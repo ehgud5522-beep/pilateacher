@@ -386,7 +386,7 @@ function normalizeDb(data, staff) {
       regular: Number(m.regular) || 0, service: Number(m.service) || 0, total: Number(m.total) || 0,
       focus: Array.isArray(m.focus) ? m.focus : [],
       perf: Array.isArray(m.perf) && m.perf.length ? m.perf : DEFAULT_PERF.map((x) => ({ ...x })),
-      inbody: Array.isArray(m.inbody) ? m.inbody.filter((r) => r && r.date) : [],
+      inbody: Array.isArray(m.inbody) ? m.inbody.filter((r) => r && r.date).map((r) => ({ ...r, id: r.id || uid() })) : [],
       notes: Array.isArray(m.notes) ? m.notes.filter(Boolean) : [],
       payments: Array.isArray(m.payments) ? m.payments.filter(Boolean) : [],
     })) : [],
@@ -3730,11 +3730,11 @@ function InbodyForm({ member, last, onSave, onDelete, onPatch, onToast }) {
         <h3 className="font-extrabold" style={{ color: INK }}>측정 기록 ({inbodyOf(member).length}회)</h3>
         <div className="mt-3 max-h-80 space-y-2 overflow-y-auto">
           {[...inbodyOf(member)].reverse().map((r) => (
-            <div key={r.date + r.weight} className="rounded-2xl px-3 py-2.5" style={{ backgroundColor: CANVAS }}>
+            <div key={r.id || `${r.date}-${r.weight}-${r.fat}`} className="rounded-2xl px-3 py-2.5" style={{ backgroundColor: CANVAS }}>
               <div className="flex items-center gap-2">
                 <span className="text-xs font-extrabold tabular-nums" style={{ color: INK }}>{ymd(r.date)}</span>
                 <span className="text-xs tabular-nums" style={{ color: SUB }}>{r.weight}kg · 근육 {r.smm}kg · 지방 {r.fat}%</span>
-                <button onClick={() => onDelete(member.id, r.date)} className="ml-auto" style={{ color: FAINT }}><Trash2 size={13} /></button>
+                <button onClick={() => onDelete(member.id, r.id || r.date)} className="ml-auto" style={{ color: FAINT }}><Trash2 size={13} /></button>
               </div>
               {INBODY_EXTRA.some((x) => r[x.k] !== undefined) && (
                 <p className="mt-1 text-xs tabular-nums" style={{ color: SUB }}>
@@ -4665,12 +4665,13 @@ export default function App() {
   };
   const saveInbody = (id, rec) => {
     const t = db.members.find((m) => m.id === id);
-    patch(id, { inbody: [...t.inbody, rec].sort((a, b) => (a.date > b.date ? 1 : -1)) });
+    patch(id, { inbody: [...t.inbody, { id: uid(), ...rec }].sort((a, b) => (a.date > b.date ? 1 : -1)) });
     setToast({ ok: true, msg: "측정값을 저장했습니다." });
   };
-  const deleteInbody = (id, date) => {
+  const deleteInbody = (id, recId) => {
     const t = db.members.find((m) => m.id === id);
-    patch(id, { inbody: t.inbody.filter((r) => r.date !== date) });
+    patch(id, { inbody: t.inbody.filter((r) => (r.id || r.date) !== recId) });
+    setToast({ ok: true, msg: "측정 기록을 삭제했습니다." });
   };
   const saveNote = (id, note) => {
     const t = db.members.find((m) => m.id === id);

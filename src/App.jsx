@@ -2216,7 +2216,7 @@ function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveM
   );
   const Empty = ({ slot, label }) => (
     <div className="flex w-full flex-col items-center justify-center gap-2 rounded-2xl" style={{ aspectRatio: "3 / 4", backgroundColor: CANVAS }}>
-      <svg viewBox="0 0 120 160" className="w-2/5 max-w-[120px]" fill="none" stroke={FAINT} strokeWidth="1.5" strokeDasharray="5 4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <svg viewBox="0 0 120 160" className="w-3/5 max-w-[150px]" fill="none" stroke={SUB} strokeWidth="2" strokeDasharray="6 4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         <circle cx="60" cy="22" r="14" />
         <path d="M60 36 L60 92" />
         <path d="M60 48 L34 76" />
@@ -2274,7 +2274,7 @@ function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveM
           ) : (
             <div className="flex gap-3">
               {before ? <div className="min-w-0 flex-1"><Shot p={before} label="비포" /></div> : <Empty slot="before" label="비포" />}
-              <Empty slot="after" label="애프터" />
+              {after ? <div className="min-w-0 flex-1"><Shot p={after} label="애프터" /></div> : <Empty slot="after" label="애프터" />}
             </div>
           )}
           <div className="mt-3 flex flex-wrap items-center gap-2">

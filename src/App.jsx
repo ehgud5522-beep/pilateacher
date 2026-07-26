@@ -3856,4 +3856,1030 @@ function NoteForm({ member, schedule, onSave, settings, onSettings }) {
 }
 
 
-export default NoteForm
+const clampScore = (v) => Math.max(0, Math.min(100, Math.round(Number(v) || 0)));
+
+function PerfForm({ member, onPatch }) {
+  const [newName, setNewName] = useState("");
+  const rows = Array.isArray(member.perf) ? member.perf : [];
+  const set = (i, key, val) => onPatch(member.id, { perf: rows.map((p, idx) => (idx === i ? { ...p, [key]: clampScore(val) } : p)) });
+  return (
+    <Card className="p-5">
+      <h3 className="font-extrabold" style={{ color: INK }}>운동 수행 능력 평가</h3>
+      <Sub>0~100점. 첫 평가 점수를 넣어두면 개선 폭이 표시됩니다</Sub>
+      <div className="mt-4 space-y-4">
+        {rows.map((p, i) => {
+          const gain = p.now - p.prev;
+          return (
+            <div key={i} className="rounded-2xl p-3" style={{ backgroundColor: CANVAS }}>
+              <div className="flex items-center gap-2">
+                <input value={p.name} onChange={(e) => onPatch(member.id, { perf: rows.map((x, idx) => (idx === i ? { ...x, name: e.target.value } : x)) })} className="min-w-0 flex-1 bg-transparent text-sm font-bold outline-none" style={{ color: INK }} />
+                <span className="shrink-0 whitespace-nowrap text-sm font-extrabold tabular-nums" style={{ color: INK }}>{p.now}<span className="ml-1 text-xs" style={{ color: gain > 0 ? GOOD : gain < 0 ? BAD : SUB }}>{gain > 0 ? "+" : ""}{gain}</span></span>
+                <button onClick={() => onPatch(member.id, { perf: rows.filter((_, idx) => idx !== i) })} aria-label={`${p.name} 항목 삭제`}
+                  className="-mr-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full" style={{ color: SUB, backgroundColor: CARD }}><Trash2 size={14} /></button>
+              </div>
+              <div className="mt-2 flex items-center gap-2">
+                <button onClick={() => set(i, "now", Number(p.now) - 1)} aria-label={`${p.name} 1점 내리기`}
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full" style={{ backgroundColor: CARD, color: INK }}><Minus size={14} /></button>
+                <input type="range" min="0" max="100" value={p.now} onChange={(e) => set(i, "now", e.target.value)} className="min-w-0 flex-1" style={{ accentColor: GOOD }} />
+                <button onClick={() => set(i, "now", Number(p.now) + 1)} aria-label={`${p.name} 1점 올리기`}
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full" style={{ backgroundColor: CARD, color: INK }}><Plus size={14} /></button>
+              </div>
+              <div className="mt-1 flex items-center gap-2">
+                <span className="text-xs" style={{ color: SUB }}>첫 평가</span>
+                <input inputMode="numeric" value={p.prev} onChange={(e) => set(i, "prev", e.target.value)} className="w-14 rounded-lg bg-white px-2 py-1 text-center text-xs font-bold outline-none" />
+                <span className="text-xs" style={{ color: SUB }}>현재</span>
+                <input inputMode="numeric" value={p.now} onChange={(e) => set(i, "now", e.target.value)} className="w-14 rounded-lg bg-white px-2 py-1 text-center text-xs font-bold outline-none" />
+              </div>
+            </div>
+          );
+        })}
+        <div className="flex gap-2">
+          <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="평가 항목 추가" className={inputCls} />
+          <button onClick={() => { if (!newName.trim()) return; onPatch(member.id, { perf: [...rows, { name: newName.trim(), now: 50, prev: 50 }] }); setNewName(""); }}
+            className="shrink-0 rounded-2xl px-4 text-white" style={{ backgroundColor: BRAND }}><Plus size={16} /></button>
+        </div>
+      </div>
+    </Card>
+  );
+}
+const INFO_FIELDS = ["name", "age", "instructor", "phone", "goal", "focus", "passName", "regular", "service", "total", "startDate", "contractEnd", "status", "endedAt", "endedReason", "endedMemo", "holdFrom", "holdUntil", "holdReason"];
+
+function PaymentSheet({ member, onClose, onSubmit }) {
+  const [f, setF] = useState({ date: todayISO(), name: member.passName || "", sessions: "", service: "0", amount: "", method: "카드", end: member.contractEnd || "", memo: "" });
+  const n = Number(f.sessions) || 0, amt = Number(f.amount) || 0;
+  const unit = n > 0 && amt > 0 ? Math.round(amt / n) : 0;
+  return (
+    <Sheet title="수강권 등록" onClose={onClose}>
+      <div className="space-y-3">
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="등록일"><input type="date" value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} className={inputCls} /></Field>
+          <Field label="결제 수단">
+            <select value={f.method} onChange={(e) => setF({ ...f, method: e.target.value })} className={inputCls}>
+              {["카드", "현금", "계좌이체", "기타"].map((m) => <option key={m}>{m}</option>)}
+            </select>
+          </Field>
+        </div>
+        <Field label="수강권 이름"><input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="예) 개인레슨 30회" className={inputCls} /></Field>
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="정규 횟수"><input inputMode="numeric" value={f.sessions} onChange={(e) => setF({ ...f, sessions: e.target.value })} placeholder="30" className={inputCls} /></Field>
+          <Field label="서비스 횟수"><input inputMode="numeric" value={f.service} onChange={(e) => setF({ ...f, service: e.target.value })} placeholder="0" className={inputCls} /></Field>
+        </div>
+        <Field label="총 결제 금액 원"><input inputMode="numeric" value={f.amount} onChange={(e) => setF({ ...f, amount: e.target.value.replace(/[^0-9]/g, "") })} placeholder="2100000" className={inputCls} /></Field>
+        <div className="flex gap-1.5">
+          {[100000, 500000, 1000000].map((v) => (
+            <button key={v} onClick={() => setF({ ...f, amount: String((Number(f.amount) || 0) + v) })} className="flex-1 rounded-xl py-2 text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>+{won(v)}</button>
+          ))}
+          <button onClick={() => setF({ ...f, amount: "" })} className="rounded-xl px-3 py-2 text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>지우기</button>
+        </div>
+        <div className="rounded-2xl p-4 text-center" style={{ backgroundColor: TINT }}>
+          <Sub>결제 금액</Sub>
+          <p className="text-2xl font-extrabold tabular-nums" style={{ color: PRIMARY }}>₩{won(amt)}</p>
+          <Sub>{n > 0 ? `정규 ${n}회${Number(f.service) ? ` + 서비스 ${f.service}회` : ""} · 회당 ₩${won(unit)}` : "정규 횟수를 입력하면 회당 단가가 계산됩니다"}</Sub>
+        </div>
+        <Field label="유효기간" hint="누르면 만료일이 자동 계산됩니다">
+          <div className="flex gap-1.5">
+            {[1, 3, 6, 12].map((n) => (
+              <button key={n} onClick={() => setF({ ...f, end: addMonths(f.date, n) })} className="flex-1 rounded-xl py-2 text-xs font-bold"
+                style={f.end === addMonths(f.date, n) ? { backgroundColor: BRAND, color: "#fff" } : { backgroundColor: CANVAS, color: SUB }}>{n}개월</button>
+            ))}
+          </div>
+        </Field>
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="만료일"><input type="date" value={f.end} onChange={(e) => setF({ ...f, end: e.target.value })} className={inputCls} /></Field>
+          <Field label="메모" hint="선택"><input value={f.memo} onChange={(e) => setF({ ...f, memo: e.target.value })} placeholder="예) 재등록 할인" className={inputCls} /></Field>
+        </div>
+        <PrimaryBtn disabled={!(n > 0 && amt > 0)} onClick={() => onSubmit({
+          id: uid(), date: f.date, name: f.name || "수강권", sessions: n, service: Number(f.service) || 0,
+          amount: amt, unit, method: f.method, end: f.end, memo: f.memo,
+        })}>
+          <Ticket size={16} /> 등록하고 잔여 횟수에 더하기
+        </PrimaryBtn>
+      </div>
+    </Sheet>
+  );
+}
+function InfoForm({ member, onPatch, onDelete, onToast }) {
+  const [d, setD] = useState(member);
+  const [tag, setTag] = useState("");
+  const [confirm, setConfirm] = useState(false);
+  const [pay, setPay] = useState(false);
+  const [hist, setHist] = useState(false);
+  const [delPay, setDelPay] = useState(null);
+  useEffect(() => { setD(member); }, [member.id]);
+  const S = (p) => setD((x) => ({ ...x, ...p }));
+  const dirty = INFO_FIELDS.some((k) => JSON.stringify(d[k] ?? "") !== JSON.stringify(member[k] ?? ""));
+  const save = () => { const p = {}; INFO_FIELDS.forEach((k) => { p[k] = d[k]; }); onPatch(member.id, p); onToast({ ok: true, msg: "회원 정보를 저장했습니다." }); };
+  const addTag = (t) => { const v = (t || "").trim(); if (!v || (d.focus || []).includes(v)) return; S({ focus: [...(d.focus || []), v] }); setTag(""); };
+  const st = isEnded(d) ? "ended" : isHold(d) ? "hold" : "active";
+  const addPayment = (rec) => {
+    const patch = {
+      payments: [rec, ...(member.payments || [])],
+      regular: (member.regular || 0) + rec.sessions,
+      service: (member.service || 0) + rec.service,
+      total: (member.total || 0) + rec.sessions + rec.service,
+      passName: rec.name,
+    };
+    if (rec.end) patch.contractEnd = rec.end;
+    onPatch(member.id, patch);
+    setD((x) => ({ ...x, ...patch }));
+    setPay(false);
+    onToast({ ok: true, msg: `${rec.name} ${rec.sessions}회 · ₩${won(rec.amount)} 등록` });
+  };
+  const removePayment = (id) => {
+    const rec = (member.payments || []).find((x) => x.id === id);
+    if (!rec) return;
+    const patch = {
+      payments: (member.payments || []).filter((x) => x.id !== id),
+      regular: Math.max(0, (member.regular || 0) - rec.sessions),
+      service: Math.max(0, (member.service || 0) - rec.service),
+      total: Math.max(0, (member.total || 0) - rec.sessions - rec.service),
+    };
+    onPatch(member.id, patch);
+    setD((x) => ({ ...x, ...patch }));
+    setDelPay(null);
+    onToast({ ok: true, msg: "등록 내역을 삭제하고 잔여를 되돌렸습니다." });
+  };
+  return (
+    <>
+      <Card className="p-5">
+        <h3 className="font-extrabold" style={{ color: INK }}>회원 정보</h3>
+        <Sub>수정 후 맨 아래 '저장하기'를 눌러야 반영됩니다</Sub>
+        <div className="mt-4 space-y-3">
+          <div className="grid grid-cols-2 gap-2">
+            <Field label="이름"><input value={d.name} onChange={(e) => S({ name: e.target.value })} className={inputCls} /></Field>
+            <Field label="나이"><input inputMode="numeric" value={d.age} onChange={(e) => S({ age: e.target.value })} className={inputCls} /></Field>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <Field label="담당 강사"><input value={d.instructor} onChange={(e) => S({ instructor: e.target.value })} className={inputCls} /></Field>
+            <Field label="연락처" hint="선택"><input value={d.phone || ""} onChange={(e) => S({ phone: e.target.value })} placeholder="010-" className={inputCls} /></Field>
+          </div>
+          <Field label="목표" hint="이름 아래 보라색 태그"><input value={d.goal} onChange={(e) => S({ goal: e.target.value })} placeholder="예) 체지방 감량 · 코어 강화" className={inputCls} /></Field>
+          <Field label="체형 · 상태 태그">
+            <div className="flex flex-wrap gap-1.5">
+              {(d.focus || []).map((x) => (
+                <span key={x} className="flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-bold" style={{ backgroundColor: TINT, color: PRIMARY }}>
+                  {x}<button onClick={() => S({ focus: d.focus.filter((y) => y !== x) })}><X size={11} /></button>
+                </span>
+              ))}
+            </div>
+            <div className="mt-2 flex gap-2">
+              <input value={tag} onChange={(e) => setTag(e.target.value)} placeholder="직접 입력 후 추가" className={inputCls} />
+              <button onClick={() => addTag(tag)} className="shrink-0 rounded-2xl px-4 text-white" style={{ backgroundColor: BRAND }}><Plus size={16} /></button>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {FOCUS_PRESETS.filter((x) => !(d.focus || []).includes(x)).map((x) => (
+                <button key={x} onClick={() => addTag(x)} className="rounded-full px-2.5 py-1 text-xs" style={{ backgroundColor: CANVAS, color: SUB }}>+ {x}</button>
+              ))}
+            </div>
+          </Field>
+        </div>
+      </Card>
+      <Card className="p-5">
+        <div className="flex items-center justify-between">
+          <div><h3 className="font-extrabold" style={{ color: INK }}>수강권 · 결제</h3><Sub>등록할 때마다 잔여 횟수가 자동으로 더해집니다</Sub></div>
+          <button onClick={() => setPay(true)} className="flex items-center gap-1 rounded-full px-3 py-2 text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>
+            <Plus size={13} /> 수강권 등록
+          </button>
+        </div>
+        <div className="mt-4 rounded-2xl p-4" style={{ backgroundColor: TOAST }}>
+          <p className="text-xs font-bold text-white opacity-70">누적 결제 금액</p>
+          <p className="mt-1 text-3xl font-extrabold tabular-nums text-white">₩{won(paidTotal(member))}</p>
+          <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
+            <span className="text-xs font-bold" style={{ color: "#A9B6FF" }}>등록 {(member.payments || []).length}건</span>
+            <span className="text-xs font-bold" style={{ color: "#A9B6FF" }}>총 {paidCount(member)}회 구매</span>
+            <span className="text-xs font-bold" style={{ color: "#A9B6FF" }}>회당 평균 ₩{won(paidAvg(member))}</span>
+          </div>
+        </div>
+        <button onClick={() => setHist(true)} className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-2xl py-3 text-sm font-bold"
+          style={{ backgroundColor: CANVAS, color: INK }}>
+          <ClipboardList size={15} style={{ color: PRIMARY }} /> 결제 내역 보기 ({(member.payments || []).length}건)
+        </button>
+        <div className="mt-4 space-y-3">
+          <Sub>현재 잔여 (직접 수정도 가능)</Sub>
+          <div className="grid grid-cols-3 gap-2">
+            <Field label="정규 잔여"><input inputMode="numeric" value={d.regular} onChange={(e) => S({ regular: Math.max(0, parseInt(e.target.value || "0", 10)) })} className={inputCls} /></Field>
+            <Field label="서비스 잔여"><input inputMode="numeric" value={d.service} onChange={(e) => S({ service: Math.max(0, parseInt(e.target.value || "0", 10)) })} className={inputCls} /></Field>
+            <Field label="등록 총 횟수"><input inputMode="numeric" value={d.total} onChange={(e) => S({ total: Math.max(0, parseInt(e.target.value || "0", 10)) })} className={inputCls} /></Field>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <Field label="시작일"><input type="date" value={d.startDate} onChange={(e) => S({ startDate: e.target.value })} className={inputCls} /></Field>
+            <Field label="만료일"><input type="date" value={d.contractEnd || ""} onChange={(e) => S({ contractEnd: e.target.value })} className={inputCls} /></Field>
+          </div>
+          <div className="rounded-2xl p-4 text-center" style={{ backgroundColor: TINT }}>
+            <Sub>총 잔여 횟수</Sub>
+            <p className="text-2xl font-extrabold tabular-nums" style={{ color: PRIMARY }}>{(d.regular || 0) + (d.service || 0)}회</p>
+            <Sub>정규 {d.regular} · 서비스 {d.service}</Sub>
+          </div>
+        </div>
+      </Card>
+      <Card className="p-5">
+        <h3 className="font-extrabold" style={{ color: INK }}>회원 상태</h3>
+        <Sub>회원 목록이 이 상태에 따라 3개 탭으로 나뉩니다</Sub>
+        <div className="mt-3 flex gap-1 rounded-2xl p-1" style={{ backgroundColor: CANVAS }}>
+          {[{ k: "active", l: "진행중", c: PRIMARY }, { k: "hold", l: "홀딩", c: WARN }, { k: "ended", l: "종료", c: BAD }].map((o) => (
+            <button key={o.k} onClick={() => S(
+              o.k === "ended" ? { status: "ended", endedAt: d.endedAt || todayISO() }
+                : o.k === "hold" ? { status: "hold", holdFrom: d.holdFrom || todayISO() }
+                : { status: "active" })}
+              className="flex-1 rounded-xl py-2.5 text-sm font-bold"
+              style={st === o.k ? { backgroundColor: CARD, color: o.c, boxShadow: "0 1px 3px rgba(20,20,43,.12)" } : { color: SUB }}>{o.l}</button>
+          ))}
+        </div>
+        {st === "hold" && (
+          <div className="mt-3 space-y-3">
+            <div className="grid grid-cols-2 gap-2">
+              <Field label="홀딩 시작일"><input type="date" value={d.holdFrom || ""} onChange={(e) => S({ holdFrom: e.target.value })} className={inputCls} /></Field>
+              <Field label="복귀 예정일" hint="알림 기준"><input type="date" value={d.holdUntil || ""} onChange={(e) => S({ holdUntil: e.target.value })} className={inputCls} /></Field>
+            </div>
+            <Field label="홀딩 사유">
+              <select value={d.holdReason || "개인 사정"} onChange={(e) => S({ holdReason: e.target.value })} className={inputCls}>
+                {["개인 사정", "부상 · 통증", "임신 · 출산", "출장 · 여행", "질병", "기타"].map((r) => <option key={r}>{r}</option>)}
+              </select>
+            </Field>
+          </div>
+        )}
+        {st === "ended" && (
+          <div className="mt-3 space-y-3">
+            <div className="grid grid-cols-2 gap-2">
+              <Field label="종료일"><input type="date" value={d.endedAt || ""} onChange={(e) => S({ endedAt: e.target.value })} className={inputCls} /></Field>
+              <Field label="종료 사유">
+                <select value={d.endedReason || "수강권 만료"} onChange={(e) => S({ endedReason: e.target.value })} className={inputCls}>
+                  {["수강권 만료", "개인 사정", "이사 · 이직", "가격 부담", "효과 미흡", "타 센터 이동", "기타"].map((r) => <option key={r}>{r}</option>)}
+                </select>
+              </Field>
+            </div>
+            <Field label="종료 메모" hint="재등록 상담 때 참고"><input value={d.endedMemo || ""} onChange={(e) => S({ endedMemo: e.target.value })} placeholder="예) 9월 복귀 희망" className={inputCls} /></Field>
+          </div>
+        )}
+      </Card>
+      <Card className="p-5">
+        {!confirm ? (
+          <button onClick={() => setConfirm(true)} className="flex items-center gap-1.5 text-sm font-bold" style={{ color: SUB }}><Trash2 size={14} /> 회원 삭제</button>
+        ) : (
+          <div>
+            <p className="text-sm font-bold" style={{ color: BAD }}>{member.name || "이 회원"}의 모든 기록이 삭제됩니다.</p>
+            <div className="mt-2 flex gap-2">
+              <button onClick={() => { onDelete(member.id); setConfirm(false); }} className="rounded-xl px-4 py-2 text-sm font-extrabold text-white" style={{ backgroundColor: BAD }}>삭제</button>
+              <button onClick={() => setConfirm(false)} className="rounded-xl px-4 py-2 text-sm font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>취소</button>
+            </div>
+          </div>
+        )}
+      </Card>
+      <div className="sticky bottom-3 z-10">
+        <button onClick={save} disabled={!dirty}
+          className="flex w-full items-center justify-center gap-1.5 rounded-2xl py-4 text-sm font-extrabold text-white"
+          style={{ backgroundColor: dirty ? PRIMARY : FAINT, boxShadow: SHADOW }}>
+          <Check size={16} /> {dirty ? "변경사항 저장하기" : "저장됨 · 변경사항 없음"}
+        </button>
+      </div>
+      {pay && <PaymentSheet member={member} onClose={() => setPay(false)} onSubmit={addPayment} />}
+      {hist && (
+        <Sheet title={`${member.name || "회원"} 결제 내역`} onClose={() => setHist(false)}>
+          <div className="rounded-2xl p-4" style={{ backgroundColor: TOAST }}>
+            <p className="text-xs font-bold text-white opacity-70">누적 결제 금액</p>
+            <p className="mt-1 text-3xl font-extrabold tabular-nums text-white">₩{won(paidTotal(member))}</p>
+            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
+              <span className="text-xs font-bold" style={{ color: "#A9B6FF" }}>등록 {(member.payments || []).length}건</span>
+              <span className="text-xs font-bold" style={{ color: "#A9B6FF" }}>총 {paidCount(member)}회 구매</span>
+              <span className="text-xs font-bold" style={{ color: "#A9B6FF" }}>회당 평균 ₩{won(paidAvg(member))}</span>
+            </div>
+          </div>
+          <div className="mt-3 space-y-2">
+            {(member.payments || []).map((r) => (
+              <div key={r.id} className="rounded-2xl p-3" style={{ backgroundColor: CANVAS }}>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-extrabold tabular-nums" style={{ color: INK }}>{ymd(r.date)}</span>
+                  <span className="min-w-0 flex-1 truncate text-xs font-bold" style={{ color: INK }}>{r.name}</span>
+                  <span className="text-sm font-extrabold tabular-nums" style={{ color: PRIMARY }}>₩{won(r.amount)}</span>
+                  <button onClick={() => setDelPay(r.id)} style={{ color: FAINT }}><Trash2 size={13} /></button>
+                </div>
+                <Sub className="mt-0.5">정규 {r.sessions}회{r.service ? ` + 서비스 ${r.service}회` : ""} · 회당 ₩{won(r.unit)} · {r.method}{r.memo ? ` · ${r.memo}` : ""}</Sub>
+                {delPay === r.id && (
+                  <div className="mt-2 flex items-center gap-2 rounded-xl p-2" style={{ backgroundColor: BAD_S }}>
+                    <span className="text-xs font-bold" style={{ color: INK }}>삭제하고 잔여를 되돌릴까요?</span>
+                    <button onClick={() => removePayment(r.id)} className="ml-auto rounded-full px-3 py-1 text-xs font-extrabold text-white" style={{ backgroundColor: BAD }}>삭제</button>
+                    <button onClick={() => setDelPay(null)} className="rounded-full bg-white px-3 py-1 text-xs font-bold" style={{ color: SUB }}>취소</button>
+                  </div>
+                )}
+              </div>
+            ))}
+            {(member.payments || []).length === 0 && (
+              <div className="py-8 text-center">
+                <Ticket size={20} className="mx-auto" style={{ color: FAINT }} />
+                <Sub className="mt-2">등록 이력이 없습니다. '수강권 등록'으로 첫 결제를 기록해 보세요.</Sub>
+              </div>
+            )}
+          </div>
+        </Sheet>
+      )}
+    </>
+  );
+}
+const HANDOFF_ABC = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+const handoffId = () => {
+  let v = "";
+  for (let i = 0; i < 8; i++) v += HANDOFF_ABC[Math.floor(Math.random() * HANDOFF_ABC.length)];
+  return v.slice(0, 4) + "-" + v.slice(4);
+};
+const normCode = (v) => String(v || "").toUpperCase().replace(/[^0-9A-Z]/g, "").slice(0, 8);
+const fmtCode = (v) => { const x = normCode(v); return x.length > 4 ? x.slice(0, 4) + "-" + x.slice(4) : x; };
+const handoffKey = (code) => "pilateacher_handoff_" + normCode(code);
+const packHandoff = (db, photos, withPhotos, from) => JSON.stringify({
+  app: "pilateacher", kind: "handoff", ver: 1, at: new Date().toISOString(),
+  from: from || "", center: (db && db.settings && db.settings.center) || "",
+  members: (db && db.members) || [], schedule: (db && db.schedule) || [],
+  photos: withPhotos ? (photos || {}) : {},
+});
+function readHandoff(text) {
+  let d = null;
+  try { d = JSON.parse(String(text || "").trim()); } catch (e) { return null; }
+  if (!d || d.kind !== "handoff" || !Array.isArray(d.members)) return null;
+  return d;
+}
+function mergeHandoff(cur, inc, staff) {
+  const members = [...((cur && cur.members) || [])];
+  ((inc && inc.members) || []).forEach((m) => {
+    if (!m || !m.id) return;
+    const i = members.findIndex((x) => x.id === m.id);
+    if (i >= 0) members[i] = m; else members.push(m);
+  });
+  const schedule = [...((cur && cur.schedule) || [])];
+  ((inc && inc.schedule) || []).forEach((x0) => {
+    if (!x0 || !x0.id) return;
+    const i = schedule.findIndex((x) => x.id === x0.id);
+    if (i >= 0) schedule[i] = x0; else schedule.push(x0);
+  });
+  return normalizeDb({ settings: cur.settings, members, schedule }, staff);
+}
+const packSize = (t) => (String(t || "").length / 1048576).toFixed(1);
+
+function HandoffCard({ db, photos, account, onImport, onToast }) {
+  const [mode, setMode] = useState(null);
+  const [withPhotos, setWithPhotos] = useState(false);
+  const [pack, setPack] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [code, setCode] = useState("");
+  const [paste, setPaste] = useState("");
+  const [inc, setInc] = useState(null);
+  const [err, setErr] = useState("");
+  const [confirmAll, setConfirmAll] = useState(false);
+  const copy = async (t, msg) => {
+    try { await navigator.clipboard.writeText(t); onToast({ ok: true, msg }); }
+    catch (e) { onToast({ ok: false, msg: "복사하지 못했습니다. 길게 눌러 직접 복사해 주세요." }); }
+  };
+  const make = async () => {
+    setBusy(true); setErr("");
+    let text = packHandoff(db, photos, withPhotos, account && account.name);
+    if (withPhotos && text.length > 4.5 * 1048576) {
+      text = packHandoff(db, photos, false, account && account.name);
+      onToast({ ok: false, msg: "사진 용량이 커서 사진은 빼고 만들었습니다." });
+    }
+    const c = handoffId();
+    let shared = false;
+    try { await window.storage.set(handoffKey(c), text, true); shared = true; } catch (e) {}
+    if (!shared) { try { await window.storage.set(handoffKey(c), text); } catch (e) {} }
+    setPack({ code: c, text, shared });
+    setBusy(false);
+  };
+  const take = async () => {
+    setBusy(true); setErr(""); setInc(null); setConfirmAll(false);
+    const key = handoffKey(code);
+    let val = null;
+    try { const r = await window.storage.get(key, true); if (r && r.value) val = r.value; } catch (e) {}
+    if (!val) { try { const r = await window.storage.get(key); if (r && r.value) val = r.value; } catch (e) {} }
+    const d = readHandoff(val);
+    if (!d) setErr("이 번호로 받을 자료를 찾지 못했습니다. 번호를 확인하거나, 아래에 인계 코드 텍스트를 붙여넣어 주세요.");
+    else setInc(d);
+    setBusy(false);
+  };
+  const readPaste = () => {
+    setErr(""); setConfirmAll(false);
+    const d = readHandoff(paste);
+    if (!d) { setInc(null); setErr("인계 코드 형식이 아닙니다. 넘겨주신 분이 복사한 코드 전체를 붙여넣어 주세요."); return; }
+    setInc(d);
+  };
+  const apply = (how) => {
+    onImport(inc, how);
+    setInc(null); setPaste(""); setCode(""); setMode(null); setConfirmAll(false);
+  };
+  return (
+    <Card className="p-5">
+      <div className="flex items-center gap-2">
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: TINT }}><Users2 size={14} style={{ color: PRIMARY }} /></span>
+        <div className="min-w-0 flex-1">
+          <h3 className="font-extrabold" style={{ color: INK }}>회원 인계 · DB 넘기기</h3>
+          <Sub>담당이 바뀔 때 회원 · 수업 기록을 통째로 주고받습니다</Sub>
+        </div>
+      </div>
+      <div className="mt-3 flex gap-1.5">
+        <button onClick={() => { setMode(mode === "give" ? null : "give"); setPack(null); }}
+          className="flex flex-1 items-center justify-center gap-1.5 rounded-2xl py-3 text-sm font-extrabold"
+          style={mode === "give" ? { background: GRAD, color: "#fff" } : { backgroundColor: CANVAS, color: INK }}>
+          <Upload size={14} /> 내 자료 넘기기
+        </button>
+        <button onClick={() => { setMode(mode === "take" ? null : "take"); setInc(null); setErr(""); }}
+          className="flex flex-1 items-center justify-center gap-1.5 rounded-2xl py-3 text-sm font-extrabold"
+          style={mode === "take" ? { background: GRAD, color: "#fff" } : { backgroundColor: CANVAS, color: INK }}>
+          <Download size={14} /> 번호로 받아오기
+        </button>
+      </div>
+      {mode === "give" && (
+        <div className="mt-3 space-y-3">
+          <button onClick={() => setWithPhotos((v) => !v)} className="flex w-full items-center gap-2 rounded-2xl px-3 py-2.5" style={{ backgroundColor: CANVAS }}>
+            <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md" style={{ backgroundColor: withPhotos ? BRAND : CARD, border: `1px solid ${withPhotos ? BRAND : LINE}` }}>
+              {withPhotos && <Check size={12} color="#fff" />}
+            </span>
+            <span className="min-w-0 flex-1 text-left text-xs font-bold" style={{ color: INK }}>비포애프터 사진도 함께 넘기기</span>
+            <Sub>용량이 커집니다</Sub>
+          </button>
+          <button onClick={make} disabled={busy} className="flex w-full items-center justify-center gap-1.5 rounded-2xl py-3.5 text-sm font-extrabold text-white disabled:opacity-60" style={{ backgroundColor: BRAND }}>
+            {busy ? <Loader2 size={15} className="animate-spin" /> : <Ticket size={15} />} 인계 코드 만들기
+          </button>
+          {pack && (
+            <div className="rounded-2xl p-4" style={{ backgroundColor: TINT }}>
+              <Sub>인계 번호</Sub>
+              <p className="mt-0.5 text-3xl font-extrabold tabular-nums tracking-widest" style={{ color: PRIMARY }}>{pack.code}</p>
+              <p className="mt-2 text-xs font-bold" style={{ color: INK }}>
+                회원 {(db.members || []).length}명 · 수업 {(db.schedule || []).length}건{withPhotos ? " · 사진 포함" : ""} · {packSize(pack.text)}MB
+              </p>
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                <button onClick={() => copy(pack.code, "인계 번호를 복사했습니다.")} className="flex items-center gap-1 rounded-full bg-white px-3 py-2 text-xs font-extrabold" style={{ color: PRIMARY }}><Copy size={12} /> 번호 복사</button>
+                <button onClick={() => copy(pack.text, "인계 코드를 복사했습니다. 메시지로 보내 주세요.")} className="flex items-center gap-1 rounded-full bg-white px-3 py-2 text-xs font-bold" style={{ color: INK }}><Copy size={12} /> 인계 코드 전체 복사</button>
+              </div>
+              <Sub className="mt-2">같은 앱을 쓰는 기기면 번호만 알려 주세요. 다른 기기·다른 브라우저면 '인계 코드 전체 복사'로 보낸 내용을 상대가 붙여넣으면 됩니다. 코드는 비밀번호와 같으니 받는 분에게만 알려 주세요.</Sub>
+            </div>
+          )}
+        </div>
+      )}
+      {mode === "take" && (
+        <div className="mt-3 space-y-3">
+          <Field label="인계 번호" hint="예) ABCD-2345">
+            <div className="flex gap-1.5">
+              <input value={code} onChange={(e) => setCode(fmtCode(e.target.value))} placeholder="ABCD-2345" className={inputCls} style={{ letterSpacing: "0.12em" }} />
+              <button onClick={take} disabled={busy || normCode(code).length < 8} className="shrink-0 rounded-2xl px-4 text-sm font-extrabold text-white disabled:opacity-50" style={{ backgroundColor: BRAND }}>
+                {busy ? <Loader2 size={15} className="animate-spin" /> : "받기"}
+              </button>
+            </div>
+          </Field>
+          <Field label="또는 인계 코드 붙여넣기" hint="다른 기기에서 받을 때">
+            <textarea value={paste} onChange={(e) => setPaste(e.target.value)} rows={3} placeholder='{"app":"pilateacher", ...' className={inputCls} style={{ resize: "none" }} />
+          </Field>
+          <button onClick={readPaste} disabled={!paste.trim()} className="w-full rounded-2xl py-3 text-sm font-bold disabled:opacity-50" style={{ backgroundColor: CANVAS, color: INK }}>붙여넣은 코드 확인</button>
+          {err && <p className="rounded-2xl px-3 py-2.5 text-xs font-bold" style={{ backgroundColor: BAD_S, color: BAD }}>{err}</p>}
+          {inc && (
+            <div className="rounded-2xl p-4" style={{ backgroundColor: CANVAS }}>
+              <p className="text-sm font-extrabold" style={{ color: INK }}>{inc.from || "이름 미기재"} 강사님이 보낸 자료</p>
+              <Sub className="mt-1">
+                {inc.center ? `${inc.center} · ` : ""}회원 {(inc.members || []).length}명 · 수업 {(inc.schedule || []).length}건
+                {inc.photos && Object.keys(inc.photos).length ? " · 사진 포함" : ""}
+                {inc.at ? ` · ${ymd(String(inc.at).slice(0, 10))} 생성` : ""}
+              </Sub>
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                <button onClick={() => apply("merge")} className="flex-1 rounded-2xl py-3 text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>내 회원에 합치기</button>
+                <button onClick={() => setConfirmAll(true)} className="flex-1 rounded-2xl py-3 text-xs font-bold" style={{ backgroundColor: CARD, color: BAD }}>전부 덮어쓰기</button>
+              </div>
+              {confirmAll && (
+                <div className="mt-2 rounded-2xl p-3" style={{ backgroundColor: BAD_S }}>
+                  <p className="text-xs font-bold" style={{ color: INK }}>지금 이 기기의 회원 {(db.members || []).length}명이 지워지고 받은 자료로 바뀝니다.</p>
+                  <div className="mt-2 flex gap-2">
+                    <button onClick={() => apply("replace")} className="rounded-xl px-4 py-2 text-xs font-extrabold text-white" style={{ backgroundColor: BAD }}>덮어쓰기</button>
+                    <button onClick={() => setConfirmAll(false)} className="rounded-xl bg-white px-4 py-2 text-xs font-bold" style={{ color: SUB }}>취소</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+function SettingsTab({ db, photos, account, onChangeSettings, onChangePhoto, savedAt, onReset, onClear, onLogout, onToast, themePref, onChangeTheme, onImport }) {
+  const [confirm, setConfirm] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const camRef = useRef(null), albumRef = useRef(null);
+  const pickPhoto = async (file) => {
+    if (!file) return;
+    setBusy(true);
+    try { onChangePhoto(await fileToThumb(file, 320)); }
+    catch (e) { onToast?.({ ok: false, msg: "사진을 불러오지 못했습니다." }); }
+    setBusy(false);
+  };
+  return (
+    <div className="space-y-3">
+      <Card className="p-5">
+        <h3 className="font-extrabold" style={{ color: INK }}>내 계정</h3>
+        <div className="mt-3 flex items-center gap-3">
+          <button onClick={() => albumRef.current?.click()} className="relative shrink-0" aria-label="프로필 사진 변경">
+            <Avatar src={account?.photo} name={account?.name} size={56} radius={20} />
+            <span className="absolute -bottom-1 -right-1 flex h-6 w-6 items-center justify-center rounded-full border-2 border-white" style={{ background: GRAD }}>
+              {busy ? <Loader2 size={11} color="#fff" className="animate-spin" /> : <Camera size={11} color="#fff" />}
+            </span>
+          </button>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-base font-extrabold" style={{ color: INK }}>{account?.name}</p>
+            <Sub className="truncate">{account?.email || "이메일 미등록"}</Sub>
+          </div>
+          <span className="shrink-0 rounded-full px-2.5 py-1 text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>{PROVIDER_LABEL[account?.provider]}</span>
+        </div>
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          <button onClick={() => albumRef.current?.click()} className="rounded-full px-3 py-1.5 text-xs font-bold" style={{ backgroundColor: TINT, color: PRIMARY }}>
+            사진 {account?.photo ? "변경" : "등록"}
+          </button>
+          <button onClick={() => camRef.current?.click()} className="flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>
+            <Camera size={12} /> 촬영
+          </button>
+          {account?.photo && (
+            <button onClick={() => onChangePhoto(null)} className="flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>
+              <Trash2 size={12} /> 사진 삭제
+            </button>
+          )}
+          <span className="w-full"><Sub>회원 앱·상담 화면에 함께 보이는 사진입니다. 얼굴이 잘 보이는 정사각 사진을 권합니다.</Sub></span>
+        </div>
+        <input ref={albumRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; pickPhoto(f); }} />
+        <input ref={camRef} type="file" accept="image/*" capture="user" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; pickPhoto(f); }} />
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <div className="rounded-2xl p-3" style={{ backgroundColor: CANVAS }}><Sub>센터</Sub><p className="text-sm font-extrabold" style={{ color: INK }}>{account?.center || "-"}</p></div>
+          <div className="rounded-2xl p-3" style={{ backgroundColor: CANVAS }}><Sub>연락처</Sub><p className="text-sm font-extrabold" style={{ color: INK }}>{account?.phone || "-"}</p></div>
+          <div className="rounded-2xl p-3" style={{ backgroundColor: CANVAS }}><Sub>가입일</Sub><p className="text-sm font-extrabold tabular-nums" style={{ color: INK }}>{ymd(account?.joinedAt)}</p></div>
+          <div className="rounded-2xl p-3" style={{ backgroundColor: CANVAS }}><Sub>관리 회원</Sub><p className="text-sm font-extrabold tabular-nums" style={{ color: INK }}>{db.members.length}명</p></div>
+        </div>
+        <button onClick={onLogout} className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-2xl py-3 text-sm font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>
+          <LogOut size={14} /> 로그아웃
+        </button>
+      </Card>
+      <Card className="p-5">
+        <h3 className="font-extrabold" style={{ color: INK }}>화면 테마</h3>
+        <Sub className="mt-1">폰 설정을 따르거나 직접 고를 수 있어요. 어두운 곳에서 회원에게 보여줄 땐 다크가 눈이 편합니다.</Sub>
+        <div className="mt-3 flex gap-1 rounded-2xl p-1" style={{ backgroundColor: CANVAS }}>
+          {[{ k: "system", l: "폰 설정", i: Smartphone }, { k: "light", l: "라이트", i: Sun }, { k: "dark", l: "다크", i: Moon }].map((o) => {
+            const on = themePref === o.k, Icon = o.i;
+            return (
+              <button key={o.k} onClick={() => onChangeTheme(o.k)} className="flex flex-1 items-center justify-center gap-1.5 rounded-xl py-2.5 text-sm font-bold"
+                style={on ? { background: GRAD, color: "#fff", boxShadow: "0 3px 10px rgba(108,76,241,.3)" } : { color: SUB }}>
+                <Icon size={14} /> {o.l}
+              </button>
+            );
+          })}
+        </div>
+      </Card>
+      <Card className="p-5">
+        <h3 className="font-extrabold" style={{ color: INK }}>센터 정보</h3>
+        <div className="mt-4 space-y-3">
+          <Field label="센터명"><input value={db.settings.center} onChange={(e) => onChangeSettings({ ...db.settings, center: e.target.value })} className={inputCls} /></Field>
+          <Field label="기본 담당자" hint="수업 등록 시 자동 입력"><input value={db.settings.staff} onChange={(e) => onChangeSettings({ ...db.settings, staff: e.target.value })} className={inputCls} /></Field>
+        </div>
+      </Card>
+      <HandoffCard db={db} photos={photos} account={account} onImport={onImport} onToast={onToast} />
+      <Card className="p-5">
+        <h3 className="font-extrabold" style={{ color: INK }}>데이터</h3>
+        <Sub className="mt-2">계정별로 따로 저장됩니다.{savedAt instanceof Date && ` 마지막 저장 ${savedAt.getHours()}:${String(savedAt.getMinutes()).padStart(2, "0")}`}</Sub>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button onClick={() => setConfirm("clear")} className="rounded-2xl px-4 py-2.5 text-sm font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>모든 회원 초기화</button>
+          <button onClick={() => setConfirm("reset")} className="flex items-center gap-1.5 rounded-2xl px-4 py-2.5 text-sm font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>
+            <RotateCcw size={14} /> 회원 데이터로 돌리기
+          </button>
+        </div>
+        {confirm && (
+          <div className="mt-3 rounded-2xl p-4" style={{ backgroundColor: BAD_S }}>
+            <p className="text-sm font-bold" style={{ color: BAD }}>{confirm === "clear" ? "이 계정의 회원 · 스케줄이 모두 지워집니다." : "회원 데이터를 처음 상태로 되돌립니다. 입력한 내용은 사라집니다."}</p>
+            <div className="mt-2 flex gap-2">
+              <button onClick={() => { confirm === "clear" ? onClear() : onReset(); setConfirm(null); }} className="rounded-xl px-4 py-2 text-sm font-extrabold text-white" style={{ backgroundColor: BAD }}>진행</button>
+              <button onClick={() => setConfirm(null)} className="rounded-xl bg-white px-4 py-2 text-sm font-bold" style={{ color: SUB }}>취소</button>
+            </div>
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+export default function App() {
+  const [phase, setPhase] = useState("splash");
+  const [accounts, setAccounts] = useState([]);
+  const [account, setAccount] = useState(null);
+  const [db, setDb] = useState(emptyDb("", ""));
+  const [photos, setPhotos] = useState({});
+  const [tab, setTab] = useState("schedule");
+  const [section, setSection] = useState("inbody");
+  const [selectedId, setSelectedId] = useState(null);
+  const [mobileView, setMobileView] = useState("list");
+  const briefing = false;
+  const [savedAt, setSavedAt] = useState(null);
+  const [toast, setToast] = useState(null);
+  const [brief, setBrief] = useState(null);
+  const [favOpen, setFavOpen] = useState(false);
+  const [themePref, setThemePref] = useState("system");
+  const [sysDark, setSysDark] = useState(sysDarkNow());
+  useEffect(() => {
+    let mq;
+    try { mq = window.matchMedia("(prefers-color-scheme: dark)"); } catch (e) { return; }
+    if (!mq) return;
+    const on = () => setSysDark(mq.matches);
+    on();
+    mq.addEventListener ? mq.addEventListener("change", on) : mq.addListener(on);
+    return () => { mq.removeEventListener ? mq.removeEventListener("change", on) : mq.removeListener(on); };
+  }, []);
+  const themeMode = themePref === "dark" || (themePref === "system" && sysDark) ? "dark" : "light";
+  applyTheme(themeMode);
+  const changeTheme = (pref) => {
+    setThemePref(pref);
+    try { window.storage.set(THEME_KEY, pref); } catch (e) {}
+  };
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      let accs = [];
+      try { const r = await window.storage.get(ACC_KEY); if (r?.value) accs = JSON.parse(r.value); } catch (e) {}
+      accs = Array.isArray(accs) ? accs.filter((a) => a && typeof a === "object").map((a) => ({ ...a, id: a.id || uid() })) : [];
+      let ses = null;
+      try { const r = await window.storage.get(SES_KEY); if (r?.value) ses = JSON.parse(r.value); } catch (e) {}
+      try { const r = await window.storage.get(THEME_KEY); if (r?.value && alive) setThemePref(r.value); } catch (e) {}
+      if (!alive) return;
+      setAccounts(accs);
+      const auto = ses?.auto && accs.find((a) => a.id === ses.accountId);
+      setTimeout(async () => {
+        if (!alive) return;
+        if (auto) { await loadAccount(auto); setPhase("app"); }
+        else setPhase("auth");
+      }, 1400);
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  const loadAccount = async (acc) => {
+    setAccount(acc);
+    let data = null, ph = {};
+    try { const r = await window.storage.get(dbKey(acc.id)); if (r?.value) data = JSON.parse(r.value); } catch (e) {}
+    try { const r = await window.storage.get(phKey(acc.id)); if (r?.value) ph = JSON.parse(r.value); } catch (e) {}
+    if (!data) data = sampleDb(acc.center, acc.name);
+    data = normalizeDb(data, acc.name);
+    if (!data.settings.center) data.settings.center = acc.center || "";
+    setDb(data);
+    setPhotos(ph && typeof ph === "object" ? ph : {});
+    setSelectedId(data.members[0]?.id || null);
+    setTab("schedule");
+  };
+
+  const persistAccounts = async (list) => {
+    setAccounts(list);
+    try { await window.storage.set(ACC_KEY, JSON.stringify(list)); } catch (e) {}
+  };
+  const persistSession = async (accId, auto) => {
+    try { await window.storage.set(SES_KEY, JSON.stringify({ accountId: accId, auto })); } catch (e) {}
+  };
+  const handleLogin = async (acc, auto) => {
+    await persistSession(acc.id, auto);
+    await loadAccount(acc);
+    setPhase("app");
+    setToast({ ok: true, msg: `${acc.name} 강사님, 환영합니다.` });
+  };
+  const handleSignup = async (info, auto) => {
+    const acc = { id: uid(), joinedAt: todayISO(), ...info };
+    await persistAccounts([...accounts, acc]);
+    await persistSession(acc.id, auto);
+    await loadAccount(acc);
+    setPhase("app");
+    setToast({ ok: true, msg: "가입이 완료됐습니다. 설정 탭에서 내 정보를 볼 수 있어요." });
+  };
+  const changePhoto = async (src) => {
+    if (!account) return;
+    const next = { ...account, photo: src || undefined };
+    setAccount(next);
+    await persistAccounts(accounts.map((a) => (a.id === next.id ? next : a)));
+    setToast({ ok: true, msg: src ? "프로필 사진을 저장했습니다." : "프로필 사진을 삭제했습니다." });
+  };
+  const handleLogout = async () => {
+    try { await window.storage.set(SES_KEY, JSON.stringify({ accountId: null, auto: false })); } catch (e) {}
+    setAccount(null); setPhase("auth"); setDb(emptyDb("", "")); setPhotos({});
+  };
+
+  const saveDb = useCallback(async (next) => {
+    setDb(next);
+    if (!account) return;
+    try { await window.storage.set(dbKey(account.id), JSON.stringify(next)); setSavedAt(new Date()); }
+    catch (e) { setToast({ ok: false, msg: "저장하지 못했습니다." }); }
+  }, [account]);
+  const savePhotos = useCallback(async (next) => {
+    setPhotos(next);
+    if (!account) return;
+    try { await window.storage.set(phKey(account.id), JSON.stringify(next)); setSavedAt(new Date()); }
+    catch (e) { setToast({ ok: false, msg: "사진 저장 공간이 부족합니다." }); }
+  }, [account]);
+
+  useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 2600); return () => clearTimeout(t); }, [toast]);
+
+  const patch = (id, p) => saveDb({ ...db, members: db.members.map((m) => (m.id === id ? { ...m, ...p } : m)) });
+  const member = db.members.find((m) => m.id === selectedId) || db.members[0];
+  const alerts = useMemo(() => detectAlerts(db.members, db.schedule), [db.members, db.schedule]);
+  const goTab = (k) => { if (k === "members") setMobileView("list"); setTab(k); };
+  const goRecord = (sec) => { setSection(sec); setTab("records"); };
+  const noComment = (id, type) => {
+    saveDb({ ...db, members: db.members.map((m) => (m.id === id ? { ...m, notes: [...(m.notes || []), { id: uid(), date: todayISO(), type: type || "개인레슨", instructor: m.instructor, body: "특이사항 없음", tags: [], deductFrom: null }] } : m)) });
+    setToast({ ok: true, msg: "특이사항 없음으로 기록했습니다." });
+  };
+
+  const saveSchedule = (item) => {
+    const prev = db.schedule.find((s) => s.id === item.id);
+    let members = db.members;
+    if (prev) {
+      const keep = new Set(attendeesOf(item).map((a) => a.memberId));
+      attendeesOf(prev).forEach((a) => { if (a.deductFrom && !keep.has(a.memberId)) members = restoreOne(members, a.memberId, a.deductFrom); });
+    }
+    saveDb({ ...db, members, schedule: prev ? db.schedule.map((s) => (s.id === item.id ? item : s)) : [...db.schedule, item] });
+    setToast({ ok: true, msg: prev ? "수업을 수정했습니다." : "수업을 등록했습니다." });
+  };
+  const deleteSchedule = (id) => {
+    const s0 = db.schedule.find((x) => x.id === id);
+    let members = db.members;
+    if (s0) attendeesOf(s0).forEach((a) => { if (a.deductFrom) members = restoreOne(members, a.memberId, a.deductFrom); });
+    saveDb({ ...db, members, schedule: db.schedule.filter((x) => x.id !== id) });
+    setToast({ ok: true, msg: "수업을 삭제했습니다." });
+  };
+  const setStatus = (id, status, memberId) => {
+    const s0 = db.schedule.find((x) => x.id === id);
+    if (!s0) return;
+    const list = attendeesOf(s0);
+    if (!list.length) return;
+    const mid = memberId || list[0].memberId;
+    const cur = list.find((a) => a.memberId === mid);
+    if (!cur) return;
+    let members = db.members, msg = "";
+    if (cur.deductFrom) { members = restoreOne(members, mid, cur.deductFrom); msg = `${cur.deductFrom} 1회 복구`; }
+    let deductFrom = null;
+    if (status === "done") {
+      const r = deductOne(members, mid);
+      members = r.members; deductFrom = r.from;
+      if (deductFrom) {
+        const rest = left(members.find((x) => x.id === mid));
+        msg = `${db.members.find((x) => x.id === mid)?.name || ""} 출석 · ${deductFrom} 1회 차감 (잔여 ${rest}회)`;
+        if (rest <= 10) msg += " · 재등록 알림 대상";
+      } else { setToast({ ok: false, msg: "잔여 0회 — 수강권을 먼저 등록해 주세요. 출석만 기록됩니다." }); msg = "출석 기록(차감 없음)"; }
+    }
+    const attendees = list.map((a) => (a.memberId === mid ? { ...a, status, deductFrom, noshowFee: null } : a));
+    const schedule = db.schedule.map((x) => (x.id === id ? { ...x, attendees, status: undefined, deductFrom: undefined, noshowFee: undefined } : x));
+    saveDb({ ...db, members, schedule });
+    setToast({ ok: true, msg: msg || `${stOf(status).label} 처리했습니다.` });
+  };
+  const setNoshowFee = (id, charge, memberId) => {
+    const s0 = db.schedule.find((x) => x.id === id);
+    if (!s0) return;
+    const list = attendeesOf(s0);
+    if (!list.length) return;
+    const mid = memberId || list[0].memberId;
+    const cur = list.find((a) => a.memberId === mid);
+    if (!cur) return;
+    let members = db.members, deductFrom = cur.deductFrom || null, msg = "";
+    if (charge && !deductFrom) {
+      const r = deductOne(members, mid);
+      members = r.members; deductFrom = r.from;
+      msg = deductFrom ? `노쇼 · ${deductFrom} 1회 차감 (잔여 ${left(members.find((x) => x.id === mid))}회)` : "잔여 횟수가 없어 차감하지 않았습니다.";
+    } else if (!charge && deductFrom) {
+      members = restoreOne(members, mid, deductFrom);
+      msg = `${deductFrom} 1회 복구 · 차감 없이 기록합니다.`;
+      deductFrom = null;
+    } else msg = charge ? "이미 차감된 노쇼입니다." : "차감 없이 기록합니다.";
+    const attendees = list.map((a) => (a.memberId === mid ? { ...a, noshowFee: charge, deductFrom } : a));
+    saveDb({ ...db, members, schedule: db.schedule.map((x) => (x.id === id ? { ...x, attendees } : x)) });
+    setToast({ ok: true, msg });
+  };
+  const setGroupDone = (id, done) => {
+    saveDb({ ...db, schedule: db.schedule.map((s) => (s.id === id ? { ...s, groupDone: done } : s)) });
+    setToast({ ok: true, msg: done ? "그룹 수업을 완료 처리했습니다. 이달 누적에 반영됩니다." : "그룹 수업 완료를 취소했습니다." });
+  };
+  const addMember = () => {
+    const m = blankMember(db.settings.staff);
+    saveDb({ ...db, members: [m, ...db.members] });
+    setSelectedId(m.id); setSection("info"); setTab("records");
+    setToast({ ok: true, msg: "새 회원을 추가했습니다." });
+  };
+  const removeMember = (id) => {
+    const rest = db.members.filter((m) => m.id !== id);
+    saveDb({
+      ...db, members: rest,
+      schedule: db.schedule
+        .map((s) => ({ ...s, attendees: attendeesOf(s).filter((a) => a.memberId !== id) }))
+        .filter((s) => s.attendees.length || s.equip),
+    });
+    setSelectedId(rest[0]?.id || null);
+    setToast({ ok: true, msg: "회원을 삭제했습니다." });
+  };
+  const saveInbody = (id, rec) => {
+    const t = db.members.find((m) => m.id === id);
+    patch(id, { inbody: [...t.inbody, rec].sort((a, b) => (a.date > b.date ? 1 : -1)) });
+    setToast({ ok: true, msg: "측정값을 저장했습니다." });
+  };
+  const deleteInbody = (id, date) => {
+    const t = db.members.find((m) => m.id === id);
+    patch(id, { inbody: t.inbody.filter((r) => r.date !== date) });
+  };
+  const saveNote = (id, note) => {
+    const t = db.members.find((m) => m.id === id);
+    patch(id, { notes: [note, ...(t.notes || [])] });
+    setToast({ ok: true, msg: "코멘트를 저장했습니다." });
+  };
+  const deleteNote = (nid) => patch(member.id, { notes: member.notes.filter((n) => n.id !== nid) });
+  const savePhoto = (view, src, slot, tf) => {
+    const cur = photos[member.id] || {}, list = cur[view] || [];
+    const shot = { id: uid(), date: todayISO(), src, marks: [], ...tf };
+    const nextList = slot === "before" ? [shot, ...list] : [...list, shot];
+    const sets = [...(cur.sets || [])];
+    let made = false;
+    if (nextList.length >= 2) {
+      const b = nextList[0], a = nextList[nextList.length - 1];
+      if (!sets.some((x) => x.view === view && x.beforeId === b.id && x.afterId === a.id)) {
+        sets.unshift({ id: uid(), view, beforeId: b.id, afterId: a.id, createdAt: todayISO(), fav: false });
+        made = true;
+      }
+    }
+    savePhotos({ ...photos, [member.id]: { ...cur, [view]: nextList, sets } });
+    setToast({ ok: true, msg: made ? "사진 등록 · 비포&애프터 세트를 저장했습니다." : "사진을 등록했습니다." });
+  };
+  const removePhoto = (view, pid) => {
+    const cur = photos[member.id] || {};
+    savePhotos({ ...photos, [member.id]: { ...cur, [view]: (cur[view] || []).filter((p) => p.id !== pid) } });
+  };
+  const toggleFav = (memberId, setId) => {
+    const cur = photos[memberId] || {};
+    savePhotos({ ...photos, [memberId]: { ...cur, sets: (cur.sets || []).map((x) => (x.id === setId ? { ...x, fav: !x.fav } : x)) } });
+  };
+  const deleteSet = (memberId, setId) => {
+    const cur = photos[memberId] || {};
+    savePhotos({ ...photos, [memberId]: { ...cur, sets: (cur.sets || []).filter((x) => x.id !== setId) } });
+    setToast({ ok: true, msg: "세트를 삭제했습니다." });
+  };
+  const favList = useMemo(() => {
+    const out = [];
+    db.members.forEach((m) => {
+      const ph = photos[m.id];
+      (ph?.sets || []).filter((x) => x.fav).forEach((x) => {
+        const list = ph[x.view] || [];
+        const before = list.find((p) => p.id === x.beforeId), after = list.find((p) => p.id === x.afterId);
+        if (before && after) out.push({ set: x, before, after, member: m });
+      });
+    });
+    return out;
+  }, [db.members, photos]);
+  const savePose = (rec) => {
+    if (!member) return;
+    const cur = photos[member.id] || {};
+    savePhotos({ ...photos, [member.id]: { ...cur, poses: [rec, ...(cur.poses || [])].slice(0, 6) } });
+    setToast({ ok: true, msg: "체형 분석 결과를 저장했습니다." });
+  };
+  const deletePose = (pid) => {
+    if (!member) return;
+    const cur = photos[member.id] || {};
+    savePhotos({ ...photos, [member.id]: { ...cur, poses: (cur.poses || []).filter((p) => p.id !== pid) } });
+  };
+  const adjustPhoto = (view, pid, tf) => {
+    const cur = photos[member.id] || {};
+    savePhotos({ ...photos, [member.id]: { ...cur, [view]: (cur[view] || []).map((p) => (p.id === pid ? { ...p, ...tf } : p)) } });
+    setToast({ ok: true, msg: "사진 위치를 저장했습니다." });
+  };
+  const saveMarks = (view, pid, marks) => {
+    const cur = photos[member.id] || {};
+    savePhotos({ ...photos, [member.id]: { ...cur, [view]: (cur[view] || []).map((p) => (p.id === pid ? { ...p, marks } : p)) } });
+    setToast({ ok: true, msg: "체형 분석을 저장했습니다." });
+  };
+  const resetSample = () => {
+    const d = normalizeDb(sampleDb(account?.center, account?.name), account?.name);
+    saveDb(d); savePhotos({}); setSelectedId(d.members[0].id);
+    setToast({ ok: true, msg: "회원 데이터를 되돌렸습니다." });
+  };
+  const clearAll = () => {
+    saveDb({ ...db, members: [], schedule: [] }); savePhotos({}); setSelectedId(null);
+    setToast({ ok: true, msg: "모든 회원을 초기화했습니다." });
+  };
+  const importHandoff = (inc, how) => {
+    if (!inc) return;
+    const next = how === "replace"
+      ? normalizeDb({ settings: db.settings, members: inc.members || [], schedule: inc.schedule || [] }, account?.name)
+      : mergeHandoff(db, inc, account?.name);
+    saveDb(next);
+    const ph = inc.photos && typeof inc.photos === "object" ? inc.photos : null;
+    if (ph && Object.keys(ph).length) savePhotos(how === "replace" ? ph : { ...photos, ...ph });
+    else if (how === "replace") savePhotos({});
+    setSelectedId(next.members[0]?.id || null);
+    setToast({ ok: true, msg: `회원 ${next.members.length}명 · 수업 ${next.schedule.length}건으로 반영했습니다.` });
+  };
+
+  const style = (
+    <style>{`
+      @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css');
+      .app-root { font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', sans-serif; -webkit-font-smoothing: antialiased; color: ${INK}; color-scheme: ${THEME}; }
+      .app-root .bg-white { background-color: ${CARD}; }
+      .app-root .bg-slate-50 { background-color: ${CANVAS}; }
+      .app-root .ring-slate-200 { --tw-ring-color: ${LINE}; }
+      .app-root .border-white { border-color: ${CARD}; }
+      .app-root .bg-photo { background-color: ${PHOTO}; }
+      .app-root input, .app-root textarea, .app-root select { color: ${INK}; background-color: ${CANVAS}; }
+      .app-root input::placeholder, .app-root textarea::placeholder { color: ${FAINT}; }
+      .app-root ::-webkit-calendar-picker-indicator { filter: ${THEME === "dark" ? "invert(1) opacity(.55)" : "none"}; }
+      .app-root ::-webkit-scrollbar { width: 8px; height: 8px; }
+      .app-root ::-webkit-scrollbar-thumb { background: ${LINE}; border-radius: 8px; }
+      .app-root p, .app-root h1, .app-root h2, .app-root h3, .app-root span, .app-root button, .app-root li { word-break: keep-all; overflow-wrap: break-word; }
+      .app-root *:focus-visible { outline: 2px solid ${PRIMARY}; outline-offset: 2px; }
+      .app-root input[type=range] { height: 28px; }
+      .touch-none { touch-action: none; }
+      .line-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+      @keyframes pop { 0% { transform: scale(.86); opacity: 0 } 60% { transform: scale(1.04); opacity: 1 } 100% { transform: scale(1) } }
+      @keyframes fade { from { opacity: 0; transform: translateY(6px) } to { opacity: 1; transform: none } }
+      .splash-pop { animation: pop .7s cubic-bezier(.2,.85,.25,1) both }
+      .splash-fade { animation: fade .55s ease .38s both }
+      .splash-fade2 { animation: fade .55s ease .58s both }
+      @keyframes ringOut { 0% { transform: scale(.82); opacity: 0 } 45% { opacity: .85 } 100% { transform: scale(1.06); opacity: .35 } }
+      .ring1 { animation: ringOut 1.1s ease .25s both }
+      .ring2 { animation: ringOut 1.3s ease .4s both }
+      @keyframes bar { 0% { width: 0 } 70% { width: 82% } 100% { width: 100% } }
+      .loadbar { animation: bar 1.5s cubic-bezier(.3,.9,.3,1) both }
+      @keyframes weekIn { from { opacity: .35; transform: translateX(10px) } to { opacity: 1; transform: none } }
+      .week-strip { animation: weekIn .22s ease both }
+      @media (prefers-reduced-motion: reduce) { .app-root *, .splash-pop, .splash-fade { animation: none !important; transition: none !important } }
+    `}</style>
+  );
+
+  if (phase === "splash") return <div className="app-root">{style}<Splash /></div>;
+  if (phase === "auth")
+    return (
+      <div className="app-root">
+        {style}
+        <AuthScreen accounts={accounts} onLogin={handleLogin} onSignup={handleSignup} onToast={setToast} />
+        {toast && (
+          <div className="fixed inset-x-0 bottom-5 z-50 flex justify-center px-4">
+            <div className="flex items-center gap-2 rounded-full px-4 py-3" style={{ backgroundColor: toast.ok ? TOAST : BAD, boxShadow: SHADOW }}>
+              {toast.ok ? <Check size={14} color="#fff" /> : <AlertTriangle size={14} color="#fff" />}
+              <span className="text-sm font-bold text-white">{toast.msg}</span>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+
+  return (
+    <div className="app-root min-h-screen pb-16" style={{ backgroundColor: PAGE }}>
+      {style}
+      <div className="sticky top-0 z-30">
+        <Header settings={db.settings || {}} account={account} alertCount={alerts.length} onProfile={() => setTab("settings")} />
+        <Tabs tab={tab} setTab={goTab} />
+      </div>
+      <main className="mx-auto max-w-6xl px-4 py-3">
+        <Guard key={tab}>
+        {tab === "members" && (
+          <>
+            <div className="gap-5 md:grid md:grid-cols-12">
+              <div className={`md:col-span-5 lg:col-span-4 ${mobileView === "detail" ? "hidden md:block" : ""}`}>
+                <Guard label="회원 목록">
+                  <MemberList members={db.members} schedule={db.schedule} selectedId={selectedId} onAdd={addMember} onOpenFav={() => setFavOpen(true)} favCount={favList.length}
+                    onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} />
+                </Guard>
+              </div>
+              <div className={`md:col-span-7 lg:col-span-8 ${mobileView === "list" ? "hidden md:block" : ""}`}>
+                {member ? (
+                  <Guard label="회원 상세" key={member.id}>
+                  <Dashboard member={member} photos={photos[member.id]} schedule={db.schedule} briefing={briefing}
+                    onBack={() => setMobileView("list")} onSavePhoto={savePhoto} onRemovePhoto={removePhoto}
+                    onSaveMarks={saveMarks} onAdjustPhoto={adjustPhoto} onDeleteNote={deleteNote} onToast={setToast} goRecord={goRecord}
+                    onSavePose={savePose} onDeletePose={deletePose}
+                    onToggleFav={(sid) => toggleFav(member.id, sid)} onDeleteSet={(sid) => deleteSet(member.id, sid)}
+                    onBrief={(m) => setBrief({ member: m, rest: left(m), d: ddaySafe(m.contractEnd), att: attendanceOf(db.schedule, m.id), reasons: [] })} />
+                  </Guard>
+                ) : (
+                  <Card className="p-8 text-center"><p className="text-sm font-bold">회원을 추가하면 여기에 상세 대시보드가 표시됩니다.</p></Card>
+                )}
+              </div>
+            </div>
+            {!briefing && <div className="mt-3"><Guard label="골든타임 알림"><AlertCenter alerts={alerts} onBrief={setBrief} onOpenMember={(id) => { setSelectedId(id); setMobileView("detail"); }} /></Guard></div>}
+          </>
+        )}
+        {tab === "schedule" && (
+          <ScheduleManager db={db} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone}
+            onOpenMember={(id) => { setSelectedId(id); setMobileView("detail"); setTab("members"); }}
+            onNoComment={noComment}
+            onWriteNote={(id) => { setSelectedId(id); setSection("note"); setTab("records"); }} />
+        )}
+        {tab === "records" && (
+          <RecordTab db={db} selectedId={selectedId} setSelectedId={setSelectedId} section={section} setSection={setSection}
+            onSaveInbody={saveInbody} onDeleteInbody={deleteInbody} onSaveNote={saveNote} onPatch={patch} onDelete={removeMember} onToast={setToast}
+            onSettings={(next) => saveDb({ ...db, settings: next })} />
+        )}
+        {tab === "settings" && (
+          <SettingsTab db={db} photos={photos} account={account} savedAt={savedAt} onChangeSettings={(s) => saveDb({ ...db, settings: s })}
+            onChangePhoto={changePhoto} onToast={setToast} themePref={themePref} onChangeTheme={changeTheme}
+            onReset={resetSample} onClear={clearAll} onLogout={handleLogout} onImport={importHandoff} />
+        )}
+        </Guard>
+      </main>
+      {favOpen && <FavSetsModal items={favList} onClose={() => setFavOpen(false)} onToggleFav={toggleFav}
+        onOpenMember={(id) => { setSelectedId(id); setMobileView("detail"); setTab("members"); }} />}
+      {brief && <SalesBriefModal alert={brief} onClose={() => setBrief(null)} onToast={setToast} />}
+      {toast && (
+        <div className="fixed inset-x-0 bottom-5 z-50 flex justify-center px-4">
+          <div className="flex items-center gap-2 rounded-full px-4 py-3" style={{ backgroundColor: toast.ok ? TOAST : BAD, boxShadow: SHADOW }}>
+            {toast.ok ? <Check size={14} color="#fff" /> : <AlertTriangle size={14} color="#fff" />}
+            <span className="text-sm font-bold text-white">{toast.msg}</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

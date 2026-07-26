@@ -1,0 +1,37 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* CSS 변수 — applyTheme() 에서 라이트/다크 전환 시 값이 교체됩니다.
+   tailwind.config.js 의 color 토큰이 이 변수를 참조합니다. */
+:root {
+  --page: #F2F2F7;
+  --card: #FFFFFF;
+  --canvas: #F5F5FA;
+  --line: #EBEBF2;
+  --ink: #17171F;
+  --ink2: #4A4A5A;
+  --sub: #8A8A9B;
+  --faint: #C2C2D2;
+  --primary: #6C4CF1;
+  --brand: #6C4CF1;
+  --tint: #F1EDFE;
+  --ring: rgba(108,76,241,.28);
+  --toast: #17171F;
+  --photo: #000000;
+  --good: #12B76A;
+  --good-s: #E7F8F0;
+  --bad: #F04438;
+  --bad-s: #FEECEA;
+  --warn: #F79009;
+  --warn-s: #FFF4E3;
+  --mint: #8B74FF;
+  --shadow: 0 1px 2px rgba(20,20,43,0.04), 0 10px 30px rgba(20,20,43,0.06);
+  --grad: linear-gradient(135deg, #7C5CFC 0%, #6C4CF1 45%, #5636D8 100%);
+  --grad-soft: linear-gradient(155deg, #F1EDFE 0%, #FFFFFF 62%);
+  --splash-bg: linear-gradient(180deg,#FFFFFF 0%,#F7F5FF 44%,#EAE4FF 100%);
+  --glow: radial-gradient(circle, rgba(139,116,255,.27) 0%, rgba(139,116,255,.07) 45%, transparent 70%);
+  --scrim: rgba(20,20,43,0.45);
+  --on-brand: #FFFFFF;
+  --theme: light;
+}

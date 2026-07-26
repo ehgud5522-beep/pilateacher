@@ -1976,7 +1976,7 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast }) {
 
   useEffect(() => {
     const img = new window.Image();
-    img.crossOrigin = "anonymous";
+    if (!String(photo.src || "").startsWith("blob:")) img.crossOrigin = "anonymous";
     img.onload = () => { imgRef.current = img; setSize((s) => ({ ...s })); };
     img.src = photo.src;
   }, [photo.src]);
@@ -2452,7 +2452,14 @@ function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveM
   const list = (photos?.[view] || []).filter((p) => p && p.src);
   const before = list[0] || null;
   const after = list.length > 1 ? list[list.length - 1] : null;
-  const pick = async (file) => { if (!file) return; setPending({ src: await fileToThumb(file), slot: slotRef.current }); };
+  const pick = async (file) => {
+    if (!file) return;
+    try {
+      const blob = await fileToBlob(file);
+      setPending({ blob, src: URL.createObjectURL(blob), slot: slotRef.current });
+    } catch (e) { onToast && onToast({ ok: false, msg: "사진을 읽지 못했습니다." }); }
+  };
+  const closePending = () => setPending((p) => { if (p?.src) { try { URL.revokeObjectURL(p.src); } catch (e) {} } return null; });
   const open = (slot, ref) => { slotRef.current = slot; ref.current?.click(); };
   const onCam = (slot) => open(slot, camRef);
   const onAlbum = (slot) => open(slot, albumRef);
@@ -2544,7 +2551,7 @@ function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveM
       )}
       <input ref={camRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; pick(f); }} />
       <input ref={albumRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; pick(f); }} />
-      {pending && <AlignSheet src={pending.src} ghost={pending.slot === "after" ? before : after} onCancel={() => setPending(null)} onSave={(tf) => { onSavePhoto(view, pending.src, pending.slot, tf); setPending(null); }} />}
+      {pending && <AlignSheet src={pending.src} ghost={pending.slot === "after" ? before : after} onCancel={closePending} onSave={(tf) => { onSavePhoto(view, pending.blob, pending.slot, tf); closePending(); }} />}
       {adjust && (
         <AlignSheet src={adjust.p.src} init={adjust.p} title={`${adjust.label} 사진 조정`}
           ghost={adjust.p.id === before?.id ? after : before}
@@ -3348,18 +3355,18 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onToast }) {
     setManual((m) => ({ ...m, i: m.i - 1 }));
   };
   const download = () => shareCanvas(canvasRef.current, `${member?.name || "회원"}_체형분석_${todayISO()}.jpg`, "체형 분석", onToast);
-  const save = () => {
+  const save = async () => {
     if (!res || !res.items.length) return;
-    let thumb = img.src;
+    let blob = null;
     try {
       const c = document.createElement("canvas");
       const s = Math.min(1, 520 / Math.max(canvasRef.current.width, canvasRef.current.height));
       c.width = Math.round(canvasRef.current.width * s); c.height = Math.round(canvasRef.current.height * s);
       c.getContext("2d").drawImage(canvasRef.current, 0, 0, c.width, c.height);
-      thumb = c.toDataURL("image/jpeg", 0.72);
+      blob = await new Promise((r) => c.toBlob(r, "image/jpeg", 0.72));
     } catch (e) {}
     onSavePose?.({
-      id: uid(), date: todayISO(), view, src: thumb,
+      id: uid(), date: todayISO(), view, blob,
       metrics: res.items.map((i) => ({ key: i.key, label: i.label, value: i.value, unit: i.unit, level: i.level, dir: i.dir })),
       comment: poseComment(member, view, res),
     });

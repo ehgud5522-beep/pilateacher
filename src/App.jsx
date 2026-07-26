@@ -857,6 +857,7 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
         </div>
 
         <p className="text-center text-xs leading-relaxed" style={{ color: FAINT }}>
+          회원 정보와 사진은 이 기기에만 저장되며 외부 서버로 전송되지 않습니다.<br />
           로그인하면 이용약관 및 개인정보 처리방침에 동의하게 됩니다.
         </p>
       </div>
@@ -2303,7 +2304,7 @@ function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveM
   return (
     <Card className="p-5">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div><h3 className="font-extrabold" style={{ color: INK }}>AI 비포애프터 분석</h3><Sub>중심선 정렬 · 관절 각도 측정</Sub></div>
+        <div><h3 className="font-extrabold" style={{ color: INK }}>AI 비포애프터 분석</h3><Sub>중심선 정렬 · 관절 각도 측정 · 회원 동의 후 촬영, 이 기기에만 저장</Sub></div>
         <div className="flex gap-1 rounded-full p-1" style={{ backgroundColor: CANVAS }}>
           {VIEWS.map((v) => (
             <button key={v.key} onClick={() => setView(v.key)} className="rounded-full px-3 py-1.5 text-xs font-bold"
@@ -2348,6 +2349,7 @@ function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveM
             {after && <button onClick={() => setPosture({ p: after, label: "AFTER" })} className="rounded-full px-3 py-1.5 text-xs font-bold" style={{ backgroundColor: TINT, color: PRIMARY }}>애프터 분석</button>}
             {before && after && <button onClick={() => shareBeforeAfter(before, after, member?.name, onToast)} className="ml-auto flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}><Upload size={12} /> 회원에게 보내기</button>}
           </div>
+          {before && after && <Sub className="mt-1.5">보낸 이미지는 회수할 수 없습니다. 회원 본인에게만 보내 주세요.</Sub>}
           {!briefing && (
             <div className="mt-2 space-y-1.5">
               {before && after && <ShotBar slot="after" onCam={onCam} />}
@@ -4514,6 +4516,21 @@ function SettingsTab({ db, photos, account, onChangeSettings, onChangePhoto, sav
             </div>
           </div>
         )}
+      </Card>
+      <Card className="p-5">
+        <div className="flex items-center gap-2">
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: CANVAS }}><Smartphone size={14} style={{ color: SUB }} /></span>
+          <h3 className="font-extrabold" style={{ color: INK }}>개인정보 안내</h3>
+        </div>
+        <p className="mt-2.5 text-xs leading-relaxed" style={{ color: INK2 }}>
+          회원 정보 · 사진 · 기록은 <b style={{ color: INK }}>이 기기 안에만</b> 저장됩니다. 외부 서버로 전송하거나 보관하지 않습니다.
+        </p>
+        <p className="mt-1.5 text-xs leading-relaxed" style={{ color: INK2 }}>
+          그래서 기기를 잃어버리거나 앱을 지우면 <b style={{ color: INK }}>되살릴 수 없습니다.</b> 위 '회원 인계 · DB 넘기기'에서 정기적으로 백업해 두세요.
+        </p>
+        <p className="mt-1.5 text-xs leading-relaxed" style={{ color: INK2 }}>
+          회원 사진은 회원 동의를 받은 뒤 촬영해 주세요. 회원이 삭제를 요청하면 이 앱에서 그 회원을 삭제하는 것으로 사진까지 함께 지워집니다.
+        </p>
       </Card>
     </div>
   );

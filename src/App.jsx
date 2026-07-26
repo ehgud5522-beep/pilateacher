@@ -414,7 +414,8 @@ async function shareCanvas(canvas, filename, title, onToast) {
     canNative = !!(navigator.canShare && navigator.canShare({ files: [file] }));
   } catch (e) { canNative = false; }
   if (canNative) {
-    try { await navigator.share({ files: [file], title }); } catch (e) {}
+    try { await navigator.share({ files: [file], title }); }
+    catch (e) { if (e && e.name !== "AbortError") onToast && onToast({ ok: false, msg: "공유창을 열지 못했습니다. 한 번 더 눌러 주세요." }); }
     return true;
   }
   try {

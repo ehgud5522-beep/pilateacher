@@ -2199,6 +2199,38 @@ function AlignSheet({ src, ghost, init, title, onSave, onCancel }) {
     </div>
   );
 }
+function Shot({ p, label, guides }) {
+  return (
+    <div className="relative overflow-hidden rounded-2xl bg-photo" style={{ aspectRatio: "3 / 4" }}>
+      <img src={p.src} alt={label} className="absolute inset-0 h-full w-full object-cover" style={{ transform: ptf(p) }} />
+      {guides && <GuideOverlay />}
+      <span className="absolute bottom-2 left-2 rounded-md px-1.5 py-0.5 text-xs text-white" style={{ backgroundColor: "rgba(0,0,0,0.55)" }}>{ymd(p.date)}</span>
+      {p.marks?.length > 0 && <span className="absolute right-2 top-2 rounded-md px-1.5 py-0.5 text-xs font-bold text-white" style={{ backgroundColor: BRAND }}>분석 {p.marks.length}</span>}
+    </div>
+  );
+}
+function EmptyShot({ slot, label, onCam, onAlbum }) {
+  return (
+    <div className="flex min-w-0 flex-1 flex-col items-center justify-center gap-2 rounded-2xl" style={{ aspectRatio: "3 / 4", backgroundColor: CANVAS }}>
+      <img src="/215736080-dotted-line-in-the-shape-of-a-person copy.jpg" alt="" aria-hidden="true"
+        className="w-3/5 max-w-[140px]"
+        onError={(e) => { e.currentTarget.style.display = "none"; }}
+        style={THEME === "dark" ? { mixBlendMode: "screen", filter: "invert(1)", opacity: 0.45 } : { mixBlendMode: "multiply", opacity: 0.9 }} />
+      <button onClick={() => onCam(slot)} className="flex flex-col items-center gap-1">
+        <Camera size={22} style={{ color: PRIMARY }} /><span className="text-xs font-bold" style={{ color: PRIMARY }}>{label} 촬영하기</span>
+      </button>
+      <button onClick={() => onAlbum(slot)} className="text-xs font-bold" style={{ color: SUB }}>불러오기</button>
+    </div>
+  );
+}
+function ShotBar({ slot, onCam }) {
+  return (
+    <button onClick={() => onCam(slot)} className="flex w-full items-center justify-center gap-1 rounded-xl py-2 text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>
+      <Camera size={13} /> 촬영하기
+    </button>
+  );
+}
+
 function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveMarks, onAdjust, onToast }) {
   const [view, setView] = useState("front");
   const [mode, setMode] = useState("overlay");
@@ -2213,28 +2245,8 @@ function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveM
   const after = list.length > 1 ? list[list.length - 1] : null;
   const pick = async (file) => { if (!file) return; setPending({ src: await fileToThumb(file), slot: slotRef.current }); };
   const open = (slot, ref) => { slotRef.current = slot; ref.current?.click(); };
-  const Shot = ({ p, label }) => (
-    <div className="relative overflow-hidden rounded-2xl bg-photo" style={{ aspectRatio: "3 / 4" }}>
-      <img src={p.src} alt={label} className="absolute inset-0 h-full w-full object-cover" style={{ transform: ptf(p) }} />
-      {guides && <GuideOverlay />}
-      <span className="absolute bottom-2 left-2 rounded-md px-1.5 py-0.5 text-xs text-white" style={{ backgroundColor: "rgba(0,0,0,0.55)" }}>{ymd(p.date)}</span>
-      {p.marks?.length > 0 && <span className="absolute right-2 top-2 rounded-md px-1.5 py-0.5 text-xs font-bold text-white" style={{ backgroundColor: BRAND }}>분석 {p.marks.length}</span>}
-    </div>
-  );
-  const Empty = ({ slot, label }) => (
-    <div className="flex w-full flex-col items-center justify-center gap-2 rounded-2xl" style={{ aspectRatio: "3 / 4", backgroundColor: CANVAS }}>
-      <img src="/215736080-dotted-line-in-the-shape-of-a-person copy.jpg" alt="" aria-hidden="true" className="w-3/5 max-w-[140px]" style={{ mixBlendMode: "multiply" }} />
-      <button onClick={() => open(slot, camRef)} className="flex flex-col items-center gap-1">
-        <Camera size={22} style={{ color: PRIMARY }} /><span className="text-xs font-bold" style={{ color: PRIMARY }}>{label} 촬영하기</span>
-      </button>
-      <button onClick={() => open(slot, albumRef)} className="text-xs font-bold" style={{ color: SUB }}>불러오기</button>
-    </div>
-  );
-  const ShotBar = ({ slot }) => (
-    <button onClick={() => open(slot, camRef)} className="flex w-full items-center justify-center gap-1 rounded-xl py-2 text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>
-      <Camera size={13} /> 촬영하기
-    </button>
-  );
+  const onCam = (slot) => open(slot, camRef);
+  const onAlbum = (slot) => open(slot, albumRef);
   return (
     <Card className="p-5">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -2273,8 +2285,8 @@ function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveM
             </>
           ) : (
             <div className="flex gap-3">
-              {before ? <div className="min-w-0 flex-1"><Shot p={before} label="비포" /></div> : <Empty slot="before" label="비포" />}
-              {after ? <div className="min-w-0 flex-1"><Shot p={after} label="애프터" /></div> : <Empty slot="after" label="애프터" />}
+              {before ? <div className="min-w-0 flex-1"><Shot p={before} label="비포" guides={guides} /></div> : <EmptyShot slot="before" label="비포" onCam={onCam} onAlbum={onAlbum} />}
+              {after ? <div className="min-w-0 flex-1"><Shot p={after} label="애프터" guides={guides} /></div> : <EmptyShot slot="after" label="애프터" onCam={onCam} onAlbum={onAlbum} />}
             </div>
           )}
           <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -2284,7 +2296,7 @@ function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveM
           </div>
           {!briefing && (
             <div className="mt-2 space-y-1.5">
-              {before && after && <ShotBar slot="after" />}
+              {before && after && <ShotBar slot="after" onCam={onCam} />}
               {(before || after) && (
                 <div className="flex gap-1.5">
                   {before && <button onClick={() => setAdjust({ p: before, label: "비포" })} className="flex flex-1 items-center justify-center gap-1 rounded-xl py-2 text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}><SlidersHorizontal size={12} /> 비포 사진 조정</button>}
@@ -2305,7 +2317,7 @@ function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveM
               </div>
               {s.p ? (
                 <>
-                  <Shot p={s.p} label={s.label} />
+                  <Shot p={s.p} label={s.label} guides={guides} />
                   <button onClick={() => setPosture({ p: s.p, label: s.label })} className="mt-2 w-full rounded-xl py-2 text-xs font-bold" style={{ backgroundColor: CANVAS, color: PRIMARY }}>체형 분석</button>
                   {!briefing && (
                     <button onClick={() => setAdjust({ p: s.p, label: s.label === "BEFORE" ? "비포" : "애프터" })} className="mt-1.5 flex w-full items-center justify-center gap-1 rounded-xl py-2 text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>
@@ -2313,8 +2325,8 @@ function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveM
                     </button>
                   )}
                 </>
-              ) : <Empty slot={s.slot} label={s.label === "BEFORE" ? "비포" : "애프터"} />}
-              {!briefing && s.p && <div className="mt-1.5"><ShotBar slot={s.slot} /></div>}
+              ) : <EmptyShot slot={s.slot} label={s.label === "BEFORE" ? "비포" : "애프터"} onCam={onCam} onAlbum={onAlbum} />}
+              {!briefing && s.p && <div className="mt-1.5"><ShotBar slot={s.slot} onCam={onCam} /></div>}
             </div>
           ))}
         </div>

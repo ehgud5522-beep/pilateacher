@@ -11,7 +11,6 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
 } from "recharts";
 import jsQR from "jsqr";
-import { fbReady, fbSignInSocial, fbSignInEmail, fbSignUpEmail, fbSignOut, fbOnAuth, fbLoadProfile, fbSaveProfile, fbPushBackup, fbPullBackup } from "./lib/firebase";
 import { Users, Settings as SettingsIcon, Search, ChevronRight, ChevronLeft, Plus, Camera, MessageSquare, Check, X, Trash2, ArrowLeft, Target, ClipboardList, RotateCcw, Sparkles, Copy, ArrowUpRight, ArrowDownRight, Loader as Loader2, Pencil, UserPlus, Activity, Ticket, Calendar, Clock, Bell, Download, TriangleAlert as AlertTriangle, LogOut, Mail, Star, Sun, Moon, Smartphone, Move, Crosshair, ChevronDown, ImagePlus, SlidersHorizontal, CalendarDays, ArrowUpDown, QrCode, Minus, Upload, Link2, Users as Users2 } from "lucide-react";
 
 /* ================= 토큰 · 테마 ================= */
@@ -942,25 +941,7 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
   const [signup, setSignup] = useState(null);
   const [f, setF] = useState({ name: "", email: "", pw: "", center: "", phone: "" });
 
-  const [busy, setBusy] = useState(false);
-  const handleSocial = async (provider) => {
-    if (fbReady) {
-      if (provider !== "google" && provider !== "apple") {
-        onToast({ ok: false, msg: "지금은 Google \u00b7 Apple \u00b7 \uc774\uba54\uc77c\ub85c\ub9cc \ub85c\uadf8\uc778\ud560 \uc218 \uc788\uc2b5\ub2c8\ub2e4." });
-        return;
-      }
-      setBusy(true);
-      try {
-        const u = await fbSignInSocial(provider);
-        const prof = await fbLoadProfile(u.id);
-        if (prof && prof.center) onLogin({ ...u, ...prof, id: u.id }, auto);
-        else setSignup({ ...u, provider, center: "", phone: "", fb: true });
-      } catch (e) {
-        onToast({ ok: false, msg: e && e.code === "auth/popup-closed-by-user" ? "\ub85c\uadf8\uc778\uc744 \ucde8\uc18c\ud588\uc2b5\ub2c8\ub2e4." : "\ub85c\uadf8\uc778\ud558\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4. \uc7a0\uc2dc \ub4a4 \ub2e4\uc2dc \uc2dc\ub3c4\ud574 \uc8fc\uc138\uc694." });
-      }
-      setBusy(false);
-      return;
-    }
+  const handleSocial = (provider) => {
     const exist = accounts.find((a) => a.provider === provider);
     if (exist) { onLogin(exist, auto); return; }
     setSignup({ provider, name: "", email: "", center: "", phone: "" });
@@ -1016,31 +997,8 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
                 <Field label="이메일"><input value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} placeholder="teacher@studio.com" className={inputCls} /></Field>
                 <Field label="비밀번호"><input type="password" value={f.pw} onChange={(e) => setF({ ...f, pw: e.target.value })} placeholder="6자 이상" className={inputCls} /></Field>
                 <PrimaryBtn
-                  disabled={busy || (emailTab === "signup" ? !(f.name && f.email && f.pw.length >= 6 && f.center) : !(f.email && f.pw))}
-                  onClick={async () => {
-                    if (fbReady) {
-                      setBusy(true);
-                      try {
-                        if (emailTab === "signup") {
-                          const u = await fbSignUpEmail(f.email, f.pw, f.name);
-                          onSignup({ ...u, provider: "email", name: f.name, email: f.email, center: f.center, phone: f.phone, fb: true }, auto);
-                        } else {
-                          const u = await fbSignInEmail(f.email, f.pw);
-                          const prof = await fbLoadProfile(u.id);
-                          if (prof && prof.center) onLogin({ ...u, ...prof, id: u.id }, auto);
-                          else setSignup({ ...u, provider: "email", center: "", phone: "", fb: true });
-                        }
-                      } catch (e) {
-                        const c = (e && e.code) || "";
-                        onToast({ ok: false, msg:
-                          c === "auth/email-already-in-use" ? "\uc774\ubbf8 \uac00\uc785\ub41c \uc774\uba54\uc77c\uc785\ub2c8\ub2e4."
-                          : c === "auth/weak-password" ? "\ube44\ubc00\ubc88\ud638\ub97c 6\uc790 \uc774\uc0c1\uc73c\ub85c \ub9cc\ub4e4\uc5b4 \uc8fc\uc138\uc694."
-                          : c === "auth/invalid-email" ? "\uc774\uba54\uc77c \ud615\uc2dd\uc774 \uc62c\ubc14\ub974\uc9c0 \uc54a\uc2b5\ub2c8\ub2e4."
-                          : "\uc774\uba54\uc77c \ub610\ub294 \ube44\ubc00\ubc88\ud638\uac00 \ub9de\uc9c0 \uc54a\uc2b5\ub2c8\ub2e4." });
-                      }
-                      setBusy(false);
-                      return;
-                    }
+                  disabled={emailTab === "signup" ? !(f.name && f.email && f.pw.length >= 6 && f.center) : !(f.email && f.pw)}
+                  onClick={() => {
                     if (emailTab === "signup") {
                       if (accounts.some((a) => a.email === f.email)) { onToast({ ok: false, msg: "이미 가입된 이메일입니다." }); return; }
                       onSignup({ provider: "email", name: f.name, email: f.email, pw: f.pw, center: f.center, phone: f.phone }, auto);
@@ -1066,7 +1024,7 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
             <span className="ml-auto text-xs" style={{ color: SUB }}>다음부터 바로 시작합니다</span>
           </button>
 
-          {!fbReady && accounts.length > 0 && (
+          {accounts.length > 0 && (
             <div className="mt-6">
               <Sub>최근 로그인</Sub>
               <div className="mt-2 flex flex-wrap gap-1.5">
@@ -1083,7 +1041,7 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
         </div>
 
         <p className="text-center text-xs leading-relaxed" style={{ color: FAINT }}>
-          {fbReady ? "회원 사진은 이 기기에만 저장되며 외부로 전송되지 않습니다." : "회원 정보와 사진은 이 기기에만 저장되며 외부 서버로 전송되지 않습니다."}<br />
+          회원 정보와 사진은 이 기기에만 저장되며 외부 서버로 전송되지 않습니다.<br />
           로그인하면 이용약관 및 개인정보 처리방침에 동의하게 됩니다.
         </p>
       </div>
@@ -1095,7 +1053,7 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
             <Field label="강사 이름"><input value={signup.name} onChange={(e) => setSignup({ ...signup, name: e.target.value })} placeholder="예) 박서연" className={inputCls} /></Field>
             <Field label="센터명"><input value={signup.center} onChange={(e) => setSignup({ ...signup, center: e.target.value })} placeholder="예) 필라티쳐 강남점" className={inputCls} /></Field>
             <div className="grid grid-cols-2 gap-2">
-              <Field label="이메일"><input value={signup.email} onChange={(e) => setSignup({ ...signup, email: e.target.value })} placeholder="teacher@studio.com" className={inputCls} disabled={!!signup.fb} /></Field>
+              <Field label="이메일"><input value={signup.email} onChange={(e) => setSignup({ ...signup, email: e.target.value })} placeholder="teacher@studio.com" className={inputCls} /></Field>
               <Field label="연락처" hint="선택"><input value={signup.phone} onChange={(e) => setSignup({ ...signup, phone: e.target.value })} placeholder="010-" className={inputCls} /></Field>
             </div>
             <PrimaryBtn disabled={!(signup.name && signup.center)} onClick={() => onSignup(signup, auto)}>가입하고 시작하기</PrimaryBtn>
@@ -4821,14 +4779,10 @@ function SettingsTab({ db, photos, account, onChangeSettings, onChangePhoto, sav
           <h3 className="font-extrabold" style={{ color: INK }}>개인정보 안내</h3>
         </div>
         <p className="mt-2.5 text-xs leading-relaxed" style={{ color: INK2 }}>
-          {fbReady
-            ? <>회원 <b style={{ color: INK }}>사진은 이 기기 안에만</b> 저장되며 외부로 전송하지 않습니다. 회원 이름 · 수업 · 기록은 기기 교체와 분실에 대비해 <b style={{ color: INK }}>본인 계정으로 암호화 보관</b>됩니다.</>
-            : <>회원 정보 · 사진 · 기록은 <b style={{ color: INK }}>이 기기 안에만</b> 저장됩니다. 외부 서버로 전송하거나 보관하지 않습니다.</>}
+          회원 정보 · 사진 · 기록은 <b style={{ color: INK }}>이 기기 안에만</b> 저장됩니다. 외부 서버로 전송하거나 보관하지 않습니다.
         </p>
         <p className="mt-1.5 text-xs leading-relaxed" style={{ color: INK2 }}>
-          {fbReady
-            ? <>같은 계정으로 새 기기에서 로그인하면 회원 기록이 자동으로 돌아옵니다. 다만 <b style={{ color: INK }}>사진은 돌아오지 않습니다.</b> 사진까지 지키려면 아래 백업 파일을 받아 두세요.</>
-            : <>그래서 기기를 잃어버리거나 앱을 지우면 <b style={{ color: INK }}>되살릴 수 없습니다.</b> 위 '회원 인계 · DB 넘기기'에서 정기적으로 백업해 두세요.</>}
+          그래서 기기를 잃어버리거나 앱을 지우면 <b style={{ color: INK }}>되살릴 수 없습니다.</b> 위 '회원 인계 · DB 넘기기'에서 정기적으로 백업해 두세요.
         </p>
         <p className="mt-1.5 text-xs leading-relaxed" style={{ color: INK2 }}>
           회원 사진은 회원 동의를 받은 뒤 촬영해 주세요. 회원이 삭제를 요청하면 이 앱에서 그 회원을 삭제하는 것으로 사진까지 함께 지워집니다.
@@ -4873,7 +4827,6 @@ export default function App() {
 
   useEffect(() => {
     let alive = true;
-    let cleanup = null;
     (async () => {
       let accs = [];
       try { const r = await window.storage.get(ACC_KEY); if (r?.value) accs = JSON.parse(r.value); } catch (e) {}
@@ -4883,24 +4836,6 @@ export default function App() {
       try { const r = await window.storage.get(THEME_KEY); if (r?.value && alive) setThemePref(r.value); } catch (e) {}
       if (!alive) return;
       setAccounts(accs);
-      if (fbReady) {
-        let first = true;
-        const off = fbOnAuth(async (u) => {
-          if (!alive) return;
-          if (!u) { if (first) { first = false; setTimeout(() => alive && setPhase("auth"), 1400); } else { setPhase("auth"); } return; }
-          const prof = await fbLoadProfile(u.id);
-          const acc = { ...u, ...(prof || {}), id: u.id };
-          if (!alive) return;
-          if (!acc.center) { if (first) { first = false; setTimeout(() => alive && setPhase("auth"), 1400); } else setPhase("auth"); return; }
-          await loadAccount(acc);
-          if (!alive) return;
-          const wait = first ? 1400 : 0;
-          first = false;
-          setTimeout(() => alive && setPhase("app"), wait);
-        });
-        cleanup = off;
-        return;
-      }
       const auto = ses?.auto && accs.find((a) => a.id === ses.accountId);
       setTimeout(async () => {
         if (!alive) return;
@@ -4908,26 +4843,16 @@ export default function App() {
         else setPhase("auth");
       }, 1400);
     })();
-    return () => { alive = false; if (cleanup) { try { cleanup(); } catch (e) {} } };
+    return () => { alive = false; };
   }, []);
 
   const loadAccount = async (acc) => {
     revokeAllUrls();
     setAccount(acc);
-    let data = null, ph = {}, restored = false;
+    let data = null, ph = {};
     try { const r = await window.storage.get(dbKey(acc.id)); if (r?.value) data = JSON.parse(r.value); } catch (e) {}
     try { const r = await window.storage.get(phKey(acc.id)); if (r?.value) ph = JSON.parse(r.value); } catch (e) {}
-    if (fbReady && (!data || !(Array.isArray(data.members) && data.members.length))) {
-      try {
-        const cloud = await fbPullBackup(acc.id);
-        if (cloud && cloud.data && Array.isArray(cloud.data.members) && cloud.data.members.length) {
-          data = cloud.data;
-          restored = true;
-          try { await window.storage.set(dbKey(acc.id), JSON.stringify(data)); } catch (e) {}
-        }
-      } catch (e) {}
-    }
-    if (!data) data = fbReady ? emptyDb(acc.center, acc.name) : sampleDb(acc.center, acc.name);
+    if (!data) data = sampleDb(acc.center, acc.name);
     data = normalizeDb(data, acc.name);
     if (!data.settings.center) data.settings.center = acc.center || "";
     setDb(data);
@@ -4940,7 +4865,6 @@ export default function App() {
     setPhotos(hyd);
     setSelectedId(data.members[0]?.id || null);
     setTab("schedule");
-    if (restored) setToast({ ok: true, msg: `\ud074\ub77c\uc6b0\ub4dc\uc5d0\uc11c \ud68c\uc6d0 ${data.members.length}\uba85\uc744 \ubcf5\uad6c\ud588\uc2b5\ub2c8\ub2e4. \uc0ac\uc9c4\uc740 \uc774\uc804 \uae30\uae30\uc5d0\ub9cc \uc788\uc2b5\ub2c8\ub2e4.` });
   };
 
   const persistAccounts = async (list) => {
@@ -4951,21 +4875,15 @@ export default function App() {
     try { await window.storage.set(SES_KEY, JSON.stringify({ accountId: accId, auto })); } catch (e) {}
   };
   const handleLogin = async (acc, auto) => {
-    if (!fbReady) await persistSession(acc.id, auto);
+    await persistSession(acc.id, auto);
     await loadAccount(acc);
     setPhase("app");
     setToast({ ok: true, msg: `${acc.name} 강사님, 환영합니다.` });
   };
   const handleSignup = async (info, auto) => {
-    const acc = info.fb ? { joinedAt: todayISO(), ...info } : { id: uid(), joinedAt: todayISO(), ...info };
-    if (acc.fb) delete acc.fb;
-    if (acc.pw) delete acc.pw;
-    if (fbReady) {
-      try { await fbSaveProfile(acc.id, { name: acc.name, center: acc.center, phone: acc.phone || "", email: acc.email || "", photo: acc.photo || "", provider: acc.provider, joinedAt: acc.joinedAt }); } catch (e) {}
-    } else {
-      await persistAccounts([...accounts, acc]);
-      await persistSession(acc.id, auto);
-    }
+    const acc = { id: uid(), joinedAt: todayISO(), ...info };
+    await persistAccounts([...accounts, acc]);
+    await persistSession(acc.id, auto);
     await loadAccount(acc);
     setPhase("app");
     setToast({ ok: true, msg: "가입이 완료됐습니다. 설정 탭에서 내 정보를 볼 수 있어요." });
@@ -4974,43 +4892,22 @@ export default function App() {
     if (!account) return;
     const next = { ...account, photo: src || undefined };
     setAccount(next);
-    if (fbReady) { try { await fbSaveProfile(next.id, { photo: src || "" }); } catch (e) {} }
-    else await persistAccounts(accounts.map((a) => (a.id === next.id ? next : a)));
+    await persistAccounts(accounts.map((a) => (a.id === next.id ? next : a)));
     setToast({ ok: true, msg: src ? "프로필 사진을 저장했습니다." : "프로필 사진을 삭제했습니다." });
   };
   const handleLogout = async () => {
-    if (fbReady) { try { await fbSignOut(); } catch (e) {} }
     try { await window.storage.set(SES_KEY, JSON.stringify({ accountId: null, auto: false })); } catch (e) {}
     revokeAllUrls();
     setAccount(null); setPhase("auth"); setDb(emptyDb("", "")); setPhotos({});
   };
 
-  const cloudTimer = useRef(null);
-  const cloudPending = useRef(null);
-  const queueCloud = useCallback((uidStr, data) => {
-    if (!fbReady || !uidStr) return;
-    cloudPending.current = { uid: uidStr, data };
-    if (cloudTimer.current) clearTimeout(cloudTimer.current);
-    cloudTimer.current = setTimeout(async () => {
-      const p = cloudPending.current;
-      cloudPending.current = null; cloudTimer.current = null;
-      if (!p) return;
-      try { await fbPushBackup(p.uid, p.data); } catch (e) {}
-    }, 3000);
-  }, []);
-  useEffect(() => () => { if (cloudTimer.current) clearTimeout(cloudTimer.current); }, []);
-
   const saveDb = useCallback(async (next) => {
     const prev = db;
     setDb(next);
     if (!account) return;
-    try {
-      await window.storage.set(dbKey(account.id), JSON.stringify(next));
-      setSavedAt(new Date());
-      queueCloud(account.id, next);
-    }
+    try { await window.storage.set(dbKey(account.id), JSON.stringify(next)); setSavedAt(new Date()); }
     catch (e) { setDb(prev); setToast({ ok: false, msg: "저장하지 못했습니다. 방금 입력한 내용을 다시 확인해 주세요." }); }
-  }, [account, db, queueCloud]);
+  }, [account, db]);
   const savePhotos = useCallback(async (next) => {
     const prev = photos;
     setPhotos(next);

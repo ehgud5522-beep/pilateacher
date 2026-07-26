@@ -4451,7 +4451,7 @@ function HandoffCard({ db, photos, account, onImport, onToast }) {
   };
   const exportAll = async () => {
     try {
-      const text = packHandoff(db, photos, true, account && account.name);
+      const text = packHandoff(db, await photosForExport(photos), true, account && account.name);
       const blob = new Blob([text], { type: "application/json" });
       const filename = `필라티쳐_백업_${todayISO()}.json`;
       try {
@@ -4479,9 +4479,9 @@ function HandoffCard({ db, photos, account, onImport, onToast }) {
   };
   const make = async () => {
     setBusy(true); setErr("");
-    let text = packHandoff(db, photos, withPhotos, account && account.name);
+    let text = packHandoff(db, withPhotos ? await photosForExport(photos) : {}, withPhotos, account && account.name);
     if (withPhotos && text.length > 4.5 * 1048576) {
-      text = packHandoff(db, photos, false, account && account.name);
+      text = packHandoff(db, {}, false, account && account.name);
       onToast({ ok: false, msg: "사진 용량이 커서 사진은 빼고 만들었습니다." });
     }
     const c = handoffId();

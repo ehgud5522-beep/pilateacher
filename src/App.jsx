@@ -4954,8 +4954,10 @@ export default function App() {
     });
     if (photos[id]) {
       const nextPh = { ...photos };
+      const ids = blobIdsOf(photos[id]);
       delete nextPh[id];
       savePhotos(nextPh);
+      forgetBlobs(ids);
     }
     setSelectedId(rest[0]?.id || null);
     setToast({ ok: true, msg: "회원을 삭제했습니다." });
@@ -5057,24 +5059,32 @@ export default function App() {
     savePhotos({ ...photos, [member.id]: { ...cur, [view]: (cur[view] || []).map((p) => (p.id === pid ? { ...p, marks } : p)) } });
     setToast({ ok: true, msg: "체형 분석을 저장했습니다." });
   };
+  const wipePhotos = () => {
+    Object.keys(photos || {}).forEach((mid) => forgetBlobs(blobIdsOf(photos[mid])));
+    savePhotos({});
+  };
   const resetSample = () => {
     const d = normalizeDb(sampleDb(account?.center, account?.name), account?.name);
-    saveDb(d); savePhotos({}); setSelectedId(d.members[0].id);
+    saveDb(d); wipePhotos(); setSelectedId(d.members[0].id);
     setToast({ ok: true, msg: "회원 데이터를 되돌렸습니다." });
   };
   const clearAll = () => {
-    saveDb({ ...db, members: [], schedule: [] }); savePhotos({}); setSelectedId(null);
+    saveDb({ ...db, members: [], schedule: [] }); wipePhotos(); setSelectedId(null);
     setToast({ ok: true, msg: "모든 회원을 초기화했습니다." });
   };
-  const importHandoff = (inc, how) => {
+  const importHandoff = async (inc, how) => {
     if (!inc) return;
     const next = how === "replace"
       ? normalizeDb({ settings: db.settings, members: inc.members || [], schedule: inc.schedule || [] }, account?.name)
       : mergeHandoff(db, inc, account?.name);
     saveDb(next);
     const ph = inc.photos && typeof inc.photos === "object" ? inc.photos : null;
-    if (ph && Object.keys(ph).length) savePhotos(how === "replace" ? ph : { ...photos, ...ph });
-    else if (how === "replace") savePhotos({});
+    if (ph && Object.keys(ph).length) {
+      let got = ph;
+      try { got = (await adoptPhotos(ph)).map; } catch (e) {}
+      if (how === "replace") wipePhotos();
+      savePhotos(how === "replace" ? got : { ...photos, ...got });
+    } else if (how === "replace") wipePhotos();
     setSelectedId(next.members[0]?.id || null);
     setToast({ ok: true, msg: `회원 ${next.members.length}명 · 수업 ${next.schedule.length}건으로 반영했습니다.` });
   };

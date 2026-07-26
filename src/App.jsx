@@ -249,6 +249,62 @@ function fileToThumb(file, max = 900) {
     r.onerror = reject; r.readAsDataURL(file);
   });
 }
+async function shareCanvas(canvas, filename, title, onToast) {
+  let blob = null;
+  try { blob = await new Promise((r) => canvas.toBlob(r, "image/jpeg", 0.92)); } catch (e) {}
+  if (!blob) { onToast && onToast({ ok: false, msg: "이미지를 만들지 못했습니다." }); return false; }
+  let file = null, canNative = false;
+  try {
+    file = new File([blob], filename, { type: "image/jpeg" });
+    canNative = !!(navigator.canShare && navigator.canShare({ files: [file] }));
+  } catch (e) { canNative = false; }
+  if (canNative) {
+    try { await navigator.share({ files: [file], title }); } catch (e) {}
+    return true;
+  }
+  try {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    onToast && onToast({ ok: true, msg: "이미지를 저장했습니다." });
+    return true;
+  } catch (e) { return false; }
+}
+
+async function shareBeforeAfter(before, after, memberName, onToast) {
+  try {
+    const load = (src) => new Promise((res, rej) => { const i = new window.Image(); i.onload = () => res(i); i.onerror = rej; i.src = src; });
+    const [b, a] = await Promise.all([load(before.src), load(after.src)]);
+    const W = 900, H = 1200, GAP = 12, FOOT = 96;
+    const c = document.createElement("canvas");
+    c.width = W * 2 + GAP; c.height = H + FOOT;
+    const ctx = c.getContext("2d");
+    ctx.fillStyle = "#0F0F14"; ctx.fillRect(0, 0, c.width, c.height);
+    const cell = (img, p, x) => {
+      ctx.save(); ctx.beginPath(); ctx.rect(x, 0, W, H); ctx.clip();
+      const base = Math.max(W / img.width, H / img.height) * (p?.scale || 1);
+      const dw = img.width * base, dh = img.height * base;
+      ctx.drawImage(img, x + (W - dw) / 2 + ((p?.x || 0) / 100) * W, (H - dh) / 2 + ((p?.y || 0) / 100) * H, dw, dh);
+      ctx.restore();
+    };
+    cell(b, before, 0); cell(a, after, W + GAP);
+    ctx.textBaseline = "middle";
+    ctx.font = "700 38px Pretendard, -apple-system, sans-serif";
+    const tag = (txt, x) => {
+      const w = ctx.measureText(txt).width + 44;
+      ctx.fillStyle = "rgba(0,0,0,.55)"; ctx.fillRect(x + 24, 24, w, 64);
+      ctx.fillStyle = "#fff"; ctx.fillText(txt, x + 46, 57);
+    };
+    tag(`BEFORE  ${ymd(before.date)}`, 0);
+    tag(`AFTER  ${ymd(after.date)}`, W + GAP);
+    ctx.font = "700 34px Pretendard, -apple-system, sans-serif";
+    ctx.fillStyle = "#A594FF";
+    ctx.fillText(`${memberName || "회원"} · ${weeksBetween(before.date, after.date)}주 변화`, 28, H + FOOT / 2);
+    return await shareCanvas(c, `비포애프터_${memberName || "회원"}_${todayISO()}.jpg`, "비포 & 애프터", onToast);
+  } catch (e) { onToast && onToast({ ok: false, msg: "이미지를 만들지 못했습니다." }); return false; }
+}
+
 function blankMember(staff) {
   return {
     id: uid(), name: "", age: "", instructor: staff || "", goal: "", passName: "", phone: "",
@@ -1855,12 +1911,9 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast }) {
     const deg = angleOf(d.pts[0], d.pts[1]);
     setMarks((m) => [...m, d.tool === "angle" ? { ...d, angle: deg, label: angleLabel(part, deg, mirror) } : d]);
   };
-  const download = () => {
-    try {
-      const url = canvasRef.current.toDataURL("image/jpeg", 0.92);
-      setShot(url);
-      const a = document.createElement("a"); a.href = url; a.download = `posture_${label}_${todayISO()}.jpg`; a.click();
-    } catch (e) { onToast({ ok: false, msg: "이미지를 만들지 못했습니다." }); }
+  const download = async () => {
+    const ok = await shareCanvas(canvasRef.current, `체형분석_${label}_${todayISO()}.jpg`, "체형 분석", onToast);
+    if (!ok) { try { setShot(canvasRef.current.toDataURL("image/jpeg", 0.92)); } catch (e) {} }
   };
 
   return (
@@ -1908,7 +1961,7 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast }) {
         <div className="flex gap-2">
           <button onClick={() => setMarks((m) => m.slice(0, -1))} className="flex flex-1 items-center justify-center gap-1 rounded-2xl py-2.5 text-xs font-bold text-white" style={{ backgroundColor: "rgba(255,255,255,0.15)" }}><RotateCcw size={13} /> 뒤로</button>
           <button onClick={() => setMarks([])} className="flex flex-1 items-center justify-center gap-1 rounded-2xl py-2.5 text-xs font-bold text-white" style={{ backgroundColor: "rgba(255,255,255,0.15)" }}><Trash2 size={13} /> 전체 지우기</button>
-          <button onClick={download} className="flex flex-1 items-center justify-center gap-1 rounded-2xl py-2.5 text-xs font-bold text-white" style={{ backgroundColor: "rgba(255,255,255,0.15)" }}><Download size={13} /> 저장</button>
+          <button onClick={download} className="flex flex-1 items-center justify-center gap-1 rounded-2xl py-2.5 text-xs font-bold text-white" style={{ backgroundColor: "rgba(255,255,255,0.15)" }}><Download size={13} /> 공유</button>
         </div>
         <p className="text-center text-xs text-white opacity-60">
           {tool === "angle" ? "양쪽 어깨(또는 골반) 지점을 드래그하면 각도가 표시됩니다" : "화면을 드래그해 그리세요"}
@@ -2293,6 +2346,7 @@ function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveM
             <button onClick={() => setGuides((g) => !g)} className="rounded-full px-3 py-1.5 text-xs font-bold" style={{ backgroundColor: guides ? TINT : CANVAS, color: guides ? PRIMARY : SUB }}>중심선 {guides ? "켜짐" : "꺼짐"}</button>
             {before && <button onClick={() => setPosture({ p: before, label: "BEFORE" })} className="rounded-full px-3 py-1.5 text-xs font-bold" style={{ backgroundColor: CANVAS, color: INK }}>비포 분석</button>}
             {after && <button onClick={() => setPosture({ p: after, label: "AFTER" })} className="rounded-full px-3 py-1.5 text-xs font-bold" style={{ backgroundColor: TINT, color: PRIMARY }}>애프터 분석</button>}
+            {before && after && <button onClick={() => shareBeforeAfter(before, after, member?.name, onToast)} className="ml-auto flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}><Upload size={12} /> 회원에게 보내기</button>}
           </div>
           {!briefing && (
             <div className="mt-2 space-y-1.5">
@@ -3136,14 +3190,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onToast }) {
     setPts((p) => { const q = { ...(p || {}) }; delete q[key]; return q; });
     setManual((m) => ({ ...m, i: m.i - 1 }));
   };
-  const download = () => {
-    try {
-      const a = document.createElement("a");
-      a.download = `${member?.name || "회원"}_체형분석_${todayISO()}.png`;
-      a.href = canvasRef.current.toDataURL("image/png");
-      a.click();
-    } catch (e) { onToast?.({ ok: false, msg: "이미지를 저장하지 못했습니다." }); }
-  };
+  const download = () => shareCanvas(canvasRef.current, `${member?.name || "회원"}_체형분석_${todayISO()}.jpg`, "체형 분석", onToast);
   const save = () => {
     if (!res || !res.items.length) return;
     let thumb = img.src;
@@ -3279,7 +3326,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onToast }) {
                 )}
                 <button onClick={() => setShowSkel((s) => !s)} className="rounded-full px-3 py-1.5 text-xs font-bold" style={{ backgroundColor: showSkel ? TINT : CANVAS, color: showSkel ? PRIMARY : SUB }}>뼈대</button>
                 <button onClick={() => setShowNum((s) => !s)} className="rounded-full px-3 py-1.5 text-xs font-bold" style={{ backgroundColor: showNum ? TINT : CANVAS, color: showNum ? PRIMARY : SUB }}>수치</button>
-                <button onClick={download} className="ml-auto flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-bold" style={{ backgroundColor: CANVAS, color: INK }}><Download size={12} /> 이미지</button>
+                <button onClick={download} className="ml-auto flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-bold" style={{ backgroundColor: CANVAS, color: INK }}><Download size={12} /> 공유</button>
               </div>
               <Sub>관절을 끌면 확대경이 뜨고, 손을 떼는 즉시 각도가 다시 계산됩니다.</Sub>
             </>

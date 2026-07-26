@@ -1,8 +1,8 @@
 /* Storage shim — Bolt 환경의 window.storage 가 없으면 localStorage 로 대체 */
 if (typeof window !== "undefined" && !window.storage) {
   window.storage = {
-    get: (key) => { try { return Promise.resolve({ value: localStorage.getItem(key) }); } catch (e) { return Promise.resolve({ value: null }); } },
-    set: (key, val) => { try { localStorage.setItem(key, val); } catch (e) {} return Promise.resolve(); },
+    get: (key, shared) => { if (shared) return Promise.reject(new Error("이 환경에서는 공유 저장소를 쓸 수 없습니다")); try { return Promise.resolve({ value: localStorage.getItem(key) }); } catch (e) { return Promise.resolve({ value: null }); } },
+    set: (key, val, shared) => { if (shared) throw new Error("이 환경에서는 공유 저장소를 쓸 수 없습니다"); localStorage.setItem(key, String(val)); return Promise.resolve(); },
   };
 }
 
@@ -4547,17 +4547,19 @@ export default function App() {
   };
 
   const saveDb = useCallback(async (next) => {
+    const prev = db;
     setDb(next);
     if (!account) return;
     try { await window.storage.set(dbKey(account.id), JSON.stringify(next)); setSavedAt(new Date()); }
-    catch (e) { setToast({ ok: false, msg: "저장하지 못했습니다." }); }
-  }, [account]);
+    catch (e) { setDb(prev); setToast({ ok: false, msg: "저장하지 못했습니다. 방금 입력한 내용을 다시 확인해 주세요." }); }
+  }, [account, db]);
   const savePhotos = useCallback(async (next) => {
+    const prev = photos;
     setPhotos(next);
     if (!account) return;
     try { await window.storage.set(phKey(account.id), JSON.stringify(next)); setSavedAt(new Date()); }
-    catch (e) { setToast({ ok: false, msg: "사진 저장 공간이 부족합니다." }); }
-  }, [account]);
+    catch (e) { setPhotos(prev); setToast({ ok: false, msg: "저장 공간이 가득 찼습니다. 오래된 사진을 지운 뒤 다시 찍어 주세요." }); }
+  }, [account, photos]);
 
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 2600); return () => clearTimeout(t); }, [toast]);
 

@@ -4232,7 +4232,10 @@ function HandoffCard({ db, photos, account, onImport, onToast }) {
     const c = handoffId();
     let shared = false;
     try { await window.storage.set(handoffKey(c), text, true); shared = true; } catch (e) {}
-    if (!shared) { try { await window.storage.set(handoffKey(c), text); } catch (e) {} }
+    if (!shared) {
+      try { await window.storage.set(handoffKey(c), text); }
+      catch (e) { onToast({ ok: false, msg: "저장 공간이 부족합니다. 아래 '인계 코드 전체 복사'로 전달해 주세요." }); }
+    }
     setPack({ code: c, text, shared });
     setBusy(false);
   };
@@ -4301,7 +4304,11 @@ function HandoffCard({ db, photos, account, onImport, onToast }) {
                 <button onClick={() => copy(pack.code, "인계 번호를 복사했습니다.")} className="flex items-center gap-1 rounded-full bg-white px-3 py-2 text-xs font-extrabold" style={{ color: PRIMARY }}><Copy size={12} /> 번호 복사</button>
                 <button onClick={() => copy(pack.text, "인계 코드를 복사했습니다. 메시지로 보내 주세요.")} className="flex items-center gap-1 rounded-full bg-white px-3 py-2 text-xs font-bold" style={{ color: INK }}><Copy size={12} /> 인계 코드 전체 복사</button>
               </div>
-              <Sub className="mt-2">같은 앱을 쓰는 기기면 번호만 알려 주세요. 다른 기기·다른 브라우저면 '인계 코드 전체 복사'로 보낸 내용을 상대가 붙여넣으면 됩니다. 코드는 비밀번호와 같으니 받는 분에게만 알려 주세요.</Sub>
+              <Sub className="mt-2">
+                {pack.shared ? "같은 앱을 쓰는 기기면 번호만 알려 주세요. 다른 기기라면 " : "이 번호는 이 기기에만 저장됩니다. 받는 분에게는 "}
+                '인계 코드 전체 복사'로 보낸 내용을 상대가 붙여넣으면 됩니다.
+                코드 안에 회원 이름·연락처·기록이 그대로 들어 있으니 받는 분에게만 전달해 주세요.
+              </Sub>
             </div>
           )}
         </div>

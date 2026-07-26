@@ -134,9 +134,9 @@ const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 const left = (m) => num(m?.regular) + num(m?.service);
 const ptf = (p) => `translate(${p?.x || 0}%, ${p?.y || 0}%) scale(${p?.scale || 1})`;
 const addMin = (t, min) => {
-  const [h, m] = t.split(":").map(Number);
-  const d = new Date(2000, 0, 1, h, m + min);
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  const [h, m] = String(t || "0:00").split(":").map(Number);
+  const tot = Math.max(0, Math.min(23 * 60 + 59, (h || 0) * 60 + (m || 0) + min));
+  return `${String(Math.floor(tot / 60)).padStart(2, "0")}:${String(tot % 60).padStart(2, "0")}`;
 };
 
 const deductOne = (members, memberId) => {
@@ -4655,6 +4655,11 @@ export default function App() {
         .map((s) => ({ ...s, attendees: attendeesOf(s).filter((a) => a.memberId !== id) }))
         .filter((s) => s.attendees.length || s.equip),
     });
+    if (photos[id]) {
+      const nextPh = { ...photos };
+      delete nextPh[id];
+      savePhotos(nextPh);
+    }
     setSelectedId(rest[0]?.id || null);
     setToast({ ok: true, msg: "회원을 삭제했습니다." });
   };

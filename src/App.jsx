@@ -4287,6 +4287,34 @@ function HandoffCard({ db, photos, account, onImport, onToast }) {
     try { await navigator.clipboard.writeText(t); onToast({ ok: true, msg }); }
     catch (e) { onToast({ ok: false, msg: "복사하지 못했습니다. 길게 눌러 직접 복사해 주세요." }); }
   };
+  const exportAll = async () => {
+    try {
+      const text = packHandoff(db, photos, true, account && account.name);
+      const blob = new Blob([text], { type: "application/json" });
+      const filename = `필라티쳐_백업_${todayISO()}.json`;
+      try {
+        const file = new File([blob], filename, { type: "application/json" });
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file], title: "필라티쳐 백업" });
+          return;
+        }
+      } catch (e) {}
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = filename; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      onToast({ ok: true, msg: "백업 파일을 저장했습니다." });
+    } catch (e) { onToast({ ok: false, msg: "백업 파일을 만들지 못했습니다." }); }
+  };
+  const importFile = async (file) => {
+    if (!file) return;
+    setErr(""); setInc(null); setConfirmAll(false);
+    try {
+      const d = readHandoff(await file.text());
+      if (!d) { setErr("필라티쳐 백업 파일이 아닙니다. 내보내기로 만든 .json 파일을 골라 주세요."); return; }
+      setInc(d);
+    } catch (e) { setErr("파일을 읽지 못했습니다."); }
+  };
   const make = async () => {
     setBusy(true); setErr("");
     let text = packHandoff(db, photos, withPhotos, account && account.name);
@@ -4358,6 +4386,10 @@ function HandoffCard({ db, photos, account, onImport, onToast }) {
           <button onClick={make} disabled={busy} className="flex w-full items-center justify-center gap-1.5 rounded-2xl py-3.5 text-sm font-extrabold text-white disabled:opacity-60" style={{ backgroundColor: BRAND }}>
             {busy ? <Loader2 size={15} className="animate-spin" /> : <Ticket size={15} />} 인계 코드 만들기
           </button>
+          <button onClick={exportAll} className="flex w-full items-center justify-center gap-1.5 rounded-2xl py-3 text-sm font-bold" style={{ backgroundColor: CANVAS, color: INK }}>
+            <Download size={14} /> 백업 파일로 내보내기 (.json)
+          </button>
+          <Sub>기기가 바뀌거나 고장 났을 때 되살리는 유일한 방법입니다. 일주일에 한 번은 내보내 두세요.</Sub>
           {pack && (
             <div className="rounded-2xl p-4" style={{ backgroundColor: TINT }}>
               <Sub>인계 번호</Sub>
@@ -4390,6 +4422,10 @@ function HandoffCard({ db, photos, account, onImport, onToast }) {
           </Field>
           <Field label="또는 인계 코드 붙여넣기" hint="다른 기기에서 받을 때">
             <textarea value={paste} onChange={(e) => setPaste(e.target.value)} rows={3} placeholder='{"app":"pilateacher", ...' className={inputCls} style={{ resize: "none" }} />
+          </Field>
+          <Field label="또는 백업 파일 열기" hint=".json 파일">
+            <input type="file" accept=".json,application/json" className={inputCls}
+              onChange={(e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; importFile(f); }} />
           </Field>
           <button onClick={readPaste} disabled={!paste.trim()} className="w-full rounded-2xl py-3 text-sm font-bold disabled:opacity-50" style={{ backgroundColor: CANVAS, color: INK }}>붙여넣은 코드 확인</button>
           {err && <p className="rounded-2xl px-3 py-2.5 text-xs font-bold" style={{ backgroundColor: BAD_S, color: BAD }}>{err}</p>}

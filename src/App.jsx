@@ -738,7 +738,7 @@ function TimePick({ value, onChange }) {
 function Sheet({ title, onClose, children }) {
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center" style={{ backgroundColor: SCRIM }} onClick={onClose}>
-      <div className="w-full max-w-lg overflow-y-auto rounded-t-3xl bg-white p-5 sm:rounded-3xl md:max-w-xl" style={{ maxHeight: "92vh" }} onClick={(e) => e.stopPropagation()}>
+      <div className="safe-sheet w-full max-w-lg overflow-y-auto rounded-t-3xl bg-white p-5 sm:rounded-3xl md:max-w-xl" style={{ maxHeight: "92dvh" }} onClick={(e) => e.stopPropagation()}>
         <div className="mb-4 flex items-center justify-between">
           <h3 className="font-extrabold" style={{ color: INK }}>{title}</h3>
           <button onClick={onClose} className="rounded-full p-1.5" style={{ backgroundColor: CANVAS }}><X size={16} style={{ color: SUB }} /></button>
@@ -2073,7 +2073,7 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast }) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-photo">
+    <div className="safe-all fixed inset-0 z-50 flex flex-col bg-photo">
       <div className="flex items-center justify-between px-4 py-3">
         <button onClick={onClose} className="rounded-full p-2" style={{ backgroundColor: "rgba(255,255,255,0.15)" }}><X size={18} color="#fff" /></button>
         <p className="text-sm font-bold text-white">체형 분석 · {label}</p>
@@ -2376,7 +2376,7 @@ function AlignSheet({ src, ghost, init, title, onSave, onCancel }) {
   const [x, setX] = useState(num(init?.x) || 0), [y, setY] = useState(num(init?.y) || 0);
   const [scale, setScale] = useState(num(init?.scale) || 1), [op, setOp] = useState(45);
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-photo">
+    <div className="safe-all fixed inset-0 z-50 flex flex-col bg-photo">
       <div className="flex items-center justify-between px-4 py-3">
         <button onClick={onCancel} className="rounded-full p-2" style={{ backgroundColor: "rgba(255,255,255,0.15)" }}><X size={18} color="#fff" /></button>
         <p className="text-sm font-bold text-white">{title || "중심선 맞추기"}</p>
@@ -2817,7 +2817,7 @@ function SetViewer({ item, onClose, onToggleFav }) {
   if (!before || !after || !set) return null;
   const weeks = weeksBetween(before.date, after.date);
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-photo">
+    <div className="safe-all fixed inset-0 z-50 flex flex-col bg-photo">
       <div className="flex items-center justify-between px-4 py-3">
         <button onClick={onClose} className="rounded-full p-2" style={{ backgroundColor: "rgba(255,255,255,0.15)" }}><X size={18} color="#fff" /></button>
         <p className="text-sm font-bold text-white">{memberName} · {VIEWS.find((v) => v.key === set.view)?.label} · {weeks}주</p>
@@ -5111,6 +5111,9 @@ export default function App() {
       .app-root *:focus-visible { outline: 2px solid ${PRIMARY}; outline-offset: 2px; }
       .app-root input[type=range] { height: 28px; }
       .safe-b { padding-bottom: env(safe-area-inset-bottom, 0px); }
+      .safe-t { padding-top: env(safe-area-inset-top, 0px); }
+      .safe-all { padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+      .safe-sheet { padding-bottom: calc(1.25rem + env(safe-area-inset-bottom, 0px)); }
       .touch-none { touch-action: none; }
       .line-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
       @keyframes pop { 0% { transform: scale(.86); opacity: 0 } 60% { transform: scale(1.04); opacity: 1 } 100% { transform: scale(1) } }
@@ -5149,7 +5152,7 @@ export default function App() {
   return (
     <div className="app-root min-h-screen pb-16" style={{ backgroundColor: PAGE }}>
       {style}
-      <div className="sticky top-0 z-30">
+      <div className="safe-t sticky top-0 z-30" style={{ backgroundColor: CARD }}>
         <Header settings={db.settings || {}} account={account} alertCount={alerts.length} onProfile={() => setTab("settings")} />
         <Tabs tab={tab} setTab={goTab} />
       </div>

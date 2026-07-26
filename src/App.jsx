@@ -1278,7 +1278,7 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onNoshowFee, onGroupD
         <Card className="p-5">
           <div className="flex items-center justify-between">
             <div>
-              <h3 className="font-extrabold" style={{ color: INK }}>당일 수업</h3>
+              <h3 className="font-extrabold" style={{ color: INK }}>오늘 수업</h3>
               <Sub>여기서 출석 · 노쇼 · 취소를 처리하면 잔여 횟수에 바로 반영됩니다</Sub>
             </div>
             <span className="rounded-full px-2.5 py-1 text-xs font-extrabold" style={{ backgroundColor: TINT, color: PRIMARY }}>{todayRows.length}건</span>
@@ -1444,15 +1444,6 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onNoshowFee, onGroupD
           onNew={(date, start) => setEditing({ id: null, memberIds: [], date, start, dur: 50, type: "개인레슨", instructor: db.settings.staff, room: "", memo: "" })} />
       </Card>
 
-      {mode === "day" && cursor === T0 && byDate(cursor).length > 0 && (
-        <Card className="p-4">
-          <div className="flex items-center gap-2">
-            <Check size={15} style={{ color: GOOD }} />
-            <p className="text-sm font-bold" style={{ color: INK }}>당일 수업은 위 「당일 수업」에서 처리합니다</p>
-          </div>
-          <Sub className="mt-1">수업을 고치거나 지우려면 위 시간표에서 그 수업을 눌러 주세요.</Sub>
-        </Card>
-      )}
       {mode === "day" && !(cursor === T0 && byDate(cursor).length > 0) && (
         <Card className="space-y-2 p-4">
           {byDate(cursor).length === 0

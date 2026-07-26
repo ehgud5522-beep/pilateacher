@@ -4997,9 +4997,9 @@ export default function App() {
         )}
         </Guard>
       </main>
-      {favOpen && <FavSetsModal items={favList} onClose={() => setFavOpen(false)} onToggleFav={toggleFav}
-        onOpenMember={(id) => { setSelectedId(id); setMobileView("detail"); setTab("members"); }} />}
-      {brief && <SalesBriefModal alert={brief} onClose={() => setBrief(null)} onToast={setToast} />}
+      {favOpen && <Guard label="즐겨찾기"><FavSetsModal items={favList} onClose={() => setFavOpen(false)} onToggleFav={toggleFav}
+        onOpenMember={(id) => { setSelectedId(id); setMobileView("detail"); setTab("members"); }} /></Guard>}
+      {brief && <Guard label="재등록 브리핑"><SalesBriefModal alert={brief} onClose={() => setBrief(null)} onToast={setToast} /></Guard>}
       {toast && (
         <div className="safe-b fixed inset-x-0 bottom-5 z-50 flex justify-center px-4">
           <div className="flex items-center gap-2 rounded-full px-4 py-3" style={{ backgroundColor: toast.ok ? TOAST : BAD, boxShadow: SHADOW }}>

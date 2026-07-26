@@ -2216,7 +2216,7 @@ function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveM
   );
   const Empty = ({ slot, label }) => (
     <div className="flex w-full flex-col items-center justify-center gap-2 rounded-2xl" style={{ aspectRatio: "3 / 4", backgroundColor: CANVAS }}>
-      <img src="/215736080-dotted-line-in-the-shape-of-a-person copy.jpg" alt="" aria-hidden="true" className="w-3/5 max-w-[140px] opacity-60" />
+      <img src="/215736080-dotted-line-in-the-shape-of-a-person copy.jpg" alt="" aria-hidden="true" className="w-3/5 max-w-[140px]" style={{ mixBlendMode: "multiply" }} />
       <button onClick={() => open(slot, camRef)} className="flex flex-col items-center gap-1">
         <Camera size={22} style={{ color: PRIMARY }} /><span className="text-xs font-bold" style={{ color: PRIMARY }}>{label} 촬영하기</span>
       </button>

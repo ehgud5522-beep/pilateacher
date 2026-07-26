@@ -46,6 +46,7 @@ let INK, INK2, SUB, FAINT, PRIMARY, TINT, RING, CANVAS, PAGE, CARD, LINE;
 let GOOD, GOOD_S, BAD, BAD_S, WARN, WARN_S, MINT, SHADOW, GRAD, GRAD_SOFT, SPLASH_BG, GLOW, SCRIM, ON_BRAND;
 let BRAND, TOAST, PHOTO;
 function applyTheme(mode) {
+  if (PAGE && THEME === mode) return;
   const p = mode === "dark" ? DARK : LIGHT;
   THEME = mode;
   PAGE = p.page; CARD = p.card; CANVAS = p.soft; LINE = p.line;
@@ -56,8 +57,10 @@ function applyTheme(mode) {
   SHADOW = p.shadow; GRAD = p.grad; GRAD_SOFT = p.gradSoft;
   SPLASH_BG = p.splash; GLOW = p.glow; SCRIM = p.scrim; ON_BRAND = p.onBrand;
 
-  /* CSS 변수 노출 — :root 에 토큰 값을 쓰면 tailwind.config.js 와 인라인 style 모두에서 참조 가능 */
+}
+function paintThemeVars(mode) {
   if (typeof document !== "undefined") {
+    const p = mode === "dark" ? DARK : LIGHT;
     const root = document.documentElement;
     const props = {
       "--page": p.page, "--card": p.card, "--canvas": p.soft, "--line": p.line,
@@ -4473,9 +4476,10 @@ export default function App() {
   }, []);
   const themeMode = themePref === "dark" || (themePref === "system" && sysDark) ? "dark" : "light";
   applyTheme(themeMode);
+  useEffect(() => { paintThemeVars(themeMode); }, [themeMode]);
   const changeTheme = (pref) => {
     setThemePref(pref);
-    try { window.storage.set(THEME_KEY, pref); } catch (e) {}
+    try { const p = window.storage.set(THEME_KEY, pref); if (p && p.catch) p.catch(() => {}); } catch (e) {}
   };
 
   useEffect(() => {

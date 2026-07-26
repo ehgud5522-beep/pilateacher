@@ -3271,16 +3271,20 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onToast }) {
     if (!file) return;
     setBusy(true); setPts(null);
     try {
-      const src = await fileToThumb(file, 1000);
+      const blob = await fileToBlob(file, 1000);
+      const src = URL.createObjectURL(blob);
       const im = new window.Image();
       im.onload = async () => {
         imgRef.current = im;
-        setImg({ src, w: im.naturalWidth, h: im.naturalHeight });
+        setImg((prev) => {
+          if (prev && typeof prev.src === "string" && prev.src.startsWith("blob:")) { try { URL.revokeObjectURL(prev.src); } catch (e) {} }
+          return { src, w: im.naturalWidth, h: im.naturalHeight };
+        });
         const auto = await detect(im);
         setBusy(false);
         if (!auto) startManual();
       };
-      im.onerror = () => { setBusy(false); onToast?.({ ok: false, msg: "사진을 읽지 못했습니다." }); };
+      im.onerror = () => { setBusy(false); try { URL.revokeObjectURL(src); } catch (e) {} onToast?.({ ok: false, msg: "사진을 읽지 못했습니다." }); };
       im.src = src;
     } catch (e) { setBusy(false); onToast?.({ ok: false, msg: "사진을 읽지 못했습니다." }); }
   };

@@ -4789,6 +4789,7 @@ export default function App() {
   }, []);
 
   const loadAccount = async (acc) => {
+    revokeAllUrls();
     setAccount(acc);
     let data = null, ph = {};
     try { const r = await window.storage.get(dbKey(acc.id)); if (r?.value) data = JSON.parse(r.value); } catch (e) {}
@@ -4797,7 +4798,13 @@ export default function App() {
     data = normalizeDb(data, acc.name);
     if (!data.settings.center) data.settings.center = acc.center || "";
     setDb(data);
-    setPhotos(ph && typeof ph === "object" ? ph : {});
+    let hyd = ph && typeof ph === "object" ? ph : {};
+    try {
+      const a = await adoptPhotos(hyd);
+      hyd = a.map;
+      if (a.changed) { try { await window.storage.set(phKey(acc.id), JSON.stringify(stripSrc(hyd))); } catch (e) {} }
+    } catch (e) {}
+    setPhotos(hyd);
     setSelectedId(data.members[0]?.id || null);
     setTab("schedule");
   };
@@ -4832,6 +4839,7 @@ export default function App() {
   };
   const handleLogout = async () => {
     try { await window.storage.set(SES_KEY, JSON.stringify({ accountId: null, auto: false })); } catch (e) {}
+    revokeAllUrls();
     setAccount(null); setPhase("auth"); setDb(emptyDb("", "")); setPhotos({});
   };
 
@@ -4846,7 +4854,7 @@ export default function App() {
     const prev = photos;
     setPhotos(next);
     if (!account) return;
-    try { await window.storage.set(phKey(account.id), JSON.stringify(next)); setSavedAt(new Date()); }
+    try { await window.storage.set(phKey(account.id), JSON.stringify(stripSrc(next))); setSavedAt(new Date()); }
     catch (e) { setPhotos(prev); setToast({ ok: false, msg: "저장 공간이 가득 찼습니다. 오래된 사진을 지운 뒤 다시 찍어 주세요." }); }
   }, [account, photos]);
 

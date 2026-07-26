@@ -4976,9 +4976,16 @@ export default function App() {
     setToast({ ok: true, msg: "코멘트를 저장했습니다." });
   };
   const deleteNote = (nid) => patch(member.id, { notes: member.notes.filter((n) => n.id !== nid) });
-  const savePhoto = (view, src, slot, tf) => {
+  const savePhoto = async (view, blob, slot, tf) => {
+    if (!member || !blob) return;
+    let rec = null;
+    try { const bid = newBlobId(); await blobPut(bid, blob); rec = { blobId: bid, src: URL.createObjectURL(blob) }; }
+    catch (e) {
+      try { rec = { src: await blobToDataUrl(blob) }; }
+      catch (e2) { setToast({ ok: false, msg: "사진을 저장하지 못했습니다." }); return; }
+    }
     const cur = photos[member.id] || {}, list = cur[view] || [];
-    const shot = { id: uid(), date: todayISO(), src, marks: [], ...tf };
+    const shot = { id: uid(), date: todayISO(), marks: [], ...rec, ...tf };
     const nextList = slot === "before" ? [shot, ...list] : [...list, shot];
     const sets = [...(cur.sets || [])];
     let made = false;
@@ -4994,7 +5001,9 @@ export default function App() {
   };
   const removePhoto = (view, pid) => {
     const cur = photos[member.id] || {};
+    const gone = (cur[view] || []).find((p) => p.id === pid);
     savePhotos({ ...photos, [member.id]: { ...cur, [view]: (cur[view] || []).filter((p) => p.id !== pid) } });
+    if (gone?.blobId) forgetBlobs([gone.blobId]);
   };
   const toggleFav = (memberId, setId) => {
     const cur = photos[memberId] || {};
@@ -5017,16 +5026,26 @@ export default function App() {
     });
     return out;
   }, [db.members, photos]);
-  const savePose = (rec) => {
+  const savePose = async (rec) => {
     if (!member) return;
+    const out = { ...rec };
+    delete out.blob;
+    if (rec.blob) {
+      try { const bid = newBlobId(); await blobPut(bid, rec.blob); out.blobId = bid; out.src = URL.createObjectURL(rec.blob); }
+      catch (e) { try { out.src = await blobToDataUrl(rec.blob); } catch (e2) {} }
+    }
     const cur = photos[member.id] || {};
-    savePhotos({ ...photos, [member.id]: { ...cur, poses: [rec, ...(cur.poses || [])].slice(0, 6) } });
+    const keep = [out, ...(cur.poses || [])];
+    forgetBlobs(keep.slice(6).map((p) => p.blobId).filter(Boolean));
+    savePhotos({ ...photos, [member.id]: { ...cur, poses: keep.slice(0, 6) } });
     setToast({ ok: true, msg: "체형 분석 결과를 저장했습니다." });
   };
   const deletePose = (pid) => {
     if (!member) return;
     const cur = photos[member.id] || {};
+    const gone = (cur.poses || []).find((p) => p.id === pid);
     savePhotos({ ...photos, [member.id]: { ...cur, poses: (cur.poses || []).filter((p) => p.id !== pid) } });
+    if (gone?.blobId) forgetBlobs([gone.blobId]);
   };
   const adjustPhoto = (view, pid, tf) => {
     const cur = photos[member.id] || {};

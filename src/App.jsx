@@ -2216,6 +2216,14 @@ function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveM
   );
   const Empty = ({ slot, label }) => (
     <div className="flex w-full flex-col items-center justify-center gap-2 rounded-2xl" style={{ aspectRatio: "3 / 4", backgroundColor: CANVAS }}>
+      <svg viewBox="0 0 120 160" className="w-2/5 max-w-[120px]" fill="none" stroke={FAINT} strokeWidth="1.5" strokeDasharray="5 4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <circle cx="60" cy="22" r="14" />
+        <path d="M60 36 L60 92" />
+        <path d="M60 48 L34 76" />
+        <path d="M60 48 L86 76" />
+        <path d="M60 92 L42 140" />
+        <path d="M60 92 L78 140" />
+      </svg>
       <button onClick={() => open(slot, camRef)} className="flex flex-col items-center gap-1">
         <Camera size={22} style={{ color: PRIMARY }} /><span className="text-xs font-bold" style={{ color: PRIMARY }}>{label} 촬영하기</span>
       </button>

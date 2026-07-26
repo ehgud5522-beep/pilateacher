@@ -249,6 +249,161 @@ function fileToThumb(file, max = 900) {
     r.onerror = reject; r.readAsDataURL(file);
   });
 }
+/* ================= 사진 저장소 (IndexedDB) =================
+   사진 실물은 IndexedDB 에 Blob 으로, 좌표·분석선만 기존 저장소에.
+   화면에서 쓰는 p.src 는 blob: 주소로 그때그때 만들어 붙인다. */
+const IDB_NAME = "pilateacher_photos";
+const IDB_STORE = "blobs";
+let idbP = null;
+function idbOpen() {
+  if (idbP) return idbP;
+  idbP = new Promise((res, rej) => {
+    if (typeof indexedDB === "undefined") { rej(new Error("IndexedDB 미지원")); return; }
+    const rq = indexedDB.open(IDB_NAME, 1);
+    rq.onupgradeneeded = () => { const d = rq.result; if (!d.objectStoreNames.contains(IDB_STORE)) d.createObjectStore(IDB_STORE); };
+    rq.onsuccess = () => res(rq.result);
+    rq.onerror = () => rej(rq.error);
+    rq.onblocked = () => rej(new Error("IndexedDB blocked"));
+  }).catch((e) => { idbP = null; throw e; });
+  return idbP;
+}
+function idbRun(mode, fn) {
+  return idbOpen().then((d) => new Promise((res, rej) => {
+    let out;
+    const tx = d.transaction(IDB_STORE, mode);
+    tx.onerror = () => rej(tx.error);
+    tx.onabort = () => rej(tx.error || new Error("aborted"));
+    tx.oncomplete = () => res(out);
+    const rq = fn(tx.objectStore(IDB_STORE));
+    if (rq) rq.onsuccess = () => { out = rq.result; };
+  }));
+}
+const blobPut = (k, b) => idbRun("readwrite", (s) => s.put(b, k));
+const blobGet = (k) => idbRun("readonly", (s) => s.get(k));
+const blobDel = (k) => idbRun("readwrite", (s) => s.delete(k));
+const newBlobId = () => "b_" + Date.now().toString(36) + "_" + uid();
+
+const blobToDataUrl = (b) => new Promise((res, rej) => {
+  const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(b);
+});
+const dataUrlToBlob = async (s) => (await fetch(s)).blob();
+
+/* 원본을 문자열로 만들지 않고 바로 축소 · 사진 회전(EXIF)도 자동 보정 */
+async function fileToBlob(file, max = 900, q = 0.72) {
+  if (typeof createImageBitmap === "function") {
+    let bmp = null;
+    try { bmp = await createImageBitmap(file, { imageOrientation: "from-image" }); }
+    catch (e) { try { bmp = await createImageBitmap(file); } catch (e2) { bmp = null; } }
+    if (bmp) {
+      const s = Math.min(1, max / Math.max(bmp.width, bmp.height));
+      const c = document.createElement("canvas");
+      c.width = Math.max(1, Math.round(bmp.width * s));
+      c.height = Math.max(1, Math.round(bmp.height * s));
+      c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
+      if (bmp.close) bmp.close();
+      const out = await new Promise((r) => c.toBlob(r, "image/jpeg", q));
+      if (out) return out;
+    }
+  }
+  return dataUrlToBlob(await fileToThumb(file, max));
+}
+
+const PHOTO_KEYS = ["front", "side", "back", "poses"];
+const objUrls = new Map();
+function revokeAllUrls() {
+  objUrls.forEach((u) => { try { URL.revokeObjectURL(u); } catch (e) {} });
+  objUrls.clear();
+}
+function dropUrl(id) {
+  const u = objUrls.get(id);
+  if (u) { try { URL.revokeObjectURL(u); } catch (e) {} objUrls.delete(id); }
+}
+async function urlFor(blobId) {
+  if (!blobId) return null;
+  if (objUrls.has(blobId)) return objUrls.get(blobId);
+  try {
+    const b = await blobGet(blobId);
+    if (!b) return null;
+    const u = URL.createObjectURL(b);
+    objUrls.set(blobId, u);
+    return u;
+  } catch (e) { return null; }
+}
+const blobIdsOf = (ph) => {
+  const out = [];
+  PHOTO_KEYS.forEach((k) => (Array.isArray(ph?.[k]) ? ph[k] : []).forEach((p) => { if (p?.blobId) out.push(p.blobId); }));
+  return out;
+};
+function forgetBlobs(ids) {
+  (ids || []).forEach((id) => { dropUrl(id); blobDel(id).catch(() => {}); });
+}
+/* 저장 직전: 사진 실물(src)은 빼고 좌표·분석선만 남긴다 */
+const stripSrc = (map) => {
+  const out = {};
+  Object.keys(map || {}).forEach((mid) => {
+    const cur = map[mid] || {};
+    const next = { ...cur };
+    PHOTO_KEYS.forEach((k) => {
+      if (!Array.isArray(cur[k])) return;
+      next[k] = cur[k].map((p) => { const q = { ...p }; if (q.blobId) delete q.src; return q; });
+    });
+    out[mid] = next;
+  });
+  return out;
+};
+/* 불러올 때: 옛 base64 는 IndexedDB 로 이사시키고, 화면용 blob: 주소를 붙인다 */
+async function adoptPhotos(map) {
+  let changed = false;
+  const out = {};
+  for (const mid of Object.keys(map || {})) {
+    const cur = map[mid] || {};
+    const next = { ...cur };
+    for (const k of PHOTO_KEYS) {
+      if (!Array.isArray(cur[k])) continue;
+      const arr = [];
+      for (const p of cur[k]) {
+        if (!p) continue;
+        let q = p;
+        if (!q.blobId && typeof q.src === "string" && q.src.slice(0, 5) === "data:") {
+          try {
+            const id = newBlobId();
+            await blobPut(id, await dataUrlToBlob(q.src));
+            q = { ...q, blobId: id };
+            changed = true;
+          } catch (e) {}
+        }
+        arr.push(q.blobId ? { ...q, src: (await urlFor(q.blobId)) || q.src || null } : q);
+      }
+      next[k] = arr;
+    }
+    out[mid] = next;
+  }
+  return { map: out, changed };
+}
+/* 백업·인계용: Blob 을 다시 base64 로 (다른 기기에서도 열리게) */
+async function photosForExport(map) {
+  const out = {};
+  for (const mid of Object.keys(map || {})) {
+    const cur = map[mid] || {};
+    const next = { ...cur };
+    for (const k of PHOTO_KEYS) {
+      if (!Array.isArray(cur[k])) continue;
+      const arr = [];
+      for (const p of cur[k]) {
+        const q = { ...p };
+        if (q.blobId) {
+          try { const b = await blobGet(q.blobId); if (b) q.src = await blobToDataUrl(b); } catch (e) {}
+          delete q.blobId;
+        }
+        arr.push(q);
+      }
+      next[k] = arr;
+    }
+    out[mid] = next;
+  }
+  return out;
+}
+
 async function shareCanvas(canvas, filename, title, onToast) {
   let blob = null;
   try { blob = await new Promise((r) => canvas.toBlob(r, "image/jpeg", 0.92)); } catch (e) {}

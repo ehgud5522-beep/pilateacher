@@ -1004,6 +1004,113 @@ function SalesBriefModal({ alert, onClose, onToast }) {
     </Sheet>
   );
 }
+function SchedAttendeeRow({ s, a, members, onStatus, onNoshowFee }) {
+  const m = members.find((x) => x.id === a.memberId);
+  const nm = m?.name || "삭제된 회원";
+  const st = stOf(a.status);
+  return (
+    <div className="rounded-xl bg-white p-2.5">
+      <div className="flex items-center gap-2">
+        <span className="min-w-0 flex-1 truncate text-sm font-extrabold" style={{ color: INK }}>{nm}</span>
+        {m && (left(m) > 0
+          ? <Sub>잔여 {left(m)}회</Sub>
+          : <span className="rounded-full px-2 py-0.5 text-xs font-extrabold" style={{ backgroundColor: BAD_S, color: BAD }}>잔여 0</span>)}
+        <span className="rounded-full px-2 py-0.5 text-xs font-extrabold" style={{ backgroundColor: st.bg, color: st.color }}>{st.label}</span>
+      </div>
+      <div className="mt-1.5 flex flex-wrap gap-1.5">
+        {a.status !== "done"
+          ? <button onClick={() => onStatus(s.id, "done", a.memberId)} className="rounded-full px-2.5 py-1 text-xs font-extrabold text-white" style={{ backgroundColor: GOOD }}>출석</button>
+          : <button onClick={() => onStatus(s.id, "booked", a.memberId)} className="rounded-full px-2.5 py-1 text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>출석 취소</button>}
+        {a.status !== "noshow" && <button onClick={() => onStatus(s.id, "noshow", a.memberId)} className="rounded-full px-2.5 py-1 text-xs font-bold" style={{ backgroundColor: CANVAS, color: BAD }}>노쇼</button>}
+        {a.status !== "cancel" && <button onClick={() => onStatus(s.id, "cancel", a.memberId)} className="rounded-full px-2.5 py-1 text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>수업 취소</button>}
+        {a.deductFrom && <span className="self-center text-xs font-bold" style={{ color: SUB }}>{a.deductFrom} −1회</span>}
+      </div>
+      {a.status === "noshow" && (
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5 rounded-lg p-2" style={{ backgroundColor: BAD_S }}>
+          {a.noshowFee == null ? (
+            <>
+              <span className="text-xs font-bold" style={{ color: INK }}>노쇼 차감할까요?</span>
+              <button onClick={() => onNoshowFee(s.id, true, a.memberId)} className="rounded-full px-2.5 py-1 text-xs font-extrabold text-white" style={{ backgroundColor: BAD }}>1회 차감</button>
+              <button onClick={() => onNoshowFee(s.id, false, a.memberId)} className="rounded-full bg-white px-2.5 py-1 text-xs font-bold" style={{ color: SUB }}>다음으로</button>
+            </>
+          ) : a.noshowFee ? (
+            <>
+              <span className="rounded-full px-2 py-0.5 text-xs font-extrabold" style={{ backgroundColor: CARD, color: BAD }}>{a.deductFrom || "정규"} 1회 차감됨</span>
+              <button onClick={() => onNoshowFee(s.id, false, a.memberId)} className="text-xs font-bold" style={{ color: SUB }}>차감 취소</button>
+            </>
+          ) : (
+            <>
+              <span className="text-xs font-bold" style={{ color: SUB }}>차감 없이 기록</span>
+              <button onClick={() => onNoshowFee(s.id, true, a.memberId)} className="text-xs font-extrabold" style={{ color: BAD }}>1회 차감하기</button>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SchedItem({ s, members, del, setDel, setEditing, onStatus, onNoshowFee, onGroupDone, onDelete }) {
+  const nameOf = (id) => members.find((m) => m.id === id)?.name || "삭제된 회원";
+  const list = attendeesOf(s);
+  const eq = isEquipGroup(s);
+  const group = list.length > 1 || s.type === "그룹";
+  const doneN = list.filter((a) => a.status === "done").length;
+  return (
+    <div className="rounded-2xl p-3" style={{ backgroundColor: CANVAS }}>
+      <div className="flex items-center gap-2">
+        <div className="w-14 shrink-0">
+          <p className="text-sm font-extrabold tabular-nums" style={{ color: INK }}>{s.start}</p>
+          <Sub>{s.end}</Sub>
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-extrabold" style={{ color: INK }}>
+            {eq ? `그룹 · ${s.equip || "기구 미선택"}` : group ? `${s.type} · ${list.length}명` : nameOf(list[0]?.memberId)}
+          </p>
+          <Sub className="truncate">
+            {eq ? [s.instructor, s.room].filter(Boolean).join(" · ") : group ? list.map((a) => nameOf(a.memberId)).join(", ") : [s.type, s.instructor, s.room].filter(Boolean).join(" · ")}
+          </Sub>
+        </div>
+        {eq
+          ? <span className="rounded-full px-2.5 py-1 text-xs font-extrabold" style={{ backgroundColor: s.groupDone ? GOOD_S : TINT, color: s.groupDone ? GOOD : PRIMARY }}>{s.groupDone ? "완료" : "예정"}</span>
+          : group
+          ? <span className="rounded-full px-2.5 py-1 text-xs font-extrabold" style={{ backgroundColor: doneN ? GOOD_S : TINT, color: doneN ? GOOD : PRIMARY }}>출석 {doneN}/{list.length}</span>
+          : <span className="rounded-full px-2.5 py-1 text-xs font-extrabold" style={{ backgroundColor: stOf(list[0]?.status).bg, color: stOf(list[0]?.status).color }}>{stOf(list[0]?.status).label}</span>}
+      </div>
+      {s.memo && <p className="mt-1.5 text-xs" style={{ color: INK2 }}>{s.memo}</p>}
+      {eq ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2 rounded-xl bg-white p-2.5">
+          <span className="text-sm font-extrabold" style={{ color: INK }}>{s.equip || "기구 미선택"} 그룹 수업</span>
+          {s.groupDone ? (
+            <>
+              <span className="rounded-full px-2 py-0.5 text-xs font-extrabold" style={{ backgroundColor: GOOD_S, color: GOOD }}>진행 완료 · 이달 누적 +1</span>
+              <button onClick={() => onGroupDone && onGroupDone(s.id, false)} className="ml-auto text-xs font-bold" style={{ color: SUB }}>완료 취소</button>
+            </>
+          ) : (
+            <button onClick={() => onGroupDone && onGroupDone(s.id, true)} className="ml-auto rounded-full px-3 py-1.5 text-xs font-extrabold text-white" style={{ backgroundColor: GOOD }}>진행 완료</button>
+          )}
+        </div>
+      ) : (
+        <div className="mt-2 space-y-1.5">
+          {list.map((a) => <SchedAttendeeRow key={a.memberId} s={s} a={a} members={members} onStatus={onStatus} onNoshowFee={onNoshowFee} />)}
+        </div>
+      )}
+      <div className="mt-2 flex gap-1.5">
+        <button onClick={() => setEditing(s)} className="ml-auto rounded-full bg-white px-2.5 py-1.5" style={{ color: SUB }}><Pencil size={12} /></button>
+        <button onClick={() => setDel(s.id)} className="rounded-full bg-white px-2.5 py-1.5" style={{ color: FAINT }}><Trash2 size={12} /></button>
+      </div>
+      {del === s.id && (
+        <div className="mt-2 flex flex-wrap items-center gap-2 rounded-xl p-2.5" style={{ backgroundColor: BAD_S }}>
+          <AlertTriangle size={13} style={{ color: BAD }} />
+          <span className="text-xs font-bold" style={{ color: INK }}>{s.start} 수업을 삭제할까요?</span>
+          <button onClick={() => { onDelete(s.id); setDel(null); }} className="rounded-full px-3 py-1.5 text-xs font-extrabold text-white" style={{ backgroundColor: BAD }}>삭제</button>
+          <button onClick={() => setDel(null)} className="rounded-full bg-white px-3 py-1.5 text-xs font-bold" style={{ color: SUB }}>취소</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ScheduleManager({ db, onSave, onDelete, onStatus, onNoshowFee, onGroupDone, onOpenMember, onWriteNote, onNoComment }) {
   const [mode, setMode] = useState("day");
   const [cursor, setCursor] = useState(todayISO());
@@ -1046,110 +1153,7 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onNoshowFee, onGroupD
   };
   const slide = { transform: `translateX(${drag}px)`, transition: anim ? "transform .18s cubic-bezier(.25,.8,.3,1), opacity .18s ease" : "none", opacity: 1 - Math.min(0.45, Math.abs(drag) / 340) };
 
-  const AttendeeRow = ({ s, a }) => {
-    const m = memberOf(a.memberId);
-    const st = stOf(a.status);
-    return (
-      <div className="rounded-xl bg-white p-2.5">
-        <div className="flex items-center gap-2">
-          <span className="min-w-0 flex-1 truncate text-sm font-extrabold" style={{ color: INK }}>{nameOf(a.memberId)}</span>
-          {m && (left(m) > 0
-            ? <Sub>잔여 {left(m)}회</Sub>
-            : <span className="rounded-full px-2 py-0.5 text-xs font-extrabold" style={{ backgroundColor: BAD_S, color: BAD }}>잔여 0</span>)}
-          <span className="rounded-full px-2 py-0.5 text-xs font-extrabold" style={{ backgroundColor: st.bg, color: st.color }}>{st.label}</span>
-        </div>
-        <div className="mt-1.5 flex flex-wrap gap-1.5">
-          {a.status !== "done"
-            ? <button onClick={() => onStatus(s.id, "done", a.memberId)} className="rounded-full px-2.5 py-1 text-xs font-extrabold text-white" style={{ backgroundColor: GOOD }}>출석</button>
-            : <button onClick={() => onStatus(s.id, "booked", a.memberId)} className="rounded-full px-2.5 py-1 text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>출석 취소</button>}
-          {a.status !== "noshow" && <button onClick={() => onStatus(s.id, "noshow", a.memberId)} className="rounded-full px-2.5 py-1 text-xs font-bold" style={{ backgroundColor: CANVAS, color: BAD }}>노쇼</button>}
-          {a.status !== "cancel" && <button onClick={() => onStatus(s.id, "cancel", a.memberId)} className="rounded-full px-2.5 py-1 text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>수업 취소</button>}
-          {a.deductFrom && <span className="self-center text-xs font-bold" style={{ color: SUB }}>{a.deductFrom} −1회</span>}
-        </div>
-        {a.status === "noshow" && (
-          <div className="mt-1.5 flex flex-wrap items-center gap-1.5 rounded-lg p-2" style={{ backgroundColor: BAD_S }}>
-            {a.noshowFee == null ? (
-              <>
-                <span className="text-xs font-bold" style={{ color: INK }}>노쇼 차감할까요?</span>
-                <button onClick={() => onNoshowFee(s.id, true, a.memberId)} className="rounded-full px-2.5 py-1 text-xs font-extrabold text-white" style={{ backgroundColor: BAD }}>1회 차감</button>
-                <button onClick={() => onNoshowFee(s.id, false, a.memberId)} className="rounded-full bg-white px-2.5 py-1 text-xs font-bold" style={{ color: SUB }}>다음으로</button>
-              </>
-            ) : a.noshowFee ? (
-              <>
-                <span className="rounded-full px-2 py-0.5 text-xs font-extrabold" style={{ backgroundColor: CARD, color: BAD }}>{a.deductFrom || "정규"} 1회 차감됨</span>
-                <button onClick={() => onNoshowFee(s.id, false, a.memberId)} className="text-xs font-bold" style={{ color: SUB }}>차감 취소</button>
-              </>
-            ) : (
-              <>
-                <span className="text-xs font-bold" style={{ color: SUB }}>차감 없이 기록</span>
-                <button onClick={() => onNoshowFee(s.id, true, a.memberId)} className="text-xs font-extrabold" style={{ color: BAD }}>1회 차감하기</button>
-              </>
-            )}
-          </div>
-        )}
-      </div>
-    );
-  };
-
-  const Item = ({ s }) => {
-    const list = attendeesOf(s);
-    const eq = isEquipGroup(s);
-    const group = list.length > 1 || s.type === "그룹";
-    const doneN = list.filter((a) => a.status === "done").length;
-    return (
-      <div className="rounded-2xl p-3" style={{ backgroundColor: CANVAS }}>
-        <div className="flex items-center gap-2">
-          <div className="w-14 shrink-0">
-            <p className="text-sm font-extrabold tabular-nums" style={{ color: INK }}>{s.start}</p>
-            <Sub>{s.end}</Sub>
-          </div>
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-extrabold" style={{ color: INK }}>
-              {eq ? `그룹 · ${s.equip || "기구 미선택"}` : group ? `${s.type} · ${list.length}명` : nameOf(list[0].memberId)}
-            </p>
-            <Sub className="truncate">
-              {eq ? [s.instructor, s.room].filter(Boolean).join(" · ") : group ? list.map((a) => nameOf(a.memberId)).join(", ") : [s.type, s.instructor, s.room].filter(Boolean).join(" · ")}
-            </Sub>
-          </div>
-          {eq
-            ? <span className="rounded-full px-2.5 py-1 text-xs font-extrabold" style={{ backgroundColor: s.groupDone ? GOOD_S : TINT, color: s.groupDone ? GOOD : PRIMARY }}>{s.groupDone ? "완료" : "예정"}</span>
-            : group
-            ? <span className="rounded-full px-2.5 py-1 text-xs font-extrabold" style={{ backgroundColor: doneN ? GOOD_S : TINT, color: doneN ? GOOD : PRIMARY }}>출석 {doneN}/{list.length}</span>
-            : <span className="rounded-full px-2.5 py-1 text-xs font-extrabold" style={{ backgroundColor: stOf(list[0].status).bg, color: stOf(list[0].status).color }}>{stOf(list[0].status).label}</span>}
-        </div>
-        {s.memo && <p className="mt-1.5 text-xs" style={{ color: INK2 }}>{s.memo}</p>}
-        {eq ? (
-          <div className="mt-2 flex flex-wrap items-center gap-2 rounded-xl bg-white p-2.5">
-            <span className="text-sm font-extrabold" style={{ color: INK }}>{s.equip || "기구 미선택"} 그룹 수업</span>
-            {s.groupDone ? (
-              <>
-                <span className="rounded-full px-2 py-0.5 text-xs font-extrabold" style={{ backgroundColor: GOOD_S, color: GOOD }}>진행 완료 · 이달 누적 +1</span>
-                <button onClick={() => onGroupDone && onGroupDone(s.id, false)} className="ml-auto text-xs font-bold" style={{ color: SUB }}>완료 취소</button>
-              </>
-            ) : (
-              <button onClick={() => onGroupDone && onGroupDone(s.id, true)} className="ml-auto rounded-full px-3 py-1.5 text-xs font-extrabold text-white" style={{ backgroundColor: GOOD }}>진행 완료</button>
-            )}
-          </div>
-        ) : (
-          <div className="mt-2 space-y-1.5">
-            {list.map((a) => <AttendeeRow key={a.memberId} s={s} a={a} />)}
-          </div>
-        )}
-        <div className="mt-2 flex gap-1.5">
-          <button onClick={() => setEditing(s)} className="ml-auto rounded-full bg-white px-2.5 py-1.5" style={{ color: SUB }}><Pencil size={12} /></button>
-          <button onClick={() => setDel(s.id)} className="rounded-full bg-white px-2.5 py-1.5" style={{ color: FAINT }}><Trash2 size={12} /></button>
-        </div>
-        {del === s.id && (
-          <div className="mt-2 flex flex-wrap items-center gap-2 rounded-xl p-2.5" style={{ backgroundColor: BAD_S }}>
-            <AlertTriangle size={13} style={{ color: BAD }} />
-            <span className="text-xs font-bold" style={{ color: INK }}>{s.start} 수업을 삭제할까요?</span>
-            <button onClick={() => { onDelete(s.id); setDel(null); }} className="rounded-full px-3 py-1.5 text-xs font-extrabold text-white" style={{ backgroundColor: BAD }}>삭제</button>
-            <button onClick={() => setDel(null)} className="rounded-full bg-white px-3 py-1.5 text-xs font-bold" style={{ color: SUB }}>취소</button>
-          </div>
-        )}
-      </div>
-    );
-  };
+  const itemProps = { members: db.members, del, setDel, setEditing, onStatus, onNoshowFee, onGroupDone, onDelete };
 
   const T0 = todayISO();
   const [parked, setParked] = useState({});
@@ -1451,7 +1455,7 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onNoshowFee, onGroupD
         <Card className="space-y-2 p-4">
           {byDate(cursor).length === 0
             ? <div className="py-8 text-center"><Clock size={20} className="mx-auto" style={{ color: FAINT }} /><Sub className="mt-2">등록된 수업이 없습니다.</Sub></div>
-            : byDate(cursor).map((s) => <Item key={s.id} s={s} />)}
+            : byDate(cursor).map((s) => <SchedItem key={s.id} s={s} {...itemProps} />)}
         </Card>
       )}
       {mode === "week" && (
@@ -1464,7 +1468,7 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onNoshowFee, onGroupD
                   <p className="text-sm font-extrabold" style={{ color: d === todayISO() ? PRIMARY : INK }}>{md(d)} ({dow(d)}) {d === todayISO() && "· 오늘"}</p>
                   <Sub>{items.length}수업 · {seatsOn(d)}명</Sub>
                 </div>
-                <div className="mt-2 space-y-2">{items.length === 0 ? <Sub>수업 없음</Sub> : items.map((s) => <Item key={s.id} s={s} />)}</div>
+                <div className="mt-2 space-y-2">{items.length === 0 ? <Sub>수업 없음</Sub> : items.map((s) => <SchedItem key={s.id} s={s} {...itemProps} />)}</div>
               </Card>
             );
           })}

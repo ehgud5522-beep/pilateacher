@@ -4120,7 +4120,7 @@ function InfoForm({ member, onPatch, onDelete, onToast }) {
           </div>
         )}
       </Card>
-      <div className="sticky bottom-3 z-10">
+      <div className="safe-b sticky bottom-3 z-10">
         <button onClick={save} disabled={!dirty}
           className="flex w-full items-center justify-center gap-1.5 rounded-2xl py-4 text-sm font-extrabold text-white"
           style={{ backgroundColor: dirty ? PRIMARY : FAINT, boxShadow: SHADOW }}>
@@ -4791,6 +4791,7 @@ export default function App() {
       .app-root p, .app-root h1, .app-root h2, .app-root h3, .app-root span, .app-root button, .app-root li { word-break: keep-all; overflow-wrap: break-word; }
       .app-root *:focus-visible { outline: 2px solid ${PRIMARY}; outline-offset: 2px; }
       .app-root input[type=range] { height: 28px; }
+      .safe-b { padding-bottom: env(safe-area-inset-bottom, 0px); }
       .touch-none { touch-action: none; }
       .line-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
       @keyframes pop { 0% { transform: scale(.86); opacity: 0 } 60% { transform: scale(1.04); opacity: 1 } 100% { transform: scale(1) } }
@@ -4816,7 +4817,7 @@ export default function App() {
         {style}
         <AuthScreen accounts={accounts} onLogin={handleLogin} onSignup={handleSignup} onToast={setToast} />
         {toast && (
-          <div className="fixed inset-x-0 bottom-5 z-50 flex justify-center px-4">
+          <div className="safe-b fixed inset-x-0 bottom-5 z-50 flex justify-center px-4">
             <div className="flex items-center gap-2 rounded-full px-4 py-3" style={{ backgroundColor: toast.ok ? TOAST : BAD, boxShadow: SHADOW }}>
               {toast.ok ? <Check size={14} color="#fff" /> : <AlertTriangle size={14} color="#fff" />}
               <span className="text-sm font-bold text-white">{toast.msg}</span>
@@ -4884,7 +4885,7 @@ export default function App() {
         onOpenMember={(id) => { setSelectedId(id); setMobileView("detail"); setTab("members"); }} />}
       {brief && <SalesBriefModal alert={brief} onClose={() => setBrief(null)} onToast={setToast} />}
       {toast && (
-        <div className="fixed inset-x-0 bottom-5 z-50 flex justify-center px-4">
+        <div className="safe-b fixed inset-x-0 bottom-5 z-50 flex justify-center px-4">
           <div className="flex items-center gap-2 rounded-full px-4 py-3" style={{ backgroundColor: toast.ok ? TOAST : BAD, boxShadow: SHADOW }}>
             {toast.ok ? <Check size={14} color="#fff" /> : <AlertTriangle size={14} color="#fff" />}
             <span className="text-sm font-bold text-white">{toast.msg}</span>

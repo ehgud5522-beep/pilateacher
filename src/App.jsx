@@ -161,7 +161,7 @@ const attendeesOf = (s) => {
   if (Array.isArray(s.attendees) && s.attendees.length) return s.attendees.filter((a) => a && a.memberId);
   return s.memberId ? [{ memberId: s.memberId, status: s.status || "booked", deductFrom: s.deductFrom || null, noshowFee: s.noshowFee ?? null }] : [];
 };
-const isEquipGroup = (s) => s?.type === "그룹" && attendeesOf(s).length === 0;
+const isEquipGroup = (s) => attendeesOf(s).length === 0;
 const attOf = (s, id) => attendeesOf(s).find((a) => a.memberId === id);
 const hasMember = (s, id) => attendeesOf(s).some((a) => a.memberId === id);
 const doneBy = (s, id) => attOf(s, id)?.status === "done";
@@ -935,8 +935,8 @@ function SalesBriefModal({ alert, onClose, onToast }) {
   const fallback = useCallback(() => {
     const fat = r?.rows.find((x) => x.key === "fat"), smm = r?.rows.find((x) => x.key === "smm");
     return `${member.name} 회원님, 지난 ${r ? r.weeks : 0}주 동안 ` +
-      (fat ? `체지방률이 ${Math.abs(fat.diff)}%p 줄고 골격근량이 ${Math.abs(smm.diff)}kg 늘었습니다. ` : "체형이 꾸준히 개선됐습니다. ") +
-      (r ? `수행 능력도 평균 ${r.avgGain}점 올랐고, 특히 ${r.best.name}이 크게 좋아졌습니다. ` : "") +
+      (fat && smm ? `체지방률이 ${Math.abs(fat.diff)}%p 줄고 골격근량이 ${Math.abs(smm.diff)}kg 늘었습니다. ` : "체형이 꾸준히 개선됐습니다. ") +
+      (r && r.best ? `수행 능력도 평균 ${r.avgGain}점 올랐고, 특히 ${r.best.name}이 크게 좋아졌습니다. ` : "") +
       (att.rate !== null ? `출석률 ${att.rate}%로 성실하게 참여해 주신 결과입니다. ` : "") +
       `지금이 변화 속도가 가장 빠른 구간인데 수강권이 ${rest}회 남았습니다. ` +
       (r?.weak ? `다음 3개월은 ${r.weak.name} 보완에 집중해 목표까지 마무리하시길 권해 드립니다.` : "흐름이 끊기지 않게 이어가시길 권해 드립니다.");
@@ -1475,7 +1475,7 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onNoshowFee, onGroupD
               <button key={d} onClick={() => { setCursor(d); setMode("day"); }} className="flex w-full items-center gap-2 rounded-2xl p-3 text-left" style={{ backgroundColor: CANVAS }}>
                 <span className="w-16 text-xs font-extrabold tabular-nums" style={{ color: d === todayISO() ? PRIMARY : INK }}>{md(d)} ({dow(d)})</span>
                 <span className="min-w-0 flex-1 truncate text-xs" style={{ color: SUB }}>
-                  {byDate(d).map((s) => `${s.start} ${isEquipGroup(s) ? `그룹 ${s.equip || ""}` : attendeesOf(s).length > 1 ? `${s.type} ${attendeesOf(s).length}명` : nameOf(attendeesOf(s)[0].memberId)}`).join(" · ")}
+                  {byDate(d).map((s) => `${s.start} ${isEquipGroup(s) ? `그룹 ${s.equip || ""}` : attendeesOf(s).length > 1 ? `${s.type} ${attendeesOf(s).length}명` : nameOf(attendeesOf(s)[0]?.memberId)}`).join(" · ")}
                 </span>
                 <span className="rounded-full px-2 py-0.5 text-xs font-extrabold" style={{ backgroundColor: TINT, color: PRIMARY }}>{byDate(d).length}</span>
               </button>

@@ -10,6 +10,7 @@ import { useState, useEffect, useMemo, useRef, useCallback, Component } from "re
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
 } from "recharts";
+import jsQR from "jsqr";
 import { Users, Settings as SettingsIcon, Search, ChevronRight, ChevronLeft, Plus, Camera, MessageSquare, Check, X, Trash2, ArrowLeft, Target, ClipboardList, RotateCcw, Sparkles, Copy, ArrowUpRight, ArrowDownRight, Loader as Loader2, Pencil, UserPlus, Activity, Ticket, Calendar, Clock, Bell, Download, TriangleAlert as AlertTriangle, LogOut, Mail, Star, Sun, Moon, Smartphone, Move, Crosshair, ChevronDown, ImagePlus, SlidersHorizontal, CalendarDays, ArrowUpDown, QrCode, Minus, Upload, Link2, Users as Users2 } from "lucide-react";
 
 /* ================= 토큰 · 테마 ================= */
@@ -3792,6 +3793,30 @@ function parseInbodyQR(raw) {
   }
   return out;
 }
+/* QR 해독 — 브라우저 기본 기능이 없으면(사파리) jsQR 로 직접 읽는다 */
+async function decodeQR(source) {
+  try {
+    if (typeof window !== "undefined" && typeof window.BarcodeDetector === "function") {
+      const det = new window.BarcodeDetector({ formats: ["qr_code"] });
+      const codes = await det.detect(source);
+      if (codes && codes.length && codes[0].rawValue) return codes[0].rawValue;
+    }
+  } catch (e) {}
+  try {
+    const w = source.videoWidth || source.naturalWidth || source.width;
+    const h = source.videoHeight || source.naturalHeight || source.height;
+    if (!w || !h) return null;
+    const s = Math.min(1, 1000 / Math.max(w, h));
+    const c = document.createElement("canvas");
+    c.width = Math.round(w * s); c.height = Math.round(h * s);
+    const ctx = c.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(source, 0, 0, c.width, c.height);
+    const d = ctx.getImageData(0, 0, c.width, c.height);
+    const r = jsQR(d.data, d.width, d.height, { inversionAttempts: "attemptBoth" });
+    return r && r.data ? r.data : null;
+  } catch (e) { return null; }
+}
+
 function QrSheet({ onClose, onRead }) {
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
@@ -3799,7 +3824,7 @@ function QrSheet({ onClose, onRead }) {
   const [link, setLink] = useState(null);
   const [cam, setCam] = useState(false);
   const videoRef = useRef(null), fileRef = useRef(null), streamRef = useRef(null), loopRef = useRef(null);
-  const canScan = typeof window !== "undefined" && typeof window.BarcodeDetector === "function";
+  const canScan = typeof navigator !== "undefined" && !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
   const stop = useCallback(() => {
     try { if (loopRef.current) clearTimeout(loopRef.current); } catch (e) {}
     loopRef.current = null;
@@ -3826,13 +3851,10 @@ function QrSheet({ onClose, onRead }) {
       const st = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } } });
       streamRef.current = st; setCam(true);
       if (videoRef.current) { videoRef.current.srcObject = st; try { await videoRef.current.play(); } catch (e) {} }
-      const det = new window.BarcodeDetector({ formats: ["qr_code"] });
       const tick = async () => {
         if (!streamRef.current) return;
-        try {
-          const codes = await det.detect(videoRef.current);
-          if (codes && codes.length && codes[0].rawValue) { handle(codes[0].rawValue); return; }
-        } catch (e) {}
+        const v = await decodeQR(videoRef.current);
+        if (v) { handle(v); return; }
         loopRef.current = setTimeout(tick, 350);
       };
       tick();
@@ -3844,16 +3866,17 @@ function QrSheet({ onClose, onRead }) {
   const scanFile = async (file) => {
     if (!file) return;
     setBusy(true); setMsg(""); setLink(null);
+    let url = null;
     try {
-      if (!canScan) throw new Error("unsupported");
-      const det = new window.BarcodeDetector({ formats: ["qr_code"] });
-      const bmp = await createImageBitmap(file);
-      const codes = await det.detect(bmp);
-      if (!codes || !codes.length) setMsg("사진에서 QR을 찾지 못했습니다. 기록지 전체 말고 QR만 화면에 꽉 차게 다시 찍어 주세요.");
-      else handle(codes[0].rawValue);
+      url = URL.createObjectURL(file);
+      const im = await new Promise((res, rej) => { const i = new window.Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
+      const v = await decodeQR(im);
+      if (v) handle(v);
+      else setMsg("사진에서 QR을 찾지 못했습니다. 기록지 전체 말고 QR만 화면에 꽉 차게 다시 찍어 주세요.");
     } catch (e) {
-      setMsg("이 브라우저는 사진에서 QR 읽기를 지원하지 않습니다. 휴대폰 기본 카메라로 QR을 찍어 나온 내용을 아래에 붙여넣어 주세요.");
+      setMsg("사진을 읽지 못했습니다. 휴대폰 기본 카메라로 QR을 찍어 나온 내용을 아래에 붙여넣어 주세요.");
     }
+    if (url) { try { URL.revokeObjectURL(url); } catch (e) {} }
     setBusy(false);
   };
   return (

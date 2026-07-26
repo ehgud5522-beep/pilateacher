@@ -735,7 +735,34 @@ function TimePick({ value, onChange }) {
   );
 }
 
+/* 안드로이드 하드웨어 뒤로가기 · 브라우저 뒤로가기로 겹쳐진 화면을 하나씩 닫는다 */
+const backStack = [];
+function useBackClose(open, close) {
+  useEffect(() => {
+    if (!open) return;
+    const entry = { close };
+    backStack.push(entry);
+    try { window.history.pushState({ pt: backStack.length }, ""); } catch (e) {}
+    let done = false;
+    const onPop = () => {
+      if (done) return;
+      if (backStack[backStack.length - 1] !== entry) return;
+      done = true;
+      const i = backStack.indexOf(entry);
+      if (i >= 0) backStack.splice(i, 1);
+      try { close(); } catch (e) {}
+    };
+    window.addEventListener("popstate", onPop);
+    return () => {
+      window.removeEventListener("popstate", onPop);
+      const i = backStack.indexOf(entry);
+      if (i >= 0) backStack.splice(i, 1);
+      if (!done) { try { window.history.back(); } catch (e) {} }
+    };
+  }, [open]);
+}
 function Sheet({ title, onClose, children }) {
+  useBackClose(true, onClose);
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center" style={{ backgroundColor: SCRIM }} onClick={onClose}>
       <div className="safe-sheet w-full max-w-lg overflow-y-auto rounded-t-3xl bg-white p-5 sm:rounded-3xl md:max-w-xl" style={{ maxHeight: "92dvh" }} onClick={(e) => e.stopPropagation()}>
@@ -1973,6 +2000,7 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast }) {
   const [part, setPart] = useState("어깨");
   const [mirror, setMirror] = useState(false);
   const [shot, setShot] = useState(null);
+  useBackClose(true, onClose);
 
   useEffect(() => {
     const img = new window.Image();
@@ -2375,6 +2403,7 @@ function InbodyChart({ member }) {
 function AlignSheet({ src, ghost, init, title, onSave, onCancel }) {
   const [x, setX] = useState(num(init?.x) || 0), [y, setY] = useState(num(init?.y) || 0);
   const [scale, setScale] = useState(num(init?.scale) || 1), [op, setOp] = useState(45);
+  useBackClose(true, onCancel);
   return (
     <div className="safe-all fixed inset-0 z-50 flex flex-col bg-photo">
       <div className="flex items-center justify-between px-4 py-3">
@@ -2813,6 +2842,7 @@ function SetThumb({ p }) {
 function SetViewer({ item, onClose, onToggleFav }) {
   const [t, setT] = useState(100);
   const [side, setSide] = useState(false);
+  useBackClose(true, onClose);
   const { before, after, set, memberName } = item || {};
   if (!before || !after || !set) return null;
   const weeks = weeksBetween(before.date, after.date);

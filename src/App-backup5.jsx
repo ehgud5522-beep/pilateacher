@@ -128,6 +128,32 @@ const isoOf = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, 
 const todayISO = () => isoOf(new Date());
 const shift = (iso, n) => { const d = new Date(iso + "T00:00:00"); d.setDate(d.getDate() + n); return isoOf(d); };
 const dow = (iso) => ["일", "월", "화", "수", "목", "금", "토"][new Date(iso + "T00:00:00").getDay()];
+/* ===== 대한민국 공휴일 =====
+   양력 고정일은 해마다 자동, 음력(설날·추석·부처님오신날)과 대체공휴일은 표로 관리.
+   해가 바뀌면 아래 LUNAR_HOL 에 그 해 날짜만 추가하면 됩니다. */
+const SOLAR_HOL = {
+  "01-01": "신정", "03-01": "삼일절", "05-05": "어린이날", "06-06": "현충일",
+  "08-15": "광복절", "10-03": "개천절", "10-09": "한글날", "12-25": "성탄절",
+};
+const LUNAR_HOL = {
+  "2026-02-16": "설날", "2026-02-17": "설날", "2026-02-18": "설날",
+  "2026-03-02": "삼일절 대체", "2026-05-24": "부처님오신날", "2026-05-25": "부처님오신날 대체",
+  "2026-08-17": "광복절 대체", "2026-09-24": "추석", "2026-09-25": "추석", "2026-09-26": "추석",
+  "2026-10-05": "개천절 대체",
+  "2027-02-06": "설날", "2027-02-07": "설날", "2027-02-08": "설날", "2027-02-09": "설날 대체",
+  "2027-05-13": "부처님오신날", "2027-06-07": "현충일 대체", "2027-08-16": "광복절 대체",
+  "2027-09-14": "추석", "2027-09-15": "추석", "2027-09-16": "추석",
+  "2027-10-04": "개천절 대체", "2027-10-11": "한글날 대체", "2027-12-27": "성탄절 대체",
+  "2028-01-26": "설날", "2028-01-27": "설날",
+  "2028-10-02": "추석", "2028-10-04": "추석",
+};
+const holidayOf = (iso) => (iso ? LUNAR_HOL[iso] || SOLAR_HOL[iso.slice(5)] || null : null);
+const dayIdx = (iso) => new Date(iso + "T00:00:00").getDay();
+const isSat = (iso) => dayIdx(iso) === 6;
+const isSun = (iso) => dayIdx(iso) === 0;
+/* 공휴일 · 토 · 일 = 빨간날 */
+const isRed = (iso) => !!holidayOf(iso) || isSat(iso) || isSun(iso);
+const redInk = (iso, normal) => (isRed(iso) ? BAD : normal);
 const monStart = (iso) => { const d = new Date(iso + "T00:00:00"); return shift(iso, -((d.getDay() + 6) % 7)); };
 const dday = (iso) => Math.round((new Date(iso + "T00:00:00") - new Date(todayISO() + "T00:00:00")) / 864e5);
 const ddaySafe = (iso) => { if (!iso) return null; const v = dday(iso); return Number.isFinite(v) ? v : null; };
@@ -1614,8 +1640,13 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onNoshowFee, onGroupD
           <div className="flex items-center gap-2">
             <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: TINT }}><CalendarDays size={14} style={{ color: PRIMARY }} /></span>
             <div className="min-w-0 flex-1">
-              <h3 className="font-extrabold" style={{ color: INK }}>{peek === 1 ? "내일" : `${peek}일 뒤`} 수업 미리 보기</h3>
-              <Sub>{md(T1)} ({dow(T1)}) · {tomorrowRows.length === 0 ? "잡힌 수업이 없습니다" : `${tomorrowRows.length}건`}</Sub>
+              <Sub>{peek === 1 ? "내일" : `${peek}일 뒤`} 수업 미리 보기</Sub>
+              <p className="text-xl font-extrabold" style={{ color: redInk(T1, INK), letterSpacing: "-0.02em" }}>
+                {md(T1)} <span className="text-lg">({dow(T1)})</span>
+              </p>
+              <p className="mt-0.5 text-sm font-bold" style={{ color: holidayOf(T1) ? BAD : SUB }}>
+                {holidayOf(T1) ? `${holidayOf(T1)} · ` : ""}{tomorrowRows.length === 0 ? "잡힌 수업이 없습니다" : `수업 ${tomorrowRows.length}건`}
+              </p>
             </div>
             {tomorrowRows.length > 0 && <span className="shrink-0 rounded-full px-2.5 py-1 text-xs font-extrabold" style={{ backgroundColor: TINT, color: PRIMARY }}>{tomorrowRows.length}건</span>}
           </div>
@@ -1650,9 +1681,9 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onNoshowFee, onGroupD
           </div>
           )}
           <div className="mt-3 flex gap-1.5">
-            {peek > 1 && (
-              <button onClick={() => setPeek(1)} className="flex items-center gap-1 rounded-2xl px-3 py-3 text-sm font-extrabold" style={{ backgroundColor: CANVAS, color: INK }}>
-                <RotateCcw size={14} /> 내일로
+            {(peek > 1 || cursor !== T0) && (
+              <button onClick={() => { setPeek(1); setCursor(T0); setMode("day"); }} className="flex items-center gap-1 rounded-2xl px-3 py-3 text-sm font-extrabold" style={{ backgroundColor: CANVAS, color: INK }}>
+                <RotateCcw size={14} /> 오늘로
               </button>
             )}
             <button onClick={() => setPeek((p) => Math.min(60, p + 1))} className="flex flex-1 items-center justify-center gap-1 rounded-2xl py-3 text-sm font-extrabold" style={{ backgroundColor: TINT, color: PRIMARY }}>
@@ -1776,9 +1807,10 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onNoshowFee, onGroupD
         <div className="flex items-center gap-2">
           <button onClick={() => step(-1)} className="rounded-xl p-2" style={{ backgroundColor: CANVAS }}><ChevronLeft size={16} style={{ color: SUB }} /></button>
           <button onClick={() => setCursor(todayISO())} aria-label="오늘 날짜로 이동" className="min-w-0 flex-1 text-center">
-            <p className="text-sm font-extrabold" style={{ color: INK }}>
+            <p className="text-sm font-extrabold" style={{ color: mode === "day" ? redInk(cursor, INK) : INK }}>
               {mode === "day" ? `${ymd(cursor)} (${dow(cursor)})` : mode === "week" ? `${md(week[0])} ~ ${md(week[6])}` : monthLabel(cursor)}
             </p>
+            {mode === "day" && holidayOf(cursor) && <p className="text-xs font-extrabold" style={{ color: BAD }}>{holidayOf(cursor)}</p>}
           </button>
           <button onClick={() => step(1)} className="rounded-xl p-2" style={{ backgroundColor: CANVAS }}><ChevronRight size={16} style={{ color: SUB }} /></button>
         </div>
@@ -1796,8 +1828,8 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onNoshowFee, onGroupD
                 return (
                   <button key={d} onClick={() => { setCursor(d); setMode("day"); }} className="min-w-0 flex-1 rounded-2xl px-1 py-2 text-center"
                     style={on ? { backgroundColor: BRAND } : { backgroundColor: CANVAS }}>
-                    <p className="text-xs font-bold" style={{ color: on ? "#fff" : SUB }}>{dow(d)}</p>
-                    <p className="text-sm font-extrabold tabular-nums" style={{ color: on ? "#fff" : d === todayISO() ? PRIMARY : INK }}>{d.slice(8, 10)}</p>
+                    <p className="text-sm font-extrabold" style={{ color: on ? "#fff" : redInk(d, SUB) }}>{dow(d)}</p>
+                    <p className="text-base font-extrabold tabular-nums" style={{ color: on ? "#fff" : d === todayISO() ? PRIMARY : redInk(d, INK) }}>{d.slice(8, 10)}</p>
                     <p className="text-xs font-bold tabular-nums" style={{ color: on ? "#fff" : n ? PRIMARY : FAINT }}>{n || "-"}</p>
                   </button>
                 );
@@ -1807,7 +1839,7 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onNoshowFee, onGroupD
             <div style={slide}>
               <div className="grid grid-cols-7 gap-1">
                 {["월", "화", "수", "목", "금", "토", "일"].map((w) => (
-                  <p key={w} className="py-1 text-center text-xs font-bold" style={{ color: SUB }}>{w}</p>
+                  <p key={w} className="py-1 text-center text-xs font-extrabold" style={{ color: w === "토" || w === "일" ? BAD : SUB }}>{w}</p>
                 ))}
                 {monthGrid(cursor).map((d) => {
                   const out = monthKey(d) !== ym;
@@ -1816,7 +1848,7 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onNoshowFee, onGroupD
                   return (
                     <button key={d} onClick={() => { setCursor(d); setMode("day"); }}
                       className="rounded-xl py-1.5 text-center" style={{ backgroundColor: today ? PRIMARY : n ? TINT : "transparent", opacity: out ? 0.28 : 1 }}>
-                      <p className="text-xs font-extrabold tabular-nums" style={{ color: today ? "#fff" : INK }}>{Number(d.slice(8, 10))}</p>
+                      <p className="text-xs font-extrabold tabular-nums" style={{ color: today ? "#fff" : redInk(d, INK) }}>{Number(d.slice(8, 10))}</p>
                       <p className="text-xs font-bold tabular-nums" style={{ color: today ? "#fff" : n ? PRIMARY : "transparent" }}>{n || "0"}</p>
                     </button>
                   );
@@ -1849,7 +1881,7 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onNoshowFee, onGroupD
             return (
               <Card key={d} className="p-4">
                 <div className="flex items-center justify-between">
-                  <p className="text-sm font-extrabold" style={{ color: d === todayISO() ? PRIMARY : INK }}>{md(d)} ({dow(d)}) {d === todayISO() && "· 오늘"}</p>
+                  <p className="text-sm font-extrabold" style={{ color: d === todayISO() ? PRIMARY : redInk(d, INK) }}>{md(d)} ({dow(d)}) {d === todayISO() && "· 오늘"}{holidayOf(d) ? ` · ${holidayOf(d)}` : ""}</p>
                   <Sub>{items.length}수업 · {seatsOn(d)}명</Sub>
                 </div>
                 <div className="mt-2 space-y-2">{items.length === 0 ? <Sub>수업 없음</Sub> : items.map((s) => <SchedItem key={s.id} s={s} {...itemProps} />)}</div>
@@ -1864,7 +1896,7 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onNoshowFee, onGroupD
           <div className="mt-3 space-y-1.5">
             {monthGrid(cursor).filter((d) => monthKey(d) === ym && byDate(d).length).map((d) => (
               <button key={d} onClick={() => { setCursor(d); setMode("day"); }} className="flex w-full items-center gap-2 rounded-2xl p-3 text-left" style={{ backgroundColor: CANVAS }}>
-                <span className="w-16 text-xs font-extrabold tabular-nums" style={{ color: d === todayISO() ? PRIMARY : INK }}>{md(d)} ({dow(d)})</span>
+                <span className="w-16 text-xs font-extrabold tabular-nums" style={{ color: d === todayISO() ? PRIMARY : redInk(d, INK) }}>{md(d)} ({dow(d)})</span>
                 <span className="min-w-0 flex-1 truncate text-xs" style={{ color: SUB }}>
                   {byDate(d).map((s) => `${s.start} ${isEquipGroup(s) ? `그룹 ${s.equip || ""}` : attendeesOf(s).length > 1 ? `${s.type} ${attendeesOf(s).length}명` : nameOf(attendeesOf(s)[0]?.memberId)}`).join(" · ")}
                 </span>
@@ -1970,8 +2002,8 @@ function WeekGrid({ days, byDate, nameOf, cursor, onOpen, onNew }) {
               const today = d === todayISO(), on = d === cursor;
               return (
                 <div key={d} className="min-w-0 flex-1 py-1.5 text-center" style={{ borderLeft: `1px solid ${LINE}`, backgroundColor: today ? TINT : "transparent" }}>
-                  <p className="text-xs font-bold" style={{ color: today ? PRIMARY : SUB }}>{dow(d)}</p>
-                  <p className="text-xs font-extrabold tabular-nums" style={{ color: today ? PRIMARY : on ? INK : SUB }}>{Number(d.slice(8, 10))}</p>
+                  <p className="text-xs font-extrabold" style={{ color: today ? PRIMARY : redInk(d, SUB) }}>{dow(d)}</p>
+                  <p className="text-xs font-extrabold tabular-nums" style={{ color: today ? PRIMARY : redInk(d, on ? INK : SUB) }}>{Number(d.slice(8, 10))}</p>
                 </div>
               );
             })}
@@ -2029,7 +2061,13 @@ function ScheduleForm({ draft, members, onClose, onSubmit, onDelete }) {
     return { ...x, memberIds: next.filter(Boolean) };
   });
   const slotVal = (slot) => (f.memberIds[slot] || "");
-  const ready = f.date && f.start && (isGroup ? !!f.equip : f.memberIds.length > 0);
+  /* 이미 이 수업에 들어와 있던 회원은 그대로 두고, 새로 넣는 회원만 잔여를 본다 */
+  const prevIds = new Set(attendeesOf(draft).map((a) => a.memberId));
+  const noRest = isGroup ? [] : f.memberIds
+    .filter((id) => id && !prevIds.has(id))
+    .map((id) => members.find((m) => m.id === id))
+    .filter((m) => m && left(m) <= 0);
+  const ready = f.date && f.start && (isGroup ? !!f.equip : f.memberIds.length > 0) && noRest.length === 0;
 
   return (
     <Sheet title={draft.id ? "수업 수정" : "수업 등록"} onClose={onClose}>
@@ -2059,7 +2097,7 @@ function ScheduleForm({ draft, members, onClose, onSubmit, onDelete }) {
                 <SelectBox value={slotVal(slot)} onChange={(e) => pickAt(slot, e.target.value)}>
                   <option value="">{slot === 0 ? "회원 선택" : "선택 안 함"}</option>
                   {members.filter((m) => m.id === slotVal(slot) || m.id !== slotVal(slot === 0 ? 1 : 0))
-                    .map((m) => <option key={m.id} value={m.id}>{m.name || "이름 미입력"}{isEnded(m) ? " (종료)" : ""} · 잔여 {left(m)}회</option>)}
+                    .map((m) => <option key={m.id} value={m.id}>{m.name || "이름 미입력"}{isEnded(m) ? " (종료)" : ""} · {left(m) > 0 ? `잔여 ${left(m)}회` : "잔여 없음"}</option>)}
                 </SelectBox>
               </Field>
             ))}
@@ -2068,7 +2106,7 @@ function ScheduleForm({ draft, members, onClose, onSubmit, onDelete }) {
           <Field label="회원">
             <SelectBox value={f.memberIds[0] || ""} onChange={(e) => pick(e.target.value)}>
               <option value="">회원 선택</option>
-              {members.map((m) => <option key={m.id} value={m.id}>{m.name || "이름 미입력"}{isEnded(m) ? " (종료)" : ""} · 잔여 {left(m)}회</option>)}
+              {members.map((m) => <option key={m.id} value={m.id}>{m.name || "이름 미입력"}{isEnded(m) ? " (종료)" : ""} · {left(m) > 0 ? `잔여 ${left(m)}회` : "잔여 없음"}</option>)}
             </SelectBox>
           </Field>
         )}
@@ -2088,6 +2126,17 @@ function ScheduleForm({ draft, members, onClose, onSubmit, onDelete }) {
           <Field label="룸" hint="선택"><input value={f.room} onChange={(e) => setF({ ...f, room: e.target.value })} className={inputCls} /></Field>
           <Field label="메모" hint="선택"><input value={f.memo} onChange={(e) => setF({ ...f, memo: e.target.value })} className={inputCls} /></Field>
         </div>
+        {noRest.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 rounded-2xl px-3 py-3" style={{ backgroundColor: BAD_S }}>
+            <AlertTriangle size={16} className="shrink-0" style={{ color: BAD }} />
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-extrabold" style={{ color: BAD }}>
+                {noRest.map((m) => m.name || "이름 미입력").join(", ")} · 잔여 횟수가 없습니다
+              </p>
+              <p className="mt-0.5 text-xs" style={{ color: INK2 }}>수강권을 먼저 등록해 주세요. 회원 → 기록 → 회원정보 → 수강권 등록</p>
+            </div>
+          </div>
+        )}
         <PrimaryBtn disabled={!ready} onClick={() => {
           const prev = draft.id ? attendeesOf(draft) : [];
           onSubmit({
@@ -4230,7 +4279,7 @@ function RecordTab({ db, selectedId, setSelectedId, section, setSection, onSaveI
       <Card className="p-4">
         <Field label="기록할 회원">
           <select value={member.id} onChange={(e) => setSelectedId(e.target.value)} className={inputCls}>
-            {members.map((m) => <option key={m.id} value={m.id}>{m.name || "이름 미입력"}{isEnded(m) ? " (종료)" : ""} · 잔여 {left(m)}회</option>)}
+            {members.map((m) => <option key={m.id} value={m.id}>{m.name || "이름 미입력"}{isEnded(m) ? " (종료)" : ""} · {left(m) > 0 ? `잔여 ${left(m)}회` : "잔여 없음"}</option>)}
           </select>
         </Field>
         <button onClick={() => setOpenInfo((v) => !v)} aria-expanded={openInfo}

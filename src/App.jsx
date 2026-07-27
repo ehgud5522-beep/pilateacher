@@ -86,7 +86,7 @@ const sysDarkNow = () => {
 };
 
 /* 파일이 실제로 교체됐는지 1초 만에 확인하는 표시 — 설정 탭 맨 아래에 뜬다 */
-const APP_VER = "v51 · 2026-07-27";
+const APP_VER = "v52 · 2026-07-27";
 try { if (typeof window !== "undefined") window.PILATEACHER_VER = APP_VER; } catch (e) {}
 
 const ACC_KEY = "pilateacher_accounts_v1";
@@ -1782,16 +1782,16 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onStatusAll, onNoshow
         </h2>
         <div className="mt-2.5 flex items-stretch gap-1.5">
           <div className="min-w-0 flex-1 rounded-xl px-2.5 py-1.5" style={{ backgroundColor: "rgba(255,255,255,0.16)", border: "1px solid rgba(255,255,255,0.14)" }}>
-            <p className="truncate text-xs font-bold text-white opacity-85">오늘</p>
-            <p className="text-base font-extrabold leading-tight tabular-nums text-white md:text-lg">{todayCls}</p>
+            <p className="truncate text-xs font-bold text-white opacity-85">오늘 수업</p>
+            <p className="whitespace-nowrap text-base font-extrabold leading-tight tabular-nums text-white md:text-lg">{todayCls}수업</p>
           </div>
           <div className="min-w-0 flex-1 rounded-xl px-2.5 py-1.5" style={{ backgroundColor: "rgba(52,211,153,0.32)", border: "1px solid rgba(255,255,255,0.22)" }}>
             <p className="flex items-center gap-0.5 truncate text-xs font-bold text-white opacity-90"><Check size={10} /> 완료</p>
-            <p className="text-base font-extrabold leading-tight tabular-nums text-white md:text-lg">{doneCls}</p>
+            <p className="whitespace-nowrap text-base font-extrabold leading-tight tabular-nums text-white md:text-lg">{doneCls}수업</p>
           </div>
-          <div className="min-w-0 flex-[1.4] rounded-xl px-2.5 py-1.5" style={{ backgroundColor: "#FFFFFF", boxShadow: "0 4px 12px rgba(30,16,90,.22)" }}>
+          <div className="min-w-0 flex-1 rounded-xl px-2.5 py-1.5" style={{ backgroundColor: "#FFFFFF", boxShadow: "0 4px 12px rgba(30,16,90,.22)" }}>
             <p className="truncate text-xs font-bold" style={{ color: "#6E6E80" }}>남은 수업</p>
-            <p className="text-base font-extrabold leading-tight tabular-nums md:text-lg" style={{ color: "#4F2FCB" }}>{Math.max(0, todayCls - doneCls)}수업</p>
+            <p className="whitespace-nowrap text-base font-extrabold leading-tight tabular-nums md:text-lg" style={{ color: "#4F2FCB" }}>{Math.max(0, todayCls - doneCls)}수업</p>
             <p className="truncate text-xs font-bold tabular-nums" style={{ color: "#77778A" }}>이달 {monthDone}</p>
           </div>
         </div>
@@ -2295,24 +2295,24 @@ function WeekGrid({ days, byDate, nameOf, cursor, onOpen, onNew }) {
           : "08:00 ~ 23:00 · 빈 칸을 누르면 30분으로 등록 · 길게 잡으려면 위 버튼을 켜세요"}
       </p>
       <div className="overflow-x-auto rounded-2xl" style={{ border: `1px solid ${LINE}` }}>
-        <div style={{ minWidth: 460 }}>
+        <div style={{ width: "100%" }}>
           <div className="sticky top-0 z-10 flex" style={{ backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
-            <div className="shrink-0" style={{ width: 40 }} />
+            <div className="shrink-0" style={{ width: 32 }} />
             {days.map((d) => {
               const today = d === todayISO(), on = d === cursor;
               return (
                 <div key={d} className="min-w-0 flex-1 py-1.5 text-center" style={{ borderLeft: `1px solid ${LINE}`, backgroundColor: today ? TINT : "transparent" }}>
-                  <p className="text-xs font-extrabold" style={{ color: today ? PRIMARY : redInk(d, SUB) }}>{dow(d)}</p>
-                  <p className="text-xs font-extrabold tabular-nums" style={{ color: today ? PRIMARY : redInk(d, on ? INK : SUB) }}>{Number(d.slice(8, 10))}</p>
+                  <p className="font-extrabold" style={{ fontSize: 11, color: today ? PRIMARY : redInk(d, SUB) }}>{dow(d)}</p>
+                  <p className="font-extrabold tabular-nums" style={{ fontSize: 13, color: today ? PRIMARY : redInk(d, on ? INK : SUB) }}>{Number(d.slice(8, 10))}</p>
                 </div>
               );
             })}
           </div>
           <div className="relative flex">
-            <div className="shrink-0" style={{ width: 40 }}>
+            <div className="shrink-0" style={{ width: 32 }}>
               {Array.from({ length: rows }, (_, i) => (
                 <div key={i} className="flex items-start justify-end pr-1 pt-0.5" style={{ height: GRID_ROW, borderTop: i ? `1px solid ${LINE}` : "none" }}>
-                  <span className="text-xs font-bold tabular-nums" style={{ color: FAINT, fontSize: 10 }}>{hourLabel(GRID_H0 + i)}</span>
+                  <span className="font-bold tabular-nums" style={{ color: FAINT, fontSize: 9 }}>{hourLabel(GRID_H0 + i)}</span>
                 </div>
               ))}
             </div>
@@ -2337,12 +2337,12 @@ function WeekGrid({ days, byDate, nameOf, cursor, onOpen, onNew }) {
                 )}
                 {blocksOf(d).map((b) => (
                   <button key={b.s.id} onPointerDown={(e) => e.stopPropagation()} onClick={() => onOpen(b.s)}
-                    className="absolute left-0.5 right-0.5 overflow-hidden rounded-lg px-1.5 py-1 text-left"
+                    className="absolute left-0.5 right-0.5 overflow-hidden rounded-lg px-1 py-1 text-left"
                     style={{ top: b.top, height: b.h,
                       background: b.pv ? MINT : b.done ? GOOD_S : GRAD,
                       border: b.done ? `1px solid ${GOOD}` : "none" }}>
-                    <p className="truncate font-extrabold leading-tight" style={{ color: b.done ? GOOD : "#fff", fontSize: 13 }}>{b.label}</p>
-                    <p className="truncate font-bold leading-tight tabular-nums" style={{ color: b.done ? GOOD : "rgba(255,255,255,.85)", fontSize: 10 }}>
+                    <p className="truncate font-extrabold leading-tight" style={{ color: b.done ? GOOD : "#fff", fontSize: 12, letterSpacing: "-0.03em" }}>{b.label}</p>
+                    <p className="truncate font-bold leading-tight tabular-nums" style={{ color: b.done ? GOOD : "rgba(255,255,255,.85)", fontSize: 9 }}>
                       {b.s.start}{b.sub ? ` · ${b.sub}` : ""}
                     </p>
                   </button>

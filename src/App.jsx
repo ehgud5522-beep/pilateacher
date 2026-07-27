@@ -30,13 +30,13 @@ const LIGHT = {
   scrim: "rgba(20,20,43,0.45)", onBrand: "#FFFFFF", photo: "#000000",
 };
 const DARK = {
-  page: "#16161C", card: "#1E1E26", soft: "#292933", line: "#363644",
-  ink: "#DEDEE8", ink2: "#CACAD8", sub: "#8B8B9C", faint: "#5A5A70",
+  page: "#1B1B24", card: "#26262F", soft: "#32323E", line: "#434354",
+  ink: "#F0F0F7", ink2: "#DADAE6", sub: "#A0A0B2", faint: "#727288",
   primary: "#A594FF", brand: "#6E56E2", tint: "#272049", ring: "rgba(165,148,255,.35)",
   toast: "#2E2E3A",
-  good: "#4ECFA0", goodS: "#10291F", bad: "#FF8B80", badS: "#301715",
-  warn: "#EFC05C", warnS: "#2E2109", mint: "#A18CFF",
-  shadow: "0 0 0 1px rgba(255,255,255,.02), 0 14px 38px rgba(0,0,0,.55)",
+  good: "#5FDCAE", goodS: "#16382A", bad: "#FF9A90", badS: "#3D1F1C",
+  warn: "#F5CC72", warnS: "#3B2B10", mint: "#7BD8D0",
+  shadow: "0 0 0 1px rgba(255,255,255,.05), 0 14px 38px rgba(0,0,0,.45)",
   grad: "linear-gradient(135deg, #8168FF 0%, #6A4CE0 45%, #4E31C8 100%)",
   gradSoft: "linear-gradient(155deg, #272049 0%, #1E1E26 62%)",
   splash: "linear-gradient(180deg,#08080C 0%,#151130 46%,#241C4E 100%)",
@@ -84,6 +84,10 @@ const sysDarkNow = () => {
   try { return !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches); }
   catch (e) { return false; }
 };
+
+/* 파일이 실제로 교체됐는지 1초 만에 확인하는 표시 — 설정 탭 맨 아래에 뜬다 */
+const APP_VER = "v50 · 2026-07-27";
+try { if (typeof window !== "undefined") window.PILATEACHER_VER = APP_VER; } catch (e) {}
 
 const ACC_KEY = "pilateacher_accounts_v1";
 const SES_KEY = "pilateacher_session_v1";
@@ -192,7 +196,8 @@ const attendeesOf = (s) => {
   if (Array.isArray(s.attendees) && s.attendees.length) return s.attendees.filter((a) => a && a.memberId);
   return s.memberId ? [{ memberId: s.memberId, status: s.status || "booked", deductFrom: s.deductFrom || null, noshowFee: s.noshowFee ?? null }] : [];
 };
-const isEquipGroup = (s) => attendeesOf(s).length === 0;
+const isPersonalEvt = (s) => !!s?.personal;
+const isEquipGroup = (s) => !isPersonalEvt(s) && attendeesOf(s).length === 0;
 const attOf = (s, id) => attendeesOf(s).find((a) => a.memberId === id);
 const hasMember = (s, id) => attendeesOf(s).some((a) => a.memberId === id);
 const doneBy = (s, id) => attOf(s, id)?.status === "done";
@@ -660,7 +665,7 @@ function normalizeDb(data, staff) {
       attendees: Array.isArray(x.attendees) && x.attendees.length
         ? x.attendees.filter((a) => a && a.memberId).map((a) => ({ ...a, status: STATUS[a.status] ? a.status : "booked" }))
         : x.memberId ? [{ memberId: x.memberId, status: STATUS[x.status] ? x.status : "booked", deductFrom: x.deductFrom || null, noshowFee: x.noshowFee ?? null }] : [],
-    })).filter((x) => x.attendees.length || x.equip) : [],
+    })).filter((x) => x.attendees.length || x.equip || x.personal) : [],
   };
 }
 const emptyDb = (center, staff) => ({ settings: { center: center || "", staff: staff || "" }, schedule: [], members: [] });
@@ -786,18 +791,34 @@ function TimePick({ value, onChange }) {
   );
 }
 
-/* 안드로이드 하드웨어 뒤로가기 · 브라우저 뒤로가기로 겹쳐진 화면을 하나씩 닫는다 */
+/* 안드로이드 하드웨어 뒤로가기로 겹쳐진 화면을 닫는다.
+   ⚠️ 브라우저·미리보기(iframe)에서는 켜지 않는다. 히스토리 스택이 우리 것이 아니라
+   back() 이 시트가 아니라 페이지 자체를 되돌려 앱이 재시작된다. */
+const BACK_OK = (() => {
+  try {
+    if (typeof window === "undefined") return false;
+    const cap = window.Capacitor;
+    if (cap && typeof cap.isNativePlatform === "function" && cap.isNativePlatform()) return true;
+    return false;
+  } catch (e) { return false; }
+})();
 const backStack = [];
+let backSwallow = 0, backSeq = 0;
 function useBackClose(open, close) {
   useEffect(() => {
-    if (!open) return;
-    const entry = { close };
+    if (!open || !BACK_OK) return;
+    const token = ++backSeq;
+    const bornAt = Date.now();
+    const entry = { close, token };
     backStack.push(entry);
-    try { window.history.pushState({ pt: backStack.length }, ""); } catch (e) {}
+    let pushed = false;
+    try { window.history.pushState({ ptk: token }, ""); pushed = true; } catch (e) {}
     let done = false;
     const onPop = () => {
+      if (backSwallow > 0) { backSwallow -= 1; return; }
       if (done) return;
       if (backStack[backStack.length - 1] !== entry) return;
+      if (Date.now() - bornAt < 400) return;
       done = true;
       const i = backStack.indexOf(entry);
       if (i >= 0) backStack.splice(i, 1);
@@ -808,35 +829,12 @@ function useBackClose(open, close) {
       window.removeEventListener("popstate", onPop);
       const i = backStack.indexOf(entry);
       if (i >= 0) backStack.splice(i, 1);
-      if (!done) { try { window.history.back(); } catch (e) {} }
+      /* 우리가 넣은 칸이 아직 맨 위일 때만 되돌린다 — 아니면 페이지가 통째로 뒤로 간다 */
+      let mine = false;
+      try { mine = !!(window.history.state && window.history.state.ptk === token); } catch (e) {}
+      if (!done && pushed && mine) { backSwallow += 1; try { window.history.back(); } catch (e) {} }
     };
   }, [open]);
-}
-/* 전체화면 편집 중에는 뒤 배경이 안 밀리게.
-   iOS 는 overflow:hidden 만으로는 안 막혀서 position:fixed 까지 써야 한다. */
-let lockDepth = 0, lockY = 0, lockPrev = null;
-function useScrollLock() {
-  useEffect(() => {
-    const b = document.body, d = document.documentElement;
-    if (lockDepth === 0) {
-      lockY = window.scrollY || window.pageYOffset || 0;
-      lockPrev = { ov: b.style.overflow, dov: d.style.overflow, pos: b.style.position, top: b.style.top, w: b.style.width, ob: b.style.overscrollBehavior };
-      b.style.overflow = "hidden"; d.style.overflow = "hidden"; b.style.overscrollBehavior = "none";
-      b.style.position = "fixed"; b.style.top = `-${lockY}px`; b.style.width = "100%";
-    }
-    lockDepth += 1;
-    return () => {
-      lockDepth -= 1;
-      if (lockDepth > 0) return;
-      lockDepth = 0;
-      if (lockPrev) {
-        b.style.overflow = lockPrev.ov; d.style.overflow = lockPrev.dov; b.style.overscrollBehavior = lockPrev.ob;
-        b.style.position = lockPrev.pos; b.style.top = lockPrev.top; b.style.width = lockPrev.w;
-        lockPrev = null;
-      }
-      try { window.scrollTo(0, lockY); } catch (e) {}
-    };
-  }, []);
 }
 
 function Sheet({ title, onClose, children }) {
@@ -907,45 +905,166 @@ const Logo = ({ size = 64, radius = 0.24 }) => (
     </g>
   </svg>
 );
-const GREETS = {
-  dawn: ["이 새벽에 나온 정성, 회원들은 다 알고 있어요", "새벽 공기 가르며 오셨네요, 오늘도 곁에서 응원해요", "하루를 가장 먼저 여는 사람이 강사님이라 든든해요"],
-  morning: ["오늘 아침 컨디션은 어떠세요? 좋은 하루 만들어봐요", "강사님의 미소면 오늘 수업 절반은 이미 성공이에요", "따뜻한 커피 한 잔 하셨나요? 천천히 시작해요"],
-  noon: ["오전 수업 하느라 애쓰셨어요, 점심 꼭 챙겨 드세요", "잠깐 숨 고르고 가요, 오늘도 충분히 잘하고 있어요", "오전의 강사님, 정말 멋졌어요"],
-  afternoon: ["나른한 시간에도 이렇게 준비하시다니, 역시 강사님이에요", "회원들이 강사님 에너지 받으러 오고 있어요", "잠깐 기지개 한 번 켜고 가요, 강사님 몸도 소중하니까요"],
-  evening: ["하루 중 제일 바쁜 시간이죠, 오늘도 함께 응원할게요", "퇴근하고 달려오는 회원들, 사실 강사님 보러 오는 거예요", "저녁 수업까지 힘내는 모습, 진심으로 멋져요"],
-  night: ["오늘 하루도 정말 수고 많으셨어요, 마음이 따뜻해지네요", "회원들 몸이 좋아진 건 전부 강사님 덕분이에요", "이제 강사님 자신을 챙길 시간이에요"],
-  late: ["이 시간까지라니, 마음이 쓰여요. 얼른 쉬세요", "오늘은 충분히 하셨어요, 나머지는 내일의 강사님께 맡겨요", "고생 많았어요, 오늘 밤은 포근하게 마무리해요"],
-};
+/* ===== 인사말 =====
+   응원 3 : 지식 1 비율로 뜬다. 응원은 시간대·요일에 맞게, 최근에 나온 건 피한다. */
 const greetKey = (h) => (h < 6 ? "late" : h < 9 ? "dawn" : h < 11 ? "morning" : h < 14 ? "noon" : h < 17 ? "afternoon" : h < 20 ? "evening" : h < 23 ? "night" : "late");
 
-const WEEKEND_GREETS = {
+const CHEER = {
+  dawn: [
+    "첫 수업 전 5분, 오늘 만날 회원님 기록 한 번만 훑고 가세요",
+    "새벽엔 관절이 굳어 있습니다. 워밍업을 평소보다 길게 잡아 주세요",
+    "이 시간에 나오는 회원은 의지가 강합니다. 그만큼 잘 따라옵니다",
+    "강사님 몸부터 한 번 풀고 시작해요. 시범도 운동입니다",
+    "오늘의 첫 큐잉이 하루 수업의 톤을 정합니다",
+    "이른 아침 수업일수록 회원 컨디션을 먼저 물어봐 주세요",
+    "오늘 첫 회원의 이름과 목표를 떠올리며 들어가 보세요",
+    "새벽 수업 후 강사님 아침도 꼭 챙기세요",
+  ],
+  morning: [
+    "오전 회원은 가동범위부터 천천히 열어 주세요",
+    "어제 못 적은 코멘트, 지금이 제일 기억이 선명할 때입니다",
+    "이름을 부르며 시작하면 회원의 집중도가 달라집니다",
+    "오늘 한 명에게만이라도 '지난번보다 좋아졌다'고 말해 주세요",
+    "수업 전 30초, 오늘 무엇을 볼지 정하고 들어가면 흐름이 삽니다",
+    "오전에는 설명보다 시범이 빨리 통합니다",
+    "지난 수업에서 아팠다고 한 부위, 오늘 먼저 확인해 주세요",
+    "잘한 동작 하나를 짚어 주면 회원은 그걸 기억하고 갑니다",
+  ],
+  noon: [
+    "오전 수업 하느라 애쓰셨어요. 물 한 잔 하고 가요",
+    "식사 직후 회원은 복부 압박이 부담스러울 수 있습니다",
+    "잠깐 앉아서 어깨 한 번 돌리고 가세요",
+    "오전에 잘 됐던 동작 하나만 적어두면 오후가 편해집니다",
+    "여기까지 오신 것만으로 오늘 절반은 하셨습니다",
+    "점심 전 수업은 저혈당을 조심하세요. 어지럼 호소가 있으면 바로 앉히기",
+    "오전 회원 중 잔여가 얼마 안 남은 분이 있었는지 한 번 보세요",
+    "이 시간에 5분만 앉아 쉬면 오후 수업이 달라집니다",
+  ],
+  afternoon: [
+    "나른한 시간대엔 템포를 살짝 올려 보세요",
+    "오후 회원은 종일 앉아 있다 옵니다. 흉추부터 열어 주세요",
+    "지금 기지개 한 번. 강사님 허리도 소중합니다",
+    "남은 수업을 미리 훑어두면 전환이 매끄러워집니다",
+    "집중이 떨어질 땐 동작을 줄이고 큐잉을 늘려 보세요",
+    "졸린 시간엔 호흡을 크게 쓰는 동작부터 넣어 보세요",
+    "오후 회원에게는 손목·목 스트레칭을 먼저 권해 보세요",
+    "지금까지 한 수업 중 기록 안 남긴 게 있는지 확인해 보세요",
+  ],
+  evening: [
+    "퇴근길 회원은 목·어깨가 굳어 있습니다. 상부부터 풀어 주세요",
+    "가장 바쁜 시간이죠. 호흡 한 번 고르고 들어가요",
+    "저녁 회원은 피로가 쌓여 있습니다. 강도보다 정렬에 집중하세요",
+    "오늘 제일 잘 됐던 수업 하나만 떠올려 보세요",
+    "지친 회원에게는 '오늘 나온 것만으로 잘했다'는 말이 큽니다",
+    "저녁 회원은 배고픈 상태일 수 있습니다. 무리한 강도는 피하세요",
+    "하루 종일 서 계셨습니다. 다음 수업 전에 한 번 앉으세요",
+    "마지막 두 수업이 하루 인상을 결정합니다",
+  ],
+  night: [
+    "늦은 수업은 마무리를 이완으로. 교감신경이 올라가면 잠을 방해합니다",
+    "오늘 코멘트를 자기 전에 남기면 내일이 가벼워집니다",
+    "긴 하루였습니다. 마지막 회원까지 잘 마무리해요",
+    "오늘 몇 사람의 몸을 바꿔 놓으셨습니다",
+    "수업이 끝나면 강사님 몸도 한 번 정리해 주세요",
+    "야간 수업은 조명을 조금 낮추면 회원이 더 이완합니다",
+    "오늘 노쇼·취소가 있었다면 이유를 한 줄만 남겨 두세요",
+    "내일 첫 수업만 확인해 두고 마무리해요",
+  ],
+  late: [
+    "이 시간까지 정리 중이시라면, 내일의 강사님이 고마워할 겁니다",
+    "오늘은 충분히 하셨어요. 나머지는 내일에 맡겨요",
+    "수면도 회복 훈련입니다. 강사님부터 지키세요",
+    "고생 많았습니다. 오늘 밤은 포근하게 마무리해요",
+    "회복 없이는 근육도 실력도 자라지 않습니다",
+    "지금 정리보다 잠이 더 중요할 수 있습니다",
+    "내일 아침의 나를 위해 오늘은 여기까지",
+  ],
   satAM: [
-    "점심까지만 달리면 이번 주 끝이에요. 같이 힘내요",
-    "토요일 오전, 이번 주 마지막 수업입니다. 조금만 더요",
-    "주말 아침부터 나오신 강사님, 오전만 부탁드려요",
-    "오늘 점심이면 한 주가 마무리돼요. 컨디션 잘 챙기세요",
+    "토요일 오전만 지나면 이번 주가 끝납니다",
+    "주말 회원은 여유가 있어요. 평소보다 한 동작 더 가 보세요",
+    "오늘 점심이면 마무리입니다. 컨디션 잘 챙기세요",
+    "주말 아침 몸은 더 굳어 있습니다. 준비 운동을 넉넉히",
+    "이번 주 마지막 수업들입니다. 조금만 더 힘내요",
+    "주말 오전은 회원 컨디션이 가장 좋은 시간대입니다",
+    "이번 주 못 만난 회원이 있는지 한 번 보세요",
   ],
   satPM: [
-    "이번 주 수업 모두 끝났어요. 남은 주말은 강사님 시간입니다",
-    "토요일 오전까지 달려온 한 주, 정말 수고 많으셨어요",
-    "한 주를 잘 닫았습니다. 오늘 오후는 푹 쉬어 주세요",
-    "수업 마감! 오늘만큼은 강사님 몸도 쉬게 해 주세요",
+    "이번 주 수업 마감. 남은 주말은 강사님 시간입니다",
+    "한 주 동안 여러 사람의 자세를 바꿔 놓으셨습니다",
+    "오늘만큼은 강사님 몸도 쉬게 해 주세요",
+    "한 주를 잘 닫았습니다. 다음 주는 월요일에 생각해요",
+    "이번 주 기록이 비어 있는 회원만 한 번 확인하고 마쳐요",
+    "주말 오후엔 강사님 몸도 한 번 풀어 주세요",
+    "이번 주 사진이나 인바디를 남긴 회원이 있었나요",
   ],
   sun: [
-    "내일 만날 회원님을 미리 알고 가면 수업이 훨씬 쉬워져요",
-    "일요일은 다음 주를 준비하는 날. 내일 회원님부터 한 번 훑어볼까요",
-    "내일 수업 회원님의 지난 기록만 봐도 첫 마디가 달라집니다",
-    "다음 주 회원님들을 미리 그려 보는 시간, 이게 강사님의 강점이 돼요",
+    "내일 만날 회원님 기록만 훑어봐도 월요일이 가벼워집니다",
+    "일요일은 회복하는 날. 강사님 몸도 쉬어야 합니다",
+    "다음 주 회원님들을 미리 그려 보는 시간, 이게 강사님의 강점이 됩니다",
     "월요일이 가벼워지는 방법은 하나예요. 내일 수업을 미리 보는 것",
+    "이번 주 잔여가 적은 회원만 미리 봐 두면 한 주가 편합니다",
+    "쉬는 것도 일의 일부입니다. 오늘은 비워 두세요",
+    "다음 주 첫 수업 회원의 목표만 떠올려 보세요",
   ],
 };
-const greetLine = () => {
-  const now = new Date(), day = now.getDay(), h = now.getHours(), i = now.getDate();
-  if (day === 0) return WEEKEND_GREETS.sun[i % WEEKEND_GREETS.sun.length];
-  if (day === 6 && h >= 6) { const a = h < 14 ? WEEKEND_GREETS.satAM : WEEKEND_GREETS.satPM; return a[i % a.length]; }
-  const a = GREETS[greetKey(h)];
-  return a[i % a.length];
+
+/* 해부학 · 필라테스 지식 (전체의 1/4 확률로 등장) */
+const KNOW = [
+  "복횡근은 허리를 코르셋처럼 감싸는 가장 깊은 복근입니다. 숨을 내쉴 때 먼저 켜집니다",
+  "요방형근이 짧아지면 그쪽 골반이 올라갑니다. 사이드 벤드 좌우 차이를 보세요",
+  "중둔근이 약하면 걸을 때 골반이 흔들립니다. 사이드 라잉 시리즈가 지름길입니다",
+  "흉추는 원래 뒤로 굽은 뼈입니다. 문제는 굽은 게 아니라 안 펴지는 것입니다",
+  "장요근은 척추와 다리를 잇는 유일한 근육입니다. 오래 앉으면 여기부터 짧아집니다",
+  "견갑골은 뼈에 거의 붙어 있지 않습니다. 주변 근육이 자리를 잡아 줍니다",
+  "필라테스 호흡은 갈비뼈를 옆으로 넓히는 측방 호흡입니다. 배를 부풀리지 않습니다",
+  "파워하우스는 골반저근·복횡근·다열근·횡격막을 묶어 부르는 말입니다",
+  "다열근은 척추뼈를 하나씩 잇는 작은 근육입니다. 롤다운이 부드러우면 살아 있는 겁니다",
+  "골반저근은 숨을 내쉴 때 함께 올라옵니다. 따로 힘주지 않아도 됩니다",
+  "전거근이 약하면 팔을 올릴 때 견갑골이 날개처럼 뜹니다",
+  "햄스트링이 짧으면 숙일 때 허리가 대신 굽습니다. 유연성만의 문제가 아닐 수 있습니다",
+  "고관절 굴곡은 대략 120도까지입니다. 그 이상은 골반이 따라 움직인 것입니다",
+  "어깨를 180도 올릴 때 그중 60도는 견갑골이 회전해 만듭니다",
+  "조셉 필라테스는 이것을 '컨트롤로지'라 불렀습니다. 힘이 아니라 통제입니다",
+  "코어는 배가 아니라 통입니다. 위는 횡격막, 아래는 골반저근",
+  "리포머 스프링은 무거울수록 어려운 게 아닙니다. 동작에 따라 보조가 되기도 합니다",
+  "척추 중립은 곧게 편 상태가 아니라 원래 곡선을 유지한 상태입니다",
+  "발 아치가 무너지면 무릎이 안으로 들어옵니다. 스쿼트 교정은 발에서 시작할 때가 많습니다",
+  "통증이 있는 자리가 원인인 경우는 드뭅니다. 위아래 관절을 함께 보세요",
+  "대둔근은 몸에서 가장 큰 근육이지만 앉아 있으면 가장 먼저 잠듭니다",
+  "목뼈는 머리 무게 5kg 을 받칩니다. 15도만 숙여도 12kg 으로 늘어납니다",
+  "복직근 이개는 산후에 흔합니다. 크런치보다 복횡근 활성이 먼저입니다",
+  "관절 가동범위는 근육만의 문제가 아닙니다. 신경이 안전하다고 느껴야 열립니다",
+];
+
+const cheerPool = () => {
+  const now = new Date(), day = now.getDay(), h = now.getHours();
+  if (day === 0) return CHEER.sun;
+  if (day === 6 && h >= 6) return h < 14 ? CHEER.satAM : CHEER.satPM;
+  return CHEER[greetKey(h)] || CHEER.morning;
 };
+
+/* 최근 나온 문구를 기억해 두고 겹치지 않게 고른다 */
+const GREET_SEEN = "pilateacher_greet_v1";
+function pickGreet() {
+  let seen = [];
+  try { const v = window.localStorage.getItem(GREET_SEEN); if (v) seen = JSON.parse(v) || []; } catch (e) { seen = []; }
+  const know = Math.random() < 0.25;
+  const pool = know ? KNOW : cheerPool();
+  /* 이 묶음에서 최근에 나온 것들은 빼고 고른다. 항상 두 개 이상은 남겨 둔다 */
+  const keep = Math.max(3, pool.length - 2);
+  const mine = seen.filter((x) => pool.indexOf(x) >= 0).slice(0, keep);
+  let fresh = pool.filter((x) => mine.indexOf(x) < 0);
+  if (!fresh.length) fresh = pool;
+  const text = fresh[Math.floor(Math.random() * fresh.length)];
+  try {
+    const next = [text, ...seen.filter((x) => x !== text)].slice(0, 80);
+    window.localStorage.setItem(GREET_SEEN, JSON.stringify(next));
+  } catch (e) {}
+  return text;
+}
+let GREET_NOW = "";
+try { GREET_NOW = pickGreet(); } catch (e) { GREET_NOW = CHEER.morning[0]; }
+const greetLine = () => GREET_NOW;
 
 const DAILY_LINES = [
   "기록이 쌓이면 회원은 남습니다",
@@ -1273,24 +1392,30 @@ function detectAlerts(members, schedule) {
   return out.sort((a, b) => b.urgency - a.urgency);
 }
 function AlertCenter({ alerts, onOpenMember, onBrief, onSnooze, snoozedCount, onUnsnoozeAll }) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   if (!alerts.length && !snoozedCount) return null;
   return (
     <section className="mb-3 overflow-hidden rounded-3xl" style={{ background: `linear-gradient(150deg, ${BAD_S} 0%, ${CARD} 55%)`, border: `1px solid ${LINE}`, boxShadow: SHADOW }}>
-      <button onClick={() => setOpen((v) => !v)} className="flex w-full items-center gap-2 px-5 pb-3 pt-5 text-left">
-        <span className="flex h-8 w-8 items-center justify-center rounded-xl" style={{ backgroundColor: BAD_S }}><Bell size={16} style={{ color: BAD }} /></span>
-        <div className="flex-1"><h3 className="font-extrabold" style={{ color: INK }}>재등록 골든타임</h3>
-          <Sub>{alerts.length ? `지금 연락해야 할 회원 ${alerts.length}명` : "지금 연락할 회원은 없습니다"}</Sub></div>
-        <ChevronRight size={18} style={{ color: SUB, transform: open ? "rotate(90deg)" : "none" }} />
+      <button onClick={() => setOpen((v) => !v)} className="flex w-full items-center gap-2 px-4 py-3.5 text-left">
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: BAD_S }}><Bell size={16} style={{ color: BAD }} /></span>
+        <div className="min-w-0 flex-1">
+          <h3 className="text-sm font-extrabold" style={{ color: INK }}>재등록 골든타임</h3>
+          <Sub className="truncate">{alerts.length ? `지금 연락해야 할 회원 ${alerts.length}명` : "지금 연락할 회원은 없습니다"}</Sub>
+        </div>
+        {alerts.length > 0 && !open && (
+          <span className="shrink-0 rounded-full px-2.5 py-1 text-xs font-extrabold" style={{ backgroundColor: BAD_S, color: BAD }}>{alerts.length}</span>
+        )}
+        <span className="shrink-0 text-xs font-extrabold" style={{ color: PRIMARY }}>{open ? "접기" : "보기"}</span>
+        <ChevronRight size={16} className="shrink-0" style={{ color: PRIMARY, transform: open ? "rotate(90deg)" : "none", transition: "transform .18s ease" }} />
       </button>
       {snoozedCount > 0 && (
-        <div className="flex items-center gap-2 px-5 pb-3">
+        <div className="flex items-center gap-2 px-4 pb-3">
           <Sub className="min-w-0 flex-1">알림을 미뤄둔 회원 {snoozedCount}명</Sub>
           <button onClick={onUnsnoozeAll} className="shrink-0 rounded-full bg-white px-3 py-1.5 text-xs font-extrabold" style={{ color: PRIMARY }}>다시 보기</button>
         </div>
       )}
       {open && alerts.length > 0 && (
-        <div className="flex gap-3 overflow-x-auto px-5 pb-5">
+        <div className="flex gap-3 overflow-x-auto px-4 pb-4">
           {alerts.map((a) => {
             const urgent = a.rest <= 3;
             return (
@@ -1444,6 +1569,22 @@ function SchedAttendeeRow({ s, a, members, onStatus, onNoshowFee }) {
 
 function SchedItem({ s, members, del, setDel, setEditing, onStatus, onNoshowFee, onGroupDone, onDelete }) {
   const nameOf = (id) => members.find((m) => m.id === id)?.name || "삭제된 회원";
+  if (isPersonalEvt(s)) return (
+    <div className="rounded-2xl p-3" style={{ backgroundColor: CANVAS, borderLeft: `4px solid ${MINT}` }}>
+      <div className="flex items-center gap-2">
+        <div className="w-14 shrink-0">
+          <p className="text-sm font-extrabold tabular-nums" style={{ color: MINT }}>{s.start}</p>
+          <Sub>{s.end}</Sub>
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-extrabold" style={{ color: INK }}>{s.title || "내 일정"}</p>
+          <Sub className="truncate">{s.memo || "개인 일정"}</Sub>
+        </div>
+        <button onClick={() => setEditing(s)} className="rounded-full bg-white px-2.5 py-1.5" style={{ color: SUB }}><Pencil size={12} /></button>
+        <button onClick={() => onDelete(s.id)} className="rounded-full bg-white px-2.5 py-1.5" style={{ color: FAINT }}><Trash2 size={12} /></button>
+      </div>
+    </div>
+  );
   const list = attendeesOf(s);
   const eq = isEquipGroup(s);
   const group = list.length > 1 || s.type === "그룹";
@@ -1503,7 +1644,7 @@ function SchedItem({ s, members, del, setDel, setEditing, onStatus, onNoshowFee,
   );
 }
 
-function ScheduleManager({ db, onSave, onDelete, onStatus, onNoshowFee, onGroupDone, onOpenMember, onWriteNote, onNoComment }) {
+function ScheduleManager({ db, onSave, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onOpenMember, onWriteNote, onNoComment }) {
   const [mode, setMode] = useState("day");
   const [cursor, setCursor] = useState(todayISO());
   const [editing, setEditing] = useState(null);
@@ -1524,6 +1665,9 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onNoshowFee, onGroupD
     return db.schedule.filter((s) => s?.date && s.date.startsWith(cm) && (isEquipGroup(s) ? !!s.groupDone : attendeesOf(s).some((a) => a.deductFrom))).length;
   }, [db.schedule]);
 
+  /* 일요일은 일정이 있을 때만 보여준다 (평소엔 월~토 6칸이라 글씨가 커진다) */
+  const sunUsed = db.schedule.some((s) => s.date === week[6]) || cursor === week[6];
+  const weekDays = sunUsed ? week : week.slice(0, 6);
   const step = (dir) => setCursor(mode === "month" ? addMonth(cursor, dir) : shift(cursor, (mode === "day" ? 1 : 7) * dir));
   const onStart = (e) => { x0.current = e.touches[0].clientX; setAnim(false); };
   const onMove = (e) => {
@@ -1552,8 +1696,12 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onNoshowFee, onGroupD
   const todayRows = useMemo(() => {
     const out = [];
     db.schedule.filter((s) => s.date === T0).sort((a, b) => a.start.localeCompare(b.start)).forEach((s) => {
+      if (isPersonalEvt(s)) { out.push({ key: s.id, kind: "personal", sid: s.id, start: s.start, end: s.end, title: s.title, memo: s.memo, s }); return; }
       if (isEquipGroup(s)) { out.push({ key: s.id, kind: "equip", sid: s.id, start: s.start, end: s.end, type: s.type, equip: s.equip, done: !!s.groupDone, s }); return; }
-      attendeesOf(s).forEach((a) => out.push({ key: `${s.id}:${a.memberId}`, kind: "member", id: a.memberId, sid: s.id, start: s.start, end: s.end, type: s.type, status: a.status, fee: a.noshowFee, deductFrom: a.deductFrom, s }));
+      const list = attendeesOf(s);
+      /* 듀엣처럼 두 명 이상이면 한 카드로 묶어 한 회원처럼 다룬다 */
+      if (list.length > 1) { out.push({ key: s.id, kind: "multi", sid: s.id, start: s.start, end: s.end, type: s.type, list, s }); return; }
+      list.forEach((a) => out.push({ key: `${s.id}:${a.memberId}`, kind: "member", id: a.memberId, sid: s.id, start: s.start, end: s.end, type: s.type, status: a.status, fee: a.noshowFee, deductFrom: a.deductFrom, s }));
     });
     return out;
   }, [db.schedule]);
@@ -1563,14 +1711,18 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onNoshowFee, onGroupD
   const tomorrowRows = useMemo(() => {
     const out = [];
     db.schedule.filter((s) => s.date === T1).sort((a, b) => a.start.localeCompare(b.start)).forEach((s) => {
+      if (isPersonalEvt(s)) { out.push({ key: s.id, kind: "personal", start: s.start, title: s.title }); return; }
       if (isEquipGroup(s)) { out.push({ key: s.id, kind: "equip", start: s.start, equip: s.equip }); return; }
       attendeesOf(s).forEach((a) => out.push({ key: `${s.id}:${a.memberId}`, kind: "member", id: a.memberId, start: s.start, type: s.type }));
     });
     return out;
   }, [db.schedule, T1]);
 
+  const [solo, setSolo] = useState({});
   const isSettled = (r) => {
+    if (r.kind === "personal") return true;
     if (r.kind === "equip") return r.done;
+    if (r.kind === "multi") return r.list.every((a) => a.status !== "booked" && (a.status !== "noshow" || a.noshowFee != null));
     if (r.status === "cancel") return true;
     if (r.status === "noshow") return r.fee != null;
     if (r.status === "done") return (memberOf(r.id)?.notes || []).some((x) => x?.date === T0);
@@ -1583,47 +1735,42 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onNoshowFee, onGroupD
     return [...up, ...down];
   }, [todayRows, parked]);
   const parkedCount = todayRows.filter((r) => parked[r.key]).length;
-  const todayCls = db.schedule.filter((s) => s.date === T0).length;
+  const todayCls = db.schedule.filter((s) => s.date === T0 && !isPersonalEvt(s)).length;
   const doneRows = todayRows.filter((r) => r.kind === "member" && r.status === "done");
+  const multiDone = todayRows.filter((r) => r.kind === "multi").reduce((n, r) => n + r.list.filter((a) => a.status === "done").length, 0);
   const doneToday = doneRows.length;
   const unwrittenRows = doneRows.filter((r) => !(memberOf(r.id)?.notes || []).some((x) => x?.date === T0));
   const unwritten = unwrittenRows.length;
   const firstUnwritten = unwrittenRows[0]?.id;
-  const doneCls = db.schedule.filter((s) => s.date === T0 && (isEquipGroup(s) ? !!s.groupDone : attendeesOf(s).every((a) => a.status !== "booked"))).length;
+  const doneCls = db.schedule.filter((s) => s.date === T0 && !isPersonalEvt(s) && (isEquipGroup(s) ? !!s.groupDone : attendeesOf(s).every((a) => a.status !== "booked"))).length;
   return (
     <div className="space-y-3">
-      <div className="rounded-3xl p-5" style={{ background: `linear-gradient(140deg, ${BRAND} 0%, #5B3FD4 100%)`, boxShadow: SHADOW }}>
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0 flex-1">
-            <p className="text-xs font-bold text-white opacity-75">{ymd(T0)} ({dow(T0)})</p>
-            {db.settings?.staff && (
-              <p className="mt-1 text-sm font-extrabold text-white" style={{ letterSpacing: "-0.02em", wordBreak: "keep-all" }}>
-                <span className="whitespace-nowrap">{db.settings.staff} 강사님,</span>
-              </p>
-            )}
-            <h2 className="mt-0.5 text-xl font-extrabold text-white" style={{ letterSpacing: "-0.03em", lineHeight: 1.32, wordBreak: "keep-all", overflowWrap: "break-word" }}>
-              {greetLine()}
-            </h2>
+      <div className="rounded-3xl p-4 md:p-5" style={{ background: `linear-gradient(140deg, ${BRAND} 0%, #5B3FD4 100%)`, boxShadow: SHADOW }}>
+        <div className="flex items-baseline gap-2">
+          <p className="text-xs font-bold text-white opacity-75">{ymd(T0)} ({dow(T0)})</p>
+          {db.settings?.staff && <p className="truncate text-xs font-extrabold text-white opacity-90">{db.settings.staff} 강사님</p>}
+        </div>
+        <h2 className="line-clamp-2 mt-0.5 text-base font-extrabold text-white md:text-xl" style={{ letterSpacing: "-0.03em", lineHeight: 1.3, wordBreak: "keep-all", overflowWrap: "break-word" }}>
+          {greetLine()}
+        </h2>
+        <div className="mt-2.5 flex items-stretch gap-1.5">
+          <div className="min-w-0 flex-1 rounded-xl px-2.5 py-1.5" style={{ backgroundColor: "rgba(255,255,255,0.16)", border: "1px solid rgba(255,255,255,0.14)" }}>
+            <p className="truncate text-xs font-bold text-white opacity-85">오늘</p>
+            <p className="text-base font-extrabold leading-tight tabular-nums text-white md:text-lg">{todayCls}</p>
+          </div>
+          <div className="min-w-0 flex-1 rounded-xl px-2.5 py-1.5" style={{ backgroundColor: "rgba(52,211,153,0.32)", border: "1px solid rgba(255,255,255,0.22)" }}>
+            <p className="flex items-center gap-0.5 truncate text-xs font-bold text-white opacity-90"><Check size={10} /> 완료</p>
+            <p className="text-base font-extrabold leading-tight tabular-nums text-white md:text-lg">{doneCls}</p>
+          </div>
+          <div className="min-w-0 flex-[1.4] rounded-xl px-2.5 py-1.5" style={{ backgroundColor: "#FFFFFF", boxShadow: "0 4px 12px rgba(30,16,90,.22)" }}>
+            <p className="truncate text-xs font-bold" style={{ color: "#6E6E80" }}>남은 수업</p>
+            <p className="text-base font-extrabold leading-tight tabular-nums md:text-lg" style={{ color: "#4F2FCB" }}>{Math.max(0, todayCls - doneCls)}수업</p>
+            <p className="truncate text-xs font-bold tabular-nums" style={{ color: "#77778A" }}>이달 {monthDone}</p>
           </div>
         </div>
-        <div className="mt-4 grid grid-cols-3 gap-2">
-          <div className="rounded-2xl p-3" style={{ backgroundColor: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.14)" }}>
-            <p className="text-xs font-bold text-white opacity-85">오늘 수업</p>
-            <p className="mt-0.5 text-xl font-extrabold tabular-nums text-white">{todayCls}수업</p>
-          </div>
-          <div className="rounded-2xl p-3" style={{ backgroundColor: "rgba(52,211,153,0.30)", border: "1px solid rgba(255,255,255,0.22)" }}>
-            <p className="flex items-center gap-1 text-xs font-bold text-white opacity-90"><Check size={11} /> 완료</p>
-            <p className="mt-0.5 text-xl font-extrabold tabular-nums text-white">{doneCls}수업</p>
-          </div>
-          <div className="rounded-2xl p-3" style={{ backgroundColor: "#FFFFFF", boxShadow: "0 4px 12px rgba(30,16,90,.22)" }}>
-            <p className="text-xs font-bold" style={{ color: "#6E6E80" }}>남은 수업</p>
-            <p className="mt-0.5 text-xl font-extrabold tabular-nums" style={{ color: "#4F2FCB" }}>{Math.max(0, todayCls - doneCls)}수업</p>
-            <p className="mt-1 text-xs font-bold tabular-nums" style={{ color: "#77778A" }}>이달 누적 {monthDone}수업</p>
-          </div>
-        </div>
-        <div className="mt-3 flex items-center gap-1.5">
-          <Sparkles size={12} color="#fff" style={{ opacity: 0.8 }} />
-          <p className="text-xs font-semibold text-white opacity-90">{dailyLine()}</p>
+        <div className="mt-2 flex items-center gap-1.5">
+          <Sparkles size={11} color="#fff" style={{ opacity: 0.8 }} />
+          <p className="truncate text-xs font-semibold text-white opacity-90">{dailyLine()}</p>
         </div>
       </div>
 
@@ -1658,6 +1805,12 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onNoshowFee, onGroupD
           ) : (
           <div className="mt-3 space-y-1.5">
             {tomorrowRows.slice(0, 8).map((r) => {
+              if (r.kind === "personal") return (
+                <div key={r.key} className="flex items-center gap-2 rounded-2xl px-3 py-2.5" style={{ backgroundColor: CANVAS, borderLeft: `4px solid ${MINT}` }}>
+                  <span className="w-12 shrink-0 text-xs font-extrabold tabular-nums" style={{ color: MINT }}>{r.start}</span>
+                  <span className="min-w-0 flex-1 truncate text-sm font-extrabold" style={{ color: INK }}>{r.title || "내 일정"}</span>
+                </div>
+              );
               if (r.kind === "equip") return (
                 <div key={r.key} className="flex items-center gap-2 rounded-2xl px-3 py-2.5" style={{ backgroundColor: CANVAS }}>
                   <span className="w-12 shrink-0 text-xs font-extrabold tabular-nums" style={{ color: PRIMARY }}>{r.start}</span>
@@ -1737,6 +1890,81 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onNoshowFee, onGroupD
                   </div>
                 </div>
               );
+              if (r.kind === "personal") return wrap(
+                <div className="rounded-2xl p-3" style={{ backgroundColor: CANVAS, borderLeft: `4px solid ${MINT}` }}>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs font-extrabold tabular-nums" style={{ color: MINT }}>{r.start}</span>
+                    <span className="text-xs" style={{ color: SUB }}>~ {r.end} · 내 일정</span>
+                    <button onClick={() => setEditing(r.s)} aria-label="일정 수정" className="ml-auto flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-white" style={{ color: SUB }}><Pencil size={12} /></button>
+                  </div>
+                  <p className="mt-1 truncate text-base font-extrabold" style={{ color: INK }}>{r.title || "제목 없음"}</p>
+                  {r.memo && <p className="mt-1 line-clamp-2 text-xs" style={{ color: INK2 }}>{r.memo}</p>}
+                </div>
+              );
+              if (r.kind === "multi") {
+                const names = r.list.map((a) => memberOf(a.memberId)?.name || "삭제된 회원");
+                const allBooked = r.list.every((a) => a.status === "booked");
+                const same = r.list.every((a) => a.status === r.list[0].status);
+                const st0 = stOf(r.list[0].status);
+                const open = !!solo[r.key];
+                return wrap(
+                  <div className="rounded-2xl p-3" style={{ backgroundColor: CANVAS }}>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs font-extrabold tabular-nums" style={{ color: PRIMARY }}>{r.start}</span>
+                      <span className="truncate text-xs" style={{ color: SUB }}>{r.type} · {r.list.length}명</span>
+                      {canPark(r) && <ChevronLeft size={13} className="ml-auto shrink-0" style={{ color: down ? GOOD : PRIMARY, opacity: 0.75 }} />}
+                      <button onClick={() => setEditing(r.s)} aria-label="수업 수정" className={`${canPark(r) ? "" : "ml-auto "}flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-white`} style={{ color: SUB }}><Pencil size={12} /></button>
+                    </div>
+                    <p className="mt-1 truncate text-base font-extrabold" style={{ color: INK }}>{names.join(" · ")}</p>
+                    <div className="mt-1 flex flex-wrap items-center gap-1">
+                      {r.list.map((a) => {
+                        const mm = memberOf(a.memberId);
+                        const rr = mm ? left(mm) : 0;
+                        return (
+                          <button key={a.memberId} onClick={() => onOpenMember && onOpenMember(a.memberId)}
+                            className="rounded-full px-2 py-0.5 text-xs font-bold" style={{ backgroundColor: CARD, color: rr <= 3 ? BAD : SUB }}>
+                            {mm?.name || "삭제됨"} 잔여 {rr}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {allBooked ? (
+                      <div className="mt-2 flex gap-1.5">
+                        <button onClick={() => onStatusAll(r.sid, "done")} className="flex-1 rounded-lg py-2 text-xs font-extrabold text-white" style={{ backgroundColor: GOOD }}>{r.list.length}명 출석</button>
+                        <button onClick={() => onStatusAll(r.sid, "noshow")} className="flex-1 rounded-lg py-2 text-xs font-extrabold text-white" style={{ backgroundColor: BAD }}>노쇼</button>
+                        <button onClick={() => onStatusAll(r.sid, "cancel")} className="flex-1 rounded-lg py-2 text-xs font-extrabold" style={{ backgroundColor: CARD, color: SUB }}>취소</button>
+                      </div>
+                    ) : (
+                      <div className="mt-2 flex flex-wrap items-center gap-1.5 rounded-lg px-2 py-1.5" style={{ backgroundColor: same ? st0.bg : CARD }}>
+                        <span className="text-xs font-extrabold" style={{ color: same ? st0.color : INK }}>
+                          {same ? `${r.list.length}명 모두 ${st0.label}` : r.list.map((a, k) => `${names[k]} ${stOf(a.status).label}`).join(" · ")}
+                        </span>
+                        <button onClick={() => onStatusAll(r.sid, "booked")} className="ml-auto rounded-full bg-white px-2 py-0.5 text-xs font-bold" style={{ color: SUB }}>다시 고르기</button>
+                      </div>
+                    )}
+                    <button onClick={() => setSolo((v) => ({ ...v, [r.key]: !v[r.key] }))}
+                      className="mt-1.5 w-full rounded-lg py-1.5 text-xs font-bold" style={{ backgroundColor: CARD, color: PRIMARY }}>
+                      {open ? "따로 처리 접기" : "한 명만 따로 처리하기"}
+                    </button>
+                    {open && (
+                      <div className="mt-1.5 space-y-1.5">
+                        {r.list.map((a) => <SchedAttendeeRow key={a.memberId} s={r.s} a={a} members={db.members} onStatus={onStatus} onNoshowFee={onNoshowFee} />)}
+                      </div>
+                    )}
+                    {r.list.filter((a) => a.status === "done").map((a) => {
+                      const mm = memberOf(a.memberId);
+                      const written = (mm?.notes || []).some((x) => x?.date === T0);
+                      if (written) return null;
+                      return (
+                        <div key={a.memberId} className="mt-1.5 flex gap-1.5">
+                          <button onClick={() => onWriteNote && onWriteNote(a.memberId)} className="flex flex-1 items-center justify-center gap-1 rounded-lg py-2 text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}><Pencil size={12} /> {mm?.name || ""} 기록하기</button>
+                          <button onClick={() => onNoComment && onNoComment(a.memberId, r.type)} className="flex-1 rounded-lg py-2 text-xs font-bold" style={{ backgroundColor: CARD, color: SUB }}>노코멘트</button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              }
               const m = memberOf(r.id);
               const rest = m ? left(m) : 0;
               const lastD = m ? lastDoneOf(db.schedule, m.id) : null;
@@ -1808,7 +2036,7 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onNoshowFee, onGroupD
           <button onClick={() => step(-1)} className="rounded-xl p-2" style={{ backgroundColor: CANVAS }}><ChevronLeft size={16} style={{ color: SUB }} /></button>
           <button onClick={() => setCursor(todayISO())} aria-label="오늘 날짜로 이동" className="min-w-0 flex-1 text-center">
             <p className="text-sm font-extrabold" style={{ color: mode === "day" ? redInk(cursor, INK) : INK }}>
-              {mode === "day" ? `${ymd(cursor)} (${dow(cursor)})` : mode === "week" ? `${md(week[0])} ~ ${md(week[6])}` : monthLabel(cursor)}
+              {mode === "day" ? `${ymd(cursor)} (${dow(cursor)})` : mode === "week" ? `${md(weekDays[0])} ~ ${md(weekDays[weekDays.length - 1])}` : monthLabel(cursor)}
             </p>
             {mode === "day" && holidayOf(cursor) && <p className="text-xs font-extrabold" style={{ color: BAD }}>{holidayOf(cursor)}</p>}
           </button>
@@ -1823,7 +2051,7 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onNoshowFee, onGroupD
         <div onTouchStart={onStart} onTouchMove={onMove} onTouchEnd={onEnd} style={{ touchAction: "pan-y", overflow: "hidden" }} className="mt-3">
           {mode !== "month" ? (
             <div className="flex gap-1.5" style={slide}>
-              {week.map((d) => {
+              {weekDays.map((d) => {
                 const n = byDate(d).length, on = d === cursor;
                 return (
                   <button key={d} onClick={() => { setCursor(d); setMode("day"); }} className="min-w-0 flex-1 rounded-2xl px-1 py-2 text-center"
@@ -1857,14 +2085,22 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onNoshowFee, onGroupD
             </div>
           )}
         </div>
-        <p className="mt-1.5 text-center text-xs" style={{ color: FAINT }}>← 옆으로 밀어 {mode === "month" ? "달" : "주"} 이동 →</p>
-        <button onClick={() => setEditing({ id: null, memberIds: db.members[0] ? [db.members[0].id] : [], date: cursor, start: "10:00", dur: 50, type: "개인레슨", instructor: db.settings.staff, room: "", memo: "" })}
-          className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-2xl py-3 text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>
-          <Plus size={16} /> 수업 등록
-        </button>
-        <WeekGrid days={byDate(week[6]).length ? week : week.slice(0, 6)} byDate={byDate} nameOf={nameOf} cursor={cursor}
+        <p className="mt-1.5 text-center text-xs" style={{ color: FAINT }}>
+          ← 옆으로 밀어 {mode === "month" ? "달" : "주"} 이동 →{!sunUsed && mode !== "month" ? " · 일요일은 일정이 있을 때만 표시됩니다" : ""}
+        </p>
+        <div className="mt-3 flex gap-1.5">
+          <button onClick={() => setEditing({ id: null, memberIds: db.members[0] ? [db.members[0].id] : [], date: cursor, start: "10:00", dur: 50, type: "개인레슨", instructor: db.settings.staff, room: "", memo: "" })}
+            className="flex flex-1 items-center justify-center gap-1.5 rounded-2xl py-3 text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>
+            <Plus size={16} /> 수업 등록
+          </button>
+          <button onClick={() => setEditing({ id: null, personal: true, memberIds: [], date: cursor, start: "10:00", dur: 60, type: "개인일정", title: "", instructor: db.settings.staff, room: "", memo: "" })}
+            className="flex flex-1 items-center justify-center gap-1.5 rounded-2xl py-3 text-sm font-extrabold" style={{ backgroundColor: CANVAS, color: INK, border: `1px solid ${LINE}` }}>
+            <CalendarDays size={16} /> 내 일정 등록
+          </button>
+        </div>
+        <WeekGrid days={weekDays} byDate={byDate} nameOf={nameOf} cursor={cursor}
           onOpen={(s) => setEditing(s)}
-          onNew={(date, start) => setEditing({ id: null, memberIds: [], date, start, dur: 50, type: "개인레슨", instructor: db.settings.staff, room: "", memo: "" })} />
+          onNew={(date, start, dur) => setEditing({ id: null, memberIds: db.members[0] ? [db.members[0].id] : [], date, start, dur: dur || 50, type: "개인레슨", instructor: db.settings.staff, room: "", memo: "" })} />
       </Card>
 
       {mode === "day" && !(cursor === T0 && byDate(cursor).length > 0) && (
@@ -1876,7 +2112,7 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onNoshowFee, onGroupD
       )}
       {mode === "week" && (
         <div className="space-y-3">
-          {week.map((d) => {
+          {weekDays.map((d) => {
             const items = byDate(d);
             return (
               <Card key={d} className="p-4">
@@ -1967,24 +2203,44 @@ function SwipeRow({ children, down, enabled, onPark, onUnpark }) {
   );
 }
 
-const GRID_H0 = 8, GRID_H1 = 23, GRID_ROW = 44;
+const GRID_H0 = 8, GRID_H1 = 23, GRID_ROW = 56;
 const minOf = (hhmm) => Number(String(hhmm || "0:00").slice(0, 2)) * 60 + Number(String(hhmm || "0:00").slice(3, 5) || 0);
 const hourLabel = (h) => `${String(h).padStart(2, "0")}시`;
 
 function WeekGrid({ days, byDate, nameOf, cursor, onOpen, onNew }) {
   const rows = GRID_H1 - GRID_H0 + 1;
   const top0 = GRID_H0 * 60;
+  /* 빈 칸을 위아래로 훑으면 그 시간만큼 일정이 잡힌다 (30분 단위) */
+  const [sel, setSel] = useState(null);
+  const dragging = useRef(false);
+  const slotAt = (e, el) => {
+    const r = el.getBoundingClientRect();
+    const y = Math.max(0, Math.min(r.height - 1, e.clientY - r.top));
+    return Math.max(0, Math.min(rows * 2 - 1, Math.floor(y / (GRID_ROW / 2))));
+  };
+  const selRange = (v) => {
+    const a = Math.min(v.a, v.b), b = Math.max(v.a, v.b);
+    const startMin = top0 + a * 30;
+    return { start: `${String(Math.floor(startMin / 60)).padStart(2, "0")}:${String(startMin % 60).padStart(2, "0")}`, dur: (b - a + 1) * 30 };
+  };
+  const selLabel = (v) => { const r = selRange(v); return `${r.start} · ${r.dur >= 60 ? `${Math.floor(r.dur / 60)}시간${r.dur % 60 ? ` ${r.dur % 60}분` : ""}` : `${r.dur}분`}`; };
+  const finishSel = () => {
+    dragging.current = false;
+    setSel((v) => { if (v) { const r = selRange(v); setTimeout(() => onNew(v.day, r.start, r.dur), 0); } return null; });
+  };
   const blocksOf = (d) => byDate(d).filter((s) => {
     const a = minOf(s.start), b = minOf(s.end) || a + 50;
     return b > top0 && a < (GRID_H1 + 1) * 60;
   }).map((s) => {
     const st = Math.max(minOf(s.start), top0);
     const en = Math.min(minOf(s.end) || st + 50, (GRID_H1 + 1) * 60);
+    const pv = isPersonalEvt(s);
     const eq = isEquipGroup(s);
     const list = attendeesOf(s);
-    const label = eq ? (s.equip || "그룹") : list.length > 1 ? `${s.type} ${list.length}명` : nameOf(list[0]?.memberId);
-    const done = eq ? !!s.groupDone : list.length > 0 && list.every((a) => a.status !== "booked");
-    return { s, top: ((st - top0) / 60) * GRID_ROW, h: Math.max(20, ((en - st) / 60) * GRID_ROW - 2), label, done, eq };
+    const label = pv ? (s.title || "내 일정") : eq ? (s.equip || "그룹") : list.length > 1 ? list.map((a) => nameOf(a.memberId)).join(", ") : nameOf(list[0]?.memberId);
+    const sub = pv ? "" : eq ? "그룹" : list.length > 1 ? `${s.type} ${list.length}명` : s.type;
+    const done = pv ? false : eq ? !!s.groupDone : list.length > 0 && list.every((a) => a.status !== "booked");
+    return { s, top: ((st - top0) / 60) * GRID_ROW, h: Math.max(26, ((en - st) / 60) * GRID_ROW - 2), label, sub, done, eq, pv };
   }).filter((b) => b.top >= -GRID_ROW && b.top < rows * GRID_ROW);
 
   return (
@@ -1992,7 +2248,7 @@ function WeekGrid({ days, byDate, nameOf, cursor, onOpen, onNew }) {
       <div className="mb-1.5 flex items-center gap-1.5">
         <CalendarDays size={13} style={{ color: PRIMARY }} />
         <p className="text-xs font-extrabold" style={{ color: INK }}>주간 시간표</p>
-        <Sub className="ml-auto">08:00 ~ 23:00 · 빈 칸을 누르면 등록</Sub>
+        <Sub className="ml-auto">08:00 ~ 23:00 · 빈 칸을 훑으면 그 시간만큼 등록</Sub>
       </div>
       <div className="overflow-x-auto rounded-2xl" style={{ border: `1px solid ${LINE}` }}>
         <div style={{ minWidth: 460 }}>
@@ -2017,18 +2273,33 @@ function WeekGrid({ days, byDate, nameOf, cursor, onOpen, onNew }) {
               ))}
             </div>
             {days.map((d) => (
-              <div key={d} className="relative min-w-0 flex-1" style={{ borderLeft: `1px solid ${LINE}`, backgroundColor: d === todayISO() ? `${PRIMARY}0A` : "transparent" }}>
+              <div key={d} className="relative min-w-0 flex-1"
+                style={{ borderLeft: `1px solid ${LINE}`, backgroundColor: d === todayISO() ? `${PRIMARY}14` : "transparent", touchAction: "none" }}
+                onPointerDown={(e) => { e.currentTarget.setPointerCapture?.(e.pointerId); const k = slotAt(e, e.currentTarget); dragging.current = true; setSel({ day: d, a: k, b: k }); }}
+                onPointerMove={(e) => { if (!dragging.current) return; const k = slotAt(e, e.currentTarget); setSel((v) => (v && v.day === d ? { ...v, b: k } : v)); }}
+                onPointerUp={() => finishSel()}
+                onPointerCancel={() => { dragging.current = false; setSel(null); }}>
                 {Array.from({ length: rows }, (_, i) => (
-                  <button key={i} onClick={() => onNew(d, `${String(GRID_H0 + i).padStart(2, "0")}:00`)}
-                    aria-label={`${md(d)} ${GRID_H0 + i}시 수업 등록`}
-                    className="block w-full" style={{ height: GRID_ROW, borderTop: i ? `1px solid ${LINE}` : "none" }} />
+                  <div key={i} style={{ height: GRID_ROW, borderTop: i ? `1px solid ${LINE}` : "none" }}>
+                    <div style={{ height: GRID_ROW / 2, borderBottom: `1px dashed ${LINE}` }} />
+                  </div>
                 ))}
+                {sel && sel.day === d && (
+                  <div className="pointer-events-none absolute left-0.5 right-0.5 flex items-center justify-center rounded-lg"
+                    style={{ top: Math.min(sel.a, sel.b) * (GRID_ROW / 2), height: (Math.abs(sel.b - sel.a) + 1) * (GRID_ROW / 2), background: `${PRIMARY}55`, border: `2px solid ${PRIMARY}` }}>
+                    <span className="rounded-full px-2 py-0.5 text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>{selLabel(sel)}</span>
+                  </div>
+                )}
                 {blocksOf(d).map((b) => (
-                  <button key={b.s.id} onClick={() => onOpen(b.s)}
-                    className="absolute left-0.5 right-0.5 overflow-hidden rounded-lg px-1 py-0.5 text-left"
-                    style={{ top: b.top, height: b.h, background: b.done ? GOOD_S : GRAD, border: b.done ? `1px solid ${GOOD}` : "none" }}>
-                    <p className="truncate text-xs font-extrabold tabular-nums" style={{ color: b.done ? GOOD : "#fff", fontSize: 10 }}>{b.s.start}</p>
-                    <p className="truncate text-xs font-bold" style={{ color: b.done ? GOOD : "#fff", fontSize: 10 }}>{b.label}</p>
+                  <button key={b.s.id} onPointerDown={(e) => e.stopPropagation()} onClick={() => onOpen(b.s)}
+                    className="absolute left-0.5 right-0.5 overflow-hidden rounded-lg px-1.5 py-1 text-left"
+                    style={{ top: b.top, height: b.h,
+                      background: b.pv ? MINT : b.done ? GOOD_S : GRAD,
+                      border: b.done ? `1px solid ${GOOD}` : "none" }}>
+                    <p className="truncate font-extrabold leading-tight" style={{ color: b.done ? GOOD : "#fff", fontSize: 13 }}>{b.label}</p>
+                    <p className="truncate font-bold leading-tight tabular-nums" style={{ color: b.done ? GOOD : "rgba(255,255,255,.85)", fontSize: 10 }}>
+                      {b.s.start}{b.sub ? ` · ${b.sub}` : ""}
+                    </p>
                   </button>
                 ))}
               </div>
@@ -2045,14 +2316,21 @@ function ScheduleForm({ draft, members, onClose, onSubmit, onDelete }) {
   const [del, setDel] = useState(false);
   const [f, setF] = useState({
     ...draft,
+    title: draft.title || "",
     type: initType,
     equip: draft.equip || "",
     memberIds: draft.memberIds || attendeesOf(draft).map((a) => a.memberId).filter(Boolean),
     dur: draft.dur || (draft.start && draft.end
       ? Number(draft.end.slice(0, 2)) * 60 + Number(draft.end.slice(3)) - Number(draft.start.slice(0, 2)) * 60 - Number(draft.start.slice(3)) : 50),
   });
-  const isGroup = f.type === "그룹";
-  const isDuet = f.type === "듀엣";
+  const [personal, setPersonal] = useState(!!draft.personal);
+  const isPersonal = personal;
+  const isGroup = !isPersonal && f.type === "그룹";
+  const isDuet = !isPersonal && f.type === "듀엣";
+  const DUR_CLASS = [30, 50, 60, 80];
+  const DUR_PERSONAL = [30, 60, 90, 120, 180, 240, 360, 480];
+  const durList = [...new Set([...(isPersonal ? DUR_PERSONAL : DUR_CLASS), Number(f.dur) || 50])].sort((a, b) => a - b);
+  const durText = (d) => (d >= 60 ? `${Math.floor(d / 60)}시간${d % 60 ? ` ${d % 60}분` : ""}` : `${d}분`);
   const pick = (id) => setF((x) => ({ ...x, memberIds: id ? [id] : [] }));
   const pickAt = (slot, id) => setF((x) => {
     const a = x.memberIds[0] || "", b = x.memberIds[1] || "";
@@ -2067,11 +2345,31 @@ function ScheduleForm({ draft, members, onClose, onSubmit, onDelete }) {
     .filter((id) => id && !prevIds.has(id))
     .map((id) => members.find((m) => m.id === id))
     .filter((m) => m && left(m) <= 0);
-  const ready = f.date && f.start && (isGroup ? !!f.equip : f.memberIds.length > 0) && noRest.length === 0;
+  const ready = f.date && f.start && (isPersonal ? !!String(f.title || "").trim() : isGroup ? !!f.equip : f.memberIds.filter(Boolean).length > 0) && noRest.length === 0;
 
   return (
-    <Sheet title={draft.id ? "수업 수정" : "수업 등록"} onClose={onClose}>
+    <Sheet title={`${isPersonal ? "내 일정" : "수업"} ${draft.id ? "수정" : "등록"}`} onClose={onClose}>
       <div className="space-y-3">
+        {!draft.id && (
+          <div className="flex gap-1 rounded-2xl p-1" style={{ backgroundColor: CANVAS }}>
+            {[{ k: false, l: "회원 수업", i: Users }, { k: true, l: "내 일정", i: CalendarDays }].map((o) => {
+              const on = personal === o.k, Ic = o.i;
+              return (
+                <button key={String(o.k)} onClick={() => setPersonal(o.k)}
+                  className="flex flex-1 items-center justify-center gap-1.5 rounded-xl py-2.5 text-sm font-extrabold"
+                  style={on ? { background: GRAD, color: "#fff", boxShadow: "0 3px 10px rgba(108,76,241,.35)" } : { backgroundColor: CARD, color: INK, border: `1px solid ${LINE}` }}>
+                  <Ic size={15} /> {o.l}
+                </button>
+              );
+            })}
+          </div>
+        )}
+        {isPersonal && (
+          <Field label="일정 제목" hint="회원 수업이 아닌 개인 일정입니다">
+            <input autoFocus value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} placeholder="예) 세미나 · 점심 약속 · 휴무" className={inputCls} />
+          </Field>
+        )}
+        {!isPersonal && (
         <Field label="레슨 유형">
           <div className="flex gap-1.5">
             {CLASS_TYPES.map((t) => (
@@ -2081,7 +2379,8 @@ function ScheduleForm({ draft, members, onClose, onSubmit, onDelete }) {
             ))}
           </div>
         </Field>
-        {isGroup ? (
+        )}
+        {isPersonal ? null : isGroup ? (
           <Field label="수업 기구" hint="그룹은 회원 대신 기구를 선택합니다">
             <div className="grid grid-cols-4 gap-1.5">
               {EQUIP_TYPES.map((t) => (
@@ -2093,7 +2392,7 @@ function ScheduleForm({ draft, members, onClose, onSubmit, onDelete }) {
         ) : isDuet ? (
           <div className="grid grid-cols-2 gap-2">
             {[0, 1].map((slot) => (
-              <Field key={slot} label={`회원 ${slot + 1}`} hint={slot === 1 ? "선택" : ""}>
+              <Field key={slot} label={`회원 ${slot + 1}`} hint={slot === 1 ? "두 번째 분" : ""}>
                 <SelectBox value={slotVal(slot)} onChange={(e) => pickAt(slot, e.target.value)}>
                   <option value="">{slot === 0 ? "회원 선택" : "선택 안 함"}</option>
                   {members.filter((m) => m.id === slotVal(slot) || m.id !== slotVal(slot === 0 ? 1 : 0))
@@ -2114,18 +2413,31 @@ function ScheduleForm({ draft, members, onClose, onSubmit, onDelete }) {
         <Field label="시작 시간" hint={`${f.start} 시작 · ${to12(f.start).ap === "AM" ? "오전" : "오후"} ${to12(f.start).h12}시`}>
           <TimePick value={f.start} onChange={(v) => setF({ ...f, start: v })} />
         </Field>
-        <div className="grid grid-cols-2 gap-2">
-          <Field label="소요 시간">
-            <SelectBox value={f.dur} onChange={(e) => setF({ ...f, dur: Number(e.target.value) })}>
-              {[30, 50, 60, 80].map((d) => <option key={d} value={d}>{d}분</option>)}
-            </SelectBox>
-          </Field>
-          <Field label="담당 강사"><input value={f.instructor} onChange={(e) => setF({ ...f, instructor: e.target.value })} className={inputCls} /></Field>
-        </div>
-        <div className="grid grid-cols-2 gap-2">
-          <Field label="룸" hint="선택"><input value={f.room} onChange={(e) => setF({ ...f, room: e.target.value })} className={inputCls} /></Field>
-          <Field label="메모" hint="선택"><input value={f.memo} onChange={(e) => setF({ ...f, memo: e.target.value })} className={inputCls} /></Field>
-        </div>
+        {isPersonal ? (
+          <div className="grid grid-cols-2 gap-2">
+            <Field label="소요 시간">
+              <SelectBox value={f.dur} onChange={(e) => setF({ ...f, dur: Number(e.target.value) })}>
+                {durList.map((d) => <option key={d} value={d}>{durText(d)}</option>)}
+              </SelectBox>
+            </Field>
+            <Field label="메모" hint="선택"><input value={f.memo} onChange={(e) => setF({ ...f, memo: e.target.value })} className={inputCls} /></Field>
+          </div>
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-2">
+              <Field label="소요 시간">
+                <SelectBox value={f.dur} onChange={(e) => setF({ ...f, dur: Number(e.target.value) })}>
+                  {durList.map((d) => <option key={d} value={d}>{durText(d)}</option>)}
+                </SelectBox>
+              </Field>
+              <Field label="담당 강사"><input value={f.instructor} onChange={(e) => setF({ ...f, instructor: e.target.value })} className={inputCls} /></Field>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <Field label="룸" hint="선택"><input value={f.room} onChange={(e) => setF({ ...f, room: e.target.value })} className={inputCls} /></Field>
+              <Field label="메모" hint="선택"><input value={f.memo} onChange={(e) => setF({ ...f, memo: e.target.value })} className={inputCls} /></Field>
+            </div>
+          </>
+        )}
         {noRest.length > 0 && (
           <div className="flex flex-wrap items-center gap-2 rounded-2xl px-3 py-3" style={{ backgroundColor: BAD_S }}>
             <AlertTriangle size={16} className="shrink-0" style={{ color: BAD }} />
@@ -2141,24 +2453,27 @@ function ScheduleForm({ draft, members, onClose, onSubmit, onDelete }) {
           const prev = draft.id ? attendeesOf(draft) : [];
           onSubmit({
             id: draft.id || uid(), date: f.date, start: f.start, end: addMin(f.start, f.dur),
-            type: f.type, instructor: f.instructor, room: f.room, memo: f.memo,
+            type: isPersonal ? "개인일정" : f.type,
+            instructor: isPersonal ? "" : f.instructor, room: isPersonal ? "" : f.room, memo: f.memo,
             equip: isGroup ? f.equip : null,
             groupDone: isGroup ? !!draft.groupDone : undefined,
-            attendees: isGroup ? [] : f.memberIds.map((id) => prev.find((a) => a.memberId === id) || { memberId: id, status: "booked", deductFrom: null, noshowFee: null }),
+            attendees: isGroup || isPersonal ? [] : f.memberIds.map((id) => prev.find((a) => a.memberId === id) || { memberId: id, status: "booked", deductFrom: null, noshowFee: null }),
+            personal: isPersonal || undefined,
+            title: isPersonal ? String(f.title || "").trim() : undefined,
           });
         }}>
-          <Check size={16} /> {draft.id ? "수정 저장" : `수업 등록${isDuet && f.memberIds.length > 1 ? ` (${f.memberIds.length}명)` : ""}`}
+          <Check size={16} /> {draft.id ? "수정 저장" : isPersonal ? "일정 등록" : `수업 등록${isDuet && f.memberIds.length > 1 ? ` (${f.memberIds.length}명)` : ""}`}
         </PrimaryBtn>
         {draft.id && onDelete && (del ? (
           <div className="flex flex-wrap items-center gap-2 rounded-2xl p-3" style={{ backgroundColor: BAD_S }}>
             <AlertTriangle size={14} style={{ color: BAD }} />
-            <span className="text-xs font-bold" style={{ color: INK }}>이 수업을 삭제할까요? 차감된 횟수는 되돌아갑니다.</span>
+            <span className="text-xs font-bold" style={{ color: INK }}>{isPersonal ? "이 일정을 삭제할까요?" : "이 수업을 삭제할까요? 차감된 횟수는 되돌아갑니다."}</span>
             <button onClick={() => { onDelete(draft.id); onClose(); }} className="rounded-full px-3 py-1.5 text-xs font-extrabold text-white" style={{ backgroundColor: BAD }}>삭제</button>
             <button onClick={() => setDel(false)} className="rounded-full bg-white px-3 py-1.5 text-xs font-bold" style={{ color: SUB }}>취소</button>
           </div>
         ) : (
           <button onClick={() => setDel(true)} className="flex w-full items-center justify-center gap-1.5 rounded-2xl py-2.5 text-sm font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>
-            <Trash2 size={14} /> 수업 삭제
+            <Trash2 size={14} /> {isPersonal ? "일정 삭제" : "수업 삭제"}
           </button>
         ))}
       </div>
@@ -4278,14 +4593,21 @@ function RecordTab({ db, selectedId, setSelectedId, section, setSection, onSaveI
     <div className="space-y-3">
       <Card className="p-4">
         <Field label="기록할 회원">
-          <select value={member.id} onChange={(e) => setSelectedId(e.target.value)} className={inputCls}>
-            {members.map((m) => <option key={m.id} value={m.id}>{m.name || "이름 미입력"}{isEnded(m) ? " (종료)" : ""} · {left(m) > 0 ? `잔여 ${left(m)}회` : "잔여 없음"}</option>)}
-          </select>
+          <div className="relative">
+            <select value={member.id} onChange={(e) => setSelectedId(e.target.value)}
+              className="w-full rounded-2xl border-0 py-3.5 pl-11 pr-4 text-sm font-extrabold outline-none"
+              style={{ appearance: "none", WebkitAppearance: "none", MozAppearance: "none",
+                backgroundColor: TINT, color: PRIMARY, boxShadow: `inset 0 0 0 2px ${PRIMARY}` }}>
+              {members.map((m) => <option key={m.id} value={m.id}>{m.name || "이름 미입력"}{isEnded(m) ? " (종료)" : ""} · {left(m) > 0 ? `잔여 ${left(m)}회` : "잔여 없음"}</option>)}
+            </select>
+            <Users size={16} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2" style={{ color: PRIMARY }} />
+            <ChevronDown size={16} className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2" style={{ color: PRIMARY }} />
+          </div>
         </Field>
         <button onClick={() => setOpenInfo((v) => !v)} aria-expanded={openInfo}
           className="mt-2 flex w-full items-center gap-2 rounded-2xl px-3 py-2.5" style={{ backgroundColor: CANVAS }}>
           <span className="min-w-0 flex-1 truncate text-left text-xs font-bold" style={{ color: INK }}>
-            {member.name || "이름 미입력"} · 잔여 {left(member)}회{member.goal ? ` · ${member.goal}` : ""}
+            {member.goal || (member.passName ? member.passName : "목표 · 수강권 미입력")}
           </span>
           <span className="shrink-0 text-xs font-bold" style={{ color: PRIMARY }}>{openInfo ? "접기" : "자세히"}</span>
           <ChevronDown size={14} className="shrink-0" style={{ color: PRIMARY, transform: openInfo ? "rotate(180deg)" : "none", transition: "transform .18s ease" }} />
@@ -4335,7 +4657,7 @@ function RecordTab({ db, selectedId, setSelectedId, section, setSection, onSaveI
       </Card>
       {section === "inbody" && <InbodyForm member={member} last={last} onSave={onSaveInbody} onDelete={onDeleteInbody} onPatch={onPatch} onToast={onToast} />}
       {section === "note" && <NoteForm member={member} schedule={db.schedule} onSave={onSaveNote} settings={db.settings} onSettings={onSettings} />}
-      {section === "perf" && <PerfForm member={member} onPatch={onPatch} />}
+      {section === "perf" && <PerfForm member={member} onPatch={onPatch} onToast={onToast} />}
       {section === "info" && <InfoForm member={member} onPatch={onPatch} onDelete={onDelete} onToast={onToast} />}
     </div>
   );
@@ -4735,50 +5057,74 @@ function NoteForm({ member, schedule, onSave, settings, onSettings }) {
 
 const clampScore = (v) => Math.max(0, Math.min(100, Math.round(Number(v) || 0)));
 
-function PerfForm({ member, onPatch }) {
+function PerfForm({ member, onPatch, onToast }) {
   const [newName, setNewName] = useState("");
-  const rows = Array.isArray(member.perf) ? member.perf : [];
-  const set = (i, key, val) => onPatch(member.id, { perf: rows.map((p, idx) => (idx === i ? { ...p, [key]: clampScore(val) } : p)) });
+  const [rows, setRows] = useState(() => (Array.isArray(member.perf) ? member.perf.map((p) => ({ ...p })) : []));
+  const [del, setDel] = useState(null);
+  useEffect(() => { setRows(Array.isArray(member.perf) ? member.perf.map((p) => ({ ...p })) : []); setDel(null); }, [member.id]);
+  const base = Array.isArray(member.perf) ? member.perf : [];
+  const dirty = JSON.stringify(rows) !== JSON.stringify(base);
+  const set = (i, key, val) => setRows((r) => r.map((p, idx) => (idx === i ? { ...p, [key]: key === "name" ? val : clampScore(val) } : p)));
+  const save = () => { onPatch(member.id, { perf: rows }); onToast && onToast({ ok: true, msg: "수행 능력 평가를 저장했습니다." }); };
   return (
-    <Card className="p-5">
-      <h3 className="font-extrabold" style={{ color: INK }}>운동 수행 능력 평가</h3>
-      <Sub>0~100점. 첫 평가 점수를 넣어두면 개선 폭이 표시됩니다</Sub>
-      <div className="mt-4 space-y-4">
-        {rows.map((p, i) => {
-          const gain = p.now - p.prev;
-          return (
-            <div key={i} className="rounded-2xl p-3" style={{ backgroundColor: CANVAS }}>
-              <div className="flex items-center gap-2">
-                <input value={p.name} onChange={(e) => onPatch(member.id, { perf: rows.map((x, idx) => (idx === i ? { ...x, name: e.target.value } : x)) })} className="min-w-0 flex-1 bg-transparent text-sm font-bold outline-none" style={{ color: INK }} />
-                <span className="shrink-0 whitespace-nowrap text-sm font-extrabold tabular-nums" style={{ color: INK }}>{p.now}<span className="ml-1 text-xs" style={{ color: gain > 0 ? GOOD : gain < 0 ? BAD : SUB }}>{gain > 0 ? "+" : ""}{gain}</span></span>
-                <button onClick={() => onPatch(member.id, { perf: rows.filter((_, idx) => idx !== i) })} aria-label={`${p.name} 항목 삭제`}
-                  className="-mr-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full" style={{ color: SUB, backgroundColor: CARD }}><Trash2 size={14} /></button>
+    <>
+      <Card className="p-5">
+        <h3 className="font-extrabold" style={{ color: INK }}>운동 수행 능력 평가</h3>
+        <Sub>0~100점 · 회색 눈금 = 첫 평가 · 수정 후 맨 아래 '저장하기'를 눌러야 반영됩니다</Sub>
+        <div className="mt-4 space-y-4">
+          {rows.map((p, i) => {
+            const gain = p.now - p.prev;
+            return (
+              <div key={i} className="rounded-2xl p-3" style={{ backgroundColor: CANVAS }}>
+                <div className="flex items-center gap-2">
+                  <input value={p.name} onChange={(e) => set(i, "name", e.target.value)} className="min-w-0 flex-1 bg-transparent text-sm font-bold outline-none" style={{ color: INK }} />
+                  <span className="shrink-0 whitespace-nowrap text-sm font-extrabold tabular-nums" style={{ color: INK }}>{p.now}<span className="ml-1 text-xs" style={{ color: gain > 0 ? GOOD : gain < 0 ? BAD : SUB }}>{gain > 0 ? "+" : ""}{gain}</span></span>
+                </div>
+                <div className="mt-2 flex items-center gap-2">
+                  <button onClick={() => set(i, "now", Number(p.now) - 1)} aria-label={`${p.name} 1점 내리기`}
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full" style={{ backgroundColor: CARD, color: INK }}><Minus size={14} /></button>
+                  <input type="range" min="0" max="100" value={p.now} onChange={(e) => set(i, "now", e.target.value)} className="min-w-0 flex-1" style={{ accentColor: GOOD }} />
+                  <button onClick={() => set(i, "now", Number(p.now) + 1)} aria-label={`${p.name} 1점 올리기`}
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full" style={{ backgroundColor: CARD, color: INK }}><Plus size={14} /></button>
+                </div>
+                <div className="mt-1 flex items-center gap-2">
+                  <span className="text-xs" style={{ color: SUB }}>첫 평가</span>
+                  <input inputMode="numeric" value={p.prev} onChange={(e) => set(i, "prev", e.target.value)} className="w-14 rounded-lg bg-white px-2 py-1 text-center text-xs font-bold outline-none" />
+                  <span className="text-xs" style={{ color: SUB }}>현재</span>
+                  <input inputMode="numeric" value={p.now} onChange={(e) => set(i, "now", e.target.value)} className="w-14 rounded-lg bg-white px-2 py-1 text-center text-xs font-bold outline-none" />
+                  <button onClick={() => setDel(i)} aria-label={`${p.name} 항목 삭제`}
+                    className="ml-auto flex h-8 items-center gap-1 rounded-full px-3 text-xs font-bold" style={{ color: SUB, backgroundColor: CARD }}><Trash2 size={13} /> 항목 삭제</button>
+                </div>
+                {del === i && (
+                  <div className="mt-2 flex flex-wrap items-center gap-2 rounded-xl p-2.5" style={{ backgroundColor: BAD_S }}>
+                    <AlertTriangle size={13} style={{ color: BAD }} />
+                    <span className="min-w-0 flex-1 text-xs font-bold" style={{ color: INK }}>'{p.name || "이 항목"}'을(를) 지울까요?</span>
+                    <button onClick={() => { setRows((r) => r.filter((_, idx) => idx !== i)); setDel(null); }} className="rounded-full px-3 py-1.5 text-xs font-extrabold text-white" style={{ backgroundColor: BAD }}>삭제</button>
+                    <button onClick={() => setDel(null)} className="rounded-full bg-white px-3 py-1.5 text-xs font-bold" style={{ color: SUB }}>취소</button>
+                  </div>
+                )}
               </div>
-              <div className="mt-2 flex items-center gap-2">
-                <button onClick={() => set(i, "now", Number(p.now) - 1)} aria-label={`${p.name} 1점 내리기`}
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full" style={{ backgroundColor: CARD, color: INK }}><Minus size={14} /></button>
-                <input type="range" min="0" max="100" value={p.now} onChange={(e) => set(i, "now", e.target.value)} className="min-w-0 flex-1" style={{ accentColor: GOOD }} />
-                <button onClick={() => set(i, "now", Number(p.now) + 1)} aria-label={`${p.name} 1점 올리기`}
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full" style={{ backgroundColor: CARD, color: INK }}><Plus size={14} /></button>
-              </div>
-              <div className="mt-1 flex items-center gap-2">
-                <span className="text-xs" style={{ color: SUB }}>첫 평가</span>
-                <input inputMode="numeric" value={p.prev} onChange={(e) => set(i, "prev", e.target.value)} className="w-14 rounded-lg bg-white px-2 py-1 text-center text-xs font-bold outline-none" />
-                <span className="text-xs" style={{ color: SUB }}>현재</span>
-                <input inputMode="numeric" value={p.now} onChange={(e) => set(i, "now", e.target.value)} className="w-14 rounded-lg bg-white px-2 py-1 text-center text-xs font-bold outline-none" />
-              </div>
-            </div>
-          );
-        })}
-        <div className="flex gap-2">
-          <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="평가 항목 추가" className={inputCls} />
-          <button onClick={() => { if (!newName.trim()) return; onPatch(member.id, { perf: [...rows, { name: newName.trim(), now: 50, prev: 50 }] }); setNewName(""); }}
-            className="shrink-0 rounded-2xl px-4 text-white" style={{ backgroundColor: BRAND }}><Plus size={16} /></button>
+            );
+          })}
+          {rows.length === 0 && <Sub className="py-4 text-center">평가 항목이 없습니다. 아래에서 추가해 주세요.</Sub>}
+          <div className="flex gap-2 pt-2" style={{ borderTop: `1px solid ${LINE}` }}>
+            <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="평가 항목 추가" className={inputCls} />
+            <button onClick={() => { if (!newName.trim()) return; setRows((r) => [...r, { name: newName.trim(), now: 50, prev: 50 }]); setNewName(""); }}
+              aria-label="평가 항목 추가" className="flex shrink-0 items-center gap-1 rounded-2xl px-4 text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}><Plus size={16} /> 추가</button>
+          </div>
         </div>
+      </Card>
+      <div className="safe-b sticky bottom-3 z-10">
+        <button onClick={save} disabled={!dirty}
+          className="flex w-full items-center justify-center gap-1.5 rounded-2xl py-4 text-sm font-extrabold text-white"
+          style={{ backgroundColor: dirty ? PRIMARY : FAINT, boxShadow: SHADOW }}>
+          <Check size={16} /> {dirty ? "변경사항 저장하기" : "저장됨 · 변경사항 없음"}
+        </button>
       </div>
-    </Card>
+    </>
   );
 }
+
 const INFO_FIELDS = ["name", "age", "instructor", "phone", "goal", "focus", "passName", "regular", "service", "total", "startDate", "contractEnd", "status", "endedAt", "endedReason", "endedMemo", "holdFrom", "holdUntil", "holdReason"];
 
 function PaymentSheet({ member, onClose, onSubmit }) {
@@ -5388,6 +5734,10 @@ function SettingsTab({ db, photos, account, onChangeSettings, onChangePhoto, sav
         <p className="mt-1.5 text-xs leading-relaxed" style={{ color: INK2 }}>
           회원 사진은 회원 동의를 받은 뒤 촬영해 주세요. 회원이 삭제를 요청하면 이 앱에서 그 회원을 삭제하는 것으로 사진까지 함께 지워집니다.
         </p>
+        <div className="mt-3 flex items-center gap-2 rounded-xl px-3 py-2" style={{ backgroundColor: CANVAS }}>
+          <span className="text-xs font-bold" style={{ color: SUB }}>앱 버전</span>
+          <span className="ml-auto text-xs font-extrabold tabular-nums" style={{ color: PRIMARY }}>{APP_VER}</span>
+        </div>
       </Card>
     </div>
   );
@@ -5594,7 +5944,9 @@ export default function App() {
       attendeesOf(prev).forEach((a) => { if (a.deductFrom && !keep.has(a.memberId)) members = restoreOne(members, a.memberId, a.deductFrom); });
     }
     saveDb({ ...db, members, schedule: prev ? db.schedule.map((s) => (s.id === item.id ? item : s)) : [...db.schedule, item] });
-    setToast({ ok: true, msg: prev ? "수업을 수정했습니다." : "수업을 등록했습니다." });
+    setToast({ ok: true, msg: item.personal
+      ? (prev ? "일정을 수정했습니다." : "일정을 등록했습니다.")
+      : prev ? "수업을 수정했습니다." : "수업을 등록했습니다." });
   };
   const deleteSchedule = (id) => {
     const s0 = db.schedule.find((x) => x.id === id);
@@ -5627,6 +5979,29 @@ export default function App() {
     const schedule = db.schedule.map((x) => (x.id === id ? { ...x, attendees, status: undefined, deductFrom: undefined, noshowFee: undefined } : x));
     saveDb({ ...db, members, schedule });
     setToast({ ok: true, msg: msg || `${stOf(status).label} 처리했습니다.` });
+  };
+  /* 듀엣처럼 여러 명인 수업을 한 번에 처리 — 따로 두 번 호출하면 뒤엣것이 앞엣것을 덮는다 */
+  const setStatusAll = (id, status) => {
+    const s0 = db.schedule.find((x) => x.id === id);
+    if (!s0) return;
+    const list = attendeesOf(s0);
+    if (!list.length) return;
+    let members = db.members;
+    const zero = [];
+    const attendees = list.map((a) => {
+      if (a.deductFrom) members = restoreOne(members, a.memberId, a.deductFrom);
+      let deductFrom = null;
+      if (status === "done") {
+        const r = deductOne(members, a.memberId);
+        members = r.members; deductFrom = r.from;
+        if (!deductFrom) zero.push(db.members.find((x) => x.id === a.memberId)?.name || "회원");
+      }
+      return { ...a, status, deductFrom, noshowFee: null };
+    });
+    saveDb({ ...db, members, schedule: db.schedule.map((x) => (x.id === id ? { ...x, attendees, status: undefined, deductFrom: undefined, noshowFee: undefined } : x)) });
+    setToast(zero.length
+      ? { ok: false, msg: `${zero.join(", ")} 잔여 0 — 차감 없이 기록했습니다.` }
+      : { ok: true, msg: `${list.length}명 ${stOf(status).label} 처리했습니다.` });
   };
   const setNoshowFee = (id, charge, memberId) => {
     const s0 = db.schedule.find((x) => x.id === id);
@@ -5935,7 +6310,7 @@ export default function App() {
           </>
         )}
         {tab === "schedule" && (
-          <ScheduleManager db={db} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone}
+          <ScheduleManager db={db} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone}
             onOpenMember={(id) => { setSelectedId(id); setMobileView("detail"); setTab("members"); }}
             onNoComment={noComment}
             onWriteNote={(id) => { setSelectedId(id); setSection("note"); setTab("records"); }} />

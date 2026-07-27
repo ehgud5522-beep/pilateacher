@@ -5249,7 +5249,7 @@ export default function App() {
     setToast({ ok: true, msg: "코멘트를 저장했습니다." });
   };
   const deleteNote = (nid) => patch(member.id, { notes: member.notes.filter((n) => n.id !== nid) });
-  const savePhoto = async (view, blob, slot, tf) => {
+  const savePhoto = async (view, blob, slot, tf, gid, gtf) => {
     if (!member || !blob) return;
     let rec = null;
     try { const bid = newBlobId(); await blobPut(bid, blob); rec = { blobId: bid, src: URL.createObjectURL(blob) }; }
@@ -5257,7 +5257,9 @@ export default function App() {
       try { rec = { src: await blobToDataUrl(blob) }; }
       catch (e2) { setToast({ ok: false, msg: "사진을 저장하지 못했습니다." }); return; }
     }
-    const cur = photos[member.id] || {}, list = cur[view] || [];
+    const cur = photos[member.id] || {};
+    /* 상대 사진 조정이 같이 넘어오면 한 번에 반영한다 (따로 저장하면 뒤엣것이 앞엣것을 덮는다) */
+    const list = (cur[view] || []).map((p) => (gid && gtf && p.id === gid ? { ...p, ...gtf } : p));
     const shot = { id: uid(), date: todayISO(), marks: [], ...rec, ...tf };
     const nextList = slot === "before" ? [shot, ...list] : [...list, shot];
     const sets = [...(cur.sets || [])];
@@ -5320,10 +5322,11 @@ export default function App() {
     savePhotos({ ...photos, [member.id]: { ...cur, poses: (cur.poses || []).filter((p) => p.id !== pid) } });
     if (gone?.blobId) forgetBlobs([gone.blobId]);
   };
-  const adjustPhoto = (view, pid, tf) => {
+  const adjustPhoto = (view, pid, tf, gid, gtf) => {
     const cur = photos[member.id] || {};
-    savePhotos({ ...photos, [member.id]: { ...cur, [view]: (cur[view] || []).map((p) => (p.id === pid ? { ...p, ...tf } : p)) } });
-    setToast({ ok: true, msg: "사진 위치를 저장했습니다." });
+    savePhotos({ ...photos, [member.id]: { ...cur, [view]: (cur[view] || []).map((p) =>
+      p.id === pid ? { ...p, ...tf } : (gid && gtf && p.id === gid ? { ...p, ...gtf } : p)) } });
+    setToast({ ok: true, msg: gid && gtf ? "두 사진의 위치를 저장했습니다." : "사진 위치를 저장했습니다." });
   };
   const saveMarks = (view, pid, marks) => {
     const cur = photos[member.id] || {};

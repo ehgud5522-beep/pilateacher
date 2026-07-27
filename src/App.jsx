@@ -1601,16 +1601,22 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onNoshowFee, onGroupD
         </button>
       )}
 
-      {todayRows.length === 0 && tomorrowRows.length > 0 && (
+      {todayRows.length === 0 && (
         <Card className="p-5">
           <div className="flex items-center gap-2">
             <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: TINT }}><CalendarDays size={14} style={{ color: PRIMARY }} /></span>
             <div className="min-w-0 flex-1">
               <h3 className="font-extrabold" style={{ color: INK }}>내일 수업 미리 보기</h3>
-              <Sub>{dow(T0) === "일" ? "내일 만날 회원님을 알고 가면 첫 수업부터 수월합니다" : "내일 만날 회원님을 미리 확인해 두세요"}</Sub>
+              <Sub>{tomorrowRows.length === 0 ? "다음날 일정을 미리 확인해 두세요" : dow(T0) === "일" ? "내일 만날 회원님을 알고 가면 첫 수업부터 수월합니다" : "내일 만날 회원님을 미리 확인해 두세요"}</Sub>
             </div>
-            <span className="shrink-0 rounded-full px-2.5 py-1 text-xs font-extrabold" style={{ backgroundColor: TINT, color: PRIMARY }}>{tomorrowRows.length}건</span>
+            {tomorrowRows.length > 0 && <span className="shrink-0 rounded-full px-2.5 py-1 text-xs font-extrabold" style={{ backgroundColor: TINT, color: PRIMARY }}>{tomorrowRows.length}건</span>}
           </div>
+          {tomorrowRows.length === 0 ? (
+            <div className="mt-3 rounded-2xl px-4 py-6 text-center" style={{ backgroundColor: CANVAS }}>
+              <p className="text-sm font-extrabold" style={{ color: INK }}>수업이 비어 있어요</p>
+              <p className="mt-1 text-xs" style={{ color: SUB }}>내일은 잡힌 수업이 없습니다 · 미리 등록해 두면 아침 준비가 쉬워집니다</p>
+            </div>
+          ) : (
           <div className="mt-3 space-y-1.5">
             {tomorrowRows.slice(0, 8).map((r) => {
               if (r.kind === "equip") return (
@@ -1634,8 +1640,9 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onNoshowFee, onGroupD
               );
             })}
           </div>
+          )}
           <button onClick={() => { setCursor(T1); setMode("day"); }} className="mt-3 w-full rounded-2xl py-3 text-sm font-extrabold" style={{ backgroundColor: TINT, color: PRIMARY }}>
-            내일 일정 열기
+            다음날 일정 확인하기
           </button>
         </Card>
       )}

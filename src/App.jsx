@@ -2651,7 +2651,15 @@ function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveM
   return (
     <Card className="p-5">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div><h3 className="font-extrabold" style={{ color: INK }}>AI 비포애프터 분석</h3><Sub>중심선 정렬 · 관절 각도 측정 · 회원 동의 후 촬영, 이 기기에만 저장</Sub></div>
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl" style={{ background: GRAD }}>
+            <Camera size={16} color="#fff" />
+          </span>
+          <div className="min-w-0">
+            <h3 className="font-extrabold" style={{ color: INK }}>비포애프터 분석</h3>
+            <Sub>중심선 정렬 · 회원 동의 후 촬영, 이 기기에만 저장</Sub>
+          </div>
+        </div>
         <div className="flex gap-1 rounded-full p-1" style={{ backgroundColor: CANVAS }}>
           {VIEWS.map((v) => (
             <button key={v.key} onClick={() => setView(v.key)} className="rounded-full px-3 py-1.5 text-xs font-bold"
@@ -3333,6 +3341,28 @@ function badge(ctx, x, y, text, color, up, placed, W, H) {
 }
 const BONES_FRONT = [["shL", "shR"], ["hipL", "hipR"], ["shL", "hipL"], ["shR", "hipR"], ["hipL", "kneeL"], ["kneeL", "ankL"], ["hipR", "kneeR"], ["kneeR", "ankR"], ["shL", "elL"], ["elL", "wrL"], ["shR", "elR"], ["elR", "wrR"], ["earL", "earR"]];
 const BONES_SIDE = [["ear", "sh"], ["sh", "hip"], ["hip", "knee"], ["knee", "ank"]];
+/* 접힌 상태에서 보여줄 분석 예시 그림 (실제 회원 사진이 아님) */
+function PoseMock() {
+  return (
+    <svg viewBox="0 0 96 128" width="72" height="96" className="shrink-0" style={{ borderRadius: 12, background: "#14141C" }} aria-hidden="true">
+      <line x1="48" y1="6" x2="48" y2="122" stroke="rgba(255,255,255,.22)" strokeWidth="1" strokeDasharray="3 3" />
+      <circle cx="48" cy="22" r="8" fill="none" stroke="#B8A6FF" strokeWidth="2" />
+      <path d="M34 40 L62 37" stroke="#F04438" strokeWidth="2.5" strokeLinecap="round" />
+      <path d="M36 74 L60 72" stroke="#F79009" strokeWidth="2.5" strokeLinecap="round" />
+      <path d="M48 40 L48 74" stroke="#8B74FF" strokeWidth="2" />
+      <path d="M38 74 L36 104 M58 72 L60 104" stroke="#8B74FF" strokeWidth="2" strokeLinecap="round" />
+      <path d="M36 104 L34 118 M60 104 L62 118" stroke="#8B74FF" strokeWidth="2" strokeLinecap="round" />
+      {[[34, 40], [62, 37], [36, 74], [60, 72], [36, 104], [60, 104]].map(([cx, cy]) => (
+        <circle key={`${cx}-${cy}`} cx={cx} cy={cy} r="3" fill="#fff" />
+      ))}
+      <rect x="6" y="44" width="34" height="13" rx="6" fill="#F04438" />
+      <text x="23" y="53.5" textAnchor="middle" fontSize="8" fontWeight="700" fill="#fff">어깨 3.2°</text>
+      <rect x="54" y="80" width="36" height="13" rx="6" fill="#F79009" />
+      <text x="72" y="89.5" textAnchor="middle" fontSize="8" fontWeight="700" fill="#fff">골반 1.8°</text>
+    </svg>
+  );
+}
+
 function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onToast }) {
   const [engine, setEngine] = useState("idle");
   const [busy, setBusy] = useState(false);
@@ -3606,6 +3636,20 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onToast }) {
         {saved.length > 0 && <span className="rounded-full px-2 py-1 text-xs font-bold" style={{ backgroundColor: TINT, color: PRIMARY }}>{saved.length}건</span>}
         <ChevronRight size={16} style={{ color: SUB, transform: open ? "rotate(90deg)" : "none", transition: "transform .2s" }} />
       </button>
+      {!open && (
+        <button onClick={() => setOpen(true)} className="mt-3 flex w-full items-center gap-3 rounded-2xl p-3 text-left" style={{ background: GRAD_SOFT, border: `1px solid ${LINE}` }}>
+          <PoseMock />
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm font-extrabold" style={{ color: INK }}>이렇게 나옵니다</span>
+            <span className="mt-1 block text-xs leading-relaxed" style={{ color: INK2 }}>
+              전신 사진을 올리면 어깨 · 골반 · 무릎을 찾아 좌우 기울기를 각도로 재고, 보완 운동까지 알려 줍니다.
+            </span>
+            <span className="mt-1.5 inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-extrabold" style={{ backgroundColor: BRAND, color: "#fff" }}>
+              사진 올리고 분석하기
+            </span>
+          </span>
+        </button>
+      )}
       {open && (
         <div className="mt-4 space-y-3">
           <div className="flex flex-wrap items-center gap-2 rounded-2xl px-3 py-2.5" style={{ background: GRAD_SOFT }}>
@@ -3834,7 +3878,7 @@ function Dashboard({ member, photos, schedule, onBack, briefing, onSavePhoto, on
       <Guard label="변화 요약"><ChangeSummary member={member} onGo={() => goRecord("inbody")} /></Guard>
       <Guard label="인바디 그래프"><InbodyChart member={member} /></Guard>
       <Guard label="AI 체형 분석"><PoseAnalyzer member={member} photos={photos} onSavePose={onSavePose} onDeletePose={onDeletePose} onToast={onToast} /></Guard>
-      <Guard label="AI 비포애프터 분석"><PhotoCompare member={member} photos={photos} briefing={briefing} onSavePhoto={onSavePhoto} onRemove={onRemovePhoto} onSaveMarks={onSaveMarks} onAdjust={onAdjustPhoto} onToast={onToast} /></Guard>
+      <Guard label="비포애프터 분석"><PhotoCompare member={member} photos={photos} briefing={briefing} onSavePhoto={onSavePhoto} onRemove={onRemovePhoto} onSaveMarks={onSaveMarks} onAdjust={onAdjustPhoto} onToast={onToast} /></Guard>
       <Guard label="사진 모음"><BeforeAfterSets memberName={member.name} photos={photos} onToggleFav={onToggleFav} onDelete={onDeleteSet} /></Guard>
       <Guard label="운동 수행 능력"><PerformancePanel member={member} briefing={briefing} onGo={() => goRecord("perf")} /></Guard>
       <Guard label="코멘트 기록"><Timeline member={member} briefing={briefing} onDelete={onDeleteNote} /></Guard>

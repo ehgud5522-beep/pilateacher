@@ -1150,11 +1150,21 @@ function Tabs({ tab, setTab }) {
   );
 }
 
+/* 수강권 흔적이 하나라도 있으면 '등록한 적 있는 회원' */
+const everRegistered = (m) => !!(
+  (m?.passName && String(m.passName).trim()) ||
+  left(m) > 0 ||
+  (m?.payments || []).length > 0 ||
+  num(m?.total) > 0 ||
+  (m?.contractEnd && String(m.contractEnd).trim())
+);
 function detectAlerts(members, schedule) {
   const out = [];
   members.forEach((m) => {
     if (isEnded(m)) return;
     const att = attendanceOf(schedule, m.id);
+    /* 등록 이력도 출석 기록도 없는 빈 회원은 재등록 대상이 아니다 */
+    if (!everRegistered(m) && !att.done) return;
     if (isHold(m)) {
       const d = ddaySafe(m.holdUntil);
       if (d !== null && d <= 3)

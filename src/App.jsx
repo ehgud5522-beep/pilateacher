@@ -898,11 +898,6 @@ const restLabel = (idle) => (idle === null ? "첫 수업 전" : idle === 0 ? "�
 const isEnded = (m) => m?.status === "ended";
 const isHold = (m) => m?.status === "hold";
 const isActive = (m) => !isEnded(m) && !isHold(m);
-/* 이름을 아직 안 적은 회원 = 작성 중 */
-const isDraft = (m) => !String(m?.name || "").trim();
-/* 이름도 기록도 전혀 없는, 안전하게 지울 수 있는 회원 */
-const isBlankDraft = (m) => isDraft(m) && left(m) === 0 && !num(m?.total)
-  && !(m?.payments || []).length && !(m?.inbody || []).length && !(m?.notes || []).length;
 const won = (n) => (Number(n) || 0).toLocaleString("ko-KR");
 const paidTotal = (m) => (m?.payments || []).reduce((s, p) => s + num(p?.amount), 0);
 const paidCount = (m) => (m?.payments || []).reduce((s, p) => s + num(p?.sessions) + num(p?.service), 0);
@@ -2221,9 +2216,8 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast }) {
     </div>
   );
 }
-function MemberList({ members, selectedId, onSelect, onAdd, onOpenFav, favCount, schedule, draftCount, onCleanDrafts }) {
+function MemberList({ members, selectedId, onSelect, onAdd, onOpenFav, favCount, schedule }) {
   const [q, setQ] = useState("");
-  const [cleanAsk, setCleanAsk] = useState(false);
   const [seg, setSeg] = useState("active");
   const [todayOnly, setTodayOnly] = useState(false);
   const [sortBy, setSortBy] = useState("default");
@@ -2260,20 +2254,6 @@ function MemberList({ members, selectedId, onSelect, onAdd, onOpenFav, favCount,
         </div>
         <button onClick={onAdd} className="flex items-center gap-1 rounded-2xl px-4 text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}><UserPlus size={16} /> 추가</button>
       </div>
-      {draftCount > 0 && (cleanAsk ? (
-        <div className="flex flex-wrap items-center gap-2 rounded-2xl px-4 py-3" style={{ backgroundColor: BAD_S }}>
-          <AlertTriangle size={15} style={{ color: BAD }} />
-          <span className="min-w-0 flex-1 text-sm font-bold" style={{ color: INK }}>이름도 기록도 없는 회원 {draftCount}명을 지울까요?</span>
-          <button onClick={() => { onCleanDrafts && onCleanDrafts(); setCleanAsk(false); }} className="rounded-full px-3 py-1.5 text-xs font-extrabold text-white" style={{ backgroundColor: BAD }}>정리</button>
-          <button onClick={() => setCleanAsk(false)} className="rounded-full bg-white px-3 py-1.5 text-xs font-bold" style={{ color: SUB }}>취소</button>
-        </div>
-      ) : (
-        <button onClick={() => setCleanAsk(true)} className="flex w-full items-center gap-2 rounded-2xl px-4 py-3" style={{ backgroundColor: WARN_S }}>
-          <Pencil size={15} className="shrink-0" style={{ color: WARN }} />
-          <span className="min-w-0 flex-1 text-left text-sm font-bold" style={{ color: INK }}>작성 중인 회원 {draftCount}명 · 이름이 비어 있습니다</span>
-          <span className="shrink-0 text-xs font-extrabold" style={{ color: WARN }}>정리하기</span>
-        </button>
-      ))}
       {todayCount > 0 && (
         <button onClick={() => setTodayOnly((v) => !v)} className="flex w-full items-center gap-2 rounded-2xl px-4 py-3"
           style={todayOnly ? { backgroundColor: BRAND, color: "#fff" } : { backgroundColor: CARD, color: INK, boxShadow: SHADOW }}>
@@ -2353,9 +2333,7 @@ function MemberList({ members, selectedId, onSelect, onAdd, onOpenFav, favCount,
             <div className="flex items-center gap-3">
               <div className="flex h-11 w-11 items-center justify-center rounded-2xl text-sm font-extrabold" style={{ backgroundColor: TINT, color: PRIMARY }}>{(m.name || "?").slice(0, 1)}</div>
               <div className="min-w-0 flex-1">
-                <p className="truncate font-extrabold" style={{ color: isDraft(m) ? SUB : INK }}>
-                  {isDraft(m) ? "작성 중" : m.name} {m.age ? <span className="text-xs font-medium" style={{ color: SUB }}>{m.age}세</span> : null}
-                </p>
+                <p className="truncate font-extrabold" style={{ color: INK }}>{m.name || "이름 미입력"} {m.age ? <span className="text-xs font-medium" style={{ color: SUB }}>{m.age}세</span> : null}</p>
                 {todayMap[m.id]
                   ? <p className="truncate text-xs font-extrabold" style={{ color: PRIMARY }}>오늘 {todayMap[m.id].start} · {todayMap[m.id].type}</p>
                   : <Sub className="truncate">{m.goal || "목표 미입력"}</Sub>}
@@ -3688,7 +3666,7 @@ function Dashboard({ member, photos, schedule, onBack, briefing, onSavePhoto, on
         <div className="flex items-center gap-3">
           <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl text-lg font-extrabold text-white" style={{ background: GRAD, boxShadow: "0 4px 12px rgba(108,76,241,.30)" }}>{(member.name || "?").slice(0, 1)}</div>
           <div className="min-w-0 flex-1">
-            <h2 className="text-lg font-extrabold" style={{ color: isDraft(member) ? SUB : INK }}>{isDraft(member) ? "이름을 입력해 주세요" : `${member.name} 회원님`}</h2>
+            <h2 className="text-lg font-extrabold" style={{ color: INK }}>{member.name || "이름 미입력"} 회원님</h2>
             <Sub>{member.age ? `${member.age}세 · ` : ""}담당 {member.instructor || "-"}{att.rate !== null ? ` · 출석률 ${att.rate}%` : ""}</Sub>
           </div>
           <div className="rounded-2xl px-3 py-2 text-center" style={{ backgroundColor: low ? BAD_S : CANVAS }}>
@@ -5137,18 +5115,6 @@ export default function App() {
     setSelectedId(m.id); setSection("info"); setTab("records");
     setToast({ ok: true, msg: "새 회원을 추가했습니다." });
   };
-  const drafts = useMemo(
-    () => db.members.filter((m) => isBlankDraft(m) && !photos[m.id] && !db.schedule.some((s) => hasMember(s, m.id))),
-    [db.members, db.schedule, photos]
-  );
-  const cleanDrafts = () => {
-    const ids = new Set(drafts.map((m) => m.id));
-    if (!ids.size) return;
-    const rest = db.members.filter((m) => !ids.has(m.id));
-    saveDb({ ...db, members: rest });
-    if (ids.has(selectedId)) setSelectedId(rest[0]?.id || null);
-    setToast({ ok: true, msg: `작성 중이던 회원 ${ids.size}명을 정리했습니다.` });
-  };
   const removeMember = (id) => {
     const rest = db.members.filter((m) => m.id !== id);
     saveDb({
@@ -5369,7 +5335,6 @@ export default function App() {
               <div className={`md:col-span-5 lg:col-span-4 ${mobileView === "detail" ? "hidden md:block" : ""}`}>
                 <Guard label="회원 목록">
                   <MemberList members={db.members} schedule={db.schedule} selectedId={selectedId} onAdd={addMember} onOpenFav={() => setFavOpen(true)} favCount={favList.length}
-                    draftCount={drafts.length} onCleanDrafts={cleanDrafts}
                     onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} />
                 </Guard>
               </div>

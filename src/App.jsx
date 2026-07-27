@@ -86,7 +86,7 @@ const sysDarkNow = () => {
 };
 
 /* 파일이 실제로 교체됐는지 1초 만에 확인하는 표시 — 설정 탭 맨 아래에 뜬다 */
-const APP_VER = "v53 · 2026-07-27";
+const APP_VER = "v54 · 2026-07-27";
 try { if (typeof window !== "undefined") window.PILATEACHER_VER = APP_VER; } catch (e) {}
 
 const ACC_KEY = "pilateacher_accounts_v1";
@@ -1893,7 +1893,7 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onStatusAll, onNoshow
           </div>
           <div className="mt-2 flex items-center gap-1.5 rounded-xl px-3 py-2" style={{ backgroundColor: CANVAS }}>
             <ChevronLeft size={13} style={{ color: PRIMARY }} />
-            <p className="text-xs font-bold" style={{ color: INK }}>끝난 수업은 <span style={{ color: PRIMARY }}>왼쪽으로 밀면</span> 맨 아래로</p>
+            <p className="text-xs font-bold" style={{ color: INK }}>끝난 수업은 <span style={{ color: PRIMARY }}>왼쪽으로 밀어</span> 정리해 두세요</p>
             {parkedCount > 0 && (
               <button onClick={() => setParked({})} className="ml-auto rounded-full bg-white px-2.5 py-1 text-xs font-extrabold" style={{ color: PRIMARY }}>모두 올리기 {parkedCount}</button>
             )}
@@ -2235,7 +2235,7 @@ function SwipeRow({ children, down, enabled, onPark, onUnpark }) {
       {enabled && (
         <div ref={tag} className="pointer-events-none absolute inset-0 flex items-center rounded-2xl px-4"
           style={{ backgroundColor: down ? GOOD_S : TINT, justifyContent: down ? "flex-start" : "flex-end", opacity: 0 }}>
-          <span className="text-xs font-extrabold" style={{ color: down ? GOOD : PRIMARY }}>{down ? "다시 위로" : "맨 아래로"}</span>
+          <span className="text-xs font-extrabold" style={{ color: down ? GOOD : PRIMARY }}>{down ? "되돌리기" : "정리하기"}</span>
         </div>
       )}
       <div ref={box} onPointerDown={start} onPointerMove={move} onPointerUp={end} onPointerCancel={end}
@@ -2254,30 +2254,17 @@ function WeekGrid({ days, byDate, nameOf, cursor, onOpen, onNew }) {
   const rows = GRID_H1 - GRID_H0 + 1;
   const top0 = GRID_H0 * 60;
   /* 빈 칸을 위아래로 훑으면 그 시간만큼 일정이 잡힌다 (30분 단위) */
-  const [sel, setSel] = useState(null);
-  const [pick, setPick] = useState(false);   /* 켜면 드래그로 시간 잡기, 끄면 화면 스크롤 */
-  const dragging = useRef(false);
   const slotAt = (e, el) => {
     const r = el.getBoundingClientRect();
     const y = Math.max(0, Math.min(r.height - 1, e.clientY - r.top));
     return Math.max(0, Math.min(rows * 2 - 1, Math.floor(y / (GRID_ROW / 2))));
   };
-  const selRange = (v) => {
-    const a = Math.min(v.a, v.b), b = Math.max(v.a, v.b);
-    const startMin = top0 + a * 30;
-    return { start: `${String(Math.floor(startMin / 60)).padStart(2, "0")}:${String(startMin % 60).padStart(2, "0")}`, dur: (b - a + 1) * 30 };
-  };
-  const selLabel = (v) => { const r = selRange(v); return `${r.start} · ${r.dur >= 60 ? `${Math.floor(r.dur / 60)}시간${r.dur % 60 ? ` ${r.dur % 60}분` : ""}` : `${r.dur}분`}`; };
-  const finishSel = () => {
-    dragging.current = false;
-    setPick(false);
-    setSel((v) => { if (v) { const r = selRange(v); setTimeout(() => onNew(v.day, r.start, r.dur), 0); } return null; });
-  };
-  /* 스크롤 모드에서는 한 번 눌러 30분짜리로 등록 */
+  /* 빈 칸을 누르면 그 시간대(30분)로 등록 창이 열린다 */
   const tapNew = (d, e) => {
     const k = slotAt(e, e.currentTarget);
-    const r = selRange({ a: k, b: k });
-    onNew(d, r.start, r.dur);
+    const startMin = top0 + k * 30;
+    const start = `${String(Math.floor(startMin / 60)).padStart(2, "0")}:${String(startMin % 60).padStart(2, "0")}`;
+    onNew(d, start, 30);
   };
   const blocksOf = (d) => byDate(d).filter((s) => {
     const a = minOf(s.start), b = minOf(s.end) || a + 50;
@@ -2299,17 +2286,9 @@ function WeekGrid({ days, byDate, nameOf, cursor, onOpen, onNew }) {
       <div className="mb-1.5 flex items-center gap-1.5">
         <CalendarDays size={13} style={{ color: PRIMARY }} />
         <p className="text-xs font-extrabold" style={{ color: INK }}>주간 시간표</p>
-        <button onClick={() => { setPick((v) => !v); setSel(null); dragging.current = false; }}
-          className="ml-auto flex shrink-0 items-center gap-1 rounded-full px-3 py-1.5 text-xs font-extrabold"
-          style={pick ? { background: GRAD, color: "#fff", boxShadow: "0 3px 10px rgba(108,76,241,.35)" } : { backgroundColor: CANVAS, color: INK, border: `1px solid ${LINE}` }}>
-          <Move size={13} /> {pick ? "시간 잡는 중" : "드래그로 잡기"}
-        </button>
+        <Sub className="ml-auto shrink-0">08:00 ~ 23:00</Sub>
       </div>
-      <p className="mb-2 text-xs font-semibold" style={{ color: pick ? PRIMARY : SUB }}>
-        {pick
-          ? "빈 칸을 위아래로 훑으면 그만큼 시간이 잡힙니다 · 한 번 잡으면 자동으로 꺼집니다"
-          : "08:00 ~ 23:00 · 빈 칸을 누르면 30분으로 등록 · 길게 잡으려면 위 버튼을 켜세요"}
-      </p>
+      <p className="mb-2 text-xs font-semibold" style={{ color: SUB }}>빈 칸을 누르면 그 시간으로 등록 창이 열립니다 · 시간은 창에서 바꿀 수 있어요</p>
       <div className="overflow-x-auto rounded-2xl" style={{ border: `1px solid ${LINE}` }}>
         <div style={{ width: "100%" }}>
           <div className="sticky top-0 z-10 flex" style={{ backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
@@ -2334,23 +2313,13 @@ function WeekGrid({ days, byDate, nameOf, cursor, onOpen, onNew }) {
             </div>
             {days.map((d) => (
               <div key={d} className="relative min-w-0 flex-1"
-                style={{ borderLeft: `1px solid ${LINE}`, backgroundColor: d === todayISO() ? `${PRIMARY}14` : "transparent", touchAction: pick ? "none" : "auto" }}
-                onClick={pick ? undefined : (e) => tapNew(d, e)}
-                onPointerDown={pick ? ((e) => { e.currentTarget.setPointerCapture?.(e.pointerId); const k = slotAt(e, e.currentTarget); dragging.current = true; setSel({ day: d, a: k, b: k }); }) : undefined}
-                onPointerMove={pick ? ((e) => { if (!dragging.current) return; e.preventDefault(); const k = slotAt(e, e.currentTarget); setSel((v) => (v && v.day === d ? { ...v, b: k } : v)); }) : undefined}
-                onPointerUp={pick ? (() => finishSel()) : undefined}
-                onPointerCancel={pick ? (() => { dragging.current = false; setSel(null); }) : undefined}>
+                style={{ borderLeft: `1px solid ${LINE}`, backgroundColor: d === todayISO() ? `${PRIMARY}14` : "transparent" }}
+                onClick={(e) => tapNew(d, e)}>
                 {Array.from({ length: rows }, (_, i) => (
                   <div key={i} style={{ height: GRID_ROW, borderTop: i ? `1px solid ${LINE}` : "none" }}>
                     <div style={{ height: GRID_ROW / 2, borderBottom: `1px dashed ${LINE}` }} />
                   </div>
                 ))}
-                {sel && sel.day === d && (
-                  <div className="pointer-events-none absolute left-0.5 right-0.5 flex items-center justify-center rounded-lg"
-                    style={{ top: Math.min(sel.a, sel.b) * (GRID_ROW / 2), height: (Math.abs(sel.b - sel.a) + 1) * (GRID_ROW / 2), background: `${PRIMARY}55`, border: `2px solid ${PRIMARY}` }}>
-                    <span className="rounded-full px-2 py-0.5 text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>{selLabel(sel)}</span>
-                  </div>
-                )}
                 {blocksOf(d).map((b) => (
                   <button key={b.s.id} onPointerDown={(e) => e.stopPropagation()} onClick={() => onOpen(b.s)}
                     className="absolute left-0.5 right-0.5 overflow-hidden rounded-lg px-1 py-1 text-left"
@@ -4639,7 +4608,7 @@ function Dashboard({ member, photos, schedule, onBack, briefing, onSavePhoto, on
     </div>
   );
 }
-function RecordTab({ db, selectedId, setSelectedId, section, setSection, onSaveInbody, onDeleteInbody, onSaveNote, onPatch, onDelete, onToast, onSettings }) {
+function RecordTab({ db, selectedId, setSelectedId, section, setSection, onSaveInbody, onDeleteInbody, onSaveNote, onPatch, onDelete, onToast, onSettings, onLeaveNote, backHint }) {
   const [openInfo, setOpenInfo] = useState(false);
   const members = db.members;
   const member = members.find((m) => m.id === selectedId) || members[0];
@@ -4705,7 +4674,7 @@ function RecordTab({ db, selectedId, setSelectedId, section, setSection, onSaveI
           {SECTIONS.map((s) => {
             const Icon = s.icon, on = section === s.k;
             return (
-              <button key={s.k} onClick={() => setSection(s.k)}
+              <button key={s.k} onClick={() => { setSection(s.k); onLeaveNote && onLeaveNote(); }}
                 className="flex min-w-0 flex-1 flex-col items-center justify-center gap-1 whitespace-nowrap rounded-2xl px-1 py-3 text-xs font-extrabold"
                 style={on
                   ? { background: GRAD, color: "#fff", boxShadow: "0 4px 12px rgba(108,76,241,.38)", border: "1px solid transparent" }
@@ -4717,7 +4686,7 @@ function RecordTab({ db, selectedId, setSelectedId, section, setSection, onSaveI
         </div>
       </Card>
       {section === "inbody" && <InbodyForm member={member} last={last} onSave={onSaveInbody} onDelete={onDeleteInbody} onPatch={onPatch} onToast={onToast} />}
-      {section === "note" && <NoteForm member={member} schedule={db.schedule} onSave={onSaveNote} settings={db.settings} onSettings={onSettings} />}
+      {section === "note" && <NoteForm member={member} schedule={db.schedule} onSave={onSaveNote} settings={db.settings} onSettings={onSettings} backHint={backHint} />}
       {section === "perf" && <PerfForm member={member} onPatch={onPatch} onToast={onToast} />}
       {section === "info" && <InfoForm member={member} onPatch={onPatch} onDelete={onDelete} onToast={onToast} />}
     </div>
@@ -5030,7 +4999,7 @@ function InbodyForm({ member, last, onSave, onDelete, onPatch, onToast }) {
     </>
   );
 }
-function NoteForm({ member, schedule, onSave, settings, onSettings }) {
+function NoteForm({ member, schedule, onSave, settings, onSettings, backHint }) {
   const [n, setN] = useState({ date: todayISO(), type: "개인레슨", body: "", tags: "" });
   const [group, setGroup] = useState("코어 · 안정성");
   const [adding, setAdding] = useState(false);
@@ -5101,6 +5070,12 @@ function NoteForm({ member, schedule, onSave, settings, onSettings }) {
         <Field label="태그" hint="쉼표로 구분 · 선택">
           <input value={n.tags} onChange={(e) => setN({ ...n, tags: e.target.value })} placeholder="코어, 가동성" className={inputCls} />
         </Field>
+        {backHint && (
+          <div className="flex items-center gap-2 rounded-2xl px-3 py-2.5" style={{ backgroundColor: TINT }}>
+            <CalendarDays size={14} className="shrink-0" style={{ color: PRIMARY }} />
+            <span className="text-xs font-bold" style={{ color: INK }}>저장하면 오늘 일정으로 돌아갑니다 · 다음 회원을 이어서 처리하세요</span>
+          </div>
+        )}
         <PrimaryBtn disabled={!n.body.trim()} onClick={() => {
           onSave(member.id, {
             id: uid(), date: n.date, type: n.type, instructor: member.instructor, body: n.body.trim(),
@@ -5991,8 +5966,11 @@ export default function App() {
   const member = db.members.find((m) => m.id === selectedId) || db.members[0];
   const alerts = useMemo(() => detectAlerts(db.members, db.schedule), [db.members, db.schedule]);
   const goTab = (k) => { if (k === "members") setMobileView("list"); setTab(k); };
-  const goRecord = (sec) => { setSection(sec); setTab("records"); };
+  const goRecord = (sec) => { setNoteBack(false); setSection(sec); setTab("records"); };
+  /* 일정 탭에서 '기록하기'로 들어왔으면 저장 후 다시 일정으로 돌려보낸다 */
+  const [noteBack, setNoteBack] = useState(false);
   const noComment = (id, type) => {
+    setNoteBack(false);
     saveDb({ ...db, members: db.members.map((m) => (m.id === id ? { ...m, notes: [...(m.notes || []), { id: uid(), date: todayISO(), type: type || "개인레슨", instructor: m.instructor, body: "특이사항 없음", tags: [], deductFrom: null }] } : m)) });
     setToast({ ok: true, msg: "특이사항 없음으로 기록했습니다." });
   };
@@ -6151,6 +6129,12 @@ export default function App() {
   const saveNote = (id, note) => {
     const t = db.members.find((m) => m.id === id);
     patch(id, { notes: [note, ...(t.notes || [])] });
+    if (noteBack) {
+      setNoteBack(false);
+      setTab("schedule");
+      setToast({ ok: true, msg: `${t?.name || "회원"} 코멘트 저장 · 다음 회원으로 갑니다` });
+      return;
+    }
     setToast({ ok: true, msg: "코멘트를 저장했습니다." });
   };
   const deleteNote = (nid) => patch(member.id, { notes: member.notes.filter((n) => n.id !== nid) });
@@ -6376,11 +6360,11 @@ export default function App() {
           <ScheduleManager db={db} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone}
             onOpenMember={(id) => { setSelectedId(id); setMobileView("detail"); setTab("members"); }}
             onNoComment={noComment}
-            onWriteNote={(id) => { setSelectedId(id); setSection("note"); setTab("records"); }} />
+            onWriteNote={(id) => { setSelectedId(id); setSection("note"); setNoteBack(true); setTab("records"); }} />
         )}
         {tab === "records" && (
           <RecordTab db={db} selectedId={selectedId} setSelectedId={setSelectedId} section={section} setSection={setSection}
-            onSaveInbody={saveInbody} onDeleteInbody={deleteInbody} onSaveNote={saveNote} onPatch={patch} onDelete={removeMember} onToast={setToast}
+            onSaveInbody={saveInbody} onDeleteInbody={deleteInbody} onSaveNote={saveNote} onPatch={patch} onDelete={removeMember} onToast={setToast} onLeaveNote={() => setNoteBack(false)} backHint={noteBack}
             onSettings={(next) => saveDb({ ...db, settings: next })} />
         )}
         {tab === "settings" && (

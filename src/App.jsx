@@ -443,10 +443,23 @@ async function shareBeforeAfter(before, after, memberName, onToast, saveOnly) {
       ctx.save(); ctx.beginPath(); ctx.rect(x, 0, W, H); ctx.clip();
       const base = Math.max(W / img.width, H / img.height) * (p?.scale || 1);
       const dw = img.width * base, dh = img.height * base;
-      ctx.drawImage(img, x + (W - dw) / 2 + ((p?.x || 0) / 100) * W, (H - dh) / 2 + ((p?.y || 0) / 100) * H, dw, dh);
+      const rot = ((p?.rot || 0) * Math.PI) / 180;
+      ctx.translate(x + W / 2 + ((p?.x || 0) / 100) * W, H / 2 + ((p?.y || 0) / 100) * H);
+      if (rot) ctx.rotate(rot);
+      ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+      ctx.restore();
+    };
+    /* 화면에서 보던 중심선을 그대로 얹는다 */
+    const guides = (x) => {
+      ctx.save();
+      ctx.strokeStyle = "rgba(255,255,255,0.5)"; ctx.lineWidth = 2;
+      [22, 50, 78].forEach((t) => { ctx.beginPath(); ctx.moveTo(x, (H * t) / 100); ctx.lineTo(x + W, (H * t) / 100); ctx.stroke(); });
+      ctx.strokeStyle = "rgba(108,76,241,0.95)"; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(x + W / 2, 0); ctx.lineTo(x + W / 2, H); ctx.stroke();
       ctx.restore();
     };
     cell(b, before, 0); cell(a, after, W + GAP);
+    guides(0); guides(W + GAP);
     ctx.textBaseline = "middle";
     ctx.font = "700 38px Pretendard, -apple-system, sans-serif";
     const tag = (txt, x) => {
@@ -459,7 +472,7 @@ async function shareBeforeAfter(before, after, memberName, onToast, saveOnly) {
     ctx.font = "700 34px Pretendard, -apple-system, sans-serif";
     ctx.fillStyle = "#A594FF";
     ctx.fillText(`${memberName || "회원"} · ${weeksBetween(before.date, after.date)}주 변화`, 28, H + FOOT / 2);
-    return await shareCanvas(c, `비포애프터_${memberName || "회원"}_${todayISO()}.jpg`, "비포 & 애프터", onToast);
+    return await shareCanvas(c, `비포애프터_${memberName || "회원"}_${todayISO()}.jpg`, "비포 & 애프터", onToast, saveOnly);
   } catch (e) { onToast && onToast({ ok: false, msg: "이미지를 만들지 못했습니다." }); return false; }
 }
 

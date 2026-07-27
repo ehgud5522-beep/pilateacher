@@ -86,7 +86,7 @@ const sysDarkNow = () => {
 };
 
 /* 파일이 실제로 교체됐는지 1초 만에 확인하는 표시 — 설정 탭 맨 아래에 뜬다 */
-const APP_VER = "v50 · 2026-07-27";
+const APP_VER = "v51 · 2026-07-27";
 try { if (typeof window !== "undefined") window.PILATEACHER_VER = APP_VER; } catch (e) {}
 
 const ACC_KEY = "pilateacher_accounts_v1";
@@ -835,6 +835,33 @@ function useBackClose(open, close) {
       if (!done && pushed && mine) { backSwallow += 1; try { window.history.back(); } catch (e) {} }
     };
   }, [open]);
+}
+
+/* 전체화면 편집 중에는 뒤 배경이 안 밀리게.
+   iOS 는 overflow:hidden 만으로는 안 막혀서 position:fixed 까지 써야 한다. */
+let lockDepth = 0, lockY = 0, lockPrev = null;
+function useScrollLock() {
+  useEffect(() => {
+    const b = document.body, d = document.documentElement;
+    if (lockDepth === 0) {
+      lockY = window.scrollY || window.pageYOffset || 0;
+      lockPrev = { ov: b.style.overflow, dov: d.style.overflow, pos: b.style.position, top: b.style.top, w: b.style.width, ob: b.style.overscrollBehavior };
+      b.style.overflow = "hidden"; d.style.overflow = "hidden"; b.style.overscrollBehavior = "none";
+      b.style.position = "fixed"; b.style.top = `-${lockY}px`; b.style.width = "100%";
+    }
+    lockDepth += 1;
+    return () => {
+      lockDepth -= 1;
+      if (lockDepth > 0) return;
+      lockDepth = 0;
+      if (lockPrev) {
+        b.style.overflow = lockPrev.ov; d.style.overflow = lockPrev.dov; b.style.overscrollBehavior = lockPrev.ob;
+        b.style.position = lockPrev.pos; b.style.top = lockPrev.top; b.style.width = lockPrev.w;
+        lockPrev = null;
+      }
+      try { window.scrollTo(0, lockY); } catch (e) {}
+    };
+  }, []);
 }
 
 function Sheet({ title, onClose, children }) {
@@ -2212,6 +2239,7 @@ function WeekGrid({ days, byDate, nameOf, cursor, onOpen, onNew }) {
   const top0 = GRID_H0 * 60;
   /* 빈 칸을 위아래로 훑으면 그 시간만큼 일정이 잡힌다 (30분 단위) */
   const [sel, setSel] = useState(null);
+  const [pick, setPick] = useState(false);   /* 켜면 드래그로 시간 잡기, 끄면 화면 스크롤 */
   const dragging = useRef(false);
   const slotAt = (e, el) => {
     const r = el.getBoundingClientRect();
@@ -2226,7 +2254,14 @@ function WeekGrid({ days, byDate, nameOf, cursor, onOpen, onNew }) {
   const selLabel = (v) => { const r = selRange(v); return `${r.start} · ${r.dur >= 60 ? `${Math.floor(r.dur / 60)}시간${r.dur % 60 ? ` ${r.dur % 60}분` : ""}` : `${r.dur}분`}`; };
   const finishSel = () => {
     dragging.current = false;
+    setPick(false);
     setSel((v) => { if (v) { const r = selRange(v); setTimeout(() => onNew(v.day, r.start, r.dur), 0); } return null; });
+  };
+  /* 스크롤 모드에서는 한 번 눌러 30분짜리로 등록 */
+  const tapNew = (d, e) => {
+    const k = slotAt(e, e.currentTarget);
+    const r = selRange({ a: k, b: k });
+    onNew(d, r.start, r.dur);
   };
   const blocksOf = (d) => byDate(d).filter((s) => {
     const a = minOf(s.start), b = minOf(s.end) || a + 50;
@@ -2248,8 +2283,17 @@ function WeekGrid({ days, byDate, nameOf, cursor, onOpen, onNew }) {
       <div className="mb-1.5 flex items-center gap-1.5">
         <CalendarDays size={13} style={{ color: PRIMARY }} />
         <p className="text-xs font-extrabold" style={{ color: INK }}>주간 시간표</p>
-        <Sub className="ml-auto">08:00 ~ 23:00 · 빈 칸을 훑으면 그 시간만큼 등록</Sub>
+        <button onClick={() => { setPick((v) => !v); setSel(null); dragging.current = false; }}
+          className="ml-auto flex shrink-0 items-center gap-1 rounded-full px-3 py-1.5 text-xs font-extrabold"
+          style={pick ? { background: GRAD, color: "#fff", boxShadow: "0 3px 10px rgba(108,76,241,.35)" } : { backgroundColor: CANVAS, color: INK, border: `1px solid ${LINE}` }}>
+          <Move size={13} /> {pick ? "시간 잡는 중" : "드래그로 잡기"}
+        </button>
       </div>
+      <p className="mb-2 text-xs font-semibold" style={{ color: pick ? PRIMARY : SUB }}>
+        {pick
+          ? "빈 칸을 위아래로 훑으면 그만큼 시간이 잡힙니다 · 한 번 잡으면 자동으로 꺼집니다"
+          : "08:00 ~ 23:00 · 빈 칸을 누르면 30분으로 등록 · 길게 잡으려면 위 버튼을 켜세요"}
+      </p>
       <div className="overflow-x-auto rounded-2xl" style={{ border: `1px solid ${LINE}` }}>
         <div style={{ minWidth: 460 }}>
           <div className="sticky top-0 z-10 flex" style={{ backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
@@ -2274,11 +2318,12 @@ function WeekGrid({ days, byDate, nameOf, cursor, onOpen, onNew }) {
             </div>
             {days.map((d) => (
               <div key={d} className="relative min-w-0 flex-1"
-                style={{ borderLeft: `1px solid ${LINE}`, backgroundColor: d === todayISO() ? `${PRIMARY}14` : "transparent", touchAction: "none" }}
-                onPointerDown={(e) => { e.currentTarget.setPointerCapture?.(e.pointerId); const k = slotAt(e, e.currentTarget); dragging.current = true; setSel({ day: d, a: k, b: k }); }}
-                onPointerMove={(e) => { if (!dragging.current) return; const k = slotAt(e, e.currentTarget); setSel((v) => (v && v.day === d ? { ...v, b: k } : v)); }}
-                onPointerUp={() => finishSel()}
-                onPointerCancel={() => { dragging.current = false; setSel(null); }}>
+                style={{ borderLeft: `1px solid ${LINE}`, backgroundColor: d === todayISO() ? `${PRIMARY}14` : "transparent", touchAction: pick ? "none" : "auto" }}
+                onClick={pick ? undefined : (e) => tapNew(d, e)}
+                onPointerDown={pick ? ((e) => { e.currentTarget.setPointerCapture?.(e.pointerId); const k = slotAt(e, e.currentTarget); dragging.current = true; setSel({ day: d, a: k, b: k }); }) : undefined}
+                onPointerMove={pick ? ((e) => { if (!dragging.current) return; e.preventDefault(); const k = slotAt(e, e.currentTarget); setSel((v) => (v && v.day === d ? { ...v, b: k } : v)); }) : undefined}
+                onPointerUp={pick ? (() => finishSel()) : undefined}
+                onPointerCancel={pick ? (() => { dragging.current = false; setSel(null); }) : undefined}>
                 {Array.from({ length: rows }, (_, i) => (
                   <div key={i} style={{ height: GRID_ROW, borderTop: i ? `1px solid ${LINE}` : "none" }}>
                     <div style={{ height: GRID_ROW / 2, borderBottom: `1px dashed ${LINE}` }} />

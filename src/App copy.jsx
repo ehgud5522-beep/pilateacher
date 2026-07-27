@@ -1267,24 +1267,30 @@ function detectAlerts(members, schedule) {
   return out.sort((a, b) => b.urgency - a.urgency);
 }
 function AlertCenter({ alerts, onOpenMember, onBrief, onSnooze, snoozedCount, onUnsnoozeAll }) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   if (!alerts.length && !snoozedCount) return null;
   return (
     <section className="mb-3 overflow-hidden rounded-3xl" style={{ background: `linear-gradient(150deg, ${BAD_S} 0%, ${CARD} 55%)`, border: `1px solid ${LINE}`, boxShadow: SHADOW }}>
-      <button onClick={() => setOpen((v) => !v)} className="flex w-full items-center gap-2 px-5 pb-3 pt-5 text-left">
-        <span className="flex h-8 w-8 items-center justify-center rounded-xl" style={{ backgroundColor: BAD_S }}><Bell size={16} style={{ color: BAD }} /></span>
-        <div className="flex-1"><h3 className="font-extrabold" style={{ color: INK }}>재등록 골든타임</h3>
-          <Sub>{alerts.length ? `지금 연락해야 할 회원 ${alerts.length}명` : "지금 연락할 회원은 없습니다"}</Sub></div>
-        <ChevronRight size={18} style={{ color: SUB, transform: open ? "rotate(90deg)" : "none" }} />
+      <button onClick={() => setOpen((v) => !v)} className="flex w-full items-center gap-2 px-4 py-3.5 text-left">
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: BAD_S }}><Bell size={16} style={{ color: BAD }} /></span>
+        <div className="min-w-0 flex-1">
+          <h3 className="text-sm font-extrabold" style={{ color: INK }}>재등록 골든타임</h3>
+          <Sub className="truncate">{alerts.length ? `지금 연락해야 할 회원 ${alerts.length}명` : "지금 연락할 회원은 없습니다"}</Sub>
+        </div>
+        {alerts.length > 0 && !open && (
+          <span className="shrink-0 rounded-full px-2.5 py-1 text-xs font-extrabold" style={{ backgroundColor: BAD_S, color: BAD }}>{alerts.length}</span>
+        )}
+        <span className="shrink-0 text-xs font-extrabold" style={{ color: PRIMARY }}>{open ? "접기" : "보기"}</span>
+        <ChevronRight size={16} className="shrink-0" style={{ color: PRIMARY, transform: open ? "rotate(90deg)" : "none", transition: "transform .18s ease" }} />
       </button>
       {snoozedCount > 0 && (
-        <div className="flex items-center gap-2 px-5 pb-3">
+        <div className="flex items-center gap-2 px-4 pb-3">
           <Sub className="min-w-0 flex-1">알림을 미뤄둔 회원 {snoozedCount}명</Sub>
           <button onClick={onUnsnoozeAll} className="shrink-0 rounded-full bg-white px-3 py-1.5 text-xs font-extrabold" style={{ color: PRIMARY }}>다시 보기</button>
         </div>
       )}
       {open && alerts.length > 0 && (
-        <div className="flex gap-3 overflow-x-auto px-5 pb-5">
+        <div className="flex gap-3 overflow-x-auto px-4 pb-4">
           {alerts.map((a) => {
             const urgent = a.rest <= 3;
             return (
@@ -1614,38 +1620,32 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onStatusAll, onNoshow
   const doneCls = db.schedule.filter((s) => s.date === T0 && !isPersonalEvt(s) && (isEquipGroup(s) ? !!s.groupDone : attendeesOf(s).every((a) => a.status !== "booked"))).length;
   return (
     <div className="space-y-3">
-      <div className="rounded-3xl p-5" style={{ background: `linear-gradient(140deg, ${BRAND} 0%, #5B3FD4 100%)`, boxShadow: SHADOW }}>
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0 flex-1">
-            <p className="text-xs font-bold text-white opacity-75">{ymd(T0)} ({dow(T0)})</p>
-            {db.settings?.staff && (
-              <p className="mt-1 text-sm font-extrabold text-white" style={{ letterSpacing: "-0.02em", wordBreak: "keep-all" }}>
-                <span className="whitespace-nowrap">{db.settings.staff} 강사님,</span>
-              </p>
-            )}
-            <h2 className="mt-0.5 text-xl font-extrabold text-white" style={{ letterSpacing: "-0.03em", lineHeight: 1.32, wordBreak: "keep-all", overflowWrap: "break-word" }}>
-              {greetLine()}
-            </h2>
+      <div className="rounded-3xl p-4 md:p-5" style={{ background: `linear-gradient(140deg, ${BRAND} 0%, #5B3FD4 100%)`, boxShadow: SHADOW }}>
+        <div className="flex items-baseline gap-2">
+          <p className="text-xs font-bold text-white opacity-75">{ymd(T0)} ({dow(T0)})</p>
+          {db.settings?.staff && <p className="truncate text-xs font-extrabold text-white opacity-90">{db.settings.staff} 강사님</p>}
+        </div>
+        <h2 className="line-clamp-2 mt-0.5 text-base font-extrabold text-white md:text-xl" style={{ letterSpacing: "-0.03em", lineHeight: 1.3, wordBreak: "keep-all", overflowWrap: "break-word" }}>
+          {greetLine()}
+        </h2>
+        <div className="mt-2.5 flex items-stretch gap-1.5">
+          <div className="min-w-0 flex-1 rounded-xl px-2.5 py-1.5" style={{ backgroundColor: "rgba(255,255,255,0.16)", border: "1px solid rgba(255,255,255,0.14)" }}>
+            <p className="truncate text-xs font-bold text-white opacity-85">오늘</p>
+            <p className="text-base font-extrabold leading-tight tabular-nums text-white md:text-lg">{todayCls}</p>
+          </div>
+          <div className="min-w-0 flex-1 rounded-xl px-2.5 py-1.5" style={{ backgroundColor: "rgba(52,211,153,0.32)", border: "1px solid rgba(255,255,255,0.22)" }}>
+            <p className="flex items-center gap-0.5 truncate text-xs font-bold text-white opacity-90"><Check size={10} /> 완료</p>
+            <p className="text-base font-extrabold leading-tight tabular-nums text-white md:text-lg">{doneCls}</p>
+          </div>
+          <div className="min-w-0 flex-[1.4] rounded-xl px-2.5 py-1.5" style={{ backgroundColor: "#FFFFFF", boxShadow: "0 4px 12px rgba(30,16,90,.22)" }}>
+            <p className="truncate text-xs font-bold" style={{ color: "#6E6E80" }}>남은 수업</p>
+            <p className="text-base font-extrabold leading-tight tabular-nums md:text-lg" style={{ color: "#4F2FCB" }}>{Math.max(0, todayCls - doneCls)}수업</p>
+            <p className="truncate text-xs font-bold tabular-nums" style={{ color: "#77778A" }}>이달 {monthDone}</p>
           </div>
         </div>
-        <div className="mt-4 grid grid-cols-3 gap-2">
-          <div className="rounded-2xl p-3" style={{ backgroundColor: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.14)" }}>
-            <p className="text-xs font-bold text-white opacity-85">오늘 수업</p>
-            <p className="mt-0.5 text-xl font-extrabold tabular-nums text-white">{todayCls}수업</p>
-          </div>
-          <div className="rounded-2xl p-3" style={{ backgroundColor: "rgba(52,211,153,0.30)", border: "1px solid rgba(255,255,255,0.22)" }}>
-            <p className="flex items-center gap-1 text-xs font-bold text-white opacity-90"><Check size={11} /> 완료</p>
-            <p className="mt-0.5 text-xl font-extrabold tabular-nums text-white">{doneCls}수업</p>
-          </div>
-          <div className="rounded-2xl p-3" style={{ backgroundColor: "#FFFFFF", boxShadow: "0 4px 12px rgba(30,16,90,.22)" }}>
-            <p className="text-xs font-bold" style={{ color: "#6E6E80" }}>남은 수업</p>
-            <p className="mt-0.5 text-xl font-extrabold tabular-nums" style={{ color: "#4F2FCB" }}>{Math.max(0, todayCls - doneCls)}수업</p>
-            <p className="mt-1 text-xs font-bold tabular-nums" style={{ color: "#77778A" }}>이달 누적 {monthDone}수업</p>
-          </div>
-        </div>
-        <div className="mt-3 flex items-center gap-1.5">
-          <Sparkles size={12} color="#fff" style={{ opacity: 0.8 }} />
-          <p className="text-xs font-semibold text-white opacity-90">{dailyLine()}</p>
+        <div className="mt-2 flex items-center gap-1.5">
+          <Sparkles size={11} color="#fff" style={{ opacity: 0.8 }} />
+          <p className="truncate text-xs font-semibold text-white opacity-90">{dailyLine()}</p>
         </div>
       </div>
 
@@ -4468,14 +4468,21 @@ function RecordTab({ db, selectedId, setSelectedId, section, setSection, onSaveI
     <div className="space-y-3">
       <Card className="p-4">
         <Field label="기록할 회원">
-          <select value={member.id} onChange={(e) => setSelectedId(e.target.value)} className={inputCls}>
-            {members.map((m) => <option key={m.id} value={m.id}>{m.name || "이름 미입력"}{isEnded(m) ? " (종료)" : ""} · {left(m) > 0 ? `잔여 ${left(m)}회` : "잔여 없음"}</option>)}
-          </select>
+          <div className="relative">
+            <select value={member.id} onChange={(e) => setSelectedId(e.target.value)}
+              className="w-full rounded-2xl border-0 py-3.5 pl-11 pr-4 text-sm font-extrabold outline-none"
+              style={{ appearance: "none", WebkitAppearance: "none", MozAppearance: "none",
+                backgroundColor: TINT, color: PRIMARY, boxShadow: `inset 0 0 0 2px ${PRIMARY}` }}>
+              {members.map((m) => <option key={m.id} value={m.id}>{m.name || "이름 미입력"}{isEnded(m) ? " (종료)" : ""} · {left(m) > 0 ? `잔여 ${left(m)}회` : "잔여 없음"}</option>)}
+            </select>
+            <Users size={16} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2" style={{ color: PRIMARY }} />
+            <ChevronDown size={16} className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2" style={{ color: PRIMARY }} />
+          </div>
         </Field>
         <button onClick={() => setOpenInfo((v) => !v)} aria-expanded={openInfo}
           className="mt-2 flex w-full items-center gap-2 rounded-2xl px-3 py-2.5" style={{ backgroundColor: CANVAS }}>
           <span className="min-w-0 flex-1 truncate text-left text-xs font-bold" style={{ color: INK }}>
-            {member.name || "이름 미입력"} · 잔여 {left(member)}회{member.goal ? ` · ${member.goal}` : ""}
+            {member.goal || (member.passName ? member.passName : "목표 · 수강권 미입력")}
           </span>
           <span className="shrink-0 text-xs font-bold" style={{ color: PRIMARY }}>{openInfo ? "접기" : "자세히"}</span>
           <ChevronDown size={14} className="shrink-0" style={{ color: PRIMARY, transform: openInfo ? "rotate(180deg)" : "none", transition: "transform .18s ease" }} />

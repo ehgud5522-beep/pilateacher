@@ -898,6 +898,11 @@ const restLabel = (idle) => (idle === null ? "첫 수업 전" : idle === 0 ? "�
 const isEnded = (m) => m?.status === "ended";
 const isHold = (m) => m?.status === "hold";
 const isActive = (m) => !isEnded(m) && !isHold(m);
+/* 이름을 아직 안 적은 회원 = 작성 중 */
+const isDraft = (m) => !String(m?.name || "").trim();
+/* 이름도 기록도 전혀 없는, 안전하게 지울 수 있는 회원 */
+const isBlankDraft = (m) => isDraft(m) && left(m) === 0 && !num(m?.total)
+  && !(m?.payments || []).length && !(m?.inbody || []).length && !(m?.notes || []).length;
 const won = (n) => (Number(n) || 0).toLocaleString("ko-KR");
 const paidTotal = (m) => (m?.payments || []).reduce((s, p) => s + num(p?.amount), 0);
 const paidCount = (m) => (m?.payments || []).reduce((s, p) => s + num(p?.sessions) + num(p?.service), 0);
@@ -2333,7 +2338,9 @@ function MemberList({ members, selectedId, onSelect, onAdd, onOpenFav, favCount,
             <div className="flex items-center gap-3">
               <div className="flex h-11 w-11 items-center justify-center rounded-2xl text-sm font-extrabold" style={{ backgroundColor: TINT, color: PRIMARY }}>{(m.name || "?").slice(0, 1)}</div>
               <div className="min-w-0 flex-1">
-                <p className="truncate font-extrabold" style={{ color: INK }}>{m.name || "이름 미입력"} {m.age ? <span className="text-xs font-medium" style={{ color: SUB }}>{m.age}세</span> : null}</p>
+                <p className="truncate font-extrabold" style={{ color: isDraft(m) ? SUB : INK }}>
+                  {isDraft(m) ? "작성 중" : m.name} {m.age ? <span className="text-xs font-medium" style={{ color: SUB }}>{m.age}세</span> : null}
+                </p>
                 {todayMap[m.id]
                   ? <p className="truncate text-xs font-extrabold" style={{ color: PRIMARY }}>오늘 {todayMap[m.id].start} · {todayMap[m.id].type}</p>
                   : <Sub className="truncate">{m.goal || "목표 미입력"}</Sub>}
@@ -3666,7 +3673,7 @@ function Dashboard({ member, photos, schedule, onBack, briefing, onSavePhoto, on
         <div className="flex items-center gap-3">
           <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl text-lg font-extrabold text-white" style={{ background: GRAD, boxShadow: "0 4px 12px rgba(108,76,241,.30)" }}>{(member.name || "?").slice(0, 1)}</div>
           <div className="min-w-0 flex-1">
-            <h2 className="text-lg font-extrabold" style={{ color: INK }}>{member.name || "이름 미입력"} 회원님</h2>
+            <h2 className="text-lg font-extrabold" style={{ color: isDraft(member) ? SUB : INK }}>{isDraft(member) ? "이름을 입력해 주세요" : `${member.name} 회원님`}</h2>
             <Sub>{member.age ? `${member.age}세 · ` : ""}담당 {member.instructor || "-"}{att.rate !== null ? ` · 출석률 ${att.rate}%` : ""}</Sub>
           </div>
           <div className="rounded-2xl px-3 py-2 text-center" style={{ backgroundColor: low ? BAD_S : CANVAS }}>

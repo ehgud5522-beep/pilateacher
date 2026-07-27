@@ -2988,8 +2988,10 @@ function OverallReview({ member, briefing, onToast, schedule }) {
       <div className="p-5">
         <div className="flex gap-1 rounded-2xl p-1" style={{ backgroundColor: CANVAS }}>
           {[{ k: "member", l: "회원용 멘트" }, { k: "coach", l: "강사용 코칭노트" }].map((o) => (
-            <button key={o.k} onClick={() => setTab(o.k)} className="flex-1 rounded-xl py-2.5 text-xs font-bold"
-              style={tab === o.k ? { backgroundColor: CARD, color: o.k === "coach" ? INK : PRIMARY, boxShadow: "0 1px 3px rgba(20,20,43,.12)" } : { color: SUB }}>{o.l}</button>
+            <button key={o.k} onClick={() => setTab(o.k)} className="flex-1 rounded-xl py-2.5 text-xs font-extrabold"
+              style={tab === o.k
+                ? { backgroundColor: CARD, color: o.k === "coach" ? INK : PRIMARY, boxShadow: "0 2px 6px rgba(20,20,43,.18)" }
+                : { backgroundColor: "transparent", color: INK2, border: `1px solid ${LINE}` }}>{o.l}</button>
           ))}
         </div>
         {txt[tab] ? (
@@ -3000,6 +3002,7 @@ function OverallReview({ member, briefing, onToast, schedule }) {
               <button onClick={async () => { try { await navigator.clipboard.writeText(txt[tab]); onToast({ ok: true, msg: "복사했습니다." }); } catch (e) { onToast({ ok: false, msg: "복사하지 못했습니다." }); } }}
                 className="flex items-center gap-1.5 rounded-full bg-white px-3 py-2 text-xs font-bold" style={{ color: PRIMARY }}><Copy size={13} /> 복사</button>
               <button onClick={() => make(tab)} className="rounded-full bg-white px-3 py-2 text-xs font-bold" style={{ color: SUB }}>다시 만들기</button>
+              <button onClick={() => setTxt((x) => ({ ...x, [tab]: "" }))} className="ml-auto flex items-center gap-1 rounded-full bg-white px-3 py-2 text-xs font-bold" style={{ color: SUB }}><ArrowLeft size={13} /> 되돌아가기</button>
             </div>
           </div>
         ) : (

@@ -2663,7 +2663,12 @@ function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveM
             <button onClick={() => setGuides((g) => !g)} className="rounded-full px-3 py-1.5 text-xs font-bold" style={{ backgroundColor: guides ? TINT : CANVAS, color: guides ? PRIMARY : SUB }}>중심선 {guides ? "켜짐" : "꺼짐"}</button>
             {before && <button onClick={() => setPosture({ p: before, label: "BEFORE" })} className="rounded-full px-3 py-1.5 text-xs font-bold" style={{ backgroundColor: CANVAS, color: INK }}>비포 분석</button>}
             {after && <button onClick={() => setPosture({ p: after, label: "AFTER" })} className="rounded-full px-3 py-1.5 text-xs font-bold" style={{ backgroundColor: TINT, color: PRIMARY }}>애프터 분석</button>}
-            {before && after && <button onClick={() => shareBeforeAfter(before, after, member?.name, onToast)} className="ml-auto flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}><Upload size={12} /> 회원에게 보내기</button>}
+            {before && after && (
+              <span className="ml-auto flex gap-1.5">
+                <button onClick={() => shareBeforeAfter(before, after, member?.name, onToast, true)} className="flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: INK }}><Download size={12} /> 내 폰에 저장</button>
+                <button onClick={() => shareBeforeAfter(before, after, member?.name, onToast)} className="flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}><Upload size={12} /> 회원에게 보내기</button>
+              </span>
+            )}
           </div>
           {before && after && <Sub className="mt-1.5">보낸 이미지는 회수할 수 없습니다. 회원 본인에게만 보내 주세요.</Sub>}
           {!briefing && (
@@ -2705,13 +2710,26 @@ function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveM
       )}
       <input ref={camRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; pick(f); }} />
       <input ref={albumRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; pick(f); }} />
-      {pending && <AlignSheet src={pending.src} ghost={pending.slot === "after" ? before : after} onCancel={closePending} onSave={(tf) => { onSavePhoto(view, pending.blob, pending.slot, tf); closePending(); }} />}
-      {adjust && (
-        <AlignSheet src={adjust.p.src} init={adjust.p} title={`${adjust.label} 사진 조정`}
-          ghost={adjust.p.id === before?.id ? after : before}
-          onCancel={() => setAdjust(null)}
-          onSave={(tf) => { onAdjust && onAdjust(view, adjust.p.id, tf); setAdjust(null); }} />
-      )}
+      {pending && (() => {
+        const gp = pending.slot === "after" ? before : after;
+        const isAfter = pending.slot === "after";
+        return (
+          <AlignSheet src={pending.src} ghost={gp} ghostEditable={!!gp}
+            mainName={isAfter ? "애프터" : "비포"} ghostName={isAfter ? "비포" : "애프터"}
+            onCancel={closePending}
+            onSave={(tf, gtf) => { onSavePhoto(view, pending.blob, pending.slot, tf, gp && gtf ? gp.id : null, gtf); closePending(); }} />
+        );
+      })()}
+      {adjust && (() => {
+        const gp = adjust.p.id === before?.id ? after : before;
+        const other = adjust.label === "비포" ? "애프터" : "비포";
+        return (
+          <AlignSheet src={adjust.p.src} init={adjust.p} title={`${adjust.label} 사진 조정`}
+            ghost={gp} ghostEditable={!!gp} mainName={adjust.label} ghostName={other}
+            onCancel={() => setAdjust(null)}
+            onSave={(tf, gtf) => { onAdjust && onAdjust(view, adjust.p.id, tf, gp && gtf ? gp.id : null, gtf); setAdjust(null); }} />
+        );
+      })()}
       {posture && <PostureCanvas photo={posture.p} label={posture.label} onToast={onToast} onClose={() => setPosture(null)} onSave={(marks) => onSaveMarks(view, posture.p.id, marks)} />}
     </Card>
   );

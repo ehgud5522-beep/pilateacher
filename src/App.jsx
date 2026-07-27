@@ -137,7 +137,7 @@ const uid = () => Math.random().toString(36).slice(2, 9);
 const weeksBetween = (a, b) => Math.max(1, Math.round((new Date(b) - new Date(a)) / 6048e5));
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 const left = (m) => num(m?.regular) + num(m?.service);
-const ptf = (p) => `translate(${p?.x || 0}%, ${p?.y || 0}%) scale(${p?.scale || 1})`;
+const ptf = (p) => `translate(${p?.x || 0}%, ${p?.y || 0}%) scale(${p?.scale || 1}) rotate(${p?.rot || 0}deg)`;
 const addMin = (t, min) => {
   const [h, m] = String(t || "0:00").split(":").map(Number);
   const tot = Math.max(0, Math.min(23 * 60 + 59, (h || 0) * 60 + (m || 0) + min));
@@ -406,14 +406,14 @@ async function photosForExport(map) {
   return out;
 }
 
-async function shareCanvas(canvas, filename, title, onToast) {
+async function shareCanvas(canvas, filename, title, onToast, saveOnly) {
   let blob = null;
   try { blob = await new Promise((r) => canvas.toBlob(r, "image/jpeg", 0.92)); } catch (e) {}
   if (!blob) { onToast && onToast({ ok: false, msg: "이미지를 만들지 못했습니다." }); return false; }
   let file = null, canNative = false;
   try {
     file = new File([blob], filename, { type: "image/jpeg" });
-    canNative = !!(navigator.canShare && navigator.canShare({ files: [file] }));
+    canNative = !saveOnly && !!(navigator.canShare && navigator.canShare({ files: [file] }));
   } catch (e) { canNative = false; }
   if (canNative) {
     try { await navigator.share({ files: [file], title }); }
@@ -430,7 +430,7 @@ async function shareCanvas(canvas, filename, title, onToast) {
   } catch (e) { return false; }
 }
 
-async function shareBeforeAfter(before, after, memberName, onToast) {
+async function shareBeforeAfter(before, after, memberName, onToast, saveOnly) {
   try {
     const load = (src) => new Promise((res, rej) => { const i = new window.Image(); i.onload = () => res(i); i.onerror = rej; i.src = src; });
     const [b, a] = await Promise.all([load(before.src), load(after.src)]);
@@ -2047,7 +2047,12 @@ function coverDraw(ctx, img, w, h, tf) {
   const base = Math.max(w / img.width, h / img.height);
   const s = base * (tf?.scale || 1);
   const dw = img.width * s, dh = img.height * s;
-  ctx.drawImage(img, (w - dw) / 2 + ((tf?.x || 0) / 100) * w, (h - dh) / 2 + ((tf?.y || 0) / 100) * h, dw, dh);
+  const rot = ((tf?.rot || 0) * Math.PI) / 180;
+  ctx.save();
+  ctx.translate(w / 2 + ((tf?.x || 0) / 100) * w, h / 2 + ((tf?.y || 0) / 100) * h);
+  if (rot) ctx.rotate(rot);
+  ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+  ctx.restore();
 }
 function angleOf(p1, p2) {
   const [a, b] = p1.x <= p2.x ? [p1, p2] : [p2, p1];

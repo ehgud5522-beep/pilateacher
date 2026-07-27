@@ -1150,6 +1150,9 @@ function Tabs({ tab, setTab }) {
   );
 }
 
+/* 알림을 미뤄둔 회원 — 그 날짜까지 골든타임에서 숨긴다 */
+const isSnoozed = (m) => !!(m?.snoozeUntil && dday(m.snoozeUntil) > 0);
+
 /* 수강권 흔적이 하나라도 있으면 '등록한 적 있는 회원' */
 const everRegistered = (m) => !!(
   (m?.passName && String(m.passName).trim()) ||
@@ -1162,6 +1165,7 @@ function detectAlerts(members, schedule) {
   const out = [];
   members.forEach((m) => {
     if (isEnded(m)) return;
+    if (isSnoozed(m)) return;
     const att = attendanceOf(schedule, m.id);
     /* 등록 이력도 출석 기록도 없는 빈 회원은 재등록 대상이 아니다 */
     if (!everRegistered(m) && !att.done) return;
@@ -1186,17 +1190,24 @@ function detectAlerts(members, schedule) {
   });
   return out.sort((a, b) => b.urgency - a.urgency);
 }
-function AlertCenter({ alerts, onOpenMember, onBrief }) {
+function AlertCenter({ alerts, onOpenMember, onBrief, onSnooze, snoozedCount, onUnsnoozeAll }) {
   const [open, setOpen] = useState(true);
-  if (!alerts.length) return null;
+  if (!alerts.length && !snoozedCount) return null;
   return (
     <section className="mb-3 overflow-hidden rounded-3xl" style={{ background: `linear-gradient(150deg, ${BAD_S} 0%, ${CARD} 55%)`, border: `1px solid ${LINE}`, boxShadow: SHADOW }}>
       <button onClick={() => setOpen((v) => !v)} className="flex w-full items-center gap-2 px-5 pb-3 pt-5 text-left">
         <span className="flex h-8 w-8 items-center justify-center rounded-xl" style={{ backgroundColor: BAD_S }}><Bell size={16} style={{ color: BAD }} /></span>
-        <div className="flex-1"><h3 className="font-extrabold" style={{ color: INK }}>재등록 골든타임</h3><Sub>지금 연락해야 할 회원 {alerts.length}명</Sub></div>
+        <div className="flex-1"><h3 className="font-extrabold" style={{ color: INK }}>재등록 골든타임</h3>
+          <Sub>{alerts.length ? `지금 연락해야 할 회원 ${alerts.length}명` : "지금 연락할 회원은 없습니다"}</Sub></div>
         <ChevronRight size={18} style={{ color: SUB, transform: open ? "rotate(90deg)" : "none" }} />
       </button>
-      {open && (
+      {snoozedCount > 0 && (
+        <div className="flex items-center gap-2 px-5 pb-3">
+          <Sub className="min-w-0 flex-1">알림을 미뤄둔 회원 {snoozedCount}명</Sub>
+          <button onClick={onUnsnoozeAll} className="shrink-0 rounded-full bg-white px-3 py-1.5 text-xs font-extrabold" style={{ color: PRIMARY }}>다시 보기</button>
+        </div>
+      )}
+      {open && alerts.length > 0 && (
         <div className="flex gap-3 overflow-x-auto px-5 pb-5">
           {alerts.map((a) => {
             const urgent = a.rest <= 3;
@@ -1215,6 +1226,12 @@ function AlertCenter({ alerts, onOpenMember, onBrief }) {
                 <button onClick={() => onBrief(a)} className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-xl py-2.5 text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>
                   <Sparkles size={13} /> AI 재등록 브리핑 생성
                 </button>
+                <div className="mt-1.5 flex gap-1.5">
+                  {[7, 30].map((n) => (
+                    <button key={n} onClick={() => onSnooze && onSnooze(a.member.id, n)}
+                      className="flex-1 rounded-xl bg-white py-2 text-xs font-bold" style={{ color: SUB }}>{n}일 숨기기</button>
+                  ))}
+                </div>
               </div>
             );
           })}
@@ -5115,6 +5132,17 @@ export default function App() {
     setSelectedId(m.id); setSection("info"); setTab("records");
     setToast({ ok: true, msg: "새 회원을 추가했습니다." });
   };
+  const snoozedCount = useMemo(() => db.members.filter((m) => isSnoozed(m)).length, [db.members]);
+  const snoozeAlert = (memberId, days) => {
+    const until = shift(todayISO(), days);
+    saveDb({ ...db, members: db.members.map((m) => (m.id === memberId ? { ...m, snoozeUntil: until } : m)) });
+    setToast({ ok: true, msg: `${ymd(until)}까지 이 회원 알림을 숨깁니다.` });
+  };
+  const unsnoozeAll = () => {
+    saveDb({ ...db, members: db.members.map((m) => (m.snoozeUntil ? { ...m, snoozeUntil: "" } : m)) });
+    setToast({ ok: true, msg: "미뤄둔 알림을 모두 다시 켰습니다." });
+  };
+
   const removeMember = (id) => {
     const rest = db.members.filter((m) => m.id !== id);
     saveDb({
@@ -5353,7 +5381,7 @@ export default function App() {
                 )}
               </div>
             </div>
-            {!briefing && <div id="alert-center" className="mt-3"><Guard label="골든타임 알림"><AlertCenter alerts={alerts} onBrief={setBrief} onOpenMember={(id) => { setSelectedId(id); setMobileView("detail"); }} /></Guard></div>}
+            {!briefing && <div id="alert-center" className="mt-3"><Guard label="골든타임 알림"><AlertCenter alerts={alerts} onBrief={setBrief} onSnooze={snoozeAlert} snoozedCount={snoozedCount} onUnsnoozeAll={unsnoozeAll} onOpenMember={(id) => { setSelectedId(id); setMobileView("detail"); }} /></Guard></div>}
           </>
         )}
         {tab === "schedule" && (

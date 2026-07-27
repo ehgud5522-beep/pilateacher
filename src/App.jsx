@@ -2221,8 +2221,9 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast }) {
     </div>
   );
 }
-function MemberList({ members, selectedId, onSelect, onAdd, onOpenFav, favCount, schedule }) {
+function MemberList({ members, selectedId, onSelect, onAdd, onOpenFav, favCount, schedule, draftCount, onCleanDrafts }) {
   const [q, setQ] = useState("");
+  const [cleanAsk, setCleanAsk] = useState(false);
   const [seg, setSeg] = useState("active");
   const [todayOnly, setTodayOnly] = useState(false);
   const [sortBy, setSortBy] = useState("default");
@@ -2259,6 +2260,20 @@ function MemberList({ members, selectedId, onSelect, onAdd, onOpenFav, favCount,
         </div>
         <button onClick={onAdd} className="flex items-center gap-1 rounded-2xl px-4 text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}><UserPlus size={16} /> 추가</button>
       </div>
+      {draftCount > 0 && (cleanAsk ? (
+        <div className="flex flex-wrap items-center gap-2 rounded-2xl px-4 py-3" style={{ backgroundColor: BAD_S }}>
+          <AlertTriangle size={15} style={{ color: BAD }} />
+          <span className="min-w-0 flex-1 text-sm font-bold" style={{ color: INK }}>이름도 기록도 없는 회원 {draftCount}명을 지울까요?</span>
+          <button onClick={() => { onCleanDrafts && onCleanDrafts(); setCleanAsk(false); }} className="rounded-full px-3 py-1.5 text-xs font-extrabold text-white" style={{ backgroundColor: BAD }}>정리</button>
+          <button onClick={() => setCleanAsk(false)} className="rounded-full bg-white px-3 py-1.5 text-xs font-bold" style={{ color: SUB }}>취소</button>
+        </div>
+      ) : (
+        <button onClick={() => setCleanAsk(true)} className="flex w-full items-center gap-2 rounded-2xl px-4 py-3" style={{ backgroundColor: WARN_S }}>
+          <Pencil size={15} className="shrink-0" style={{ color: WARN }} />
+          <span className="min-w-0 flex-1 text-left text-sm font-bold" style={{ color: INK }}>작성 중인 회원 {draftCount}명 · 이름이 비어 있습니다</span>
+          <span className="shrink-0 text-xs font-extrabold" style={{ color: WARN }}>정리하기</span>
+        </button>
+      ))}
       {todayCount > 0 && (
         <button onClick={() => setTodayOnly((v) => !v)} className="flex w-full items-center gap-2 rounded-2xl px-4 py-3"
           style={todayOnly ? { backgroundColor: BRAND, color: "#fff" } : { backgroundColor: CARD, color: INK, boxShadow: SHADOW }}>
@@ -5122,6 +5137,18 @@ export default function App() {
     setSelectedId(m.id); setSection("info"); setTab("records");
     setToast({ ok: true, msg: "새 회원을 추가했습니다." });
   };
+  const drafts = useMemo(
+    () => db.members.filter((m) => isBlankDraft(m) && !photos[m.id] && !db.schedule.some((s) => hasMember(s, m.id))),
+    [db.members, db.schedule, photos]
+  );
+  const cleanDrafts = () => {
+    const ids = new Set(drafts.map((m) => m.id));
+    if (!ids.size) return;
+    const rest = db.members.filter((m) => !ids.has(m.id));
+    saveDb({ ...db, members: rest });
+    if (ids.has(selectedId)) setSelectedId(rest[0]?.id || null);
+    setToast({ ok: true, msg: `작성 중이던 회원 ${ids.size}명을 정리했습니다.` });
+  };
   const removeMember = (id) => {
     const rest = db.members.filter((m) => m.id !== id);
     saveDb({
@@ -5342,6 +5369,7 @@ export default function App() {
               <div className={`md:col-span-5 lg:col-span-4 ${mobileView === "detail" ? "hidden md:block" : ""}`}>
                 <Guard label="회원 목록">
                   <MemberList members={db.members} schedule={db.schedule} selectedId={selectedId} onAdd={addMember} onOpenFav={() => setFavOpen(true)} favCount={favList.length}
+                    draftCount={drafts.length} onCleanDrafts={cleanDrafts}
                     onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} />
                 </Guard>
               </div>

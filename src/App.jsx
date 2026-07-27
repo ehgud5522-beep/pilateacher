@@ -406,6 +406,14 @@ async function photosForExport(map) {
   return out;
 }
 
+/* 아이폰·아이패드는 a[download] 가 사진 앱이 아니라 파일 앱으로 가므로 공유 시트를 써야 한다 */
+const isIOS = () => {
+  try {
+    const ua = navigator.userAgent || "";
+    return /iPad|iPhone|iPod/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  } catch (e) { return false; }
+};
+
 async function shareCanvas(canvas, filename, title, onToast, saveOnly) {
   let blob = null;
   try { blob = await new Promise((r) => canvas.toBlob(r, "image/jpeg", 0.92)); } catch (e) {}
@@ -413,9 +421,10 @@ async function shareCanvas(canvas, filename, title, onToast, saveOnly) {
   let file = null, canNative = false;
   try {
     file = new File([blob], filename, { type: "image/jpeg" });
-    canNative = !saveOnly && !!(navigator.canShare && navigator.canShare({ files: [file] }));
+    canNative = (!saveOnly || isIOS()) && !!(navigator.canShare && navigator.canShare({ files: [file] }));
   } catch (e) { canNative = false; }
   if (canNative) {
+    if (saveOnly) onToast && onToast({ ok: true, msg: "'이미지 저장'을 누르면 사진 앱에 들어갑니다." });
     try { await navigator.share({ files: [file], title }); }
     catch (e) { if (e && e.name !== "AbortError") onToast && onToast({ ok: false, msg: "공유창을 열지 못했습니다. 한 번 더 눌러 주세요." }); }
     return true;
@@ -777,13 +786,30 @@ function useBackClose(open, close) {
     };
   }, [open]);
 }
-/* 전체화면 편집 중에는 뒤 배경이 안 밀리게 */
+/* 전체화면 편집 중에는 뒤 배경이 안 밀리게.
+   iOS 는 overflow:hidden 만으로는 안 막혀서 position:fixed 까지 써야 한다. */
+let lockDepth = 0, lockY = 0, lockPrev = null;
 function useScrollLock() {
   useEffect(() => {
     const b = document.body, d = document.documentElement;
-    const pb = b.style.overflow, pd = d.style.overflow, pob = b.style.overscrollBehavior;
-    b.style.overflow = "hidden"; d.style.overflow = "hidden"; b.style.overscrollBehavior = "none";
-    return () => { b.style.overflow = pb; d.style.overflow = pd; b.style.overscrollBehavior = pob; };
+    if (lockDepth === 0) {
+      lockY = window.scrollY || window.pageYOffset || 0;
+      lockPrev = { ov: b.style.overflow, dov: d.style.overflow, pos: b.style.position, top: b.style.top, w: b.style.width, ob: b.style.overscrollBehavior };
+      b.style.overflow = "hidden"; d.style.overflow = "hidden"; b.style.overscrollBehavior = "none";
+      b.style.position = "fixed"; b.style.top = `-${lockY}px`; b.style.width = "100%";
+    }
+    lockDepth += 1;
+    return () => {
+      lockDepth -= 1;
+      if (lockDepth > 0) return;
+      lockDepth = 0;
+      if (lockPrev) {
+        b.style.overflow = lockPrev.ov; d.style.overflow = lockPrev.dov; b.style.overscrollBehavior = lockPrev.ob;
+        b.style.position = lockPrev.pos; b.style.top = lockPrev.top; b.style.width = lockPrev.w;
+        lockPrev = null;
+      }
+      try { window.scrollTo(0, lockY); } catch (e) {}
+    };
   }, []);
 }
 
@@ -2508,6 +2534,10 @@ function AlignSheet({ src, ghost, init, title, onSave, onCancel, ghostEditable, 
   useScrollLock();
   const twoWay = !!(ghost && ghostEditable);
   const onGhost = twoWay && which === "ghost";
+  /* 상대 사진을 실제로 건드렸을 때만 같이 저장한다 */
+  const gDirty = twoWay && (g.x !== (num(ghost?.x) || 0) || g.y !== (num(ghost?.y) || 0)
+    || g.scale !== (num(ghost?.scale) || 1) || g.rot !== (num(ghost?.rot) || 0));
+  const marked = (init?.marks?.length || 0) + (onGhost ? (ghost?.marks?.length || 0) : 0);
   const cur = onGhost ? g : m;
   const setCur = (p) => (onGhost ? setG((v) => ({ ...v, ...p })) : setM((v) => ({ ...v, ...p })));
   const rows = [
@@ -2521,7 +2551,7 @@ function AlignSheet({ src, ghost, init, title, onSave, onCancel, ghostEditable, 
       <div className="flex items-center justify-between px-4 py-3">
         <button onClick={onCancel} className="rounded-full p-2" style={{ backgroundColor: "rgba(255,255,255,0.15)" }}><X size={18} color="#fff" /></button>
         <p className="text-sm font-bold text-white">{title || "중심선 맞추기"}</p>
-        <button onClick={() => onSave(m, twoWay ? g : null)} className="rounded-full px-4 py-2 text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>저장</button>
+        <button onClick={() => onSave(m, gDirty ? g : null)} className="rounded-full px-4 py-2 text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>저장</button>
       </div>
       {twoWay && (
         <div className="mx-4 mb-1 flex gap-1 rounded-2xl p-1" style={{ backgroundColor: "rgba(255,255,255,0.12)" }}>
@@ -2542,6 +2572,7 @@ function AlignSheet({ src, ghost, init, title, onSave, onCancel, ghostEditable, 
       </div>
       <div className="space-y-2 px-4 pb-6 pt-3">
         {twoWay && <p className="text-center text-xs font-bold text-white opacity-60">지금 {onGhost ? (ghostName || "비포") : (mainName || "애프터")} 사진을 맞추는 중입니다</p>}
+        {marked > 0 && <p className="text-center text-xs font-bold" style={{ color: WARN }}>이 사진에 분석선 {marked}개가 있습니다. 위치를 바꾸면 선이 몸에서 어긋납니다.</p>}
         {rows.map((r) => (
           <div key={r.k} className="flex items-center gap-3">
             <span className="w-14 shrink-0 text-xs font-bold text-white opacity-70">{r.l}</span>

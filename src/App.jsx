@@ -2125,14 +2125,17 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast }) {
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [marks, setMarks] = useState(photo.marks || []);
   const [draft, setDraft] = useState(null);
+  const [pending, setPending] = useState(null);
   const [tool, setTool] = useState("angle");
   const [color, setColor] = useState(PEN_COLORS[0]);
   const [width, setWidth] = useState(3);
   const [grid, setGrid] = useState(true);
-  const [part, setPart] = useState("어깨");
-  const [mirror, setMirror] = useState(false);
+  const [ruler, setRuler] = useState(null);
+  const rulerDrag = useRef(null);
+  const exportingRef = useRef(false);
   const [shot, setShot] = useState(null);
   useBackClose(true, onClose);
+  useScrollLock();
 
   useEffect(() => {
     const img = new window.Image();
@@ -2155,10 +2158,37 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast }) {
     return () => window.removeEventListener("resize", fit);
   }, []);
 
+  const degText = (deg) => `${Math.abs(deg).toFixed(1)}\u00b0`;
+
+  /* ---- 자(눈금자) 기하 ---- */
+  const rulerGeom = (w, h) => {
+    if (!ruler) return null;
+    const C = { x: ruler.cx * w, y: ruler.cy * h };
+    const rad = (ruler.deg * Math.PI) / 180;
+    return { C, rad, u: { x: Math.cos(rad), y: Math.sin(rad) }, n: { x: -Math.sin(rad), y: Math.cos(rad) }, L: Math.hypot(w, h) * 1.3 };
+  };
+  const toLocal = (g, P) => { const dx = P.x - g.C.x, dy = P.y - g.C.y; return { x: dx * g.u.x + dy * g.u.y, y: dx * g.n.x + dy * g.n.y }; };
+  /* 자 눈금선 근처(선 위쪽)에 찍는 점은 선 위로 딱 붙인다 */
+  const snapPt = (p) => {
+    const c = canvasRef.current; if (!c || !ruler) return p;
+    const r = c.getBoundingClientRect(), w = r.width, h = r.height;
+    const g = rulerGeom(w, h);
+    const lp = toLocal(g, { x: p.x * w, y: p.y * h });
+    if (lp.y < -48 || lp.y > 6) return p;
+    return { x: (g.C.x + lp.x * g.u.x) / w, y: (g.C.y + lp.x * g.u.y) / h };
+  };
+
   const drawMark = (ctx, m, w, h) => {
     const P = (p) => ({ x: p.x * w, y: p.y * h });
     ctx.strokeStyle = m.color; ctx.fillStyle = m.color; ctx.lineWidth = m.width;
     ctx.lineCap = "round"; ctx.lineJoin = "round";
+    if (m.tool === "point") {
+      const p = P(m.pts[0]);
+      ctx.beginPath(); ctx.arc(p.x, p.y, m.width + 3, 0, Math.PI * 2); ctx.fill();
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(p.x, p.y, m.width + 9, 0, Math.PI * 2); ctx.stroke();
+      return;
+    }
     ctx.beginPath();
     if (m.tool === "hline") { const y = m.pts[0].y * h; ctx.moveTo(0, y); ctx.lineTo(w, y); }
     else if (m.tool === "vline") { const x = m.pts[0].x * w; ctx.moveTo(x, 0); ctx.lineTo(x, h); }
@@ -2173,10 +2203,40 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast }) {
       const cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2 - 14;
       ctx.font = "bold 13px Pretendard, sans-serif";
       const tw = ctx.measureText(m.label || "").width;
-      ctx.fillStyle = "rgba(0,0,0,0.65)"; ctx.fillRect(cx - tw / 2 - 6, cy - 14, tw + 12, 20);
-      ctx.fillStyle = "#fff"; ctx.textAlign = "center"; ctx.fillText(m.label || "", cx, cy);
+      ctx.fillStyle = "rgba(10,10,16,0.8)"; ctx.fillRect(cx - tw / 2 - 7, cy - 15, tw + 14, 22);
+      ctx.strokeStyle = "rgba(255,255,255,0.55)"; ctx.lineWidth = 1; ctx.strokeRect(cx - tw / 2 - 7, cy - 15, tw + 14, 22);
+      ctx.fillStyle = "#fff"; ctx.textAlign = "center"; ctx.fillText(m.label || "", cx, cy + 1);
     }
   };
+
+  const drawRuler = (ctx, w, h) => {
+    const g = rulerGeom(w, h); if (!g) return;
+    const rx = Math.min(150, g.L / 2 - 30);
+    ctx.save();
+    ctx.translate(g.C.x, g.C.y); ctx.rotate(g.rad);
+    ctx.fillStyle = "rgba(18,18,26,0.55)";
+    ctx.fillRect(-g.L / 2, 0, g.L, 52);
+    ctx.strokeStyle = "rgba(255,255,255,0.95)"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(-g.L / 2, 0); ctx.lineTo(g.L / 2, 0); ctx.stroke();
+    ctx.strokeStyle = "rgba(255,255,255,0.45)"; ctx.lineWidth = 1;
+    for (let x = Math.ceil(-g.L / 2 / 24) * 24; x <= g.L / 2; x += 24) {
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, x % 120 === 0 ? 16 : 9); ctx.stroke();
+    }
+    ctx.beginPath(); ctx.arc(0, 26, 15, 0, Math.PI * 2); ctx.fillStyle = "rgba(255,255,255,0.92)"; ctx.fill();
+    ctx.strokeStyle = "rgba(0,0,0,0.35)"; ctx.lineWidth = 1.5; ctx.stroke();
+    [-5, 0, 5].forEach((dx) => { ctx.beginPath(); ctx.arc(dx, 26, 1.6, 0, Math.PI * 2); ctx.fillStyle = "#17171F"; ctx.fill(); });
+    ctx.beginPath(); ctx.arc(rx, 26, 13, 0, Math.PI * 2); ctx.fillStyle = PRIMARY; ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,0.9)"; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.beginPath(); ctx.arc(rx, 26, 5.5, 0, Math.PI * 2); ctx.strokeStyle = "#fff"; ctx.lineWidth = 2; ctx.stroke();
+    let a = ((g.rad * 180 / Math.PI) % 180 + 180) % 180; if (a > 90) a -= 180;
+    const t = `${Math.abs(a).toFixed(1)}\u00b0`;
+    ctx.font = "bold 12px Pretendard, sans-serif";
+    const tw = ctx.measureText(t).width;
+    ctx.fillStyle = "rgba(10,10,16,0.85)"; ctx.fillRect(-60 - tw / 2 - 6, 17, tw + 12, 18);
+    ctx.fillStyle = "#fff"; ctx.textAlign = "center"; ctx.fillText(t, -60, 30);
+    ctx.restore();
+  };
+
   const draw = useCallback(() => {
     const c = canvasRef.current; if (!c) return;
     const ctx = c.getContext("2d"), dpr = window.devicePixelRatio || 1;
@@ -2196,7 +2256,9 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast }) {
     }
     marks.forEach((m) => drawMark(ctx, m, w, h));
     if (draft) drawMark(ctx, draft, w, h);
-  }, [marks, draft, grid, photo, size]);
+    if (pending && !draft) drawMark(ctx, { tool: "point", color, width, pts: [pending] }, w, h);
+    if (ruler && !exportingRef.current) drawRuler(ctx, w, h);
+  }, [marks, draft, pending, grid, ruler, color, width, photo, size]);
   useEffect(() => { draw(); }, [draw]);
 
   const pos = (e) => {
@@ -2205,31 +2267,68 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast }) {
   };
   const down = (e) => {
     e.currentTarget.setPointerCapture?.(e.pointerId);
-    const p = pos(e);
+    const raw = pos(e);
+    if (ruler) {
+      const rct = canvasRef.current.getBoundingClientRect();
+      const g = rulerGeom(rct.width, rct.height);
+      const P = { x: raw.x * rct.width, y: raw.y * rct.height };
+      const lp = toLocal(g, P);
+      const rx = Math.min(150, g.L / 2 - 30);
+      if (Math.hypot(lp.x - rx, lp.y - 26) < 26) { rulerDrag.current = { mode: "rot", a0: Math.atan2(P.y - g.C.y, P.x - g.C.x) - g.rad }; return; }
+      if (Math.hypot(lp.x, lp.y - 26) < 28 || (lp.y > 6 && lp.y < 52)) { rulerDrag.current = { mode: "move", dx: P.x - g.C.x, dy: P.y - g.C.y }; return; }
+    }
+    const p = ruler ? snapPt(raw) : raw;
     if (tool === "hline" || tool === "vline") { setDraft({ id: uid(), tool, color, width, pts: [p] }); return; }
+    if (tool === "angle") {
+      if (!pending) { setDraft({ id: uid(), tool: "point", color, width, pts: [p] }); return; }
+      setDraft({ id: uid(), tool: "angle", color, width, pts: [pending, p], label: degText(angleOf(pending, p)) });
+      return;
+    }
     setDraft({ id: uid(), tool, color, width, pts: [p, p], label: "" });
   };
   const move = (e) => {
+    const raw = pos(e);
+    if (rulerDrag.current && ruler) {
+      const rct = canvasRef.current.getBoundingClientRect();
+      const P = { x: raw.x * rct.width, y: raw.y * rct.height };
+      const d = rulerDrag.current;
+      if (d.mode === "move") setRuler((r) => ({ ...r, cx: Math.min(0.98, Math.max(0.02, (P.x - d.dx) / rct.width)), cy: Math.min(0.98, Math.max(0.02, (P.y - d.dy) / rct.height)) }));
+      else setRuler((r) => ({ ...r, deg: ((Math.atan2(P.y - r.cy * rct.height, P.x - r.cx * rct.width) - d.a0) * 180) / Math.PI }));
+      return;
+    }
     if (!draft) return;
-    const p = pos(e);
+    const p = ruler ? snapPt(raw) : raw;
     setDraft((d) => {
       if (!d) return d;
-      if (d.tool === "hline" || d.tool === "vline") return { ...d, pts: [p] };
+      if (d.tool === "hline" || d.tool === "vline" || d.tool === "point") return { ...d, pts: [p] };
       if (d.tool === "pen") return { ...d, pts: [...d.pts, p] };
-      return { ...d, pts: [d.pts[0], p], label: d.tool === "angle" ? angleLabel(part, angleOf(d.pts[0], p), mirror) : "" };
+      return { ...d, pts: [d.pts[0], p], label: d.tool === "angle" ? degText(angleOf(d.pts[0], p)) : "" };
     });
   };
   const up = () => {
+    if (rulerDrag.current) { rulerDrag.current = null; return; }
     if (!draft) return;
     const d = draft; setDraft(null);
+    if (d.tool === "point") { setPending(d.pts[0]); return; }
     if (d.tool === "hline" || d.tool === "vline") { setMarks((m) => [...m, d]); return; }
+    if (d.tool === "angle") {
+      if (Math.hypot(d.pts[1].x - d.pts[0].x, d.pts[1].y - d.pts[0].y) < 0.02) return;
+      const deg = angleOf(d.pts[0], d.pts[1]);
+      setMarks((m) => [...m, { ...d, angle: deg, label: degText(deg) }]);
+      setPending(null);
+      return;
+    }
     if (d.tool !== "pen" && Math.hypot(d.pts[1].x - d.pts[0].x, d.pts[1].y - d.pts[0].y) < 0.02) return;
-    const deg = angleOf(d.pts[0], d.pts[1]);
-    setMarks((m) => [...m, d.tool === "angle" ? { ...d, angle: deg, label: angleLabel(part, deg, mirror) } : d]);
+    setMarks((m) => [...m, d]);
   };
+  const pickTool = (k) => { setTool(k); setPending(null); setDraft(null); };
   const download = async () => {
+    exportingRef.current = true; draw();
+    let snap = null;
+    try { snap = canvasRef.current.toDataURL("image/jpeg", 0.92); } catch (e) {}
     const ok = await shareCanvas(canvasRef.current, `체형분석_${label}_${todayISO()}.jpg`, "체형 분석", onToast);
-    if (!ok) { try { setShot(canvasRef.current.toDataURL("image/jpeg", 0.92)); } catch (e) {} }
+    exportingRef.current = false; draw();
+    if (!ok && snap) setShot(snap);
   };
 
   return (
@@ -2246,25 +2345,25 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast }) {
       </div>
       <div className="space-y-2 px-3 pb-5 pt-3">
         <div className="flex gap-1.5 overflow-x-auto">
-          {[{ k: "angle", l: "각도" }, { k: "line", l: "직선" }, { k: "pen", l: "펜" }, { k: "hline", l: "수평선" }, { k: "vline", l: "수직선" }].map((t) => (
-            <button key={t.k} onClick={() => setTool(t.k)} className="whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-bold"
+          {[{ k: "angle", l: "각도" }, { k: "line", l: "직선" }, { k: "pen", l: "편" }, { k: "hline", l: "수평선" }, { k: "vline", l: "수직선" }].map((t) => (
+            <button key={t.k} onClick={() => pickTool(t.k)} className="whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-bold"
               style={tool === t.k ? { backgroundColor: BRAND, color: "#fff" } : { backgroundColor: "rgba(255,255,255,0.15)", color: "#fff" }}>{t.l}</button>
           ))}
+          <button onClick={() => setRuler((r) => (r ? null : { cx: 0.5, cy: 0.45, deg: 0 }))} className="whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-bold"
+            style={{ backgroundColor: ruler ? "rgba(255,255,255,0.9)" : "rgba(255,255,255,0.15)", color: ruler ? "#17171F" : "#fff" }}>자</button>
           <button onClick={() => setGrid((g) => !g)} className="whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-bold"
-            style={{ backgroundColor: grid ? "rgba(255,255,255,0.9)" : "rgba(255,255,255,0.15)", color: grid ? INK : "#fff" }}>격자</button>
+            style={{ backgroundColor: grid ? "rgba(255,255,255,0.9)" : "rgba(255,255,255,0.15)", color: grid ? "#17171F" : "#fff" }}>격자</button>
         </div>
         {(tool === "hline" || tool === "vline") && (
-          <p className="text-xs font-semibold text-white opacity-80">화면을 누른 채로 위치를 옮기고, 손을 떼면 선이 그려집니다.</p>
+          <p className="text-xs font-semibold text-white opacity-80">화면을 눌린 채로 위치를 옮기고, 손을 떨면 선이 그려집니다.</p>
         )}
         {tool === "angle" && (
-          <div className="flex items-center gap-1.5 overflow-x-auto">
-            {["어깨", "골반", "무릎", "귀-어깨"].map((p) => (
-              <button key={p} onClick={() => setPart(p)} className="whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-bold"
-                style={part === p ? { backgroundColor: CARD, color: INK } : { backgroundColor: "rgba(255,255,255,0.15)", color: "#fff" }}>{p}</button>
-            ))}
-            <button onClick={() => setMirror((v) => !v)} className="ml-auto whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-bold"
-              style={{ backgroundColor: mirror ? PRIMARY : "rgba(255,255,255,0.15)", color: "#fff" }}>좌우 기준: {mirror ? "회원" : "화면"}</button>
-          </div>
+          <p className="text-xs font-semibold text-white opacity-80">
+            {pending ? "두 번째 점을 찍으면 두 점을 잇는 선의 각도가 나옵니다" : "점을 한 번 찍고, 이어서 다음 점을 찍으면 수평 대비 각도가 표시됩니다"}
+          </p>
+        )}
+        {ruler && (
+          <p className="text-xs font-semibold text-white opacity-80">자 눈금선 가까이 찍는 점은 선 위로 딱 붙습니다 · 흰 손잡이 = 이동, 보라 손잡이 = 회전</p>
         )}
         <div className="flex items-center gap-2">
           {PEN_COLORS.map((c) => (
@@ -2275,12 +2374,12 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast }) {
           <span className="w-6 text-center text-xs font-bold text-white">{width}</span>
         </div>
         <div className="flex gap-2">
-          <button onClick={() => setMarks((m) => m.slice(0, -1))} className="flex flex-1 items-center justify-center gap-1 rounded-2xl py-2.5 text-xs font-bold text-white" style={{ backgroundColor: "rgba(255,255,255,0.15)" }}><RotateCcw size={13} /> 뒤로</button>
-          <button onClick={() => setMarks([])} className="flex flex-1 items-center justify-center gap-1 rounded-2xl py-2.5 text-xs font-bold text-white" style={{ backgroundColor: "rgba(255,255,255,0.15)" }}><Trash2 size={13} /> 전체 지우기</button>
+          <button onClick={() => { if (pending) { setPending(null); return; } setMarks((m) => m.slice(0, -1)); }} className="flex flex-1 items-center justify-center gap-1 rounded-2xl py-2.5 text-xs font-bold text-white" style={{ backgroundColor: "rgba(255,255,255,0.15)" }}><RotateCcw size={13} /> 뒤로</button>
+          <button onClick={() => { setMarks([]); setPending(null); }} className="flex flex-1 items-center justify-center gap-1 rounded-2xl py-2.5 text-xs font-bold text-white" style={{ backgroundColor: "rgba(255,255,255,0.15)" }}><Trash2 size={13} /> 전체 지우기</button>
           <button onClick={download} className="flex flex-1 items-center justify-center gap-1 rounded-2xl py-2.5 text-xs font-bold text-white" style={{ backgroundColor: "rgba(255,255,255,0.15)" }}><Download size={13} /> 공유</button>
         </div>
         <p className="text-center text-xs text-white opacity-60">
-          {tool === "angle" ? "양쪽 어깨(또는 골반) 지점을 드래그하면 각도가 표시됩니다" : "화면을 드래그해 그리세요"}
+          {tool === "angle" ? "점 두 개를 이면 각도가 표시됩니다 · 자를 켜면 반듯하게 찍기 쉽습니다" : "화면을 드래그해 그리세요"}
         </p>
       </div>
       {shot && (

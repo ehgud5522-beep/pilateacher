@@ -777,6 +777,16 @@ function useBackClose(open, close) {
     };
   }, [open]);
 }
+/* 전체화면 편집 중에는 뒤 배경이 안 밀리게 */
+function useScrollLock() {
+  useEffect(() => {
+    const b = document.body, d = document.documentElement;
+    const pb = b.style.overflow, pd = d.style.overflow, pob = b.style.overscrollBehavior;
+    b.style.overflow = "hidden"; d.style.overflow = "hidden"; b.style.overscrollBehavior = "none";
+    return () => { b.style.overflow = pb; d.style.overflow = pd; b.style.overscrollBehavior = pob; };
+  }, []);
+}
+
 function Sheet({ title, onClose, children }) {
   useBackClose(true, onClose);
   return (
@@ -2489,34 +2499,60 @@ function InbodyChart({ member }) {
     </Card>
   );
 }
-function AlignSheet({ src, ghost, init, title, onSave, onCancel }) {
-  const [x, setX] = useState(num(init?.x) || 0), [y, setY] = useState(num(init?.y) || 0);
-  const [scale, setScale] = useState(num(init?.scale) || 1), [op, setOp] = useState(45);
+function AlignSheet({ src, ghost, init, title, onSave, onCancel, ghostEditable, mainName, ghostName }) {
+  const [which, setWhich] = useState("main");
+  const [m, setM] = useState({ x: num(init?.x) || 0, y: num(init?.y) || 0, scale: num(init?.scale) || 1, rot: num(init?.rot) || 0 });
+  const [g, setG] = useState({ x: num(ghost?.x) || 0, y: num(ghost?.y) || 0, scale: num(ghost?.scale) || 1, rot: num(ghost?.rot) || 0 });
+  const [op, setOp] = useState(45);
   useBackClose(true, onCancel);
+  useScrollLock();
+  const twoWay = !!(ghost && ghostEditable);
+  const onGhost = twoWay && which === "ghost";
+  const cur = onGhost ? g : m;
+  const setCur = (p) => (onGhost ? setG((v) => ({ ...v, ...p })) : setM((v) => ({ ...v, ...p })));
+  const rows = [
+    { k: "x", l: "좌 · 우", min: -40, max: 40, step: 1 },
+    { k: "y", l: "위 · 아래", min: -40, max: 40, step: 1 },
+    { k: "scale", l: "확대", min: 0.6, max: 2, step: 0.02 },
+    { k: "rot", l: "기울기", min: -20, max: 20, step: 0.5 },
+  ];
   return (
-    <div className="safe-all fixed inset-0 z-50 flex flex-col bg-photo">
+    <div className="safe-all fixed inset-0 z-50 flex flex-col bg-photo" style={{ overscrollBehavior: "none" }}>
       <div className="flex items-center justify-between px-4 py-3">
         <button onClick={onCancel} className="rounded-full p-2" style={{ backgroundColor: "rgba(255,255,255,0.15)" }}><X size={18} color="#fff" /></button>
         <p className="text-sm font-bold text-white">{title || "중심선 맞추기"}</p>
-        <button onClick={() => onSave({ x, y, scale })} className="rounded-full px-4 py-2 text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>저장</button>
+        <button onClick={() => onSave(m, twoWay ? g : null)} className="rounded-full px-4 py-2 text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>저장</button>
       </div>
-      <div className="flex-1 px-4">
+      {twoWay && (
+        <div className="mx-4 mb-1 flex gap-1 rounded-2xl p-1" style={{ backgroundColor: "rgba(255,255,255,0.12)" }}>
+          {[{ k: "ghost", l: ghostName || "비포" }, { k: "main", l: mainName || "애프터" }].map((o) => (
+            <button key={o.k} onClick={() => setWhich(o.k)} className="flex-1 rounded-xl py-2 text-xs font-extrabold"
+              style={which === o.k ? { backgroundColor: BRAND, color: "#fff" } : { color: "rgba(255,255,255,0.7)" }}>{o.l} 맞추기</button>
+          ))}
+        </div>
+      )}
+      <div className="min-h-0 flex-1 px-4">
         <div className="relative mx-auto h-full overflow-hidden rounded-2xl bg-photo" style={{ maxWidth: "min(100%, 720px)" }}>
-          <img src={src} alt="촬영본" className="absolute inset-0 h-full w-full object-cover" style={{ transform: `translate(${x}%, ${y}%) scale(${scale})` }} />
-          {ghost && <img src={ghost.src} alt="이전" className="absolute inset-0 h-full w-full object-cover" style={{ opacity: op / 100, transform: ptf(ghost) }} />}
+          <img src={src} alt="촬영본" className="absolute inset-0 h-full w-full object-cover"
+            style={{ transform: ptf(m), opacity: onGhost ? 0.45 : 1 }} />
+          {ghost && <img src={ghost.src} alt="이전" className="absolute inset-0 h-full w-full object-cover"
+            style={{ opacity: onGhost ? 1 : op / 100, transform: ptf(twoWay ? g : ghost) }} />}
           <GuideOverlay strong />
         </div>
       </div>
       <div className="space-y-2 px-4 pb-6 pt-3">
-        {[{ l: "좌 · 우", v: x, set: setX, min: -40, max: 40, step: 1 },
-          { l: "위 · 아래", v: y, set: setY, min: -40, max: 40, step: 1 },
-          { l: "확대", v: scale, set: setScale, min: 0.6, max: 2, step: 0.02 }].map((s) => (
-          <div key={s.l} className="flex items-center gap-3">
-            <span className="w-14 shrink-0 text-xs font-bold text-white opacity-70">{s.l}</span>
-            <input type="range" min={s.min} max={s.max} step={s.step} value={s.v} onChange={(e) => s.set(Number(e.target.value))} className="w-full" style={{ accentColor: PRIMARY }} />
+        {twoWay && <p className="text-center text-xs font-bold text-white opacity-60">지금 {onGhost ? (ghostName || "비포") : (mainName || "애프터")} 사진을 맞추는 중입니다</p>}
+        {rows.map((r) => (
+          <div key={r.k} className="flex items-center gap-3">
+            <span className="w-14 shrink-0 text-xs font-bold text-white opacity-70">{r.l}</span>
+            <input type="range" min={r.min} max={r.max} step={r.step} value={cur[r.k]}
+              onChange={(e) => setCur({ [r.k]: Number(e.target.value) })} className="w-full" style={{ accentColor: PRIMARY }} />
+            {r.k === "rot" && (
+              <button onClick={() => setCur({ rot: 0 })} className="shrink-0 rounded-full px-2.5 py-1 text-xs font-bold text-white" style={{ backgroundColor: "rgba(255,255,255,0.15)" }}>0°</button>
+            )}
           </div>
         ))}
-        {ghost && (
+        {ghost && !onGhost && (
           <div className="flex items-center gap-3">
             <span className="w-14 shrink-0 text-xs font-bold text-white opacity-70">이전 사진</span>
             <input type="range" min="0" max="80" value={op} onChange={(e) => setOp(Number(e.target.value))} className="w-full" style={{ accentColor: PRIMARY }} />

@@ -3896,13 +3896,17 @@ function RecordTab({ db, selectedId, setSelectedId, section, setSection, onSaveI
             {last && <p className="mt-2 text-xs font-bold tabular-nums" style={{ color: INK2 }}>최근 인바디 {ymd(last.date)} · {last.weight}kg · 근육 {last.smm}kg · 지방 {last.fat}%</p>}
           </div>
         )}
-        <div className="mt-3 flex gap-1 overflow-x-auto rounded-2xl p-1" style={{ backgroundColor: CANVAS }}>
+        <p className="mb-1.5 mt-4 text-xs font-bold" style={{ color: SUB }}>무엇을 기록할까요?</p>
+        <div className="flex gap-1.5">
           {SECTIONS.map((s) => {
             const Icon = s.icon, on = section === s.k;
             return (
-              <button key={s.k} onClick={() => setSection(s.k)} className="flex flex-1 items-center justify-center gap-1 whitespace-nowrap rounded-xl px-3 py-2 text-xs font-bold"
-                style={on ? { background: GRAD, color: "#fff", boxShadow: "0 3px 8px rgba(108,76,241,.30)" } : { color: SUB }}>
-                <Icon size={13} /> {s.l}
+              <button key={s.k} onClick={() => setSection(s.k)}
+                className="flex min-w-0 flex-1 flex-col items-center justify-center gap-1 whitespace-nowrap rounded-2xl px-1 py-3 text-xs font-extrabold"
+                style={on
+                  ? { background: GRAD, color: "#fff", boxShadow: "0 4px 12px rgba(108,76,241,.38)", border: "1px solid transparent" }
+                  : { backgroundColor: CANVAS, color: INK2, border: `1px solid ${LINE}` }}>
+                <Icon size={17} /> {s.l}
               </button>
             );
           })}

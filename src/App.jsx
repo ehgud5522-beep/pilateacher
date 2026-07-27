@@ -86,7 +86,7 @@ const sysDarkNow = () => {
 };
 
 /* 파일이 실제로 교체됐는지 1초 만에 확인하는 표시 — 설정 탭 맨 아래에 뜬다 */
-const APP_VER = "v52 · 2026-07-27";
+const APP_VER = "v53 · 2026-07-27";
 try { if (typeof window !== "undefined") window.PILATEACHER_VER = APP_VER; } catch (e) {}
 
 const ACC_KEY = "pilateacher_accounts_v1";
@@ -1746,6 +1746,12 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onStatusAll, onNoshow
   }, [db.schedule, T1]);
 
   const [solo, setSolo] = useState({});
+  /* 수업을 처리하면 목록 순서가 바뀐다 — 올라오는 카드에 튕기는 느낌을 준다 */
+  const [bump, setBump] = useState(0);
+  const bumped = () => setBump((v) => v + 1);
+  const doStatus = (...a) => { bumped(); onStatus(...a); };
+  const doStatusAll = (...a) => { bumped(); onStatusAll && onStatusAll(...a); };
+  const doGroupDone = (...a) => { bumped(); onGroupDone(...a); };
   const isSettled = (r) => {
     if (r.kind === "personal") return true;
     if (r.kind === "equip") return r.done;
@@ -1782,7 +1788,7 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onStatusAll, onNoshow
         </h2>
         <div className="mt-2.5 flex items-stretch gap-1.5">
           <div className="min-w-0 flex-1 rounded-xl px-2.5 py-1.5" style={{ backgroundColor: "rgba(255,255,255,0.16)", border: "1px solid rgba(255,255,255,0.14)" }}>
-            <p className="truncate text-xs font-bold text-white opacity-85">오늘 수업</p>
+            <p className="truncate text-xs font-bold text-white opacity-85">총 수업</p>
             <p className="whitespace-nowrap text-base font-extrabold leading-tight tabular-nums text-white md:text-lg">{todayCls}수업</p>
           </div>
           <div className="min-w-0 flex-1 rounded-xl px-2.5 py-1.5" style={{ backgroundColor: "rgba(52,211,153,0.32)", border: "1px solid rgba(255,255,255,0.22)" }}>
@@ -1893,12 +1899,19 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onStatusAll, onNoshow
             )}
           </div>
           <div className="mt-2 grid gap-2 md:grid-cols-2">
-            {sortedRows.map((r) => {
+            {sortedRows.map((r, i) => {
               const down = !!parked[r.key];
               const wrap = (inner) => (
-                <SwipeRow key={r.key} down={down} enabled={canPark(r)}
-                  onPark={() => setParked((p) => ({ ...p, [r.key]: true }))}
-                  onUnpark={() => setParked((p) => { const q = { ...p }; delete q[r.key]; return q; })}>{inner}</SwipeRow>
+                <div key={`${r.key}#${bump}`}
+                  style={bump === 0 ? undefined : {
+                    animation: `${down ? "rowSink" : "rowRise"} .46s cubic-bezier(.34,1.5,.5,1) both`,
+                    animationDelay: `${Math.min(i, 6) * 32}ms`,
+                    willChange: "transform",
+                  }}>
+                  <SwipeRow down={down} enabled={canPark(r)}
+                    onPark={() => setParked((p) => ({ ...p, [r.key]: true }))}
+                    onUnpark={() => setParked((p) => { const q = { ...p }; delete q[r.key]; return q; })}>{inner}</SwipeRow>
+                </div>
               );
               if (r.kind === "equip") return wrap(
                 <div className="rounded-2xl p-3" style={{ backgroundColor: CANVAS }}>
@@ -1911,8 +1924,8 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onStatusAll, onNoshow
                   <p className="mt-1.5 text-xs" style={{ color: INK2, minHeight: 26 }}>{r.done ? "이달 누적에 반영되었습니다" : "수업을 마치면 완료로 표시해 주세요"}</p>
                   <div className="mt-2 flex gap-1.5">
                     {r.done
-                      ? <button onClick={() => onGroupDone && onGroupDone(r.sid, false)} className="flex-1 rounded-lg py-1.5 text-xs font-extrabold" style={{ backgroundColor: GOOD_S, color: GOOD }}>완료 취소</button>
-                      : <button onClick={() => onGroupDone && onGroupDone(r.sid, true)} className="flex-1 rounded-lg py-1.5 text-xs font-extrabold text-white" style={{ backgroundColor: GOOD }}>진행 완료</button>}
+                      ? <button onClick={() => onGroupDone && doGroupDone(r.sid, false)} className="flex-1 rounded-lg py-1.5 text-xs font-extrabold" style={{ backgroundColor: GOOD_S, color: GOOD }}>완료 취소</button>
+                      : <button onClick={() => onGroupDone && doGroupDone(r.sid, true)} className="flex-1 rounded-lg py-1.5 text-xs font-extrabold text-white" style={{ backgroundColor: GOOD }}>진행 완료</button>}
                     <button onClick={() => setEditing(r.s)} aria-label="수업 수정" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white" style={{ color: SUB }}><Pencil size={13} /></button>
                   </div>
                 </div>
@@ -1957,16 +1970,16 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onStatusAll, onNoshow
                     </div>
                     {allBooked ? (
                       <div className="mt-2 flex gap-1.5">
-                        <button onClick={() => onStatusAll(r.sid, "done")} className="flex-1 rounded-lg py-2 text-xs font-extrabold text-white" style={{ backgroundColor: GOOD }}>{r.list.length}명 출석</button>
-                        <button onClick={() => onStatusAll(r.sid, "noshow")} className="flex-1 rounded-lg py-2 text-xs font-extrabold text-white" style={{ backgroundColor: BAD }}>노쇼</button>
-                        <button onClick={() => onStatusAll(r.sid, "cancel")} className="flex-1 rounded-lg py-2 text-xs font-extrabold" style={{ backgroundColor: CARD, color: SUB }}>취소</button>
+                        <button onClick={() => doStatusAll(r.sid, "done")} className="flex-1 rounded-lg py-2 text-xs font-extrabold text-white" style={{ backgroundColor: GOOD }}>{r.list.length}명 출석</button>
+                        <button onClick={() => doStatusAll(r.sid, "noshow")} className="flex-1 rounded-lg py-2 text-xs font-extrabold text-white" style={{ backgroundColor: BAD }}>노쇼</button>
+                        <button onClick={() => doStatusAll(r.sid, "cancel")} className="flex-1 rounded-lg py-2 text-xs font-extrabold" style={{ backgroundColor: CARD, color: SUB }}>취소</button>
                       </div>
                     ) : (
                       <div className="mt-2 flex flex-wrap items-center gap-1.5 rounded-lg px-2 py-1.5" style={{ backgroundColor: same ? st0.bg : CARD }}>
                         <span className="text-xs font-extrabold" style={{ color: same ? st0.color : INK }}>
                           {same ? `${r.list.length}명 모두 ${st0.label}` : r.list.map((a, k) => `${names[k]} ${stOf(a.status).label}`).join(" · ")}
                         </span>
-                        <button onClick={() => onStatusAll(r.sid, "booked")} className="ml-auto rounded-full bg-white px-2 py-0.5 text-xs font-bold" style={{ color: SUB }}>다시 고르기</button>
+                        <button onClick={() => doStatusAll(r.sid, "booked")} className="ml-auto rounded-full bg-white px-2 py-0.5 text-xs font-bold" style={{ color: SUB }}>다시 고르기</button>
                       </div>
                     )}
                     <button onClick={() => setSolo((v) => ({ ...v, [r.key]: !v[r.key] }))}
@@ -1975,7 +1988,7 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onStatusAll, onNoshow
                     </button>
                     {open && (
                       <div className="mt-1.5 space-y-1.5">
-                        {r.list.map((a) => <SchedAttendeeRow key={a.memberId} s={r.s} a={a} members={db.members} onStatus={onStatus} onNoshowFee={onNoshowFee} />)}
+                        {r.list.map((a) => <SchedAttendeeRow key={a.memberId} s={r.s} a={a} members={db.members} onStatus={doStatus} onNoshowFee={onNoshowFee} />)}
                       </div>
                     )}
                     {r.list.filter((a) => a.status === "done").map((a) => {
@@ -2023,9 +2036,9 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onStatusAll, onNoshow
                   </p>
                   {r.status === "booked" ? (
                     <div className="mt-2 flex gap-1.5">
-                      <button onClick={() => onStatus(r.sid, "done", r.id)} className="flex-1 rounded-lg py-2 text-xs font-extrabold text-white" style={{ backgroundColor: GOOD }}>출석</button>
-                      <button onClick={() => onStatus(r.sid, "noshow", r.id)} className="flex-1 rounded-lg py-2 text-xs font-extrabold text-white" style={{ backgroundColor: BAD }}>노쇼</button>
-                      <button onClick={() => onStatus(r.sid, "cancel", r.id)} className="flex-1 rounded-lg py-2 text-xs font-extrabold" style={{ backgroundColor: CARD, color: SUB }}>취소</button>
+                      <button onClick={() => doStatus(r.sid, "done", r.id)} className="flex-1 rounded-lg py-2 text-xs font-extrabold text-white" style={{ backgroundColor: GOOD }}>출석</button>
+                      <button onClick={() => doStatus(r.sid, "noshow", r.id)} className="flex-1 rounded-lg py-2 text-xs font-extrabold text-white" style={{ backgroundColor: BAD }}>노쇼</button>
+                      <button onClick={() => doStatus(r.sid, "cancel", r.id)} className="flex-1 rounded-lg py-2 text-xs font-extrabold" style={{ backgroundColor: CARD, color: SUB }}>취소</button>
                     </div>
                   ) : (
                     <>
@@ -2036,7 +2049,7 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onStatusAll, onNoshow
                         )}
                         {r.status === "cancel" && <span className="text-xs font-bold" style={{ color: st.color, opacity: 0.85 }}>· 차감 없음</span>}
                         {r.status === "done" && written && <span className="text-xs font-bold" style={{ color: st.color, opacity: 0.85 }}>· 기록 완료</span>}
-                        <button onClick={() => onStatus(r.sid, "booked", r.id)} className="ml-auto rounded-full bg-white px-2 py-0.5 text-xs font-bold" style={{ color: SUB }}>다시 고르기</button>
+                        <button onClick={() => doStatus(r.sid, "booked", r.id)} className="ml-auto rounded-full bg-white px-2 py-0.5 text-xs font-bold" style={{ color: SUB }}>다시 고르기</button>
                       </div>
                       {r.status === "done" && !written && (
                         <div className="mt-1.5 flex gap-1.5">
@@ -2081,11 +2094,14 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onStatusAll, onNoshow
               {weekDays.map((d) => {
                 const n = byDate(d).length, on = d === cursor;
                 return (
-                  <button key={d} onClick={() => { setCursor(d); setMode("day"); }} className="min-w-0 flex-1 rounded-2xl px-1 py-2 text-center"
+                  <button key={d} onClick={() => { setCursor(d); setMode("day"); }} className="relative min-w-0 flex-1 rounded-xl px-0.5 py-1.5 text-center"
                     style={on ? { backgroundColor: BRAND } : { backgroundColor: CANVAS }}>
-                    <p className="text-sm font-extrabold" style={{ color: on ? "#fff" : redInk(d, SUB) }}>{dow(d)}</p>
-                    <p className="text-base font-extrabold tabular-nums" style={{ color: on ? "#fff" : d === todayISO() ? PRIMARY : redInk(d, INK) }}>{d.slice(8, 10)}</p>
-                    <p className="text-xs font-bold tabular-nums" style={{ color: on ? "#fff" : n ? PRIMARY : FAINT }}>{n || "-"}</p>
+                    <p className="font-extrabold leading-none" style={{ fontSize: 10, color: on ? "rgba(255,255,255,.85)" : redInk(d, SUB) }}>{dow(d)}</p>
+                    <p className="mt-0.5 font-extrabold leading-none tabular-nums" style={{ fontSize: 15, color: on ? "#fff" : d === todayISO() ? PRIMARY : redInk(d, INK) }}>{d.slice(8, 10)}</p>
+                    {n > 0 && (
+                      <span className="absolute right-1 top-1 flex h-3.5 min-w-[14px] items-center justify-center rounded-full px-1 font-extrabold tabular-nums"
+                        style={{ fontSize: 9, backgroundColor: on ? "rgba(255,255,255,.9)" : PRIMARY, color: on ? BRAND : "#fff" }}>{n}</span>
+                    )}
                   </button>
                 );
               })}
@@ -6291,6 +6307,8 @@ export default function App() {
       @keyframes bar { 0% { width: 0 } 70% { width: 82% } 100% { width: 100% } }
       .loadbar { animation: bar 1.5s cubic-bezier(.3,.9,.3,1) both }
       @keyframes weekIn { from { opacity: .35; transform: translateX(10px) } to { opacity: 1; transform: none } }
+      @keyframes rowRise { 0% { transform: translateY(18px); opacity: .3 } 55% { transform: translateY(-5px); opacity: 1 } 78% { transform: translateY(2px) } 100% { transform: translateY(0) } }
+      @keyframes rowSink { 0% { transform: translateY(-12px) scale(.98); opacity: .45 } 70% { transform: translateY(2px) scale(1) } 100% { transform: translateY(0); opacity: 1 } }
       .week-strip { animation: weekIn .22s ease both }
       @media (prefers-reduced-motion: reduce) { .app-root *, .splash-pop, .splash-fade { animation: none !important; transition: none !important } }
     `}</style>

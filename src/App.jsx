@@ -1105,7 +1105,7 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
     </div>
   );
 }
-function Header({ settings, account, alertCount, onProfile }) {
+function Header({ settings, account, alertCount, onProfile, onAlerts }) {
   return (
     <div className="bg-white">
       <div className="mx-auto flex max-w-6xl items-center gap-3 px-4 py-3">
@@ -5320,7 +5320,11 @@ export default function App() {
     <div className="app-root min-h-screen pb-16" style={{ backgroundColor: PAGE }}>
       {style}
       <div className="safe-t sticky top-0 z-30" style={{ backgroundColor: CARD }}>
-        <Header settings={db.settings || {}} account={account} alertCount={alerts.length} onProfile={() => setTab("settings")} />
+        <Header settings={db.settings || {}} account={account} alertCount={alerts.length} onProfile={() => setTab("settings")}
+          onAlerts={() => {
+            setMobileView("list"); setTab("members");
+            setTimeout(() => { try { document.getElementById("alert-center")?.scrollIntoView({ behavior: "smooth", block: "start" }); } catch (e) {} }, 80);
+          }} />
         <Tabs tab={tab} setTab={goTab} />
       </div>
       <main className="mx-auto max-w-6xl px-4 py-3">
@@ -5349,7 +5353,7 @@ export default function App() {
                 )}
               </div>
             </div>
-            {!briefing && <div className="mt-3"><Guard label="골든타임 알림"><AlertCenter alerts={alerts} onBrief={setBrief} onOpenMember={(id) => { setSelectedId(id); setMobileView("detail"); }} /></Guard></div>}
+            {!briefing && <div id="alert-center" className="mt-3"><Guard label="골든타임 알림"><AlertCenter alerts={alerts} onBrief={setBrief} onOpenMember={(id) => { setSelectedId(id); setMobileView("detail"); }} /></Guard></div>}
           </>
         )}
         {tab === "schedule" && (

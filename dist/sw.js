@@ -1,11 +1,13 @@
 /* 필라티쳐 Service Worker — 오프라인 캐싱 */
-const CACHE = "pilateacher-v1";
+const CACHE = "pilateacher-v2";
 const CORE = [
   "/",
   "/index.html",
+  "/manifest.json",
   "/manifest.webmanifest",
   "/icon-192.png",
   "/icon-512.png",
+  "/PlayStore-512.png",
   "/apple-touch-icon.png",
 ];
 

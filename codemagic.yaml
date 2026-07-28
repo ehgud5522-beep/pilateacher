@@ -8,7 +8,7 @@ workflows:
       app_store_connect: 필라티쳐
 
     environment:
-      node: 20
+      node: 22
       xcode: latest
       cocoapods: default
       vars:

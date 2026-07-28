@@ -86,7 +86,7 @@ const sysDarkNow = () => {
 };
 
 /* 파일이 실제로 교체됐는지 1초 만에 확인하는 표시 — 설정 탭 맨 아래에 뜬다 */
-const APP_VER = "v54 · 2026-07-27";
+const APP_VER = "v55 · 2026-07-27";
 try { if (typeof window !== "undefined") window.PILATEACHER_VER = APP_VER; } catch (e) {}
 
 const ACC_KEY = "pilateacher_accounts_v1";
@@ -1672,7 +1672,7 @@ function SchedItem({ s, members, del, setDel, setEditing, onStatus, onNoshowFee,
 }
 
 function ScheduleManager({ db, onSave, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onOpenMember, onWriteNote, onNoComment }) {
-  const [mode, setMode] = useState("day");
+  const [mode, setMode] = useState("week");
   const [cursor, setCursor] = useState(todayISO());
   const [editing, setEditing] = useState(null);
   const [del, setDel] = useState(null);
@@ -1893,7 +1893,7 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onStatusAll, onNoshow
           </div>
           <div className="mt-2 flex items-center gap-1.5 rounded-xl px-3 py-2" style={{ backgroundColor: CANVAS }}>
             <ChevronLeft size={13} style={{ color: PRIMARY }} />
-            <p className="text-xs font-bold" style={{ color: INK }}>끝난 수업은 <span style={{ color: PRIMARY }}>왼쪽으로 밀어</span> 정리해 두세요</p>
+            <p className="text-xs font-bold" style={{ color: INK }}>끝난 수업과 일정은 <span style={{ color: PRIMARY }}>왼쪽으로 밀어</span> 정리해 두세요</p>
             {parkedCount > 0 && (
               <button onClick={() => setParked({})} className="ml-auto rounded-full bg-white px-2.5 py-1 text-xs font-extrabold" style={{ color: PRIMARY }}>모두 올리기 {parkedCount}</button>
             )}
@@ -2141,16 +2141,38 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onStatusAll, onNoshow
             <CalendarDays size={16} /> 내 일정 등록
           </button>
         </div>
-        <WeekGrid days={weekDays} byDate={byDate} nameOf={nameOf} cursor={cursor}
-          onOpen={(s) => setEditing(s)}
-          onNew={(date, start, dur) => setEditing({ id: null, memberIds: db.members[0] ? [db.members[0].id] : [], date, start, dur: dur || 50, type: "개인레슨", instructor: db.settings.staff, room: "", memo: "" })} />
+        {mode === "week" && (
+          <WeekGrid days={weekDays} byDate={byDate} nameOf={nameOf} cursor={cursor}
+            onOpen={(s) => setEditing(s)}
+            onNew={(date, start, dur) => setEditing({ id: null, memberIds: db.members[0] ? [db.members[0].id] : [], date, start, dur: dur || 50, type: "개인레슨", instructor: db.settings.staff, room: "", memo: "" })} />
+        )}
       </Card>
 
-      {mode === "day" && !(cursor === T0 && byDate(cursor).length > 0) && (
-        <Card className="space-y-2 p-4">
-          {byDate(cursor).length === 0
-            ? <div className="py-8 text-center"><Clock size={20} className="mx-auto" style={{ color: FAINT }} /><Sub className="mt-2">등록된 수업이 없습니다.</Sub></div>
-            : byDate(cursor).map((s) => <SchedItem key={s.id} s={s} {...itemProps} />)}
+      {mode === "day" && (
+        <Card className="p-4">
+          <div className="flex items-center gap-2">
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: TINT }}><Clock size={15} style={{ color: PRIMARY }} /></span>
+            <div className="min-w-0 flex-1">
+              <h3 className="font-extrabold" style={{ color: redInk(cursor, INK) }}>{ymd(cursor)} ({dow(cursor)}){holidayOf(cursor) ? ` · ${holidayOf(cursor)}` : ""}</h3>
+              <Sub>{cursor === T0 ? "오늘" : dday(cursor) > 0 ? `${dday(cursor)}일 뒤` : `${-dday(cursor)}일 전`} · 이 날 만나는 회원</Sub>
+            </div>
+            <span className="shrink-0 rounded-full px-2.5 py-1 text-xs font-extrabold" style={{ backgroundColor: byDate(cursor).length ? TINT : CANVAS, color: byDate(cursor).length ? PRIMARY : SUB }}>
+              {byDate(cursor).length}건 · {seatsOn(cursor)}명
+            </span>
+          </div>
+          {byDate(cursor).length === 0 ? (
+            <Sub className="mt-3 block text-center">이 날은 잡힌 일정이 없습니다 · 아래 버튼으로 등록해 보세요</Sub>
+          ) : cursor === T0 ? (
+            <div className="mt-2 space-y-2">
+              <div className="flex items-center gap-2 rounded-xl px-3 py-2" style={{ backgroundColor: TINT }}>
+                <Sparkles size={13} className="shrink-0" style={{ color: PRIMARY }} />
+                <span className="text-xs font-bold" style={{ color: INK }}>출석 · 노쇼 처리는 위 '오늘 수업'에서 하세요</span>
+              </div>
+              {byDate(cursor).map((s) => <SchedItem key={s.id} s={s} {...itemProps} />)}
+            </div>
+          ) : (
+            <div className="mt-2 space-y-2">{byDate(cursor).map((s) => <SchedItem key={s.id} s={s} {...itemProps} />)}</div>
+          )}
         </Card>
       )}
       {mode === "week" && (

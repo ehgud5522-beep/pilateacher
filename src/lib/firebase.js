@@ -7,8 +7,6 @@
    =================================================================== */
 
 import { initializeApp } from "firebase/app";
-import { Capacitor } from "@capacitor/core";
-import { FirebaseAuthentication } from "@capacitor-firebase/authentication";
 import {
   getAuth, onAuthStateChanged, signOut,
   GoogleAuthProvider, OAuthProvider, signInWithPopup, signInWithCredential,
@@ -41,20 +39,34 @@ const shape = (u) => ({
   photo: u.photoURL || "",
 });
 
-/* 앱(안드로이드·iOS)인지 판별 — 웹이면 false */
+/* 앱(안드로이드·iOS)인지 판별 — 웹이면 false
+   ⚠️ @capacitor/core 를 import 하지 않고 전역에서 읽는다.
+      앱에서는 Capacitor 가 window.Capacitor 를 심어 주고,
+      웹(볼트 미리보기·브라우저)에서는 없으므로 false 가 된다.
+      이렇게 해야 웹 쪽 번들러가 Capacitor 패키지를 찾지 않아 에러가 안 난다. */
+const cap = () => {
+  try { return (typeof window !== "undefined" && window.Capacitor) || null; } catch (e) { return null; }
+};
 const isNative = () => {
-  try { return !!(Capacitor && Capacitor.isNativePlatform && Capacitor.isNativePlatform()); }
+  const c = cap();
+  try { return !!(c && typeof c.isNativePlatform === "function" && c.isNativePlatform()); }
   catch (e) { return false; }
+};
+/* 네이티브 로그인 플러그인 — cap sync 로 앱에 심어지면 여기서 잡힌다 */
+const nativeAuth = () => {
+  const c = cap();
+  return (c && c.Plugins && c.Plugins.FirebaseAuthentication) || null;
 };
 
 /* ---------------- 로그인 ----------------
    앱에서는 팝업이 뜨지 않으므로 네이티브 로그인 화면을 쓴다.
    웹(브라우저)에서는 기존 팝업 방식 그대로. */
 export async function fbSignInSocial(provider) {
-  if (isNative()) {
+  const NA = nativeAuth();
+  if (isNative() && NA) {
     const res = provider === "apple"
-      ? await FirebaseAuthentication.signInWithApple({ skipNativeAuth: true })
-      : await FirebaseAuthentication.signInWithGoogle({ skipNativeAuth: true });
+      ? await NA.signInWithApple({ skipNativeAuth: true })
+      : await NA.signInWithGoogle({ skipNativeAuth: true });
     const cred = provider === "apple"
       ? new OAuthProvider("apple.com").credential({
           idToken: res?.credential?.idToken,
@@ -90,7 +102,8 @@ export async function fbSignInEmail(email, pw) {
 }
 
 export async function fbSignOut() {
-  if (isNative()) { try { await FirebaseAuthentication.signOut(); } catch (e) {} }
+  const NA = nativeAuth();
+  if (NA) { try { await NA.signOut(); } catch (e) {} }
   if (auth) await signOut(auth);
 }
 

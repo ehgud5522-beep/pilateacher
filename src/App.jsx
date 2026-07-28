@@ -86,7 +86,7 @@ const sysDarkNow = () => {
 };
 
 /* 파일이 실제로 교체됐는지 1초 만에 확인하는 표시 — 설정 탭 맨 아래에 뜬다 */
-const APP_VER = "v56 · 2026-07-28";
+const APP_VER = "v57 · 2026-07-28";
 try { if (typeof window !== "undefined") window.PILATEACHER_VER = APP_VER; } catch (e) {}
 
 const ACC_KEY = "pilateacher_accounts_v1";
@@ -1783,7 +1783,7 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onStatusAll, onNoshow
     if (r.kind === "multi") return r.list.every((a) => a.status !== "booked" && (a.status !== "noshow" || a.noshowFee != null));
     if (r.status === "cancel") return true;
     if (r.status === "noshow") return r.fee != null;
-    if (r.status === "done") return (memberOf(r.id)?.notes || []).some((x) => x?.date === T0);
+    if (r.status === "done") return (memberOf(r.id)?.notes || []).some((x) => x?.sid === r.sid);
     return false;
   };
   const canPark = (r) => isSettled(r) || !!parked[r.key];
@@ -1797,9 +1797,9 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onStatusAll, onNoshow
   const doneRows = todayRows.filter((r) => r.kind === "member" && r.status === "done");
   const multiDone = todayRows.filter((r) => r.kind === "multi").reduce((n, r) => n + r.list.filter((a) => a.status === "done").length, 0);
   const doneToday = doneRows.length;
-  const unwrittenRows = doneRows.filter((r) => !(memberOf(r.id)?.notes || []).some((x) => x?.date === T0));
+  const unwrittenRows = doneRows.filter((r) => !(memberOf(r.id)?.notes || []).some((x) => x?.sid === r.sid));
   const unwritten = unwrittenRows.length;
-  const firstUnwritten = unwrittenRows[0]?.id;
+  const firstUnwritten = unwrittenRows[0] || null;
   const doneCls = db.schedule.filter((s) => s.date === T0 && !isPersonalEvt(s) && (isEquipGroup(s) ? !!s.groupDone : attendeesOf(s).every((a) => a.status !== "booked"))).length;
   return (
     <div className="space-y-3">
@@ -1833,7 +1833,7 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onStatusAll, onNoshow
       </div>
 
       {todayRows.length > 0 && unwritten > 0 && (
-        <button onClick={() => onWriteNote && onWriteNote(firstUnwritten)} className="flex w-full items-center gap-2 rounded-2xl px-4 py-3" style={{ backgroundColor: WARN_S }}>
+        <button onClick={() => onWriteNote && firstUnwritten && onWriteNote(firstUnwritten.id, firstUnwritten.sid)} className="flex w-full items-center gap-2 rounded-2xl px-4 py-3" style={{ backgroundColor: WARN_S }}>
           <Pencil size={15} style={{ color: WARN }} />
           <span className="text-sm font-extrabold" style={{ color: INK }}>오늘 수업 {doneToday}건 중 {unwritten}건이 아직 기록 전입니다</span>
           <ChevronRight size={16} style={{ color: WARN, marginLeft: "auto" }} />
@@ -2021,12 +2021,12 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onStatusAll, onNoshow
                     )}
                     {r.list.filter((a) => a.status === "done").map((a) => {
                       const mm = memberOf(a.memberId);
-                      const written = (mm?.notes || []).some((x) => x?.date === T0);
+                      const written = (mm?.notes || []).some((x) => x?.sid === r.sid);
                       if (written) return null;
                       return (
                         <div key={a.memberId} className="mt-1.5 flex gap-1.5">
-                          <button onClick={() => onWriteNote && onWriteNote(a.memberId)} className="flex flex-1 items-center justify-center gap-1 rounded-lg py-2 text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}><Pencil size={12} /> {mm?.name || ""} 기록하기</button>
-                          <button onClick={() => onNoComment && onNoComment(a.memberId, r.type)} className="flex-1 rounded-lg py-2 text-xs font-bold" style={{ backgroundColor: CARD, color: SUB }}>노코멘트</button>
+                          <button onClick={() => onWriteNote && onWriteNote(a.memberId, r.sid)} className="flex flex-1 items-center justify-center gap-1 rounded-lg py-2 text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}><Pencil size={12} /> {mm?.name || ""} 기록하기</button>
+                          <button onClick={() => onNoComment && onNoComment(a.memberId, r.type, r.sid)} className="flex-1 rounded-lg py-2 text-xs font-bold" style={{ backgroundColor: CARD, color: SUB }}>노코멘트</button>
                         </div>
                       );
                     })}
@@ -2040,7 +2040,8 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onStatusAll, onNoshow
               const st = stOf(r.status);
               const notes = (m?.notes || []).filter((x) => x && x.body).sort((a, b) => ((a.date || "") < (b.date || "") ? 1 : -1));
               const lastNote = notes.find((x) => x.date !== T0) || null;
-              const written = notes.some((x) => x.date === T0);
+              /* 같은 회원이 하루 두 번 와도 수업마다 따로 기록할 수 있게 수업 id 로 판정 */
+              const written = notes.some((x) => (x.sid ? x.sid === r.sid : false));
               return wrap(
                 <div className="rounded-2xl p-3" style={{ backgroundColor: CANVAS }}>
                   <div className="flex items-center gap-1.5">
@@ -2081,8 +2082,8 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onStatusAll, onNoshow
                       </div>
                       {r.status === "done" && !written && (
                         <div className="mt-1.5 flex gap-1.5">
-                          <button onClick={() => onWriteNote && onWriteNote(r.id)} className="flex flex-1 items-center justify-center gap-1 rounded-lg py-2 text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}><Pencil size={12} /> 기록하기</button>
-                          <button onClick={() => onNoComment && onNoComment(r.id, r.type)} className="flex-1 rounded-lg py-2 text-xs font-bold" style={{ backgroundColor: CARD, color: SUB }}>노코멘트</button>
+                          <button onClick={() => onWriteNote && onWriteNote(r.id, r.sid)} className="flex flex-1 items-center justify-center gap-1 rounded-lg py-2 text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}><Pencil size={12} /> 기록하기</button>
+                          <button onClick={() => onNoComment && onNoComment(r.id, r.type, r.sid)} className="flex-1 rounded-lg py-2 text-xs font-bold" style={{ backgroundColor: CARD, color: SUB }}>노코멘트</button>
                         </div>
                       )}
                       {r.status === "noshow" && r.fee == null && (
@@ -2428,7 +2429,7 @@ function ScheduleForm({ draft, members, onClose, onSubmit, onDelete }) {
   const slotVal = (slot) => (f.memberIds[slot] || "");
   /* 이미 이 수업에 들어와 있던 회원은 그대로 두고, 새로 넣는 회원만 잔여를 본다 */
   const prevIds = new Set(attendeesOf(draft).map((a) => a.memberId));
-  const noRest = isGroup ? [] : f.memberIds
+  const noRest = (isGroup || isPersonal) ? [] : f.memberIds
     .filter((id) => id && !prevIds.has(id))
     .map((id) => members.find((m) => m.id === id))
     .filter((m) => m && left(m) <= 0);
@@ -6026,9 +6027,10 @@ export default function App() {
   const goRecord = (sec) => { setNoteBack(false); setSection(sec); setTab("records"); };
   /* 일정 탭에서 '기록하기'로 들어왔으면 저장 후 다시 일정으로 돌려보낸다 */
   const [noteBack, setNoteBack] = useState(false);
-  const noComment = (id, type) => {
+  const [noteSid, setNoteSid] = useState(null);
+  const noComment = (id, type, sid) => {
     setNoteBack(false);
-    saveDb({ ...db, members: db.members.map((m) => (m.id === id ? { ...m, notes: [...(m.notes || []), { id: uid(), date: todayISO(), type: type || "개인레슨", instructor: m.instructor, body: "특이사항 없음", tags: [], deductFrom: null }] } : m)) });
+    saveDb({ ...db, members: db.members.map((m) => (m.id === id ? { ...m, notes: [...(m.notes || []), { id: uid(), date: todayISO(), sid: sid || undefined, type: type || "개인레슨", instructor: m.instructor, body: "특이사항 없음", tags: [], deductFrom: null }] } : m)) });
     setToast({ ok: true, msg: "특이사항 없음으로 기록했습니다." });
   };
 
@@ -6185,7 +6187,8 @@ export default function App() {
   };
   const saveNote = (id, note) => {
     const t = db.members.find((m) => m.id === id);
-    patch(id, { notes: [note, ...(t.notes || [])] });
+    patch(id, { notes: [{ ...note, sid: noteSid || undefined }, ...(t.notes || [])] });
+    setNoteSid(null);
     if (noteBack) {
       setNoteBack(false);
       setTab("schedule");
@@ -6417,7 +6420,7 @@ export default function App() {
           <ScheduleManager db={db} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone}
             onOpenMember={(id) => { setSelectedId(id); setMobileView("detail"); setTab("members"); }}
             onNoComment={noComment}
-            onWriteNote={(id) => { setSelectedId(id); setSection("note"); setNoteBack(true); setTab("records"); }} />
+            onWriteNote={(id, sid) => { setSelectedId(id); setSection("note"); setNoteBack(true); setNoteSid(sid || null); setTab("records"); }} />
         )}
         {tab === "records" && (
           <RecordTab db={db} selectedId={selectedId} setSelectedId={setSelectedId} section={section} setSection={setSection}

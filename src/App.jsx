@@ -86,7 +86,7 @@ const sysDarkNow = () => {
 };
 
 /* 파일이 실제로 교체됐는지 1초 만에 확인하는 표시 — 설정 탭 맨 아래에 뜬다 */
-const APP_VER = "v61 · 2026-07-28";
+const APP_VER = "v62 · 2026-07-28";
 try { if (typeof window !== "undefined") window.PILATEACHER_VER = APP_VER; } catch (e) {}
 
 const ACC_KEY = "pilateacher_accounts_v1";
@@ -168,6 +168,7 @@ const weeksBetween = (a, b) => Math.max(1, Math.round((new Date(b) - new Date(a)
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 const left = (m) => num(m?.regular) + num(m?.service);
 const ptf = (p) => `translate(${p?.x || 0}%, ${p?.y || 0}%) scale(${p?.scale || 1}) rotate(${p?.rot || 0}deg)`;
+const minOf = (hhmm) => Number(String(hhmm || "0:00").slice(0, 2)) * 60 + Number(String(hhmm || "0:00").slice(3, 5) || 0);
 const addMin = (t, min) => {
   const [h, m] = String(t || "0:00").split(":").map(Number);
   const tot = Math.max(0, Math.min(23 * 60 + 59, (h || 0) * 60 + (m || 0) + min));
@@ -1396,7 +1397,7 @@ function Header({ settings, account, alertCount, onProfile, onAlerts }) {
       <div className="mx-auto flex max-w-6xl items-center gap-3 px-4 py-3">
         <Logo size={36} radius={0.28} />
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-extrabold" style={{ color: INK }}>{settings.center || "필라티쳐"}</p>
+          <p className="truncate text-sm font-extrabold" style={{ color: INK, maxWidth: "100%" }}>{settings.center || "필라티쳐"}</p>
           <Sub className="truncate">{account?.name ? `${account.name} 강사` : "체형 변화 · 재등록 관리"}</Sub>
         </div>
         {alertCount > 0 && (
@@ -2042,7 +2043,7 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onStatusAll, onNoshow
                       {canPark(r) && <ChevronLeft size={13} className="ml-auto shrink-0" style={{ color: down ? GOOD : PRIMARY, opacity: 0.75 }} />}
                       <button onClick={() => setEditing(r.s)} aria-label="수업 수정" className={`${canPark(r) ? "" : "ml-auto "}flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-white`} style={{ color: SUB }}><Pencil size={12} /></button>
                     </div>
-                    <p className="mt-1 truncate text-base font-extrabold" style={{ color: INK }}>{names.join(" · ")}</p>
+                    <p className="mt-1 truncate text-base font-extrabold" style={{ color: INK, maxWidth: "100%" }}>{names.join(" · ")}</p>
                     <div className="mt-1 flex flex-wrap items-center gap-1">
                       {r.list.map((a) => {
                         const mm = memberOf(a.memberId);
@@ -2303,7 +2304,7 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onStatusAll, onNoshow
           </div>
         </Card>
       )}
-      {editing && <ScheduleForm draft={editing} members={db.members} onClose={() => setEditing(null)}
+      {editing && <ScheduleForm draft={editing} members={db.members} schedule={db.schedule} onClose={() => setEditing(null)}
         onSubmit={(v) => { onSave(v); setEditing(null); }} onDelete={(id) => { onDelete(id); setEditing(null); }} />}
     </div>
   );
@@ -2364,7 +2365,6 @@ function SwipeRow({ children, down, enabled, onPark, onUnpark }) {
 }
 
 const GRID_H0 = 8, GRID_H1 = 23, GRID_ROW = 56;
-const minOf = (hhmm) => Number(String(hhmm || "0:00").slice(0, 2)) * 60 + Number(String(hhmm || "0:00").slice(3, 5) || 0);
 const hourLabel = (h) => `${String(h).padStart(2, "0")}시`;
 
 function WeekGrid({ days, byDate, nameOf, cursor, onOpen, onNew }) {
@@ -2472,7 +2472,7 @@ function WeekGrid({ days, byDate, nameOf, cursor, onOpen, onNew }) {
   );
 }
 
-function ScheduleForm({ draft, members, onClose, onSubmit, onDelete }) {
+function ScheduleForm({ draft, members, schedule, onClose, onSubmit, onDelete }) {
   const initType = CLASS_TYPES.includes(draft.type) ? draft.type : (attendeesOf(draft).length >= 2 ? "듀엣" : "개인레슨");
   const [del, setDel] = useState(false);
   const [f, setF] = useState({
@@ -2506,7 +2506,23 @@ function ScheduleForm({ draft, members, onClose, onSubmit, onDelete }) {
     .filter((id) => id && !prevIds.has(id))
     .map((id) => members.find((m) => m.id === id))
     .filter((m) => m && left(m) <= 0);
-  const ready = f.date && f.start && (isPersonal ? !!String(f.title || "").trim() : isGroup ? !!f.equip : f.memberIds.filter(Boolean).length > 0) && noRest.length === 0;
+  /* 같은 강사가 같은 시간에 두 개를 잡을 수는 없다 — 수업·내 일정 모두 검사 */
+  const [force, setForce] = useState(false);
+  const myStart = minOf(f.start), myEnd = myStart + (Number(f.dur) || 50);
+  const clashes = (Array.isArray(schedule) ? schedule : [])
+    .filter((x) => x && x.date === f.date && x.id !== draft.id)
+    .filter((x) => {
+      const a = minOf(x.start), b = minOf(x.end) || a + 50;
+      return myStart < b && a < myEnd;
+    });
+  const clashLabel = (x) => {
+    if (isPersonalEvt(x)) return `${x.start}~${x.end} · ${x.title || "내 일정"}`;
+    if (isEquipGroup(x)) return `${x.start}~${x.end} · ${x.equip || "기구"} 그룹`;
+    const names = attendeesOf(x).map((a) => members.find((m) => m.id === a.memberId)?.name || "삭제된 회원");
+    return `${x.start}~${x.end} · ${names.join(", ") || x.type}`;
+  };
+  const ready = f.date && f.start && (isPersonal ? !!String(f.title || "").trim() : isGroup ? !!f.equip : f.memberIds.filter(Boolean).length > 0)
+    && noRest.length === 0 && (clashes.length === 0 || force);
 
   return (
     <Sheet title={`${isPersonal ? "내 일정" : "수업"} ${draft.id ? "수정" : "등록"}`} onClose={onClose}>
@@ -2600,6 +2616,28 @@ function ScheduleForm({ draft, members, onClose, onSubmit, onDelete }) {
               <Field label="메모" hint="선택"><input value={f.memo} onChange={(e) => setF({ ...f, memo: e.target.value })} className={inputCls} /></Field>
             </div>
           </>
+        )}
+        {clashes.length > 0 && (
+          <div className="rounded-2xl px-3 py-3" style={{ backgroundColor: WARN_S }}>
+            <div className="flex items-start gap-2">
+              <AlertTriangle size={16} className="mt-0.5 shrink-0" style={{ color: WARN }} />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-extrabold" style={{ color: WARN }}>이 시간에 이미 잡혀 있습니다</p>
+                <ul className="mt-1 space-y-0.5">
+                  {clashes.slice(0, 3).map((x) => (
+                    <li key={x.id} className="truncate text-xs font-bold" style={{ color: INK }}>· {clashLabel(x)}</li>
+                  ))}
+                </ul>
+                <p className="mt-1 text-xs" style={{ color: INK2 }}>시작 시간이나 소요 시간을 바꿔 주세요</p>
+              </div>
+            </div>
+            <button onClick={() => setForce((v) => !v)} className="mt-2 flex w-full items-center gap-2 rounded-xl px-3 py-2" style={{ backgroundColor: CARD }}>
+              <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded" style={{ backgroundColor: force ? WARN : CANVAS, border: `1px solid ${force ? WARN : LINE}` }}>
+                {force && <Check size={11} color="#fff" />}
+              </span>
+              <span className="text-xs font-bold" style={{ color: INK }}>알면서도 겹쳐서 등록합니다</span>
+            </button>
+          </div>
         )}
         {noRest.length > 0 && (
           <div className="flex flex-wrap items-center gap-2 rounded-2xl px-3 py-3" style={{ backgroundColor: BAD_S }}>
@@ -3009,7 +3047,7 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
         </p>
       </div>
       {shot && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-6" style={{ backgroundColor: "rgba(0,0,0,0.85)" }} onClick={() => setShot(null)}>
+        <div className="safe-all fixed inset-0 z-50 flex items-center justify-center p-6" style={{ backgroundColor: "rgba(0,0,0,0.85)" }} onClick={() => setShot(null)}>
           <div className="text-center">
             <img src={shot} alt="분석 결과" className="mx-auto rounded-2xl" style={{ maxHeight: "70vh" }} />
             <p className="mt-3 text-xs text-white opacity-70">자동 저장이 막힌 기기에서는 이미지를 길게 눌러 저장하세요</p>
@@ -3680,7 +3718,7 @@ function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveM
             <span style={{ width: 34 }} />
           </div>
           <div className="min-h-0 flex-1 overflow-auto px-4">
-            <img src={preview.url} alt="미리보기" className="mx-auto rounded-2xl" style={{ maxWidth: "min(100%, 760px)" }} />
+            <img src={preview.url} alt="미리보기" className="mx-auto block h-auto rounded-2xl" style={{ maxWidth: "min(100%, 760px)", width: "auto" }} />
             <p className="mx-auto mt-2 text-center text-xs" style={{ color: "rgba(255,255,255,.65)", maxWidth: 760 }}>
               사진 위치·기울기와 분석선이 그대로 들어갑니다 · 마음에 안 들면 닫고 사진 조정에서 고치세요
             </p>
@@ -3696,8 +3734,8 @@ function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveM
         </div>
       )}
       {loading && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ backgroundColor: "rgba(0,0,0,0.55)" }}>
-          <div className="flex flex-col items-center gap-3 rounded-3xl px-8 py-7" style={{ backgroundColor: CARD }}>
+        <div className="safe-all fixed inset-0 z-50 flex items-center justify-center px-6" style={{ backgroundColor: "rgba(0,0,0,0.55)" }}>
+          <div className="flex max-w-full flex-col items-center gap-3 rounded-3xl px-8 py-7" style={{ backgroundColor: CARD }}>
             <Loader2 size={26} className="animate-spin" style={{ color: PRIMARY }} />
             <p className="text-sm font-extrabold" style={{ color: INK }}>사진을 불러오는 중…</p>
             <Sub>큰 사진은 몇 초 걸릴 수 있어요</Sub>

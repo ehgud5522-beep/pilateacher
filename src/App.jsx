@@ -86,7 +86,7 @@ const sysDarkNow = () => {
 };
 
 /* 파일이 실제로 교체됐는지 1초 만에 확인하는 표시 — 설정 탭 맨 아래에 뜬다 */
-const APP_VER = "v55 · 2026-07-27";
+const APP_VER = "v56 · 2026-07-28";
 try { if (typeof window !== "undefined") window.PILATEACHER_VER = APP_VER; } catch (e) {}
 
 const ACC_KEY = "pilateacher_accounts_v1";
@@ -1594,6 +1594,31 @@ function SchedAttendeeRow({ s, a, members, onStatus, onNoshowFee }) {
   );
 }
 
+/* 일간·주간·월간 목록용 한 줄 요약 — 출석 처리는 '오늘 수업' 에서만 한다 */
+function SchedLine({ s, members, onEdit }) {
+  const nameOf = (id) => members.find((m) => m.id === id)?.name || "삭제된 회원";
+  const pv = isPersonalEvt(s);
+  const list = attendeesOf(s);
+  const eq = isEquipGroup(s);
+  const settled = pv ? true : eq ? !!s.groupDone : list.length > 0 && list.every((a) => a.status !== "booked");
+  const st = pv ? { label: "내 일정", color: MINT, bg: CANVAS }
+    : eq ? (s.groupDone ? { label: "완료", color: GOOD, bg: GOOD_S } : { label: "예정", color: PRIMARY, bg: TINT })
+    : list.length > 1 ? { label: `${list.filter((a) => a.status === "done").length}/${list.length} 출석`, color: settled ? GOOD : PRIMARY, bg: settled ? GOOD_S : TINT }
+    : stOf(list[0]?.status);
+  const edge = pv ? MINT : settled ? GOOD : PRIMARY;
+  const title = pv ? (s.title || "내 일정") : eq ? `${s.equip || "기구"} 그룹` : list.map((a) => nameOf(a.memberId)).join(", ") || "회원 없음";
+  return (
+    <button onClick={() => onEdit(s)} className="flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left"
+      style={{ backgroundColor: settled ? CANVAS : CARD, borderLeft: `4px solid ${edge}`, border: `1px solid ${settled ? "transparent" : LINE}`, borderLeftWidth: 4, borderLeftColor: edge, opacity: settled ? 0.72 : 1 }}>
+      <span className="w-11 shrink-0 text-xs font-extrabold tabular-nums" style={{ color: settled ? SUB : edge }}>{s.start}</span>
+      <span className="min-w-0 flex-1 truncate text-sm font-extrabold" style={{ color: INK, textDecoration: st.label === "취소" ? "line-through" : "none" }}>{title}</span>
+      <span className="hidden shrink-0 text-xs sm:inline" style={{ color: SUB }}>{pv ? "" : eq ? "그룹" : s.type}</span>
+      <span className="shrink-0 rounded-full px-2 py-0.5 text-xs font-extrabold" style={{ backgroundColor: st.bg, color: st.color }}>{st.label}</span>
+      <Pencil size={12} className="shrink-0" style={{ color: FAINT }} />
+    </button>
+  );
+}
+
 function SchedItem({ s, members, del, setDel, setEditing, onStatus, onNoshowFee, onGroupDone, onDelete }) {
   const nameOf = (id) => members.find((m) => m.id === id)?.name || "삭제된 회원";
   if (isPersonalEvt(s)) return (
@@ -1901,6 +1926,7 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onStatusAll, onNoshow
           <div className="mt-2 grid gap-2 md:grid-cols-2">
             {sortedRows.map((r, i) => {
               const down = !!parked[r.key];
+              const settled = isSettled(r);
               const wrap = (inner) => (
                 <div key={`${r.key}#${bump}`}
                   style={bump === 0 ? undefined : {
@@ -1910,7 +1936,9 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onStatusAll, onNoshow
                   }}>
                   <SwipeRow down={down} enabled={canPark(r)}
                     onPark={() => setParked((p) => ({ ...p, [r.key]: true }))}
-                    onUnpark={() => setParked((p) => { const q = { ...p }; delete q[r.key]; return q; })}>{inner}</SwipeRow>
+                    onUnpark={() => setParked((p) => { const q = { ...p }; delete q[r.key]; return q; })}>
+                    <div style={{ opacity: settled ? 0.62 : 1, filter: settled ? "saturate(.55)" : "none", transition: "opacity .2s, filter .2s" }}>{inner}</div>
+                  </SwipeRow>
                 </div>
               );
               if (r.kind === "equip") return wrap(
@@ -1948,9 +1976,9 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onStatusAll, onNoshow
                 const st0 = stOf(r.list[0].status);
                 const open = !!solo[r.key];
                 return wrap(
-                  <div className="rounded-2xl p-3" style={{ backgroundColor: CANVAS }}>
+                  <div className="rounded-2xl p-3" style={{ backgroundColor: settled ? CANVAS : CARD, border: `1px solid ${settled ? "transparent" : LINE}`, borderLeft: `4px solid ${settled ? GOOD : PRIMARY}` }}>
                     <div className="flex items-center gap-1.5">
-                      <span className="text-xs font-extrabold tabular-nums" style={{ color: PRIMARY }}>{r.start}</span>
+                      <span className="text-xs font-extrabold tabular-nums" style={{ color: settled ? GOOD : PRIMARY }}>{r.start}</span>
                       <span className="truncate text-xs" style={{ color: SUB }}>{r.type} · {r.list.length}명</span>
                       {canPark(r) && <ChevronLeft size={13} className="ml-auto shrink-0" style={{ color: down ? GOOD : PRIMARY, opacity: 0.75 }} />}
                       <button onClick={() => setEditing(r.s)} aria-label="수업 수정" className={`${canPark(r) ? "" : "ml-auto "}flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-white`} style={{ color: SUB }}><Pencil size={12} /></button>
@@ -2168,28 +2196,35 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onStatusAll, onNoshow
                 <Sparkles size={13} className="shrink-0" style={{ color: PRIMARY }} />
                 <span className="text-xs font-bold" style={{ color: INK }}>출석 · 노쇼 처리는 위 '오늘 수업'에서 하세요</span>
               </div>
-              {byDate(cursor).map((s) => <SchedItem key={s.id} s={s} {...itemProps} />)}
+              {byDate(cursor).map((s) => <SchedLine key={s.id} s={s} members={db.members} onEdit={setEditing} />)}
             </div>
           ) : (
-            <div className="mt-2 space-y-2">{byDate(cursor).map((s) => <SchedItem key={s.id} s={s} {...itemProps} />)}</div>
+            <div className="mt-2 space-y-1.5">{byDate(cursor).map((s) => <SchedLine key={s.id} s={s} members={db.members} onEdit={setEditing} />)}</div>
           )}
         </Card>
       )}
       {mode === "week" && (
-        <div className="space-y-3">
-          {weekDays.map((d) => {
-            const items = byDate(d);
-            return (
-              <Card key={d} className="p-4">
-                <div className="flex items-center justify-between">
-                  <p className="text-sm font-extrabold" style={{ color: d === todayISO() ? PRIMARY : redInk(d, INK) }}>{md(d)} ({dow(d)}) {d === todayISO() && "· 오늘"}{holidayOf(d) ? ` · ${holidayOf(d)}` : ""}</p>
-                  <Sub>{items.length}수업 · {seatsOn(d)}명</Sub>
+        <Card className="p-4">
+          <div className="mb-2 flex items-center gap-2">
+            <Clock size={15} style={{ color: PRIMARY }} />
+            <h3 className="font-extrabold" style={{ color: INK }}>이번 주 일정</h3>
+            <Sub className="ml-auto">{weekDays.reduce((n, d) => n + byDate(d).length, 0)}건</Sub>
+          </div>
+          <div className="space-y-2">
+            {weekDays.filter((d) => byDate(d).length > 0).map((d) => (
+              <div key={d}>
+                <div className="mb-1 flex items-center gap-2">
+                  <p className="text-xs font-extrabold" style={{ color: d === todayISO() ? PRIMARY : redInk(d, INK) }}>
+                    {md(d)} ({dow(d)}){d === todayISO() ? " · 오늘" : ""}{holidayOf(d) ? ` · ${holidayOf(d)}` : ""}
+                  </p>
+                  <Sub className="ml-auto">{byDate(d).length}건 · {seatsOn(d)}명</Sub>
                 </div>
-                <div className="mt-2 space-y-2">{items.length === 0 ? <Sub>수업 없음</Sub> : items.map((s) => <SchedItem key={s.id} s={s} {...itemProps} />)}</div>
-              </Card>
-            );
-          })}
-        </div>
+                <div className="space-y-1">{byDate(d).map((s) => <SchedLine key={s.id} s={s} members={db.members} onEdit={setEditing} />)}</div>
+              </div>
+            ))}
+            {weekDays.every((d) => byDate(d).length === 0) && <Sub className="block py-4 text-center">이번 주에는 잡힌 일정이 없습니다</Sub>}
+          </div>
+        </Card>
       )}
       {mode === "month" && (
         <Card className="p-4">
@@ -2809,7 +2844,7 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
             <button key={c} onClick={() => setColor(c)} className="h-7 w-7 rounded-full"
               style={{ backgroundColor: c, border: color === c ? `3px solid ${PRIMARY}` : "2px solid rgba(255,255,255,0.4)" }} />
           ))}
-          <input type="range" min="1" max="10" value={width} onChange={(e) => setWidth(Number(e.target.value))} className="ml-2 flex-1" style={{ accentColor: PRIMARY }} />
+          <input type="range" min="1" max="10" value={width} onChange={(e) => setWidth(Number(e.target.value))} className="ml-2 flex-1" style={{ accentColor: PRIMARY, touchAction: "none" }} />
           <span className="w-6 text-center text-xs font-bold text-white">{width}</span>
         </div>
         <div className="flex gap-2">
@@ -3117,7 +3152,7 @@ function AlignSheet({ src, ghost, init, title, onSave, onCancel, ghostEditable, 
     { k: "rot", l: "기울기", min: -20, max: 20, step: 0.5 },
   ];
   return (
-    <div className="safe-all fixed inset-0 z-50 flex flex-col bg-photo" style={{ overscrollBehavior: "none" }}>
+    <div className="safe-all fixed inset-0 z-50 flex flex-col bg-photo" style={{ overscrollBehavior: "contain", touchAction: "none" }}>
       <div className="flex items-center justify-between px-4 py-3">
         <button onClick={onCancel} className="rounded-full p-2" style={{ backgroundColor: "rgba(255,255,255,0.15)" }}><X size={18} color="#fff" /></button>
         <p className="text-sm font-bold text-white">{title || "중심선 맞추기"}</p>
@@ -3158,7 +3193,7 @@ function AlignSheet({ src, ghost, init, title, onSave, onCancel, ghostEditable, 
             <div key={r.k} className="flex items-center gap-2">
               <span className="w-14 shrink-0 text-xs font-bold text-white opacity-70">{r.l}</span>
               <input type="range" min={r.min} max={r.max} step={r.step} value={cur[r.k]}
-                onChange={(e) => setCur({ [r.k]: Number(e.target.value) })} className="min-w-0 flex-1" style={{ accentColor: PRIMARY }} />
+                onChange={(e) => setCur({ [r.k]: Number(e.target.value) })} className="min-w-0 flex-1" style={{ accentColor: PRIMARY, touchAction: "none" }} />
               <span className="w-9 shrink-0 rounded-lg py-1 text-center text-xs font-extrabold tabular-nums text-white" style={{ backgroundColor: "rgba(255,255,255,0.16)" }}>{n100}</span>
               <button onClick={() => setCur({ [r.k]: r.k === "scale" ? 1 : 0 })} className="w-8 shrink-0 rounded-lg py-1 text-center text-xs font-bold text-white" style={{ backgroundColor: "rgba(255,255,255,0.1)" }}>↺</button>
             </div>
@@ -3168,7 +3203,7 @@ function AlignSheet({ src, ghost, init, title, onSave, onCancel, ghostEditable, 
         {ghost && !onGhost && (
           <div className="flex items-center gap-3">
             <span className="w-14 shrink-0 text-xs font-bold text-white opacity-70">이전 사진</span>
-            <input type="range" min="0" max="80" value={op} onChange={(e) => setOp(Number(e.target.value))} className="w-full" style={{ accentColor: PRIMARY }} />
+            <input type="range" min="0" max="80" value={op} onChange={(e) => setOp(Number(e.target.value))} className="w-full" style={{ accentColor: PRIMARY, touchAction: "none" }} />
           </div>
         )}
       </div>
@@ -3750,7 +3785,7 @@ function SetViewer({ item, onClose, onToggleFav }) {
         )}
       </div>
       <div className="space-y-2 px-4 pb-6 pt-3">
-        {!side && <input type="range" min="0" max="100" value={t} onChange={(e) => setT(Number(e.target.value))} className="w-full" style={{ accentColor: PRIMARY }} />}
+        {!side && <input type="range" min="0" max="100" value={t} onChange={(e) => setT(Number(e.target.value))} className="w-full" style={{ accentColor: PRIMARY, touchAction: "none" }} />}
         <div className="flex items-center justify-between">
           <span className="text-xs font-bold text-white opacity-70">{ymd(before.date)}</span>
           <button onClick={() => setSide((v) => !v)} className="rounded-full px-3 py-1.5 text-xs font-bold text-white" style={{ backgroundColor: "rgba(255,255,255,0.15)" }}>

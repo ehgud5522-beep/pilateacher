@@ -5,7 +5,7 @@ workflows:
     instance_type: mac_mini_m2
 
     integrations:
-      app_store_connect: pilateacher
+      app_store_connect: 필라티쳐
 
     environment:
       node: 20

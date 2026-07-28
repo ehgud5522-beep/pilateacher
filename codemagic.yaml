@@ -1,0 +1,54 @@
+workflows:
+  ios-testflight:
+    name: Pilateacher iOS TestFlight
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+
+    integrations:
+      app_store_connect: pilateacher
+
+    environment:
+      node: 20
+      xcode: latest
+      cocoapods: default
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.pilateacher.app
+      vars:
+        XCODE_WORKSPACE: "ios/App/App.xcworkspace"
+        XCODE_SCHEME: "App"
+
+    scripts:
+      - name: Install npm packages
+        script: npm install
+
+      - name: Build web
+        script: npm run build
+
+      - name: Capacitor sync ios
+        script: npx cap sync ios
+
+      - name: Install pods
+        script: |
+          cd ios/App
+          pod install
+
+      - name: Set build number
+        script: |
+          cd $CM_BUILD_DIR/ios/App
+          agvtool new-version -all $BUILD_NUMBER
+
+      - name: Build ipa
+        script: |
+          xcode-project build-ipa \
+            --workspace "$CM_BUILD_DIR/$XCODE_WORKSPACE" \
+            --scheme "$XCODE_SCHEME"
+
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true

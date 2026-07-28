@@ -12,7 +12,6 @@ workflows:
       xcode: latest
       cocoapods: default
       vars:
-        XCODE_WORKSPACE: "ios/App/App.xcworkspace"
         XCODE_SCHEME: "App"
         BUNDLE_ID: "com.pilateacher.app"
 
@@ -26,10 +25,14 @@ workflows:
       - name: Capacitor sync ios
         script: npx cap sync ios
 
-      - name: Install pods
+      - name: Install pods if needed
         script: |
-          cd ios/App
-          pod install
+          if [ -f ios/App/Podfile ]; then
+            cd ios/App
+            pod install
+          else
+            echo "Podfile not found - using Swift Package Manager, skipping"
+          fi
 
       - name: Set up code signing
         script: |
@@ -45,7 +48,12 @@ workflows:
 
       - name: Build ipa
         script: |
-          xcode-project build-ipa --workspace "$CM_BUILD_DIR/$XCODE_WORKSPACE" --scheme "$XCODE_SCHEME"
+          cd $CM_BUILD_DIR
+          if [ -d ios/App/App.xcworkspace ]; then
+            xcode-project build-ipa --workspace "ios/App/App.xcworkspace" --scheme "$XCODE_SCHEME"
+          else
+            xcode-project build-ipa --project "ios/App/App.xcodeproj" --scheme "$XCODE_SCHEME"
+          fi
 
     artifacts:
       - build/ios/ipa/*.ipa

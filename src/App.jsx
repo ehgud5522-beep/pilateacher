@@ -86,7 +86,7 @@ const sysDarkNow = () => {
 };
 
 /* 파일이 실제로 교체됐는지 1초 만에 확인하는 표시 — 설정 탭 맨 아래에 뜬다 */
-const APP_VER = "v60 · 2026-07-28";
+const APP_VER = "v61 · 2026-07-28";
 try { if (typeof window !== "undefined") window.PILATEACHER_VER = APP_VER; } catch (e) {}
 
 const ACC_KEY = "pilateacher_accounts_v1";
@@ -560,7 +560,7 @@ async function shareBeforeAfter(before, after, memberName, onToast, saveOnly) {
 
 function blankMember(staff) {
   return {
-    id: uid(), name: "", age: "", birth: "", instructor: staff || "", goal: "", passName: "", phone: "",
+    id: uid(), name: "", age: "", birth: "", duetWith: "", instructor: staff || "", goal: "", passName: "", phone: "",
     regular: 0, service: 0, total: 0, startDate: todayISO(), contractEnd: "", focus: [],
     status: "active", endedAt: "", endedReason: "", endedMemo: "",
     holdFrom: "", holdUntil: "", holdReason: "", payments: [],
@@ -2556,8 +2556,8 @@ function ScheduleForm({ draft, members, onClose, onSubmit, onDelete }) {
               <Field key={slot} label={`회원 ${slot + 1}`} hint={slot === 1 ? "두 번째 분" : ""}>
                 <SelectBox value={slotVal(slot)} onChange={(e) => pickAt(slot, e.target.value)}>
                   <option value="">{slot === 0 ? "회원 선택" : "선택 안 함"}</option>
-                  {members.filter((m) => m.id === slotVal(slot) || m.id !== slotVal(slot === 0 ? 1 : 0))
-                    .map((m) => <option key={m.id} value={m.id}>{m.name || "이름 미입력"}{isEnded(m) ? " (종료)" : ""} · {left(m) > 0 ? `잔여 ${left(m)}회` : "잔여 없음"}</option>)}
+                  {members.filter((m) => m.id === slotVal(slot) || (isActive(m) && m.id !== slotVal(slot === 0 ? 1 : 0)))
+                    .map((m) => <option key={m.id} value={m.id}>{m.name || "이름 미입력"}{isActive(m) ? "" : isHold(m) ? " (홀딩)" : " (종료)"} · {left(m) > 0 ? `잔여 ${left(m)}회` : "잔여 없음"}</option>)}
                 </SelectBox>
               </Field>
             ))}
@@ -2566,8 +2566,10 @@ function ScheduleForm({ draft, members, onClose, onSubmit, onDelete }) {
           <Field label="회원">
             <SelectBox value={f.memberIds[0] || ""} onChange={(e) => pick(e.target.value)}>
               <option value="">회원 선택</option>
-              {members.map((m) => <option key={m.id} value={m.id}>{m.name || "이름 미입력"}{isEnded(m) ? " (종료)" : ""} · {left(m) > 0 ? `잔여 ${left(m)}회` : "잔여 없음"}</option>)}
+              {members.filter((m) => isActive(m) || m.id === f.memberIds[0])
+                .map((m) => <option key={m.id} value={m.id}>{m.name || "이름 미입력"}{isActive(m) ? "" : isHold(m) ? " (홀딩)" : " (종료)"} · {left(m) > 0 ? `잔여 ${left(m)}회` : "잔여 없음"}</option>)}
             </SelectBox>
+            {members.some((m) => !isActive(m)) && <Sub className="mt-1 block">홀딩·종료 회원은 목록에 나오지 않습니다</Sub>}
           </Field>
         )}
         <Field label="날짜"><input type="date" value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} className={inputCls} /></Field>
@@ -2678,6 +2680,11 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
   /* 두 손가락으로 자를 옮기고 돌린다 */
   const ptrs = useRef(new Map());
   const gest = useRef(null);
+  /* 자가 꺼져 있으면 두 손가락은 사진 확대·이동 */
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const pinch = useRef(null);
+  const resetZoom = () => { setZoom(1); setPan({ x: 0, y: 0 }); };
   const exportingRef = useRef(false);
   const [shot, setShot] = useState(null);
   useBackClose(true, onClose);
@@ -2714,15 +2721,20 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
     return { C, rad, u: { x: Math.cos(rad), y: Math.sin(rad) }, n: { x: -Math.sin(rad), y: Math.cos(rad) }, L: Math.hypot(w, h) * 1.3 };
   };
   const toLocal = (g, P) => { const dx = P.x - g.C.x, dy = P.y - g.C.y; return { x: dx * g.u.x + dy * g.u.y, y: dx * g.n.x + dy * g.n.y }; };
-  /* 자 눈금선 근처(선 위쪽)에 찍는 점은 선 위로 딱 붙인다 */
-  const snapPt = (p) => {
-    const c = canvasRef.current; if (!c || !ruler) return p;
+  /* 자를 켜면 '윗변'에서만 그릴 수 있다.
+     실제 자처럼 — 자 몸통과 그 아래에는 아무것도 그어지지 않고,
+     윗변 근처에 찍은 점은 자 선 위로 딱 붙는다. */
+  const rulerZone = (p) => {
+    const c = canvasRef.current;
+    if (!c || !ruler) return { ok: true, pt: p };
     const r = c.getBoundingClientRect(), w = r.width, h = r.height;
     const g = rulerGeom(w, h);
     const lp = toLocal(g, { x: p.x * w, y: p.y * h });
-    if (lp.y < -48 || lp.y > 6) return p;
-    return { x: (g.C.x + lp.x * g.u.x) / w, y: (g.C.y + lp.x * g.u.y) / h };
+    if (lp.y >= -1) return { ok: false, pt: p, lp };      /* 자 몸통과 그 아래 — 금지 */
+    if (lp.y < -140) return { ok: true, pt: p, lp };       /* 자에서 멀면 자유롭게 */
+    return { ok: true, snap: true, lp, pt: { x: (g.C.x + lp.x * g.u.x) / w, y: (g.C.y + lp.x * g.u.y) / h } };
   };
+  const snapPt = (p) => rulerZone(p).pt;
 
   const drawMark = (ctx, m, w, h) => {
     const P = (p) => ({ x: p.x * w, y: p.y * h });
@@ -2814,7 +2826,17 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
   const down = (e) => {
     e.currentTarget.setPointerCapture?.(e.pointerId);
     ptrs.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    /* 손가락이 둘이면 그리기를 멈추고 자 조절로 전환 */
+    /* 손가락이 둘 — 자가 켜져 있으면 자 조절, 꺼져 있으면 사진 확대 */
+    if (ptrs.current.size === 2 && !ruler) {
+      const [a, b] = [...ptrs.current.values()];
+      setDraft(null);
+      pinch.current = {
+        d0: Math.max(1, Math.hypot(b.x - a.x, b.y - a.y)),
+        mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2,
+        z0: zoom, px: pan.x, py: pan.y,
+      };
+      return;
+    }
     if (ptrs.current.size === 2 && ruler) {
       const [p1, p2] = [...ptrs.current.values()];
       setDraft(null);
@@ -2835,8 +2857,8 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
       const lp = toLocal(g, P);
       const rx = Math.min(150, g.L / 2 - 30);
       if (Math.hypot(lp.x - rx, lp.y - 26) < 26) { rulerDrag.current = { mode: "rot", a0: Math.atan2(P.y - g.C.y, P.x - g.C.x) - g.rad }; return; }
-      /* 자 몸통 위에서는 선이 그어지지 않는다 — 이동만 */
-      if (Math.hypot(lp.x, lp.y - 26) < 28 || (lp.y > 4 && lp.y < 58)) { rulerDrag.current = { mode: "move", dx: P.x - g.C.x, dy: P.y - g.C.y }; return; }
+      /* 자 몸통과 그 아래에서는 절대 그어지지 않는다 — 누르면 자를 옮긴다 */
+      if (lp.y >= -1) { rulerDrag.current = { mode: "move", dx: P.x - g.C.x, dy: P.y - g.C.y }; return; }
     }
     const p = ruler ? snapPt(raw) : raw;
     if (tool === "hline" || tool === "vline") { setDraft({ id: uid(), tool, color, width, pts: [p] }); return; }
@@ -2849,6 +2871,16 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
   };
   const move = (e) => {
     if (ptrs.current.has(e.pointerId)) ptrs.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pinch.current && ptrs.current.size >= 2 && !ruler) {
+      const el = canvasRef.current; if (!el) return;
+      const [a, b] = [...ptrs.current.values()];
+      const d = Math.max(1, Math.hypot(b.x - a.x, b.y - a.y));
+      const g = pinch.current;
+      setZoom(Math.min(5, Math.max(1, g.z0 * (d / g.d0))));
+      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+      setPan({ x: g.px + (mx - g.mx), y: g.py + (my - g.my) });
+      return;
+    }
     if (gest.current && ptrs.current.size >= 2 && ruler) {
       const el = canvasRef.current; if (!el) return;
       const r = el.getBoundingClientRect();
@@ -2874,13 +2906,8 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
       return;
     }
     if (!draft) return;
-    /* 자 몸통 위를 지나가는 동안에는 선이 이어지지 않는다 */
-    if (ruler) {
-      const rct = canvasRef.current.getBoundingClientRect();
-      const g = rulerGeom(rct.width, rct.height);
-      const lp = toLocal(g, { x: raw.x * rct.width, y: raw.y * rct.height });
-      if (lp.y > 4 && lp.y < 58) return;
-    }
+    /* 자 몸통·아래를 지나가는 동안에는 선이 이어지지 않는다 */
+    if (ruler) { const z = rulerZone(raw); if (!z.ok) return; }
     const p = ruler ? snapPt(raw) : raw;
     setDraft((d) => {
       if (!d) return d;
@@ -2891,7 +2918,8 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
   };
   const up = (e) => {
     if (e && e.pointerId != null) ptrs.current.delete(e.pointerId);
-    if (ptrs.current.size < 2) gest.current = null;
+    if (ptrs.current.size < 2) { gest.current = null; pinch.current = null; }
+    if (zoom <= 1.02 && (pan.x !== 0 || pan.y !== 0)) setPan({ x: 0, y: 0 });
     if (ptrs.current.size >= 1 && gest.current === null && !draft) return;
     if (rulerDrag.current) { rulerDrag.current = null; return; }
     if (!draft) return;
@@ -2932,7 +2960,12 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
       )}
       <div className="flex min-h-0 flex-1 items-center justify-center px-3">
         <div ref={wrapRef} className="relative overflow-hidden rounded-2xl" style={{ aspectRatio: "3 / 4", maxHeight: "100%", maxWidth: "min(100%, 540px)", width: "100%" }}>
-          <canvas ref={canvasRef} className="absolute inset-0 touch-none" onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up} />
+          <canvas ref={canvasRef} className="absolute inset-0 touch-none" onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up}
+            style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin: "center center" }} />
+          {zoom > 1.02 && (
+            <button onClick={resetZoom} className="absolute right-2 top-2 rounded-full px-3 py-1.5 text-xs font-extrabold"
+              style={{ backgroundColor: "rgba(255,255,255,.92)", color: "#17171F" }}>{zoom.toFixed(1)}× · 원래대로</button>
+          )}
         </div>
       </div>
       <div className="space-y-2 px-3 pb-5 pt-3">
@@ -2941,7 +2974,7 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
             <button key={t.k} onClick={() => pickTool(t.k)} className="whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-bold"
               style={tool === t.k ? { backgroundColor: BRAND, color: "#fff" } : { backgroundColor: "rgba(255,255,255,0.15)", color: "#fff" }}>{t.l}</button>
           ))}
-          <button onClick={() => setRuler((r) => (r ? null : { cx: 0.5, cy: 0.45, deg: 0 }))} className="whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-bold"
+          <button onClick={() => setRuler((r) => { if (r) return null; setTool("pen"); setPending(null); setDraft(null); return { cx: 0.5, cy: 0.45, deg: 0 }; })} className="whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-bold"
             style={{ backgroundColor: ruler ? "rgba(255,255,255,0.9)" : "rgba(255,255,255,0.15)", color: ruler ? "#17171F" : "#fff" }}>자</button>
           <button onClick={() => setGrid((g) => !g)} className="whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-bold"
             style={{ backgroundColor: grid ? "rgba(255,255,255,0.9)" : "rgba(255,255,255,0.15)", color: grid ? "#17171F" : "#fff" }}>격자</button>
@@ -2955,7 +2988,7 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
           </p>
         )}
         {ruler && (
-          <p className="text-xs font-semibold text-white opacity-80">두 손가락으로 자를 옮기고 돌립니다 · 자 몸통 위에는 선이 안 그려집니다 · 눈금선 가까이 찍은 점은 선에 딱 붙습니다</p>
+          <p className="text-xs font-semibold text-white opacity-80">자 <b>윗변</b>을 따라서만 그어집니다 · 자 몸통과 아래쪽은 그어지지 않습니다 · 두 손가락으로 옮기고 돌리세요</p>
         )}
         <div className="flex items-center gap-2">
           {PEN_COLORS.map((c) => (
@@ -2970,6 +3003,7 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
           <button onClick={() => { setMarks([]); setPending(null); }} className="flex flex-1 items-center justify-center gap-1 rounded-2xl py-2.5 text-xs font-bold text-white" style={{ backgroundColor: "rgba(255,255,255,0.15)" }}><Trash2 size={13} /> 전체 지우기</button>
           <button onClick={download} className="flex flex-1 items-center justify-center gap-1 rounded-2xl py-2.5 text-xs font-bold text-white" style={{ backgroundColor: "rgba(255,255,255,0.15)" }}><Download size={13} /> 공유</button>
         </div>
+        {!ruler && <p className="text-center text-xs text-white opacity-60">두 손가락으로 벌리면 사진이 확대됩니다</p>}
         <p className="text-center text-xs text-white opacity-60">
           {tool === "angle" ? "점 두 개를 이으면 각도가 표시됩니다 · 자를 켜면 반듯하게 찍기 쉬워요" : "화면을 드래그해 그리세요"}
         </p>
@@ -3003,7 +3037,19 @@ function MemberList({ members, selectedId, onSelect, onAdd, onOpenFav, favCount,
   const activeCount = members.filter((m) => isActive(m)).length;
   const holdCount = members.filter((m) => isHold(m)).length;
   const endedCount = members.filter((m) => isEnded(m)).length;
-  const filtered = members
+  /* 듀엣 짝을 항상 바로 아래에 붙인다 */
+  const pairUp = (arr) => {
+    const byId = {}; arr.forEach((m) => { byId[m.id] = m; });
+    const out = [], used = new Set();
+    arr.forEach((m) => {
+      if (used.has(m.id)) return;
+      out.push(m); used.add(m.id);
+      const p = m.duetWith && byId[m.duetWith];
+      if (p && !used.has(p.id)) { out.push(p); used.add(p.id); }
+    });
+    return out;
+  };
+  const filtered = pairUp(members
     .filter((m) => (seg === "ended" ? isEnded(m) : seg === "hold" ? isHold(m) : isActive(m)))
     .filter((m) => (todayOnly ? !!todayMap[m.id] : true))
     .filter((m) => (m.name || "").includes(q) || (m.goal || "").includes(q) || (m.instructor || "").includes(q))
@@ -3015,7 +3061,7 @@ function MemberList({ members, selectedId, onSelect, onAdd, onOpenFav, favCount,
       if (ta) return -1;
       if (tb) return 1;
       return 0;
-    });
+    }));
   return (
     <div className="space-y-3">
       <div className="flex gap-2">
@@ -3118,8 +3164,13 @@ function MemberList({ members, selectedId, onSelect, onAdd, onOpenFav, favCount,
             <div className="flex items-center gap-3">
               <div className="flex h-11 w-11 items-center justify-center rounded-2xl text-sm font-extrabold" style={{ backgroundColor: TINT, color: PRIMARY }}>{(m.name || "?").slice(0, 1)}</div>
               <div className="min-w-0 flex-1">
-                <p className="truncate font-extrabold" style={{ color: isDraft(m) ? SUB : INK }}>
+                <p className="flex items-center gap-1 truncate font-extrabold" style={{ color: isDraft(m) ? SUB : INK }}>
                   {isDraft(m) ? "작성 중" : m.name} {ageOf(m) !== null ? <span className="text-xs font-medium" style={{ color: SUB }}>{ageOf(m)}세</span> : null}
+                  {m.duetWith && members.some((x) => x.id === m.duetWith) && (
+                    <span className="shrink-0 rounded-full px-1.5 py-0.5 text-xs font-extrabold" style={{ backgroundColor: TINT, color: PRIMARY }}>
+                      듀엣 · {members.find((x) => x.id === m.duetWith)?.name || "짝"}
+                    </span>
+                  )}
                 </p>
                 {todayMap[m.id]
                   ? <p className="truncate text-xs font-extrabold" style={{ color: PRIMARY }}>오늘 {todayMap[m.id].start} · {todayMap[m.id].type}</p>
@@ -4981,7 +5032,7 @@ function RecordTab({ db, selectedId, setSelectedId, section, setSection, onSaveI
       {section === "inbody" && <InbodyForm member={member} last={last} onSave={onSaveInbody} onDelete={onDeleteInbody} onPatch={onPatch} onToast={onToast} />}
       {section === "note" && <NoteForm member={member} schedule={db.schedule} onSave={onSaveNote} settings={db.settings} onSettings={onSettings} backHint={backHint} />}
       {section === "perf" && <PerfForm member={member} onPatch={onPatch} onToast={onToast} />}
-      {section === "info" && <InfoForm member={member} onPatch={onPatch} onDelete={onDelete} onToast={onToast} />}
+      {section === "info" && <InfoForm member={member} members={members} onPatch={onPatch} onDelete={onDelete} onToast={onToast} />}
     </div>
   );
 }
@@ -5454,7 +5505,7 @@ function PerfForm({ member, onPatch, onToast }) {
   );
 }
 
-const INFO_FIELDS = ["name", "age", "birth", "instructor", "phone", "goal", "focus", "passName", "regular", "service", "total", "startDate", "contractEnd", "status", "endedAt", "endedReason", "endedMemo", "holdFrom", "holdUntil", "holdReason"];
+const INFO_FIELDS = ["name", "age", "birth", "duetWith", "instructor", "phone", "goal", "focus", "passName", "regular", "service", "total", "startDate", "contractEnd", "status", "endedAt", "endedReason", "endedMemo", "holdFrom", "holdUntil", "holdReason"];
 
 function PaymentSheet({ member, onClose, onSubmit }) {
   const [f, setF] = useState({ date: todayISO(), name: member.passName || "", sessions: "", service: "0", amount: "", method: "카드", end: member.contractEnd || "", memo: "" });
@@ -5510,7 +5561,44 @@ function PaymentSheet({ member, onClose, onSubmit }) {
     </Sheet>
   );
 }
-function InfoForm({ member, onPatch, onDelete, onToast }) {
+/* 년·월·일을 같은 크기 세 칸으로 — 기본 날짜 입력기는 년도 칸이 너무 좁다 */
+function BirthPick({ value, onChange }) {
+  const [y, m, d] = String(value || "").split("-");
+  const nowY = new Date().getFullYear();
+  const years = Array.from({ length: 90 }, (_, i) => nowY - i);
+  const set = (ny, nm, nd) => {
+    if (!ny || !nm || !nd) { onChange(""); return; }
+    const last = new Date(Number(ny), Number(nm), 0).getDate();
+    const dd = Math.min(Number(nd), last);
+    onChange(`${ny}-${String(nm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`);
+  };
+  const days = y && m ? new Date(Number(y), Number(m), 0).getDate() : 31;
+  const box = "w-full min-w-0 rounded-2xl border-0 py-3 pl-3 pr-7 text-sm outline-none ring-1 ring-slate-200 focus:ring-2";
+  const wrap = { appearance: "none", WebkitAppearance: "none", MozAppearance: "none", backgroundColor: CANVAS, color: INK };
+  return (
+    <div className="grid grid-cols-3 gap-1.5">
+      {[
+        { k: "y", v: y || "", ph: "년", list: years, unit: "년" },
+        { k: "m", v: m ? String(Number(m)) : "", ph: "월", list: Array.from({ length: 12 }, (_, i) => i + 1), unit: "월" },
+        { k: "d", v: d ? String(Number(d)) : "", ph: "일", list: Array.from({ length: days }, (_, i) => i + 1), unit: "일" },
+      ].map((o) => (
+        <div key={o.k} className="relative min-w-0">
+          <select value={o.v} className={box} style={wrap}
+            onChange={(e) => {
+              const nv = e.target.value;
+              set(o.k === "y" ? nv : y, o.k === "m" ? nv : m, o.k === "d" ? nv : d);
+            }}>
+            <option value="">{o.ph}</option>
+            {o.list.map((n) => <option key={n} value={n}>{n}{o.unit}</option>)}
+          </select>
+          <ChevronDown size={13} className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2" style={{ color: SUB }} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function InfoForm({ member, members, onPatch, onDelete, onToast }) {
   const [d, setD] = useState(member);
   const [tag, setTag] = useState("");
   const [confirm, setConfirm] = useState(false);
@@ -5520,7 +5608,13 @@ function InfoForm({ member, onPatch, onDelete, onToast }) {
   useEffect(() => { setD(member); }, [member.id]);
   const S = (p) => setD((x) => ({ ...x, ...p }));
   const dirty = INFO_FIELDS.some((k) => JSON.stringify(d[k] ?? "") !== JSON.stringify(member[k] ?? ""));
-  const save = () => { const p = {}; INFO_FIELDS.forEach((k) => { p[k] = d[k]; }); onPatch(member.id, p); onToast({ ok: true, msg: "회원 정보를 저장했습니다." }); };
+  const save = () => {
+    const p = {};
+    INFO_FIELDS.forEach((k) => { p[k] = d[k]; });
+    /* 듀엣은 서로를 가리켜야 목록에서 함께 움직인다 */
+    onPatch(member.id, p, { duetPrev: member.duetWith || "", duetNext: d.duetWith || "" });
+    onToast({ ok: true, msg: "회원 정보를 저장했습니다." });
+  };
   const addTag = (t) => { const v = (t || "").trim(); if (!v || (d.focus || []).includes(v)) return; S({ focus: [...(d.focus || []), v] }); setTag(""); };
   const st = isEnded(d) ? "ended" : isHold(d) ? "hold" : "active";
   const addPayment = (rec) => {
@@ -5560,7 +5654,7 @@ function InfoForm({ member, onPatch, onDelete, onToast }) {
           <div className="grid grid-cols-2 gap-2">
             <Field label="이름"><input value={d.name} onChange={(e) => S({ name: e.target.value })} className={inputCls} /></Field>
             <Field label="생년월일" hint={ageFromBirth(d.birth) !== null ? `만 ${ageFromBirth(d.birth)}세` : "선택"}>
-              <input type="date" value={d.birth || ""} onChange={(e) => S({ birth: e.target.value })} className={inputCls} />
+              <BirthPick value={d.birth || ""} onChange={(v) => S({ birth: v })} />
             </Field>
           </div>
           {ageFromBirth(d.birth) === null && (
@@ -5572,6 +5666,13 @@ function InfoForm({ member, onPatch, onDelete, onToast }) {
             <Field label="담당 강사"><input value={d.instructor} onChange={(e) => S({ instructor: e.target.value })} className={inputCls} /></Field>
             <Field label="연락처" hint="선택"><input value={d.phone || ""} onChange={(e) => S({ phone: e.target.value })} placeholder="010-" className={inputCls} /></Field>
           </div>
+          <Field label="듀엣 짝" hint="정해두면 회원 목록에서 항상 붙어서 보입니다">
+            <SelectBox value={d.duetWith || ""} onChange={(e) => S({ duetWith: e.target.value })}>
+              <option value="">없음 (개인)</option>
+              {(members || []).filter((m) => m.id !== member.id && isActive(m))
+                .map((m) => <option key={m.id} value={m.id}>{m.name || "이름 미입력"}</option>)}
+            </SelectBox>
+          </Field>
           <Field label="목표" hint="이름 아래 보라색 태그"><input value={d.goal} onChange={(e) => S({ goal: e.target.value })} placeholder="예) 체지방 감량 · 코어 강화" className={inputCls} /></Field>
           <Field label="체형 · 상태 태그">
             <div className="flex flex-wrap gap-1.5">
@@ -6274,7 +6375,20 @@ export default function App() {
 
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 2600); return () => clearTimeout(t); }, [toast]);
 
-  const patch = (id, p) => saveDb({ ...db, members: db.members.map((m) => (m.id === id ? { ...m, ...p } : m)) });
+  const patch = (id, p, duet) => {
+    let members = db.members.map((m) => (m.id === id ? { ...m, ...p } : m));
+    if (duet) {
+      const { duetPrev, duetNext } = duet;
+      /* 짝을 바꾸면 옛 짝의 연결을 끊고 새 짝에 나를 걸어 준다 */
+      if (duetPrev && duetPrev !== duetNext) members = members.map((m) => (m.id === duetPrev ? { ...m, duetWith: "" } : m));
+      if (duetNext) members = members.map((m) => {
+        if (m.id === duetNext) return { ...m, duetWith: id };
+        if (m.id !== id && m.duetWith === duetNext) return { ...m, duetWith: "" };
+        return m;
+      });
+    }
+    saveDb({ ...db, members });
+  };
   const member = db.members.find((m) => m.id === selectedId) || db.members[0];
   const alerts = useMemo(() => detectAlerts(db.members, db.schedule), [db.members, db.schedule]);
   const goTab = (k) => { if (k === "members") setMobileView("list"); setTab(k); };

@@ -86,7 +86,7 @@ const sysDarkNow = () => {
 };
 
 /* 파일이 실제로 교체됐는지 1초 만에 확인하는 표시 — 설정 탭 맨 아래에 뜬다 */
-const APP_VER = "v58 · 2026-07-28";
+const APP_VER = "v59 · 2026-07-28";
 try { if (typeof window !== "undefined") window.PILATEACHER_VER = APP_VER; } catch (e) {}
 
 const ACC_KEY = "pilateacher_accounts_v1";
@@ -498,8 +498,44 @@ async function shareBeforeAfter(before, after, memberName, onToast, saveOnly) {
       ctx.beginPath(); ctx.moveTo(x + W / 2, 0); ctx.lineTo(x + W / 2, H); ctx.stroke();
       ctx.restore();
     };
+    /* 체형 분석에서 그린 선·각도를 사진 위에 그대로 얹는다 */
+    const marksOn = (p, x) => {
+      const list = Array.isArray(p?.marks) ? p.marks : [];
+      if (!list.length) return;
+      ctx.save(); ctx.beginPath(); ctx.rect(x, 0, W, H); ctx.clip();
+      const P = (q) => ({ x: x + q.x * W, y: q.y * H });
+      list.forEach((m) => {
+        if (!m || !Array.isArray(m.pts) || !m.pts.length) return;
+        const lw = Math.max(3, (m.width || 3) * 2.6);
+        ctx.strokeStyle = m.color || "#F04438"; ctx.fillStyle = m.color || "#F04438";
+        ctx.lineWidth = lw; ctx.lineCap = "round"; ctx.lineJoin = "round";
+        if (m.tool === "point") { const q = P(m.pts[0]); ctx.beginPath(); ctx.arc(q.x, q.y, lw + 5, 0, Math.PI * 2); ctx.fill(); return; }
+        ctx.beginPath();
+        if (m.tool === "hline") { const y = m.pts[0].y * H; ctx.moveTo(x, y); ctx.lineTo(x + W, y); }
+        else if (m.tool === "vline") { const vx = x + m.pts[0].x * W; ctx.moveTo(vx, 0); ctx.lineTo(vx, H); }
+        else m.pts.forEach((q, i) => { const r = P(q); if (i) ctx.lineTo(r.x, r.y); else ctx.moveTo(r.x, r.y); });
+        ctx.stroke();
+        if (m.tool === "angle" && m.pts.length === 2) {
+          const A = P(m.pts[0]), B = P(m.pts[1]);
+          [A, B].forEach((q) => { ctx.beginPath(); ctx.arc(q.x, q.y, lw + 4, 0, Math.PI * 2); ctx.fill(); });
+          if (m.label) {
+            const cx = (A.x + B.x) / 2, cy = (A.y + B.y) / 2 - 36;
+            ctx.save();
+            ctx.font = "700 30px Pretendard, -apple-system, sans-serif";
+            ctx.textAlign = "center"; ctx.textBaseline = "middle";
+            const tw = ctx.measureText(String(m.label)).width;
+            ctx.fillStyle = "rgba(10,10,16,.85)"; ctx.fillRect(cx - tw / 2 - 15, cy - 23, tw + 30, 46);
+            ctx.strokeStyle = "rgba(255,255,255,.6)"; ctx.lineWidth = 2; ctx.strokeRect(cx - tw / 2 - 15, cy - 23, tw + 30, 46);
+            ctx.fillStyle = "#fff"; ctx.fillText(String(m.label), cx, cy);
+            ctx.restore();
+          }
+        }
+      });
+      ctx.restore();
+    };
     cell(b, before, 0); cell(a, after, W + GAP);
     guides(0); guides(W + GAP);
+    marksOn(before, 0); marksOn(after, W + GAP);
     ctx.textBaseline = "middle";
     ctx.font = "700 38px Pretendard, -apple-system, sans-serif";
     const tag = (txt, x) => {
@@ -2633,6 +2669,9 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
   const [grid, setGrid] = useState(true);
   const [ruler, setRuler] = useState(null);
   const rulerDrag = useRef(null);
+  /* 두 손가락으로 자를 옮기고 돌린다 */
+  const ptrs = useRef(new Map());
+  const gest = useRef(null);
   const exportingRef = useRef(false);
   const [shot, setShot] = useState(null);
   useBackClose(true, onClose);
@@ -2768,6 +2807,20 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
   };
   const down = (e) => {
     e.currentTarget.setPointerCapture?.(e.pointerId);
+    ptrs.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    /* 손가락이 둘이면 그리기를 멈추고 자 조절로 전환 */
+    if (ptrs.current.size === 2 && ruler) {
+      const [p1, p2] = [...ptrs.current.values()];
+      setDraft(null);
+      rulerDrag.current = null;
+      gest.current = {
+        mx: (p1.x + p2.x) / 2, my: (p1.y + p2.y) / 2,
+        ang: (Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180) / Math.PI,
+        cx: ruler.cx, cy: ruler.cy, deg: ruler.deg,
+      };
+      return;
+    }
+    if (ptrs.current.size > 1) return;
     const raw = pos(e);
     if (ruler) {
       const rct = canvasRef.current.getBoundingClientRect();
@@ -2776,7 +2829,8 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
       const lp = toLocal(g, P);
       const rx = Math.min(150, g.L / 2 - 30);
       if (Math.hypot(lp.x - rx, lp.y - 26) < 26) { rulerDrag.current = { mode: "rot", a0: Math.atan2(P.y - g.C.y, P.x - g.C.x) - g.rad }; return; }
-      if (Math.hypot(lp.x, lp.y - 26) < 28 || (lp.y > 6 && lp.y < 52)) { rulerDrag.current = { mode: "move", dx: P.x - g.C.x, dy: P.y - g.C.y }; return; }
+      /* 자 몸통 위에서는 선이 그어지지 않는다 — 이동만 */
+      if (Math.hypot(lp.x, lp.y - 26) < 28 || (lp.y > 4 && lp.y < 58)) { rulerDrag.current = { mode: "move", dx: P.x - g.C.x, dy: P.y - g.C.y }; return; }
     }
     const p = ruler ? snapPt(raw) : raw;
     if (tool === "hline" || tool === "vline") { setDraft({ id: uid(), tool, color, width, pts: [p] }); return; }
@@ -2788,6 +2842,22 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
     setDraft({ id: uid(), tool, color, width, pts: [p, p], label: "" });
   };
   const move = (e) => {
+    if (ptrs.current.has(e.pointerId)) ptrs.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (gest.current && ptrs.current.size >= 2 && ruler) {
+      const el = canvasRef.current; if (!el) return;
+      const r = el.getBoundingClientRect();
+      const [p1, p2] = [...ptrs.current.values()];
+      const mx = (p1.x + p2.x) / 2, my = (p1.y + p2.y) / 2;
+      const ang = (Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180) / Math.PI;
+      const g = gest.current;
+      setRuler({
+        cx: Math.min(0.98, Math.max(0.02, g.cx + (mx - g.mx) / r.width)),
+        cy: Math.min(0.98, Math.max(0.02, g.cy + (my - g.my) / r.height)),
+        deg: g.deg + (ang - g.ang),
+      });
+      return;
+    }
+    if (ptrs.current.size > 1) return;
     const raw = pos(e);
     if (rulerDrag.current && ruler) {
       const rct = canvasRef.current.getBoundingClientRect();
@@ -2806,7 +2876,10 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
       return { ...d, pts: [d.pts[0], p], label: d.tool === "angle" ? degText(angleOf(d.pts[0], p)) : "" };
     });
   };
-  const up = () => {
+  const up = (e) => {
+    if (e && e.pointerId != null) ptrs.current.delete(e.pointerId);
+    if (ptrs.current.size < 2) gest.current = null;
+    if (ptrs.current.size >= 1 && gest.current === null && !draft) return;
     if (rulerDrag.current) { rulerDrag.current = null; return; }
     if (!draft) return;
     const d = draft; setDraft(null);
@@ -2869,7 +2942,7 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
           </p>
         )}
         {ruler && (
-          <p className="text-xs font-semibold text-white opacity-80">자 눈금선 가까이 찍는 점은 선 위로 딱 붙습니다 · 흰 손잡이 = 이동, 보라 손잡이 = 회전</p>
+          <p className="text-xs font-semibold text-white opacity-80">두 손가락으로 자를 옮기고 돌립니다 · 자 몸통 위에는 선이 안 그려집니다 · 눈금선 가까이 찍은 점은 선에 딱 붙습니다</p>
         )}
         <div className="flex items-center gap-2">
           {PEN_COLORS.map((c) => (
@@ -4202,6 +4275,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onToast }) {
   const [showSkel, setShowSkel] = useState(true);
   const [showNum, setShowNum] = useState(true);
   const [manual, setManual] = useState(null);
+  const [zoom, setZoom] = useState(1);   /* 관절을 정확히 찍으려면 확대가 필요하다 */
   const [faceDir, setFaceDir] = useState(1);
   const [open, setOpen] = useState(false);
   const [seeSaved, setSeeSaved] = useState(null);
@@ -4496,11 +4570,15 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onToast }) {
               className="flex items-center gap-1.5 rounded-2xl px-4 py-2.5 text-sm font-bold" style={{ backgroundColor: CANVAS, color: INK }}>
               <Camera size={14} /> 촬영
             </button>
-            {img && <button onClick={() => startManual()} className="rounded-2xl px-4 py-2.5 text-sm font-bold" style={{ backgroundColor: CANVAS, color: PRIMARY }}>관절 직접 찍기</button>}
-            {img && engine === "ready" && !manual && (
-              <button onClick={() => { setBusy(true); detect(imgRef.current).finally(() => setBusy(false)); }} className="rounded-2xl px-4 py-2.5 text-sm font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>
-                <RotateCcw size={13} /> 다시 인식
+            {img && !manual && <button onClick={() => startManual()} className="rounded-2xl px-4 py-2.5 text-sm font-bold" style={{ backgroundColor: CANVAS, color: PRIMARY }}>관절 직접 찍기</button>}
+            {img && engine === "ready" && (
+              <button onClick={() => { setManual(null); setBusy(true); detect(imgRef.current).finally(() => setBusy(false)); }}
+                className="flex items-center gap-1.5 rounded-2xl px-4 py-2.5 text-sm font-bold" style={{ backgroundColor: manual ? TINT : CANVAS, color: manual ? PRIMARY : SUB }}>
+                <RotateCcw size={13} /> {manual ? "AI로 다시 분석" : "다시 인식"}
               </button>
+            )}
+            {img && manual && (
+              <button onClick={() => setManual(null)} className="rounded-2xl px-4 py-2.5 text-sm font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>직접 찍기 끝내기</button>
             )}
           </div>
           <input ref={albumRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; pickFile(f); }} />
@@ -4517,7 +4595,18 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onToast }) {
           )}
           {img && (
             <>
-              <div className="relative overflow-hidden rounded-2xl bg-photo">
+              {pts && (
+                <div className="flex items-center gap-2">
+                  <span className="shrink-0 text-xs font-bold" style={{ color: SUB }}>확대</span>
+                  <input type="range" min="1" max="3" step="0.1" value={zoom} onChange={(e) => setZoom(Number(e.target.value))}
+                    className="min-w-0 flex-1" style={{ accentColor: PRIMARY, touchAction: "none" }} />
+                  <span className="w-10 shrink-0 text-center text-xs font-extrabold tabular-nums" style={{ color: zoom > 1 ? PRIMARY : SUB }}>{zoom.toFixed(1)}×</span>
+                  {zoom > 1 && <button onClick={() => setZoom(1)} className="shrink-0 rounded-lg px-2 py-1 text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>원래대로</button>}
+                </div>
+              )}
+              {zoom > 1 && <Sub className="block">확대한 상태에서는 옆으로 밀어 원하는 부위를 찾은 뒤 점을 찍으세요</Sub>}
+              <div className={zoom > 1 ? "overflow-auto rounded-2xl" : ""} style={zoom > 1 ? { WebkitOverflowScrolling: "touch" } : undefined}>
+              <div className="relative overflow-hidden rounded-2xl bg-photo" style={{ width: `${zoom * 100}%` }}>
                 <canvas ref={canvasRef} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}
                   className="block w-full touch-none" style={{ height: "auto" }} />
                 {manual && manual.i < manual.seq.length && (
@@ -4552,6 +4641,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onToast }) {
                     <Move size={11} /> 점을 끌어 보정
                   </span>
                 )}
+              </div>
               </div>
               <div className="flex flex-wrap items-center gap-1.5">
                 <div className="flex gap-1 rounded-full p-1" style={{ backgroundColor: CANVAS }}>
@@ -4733,13 +4823,14 @@ function RecordTab({ db, selectedId, setSelectedId, section, setSection, onSaveI
   ];
   return (
     <div className="space-y-3">
-      <Card className="p-4">
+      <Card className="overflow-hidden p-4">
         <Field label="기록할 회원">
-          <div className="relative">
+          <div className="relative w-full" style={{ maxWidth: "100%" }}>
             <select value={member.id} onChange={(e) => setSelectedId(e.target.value)}
-              className="w-full rounded-2xl border-0 py-3.5 pl-11 pr-4 text-sm font-extrabold outline-none"
+              className="block w-full min-w-0 max-w-full truncate rounded-2xl border-0 py-3.5 pl-11 pr-10 text-sm font-extrabold outline-none"
               style={{ appearance: "none", WebkitAppearance: "none", MozAppearance: "none",
-                backgroundColor: TINT, color: PRIMARY, boxShadow: `inset 0 0 0 2px ${PRIMARY}` }}>
+                backgroundColor: TINT, color: PRIMARY, boxShadow: `inset 0 0 0 2px ${PRIMARY}`,
+                textOverflow: "ellipsis", maxWidth: "100%", boxSizing: "border-box" }}>
               {members.map((m) => <option key={m.id} value={m.id}>{m.name || "이름 미입력"}{isEnded(m) ? " (종료)" : ""} · {left(m) > 0 ? `잔여 ${left(m)}회` : "잔여 없음"}</option>)}
             </select>
             <Users size={16} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2" style={{ color: PRIMARY }} />

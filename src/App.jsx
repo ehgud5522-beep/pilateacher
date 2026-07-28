@@ -86,7 +86,7 @@ const sysDarkNow = () => {
 };
 
 /* 파일이 실제로 교체됐는지 1초 만에 확인하는 표시 — 설정 탭 맨 아래에 뜬다 */
-const APP_VER = "v57 · 2026-07-28";
+const APP_VER = "v58 · 2026-07-28";
 try { if (typeof window !== "undefined") window.PILATEACHER_VER = APP_VER; } catch (e) {}
 
 const ACC_KEY = "pilateacher_accounts_v1";
@@ -121,21 +121,6 @@ const PROVIDERS = [
   { key: "apple", label: "Apple로 시작하기", bg: "#000000", fg: "#FFFFFF" },
 ];
 const PROVIDER_LABEL = { kakao: "카카오", naver: "네이버", google: "Google", apple: "Apple", email: "이메일" };
-
-/* 아이폰·아이패드 네이티브 앱에서는 소셜 로그인 버튼을 숨긴다.
-   애플 심사 지침 4.8(로그인 서비스)은 소셜 로그인을 제공하는 앱에
-   개인정보 보호형 대체 로그인을 함께 요구한다. 소셜 로그인을 아예
-   노출하지 않으면 이 조항 대상에서 벗어난다. 이메일 로그인만 남는다.
-   안드로이드·웹은 영향 없음. */
-const IOS_NATIVE = (() => {
-  try {
-    if (typeof window === "undefined") return false;
-    const cap = window.Capacitor;
-    if (!cap || typeof cap.isNativePlatform !== "function" || !cap.isNativePlatform()) return false;
-    const p = typeof cap.getPlatform === "function" ? cap.getPlatform() : "";
-    return p === "ios";
-  } catch (e) { return false; }
-})();
 const DEFAULT_PERF = [
   { name: "코어 안정성", now: 50, prev: 50 }, { name: "척추 분절 가동성", now: 50, prev: 50 },
   { name: "고관절 유연성", now: 50, prev: 50 }, { name: "균형 · 정렬", now: 50, prev: 50 },
@@ -337,7 +322,7 @@ const blobToDataUrl = (b) => new Promise((res, rej) => {
 const dataUrlToBlob = async (s) => (await fetch(s)).blob();
 
 /* 원본을 문자열로 만들지 않고 바로 축소 · 사진 회전(EXIF)도 자동 보정 */
-async function fileToBlob(file, max = 900, q = 0.72) {
+async function fileToBlob(file, max = 760, q = 0.7) {
   if (typeof createImageBitmap === "function") {
     let bmp = null;
     try { bmp = await createImageBitmap(file, { imageOrientation: "from-image" }); }
@@ -533,7 +518,7 @@ async function shareBeforeAfter(before, after, memberName, onToast, saveOnly) {
 
 function blankMember(staff) {
   return {
-    id: uid(), name: "", age: "", instructor: staff || "", goal: "", passName: "", phone: "",
+    id: uid(), name: "", age: "", birth: "", instructor: staff || "", goal: "", passName: "", phone: "",
     regular: 0, service: 0, total: 0, startDate: todayISO(), contractEnd: "", focus: [],
     status: "active", endedAt: "", endedReason: "", endedMemo: "",
     holdFrom: "", holdUntil: "", holdReason: "", payments: [],
@@ -1134,6 +1119,23 @@ const restLabel = (idle) => (idle === null ? "첫 수업 전" : idle === 0 ? "�
 const isEnded = (m) => m?.status === "ended";
 const isHold = (m) => m?.status === "hold";
 const isActive = (m) => !isEnded(m) && !isHold(m);
+/* 생년월일이 있으면 나이를 계산하고, 없으면 직접 적은 나이를 쓴다 */
+const ageFromBirth = (b) => {
+  if (!b || !/^\d{4}-\d{2}-\d{2}$/.test(b)) return null;
+  const d = new Date(b + "T00:00:00");
+  if (Number.isNaN(d.getTime())) return null;
+  const t = new Date();
+  let a = t.getFullYear() - d.getFullYear();
+  const m = t.getMonth() - d.getMonth();
+  if (m < 0 || (m === 0 && t.getDate() < d.getDate())) a -= 1;
+  return a >= 0 && a < 130 ? a : null;
+};
+const ageOf = (m) => {
+  const a = ageFromBirth(m?.birth);
+  if (a !== null) return a;
+  const n = num(m?.age);
+  return n > 0 ? n : null;
+};
 /* 이름을 아직 안 적은 회원 = 작성 중 */
 const isDraft = (m) => !String(m?.name || "").trim();
 /* 이름도 기록도 전혀 없는, 안전하게 지울 수 있는 회원 */
@@ -1185,7 +1187,6 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
 
   const [busy, setBusy] = useState(false);
   const handleSocial = async (provider) => {
-    if (IOS_NATIVE) return;
     if (fbReady) {
       if (provider !== "google" && provider !== "apple") {
         onToast({ ok: false, msg: "지금은 Google \u00b7 Apple \u00b7 \uc774\uba54\uc77c\ub85c\ub9cc \ub85c\uadf8\uc778\ud560 \uc218 \uc788\uc2b5\ub2c8\ub2e4." });
@@ -1221,22 +1222,18 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
         <div className="mt-10 flex-1">
           {mode === "main" ? (
             <div className="space-y-2">
-              {!IOS_NATIVE && (
-                <>
-                  {PROVIDERS.map((p) => (
-                    <button key={p.key} onClick={() => handleSocial(p.key)}
-                      className="flex w-full items-center justify-center gap-2 rounded-2xl py-3.5 text-sm font-extrabold"
-                      style={{ backgroundColor: p.bg, color: p.fg, border: p.border ? `1px solid ${p.border}` : "none" }}>
-                      {p.label}
-                    </button>
-                  ))}
-                  <div className="flex items-center gap-3 py-3">
-                    <div className="h-px flex-1" style={{ backgroundColor: LINE }} />
-                    <span className="text-xs font-bold" style={{ color: SUB }}>또는</span>
-                    <div className="h-px flex-1" style={{ backgroundColor: LINE }} />
-                  </div>
-                </>
-              )}
+              {PROVIDERS.map((p) => (
+                <button key={p.key} onClick={() => handleSocial(p.key)}
+                  className="flex w-full items-center justify-center gap-2 rounded-2xl py-3.5 text-sm font-extrabold"
+                  style={{ backgroundColor: p.bg, color: p.fg, border: p.border ? `1px solid ${p.border}` : "none" }}>
+                  {p.label}
+                </button>
+              ))}
+              <div className="flex items-center gap-3 py-3">
+                <div className="h-px flex-1" style={{ backgroundColor: LINE }} />
+                <span className="text-xs font-bold" style={{ color: SUB }}>또는</span>
+                <div className="h-px flex-1" style={{ backgroundColor: LINE }} />
+              </div>
               <button onClick={() => setMode("email")}
                 className="flex w-full items-center justify-center gap-2 rounded-2xl py-3.5 text-sm font-extrabold"
                 style={{ backgroundColor: CANVAS, color: INK }}>
@@ -2332,6 +2329,14 @@ function WeekGrid({ days, byDate, nameOf, cursor, onOpen, onNew }) {
   const rows = GRID_H1 - GRID_H0 + 1;
   const top0 = GRID_H0 * 60;
   /* 빈 칸을 위아래로 훑으면 그 시간만큼 일정이 잡힌다 (30분 단위) */
+  /* 지금 시각 표시선 — 1분마다 갱신 */
+  const [nowMin, setNowMin] = useState(() => { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); });
+  useEffect(() => {
+    const t = setInterval(() => { const d = new Date(); setNowMin(d.getHours() * 60 + d.getMinutes()); }, 60000);
+    return () => clearInterval(t);
+  }, []);
+  const nowTop = ((nowMin - top0) / 60) * GRID_ROW;
+  const showNow = nowMin >= top0 && nowMin <= GRID_H1 * 60 + 59;
   const slotAt = (e, el) => {
     const r = el.getBoundingClientRect();
     const y = Math.max(0, Math.min(r.height - 1, e.clientY - r.top));
@@ -2398,6 +2403,12 @@ function WeekGrid({ days, byDate, nameOf, cursor, onOpen, onNew }) {
                     <div style={{ height: GRID_ROW / 2, borderBottom: `1px dashed ${LINE}` }} />
                   </div>
                 ))}
+                {d === todayISO() && showNow && (
+                  <div className="pointer-events-none absolute left-0 right-0 z-10" style={{ top: nowTop }}>
+                    <div style={{ height: 2, backgroundColor: BAD, boxShadow: `0 0 6px ${BAD}` }} />
+                    <div style={{ position: "absolute", left: -4, top: -3, width: 8, height: 8, borderRadius: 8, backgroundColor: BAD }} />
+                  </div>
+                )}
                 {blocksOf(d).map((b) => (
                   <button key={b.s.id} onPointerDown={(e) => e.stopPropagation()} onClick={() => onOpen(b.s)}
                     className="absolute left-0.5 right-0.5 overflow-hidden rounded-lg px-1 py-1 text-left"
@@ -3022,7 +3033,7 @@ function MemberList({ members, selectedId, onSelect, onAdd, onOpenFav, favCount,
               <div className="flex h-11 w-11 items-center justify-center rounded-2xl text-sm font-extrabold" style={{ backgroundColor: TINT, color: PRIMARY }}>{(m.name || "?").slice(0, 1)}</div>
               <div className="min-w-0 flex-1">
                 <p className="truncate font-extrabold" style={{ color: isDraft(m) ? SUB : INK }}>
-                  {isDraft(m) ? "작성 중" : m.name} {m.age ? <span className="text-xs font-medium" style={{ color: SUB }}>{m.age}세</span> : null}
+                  {isDraft(m) ? "작성 중" : m.name} {ageOf(m) !== null ? <span className="text-xs font-medium" style={{ color: SUB }}>{ageOf(m)}세</span> : null}
                 </p>
                 {todayMap[m.id]
                   ? <p className="truncate text-xs font-extrabold" style={{ color: PRIMARY }}>오늘 {todayMap[m.id].start} · {todayMap[m.id].type}</p>
@@ -3148,7 +3159,7 @@ function AlignSheet({ src, ghost, init, title, onSave, onCancel, ghostEditable, 
   const [which, setWhich] = useState("main");
   const [m, setM] = useState({ x: num(init?.x) || 0, y: num(init?.y) || 0, scale: num(init?.scale) || 1, rot: num(init?.rot) || 0 });
   const [g, setG] = useState({ x: num(ghost?.x) || 0, y: num(ghost?.y) || 0, scale: num(ghost?.scale) || 1, rot: num(ghost?.rot) || 0 });
-  const [op, setOp] = useState(45);
+  const [op, setOp] = useState(0);
   useBackClose(true, onCancel);
   useScrollLock();
   const twoWay = !!(ghost && ghostEditable);
@@ -3305,7 +3316,7 @@ function ShotBar({ slot, onCam }) {
 
 function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveMarks, onAdjust, onToast, onSaveSet }) {
   const [view, setView] = useState("front");
-  const [mode, setMode] = useState("overlay");
+  const [mode, setMode] = useState("side");
   const [cmp, setCmp] = useState("curtain");
   const [del, setDel] = useState(null);
   const [flip, setFlip] = useState(false);
@@ -3325,12 +3336,17 @@ function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveM
   const list = (photos?.[view] || []).filter((p) => p && p.src);
   const before = list[0] || null;
   const after = list.length > 1 ? list[list.length - 1] : null;
+  const [loading, setLoading] = useState(false);
   const pick = async (file) => {
     if (!file) return;
+    setLoading(true);
     try {
+      /* 큰 사진은 줄이는 데 몇 초 걸린다 — 화면을 잠깐 쉬게 해서 로딩 표시가 실제로 그려지게 한다 */
+      await new Promise((r) => setTimeout(r, 30));
       const blob = await fileToBlob(file);
       setPending({ blob, src: URL.createObjectURL(blob), slot: slotRef.current });
     } catch (e) { onToast && onToast({ ok: false, msg: "사진을 읽지 못했습니다." }); }
+    setLoading(false);
   };
   const closePending = () => setPending((p) => { if (p?.src) { try { URL.revokeObjectURL(p.src); } catch (e) {} } return null; });
   const open = (slot, ref) => { slotRef.current = slot; ref.current?.click(); };
@@ -3428,22 +3444,31 @@ function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveM
             <button onClick={() => setGuides((g) => !g)} className="rounded-full px-3 py-1.5 text-xs font-bold" style={{ backgroundColor: guides ? TINT : CANVAS, color: guides ? PRIMARY : SUB }}>중심선 {guides ? "켜짐" : "꺼짐"}</button>
             {before && <button onClick={() => setPosture({ p: before, label: "BEFORE" })} className="rounded-full px-3 py-1.5 text-xs font-bold" style={{ backgroundColor: CANVAS, color: INK }}>비포 분석</button>}
             {after && <button onClick={() => setPosture({ p: after, label: "AFTER" })} className="rounded-full px-3 py-1.5 text-xs font-bold" style={{ backgroundColor: TINT, color: PRIMARY }}>애프터 분석</button>}
-            {before && after && !briefing && (
-              <button onClick={() => onSaveSet && onSaveSet(view, before.id, after.id)} className="flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-extrabold" style={{ backgroundColor: TINT, color: PRIMARY }}><Star size={12} /> 모음에 저장</button>
-            )}
             {before && !briefing && (
               <button onClick={() => setDel({ id: before.id, label: "비포" })} className="flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}><Trash2 size={12} /> 비포 삭제</button>
             )}
             {after && !briefing && (
               <button onClick={() => setDel({ id: after.id, label: "애프터" })} className="flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}><Trash2 size={12} /> 애프터 삭제</button>
             )}
-            {before && after && (
-              <span className="ml-auto flex gap-1.5">
-                <button onClick={() => shareBeforeAfter(before, after, member?.name, onToast, true)} className="flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: INK }}><Download size={12} /> 내 폰에 저장</button>
-                <button onClick={() => shareBeforeAfter(before, after, member?.name, onToast)} className="flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}><Upload size={12} /> 회원에게 보내기</button>
-              </span>
-            )}
           </div>
+          {before && after && (
+            <div className="mt-2 grid grid-cols-3 gap-1.5">
+              {!briefing && (
+                <button onClick={() => onSaveSet && onSaveSet(view, before.id, after.id)}
+                  className="flex flex-col items-center justify-center gap-1 rounded-2xl py-2.5 text-xs font-extrabold" style={{ backgroundColor: TINT, color: PRIMARY }}>
+                  <Star size={15} /> 모음에 저장
+                </button>
+              )}
+              <button onClick={() => shareBeforeAfter(before, after, member?.name, onToast, true)}
+                className="flex flex-col items-center justify-center gap-1 rounded-2xl py-2.5 text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: INK, border: `1px solid ${LINE}` }}>
+                <Download size={15} /> 내 폰에 저장
+              </button>
+              <button onClick={() => shareBeforeAfter(before, after, member?.name, onToast)}
+                className="flex flex-col items-center justify-center gap-1 rounded-2xl py-2.5 text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>
+                <Upload size={15} /> 회원에게 보내기
+              </button>
+            </div>
+          )}
           {del && (
             <div className="mt-2 flex flex-wrap items-center gap-2 rounded-2xl px-3 py-2.5" style={{ backgroundColor: BAD_S }}>
               <AlertTriangle size={14} style={{ color: BAD }} />
@@ -3492,6 +3517,15 @@ function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveM
       )}
       <input ref={camRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; pick(f); }} />
       <input ref={albumRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; pick(f); }} />
+      {loading && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ backgroundColor: "rgba(0,0,0,0.55)" }}>
+          <div className="flex flex-col items-center gap-3 rounded-3xl px-8 py-7" style={{ backgroundColor: CARD }}>
+            <Loader2 size={26} className="animate-spin" style={{ color: PRIMARY }} />
+            <p className="text-sm font-extrabold" style={{ color: INK }}>사진을 불러오는 중…</p>
+            <Sub>큰 사진은 몇 초 걸릴 수 있어요</Sub>
+          </div>
+        </div>
+      )}
       {pending && (() => {
         const gp = pending.slot === "after" ? before : after;
         const isAfter = pending.slot === "after";
@@ -4631,7 +4665,7 @@ function Dashboard({ member, photos, schedule, onBack, briefing, onSavePhoto, on
           <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl text-lg font-extrabold text-white" style={{ background: GRAD, boxShadow: "0 4px 12px rgba(108,76,241,.30)" }}>{(member.name || "?").slice(0, 1)}</div>
           <div className="min-w-0 flex-1">
             <h2 className="text-lg font-extrabold" style={{ color: isDraft(member) ? SUB : INK }}>{isDraft(member) ? "이름을 입력해 주세요" : `${member.name} 회원님`}</h2>
-            <Sub>{member.age ? `${member.age}세 · ` : ""}담당 {member.instructor || "-"}{att.rate !== null ? ` · 출석률 ${att.rate}%` : ""}</Sub>
+            <Sub>{ageOf(member) !== null ? `${ageOf(member)}세 · ` : ""}담당 {member.instructor || "-"}{att.rate !== null ? ` · 출석률 ${att.rate}%` : ""}</Sub>
           </div>
           <div className="rounded-2xl px-3 py-2 text-center" style={{ backgroundColor: low ? BAD_S : CANVAS }}>
             <Sub>총 잔여</Sub>
@@ -4727,7 +4761,7 @@ function RecordTab({ db, selectedId, setSelectedId, section, setSection, onSaveI
                 { l: "상태", v: isEnded(member) ? "종료" : isHold(member) ? "홀딩" : "진행중" },
                 { l: "담당 강사", v: member.instructor || "-" },
                 { l: "연락처", v: member.phone || "-" },
-                { l: "나이", v: member.age ? `${member.age}세` : "-" },
+                { l: "나이", v: ageOf(member) !== null ? `${ageOf(member)}세${member.birth ? ` (${ymd(member.birth)})` : ""}` : "-" },
                 { l: "수강권", v: member.passName || "-" },
                 { l: "잔여 내역", v: `정규 ${num(member.regular)} · 서비스 ${num(member.service)}` },
                 { l: "시작일", v: member.startDate ? ymd(member.startDate) : "-" },
@@ -5239,7 +5273,7 @@ function PerfForm({ member, onPatch, onToast }) {
   );
 }
 
-const INFO_FIELDS = ["name", "age", "instructor", "phone", "goal", "focus", "passName", "regular", "service", "total", "startDate", "contractEnd", "status", "endedAt", "endedReason", "endedMemo", "holdFrom", "holdUntil", "holdReason"];
+const INFO_FIELDS = ["name", "age", "birth", "instructor", "phone", "goal", "focus", "passName", "regular", "service", "total", "startDate", "contractEnd", "status", "endedAt", "endedReason", "endedMemo", "holdFrom", "holdUntil", "holdReason"];
 
 function PaymentSheet({ member, onClose, onSubmit }) {
   const [f, setF] = useState({ date: todayISO(), name: member.passName || "", sessions: "", service: "0", amount: "", method: "카드", end: member.contractEnd || "", memo: "" });
@@ -5344,8 +5378,15 @@ function InfoForm({ member, onPatch, onDelete, onToast }) {
         <div className="mt-4 space-y-3">
           <div className="grid grid-cols-2 gap-2">
             <Field label="이름"><input value={d.name} onChange={(e) => S({ name: e.target.value })} className={inputCls} /></Field>
-            <Field label="나이"><input inputMode="numeric" value={d.age} onChange={(e) => S({ age: e.target.value })} className={inputCls} /></Field>
+            <Field label="생년월일" hint={ageFromBirth(d.birth) !== null ? `만 ${ageFromBirth(d.birth)}세` : "선택"}>
+              <input type="date" value={d.birth || ""} onChange={(e) => S({ birth: e.target.value })} className={inputCls} />
+            </Field>
           </div>
+          {ageFromBirth(d.birth) === null && (
+            <Field label="나이" hint="생년월일을 넣으면 자동으로 계산됩니다">
+              <input inputMode="numeric" value={d.age} onChange={(e) => S({ age: e.target.value })} placeholder="예) 34" className={inputCls} />
+            </Field>
+          )}
           <div className="grid grid-cols-2 gap-2">
             <Field label="담당 강사"><input value={d.instructor} onChange={(e) => S({ instructor: e.target.value })} className={inputCls} /></Field>
             <Field label="연락처" hint="선택"><input value={d.phone || ""} onChange={(e) => S({ phone: e.target.value })} placeholder="010-" className={inputCls} /></Field>
@@ -5889,6 +5930,18 @@ export default function App() {
     setThemePref(pref);
     try { const p = window.storage.set(THEME_KEY, pref); if (p && p.catch) p.catch(() => {}); } catch (e) {}
   };
+
+  /* 키보드가 올라오면 입력칸이 가려진다 — 초점이 간 칸을 화면 가운데로 올려 준다 */
+  useEffect(() => {
+    const onFocusIn = (e) => {
+      const el = e.target;
+      if (!el || !/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName || "")) return;
+      if (el.type === "range" || el.type === "file" || el.type === "checkbox") return;
+      setTimeout(() => { try { el.scrollIntoView({ block: "center", behavior: "smooth" }); } catch (err) {} }, 320);
+    };
+    document.addEventListener("focusin", onFocusIn);
+    return () => document.removeEventListener("focusin", onFocusIn);
+  }, []);
 
   useEffect(() => {
     let alive = true;

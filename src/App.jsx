@@ -121,6 +121,21 @@ const PROVIDERS = [
   { key: "apple", label: "Apple로 시작하기", bg: "#000000", fg: "#FFFFFF" },
 ];
 const PROVIDER_LABEL = { kakao: "카카오", naver: "네이버", google: "Google", apple: "Apple", email: "이메일" };
+
+/* 아이폰·아이패드 네이티브 앱에서는 소셜 로그인 버튼을 숨긴다.
+   애플 심사 지침 4.8(로그인 서비스)은 소셜 로그인을 제공하는 앱에
+   개인정보 보호형 대체 로그인을 함께 요구한다. 소셜 로그인을 아예
+   노출하지 않으면 이 조항 대상에서 벗어난다. 이메일 로그인만 남는다.
+   안드로이드·웹은 영향 없음. */
+const IOS_NATIVE = (() => {
+  try {
+    if (typeof window === "undefined") return false;
+    const cap = window.Capacitor;
+    if (!cap || typeof cap.isNativePlatform !== "function" || !cap.isNativePlatform()) return false;
+    const p = typeof cap.getPlatform === "function" ? cap.getPlatform() : "";
+    return p === "ios";
+  } catch (e) { return false; }
+})();
 const DEFAULT_PERF = [
   { name: "코어 안정성", now: 50, prev: 50 }, { name: "척추 분절 가동성", now: 50, prev: 50 },
   { name: "고관절 유연성", now: 50, prev: 50 }, { name: "균형 · 정렬", now: 50, prev: 50 },
@@ -1170,6 +1185,7 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
 
   const [busy, setBusy] = useState(false);
   const handleSocial = async (provider) => {
+    if (IOS_NATIVE) return;
     if (fbReady) {
       if (provider !== "google" && provider !== "apple") {
         onToast({ ok: false, msg: "지금은 Google \u00b7 Apple \u00b7 \uc774\uba54\uc77c\ub85c\ub9cc \ub85c\uadf8\uc778\ud560 \uc218 \uc788\uc2b5\ub2c8\ub2e4." });
@@ -1205,18 +1221,22 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
         <div className="mt-10 flex-1">
           {mode === "main" ? (
             <div className="space-y-2">
-              {PROVIDERS.map((p) => (
-                <button key={p.key} onClick={() => handleSocial(p.key)}
-                  className="flex w-full items-center justify-center gap-2 rounded-2xl py-3.5 text-sm font-extrabold"
-                  style={{ backgroundColor: p.bg, color: p.fg, border: p.border ? `1px solid ${p.border}` : "none" }}>
-                  {p.label}
-                </button>
-              ))}
-              <div className="flex items-center gap-3 py-3">
-                <div className="h-px flex-1" style={{ backgroundColor: LINE }} />
-                <span className="text-xs font-bold" style={{ color: SUB }}>또는</span>
-                <div className="h-px flex-1" style={{ backgroundColor: LINE }} />
-              </div>
+              {!IOS_NATIVE && (
+                <>
+                  {PROVIDERS.map((p) => (
+                    <button key={p.key} onClick={() => handleSocial(p.key)}
+                      className="flex w-full items-center justify-center gap-2 rounded-2xl py-3.5 text-sm font-extrabold"
+                      style={{ backgroundColor: p.bg, color: p.fg, border: p.border ? `1px solid ${p.border}` : "none" }}>
+                      {p.label}
+                    </button>
+                  ))}
+                  <div className="flex items-center gap-3 py-3">
+                    <div className="h-px flex-1" style={{ backgroundColor: LINE }} />
+                    <span className="text-xs font-bold" style={{ color: SUB }}>또는</span>
+                    <div className="h-px flex-1" style={{ backgroundColor: LINE }} />
+                  </div>
+                </>
+              )}
               <button onClick={() => setMode("email")}
                 className="flex w-full items-center justify-center gap-2 rounded-2xl py-3.5 text-sm font-extrabold"
                 style={{ backgroundColor: CANVAS, color: INK }}>

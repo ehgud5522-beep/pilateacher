@@ -1,0 +1,55 @@
+{
+  "project_info": {
+    "project_number": "452402660812",
+    "project_id": "pilateacher",
+    "storage_bucket": "pilateacher.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:452402660812:android:e0722fdcbc5ddaee144969",
+        "android_client_info": {
+          "package_name": "com.pilateacher.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "452402660812-668h676pvuiu4jq0ilsk8di80tkd1je4.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.pilateacher.app",
+            "certificate_hash": "e12c77bbdfa5b4aeed6fd66cab2b2498bfd15772"
+          }
+        },
+        {
+          "client_id": "452402660812-n1bpmvp4iq2gm58h4s1vjcfiug6e6uip.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.pilateacher.app",
+            "certificate_hash": "117f317237df69c445d6b42ed73fa6470ec23ed4"
+          }
+        },
+        {
+          "client_id": "452402660812-ldotjjr4rg9jhocdpme2khjjls9lj64q.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAf1A9MMb_BwY2XdNERDDZ3jQKwN6u7WHQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "452402660812-ldotjjr4rg9jhocdpme2khjjls9lj64q.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -1,12 +1,17 @@
 /* ===================================================================
    필라티쳐 — Firebase 연결
+   config 는 pilateacher 프로젝트 값입니다.
+   (Analytics 는 뺐습니다 - 개인정보 신고가 '수집 안 함'으로 유지됩니다)
+
    ⚠️ 회원 사진(비포애프터·체형분석)은 여기로 절대 올라가지 않습니다.
    =================================================================== */
 
 import { initializeApp } from "firebase/app";
+import { Capacitor } from "@capacitor/core";
+import { FirebaseAuthentication } from "@capacitor-firebase/authentication";
 import {
   getAuth, onAuthStateChanged, signOut,
-  GoogleAuthProvider, OAuthProvider, signInWithPopup,
+  GoogleAuthProvider, OAuthProvider, signInWithPopup, signInWithCredential,
   createUserWithEmailAndPassword, signInWithEmailAndPassword, updateProfile,
 } from "firebase/auth";
 import { getFirestore, doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
@@ -36,8 +41,29 @@ const shape = (u) => ({
   photo: u.photoURL || "",
 });
 
-/* ---------------- 로그인 ---------------- */
+/* 앱(안드로이드·iOS)인지 판별 — 웹이면 false */
+const isNative = () => {
+  try { return !!(Capacitor && Capacitor.isNativePlatform && Capacitor.isNativePlatform()); }
+  catch (e) { return false; }
+};
+
+/* ---------------- 로그인 ----------------
+   앱에서는 팝업이 뜨지 않으므로 네이티브 로그인 화면을 쓴다.
+   웹(브라우저)에서는 기존 팝업 방식 그대로. */
 export async function fbSignInSocial(provider) {
+  if (isNative()) {
+    const res = provider === "apple"
+      ? await FirebaseAuthentication.signInWithApple({ skipNativeAuth: true })
+      : await FirebaseAuthentication.signInWithGoogle({ skipNativeAuth: true });
+    const cred = provider === "apple"
+      ? new OAuthProvider("apple.com").credential({
+          idToken: res?.credential?.idToken,
+          rawNonce: res?.credential?.nonce,
+        })
+      : GoogleAuthProvider.credential(res?.credential?.idToken);
+    const out = await signInWithCredential(auth, cred);
+    return { ...shape(out.user), provider };
+  }
   let p;
   if (provider === "google") {
     p = new GoogleAuthProvider();
@@ -64,9 +90,11 @@ export async function fbSignInEmail(email, pw) {
 }
 
 export async function fbSignOut() {
+  if (isNative()) { try { await FirebaseAuthentication.signOut(); } catch (e) {} }
   if (auth) await signOut(auth);
 }
 
+/* 로그인 상태가 바뀔 때마다 호출됩니다. 반환값은 해제 함수 */
 export function fbOnAuth(cb) {
   if (!auth) return () => {};
   return onAuthStateChanged(auth, (u) => {

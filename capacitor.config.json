@@ -1,0 +1,11 @@
+{
+  "appId": "com.pilateacher.app",
+  "appName": "필라티쳐",
+  "webDir": "dist",
+  "plugins": {
+    "FirebaseAuthentication": {
+      "skipNativeAuth": true,
+      "providers": ["google.com"]
+    }
+  }
+}

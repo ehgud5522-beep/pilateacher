@@ -86,7 +86,7 @@ const sysDarkNow = () => {
 };
 
 /* 파일이 실제로 교체됐는지 1초 만에 확인하는 표시 — 설정 탭 맨 아래에 뜬다 */
-const APP_VER = "v64 · 2026-07-29";
+const APP_VER = "v65 · 2026-07-29";
 try { if (typeof window !== "undefined") window.PILATEACHER_VER = APP_VER; } catch (e) {}
 
 const ACC_KEY = "pilateacher_accounts_v1";
@@ -486,6 +486,16 @@ async function exportCanvas(canvas, filename, title, saveOnly) {
       return { how: "saved" };
     } catch (e) {}
   }
+  /* 4) 클립보드 — 앱에서도 되는 경우가 많다. 복사해서 카톡에 붙여넣기 */
+  try {
+    if (navigator.clipboard && window.ClipboardItem) {
+      const png = await new Promise((r) => canvas.toBlob(r, "image/png"));
+      if (png) {
+        await navigator.clipboard.write([new window.ClipboardItem({ "image/png": png })]);
+        return { how: "copied" };
+      }
+    }
+  } catch (e) {}
   return { how: "manual", url: canvas.toDataURL("image/jpeg", 0.92) };
 }
 
@@ -493,6 +503,7 @@ async function shareCanvas(canvas, filename, title, onToast, saveOnly) {
   const r = await exportCanvas(canvas, filename, title, saveOnly);
   if (r.how === "fail") { onToast && onToast({ ok: false, msg: "이미지를 만들지 못했습니다." }); return false; }
   if (r.how === "saved") { onToast && onToast({ ok: true, msg: "이미지를 저장했습니다." }); return true; }
+  if (r.how === "copied") { onToast && onToast({ ok: true, msg: "이미지를 복사했습니다. 카톡 등에 붙여넣기 하세요." }); return true; }
   if (r.how === "shared" || r.how === "cancel") return true;
   onToast && onToast({ ok: false, msg: "이 화면에서는 자동 저장이 막혀 있습니다. 사진을 길게 눌러 저장해 주세요." });
   return r;
@@ -1476,6 +1487,15 @@ const everRegistered = (m) => !!(
   (m?.contractEnd && String(m.contractEnd).trim())
 );
 
+/* 잔여가 다 떨어진 회원 — 재등록 상담이 이미 지났거나 종료 처리가 필요한 사람 */
+function spentMembers(members, schedule) {
+  return members.filter((m) => {
+    if (isEnded(m) || isHold(m)) return false;
+    if (left(m) > 0) return false;
+    if (!everRegistered(m) && !attendanceOf(schedule, m.id).done) return false;
+    return true;
+  });
+}
 function detectAlerts(members, schedule) {
   const out = [];
   members.forEach((m) => {
@@ -1491,6 +1511,9 @@ function detectAlerts(members, schedule) {
       return;
     }
     const rest = left(m);
+    /* 잔여가 0이면 이미 소진된 상태 — 골든타임(소진 전에 잡는 알림)에서는 뺀다.
+       대신 아래 spent 로 따로 세어 '정리 필요'로 보여 준다. */
+    if (rest <= 0) return;
     const d = ddaySafe(m.contractEnd);
     const pc = paceOf(schedule, m);
     const pace = pc.use;
@@ -1505,16 +1528,17 @@ function detectAlerts(members, schedule) {
   });
   return out.sort((a, b) => b.urgency - a.urgency);
 }
-function AlertCenter({ alerts, onOpenMember, onBrief, onSnooze, snoozedCount, onUnsnoozeAll }) {
+function AlertCenter({ alerts, spent, onOpenMember, onBrief, onSnooze, snoozedCount, onUnsnoozeAll }) {
   const [open, setOpen] = useState(false);
-  if (!alerts.length && !snoozedCount) return null;
+  const spentN = (spent || []).length;
+  if (!alerts.length && !snoozedCount && !spentN) return null;
   return (
     <section className="mb-3 overflow-hidden rounded-3xl" style={{ background: `linear-gradient(150deg, ${BAD_S} 0%, ${CARD} 55%)`, border: `1px solid ${LINE}`, boxShadow: SHADOW }}>
       <button onClick={() => setOpen((v) => !v)} className="flex w-full items-center gap-2 px-4 py-3.5 text-left">
         <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: BAD_S }}><Bell size={16} style={{ color: BAD }} /></span>
         <div className="min-w-0 flex-1">
           <h3 className="text-sm font-extrabold" style={{ color: INK }}>재등록 골든타임</h3>
-          <Sub className="truncate">{alerts.length ? `지금 연락해야 할 회원 ${alerts.length}명` : "지금 연락할 회원은 없습니다"}</Sub>
+          <Sub className="truncate">{alerts.length ? `지금 연락해야 할 회원 ${alerts.length}명` : spentN ? `잔여를 다 쓴 회원 ${spentN}명` : "지금 연락할 회원은 없습니다"}</Sub>
         </div>
         {alerts.length > 0 && !open && (
           <span className="shrink-0 rounded-full px-2.5 py-1 text-xs font-extrabold" style={{ backgroundColor: BAD_S, color: BAD }}>{alerts.length}</span>
@@ -1522,6 +1546,21 @@ function AlertCenter({ alerts, onOpenMember, onBrief, onSnooze, snoozedCount, on
         <span className="shrink-0 text-xs font-extrabold" style={{ color: PRIMARY }}>{open ? "접기" : "보기"}</span>
         <ChevronRight size={16} className="shrink-0" style={{ color: PRIMARY, transform: open ? "rotate(90deg)" : "none", transition: "transform .18s ease" }} />
       </button>
+      {open && spentN > 0 && (
+        <div className="px-4 pb-3">
+          <div className="rounded-2xl p-3" style={{ backgroundColor: CANVAS }}>
+            <p className="text-xs font-extrabold" style={{ color: INK }}>잔여를 다 쓴 회원 {spentN}명</p>
+            <Sub className="mt-0.5 block">재등록을 했거나, 더 안 나오면 종료로 바꿔 주세요</Sub>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {(spent || []).slice(0, 12).map((m) => (
+                <button key={m.id} onClick={() => onOpenMember(m.id)} className="rounded-full bg-white px-2.5 py-1.5 text-xs font-bold" style={{ color: INK }}>
+                  {m.name || "이름 미입력"}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
       {snoozedCount > 0 && (
         <div className="flex items-center gap-2 px-4 pb-3">
           <Sub className="min-w-0 flex-1">알림을 미뤄둔 회원 {snoozedCount}명</Sub>
@@ -3568,6 +3607,7 @@ function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveM
       return;
     }
     if (r.how === "saved") onToast && onToast({ ok: true, msg: "이미지를 저장했습니다." });
+    if (r.how === "copied") onToast && onToast({ ok: true, msg: "이미지를 복사했습니다. 카톡 등에 붙여넣기 하세요." });
     setPreview(null);
   };
   const pick = async (file) => {
@@ -3795,7 +3835,7 @@ function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveM
               style={{ maxWidth: "min(100%, 760px)", maxHeight: "68%", width: "auto", objectFit: "contain" }} />
             <p className="mt-3 text-center text-xs" style={{ color: "rgba(255,255,255,.7)", maxWidth: 760 }}>
               {preview.manual
-                ? "버튼이 막힌 환경입니다 · 위 사진을 길게 눌러 저장하세요"
+                ? "위 사진을 2초간 길게 누르면 '이미지 저장' 이 뜹니다 · 안 뜨면 설정 탭 맨 아래 안내를 봐 주세요"
                 : "사진을 길게 눌러도 저장됩니다 · 마음에 안 들면 닫고 사진 조정에서 고치세요"}
             </p>
           </div>
@@ -6285,6 +6325,16 @@ function SettingsTab({ db, photos, account, onChangeSettings, onChangePhoto, sav
         <p className="mt-1.5 text-xs leading-relaxed" style={{ color: INK2 }}>
           회원 사진은 회원 동의를 받은 뒤 촬영해 주세요. 회원이 삭제를 요청하면 이 앱에서 그 회원을 삭제하는 것으로 사진까지 함께 지워집니다.
         </p>
+        {inApp() && !(window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Share) && (
+          <div className="mt-3 rounded-2xl p-3" style={{ backgroundColor: WARN_S }}>
+            <p className="text-xs font-extrabold" style={{ color: WARN }}>사진 저장 · 공유가 막혀 있습니다</p>
+            <p className="mt-1 text-xs leading-relaxed" style={{ color: INK2 }}>
+              앱에 공유 기능이 아직 안 들어가 있어 버튼으로 저장되지 않습니다.
+              지금은 <b style={{ color: INK }}>미리보기 사진을 길게 눌러</b> 저장하거나, 브라우저(pilateacher.com)에서 저장해 주세요.
+              다음 업데이트에 포함하면 버튼 한 번으로 됩니다.
+            </p>
+          </div>
+        )}
         <div className="mt-3 flex items-center gap-2 rounded-xl px-3 py-2" style={{ backgroundColor: CANVAS }}>
           <span className="text-xs font-bold" style={{ color: SUB }}>앱 버전</span>
           <span className="ml-auto text-xs font-extrabold tabular-nums" style={{ color: PRIMARY }}>{APP_VER}</span>
@@ -6505,6 +6555,7 @@ export default function App() {
   };
   const member = db.members.find((m) => m.id === selectedId) || db.members[0];
   const alerts = useMemo(() => detectAlerts(db.members, db.schedule), [db.members, db.schedule]);
+  const spent = useMemo(() => spentMembers(db.members, db.schedule), [db.members, db.schedule]);
   const goTab = (k) => { if (k === "members") setMobileView("list"); setTab(k); };
   const goRecord = (sec) => { setNoteBack(false); setSection(sec); setTab("records"); };
   /* 일정 탭에서 '기록하기'로 들어왔으면 저장 후 다시 일정으로 돌려보낸다 */
@@ -6905,7 +6956,7 @@ export default function App() {
                 )}
               </div>
             </div>
-            {!briefing && <div id="alert-center" className="mt-3"><Guard label="골든타임 알림"><AlertCenter alerts={alerts} onBrief={setBrief} onSnooze={snoozeAlert} snoozedCount={snoozedCount} onUnsnoozeAll={unsnoozeAll} onOpenMember={(id) => { setSelectedId(id); setMobileView("detail"); }} /></Guard></div>}
+            {!briefing && <div id="alert-center" className="mt-3"><Guard label="골든타임 알림"><AlertCenter alerts={alerts} spent={spent} onBrief={setBrief} onSnooze={snoozeAlert} snoozedCount={snoozedCount} onUnsnoozeAll={unsnoozeAll} onOpenMember={(id) => { setSelectedId(id); setMobileView("detail"); }} /></Guard></div>}
           </>
         )}
         {tab === "schedule" && (

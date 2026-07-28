@@ -36,10 +36,13 @@ workflows:
 
       - name: Set up code signing
         script: |
+          set -e
           keychain initialize
           app-store-connect fetch-signing-files "$BUNDLE_ID" --type IOS_APP_STORE --create
           keychain add-certificates
-          xcode-project use-profiles
+          echo "--- downloaded profiles ---"
+          ls -la ~/Library/MobileDevice/Provisioning\ Profiles/ || true
+          xcode-project use-profiles --project "$CM_BUILD_DIR/ios/App/App.xcodeproj"
 
       - name: Set build number
         script: |

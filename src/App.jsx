@@ -86,7 +86,7 @@ const sysDarkNow = () => {
 };
 
 /* 파일이 실제로 교체됐는지 1초 만에 확인하는 표시 — 설정 탭 맨 아래에 뜬다 */
-const APP_VER = "v59 · 2026-07-28";
+const APP_VER = "v60 · 2026-07-28";
 try { if (typeof window !== "undefined") window.PILATEACHER_VER = APP_VER; } catch (e) {}
 
 const ACC_KEY = "pilateacher_accounts_v1";
@@ -470,8 +470,8 @@ async function shareCanvas(canvas, filename, title, onToast, saveOnly) {
   } catch (e) { return false; }
 }
 
-async function shareBeforeAfter(before, after, memberName, onToast, saveOnly) {
-  try {
+async function composeBeforeAfter(before, after, memberName) {
+  {
     const load = (src) => new Promise((res, rej) => { const i = new window.Image(); i.onload = () => res(i); i.onerror = rej; i.src = src; });
     const [b, a] = await Promise.all([load(before.src), load(after.src)]);
     const W = 900, H = 1200, GAP = 12, FOOT = 96;
@@ -548,6 +548,12 @@ async function shareBeforeAfter(before, after, memberName, onToast, saveOnly) {
     ctx.font = "700 34px Pretendard, -apple-system, sans-serif";
     ctx.fillStyle = "#A594FF";
     ctx.fillText(`${memberName || "회원"} · ${weeksBetween(before.date, after.date)}주 변화`, 28, H + FOOT / 2);
+    return c;
+  }
+}
+async function shareBeforeAfter(before, after, memberName, onToast, saveOnly) {
+  try {
+    const c = await composeBeforeAfter(before, after, memberName);
     return await shareCanvas(c, `비포애프터_${memberName || "회원"}_${todayISO()}.jpg`, "비포 & 애프터", onToast, saveOnly);
   } catch (e) { onToast && onToast({ ok: false, msg: "이미지를 만들지 못했습니다." }); return false; }
 }
@@ -2754,8 +2760,8 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
     const rx = Math.min(150, g.L / 2 - 30);
     ctx.save();
     ctx.translate(g.C.x, g.C.y); ctx.rotate(g.rad);
-    ctx.fillStyle = "rgba(18,18,26,0.55)";
-    ctx.fillRect(-g.L / 2, 0, g.L, 52);
+    ctx.fillStyle = "rgba(16,16,24,0.94)";
+    ctx.fillRect(-g.L / 2, 0, g.L, 56);
     ctx.strokeStyle = "rgba(255,255,255,0.95)"; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.moveTo(-g.L / 2, 0); ctx.lineTo(g.L / 2, 0); ctx.stroke();
     ctx.strokeStyle = "rgba(255,255,255,0.45)"; ctx.lineWidth = 1;
@@ -2868,6 +2874,13 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
       return;
     }
     if (!draft) return;
+    /* 자 몸통 위를 지나가는 동안에는 선이 이어지지 않는다 */
+    if (ruler) {
+      const rct = canvasRef.current.getBoundingClientRect();
+      const g = rulerGeom(rct.width, rct.height);
+      const lp = toLocal(g, { x: raw.x * rct.width, y: raw.y * rct.height });
+      if (lp.y > 4 && lp.y < 58) return;
+    }
     const p = ruler ? snapPt(raw) : raw;
     setDraft((d) => {
       if (!d) return d;
@@ -3410,6 +3423,22 @@ function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveM
   const before = list[0] || null;
   const after = list.length > 1 ? list[list.length - 1] : null;
   const [loading, setLoading] = useState(false);
+  const [preview, setPreview] = useState(null);
+  const openPreview = async () => {
+    if (!before || !after) return;
+    setLoading(true);
+    await new Promise((r) => setTimeout(r, 30));
+    try {
+      const c = await composeBeforeAfter(before, after, member?.name);
+      setPreview({ canvas: c, url: c.toDataURL("image/jpeg", 0.9) });
+    } catch (e) { onToast && onToast({ ok: false, msg: "이미지를 만들지 못했습니다." }); }
+    setLoading(false);
+  };
+  const doExport = async (saveOnly) => {
+    if (!preview) return;
+    await shareCanvas(preview.canvas, `비포애프터_${member?.name || "회원"}_${todayISO()}.jpg`, "비포 & 애프터", onToast, saveOnly);
+    setPreview(null);
+  };
   const pick = async (file) => {
     if (!file) return;
     setLoading(true);
@@ -3524,24 +3553,6 @@ function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveM
               <button onClick={() => setDel({ id: after.id, label: "애프터" })} className="flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}><Trash2 size={12} /> 애프터 삭제</button>
             )}
           </div>
-          {before && after && (
-            <div className="mt-2 grid grid-cols-3 gap-1.5">
-              {!briefing && (
-                <button onClick={() => onSaveSet && onSaveSet(view, before.id, after.id)}
-                  className="flex flex-col items-center justify-center gap-1 rounded-2xl py-2.5 text-xs font-extrabold" style={{ backgroundColor: TINT, color: PRIMARY }}>
-                  <Star size={15} /> 모음에 저장
-                </button>
-              )}
-              <button onClick={() => shareBeforeAfter(before, after, member?.name, onToast, true)}
-                className="flex flex-col items-center justify-center gap-1 rounded-2xl py-2.5 text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: INK, border: `1px solid ${LINE}` }}>
-                <Download size={15} /> 내 폰에 저장
-              </button>
-              <button onClick={() => shareBeforeAfter(before, after, member?.name, onToast)}
-                className="flex flex-col items-center justify-center gap-1 rounded-2xl py-2.5 text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>
-                <Upload size={15} /> 회원에게 보내기
-              </button>
-            </div>
-          )}
           {del && (
             <div className="mt-2 flex flex-wrap items-center gap-2 rounded-2xl px-3 py-2.5" style={{ backgroundColor: BAD_S }}>
               <AlertTriangle size={14} style={{ color: BAD }} />
@@ -3590,6 +3601,49 @@ function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveM
       )}
       <input ref={camRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; pick(f); }} />
       <input ref={albumRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; pick(f); }} />
+      {before && after && (
+        <div className="mt-3 grid grid-cols-3 gap-1.5">
+          {!briefing && (
+            <button onClick={() => onSaveSet && onSaveSet(view, before.id, after.id)}
+              className="flex flex-col items-center justify-center gap-1 rounded-2xl py-2.5 text-xs font-extrabold" style={{ backgroundColor: TINT, color: PRIMARY }}>
+              <Star size={15} /> 모음에 저장
+            </button>
+          )}
+          <button onClick={() => openPreview()}
+            className="flex flex-col items-center justify-center gap-1 rounded-2xl py-2.5 text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: INK, border: `1px solid ${LINE}` }}>
+            <Download size={15} /> 내 폰에 저장
+          </button>
+          <button onClick={() => openPreview()}
+            className="flex flex-col items-center justify-center gap-1 rounded-2xl py-2.5 text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>
+            <Upload size={15} /> 회원에게 보내기
+          </button>
+        </div>
+      )}
+      {before && after && <Sub className="mt-1.5 block">누르면 만들어질 이미지를 먼저 보여 드립니다</Sub>}
+
+      {preview && (
+        <div className="safe-all fixed inset-0 z-50 flex flex-col bg-photo">
+          <div className="flex items-center justify-between px-4 py-3">
+            <button onClick={() => setPreview(null)} className="rounded-full p-2" style={{ backgroundColor: "rgba(255,255,255,0.15)" }}><X size={18} color="#fff" /></button>
+            <p className="text-sm font-bold text-white">이렇게 저장됩니다</p>
+            <span style={{ width: 34 }} />
+          </div>
+          <div className="min-h-0 flex-1 overflow-auto px-4">
+            <img src={preview.url} alt="미리보기" className="mx-auto rounded-2xl" style={{ maxWidth: "min(100%, 760px)" }} />
+            <p className="mx-auto mt-2 text-center text-xs" style={{ color: "rgba(255,255,255,.65)", maxWidth: 760 }}>
+              사진 위치·기울기와 분석선이 그대로 들어갑니다 · 마음에 안 들면 닫고 사진 조정에서 고치세요
+            </p>
+          </div>
+          <div className="flex gap-2 px-4 pb-5 pt-3">
+            <button onClick={() => doExport(true)} className="flex flex-1 items-center justify-center gap-1.5 rounded-2xl py-3.5 text-sm font-extrabold" style={{ backgroundColor: "rgba(255,255,255,0.92)", color: "#17171F" }}>
+              <Download size={16} /> 내 폰에 저장
+            </button>
+            <button onClick={() => doExport(false)} className="flex flex-1 items-center justify-center gap-1.5 rounded-2xl py-3.5 text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>
+              <Upload size={16} /> 회원에게 보내기
+            </button>
+          </div>
+        </div>
+      )}
       {loading && (
         <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ backgroundColor: "rgba(0,0,0,0.55)" }}>
           <div className="flex flex-col items-center gap-3 rounded-3xl px-8 py-7" style={{ backgroundColor: CARD }}>
@@ -4275,7 +4329,12 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onToast }) {
   const [showSkel, setShowSkel] = useState(true);
   const [showNum, setShowNum] = useState(true);
   const [manual, setManual] = useState(null);
-  const [zoom, setZoom] = useState(1);   /* 관절을 정확히 찍으려면 확대가 필요하다 */
+  /* 관절을 정확히 찍으려면 확대가 필요하다 — 두 손가락으로 자유롭게 */
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const pz = useRef(new Map());
+  const pinch = useRef(null);
+  const resetZoom = () => { setZoom(1); setPan({ x: 0, y: 0 }); };
   const [faceDir, setFaceDir] = useState(1);
   const [open, setOpen] = useState(false);
   const [seeSaved, setSeeSaved] = useState(null);
@@ -4467,6 +4526,20 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onToast }) {
   const buzz = (ms) => { try { navigator.vibrate?.(ms); } catch (e) {} };
   const onDown = (e) => {
     if (!img) return;
+    pz.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    /* 손가락이 둘이면 관절을 찍지 않고 확대·이동으로 전환 */
+    if (pz.current.size === 2) {
+      const [a, b] = [...pz.current.values()];
+      dragRef.current = null; setHot(null);
+      pinch.current = {
+        d0: Math.max(1, Math.hypot(b.x - a.x, b.y - a.y)),
+        mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2,
+        z0: zoom, px: pan.x, py: pan.y,
+      };
+      e.currentTarget.setPointerCapture?.(e.pointerId);
+      return;
+    }
+    if (pz.current.size > 1) return;
     const n = toNorm(e);
     let near = null, best = 0.055;
     Object.keys(pts || {}).forEach((k) => {
@@ -4483,12 +4556,32 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onToast }) {
     }
   };
   const onMove = (e) => {
+    if (pz.current.has(e.pointerId)) pz.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pinch.current && pz.current.size >= 2) {
+      e.preventDefault?.();
+      const [a, b] = [...pz.current.values()];
+      const d = Math.max(1, Math.hypot(b.x - a.x, b.y - a.y));
+      const g = pinch.current;
+      const z = Math.min(5, Math.max(1, g.z0 * (d / g.d0)));
+      setZoom(z);
+      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+      setPan({ x: g.px + (mx - g.mx), y: g.py + (my - g.my) });
+      return;
+    }
+    if (pz.current.size > 1) return;
     if (!dragRef.current) return;
     e.preventDefault?.();
     const n = toNorm(e);
     setPts((p) => ({ ...p, [dragRef.current]: { ...p[dragRef.current], x: n.x, y: n.y } }));
   };
-  const onUp = () => { if (dragRef.current) buzz(4); dragRef.current = null; setHot(null); };
+  const onUp = (e) => {
+    if (e && e.pointerId != null) pz.current.delete(e.pointerId);
+    if (pz.current.size < 2) pinch.current = null;
+    if (zoom <= 1.02 && (pan.x !== 0 || pan.y !== 0)) setPan({ x: 0, y: 0 });
+    if (pz.current.size >= 1) return;
+    if (dragRef.current) buzz(4);
+    dragRef.current = null; setHot(null);
+  };
   const undoPoint = () => {
     if (!manual || manual.i === 0) return;
     const key = manual.seq[manual.i - 1];
@@ -4595,20 +4688,18 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onToast }) {
           )}
           {img && (
             <>
-              {pts && (
-                <div className="flex items-center gap-2">
-                  <span className="shrink-0 text-xs font-bold" style={{ color: SUB }}>확대</span>
-                  <input type="range" min="1" max="3" step="0.1" value={zoom} onChange={(e) => setZoom(Number(e.target.value))}
-                    className="min-w-0 flex-1" style={{ accentColor: PRIMARY, touchAction: "none" }} />
-                  <span className="w-10 shrink-0 text-center text-xs font-extrabold tabular-nums" style={{ color: zoom > 1 ? PRIMARY : SUB }}>{zoom.toFixed(1)}×</span>
-                  {zoom > 1 && <button onClick={() => setZoom(1)} className="shrink-0 rounded-lg px-2 py-1 text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>원래대로</button>}
-                </div>
-              )}
-              {zoom > 1 && <Sub className="block">확대한 상태에서는 옆으로 밀어 원하는 부위를 찾은 뒤 점을 찍으세요</Sub>}
-              <div className={zoom > 1 ? "overflow-auto rounded-2xl" : ""} style={zoom > 1 ? { WebkitOverflowScrolling: "touch" } : undefined}>
-              <div className="relative overflow-hidden rounded-2xl bg-photo" style={{ width: `${zoom * 100}%` }}>
+              <div className="flex items-center gap-2">
+                <Sub className="min-w-0 flex-1">두 손가락으로 벌리면 확대 · 오므리면 축소 · 확대한 채로 밀어서 이동</Sub>
+                {zoom > 1.02 && (
+                  <button onClick={resetZoom} className="shrink-0 rounded-lg px-2.5 py-1 text-xs font-extrabold" style={{ backgroundColor: TINT, color: PRIMARY }}>
+                    {zoom.toFixed(1)}× · 원래대로
+                  </button>
+                )}
+              </div>
+              <div className="relative overflow-hidden rounded-2xl bg-photo" style={{ touchAction: "none" }}>
                 <canvas ref={canvasRef} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}
-                  className="block w-full touch-none" style={{ height: "auto" }} />
+                  className="block w-full touch-none"
+                  style={{ height: "auto", transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin: "center center" }} />
                 {manual && manual.i < manual.seq.length && (
                   <>
                     <div className="absolute inset-x-0 top-0 flex justify-center gap-1 p-3">
@@ -4641,7 +4732,6 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onToast }) {
                     <Move size={11} /> 점을 끌어 보정
                   </span>
                 )}
-              </div>
               </div>
               <div className="flex flex-wrap items-center gap-1.5">
                 <div className="flex gap-1 rounded-full p-1" style={{ backgroundColor: CANVAS }}>

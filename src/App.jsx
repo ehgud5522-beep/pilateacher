@@ -86,7 +86,7 @@ const sysDarkNow = () => {
 };
 
 /* 파일이 실제로 교체됐는지 1초 만에 확인하는 표시 — 설정 탭 맨 아래에 뜬다 */
-const APP_VER = "v62 · 2026-07-28";
+const APP_VER = "v64 · 2026-07-29";
 try { if (typeof window !== "undefined") window.PILATEACHER_VER = APP_VER; } catch (e) {}
 
 const ACC_KEY = "pilateacher_accounts_v1";
@@ -446,29 +446,56 @@ const isIOS = () => {
   } catch (e) { return false; }
 };
 
-async function shareCanvas(canvas, filename, title, onToast, saveOnly) {
+/* 앱(Capacitor) 안인지 — 앱 웹뷰에서는 a[download] 가 동작하지 않는다 */
+const inApp = () => {
+  try { const c = window.Capacitor; return !!(c && typeof c.isNativePlatform === "function" && c.isNativePlatform()); }
+  catch (e) { return false; }
+};
+
+/* 결과를 정직하게 돌려준다: shared | saved | cancel | manual | fail
+   manual = 자동 저장이 막힌 환경 → 화면에 띄워 길게 눌러 저장하게 해야 함 */
+async function exportCanvas(canvas, filename, title, saveOnly) {
   let blob = null;
   try { blob = await new Promise((r) => canvas.toBlob(r, "image/jpeg", 0.92)); } catch (e) {}
-  if (!blob) { onToast && onToast({ ok: false, msg: "이미지를 만들지 못했습니다." }); return false; }
-  let file = null, canNative = false;
+  if (!blob) return { how: "fail" };
+  /* 1) 캐패시터 공유 플러그인이 깔려 있으면 그걸 먼저 */
   try {
-    file = new File([blob], filename, { type: "image/jpeg" });
-    canNative = (!saveOnly || isIOS()) && !!(navigator.canShare && navigator.canShare({ files: [file] }));
-  } catch (e) { canNative = false; }
-  if (canNative) {
-    if (saveOnly) onToast && onToast({ ok: true, msg: "'이미지 저장'을 누르면 사진 앱에 들어갑니다." });
-    try { await navigator.share({ files: [file], title }); }
-    catch (e) { if (e && e.name !== "AbortError") onToast && onToast({ ok: false, msg: "공유창을 열지 못했습니다. 한 번 더 눌러 주세요." }); }
-    return true;
+    const P = window.Capacitor && window.Capacitor.Plugins;
+    if (P && P.Share && P.Filesystem) {
+      const b64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(",")[1]); r.onerror = rej; r.readAsDataURL(blob); });
+      const w = await P.Filesystem.writeFile({ path: filename, data: b64, directory: "CACHE" });
+      await P.Share.share({ title, files: [w.uri] });
+      return { how: "shared" };
+    }
+  } catch (e) {}
+  /* 2) 브라우저 공유 */
+  try {
+    const file = new File([blob], filename, { type: "image/jpeg" });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title });
+      return { how: "shared" };
+    }
+  } catch (e) { if (e && e.name === "AbortError") return { how: "cancel" }; }
+  /* 3) 브라우저 다운로드 — 앱 웹뷰에서는 조용히 실패하므로 시도하지 않는다 */
+  if (!inApp()) {
+    try {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = filename; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1500);
+      return { how: "saved" };
+    } catch (e) {}
   }
-  try {
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = filename; a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-    onToast && onToast({ ok: true, msg: "이미지를 저장했습니다." });
-    return true;
-  } catch (e) { return false; }
+  return { how: "manual", url: canvas.toDataURL("image/jpeg", 0.92) };
+}
+
+async function shareCanvas(canvas, filename, title, onToast, saveOnly) {
+  const r = await exportCanvas(canvas, filename, title, saveOnly);
+  if (r.how === "fail") { onToast && onToast({ ok: false, msg: "이미지를 만들지 못했습니다." }); return false; }
+  if (r.how === "saved") { onToast && onToast({ ok: true, msg: "이미지를 저장했습니다." }); return true; }
+  if (r.how === "shared" || r.how === "cancel") return true;
+  onToast && onToast({ ok: false, msg: "이 화면에서는 자동 저장이 막혀 있습니다. 사진을 길게 눌러 저장해 주세요." });
+  return r;
 }
 
 async function composeBeforeAfter(before, after, memberName) {
@@ -3498,6 +3525,12 @@ function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveM
   const [t, setT] = useState(50);
   const boxRef = useRef(null);
   const dragRef = useRef(false);
+  /* 두 손가락으로 사진 확대 — 한 손가락은 커튼 이동 */
+  const [cz, setCz] = useState(1);
+  const [cp, setCp] = useState({ x: 0, y: 0 });
+  const cPtr = useRef(new Map());
+  const cPinch = useRef(null);
+  const resetCz = () => { setCz(1); setCp({ x: 0, y: 0 }); };
   const moveCurtain = (e) => {
     const el = boxRef.current; if (!el) return;
     const r = el.getBoundingClientRect();
@@ -3525,7 +3558,16 @@ function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveM
   };
   const doExport = async (saveOnly) => {
     if (!preview) return;
-    await shareCanvas(preview.canvas, `비포애프터_${member?.name || "회원"}_${todayISO()}.jpg`, "비포 & 애프터", onToast, saveOnly);
+    const name = `비포애프터_${member?.name || "회원"}_${todayISO()}.jpg`;
+    const r = await exportCanvas(preview.canvas, name, "비포 & 애프터", saveOnly);
+    if (r.how === "fail") { onToast && onToast({ ok: false, msg: "이미지를 만들지 못했습니다." }); return; }
+    if (r.how === "manual") {
+      /* 자동 저장이 막힌 환경 — 화면은 그대로 두고 길게 눌러 저장하도록 안내 */
+      setPreview((p) => (p ? { ...p, manual: true } : p));
+      onToast && onToast({ ok: false, msg: "자동 저장이 막힌 환경입니다. 사진을 길게 눌러 저장해 주세요." });
+      return;
+    }
+    if (r.how === "saved") onToast && onToast({ ok: true, msg: "이미지를 저장했습니다." });
     setPreview(null);
   };
   const pick = async (file) => {
@@ -3579,6 +3621,7 @@ function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveM
                 ))}
               </div>
               <div ref={boxRef} className="relative overflow-hidden rounded-2xl bg-photo" style={{ aspectRatio: "3 / 4", ...NOPRESS }}>
+                <div className="absolute inset-0" style={{ transform: `translate(${cp.x}px, ${cp.y}px) scale(${cz})`, transformOrigin: "center center" }}>
                 {cmp === "flip" ? (
                   <>
                     <img {...IMGP} src={(flip ? after : before).src} alt={flip ? "애프터" : "비포"} className="absolute inset-0 h-full w-full object-cover" style={{ transform: ptf(flip ? after : before) }} />
@@ -3593,11 +3636,9 @@ function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveM
                       <MarkLayer marks={after.marks} hideLabel />
                     </div>
                     <div className="pointer-events-none absolute inset-y-0" style={{ left: `${t}%`, width: 2, backgroundColor: "#fff", boxShadow: "0 0 8px rgba(0,0,0,.6)" }} />
-                    <div className="pointer-events-none absolute flex h-11 w-11 items-center justify-center rounded-full" style={{ left: `${t}%`, top: "50%", transform: "translate(-50%,-50%)", backgroundColor: "#fff", boxShadow: "0 2px 12px rgba(0,0,0,.55)" }}>
-                      <ArrowUpDown size={18} style={{ color: "#17171F", transform: "rotate(90deg)" }} />
-                    </div>
                   </>
                 )}
+                </div>
                 {guides && <GuideOverlay />}
                 {/* 손가락을 받는 전용 레이어 — 사진 위에서 길게 눌러도 iOS 저장 팝업이 안 뜬다 */}
                 <div className="absolute inset-0 z-10" style={{ touchAction: "none", ...NOPRESS }}
@@ -3605,12 +3646,44 @@ function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveM
                   onPointerDown={(e) => {
                     e.preventDefault();
                     e.currentTarget.setPointerCapture?.(e.pointerId);
+                    cPtr.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+                    if (cPtr.current.size === 2) {
+                      const [a, b] = [...cPtr.current.values()];
+                      dragRef.current = false; setFlip(false);
+                      cPinch.current = { d0: Math.max(1, Math.hypot(b.x - a.x, b.y - a.y)), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2, z0: cz, px: cp.x, py: cp.y };
+                      return;
+                    }
+                    if (cPtr.current.size > 1) return;
                     if (cmp === "flip") setFlip(true);
                     else { dragRef.current = true; moveCurtain(e); }
                   }}
-                  onPointerMove={(e) => { if (cmp === "curtain" && dragRef.current) { e.preventDefault(); moveCurtain(e); } }}
-                  onPointerUp={() => { setFlip(false); dragRef.current = false; }}
-                  onPointerCancel={() => { setFlip(false); dragRef.current = false; }} />
+                  onPointerMove={(e) => {
+                    if (cPtr.current.has(e.pointerId)) cPtr.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+                    if (cPinch.current && cPtr.current.size >= 2) {
+                      e.preventDefault();
+                      const [a, b] = [...cPtr.current.values()];
+                      const d = Math.max(1, Math.hypot(b.x - a.x, b.y - a.y));
+                      const g = cPinch.current;
+                      setCz(Math.min(5, Math.max(1, g.z0 * (d / g.d0))));
+                      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+                      setCp({ x: g.px + (mx - g.mx), y: g.py + (my - g.my) });
+                      return;
+                    }
+                    if (cPtr.current.size > 1) return;
+                    if (cmp === "curtain" && dragRef.current) { e.preventDefault(); moveCurtain(e); }
+                  }}
+                  onPointerUp={(e) => {
+                    if (e && e.pointerId != null) cPtr.current.delete(e.pointerId);
+                    if (cPtr.current.size < 2) cPinch.current = null;
+                    if (cz <= 1.02 && (cp.x !== 0 || cp.y !== 0)) setCp({ x: 0, y: 0 });
+                    if (cPtr.current.size >= 1) return;
+                    setFlip(false); dragRef.current = false;
+                  }}
+                  onPointerCancel={() => { cPtr.current.clear(); cPinch.current = null; setFlip(false); dragRef.current = false; }} />
+                {cz > 1.02 && (
+                  <button onClick={resetCz} className="absolute right-2 top-2 z-20 rounded-full px-3 py-1.5 text-xs font-extrabold"
+                    style={{ backgroundColor: "rgba(255,255,255,.92)", color: "#17171F" }}>{cz.toFixed(1)}× · 원래대로</button>
+                )}
                 <span className="pointer-events-none absolute left-3 top-3 z-20 rounded-full px-2.5 py-1 text-xs font-extrabold text-white" style={{ backgroundColor: "rgba(0,0,0,0.6)" }}>
                   {cmp === "flip" ? (flip ? `AFTER ${ymd(after.date)}` : `BEFORE ${ymd(before.date)}`) : `BEFORE ${ymd(before.date)}`}
                 </span>
@@ -3621,7 +3694,7 @@ function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveM
               <input type="range" min="0" max="100" value={t} onChange={(e) => setT(Number(e.target.value))}
                 className={`mt-2 w-full ${cmp === "curtain" ? "" : "hidden"}`} style={{ accentColor: PRIMARY }} aria-label="커튼 위치" />
               <p className="mt-1 text-center text-xs font-semibold" style={{ color: SUB }}>
-                {cmp === "curtain" ? "사진을 좌우로 밀거나 아래 막대로 옮기세요 · 양쪽 다 선명합니다"
+                {cmp === "curtain" ? "사진을 좌우로 밀거나 아래 막대로 옮기세요 · 두 손가락으로 확대됩니다"
                   : "사진을 꾹 누르면 애프터, 손을 떼면 비포 · 달라진 부분이 움직임으로 보입니다"}
               </p>
             </>
@@ -3717,10 +3790,13 @@ function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveM
             <p className="text-sm font-bold text-white">이렇게 저장됩니다</p>
             <span style={{ width: 34 }} />
           </div>
-          <div className="min-h-0 flex-1 overflow-auto px-4">
-            <img src={preview.url} alt="미리보기" className="mx-auto block h-auto rounded-2xl" style={{ maxWidth: "min(100%, 760px)", width: "auto" }} />
-            <p className="mx-auto mt-2 text-center text-xs" style={{ color: "rgba(255,255,255,.65)", maxWidth: 760 }}>
-              사진 위치·기울기와 분석선이 그대로 들어갑니다 · 마음에 안 들면 닫고 사진 조정에서 고치세요
+          <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-4">
+            <img src={preview.url} alt="미리보기" className="block h-auto rounded-2xl"
+              style={{ maxWidth: "min(100%, 760px)", maxHeight: "68%", width: "auto", objectFit: "contain" }} />
+            <p className="mt-3 text-center text-xs" style={{ color: "rgba(255,255,255,.7)", maxWidth: 760 }}>
+              {preview.manual
+                ? "버튼이 막힌 환경입니다 · 위 사진을 길게 눌러 저장하세요"
+                : "사진을 길게 눌러도 저장됩니다 · 마음에 안 들면 닫고 사진 조정에서 고치세요"}
             </p>
           </div>
           <div className="flex gap-2 px-4 pb-5 pt-3">
@@ -5532,7 +5608,7 @@ function PerfForm({ member, onPatch, onToast }) {
           </div>
         </div>
       </Card>
-      <div className="safe-b sticky bottom-3 z-10">
+      <div className="safe-b sticky bottom-0 z-10 pt-2">
         <button onClick={save} disabled={!dirty}
           className="flex w-full items-center justify-center gap-1.5 rounded-2xl py-4 text-sm font-extrabold text-white"
           style={{ backgroundColor: dirty ? PRIMARY : FAINT, boxShadow: SHADOW }}>
@@ -5823,7 +5899,7 @@ function InfoForm({ member, members, onPatch, onDelete, onToast }) {
           </div>
         )}
       </Card>
-      <div className="safe-b sticky bottom-3 z-10">
+      <div className="safe-b sticky bottom-0 z-10 pt-2">
         <button onClick={save} disabled={!dirty}
           className="flex w-full items-center justify-center gap-1.5 rounded-2xl py-4 text-sm font-extrabold text-white"
           style={{ backgroundColor: dirty ? PRIMARY : FAINT, boxShadow: SHADOW }}>
@@ -6740,10 +6816,20 @@ export default function App() {
       .app-root p, .app-root h1, .app-root h2, .app-root h3, .app-root span, .app-root button, .app-root li { word-break: keep-all; overflow-wrap: break-word; }
       .app-root *:focus-visible { outline: 2px solid ${PRIMARY}; outline-offset: 2px; }
       .app-root input[type=range] { height: 28px; }
-      .safe-b { padding-bottom: env(safe-area-inset-bottom, 0px); }
-      .safe-t { padding-top: env(safe-area-inset-top, 0px); }
-      .safe-all { padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
-      .safe-sheet { padding-bottom: calc(1.25rem + env(safe-area-inset-bottom, 0px)); }
+      /* 노치·홈바 여백.
+         아이폰은 env() 로 정확한 값이 오지만 안드로이드(갤럭시 등)는 0을 주는 경우가 많아
+         max() 로 최소 여백을 보장한다. 좌우도 가로모드·곡면 화면 대비로 함께 잡는다. */
+      .safe-b { padding-bottom: max(env(safe-area-inset-bottom, 0px), 12px); }
+      .safe-t { padding-top: max(env(safe-area-inset-top, 0px), 0px); }
+      .safe-all {
+        padding-top: max(env(safe-area-inset-top, 0px), 10px);
+        padding-bottom: max(env(safe-area-inset-bottom, 0px), 14px);
+        padding-left: max(env(safe-area-inset-left, 0px), 0px);
+        padding-right: max(env(safe-area-inset-right, 0px), 0px);
+      }
+      .safe-sheet { padding-bottom: calc(1.25rem + max(env(safe-area-inset-bottom, 0px), 10px)); }
+      /* 화면 아래에 붙는 저장 바에 가려지지 않도록 본문 아래 여백 */
+      .safe-scroll { padding-bottom: calc(28px + max(env(safe-area-inset-bottom, 0px), 12px)); }
       .touch-none { touch-action: none; }
       .line-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
       @keyframes pop { 0% { transform: scale(.86); opacity: 0 } 60% { transform: scale(1.04); opacity: 1 } 100% { transform: scale(1) } }
@@ -6792,7 +6878,7 @@ export default function App() {
           }} />
         <Tabs tab={tab} setTab={goTab} />
       </div>
-      <main className="mx-auto max-w-6xl px-4 py-3">
+      <main className="safe-scroll mx-auto max-w-6xl px-4 py-3">
         <Guard key={tab}>
         {tab === "members" && (
           <>

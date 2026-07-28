@@ -11,9 +11,11 @@ workflows:
       node: 22
       xcode: latest
       cocoapods: default
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.pilateacher.app
       vars:
         XCODE_SCHEME: "App"
-        BUNDLE_ID: "com.pilateacher.app"
 
     scripts:
       - name: Install npm packages
@@ -33,16 +35,6 @@ workflows:
           else
             echo "Podfile not found - using Swift Package Manager, skipping"
           fi
-
-      - name: Set up code signing
-        script: |
-          set -e
-          keychain initialize
-          app-store-connect fetch-signing-files "$BUNDLE_ID" --type IOS_APP_STORE --create
-          keychain add-certificates
-          echo "--- downloaded profiles ---"
-          ls -la ~/Library/MobileDevice/Provisioning\ Profiles/ || true
-          xcode-project use-profiles --project "$CM_BUILD_DIR/ios/App/App.xcodeproj"
 
       - name: Set build number
         script: |

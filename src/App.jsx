@@ -85,7 +85,7 @@ const sysDarkNow = () => {
 };
 
 /* 파일이 실제로 교체됐는지 1초 만에 확인하는 표시 — 설정 탭 맨 아래에 뜬다 */
-const APP_VER = "v77 · 2026-07-29";
+const APP_VER = "v78 · 2026-07-29";
 try { if (typeof window !== "undefined") window.PILATEACHER_VER = APP_VER; } catch (e) {}
 
 const ACC_KEY = "pilateacher_accounts_v1";
@@ -4506,7 +4506,7 @@ function cardDrafts(bRec, aRec, keys) {
   };
 }
 
-function ResultCardMaker({ member, saved, centerName, onToast }) {
+function ResultCardMaker({ member, saved, centerName, onToast, onGoAnalyze }) {
   const [open, setOpen] = useState(false);
   const usable = saved.filter((p) => p && p.pts && (p.cleanBlobId || p.blobId));
   const [bId, setBId] = useState(null);
@@ -4529,6 +4529,23 @@ function ResultCardMaker({ member, saved, centerName, onToast }) {
   const T = txt || drafts;
   const [preview, setPreview] = useState(null);
   const [busy, setBusy] = useState(false);
+
+  /* 색·문구·항목을 바꾸면 미리보기가 알아서 다시 그려진다 */
+  const [live, setLive] = useState(null);
+  useEffect(() => {
+    if (!both || !keys.length) { setLive(null); return; }
+    let alive = true;
+    const id = setTimeout(async () => {
+      try {
+        const bSrc = (await urlFor(bRec.cleanBlobId || bRec.blobId)) || bRec.src;
+        const aSrc = (await urlFor(aRec.cleanBlobId || aRec.blobId)) || aRec.src;
+        if (!bSrc || !aSrc || !alive) return;
+        const canvas = await composeResultCard({ bRec, aRec, bSrc, aSrc, keys, colors: { b: cb, a: ca }, texts: T, centerName });
+        if (alive) setLive(canvas.toDataURL("image/jpeg", 0.72));
+      } catch (e) {}
+    }, 350);
+    return () => { alive = false; clearTimeout(id); };
+  }, [both, bRec?.id, aRec?.id, JSON.stringify(keys), cb, ca, T.title, T.c1, T.c2, T.close, centerName]);
 
   const build = async () => {
     if (!both) return;
@@ -4572,9 +4589,21 @@ function ResultCardMaker({ member, saved, centerName, onToast }) {
       {open && (
         <div className="mt-3 space-y-3">
           {usable.length < 2 ? (
-            <Sub className="block rounded-2xl px-3 py-4 text-center" >
-              분석을 <b style={{ color: PRIMARY }}>2개 이상 저장</b>하면 카드를 만들 수 있어요{saved.length > usable.length ? " · 예전에 저장한 분석은 관절 정보가 없어 카드에 못 씁니다. 새로 분석해 주세요" : ""}
-            </Sub>
+            <div className="rounded-2xl p-4" style={{ backgroundColor: CANVAS }}>
+              <p className="text-sm font-extrabold" style={{ color: INK }}>비포·애프터 사진이 둘 다 있어야 만들 수 있어요</p>
+              <p className="mt-1 text-xs leading-relaxed" style={{ color: INK2 }}>
+                <b style={{ color: PRIMARY }}>AI 체형 분석</b>에서 <b style={{ color: INK }}>비포 사진 1장</b>과 <b style={{ color: INK }}>애프터 사진 1장</b>을 각각 분석·저장하면
+                여기서 자동으로 비교 카드가 만들어집니다. (지금 {usable.length}장)
+              </p>
+              {saved.length > usable.length && (
+                <p className="mt-1 text-xs" style={{ color: WARN }}>예전에 저장한 분석은 관절 정보가 없어 카드에 못 씁니다 · 새로 분석해 주세요</p>
+              )}
+              {onGoAnalyze && (
+                <button onClick={onGoAnalyze} className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-2xl py-3 text-sm font-extrabold text-white" style={{ background: GRAD }}>
+                  <Camera size={15} /> 지금 사진 찍고 분석하기
+                </button>
+              )}
+            </div>
           ) : (
             <>
               {[{ slot: "b", label: "BEFORE", cur: bRec }, { slot: "a", label: "AFTER", cur: aRec }].map(({ slot, label, cur }) => (
@@ -4622,8 +4651,18 @@ function ResultCardMaker({ member, saved, centerName, onToast }) {
                       <input value={T[k]} onChange={(e) => setTxt({ ...T, [k]: e.target.value })} className={inputCls} />
                     </Field>
                   ))}
+                  {live ? (
+                    <button onClick={build} className="block w-full">
+                      <img src={live} alt="실시간 미리보기" className="w-full rounded-2xl" style={{ boxShadow: SHADOW }} {...IMGP} />
+                      <Sub className="mt-1 block text-center">색·문구를 바꾸면 바로 반영됩니다 · 누르면 크게 보고 저장</Sub>
+                    </button>
+                  ) : keys.length ? (
+                    <div className="flex items-center justify-center gap-2 rounded-2xl py-8" style={{ backgroundColor: CANVAS }}>
+                      <Loader2 size={16} className="animate-spin" style={{ color: PRIMARY }} /><Sub>미리보기 만드는 중…</Sub>
+                    </div>
+                  ) : null}
                   <PrimaryBtn disabled={busy || !keys.length} onClick={build}>
-                    {busy ? <Loader2 size={15} className="animate-spin" /> : <Star size={15} />} 카드 미리보기
+                    {busy ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />} 크게 보고 저장하기
                   </PrimaryBtn>
                   {!keys.length && <Sub className="block text-center">보여줄 항목을 1개 이상 고르세요</Sub>}
                 </>
@@ -5793,8 +5832,9 @@ function PoseThumb({ rec }) {
 }
 
 /* 체형분석 탭 — 전 회원의 최근 분석을 한눈에 */
-function AnalysisTab({ members, photos, onOpen }) {
+function AnalysisTab({ members, photos, onOpen, hub }) {
   const [q, setQ] = useState("");
+  const [pick, setPick] = useState(null);
   const rows = useMemo(() => {
     return members
       .filter((m) => !isDraft(m))
@@ -5837,17 +5877,30 @@ function AnalysisTab({ members, photos, onOpen }) {
           <div className="mt-3">
             <p className="mb-1.5 text-xs font-extrabold" style={{ color: SUB }}>누구를 분석할까요?</p>
             <div className="flex flex-wrap gap-1.5">
-              {rows.slice(0, 6).map(({ m, last }) => (
-                <button key={m.id} onClick={() => onOpen(m.id)} className="flex items-center gap-1 rounded-full px-3 py-2 text-xs font-extrabold"
-                  style={last ? { backgroundColor: CANVAS, color: INK } : { background: GRAD, color: "#fff" }}>
+              {rows.slice(0, 8).map(({ m, last }) => (
+                <button key={m.id} onClick={() => setPick(pick === m.id ? null : m.id)} className="flex items-center gap-1 rounded-full px-3 py-2 text-xs font-extrabold"
+                  style={pick === m.id ? { background: GRAD, color: "#fff", boxShadow: SHADOW }
+                    : last ? { backgroundColor: CANVAS, color: INK } : { backgroundColor: TINT, color: PRIMARY }}>
                   {!last && <Plus size={12} />}{m.name || "이름 미입력"}
                 </button>
               ))}
             </div>
-            <Sub className="mt-1.5 block">보라색 = 아직 분석 전 · 이름을 누르면 바로 시작합니다</Sub>
+            <Sub className="mt-1.5 block">연보라 = 아직 분석 전 · 이름을 누르면 아래에서 바로 시작합니다</Sub>
           </div>
         </div>
       </Card>
+      {pick && hub && (
+        <div className="min-w-0">
+          <div className="mb-2 flex items-center gap-2">
+            <p className="min-w-0 flex-1 truncate text-sm font-extrabold" style={{ color: INK }}>
+              {members.find((m) => m.id === pick)?.name || "회원"} 님 분석
+            </p>
+            <button onClick={() => onOpen(pick)} className="shrink-0 rounded-full px-3 py-1.5 text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: PRIMARY }}>회원 상세로</button>
+            <button onClick={() => setPick(null)} className="shrink-0 rounded-full p-1.5" style={{ backgroundColor: CANVAS }}><X size={13} style={{ color: SUB }} /></button>
+          </div>
+          {hub(pick)}
+        </div>
+      )}
       <Card className="p-4">
         <div className="flex items-center gap-2">
           <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: TINT }}><Activity size={16} style={{ color: PRIMARY }} /></span>
@@ -5932,7 +5985,7 @@ function PhotoHub(p) {
       </div>
       {tab === "compare" && <Guard label="비포애프터 분석"><PhotoCompare member={p.member} photos={p.photos} briefing={p.briefing} onSavePhoto={p.onSavePhoto} onRemove={p.onRemovePhoto} onSaveMarks={p.onSaveMarks} onAdjust={p.onAdjustPhoto} onToast={p.onToast} onSaveSet={p.onSaveSet} /></Guard>}
       {tab === "pose" && <Guard label="AI 체형 분석"><PoseAnalyzer member={p.member} photos={p.photos} onSavePose={p.onSavePose} onDeletePose={p.onDeletePose} onToast={p.onToast} /></Guard>}
-      {tab === "card" && <Guard label="결과 카드"><ResultCardMaker member={p.member} saved={(p.photos?.poses || []).filter((x) => x && x.metrics)} centerName={p.centerName} onToast={p.onToast} /></Guard>}
+      {tab === "card" && <Guard label="결과 카드"><ResultCardMaker member={p.member} saved={(p.photos?.poses || []).filter((x) => x && x.metrics)} centerName={p.centerName} onToast={p.onToast} onGoAnalyze={() => setTab("pose")} /></Guard>}
       {tab === "sets" && <Guard label="사진 모음"><BeforeAfterSets memberName={p.member.name} photos={p.photos} onToggleFav={p.onToggleFav} onDelete={p.onDeleteSet} /></Guard>}
     </div>
   );
@@ -6476,7 +6529,7 @@ function BirthPick({ value, onChange }) {
     onChange(`${ny}-${String(nm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`);
   };
   const days = y && m ? new Date(Number(y), Number(m), 0).getDate() : 31;
-  const box = "w-full min-w-0 rounded-2xl border-0 py-3 pl-3 pr-7 text-sm outline-none ring-1 ring-slate-200 focus:ring-2";
+  const box = "w-full min-w-0 truncate rounded-2xl border-0 py-3 pl-2.5 pr-6 text-sm outline-none ring-1 ring-slate-200 focus:ring-2";
   const wrap = { appearance: "none", WebkitAppearance: "none", MozAppearance: "none", backgroundColor: CANVAS, color: INK };
   return (
     <div className="grid grid-cols-3 gap-1.5">
@@ -6556,12 +6609,10 @@ function InfoForm({ member, members, onPatch, onDelete, onToast }) {
         <h3 className="font-extrabold" style={{ color: INK }}>회원 정보</h3>
         <Sub>수정 후 맨 아래 '저장하기'를 눌러야 반영됩니다</Sub>
         <div className="mt-4 space-y-3">
-          <div className="grid grid-cols-2 gap-2">
-            <Field label="이름"><input value={d.name} onChange={(e) => S({ name: e.target.value })} className={inputCls} /></Field>
-            <Field label="생년월일" hint={ageFromBirth(d.birth) !== null ? `만 ${ageFromBirth(d.birth)}세` : "선택"}>
-              <BirthPick value={d.birth || ""} onChange={(v) => S({ birth: v })} />
-            </Field>
-          </div>
+          <Field label="이름"><input value={d.name} onChange={(e) => S({ name: e.target.value })} className={inputCls} /></Field>
+          <Field label="생년월일" hint={ageFromBirth(d.birth) !== null ? `만 ${ageFromBirth(d.birth)}세` : "선택"}>
+            <BirthPick value={d.birth || ""} onChange={(v) => S({ birth: v })} />
+          </Field>
           {ageFromBirth(d.birth) === null && (
             <Field label="나이" hint="생년월일을 넣으면 자동으로 계산됩니다">
               <input inputMode="numeric" value={d.age} onChange={(e) => S({ age: e.target.value })} placeholder="예) 34" className={inputCls} />
@@ -6579,17 +6630,12 @@ function InfoForm({ member, members, onPatch, onDelete, onToast }) {
             </SelectBox>
           </Field>
           <div className="rounded-2xl p-3" style={{ backgroundColor: CANVAS }}>
-            <p className="mb-2 text-xs font-extrabold" style={{ color: INK }}>이 회원 수업료 <span className="font-bold" style={{ color: SUB }}>· 비워 두면 설정의 기본값</span></p>
-            <div className="grid grid-cols-2 gap-2">
-              <Field label="개인 1회당 원">
-                <input inputMode="numeric" value={d.payRate || ""} placeholder="기본값 사용"
-                  onChange={(e) => S({ payRate: Number(e.target.value.replace(/[^0-9]/g, "")) || 0 })} className={inputCls} />
-              </Field>
-              <Field label="그룹 1회당 원">
-                <input inputMode="numeric" value={d.groupRate || ""} placeholder="기본값 사용"
-                  onChange={(e) => S({ groupRate: Number(e.target.value.replace(/[^0-9]/g, "")) || 0 })} className={inputCls} />
-              </Field>
-            </div>
+            <p className="mb-2 text-xs font-extrabold" style={{ color: INK }}>이 회원 개인수업료 <span className="font-bold" style={{ color: SUB }}>· 비워 두면 설정의 기본값</span></p>
+            <Field label="개인 1회당 원">
+              <input inputMode="numeric" value={d.payRate || ""} placeholder="기본값 사용"
+                onChange={(e) => S({ payRate: Number(e.target.value.replace(/[^0-9]/g, "")) || 0 })} className={inputCls} />
+            </Field>
+            <Sub className="mt-1 block">그룹 수업료는 설정 → 내 수업료 기본값에서 한 번에 정합니다</Sub>
           </div>
           <Field label="목표" hint="이름 아래 보라색 태그"><input value={d.goal} onChange={(e) => S({ goal: e.target.value })} placeholder="예) 체지방 감량 · 코어 강화" className={inputCls} /></Field>
           <Field label="체형 · 상태 태그">
@@ -7764,7 +7810,17 @@ export default function App() {
         {tab === "analysis" && (
           <Guard label="체형분석 목록">
             <AnalysisTab members={db.members} photos={photos}
-              onOpen={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />
+              onOpen={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }}
+              hub={(id) => {
+                const m = db.members.find((x) => x.id === id);
+                if (!m) return null;
+                return (
+                  <PhotoHub key={id} member={m} photos={photos[id]} centerName={db.settings.center}
+                    onSavePhoto={savePhoto} onRemovePhoto={removePhoto} onSaveMarks={saveMarks} onAdjustPhoto={adjustPhoto}
+                    onSavePose={savePose} onDeletePose={deletePose} onSaveSet={saveSet}
+                    onToggleFav={(sid) => toggleFav(id, sid)} onDeleteSet={(sid) => deleteSet(id, sid)} onToast={setToast} />
+                );
+              }} />
           </Guard>
         )}
         {tab === "settings" && (

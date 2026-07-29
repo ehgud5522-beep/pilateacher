@@ -10,9 +10,8 @@ import { useState, useEffect, useMemo, useRef, useCallback, Component } from "re
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
 } from "recharts";
-import jsQR from "jsqr";
 import { fbReady, fbSignInSocial, fbSignInEmail, fbSignUpEmail, fbSignOut, fbOnAuth, fbLoadProfile, fbSaveProfile, fbPushBackup, fbPullBackup } from "./lib/firebase";
-import { Users, Settings as SettingsIcon, Search, ChevronRight, ChevronLeft, Plus, Camera, MessageSquare, Check, X, Trash2, ArrowLeft, Target, ClipboardList, RotateCcw, Sparkles, Copy, ArrowUpRight, ArrowDownRight, Loader as Loader2, Pencil, UserPlus, Activity, Ticket, Calendar, Clock, Bell, Download, TriangleAlert as AlertTriangle, LogOut, Mail, Star, Sun, Moon, Smartphone, Move, Crosshair, ChevronDown, ImagePlus, SlidersHorizontal, CalendarDays, ArrowUpDown, QrCode, Minus, Upload, Link2, Users as Users2 } from "lucide-react";
+import { Users, Settings as SettingsIcon, Search, ChevronRight, ChevronLeft, Plus, Camera, MessageSquare, Check, X, Trash2, ArrowLeft, Target, ClipboardList, RotateCcw, Sparkles, Copy, ArrowUpRight, ArrowDownRight, Loader as Loader2, Pencil, UserPlus, Activity, Ticket, Calendar, Clock, Bell, Download, TriangleAlert as AlertTriangle, LogOut, Mail, Star, Sun, Moon, Smartphone, Move, Crosshair, ChevronDown, ImagePlus, SlidersHorizontal, CalendarDays, ArrowUpDown, Minus, Upload, Link2, Users as Users2 } from "lucide-react";
 
 /* ================= 토큰 · 테마 ================= */
 const LIGHT = {
@@ -86,7 +85,7 @@ const sysDarkNow = () => {
 };
 
 /* 파일이 실제로 교체됐는지 1초 만에 확인하는 표시 — 설정 탭 맨 아래에 뜬다 */
-const APP_VER = "v65 · 2026-07-29";
+const APP_VER = "v68 · 2026-07-29";
 try { if (typeof window !== "undefined") window.PILATEACHER_VER = APP_VER; } catch (e) {}
 
 const ACC_KEY = "pilateacher_accounts_v1";
@@ -105,6 +104,20 @@ const uLabel = (k) => (METRICS[k].unit === "%" ? "%p" : METRICS[k].unit);
 
 const VIEWS = [{ key: "front", label: "정면" }, { key: "side", label: "측면" }, { key: "back", label: "후면" }];
 const CLASS_TYPES = ["개인레슨", "듀엣", "그룹"];
+/* 수업료 기본값 — 회원마다 다르면 그 회원 값이 우선한다 */
+const DEF_RATE = 25000;
+const DEF_GROUP_RATE = 25000;
+const rateBase = (st) => ({
+  solo: Number(st?.payRate) > 0 ? Number(st.payRate) : DEF_RATE,
+  group: Number(st?.groupRate) > 0 ? Number(st.groupRate) : DEF_GROUP_RATE,
+});
+/* 이 수업 1회로 강사가 받는 금액 */
+const rateFor = (m, type, st) => {
+  const base = rateBase(st);
+  if (!m) return type === "그룹" ? base.group : base.solo;
+  if (type === "그룹") return Number(m.groupRate) > 0 ? Number(m.groupRate) : base.group;
+  return Number(m.payRate) > 0 ? Number(m.payRate) : base.solo;
+};
 const EQUIP_TYPES = ["리포머", "캐딜락", "체어", "바렐"];
 const NON_CLASS_TYPES = ["상담", "인바디"];
 const STATUS = {
@@ -602,7 +615,7 @@ function blankMember(staff) {
     id: uid(), name: "", age: "", birth: "", duetWith: "", instructor: staff || "", goal: "", passName: "", phone: "",
     regular: 0, service: 0, total: 0, startDate: todayISO(), contractEnd: "", focus: [],
     status: "active", endedAt: "", endedReason: "", endedMemo: "",
-    holdFrom: "", holdUntil: "", holdReason: "", payments: [],
+    holdFrom: "", holdUntil: "", holdReason: "", payRate: 0, groupRate: 0, payments: [],
     goalWeight: 0, goalFat: 0, inbody: [], perf: DEFAULT_PERF.map((p) => ({ ...p })), notes: [],
   };
 }
@@ -651,7 +664,7 @@ function buildReview(member, ai, bi) {
 }
 const T = todayISO();
 const sampleDb = (center, staff) => ({
-  settings: { center: center || "필라티쳐 스튜디오", staff: staff || "강사" },
+  settings: { center: center || "필라티쳐 스튜디오", staff: staff || "강사", payRate: DEF_RATE, groupRate: DEF_GROUP_RATE },
   schedule: [
     { id: "s1", memberId: "m1", date: shift(T, -2), start: "10:00", end: "10:50", type: "개인레슨", instructor: staff, room: "1번룸", memo: "", status: "done", deductFrom: "정규", noshowFee: null },
     { id: "s2", memberId: "m2", date: shift(T, -1), start: "11:00", end: "11:50", type: "듀엣", instructor: staff, room: "2번룸", memo: "", status: "noshow", deductFrom: null, noshowFee: null },
@@ -729,7 +742,7 @@ const sampleDb = (center, staff) => ({
 function normalizeDb(data, staff) {
   const d = data && typeof data === "object" ? data : {};
   return {
-    settings: { center: d.settings?.center ?? "", staff: d.settings?.staff ?? (staff || ""), templates: Array.isArray(d.settings?.templates) ? d.settings.templates : [] },
+    settings: { center: d.settings?.center ?? "", staff: d.settings?.staff ?? (staff || ""), payRate: Number(d.settings?.payRate) || DEF_RATE, groupRate: Number(d.settings?.groupRate) || DEF_GROUP_RATE, templates: Array.isArray(d.settings?.templates) ? d.settings.templates : [] },
     members: Array.isArray(d.members) ? d.members.filter(Boolean).map((m) => ({
       ...blankMember(staff), ...m,
       id: m.id || uid(),
@@ -749,7 +762,7 @@ function normalizeDb(data, staff) {
     })).filter((x) => x.attendees.length || x.equip || x.personal) : [],
   };
 }
-const emptyDb = (center, staff) => ({ settings: { center: center || "", staff: staff || "" }, schedule: [], members: [] });
+const emptyDb = (center, staff) => ({ settings: { center: center || "", staff: staff || "", payRate: DEF_RATE, groupRate: DEF_GROUP_RATE }, schedule: [], members: [] });
 /* ================= 공통 UI ================= */
 class Guard extends Component {
   constructor(p) { super(p); this.state = { err: null, info: "" }; }
@@ -1838,6 +1851,20 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onStatusAll, onNoshow
   const seatsOn = (d) => byDate(d).reduce((n, s) => n + attendeesOf(s).length, 0);
   const ym = monthKey(cursor);
   const stat = useMemo(() => monthStats(db.schedule, ym), [db.schedule, ym]);
+  /* 이번 달 예상 급여 — 완료된 수업의 회원별 수업료를 더한다 */
+  const monthPay = useMemo(() => {
+    const cm = monthKey(todayISO());
+    let sum = 0;
+    db.schedule.forEach((s) => {
+      if (!s?.date || !s.date.startsWith(cm) || isPersonalEvt(s)) return;
+      if (isEquipGroup(s)) { if (s.groupDone) sum += rateBase(db.settings).group; return; }
+      attendeesOf(s).forEach((a) => {
+        if (!a.deductFrom) return;
+        sum += rateFor(db.members.find((x) => x.id === a.memberId), s.type, db.settings);
+      });
+    });
+    return sum;
+  }, [db.schedule, db.members, db.settings]);
   const monthDone = useMemo(() => {
     const cm = monthKey(todayISO());
     return db.schedule.filter((s) => s?.date && s.date.startsWith(cm) && (isEquipGroup(s) ? !!s.groupDone : attendeesOf(s).some((a) => a.deductFrom))).length;
@@ -1949,7 +1976,7 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onStatusAll, onNoshow
           <div className="min-w-0 flex-1 rounded-xl px-2.5 py-1.5" style={{ backgroundColor: "#FFFFFF", boxShadow: "0 4px 12px rgba(30,16,90,.22)" }}>
             <p className="truncate text-xs font-bold" style={{ color: "#6E6E80" }}>남은 수업</p>
             <p className="whitespace-nowrap text-base font-extrabold leading-tight tabular-nums md:text-lg" style={{ color: "#4F2FCB" }}>{Math.max(0, todayCls - doneCls)}수업</p>
-            <p className="truncate text-xs font-bold tabular-nums" style={{ color: "#77778A" }}>이달 {monthDone}</p>
+            <p className="truncate text-xs font-bold tabular-nums" style={{ color: "#77778A" }}>이달 {monthDone}{monthPay > 0 ? ` · ₩${won(monthPay)}` : ""}</p>
           </div>
         </div>
         <div className="mt-2 flex items-center gap-1.5">
@@ -4314,6 +4341,7 @@ const MANUAL_FRONT = ["earL", "earR", "shL", "shR", "hipL", "hipR", "kneeL", "kn
 const MANUAL_SIDE = ["ear", "sh", "hip", "knee", "ank"];
 const D2 = 180 / Math.PI;
 const r1 = (v) => Math.round(v * 10) / 10;
+const r3 = (v) => Math.round(v * 1000) / 1000;
 function lineDeg(a, b) {
   const [p, q] = a.x <= b.x ? [a, b] : [b, a];
   return Math.atan2(q.y - p.y, q.x - p.x) * D2;
@@ -4482,6 +4510,327 @@ function PoseMock() {
 }
 
 /* 저장해 둔 체형 분석을 다시 크게 보는 화면 */
+
+/* ================= 결과 카드 (마케팅용 비포/애프터) ================= */
+const CARD_COLORS = [
+  { k: "white", c: "#FFFFFF", name: "흰색" },
+  { k: "yellow", c: "#FFD43B", name: "노랑" },
+  { k: "purple", c: "#8B6CF1", name: "보라" },
+  { k: "red", c: "#FF5A5A", name: "빨강" },
+  { k: "green", c: "#2FD07A", name: "초록" },
+  { k: "sky", c: "#4CC3FF", name: "하늘" },
+];
+/* 항목 → 원을 그릴 관절 (정면/측면) */
+const CARD_JOINTS = {
+  shoulder: ["shL", "shR"], pelvis: ["hipL", "hipR"], knee: ["kneeL", "kneeR"],
+  head: ["earL", "earR"], twist: ["shL", "shR"],
+  fha: ["ear"], trunk: ["sh", "hip"], kneeSide: ["knee"], align: ["sh", "hip", "knee"],
+};
+const CARD_SHORT = { shoulder: "어깨", pelvis: "골반", knee: "무릎", head: "머리", twist: "어깨 회전", fha: "거북목", trunk: "몸통 기울기", kneeSide: "무릎(측면)", align: "정렬" };
+
+async function loadImg(src) {
+  return new Promise((res, rej) => { const i = new window.Image(); i.onload = () => res(i); i.onerror = rej; i.src = src; });
+}
+/* cover 로 채우고, 정규좌표(0~1) → 그린 영역 좌표로 변환하는 함수를 돌려준다 */
+function drawCover(ctx, im, x, y, w, h) {
+  const iw = im.naturalWidth || im.width, ih = im.naturalHeight || im.height;
+  const sc = Math.max(w / iw, h / ih);
+  const dw = iw * sc, dh = ih * sc;
+  const dx = x + (w - dw) / 2, dy = y + (h - dh) / 2;
+  ctx.save(); ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
+  ctx.drawImage(im, dx, dy, dw, dh); ctx.restore();
+  return (p) => ({ x: dx + p.x * dw, y: dy + p.y * dh });
+}
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+function cardChip(ctx, text, cx, cy, opt) {
+  const { font = "700 24px Pretendard, -apple-system, sans-serif", pad = 14, bg = "rgba(20,20,28,.82)", fg = "#fff" } = opt || {};
+  ctx.save(); ctx.font = font;
+  const w = ctx.measureText(text).width + pad * 2, h = 40;
+  const x = Math.max(8, Math.min(cx - w / 2, (opt?.maxX ?? 1e9) - w - 8));
+  roundRect(ctx, x, cy - h / 2, w, h, 10);
+  ctx.fillStyle = bg; ctx.fill();
+  ctx.fillStyle = fg; ctx.textAlign = "left"; ctx.textBaseline = "middle";
+  ctx.fillText(text, x + pad, cy + 1);
+  ctx.restore();
+  return { x, w, h };
+}
+
+async function composeResultCard({ bRec, aRec, bSrc, aSrc, keys, colors, texts, centerName }) {
+  const W = 1080, GAP = 14, PW = (W - GAP) / 2, PH = Math.round(PW * 4 / 3);
+  const PANEL = 336, TOP = 66;
+  const H = TOP + PH + PANEL;
+  const c = document.createElement("canvas"); c.width = W; c.height = H;
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = "#F4F2EE"; ctx.fillRect(0, 0, W, H);
+
+  const [bIm, aIm] = await Promise.all([loadImg(bSrc), loadImg(aSrc)]);
+  const mapB = drawCover(ctx, bIm, 0, TOP, PW, PH);
+  const mapA = drawCover(ctx, aIm, PW + GAP, TOP, PW, PH);
+
+  /* BEFORE / AFTER 헤더 */
+  const head = (label, x0) => {
+    ctx.save(); ctx.font = "800 30px Pretendard, -apple-system, sans-serif";
+    const tw = ctx.measureText(label).width + 44;
+    roundRect(ctx, x0 + PW / 2 - tw / 2, TOP - 48, tw, 44, 12);
+    ctx.fillStyle = "#2A2A32"; ctx.fill();
+    ctx.fillStyle = "#fff"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(label, x0 + PW / 2, TOP - 25);
+    ctx.restore();
+  };
+  head("BEFORE", 0); head("AFTER", PW + GAP);
+
+  /* 가운데 화살표 원 */
+  ctx.save();
+  ctx.beginPath(); ctx.arc(W / 2, TOP + PH / 2, 34, 0, Math.PI * 2);
+  ctx.fillStyle = "#2A2A32"; ctx.fill();
+  ctx.strokeStyle = "#fff"; ctx.lineWidth = 5; ctx.lineCap = "round";
+  ctx.beginPath(); ctx.moveTo(W / 2 - 6, TOP + PH / 2 - 11); ctx.lineTo(W / 2 + 7, TOP + PH / 2); ctx.lineTo(W / 2 - 6, TOP + PH / 2 + 11); ctx.stroke();
+  ctx.restore();
+
+  /* 항목별 점선 원 + 라벨 */
+  const drawMarks = (rec, map, x0, color, isAfter) => {
+    const pts = rec?.pts || {};
+    const mFor = (k) => (rec?.metrics || []).find((m) => m.key === k);
+    ctx.save(); ctx.beginPath(); ctx.rect(x0, TOP, PW, PH); ctx.clip();
+    keys.forEach((k, i) => {
+      const joints = (CARD_JOINTS[k] || []).map((j) => pts[j]).filter(Boolean);
+      if (!joints.length) return;
+      ctx.strokeStyle = color; ctx.lineWidth = 4;
+      ctx.setLineDash(isAfter ? [] : [9, 8]);
+      joints.forEach((p) => {
+        const q = map(p);
+        ctx.beginPath(); ctx.arc(q.x, q.y, 44, 0, Math.PI * 2); ctx.stroke();
+      });
+      ctx.setLineDash([]);
+      const mid = joints.reduce((s, p) => ({ x: s.x + p.x / joints.length, y: s.y + p.y / joints.length }), { x: 0, y: 0 });
+      const q = map(mid);
+      const m = mFor(k);
+      const txt = isAfter
+        ? `${CARD_SHORT[k] || k} ${m ? `${m.value}${m.unit}` : ""} 개선`.trim()
+        : `${CARD_SHORT[k] || k} ${m ? `${m.value}${m.unit}` : ""}`.trim();
+      cardChip(ctx, txt, q.x, Math.max(TOP + 30, q.y - 74 - (i % 2) * 6), { bg: "rgba(20,20,28,.8)", fg: color === "#FFFFFF" ? "#fff" : color, maxX: x0 + PW });
+    });
+    ctx.restore();
+  };
+  drawMarks(bRec, mapB, 0, colors.b, false);
+  drawMarks(aRec, mapA, PW + GAP, colors.a, true);
+
+  /* 하단 패널 */
+  const py = TOP + PH;
+  ctx.fillStyle = "#FFFFFF"; ctx.fillRect(0, py, W, PANEL);
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillStyle = "#17171F"; ctx.font = "800 40px Pretendard, -apple-system, sans-serif";
+  ctx.fillText(texts.title, W / 2, py + 56, W - 60);
+  ctx.textAlign = "left"; ctx.font = "600 27px Pretendard, -apple-system, sans-serif";
+  const checks = [texts.c1, texts.c2].filter((t) => t && t.trim());
+  checks.forEach((t, i) => {
+    const y = py + 112 + i * 46;
+    ctx.fillStyle = "#FFD43B"; roundRect(ctx, 84, y - 13, 26, 26, 6); ctx.fill();
+    ctx.strokeStyle = "#7A5C00"; ctx.lineWidth = 3.4; ctx.lineCap = "round";
+    ctx.beginPath(); ctx.moveTo(90, y); ctx.lineTo(96, y + 6); ctx.lineTo(105, y - 6); ctx.stroke();
+    ctx.fillStyle = "#2A2A32"; ctx.fillText(t, 124, y + 1, W - 200);
+  });
+  if (texts.close && texts.close.trim()) {
+    ctx.font = "800 26px Pretendard, -apple-system, sans-serif";
+    const tw = Math.min(W - 80, ctx.measureText(texts.close).width + 56);
+    roundRect(ctx, W / 2 - tw / 2, py + 210, tw, 52, 14);
+    ctx.fillStyle = "#FFF1BF"; ctx.fill();
+    ctx.fillStyle = "#3A2E00"; ctx.textAlign = "center";
+    ctx.fillText(texts.close, W / 2, py + 237, W - 120);
+  }
+  ctx.strokeStyle = "#D8D5CE"; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(120, py + 296); ctx.lineTo(W / 2 - 110, py + 296);
+  ctx.moveTo(W / 2 + 110, py + 296); ctx.lineTo(W - 120, py + 296); ctx.stroke();
+  ctx.fillStyle = "#6E6A62"; ctx.font = "700 22px Pretendard, -apple-system, sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText((centerName || "PILATEACHER").toUpperCase(), W / 2, py + 297);
+  return c;
+}
+
+/* 받침 유무로 이/가 를 고른다 — "틀어짐이", "비대칭이" */
+const josa = (w, a, b) => {
+  const ch = (w || "").charCodeAt((w || "").length - 1);
+  if (ch < 0xac00 || ch > 0xd7a3) return w + a;
+  return w + (((ch - 0xac00) % 28) ? a : b);
+};
+/* 개선 문구 자동 초안 */
+function cardDrafts(bRec, aRec, keys) {
+  const g = (rec, k) => (rec?.metrics || []).find((m) => m.key === k);
+  const lines = [];
+  keys.forEach((k) => {
+    const b = g(bRec, k), a = g(aRec, k);
+    if (b && a && Number.isFinite(b.value) && Number.isFinite(a.value) && a.value < b.value) {
+      lines.push(`${josa(b.label.replace(" 각도", ""), "이", "가")} ${b.value}${b.unit} → ${a.value}${a.unit}로 개선되었습니다.`);
+    } else if (a) {
+      lines.push(`${a.label.replace(" 각도", "")} ${a.value}${a.unit} · 좋은 정렬을 유지하고 있습니다.`);
+    }
+  });
+  const names = keys.map((k) => CARD_SHORT[k] || k).slice(0, 2).join("·");
+  return {
+    title: names ? `${names} 정렬 개선으로 바디라인이 달라졌어요!` : "체형이 이렇게 달라졌어요!",
+    c1: lines[0] || "",
+    c2: lines[1] || "",
+    close: "가동성을 높이고, 근육의 균형을 바로잡는 것이 바른 체형의 시작입니다.",
+  };
+}
+
+function ResultCardMaker({ member, saved, centerName, onToast }) {
+  const [open, setOpen] = useState(false);
+  const usable = saved.filter((p) => p && p.pts && (p.cleanBlobId || p.blobId));
+  const [bId, setBId] = useState(null);
+  const [aId, setAId] = useState(null);
+  const bRec = usable.find((p) => p.id === bId) || usable[usable.length - 1] || null;
+  const aRec = usable.find((p) => p.id === aId) || (usable[0] && usable[0] !== bRec ? usable[0] : null);
+  const both = bRec && aRec && bRec.id !== aRec.id;
+  const commonKeys = both
+    ? Object.keys(CARD_JOINTS).filter((k) => (bRec.metrics || []).some((m) => m.key === k) && (aRec.metrics || []).some((m) => m.key === k))
+    : [];
+  const [sel, setSel] = useState(null);
+  const keys = sel || commonKeys.filter((k) => {
+    const b = (bRec?.metrics || []).find((m) => m.key === k);
+    return b && b.level !== "good";
+  }).slice(0, 3);
+  const [cb, setCb] = useState("#FFFFFF");
+  const [ca, setCa] = useState("#FFD43B");
+  const drafts = useMemo(() => (both ? cardDrafts(bRec, aRec, keys) : { title: "", c1: "", c2: "", close: "" }), [bId, aId, JSON.stringify(keys)]);
+  const [txt, setTxt] = useState(null);
+  const T = txt || drafts;
+  const [preview, setPreview] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const build = async () => {
+    if (!both) return;
+    setBusy(true);
+    try {
+      const bSrc = (await urlFor(bRec.cleanBlobId || bRec.blobId)) || bRec.src;
+      const aSrc = (await urlFor(aRec.cleanBlobId || aRec.blobId)) || aRec.src;
+      if (!bSrc || !aSrc) throw new Error("no image");
+      const canvas = await composeResultCard({ bRec, aRec, bSrc, aSrc, keys, colors: { b: cb, a: ca }, texts: T, centerName });
+      setPreview({ canvas, url: canvas.toDataURL("image/jpeg", 0.9) });
+    } catch (e) { onToast?.({ ok: false, msg: "카드를 만들지 못했습니다. 분석을 다시 저장해 보세요." }); }
+    setBusy(false);
+  };
+  const doExport = async (saveOnly) => {
+    if (!preview) return;
+    const r = await exportCanvas(preview.canvas, `결과카드_${member?.name || "회원"}_${todayISO()}.jpg`, "체형 변화 카드", saveOnly);
+    if (r.how === "fail") { onToast?.({ ok: false, msg: "이미지를 만들지 못했습니다." }); return; }
+    if (r.how === "manual") { setPreview((p) => (p ? { ...p, manual: true } : p)); onToast?.({ ok: false, msg: "자동 저장이 막힌 환경입니다. 사진을 길게 눌러 저장해 주세요." }); return; }
+    if (r.how === "saved") onToast?.({ ok: true, msg: "카드를 저장했습니다." });
+    if (r.how === "copied") onToast?.({ ok: true, msg: "카드를 복사했습니다. 카톡 등에 붙여넣기 하세요." });
+    setPreview(null);
+  };
+
+  const pickRec = (p, slot) => {
+    if (slot === "b") { setBId(p.id); if (aId === p.id) setAId(null); }
+    else { setAId(p.id); if (bId === p.id) setBId(null); }
+    setSel(null); setTxt(null);
+  };
+  const dateOf = (p) => (p?.date || "").slice(5).replace("-", ".");
+
+  return (
+    <Card className="p-4">
+      <button onClick={() => setOpen((v) => !v)} className="flex w-full items-center gap-2 text-left">
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl" style={{ background: GRAD }}><Star size={16} color="#fff" /></span>
+        <div className="min-w-0 flex-1">
+          <h3 className="font-extrabold" style={{ color: INK }}>결과 카드 만들기</h3>
+          <Sub>비포·애프터 분석을 골라 회원용 카드로</Sub>
+        </div>
+        <ChevronDown size={16} style={{ color: SUB, transform: open ? "rotate(180deg)" : "none" }} />
+      </button>
+      {open && (
+        <div className="mt-3 space-y-3">
+          {usable.length < 2 ? (
+            <Sub className="block rounded-2xl px-3 py-4 text-center" >
+              분석을 <b style={{ color: PRIMARY }}>2개 이상 저장</b>하면 카드를 만들 수 있어요{saved.length > usable.length ? " · 예전에 저장한 분석은 관절 정보가 없어 카드에 못 씁니다. 새로 분석해 주세요" : ""}
+            </Sub>
+          ) : (
+            <>
+              {[{ slot: "b", label: "BEFORE", cur: bRec }, { slot: "a", label: "AFTER", cur: aRec }].map(({ slot, label, cur }) => (
+                <div key={slot}>
+                  <p className="mb-1 text-xs font-extrabold" style={{ color: SUB }}>{label} 로 쓸 분석</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {usable.map((p) => (
+                      <button key={p.id} onClick={() => pickRec(p, slot)} className="rounded-full px-3 py-1.5 text-xs font-extrabold"
+                        style={cur?.id === p.id ? { background: GRAD, color: "#fff" } : { backgroundColor: CANVAS, color: INK }}>
+                        {dateOf(p)} · {p.view === "front" ? "정면" : p.view === "side" ? "측면" : "후면"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+              {both && bRec.view !== aRec.view && <Sub className="block" >⚠️ 두 분석의 방향(정면/측면)이 다릅니다 · 같은 방향끼리 골라야 비교가 맞아요</Sub>}
+              {both && (
+                <>
+                  <div>
+                    <p className="mb-1 text-xs font-extrabold" style={{ color: SUB }}>보여줄 항목</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {commonKeys.map((k) => (
+                        <button key={k} onClick={() => { const cur = new Set(keys); cur.has(k) ? cur.delete(k) : cur.add(k); setSel([...cur]); setTxt(null); }}
+                          className="rounded-full px-3 py-1.5 text-xs font-extrabold"
+                          style={keys.includes(k) ? { backgroundColor: TINT, color: PRIMARY, boxShadow: `inset 0 0 0 1.5px ${PRIMARY}` } : { backgroundColor: CANVAS, color: SUB }}>
+                          {CARD_SHORT[k] || k}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  {[{ l: "BEFORE 표시 색", v: cb, set: setCb }, { l: "AFTER 표시 색", v: ca, set: setCa }].map(({ l, v, set }) => (
+                    <div key={l}>
+                      <p className="mb-1 text-xs font-extrabold" style={{ color: SUB }}>{l}</p>
+                      <div className="flex gap-2">
+                        {CARD_COLORS.map((o) => (
+                          <button key={o.k} onClick={() => set(o.c)} aria-label={o.name}
+                            className="h-8 w-8 rounded-full"
+                            style={{ backgroundColor: o.c, border: o.c === "#FFFFFF" ? `1px solid ${LINE}` : "none", boxShadow: v === o.c ? `0 0 0 3px ${CARD}, 0 0 0 5px ${PRIMARY}` : "none" }} />
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                  {[{ k: "title", l: "제목" }, { k: "c1", l: "체크 문장 1" }, { k: "c2", l: "체크 문장 2" }, { k: "close", l: "마무리 문장" }].map(({ k, l }) => (
+                    <Field key={k} label={l} hint="자동 초안 · 고쳐 쓸 수 있어요">
+                      <input value={T[k]} onChange={(e) => setTxt({ ...T, [k]: e.target.value })} className={inputCls} />
+                    </Field>
+                  ))}
+                  <PrimaryBtn disabled={busy || !keys.length} onClick={build}>
+                    {busy ? <Loader2 size={15} className="animate-spin" /> : <Star size={15} />} 카드 미리보기
+                  </PrimaryBtn>
+                  {!keys.length && <Sub className="block text-center">보여줄 항목을 1개 이상 고르세요</Sub>}
+                </>
+              )}
+            </>
+          )}
+        </div>
+      )}
+      {preview && (
+        <div className="safe-all fixed inset-0 z-50 flex flex-col bg-photo">
+          <div className="flex items-center justify-between px-4 py-3">
+            <button onClick={() => setPreview(null)} className="rounded-full p-2" style={{ backgroundColor: "rgba(255,255,255,0.15)" }}><X size={18} color="#fff" /></button>
+            <p className="text-sm font-bold text-white">이렇게 만들어집니다</p>
+            <span style={{ width: 34 }} />
+          </div>
+          <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-4">
+            <img src={preview.url} alt="결과 카드" className="block h-auto rounded-2xl" style={{ maxWidth: "min(100%, 640px)", maxHeight: "72%", objectFit: "contain" }} {...IMGP} />
+            <p className="mt-3 text-center text-xs" style={{ color: "rgba(255,255,255,.7)" }}>
+              {preview.manual ? "위 사진을 길게 눌러 저장하세요" : "마음에 안 들면 닫고 색·문구를 바꿔 보세요"}
+            </p>
+          </div>
+          <div className="flex gap-2 px-4 pb-5 pt-3">
+            <button onClick={() => doExport(true)} className="flex flex-1 items-center justify-center gap-1.5 rounded-2xl py-3.5 text-sm font-extrabold" style={{ backgroundColor: "rgba(255,255,255,0.92)", color: "#17171F" }}>
+              <Download size={16} /> 내 폰에 저장
+            </button>
+            <button onClick={() => doExport(false)} className="flex flex-1 items-center justify-center gap-1.5 rounded-2xl py-3.5 text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>
+              <Upload size={16} /> 회원에게 보내기
+            </button>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function SavedPoseViewer({ rec, onClose, onToast }) {
   useBackClose(true, onClose);
   useScrollLock();
@@ -4534,6 +4883,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onToast }) {
   const [showSkel, setShowSkel] = useState(true);
   const [showNum, setShowNum] = useState(true);
   const [manual, setManual] = useState(null);
+  const [choice, setChoice] = useState(false);  /* 사진 직후: AI / 직접 이지선다 */
   /* 관절을 정확히 찍으려면 확대가 필요하다 — 두 손가락으로 자유롭게 */
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -4681,9 +5031,8 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onToast }) {
           if (prev && typeof prev.src === "string" && prev.src.startsWith("blob:")) { try { URL.revokeObjectURL(prev.src); } catch (e) {} }
           return { src, w: im.naturalWidth, h: im.naturalHeight };
         });
-        const auto = await detect(im);
         setBusy(false);
-        if (!auto) startManual();
+        setChoice(true);   /* 바로 분석하지 않고 AI/직접 을 고르게 한다 */
       };
       im.onerror = () => { setBusy(false); try { URL.revokeObjectURL(src); } catch (e) {} onToast?.({ ok: false, msg: "사진을 읽지 못했습니다." }); };
       im.src = src;
@@ -4796,7 +5145,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onToast }) {
   const download = () => shareCanvas(canvasRef.current, `${member?.name || "회원"}_체형분석_${todayISO()}.jpg`, "체형 분석", onToast);
   const save = async () => {
     if (!res || !res.items.length) return;
-    let blob = null;
+    let blob = null, cleanBlob = null;
     try {
       const c = document.createElement("canvas");
       const s = Math.min(1, 520 / Math.max(canvasRef.current.width, canvasRef.current.height));
@@ -4804,8 +5153,18 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onToast }) {
       c.getContext("2d").drawImage(canvasRef.current, 0, 0, c.width, c.height);
       blob = await new Promise((r) => c.toBlob(r, "image/jpeg", 0.72));
     } catch (e) {}
+    try {
+      /* 결과 카드용 — 뼈대 없는 원본을 따로 담는다 */
+      const c2 = document.createElement("canvas"), im = imgRef.current;
+      const s2 = Math.min(1, 760 / Math.max(im.naturalWidth, im.naturalHeight));
+      c2.width = Math.round(im.naturalWidth * s2); c2.height = Math.round(im.naturalHeight * s2);
+      c2.getContext("2d").drawImage(im, 0, 0, c2.width, c2.height);
+      cleanBlob = await new Promise((r) => c2.toBlob(r, "image/jpeg", 0.8));
+    } catch (e) {}
+    const slim = {};
+    Object.keys(pts || {}).forEach((k) => { const p = pts[k]; if (p) slim[k] = { x: r3(p.x), y: r3(p.y) }; });
     onSavePose?.({
-      id: uid(), date: todayISO(), view, blob,
+      id: uid(), date: todayISO(), view, blob, cleanBlob, pts: slim, mirror,
       metrics: res.items.map((i) => ({ key: i.key, label: i.label, value: i.value, unit: i.unit, level: i.level, dir: i.dir })),
       comment: poseComment(member, view, res),
     });
@@ -4905,6 +5264,24 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onToast }) {
                 <canvas ref={canvasRef} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}
                   className="block w-full touch-none"
                   style={{ height: "auto", transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin: "center center" }} />
+                {choice && !busy && !pts && !manual && (
+                  <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 px-6" style={{ backgroundColor: "rgba(10,10,16,.72)" }}>
+                    <p className="text-sm font-extrabold text-white">어떻게 분석할까요?</p>
+                    <button disabled={engine !== "ready"}
+                      onClick={async () => { setChoice(false); setBusy(true); const ok = await detect(imgRef.current); setBusy(false); if (!ok) { onToast?.({ ok: false, msg: "AI가 관절을 찾지 못했습니다. 직접 찍기로 전환합니다." }); startManual(); } }}
+                      className="w-full max-w-xs rounded-2xl px-4 py-4 text-left" style={{ backgroundColor: engine === "ready" ? CARD : "rgba(255,255,255,.25)", opacity: engine === "ready" ? 1 : 0.75 }}>
+                      <p className="flex items-center gap-1.5 text-sm font-extrabold" style={{ color: engine === "ready" ? PRIMARY : "#fff" }}><Sparkles size={15} /> AI 자동 분석</p>
+                      <p className="mt-0.5 text-xs" style={{ color: engine === "ready" ? SUB : "rgba(255,255,255,.85)" }}>
+                        {engine === "ready" ? "관절을 자동으로 찾고, 틀린 점만 손으로 고칩니다" : engine === "loading" ? "AI 준비 중입니다 · 아래 직접 분석은 바로 가능해요" : "이 환경에선 AI를 쓸 수 없어요 · 직접 분석으로 진행하세요"}
+                      </p>
+                    </button>
+                    <button onClick={() => { setChoice(false); startManual(); }}
+                      className="w-full max-w-xs rounded-2xl px-4 py-4 text-left" style={{ backgroundColor: CARD }}>
+                      <p className="flex items-center gap-1.5 text-sm font-extrabold" style={{ color: INK }}><Crosshair size={15} /> 직접 분석하기</p>
+                      <p className="mt-0.5 text-xs" style={{ color: SUB }}>AI 없이 점을 순서대로 직접 찍습니다</p>
+                    </button>
+                  </div>
+                )}
                 {manual && manual.i < manual.seq.length && (
                   <>
                     <div className="absolute inset-x-0 top-0 flex justify-center gap-1 p-3">
@@ -5037,7 +5414,49 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onToast }) {
     </Card>
   );
 }
-function Dashboard({ member, photos, schedule, onBack, briefing, onSavePhoto, onRemovePhoto, onSaveMarks, onAdjustPhoto, onDeleteNote, onToast, goRecord, onToggleFav, onDeleteSet, onBrief, onSavePose, onDeletePose, onSaveSet }) {
+/* 인바디 요약과 그래프는 같은 데이터라 한 카드로 합친다 */
+function InbodyPanel({ member, onGo }) {
+  const [graph, setGraph] = useState(false);
+  return (
+    <div className="space-y-2">
+      <ChangeSummary member={member} onGo={onGo} />
+      <button onClick={() => setGraph((v) => !v)} className="flex w-full items-center gap-2 rounded-2xl px-4 py-2.5" style={{ backgroundColor: CARD, boxShadow: SHADOW }}>
+        <Activity size={14} style={{ color: PRIMARY }} />
+        <span className="text-xs font-extrabold" style={{ color: INK }}>인바디 그래프</span>
+        <span className="flex-1" />
+        <ChevronDown size={14} style={{ color: SUB, transform: graph ? "rotate(180deg)" : "none" }} />
+      </button>
+      {graph && <InbodyChart member={member} />}
+    </div>
+  );
+}
+
+/* 사진·체형 관련 4개를 한 카드 안 탭으로 묶는다 (스크롤 단축) */
+function PhotoHub(p) {
+  const TABS = [
+    { k: "compare", l: "비포·애프터" },
+    { k: "pose", l: "AI 체형 분석" },
+    { k: "card", l: "결과 카드" },
+    { k: "sets", l: "사진 모음" },
+  ];
+  const [tab, setTab] = useState("compare");
+  return (
+    <div className="space-y-2">
+      <div className="flex gap-1 overflow-x-auto rounded-2xl p-1" style={{ backgroundColor: CANVAS }}>
+        {TABS.map((t) => (
+          <button key={t.k} onClick={() => setTab(t.k)} className="shrink-0 whitespace-nowrap rounded-xl px-3 py-2 text-xs font-extrabold"
+            style={tab === t.k ? { backgroundColor: CARD, color: PRIMARY, boxShadow: "0 1px 3px rgba(20,20,43,.12)" } : { color: SUB }}>{t.l}</button>
+        ))}
+      </div>
+      {tab === "compare" && <Guard label="비포애프터 분석"><PhotoCompare member={p.member} photos={p.photos} briefing={p.briefing} onSavePhoto={p.onSavePhoto} onRemove={p.onRemovePhoto} onSaveMarks={p.onSaveMarks} onAdjust={p.onAdjustPhoto} onToast={p.onToast} onSaveSet={p.onSaveSet} /></Guard>}
+      {tab === "pose" && <Guard label="AI 체형 분석"><PoseAnalyzer member={p.member} photos={p.photos} onSavePose={p.onSavePose} onDeletePose={p.onDeletePose} onToast={p.onToast} /></Guard>}
+      {tab === "card" && <Guard label="결과 카드"><ResultCardMaker member={p.member} saved={(p.photos?.poses || []).filter((x) => x && x.metrics)} centerName={p.centerName} onToast={p.onToast} /></Guard>}
+      {tab === "sets" && <Guard label="사진 모음"><BeforeAfterSets memberName={p.member.name} photos={p.photos} onToggleFav={p.onToggleFav} onDelete={p.onDeleteSet} /></Guard>}
+    </div>
+  );
+}
+
+function Dashboard({ member, photos, schedule, onBack, briefing, onSavePhoto, onRemovePhoto, onSaveMarks, onAdjustPhoto, onDeleteNote, onToast, goRecord, onToggleFav, onDeleteSet, onBrief, onSavePose, onDeletePose, onSaveSet, centerName }) {
   const total = left(member), low = total <= 3;
   const att = attendanceOf(schedule, member.id);
   const d = ddaySafe(member.contractEnd);
@@ -5094,11 +5513,11 @@ function Dashboard({ member, photos, schedule, onBack, briefing, onSavePhoto, on
           {member.endedMemo && <p className="mt-2 text-sm" style={{ color: INK2 }}>{member.endedMemo}</p>}
         </Card>
       )}
-      <Guard label="변화 요약"><ChangeSummary member={member} onGo={() => goRecord("inbody")} /></Guard>
-      <Guard label="인바디 그래프"><InbodyChart member={member} /></Guard>
-      <Guard label="AI 체형 분석"><PoseAnalyzer member={member} photos={photos} onSavePose={onSavePose} onDeletePose={onDeletePose} onToast={onToast} /></Guard>
-      <Guard label="비포애프터 분석"><PhotoCompare member={member} photos={photos} briefing={briefing} onSavePhoto={onSavePhoto} onRemove={onRemovePhoto} onSaveMarks={onSaveMarks} onAdjust={onAdjustPhoto} onToast={onToast} onSaveSet={onSaveSet} /></Guard>
-      <Guard label="사진 모음"><BeforeAfterSets memberName={member.name} photos={photos} onToggleFav={onToggleFav} onDelete={onDeleteSet} /></Guard>
+      <Guard label="인바디"><InbodyPanel member={member} onGo={() => goRecord("inbody")} /></Guard>
+      <PhotoHub member={member} photos={photos} briefing={briefing} centerName={centerName}
+        onSavePhoto={onSavePhoto} onRemovePhoto={onRemovePhoto} onSaveMarks={onSaveMarks} onAdjustPhoto={onAdjustPhoto}
+        onSavePose={onSavePose} onDeletePose={onDeletePose} onSaveSet={onSaveSet}
+        onToggleFav={onToggleFav} onDeleteSet={onDeleteSet} onToast={onToast} />
       <Guard label="운동 수행 능력"><PerformancePanel member={member} briefing={briefing} onGo={() => goRecord("perf")} /></Guard>
       <Guard label="코멘트 기록"><Timeline member={member} briefing={briefing} onDelete={onDeleteNote} /></Guard>
       <Guard label="종합 평가"><OverallReview member={member} briefing={briefing} onToast={onToast} schedule={schedule} /></Guard>
@@ -5202,186 +5621,10 @@ const QR_FIELDS = [
 ];
 const QR_LABEL = { weight: "체중", smm: "골격근량", fat: "체지방률", fatMass: "체지방량", bmi: "BMI", bmr: "기초대사량", visceral: "내장지방", score: "인바디 점수" };
 const qrNorm = (v) => String(v || "").toLowerCase().replace(/[^0-9a-z가-힣]/g, "");
-function parseInbodyQR(raw) {
-  const text = String(raw || "").trim();
-  const out = { values: {}, date: null, url: null, raw: text };
-  if (!text) return out;
-  out.url = /^https?:\/\//i.test(text) ? text.split(/\s/)[0] : null;
-  const pairs = [];
-  try {
-    const j = JSON.parse(text);
-    const walk = (o) => {
-      if (!o || typeof o !== "object") return;
-      Object.keys(o).forEach((k) => { const v = o[k]; if (v && typeof v === "object") walk(v); else pairs.push([k, v]); });
-    };
-    walk(j);
-  } catch (e) {}
-  const src = text.indexOf("?") >= 0 ? text.slice(text.indexOf("?") + 1) : text;
-  String(src).split(/[&;\n\r,|\t]+/).forEach((seg) => {
-    const m = seg.match(/^\s*([0-9A-Za-z_%가-힣 .-]+?)\s*[=:]\s*(-?\d+(?:\.\d+)?)\s*[a-zA-Z%가-힣]*\s*$/);
-    if (m) { let k = m[1]; try { k = decodeURIComponent(k); } catch (e) {} pairs.push([k, m[2]]); }
-  });
-  QR_FIELDS.forEach((f) => f.keys.forEach((k) => {
-    const m = text.match(new RegExp("(?:^|[^0-9A-Za-z가-힣])" + k + "\\s*[:=]?\\s*(-?\\d+(?:\\.\\d+)?)", "i"));
-    if (m) pairs.push([k, m[1]]);
-  }));
-  pairs.forEach((kv) => {
-    const key = qrNorm(kv[0]), n = Number(kv[1]);
-    if (!key || !Number.isFinite(n)) return;
-    const f = QR_FIELDS.find((x) => x.keys.some((y) => qrNorm(y) === key));
-    if (!f || out.values[f.k] !== undefined) return;
-    if (n < f.min || n > f.max) return;
-    out.values[f.k] = n;
-  });
-  const g = text.match(/(20\d{2})[-.\/](\d{1,2})[-.\/](\d{1,2})/) || text.match(/(20\d{2})(\d{2})(\d{2})/);
-  if (g) {
-    const mo = String(g[2]).padStart(2, "0"), da = String(g[3]).padStart(2, "0");
-    if (+mo >= 1 && +mo <= 12 && +da >= 1 && +da <= 31) out.date = g[1] + "-" + mo + "-" + da;
-  }
-  return out;
-}
-/* QR 해독 — 브라우저 기본 기능이 없으면(사파리) jsQR 로 직접 읽는다 */
-async function decodeQR(source) {
-  try {
-    if (typeof window !== "undefined" && typeof window.BarcodeDetector === "function") {
-      const det = new window.BarcodeDetector({ formats: ["qr_code"] });
-      const codes = await det.detect(source);
-      if (codes && codes.length && codes[0].rawValue) return codes[0].rawValue;
-    }
-  } catch (e) {}
-  try {
-    const w = source.videoWidth || source.naturalWidth || source.width;
-    const h = source.videoHeight || source.naturalHeight || source.height;
-    if (!w || !h) return null;
-    const s = Math.min(1, 1000 / Math.max(w, h));
-    const c = document.createElement("canvas");
-    c.width = Math.round(w * s); c.height = Math.round(h * s);
-    const ctx = c.getContext("2d", { willReadFrequently: true });
-    ctx.drawImage(source, 0, 0, c.width, c.height);
-    const d = ctx.getImageData(0, 0, c.width, c.height);
-    const r = jsQR(d.data, d.width, d.height, { inversionAttempts: "attemptBoth" });
-    return r && r.data ? r.data : null;
-  } catch (e) { return null; }
-}
 
-function QrSheet({ onClose, onRead }) {
-  const [msg, setMsg] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [paste, setPaste] = useState("");
-  const [link, setLink] = useState(null);
-  const [cam, setCam] = useState(false);
-  const videoRef = useRef(null), fileRef = useRef(null), streamRef = useRef(null), loopRef = useRef(null);
-  const canScan = typeof navigator !== "undefined" && !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
-  const stop = useCallback(() => {
-    try { if (loopRef.current) clearTimeout(loopRef.current); } catch (e) {}
-    loopRef.current = null;
-    try { ((streamRef.current && streamRef.current.getTracks()) || []).forEach((t) => t.stop()); } catch (e) {}
-    streamRef.current = null;
-    setCam(false);
-  }, []);
-  useEffect(() => stop, [stop]);
-  const handle = (text) => {
-    const r = parseInbodyQR(text);
-    if (!Object.keys(r.values).length) {
-      setLink(r.url);
-      setMsg(r.url
-        ? "이 QR에는 측정값이 없고 인바디 결과 페이지 링크만 들어 있습니다. 링크를 열어 값을 확인한 뒤 아래 칸에 입력해 주세요."
-        : "측정값을 찾지 못했습니다. 읽힌 내용: " + (r.raw || "").slice(0, 60));
-      return;
-    }
-    stop();
-    onRead(r);
-  };
-  const startCam = async () => {
-    setMsg(""); setLink(null); setBusy(true);
-    try {
-      const st = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } } });
-      streamRef.current = st; setCam(true);
-      if (videoRef.current) { videoRef.current.srcObject = st; try { await videoRef.current.play(); } catch (e) {} }
-      const tick = async () => {
-        if (!streamRef.current) return;
-        const v = await decodeQR(videoRef.current);
-        if (v) { handle(v); return; }
-        loopRef.current = setTimeout(tick, 350);
-      };
-      tick();
-    } catch (e) {
-      setMsg("카메라를 열지 못했습니다. 아래에서 사진으로 읽거나 내용을 붙여넣어 주세요.");
-    }
-    setBusy(false);
-  };
-  const scanFile = async (file) => {
-    if (!file) return;
-    setBusy(true); setMsg(""); setLink(null);
-    let url = null;
-    try {
-      url = URL.createObjectURL(file);
-      const im = await new Promise((res, rej) => { const i = new window.Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
-      const v = await decodeQR(im);
-      if (v) handle(v);
-      else setMsg("사진에서 QR을 찾지 못했습니다. 기록지 전체 말고 QR만 화면에 꽉 차게 다시 찍어 주세요.");
-    } catch (e) {
-      setMsg("사진을 읽지 못했습니다. 휴대폰 기본 카메라로 QR을 찍어 나온 내용을 아래에 붙여넣어 주세요.");
-    }
-    if (url) { try { URL.revokeObjectURL(url); } catch (e) {} }
-    setBusy(false);
-  };
-  return (
-    <Sheet title="인바디 QR 불러오기" onClose={() => { stop(); onClose(); }}>
-      <div className="space-y-3">
-        <div className="rounded-2xl p-3" style={{ backgroundColor: TINT }}>
-          <p className="text-xs font-bold" style={{ color: PRIMARY }}>QR만 화면에 꽉 차게 잡아 주세요</p>
-          <Sub className="mt-1">기록지 전체를 멀리서 찍은 사진은 QR이 작게 나와 잘 읽히지 않습니다.</Sub>
-        </div>
-        {cam && (
-          <div className="relative overflow-hidden rounded-2xl bg-photo" style={{ aspectRatio: "4 / 3" }}>
-            <video ref={videoRef} playsInline muted className="absolute inset-0 h-full w-full object-cover" />
-            <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-              <span className="rounded-2xl" style={{ width: "58%", aspectRatio: "1 / 1", border: "3px solid rgba(255,255,255,.9)" }} />
-            </div>
-            <button onClick={stop} className="absolute right-2 top-2 rounded-full px-3 py-1.5 text-xs font-bold text-white" style={{ backgroundColor: "rgba(0,0,0,.55)" }}>중단</button>
-          </div>
-        )}
-        <div className="flex gap-1.5">
-          {canScan && !cam && (
-            <button onClick={startCam} disabled={busy} className="flex flex-1 items-center justify-center gap-1.5 rounded-2xl py-3 text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>
-              {busy ? <Loader2 size={15} className="animate-spin" /> : <Camera size={15} />} 카메라로 스캔
-            </button>
-          )}
-          <button onClick={() => fileRef.current && fileRef.current.click()} disabled={busy}
-            className="flex flex-1 items-center justify-center gap-1.5 rounded-2xl py-3 text-sm font-bold" style={{ backgroundColor: CANVAS, color: INK }}>
-            <ImagePlus size={15} /> 사진에서 읽기
-          </button>
-        </div>
-        <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; scanFile(f); }} />
-        <Field label="QR 내용 붙여넣기" hint="휴대폰 카메라로 찍은 결과를 그대로">
-          <textarea value={paste} onChange={(e) => setPaste(e.target.value)} rows={3}
-            placeholder="예) WT=70.2&SMM=22.4&PBF=41.4  또는  체중 70.2kg 골격근량 22.4kg"
-            className={inputCls} style={{ resize: "none" }} />
-        </Field>
-        <button onClick={() => handle(paste)} disabled={!paste.trim()}
-          className="w-full rounded-2xl py-3 text-sm font-extrabold text-white disabled:opacity-50" style={{ backgroundColor: PRIMARY }}>
-          내용에서 값 읽기
-        </button>
-        {msg && (
-          <div className="rounded-2xl p-3" style={{ backgroundColor: WARN_S }}>
-            <p className="text-xs font-bold" style={{ color: INK }}>{msg}</p>
-            {link && (
-              <a href={link} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-extrabold" style={{ backgroundColor: CARD, color: PRIMARY }}>
-                <Link2 size={12} /> 인바디 결과 페이지 열기
-              </a>
-            )}
-          </div>
-        )}
-      </div>
-    </Sheet>
-  );
-}
 function InbodyForm({ member, last, onSave, onDelete, onPatch, onToast }) {
   const [f, setF] = useState({ date: todayISO(), weight: "", smm: "", fat: "", fatMass: "", bmi: "", bmr: "", visceral: "", score: "", memo: "" });
   const [more, setMore] = useState(false);
-  const [qr, setQr] = useState(false);
-  const [qrHit, setQrHit] = useState(null);
   const [g, setG] = useState({ goalWeight: member.goalWeight || "", goalFat: member.goalFat || "" });
   useEffect(() => { setG({ goalWeight: member.goalWeight || "", goalFat: member.goalFat || "" }); }, [member.id]);
   const gDirty = String(g.goalWeight || "") !== String(member.goalWeight || "") || String(g.goalFat || "") !== String(member.goalFat || "");
@@ -5409,20 +5652,8 @@ function InbodyForm({ member, last, onSave, onDelete, onPatch, onToast }) {
         <div className="flex items-center gap-2">
           <span className="flex h-7 w-7 items-center justify-center rounded-lg" style={{ backgroundColor: GOOD_S }}><Activity size={14} style={{ color: GOOD }} /></span>
           <div className="min-w-0 flex-1"><h3 className="font-extrabold" style={{ color: INK }}>인바디 측정 기록지</h3><Sub>기본 3항목은 필수, 상세 항목은 선택입니다</Sub></div>
-          <button onClick={() => setQr(true)} className="flex shrink-0 items-center gap-1 rounded-full px-3 py-2 text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>
-            <QrCode size={13} /> QR 불러오기
-          </button>
         </div>
         <div className="mt-4 space-y-3">
-          {qrHit && (
-            <div className="flex items-start gap-1.5 rounded-2xl px-3 py-2.5" style={{ backgroundColor: GOOD_S }}>
-              <Check size={13} style={{ color: GOOD, marginTop: 2 }} />
-              <span className="min-w-0 flex-1 text-xs font-bold" style={{ color: INK }}>
-                QR에서 {qrHit.list.join(" · ")}을(를) 불러왔습니다{qrHit.date ? ` · 측정일 ${ymd(qrHit.date)}` : ""}. 값을 확인한 뒤 저장해 주세요.
-              </span>
-              <button onClick={() => setQrHit(null)} className="shrink-0" style={{ color: SUB }}><X size={13} /></button>
-            </div>
-          )}
           <Field label="측정일"><input type="date" value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} className={inputCls} /></Field>
           <div className="grid grid-cols-3 gap-2">
             <Field label="체중 kg"><input inputMode="decimal" value={f.weight} onChange={(e) => setF({ ...f, weight: e.target.value })} placeholder={last ? String(last.weight) : "0.0"} className={inputCls} /></Field>
@@ -5482,19 +5713,7 @@ function InbodyForm({ member, last, onSave, onDelete, onPatch, onToast }) {
           {inbodyOf(member).length === 0 && <Sub>아직 측정 기록이 없습니다.</Sub>}
         </div>
       </Card>
-      {qr && (
-        <QrSheet onClose={() => setQr(false)} onRead={(r) => {
-          const ks = Object.keys(r.values);
-          const fill = {};
-          ks.forEach((k) => { fill[k] = String(r.values[k]); });
-          setF((x) => ({ ...x, ...fill, date: r.date || x.date }));
-          if (ks.some((k) => ["fatMass", "bmi", "bmr", "visceral", "score"].indexOf(k) >= 0)) setMore(true);
-          setQrHit({ list: ks.map((k) => QR_LABEL[k] || k), date: r.date });
-          setQr(false);
-          onToast({ ok: true, msg: `QR에서 ${ks.length}개 항목을 불러왔습니다.` });
-        }} />
-      )}
-    </>
+          </>
   );
 }
 function NoteForm({ member, schedule, onSave, settings, onSettings, backHint }) {
@@ -5659,29 +5878,56 @@ function PerfForm({ member, onPatch, onToast }) {
   );
 }
 
-const INFO_FIELDS = ["name", "age", "birth", "duetWith", "instructor", "phone", "goal", "focus", "passName", "regular", "service", "total", "startDate", "contractEnd", "status", "endedAt", "endedReason", "endedMemo", "holdFrom", "holdUntil", "holdReason"];
+const INFO_FIELDS = ["name", "age", "birth", "duetWith", "instructor", "phone", "goal", "focus", "passName", "payRate", "groupRate", "regular", "service", "total", "startDate", "contractEnd", "status", "endedAt", "endedReason", "endedMemo", "holdFrom", "holdUntil", "holdReason"];
 
 function PaymentSheet({ member, onClose, onSubmit }) {
-  const [f, setF] = useState({ date: todayISO(), name: member.passName || "", sessions: "", service: "0", amount: "", method: "카드", end: member.contractEnd || "", memo: "" });
+  const [f, setF] = useState({
+    date: todayISO(), name: member.passName || "", sessions: "", service: "0", amount: "",
+    method: "카드", end: member.contractEnd || "", memo: "",
+    payRate: member.payRate ? String(member.payRate) : "",
+    groupRate: member.groupRate ? String(member.groupRate) : "",
+  });
+  const [months, setMonths] = useState(0);
+  const [more, setMore] = useState(false);
   const n = Number(f.sessions) || 0, amt = Number(f.amount) || 0;
   const unit = n > 0 && amt > 0 ? Math.round(amt / n) : 0;
+  const onlyNum = (v) => v.replace(/[^0-9]/g, "");
+  /* 회당 수업료를 넣으면 총액이, 총액을 넣으면 회당이 서로 채워진다 */
+  const setUnitPrice = (v) => {
+    const u = Number(onlyNum(v)) || 0;
+    setF((p) => ({ ...p, payRate: onlyNum(v), amount: u > 0 && (Number(p.sessions) || 0) > 0 ? String(u * Number(p.sessions)) : p.amount }));
+  };
+  const setSessions = (v) => {
+    const c = Number(onlyNum(v)) || 0, u = Number(f.payRate) || 0;
+    setF((p) => ({ ...p, sessions: onlyNum(v), amount: u > 0 && c > 0 ? String(u * c) : p.amount }));
+  };
+  const setAmount = (v) => {
+    const a = Number(onlyNum(v)) || 0, c = Number(f.sessions) || 0;
+    setF((p) => ({ ...p, amount: onlyNum(v), payRate: a > 0 && c > 0 ? String(Math.round(a / c)) : p.payRate }));
+  };
+  const addMonthsBtn = (k) => {
+    const m = Math.max(0, months + k);
+    setMonths(m);
+    setF((p) => ({ ...p, end: m > 0 ? addMonths(p.date, m) : "" }));
+  };
   return (
     <Sheet title="수강권 등록" onClose={onClose}>
       <div className="space-y-3">
-        <div className="grid grid-cols-2 gap-2">
-          <Field label="등록일"><input type="date" value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} className={inputCls} /></Field>
-          <Field label="결제 수단">
-            <select value={f.method} onChange={(e) => setF({ ...f, method: e.target.value })} className={inputCls}>
-              {["카드", "현금", "계좌이체", "기타"].map((m) => <option key={m}>{m}</option>)}
-            </select>
-          </Field>
-        </div>
         <Field label="수강권 이름"><input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="예) 개인레슨 30회" className={inputCls} /></Field>
-        <div className="grid grid-cols-2 gap-2">
-          <Field label="정규 횟수"><input inputMode="numeric" value={f.sessions} onChange={(e) => setF({ ...f, sessions: e.target.value })} placeholder="30" className={inputCls} /></Field>
-          <Field label="서비스 횟수"><input inputMode="numeric" value={f.service} onChange={(e) => setF({ ...f, service: e.target.value })} placeholder="0" className={inputCls} /></Field>
+        <Field label="정규 횟수"><input inputMode="numeric" value={f.sessions} onChange={(e) => setSessions(e.target.value)} placeholder="30" className={inputCls} /></Field>
+        <div className="rounded-2xl p-3" style={{ backgroundColor: CANVAS }}>
+          <p className="mb-2 text-xs font-extrabold" style={{ color: INK }}>이 회원 수업료 <span className="font-bold" style={{ color: SUB }}>· 비워 두면 설정의 기본값</span></p>
+          <div className="grid grid-cols-2 gap-2">
+            <Field label="개인 1회당 원">
+              <input inputMode="numeric" value={f.payRate} onChange={(e) => setUnitPrice(e.target.value)} placeholder="40000" className={inputCls} />
+            </Field>
+            <Field label="그룹 1회당 원" hint="선택">
+              <input inputMode="numeric" value={f.groupRate} onChange={(e) => setF({ ...f, groupRate: onlyNum(e.target.value) })} placeholder="20000" className={inputCls} />
+            </Field>
+          </div>
+          <Sub className="mt-1 block">개인 1회당 × 정규 횟수 = 총 결제 금액이 자동으로 채워집니다</Sub>
         </div>
-        <Field label="총 결제 금액 원"><input inputMode="numeric" value={f.amount} onChange={(e) => setF({ ...f, amount: e.target.value.replace(/[^0-9]/g, "") })} placeholder="2100000" className={inputCls} /></Field>
+        <Field label="총 결제 금액 원"><input inputMode="numeric" value={f.amount} onChange={(e) => setAmount(e.target.value)} placeholder="2100000" className={inputCls} /></Field>
         <div className="flex gap-1.5">
           {[100000, 500000, 1000000].map((v) => (
             <button key={v} onClick={() => setF({ ...f, amount: String((Number(f.amount) || 0) + v) })} className="flex-1 rounded-xl py-2 text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>+{won(v)}</button>
@@ -5693,21 +5939,42 @@ function PaymentSheet({ member, onClose, onSubmit }) {
           <p className="text-2xl font-extrabold tabular-nums" style={{ color: PRIMARY }}>₩{won(amt)}</p>
           <Sub>{n > 0 ? `정규 ${n}회${Number(f.service) ? ` + 서비스 ${f.service}회` : ""} · 회당 ₩${won(unit)}` : "정규 횟수를 입력하면 회당 단가가 계산됩니다"}</Sub>
         </div>
-        <Field label="유효기간" hint="누르면 만료일이 자동 계산됩니다">
+        <Field label="유효기간" hint="누를 때마다 더해집니다">
           <div className="flex gap-1.5">
-            {[1, 3, 6, 12].map((n) => (
-              <button key={n} onClick={() => setF({ ...f, end: addMonths(f.date, n) })} className="flex-1 rounded-xl py-2 text-xs font-bold"
-                style={f.end === addMonths(f.date, n) ? { backgroundColor: BRAND, color: "#fff" } : { backgroundColor: CANVAS, color: SUB }}>{n}개월</button>
+            {[1, 3, 6, 12].map((k) => (
+              <button key={k} onClick={() => addMonthsBtn(k)} className="flex-1 rounded-xl py-2 text-xs font-bold"
+                style={{ backgroundColor: CANVAS, color: SUB }}>+{k}개월</button>
             ))}
+            <button onClick={() => { setMonths(0); setF({ ...f, end: "" }); }} className="rounded-xl px-3 py-2 text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>지우기</button>
           </div>
+          {months > 0 && <Sub className="mt-1 block">총 <b style={{ color: PRIMARY }}>{months}개월</b> · 만료일 {ymd(f.end)}</Sub>}
         </Field>
-        <div className="grid grid-cols-2 gap-2">
-          <Field label="만료일"><input type="date" value={f.end} onChange={(e) => setF({ ...f, end: e.target.value })} className={inputCls} /></Field>
-          <Field label="메모" hint="선택"><input value={f.memo} onChange={(e) => setF({ ...f, memo: e.target.value })} placeholder="예) 재등록 할인" className={inputCls} /></Field>
-        </div>
+        <button onClick={() => setMore((v) => !v)} className="flex w-full items-center gap-2 rounded-2xl px-3 py-2.5" style={{ backgroundColor: CANVAS }}>
+          <span className="text-xs font-extrabold" style={{ color: INK }}>자세히</span>
+          <Sub className="min-w-0 flex-1 truncate text-left">등록일 · 결제수단 · 서비스 횟수 · 만료일 · 메모</Sub>
+          <ChevronDown size={14} style={{ color: SUB, transform: more ? "rotate(180deg)" : "none" }} />
+        </button>
+        {more && (
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-2">
+              <Field label="등록일"><input type="date" value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} className={inputCls} /></Field>
+              <Field label="결제 수단">
+                <select value={f.method} onChange={(e) => setF({ ...f, method: e.target.value })} className={inputCls}>
+                  {["카드", "현금", "계좌이체", "기타"].map((m) => <option key={m}>{m}</option>)}
+                </select>
+              </Field>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <Field label="서비스 횟수"><input inputMode="numeric" value={f.service} onChange={(e) => setF({ ...f, service: e.target.value })} placeholder="0" className={inputCls} /></Field>
+              <Field label="만료일"><input type="date" value={f.end} onChange={(e) => setF({ ...f, end: e.target.value })} className={inputCls} /></Field>
+            </div>
+            <Field label="메모" hint="선택"><input value={f.memo} onChange={(e) => setF({ ...f, memo: e.target.value })} placeholder="예) 재등록 할인" className={inputCls} /></Field>
+          </div>
+        )}
         <PrimaryBtn disabled={!(n > 0 && amt > 0)} onClick={() => onSubmit({
           id: uid(), date: f.date, name: f.name || "수강권", sessions: n, service: Number(f.service) || 0,
           amount: amt, unit, method: f.method, end: f.end, memo: f.memo,
+          payRate: Number(f.payRate) || 0, groupRate: Number(f.groupRate) || 0,
         })}>
           <Ticket size={16} /> 등록하고 잔여 횟수에 더하기
         </PrimaryBtn>
@@ -5779,6 +6046,8 @@ function InfoForm({ member, members, onPatch, onDelete, onToast }) {
       total: (member.total || 0) + rec.sessions + rec.service,
       passName: rec.name,
     };
+    if (rec.payRate > 0) patch.payRate = rec.payRate;
+    if (rec.groupRate > 0) patch.groupRate = rec.groupRate;
     if (rec.end) patch.contractEnd = rec.end;
     onPatch(member.id, patch);
     setD((x) => ({ ...x, ...patch }));
@@ -5827,6 +6096,19 @@ function InfoForm({ member, members, onPatch, onDelete, onToast }) {
                 .map((m) => <option key={m.id} value={m.id}>{m.name || "이름 미입력"}</option>)}
             </SelectBox>
           </Field>
+          <div className="rounded-2xl p-3" style={{ backgroundColor: CANVAS }}>
+            <p className="mb-2 text-xs font-extrabold" style={{ color: INK }}>이 회원 수업료 <span className="font-bold" style={{ color: SUB }}>· 비워 두면 설정의 기본값</span></p>
+            <div className="grid grid-cols-2 gap-2">
+              <Field label="개인 1회당 원">
+                <input inputMode="numeric" value={d.payRate || ""} placeholder="기본값 사용"
+                  onChange={(e) => S({ payRate: Number(e.target.value.replace(/[^0-9]/g, "")) || 0 })} className={inputCls} />
+              </Field>
+              <Field label="그룹 1회당 원">
+                <input inputMode="numeric" value={d.groupRate || ""} placeholder="기본값 사용"
+                  onChange={(e) => S({ groupRate: Number(e.target.value.replace(/[^0-9]/g, "")) || 0 })} className={inputCls} />
+              </Field>
+            </div>
+          </div>
           <Field label="목표" hint="이름 아래 보라색 태그"><input value={d.goal} onChange={(e) => S({ goal: e.target.value })} placeholder="예) 체지방 감량 · 코어 강화" className={inputCls} /></Field>
           <Field label="체형 · 상태 태그">
             <div className="flex flex-wrap gap-1.5">
@@ -6284,6 +6566,20 @@ function SettingsTab({ db, photos, account, onChangeSettings, onChangePhoto, sav
         <h3 className="font-extrabold" style={{ color: INK }}>센터 정보</h3>
         <div className="mt-4 space-y-3">
           <Field label="센터명"><input value={db.settings.center} onChange={(e) => onChangeSettings({ ...db.settings, center: e.target.value })} className={inputCls} /></Field>
+          <div className="rounded-2xl p-3" style={{ backgroundColor: CANVAS }}>
+            <p className="text-xs font-extrabold" style={{ color: INK }}>내 수업료 기본값</p>
+            <Sub className="mb-2 block">회원마다 다르면 그 회원 정보에서 따로 넣으세요 · 비워 두면 이 값을 씁니다</Sub>
+            <div className="grid grid-cols-2 gap-2">
+              <Field label="개인 1회당 원">
+                <input inputMode="numeric" value={db.settings.payRate ?? DEF_RATE} placeholder={String(DEF_RATE)}
+                  onChange={(e) => onChangeSettings({ ...db.settings, payRate: Number(e.target.value.replace(/[^0-9]/g, "")) || 0 })} className={inputCls} />
+              </Field>
+              <Field label="그룹 1회당 원">
+                <input inputMode="numeric" value={db.settings.groupRate ?? DEF_GROUP_RATE} placeholder={String(DEF_GROUP_RATE)}
+                  onChange={(e) => onChangeSettings({ ...db.settings, groupRate: Number(e.target.value.replace(/[^0-9]/g, "")) || 0 })} className={inputCls} />
+              </Field>
+            </div>
+          </div>
           <Field label="기본 담당자" hint="수업 등록 시 자동 입력"><input value={db.settings.staff} onChange={(e) => onChangeSettings({ ...db.settings, staff: e.target.value })} className={inputCls} /></Field>
         </div>
       </Card>
@@ -6791,14 +7087,17 @@ export default function App() {
   const savePose = async (rec) => {
     if (!member) return;
     const out = { ...rec };
-    delete out.blob;
+    delete out.blob; delete out.cleanBlob;
     if (rec.blob) {
       try { const bid = newBlobId(); await blobPut(bid, rec.blob); out.blobId = bid; out.src = URL.createObjectURL(rec.blob); }
       catch (e) { try { out.src = await blobToDataUrl(rec.blob); } catch (e2) {} }
     }
+    if (rec.cleanBlob) {
+      try { const cid = newBlobId(); await blobPut(cid, rec.cleanBlob); out.cleanBlobId = cid; } catch (e) {}
+    }
     const cur = photos[member.id] || {};
     const keep = [out, ...(cur.poses || [])];
-    forgetBlobs(keep.slice(6).map((p) => p.blobId).filter(Boolean));
+    forgetBlobs(keep.slice(6).flatMap((p) => [p.blobId, p.cleanBlobId]).filter(Boolean));
     savePhotos({ ...photos, [member.id]: { ...cur, poses: keep.slice(0, 6) } });
     setToast({ ok: true, msg: "저장했습니다 · 아래 '저장된 분석' 목록에서 다시 볼 수 있어요." });
   };
@@ -6807,7 +7106,7 @@ export default function App() {
     const cur = photos[member.id] || {};
     const gone = (cur.poses || []).find((p) => p.id === pid);
     savePhotos({ ...photos, [member.id]: { ...cur, poses: (cur.poses || []).filter((p) => p.id !== pid) } });
-    if (gone?.blobId) forgetBlobs([gone.blobId]);
+    forgetBlobs([gone?.blobId, gone?.cleanBlobId].filter(Boolean));
   };
   const adjustPhoto = (view, pid, tf, gid, gtf) => {
     const cur = photos[member.id] || {};
@@ -6949,7 +7248,8 @@ export default function App() {
                     onSaveMarks={saveMarks} onAdjustPhoto={adjustPhoto} onDeleteNote={deleteNote} onToast={setToast} goRecord={goRecord}
                     onSavePose={savePose} onDeletePose={deletePose} onSaveSet={saveSet}
                     onToggleFav={(sid) => toggleFav(member.id, sid)} onDeleteSet={(sid) => deleteSet(member.id, sid)}
-                    onBrief={(m) => setBrief({ member: m, rest: left(m), d: ddaySafe(m.contractEnd), att: attendanceOf(db.schedule, m.id), reasons: [] })} />
+                    onBrief={(m) => setBrief({ member: m, rest: left(m), d: ddaySafe(m.contractEnd), att: attendanceOf(db.schedule, m.id), reasons: [] })}
+                    centerName={db.settings.center} />
                   </Guard>
                 ) : (
                   <Card className="p-8 text-center"><p className="text-sm font-bold">회원을 추가하면 여기에 상세 대시보드가 표시됩니다.</p></Card>

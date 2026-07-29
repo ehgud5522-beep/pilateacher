@@ -85,7 +85,7 @@ const sysDarkNow = () => {
 };
 
 /* 파일이 실제로 교체됐는지 1초 만에 확인하는 표시 — 설정 탭 맨 아래에 뜬다 */
-const APP_VER = "v72 · 2026-07-29";
+const APP_VER = "v73 · 2026-07-29";
 try { if (typeof window !== "undefined") window.PILATEACHER_VER = APP_VER; } catch (e) {}
 
 const ACC_KEY = "pilateacher_accounts_v1";
@@ -1985,7 +1985,15 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
         </div>
       </div>
 
-      <Guard label="오늘의 시퀀스"><SequenceCard members={db.members} schedule={db.schedule} photos={photos} onWriteNote={onWriteNote} onToast={onToast} /></Guard>
+      <div className="grid gap-3 lg:grid-cols-2">
+        <Guard label="다음 수업 브리핑">
+          <NextClassCard members={db.members} schedule={db.schedule} photos={photos}
+            onStatus={onStatus} onOpenMember={onOpenMember} onWriteNote={onWriteNote} />
+        </Guard>
+        <Guard label="오늘의 시퀀스">
+          <SequenceCard members={db.members} schedule={db.schedule} photos={photos} onWriteNote={onWriteNote} onToast={onToast} />
+        </Guard>
+      </div>
 
       {todayRows.length > 0 && unwritten > 0 && (
         <button onClick={() => onWriteNote && firstUnwritten && onWriteNote(firstUnwritten.id, firstUnwritten.sid)} className="flex w-full items-center gap-2 rounded-2xl px-4 py-3" style={{ backgroundColor: WARN_S }}>
@@ -5581,6 +5589,80 @@ function seqAdvice(member, schedule, photos) {
   };
 }
 
+/* 오늘 아직 처리 안 된 가장 이른 수업 — 시퀀스 카드와 같은 기준을 쓴다 */
+function nextTarget(schedule, members) {
+  const T = todayISO();
+  const rows = (schedule || [])
+    .filter((s) => s?.date === T && !isPersonalEvt(s) && !isEquipGroup(s))
+    .sort((a, b) => String(a.start).localeCompare(String(b.start)));
+  for (const s of rows) {
+    const a = attendeesOf(s).find((x) => !x.deductFrom && x.status !== "noshow" && x.status !== "cancel");
+    if (a) { const m = (members || []).find((x) => x.id === a.memberId); if (m) return { m, s, a }; }
+  }
+  return null;
+}
+
+function NextClassCard({ members, schedule, photos, onStatus, onOpenMember, onWriteNote }) {
+  const target = useMemo(() => nextTarget(schedule, members), [schedule, members]);
+  const adv = useMemo(() => seqAdvice(target?.m, schedule, photos), [target, schedule, photos]);
+  if (!target) {
+    return (
+      <Card className="p-5">
+        <div className="flex items-center gap-2">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: GOOD_S }}><Check size={16} style={{ color: GOOD }} /></span>
+          <div className="min-w-0 flex-1">
+            <h3 className="font-extrabold" style={{ color: INK }}>다음 수업 브리핑</h3>
+            <Sub>오늘 남은 수업이 없습니다</Sub>
+          </div>
+        </div>
+      </Card>
+    );
+  }
+  const { m, s } = target;
+  const rest = left(m);
+  const cautions = [...(m.focus || [])];
+  const poses = (photos?.[m.id]?.poses || []).filter((p) => p && p.metrics);
+  (poses[0]?.metrics || []).filter((x) => x.level === "bad").forEach((x) => cautions.push(x.label.replace(" 각도", "")));
+  return (
+    <Card className="p-5">
+      <div className="flex items-center gap-2">
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl" style={{ background: GRAD }}><Target size={16} color="#fff" /></span>
+        <div className="min-w-0 flex-1">
+          <h3 className="truncate font-extrabold" style={{ color: INK }}>다음 수업 · {s.start} {s.type}</h3>
+          <Sub>{s.room || "룸 미지정"}</Sub>
+        </div>
+      </div>
+      <button onClick={() => onOpenMember && onOpenMember(m.id)} className="mt-3 flex w-full items-center gap-2 rounded-2xl px-3 py-2.5 text-left" style={{ backgroundColor: CANVAS }}>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-extrabold" style={{ color: INK }}>{m.name || "이름 미입력"} 회원님</p>
+          <Sub>{rest > 0 ? `잔여 ${rest}회` : "잔여 없음"}{ageOf(m) !== null ? ` · ${ageOf(m)}세` : ""}</Sub>
+        </div>
+        <ChevronRight size={15} style={{ color: FAINT }} />
+      </button>
+      {cautions.length > 0 && (
+        <div className="mt-2 flex items-start gap-1.5 rounded-2xl px-3 py-2.5" style={{ backgroundColor: WARN_S }}>
+          <AlertTriangle size={13} style={{ color: WARN, marginTop: 2 }} />
+          <p className="min-w-0 flex-1 text-xs font-bold leading-relaxed" style={{ color: INK }}>{cautions.slice(0, 4).join(" · ")}</p>
+        </div>
+      )}
+      {adv && !adv.first && adv.last?.body && (
+        <p className="mt-2 line-clamp-2 text-xs leading-relaxed" style={{ color: INK2 }}>지난 일지: {adv.last.body}</p>
+      )}
+      {adv && adv.first && (
+        <button onClick={() => onWriteNote && onWriteNote(m.id, s.id)} className="mt-2 flex w-full items-center gap-1.5 rounded-2xl px-3 py-2.5" style={{ backgroundColor: TINT }}>
+          <Pencil size={13} style={{ color: PRIMARY }} />
+          <span className="text-xs font-extrabold" style={{ color: PRIMARY }}>첫 수업입니다 · 일지를 기록해 주세요</span>
+        </button>
+      )}
+      <div className="mt-3 grid grid-cols-3 gap-1.5">
+        <button onClick={() => onStatus(s.id, "done", m.id)} className="rounded-2xl py-2.5 text-xs font-extrabold text-white" style={{ backgroundColor: GOOD }}>출석</button>
+        <button onClick={() => onStatus(s.id, "noshow", m.id)} className="rounded-2xl py-2.5 text-xs font-extrabold" style={{ backgroundColor: BAD_S, color: BAD }}>노쇼</button>
+        <button onClick={() => onStatus(s.id, "cancel", m.id)} className="rounded-2xl py-2.5 text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: SUB }}>취소</button>
+      </div>
+    </Card>
+  );
+}
+
 function VideoPlayer({ video, onClose, onToast }) {
   const boxRef = useRef(null);
   const playerRef = useRef(null);
@@ -5718,17 +5800,7 @@ function SequenceCard({ members, schedule, photos, onWriteNote, onToast }) {
   const [busy, setBusy] = useState(false);
   const [play, setPlay] = useState(null);
   /* 오늘 아직 안 한 수업 중 가장 이른 회원을 기준으로 삼는다 */
-  const target = useMemo(() => {
-    const T = todayISO();
-    const rows = (schedule || [])
-      .filter((s) => s?.date === T && !isPersonalEvt(s) && !isEquipGroup(s))
-      .sort((a, b) => String(a.start).localeCompare(String(b.start)));
-    for (const s of rows) {
-      const a = attendeesOf(s).find((x) => !x.deductFrom && x.status !== "noshow" && x.status !== "cancel");
-      if (a) { const m = (members || []).find((x) => x.id === a.memberId); if (m) return { m, s }; }
-    }
-    return null;
-  }, [schedule, members]);
+  const target = useMemo(() => nextTarget(schedule, members), [schedule, members]);
   const adv = useMemo(() => seqAdvice(target?.m, schedule, photos), [target, schedule, photos]);
   const [manualKw, setManualKw] = useState(false);
   useEffect(() => {
@@ -5754,7 +5826,7 @@ function SequenceCard({ members, schedule, photos, onWriteNote, onToast }) {
   const vids = useMemo(() => {
     const seen = new Set(); const out = [];
     [...ytFilter(pool || [], kw), ...extra].forEach((v) => { if (!seen.has(v.id)) { seen.add(v.id); out.push(v); } });
-    return out.sort((a, b) => (b.at || "").localeCompare(a.at || "")).slice(0, 4);
+    return out.sort((a, b) => (b.at || "").localeCompare(a.at || "")).slice(0, 6);
   }, [pool, extra, kw]);
   return (
     <Card className="p-4">
@@ -5804,7 +5876,7 @@ function SequenceCard({ members, schedule, photos, onWriteNote, onToast }) {
           {!err && !pool && <div className="flex justify-center py-6"><Loader2 size={18} className="animate-spin" style={{ color: PRIMARY }} /></div>}
           {!err && pool && vids.length === 0 && !busy && <Sub className="block py-3 text-center">'{kw}' 영상이 아직 없습니다 · 다른 키워드를 눌러 보세요</Sub>}
           {busy && <Sub className="block text-center">'{kw}' 영상을 채널에서 찾는 중…</Sub>}
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-3 gap-2">
             {vids.map((v) => (
               <button key={v.id} onClick={() => setPlay(v)} className="text-left">
                 <div className="relative overflow-hidden rounded-2xl bg-photo" style={{ aspectRatio: "16 / 9" }}>
@@ -5816,7 +5888,7 @@ function SequenceCard({ members, schedule, photos, onWriteNote, onToast }) {
                   </span>
                 </div>
                 <p className="mt-1 line-clamp-2 text-xs font-bold leading-snug" style={{ color: INK }}>{v.title}</p>
-                <Sub className="block truncate">{v.ch}</Sub>
+                <Sub className="block truncate text-xs">{v.ch}</Sub>
               </button>
             ))}
           </div>

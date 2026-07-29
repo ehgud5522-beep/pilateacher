@@ -85,7 +85,7 @@ const sysDarkNow = () => {
 };
 
 /* 파일이 실제로 교체됐는지 1초 만에 확인하는 표시 — 설정 탭 맨 아래에 뜬다 */
-const APP_VER = "v76 · 2026-07-29";
+const APP_VER = "v77 · 2026-07-29";
 try { if (typeof window !== "undefined") window.PILATEACHER_VER = APP_VER; } catch (e) {}
 
 const ACC_KEY = "pilateacher_accounts_v1";
@@ -2011,14 +2011,18 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
         </div>
       </div>
 
-      <div className="grid gap-3 lg:grid-cols-2">
-        <Guard label="다음 수업 브리핑">
-          <NextClassCard members={db.members} schedule={db.schedule} photos={photos}
-            onStatus={onStatus} onOpenMember={onOpenMember} onWriteNote={onWriteNote} />
-        </Guard>
-        <Guard label="오늘의 시퀀스">
-          <SequenceCard members={db.members} schedule={db.schedule} photos={photos} onWriteNote={onWriteNote} onToast={onToast} compact />
-        </Guard>
+      <div className="grid min-w-0 gap-3 lg:grid-cols-2">
+        <div className="min-w-0">
+          <Guard label="다음 수업 브리핑">
+            <NextClassCard members={db.members} schedule={db.schedule} photos={photos}
+              onStatus={onStatus} onOpenMember={onOpenMember} onWriteNote={onWriteNote} />
+          </Guard>
+        </div>
+        <div className="min-w-0">
+          <Guard label="오늘의 시퀀스">
+            <SequenceCard members={db.members} schedule={db.schedule} photos={photos} onWriteNote={onWriteNote} onToast={onToast} compact />
+          </Guard>
+        </div>
       </div>
 
       {todayRows.length > 0 && unwritten > 0 && (
@@ -2096,199 +2100,6 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
         </Card>
       )}
 
-      {todayRows.length > 0 && (
-        <Card className="p-5">
-          <div className="flex items-center justify-between">
-            <div>
-              <h3 className="font-extrabold" style={{ color: INK }}>오늘 수업</h3>
-              <Sub>여기서 출석 · 노쇼 · 취소를 처리하면 잔여 횟수에 바로 반영됩니다</Sub>
-            </div>
-            <span className="rounded-full px-2.5 py-1 text-xs font-extrabold" style={{ backgroundColor: TINT, color: PRIMARY }}>{todayRows.length}건</span>
-          </div>
-          <div className="mt-2 flex items-center gap-1.5 rounded-xl px-3 py-2" style={{ backgroundColor: CANVAS }}>
-            <ChevronLeft size={13} style={{ color: PRIMARY }} />
-            <p className="text-xs font-bold" style={{ color: INK }}>끝난 수업과 일정은 <span style={{ color: PRIMARY }}>왼쪽으로 밀어</span> 정리해 두세요</p>
-            {parkedCount > 0 && (
-              <button onClick={() => setParked({})} className="ml-auto rounded-full bg-white px-2.5 py-1 text-xs font-extrabold" style={{ color: PRIMARY }}>모두 올리기 {parkedCount}</button>
-            )}
-          </div>
-          <div className="mt-2 grid gap-2 md:grid-cols-2">
-            {sortedRows.map((r, i) => {
-              const down = !!parked[r.key];
-              const settled = isSettled(r);
-              const wrap = (inner) => (
-                <div key={`${r.key}#${bump}`}
-                  style={bump === 0 ? undefined : {
-                    animation: `${down ? "rowSink" : "rowRise"} .46s cubic-bezier(.34,1.5,.5,1) both`,
-                    animationDelay: `${Math.min(i, 6) * 32}ms`,
-                    willChange: "transform",
-                  }}>
-                  <SwipeRow down={down} enabled={canPark(r)}
-                    onPark={() => setParked((p) => ({ ...p, [r.key]: true }))}
-                    onUnpark={() => setParked((p) => { const q = { ...p }; delete q[r.key]; return q; })}>
-                    <div style={{ opacity: settled ? 0.62 : 1, filter: settled ? "saturate(.55)" : "none", transition: "opacity .2s, filter .2s" }}>{inner}</div>
-                  </SwipeRow>
-                </div>
-              );
-              if (r.kind === "equip") return wrap(
-                <div className="rounded-2xl p-3" style={{ backgroundColor: CANVAS }}>
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-xs font-extrabold tabular-nums" style={{ color: PRIMARY }}>{r.start}</span>
-                    <span className="truncate text-xs" style={{ color: SUB }}>그룹</span>
-                    <span className="ml-auto rounded-full px-2 py-0.5 text-xs font-extrabold" style={{ backgroundColor: r.done ? GOOD_S : TINT, color: r.done ? GOOD : PRIMARY }}>{r.done ? "완료" : "예정"}</span>
-                  </div>
-                  <p className="mt-1 truncate text-base font-extrabold" style={{ color: INK }}>{r.equip || "기구 미선택"} 그룹</p>
-                  <p className="mt-1.5 text-xs" style={{ color: INK2, minHeight: 26 }}>{r.done ? "이달 누적에 반영되었습니다" : "수업을 마치면 완료로 표시해 주세요"}</p>
-                  <div className="mt-2 flex gap-1.5">
-                    {r.done
-                      ? <button onClick={() => onGroupDone && doGroupDone(r.sid, false)} className="flex-1 rounded-lg py-1.5 text-xs font-extrabold" style={{ backgroundColor: GOOD_S, color: GOOD }}>완료 취소</button>
-                      : <button onClick={() => onGroupDone && doGroupDone(r.sid, true)} className="flex-1 rounded-lg py-1.5 text-xs font-extrabold text-white" style={{ backgroundColor: GOOD }}>진행 완료</button>}
-                    <button onClick={() => setEditing(r.s)} aria-label="수업 수정" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white" style={{ color: SUB }}><Pencil size={13} /></button>
-                  </div>
-                </div>
-              );
-              if (r.kind === "personal") return wrap(
-                <div className="rounded-2xl p-3" style={{ backgroundColor: CANVAS, borderLeft: `4px solid ${MINT}` }}>
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-xs font-extrabold tabular-nums" style={{ color: MINT }}>{r.start}</span>
-                    <span className="text-xs" style={{ color: SUB }}>~ {r.end} · 내 일정</span>
-                    <button onClick={() => setEditing(r.s)} aria-label="일정 수정" className="ml-auto flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-white" style={{ color: SUB }}><Pencil size={12} /></button>
-                  </div>
-                  <p className="mt-1 truncate text-base font-extrabold" style={{ color: INK }}>{r.title || "제목 없음"}</p>
-                  {r.memo && <p className="mt-1 line-clamp-2 text-xs" style={{ color: INK2 }}>{r.memo}</p>}
-                </div>
-              );
-              if (r.kind === "multi") {
-                const names = r.list.map((a) => memberOf(a.memberId)?.name || "삭제된 회원");
-                const allBooked = r.list.every((a) => a.status === "booked");
-                const same = r.list.every((a) => a.status === r.list[0].status);
-                const st0 = stOf(r.list[0].status);
-                const open = !!solo[r.key];
-                return wrap(
-                  <div className="rounded-2xl p-3" style={{ backgroundColor: settled ? CANVAS : CARD, border: `1px solid ${settled ? "transparent" : LINE}`, borderLeft: `4px solid ${settled ? GOOD : PRIMARY}` }}>
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-xs font-extrabold tabular-nums" style={{ color: settled ? GOOD : PRIMARY }}>{r.start}</span>
-                      <span className="truncate text-xs" style={{ color: SUB }}>{r.type} · {r.list.length}명</span>
-                      {canPark(r) && <ChevronLeft size={13} className="ml-auto shrink-0" style={{ color: down ? GOOD : PRIMARY, opacity: 0.75 }} />}
-                      <button onClick={() => setEditing(r.s)} aria-label="수업 수정" className={`${canPark(r) ? "" : "ml-auto "}flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-white`} style={{ color: SUB }}><Pencil size={12} /></button>
-                    </div>
-                    <p className="mt-1 truncate text-base font-extrabold" style={{ color: INK, maxWidth: "100%" }}>{names.join(" · ")}</p>
-                    <div className="mt-1 flex flex-wrap items-center gap-1">
-                      {r.list.map((a) => {
-                        const mm = memberOf(a.memberId);
-                        const rr = mm ? left(mm) : 0;
-                        return (
-                          <button key={a.memberId} onClick={() => onOpenMember && onOpenMember(a.memberId)}
-                            className="rounded-full px-2 py-0.5 text-xs font-bold" style={{ backgroundColor: CARD, color: rr <= 3 ? BAD : SUB }}>
-                            {mm?.name || "삭제됨"} 잔여 {rr}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    {allBooked ? (
-                      <div className="mt-2 flex gap-1.5">
-                        <button onClick={() => doStatusAll(r.sid, "done")} className="flex-1 rounded-lg py-2 text-xs font-extrabold text-white" style={{ backgroundColor: GOOD }}>{r.list.length}명 출석</button>
-                        <button onClick={() => doStatusAll(r.sid, "noshow")} className="flex-1 rounded-lg py-2 text-xs font-extrabold text-white" style={{ backgroundColor: BAD }}>노쇼</button>
-                        <button onClick={() => doStatusAll(r.sid, "cancel")} className="flex-1 rounded-lg py-2 text-xs font-extrabold" style={{ backgroundColor: CARD, color: SUB }}>취소</button>
-                      </div>
-                    ) : (
-                      <div className="mt-2 flex flex-wrap items-center gap-1.5 rounded-lg px-2 py-1.5" style={{ backgroundColor: same ? st0.bg : CARD }}>
-                        <span className="text-xs font-extrabold" style={{ color: same ? st0.color : INK }}>
-                          {same ? `${r.list.length}명 모두 ${st0.label}` : r.list.map((a, k) => `${names[k]} ${stOf(a.status).label}`).join(" · ")}
-                        </span>
-                        <button onClick={() => doStatusAll(r.sid, "booked")} className="ml-auto rounded-full bg-white px-2 py-0.5 text-xs font-bold" style={{ color: SUB }}>다시 고르기</button>
-                      </div>
-                    )}
-                    <button onClick={() => setSolo((v) => ({ ...v, [r.key]: !v[r.key] }))}
-                      className="mt-1.5 w-full rounded-lg py-1.5 text-xs font-bold" style={{ backgroundColor: CARD, color: PRIMARY }}>
-                      {open ? "따로 처리 접기" : "한 명만 따로 처리하기"}
-                    </button>
-                    {open && (
-                      <div className="mt-1.5 space-y-1.5">
-                        {r.list.map((a) => <SchedAttendeeRow key={a.memberId} s={r.s} a={a} members={db.members} onStatus={doStatus} onNoshowFee={onNoshowFee} />)}
-                      </div>
-                    )}
-                    {r.list.filter((a) => a.status === "done").map((a) => {
-                      const mm = memberOf(a.memberId);
-                      const written = (mm?.notes || []).some((x) => x?.sid === r.sid);
-                      if (written) return null;
-                      return (
-                        <div key={a.memberId} className="mt-1.5 flex gap-1.5">
-                          <button onClick={() => onWriteNote && onWriteNote(a.memberId, r.sid)} className="flex flex-1 items-center justify-center gap-1 rounded-lg py-2 text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}><Pencil size={12} /> {mm?.name || ""} 기록하기</button>
-                          <button onClick={() => onNoComment && onNoComment(a.memberId, r.type, r.sid)} className="flex-1 rounded-lg py-2 text-xs font-bold" style={{ backgroundColor: CARD, color: SUB }}>노코멘트</button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                );
-              }
-              const m = memberOf(r.id);
-              const rest = m ? left(m) : 0;
-              const lastD = m ? lastDoneOf(db.schedule, m.id) : null;
-              const idle = lastD ? Math.max(0, -dday(lastD)) : null;
-              const st = stOf(r.status);
-              const notes = (m?.notes || []).filter((x) => x && x.body).sort((a, b) => ((a.date || "") < (b.date || "") ? 1 : -1));
-              const lastNote = notes.find((x) => x.date !== T0) || null;
-              /* 같은 회원이 하루 두 번 와도 수업마다 따로 기록할 수 있게 수업 id 로 판정 */
-              const written = notes.some((x) => (x.sid ? x.sid === r.sid : false));
-              return wrap(
-                <div className="rounded-2xl p-3" style={{ backgroundColor: CANVAS }}>
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-xs font-extrabold tabular-nums" style={{ color: PRIMARY }}>{r.start}</span>
-                    <span className="truncate text-xs" style={{ color: SUB }}>{r.type}</span>
-                    {canPark(r) && <ChevronLeft size={13} className="ml-auto shrink-0" style={{ color: down ? GOOD : PRIMARY, opacity: 0.75 }} />}
-                    <button onClick={() => setEditing(r.s)} aria-label="수업 수정" className={`${canPark(r) ? "" : "ml-auto "}flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-white`} style={{ color: SUB }}><Pencil size={12} /></button>
-                  </div>
-                  <button onClick={() => onOpenMember && onOpenMember(r.id)} className="mt-1 block w-full truncate text-left text-base font-extrabold" style={{ color: INK }}>
-                    {m ? (m.name || "이름 미입력") : "삭제된 회원"}
-                  </button>
-                  <div className="mt-1 flex flex-wrap items-center gap-1">
-                    <span className="text-xs font-bold tabular-nums" style={{ color: rest <= 3 ? BAD : SUB }}>잔여 {rest}회</span>
-                    {r.deductFrom && <span className="rounded-full px-1.5 py-0.5 text-xs font-extrabold" style={{ backgroundColor: CARD, color: SUB }}>{r.deductFrom} −1회</span>}
-                    {idle !== null && idle >= 3 && (
-                      <span className="rounded-full px-1.5 py-0.5 text-xs font-extrabold" style={{ backgroundColor: `${idle >= 5 ? BAD : WARN}14`, color: idle >= 5 ? BAD : WARN }}>{restLabel(idle)}</span>
-                    )}
-                  </div>
-                  <p className="mt-1.5 line-clamp-2 text-xs leading-snug" style={{ color: INK2, minHeight: 26 }}>
-                    {lastNote ? `지난 수업 · ${lastNote.body}` : "지난 기록이 없습니다"}
-                  </p>
-                  {r.status === "booked" ? (
-                    <div className="mt-2 flex gap-1.5">
-                      <button onClick={() => doStatus(r.sid, "done", r.id)} className="flex-1 rounded-lg py-2 text-xs font-extrabold text-white" style={{ backgroundColor: GOOD }}>출석</button>
-                      <button onClick={() => doStatus(r.sid, "noshow", r.id)} className="flex-1 rounded-lg py-2 text-xs font-extrabold text-white" style={{ backgroundColor: BAD }}>노쇼</button>
-                      <button onClick={() => doStatus(r.sid, "cancel", r.id)} className="flex-1 rounded-lg py-2 text-xs font-extrabold" style={{ backgroundColor: CARD, color: SUB }}>취소</button>
-                    </div>
-                  ) : (
-                    <>
-                      <div className="mt-2 flex items-center gap-1.5 rounded-lg px-2 py-1.5" style={{ backgroundColor: st.bg }}>
-                        <span className="text-xs font-extrabold" style={{ color: st.color }}>{st.label}</span>
-                        {r.status === "noshow" && r.fee != null && (
-                          <span className="text-xs font-bold" style={{ color: st.color, opacity: 0.85 }}>· {r.fee ? `${r.deductFrom || "정규"} 1회 차감` : "차감 안 함"}</span>
-                        )}
-                        {r.status === "cancel" && <span className="text-xs font-bold" style={{ color: st.color, opacity: 0.85 }}>· 차감 없음</span>}
-                        {r.status === "done" && written && <span className="text-xs font-bold" style={{ color: st.color, opacity: 0.85 }}>· 기록 완료</span>}
-                        <button onClick={() => doStatus(r.sid, "booked", r.id)} className="ml-auto rounded-full bg-white px-2 py-0.5 text-xs font-bold" style={{ color: SUB }}>다시 고르기</button>
-                      </div>
-                      {r.status === "done" && !written && (
-                        <div className="mt-1.5 flex gap-1.5">
-                          <button onClick={() => onWriteNote && onWriteNote(r.id, r.sid)} className="flex flex-1 items-center justify-center gap-1 rounded-lg py-2 text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}><Pencil size={12} /> 기록하기</button>
-                          <button onClick={() => onNoComment && onNoComment(r.id, r.type, r.sid)} className="flex-1 rounded-lg py-2 text-xs font-bold" style={{ backgroundColor: CARD, color: SUB }}>노코멘트</button>
-                        </div>
-                      )}
-                      {r.status === "noshow" && r.fee == null && (
-                        <div className="mt-1.5 flex gap-1.5">
-                          <button onClick={() => onNoshowFee(r.sid, true, r.id)} className="flex-1 rounded-lg py-2 text-xs font-extrabold text-white" style={{ backgroundColor: BAD }}>1회 차감</button>
-                          <button onClick={() => onNoshowFee(r.sid, false, r.id)} className="flex-1 rounded-lg py-2 text-xs font-bold" style={{ backgroundColor: CARD, color: SUB }}>차감 안 함</button>
-                        </div>
-                      )}
-                    </>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </Card>
-      )}
       <Card className="p-4">
         <div className="flex items-center gap-2">
           <button onClick={() => step(-1)} className="rounded-xl p-2" style={{ backgroundColor: CANVAS }}><ChevronLeft size={16} style={{ color: SUB }} /></button>
@@ -2391,29 +2202,6 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
           ) : (
             <div className="mt-2 space-y-1.5">{byDate(cursor).map((s) => <SchedLine key={s.id} s={s} members={db.members} onEdit={setEditing} />)}</div>
           )}
-        </Card>
-      )}
-      {mode === "week" && (
-        <Card className="p-4">
-          <div className="mb-2 flex items-center gap-2">
-            <Clock size={15} style={{ color: PRIMARY }} />
-            <h3 className="font-extrabold" style={{ color: INK }}>이번 주 일정</h3>
-            <Sub className="ml-auto">{weekDays.reduce((n, d) => n + byDate(d).length, 0)}건</Sub>
-          </div>
-          <div className="space-y-2">
-            {weekDays.filter((d) => byDate(d).length > 0).map((d) => (
-              <div key={d}>
-                <div className="mb-1 flex items-center gap-2">
-                  <p className="text-xs font-extrabold" style={{ color: d === todayISO() ? PRIMARY : redInk(d, INK) }}>
-                    {md(d)} ({dow(d)}){d === todayISO() ? " · 오늘" : ""}{holidayOf(d) ? ` · ${holidayOf(d)}` : ""}
-                  </p>
-                  <Sub className="ml-auto">{byDate(d).length}건 · {seatsOn(d)}명</Sub>
-                </div>
-                <div className="space-y-1">{byDate(d).map((s) => <SchedLine key={s.id} s={s} members={db.members} onEdit={setEditing} />)}</div>
-              </div>
-            ))}
-            {weekDays.every((d) => byDate(d).length === 0) && <Sub className="block py-4 text-center">이번 주에는 잡힌 일정이 없습니다</Sub>}
-          </div>
         </Card>
       )}
       {mode === "month" && (
@@ -5744,7 +5532,7 @@ function NextClassCard({ members, schedule, photos, onStatus, onOpenMember, onWr
           <span className="text-xs font-extrabold" style={{ color: PRIMARY }}>첫 수업입니다 · 일지를 기록해 주세요</span>
         </button>
       )}
-      <div className="mt-3 grid grid-cols-3 gap-1.5">
+      <div className="mt-3 grid min-w-0 grid-cols-3 gap-1.5">
         <button onClick={() => onStatus(s.id, "done", m.id)} className="rounded-2xl py-2.5 text-xs font-extrabold text-white" style={{ backgroundColor: GOOD }}>출석</button>
         <button onClick={() => onStatus(s.id, "noshow", m.id)} className="rounded-2xl py-2.5 text-xs font-extrabold" style={{ backgroundColor: BAD_S, color: BAD }}>노쇼</button>
         <button onClick={() => onStatus(s.id, "cancel", m.id)} className="rounded-2xl py-2.5 text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: SUB }}>취소</button>
@@ -5952,7 +5740,7 @@ function SequenceCard({ members, schedule, photos, onWriteNote, onToast, compact
               {adv.last?.body && <Sub className="mt-0.5 block line-clamp-2">지난 일지: {adv.last.body}</Sub>}
             </div>
           )}
-          <div className="flex gap-1.5 overflow-x-auto pb-1">
+          <div className="-mx-1 flex min-w-0 max-w-full gap-1.5 overflow-x-auto px-1 pb-1">
             {YT_KEYWORDS.map((k) => (
               <button key={k} onClick={() => { setManualKw(true); setKw(k); }} className="shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-extrabold"
                 style={kw === k ? { background: GRAD, color: "#fff" } : { backgroundColor: CANVAS, color: SUB }}>{k}</button>
@@ -6024,9 +5812,45 @@ function AnalysisTab({ members, photos, onOpen }) {
   const levelDot = { good: GOOD, warn: WARN, bad: BAD };
   return (
     <div className="mx-auto max-w-3xl space-y-3">
+      <Card className="overflow-hidden p-0">
+        <div className="px-5 pb-4 pt-5" style={{ background: GRAD }}>
+          <p className="text-xs font-extrabold text-white opacity-90">필라티쳐 핵심 기능</p>
+          <h3 className="mt-0.5 text-lg font-extrabold text-white" style={{ letterSpacing: "-0.02em" }}>사진 한 장이 회원 카드가 됩니다</h3>
+          <div className="mt-3 grid grid-cols-3 gap-1.5">
+            {[
+              { n: "1", t: "사진 찍기", d: "정면·측면" },
+              { n: "2", t: "AI 분석", d: "각도 자동" },
+              { n: "3", t: "결과 카드", d: "회원에게" },
+            ].map((x, idx) => (
+              <div key={x.n} className="relative min-w-0 rounded-xl px-2 py-2" style={{ backgroundColor: "rgba(255,255,255,.16)" }}>
+                <p className="truncate text-xs font-extrabold text-white">{x.n}. {x.t}</p>
+                <p className="truncate text-xs text-white opacity-80">{x.d}</p>
+                {idx < 2 && <span className="absolute -right-1 top-1/2 z-10 -translate-y-1/2 text-xs font-extrabold text-white opacity-70">›</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="p-4">
+          <p className="text-xs font-bold" style={{ color: INK2 }}>
+            전신 사진을 올리면 <b style={{ color: INK }}>어깨·골반·무릎 기울기</b>를 각도로 재고, 비포·애프터를 골라 <b style={{ color: INK }}>회원에게 보낼 카드</b>까지 한 번에 만듭니다.
+          </p>
+          <div className="mt-3">
+            <p className="mb-1.5 text-xs font-extrabold" style={{ color: SUB }}>누구를 분석할까요?</p>
+            <div className="flex flex-wrap gap-1.5">
+              {rows.slice(0, 6).map(({ m, last }) => (
+                <button key={m.id} onClick={() => onOpen(m.id)} className="flex items-center gap-1 rounded-full px-3 py-2 text-xs font-extrabold"
+                  style={last ? { backgroundColor: CANVAS, color: INK } : { background: GRAD, color: "#fff" }}>
+                  {!last && <Plus size={12} />}{m.name || "이름 미입력"}
+                </button>
+              ))}
+            </div>
+            <Sub className="mt-1.5 block">보라색 = 아직 분석 전 · 이름을 누르면 바로 시작합니다</Sub>
+          </div>
+        </div>
+      </Card>
       <Card className="p-4">
         <div className="flex items-center gap-2">
-          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl" style={{ background: GRAD }}><Activity size={16} color="#fff" /></span>
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: TINT }}><Activity size={16} style={{ color: PRIMARY }} /></span>
           <div className="min-w-0 flex-1">
             <h3 className="font-extrabold" style={{ color: INK }}>체형분석 현황</h3>
             <Sub>{members.filter((m) => !isDraft(m)).length}명 중 <b style={{ color: PRIMARY }}>{done}명</b> 분석 완료</Sub>
@@ -6092,12 +5916,12 @@ function InbodyPanel({ member, onGo }) {
 /* 사진·체형 관련 4개를 한 카드 안 탭으로 묶는다 (스크롤 단축) */
 function PhotoHub(p) {
   const TABS = [
-    { k: "compare", l: "비포·애프터" },
     { k: "pose", l: "AI 체형 분석" },
     { k: "card", l: "결과 카드" },
+    { k: "compare", l: "비포·애프터" },
     { k: "sets", l: "사진 모음" },
   ];
-  const [tab, setTab] = useState("compare");
+  const [tab, setTab] = useState(p.initialTab || "pose");
   return (
     <div className="space-y-2">
       <div className="flex gap-1 overflow-x-auto rounded-2xl p-1" style={{ backgroundColor: CANVAS }}>

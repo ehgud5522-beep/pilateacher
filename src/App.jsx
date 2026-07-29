@@ -85,7 +85,7 @@ const sysDarkNow = () => {
 };
 
 /* 파일이 실제로 교체됐는지 1초 만에 확인하는 표시 — 설정 탭 맨 아래에 뜬다 */
-const APP_VER = "v81 · 2026-07-29";
+const APP_VER = "v83 · 2026-07-29";
 try { if (typeof window !== "undefined") window.PILATEACHER_VER = APP_VER; } catch (e) {}
 
 const ACC_KEY = "pilateacher_accounts_v1";
@@ -5332,7 +5332,13 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onToast, onSav
    pilateacher.com/*, *.vercel.app/*, https://localhost/* (앱), http://localhost:*
    제한을 걸면 코드에 들어 있어도 남이 못 쓴다. */
 const YT_KEY = "AIzaSyAjSubZDcGlacRHp8Ohldno_zPK5UvSP30";
-const YT_CHANNELS = ["@pilatesua", "@Yangpila", "@sbt_pilateslife", "@janepila", "@daoom_yeoon", "@pilates.G0"];
+const YT_CHANNELS = ["@pilatesua", "@onlypilates", "@pilamincho", "@pt3885", "@theclassicpilates", "@pila_hyeonj"];
+/* 주차 번호 — 월요일 시작 기준이라 한 주 안에서는 바뀌지 않는다 */
+const weekNo = (d) => {
+  const t = new Date(d + "T00:00:00");
+  t.setDate(t.getDate() - ((t.getDay() + 6) % 7));   /* 그 주 월요일로 */
+  return Math.round(t.getTime() / 604800000);
+};
 const YT_KEYWORDS = ["리포머", "캐딜락", "체어", "바렐", "라운드숄더", "거북목", "골반", "코어", "척추", "스트레칭", "하체", "어깨"];
 const YT_CACHE_KEY = "pt_yt_cache_v3";
 
@@ -5835,18 +5841,28 @@ function SequenceCard({ members, schedule, photos, onWriteNote, onToast, compact
     ytSearchKw(kw).then((r) => { if (ok) setExtra(r); }).catch(() => {}).finally(() => { if (ok) setBusy(false); });
     return () => { ok = false; };
   }, [kw, pool]);
+  /* 이번 주 채널 — 6개를 주마다 돌아가며 */
+  const weekCh = useMemo(() => {
+    const names = [...new Set((pool || []).map((v) => v.ch).filter(Boolean))];
+    if (!names.length) return null;
+    return names[weekNo(todayISO()) % names.length];
+  }, [pool]);
   const vids = useMemo(() => {
     const seen = new Set(); const out = [];
     [...ytFilter(pool || [], kw), ...extra].forEach((v) => { if (!seen.has(v.id)) { seen.add(v.id); out.push(v); } });
-    return out.sort((a, b) => (b.at || "").localeCompare(a.at || "")).slice(0, compact ? 4 : 6);
-  }, [pool, extra, kw, compact]);
+    const sorted = out.sort((a, b) => (b.at || "").localeCompare(a.at || ""));
+    /* 이번 주 채널을 앞으로 올리되, 모자라면 다른 채널로 채운다 */
+    const mine = weekCh ? sorted.filter((v) => v.ch === weekCh) : [];
+    const rest = weekCh ? sorted.filter((v) => v.ch !== weekCh) : sorted;
+    return [...mine, ...rest].slice(0, 2);
+  }, [pool, extra, kw, weekCh]);
   return (
     <Card className="p-4">
       <button onClick={() => setOpen((v) => !v)} className="flex w-full items-center gap-2 text-left">
         <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl" style={{ background: GRAD }}><Sparkles size={16} color="#fff" /></span>
         <div className="min-w-0 flex-1">
           <h3 className="font-extrabold" style={{ color: INK }}>오늘의 시퀀스</h3>
-          <Sub>검증된 필라테스 채널에서 골라 드립니다</Sub>
+          <Sub>{weekCh ? <>이번 주 채널 · <b style={{ color: PRIMARY }}>{weekCh}</b></> : "검증된 필라테스 채널에서 골라 드립니다"}</Sub>
         </div>
         <ChevronDown size={16} style={{ color: SUB, transform: open ? "rotate(180deg)" : "none" }} />
       </button>
@@ -5891,7 +5907,7 @@ function SequenceCard({ members, schedule, photos, onWriteNote, onToast, compact
           {!err && !pool && <div className="flex justify-center py-6"><Loader2 size={18} className="animate-spin" style={{ color: PRIMARY }} /></div>}
           {!err && pool && vids.length === 0 && !busy && <Sub className="block py-3 text-center">'{kw}' 영상이 아직 없습니다 · 다른 키워드를 눌러 보세요</Sub>}
           {busy && <Sub className="block text-center">'{kw}' 영상을 채널에서 찾는 중…</Sub>}
-          <div className={compact ? "grid grid-cols-2 gap-2" : "grid grid-cols-3 gap-2"}>
+          <div className="grid grid-cols-2 gap-2">
             {vids.map((v) => (
               <button key={v.id} onClick={() => setPlay(v)} className="text-left">
                 <div className="relative overflow-hidden rounded-2xl bg-photo" style={{ aspectRatio: "16 / 9" }}>
@@ -5927,6 +5943,23 @@ function PoseThumb({ rec }) {
   }, [rec?.id]);
   if (!src) return <div className="h-16 w-12 shrink-0 rounded-xl" style={{ backgroundColor: CANVAS }} />;
   return <img src={src} alt="" className="h-16 w-12 shrink-0 rounded-xl object-cover" {...IMGP} />;
+}
+
+/* 접었다 펴는 묶음 — 화면이 길어지지 않게 */
+function Fold({ label, hint, open: init, children }) {
+  const [open, setOpen] = useState(!!init);
+  return (
+    <div>
+      <button onClick={() => setOpen((v) => !v)} className="flex w-full items-center gap-2 rounded-2xl px-4 py-3" style={{ backgroundColor: CARD, boxShadow: SHADOW }}>
+        <span className="min-w-0 flex-1 text-left">
+          <span className="block text-sm font-extrabold" style={{ color: INK }}>{label}</span>
+          {hint && <span className="block text-xs" style={{ color: SUB }}>{hint}</span>}
+        </span>
+        <ChevronDown size={16} style={{ color: SUB, transform: open ? "rotate(180deg)" : "none", transition: "transform .2s" }} />
+      </button>
+      {open && <div className="mt-2">{children}</div>}
+    </div>
+  );
 }
 
 /* 체형분석 탭 — 전 회원의 최근 분석을 한눈에 */
@@ -5965,10 +5998,36 @@ function AnalysisTab({ members, photos, onOpen, hub, doneSignal, onConsumeDone }
   );
   return (
     <div className="mx-auto max-w-3xl space-y-3">
+      <Card className="p-4">
+        <div className="flex items-center gap-2">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl" style={{ background: GRAD }}><Users size={16} color="#fff" /></span>
+          <div className="min-w-0 flex-1">
+            <h3 className="font-extrabold" style={{ color: INK }}>회원 선택</h3>
+            <Sub>{rows.length}명 · 이름을 누르면 아래에서 촬영·분석합니다</Sub>
+          </div>
+        </div>
+        <div className="relative mt-3">
+          <Search size={15} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2" style={{ color: SUB }} />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="회원 이름 검색"
+            className="w-full rounded-2xl border-0 py-3 pl-10 pr-4 text-sm outline-none" style={{ backgroundColor: CANVAS, color: INK }} />
+        </div>
+        <div className="-mx-1 mt-2 max-h-44 overflow-y-auto px-1">
+          <div className="flex flex-wrap gap-1.5">
+            {rows.map(({ m, count }) => (
+              <button key={m.id} onClick={() => setPick(pick === m.id ? null : m.id)} className="flex items-center gap-1 rounded-full px-3 py-2 text-xs font-extrabold"
+                style={pick === m.id ? { background: GRAD, color: "#fff", boxShadow: SHADOW }
+                  : count === 0 ? { backgroundColor: TINT, color: PRIMARY } : { backgroundColor: CANVAS, color: INK }}>
+                {m.name || "이름 미입력"}
+                <span className="font-bold" style={{ opacity: 0.65 }}>{count === 0 ? "· 분석 전" : `· ${count}건`}</span>
+              </button>
+            ))}
+            {rows.length === 0 && <Sub className="py-3">회원이 없습니다</Sub>}
+          </div>
+        </div>
+      </Card>
       <Card className="overflow-hidden p-0">
         <div className="px-5 pb-4 pt-5" style={{ background: GRAD }}>
-          <p className="text-xs font-extrabold text-white opacity-90">필라티쳐 핵심 기능</p>
-          <h3 className="mt-0.5 text-lg font-extrabold text-white" style={{ letterSpacing: "-0.02em" }}>사진 한 장이 회원 카드가 됩니다</h3>
+          <h3 className="text-lg font-extrabold text-white" style={{ letterSpacing: "-0.02em" }}>AI로 분석한 비포·애프터로<br />회원 카드를 만들어 보세요</h3>
           <div className="mt-3 grid grid-cols-3 gap-1.5">
             {[
               { n: "1", t: "사진 찍기", d: "정면·측면" },
@@ -5984,41 +6043,11 @@ function AnalysisTab({ members, photos, onOpen, hub, doneSignal, onConsumeDone }
           </div>
         </div>
         <div className="p-4">
-          <p className="text-xs font-bold" style={{ color: INK2 }}>
-            전신 사진을 올리면 <b style={{ color: INK }}>어깨·골반·무릎 기울기</b>를 각도로 재고, 비포·애프터를 골라 <b style={{ color: INK }}>회원에게 보낼 카드</b>까지 한 번에 만듭니다.
+          <p className="text-xs font-bold leading-relaxed" style={{ color: INK2 }}>
+            전신 사진을 올리면 <b style={{ color: INK }}>어깨·골반·무릎 기울기</b>를 각도로 재고, 자와 펜으로 직접 선을 그어 보정한 뒤,
+            비포·애프터를 골라 <b style={{ color: INK }}>회원에게 보낼 카드</b>까지 한 번에 만듭니다.
           </p>
-          <div className="mt-3 grid grid-cols-2 gap-2">
-            <button onClick={() => { setMode("before"); setPick(null); }}
-              className="flex flex-col items-center justify-center gap-1 rounded-2xl py-3.5 text-sm font-extrabold"
-              style={mode === "before" ? { background: GRAD, color: "#fff", boxShadow: SHADOW } : { backgroundColor: CANVAS, color: INK }}>
-              <Camera size={17} /> 비포 사진 촬영
-            </button>
-            <button onClick={() => { setMode("after"); setPick(null); }}
-              className="flex flex-col items-center justify-center gap-1 rounded-2xl py-3.5 text-sm font-extrabold"
-              style={mode === "after" ? { background: GRAD, color: "#fff", boxShadow: SHADOW } : { backgroundColor: CANVAS, color: INK }}>
-              <Camera size={17} /> 애프터 사진 촬영
-            </button>
-          </div>
-          <div className="mt-3">
-            <p className="mb-1.5 text-xs font-extrabold" style={{ color: SUB }}>
-              회원 선택 <span className="font-bold" style={{ color: PRIMARY }}>{rows.length}명</span>
-            </p>
-            <div className="-mx-1 max-h-40 overflow-y-auto px-1">
-              <div className="flex flex-wrap gap-1.5">
-                {rows.map(({ m, count }) => (
-                  <button key={m.id} onClick={() => setPick(pick === m.id ? null : m.id)} className="flex items-center gap-1 rounded-full px-3 py-2 text-xs font-extrabold"
-                    style={pick === m.id ? { background: GRAD, color: "#fff", boxShadow: SHADOW }
-                      : count === 0 ? { backgroundColor: TINT, color: PRIMARY } : { backgroundColor: CANVAS, color: INK }}>
-                    {m.name || "이름 미입력"}
-                    <span className="font-bold" style={{ opacity: 0.65 }}>{count === 0 ? "· 분석 전" : `· ${count}건`}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-            <Sub className="mt-1.5 block">
-              연보라 = 아직 분석 전 · 이름을 누르면 아래에서 바로 {mode === "before" ? "비포" : "애프터"}를 찍습니다
-            </Sub>
-          </div>
+          {!pick && <Sub className="mt-2 block">위에서 회원을 먼저 골라 주세요</Sub>}
         </div>
       </Card>
       {cardFor && hub && !pick && (
@@ -6029,7 +6058,7 @@ function AnalysisTab({ members, photos, onOpen, hub, doneSignal, onConsumeDone }
             </p>
             <button onClick={() => setCardFor(null)} className="shrink-0 rounded-full p-1.5" style={{ backgroundColor: CANVAS }}><X size={13} style={{ color: SUB }} /></button>
           </div>
-          {hub(cardFor, "card")}
+          {hub(cardFor)}
         </div>
       )}
       {pick && hub && (
@@ -6041,7 +6070,7 @@ function AnalysisTab({ members, photos, onOpen, hub, doneSignal, onConsumeDone }
             <button onClick={() => onOpen(pick)} className="shrink-0 rounded-full px-3 py-1.5 text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: PRIMARY }}>회원 상세로</button>
             <button onClick={() => setPick(null)} className="shrink-0 rounded-full p-1.5" style={{ backgroundColor: CANVAS }}><X size={13} style={{ color: SUB }} /></button>
           </div>
-          {hub(pick, mode)}
+          {hub(pick)}
         </div>
       )}
       <Card className="p-4">
@@ -6052,13 +6081,7 @@ function AnalysisTab({ members, photos, onOpen, hub, doneSignal, onConsumeDone }
             <Sub>{pick ? `${members.find((m) => m.id === pick)?.name || "회원"} 님의 저장된 분석` : <>{members.filter((m) => !isDraft(m)).length}명 중 <b style={{ color: PRIMARY }}>{done}명</b> 분석 완료</>}</Sub>
           </div>
         </div>
-        {!pick && (
-          <div className="relative mt-3">
-            <Search size={15} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2" style={{ color: SUB }} />
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="회원 이름 검색"
-              className="w-full rounded-2xl border-0 py-3 pl-10 pr-4 text-sm outline-none" style={{ backgroundColor: CANVAS, color: INK }} />
-          </div>
-        )}
+
       </Card>
       {rows.length === 0 && <Card className="p-8 text-center"><Sub>회원이 없습니다</Sub></Card>}
       {(pick ? rows.filter((r) => r.m.id === pick) : rows).map(({ m, last, count }) => (
@@ -6819,8 +6842,12 @@ function BirthPick({ value, onChange }) {
     onChange(`${ny}-${String(nm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`);
   };
   const days = y && m ? new Date(Number(y), Number(m), 0).getDate() : 31;
-  const box = "w-full min-w-0 truncate rounded-2xl border-0 py-3 pl-2.5 pr-6 text-sm outline-none ring-1 ring-slate-200 focus:ring-2";
-  const wrap = { appearance: "none", WebkitAppearance: "none", MozAppearance: "none", backgroundColor: CANVAS, color: INK };
+  const box = "w-full min-w-0 rounded-2xl border-0 py-3 pl-3 pr-3 text-center text-sm font-bold outline-none ring-1 ring-slate-200 focus:ring-2";
+  /* 안드로이드 웹뷰는 select 글자를 회색으로 덮어써서 안 보이는 경우가 있다 */
+  const wrap = {
+    appearance: "none", WebkitAppearance: "none", MozAppearance: "none",
+    backgroundColor: CANVAS, color: INK, WebkitTextFillColor: INK, opacity: 1,
+  };
   return (
     <div className="grid grid-cols-3 gap-1.5">
       {[
@@ -6837,7 +6864,6 @@ function BirthPick({ value, onChange }) {
             <option value="">{o.ph}</option>
             {o.list.map((n) => <option key={n} value={n}>{n}{o.unit}</option>)}
           </select>
-          <ChevronDown size={13} className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2" style={{ color: SUB }} />
         </div>
       ))}
     </div>
@@ -8103,20 +8129,28 @@ export default function App() {
           <Guard label="체형분석 목록">
             <AnalysisTab members={db.members} photos={photos}
               onOpen={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }}
-              hub={(id, mode) => {
+              hub={(id) => {
                 const m = db.members.find((x) => x.id === id);
                 if (!m) return null;
                 const saved = (photos[id]?.poses || []).filter((x) => x && x.metrics);
                 return (
-                  <div key={id + mode} className="space-y-3">
-                    <Guard label="AI 체형 분석">
-                      <PoseAnalyzer member={m} photos={photos[id]} onSavePose={savePose} onDeletePose={deletePose} onToast={setToast}
-                        roleLabel={mode === "before" ? "비포 사진" : mode === "after" ? "애프터 사진" : ""}
-                        onSaved={() => setAnalysisDone({ id, mode })} />
+                  <div key={id} className="space-y-3">
+                    <Guard label="비포·애프터">
+                      <PhotoCompare member={m} photos={photos[id]} onSavePhoto={savePhoto} onRemove={removePhoto}
+                        onSaveMarks={saveMarks} onAdjust={adjustPhoto} onToast={setToast} onSaveSet={saveSet} />
                     </Guard>
-                    <Guard label="결과 카드">
-                      <ResultCardMaker member={m} saved={saved} centerName={db.settings.center} onToast={setToast} />
-                    </Guard>
+                    <Fold label="AI 체형 분석" hint="관절을 자동으로 찾아 각도로">
+                      <Guard label="AI 체형 분석">
+                        <PoseAnalyzer member={m} photos={photos[id]} onSavePose={savePose} onDeletePose={deletePose} onToast={setToast}
+                          roleLabel={saved.length === 0 ? "비포 사진" : "애프터 사진"}
+                          onSaved={() => setAnalysisDone({ id, mode: saved.length === 0 ? "before" : "after" })} />
+                      </Guard>
+                    </Fold>
+                    <Fold label="결과 카드 만들기" hint={`저장된 분석 ${saved.length}건`} open={saved.length >= 2}>
+                      <Guard label="결과 카드">
+                        <ResultCardMaker member={m} saved={saved} centerName={db.settings.center} onToast={setToast} />
+                      </Guard>
+                    </Fold>
                   </div>
                 );
               }}

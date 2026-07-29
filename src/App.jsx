@@ -85,7 +85,7 @@ const sysDarkNow = () => {
 };
 
 /* 파일이 실제로 교체됐는지 1초 만에 확인하는 표시 — 설정 탭 맨 아래에 뜬다 */
-const APP_VER = "v73 · 2026-07-29";
+const APP_VER = "v76 · 2026-07-29";
 try { if (typeof window !== "undefined") window.PILATEACHER_VER = APP_VER; } catch (e) {}
 
 const ACC_KEY = "pilateacher_accounts_v1";
@@ -1835,7 +1835,7 @@ function SchedItem({ s, members, del, setDel, setEditing, onStatus, onNoshowFee,
   );
 }
 
-function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onOpenMember, onWriteNote, onNoComment, onToast }) {
+function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onOpenMember, onWriteNote, onNoComment, onToast, onSettings }) {
   const [mode, setMode] = useState("week");
   const [cursor, setCursor] = useState(todayISO());
   const [editing, setEditing] = useState(null);
@@ -1947,6 +1947,34 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
   }, [todayRows, parked]);
   const parkedCount = todayRows.filter((r) => parked[r.key]).length;
   const todayCls = db.schedule.filter((s) => s.date === T0 && !isPersonalEvt(s)).length;
+  const todayStat = useMemo(() => {
+    const st = { done: 0, booked: 0, noshow: 0, cancel: 0 };
+    db.schedule.filter((s) => s?.date === T0 && !isPersonalEvt(s)).forEach((s) => {
+      if (isEquipGroup(s)) { st[s.groupDone ? "done" : "booked"] += 1; return; }
+      attendeesOf(s).forEach((a) => {
+        if (a.status === "done") st.done += 1;
+        else if (a.status === "noshow") st.noshow += 1;
+        else if (a.status === "cancel") st.cancel += 1;
+        else st.booked += 1;
+      });
+    });
+    return st;
+  }, [db.schedule, T0]);
+  /* 지난달 같은 날까지 완료 수업 — 비교용 */
+  const lastMonthSame = useMemo(() => {
+    const d = new Date(T0 + "T00:00:00");
+    const day = d.getDate();
+    const p = new Date(d.getFullYear(), d.getMonth() - 1, 1);
+    const pm = `${p.getFullYear()}-${String(p.getMonth() + 1).padStart(2, "0")}`;
+    let n = 0;
+    db.schedule.forEach((s) => {
+      if (!s?.date || !s.date.startsWith(pm) || isPersonalEvt(s)) return;
+      if (Number(s.date.slice(8, 10)) > day) return;
+      if (isEquipGroup(s)) { if (s.groupDone) n += 1; return; }
+      n += attendeesOf(s).filter((a) => a.deductFrom).length;
+    });
+    return n;
+  }, [db.schedule, T0]);
   const doneRows = todayRows.filter((r) => r.kind === "member" && r.status === "done");
   const multiDone = todayRows.filter((r) => r.kind === "multi").reduce((n, r) => n + r.list.filter((a) => a.status === "done").length, 0);
   const doneToday = doneRows.length;
@@ -1964,20 +1992,18 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
         <h2 className="line-clamp-2 mt-0.5 text-base font-extrabold text-white md:text-xl" style={{ letterSpacing: "-0.03em", lineHeight: 1.3, wordBreak: "keep-all", overflowWrap: "break-word" }}>
           {greetLine()}
         </h2>
-        <div className="mt-2.5 flex items-stretch gap-1.5">
-          <div className="min-w-0 flex-1 rounded-xl px-2.5 py-1.5" style={{ backgroundColor: "rgba(255,255,255,0.16)", border: "1px solid rgba(255,255,255,0.14)" }}>
-            <p className="truncate text-xs font-bold text-white opacity-85">총 수업</p>
-            <p className="whitespace-nowrap text-base font-extrabold leading-tight tabular-nums text-white md:text-lg">{todayCls}수업</p>
-          </div>
-          <div className="min-w-0 flex-1 rounded-xl px-2.5 py-1.5" style={{ backgroundColor: "rgba(52,211,153,0.32)", border: "1px solid rgba(255,255,255,0.22)" }}>
-            <p className="flex items-center gap-0.5 truncate text-xs font-bold text-white opacity-90"><Check size={10} /> 완료</p>
-            <p className="whitespace-nowrap text-base font-extrabold leading-tight tabular-nums text-white md:text-lg">{doneCls}수업</p>
-          </div>
-          <div className="min-w-0 flex-1 rounded-xl px-2.5 py-1.5" style={{ backgroundColor: "#FFFFFF", boxShadow: "0 4px 12px rgba(30,16,90,.22)" }}>
-            <p className="truncate text-xs font-bold" style={{ color: "#6E6E80" }}>남은 수업</p>
-            <p className="whitespace-nowrap text-base font-extrabold leading-tight tabular-nums md:text-lg" style={{ color: "#4F2FCB" }}>{Math.max(0, todayCls - doneCls)}수업</p>
-            <p className="truncate text-xs font-bold tabular-nums" style={{ color: "#77778A" }}>이달 {monthDone}{monthPay > 0 ? ` · ₩${won(monthPay)}` : ""}</p>
-          </div>
+        <div className="mt-2.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-2xl px-3 py-2" style={{ backgroundColor: "rgba(255,255,255,0.14)", border: "1px solid rgba(255,255,255,0.14)" }}>
+          <span className="text-xs font-extrabold text-white">오늘 {todayCls}건</span>
+          {[
+            { l: "출석", v: todayStat.done, c: "#5AE6A8" },
+            { l: "예정", v: todayStat.booked, c: "#FFFFFF" },
+            { l: "노쇼", v: todayStat.noshow, c: "#FFB4B4" },
+            { l: "취소", v: todayStat.cancel, c: "rgba(255,255,255,.72)" },
+          ].map((o) => (
+            <span key={o.l} className="flex items-center gap-1 text-xs font-bold tabular-nums" style={{ color: o.c, opacity: o.v ? 1 : 0.55 }}>
+              <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: o.c }} />{o.l} {o.v}
+            </span>
+          ))}
         </div>
         <div className="mt-2 flex items-center gap-1.5">
           <Sparkles size={11} color="#fff" style={{ opacity: 0.8 }} />
@@ -1991,7 +2017,7 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
             onStatus={onStatus} onOpenMember={onOpenMember} onWriteNote={onWriteNote} />
         </Guard>
         <Guard label="오늘의 시퀀스">
-          <SequenceCard members={db.members} schedule={db.schedule} photos={photos} onWriteNote={onWriteNote} onToast={onToast} />
+          <SequenceCard members={db.members} schedule={db.schedule} photos={photos} onWriteNote={onWriteNote} onToast={onToast} compact />
         </Guard>
       </div>
 
@@ -2407,6 +2433,10 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
           </div>
         </Card>
       )}
+      <Guard label="이번 달 성과">
+        <MonthPerfCard done={monthDone} pay={monthPay} goal={db.settings?.monthGoal} lastSame={lastMonthSame}
+          onGoal={(n) => onSettings && onSettings({ ...db.settings, monthGoal: n })} />
+      </Guard>
       {editing && <ScheduleForm draft={editing} members={db.members} schedule={db.schedule} onClose={() => setEditing(null)}
         onSubmit={(v) => { onSave(v); setEditing(null); }} onDelete={(id) => { onDelete(id); setEditing(null); }} />}
     </div>
@@ -5589,6 +5619,66 @@ function seqAdvice(member, schedule, photos) {
   };
 }
 
+/* 이번 달 나의 성과 — 완료 타임·예상 급여·목표 진행률·지난달 대비 */
+function MonthPerfCard({ done, pay, goal, lastSame, onGoal }) {
+  const [edit, setEdit] = useState(false);
+  const [v, setV] = useState(String(goal || ""));
+  const g = Number(goal) || 0;
+  const pct = g > 0 ? Math.min(100, Math.round((done / g) * 100)) : null;
+  const diff = done - lastSame;
+  const diffPct = lastSame > 0 ? Math.round((diff / lastSame) * 100) : null;
+  return (
+    <Card className="p-5">
+      <div className="flex items-center gap-2">
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl" style={{ background: GRAD }}><Sparkles size={16} color="#fff" /></span>
+        <div className="min-w-0 flex-1">
+          <h3 className="font-extrabold" style={{ color: INK }}>이번 달 나의 성과</h3>
+          <Sub>완료한 수업 기준입니다</Sub>
+        </div>
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <div className="rounded-2xl px-3 py-2.5" style={{ backgroundColor: CANVAS }}>
+          <p className="text-xs font-bold" style={{ color: SUB }}>완료한 수업</p>
+          <p className="text-xl font-extrabold tabular-nums" style={{ color: INK }}>{done}<span className="text-sm"> 타임</span></p>
+        </div>
+        <div className="rounded-2xl px-3 py-2.5" style={{ backgroundColor: TINT }}>
+          <p className="text-xs font-bold" style={{ color: PRIMARY }}>이번 달 예상 급여</p>
+          <p className="truncate text-xl font-extrabold tabular-nums" style={{ color: PRIMARY }}>₩{won(pay)}</p>
+        </div>
+      </div>
+      <div className="mt-3">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-bold" style={{ color: SUB }}>
+            {g > 0 ? <>목표 <b style={{ color: INK }}>{g}타임</b> 중 <b style={{ color: PRIMARY }}>{pct}%</b></> : "이번 달 목표를 정해 보세요"}
+          </span>
+          <span className="flex-1" />
+          <button onClick={() => { setV(String(g || "")); setEdit((x) => !x); }} className="rounded-full px-2.5 py-1 text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: PRIMARY }}>
+            {g > 0 ? "목표 수정" : "목표 정하기"}
+          </button>
+        </div>
+        {edit ? (
+          <div className="mt-2 flex gap-1.5">
+            <input inputMode="numeric" value={v} onChange={(e) => setV(e.target.value.replace(/[^0-9]/g, ""))} placeholder="80"
+              className="min-w-0 flex-1 rounded-xl px-3 py-2 text-sm font-extrabold outline-none" style={{ backgroundColor: CANVAS, color: INK }} />
+            <button onClick={() => { onGoal(Number(v) || 0); setEdit(false); }} className="rounded-xl px-4 py-2 text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>저장</button>
+          </div>
+        ) : g > 0 ? (
+          <div className="mt-1.5 h-2.5 w-full overflow-hidden rounded-full" style={{ backgroundColor: CANVAS }}>
+            <div className="h-full rounded-full" style={{ width: `${pct}%`, background: GRAD, transition: "width .5s ease" }} />
+          </div>
+        ) : null}
+      </div>
+      <div className="mt-3 flex items-center gap-1.5 rounded-2xl px-3 py-2.5" style={{ backgroundColor: diff >= 0 ? GOOD_S : CANVAS }}>
+        {diff >= 0 ? <ArrowUpRight size={14} style={{ color: GOOD }} /> : <ArrowDownRight size={14} style={{ color: SUB }} />}
+        <p className="min-w-0 flex-1 text-xs font-bold" style={{ color: INK }}>
+          지난달 같은 날 대비 <b style={{ color: diff >= 0 ? GOOD : SUB }}>{diff >= 0 ? "+" : ""}{diff}타임</b>
+          {diffPct !== null && <span style={{ color: SUB }}> · {diffPct >= 0 ? "+" : ""}{diffPct}%</span>}
+        </p>
+      </div>
+    </Card>
+  );
+}
+
 /* 오늘 아직 처리 안 된 가장 이른 수업 — 시퀀스 카드와 같은 기준을 쓴다 */
 function nextTarget(schedule, members) {
   const T = todayISO();
@@ -5789,7 +5879,7 @@ function VideoPlayer({ video, onClose, onToast }) {
   );
 }
 
-function SequenceCard({ members, schedule, photos, onWriteNote, onToast }) {
+function SequenceCard({ members, schedule, photos, onWriteNote, onToast, compact }) {
   const [open, setOpen] = useState(true);
   /* 날짜에 따라 오늘의 기본 키워드가 돌아간다 */
   const dayIdx = useMemo(() => { const d = new Date(); return (d.getFullYear() + d.getMonth() + d.getDate()) % YT_KEYWORDS.length; }, []);
@@ -5826,8 +5916,8 @@ function SequenceCard({ members, schedule, photos, onWriteNote, onToast }) {
   const vids = useMemo(() => {
     const seen = new Set(); const out = [];
     [...ytFilter(pool || [], kw), ...extra].forEach((v) => { if (!seen.has(v.id)) { seen.add(v.id); out.push(v); } });
-    return out.sort((a, b) => (b.at || "").localeCompare(a.at || "")).slice(0, 6);
-  }, [pool, extra, kw]);
+    return out.sort((a, b) => (b.at || "").localeCompare(a.at || "")).slice(0, compact ? 4 : 6);
+  }, [pool, extra, kw, compact]);
   return (
     <Card className="p-4">
       <button onClick={() => setOpen((v) => !v)} className="flex w-full items-center gap-2 text-left">
@@ -5876,7 +5966,7 @@ function SequenceCard({ members, schedule, photos, onWriteNote, onToast }) {
           {!err && !pool && <div className="flex justify-center py-6"><Loader2 size={18} className="animate-spin" style={{ color: PRIMARY }} /></div>}
           {!err && pool && vids.length === 0 && !busy && <Sub className="block py-3 text-center">'{kw}' 영상이 아직 없습니다 · 다른 키워드를 눌러 보세요</Sub>}
           {busy && <Sub className="block text-center">'{kw}' 영상을 채널에서 찾는 중…</Sub>}
-          <div className="grid grid-cols-3 gap-2">
+          <div className={compact ? "grid grid-cols-2 gap-2" : "grid grid-cols-3 gap-2"}>
             {vids.map((v) => (
               <button key={v.id} onClick={() => setPlay(v)} className="text-left">
                 <div className="relative overflow-hidden rounded-2xl bg-photo" style={{ aspectRatio: "16 / 9" }}>
@@ -7842,7 +7932,7 @@ export default function App() {
           </>
         )}
         {tab === "schedule" && (
-          <ScheduleManager db={db} photos={photos} onToast={setToast} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone}
+          <ScheduleManager db={db} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone}
             onOpenMember={(id) => { setSelectedId(id); setMobileView("detail"); setTab("members"); }}
             onNoComment={noComment}
             onWriteNote={(id, sid) => { setSelectedId(id); setSection("note"); setNoteBack(true); setNoteSid(sid || null); setDetailTab("record"); setMobileView("detail"); setTab("members"); }} />

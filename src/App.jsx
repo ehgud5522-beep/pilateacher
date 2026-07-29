@@ -85,7 +85,7 @@ const sysDarkNow = () => {
 };
 
 /* 파일이 실제로 교체됐는지 1초 만에 확인하는 표시 — 설정 탭 맨 아래에 뜬다 */
-const APP_VER = "v78 · 2026-07-29";
+const APP_VER = "v79 · 2026-07-29";
 try { if (typeof window !== "undefined") window.PILATEACHER_VER = APP_VER; } catch (e) {}
 
 const ACC_KEY = "pilateacher_accounts_v1";
@@ -4739,7 +4739,7 @@ function SavedPoseViewer({ rec, onClose, onToast }) {
   );
 }
 
-function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onToast }) {
+function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onToast, onSaved, roleLabel }) {
   const [engine, setEngine] = useState("idle");
   const [busy, setBusy] = useState(false);
   const [img, setImg] = useState(null);
@@ -5035,6 +5035,10 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onToast }) {
       metrics: res.items.map((i) => ({ key: i.key, label: i.label, value: i.value, unit: i.unit, level: i.level, dir: i.dir })),
       comment: poseComment(member, view, res),
     });
+    /* 저장하면 처음 화면으로 되돌린다 */
+    setImg(null); setPts(null); setManual(null); setChoice(false); setZoom(1); setPan({ x: 0, y: 0 });
+    onToast?.({ ok: true, msg: `${roleLabel || "분석"}을 저장했습니다.` });
+    onSaved?.();
   };
   const copy = async () => {
     const txt = poseComment(member, view, res);
@@ -5182,6 +5186,11 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onToast }) {
                   </span>
                 )}
               </div>
+              {pts && (
+                <button onClick={save} className="flex w-full items-center justify-center gap-1.5 rounded-2xl py-3.5 text-sm font-extrabold text-white" style={{ background: GRAD, boxShadow: SHADOW }}>
+                  <Check size={16} /> {roleLabel ? `${roleLabel} 저장하기` : "이 분석 저장하기"}
+                </button>
+              )}
               <div className="flex flex-wrap items-center gap-1.5">
                 <div className="flex gap-1 rounded-full p-1" style={{ backgroundColor: CANVAS }}>
                   {[{ k: "front", l: "정면" }, { k: "side", l: "측면" }].map((v) => (
@@ -5832,9 +5841,10 @@ function PoseThumb({ rec }) {
 }
 
 /* 체형분석 탭 — 전 회원의 최근 분석을 한눈에 */
-function AnalysisTab({ members, photos, onOpen, hub }) {
+function AnalysisTab({ members, photos, onOpen, hub, doneSignal, onConsumeDone }) {
   const [q, setQ] = useState("");
   const [pick, setPick] = useState(null);
+  const [mode, setMode] = useState("after");   /* before | after */
   const rows = useMemo(() => {
     return members
       .filter((m) => !isDraft(m))
@@ -5850,6 +5860,20 @@ function AnalysisTab({ members, photos, onOpen, hub }) {
   }, [members, photos, q]);
   const done = rows.filter((r) => r.last).length;
   const levelDot = { good: GOOD, warn: WARN, bad: BAD };
+  const dateOf = (p) => (p?.date || "").slice(5).replace("-", ".");
+  /* 비포만 있고 애프터가 없는 회원 = 애프터 촬영 대상 */
+  const [cardFor, setCardFor] = useState(null);
+  useEffect(() => {
+    if (!doneSignal) return;
+    /* 비포를 찍었으면 목록으로 · 애프터를 찍었으면 결과 카드로 이어 준다 */
+    if (doneSignal.mode === "after") setCardFor(doneSignal.id);
+    setPick(null);
+    onConsumeDone && onConsumeDone();
+  }, [doneSignal]);
+  const modeList = useMemo(
+    () => rows.filter((r) => (mode === "before" ? !r.last : r.count === 1)),
+    [rows, mode]
+  );
   return (
     <div className="mx-auto max-w-3xl space-y-3">
       <Card className="overflow-hidden p-0">
@@ -5874,21 +5898,57 @@ function AnalysisTab({ members, photos, onOpen, hub }) {
           <p className="text-xs font-bold" style={{ color: INK2 }}>
             전신 사진을 올리면 <b style={{ color: INK }}>어깨·골반·무릎 기울기</b>를 각도로 재고, 비포·애프터를 골라 <b style={{ color: INK }}>회원에게 보낼 카드</b>까지 한 번에 만듭니다.
           </p>
-          <div className="mt-3">
-            <p className="mb-1.5 text-xs font-extrabold" style={{ color: SUB }}>누구를 분석할까요?</p>
-            <div className="flex flex-wrap gap-1.5">
-              {rows.slice(0, 8).map(({ m, last }) => (
-                <button key={m.id} onClick={() => setPick(pick === m.id ? null : m.id)} className="flex items-center gap-1 rounded-full px-3 py-2 text-xs font-extrabold"
-                  style={pick === m.id ? { background: GRAD, color: "#fff", boxShadow: SHADOW }
-                    : last ? { backgroundColor: CANVAS, color: INK } : { backgroundColor: TINT, color: PRIMARY }}>
-                  {!last && <Plus size={12} />}{m.name || "이름 미입력"}
-                </button>
-              ))}
-            </div>
-            <Sub className="mt-1.5 block">연보라 = 아직 분석 전 · 이름을 누르면 아래에서 바로 시작합니다</Sub>
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <button onClick={() => { setMode("before"); setPick(null); }}
+              className="flex flex-col items-center justify-center gap-1 rounded-2xl py-3.5 text-sm font-extrabold"
+              style={mode === "before" ? { background: GRAD, color: "#fff", boxShadow: SHADOW } : { backgroundColor: CANVAS, color: INK }}>
+              <Camera size={17} /> 비포 사진 촬영
+            </button>
+            <button onClick={() => { setMode("after"); setPick(null); }}
+              className="flex flex-col items-center justify-center gap-1 rounded-2xl py-3.5 text-sm font-extrabold"
+              style={mode === "after" ? { background: GRAD, color: "#fff", boxShadow: SHADOW } : { backgroundColor: CANVAS, color: INK }}>
+              <Camera size={17} /> 애프터 사진 촬영
+            </button>
           </div>
+          {mode && (
+            <div className="mt-3">
+              <p className="mb-1.5 text-xs font-extrabold" style={{ color: SUB }}>
+                {mode === "before" ? "비포를 찍을 회원" : "애프터 촬영이 필요한 회원"}
+                <span className="ml-1 font-bold" style={{ color: PRIMARY }}>{modeList.length}명</span>
+              </p>
+              {modeList.length === 0 ? (
+                <Sub className="block rounded-2xl px-3 py-4 text-center" >
+                  {mode === "before" ? "모든 회원이 비포를 찍었습니다" : "애프터가 필요한 회원이 없습니다 · 먼저 비포를 찍어 주세요"}
+                </Sub>
+              ) : (
+                <div className="flex flex-wrap gap-1.5">
+                  {modeList.map(({ m, last, count }) => (
+                    <button key={m.id} onClick={() => setPick(pick === m.id ? null : m.id)} className="flex items-center gap-1 rounded-full px-3 py-2 text-xs font-extrabold"
+                      style={pick === m.id ? { background: GRAD, color: "#fff", boxShadow: SHADOW } : { backgroundColor: TINT, color: PRIMARY }}>
+                      {m.name || "이름 미입력"}
+                      {mode === "after" && last && <span className="font-bold" style={{ opacity: 0.7 }}>· {dateOf(last)}부터 {count}건</span>}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <Sub className="mt-1.5 block">
+                {mode === "before" ? "이름을 누르면 아래에서 바로 촬영·분석할 수 있습니다" : "이름을 누르면 애프터를 찍고 바로 결과 카드까지 만듭니다"}
+              </Sub>
+            </div>
+          )}
         </div>
       </Card>
+      {cardFor && hub && !pick && (
+        <div className="min-w-0">
+          <div className="mb-2 flex items-center gap-2">
+            <p className="min-w-0 flex-1 truncate text-sm font-extrabold" style={{ color: PRIMARY }}>
+              애프터 저장 완료 · 이제 결과 카드를 만드세요
+            </p>
+            <button onClick={() => setCardFor(null)} className="shrink-0 rounded-full p-1.5" style={{ backgroundColor: CANVAS }}><X size={13} style={{ color: SUB }} /></button>
+          </div>
+          {hub(cardFor, "card")}
+        </div>
+      )}
       {pick && hub && (
         <div className="min-w-0">
           <div className="mb-2 flex items-center gap-2">
@@ -5898,7 +5958,7 @@ function AnalysisTab({ members, photos, onOpen, hub }) {
             <button onClick={() => onOpen(pick)} className="shrink-0 rounded-full px-3 py-1.5 text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: PRIMARY }}>회원 상세로</button>
             <button onClick={() => setPick(null)} className="shrink-0 rounded-full p-1.5" style={{ backgroundColor: CANVAS }}><X size={13} style={{ color: SUB }} /></button>
           </div>
-          {hub(pick)}
+          {hub(pick, mode)}
         </div>
       )}
       <Card className="p-4">
@@ -5984,14 +6044,14 @@ function PhotoHub(p) {
         ))}
       </div>
       {tab === "compare" && <Guard label="비포애프터 분석"><PhotoCompare member={p.member} photos={p.photos} briefing={p.briefing} onSavePhoto={p.onSavePhoto} onRemove={p.onRemovePhoto} onSaveMarks={p.onSaveMarks} onAdjust={p.onAdjustPhoto} onToast={p.onToast} onSaveSet={p.onSaveSet} /></Guard>}
-      {tab === "pose" && <Guard label="AI 체형 분석"><PoseAnalyzer member={p.member} photos={p.photos} onSavePose={p.onSavePose} onDeletePose={p.onDeletePose} onToast={p.onToast} /></Guard>}
+      {tab === "pose" && <Guard label="AI 체형 분석"><PoseAnalyzer member={p.member} photos={p.photos} onSavePose={p.onSavePose} onDeletePose={p.onDeletePose} onToast={p.onToast} onSaved={p.onSaved} roleLabel={p.roleLabel} /></Guard>}
       {tab === "card" && <Guard label="결과 카드"><ResultCardMaker member={p.member} saved={(p.photos?.poses || []).filter((x) => x && x.metrics)} centerName={p.centerName} onToast={p.onToast} onGoAnalyze={() => setTab("pose")} /></Guard>}
       {tab === "sets" && <Guard label="사진 모음"><BeforeAfterSets memberName={p.member.name} photos={p.photos} onToggleFav={p.onToggleFav} onDelete={p.onDeleteSet} /></Guard>}
     </div>
   );
 }
 
-function Dashboard({ member, photos, schedule, onBack, briefing, onSavePhoto, onRemovePhoto, onSaveMarks, onAdjustPhoto, onDeleteNote, onToast, goRecord, onToggleFav, onDeleteSet, onBrief, onSavePose, onDeletePose, onSaveSet, centerName }) {
+function Dashboard({ member, photos, schedule, onBack, briefing, onSavePhoto, onRemovePhoto, onSaveMarks, onAdjustPhoto, onDeleteNote, onToast, goRecord, onToggleFav, onDeleteSet, onBrief, onSavePose, onDeletePose, onSaveSet, centerName, goAnalysis }) {
   const total = left(member), low = total <= 3;
   const att = attendanceOf(schedule, member.id);
   const d = ddaySafe(member.contractEnd);
@@ -6049,11 +6109,21 @@ function Dashboard({ member, photos, schedule, onBack, briefing, onSavePhoto, on
         </Card>
       )}
       <Guard label="인바디"><InbodyPanel member={member} onGo={() => goRecord("inbody")} /></Guard>
-      <PhotoHub member={member} photos={photos} briefing={briefing} centerName={centerName}
-        onSavePhoto={onSavePhoto} onRemovePhoto={onRemovePhoto} onSaveMarks={onSaveMarks} onAdjustPhoto={onAdjustPhoto}
-        onSavePose={onSavePose} onDeletePose={onDeletePose} onSaveSet={onSaveSet}
-        onToggleFav={onToggleFav} onDeleteSet={onDeleteSet} onToast={onToast} />
-      <Guard label="운동 수행 능력"><PerformancePanel member={member} briefing={briefing} onGo={() => goRecord("perf")} /></Guard>
+      <Guard label="체형분석 안내">
+        <Card className="p-4">
+          <button onClick={() => goAnalysis && goAnalysis()} className="flex w-full items-center gap-3 text-left">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl" style={{ background: GRAD }}><Activity size={18} color="#fff" /></span>
+            <div className="min-w-0 flex-1">
+              <p className="font-extrabold" style={{ color: INK }}>체형분석 · 결과 카드</p>
+              <Sub>사진 촬영과 카드 만들기는 <b style={{ color: PRIMARY }}>체형분석 탭</b>에서</Sub>
+            </div>
+            <span className="shrink-0 rounded-full px-3 py-1.5 text-xs font-extrabold" style={{ backgroundColor: TINT, color: PRIMARY }}>
+              {(photos?.poses || []).filter((p) => p && p.metrics).length}건
+            </span>
+            <ChevronRight size={16} style={{ color: FAINT }} />
+          </button>
+        </Card>
+      </Guard>
       <Guard label="코멘트 기록"><Timeline member={member} briefing={briefing} onDelete={onDeleteNote} /></Guard>
       <Guard label="종합 평가"><OverallReview member={member} briefing={briefing} onToast={onToast} schedule={schedule} /></Guard>
     </div>
@@ -6251,6 +6321,110 @@ function InbodyForm({ member, last, onSave, onDelete, onPatch, onToast }) {
           </>
   );
 }
+/* ===== 음성으로 일지 쓰기 =====
+   브라우저 기본 음성 인식(Web Speech API)을 쓴다. 서버가 필요 없어 무료다.
+   안 되는 기기에서는 버튼이 나오지 않는다. */
+const sttOK = () => typeof window !== "undefined" && !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+/* 말한 내용을 항목별로 갈라 준다 */
+/* 순서가 곧 우선순위 — 부위는 거의 모든 문장에 나오므로 맨 뒤에 둔다 */
+const STT_RULES = [
+  { k: "통증·주의", hit: ["통증", "아프", "불편", "저림", "당김", "뻐근", "무리", "주의", "조심", "부상", "염증", "결림"] },
+  { k: "다음 계획", hit: ["다음", "차시", "이어서", "숙제", "과제", "집에서", "홈트", "권장", "추천", "계획", "하겠습니다", "예정"] },
+  { k: "수행·변화", hit: ["가동", "안정", "향상", "개선", "좋아", "늘었", "줄었", "유지", "정체", "가능", "어려", "버거", "수월", "강화", "회복"] },
+  { k: "부위·관찰", hit: ["어깨", "골반", "무릎", "허리", "요추", "흉추", "경추", "목", "발목", "고관절", "척추", "손목", "둔근", "햄스트링", "코어", "복부"] },
+];
+function sttSplit(text) {
+  const out = { "통증·주의": [], "다음 계획": [], "수행·변화": [], "부위·관찰": [], "기타": [] };
+  String(text || "")
+    .split(/(?<=[.!?])\s+|[,·]\s*|\n+/)
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .forEach((sen) => {
+      const hit = STT_RULES.find((r) => r.hit.some((w) => sen.includes(w)));
+      out[hit ? hit.k : "기타"].push(sen);
+    });
+  return out;
+}
+/* 분류 결과를 일지 문장으로 정리 */
+function sttCompose(groups) {
+  const order = ["통증·주의", "수행·변화", "부위·관찰", "다음 계획", "기타"];
+  return order
+    .filter((k) => groups[k] && groups[k].length)
+    .map((k) => `[${k}] ${groups[k].join(", ")}`)
+    .join("\n");
+}
+
+function VoiceNote({ onApply }) {
+  const [on, setOn] = useState(false);
+  const [text, setText] = useState("");
+  const [err, setErr] = useState("");
+  const recRef = useRef(null);
+  const groups = useMemo(() => sttSplit(text), [text]);
+  const start = () => {
+    const R = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!R) { setErr("이 기기에서는 음성 인식을 쓸 수 없습니다"); return; }
+    try {
+      const r = new R();
+      r.lang = "ko-KR"; r.continuous = true; r.interimResults = true;
+      let fixed = text ? text + " " : "";
+      r.onresult = (e) => {
+        let live = "";
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          const t = e.results[i][0].transcript;
+          if (e.results[i].isFinal) fixed += t + " "; else live += t;
+        }
+        setText((fixed + live).trim());
+      };
+      r.onerror = (e) => { setErr(e?.error === "not-allowed" ? "마이크 권한을 허용해 주세요" : "인식이 중단됐습니다"); setOn(false); };
+      r.onend = () => setOn(false);
+      recRef.current = r; setErr(""); setOn(true); r.start();
+    } catch (e) { setErr("음성 인식을 시작하지 못했습니다"); }
+  };
+  const stop = () => { try { recRef.current?.stop(); } catch (e) {} setOn(false); };
+  useEffect(() => () => { try { recRef.current?.stop(); } catch (e) {} }, []);
+  if (!sttOK()) return null;
+  const filled = Object.keys(groups).filter((k) => groups[k].length);
+  return (
+    <div className="rounded-2xl p-3" style={{ backgroundColor: CANVAS }}>
+      <div className="flex items-center gap-2">
+        <p className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: INK }}>음성으로 일지 쓰기</p>
+        <button onClick={on ? stop : start} className="flex shrink-0 items-center gap-1.5 rounded-full px-3 py-2 text-xs font-extrabold text-white"
+          style={{ backgroundColor: on ? BAD : BRAND }}>
+          {on ? <><span className="h-2 w-2 animate-pulse rounded-full bg-white" /> 듣는 중 · 멈추기</> : <><Smartphone size={12} /> 말하기 시작</>}
+        </button>
+      </div>
+      {!text && !on && (
+        <Sub className="mt-1.5 block leading-relaxed">
+          이렇게 말해 보세요 —<br />
+          "오른쪽 어깨 가동범위가 좋아졌습니다. 허리 통증은 없다고 하셨고요. 코어 안정성 향상됐습니다. 다음 시간에는 흉추 신전 이어서 하겠습니다."
+        </Sub>
+      )}
+      {err && <Sub className="mt-1.5 block" style={{ color: BAD }}>{err}</Sub>}
+      {text && (
+        <>
+          <p className="mt-2 rounded-xl px-3 py-2 text-sm leading-relaxed" style={{ backgroundColor: CARD, color: INK }}>{text}</p>
+          {filled.length > 0 && (
+            <div className="mt-2 space-y-1">
+              {filled.map((k) => (
+                <div key={k} className="flex items-start gap-1.5">
+                  <span className="shrink-0 rounded-full px-2 py-0.5 text-xs font-extrabold" style={{ backgroundColor: TINT, color: PRIMARY }}>{k}</span>
+                  <span className="min-w-0 flex-1 text-xs" style={{ color: INK2 }}>{groups[k].join(", ")}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="mt-2 flex gap-1.5">
+            <button onClick={() => { setText(""); setErr(""); }} className="rounded-xl px-3 py-2 text-xs font-bold" style={{ backgroundColor: CARD, color: SUB }}>지우기</button>
+            <button onClick={() => { onApply(sttCompose(groups)); setText(""); }} className="flex-1 rounded-xl py-2 text-xs font-extrabold text-white" style={{ background: GRAD }}>
+              정리해서 일지에 넣기
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function NoteForm({ member, schedule, onSave, settings, onSettings, backHint }) {
   const [n, setN] = useState({ date: todayISO(), type: "개인레슨", body: "", tags: "" });
   const [group, setGroup] = useState("코어 · 안정성");
@@ -6312,6 +6486,7 @@ function NoteForm({ member, schedule, onSave, settings, onSettings, backHint }) 
             {chips.length === 0 && <Sub>'내 문구' 버튼으로 자주 쓰는 표현을 저장해 두세요.</Sub>}
           </div>
         </div>
+        <VoiceNote onApply={(t) => setN((x) => ({ ...x, body: x.body.trim() ? `${x.body.trim()}\n${t}` : t }))} />
         <Field label="피드백 내용" hint={`${n.body.length}자`}>
           <textarea rows={5} value={n.body} onChange={(e) => setN({ ...n, body: e.target.value })}
             placeholder="위 문구를 눌러 채우거나 직접 입력하세요" className={`${inputCls} resize-none leading-relaxed`} />
@@ -7382,6 +7557,7 @@ export default function App() {
   const spent = useMemo(() => spentMembers(db.members, db.schedule), [db.members, db.schedule]);
   const goTab = (k) => { if (k === "members") setMobileView("list"); setTab(k); };
   const [detailTab, setDetailTab] = useState("summary");   /* 회원 상세 안: 요약 / 기록 입력 */
+  const [analysisDone, setAnalysisDone] = useState(null);
   const goRecord = (sec) => { setNoteBack(false); setSection(sec); setDetailTab("record"); setTab("members"); setMobileView("detail"); };
   /* 일정 탭에서 '기록하기'로 들어왔으면 저장 후 다시 일정으로 돌려보낸다 */
   const [noteBack, setNoteBack] = useState(false);
@@ -7790,7 +7966,7 @@ export default function App() {
                     onSavePose={savePose} onDeletePose={deletePose} onSaveSet={saveSet}
                     onToggleFav={(sid) => toggleFav(member.id, sid)} onDeleteSet={(sid) => deleteSet(member.id, sid)}
                     onBrief={(m) => setBrief({ member: m, rest: left(m), d: ddaySafe(m.contractEnd), att: attendanceOf(db.schedule, m.id), reasons: [] })}
-                    centerName={db.settings.center} />
+                    centerName={db.settings.center} goAnalysis={() => setTab("analysis")} />
                   )}
                   </Guard>
                 ) : (
@@ -7811,16 +7987,19 @@ export default function App() {
           <Guard label="체형분석 목록">
             <AnalysisTab members={db.members} photos={photos}
               onOpen={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }}
-              hub={(id) => {
+              hub={(id, mode) => {
                 const m = db.members.find((x) => x.id === id);
                 if (!m) return null;
                 return (
-                  <PhotoHub key={id} member={m} photos={photos[id]} centerName={db.settings.center}
+                  <PhotoHub key={id + mode} member={m} photos={photos[id]} centerName={db.settings.center}
+                    initialTab={mode === "card" ? "card" : "pose"} roleLabel={mode === "before" ? "비포 사진" : mode === "after" ? "애프터 사진" : ""}
+                    onSaved={() => setAnalysisDone({ id, mode })}
                     onSavePhoto={savePhoto} onRemovePhoto={removePhoto} onSaveMarks={saveMarks} onAdjustPhoto={adjustPhoto}
                     onSavePose={savePose} onDeletePose={deletePose} onSaveSet={saveSet}
                     onToggleFav={(sid) => toggleFav(id, sid)} onDeleteSet={(sid) => deleteSet(id, sid)} onToast={setToast} />
                 );
-              }} />
+              }}
+              doneSignal={analysisDone} onConsumeDone={() => setAnalysisDone(null)} />
           </Guard>
         )}
         {tab === "settings" && (

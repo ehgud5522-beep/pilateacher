@@ -85,7 +85,7 @@ const sysDarkNow = () => {
 };
 
 /* 파일이 실제로 교체됐는지 1초 만에 확인하는 표시 — 설정 탭 맨 아래에 뜬다 */
-const APP_VER = "v68 · 2026-07-29";
+const APP_VER = "v72 · 2026-07-29";
 try { if (typeof window !== "undefined") window.PILATEACHER_VER = APP_VER; } catch (e) {}
 
 const ACC_KEY = "pilateacher_accounts_v1";
@@ -1466,8 +1466,8 @@ function Header({ settings, account, alertCount, onProfile, onAlerts }) {
 }
 function Tabs({ tab, setTab }) {
   const items = [
-    { key: "schedule", label: "일정", icon: Calendar }, { key: "members", label: "회원", icon: Users },
-    { key: "records", label: "기록", icon: ClipboardList }, { key: "settings", label: "설정", icon: SettingsIcon },
+    { key: "schedule", label: "일정", icon: Calendar }, { key: "analysis", label: "체형분석", icon: Activity },
+    { key: "members", label: "회원", icon: Users }, { key: "settings", label: "설정", icon: SettingsIcon },
   ];
   return (
     <div className="bg-white pb-2" style={{ borderBottom: `1px solid ${LINE}` }}>
@@ -1835,7 +1835,7 @@ function SchedItem({ s, members, del, setDel, setEditing, onStatus, onNoshowFee,
   );
 }
 
-function ScheduleManager({ db, onSave, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onOpenMember, onWriteNote, onNoComment }) {
+function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onOpenMember, onWriteNote, onNoComment, onToast }) {
   const [mode, setMode] = useState("week");
   const [cursor, setCursor] = useState(todayISO());
   const [editing, setEditing] = useState(null);
@@ -1984,6 +1984,8 @@ function ScheduleManager({ db, onSave, onDelete, onStatus, onStatusAll, onNoshow
           <p className="truncate text-xs font-semibold text-white opacity-90">{dailyLine()}</p>
         </div>
       </div>
+
+      <Guard label="오늘의 시퀀스"><SequenceCard members={db.members} schedule={db.schedule} photos={photos} onWriteNote={onWriteNote} onToast={onToast} /></Guard>
 
       {todayRows.length > 0 && unwritten > 0 && (
         <button onClick={() => onWriteNote && firstUnwritten && onWriteNote(firstUnwritten.id, firstUnwritten.sid)} className="flex w-full items-center gap-2 rounded-2xl px-4 py-3" style={{ backgroundColor: WARN_S }}>
@@ -5414,6 +5416,500 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onToast }) {
     </Card>
   );
 }
+
+/* ================= 오늘의 시퀀스 (유튜브 · 검증 채널만) =================
+   키는 반드시 구글 클라우드에서 "HTTP 리퍼러 제한"을 걸어 두어야 한다:
+   pilateacher.com/*, *.vercel.app/*, https://localhost/* (앱), http://localhost:*
+   제한을 걸면 코드에 들어 있어도 남이 못 쓴다. */
+const YT_KEY = "AIzaSyAjSubZDcGlacRHp8Ohldno_zPK5UvSP30";
+const YT_CHANNELS = ["@pilatesua", "@Yangpila", "@sbt_pilateslife", "@janepila", "@daoom_yeoon", "@pilates.G0"];
+const YT_KEYWORDS = ["리포머", "캐딜락", "체어", "바렐", "라운드숄더", "거북목", "골반", "코어", "척추", "스트레칭", "하체", "어깨"];
+const YT_CACHE_KEY = "pt_yt_cache_v3";
+
+async function ytGet(path, params) {
+  const q = new URLSearchParams({ ...params, key: YT_KEY }).toString();
+  const r = await fetch(`https://www.googleapis.com/youtube/v3/${path}?${q}`);
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { const msg = j?.error?.message || `HTTP ${r.status}`; const e = new Error(msg); e.reason = j?.error?.errors?.[0]?.reason; throw e; }
+  return j;
+}
+const ytCacheRead = () => { try { return JSON.parse(localStorage.getItem(YT_CACHE_KEY)) || {}; } catch (e) { return {}; } };
+const ytCacheWrite = (c) => { try { localStorage.setItem(YT_CACHE_KEY, JSON.stringify(c)); } catch (e) {} };
+
+/* 채널 핸들 → 업로드 목록 ID (한 번만 알아내면 계속 씀) */
+async function ytResolveChannels() {
+  const c = ytCacheRead();
+  c.ch = c.ch || {};
+  for (const h of YT_CHANNELS) {
+    if (c.ch[h]?.uploads) continue;
+    const j = await ytGet("channels", { part: "contentDetails,snippet", forHandle: h });
+    const it = j.items && j.items[0];
+    if (it) c.ch[h] = { id: it.id, name: it.snippet?.title || h, uploads: it.contentDetails?.relatedPlaylists?.uploads };
+  }
+  ytCacheWrite(c);
+  return c.ch;
+}
+/* 하루 한 번, 채널마다 최근 영상을 모아 둔다 (검색보다 훨씬 싼 호출) */
+async function ytLoadPool() {
+  const c = ytCacheRead();
+  const today = todayISO();
+  if (c.poolDay === today && Array.isArray(c.pool) && c.pool.length) return c.pool;
+  const ch = await ytResolveChannels();
+  const pool = [];
+  for (const h of Object.keys(ch)) {
+    const up = ch[h]?.uploads; if (!up) continue;
+    try {
+      const j = await ytGet("playlistItems", { part: "snippet", playlistId: up, maxResults: "15" });
+      (j.items || []).forEach((it) => {
+        const sn = it.snippet || {};
+        const vid = sn.resourceId?.videoId; if (!vid) return;
+        pool.push({
+          id: vid, title: sn.title || "", desc: (sn.description || "").slice(0, 2000),
+          thumb: sn.thumbnails?.medium?.url || sn.thumbnails?.default?.url || "",
+          ch: ch[h].name, at: sn.publishedAt || "",
+        });
+      });
+    } catch (e) {}
+  }
+  if (pool.length) { c.pool = pool; c.poolDay = today; ytCacheWrite(c); }
+  return pool;
+}
+/* 키워드가 모음에 없으면 그때만 검색 API 를 쓴다 (채널 안에서만) */
+async function ytSearchKw(kw) {
+  const c = ytCacheRead();
+  c.q = c.q || {};
+  const ck = `${todayISO()}|${kw}`;
+  if (Array.isArray(c.q[ck])) return c.q[ck];
+  const ch = await ytResolveChannels();
+  const out = [];
+  for (const h of Object.keys(ch).slice(0, 3)) {
+    try {
+      const j = await ytGet("search", { part: "snippet", channelId: ch[h].id, q: kw, type: "video", maxResults: "3", videoEmbeddable: "true" });
+      (j.items || []).forEach((it) => {
+        const vid = it.id?.videoId; if (!vid) return;
+        out.push({ id: vid, title: it.snippet?.title || "", desc: "", thumb: it.snippet?.thumbnails?.medium?.url || "", ch: ch[h].name, at: it.snippet?.publishedAt || "" });
+      });
+    } catch (e) {}
+  }
+  c.q[ck] = out; ytCacheWrite(c);
+  return out;
+}
+const ytFilter = (pool, kw) => pool.filter((v) => (v.title + " " + v.desc).toLowerCase().includes(kw.toLowerCase()));
+
+/* ===== 타임스탬프 ===== */
+const secToClock = (n) => {
+  const t = Math.max(0, Math.floor(n));
+  const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s2 = t % 60;
+  return (h ? `${h}:${String(m).padStart(2, "0")}` : `${m}`) + `:${String(s2).padStart(2, "0")}`;
+};
+/* 유튜브 설명란의 "02:15 풋워크" 같은 줄을 챕터로 뽑는다 */
+function parseChapters(desc) {
+  const out = [];
+  String(desc || "").split(/\r?\n/).forEach((raw) => {
+    const line = raw.trim();
+    const m = line.match(/^[\[\(]?(\d{1,2}):(\d{2})(?::(\d{2}))?[\]\)]?\s*[-–—~:.)\]]*\s*(.*)$/);
+    if (!m) return;
+    const a = Number(m[1]), b = Number(m[2]), c = m[3] ? Number(m[3]) : null;
+    if (b > 59 || (c !== null && c > 59)) return;
+    const t = c !== null ? a * 3600 + b * 60 + c : a * 60 + b;
+    const label = (m[4] || "").trim().replace(/^[-–—~:.]+\s*/, "");
+    if (!label) return;
+    if (out.some((x) => x.t === t)) return;
+    out.push({ t, label: label.slice(0, 40) });
+  });
+  return out.sort((x, y) => x.t - y.t).slice(0, 20);
+}
+const YT_MARK_KEY = "pt_yt_marks_v1";
+const marksRead = () => { try { return JSON.parse(localStorage.getItem(YT_MARK_KEY)) || {}; } catch (e) { return {}; } };
+const marksWrite = (o) => { try { localStorage.setItem(YT_MARK_KEY, JSON.stringify(o)); } catch (e) {} };
+
+/* 유튜브 플레이어 API — 되면 현재 위치를 읽어 저장할 수 있다. 안 되면 일반 iframe 으로 폴백 */
+let ytApiP = null;
+function ytApiReady() {
+  if (ytApiP) return ytApiP;
+  ytApiP = new Promise((res) => {
+    if (typeof window === "undefined") return res(null);
+    if (window.YT && window.YT.Player) return res(window.YT);
+    const done = () => res(window.YT && window.YT.Player ? window.YT : null);
+    const prev = window.onYouTubeIframeAPIReady;
+    window.onYouTubeIframeAPIReady = () => { try { prev && prev(); } catch (e) {} done(); };
+    if (!document.getElementById("yt-iframe-api")) {
+      const sc = document.createElement("script");
+      sc.id = "yt-iframe-api"; sc.src = "https://www.youtube.com/iframe_api";
+      sc.onerror = () => res(null);
+      document.head.appendChild(sc);
+    }
+    setTimeout(done, 6000);
+  });
+  return ytApiP;
+}
+
+/* 체형 태그·코멘트·분석 지표에 나오는 말 → 시퀀스 키워드 */
+const KW_HINTS = [
+  { kw: "라운드숄더", hit: ["라운드", "숄더", "어깨 말림", "굽은 등", "흉추 후만"] },
+  { kw: "거북목", hit: ["거북목", "전방두부", "목 전방", "일자목"] },
+  { kw: "골반", hit: ["골반", "전방경사", "후방경사", "비대칭", "요추"] },
+  { kw: "코어", hit: ["코어", "복부", "복횡근", "불안정"] },
+  { kw: "척추", hit: ["척추", "측만", "흉추", "신전"] },
+  { kw: "하체", hit: ["무릎", "하체", "둔근", "다리", "발목", "x자", "o자"] },
+  { kw: "어깨", hit: ["어깨", "견갑", "회전근개", "충돌"] },
+  { kw: "스트레칭", hit: ["뭉침", "근육통", "통증", "긴장", "유연"] },
+];
+/* 지난 수업 기록에서 오늘 무엇을 다룰지 뽑아낸다 */
+function seqAdvice(member, schedule, photos) {
+  if (!member) return null;
+  const notes = (member.notes || []).slice().sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  const att = attendanceOf(schedule, member.id);
+  const first = notes.length === 0 && (!att || !att.done);
+  if (first) return { first: true, name: member.name || "회원" };
+  const last = notes[0] || null;
+  const poses = (photos?.[member.id]?.poses || []).filter((p) => p && p.metrics);
+  const bad = (poses[0]?.metrics || []).filter((m) => m.level !== "good").map((m) => m.label);
+  const text = [
+    ...(member.focus || []),
+    last?.body || "",
+    ...bad,
+  ].join(" ").toLowerCase();
+  const kws = [];
+  KW_HINTS.forEach((h) => { if (h.hit.some((w) => text.includes(w.toLowerCase()))) kws.push(h.kw); });
+  return {
+    first: false,
+    name: member.name || "회원",
+    kws: kws.slice(0, 3),
+    last,
+    why: (member.focus || []).slice(0, 2).concat(bad.slice(0, 2)).slice(0, 3),
+  };
+}
+
+function VideoPlayer({ video, onClose, onToast }) {
+  const boxRef = useRef(null);
+  const playerRef = useRef(null);
+  const [api, setApi] = useState(false);
+  const [marks, setMarks] = useState(() => marksRead()[video.id] || []);
+  const [adding, setAdding] = useState(null);   /* { t, label } */
+  const chapters = useMemo(() => parseChapters(video.desc), [video.id]);
+  const all = useMemo(() => {
+    const seen = new Set(); const out = [];
+    [...marks.map((m) => ({ ...m, mine: true })), ...chapters].forEach((c) => {
+      if (seen.has(c.t)) return; seen.add(c.t); out.push(c);
+    });
+    return out.sort((a, b) => a.t - b.t);
+  }, [marks, chapters]);
+
+  useEffect(() => {
+    let alive = true;
+    ytApiReady().then((YT) => {
+      if (!alive || !YT || !boxRef.current) return;
+      try {
+        playerRef.current = new YT.Player(boxRef.current, {
+          videoId: video.id,
+          playerVars: { autoplay: 1, rel: 0, playsinline: 1 },
+          events: { onReady: () => { if (alive) setApi(true); } },
+        });
+      } catch (e) {}
+    });
+    return () => { alive = false; try { playerRef.current?.destroy(); } catch (e) {} };
+  }, [video.id]);
+
+  const seek = (t) => {
+    const p = playerRef.current;
+    if (p && p.seekTo) { try { p.seekTo(t, true); p.playVideo && p.playVideo(); return; } catch (e) {} }
+    const f = document.getElementById("yt-fallback");
+    if (f) f.src = `https://www.youtube-nocookie.com/embed/${video.id}?autoplay=1&rel=0&start=${t}`;
+  };
+  const saveMark = (t, label) => {
+    const next = [...marks.filter((m) => m.t !== t), { t, label: (label || "").trim() || secToClock(t) }].sort((a, b) => a.t - b.t).slice(0, 30);
+    setMarks(next);
+    const all2 = marksRead(); all2[video.id] = next; marksWrite(all2);
+    setAdding(null);
+    onToast && onToast({ ok: true, msg: `${secToClock(t)} 저장했습니다.` });
+  };
+  const delMark = (t) => {
+    const next = marks.filter((m) => m.t !== t);
+    setMarks(next);
+    const all2 = marksRead(); all2[video.id] = next; marksWrite(all2);
+  };
+  const grabNow = () => {
+    const p = playerRef.current;
+    let t = 0;
+    try { t = Math.floor(p?.getCurrentTime?.() || 0); } catch (e) {}
+    setAdding({ t, label: "" });
+  };
+
+  return (
+    <div className="safe-all fixed inset-0 z-50 flex flex-col bg-photo">
+      <div className="flex items-center justify-between px-4 py-3">
+        <button onClick={onClose} className="rounded-full p-2" style={{ backgroundColor: "rgba(255,255,255,0.15)" }}><X size={18} color="#fff" /></button>
+        <p className="mx-2 min-w-0 flex-1 truncate text-center text-sm font-bold text-white">{video.title}</p>
+        <span style={{ width: 34 }} />
+      </div>
+      <div className="px-3">
+        <div className="mx-auto w-full overflow-hidden rounded-2xl" style={{ maxWidth: 860, aspectRatio: "16 / 9", backgroundColor: "#000" }}>
+          <div ref={boxRef} className="h-full w-full">
+            <iframe id="yt-fallback" title={video.title} src={`https://www.youtube-nocookie.com/embed/${video.id}?autoplay=1&rel=0&playsinline=1`}
+              className="h-full w-full" style={{ border: 0 }} allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowFullScreen />
+          </div>
+        </div>
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto px-4 pt-3">
+        <div className="mx-auto" style={{ maxWidth: 860 }}>
+          <div className="flex items-center gap-2">
+            <p className="text-xs font-extrabold text-white">동작 구간 {all.length > 0 && <span style={{ opacity: 0.6 }}>{all.length}개</span>}</p>
+            <span className="flex-1" />
+            {api ? (
+              <button onClick={grabNow} className="flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>
+                <Plus size={12} /> 지금 위치 저장
+              </button>
+            ) : (
+              <button onClick={() => setAdding({ t: 0, label: "" })} className="flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-extrabold" style={{ backgroundColor: "rgba(255,255,255,.16)", color: "#fff" }}>
+                <Plus size={12} /> 구간 직접 추가
+              </button>
+            )}
+          </div>
+          {adding && (
+            <div className="mt-2 rounded-2xl p-3" style={{ backgroundColor: "rgba(255,255,255,.12)" }}>
+              <div className="flex items-center gap-1.5">
+                <input inputMode="numeric" value={Math.floor(adding.t / 60)} onChange={(e) => setAdding({ ...adding, t: (Number(e.target.value.replace(/[^0-9]/g, "")) || 0) * 60 + (adding.t % 60) })}
+                  className="w-14 rounded-xl px-2 py-2 text-center text-sm font-extrabold" style={{ backgroundColor: "#fff", color: "#17171F" }} />
+                <span className="text-sm font-extrabold text-white">분</span>
+                <input inputMode="numeric" value={adding.t % 60} onChange={(e) => setAdding({ ...adding, t: Math.floor(adding.t / 60) * 60 + Math.min(59, Number(e.target.value.replace(/[^0-9]/g, "")) || 0) })}
+                  className="w-14 rounded-xl px-2 py-2 text-center text-sm font-extrabold" style={{ backgroundColor: "#fff", color: "#17171F" }} />
+                <span className="text-sm font-extrabold text-white">초</span>
+              </div>
+              <input value={adding.label} onChange={(e) => setAdding({ ...adding, label: e.target.value })} placeholder="예) 리포머 풋워크"
+                className="mt-2 w-full rounded-xl px-3 py-2 text-sm" style={{ backgroundColor: "#fff", color: "#17171F" }} />
+              <div className="mt-2 flex gap-1.5">
+                <button onClick={() => setAdding(null)} className="flex-1 rounded-xl py-2 text-xs font-bold" style={{ backgroundColor: "rgba(255,255,255,.18)", color: "#fff" }}>취소</button>
+                <button onClick={() => saveMark(adding.t, adding.label)} className="flex-1 rounded-xl py-2 text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>저장</button>
+              </div>
+            </div>
+          )}
+          {all.length === 0 && !adding && (
+            <p className="mt-2 text-xs" style={{ color: "rgba(255,255,255,.6)" }}>
+              이 영상에는 구간 정보가 없습니다 · 자주 쓰는 동작 시점을 저장해 두면 다음부터 바로 그 지점부터 재생됩니다
+            </p>
+          )}
+          <div className="mt-2 space-y-1.5 pb-4">
+            {all.map((c) => (
+              <div key={c.t} className="flex items-center gap-2 rounded-xl px-3 py-2" style={{ backgroundColor: "rgba(255,255,255,.1)" }}>
+                <button onClick={() => seek(c.t)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+                  <span className="shrink-0 rounded-lg px-2 py-1 text-xs font-extrabold tabular-nums" style={{ backgroundColor: c.mine ? BRAND : "rgba(255,255,255,.2)", color: "#fff" }}>{secToClock(c.t)}</span>
+                  <span className="min-w-0 flex-1 truncate text-xs font-bold text-white">{c.label}</span>
+                </button>
+                {c.mine && <button onClick={() => delMark(c.t)} className="shrink-0 p-1"><Trash2 size={13} color="rgba(255,255,255,.6)" /></button>}
+              </div>
+            ))}
+          </div>
+          <p className="pb-4 text-center text-xs" style={{ color: "rgba(255,255,255,.5)" }}>영상 저작권은 해당 채널에 있습니다 · 유튜브 공식 재생기로 재생됩니다</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SequenceCard({ members, schedule, photos, onWriteNote, onToast }) {
+  const [open, setOpen] = useState(true);
+  /* 날짜에 따라 오늘의 기본 키워드가 돌아간다 */
+  const dayIdx = useMemo(() => { const d = new Date(); return (d.getFullYear() + d.getMonth() + d.getDate()) % YT_KEYWORDS.length; }, []);
+  const [kw, setKw] = useState(YT_KEYWORDS[dayIdx]);
+  const [pool, setPool] = useState(null);
+  const [extra, setExtra] = useState([]);
+  const [err, setErr] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [play, setPlay] = useState(null);
+  /* 오늘 아직 안 한 수업 중 가장 이른 회원을 기준으로 삼는다 */
+  const target = useMemo(() => {
+    const T = todayISO();
+    const rows = (schedule || [])
+      .filter((s) => s?.date === T && !isPersonalEvt(s) && !isEquipGroup(s))
+      .sort((a, b) => String(a.start).localeCompare(String(b.start)));
+    for (const s of rows) {
+      const a = attendeesOf(s).find((x) => !x.deductFrom && x.status !== "noshow" && x.status !== "cancel");
+      if (a) { const m = (members || []).find((x) => x.id === a.memberId); if (m) return { m, s }; }
+    }
+    return null;
+  }, [schedule, members]);
+  const adv = useMemo(() => seqAdvice(target?.m, schedule, photos), [target, schedule, photos]);
+  const [manualKw, setManualKw] = useState(false);
+  useEffect(() => {
+    if (!manualKw && adv && !adv.first && adv.kws?.length) setKw(adv.kws[0]);
+  }, [adv, manualKw]);
+  useEffect(() => {
+    let ok = true;
+    (async () => {
+      try { const p = await ytLoadPool(); if (ok) setPool(p); }
+      catch (e) { if (ok) setErr(e); }
+    })();
+    return () => { ok = false; };
+  }, []);
+  useEffect(() => {
+    let ok = true;
+    setExtra([]);
+    if (!pool) return;
+    if (ytFilter(pool, kw).length >= 2) return;
+    setBusy(true);
+    ytSearchKw(kw).then((r) => { if (ok) setExtra(r); }).catch(() => {}).finally(() => { if (ok) setBusy(false); });
+    return () => { ok = false; };
+  }, [kw, pool]);
+  const vids = useMemo(() => {
+    const seen = new Set(); const out = [];
+    [...ytFilter(pool || [], kw), ...extra].forEach((v) => { if (!seen.has(v.id)) { seen.add(v.id); out.push(v); } });
+    return out.sort((a, b) => (b.at || "").localeCompare(a.at || "")).slice(0, 4);
+  }, [pool, extra, kw]);
+  return (
+    <Card className="p-4">
+      <button onClick={() => setOpen((v) => !v)} className="flex w-full items-center gap-2 text-left">
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl" style={{ background: GRAD }}><Sparkles size={16} color="#fff" /></span>
+        <div className="min-w-0 flex-1">
+          <h3 className="font-extrabold" style={{ color: INK }}>오늘의 시퀀스</h3>
+          <Sub>검증된 필라테스 채널에서 골라 드립니다</Sub>
+        </div>
+        <ChevronDown size={16} style={{ color: SUB, transform: open ? "rotate(180deg)" : "none" }} />
+      </button>
+      {open && (
+        <div className="mt-3 space-y-3">
+          {adv && adv.first && (
+            <div className="rounded-2xl px-3 py-3" style={{ backgroundColor: TINT }}>
+              <p className="text-sm font-extrabold" style={{ color: PRIMARY }}>{adv.name} 회원님 첫 수업입니다</p>
+              <p className="mt-0.5 text-xs leading-relaxed" style={{ color: INK2 }}>
+                지난 기록이 없어 추천할 근거가 없습니다. <b style={{ color: INK }}>첫 수업 일지를 기록해 주세요.</b> 다음부터 그 내용을 보고 시퀀스를 골라 드립니다.
+              </p>
+              {onWriteNote && (
+                <button onClick={() => onWriteNote(target.m.id, target.s.id)} className="mt-2 flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>
+                  <Pencil size={12} /> 첫 수업 일지 쓰기
+                </button>
+              )}
+            </div>
+          )}
+          {adv && !adv.first && (
+            <div className="rounded-2xl px-3 py-2.5" style={{ backgroundColor: CANVAS }}>
+              <p className="text-xs font-extrabold" style={{ color: INK }}>
+                {adv.name} 회원님 {adv.kws?.length ? <>· 지난 기록 기준 <b style={{ color: PRIMARY }}>{adv.kws.join(" · ")}</b> 추천</> : "· 지난 기록에서 특별한 항목은 없었습니다"}
+              </p>
+              {adv.why?.length > 0 && <Sub className="mt-0.5 block truncate">근거: {adv.why.join(" · ")}</Sub>}
+              {adv.last?.body && <Sub className="mt-0.5 block line-clamp-2">지난 일지: {adv.last.body}</Sub>}
+            </div>
+          )}
+          <div className="flex gap-1.5 overflow-x-auto pb-1">
+            {YT_KEYWORDS.map((k) => (
+              <button key={k} onClick={() => { setManualKw(true); setKw(k); }} className="shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-extrabold"
+                style={kw === k ? { background: GRAD, color: "#fff" } : { backgroundColor: CANVAS, color: SUB }}>{k}</button>
+            ))}
+          </div>
+          {err && (
+            <Sub className="block rounded-2xl px-3 py-3">
+              영상을 불러오지 못했습니다{String(err.reason) === "forbidden" || /referer|referrer|API key/i.test(String(err.message)) ? " · 유튜브 키의 리퍼러 제한에 이 주소를 추가해 주세요" : " · 네트워크를 확인해 주세요"}
+            </Sub>
+          )}
+          {!err && !pool && <div className="flex justify-center py-6"><Loader2 size={18} className="animate-spin" style={{ color: PRIMARY }} /></div>}
+          {!err && pool && vids.length === 0 && !busy && <Sub className="block py-3 text-center">'{kw}' 영상이 아직 없습니다 · 다른 키워드를 눌러 보세요</Sub>}
+          {busy && <Sub className="block text-center">'{kw}' 영상을 채널에서 찾는 중…</Sub>}
+          <div className="grid grid-cols-2 gap-2">
+            {vids.map((v) => (
+              <button key={v.id} onClick={() => setPlay(v)} className="text-left">
+                <div className="relative overflow-hidden rounded-2xl bg-photo" style={{ aspectRatio: "16 / 9" }}>
+                  {v.thumb && <img src={v.thumb} alt="" className="h-full w-full object-cover" {...IMGP} />}
+                  <span className="absolute inset-0 flex items-center justify-center">
+                    <span className="flex h-9 w-9 items-center justify-center rounded-full" style={{ backgroundColor: "rgba(0,0,0,.55)" }}>
+                      <span style={{ width: 0, height: 0, borderTop: "7px solid transparent", borderBottom: "7px solid transparent", borderLeft: "11px solid #fff", marginLeft: 3 }} />
+                    </span>
+                  </span>
+                </div>
+                <p className="mt-1 line-clamp-2 text-xs font-bold leading-snug" style={{ color: INK }}>{v.title}</p>
+                <Sub className="block truncate">{v.ch}</Sub>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {play && <VideoPlayer video={play} onClose={() => setPlay(null)} onToast={onToast} />}
+    </Card>
+  );
+}
+
+/* 저장된 분석 썸네일 — blobId 는 비동기라 여기서 불러온다 */
+function PoseThumb({ rec }) {
+  const [src, setSrc] = useState(rec?.src || null);
+  useEffect(() => {
+    let ok = true;
+    (async () => {
+      const u = await urlFor(rec?.cleanBlobId || rec?.blobId);
+      if (ok && u) setSrc(u);
+    })();
+    return () => { ok = false; };
+  }, [rec?.id]);
+  if (!src) return <div className="h-16 w-12 shrink-0 rounded-xl" style={{ backgroundColor: CANVAS }} />;
+  return <img src={src} alt="" className="h-16 w-12 shrink-0 rounded-xl object-cover" {...IMGP} />;
+}
+
+/* 체형분석 탭 — 전 회원의 최근 분석을 한눈에 */
+function AnalysisTab({ members, photos, onOpen }) {
+  const [q, setQ] = useState("");
+  const rows = useMemo(() => {
+    return members
+      .filter((m) => !isDraft(m))
+      .map((m) => {
+        const poses = (photos[m.id]?.poses || []).filter((p) => p && p.metrics);
+        return { m, last: poses[0] || null, count: poses.length };
+      })
+      .filter((r) => !q.trim() || (r.m.name || "").includes(q.trim()))
+      .sort((a, b) => {
+        if (!!b.last - !!a.last) return !!b.last - !!a.last;
+        return (b.last?.date || "").localeCompare(a.last?.date || "");
+      });
+  }, [members, photos, q]);
+  const done = rows.filter((r) => r.last).length;
+  const levelDot = { good: GOOD, warn: WARN, bad: BAD };
+  return (
+    <div className="mx-auto max-w-3xl space-y-3">
+      <Card className="p-4">
+        <div className="flex items-center gap-2">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl" style={{ background: GRAD }}><Activity size={16} color="#fff" /></span>
+          <div className="min-w-0 flex-1">
+            <h3 className="font-extrabold" style={{ color: INK }}>체형분석 현황</h3>
+            <Sub>{members.filter((m) => !isDraft(m)).length}명 중 <b style={{ color: PRIMARY }}>{done}명</b> 분석 완료</Sub>
+          </div>
+        </div>
+        <div className="relative mt-3">
+          <Search size={15} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2" style={{ color: SUB }} />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="회원 이름 검색"
+            className="w-full rounded-2xl border-0 py-3 pl-10 pr-4 text-sm outline-none" style={{ backgroundColor: CANVAS, color: INK }} />
+        </div>
+      </Card>
+      {rows.length === 0 && <Card className="p-8 text-center"><Sub>회원이 없습니다</Sub></Card>}
+      {rows.map(({ m, last, count }) => (
+        <button key={m.id} onClick={() => onOpen(m.id)} className="w-full text-left">
+          <Card className="flex items-center gap-3 p-3">
+            {last ? <PoseThumb rec={last} /> : <div className="flex h-16 w-12 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: CANVAS }}><Camera size={16} style={{ color: FAINT }} /></div>}
+            <div className="min-w-0 flex-1">
+              <p className="flex items-center gap-1.5 truncate font-extrabold" style={{ color: INK }}>
+                {m.name || "이름 미입력"}
+                {ageOf(m) !== null && <span className="text-xs font-medium" style={{ color: SUB }}>{ageOf(m)}세</span>}
+              </p>
+              {last ? (
+                <>
+                  <Sub className="block">{ymd(last.date)} · {last.view === "front" ? "정면" : last.view === "side" ? "측면" : "후면"} · {count}건</Sub>
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {(last.metrics || []).slice(0, 3).map((x) => (
+                      <span key={x.key} className="flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-bold" style={{ backgroundColor: CANVAS, color: INK2 }}>
+                        <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: levelDot[x.level] || SUB }} />
+                        {x.label.replace(" 각도", "")} {x.value}{x.unit}
+                      </span>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <Sub className="block">아직 분석이 없습니다 · 눌러서 시작</Sub>
+              )}
+            </div>
+            <ChevronRight size={16} style={{ color: FAINT }} />
+          </Card>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 /* 인바디 요약과 그래프는 같은 데이터라 한 카드로 합친다 */
 function InbodyPanel({ member, onGo }) {
   const [graph, setGraph] = useState(false);
@@ -5524,7 +6020,7 @@ function Dashboard({ member, photos, schedule, onBack, briefing, onSavePhoto, on
     </div>
   );
 }
-function RecordTab({ db, selectedId, setSelectedId, section, setSection, onSaveInbody, onDeleteInbody, onSaveNote, onPatch, onDelete, onToast, onSettings, onLeaveNote, backHint }) {
+function RecordTab({ db, selectedId, setSelectedId, section, setSection, onSaveInbody, onDeleteInbody, onSaveNote, onPatch, onDelete, onToast, onSettings, onLeaveNote, backHint, locked }) {
   const [openInfo, setOpenInfo] = useState(false);
   const members = db.members;
   const member = members.find((m) => m.id === selectedId) || members[0];
@@ -5538,7 +6034,7 @@ function RecordTab({ db, selectedId, setSelectedId, section, setSection, onSaveI
   return (
     <div className="space-y-3">
       <Card className="overflow-hidden p-4">
-        <Field label="기록할 회원">
+        {!locked && <Field label="기록할 회원">
           <div className="relative w-full" style={{ maxWidth: "100%" }}>
             <select value={member.id} onChange={(e) => setSelectedId(e.target.value)}
               className="block w-full min-w-0 max-w-full truncate rounded-2xl border-0 py-3.5 pl-11 pr-10 text-sm font-extrabold outline-none"
@@ -5550,7 +6046,7 @@ function RecordTab({ db, selectedId, setSelectedId, section, setSection, onSaveI
             <Users size={16} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2" style={{ color: PRIMARY }} />
             <ChevronDown size={16} className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2" style={{ color: PRIMARY }} />
           </div>
-        </Field>
+        </Field>}
         <button onClick={() => setOpenInfo((v) => !v)} aria-expanded={openInfo}
           className="mt-2 flex w-full items-center gap-2 rounded-2xl px-3 py-2.5" style={{ backgroundColor: CANVAS }}>
           <span className="min-w-0 flex-1 truncate text-left text-xs font-bold" style={{ color: INK }}>
@@ -6853,7 +7349,8 @@ export default function App() {
   const alerts = useMemo(() => detectAlerts(db.members, db.schedule), [db.members, db.schedule]);
   const spent = useMemo(() => spentMembers(db.members, db.schedule), [db.members, db.schedule]);
   const goTab = (k) => { if (k === "members") setMobileView("list"); setTab(k); };
-  const goRecord = (sec) => { setNoteBack(false); setSection(sec); setTab("records"); };
+  const [detailTab, setDetailTab] = useState("summary");   /* 회원 상세 안: 요약 / 기록 입력 */
+  const goRecord = (sec) => { setNoteBack(false); setSection(sec); setDetailTab("record"); setTab("members"); setMobileView("detail"); };
   /* 일정 탭에서 '기록하기'로 들어왔으면 저장 후 다시 일정으로 돌려보낸다 */
   const [noteBack, setNoteBack] = useState(false);
   const [noteSid, setNoteSid] = useState(null);
@@ -6959,7 +7456,7 @@ export default function App() {
   const addMember = () => {
     const m = blankMember(db.settings.staff);
     saveDb({ ...db, members: [m, ...db.members] });
-    setSelectedId(m.id); setSection("info"); setTab("records");
+    setSelectedId(m.id); setSection("info"); setDetailTab("record"); setMobileView("detail"); setTab("members");
     setToast({ ok: true, msg: "새 회원을 추가했습니다." });
   };
   const snoozedCount = useMemo(() => db.members.filter((m) => isSnoozed(m)).length, [db.members]);
@@ -7237,12 +7734,24 @@ export default function App() {
                 <Guard label="회원 목록">
                   <MemberList members={db.members} schedule={db.schedule} selectedId={selectedId} onAdd={addMember} onOpenFav={() => setFavOpen(true)} favCount={favList.length}
                     draftCount={drafts.length} onCleanDrafts={cleanDrafts}
-                    onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} />
+                    onSelect={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); }} />
                 </Guard>
               </div>
               <div className={`md:col-span-7 lg:col-span-8 ${mobileView === "list" ? "hidden md:block" : ""}`}>
                 {member ? (
                   <Guard label="회원 상세" key={member.id}>
+                  <div className="mb-3 flex gap-1 rounded-2xl p-1" style={{ backgroundColor: CANVAS }}>
+                    {[{ k: "summary", l: "프로필 · 요약" }, { k: "record", l: "기록 입력" }].map((o) => (
+                      <button key={o.k} onClick={() => setDetailTab(o.k)} className="flex-1 rounded-xl py-2.5 text-sm font-extrabold"
+                        style={detailTab === o.k ? { backgroundColor: CARD, color: PRIMARY, boxShadow: "0 1px 3px rgba(20,20,43,.12)" } : { color: SUB }}>{o.l}</button>
+                    ))}
+                  </div>
+                  {detailTab === "record" ? (
+                    <RecordTab db={db} locked selectedId={member.id} setSelectedId={setSelectedId} section={section} setSection={setSection}
+                      onSaveInbody={saveInbody} onDeleteInbody={deleteInbody} onSaveNote={saveNote} onPatch={patch} onDelete={removeMember} onToast={setToast}
+                      onLeaveNote={() => setNoteBack(false)} backHint={noteBack}
+                      onSettings={(next) => saveDb({ ...db, settings: next })} />
+                  ) : (
                   <Dashboard member={member} photos={photos[member.id]} schedule={db.schedule} briefing={briefing}
                     onBack={() => setMobileView("list")} onSavePhoto={savePhoto} onRemovePhoto={removePhoto}
                     onSaveMarks={saveMarks} onAdjustPhoto={adjustPhoto} onDeleteNote={deleteNote} onToast={setToast} goRecord={goRecord}
@@ -7250,6 +7759,7 @@ export default function App() {
                     onToggleFav={(sid) => toggleFav(member.id, sid)} onDeleteSet={(sid) => deleteSet(member.id, sid)}
                     onBrief={(m) => setBrief({ member: m, rest: left(m), d: ddaySafe(m.contractEnd), att: attendanceOf(db.schedule, m.id), reasons: [] })}
                     centerName={db.settings.center} />
+                  )}
                   </Guard>
                 ) : (
                   <Card className="p-8 text-center"><p className="text-sm font-bold">회원을 추가하면 여기에 상세 대시보드가 표시됩니다.</p></Card>
@@ -7260,15 +7770,16 @@ export default function App() {
           </>
         )}
         {tab === "schedule" && (
-          <ScheduleManager db={db} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone}
+          <ScheduleManager db={db} photos={photos} onToast={setToast} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone}
             onOpenMember={(id) => { setSelectedId(id); setMobileView("detail"); setTab("members"); }}
             onNoComment={noComment}
-            onWriteNote={(id, sid) => { setSelectedId(id); setSection("note"); setNoteBack(true); setNoteSid(sid || null); setTab("records"); }} />
+            onWriteNote={(id, sid) => { setSelectedId(id); setSection("note"); setNoteBack(true); setNoteSid(sid || null); setDetailTab("record"); setMobileView("detail"); setTab("members"); }} />
         )}
-        {tab === "records" && (
-          <RecordTab db={db} selectedId={selectedId} setSelectedId={setSelectedId} section={section} setSection={setSection}
-            onSaveInbody={saveInbody} onDeleteInbody={deleteInbody} onSaveNote={saveNote} onPatch={patch} onDelete={removeMember} onToast={setToast} onLeaveNote={() => setNoteBack(false)} backHint={noteBack}
-            onSettings={(next) => saveDb({ ...db, settings: next })} />
+        {tab === "analysis" && (
+          <Guard label="체형분석 목록">
+            <AnalysisTab members={db.members} photos={photos}
+              onOpen={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />
+          </Guard>
         )}
         {tab === "settings" && (
           <SettingsTab db={db} photos={photos} account={account} savedAt={savedAt} onChangeSettings={(s) => saveDb({ ...db, settings: s })}

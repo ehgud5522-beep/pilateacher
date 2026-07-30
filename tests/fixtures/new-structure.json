@@ -1,0 +1,72 @@
+{
+  "expected": {
+    "clientIds": ["client-fixture-1", "client-fixture-2"]
+  },
+  "collections": {
+    "clients": [
+      {
+        "id": "client-fixture-1",
+        "remainingSummary": {
+          "regular": 4,
+          "service": 1
+        }
+      },
+      {
+        "id": "client-fixture-2",
+        "remainingSummary": {
+          "regular": 2,
+          "service": 0
+        }
+      }
+    ],
+    "lessons": [
+      {
+        "id": "lesson-fixture-1",
+        "legacyDate": "2026-01-03"
+      },
+      {
+        "id": "lesson-fixture-2",
+        "legacyDate": "2026-01-04"
+      }
+    ],
+    "lessonParticipants": [
+      {
+        "id": "participant-fixture-1",
+        "attendanceStatus": "attended"
+      },
+      {
+        "id": "participant-fixture-2",
+        "attendanceStatus": "noshow"
+      },
+      {
+        "id": "participant-fixture-3",
+        "attendanceStatus": "cancelled"
+      }
+    ],
+    "lessonNotes": [
+      {
+        "id": "note-fixture-1",
+        "recordStatus": "written",
+        "body": "Fixture note"
+      },
+      {
+        "id": "note-fixture-2",
+        "recordStatus": "missing",
+        "body": ""
+      }
+    ],
+    "assessments": [
+      {
+        "id": "assessment-fixture-1"
+      }
+    ],
+    "assessmentMedia": [
+      {
+        "id": "media-fixture-1"
+      },
+      {
+        "id": "media-fixture-2"
+      }
+    ]
+  }
+}

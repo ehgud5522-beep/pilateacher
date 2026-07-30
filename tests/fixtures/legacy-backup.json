@@ -1,0 +1,113 @@
+{
+  "userId": "fixture-owner",
+  "profile": {
+    "name": "Fixture Teacher"
+  },
+  "backup": {
+    "data": {
+      "settings": {
+        "center": "Fixture Center",
+        "staff": "Fixture Teacher"
+      },
+      "members": [
+        {
+          "id": "legacy-member-1",
+          "name": "Fixture Client One",
+          "status": "active",
+          "regular": 4,
+          "service": 1,
+          "startDate": "2026-01-01",
+          "inbody": [
+            {
+              "id": "inbody-1",
+              "date": "2026-01-02",
+              "weight": 55.2,
+              "smm": 22.1,
+              "fat": 27.5
+            }
+          ],
+          "notes": [
+            {
+              "id": "note-1",
+              "sid": "legacy-lesson-1",
+              "date": "2026-01-03",
+              "body": "Fixture note",
+              "tags": ["fixture"]
+            },
+            {
+              "id": "note-2",
+              "date": "2026-01-04",
+              "body": "",
+              "tags": []
+            }
+          ]
+        },
+        {
+          "id": "legacy-member-2",
+          "name": "Fixture Client Two",
+          "status": "hold",
+          "regular": 2,
+          "service": 0,
+          "startDate": "2026-01-01",
+          "inbody": [],
+          "notes": []
+        }
+      ],
+      "schedule": [
+        {
+          "id": "legacy-lesson-1",
+          "date": "2026-01-03",
+          "start": "10:00",
+          "end": "10:50",
+          "type": "private",
+          "memberId": "legacy-member-1",
+          "status": "done",
+          "deductFrom": "regular"
+        },
+        {
+          "id": "legacy-lesson-2",
+          "date": "2026-01-04",
+          "start": "11:00",
+          "end": "11:50",
+          "type": "duet",
+          "attendees": [
+            {
+              "memberId": "legacy-member-1",
+              "status": "noshow",
+              "noshowFee": true
+            },
+            {
+              "memberId": "legacy-member-2",
+              "status": "cancel"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "local": {
+    "photos": {
+      "legacy-member-1": {
+        "front": [
+          {
+            "id": "photo-1",
+            "blobId": "fixture-blob-1"
+          }
+        ],
+        "side": [
+          {
+            "id": "photo-2",
+            "blobId": "fixture-blob-2"
+          }
+        ],
+        "back": [],
+        "poses": [
+          {
+            "id": "pose-1",
+            "view": "front"
+          }
+        ]
+      }
+    }
+  }
+}

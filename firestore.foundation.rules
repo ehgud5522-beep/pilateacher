@@ -1,0 +1,242 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function membershipId(organizationId) {
+      return organizationId + "_" + request.auth.uid;
+    }
+
+    function membership(organizationId) {
+      return get(/databases/$(database)/documents/memberships/$(membershipId(organizationId)));
+    }
+
+    function isActiveMember(organizationId) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/memberships/$(membershipId(organizationId)))
+        && membership(organizationId).data.status == "active";
+    }
+
+    function hasRole(organizationId, roles) {
+      return isActiveMember(organizationId)
+        && membership(organizationId).data.role in roles;
+    }
+
+    function sameOrganization() {
+      return request.resource.data.organizationId == resource.data.organizationId;
+    }
+
+    function immutable(fields) {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
+    }
+
+    function isOwnClientDocument(data) {
+      return signedIn() && data.userId == request.auth.uid;
+    }
+
+    match /users/{userId} {
+      allow create, read: if signedIn() && request.auth.uid == userId;
+      allow update: if signedIn()
+        && request.auth.uid == userId
+        && immutable(["role", "plan", "subscriptionStatus", "aiUsageCount"]);
+      allow delete: if false;
+
+      // Legacy compatibility: preserves the current user's own backup access.
+      match /backup/{backupId} {
+        allow read, create, update: if signedIn() && request.auth.uid == userId;
+        allow delete: if false;
+      }
+    }
+
+    match /organizations/{organizationId} {
+      allow read: if isActiveMember(organizationId);
+      allow create, delete: if false;
+      allow update: if hasRole(organizationId, ["owner"])
+        && immutable(["plan", "subscriptionStatus", "aiUsageCount"]);
+    }
+
+    match /locations/{locationId} {
+      allow read: if isActiveMember(resource.data.organizationId);
+      allow create: if hasRole(request.resource.data.organizationId, ["owner", "manager"]);
+      allow update: if sameOrganization()
+        && hasRole(resource.data.organizationId, ["owner", "manager"]);
+      allow delete: if false;
+    }
+
+    match /memberships/{membershipDocumentId} {
+      allow read: if signedIn() && (
+        resource.data.userId == request.auth.uid
+        || hasRole(resource.data.organizationId, ["owner", "manager"])
+      );
+      allow create, update, delete: if false;
+    }
+
+    match /clients/{clientId} {
+      allow read: if isActiveMember(resource.data.organizationId)
+        && (
+          hasRole(resource.data.organizationId, ["owner", "manager", "instructor", "staff"])
+          || isOwnClientDocument(resource.data)
+        );
+      allow create: if hasRole(request.resource.data.organizationId, ["owner", "manager", "instructor", "staff"]);
+      allow update: if sameOrganization()
+        && hasRole(resource.data.organizationId, ["owner", "manager", "instructor", "staff"]);
+      allow delete: if false;
+    }
+
+    match /lessons/{lessonId} {
+      allow read: if isActiveMember(resource.data.organizationId);
+      allow create: if hasRole(request.resource.data.organizationId, ["owner", "manager", "instructor", "staff"]);
+      allow update: if sameOrganization()
+        && hasRole(resource.data.organizationId, ["owner", "manager", "instructor", "staff"]);
+      allow delete: if hasRole(resource.data.organizationId, ["owner", "manager"]);
+    }
+
+    match /lessonParticipants/{participantId} {
+      allow read: if isActiveMember(resource.data.organizationId)
+        && (
+          hasRole(resource.data.organizationId, ["owner", "manager", "instructor", "staff"])
+          || resource.data.userId == request.auth.uid
+        );
+      allow create: if hasRole(request.resource.data.organizationId, ["owner", "manager", "instructor", "staff"]);
+      allow update: if sameOrganization()
+        && immutable(["lessonId", "clientId", "userId"])
+        && hasRole(resource.data.organizationId, ["owner", "manager", "instructor", "staff"]);
+      allow delete: if false;
+    }
+
+    match /lessonNotes/{noteId} {
+      allow read: if isActiveMember(resource.data.organizationId)
+        && (
+          hasRole(resource.data.organizationId, ["owner", "manager", "instructor"])
+          || resource.data.userId == request.auth.uid
+        );
+      allow create: if hasRole(request.resource.data.organizationId, ["owner", "manager", "instructor"]);
+      allow update: if sameOrganization()
+        && request.auth.uid == resource.data.createdBy
+        && immutable(["clientId", "lessonId", "createdBy", "createdAt"]);
+      allow delete: if false;
+    }
+
+    match /assessments/{assessmentId} {
+      allow read: if isActiveMember(resource.data.organizationId)
+        && (
+          hasRole(resource.data.organizationId, ["owner", "manager", "instructor"])
+          || resource.data.userId == request.auth.uid
+        );
+      allow create: if hasRole(request.resource.data.organizationId, ["owner", "manager", "instructor"]);
+      allow update: if sameOrganization()
+        && immutable(["clientId", "createdBy", "createdAt"])
+        && hasRole(resource.data.organizationId, ["owner", "manager", "instructor"]);
+      allow delete: if false;
+    }
+
+    match /assessmentMedia/{mediaId} {
+      allow read: if isActiveMember(resource.data.organizationId)
+        && (
+          hasRole(resource.data.organizationId, ["owner", "manager", "instructor"])
+          || resource.data.userId == request.auth.uid
+        );
+      allow create, update, delete: if false;
+    }
+
+    match /inbodyMeasurements/{measurementId} {
+      allow read: if isActiveMember(resource.data.organizationId)
+        && (
+          hasRole(resource.data.organizationId, ["owner", "manager", "instructor"])
+          || resource.data.userId == request.auth.uid
+        );
+      allow create: if hasRole(request.resource.data.organizationId, ["owner", "manager", "instructor"]);
+      allow update, delete: if false;
+    }
+
+    match /exercisePrograms/{programId} {
+      allow read: if isActiveMember(resource.data.organizationId)
+        && (
+          hasRole(resource.data.organizationId, ["owner", "manager", "instructor"])
+          || resource.data.userId == request.auth.uid
+        );
+      allow create: if hasRole(request.resource.data.organizationId, ["owner", "manager", "instructor"]);
+      allow update: if sameOrganization()
+        && immutable(["sourceRecommendationId", "createdBy", "createdAt"])
+        && hasRole(resource.data.organizationId, ["owner", "manager", "instructor"]);
+      allow delete: if false;
+    }
+
+    match /exerciseHistory/{historyId} {
+      allow read: if isActiveMember(resource.data.organizationId)
+        && (
+          hasRole(resource.data.organizationId, ["owner", "manager", "instructor"])
+          || resource.data.userId == request.auth.uid
+        );
+      allow create: if hasRole(request.resource.data.organizationId, ["owner", "manager", "instructor"]);
+      allow update, delete: if false;
+    }
+
+    match /aiRecommendations/{recommendationId} {
+      allow read: if isActiveMember(resource.data.organizationId)
+        && (
+          hasRole(resource.data.organizationId, ["owner", "manager", "instructor"])
+          || resource.data.userId == request.auth.uid
+        );
+      allow create, update, delete: if false;
+    }
+
+    match /aiFeedback/{feedbackId} {
+      allow read: if hasRole(resource.data.organizationId, ["owner", "manager", "instructor"]);
+      allow create: if hasRole(request.resource.data.organizationId, ["owner", "manager", "instructor"])
+        && request.resource.data.createdBy == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    match /outcomes/{outcomeId} {
+      allow read: if hasRole(resource.data.organizationId, ["owner", "manager", "instructor"]);
+      allow create, update, delete: if false;
+    }
+
+    match /memberGoals/{goalId} {
+      allow read: if isActiveMember(resource.data.organizationId)
+        && (
+          hasRole(resource.data.organizationId, ["owner", "manager", "instructor"])
+          || resource.data.userId == request.auth.uid
+        );
+      allow create: if hasRole(request.resource.data.organizationId, ["owner", "manager", "instructor"]);
+      allow update, delete: if false;
+    }
+
+    match /memberProgress/{progressId} {
+      allow read: if isActiveMember(resource.data.organizationId)
+        && (
+          hasRole(resource.data.organizationId, ["owner", "manager", "instructor"])
+          || resource.data.userId == request.auth.uid
+        );
+      allow create, update, delete: if false;
+    }
+
+    match /events/{eventId} {
+      allow read: if isActiveMember(resource.data.organizationId);
+      allow create, update, delete: if false;
+    }
+
+    match /auditLogs/{logId} {
+      allow read: if hasRole(resource.data.organizationId, ["owner", "manager"]);
+      allow create, update, delete: if false;
+    }
+
+    match /dailyStats/{statId} {
+      allow read: if hasRole(resource.data.organizationId, ["owner", "manager", "instructor", "staff"]);
+      allow create, update, delete: if false;
+    }
+
+    match /teacherPatterns/{patternId} {
+      allow read: if hasRole(resource.data.organizationId, ["owner", "manager", "instructor"]);
+      allow create, update, delete: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,5 +1,6 @@
 import UIKit
 import Capacitor
+import FirebaseCore
 
 @UIApplicationMain
 class AppDelegate: UIResponder, UIApplicationDelegate {
@@ -7,8 +8,28 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        // Override point for customization after application launch.
+        configureFirebaseSafely()
         return true
+    }
+
+    private func configureFirebaseSafely() {
+        guard FirebaseApp.app() == nil else { return }
+
+        if let path = Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist"),
+           let options = FirebaseOptions(contentsOfFile: path) {
+            FirebaseApp.configure(options: options)
+            return
+        }
+
+        // FirebaseAuthentication configures Firebase while the Capacitor bridge loads.
+        // Supplying the checked-in development configuration here prevents that plugin
+        // from calling FirebaseApp.configure() without options and terminating launch.
+        NSLog("[PilaTeacher] GoogleService-Info.plist is missing from the app bundle; using fallback Firebase options.")
+        let options = FirebaseOptions(
+            googleAppID: "1:452402660812:ios:6d6617d5c46d8d3a144969",
+            gcmSenderID: "452402660812"
+        )
+        FirebaseApp.configure(options: options)
     }
 
     func applicationWillResignActive(_ application: UIApplication) {

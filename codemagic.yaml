@@ -27,6 +27,21 @@ workflows:
       - name: Capacitor sync ios
         script: npx cap sync ios
 
+      - name: Validate iOS launch resources
+        script: |
+          set -e
+          test -f ios/App/App/public/index.html
+          test -f ios/App/App/GoogleService-Info.plist
+          plutil -lint ios/App/App/Info.plist
+          plutil -lint ios/App/App/GoogleService-Info.plist
+          plutil -lint ios/App/App/App.entitlements
+          grep -q "GoogleService-Info.plist in Resources" ios/App/App.xcodeproj/project.pbxproj
+          grep -q "CODE_SIGN_ENTITLEMENTS = App/App.entitlements" ios/App/App.xcodeproj/project.pbxproj
+          grep -q "com.apple.SignInWithApple" ios/App/App.xcodeproj/project.pbxproj
+          grep -q "NSMicrophoneUsageDescription" ios/App/App/Info.plist
+          grep -q "CFBundleURLSchemes" ios/App/App/Info.plist
+          test ! -e ios/App/App/cert_key.pem
+
       - name: Install pods if needed
         script: |
           if [ -f ios/App/Podfile ]; then

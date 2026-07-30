@@ -82,7 +82,13 @@
 // ============================================================================
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CalendarDays, Users, Ruler, MoveHorizontal as MoreHorizontal, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, X, Mic, Pencil, Check, Play, Sparkles, List, Settings, FileText, BarChart3, Share2, BookOpen, Plus, Minus, CircleAlert as AlertCircle, RefreshCw, Link2, CalendarClock, CloudOff, Search, UserPlus, MessageSquarePlus, Camera } from "lucide-react";
+import {
+  CalendarDays, Users, Ruler, MoreHorizontal, ChevronLeft, ChevronRight,
+  ChevronDown, ChevronUp, X, Mic, Pencil, Check, Play, Sparkles, List,
+  Settings, FileText, BarChart3, Share2, BookOpen, Plus, Minus, AlertCircle,
+  RefreshCw, Link2, CalendarClock, CloudOff, Search, UserPlus, MessageSquarePlus,
+  Camera,
+} from "lucide-react";
 
 /* ─────────────────────────── 디자인 토큰 (VDS 확정) ─────────────────────────── */
 const T = {

@@ -29,6 +29,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             googleAppID: "1:452402660812:ios:6d6617d5c46d8d3a144969",
             gcmSenderID: "452402660812"
         )
+        options.apiKey = "AIzaSyBU2YOojNfSUknNPrJrs2boicfNF4LHVAQ"
+        options.projectID = "pilateacher"
+        options.bundleID = "com.pilateacher.app"
+        options.storageBucket = "pilateacher.firebasestorage.app"
+        options.clientID = "452402660812-r799moansshm2f7ifeakicsrnis7vl2n.apps.googleusercontent.com"
         FirebaseApp.configure(options: options)
     }
 

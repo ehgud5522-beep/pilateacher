@@ -11,6 +11,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
 } from "recharts";
 import { fbReady, fbSignInSocial, fbSignInEmail, fbSignUpEmail, fbSignOut, fbOnAuth, fbLoadProfile, fbSaveProfile, fbPushBackup, fbPullBackup } from "./lib/firebase";
+import { runAppDualWrite } from "./data/dual-write/app-runtime";
 import { Users, Settings as SettingsIcon, Search, ChevronRight, ChevronLeft, Plus, Camera, MessageSquare, Check, X, Trash2, ArrowLeft, Target, ClipboardList, RotateCcw, Sparkles, Copy, ArrowUpRight, ArrowDownRight, Loader as Loader2, Pencil, UserPlus, Activity, Ticket, Calendar, Clock, Bell, Download, TriangleAlert as AlertTriangle, LogOut, Mail, Star, Sun, Moon, Smartphone, Move, Crosshair, ChevronDown, ImagePlus, SlidersHorizontal, CalendarDays, ArrowUpDown, Minus, Upload, Link2, Users as Users2 } from "lucide-react";
 
 /* ================= 토큰 · 테마 ================= */
@@ -7658,14 +7659,19 @@ export default function App() {
   }, []);
   useEffect(() => () => { if (cloudTimer.current) clearTimeout(cloudTimer.current); }, []);
 
-  const saveDb = useCallback(async (next) => {
+  const saveDb = useCallback(async (next, dualWrite) => {
     const prev = db;
     setDb(next);
     if (!account) return;
     try {
-      await window.storage.set(dbKey(account.id), JSON.stringify(next));
-      setSavedAt(new Date());
-      queueCloud(account.id, next);
+      const legacyWrite = async () => {
+        await window.storage.set(dbKey(account.id), JSON.stringify(next));
+        setSavedAt(new Date());
+        queueCloud(account.id, next);
+      };
+      if (dualWrite) await runAppDualWrite(account, dualWrite, legacyWrite);
+      else await legacyWrite();
+      return true;
     }
     catch (e) { setDb(prev); setToast({ ok: false, msg: "저장하지 못했습니다. 방금 입력한 내용을 다시 확인해 주세요." }); }
   }, [account, db, queueCloud]);
@@ -7691,7 +7697,10 @@ export default function App() {
         return m;
       });
     }
-    saveDb({ ...db, members });
+    const changed = members.find((m) => m.id === id);
+    saveDb({ ...db, members }, changed && {
+      entityType: "client", entityId: id, operation: "update", payload: changed,
+    });
   };
   const member = db.members.find((m) => m.id === selectedId) || db.members[0];
   const alerts = useMemo(() => detectAlerts(db.members, db.schedule), [db.members, db.schedule]);
@@ -7717,7 +7726,13 @@ export default function App() {
       const keep = new Set(attendeesOf(item).map((a) => a.memberId));
       attendeesOf(prev).forEach((a) => { if (a.deductFrom && !keep.has(a.memberId)) members = restoreOne(members, a.memberId, a.deductFrom); });
     }
-    saveDb({ ...db, members, schedule: prev ? db.schedule.map((s) => (s.id === item.id ? item : s)) : [...db.schedule, item] });
+    saveDb(
+      { ...db, members, schedule: prev ? db.schedule.map((s) => (s.id === item.id ? item : s)) : [...db.schedule, item] },
+      {
+        entityType: "lesson", entityId: item.id, operation: prev ? "update" : "create",
+        payload: { ...item, participantCount: attendeesOf(item).length },
+      },
+    );
     setToast({ ok: true, msg: item.personal
       ? (prev ? "일정을 수정했습니다." : "일정을 등록했습니다.")
       : prev ? "수업을 수정했습니다." : "수업을 등록했습니다." });
@@ -7726,7 +7741,13 @@ export default function App() {
     const s0 = db.schedule.find((x) => x.id === id);
     let members = db.members;
     if (s0) attendeesOf(s0).forEach((a) => { if (a.deductFrom) members = restoreOne(members, a.memberId, a.deductFrom); });
-    saveDb({ ...db, members, schedule: db.schedule.filter((x) => x.id !== id) });
+    saveDb(
+      { ...db, members, schedule: db.schedule.filter((x) => x.id !== id) },
+      s0 && {
+        entityType: "lesson", entityId: id, operation: "update",
+        payload: { ...s0, status: "cancel", participantCount: attendeesOf(s0).length },
+      },
+    );
     setToast({ ok: true, msg: "수업을 삭제했습니다." });
   };
   const setStatus = (id, status, memberId) => {
@@ -7751,7 +7772,11 @@ export default function App() {
     }
     const attendees = list.map((a) => (a.memberId === mid ? { ...a, status, deductFrom, noshowFee: null } : a));
     const schedule = db.schedule.map((x) => (x.id === id ? { ...x, attendees, status: undefined, deductFrom: undefined, noshowFee: undefined } : x));
-    saveDb({ ...db, members, schedule });
+    const attendanceStatus = { booked: "booked", done: "attended", noshow: "noshow", cancel: "cancelled" }[status] || "booked";
+    saveDb({ ...db, members, schedule }, {
+      entityType: "lesson", entityId: id, operation: "save_attendance",
+      attendance: [{ clientId: mid, status: attendanceStatus }],
+    });
     setToast({ ok: true, msg: msg || `${stOf(status).label} 처리했습니다.` });
   };
   /* 듀엣처럼 여러 명인 수업을 한 번에 처리 — 따로 두 번 호출하면 뒤엣것이 앞엣것을 덮는다 */
@@ -7772,7 +7797,14 @@ export default function App() {
       }
       return { ...a, status, deductFrom, noshowFee: null };
     });
-    saveDb({ ...db, members, schedule: db.schedule.map((x) => (x.id === id ? { ...x, attendees, status: undefined, deductFrom: undefined, noshowFee: undefined } : x)) });
+    const attendanceStatus = { booked: "booked", done: "attended", noshow: "noshow", cancel: "cancelled" }[status] || "booked";
+    saveDb(
+      { ...db, members, schedule: db.schedule.map((x) => (x.id === id ? { ...x, attendees, status: undefined, deductFrom: undefined, noshowFee: undefined } : x)) },
+      {
+        entityType: "lesson", entityId: id, operation: "save_attendance",
+        attendance: attendees.map((a) => ({ clientId: a.memberId, status: attendanceStatus })),
+      },
+    );
     setToast(zero.length
       ? { ok: false, msg: `${zero.join(", ")} 잔여 0 — 차감 없이 기록했습니다.` }
       : { ok: true, msg: `${list.length}명 ${stOf(status).label} 처리했습니다.` });
@@ -7800,12 +7832,18 @@ export default function App() {
     setToast({ ok: true, msg });
   };
   const setGroupDone = (id, done) => {
-    saveDb({ ...db, schedule: db.schedule.map((s) => (s.id === id ? { ...s, groupDone: done } : s)) });
+    saveDb(
+      { ...db, schedule: db.schedule.map((s) => (s.id === id ? { ...s, groupDone: done } : s)) },
+      { entityType: "lesson", entityId: id, operation: "change_status", status: done ? "completed" : "scheduled" },
+    );
     setToast({ ok: true, msg: done ? "그룹 수업을 완료 처리했습니다. 이달 누적에 반영됩니다." : "그룹 수업 완료를 취소했습니다." });
   };
   const addMember = () => {
     const m = blankMember(db.settings.staff);
-    saveDb({ ...db, members: [m, ...db.members] });
+    saveDb(
+      { ...db, members: [m, ...db.members] },
+      { entityType: "client", entityId: m.id, operation: "create", payload: m },
+    );
     setSelectedId(m.id); setSection("info"); setDetailTab("record"); setMobileView("detail"); setTab("members");
     setToast({ ok: true, msg: "새 회원을 추가했습니다." });
   };
@@ -7835,12 +7873,16 @@ export default function App() {
 
   const removeMember = (id) => {
     const rest = db.members.filter((m) => m.id !== id);
-    saveDb({
-      ...db, members: rest,
-      schedule: db.schedule
-        .map((s) => ({ ...s, attendees: attendeesOf(s).filter((a) => a.memberId !== id) }))
-        .filter((s) => s.attendees.length || s.equip),
-    });
+    const removed = db.members.find((m) => m.id === id);
+    saveDb(
+      {
+        ...db, members: rest,
+        schedule: db.schedule
+          .map((s) => ({ ...s, attendees: attendeesOf(s).filter((a) => a.memberId !== id) }))
+          .filter((s) => s.attendees.length || s.equip),
+      },
+      removed && { entityType: "client", entityId: id, operation: "archive", payload: removed },
+    );
     if (photos[id]) {
       const nextPh = { ...photos };
       const ids = blobIdsOf(photos[id]);

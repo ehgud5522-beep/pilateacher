@@ -556,7 +556,7 @@ async function composeBeforeAfter(before, after, memberName) {
       ctx.save();
       ctx.strokeStyle = "rgba(255,255,255,0.5)"; ctx.lineWidth = 2;
       [22, 50, 78].forEach((t) => { ctx.beginPath(); ctx.moveTo(x, (H * t) / 100); ctx.lineTo(x + W, (H * t) / 100); ctx.stroke(); });
-      ctx.strokeStyle = "rgba(108,76,241,0.95)"; ctx.lineWidth = 3;
+      ctx.strokeStyle = "rgba(37,99,235,0.95)"; ctx.lineWidth = 3;
       ctx.beginPath(); ctx.moveTo(x + W / 2, 0); ctx.lineTo(x + W / 2, H); ctx.stroke();
       ctx.restore();
     };
@@ -881,7 +881,7 @@ function TimePick({ value, onChange }) {
             aria-pressed={ap === o.k}
             className="rounded-xl px-2.5 py-2 text-xs font-extrabold"
             style={ap === o.k
-              ? { backgroundColor: BRAND, color: "#fff", boxShadow: "0 2px 8px rgba(108,76,241,.30)" }
+              ? { backgroundColor: BRAND, color: "#fff", boxShadow: "0 2px 8px rgba(37,99,235,.30)" }
               : { backgroundColor: "transparent", color: SUB }}>{o.l}</button>
         ))}
       </div>
@@ -983,7 +983,7 @@ function Sheet({ title, onClose, children }) {
   );
 }
 function GuideOverlay({ strong = false }) {
-  const c = strong ? "rgba(108,76,241,0.95)" : "rgba(108,76,241,0.5)";
+  const c = strong ? "rgba(37,99,235,0.95)" : "rgba(37,99,235,0.5)";
   return (
     <div className="pointer-events-none absolute inset-0">
       <div className="absolute inset-y-0 left-1/2 w-px" style={{ backgroundColor: c }} />
@@ -993,12 +993,12 @@ function GuideOverlay({ strong = false }) {
 }
 const Logo = ({ size = 64, radius = 0.24 }) => (
   <svg width={size} height={size} viewBox="0 0 100 100" role="img" aria-label="필라티쳐"
-    style={{ borderRadius: size * radius, display: "block", boxShadow: "0 18px 40px rgba(76,52,190,0.30), 0 4px 10px rgba(76,52,190,0.20)" }}>
+    style={{ borderRadius: size * radius, display: "block", boxShadow: "0 18px 40px rgba(37,99,235,0.30), 0 4px 10px rgba(37,99,235,0.20)" }}>
     <defs>
       <linearGradient id="ptg" x1="0.1" y1="0" x2="0.9" y2="1">
-        <stop offset="0%" stopColor="#A08CFF" />
-        <stop offset="52%" stopColor="#6C4CF1" />
-        <stop offset="100%" stopColor="#5433CE" />
+        <stop offset="0%" stopColor="#93C5FD" />
+        <stop offset="52%" stopColor="#2563EB" />
+        <stop offset="100%" stopColor="#1D4ED8" />
       </linearGradient>
       <linearGradient id="ptGloss" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.38" />
@@ -1014,7 +1014,7 @@ const Logo = ({ size = 64, radius = 0.24 }) => (
     <path fillRule="evenodd" fill="#FFFFFF"
       d="M34.5 24 H50.5 a15 15 0 0 1 0 30 H46 V76 H34.5 Z M46 34 h4.5 a5 5 0 0 1 0 10 H46 Z" />
     <g fill="none" strokeLinecap="round" strokeLinejoin="round">
-      <g stroke="#6C4CF1" strokeWidth="9">
+      <g stroke="#2563EB" strokeWidth="9">
         <path d="M69 42 L62 31" />
         <path d="M69 42 H83" />
         <path d="M69 42 V57" />
@@ -1027,9 +1027,9 @@ const Logo = ({ size = 64, radius = 0.24 }) => (
         <path d="M69 57 L63.5 71.5 M69 57 L74.5 71.5" />
       </g>
     </g>
-    <circle cx="69" cy="29.5" r="7" fill="#6C4CF1" />
+    <circle cx="69" cy="29.5" r="7" fill="#2563EB" />
     <circle cx="69" cy="29.5" r="5.8" fill="#FFFFFF" />
-    <g fill="#6C4CF1" stroke="#FFFFFF" strokeWidth="1.6">
+    <g fill="#2563EB" stroke="#FFFFFF" strokeWidth="1.6">
       {[[62, 31], [83, 42], [69, 42], [69, 57], [63.5, 71.5], [74.5, 71.5]].map(([cx, cy]) => (
         <circle key={`${cx}-${cy}`} cx={cx} cy={cy} r="3" />
       ))}
@@ -1480,19 +1480,18 @@ function Tabs({ tab, setTab }) {
     { key: "members", label: "회원", icon: Users }, { key: "settings", label: "설정", icon: SettingsIcon },
   ];
   return (
-    <div className="bg-white pb-2" style={{ borderBottom: `1px solid ${LINE}` }}>
-      <div className="mx-auto max-w-6xl px-4">
-        <div className="flex gap-1 rounded-2xl p-1" style={{ backgroundColor: CANVAS }}>
-          {items.map((it) => {
-            const on = tab === it.key, Icon = it.icon;
-            return (
-              <button key={it.key} onClick={() => setTab(it.key)} className="flex flex-1 items-center justify-center gap-1 rounded-xl py-2.5 text-sm font-bold"
-                style={on ? { background: GRAD, color: "#fff", boxShadow: "0 3px 10px rgba(108,76,241,.35)" } : { color: SUB }}>
-                <Icon size={15} /> {it.label}
-              </button>
-            );
-          })}
-        </div>
+    <div style={{ height: 40, borderTop: `1px solid ${LINE}`, backgroundColor: CARD }}>
+      <div className="mx-auto flex h-full max-w-6xl items-center px-2">
+        {items.map((it) => {
+          const on = tab === it.key, Icon = it.icon;
+          return (
+            <button key={it.key} onClick={() => setTab(it.key)} className="flex flex-1 flex-col items-center justify-center gap-0.5 text-[10px] font-semibold"
+              style={{ color: on ? BRAND : SUB }}>
+              <Icon size={16} strokeWidth={on ? 2.4 : 1.8} />
+              {it.label}
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -2132,12 +2131,15 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
           {mode !== "month" ? (
             <div className="flex gap-1.5" style={slide}>
               {weekDays.map((d) => {
-                const n = byDate(d).length, on = d === cursor;
+                const n = byDate(d).length, on = d === cursor, isToday = d === todayISO();
                 return (
                   <button key={d} onClick={() => { setCursor(d); setMode("day"); }} className="relative min-w-0 flex-1 rounded-xl px-0.5 py-1.5 text-center"
                     style={on ? { backgroundColor: BRAND } : { backgroundColor: CANVAS }}>
                     <p className="font-extrabold leading-none" style={{ fontSize: 10, color: on ? "rgba(255,255,255,.85)" : redInk(d, SUB) }}>{dow(d)}</p>
-                    <p className="mt-0.5 font-extrabold leading-none tabular-nums" style={{ fontSize: 15, color: on ? "#fff" : d === todayISO() ? PRIMARY : redInk(d, INK) }}>{d.slice(8, 10)}</p>
+                    <div className="mt-1 flex items-center justify-center">
+                      <span className="flex h-6 w-6 items-center justify-center rounded-full font-extrabold tabular-nums"
+                        style={{ fontSize: 14, backgroundColor: isToday && !on ? "rgba(37,99,235,0.1)" : "transparent", color: on ? "#fff" : isToday ? PRIMARY : redInk(d, INK) }}>{d.slice(8, 10)}</span>
+                    </div>
                     {n > 0 && (
                       <span className="absolute right-1 top-1 flex h-3.5 min-w-[14px] items-center justify-center rounded-full px-1 font-extrabold tabular-nums"
                         style={{ fontSize: 9, backgroundColor: on ? "rgba(255,255,255,.9)" : PRIMARY, color: on ? BRAND : "#fff" }}>{n}</span>
@@ -2370,7 +2372,7 @@ function WeekGrid({ days, byDate, nameOf, cursor, onOpen, onNew }) {
             </div>
             {days.map((d) => (
               <div key={d} className="relative min-w-0 flex-1"
-                style={{ borderLeft: `1px solid ${LINE}`, backgroundColor: d === todayISO() ? `${PRIMARY}14` : "transparent" }}
+                style={{ borderLeft: `1px solid ${LINE}`, backgroundColor: d === todayISO() ? "rgba(37,99,235,0.04)" : "transparent" }}
                 onClick={(e) => tapNew(d, e)}>
                 {Array.from({ length: rows }, (_, i) => (
                   <div key={i} style={{ height: GRID_ROW, borderTop: i ? `1px solid ${LINE}` : "none" }}>
@@ -2466,7 +2468,7 @@ function ScheduleForm({ draft, members, schedule, onClose, onSubmit, onDelete })
               return (
                 <button key={String(o.k)} onClick={() => setPersonal(o.k)}
                   className="flex flex-1 items-center justify-center gap-1.5 rounded-xl py-2.5 text-sm font-extrabold"
-                  style={on ? { background: GRAD, color: "#fff", boxShadow: "0 3px 10px rgba(108,76,241,.35)" } : { backgroundColor: CARD, color: INK, border: `1px solid ${LINE}` }}>
+                  style={on ? { background: GRAD, color: "#fff", boxShadow: "0 3px 10px rgba(37,99,235,.35)" } : { backgroundColor: CARD, color: INK, border: `1px solid ${LINE}` }}>
                   <Ic size={15} /> {o.l}
                 </button>
               );
@@ -2613,7 +2615,7 @@ function ScheduleForm({ draft, members, schedule, onClose, onSubmit, onDelete })
     </Sheet>
   );
 }
-const PEN_COLORS = ["#F04438", "#12B76A", "#6C4CF1", "#FFFFFF", "#111111"];
+const PEN_COLORS = ["#F04438", "#12B76A", "#2563EB", "#FFFFFF", "#111111"];
 function coverDraw(ctx, img, w, h, tf) {
   const base = Math.max(w / img.width, h / img.height);
   const s = base * (tf?.scale || 1);
@@ -2779,7 +2781,7 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
         ctx.beginPath(); ctx.moveTo((w / 10) * i, 0); ctx.lineTo((w / 10) * i, h); ctx.stroke();
         ctx.beginPath(); ctx.moveTo(0, (h / 10) * i); ctx.lineTo(w, (h / 10) * i); ctx.stroke();
       }
-      ctx.strokeStyle = "rgba(108,76,241,0.9)"; ctx.lineWidth = 1.5;
+      ctx.strokeStyle = "rgba(37,99,235,0.9)"; ctx.lineWidth = 1.5;
       ctx.beginPath(); ctx.moveTo(w / 2, 0); ctx.lineTo(w / 2, h); ctx.stroke(); ctx.restore();
     }
     marks.forEach((m) => drawMark(ctx, m, w, h));
@@ -2924,7 +2926,7 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
         <button onClick={() => { onSave(marks); onClose(); }} className="rounded-full px-4 py-2 text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>저장</button>
       </div>
       {fresh && (
-        <p className="mx-4 mb-1 rounded-xl px-3 py-2 text-center text-xs font-bold text-white" style={{ backgroundColor: "rgba(108,76,241,.55)" }}>
+        <p className="mx-4 mb-1 rounded-xl px-3 py-2 text-center text-xs font-bold text-white" style={{ backgroundColor: "rgba(37,99,235,.55)" }}>
           사진이 등록됐습니다 · 지금 바로 각도를 재 보세요. 저장하면 사진에 함께 남습니다 (건너뛰려면 왼쪽 위 X)
         </p>
       )}
@@ -3970,7 +3972,7 @@ function OverallReview({ member, briefing, onToast, schedule }) {
           {[{ k: "member", l: "회원용 멘트" }, { k: "coach", l: "강사용 코칭노트" }].map((o) => (
             <button key={o.k} onClick={() => setTab(o.k)} className="flex flex-1 items-center justify-center gap-1.5 rounded-xl py-3 text-sm font-extrabold"
               style={tab === o.k
-                ? { background: GRAD, color: "#fff", boxShadow: "0 4px 12px rgba(108,76,241,.38)", border: "1px solid transparent" }
+                ? { background: GRAD, color: "#fff", boxShadow: "0 4px 12px rgba(37,99,235,.38)", border: "1px solid transparent" }
                 : { backgroundColor: CARD, color: INK, border: `1px solid ${LINE}` }}>
               {o.k === "coach" ? <ClipboardList size={15} /> : <MessageSquare size={15} />} {o.l}
             </button>
@@ -4332,7 +4334,7 @@ function PoseMock() {
   return (
     <svg viewBox="0 0 96 128" width="72" height="96" className="shrink-0" style={{ borderRadius: 12, background: "#14141C" }} aria-hidden="true">
       <line x1="48" y1="6" x2="48" y2="122" stroke="rgba(255,255,255,.22)" strokeWidth="1" strokeDasharray="3 3" />
-      <circle cx="48" cy="22" r="8" fill="none" stroke="#B8A6FF" strokeWidth="2" />
+      <circle cx="48" cy="22" r="8" fill="none" stroke="#93C5FD" strokeWidth="2" />
       <path d="M34 40 L62 37" stroke="#F04438" strokeWidth="2.5" strokeLinecap="round" />
       <path d="M36 74 L60 72" stroke="#F79009" strokeWidth="2.5" strokeLinecap="round" />
       <path d="M48 40 L48 74" stroke="#8B74FF" strokeWidth="2" />
@@ -4747,7 +4749,7 @@ function SavedPoseViewer({ rec, onClose, onToast }) {
             </div>
           ))}
           {rec.comment && (
-            <div className="rounded-2xl px-3 py-3" style={{ backgroundColor: "rgba(108,76,241,0.28)" }}>
+            <div className="rounded-2xl px-3 py-3" style={{ backgroundColor: "rgba(37,99,235,0.28)" }}>
               <p className="text-xs font-extrabold text-white opacity-80">저장된 코멘트</p>
               <p className="mt-1 text-sm leading-relaxed text-white">{rec.comment}</p>
             </div>
@@ -4831,12 +4833,12 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onToast, onSav
         if (!pts[a] || !pts[b]) return;
         const p = S(pts[a]), q = S(pts[b]);
         const g = ctx.createLinearGradient(p.x, p.y, q.x, q.y);
-        g.addColorStop(0, "#B8A6FF"); g.addColorStop(1, "#6C4CF1");
+        g.addColorStop(0, "#93C5FD"); g.addColorStop(1, "#2563EB");
         ctx.save();
-        ctx.strokeStyle = "rgba(108,76,241,.35)"; ctx.lineWidth = 9 * k;
+        ctx.strokeStyle = "rgba(37,99,235,.35)"; ctx.lineWidth = 9 * k;
         ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke();
         ctx.strokeStyle = g; ctx.lineWidth = 3.2 * k;
-        ctx.shadowColor = "rgba(108,76,241,.55)"; ctx.shadowBlur = 10 * k;
+        ctx.shadowColor = "rgba(37,99,235,.55)"; ctx.shadowBlur = 10 * k;
         ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke();
         ctx.restore();
       });
@@ -4853,7 +4855,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onToast, onSav
         if (on) { ctx.strokeStyle = "rgba(255,255,255,.55)"; ctx.lineWidth = 1.4 * k; ctx.beginPath(); ctx.arc(p.x, p.y, r * 1.9, 0, Math.PI * 2); ctx.stroke(); }
         ctx.shadowColor = "rgba(0,0,0,.35)"; ctx.shadowBlur = 6 * k;
         ctx.fillStyle = "rgba(255,255,255,.98)"; ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.fill();
-        ctx.shadowBlur = 0; ctx.fillStyle = "#6C4CF1"; ctx.beginPath(); ctx.arc(p.x, p.y, r * 0.46, 0, Math.PI * 2); ctx.fill();
+        ctx.shadowBlur = 0; ctx.fillStyle = "#2563EB"; ctx.beginPath(); ctx.arc(p.x, p.y, r * 0.46, 0, Math.PI * 2); ctx.fill();
         ctx.restore();
       });
       if (hot && pts[hot]) {
@@ -6169,7 +6171,7 @@ function Dashboard({ member, photos, schedule, onBack, briefing, onSavePhoto, on
       <Guard label="회원 요약">
       <Card className="p-5">
         <div className="flex items-center gap-3">
-          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl text-lg font-extrabold text-white" style={{ background: GRAD, boxShadow: "0 4px 12px rgba(108,76,241,.30)" }}>{(member.name || "?").slice(0, 1)}</div>
+          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl text-lg font-extrabold text-white" style={{ background: GRAD, boxShadow: "0 4px 12px rgba(37,99,235,.30)" }}>{(member.name || "?").slice(0, 1)}</div>
           <div className="min-w-0 flex-1">
             <h2 className="text-lg font-extrabold" style={{ color: isDraft(member) ? SUB : INK }}>{isDraft(member) ? "이름을 입력해 주세요" : `${member.name} 회원님`}</h2>
             <Sub>{ageOf(member) !== null ? `${ageOf(member)}세 · ` : ""}담당 {member.instructor || "-"}{att.rate !== null ? ` · 출석률 ${att.rate}%` : ""}</Sub>
@@ -6307,7 +6309,7 @@ function RecordTab({ db, selectedId, setSelectedId, section, setSection, onSaveI
               <button key={s.k} onClick={() => { setSection(s.k); onLeaveNote && onLeaveNote(); }}
                 className="flex min-w-0 flex-1 flex-col items-center justify-center gap-1 whitespace-nowrap rounded-2xl px-1 py-3 text-xs font-extrabold"
                 style={on
-                  ? { background: GRAD, color: "#fff", boxShadow: "0 4px 12px rgba(108,76,241,.38)", border: "1px solid transparent" }
+                  ? { background: GRAD, color: "#fff", boxShadow: "0 4px 12px rgba(37,99,235,.38)", border: "1px solid transparent" }
                   : { backgroundColor: CANVAS, color: INK2, border: `1px solid ${LINE}` }}>
                 <Icon size={17} /> {s.l}
               </button>
@@ -7399,7 +7401,7 @@ function SettingsTab({ db, photos, account, onChangeSettings, onChangePhoto, sav
             const on = themePref === o.k, Icon = o.i;
             return (
               <button key={o.k} onClick={() => onChangeTheme(o.k)} className="flex flex-1 items-center justify-center gap-1.5 rounded-xl py-2.5 text-sm font-bold"
-                style={on ? { background: GRAD, color: "#fff", boxShadow: "0 3px 10px rgba(108,76,241,.3)" } : { color: SUB }}>
+                style={on ? { background: GRAD, color: "#fff", boxShadow: "0 3px 10px rgba(37,99,235,.3)" } : { color: SUB }}>
                 <Icon size={14} /> {o.l}
               </button>
             );
@@ -8065,7 +8067,7 @@ export default function App() {
     );
 
   return (
-    <div className="app-root min-h-screen pb-16" style={{ backgroundColor: PAGE }}>
+    <div className="app-root min-h-screen pb-16" style={{ backgroundColor: PAGE, overflow: "hidden" }}>
       {style}
       <div className="safe-t sticky top-0 z-30" style={{ backgroundColor: CARD }}>
         <Header settings={db.settings || {}} account={account} alertCount={alerts.length} onProfile={() => setTab("settings")}

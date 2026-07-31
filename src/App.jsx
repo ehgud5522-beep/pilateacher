@@ -1990,9 +1990,7 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
   const unwrittenRows = doneRows.filter((r) => !(memberOf(r.id)?.notes || []).some((x) => x?.sid === r.sid));
   const unwritten = unwrittenRows.length;
   const firstUnwritten = unwrittenRows[0] || null;
-  const doneCls = db.schedule.filter((s) => s.date === T0 && !isPersonalEvt(s) && (isEquipGroup(s) ? !!s.groupDone : attendeesOf(s).every((a) => a.status !== "booked"))).length;
-
-  const nextTarget0 = useMemo(() => nextTarget(db.schedule, db.members), [db.schedule, db.members]);
+  const nextTarget0 = nextTarget(db.schedule, db.members);
 
   return (
     <div className="-mx-4 -mt-3 -mb-3 flex flex-col" style={{ height: "calc(100dvh - 84px)" }}>
@@ -2205,7 +2203,7 @@ function WeekGrid({ days, byDate, nameOf, cursor, onOpen, onNew }) {
     const eq = isEquipGroup(s);
     const list = attendeesOf(s);
     const label = pv ? (s.title || "내 일정") : eq ? (s.equip || "그룹") : list.length > 1 ? list.map((a) => nameOf(a.memberId)).join(", ") : nameOf(list[0]?.memberId);
-    const sub = pv ? "" : eq ? "그룹" : list.length > 1 ? `${s.type} ${list.length}명` : s.type;
+    const sub = pv ? "" : eq ? `${list.length}명` : list.length > 1 ? `${s.type} ${list.length}명` : s.type;
     const done = pv ? false : eq ? !!s.groupDone : list.length > 0 && list.every((a) => a.status !== "booked");
     return { s, top: ((st - top0) / 60) * GRID_ROW, h: Math.max(26, ((en - st) / 60) * GRID_ROW - 2), label, sub, done, eq, pv };
   }).filter((b) => b.top >= -GRID_ROW && b.top < rows * GRID_ROW);

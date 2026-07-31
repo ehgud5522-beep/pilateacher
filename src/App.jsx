@@ -11,6 +11,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
 } from "recharts";
 import { fbReady, fbSignInSocial, fbSignInEmail, fbSignUpEmail, fbSignOut, fbOnAuth, fbLoadProfile, fbSaveProfile, fbPushBackup, fbPullBackup } from "./lib/firebase";
+import { runAppDualWrite } from "./data/dual-write/app-runtime";
 import { Users, Settings as SettingsIcon, Search, ChevronRight, ChevronLeft, Plus, Camera, MessageSquare, Check, X, Trash2, ArrowLeft, Target, ClipboardList, RotateCcw, Sparkles, Copy, ArrowUpRight, ArrowDownRight, Loader as Loader2, Pencil, UserPlus, Activity, Ticket, Calendar, Clock, Bell, Download, TriangleAlert as AlertTriangle, LogOut, Mail, Star, Sun, Moon, Smartphone, Move, Crosshair, ChevronDown, ImagePlus, SlidersHorizontal, CalendarDays, ArrowUpDown, Minus, Upload, Link2, Users as Users2, Play } from "lucide-react";
 
 /* ================= 토큰 · 테마 ================= */
@@ -806,10 +807,10 @@ class Guard extends Component {
 }
 
 const Card = ({ children, className = "" }) => (
-  <section className={`rounded-3xl bg-white ${className}`} style={{ boxShadow: SHADOW, border: `1px solid ${LINE}` }}>{children}</section>
+  <section className={`rounded-2xl bg-white ${className}`} style={{ boxShadow: "0 1px 2px rgba(20,20,43,.05)", border: `1px solid ${LINE}` }}>{children}</section>
 );
 const Sub = ({ children, className = "" }) => <p className={`text-xs ${className}`} style={{ color: SUB }}>{children}</p>;
-const inputCls = "w-full rounded-2xl border-0 bg-slate-50 px-4 py-3 text-sm outline-none ring-1 ring-slate-200 focus:ring-2";
+const inputCls = "h-11 w-full rounded-xl border-0 bg-slate-50 px-3.5 text-sm outline-none ring-1 ring-slate-200 focus:ring-2";
 const Field = ({ label, hint, children }) => (
   <div>
     <div className="mb-1.5 flex items-baseline gap-2">
@@ -830,7 +831,7 @@ function DeltaChip({ metricKey, diff }) {
 }
 const PrimaryBtn = ({ children, onClick, disabled, tone = PRIMARY }) => (
   <button onClick={onClick} disabled={disabled}
-    className="flex w-full items-center justify-center gap-1.5 rounded-2xl py-3.5 text-sm font-extrabold text-white disabled:opacity-40"
+    className="flex h-11 w-full items-center justify-center gap-1.5 rounded-xl px-4 text-sm font-extrabold text-white disabled:opacity-40"
     style={{ background: tone === PRIMARY ? GRAD : tone }}>{children}</button>
 );
 function Avatar({ src, name, size = 48, radius = 16, ring }) {
@@ -1454,43 +1455,42 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
 }
 function Header({ settings, account, alertCount, onProfile, onAlerts }) {
   return (
-    <header style={{ backgroundColor: CARD }}>
-      <div className="mx-auto flex max-w-6xl items-center gap-3 px-4" style={{ height: 56 }}>
+    <header className="bg-white" style={{ borderBottom: `1px solid ${LINE}` }}>
+      <div className="mx-auto flex h-14 max-w-6xl items-center gap-3 px-4">
         <Logo size={32} radius={0.28} />
         <div className="min-w-0 flex-1">
-          <p className="truncate text-[15px] font-extrabold leading-tight" style={{ color: INK }}>{settings.center || "필라티쳐"}</p>
-          <p className="truncate text-[11px] leading-snug" style={{ color: SUB }}>{account?.name ? `${account.name} 강사` : "체형 변화 · 재등록 관리"}</p>
+          <p className="truncate text-sm font-extrabold" style={{ color: INK, maxWidth: "100%" }}>{settings.center || "필라티쳐"}</p>
+          <Sub className="truncate">{account?.name ? `${account.name} 강사` : "체형 변화 · 재등록 관리"}</Sub>
         </div>
         {alertCount > 0 && (
           <button onClick={onAlerts} aria-label={`재등록 상담이 필요한 회원 ${alertCount}명 보기`}
-            className="flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1.5 text-xs font-bold transition-transform active:scale-95" style={{ backgroundColor: BAD_S, color: BAD }}>
-            <Bell size={13} /> {alertCount}
+            className="flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1.5 text-xs font-extrabold" style={{ backgroundColor: BAD_S, color: BAD }}>
+            <Bell size={13} /> 재등록 {alertCount}
           </button>
         )}
-        <button onClick={onProfile} className="shrink-0 transition-transform active:scale-95" aria-label="내 프로필">
+        <button onClick={onProfile} className="shrink-0" aria-label="내 프로필">
           <Avatar src={account?.photo} name={account?.name} size={34} radius={12} ring />
         </button>
       </div>
     </header>
   );
 }
-function BottomNav({ tab, setTab }) {
+function Tabs({ tab, setTab }) {
   const items = [
     { key: "schedule", label: "일정", icon: Calendar }, { key: "analysis", label: "체형분석", icon: Activity },
     { key: "members", label: "회원", icon: Users }, { key: "settings", label: "설정", icon: SettingsIcon },
   ];
   return (
-    <nav className="safe-b fixed inset-x-0 bottom-0 z-40" style={{ backgroundColor: CARD, borderTop: `1px solid ${LINE}`, boxShadow: "0 -1px 6px rgba(0,0,0,.06)" }}>
-      <div className="mx-auto flex max-w-6xl items-end px-2 pt-2 pb-1">
+    <nav className="safe-tab fixed inset-x-0 bottom-0 z-40" aria-label="주요 메뉴"
+      style={{ borderTop: `1px solid ${LINE}`, backgroundColor: CARD, boxShadow: "0 -4px 16px rgba(20,20,43,.06)" }}>
+      <div className="mx-auto flex h-14 max-w-6xl items-center px-2">
         {items.map((it) => {
           const on = tab === it.key, Icon = it.icon;
           return (
-            <button key={it.key} onClick={() => setTab(it.key)} className="flex flex-1 flex-col items-center justify-center gap-0.5 text-[10px] font-semibold transition-colors"
-              style={{ color: on ? PRIMARY : SUB }}>
-              <div className="relative flex items-center justify-center" style={{ width: 28, height: 28, borderRadius: 8, backgroundColor: on ? TINT : "transparent", transition: "background-color .2s" }}>
-                <Icon size={18} strokeWidth={on ? 2.4 : 1.7} />
-              </div>
-              <span style={{ fontSize: 10, fontWeight: on ? 700 : 500 }}>{it.label}</span>
+            <button key={it.key} onClick={() => setTab(it.key)} className="flex h-12 flex-1 flex-col items-center justify-center gap-0.5 rounded-xl text-[11px] font-semibold"
+              style={{ color: on ? BRAND : SUB }}>
+              <Icon size={18} strokeWidth={on ? 2.5 : 1.8} />
+              {it.label}
             </button>
           );
         })}
@@ -1995,7 +1995,7 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
   const nextTarget0 = nextTarget(db.schedule, db.members);
 
   return (
-    <div className="-mx-4 -mt-3 -mb-3 flex flex-col" style={{ height: "calc(100dvh - 56px - 60px - env(safe-area-inset-top, 0px) - max(env(safe-area-inset-bottom, 0px), 12px))" }}>
+    <div className="-mx-4 -mt-3 -mb-3 flex flex-col" style={{ height: "calc(100dvh - 101px - env(safe-area-inset-top, 0px))" }}>
       {/* ─── 상단 헤더: 주 범위 + 이동 + 오늘 + 등록 ─── */}
       <div className="shrink-0 flex items-center gap-1 px-2" style={{ height: 44, backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
         <button onClick={() => step(-1)} className="flex items-center justify-center" style={{ width: 36, height: 36, color: SUB }}>
@@ -2900,13 +2900,15 @@ function MemberList({ members, selectedId, onSelect, onAdd, onOpenFav, favCount,
       return 0;
     }));
   return (
-    <div className="space-y-3">
+    <div className="space-y-2.5">
       <div className="flex gap-2">
         <div className="relative flex-1">
-          <Search size={16} className="absolute left-4 top-3.5" style={{ color: SUB }} />
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="회원명 · 목표 · 강사 검색" className="w-full rounded-2xl border-0 bg-white py-3 pl-11 pr-4 text-sm outline-none" style={{ boxShadow: SHADOW }} />
+          <Search size={16} className="absolute left-3.5 top-3.5" style={{ color: SUB }} />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="회원명 · 목표 · 강사 검색"
+            className="h-11 w-full rounded-xl border-0 bg-white pl-10 pr-3 text-sm outline-none"
+            style={{ border: `1px solid ${LINE}`, boxShadow: "0 1px 2px rgba(20,20,43,.04)" }} />
         </div>
-        <button onClick={onAdd} className="flex items-center gap-1 rounded-2xl px-4 text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}><UserPlus size={16} /> 추가</button>
+        <button onClick={onAdd} className="flex h-11 items-center gap-1 rounded-xl px-4 text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}><UserPlus size={16} /> 추가</button>
       </div>
       {draftCount > 0 && (cleanAsk ? (
         <div className="flex flex-wrap items-center gap-2 rounded-2xl px-4 py-3" style={{ backgroundColor: BAD_S }}>
@@ -2923,8 +2925,8 @@ function MemberList({ members, selectedId, onSelect, onAdd, onOpenFav, favCount,
         </button>
       ))}
       {todayCount > 0 && (
-        <button onClick={() => setTodayOnly((v) => !v)} className="flex w-full items-center gap-2 rounded-2xl px-4 py-3"
-          style={todayOnly ? { backgroundColor: BRAND, color: "#fff" } : { backgroundColor: CARD, color: INK, boxShadow: SHADOW }}>
+        <button onClick={() => setTodayOnly((v) => !v)} className="flex h-10 w-full items-center gap-2 rounded-xl px-3"
+          style={todayOnly ? { backgroundColor: BRAND, color: "#fff" } : { backgroundColor: CARD, color: INK, border: `1px solid ${LINE}` }}>
           <Calendar size={15} style={{ color: todayOnly ? "#fff" : PRIMARY }} />
           <span className="text-sm font-extrabold">오늘 수업 회원 {todayCount}명</span>
           <span className="ml-auto text-xs font-bold" style={{ color: todayOnly ? "rgba(255,255,255,0.8)" : SUB }}>
@@ -2933,22 +2935,22 @@ function MemberList({ members, selectedId, onSelect, onAdd, onOpenFav, favCount,
         </button>
       )}
       <div className="flex items-center gap-1.5">
-        <div className="flex flex-1 gap-1 rounded-2xl bg-white p-1" style={{ boxShadow: SHADOW }}>
+        <div className="flex flex-1 gap-1 rounded-xl bg-white p-1" style={{ border: `1px solid ${LINE}` }}>
           {[{ k: "active", l: "진행중", n: activeCount, c: PRIMARY }, { k: "hold", l: "홀딩", n: holdCount, c: WARN }, { k: "ended", l: "종료", n: endedCount, c: INK }].map((o) => (
-            <button key={o.k} onClick={() => setSeg(o.k)} className="flex flex-1 items-center justify-center gap-1 rounded-xl py-2 text-xs font-bold"
+            <button key={o.k} onClick={() => setSeg(o.k)} className="flex h-8 flex-1 items-center justify-center gap-1 rounded-lg px-1 text-xs font-bold"
               style={seg === o.k ? { backgroundColor: o.c, color: "#fff" } : { color: SUB }}>
               {o.l} <span className="tabular-nums">{o.n}</span>
             </button>
           ))}
         </div>
-        <button onClick={onOpenFav} className="flex items-center gap-1 rounded-2xl bg-white px-3 py-2.5 text-xs font-bold" style={{ color: favCount ? WARN : SUB, boxShadow: SHADOW }}>
+        <button onClick={onOpenFav} className="flex h-10 items-center gap-1 rounded-xl bg-white px-3 text-xs font-bold" style={{ color: favCount ? WARN : SUB, border: `1px solid ${LINE}` }}>
           <Star size={14} fill={favCount ? WARN : "none"} /> 즐겨찾기 {favCount || 0}
         </button>
       </div>
       {filtered.length > 1 && (
         <button onClick={() => setSortBy((s) => (s === "default" ? "leftDesc" : s === "leftDesc" ? "leftAsc" : "default"))}
-          className="flex w-full items-center gap-2 rounded-2xl px-4 py-2.5"
-          style={sortBy === "default" ? { backgroundColor: CARD, boxShadow: SHADOW } : { backgroundColor: TINT }}>
+          className="flex h-10 w-full items-center gap-2 rounded-xl px-3"
+          style={sortBy === "default" ? { backgroundColor: CARD, border: `1px solid ${LINE}` } : { backgroundColor: TINT, border: `1px solid ${PRIMARY}33` }}>
           <ArrowUpDown size={14} style={{ color: PRIMARY }} />
           <span className="text-xs font-extrabold" style={{ color: sortBy === "default" ? INK : PRIMARY }}>
             {sortBy === "leftDesc" ? "잔여 횟수 많은 순" : sortBy === "leftAsc" ? "잔여 횟수 적은 순" : "기본 순서 (오늘 수업 먼저)"}
@@ -2997,7 +2999,8 @@ function MemberList({ members, selectedId, onSelect, onAdd, onOpenFav, favCount,
         const idleC = idle === null ? SUB : idle >= 5 ? BAD : idle >= 3 ? WARN : GOOD;
         const d = ddaySafe(m.contractEnd);
         return (
-          <button key={m.id} onClick={() => onSelect(m.id)} className="w-full rounded-3xl bg-white p-4 text-left" style={{ boxShadow: on ? `0 0 0 2px ${PRIMARY}, ${SHADOW}` : SHADOW }}>
+          <button key={m.id} onClick={() => onSelect(m.id)} className="w-full rounded-2xl bg-white p-3.5 text-left"
+            style={{ border: `1px solid ${on ? PRIMARY : LINE}`, boxShadow: on ? `0 0 0 1px ${PRIMARY}` : "0 1px 2px rgba(20,20,43,.04)" }}>
             <div className="flex items-center gap-3">
               <div className="flex h-11 w-11 items-center justify-center rounded-2xl text-sm font-extrabold" style={{ backgroundColor: TINT, color: PRIMARY }}>{(m.name || "?").slice(0, 1)}</div>
               <div className="min-w-0 flex-1">
@@ -3045,14 +3048,14 @@ function ChangeSummary({ member, onGo }) {
   const n = rec.length;
   if (n === 0)
     return (
-      <button onClick={onGo} className="w-full rounded-3xl p-5 text-left" style={{ background: GRAD, boxShadow: SHADOW }}>
+      <button onClick={onGo} className="w-full rounded-2xl p-4 text-left" style={{ background: GRAD }}>
         <p className="text-sm font-extrabold text-white">첫 인바디 측정값을 입력해 주세요</p>
         <p className="mt-1 text-xs text-white opacity-70">기록 탭 → 인바디에서 등록하면 여기에 변화가 표시됩니다</p>
       </button>
     );
   const first = rec[0], last = rec[n - 1];
   return (
-    <div className="rounded-3xl p-5" style={{ backgroundColor: BRAND, boxShadow: SHADOW }}>
+    <div className="rounded-2xl p-4" style={{ backgroundColor: BRAND }}>
       <div className="flex items-center justify-between">
         <p className="text-xs font-bold text-white opacity-70">{ymd(first.date)} → {ymd(last.date)}</p>
         <span className="rounded-full bg-white px-2.5 py-1 text-xs font-extrabold" style={{ color: PRIMARY }}>{n === 1 ? "첫 측정" : `${weeksBetween(first.date, last.date)}주 변화`}</span>
@@ -3063,7 +3066,7 @@ function ChangeSummary({ member, onGo }) {
           const t = toneOf(m.key, diff);
           const c = t === "good" ? GOOD : t === "bad" ? BAD : LINE;
           return (
-            <div key={m.key} className="rounded-2xl p-3" style={{ backgroundColor: "rgba(255,255,255,0.12)" }}>
+            <div key={m.key} className="rounded-xl p-3" style={{ backgroundColor: "rgba(255,255,255,0.12)" }}>
               <p className="text-xs font-bold text-white opacity-80">{m.label}</p>
               <p className="mt-1 text-2xl font-extrabold tabular-nums text-white">{last[m.key]}<span className="ml-0.5 text-xs opacity-70">{m.unit}</span></p>
               {n > 1 && (
@@ -5864,25 +5867,34 @@ function AnalysisTab({ members, photos, onOpen, hub, doneSignal, onConsumeDone }
     [rows, mode]
   );
   return (
-    <div className="mx-auto max-w-3xl space-y-3">
+    <div className="mx-auto max-w-4xl space-y-3">
       <Card className="p-4">
-        <div className="flex items-center gap-2">
-          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl" style={{ background: GRAD }}><Users size={16} color="#fff" /></span>
+        <div className="flex items-center gap-3">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: TINT }}><Activity size={18} style={{ color: PRIMARY }} /></span>
           <div className="min-w-0 flex-1">
-            <h3 className="font-extrabold" style={{ color: INK }}>회원 선택</h3>
-            <Sub>{rows.length}명 · 이름을 누르면 아래에서 촬영·분석합니다</Sub>
+            <h2 className="text-base font-extrabold" style={{ color: INK }}>체형분석</h2>
+            <Sub>촬영부터 결과 카드까지 한 흐름으로 관리합니다</Sub>
+          </div>
+          <div className="grid shrink-0 grid-cols-2 gap-1.5 text-center">
+            <div className="rounded-xl px-3 py-1.5" style={{ backgroundColor: TINT }}>
+              <p className="text-sm font-extrabold tabular-nums" style={{ color: PRIMARY }}>{done}</p><Sub>분석 완료</Sub>
+            </div>
+            <div className="rounded-xl px-3 py-1.5" style={{ backgroundColor: CANVAS }}>
+              <p className="text-sm font-extrabold tabular-nums" style={{ color: INK }}>{Math.max(0, rows.length - done)}</p><Sub>분석 전</Sub>
+            </div>
           </div>
         </div>
-        <div className="relative mt-3">
+        <div className="relative mt-4">
           <Search size={15} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2" style={{ color: SUB }} />
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="회원 이름 검색"
-            className="w-full rounded-2xl border-0 py-3 pl-10 pr-4 text-sm outline-none" style={{ backgroundColor: CANVAS, color: INK }} />
+            className="h-10 w-full rounded-xl border-0 pl-10 pr-3 text-sm outline-none"
+            style={{ backgroundColor: CANVAS, color: INK, boxShadow: `inset 0 0 0 1px ${LINE}` }} />
         </div>
-        <div className="-mx-1 mt-2 max-h-44 overflow-y-auto px-1">
-          <div className="flex flex-wrap gap-1.5">
+        <div className="-mx-1 mt-2 max-h-32 overflow-y-auto px-1">
+          <div className="flex flex-wrap gap-1">
             {rows.map(({ m, count }) => (
-              <button key={m.id} onClick={() => setPick(pick === m.id ? null : m.id)} className="flex items-center gap-1 rounded-full px-3 py-2 text-xs font-extrabold"
-                style={pick === m.id ? { background: GRAD, color: "#fff", boxShadow: SHADOW }
+              <button key={m.id} onClick={() => setPick(pick === m.id ? null : m.id)} className="flex h-8 items-center gap-1 rounded-lg px-2.5 text-xs font-extrabold"
+                style={pick === m.id ? { backgroundColor: PRIMARY, color: "#fff" }
                   : count === 0 ? { backgroundColor: TINT, color: PRIMARY } : { backgroundColor: CANVAS, color: INK }}>
                 {m.name || "이름 미입력"}
                 <span className="font-bold" style={{ opacity: 0.65 }}>{count === 0 ? "· 분석 전" : `· ${count}건`}</span>
@@ -5892,30 +5904,29 @@ function AnalysisTab({ members, photos, onOpen, hub, doneSignal, onConsumeDone }
           </div>
         </div>
       </Card>
-      <Card className="overflow-hidden p-0">
-        <div className="px-5 pb-4 pt-5" style={{ background: GRAD }}>
-          <h3 className="text-lg font-extrabold text-white" style={{ letterSpacing: "-0.02em" }}>AI로 분석한 비포·애프터로<br />회원 카드를 만들어 보세요</h3>
-          <div className="mt-3 grid grid-cols-3 gap-1.5">
-            {[
-              { n: "1", t: "사진 찍기", d: "정면·측면" },
-              { n: "2", t: "AI 분석", d: "각도 자동" },
-              { n: "3", t: "결과 카드", d: "회원에게" },
-            ].map((x, idx) => (
-              <div key={x.n} className="relative min-w-0 rounded-xl px-2 py-2" style={{ backgroundColor: "rgba(255,255,255,.16)" }}>
-                <p className="truncate text-xs font-extrabold text-white">{x.n}. {x.t}</p>
-                <p className="truncate text-xs text-white opacity-80">{x.d}</p>
-                {idx < 2 && <span className="absolute -right-1 top-1/2 z-10 -translate-y-1/2 text-xs font-extrabold text-white opacity-70">›</span>}
+      <Card className="p-4">
+        <div className="flex items-center justify-between gap-3">
+          {[
+            { n: "1", t: "사진 촬영", d: "정면 · 측면", i: Camera },
+            { n: "2", t: "AI 분석", d: "관절 · 각도", i: Sparkles },
+            { n: "3", t: "결과 카드", d: "비포 · 애프터", i: ClipboardList },
+          ].map((x, idx) => {
+            const Icon = x.i;
+            return (
+              <div key={x.n} className="relative flex min-w-0 flex-1 items-center gap-2">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: idx === 0 && pick ? PRIMARY : TINT, color: idx === 0 && pick ? "#fff" : PRIMARY }}>
+                  <Icon size={16} />
+                </span>
+                <div className="min-w-0">
+                  <p className="truncate text-xs font-extrabold" style={{ color: INK }}>{x.n}. {x.t}</p>
+                  <Sub className="truncate">{x.d}</Sub>
+                </div>
+                {idx < 2 && <ChevronRight size={14} className="ml-auto shrink-0" style={{ color: FAINT }} />}
               </div>
-            ))}
-          </div>
+            );
+          })}
         </div>
-        <div className="p-4">
-          <p className="text-xs font-bold leading-relaxed" style={{ color: INK2 }}>
-            전신 사진을 올리면 <b style={{ color: INK }}>어깨·골반·무릎 기울기</b>를 각도로 재고, 자와 펜으로 직접 선을 그어 보정한 뒤,
-            비포·애프터를 골라 <b style={{ color: INK }}>회원에게 보낼 카드</b>까지 한 번에 만듭니다.
-          </p>
-          {!pick && <Sub className="mt-2 block">위에서 회원을 먼저 골라 주세요</Sub>}
-        </div>
+        {!pick && <div className="mt-3 rounded-xl px-3 py-2 text-xs font-bold" style={{ backgroundColor: TINT, color: PRIMARY }}>위에서 회원을 선택하면 촬영과 분석 도구가 열립니다.</div>}
       </Card>
       {cardFor && hub && !pick && (
         <div className="min-w-0">
@@ -5942,9 +5953,9 @@ function AnalysisTab({ members, photos, onOpen, hub, doneSignal, onConsumeDone }
       )}
       <Card className="p-4">
         <div className="flex items-center gap-2">
-          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: TINT }}><Activity size={16} style={{ color: PRIMARY }} /></span>
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: TINT }}><Users size={16} style={{ color: PRIMARY }} /></span>
           <div className="min-w-0 flex-1">
-            <h3 className="font-extrabold" style={{ color: INK }}>{pick ? "이 회원 촬영 기록" : "체형분석 현황"}</h3>
+            <h3 className="font-extrabold" style={{ color: INK }}>{pick ? "선택 회원 분석 기록" : "회원 분석 목록"}</h3>
             <Sub>{pick ? `${members.find((m) => m.id === pick)?.name || "회원"} 님의 저장된 분석` : <>{members.filter((m) => !isDraft(m)).length}명 중 <b style={{ color: PRIMARY }}>{done}명</b> 분석 완료</>}</Sub>
           </div>
         </div>
@@ -6034,14 +6045,14 @@ function Dashboard({ member, photos, schedule, onBack, briefing, onSavePhoto, on
     <div className="space-y-3">
       <button onClick={onBack} className="flex items-center gap-1 py-1 text-sm font-bold md:hidden" style={{ color: SUB }}><ArrowLeft size={16} /> 목록</button>
       <Guard label="회원 요약">
-      <Card className="p-5">
+      <Card className="p-4">
         <div className="flex items-center gap-3">
-          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl text-lg font-extrabold text-white" style={{ background: GRAD, boxShadow: "0 4px 12px rgba(37,99,235,.30)" }}>{(member.name || "?").slice(0, 1)}</div>
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-lg font-extrabold text-white" style={{ background: GRAD }}>{(member.name || "?").slice(0, 1)}</div>
           <div className="min-w-0 flex-1">
             <h2 className="text-lg font-extrabold" style={{ color: isDraft(member) ? SUB : INK }}>{isDraft(member) ? "이름을 입력해 주세요" : `${member.name} 회원님`}</h2>
             <Sub>{ageOf(member) !== null ? `${ageOf(member)}세 · ` : ""}담당 {member.instructor || "-"}{att.rate !== null ? ` · 출석률 ${att.rate}%` : ""}</Sub>
           </div>
-          <div className="rounded-2xl px-3 py-2 text-center" style={{ backgroundColor: low ? BAD_S : CANVAS }}>
+          <div className="rounded-xl px-3 py-2 text-center" style={{ backgroundColor: low ? BAD_S : CANVAS }}>
             <Sub>총 잔여</Sub>
             <p className="text-lg font-extrabold tabular-nums" style={{ color: low ? BAD : INK }}>{total}회</p>
             <Sub>정규 {member.regular} · 서비스 {member.service}</Sub>
@@ -6054,7 +6065,7 @@ function Dashboard({ member, photos, schedule, onBack, briefing, onSavePhoto, on
           {!briefing && <button onClick={() => goRecord("info")} className="flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-bold" style={{ backgroundColor: CANVAS, color: PRIMARY }}><Pencil size={11} /> 정보 수정</button>}
         </div>
         {!briefing && paidTotal(member) > 0 && (
-          <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-2xl px-3 py-2.5" style={{ backgroundColor: CANVAS }}>
+          <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl px-3 py-2.5" style={{ backgroundColor: CANVAS }}>
             <Ticket size={13} style={{ color: PRIMARY }} />
             <span className="text-sm font-extrabold tabular-nums" style={{ color: INK }}>누적 결제 ₩{won(paidTotal(member))}</span>
             <span className="text-xs" style={{ color: SUB }}>등록 {(member.payments || []).length}건 · 총 {paidCount(member)}회 · 회당 평균 ₩{won(paidAvg(member))}</span>
@@ -6087,7 +6098,7 @@ function Dashboard({ member, photos, schedule, onBack, briefing, onSavePhoto, on
       <Guard label="체형분석 안내">
         <Card className="p-4">
           <button onClick={() => goAnalysis && goAnalysis()} className="flex w-full items-center gap-3 text-left">
-            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl" style={{ background: GRAD }}><Activity size={18} color="#fff" /></span>
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl" style={{ background: GRAD }}><Activity size={18} color="#fff" /></span>
             <div className="min-w-0 flex-1">
               <p className="font-extrabold" style={{ color: INK }}>체형분석 · 결과 카드</p>
               <Sub>사진 촬영과 카드 만들기는 <b style={{ color: PRIMARY }}>체형분석 탭</b>에서</Sub>
@@ -7216,12 +7227,15 @@ function SettingsTab({ db, photos, account, onChangeSettings, onChangePhoto, sav
     setBusy(false);
   };
   return (
-    <div className="space-y-3">
-      <Card className="p-5">
-        <h3 className="font-extrabold" style={{ color: INK }}>내 계정</h3>
+    <div className="mx-auto max-w-3xl space-y-3">
+      <Card className="p-4">
+        <div className="flex items-center gap-2">
+          <span className="flex h-8 w-8 items-center justify-center rounded-xl" style={{ backgroundColor: TINT }}><Users size={15} style={{ color: PRIMARY }} /></span>
+          <div><h3 className="font-extrabold" style={{ color: INK }}>내 계정</h3><Sub>프로필과 로그인 정보를 관리합니다</Sub></div>
+        </div>
         <div className="mt-3 flex items-center gap-3">
           <button onClick={() => albumRef.current?.click()} className="relative shrink-0" aria-label="프로필 사진 변경">
-            <Avatar src={account?.photo} name={account?.name} size={56} radius={20} />
+            <Avatar src={account?.photo} name={account?.name} size={52} radius={16} />
             <span className="absolute -bottom-1 -right-1 flex h-6 w-6 items-center justify-center rounded-full border-2 border-white" style={{ background: GRAD }}>
               {busy ? <Loader2 size={11} color="#fff" className="animate-spin" /> : <Camera size={11} color="#fff" />}
             </span>
@@ -7233,14 +7247,14 @@ function SettingsTab({ db, photos, account, onChangeSettings, onChangePhoto, sav
           <span className="shrink-0 rounded-full px-2.5 py-1 text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>{PROVIDER_LABEL[account?.provider]}</span>
         </div>
         <div className="mt-3 flex flex-wrap gap-1.5">
-          <button onClick={() => albumRef.current?.click()} className="rounded-full px-3 py-1.5 text-xs font-bold" style={{ backgroundColor: TINT, color: PRIMARY }}>
+          <button onClick={() => albumRef.current?.click()} className="flex h-9 items-center rounded-xl px-3 text-xs font-bold" style={{ backgroundColor: TINT, color: PRIMARY }}>
             사진 {account?.photo ? "변경" : "등록"}
           </button>
-          <button onClick={() => camRef.current?.click()} className="flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>
+          <button onClick={() => camRef.current?.click()} className="flex h-9 items-center gap-1 rounded-xl px-3 text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>
             <Camera size={12} /> 촬영
           </button>
           {account?.photo && (
-            <button onClick={() => onChangePhoto(null)} className="flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>
+            <button onClick={() => onChangePhoto(null)} className="flex h-9 items-center gap-1 rounded-xl px-3 text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>
               <Trash2 size={12} /> 사진 삭제
             </button>
           )}
@@ -7248,36 +7262,41 @@ function SettingsTab({ db, photos, account, onChangeSettings, onChangePhoto, sav
         </div>
         <input ref={albumRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; pickPhoto(f); }} />
         <input ref={camRef} type="file" accept="image/*" capture="user" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; pickPhoto(f); }} />
-        <div className="mt-3 grid grid-cols-2 gap-2">
-          <div className="rounded-2xl p-3" style={{ backgroundColor: CANVAS }}><Sub>센터</Sub><p className="text-sm font-extrabold" style={{ color: INK }}>{account?.center || "-"}</p></div>
-          <div className="rounded-2xl p-3" style={{ backgroundColor: CANVAS }}><Sub>연락처</Sub><p className="text-sm font-extrabold" style={{ color: INK }}>{account?.phone || "-"}</p></div>
-          <div className="rounded-2xl p-3" style={{ backgroundColor: CANVAS }}><Sub>가입일</Sub><p className="text-sm font-extrabold tabular-nums" style={{ color: INK }}>{ymd(account?.joinedAt)}</p></div>
-          <div className="rounded-2xl p-3" style={{ backgroundColor: CANVAS }}><Sub>관리 회원</Sub><p className="text-sm font-extrabold tabular-nums" style={{ color: INK }}>{db.members.length}명</p></div>
+        <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4">
+          <div className="rounded-xl p-2.5" style={{ backgroundColor: CANVAS }}><Sub>센터</Sub><p className="truncate text-sm font-extrabold" style={{ color: INK }}>{account?.center || "-"}</p></div>
+          <div className="rounded-xl p-2.5" style={{ backgroundColor: CANVAS }}><Sub>연락처</Sub><p className="truncate text-sm font-extrabold" style={{ color: INK }}>{account?.phone || "-"}</p></div>
+          <div className="rounded-xl p-2.5" style={{ backgroundColor: CANVAS }}><Sub>가입일</Sub><p className="text-sm font-extrabold tabular-nums" style={{ color: INK }}>{ymd(account?.joinedAt)}</p></div>
+          <div className="rounded-xl p-2.5" style={{ backgroundColor: CANVAS }}><Sub>관리 회원</Sub><p className="text-sm font-extrabold tabular-nums" style={{ color: INK }}>{db.members.length}명</p></div>
         </div>
-        <button onClick={onLogout} className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-2xl py-3 text-sm font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>
+        <button onClick={onLogout} className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 rounded-xl text-sm font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>
           <LogOut size={14} /> 로그아웃
         </button>
       </Card>
-      <Card className="p-5">
-        <h3 className="font-extrabold" style={{ color: INK }}>화면 테마</h3>
-        <Sub className="mt-1">폰 설정을 따르거나 직접 고를 수 있어요. 어두운 곳에서 회원에게 보여줄 땐 다크가 눈이 편합니다.</Sub>
-        <div className="mt-3 flex gap-1 rounded-2xl p-1" style={{ backgroundColor: CANVAS }}>
+      <Card className="p-4">
+        <div className="flex items-center gap-2">
+          <span className="flex h-8 w-8 items-center justify-center rounded-xl" style={{ backgroundColor: TINT }}><Sun size={15} style={{ color: PRIMARY }} /></span>
+          <div><h3 className="font-extrabold" style={{ color: INK }}>화면 테마</h3><Sub>기기 설정 또는 원하는 화면을 선택합니다</Sub></div>
+        </div>
+        <div className="mt-3 flex gap-1 rounded-xl p-1" style={{ backgroundColor: CANVAS }}>
           {[{ k: "system", l: "폰 설정", i: Smartphone }, { k: "light", l: "라이트", i: Sun }, { k: "dark", l: "다크", i: Moon }].map((o) => {
             const on = themePref === o.k, Icon = o.i;
             return (
-              <button key={o.k} onClick={() => onChangeTheme(o.k)} className="flex flex-1 items-center justify-center gap-1.5 rounded-xl py-2.5 text-sm font-bold"
-                style={on ? { background: GRAD, color: "#fff", boxShadow: "0 3px 10px rgba(37,99,235,.3)" } : { color: SUB }}>
+              <button key={o.k} onClick={() => onChangeTheme(o.k)} className="flex h-10 flex-1 items-center justify-center gap-1.5 rounded-lg text-sm font-bold"
+                style={on ? { backgroundColor: PRIMARY, color: "#fff" } : { color: SUB }}>
                 <Icon size={14} /> {o.l}
               </button>
             );
           })}
         </div>
       </Card>
-      <Card className="p-5">
-        <h3 className="font-extrabold" style={{ color: INK }}>센터 정보</h3>
-        <div className="mt-4 space-y-3">
+      <Card className="p-4">
+        <div className="flex items-center gap-2">
+          <span className="flex h-8 w-8 items-center justify-center rounded-xl" style={{ backgroundColor: TINT }}><SettingsIcon size={15} style={{ color: PRIMARY }} /></span>
+          <div><h3 className="font-extrabold" style={{ color: INK }}>센터 정보</h3><Sub>일정과 회원 관리에 사용할 기본값입니다</Sub></div>
+        </div>
+        <div className="mt-3 space-y-3">
           <Field label="센터명"><input value={db.settings.center} onChange={(e) => onChangeSettings({ ...db.settings, center: e.target.value })} className={inputCls} /></Field>
-          <div className="rounded-2xl p-3" style={{ backgroundColor: CANVAS }}>
+          <div className="rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
             <p className="text-xs font-extrabold" style={{ color: INK }}>내 수업료 기본값</p>
             <Sub className="mb-2 block">회원마다 다르면 그 회원 정보에서 따로 넣으세요 · 비워 두면 이 값을 씁니다</Sub>
             <div className="grid grid-cols-2 gap-2">
@@ -7295,12 +7314,12 @@ function SettingsTab({ db, photos, account, onChangeSettings, onChangePhoto, sav
         </div>
       </Card>
       <HandoffCard db={db} photos={photos} account={account} onImport={onImport} onToast={onToast} />
-      <Card className="p-5">
+      <Card className="p-4">
         <h3 className="font-extrabold" style={{ color: INK }}>데이터</h3>
         <Sub className="mt-2">계정별로 따로 저장됩니다.{savedAt instanceof Date && ` 마지막 저장 ${savedAt.getHours()}:${String(savedAt.getMinutes()).padStart(2, "0")}`}</Sub>
         <div className="mt-3 flex flex-wrap gap-2">
-          <button onClick={() => setConfirm("clear")} className="rounded-2xl px-4 py-2.5 text-sm font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>모든 회원 초기화</button>
-          <button onClick={() => setConfirm("reset")} className="flex items-center gap-1.5 rounded-2xl px-4 py-2.5 text-sm font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>
+          <button onClick={() => setConfirm("clear")} className="flex h-10 items-center rounded-xl px-4 text-sm font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>모든 회원 초기화</button>
+          <button onClick={() => setConfirm("reset")} className="flex h-10 items-center gap-1.5 rounded-xl px-4 text-sm font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>
             <RotateCcw size={14} /> 회원 데이터로 돌리기
           </button>
         </div>
@@ -7314,7 +7333,7 @@ function SettingsTab({ db, photos, account, onChangeSettings, onChangePhoto, sav
           </div>
         )}
       </Card>
-      <Card className="p-5">
+      <Card className="p-4">
         <div className="flex items-center gap-2">
           <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: CANVAS }}><Smartphone size={14} style={{ color: SUB }} /></span>
           <h3 className="font-extrabold" style={{ color: INK }}>개인정보 안내</h3>
@@ -7525,14 +7544,19 @@ export default function App() {
   }, []);
   useEffect(() => () => { if (cloudTimer.current) clearTimeout(cloudTimer.current); }, []);
 
-  const saveDb = useCallback(async (next) => {
+  const saveDb = useCallback(async (next, dualWrite) => {
     const prev = db;
     setDb(next);
     if (!account) return;
     try {
-      await window.storage.set(dbKey(account.id), JSON.stringify(next));
-      setSavedAt(new Date());
-      queueCloud(account.id, next);
+      const legacyWrite = async () => {
+        await window.storage.set(dbKey(account.id), JSON.stringify(next));
+        setSavedAt(new Date());
+        queueCloud(account.id, next);
+      };
+      if (dualWrite) await runAppDualWrite(account, dualWrite, legacyWrite);
+      else await legacyWrite();
+      return true;
     }
     catch (e) { setDb(prev); setToast({ ok: false, msg: "저장하지 못했습니다. 방금 입력한 내용을 다시 확인해 주세요." }); }
   }, [account, db, queueCloud]);
@@ -7558,7 +7582,10 @@ export default function App() {
         return m;
       });
     }
-    saveDb({ ...db, members });
+    const changed = members.find((m) => m.id === id);
+    saveDb({ ...db, members }, changed && {
+      entityType: "client", entityId: id, operation: "update", payload: changed,
+    });
   };
   const member = db.members.find((m) => m.id === selectedId) || db.members[0];
   const alerts = useMemo(() => detectAlerts(db.members, db.schedule), [db.members, db.schedule]);
@@ -7584,7 +7611,13 @@ export default function App() {
       const keep = new Set(attendeesOf(item).map((a) => a.memberId));
       attendeesOf(prev).forEach((a) => { if (a.deductFrom && !keep.has(a.memberId)) members = restoreOne(members, a.memberId, a.deductFrom); });
     }
-    saveDb({ ...db, members, schedule: prev ? db.schedule.map((s) => (s.id === item.id ? item : s)) : [...db.schedule, item] });
+    saveDb(
+      { ...db, members, schedule: prev ? db.schedule.map((s) => (s.id === item.id ? item : s)) : [...db.schedule, item] },
+      {
+        entityType: "lesson", entityId: item.id, operation: prev ? "update" : "create",
+        payload: { ...item, participantCount: attendeesOf(item).length },
+      },
+    );
     setToast({ ok: true, msg: item.personal
       ? (prev ? "일정을 수정했습니다." : "일정을 등록했습니다.")
       : prev ? "수업을 수정했습니다." : "수업을 등록했습니다." });
@@ -7593,7 +7626,13 @@ export default function App() {
     const s0 = db.schedule.find((x) => x.id === id);
     let members = db.members;
     if (s0) attendeesOf(s0).forEach((a) => { if (a.deductFrom) members = restoreOne(members, a.memberId, a.deductFrom); });
-    saveDb({ ...db, members, schedule: db.schedule.filter((x) => x.id !== id) });
+    saveDb(
+      { ...db, members, schedule: db.schedule.filter((x) => x.id !== id) },
+      s0 && {
+        entityType: "lesson", entityId: id, operation: "update",
+        payload: { ...s0, status: "cancel", participantCount: attendeesOf(s0).length },
+      },
+    );
     setToast({ ok: true, msg: "수업을 삭제했습니다." });
   };
   const setStatus = (id, status, memberId) => {
@@ -7618,7 +7657,11 @@ export default function App() {
     }
     const attendees = list.map((a) => (a.memberId === mid ? { ...a, status, deductFrom, noshowFee: null } : a));
     const schedule = db.schedule.map((x) => (x.id === id ? { ...x, attendees, status: undefined, deductFrom: undefined, noshowFee: undefined } : x));
-    saveDb({ ...db, members, schedule });
+    const attendanceStatus = { booked: "booked", done: "attended", noshow: "noshow", cancel: "cancelled" }[status] || "booked";
+    saveDb({ ...db, members, schedule }, {
+      entityType: "lesson", entityId: id, operation: "save_attendance",
+      attendance: [{ clientId: mid, status: attendanceStatus }],
+    });
     setToast({ ok: true, msg: msg || `${stOf(status).label} 처리했습니다.` });
   };
   /* 듀엣처럼 여러 명인 수업을 한 번에 처리 — 따로 두 번 호출하면 뒤엣것이 앞엣것을 덮는다 */
@@ -7639,7 +7682,14 @@ export default function App() {
       }
       return { ...a, status, deductFrom, noshowFee: null };
     });
-    saveDb({ ...db, members, schedule: db.schedule.map((x) => (x.id === id ? { ...x, attendees, status: undefined, deductFrom: undefined, noshowFee: undefined } : x)) });
+    const attendanceStatus = { booked: "booked", done: "attended", noshow: "noshow", cancel: "cancelled" }[status] || "booked";
+    saveDb(
+      { ...db, members, schedule: db.schedule.map((x) => (x.id === id ? { ...x, attendees, status: undefined, deductFrom: undefined, noshowFee: undefined } : x)) },
+      {
+        entityType: "lesson", entityId: id, operation: "save_attendance",
+        attendance: attendees.map((a) => ({ clientId: a.memberId, status: attendanceStatus })),
+      },
+    );
     setToast(zero.length
       ? { ok: false, msg: `${zero.join(", ")} 잔여 0 — 차감 없이 기록했습니다.` }
       : { ok: true, msg: `${list.length}명 ${stOf(status).label} 처리했습니다.` });
@@ -7667,12 +7717,18 @@ export default function App() {
     setToast({ ok: true, msg });
   };
   const setGroupDone = (id, done) => {
-    saveDb({ ...db, schedule: db.schedule.map((s) => (s.id === id ? { ...s, groupDone: done } : s)) });
+    saveDb(
+      { ...db, schedule: db.schedule.map((s) => (s.id === id ? { ...s, groupDone: done } : s)) },
+      { entityType: "lesson", entityId: id, operation: "change_status", status: done ? "completed" : "scheduled" },
+    );
     setToast({ ok: true, msg: done ? "그룹 수업을 완료 처리했습니다. 이달 누적에 반영됩니다." : "그룹 수업 완료를 취소했습니다." });
   };
   const addMember = () => {
     const m = blankMember(db.settings.staff);
-    saveDb({ ...db, members: [m, ...db.members] });
+    saveDb(
+      { ...db, members: [m, ...db.members] },
+      { entityType: "client", entityId: m.id, operation: "create", payload: m },
+    );
     setSelectedId(m.id); setSection("info"); setDetailTab("record"); setMobileView("detail"); setTab("members");
     setToast({ ok: true, msg: "새 회원을 추가했습니다." });
   };
@@ -7702,12 +7758,16 @@ export default function App() {
 
   const removeMember = (id) => {
     const rest = db.members.filter((m) => m.id !== id);
-    saveDb({
-      ...db, members: rest,
-      schedule: db.schedule
-        .map((s) => ({ ...s, attendees: attendeesOf(s).filter((a) => a.memberId !== id) }))
-        .filter((s) => s.attendees.length || s.equip),
-    });
+    const removed = db.members.find((m) => m.id === id);
+    saveDb(
+      {
+        ...db, members: rest,
+        schedule: db.schedule
+          .map((s) => ({ ...s, attendees: attendeesOf(s).filter((a) => a.memberId !== id) }))
+          .filter((s) => s.attendees.length || s.equip),
+      },
+      removed && { entityType: "client", entityId: id, operation: "archive", payload: removed },
+    );
     if (photos[id]) {
       const nextPh = { ...photos };
       const ids = blobIdsOf(photos[id]);
@@ -7892,8 +7952,9 @@ export default function App() {
         padding-right: max(env(safe-area-inset-right, 0px), 0px);
       }
       .safe-sheet { padding-bottom: calc(1.25rem + max(env(safe-area-inset-bottom, 0px), 10px)); }
-      /* 화면 아래에 붙는 저장 바에 가려지지 않도록 본문 아래 여백 */
-      .safe-scroll { padding-bottom: calc(28px + max(env(safe-area-inset-bottom, 0px), 12px)); }
+      .safe-tab { padding-bottom: max(env(safe-area-inset-bottom, 0px), 8px); }
+      /* 56px 하단 탭바와 홈 인디케이터에 본문이 가려지지 않도록 여백 확보 */
+      .safe-scroll { padding-bottom: calc(84px + max(env(safe-area-inset-bottom, 0px), 12px)); }
       .touch-none { touch-action: none; }
       .line-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
       @keyframes pop { 0% { transform: scale(.86); opacity: 0 } 60% { transform: scale(1.04); opacity: 1 } 100% { transform: scale(1) } }
@@ -7932,16 +7993,16 @@ export default function App() {
     );
 
   return (
-    <div className="app-root min-h-screen" style={{ backgroundColor: PAGE, overflow: "hidden", paddingBottom: "calc(60px + max(env(safe-area-inset-bottom, 0px), 12px))" }}>
+    <div className="app-root min-h-screen" style={{ backgroundColor: PAGE, overflow: "hidden" }}>
       {style}
-      <div className="safe-t sticky top-0 z-30" style={{ backgroundColor: CARD, boxShadow: "0 1px 3px rgba(0,0,0,.04)" }}>
+      <div className="safe-t sticky top-0 z-30" style={{ backgroundColor: CARD }}>
         <Header settings={db.settings || {}} account={account} alertCount={alerts.length} onProfile={() => setTab("settings")}
           onAlerts={() => {
             setMobileView("list"); setTab("members");
             setTimeout(() => { try { document.getElementById("alert-center")?.scrollIntoView({ behavior: "smooth", block: "start" }); } catch (e) {} }, 80);
           }} />
       </div>
-      <main className="safe-scroll mx-auto max-w-6xl px-4 py-3">
+      <main className="safe-scroll mx-auto max-w-6xl px-3 py-3 sm:px-4">
         <Guard key={tab}>
         {tab === "members" && (
           <>
@@ -7956,10 +8017,10 @@ export default function App() {
               <div className={`md:col-span-7 lg:col-span-8 ${mobileView === "list" ? "hidden md:block" : ""}`}>
                 {member ? (
                   <Guard label="회원 상세" key={member.id}>
-                  <div className="mb-3 flex gap-1 rounded-2xl p-1" style={{ backgroundColor: CANVAS }}>
+                  <div className="mb-3 flex gap-1 rounded-xl p-1" style={{ backgroundColor: CANVAS, border: `1px solid ${LINE}` }}>
                     {[{ k: "summary", l: "프로필 · 요약" }, { k: "record", l: "기록 입력" }].map((o) => (
-                      <button key={o.k} onClick={() => setDetailTab(o.k)} className="flex-1 rounded-xl py-2.5 text-sm font-extrabold"
-                        style={detailTab === o.k ? { backgroundColor: CARD, color: PRIMARY, boxShadow: "0 1px 3px rgba(20,20,43,.12)" } : { color: SUB }}>{o.l}</button>
+                      <button key={o.k} onClick={() => setDetailTab(o.k)} className="h-10 flex-1 rounded-lg text-sm font-extrabold"
+                        style={detailTab === o.k ? { backgroundColor: CARD, color: PRIMARY, boxShadow: "0 1px 2px rgba(20,20,43,.08)" } : { color: SUB }}>{o.l}</button>
                     ))}
                   </div>
                   {detailTab === "record" ? (
@@ -8030,12 +8091,12 @@ export default function App() {
         )}
         </Guard>
       </main>
+      <Tabs tab={tab} setTab={goTab} />
       {favOpen && <Guard label="즐겨찾기"><FavSetsModal items={favList} onClose={() => setFavOpen(false)} onToggleFav={toggleFav}
         onOpenMember={(id) => { setSelectedId(id); setMobileView("detail"); setTab("members"); }} /></Guard>}
       {brief && <Guard label="재등록 브리핑"><SalesBriefModal alert={brief} onClose={() => setBrief(null)} onToast={setToast} /></Guard>}
-      <BottomNav tab={tab} setTab={goTab} />
       {toast && (
-        <div className="fixed inset-x-0 z-50 flex justify-center px-4" style={{ bottom: "calc(68px + max(env(safe-area-inset-bottom, 0px), 12px))" }}>
+        <div className="fixed inset-x-0 z-50 flex justify-center px-4" style={{ bottom: "calc(68px + max(env(safe-area-inset-bottom, 0px), 10px))" }}>
           <div className="flex items-center gap-2 rounded-full px-4 py-3" style={{ backgroundColor: toast.ok ? TOAST : BAD, boxShadow: SHADOW }}>
             {toast.ok ? <Check size={14} color="#fff" /> : <AlertTriangle size={14} color="#fff" />}
             <span className="text-sm font-bold text-white">{toast.msg}</span>

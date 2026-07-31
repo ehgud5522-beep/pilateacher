@@ -89,7 +89,7 @@ const T = {
   bg: "#F6F7F9", surface: "#FFFFFF", sunken: "#F1F3F6", lineFaint: "#EEF1F5",
   border: "#E6E9EF", borderStrong: "#D5DAE3",
   ink: "#1C2433", ink2: "#5E6673", ink3: "#6B7484", disabled: "#B6BDC9",   // P1-10: ink3 AA(≈4.7:1)
-  a600: "#4C4399", a700: "#3E3781", a200: "#D9D7EE", a100: "#ECEBF7", a50: "#F5F4FB",
+  a600: "#2563EB", a700: "#1D4ED8", a200: "#BFDBFE", a100: "#DBEAFE", a50: "#EFF6FF",
   good: "#2E7D5B", goodS: "#E7F2EC", warn: "#B45309", warnS: "#FAF0E1",
   bad: "#C2413B", badS: "#FAECEB",
   nowLine: "#FF3B30",        // 현재 시간선 전용 — 브랜드 보라와 구분, 변경 금지
@@ -108,7 +108,7 @@ const CSS = `
   .tnum{font-variant-numeric:tabular-nums}
   button{-webkit-tap-highlight-color:transparent;touch-action:manipulation;background:transparent;border:none;cursor:pointer;font-family:inherit;color:inherit;padding:0}
   button:focus-visible,select:focus-visible,input:focus-visible,textarea:focus-visible,[tabindex]:focus-visible{
-    outline:2px solid #4C4399;outline-offset:1px;border-radius:4px}
+    outline:2px solid #2563EB;outline-offset:1px;border-radius:4px}
   input,select,textarea{font-family:inherit}
   .app-h{height:100vh}
   @supports (height:100dvh){.app-h{height:100dvh}}
@@ -1200,7 +1200,7 @@ const WeekGrid = React.memo(function WeekGrid({
       <div className="relative" style={{ height: Math.max(L.total + 8, gridH) }}>
         {tIdx >= 0 ? (
           <div className="absolute" aria-hidden="true"
-            style={{ top: 0, bottom: 0, left: AXIS + lefts[tIdx], width: colWidths[tIdx], background: T.a50 }} />
+            style={{ top: 0, bottom: 0, left: AXIS + lefts[tIdx], width: colWidths[tIdx], background: "rgba(37,99,235,0.04)" }} />
         ) : null}
 
         {L.rows.map((r) => {
@@ -2631,7 +2631,7 @@ export default function App() {
       style={{ minHeight: "100vh", background: T.sunken,
         fontFamily: 'Pretendard, -apple-system, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif' }}>
       <style>{CSS}</style>
-      <div className="w-full flex flex-col app-h" style={{ maxWidth: 420, background: T.bg, wordBreak: "keep-all" }}>
+      <div className="w-full flex flex-col app-h" style={{ maxWidth: 420, background: T.bg, wordBreak: "keep-all", overflow: "hidden" }}>
 
         {tab === "schedule" ? (
           <>
@@ -2678,9 +2678,12 @@ export default function App() {
                 const isT = ds === todayS;
                 return (
                   <div key={ds} className="flex flex-col items-center justify-center" style={{ width: colWidths[i] }}>
-                    <span className="tnum" style={{ fontSize: 12, fontWeight: isT ? 600 : 500,
-                      color: isT ? T.a600 : T.ink2 }}>{DOW[i]} {+ds.slice(8)}</span>
-                    {isT ? <span aria-hidden="true" style={{ width: 16, height: 2, background: T.a600, borderRadius: 1, marginTop: 2 }} /> : null}
+                    <span className="tnum" style={{ fontSize: 12, fontWeight: isT ? 700 : 500,
+                      color: isT ? T.a600 : T.ink2 }}>{DOW[i]}</span>
+                    <span className="tnum" style={{ fontSize: 11, fontWeight: isT ? 700 : 400,
+                      color: isT ? "#fff" : T.ink3,
+                      background: isT ? T.a600 : "transparent",
+                      borderRadius: 10, padding: isT ? "1px 5px" : 0, marginTop: 1 }}>{+ds.slice(8)}</span>
                   </div>
                 );
               })}
@@ -2704,12 +2707,12 @@ export default function App() {
               )}
             </main>
 
-            {/* 액션바: 카드 컨테이너 + 형제 버튼(본체/배지) */}
-            <div className="shrink-0" style={{ padding: "6px 12px 8px", background: T.bg }}>
+            {/* 액션바: 한 줄 스트립 */}
+            <div className="shrink-0" style={{ padding: "4px 12px 6px", background: T.bg }}>
               <div className="w-full flex items-center gap-2"
-                style={{ height: 56, background: ab.kind === "queue" ? T.a50 : T.surface,
-                  border: `1px solid ${ab.kind === "queue" ? T.a200 : T.border}`, borderRadius: 12,
-                  boxShadow: "0 1px 4px rgba(28,36,51,0.06)", padding: "0 12px" }}>
+                style={{ height: 40, background: T.surface,
+                  borderTop: `1px solid ${T.lineFaint}`, borderRadius: 8,
+                  padding: "0 10px" }}>
                 {ab.kind === "clear" ? (
                   <div className="flex items-center gap-2 flex-1 min-w-0">
                     <span className="flex items-center justify-center shrink-0"

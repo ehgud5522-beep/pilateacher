@@ -17,6 +17,7 @@
     "tools/**/*.js",
     "tests/schema/**/*.js",
     "tests/migration/**/*.js",
-    "tests/validation/**/*.js"
+    "tests/validation/**/*.js",
+    "tests/dual-write/**/*.js"
   ]
 }

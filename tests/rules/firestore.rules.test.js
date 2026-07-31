@@ -142,6 +142,31 @@ describe("role permissions", () => {
     }));
   });
 
+  test("dual-write client and lesson paths allow same-organization staff only", async () => {
+    const staffDb = dbFor(users.staff);
+    await assertSucceeds(setDoc(doc(staffDb, "organizations", ORG_A, "clients", "client-dual"), {
+      organizationId: ORG_A,
+      clientId: "client-dual",
+      status: "active",
+    }));
+    await assertSucceeds(setDoc(doc(staffDb, "organizations", ORG_A, "lessons", "lesson-dual"), {
+      organizationId: ORG_A,
+      lessonId: "lesson-dual",
+      status: "scheduled",
+    }));
+    await assertSucceeds(setDoc(doc(staffDb, "organizations", ORG_A, "lessons", "lesson-dual", "participants", "client-dual"), {
+      organizationId: ORG_A,
+      lessonId: "lesson-dual",
+      clientId: "client-dual",
+      attendanceStatus: "booked",
+    }));
+    await assertFails(setDoc(doc(dbFor(users.outsider), "organizations", ORG_A, "clients", "client-blocked"), {
+      organizationId: ORG_A,
+      clientId: "client-blocked",
+      status: "active",
+    }));
+  });
+
   test("member reads only the linked client document", async () => {
     await assertSucceeds(getDoc(doc(dbFor(users.member), "clients", "client-member")));
     await assertFails(getDoc(doc(dbFor(users.member), "clients", "client-other")));

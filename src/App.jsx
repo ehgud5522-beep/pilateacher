@@ -1454,46 +1454,48 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
 }
 function Header({ settings, account, alertCount, onProfile, onAlerts }) {
   return (
-    <div className="bg-white">
-      <div className="mx-auto flex max-w-6xl items-center gap-3 px-4 py-3">
-        <Logo size={36} radius={0.28} />
+    <header style={{ backgroundColor: CARD }}>
+      <div className="mx-auto flex max-w-6xl items-center gap-3 px-4" style={{ height: 56 }}>
+        <Logo size={32} radius={0.28} />
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-extrabold" style={{ color: INK, maxWidth: "100%" }}>{settings.center || "필라티쳐"}</p>
-          <Sub className="truncate">{account?.name ? `${account.name} 강사` : "체형 변화 · 재등록 관리"}</Sub>
+          <p className="truncate text-[15px] font-extrabold leading-tight" style={{ color: INK }}>{settings.center || "필라티쳐"}</p>
+          <p className="truncate text-[11px] leading-snug" style={{ color: SUB }}>{account?.name ? `${account.name} 강사` : "체형 변화 · 재등록 관리"}</p>
         </div>
         {alertCount > 0 && (
           <button onClick={onAlerts} aria-label={`재등록 상담이 필요한 회원 ${alertCount}명 보기`}
-            className="flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1.5 text-xs font-extrabold" style={{ backgroundColor: BAD_S, color: BAD }}>
-            <Bell size={13} /> 재등록 {alertCount}
+            className="flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1.5 text-xs font-bold transition-transform active:scale-95" style={{ backgroundColor: BAD_S, color: BAD }}>
+            <Bell size={13} /> {alertCount}
           </button>
         )}
-        <button onClick={onProfile} className="shrink-0" aria-label="내 프로필">
+        <button onClick={onProfile} className="shrink-0 transition-transform active:scale-95" aria-label="내 프로필">
           <Avatar src={account?.photo} name={account?.name} size={34} radius={12} ring />
         </button>
       </div>
-    </div>
+    </header>
   );
 }
-function Tabs({ tab, setTab }) {
+function BottomNav({ tab, setTab }) {
   const items = [
     { key: "schedule", label: "일정", icon: Calendar }, { key: "analysis", label: "체형분석", icon: Activity },
     { key: "members", label: "회원", icon: Users }, { key: "settings", label: "설정", icon: SettingsIcon },
   ];
   return (
-    <div style={{ height: 40, borderTop: `1px solid ${LINE}`, backgroundColor: CARD }}>
-      <div className="mx-auto flex h-full max-w-6xl items-center px-2">
+    <nav className="safe-b fixed inset-x-0 bottom-0 z-40" style={{ backgroundColor: CARD, borderTop: `1px solid ${LINE}`, boxShadow: "0 -1px 6px rgba(0,0,0,.06)" }}>
+      <div className="mx-auto flex max-w-6xl items-end px-2 pt-2 pb-1">
         {items.map((it) => {
           const on = tab === it.key, Icon = it.icon;
           return (
-            <button key={it.key} onClick={() => setTab(it.key)} className="flex flex-1 flex-col items-center justify-center gap-0.5 text-[10px] font-semibold"
-              style={{ color: on ? BRAND : SUB }}>
-              <Icon size={16} strokeWidth={on ? 2.4 : 1.8} />
-              {it.label}
+            <button key={it.key} onClick={() => setTab(it.key)} className="flex flex-1 flex-col items-center justify-center gap-0.5 text-[10px] font-semibold transition-colors"
+              style={{ color: on ? PRIMARY : SUB }}>
+              <div className="relative flex items-center justify-center" style={{ width: 28, height: 28, borderRadius: 8, backgroundColor: on ? TINT : "transparent", transition: "background-color .2s" }}>
+                <Icon size={18} strokeWidth={on ? 2.4 : 1.7} />
+              </div>
+              <span style={{ fontSize: 10, fontWeight: on ? 700 : 500 }}>{it.label}</span>
             </button>
           );
         })}
       </div>
-    </div>
+    </nav>
   );
 }
 
@@ -1993,7 +1995,7 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
   const nextTarget0 = nextTarget(db.schedule, db.members);
 
   return (
-    <div className="-mx-4 -mt-3 -mb-3 flex flex-col" style={{ height: "calc(100dvh - 101px - env(safe-area-inset-top, 0px))" }}>
+    <div className="-mx-4 -mt-3 -mb-3 flex flex-col" style={{ height: "calc(100dvh - 56px - 60px - env(safe-area-inset-top, 0px) - max(env(safe-area-inset-bottom, 0px), 12px))" }}>
       {/* ─── 상단 헤더: 주 범위 + 이동 + 오늘 + 등록 ─── */}
       <div className="shrink-0 flex items-center gap-1 px-2" style={{ height: 44, backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
         <button onClick={() => step(-1)} className="flex items-center justify-center" style={{ width: 36, height: 36, color: SUB }}>
@@ -7930,15 +7932,14 @@ export default function App() {
     );
 
   return (
-    <div className="app-root min-h-screen pb-16" style={{ backgroundColor: PAGE, overflow: "hidden" }}>
+    <div className="app-root min-h-screen" style={{ backgroundColor: PAGE, overflow: "hidden", paddingBottom: "calc(60px + max(env(safe-area-inset-bottom, 0px), 12px))" }}>
       {style}
-      <div className="safe-t sticky top-0 z-30" style={{ backgroundColor: CARD }}>
+      <div className="safe-t sticky top-0 z-30" style={{ backgroundColor: CARD, boxShadow: "0 1px 3px rgba(0,0,0,.04)" }}>
         <Header settings={db.settings || {}} account={account} alertCount={alerts.length} onProfile={() => setTab("settings")}
           onAlerts={() => {
             setMobileView("list"); setTab("members");
             setTimeout(() => { try { document.getElementById("alert-center")?.scrollIntoView({ behavior: "smooth", block: "start" }); } catch (e) {} }, 80);
           }} />
-        <Tabs tab={tab} setTab={goTab} />
       </div>
       <main className="safe-scroll mx-auto max-w-6xl px-4 py-3">
         <Guard key={tab}>
@@ -8032,8 +8033,9 @@ export default function App() {
       {favOpen && <Guard label="즐겨찾기"><FavSetsModal items={favList} onClose={() => setFavOpen(false)} onToggleFav={toggleFav}
         onOpenMember={(id) => { setSelectedId(id); setMobileView("detail"); setTab("members"); }} /></Guard>}
       {brief && <Guard label="재등록 브리핑"><SalesBriefModal alert={brief} onClose={() => setBrief(null)} onToast={setToast} /></Guard>}
+      <BottomNav tab={tab} setTab={goTab} />
       {toast && (
-        <div className="safe-b fixed inset-x-0 bottom-5 z-50 flex justify-center px-4">
+        <div className="fixed inset-x-0 z-50 flex justify-center px-4" style={{ bottom: "calc(68px + max(env(safe-area-inset-bottom, 0px), 12px))" }}>
           <div className="flex items-center gap-2 rounded-full px-4 py-3" style={{ backgroundColor: toast.ok ? TOAST : BAD, boxShadow: SHADOW }}>
             {toast.ok ? <Check size={14} color="#fff" /> : <AlertTriangle size={14} color="#fff" />}
             <span className="text-sm font-bold text-white">{toast.msg}</span>

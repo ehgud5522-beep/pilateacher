@@ -1993,7 +1993,7 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
   const nextTarget0 = nextTarget(db.schedule, db.members);
 
   return (
-    <div className="-mx-4 -mt-3 -mb-3 flex flex-col" style={{ height: "calc(100dvh - 84px)" }}>
+    <div className="-mx-4 -mt-3 -mb-3 flex flex-col" style={{ height: "calc(100dvh - 101px - env(safe-area-inset-top, 0px))" }}>
       {/* ─── 상단 헤더: 주 범위 + 이동 + 오늘 + 등록 ─── */}
       <div className="shrink-0 flex items-center gap-1 px-2" style={{ height: 44, backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
         <button onClick={() => step(-1)} className="flex items-center justify-center" style={{ width: 36, height: 36, color: SUB }}>

@@ -11,6 +11,9 @@ workflows:
       node: 22
       xcode: latest
       cocoapods: default
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.pilateacher.app
       groups:
         - signing
       vars:
@@ -27,6 +30,21 @@ workflows:
       - name: Capacitor sync ios
         script: npx cap sync ios
 
+      - name: Validate iOS launch resources
+        script: |
+          set -e
+          test -f ios/App/App/public/index.html
+          test -f ios/App/App/GoogleService-Info.plist
+          plutil -lint ios/App/App/Info.plist
+          plutil -lint ios/App/App/GoogleService-Info.plist
+          plutil -lint ios/App/App/App.entitlements
+          grep -q "GoogleService-Info.plist in Resources" ios/App/App.xcodeproj/project.pbxproj
+          grep -q "CODE_SIGN_ENTITLEMENTS = App/App.entitlements" ios/App/App.xcodeproj/project.pbxproj
+          grep -q "com.apple.SignInWithApple" ios/App/App.xcodeproj/project.pbxproj
+          grep -q "NSMicrophoneUsageDescription" ios/App/App/Info.plist
+          grep -q "CFBundleURLSchemes" ios/App/App/Info.plist
+          test ! -e ios/App/App/cert_key.pem
+
       - name: Install pods if needed
         script: |
           if [ -f ios/App/Podfile ]; then
@@ -36,13 +54,155 @@ workflows:
             echo "Podfile not found - using Swift Package Manager, skipping"
           fi
 
+      - name: Fetch or create App Store provisioning profile
+        script: |
+          set -euo pipefail
+          unset CERTIFICATE_PRIVATE_KEY CERTIFICATE_PRIVATE_KEY_PASSWORD
+          app-store-connect fetch-signing-files "$BUNDLE_ID" \
+            --type IOS_APP_STORE \
+            --strict-match-identifier \
+            --create
+
       - name: Set up code signing
         script: |
-          set -e
-          keychain initialize
-          app-store-connect fetch-signing-files "$BUNDLE_ID" --type IOS_APP_STORE --certificate-key=@env:CERTIFICATE_PRIVATE_KEY --create
-          keychain add-certificates
-          xcode-project use-profiles --project "$CM_BUILD_DIR/ios/App/App.xcodeproj"
+          xcode-project use-profiles
+
+      - name: Validate applied code signing
+        script: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import datetime
+          import glob
+          import hashlib
+          import os
+          import plistlib
+          import subprocess
+          import sys
+
+          expected_bundle_id = "com.pilateacher.app"
+          expected_team_id = "7ADRYNV3B4"
+          export_options_path = os.path.expanduser("~/export_options.plist")
+
+          def fail(message):
+              print(f"Code signing validation failed: {message}", file=sys.stderr)
+              sys.exit(1)
+
+          if not os.path.isfile(export_options_path):
+              fail(f"{export_options_path} was not created by xcode-project use-profiles")
+
+          with open(export_options_path, "rb") as export_options_file:
+              export_options = plistlib.load(export_options_file)
+
+          profile_reference = (export_options.get("provisioningProfiles") or {}).get(
+              expected_bundle_id
+          )
+          export_method = export_options.get("method")
+          export_team_id = export_options.get("teamID")
+          signing_certificate = str(export_options.get("signingCertificate") or "")
+
+          if not profile_reference:
+              fail(f"no provisioning profile is assigned to {expected_bundle_id}")
+          if export_method not in {"app-store", "app-store-connect"}:
+              fail(f"unexpected export method: {export_method!r}")
+          if export_team_id is not None and export_team_id != expected_team_id:
+              fail(f"unexpected Team ID: {export_team_id!r}")
+          if signing_certificate and "Apple Distribution" not in signing_certificate:
+              fail(f"unexpected signing certificate: {signing_certificate!r}")
+
+          profile_paths = []
+          for profile_directory in (
+              "~/Library/MobileDevice/Provisioning Profiles",
+              "~/Library/Developer/Xcode/UserData/Provisioning Profiles",
+          ):
+              profile_paths.extend(
+                  glob.glob(os.path.expanduser(f"{profile_directory}/*.mobileprovision"))
+              )
+
+          selected_profile = None
+          for profile_path in profile_paths:
+              try:
+                  decoded_profile = subprocess.check_output(
+                      ["security", "cms", "-D", "-i", profile_path],
+                      stderr=subprocess.DEVNULL,
+                  )
+                  profile = plistlib.loads(decoded_profile)
+              except (OSError, subprocess.CalledProcessError, plistlib.InvalidFileException):
+                  continue
+
+              if profile_reference in {profile.get("Name"), profile.get("UUID")}:
+                  selected_profile = profile
+                  break
+
+          if selected_profile is None:
+              fail(f"the applied profile {profile_reference!r} is not installed")
+
+          profile_name = selected_profile.get("Name")
+          profile_uuid = selected_profile.get("UUID")
+          profile_team_ids = selected_profile.get("TeamIdentifier") or []
+          profile_entitlements = selected_profile.get("Entitlements") or {}
+          application_identifier = (
+              profile_entitlements.get("application-identifier")
+              or profile_entitlements.get("com.apple.application-identifier")
+          )
+          expiration_date = selected_profile.get("ExpirationDate")
+          apple_sign_in = profile_entitlements.get("com.apple.developer.applesignin") or []
+
+          if expected_team_id not in profile_team_ids:
+              fail(f"profile Team ID does not include {expected_team_id}")
+          if application_identifier != f"{expected_team_id}.{expected_bundle_id}":
+              fail(f"unexpected application identifier: {application_identifier!r}")
+          if not isinstance(expiration_date, datetime.datetime):
+              fail("profile expiration date is missing")
+          if expiration_date.tzinfo is None:
+              expiration_date = expiration_date.replace(tzinfo=datetime.timezone.utc)
+          if expiration_date <= datetime.datetime.now(datetime.timezone.utc):
+              fail(f"profile expired at {expiration_date.isoformat()}")
+          if selected_profile.get("ProvisionedDevices"):
+              fail("a development or ad hoc profile was selected")
+          if selected_profile.get("ProvisionsAllDevices"):
+              fail("an enterprise profile was selected")
+          if profile_entitlements.get("get-task-allow") is not False:
+              fail("profile is not configured for App Store distribution")
+          if "Default" not in apple_sign_in:
+              fail("Sign in with Apple entitlement is missing")
+
+          profile_certificate_fingerprints = {
+              hashlib.sha1(bytes(certificate)).hexdigest().upper()
+              for certificate in selected_profile.get("DeveloperCertificates") or []
+          }
+          try:
+              identities = subprocess.check_output(
+                  ["security", "find-identity", "-v", "-p", "codesigning"],
+                  text=True,
+                  stderr=subprocess.STDOUT,
+              )
+          except (OSError, subprocess.CalledProcessError) as error:
+              fail(f"could not inspect installed signing identities: {error}")
+
+          matching_identity = next(
+              (
+                  line.strip()
+                  for line in identities.splitlines()
+                  if "Apple Distribution" in line
+                  and any(
+                      fingerprint in line
+                      for fingerprint in profile_certificate_fingerprints
+                  )
+              ),
+              None,
+          )
+          if matching_identity is None:
+              fail("the profile's Apple Distribution identity is not installed")
+
+          print(f"Provisioning profile name: {profile_name}")
+          print(f"Profile UUID: {profile_uuid}")
+          print(f"Bundle ID: {expected_bundle_id}")
+          print(f"Team ID: {expected_team_id}")
+          print("Distribution type: app_store")
+          print("Sign in with Apple entitlement: included")
+          print("Apple Distribution certificate: applied")
+          print(f"Provisioning profile expiration: {expiration_date.isoformat()}")
+          PY
 
       - name: Set build number
         script: |

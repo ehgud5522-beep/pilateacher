@@ -12,35 +12,35 @@ import {
 } from "recharts";
 import { fbReady, fbSignInSocial, fbSignInEmail, fbSignUpEmail, fbSignOut, fbOnAuth, fbLoadProfile, fbSaveProfile, fbPushBackup, fbPullBackup } from "./lib/firebase";
 import { runAppDualWrite } from "./data/dual-write/app-runtime";
-import { Users, Settings as SettingsIcon, Search, ChevronRight, ChevronLeft, Plus, Camera, MessageSquare, Check, X, Trash2, ArrowLeft, Target, ClipboardList, RotateCcw, Sparkles, Copy, ArrowUpRight, ArrowDownRight, Loader as Loader2, Pencil, UserPlus, Activity, Ticket, Calendar, Clock, Bell, Download, TriangleAlert as AlertTriangle, LogOut, Mail, Star, Sun, Moon, Smartphone, Move, Crosshair, ChevronDown, ImagePlus, SlidersHorizontal, CalendarDays, ArrowUpDown, Minus, Upload, Link2, Users as Users2 } from "lucide-react";
+import { Users, Settings as SettingsIcon, Search, ChevronRight, ChevronLeft, Plus, Camera, MessageSquare, Check, X, Trash2, ArrowLeft, Target, ClipboardList, RotateCcw, Sparkles, Copy, ArrowUpRight, ArrowDownRight, Loader as Loader2, Pencil, UserPlus, Activity, Ticket, Calendar, Clock, Bell, Download, TriangleAlert as AlertTriangle, LogOut, Mail, Star, Sun, Moon, Smartphone, Move, Crosshair, ChevronDown, ImagePlus, SlidersHorizontal, CalendarDays, ArrowUpDown, Minus, Upload, Link2, Users as Users2, Play } from "lucide-react";
 
 /* ================= 토큰 · 테마 ================= */
 const LIGHT = {
   page: "#F2F2F7", card: "#FFFFFF", soft: "#F5F5FA", line: "#EBEBF2",
   ink: "#17171F", ink2: "#4A4A5A", sub: "#8A8A9B", faint: "#C2C2D2",
-  primary: "#6C4CF1", brand: "#6C4CF1", tint: "#F1EDFE", ring: "rgba(108,76,241,.28)",
+  primary: "#2563EB", brand: "#2563EB", tint: "#EFF6FF", ring: "rgba(37,99,235,.28)",
   toast: "#17171F",
   good: "#12B76A", goodS: "#E7F8F0", bad: "#F04438", badS: "#FEECEA",
-  warn: "#F79009", warnS: "#FFF4E3", mint: "#8B74FF",
+  warn: "#F79009", warnS: "#FFF4E3", mint: "#60A5FA",
   shadow: "0 1px 2px rgba(20,20,43,0.04), 0 10px 30px rgba(20,20,43,0.06)",
-  grad: "linear-gradient(135deg, #7C5CFC 0%, #6C4CF1 45%, #5636D8 100%)",
-  gradSoft: "linear-gradient(155deg, #F1EDFE 0%, #FFFFFF 62%)",
-  splash: "linear-gradient(180deg,#FFFFFF 0%,#F7F5FF 44%,#EAE4FF 100%)",
-  glow: "radial-gradient(circle, rgba(139,116,255,.27) 0%, rgba(139,116,255,.07) 45%, transparent 70%)",
+  grad: "linear-gradient(135deg, #3B82F6 0%, #2563EB 45%, #1D4ED8 100%)",
+  gradSoft: "linear-gradient(155deg, #EFF6FF 0%, #FFFFFF 62%)",
+  splash: "linear-gradient(180deg,#FFFFFF 0%,#F5F9FF 44%,#DBEAFE 100%)",
+  glow: "radial-gradient(circle, rgba(96,165,250,.27) 0%, rgba(96,165,250,.07) 45%, transparent 70%)",
   scrim: "rgba(20,20,43,0.45)", onBrand: "#FFFFFF", photo: "#000000",
 };
 const DARK = {
   page: "#1B1B24", card: "#26262F", soft: "#32323E", line: "#434354",
   ink: "#F0F0F7", ink2: "#DADAE6", sub: "#A0A0B2", faint: "#727288",
-  primary: "#A594FF", brand: "#6E56E2", tint: "#272049", ring: "rgba(165,148,255,.35)",
+  primary: "#60A5FA", brand: "#2563EB", tint: "#172554", ring: "rgba(96,165,250,.35)",
   toast: "#2E2E3A",
   good: "#5FDCAE", goodS: "#16382A", bad: "#FF9A90", badS: "#3D1F1C",
-  warn: "#F5CC72", warnS: "#3B2B10", mint: "#7BD8D0",
+  warn: "#F5CC72", warnS: "#3B2B10", mint: "#7DD3FC",
   shadow: "0 0 0 1px rgba(255,255,255,.05), 0 14px 38px rgba(0,0,0,.45)",
-  grad: "linear-gradient(135deg, #8168FF 0%, #6A4CE0 45%, #4E31C8 100%)",
-  gradSoft: "linear-gradient(155deg, #272049 0%, #1E1E26 62%)",
-  splash: "linear-gradient(180deg,#08080C 0%,#151130 46%,#241C4E 100%)",
-  glow: "radial-gradient(circle, rgba(161,140,255,.32) 0%, rgba(161,140,255,.09) 45%, transparent 70%)",
+  grad: "linear-gradient(135deg, #3B82F6 0%, #2563EB 45%, #1E40AF 100%)",
+  gradSoft: "linear-gradient(155deg, #172554 0%, #1E1E26 62%)",
+  splash: "linear-gradient(180deg,#08080C 0%,#0F172A 46%,#172554 100%)",
+  glow: "radial-gradient(circle, rgba(96,165,250,.32) 0%, rgba(96,165,250,.09) 45%, transparent 70%)",
   scrim: "rgba(0,0,0,0.66)", onBrand: "#FFFFFF", photo: "#0F0F14",
 };
 let THEME = "light";
@@ -557,7 +557,7 @@ async function composeBeforeAfter(before, after, memberName) {
       ctx.save();
       ctx.strokeStyle = "rgba(255,255,255,0.5)"; ctx.lineWidth = 2;
       [22, 50, 78].forEach((t) => { ctx.beginPath(); ctx.moveTo(x, (H * t) / 100); ctx.lineTo(x + W, (H * t) / 100); ctx.stroke(); });
-      ctx.strokeStyle = "rgba(108,76,241,0.95)"; ctx.lineWidth = 3;
+      ctx.strokeStyle = "rgba(37,99,235,0.95)"; ctx.lineWidth = 3;
       ctx.beginPath(); ctx.moveTo(x + W / 2, 0); ctx.lineTo(x + W / 2, H); ctx.stroke();
       ctx.restore();
     };
@@ -882,7 +882,7 @@ function TimePick({ value, onChange }) {
             aria-pressed={ap === o.k}
             className="rounded-xl px-2.5 py-2 text-xs font-extrabold"
             style={ap === o.k
-              ? { backgroundColor: BRAND, color: "#fff", boxShadow: "0 2px 8px rgba(108,76,241,.30)" }
+              ? { backgroundColor: BRAND, color: "#fff", boxShadow: "0 2px 8px rgba(37,99,235,.30)" }
               : { backgroundColor: "transparent", color: SUB }}>{o.l}</button>
         ))}
       </div>
@@ -984,7 +984,7 @@ function Sheet({ title, onClose, children }) {
   );
 }
 function GuideOverlay({ strong = false }) {
-  const c = strong ? "rgba(108,76,241,0.95)" : "rgba(108,76,241,0.5)";
+  const c = strong ? "rgba(37,99,235,0.95)" : "rgba(37,99,235,0.5)";
   return (
     <div className="pointer-events-none absolute inset-0">
       <div className="absolute inset-y-0 left-1/2 w-px" style={{ backgroundColor: c }} />
@@ -994,12 +994,12 @@ function GuideOverlay({ strong = false }) {
 }
 const Logo = ({ size = 64, radius = 0.24 }) => (
   <svg width={size} height={size} viewBox="0 0 100 100" role="img" aria-label="필라티쳐"
-    style={{ borderRadius: size * radius, display: "block", boxShadow: "0 18px 40px rgba(76,52,190,0.30), 0 4px 10px rgba(76,52,190,0.20)" }}>
+    style={{ borderRadius: size * radius, display: "block", boxShadow: "0 18px 40px rgba(37,99,235,0.30), 0 4px 10px rgba(37,99,235,0.20)" }}>
     <defs>
       <linearGradient id="ptg" x1="0.1" y1="0" x2="0.9" y2="1">
-        <stop offset="0%" stopColor="#A08CFF" />
-        <stop offset="52%" stopColor="#6C4CF1" />
-        <stop offset="100%" stopColor="#5433CE" />
+        <stop offset="0%" stopColor="#93C5FD" />
+        <stop offset="52%" stopColor="#2563EB" />
+        <stop offset="100%" stopColor="#1D4ED8" />
       </linearGradient>
       <linearGradient id="ptGloss" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.38" />
@@ -1015,7 +1015,7 @@ const Logo = ({ size = 64, radius = 0.24 }) => (
     <path fillRule="evenodd" fill="#FFFFFF"
       d="M34.5 24 H50.5 a15 15 0 0 1 0 30 H46 V76 H34.5 Z M46 34 h4.5 a5 5 0 0 1 0 10 H46 Z" />
     <g fill="none" strokeLinecap="round" strokeLinejoin="round">
-      <g stroke="#6C4CF1" strokeWidth="9">
+      <g stroke="#2563EB" strokeWidth="9">
         <path d="M69 42 L62 31" />
         <path d="M69 42 H83" />
         <path d="M69 42 V57" />
@@ -1028,9 +1028,9 @@ const Logo = ({ size = 64, radius = 0.24 }) => (
         <path d="M69 57 L63.5 71.5 M69 57 L74.5 71.5" />
       </g>
     </g>
-    <circle cx="69" cy="29.5" r="7" fill="#6C4CF1" />
+    <circle cx="69" cy="29.5" r="7" fill="#2563EB" />
     <circle cx="69" cy="29.5" r="5.8" fill="#FFFFFF" />
-    <g fill="#6C4CF1" stroke="#FFFFFF" strokeWidth="1.6">
+    <g fill="#2563EB" stroke="#FFFFFF" strokeWidth="1.6">
       {[[62, 31], [83, 42], [69, 42], [69, 57], [63.5, 71.5], [74.5, 71.5]].map(([cx, cy]) => (
         <circle key={`${cx}-${cy}`} cx={cx} cy={cy} r="3" />
       ))}
@@ -1481,19 +1481,18 @@ function Tabs({ tab, setTab }) {
     { key: "members", label: "회원", icon: Users }, { key: "settings", label: "설정", icon: SettingsIcon },
   ];
   return (
-    <div className="bg-white pb-2" style={{ borderBottom: `1px solid ${LINE}` }}>
-      <div className="mx-auto max-w-6xl px-4">
-        <div className="flex gap-1 rounded-2xl p-1" style={{ backgroundColor: CANVAS }}>
-          {items.map((it) => {
-            const on = tab === it.key, Icon = it.icon;
-            return (
-              <button key={it.key} onClick={() => setTab(it.key)} className="flex flex-1 items-center justify-center gap-1 rounded-xl py-2.5 text-sm font-bold"
-                style={on ? { background: GRAD, color: "#fff", boxShadow: "0 3px 10px rgba(108,76,241,.35)" } : { color: SUB }}>
-                <Icon size={15} /> {it.label}
-              </button>
-            );
-          })}
-        </div>
+    <div style={{ height: 40, borderTop: `1px solid ${LINE}`, backgroundColor: CARD }}>
+      <div className="mx-auto flex h-full max-w-6xl items-center px-2">
+        {items.map((it) => {
+          const on = tab === it.key, Icon = it.icon;
+          return (
+            <button key={it.key} onClick={() => setTab(it.key)} className="flex flex-1 flex-col items-center justify-center gap-0.5 text-[10px] font-semibold"
+              style={{ color: on ? BRAND : SUB }}>
+              <Icon size={16} strokeWidth={on ? 2.4 : 1.8} />
+              {it.label}
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -1992,251 +1991,122 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
   const unwrittenRows = doneRows.filter((r) => !(memberOf(r.id)?.notes || []).some((x) => x?.sid === r.sid));
   const unwritten = unwrittenRows.length;
   const firstUnwritten = unwrittenRows[0] || null;
-  const doneCls = db.schedule.filter((s) => s.date === T0 && !isPersonalEvt(s) && (isEquipGroup(s) ? !!s.groupDone : attendeesOf(s).every((a) => a.status !== "booked"))).length;
+  const nextTarget0 = nextTarget(db.schedule, db.members);
+
   return (
-    <div className="space-y-3">
-      <div className="rounded-3xl p-4 md:p-5" style={{ background: `linear-gradient(140deg, ${BRAND} 0%, #5B3FD4 100%)`, boxShadow: SHADOW }}>
-        <div className="flex items-baseline gap-2">
-          <p className="text-xs font-bold text-white opacity-75">{ymd(T0)} ({dow(T0)})</p>
-          {db.settings?.staff && <p className="truncate text-xs font-extrabold text-white opacity-90">{db.settings.staff} 강사님</p>}
-        </div>
-        <h2 className="line-clamp-2 mt-0.5 text-base font-extrabold text-white md:text-xl" style={{ letterSpacing: "-0.03em", lineHeight: 1.3, wordBreak: "keep-all", overflowWrap: "break-word" }}>
-          {greetLine()}
-        </h2>
-        <div className="mt-2.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-2xl px-3 py-2" style={{ backgroundColor: "rgba(255,255,255,0.14)", border: "1px solid rgba(255,255,255,0.14)" }}>
-          <span className="text-xs font-extrabold text-white">오늘 {todayCls}건</span>
-          {[
-            { l: "출석", v: todayStat.done, c: "#5AE6A8" },
-            { l: "예정", v: todayStat.booked, c: "#FFFFFF" },
-            { l: "노쇼", v: todayStat.noshow, c: "#FFB4B4" },
-            { l: "취소", v: todayStat.cancel, c: "rgba(255,255,255,.72)" },
-          ].map((o) => (
-            <span key={o.l} className="flex items-center gap-1 text-xs font-bold tabular-nums" style={{ color: o.c, opacity: o.v ? 1 : 0.55 }}>
-              <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: o.c }} />{o.l} {o.v}
-            </span>
-          ))}
-        </div>
-        <div className="mt-2 flex items-center gap-1.5">
-          <Sparkles size={11} color="#fff" style={{ opacity: 0.8 }} />
-          <p className="truncate text-xs font-semibold text-white opacity-90">{dailyLine()}</p>
-        </div>
-      </div>
-
-      <div className="grid min-w-0 gap-3 lg:grid-cols-2">
-        <div className="min-w-0">
-          <Guard label="다음 수업 브리핑">
-            <NextClassCard members={db.members} schedule={db.schedule} photos={photos}
-              onStatus={onStatus} onOpenMember={onOpenMember} onWriteNote={onWriteNote}
-              onNoshowFee={onNoshowFee} onNoComment={onNoComment} onVoiceNote={onVoiceNote} />
-          </Guard>
-        </div>
-        <div className="min-w-0">
-          <Guard label="오늘의 시퀀스">
-            <SequenceCard members={db.members} schedule={db.schedule} photos={photos} onWriteNote={onWriteNote} onToast={onToast} compact />
-          </Guard>
-        </div>
-      </div>
-
-      {todayRows.length > 0 && unwritten > 0 && (
-        <button onClick={() => onWriteNote && firstUnwritten && onWriteNote(firstUnwritten.id, firstUnwritten.sid)} className="flex w-full items-center gap-2 rounded-2xl px-4 py-3" style={{ backgroundColor: WARN_S }}>
-          <Pencil size={15} style={{ color: WARN }} />
-          <span className="text-sm font-extrabold" style={{ color: INK }}>오늘 수업 {doneToday}건 중 {unwritten}건이 아직 기록 전입니다</span>
-          <ChevronRight size={16} style={{ color: WARN, marginLeft: "auto" }} />
+    <div className="-mx-4 -mt-3 -mb-3 flex flex-col" style={{ height: "calc(100dvh - 101px - env(safe-area-inset-top, 0px))" }}>
+      {/* ─── 상단 헤더: 주 범위 + 이동 + 오늘 + 등록 ─── */}
+      <div className="shrink-0 flex items-center gap-1 px-2" style={{ height: 44, backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
+        <button onClick={() => step(-1)} className="flex items-center justify-center" style={{ width: 36, height: 36, color: SUB }}>
+          <ChevronLeft size={18} />
         </button>
-      )}
+        <button onClick={() => setCursor(todayISO())} className="min-w-0 flex-1 text-center">
+          <p className="text-sm font-extrabold tabular-nums" style={{ color: INK }}>
+            {mode === "day" ? `${ymd(cursor)} (${dow(cursor)})` : `${md(weekDays[0])} ~ ${md(weekDays[weekDays.length - 1])}`}
+          </p>
+          {mode === "day" && holidayOf(cursor) && <p className="text-xs font-extrabold" style={{ color: BAD }}>{holidayOf(cursor)}</p>}
+        </button>
+        <button onClick={() => step(1)} className="flex items-center justify-center" style={{ width: 36, height: 36, color: SUB }}>
+          <ChevronRight size={18} />
+        </button>
+        <button onClick={() => setCursor(todayISO())} className="shrink-0 rounded-lg px-2.5 py-1.5 text-xs font-bold"
+          style={{ color: cursor === T0 ? SUB : PRIMARY, opacity: cursor === T0 ? 0.5 : 1 }}>오늘</button>
+        <button onClick={() => setEditing({ id: null, memberIds: db.members[0] ? [db.members[0].id] : [], date: cursor, start: "10:00", dur: 50, type: "개인레슨", instructor: db.settings.staff, room: "", memo: "" })}
+          className="shrink-0 flex items-center justify-center rounded-lg" style={{ width: 36, height: 36, color: PRIMARY }}>
+          <Plus size={20} />
+        </button>
+      </div>
 
-      {todayRows.length === 0 && (
-        <Card className="p-5">
-          <div className="flex items-center gap-2">
-            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: TINT }}><CalendarDays size={14} style={{ color: PRIMARY }} /></span>
-            <div className="min-w-0 flex-1">
-              <Sub>{peek === 1 ? "내일" : `${peek}일 뒤`} 수업 미리 보기</Sub>
-              <p className="text-xl font-extrabold" style={{ color: redInk(T1, INK), letterSpacing: "-0.02em" }}>
-                {md(T1)} <span className="text-lg">({dow(T1)})</span>
-              </p>
-              <p className="mt-0.5 text-sm font-bold" style={{ color: holidayOf(T1) ? BAD : SUB }}>
-                {holidayOf(T1) ? `${holidayOf(T1)} · ` : ""}{tomorrowRows.length === 0 ? "잡힌 수업이 없습니다" : `수업 ${tomorrowRows.length}건`}
-              </p>
-            </div>
-            {tomorrowRows.length > 0 && <span className="shrink-0 rounded-full px-2.5 py-1 text-xs font-extrabold" style={{ backgroundColor: TINT, color: PRIMARY }}>{tomorrowRows.length}건</span>}
-          </div>
-          {tomorrowRows.length === 0 ? (
-            <div className="mt-3 rounded-2xl px-4 py-6 text-center" style={{ backgroundColor: CANVAS }}>
-              <p className="text-sm font-extrabold" style={{ color: INK }}>수업이 비어 있어요</p>
-              <p className="mt-1 text-xs" style={{ color: SUB }}>내일은 잡힌 수업이 없습니다 · 미리 등록해 두면 아침 준비가 쉬워집니다</p>
-            </div>
-          ) : (
-          <div className="mt-3 space-y-1.5">
-            {tomorrowRows.slice(0, 8).map((r) => {
-              if (r.kind === "personal") return (
-                <div key={r.key} className="flex items-center gap-2 rounded-2xl px-3 py-2.5" style={{ backgroundColor: CANVAS, borderLeft: `4px solid ${MINT}` }}>
-                  <span className="w-12 shrink-0 text-xs font-extrabold tabular-nums" style={{ color: MINT }}>{r.start}</span>
-                  <span className="min-w-0 flex-1 truncate text-sm font-extrabold" style={{ color: INK }}>{r.title || "내 일정"}</span>
-                </div>
-              );
-              if (r.kind === "equip") return (
-                <div key={r.key} className="flex items-center gap-2 rounded-2xl px-3 py-2.5" style={{ backgroundColor: CANVAS }}>
-                  <span className="w-12 shrink-0 text-xs font-extrabold tabular-nums" style={{ color: PRIMARY }}>{r.start}</span>
-                  <span className="min-w-0 flex-1 truncate text-sm font-extrabold" style={{ color: INK }}>{r.equip || "기구 미선택"} 그룹</span>
-                </div>
-              );
-              const m = memberOf(r.id);
-              const note = (m?.notes || []).filter((x) => x && x.body).sort((a, b) => ((a.date || "") < (b.date || "") ? 1 : -1))[0];
+      {/* ─── 일간/주간 전환 + 요일 선택 ─── */}
+      <div className="shrink-0" style={{ backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
+        <div className="flex items-center gap-1 px-3 py-1.5">
+          {[{ k: "day", l: "일간" }, { k: "week", l: "주간" }].map((o) => (
+            <button key={o.k} onClick={() => setMode(o.k)} className="rounded-lg px-3 py-1.5 text-xs font-bold"
+              style={mode === o.k ? { backgroundColor: BRAND, color: "#fff" } : { color: SUB }}>{o.l}</button>
+          ))}
+          <div className="flex-1" />
+          <span className="text-xs font-bold tabular-nums" style={{ color: SUB }}>
+            오늘 {todayCls}건 · 출석 {todayStat.done}
+          </span>
+        </div>
+        <div onTouchStart={onStart} onTouchMove={onMove} onTouchEnd={onEnd} style={{ touchAction: "pan-y" }}>
+          <div className="flex gap-1 px-2 pb-2" style={slide}>
+            {weekDays.map((d) => {
+              const n = byDate(d).length, on = d === cursor, isToday = d === todayISO();
               return (
-                <button key={r.key} onClick={() => onOpenMember && onOpenMember(r.id)} className="flex w-full items-center gap-2 rounded-2xl px-3 py-2.5 text-left" style={{ backgroundColor: CANVAS }}>
-                  <span className="w-12 shrink-0 text-xs font-extrabold tabular-nums" style={{ color: PRIMARY }}>{r.start}</span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-extrabold" style={{ color: INK }}>{m ? (m.name || "이름 미입력") : "삭제된 회원"}</span>
-                    <span className="block truncate text-xs" style={{ color: INK2 }}>{note ? `지난 수업 · ${note.body}` : "지난 기록이 없습니다"}</span>
-                  </span>
-                  {m && <span className="shrink-0 text-xs font-bold tabular-nums" style={{ color: left(m) <= 3 ? BAD : SUB }}>잔여 {left(m)}회</span>}
-                  <ChevronRight size={14} className="shrink-0" style={{ color: FAINT }} />
+                <button key={d} onClick={() => { setCursor(d); if (mode === "month") setMode("day"); }} className="relative min-w-0 flex-1 rounded-xl px-0.5 py-1.5 text-center"
+                  style={on ? { backgroundColor: BRAND } : { backgroundColor: CANVAS }}>
+                  <p className="font-extrabold leading-none" style={{ fontSize: 10, color: on ? "rgba(255,255,255,.85)" : redInk(d, SUB) }}>{dow(d)}</p>
+                  <div className="mt-1 flex items-center justify-center">
+                    <span className="flex h-6 w-6 items-center justify-center rounded-full font-extrabold tabular-nums"
+                      style={{ fontSize: 14, backgroundColor: isToday && !on ? "rgba(37,99,235,0.1)" : "transparent", color: on ? "#fff" : isToday ? PRIMARY : redInk(d, INK) }}>{d.slice(8, 10)}</span>
+                  </div>
+                  {n > 0 && (
+                    <span className="absolute right-1 top-1 flex h-3.5 min-w-[14px] items-center justify-center rounded-full px-1 font-extrabold tabular-nums"
+                      style={{ fontSize: 9, backgroundColor: on ? "rgba(255,255,255,.9)" : PRIMARY, color: on ? BRAND : "#fff" }}>{n}</span>
+                  )}
                 </button>
               );
             })}
           </div>
-          )}
-          <div className="mt-3 flex gap-1.5">
-            {(peek > 1 || cursor !== T0) && (
-              <button onClick={() => { setPeek(1); setCursor(T0); setMode("day"); }} className="flex items-center gap-1 rounded-2xl px-3 py-3 text-sm font-extrabold" style={{ backgroundColor: CANVAS, color: INK }}>
-                <RotateCcw size={14} /> 오늘로
-              </button>
-            )}
-            <button onClick={() => setPeek((p) => Math.min(60, p + 1))} className="flex flex-1 items-center justify-center gap-1 rounded-2xl py-3 text-sm font-extrabold" style={{ backgroundColor: TINT, color: PRIMARY }}>
-              다음날 보기 <ChevronRight size={15} />
-            </button>
-            <button onClick={() => { setCursor(T1); setMode("day"); }} className="flex-1 rounded-2xl py-3 text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>
-              이 날 일정 열기
-            </button>
-          </div>
-        </Card>
-      )}
+        </div>
+      </div>
 
-      <Card className="p-4">
-        <div className="flex items-center gap-2">
-          <button onClick={() => step(-1)} className="rounded-xl p-2" style={{ backgroundColor: CANVAS }}><ChevronLeft size={16} style={{ color: SUB }} /></button>
-          <button onClick={() => setCursor(todayISO())} aria-label="오늘 날짜로 이동" className="min-w-0 flex-1 text-center">
-            <p className="text-sm font-extrabold" style={{ color: mode === "day" ? redInk(cursor, INK) : INK }}>
-              {mode === "day" ? `${ymd(cursor)} (${dow(cursor)})` : mode === "week" ? `${md(weekDays[0])} ~ ${md(weekDays[weekDays.length - 1])}` : monthLabel(cursor)}
-            </p>
-            {mode === "day" && holidayOf(cursor) && <p className="text-xs font-extrabold" style={{ color: BAD }}>{holidayOf(cursor)}</p>}
-          </button>
-          <button onClick={() => step(1)} className="rounded-xl p-2" style={{ backgroundColor: CANVAS }}><ChevronRight size={16} style={{ color: SUB }} /></button>
-        </div>
-        <div className="mt-3 flex gap-1 rounded-2xl p-1" style={{ backgroundColor: CANVAS }}>
-          {[{ k: "day", l: "일간" }, { k: "week", l: "주간" }, { k: "month", l: "월간" }].map((o) => (
-            <button key={o.k} onClick={() => setMode(o.k)} className="flex-1 rounded-xl py-2 text-xs font-bold"
-              style={mode === o.k ? { backgroundColor: CARD, color: PRIMARY, boxShadow: "0 1px 3px rgba(20,20,43,.12)" } : { color: SUB }}>{o.l}</button>
-          ))}
-        </div>
-        <div onTouchStart={onStart} onTouchMove={onMove} onTouchEnd={onEnd} style={{ touchAction: "pan-y", overflow: "hidden" }} className="mt-3">
-          {mode !== "month" ? (
-            <div className="flex gap-1.5" style={slide}>
-              {weekDays.map((d) => {
-                const n = byDate(d).length, on = d === cursor;
-                return (
-                  <button key={d} onClick={() => { setCursor(d); setMode("day"); }} className="relative min-w-0 flex-1 rounded-xl px-0.5 py-1.5 text-center"
-                    style={on ? { backgroundColor: BRAND } : { backgroundColor: CANVAS }}>
-                    <p className="font-extrabold leading-none" style={{ fontSize: 10, color: on ? "rgba(255,255,255,.85)" : redInk(d, SUB) }}>{dow(d)}</p>
-                    <p className="mt-0.5 font-extrabold leading-none tabular-nums" style={{ fontSize: 15, color: on ? "#fff" : d === todayISO() ? PRIMARY : redInk(d, INK) }}>{d.slice(8, 10)}</p>
-                    {n > 0 && (
-                      <span className="absolute right-1 top-1 flex h-3.5 min-w-[14px] items-center justify-center rounded-full px-1 font-extrabold tabular-nums"
-                        style={{ fontSize: 9, backgroundColor: on ? "rgba(255,255,255,.9)" : PRIMARY, color: on ? BRAND : "#fff" }}>{n}</span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          ) : (
-            <div style={slide}>
-              <div className="grid grid-cols-7 gap-1">
-                {["월", "화", "수", "목", "금", "토", "일"].map((w) => (
-                  <p key={w} className="py-1 text-center text-xs font-extrabold" style={{ color: w === "토" || w === "일" ? BAD : SUB }}>{w}</p>
-                ))}
-                {monthGrid(cursor).map((d) => {
-                  const out = monthKey(d) !== ym;
-                  const n = byDate(d).length;
-                  const today = d === todayISO();
-                  return (
-                    <button key={d} onClick={() => { setCursor(d); setMode("day"); }}
-                      className="rounded-xl py-1.5 text-center" style={{ backgroundColor: today ? PRIMARY : n ? TINT : "transparent", opacity: out ? 0.28 : 1 }}>
-                      <p className="text-xs font-extrabold tabular-nums" style={{ color: today ? "#fff" : redInk(d, INK) }}>{Number(d.slice(8, 10))}</p>
-                      <p className="text-xs font-bold tabular-nums" style={{ color: today ? "#fff" : n ? PRIMARY : "transparent" }}>{n || "0"}</p>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-        </div>
-        <p className="mt-1.5 text-center text-xs" style={{ color: FAINT }}>
-          ← 옆으로 밀어 {mode === "month" ? "달" : "주"} 이동 →{!sunUsed && mode !== "month" ? " · 일요일은 일정이 있을 때만 표시됩니다" : ""}
-        </p>
-        <div className="mt-3 flex gap-1.5">
-          <button onClick={() => setEditing({ id: null, memberIds: db.members[0] ? [db.members[0].id] : [], date: cursor, start: "10:00", dur: 50, type: "개인레슨", instructor: db.settings.staff, room: "", memo: "" })}
-            className="flex flex-1 items-center justify-center gap-1.5 rounded-2xl py-3 text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>
-            <Plus size={16} /> 수업 등록
-          </button>
-          <button onClick={() => setEditing({ id: null, personal: true, memberIds: [], date: cursor, start: "10:00", dur: 60, type: "개인일정", title: "", instructor: db.settings.staff, room: "", memo: "" })}
-            className="flex flex-1 items-center justify-center gap-1.5 rounded-2xl py-3 text-sm font-extrabold" style={{ backgroundColor: CANVAS, color: INK, border: `1px solid ${LINE}` }}>
-            <CalendarDays size={16} /> 내 일정 등록
-          </button>
-        </div>
-        {mode === "week" && (
+      {/* ─── 메인 시간표 영역 (flex-1, 내부 스크롤) ─── */}
+      <div className="min-h-0 flex-1 overflow-y-auto" style={{ backgroundColor: CARD }}>
+        {mode === "week" ? (
           <WeekGrid days={weekDays} byDate={byDate} nameOf={nameOf} cursor={cursor}
             onOpen={(s) => setEditing(s)}
             onNew={(date, start, dur) => setEditing({ id: null, memberIds: db.members[0] ? [db.members[0].id] : [], date, start, dur: dur || 50, type: "개인레슨", instructor: db.settings.staff, room: "", memo: "" })} />
-        )}
-      </Card>
-
-      {mode === "day" && (
-        <Card className="p-4">
-          <div className="flex items-center gap-2">
-            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: TINT }}><Clock size={15} style={{ color: PRIMARY }} /></span>
-            <div className="min-w-0 flex-1">
-              <h3 className="font-extrabold" style={{ color: redInk(cursor, INK) }}>{ymd(cursor)} ({dow(cursor)}){holidayOf(cursor) ? ` · ${holidayOf(cursor)}` : ""}</h3>
-              <Sub>{cursor === T0 ? "오늘" : dday(cursor) > 0 ? `${dday(cursor)}일 뒤` : `${-dday(cursor)}일 전`} · 이 날 만나는 회원</Sub>
-            </div>
-            <span className="shrink-0 rounded-full px-2.5 py-1 text-xs font-extrabold" style={{ backgroundColor: byDate(cursor).length ? TINT : CANVAS, color: byDate(cursor).length ? PRIMARY : SUB }}>
-              {byDate(cursor).length}건 · {seatsOn(cursor)}명
-            </span>
-          </div>
-          {byDate(cursor).length === 0 ? (
-            <Sub className="mt-3 block text-center">이 날은 잡힌 일정이 없습니다 · 아래 버튼으로 등록해 보세요</Sub>
-          ) : cursor === T0 ? (
-            <div className="mt-2 space-y-2">
-              <div className="flex items-center gap-2 rounded-xl px-3 py-2" style={{ backgroundColor: TINT }}>
-                <Sparkles size={13} className="shrink-0" style={{ color: PRIMARY }} />
-                <span className="text-xs font-bold" style={{ color: INK }}>출석 · 노쇼 처리는 위 '오늘 수업'에서 하세요</span>
+        ) : (
+          <div className="p-3 space-y-1.5">
+            {byDate(cursor).length === 0 ? (
+              <div className="rounded-2xl px-4 py-8 text-center" style={{ backgroundColor: CANVAS }}>
+                <p className="text-sm font-extrabold" style={{ color: INK }}>이 날은 잡힌 일정이 없습니다</p>
+                <p className="mt-1 text-xs" style={{ color: SUB }}>아래 + 버튼으로 등록하세요</p>
               </div>
-              {byDate(cursor).map((s) => <SchedLine key={s.id} s={s} members={db.members} onEdit={setEditing} />)}
-            </div>
-          ) : (
-            <div className="mt-2 space-y-1.5">{byDate(cursor).map((s) => <SchedLine key={s.id} s={s} members={db.members} onEdit={setEditing} />)}</div>
-          )}
-        </Card>
-      )}
-      {mode === "month" && (
-        <Card className="p-4">
-          <h3 className="font-extrabold" style={{ color: INK }}>{monthLabel(cursor)} 일별 수업</h3>
-          <div className="mt-3 space-y-1.5">
-            {monthGrid(cursor).filter((d) => monthKey(d) === ym && byDate(d).length).map((d) => (
-              <button key={d} onClick={() => { setCursor(d); setMode("day"); }} className="flex w-full items-center gap-2 rounded-2xl p-3 text-left" style={{ backgroundColor: CANVAS }}>
-                <span className="w-16 text-xs font-extrabold tabular-nums" style={{ color: d === todayISO() ? PRIMARY : redInk(d, INK) }}>{md(d)} ({dow(d)})</span>
-                <span className="min-w-0 flex-1 truncate text-xs" style={{ color: SUB }}>
-                  {byDate(d).map((s) => `${s.start} ${isEquipGroup(s) ? `그룹 ${s.equip || ""}` : attendeesOf(s).length > 1 ? `${s.type} ${attendeesOf(s).length}명` : nameOf(attendeesOf(s)[0]?.memberId)}`).join(" · ")}
-                </span>
-                <span className="rounded-full px-2 py-0.5 text-xs font-extrabold" style={{ backgroundColor: TINT, color: PRIMARY }}>{byDate(d).length}</span>
-              </button>
-            ))}
-            {stat.cls === 0 && <Sub className="py-6 text-center">이 달에는 등록된 수업이 없습니다.</Sub>}
+            ) : byDate(cursor).map((s) => <SchedLine key={s.id} s={s} members={db.members} onEdit={setEditing} />)}
           </div>
-        </Card>
-      )}
-      <Guard label="이번 달 성과">
-        <MonthPerfCard done={monthDone} pay={monthPay} goal={db.settings?.monthGoal} lastSame={lastMonthSame}
-          onGoal={(n) => onSettings && onSettings({ ...db.settings, monthGoal: n })} />
-      </Guard>
+        )}
+      </div>
+
+      {/* ─── 하단 액션바: 다음수업 + 미기록 배지 ─── */}
+      <div className="shrink-0 flex items-center gap-2 px-3" style={{ height: 48, backgroundColor: CARD, borderTop: `1px solid ${LINE}` }}>
+        {nextTarget0 ? (
+          <button onClick={() => onOpenMember && onOpenMember(nextTarget0.m.id)} className="flex items-center gap-2 min-w-0 flex-1 text-left">
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg" style={{ background: GRAD }}>
+              <Play size={10} color="#fff" fill="#fff" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="flex items-baseline gap-1">
+                <span className="text-sm font-extrabold tabular-nums" style={{ color: PRIMARY }}>{nextTarget0.s.start}</span>
+                <span className="truncate text-sm font-extrabold" style={{ color: INK }}>{nextTarget0.m.name}</span>
+              </span>
+              <span className="block text-xs truncate" style={{ color: SUB }}>{minOf(nextTarget0.s.start) <= (new Date().getHours() * 60 + new Date().getMinutes()) ? "진행 중" : "다음 수업"} · {nextTarget0.s.type}</span>
+            </span>
+          </button>
+        ) : (
+          <span className="flex items-center gap-2 min-w-0 flex-1">
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: GOOD_S }}>
+              <Check size={12} style={{ color: GOOD }} />
+            </span>
+            <span className="text-sm font-extrabold" style={{ color: SUB }}>남은 수업 없음</span>
+          </span>
+        )}
+        {unwritten > 0 && (
+          <button onClick={() => onWriteNote && firstUnwritten && onWriteNote(firstUnwritten.id, firstUnwritten.sid)}
+            className="shrink-0 flex items-center gap-1 rounded-lg px-2.5 py-1.5"
+            style={{ backgroundColor: WARN_S, border: `1px solid ${WARN}` }}>
+            <Pencil size={11} style={{ color: WARN }} />
+            <span className="text-xs font-extrabold" style={{ color: WARN }}>미기록 {unwritten}</span>
+          </button>
+        )}
+        <button onClick={() => setEditing({ id: null, personal: true, memberIds: [], date: cursor, start: "10:00", dur: 60, type: "개인일정", title: "", instructor: db.settings.staff, room: "", memo: "" })}
+          className="shrink-0 flex items-center justify-center rounded-lg" style={{ width: 36, height: 36, backgroundColor: CANVAS, color: INK }}>
+          <CalendarDays size={16} />
+        </button>
+      </div>
+
       {editing && <ScheduleForm draft={editing} members={db.members} schedule={db.schedule} onClose={() => setEditing(null)}
         onSubmit={(v) => { onSave(v); setEditing(null); }} onDelete={(id) => { onDelete(id); setEditing(null); }} />}
     </div>
@@ -2334,20 +2204,15 @@ function WeekGrid({ days, byDate, nameOf, cursor, onOpen, onNew }) {
     const eq = isEquipGroup(s);
     const list = attendeesOf(s);
     const label = pv ? (s.title || "내 일정") : eq ? (s.equip || "그룹") : list.length > 1 ? list.map((a) => nameOf(a.memberId)).join(", ") : nameOf(list[0]?.memberId);
-    const sub = pv ? "" : eq ? "그룹" : list.length > 1 ? `${s.type} ${list.length}명` : s.type;
+    const sub = pv ? "" : eq ? `${list.length}명` : list.length > 1 ? `${s.type} ${list.length}명` : s.type;
     const done = pv ? false : eq ? !!s.groupDone : list.length > 0 && list.every((a) => a.status !== "booked");
     return { s, top: ((st - top0) / 60) * GRID_ROW, h: Math.max(26, ((en - st) / 60) * GRID_ROW - 2), label, sub, done, eq, pv };
   }).filter((b) => b.top >= -GRID_ROW && b.top < rows * GRID_ROW);
 
   return (
-    <div className="mt-3">
-      <div className="mb-1.5 flex items-center gap-1.5">
-        <CalendarDays size={13} style={{ color: PRIMARY }} />
-        <p className="text-xs font-extrabold" style={{ color: INK }}>주간 시간표</p>
-        <Sub className="ml-auto shrink-0">08:00 ~ 23:00</Sub>
-      </div>
-      <p className="mb-2 text-xs font-semibold" style={{ color: SUB }}>빈 칸을 누르면 그 시간으로 등록 창이 열립니다 · 시간은 창에서 바꿀 수 있어요</p>
-      <div className="overflow-x-auto rounded-2xl" style={{ border: `1px solid ${LINE}` }}>
+    <div className="h-full">
+      <p className="px-2 pb-1 pt-2 text-xs font-semibold" style={{ color: SUB }}>빈 칸을 눌러 수업 등록</p>
+      <div className="overflow-x-auto" style={{ border: `1px solid ${LINE}` }}>
         <div style={{ width: "100%" }}>
           <div className="sticky top-0 z-10 flex" style={{ backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
             <div className="shrink-0" style={{ width: 32 }} />
@@ -2371,7 +2236,7 @@ function WeekGrid({ days, byDate, nameOf, cursor, onOpen, onNew }) {
             </div>
             {days.map((d) => (
               <div key={d} className="relative min-w-0 flex-1"
-                style={{ borderLeft: `1px solid ${LINE}`, backgroundColor: d === todayISO() ? `${PRIMARY}14` : "transparent" }}
+                style={{ borderLeft: `1px solid ${LINE}`, backgroundColor: d === todayISO() ? "rgba(37,99,235,0.04)" : "transparent" }}
                 onClick={(e) => tapNew(d, e)}>
                 {Array.from({ length: rows }, (_, i) => (
                   <div key={i} style={{ height: GRID_ROW, borderTop: i ? `1px solid ${LINE}` : "none" }}>
@@ -2467,7 +2332,7 @@ function ScheduleForm({ draft, members, schedule, onClose, onSubmit, onDelete })
               return (
                 <button key={String(o.k)} onClick={() => setPersonal(o.k)}
                   className="flex flex-1 items-center justify-center gap-1.5 rounded-xl py-2.5 text-sm font-extrabold"
-                  style={on ? { background: GRAD, color: "#fff", boxShadow: "0 3px 10px rgba(108,76,241,.35)" } : { backgroundColor: CARD, color: INK, border: `1px solid ${LINE}` }}>
+                  style={on ? { background: GRAD, color: "#fff", boxShadow: "0 3px 10px rgba(37,99,235,.35)" } : { backgroundColor: CARD, color: INK, border: `1px solid ${LINE}` }}>
                   <Ic size={15} /> {o.l}
                 </button>
               );
@@ -2614,7 +2479,7 @@ function ScheduleForm({ draft, members, schedule, onClose, onSubmit, onDelete })
     </Sheet>
   );
 }
-const PEN_COLORS = ["#F04438", "#12B76A", "#6C4CF1", "#FFFFFF", "#111111"];
+const PEN_COLORS = ["#F04438", "#12B76A", "#2563EB", "#FFFFFF", "#111111"];
 function coverDraw(ctx, img, w, h, tf) {
   const base = Math.max(w / img.width, h / img.height);
   const s = base * (tf?.scale || 1);
@@ -2780,7 +2645,7 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
         ctx.beginPath(); ctx.moveTo((w / 10) * i, 0); ctx.lineTo((w / 10) * i, h); ctx.stroke();
         ctx.beginPath(); ctx.moveTo(0, (h / 10) * i); ctx.lineTo(w, (h / 10) * i); ctx.stroke();
       }
-      ctx.strokeStyle = "rgba(108,76,241,0.9)"; ctx.lineWidth = 1.5;
+      ctx.strokeStyle = "rgba(37,99,235,0.9)"; ctx.lineWidth = 1.5;
       ctx.beginPath(); ctx.moveTo(w / 2, 0); ctx.lineTo(w / 2, h); ctx.stroke(); ctx.restore();
     }
     marks.forEach((m) => drawMark(ctx, m, w, h));
@@ -2925,7 +2790,7 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
         <button onClick={() => { onSave(marks); onClose(); }} className="rounded-full px-4 py-2 text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>저장</button>
       </div>
       {fresh && (
-        <p className="mx-4 mb-1 rounded-xl px-3 py-2 text-center text-xs font-bold text-white" style={{ backgroundColor: "rgba(108,76,241,.55)" }}>
+        <p className="mx-4 mb-1 rounded-xl px-3 py-2 text-center text-xs font-bold text-white" style={{ backgroundColor: "rgba(37,99,235,.55)" }}>
           사진이 등록됐습니다 · 지금 바로 각도를 재 보세요. 저장하면 사진에 함께 남습니다 (건너뛰려면 왼쪽 위 X)
         </p>
       )}
@@ -3971,7 +3836,7 @@ function OverallReview({ member, briefing, onToast, schedule }) {
           {[{ k: "member", l: "회원용 멘트" }, { k: "coach", l: "강사용 코칭노트" }].map((o) => (
             <button key={o.k} onClick={() => setTab(o.k)} className="flex flex-1 items-center justify-center gap-1.5 rounded-xl py-3 text-sm font-extrabold"
               style={tab === o.k
-                ? { background: GRAD, color: "#fff", boxShadow: "0 4px 12px rgba(108,76,241,.38)", border: "1px solid transparent" }
+                ? { background: GRAD, color: "#fff", boxShadow: "0 4px 12px rgba(37,99,235,.38)", border: "1px solid transparent" }
                 : { backgroundColor: CARD, color: INK, border: `1px solid ${LINE}` }}>
               {o.k === "coach" ? <ClipboardList size={15} /> : <MessageSquare size={15} />} {o.l}
             </button>
@@ -4333,7 +4198,7 @@ function PoseMock() {
   return (
     <svg viewBox="0 0 96 128" width="72" height="96" className="shrink-0" style={{ borderRadius: 12, background: "#14141C" }} aria-hidden="true">
       <line x1="48" y1="6" x2="48" y2="122" stroke="rgba(255,255,255,.22)" strokeWidth="1" strokeDasharray="3 3" />
-      <circle cx="48" cy="22" r="8" fill="none" stroke="#B8A6FF" strokeWidth="2" />
+      <circle cx="48" cy="22" r="8" fill="none" stroke="#93C5FD" strokeWidth="2" />
       <path d="M34 40 L62 37" stroke="#F04438" strokeWidth="2.5" strokeLinecap="round" />
       <path d="M36 74 L60 72" stroke="#F79009" strokeWidth="2.5" strokeLinecap="round" />
       <path d="M48 40 L48 74" stroke="#8B74FF" strokeWidth="2" />
@@ -4748,7 +4613,7 @@ function SavedPoseViewer({ rec, onClose, onToast }) {
             </div>
           ))}
           {rec.comment && (
-            <div className="rounded-2xl px-3 py-3" style={{ backgroundColor: "rgba(108,76,241,0.28)" }}>
+            <div className="rounded-2xl px-3 py-3" style={{ backgroundColor: "rgba(37,99,235,0.28)" }}>
               <p className="text-xs font-extrabold text-white opacity-80">저장된 코멘트</p>
               <p className="mt-1 text-sm leading-relaxed text-white">{rec.comment}</p>
             </div>
@@ -4832,12 +4697,12 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onToast, onSav
         if (!pts[a] || !pts[b]) return;
         const p = S(pts[a]), q = S(pts[b]);
         const g = ctx.createLinearGradient(p.x, p.y, q.x, q.y);
-        g.addColorStop(0, "#B8A6FF"); g.addColorStop(1, "#6C4CF1");
+        g.addColorStop(0, "#93C5FD"); g.addColorStop(1, "#2563EB");
         ctx.save();
-        ctx.strokeStyle = "rgba(108,76,241,.35)"; ctx.lineWidth = 9 * k;
+        ctx.strokeStyle = "rgba(37,99,235,.35)"; ctx.lineWidth = 9 * k;
         ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke();
         ctx.strokeStyle = g; ctx.lineWidth = 3.2 * k;
-        ctx.shadowColor = "rgba(108,76,241,.55)"; ctx.shadowBlur = 10 * k;
+        ctx.shadowColor = "rgba(37,99,235,.55)"; ctx.shadowBlur = 10 * k;
         ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke();
         ctx.restore();
       });
@@ -4854,7 +4719,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onToast, onSav
         if (on) { ctx.strokeStyle = "rgba(255,255,255,.55)"; ctx.lineWidth = 1.4 * k; ctx.beginPath(); ctx.arc(p.x, p.y, r * 1.9, 0, Math.PI * 2); ctx.stroke(); }
         ctx.shadowColor = "rgba(0,0,0,.35)"; ctx.shadowBlur = 6 * k;
         ctx.fillStyle = "rgba(255,255,255,.98)"; ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.fill();
-        ctx.shadowBlur = 0; ctx.fillStyle = "#6C4CF1"; ctx.beginPath(); ctx.arc(p.x, p.y, r * 0.46, 0, Math.PI * 2); ctx.fill();
+        ctx.shadowBlur = 0; ctx.fillStyle = "#2563EB"; ctx.beginPath(); ctx.arc(p.x, p.y, r * 0.46, 0, Math.PI * 2); ctx.fill();
         ctx.restore();
       });
       if (hot && pts[hot]) {
@@ -5332,7 +5197,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onToast, onSav
    키는 반드시 구글 클라우드에서 "HTTP 리퍼러 제한"을 걸어 두어야 한다:
    pilateacher.com/*, *.vercel.app/*, https://localhost/* (앱), http://localhost:*
    제한을 걸면 코드에 들어 있어도 남이 못 쓴다. */
-const YT_KEY = "AIzaSyAjSubZDcGlacRHp8Ohldno_zPK5UvSP30";
+const YT_KEY = import.meta.env.VITE_YOUTUBE_API_KEY || "";
 const YT_CHANNELS = ["@pilatesua", "@onlypilates", "@pilamincho", "@pt3885", "@theclassicpilates", "@pila_hyeonj"];
 /* 주차 번호 — 월요일 시작 기준이라 한 주 안에서는 바뀌지 않는다 */
 const weekNo = (d) => {
@@ -6170,7 +6035,7 @@ function Dashboard({ member, photos, schedule, onBack, briefing, onSavePhoto, on
       <Guard label="회원 요약">
       <Card className="p-5">
         <div className="flex items-center gap-3">
-          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl text-lg font-extrabold text-white" style={{ background: GRAD, boxShadow: "0 4px 12px rgba(108,76,241,.30)" }}>{(member.name || "?").slice(0, 1)}</div>
+          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl text-lg font-extrabold text-white" style={{ background: GRAD, boxShadow: "0 4px 12px rgba(37,99,235,.30)" }}>{(member.name || "?").slice(0, 1)}</div>
           <div className="min-w-0 flex-1">
             <h2 className="text-lg font-extrabold" style={{ color: isDraft(member) ? SUB : INK }}>{isDraft(member) ? "이름을 입력해 주세요" : `${member.name} 회원님`}</h2>
             <Sub>{ageOf(member) !== null ? `${ageOf(member)}세 · ` : ""}담당 {member.instructor || "-"}{att.rate !== null ? ` · 출석률 ${att.rate}%` : ""}</Sub>
@@ -6308,7 +6173,7 @@ function RecordTab({ db, selectedId, setSelectedId, section, setSection, onSaveI
               <button key={s.k} onClick={() => { setSection(s.k); onLeaveNote && onLeaveNote(); }}
                 className="flex min-w-0 flex-1 flex-col items-center justify-center gap-1 whitespace-nowrap rounded-2xl px-1 py-3 text-xs font-extrabold"
                 style={on
-                  ? { background: GRAD, color: "#fff", boxShadow: "0 4px 12px rgba(108,76,241,.38)", border: "1px solid transparent" }
+                  ? { background: GRAD, color: "#fff", boxShadow: "0 4px 12px rgba(37,99,235,.38)", border: "1px solid transparent" }
                   : { backgroundColor: CANVAS, color: INK2, border: `1px solid ${LINE}` }}>
                 <Icon size={17} /> {s.l}
               </button>
@@ -7400,7 +7265,7 @@ function SettingsTab({ db, photos, account, onChangeSettings, onChangePhoto, sav
             const on = themePref === o.k, Icon = o.i;
             return (
               <button key={o.k} onClick={() => onChangeTheme(o.k)} className="flex flex-1 items-center justify-center gap-1.5 rounded-xl py-2.5 text-sm font-bold"
-                style={on ? { background: GRAD, color: "#fff", boxShadow: "0 3px 10px rgba(108,76,241,.3)" } : { color: SUB }}>
+                style={on ? { background: GRAD, color: "#fff", boxShadow: "0 3px 10px rgba(37,99,235,.3)" } : { color: SUB }}>
                 <Icon size={14} /> {o.l}
               </button>
             );
@@ -8107,7 +7972,7 @@ export default function App() {
     );
 
   return (
-    <div className="app-root min-h-screen pb-16" style={{ backgroundColor: PAGE }}>
+    <div className="app-root min-h-screen pb-16" style={{ backgroundColor: PAGE, overflow: "hidden" }}>
       {style}
       <div className="safe-t sticky top-0 z-30" style={{ backgroundColor: CARD }}>
         <Header settings={db.settings || {}} account={account} alertCount={alerts.length} onProfile={() => setTab("settings")}

@@ -97,7 +97,13 @@ const sysDarkNow = () => {
 
 /* 파일이 실제로 교체됐는지 1초 만에 확인하는 표시 — 설정 탭 맨 아래에 뜬다 */
 const APP_VER = "v83 · 2026-07-29";
-try { if (typeof window !== "undefined") window.PILATEACHER_VER = APP_VER; } catch (e) {}
+const RELEASE_VERSION = String(import.meta.env?.VITE_APP_VERSION || "").trim();
+const RELEASE_BUILD_NUMBER = String(import.meta.env?.VITE_BUILD_NUMBER || "").trim();
+const RELEASE_COMMIT_SHORT = String(import.meta.env?.VITE_BUILD_COMMIT || "").trim().slice(0, 7);
+const APP_BUILD_LABEL = RELEASE_VERSION && RELEASE_BUILD_NUMBER
+  ? `${RELEASE_VERSION} (${RELEASE_BUILD_NUMBER})${RELEASE_COMMIT_SHORT ? ` · ${RELEASE_COMMIT_SHORT}` : ""}`
+  : APP_VER;
+try { if (typeof window !== "undefined") window.PILATEACHER_VER = APP_BUILD_LABEL; } catch (e) {}
 
 const ACC_KEY = "pilateacher_accounts_v1";
 const SES_KEY = "pilateacher_session_v1";
@@ -8087,7 +8093,7 @@ function SettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings,
         )}
         <div className="mt-3 flex items-center gap-2 rounded-xl px-3 py-2" style={{ backgroundColor: CANVAS }}>
           <span className="text-xs font-bold" style={{ color: SUB }}>앱 버전</span>
-          <span className="ml-auto text-xs font-extrabold tabular-nums" style={{ color: PRIMARY }}>{APP_VER}</span>
+          <span className="ml-auto text-xs font-extrabold tabular-nums" style={{ color: PRIMARY }}>{APP_BUILD_LABEL}</span>
         </div>
       </Card>
     </div>
@@ -8133,7 +8139,7 @@ function ReferenceSettingsTab({ db, account, savedAt, onChangeSettings, onChange
               { l: "로그인", v: account ? "로그인됨" : "로그인 안 됨", c: account ? GOOD : WARN },
               { l: "Firebase", v: fbReady ? "연결 가능" : "미사용", c: fbReady ? GOOD : SUB },
             ].map((x) => <div key={x.l} style={{ padding: "9px 8px", borderRadius: 8, backgroundColor: CANVAS }}><p style={{ fontSize: 10, color: SUB }}>{x.l}</p><p className="mt-1 truncate" style={{ fontSize: 11, fontWeight: 600, color: x.c }}>{x.v}</p></div>)}</div>
-            <div className="mt-3 flex items-center" style={{ paddingTop: 10, borderTop: `1px solid ${LINE}` }}><span style={{ fontSize: 11, color: SUB }}>앱 버전</span><span className="ml-auto tabular-nums" style={{ fontSize: 11, fontWeight: 600, color: BRAND }}>{APP_VER}</span></div>
+            <div className="mt-3 flex items-center" style={{ paddingTop: 10, borderTop: `1px solid ${LINE}` }}><span style={{ fontSize: 11, color: SUB }}>앱 버전</span><span className="ml-auto tabular-nums" style={{ fontSize: 11, fontWeight: 600, color: BRAND }}>{APP_BUILD_LABEL}</span></div>
           </section>
         </div>
       </main>

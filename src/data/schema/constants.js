@@ -48,6 +48,21 @@ export const ATTENDANCE_STATUS = Object.freeze({
   CANCELLED: "cancelled",
 });
 
+export const RECORD_STATUS = Object.freeze({
+  MISSING: "missing",
+  COMPLETED: "completed",
+  NOT_REQUIRED: "not_required",
+});
+
+export const DUAL_WRITE_OPERATION = Object.freeze({
+  CREATE: "create",
+  UPDATE: "update",
+  ARCHIVE: "archive",
+  CHANGE_STATUS: "change_status",
+  SAVE_ATTENDANCE: "save_attendance",
+  SAVE_RECORD_STATUS: "save_record_status",
+});
+
 export const AI_RECOMMENDATION_STATUS = Object.freeze({
   REQUESTED: "requested",
   PROCESSING: "processing",

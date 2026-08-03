@@ -13,10 +13,13 @@
     "types": ["node"]
   },
   "include": [
+    "src/ai/**/*.js",
     "src/data/**/*.js",
     "tools/**/*.js",
     "tests/schema/**/*.js",
     "tests/migration/**/*.js",
-    "tests/validation/**/*.js"
+    "tests/validation/**/*.js",
+    "tests/dual-write/**/*.js",
+    "tests/ai/**/*.js"
   ]
 }

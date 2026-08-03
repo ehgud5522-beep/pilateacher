@@ -10,14 +10,18 @@ export default [
     ],
   },
   {
-    files: ["src/data/**/*.js", "tools/**/*.js", "tests/**/*.js"],
+    files: ["src/ai/**/*.js", "src/data/**/*.js", "tools/**/*.js", "tests/**/*.js"],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "module",
       globals: {
         Buffer: "readonly",
+        AbortController: "readonly",
+        clearTimeout: "readonly",
         console: "readonly",
+        fetch: "readonly",
         process: "readonly",
+        setTimeout: "readonly",
         structuredClone: "readonly",
         URL: "readonly",
       },

@@ -58,15 +58,6 @@ workflows:
             echo "Podfile not found - using Swift Package Manager, skipping"
           fi
 
-      - name: Fetch or create App Store provisioning profile
-        script: |
-          set -euo pipefail
-          unset CERTIFICATE_PRIVATE_KEY CERTIFICATE_PRIVATE_KEY_PASSWORD
-          app-store-connect fetch-signing-files "$BUNDLE_ID" \
-            --type IOS_APP_STORE \
-            --strict-match-identifier \
-            --create
-
       - name: Set up code signing
         script: |
           xcode-project use-profiles

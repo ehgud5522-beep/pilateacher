@@ -24,6 +24,9 @@ workflows:
       - name: Install npm packages
         script: npm install
 
+      - name: Prepare build metadata
+        script: python3 tools/ios/prepare_build_metadata.py
+
       - name: Build web
         script: npm run build
 
@@ -32,7 +35,7 @@ workflows:
 
       - name: Validate iOS launch resources
         script: |
-          set -e
+          set -euo pipefail
           test -f ios/App/App/public/index.html
           test -f ios/App/App/GoogleService-Info.plist
           plutil -lint ios/App/App/Info.plist
@@ -44,6 +47,7 @@ workflows:
           grep -q "NSMicrophoneUsageDescription" ios/App/App/Info.plist
           grep -q "CFBundleURLSchemes" ios/App/App/Info.plist
           test ! -e ios/App/App/cert_key.pem
+          python3 tools/ios/validate_release_source.py
 
       - name: Install pods if needed
         script: |
@@ -53,15 +57,6 @@ workflows:
           else
             echo "Podfile not found - using Swift Package Manager, skipping"
           fi
-
-      - name: Fetch or create App Store provisioning profile
-        script: |
-          set -euo pipefail
-          unset CERTIFICATE_PRIVATE_KEY CERTIFICATE_PRIVATE_KEY_PASSWORD
-          app-store-connect fetch-signing-files "$BUNDLE_ID" \
-            --type IOS_APP_STORE \
-            --strict-match-identifier \
-            --create
 
       - name: Set up code signing
         script: |
@@ -218,8 +213,33 @@ workflows:
             xcode-project build-ipa --project "ios/App/App.xcodeproj" --scheme "$XCODE_SCHEME"
           fi
 
+      - name: Validate exported IPA, archive, and dSYM
+        script: |
+          set -euo pipefail
+          cd "$CM_BUILD_DIR"
+          python3 tools/ios/validate_release_artifacts.py
+
+          ARCHIVE_PATH="$(cat build/ios/metadata/archive-path.txt)"
+          rm build/ios/metadata/archive-path.txt
+          mkdir -p build/ios/archive build/ios/dsyms build/ios/logs
+          ditto -c -k --sequesterRsrc --keepParent "$ARCHIVE_PATH" "build/ios/archive/App-${BUILD_NUMBER}.xcarchive.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$ARCHIVE_PATH/dSYMs" "build/ios/dsyms/App-${BUILD_NUMBER}-dSYMs.zip"
+          if [ -d /tmp/xcodebuild_logs ]; then
+            find /tmp/xcodebuild_logs -maxdepth 1 -type f -name '*.log' -exec cp {} build/ios/logs/ \;
+          fi
+          test -s "build/ios/archive/App-${BUILD_NUMBER}.xcarchive.zip"
+          test -s "build/ios/dsyms/App-${BUILD_NUMBER}-dSYMs.zip"
+          test -s build/ios/metadata/build-info.json
+          echo "Archive artifact: build/ios/archive/App-${BUILD_NUMBER}.xcarchive.zip"
+          echo "dSYM artifact: build/ios/dsyms/App-${BUILD_NUMBER}-dSYMs.zip"
+          echo "Build info artifact: build/ios/metadata/build-info.json"
+
     artifacts:
       - build/ios/ipa/*.ipa
+      - build/ios/archive/*.xcarchive.zip
+      - build/ios/dsyms/*.zip
+      - build/ios/logs/*.log
+      - build/ios/metadata/build-info.json
       - /tmp/xcodebuild_logs/*.log
 
     publishing:

@@ -7,6 +7,8 @@
    =================================================================== */
 
 import { initializeApp } from "firebase/app";
+import { Capacitor } from "@capacitor/core";
+import { FirebaseAuthentication } from "@capacitor-firebase/authentication";
 import {
   getAuth, onAuthStateChanged, signOut,
   GoogleAuthProvider, OAuthProvider, signInWithPopup, signInWithCredential,
@@ -15,6 +17,7 @@ import {
 } from "firebase/auth";
 import { getFirestore, doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
+import { withAuthTimeout } from "../features/auth/apple-sign-in.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyABFqCur9nKHUuD_-EvvRNtxVbEhif9gjs",
@@ -47,18 +50,13 @@ const shape = (u) => ({
       앱에서는 Capacitor 가 window.Capacitor 를 심어 주고,
       웹(볼트 미리보기·브라우저)에서는 없으므로 false 가 된다.
       이렇게 해야 웹 쪽 번들러가 Capacitor 패키지를 찾지 않아 에러가 안 난다. */
-const cap = () => {
-  try { return (typeof window !== "undefined" && window.Capacitor) || null; } catch (e) { return null; }
-};
 const isNative = () => {
-  const c = cap();
-  try { return !!(c && typeof c.isNativePlatform === "function" && c.isNativePlatform()); }
+  try { return Capacitor.isNativePlatform(); }
   catch (e) { return false; }
 };
 /* 네이티브 로그인 플러그인 — cap sync 로 앱에 심어지면 여기서 잡힌다 */
 const nativeAuth = () => {
-  const c = cap();
-  return (c && c.Plugins && c.Plugins.FirebaseAuthentication) || null;
+  return FirebaseAuthentication;
 };
 
 const providerObject = (provider) => {
@@ -114,11 +112,17 @@ export async function fbSignInSocial(provider) {
         provider,
       });
     }
-    const res = provider === "apple"
-      ? await NA.signInWithApple({ skipNativeAuth: true })
-      : await NA.signInWithGoogle({ skipNativeAuth: true });
+    const res = await withAuthTimeout(
+      () => provider === "apple"
+        ? NA.signInWithApple({ skipNativeAuth: true })
+        : NA.signInWithGoogle({ skipNativeAuth: true }),
+      { timeoutMs: 30000, provider, stage: "native_credential" },
+    );
     const nativeCredential = requireNativeCredential(provider, res);
-    const out = await signInWithCredential(auth, nativeCredential.credential);
+    const out = await withAuthTimeout(
+      () => signInWithCredential(auth, nativeCredential.credential),
+      { timeoutMs: 20000, provider, stage: "firebase_credential_exchange" },
+    );
     const user = shape(out.user);
     return {
       ...user,

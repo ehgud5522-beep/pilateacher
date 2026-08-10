@@ -6,6 +6,30 @@ export const APPLE_SIGN_IN_ERROR_KINDS = Object.freeze({
   UNKNOWN: "unknown",
 });
 
+export const AUTH_OPERATION_TIMEOUT_CODE = "auth/operation-timeout";
+
+export function withAuthTimeout(operation, {
+  timeoutMs = 30000,
+  provider = "apple",
+  stage = "sign_in",
+  setTimer = setTimeout,
+  clearTimer = clearTimeout,
+} = {}) {
+  if (typeof operation !== "function") throw new TypeError("Authentication operation is required");
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimer(() => {
+      reject(Object.assign(new Error("Authentication did not respond in time."), {
+        code: AUTH_OPERATION_TIMEOUT_CODE,
+        authStage: stage,
+        provider,
+      }));
+    }, timeoutMs);
+  });
+  return Promise.race([Promise.resolve().then(operation), timeout])
+    .finally(() => clearTimer(timer));
+}
+
 const USER_MESSAGES = Object.freeze({
   [APPLE_SIGN_IN_ERROR_KINDS.CANCELLED]: "Apple 로그인이 취소되었습니다.",
   [APPLE_SIGN_IN_ERROR_KINDS.NETWORK]: "네트워크 연결을 확인한 뒤 다시 시도해 주세요.",

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  AUTH_OPERATION_TIMEOUT_CODE,
   APPLE_SIGN_IN_ERROR_KINDS,
   AppleSignInFlowError,
   classifyAuthError,
@@ -10,7 +11,37 @@ import {
   runAppleSignIn,
   safeAuthDiagnostic,
   validateAppleCredential,
+  withAuthTimeout,
 } from "../../src/features/auth/apple-sign-in.js";
+
+test("authentication timeouts reject with a safe stage and always clear the timer", async () => {
+  let triggerTimeout;
+  let cleared;
+  const pending = withAuthTimeout(() => new Promise(() => {}), {
+    provider: "apple",
+    stage: "native_credential",
+    setTimer: /** @type {typeof setTimeout} */ ((callback) => { triggerTimeout = callback; return 42; }),
+    clearTimer: (timer) => { cleared = timer; },
+  });
+  triggerTimeout();
+  await assert.rejects(
+    pending,
+    (error) => /** @type {{ code?: string, authStage?: string, provider?: string }} */ (error).code === AUTH_OPERATION_TIMEOUT_CODE
+      && /** @type {{ authStage?: string }} */ (error).authStage === "native_credential"
+      && /** @type {{ provider?: string }} */ (error).provider === "apple",
+  );
+  assert.equal(cleared, 42);
+});
+
+test("authentication timeouts preserve a successful result and cancel the timer", async () => {
+  let cleared;
+  const result = await withAuthTimeout(() => Promise.resolve("credential"), {
+    setTimer: /** @type {typeof setTimeout} */ (/** @type {unknown} */ (() => 7)),
+    clearTimer: (timer) => { cleared = timer; },
+  });
+  assert.equal(result, "credential");
+  assert.equal(cleared, 7);
+});
 
 test("Apple errors are separated into cancellation, network, configuration, credential, and unknown", () => {
   assert.equal(classifyAuthError({ code: "1001", message: "The operation was cancelled" }), APPLE_SIGN_IN_ERROR_KINDS.CANCELLED);

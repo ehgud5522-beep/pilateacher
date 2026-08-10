@@ -1420,7 +1420,7 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
   const [signup, setSignup] = useState(null);
   const [f, setF] = useState({ name: "", email: "", pw: "", center: "", phone: "" });
 
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState("");
   const socialGateRef = useRef(null);
   if (!socialGateRef.current) socialGateRef.current = createSingleFlightGate();
   const handleSocial = async (provider) => {
@@ -1430,7 +1430,7 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
         return;
       }
       if (socialGateRef.current.busy) return;
-      setBusy(true);
+      setBusy(provider);
       try {
         await socialGateRef.current.run(async () => {
           const u = await fbSignInSocial(provider);
@@ -1453,7 +1453,7 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
           onToast({ ok: false, msg: message });
         }
       } finally {
-        setBusy(false);
+        setBusy("");
       }
       return;
     }
@@ -1476,10 +1476,10 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
           {mode === "main" ? (
             <div className="space-y-2">
               {PROVIDERS.map((p) => (
-                <button key={p.key} onClick={() => handleSocial(p.key)} disabled={busy} aria-busy={busy}
+                <button key={p.key} onClick={() => handleSocial(p.key)} disabled={!!busy} aria-busy={busy === p.key}
                   className="flex w-full items-center justify-center gap-2 rounded-2xl py-3.5 text-sm font-extrabold disabled:cursor-not-allowed disabled:opacity-55"
                   style={{ backgroundColor: p.bg, color: p.fg, border: p.border ? `1px solid ${p.border}` : "none" }}>
-                  {busy && (p.key === "google" || p.key === "apple") ? <Loader2 size={15} className="animate-spin" /> : null}{p.label}
+                  {busy === p.key ? <Loader2 size={15} className="animate-spin" /> : null}{p.label}
                 </button>
               ))}
               <div className="flex items-center gap-3 py-3">
@@ -1515,7 +1515,7 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
                   disabled={busy || (emailTab === "signup" ? !(f.name && f.email && f.pw.length >= 6 && f.center) : !(f.email && f.pw))}
                   onClick={async () => {
                     if (fbReady) {
-                      setBusy(true);
+                      setBusy("email");
                       try {
                         if (emailTab === "signup") {
                           const u = await fbSignUpEmail(f.email, f.pw, f.name);
@@ -1534,7 +1534,7 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
                           : c === "auth/invalid-email" ? "\uc774\uba54\uc77c \ud615\uc2dd\uc774 \uc62c\ubc14\ub974\uc9c0 \uc54a\uc2b5\ub2c8\ub2e4."
                           : "\uc774\uba54\uc77c \ub610\ub294 \ube44\ubc00\ubc88\ud638\uac00 \ub9de\uc9c0 \uc54a\uc2b5\ub2c8\ub2e4." });
                       }
-                      setBusy(false);
+                      setBusy("");
                       return;
                     }
                     if (emailTab === "signup") {

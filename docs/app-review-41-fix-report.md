@@ -172,7 +172,7 @@ firebase deploy --only functions:deleteCurrentUserAccount --project pilateacher 
 - [x] `npx cap sync ios`
 - [x] plist/entitlement/project 및 동기화된 provider 정적 검사
 - [x] `deleteCurrentUserAccount` Node.js 22 배포 및 ACTIVE 상태 확인
-- [x] Codemagic Xcode Release Archive, IPA/dSYM 검증 및 App Store Connect 배포(Build `6a795ba8f5a7d0d1c8281ea9`)
+- [x] Codemagic Xcode Release Archive, IPA/dSYM 검증 및 App Store Connect 배포(Build ID `6a795ba8f5a7d0d1c8281ea9`; TestFlight 1.0 (42), 승인됨)
 - [ ] iPad Air 11-inch(M3), iPadOS 26.6 신규 설치/Apple 로그인
 - [ ] 실제 계정 삭제 end-to-end
 - [ ] 실제 demo seed apply 및 로그인

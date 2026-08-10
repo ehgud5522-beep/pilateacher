@@ -10163,17 +10163,37 @@ export default function App() {
   useEffect(() => {
     let alive = true;
     let cleanup = null;
+    let phaseTimer = null;
+    let startupStage = "storage_accounts";
+    const finishStartup = (nextPhase, delay = 0) => {
+      if (!alive) return;
+      clearTimeout(startupWatchdog);
+      if (phaseTimer) clearTimeout(phaseTimer);
+      if (delay > 0) {
+        phaseTimer = setTimeout(() => alive && setPhase(nextPhase), delay);
+        return;
+      }
+      setPhase(nextPhase);
+    };
+    const startupWatchdog = setTimeout(() => {
+      if (!alive) return;
+      deviceLog("app_startup_timeout", { stage: startupStage, fallback: "auth" });
+      setPhase("auth");
+    }, 6000);
     (async () => {
       let accs = [];
       try { const r = await window.storage.get(ACC_KEY); if (r?.value) accs = JSON.parse(r.value); } catch (e) {}
       accs = Array.isArray(accs) ? accs.filter((a) => a && typeof a === "object").map((a) => ({ ...a, id: a.id || uid() })) : [];
       let ses = null;
+      startupStage = "storage_session";
       try { const r = await window.storage.get(SES_KEY); if (r?.value) ses = JSON.parse(r.value); } catch (e) {}
+      startupStage = "storage_theme";
       try { const r = await window.storage.get(THEME_KEY); if (r?.value && alive) setThemePref(r.value); } catch (e) {}
       if (!alive) return;
       setAccounts(accs);
       if (fbReady) {
         let first = true;
+        startupStage = "firebase_auth_state";
         const off = fbOnAuth(async (u) => {
           if (!alive) return;
           if (!u) {
@@ -10186,30 +10206,40 @@ export default function App() {
             } catch (error) {
               deviceLog("account_deletion_local_cleanup_failed", { stage: "auth_state_recovery", ...deviceError(error) });
             }
-            if (first) { first = false; setTimeout(() => alive && setPhase("auth"), 1400); } else { setPhase("auth"); }
+            if (first) { first = false; finishStartup("auth", 1400); } else { finishStartup("auth"); }
             return;
           }
+          startupStage = "firebase_profile";
           const prof = await fbLoadProfile(u.id);
           const acc = { ...u, ...(prof || {}), id: u.id };
           if (!alive) return;
-          if (!acc.center) { if (first) { first = false; setTimeout(() => alive && setPhase("auth"), 1400); } else setPhase("auth"); return; }
+          if (!acc.center) { if (first) { first = false; finishStartup("auth", 1400); } else finishStartup("auth"); return; }
+          startupStage = "account_restore";
           await loadAccount(acc);
           if (!alive) return;
           const wait = first ? 1400 : 0;
           first = false;
-          setTimeout(() => alive && setPhase("app"), wait);
+          finishStartup("app", wait);
         });
         cleanup = off;
         return;
       }
       const auto = ses?.auto && accs.find((a) => a.id === ses.accountId);
-      setTimeout(async () => {
+      phaseTimer = setTimeout(async () => {
         if (!alive) return;
-        if (auto) { await loadAccount(auto); setPhase("app"); }
-        else setPhase("auth");
+        if (auto) { startupStage = "local_account_restore"; await loadAccount(auto); finishStartup("app"); }
+        else finishStartup("auth");
       }, 1400);
-    })();
-    return () => { alive = false; if (cleanup) { try { cleanup(); } catch (e) {} } };
+    })().catch((error) => {
+      deviceLog("app_startup_failed", { stage: startupStage, ...deviceError(error) });
+      finishStartup("auth");
+    });
+    return () => {
+      alive = false;
+      clearTimeout(startupWatchdog);
+      if (phaseTimer) clearTimeout(phaseTimer);
+      if (cleanup) { try { cleanup(); } catch (e) {} }
+    };
   }, []);
 
   const loadAccount = async (acc) => {

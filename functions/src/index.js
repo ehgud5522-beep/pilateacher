@@ -4,7 +4,6 @@ const { initializeApp, getApps } = require("firebase-admin/app");
 const { getAuth } = require("firebase-admin/auth");
 const { getFirestore } = require("firebase-admin/firestore");
 const { getStorage } = require("firebase-admin/storage");
-const { defineSecret } = require("firebase-functions/params");
 const { logger } = require("firebase-functions");
 const { HttpsError, onCall, onRequest } = require("firebase-functions/v2/https");
 const { createAccountDeletionService } = require("./account-deletion");
@@ -17,7 +16,7 @@ const { createVoiceSummaryHandler } = require("./voice-summary");
 
 if (!getApps().length) initializeApp();
 
-const OPENAI_API_KEY = defineSecret("OPENAI_API_KEY");
+const OPENAI_API_KEY = "OPENAI_API_KEY";
 const VOICE_SUMMARY_ROUTE = "/v1/ai/voice-summary";
 const allowedOrigins = parseAllowedOrigins(process.env.AI_ALLOWED_ORIGINS);
 const policyService = createDisabledPolicyService();
@@ -63,7 +62,7 @@ const handler = createVoiceSummaryHandler({
   summarizeVoice: async (input) => {
     if (!openAIProvider) {
       openAIProvider = createOpenAIVoiceSummaryProvider({
-        apiKey: OPENAI_API_KEY.value(),
+        apiKey: process.env[OPENAI_API_KEY] || "",
         model: process.env.AI_VOICE_SUMMARY_MODEL || DEFAULT_MODEL,
       });
     }

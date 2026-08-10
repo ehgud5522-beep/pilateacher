@@ -152,7 +152,7 @@ Firebase Console:
 - 동일 Apple identity 재로그인 시 기존 Firebase UID가 유지되는지 확인
 - 이메일 비공개 릴레이/계정 연결 정책 확인
 
-서버 Function 배포가 필요한 경우(이 작업에서는 실행하지 않음):
+서버 Function 배포 명령(2026-08-10 실행 완료):
 
 ```powershell
 firebase deploy --only functions:deleteCurrentUserAccount --project pilateacher --config firebase.ai-gateway.json
@@ -160,9 +160,9 @@ firebase deploy --only functions:deleteCurrentUserAccount --project pilateacher 
 
 ## 10. Release 빌드 검증 결과
 
-2026-08-10에 아래 항목을 실제 실행했다. Firebase 배포·계정 생성·계정 삭제·seed apply는 실행하지 않았다.
+2026-08-10에 아래 항목을 실제 실행했다. 실제 계정 생성·계정 삭제·seed apply와 iPad 검증은 실행하지 않았다.
 
-- [ ] npm install 또는 npm ci (기존 `node_modules`를 사용했으며 재설치하지 않음)
+- [x] npm install (Codemagic 격리 빌드 환경)
 - [x] typecheck
 - [x] 클라이언트 및 Functions lint
 - [x] production build (성공, 기존 dirty `dist`는 사전 백업본으로 복원)
@@ -171,12 +171,13 @@ firebase deploy --only functions:deleteCurrentUserAccount --project pilateacher 
 - [x] demo seed 기본 dry-run (`writesPerformed: false`)
 - [x] `npx cap sync ios`
 - [x] plist/entitlement/project 및 동기화된 provider 정적 검사
-- [ ] 실제 Xcode Release Archive
+- [x] `deleteCurrentUserAccount` Node.js 22 배포 및 ACTIVE 상태 확인
+- [x] Codemagic Xcode Release Archive, IPA/dSYM 검증 및 App Store Connect 배포(Build `6a795ba8f5a7d0d1c8281ea9`)
 - [ ] iPad Air 11-inch(M3), iPadOS 26.6 신규 설치/Apple 로그인
 - [ ] 실제 계정 삭제 end-to-end
 - [ ] 실제 demo seed apply 및 로그인
 
-production build에는 Firebase 모듈의 정적/동적 import 중복과 500 kB를 넘는 메인 청크 경고가 있었지만 오류 없이 완료됐다. Windows에서는 Xcode Archive, provisioning profile, signed entitlement, 실제 Apple sheet와 iPad 동작을 검증할 수 없다.
+production build에는 Firebase 모듈의 정적/동적 import 중복과 500 kB를 넘는 메인 청크 경고가 있었지만 오류 없이 완료됐다. Codemagic에서 Xcode Archive, 적용된 signing profile, IPA, archive 및 dSYM 검증을 통과했다. 실제 Apple sheet와 iPad 동작은 아직 검증하지 않았다.
 
 ## 11. 화면 녹화·캡처 순서
 

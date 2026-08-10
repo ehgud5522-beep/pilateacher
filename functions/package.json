@@ -1,0 +1,23 @@
+{
+  "name": "pilateacher-functions",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PilaTeacher Firebase Cloud Functions v2 AI Gateway",
+  "main": "src/index.js",
+  "engines": {
+    "node": "20"
+  },
+  "scripts": {
+    "lint": "eslint src scripts tests",
+    "test": "node --test tests/*.test.js",
+    "seed:app-review": "node scripts/seed-app-review.js"
+  },
+  "dependencies": {
+    "firebase-admin": "^13.5.0",
+    "firebase-functions": "^7.0.0",
+    "openai": "^6.39.0"
+  },
+  "devDependencies": {
+    "eslint": "^9.39.1"
+  }
+}

@@ -1,0 +1,1 @@
+export const AVATAR_INITIAL_FONT_SCALE = 0.4;

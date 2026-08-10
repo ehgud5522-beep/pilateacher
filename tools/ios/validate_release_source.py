@@ -85,9 +85,23 @@ require('customClass="CAPBridgeViewController"' in storyboard,
 package_json = json.loads((root / "package.json").read_text(encoding="utf-8"))
 require(package_json.get("dependencies", {}).get("@capgo/camera-preview") == "8.11.2",
         "camera preview version changed; review the no-location patch")
-require(package_json.get("scripts", {}).get("postinstall") ==
-        "node tools/patch-camera-preview-ios-no-location.mjs",
+postinstall = package_json.get("scripts", {}).get("postinstall", "")
+require("node tools/patch-camera-preview-ios-no-location.mjs" in postinstall,
         "camera preview no-location postinstall is missing")
+require("node tools/patch-firebase-auth-ios-first-login-profile.mjs" in postinstall,
+        "Firebase Authentication first-login profile postinstall is missing")
+
+capacitor_config = json.loads((root / "capacitor.config.json").read_text(encoding="utf-8"))
+auth_providers = capacitor_config.get("plugins", {}).get("FirebaseAuthentication", {}).get("providers", [])
+require("apple.com" in auth_providers, "Firebase Authentication Apple provider is missing")
+synced_capacitor_config = json.loads((root / "ios/App/App/capacitor.config.json").read_text(encoding="utf-8"))
+synced_auth_providers = synced_capacitor_config.get("plugins", {}).get("FirebaseAuthentication", {}).get("providers", [])
+require("apple.com" in synced_auth_providers, "synced iOS Firebase Authentication Apple provider is missing")
+auth_helper = (
+    root / "node_modules/@capacitor-firebase/authentication/ios/Plugin/FirebaseAuthenticationHelper.swift"
+).read_text(encoding="utf-8")
+require('result["firstTimeDisplayName"] = displayName' in auth_helper,
+        "Firebase Authentication first-login display name patch is missing")
 
 camera_sources = root / "node_modules/@capgo/camera-preview/ios/Sources"
 forbidden_location_tokens = (

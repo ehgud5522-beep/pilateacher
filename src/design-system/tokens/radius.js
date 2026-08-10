@@ -1,0 +1,1 @@
+export const AVATAR_DEFAULT_RADIUS = 16;

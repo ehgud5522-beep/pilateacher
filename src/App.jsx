@@ -7,80 +7,51 @@ if (typeof window !== "undefined" && !window.storage) {
 }
 
 import { useState, useEffect, useMemo, useRef, useCallback, Component } from "react";
+import { createPortal } from "react-dom";
+import { Capacitor } from "@capacitor/core";
+import { CameraPreview } from "@capgo/camera-preview";
+import { Motion } from "@capacitor/motion";
+import { Avatar, Card, Field, PrimaryBtn, Sub } from "./design-system/components/index.js";
+import {
+  BAD, BAD_S, BRAND, BRAND_D, CANVAS, CARD, FAINT, GLOW, GOOD, GOOD_S, GRAD, GRAD_SOFT,
+  INK, INK2, LAVENDER, LAVENDER_S, LINE, MINT, PAGE, PHOTO, PRIMARY, RING, SAND, SCRIM,
+  SHADOW, SPLASH_BG, SUB, THEME, TINT, TOAST, WARN, WARN_S, applyTheme, paintThemeVars,
+} from "./design-system/theme/themes.js";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
 } from "recharts";
-import { fbReady, fbSignInSocial, fbSignInEmail, fbSignUpEmail, fbSignOut, fbOnAuth, fbLoadProfile, fbSaveProfile, fbPushBackup, fbPullBackup } from "./lib/firebase";
+import {
+  fbReady, fbSignInSocial, fbSignInEmail, fbSignUpEmail, fbSignOut, fbOnAuth,
+  fbLoadProfile, fbSaveProfile, fbPushBackup, fbPullBackup, fbReauthenticate,
+  fbRevokeAppleAccess, fbDeleteCurrentUserAccount,
+} from "./lib/firebase";
 import { runAppDualWrite } from "./data/dual-write/app-runtime";
-import { Users, Settings as SettingsIcon, Search, ChevronRight, ChevronLeft, Plus, Camera, MessageSquare, Check, X, Trash2, ArrowLeft, Target, ClipboardList, RotateCcw, Sparkles, Copy, ArrowUpRight, ArrowDownRight, Loader as Loader2, Pencil, UserPlus, Activity, Ticket, Calendar, Clock, Bell, Download, TriangleAlert as AlertTriangle, LogOut, Mail, Star, Sun, Moon, Smartphone, Move, Crosshair, ChevronDown, ImagePlus, SlidersHorizontal, CalendarDays, ArrowUpDown, Minus, Upload, Link2, Users as Users2, Play } from "lucide-react";
+import {
+  AI_STATUSES, aiProvider, bodyAnalysisFields, buildBodyAnalysisInput, buildReportInput,
+  buildSequenceInput, buildVoiceSummaryInput, formatAIReport, formatSequenceRecommendation, formatVoiceSummary,
+} from "./ai/index.js";
+import {
+  POSTURE_RETAKE_DAYS, POSTURE_STORAGE_KEYS, POSTURE_VIEW_DEFS, POSTURE_VIEW_KEYS,
+  correctedPoseSource, normalizeAssessmentSets, normalizePostureView, postureAnalysisPlane,
+  postureRetakeStatus, postureViewLabel, selectAutomaticComparison,
+} from "./features/posture/posture-model.js";
+import {
+  POSTURE_WORKFLOW_EVENTS, createPostureWorkflowState, startNewAssessmentEvent, transitionPostureWorkflow,
+} from "./features/posture/posture-workflow.js";
+import {
+  CAPTURE_TIMER_OPTIONS, LEVEL_THRESHOLD_DEG, SENSOR_STATUSES, base64ToBlob,
+  computePreviewGeometry, correctOrientationForScreen, createCaptureGeometryMetadata,
+  evaluateDeviceLevel, readCaptureTimer, writeCaptureTimer,
+} from "./features/posture/posture-camera.js";
+import { classifyAuthError, createSingleFlightGate, safeAuthDiagnostic } from "./features/auth/apple-sign-in.js";
+import {
+  ACCOUNT_DELETION_PHASES, DELETE_CONFIRMATION_PHRASE, collectOwnedBlobIds, runAccountDeletion,
+} from "./features/account/account-deletion.js";
+import { Users, Settings as SettingsIcon, Search, ChevronRight, ChevronLeft, Plus, Camera, MessageSquare, Check, X, Trash2, ArrowLeft, Target, ClipboardList, RotateCcw, Sparkles, Copy, ArrowUpRight, ArrowDownRight, Loader as Loader2, Pencil, UserPlus, Activity, Ticket, Calendar, Clock, Bell, Download, TriangleAlert as AlertTriangle, CircleAlert as AlertCircle, LogOut, Mail, Star, Sun, Moon, Smartphone, Move, Crosshair, ChevronDown, ImagePlus, SlidersHorizontal, CalendarDays, ArrowUpDown, Minus, Upload, Link2, Users as Users2, Play } from "lucide-react";
+
+const IOS_NATIVE_CAPTURE_ENABLED = String(import.meta.env?.VITE_IOS_NATIVE_CAPTURE_ENABLED || "").trim().toLowerCase() === "true";
 
 /* ================= 토큰 · 테마 ================= */
-const LIGHT = {
-  page: "#F6F7F9", card: "#FFFFFF", soft: "#F1F3F6", line: "#E6E9EF",
-  ink: "#1C2433", ink2: "#5E6673", sub: "#6B7484", faint: "#B6BDC9",
-  primary: "#4C4399", primaryDark: "#3E3781", brand: "#4C4399", tint: "#ECEBF7", ring: "rgba(76,67,153,.24)",
-  toast: "#1C2433",
-  good: "#2E7D5B", goodS: "#E7F2EC", bad: "#C2413B", badS: "#FAECEB",
-  warn: "#B45309", warnS: "#FAF0E1", mint: "#D9D7EE",
-  lavender: "#4C4399", lavenderS: "#F5F4FB", sand: "#F1F3F6",
-  shadow: "0 1px 4px rgba(28,36,51,.06)",
-  grad: "#4C4399",
-  gradSoft: "#F5F4FB",
-  splash: "#F6F7F9",
-  glow: "radial-gradient(circle, rgba(76,67,153,.12) 0%, transparent 68%)",
-  scrim: "rgba(28,36,51,.46)", onBrand: "#FFFFFF", photo: "#171A1D",
-};
-const DARK = {
-  page: "#171A22", card: "#20242E", soft: "#292E39", line: "#373D49",
-  ink: "#F4F5F8", ink2: "#D6D9E0", sub: "#AEB4C0", faint: "#737B89",
-  primary: "#B8B2E1", primaryDark: "#D2CEF0", brand: "#7068B6", tint: "#302E4A", ring: "rgba(184,178,225,.28)",
-  toast: "#30373D",
-  good: "#5FDCAE", goodS: "#16382A", bad: "#FF9A90", badS: "#3D1F1C",
-  warn: "#E2BB74", warnS: "#3B3020", mint: "#55516F",
-  lavender: "#B8B2E1", lavenderS: "#302E4A", sand: "#292E39",
-  shadow: "0 0 0 1px rgba(255,255,255,.05), 0 14px 38px rgba(0,0,0,.45)",
-  grad: "#7068B6",
-  gradSoft: "#302E4A",
-  splash: "#171A22",
-  glow: "radial-gradient(circle, rgba(195,181,234,.28) 0%, rgba(112,221,214,.10) 45%, transparent 70%)",
-  scrim: "rgba(0,0,0,0.66)", onBrand: "#FFFFFF", photo: "#0F0F14",
-};
-let THEME = "light";
-let INK, INK2, SUB, FAINT, PRIMARY, TINT, RING, CANVAS, PAGE, CARD, LINE;
-let GOOD, GOOD_S, BAD, BAD_S, WARN, WARN_S, MINT, LAVENDER, LAVENDER_S, SAND, SHADOW, GRAD, GRAD_SOFT, SPLASH_BG, GLOW, SCRIM, ON_BRAND;
-let BRAND, BRAND_D, TOAST, PHOTO;
-function applyTheme(mode) {
-  if (PAGE && THEME === mode) return;
-  const p = mode === "dark" ? DARK : LIGHT;
-  THEME = mode;
-  PAGE = p.page; CARD = p.card; CANVAS = p.soft; LINE = p.line;
-  INK = p.ink; INK2 = p.ink2; SUB = p.sub; FAINT = p.faint;
-  PRIMARY = p.primary; BRAND = p.brand; BRAND_D = p.primaryDark; TINT = p.tint; RING = p.ring; TOAST = p.toast; PHOTO = p.photo || "#000";
-  GOOD = p.good; GOOD_S = p.goodS; BAD = p.bad; BAD_S = p.badS;
-  WARN = p.warn; WARN_S = p.warnS; MINT = p.mint; LAVENDER = p.lavender; LAVENDER_S = p.lavenderS; SAND = p.sand;
-  SHADOW = p.shadow; GRAD = p.grad; GRAD_SOFT = p.gradSoft;
-  SPLASH_BG = p.splash; GLOW = p.glow; SCRIM = p.scrim; ON_BRAND = p.onBrand;
-
-}
-function paintThemeVars(mode) {
-  if (typeof document !== "undefined") {
-    const p = mode === "dark" ? DARK : LIGHT;
-    const root = document.documentElement;
-    const props = {
-      "--page": p.page, "--card": p.card, "--canvas": p.soft, "--line": p.line,
-      "--ink": p.ink, "--ink2": p.ink2, "--sub": p.sub, "--faint": p.faint,
-      "--primary": p.primary, "--brand": p.brand, "--tint": p.tint, "--ring": p.ring,
-      "--toast": p.toast, "--photo": p.photo || "#000",
-      "--good": p.good, "--good-s": p.goodS, "--bad": p.bad, "--bad-s": p.badS,
-      "--warn": p.warn, "--warn-s": p.warnS, "--mint": p.mint,
-      "--lavender": p.lavender, "--lavender-s": p.lavenderS, "--sand": p.sand,
-      "--shadow": p.shadow, "--grad": p.grad, "--grad-soft": p.gradSoft,
-      "--splash-bg": p.splash, "--glow": p.glow, "--scrim": p.scrim, "--on-brand": p.onBrand,
-      "--theme": mode,
-    };
-    Object.entries(props).forEach(([k, v]) => root.style.setProperty(k, v));
-  }
-}
 applyTheme("light");
 const MEMBER_DOT_COLORS = ["#5E8FB4", "#4FA08F", "#8AA36B", "#B4915E", "#6FA3AD", "#7C8BA8", "#A8867C", "#98A0AE"];
 const idColor = (id) => {
@@ -107,6 +78,8 @@ try { if (typeof window !== "undefined") window.PILATEACHER_VER = APP_BUILD_LABE
 
 const ACC_KEY = "pilateacher_accounts_v1";
 const SES_KEY = "pilateacher_session_v1";
+const ACCOUNT_DELETION_PENDING_KEY = "pilateacher_account_deletion_pending_v1";
+const DUAL_WRITE_RETRY_KEY = "pilateacher_dual_write_retry_v1";
 const dbKey = (id) => `pilateacher_db_${id}`;
 const phKey = (id) => `pilateacher_photos_${id}`;
 
@@ -120,6 +93,7 @@ const toneColor = (t) => (t === "good" ? GOOD : t === "bad" ? BAD : SUB);
 const uLabel = (k) => (METRICS[k].unit === "%" ? "%p" : METRICS[k].unit);
 
 const VIEWS = [{ key: "front", label: "전면" }, { key: "side", label: "측면" }, { key: "back", label: "후면" }];
+const POSTURE_VIEWS = POSTURE_VIEW_DEFS;
 const CLASS_TYPES = ["개인레슨", "듀엣", "그룹"];
 /* 수업료 기본값 — 회원마다 다르면 그 회원 값이 우선한다 */
 const DEF_RATE = 25000;
@@ -194,6 +168,25 @@ const ddaySafe = (iso) => { if (!iso) return null; const v = dday(iso); return N
 const md = (iso) => (iso ? `${iso.slice(5, 7)}.${iso.slice(8, 10)}` : "");
 const ymd = (iso) => (iso ? `${iso.slice(0, 4)}. ${iso.slice(5, 7)}. ${iso.slice(8, 10)}` : "");
 const uid = () => Math.random().toString(36).slice(2, 9);
+const DEVICE_LOG_FIELDS = new Set([
+  "memberId", "assessmentId", "lessonId", "view", "storage", "operation",
+  "permission", "state", "source", "code", "message", "count", "provider",
+  "stage", "kind", "firebaseCode", "nativeCode", "nativeMessage", "credentialState",
+]);
+const deviceLog = (event, details = {}) => {
+  try {
+    const safe = {};
+    Object.entries(details || {}).forEach(([key, value]) => {
+      if (!DEVICE_LOG_FIELDS.has(key) || value === undefined || value === null) return;
+      safe[key] = key === "message" ? String(value).slice(0, 180) : value;
+    });
+    console.info(`[PilaTeacher/device] ${event}`, safe);
+  } catch (e) {}
+};
+const deviceError = (error) => ({
+  code: error?.code || error?.name || "unknown",
+  message: error?.message || String(error || "unknown error"),
+});
 const weeksBetween = (a, b) => Math.max(1, Math.round((new Date(b) - new Date(a)) / 6048e5));
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 const left = (m) => num(m?.regular) + num(m?.service);
@@ -346,6 +339,7 @@ const blobPut = (k, b) => idbRun("readwrite", (s) => s.put(b, k));
 const blobGet = (k) => idbRun("readonly", (s) => s.get(k));
 const blobDel = (k) => idbRun("readwrite", (s) => s.delete(k));
 const newBlobId = () => "b_" + Date.now().toString(36) + "_" + uid();
+const newAudioBlobId = () => "a_" + Date.now().toString(36) + "_" + uid();
 
 const blobToDataUrl = (b) => new Promise((res, rej) => {
   const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(b);
@@ -372,7 +366,7 @@ async function fileToBlob(file, max = 760, q = 0.7) {
   return dataUrlToBlob(await fileToThumb(file, max));
 }
 
-const PHOTO_KEYS = ["front", "side", "back", "poses"];
+const PHOTO_KEYS = [...POSTURE_STORAGE_KEYS, "poses"];
 const objUrls = new Map();
 function revokeAllUrls() {
   objUrls.forEach((u) => { try { URL.revokeObjectURL(u); } catch (e) {} });
@@ -400,6 +394,53 @@ const blobIdsOf = (ph) => {
 };
 function forgetBlobs(ids) {
   (ids || []).forEach((id) => { dropUrl(id); blobDel(id).catch(() => {}); });
+}
+
+async function storedJson(key, fallback) {
+  try {
+    const result = await window.storage.get(key);
+    return result?.value ? JSON.parse(result.value) : fallback;
+  } catch (error) { return fallback; }
+}
+
+async function removeStoredKey(key) {
+  try {
+    if (typeof window.storage?.remove === "function") await window.storage.remove(key);
+    else await window.storage?.set?.(key, "");
+  } catch (error) {}
+  try { window.localStorage?.removeItem(key); } catch (error) {}
+}
+
+async function cleanupLocalAccountData(accountId, snapshot = null) {
+  if (!accountId) throw new Error("삭제할 로컬 계정 ID가 없습니다.");
+  const storedDb = snapshot?.db ?? await storedJson(dbKey(accountId), {});
+  const storedPhotos = snapshot?.photos ?? await storedJson(phKey(accountId), {});
+  const blobIds = collectOwnedBlobIds(storedDb, storedPhotos);
+  await Promise.all(blobIds.map(async (blobId) => {
+    dropUrl(blobId);
+    try { await blobDel(blobId); } catch (error) {}
+  }));
+
+  const accountList = await storedJson(ACC_KEY, []);
+  const remainingAccounts = Array.isArray(accountList) ? accountList.filter((entry) => entry?.id !== accountId) : [];
+  try { await window.storage.set(ACC_KEY, JSON.stringify(remainingAccounts)); } catch (error) {}
+
+  const session = await storedJson(SES_KEY, null);
+  if (!session || session.accountId === accountId) await removeStoredKey(SES_KEY);
+  await removeStoredKey(dbKey(accountId));
+  await removeStoredKey(phKey(accountId));
+
+  try {
+    const retries = JSON.parse(window.localStorage?.getItem(DUAL_WRITE_RETRY_KEY) || "[]");
+    const prefix = `${encodeURIComponent(`legacy_${accountId}`)}:`;
+    const remainingRetries = Array.isArray(retries)
+      ? retries.filter((entry) => !String(entry?.idempotencyKey || "").startsWith(prefix))
+      : [];
+    window.localStorage?.setItem(DUAL_WRITE_RETRY_KEY, JSON.stringify(remainingRetries));
+  } catch (error) {}
+
+  try { window.localStorage?.removeItem(ACCOUNT_DELETION_PENDING_KEY); } catch (error) {}
+  return { blobIds, remainingAccounts };
 }
 /* 저장 직전: 사진 실물(src)은 빼고 좌표·분석선만 남긴다 */
 const stripSrc = (map) => {
@@ -822,20 +863,7 @@ class Guard extends Component {
   }
 }
 
-const Card = ({ children, className = "" }) => (
-  <section className={`rounded-xl bg-white ${className}`} style={{ boxShadow: SHADOW, border: `1px solid ${LINE}` }}>{children}</section>
-);
-const Sub = ({ children, className = "" }) => <p className={`text-xs ${className}`} style={{ color: SUB }}>{children}</p>;
 const inputCls = "h-11 w-full rounded-[10px] border-0 bg-slate-50 px-3.5 text-sm outline-none ring-1 ring-slate-200 focus:ring-2";
-const Field = ({ label, hint, children }) => (
-  <div>
-    <div className="mb-1.5 flex items-baseline gap-2">
-      <p className="text-xs font-bold" style={{ color: SUB }}>{label}</p>
-      {hint && <span className="text-xs" style={{ color: FAINT }}>{hint}</span>}
-    </div>
-    {children}
-  </div>
-);
 function DeltaChip({ metricKey, diff }) {
   const t = toneOf(metricKey, diff), c = toneColor(t);
   const Icon = diff > 0 ? ArrowUpRight : ArrowDownRight;
@@ -845,23 +873,6 @@ function DeltaChip({ metricKey, diff }) {
     </span>
   );
 }
-const PrimaryBtn = ({ children, onClick, disabled, tone = PRIMARY }) => (
-  <button onClick={onClick} disabled={disabled}
-    className="flex h-12 w-full items-center justify-center gap-1.5 rounded-xl px-4 text-sm font-extrabold text-white disabled:opacity-40"
-    style={{ background: tone === PRIMARY ? GRAD : tone }}>{children}</button>
-);
-function Avatar({ src, name, size = 48, radius = 16, ring }) {
-  const st = {
-    width: size, height: size, borderRadius: radius,
-    boxShadow: ring ? `0 0 0 2px ${CARD}, 0 0 0 3px ${RING}` : undefined,
-  };
-  if (src) return <img src={src} alt={name || "프로필"} className="shrink-0 object-cover" style={st} />;
-  return (
-    <span className="flex shrink-0 items-center justify-center font-extrabold text-white"
-      style={{ ...st, background: GRAD, fontSize: Math.round(size * 0.4) }}>{(name || "?").slice(0, 1)}</span>
-  );
-}
-
 function SelectBox({ value, onChange, children, disabled }) {
   return (
     <div className="relative">
@@ -873,7 +884,6 @@ function SelectBox({ value, onChange, children, disabled }) {
     </div>
   );
 }
-
 const to12 = (hhmm) => {
   const h = Number((hhmm || "10:00").slice(0, 2)), m = Number((hhmm || "10:00").slice(3, 5)) || 0;
   return { ap: h < 12 ? "AM" : "PM", h12: h % 12 === 0 ? 12 : h % 12, m };
@@ -1061,23 +1071,47 @@ function ScheduleBottomSheet({ title, subtitle, onClose, returnFocusRef, childre
     };
   }, []);
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center" style={{ backgroundColor: SCRIM }} onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+    <div className="fixed inset-0 z-50 flex items-end justify-center px-0 sm:px-3" style={{ backgroundColor: SCRIM, animation: "sheet-fade .18s ease-out" }} onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <section ref={panelRef} role="dialog" aria-modal="true" aria-labelledby="schedule-sheet-title"
-        className="w-full overflow-y-auto bg-white"
-        style={{ maxWidth: 420, maxHeight: "92dvh", borderRadius: "16px 16px 0 0",
-          boxShadow: "0 -8px 24px rgba(28,36,51,.12)", padding: "16px 16px calc(20px + env(safe-area-inset-bottom, 0px))" }}>
-        <div className="mb-2 flex items-start gap-3">
+        className="w-full overflow-y-auto"
+        style={{ maxWidth: 420, maxHeight: "92dvh", borderRadius: "20px 20px 0 0", backgroundColor: CARD,
+          border: `1px solid ${LINE}`, borderBottom: 0, boxShadow: "0 -18px 54px rgba(28,36,51,.18)", padding: "8px 16px calc(20px + env(safe-area-inset-bottom, 0px))", animation: "sheet-rise .24s cubic-bezier(.2,.8,.2,1)" }}>
+        <div aria-hidden="true" className="mx-auto mb-2" style={{ width: 36, height: 4, borderRadius: 999, backgroundColor: LINE }} />
+        <div className="mb-3 flex min-h-11 items-start gap-3">
           <div className="min-w-0 flex-1">
-            <h3 id="schedule-sheet-title" style={{ fontSize: 17, fontWeight: 600, color: INK }}>{title}</h3>
-            {subtitle && <p className="mt-0.5 text-xs" style={{ color: SUB }}>{subtitle}</p>}
+            <h3 id="schedule-sheet-title" style={{ fontSize: 18, lineHeight: 1.35, fontWeight: 700, color: INK }}>{title}</h3>
+            {subtitle && <p className="mt-1 text-xs tabular-nums" style={{ color: SUB }}>{subtitle}</p>}
           </div>
-          <button onClick={onClose} aria-label="닫기" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg" style={{ marginTop: -6, marginRight: -8, color: SUB }}>
+          <button onClick={onClose} aria-label="닫기" className="flex h-10 w-10 shrink-0 items-center justify-center" style={{ marginTop: -2, marginRight: -6, borderRadius: 10, backgroundColor: CANVAS, color: SUB }}>
             <X size={18} />
           </button>
         </div>
         {children}
       </section>
     </div>
+  );
+}
+function ChoiceBottomSheet({ title, subtitle, options, value, onSelect, onClose, columns = 1 }) {
+  return (
+    <ScheduleBottomSheet title={title} subtitle={subtitle} onClose={onClose}>
+      <div className={columns > 1 ? "grid grid-cols-2 gap-2" : "space-y-2"}>
+        {options.map((option) => {
+          const active = option.value === value;
+          return (
+            <button key={option.value} type="button" onClick={() => { onSelect(option.value); onClose(); }}
+              className="flex min-h-12 w-full items-center gap-3 px-3 py-2.5 text-left"
+              style={{ borderRadius: 11, backgroundColor: active ? TINT : CANVAS, border: `1px solid ${active ? BRAND : LINE}`, color: active ? BRAND_D : INK }}>
+              {option.icon && <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: active ? CARD : TINT, color: BRAND_D }}>{option.icon}</span>}
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-bold">{option.label}</span>
+                {option.description && <span className="mt-0.5 block text-[11px] leading-relaxed" style={{ color: SUB }}>{option.description}</span>}
+              </span>
+              {active && <Check size={15} className="shrink-0" style={{ color: BRAND }} />}
+            </button>
+          );
+        })}
+      </div>
+    </ScheduleBottomSheet>
   );
 }
 function GuideOverlay({ strong = false }) {
@@ -1387,22 +1421,40 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
   const [f, setF] = useState({ name: "", email: "", pw: "", center: "", phone: "" });
 
   const [busy, setBusy] = useState(false);
+  const socialGateRef = useRef(null);
+  if (!socialGateRef.current) socialGateRef.current = createSingleFlightGate();
   const handleSocial = async (provider) => {
     if (fbReady) {
       if (provider !== "google" && provider !== "apple") {
         onToast({ ok: false, msg: "지금은 Google \u00b7 Apple \u00b7 \uc774\uba54\uc77c\ub85c\ub9cc \ub85c\uadf8\uc778\ud560 \uc218 \uc788\uc2b5\ub2c8\ub2e4." });
         return;
       }
+      if (socialGateRef.current.busy) return;
       setBusy(true);
       try {
-        const u = await fbSignInSocial(provider);
-        const prof = await fbLoadProfile(u.id);
-        if (prof && prof.center) onLogin({ ...u, ...prof, id: u.id }, auto);
-        else setSignup({ ...u, provider, center: "", phone: "", fb: true });
+        await socialGateRef.current.run(async () => {
+          const u = await fbSignInSocial(provider);
+          const prof = await fbLoadProfile(u.id);
+          if (prof && prof.center) onLogin({ ...u, ...prof, id: u.id }, auto);
+          else setSignup({ ...u, provider, center: "", phone: "", fb: true });
+        });
       } catch (e) {
-        onToast({ ok: false, msg: e && e.code === "auth/popup-closed-by-user" ? "\ub85c\uadf8\uc778\uc744 \ucde8\uc18c\ud588\uc2b5\ub2c8\ub2e4." : "\ub85c\uadf8\uc778\ud558\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4. \uc7a0\uc2dc \ub4a4 \ub2e4\uc2dc \uc2dc\ub3c4\ud574 \uc8fc\uc138\uc694." });
+        const diagnostic = safeAuthDiagnostic(e, { provider, stage: e?.authStage || "sign_in" });
+        deviceLog("auth_sign_in_failed", diagnostic);
+        const kind = classifyAuthError(e);
+        if (kind !== "cancelled") {
+          const message = kind === "network"
+            ? "네트워크 연결을 확인한 뒤 다시 시도해 주세요."
+            : kind === "configuration"
+              ? `${provider === "apple" ? "Apple" : "Google"} 로그인 설정을 확인할 수 없습니다. 잠시 뒤 다시 시도해 주세요.`
+              : kind === "credential"
+                ? "로그인 정보가 만료되었거나 유효하지 않습니다. 다시 로그인해 주세요."
+                : "로그인하지 못했습니다. 잠시 뒤 다시 시도해 주세요.";
+          onToast({ ok: false, msg: message });
+        }
+      } finally {
+        setBusy(false);
       }
-      setBusy(false);
       return;
     }
     const exist = accounts.find((a) => a.provider === provider);
@@ -1424,10 +1476,10 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
           {mode === "main" ? (
             <div className="space-y-2">
               {PROVIDERS.map((p) => (
-                <button key={p.key} onClick={() => handleSocial(p.key)}
-                  className="flex w-full items-center justify-center gap-2 rounded-2xl py-3.5 text-sm font-extrabold"
+                <button key={p.key} onClick={() => handleSocial(p.key)} disabled={busy} aria-busy={busy}
+                  className="flex w-full items-center justify-center gap-2 rounded-2xl py-3.5 text-sm font-extrabold disabled:cursor-not-allowed disabled:opacity-55"
                   style={{ backgroundColor: p.bg, color: p.fg, border: p.border ? `1px solid ${p.border}` : "none" }}>
-                  {p.label}
+                  {busy && (p.key === "google" || p.key === "apple") ? <Loader2 size={15} className="animate-spin" /> : null}{p.label}
                 </button>
               ))}
               <div className="flex items-center gap-3 py-3">
@@ -1435,7 +1487,7 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
                 <span className="text-xs font-bold" style={{ color: SUB }}>또는</span>
                 <div className="h-px flex-1" style={{ backgroundColor: LINE }} />
               </div>
-              <button onClick={() => setMode("email")}
+              <button onClick={() => setMode("email")} disabled={busy}
                 className="flex w-full items-center justify-center gap-2 rounded-2xl py-3.5 text-sm font-extrabold"
                 style={{ backgroundColor: CANVAS, color: INK }}>
                 <Mail size={16} /> 이메일로 시작하기
@@ -1574,7 +1626,7 @@ function Header({ settings, account, alertCount, onProfile, onAlerts }) {
 function Tabs({ tab, setTab }) {
   const items = [
     { key: "schedule", label: "일정", icon: Calendar }, { key: "members", label: "회원", icon: Users },
-    { key: "analysis", label: "체형분석", icon: Activity }, { key: "settings", label: "설정", icon: SettingsIcon },
+    { key: "analysis", label: "체형분석", icon: Activity }, { key: "settings", label: "더보기", icon: SettingsIcon },
   ];
   return (
     <nav className="safe-tab z-40 flex shrink-0" aria-label="주요 메뉴"
@@ -1728,31 +1780,20 @@ function SalesBriefModal({ alert, onClose, onToast }) {
   const r = useMemo(() => buildReview(member), [member]);
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(true);
-  const fallback = useCallback(() => {
-    const fat = r?.rows.find((x) => x.key === "fat"), smm = r?.rows.find((x) => x.key === "smm");
-    return `${member.name} 회원님, 지난 ${r ? r.weeks : 0}주 동안 ` +
-      (fat && smm ? `체지방률이 ${Math.abs(fat.diff)}%p 줄고 골격근량이 ${Math.abs(smm.diff)}kg 늘었습니다. ` : "체형이 꾸준히 개선됐습니다. ") +
-      (r && r.best ? `수행 능력도 평균 ${r.avgGain}점 올랐고, 특히 ${r.best.name}이 크게 좋아졌습니다. ` : "") +
-      (att.rate !== null ? `출석률 ${att.rate}%로 성실하게 참여해 주신 결과입니다. ` : "") +
-      `지금이 변화 속도가 가장 빠른 구간인데 수강권이 ${rest}회 남았습니다. ` +
-      (r?.weak ? `다음 3개월은 ${r.weak.name} 보완에 집중해 목표까지 마무리하시길 권해 드립니다.` : "흐름이 끊기지 않게 이어가시길 권해 드립니다.");
-  }, [member, r, att, rest]);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     let alive = true;
     (async () => {
+      if (aiProvider.getStatus().status !== "connected") {
+        if (alive) { setError("AI 분석 미연결"); setLoading(false); }
+        return;
+      }
       try {
-        const res = await fetch("https://api.anthropic.com/v1/messages", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model: "claude-sonnet-4-6", max_tokens: 1000,
-            messages: [{ role: "user", content: "너는 필라테스 스튜디오의 베테랑 강사다. 아래 데이터로 재등록 상담에서 회원에게 직접 말할 멘트를 써라.\n조건: 5~6문장 존댓말. ①숫자 근거로 성과 인정 → ②지금 멈추면 아까운 이유 → ③다음 3개월 제안. 압박·과장 금지, 마크다운 없이 한 문단.\n\n" + JSON.stringify({ 회원: member.name, 목표: member.goal, 잔여: rest, 만료D: d, 출석: att, 체성분: r?.rows.map((x) => `${x.label} ${x.from}→${x.to}`), 수행능력: (member.perf || []).map((p) => `${p.name} ${p.prev}→${p.now}`) }) }],
-          }),
-        });
-        const data = await res.json();
-        const t = (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
-        if (alive) setText(t || fallback());
-      } catch (e) { if (alive) setText(fallback()); }
+        const result = await aiProvider.generateReport(buildReportInput({ reportType: "renewal_consultation", memberId: member.id, source: { goal: member.goal, remainingLessons: rest, expiryDays: d, attendance: att, bodyComposition: r?.rows, performance: member.perf || [] } }));
+        if (alive && result.status === AI_STATUSES.DRAFT) setText(formatAIReport(result.output));
+        else if (alive) setError("AI 분석 미연결");
+      } catch (e) { if (alive) setError("AI 브리핑을 불러오지 못했습니다."); }
       finally { if (alive) setLoading(false); }
     })();
     return () => { alive = false; };
@@ -1783,10 +1824,11 @@ function SalesBriefModal({ alert, onClose, onToast }) {
       <div className="mt-3 rounded-2xl p-4" style={{ backgroundColor: TINT }}>
         <p className="text-xs font-extrabold" style={{ color: PRIMARY }}>상담 멘트</p>
         {loading ? <p className="mt-2 flex items-center gap-2 text-sm" style={{ color: SUB }}><Loader2 size={14} className="animate-spin" /> 회원 데이터를 분석하는 중…</p>
-          : <p className="mt-2 text-sm leading-relaxed" style={{ color: INK }}>{text}</p>}
+          : error ? <p className="mt-2 text-sm font-bold" style={{ color: WARN }}>{error} · 실제 Provider 연결 전에는 상담 문장을 생성하지 않습니다.</p>
+            : <p className="mt-2 whitespace-pre-line text-sm leading-relaxed" style={{ color: INK }}>{text}</p>}
       </div>
       <div className="mt-3 flex gap-2">
-        <button disabled={loading} onClick={async () => {
+        <button disabled={loading || !text} onClick={async () => {
           try { await navigator.clipboard.writeText(text); onToast({ ok: true, msg: "멘트를 복사했습니다." }); }
           catch (e) { onToast({ ok: false, msg: "복사하지 못했습니다." }); }
         }} className="flex flex-1 items-center justify-center gap-1.5 rounded-2xl py-3 text-sm font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: BRAND }}>
@@ -1947,13 +1989,14 @@ function SchedItem({ s, members, del, setDel, setEditing, onStatus, onNoshowFee,
   );
 }
 
-function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset }) {
+function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset, quickAddRequest, onConsumeQuickAdd }) {
   const initialDisplay = useMemo(() => {
     try { return JSON.parse(localStorage.getItem(SCHEDULE_VIEW_KEY) || "null") || {}; }
     catch (e) { return {}; }
   }, []);
   const [foldEmpty, setFoldEmpty] = useState(initialDisplay.foldEmpty !== false);
-  const [showSunday, setShowSunday] = useState(initialDisplay.showSunday === true);
+  /* v1의 showSunday 값은 APK에서 의도치 않게 계속 남을 수 있어 새 명시 설정만 읽는다. */
+  const [showSundaySetting, setShowSundaySetting] = useState(initialDisplay.showSundaySetting === true);
   const [displaySettings, setDisplaySettings] = useState(false);
   const [listOpen, setListOpen] = useState(false);
   const [queueOpen, setQueueOpen] = useState(false);
@@ -1962,9 +2005,8 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
   const [cursor, setCursor] = useState(todayISO());
   const [editing, setEditing] = useState(null);
   const [del, setDel] = useState(null);
-  const [drag, setDrag] = useState(0);
-  const [anim, setAnim] = useState(true);
-  const x0 = useRef(null);
+  const [focusedMemberId, setFocusedMemberId] = useState(null);
+  useBackClose(!!focusedMemberId, () => setFocusedMemberId(null));
   useEffect(() => {
     if (!memberPresetId) return;
     const target = db.members.find((m) => m.id === memberPresetId);
@@ -1974,8 +2016,14 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
     onConsumeMemberPreset?.();
   }, [memberPresetId]);
   useEffect(() => {
-    try { localStorage.setItem(SCHEDULE_VIEW_KEY, JSON.stringify({ foldEmpty, showSunday })); } catch (e) {}
-  }, [foldEmpty, showSunday]);
+    if (!quickAddRequest) return;
+    setCursor(todayISO());
+    setEditing({ id: null, memberIds: [], date: todayISO(), start: "10:00", dur: 50, type: "개인레슨", instructor: db.settings.staff, room: "", memo: "" });
+    onConsumeQuickAdd?.();
+  }, [quickAddRequest]);
+  useEffect(() => {
+    try { localStorage.setItem(SCHEDULE_VIEW_KEY, JSON.stringify({ foldEmpty, showSundaySetting })); } catch (e) {}
+  }, [foldEmpty, showSundaySetting]);
 
   const nameOf = (id) => db.members.find((m) => m.id === id)?.name || "삭제된 회원";
   const memberOf = (id) => db.members.find((m) => m.id === id);
@@ -2004,28 +2052,9 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
   }, [db.schedule]);
 
   const sundayHasLessons = db.schedule.some((s) => s?.date === week[6]);
-  const visibleDays = showSunday || sundayHasLessons ? week : week.slice(0, 6);
+  const visibleDays = showSundaySetting || sundayHasLessons ? week : week.slice(0, 6);
   const liveEditing = editing?.id ? (db.schedule.find((s) => s.id === editing.id) || editing) : editing;
   const step = (dir) => setCursor(shift(cursor, 7 * dir));
-  const onStart = (e) => { x0.current = e.touches[0].clientX; setAnim(false); };
-  const onMove = (e) => {
-    if (x0.current === null) return;
-    const dx = e.touches[0].clientX - x0.current;
-    setDrag(Math.max(-150, Math.min(150, dx)));
-  };
-  const onEnd = () => {
-    if (x0.current === null) return;
-    const dx = drag; x0.current = null;
-    if (Math.abs(dx) < 55) { setAnim(true); setDrag(0); return; }
-    const dir = dx < 0 ? 1 : -1;
-    setAnim(true); setDrag(dir * -190);
-    setTimeout(() => {
-      step(dir);
-      setAnim(false); setDrag(dir * 190);
-      requestAnimationFrame(() => requestAnimationFrame(() => { setAnim(true); setDrag(0); }));
-    }, 160);
-  };
-  const slide = { transform: `translateX(${drag}px)`, transition: anim ? "transform .18s cubic-bezier(.25,.8,.3,1), opacity .18s ease" : "none", opacity: 1 - Math.min(0.45, Math.abs(drag) / 340) };
 
   const itemProps = { members: db.members, del, setDel, setEditing, onStatus, onNoshowFee, onGroupDone, onDelete };
 
@@ -2170,8 +2199,14 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
       </div>
 
       {/* ─── 메인 시간표 영역 (flex-1, 내부 스크롤) ─── */}
-      <div className="min-h-0 flex-1 overflow-y-auto" style={{ backgroundColor: CARD }}>
-        <WeekGrid days={visibleDays} byDate={byDate} nameOf={nameOf} memberOf={(id) => db.members.find((m) => m.id === id)} cursor={cursor} foldEmpty={foldEmpty}
+      <div className="min-h-0 flex-1 overflow-hidden" style={{ backgroundColor: CARD }}>
+        {focusedMemberId && (
+          <div className="sticky top-0 z-20 flex items-center gap-2 px-3 py-2" style={{ backgroundColor: TINT, borderBottom: `1px solid ${LINE}` }}>
+            <span className="min-w-0 flex-1 text-xs font-bold" style={{ color: BRAND_D }}>{nameOf(focusedMemberId)} · 이번 주 이 회원 일정만 보기</span>
+            <button type="button" onClick={() => setFocusedMemberId(null)} className="flex h-7 shrink-0 items-center gap-1 px-2 text-xs font-semibold" style={{ borderRadius: 7, backgroundColor: CARD, color: SUB, border: `1px solid ${LINE}` }}><X size={12} />필터 해제</button>
+          </div>
+        )}
+        <WeekGrid days={visibleDays} byDate={byDate} nameOf={nameOf} memberOf={(id) => db.members.find((m) => m.id === id)} cursor={cursor} foldEmpty={foldEmpty} focusedMemberId={focusedMemberId}
           onOpen={(s, trigger) => { scheduleTriggerRef.current = trigger; setEditing(s); }}
           onNew={(date, start, dur, trigger) => { scheduleTriggerRef.current = trigger; setEditing({ id: null, memberIds: [], date, start, dur: dur || 50, type: "개인레슨", instructor: db.settings.staff, room: "", memo: "" }); }} />
       </div>
@@ -2195,7 +2230,7 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
       {editing && <ScheduleForm draft={liveEditing} members={db.members} schedule={db.schedule} photos={photos} returnFocusRef={scheduleTriggerRef} onClose={() => setEditing(null)}
         onSubmit={(v) => { onSave(v); setEditing(null); }} onDelete={(id) => { onDelete(id); setEditing(null); }}
         onStatus={onStatus} onStatusAll={onStatusAll} onNoshowFee={onNoshowFee} onGroupDone={onGroupDone}
-        onNoComment={onNoComment} onSaveNote={onSaveNote} />}
+        onNoComment={onNoComment} onSaveNote={onSaveNote} onFocusMemberWeek={(memberId) => { setFocusedMemberId(memberId); setEditing(null); }} onSaveRecommendation={(recommendation) => onSave({ ...liveEditing, aiRecommendation: recommendation })} />}
       {queueOpen && (
         <ScheduleQueueSheet tasks={taskQueue} members={db.members} returnFocusRef={queueTriggerRef} onClose={() => setQueueOpen(false)}
           onNoComment={onNoComment} onSaveNote={onSaveNote}
@@ -2206,7 +2241,7 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
           <div className="space-y-2">
             {[
               { label: "빈 시간 접기", value: foldEmpty, set: setFoldEmpty },
-              { label: "일요일 표시", value: showSunday, set: setShowSunday },
+              { label: "일요일 표시", value: showSundaySetting, set: setShowSundaySetting },
             ].map((item) => (
               <button key={item.label} onClick={() => item.set(!item.value)}
                 className="flex h-12 w-full items-center rounded-xl px-3 text-left" style={{ border: `1px solid ${LINE}`, backgroundColor: CARD }}>
@@ -2305,9 +2340,12 @@ function SwipeRow({ children, down, enabled, onPark, onUnpark }) {
 const AXIS = 28, GRID_PAD_X = 12, GRID_H0 = 8, GRID_H1 = 23, GRID_ROW = 64, GRID_FOLD = 20;
 const hourLabel = (h) => `${String(h).padStart(2, "0")}시`;
 
-function WeekGrid({ days, byDate, nameOf, memberOf, cursor, onOpen, onNew, foldEmpty = true }) {
+function WeekGrid({ days, byDate, nameOf, memberOf, cursor, onOpen, onNew, foldEmpty = true, focusedMemberId = null }) {
   const rows = GRID_H1 - GRID_H0 + 1;
   const top0 = GRID_H0 * 60;
+  const gridRef = useRef(null);
+  const gridHeaderRef = useRef(null);
+  const [gridBodyHeight, setGridBodyHeight] = useState(0);
   /* 빈 칸을 위아래로 훑으면 그 시간만큼 일정이 잡힌다 (30분 단위) */
   /* 지금 시각 표시선 — 1분마다 갱신 */
   const [nowMin, setNowMin] = useState(() => { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); });
@@ -2326,7 +2364,26 @@ function WeekGrid({ days, byDate, nameOf, memberOf, cursor, onOpen, onNew, foldE
     if (days.includes(todayISO())) out.add(Math.floor(nowMin / 60));
     return out;
   }, [days, byDate, nowMin]);
-  const heightOf = (hour) => (!foldEmpty || activeHours.has(hour) ? GRID_ROW : GRID_FOLD);
+  useEffect(() => {
+    const grid = gridRef.current;
+    if (!grid) return undefined;
+    const measure = () => {
+      const headerHeight = gridHeaderRef.current?.getBoundingClientRect().height || 0;
+      setGridBodyHeight(Math.max(0, grid.clientHeight - headerHeight));
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", measure);
+      return () => window.removeEventListener("resize", measure);
+    }
+    const observer = new ResizeObserver(measure);
+    observer.observe(grid);
+    return () => observer.disconnect();
+  }, []);
+  const baseHeightOf = (hour) => (!foldEmpty || activeHours.has(hour) ? GRID_ROW : GRID_FOLD);
+  const baseTotalHeight = Array.from({ length: rows }, (_, i) => baseHeightOf(GRID_H0 + i)).reduce((a, b) => a + b, 0);
+  const fillPerRow = gridBodyHeight > baseTotalHeight ? (gridBodyHeight - baseTotalHeight) / rows : 0;
+  const heightOf = (hour) => baseHeightOf(hour) + fillPerRow;
   const topOf = (minutes) => {
     const clamped = Math.max(top0, Math.min((GRID_H1 + 1) * 60, minutes));
     const hour = Math.floor(clamped / 60);
@@ -2379,10 +2436,8 @@ function WeekGrid({ days, byDate, nameOf, memberOf, cursor, onOpen, onNew, foldE
   }).filter((b) => b.top >= -GRID_ROW && b.top < totalHeight);
 
   return (
-    <div className="h-full" style={{ padding: `0 ${GRID_PAD_X}px`, backgroundColor: CARD }}>
-      <div style={{ borderBottom: `1px solid ${LINE}` }}>
-        <div style={{ width: "100%" }}>
-          <div className="sticky top-0 z-10 grid" style={{ gridTemplateColumns: `${AXIS}px repeat(${days.length}, minmax(0, 1fr))`, backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
+    <div ref={gridRef} className="flex h-full min-h-0 flex-col" style={{ padding: `0 ${GRID_PAD_X}px`, backgroundColor: CARD }}>
+          <div ref={gridHeaderRef} className="z-10 grid shrink-0" style={{ gridTemplateColumns: `${AXIS}px repeat(${days.length}, minmax(0, 1fr))`, backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
             <div />
             {days.map((d) => {
               const today = d === todayISO(), on = d === cursor;
@@ -2394,6 +2449,7 @@ function WeekGrid({ days, byDate, nameOf, memberOf, cursor, onOpen, onNew, foldE
               );
             })}
           </div>
+          <div className="min-h-0 flex-1 overflow-y-auto">
           <div className="relative grid" style={{ gridTemplateColumns: `${AXIS}px repeat(${days.length}, minmax(0, 1fr))` }}>
             <div style={{ height: totalHeight }}>
               {Array.from({ length: rows }, (_, i) => (
@@ -2417,31 +2473,35 @@ function WeekGrid({ days, byDate, nameOf, memberOf, cursor, onOpen, onNew, foldE
                     <div style={{ position: "absolute", left: -4, top: -3, width: 8, height: 8, borderRadius: 8, backgroundColor: "#FF3B30" }} />
                   </div>
                 )}
-                {blocksOf(d).map((b) => (
+                {blocksOf(d).map((b) => {
+                  const memberMatch = !focusedMemberId || attendeesOf(b.s).some((a) => a.memberId === focusedMemberId);
+                  return (
                   <button key={b.s.id} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); onOpen(b.s, e.currentTarget); }}
-                    className="absolute left-0.5 right-0.5 flex min-w-0 items-center gap-0.5 overflow-hidden px-1 text-left"
+                    className="absolute left-0.5 right-0.5 flex min-w-0 items-center justify-center overflow-hidden text-center"
                     style={{ top: b.top + 1, height: Math.max(18, b.h - 1), borderRadius: 4,
                       background: b.pv ? CARD : b.cancelled ? "transparent" : b.noshow ? BAD_S : b.done ? CANVAS : b.next ? TINT : "#E9EDF3",
                       border: b.next ? `1.5px solid ${BRAND}` : b.cancelled ? "1px dashed #D5DAE3" : b.pv ? `1px solid #D5DAE3` : "1px solid transparent",
                       borderLeft: b.pv ? `3px solid ${BRAND}` : undefined,
                       color: b.noshow ? BAD : b.next ? BRAND : b.done || b.cancelled ? INK2 : d === todayISO() ? INK : INK2,
-                      fontSize: 11, fontWeight: b.next ? 600 : 500 }}>
-                    {b.next && <Play size={8} fill={BRAND} className="shrink-0" />}
-                    {!b.pv && !b.eq && <span className="shrink-0" style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: idColor(attendeesOf(b.s)[0]?.memberId), opacity: b.done ? .45 : 1 }} />}
-                    <span className="truncate" style={{ textDecoration: b.cancelled ? "line-through" : "none" }}>{b.label}</span>
-                    {b.needsRecord && <span className="absolute" style={{ top: 2, right: 2, width: 6, height: 6, borderRadius: 3, backgroundColor: BRAND }} />}
+                      padding: "1px 2px", fontSize: b.label.length > 7 ? 8.5 : b.label.length > 4 ? 9 : b.label.length === 4 ? 9.5 : 10.5,
+                      letterSpacing: b.label.length >= 4 ? "-0.35px" : "-0.15px", lineHeight: 1.08, fontWeight: b.next || (focusedMemberId && memberMatch) ? 700 : 600,
+                      opacity: memberMatch ? 1 : 0.22, boxShadow: focusedMemberId && memberMatch ? `0 0 0 2px ${RING}` : "none", transition: "opacity .18s ease, box-shadow .18s ease" }}>
+                    {b.next && <Play size={7} fill={BRAND} className="absolute left-0.5 top-0.5" />}
+                    {!b.pv && !b.eq && <span className="absolute" aria-hidden="true" style={{ left: 2, bottom: 2, width: 5, height: 5, borderRadius: 3, backgroundColor: idColor(attendeesOf(b.s)[0]?.memberId), opacity: b.done ? .45 : 1 }} />}
+                    <span className="w-full" style={{ display: "-webkit-box", WebkitBoxOrient: "vertical", WebkitLineClamp: 2, overflow: "hidden", wordBreak: b.label.length <= 4 ? "keep-all" : "break-all", overflowWrap: "normal", textDecoration: b.cancelled ? "line-through" : "none" }}>{b.label}</span>
+                    {b.needsRecord && <span className="absolute" aria-label="기록 필요" style={{ top: 2, right: 2, width: 5, height: 5, borderRadius: 3, backgroundColor: BRAND }} />}
                   </button>
-                ))}
+                  );
+                })}
               </div>
             ))}
           </div>
-        </div>
-      </div>
+          </div>
     </div>
   );
 }
 
-function ScheduleForm({ draft, members, schedule, photos, returnFocusRef, onClose, onSubmit, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote }) {
+function ScheduleForm({ draft, members, schedule, photos, returnFocusRef, onClose, onSubmit, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onSaveRecommendation, onFocusMemberWeek }) {
   const currentIds = draft.memberIds || attendeesOf(draft).map((a) => a.memberId).filter(Boolean);
   const initialKind = draft.personal
     ? (draft.title === "상담" ? "consult" : "off")
@@ -2456,22 +2516,53 @@ function ScheduleForm({ draft, members, schedule, photos, returnFocusRef, onClos
   const [activeMemberId, setActiveMemberId] = useState(currentIds[0] || "");
   const [recordMode, setRecordMode] = useState(null);
   const [recordBody, setRecordBody] = useState("");
+  const [recordMeta, setRecordMeta] = useState(null);
+  const [picker, setPicker] = useState(null);
   const isGroup = kind === "group";
   const isDuet = kind === "duet";
   const isMemberLesson = kind === "solo" || isDuet;
   const activeMember = members.find((m) => m.id === activeMemberId) || null;
   const activeAttendee = attendeesOf(draft).find((a) => a.memberId === activeMemberId) || null;
-  const advice = useMemo(() => seqAdvice(activeMember, schedule, photos), [activeMember, schedule, photos]);
+  const existingRecommendation = draft.aiRecommendation?.memberId === activeMemberId ? draft.aiRecommendation : null;
+  const [sequenceOriginal, setSequenceOriginal] = useState(existingRecommendation?.output || null);
+  const [sequenceText, setSequenceText] = useState(existingRecommendation?.teacherEditedText || (existingRecommendation?.output ? formatSequenceRecommendation(existingRecommendation.output) : ""));
+  const [sequenceMeta, setSequenceMeta] = useState(existingRecommendation?.meta || null);
+  const [sequenceStatus, setSequenceStatus] = useState(existingRecommendation?.status || AI_STATUSES.NOT_CONNECTED);
+  const [sequenceBusy, setSequenceBusy] = useState(false);
+  const [sequenceError, setSequenceError] = useState("");
+  useEffect(() => {
+    const saved = draft.aiRecommendation?.memberId === activeMemberId ? draft.aiRecommendation : null;
+    setSequenceOriginal(saved?.output || null);
+    setSequenceText(saved?.teacherEditedText || (saved?.output ? formatSequenceRecommendation(saved.output) : ""));
+    setSequenceMeta(saved?.meta || null);
+    setSequenceStatus(saved?.status || AI_STATUSES.NOT_CONNECTED);
+    setSequenceError("");
+  }, [activeMemberId, draft.aiRecommendation?.memberId, draft.aiRecommendation?.status]);
+  const requestSequence = async () => {
+    if (!activeMember || !draft.id) return;
+    if (aiProvider.getStatus().status !== "connected") { setSequenceStatus(AI_STATUSES.NOT_CONNECTED); setSequenceError("AI 추천 미연결 상태입니다."); return; }
+    setSequenceBusy(true); setSequenceError("");
+    try {
+      const result = await aiProvider.recommendSequence(buildSequenceInput({ member: activeMember, schedule, photos: photos?.[activeMember.id] || {} }));
+      if (result.status === AI_STATUSES.NOT_CONNECTED) { setSequenceStatus(result.status); return; }
+      const meta = aiMetaFrom(result);
+      const teacherEditedText = formatSequenceRecommendation(result.output);
+      const recommendation = { id: `airec_${draft.id}_${activeMember.id}`, lessonId: draft.id, memberId: activeMember.id, status: AI_STATUSES.DRAFT, output: result.output, teacherEditedText, meta, createdAt: result.createdAt || new Date().toISOString() };
+      onSaveRecommendation?.(recommendation);
+      setSequenceOriginal(result.output); setSequenceText(teacherEditedText); setSequenceMeta(meta); setSequenceStatus(AI_STATUSES.DRAFT);
+    } catch (error) { setSequenceStatus(AI_STATUSES.ERROR); setSequenceError(`AI 추천을 불러오지 못했습니다${error?.code ? ` (${error.code})` : ""}.`); }
+    finally { setSequenceBusy(false); }
+  };
+  const confirmSequence = () => {
+    if (!activeMember || !draft.id || !sequenceOriginal || !sequenceText.trim()) return;
+    onSaveRecommendation?.({ id: `airec_${draft.id}_${activeMember.id}`, lessonId: draft.id, memberId: activeMember.id, status: AI_STATUSES.CONFIRMED, output: sequenceOriginal, teacherEditedText: sequenceText.trim(), meta: sequenceMeta, confirmedAt: new Date().toISOString() });
+    setSequenceStatus(AI_STATUSES.CONFIRMED);
+  };
   const latestNote = (activeMember?.notes || []).slice().sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")))[0] || null;
   const hour = Number((f.start || "10:00").slice(0, 2));
   const minute = Number((f.start || "10:00").slice(3, 5));
   const durationOptions = [...new Set([30, 50, 60, 80, Number(f.dur)].filter((n) => Number.isFinite(n) && n > 0))].sort((a, b) => a - b);
   const setTime = (h, m) => setF((x) => ({ ...x, start: `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}` }));
-  const updateMemberName = (slot, value) => {
-    const names = [...memberNames]; names[slot] = value; setMemberNames(names);
-    const matches = members.filter((m) => isActive(m) && (m.name || "").trim() === value.trim());
-    const ids = [...memberIds]; ids[slot] = matches.length === 1 ? matches[0].id : ""; setMemberIds(ids);
-  };
   const neededSlots = isDuet ? 2 : isMemberLesson ? 1 : 0;
   const chosenIds = memberIds.slice(0, neededSlots).filter(Boolean);
   const unresolved = isMemberLesson && memberNames.slice(0, neededSlots).some((name, i) => {
@@ -2507,8 +2598,8 @@ function ScheduleForm({ draft, members, schedule, photos, returnFocusRef, onClos
       title: personal ? (kind === "consult" ? "상담" : (draft.personal && draft.title && draft.title !== "상담" ? draft.title : "휴무")) : undefined,
     });
   };
-  const memberListId = `schedule-member-list-${draft.id || "new"}`;
   return (
+    <>
     <ScheduleBottomSheet title={draft.id ? (isMemberLesson ? "수업 관리" : "일정 수정") : "일정 등록"} subtitle={`${dow(f.date)} ${f.date?.slice(5).replace("-", ".") || ""}${draft.id ? ` · ${draft.start}~${draft.end || addMin(draft.start, Number(draft.dur) || 50)}` : ""}`} returnFocusRef={returnFocusRef} onClose={onClose}>
       <div className="space-y-4">
         {draft.id && !editingInfo && (
@@ -2522,17 +2613,18 @@ function ScheduleForm({ draft, members, schedule, photos, returnFocusRef, onClos
         )}
         {editingInfo && <>
         <div>
+          <p className="mb-1.5 text-xs font-bold" style={{ color: SUB }}>날짜</p>
+          <button type="button" onClick={() => setPicker({ type: "date" })} className="flex h-11 w-full items-center gap-2 px-3 text-left text-sm font-bold"
+            style={{ borderRadius: 9, backgroundColor: CANVAS, border: `1px solid ${LINE}`, color: INK }}>
+            <CalendarDays size={15} style={{ color: BRAND }} />{ymd(f.date)} · {dow(f.date)}요일<ChevronDown size={14} className="ml-auto" style={{ color: SUB }} />
+          </button>
+        </div>
+        <div>
           <p className="mb-1.5 text-xs font-bold" style={{ color: SUB }}>시작 시간</p>
           <div className="grid grid-cols-3 gap-2">
-            <select aria-label="시" value={hour} onChange={(e) => setTime(Number(e.target.value), minute)} className={inputCls}>
-              {Array.from({ length: 24 }, (_, h) => <option key={h} value={h}>{h}시</option>)}
-            </select>
-            <select aria-label="분" value={minute} onChange={(e) => setTime(hour, Number(e.target.value))} className={inputCls}>
-              {[0, 10, 20, 30, 40, 50].map((m) => <option key={m} value={m}>{String(m).padStart(2, "0")}분</option>)}
-            </select>
-            <select aria-label="수업 길이" value={f.dur} onChange={(e) => setF({ ...f, dur: Number(e.target.value) })} className={inputCls}>
-              {durationOptions.map((d) => <option key={d} value={d}>{d}분</option>)}
-            </select>
+            <button type="button" aria-label="시 선택" onClick={() => setPicker({ type: "hour" })} className="flex h-11 items-center justify-center gap-1 text-sm font-bold" style={{ borderRadius: 9, backgroundColor: CANVAS, border: `1px solid ${LINE}`, color: INK }}>{hour}시<ChevronDown size={13} style={{ color: SUB }} /></button>
+            <button type="button" aria-label="분 선택" onClick={() => setPicker({ type: "minute" })} className="flex h-11 items-center justify-center gap-1 text-sm font-bold" style={{ borderRadius: 9, backgroundColor: CANVAS, border: `1px solid ${LINE}`, color: INK }}>{String(minute).padStart(2, "0")}분<ChevronDown size={13} style={{ color: SUB }} /></button>
+            <button type="button" aria-label="수업 길이 선택" onClick={() => setPicker({ type: "duration" })} className="flex h-11 items-center justify-center gap-1 text-sm font-bold" style={{ borderRadius: 9, backgroundColor: CANVAS, border: `1px solid ${LINE}`, color: INK }}>{f.dur}분<ChevronDown size={13} style={{ color: SUB }} /></button>
           </div>
         </div>
         <div>
@@ -2554,11 +2646,12 @@ function ScheduleForm({ draft, members, schedule, photos, returnFocusRef, onClos
             <p className="mb-1.5 text-xs font-bold" style={{ color: SUB }}>회원 {isDuet ? "(두 명 모두 입력)" : "(같은 이름은 기존 회원으로 연결)"}</p>
             <div className={`grid gap-2 ${isDuet ? "grid-cols-2" : "grid-cols-1"}`}>
               {Array.from({ length: neededSlots }, (_, slot) => (
-                <input key={slot} autoFocus={slot === 0} list={memberListId} value={memberNames[slot] || ""}
-                  onChange={(e) => updateMemberName(slot, e.target.value)} placeholder={isDuet ? `회원 ${slot + 1} 이름` : "회원 이름"} className={inputCls} />
+                <button type="button" key={slot} onClick={() => setPicker({ type: "member", slot })} className="flex h-11 min-w-0 items-center gap-2 px-3 text-left text-sm font-bold"
+                  style={{ borderRadius: 9, backgroundColor: CANVAS, border: `1px solid ${LINE}`, color: memberIds[slot] ? INK : FAINT }}>
+                  <Users size={14} className="shrink-0" style={{ color: BRAND }} /><span className="min-w-0 flex-1 truncate">{memberNames[slot] || (isDuet ? `회원 ${slot + 1} 선택` : "회원 선택")}</span><ChevronDown size={13} className="shrink-0" style={{ color: SUB }} />
+                </button>
               ))}
             </div>
-            <datalist id={memberListId}>{[...new Set(members.filter(isActive).map((m) => m.name).filter(Boolean))].map((name) => <option key={name} value={name} />)}</datalist>
           </div>
         )}
         {isGroup && (
@@ -2583,7 +2676,7 @@ function ScheduleForm({ draft, members, schedule, photos, returnFocusRef, onClos
                 const m = members.find((x) => x.id === a.memberId);
                 const active = a.memberId === activeMemberId;
                 return (
-                  <button key={a.memberId} onClick={() => { setActiveMemberId(a.memberId); setRecordMode(null); setRecordBody(""); }}
+                  <button key={a.memberId} onClick={() => { setActiveMemberId(a.memberId); setRecordMode(null); setRecordBody(""); setRecordMeta(null); }}
                     className="min-w-[132px] flex-1 rounded-xl p-3 text-left"
                     style={{ backgroundColor: active ? TINT : CANVAS, border: `1px solid ${active ? "#D9D7EE" : LINE}` }}>
                     <p className="truncate text-sm font-extrabold" style={{ color: active ? PRIMARY : INK }}>{m?.name || "삭제된 회원"}</p>
@@ -2592,6 +2685,13 @@ function ScheduleForm({ draft, members, schedule, photos, returnFocusRef, onClos
                 );
               })}
             </div>
+
+            {activeMember && (
+              <button type="button" onClick={() => onFocusMemberWeek?.(activeMember.id)} className="flex h-11 w-full items-center justify-center gap-2 rounded-lg text-xs font-bold"
+                style={{ backgroundColor: TINT, color: BRAND_D, border: `1px solid #D5D1EB` }}>
+                <CalendarDays size={14} /> 이번 주 이 회원 일정만 보기
+              </button>
+            )}
 
             {activeMember && activeAttendee && (
               <>
@@ -2625,9 +2725,14 @@ function ScheduleForm({ draft, members, schedule, photos, returnFocusRef, onClos
                 </div>
 
                 <div className="rounded-xl p-3" style={{ backgroundColor: "#F5F4FB", border: "1px solid #D9D7EE" }}>
-                  <div className="flex items-center gap-1.5"><Sparkles size={14} style={{ color: PRIMARY }} /><p className="text-xs font-extrabold" style={{ color: PRIMARY }}>AI 수업 추천</p></div>
-                  {advice?.first ? <p className="mt-1.5 text-xs leading-relaxed" style={{ color: INK }}>첫 수업입니다. 목표와 주의사항을 확인하고 기본 움직임을 평가해 보세요.</p>
-                    : <p className="mt-1.5 text-xs leading-relaxed" style={{ color: INK }}>{advice?.kws?.length ? `${advice.kws.join(" · ")} 중심으로 진행해 보세요.` : "최근 기록과 회원 목표를 확인해 수업 강도를 조절해 주세요."}{advice?.why?.length ? ` 근거: ${advice.why.join(" · ")}` : ""}</p>}
+                  <div className="flex items-center gap-1.5"><Sparkles size={14} style={{ color: PRIMARY }} /><p className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: PRIMARY }}>AI 수업 시퀀스 추천</p><span className="text-[10px] font-bold" style={{ color: sequenceStatus === AI_STATUSES.CONFIRMED ? GOOD : SUB }}>{sequenceStatus === AI_STATUSES.CONFIRMED ? "강사 확정" : sequenceStatus === AI_STATUSES.DRAFT ? "초안" : aiProvider.getStatus().status === "connected" ? "생성 가능" : "미연결"}</span></div>
+                  {sequenceText ? <textarea rows={5} value={sequenceText} onChange={(event) => setSequenceText(event.target.value)} className={`${inputCls} mt-2 h-auto resize-none py-2 text-xs leading-relaxed`} />
+                    : <p className="mt-1.5 text-xs leading-relaxed" style={{ color: INK }}>{aiProvider.getStatus().status === "connected" ? "체형분석·최근 수업·목표·주의사항을 바탕으로 추천 초안을 생성할 수 있습니다." : "AI 추천 미연결 · 실제 Provider가 연결되기 전에는 추천을 생성하지 않습니다."}</p>}
+                  {sequenceError && <p className="mt-1.5 text-xs font-bold" style={{ color: BAD }}>{sequenceError}</p>}
+                  <div className="mt-2 flex gap-2">
+                    <button disabled={sequenceBusy || aiProvider.getStatus().status !== "connected"} onClick={requestSequence} className="h-9 flex-1 rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: CARD, color: PRIMARY }}>{sequenceBusy ? "생성 중…" : sequenceText ? "다시 생성" : "추천 생성"}</button>
+                    {sequenceText && <button disabled={sequenceBusy || !sequenceOriginal || !sequenceText.trim()} onClick={confirmSequence} className="h-9 flex-1 rounded-lg text-xs font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: PRIMARY }}>강사 수정본 저장</button>}
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-3 gap-2">
@@ -2638,9 +2743,9 @@ function ScheduleForm({ draft, members, schedule, photos, returnFocusRef, onClos
 
                 {recordMode && (
                   <div className="space-y-2 rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
-                    {recordMode === "voice" && <VoiceNote onApply={(text) => setRecordBody((body) => body.trim() ? `${body.trim()}\n${text}` : text)} />}
+                    {recordMode === "voice" && <VoiceNote memberId={activeMemberId} lessonId={draft.id} onApply={(text, meta) => { setRecordBody((body) => body.trim() ? `${body.trim()}\n${text}` : text); setRecordMeta(meta); }} />}
                     <textarea rows={4} value={recordBody} onChange={(e) => setRecordBody(e.target.value)} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} />
-                    <button disabled={!recordBody.trim()} onClick={() => { onSaveNote?.(activeMemberId, draft.type, draft.id, recordBody.trim()); onClose(); }} className="h-11 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35" style={{ backgroundColor: PRIMARY }}>기록 저장</button>
+                    <button disabled={!recordBody.trim()} onClick={() => { onSaveNote?.(activeMemberId, draft.type, draft.id, recordBody.trim(), recordMeta); onClose(); }} className="h-11 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35" style={{ backgroundColor: PRIMARY }}>기록 저장</button>
                   </div>
                 )}
               </>
@@ -2673,6 +2778,16 @@ function ScheduleForm({ draft, members, schedule, photos, returnFocusRef, onClos
         ) : null)}
       </div>
     </ScheduleBottomSheet>
+    {picker?.type === "date" && <ChoiceBottomSheet title="날짜 선택" subtitle="선택한 날짜로 일정이 등록됩니다" value={f.date} onClose={() => setPicker(null)}
+      options={Array.from({ length: 15 }, (_, index) => shift(f.date, index - 7)).map((date) => ({ value: date, label: `${ymd(date)} · ${dow(date)}요일`, description: date === todayISO() ? "오늘" : "" }))}
+      onSelect={(date) => setF((current) => ({ ...current, date }))} />}
+    {picker?.type === "hour" && <ChoiceBottomSheet title="시 선택" value={hour} columns={2} onClose={() => setPicker(null)} options={Array.from({ length: 24 }, (_, value) => ({ value, label: `${value}시` }))} onSelect={(value) => setTime(value, minute)} />}
+    {picker?.type === "minute" && <ChoiceBottomSheet title="분 선택" value={minute} columns={2} onClose={() => setPicker(null)} options={[0, 10, 20, 30, 40, 50].map((value) => ({ value, label: `${String(value).padStart(2, "0")}분` }))} onSelect={(value) => setTime(hour, value)} />}
+    {picker?.type === "duration" && <ChoiceBottomSheet title="수업 길이" value={Number(f.dur)} columns={2} onClose={() => setPicker(null)} options={durationOptions.map((value) => ({ value, label: `${value}분` }))} onSelect={(value) => setF((current) => ({ ...current, dur: value }))} />}
+    {picker?.type === "member" && <ChoiceBottomSheet title="회원 선택" subtitle="기존 회원과 정확히 연결합니다" value={memberIds[picker.slot] || ""} onClose={() => setPicker(null)}
+      options={members.filter(isActive).map((item) => ({ value: item.id, label: item.name || "이름 미입력", description: `잔여 ${left(item)}회${item.contractEnd ? ` · ${ymd(item.contractEnd)}까지` : ""}` }))}
+      onSelect={(id) => { const item = members.find((memberItem) => memberItem.id === id); const ids = [...memberIds]; const names = [...memberNames]; ids[picker.slot] = id; names[picker.slot] = item?.name || ""; setMemberIds(ids); setMemberNames(names); }} />}
+    </>
   );
 }
 
@@ -2682,10 +2797,12 @@ function ScheduleQueueSheet({ tasks, members, returnFocusRef, onClose, onNoComme
   const [lastGroup, setLastGroup] = useState(null);
   const [recordMode, setRecordMode] = useState(null);
   const [recordBody, setRecordBody] = useState("");
+  const [recordMeta, setRecordMeta] = useState(null);
   useEffect(() => {
     if (task?.kind === "group") setGroupCount(num(task.s.actualCount ?? task.s.groupCount ?? 0));
     setRecordMode(null);
     setRecordBody("");
+    setRecordMeta(null);
   }, [task?.key]);
   const memberName = task?.m?.name || members.find((m) => m.id === task?.a?.memberId)?.name || "회원";
   const targetName = task?.kind === "group" ? "그룹수업" : memberName;
@@ -2721,9 +2838,9 @@ function ScheduleQueueSheet({ tasks, members, returnFocusRef, onClose, onNoComme
               </div>
               {recordMode && (
                 <div className="mt-3 space-y-2 rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
-                  {recordMode === "voice" && <VoiceNote onApply={(text) => setRecordBody((body) => body.trim() ? `${body.trim()}\n${text}` : text)} />}
+                  {recordMode === "voice" && <VoiceNote memberId={task.a.memberId} lessonId={task.s.id} onApply={(text, meta) => { setRecordBody((body) => body.trim() ? `${body.trim()}\n${text}` : text); setRecordMeta(meta); }} />}
                   <textarea rows={4} value={recordBody} onChange={(e) => setRecordBody(e.target.value)} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} />
-                  <button disabled={!recordBody.trim()} onClick={() => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, recordBody.trim())} className="h-11 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35" style={{ backgroundColor: PRIMARY }}>기록 저장</button>
+                  <button disabled={!recordBody.trim()} onClick={() => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, recordBody.trim(), recordMeta)} className="h-11 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35" style={{ backgroundColor: PRIMARY }}>기록 저장</button>
                 </div>
               )}
             </div>
@@ -2778,16 +2895,19 @@ function angleLabel(part, deg, mirror) {
   if (mirror) higher = higher === "좌" ? "우" : "좌";
   return `${part} ${Math.abs(deg).toFixed(1)}° · ${higher}측 높음`;
 }
-function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
+function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDraft, onToast, fresh, initialTool = "guide" }) {
   const wrapRef = useRef(null), canvasRef = useRef(null), imgRef = useRef(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [marks, setMarks] = useState(photo.marks || []);
+  const [redoMarks, setRedoMarks] = useState([]);
   const [draft, setDraft] = useState(null);
   const [pending, setPending] = useState(null);
-  const [tool, setTool] = useState("angle");
-  const [color, setColor] = useState(PEN_COLORS[0]);
+  const [tool, setTool] = useState(initialTool === "guide" ? "hline" : initialTool);
+  const [guideSheet, setGuideSheet] = useState(initialTool === "guide");
+  const [color, setColor] = useState("#6C5FD4");
   const [width, setWidth] = useState(3);
-  const [grid, setGrid] = useState(true);
+  const [opacity] = useState(1);
+  const [grid] = useState(false);
   const [ruler, setRuler] = useState(null);
   const rulerDrag = useRef(null);
   /* 두 손가락으로 자를 옮기고 돌린다 */
@@ -2800,8 +2920,26 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
   const resetZoom = () => { setZoom(1); setPan({ x: 0, y: 0 }); };
   const exportingRef = useRef(false);
   const [shot, setShot] = useState(null);
-  useBackClose(true, onClose);
+  const initialMarks = useRef(JSON.stringify(photo.marks || []));
+  const onDraftRef = useRef(onDraft);
+  useEffect(() => { onDraftRef.current = onDraft; }, [onDraft]);
+  const hasUnsaved = () => JSON.stringify(marks) !== initialMarks.current;
+  const requestClose = () => {
+    if (hasUnsaved() && !window.confirm("저장하지 않은 표시가 있습니다. 편집을 종료할까요?")) return;
+    onCancel?.();
+  };
+  useBackClose(true, requestClose);
   useScrollLock();
+
+  useEffect(() => {
+    if (!onDraftRef.current || !hasUnsaved()) return undefined;
+    const timer = setTimeout(() => {
+      Promise.resolve(onDraftRef.current?.(marks.map((mark) => ({ ...mark, source: mark.source || "manual" }))))
+        .then((stored) => { if (stored === false) onToast?.({ ok: false, msg: "표시 초안을 저장하지 못했습니다. 편집 내용은 화면에 유지됩니다." }); })
+        .catch(() => onToast?.({ ok: false, msg: "표시 초안을 저장하지 못했습니다. 편집 내용은 화면에 유지됩니다." }));
+    }, 240);
+    return () => clearTimeout(timer);
+  }, [marks, onToast]);
 
   useEffect(() => {
     const img = new window.Image();
@@ -2851,6 +2989,8 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
 
   const drawMark = (ctx, m, w, h) => {
     const P = (p) => ({ x: p.x * w, y: p.y * h });
+    ctx.save();
+    ctx.globalAlpha = m.opacity ?? 1;
     ctx.strokeStyle = m.color; ctx.fillStyle = m.color; ctx.lineWidth = m.width;
     ctx.lineCap = "round"; ctx.lineJoin = "round";
     if (m.tool === "point") {
@@ -2858,13 +2998,27 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
       ctx.beginPath(); ctx.arc(p.x, p.y, m.width + 3, 0, Math.PI * 2); ctx.fill();
       ctx.lineWidth = 1.5;
       ctx.beginPath(); ctx.arc(p.x, p.y, m.width + 9, 0, Math.PI * 2); ctx.stroke();
-      return;
+      ctx.restore(); return;
     }
-    ctx.beginPath();
-    if (m.tool === "hline") { const y = m.pts[0].y * h; ctx.moveTo(0, y); ctx.lineTo(w, y); }
-    else if (m.tool === "vline") { const x = m.pts[0].x * w; ctx.moveTo(x, 0); ctx.lineTo(x, h); }
-    else m.pts.forEach((p, i) => { const q = P(p); i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y); });
-    ctx.stroke();
+    const a = P(m.pts[0] || { x: 0, y: 0 }), b = P(m.pts[m.pts.length - 1] || m.pts[0] || { x: 0, y: 0 });
+    if (m.tool === "circle") {
+      ctx.beginPath(); ctx.ellipse((a.x + b.x) / 2, (a.y + b.y) / 2, Math.abs(b.x - a.x) / 2, Math.abs(b.y - a.y) / 2, 0, 0, Math.PI * 2); ctx.stroke();
+    } else if (m.tool === "rect") {
+      ctx.strokeRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
+    } else if (m.tool === "text") {
+      ctx.font = `600 ${Math.max(13, m.width * 5)}px Pretendard, sans-serif`; ctx.textAlign = "left"; ctx.textBaseline = "top"; ctx.fillText(m.label || "", a.x, a.y);
+    } else {
+      ctx.beginPath();
+      if (m.tool === "hline") { const y = m.pts[0].y * h; ctx.moveTo(0, y); ctx.lineTo(w, y); }
+      else if (m.tool === "vline") { const x = m.pts[0].x * w; ctx.moveTo(x, 0); ctx.lineTo(x, h); }
+      else m.pts.forEach((p, i) => { const q = P(p); i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y); });
+      ctx.stroke();
+      if (m.tool === "arrow" && m.pts.length >= 2) {
+        const ang = Math.atan2(b.y - a.y, b.x - a.x), head = 10 + m.width * 2;
+        ctx.beginPath(); ctx.moveTo(b.x, b.y); ctx.lineTo(b.x - head * Math.cos(ang - Math.PI / 6), b.y - head * Math.sin(ang - Math.PI / 6));
+        ctx.moveTo(b.x, b.y); ctx.lineTo(b.x - head * Math.cos(ang + Math.PI / 6), b.y - head * Math.sin(ang + Math.PI / 6)); ctx.stroke();
+      }
+    }
     if (m.tool === "angle" && m.pts.length === 2) {
       const a = P(m.pts[0]), b = P(m.pts[1]);
       const baseY = a.x <= b.x ? a.y : b.y;
@@ -2878,6 +3032,7 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
       ctx.strokeStyle = "rgba(255,255,255,0.55)"; ctx.lineWidth = 1; ctx.strokeRect(cx - tw / 2 - 7, cy - 15, tw + 14, 22);
       ctx.fillStyle = "#fff"; ctx.textAlign = "center"; ctx.fillText(m.label || "", cx, cy + 1);
     }
+    ctx.restore();
   };
 
   const drawRuler = (ctx, w, h) => {
@@ -2927,9 +3082,9 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
     }
     marks.forEach((m) => drawMark(ctx, m, w, h));
     if (draft) drawMark(ctx, draft, w, h);
-    if (pending && !draft) drawMark(ctx, { tool: "point", color, width, pts: [pending] }, w, h);
+    if (pending && !draft) drawMark(ctx, { tool: "point", color, width, opacity, pts: [pending] }, w, h);
     if (ruler && !exportingRef.current) drawRuler(ctx, w, h);
-  }, [marks, draft, pending, grid, ruler, color, width, photo, size]);
+  }, [marks, draft, pending, grid, ruler, color, width, opacity, photo, size]);
   useEffect(() => { draw(); }, [draw]);
 
   const pos = (e) => {
@@ -2963,6 +3118,19 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
     }
     if (ptrs.current.size > 1) return;
     const raw = pos(e);
+    if (tool === "eraser") {
+      let best = -1, dist = Infinity;
+      marks.forEach((mark, index) => (mark.pts || []).forEach((point) => {
+        const d = Math.hypot(point.x - raw.x, point.y - raw.y);
+        if (d < dist) { dist = d; best = index; }
+      }));
+      if (best >= 0 && dist < 0.12) {
+        if (!window.confirm("선택한 표시를 삭제할까요?")) return;
+        setRedoMarks([]);
+        setMarks((items) => items.filter((_, index) => index !== best));
+      }
+      return;
+    }
     if (ruler) {
       const rct = canvasRef.current.getBoundingClientRect();
       const g = rulerGeom(rct.width, rct.height);
@@ -2974,13 +3142,18 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
       if (lp.y >= -1) { rulerDrag.current = { mode: "move", dx: P.x - g.C.x, dy: P.y - g.C.y }; return; }
     }
     const p = ruler ? snapPt(raw) : raw;
-    if (tool === "hline" || tool === "vline") { setDraft({ id: uid(), tool, color, width, pts: [p] }); return; }
-    if (tool === "angle") {
-      if (!pending) { setDraft({ id: uid(), tool: "point", color, width, pts: [p] }); return; }
-      setDraft({ id: uid(), tool: "angle", color, width, pts: [pending, p], label: degText(angleOf(pending, p)) });
+    if (tool === "text") {
+      const label = window.prompt("사진에 표시할 내용을 입력하세요", "");
+      if (label?.trim()) { setRedoMarks([]); setMarks((items) => [...items, { id: uid(), tool, color, width, opacity, pts: [p], label: label.trim() }]); }
       return;
     }
-    setDraft({ id: uid(), tool, color, width, pts: [p, p], label: "" });
+    if (tool === "hline" || tool === "vline") { setDraft({ id: uid(), tool, color, width, opacity, pts: [p] }); return; }
+    if (tool === "angle") {
+      if (!pending) { setDraft({ id: uid(), tool: "point", color, width, opacity, pts: [p] }); return; }
+      setDraft({ id: uid(), tool: "angle", color, width, opacity, pts: [pending, p], label: degText(angleOf(pending, p)) });
+      return;
+    }
+    setDraft({ id: uid(), tool, color, width, opacity, pts: [p, p], label: "" });
   };
   const move = (e) => {
     if (ptrs.current.has(e.pointerId)) ptrs.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -3038,18 +3211,32 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
     if (!draft) return;
     const d = draft; setDraft(null);
     if (d.tool === "point") { setPending(d.pts[0]); return; }
-    if (d.tool === "hline" || d.tool === "vline") { setMarks((m) => [...m, d]); return; }
+    if (d.tool === "hline" || d.tool === "vline") { setRedoMarks([]); setMarks((m) => [...m, d]); return; }
     if (d.tool === "angle") {
       if (Math.hypot(d.pts[1].x - d.pts[0].x, d.pts[1].y - d.pts[0].y) < 0.02) return;
       const deg = angleOf(d.pts[0], d.pts[1]);
-      setMarks((m) => [...m, { ...d, angle: deg, label: degText(deg) }]);
+      setRedoMarks([]); setMarks((m) => [...m, { ...d, angle: deg, label: degText(deg) }]);
       setPending(null);
       return;
     }
     if (d.tool !== "pen" && Math.hypot(d.pts[1].x - d.pts[0].x, d.pts[1].y - d.pts[0].y) < 0.02) return;
-    setMarks((m) => [...m, d]);
+    setRedoMarks([]); setMarks((m) => [...m, d]);
   };
   const pickTool = (k) => { setTool(k); setPending(null); setDraft(null); };
+  const addGuide = (kind) => {
+    const preset = {
+      shoulder: { tool: "hline", pts: [{ x: 0.5, y: 0.28 }] },
+      pelvis: { tool: "hline", pts: [{ x: 0.5, y: 0.54 }] },
+      spine: { tool: "vline", pts: [{ x: 0.5, y: 0.5 }] },
+      knee: { tool: "hline", pts: [{ x: 0.5, y: 0.73 }] },
+      ankle: { tool: "hline", pts: [{ x: 0.5, y: 0.88 }] },
+    }[kind];
+    if (!preset) return;
+    setRedoMarks([]);
+    setMarks((items) => [...items, { id: uid(), ...preset, color, width, opacity: 1, source: "manual" }]);
+    setTool(preset.tool);
+    setGuideSheet(false);
+  };
   const download = async () => {
     exportingRef.current = true; draw();
     let snap = null;
@@ -3061,10 +3248,11 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
 
   return (
     <div className="safe-all fixed inset-0 z-50 flex flex-col bg-photo">
-      <div className="flex items-center justify-between px-4 py-3">
-        <button onClick={onClose} className="rounded-full p-2" style={{ backgroundColor: "rgba(255,255,255,0.15)" }}><X size={18} color="#fff" /></button>
-        <p className="text-sm font-bold text-white">체형 분석 · {label}</p>
-        <button onClick={() => { onSave(marks); onClose(); }} className="rounded-full px-4 py-2 text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>저장</button>
+      <div className="flex items-center gap-1 px-3 py-3">
+        <button onClick={requestClose} aria-label="편집 닫기" className="flex h-11 w-11 items-center justify-center rounded-full" style={{ backgroundColor: "rgba(255,255,255,0.15)" }}><X size={18} color="#fff" /></button>
+        <p className="min-w-0 flex-1 truncate px-1 text-sm font-bold text-white">직접 그리기 · {label}</p>
+        <button aria-label="실행 취소" disabled={!pending && !marks.length} onClick={() => { if (pending) { setPending(null); return; } setMarks((items) => { if (!items.length) return items; setRedoMarks((redo) => [...redo, items[items.length - 1]]); return items.slice(0, -1); }); }} className="flex h-9 w-9 items-center justify-center rounded-full disabled:opacity-35" style={{ backgroundColor: "rgba(255,255,255,0.15)" }}><RotateCcw size={15} color="#fff" /></button>
+        <button onClick={async () => { const next = marks.map((mark) => ({ ...mark, source: mark.source || "manual" })); try { const stored = await onSave(next); if (stored === false) throw Object.assign(new Error("annotation save rejected"), { code: "annotation_save_rejected" }); initialMarks.current = JSON.stringify(next); onClose(); } catch (error) { deviceLog("assessment_annotation_save_failed", { memberId: photo.memberId, assessmentId: photo.assessmentId, view: photo.view, ...deviceError(error) }); onToast?.({ ok: false, msg: "표시를 저장하지 못했습니다. 현재 편집 내용은 유지됩니다. 다시 시도해 주세요." }); } }} className="flex h-10 items-center rounded-full px-4 text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>완료</button>
       </div>
       {fresh && (
         <p className="mx-4 mb-1 rounded-xl px-3 py-2 text-center text-xs font-bold text-white" style={{ backgroundColor: PRIMARY }}>
@@ -3082,15 +3270,12 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
         </div>
       </div>
       <div className="space-y-2 px-3 pb-5 pt-3">
-        <div className="flex gap-1.5 overflow-x-auto">
-          {[{ k: "angle", l: "각도" }, { k: "line", l: "직선" }, { k: "pen", l: "펜" }, { k: "hline", l: "수평선" }, { k: "vline", l: "수직선" }].map((t) => (
-            <button key={t.k} onClick={() => pickTool(t.k)} className="whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-bold"
-              style={tool === t.k ? { backgroundColor: BRAND, color: "#fff" } : { backgroundColor: "rgba(255,255,255,0.15)", color: "#fff" }}>{t.l}</button>
+        <div className="grid grid-cols-5 gap-1.5">
+          {[{ k: "guide", l: "기준선" }, { k: "pen", l: "펜" }, { k: "arrow", l: "화살표" }, { k: "text", l: "메모" }, { k: "eraser", l: "삭제" }].map((t) => (
+            <button key={t.k} onClick={() => t.k === "guide" ? setGuideSheet(true) : pickTool(t.k)} className="whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-bold"
+              style={(t.k === "guide" ? ["hline", "vline"].includes(tool) : tool === t.k) ? { backgroundColor: BRAND, color: "#fff" } : { backgroundColor: "rgba(255,255,255,0.15)", color: "#fff" }}
+              aria-pressed={t.k === "guide" ? ["hline", "vline"].includes(tool) : tool === t.k}>{t.l}</button>
           ))}
-          <button onClick={() => setRuler((r) => { if (r) return null; setTool("pen"); setPending(null); setDraft(null); return { cx: 0.5, cy: 0.45, deg: 0 }; })} className="whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-bold"
-            style={{ backgroundColor: ruler ? "rgba(255,255,255,0.9)" : "rgba(255,255,255,0.15)", color: ruler ? "#17171F" : "#fff" }}>자</button>
-          <button onClick={() => setGrid((g) => !g)} className="whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-bold"
-            style={{ backgroundColor: grid ? "rgba(255,255,255,0.9)" : "rgba(255,255,255,0.15)", color: grid ? "#17171F" : "#fff" }}>격자</button>
         </div>
         {(tool === "hline" || tool === "vline") && (
           <p className="text-xs font-semibold text-white opacity-80">화면을 누른 채로 위치를 옮기고, 손을 떼면 선이 그려집니다.</p>
@@ -3104,21 +3289,17 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
           <p className="text-xs font-semibold text-white opacity-80">자 <b>윗변</b>을 따라서만 그어집니다 · 자 몸통과 아래쪽은 그어지지 않습니다 · 두 손가락으로 옮기고 돌리세요</p>
         )}
         <div className="flex items-center gap-2">
-          {PEN_COLORS.map((c) => (
+          {["#6C5FD4", "#FF3B30"].map((c) => (
             <button key={c} onClick={() => setColor(c)} className="h-7 w-7 rounded-full"
-              style={{ backgroundColor: c, border: color === c ? `3px solid ${PRIMARY}` : "2px solid rgba(255,255,255,0.4)" }} />
+              aria-label={c === "#6C5FD4" ? "보라색" : "빨간색"} aria-pressed={color === c}
+              style={{ backgroundColor: c, border: color === c ? "3px solid #FFFFFF" : "2px solid rgba(255,255,255,0.4)" }} />
           ))}
-          <input type="range" min="1" max="10" value={width} onChange={(e) => setWidth(Number(e.target.value))} className="ml-2 flex-1" style={{ accentColor: PRIMARY, touchAction: "none" }} />
-          <span className="w-6 text-center text-xs font-bold text-white">{width}</span>
-        </div>
-        <div className="flex gap-2">
-          <button onClick={() => { if (pending) { setPending(null); return; } setMarks((m) => m.slice(0, -1)); }} className="flex flex-1 items-center justify-center gap-1 rounded-2xl py-2.5 text-xs font-bold text-white" style={{ backgroundColor: "rgba(255,255,255,0.15)" }}><RotateCcw size={13} /> 뒤로</button>
-          <button onClick={() => { setMarks([]); setPending(null); }} className="flex flex-1 items-center justify-center gap-1 rounded-2xl py-2.5 text-xs font-bold text-white" style={{ backgroundColor: "rgba(255,255,255,0.15)" }}><Trash2 size={13} /> 전체 지우기</button>
-          <button onClick={download} className="flex flex-1 items-center justify-center gap-1 rounded-2xl py-2.5 text-xs font-bold text-white" style={{ backgroundColor: "rgba(255,255,255,0.15)" }}><Download size={13} /> 공유</button>
+          <span className="ml-2 text-xs font-semibold text-white opacity-70">굵기</span>
+          {[{ value: 2, label: "얇게" }, { value: 4, label: "보통" }].map((option) => <button type="button" key={option.value} onClick={() => setWidth(option.value)} className="h-9 rounded-full px-3 text-xs font-bold" style={{ backgroundColor: width === option.value ? "#FFFFFF" : "rgba(255,255,255,.15)", color: width === option.value ? "#17171F" : "#FFFFFF" }}>{option.label}</button>)}
         </div>
         {!ruler && <p className="text-center text-xs text-white opacity-60">두 손가락으로 벌리면 사진이 확대됩니다</p>}
         <p className="text-center text-xs text-white opacity-60">
-          {tool === "angle" ? "점 두 개를 이으면 각도가 표시됩니다 · 자를 켜면 반듯하게 찍기 쉬워요" : "화면을 드래그해 그리세요"}
+          {tool === "angle" ? "점 두 개를 이으면 각도가 표시됩니다 · 자를 켜면 반듯하게 찍기 쉬워요" : tool === "text" ? "사진 위 원하는 위치를 눌러 텍스트를 입력하세요" : tool === "eraser" ? "지울 표시를 눌러 주세요" : "화면을 드래그해 그리세요"}
         </p>
       </div>
       {shot && (
@@ -3129,6 +3310,11 @@ function PostureCanvas({ photo, label, onClose, onSave, onToast, fresh }) {
           </div>
         </div>
       )}
+      {guideSheet && <ScheduleBottomSheet title="기준선 선택" subtitle="자주 쓰는 두 기준선을 먼저 보여드립니다" onClose={() => setGuideSheet(false)}>
+        <div className="space-y-2">
+          {[{ key: "shoulder", label: "어깨선", sub: "좌우 어깨 높이 확인" }, { key: "pelvis", label: "골반선", sub: "좌우 골반 높이 확인" }, { key: "spine", label: "척추 중심선", sub: "수직 중심 정렬" }, { key: "knee", label: "무릎선", sub: "좌우 무릎 높이" }, { key: "ankle", label: "발목선", sub: "좌우 발목 높이" }].map((item, index) => <button type="button" key={item.key} onClick={() => addGuide(item.key)} className="flex min-h-12 w-full items-center gap-3 px-3 text-left" style={{ borderRadius: 10, backgroundColor: index < 2 ? TINT : CANVAS, border: `1px solid ${index < 2 ? "#D5D1EB" : LINE}` }}><span className="min-w-0 flex-1"><span className="block text-sm font-bold" style={{ color: INK }}>{item.label}</span><span className="mt-0.5 block text-xs" style={{ color: SUB }}>{item.sub}</span></span><ChevronRight size={15} style={{ color: FAINT }} /></button>)}
+        </div>
+      </ScheduleBottomSheet>}
     </div>
   );
 }
@@ -3428,7 +3614,7 @@ function ReferenceMemberList({ members, schedule, onSelect, onAdd }) {
 }
 
 function MemberRegisterSheet({ members, onOpenExisting, onClose, onCreate }) {
-  const [f, setF] = useState({ name: "", phone: "", lessonType: "private", goal: "", focus: "", memo: "", passName: "개인 10회", regular: "10", startDate: todayISO(), contractEnd: shift(todayISO(), 90) });
+  const [f, setF] = useState({ name: "", phone: "", birth: "", lessonType: "private", goal: "", focus: "", memo: "", passName: "개인 10회", regular: "10", startDate: todayISO(), contractEnd: shift(todayISO(), 90) });
   const [error, setError] = useState("");
   const submit = () => {
     const name = f.name.trim(), phone = f.phone.replace(/\D/g, "");
@@ -3437,7 +3623,7 @@ function MemberRegisterSheet({ members, onOpenExisting, onClose, onCreate }) {
       && (!phone || String(m.phone || "").replace(/\D/g, "") === phone));
     if (duplicate) { setError("같은 회원이 이미 등록되어 있습니다."); return; }
     const count = num(f.regular);
-    onCreate({ name, phone: f.phone.trim(), lessonType: f.lessonType, goal: f.goal.trim(),
+    onCreate({ name, phone: f.phone.trim(), birth: f.birth || "", lessonType: f.lessonType, goal: f.goal.trim(),
       focus: f.focus.split("\n").map((x) => x.trim()).filter(Boolean), passName: f.passName.trim(),
       regular: count, total: count, startDate: f.startDate, contractEnd: f.contractEnd,
       notes: f.memo.trim() ? [{ id: uid(), date: todayISO(), type: "상담", body: f.memo.trim(), tags: [] }] : [] });
@@ -3447,6 +3633,7 @@ function MemberRegisterSheet({ members, onOpenExisting, onClose, onCreate }) {
       <div className="space-y-3">
         <Field label="회원 이름"><input autoFocus value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} className={inputCls} /></Field>
         <Field label="연락처"><input value={f.phone} onChange={(e) => setF({ ...f, phone: e.target.value })} className={inputCls} /></Field>
+        <Field label="생년월일" hint={f.birth ? `${ageFromBirth(f.birth)}세 · 오늘 기준 자동 계산` : "나이는 자동 계산됩니다"}><input type="date" value={f.birth} max={todayISO()} onChange={(e) => setF({ ...f, birth: e.target.value })} className={inputCls} /></Field>
         <Field label="수업 유형"><div className="grid grid-cols-3 gap-1">{[{k:"private",l:"개인"},{k:"duet",l:"듀엣"},{k:"group",l:"그룹"}].map((o) => <button type="button" key={o.k} onClick={() => setF({ ...f, lessonType: o.k, passName: `${o.l} ${f.regular || 0}회` })} style={{ height: 38, borderRadius: 8, border: `1px solid ${f.lessonType === o.k ? BRAND : LINE}`, backgroundColor: f.lessonType === o.k ? TINT : CARD, color: f.lessonType === o.k ? BRAND_D : SUB, fontSize: 12, fontWeight: 600 }}>{o.l}</button>)}</div></Field>
         <Field label="목표"><input value={f.goal} onChange={(e) => setF({ ...f, goal: e.target.value })} className={inputCls} /></Field>
         <Field label="주의사항" hint="한 줄에 하나"><textarea rows={2} value={f.focus} onChange={(e) => setF({ ...f, focus: e.target.value })} className={`${inputCls} h-auto resize-none py-2.5`} /></Field>
@@ -3464,12 +3651,17 @@ function ReferenceMemberDetail({ member, schedule, photos, onBack, onPatch, onSa
   const [sheet, setSheet] = useState(null);
   const [edit, setEdit] = useState({});
   const [memo, setMemo] = useState("");
+  const [memoMeta, setMemoMeta] = useState(null);
   const [pass, setPass] = useState({ name: "", count: "", end: "" });
   const [hold, setHold] = useState({ start: todayISO(), end: shift(todayISO(), 14), reason: "", extend: true });
   const [releaseArmed, setReleaseArmed] = useState(false);
   const lessons = (schedule || []).filter((s) => hasMember(s, member.id)).sort((a, b) => `${b.date} ${b.start}`.localeCompare(`${a.date} ${a.start}`));
   const notes = [...(member.notes || [])].sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
-  const assessments = (photos?.poses || []).filter((p) => p && p.metrics).sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
+  const assessmentSets = useMemo(() => normalizeAssessmentSets(photos, { memberId: member.id }), [photos, member.id]);
+  const completedAssessments = assessmentSets.filter((assessment) => assessment.status === "completed");
+  const lastAssessment = completedAssessments[0] || null;
+  const retake = postureRetakeStatus(lastAssessment?.completedAt || lastAssessment?.at);
+  const lastAssessmentMetrics = lastAssessment?.poses.flatMap((pose) => pose.metrics || []).slice(0, 2) || [];
   const next = lessons.filter((s) => `${s.date} ${s.start}` >= `${todayISO()} 00:00`).sort((a, b) => `${a.date} ${a.start}`.localeCompare(`${b.date} ${b.start}`))[0] || null;
   const openEdit = () => { setEdit({ name: member.name || "", phone: member.phone || "", birth: member.birth || "", goal: member.goal || "", focus: (member.focus || []).join(", ") }); setSheet("edit"); };
   const holdHistory = member.holdHistory || [];
@@ -3491,18 +3683,24 @@ function ReferenceMemberDetail({ member, schedule, photos, onBack, onPatch, onSa
               <div className="text-right"><p className="tabular-nums" style={{ fontSize: 22, lineHeight: 1, fontWeight: 600, color: left(member) <= 3 ? BAD : BRAND }}>{left(member)}<span style={{ fontSize: 11 }}>회</span></p><p style={{ marginTop: 4, fontSize: 10, color: SUB }}>{member.contractEnd ? `${ymd(member.contractEnd)}까지` : "만료일 미설정"}</p></div>
             </div>
           </section>
+          <section style={{ ...sectionStyle, backgroundColor: retake.tone === "recommended" ? WARN_S : CARD }}>
+            <div className="flex items-start gap-3"><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: TINT, color: BRAND_D }}><Activity size={17} /></span><span className="min-w-0 flex-1"><span className="block text-sm font-bold" style={{ color: INK }}>마지막 체형분석</span><span className="mt-1 block text-xs" style={{ color: SUB }}>{lastAssessment ? `${ymd((lastAssessment.completedAt || lastAssessment.at).slice(0, 10))}${retake.days != null ? ` · ${retake.days}일 전` : ""}` : "아직 완료된 분석이 없습니다"}</span><span className="mt-1 block text-xs font-bold" style={{ color: retake.tone === "recommended" ? WARN : BRAND_D }}>{retake.label}</span></span></div>
+            {lastAssessmentMetrics.length > 0 && <p className="mt-3 line-clamp-2 text-xs leading-relaxed" style={{ color: INK2 }}>{lastAssessmentMetrics.map((metric) => `${metric.label} ${metric.value}${metric.unit}`).join(" · ")}</p>}
+            <div className="mt-3 grid grid-cols-[1.2fr_.8fr] gap-2"><button type="button" onClick={() => onAssess?.({ mode: "new" })} className="h-11 text-xs font-extrabold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>{retake.recommended ? "오늘 재촬영하기" : "새 체형분석 시작"}</button><button type="button" onClick={() => onAssess?.({ mode: "history" })} className="h-11 text-xs font-bold" style={{ borderRadius: 10, backgroundColor: CARD, border: `1px solid ${LINE}`, color: INK }}>이전 분석 보기</button></div>
+          </section>
           <Section title="목표"><p style={{ fontSize: 13, lineHeight: 1.55, color: member.goal ? INK2 : SUB }}>{member.goal || "등록된 목표가 없습니다"}</p></Section>
           <Section title="주의사항"><div className="flex flex-wrap gap-1">{(member.focus || []).length ? member.focus.map((x) => <span key={x} style={{ padding: "4px 8px", borderRadius: 6, backgroundColor: WARN_S, color: WARN, fontSize: 11, fontWeight: 600 }}>{x}</span>) : <p style={{ fontSize: 12, color: SUB }}>등록된 주의사항이 없습니다</p>}</div></Section>
-          <Section title="최근 기록" action={<button type="button" onClick={() => { setMemo(""); setSheet("record"); }} style={{ fontSize: 12, fontWeight: 600, color: BRAND }}>기록하기</button>}>
+          <Section title="최근 기록" action={<button type="button" onClick={() => { setMemo(""); setMemoMeta(null); setSheet("record"); }} style={{ fontSize: 12, fontWeight: 600, color: BRAND }}>기록하기</button>}>
             {notes.length ? notes.slice(0, 3).map((n) => <div key={n.id} style={{ padding: "8px 0", borderTop: `1px solid ${LINE}` }}><p style={{ fontSize: 11, color: SUB }}>{ymd(n.date)} · {n.type || "기록"}</p><p className="mt-1 line-clamp-2" style={{ fontSize: 13, lineHeight: 1.45, color: INK2 }}>{n.body}</p></div>) : <p style={{ fontSize: 12, color: SUB }}>아직 기록이 없습니다</p>}
           </Section>
           <Section title="수업 이력">
             {lessons.length ? lessons.slice(0, 5).map((s) => { const a = attOf(s, member.id); return <div key={s.id} className="flex items-center gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}` }}><span className="tabular-nums" style={{ fontSize: 11, color: SUB }}>{ymd(s.date)} {s.start}</span><span className="min-w-0 flex-1 truncate" style={{ fontSize: 12, color: INK2 }}>{s.type}</span><span style={{ fontSize: 11, fontWeight: 600, color: stOf(a?.status).color }}>{stOf(a?.status).label}</span></div>; }) : <p style={{ fontSize: 12, color: SUB }}>수업 이력이 없습니다</p>}
           </Section>
-          <Section title="체형분석 이력" action={<button type="button" onClick={onAssess} style={{ fontSize: 12, fontWeight: 600, color: BRAND }}>새 분석</button>}>
-            {assessments.length ? assessments.slice(0, 3).map((a) => <button type="button" key={a.id} onClick={onAssess} className="flex w-full items-center gap-2 text-left" style={{ padding: "8px 0", borderTop: `1px solid ${LINE}` }}><Activity size={14} style={{ color: BRAND }} /><span className="min-w-0 flex-1 truncate" style={{ fontSize: 12, color: INK2 }}>{ymd(a.date)} · {a.view === "front" ? "전면" : a.view === "side" ? "측면" : "후면"}</span><ChevronRight size={13} style={{ color: SUB }} /></button>) : <p style={{ fontSize: 12, color: SUB }}>저장된 분석이 없습니다</p>}
+          <Section title="체형분석 이력" action={<button type="button" onClick={() => onAssess?.({ mode: "new" })} style={{ fontSize: 12, fontWeight: 600, color: BRAND }}>새 분석</button>}>
+            {assessmentSets.length ? assessmentSets.slice(0, 3).map((assessment) => { const representative = assessment.photos.front || Object.values(assessment.photos)[0]; const summary = assessment.poses.flatMap((pose) => pose.metrics || []).slice(0, 1)[0]; return <button type="button" key={assessment.id} onClick={() => onAssess?.(assessment.status === "completed" && assessment.poses[0]?.id ? { mode: "result", poseId: assessment.poses[0].id, assessmentId: assessment.id } : { mode: "resume", assessmentId: assessment.id })} className="flex w-full items-center gap-2 text-left" style={{ padding: "8px 0", borderTop: `1px solid ${LINE}` }}>{representative?.src ? <img src={representative.src} alt="체형분석 대표 사진" className="h-11 w-8 shrink-0 object-cover" style={{ borderRadius: 6, backgroundColor: PHOTO }} /> : <span className="flex h-11 w-8 shrink-0 items-center justify-center" style={{ borderRadius: 6, backgroundColor: CANVAS, color: BRAND }}><Activity size={13} /></span>}<span className="min-w-0 flex-1"><span className="block truncate" style={{ fontSize: 12, color: INK2 }}>{ymd((assessment.completedAt || assessment.at).slice(0, 10))} · {assessment.scope === "partial" ? "부위별" : "전신"}</span><span className="mt-0.5 block truncate" style={{ fontSize: 10, color: SUB }}>{summary ? `${summary.label} ${summary.value}${summary.unit}` : assessment.method === "draw" ? "강사 직접 기록" : "AI 해석 미연결"}</span></span><span style={{ padding: "2px 6px", borderRadius: 6, backgroundColor: assessment.status === "completed" ? GOOD_S : WARN_S, color: assessment.status === "completed" ? GOOD : WARN, fontSize: 9, fontWeight: 700 }}>{assessment.status === "completed" ? "완료" : "초안"}</span><ChevronRight size={13} style={{ color: SUB }} /></button>; }) : <p style={{ fontSize: 12, color: SUB }}>저장된 분석이 없습니다</p>}
+            {assessmentSets.length > 3 && <button type="button" onClick={() => onAssess?.({ mode: "history" })} className="mt-2 h-9 w-full text-xs font-bold" style={{ borderRadius: 8, backgroundColor: CANVAS, color: BRAND_D }}>전체 히스토리 보기</button>}
           </Section>
-          <Section title="상담 메모" action={<button type="button" onClick={() => { setMemo(""); setSheet("memo"); }} style={{ fontSize: 12, fontWeight: 600, color: BRAND }}>메모 추가</button>}>
+          <Section title="상담 메모" action={<button type="button" onClick={() => { setMemo(""); setMemoMeta(null); setSheet("memo"); }} style={{ fontSize: 12, fontWeight: 600, color: BRAND }}>메모 추가</button>}>
             {notes.filter((n) => n.type === "상담").slice(0, 3).map((n) => <p key={n.id} style={{ padding: "7px 0", borderTop: `1px solid ${LINE}`, fontSize: 12, lineHeight: 1.5, color: INK2 }}>{n.body}</p>)}
             {!notes.some((n) => n.type === "상담") && <p style={{ fontSize: 12, color: SUB }}>등록된 상담 메모가 없습니다</p>}
           </Section>
@@ -3511,14 +3709,14 @@ function ReferenceMemberDetail({ member, schedule, photos, onBack, onPatch, onSa
             {holdHistory.slice(0, 4).map((h) => <div key={h.id} className="flex items-center gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}`, backgroundColor: CANVAS }}><span style={{ padding: "2px 6px", borderRadius: 5, color: INK2, fontSize: 10, fontWeight: 600 }}>홀딩</span><span className="min-w-0 flex-1 truncate" style={{ fontSize: 11, color: INK2 }}>{ymd(h.startDate)} ~ {ymd(h.releasedAt || h.endDate)}{h.extendDays ? ` · 만료 +${h.extendDays}일` : ""}</span></div>)}
           </Section>
           <Section title="회원 기본정보">
-            <div className="grid grid-cols-2 gap-x-3 gap-y-2">{[["이름", member.name || "-"], ["연락처", member.phone || "-"], ["수업 유형", member.lessonType === "duet" ? "듀엣" : member.lessonType === "group" ? "그룹" : "개인"], ["상태", isHold(member) ? "홀딩" : isEnded(member) ? "종료" : "활성"]].map(([k,v]) => <div key={k}><p style={{ fontSize: 10, color: SUB }}>{k}</p><p className="truncate" style={{ marginTop: 2, fontSize: 12, color: INK }}>{v}</p></div>)}</div>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-2">{[["이름", member.name || "-"], ["연락처", member.phone || "-"], ["생년월일", member.birth ? `${member.birth.replaceAll("-", ".")} · ${ageOf(member)}세` : "-"], ["수업 유형", member.lessonType === "duet" ? "듀엣" : member.lessonType === "group" ? "그룹" : "개인"], ["상태", isHold(member) ? "홀딩" : isEnded(member) ? "종료" : "활성"]].map(([k,v]) => <div key={k}><p style={{ fontSize: 10, color: SUB }}>{k}</p><p className="truncate" style={{ marginTop: 2, fontSize: 12, color: INK }}>{v}</p></div>)}</div>
             {isHold(member) && <div className="mt-2 flex items-start gap-2" style={{ padding: "9px 10px", borderRadius: 8, backgroundColor: CANVAS }}><AlertCircle size={14} className="mt-0.5 shrink-0" style={{ color: SUB }} /><p style={{ fontSize: 11, lineHeight: 1.5, color: INK2 }}>{ymd(member.holdFrom)} ~ {ymd(member.holdUntil)}{member.holdReason ? ` · ${member.holdReason}` : ""}</p></div>}
             <div className="mt-2 flex gap-2"><button type="button" onClick={openEdit} style={{ flex: 1, height: 42, borderRadius: 8, border: `1px solid ${LINE}`, color: INK2, fontSize: 12, fontWeight: 600 }}>정보 수정</button>{isHold(member) ? <button type="button" onClick={() => { if (!releaseArmed) { setReleaseArmed(true); return; } const releasedAt = todayISO(); onPatch({ status: "active", holdFrom: "", holdUntil: "", holdReason: "", holdHistory: [{ id: uid(), startDate: member.holdFrom, endDate: member.holdUntil, releasedAt, reason: member.holdReason, extendDays: num(member.holdExtendDays), createdAt: releasedAt }, ...holdHistory] }); setReleaseArmed(false); }} style={{ flex: 1.35, height: 42, borderRadius: 8, border: `1px solid ${releaseArmed ? BRAND : LINE}`, backgroundColor: releaseArmed ? TINT : CARD, color: BRAND_D, fontSize: 12, fontWeight: 600 }}>{releaseArmed ? "한 번 더 눌러 홀딩 해제" : "홀딩 해제"}</button> : <button type="button" onClick={() => { setHold({ start: todayISO(), end: shift(todayISO(), 14), reason: "", extend: true }); setSheet("hold"); }} style={{ flex: 1, height: 42, borderRadius: 8, border: `1px solid ${LINE}`, color: BRAND_D, fontSize: 12, fontWeight: 600 }}>홀딩 설정</button>}</div>
           </Section>
         </div>
       </main>
       <div className="absolute bottom-0 left-0 right-0 grid grid-cols-4" style={{ height: 58, padding: "6px 10px", backgroundColor: CARD, borderTop: `1px solid ${LINE}` }}>
-        {[{ l: "일정", I: CalendarDays, fn: onSchedule }, { l: "기록", I: Pencil, fn: () => { setMemo(""); setSheet("record"); } }, { l: "체형분석", I: Activity, fn: onAssess }, { l: "메모", I: MessageSquare, fn: () => { setMemo(""); setSheet("memo"); } }].map(({ l, I, fn }) => <button type="button" key={l} onClick={fn} className="flex flex-col items-center justify-center gap-0.5" style={{ color: BRAND, fontSize: 10, fontWeight: 600 }}><I size={17} />{l}</button>)}
+        {[{ l: "일정", I: CalendarDays, fn: onSchedule }, { l: "기록", I: Pencil, fn: () => { setMemo(""); setMemoMeta(null); setSheet("record"); } }, { l: "체형분석", I: Activity, fn: () => onAssess?.({ mode: "new" }) }, { l: "메모", I: MessageSquare, fn: () => { setMemo(""); setMemoMeta(null); setSheet("memo"); } }].map(({ l, I, fn }) => <button type="button" key={l} onClick={fn} className="flex flex-col items-center justify-center gap-0.5" style={{ color: BRAND, fontSize: 10, fontWeight: 600 }}><I size={17} />{l}</button>)}
       </div>
       {sheet === "edit" && <Sheet title="회원 정보 수정" onClose={() => setSheet(null)} wide><div className="space-y-3">
         <Field label="이름"><input value={edit.name || ""} onChange={(e) => setEdit({ ...edit, name: e.target.value })} className={inputCls} /></Field><Field label="연락처"><input value={edit.phone || ""} onChange={(e) => setEdit({ ...edit, phone: e.target.value })} className={inputCls} /></Field><Field label="생년월일"><input type="date" value={edit.birth || ""} onChange={(e) => setEdit({ ...edit, birth: e.target.value })} className={inputCls} /></Field><Field label="목표"><textarea rows={3} value={edit.goal || ""} onChange={(e) => setEdit({ ...edit, goal: e.target.value })} className={`${inputCls} h-auto py-3`} /></Field><Field label="주의사항" hint="쉼표로 구분"><input value={edit.focus || ""} onChange={(e) => setEdit({ ...edit, focus: e.target.value })} className={inputCls} /></Field>
@@ -3531,7 +3729,7 @@ function ReferenceMemberDetail({ member, schedule, photos, onBack, onPatch, onSa
         <p style={{ fontSize: 11, lineHeight: 1.5, color: SUB }}>홀딩은 예정된 수업을 자동 취소하지 않습니다. 일정 탭에서 직접 확인해 주세요.</p>
         <button type="button" disabled={!hold.start || !hold.end || hold.end < hold.start} onClick={() => { const days = Math.max(0, Math.round((new Date(`${hold.end}T00:00:00`).getTime() - new Date(`${hold.start}T00:00:00`).getTime()) / 86400000)); onPatch({ status: "hold", holdFrom: hold.start, holdUntil: hold.end, holdReason: hold.reason.trim(), holdExtendDays: hold.extend ? days : 0, contractEnd: hold.extend && member.contractEnd ? shift(member.contractEnd, days) : member.contractEnd }); setSheet(null); }} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>홀딩 시작</button>
       </div></Sheet>}
-      {(sheet === "memo" || sheet === "record") && <Sheet title={sheet === "memo" ? "상담 메모" : "수업 기록"} onClose={() => setSheet(null)}><div className="space-y-2">{sheet === "record" && <VoiceNote onApply={(text) => setMemo((v) => v ? `${v}\n${text}` : text)} />}<textarea autoFocus rows={5} value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="내용을 입력하세요" className={`${inputCls} h-auto resize-none py-3`} /><button type="button" disabled={!memo.trim()} onClick={() => { onSaveNote(sheet === "memo" ? "상담" : "개인레슨", memo.trim()); setSheet(null); }} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>저장</button></div></Sheet>}
+      {(sheet === "memo" || sheet === "record") && <Sheet title={sheet === "memo" ? "상담 메모" : "수업 기록"} onClose={() => setSheet(null)}><div className="space-y-2">{sheet === "record" && <VoiceNote memberId={member.id} onApply={(text, meta) => { setMemo((v) => v ? `${v}\n${text}` : text); setMemoMeta(meta); }} />}<textarea autoFocus rows={5} value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="내용을 입력하세요" className={`${inputCls} h-auto resize-none py-3`} /><button type="button" disabled={!memo.trim()} onClick={() => { onSaveNote(sheet === "memo" ? "상담" : "개인레슨", memo.trim(), memoMeta); setMemoMeta(null); setSheet(null); }} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>저장</button></div></Sheet>}
       {sheet === "membership" && <Sheet title="이용권 변경" onClose={() => setSheet(null)}><div className="space-y-3"><Field label="이용권 이름"><input value={pass.name} onChange={(e) => setPass({ ...pass, name: e.target.value })} className={inputCls} /></Field><div className="grid grid-cols-2 gap-2"><Field label="추가 횟수"><input inputMode="numeric" value={pass.count} onChange={(e) => setPass({ ...pass, count: e.target.value.replace(/\D/g, "") })} className={inputCls} /></Field><Field label="만료일"><input type="date" value={pass.end} onChange={(e) => setPass({ ...pass, end: e.target.value })} className={inputCls} /></Field></div><button type="button" disabled={!num(pass.count)} onClick={() => { const count = num(pass.count); onPatch({ passName: pass.name, regular: num(member.regular) + count, total: num(member.total) + count, contractEnd: pass.end, payments: [{ id: uid(), date: todayISO(), name: pass.name, count }, ...(member.payments || [])] }); setSheet(null); }} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>변경 저장</button></div></Sheet>}
     </div>
   );
@@ -4223,37 +4421,6 @@ function LessonHistory({ member, schedule }) {
     </Card>
   );
 }
-function localReview(kind, member, r, att, pc) {
-  const find = (k) => (r.rows || []).find((x) => x.key === k);
-  const w = find("weight"), sm = find("smm"), ft = find("fat");
-  const moves = [
-    w && `체중 ${w.from}kg → ${w.to}kg`,
-    sm && `골격근량 ${sm.from}kg → ${sm.to}kg`,
-    ft && `체지방률 ${ft.from}% → ${ft.to}%`,
-  ].filter(Boolean).join(", ");
-  const attTxt = att.rate === null ? "출석 기록이 아직 쌓이는 중입니다" : `출석률 ${att.rate}%`;
-  const rest = left(member);
-  const dl = ddaySafe(member.contractEnd);
-  if (kind === "member") {
-    return [
-      `${member.name} 회원님, 지난 ${r.weeks}주 변화를 정리해 드릴게요.`,
-      moves ? `${moves}로 움직였습니다.` : "",
-      r.goods.length ? `특히 ${r.goods[0]} 부분이 눈에 띄게 좋아졌어요.` : "지표가 큰 흔들림 없이 유지되고 있어요.",
-      r.best && r.best.gain > 0 ? `운동 수행 능력에서는 ${r.best.name}이 ${r.best.gain}점 올랐습니다.` : "",
-      `${attTxt}, ${pc.label}.`,
-      r.cares.length
-        ? `다음 구간은 ${r.cares[0]} 쪽을 함께 잡아 보겠습니다. 지금 페이스면 충분히 따라옵니다.`
-        : `다음 구간은 ${r.weak ? r.weak.name : "약한 동작"}을 한 단계 올려 보겠습니다.`,
-    ].filter(Boolean).join(" ");
-  }
-  return [
-    `· 페이스 — ${pc.label} / ${attTxt}` + (att.rate === null ? "" : ` (출석 ${att.done} · 노쇼 ${att.noshow} · 취소 ${att.cancel})`),
-    `· 지표 — ${moves || "체성분 변화 없음"}${r.cares.length ? ` / 보완 우선순위: ${r.cares.join(", ")}` : " / 지표 전반 양호"}`,
-    `· 다음 4주 — ${r.weak ? `${r.weak.name}(현재 ${r.weak.now}점) 보완 세트를 매 수업 앞단에 배치` : "현재 프로그램 유지 후 재평가"}` + (r.avgGain <= 2 ? " · 수행능력 정체 구간이라 난이도 재설계 필요" : ""),
-    `· 재등록 — 잔여 ${rest}회` + (dl === null ? "" : dl >= 0 ? ` · 만료 D-${dl}` : ` · 만료 ${-dl}일 지남`) +
-      (rest <= 10 || (dl !== null && dl <= 30) ? " → 지금이 상담 타이밍. 이번 성과 브리핑과 함께 제안" : " → 다음 측정 때 성과와 함께 자연스럽게 안내"),
-  ].join("\n");
-}
 function OverallReview({ member, briefing, onToast, schedule }) {
   const rec = inbodyOf(member);
   const [ai, setAi] = useState(0);
@@ -4295,8 +4462,11 @@ function OverallReview({ member, briefing, onToast, schedule }) {
       </Card>
     );
   const gc = r.grade.tone === "good" ? GOOD : r.grade.tone === "bad" ? BAD : SUB;
-  const composeLocal = (kind) => localReview(kind, member, r, att, pc);
   const make = async (kind) => {
+    if (aiProvider.getStatus().status !== "connected") {
+      onToast({ ok: false, msg: "AI 분석 미연결 상태입니다. 실제 Provider 연결 전에는 문장을 생성하지 않습니다." });
+      return;
+    }
     setLoading(true);
     const payload = {
       회원: member.name, 목표: member.goal, 비교구간: `${r.weeks}주`,
@@ -4307,22 +4477,14 @@ function OverallReview({ member, briefing, onToast, schedule }) {
       잔여횟수: left(member),
       좋아진점: r.goods, 관리필요: r.cares,
     };
-    const prompt = kind === "member"
-      ? "너는 필라테스 베테랑 강사다. 아래 데이터로 '회원에게 직접 읽어줄' 멘트를 써라.\n조건: 4~5문장 존댓말 한 문단. 숫자 근거로 성과를 인정 → 지금의 운동 페이스 평가 → 다음 목표 한 가지 제안. 압박·과장 금지, 마크다운 금지."
-      : "너는 필라테스 스튜디오 수석 강사다. 아래 데이터로 '담당 강사가 볼 내부 코칭 노트'를 써라.\n조건: 마크다운 없이 각 줄을 '· '로 시작하는 4줄. ①현재 페이스·출석 진단 ②체성분/수행능력에서 우선 보완할 포인트 ③다음 4주 프로그램 구성 제안 ④재등록·이탈 리스크와 대응 타이밍.";
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 1000, messages: [{ role: "user", content: prompt + "\n\n" + JSON.stringify(payload) }] }),
-      });
-      const d = await res.json();
-      const t = (d.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
-      if (!t) throw new Error("empty");
+      const result = await aiProvider.generateReport(buildReportInput({ reportType: kind === "member" ? "member_progress_message" : "instructor_coaching_note", memberId: member.id, source: payload }));
+      if (result.status !== AI_STATUSES.DRAFT) throw new Error("not_connected");
+      const t = formatAIReport(result.output);
       setTxt((x) => ({ ...x, [kind]: t }));
       onToast({ ok: true, msg: kind === "coach" ? "코칭노트를 만들었습니다." : "회원용 멘트를 만들었습니다." });
     } catch (e) {
-      setTxt((x) => ({ ...x, [kind]: composeLocal(kind) }));
-      onToast({ ok: true, msg: "지금 기록으로 만들었습니다. 다시 만들기를 누르면 새로 씁니다." });
+      onToast({ ok: false, msg: "AI 결과를 불러오지 못했습니다. 기존 지표는 그대로 유지됩니다." });
     }
     finally { setLoading(false); }
   };
@@ -4550,8 +4712,14 @@ function loadLandmarker() {
     for (let i = 0; i < MP_LIB.length; i++) {
       try {
         const mod = dyn ? await dyn(MP_LIB[i]) : await import(MP_LIB[i]);
-        if (mod && mod.FilesetResolver && mod.PoseLandmarker) { vision = mod; wasmBase = MP_WASM[i]; break; }
-      } catch (e) {}
+        if (mod && mod.FilesetResolver && mod.PoseLandmarker) {
+          vision = mod; wasmBase = MP_WASM[i];
+          deviceLog("pose_library_loaded", { source: i === 0 ? "jsdelivr" : "unpkg" });
+          break;
+        }
+      } catch (e) {
+        deviceLog("pose_library_load_failed", { source: i === 0 ? "jsdelivr" : "unpkg", ...deviceError(e) });
+      }
     }
     if (!vision) throw new Error("lib");
     const fileset = await vision.FilesetResolver.forVisionTasks(wasmBase);
@@ -4561,13 +4729,48 @@ function loadLandmarker() {
         runningMode: "IMAGE", numPoses: 1,
         minPoseDetectionConfidence: 0.4, minPosePresenceConfidence: 0.4,
       });
-    try { return await make("GPU"); } catch (e) { return await make("CPU"); }
-  })().catch((e) => { mpPromise = null; throw e; });
+    try {
+      const landmarker = await make("GPU");
+      deviceLog("pose_model_ready", { source: "GPU" });
+      return landmarker;
+    } catch (e) {
+      deviceLog("pose_gpu_fallback", { source: "CPU", ...deviceError(e) });
+      const landmarker = await make("CPU");
+      deviceLog("pose_model_ready", { source: "CPU" });
+      return landmarker;
+    }
+  })().catch((e) => { mpPromise = null; deviceLog("pose_model_failed", deviceError(e)); throw e; });
   return mpPromise;
 }
 const MP_IDX = {
   nose: 0, earL: 7, earR: 8, shL: 11, shR: 12, elL: 13, elR: 14, wrL: 15, wrR: 16,
   hipL: 23, hipR: 24, kneeL: 25, kneeR: 26, ankL: 27, ankR: 28, footL: 31, footR: 32,
+};
+const POSE_CONFIDENCE_MIN = 0.5;
+const newAssessmentId = () => "asmt_" + Date.now().toString(36) + "_" + uid();
+const captureStateFor = (views) => Object.fromEntries((views || []).map((view) => [view.key || view, null]));
+const captureQualityFor = (image) => {
+  const width = Number(image?.naturalWidth || image?.width || 0);
+  const height = Number(image?.naturalHeight || image?.height || 0);
+  let brightness = null;
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = 24; canvas.height = 32;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    let total = 0;
+    for (let index = 0; index < pixels.length; index += 4) total += (pixels[index] * 0.2126) + (pixels[index + 1] * 0.7152) + (pixels[index + 2] * 0.0722);
+    brightness = Math.round(total / Math.max(1, pixels.length / 4));
+  } catch (error) {}
+  const portraitRatio = width && height ? width / height : 0;
+  return {
+    resolution: { source: "actual", state: width >= 720 && height >= 960 ? "good" : "review", width, height },
+    lighting: { source: "heuristic", state: brightness == null ? "unknown" : brightness < 45 ? "dark" : brightness > 225 ? "bright" : "good", value: brightness },
+    framing: { source: "heuristic", state: portraitRatio >= 0.5 && portraitRatio <= 0.9 ? "good" : "review" },
+    tilt: { source: "unsupported", state: "unknown" },
+    distance: { source: "unsupported", state: "unknown" },
+  };
 };
 const PART_KO = { ear: "귀", sh: "어깨", hip: "골반", knee: "무릎", ank: "발목" };
 function jointName(key, view) {
@@ -4688,14 +4891,6 @@ function analyzePose(raw, { view, W, H, floorFix }) {
   }
   notes.push("측면 골반 전·후방 경사는 사진 관절점만으로는 정확히 계산할 수 없어 제외했습니다. 촉진(ASIS·PSIS)으로 확인해 주세요.");
   return { items, notes, floor: 0 };
-}
-function poseComment(member, view, res) {
-  const bad = res.items.filter((i) => i.level !== "good").sort((a, b) => LV_RANK[b.level] - LV_RANK[a.level]);
-  const head = `[${view === "front" ? "전면" : view === "side" ? "측면" : "후면"} 체형 분석] `;
-  if (!bad.length) return head + "주요 지표가 모두 정상 범위입니다. 현재 정렬을 유지하는 방향으로 진행합니다.";
-  const t = bad.slice(0, 2);
-  const facts = t.map((i) => `${i.label} ${i.value}${i.unit}(${i.dir})`).join(", ");
-  return `${head}${facts}. 오늘 수업은 ${t[0].tip} 위주로 진행하겠습니다.`;
 }
 function badge(ctx, x, y, text, color, up, placed, W, H) {
   ctx.font = "700 15px Pretendard, -apple-system, sans-serif";
@@ -4939,7 +5134,18 @@ function ResultCardMaker({ member, saved, centerName, onToast, onGoAnalyze }) {
   }).slice(0, 3);
   const [cb, setCb] = useState("#FFFFFF");
   const [ca, setCa] = useState("#FFD43B");
-  const drafts = useMemo(() => (both ? cardDrafts(bRec, aRec, keys) : { title: "", c1: "", c2: "", close: "" }), [bId, aId, JSON.stringify(keys)]);
+  const confirmedCard = both ? saved.find((record) => record?.assessmentId === aRec?.assessmentId && record?.memberResultCard?.status === AI_STATUSES.CONFIRMED)?.memberResultCard : null;
+  const confirmedCardText = confirmedCard?.teacherEditedOutput || confirmedCard?.output || null;
+  const drafts = useMemo(() => {
+    if (!both) return { title: "", c1: "", c2: "", close: "" };
+    if (!confirmedCardText) return cardDrafts(bRec, aRec, keys);
+    return {
+      title: confirmedCardText.title || "체형분석 결과",
+      c1: confirmedCardText.highlights?.[0] || confirmedCardText.summary || "",
+      c2: confirmedCardText.highlights?.[1] || confirmedCardText.recommendations?.[0] || "",
+      close: confirmedCardText.recommendations?.[0] || confirmedCardText.precautions?.[0] || "",
+    };
+  }, [bId, aId, JSON.stringify(keys), confirmedCardText]);
   const [txt, setTxt] = useState(null);
   const T = txt || drafts;
   const [preview, setPreview] = useState(null);
@@ -5120,7 +5326,153 @@ function ResultCardMaker({ member, saved, centerName, onToast, onGoAnalyze }) {
   );
 }
 
-function SavedPoseViewer({ rec, memberName, onClose, onToast }) {
+const aiMetaFrom = (result) => ({
+  provider: result.provider, requestId: result.requestId, model: result.model, modelVersion: result.modelVersion,
+  promptVersion: result.promptVersion, pipelineVersion: result.pipelineVersion, generatedAt: result.createdAt || new Date().toISOString(),
+});
+const aiListText = (items) => (items || []).join("\n");
+const aiListValue = (value) => String(value || "").split(/\n+/).map((item) => item.trim()).filter(Boolean);
+
+function BodyAIReview({ member, rec, records, onUpdate, onToast }) {
+  const group = useMemo(() => {
+    const same = (records || []).filter((record) => rec?.assessmentId && record?.assessmentId === rec.assessmentId);
+    return same.length ? same : [rec];
+  }, [records, rec?.assessmentId, rec?.id]);
+  const expectedViews = useMemo(() => {
+    const selected = group.flatMap((record) => Array.isArray(record?.selectedViews) ? record.selectedViews : [])
+      .map(normalizePostureView)
+      .filter((view) => POSTURE_VIEW_KEYS.includes(view));
+    if (selected.length) return [...new Set(selected)];
+    return POSTURE_VIEWS.map(({ key }) => key).filter((key) => group.some((record) => normalizePostureView(record?.view) === key));
+  }, [group]);
+  const viewRecords = useMemo(() => expectedViews.map((key) => group.find((record) => normalizePostureView(record?.view) === key)).filter(Boolean), [group, expectedViews]);
+  const storedRecord = group.find((record) => record?.aiAnalysis) || rec;
+  const storedAnalysis = storedRecord?.aiAnalysis || null;
+  const storedCard = storedRecord?.memberResultCard || null;
+  const [teacherNote, setTeacherNote] = useState(storedAnalysis?.teacherNote || rec?.comment || "");
+  const [original, setOriginal] = useState(storedAnalysis?.output || null);
+  const [draft, setDraft] = useState(storedAnalysis?.teacherEditedOutput || storedAnalysis?.output || null);
+  const [analysisMeta, setAnalysisMeta] = useState(storedAnalysis?.meta || null);
+  const [analysisStatus, setAnalysisStatus] = useState(storedAnalysis?.status || AI_STATUSES.NOT_CONNECTED);
+  const [reportOriginal, setReportOriginal] = useState(storedCard?.output || null);
+  const [reportDraft, setReportDraft] = useState(storedCard?.teacherEditedOutput || storedCard?.output || null);
+  const [reportMeta, setReportMeta] = useState(storedCard?.meta || null);
+  const [reportStatus, setReportStatus] = useState(storedCard?.status || AI_STATUSES.NOT_CONNECTED);
+  const [busy, setBusy] = useState("");
+  const connected = aiProvider.getStatus().status === "connected";
+  const ready = expectedViews.length > 0 && expectedViews.every((key) => {
+    const record = group.find((item) => normalizePostureView(item?.view) === key);
+    return Boolean(record?.pts && (record?.metrics || []).length);
+  });
+
+  useEffect(() => {
+    setTeacherNote(storedAnalysis?.teacherNote || rec?.comment || "");
+    setOriginal(storedAnalysis?.output || null);
+    setDraft(storedAnalysis?.teacherEditedOutput || storedAnalysis?.output || null);
+    setAnalysisMeta(storedAnalysis?.meta || null);
+    setAnalysisStatus(storedAnalysis?.status || AI_STATUSES.NOT_CONNECTED);
+    setReportOriginal(storedCard?.output || null);
+    setReportDraft(storedCard?.teacherEditedOutput || storedCard?.output || null);
+    setReportMeta(storedCard?.meta || null);
+    setReportStatus(storedCard?.status || AI_STATUSES.NOT_CONNECTED);
+  }, [storedRecord?.id, storedAnalysis?.status, storedCard?.status]);
+
+  const persist = async (patch) => {
+    const ok = await onUpdate?.(storedRecord?.id || rec.id, patch);
+    if (ok === false) throw new Error("save_failed");
+  };
+  const requestAnalysis = async () => {
+    if (!ready) { onToast?.({ ok: false, msg: "선택한 모든 촬영 방향의 분석을 저장해야 AI 분석을 시작할 수 있습니다." }); return; }
+    if (!connected) { setAnalysisStatus(AI_STATUSES.NOT_CONNECTED); onToast?.({ ok: false, msg: "AI 분석 미연결 상태입니다." }); return; }
+    setBusy("analysis");
+    try {
+      const result = await aiProvider.analyzeBody(buildBodyAnalysisInput({ member, records: viewRecords, teacherNote }));
+      if (result.status === AI_STATUSES.NOT_CONNECTED) { setAnalysisStatus(result.status); return; }
+      const meta = aiMetaFrom(result);
+      const next = { status: AI_STATUSES.DRAFT, output: result.output, teacherEditedOutput: result.output, teacherNote, meta };
+      await persist({ aiAnalysis: next, interpretation: result.output, interpretationStatus: AI_STATUSES.DRAFT, comment: teacherNote });
+      setOriginal(result.output); setDraft(result.output); setAnalysisMeta(meta); setAnalysisStatus(AI_STATUSES.DRAFT);
+      onToast?.({ ok: true, msg: "AI 체형분석 초안을 저장했습니다. 강사가 검수해 주세요." });
+    } catch (error) {
+      setAnalysisStatus(AI_STATUSES.ERROR);
+      onToast?.({ ok: false, msg: `AI 체형분석을 불러오지 못했습니다${error?.code ? ` (${error.code})` : ""}.` });
+    } finally { setBusy(""); }
+  };
+  const confirmAnalysis = async () => {
+    if (!draft || !original) return;
+    setBusy("confirm");
+    try {
+      const confirmedAt = new Date().toISOString();
+      await persist({
+        aiAnalysis: { status: AI_STATUSES.CONFIRMED, output: original, teacherEditedOutput: draft, teacherNote, meta: analysisMeta, confirmedAt },
+        interpretation: draft, interpretationStatus: AI_STATUSES.CONFIRMED, comment: teacherNote,
+      });
+      setAnalysisStatus(AI_STATUSES.CONFIRMED);
+      onToast?.({ ok: true, msg: "강사 검수 결과를 확정했습니다." });
+    } catch (error) { onToast?.({ ok: false, msg: "AI 분석 확정본을 저장하지 못했습니다." }); }
+    finally { setBusy(""); }
+  };
+  const requestReport = async () => {
+    if (analysisStatus !== AI_STATUSES.CONFIRMED || !draft) { onToast?.({ ok: false, msg: "체형분석을 강사 확정한 뒤 결과카드를 만들 수 있습니다." }); return; }
+    if (!connected) { setReportStatus(AI_STATUSES.NOT_CONNECTED); onToast?.({ ok: false, msg: "AI 결과카드 미연결 상태입니다." }); return; }
+    setBusy("report");
+    try {
+      const result = await aiProvider.generateReport(buildReportInput({ reportType: "member_body_assessment_card", memberId: member?.id, source: { bodyAnalysis: draft, teacherNote } }));
+      if (result.status === AI_STATUSES.NOT_CONNECTED) { setReportStatus(result.status); return; }
+      const meta = aiMetaFrom(result);
+      const next = { status: AI_STATUSES.DRAFT, output: result.output, teacherEditedOutput: result.output, meta };
+      await persist({ memberResultCard: next });
+      setReportOriginal(result.output); setReportDraft(result.output); setReportMeta(meta); setReportStatus(AI_STATUSES.DRAFT);
+      onToast?.({ ok: true, msg: "회원 결과카드 초안을 저장했습니다." });
+    } catch (error) { setReportStatus(AI_STATUSES.ERROR); onToast?.({ ok: false, msg: "AI 결과카드 초안을 불러오지 못했습니다." }); }
+    finally { setBusy(""); }
+  };
+  const confirmReport = async () => {
+    if (!reportDraft || !reportOriginal) return;
+    setBusy("report-confirm");
+    try {
+      await persist({ memberResultCard: { status: AI_STATUSES.CONFIRMED, output: reportOriginal, teacherEditedOutput: reportDraft, meta: reportMeta, confirmedAt: new Date().toISOString() } });
+      setReportStatus(AI_STATUSES.CONFIRMED);
+      onToast?.({ ok: true, msg: "회원 결과카드를 확정했습니다." });
+    } catch (error) { onToast?.({ ok: false, msg: "회원 결과카드를 저장하지 못했습니다." }); }
+    finally { setBusy(""); }
+  };
+  const setBodyField = (field, value, isList) => setDraft((current) => ({ ...(current || {}), [field]: isList ? aiListValue(value) : value }));
+  const setReportField = (field, value, isList) => setReportDraft((current) => ({ ...(current || {}), [field]: isList ? aiListValue(value) : value }));
+  const bodyLabels = { bodyCharacteristics: "체형 특징", asymmetries: "좌우 불균형", pelvis: "골반", thorax: "흉곽", scapula: "견갑", head: "머리", knees: "무릎", feet: "발", recommendedExercises: "추천 운동", precautions: "주의사항" };
+  const reportLabels = { title: "카드 제목", summary: "회원 설명", highlights: "핵심 변화", recommendations: "추천 운동", precautions: "주의사항" };
+
+  return (
+    <div className="rounded-xl p-3" style={{ backgroundColor: "rgba(255,255,255,.96)", color: "#1C2433" }}>
+      <div className="flex items-center gap-2">
+        <Sparkles size={15} style={{ color: "#4C4399" }} />
+        <p className="min-w-0 flex-1 text-sm font-extrabold">AI 체형분석</p>
+        <span className="rounded-full px-2 py-1 text-[10px] font-bold" style={{ backgroundColor: analysisStatus === AI_STATUSES.CONFIRMED ? "#E7F2EC" : "#ECEBF7", color: analysisStatus === AI_STATUSES.CONFIRMED ? "#2E7D5B" : "#4C4399" }}>{analysisStatus === AI_STATUSES.CONFIRMED ? "강사 확정" : analysisStatus === AI_STATUSES.DRAFT ? "초안" : connected ? "분석 가능" : "미연결"}</span>
+      </div>
+      <p className="mt-1 text-xs" style={{ color: "#6B7484" }}>좌표·각도·수동 수정 이력만 전송하며 사진 원본은 전송하지 않습니다. {viewRecords.length}/3 방향 준비</p>
+      <textarea rows={2} value={teacherNote} onChange={(event) => setTeacherNote(event.target.value)} placeholder="강사 메모 (AI 입력에 포함)" className={`${inputCls} mt-2 h-auto resize-none py-2 text-xs`} />
+      <button disabled={busy || !ready || !connected} onClick={requestAnalysis} className="mt-2 flex h-10 w-full items-center justify-center gap-1.5 rounded-lg text-xs font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: "#4C4399" }}>{busy === "analysis" ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} {draft ? "AI 초안 다시 생성" : "AI 체형분석 초안 생성"}</button>
+      {!connected && <p className="mt-2 text-xs font-bold" style={{ color: "#B45309" }}>AI 분석 미연결 · Gateway를 설정하기 전에는 결과를 생성하지 않습니다.</p>}
+      {draft && <div className="mt-3 space-y-2 border-t pt-3" style={{ borderColor: "#E6E9EF" }}>
+        {[...bodyAnalysisFields.list, ...bodyAnalysisFields.text].map((field) => {
+          const isList = bodyAnalysisFields.list.includes(field);
+          return <label key={field} className="block"><span className="mb-1 block text-[11px] font-bold" style={{ color: "#5E6673" }}>{bodyLabels[field]}</span><textarea rows={isList ? 2 : 1} value={isList ? aiListText(draft[field]) : draft[field] || ""} onChange={(event) => setBodyField(field, event.target.value, isList)} className={`${inputCls} h-auto resize-none py-2 text-xs`} /></label>;
+        })}
+        <button disabled={busy || !original} onClick={confirmAnalysis} className="h-10 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: "#2E7D5B" }}>{busy === "confirm" ? "저장 중…" : "강사 수정본 확정"}</button>
+      </div>}
+      {analysisStatus === AI_STATUSES.CONFIRMED && <div className="mt-3 border-t pt-3" style={{ borderColor: "#E6E9EF" }}>
+        <div className="flex items-center gap-2"><p className="min-w-0 flex-1 text-xs font-extrabold">회원 결과카드</p><span className="text-[10px] font-bold" style={{ color: reportStatus === AI_STATUSES.CONFIRMED ? "#2E7D5B" : "#6B7484" }}>{reportStatus === AI_STATUSES.CONFIRMED ? "확정" : reportStatus === AI_STATUSES.DRAFT ? "초안" : "미생성"}</span></div>
+        <button disabled={busy || !connected} onClick={requestReport} className="mt-2 h-10 w-full rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: "#ECEBF7", color: "#4C4399" }}>{busy === "report" ? "생성 중…" : reportDraft ? "결과카드 다시 생성" : "회원 결과카드 초안 생성"}</button>
+        {reportDraft && <div className="mt-2 space-y-2">
+          {["title", "summary", "highlights", "recommendations", "precautions"].map((field) => { const isList = ["highlights", "recommendations", "precautions"].includes(field); return <label key={field} className="block"><span className="mb-1 block text-[11px] font-bold" style={{ color: "#5E6673" }}>{reportLabels[field]}</span><textarea rows={isList ? 2 : 1} value={isList ? aiListText(reportDraft[field]) : reportDraft[field] || ""} onChange={(event) => setReportField(field, event.target.value, isList)} className={`${inputCls} h-auto resize-none py-2 text-xs`} /></label>; })}
+          <button disabled={busy || !reportOriginal} onClick={confirmReport} className="h-10 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: "#4C4399" }}>{busy === "report-confirm" ? "저장 중…" : "회원 결과카드 확정"}</button>
+        </div>}
+      </div>}
+    </div>
+  );
+}
+
+function SavedPoseViewer({ rec, member, records, onUpdate, memberName, onClose, onToast }) {
   useBackClose(true, onClose);
   useScrollLock();
   return (
@@ -5155,25 +5507,542 @@ function SavedPoseViewer({ rec, memberName, onClose, onToast }) {
               <p className="mt-1 text-sm leading-relaxed text-white">{rec.comment}</p>
             </div>
           )}
+          <BodyAIReview member={member} rec={rec} records={records} onUpdate={onUpdate} onToast={onToast} />
         </div>
       </div>
     </div>
   );
 }
 
-function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onSaveCaptureDraft, onToast, onSaved, roleLabel, embedded = false, initialSavedId = null }) {
+function PostureCaptureScreen({
+  member, assessmentId, captureViews, currentCapture, capturePhotos, draftSaved, busy,
+  onSelectView, onAcceptCapture, onOpenAlbum, onDeleteCapture, onSaveDraft, onContinue, onExit,
+}) {
+  const isNative = Capacitor.isNativePlatform();
+  const iosStableCaptureFallback = Capacitor.getPlatform() === "ios" && !IOS_NATIVE_CAPTURE_ENABLED;
+  const nativePreviewAvailable = isNative && !iosStableCaptureFallback && Capacitor.isPluginAvailable("CameraPreview");
+  const viewportRef = useRef(null);
+  const stageRef = useRef(null);
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+  const cameraRunning = useRef(false);
+  const cameraStarting = useRef(false);
+  const cameraGeneration = useRef(0);
+  const captureRunning = useRef(false);
+  const cameraPermissionDenied = useRef(false);
+  const motionPermission = useRef("unknown");
+  const mounted = useRef(true);
+  const motionHandle = useRef(null);
+  const motionReadingTimeout = useRef(null);
+  const countdownTimer = useRef(null);
+  const pendingCaptureRef = useRef(null);
+  const [cameraStatus, setCameraStatus] = useState("idle");
+  const [cameraError, setCameraError] = useState("");
+  const [previewRect, setPreviewRect] = useState(null);
+  const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
+  const [pendingCapture, setPendingCapture] = useState(null);
+  const [timerSeconds, setTimerSeconds] = useState(() => readCaptureTimer(typeof window === "undefined" ? null : window.localStorage));
+  const [timerOpen, setTimerOpen] = useState(false);
+  const [countdown, setCountdown] = useState(null);
+  const [sensor, setSensor] = useState({ status: SENSOR_STATUSES.loading, roll: null, pitch: null, isLevel: false, message: "기울기 센서를 확인하고 있습니다." });
+  const activeView = currentCapture?.key || captureViews[0]?.key || "front";
+  const activePhoto = capturePhotos[activeView] || null;
+  const capturesComplete = captureViews.every(({ key }) => !!capturePhotos[key]);
+  const completedCount = captureViews.filter(({ key }) => !!capturePhotos[key]).length;
+
+  useEffect(() => {
+    pendingCaptureRef.current = pendingCapture;
+  }, [pendingCapture]);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return undefined;
+    const update = () => {
+      const box = viewport.getBoundingClientRect();
+      const width = Math.max(1, Math.min(box.width, box.height * 0.75));
+      const height = Math.max(1, width * 4 / 3);
+      setStageSize((previous) => Math.abs(previous.width - width) < 0.5 && Math.abs(previous.height - height) < 0.5
+        ? previous
+        : { width, height });
+    };
+    update();
+    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(update) : null;
+    observer?.observe(viewport);
+    window.addEventListener("resize", update);
+    window.addEventListener("orientationchange", update);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", update);
+      window.removeEventListener("orientationchange", update);
+    };
+  }, []);
+
+  const clearCountdown = useCallback(() => {
+    if (countdownTimer.current) window.clearInterval(countdownTimer.current);
+    countdownTimer.current = null;
+    setCountdown(null);
+  }, []);
+
+  const stopMotion = useCallback(async () => {
+    if (motionReadingTimeout.current) window.clearTimeout(motionReadingTimeout.current);
+    motionReadingTimeout.current = null;
+    const handle = motionHandle.current;
+    motionHandle.current = null;
+    if (handle?.remove) {
+      try { await handle.remove(); } catch {}
+    }
+  }, []);
+
+  const stopCamera = useCallback(async (reason = "manual") => {
+    cameraGeneration.current += 1;
+    clearCountdown();
+    captureRunning.current = false;
+    cameraStarting.current = false;
+    if (nativePreviewAvailable) {
+      try { await CameraPreview.stop({ force: true }); } catch {}
+    } else {
+      const stream = streamRef.current;
+      streamRef.current = null;
+      stream?.getTracks?.().forEach((track) => track.stop());
+      if (videoRef.current) videoRef.current.srcObject = null;
+    }
+    cameraRunning.current = false;
+    document.documentElement.classList.remove("posture-camera-native-active");
+    await stopMotion();
+    if (mounted.current && reason !== "capture") setCameraStatus(reason === "background" ? "paused" : "idle");
+  }, [clearCountdown, nativePreviewAvailable, stopMotion]);
+
+  const startMotion = useCallback(async (generation) => {
+    if (motionHandle.current) return;
+    const isCurrent = () => mounted.current && cameraGeneration.current === generation;
+    const orientationCtor = typeof window !== "undefined" ? window.DeviceOrientationEvent : null;
+    if (!orientationCtor && !Motion?.addListener) {
+      if (isCurrent()) setSensor(evaluateDeviceLevel({ status: SENSOR_STATUSES.unavailable }));
+      return;
+    }
+    try {
+      if (typeof orientationCtor?.requestPermission === "function") {
+        let permission = motionPermission.current;
+        if (permission === "unknown") {
+          if (isCurrent()) setSensor(evaluateDeviceLevel({ status: SENSOR_STATUSES.permissionRequired }));
+          permission = await orientationCtor.requestPermission();
+          motionPermission.current = permission;
+        }
+        if (!isCurrent()) return;
+        if (permission !== "granted") {
+          setSensor(evaluateDeviceLevel({ status: SENSOR_STATUSES.denied }));
+          return;
+        }
+      }
+      if (!isCurrent()) return;
+      setSensor(evaluateDeviceLevel({ status: SENSOR_STATUSES.loading }));
+      const handle = await Motion.addListener("orientation", (event) => {
+        if (!isCurrent()) return;
+        if (motionReadingTimeout.current) window.clearTimeout(motionReadingTimeout.current);
+        motionReadingTimeout.current = null;
+        const screenAngle = window.screen?.orientation?.angle ?? window.orientation ?? 0;
+        const corrected = correctOrientationForScreen({ beta: event?.beta, gamma: event?.gamma, screenAngle });
+        if (!Number.isFinite(corrected.roll) || !Number.isFinite(corrected.pitch)) {
+          setSensor(evaluateDeviceLevel({ status: SENSOR_STATUSES.unavailable }));
+          return;
+        }
+        setSensor((previous) => {
+          const roll = previous.roll == null ? corrected.roll : Math.round((previous.roll * 0.7 + corrected.roll * 0.3) * 10) / 10;
+          const pitch = previous.pitch == null ? corrected.pitch : Math.round((previous.pitch * 0.7 + corrected.pitch * 0.3) * 10) / 10;
+          return evaluateDeviceLevel({ roll, pitch, status: SENSOR_STATUSES.active, threshold: LEVEL_THRESHOLD_DEG });
+        });
+      });
+      if (!isCurrent()) {
+        try { await handle?.remove?.(); } catch {}
+        return;
+      }
+      motionHandle.current = handle;
+      motionReadingTimeout.current = window.setTimeout(() => {
+        if (!isCurrent()) return;
+        setSensor((previous) => previous.status === SENSOR_STATUSES.active
+          ? previous
+          : evaluateDeviceLevel({ status: SENSOR_STATUSES.unavailable }));
+      }, 2500);
+    } catch (error) {
+      if (!isCurrent()) return;
+      const denied = /denied|permission/i.test(String(error?.message || error));
+      setSensor(evaluateDeviceLevel({ status: denied ? SENSOR_STATUSES.denied : SENSOR_STATUSES.error }));
+    }
+  }, []);
+
+  const syncPreviewBounds = useCallback(async () => {
+    const box = stageRef.current?.getBoundingClientRect();
+    if (!box?.width || !box?.height) return null;
+    const canonical = { x: box.left, y: box.top, width: box.width, height: box.height };
+    setPreviewRect(canonical);
+    if (nativePreviewAvailable && cameraRunning.current) {
+      await CameraPreview.setPreviewSize({
+        x: Math.round(box.left), y: Math.round(box.top), width: Math.round(box.width), height: Math.round(box.height),
+      });
+    }
+    return canonical;
+  }, [nativePreviewAvailable]);
+
+  useEffect(() => {
+    if (!cameraRunning.current) return undefined;
+    const frame = window.requestAnimationFrame(() => {
+      syncPreviewBounds().catch((error) => {
+        deviceLog("posture_camera_preview_resize_failed", { memberId: member?.id, assessmentId, ...deviceError(error) });
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [assessmentId, member?.id, stageSize.height, stageSize.width, syncPreviewBounds]);
+
+  const cameraErrorMessage = (error) => {
+    const name = String(error?.name || error?.code || "");
+    if (/NotAllowed|denied|permission/i.test(name) || /denied|permission/i.test(String(error?.message || ""))) return "카메라 권한이 거부되었습니다. 기기 설정에서 PilaTeacher 카메라 권한을 허용해 주세요.";
+    if (/NotFound|no_camera/i.test(name)) return "사용 가능한 후면 카메라를 찾지 못했습니다.";
+    if (/NotReadable|in_use|busy/i.test(name)) return "다른 앱이 카메라를 사용 중입니다. 다른 앱을 닫고 다시 시도해 주세요.";
+    if (!isNative && typeof window !== "undefined" && !window.isSecureContext) return "브라우저 카메라는 HTTPS 또는 localhost에서만 사용할 수 있습니다.";
+    return "카메라 프리뷰를 시작하지 못했습니다. 앨범에서 사진을 선택하거나 다시 시도해 주세요.";
+  };
+
+  const startCamera = useCallback(async () => {
+    if (iosStableCaptureFallback || cameraRunning.current || cameraStarting.current || busy) return;
+    const generation = cameraGeneration.current + 1;
+    cameraGeneration.current = generation;
+    const ensureCurrent = () => {
+      if (!mounted.current || cameraGeneration.current !== generation || document.visibilityState === "hidden") {
+        throw Object.assign(new Error("camera start cancelled"), { code: "camera_start_cancelled" });
+      }
+    };
+    cameraStarting.current = true;
+    setCameraStatus("starting");
+    setCameraError("");
+    const motionPromise = startMotion(generation);
+    try {
+      if (nativePreviewAvailable) {
+        const checked = await CameraPreview.checkPermissions({ disableAudio: true });
+        ensureCurrent();
+        let cameraPermission = checked.camera;
+        if (cameraPermission === "granted") cameraPermissionDenied.current = false;
+        if (cameraPermission !== "granted") {
+          if (cameraPermissionDenied.current) throw Object.assign(new Error("camera permission denied"), { code: "permission_denied" });
+          const requested = await CameraPreview.requestPermissions({ disableAudio: true, showSettingsAlert: false });
+          ensureCurrent();
+          cameraPermission = requested.camera;
+        }
+        if (cameraPermission !== "granted") {
+          cameraPermissionDenied.current = true;
+          throw Object.assign(new Error("camera permission denied"), { code: "permission_denied" });
+        }
+        document.documentElement.classList.add("posture-camera-native-active");
+        await CameraPreview.start({
+          position: "rear", toBack: true, aspectRatio: "4:3", aspectMode: "contain", positioning: "center",
+          storeToFile: false, disableAudio: true, rotateWhenOrientationChanged: true, lockAndroidOrientation: false,
+        });
+        ensureCurrent();
+        cameraRunning.current = true;
+        await syncPreviewBounds();
+        ensureCurrent();
+      } else {
+        if (!navigator.mediaDevices?.getUserMedia) throw Object.assign(new Error("getUserMedia unavailable"), { code: "unavailable" });
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: { facingMode: { ideal: "environment" }, width: { ideal: 1440 }, height: { ideal: 1920 } },
+        });
+        try { ensureCurrent(); } catch (error) {
+          stream.getTracks().forEach((track) => track.stop());
+          throw error;
+        }
+        streamRef.current = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          await videoRef.current.play();
+        }
+        ensureCurrent();
+        cameraRunning.current = true;
+        await syncPreviewBounds();
+      }
+      ensureCurrent();
+      setCameraStatus("active");
+      deviceLog("posture_camera_preview_started", { memberId: member?.id, assessmentId, view: activeView, source: nativePreviewAvailable ? "native_preview" : "getUserMedia", permission: "granted" });
+      await motionPromise;
+    } catch (error) {
+      if (error?.code === "camera_start_cancelled") {
+        if (nativePreviewAvailable) { try { await CameraPreview.stop({ force: true }); } catch {} }
+        return;
+      }
+      await stopCamera("error");
+      if (!mounted.current) return;
+      setCameraStatus("error");
+      setCameraError(cameraErrorMessage(error));
+      deviceLog("posture_camera_preview_failed", { memberId: member?.id, assessmentId, view: activeView, source: nativePreviewAvailable ? "native_preview" : "getUserMedia", ...deviceError(error) });
+    } finally {
+      if (cameraGeneration.current === generation) cameraStarting.current = false;
+    }
+  }, [activeView, assessmentId, busy, iosStableCaptureFallback, member?.id, nativePreviewAvailable, startMotion, stopCamera, syncPreviewBounds]);
+
+  const decodeBlobSize = async (blob) => {
+    const src = URL.createObjectURL(blob);
+    try {
+      const image = new window.Image();
+      await new Promise((resolve, reject) => { image.onload = resolve; image.onerror = reject; image.src = src; });
+      return { width: image.naturalWidth, height: image.naturalHeight };
+    } finally { URL.revokeObjectURL(src); }
+  };
+
+  const captureBrowserFrame = async () => {
+    const video = videoRef.current;
+    if (!video?.videoWidth || !video?.videoHeight) throw new Error("browser preview is not ready");
+    const width = 960;
+    const height = 1280;
+    const canvasGeometry = computePreviewGeometry({ containerWidth: width, containerHeight: height, sourceWidth: video.videoWidth, sourceHeight: video.videoHeight, mode: "contain" });
+    const stage = stageRef.current?.getBoundingClientRect();
+    const geometry = computePreviewGeometry({
+      containerX: stage?.left || 0, containerY: stage?.top || 0,
+      containerWidth: stage?.width || width, containerHeight: stage?.height || height,
+      sourceWidth: video.videoWidth, sourceHeight: video.videoHeight, mode: "contain",
+    });
+    const canvas = document.createElement("canvas");
+    canvas.width = width; canvas.height = height;
+    const context = canvas.getContext("2d");
+    context.fillStyle = "#0D1016"; context.fillRect(0, 0, width, height);
+    const rendered = canvasGeometry.renderedRect;
+    context.drawImage(video, rendered.x, rendered.y, rendered.width, rendered.height);
+    const blob = await new Promise((resolve, reject) => canvas.toBlob((value) => value ? resolve(value) : reject(new Error("camera canvas encoding failed")), "image/jpeg", 0.92));
+    return { blob, width, height, geometry };
+  };
+
+  const captureNow = useCallback(async () => {
+    if (!cameraRunning.current || captureRunning.current || busy) return;
+    captureRunning.current = true;
+    setCameraStatus("capturing");
+    const captureMemberId = member?.id || null;
+    const captureAssessmentId = assessmentId;
+    const captureView = activeView;
+    try {
+      let blob;
+      let width;
+      let height;
+      let geometry;
+      if (nativePreviewAvailable) {
+        const result = await CameraPreview.capture({ quality: 92, width: 1440, height: 1920, format: "jpeg", saveToGallery: false, mirrorFrontCamera: false, photoQualityPrioritization: "quality" });
+        blob = base64ToBlob(result.value, { defaultMimeType: "image/jpeg" });
+        ({ width, height } = await decodeBlobSize(blob));
+        const rect = stageRef.current?.getBoundingClientRect() || previewRect;
+        geometry = computePreviewGeometry({ containerX: rect?.x || 0, containerY: rect?.y || 0, containerWidth: rect?.width || width, containerHeight: rect?.height || height, sourceWidth: width, sourceHeight: height, mode: "contain" });
+      } else {
+        ({ blob, width, height, geometry } = await captureBrowserFrame());
+      }
+      const measuredAt = new Date().toISOString();
+      const geometryMetadata = createCaptureGeometryMetadata({ geometry, captureWidth: width, captureHeight: height, orientationDegrees: window.screen?.orientation?.angle || 0, previewMirrored: false, captureMirrored: false, measuredAt });
+      const motionMetadata = sensor.status === SENSOR_STATUSES.active ? { roll: sensor.roll, pitch: sensor.pitch, isLevel: sensor.isLevel, measuredAt } : null;
+      const src = URL.createObjectURL(blob);
+      await stopCamera("capture");
+      setCameraStatus("confirming");
+      setPendingCapture({ blob, src, memberId: captureMemberId, assessmentId: captureAssessmentId, view: captureView, geometry: geometryMetadata, motion: motionMetadata, source: nativePreviewAvailable ? "native_preview" : "getUserMedia" });
+      deviceLog("posture_camera_photo_captured", { memberId: captureMemberId, assessmentId: captureAssessmentId, view: captureView, source: nativePreviewAvailable ? "native_preview" : "getUserMedia", state: "awaiting_confirmation" });
+    } catch (error) {
+      setCameraStatus(cameraRunning.current ? "active" : "error");
+      setCameraError("사진 촬영에 실패했습니다. 기존 사진은 그대로 유지됩니다. 다시 시도해 주세요.");
+      deviceLog("posture_camera_capture_failed", { memberId: captureMemberId, assessmentId: captureAssessmentId, view: captureView, source: nativePreviewAvailable ? "native_preview" : "getUserMedia", ...deviceError(error) });
+    } finally { captureRunning.current = false; }
+  }, [activeView, assessmentId, busy, member?.id, nativePreviewAvailable, previewRect, sensor, stopCamera]);
+
+  const beginCountdown = () => {
+    if (countdown != null || captureRunning.current || cameraStatus !== "active") return;
+    if (timerSeconds === 0) { captureNow(); return; }
+    let remaining = timerSeconds;
+    setCountdown(remaining);
+    navigator.vibrate?.(35);
+    countdownTimer.current = window.setInterval(() => {
+      remaining -= 1;
+      if (remaining <= 0) {
+        clearCountdown();
+        captureNow();
+      } else {
+        setCountdown(remaining);
+        navigator.vibrate?.(35);
+      }
+    }, 1000);
+  };
+
+  const retakePending = async () => {
+    if (!pendingCapture) return;
+    URL.revokeObjectURL(pendingCapture.src);
+    setPendingCapture(null);
+    setCameraStatus("idle");
+    await startCamera();
+  };
+
+  const usePending = async () => {
+    if (!pendingCapture || busy) return;
+    const willComplete = captureViews.every(({ key }) => key === pendingCapture.view || !!capturePhotos[key]);
+    const stored = await onAcceptCapture(pendingCapture.blob, {
+      source: pendingCapture.source || (nativePreviewAvailable ? "native_preview" : "getUserMedia"), memberId: pendingCapture.memberId,
+      assessmentId: pendingCapture.assessmentId, view: pendingCapture.view,
+      geometry: pendingCapture.geometry, motion: pendingCapture.motion,
+    });
+    if (!stored) {
+      setCameraError("촬영 사진은 임시로 유지 중입니다. 저장을 다시 시도하거나 재촬영해 주세요.");
+      return;
+    }
+    URL.revokeObjectURL(pendingCapture.src);
+    setPendingCapture(null);
+    setCameraError("");
+    setCameraStatus("idle");
+    if (!willComplete) window.setTimeout(() => startCamera(), 0);
+  };
+
+  const handleBack = async () => {
+    if (countdown != null) { clearCountdown(); return; }
+    if (pendingCapture) {
+      URL.revokeObjectURL(pendingCapture.src);
+      setPendingCapture(null);
+      setCameraStatus("idle");
+      return;
+    }
+    await stopCamera("exit");
+    onExit?.();
+  };
+
+  const chooseTimer = (seconds) => {
+    const value = writeCaptureTimer(window.localStorage, seconds);
+    setTimerSeconds(value);
+    setTimerOpen(false);
+  };
+
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState !== "hidden") return;
+      stopCamera("background").finally(() => {
+        if (!mounted.current) return;
+        setCameraError("앱으로 돌아온 뒤 카메라를 다시 시작해 주세요.");
+        setCameraStatus("paused");
+      });
+    };
+    const onPageHide = () => { stopCamera("background"); };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("pagehide", onPageHide);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pagehide", onPageHide);
+      if (pendingCaptureRef.current?.src) URL.revokeObjectURL(pendingCaptureRef.current.src);
+      stopCamera("unmount");
+    };
+  }, [stopCamera]);
+
+  const guideColor = sensor.isLevel ? "#63D7A3" : sensor.status === SENSOR_STATUSES.active ? "#F2B84B" : "rgba(236,235,247,.88)";
+  const directionGuide = {
+    front: "정면을 바라보고 양팔을 자연스럽게 내려 주세요.",
+    leftSide: "왼쪽 어깨가 카메라를 향하도록 서 주세요.",
+    back: "카메라를 등지고 정면 자세로 서 주세요.",
+    rightSide: "오른쪽 어깨가 카메라를 향하도록 서 주세요.",
+    custom: "기록할 부위를 프레임 중앙에 맞춰 주세요.",
+  }[activeView] || "가이드 안에 촬영 대상을 맞춰 주세요.";
+  const sensorTone = sensor.isLevel ? "#63D7A3" : sensor.status === SENSOR_STATUSES.active ? "#F2B84B" : "#C7CDD7";
+
+  const screen = (
+    <div className="fixed inset-0 z-[200] flex flex-col overflow-hidden" style={{ height: "100dvh", backgroundColor: nativePreviewAvailable && cameraStatus === "active" ? "transparent" : "#0D1016", color: "#fff" }}>
+      <style>{`
+        html.posture-camera-native-active, html.posture-camera-native-active body, html.posture-camera-native-active #root { background: transparent !important; }
+        html.posture-camera-native-active #root { visibility: hidden !important; }
+      `}</style>
+      <header className="safe-t shrink-0" style={{ background: "linear-gradient(180deg, rgba(13,16,22,.98), rgba(13,16,22,.82))", paddingLeft: 12, paddingRight: 12, paddingBottom: 8 }}>
+        <div className="flex h-12 items-center gap-2">
+          <button type="button" onClick={handleBack} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full" style={{ backgroundColor: "rgba(255,255,255,.10)" }} aria-label={countdown != null ? "카운트다운 취소" : "촬영 화면 닫기"}>{countdown != null ? <X size={19} /> : <ChevronLeft size={20} />}</button>
+          <span className="min-w-0 flex-1"><span className="block truncate text-sm font-extrabold">{member?.name || "회원"} · 체형 촬영</span><span className="block text-[10px] text-white/65">{completedCount}/{captureViews.length} 완료 · {postureViewLabel(activeView)}</span></span>
+          <span className="flex h-8 items-center gap-1 rounded-full px-2.5 text-[10px] font-bold" style={{ backgroundColor: "rgba(13,16,22,.66)", border: `1px solid ${sensorTone}`, color: sensorTone }}><span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: sensorTone }} />{iosStableCaptureFallback ? "안정 촬영" : sensor.isLevel ? "수평" : sensor.status === SENSOR_STATUSES.active ? `${sensor.roll > 0 ? "+" : ""}${sensor.roll ?? "-"}°` : "센서 확인"}</span>
+        </div>
+        <div className="grid gap-1" style={{ gridTemplateColumns: `repeat(${captureViews.length}, minmax(0, 1fr))` }}>
+          {captureViews.map((capture, index) => { const selected = capture.key === activeView; const complete = !!capturePhotos[capture.key]; return <button key={capture.key} type="button" disabled={countdown != null || cameraStatus === "capturing"} onClick={() => onSelectView(capture.key)} className="flex h-8 min-w-0 items-center justify-center gap-1 rounded-lg px-1 text-[10px] font-bold disabled:opacity-45" style={{ backgroundColor: selected ? "rgba(76,67,153,.92)" : complete ? "rgba(46,125,91,.72)" : "rgba(255,255,255,.10)", border: `1px solid ${selected ? "#B9B2F4" : "rgba(255,255,255,.14)"}` }}><span>{complete ? <Check size={10} /> : index + 1}</span><span className="truncate">{capture.label}</span></button>; })}
+        </div>
+      </header>
+
+      <main ref={viewportRef} className="relative min-h-0 flex-1 overflow-hidden" style={{ backgroundColor: nativePreviewAvailable && cameraStatus === "active" ? "transparent" : "#0D1016" }}>
+        <div ref={stageRef} id="posture-camera-preview" className="absolute overflow-hidden" style={{ left: "50%", top: "50%", width: stageSize.width || "75%", height: stageSize.height || "100%", aspectRatio: "3 / 4", transform: "translate(-50%, -50%)", backgroundColor: nativePreviewAvailable && cameraStatus === "active" ? "transparent" : "#111620" }}>
+          {!nativePreviewAvailable && <video ref={videoRef} muted playsInline autoPlay className="h-full w-full object-contain" />}
+          {pendingCapture?.src && <img src={pendingCapture.src} alt={`방금 촬영한 ${postureViewLabel(pendingCapture.view)} 사진`} className="absolute inset-0 h-full w-full object-contain" />}
+          {!pendingCapture && activePhoto?.src && cameraStatus !== "active" && <img src={activePhoto.src} alt={`${postureViewLabel(activeView)} 기존 촬영`} className="absolute inset-0 h-full w-full object-contain opacity-75" />}
+          {!pendingCapture && (
+            <div className="pointer-events-none absolute inset-0" aria-hidden="true" style={{ color: guideColor }}>
+              <span className="absolute left-[10%] right-[10%] top-[17%] border-t border-dashed" style={{ borderColor: "currentColor" }} />
+              <span className="absolute bottom-[10%] left-[10%] right-[10%] border-t border-dashed" style={{ borderColor: "currentColor" }} />
+              <span className="absolute bottom-[10%] left-1/2 top-[17%] border-l border-dashed opacity-80" style={{ borderColor: "currentColor" }} />
+              {[["left-[7%] top-[8%] border-l border-t"], ["right-[7%] top-[8%] border-r border-t"], ["bottom-[7%] left-[7%] border-b border-l"], ["bottom-[7%] right-[7%] border-b border-r"]].map(([position], index) => <span key={index} className={`absolute h-8 w-8 ${position}`} style={{ borderColor: "currentColor", borderWidth: 2 }} />)}
+              <span className="absolute left-[11%] top-[13%] text-[10px] font-bold">머리 위치</span>
+              <span className="absolute bottom-[6%] left-[11%] text-[10px] font-bold">발 위치</span>
+            </div>
+          )}
+          {!pendingCapture && <div className="pointer-events-none absolute inset-x-3 bottom-3 rounded-xl px-3 py-2 text-center" style={{ backgroundColor: "rgba(13,16,22,.72)", backdropFilter: "blur(8px)" }}><p className="text-xs font-bold" style={{ color: sensorTone }}>{sensor.message}</p><p className="mt-0.5 text-[10px] text-white/75">{directionGuide}</p></div>}
+
+          {cameraStatus !== "active" && cameraStatus !== "capturing" && !pendingCapture && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#0D1016]/88 px-7 text-center">
+              {cameraStatus === "starting" ? <Loader2 size={30} className="animate-spin" /> : cameraStatus === "error" || cameraStatus === "paused" ? <AlertTriangle size={30} style={{ color: "#F2B84B" }} /> : <Camera size={30} />}
+              <div><p className="text-sm font-extrabold">{iosStableCaptureFallback ? "사진 촬영 또는 선택" : cameraStatus === "starting" ? "카메라 준비 중" : cameraStatus === "paused" ? "카메라가 일시 중지되었습니다" : cameraStatus === "error" ? "카메라를 열 수 없습니다" : "앱 안에서 바로 촬영합니다"}</p><p className="mt-1 text-xs leading-relaxed text-white/65">{iosStableCaptureFallback ? "App Store 안정화 빌드에서는 iOS 기본 사진 선택 화면을 사용합니다." : cameraError || "카메라 시작을 누르면 후면 카메라 프리뷰 위에 촬영 가이드가 표시됩니다."}</p></div>
+              {cameraStatus !== "starting" && (iosStableCaptureFallback
+                ? <button type="button" onClick={() => onOpenAlbum(activeView)} className="h-11 rounded-xl px-5 text-sm font-bold text-white" style={{ backgroundColor: "#4C4399" }}>사진 촬영 또는 선택</button>
+                : <><button type="button" onClick={startCamera} className="h-11 rounded-xl px-5 text-sm font-bold text-white" style={{ backgroundColor: "#4C4399" }}>카메라 시작</button><button type="button" onClick={async () => { await stopCamera("album"); onOpenAlbum(activeView); }} className="h-10 px-4 text-xs font-bold text-white/80">앨범에서 선택</button></>)}
+            </div>
+          )}
+
+          {countdown != null && <button type="button" onClick={clearCountdown} aria-label="카운트다운 취소" className="absolute inset-0 flex flex-col items-center justify-center" style={{ backgroundColor: "rgba(13,16,22,.34)" }}><span className="text-[104px] font-black leading-none text-white" style={{ textShadow: "0 4px 24px rgba(0,0,0,.55)" }}>{countdown}</span><span className="mt-3 rounded-full bg-black/45 px-3 py-1 text-xs font-bold">화면을 눌러 취소</span></button>}
+          {pendingCapture && <div className="absolute inset-x-0 top-3 text-center"><span className="rounded-full bg-black/65 px-3 py-1.5 text-xs font-bold">방금 촬영한 {postureViewLabel(pendingCapture.view)} 사진</span></div>}
+        </div>
+      </main>
+
+      <footer className="safe-b shrink-0 px-3 pt-2" style={{ background: "linear-gradient(0deg, rgba(13,16,22,1), rgba(13,16,22,.9))" }}>
+        {cameraError && pendingCapture && <p className="mb-2 rounded-lg px-3 py-2 text-center text-[11px] font-bold" style={{ backgroundColor: "rgba(179,57,46,.24)", color: "#FFB8B1" }}>{cameraError}</p>}
+        {pendingCapture ? (
+          <div className="grid grid-cols-2 gap-2 pb-1"><button type="button" onClick={retakePending} disabled={busy} className="flex h-12 items-center justify-center gap-2 rounded-xl text-sm font-bold disabled:opacity-40" style={{ border: "1px solid rgba(255,255,255,.22)" }}><RotateCcw size={16} />다시 촬영</button><button type="button" onClick={usePending} disabled={busy} className="flex h-12 items-center justify-center gap-2 rounded-xl text-sm font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: "#4C4399" }}>{busy ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}사용하기</button></div>
+        ) : capturesComplete && cameraStatus !== "active" ? (
+          <div className="grid gap-2 pb-1"><div className="flex items-center justify-between rounded-lg px-3 py-2" style={{ backgroundColor: "rgba(46,125,91,.18)", color: "#8DE0BA" }}><span className="text-xs font-bold">{captureViews.length}방향 촬영 완료</span><span className="text-[10px]">분석 준비가 끝났습니다</span></div><button type="button" onClick={onContinue} disabled={busy} className="flex h-12 items-center justify-center gap-2 rounded-xl text-sm font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: "#4C4399" }}><ChevronRight size={17} />다음 분석 단계</button></div>
+        ) : iosStableCaptureFallback ? (
+          <button type="button" onClick={() => onOpenAlbum(activeView)} disabled={busy} className="flex h-12 w-full items-center justify-center gap-2 rounded-xl text-sm font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: "#4C4399" }}><ImagePlus size={17} />사진 촬영 또는 선택</button>
+        ) : (
+          <div className="relative flex items-center justify-between gap-3 pb-1">
+            <button type="button" onClick={async () => { await stopCamera("album"); onOpenAlbum(activeView); }} disabled={countdown != null || busy} className="flex h-11 w-16 flex-col items-center justify-center gap-0.5 rounded-xl text-[10px] font-bold disabled:opacity-40" style={{ backgroundColor: "rgba(255,255,255,.10)" }}><ImagePlus size={16} />앨범</button>
+            <button type="button" onClick={beginCountdown} disabled={cameraStatus !== "active" || countdown != null || busy} className="flex h-[66px] w-[66px] shrink-0 items-center justify-center rounded-full disabled:opacity-40" style={{ border: "4px solid #fff", backgroundColor: "rgba(255,255,255,.22)", boxShadow: "0 0 0 2px rgba(255,255,255,.18)" }} aria-label={`${timerSeconds ? `${timerSeconds}초 후` : "즉시"} 촬영`}><span className="h-[48px] w-[48px] rounded-full bg-white" /></button>
+            <div className="relative"><button type="button" onClick={() => setTimerOpen((value) => !value)} disabled={countdown != null || busy} className="flex h-11 w-16 flex-col items-center justify-center gap-0.5 rounded-xl text-[10px] font-bold disabled:opacity-40" style={{ backgroundColor: "rgba(255,255,255,.10)" }}><Clock size={16} />{timerSeconds === 0 ? "즉시" : `${timerSeconds}초`}</button>{timerOpen && <div className="absolute bottom-14 right-0 grid w-[188px] grid-cols-4 gap-1 rounded-xl p-2" style={{ backgroundColor: "#202631", boxShadow: "0 12px 32px rgba(0,0,0,.42)" }}>{CAPTURE_TIMER_OPTIONS.map((seconds) => <button type="button" key={seconds} onClick={() => chooseTimer(seconds)} className="h-9 rounded-lg text-[11px] font-bold" style={{ backgroundColor: timerSeconds === seconds ? "#4C4399" : "rgba(255,255,255,.08)" }}>{seconds === 0 ? "즉시" : `${seconds}초`}</button>)}</div>}</div>
+          </div>
+        )}
+        {!pendingCapture && !capturesComplete && <div className="mt-1 flex items-center justify-between text-[10px] text-white/55"><span>{activePhoto ? `${postureViewLabel(activeView)} 재촬영 가능` : `${postureViewLabel(activeView)} 촬영 대기`}</span><span className="flex items-center gap-1">{activePhoto && <button type="button" onClick={async () => { await stopCamera("delete"); await onDeleteCapture?.(); }} disabled={busy || countdown != null} className="flex h-7 items-center gap-1 px-2 font-bold text-white/75 disabled:opacity-40"><Trash2 size={11} />삭제</button>}{captureViews.some(({ key }) => capturePhotos[key] && !draftSaved[key]) && <button type="button" onClick={onSaveDraft} disabled={busy} className="h-7 px-2 font-bold text-white/80">초안 저장 재시도</button>}</span></div>}
+      </footer>
+    </div>
+  );
+
+  return typeof document === "undefined" ? null : createPortal(screen, document.body);
+}
+
+function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, onSaveCaptureDraft, onDeleteCaptureDraft, onSaveMarks, onToast, onSaved, onStageChange, onCaptureExit, onRequestRole, roleLabel, assessmentRole = null, defaultMethod = "always", embedded = false, initialSavedId = null, initialAssessmentId = null, resumeAssessmentId = null, selectedViews = POSTURE_VIEW_KEYS, scope = "full_body" }) {
+  const captureViews = useMemo(() => {
+    if (scope === "partial") return [{ key: "custom", label: "부위" }];
+    const allowed = new Set((selectedViews || []).map(normalizePostureView));
+    const result = POSTURE_VIEWS.filter((view) => allowed.has(view.key));
+    return result.length ? result : [POSTURE_VIEWS[0]];
+  }, [scope, selectedViews]);
+  const captureKeys = useMemo(() => captureViews.map(({ key }) => key), [captureViews]);
   const [engine, setEngine] = useState("idle");
   const [busy, setBusy] = useState(false);
   const [img, setImg] = useState(null);
   const [pts, setPts] = useState(null);
-  const [view, setView] = useState("front");
+  const [originalPts, setOriginalPts] = useState(null);
+  const [view, setView] = useState(captureViews[0]?.key || "front");
   const [analysisMethod, setAnalysisMethod] = useState(null);
-  const [captureTarget, setCaptureTarget] = useState("front");
-  const [capturePhotos, setCapturePhotos] = useState({ front: null, side: null, back: null });
+  const [captureTarget, setCaptureTarget] = useState(captureViews[0]?.key || "front");
+  const [capturePhotos, setCapturePhotos] = useState(() => captureStateFor(captureViews));
   const [draftSaved, setDraftSaved] = useState({});
   const [analysisStarted, setAnalysisStarted] = useState(false);
   const [analyzedViews, setAnalyzedViews] = useState({});
+  const [drawnViews, setDrawnViews] = useState({});
+  const [drawingView, setDrawingView] = useState(null);
+  const [correctionDrawingView, setCorrectionDrawingView] = useState(null);
+  const [correctionPicker, setCorrectionPicker] = useState(false);
   const analysisMemberId = useRef(member?.id || null);
+  const assessmentId = useRef(initialAssessmentId || resumeAssessmentId || newAssessmentId());
+  const [poseQuality, setPoseQuality] = useState({ missing: [], low: [] });
+  const [editedJoints, setEditedJoints] = useState([]);
   const [mirror, setMirror] = useState(false);
   const [floorFix, setFloorFix] = useState(false);
   const [showSkel, setShowSkel] = useState(true);
@@ -5191,12 +6060,106 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onSaveCaptureD
   const [seeSaved, setSeeSaved] = useState(null);
   const [hot, setHot] = useState(null);
   const canvasRef = useRef(null), imgRef = useRef(null), dragRef = useRef(null);
-  const camRef = useRef(null), albumRef = useRef(null);
-  const saved = (photos?.poses || []).filter((p) => p && p.metrics);
-  const analysisRole = useRef(saved.length === 0 ? "before" : "after");
-  const captureViews = VIEWS;
+  const albumRef = useRef(null);
+  const captureSource = useRef("system_picker");
+  const allSaved = useMemo(
+    () => (photos?.poses || []).filter((pose) => pose && (!pose.memberId || pose.memberId === member?.id)),
+    [photos?.poses, member?.id],
+  );
+  const saved = useMemo(() => allSaved.filter((p) => p.metrics), [allSaved]);
+  const analysisRole = useRef(allSaved.length === 0 ? "before" : "after");
   const capturesComplete = captureViews.every(({ key }) => !!capturePhotos[key]);
-  const poseView = view === "back" ? "front" : view;
+  const poseView = postureAnalysisPlane(view);
+  const resumeDraft = useMemo(() => {
+    if (!resumeAssessmentId) return null;
+    const groups = new Map();
+    captureViews.forEach(({ key }) => {
+      const records = key === "leftSide" ? [...(photos?.leftSide || []), ...(photos?.side || [])] : (photos?.[key] || []);
+      records.forEach((photo) => {
+        if (photo?.memberId && photo.memberId !== member?.id) return;
+        if (!photo?.assessmentId || photo.captureStatus !== "draft" || photo.assessmentId !== resumeAssessmentId) return;
+        const group = groups.get(photo.assessmentId) || {
+          id: photo.assessmentId, photos: {}, method: photo.analysisMethod || "ai", at: "",
+          scope: photo.scope || "full_body",
+          selectedViews: Array.isArray(photo.selectedViews) ? photo.selectedViews.map(normalizePostureView) : [],
+          role: photo.assessmentRole || null,
+        };
+        const stamp = photo.createdAt || `${photo.date || ""}T00:00:00.000Z`;
+        if (!group.photos[key] || stamp >= (group.photos[key].createdAt || "")) group.photos[key] = photo;
+        if (photo.scope) group.scope = photo.scope;
+        if (Array.isArray(photo.selectedViews) && photo.selectedViews.length) group.selectedViews = photo.selectedViews.map(normalizePostureView);
+        if (photo.assessmentRole) group.role = photo.assessmentRole;
+        if (stamp > group.at) group.at = stamp;
+        groups.set(photo.assessmentId, group);
+      });
+    });
+    const poseViews = new Map();
+    allSaved.forEach((pose) => {
+      if (!pose.assessmentId) return;
+      const views = poseViews.get(pose.assessmentId) || new Set();
+      views.add(normalizePostureView(pose.view));
+      poseViews.set(pose.assessmentId, views);
+    });
+    return [...groups.values()]
+      .filter((group) => (poseViews.get(group.id)?.size || 0) < captureViews.length)
+      .sort((a, b) => b.at.localeCompare(a.at))[0] || null;
+  }, [photos, allSaved, captureViews, resumeAssessmentId, member?.id]);
+
+  const startAssessment = (method) => {
+    analysisMemberId.current = member?.id || null;
+    if (!assessmentId.current) assessmentId.current = initialAssessmentId || newAssessmentId();
+    analysisRole.current = assessmentRole || (allSaved.length === 0 ? "before" : "after");
+    setAnalysisMethod(method);
+    setCapturePhotos(captureStateFor(captureViews));
+    setCaptureTarget(captureViews[0]?.key || "front");
+    setDraftSaved({});
+    setAnalyzedViews({});
+    setDrawnViews({});
+    setPoseQuality({ missing: [], low: [] });
+    setEditedJoints([]);
+    setOriginalPts(null);
+    onStageChange?.("capture");
+    deviceLog("assessment_started", { memberId: member?.id, assessmentId: assessmentId.current, source: method });
+  };
+
+  useEffect(() => {
+    if (assessmentRole) analysisRole.current = assessmentRole;
+  }, [assessmentRole]);
+
+  useEffect(() => {
+    if (!open || analysisMethod || analysisStarted || resumeDraft || defaultMethod === "always") return;
+    if (["ai", "manual", "draw"].includes(defaultMethod)) startAssessment(defaultMethod);
+  }, [open, analysisMethod, analysisStarted, resumeDraft, defaultMethod, member?.id]);
+
+  useEffect(() => {
+    analysisMemberId.current = member?.id || null;
+    if (!member?.id || analysisMethod || analysisStarted || !resumeDraft) return;
+    let alive = true;
+    (async () => {
+      const restored = {};
+      for (const { key } of captureViews) {
+        const rec = resumeDraft.photos[key];
+        if (!rec) continue;
+        const src = rec.src || await urlFor(rec.blobId);
+        if (!src) continue;
+        const blob = rec.blobId ? await blobGet(rec.blobId) : await fetch(src).then((response) => response.blob());
+        const element = new window.Image();
+        await new Promise((resolve, reject) => { element.onload = resolve; element.onerror = reject; element.src = src; });
+        restored[key] = { src, blob, w: element.naturalWidth, h: element.naturalHeight, element, recordId: rec.id, marks: rec.marks || [] };
+      }
+      if (!alive || !Object.keys(restored).length) return;
+      assessmentId.current = resumeDraft.id;
+      analysisRole.current = resumeDraft.role || assessmentRole || analysisRole.current;
+      setAnalysisMethod(resumeDraft.method || "ai");
+      setCapturePhotos({ ...captureStateFor(captureViews), ...restored });
+      setDraftSaved(Object.fromEntries(Object.keys(restored).map((key) => [key, true])));
+      const completed = Object.fromEntries(saved.filter((pose) => pose.assessmentId === resumeDraft.id).map((pose) => [normalizePostureView(pose.view), true]));
+      setAnalyzedViews(completed);
+      setDrawnViews(Object.fromEntries(Object.entries(restored).filter(([, photo]) => (photo?.marks || []).length > 0).map(([key]) => [key, true])));
+      deviceLog("assessment_draft_restored", { memberId: member.id, assessmentId: resumeDraft.id, storage: "indexedDB", count: Object.keys(restored).length });
+    })().catch((error) => deviceLog("assessment_draft_restore_failed", { memberId: member.id, assessmentId: resumeDraft.id, storage: "indexedDB", ...deviceError(error) }));
+    return () => { alive = false; };
+  }, [member?.id, resumeDraft, analysisMethod, analysisStarted]);
 
   useEffect(() => {
     if (initialSavedId) setSeeSaved(saved.find((p) => p.id === initialSavedId) || null);
@@ -5259,6 +6222,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onSaveCaptureD
       Object.keys(pts).forEach((key) => {
         const p = S(pts[key]);
         const on = hot === key;
+        const lowConfidence = poseQuality.low.includes(key);
         const r = (on ? 11 : 7) * k;
         ctx.save();
         const halo = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r * 2.6);
@@ -5269,7 +6233,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onSaveCaptureD
         if (on) { ctx.strokeStyle = "rgba(255,255,255,.55)"; ctx.lineWidth = 1.4 * k; ctx.beginPath(); ctx.arc(p.x, p.y, r * 1.9, 0, Math.PI * 2); ctx.stroke(); }
         ctx.shadowColor = "rgba(0,0,0,.35)"; ctx.shadowBlur = 6 * k;
         ctx.fillStyle = "rgba(255,255,255,.98)"; ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.fill();
-        ctx.shadowBlur = 0; ctx.fillStyle = BRAND; ctx.beginPath(); ctx.arc(p.x, p.y, r * 0.46, 0, Math.PI * 2); ctx.fill();
+        ctx.shadowBlur = 0; ctx.fillStyle = lowConfidence ? WARN : BRAND; ctx.beginPath(); ctx.arc(p.x, p.y, r * 0.46, 0, Math.PI * 2); ctx.fill();
         ctx.restore();
       });
       if (hot && pts[hot]) {
@@ -5317,67 +6281,155 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onSaveCaptureD
         badge(ctx, i.at.x * (c.width / img.w), i.at.y * (c.height / img.h), `${i.label.replace(/\(.*\)/, "").trim()} ${i.value}${i.unit}`, LV_COLOR[i.level], i.up ?? -1, placed, c.width, c.height);
       });
     }
-  }, [img, pts, poseView, showSkel, showNum, res, hot]);
+  }, [img, pts, poseView, showSkel, showNum, res, hot, poseQuality.low]);
   useEffect(() => { draw(); }, [draw]);
 
-  const pickFile = async (file) => {
-    if (!file) return;
-    setBusy(true); setPts(null);
-    try {
-      const blob = await fileToBlob(file, 1000);
-      const src = URL.createObjectURL(blob);
-      const im = new window.Image();
-      im.onload = async () => {
-        const captured = { src, blob, w: im.naturalWidth, h: im.naturalHeight, element: im };
-        setCapturePhotos((prev) => {
-          const old = prev[captureTarget];
-          if (old?.src?.startsWith("blob:")) { try { URL.revokeObjectURL(old.src); } catch (e) {} }
-          return { ...prev, [captureTarget]: captured };
-        });
-        setDraftSaved((prev) => ({ ...prev, [captureTarget]: false }));
-        setBusy(false);
-        const nextTarget = captureViews.find(({ key }) => key !== captureTarget && !capturePhotos[key]);
-        if (nextTarget) setCaptureTarget(nextTarget.key);
-      };
-      im.onerror = () => { setBusy(false); try { URL.revokeObjectURL(src); } catch (e) {} onToast?.({ ok: false, msg: "사진을 읽지 못했습니다." }); };
-      im.src = src;
-    } catch (e) { setBusy(false); onToast?.({ ok: false, msg: "사진을 읽지 못했습니다." }); }
+  const openCapture = (targetView) => {
+    setCaptureTarget(targetView);
+    captureSource.current = "system_photo_picker";
+    deviceLog("assessment_photo_input_opened", {
+      memberId: analysisMemberId.current, assessmentId: assessmentId.current, view: targetView,
+      source: "system_photo_picker", permission: "not_required", state: "opened",
+    });
+    albumRef.current?.click();
   };
+
+  const acceptCaptureBlob = async (input, metadata = {}) => {
+    if (!input) return false;
+    const capturedView = normalizePostureView(metadata.view || captureTarget);
+    const expectedMemberId = metadata.memberId || analysisMemberId.current;
+    const expectedAssessmentId = metadata.assessmentId || assessmentId.current;
+    setBusy(true); setPts(null);
+    let src = null;
+    try {
+      if (analysisMemberId.current !== member?.id || expectedMemberId !== member?.id || expectedAssessmentId !== assessmentId.current) {
+        deviceLog("assessment_capture_identity_mismatch", { memberId: analysisMemberId.current, assessmentId: assessmentId.current, view: capturedView, state: "blocked" });
+        onToast?.({ ok: false, msg: "분석 대상 회원 또는 분석 ID가 변경되어 사진 저장을 중단했습니다." });
+        return false;
+      }
+      const blob = metadata.preserveResolution ? input : await fileToBlob(input, 1000);
+      src = URL.createObjectURL(blob);
+      const im = new window.Image();
+      await new Promise((resolve, reject) => { im.onload = resolve; im.onerror = reject; im.src = src; });
+      const measuredQuality = captureQualityFor(im);
+      const quality = {
+        ...measuredQuality,
+        tilt: metadata.motion ? {
+          source: "actual", state: metadata.motion.isLevel ? "good" : "review",
+          roll: metadata.motion.roll, pitch: metadata.motion.pitch, isLevel: metadata.motion.isLevel, measuredAt: metadata.motion.measuredAt,
+        } : measuredQuality.tilt,
+        previewGeometry: metadata.geometry || null,
+      };
+      const captured = { src, blob, w: im.naturalWidth, h: im.naturalHeight, element: im, captureQuality: quality };
+      if (onSaveCaptureDraft) {
+        const stored = await onSaveCaptureDraft({ assessmentId: assessmentId.current, analysisMethod, scope, selectedViews: captureKeys, assessmentRole: analysisRole.current, captures: { [capturedView]: blob }, captureQuality: { [capturedView]: quality } });
+        if (stored === false) throw Object.assign(new Error("capture draft rejected"), { code: "capture_draft_rejected" });
+      }
+      setCapturePhotos((previous) => {
+        const old = previous[capturedView];
+        if (old?.src?.startsWith("blob:")) { try { URL.revokeObjectURL(old.src); } catch {} }
+        return { ...previous, [capturedView]: { ...captured, recordId: `${assessmentId.current}_${capturedView}` } };
+      });
+      setDraftSaved((previous) => ({ ...previous, [capturedView]: true }));
+      deviceLog("assessment_draft_saved", { memberId: analysisMemberId.current, assessmentId: assessmentId.current, view: capturedView, storage: "indexedDB", source: metadata.source || captureSource.current, count: 1 });
+      const nextTarget = captureViews.find(({ key }) => key !== capturedView && !capturePhotos[key]);
+      if (nextTarget) {
+        setCaptureTarget(nextTarget.key);
+        onToast?.({ ok: true, msg: `${postureViewLabel(capturedView)} 촬영이 완료되었습니다. 다음은 ${postureViewLabel(nextTarget.key)}입니다.` });
+      } else onToast?.({ ok: true, msg: `${postureViewLabel(capturedView)} 촬영이 완료되었습니다. 분석 준비가 끝났습니다.` });
+      return true;
+    } catch (error) {
+      if (src) { try { URL.revokeObjectURL(src); } catch {} }
+      deviceLog("assessment_draft_save_failed", { memberId: analysisMemberId.current, assessmentId: assessmentId.current, view: capturedView, storage: "indexedDB", ...deviceError(error) });
+      onToast?.({ ok: false, msg: `${postureViewLabel(capturedView)} 새 사진 저장에 실패했습니다. 기존 사진은 그대로 유지됩니다.` });
+      return false;
+    } finally { setBusy(false); }
+  };
+
+  const pickFile = async (file) => acceptCaptureBlob(file, {
+    source: "system_photo_picker", view: captureTarget, memberId: analysisMemberId.current,
+    assessmentId: assessmentId.current, preserveResolution: false,
+  });
   const detect = async (im, requestedView = view) => {
     try {
       const lm = await loadLandmarker();
       const out = lm.detect(im);
       const marks = out?.landmarks?.[0];
-      if (!marks || !marks.length) { onToast?.({ ok: false, msg: "사람을 찾지 못했습니다. 관절을 직접 지정해 주세요." }); return false; }
+      if (!marks || !marks.length) {
+        const required = postureAnalysisPlane(requestedView) === "side" ? MANUAL_SIDE : MANUAL_FRONT;
+        setPoseQuality({ missing: required, low: [] });
+        deviceLog("pose_not_detected", { memberId: analysisMemberId.current, assessmentId: assessmentId.current, view: requestedView, source: "mediapipe" });
+        onToast?.({ ok: false, msg: `${postureViewLabel(requestedView)}에서 사람을 찾지 못했습니다. 재촬영하거나 관절을 직접 지정해 주세요.` });
+        return false;
+      }
       const next = {};
       Object.keys(MP_IDX).forEach((k) => {
         const m = marks[MP_IDX[k]];
-        if (m) next[k] = { x: m.x, y: m.y, score: m.visibility ?? 1 };
+        if (m && Number.isFinite(m.x) && Number.isFinite(m.y)) next[k] = { x: m.x, y: m.y, score: m.visibility ?? m.presence ?? 1, source: "ai" };
       });
-      if (!(next.shL && next.shR && next.hipL && next.hipR)) {
-        onToast?.({ ok: false, msg: "전신이 다 나오지 않았습니다. 머리부터 발끝까지 나온 사진을 올려주세요." });
-        return false;
-      }
-      if (requestedView === "side") {
+      if (postureAnalysisPlane(requestedView) === "side") {
         const s = (a, b) => ((next[a]?.score ?? 0) >= (next[b]?.score ?? 0) ? next[a] : next[b]);
         next.ear = s("earL", "earR"); next.sh = s("shL", "shR"); next.hip = s("hipL", "hipR");
         next.knee = s("kneeL", "kneeR"); next.ank = s("ankL", "ankR");
-        setView("side");
+        setView(requestedView);
         setFaceDir(next.nose && next.sh ? (next.nose.x >= next.sh.x ? 1 : -1) : 1);
       } else setView(requestedView);
-      setPts(next); setManual(null); setEngine("ready");
-      onToast?.({ ok: true, msg: `관절 ${Object.keys(next).length}개를 인식했습니다.` });
+      const required = postureAnalysisPlane(requestedView) === "side" ? MANUAL_SIDE : MANUAL_FRONT;
+      const missing = required.filter((key) => !next[key]);
+      const low = required.filter((key) => next[key] && (next[key].score ?? 1) < POSE_CONFIDENCE_MIN);
+      setPts(next);
+      setOriginalPts(structuredClone(next));
+      setEditedJoints([]);
+      setPoseQuality({ missing, low });
+      setEngine("ready");
+      deviceLog("pose_detected", { memberId: analysisMemberId.current, assessmentId: assessmentId.current, view: requestedView, source: "mediapipe", count: Object.keys(next).length });
+      if (missing.length) {
+        setManual({ seq: missing, i: 0 });
+        onToast?.({ ok: false, msg: `${postureViewLabel(requestedView)} 관절 ${missing.length}개가 검출되지 않아 직접 보정이 필요합니다.` });
+      } else if (low.length) {
+        setManual(null);
+        onToast?.({ ok: false, msg: `신뢰도가 낮은 관절 ${low.length}개를 확인하고 필요하면 직접 이동해 주세요.` });
+      } else {
+        setManual(null);
+        onToast?.({ ok: true, msg: `관절 ${Object.keys(next).length}개를 인식했습니다.` });
+      }
       return true;
-    } catch (e) { setEngine("manual"); return false; }
+    } catch (e) {
+      setEngine("manual");
+      deviceLog("pose_detection_failed", { memberId: analysisMemberId.current, assessmentId: assessmentId.current, view: requestedView, source: "mediapipe", ...deviceError(e) });
+      return false;
+    }
   };
-  const startManual = (v) => {
+  const startManual = (v, existing = null) => {
     const vv = v || view;
-    setView(vv); setPts({});
-    setManual({ seq: vv === "side" ? MANUAL_SIDE : MANUAL_FRONT, i: 0 });
+    const base = existing || {};
+    const required = postureAnalysisPlane(vv) === "side" ? MANUAL_SIDE : MANUAL_FRONT;
+    const missing = required.filter((key) => !base[key]);
+    setView(vv); setPts(base);
+    setPoseQuality({ missing, low: [] });
+    setEditedJoints([]);
+    setManual({ seq: missing.length ? missing : required, i: 0 });
+    deviceLog("pose_manual_correction_started", { memberId: analysisMemberId.current, assessmentId: assessmentId.current, view: vv, source: existing ? "ai_missing" : "manual" });
+  };
+  const startFocusedCorrection = (target) => {
+    if (!pts || !img) return;
+    const side = poseView === "side";
+    const keys = target === "shoulder" ? (side ? ["sh"] : ["shL", "shR"])
+      : target === "pelvis" ? (side ? ["hip"] : ["hipL", "hipR"])
+        : target === "spine" ? (side ? ["ear", "sh", "hip"] : ["shL", "shR", "hipL", "hipR"])
+          : [];
+    setCorrectionPicker(false);
+    if (!keys.length) {
+      setCorrectionDrawingView(view);
+      return;
+    }
+    setManual({ seq: keys, i: 0, focused: target });
+    onToast?.({ ok: true, msg: `${target === "shoulder" ? "어깨" : target === "pelvis" ? "골반" : "척추"} 관절을 사진에서 순서대로 다시 지정해 주세요.` });
+    deviceLog("pose_manual_correction_started", { memberId: analysisMemberId.current, assessmentId: assessmentId.current, view, source: "ai_manual_corrected" });
   };
   const beginCapturedAnalysis = async (nextView = "front") => {
     if (!capturesComplete) {
-      onToast?.({ ok: false, msg: "전면·측면·후면 사진을 모두 촬영해 주세요." });
+      onToast?.({ ok: false, msg: `선택한 ${captureViews.length}방향 사진을 모두 촬영해 주세요.` });
       return;
     }
     if (analysisMemberId.current !== member?.id) {
@@ -5386,8 +6438,11 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onSaveCaptureD
     }
     const captured = capturePhotos[nextView];
     if (!captured?.element) return;
+    const pendingCapture = captureViews.some(({ key }) => capturePhotos[key]?.blob && !draftSaved[key]);
+    if (pendingCapture && !(await saveCaptureDraft({ quiet: true }))) return;
     setBusy(true);
     setAnalysisStarted(true);
+    onStageChange?.("analysis");
     setCaptureTarget(nextView);
     setView(nextView);
     setPts(null);
@@ -5403,25 +6458,88 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onSaveCaptureD
     const ok = await detect(captured.element, nextView);
     setBusy(false);
     if (!ok) {
-      onToast?.({ ok: false, msg: `${VIEWS.find((v) => v.key === nextView)?.label} 관절을 찾지 못했습니다. 직접 찍기로 전환합니다.` });
+      onToast?.({ ok: false, msg: `${postureViewLabel(nextView)} 관절을 찾지 못했습니다. 재촬영하거나 관절을 직접 지정해 주세요.` });
       startManual(nextView);
     }
   };
-  const saveCaptureDraft = async () => {
-    if (!capturesComplete || !onSaveCaptureDraft) return;
+  const saveCaptureDraft = async ({ quiet = false } = {}) => {
+    if (!captureViews.some(({ key }) => !!capturePhotos[key]) || !onSaveCaptureDraft) return false;
     if (analysisMemberId.current !== member?.id) {
       onToast?.({ ok: false, msg: "분석 대상 회원이 변경되어 초안을 저장하지 않았습니다." });
-      return;
+      return false;
     }
     setBusy(true);
     try {
       const pending = Object.fromEntries(captureViews
         .filter(({ key }) => !draftSaved[key] && capturePhotos[key]?.blob)
         .map(({ key }) => [key, capturePhotos[key].blob]));
-      await onSaveCaptureDraft(pending);
-      setDraftSaved({ front: true, side: true, back: true });
-      onToast?.({ ok: true, msg: "3방향 촬영 초안을 회원 사진 기록에 저장했습니다." });
+      const pendingKeys = Object.keys(pending);
+      if (!pendingKeys.length) return true;
+      const stored = await onSaveCaptureDraft({ assessmentId: assessmentId.current, analysisMethod, scope, selectedViews: captureKeys, assessmentRole: analysisRole.current, captures: pending });
+      if (stored === false) throw Object.assign(new Error("capture draft rejected"), { code: "capture_draft_rejected" });
+      setDraftSaved((prev) => ({ ...prev, ...Object.fromEntries(pendingKeys.map((key) => [key, true])) }));
+      setCapturePhotos((prev) => ({ ...prev, ...Object.fromEntries(pendingKeys.map((key) => [key, { ...prev[key], recordId: `${assessmentId.current}_${key}` }])) }));
+      deviceLog("assessment_draft_saved", { memberId: analysisMemberId.current, assessmentId: assessmentId.current, storage: "indexedDB", count: pendingKeys.length });
+      if (!quiet) onToast?.({ ok: true, msg: `${pendingKeys.length}방향 촬영 초안을 저장했습니다.` });
+      return true;
+    } catch (error) {
+      deviceLog("assessment_draft_save_failed", { memberId: analysisMemberId.current, assessmentId: assessmentId.current, storage: "indexedDB", ...deviceError(error) });
+      if (!quiet) onToast?.({ ok: false, msg: "촬영 초안을 저장하지 못했습니다. 기존 사진은 유지됩니다." });
+      return false;
     } finally { setBusy(false); }
+  };
+  const deleteCurrentCapture = async () => {
+    if (!currentCapture || !currentCapturePhoto) return;
+    const key = currentCapture.key;
+    if (draftSaved[key]) {
+      const removed = await onDeleteCaptureDraft?.(assessmentId.current, key);
+      if (removed === false) {
+        onToast?.({ ok: false, msg: `${postureViewLabel(key)} 사진을 삭제하지 못했습니다. 기존 사진은 유지됩니다.` });
+        return;
+      }
+    }
+    if (currentCapturePhoto.src?.startsWith("blob:")) {
+      try { URL.revokeObjectURL(currentCapturePhoto.src); } catch {}
+    }
+    setCapturePhotos((previous) => ({ ...previous, [key]: null }));
+    setDraftSaved((previous) => ({ ...previous, [key]: false }));
+    deviceLog("assessment_photo_removed_from_capture", { memberId: analysisMemberId.current, assessmentId: assessmentId.current, view: key, state: "removed" });
+  };
+  const beginDrawing = async (nextView = "front") => {
+    if (!capturesComplete) { onToast?.({ ok: false, msg: `선택한 ${captureViews.length}방향 사진을 모두 촬영해 주세요.` }); return; }
+    if (analysisMemberId.current !== member?.id) { onToast?.({ ok: false, msg: "분석 대상 회원이 변경되어 진행할 수 없습니다." }); return; }
+    if (!(await saveCaptureDraft({ quiet: true }))) return;
+    setAnalysisStarted(true);
+    onStageChange?.("analysis");
+    setDrawingView(nextView);
+  };
+  const saveDrawing = async (nextView, marks) => {
+    const photo = capturePhotos[nextView];
+    const recordId = photo?.recordId || `${assessmentId.current}_${nextView}`;
+    const marksStored = await onSaveMarks?.(nextView, recordId, marks);
+    if (marksStored === false) {
+      onToast?.({ ok: false, msg: "표시 저장에 실패했습니다. 작성한 내용은 화면에 유지됩니다." });
+      return false;
+    }
+    const willComplete = captureViews.every(({ key }) => key === nextView || drawnViews[key]);
+    if (!(photos?.poses || []).some((record) => record?.assessmentId === assessmentId.current && record?.view === nextView && record?.analysisSource === "draw")) {
+      const poseStored = await onSavePose?.({ id: `${assessmentId.current}_${nextView}_draw`, assessmentId: assessmentId.current, date: todayISO(), createdAt: new Date().toISOString(), completedAt: willComplete ? new Date().toISOString() : null, view: nextView, memberId: analysisMemberId.current,
+        scope, selectedViews: captureKeys, assessmentStatus: willComplete ? "completed" : "analyzing", analysisSource: "draw", annotationPhotoId: recordId, assessmentRole: analysisRole.current, assessmentComplete: willComplete, metrics: [], interpretation: null, interpretationStatus: "not_connected" });
+      if (poseStored === false) {
+        onToast?.({ ok: false, msg: "분석 기록 저장에 실패했습니다. 작성한 내용은 화면에 유지됩니다." });
+        return false;
+      }
+    }
+    const complete = { ...drawnViews, [nextView]: true };
+    setDrawnViews(complete);
+    const upcoming = captureViews.find(({ key }) => !complete[key])?.key;
+    if (upcoming) setDrawingView(upcoming);
+    else {
+      setDrawingView(null); setAnalysisStarted(false); setAnalysisMethod(null); setCapturePhotos(captureStateFor(captureViews)); setDraftSaved({});
+      onToast?.({ ok: true, msg: `${roleLabel || "직접 기록"} ${captureViews.length}방향 Annotation을 저장했습니다.` });
+      onSaved?.(analysisRole.current, assessmentId.current);
+    }
+    return true;
   };
   const toNorm = (e) => {
     const c = canvasRef.current, r = c.getBoundingClientRect();
@@ -5453,8 +6571,10 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onSaveCaptureD
     if (near) { dragRef.current = near; setHot(near); buzz(8); e.currentTarget.setPointerCapture?.(e.pointerId); return; }
     if (manual && manual.i < manual.seq.length) {
       const key = manual.seq[manual.i];
-      setPts((p) => ({ ...(p || {}), [key]: { x: n.x, y: n.y, score: 1 } }));
+      setPts((p) => ({ ...(p || {}), [key]: { x: n.x, y: n.y, score: 1, source: manual.focused ? "ai_manual_corrected" : "manual" } }));
       setManual((m) => ({ ...m, i: m.i + 1 }));
+      setPoseQuality((quality) => ({ missing: quality.missing.filter((item) => item !== key), low: quality.low.filter((item) => item !== key) }));
+      setEditedJoints((items) => items.includes(key) ? items : [...items, key]);
       dragRef.current = key; setHot(key); buzz(6);
       e.currentTarget.setPointerCapture?.(e.pointerId);
     }
@@ -5476,7 +6596,10 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onSaveCaptureD
     if (!dragRef.current) return;
     e.preventDefault?.();
     const n = toNorm(e);
-    setPts((p) => ({ ...p, [dragRef.current]: { ...p[dragRef.current], x: n.x, y: n.y } }));
+    const key = dragRef.current;
+    setPts((p) => ({ ...p, [key]: { ...p[key], x: n.x, y: n.y, score: 1, source: p[key]?.source === "manual" ? "manual" : "manual-corrected" } }));
+    setPoseQuality((quality) => ({ missing: quality.missing.filter((item) => item !== key), low: quality.low.filter((item) => item !== key) }));
+    setEditedJoints((items) => items.includes(key) ? items : [...items, key]);
   };
   const onUp = (e) => {
     if (e && e.pointerId != null) pz.current.delete(e.pointerId);
@@ -5491,6 +6614,8 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onSaveCaptureD
     const key = manual.seq[manual.i - 1];
     setPts((p) => { const q = { ...(p || {}) }; delete q[key]; return q; });
     setManual((m) => ({ ...m, i: m.i - 1 }));
+    setPoseQuality((quality) => ({ ...quality, missing: quality.missing.includes(key) ? quality.missing : [...quality.missing, key] }));
+    setEditedJoints((items) => items.filter((item) => item !== key));
   };
   const download = () => shareCanvas(canvasRef.current, `${member?.name || "회원"}_체형분석_${todayISO()}.jpg`, "체형 분석", onToast);
   /* 분석 화면(뼈대·각도 포함)을 이미지로 내보낸다 */
@@ -5505,7 +6630,11 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onSaveCaptureD
     if (r.how === "copied") onToast?.({ ok: true, msg: "이미지를 복사했습니다." });
   };
   const save = async () => {
-    if (!res || !res.items.length) return;
+    if (!res || !res.items.length || poseQuality.missing.length) {
+      deviceLog("pose_save_blocked", { memberId: analysisMemberId.current, assessmentId: assessmentId.current, view, state: poseQuality.missing.length ? "missing_joints" : "no_measurements" });
+      onToast?.({ ok: false, msg: "미검출 관절을 보정하고 측정값을 확인한 뒤 저장해 주세요." });
+      return;
+    }
     if (analysisMemberId.current !== member?.id) {
       onToast?.({ ok: false, msg: "분석 대상 회원이 변경되어 저장하지 않았습니다." });
       return;
@@ -5527,15 +6656,33 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onSaveCaptureD
       cleanBlob = await new Promise((r) => c2.toBlob(r, "image/jpeg", 0.8));
     } catch (e) {}
     const slim = {};
-    Object.keys(pts || {}).forEach((k) => { const p = pts[k]; if (p) slim[k] = { x: r3(p.x), y: r3(p.y) }; });
-    await onSavePose?.({
-      id: uid(), date: todayISO(), view, memberId: analysisMemberId.current, blob, cleanBlob, pts: slim, mirror,
-      metrics: res.items.map((i) => ({ key: i.key, label: i.label, value: i.value, unit: i.unit, level: i.level, dir: i.dir })),
-      comment: poseComment(member, view, res),
+    Object.keys(pts || {}).forEach((k) => {
+      const p = pts[k];
+      if (p) slim[k] = { x: r3(p.x), y: r3(p.y), score: r3(p.score ?? 1), source: p.source || (analysisMethod === "manual" ? "manual" : "ai") };
+    });
+    const originalSlim = {};
+    Object.keys(originalPts || {}).forEach((key) => {
+      const point = originalPts[key];
+      if (point) originalSlim[key] = { x: r3(point.x), y: r3(point.y), score: r3(point.score ?? 1), source: "ai" };
     });
     const nextAnalyzed = { ...analyzedViews, [view]: true };
+    const source = analysisMethod === "manual" ? "manual" : correctedPoseSource("ai", editedJoints.length > 0);
+    const stored = await onSavePose?.({
+      id: `${assessmentId.current}_${view}_pose`, assessmentId: assessmentId.current, date: todayISO(), createdAt: new Date().toISOString(), completedAt: captureViews.every(({ key }) => !!nextAnalyzed[key]) ? new Date().toISOString() : null, view,
+      memberId: analysisMemberId.current, blob, cleanBlob, pts: slim, originalPts: Object.keys(originalSlim).length ? originalSlim : null, mirror, analysisSource: source,
+      scope, selectedViews: captureKeys, assessmentRole: analysisRole.current, assessmentStatus: captureViews.every(({ key }) => !!nextAnalyzed[key]) ? "completed" : "analyzing",
+      confidence: { threshold: POSE_CONFIDENCE_MIN, lowJoints: poseQuality.low, missingJoints: [] },
+      editedJoints: [...editedJoints], assessmentComplete: captureViews.every(({ key }) => !!nextAnalyzed[key]),
+      metrics: res.items.map((i) => ({ key: i.key, label: i.label, value: i.value, unit: i.unit, level: i.level, dir: i.dir })),
+      interpretation: null, interpretationStatus: "not_connected",
+    });
+    if (stored === false) {
+      onToast?.({ ok: false, msg: "분석 결과를 저장하지 못했습니다. 현재 관절 수정 내용은 유지됩니다." });
+      return;
+    }
+    deviceLog("pose_saved", { memberId: analysisMemberId.current, assessmentId: assessmentId.current, view, storage: "indexedDB", source, count: res.items.length });
     setAnalyzedViews(nextAnalyzed);
-    setPts(null); setManual(null); setChoice(false); setZoom(1); setPan({ x: 0, y: 0 });
+    setPts(null); setOriginalPts(null); setManual(null); setChoice(false); setZoom(1); setPan({ x: 0, y: 0 }); setPoseQuality({ missing: [], low: [] }); setEditedJoints([]);
     onToast?.({ ok: true, msg: `${roleLabel || "분석"}을 저장했습니다.` });
     const nextView = captureViews.find(({ key }) => !nextAnalyzed[key])?.key;
     if (nextView) {
@@ -5545,18 +6692,30 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onSaveCaptureD
       setAnalysisStarted(false);
       setAnalysisMethod(null);
       setAnalyzedViews({});
-      setCapturePhotos({ front: null, side: null, back: null });
-      setCaptureTarget("front");
-      onSaved?.(analysisRole.current);
+      setCapturePhotos(captureStateFor(captureViews));
+      setCaptureTarget(captureViews[0]?.key || "front");
+      onSaved?.(analysisRole.current, assessmentId.current);
     }
   };
   const copy = async () => {
-    const txt = poseComment(member, view, res);
-    try { await navigator.clipboard.writeText(txt); onToast?.({ ok: true, msg: "코멘트를 복사했습니다." }); }
+    const txt = `[${postureViewLabel(view)} 측정값]\n${(res?.items || []).map((item) => `${item.label}: ${item.value}${item.unit}`).join("\n")}`;
+    try { await navigator.clipboard.writeText(txt); onToast?.({ ok: true, msg: "측정값을 복사했습니다." }); }
     catch (e) { onToast?.({ ok: false, msg: "복사가 지원되지 않는 환경입니다." }); }
   };
   const worst = res ? [...res.items].sort((a, b) => LV_RANK[b.level] - LV_RANK[a.level] || b.value - a.value)[0] : null;
-  const history = saved.filter((s) => s.view === view);
+  const drawingPhoto = drawingView ? (() => {
+    const recordId = capturePhotos[drawingView]?.recordId || `${assessmentId.current}_${drawingView}`;
+    const stored = (photos?.[drawingView] || []).find((photo) => photo?.id === recordId);
+    return { ...(stored || {}), ...(capturePhotos[drawingView] || {}), id: recordId, marks: stored?.marks || [] };
+  })() : null;
+  const correctionPhoto = correctionDrawingView ? (() => {
+    const recordId = capturePhotos[correctionDrawingView]?.recordId || `${assessmentId.current}_${correctionDrawingView}`;
+    const stored = (photos?.[correctionDrawingView] || []).find((photo) => photo?.id === recordId);
+    return { ...(stored || {}), ...(capturePhotos[correctionDrawingView] || {}), id: recordId, marks: stored?.marks || [] };
+  })() : null;
+  const history = saved.filter((record) => normalizePostureView(record.view) === normalizePostureView(view));
+  const currentCapture = captureViews.find(({ key }) => key === captureTarget) || captureViews[0];
+  const currentCapturePhoto = currentCapture ? capturePhotos[currentCapture.key] : null;
   const trend = (key) => {
     const list = history.filter((h) => h.metrics.some((m) => m.key === key)).slice(0, 6);
     if (list.length < 2) return null;
@@ -5565,6 +6724,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onSaveCaptureD
     return { diff: r1(now - old), from: list[list.length - 1].date };
   };
   return (
+    <>
     <Card className={embedded ? "p-3" : "p-5"}>
       {!embedded && <button onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-2 text-left">
         <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl" style={{ background: GRAD }}>
@@ -5597,72 +6757,49 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onSaveCaptureD
             <p className="text-xs font-bold" style={{ color: SUB }}>분석 대상</p>
             <p className="mt-0.5 text-sm font-extrabold" style={{ color: INK }}>{member?.name || "회원"}</p>
           </div>
+          {analysisMethod && (
+            <div className="flex items-center gap-2.5 px-3 py-2.5" style={{ borderRadius: 11, backgroundColor: LAVENDER_S, border: `1px solid ${LINE}` }}>
+              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: CARD, color: assessmentRole === "after" ? GOOD : BRAND_D }}><Camera size={13} /></span>
+              <span className="min-w-0 flex-1"><span className="block text-[10px] font-bold" style={{ color: SUB }}>촬영 구분</span><span className="mt-0.5 block text-sm font-bold" style={{ color: assessmentRole === "before" || assessmentRole === "after" ? INK : SUB }}>{assessmentRole === "before" || assessmentRole === "after" ? (roleLabel || (assessmentRole === "before" ? "비포" : "에프터")) : "아직 선택되지 않았어요"}</span></span>
+              {onRequestRole && <button type="button" onClick={onRequestRole} className="h-8 shrink-0 px-2.5 text-[11px] font-bold" style={{ borderRadius: 8, backgroundColor: CARD, color: BRAND_D, border: `1px solid ${LINE}` }}>구분 선택</button>}
+            </div>
+          )}
           {!analysisMethod && (
           <div className="grid gap-2">
-              <button onClick={() => setAnalysisMethod("ai")} className="p-3.5 text-left" style={{ borderRadius: 14, backgroundColor: LAVENDER_S, border: `1.5px solid ${LAVENDER}` }}>
+              <button onClick={() => startAssessment("ai")} className="p-3.5 text-left" style={{ borderRadius: 14, backgroundColor: LAVENDER_S, border: `1.5px solid ${LAVENDER}` }}>
                 <p className="flex items-center gap-1.5 text-[15px] font-bold" style={{ color: INK }}><Sparkles size={15} style={{ color: LAVENDER }} /> AI 체형분석</p>
-                <Sub className="mt-1">3방향 촬영 후 관절을 자동 추출하고 직접 보정합니다.</Sub>
+                <Sub className="mt-1">선택한 {captureViews.length}방향 촬영 후 관절을 자동 추출하고 직접 보정합니다.</Sub>
               </button>
-              <button onClick={() => setAnalysisMethod("manual")} className="p-3.5 text-left" style={{ borderRadius: 14, backgroundColor: CARD, border: `1.5px solid ${LINE}` }}>
-                <p className="flex items-center gap-1.5 text-[15px] font-bold" style={{ color: INK }}><Crosshair size={15} style={{ color: BRAND }} /> 직접 체형분석</p>
-                <Sub className="mt-1">3방향 촬영 후 관절 포인트를 순서대로 직접 입력합니다.</Sub>
+              <button onClick={() => startAssessment("manual")} className="p-3.5 text-left" style={{ borderRadius: 14, backgroundColor: CARD, border: `1.5px solid ${LINE}` }}>
+                <p className="flex items-center gap-1.5 text-[15px] font-bold" style={{ color: INK }}><Crosshair size={15} style={{ color: BRAND }} /> 직접 포인트 분석</p>
+                <Sub className="mt-1">선택한 {captureViews.length}방향 촬영 후 관절 포인트를 순서대로 직접 입력합니다.</Sub>
+              </button>
+              <button onClick={() => startAssessment("draw")} className="p-3.5 text-left" style={{ borderRadius: 14, backgroundColor: CARD, border: `1.5px solid ${LINE}` }}>
+                <p className="flex items-center gap-1.5 text-[15px] font-bold" style={{ color: INK }}><Pencil size={15} style={{ color: BRAND }} /> 직접 그리기</p>
+                <Sub className="mt-1">AI 없이 사진 위에 기준선·펜·화살표·메모를 기록합니다.</Sub>
               </button>
             </div>
           )}
-          {analysisMethod && !analysisStarted && (
-            <>
-              <div className="flex items-center"><h2 style={{ fontSize: 16, fontWeight: 700, color: INK }}>체형 사진 등록</h2><span className="ml-2 tabular-nums" style={{ fontSize: 12, color: SUB }}>{captureViews.filter(({ key }) => !!capturePhotos[key]).length}/3</span></div>
-              <p style={{ marginTop: -6, fontSize: 12.5, color: INK2 }}>정확한 비교를 위해 같은 위치와 거리에서 촬영해주세요.</p>
-              <div className="flex flex-col gap-2.5">
-                {captureViews.map((capture) => {
-                  const photo = capturePhotos[capture.key];
-                  const guide = {
-                    front: ["양발 간격을 맞추고 정면을 바라봐 주세요", "머리부터 발끝까지 전신이 보이게 촬영해 주세요"],
-                    side: ["카메라에 어깨와 골반의 옆선이 보이게 서 주세요", "고개를 들거나 숙이지 말고 자연스럽게 바라봐 주세요"],
-                    back: ["등과 양쪽 발뒤꿈치가 모두 보이게 서 주세요", "전면과 같은 거리와 높이에서 촬영해 주세요"],
-                  }[capture.key];
-                  return (
-                    <div key={capture.key} style={{ padding: 12, borderRadius: 14, backgroundColor: CARD, border: `1px solid ${captureTarget === capture.key ? BRAND : LINE}` }}>
-                      <div className="flex items-center gap-1.5"><h3 style={{ fontSize: 14, fontWeight: 700, color: INK }}>{capture.label}</h3><span className="flex items-center gap-1" style={{ padding: "2px 7px", borderRadius: 6, backgroundColor: photo ? GOOD_S : CANVAS, color: photo ? GOOD : INK2, fontSize: 10, fontWeight: 700 }}>{photo && <Check size={11} />}{photo ? "등록 완료" : "미등록"}</span><span className="flex-1" />
-                        {photo && <><button type="button" onClick={() => { setCaptureTarget(capture.key); albumRef.current?.click(); }} disabled={busy} style={{ minHeight: 34, padding: "0 10px", borderRadius: 8, border: `1px solid ${LINE}`, color: INK2, fontSize: 12, fontWeight: 600 }}>교체</button><button type="button" onClick={() => {
-                               if (photo.src?.startsWith("blob:")) { try { URL.revokeObjectURL(photo.src); } catch (e) {} }
-                               setCapturePhotos((prev) => ({ ...prev, [capture.key]: null }));
-                               setDraftSaved((prev) => ({ ...prev, [capture.key]: false }));
-                               setCaptureTarget(capture.key);
-                            }} disabled={busy} style={{ minHeight: 34, padding: "0 10px", borderRadius: 8, border: `1px solid ${LINE}`, color: BAD, fontSize: 12, fontWeight: 600 }}>삭제</button></>}
-                      </div>
-                      {photo ? <div className="mt-2 flex gap-2.5"><img src={photo.src} alt={`${capture.label} 촬영 사진`} className="object-cover" style={{ width: 72, height: 104, borderRadius: 8, border: `1px solid ${LINE}`, backgroundColor: PHOTO }} /><div className="min-w-0 flex-1"><p className="truncate" style={{ fontSize: 12, color: INK }}>촬영 사진</p><button type="button" onClick={() => { setCaptureTarget(capture.key); camRef.current?.click(); }} className="mt-2" style={{ minHeight: 34, padding: "0 10px", borderRadius: 8, backgroundColor: TINT, color: BRAND_D, fontSize: 12, fontWeight: 600 }}>재촬영</button></div></div>
-                        : <button type="button" onClick={() => { setCaptureTarget(capture.key); camRef.current?.click(); }} disabled={busy} className="mt-2.5 flex w-full items-center justify-center gap-2" style={{ minHeight: 84, borderRadius: 10, border: `1.5px dashed #D5DAE3`, backgroundColor: CANVAS, color: INK2, fontSize: 13, fontWeight: 600 }}><Camera size={17} style={{ color: BRAND }} />촬영 · 불러오기</button>}
-                      <p style={{ marginTop: 8, fontSize: 11.5, lineHeight: 1.6, color: SUB }}>{guide.map((line) => <span key={line}>· {line}<br /></span>)}</p>
-                    </div>
-                  );
-                })}
-              </div>
-              <div className="rounded-2xl p-4" style={{ backgroundColor: CANVAS }}>
-                <p className="text-sm font-bold" style={{ color: INK }}>촬영 가이드</p>
-                <ul className="mt-2 space-y-1 text-xs leading-relaxed" style={{ color: SUB }}>
-                  <li>· 발끝부터 머리끝까지 전신이 들어가게, 카메라는 골반 높이에서 수평으로</li>
-                  <li>· 몸에 붙는 옷 · 맨발 · 벽에서 30cm 떨어져 전면·측면·후면으로 자연스럽게 서기</li>
-                  <li>· 세 방향을 같은 자리·같은 거리에서 촬영하고 사진을 확인해 주세요</li>
-                </ul>
-              </div>
-              <button onClick={saveCaptureDraft} disabled={!captureViews.some(({ key }) => !!capturePhotos[key]) || busy || !onSaveCaptureDraft}
-                className="flex h-11 w-full items-center justify-center gap-1.5 rounded-xl text-sm font-bold disabled:opacity-40"
-                style={{ backgroundColor: CARD, color: PRIMARY, border: `1px solid ${LINE}` }}>
-                <Download size={14} /> {captureViews.every(({ key }) => draftSaved[key]) ? "촬영 초안 저장됨" : "촬영 초안 저장"}
-              </button>
-              <button onClick={() => beginCapturedAnalysis("front")} disabled={!capturesComplete || busy}
-                className="flex w-full items-center justify-center gap-1.5 rounded-2xl py-3.5 text-sm font-extrabold text-white disabled:opacity-40" style={{ background: GRAD }}>
-                {busy ? <Loader2 size={15} className="animate-spin" /> : analysisMethod === "ai" ? <Sparkles size={15} /> : <Crosshair size={15} />}
-                {capturesComplete ? `${analysisMethod === "ai" ? "AI 관절 추출" : "직접 입력"} 시작` : "전면·측면·후면 촬영을 완료해 주세요"}
-              </button>
-            </>
-          )}
+          {analysisMethod && !analysisStarted && <PostureCaptureScreen
+            member={member} assessmentId={assessmentId.current} captureViews={captureViews} currentCapture={currentCapture}
+            capturePhotos={capturePhotos} draftSaved={draftSaved} busy={busy} onSelectView={setCaptureTarget}
+            onAcceptCapture={(blob, metadata) => acceptCaptureBlob(blob, { ...metadata, preserveResolution: true })}
+            onOpenAlbum={openCapture} onDeleteCapture={deleteCurrentCapture} onSaveDraft={saveCaptureDraft}
+            onContinue={() => analysisMethod === "draw" ? beginDrawing(captureViews.find(({ key }) => !drawnViews[key])?.key || "front") : beginCapturedAnalysis(captureViews.find(({ key }) => !analyzedViews[key])?.key || "front")}
+            onExit={() => onCaptureExit?.()}
+          />}
           <input ref={albumRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; pickFile(f); }} />
-          <input ref={camRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; pickFile(f); }} />
+          {analysisStarted && busy && (
+            <section role="status" aria-live="polite" className="py-8 text-center" style={{ borderRadius: 16, backgroundColor: LAVENDER_S, border: `1px solid #D5D1EB` }}>
+              <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-full" style={{ backgroundColor: CARD, color: BRAND_D }}><Loader2 size={24} className="animate-spin" /></span>
+              <h2 className="mt-4 text-lg font-extrabold" style={{ color: INK }}>AI 분석 중</h2>
+              <p className="mt-1 text-xs leading-relaxed" style={{ color: INK2 }}>{postureViewLabel(view)} 사진에서 관절점을 찾고 실제 측정값을 계산하고 있습니다.</p>
+              <p className="mt-2 text-[10px]" style={{ color: SUB }}>사진과 초안은 이미 기기에 저장되어 있습니다.</p>
+            </section>
+          )}
           {analysisStarted && (
             <div className="flex flex-wrap items-center gap-2 rounded-2xl px-3 py-2.5" style={{ background: GRAD_SOFT }}>
-              <span className="text-xs font-extrabold" style={{ color: PRIMARY }}>{VIEWS.find((v) => v.key === view)?.label} 분석</span>
+              <span className="text-xs font-extrabold" style={{ color: PRIMARY }}>{postureViewLabel(view)} 분석</span>
               {engine === "loading" && <><Loader2 size={13} className="animate-spin" style={{ color: PRIMARY }} /><Sub>AI 관절 인식 모델을 불러오는 중…</Sub></>}
               {engine === "ready" && <><Sparkles size={13} style={{ color: PRIMARY }} /><span className="text-xs font-bold" style={{ color: PRIMARY }}>AI 자동 인식 사용 가능</span></>}
               {engine === "manual" && <><AlertTriangle size={13} style={{ color: WARN }} /><span className="text-xs font-bold" style={{ color: WARN }}>수동 지정 모드로 계산합니다</span></>}
@@ -5670,6 +6807,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onSaveCaptureD
               {img && analysisMethod === "ai" && engine === "ready" && (
                 <button onClick={() => beginCapturedAnalysis(view)} className="rounded-xl px-3 py-1.5 text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>AI로 다시 인식</button>
               )}
+              {img && <button onClick={() => { setAnalysisStarted(false); setImg(null); setPts(null); setManual(null); setCaptureTarget(view); onStageChange?.("capture"); }} className="rounded-xl px-3 py-1.5 text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>{postureViewLabel(view)} 재촬영</button>}
             </div>
           )}
           {img && (
@@ -5737,14 +6875,15 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onSaveCaptureD
                   </span>
                 )}
               </div>
-              {pts && (
-                <button onClick={save} className="flex w-full items-center justify-center gap-1.5 rounded-2xl py-3.5 text-sm font-extrabold text-white" style={{ background: GRAD, boxShadow: SHADOW }}>
-                  <Check size={16} /> {roleLabel ? `${roleLabel} 저장하기` : "이 분석 저장하기"}
-                </button>
+              {(poseQuality.missing.length > 0 || poseQuality.low.length > 0) && (
+                <div className="rounded-xl px-3 py-2 text-xs" style={{ backgroundColor: WARN_S, color: WARN }}>
+                  {poseQuality.missing.length > 0 && <p className="font-bold">미검출 관절 {poseQuality.missing.length}개 · 직접 지정 전에는 저장할 수 없습니다.</p>}
+                  {poseQuality.low.length > 0 && <p className="font-bold">신뢰도 낮음 {poseQuality.low.map((key) => jointName(key, poseView)).join(" · ")} · 노란 점을 확인해 주세요.</p>}
+                </div>
               )}
               <div className="flex flex-wrap items-center gap-1.5">
                 <div className="flex gap-1 rounded-full p-1" style={{ backgroundColor: CANVAS }}>
-                  {VIEWS.map((v) => (
+                  {captureViews.map((v) => (
                     <button key={v.key} onClick={() => beginCapturedAnalysis(v.key)} className="rounded-full px-3 py-1.5 text-xs font-bold"
                       style={view === v.key ? { backgroundColor: CARD, color: PRIMARY, boxShadow: "0 1px 3px rgba(20,20,43,.12)" } : { color: analyzedViews[v.key] ? GOOD : SUB }}>
                       {v.label}{analyzedViews[v.key] ? " ✓" : ""}
@@ -5802,25 +6941,18 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onSaveCaptureD
                 <p className="mt-1 text-sm font-extrabold" style={{ color: INK }}>
                   {worst && worst.level !== "good" ? `${worst.label} ${worst.value}${worst.unit} · ${worst.dir}` : "주요 지표 모두 정상 범위"}
                 </p>
-                <p className="mt-2 text-sm leading-relaxed" style={{ color: INK2 }}>{poseComment(member, view, res)}</p>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <button onClick={save} className="flex items-center gap-1.5 rounded-2xl px-4 py-2.5 text-sm font-extrabold text-white" style={{ background: GRAD }}>
-                    <Check size={14} /> 분석 결과 저장
-                  </button>
-                  <button onClick={() => shot()} className="flex items-center gap-1.5 rounded-2xl bg-white px-4 py-2.5 text-sm font-bold" style={{ color: INK }}>
-                    <Download size={14} /> 갤러리 저장
-                  </button>
-                  <button onClick={() => shot(false)} className="flex items-center gap-1.5 rounded-2xl bg-white px-4 py-2.5 text-sm font-bold" style={{ color: BRAND }}>
-                    <Upload size={14} /> 공유하기
-                  </button>
-                  <button onClick={copy} className="flex items-center gap-1.5 rounded-2xl bg-white px-4 py-2.5 text-sm font-bold" style={{ color: PRIMARY }}>
-                    <Copy size={14} /> 코멘트 복사
+                <p className="mt-2 text-sm leading-relaxed" style={{ color: INK2 }}>관절 좌표에서 계산한 측정값입니다. AI 해석은 아직 연결되지 않았으며, 강사가 관절 위치와 측정값을 확인한 뒤 저장해야 확정됩니다.</p>
+                <div className="mt-3 grid grid-cols-[0.78fr_1.22fr] gap-2">
+                  <button type="button" onClick={() => setCorrectionPicker(true)} className="flex h-12 items-center justify-center gap-1.5 text-sm font-bold" style={{ borderRadius: 12, backgroundColor: CARD, border: `1px solid ${LINE}`, color: INK }}><Pencil size={14} />수정하기</button>
+                  <button onClick={save} disabled={poseQuality.missing.length > 0 || !res?.items?.length} className="flex h-12 items-center justify-center gap-1.5 text-sm font-extrabold text-white disabled:opacity-40" style={{ borderRadius: 12, backgroundColor: BRAND }}>
+                    <Check size={14} /> 결과 저장
                   </button>
                 </div>
+                <p className="mt-2 text-center text-[10px]" style={{ color: SUB }}>수정 없이 저장하거나, 틀린 부위만 빠르게 보정할 수 있습니다.</p>
               </div>
             </>
           )}
-          {saved.length > 0 && (
+          {!embedded && saved.length > 0 && (
             <div>
               <p className="mb-2 text-xs font-extrabold" style={{ color: SUB }}>저장된 분석 {saved.length}건 · 눌러서 크게 보기</p>
               <div className="space-y-2">
@@ -5842,11 +6974,22 @@ function PoseAnalyzer({ member, photos, onSavePose, onDeletePose, onSaveCaptureD
             </div>
           )}
           {seeSaved && (
-            <SavedPoseViewer rec={seeSaved} onClose={() => setSeeSaved(null)} onToast={onToast} />
+            <SavedPoseViewer rec={saved.find((record) => record.id === seeSaved.id) || seeSaved} member={member} memberName={member?.name} records={saved} onUpdate={onUpdatePose} onClose={() => setSeeSaved(null)} onToast={onToast} />
           )}
         </div>
       )}
     </Card>
+    {drawingView && drawingPhoto?.src && (
+      <PostureCanvas key={`${drawingView}_${drawingPhoto.id}`} photo={drawingPhoto} label={`${postureViewLabel(drawingView)} · 강사 직접 기록`}
+        fresh onClose={() => setDrawingView(null)} onCancel={() => { setDrawingView(null); setAnalysisStarted(false); onStageChange?.("capture"); }} onDraft={(marks) => onSaveMarks?.(drawingView, drawingPhoto.id, marks, { quiet: true })} onSave={(marks) => saveDrawing(drawingView, marks)} onToast={onToast} />
+    )}
+    {correctionPicker && <ScheduleBottomSheet title="어느 부분을 수정할까요?" subtitle={`${postureViewLabel(view)} AI 결과에서 틀린 부위만 빠르게 보정합니다`} onClose={() => setCorrectionPicker(false)}>
+      <div className="grid grid-cols-2 gap-2">
+        {[{ key: "shoulder", label: "어깨", sub: "어깨선과 관절점" }, { key: "pelvis", label: "골반", sub: "골반선과 관절점" }, { key: "spine", label: "척추", sub: "중심선과 체간" }, { key: "other", label: "기타 표시", sub: "기준선·펜·화살표·메모" }].map((item) => <button type="button" key={item.key} onClick={() => startFocusedCorrection(item.key)} className="min-h-[82px] p-3 text-left" style={{ borderRadius: 12, backgroundColor: item.key === "other" ? CANVAS : TINT, border: `1px solid ${item.key === "other" ? LINE : "#D5D1EB"}` }}><span className="block text-sm font-extrabold" style={{ color: INK }}>{item.label}</span><span className="mt-1 block text-xs leading-relaxed" style={{ color: SUB }}>{item.sub}</span></button>)}
+      </div>
+    </ScheduleBottomSheet>}
+    {correctionDrawingView && correctionPhoto?.src && <PostureCanvas key={`correction_${correctionDrawingView}_${correctionPhoto.id}`} photo={correctionPhoto} label={`${postureViewLabel(correctionDrawingView)} · 기타 표시`} initialTool="guide" onClose={() => setCorrectionDrawingView(null)} onCancel={() => setCorrectionDrawingView(null)} onDraft={(marks) => onSaveMarks?.(correctionDrawingView, correctionPhoto.id, marks, { quiet: true })} onSave={(marks) => onSaveMarks?.(correctionDrawingView, correctionPhoto.id, marks)} onToast={onToast} />}
+    </>
   );
 }
 
@@ -6652,23 +7795,519 @@ function AnalysisTab({ members, photos, selectedId, onSelect, onOpen, onToast, h
   );
 }
 
+function AssessmentAnnotationOverlay({ marks = [] }) {
+  if (!marks.length) return null;
+  return (
+    <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true">
+      {marks.map((mark) => {
+        const pts = (mark.pts || []).map((point) => ({ x: point.x * 1000, y: point.y * 1000 }));
+        const stroke = mark.color || "#4C4399", sw = Math.max(2, (mark.width || 3) * 2), opacity = mark.opacity ?? 1;
+        if (!pts.length) return null;
+        if (mark.tool === "circle" && pts[1]) return <ellipse key={mark.id} cx={(pts[0].x + pts[1].x) / 2} cy={(pts[0].y + pts[1].y) / 2} rx={Math.abs(pts[1].x - pts[0].x) / 2} ry={Math.abs(pts[1].y - pts[0].y) / 2} fill="none" stroke={stroke} strokeWidth={sw} opacity={opacity} />;
+        if (mark.tool === "rect" && pts[1]) return <rect key={mark.id} x={Math.min(pts[0].x, pts[1].x)} y={Math.min(pts[0].y, pts[1].y)} width={Math.abs(pts[1].x - pts[0].x)} height={Math.abs(pts[1].y - pts[0].y)} fill="none" stroke={stroke} strokeWidth={sw} opacity={opacity} />;
+        if (mark.tool === "text") return <text key={mark.id} x={pts[0].x} y={pts[0].y} fill={stroke} fontSize={Math.max(28, (mark.width || 3) * 12)} fontWeight="700" opacity={opacity}>{mark.label || ""}</text>;
+        const pointString = pts.map((point) => `${point.x},${point.y}`).join(" ");
+        return <polyline key={mark.id} points={pointString} fill="none" stroke={stroke} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" opacity={opacity} />;
+      })}
+    </svg>
+  );
+}
+
+function AssessmentSetFrame({ photo, label, annotation = true, onOpen }) {
+  return (
+    <button type="button" onClick={photo ? onOpen : undefined} disabled={!photo} className="relative min-w-0 overflow-hidden text-left"
+      style={{ aspectRatio: "3 / 4", borderRadius: 10, backgroundColor: PHOTO, border: `1px solid ${LINE}` }}>
+      {photo?.src ? <img src={photo.src} alt={`${label} 사진`} className="h-full w-full object-cover" /> : <span className="absolute inset-0 flex items-center justify-center text-[10px] font-semibold" style={{ color: FAINT }}>{label}</span>}
+      {photo && annotation && <AssessmentAnnotationOverlay marks={photo.marks || []} />}
+      <span className="absolute bottom-1.5 left-1.5 rounded-md px-1.5 py-0.5 text-[9px] font-bold text-white" style={{ backgroundColor: "rgba(28,36,51,.72)" }}>{label}</span>
+      {photo && <span className="absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full" style={{ backgroundColor: GOOD }}><Check size={11} color="#fff" /></span>}
+    </button>
+  );
+}
+
+function LegacyAssessmentWorkspace({ member, photos, settings, initialSavedId, onSavePose, onUpdatePose, onDeletePose, onSaveCaptureDraft, onDeleteCaptureDraft, onSaveMarks, onSaveAssessmentRole, onToast, onSaved }) {
+  const [screen, setScreen] = useState("result");
+  const [captureKey, setCaptureKey] = useState(0);
+  const [pendingRole, setPendingRole] = useState(null);
+  const [pendingMethod, setPendingMethod] = useState(null);
+  const [roleSheet, setRoleSheet] = useState(false);
+  const [setPicker, setSetPicker] = useState(null);
+  const [selectedSetId, setSelectedSetId] = useState(null);
+  const [compareView, setCompareView] = useState("front");
+  const [showAnnotations, setShowAnnotations] = useState(true);
+  const [beforeSetId, setBeforeSetId] = useState(null);
+  const [afterSetId, setAfterSetId] = useState(null);
+  const [zoomPhoto, setZoomPhoto] = useState(null);
+  const [viewingPose, setViewingPose] = useState(null);
+  const sets = useMemo(() => {
+    const groups = new Map();
+    const ensure = (id, stamp = "") => {
+      const current = groups.get(id) || { id, photos: {}, poses: [], at: stamp, method: "ai", role: null };
+      if (stamp > current.at) current.at = stamp;
+      groups.set(id, current); return current;
+    };
+    ["front", "side", "back"].forEach((view) => (photos?.[view] || []).forEach((photo) => {
+      if (!photo?.assessmentId) return;
+      const group = ensure(photo.assessmentId, photo.createdAt || `${photo.date || ""}T00:00:00.000Z`);
+      group.photos[view] = photo; group.method = photo.analysisMethod || group.method; group.role = photo.assessmentRole || group.role;
+    }));
+    (photos?.poses || []).filter(Boolean).forEach((pose) => {
+      const id = pose.assessmentId || `legacy_${pose.date || pose.id}`;
+      const group = ensure(id, pose.createdAt || `${pose.date || ""}T00:00:00.000Z`);
+      group.poses.push(pose); group.method = pose.analysisSource === "draw" ? "draw" : pose.analysisSource === "manual" ? "manual" : group.method;
+      group.role = pose.assessmentRole || group.role;
+    });
+    const ascending = [...groups.values()].sort((a, b) => a.at.localeCompare(b.at));
+    ascending.forEach((group, index) => { if (!group.role) group.role = index === 0 ? "before" : index === 1 ? "after" : "unassigned"; });
+    return ascending.reverse();
+  }, [photos]);
+  const completeSets = sets.filter((set) => Object.keys(set.photos).length === 3 || new Set(set.poses.map((pose) => pose.view)).size === 3);
+  const selected = sets.find((set) => set.id === selectedSetId) || sets.find((set) => set.poses.some((pose) => pose.id === initialSavedId)) || sets[0] || null;
+  const defaultBeforeSet = completeSets.find((set) => set.role === "before") || completeSets[completeSets.length - 1] || null;
+  const defaultAfterSet = completeSets.find((set) => set.role === "after" && set.id !== defaultBeforeSet?.id) || completeSets.find((set) => set.id !== defaultBeforeSet?.id) || null;
+  const beforeSet = completeSets.find((set) => set.id === beforeSetId) || defaultBeforeSet;
+  const afterSet = completeSets.find((set) => set.id === afterSetId) || defaultAfterSet;
+  useEffect(() => {
+    if (!beforeSetId && defaultBeforeSet) setBeforeSetId(defaultBeforeSet.id);
+    if (!afterSetId && defaultAfterSet) setAfterSetId(defaultAfterSet.id);
+  }, [defaultBeforeSet?.id, defaultAfterSet?.id]);
+  const methodLabel = (method) => method === "draw" ? "강사 직접 기록" : method === "manual" ? "직접 포인트" : "AI 체형분석";
+  const roleLabelOf = (role) => role === "before" ? "비포" : role === "after" ? "에프터" : "미분류";
+  const roleOrdinal = (role) => Math.max(1, sets.filter((set) => set.role === role).length + 1);
+  const pendingRoleLabel = pendingRole === "before" ? `비포 ${roleOrdinal("before")}` : pendingRole === "after" ? `에프터 ${roleOrdinal("after")}` : "미분류";
+  const openMethodChoice = () => { setRoleSheet(false); setPendingMethod(null); setScreen("method"); };
+  const startCapture = (method) => { setPendingMethod(method); setScreen("capture"); setCaptureKey((key) => key + 1); };
+  const requestCapture = () => {
+    setPendingRole(!sets.length ? "before" : sets.length === 1 ? "after" : "unassigned");
+    setPendingMethod(null);
+    setScreen("role");
+  };
+  const resultPoses = selected?.poses.filter((pose) => Array.isArray(pose.metrics) && pose.metrics.length) || [];
+  const resultMetrics = resultPoses.flatMap((pose) => pose.metrics.map((metric) => ({ ...metric, view: pose.view })));
+  const goodMetrics = resultMetrics.filter((metric) => metric.level === "good").slice(0, 3);
+  const cautionMetrics = resultMetrics.filter((metric) => metric.level && metric.level !== "good").slice(0, 3);
+  const aiPayload = resultPoses.map((pose) => pose.aiAnalysis?.teacherEditedOutput || pose.aiAnalysis?.output).find(Boolean) || null;
+  const aiText = aiPayload ? [aiPayload.bodyCharacteristics, aiPayload.asymmetries, aiPayload.pelvis, aiPayload.thorax, aiPayload.scapula, aiPayload.head, aiPayload.knees, aiPayload.feet]
+    .flatMap((value) => Array.isArray(value) ? value : value ? [value] : []).join(" · ") : "";
+  const recommendedExercises = Array.isArray(aiPayload?.recommendedExercises) ? aiPayload.recommendedExercises : [];
+  const teacherMemo = selected?.poses.map((pose) => pose.comment || pose.teacherMemo || "").find(Boolean) || "";
+  const resultPhoto = (set, view) => set?.photos?.[view] || null;
+  const stageScreen = screen === "analysis" ? "analysis" : screen === "result" ? "result" : "capture";
+  const methodOptions = [
+    { value: "ai", label: "AI 체형분석", description: "MediaPipe로 관절을 추출한 뒤 강사가 보정합니다.", icon: <Sparkles size={17} /> },
+    { value: "manual", label: "직접 포인트 분석", description: "관절 포인트를 강사가 직접 지정하고 측정합니다.", icon: <Crosshair size={17} /> },
+    { value: "draw", label: "직접 그리기", description: "AI 없이 선·도형·각도·텍스트를 사진 위에 기록합니다.", icon: <Pencil size={17} /> },
+  ];
+  const roleOptions = [
+    { value: "before", label: `비포 ${roleOrdinal("before")}`, description: "비교 기준이 되는 촬영 세트" },
+    { value: "after", label: `에프터 ${roleOrdinal("after")}`, description: "변화를 비교할 촬영 세트" },
+    { value: "unassigned", label: "미분류", description: "비교 역할을 나중에 정합니다" },
+  ];
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-3" style={{ padding: 3, borderRadius: 11, backgroundColor: CANVAS }}>
+        {[{ k: "capture", l: "촬영" }, { k: "analysis", l: "분석" }, { k: "result", l: "결과" }].map((item) => {
+          const active = stageScreen === item.k;
+          return <div key={item.k} className="flex h-9 items-center justify-center gap-1.5" style={{ borderRadius: 8, backgroundColor: active ? CARD : "transparent", color: active ? BRAND_D : SUB, boxShadow: active ? "0 1px 3px rgba(28,36,51,.08)" : "none", fontSize: 12, fontWeight: active ? 700 : 600 }}><span className="flex h-5 w-5 items-center justify-center rounded-full" style={{ backgroundColor: active ? TINT : "transparent", border: `1px solid ${active ? BRAND : LINE}`, fontSize: 10 }}>{item.k === "capture" ? 1 : item.k === "analysis" ? 2 : 3}</span>{item.l}</div>;
+        })}
+      </div>
+
+      {screen === "role" && (
+        <section style={{ padding: 16, borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}>
+          <p className="text-xs font-bold" style={{ color: SUB }}>{!sets.length ? "첫 번째 촬영" : sets.length === 1 ? "두 번째 촬영" : `${sets.length + 1}번째 촬영`}</p>
+          <div className="mt-3 flex items-center gap-3 px-4 py-4" style={{ borderRadius: 14, backgroundColor: pendingRole === "before" ? TINT : pendingRole === "after" ? GOOD_S : WARN_S, border: `1px solid ${pendingRole === "before" ? "#D5D1EB" : pendingRole === "after" ? GOOD : WARN}` }}>
+            <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: CARD, color: pendingRole === "before" ? BRAND_D : pendingRole === "after" ? GOOD : WARN }}><Camera size={20} /></span>
+            <span className="min-w-0 flex-1"><span className="block text-[11px] font-bold" style={{ color: SUB }}>{!sets.length ? "자동 제안" : sets.length === 1 ? "기본 제안" : "현재 선택"}</span><span className="mt-0.5 block text-xl font-extrabold" style={{ color: INK }}>{pendingRoleLabel}</span><span className="mt-1 block text-xs" style={{ color: INK2 }}>전면·측면·후면 3장을 하나의 Assessment Set으로 저장합니다.</span></span>
+          </div>
+          {sets.length > 0 && <div className="mt-3 grid grid-cols-3 gap-2">{roleOptions.map((option) => <button key={option.value} type="button" onClick={() => setPendingRole(option.value)} className="min-h-11 px-1 text-xs font-bold" style={{ borderRadius: 9, backgroundColor: pendingRole === option.value ? TINT : CANVAS, color: pendingRole === option.value ? BRAND_D : SUB, border: `1px solid ${pendingRole === option.value ? BRAND : LINE}` }}>{option.label}</button>)}</div>}
+          <button type="button" onClick={openMethodChoice} className="mt-4 flex h-12 w-full items-center justify-center gap-2 text-sm font-extrabold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>이 구분으로 촬영 준비 <ChevronRight size={16} /></button>
+        </section>
+      )}
+
+      {screen === "method" && (
+        <section style={{ padding: 15, borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}>
+          <div className="flex items-start gap-2"><div className="min-w-0 flex-1"><h2 style={{ fontSize: 16, fontWeight: 700, color: INK }}>분석 방식 선택</h2><p className="mt-1 text-xs" style={{ color: SUB }}>{pendingRoleLabel} 세트에 사용할 방식을 선택하세요.</p></div><button type="button" onClick={() => setScreen("role")} className="h-9 px-3 text-xs font-bold" style={{ borderRadius: 8, backgroundColor: CANVAS, color: SUB }}>구분 다시 선택</button></div>
+          <div className="mt-3 space-y-2">{methodOptions.map((option) => {
+            const recommended = settings?.defaultAssessmentMethod === option.value;
+            return <button key={option.value} type="button" onClick={() => startCapture(option.value)} className="flex min-h-[76px] w-full items-center gap-3 px-3.5 py-3 text-left" style={{ borderRadius: 13, backgroundColor: option.value === "ai" ? LAVENDER_S : CANVAS, border: `1px solid ${option.value === "ai" ? "#D5D1EB" : LINE}` }}><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: CARD, color: BRAND_D }}>{option.icon}</span><span className="min-w-0 flex-1"><span className="flex items-center gap-2 text-[15px] font-bold" style={{ color: INK }}>{option.label}{recommended && <i className="not-italic" style={{ padding: "2px 6px", borderRadius: 6, backgroundColor: TINT, color: BRAND_D, fontSize: 9 }}>기본 방식</i>}</span><span className="mt-1 block text-xs leading-relaxed" style={{ color: SUB }}>{option.description}</span></span><ChevronRight size={16} className="shrink-0" style={{ color: FAINT }} /></button>;
+          })}</div>
+        </section>
+      )}
+
+      {(screen === "capture" || screen === "analysis") && (
+        <PoseAnalyzer key={`${member.id}_${captureKey}`} embedded member={member} photos={photos} defaultMethod={pendingMethod || "always"} assessmentRole={pendingRole}
+          roleLabel={pendingRoleLabel} onRequestRole={() => setRoleSheet(true)} onSavePose={onSavePose} onUpdatePose={onUpdatePose} onDeletePose={onDeletePose}
+          onSaveCaptureDraft={onSaveCaptureDraft} onDeleteCaptureDraft={onDeleteCaptureDraft} onSaveMarks={onSaveMarks} onToast={onToast} onStageChange={setScreen}
+          onSaved={async (role, assessmentId) => { await onSaveAssessmentRole?.(assessmentId, role || pendingRole); onSaved?.(role || pendingRole); setScreen("result"); }} />
+      )}
+
+      {screen === "result" && (
+        <>
+          <section style={{ padding: "14px 14px 12px", borderRadius: 14, backgroundColor: CARD, border: `1px solid ${LINE}` }}>
+            <div className="flex items-start gap-3"><div className="min-w-0 flex-1"><h2 style={{ fontSize: 16, fontWeight: 700, color: INK }}>Assessment Set</h2><p style={{ marginTop: 3, fontSize: 11.5, color: SUB }}>전면·측면·후면은 항상 하나의 세트로 표시됩니다.</p></div><button type="button" onClick={requestCapture} className="flex h-9 items-center gap-1.5 px-3 text-xs font-bold text-white" style={{ borderRadius: 8, backgroundColor: BRAND }}><Camera size={13} />새 촬영</button></div>
+            {!sets.length ? <div className="mt-4 py-8 text-center"><Camera size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-semibold" style={{ color: INK }}>저장된 촬영 세트가 없습니다</p><p className="mt-1 text-xs" style={{ color: SUB }}>전면·측면·후면을 한 세트로 기록해 보세요.</p></div>
+              : <div className="relative mt-4 space-y-3 before:absolute before:bottom-4 before:left-[7px] before:top-4 before:w-px" style={{ "--tw-content": "''" }}>
+                {sets.map((set) => {
+                  const captureCount = Object.keys(set.photos).length;
+                  const analyzedCount = new Set(set.poses.map((pose) => pose.view)).size;
+                  const active = selected?.id === set.id;
+                  return <div key={set.id} className="relative flex w-full gap-3 text-left">
+                    <span className="relative z-10 mt-4 h-3.5 w-3.5 shrink-0 rounded-full" style={{ backgroundColor: active ? BRAND : CARD, border: `3px solid ${active ? TINT : LINE}` }} />
+                    <span className="min-w-0 flex-1" style={{ padding: 11, borderRadius: 12, backgroundColor: active ? TINT : CANVAS, border: `1px solid ${active ? "#D5D1EB" : LINE}` }}>
+                      <span className="flex items-center gap-1.5"><span style={{ padding: "2px 7px", borderRadius: 6, backgroundColor: set.role === "before" ? TINT : set.role === "after" ? GOOD_S : WARN_S, color: set.role === "before" ? BRAND_D : set.role === "after" ? GOOD : WARN, fontSize: 10, fontWeight: 700 }}>{roleLabelOf(set.role)}</span><span style={{ fontSize: 11, color: SUB }}>{set.at ? ymd(set.at.slice(0, 10)) : "날짜 미확인"}</span><span className="ml-auto" style={{ fontSize: 10, color: SUB }}>{methodLabel(set.method)}</span></span>
+                      <span className="mt-2 grid grid-cols-3 gap-1.5">{VIEWS.map((view) => <AssessmentSetFrame key={view.key} photo={set.photos[view.key]} label={view.label} onOpen={(event) => { event?.stopPropagation?.(); setZoomPhoto(set.photos[view.key]); }} />)}</span>
+                      <span className="mt-2 flex items-center gap-2 text-[10px]" style={{ color: SUB }}><span>촬영 {captureCount}/3</span><span>분석 {analyzedCount}/3</span><span className="ml-auto font-semibold" style={{ color: captureCount === 3 ? GOOD : WARN }}>{captureCount === 3 ? "세트 저장됨" : "작성 중"}</span></span>
+                      <button type="button" onClick={() => { setSelectedSetId(set.id); setScreen("result"); }} className="mt-2 h-8 w-full text-[11px] font-bold" style={{ borderRadius: 7, backgroundColor: active ? BRAND : CARD, color: active ? "#fff" : BRAND_D, border: `1px solid ${active ? BRAND : LINE}` }}>{active ? "선택된 결과" : "결과 보기"}</button>
+                    </span>
+                  </div>;
+                })}
+              </div>}
+          </section>
+
+          {completeSets.length >= 2 && beforeSet && afterSet && (
+            <section style={{ padding: 12, borderRadius: 14, backgroundColor: CARD, border: `1px solid ${LINE}` }}>
+              <div className="flex items-center gap-2"><h2 className="min-w-0 flex-1" style={{ fontSize: 14, fontWeight: 700, color: INK }}>비포 · 에프터 선택</h2><button type="button" onClick={() => setShowAnnotations((value) => !value)} className="h-8 px-2.5 text-[11px] font-bold" style={{ borderRadius: 7, backgroundColor: showAnnotations ? TINT : CANVAS, color: showAnnotations ? BRAND_D : SUB }}>Annotation {showAnnotations ? "ON" : "OFF"}</button></div>
+              <div className="mt-3 grid grid-cols-2 gap-2"><button type="button" onClick={() => setSetPicker("before")} className="min-h-12 px-3 text-left" style={{ borderRadius: 9, backgroundColor: TINT, border: `1px solid #D5D1EB` }}><span className="block text-[10px] font-bold" style={{ color: SUB }}>비포 세트</span><span className="mt-0.5 block text-xs font-bold" style={{ color: BRAND_D }}>{beforeSet.at ? ymd(beforeSet.at.slice(0, 10)) : "날짜 미확인"} · {methodLabel(beforeSet.method)}</span></button><button type="button" onClick={() => setSetPicker("after")} className="min-h-12 px-3 text-left" style={{ borderRadius: 9, backgroundColor: GOOD_S, border: `1px solid ${LINE}` }}><span className="block text-[10px] font-bold" style={{ color: SUB }}>에프터 세트</span><span className="mt-0.5 block text-xs font-bold" style={{ color: GOOD }}>{afterSet.at ? ymd(afterSet.at.slice(0, 10)) : "날짜 미확인"} · {methodLabel(afterSet.method)}</span></button></div>
+              <p className="mb-1 mt-3 text-[10px] font-bold" style={{ color: SUB }}>비교 방향</p><div className="grid grid-cols-3 gap-1">{VIEWS.map((view) => <button type="button" key={view.key} onClick={() => setCompareView(view.key)} style={{ height: 34, borderRadius: 7, backgroundColor: compareView === view.key ? TINT : CANVAS, color: compareView === view.key ? BRAND_D : SUB, fontSize: 11, fontWeight: 700 }}>{view.label}</button>)}</div>
+              <div className="mt-2 grid grid-cols-2 gap-2"><div><p className="mb-1 text-center text-[10px] font-bold" style={{ color: BRAND_D }}>비포</p><AssessmentSetFrame photo={resultPhoto(beforeSet, compareView)} label={VIEWS.find((view) => view.key === compareView)?.label} annotation={showAnnotations} onOpen={() => setZoomPhoto(resultPhoto(beforeSet, compareView))} /></div><div><p className="mb-1 text-center text-[10px] font-bold" style={{ color: GOOD }}>에프터</p><AssessmentSetFrame photo={resultPhoto(afterSet, compareView)} label={VIEWS.find((view) => view.key === compareView)?.label} annotation={showAnnotations} onOpen={() => setZoomPhoto(resultPhoto(afterSet, compareView))} /></div></div>
+              <p className="mt-2 text-center text-[10px]" style={{ color: SUB }}>서로 다른 분석 방식의 세트도 촬영 원본과 Annotation을 기준으로 비교합니다.</p>
+            </section>
+          )}
+
+          {selected && (
+            <section style={{ padding: 13, borderRadius: 14, backgroundColor: CARD, border: `1px solid ${LINE}` }}>
+              <div className="flex items-center gap-2"><h2 className="min-w-0 flex-1" style={{ fontSize: 15, fontWeight: 700, color: INK }}>결과 카드</h2><span style={{ padding: "3px 7px", borderRadius: 6, backgroundColor: TINT, color: BRAND_D, fontSize: 10, fontWeight: 700 }}>{methodLabel(selected.method)}</span></div>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                <div style={{ padding: 10, borderRadius: 10, backgroundColor: GOOD_S }}><p className="text-xs font-bold" style={{ color: GOOD }}>좋은 점</p><div className="mt-1 space-y-1">{goodMetrics.length ? goodMetrics.map((metric, index) => <p key={`${metric.key}_${index}`} className="text-xs" style={{ color: INK2 }}>{metric.label} {metric.value}{metric.unit}</p>) : <p className="text-xs" style={{ color: SUB }}>저장된 측정 결과 없음</p>}</div></div>
+                <div style={{ padding: 10, borderRadius: 10, backgroundColor: cautionMetrics.length ? WARN_S : CANVAS }}><p className="text-xs font-bold" style={{ color: cautionMetrics.length ? WARN : INK2 }}>주의할 점</p><div className="mt-1 space-y-1">{cautionMetrics.length ? cautionMetrics.map((metric, index) => <p key={`${metric.key}_${index}`} className="text-xs" style={{ color: INK2 }}>{metric.label} {metric.value}{metric.unit}</p>) : <p className="text-xs" style={{ color: SUB }}>기록된 주의 결과 없음</p>}</div></div>
+                <div style={{ padding: 10, borderRadius: 10, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>추천 운동</p>{recommendedExercises.length ? <div className="mt-1 space-y-1">{recommendedExercises.map((item, index) => <p key={`${item}_${index}`} className="text-xs leading-relaxed" style={{ color: INK2 }}>· {item}</p>)}</div> : <p className="mt-1 text-xs leading-relaxed" style={{ color: SUB }}>확정 저장된 추천 운동이 없습니다.</p>}</div>
+                <div style={{ padding: 10, borderRadius: 10, backgroundColor: LAVENDER_S }}><p className="text-xs font-bold" style={{ color: BRAND_D }}>AI 해석</p><p className="mt-1 text-xs leading-relaxed" style={{ color: aiText ? INK2 : SUB }}>{aiText || "AI 분석 미연결"}</p></div>
+                <div className="sm:col-span-2" style={{ padding: 10, borderRadius: 10, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>강사 메모</p><p className="mt-1 text-xs leading-relaxed" style={{ color: teacherMemo ? INK2 : SUB }}>{teacherMemo || "저장된 강사 메모가 없습니다."}</p></div>
+              </div>
+              {resultPoses[0] && <button type="button" onClick={() => setViewingPose(resultPoses[0])} className="mt-2 flex h-10 w-full items-center justify-center gap-1.5 text-xs font-bold" style={{ borderRadius: 8, backgroundColor: TINT, color: BRAND_D }}><Pencil size={13} />AI 해석·강사 메모 검수</button>}
+            </section>
+          )}
+        </>
+      )}
+      {roleSheet && <ChoiceBottomSheet title="촬영 세트 역할 재확인" subtitle="저장 전 세트 전체 역할을 확인합니다" value={pendingRole} options={roleOptions} onClose={() => setRoleSheet(false)} onSelect={setPendingRole} />}
+      {setPicker && <ChoiceBottomSheet title={setPicker === "before" ? "비포 세트 선택" : "에프터 세트 선택"} subtitle="전면·측면·후면이 완료된 Assessment Set만 표시합니다" value={setPicker === "before" ? beforeSet?.id : afterSet?.id} onClose={() => setSetPicker(null)}
+        options={completeSets.map((set) => ({ value: set.id, label: `${roleLabelOf(set.role)} · ${set.at ? ymd(set.at.slice(0, 10)) : "날짜 미확인"}`, description: `${methodLabel(set.method)} · 전면/측면/후면 완료` }))}
+        onSelect={(id) => { if (setPicker === "before") setBeforeSetId(id); else setAfterSetId(id); }} />}
+      {zoomPhoto?.src && <ScheduleBottomSheet title="사진 확대" subtitle="원본 사진과 저장된 Annotation" onClose={() => setZoomPhoto(null)}><div className="relative mx-auto overflow-hidden" style={{ maxWidth: 360, aspectRatio: "3 / 4", borderRadius: 12, backgroundColor: PHOTO }}><img src={zoomPhoto.src} alt="체형분석 확대 사진" className="h-full w-full object-contain" />{showAnnotations && <AssessmentAnnotationOverlay marks={zoomPhoto.marks || []} />}</div></ScheduleBottomSheet>}
+      {viewingPose && <SavedPoseViewer rec={viewingPose} member={member} memberName={member?.name} records={resultPoses} onUpdate={onUpdatePose} onClose={() => setViewingPose(null)} onToast={onToast} />}
+    </div>
+  );
+}
+
+function AssessmentWorkspace({ member, photos, settings, initialSavedId, initialAssessmentId = null, initialMode = "home", onSavePose, onUpdatePose, onDeletePose, onSaveCaptureDraft, onDeleteCaptureDraft, onSaveMarks, onSaveAssessmentRole, onToast, onSaved }) {
+  const [screen, setScreen] = useState(initialSavedId ? "result" : ["history", "resume"].includes(initialMode) ? "history" : "home");
+  const [workflow, setWorkflow] = useState(() => createPostureWorkflowState());
+  const [scope, setScope] = useState("full_body");
+  const [selectedViews, setSelectedViews] = useState(() => new Set(POSTURE_VIEW_KEYS));
+  const [captureKey, setCaptureKey] = useState(0);
+  const [pendingRole, setPendingRole] = useState(null);
+  const [roleSheet, setRoleSheet] = useState(false);
+  const [selectedSetId, setSelectedSetId] = useState(null);
+  const [resumeAssessmentId, setResumeAssessmentId] = useState(null);
+  const [setPicker, setSetPicker] = useState(null);
+  const [beforeSetId, setBeforeSetId] = useState(null);
+  const [afterSetId, setAfterSetId] = useState(null);
+  const [compareView, setCompareView] = useState("front");
+  const [comparePercent, setComparePercent] = useState(50);
+  const [compareZoom, setCompareZoom] = useState(1);
+  const [comparePan, setComparePan] = useState({ x: 0, y: 0 });
+  const [showAnnotations, setShowAnnotations] = useState(true);
+  const [viewingPose, setViewingPose] = useState(null);
+  const [captureReturnScreen, setCaptureReturnScreen] = useState("directions");
+  const compareDrag = useRef(null);
+  const entryInitialized = useRef(false);
+  const sets = useMemo(() => normalizeAssessmentSets(photos, { memberId: member?.id }), [photos, member?.id]);
+  const completeSets = useMemo(() => sets.filter((set) => set.status === "completed" && set.scope === "full_body"), [sets]);
+  const completeFullSets = useMemo(() => completeSets.filter((set) => set.scope === "full_body"), [completeSets]);
+  const automaticComparison = useMemo(() => selectAutomaticComparison(sets, { scope: "full_body" }), [sets]);
+  const beforeSet = completeFullSets.find((set) => set.id === beforeSetId) || automaticComparison.before;
+  const afterSet = completeFullSets.find((set) => set.id === afterSetId) || automaticComparison.after;
+  const selected = sets.find((set) => set.id === selectedSetId)
+    || sets.find((set) => set.id === workflow.selectedHistoryAssessmentId)
+    || sets.find((set) => set.id === initialAssessmentId)
+    || sets.find((set) => set.poses.some((pose) => pose.id === initialSavedId))
+    || sets[0] || null;
+  const requestedResumableSet = sets.find((set) => set.id === initialAssessmentId && (set.status === "draft" || set.status === "analyzing")) || null;
+  const requestedCompletedSet = sets.find((set) => set.status === "completed" && (
+    set.id === initialAssessmentId || set.poses.some((pose) => pose.id === initialSavedId)
+  )) || null;
+  const lastCompleted = completeSets[0] || null;
+  const retake = postureRetakeStatus(lastCompleted?.completedAt || lastCompleted?.at);
+  const selectedDate = selected?.completedAt || selected?.at || "";
+  const resultPoses = selected?.poses || [];
+  const resultMetrics = resultPoses.flatMap((pose) => (pose.metrics || []).map((metric) => ({ ...metric, view: pose.view })));
+  const goodMetrics = resultMetrics.filter((metric) => metric.level === "good").slice(0, 3);
+  const cautionMetrics = resultMetrics.filter((metric) => metric.level && metric.level !== "good").slice(0, 3);
+  const aiTextForSet = (set) => {
+    const confirmed = (set?.poses || []).map((pose) => pose.aiAnalysis).find((analysis) => analysis?.status === AI_STATUSES.CONFIRMED);
+    const payload = confirmed?.teacherEditedOutput || confirmed?.output || null;
+    return payload ? [payload.bodyCharacteristics, payload.asymmetries, payload.pelvis, payload.thorax, payload.scapula, payload.head, payload.knees, payload.feet]
+      .flatMap((value) => Array.isArray(value) ? value : value ? [value] : []).join(" · ") : "";
+  };
+  const memoForSet = (set) => (set?.poses || []).map((pose) => pose.comment || pose.teacherMemo || "").find(Boolean) || "";
+  const reportTextForSet = (set) => {
+    const confirmed = (set?.poses || []).map((pose) => pose.memberResultCard).find((card) => card?.status === AI_STATUSES.CONFIRMED);
+    const payload = confirmed?.teacherEditedOutput || confirmed?.output || null;
+    return payload ? [payload.summary, ...(payload.highlights || []), ...(payload.recommendations || []), ...(payload.precautions || [])].filter(Boolean).join(" · ") : "";
+  };
+  const selectedAiText = aiTextForSet(selected);
+  const comparisonAiText = aiTextForSet(afterSet);
+  const reportAiText = reportTextForSet(selected) || selectedAiText;
+  const aiText = screen === "compare" ? comparisonAiText : screen === "report" ? reportAiText : selectedAiText;
+  const teacherMemo = memoForSet(selected);
+  const methodLabel = (method) => method === "draw" ? "강사 직접 기록" : method === "manual" ? "직접 포인트" : "AI 체형분석";
+  const roleLabelOf = (role) => role === "before" ? "비포" : role === "after" ? "에프터" : "미분류";
+  const setDate = (set) => set?.completedAt || set?.at || "";
+  const setPhoto = (set, view) => set?.photos?.[normalizePostureView(view)] || null;
+  const selectedViewList = POSTURE_VIEW_KEYS.filter((view) => selectedViews.has(view));
+  const resumeSet = (set) => {
+    if (!set?.id) return;
+    try {
+      const next = transitionPostureWorkflow(workflow, {
+        type: POSTURE_WORKFLOW_EVENTS.RESUME_DRAFT,
+        assessmentId: set.id,
+        draft: set,
+      });
+      setWorkflow(next);
+      setResumeAssessmentId(next.resumeAssessmentId);
+    } catch (error) {
+      onToast?.({ ok: false, msg: "선택한 초안을 확인하지 못했습니다. 히스토리에서 다시 선택해 주세요." });
+      return;
+    }
+    setPendingRole(set.role || (!completeSets.length ? "before" : completeSets.length === 1 ? "after" : "unassigned"));
+    setScope(set.scope || "full_body");
+    setSelectedViews(new Set((set.selectedViews || POSTURE_VIEW_KEYS).filter((view) => view !== "custom")));
+    setSelectedSetId(null);
+    setCaptureReturnScreen("history");
+    setCaptureKey((value) => value + 1);
+    setScreen("capture");
+  };
+  const startNew = () => {
+    const next = transitionPostureWorkflow(workflow, startNewAssessmentEvent(newAssessmentId));
+    setWorkflow(next);
+    setResumeAssessmentId(next.resumeAssessmentId);
+    setSelectedSetId(null);
+    setBeforeSetId(null);
+    setAfterSetId(null);
+    setCompareView("front");
+    setComparePercent(50);
+    setCompareZoom(1);
+    setComparePan({ x: 0, y: 0 });
+    setShowAnnotations(true);
+    setViewingPose(null);
+    setSetPicker(null);
+    setRoleSheet(false);
+    setPendingRole(!completeSets.length ? "before" : completeSets.length === 1 ? "after" : "unassigned");
+    setScope("full_body");
+    setSelectedViews(new Set(POSTURE_VIEW_KEYS));
+    setCaptureReturnScreen("directions");
+    setCaptureKey((value) => value + 1);
+    setScreen("purpose");
+  };
+  const startCapture = (nextScope, views) => {
+    let nextWorkflow = workflow;
+    if (!nextWorkflow.activeAssessmentId) {
+      nextWorkflow = transitionPostureWorkflow(nextWorkflow, startNewAssessmentEvent(newAssessmentId));
+      setWorkflow(nextWorkflow);
+    }
+    setResumeAssessmentId(nextWorkflow.resumeAssessmentId);
+    setScope(nextScope);
+    setSelectedViews(new Set(views));
+    setCaptureReturnScreen(nextScope === "full_body" ? "directions" : "purpose");
+    setCaptureKey((value) => value + 1);
+    setScreen("capture");
+  };
+  const openSet = (set, nextScreen = "result") => {
+    if (!set) return;
+    try {
+      setWorkflow(transitionPostureWorkflow(workflow, {
+        type: POSTURE_WORKFLOW_EVENTS.OPEN_COMPLETED_ASSESSMENT,
+        assessmentId: set.id,
+        assessment: set,
+      }));
+      setResumeAssessmentId(null);
+      setSelectedSetId(set.id);
+      setScreen(nextScreen);
+    } catch (error) {
+      onToast?.({ ok: false, msg: "완료된 분석 기록만 결과로 열 수 있습니다." });
+    }
+  };
+  const comparisonPairFor = (targetSet) => {
+    const ordered = [...completeFullSets].sort((a, b) => String(setDate(a)).localeCompare(String(setDate(b))));
+    if (ordered.length < 2) return { before: ordered[0] || null, after: null };
+    const target = targetSet?.status === "completed" && targetSet?.scope === "full_body" ? targetSet : ordered.at(-1);
+    const targetIndex = ordered.findIndex((set) => set.id === target?.id);
+    if (targetIndex <= 0) return { before: ordered[0], after: ordered.at(-1) };
+    return { before: ordered[0], after: target };
+  };
+  const openComparisonFromSet = (targetSet) => {
+    const pair = comparisonPairFor(targetSet);
+    if (!pair.before || !pair.after || pair.before.id === pair.after.id) return;
+    setBeforeSetId(pair.before.id);
+    setAfterSetId(pair.after.id);
+    setSelectedSetId(targetSet?.id || pair.after.id);
+    setScreen("compare");
+  };
+  const openReportForSet = (targetSet) => {
+    if (!targetSet || targetSet.status !== "completed") return;
+    if (targetSet) setSelectedSetId(targetSet.id);
+    setScreen("report");
+  };
+  const saveSelectedRole = async (role) => {
+    setPendingRole(role);
+    if (screen !== "result" || !selected?.id) return;
+    try {
+      const stored = await onSaveAssessmentRole?.(selected.id, role);
+      if (stored === false) throw new Error("assessment_role_save_failed");
+      onToast?.({ ok: true, msg: "촬영 역할을 저장했습니다." });
+    } catch (error) {
+      onToast?.({ ok: false, msg: "촬영 역할을 저장하지 못했습니다. 다시 선택해 주세요." });
+      setRoleSheet(true);
+    }
+  };
+  const stageScreen = ["capture", "analysis"].includes(screen) ? screen : screen === "result" || screen === "compare" || screen === "report" || screen === "history" ? "result" : "capture";
+  const comparisonPhotoBefore = setPhoto(beforeSet, compareView);
+  const comparisonPhotoAfter = setPhoto(afterSet, compareView);
+  const comparisonTransform = `translate(${comparePan.x}px, ${comparePan.y}px) scale(${compareZoom})`;
+  const onCompareDown = (event) => {
+    compareDrag.current = { id: event.pointerId, x: event.clientX, y: event.clientY, px: comparePan.x, py: comparePan.y };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  };
+  const onCompareMove = (event) => {
+    const drag = compareDrag.current;
+    if (!drag || drag.id !== event.pointerId || compareZoom <= 1) return;
+    setComparePan({ x: drag.px + event.clientX - drag.x, y: drag.py + event.clientY - drag.y });
+  };
+  const finishCompareMove = () => { compareDrag.current = null; };
+  useEffect(() => {
+    if (!beforeSet || !afterSet || (setPhoto(beforeSet, compareView) && setPhoto(afterSet, compareView))) return;
+    const commonView = POSTURE_VIEW_KEYS.find((view) => setPhoto(beforeSet, view) && setPhoto(afterSet, view));
+    if (commonView) {
+      setCompareView(commonView);
+      setComparePan({ x: 0, y: 0 });
+    }
+  }, [beforeSet?.id, afterSet?.id, compareView]);
+  const reportPair = useMemo(() => {
+    if (!selected || selected.status !== "completed" || selected.scope !== "full_body") return { before: null, after: selected || null };
+    const ordered = [...completeFullSets].sort((a, b) => String(setDate(a)).localeCompare(String(setDate(b))));
+    const targetIndex = ordered.findIndex((set) => set.id === selected.id);
+    return targetIndex > 0 ? { before: ordered[0], after: selected } : { before: null, after: selected };
+  }, [selected, completeFullSets]);
+  const metricChangesBetween = (previousSet, currentSet) => {
+    if (!previousSet || !currentSet) return [];
+    const previous = new Map(previousSet.poses.flatMap((pose) => (pose.metrics || []).map((metric) => [`${normalizePostureView(pose.view)}:${metric.key}`, metric])));
+    return currentSet.poses.flatMap((pose) => pose.metrics || []).map((metric) => {
+      const view = normalizePostureView(pose.view);
+      const id = `${view}:${metric.key}`;
+      const old = previous.get(id);
+      if (!old || !Number.isFinite(Number(old.value)) || !Number.isFinite(Number(metric.value))) return null;
+      const difference = Math.round((Number(metric.value) - Number(old.value)) * 10) / 10;
+      return { id, label: `${postureViewLabel(view)} · ${metric.label}`, difference, unit: metric.unit || "" };
+    }).filter(Boolean).slice(0, 4);
+  };
+  const comparisonMetricChanges = useMemo(() => metricChangesBetween(beforeSet, afterSet), [beforeSet, afterSet]);
+  const reportMetricChanges = useMemo(() => metricChangesBetween(reportPair.before, reportPair.after), [reportPair.before, reportPair.after]);
+  const metricChanges = screen === "report" ? reportMetricChanges : comparisonMetricChanges;
+  const entrySummary = lastCompleted?.poses.flatMap((pose) => pose.metrics || []).slice(0, 2) || [];
+  const reportRetakeDate = selectedDate ? shift(selectedDate.slice(0, 10), POSTURE_RETAKE_DAYS.recommended) : "";
+  const excludedComparisonId = setPicker === "before" ? afterSet?.id : setPicker === "after" ? beforeSet?.id : null;
+  const setOptions = completeFullSets.filter((set) => set.id !== excludedComparisonId).map((set) => ({ value: set.id, label: `${roleLabelOf(set.role)} · ${setDate(set) ? ymd(setDate(set).slice(0, 10)) : "날짜 미확인"}`, description: `${methodLabel(set.method)} · ${set.selectedViews.map(postureViewLabel).join("/")}` }));
+  useEffect(() => {
+    if (entryInitialized.current) return;
+    if (initialSavedId || initialMode === "result") {
+      if (!requestedCompletedSet) return;
+      entryInitialized.current = true;
+      openSet(requestedCompletedSet, "result");
+      return;
+    }
+    if (initialMode === "resume") {
+      if (!requestedResumableSet) return;
+      entryInitialized.current = true;
+      resumeSet(requestedResumableSet);
+      return;
+    }
+    if (initialMode !== "new") return;
+    entryInitialized.current = true;
+    startNew();
+  }, [initialMode, initialSavedId, member?.id, requestedCompletedSet?.id, requestedResumableSet?.id]);
+
+  return (
+    <div className="space-y-3">
+      {!['home', 'purpose', 'directions'].includes(screen) && <div className="grid grid-cols-3" style={{ padding: 3, borderRadius: 11, backgroundColor: CANVAS }}>
+        {[{ key: "capture", label: "촬영", number: 1 }, { key: "analysis", label: "분석", number: 2 }, { key: "result", label: "결과", number: 3 }].map((item) => { const active = stageScreen === item.key; return <div key={item.key} className="flex h-9 items-center justify-center gap-1.5" style={{ borderRadius: 8, backgroundColor: active ? CARD : "transparent", color: active ? BRAND_D : SUB, boxShadow: active ? "0 1px 3px rgba(28,36,51,.08)" : "none", fontSize: 12, fontWeight: active ? 700 : 600 }}><span className="flex h-5 w-5 items-center justify-center rounded-full" style={{ backgroundColor: active ? TINT : "transparent", border: `1px solid ${active ? BRAND : LINE}`, fontSize: 10 }}>{item.number}</span>{item.label}</div>; })}
+      </div>}
+
+      {screen === "home" && <section style={{ padding: 16, borderRadius: 18, backgroundColor: CARD, border: `1px solid ${LINE}` }}>
+        <div className="flex items-start gap-3"><span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: TINT, color: BRAND_D }}><Activity size={19} /></span><span className="min-w-0 flex-1"><span className="block text-lg font-extrabold" style={{ color: INK }}>{member?.name} 회원</span><span className="mt-1 block text-xs" style={{ color: SUB }}>{lastCompleted ? `마지막 분석 ${ymd(setDate(lastCompleted).slice(0, 10))}${retake.days != null ? ` · ${retake.days}일 전` : ""}` : "아직 완료된 체형분석이 없습니다"}</span></span></div>
+        {lastCompleted && <div className="mt-4" style={{ padding: 12, borderRadius: 12, backgroundColor: retake.tone === "recommended" ? WARN_S : CANVAS }}><p className="text-xs font-bold" style={{ color: retake.tone === "recommended" ? WARN : INK }}>{retake.label}</p><p className="mt-1 text-xs leading-relaxed" style={{ color: SUB }}>{entrySummary.length ? entrySummary.map((metric) => `${metric.label} ${metric.value}${metric.unit}`).join(" · ") : "최근 측정값을 결과 화면에서 확인할 수 있습니다."}</p></div>}
+        <button type="button" onClick={startNew} className="mt-5 flex h-13 min-h-[52px] w-full items-center justify-center gap-2 text-sm font-extrabold text-white" style={{ borderRadius: 13, backgroundColor: BRAND }}><Camera size={17} />새 체형분석 시작</button>
+        <button type="button" onClick={() => setScreen("history")} className="mt-2 flex h-12 w-full items-center justify-center gap-2 text-sm font-bold" style={{ borderRadius: 12, backgroundColor: CARD, border: `1px solid ${LINE}`, color: INK }}><Activity size={16} />이전 분석 보기</button>
+      </section>}
+
+      {screen === "purpose" && <section style={{ padding: 16, borderRadius: 18, backgroundColor: CARD, border: `1px solid ${LINE}` }}>
+        <button type="button" onClick={() => setScreen("home")} className="flex h-11 items-center gap-1 text-xs font-bold" style={{ color: SUB }}><ChevronLeft size={16} />돌아가기</button>
+        <p className="mt-2 text-xs font-bold" style={{ color: BRAND }}>새 체형분석</p><h2 className="mt-1 text-xl font-extrabold" style={{ color: INK }}>무엇을 촬영할까요?</h2><p className="mt-1 text-xs leading-relaxed" style={{ color: SUB }}>촬영 목적에 맞는 가장 짧은 흐름으로 안내합니다.</p>
+        <div className="mt-5 space-y-2"><button type="button" onClick={() => { setScope("full_body"); setScreen("directions"); }} className="flex min-h-[92px] w-full items-center gap-3 p-4 text-left" style={{ borderRadius: 14, backgroundColor: TINT, border: `1px solid #D5D1EB` }}><span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: CARD, color: BRAND_D }}><Activity size={18} /></span><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>전신 분석</span><span className="mt-1 block text-xs leading-relaxed" style={{ color: SUB }}>AI 분석 가능 · 전면/좌측면/후면/우측면</span></span><ChevronRight size={17} style={{ color: FAINT }} /></button>
+          <button type="button" onClick={() => startCapture("partial", ["custom"])} className="flex min-h-[92px] w-full items-center gap-3 p-4 text-left" style={{ borderRadius: 14, backgroundColor: CANVAS, border: `1px solid ${LINE}` }}><span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: CARD, color: BRAND_D }}><Pencil size={18} /></span><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>부위별 기록</span><span className="mt-1 block text-xs leading-relaxed" style={{ color: SUB }}>AI 체형분석 미지원 · 사진 위 직접 표시와 메모</span></span><ChevronRight size={17} style={{ color: FAINT }} /></button></div>
+      </section>}
+
+      {screen === "directions" && <section style={{ padding: 16, borderRadius: 18, backgroundColor: CARD, border: `1px solid ${LINE}` }}>
+        <button type="button" onClick={() => setScreen("purpose")} className="flex h-11 items-center gap-1 text-xs font-bold" style={{ color: SUB }}><ChevronLeft size={16} />촬영 목적</button>
+        <p className="mt-2 text-xs font-bold" style={{ color: BRAND }}>전신 분석</p><h2 className="mt-1 text-xl font-extrabold" style={{ color: INK }}>촬영 방향을 선택하세요</h2><p className="mt-1 text-xs leading-relaxed" style={{ color: SUB }}>기본 4방향입니다. 필요 없는 방향만 해제할 수 있습니다.</p>
+        <div className="mt-5 grid grid-cols-2 gap-2">{POSTURE_VIEWS.map((view, index) => { const active = selectedViews.has(view.key); return <button type="button" key={view.key} aria-pressed={active} onClick={() => setSelectedViews((current) => { const next = new Set(current); if (next.has(view.key) && next.size > 1) next.delete(view.key); else next.add(view.key); return next; })} className="flex min-h-[76px] items-center gap-3 p-3 text-left" style={{ borderRadius: 13, backgroundColor: active ? TINT : CANVAS, border: `1px solid ${active ? BRAND : LINE}` }}><span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full" style={{ backgroundColor: active ? BRAND : CARD, color: active ? "#fff" : SUB, fontSize: 11 }}>{active ? <Check size={14} /> : index + 1}</span><span><span className="block text-sm font-extrabold" style={{ color: INK }}>{view.label}</span><span className="mt-0.5 block text-[10px]" style={{ color: SUB }}>{active ? "촬영함" : "촬영 안 함"}</span></span></button>; })}</div>
+        <button type="button" onClick={() => startCapture("full_body", selectedViewList)} disabled={!selectedViews.size} className="mt-5 flex h-12 w-full items-center justify-center gap-2 text-sm font-extrabold text-white disabled:opacity-40" style={{ borderRadius: 12, backgroundColor: BRAND }}>{selectedViews.size}방향 촬영 시작 <ChevronRight size={16} /></button>
+      </section>}
+
+      {(screen === "capture" || screen === "analysis") && <PoseAnalyzer key={`${member.id}_${workflow.activeAssessmentId || "none"}_${captureKey}`} embedded member={member} photos={photos} defaultMethod={scope === "partial" ? "draw" : "ai"} assessmentRole={pendingRole} roleLabel={roleLabelOf(pendingRole)} initialAssessmentId={workflow.activeAssessmentId} resumeAssessmentId={resumeAssessmentId} selectedViews={selectedViewList} scope={scope}
+        onRequestRole={() => setRoleSheet(true)} onSavePose={onSavePose} onUpdatePose={onUpdatePose} onDeletePose={onDeletePose} onSaveCaptureDraft={onSaveCaptureDraft} onDeleteCaptureDraft={onDeleteCaptureDraft} onSaveMarks={onSaveMarks} onToast={onToast}
+        onCaptureExit={() => setScreen(captureReturnScreen)} onStageChange={(stage) => setScreen(stage === "analysis" ? "analysis" : "capture")} onSaved={async (role, assessmentId) => { const nextRole = role || pendingRole; setWorkflow(transitionPostureWorkflow(workflow, { type: POSTURE_WORKFLOW_EVENTS.OPEN_COMPLETED_ASSESSMENT, assessmentId, assessment: { id: assessmentId, status: "completed" } })); setResumeAssessmentId(null); setSelectedSetId(assessmentId); setScreen("result"); try { const stored = await onSaveAssessmentRole?.(assessmentId, nextRole); if (stored === false) throw new Error("assessment_role_save_failed"); } catch (error) { onToast?.({ ok: false, msg: "촬영 역할 저장을 확인하지 못했습니다. 역할을 다시 선택해 주세요." }); setRoleSheet(true); } onSaved?.(nextRole); }} />}
+
+      {screen === "history" && <section style={{ padding: 14, borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}>
+        <div className="flex items-center gap-2"><button type="button" aria-label="체형분석 시작 화면" onClick={() => setScreen("home")} className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={18} /></button><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>체형분석 히스토리</span><span className="block text-xs" style={{ color: SUB }}>최신순 · Assessment Set {sets.length}개</span></span><button type="button" onClick={startNew} className="h-10 px-3 text-xs font-bold text-white" style={{ borderRadius: 9, backgroundColor: BRAND }}>새 분석</button></div>
+        {!sets.length ? <div className="py-12 text-center"><Activity size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>아직 체형분석 이력이 없습니다</p></div> : <div className="relative mt-3 space-y-3">{sets.map((set) => { const representative = setPhoto(set, "front") || Object.values(set.photos)[0]; const missing = set.missingPhotos || []; const summary = set.poses.map((pose) => pose.aiAnalysis?.teacherEditedOutput || pose.aiAnalysis?.output).find(Boolean); const setTeacherMemo = set.poses.map((pose) => pose.comment || pose.teacherMemo || "").find(Boolean); const completed = set.status === "completed"; return <article key={set.id} style={{ padding: 12, borderRadius: 13, backgroundColor: CANVAS, border: `1px solid ${LINE}` }}><div className="flex gap-3">{representative?.src ? <img src={representative.src} alt="대표 촬영" className="h-20 w-14 shrink-0 object-cover" style={{ borderRadius: 8, backgroundColor: PHOTO }} /> : <span className="flex h-20 w-14 shrink-0 items-center justify-center" style={{ borderRadius: 8, backgroundColor: CARD, color: FAINT }}><Camera size={17} /></span>}<div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-1.5"><span className="text-sm font-extrabold" style={{ color: INK }}>{setDate(set) ? ymd(setDate(set).slice(0, 10)) : "날짜 미확인"}</span><span style={{ padding: "2px 6px", borderRadius: 6, backgroundColor: completed ? GOOD_S : set.status === "failed" ? BAD_S : WARN_S, color: completed ? GOOD : set.status === "failed" ? BAD : WARN, fontSize: 9, fontWeight: 700 }}>{completed ? "완료" : set.status === "failed" ? "저장 실패" : set.status === "analyzing" ? "분석 중" : "초안"}</span></div><p className="mt-1 text-xs" style={{ color: INK2 }}>{set.scope === "partial" ? "부위별 기록" : "전신 분석"} · {methodLabel(set.method)}</p><p className="mt-1 line-clamp-2 text-[11px] leading-relaxed" style={{ color: SUB }}>{missing.length ? `사진 일부 누락: ${missing.map(postureViewLabel).join(", ")}` : summary ? "AI 해석 초안 있음" : "AI 해석 미연결"}{setTeacherMemo ? ` · 강사 메모 있음` : ""}</p></div></div><div className="mt-3 grid grid-cols-2 gap-2"><button type="button" onClick={() => completed ? openSet(set, "result") : resumeSet(set)} className="h-10 text-xs font-bold" style={{ borderRadius: 9, backgroundColor: CARD, color: INK }}>{completed ? "결과 카드 보기" : "초안 이어하기"}</button><button type="button" disabled={!completed || completeSets.length < 2} onClick={() => openComparisonFromSet(set)} className="h-10 text-xs font-bold disabled:opacity-40" style={{ borderRadius: 9, backgroundColor: TINT, color: BRAND_D }}>변화 비교</button></div></article>; })}</div>}
+      </section>}
+
+      {screen === "result" && <>
+        <section style={{ padding: 14, borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}><div className="flex items-center gap-2"><button type="button" aria-label="체형분석 시작 화면" onClick={() => setScreen("home")} className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={18} /></button><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>분석 결과</span><span className="block text-xs" style={{ color: SUB }}>{selected ? `${ymd(setDate(selected).slice(0, 10))} · ${methodLabel(selected.method)}` : "완료된 결과 없음"}</span></span><button type="button" onClick={() => setScreen("history")} className="h-10 px-3 text-xs font-bold" style={{ borderRadius: 9, backgroundColor: CANVAS, color: INK }}>히스토리</button></div>
+          {!selected ? <div className="py-10 text-center"><Activity size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>표시할 분석 결과가 없습니다</p><button type="button" onClick={startNew} className="mt-4 h-11 px-5 text-xs font-bold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>새 체형분석 시작</button></div> : selected.status !== "completed" ? <div className="py-10 text-center"><AlertCircle size={22} className="mx-auto" style={{ color: WARN }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>아직 완료되지 않은 분석입니다</p><p className="mt-1 text-xs" style={{ color: SUB }}>저장된 사진과 분석 상태를 유지한 채 이어서 진행할 수 있습니다.</p><button type="button" onClick={() => resumeSet(selected)} className="mt-4 h-11 px-5 text-xs font-bold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>초안 이어하기</button></div> : <><div className="mt-3 grid gap-1.5" style={{ gridTemplateColumns: `repeat(${Math.max(1, selected.selectedViews.length)}, minmax(0, 1fr))` }}>{selected.selectedViews.map((view) => <AssessmentSetFrame key={view} photo={setPhoto(selected, view)} label={postureViewLabel(view)} annotation onOpen={() => { const pose = selected.poses.find((item) => normalizePostureView(item.view) === view); if (pose) setViewingPose(pose); }} />)}</div><div className="mt-3 grid grid-cols-2 gap-2"><button type="button" disabled={!beforeSet || !afterSet} onClick={() => openComparisonFromSet(selected)} className="h-11 text-xs font-bold disabled:opacity-40" style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D }}>Before / After 비교</button><button type="button" onClick={() => openReportForSet(selected)} className="h-11 text-xs font-bold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>결과 리포트 카드</button></div></>}
+        </section>
+        {selected?.status === "completed" && <section style={{ padding: 13, borderRadius: 14, backgroundColor: CARD, border: `1px solid ${LINE}` }}><h2 className="text-sm font-extrabold" style={{ color: INK }}>관찰 결과</h2><div className="mt-3 grid gap-2 sm:grid-cols-2"><div style={{ padding: 10, borderRadius: 10, backgroundColor: GOOD_S }}><p className="text-xs font-bold" style={{ color: GOOD }}>좋은 점</p>{goodMetrics.length ? goodMetrics.map((metric, index) => <p key={`${metric.key}_${index}`} className="mt-1 text-xs" style={{ color: INK2 }}>{metric.label} {metric.value}{metric.unit}</p>) : <p className="mt-1 text-xs" style={{ color: SUB }}>정상 범위로 저장된 측정값 없음</p>}</div><div style={{ padding: 10, borderRadius: 10, backgroundColor: cautionMetrics.length ? WARN_S : CANVAS }}><p className="text-xs font-bold" style={{ color: cautionMetrics.length ? WARN : INK2 }}>관찰 필요</p>{cautionMetrics.length ? cautionMetrics.map((metric, index) => <p key={`${metric.key}_${index}`} className="mt-1 text-xs" style={{ color: INK2 }}>{metric.label} {metric.value}{metric.unit}</p>) : <p className="mt-1 text-xs" style={{ color: SUB }}>기록된 주의 결과 없음</p>}</div><div style={{ padding: 10, borderRadius: 10, backgroundColor: LAVENDER_S }}><p className="text-xs font-bold" style={{ color: BRAND_D }}>AI 해석</p><p className="mt-1 text-xs leading-relaxed" style={{ color: aiText ? INK2 : SUB }}>{aiText || "AI 해석 미연결"}</p></div><div style={{ padding: 10, borderRadius: 10, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>강사 메모</p><p className="mt-1 text-xs leading-relaxed" style={{ color: teacherMemo ? INK2 : SUB }}>{teacherMemo || "저장된 강사 메모가 없습니다."}</p></div></div>{resultPoses[0] && <button type="button" onClick={() => setViewingPose(resultPoses[0])} className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 text-xs font-bold" style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D }}><Pencil size={13} />측정값·AI 초안·강사 메모 검수</button>}</section>}
+      </>}
+
+      {screen === "compare" && <section style={{ padding: 14, borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}><div className="flex items-center gap-2"><button type="button" onClick={() => setScreen("result")} aria-label="결과로 돌아가기" className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={18} /></button><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>Before / After</span><span className="block text-xs" style={{ color: SUB }}>가장 오래된 유효 분석과 최근 완료 분석을 자동 선택</span></span><button type="button" onClick={() => setShowAnnotations((value) => !value)} className="h-9 px-2 text-[10px] font-bold" style={{ borderRadius: 8, backgroundColor: showAnnotations ? TINT : CANVAS, color: showAnnotations ? BRAND_D : SUB }}>기준선 {showAnnotations ? "ON" : "OFF"}</button></div>
+        {!beforeSet || !afterSet ? <div className="py-12 text-center"><Activity size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>다음 분석부터 변화 비교가 가능합니다</p><p className="mt-1 text-xs" style={{ color: SUB }}>현재 결과는 결과 카드에서 확인할 수 있습니다.</p></div> : <><div className="mt-3 grid grid-cols-2 gap-2"><button type="button" onClick={() => setSetPicker("before")} className="min-h-12 px-3 text-left" style={{ borderRadius: 9, backgroundColor: TINT, border: `1px solid #D5D1EB` }}><span className="block text-[10px] font-bold" style={{ color: SUB }}>Before</span><span className="block text-xs font-bold" style={{ color: BRAND_D }}>{ymd(setDate(beforeSet).slice(0, 10))}</span></button><button type="button" onClick={() => setSetPicker("after")} className="min-h-12 px-3 text-left" style={{ borderRadius: 9, backgroundColor: GOOD_S, border: `1px solid ${LINE}` }}><span className="block text-[10px] font-bold" style={{ color: SUB }}>After</span><span className="block text-xs font-bold" style={{ color: GOOD }}>{ymd(setDate(afterSet).slice(0, 10))}</span></button></div><div className="mt-3 flex gap-1 overflow-x-auto">{POSTURE_VIEWS.filter((view) => setPhoto(beforeSet, view.key) && setPhoto(afterSet, view.key)).map((view) => <button type="button" key={view.key} onClick={() => { setCompareView(view.key); setComparePan({ x: 0, y: 0 }); }} className="h-9 shrink-0 px-3 text-xs font-bold" style={{ borderRadius: 9, backgroundColor: compareView === view.key ? TINT : CANVAS, color: compareView === view.key ? BRAND_D : SUB }}>{view.label}</button>)}</div><div onPointerDown={onCompareDown} onPointerMove={onCompareMove} onPointerUp={finishCompareMove} onPointerCancel={finishCompareMove} className="relative mt-3 overflow-hidden" style={{ aspectRatio: "2 / 3", borderRadius: 14, backgroundColor: PHOTO, touchAction: compareZoom > 1 ? "none" : "pan-y" }}>{comparisonPhotoBefore?.src && <div className="absolute inset-0 overflow-hidden"><img src={comparisonPhotoBefore.src} alt="Before" className="h-full w-full object-contain" style={{ transform: comparisonTransform, transformOrigin: "center" }} />{showAnnotations && <AssessmentAnnotationOverlay marks={comparisonPhotoBefore.marks || []} />}</div>}{comparisonPhotoAfter?.src && <div className="absolute inset-0 overflow-hidden" style={{ clipPath: `inset(0 ${100 - comparePercent}% 0 0)` }}><img src={comparisonPhotoAfter.src} alt="After" className="h-full w-full object-contain" style={{ transform: comparisonTransform, transformOrigin: "center" }} />{showAnnotations && <AssessmentAnnotationOverlay marks={comparisonPhotoAfter.marks || []} />}</div>}<span className="absolute bottom-0 top-0 w-0.5 bg-white" style={{ left: `${comparePercent}%`, boxShadow: "0 0 0 1px rgba(28,36,51,.35)" }} /><span className="absolute top-3 rounded-full px-2 py-1 text-[10px] font-bold text-white" style={{ left: 8, backgroundColor: "rgba(28,36,51,.72)" }}>Before</span><span className="absolute right-2 top-3 rounded-full px-2 py-1 text-[10px] font-bold text-white" style={{ backgroundColor: "rgba(76,67,153,.82)" }}>After</span></div><input aria-label="Before After 비교 슬라이더" type="range" min="0" max="100" value={comparePercent} onChange={(event) => setComparePercent(Number(event.target.value))} className="mt-3 w-full" style={{ accentColor: BRAND }} /><div className="mt-2 flex items-center gap-2"><span className="text-xs font-bold" style={{ color: SUB }}>동시 확대</span>{[1, 1.5, 2].map((zoom) => <button type="button" key={zoom} onClick={() => { setCompareZoom(zoom); if (zoom === 1) setComparePan({ x: 0, y: 0 }); }} className="h-9 min-w-11 rounded-full text-xs font-bold" style={{ backgroundColor: compareZoom === zoom ? TINT : CANVAS, color: compareZoom === zoom ? BRAND_D : SUB }}>{zoom}×</button>)}</div><div className="mt-3" style={{ padding: 11, borderRadius: 11, backgroundColor: LAVENDER_S }}><p className="text-xs font-bold" style={{ color: BRAND_D }}>After AI 관찰</p><p className="mt-1 text-xs leading-relaxed" style={{ color: SUB }}>{aiText || "AI 해석 미연결"}</p>{metricChanges.length > 0 && <div className="mt-2 space-y-1">{metricChanges.map((change) => <p key={change.id} className="text-xs" style={{ color: INK2 }}>{change.label} {change.difference > 0 ? "+" : ""}{change.difference}{change.unit}</p>)}</div>}</div></>}
+      </section>}
+
+      {screen === "report" && <section style={{ overflow: "hidden", borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}><div className="flex items-center gap-2 px-3 pt-2"><button type="button" onClick={() => setScreen("result")} aria-label="결과로 돌아가기" className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={18} /></button><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>체형분석 결과 카드</span><span className="block text-xs" style={{ color: SUB }}>회원 상담용 요약</span></span></div><div className="p-4 pt-2"><div className="flex items-end gap-2"><div className="min-w-0 flex-1"><p className="text-lg font-extrabold" style={{ color: INK }}>{member?.name} 회원</p><p className="mt-1 text-xs" style={{ color: SUB }}>{selectedDate ? ymd(selectedDate.slice(0, 10)) : "분석일 미확인"}</p></div><span className="rounded-full px-2 py-1 text-[10px] font-bold" style={{ backgroundColor: TINT, color: BRAND_D }}>{selected ? methodLabel(selected.method) : "결과 없음"}</span></div>{selected?.scope === "full_body" && reportPair.before && reportPair.after && <div className="mt-4 grid grid-cols-2 gap-2"><div><p className="mb-1 text-[10px] font-bold" style={{ color: SUB }}>Before</p><AssessmentSetFrame photo={setPhoto(reportPair.before, "front") || Object.values(reportPair.before.photos)[0]} label="Before" /></div><div><p className="mb-1 text-[10px] font-bold" style={{ color: SUB }}>After</p><AssessmentSetFrame photo={setPhoto(reportPair.after, "front") || Object.values(reportPair.after.photos)[0]} label="After" /></div></div>}<div className="mt-4 space-y-2"><div style={{ padding: 11, borderRadius: 11, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>핵심 변화</p>{metricChanges.length ? metricChanges.map((change) => <p key={change.id} className="mt-1 text-xs" style={{ color: INK2 }}>{change.label}: {change.difference > 0 ? "+" : ""}{change.difference}{change.unit}</p>) : <p className="mt-1 text-xs" style={{ color: SUB }}>비교 가능한 실제 측정값이 아직 없습니다.</p>}</div><div style={{ padding: 11, borderRadius: 11, backgroundColor: LAVENDER_S }}><p className="text-xs font-bold" style={{ color: BRAND_D }}>AI 관찰 내용</p><p className="mt-1 text-xs leading-relaxed" style={{ color: aiText ? INK2 : SUB }}>{aiText || "AI 해석 미연결"}</p></div><div style={{ padding: 11, borderRadius: 11, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>강사 메모</p><p className="mt-1 text-xs leading-relaxed" style={{ color: teacherMemo ? INK2 : SUB }}>{teacherMemo || "저장된 강사 메모가 없습니다."}</p></div><div style={{ padding: 11, borderRadius: 11, backgroundColor: GOOD_S }}><p className="text-xs font-bold" style={{ color: GOOD }}>오늘 수업 집중 포인트</p><p className="mt-1 text-xs leading-relaxed" style={{ color: INK2 }}>{(member?.focus || []).length ? member.focus.join(" · ") : "강사가 수업 기록에서 확정할 수 있습니다."}</p></div><div className="flex items-center gap-2" style={{ padding: 11, borderRadius: 11, backgroundColor: CANVAS }}><CalendarDays size={15} style={{ color: BRAND }} /><span className="min-w-0 flex-1 text-xs" style={{ color: INK2 }}>다음 재평가 권장일</span><span className="text-xs font-bold" style={{ color: INK }}>{reportRetakeDate ? ymd(reportRetakeDate) : "확인 필요"}</span></div></div><div className="mt-4 grid grid-cols-2 gap-2"><button type="button" disabled className="h-11 text-xs font-bold disabled:opacity-55" style={{ borderRadius: 10, backgroundColor: CANVAS, color: SUB }}>이미지 저장 · 연결 예정</button><button type="button" disabled className="h-11 text-xs font-bold disabled:opacity-55" style={{ borderRadius: 10, backgroundColor: CANVAS, color: SUB }}>공유 · 연결 예정</button></div></div></section>}
+
+      {roleSheet && <ChoiceBottomSheet title="촬영 구분 선택" subtitle="이 촬영 세트를 비포·애프터 비교에서 어떻게 사용할지 선택해 주세요" value={pendingRole} options={[{ value: "before", label: "비포", description: "비교 기준이 되는 촬영" }, { value: "after", label: "에프터", description: "변화를 비교할 촬영" }, { value: "unassigned", label: "나중에 선택", description: "촬영 후에도 구분할 수 있습니다" }]} onClose={() => setRoleSheet(false)} onSelect={saveSelectedRole} />}
+      {setPicker && <ChoiceBottomSheet title={setPicker === "before" ? "Before 분석 선택" : "After 분석 선택"} subtitle="완료된 전신 분석만 표시합니다" value={setPicker === "before" ? beforeSet?.id : afterSet?.id} options={setOptions} onClose={() => setSetPicker(null)} onSelect={(id) => { if (setPicker === "before") setBeforeSetId(id); else setAfterSetId(id); }} />}
+      {viewingPose && <SavedPoseViewer rec={viewingPose} member={member} memberName={member?.name} records={resultPoses} onUpdate={onUpdatePose} onClose={() => setViewingPose(null)} onToast={onToast} />}
+    </div>
+  );
+}
+
 function ReferenceAnalysisTab({ members, photos, selectedId, selectedPoseId, onSelect, hub }) {
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState("all");
   const allRows = members.filter((m) => !isDraft(m)).map((m) => {
     const ph = photos[m.id] || {};
-    const poses = (ph.poses || []).filter((p) => p && p.metrics);
-    const last = poses[0] || null;
-    const lastDate = last?.date || "";
-    const lastViews = new Set(poses.filter((p) => p.date === lastDate).map((p) => p.view));
-    const draftCount = ["front", "side", "back"].filter((d) => (ph[d] || []).length > 0).length;
-    const completedDates = new Set(poses.map((p) => p.date)).size;
-    return { m, poses, last, lastViews, draftCount, comparable: completedDates >= 2,
-      status: poses.some((p) => p.reviewRequired) ? "review" : last ? "done" : draftCount ? "draft" : "none" };
+    const assessmentSets = normalizeAssessmentSets(ph, { memberId: m.id });
+    const last = assessmentSets[0] || null;
+    const draftCount = POSTURE_STORAGE_KEYS.filter((view) => (ph[view] || []).some((photo) => photo?.captureStatus === "draft")).length;
+    const complete = assessmentSets.filter((set) => set.status === "completed" && set.scope === "full_body");
+    const comparable = complete.length >= 2;
+    const status = assessmentSets.some((set) => set.poses.some((pose) => pose.reviewRequired)) ? "review" : last?.status === "completed" ? "done" : last || draftCount ? "draft" : "none";
+    return { m, assessmentSets, last, draftCount, comparable, status };
   });
   const rows = allRows.filter((x) => (!q.trim() || (x.m.name || "").includes(q.trim()))
     && (filter === "all" || filter === "comparable" ? (filter === "all" || x.comparable) : x.status === filter))
-    .sort((a, b) => String(b.last?.date || "").localeCompare(String(a.last?.date || "")) || String(a.m.name).localeCompare(String(b.m.name), "ko"));
+    .sort((a, b) => String(b.last?.completedAt || b.last?.at || "").localeCompare(String(a.last?.completedAt || a.last?.at || "")) || String(a.m.name).localeCompare(String(b.m.name), "ko"));
   const member = members.find((m) => m.id === selectedId) || null;
   if (member) {
     return (
@@ -6692,10 +8331,10 @@ function ReferenceAnalysisTab({ members, photos, selectedId, selectedPoseId, onS
       </header>
       <main className="pt-scroll min-h-0 flex-1 overflow-y-auto" style={{ padding: "2px 14px 18px" }}>
         {!rows.length && <div className="py-12 text-center"><Activity size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-semibold" style={{ color: INK }}>조건에 맞는 회원이 없습니다</p></div>}
-        {rows.map(({ m, poses, last, lastViews, draftCount, comparable, status }) => <div key={m.id} className="mb-2" style={{ padding: "11px 12px", borderRadius: 14, backgroundColor: CARD, border: `1px solid ${LINE}` }}><button type="button" onClick={() => onSelect(m.id, last?.id || null)} className="flex w-full items-center gap-2 text-left">
-          <span className="min-w-0 flex-1"><span className="flex items-center gap-1.5"><span className="block max-w-[44%] truncate" style={{ fontSize: 14, fontWeight: 600, color: INK }}>{m.name}</span>{status !== "none" && <span style={{ padding: "2px 6px", borderRadius: 6, backgroundColor: status === "review" ? WARN_S : status === "done" ? GOOD_S : CANVAS, color: status === "review" ? WARN : status === "done" ? GOOD : INK2, fontSize: 10, fontWeight: 600 }}>{status === "review" ? "검토 필요" : status === "done" ? "완료" : "작성 중"}</span>}{comparable && <span style={{ padding: "2px 6px", borderRadius: 6, backgroundColor: TINT, color: BRAND_D, fontSize: 10, fontWeight: 600 }}>비교 가능</span>}</span><span className="mt-1 flex items-center gap-2" style={{ fontSize: 11, color: SUB }}><span>{last ? `최근 ${ymd(last.date)}` : "아직 체형분석 이력이 없어요"}</span><span className="flex items-center gap-1" aria-label={`촬영 등록 ${last ? lastViews.size : draftCount}/3`}>{["front","side","back"].map((d) => <i key={d} aria-hidden="true" style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: (last ? lastViews.has(d) : (photos[m.id]?.[d] || []).length > 0) ? BRAND : "#D5DAE3" }} />)}<span>{last ? lastViews.size : draftCount}/3</span></span>{last && <span>저장 {poses.length}건</span>}</span></span>
+        {rows.map(({ m, assessmentSets, last, draftCount, comparable, status }) => { const displayedViews = last?.selectedViews || POSTURE_VIEW_KEYS; const completedViews = new Set([...(last ? Object.keys(last.photos) : []), ...(last?.poses || []).map((pose) => normalizePostureView(pose.view))]); return <div key={m.id} className="mb-2" style={{ padding: "11px 12px", borderRadius: 14, backgroundColor: CARD, border: `1px solid ${LINE}` }}><button type="button" onClick={() => onSelect(m.id, null)} className="flex w-full items-center gap-2 text-left">
+          <span className="min-w-0 flex-1"><span className="flex items-center gap-1.5"><span className="block max-w-[44%] truncate" style={{ fontSize: 14, fontWeight: 600, color: INK }}>{m.name}</span>{status !== "none" && <span style={{ padding: "2px 6px", borderRadius: 6, backgroundColor: status === "review" ? WARN_S : status === "done" ? GOOD_S : CANVAS, color: status === "review" ? WARN : status === "done" ? GOOD : INK2, fontSize: 10, fontWeight: 600 }}>{status === "review" ? "검토 필요" : status === "done" ? "완료" : "작성 중"}</span>}{comparable && <span style={{ padding: "2px 6px", borderRadius: 6, backgroundColor: TINT, color: BRAND_D, fontSize: 10, fontWeight: 600 }}>비교 가능</span>}</span><span className="mt-1 flex items-center gap-2" style={{ fontSize: 11, color: SUB }}><span>{last ? `최근 ${ymd((last.completedAt || last.at).slice(0, 10))}` : "아직 체형분석 이력이 없어요"}</span><span className="flex items-center gap-1" aria-label={`촬영 등록 ${last ? completedViews.size : draftCount}/${displayedViews.length}`}>{displayedViews.map((view) => <i key={view} aria-hidden="true" style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: (last ? completedViews.has(view) : (photos[m.id]?.[view] || []).length > 0) ? BRAND : "#D5DAE3" }} />)}<span>{last ? completedViews.size : draftCount}/{displayedViews.length}</span></span>{last && <span>세트 {assessmentSets.length}개</span>}</span></span>
           <ChevronRight size={15} style={{ color: FAINT }} />
-        </button>{!last && <button type="button" onClick={() => onSelect(m.id, null)} className="mt-2 w-full" style={{ height: 38, borderRadius: 8, border: `1px solid #D5D1EB`, backgroundColor: TINT, color: BRAND_D, fontSize: 12, fontWeight: 600 }}>첫 체형분석 시작</button>}</div>)}
+        </button>{!last && <button type="button" onClick={() => onSelect(m.id, null)} className="mt-2 w-full" style={{ height: 38, borderRadius: 8, border: `1px solid #D5D1EB`, backgroundColor: TINT, color: BRAND_D, fontSize: 12, fontWeight: 600 }}>첫 체형분석 시작</button>}</div>; })}
       </main>
     </div>
   );
@@ -7015,77 +8654,167 @@ function InbodyForm({ member, last, onSave, onDelete, onPatch, onToast }) {
   );
 }
 /* ===== 음성으로 일지 쓰기 =====
-   브라우저 기본 음성 인식(Web Speech API)을 쓴다. 서버가 필요 없어 무료다.
-   안 되는 기기에서는 버튼이 나오지 않는다. */
+   설치된 네이티브 음성 인식이 있으면 우선하고, 없으면 Web Speech API를 쓴다.
+   녹음 원본은 사진과 같은 로컬 IndexedDB에 저장하며 외부 API로 전송하지 않는다. */
 const nativeSTT = () => { try { return (window.Capacitor?.Plugins?.SpeechRecognition) || null; } catch (e) { return null; } };
-/* 앱에서는 네이티브 플러그인, 브라우저에서는 Web Speech API */
-const sttOK = () => typeof window !== "undefined" && (!!nativeSTT() || !!(window.SpeechRecognition || window.webkitSpeechRecognition));
-/* 말한 내용을 항목별로 갈라 준다 */
-/* 순서가 곧 우선순위 — 부위는 거의 모든 문장에 나오므로 맨 뒤에 둔다 */
-const STT_RULES = [
-  { k: "통증·주의", hit: ["통증", "아프", "불편", "저림", "당김", "뻐근", "무리", "주의", "조심", "부상", "염증", "결림"] },
-  { k: "다음 계획", hit: ["다음", "차시", "이어서", "숙제", "과제", "집에서", "홈트", "권장", "추천", "계획", "하겠습니다", "예정"] },
-  { k: "수행·변화", hit: ["가동", "안정", "향상", "개선", "좋아", "늘었", "줄었", "유지", "정체", "가능", "어려", "버거", "수월", "강화", "회복"] },
-  { k: "부위·관찰", hit: ["어깨", "골반", "무릎", "허리", "요추", "흉추", "경추", "목", "발목", "고관절", "척추", "손목", "둔근", "햄스트링", "코어", "복부"] },
-];
-function sttSplit(text) {
-  const out = { "통증·주의": [], "다음 계획": [], "수행·변화": [], "부위·관찰": [], "기타": [] };
-  String(text || "")
-    .split(/(?<=[.!?])\s+|[,·]\s*|\n+/)
-    .map((x) => x.trim())
-    .filter(Boolean)
-    .forEach((sen) => {
-      const hit = STT_RULES.find((r) => r.hit.some((w) => sen.includes(w)));
-      out[hit ? hit.k : "기타"].push(sen);
-    });
-  return out;
-}
-/* 분류 결과를 일지 문장으로 정리 */
-function sttCompose(groups) {
-  const order = ["통증·주의", "수행·변화", "부위·관찰", "다음 계획", "기타"];
-  return order
-    .filter((k) => groups[k] && groups[k].length)
-    .map((k) => `[${k}] ${groups[k].join(", ")}`)
-    .join("\n");
-}
+const webSTT = () => { try { return window.SpeechRecognition || window.webkitSpeechRecognition || null; } catch (e) { return null; } };
+const sttOK = () => typeof window !== "undefined" && (!!nativeSTT() || !!webSTT());
+const mediaRecordOK = () => typeof window !== "undefined" && !!navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== "undefined";
+const voiceTime = (seconds) => `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
 
-function VoiceNote({ onApply, highlight, onSeen }) {
+function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = null }) {
   const [on, setOn] = useState(false);
   const [text, setText] = useState("");
+  const [elapsed, setElapsed] = useState(0);
+  const [audioState, setAudioState] = useState("idle");
+  const [audioBlobId, setAudioBlobId] = useState(null);
+  const [source, setSource] = useState(null);
+  const [summaryOriginal, setSummaryOriginal] = useState(null);
+  const [summaryDraft, setSummaryDraft] = useState(null);
+  const [summaryMeta, setSummaryMeta] = useState(null);
+  const [summaryStatus, setSummaryStatus] = useState(AI_STATUSES.NOT_CONNECTED);
+  const [summaryBusy, setSummaryBusy] = useState(false);
   const boxRef = useRef(null);
   useEffect(() => {
     if (!highlight || !boxRef.current) return;
     try { boxRef.current.scrollIntoView({ block: "center", behavior: "smooth" }); } catch (e) {}
     const t = setTimeout(() => onSeen && onSeen(), 2600);
     return () => clearTimeout(t);
-  }, [highlight]);
+  }, [highlight, onSeen]);
   const [err, setErr] = useState("");
   const recRef = useRef(null);
-  const groups = useMemo(() => sttSplit(text), [text]);
+  const mediaRef = useRef(null);
+  const streamRef = useRef(null);
+  const chunksRef = useRef([]);
+  const sourceRef = useRef(null);
+  const audioBlobRef = useRef(null);
+  const audioTransferredRef = useRef(false);
+  const discardRecordingRef = useRef(false);
+  useEffect(() => {
+    if (!on) return;
+    const started = Date.now();
+    setElapsed(0);
+    const timer = setInterval(() => setElapsed(Math.floor((Date.now() - started) / 1000)), 1000);
+    return () => clearInterval(timer);
+  }, [on]);
+  const stopMedia = () => {
+    const recorder = mediaRef.current;
+    if (recorder && recorder.state !== "inactive") {
+      setAudioState("saving");
+      try { recorder.stop(); } catch (e) { setAudioState("failed"); }
+    }
+    streamRef.current?.getTracks?.().forEach((track) => track.stop());
+    streamRef.current = null;
+  };
+  const prepareMedia = async () => {
+    if (!navigator.mediaDevices?.getUserMedia) throw new Error("이 기기에서는 마이크 입력을 지원하지 않습니다.");
+    deviceLog("microphone_permission_requested", { memberId, lessonId, permission: "record_audio" });
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    streamRef.current = stream;
+    deviceLog("microphone_permission_granted", { memberId, lessonId, permission: "record_audio", state: "granted" });
+    if (typeof MediaRecorder === "undefined") {
+      setAudioState("unsupported");
+      return;
+    }
+    const preferred = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find((type) => MediaRecorder.isTypeSupported?.(type));
+    const recorder = preferred ? new MediaRecorder(stream, { mimeType: preferred }) : new MediaRecorder(stream);
+    chunksRef.current = [];
+    recorder.ondataavailable = (event) => { if (event.data?.size) chunksRef.current.push(event.data); };
+    recorder.onerror = (event) => {
+      setAudioState("failed");
+      deviceLog("voice_record_failed", { memberId, lessonId, source: sourceRef.current || "media_recorder", ...deviceError(event?.error || event) });
+    };
+    recorder.onstop = async () => {
+      const chunks = chunksRef.current;
+      chunksRef.current = [];
+      if (discardRecordingRef.current) { setAudioState("idle"); return; }
+      if (!chunks.length) { setAudioState("empty"); return; }
+      const blob = new Blob(chunks, { type: recorder.mimeType || chunks[0]?.type || "audio/webm" });
+      const id = newAudioBlobId();
+      try {
+        await blobPut(id, blob);
+        if (audioBlobRef.current && !audioTransferredRef.current) forgetBlobs([audioBlobRef.current]);
+        audioBlobRef.current = id;
+        audioTransferredRef.current = false;
+        setAudioBlobId(id);
+        setAudioState("saved");
+        deviceLog("voice_record_saved", { memberId, lessonId, storage: "indexedDB", source: sourceRef.current || "media_recorder" });
+      } catch (error) {
+        setAudioState("failed");
+        deviceLog("voice_record_save_failed", { memberId, lessonId, storage: "indexedDB", ...deviceError(error) });
+      }
+    };
+    mediaRef.current = recorder;
+    discardRecordingRef.current = false;
+    recorder.start(1000);
+    setAudioState("recording");
+  };
   const start = async () => {
     const NS = nativeSTT();
+    const R = webSTT();
+    if (!NS && !R && !mediaRecordOK()) {
+      setErr("이 기기에서는 녹음과 음성 인식을 지원하지 않습니다. 직접 입력을 이용해 주세요.");
+      deviceLog("voice_record_unavailable", { memberId, lessonId, state: "direct_input_required" });
+      return;
+    }
+    if (audioBlobRef.current && !audioTransferredRef.current) {
+      forgetBlobs([audioBlobRef.current]);
+      audioBlobRef.current = null;
+      setAudioBlobId(null);
+    }
+    audioTransferredRef.current = false;
+    try {
+      await prepareMedia();
+    } catch (error) {
+      const denied = error?.name === "NotAllowedError" || error?.name === "PermissionDeniedError";
+      setErr(denied ? "마이크 권한이 거부되었습니다. 앱 설정에서 허용하거나 직접 입력해 주세요." : "마이크를 시작하지 못했습니다. 직접 입력을 이용해 주세요.");
+      deviceLog("microphone_permission_failed", { memberId, lessonId, permission: "record_audio", state: denied ? "denied" : "failed", ...deviceError(error) });
+      return;
+    }
+    if (!NS && !R) {
+      setErr("녹음은 가능하지만 자동 전사는 지원되지 않습니다. 중지 후 원문을 직접 입력해 주세요.");
+      setOn(true); setSource("media_recorder"); sourceRef.current = "media_recorder";
+      deviceLog("voice_record_started", { memberId, lessonId, source: "media_recorder", storage: "indexedDB" });
+      deviceLog("voice_transcription_unavailable", { memberId, lessonId, state: "direct_input_required", source: "media_recorder" });
+      return;
+    }
     if (NS) {
       try {
         const perm = await NS.checkPermissions?.().catch(() => null);
+        deviceLog("speech_permission_checked", { memberId, lessonId, permission: "speech_recognition", state: perm?.speechRecognition || "unknown", source: "native" });
         if (!perm || perm.speechRecognition !== "granted") {
           const req = await NS.requestPermissions?.().catch(() => null);
-          if (req && req.speechRecognition !== "granted") { setErr("마이크·음성 인식 권한을 허용해 주세요"); return; }
+          if (req && req.speechRecognition !== "granted") {
+            stopMedia();
+            setErr("음성 인식 권한이 거부되었습니다. 직접 입력을 이용해 주세요.");
+            deviceLog("speech_permission_denied", { memberId, lessonId, permission: "speech_recognition", state: "denied", source: "native" });
+            return;
+          }
         }
-        setErr(""); setOn(true);
+        setErr(""); setOn(true); setSource("native"); sourceRef.current = "native";
         NS.addListener?.("partialResults", (d) => {
           const t = (d?.matches && d.matches[0]) || "";
           if (t) setText((p) => (p ? p.split(" ⟨")[0] : "") + " ⟨" + t + "⟩");
         });
-        const r = await NS.start({ language: "ko-KR", partialResults: true, popup: false });
-        const got = (r?.matches && r.matches[0]) || "";
-        setText((p) => (p ? p.split(" ⟨")[0] : "").trim() + (got ? (p ? " " : "") + got : ""));
-        setOn(false);
         recRef.current = { native: true, stop: () => NS.stop?.() };
+        Promise.resolve(NS.start({ language: "ko-KR", partialResults: true, popup: false })).then((result) => {
+          const got = (result?.matches && result.matches[0]) || "";
+          if (got) setText((previous) => `${previous ? previous.split(" ⟨")[0].trim() + " " : ""}${got}`.trim());
+        }).catch((error) => {
+          setErr("음성 인식이 중단되었습니다. 기존 작성 내용은 유지됩니다.");
+          deviceLog("voice_transcription_failed", { memberId, lessonId, source: "native", ...deviceError(error) });
+          setOn(false); stopMedia();
+        });
+        deviceLog("voice_record_started", { memberId, lessonId, source: "native", storage: "indexedDB" });
         return;
-      } catch (e) { setErr("음성 인식을 시작하지 못했습니다"); setOn(false); return; }
+      } catch (error) {
+        stopMedia();
+        setErr("음성 인식을 시작하지 못했습니다. 직접 입력을 이용해 주세요.");
+        setOn(false);
+        deviceLog("voice_transcription_failed", { memberId, lessonId, source: "native", ...deviceError(error) });
+        return;
+      }
     }
-    const R = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!R) { setErr("이 기기에서는 음성 인식을 쓸 수 없습니다"); return; }
     try {
       const r = new R();
       r.lang = "ko-KR"; r.continuous = true; r.interimResults = true;
@@ -7098,24 +8827,59 @@ function VoiceNote({ onApply, highlight, onSeen }) {
         }
         setText((fixed + live).trim());
       };
-      r.onerror = (e) => { setErr(e?.error === "not-allowed" ? "마이크 권한을 허용해 주세요" : "인식이 중단됐습니다"); setOn(false); };
-      r.onend = () => setOn(false);
-      recRef.current = r; setErr(""); setOn(true); r.start();
-    } catch (e) { setErr("음성 인식을 시작하지 못했습니다"); }
+      r.onerror = (event) => {
+        setErr(event?.error === "not-allowed" ? "마이크 권한이 거부되었습니다. 직접 입력을 이용해 주세요." : "음성 인식이 중단되었습니다. 기존 작성 내용은 유지됩니다.");
+        setOn(false); stopMedia();
+        deviceLog("voice_transcription_failed", { memberId, lessonId, source: "web_speech", code: event?.error || "unknown", message: "speech recognition stopped" });
+      };
+      r.onend = () => { setOn(false); stopMedia(); };
+      recRef.current = r; setErr(""); setOn(true); setSource("web_speech"); sourceRef.current = "web_speech"; r.start();
+      deviceLog("voice_record_started", { memberId, lessonId, source: "web_speech", storage: "indexedDB" });
+    } catch (error) {
+      stopMedia();
+      setErr("음성 인식을 시작하지 못했습니다. 직접 입력을 이용해 주세요.");
+      deviceLog("voice_transcription_failed", { memberId, lessonId, source: "web_speech", ...deviceError(error) });
+    }
   };
-  const stop = () => { try { const NS = nativeSTT(); if (NS) NS.stop?.(); else recRef.current?.stop(); } catch (e) {} setOn(false); };
-  useEffect(() => () => { try { recRef.current?.stop(); } catch (e) {} }, []);
-  if (!sttOK()) return null;
-  const filled = Object.keys(groups).filter((k) => groups[k].length);
+  const stop = () => {
+    try { if (recRef.current?.native) recRef.current.stop?.(); else recRef.current?.stop?.(); } catch (e) {}
+    stopMedia(); setOn(false);
+    deviceLog("voice_record_stopped", { memberId, lessonId, source: sourceRef.current || "unknown", storage: "indexedDB" });
+  };
+  const requestSummary = async () => {
+    const transcript = text.trim();
+    if (!transcript) return;
+    if (aiProvider.getStatus().status !== "connected") { setSummaryStatus(AI_STATUSES.NOT_CONNECTED); setErr("AI 요약 미연결 상태입니다. 전사 원문은 그대로 저장할 수 있습니다."); return; }
+    setSummaryBusy(true); setErr("");
+    try {
+      const result = await aiProvider.summarizeVoice(buildVoiceSummaryInput({ transcript, memberId, lessonId }));
+      if (result.status === AI_STATUSES.NOT_CONNECTED) { setSummaryStatus(result.status); return; }
+      setSummaryOriginal(result.output); setSummaryDraft(result.output); setSummaryMeta(aiMetaFrom(result)); setSummaryStatus(AI_STATUSES.DRAFT);
+    } catch (error) {
+      setSummaryStatus(AI_STATUSES.ERROR);
+      setErr(`AI 요약을 불러오지 못했습니다${error?.code ? ` (${error.code})` : ""}. 전사 원문은 유지됩니다.`);
+    } finally { setSummaryBusy(false); }
+  };
+  const setSummaryField = (field, value, isList = true) => setSummaryDraft((current) => ({ ...(current || {}), [field]: isList ? aiListValue(value) : value }));
+  useEffect(() => () => {
+    discardRecordingRef.current = true;
+    try { recRef.current?.stop?.(); } catch (e) {}
+    const recorder = mediaRef.current;
+    if (recorder && recorder.state !== "inactive") { try { recorder.stop(); } catch (e) {} }
+    streamRef.current?.getTracks?.().forEach((track) => track.stop());
+    if (audioBlobRef.current && !audioTransferredRef.current) forgetBlobs([audioBlobRef.current]);
+  }, []);
+  const supported = sttOK() || mediaRecordOK();
   return (
     <div ref={boxRef} className="rounded-2xl p-3" style={{ backgroundColor: CANVAS, boxShadow: highlight ? `0 0 0 2.5px ${PRIMARY}` : "none", transition: "box-shadow .4s ease" }}>
       <div className="flex items-center gap-2">
         <p className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: INK }}>음성으로 일지 쓰기</p>
-        <button onClick={on ? stop : start} className="flex shrink-0 items-center gap-1.5 rounded-full px-3 py-2 text-xs font-extrabold text-white"
+        <button onClick={on ? stop : start} disabled={!supported || audioState === "saving"} className="flex shrink-0 items-center gap-1.5 rounded-full px-3 py-2 text-xs font-extrabold text-white disabled:opacity-40"
           style={{ backgroundColor: on ? BAD : BRAND }}>
-          {on ? <><span className="h-2 w-2 animate-pulse rounded-full bg-white" /> 듣는 중 · 멈추기</> : <><Smartphone size={12} /> 말하기 시작</>}
+          {on ? <><span className="h-2 w-2 animate-pulse rounded-full bg-white" /> {voiceTime(elapsed)} · 멈추기</> : <><Smartphone size={12} /> 말하기 시작</>}
         </button>
       </div>
+      {!supported && <Sub className="mt-1.5 block leading-relaxed" style={{ color: BAD }}>녹음과 음성 인식을 지원하지 않는 기기입니다. 아래 직접 입력란을 이용해 주세요.</Sub>}
       {!text && !on && (
         <Sub className="mt-1.5 block leading-relaxed">
           이렇게 말해 보세요 —<br />
@@ -7123,23 +8887,29 @@ function VoiceNote({ onApply, highlight, onSeen }) {
         </Sub>
       )}
       {err && <Sub className="mt-1.5 block" style={{ color: BAD }}>{err}</Sub>}
-      {text && (
+      {(text || audioState === "saved" || audioState === "saving") && (
         <>
-          <p className="mt-2 rounded-xl px-3 py-2 text-sm leading-relaxed" style={{ backgroundColor: CARD, color: INK }}>{text}</p>
-          {filled.length > 0 && (
-            <div className="mt-2 space-y-1">
-              {filled.map((k) => (
-                <div key={k} className="flex items-start gap-1.5">
-                  <span className="shrink-0 rounded-full px-2 py-0.5 text-xs font-extrabold" style={{ backgroundColor: TINT, color: PRIMARY }}>{k}</span>
-                  <span className="min-w-0 flex-1 text-xs" style={{ color: INK2 }}>{groups[k].join(", ")}</span>
-                </div>
-              ))}
-            </div>
-          )}
+          <textarea rows={4} value={text} onChange={(event) => { setText(event.target.value); setSummaryOriginal(null); setSummaryDraft(null); setSummaryMeta(null); setSummaryStatus(AI_STATUSES.NOT_CONNECTED); }} aria-label="음성 전사 원문" className={`${inputCls} mt-2 h-auto resize-none py-2 text-sm leading-relaxed`} />
+          <Sub className="mt-1.5 block">전사 완료 · {summaryStatus === AI_STATUSES.DRAFT ? "AI 요약 초안" : aiProvider.getStatus().status === "connected" ? "AI 요약 대기" : "AI 요약 미연결"} · 저장 전 강사 확인 필요{audioState === "saved" ? " · 녹음 원본 로컬 저장됨" : audioState === "saving" ? " · 녹음 저장 중" : ""}</Sub>
+          <button disabled={on || summaryBusy || !text.trim() || aiProvider.getStatus().status !== "connected"} onClick={requestSummary} className="mt-2 flex h-10 w-full items-center justify-center gap-1.5 rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: TINT, color: PRIMARY }}>
+            {summaryBusy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} {summaryDraft ? "AI 요약 다시 생성" : "AI 요약 생성"}
+          </button>
+          {summaryDraft && <div className="mt-2 space-y-2 rounded-xl p-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
+            {[{ k: "todayExercises", l: "오늘 운동" }, { k: "memberCondition", l: "회원 상태", text: true }, { k: "pain", l: "통증" }, { k: "improvements", l: "개선" }, { k: "nextGoals", l: "다음 목표" }, { k: "homework", l: "숙제" }, { k: "precautions", l: "주의사항" }].map((field) => (
+              <label key={field.k} className="block"><span className="mb-1 block text-[11px] font-bold" style={{ color: SUB }}>{field.l}</span><textarea rows={field.text ? 1 : 2} value={field.text ? summaryDraft[field.k] || "" : aiListText(summaryDraft[field.k])} onChange={(event) => setSummaryField(field.k, event.target.value, !field.text)} className={`${inputCls} h-auto resize-none py-2 text-xs`} /></label>
+            ))}
+          </div>}
           <div className="mt-2 flex gap-1.5">
-            <button onClick={() => { setText(""); setErr(""); }} className="rounded-xl px-3 py-2 text-xs font-bold" style={{ backgroundColor: CARD, color: SUB }}>지우기</button>
-            <button onClick={() => { onApply(sttCompose(groups)); setText(""); }} className="flex-1 rounded-xl py-2 text-xs font-extrabold text-white" style={{ background: GRAD }}>
-              정리해서 일지에 넣기
+            <button onClick={() => { setText(""); setErr(""); setSummaryOriginal(null); setSummaryDraft(null); setSummaryMeta(null); setSummaryStatus(AI_STATUSES.NOT_CONNECTED); if (audioBlobId) forgetBlobs([audioBlobId]); audioBlobRef.current = null; setAudioBlobId(null); setAudioState("idle"); }} className="rounded-xl px-3 py-2 text-xs font-bold" style={{ backgroundColor: CARD, color: SUB }}>지우기</button>
+            <button disabled={on || audioState === "saving" || !text.trim()} onClick={() => {
+              const transcript = text.trim();
+              const teacherText = summaryDraft ? formatVoiceSummary(summaryDraft) : transcript;
+              onApply(teacherText, { transcript, aiSummary: summaryOriginal, aiSummaryTeacherEdited: summaryDraft, aiSummaryStatus: summaryDraft ? AI_STATUSES.DRAFT : AI_STATUSES.NOT_CONNECTED, aiMeta: summaryMeta, audioBlobId: audioBlobId || null, voiceSource: source || "unknown", recordedAt: new Date().toISOString() });
+              audioTransferredRef.current = true;
+              audioBlobRef.current = null;
+              setText(""); setSummaryOriginal(null); setSummaryDraft(null); setSummaryMeta(null); setSummaryStatus(AI_STATUSES.NOT_CONNECTED); setAudioBlobId(null); setAudioState("idle");
+            }} className="flex-1 rounded-xl py-2 text-xs font-extrabold text-white disabled:opacity-40" style={{ background: GRAD }}>
+              {summaryDraft ? "강사 확인 요약 적용" : "전사 원문 적용"}
             </button>
           </div>
         </>
@@ -7150,6 +8920,7 @@ function VoiceNote({ onApply, highlight, onSeen }) {
 
 function NoteForm({ member, schedule, onSave, settings, onSettings, backHint, voiceHint, onVoiceSeen }) {
   const [n, setN] = useState({ date: todayISO(), type: "개인레슨", body: "", tags: "" });
+  const [voiceMeta, setVoiceMeta] = useState(null);
   const [group, setGroup] = useState("코어 · 안정성");
   const [adding, setAdding] = useState(false);
   const [newTpl, setNewTpl] = useState("");
@@ -7209,7 +8980,7 @@ function NoteForm({ member, schedule, onSave, settings, onSettings, backHint, vo
             {chips.length === 0 && <Sub>'내 문구' 버튼으로 자주 쓰는 표현을 저장해 두세요.</Sub>}
           </div>
         </div>
-        <VoiceNote highlight={voiceHint} onSeen={onVoiceSeen} onApply={(t) => setN((x) => ({ ...x, body: x.body.trim() ? `${x.body.trim()}\n${t}` : t }))} />
+        <VoiceNote memberId={member.id} highlight={voiceHint} onSeen={onVoiceSeen} onApply={(t, meta) => { setN((x) => ({ ...x, body: x.body.trim() ? `${x.body.trim()}\n${t}` : t })); setVoiceMeta(meta); }} />
         <Field label="피드백 내용" hint={`${n.body.length}자`}>
           <textarea rows={5} value={n.body} onChange={(e) => setN({ ...n, body: e.target.value })}
             placeholder="위 문구를 눌러 채우거나 직접 입력하세요" className={`${inputCls} resize-none leading-relaxed`} />
@@ -7230,8 +9001,10 @@ function NoteForm({ member, schedule, onSave, settings, onSettings, backHint, vo
           onSave(member.id, {
             id: uid(), date: n.date, type: n.type, instructor: member.instructor, body: n.body.trim(),
             tags: n.tags.split(",").map((t) => t.trim()).filter(Boolean),
+            ...(voiceMeta || {}),
           });
           setN({ ...n, body: "", tags: "" });
+          setVoiceMeta(null);
         }}>
           <MessageSquare size={16} /> 코멘트 저장
         </PrimaryBtn>
@@ -8099,9 +9872,16 @@ function SettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings,
     </div>
   );
 }
-function ReferenceSettingsTab({ db, account, savedAt, onChangeSettings, onChangePhoto, onLogout, onToast, themePref, onChangeTheme }) {
+function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords }) {
+  const [view, setView] = useState("hub");
   const [busy, setBusy] = useState(false);
+  const [deleteStep, setDeleteStep] = useState("intro");
+  const [deletePhrase, setDeletePhrase] = useState("");
+  const [deletePassword, setDeletePassword] = useState("");
+  const [deletePhase, setDeletePhase] = useState(ACCOUNT_DELETION_PHASES.IDLE);
+  const [deleteError, setDeleteError] = useState("");
   const cameraRef = useRef(null), albumRef = useRef(null);
+  useBackClose(view !== "hub", () => setView(view === "account-delete" ? "account" : "hub"));
   const pickPhoto = async (file) => {
     if (!file) return;
     setBusy(true);
@@ -8109,39 +9889,219 @@ function ReferenceSettingsTab({ db, account, savedAt, onChangeSettings, onChange
     catch (e) { onToast?.({ ok: false, msg: "사진을 불러오지 못했습니다." }); }
     finally { setBusy(false); }
   };
-  const sectionStyle = { backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: "12px 14px" };
+  const reportYm = monthKey(todayISO());
+  const reportStats = useMemo(() => monthStats(db.schedule, reportYm), [db.schedule, reportYm]);
+  const reportPay = useMemo(() => {
+    let total = 0;
+    db.schedule.forEach((scheduleItem) => {
+      if (!scheduleItem?.date?.startsWith(reportYm) || isPersonalEvt(scheduleItem)) return;
+      if (isEquipGroup(scheduleItem)) {
+        if (scheduleItem.groupDone) total += rateBase(db.settings).group;
+        return;
+      }
+      attendeesOf(scheduleItem).forEach((attendee) => {
+        if (!attendee.deductFrom) return;
+        total += rateFor(db.members.find((memberItem) => memberItem.id === attendee.memberId), scheduleItem.type, db.settings);
+      });
+    });
+    return total;
+  }, [db.schedule, db.members, db.settings, reportYm]);
+  const detailTitles = {
+    report: "월간 리포트", assessment: "체형분석 설정", center: "센터 정보", theme: "화면 설정",
+    data: "데이터 상태", backup: "데이터 이관 · 백업", knowledge: "오늘의 지식", account: "계정", "account-delete": "계정 삭제", app: "앱 정보",
+  };
+  const menuGroups = [
+    { label: "업무", items: [
+      { key: "schedule", title: "일정 등록", description: "새 수업 · 상담 · 휴무 추가", Icon: Plus, action: onOpenSchedule },
+      { key: "records", title: "기록", description: "회원별 수업 · 변화 기록", Icon: ClipboardList, action: onOpenRecords },
+      { key: "report", title: "월간 리포트", description: "이달 수업 · 성과 · 예상 급여", Icon: ArrowUpRight },
+    ] },
+    { label: "운영 · 설정", items: [
+      { key: "assessment", title: "체형분석 설정", description: "기본 방식 · AI 분석 · 직접 포인트/그리기", Icon: Activity },
+      { key: "center", title: "센터 정보", description: "센터명 · 담당자 · 개인/그룹 단가", Icon: SettingsIcon },
+      { key: "theme", title: "화면 설정", description: "폰 설정 · 라이트 · 다크", Icon: Smartphone },
+      { key: "data", title: "데이터 상태", description: "기기 저장 · 로그인 · Firebase 상태", Icon: Check },
+      { key: "backup", title: "데이터 이관 · 백업", description: "기기 이동 · 백업 파일", Icon: Download },
+    ] },
+    { label: "기타", items: [
+      { key: "knowledge", title: "오늘의 지식", description: "해부학 · 영양학 모아보기", Icon: Star },
+      { key: "account", title: "계정", description: "프로필 사진 · 이메일 계정 · 로그아웃", Icon: Users },
+      { key: "app", title: "앱 정보", description: "앱 버전 확인", Icon: AlertCircle },
+    ] },
+  ];
+  const sectionStyle = { backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: "14px" };
+  const openMenu = (item) => {
+    if (item.action) item.action();
+    else setView(item.key);
+  };
+  const openAccountDeletion = () => {
+    setDeleteStep("intro");
+    setDeletePhrase("");
+    setDeletePassword("");
+    setDeleteError("");
+    setDeletePhase(ACCOUNT_DELETION_PHASES.IDLE);
+    setView("account-delete");
+  };
+  const submitAccountDeletion = async () => {
+    if (!onDeleteAccount || busy || deletePhrase.trim() !== DELETE_CONFIRMATION_PHRASE) return;
+    setBusy(true);
+    setDeleteError("");
+    try {
+      await onDeleteAccount({
+        confirmationPhrase: deletePhrase,
+        password: deletePassword,
+        onPhase: setDeletePhase,
+      });
+    } catch (error) {
+      setDeleteError(error?.message || "계정 삭제를 완료하지 못했습니다. 삭제되지 않은 상태를 확인한 뒤 다시 시도해 주세요.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (view === "hub") return (
+    <div className="flex h-full min-h-0 flex-col" style={{ backgroundColor: PAGE }}>
+      <header className="flex shrink-0 items-center" style={{ height: 52, padding: "0 14px", backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
+        <h1 style={{ fontSize: 18, fontWeight: 600, color: INK }}>더보기</h1>
+      </header>
+      <main className="pt-scroll min-h-0 flex-1 overflow-y-auto" style={{ padding: "12px 12px 20px" }}>
+        <div className="space-y-4">
+          {menuGroups.map((group) => (
+            <section key={group.label}>
+              <h2 style={{ margin: "0 4px 7px", fontSize: 11, fontWeight: 700, color: SUB }}>{group.label}</h2>
+              <div style={{ overflow: "hidden", borderRadius: 12, border: `1px solid ${LINE}`, backgroundColor: CARD }}>
+                {group.items.map((item, index) => {
+                  const Icon = item.Icon;
+                  return (
+                    <button key={item.key} type="button" onClick={() => openMenu(item)} className="flex w-full items-center gap-3 text-left"
+                      style={{ minHeight: 64, padding: "10px 12px", borderTop: index ? `1px solid ${LINE}` : "none", backgroundColor: CARD }}>
+                      <span className="flex h-9 w-9 shrink-0 items-center justify-center" style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND }}><Icon size={17} strokeWidth={1.8} /></span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block" style={{ fontSize: 14, fontWeight: 650, color: INK }}>{item.title}</span>
+                        <span className="mt-0.5 block" style={{ fontSize: 11, lineHeight: 1.35, color: SUB }}>{item.description}</span>
+                      </span>
+                      <ChevronRight size={16} className="shrink-0" style={{ color: FAINT }} />
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          ))}
+        </div>
+      </main>
+    </div>
+  );
   return (
     <div className="flex h-full min-h-0 flex-col" style={{ backgroundColor: PAGE }}>
-      <header className="flex shrink-0 items-center" style={{ height: 52, padding: "0 14px", backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}><h1 style={{ fontSize: 18, fontWeight: 600, color: INK }}>설정</h1></header>
-      <main className="pt-scroll min-h-0 flex-1 overflow-y-auto" style={{ padding: "10px 12px 18px" }}>
-        <div className="space-y-2">
+      <header className="flex shrink-0 items-center gap-1" style={{ height: 52, padding: "0 8px", backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
+        <button type="button" onClick={() => setView(view === "account-delete" ? "account" : "hub")} className="flex h-10 w-10 items-center justify-center" aria-label="이전 화면으로 돌아가기" style={{ color: INK2 }}><ArrowLeft size={18} /></button>
+        <h1 style={{ fontSize: 17, fontWeight: 600, color: INK }}>{detailTitles[view]}</h1>
+      </header>
+      <main className="pt-scroll min-h-0 flex-1 overflow-y-auto" style={{ padding: "12px 12px 20px" }}>
+        {view === "report" && (
+          <div className="space-y-2">
+            <section style={sectionStyle}>
+              <p style={{ fontSize: 11, color: SUB }}>{monthLabel(`${reportYm}-01`)}</p>
+              <div className="mt-1 flex items-end gap-2"><p className="tabular-nums" style={{ fontSize: 28, lineHeight: 1.1, fontWeight: 700, color: INK }}>₩{won(reportPay)}</p><p style={{ paddingBottom: 3, fontSize: 11, color: SUB }}>예상 급여</p></div>
+              <p className="mt-2" style={{ fontSize: 11, lineHeight: 1.5, color: SUB }}>완료·차감 처리된 수업과 센터/회원별 단가를 기준으로 계산합니다.</p>
+            </section>
+            <section style={sectionStyle}>
+              <div className="grid grid-cols-2 gap-2">
+                {[{ label: "전체 수업", value: `${reportStats.cls}건` }, { label: "회원 좌석", value: `${reportStats.seats}건` }, { label: "출석", value: `${reportStats.done}건`, color: GOOD }, { label: "예약", value: `${reportStats.booked}건`, color: BRAND }, { label: "노쇼", value: `${reportStats.noshow}건`, color: BAD }, { label: "취소", value: `${reportStats.cancel}건`, color: SUB }].map((item) => (
+                  <div key={item.label} style={{ padding: "11px 10px", borderRadius: 9, backgroundColor: CANVAS }}><p style={{ fontSize: 10, color: SUB }}>{item.label}</p><p className="mt-1 tabular-nums" style={{ fontSize: 16, fontWeight: 700, color: item.color || INK }}>{item.value}</p></div>
+                ))}
+              </div>
+            </section>
+          </div>
+        )}
+        {view === "assessment" && (
           <section style={sectionStyle}>
-            <div className="flex items-center gap-3">
-              <button type="button" onClick={() => albumRef.current?.click()} className="relative shrink-0" aria-label="프로필 사진 변경"><Avatar src={account?.photo} name={account?.name} size={48} radius={12} /><span className="absolute -bottom-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full" style={{ backgroundColor: BRAND, color: "#fff" }}>{busy ? <Loader2 size={10} className="animate-spin" /> : <Camera size={10} />}</span></button>
-              <div className="min-w-0 flex-1"><h2 className="truncate" style={{ fontSize: 15, fontWeight: 600, color: INK }}>{account?.name || "계정"}</h2><p className="mt-0.5 truncate" style={{ fontSize: 11, color: SUB }}>{account?.email || "이메일 미등록"}</p><p className="mt-0.5 truncate" style={{ fontSize: 11, color: SUB }}>{PROVIDER_LABEL[account?.provider] || "로그인"} 계정</p></div>
-              <button type="button" onClick={onLogout} className="flex items-center gap-1" style={{ height: 36, padding: "0 10px", borderRadius: 8, backgroundColor: CANVAS, color: SUB, fontSize: 12, fontWeight: 600 }}><LogOut size={13} />로그아웃</button>
-            </div>
-            <div className="mt-3 flex gap-1.5"><button type="button" onClick={() => albumRef.current?.click()} style={{ height: 34, padding: "0 10px", borderRadius: 8, backgroundColor: TINT, color: BRAND, fontSize: 12, fontWeight: 600 }}>사진 {account?.photo ? "변경" : "등록"}</button><button type="button" onClick={() => cameraRef.current?.click()} style={{ height: 34, padding: "0 10px", borderRadius: 8, backgroundColor: CANVAS, color: SUB, fontSize: 12, fontWeight: 600 }}>촬영</button>{account?.photo && <button type="button" onClick={() => onChangePhoto(null)} style={{ height: 34, padding: "0 10px", borderRadius: 8, color: SUB, fontSize: 12 }}>삭제</button>}</div>
-            <input ref={albumRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; pickPhoto(f); }} /><input ref={cameraRef} type="file" accept="image/*" capture="user" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; pickPhoto(f); }} />
+            <div className="mb-3"><h2 style={{ fontSize: 14, fontWeight: 600, color: INK }}>기본 체형분석 방식</h2><p style={{ marginTop: 3, fontSize: 11, lineHeight: 1.45, color: SUB }}>AI를 사용하지 않아도 촬영과 비교 기능을 모두 사용할 수 있습니다.</p></div>
+            <div className="grid grid-cols-2 gap-1.5">{[
+              { k: "always", l: "매번 선택", I: SlidersHorizontal }, { k: "ai", l: "AI 체형분석", I: Sparkles },
+              { k: "manual", l: "직접 포인트", I: Crosshair }, { k: "draw", l: "직접 그리기", I: Pencil },
+            ].map(({ k, l, I }) => {
+              const active = (db.settings.defaultAssessmentMethod || "always") === k;
+              return <button type="button" key={k} onClick={() => onChangeSettings({ ...db.settings, defaultAssessmentMethod: k })} className="flex h-11 items-center justify-center gap-1.5" style={{ borderRadius: 9, border: `1px solid ${active ? BRAND : LINE}`, backgroundColor: active ? TINT : CARD, color: active ? BRAND_D : INK2, fontSize: 12, fontWeight: active ? 700 : 600 }}><I size={13} />{l}</button>;
+            })}</div>
           </section>
+        )}
+        {view === "center" && (
           <section style={sectionStyle}>
-            <div className="mb-3"><h2 style={{ fontSize: 14, fontWeight: 600, color: INK }}>화면 테마</h2><p style={{ marginTop: 2, fontSize: 11, color: SUB }}>기기 설정 또는 원하는 화면을 선택합니다</p></div>
-            <div className="grid grid-cols-3 gap-1" style={{ padding: 3, borderRadius: 10, backgroundColor: CANVAS }}>{[{k:"system",l:"폰 설정",I:Smartphone},{k:"light",l:"라이트",I:Sun},{k:"dark",l:"다크",I:Moon}].map(({k,l,I}) => <button type="button" key={k} onClick={() => onChangeTheme(k)} className="flex items-center justify-center gap-1" style={{ height: 38, borderRadius: 8, backgroundColor: themePref === k ? CARD : "transparent", boxShadow: themePref === k ? "0 1px 3px rgba(28,36,51,.08)" : "none", color: themePref === k ? BRAND : SUB, fontSize: 12, fontWeight: themePref === k ? 600 : 500 }}><I size={13} />{l}</button>)}</div>
-          </section>
-          <section style={sectionStyle}>
-            <div className="mb-3"><h2 style={{ fontSize: 14, fontWeight: 600, color: INK }}>센터 정보</h2><p style={{ marginTop: 2, fontSize: 11, color: SUB }}>일정과 회원 관리에 사용할 실제 기본값입니다</p></div>
+            <div className="mb-3"><h2 style={{ fontSize: 14, fontWeight: 600, color: INK }}>센터 기본 정보</h2><p style={{ marginTop: 3, fontSize: 11, color: SUB }}>일정과 회원 관리에 사용하는 기존 저장값입니다.</p></div>
             <div className="space-y-3"><Field label="센터명"><input value={db.settings.center} onChange={(e) => onChangeSettings({ ...db.settings, center: e.target.value })} className={inputCls} /></Field><Field label="기본 담당자"><input value={db.settings.staff} onChange={(e) => onChangeSettings({ ...db.settings, staff: e.target.value })} className={inputCls} /></Field><div className="grid grid-cols-2 gap-2"><Field label="개인 1회당 원"><input inputMode="numeric" value={db.settings.payRate ?? DEF_RATE} onChange={(e) => onChangeSettings({ ...db.settings, payRate: num(e.target.value.replace(/\D/g, "")) })} className={inputCls} /></Field><Field label="그룹 1회당 원"><input inputMode="numeric" value={db.settings.groupRate ?? DEF_GROUP_RATE} onChange={(e) => onChangeSettings({ ...db.settings, groupRate: num(e.target.value.replace(/\D/g, "")) })} className={inputCls} /></Field></div></div>
           </section>
+        )}
+        {view === "theme" && (
           <section style={sectionStyle}>
-            <div className="mb-3"><h2 style={{ fontSize: 14, fontWeight: 600, color: INK }}>데이터 상태</h2><p style={{ marginTop: 2, fontSize: 11, color: SUB }}>확인 가능한 실제 연결 상태만 표시합니다</p></div>
-            <div className="grid grid-cols-3 gap-2">{[
-              { l: "기기 저장", v: savedAt instanceof Date ? "저장됨" : "변경 없음", c: savedAt instanceof Date ? GOOD : SUB },
-              { l: "로그인", v: account ? "로그인됨" : "로그인 안 됨", c: account ? GOOD : WARN },
-              { l: "Firebase", v: fbReady ? "연결 가능" : "미사용", c: fbReady ? GOOD : SUB },
-            ].map((x) => <div key={x.l} style={{ padding: "9px 8px", borderRadius: 8, backgroundColor: CANVAS }}><p style={{ fontSize: 10, color: SUB }}>{x.l}</p><p className="mt-1 truncate" style={{ fontSize: 11, fontWeight: 600, color: x.c }}>{x.v}</p></div>)}</div>
-            <div className="mt-3 flex items-center" style={{ paddingTop: 10, borderTop: `1px solid ${LINE}` }}><span style={{ fontSize: 11, color: SUB }}>앱 버전</span><span className="ml-auto tabular-nums" style={{ fontSize: 11, fontWeight: 600, color: BRAND }}>{APP_BUILD_LABEL}</span></div>
+            <div className="mb-3"><h2 style={{ fontSize: 14, fontWeight: 600, color: INK }}>화면 테마</h2><p style={{ marginTop: 3, fontSize: 11, color: SUB }}>기기 설정을 따르거나 원하는 화면을 고릅니다.</p></div>
+            <div className="grid grid-cols-3 gap-1" style={{ padding: 3, borderRadius: 10, backgroundColor: CANVAS }}>{[{ k: "system", l: "폰 설정", I: Smartphone }, { k: "light", l: "라이트", I: Sun }, { k: "dark", l: "다크", I: Moon }].map(({ k, l, I }) => <button type="button" key={k} onClick={() => onChangeTheme(k)} className="flex items-center justify-center gap-1" style={{ height: 40, borderRadius: 8, backgroundColor: themePref === k ? CARD : "transparent", boxShadow: themePref === k ? "0 1px 3px rgba(28,36,51,.08)" : "none", color: themePref === k ? BRAND : SUB, fontSize: 12, fontWeight: themePref === k ? 700 : 500 }}><I size={13} />{l}</button>)}</div>
           </section>
-        </div>
+        )}
+        {view === "data" && (
+          <div className="space-y-2">
+            <section style={sectionStyle}>
+              <div className="mb-3"><h2 style={{ fontSize: 14, fontWeight: 600, color: INK }}>연결 상태</h2><p style={{ marginTop: 3, fontSize: 11, color: SUB }}>확인 가능한 실제 상태만 표시하며, Firebase 표시는 동기화 완료를 뜻하지 않습니다.</p></div>
+              <div className="grid grid-cols-3 gap-2">{[
+                { l: "기기 저장", v: savedAt instanceof Date ? "저장됨" : "변경 없음", c: savedAt instanceof Date ? GOOD : SUB },
+                { l: "로그인", v: account ? "로그인됨" : "로그인 안 됨", c: account ? GOOD : WARN },
+                { l: "Firebase", v: fbReady ? "연결 가능" : "미사용", c: fbReady ? GOOD : SUB },
+              ].map((item) => <div key={item.l} style={{ padding: "10px 8px", borderRadius: 8, backgroundColor: CANVAS }}><p style={{ fontSize: 10, color: SUB }}>{item.l}</p><p className="mt-1 truncate" style={{ fontSize: 11, fontWeight: 700, color: item.c }}>{item.v}</p></div>)}</div>
+              {savedAt instanceof Date && <p className="mt-3 tabular-nums" style={{ fontSize: 11, color: SUB }}>최근 기기 저장 {savedAt.getHours()}:{String(savedAt.getMinutes()).padStart(2, "0")}</p>}
+            </section>
+            {demoMode && <section style={{ ...sectionStyle, backgroundColor: WARN_S, borderColor: WARN }}><p style={{ fontSize: 12, fontWeight: 700, color: WARN }}>개발·데모 데이터 사용 중</p><p className="mt-1" style={{ fontSize: 11, lineHeight: 1.5, color: INK2 }}>현재 데이터는 실제 운영 데이터가 아닙니다.</p></section>}
+          </div>
+        )}
+        {view === "backup" && <HandoffCard db={db} photos={photos} account={account} onImport={onImport} onToast={onToast} />}
+        {view === "knowledge" && (
+          <section style={{ overflow: "hidden", borderRadius: 12, border: `1px solid ${LINE}`, backgroundColor: CARD }}>
+            {KNOW.map((knowledge, index) => <div key={knowledge} className="flex gap-3" style={{ padding: "12px", borderTop: index ? `1px solid ${LINE}` : "none" }}><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full" style={{ backgroundColor: TINT, color: BRAND, fontSize: 10, fontWeight: 700 }}>{index + 1}</span><p style={{ paddingTop: 2, fontSize: 12, lineHeight: 1.55, color: INK2 }}>{knowledge}</p></div>)}
+          </section>
+        )}
+        {view === "account" && (
+          <div className="space-y-3">
+            <section style={sectionStyle}><div className="flex items-center gap-3">
+              <button type="button" onClick={() => albumRef.current?.click()} className="relative shrink-0" aria-label="프로필 사진 변경"><Avatar src={account?.photo} name={account?.name} size={52} radius={13} /><span className="absolute -bottom-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full" style={{ backgroundColor: BRAND, color: "#fff" }}>{busy ? <Loader2 size={10} className="animate-spin" /> : <Camera size={10} />}</span></button>
+              <div className="min-w-0 flex-1"><h2 className="truncate" style={{ fontSize: 15, fontWeight: 650, color: INK }}>{account?.name || "계정"}</h2><p className="mt-0.5 truncate" style={{ fontSize: 11, color: SUB }}>{account?.email || "이메일 미등록"}</p><p className="mt-0.5 truncate" style={{ fontSize: 11, color: SUB }}>{PROVIDER_LABEL[account?.provider] || "로그인"} 계정</p></div>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-1.5"><button type="button" onClick={() => albumRef.current?.click()} style={{ height: 36, padding: "0 11px", borderRadius: 8, backgroundColor: TINT, color: BRAND, fontSize: 12, fontWeight: 650 }}>사진 {account?.photo ? "변경" : "등록"}</button><button type="button" onClick={() => cameraRef.current?.click()} style={{ height: 36, padding: "0 11px", borderRadius: 8, backgroundColor: CANVAS, color: SUB, fontSize: 12, fontWeight: 600 }}>촬영</button>{account?.photo && <button type="button" onClick={() => onChangePhoto(null)} style={{ height: 36, padding: "0 11px", borderRadius: 8, color: SUB, fontSize: 12 }}>삭제</button>}</div>
+            <input ref={albumRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const file = e.target.files?.[0]; e.target.value = ""; pickPhoto(file); }} /><input ref={cameraRef} type="file" accept="image/*" capture="user" className="hidden" onChange={(e) => { const file = e.target.files?.[0]; e.target.value = ""; pickPhoto(file); }} />
+            <button type="button" onClick={onLogout} className="mt-4 flex h-11 w-full items-center justify-center gap-1.5" style={{ borderRadius: 9, backgroundColor: CANVAS, color: SUB, fontSize: 13, fontWeight: 650 }}><LogOut size={14} />로그아웃</button>
+            </section>
+            <section style={{ ...sectionStyle, borderColor: "rgba(201,64,64,.28)" }}>
+              <h2 style={{ fontSize: 14, fontWeight: 700, color: BAD }}>계정 삭제</h2>
+              <p className="mt-1" style={{ fontSize: 11, lineHeight: 1.55, color: INK2 }}>PilaTeacher 계정과 개인 저장 데이터를 영구 삭제합니다. 로그아웃과 달리 복구할 수 없습니다.</p>
+              <button type="button" onClick={openAccountDeletion} className="mt-3 flex h-11 w-full items-center justify-center gap-1.5" style={{ borderRadius: 9, border: `1px solid ${BAD}`, color: BAD, fontSize: 13, fontWeight: 700 }}><Trash2 size={14} />계정 삭제</button>
+            </section>
+          </div>
+        )}
+        {view === "account-delete" && (
+          <div className="space-y-3">
+            <section style={{ ...sectionStyle, borderColor: "rgba(201,64,64,.28)" }}>
+              <div className="flex items-start gap-2.5"><span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full" style={{ backgroundColor: BAD_S, color: BAD }}><AlertTriangle size={16} /></span><div><h2 style={{ fontSize: 15, fontWeight: 700, color: INK }}>계정을 영구 삭제합니다</h2><p className="mt-1" style={{ fontSize: 11, lineHeight: 1.6, color: INK2 }}>복구할 수 없으며, 개인 프로필·개인 백업·이 기기의 해당 계정 사진과 음성 기록이 삭제됩니다.</p></div></div>
+              <div className="mt-3 rounded-lg p-3" style={{ backgroundColor: CANVAS }}>
+                <p style={{ fontSize: 11, lineHeight: 1.6, color: INK2 }}>센터의 다른 강사가 함께 사용하는 회원·일정·법적 보존 데이터는 무조건 삭제하지 않습니다. 유일한 센터 소유자는 다른 소유자를 지정한 뒤 삭제할 수 있습니다.</p>
+              </div>
+              {deleteStep === "intro" ? (
+                <button type="button" onClick={() => setDeleteStep("confirm")} className="mt-4 h-11 w-full" style={{ borderRadius: 9, backgroundColor: BAD, color: "#fff", fontSize: 13, fontWeight: 700 }}>삭제 절차 계속</button>
+              ) : (
+                <div className="mt-4 space-y-3">
+                  <Field label={`최종 확인을 위해 '${DELETE_CONFIRMATION_PHRASE}' 입력`}><input autoFocus value={deletePhrase} onChange={(event) => setDeletePhrase(event.target.value)} autoComplete="off" className={inputCls} /></Field>
+                  {account?.provider === "email" && <Field label="현재 비밀번호"><input type="password" value={deletePassword} onChange={(event) => setDeletePassword(event.target.value)} autoComplete="current-password" className={inputCls} /></Field>}
+                  <p style={{ fontSize: 11, lineHeight: 1.5, color: SUB }}>{account?.provider === "apple" ? "최종 삭제 전에 Apple로 본인 확인합니다." : account?.provider === "google" ? "최종 삭제 전에 Google로 본인 확인합니다." : "최종 삭제 전에 비밀번호로 본인 확인합니다."}</p>
+                  {deleteError && <div role="alert" className="rounded-lg p-3" style={{ backgroundColor: BAD_S, color: BAD, fontSize: 11, lineHeight: 1.5 }}>{deleteError}</div>}
+                  {busy && <p aria-live="polite" style={{ fontSize: 11, color: SUB }}>삭제 단계: {deletePhase}</p>}
+                  <div className="grid grid-cols-2 gap-2"><button type="button" disabled={busy} onClick={() => setView("account")} className="h-11" style={{ borderRadius: 9, border: `1px solid ${LINE}`, color: INK2, fontSize: 13, fontWeight: 650 }}>취소</button><button type="button" disabled={busy || deletePhrase.trim() !== DELETE_CONFIRMATION_PHRASE || (account?.provider === "email" && !deletePassword)} onClick={submitAccountDeletion} className="flex h-11 items-center justify-center gap-1.5 disabled:opacity-40" style={{ borderRadius: 9, backgroundColor: BAD, color: "#fff", fontSize: 13, fontWeight: 700 }}>{busy ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}영구 삭제</button></div>
+                </div>
+              )}
+            </section>
+          </div>
+        )}
+        {view === "app" && (
+          <section style={sectionStyle}>
+            <div className="flex items-center gap-3"><span className="flex h-10 w-10 items-center justify-center" style={{ borderRadius: 11, backgroundColor: TINT, color: BRAND }}><Activity size={18} /></span><div><h2 style={{ fontSize: 15, fontWeight: 700, color: INK }}>PilaTeacher</h2><p className="mt-0.5 tabular-nums" style={{ fontSize: 11, color: SUB }}>{APP_BUILD_LABEL}</p></div></div>
+            <p className="mt-4" style={{ fontSize: 11, lineHeight: 1.6, color: INK2 }}>회원 사진은 기기에 저장됩니다. 회원 이름·수업·기록의 보관 상태는 데이터 상태에서 확인하고, 기기 변경 전에는 데이터 이관·백업을 이용해 주세요.</p>
+          </section>
+        )}
       </main>
     </div>
   );
@@ -8158,7 +10118,10 @@ export default function App() {
   const [selectedId, setSelectedId] = useState(null);
   const [analysisMemberId, setAnalysisMemberId] = useState(null);
   const [analysisRecordId, setAnalysisRecordId] = useState(null);
+  const [analysisAssessmentId, setAnalysisAssessmentId] = useState(null);
+  const [analysisEntryMode, setAnalysisEntryMode] = useState("home");
   const [scheduleMemberId, setScheduleMemberId] = useState(null);
+  const [scheduleQuickAddRequest, setScheduleQuickAddRequest] = useState(0);
   const [demoMode, setDemoMode] = useState(false);
   const [mobileView, setMobileView] = useState("list");
   const briefing = false;
@@ -8213,7 +10176,19 @@ export default function App() {
         let first = true;
         const off = fbOnAuth(async (u) => {
           if (!alive) return;
-          if (!u) { if (first) { first = false; setTimeout(() => alive && setPhase("auth"), 1400); } else { setPhase("auth"); } return; }
+          if (!u) {
+            try {
+              const pendingUid = window.localStorage?.getItem(ACCOUNT_DELETION_PENDING_KEY) || "";
+              if (pendingUid) {
+                const cleanup = await cleanupLocalAccountData(pendingUid);
+                if (alive) setAccounts(cleanup.remainingAccounts);
+              }
+            } catch (error) {
+              deviceLog("account_deletion_local_cleanup_failed", { stage: "auth_state_recovery", ...deviceError(error) });
+            }
+            if (first) { first = false; setTimeout(() => alive && setPhase("auth"), 1400); } else { setPhase("auth"); }
+            return;
+          }
           const prof = await fbLoadProfile(u.id);
           const acc = { ...u, ...(prof || {}), id: u.id };
           if (!alive) return;
@@ -8240,15 +10215,19 @@ export default function App() {
   const loadAccount = async (acc) => {
     revokeAllUrls();
     setAccount(acc);
-    let data = null, ph = {}, restored = false;
+    let data = null, ph = {}, restored = false, reviewPhotos = null;
     try { const r = await window.storage.get(dbKey(acc.id)); if (r?.value) data = JSON.parse(r.value); } catch (e) {}
     try { const r = await window.storage.get(phKey(acc.id)); if (r?.value) ph = JSON.parse(r.value); } catch (e) {}
-    if (fbReady && (!data || !(Array.isArray(data.members) && data.members.length))) {
+    const needsReviewBootstrap = acc.appReviewDemo === true && !Object.keys(ph || {}).length;
+    if (fbReady && (!data || !(Array.isArray(data.members) && data.members.length) || needsReviewBootstrap)) {
       try {
         const cloud = await fbPullBackup(acc.id);
         if (cloud && cloud.data && Array.isArray(cloud.data.members) && cloud.data.members.length) {
           data = cloud.data;
           restored = true;
+          if (acc.appReviewDemo === true && cloud.appReviewDemo === true && cloud.reviewPhotos && typeof cloud.reviewPhotos === "object") {
+            reviewPhotos = cloud.reviewPhotos;
+          }
           try { await window.storage.set(dbKey(acc.id), JSON.stringify(data)); } catch (e) {}
         }
       } catch (e) {}
@@ -8257,14 +10236,35 @@ export default function App() {
     if (!data) data = fbReady ? emptyDb(acc.center, acc.name) : sampleDb(acc.center, acc.name);
     data = normalizeDb(data, acc.name);
     if (!data.settings.center) data.settings.center = acc.center || "";
+    const voiceNotes = data.members.flatMap((m) => (m.notes || []).filter((note) => note.audioBlobId).map((note) => ({ memberId: m.id, note })));
+    if (voiceNotes.length) {
+      let available = 0;
+      for (const entry of voiceNotes) {
+        try {
+          const audio = await blobGet(entry.note.audioBlobId);
+          if (audio) available += 1;
+          else deviceLog("voice_record_restore_missing", { memberId: entry.memberId, lessonId: entry.note.sid, storage: "indexedDB", state: "missing" });
+        } catch (error) {
+          deviceLog("voice_record_restore_failed", { memberId: entry.memberId, lessonId: entry.note.sid, storage: "indexedDB", ...deviceError(error) });
+        }
+      }
+      deviceLog("voice_records_restored", { storage: "indexedDB", count: available, state: available === voiceNotes.length ? "complete" : "partial" });
+    }
     setDb(data);
     setDemoMode(useDemo);
     let hyd = ph && typeof ph === "object" ? ph : {};
+    if (!Object.keys(hyd).length && reviewPhotos) hyd = reviewPhotos;
     try {
       const a = await adoptPhotos(hyd);
       hyd = a.map;
       if (a.changed) { try { await window.storage.set(phKey(acc.id), JSON.stringify(stripSrc(hyd))); } catch (e) {} }
-    } catch (e) {}
+    } catch (e) { deviceLog("photo_restore_failed", { storage: "indexedDB", ...deviceError(e) }); }
+    Object.entries(hyd).forEach(([memberId, memberPhotos]) => {
+      POSTURE_STORAGE_KEYS.forEach((view) => {
+        const records = Array.isArray(memberPhotos?.[view]) ? memberPhotos[view] : [];
+        if (records.length) deviceLog("member_photos_restored", { memberId, view, storage: "indexedDB", count: records.filter((photo) => !!photo?.src).length, state: records.every((photo) => !!photo?.src) ? "complete" : "partial" });
+      });
+    });
     setPhotos(hyd);
     setSelectedId(data.members[0]?.id || null);
     setAnalysisMemberId(null);
@@ -8297,7 +10297,7 @@ export default function App() {
     }
     await loadAccount(acc);
     setPhase("app");
-    setToast({ ok: true, msg: "가입이 완료됐습니다. 설정 탭에서 내 정보를 볼 수 있어요." });
+    setToast({ ok: true, msg: "가입이 완료됐습니다. 더보기 탭에서 내 정보를 볼 수 있어요." });
   };
   const changePhoto = async (src) => {
     if (!account) return;
@@ -8316,6 +10316,7 @@ export default function App() {
 
   const cloudTimer = useRef(null);
   const cloudPending = useRef(null);
+  const accountDeletionInFlight = useRef(false);
   const queueCloud = useCallback((uidStr, data) => {
     if (!fbReady || !uidStr) return;
     cloudPending.current = { uid: uidStr, data };
@@ -8329,7 +10330,53 @@ export default function App() {
   }, []);
   useEffect(() => () => { if (cloudTimer.current) clearTimeout(cloudTimer.current); }, []);
 
+  const handleDeleteAccount = async ({ confirmationPhrase, password, onPhase }) => {
+    if (!account || accountDeletionInFlight.current) throw new Error("이미 계정 삭제를 처리하고 있습니다.");
+    const deletingAccount = account;
+    const pendingBackup = cloudPending.current;
+    accountDeletionInFlight.current = true;
+    if (cloudTimer.current) clearTimeout(cloudTimer.current);
+    cloudTimer.current = null;
+    cloudPending.current = null;
+    try { window.localStorage?.setItem(ACCOUNT_DELETION_PENDING_KEY, deletingAccount.id); } catch (error) {}
+    try {
+      const result = await runAccountDeletion({
+        confirmationPhrase,
+        provider: deletingAccount.provider || "email",
+        password,
+        onPhase,
+        localDataSnapshot: { db, photos },
+        reauthenticate: ({ provider, password: currentPassword }) => fbReauthenticate(provider, currentPassword),
+        revokeApple: ({ reauthentication }) => fbRevokeAppleAccess(reauthentication?.authorizationCode),
+        deleteServerAccount: () => fbDeleteCurrentUserAccount(),
+        cleanupLocalData: async () => {
+          const cleanup = await cleanupLocalAccountData(deletingAccount.id, { db, photos });
+          try { await fbSignOut(); } catch (error) {}
+          revokeAllUrls();
+          setAccounts(cleanup.remainingAccounts);
+          setAccount(null);
+          setDb(emptyDb("", ""));
+          setPhotos({});
+          setSelectedId(null);
+          setAnalysisMemberId(null);
+          setPhase("auth");
+          setToast({ ok: true, msg: "계정과 개인 데이터를 영구 삭제했습니다." });
+        },
+      });
+      return result;
+    } catch (error) {
+      if (!error?.remoteDeleted) {
+        accountDeletionInFlight.current = false;
+        try { window.localStorage?.removeItem(ACCOUNT_DELETION_PENDING_KEY); } catch (storageError) {}
+        if (pendingBackup?.uid && pendingBackup?.data) queueCloud(pendingBackup.uid, pendingBackup.data);
+      }
+      deviceLog("account_deletion_failed", { stage: error?.phase || "unknown", ...deviceError(error) });
+      throw error;
+    }
+  };
+
   const saveDb = useCallback(async (next, dualWrite) => {
+    if (accountDeletionInFlight.current) return false;
     const prev = db;
     setDb(next);
     if (!account) return;
@@ -8338,19 +10385,31 @@ export default function App() {
         await window.storage.set(dbKey(account.id), JSON.stringify(next));
         setSavedAt(new Date());
         queueCloud(account.id, next);
+        deviceLog("app_data_saved", { storage: "localStorage", operation: dualWrite?.operation || "legacy_write", count: (next.members?.length || 0) + (next.schedule?.length || 0) });
       };
       if (dualWrite) await runAppDualWrite(account, dualWrite, legacyWrite);
       else await legacyWrite();
       return true;
     }
-    catch (e) { setDb(prev); setToast({ ok: false, msg: "저장하지 못했습니다. 방금 입력한 내용을 다시 확인해 주세요." }); }
+    catch (e) { setDb(prev); deviceLog("app_data_save_failed", { storage: "localStorage", operation: dualWrite?.operation || "legacy_write", ...deviceError(e) }); setToast({ ok: false, msg: "저장하지 못했습니다. 방금 입력한 내용을 다시 확인해 주세요." }); }
   }, [account, db, queueCloud]);
   const savePhotos = useCallback(async (next) => {
+    if (accountDeletionInFlight.current) return false;
     const prev = photos;
     setPhotos(next);
     if (!account) return;
-    try { await window.storage.set(phKey(account.id), JSON.stringify(stripSrc(next))); setSavedAt(new Date()); }
-    catch (e) { setPhotos(prev); setToast({ ok: false, msg: "저장 공간이 가득 찼습니다. 오래된 사진을 지운 뒤 다시 찍어 주세요." }); }
+    try {
+      await window.storage.set(phKey(account.id), JSON.stringify(stripSrc(next)));
+      setSavedAt(new Date());
+      deviceLog("photo_metadata_saved", { storage: "localStorage", operation: "metadata_write", count: Object.keys(next || {}).length });
+      return true;
+    }
+    catch (e) {
+      setPhotos(prev);
+      deviceLog("photo_metadata_save_failed", { storage: "localStorage", operation: "metadata_write", ...deviceError(e) });
+      setToast({ ok: false, msg: "저장 공간이 가득 찼습니다. 오래된 사진을 지운 뒤 다시 찍어 주세요." });
+      return false;
+    }
   }, [account, photos]);
 
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 2600); return () => clearTimeout(t); }, [toast]);
@@ -8383,14 +10442,30 @@ export default function App() {
   /* 일정 탭에서 '기록하기'로 들어왔으면 저장 후 다시 일정으로 돌려보낸다 */
   const [noteBack, setNoteBack] = useState(false);
   const [noteSid, setNoteSid] = useState(null);
-  const saveScheduleComment = (id, type, sid, body) => {
+  const saveScheduleComment = (id, type, sid, body, voiceMeta = null) => {
     const text = String(body || "").trim();
     if (!text) return;
     setNoteBack(false);
     const target = db.members.find((m) => m.id === id);
     if (!target) { setToast({ ok: false, msg: "회원을 찾을 수 없습니다." }); return; }
-    const note = { id: uid(), date: todayISO(), sid: sid || undefined, type: type || "개인레슨", instructor: target.instructor, body: text, tags: [], deductFrom: null };
+    const note = {
+      id: uid(), date: todayISO(), sid: sid || undefined, type: type || "개인레슨", instructor: target.instructor,
+      body: text, tags: [], deductFrom: null,
+      ...(voiceMeta ? {
+        transcript: String(voiceMeta.transcript || "").trim() || undefined,
+        aiSummary: voiceMeta.aiSummary || null,
+        aiSummaryTeacherEdited: voiceMeta.aiSummaryTeacherEdited || null,
+        aiSummaryStatus: voiceMeta.aiSummaryTeacherEdited ? AI_STATUSES.CONFIRMED : AI_STATUSES.NOT_CONNECTED,
+        aiMeta: voiceMeta.aiMeta || null,
+        teacherSummary: text,
+        confirmedAt: voiceMeta.aiSummaryTeacherEdited ? new Date().toISOString() : undefined,
+        audioBlobId: voiceMeta.audioBlobId || undefined,
+        voiceSource: voiceMeta.voiceSource || "unknown",
+        recordedAt: voiceMeta.recordedAt || new Date().toISOString(),
+      } : {}),
+    };
     saveDb({ ...db, members: db.members.map((m) => (m.id === id ? { ...m, notes: [note, ...(m.notes || [])] } : m)) });
+    deviceLog("lesson_note_saved", { memberId: id, lessonId: sid, storage: "localStorage", source: voiceMeta ? voiceMeta.voiceSource || "voice" : "direct_input" });
     setToast({ ok: true, msg: text === "특이사항 없음" ? "특이사항 없음으로 기록했습니다." : `${target.name || "회원"} 기록을 저장했습니다.` });
   };
   const noComment = (id, type, sid) => saveScheduleComment(id, type, sid, "특이사항 없음");
@@ -8552,6 +10627,7 @@ export default function App() {
   const removeMember = (id) => {
     const rest = db.members.filter((m) => m.id !== id);
     const removed = db.members.find((m) => m.id === id);
+    const removedAudioIds = (removed?.notes || []).map((note) => note.audioBlobId).filter(Boolean);
     saveDb(
       {
         ...db, members: rest,
@@ -8568,6 +10644,7 @@ export default function App() {
       savePhotos(nextPh);
       forgetBlobs(ids);
     }
+    if (removedAudioIds.length) forgetBlobs(removedAudioIds);
     setSelectedId(rest[0]?.id || null);
     if (analysisMemberId === id) setAnalysisMemberId(null);
     setToast({ ok: true, msg: "회원을 삭제했습니다." });
@@ -8585,6 +10662,7 @@ export default function App() {
   const saveNote = (id, note) => {
     const t = db.members.find((m) => m.id === id);
     patch(id, { notes: [{ ...note, sid: noteSid || undefined }, ...(t.notes || [])] });
+    deviceLog("member_note_saved", { memberId: id, lessonId: noteSid, storage: "localStorage", source: note.voiceSource || "direct_input" });
     setNoteSid(null);
     if (noteBack) {
       setNoteBack(false);
@@ -8594,7 +10672,11 @@ export default function App() {
     }
     setToast({ ok: true, msg: "코멘트를 저장했습니다." });
   };
-  const deleteNote = (nid) => patch(member.id, { notes: member.notes.filter((n) => n.id !== nid) });
+  const deleteNote = (nid) => {
+    const gone = member.notes.find((note) => note.id === nid);
+    patch(member.id, { notes: member.notes.filter((note) => note.id !== nid) });
+    if (gone?.audioBlobId) forgetBlobs([gone.audioBlobId]);
+  };
   const analysisMember = (memberId) => {
     const target = db.members.find((m) => m.id === memberId);
     if (!memberId || !target) {
@@ -8618,28 +10700,79 @@ export default function App() {
     const shot = { id: uid(), memberId: target.id, date: todayISO(), marks: [], ...rec, ...tf };
     const nextList = slot === "before" ? [shot, ...list] : [...list, shot];
     const sets = [...(cur.sets || [])];
-    savePhotos({ ...photos, [target.id]: { ...cur, [view]: nextList, sets } });
+    const stored = await savePhotos({ ...photos, [target.id]: { ...cur, [view]: nextList, sets } });
+    if (!stored) { if (rec?.blobId) forgetBlobs([rec.blobId]); return; }
+    deviceLog("member_photo_saved", { memberId: target.id, view, storage: rec?.blobId ? "indexedDB" : "localStorage", operation: slot || "capture" });
     setToast({ ok: true, msg: "사진을 등록했습니다." });
     return shot;
   };
-  const saveCaptureDraft = async (memberId, captures) => {
+  const saveCaptureDraft = async (memberId, input) => {
     const target = analysisMember(memberId);
-    if (!target || !captures || typeof captures !== "object") return;
+    if (!target || !input || typeof input !== "object") return false;
+    const payload = input.captures ? input : { assessmentId: newAssessmentId(), analysisMethod: "ai", captures: input };
+    const assessmentId = String(payload.assessmentId || newAssessmentId());
+    const captures = payload.captures || {};
     const cur = photos[target.id] || {};
     const next = { ...cur };
-    for (const view of ["front", "side", "back"]) {
+    const newBlobIds = [];
+    const replacedBlobIds = [];
+    let savedCount = 0;
+    const attemptedCount = POSTURE_STORAGE_KEYS.filter((view) => Boolean(captures[view])).length;
+    for (const view of POSTURE_STORAGE_KEYS) {
       const blob = captures[view];
       if (!blob) continue;
       let rec = null;
-      try { const bid = newBlobId(); await blobPut(bid, blob); rec = { blobId: bid, src: URL.createObjectURL(blob) }; }
+      try {
+        const bid = newBlobId();
+        await blobPut(bid, blob);
+        newBlobIds.push(bid);
+        rec = { blobId: bid, src: URL.createObjectURL(blob) };
+      }
       catch (e) {
         try { rec = { src: await blobToDataUrl(blob) }; }
-        catch (e2) { setToast({ ok: false, msg: `${VIEWS.find((v) => v.key === view)?.label} 사진 초안을 저장하지 못했습니다.` }); continue; }
+        catch (e2) {
+          deviceLog("assessment_photo_save_failed", { memberId: target.id, assessmentId, view, storage: "indexedDB", ...deviceError(e2) });
+          setToast({ ok: false, msg: `${postureViewLabel(view)} 사진 초안을 저장하지 못했습니다.` });
+          continue;
+        }
       }
-      const shot = { id: uid(), memberId: target.id, date: todayISO(), marks: [], ...rec };
-      next[view] = [...(next[view] || []), shot];
+      const oldDrafts = (next[view] || []).filter((photo) => photo.assessmentId === assessmentId && photo.captureStatus === "draft");
+      replacedBlobIds.push(...oldDrafts.map((photo) => photo.blobId).filter(Boolean));
+      const shot = {
+        id: `${assessmentId}_${view}`, memberId: target.id, assessmentId, view,
+        analysisMethod: ["manual", "draw"].includes(payload.analysisMethod) ? payload.analysisMethod : "ai",
+        scope: payload.scope === "partial" ? "partial" : "full_body",
+        selectedViews: Array.isArray(payload.selectedViews) ? payload.selectedViews.map(normalizePostureView) : [normalizePostureView(view)],
+        assessmentRole: ["before", "after", "unassigned"].includes(payload.assessmentRole) ? payload.assessmentRole : null,
+        assessmentStatus: "draft", captureStatus: "draft", captureQuality: payload.captureQuality?.[view] || null,
+        date: todayISO(), createdAt: new Date().toISOString(), marks: [], ...rec,
+      };
+      next[view] = [shot, ...(next[view] || []).filter((photo) => !(photo.assessmentId === assessmentId && photo.captureStatus === "draft"))];
+      savedCount += 1;
     }
-    savePhotos({ ...photos, [target.id]: next });
+    if (!savedCount || savedCount !== attemptedCount) {
+      forgetBlobs(newBlobIds);
+      return false;
+    }
+    const stored = await savePhotos({ ...photos, [target.id]: next });
+    if (!stored) { forgetBlobs(newBlobIds); return false; }
+    forgetBlobs(replacedBlobIds);
+    deviceLog("assessment_photos_saved", { memberId: target.id, assessmentId, storage: "indexedDB", count: savedCount });
+    return true;
+  };
+  const deleteCaptureDraft = async (memberId, assessmentId, view) => {
+    const target = analysisMember(memberId);
+    if (!target || !assessmentId || !POSTURE_STORAGE_KEYS.includes(view)) return false;
+    const cur = photos[target.id] || {};
+    const gone = (cur[view] || []).filter((photo) => photo.assessmentId === assessmentId && photo.captureStatus === "draft");
+    const stored = await savePhotos({
+      ...photos,
+      [target.id]: { ...cur, [view]: (cur[view] || []).filter((photo) => !(photo.assessmentId === assessmentId && photo.captureStatus === "draft")) },
+    });
+    if (!stored) return false;
+    forgetBlobs(gone.map((photo) => photo.blobId).filter(Boolean));
+    deviceLog("assessment_photo_deleted", { memberId: target.id, assessmentId, view, storage: "indexedDB" });
+    return true;
   };
   const removePhoto = (memberId, view, pid) => {
     const target = analysisMember(memberId);
@@ -8648,6 +10781,7 @@ export default function App() {
     const gone = (cur[view] || []).find((p) => p.id === pid);
     savePhotos({ ...photos, [target.id]: { ...cur, [view]: (cur[view] || []).filter((p) => p.id !== pid) } });
     if (gone?.blobId) forgetBlobs([gone.blobId]);
+    deviceLog("member_photo_deleted", { memberId: target.id, view, storage: gone?.blobId ? "indexedDB" : "localStorage" });
   };
   const saveSet = (memberId, view, beforeId, afterId) => {
     const target = analysisMember(memberId);
@@ -8687,7 +10821,7 @@ export default function App() {
     const target = analysisMember(memberId);
     if (!target || rec?.memberId && rec.memberId !== target.id) {
       if (rec?.memberId && rec.memberId !== target?.id) setToast({ ok: false, msg: "분석 대상 회원이 일치하지 않아 저장하지 않았습니다." });
-      return;
+      return false;
     }
     const out = { ...rec, memberId: target.id };
     delete out.blob; delete out.cleanBlob;
@@ -8699,10 +10833,33 @@ export default function App() {
       try { const cid = newBlobId(); await blobPut(cid, rec.cleanBlob); out.cleanBlobId = cid; } catch (e) {}
     }
     const cur = photos[target.id] || {};
-    const keep = [out, ...(cur.poses || [])];
-    forgetBlobs(keep.slice(6).flatMap((p) => [p.blobId, p.cleanBlobId]).filter(Boolean));
-    savePhotos({ ...photos, [target.id]: { ...cur, poses: keep.slice(0, 6) } });
+    const previous = (cur.poses || []).find((pose) => pose?.id === out.id) || null;
+    const keep = [out, ...(cur.poses || []).filter((pose) => pose?.id !== out.id)];
+    const stored = await savePhotos({ ...photos, [target.id]: { ...cur, poses: keep } });
+    if (!stored) {
+      forgetBlobs([out.blobId, out.cleanBlobId].filter(Boolean));
+      return false;
+    }
+    forgetBlobs([previous?.blobId, previous?.cleanBlobId].filter((blobId) => blobId && blobId !== out.blobId && blobId !== out.cleanBlobId));
+    deviceLog("pose_result_saved", { memberId: target.id, assessmentId: out.assessmentId, view: out.view, storage: "indexedDB", source: out.analysisSource });
     setToast({ ok: true, msg: "저장했습니다 · 아래 '저장된 분석' 목록에서 다시 볼 수 있어요." });
+    return true;
+  };
+  const updatePose = async (memberId, poseId, posePatch) => {
+    const target = analysisMember(memberId);
+    if (!target || !poseId) return false;
+    const cur = photos[target.id] || {};
+    const current = (cur.poses || []).find((record) => record?.id === poseId);
+    if (!current || current.memberId && current.memberId !== target.id) {
+      setToast({ ok: false, msg: "분석 대상 회원이 일치하지 않아 AI 결과를 저장하지 않았습니다." });
+      return false;
+    }
+    const stored = await savePhotos({
+      ...photos,
+      [target.id]: { ...cur, poses: (cur.poses || []).map((record) => record?.id === poseId ? { ...record, ...posePatch, memberId: target.id } : record) },
+    });
+    if (stored) deviceLog("pose_ai_metadata_saved", { memberId: target.id, assessmentId: current.assessmentId, storage: "localStorage", status: posePatch?.aiAnalysis?.status || posePatch?.memberResultCard?.status || "updated" });
+    return stored !== false;
   };
   const deletePose = (memberId, pid) => {
     const target = analysisMember(memberId);
@@ -8720,12 +10877,28 @@ export default function App() {
       p.id === pid ? { ...p, ...tf } : (gid && gtf && p.id === gid ? { ...p, ...gtf } : p)) } });
     setToast({ ok: true, msg: gid && gtf ? "두 사진의 위치를 저장했습니다." : "사진 위치를 저장했습니다." });
   };
-  const saveMarks = (memberId, view, pid, marks) => {
+  const saveMarks = async (memberId, view, pid, marks, options = {}) => {
     const target = analysisMember(memberId);
-    if (!target) return;
+    if (!target || !POSTURE_STORAGE_KEYS.includes(view) || !pid) return false;
     const cur = photos[target.id] || {};
-    savePhotos({ ...photos, [target.id]: { ...cur, [view]: (cur[view] || []).map((p) => (p.id === pid ? { ...p, marks } : p)) } });
-    setToast({ ok: true, msg: "체형 분석을 저장했습니다." });
+    const exists = (cur[view] || []).some((photo) => photo?.id === pid && (!photo.memberId || photo.memberId === target.id));
+    if (!exists) return false;
+    const stored = await savePhotos({ ...photos, [target.id]: { ...cur, [view]: (cur[view] || []).map((photo) => photo.id === pid ? { ...photo, marks, annotationUpdatedAt: new Date().toISOString() } : photo) } });
+    if (stored !== false && !options.quiet) setToast({ ok: true, msg: "체형 분석을 저장했습니다." });
+    return stored !== false;
+  };
+  const saveAssessmentRole = async (memberId, assessmentId, role) => {
+    const target = analysisMember(memberId);
+    if (!target || !assessmentId || !["before", "after", "unassigned"].includes(role)) return false;
+    const cur = photos[target.id] || {};
+    const next = { ...cur };
+    POSTURE_STORAGE_KEYS.forEach((view) => {
+      next[view] = (cur[view] || []).map((photo) => photo?.assessmentId === assessmentId ? { ...photo, assessmentRole: role } : photo);
+    });
+    next.poses = (cur.poses || []).map((pose) => pose?.assessmentId === assessmentId ? { ...pose, assessmentRole: role } : pose);
+    const stored = await savePhotos({ ...photos, [target.id]: next });
+    if (stored !== false) deviceLog("assessment_role_saved", { memberId: target.id, assessmentId, storage: "localStorage", role });
+    return stored !== false;
   };
   const wipePhotos = () => {
     Object.keys(photos || {}).forEach((mid) => forgetBlobs(blobIdsOf(photos[mid])));
@@ -8808,6 +10981,8 @@ export default function App() {
       .loadbar { animation: bar 1.5s cubic-bezier(.3,.9,.3,1) both }
       @keyframes weekIn { from { opacity: .35; transform: translateX(10px) } to { opacity: 1; transform: none } }
       @keyframes sheetIn { from { transform: translate(-50%, 18px); opacity: .72 } to { transform: translate(-50%, 0); opacity: 1 } }
+      @keyframes sheet-rise { from { transform: translateY(24px); opacity: .72 } to { transform: translateY(0); opacity: 1 } }
+      @keyframes sheet-fade { from { background-color: rgba(28,36,51,0) } to { background-color: ${SCRIM} } }
       .sheet-in { animation: sheetIn .18s ease-out both; }
       @keyframes rowRise { 0% { transform: translateY(18px); opacity: .3 } 55% { transform: translateY(-5px); opacity: 1 } 78% { transform: translateY(2px) } 100% { transform: translateY(0) } }
       @keyframes rowSink { 0% { transform: translateY(-12px) scale(.98); opacity: .45 } 70% { transform: translateY(2px) scale(1) } 100% { transform: translateY(0); opacity: 1 } }
@@ -8839,25 +11014,25 @@ export default function App() {
       <div className="safe-t flex h-full min-h-0 w-full flex-col" style={{ maxWidth: 420, backgroundColor: PAGE, boxShadow: "0 0 0 1px rgba(28,36,51,.04)" }}>
         <div className="relative min-h-0 flex-1 overflow-hidden">
           <Guard key={tab}>
-            {tab === "schedule" && <ScheduleManager db={db} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} />}
+            {tab === "schedule" && <ScheduleManager db={db} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} />}
             {tab === "members" && (mobileView === "detail" && member ? (
               <ReferenceMemberDetail key={member.id} member={member} schedule={db.schedule} photos={photos[member.id]} onBack={() => setMobileView("list")}
-                onPatch={(change) => patch(member.id, change)} onSaveNote={(type, body) => saveScheduleComment(member.id, type, null, body)}
-                onSchedule={() => { setScheduleMemberId(member.id); setTab("schedule"); }} onAssess={() => { setAnalysisRecordId(null); setAnalysisMemberId(member.id); setTab("analysis"); }} />
+                onPatch={(change) => patch(member.id, change)} onSaveNote={(type, body, voiceMeta) => saveScheduleComment(member.id, type, null, body, voiceMeta)}
+                onSchedule={() => { setScheduleMemberId(member.id); setTab("schedule"); }} onAssess={(entry = {}) => { setAnalysisRecordId(entry.poseId || null); setAnalysisAssessmentId(entry.assessmentId || null); setAnalysisEntryMode(entry.mode || "home"); setAnalysisMemberId(member.id); setTab("analysis"); }} />
             ) : <ReferenceMemberList members={db.members} schedule={db.schedule} onAdd={addMember} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} />)}
             {tab === "analysis" && <ReferenceAnalysisTab members={db.members} photos={photos} selectedId={analysisMemberId} selectedPoseId={analysisRecordId}
-              onSelect={(id, poseId = null) => { setAnalysisMemberId(id); setAnalysisRecordId(poseId); }}
+              onSelect={(id, poseId = null) => { setAnalysisMemberId(id); setAnalysisRecordId(poseId); setAnalysisAssessmentId(null); setAnalysisEntryMode(poseId ? "result" : "home"); }}
               hub={(id, initialSavedId) => {
                 const m = db.members.find((x) => x.id === id);
                 if (!m) return null;
-                const saved = (photos[id]?.poses || []).filter((x) => x && x.metrics);
-                return <div key={id} className="space-y-2">
-                  <Guard label="새 체형분석"><PoseAnalyzer embedded initialSavedId={initialSavedId} member={m} photos={photos[id]} onSavePose={(rec) => savePose(id, { ...rec, memberId: id })} onDeletePose={(pid) => deletePose(id, pid)} onSaveCaptureDraft={(captures) => saveCaptureDraft(id, captures)} onToast={setToast} roleLabel={saved.length === 0 ? "비포 사진" : "애프터 사진"} onSaved={(mode) => setAnalysisDone({ id, mode: mode || (saved.length === 0 ? "before" : "after") })} /></Guard>
-                  {saved.length >= 2 && <Guard label="결과 카드"><ResultCardMaker member={m} saved={saved} centerName={db.settings.center} onToast={setToast} /></Guard>}
-                  {saved.length > 0 && <Guard label="비포·애프터"><PhotoCompare member={m} photos={photos[id]} onSavePhoto={(...args) => savePhoto(id, ...args)} onRemove={(...args) => removePhoto(id, ...args)} onSaveMarks={(...args) => saveMarks(id, ...args)} onAdjust={(...args) => adjustPhoto(id, ...args)} onToast={setToast} onSaveSet={(...args) => saveSet(id, ...args)} /></Guard>}
-                </div>;
+                return <Guard label="체형분석"><AssessmentWorkspace key={`${id}_${analysisEntryMode}_${initialSavedId || "none"}_${analysisAssessmentId || "none"}`} member={m} photos={photos[id]} settings={db.settings} initialSavedId={initialSavedId} initialAssessmentId={analysisAssessmentId} initialMode={analysisEntryMode}
+                  onSavePose={(rec) => savePose(id, { ...rec, memberId: id })} onUpdatePose={(pid, posePatch) => updatePose(id, pid, posePatch)} onDeletePose={(pid) => deletePose(id, pid)}
+                  onSaveCaptureDraft={(captures) => saveCaptureDraft(id, captures)} onDeleteCaptureDraft={(assessmentId, view) => deleteCaptureDraft(id, assessmentId, view)}
+                  onSaveMarks={(view, photoId, marks, options) => saveMarks(id, view, photoId, marks, options)} onSaveAssessmentRole={(assessmentId, role) => saveAssessmentRole(id, assessmentId, role)}
+                  onToast={setToast} onSaved={(mode) => setAnalysisDone({ id, mode })} /></Guard>;
               }} />}
-            {tab === "settings" && <ReferenceSettingsTab db={db} account={account} savedAt={savedAt} onChangeSettings={(s) => saveDb({ ...db, settings: s })} onChangePhoto={changePhoto} onToast={setToast} themePref={themePref} onChangeTheme={changeTheme} onLogout={handleLogout} />}
+            {tab === "settings" && <ReferenceSettingsTab db={db} photos={photos} account={account} savedAt={savedAt} demoMode={demoMode} onChangeSettings={(s) => saveDb({ ...db, settings: s })} onChangePhoto={changePhoto} onToast={setToast} themePref={themePref} onChangeTheme={changeTheme} onLogout={handleLogout} onDeleteAccount={handleDeleteAccount} onImport={importHandoff}
+              onOpenSchedule={() => { setScheduleQuickAddRequest((request) => request + 1); setTab("schedule"); }} onOpenRecords={() => { setMobileView("list"); setTab("members"); }} />}
           </Guard>
         </div>
         <Tabs tab={tab} setTab={goTab} />

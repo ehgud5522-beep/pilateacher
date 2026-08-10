@@ -10,9 +10,11 @@ import { initializeApp } from "firebase/app";
 import {
   getAuth, onAuthStateChanged, signOut,
   GoogleAuthProvider, OAuthProvider, signInWithPopup, signInWithCredential,
-  createUserWithEmailAndPassword, signInWithEmailAndPassword, updateProfile,
+  EmailAuthProvider, createUserWithEmailAndPassword, signInWithEmailAndPassword,
+  reauthenticateWithCredential, reauthenticateWithPopup, updateProfile,
 } from "firebase/auth";
 import { getFirestore, doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
+import { getFunctions, httpsCallable } from "firebase/functions";
 
 const firebaseConfig = {
   apiKey: "AIzaSyABFqCur9nKHUuD_-EvvRNtxVbEhif9gjs",
@@ -25,11 +27,12 @@ const firebaseConfig = {
 
 export const fbReady = !!(firebaseConfig.apiKey && firebaseConfig.projectId);
 
-let app = null, auth = null, fs = null;
+let app = null, auth = null, fs = null, functions = null;
 if (fbReady) {
   app = initializeApp(firebaseConfig);
   auth = getAuth(app);
   fs = getFirestore(app);
+  functions = getFunctions(app, "asia-northeast3");
 }
 
 const shape = (u) => ({
@@ -58,36 +61,123 @@ const nativeAuth = () => {
   return (c && c.Plugins && c.Plugins.FirebaseAuthentication) || null;
 };
 
+const providerObject = (provider) => {
+  if (provider === "google") return new GoogleAuthProvider();
+  if (provider === "apple") {
+    const apple = new OAuthProvider("apple.com");
+    apple.addScope("email");
+    apple.addScope("name");
+    return apple;
+  }
+  throw Object.assign(new Error("Unsupported authentication provider."), { code: "auth/unsupported-provider" });
+};
+
+const requireNativeCredential = (provider, result) => {
+  const idToken = result?.credential?.idToken;
+  const nonce = result?.credential?.nonce;
+  if (!idToken) {
+    throw Object.assign(new Error("The native identity provider did not return an ID token."), {
+      code: "auth/missing-id-token",
+      authStage: "native_credential",
+      provider,
+    });
+  }
+  if (provider === "apple" && !nonce) {
+    throw Object.assign(new Error("Apple Sign In did not return the nonce required by Firebase."), {
+      code: "auth/missing-nonce",
+      authStage: "native_credential",
+      provider,
+    });
+  }
+  return {
+    credential: provider === "apple"
+      ? new OAuthProvider("apple.com").credential({ idToken, rawNonce: nonce })
+      : GoogleAuthProvider.credential(idToken),
+    authorizationCode: provider === "apple" ? result?.credential?.authorizationCode || "" : "",
+    firstName: result?.firstTimeDisplayName || result?.user?.displayName || "",
+    firstEmail: result?.user?.email || "",
+  };
+};
+
 /* ---------------- 로그인 ----------------
    앱에서는 팝업이 뜨지 않으므로 네이티브 로그인 화면을 쓴다.
    웹(브라우저)에서는 기존 팝업 방식 그대로. */
 export async function fbSignInSocial(provider) {
+  if (provider !== "google" && provider !== "apple") providerObject(provider);
+  const native = isNative();
   const NA = nativeAuth();
-  if (isNative() && NA) {
+  if (native) {
+    if (!NA) {
+      throw Object.assign(new Error("Firebase Authentication native plugin is unavailable."), {
+        code: "auth/native-plugin-unavailable",
+        authStage: "native_configuration",
+        provider,
+      });
+    }
     const res = provider === "apple"
       ? await NA.signInWithApple({ skipNativeAuth: true })
       : await NA.signInWithGoogle({ skipNativeAuth: true });
-    const cred = provider === "apple"
-      ? new OAuthProvider("apple.com").credential({
-          idToken: res?.credential?.idToken,
-          rawNonce: res?.credential?.nonce,
-        })
-      : GoogleAuthProvider.credential(res?.credential?.idToken);
-    const out = await signInWithCredential(auth, cred);
-    return { ...shape(out.user), provider };
+    const nativeCredential = requireNativeCredential(provider, res);
+    const out = await signInWithCredential(auth, nativeCredential.credential);
+    const user = shape(out.user);
+    return {
+      ...user,
+      name: user.name || nativeCredential.firstName,
+      email: user.email || nativeCredential.firstEmail,
+      provider,
+    };
   }
-  let p;
-  if (provider === "google") {
-    p = new GoogleAuthProvider();
-  } else if (provider === "apple") {
-    p = new OAuthProvider("apple.com");
-    p.addScope("email");
-    p.addScope("name");
-  } else {
-    throw new Error("unsupported provider");
-  }
-  const res = await signInWithPopup(auth, p);
+  const res = await signInWithPopup(auth, providerObject(provider));
   return { ...shape(res.user), provider };
+}
+
+export async function fbReauthenticate(provider, password = "") {
+  const user = auth?.currentUser;
+  if (!user) throw Object.assign(new Error("No signed-in user."), { code: "auth/unauthenticated" });
+  if (provider === "email") {
+    if (!user.email || !password) throw Object.assign(new Error("Password is required."), { code: "auth/password-required" });
+    await reauthenticateWithCredential(user, EmailAuthProvider.credential(user.email, password));
+    await user.getIdToken(true);
+    return { provider, authorizationCode: "" };
+  }
+  const native = isNative();
+  const NA = nativeAuth();
+  if (native) {
+    if (!NA) throw Object.assign(new Error("Firebase Authentication native plugin is unavailable."), { code: "auth/native-plugin-unavailable" });
+    const res = provider === "apple"
+      ? await NA.signInWithApple({ skipNativeAuth: true })
+      : await NA.signInWithGoogle({ skipNativeAuth: true });
+    const nativeCredential = requireNativeCredential(provider, res);
+    await reauthenticateWithCredential(user, nativeCredential.credential);
+    await user.getIdToken(true);
+    if (provider === "apple" && !nativeCredential.authorizationCode) {
+      throw Object.assign(new Error("Apple Sign In did not return an authorization code for revocation."), {
+        code: "auth/missing-authorization-code",
+        authStage: "provider_revocation",
+        provider,
+      });
+    }
+    return { provider, authorizationCode: nativeCredential.authorizationCode };
+  }
+  await reauthenticateWithPopup(user, providerObject(provider));
+  await user.getIdToken(true);
+  return { provider, authorizationCode: "" };
+}
+
+export async function fbRevokeAppleAccess(authorizationCode) {
+  if (!authorizationCode) return;
+  const NA = nativeAuth();
+  if (!NA || typeof NA.revokeAccessToken !== "function") {
+    throw Object.assign(new Error("Apple access-token revocation is unavailable."), { code: "auth/apple-revoke-unavailable" });
+  }
+  await NA.revokeAccessToken({ token: authorizationCode });
+}
+
+export async function fbDeleteCurrentUserAccount() {
+  if (!functions || !auth?.currentUser) throw Object.assign(new Error("Authentication is required."), { code: "auth/unauthenticated" });
+  const call = httpsCallable(functions, "deleteCurrentUserAccount");
+  const response = await call({ confirmation: "delete_current_user" });
+  return response?.data || null;
 }
 
 export async function fbSignUpEmail(email, pw, name) {

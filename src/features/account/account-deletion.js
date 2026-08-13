@@ -15,6 +15,41 @@ export const ACCOUNT_DELETION_PHASES = Object.freeze({
   FAILED_LOCAL: "failed_local",
 });
 
+export const ACCOUNT_DELETION_PROVIDER_REVOCATION_TIMEOUT_MS = 20000;
+export const ACCOUNT_DELETION_PROVIDER_REVOCATION_TIMEOUT_CODE = "account_deletion/provider_revocation_timeout";
+
+export const ACCOUNT_DELETION_PHASE_LABELS = Object.freeze({
+  [ACCOUNT_DELETION_PHASES.IDLE]: "대기 중",
+  [ACCOUNT_DELETION_PHASES.REAUTHENTICATING]: "본인 확인 중",
+  [ACCOUNT_DELETION_PHASES.REVOKING_PROVIDER]: "Apple 로그인 연결 해제 중",
+  [ACCOUNT_DELETION_PHASES.DELETING_REMOTE]: "계정 데이터 삭제 중",
+  [ACCOUNT_DELETION_PHASES.CLEANING_LOCAL]: "기기 데이터 정리 중",
+  [ACCOUNT_DELETION_PHASES.COMPLETED]: "계정 삭제 완료",
+  [ACCOUNT_DELETION_PHASES.CANCELLED]: "계정 삭제 취소됨",
+  [ACCOUNT_DELETION_PHASES.FAILED_REAUTHENTICATION]: "본인 확인 실패",
+  [ACCOUNT_DELETION_PHASES.FAILED_REVOCATION]: "Apple 로그인 연결 해제 실패",
+  [ACCOUNT_DELETION_PHASES.FAILED_REMOTE]: "계정 데이터 삭제 실패",
+  [ACCOUNT_DELETION_PHASES.FAILED_LOCAL]: "기기 데이터 정리 실패",
+});
+
+export function withProviderRevocationTimeout(operation, {
+  timeoutMs = ACCOUNT_DELETION_PROVIDER_REVOCATION_TIMEOUT_MS,
+  setTimer = setTimeout,
+  clearTimer = clearTimeout,
+} = {}) {
+  if (typeof operation !== "function") throw new TypeError("Provider revocation operation is required");
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimer(() => {
+      reject(Object.assign(new Error("Provider revocation did not respond in time."), {
+        code: ACCOUNT_DELETION_PROVIDER_REVOCATION_TIMEOUT_CODE,
+      }));
+    }, timeoutMs);
+  });
+  return Promise.race([Promise.resolve().then(operation), timeout])
+    .finally(() => clearTimer(timer));
+}
+
 const DEFAULT_BLOB_ID_FIELDS = new Set([
   "blobId",
   "cleanBlobId",
@@ -129,6 +164,9 @@ export async function runAccountDeletion({
   localDataSnapshot = undefined,
   onPhase = (_phase) => {},
   signal = undefined,
+  providerRevocationTimeoutMs = ACCOUNT_DELETION_PROVIDER_REVOCATION_TIMEOUT_MS,
+  setProviderRevocationTimer = setTimeout,
+  clearProviderRevocationTimer = clearTimeout,
 }) {
   if (!isAccountDeletionPhraseConfirmed(confirmationPhrase)) {
     throw new AccountDeletionFlowError(
@@ -161,11 +199,19 @@ export async function runAccountDeletion({
   if (provider === "apple" && typeof revokeApple === "function") {
     emit(ACCOUNT_DELETION_PHASES.REVOKING_PROVIDER);
     try {
-      await revokeApple({ reauthentication });
-    } catch (_error) {
+      await withProviderRevocationTimeout(
+        () => revokeApple({ reauthentication }),
+        {
+          timeoutMs: providerRevocationTimeoutMs,
+          setTimer: setProviderRevocationTimer,
+          clearTimer: clearProviderRevocationTimer,
+        },
+      );
+    } catch (error) {
       emit(ACCOUNT_DELETION_PHASES.FAILED_REVOCATION);
+      const timedOut = error?.code === ACCOUNT_DELETION_PROVIDER_REVOCATION_TIMEOUT_CODE;
       throw new AccountDeletionFlowError(
-        "account_deletion/provider_revocation_failed",
+        timedOut ? ACCOUNT_DELETION_PROVIDER_REVOCATION_TIMEOUT_CODE : "account_deletion/provider_revocation_failed",
         "Apple 로그인 연결 해제를 완료하지 못했습니다. 계정 데이터는 유지되었습니다.",
         { phase: ACCOUNT_DELETION_PHASES.FAILED_REVOCATION },
       );

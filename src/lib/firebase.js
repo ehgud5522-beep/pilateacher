@@ -13,7 +13,7 @@ import {
   getAuth, onAuthStateChanged, signOut,
   GoogleAuthProvider, OAuthProvider, signInWithPopup, signInWithCredential,
   EmailAuthProvider, createUserWithEmailAndPassword, signInWithEmailAndPassword,
-  reauthenticateWithCredential, reauthenticateWithPopup, updateProfile,
+  reauthenticateWithCredential, reauthenticateWithPopup, revokeAccessToken, updateProfile,
 } from "firebase/auth";
 import { getFirestore, doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
@@ -148,11 +148,17 @@ export async function fbReauthenticate(provider, password = "") {
   const NA = nativeAuth();
   if (native) {
     if (!NA) throw Object.assign(new Error("Firebase Authentication native plugin is unavailable."), { code: "auth/native-plugin-unavailable" });
-    const res = provider === "apple"
-      ? await NA.signInWithApple({ skipNativeAuth: true })
-      : await NA.signInWithGoogle({ skipNativeAuth: true });
+    const res = await withAuthTimeout(
+      () => provider === "apple"
+        ? NA.signInWithApple({ skipNativeAuth: true })
+        : NA.signInWithGoogle({ skipNativeAuth: true }),
+      { timeoutMs: 30000, provider, stage: "native_reauthentication" },
+    );
     const nativeCredential = requireNativeCredential(provider, res);
-    await reauthenticateWithCredential(user, nativeCredential.credential);
+    await withAuthTimeout(
+      () => reauthenticateWithCredential(user, nativeCredential.credential),
+      { timeoutMs: 20000, provider, stage: "firebase_reauthentication" },
+    );
     await user.getIdToken(true);
     if (provider === "apple" && !nativeCredential.authorizationCode) {
       throw Object.assign(new Error("Apple Sign In did not return an authorization code for revocation."), {
@@ -170,11 +176,11 @@ export async function fbReauthenticate(provider, password = "") {
 
 export async function fbRevokeAppleAccess(authorizationCode) {
   if (!authorizationCode) return;
-  const NA = nativeAuth();
-  if (!NA || typeof NA.revokeAccessToken !== "function") {
-    throw Object.assign(new Error("Apple access-token revocation is unavailable."), { code: "auth/apple-revoke-unavailable" });
-  }
-  await NA.revokeAccessToken({ token: authorizationCode });
+  if (!auth) throw Object.assign(new Error("Firebase Authentication is unavailable."), { code: "auth/unauthenticated" });
+  await withAuthTimeout(
+    () => revokeAccessToken(auth, authorizationCode),
+    { timeoutMs: 20000, provider: "apple", stage: "provider_revocation" },
+  );
 }
 
 export async function fbDeleteCurrentUserAccount() {

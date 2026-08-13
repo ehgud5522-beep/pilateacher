@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   ACCOUNT_DELETION_PHASES,
+  ACCOUNT_DELETION_PROVIDER_REVOCATION_TIMEOUT_CODE,
   AccountDeletionFlowError,
   DELETE_CONFIRMATION_PHRASE,
   collectOwnedBlobIds,
@@ -98,6 +99,45 @@ test("Apple provider revocation happens after reauthentication and before remote
     cleanupLocalData: async () => { calls.push("cleanupLocal"); },
   });
   assert.deepEqual(calls, ["reauthenticate", "revoke:one-time-code", "deleteRemote", "cleanupLocal"]);
+});
+
+test("Apple provider revocation timeout restores a retryable state without deleting data", async () => {
+  const phases = [];
+  let remoteCalls = 0;
+  let cleanupCalls = 0;
+  let triggerTimeout;
+  let clearedTimer;
+
+  const deletion = runAccountDeletion({
+    confirmationPhrase: DELETE_CONFIRMATION_PHRASE,
+    provider: "apple",
+    reauthenticate: async () => ({ authorizationCode: "one-time-code" }),
+    revokeApple: async () => new Promise(() => {}),
+    deleteServerAccount: async () => { remoteCalls += 1; return { deleted: true }; },
+    cleanupLocalData: async () => { cleanupCalls += 1; },
+    onPhase: (phase) => { phases.push(phase); },
+    setProviderRevocationTimer: /** @type {typeof setTimeout} */ ((callback) => { triggerTimeout = callback; return 77; }),
+    clearProviderRevocationTimer: (timer) => { clearedTimer = timer; },
+  });
+
+  await Promise.resolve();
+  assert.equal(typeof triggerTimeout, "function");
+  triggerTimeout();
+  await assert.rejects(
+    deletion,
+    (error) => error instanceof AccountDeletionFlowError
+      && error.code === ACCOUNT_DELETION_PROVIDER_REVOCATION_TIMEOUT_CODE
+      && error.phase === ACCOUNT_DELETION_PHASES.FAILED_REVOCATION
+      && error.remoteDeleted === false,
+  );
+  assert.deepEqual(phases, [
+    ACCOUNT_DELETION_PHASES.REAUTHENTICATING,
+    ACCOUNT_DELETION_PHASES.REVOKING_PROVIDER,
+    ACCOUNT_DELETION_PHASES.FAILED_REVOCATION,
+  ]);
+  assert.equal(remoteCalls, 0);
+  assert.equal(cleanupCalls, 0);
+  assert.equal(clearedTimer, 77);
 });
 
 test("cancelled reauthentication preserves remote and local data", async () => {

@@ -45,7 +45,8 @@ import {
 } from "./features/posture/posture-camera.js";
 import { classifyAuthError, createSingleFlightGate, safeAuthDiagnostic } from "./features/auth/apple-sign-in.js";
 import {
-  ACCOUNT_DELETION_PHASES, DELETE_CONFIRMATION_PHRASE, collectOwnedBlobIds, runAccountDeletion,
+  ACCOUNT_DELETION_PHASE_LABELS, ACCOUNT_DELETION_PHASES, DELETE_CONFIRMATION_PHRASE,
+  collectOwnedBlobIds, runAccountDeletion,
 } from "./features/account/account-deletion.js";
 import { Users, Settings as SettingsIcon, Search, ChevronRight, ChevronLeft, Plus, Camera, MessageSquare, Check, X, Trash2, ArrowLeft, Target, ClipboardList, RotateCcw, Sparkles, Copy, ArrowUpRight, ArrowDownRight, Loader as Loader2, Pencil, UserPlus, Activity, Ticket, Calendar, Clock, Bell, Download, TriangleAlert as AlertTriangle, CircleAlert as AlertCircle, LogOut, Mail, Star, Sun, Moon, Smartphone, Move, Crosshair, ChevronDown, ImagePlus, SlidersHorizontal, CalendarDays, ArrowUpDown, Minus, Upload, Link2, Users as Users2, Play } from "lucide-react";
 
@@ -10089,7 +10090,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
                   {account?.provider === "email" && <Field label="현재 비밀번호"><input type="password" value={deletePassword} onChange={(event) => setDeletePassword(event.target.value)} autoComplete="current-password" className={inputCls} /></Field>}
                   <p style={{ fontSize: 11, lineHeight: 1.5, color: SUB }}>{account?.provider === "apple" ? "최종 삭제 전에 Apple로 본인 확인합니다." : account?.provider === "google" ? "최종 삭제 전에 Google로 본인 확인합니다." : "최종 삭제 전에 비밀번호로 본인 확인합니다."}</p>
                   {deleteError && <div role="alert" className="rounded-lg p-3" style={{ backgroundColor: BAD_S, color: BAD, fontSize: 11, lineHeight: 1.5 }}>{deleteError}</div>}
-                  {busy && <p aria-live="polite" style={{ fontSize: 11, color: SUB }}>삭제 단계: {deletePhase}</p>}
+                  {busy && <p aria-live="polite" style={{ fontSize: 11, color: SUB }}>삭제 단계: {ACCOUNT_DELETION_PHASE_LABELS[deletePhase] || deletePhase}</p>}
                   <div className="grid grid-cols-2 gap-2"><button type="button" disabled={busy} onClick={() => setView("account")} className="h-11" style={{ borderRadius: 9, border: `1px solid ${LINE}`, color: INK2, fontSize: 13, fontWeight: 650 }}>취소</button><button type="button" disabled={busy || deletePhrase.trim() !== DELETE_CONFIRMATION_PHRASE || (account?.provider === "email" && !deletePassword)} onClick={submitAccountDeletion} className="flex h-11 items-center justify-center gap-1.5 disabled:opacity-40" style={{ borderRadius: 9, backgroundColor: BAD, color: "#fff", fontSize: 13, fontWeight: 700 }}>{busy ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}영구 삭제</button></div>
                 </div>
               )}

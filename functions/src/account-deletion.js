@@ -59,7 +59,10 @@ class AccountDeletionStageError extends AccountDeletionError {
 
 function defaultIsNotFoundError(error) {
   const code = String(error?.code || "").toLowerCase();
-  return code === "not-found"
+  const status = Number(error?.statusCode ?? error?.status ?? error?.response?.statusCode);
+  return code === "404"
+    || status === 404
+    || code === "not-found"
     || code === "auth/user-not-found"
     || code === "storage/object-not-found"
     || code === "firestore/not-found";

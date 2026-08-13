@@ -329,3 +329,15 @@ test("not-found responses are successful, making a repeated request idempotent",
   assert.deepEqual(await fixture.service.deleteCurrentUserAccount(request()), { status: "deleted" });
   assert.deepEqual(await fixture.service.deleteCurrentUserAccount(request()), { status: "deleted" });
 });
+
+test("a missing Cloud Storage bucket is treated as already deleted", async () => {
+  const fixture = createFixture({
+    async deleteStoragePrefix() {
+      throw Object.assign(new Error("The specified bucket does not exist."), { code: 404 });
+    },
+  });
+
+  assert.deepEqual(await fixture.service.deleteCurrentUserAccount(request()), { status: "deleted" });
+  assert.equal(fixture.state.userDeleted, true);
+  assert.equal(fixture.state.authDeleted, true);
+});

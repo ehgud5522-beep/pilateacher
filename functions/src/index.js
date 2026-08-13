@@ -116,6 +116,7 @@ exports.deleteCurrentUserAccount = onCall({
   region: process.env.FUNCTIONS_REGION || "asia-northeast3",
   timeoutSeconds: 540,
   memory: "256MiB",
+  invoker: "public",
 }, async (request) => {
   try {
     return await accountDeletionService.deleteCurrentUserAccount(request);

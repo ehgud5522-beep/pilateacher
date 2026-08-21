@@ -16,6 +16,7 @@
     "validate:fixture": "node tools/validation/cli.js --legacy tests/fixtures/legacy-backup.json --new tests/fixtures/new-structure.json --format markdown"
   },
   "dependencies": {
+    "@capacitor-community/speech-recognition": "^7.0.1",
     "@capacitor-firebase/authentication": "^8.3.0",
     "@capacitor/android": "^8.4.2",
     "@capacitor/cli": "^8.4.2",

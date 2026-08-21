@@ -82,6 +82,8 @@
 // ============================================================================
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Capacitor } from "@capacitor/core";
+import { SpeechRecognition } from "@capacitor-community/speech-recognition";
 import { CalendarDays, Users, Ruler, MoveHorizontal as MoreHorizontal, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, X, Mic, Pencil, Check, Play, Sparkles, List, Settings, FileText, BarChart3, Share2, BookOpen, Plus, Minus, CircleAlert as AlertCircle, RefreshCw, Link2, CalendarClock, CloudOff, Search, UserPlus, MessageSquarePlus, Camera } from "lucide-react";
 
 /* ─────────────────────────── 디자인 토큰 (VDS 확정) ─────────────────────────── */
@@ -104,6 +106,8 @@ const idColor = (id) => {
 };
 
 const CSS = `
+  html{color-scheme:light;background:#F6F7F9}
+  body,#root{background:#F6F7F9}
   .pt-scroll::-webkit-scrollbar{width:0;height:0}
   .tnum{font-variant-numeric:tabular-nums}
   button{-webkit-tap-highlight-color:transparent;touch-action:manipulation;background:transparent;border:none;cursor:pointer;font-family:inherit;color:inherit;padding:0}
@@ -136,6 +140,43 @@ const DOW = ["월", "화", "수", "목", "금", "토", "일"];
 const kbSafe = (e) => { try { setTimeout(() => e.target.scrollIntoView({ block: "center", behavior: "smooth" }), 160); } catch (_) { /* noop */ } };
 
 const ROW = 32, DENSE_ROW = 64, FOLD_H = 20, AXIS = 28, PADX = 12, MIN_COL = 44, EDGE_GUARD = 24;
+const DEFAULT_CLASS_DURATION = 50;
+
+const webSpeechCtor = () => {
+  if (typeof window === "undefined") return null;
+  return window.SpeechRecognition || window.webkitSpeechRecognition || null;
+};
+const voiceCaptureSupported = () => Capacitor.isNativePlatform() || !!webSpeechCtor();
+async function captureVoiceNote() {
+  if (Capacitor.isNativePlatform()) {
+    const available = await SpeechRecognition.available();
+    if (!available?.available) throw new Error("unsupported");
+    let permission = await SpeechRecognition.checkPermissions();
+    if (permission?.speechRecognition !== "granted") permission = await SpeechRecognition.requestPermissions();
+    if (permission?.speechRecognition !== "granted") throw new Error("permission-denied");
+    const result = await SpeechRecognition.start({
+      language: "ko-KR",
+      maxResults: 1,
+      prompt: "수업 기록을 말씀해 주세요",
+      partialResults: false,
+      popup: Capacitor.getPlatform() === "android",
+    });
+    return String(result?.matches?.[0] || "").trim();
+  }
+  const Recognition = webSpeechCtor();
+  if (!Recognition) throw new Error("unsupported");
+  return new Promise((resolve, reject) => {
+    const recognition = new Recognition();
+    recognition.lang = "ko-KR";
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+    recognition.onresult = (event) => resolve(String(event?.results?.[0]?.[0]?.transcript || "").trim());
+    recognition.onerror = (event) => reject(new Error(event?.error === "not-allowed" ? "permission-denied" : "recognition-failed"));
+    recognition.onnomatch = () => resolve("");
+    try { recognition.start(); } catch (_) { reject(new Error("recognition-failed")); }
+  });
+}
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * @pure-start  — 데이터 모델 · 서비스 계층 (UI 무관, 테스트 대상)
@@ -1680,7 +1721,7 @@ function RegisterSheet({ date, min, hours, preset, onClose, onCreate }) {
   const [cap, setCap] = useState(8);
   const [h, setH] = useState(Math.floor(min / 60));
   const [m, setM] = useState(min % 60 - ((min % 60) % 15));
-  const [dur, setDur] = useState(50);
+  const [dur, setDur] = useState(DEFAULT_CLASS_DURATION);
   const input = { height: 44, width: "100%", background: T.sunken, border: `1px solid ${T.border}`,
     borderRadius: 8, padding: "0 12px", fontSize: 15, color: T.ink };
   const lab = (t2) => <div style={{ fontSize: 12, fontWeight: 500, color: T.ink2, marginBottom: 4 }}>{t2}</div>;
@@ -2091,6 +2132,7 @@ export default function App() {
   const [offset, setOffset] = useState(0);
   const [sheet, setSheet] = useState(null);
   const [syncing, setSyncing] = useState(false);
+  const [voiceBusy, setVoiceBusy] = useState(false);
   const [toast, setToast] = useState(null);
   const toastT = useRef(null);
   useEffect(() => () => clearTimeout(toastT.current), []);
@@ -2344,13 +2386,19 @@ export default function App() {
     bump();
   }, [attendanceRepo, bump]);
   const onVoice = useCallback((lesson) => {
-    try {
-      const api = typeof window !== "undefined" && window.__pilateacher;
-      if (api && typeof api.voiceNote === "function") { api.voiceNote(lesson); return true; }
-    } catch (e) { /* noop */ }
-    say("데모: 실제 앱에서는 기존 AI 음성기록이 열립니다");
-    return false;
-  }, [say]);
+    if (!voiceCaptureSupported()) { say("이 기기에서는 음성 인식을 사용할 수 없어요"); return false; }
+    if (voiceBusy) { say("이미 음성 기록을 듣고 있어요"); return true; }
+    setVoiceBusy(true);
+    say("수업 기록을 말씀해 주세요");
+    captureVoiceNote()
+      .then((text) => text ? setRecord(lesson, text) : say("인식된 내용이 없어요. 다시 말씀해 주세요"))
+      .catch((e) => say(e?.message === "permission-denied"
+        ? "설정에서 마이크와 음성 인식 권한을 허용해 주세요"
+        : e?.message === "unsupported" ? "이 기기에서는 음성 인식을 사용할 수 없어요"
+        : "음성 인식을 시작하지 못했어요. 다시 시도해 주세요"))
+      .finally(() => setVoiceBusy(false));
+    return true;
+  }, [voiceBusy, setRecord, say]);
   /* P0-6/v5: 같은 이름은 memberRepo.findByName 으로 기존 회원 연결 — 중복 생성 방지.
    * 테넌트·inactive 필터는 repo 가 보장. 홀딩 중 회원 포함 등록은 허용하되 토스트로 안내(해제는 회원 상세에서). */
   const createLesson = useCallback(async ({ date, start, dur, type, names, cap }) => {

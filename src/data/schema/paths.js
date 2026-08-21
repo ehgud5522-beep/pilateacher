@@ -23,6 +23,15 @@ export const paths = Object.freeze({
   client: (clientId) => `${COLLECTIONS.CLIENTS}/${segment(clientId, "clientId")}`,
   /** @param {string} lessonId */
   lesson: (lessonId) => `${COLLECTIONS.LESSONS}/${segment(lessonId, "lessonId")}`,
+  /** @param {string} organizationId @param {string} clientId */
+  organizationClient: (organizationId, clientId) =>
+    `${COLLECTIONS.ORGANIZATIONS}/${segment(organizationId, "organizationId")}/${COLLECTIONS.CLIENTS}/${segment(clientId, "clientId")}`,
+  /** @param {string} organizationId @param {string} lessonId */
+  organizationLesson: (organizationId, lessonId) =>
+    `${COLLECTIONS.ORGANIZATIONS}/${segment(organizationId, "organizationId")}/${COLLECTIONS.LESSONS}/${segment(lessonId, "lessonId")}`,
+  /** @param {string} organizationId @param {string} lessonId @param {string} clientId */
+  lessonParticipant: (organizationId, lessonId, clientId) =>
+    `${COLLECTIONS.ORGANIZATIONS}/${segment(organizationId, "organizationId")}/${COLLECTIONS.LESSONS}/${segment(lessonId, "lessonId")}/participants/${segment(clientId, "clientId")}`,
   /** @param {string} assessmentId */
   assessment: (assessmentId) => `${COLLECTIONS.ASSESSMENTS}/${segment(assessmentId, "assessmentId")}`,
   /** @param {string} recommendationId */

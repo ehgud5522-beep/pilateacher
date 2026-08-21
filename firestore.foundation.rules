@@ -56,6 +56,47 @@ service cloud.firestore {
       allow create, delete: if false;
       allow update: if hasRole(organizationId, ["owner"])
         && immutable(["plan", "subscriptionStatus", "aiUsageCount"]);
+
+      // Additive dual-write v1 paths. Existing top-level paths remain unchanged.
+      match /clients/{clientId} {
+        allow read: if isActiveMember(organizationId)
+          && resource.data.organizationId == organizationId
+          && (
+            hasRole(organizationId, ["owner", "manager", "instructor", "staff"])
+            || isOwnClientDocument(resource.data)
+          );
+        allow create: if request.resource.data.organizationId == organizationId
+          && hasRole(organizationId, ["owner", "manager", "instructor", "staff"]);
+        allow update: if resource.data.organizationId == organizationId
+          && request.resource.data.organizationId == organizationId
+          && hasRole(organizationId, ["owner", "manager", "instructor", "staff"]);
+        allow delete: if false;
+      }
+
+      match /lessons/{lessonId} {
+        allow read: if isActiveMember(organizationId)
+          && resource.data.organizationId == organizationId;
+        allow create: if request.resource.data.organizationId == organizationId
+          && hasRole(organizationId, ["owner", "manager", "instructor", "staff"]);
+        allow update: if resource.data.organizationId == organizationId
+          && request.resource.data.organizationId == organizationId
+          && hasRole(organizationId, ["owner", "manager", "instructor", "staff"]);
+        allow delete: if false;
+
+        match /participants/{clientId} {
+          allow read: if isActiveMember(organizationId)
+            && resource.data.organizationId == organizationId;
+          allow create: if request.resource.data.organizationId == organizationId
+            && request.resource.data.lessonId == lessonId
+            && request.resource.data.clientId == clientId
+            && hasRole(organizationId, ["owner", "manager", "instructor", "staff"]);
+          allow update: if resource.data.organizationId == organizationId
+            && request.resource.data.organizationId == organizationId
+            && immutable(["lessonId", "clientId", "organizationId"])
+            && hasRole(organizationId, ["owner", "manager", "instructor", "staff"]);
+          allow delete: if false;
+        }
+      }
     }
 
     match /locations/{locationId} {

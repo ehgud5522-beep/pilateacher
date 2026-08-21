@@ -5,6 +5,7 @@
 /* CSS 변수 — applyTheme() 에서 라이트/다크 전환 시 값이 교체됩니다.
    tailwind.config.js 의 color 토큰이 이 변수를 참조합니다. */
 :root {
+  color-scheme: light;
   --page: #F2F2F7;
   --card: #FFFFFF;
   --canvas: #F5F5FA;
@@ -34,4 +35,8 @@
   --scrim: rgba(20,20,43,0.45);
   --on-brand: #FFFFFF;
   --theme: light;
+}
+
+html, body, #root {
+  background: #F6F7F9;
 }

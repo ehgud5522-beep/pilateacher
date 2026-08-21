@@ -8,3 +8,4 @@ firestore-debug.log
 ui-debug.log
 reports/foundation/
 .foundation-build/
+.android-release/

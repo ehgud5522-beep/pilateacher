@@ -13,6 +13,10 @@
     "test:foundation": "node --test tests/schema/*.test.js tests/migration/*.test.js tests/validation/*.test.js",
     "test:dual-write": "node --test tests/dual-write/*.test.js",
     "test:app-review": "node --test tests/app-review/*.test.js",
+    "test:android-release": "node --test tests/android/release-guard.test.js",
+    "android:release:guard": "node tools/android/release-guard.mjs --stage preflight",
+    "android:release:build": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/android/build-release.ps1",
+    "android:release:verify": "node tools/android/release-guard.mjs --stage artifact --aab",
     "test:rules": "firebase emulators:exec --only firestore --project pilateacher-dev --config firebase.foundation.json \"node --test tests/rules/firestore.rules.test.js\"",
     "backfill:dry-run": "node tools/migration/cli.js --fixture tests/fixtures/legacy-backup.json",
     "validate:fixture": "node tools/validation/cli.js --legacy tests/fixtures/legacy-backup.json --new tests/fixtures/new-structure.json --format markdown"

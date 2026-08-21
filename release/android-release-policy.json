@@ -1,0 +1,26 @@
+{
+  "applicationId": "com.pilateacher.app",
+  "track": "closed-alpha",
+  "approvedUiBaseCommit": "140351bdddf6f7792d5c83a787b11ad13d95468d",
+  "lastPublishedVersionCode": 14,
+  "lastPublishedVersionName": "1.1.10",
+  "allowedBranchPatterns": [
+    "^codex/android-",
+    "^release/android-"
+  ],
+  "criticalSourceFile": "src/App.jsx",
+  "minimumCriticalFileSizeRatio": 0.75,
+  "minimumAabBytes": 5000000,
+  "requiredDependencies": [
+    "@capacitor-community/speech-recognition",
+    "@capacitor/motion",
+    "@capgo/camera-preview"
+  ],
+  "allowedGeneratedChanges": [
+    "dist/",
+    "android/app/src/main/assets/",
+    "android/app/src/main/res/xml/config.xml",
+    "android/app/capacitor.build.gradle",
+    "android/capacitor.settings.gradle"
+  ]
+}

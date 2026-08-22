@@ -69,7 +69,7 @@ const sysDarkNow = () => {
 };
 
 /* 파일이 실제로 교체됐는지 1초 만에 확인하는 표시 — 설정 탭 맨 아래에 뜬다 */
-const APP_VER = "v83 · 2026-07-29";
+const APP_VER = "1.1.11 (15) · 2026-08-22";
 const RELEASE_VERSION = String(import.meta.env?.VITE_APP_VERSION || "").trim();
 const RELEASE_BUILD_NUMBER = String(import.meta.env?.VITE_BUILD_NUMBER || "").trim();
 const RELEASE_COMMIT_SHORT = String(import.meta.env?.VITE_BUILD_COMMIT || "").trim().slice(0, 7);
@@ -1537,12 +1537,15 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
                       } catch (e) {
                         const c = (e && e.code) || "";
                         onToast({ ok: false, msg:
-                          c === "auth/email-already-in-use" ? "\uc774\ubbf8 \uac00\uc785\ub41c \uc774\uba54\uc77c\uc785\ub2c8\ub2e4."
+                          c === "auth/operation-timeout" ? "로그인 서버 응답이 늦어 중단했습니다. 네트워크를 확인한 뒤 다시 시도해 주세요."
+                          : c === "auth/network-request-failed" ? "네트워크 연결을 확인한 뒤 다시 시도해 주세요."
+                          : c === "auth/email-already-in-use" ? "\uc774\ubbf8 \uac00\uc785\ub41c \uc774\uba54\uc77c\uc785\ub2c8\ub2e4."
                           : c === "auth/weak-password" ? "\ube44\ubc00\ubc88\ud638\ub97c 6\uc790 \uc774\uc0c1\uc73c\ub85c \ub9cc\ub4e4\uc5b4 \uc8fc\uc138\uc694."
                           : c === "auth/invalid-email" ? "\uc774\uba54\uc77c \ud615\uc2dd\uc774 \uc62c\ubc14\ub974\uc9c0 \uc54a\uc2b5\ub2c8\ub2e4."
                           : "\uc774\uba54\uc77c \ub610\ub294 \ube44\ubc00\ubc88\ud638\uac00 \ub9de\uc9c0 \uc54a\uc2b5\ub2c8\ub2e4." });
+                      } finally {
+                        setBusy("");
                       }
-                      setBusy("");
                       return;
                     }
                     if (emailTab === "signup") {
@@ -2422,7 +2425,7 @@ function WeekGrid({ days, byDate, nameOf, memberOf, cursor, onOpen, onNew, foldE
     const k = slotAt(e, e.currentTarget);
     const startMin = k.hour * 60 + k.half * 30;
     const start = `${String(Math.floor(startMin / 60)).padStart(2, "0")}:${String(startMin % 60).padStart(2, "0")}`;
-    onNew(d, start, 30, e.currentTarget);
+    onNew(d, start, DEFAULT_CLASS_DURATION, e.currentTarget);
   };
   const blocksOf = (d) => byDate(d).filter((s) => {
     const a = minOf(s.start), b = minOf(s.end) || a + 50;
@@ -2445,19 +2448,19 @@ function WeekGrid({ days, byDate, nameOf, memberOf, cursor, onOpen, onNew, foldE
 
   return (
     <div ref={gridRef} className="flex h-full min-h-0 flex-col" style={{ padding: `0 ${GRID_PAD_X}px`, backgroundColor: CARD }}>
-          <div ref={gridHeaderRef} className="z-10 grid shrink-0" style={{ gridTemplateColumns: `${AXIS}px repeat(${days.length}, minmax(0, 1fr))`, backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
+          <div className="min-h-0 flex-1 overflow-y-auto">
+          <div ref={gridHeaderRef} className="sticky top-0 z-20 grid shrink-0" style={{ gridTemplateColumns: `${AXIS}px repeat(${days.length}, minmax(0, 1fr))`, backgroundColor: "var(--card)", borderBottom: "1px solid var(--line)" }}>
             <div />
             {days.map((d) => {
               const today = d === todayISO(), on = d === cursor;
               return (
-                <div key={d} className="min-w-0 py-1.5 text-center" style={{ borderLeft: `1px solid ${LINE}`, backgroundColor: today ? TINT : "transparent" }}>
-                  <p className="font-extrabold" style={{ fontSize: 11, color: today ? PRIMARY : redInk(d, SUB) }}>{dow(d)}</p>
-                  <p className="font-extrabold tabular-nums" style={{ fontSize: 13, color: today ? PRIMARY : redInk(d, on ? INK : SUB) }}>{Number(d.slice(8, 10))}</p>
+                <div key={d} className="min-w-0 py-1.5 text-center" style={{ borderLeft: "1px solid var(--line)", backgroundColor: today ? "var(--tint)" : "var(--card)" }}>
+                  <p className="font-extrabold" style={{ fontSize: 11, color: today ? "var(--primary)" : redInk(d, SUB) }}>{dow(d)}</p>
+                  <p className="font-extrabold tabular-nums" style={{ fontSize: 13, color: today ? "var(--primary)" : redInk(d, on ? INK : SUB) }}>{Number(d.slice(8, 10))}</p>
                 </div>
               );
             })}
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto">
           <div className="relative grid" style={{ gridTemplateColumns: `${AXIS}px repeat(${days.length}, minmax(0, 1fr))` }}>
             <div style={{ height: totalHeight }}>
               {Array.from({ length: rows }, (_, i) => (
@@ -2487,10 +2490,10 @@ function WeekGrid({ days, byDate, nameOf, memberOf, cursor, onOpen, onNew, foldE
                   <button key={b.s.id} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); onOpen(b.s, e.currentTarget); }}
                     className="absolute left-0.5 right-0.5 flex min-w-0 items-center justify-center overflow-hidden text-center"
                     style={{ top: b.top + 1, height: Math.max(18, b.h - 1), borderRadius: 4,
-                      background: b.pv ? CARD : b.cancelled ? "transparent" : b.noshow ? BAD_S : b.done ? CANVAS : b.next ? TINT : PHOTO,
-                      border: b.next ? `1.5px solid ${BRAND}` : b.cancelled ? `1px dashed ${LINE}` : b.pv ? `1px solid ${LINE}` : "1px solid transparent",
-                      borderLeft: b.pv ? `3px solid ${BRAND}` : undefined,
-                      color: b.noshow ? BAD : b.next ? BRAND : b.done || b.cancelled ? INK2 : d === todayISO() ? INK : INK2,
+                      background: b.pv ? "var(--card)" : b.cancelled ? "transparent" : b.noshow ? "var(--bad-s)" : b.done ? "var(--canvas)" : b.next ? "var(--tint)" : "var(--card)",
+                      border: b.next ? "1.5px solid var(--brand)" : b.cancelled ? "1px dashed var(--line)" : "1px solid var(--line)",
+                      borderLeft: b.pv ? "3px solid var(--brand)" : !b.cancelled && !b.next ? "3px solid var(--primary)" : undefined,
+                      color: b.noshow ? "var(--bad)" : b.next ? "var(--brand)" : b.done || b.cancelled ? "var(--ink2)" : "var(--ink)",
                       padding: "1px 2px", fontSize: b.label.length > 7 ? 8.5 : b.label.length > 4 ? 9 : b.label.length === 4 ? 9.5 : 10.5,
                       letterSpacing: b.label.length >= 4 ? "-0.35px" : "-0.15px", lineHeight: 1.08, fontWeight: b.next || (focusedMemberId && memberMatch) ? 700 : 600,
                       opacity: memberMatch ? 1 : 0.22, boxShadow: focusedMemberId && memberMatch ? `0 0 0 2px ${RING}` : "none", transition: "opacity .18s ease, box-shadow .18s ease" }}>
@@ -8680,6 +8683,7 @@ const voiceTime = (seconds) => `${String(Math.floor(seconds / 60)).padStart(2, "
 
 function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = null }) {
   const [on, setOn] = useState(false);
+  const [finishing, setFinishing] = useState(false);
   const [text, setText] = useState("");
   const [elapsed, setElapsed] = useState(0);
   const [audioState, setAudioState] = useState("idle");
@@ -8703,14 +8707,36 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
   const streamRef = useRef(null);
   const chunksRef = useRef([]);
   const sourceRef = useRef(null);
-  const nativeListenerRef = useRef(null);
+  const nativeListenersRef = useRef([]);
+  const finishTimerRef = useRef(null);
+  const stoppingRef = useRef(false);
+  const heardRef = useRef(false);
+  const textRef = useRef("");
   const audioBlobRef = useRef(null);
   const audioTransferredRef = useRef(false);
   const discardRecordingRef = useRef(false);
-  const clearNativeListener = () => {
-    const listener = nativeListenerRef.current;
-    nativeListenerRef.current = null;
-    try { listener?.remove?.(); } catch (e) {}
+  useEffect(() => { textRef.current = text; }, [text]);
+  const clearNativeListeners = () => {
+    const listeners = nativeListenersRef.current.splice(0);
+    listeners.forEach((listener) => {
+      try { Promise.resolve(listener?.remove?.()).catch(() => {}); } catch (e) {}
+    });
+  };
+  const finishRecognition = (showEmpty = true) => {
+    if (finishTimerRef.current) clearTimeout(finishTimerRef.current);
+    finishTimerRef.current = null;
+    stoppingRef.current = false;
+    recRef.current = null;
+    setOn(false);
+    setFinishing(false);
+    clearNativeListeners();
+    if (showEmpty && !heardRef.current && !textRef.current.trim()) {
+      setErr("음성이 인식되지 않았습니다. 조금 더 크게 말한 뒤 다시 시도해 주세요.");
+    }
+  };
+  const scheduleFinish = (delay = 1200, showEmpty = true) => {
+    if (finishTimerRef.current) clearTimeout(finishTimerRef.current);
+    finishTimerRef.current = setTimeout(() => finishRecognition(showEmpty), delay);
   };
   useEffect(() => {
     if (!on) return;
@@ -8772,6 +8798,11 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
     setAudioState("recording");
   };
   const start = async () => {
+    if (finishTimerRef.current) clearTimeout(finishTimerRef.current);
+    finishTimerRef.current = null;
+    stoppingRef.current = false;
+    heardRef.current = false;
+    setFinishing(false);
     const NS = nativeSTT();
     const R = webSTT();
     if (!NS && !R && !mediaRecordOK()) {
@@ -8821,26 +8852,40 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
           }
         }
         setErr(mediaError ? "음성 인식은 시작됐지만 녹음 원본은 저장되지 않습니다." : ""); setOn(true); setSource("native"); sourceRef.current = "native";
-        clearNativeListener();
-        nativeListenerRef.current = await NS.addListener?.("partialResults", (d) => {
+        clearNativeListeners();
+        const partialListener = await NS.addListener?.("partialResults", (d) => {
           const t = (d?.matches && d.matches[0]) || "";
-          if (t) setText((p) => (p ? p.split(" ⟨")[0] : "") + " ⟨" + t + "⟩");
+          if (t) {
+            heardRef.current = true;
+            setText((p) => (p ? p.split(" ⟨")[0] : "") + " ⟨" + t + "⟩");
+            if (stoppingRef.current) scheduleFinish(350, false);
+          }
         });
+        const stateListener = await NS.addListener?.("listeningState", (d) => {
+          if (d?.status === "started") { setOn(true); setFinishing(false); }
+          else if (d?.status === "stopped") { setOn(false); setFinishing(true); scheduleFinish(800); }
+        });
+        nativeListenersRef.current = [partialListener, stateListener].filter(Boolean);
         recRef.current = { native: true, stop: () => NS.stop?.() };
         Promise.resolve(NS.start({ language: "ko-KR", partialResults: true, popup: false })).then((result) => {
           const got = (result?.matches && result.matches[0]) || "";
-          if (got) setText((previous) => `${previous ? previous.split(" ⟨")[0].trim() + " " : ""}${got}`.trim());
+          if (got) {
+            heardRef.current = true;
+            setText((previous) => `${previous ? previous.split(" ⟨")[0].trim() + " " : ""}${got}`.trim());
+          }
+          if (stoppingRef.current) scheduleFinish(got ? 250 : 800, !got);
         }).catch((error) => {
+          if (stoppingRef.current) { scheduleFinish(0); return; }
           setErr("음성 인식이 중단되었습니다. 기존 작성 내용은 유지됩니다.");
           deviceLog("voice_transcription_failed", { memberId, lessonId, source: "native", ...deviceError(error) });
-          clearNativeListener(); setOn(false); stopMedia();
+          clearNativeListeners(); setOn(false); setFinishing(false); stopMedia();
         });
         deviceLog("voice_record_started", { memberId, lessonId, source: "native", storage: "indexedDB" });
         return;
       } catch (error) {
-        clearNativeListener(); stopMedia();
+        clearNativeListeners(); stopMedia();
         setErr("음성 인식을 시작하지 못했습니다. 직접 입력을 이용해 주세요.");
-        setOn(false);
+        setOn(false); setFinishing(false);
         deviceLog("voice_transcription_failed", { memberId, lessonId, source: "native", ...deviceError(error) });
         return;
       }
@@ -8853,6 +8898,7 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
         let live = "";
         for (let i = e.resultIndex; i < e.results.length; i++) {
           const t = e.results[i][0].transcript;
+          if (t) heardRef.current = true;
           if (e.results[i].isFinal) fixed += t + " "; else live += t;
         }
         setText((fixed + live).trim());
@@ -8860,9 +8906,10 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
       r.onerror = (event) => {
         setErr(event?.error === "not-allowed" ? "마이크 권한이 거부되었습니다. 직접 입력을 이용해 주세요." : "음성 인식이 중단되었습니다. 기존 작성 내용은 유지됩니다.");
         setOn(false); stopMedia();
+        finishRecognition(false);
         deviceLog("voice_transcription_failed", { memberId, lessonId, source: "web_speech", code: event?.error || "unknown", message: "speech recognition stopped" });
       };
-      r.onend = () => { setOn(false); stopMedia(); };
+      r.onend = () => { setOn(false); stopMedia(); if (stoppingRef.current) scheduleFinish(250); else finishRecognition(true); };
       recRef.current = r; setErr(""); setOn(true); setSource("web_speech"); sourceRef.current = "web_speech"; r.start();
       deviceLog("voice_record_started", { memberId, lessonId, source: "web_speech", storage: "indexedDB" });
     } catch (error) {
@@ -8872,8 +8919,19 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
     }
   };
   const stop = () => {
-    try { if (recRef.current?.native) recRef.current.stop?.(); else recRef.current?.stop?.(); } catch (e) {}
-    clearNativeListener(); stopMedia(); setOn(false);
+    const rec = recRef.current;
+    stoppingRef.current = true;
+    setOn(false);
+    setFinishing(true);
+    setErr("");
+    try {
+      /* Android 플러그인의 stop Promise가 끝나지 않는 버전이 있어 기다리지 않는다. */
+      const pending = rec?.stop?.();
+      Promise.resolve(pending).catch(() => scheduleFinish(0));
+    } catch (e) { scheduleFinish(0); }
+    stopMedia();
+    /* 마지막 partial/final 결과와 녹음 저장 완료를 받은 뒤 반드시 다음 UI를 보여 준다. */
+    scheduleFinish(rec?.native ? 1800 : rec ? 1200 : 500, !!rec);
     deviceLog("voice_record_stopped", { memberId, lessonId, source: sourceRef.current || "unknown", storage: "indexedDB" });
   };
   const requestSummary = async () => {
@@ -8892,9 +8950,10 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
   };
   const setSummaryField = (field, value, isList = true) => setSummaryDraft((current) => ({ ...(current || {}), [field]: isList ? aiListValue(value) : value }));
   useEffect(() => () => {
+    if (finishTimerRef.current) clearTimeout(finishTimerRef.current);
     discardRecordingRef.current = true;
     try { recRef.current?.stop?.(); } catch (e) {}
-    clearNativeListener();
+    clearNativeListeners();
     const recorder = mediaRef.current;
     if (recorder && recorder.state !== "inactive") { try { recorder.stop(); } catch (e) {} }
     streamRef.current?.getTracks?.().forEach((track) => track.stop());
@@ -8905,13 +8964,14 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
     <div ref={boxRef} className="rounded-2xl p-3" style={{ backgroundColor: CANVAS, boxShadow: highlight ? `0 0 0 2.5px ${PRIMARY}` : "none", transition: "box-shadow .4s ease" }}>
       <div className="flex items-center gap-2">
         <p className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: INK }}>음성으로 일지 쓰기</p>
-        <button onClick={on ? stop : start} disabled={!supported || audioState === "saving"} className="flex shrink-0 items-center gap-1.5 rounded-full px-3 py-2 text-xs font-extrabold text-white disabled:opacity-40"
+        <button onClick={on ? stop : start} disabled={!supported || audioState === "saving" || finishing} aria-label={on ? "음성 녹음 멈추기" : "음성으로 말하기 시작"} className="flex shrink-0 items-center gap-1.5 rounded-full px-3 py-2 text-xs font-extrabold text-white disabled:opacity-40"
           style={{ backgroundColor: on ? BAD : BRAND }}>
-          {on ? <><span className="h-2 w-2 animate-pulse rounded-full bg-white" /> {voiceTime(elapsed)} · 멈추기</> : <><Smartphone size={12} /> 말하기 시작</>}
+          {finishing ? <><Loader2 size={12} className="animate-spin" /> 음성 정리 중…</> : on ? <><span className="h-2 w-2 animate-pulse rounded-full bg-white" /> {voiceTime(elapsed)} · 멈추기</> : <><Smartphone size={12} /> 말하기 시작</>}
         </button>
       </div>
       {!supported && <Sub className="mt-1.5 block leading-relaxed" style={{ color: BAD }}>녹음과 음성 인식을 지원하지 않는 기기입니다. 아래 직접 입력란을 이용해 주세요.</Sub>}
-      {!text && !on && (
+      {finishing && <Sub className="mt-1.5 block leading-relaxed">마지막 음성을 정리하고 있습니다. 잠시만 기다려 주세요.</Sub>}
+      {!text && !on && !finishing && (
         <Sub className="mt-1.5 block leading-relaxed">
           이렇게 말해 보세요 —<br />
           "오른쪽 어깨 가동범위가 좋아졌습니다. 허리 통증은 없다고 하셨고요. 코어 안정성 향상됐습니다. 다음 시간에는 흉추 신전 이어서 하겠습니다."

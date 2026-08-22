@@ -38,6 +38,10 @@ if (fbReady) {
   functions = getFunctions(app, "asia-northeast3");
 }
 
+const AUTH_REQUEST_TIMEOUT_MS = 20000;
+const FIRESTORE_READ_TIMEOUT_MS = 8000;
+const FIRESTORE_WRITE_TIMEOUT_MS = 12000;
+
 const shape = (u) => ({
   id: u.uid,
   email: u.email || "",
@@ -131,7 +135,10 @@ export async function fbSignInSocial(provider) {
       provider,
     };
   }
-  const res = await signInWithPopup(auth, providerObject(provider));
+  const res = await withAuthTimeout(
+    () => signInWithPopup(auth, providerObject(provider)),
+    { timeoutMs: AUTH_REQUEST_TIMEOUT_MS, provider, stage: "web_popup" },
+  );
   return { ...shape(res.user), provider };
 }
 
@@ -191,13 +198,19 @@ export async function fbDeleteCurrentUserAccount() {
 }
 
 export async function fbSignUpEmail(email, pw, name) {
-  const res = await createUserWithEmailAndPassword(auth, email, pw);
+  const res = await withAuthTimeout(
+    () => createUserWithEmailAndPassword(auth, email, pw),
+    { timeoutMs: AUTH_REQUEST_TIMEOUT_MS, provider: "email", stage: "email_sign_up" },
+  );
   if (name) { try { await updateProfile(res.user, { displayName: name }); } catch (e) {} }
   return { ...shape(res.user), name: name || "", provider: "email" };
 }
 
 export async function fbSignInEmail(email, pw) {
-  const res = await signInWithEmailAndPassword(auth, email, pw);
+  const res = await withAuthTimeout(
+    () => signInWithEmailAndPassword(auth, email, pw),
+    { timeoutMs: AUTH_REQUEST_TIMEOUT_MS, provider: "email", stage: "email_sign_in" },
+  );
   return { ...shape(res.user), provider: "email" };
 }
 
@@ -225,14 +238,20 @@ export function fbOnAuth(cb) {
 export async function fbLoadProfile(uid) {
   if (!fs || !uid) return null;
   try {
-    const snap = await getDoc(doc(fs, "users", uid));
+    const snap = await withAuthTimeout(
+      () => getDoc(doc(fs, "users", uid)),
+      { timeoutMs: FIRESTORE_READ_TIMEOUT_MS, provider: "firebase", stage: "profile_read" },
+    );
     return snap.exists() ? snap.data() : null;
   } catch (e) { return null; }
 }
 
 export async function fbSaveProfile(uid, profile) {
   if (!fs || !uid) return;
-  await setDoc(doc(fs, "users", uid), { ...profile, updatedAt: serverTimestamp() }, { merge: true });
+  await withAuthTimeout(
+    () => setDoc(doc(fs, "users", uid), { ...profile, updatedAt: serverTimestamp() }, { merge: true }),
+    { timeoutMs: FIRESTORE_WRITE_TIMEOUT_MS, provider: "firebase", stage: "profile_write" },
+  );
 }
 
 /* ---------------- 백업 (사진 제외) ---------------- */
@@ -245,18 +264,24 @@ const deviceTag = () => {
 
 export async function fbPushBackup(uid, data) {
   if (!fs || !uid || !data) return;
-  await setDoc(doc(fs, "users", uid, "backup", "latest"), {
-    data,
-    device: deviceTag(),
-    at: serverTimestamp(),
-    members: Array.isArray(data.members) ? data.members.length : 0,
-  });
+  await withAuthTimeout(
+    () => setDoc(doc(fs, "users", uid, "backup", "latest"), {
+      data,
+      device: deviceTag(),
+      at: serverTimestamp(),
+      members: Array.isArray(data.members) ? data.members.length : 0,
+    }),
+    { timeoutMs: FIRESTORE_WRITE_TIMEOUT_MS, provider: "firebase", stage: "backup_write" },
+  );
 }
 
 export async function fbPullBackup(uid) {
   if (!fs || !uid) return null;
   try {
-    const snap = await getDoc(doc(fs, "users", uid, "backup", "latest"));
+    const snap = await withAuthTimeout(
+      () => getDoc(doc(fs, "users", uid, "backup", "latest")),
+      { timeoutMs: FIRESTORE_READ_TIMEOUT_MS, provider: "firebase", stage: "backup_read" },
+    );
     return snap.exists() ? snap.data() : null;
   } catch (e) { return null; }
 }

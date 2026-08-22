@@ -41,6 +41,7 @@ for permission_key in (
     "NSPhotoLibraryUsageDescription",
     "NSPhotoLibraryAddUsageDescription",
     "NSMicrophoneUsageDescription",
+    "NSSpeechRecognitionUsageDescription",
 ):
     require(str(info.get(permission_key, "")).strip(), f"{permission_key} is missing")
 require("Default" in (entitlements.get("com.apple.developer.applesignin") or []),
@@ -53,6 +54,23 @@ require("CODE_SIGN_ENTITLEMENTS = App/App.entitlements" in project,
         "App.entitlements is not assigned to the target")
 require("com.apple.SignInWithApple" in project,
         "Sign in with Apple capability is missing")
+require("CapApp-SPM" not in project,
+        "the App target still references CapApp-SPM; use the CocoaPods workspace")
+
+podfile_path = root / "ios/App/Podfile"
+require(podfile_path.is_file(), "ios/App/Podfile is missing")
+podfile = podfile_path.read_text(encoding="utf-8")
+for pod_name in (
+    "Capacitor",
+    "CapacitorCordova",
+    "CapacitorCommunitySpeechRecognition",
+    "CapacitorFirebaseAuthentication",
+    "CapgoCameraPreview",
+):
+    require(re.search(rf"pod\s+['\"]{re.escape(pod_name)}['\"]", podfile),
+            f"{pod_name} is missing from the Podfile")
+require(not (root / "ios/App/CapApp-SPM").exists(),
+        "obsolete CapApp-SPM directory is still present")
 
 app_delegate = (root / "ios/App/App/AppDelegate.swift").read_text(encoding="utf-8")
 app_delegate_code = re.sub(r"//.*", "", app_delegate)
@@ -125,6 +143,7 @@ require(not (root / "ios/App/App/cert_key.pem").exists(),
         "cert_key.pem must not be bundled")
 print("Firebase launch order: validated")
 print("Firebase duplicate initialization guards: validated")
+print("CocoaPods plugin graph: validated (speech, auth, camera)")
 print("Camera preview iOS location APIs: absent after deterministic patch")
 print("Info.plist location permission keys: absent")
 print("ITSAppUsesNonExemptEncryption: Boolean false")

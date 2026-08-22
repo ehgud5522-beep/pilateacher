@@ -45,7 +45,13 @@ workflows:
           grep -q "CODE_SIGN_ENTITLEMENTS = App/App.entitlements" ios/App/App.xcodeproj/project.pbxproj
           grep -q "com.apple.SignInWithApple" ios/App/App.xcodeproj/project.pbxproj
           grep -q "NSMicrophoneUsageDescription" ios/App/App/Info.plist
+          grep -q "NSSpeechRecognitionUsageDescription" ios/App/App/Info.plist
           grep -q "CFBundleURLSchemes" ios/App/App/Info.plist
+          test -f ios/App/Podfile
+          grep -q "CapacitorCommunitySpeechRecognition" ios/App/Podfile
+          grep -q "CapacitorFirebaseAuthentication" ios/App/Podfile
+          grep -q "CapgoCameraPreview" ios/App/Podfile
+          ! grep -q "CapApp-SPM" ios/App/App.xcodeproj/project.pbxproj
           test ! -e ios/App/App/cert_key.pem
           python3 tools/ios/validate_release_source.py
 

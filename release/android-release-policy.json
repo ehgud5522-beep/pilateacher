@@ -2,8 +2,8 @@
   "applicationId": "com.pilateacher.app",
   "track": "closed-alpha",
   "approvedUiBaseCommit": "140351bdddf6f7792d5c83a787b11ad13d95468d",
-  "lastPublishedVersionCode": 14,
-  "lastPublishedVersionName": "1.1.10",
+  "lastPublishedVersionCode": 15,
+  "lastPublishedVersionName": "1.1.11",
   "allowedBranchPatterns": [
     "^codex/android-",
     "^release/android-"

@@ -94,15 +94,36 @@ function assertPolicy(policy) {
     "lastPublishedVersionName",
     "allowedBranchPatterns",
     "criticalSourceFile",
+    "firebaseWebClientId",
+    "requiredAndroidOAuthSha1",
   ];
   const missing = required.filter((key) => policy[key] === undefined);
   if (missing.length > 0) throw new Error(`릴리스 정책 누락: ${missing.join(", ")}`);
+}
+
+export function missingAndroidOAuthSha1(googleServices, requiredHashes) {
+  const actual = new Set(
+    (googleServices?.client ?? [])
+      .flatMap((client) => client?.oauth_client ?? [])
+      .filter((client) => client?.client_type === 1 && client?.android_info?.certificate_hash)
+      .map((client) => String(client.android_info.certificate_hash).replaceAll(":", "").toLowerCase()),
+  );
+  return requiredHashes
+    .map((hash) => String(hash).replaceAll(":", "").toLowerCase())
+    .filter((hash) => !actual.has(hash));
+}
+
+export function hasFirebaseWebClient(googleServices, expectedClientId) {
+  return (googleServices?.client ?? [])
+    .flatMap((client) => client?.oauth_client ?? [])
+    .some((client) => client?.client_type === 3 && client?.client_id === expectedClientId);
 }
 
 function currentReleaseInfo(policy) {
   const gradle = readFileSync(resolve(repoRoot, "android/app/build.gradle"), "utf8");
   const capacitor = readJson(resolve(repoRoot, "capacitor.config.json"));
   const packageJson = readJson(resolve(repoRoot, "package.json"));
+  const googleServices = readJson(resolve(repoRoot, "android/app/google-services.json"));
   const version = parseGradleVersion(gradle);
 
   if (capacitor.appId !== policy.applicationId) {
@@ -127,6 +148,14 @@ function currentReleaseInfo(policy) {
   const missingDependencies = policy.requiredDependencies.filter((name) => !allDependencies[name]);
   if (missingDependencies.length > 0) {
     throw new Error(`정상 UI에 필요한 패키지가 없습니다: ${missingDependencies.join(", ")}`);
+  }
+
+  const missingOauthHashes = missingAndroidOAuthSha1(googleServices, policy.requiredAndroidOAuthSha1);
+  if (missingOauthHashes.length > 0) {
+    throw new Error(`Firebase Android OAuth 서명 지문이 누락됐습니다: ${missingOauthHashes.join(", ")}`);
+  }
+  if (!hasFirebaseWebClient(googleServices, policy.firebaseWebClientId)) {
+    throw new Error(`Firebase 웹 OAuth 클라이언트가 없거나 다릅니다: ${policy.firebaseWebClientId}`);
   }
 
   return version;

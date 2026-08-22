@@ -11,6 +11,15 @@
   "criticalSourceFile": "src/App.jsx",
   "minimumCriticalFileSizeRatio": 0.75,
   "minimumAabBytes": 5000000,
+  "firebaseWebClientId": "452402660812-ldotjjr4rg9jhocdpme2khjjls9lj64q.apps.googleusercontent.com",
+  "requiredAndroidOAuthSha1": [
+    "70da6a0c279280ad16f28e689fca36d659a29a5c",
+    "170722e5f1fdf087cbd933268b6dff4b79817a09",
+    "8ce38225abd73df6493784ae1c09d421c5bff93e",
+    "e12c77bbdfa5b4aeed6fd66cab2b2498bfd15772",
+    "d87ed2dc8f504ca591f443c1e88230e2fb8e1c2f",
+    "117f317237df69c445d6b42ed73fa6470ec23ed4"
+  ],
   "requiredDependencies": [
     "@capacitor-community/speech-recognition",
     "@capacitor/motion",

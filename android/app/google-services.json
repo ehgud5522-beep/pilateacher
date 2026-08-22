@@ -14,11 +14,43 @@
       },
       "oauth_client": [
         {
+          "client_id": "452402660812-08dbgv4g2jcvb5p2c0ui7370tmda0r6t.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.pilateacher.app",
+            "certificate_hash": "70da6a0c279280ad16f28e689fca36d659a29a5c"
+          }
+        },
+        {
+          "client_id": "452402660812-20npihb5b85rsai47tn9aqm5f5n386vs.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.pilateacher.app",
+            "certificate_hash": "170722e5f1fdf087cbd933268b6dff4b79817a09"
+          }
+        },
+        {
+          "client_id": "452402660812-2pik4u6fevq2nv41m19lp32ce65i334h.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.pilateacher.app",
+            "certificate_hash": "8ce38225abd73df6493784ae1c09d421c5bff93e"
+          }
+        },
+        {
           "client_id": "452402660812-668h676pvuiu4jq0ilsk8di80tkd1je4.apps.googleusercontent.com",
           "client_type": 1,
           "android_info": {
             "package_name": "com.pilateacher.app",
             "certificate_hash": "e12c77bbdfa5b4aeed6fd66cab2b2498bfd15772"
+          }
+        },
+        {
+          "client_id": "452402660812-7fkastedgt0nu0fnbfh1m4rifjbb39f1.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.pilateacher.app",
+            "certificate_hash": "d87ed2dc8f504ca591f443c1e88230e2fb8e1c2f"
           }
         },
         {
@@ -45,6 +77,13 @@
             {
               "client_id": "452402660812-ldotjjr4rg9jhocdpme2khjjls9lj64q.apps.googleusercontent.com",
               "client_type": 3
+            },
+            {
+              "client_id": "452402660812-r799moansshm2f7ifeakicsrnis7vl2n.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.pilateacher.app"
+              }
             }
           ]
         }

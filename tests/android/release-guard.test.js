@@ -3,8 +3,10 @@ import test from "node:test";
 
 import {
   compareNumericVersions,
+  hasFirebaseWebClient,
   isAllowedBranch,
   isAllowedGeneratedPath,
+  missingAndroidOAuthSha1,
   parseGradleVersion,
 } from "../../tools/android/release-guard.mjs";
 
@@ -16,6 +18,19 @@ test("Android Gradle 버전 정보를 읽는다", () => {
     }
   `);
   assert.deepEqual(result, { versionCode: 15, versionName: "1.1.11" });
+});
+
+test("Play 서명 SHA-1과 Firebase Android OAuth 설정을 대조한다", () => {
+  const googleServices = {
+    client: [{ oauth_client: [
+      { client_type: 1, android_info: { certificate_hash: "aabb" } },
+      { client_type: 3, client_id: "web-client.apps.googleusercontent.com" },
+    ] }],
+  };
+  assert.deepEqual(missingAndroidOAuthSha1(googleServices, ["AA:BB"]), []);
+  assert.deepEqual(missingAndroidOAuthSha1(googleServices, ["AA:BB", "CC:DD"]), ["ccdd"]);
+  assert.equal(hasFirebaseWebClient(googleServices, "web-client.apps.googleusercontent.com"), true);
+  assert.equal(hasFirebaseWebClient(googleServices, "wrong-client.apps.googleusercontent.com"), false);
 });
 
 test("이전 또는 같은 버전을 새 버전으로 보지 않는다", () => {

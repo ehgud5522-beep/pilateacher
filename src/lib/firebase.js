@@ -18,6 +18,7 @@ import {
 import { getFirestore, doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { withAuthTimeout } from "../features/auth/apple-sign-in.js";
+import { googleNativeSignInOptions } from "../features/auth/google-sign-in.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyABFqCur9nKHUuD_-EvvRNtxVbEhif9gjs",
@@ -61,6 +62,10 @@ const isNative = () => {
 /* 네이티브 로그인 플러그인 — cap sync 로 앱에 심어지면 여기서 잡힌다 */
 const nativeAuth = () => {
   return FirebaseAuthentication;
+};
+const nativePlatform = () => {
+  try { return Capacitor.getPlatform(); }
+  catch (e) { return "web"; }
 };
 
 const providerObject = (provider) => {
@@ -119,7 +124,7 @@ export async function fbSignInSocial(provider) {
     const res = await withAuthTimeout(
       () => provider === "apple"
         ? NA.signInWithApple({ skipNativeAuth: true })
-        : NA.signInWithGoogle({ skipNativeAuth: true }),
+        : NA.signInWithGoogle(googleNativeSignInOptions(nativePlatform())),
       { timeoutMs: 30000, provider, stage: "native_credential" },
     );
     const nativeCredential = requireNativeCredential(provider, res);
@@ -158,7 +163,7 @@ export async function fbReauthenticate(provider, password = "") {
     const res = await withAuthTimeout(
       () => provider === "apple"
         ? NA.signInWithApple({ skipNativeAuth: true })
-        : NA.signInWithGoogle({ skipNativeAuth: true }),
+        : NA.signInWithGoogle(googleNativeSignInOptions(nativePlatform())),
       { timeoutMs: 30000, provider, stage: "native_reauthentication" },
     );
     const nativeCredential = requireNativeCredential(provider, res);

@@ -7,6 +7,7 @@ import {
   isAllowedBranch,
   isAllowedGeneratedPath,
   missingAndroidOAuthSha1,
+  parsePorcelainPaths,
   parseGradleVersion,
 } from "../../tools/android/release-guard.mjs";
 
@@ -18,6 +19,13 @@ test("Android Gradle 버전 정보를 읽는다", () => {
     }
   `);
   assert.deepEqual(result, { versionCode: 15, versionName: "1.1.11" });
+});
+
+test("첫 porcelain 행의 선행 공백이 trim되어도 전체 경로를 보존한다", () => {
+  assert.deepEqual(
+    parsePorcelainPaths("M dist/assets/index.js\n M android/app/src/main/assets/public/index.html"),
+    ["dist/assets/index.js", "android/app/src/main/assets/public/index.html"],
+  );
 });
 
 test("Play 서명 SHA-1과 Firebase Android OAuth 설정을 대조한다", () => {

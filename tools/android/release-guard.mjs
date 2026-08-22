@@ -192,10 +192,15 @@ function assertApprovedLineage(policy) {
   return { branch, baseSize, currentSize, ratio };
 }
 
-function parsePorcelainPaths(status) {
+export function parsePorcelainPaths(status) {
   if (!status.trim()) return [];
   return status.split(/\r?\n/).map((line) => {
-    const raw = line.slice(3).trim();
+    /* git().trim() removes the first porcelain line's leading space when the
+       status is an unstaged modification (" M path"). Accept both the normal
+       two-column form and that first-line-trimmed form. */
+    const raw = (/^[ MADRCU?!]{2} /.test(line)
+      ? line.slice(3)
+      : line.replace(/^[MADRCU?!]{1,2}\s+/, "")).trim();
     const destination = raw.includes(" -> ") ? raw.split(" -> ").at(-1) : raw;
     return destination.replace(/^"|"$/g, "");
   });

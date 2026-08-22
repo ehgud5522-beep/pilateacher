@@ -4,6 +4,15 @@ Set-StrictMode -Version Latest
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $androidRoot = Join-Path $repoRoot "android"
 $unsignedAab = Join-Path $androidRoot "app\build\outputs\bundle\release\app-release.aab"
+$androidStudioJdk = "C:\Program Files\Android\Android Studio\jbr"
+
+if (-not (Get-Command java -ErrorAction SilentlyContinue)) {
+    $bundledJava = Join-Path $androidStudioJdk "bin\java.exe"
+    if (Test-Path -LiteralPath $bundledJava) {
+        $env:JAVA_HOME = $androidStudioJdk
+        $env:Path = "$(Join-Path $androidStudioJdk 'bin');$env:Path"
+    }
+}
 
 function Invoke-CheckedStep {
     param(

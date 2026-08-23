@@ -10,7 +10,7 @@
     "lib": ["ES2022", "DOM"],
     "skipLibCheck": true,
     "resolveJsonModule": true,
-    "types": ["node"]
+    "types": ["node", "vite/client"]
   },
   "include": [
     "src/ai/**/*.js",

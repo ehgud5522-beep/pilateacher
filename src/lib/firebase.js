@@ -42,6 +42,13 @@ if (fbReady) {
 const AUTH_REQUEST_TIMEOUT_MS = 20000;
 const FIRESTORE_READ_TIMEOUT_MS = 8000;
 const FIRESTORE_WRITE_TIMEOUT_MS = 12000;
+export const AI_CONSENT_POLICY_VERSION = "2026-08-23";
+export const AI_CONSENT_SCOPES = Object.freeze([
+  "analyzeBody",
+  "summarizeVoice",
+  "recommendSequence",
+  "generateReport",
+]);
 
 const shape = (u) => ({
   id: u.uid,
@@ -289,4 +296,72 @@ export async function fbPullBackup(uid) {
     );
     return snap.exists() ? snap.data() : null;
   } catch (e) { return null; }
+}
+
+/* ---------------- AI 처리 동의 (사진·전사·회원정보는 저장하지 않음) ---------------- */
+const aiConsentMemberId = (value) => {
+  const memberId = String(value || "").trim();
+  if (!/^[A-Za-z0-9_-]{1,160}$/.test(memberId)) {
+    throw Object.assign(new Error("A valid member id is required."), { code: "ai/invalid-member-id" });
+  }
+  return memberId;
+};
+
+const normalizeAIConsentScopes = (values) => {
+  const requested = Array.isArray(values) ? values : AI_CONSENT_SCOPES;
+  const allowed = new Set(AI_CONSENT_SCOPES);
+  const scopes = [...new Set(requested.map((value) => String(value || "").trim()).filter((value) => allowed.has(value)))];
+  if (!scopes.length) throw Object.assign(new Error("At least one AI consent scope is required."), { code: "ai/invalid-consent-scope" });
+  return scopes;
+};
+
+export async function fbLoadAIConsent(memberId) {
+  const user = auth?.currentUser;
+  if (!fs || !user) return null;
+  const safeMemberId = aiConsentMemberId(memberId);
+  try {
+    const snap = await withAuthTimeout(
+      () => getDoc(doc(fs, "users", user.uid, "aiConsents", safeMemberId)),
+      { timeoutMs: FIRESTORE_READ_TIMEOUT_MS, provider: "firebase", stage: "ai_consent_read" },
+    );
+    return snap.exists() ? snap.data() : null;
+  } catch (error) {
+    if (error?.code === "ai/invalid-member-id") throw error;
+    return null;
+  }
+}
+
+export async function fbGrantAIConsent(memberId, scopes = AI_CONSENT_SCOPES) {
+  const user = auth?.currentUser;
+  if (!fs || !user) throw Object.assign(new Error("Authentication is required."), { code: "auth/unauthenticated" });
+  const safeMemberId = aiConsentMemberId(memberId);
+  const safeScopes = normalizeAIConsentScopes(scopes);
+  await withAuthTimeout(
+    () => setDoc(doc(fs, "users", user.uid, "aiConsents", safeMemberId), {
+      status: "granted",
+      policyVersion: AI_CONSENT_POLICY_VERSION,
+      scopes: safeScopes,
+      grantedAt: serverTimestamp(),
+      revokedAt: null,
+      updatedAt: serverTimestamp(),
+    }, { merge: false }),
+    { timeoutMs: FIRESTORE_WRITE_TIMEOUT_MS, provider: "firebase", stage: "ai_consent_write" },
+  );
+  return { status: "granted", policyVersion: AI_CONSENT_POLICY_VERSION, scopes: safeScopes };
+}
+
+export async function fbRevokeAIConsent(memberId) {
+  const user = auth?.currentUser;
+  if (!fs || !user) throw Object.assign(new Error("Authentication is required."), { code: "auth/unauthenticated" });
+  const safeMemberId = aiConsentMemberId(memberId);
+  await withAuthTimeout(
+    () => setDoc(doc(fs, "users", user.uid, "aiConsents", safeMemberId), {
+      status: "revoked",
+      policyVersion: AI_CONSENT_POLICY_VERSION,
+      scopes: [],
+      revokedAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    }, { merge: true }),
+    { timeoutMs: FIRESTORE_WRITE_TIMEOUT_MS, provider: "firebase", stage: "ai_consent_revoke" },
+  );
 }

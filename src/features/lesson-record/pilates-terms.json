@@ -1,0 +1,22 @@
+[
+  { "canonical": "리포머", "aliases": ["리포머"], "category": "equipment", "bodyKey": "equipment.reformer" },
+  { "canonical": "캐딜락", "aliases": ["캐딜락", "캐딜렉"], "category": "equipment", "bodyKey": "equipment.cadillac" },
+  { "canonical": "체어", "aliases": ["체어", "필라테스 체어"], "category": "equipment", "bodyKey": "equipment.chair" },
+  { "canonical": "바렐", "aliases": ["바렐", "래더 바렐"], "category": "equipment", "bodyKey": "equipment.barrel" },
+  { "canonical": "풋워크", "aliases": ["풋워크", "풋 워크"], "category": "exercise", "bodyKey": "exercise.footwork" },
+  { "canonical": "브릿지", "aliases": ["브릿지", "브리지"], "category": "exercise", "bodyKey": "exercise.bridge" },
+  { "canonical": "스완", "aliases": ["스완"], "category": "exercise", "bodyKey": "exercise.swan" },
+  { "canonical": "ASIS", "aliases": ["ASIS", "에이시스", "에이에스아이에스"], "category": "anatomy", "bodyKey": "pelvis.asis" },
+  { "canonical": "PSIS", "aliases": ["PSIS", "피시스", "피에스아이에스"], "category": "anatomy", "bodyKey": "pelvis.psis" },
+  { "canonical": "고관절", "aliases": ["고관절"], "category": "anatomy", "bodyKey": "hip.joint" },
+  { "canonical": "외회전", "aliases": ["외회전", "바깥 회전"], "category": "movement", "bodyKey": "rotation.external" },
+  { "canonical": "내회전", "aliases": ["내회전", "안쪽 회전"], "category": "movement", "bodyKey": "rotation.internal" },
+  { "canonical": "흉추", "aliases": ["흉추", "등뼈"], "category": "anatomy", "bodyKey": "spine.thoracic" },
+  { "canonical": "견갑", "aliases": ["견갑", "견갑골", "날개뼈"], "category": "anatomy", "bodyKey": "shoulder.scapula" },
+  { "canonical": "골반", "aliases": ["골반"], "category": "anatomy", "bodyKey": "pelvis" },
+  { "canonical": "둔근", "aliases": ["둔근", "엉덩이 근육"], "category": "anatomy", "bodyKey": "muscle.gluteal" },
+  { "canonical": "햄스트링", "aliases": ["햄스트링", "햄 스트링"], "category": "anatomy", "bodyKey": "muscle.hamstring" },
+  { "canonical": "코어", "aliases": ["코어", "중심부"], "category": "concept", "bodyKey": "concept.core" },
+  { "canonical": "안정성", "aliases": ["안정성"], "category": "concept", "bodyKey": "quality.stability" },
+  { "canonical": "가동성", "aliases": ["가동성", "움직임 범위"], "category": "concept", "bodyKey": "quality.mobility" }
+]

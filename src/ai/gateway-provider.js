@@ -1,22 +1,20 @@
 import { AIProvider } from "./provider.js";
 import { AI_OPERATIONS, AI_STATUSES, normalizeAIOutput } from "./contracts.js";
 
-const stableStringify = (value) => {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
-  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(",")}}`;
-};
-
-const fnv1a = (value) => {
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < value.length; i += 1) {
-    hash ^= value.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
+let fallbackRequestSequence = 0;
+const requestNonce = () => {
+  if (typeof globalThis.crypto?.randomUUID === "function") return globalThis.crypto.randomUUID().replace(/-/g, "");
+  if (typeof globalThis.crypto?.getRandomValues === "function") {
+    const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
+    return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
   }
-  return (hash >>> 0).toString(16).padStart(8, "0");
+  fallbackRequestSequence += 1;
+  const seed = `${Date.now().toString(16)}${fallbackRequestSequence.toString(16).padStart(8, "0")}${Math.random().toString(16).slice(2)}`;
+  return seed.padEnd(32, "0").slice(0, 32);
 };
 
-export const makeAIRequestId = (provider, operation, input) => `ai_${provider}_${operation}_${fnv1a(stableStringify(input))}`;
+const idPart = (value) => String(value || "").replace(/[^A-Za-z0-9._:-]/g, "_").slice(0, 40);
+export const makeAIRequestId = (provider, operation, _input) => `ai_${idPart(provider)}_${idPart(operation)}_${requestNonce()}`.slice(0, 160);
 
 export class AIProviderError extends Error {
   constructor(code, message, options = {}) {
@@ -80,9 +78,15 @@ export class GatewayAIProvider extends AIProvider {
     const requestId = options.requestId || makeAIRequestId(this.providerId, operation, input);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    const abortFromCaller = () => controller.abort();
+    if (options.signal?.aborted) controller.abort();
+    else options.signal?.addEventListener?.("abort", abortFromCaller, { once: true });
     const headers = { "Content-Type": "application/json", "X-Idempotency-Key": requestId };
     try {
       const token = this.getAccessToken ? await this.getAccessToken() : "";
+      if (this.getAccessToken && !String(token || "").trim()) {
+        throw new AIProviderError("unauthenticated", "Firebase authentication is required for AI Gateway requests");
+      }
       if (token) headers.Authorization = `Bearer ${token}`;
       const response = await this.fetchImpl(resolveGatewayUrl(this.gatewayUrl), {
         method: "POST",
@@ -95,7 +99,7 @@ export class GatewayAIProvider extends AIProvider {
           operation,
           input,
         }),
-        signal: options.signal || controller.signal,
+        signal: controller.signal,
       });
       if (!response.ok) {
         let errorCode = "gateway_error";
@@ -123,6 +127,11 @@ export class GatewayAIProvider extends AIProvider {
         promptVersion: String(payload?.promptVersion || ""),
         pipelineVersion: String(payload?.pipelineVersion || ""),
         createdAt: String(payload?.createdAt || new Date().toISOString()),
+        usage: payload?.usage && typeof payload.usage === "object" ? {
+          inputTokens: Math.max(0, Number(payload.usage.inputTokens) || 0),
+          outputTokens: Math.max(0, Number(payload.usage.outputTokens) || 0),
+          totalTokens: Math.max(0, Number(payload.usage.totalTokens) || 0),
+        } : null,
         output,
       };
     } catch (error) {
@@ -131,6 +140,7 @@ export class GatewayAIProvider extends AIProvider {
       throw new AIProviderError("network_error", "AI Gateway request failed", { retryable: true, cause: error });
     } finally {
       clearTimeout(timeout);
+      options.signal?.removeEventListener?.("abort", abortFromCaller);
     }
   }
 }

@@ -22,6 +22,10 @@ export class AIProvider {
     return this.execute(AI_OPERATIONS.SUMMARIZE_VOICE, input, options);
   }
 
+  structureLessonRecord(input, options) {
+    return this.execute(AI_OPERATIONS.STRUCTURE_LESSON_RECORD, input, options);
+  }
+
   recommendSequence(input, options) {
     return this.execute(AI_OPERATIONS.RECOMMEND_SEQUENCE, input, options);
   }

@@ -9,7 +9,6 @@ if (typeof window !== "undefined" && !window.storage) {
 import { useState, useEffect, useMemo, useRef, useCallback, Component } from "react";
 import { createPortal } from "react-dom";
 import { Capacitor } from "@capacitor/core";
-import { SpeechRecognition } from "@capacitor-community/speech-recognition";
 import { CameraPreview } from "@capgo/camera-preview";
 import { Motion } from "@capacitor/motion";
 import { Avatar, Card, Field, PrimaryBtn, Sub } from "./design-system/components/index.js";
@@ -24,34 +23,67 @@ import {
 import {
   fbReady, fbSignInSocial, fbSignInEmail, fbSignUpEmail, fbSignOut, fbOnAuth,
   fbLoadProfile, fbSaveProfile, fbPushBackup, fbPullBackup, fbReauthenticate,
-  fbRevokeAppleAccess, fbDeleteCurrentUserAccount,
+  fbRevokeAppleAccess, fbDeleteCurrentUserAccount, fbLoadAIConsent, fbGrantAIConsent,
+  AI_CONSENT_POLICY_VERSION, AI_CONSENT_SCOPES,
 } from "./lib/firebase";
 import { runAppDualWrite } from "./data/dual-write/app-runtime";
 import {
   AI_STATUSES, aiProvider, bodyAnalysisFields, buildBodyAnalysisInput, buildReportInput,
-  buildSequenceInput, buildVoiceSummaryInput, formatAIReport, formatSequenceRecommendation, formatVoiceSummary,
+  buildLessonRecordInput, formatAIReport,
 } from "./ai/index.js";
+import { transitionAttendance } from "./features/schedule/attendance-transitions.js";
+import { maskedBirth, maskedPhone, membershipDisplay } from "./features/members/member-display.js";
+import {
+  sheetDragOffset, shouldDismissSheet, shouldStartContentDismiss,
+} from "./features/ui/bottom-sheet-gesture.js";
 import {
   POSTURE_RETAKE_DAYS, POSTURE_STORAGE_KEYS, POSTURE_VIEW_DEFS, POSTURE_VIEW_KEYS,
-  correctedPoseSource, normalizeAssessmentSets, normalizePostureView, postureAnalysisPlane,
-  postureRetakeStatus, postureViewLabel, selectAutomaticComparison,
+  compareAssessmentMetrics, completeAssessmentRecords, correctedPoseSource, normalizeAssessmentSets, normalizePostureView, postureAnalysisPlane,
+  postureAlignmentTransform, postureReferenceLines,
+  postureRetakeStatus, postureViewLabel, removeAssessmentDraftRecords, selectAutomaticComparison,
+  selectResumableAssessment,
 } from "./features/posture/posture-model.js";
 import {
   POSTURE_WORKFLOW_EVENTS, createPostureWorkflowState, startNewAssessmentEvent, transitionPostureWorkflow,
 } from "./features/posture/posture-workflow.js";
 import {
+  NATIVE_SPEECH_RESULT_TIMEOUT_MS, SPEECH_NO_RESULT_MESSAGE, SPEECH_RESULT_TIMEOUT_MESSAGE,
+  describeSpeechError, isSpeechPermissionGranted,
+} from "./features/voice/speech-session.js";
+import { GatewayLlmProvider } from "./features/lesson-record/llm-provider.js";
+import { mapPilatesTerms } from "./features/lesson-record/term-mapper.js";
+import {
+  createLessonRecordMeta, editStructuredField, structuredFieldText, structuredRecordBody,
+} from "./features/lesson-record/record-schema.js";
+import { createSttProvider, MAX_STT_SECONDS } from "./features/lesson-record/stt-provider.js";
+import {
+  loadPendingLessonRecord, removePendingLessonRecord, savePendingLessonRecord,
+} from "./features/lesson-record/draft-queue.js";
+import { trackLessonRecordUsage } from "./features/lesson-record/usage-telemetry.js";
+import { createMemberBriefing, memberMemorySummary } from "./features/member-memory/briefing.js";
+import { buildMemberMemory, rejectMemoryEntry } from "./features/member-memory/member-memory.js";
+import { trackMemberMemoryUsage } from "./features/member-memory/usage-telemetry.js";
+import Onboarding from "./features/onboarding/Onboarding.jsx";
+import { completeOnboarding, hasCompletedOnboarding } from "./features/onboarding/onboarding-storage.js";
+import {
   CAPTURE_TIMER_OPTIONS, LEVEL_THRESHOLD_DEG, SENSOR_STATUSES, base64ToBlob,
   computePreviewGeometry, correctOrientationForScreen, createCaptureGeometryMetadata,
   evaluateDeviceLevel, readCaptureTimer, writeCaptureTimer,
 } from "./features/posture/posture-camera.js";
+import {
+  ANNOTATION_PRESET_COLORS, HANDWRITING_SIZE_OPTIONS, annotationFont, annotationFontSize,
+  annotationTextBounds, annotationTextLines, applyAnnotationDrag, arrowHeadPoints,
+  closestHandwritingWidth, hitTestAnnotations, normalizeAnnotationColor, readRecentAnnotationColors, rememberAnnotationColor,
+} from "./features/posture/posture-annotations.js";
+import { LOCAL_PHOTO_NOTICE_MESSAGE, claimLocalPhotoNotice } from "./features/posture/photo-storage-notice.js";
 import { classifyAuthError, createSingleFlightGate, safeAuthDiagnostic } from "./features/auth/apple-sign-in.js";
 import {
   ACCOUNT_DELETION_PHASE_LABELS, ACCOUNT_DELETION_PHASES, DELETE_CONFIRMATION_PHRASE,
   collectOwnedBlobIds, runAccountDeletion,
 } from "./features/account/account-deletion.js";
-import { Users, Settings as SettingsIcon, Search, ChevronRight, ChevronLeft, Plus, Camera, MessageSquare, Check, X, Trash2, ArrowLeft, Target, ClipboardList, RotateCcw, Sparkles, Copy, ArrowUpRight, ArrowDownRight, Loader as Loader2, Pencil, UserPlus, Activity, Ticket, Calendar, Clock, Bell, Download, TriangleAlert as AlertTriangle, CircleAlert as AlertCircle, LogOut, Mail, Star, Sun, Moon, Smartphone, Move, Crosshair, ChevronDown, ImagePlus, SlidersHorizontal, CalendarDays, ArrowUpDown, Minus, Upload, Link2, Users as Users2, Play } from "lucide-react";
+import { Users, Settings as SettingsIcon, Search, ChevronRight, ChevronLeft, Plus, Camera, MessageSquare, Check, X, Trash2, ArrowLeft, Target, ClipboardList, RotateCcw, Redo2, Palette, Sparkles, Copy, ArrowUpRight, ArrowDownRight, Loader as Loader2, Pencil, UserPlus, Activity, Ticket, Calendar, Clock, Bell, Download, Share2, TriangleAlert as AlertTriangle, CircleAlert as AlertCircle, LogOut, Mail, Star, Sun, Moon, Smartphone, Move, Crosshair, ChevronDown, ImagePlus, SlidersHorizontal, CalendarDays, ArrowUpDown, Minus, Upload, Link2, Users as Users2, Play } from "lucide-react";
 
-const IOS_NATIVE_CAPTURE_ENABLED = String(import.meta.env?.VITE_IOS_NATIVE_CAPTURE_ENABLED || "").trim().toLowerCase() === "true";
+const IOS_NATIVE_CAPTURE_ENABLED = String(import.meta.env.VITE_IOS_NATIVE_CAPTURE_ENABLED || "").trim().toLowerCase() === "true";
 
 /* ================= 토큰 · 테마 ================= */
 applyTheme("light");
@@ -69,14 +101,63 @@ const sysDarkNow = () => {
 };
 
 /* 파일이 실제로 교체됐는지 1초 만에 확인하는 표시 — 설정 탭 맨 아래에 뜬다 */
-const APP_VER = "1.1.12 (16) · 2026-08-22";
-const RELEASE_VERSION = String(import.meta.env?.VITE_APP_VERSION || "").trim();
-const RELEASE_BUILD_NUMBER = String(import.meta.env?.VITE_BUILD_NUMBER || "").trim();
-const RELEASE_COMMIT_SHORT = String(import.meta.env?.VITE_BUILD_COMMIT || "").trim().slice(0, 7);
+const APP_VER = "1.1.16 (20) · 2026-08-23";
+const RELEASE_VERSION = String(import.meta.env.VITE_APP_VERSION || "").trim();
+const RELEASE_BUILD_NUMBER = String(import.meta.env.VITE_BUILD_NUMBER || "").trim();
+const RELEASE_COMMIT_SHORT = String(import.meta.env.VITE_BUILD_COMMIT || "").trim().slice(0, 7);
 const APP_BUILD_LABEL = RELEASE_VERSION && RELEASE_BUILD_NUMBER
   ? `${RELEASE_VERSION} (${RELEASE_BUILD_NUMBER})${RELEASE_COMMIT_SHORT ? ` · ${RELEASE_COMMIT_SHORT}` : ""}`
   : APP_VER;
 try { if (typeof window !== "undefined") window.PILATEACHER_VER = APP_BUILD_LABEL; } catch (e) {}
+
+const AI_CONSENT_PROMPT = [
+  "AI 초안 생성을 위한 회원 동의 확인",
+  "",
+  "회원의 수업 기록·음성 전사·체형 좌표와 각도를 AI가 처리하는 데 회원의 동의를 받았나요?",
+  "",
+  "사진 원본은 AI로 전송하지 않으며, 생성 결과는 강사 검수 전 초안으로만 사용됩니다.",
+].join("\n");
+
+const aiConsentAllows = (consent, operation) => Boolean(
+  consent?.status === "granted"
+  && consent?.policyVersion === AI_CONSENT_POLICY_VERSION
+  && Array.isArray(consent?.scopes)
+  && consent.scopes.includes(operation)
+  && !consent?.revokedAt
+);
+
+async function ensureMemberAIConsent(memberId, operation) {
+  if (!memberId) return { ok: false, message: "AI 처리를 적용할 회원을 먼저 선택해 주세요." };
+  try {
+    const current = await fbLoadAIConsent(memberId);
+    if (aiConsentAllows(current, operation)) return { ok: true, newlyGranted: false };
+    const accepted = typeof window !== "undefined" && window.confirm(AI_CONSENT_PROMPT);
+    if (!accepted) return { ok: false, message: "회원의 AI 처리 동의를 확인한 뒤 다시 시도해 주세요." };
+    await fbGrantAIConsent(memberId, AI_CONSENT_SCOPES);
+    return { ok: true, newlyGranted: true };
+  } catch (error) {
+    return {
+      ok: false,
+      message: error?.code === "auth/unauthenticated"
+        ? "AI 기능을 사용하려면 다시 로그인해 주세요."
+        : "AI 처리 동의를 저장하지 못했습니다. 네트워크를 확인한 뒤 다시 시도해 주세요.",
+    };
+  }
+}
+
+const aiFailureMessage = (error, fallback = "AI 결과를 불러오지 못했습니다.") => {
+  const messages = {
+    unauthenticated: "로그인이 만료되었습니다. 다시 로그인한 뒤 시도해 주세요.",
+    consent_required: "회원 동의 또는 최신 클라우드 백업을 확인한 뒤 다시 시도해 주세요.",
+    rate_limited: "AI 요청이 잠시 많습니다. 잠시 뒤 다시 시도해 주세요.",
+    provider_unavailable: "AI 서버 설정이 아직 완료되지 않았거나 일시적으로 응답하지 않습니다.",
+    invalid_request: "AI에 보낼 기록 형식을 확인하지 못했습니다. 기록을 저장한 뒤 다시 시도해 주세요.",
+    invalid_output: "AI 응답 형식을 확인하지 못했습니다. 잠시 뒤 다시 생성해 주세요.",
+    timeout: "AI 응답이 늦어지고 있습니다. 네트워크를 확인한 뒤 다시 시도해 주세요.",
+    network_error: "AI 서버에 연결하지 못했습니다. 네트워크를 확인해 주세요.",
+  };
+  return messages[String(error?.code || "")] || fallback;
+};
 
 const ACC_KEY = "pilateacher_accounts_v1";
 const SES_KEY = "pilateacher_session_v1";
@@ -174,6 +255,13 @@ const dday = (iso) => Math.round((new Date(iso + "T00:00:00") - new Date(todayIS
 const ddaySafe = (iso) => { if (!iso) return null; const v = dday(iso); return Number.isFinite(v) ? v : null; };
 const md = (iso) => (iso ? `${iso.slice(5, 7)}.${iso.slice(8, 10)}` : "");
 const ymd = (iso) => (iso ? `${iso.slice(0, 4)}. ${iso.slice(5, 7)}. ${iso.slice(8, 10)}` : "");
+const timeOf = (stamp) => {
+  const value = String(stamp || "");
+  if (!value.includes("T")) return "";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "";
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+};
 const uid = () => Math.random().toString(36).slice(2, 9);
 const DEVICE_LOG_FIELDS = new Set([
   "memberId", "assessmentId", "lessonId", "view", "storage", "operation",
@@ -213,7 +301,7 @@ const deductOne = (members, memberId) => {
   return { members, from: null };
 };
 const restoreOne = (members, memberId, from) => {
-  const k = from === "정규" ? "regular" : "service";
+  const k = from === "정규" || from === "regular" ? "regular" : "service";
   return members.map((m) => (m.id === memberId ? { ...m, [k]: (m[k] || 0) + 1 } : m));
 };
 
@@ -396,7 +484,10 @@ async function urlFor(blobId) {
 }
 const blobIdsOf = (ph) => {
   const out = [];
-  PHOTO_KEYS.forEach((k) => (Array.isArray(ph?.[k]) ? ph[k] : []).forEach((p) => { if (p?.blobId) out.push(p.blobId); }));
+  PHOTO_KEYS.forEach((k) => (Array.isArray(ph?.[k]) ? ph[k] : []).forEach((p) => {
+    if (p?.blobId) out.push(p.blobId);
+    if (p?.cleanBlobId) out.push(p.cleanBlobId);
+  }));
   return out;
 };
 function forgetBlobs(ids) {
@@ -532,9 +623,11 @@ const inApp = () => {
 
 /* 결과를 정직하게 돌려준다: shared | saved | cancel | manual | fail
    manual = 자동 저장이 막힌 환경 → 화면에 띄워 길게 눌러 저장하게 해야 함 */
-async function exportCanvas(canvas, filename, title, saveOnly) {
-  let blob = null;
-  try { blob = await new Promise((r) => canvas.toBlob(r, "image/jpeg", 0.92)); } catch (e) {}
+async function exportCanvas(canvas, filename, title, saveOnly, exactBlob = null) {
+  let blob = exactBlob;
+  if (!blob) {
+    try { blob = await new Promise((r) => canvas.toBlob(r, "image/jpeg", 0.92)); } catch (e) {}
+  }
   if (!blob) return { how: "fail" };
   const P0 = (typeof window !== "undefined" && window.Capacitor && window.Capacitor.Plugins) || null;
   /* 0) 갤러리에 바로 저장 (Media 플러그인) — '내 폰에 저장'일 때만 */
@@ -543,6 +636,15 @@ async function exportCanvas(canvas, filename, title, saveOnly) {
       const b64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.onerror = rej; r.readAsDataURL(blob); });
       await P0.Media.savePhoto({ path: b64, albumIdentifier: undefined, fileName: filename });
       return { how: "gallery" };
+    } catch (e) {}
+  }
+  /* 공식 Filesystem 플러그인: 갤러리 플러그인이 없는 안드로이드에서도
+     PilaTeacher 폴더에 실제 jpg 파일을 남긴다. */
+  if (saveOnly && P0 && P0.Filesystem) {
+    try {
+      const b64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(",")[1]); r.onerror = rej; r.readAsDataURL(blob); });
+      const written = await P0.Filesystem.writeFile({ path: `PilaTeacher/${filename}`, data: b64, directory: "DOCUMENTS", recursive: true });
+      return { how: "documents", uri: written.uri };
     } catch (e) {}
   }
   /* 1) 캐패시터 공유 플러그인이 깔려 있으면 그걸 먼저 */
@@ -591,10 +693,21 @@ async function shareCanvas(canvas, filename, title, onToast, saveOnly) {
   if (r.how === "fail") { onToast && onToast({ ok: false, msg: "이미지를 만들지 못했습니다." }); return false; }
   if (r.how === "saved") { onToast && onToast({ ok: true, msg: "이미지를 저장했습니다." }); return true; }
   if (r.how === "gallery") { onToast && onToast({ ok: true, msg: "사진 앱(갤러리)에 저장했습니다." }); return true; }
+  if (r.how === "documents") { onToast && onToast({ ok: true, msg: "내 파일 > 문서 > PilaTeacher에 저장했습니다." }); return true; }
   if (r.how === "copied") { onToast && onToast({ ok: true, msg: "이미지를 복사했습니다. 카톡 등에 붙여넣기 하세요." }); return true; }
   if (r.how === "shared" || r.how === "cancel") return true;
   onToast && onToast({ ok: false, msg: "이 화면에서는 자동 저장이 막혀 있습니다. 사진을 길게 눌러 저장해 주세요." });
   return r;
+}
+
+async function canvasFromPreviewUrl(url) {
+  const image = new window.Image();
+  await new Promise((resolve, reject) => { image.onload = resolve; image.onerror = reject; image.src = url; });
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, image.naturalWidth || image.width || 1);
+  canvas.height = Math.max(1, image.naturalHeight || image.height || 1);
+  canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
+  return canvas;
 }
 
 async function composeBeforeAfter(before, after, memberName) {
@@ -630,34 +743,8 @@ async function composeBeforeAfter(before, after, memberName) {
       const list = Array.isArray(p?.marks) ? p.marks : [];
       if (!list.length) return;
       ctx.save(); ctx.beginPath(); ctx.rect(x, 0, W, H); ctx.clip();
-      const P = (q) => ({ x: x + q.x * W, y: q.y * H });
-      list.forEach((m) => {
-        if (!m || !Array.isArray(m.pts) || !m.pts.length) return;
-        const lw = Math.max(3, (m.width || 3) * 2.6);
-        ctx.strokeStyle = m.color || "#F04438"; ctx.fillStyle = m.color || "#F04438";
-        ctx.lineWidth = lw; ctx.lineCap = "round"; ctx.lineJoin = "round";
-        if (m.tool === "point") { const q = P(m.pts[0]); ctx.beginPath(); ctx.arc(q.x, q.y, lw + 5, 0, Math.PI * 2); ctx.fill(); return; }
-        ctx.beginPath();
-        if (m.tool === "hline") { const y = m.pts[0].y * H; ctx.moveTo(x, y); ctx.lineTo(x + W, y); }
-        else if (m.tool === "vline") { const vx = x + m.pts[0].x * W; ctx.moveTo(vx, 0); ctx.lineTo(vx, H); }
-        else m.pts.forEach((q, i) => { const r = P(q); if (i) ctx.lineTo(r.x, r.y); else ctx.moveTo(r.x, r.y); });
-        ctx.stroke();
-        if (m.tool === "angle" && m.pts.length === 2) {
-          const A = P(m.pts[0]), B = P(m.pts[1]);
-          [A, B].forEach((q) => { ctx.beginPath(); ctx.arc(q.x, q.y, lw + 4, 0, Math.PI * 2); ctx.fill(); });
-          if (m.label) {
-            const cx = (A.x + B.x) / 2, cy = (A.y + B.y) / 2 - 36;
-            ctx.save();
-            ctx.font = "700 30px Pretendard, -apple-system, sans-serif";
-            ctx.textAlign = "center"; ctx.textBaseline = "middle";
-            const tw = ctx.measureText(String(m.label)).width;
-            ctx.fillStyle = "rgba(10,10,16,.85)"; ctx.fillRect(cx - tw / 2 - 15, cy - 23, tw + 30, 46);
-            ctx.strokeStyle = "rgba(255,255,255,.6)"; ctx.lineWidth = 2; ctx.strokeRect(cx - tw / 2 - 15, cy - 23, tw + 30, 46);
-            ctx.fillStyle = "#fff"; ctx.fillText(String(m.label), cx, cy);
-            ctx.restore();
-          }
-        }
-      });
+      const renderScale = W / 300;
+      list.forEach((mark) => drawAnnotationMark(ctx, mark, W, H, { offsetX: x, lineScale: renderScale, fontScale: renderScale }));
       ctx.restore();
     };
     cell(b, before, 0); cell(a, after, W + GAP);
@@ -665,13 +752,13 @@ async function composeBeforeAfter(before, after, memberName) {
     marksOn(before, 0); marksOn(after, W + GAP);
     ctx.textBaseline = "middle";
     ctx.font = "700 38px Pretendard, -apple-system, sans-serif";
-    const tag = (txt, x) => {
+    const tag = (txt, x, color) => {
       const w = ctx.measureText(txt).width + 44;
-      ctx.fillStyle = "rgba(0,0,0,.55)"; ctx.fillRect(x + 24, 24, w, 64);
+      ctx.fillStyle = color; ctx.fillRect(x + 24, 24, w, 64);
       ctx.fillStyle = "#fff"; ctx.fillText(txt, x + 46, 57);
     };
-    tag(`BEFORE  ${ymd(before.date)}`, 0);
-    tag(`AFTER  ${ymd(after.date)}`, W + GAP);
+    tag(`BEFORE  ${ymd(before.date)}`, 0, "#356AE6");
+    tag(`AFTER  ${ymd(after.date)}`, W + GAP, "#F28C28");
     ctx.font = "700 34px Pretendard, -apple-system, sans-serif";
     ctx.fillStyle = "#A594FF";
     ctx.fillText(`${memberName || "회원"} · ${weeksBetween(before.date, after.date)}주 변화`, 28, H + FOOT / 2);
@@ -943,7 +1030,19 @@ const BACK_OK = (() => {
 })();
 const backStack = [];
 let backSwallow = 0, backSeq = 0;
-function useBackClose(open, close) {
+const swallowedBackEvents = new WeakSet();
+if (BACK_OK) {
+  window.addEventListener("popstate", (event) => {
+    if (backSwallow <= 0) return;
+    backSwallow -= 1;
+    swallowedBackEvents.add(event);
+  }, true);
+}
+function useBackClose(open, close, locked = false) {
+  const closeRef = useRef(close);
+  const lockedRef = useRef(locked);
+  closeRef.current = close;
+  lockedRef.current = locked;
   useEffect(() => {
     if (!open || !BACK_OK) return;
     const token = ++backSeq;
@@ -953,15 +1052,25 @@ function useBackClose(open, close) {
     let pushed = false;
     try { window.history.pushState({ ptk: token }, ""); pushed = true; } catch (e) {}
     let done = false;
-    const onPop = () => {
-      if (backSwallow > 0) { backSwallow -= 1; return; }
+    const restoreEntry = () => {
+      let mine = false;
+      try { mine = window.history.state?.ptk === token; } catch (e) {}
+      if (mine) return;
+      try { window.history.pushState({ ptk: token }, ""); pushed = true; } catch (e) {}
+    };
+    const onPop = (event) => {
       if (done) return;
       if (backStack[backStack.length - 1] !== entry) return;
-      if (Date.now() - bornAt < 400) return;
+      if (swallowedBackEvents.has(event)) { restoreEntry(); return; }
+      if (lockedRef.current) {
+        restoreEntry();
+        return;
+      }
+      if (Date.now() - bornAt < 400) { restoreEntry(); return; }
       done = true;
       const i = backStack.indexOf(entry);
       if (i >= 0) backStack.splice(i, 1);
-      try { close(); } catch (e) {}
+      try { closeRef.current(); } catch (e) {}
     };
     window.addEventListener("popstate", onPop);
     return () => {
@@ -1049,26 +1158,31 @@ function Sheet({ title, sub, subtitle, onClose, children, wide = false }) {
     </div>
   );
 }
-function ScheduleBottomSheet({ title, subtitle, onClose, returnFocusRef, children }) {
+function ScheduleBottomSheet({ title, subtitle, onClose, returnFocusRef, children, dismissible = true }) {
   const panelRef = useRef(null);
+  const scrollRef = useRef(null);
+  const dragRef = useRef(null);
   const returnFocus = useRef(null);
   const closeRef = useRef(onClose);
+  const dismissibleRef = useRef(dismissible);
   closeRef.current = onClose;
-  useBackClose(true, onClose);
+  dismissibleRef.current = dismissible;
+  useBackClose(true, onClose, !dismissible);
   useScrollLock();
   useEffect(() => {
     returnFocus.current = returnFocusRef?.current || document.activeElement;
     const panel = panelRef.current;
     const focusable = () => [...(panel?.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') || [])];
     const first = focusable()[0];
-    if (first) requestAnimationFrame(() => first.focus());
+    requestAnimationFrame(() => (first || panel)?.focus());
     const onKey = (e) => {
-      if (e.key === "Escape") { e.preventDefault(); closeRef.current(); return; }
+      if (e.key === "Escape") { e.preventDefault(); if (dismissibleRef.current) closeRef.current(); return; }
       if (e.key !== "Tab") return;
       const items = focusable();
-      if (!items.length) return;
+      if (!items.length) { e.preventDefault(); panelRef.current?.focus(); return; }
       const a = items[0], b = items[items.length - 1];
-      if (e.shiftKey && document.activeElement === a) { e.preventDefault(); b.focus(); }
+      if (!items.includes(document.activeElement)) { e.preventDefault(); (e.shiftKey ? b : a).focus(); }
+      else if (e.shiftKey && document.activeElement === a) { e.preventDefault(); b.focus(); }
       else if (!e.shiftKey && document.activeElement === b) { e.preventDefault(); a.focus(); }
     };
     document.addEventListener("keydown", onKey);
@@ -1078,23 +1192,108 @@ function ScheduleBottomSheet({ title, subtitle, onClose, returnFocusRef, childre
       requestAnimationFrame(() => { try { target?.focus?.(); } catch (e) {} });
     };
   }, []);
+  useEffect(() => {
+    requestAnimationFrame(() => {
+      const panel = panelRef.current;
+      if (!panel) return;
+      if (!dismissible) panel.focus();
+      else if (document.activeElement === panel) panel.querySelector('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')?.focus();
+    });
+  }, [dismissible]);
+  const paintDrag = useCallback((offset, spring = false) => {
+    const panel = panelRef.current;
+    if (!panel) return;
+    panel.style.transition = spring ? "transform .24s cubic-bezier(.22,1,.36,1)" : "none";
+    panel.style.transform = offset > 0 ? `translate3d(0,${offset}px,0)` : "translate3d(0,0,0)";
+  }, []);
+  const finishDrag = useCallback(() => {
+    const drag = dragRef.current;
+    if (!drag) return;
+    dragRef.current = null;
+    const distance = drag.lastOffset || 0;
+    if (dismissibleRef.current && shouldDismissSheet({ distance, elapsedMs: performance.now() - drag.startedAt })) {
+      closeRef.current();
+      return;
+    }
+    paintDrag(0, true);
+  }, [paintDrag]);
+  const startHandleDrag = (event) => {
+    if (!dismissible || (event.pointerType === "mouse" && event.button !== 0)) return;
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    dragRef.current = { source: "handle", pointerId: event.pointerId, startY: event.clientY, startedAt: performance.now(), lastOffset: 0, active: true };
+    paintDrag(0, false);
+  };
+  const moveHandleDrag = (event) => {
+    const drag = dragRef.current;
+    if (!drag || drag.source !== "handle" || drag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    drag.lastOffset = sheetDragOffset(drag.startY, event.clientY);
+    paintDrag(drag.lastOffset, false);
+  };
+  useEffect(() => {
+    const scroll = scrollRef.current;
+    if (!scroll || !dismissible) return undefined;
+    const touchStart = (event) => {
+      if (event.touches.length !== 1) { dragRef.current = null; return; }
+      const touch = event.touches[0];
+      dragRef.current = { source: "content", startX: touch.clientX, startY: touch.clientY, startedAt: performance.now(), lastOffset: 0, active: false };
+    };
+    const touchMove = (event) => {
+      const drag = dragRef.current;
+      if (!drag || drag.source !== "content" || event.touches.length !== 1) return;
+      const touch = event.touches[0];
+      const deltaX = touch.clientX - drag.startX;
+      const deltaY = touch.clientY - drag.startY;
+      if (!drag.active) {
+        if (!shouldStartContentDismiss({ scrollTop: scroll.scrollTop, deltaX, deltaY })) {
+          if (Math.abs(deltaX) > 8 || deltaY < -8 || scroll.scrollTop > 0) dragRef.current = null;
+          return;
+        }
+        drag.active = true;
+      }
+      event.preventDefault();
+      drag.lastOffset = sheetDragOffset(drag.startY, touch.clientY);
+      paintDrag(drag.lastOffset, false);
+    };
+    const touchEnd = () => {
+      const drag = dragRef.current;
+      if (!drag || drag.source !== "content") return;
+      if (drag.active) finishDrag();
+      else dragRef.current = null;
+    };
+    scroll.addEventListener("touchstart", touchStart, { passive: true });
+    scroll.addEventListener("touchmove", touchMove, { passive: false });
+    scroll.addEventListener("touchend", touchEnd, { passive: true });
+    scroll.addEventListener("touchcancel", touchEnd, { passive: true });
+    return () => {
+      scroll.removeEventListener("touchstart", touchStart);
+      scroll.removeEventListener("touchmove", touchMove);
+      scroll.removeEventListener("touchend", touchEnd);
+      scroll.removeEventListener("touchcancel", touchEnd);
+    };
+  }, [dismissible, finishDrag, paintDrag]);
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center px-0 sm:px-3" style={{ backgroundColor: SCRIM, animation: "sheet-fade .18s ease-out" }} onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <section ref={panelRef} role="dialog" aria-modal="true" aria-labelledby="schedule-sheet-title"
-        className="w-full overflow-y-auto"
+    <div className="fixed inset-0 z-50 flex items-end justify-center px-0 sm:px-3" style={{ backgroundColor: SCRIM, animation: "sheet-fade .18s ease-out" }} onPointerDown={(e) => { if (dismissible && e.target === e.currentTarget) onClose(); }}>
+      <section ref={panelRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="schedule-sheet-title" aria-busy={!dismissible}
+        className="flex w-full min-h-0 flex-col overflow-hidden"
         style={{ maxWidth: 420, maxHeight: "92dvh", borderRadius: "20px 20px 0 0", backgroundColor: CARD,
-          border: `1px solid ${LINE}`, borderBottom: 0, boxShadow: "0 -18px 54px rgba(28,36,51,.18)", padding: "8px 16px calc(20px + env(safe-area-inset-bottom, 0px))", animation: "sheet-rise .24s cubic-bezier(.2,.8,.2,1)" }}>
-        <div aria-hidden="true" className="mx-auto mb-2" style={{ width: 36, height: 4, borderRadius: 999, backgroundColor: LINE }} />
-        <div className="mb-3 flex min-h-11 items-start gap-3">
+          border: `1px solid ${LINE}`, borderBottom: 0, boxShadow: "0 -18px 54px rgba(28,36,51,.18)", paddingBottom: "env(safe-area-inset-bottom, 0px)", animation: "sheet-rise .24s cubic-bezier(.2,.8,.2,1)" }}>
+        {dismissible && <button type="button" aria-label="아래로 끌어 닫기" onPointerDown={startHandleDrag} onPointerMove={moveHandleDrag} onPointerUp={finishDrag} onPointerCancel={finishDrag}
+          className="flex h-7 w-full shrink-0 touch-none cursor-grab items-center justify-center active:cursor-grabbing">
+          <span aria-hidden="true" style={{ width: 36, height: 4, borderRadius: 999, backgroundColor: LINE }} />
+        </button>}
+        <div className="mx-4 mb-3 flex min-h-11 shrink-0 items-start gap-3">
           <div className="min-w-0 flex-1">
             <h3 id="schedule-sheet-title" style={{ fontSize: 18, lineHeight: 1.35, fontWeight: 700, color: INK }}>{title}</h3>
             {subtitle && <p className="mt-1 text-xs tabular-nums" style={{ color: SUB }}>{subtitle}</p>}
           </div>
-          <button onClick={onClose} aria-label="닫기" className="flex h-10 w-10 shrink-0 items-center justify-center" style={{ marginTop: -2, marginRight: -6, borderRadius: 10, backgroundColor: CANVAS, color: SUB }}>
+          {dismissible && <button onClick={onClose} aria-label="닫기" className="flex h-10 w-10 shrink-0 items-center justify-center" style={{ marginTop: -2, marginRight: -6, borderRadius: 10, backgroundColor: CANVAS, color: SUB }}>
             <X size={18} />
-          </button>
+          </button>}
         </div>
-        {children}
+        <div ref={scrollRef} className="pt-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-5" style={{ touchAction: "pan-y" }}>
+          {children}
+        </div>
       </section>
     </div>
   );
@@ -1408,8 +1607,8 @@ function Splash() {
         </div>
         <h1 className="splash-fade mt-8 text-4xl font-extrabold" style={{ color: INK, letterSpacing: "-0.045em" }}>필라티쳐</h1>
         <div className="splash-fade mt-4 h-px w-12" style={{ backgroundColor: RING }} />
-        <p className="splash-fade2 mt-4 text-sm font-extrabold" style={{ color: PRIMARY, letterSpacing: "0.02em" }}>강사를 위한 전문 회원 관리</p>
-        <p className="splash-fade2 mt-1.5 text-xs font-medium" style={{ color: SUB }}>오늘의 수업이 회원의 변화가 됩니다</p>
+        <p className="splash-fade2 mt-4 text-center text-sm font-extrabold leading-relaxed" style={{ color: PRIMARY, letterSpacing: "-0.01em" }}>수업은 선생님이.<br />기억은 PilaTeacher가.</p>
+        <p className="splash-fade2 mt-2 text-center text-xs font-medium leading-relaxed" style={{ color: SUB }}>수업 후 10초만 말하면,<br />다음 수업 전에 기억해드려요.</p>
       </div>
       <div className="absolute inset-x-0 bottom-16 flex flex-col items-center gap-3">
         <div className="h-1 w-32 overflow-hidden rounded-full" style={{ backgroundColor: LINE }}>
@@ -1797,14 +1996,17 @@ function SalesBriefModal({ alert, onClose, onToast }) {
     let alive = true;
     (async () => {
       if (aiProvider.getStatus().status !== "connected") {
-        if (alive) { setError("AI 분석 미연결"); setLoading(false); }
+        if (alive) { setError("AI 상담 문장을 사용할 수 없습니다"); setLoading(false); }
         return;
       }
       try {
-        const result = await aiProvider.generateReport(buildReportInput({ reportType: "renewal_consultation", memberId: member.id, source: { goal: member.goal, remainingLessons: rest, expiryDays: d, attendance: att, bodyComposition: r?.rows, performance: member.perf || [] } }));
+        const consent = await ensureMemberAIConsent(member.id, "generateReport");
+        if (!alive) return;
+        if (!consent.ok) { setError(consent.message); return; }
+        const result = await aiProvider.generateReport(buildReportInput({ reportType: "renewal_consultation", memberId: member.id, memberName: member.name, source: { goal: member.goal, remainingLessons: rest, expiryDays: d, attendance: att, bodyComposition: r?.rows, performance: member.perf || [] } }));
         if (alive && result.status === AI_STATUSES.DRAFT) setText(formatAIReport(result.output));
-        else if (alive) setError("AI 분석 미연결");
-      } catch (e) { if (alive) setError("AI 브리핑을 불러오지 못했습니다."); }
+        else if (alive) setError("AI 상담 문장을 사용할 수 없습니다");
+      } catch (e) { if (alive) setError(aiFailureMessage(e, "AI 브리핑을 불러오지 못했습니다.")); }
       finally { if (alive) setLoading(false); }
     })();
     return () => { alive = false; };
@@ -1835,7 +2037,7 @@ function SalesBriefModal({ alert, onClose, onToast }) {
       <div className="mt-3 rounded-2xl p-4" style={{ backgroundColor: TINT }}>
         <p className="text-xs font-extrabold" style={{ color: PRIMARY }}>상담 멘트</p>
         {loading ? <p className="mt-2 flex items-center gap-2 text-sm" style={{ color: SUB }}><Loader2 size={14} className="animate-spin" /> 회원 데이터를 분석하는 중…</p>
-          : error ? <p className="mt-2 text-sm font-bold" style={{ color: WARN }}>{error} · 실제 Provider 연결 전에는 상담 문장을 생성하지 않습니다.</p>
+          : error ? <p className="mt-2 text-sm font-bold" style={{ color: WARN }}>{error}. 저장된 기록은 그대로 확인할 수 있습니다.</p>
             : <p className="mt-2 whitespace-pre-line text-sm leading-relaxed" style={{ color: INK }}>{text}</p>}
       </div>
       <div className="mt-3 flex gap-2">
@@ -2038,6 +2240,10 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
 
   const nameOf = (id) => db.members.find((m) => m.id === id)?.name || "삭제된 회원";
   const memberOf = (id) => db.members.find((m) => m.id === id);
+  const briefingOf = useCallback((memberId, sessionId = null) => {
+    const target = db.members.find((item) => item.id === memberId);
+    return target ? createMemberBriefing({ member: target, currentSessionId: sessionId }) : null;
+  }, [db.members]);
   const week = useMemo(() => Array.from({ length: 7 }, (_, i) => shift(monStart(cursor), i)), [cursor]);
   const byDate = (d) => db.schedule.filter((s) => s.date === d).sort((a, b) => a.start.localeCompare(b.start));
   const seatsOn = (d) => byDate(d).reduce((n, s) => n + attendeesOf(s).length, 0);
@@ -2064,6 +2270,18 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
 
   const sundayHasLessons = db.schedule.some((s) => s?.date === week[6]);
   const visibleDays = showSundaySetting || sundayHasLessons ? week : week.slice(0, 6);
+  const briefingRenderKey = `${visibleDays[0]}|${visibleDays.at(-1)}|${db.members.map((item) => `${item.id}:${item.notes?.length || 0}`).join(",")}`;
+  const briefingRenderRef = useRef("");
+  useEffect(() => {
+    if (briefingRenderRef.current === briefingRenderKey) return;
+    briefingRenderRef.current = briefingRenderKey;
+    const memberIds = new Set(visibleDays.flatMap((date) => byDate(date)).flatMap((lesson) => attendeesOf(lesson).map((attendee) => attendee.memberId)));
+    const count = [...memberIds].filter((memberId) => {
+      const briefing = briefingOf(memberId);
+      return briefing && briefing.kind !== "first_lesson" && briefing.kind !== "no_memory";
+    }).length;
+    if (count) trackMemberMemoryUsage("briefing_rendered", { count });
+  }, [briefingRenderKey, briefingOf]);
   const liveEditing = editing?.id ? (db.schedule.find((s) => s.id === editing.id) || editing) : editing;
   const step = (dir) => setCursor(shift(cursor, 7 * dir));
 
@@ -2217,7 +2435,7 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
             <button type="button" onClick={() => setFocusedMemberId(null)} className="flex h-7 shrink-0 items-center gap-1 px-2 text-xs font-semibold" style={{ borderRadius: 7, backgroundColor: CARD, color: SUB, border: `1px solid ${LINE}` }}><X size={12} />필터 해제</button>
           </div>
         )}
-        <WeekGrid days={visibleDays} byDate={byDate} nameOf={nameOf} memberOf={(id) => db.members.find((m) => m.id === id)} cursor={cursor} foldEmpty={foldEmpty} focusedMemberId={focusedMemberId}
+        <WeekGrid days={visibleDays} byDate={byDate} nameOf={nameOf} memberOf={(id) => db.members.find((m) => m.id === id)} briefingOf={briefingOf} cursor={cursor} foldEmpty={foldEmpty} focusedMemberId={focusedMemberId}
           onOpen={(s, trigger) => { scheduleTriggerRef.current = trigger; setEditing(s); }}
           onNew={(date, start, dur, trigger) => { scheduleTriggerRef.current = trigger; setEditing({ id: null, memberIds: [], date, start, dur: dur || DEFAULT_CLASS_DURATION, type: "개인레슨", instructor: db.settings.staff, room: "", memo: "" }); }} />
       </div>
@@ -2238,10 +2456,10 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
         </button>
       </div>
 
-      {editing && <ScheduleForm draft={liveEditing} members={db.members} schedule={db.schedule} photos={photos} returnFocusRef={scheduleTriggerRef} onClose={() => setEditing(null)}
+      {editing && <ScheduleForm draft={liveEditing} members={db.members} schedule={db.schedule} briefingOf={briefingOf} returnFocusRef={scheduleTriggerRef} onClose={() => setEditing(null)}
         onSubmit={(v) => { onSave(v); setEditing(null); }} onDelete={(id) => { onDelete(id); setEditing(null); }}
         onStatus={onStatus} onStatusAll={onStatusAll} onNoshowFee={onNoshowFee} onGroupDone={onGroupDone}
-        onNoComment={onNoComment} onSaveNote={onSaveNote} onFocusMemberWeek={(memberId) => { setFocusedMemberId(memberId); setEditing(null); }} onSaveRecommendation={(recommendation) => onSave({ ...liveEditing, aiRecommendation: recommendation })} />}
+        onNoComment={onNoComment} onSaveNote={onSaveNote} onFocusMemberWeek={(memberId) => { setFocusedMemberId(memberId); setEditing(null); }} />}
       {queueOpen && (
         <ScheduleQueueSheet tasks={taskQueue} members={db.members} returnFocusRef={queueTriggerRef} onClose={() => setQueueOpen(false)}
           onNoComment={onNoComment} onSaveNote={onSaveNote}
@@ -2273,17 +2491,18 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
               return (
                 <section key={date}>
                   <p className="mb-1.5 text-xs font-semibold tabular-nums" style={{ color: date === todayISO() ? PRIMARY : SUB }}>{dow(date)} {md(date)}</p>
-                  {rows.length ? rows.map((s) => (
+                  {rows.length ? rows.map((s) => { const cardAttendees = attendeesOf(s); const cardBriefing = !isPersonalEvt(s) && !isEquipGroup(s) && cardAttendees.length === 1 ? briefingOf(cardAttendees[0].memberId, s.id)?.lines?.[0]?.text || "" : ""; return (
                     <button key={s.id} type="button" onClick={(e) => { scheduleTriggerRef.current = e.currentTarget; setListOpen(false); setEditing(s); }}
-                      className="mb-1 flex h-11 w-full items-center gap-2 rounded-lg px-3 text-left"
+                      className="mb-1 flex min-h-11 w-full items-center gap-2 rounded-lg px-3 py-2 text-left"
                       style={{ backgroundColor: CANVAS, border: `1px solid ${LINE}` }}>
                       <span className="shrink-0 text-xs font-semibold tabular-nums" style={{ color: PRIMARY }}>{s.start}</span>
-                      <span className="min-w-0 flex-1 truncate text-sm font-semibold" style={{ color: INK }}>
-                        {isPersonalEvt(s) ? s.title : isEquipGroup(s) ? `${s.equip || "그룹"} · ${num(s.groupCount) || 0}명` : attendeesOf(s).map((a) => nameOf(a.memberId)).join(" · ")}
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-semibold" style={{ color: INK }}>{isPersonalEvt(s) ? s.title : isEquipGroup(s) ? `${s.equip || "그룹"} · ${num(s.groupCount) || 0}명` : cardAttendees.map((a) => nameOf(a.memberId)).join(" · ")}</span>
+                        {cardBriefing && <span className="mt-0.5 block truncate" style={{ fontSize: 10, color: SUB }}>{cardBriefing}</span>}
                       </span>
                       <ChevronRight size={14} style={{ color: SUB }} />
                     </button>
-                  )) : <p className="rounded-lg px-3 py-2 text-xs" style={{ backgroundColor: CANVAS, color: SUB }}>일정 없음</p>}
+                  ); }) : <p className="rounded-lg px-3 py-2 text-xs" style={{ backgroundColor: CANVAS, color: SUB }}>일정 없음</p>}
                 </section>
               );
             })}
@@ -2351,7 +2570,7 @@ function SwipeRow({ children, down, enabled, onPark, onUnpark }) {
 const AXIS = 28, GRID_PAD_X = 12, GRID_H0 = 8, GRID_H1 = 23, GRID_ROW = 64, GRID_FOLD = 20;
 const hourLabel = (h) => `${String(h).padStart(2, "0")}시`;
 
-function WeekGrid({ days, byDate, nameOf, memberOf, cursor, onOpen, onNew, foldEmpty = true, focusedMemberId = null }) {
+function WeekGrid({ days, byDate, nameOf, memberOf, briefingOf, cursor, onOpen, onNew, foldEmpty = true, focusedMemberId = null }) {
   const rows = GRID_H1 - GRID_H0 + 1;
   const top0 = GRID_H0 * 60;
   const gridRef = useRef(null);
@@ -2443,7 +2662,8 @@ function WeekGrid({ days, byDate, nameOf, memberOf, cursor, onOpen, onNew, foldE
     const done = pv ? false : eq ? !!s.groupDone : list.length > 0 && list.every((a) => a.status !== "booked");
     const status = list[0]?.status || "booked";
     const needsRecord = !pv && !eq && list.some((a) => a.status === "done" && !(memberOf?.(a.memberId)?.notes || []).some((n) => n?.sid === s.id));
-    return { s, top: topOf(st), h: Math.max(20, topOf(en) - topOf(st) - 2), label, done, cancelled: (eq && !!s.groupCancelled) || status === "cancel", noshow: status === "noshow", eq, pv, next: s.id === nextId, needsRecord, groupPeople };
+    const briefingLine = !pv && !eq && list.length === 1 ? briefingOf?.(list[0].memberId, s.id)?.lines?.[0]?.text || "" : "";
+    return { s, top: topOf(st), h: Math.max(20, topOf(en) - topOf(st) - 2), label, briefingLine, done, cancelled: (eq && !!s.groupCancelled) || status === "cancel", noshow: status === "noshow", eq, pv, next: s.id === nextId, needsRecord, groupPeople };
   }).filter((b) => b.top >= -GRID_ROW && b.top < totalHeight);
 
   return (
@@ -2487,7 +2707,7 @@ function WeekGrid({ days, byDate, nameOf, memberOf, cursor, onOpen, onNew, foldE
                 {blocksOf(d).map((b) => {
                   const memberMatch = !focusedMemberId || attendeesOf(b.s).some((a) => a.memberId === focusedMemberId);
                   return (
-                  <button key={b.s.id} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); onOpen(b.s, e.currentTarget); }}
+                  <button key={b.s.id} title={b.briefingLine ? `${b.label}\n${b.briefingLine}` : b.label} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); onOpen(b.s, e.currentTarget); }}
                     className="absolute left-0.5 right-0.5 flex min-w-0 items-center justify-center overflow-hidden text-center"
                     style={{ top: b.top + 1, height: Math.max(18, b.h - 1), borderRadius: 4,
                       background: b.pv ? "var(--card)" : b.cancelled ? "transparent" : b.noshow ? "var(--bad-s)" : b.done ? "var(--canvas)" : b.next ? "var(--tint)" : "var(--card)",
@@ -2499,7 +2719,7 @@ function WeekGrid({ days, byDate, nameOf, memberOf, cursor, onOpen, onNew, foldE
                       opacity: memberMatch ? 1 : 0.22, boxShadow: focusedMemberId && memberMatch ? `0 0 0 2px ${RING}` : "none", transition: "opacity .18s ease, box-shadow .18s ease" }}>
                     {b.next && <Play size={7} fill={BRAND} className="absolute left-0.5 top-0.5" />}
                     {!b.pv && !b.eq && <span className="absolute" aria-hidden="true" style={{ left: 2, bottom: 2, width: 5, height: 5, borderRadius: 3, backgroundColor: idColor(attendeesOf(b.s)[0]?.memberId), opacity: b.done ? .45 : 1 }} />}
-                    <span className="w-full" style={{ display: "-webkit-box", WebkitBoxOrient: "vertical", WebkitLineClamp: 2, overflow: "hidden", wordBreak: b.label.length <= 4 ? "keep-all" : "break-all", overflowWrap: "normal", textDecoration: b.cancelled ? "line-through" : "none" }}>{b.label}</span>
+                    <span className="w-full min-w-0"><span className="block truncate" style={{ textDecoration: b.cancelled ? "line-through" : "none" }}>{b.label}</span>{b.briefingLine && b.h >= 24 && <span className="mt-0.5 block truncate" style={{ fontSize: 7.5, fontWeight: 500, opacity: .78 }}>{b.briefingLine}</span>}</span>
                     {b.needsRecord && <span className="absolute" aria-label="기록 필요" style={{ top: 2, right: 2, width: 5, height: 5, borderRadius: 3, backgroundColor: BRAND }} />}
                   </button>
                   );
@@ -2512,7 +2732,7 @@ function WeekGrid({ days, byDate, nameOf, memberOf, cursor, onOpen, onNew, foldE
   );
 }
 
-function ScheduleForm({ draft, members, schedule, photos, returnFocusRef, onClose, onSubmit, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onSaveRecommendation, onFocusMemberWeek }) {
+function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, onClose, onSubmit, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onFocusMemberWeek }) {
   const currentIds = draft.memberIds || attendeesOf(draft).map((a) => a.memberId).filter(Boolean);
   const initialKind = draft.personal
     ? (draft.title === "상담" ? "consult" : "off")
@@ -2534,42 +2754,16 @@ function ScheduleForm({ draft, members, schedule, photos, returnFocusRef, onClos
   const isMemberLesson = kind === "solo" || isDuet;
   const activeMember = members.find((m) => m.id === activeMemberId) || null;
   const activeAttendee = attendeesOf(draft).find((a) => a.memberId === activeMemberId) || null;
-  const existingRecommendation = draft.aiRecommendation?.memberId === activeMemberId ? draft.aiRecommendation : null;
-  const [sequenceOriginal, setSequenceOriginal] = useState(existingRecommendation?.output || null);
-  const [sequenceText, setSequenceText] = useState(existingRecommendation?.teacherEditedText || (existingRecommendation?.output ? formatSequenceRecommendation(existingRecommendation.output) : ""));
-  const [sequenceMeta, setSequenceMeta] = useState(existingRecommendation?.meta || null);
-  const [sequenceStatus, setSequenceStatus] = useState(existingRecommendation?.status || AI_STATUSES.NOT_CONNECTED);
-  const [sequenceBusy, setSequenceBusy] = useState(false);
-  const [sequenceError, setSequenceError] = useState("");
-  useEffect(() => {
-    const saved = draft.aiRecommendation?.memberId === activeMemberId ? draft.aiRecommendation : null;
-    setSequenceOriginal(saved?.output || null);
-    setSequenceText(saved?.teacherEditedText || (saved?.output ? formatSequenceRecommendation(saved.output) : ""));
-    setSequenceMeta(saved?.meta || null);
-    setSequenceStatus(saved?.status || AI_STATUSES.NOT_CONNECTED);
-    setSequenceError("");
-  }, [activeMemberId, draft.aiRecommendation?.memberId, draft.aiRecommendation?.status]);
-  const requestSequence = async () => {
-    if (!activeMember || !draft.id) return;
-    if (aiProvider.getStatus().status !== "connected") { setSequenceStatus(AI_STATUSES.NOT_CONNECTED); setSequenceError("AI 추천 미연결 상태입니다."); return; }
-    setSequenceBusy(true); setSequenceError("");
-    try {
-      const result = await aiProvider.recommendSequence(buildSequenceInput({ member: activeMember, schedule, photos: photos?.[activeMember.id] || {} }));
-      if (result.status === AI_STATUSES.NOT_CONNECTED) { setSequenceStatus(result.status); return; }
-      const meta = aiMetaFrom(result);
-      const teacherEditedText = formatSequenceRecommendation(result.output);
-      const recommendation = { id: `airec_${draft.id}_${activeMember.id}`, lessonId: draft.id, memberId: activeMember.id, status: AI_STATUSES.DRAFT, output: result.output, teacherEditedText, meta, createdAt: result.createdAt || new Date().toISOString() };
-      onSaveRecommendation?.(recommendation);
-      setSequenceOriginal(result.output); setSequenceText(teacherEditedText); setSequenceMeta(meta); setSequenceStatus(AI_STATUSES.DRAFT);
-    } catch (error) { setSequenceStatus(AI_STATUSES.ERROR); setSequenceError(`AI 추천을 불러오지 못했습니다${error?.code ? ` (${error.code})` : ""}.`); }
-    finally { setSequenceBusy(false); }
-  };
-  const confirmSequence = () => {
-    if (!activeMember || !draft.id || !sequenceOriginal || !sequenceText.trim()) return;
-    onSaveRecommendation?.({ id: `airec_${draft.id}_${activeMember.id}`, lessonId: draft.id, memberId: activeMember.id, status: AI_STATUSES.CONFIRMED, output: sequenceOriginal, teacherEditedText: sequenceText.trim(), meta: sequenceMeta, confirmedAt: new Date().toISOString() });
-    setSequenceStatus(AI_STATUSES.CONFIRMED);
-  };
   const latestNote = (activeMember?.notes || []).slice().sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")))[0] || null;
+  const activeBriefing = useMemo(() => activeMember ? (briefingOf?.(activeMember.id, draft.id) || createMemberBriefing({ member: activeMember, currentSessionId: draft.id })) : null, [activeMember, briefingOf, draft.id]);
+  const openedBriefingRef = useRef("");
+  useEffect(() => {
+    if (!activeMember?.id || !draft.id || !activeBriefing) return;
+    const key = `${activeMember.id}:${draft.id}`;
+    if (openedBriefingRef.current === key) return;
+    openedBriefingRef.current = key;
+    trackMemberMemoryUsage("briefing_opened", { count: 1 });
+  }, [activeMember?.id, activeBriefing, draft.id]);
   const hour = Number((f.start || "10:00").slice(0, 2));
   const minute = Number((f.start || "10:00").slice(3, 5));
   const durationOptions = [...new Set([30, DEFAULT_CLASS_DURATION, 60, 80, Number(f.dur)].filter((n) => Number.isFinite(n) && n > 0))].sort((a, b) => a - b);
@@ -2607,6 +2801,7 @@ function ScheduleForm({ draft, members, schedule, photos, returnFocusRef, onClos
       attendees: isMemberLesson ? chosenIds.map((id) => previous.find((a) => a.memberId === id) || { memberId: id, status: "booked", deductFrom: null, noshowFee: null }) : [],
       personal: personal || undefined,
       title: personal ? (kind === "consult" ? "상담" : (draft.personal && draft.title && draft.title !== "상담" ? draft.title : "휴무")) : undefined,
+      ...(draft.aiRecommendation ? { aiRecommendation: draft.aiRecommendation } : {}),
     });
   };
   return (
@@ -2697,6 +2892,13 @@ function ScheduleForm({ draft, members, schedule, photos, returnFocusRef, onClos
               })}
             </div>
 
+            {activeMember && activeBriefing && (
+              <section className="rounded-xl p-3" aria-label="다음 수업 브리핑" style={{ backgroundColor: LAVENDER_S, border: `1px solid ${RING}` }}>
+                <div className="mb-2 flex items-center gap-2"><Sparkles size={14} style={{ color: BRAND_D }} /><p className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: BRAND_D }}>다음 수업 브리핑</p><span style={{ fontSize: 9, color: SUB }}>확정 기록 기반</span></div>
+                <div className="space-y-1.5">{activeBriefing.lines.slice(0, 5).map((briefingLine, index) => <p key={`${briefingLine.kind}-${index}`} className="text-xs leading-relaxed" style={{ color: briefingLine.kind === "conflict" ? WARN : INK2 }}>• {briefingLine.text}</p>)}</div>
+              </section>
+            )}
+
             {activeMember && (
               <button type="button" onClick={() => onFocusMemberWeek?.(activeMember.id)} className="flex h-11 w-full items-center justify-center gap-2 rounded-lg text-xs font-bold"
                 style={{ backgroundColor: TINT, color: BRAND_D, border: `1px solid #D5D1EB` }}>
@@ -2715,17 +2917,18 @@ function ScheduleForm({ draft, members, schedule, photos, returnFocusRef, onClos
                     <span className="shrink-0 rounded-full px-2.5 py-1 text-xs font-extrabold" style={{ backgroundColor: stOf(activeAttendee.status).bg, color: stOf(activeAttendee.status).color }}>{stOf(activeAttendee.status).label}</span>
                   </div>
                   {(activeMember.focus || []).length > 0 && <p className="mt-2 text-xs leading-relaxed" style={{ color: WARN }}>주의 · {(activeMember.focus || []).join(" · ")}</p>}
-                  {latestNote && <p className="mt-2 line-clamp-2 text-xs leading-relaxed" style={{ color: INK2 }}>최근 기록 · {latestNote.body}</p>}
+                  {latestNote && !latestNote.lessonRecord && <p className="mt-2 line-clamp-2 text-xs leading-relaxed" style={{ color: INK2 }}>최근 기록 · {latestNote.body}</p>}
                 </div>
 
                 <div>
                   <p className="mb-1.5 text-xs font-extrabold" style={{ color: INK }}>출석 · 차감</p>
-                  <div className="grid grid-cols-4 gap-1">
-                    {[{ k: "done", l: "출석" }, { k: "noshow", l: "노쇼" }, { k: "cancel", l: "취소" }, { k: "booked", l: "예정" }].map((o) => (
+                  <div className="grid grid-cols-3 gap-2">
+                    {[{ k: "done", l: "출석" }, { k: "noshow", l: "노쇼" }, { k: "cancel", l: "취소" }].map((o) => (
                       <button key={o.k} onClick={() => onStatus?.(draft.id, o.k, activeMemberId)} className="h-9 rounded-lg text-xs font-bold"
                         style={activeAttendee.status === o.k ? { backgroundColor: stOf(o.k).color, color: "#fff" } : { backgroundColor: CANVAS, color: SUB }}>{o.l}</button>
                     ))}
                   </div>
+                  {activeAttendee.status !== "booked" && <button type="button" onClick={() => onStatus?.(draft.id, "booked", activeMemberId)} className="mt-2 h-9 w-full rounded-lg text-xs font-bold" style={{ backgroundColor: CARD, color: BRAND_D, border: `1px solid ${LINE}` }}>처리 되돌리기</button>}
                   {activeAttendee.status === "done" && <p className="mt-1.5 text-xs font-bold" style={{ color: activeAttendee.deductFrom ? GOOD : SUB }}>{activeAttendee.deductFrom ? `${activeAttendee.deductFrom} 1회 차감 완료` : "차감 없이 출석 기록"}</p>}
                   {activeAttendee.status === "noshow" && (
                     <div className="mt-2 grid grid-cols-2 gap-2">
@@ -2735,30 +2938,22 @@ function ScheduleForm({ draft, members, schedule, photos, returnFocusRef, onClos
                   )}
                 </div>
 
-                <div className="rounded-xl p-3" style={{ backgroundColor: "#F5F4FB", border: "1px solid #D9D7EE" }}>
-                  <div className="flex items-center gap-1.5"><Sparkles size={14} style={{ color: PRIMARY }} /><p className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: PRIMARY }}>AI 수업 시퀀스 추천</p><span className="text-[10px] font-bold" style={{ color: sequenceStatus === AI_STATUSES.CONFIRMED ? GOOD : SUB }}>{sequenceStatus === AI_STATUSES.CONFIRMED ? "강사 확정" : sequenceStatus === AI_STATUSES.DRAFT ? "초안" : aiProvider.getStatus().status === "connected" ? "생성 가능" : "미연결"}</span></div>
-                  {sequenceText ? <textarea rows={5} value={sequenceText} onChange={(event) => setSequenceText(event.target.value)} className={`${inputCls} mt-2 h-auto resize-none py-2 text-xs leading-relaxed`} />
-                    : <p className="mt-1.5 text-xs leading-relaxed" style={{ color: INK }}>{aiProvider.getStatus().status === "connected" ? "체형분석·최근 수업·목표·주의사항을 바탕으로 추천 초안을 생성할 수 있습니다." : "AI 추천 미연결 · 실제 Provider가 연결되기 전에는 추천을 생성하지 않습니다."}</p>}
-                  {sequenceError && <p className="mt-1.5 text-xs font-bold" style={{ color: BAD }}>{sequenceError}</p>}
-                  <div className="mt-2 flex gap-2">
-                    <button disabled={sequenceBusy || aiProvider.getStatus().status !== "connected"} onClick={requestSequence} className="h-9 flex-1 rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: CARD, color: PRIMARY }}>{sequenceBusy ? "생성 중…" : sequenceText ? "다시 생성" : "추천 생성"}</button>
-                    {sequenceText && <button disabled={sequenceBusy || !sequenceOriginal || !sequenceText.trim()} onClick={confirmSequence} className="h-9 flex-1 rounded-lg text-xs font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: PRIMARY }}>강사 수정본 저장</button>}
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-3 gap-2">
-                  <button onClick={() => setRecordMode(recordMode === "voice" ? null : "voice")} className="flex h-11 items-center justify-center gap-1 rounded-lg text-xs font-extrabold" style={{ backgroundColor: recordMode === "voice" ? TINT : CARD, color: recordMode === "voice" ? PRIMARY : INK, border: `1px solid ${LINE}` }}><Smartphone size={13} /> AI 음성</button>
-                  <button onClick={() => setRecordMode(recordMode === "write" ? null : "write")} className="flex h-11 items-center justify-center gap-1 rounded-lg text-xs font-extrabold" style={{ backgroundColor: recordMode === "write" ? TINT : CARD, color: recordMode === "write" ? PRIMARY : INK, border: `1px solid ${LINE}` }}><Pencil size={13} /> 기록하기</button>
-                  <button onClick={() => { onNoComment?.(activeMemberId, draft.type, draft.id); onClose(); }} className="h-11 rounded-lg text-xs font-extrabold" style={{ color: SUB }}>노코멘트</button>
+                {activeAttendee.status !== "booked" && <>
+                <div className="grid grid-cols-2 gap-2">
+                  <button onClick={() => setRecordMode(recordMode === "voice" ? null : "voice")} className="flex h-12 items-center justify-center gap-1.5 rounded-lg text-xs font-extrabold" style={{ backgroundColor: recordMode === "voice" ? PRIMARY : TINT, color: recordMode === "voice" ? "#fff" : PRIMARY, border: `1px solid ${recordMode === "voice" ? PRIMARY : "#D9D7EE"}` }}><Smartphone size={15} /> 말하기</button>
+                  <button onClick={() => setRecordMode(recordMode === "write" ? null : "write")} className="flex h-12 items-center justify-center gap-1 rounded-lg text-xs font-extrabold" style={{ backgroundColor: recordMode === "write" ? TINT : CARD, color: recordMode === "write" ? PRIMARY : INK, border: `1px solid ${LINE}` }}><Pencil size={13} /> 직접입력</button>
+                  <button onClick={async () => { const stored = await onNoComment?.(activeMemberId, draft.type, draft.id); if (stored !== false) onClose(); }} className="h-12 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: SUB, border: `1px solid ${LINE}` }}>노코멘트</button>
+                  <button onClick={onClose} className="h-12 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: SUB, border: `1px solid ${LINE}` }}>나중에</button>
                 </div>
 
                 {recordMode && (
                   <div className="space-y-2 rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
                     {recordMode === "voice" && <VoiceNote memberId={activeMemberId} lessonId={draft.id} onApply={(text, meta) => { setRecordBody((body) => body.trim() ? `${body.trim()}\n${text}` : text); setRecordMeta(meta); }} />}
-                    <textarea rows={4} value={recordBody} onChange={(e) => setRecordBody(e.target.value)} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} />
-                    <button disabled={!recordBody.trim()} onClick={() => { onSaveNote?.(activeMemberId, draft.type, draft.id, recordBody.trim(), recordMeta); onClose(); }} className="h-11 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35" style={{ backgroundColor: PRIMARY }}>기록 저장</button>
+                    <textarea rows={4} value={recordBody} onChange={(e) => { const value = e.target.value; setRecordBody(value); setRecordMeta((meta) => meta?.lessonRecord ? { ...meta, lessonRecord: { ...meta.lessonRecord, instructorBodyOverride: value, instructorBodyOrigin: "instructor" } } : meta); }} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} />
+                    <button disabled={!recordBody.trim()} onClick={async () => { const stored = await onSaveNote?.(activeMemberId, draft.type, draft.id, recordBody.trim(), recordMeta); if (stored !== false) onClose(); }} className="h-11 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35" style={{ backgroundColor: PRIMARY }}>확인 후 기록 저장</button>
                   </div>
                 )}
+                </>}
               </>
             )}
 
@@ -2772,12 +2967,12 @@ function ScheduleForm({ draft, members, schedule, photos, returnFocusRef, onClos
           </div>
         )}
         {draft.id && isGroup && (
-          <div className="grid grid-cols-3 gap-1 border-t pt-3" style={{ borderColor: LINE }}>
+          <div className="grid grid-cols-2 gap-2 border-t pt-3" style={{ borderColor: LINE }}>
             <button onClick={() => { onGroupDone?.(draft.id, true); onClose(); }} className="h-9 rounded-lg text-xs font-bold text-white" style={{ backgroundColor: GOOD }}>완료</button>
-            <button onClick={() => { onGroupDone?.(draft.id, false); onClose(); }} className="h-9 rounded-lg text-xs font-bold" style={{ backgroundColor: TINT, color: PRIMARY }}>예정</button>
             <button onClick={() => { onGroupDone?.(draft.id, "cancelled"); onClose(); }} className="h-9 rounded-lg text-xs font-bold" style={{ backgroundColor: BAD_S, color: BAD }}>취소</button>
           </div>
         )}
+        {draft.id && !editingInfo && <button type="button" onClick={onClose} className="h-11 w-full rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: INK, border: `1px solid ${LINE}` }}>닫기</button>}
         {draft.id && onDelete && (del ? (
           <div className="flex items-center gap-2 rounded-lg p-2.5" style={{ backgroundColor: BAD_S }}>
             <span className="min-w-0 flex-1 text-xs font-bold" style={{ color: BAD }}>이 일정을 삭제할까요?</span>
@@ -2842,16 +3037,17 @@ function ScheduleQueueSheet({ tasks, members, returnFocusRef, onClose, onNoComme
           {task.kind === "note" && (
             <div>
               <p className="mb-2 text-xs" style={{ color: SUB }}>저장하면 다음 업무로 자동 이동합니다</p>
-              <div className="grid grid-cols-3 gap-2">
-                <button onClick={() => setRecordMode(recordMode === "voice" ? null : "voice")} className="flex h-12 items-center justify-center gap-1 rounded-lg text-xs font-extrabold" style={{ backgroundColor: recordMode === "voice" ? TINT : CARD, border: `1px solid ${LINE}`, color: recordMode === "voice" ? PRIMARY : INK }}><Smartphone size={14} /> AI 음성기록</button>
+              <div className="grid grid-cols-2 gap-2">
+                <button onClick={() => setRecordMode(recordMode === "voice" ? null : "voice")} className="flex h-12 items-center justify-center gap-1 rounded-lg text-xs font-extrabold" style={{ backgroundColor: recordMode === "voice" ? PRIMARY : TINT, border: `1px solid ${recordMode === "voice" ? PRIMARY : "#D9D7EE"}`, color: recordMode === "voice" ? "#fff" : PRIMARY }}><Smartphone size={15} /> 말하기</button>
                 <button onClick={() => setRecordMode(recordMode === "write" ? null : "write")} className="flex h-12 items-center justify-center gap-1 rounded-lg text-xs font-extrabold" style={{ backgroundColor: recordMode === "write" ? TINT : CARD, border: `1px solid ${LINE}`, color: recordMode === "write" ? PRIMARY : INK }}><Pencil size={14} /> 직접 입력</button>
-                <button onClick={() => onNoComment?.(task.a.memberId, task.s.type, task.s.id)} className="h-12 rounded-lg text-xs font-extrabold" style={{ color: SUB }}>노코멘트</button>
+                <button onClick={() => onNoComment?.(task.a.memberId, task.s.type, task.s.id)} className="h-12 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: SUB, border: `1px solid ${LINE}` }}>노코멘트</button>
+                <button onClick={onClose} className="h-12 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: SUB, border: `1px solid ${LINE}` }}>나중에</button>
               </div>
               {recordMode && (
                 <div className="mt-3 space-y-2 rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
                   {recordMode === "voice" && <VoiceNote memberId={task.a.memberId} lessonId={task.s.id} onApply={(text, meta) => { setRecordBody((body) => body.trim() ? `${body.trim()}\n${text}` : text); setRecordMeta(meta); }} />}
-                  <textarea rows={4} value={recordBody} onChange={(e) => setRecordBody(e.target.value)} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} />
-                  <button disabled={!recordBody.trim()} onClick={() => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, recordBody.trim(), recordMeta)} className="h-11 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35" style={{ backgroundColor: PRIMARY }}>기록 저장</button>
+                  <textarea rows={4} value={recordBody} onChange={(e) => { const value = e.target.value; setRecordBody(value); setRecordMeta((meta) => meta?.lessonRecord ? { ...meta, lessonRecord: { ...meta.lessonRecord, instructorBodyOverride: value, instructorBodyOrigin: "instructor" } } : meta); }} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} />
+                  <button disabled={!recordBody.trim()} onClick={() => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, recordBody.trim(), recordMeta)} className="h-11 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35" style={{ backgroundColor: PRIMARY }}>확인 후 저장 · 다음</button>
                 </div>
               )}
             </div>
@@ -2884,7 +3080,6 @@ function ScheduleQueueSheet({ tasks, members, returnFocusRef, onClose, onNoComme
   );
 }
 
-const PEN_COLORS = ["#C2413B", "#2E7D5B", "#4C4399", "#8A84C4", "#FFFFFF", "#1C2433"];
 function coverDraw(ctx, img, w, h, tf) {
   const base = Math.max(w / img.width, h / img.height);
   const s = base * (tf?.scale || 1);
@@ -2906,20 +3101,91 @@ function angleLabel(part, deg, mirror) {
   if (mirror) higher = higher === "좌" ? "우" : "좌";
   return `${part} ${Math.abs(deg).toFixed(1)}° · ${higher}측 높음`;
 }
-function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDraft, onToast, fresh, initialTool = "guide" }) {
+
+function drawAnnotationMark(ctx, mark, width, height, options = {}) {
+  if (!ctx || !mark || !Array.isArray(mark.pts) || !mark.pts.length) return;
+  const offsetX = Number(options.offsetX) || 0, offsetY = Number(options.offsetY) || 0;
+  const lineScale = Math.max(0.01, Number(options.lineScale) || 1);
+  const fontScale = Math.max(0.01, Number(options.fontScale) || lineScale);
+  const strokeWidth = Math.max(0.8, (Number(mark.width) || 3) * lineScale);
+  const point = (value) => ({ x: offsetX + Number(value?.x || 0) * width, y: offsetY + Number(value?.y || 0) * height });
+  const start = point(mark.pts[0]), end = point(mark.pts[mark.pts.length - 1]);
+  ctx.save();
+  ctx.globalAlpha = mark.opacity ?? 1;
+  ctx.strokeStyle = mark.color || "#6C5FD4";
+  ctx.fillStyle = mark.color || "#6C5FD4";
+  ctx.lineWidth = strokeWidth;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+
+  if (mark.tool === "point") {
+    ctx.beginPath(); ctx.arc(start.x, start.y, ((Number(mark.width) || 3) + 3) * lineScale, 0, Math.PI * 2); ctx.fill();
+    ctx.lineWidth = Math.max(1, 1.5 * lineScale);
+    ctx.beginPath(); ctx.arc(start.x, start.y, ((Number(mark.width) || 3) + 9) * lineScale, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore(); return;
+  }
+  if (mark.tool === "circle") {
+    ctx.beginPath();
+    ctx.ellipse((start.x + end.x) / 2, (start.y + end.y) / 2, Math.abs(end.x - start.x) / 2, Math.abs(end.y - start.y) / 2, 0, 0, Math.PI * 2);
+    ctx.stroke();
+  } else if (mark.tool === "rect") {
+    ctx.strokeRect(Math.min(start.x, end.x), Math.min(start.y, end.y), Math.abs(end.x - start.x), Math.abs(end.y - start.y));
+  } else if (mark.tool === "text") {
+    const lines = annotationTextLines(mark), font = annotationFont(mark, fontScale), lineHeight = annotationFontSize(mark, fontScale) * 1.16;
+    ctx.font = font; ctx.textAlign = "left"; ctx.textBaseline = "top";
+    ctx.shadowColor = "rgba(0,0,0,.58)"; ctx.shadowBlur = Math.max(1.5, 2.4 * fontScale); ctx.shadowOffsetY = Math.max(1, fontScale);
+    lines.forEach((line, index) => ctx.fillText(line || " ", start.x, start.y + index * lineHeight));
+  } else {
+    ctx.beginPath();
+    if (mark.tool === "hline") { ctx.moveTo(offsetX, start.y); ctx.lineTo(offsetX + width, start.y); }
+    else if (mark.tool === "vline") { ctx.moveTo(start.x, offsetY); ctx.lineTo(start.x, offsetY + height); }
+    else mark.pts.forEach((value, index) => { const next = point(value); index ? ctx.lineTo(next.x, next.y) : ctx.moveTo(next.x, next.y); });
+    ctx.stroke();
+    if (mark.tool === "arrow" && mark.pts.length >= 2) {
+      const [left, right] = arrowHeadPoints(start, end, (10 + (Number(mark.width) || 3) * 2) * lineScale);
+      ctx.beginPath(); ctx.moveTo(end.x, end.y); ctx.lineTo(left.x, left.y); ctx.moveTo(end.x, end.y); ctx.lineTo(right.x, right.y); ctx.stroke();
+    }
+  }
+
+  if (mark.tool === "angle" && mark.pts.length === 2) {
+    const baseY = start.x <= end.x ? start.y : end.y;
+    ctx.save(); ctx.setLineDash([5 * lineScale, 5 * lineScale]); ctx.globalAlpha *= 0.6;
+    ctx.beginPath(); ctx.moveTo(Math.min(start.x, end.x) - 20 * lineScale, baseY); ctx.lineTo(Math.max(start.x, end.x) + 20 * lineScale, baseY); ctx.stroke(); ctx.restore();
+    [start, end].forEach((value) => { ctx.beginPath(); ctx.arc(value.x, value.y, ((Number(mark.width) || 3) + 2) * lineScale, 0, Math.PI * 2); ctx.fill(); });
+    if (mark.label && !options.hideLabel) {
+      const centerX = (start.x + end.x) / 2, centerY = (start.y + end.y) / 2 - 14 * fontScale;
+      ctx.font = `700 ${13 * fontScale}px Pretendard, sans-serif`;
+      const textWidth = ctx.measureText(String(mark.label)).width;
+      ctx.fillStyle = "rgba(10,10,16,0.82)"; ctx.fillRect(centerX - textWidth / 2 - 7 * fontScale, centerY - 15 * fontScale, textWidth + 14 * fontScale, 22 * fontScale);
+      ctx.strokeStyle = "rgba(255,255,255,0.55)"; ctx.lineWidth = Math.max(0.8, fontScale); ctx.strokeRect(centerX - textWidth / 2 - 7 * fontScale, centerY - 15 * fontScale, textWidth + 14 * fontScale, 22 * fontScale);
+      ctx.fillStyle = "#fff"; ctx.textAlign = "center"; ctx.textBaseline = "alphabetic"; ctx.fillText(String(mark.label), centerX, centerY + fontScale);
+    }
+  }
+  ctx.restore();
+}
+
+function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDraft, onToast, fresh, initialTool = "pen" }) {
   const wrapRef = useRef(null), canvasRef = useRef(null), imgRef = useRef(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
-  const [marks, setMarks] = useState(photo.marks || []);
-  const [redoMarks, setRedoMarks] = useState([]);
+  const [marks, setMarks] = useState(() => (Array.isArray(photo.marks) ? photo.marks : []).map((mark) => ({ ...mark, id: mark?.id || uid() })));
+  const marksRef = useRef(marks);
+  const [undoStack, setUndoStack] = useState([]);
+  const [redoStack, setRedoStack] = useState([]);
+  const [selectedMarkId, setSelectedMarkId] = useState(null);
   const [draft, setDraft] = useState(null);
   const [pending, setPending] = useState(null);
-  const [tool, setTool] = useState(initialTool === "guide" ? "hline" : initialTool);
-  const [guideSheet, setGuideSheet] = useState(initialTool === "guide");
-  const [color, setColor] = useState("#6C5FD4");
-  const [width, setWidth] = useState(3);
+  const [tool, setTool] = useState(initialTool === "guide" ? "pen" : initialTool);
+  const [guideSheet, setGuideSheet] = useState(false);
+  const [recentColors, setRecentColors] = useState(() => readRecentAnnotationColors(window.localStorage));
+  const [color, setColor] = useState(() => readRecentAnnotationColors(window.localStorage)[0] || "#6C5FD4");
+  const [width, setWidth] = useState(4);
   const [opacity] = useState(1);
   const [grid] = useState(false);
   const [ruler, setRuler] = useState(null);
+  const [memoDraft, setMemoDraft] = useState(null);
+  const colorInputRef = useRef(null);
+  const editRef = useRef(null);
+  const memoTapRef = useRef(null);
   const rulerDrag = useRef(null);
   /* 두 손가락으로 자를 옮기고 돌린다 */
   const ptrs = useRef(new Map());
@@ -2930,8 +3196,9 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
   const pinch = useRef(null);
   const resetZoom = () => { setZoom(1); setPan({ x: 0, y: 0 }); };
   const exportingRef = useRef(false);
-  const [shot, setShot] = useState(null);
-  const initialMarks = useRef(JSON.stringify(photo.marks || []));
+  const [exportPreview, setExportPreview] = useState(null);
+  const [exportBusy, setExportBusy] = useState(false);
+  const initialMarks = useRef(JSON.stringify(marks));
   const onDraftRef = useRef(onDraft);
   useEffect(() => { onDraftRef.current = onDraft; }, [onDraft]);
   const hasUnsaved = () => JSON.stringify(marks) !== initialMarks.current;
@@ -2940,7 +3207,57 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
     onCancel?.();
   };
   useBackClose(true, requestClose);
+  useBackClose(Boolean(exportPreview), () => setExportPreview(null));
   useScrollLock();
+
+  const replaceMarks = (next) => {
+    marksRef.current = next;
+    setMarks(next);
+  };
+  const commitMarks = (updater) => {
+    const current = marksRef.current;
+    const next = typeof updater === "function" ? updater(current) : updater;
+    if (!Array.isArray(next) || JSON.stringify(next) === JSON.stringify(current)) return;
+    setUndoStack((history) => [...history, current].slice(-40));
+    setRedoStack([]);
+    replaceMarks(next);
+  };
+  const undoMarks = () => {
+    if (pending) { setPending(null); return; }
+    if (!undoStack.length) return;
+    const previous = undoStack[undoStack.length - 1];
+    setUndoStack((history) => history.slice(0, -1));
+    setRedoStack((history) => [...history, marksRef.current].slice(-40));
+    replaceMarks(previous);
+    setSelectedMarkId((id) => previous.some((mark) => mark.id === id) ? id : null);
+  };
+  const redoMarks = () => {
+    if (!redoStack.length) return;
+    const next = redoStack[redoStack.length - 1];
+    setRedoStack((history) => history.slice(0, -1));
+    setUndoStack((history) => [...history, marksRef.current].slice(-40));
+    replaceMarks(next);
+    setSelectedMarkId((id) => next.some((mark) => mark.id === id) ? id : null);
+  };
+  const chooseColor = (value) => {
+    const next = normalizeAnnotationColor(value, color);
+    setColor(next);
+    setRecentColors(rememberAnnotationColor(window.localStorage, next));
+    if (selectedMarkId) commitMarks((items) => items.map((mark) => mark.id === selectedMarkId ? { ...mark, color: next } : mark));
+  };
+  const setHandwritingSize = (value) => {
+    const next = closestHandwritingWidth(value);
+    setWidth(next);
+    if (selectedMarkId) commitMarks((items) => items.map((mark) => mark.id === selectedMarkId && mark.tool === "text" ? { ...mark, width: next } : mark));
+  };
+  const deleteSelectedMark = () => {
+    if (!selectedMarkId) return;
+    commitMarks((items) => items.filter((mark) => mark.id !== selectedMarkId));
+    setSelectedMarkId(null);
+  };
+  useEffect(() => {
+    if (selectedMarkId && !marks.some((mark) => mark.id === selectedMarkId)) setSelectedMarkId(null);
+  }, [marks, selectedMarkId]);
 
   useEffect(() => {
     if (!onDraftRef.current || !hasUnsaved()) return undefined;
@@ -2998,50 +3315,30 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
   };
   const snapPt = (p) => rulerZone(p).pt;
 
-  const drawMark = (ctx, m, w, h) => {
-    const P = (p) => ({ x: p.x * w, y: p.y * h });
+  const measureCanvasText = (text, font) => {
+    const context = canvasRef.current?.getContext("2d");
+    if (!context) return String(text || " ").length * 14;
+    context.save(); context.font = font; const measured = context.measureText(String(text || " ")).width; context.restore();
+    return measured;
+  };
+  const drawSelection = (ctx, mark, w, h, renderScale) => {
+    if (!mark || exportingRef.current) return;
     ctx.save();
-    ctx.globalAlpha = m.opacity ?? 1;
-    ctx.strokeStyle = m.color; ctx.fillStyle = m.color; ctx.lineWidth = m.width;
-    ctx.lineCap = "round"; ctx.lineJoin = "round";
-    if (m.tool === "point") {
-      const p = P(m.pts[0]);
-      ctx.beginPath(); ctx.arc(p.x, p.y, m.width + 3, 0, Math.PI * 2); ctx.fill();
-      ctx.lineWidth = 1.5;
-      ctx.beginPath(); ctx.arc(p.x, p.y, m.width + 9, 0, Math.PI * 2); ctx.stroke();
-      ctx.restore(); return;
-    }
-    const a = P(m.pts[0] || { x: 0, y: 0 }), b = P(m.pts[m.pts.length - 1] || m.pts[0] || { x: 0, y: 0 });
-    if (m.tool === "circle") {
-      ctx.beginPath(); ctx.ellipse((a.x + b.x) / 2, (a.y + b.y) / 2, Math.abs(b.x - a.x) / 2, Math.abs(b.y - a.y) / 2, 0, 0, Math.PI * 2); ctx.stroke();
-    } else if (m.tool === "rect") {
-      ctx.strokeRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
-    } else if (m.tool === "text") {
-      ctx.font = `600 ${Math.max(13, m.width * 5)}px Pretendard, sans-serif`; ctx.textAlign = "left"; ctx.textBaseline = "top"; ctx.fillText(m.label || "", a.x, a.y);
-    } else {
-      ctx.beginPath();
-      if (m.tool === "hline") { const y = m.pts[0].y * h; ctx.moveTo(0, y); ctx.lineTo(w, y); }
-      else if (m.tool === "vline") { const x = m.pts[0].x * w; ctx.moveTo(x, 0); ctx.lineTo(x, h); }
-      else m.pts.forEach((p, i) => { const q = P(p); i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y); });
-      ctx.stroke();
-      if (m.tool === "arrow" && m.pts.length >= 2) {
-        const ang = Math.atan2(b.y - a.y, b.x - a.x), head = 10 + m.width * 2;
-        ctx.beginPath(); ctx.moveTo(b.x, b.y); ctx.lineTo(b.x - head * Math.cos(ang - Math.PI / 6), b.y - head * Math.sin(ang - Math.PI / 6));
-        ctx.moveTo(b.x, b.y); ctx.lineTo(b.x - head * Math.cos(ang + Math.PI / 6), b.y - head * Math.sin(ang + Math.PI / 6)); ctx.stroke();
-      }
-    }
-    if (m.tool === "angle" && m.pts.length === 2) {
-      const a = P(m.pts[0]), b = P(m.pts[1]);
-      const baseY = a.x <= b.x ? a.y : b.y;
-      ctx.save(); ctx.setLineDash([5, 5]); ctx.globalAlpha = 0.6;
-      ctx.beginPath(); ctx.moveTo(Math.min(a.x, b.x) - 20, baseY); ctx.lineTo(Math.max(a.x, b.x) + 20, baseY); ctx.stroke(); ctx.restore();
-      [a, b].forEach((p) => { ctx.beginPath(); ctx.arc(p.x, p.y, m.width + 2, 0, Math.PI * 2); ctx.fill(); });
-      const cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2 - 14;
-      ctx.font = "bold 13px Pretendard, sans-serif";
-      const tw = ctx.measureText(m.label || "").width;
-      ctx.fillStyle = "rgba(10,10,16,0.8)"; ctx.fillRect(cx - tw / 2 - 7, cy - 15, tw + 14, 22);
-      ctx.strokeStyle = "rgba(255,255,255,0.55)"; ctx.lineWidth = 1; ctx.strokeRect(cx - tw / 2 - 7, cy - 15, tw + 14, 22);
-      ctx.fillStyle = "#fff"; ctx.textAlign = "center"; ctx.fillText(m.label || "", cx, cy + 1);
+    if (mark.tool === "arrow" && mark.pts?.length >= 2) {
+      const values = [mark.pts[0], mark.pts[mark.pts.length - 1]].map((point) => ({ x: point.x * w, y: point.y * h }));
+      ctx.setLineDash([4, 4]); ctx.strokeStyle = "rgba(255,255,255,.88)"; ctx.lineWidth = Math.max(6, (mark.width || 3) * renderScale + 5);
+      ctx.beginPath(); ctx.moveTo(values[0].x, values[0].y); ctx.lineTo(values[1].x, values[1].y); ctx.stroke(); ctx.setLineDash([]);
+      drawAnnotationMark(ctx, mark, w, h, { lineScale: renderScale, fontScale: renderScale });
+      values.forEach((value, index) => {
+        ctx.beginPath(); ctx.arc(value.x, value.y, 11, 0, Math.PI * 2); ctx.fillStyle = "rgba(18,22,32,.9)"; ctx.fill();
+        ctx.strokeStyle = "#FFFFFF"; ctx.lineWidth = 2.5; ctx.stroke();
+        ctx.beginPath(); ctx.arc(value.x, value.y, index ? 5 : 4, 0, Math.PI * 2); ctx.fillStyle = mark.color || color; ctx.fill();
+      });
+    } else if (mark.tool === "text") {
+      const bounds = annotationTextBounds(mark, { width: w, height: h }, measureCanvasText, renderScale);
+      ctx.setLineDash([5, 4]); ctx.strokeStyle = "rgba(255,255,255,.92)"; ctx.lineWidth = 1.5;
+      ctx.strokeRect(bounds.left - 7, bounds.top - 6, bounds.width + 14, bounds.height + 12); ctx.setLineDash([]);
+      ctx.beginPath(); ctx.arc(bounds.left - 7, bounds.top - 6, 8, 0, Math.PI * 2); ctx.fillStyle = "rgba(18,22,32,.92)"; ctx.fill(); ctx.strokeStyle = "#fff"; ctx.lineWidth = 2; ctx.stroke();
     }
     ctx.restore();
   };
@@ -3091,11 +3388,13 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
       ctx.strokeStyle = PRIMARY; ctx.lineWidth = 1.5;
       ctx.beginPath(); ctx.moveTo(w / 2, 0); ctx.lineTo(w / 2, h); ctx.stroke(); ctx.restore();
     }
-    marks.forEach((m) => drawMark(ctx, m, w, h));
-    if (draft) drawMark(ctx, draft, w, h);
-    if (pending && !draft) drawMark(ctx, { tool: "point", color, width, opacity, pts: [pending] }, w, h);
+    const renderScale = w / 300;
+    marks.forEach((mark) => drawAnnotationMark(ctx, mark, w, h, { lineScale: renderScale, fontScale: renderScale }));
+    if (draft) drawAnnotationMark(ctx, draft, w, h, { lineScale: renderScale, fontScale: renderScale });
+    if (pending && !draft) drawAnnotationMark(ctx, { tool: "point", color, width, opacity, pts: [pending] }, w, h, { lineScale: renderScale, fontScale: renderScale });
+    drawSelection(ctx, marks.find((mark) => mark.id === selectedMarkId), w, h, renderScale);
     if (ruler && !exportingRef.current) drawRuler(ctx, w, h);
-  }, [marks, draft, pending, grid, ruler, color, width, opacity, photo, size]);
+  }, [marks, draft, pending, grid, ruler, color, width, opacity, photo, size, selectedMarkId]);
   useEffect(() => { draw(); }, [draw]);
 
   const pos = (e) => {
@@ -3108,6 +3407,8 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
     /* 손가락이 둘 — 자가 켜져 있으면 자 조절, 꺼져 있으면 사진 확대 */
     if (ptrs.current.size === 2 && !ruler) {
       const [a, b] = [...ptrs.current.values()];
+      memoTapRef.current = null;
+      if (editRef.current) { replaceMarks(editRef.current.before); editRef.current = null; }
       setDraft(null);
       pinch.current = {
         d0: Math.max(1, Math.hypot(b.x - a.x, b.y - a.y)),
@@ -3118,6 +3419,8 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
     }
     if (ptrs.current.size === 2 && ruler) {
       const [p1, p2] = [...ptrs.current.values()];
+      memoTapRef.current = null;
+      if (editRef.current) { replaceMarks(editRef.current.before); editRef.current = null; }
       setDraft(null);
       rulerDrag.current = null;
       gest.current = {
@@ -3129,16 +3432,14 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
     }
     if (ptrs.current.size > 1) return;
     const raw = pos(e);
+    const rect = canvasRef.current.getBoundingClientRect();
+    const viewport = { width: rect.width, height: rect.height };
     if (tool === "eraser") {
-      let best = -1, dist = Infinity;
-      marks.forEach((mark, index) => (mark.pts || []).forEach((point) => {
-        const d = Math.hypot(point.x - raw.x, point.y - raw.y);
-        if (d < dist) { dist = d; best = index; }
-      }));
-      if (best >= 0 && dist < 0.12) {
+      const hit = hitTestAnnotations(marks, raw, viewport, { includeHandles: false, measureText: measureCanvasText, fontScale: rect.width / 300, bodyTolerance: 18 });
+      if (hit) {
         if (!window.confirm("선택한 표시를 삭제할까요?")) return;
-        setRedoMarks([]);
-        setMarks((items) => items.filter((_, index) => index !== best));
+        commitMarks((items) => items.filter((_, index) => index !== hit.index));
+        if (selectedMarkId === hit.markId) setSelectedMarkId(null);
       }
       return;
     }
@@ -3152,10 +3453,34 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
       /* 자 몸통과 그 아래에서는 절대 그어지지 않는다 — 누르면 자를 옮긴다 */
       if (lp.y >= -1) { rulerDrag.current = { mode: "move", dx: P.x - g.C.x, dy: P.y - g.C.y }; return; }
     }
+    const editable = hitTestAnnotations(marks, raw, viewport, { tools: ["arrow", "text"], measureText: measureCanvasText, fontScale: rect.width / 300, handleRadius: 24, bodyTolerance: 16 });
+    if (editable) {
+      const kind = editable.mark.tool === "text" ? "move-text" : editable.part === "start" ? "arrow-start" : editable.part === "end" ? "arrow-end" : "move-arrow";
+      const anchor = editable.mark.pts?.[0] || raw;
+      setSelectedMarkId(editable.markId);
+      setColor(normalizeAnnotationColor(editable.mark.color, color));
+      setWidth(closestHandwritingWidth(editable.mark.width));
+      editRef.current = {
+        pointerId: e.pointerId,
+        markId: editable.markId,
+        kind,
+        origin: raw,
+        originalPoints: (editable.mark.pts || []).map((point) => ({ ...point })),
+        originalMark: { ...editable.mark, pts: (editable.mark.pts || []).map((point) => ({ ...point })) },
+        grabOffset: kind === "move-text" ? { x: raw.x - anchor.x, y: raw.y - anchor.y } : null,
+        before: marksRef.current,
+      };
+      return;
+    }
+    setSelectedMarkId(null);
     const p = ruler ? snapPt(raw) : raw;
     if (tool === "text") {
       const label = window.prompt("사진에 표시할 내용을 입력하세요", "");
-      if (label?.trim()) { setRedoMarks([]); setMarks((items) => [...items, { id: uid(), tool, color, width, opacity, pts: [p], label: label.trim() }]); }
+      if (label?.trim()) commitMarks((items) => [...items, { id: uid(), tool, color, width, opacity, pts: [p], label: label.trim() }]);
+      return;
+    }
+    if (tool === "memo") {
+      memoTapRef.current = { pointerId: e.pointerId, point: p, startX: e.clientX, startY: e.clientY, moved: false };
       return;
     }
     if (tool === "hline" || tool === "vline") { setDraft({ id: uid(), tool, color, width, opacity, pts: [p] }); return; }
@@ -3168,6 +3493,10 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
   };
   const move = (e) => {
     if (ptrs.current.has(e.pointerId)) ptrs.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (memoTapRef.current?.pointerId === e.pointerId
+      && Math.hypot(e.clientX - memoTapRef.current.startX, e.clientY - memoTapRef.current.startY) > 10) {
+      memoTapRef.current.moved = true;
+    }
     if (pinch.current && ptrs.current.size >= 2 && !ruler) {
       const el = canvasRef.current; if (!el) return;
       const [a, b] = [...ptrs.current.values()];
@@ -3202,6 +3531,12 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
       else setRuler((r) => ({ ...r, deg: ((Math.atan2(P.y - r.cy * rct.height, P.x - r.cx * rct.width) - d.a0) * 180) / Math.PI }));
       return;
     }
+    if (editRef.current && editRef.current.pointerId === e.pointerId) {
+      const edit = editRef.current, rect = canvasRef.current.getBoundingClientRect();
+      const next = applyAnnotationDrag(edit.originalMark, edit, raw, { width: rect.width, height: rect.height }, { measureText: measureCanvasText, fontScale: rect.width / 300 });
+      replaceMarks(marksRef.current.map((mark) => mark.id === edit.markId ? next : mark));
+      return;
+    }
     if (!draft) return;
     /* 자 몸통·아래를 지나가는 동안에는 선이 이어지지 않는다 */
     if (ruler) { const z = rulerZone(raw); if (!z.ok) return; }
@@ -3215,26 +3550,42 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
   };
   const up = (e) => {
     if (e && e.pointerId != null) ptrs.current.delete(e.pointerId);
+    if (memoTapRef.current?.pointerId === e?.pointerId) {
+      const memoTap = memoTapRef.current;
+      memoTapRef.current = null;
+      if (e?.type !== "pointercancel" && !memoTap.moved) setMemoDraft({ point: memoTap.point, text: "" });
+      return;
+    }
     if (ptrs.current.size < 2) { gest.current = null; pinch.current = null; }
     if (zoom <= 1.02 && (pan.x !== 0 || pan.y !== 0)) setPan({ x: 0, y: 0 });
+    if (editRef.current && editRef.current.pointerId === e?.pointerId) {
+      const edit = editRef.current; editRef.current = null;
+      if (e?.type === "pointercancel") { replaceMarks(edit.before); return; }
+      if (JSON.stringify(marksRef.current) !== JSON.stringify(edit.before)) {
+        setUndoStack((history) => [...history, edit.before].slice(-40));
+        setRedoStack([]);
+      }
+      return;
+    }
     if (ptrs.current.size >= 1 && gest.current === null && !draft) return;
     if (rulerDrag.current) { rulerDrag.current = null; return; }
     if (!draft) return;
     const d = draft; setDraft(null);
     if (d.tool === "point") { setPending(d.pts[0]); return; }
-    if (d.tool === "hline" || d.tool === "vline") { setRedoMarks([]); setMarks((m) => [...m, d]); return; }
+    if (d.tool === "hline" || d.tool === "vline") { commitMarks((items) => [...items, d]); return; }
     if (d.tool === "angle") {
       if (Math.hypot(d.pts[1].x - d.pts[0].x, d.pts[1].y - d.pts[0].y) < 0.02) return;
       const deg = angleOf(d.pts[0], d.pts[1]);
-      setRedoMarks([]); setMarks((m) => [...m, { ...d, angle: deg, label: degText(deg) }]);
+      commitMarks((items) => [...items, { ...d, angle: deg, label: degText(deg) }]);
       setPending(null);
       return;
     }
     if (d.tool !== "pen" && Math.hypot(d.pts[1].x - d.pts[0].x, d.pts[1].y - d.pts[0].y) < 0.02) return;
-    setRedoMarks([]); setMarks((m) => [...m, d]);
+    commitMarks((items) => [...items, d]);
+    if (d.tool === "arrow") setSelectedMarkId(d.id);
   };
   const pickTool = (k) => { setTool(k); setPending(null); setDraft(null); };
-  const addGuide = (kind) => {
+  const prepareGuide = (kind) => {
     const preset = {
       shoulder: { tool: "hline", pts: [{ x: 0.5, y: 0.28 }] },
       pelvis: { tool: "hline", pts: [{ x: 0.5, y: 0.54 }] },
@@ -3243,35 +3594,96 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
       ankle: { tool: "hline", pts: [{ x: 0.5, y: 0.88 }] },
     }[kind];
     if (!preset) return;
-    setRedoMarks([]);
-    setMarks((items) => [...items, { id: uid(), ...preset, color, width, opacity: 1, source: "manual" }]);
     setTool(preset.tool);
     setGuideSheet(false);
   };
-  const download = async () => {
-    exportingRef.current = true; draw();
-    let snap = null;
-    try { snap = canvasRef.current.toDataURL("image/jpeg", 0.92); } catch (e) {}
-    const ok = await shareCanvas(canvasRef.current, `체형분석_${label}_${todayISO()}.jpg`, "체형 분석", onToast);
-    exportingRef.current = false; draw();
-    if (!ok && snap) setShot(snap);
+  const saveMemo = () => {
+    const text = String(memoDraft?.text || "").trim();
+    if (!text || !memoDraft?.point) return;
+    const id = uid();
+    commitMarks((items) => [...items, { id, tool: "text", fontStyle: "handwriting", color, width, opacity, pts: [memoDraft.point], label: text, source: "manual" }]);
+    setSelectedMarkId(id);
+    setMemoDraft(null);
   };
+  const openExportPreview = () => {
+    exportingRef.current = true;
+    draw();
+    try {
+      const url = canvasRef.current?.toDataURL("image/jpeg", 0.92);
+      if (!url) throw new Error("preview_empty");
+      setExportPreview({ url, filename: `사진기록_${label}_${todayISO()}.jpg`, manual: false });
+    } catch (error) {
+      onToast?.({ ok: false, msg: "최종 이미지를 만들지 못했습니다. 편집 내용은 그대로 유지됩니다." });
+    } finally {
+      exportingRef.current = false;
+      draw();
+    }
+  };
+  const runPreviewExport = async (saveOnly) => {
+    if (!exportPreview?.url || exportBusy) return;
+    setExportBusy(true);
+    try {
+      const [canvas, exactBlob] = await Promise.all([
+        canvasFromPreviewUrl(exportPreview.url),
+        fetch(exportPreview.url).then((response) => response.blob()),
+      ]);
+      const result = await exportCanvas(canvas, exportPreview.filename, "PilaTeacher 사진 기록", saveOnly, exactBlob);
+      if (result.how === "fail") throw new Error("image_export_failed");
+      if (result.how === "manual") {
+        setExportPreview((current) => current ? { ...current, manual: true } : current);
+        onToast?.({ ok: false, msg: "자동 저장이 막혀 있습니다. 미리보기 이미지를 길게 눌러 저장해 주세요." });
+        return;
+      }
+      if (result.how === "saved") onToast?.({ ok: true, msg: "이미지를 저장했습니다." });
+      if (result.how === "gallery") onToast?.({ ok: true, msg: "사진 앱에 저장했습니다." });
+      if (result.how === "documents") onToast?.({ ok: true, msg: "내 파일 > 문서 > PilaTeacher에 저장했습니다." });
+      if (result.how === "copied") onToast?.({ ok: true, msg: "이미지를 복사했습니다. 원하는 앱에 붙여넣어 주세요." });
+      if (result.how === "shared") onToast?.({ ok: true, msg: "이미지 공유를 완료했습니다." });
+    } catch (error) {
+      onToast?.({ ok: false, msg: saveOnly ? "이미지를 저장하지 못했습니다. 미리보기에서 다시 시도해 주세요." : "이미지를 공유하지 못했습니다. 미리보기에서 다시 시도해 주세요." });
+    } finally {
+      setExportBusy(false);
+    }
+  };
+  const toolItems = [
+    { k: "guide", l: "기준선", I: Crosshair }, { k: "ruler", l: "자", I: Move },
+    { k: "pen", l: "펜", I: Pencil }, { k: "arrow", l: "화살표", I: ArrowUpRight },
+    { k: "memo", l: "손메모", I: MessageSquare }, { k: "eraser", l: "삭제", I: Trash2 },
+  ];
+  const presetColorSet = new Set(ANNOTATION_PRESET_COLORS.map((item) => item.color));
+  const customRecentColors = recentColors.filter((item) => !presetColorSet.has(item)).slice(0, 4).map((item) => ({ color: item, label: `최근 색상 ${item}` }));
+  const selectedMark = marks.find((mark) => mark.id === selectedMarkId);
+  const instruction = selectedMark?.tool === "arrow"
+    ? "양 끝의 원을 끌어 방향을 고치고, 선 가운데를 끌어 통째로 옮기세요"
+    : selectedMark?.tool === "text"
+      ? "선택된 손메모를 끌어 정확한 위치에 놓으세요"
+      : ruler
+        ? "자 윗변을 따라 그립니다 · 자는 두 손가락으로 옮기고 돌릴 수 있어요"
+        : tool === "memo"
+          ? "문구를 놓을 곳을 누른 뒤 입력하세요 · 입력 후 다시 끌어 옮길 수 있어요"
+          : tool === "eraser"
+            ? "지울 표시를 눌러 주세요"
+            : "표시를 눌러 다시 선택할 수 있습니다 · 두 손가락으로 사진 확대";
 
   return (
-    <div className="safe-all fixed inset-0 z-50 flex flex-col bg-photo">
-      <div className="flex items-center gap-1 px-3 py-3">
-        <button onClick={requestClose} aria-label="편집 닫기" className="flex h-11 w-11 items-center justify-center rounded-full" style={{ backgroundColor: "rgba(255,255,255,0.15)" }}><X size={18} color="#fff" /></button>
-        <p className="min-w-0 flex-1 truncate px-1 text-sm font-bold text-white">직접 그리기 · {label}</p>
-        <button aria-label="실행 취소" disabled={!pending && !marks.length} onClick={() => { if (pending) { setPending(null); return; } setMarks((items) => { if (!items.length) return items; setRedoMarks((redo) => [...redo, items[items.length - 1]]); return items.slice(0, -1); }); }} className="flex h-9 w-9 items-center justify-center rounded-full disabled:opacity-35" style={{ backgroundColor: "rgba(255,255,255,0.15)" }}><RotateCcw size={15} color="#fff" /></button>
-        <button onClick={async () => { const next = marks.map((mark) => ({ ...mark, source: mark.source || "manual" })); try { const stored = await onSave(next); if (stored === false) throw Object.assign(new Error("annotation save rejected"), { code: "annotation_save_rejected" }); initialMarks.current = JSON.stringify(next); onClose(); } catch (error) { deviceLog("assessment_annotation_save_failed", { memberId: photo.memberId, assessmentId: photo.assessmentId, view: photo.view, ...deviceError(error) }); onToast?.({ ok: false, msg: "표시를 저장하지 못했습니다. 현재 편집 내용은 유지됩니다. 다시 시도해 주세요." }); } }} className="flex h-10 items-center rounded-full px-4 text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>완료</button>
+    <div className="safe-all fixed inset-0 z-50 flex flex-col bg-photo" style={{ background: "linear-gradient(180deg, #171A1D 0%, #111620 100%)" }}>
+      <div className="flex items-center gap-1.5 px-3 py-2.5" style={{ backgroundColor: "rgba(24,29,40,.94)", borderBottom: "1px solid rgba(255,255,255,.08)", boxShadow: "0 8px 24px rgba(0,0,0,.18)" }}>
+        <button onClick={requestClose} aria-label="편집 닫기" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: "rgba(255,255,255,.08)", border: "1px solid rgba(255,255,255,.08)" }}><X size={18} color="#fff" /></button>
+        <div className="min-w-0 flex-1 px-1">
+          <p className="truncate text-sm font-extrabold text-white">직접 그리기 · {label}</p>
+          <p className="mt-0.5 truncate text-[10px] font-semibold" style={{ color: "rgba(255,255,255,.52)" }}>표시는 저장 후에도 다시 수정할 수 있습니다</p>
+        </div>
+        <button aria-label="실행 취소" disabled={!pending && !undoStack.length} onClick={undoMarks} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl disabled:opacity-30" style={{ backgroundColor: "rgba(255,255,255,.08)" }}><RotateCcw size={15} color="#fff" /></button>
+        <button aria-label="다시 실행" disabled={!redoStack.length} onClick={redoMarks} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl disabled:opacity-30" style={{ backgroundColor: "rgba(255,255,255,.08)" }}><Redo2 size={15} color="#fff" /></button>
+        <button onClick={async () => { const next = marks.map((mark) => ({ ...mark, source: mark.source || "manual" })); try { const stored = await onSave(next); if (stored === false) throw Object.assign(new Error("annotation save rejected"), { code: "annotation_save_rejected" }); initialMarks.current = JSON.stringify(next); onClose(); } catch (error) { deviceLog("assessment_annotation_save_failed", { memberId: photo.memberId, assessmentId: photo.assessmentId, view: photo.view, ...deviceError(error) }); onToast?.({ ok: false, msg: "표시를 저장하지 못했습니다. 현재 편집 내용은 유지됩니다. 다시 시도해 주세요." }); } }} className="flex h-11 shrink-0 items-center rounded-xl px-4 text-xs font-extrabold text-white" style={{ backgroundColor: BRAND, boxShadow: "0 5px 14px rgba(76,67,153,.35)" }}>완료</button>
       </div>
       {fresh && (
-        <p className="mx-4 mb-1 rounded-xl px-3 py-2 text-center text-xs font-bold text-white" style={{ backgroundColor: PRIMARY }}>
-          사진이 등록됐습니다 · 지금 바로 각도를 재 보세요. 저장하면 사진에 함께 남습니다 (건너뛰려면 왼쪽 위 X)
+        <p className="mx-4 mb-1 mt-2 rounded-xl px-3 py-2 text-center text-xs font-bold text-white" style={{ backgroundColor: "rgba(76,67,153,.88)", border: "1px solid rgba(185,178,244,.28)" }}>
+          사진이 등록됐습니다 · 필요한 표시나 손메모를 남겨 주세요 (건너뛰려면 왼쪽 위 X)
         </p>
       )}
-      <div className="flex min-h-0 flex-1 items-center justify-center px-3">
-        <div ref={wrapRef} className="relative overflow-hidden rounded-2xl" style={{ aspectRatio: "3 / 4", maxHeight: "100%", maxWidth: "min(100%, 540px)", width: "100%" }}>
+      <div className="flex min-h-0 flex-1 items-center justify-center px-2 py-1">
+        <div ref={wrapRef} className="relative overflow-hidden rounded-xl" style={{ aspectRatio: "3 / 4", maxHeight: "100%", maxWidth: "min(100%, 540px)", width: "100%", border: "1px solid rgba(255,255,255,.12)", boxShadow: "0 16px 36px rgba(0,0,0,.34)" }}>
           <canvas ref={canvasRef} className="absolute inset-0 touch-none" onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up}
             style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin: "center center" }} />
           {zoom > 1.02 && (
@@ -3280,51 +3692,63 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
           )}
         </div>
       </div>
-      <div className="space-y-2 px-3 pb-5 pt-3">
-        <div className="grid grid-cols-5 gap-1.5">
-          {[{ k: "guide", l: "기준선" }, { k: "pen", l: "펜" }, { k: "arrow", l: "화살표" }, { k: "text", l: "메모" }, { k: "eraser", l: "삭제" }].map((t) => (
-            <button key={t.k} onClick={() => t.k === "guide" ? setGuideSheet(true) : pickTool(t.k)} className="whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-bold"
-              style={(t.k === "guide" ? ["hline", "vline"].includes(tool) : tool === t.k) ? { backgroundColor: BRAND, color: "#fff" } : { backgroundColor: "rgba(255,255,255,0.15)", color: "#fff" }}
-              aria-pressed={t.k === "guide" ? ["hline", "vline"].includes(tool) : tool === t.k}>{t.l}</button>
-          ))}
+      <div className="px-2 pb-2 pt-2" style={{ background: "linear-gradient(180deg, rgba(19,24,34,.9), rgba(15,19,28,.98))", borderTop: "1px solid rgba(255,255,255,.07)", boxShadow: "0 -12px 28px rgba(0,0,0,.22)" }}>
+        <div className="rounded-xl p-2" style={{ backgroundColor: "rgba(31,38,52,.94)", border: "1px solid rgba(255,255,255,.08)", boxShadow: "0 8px 24px rgba(0,0,0,.2)" }}>
+          <div className="pt-hscroll flex gap-1.5 overflow-x-auto pb-0.5">
+            {toolItems.map(({ k, l, I }) => {
+              const active = k === "guide" ? ["hline", "vline"].includes(tool) : k === "ruler" ? Boolean(ruler) : tool === k;
+              return <button key={k} onClick={() => { if (k === "guide") setGuideSheet(true); else if (k === "ruler") { setRuler((value) => value ? null : { cx: 0.5, cy: 0.58, deg: 0 }); pickTool("pen"); } else pickTool(k); }} className="flex h-11 min-w-[54px] shrink-0 items-center justify-center gap-1.5 rounded-lg px-2 text-[10px] font-bold"
+                style={active ? { backgroundColor: BRAND, color: "#fff", boxShadow: "0 5px 12px rgba(76,67,153,.32)" } : { backgroundColor: "rgba(255,255,255,.055)", color: "rgba(255,255,255,.76)", border: "1px solid rgba(255,255,255,.055)" }}
+                aria-pressed={active}><I size={14} strokeWidth={2.2} /><span className="whitespace-nowrap">{l}</span></button>;
+            })}
+          </div>
+          <div className="mt-1.5 border-t pt-1.5" style={{ borderColor: "rgba(255,255,255,.08)" }}>
+            <div className="pt-hscroll flex items-center gap-1 overflow-x-auto pb-0.5">
+              {[...ANNOTATION_PRESET_COLORS, ...customRecentColors].map(({ color: optionColor, label: optionLabel }) => (
+                <button key={optionColor} onClick={() => chooseColor(optionColor)} className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full" aria-label={optionLabel} aria-pressed={color === optionColor}
+                  style={{ backgroundColor: optionColor, border: color === optionColor ? "3px solid #FFFFFF" : "1px solid rgba(255,255,255,.22)", boxShadow: color === optionColor ? "0 0 0 2px #6C5FD4" : optionColor === "#FFFFFF" ? "inset 0 0 0 1px rgba(0,0,0,.14)" : "none" }}>
+                  {color === optionColor && <Check size={14} strokeWidth={3} color={["#FFFFFF", "#FFD43B"].includes(optionColor) ? "#17171F" : "#FFFFFF"} />}
+                </button>
+              ))}
+              <label className="relative flex h-11 min-w-[44px] shrink-0 cursor-pointer items-center justify-center gap-0.5 rounded-lg" style={{ color: "#fff", backgroundColor: "rgba(255,255,255,.08)", border: "1px solid rgba(255,255,255,.12)" }} aria-label="다른 색 직접 선택">
+                <Plus size={13} /><Palette size={14} />
+                <input ref={colorInputRef} type="color" value={color} onInput={(event) => chooseColor(event.currentTarget.value)} onChange={(event) => chooseColor(event.currentTarget.value)} aria-label="다른 색 직접 선택" className="absolute inset-0 h-full w-full cursor-pointer opacity-0" />
+              </label>
+            </div>
+          </div>
+          <div className="mt-1.5 flex items-center gap-1.5 border-t pt-1.5" style={{ borderColor: "rgba(255,255,255,.08)" }}>
+            <span className="mr-auto text-[10px] font-bold text-white">{tool === "memo" || selectedMark?.tool === "text" ? "손메모 크기" : "선 굵기"}</span>
+            {(tool === "memo" || selectedMark?.tool === "text" ? HANDWRITING_SIZE_OPTIONS : [{ value: 2, label: "얇게" }, { value: 4, label: "보통" }, { value: 6, label: "굵게" }]).map((option) => <button type="button" key={option.value} onClick={() => tool === "memo" || selectedMark?.tool === "text" ? setHandwritingSize(option.value) : setWidth(option.value)} className="flex h-11 min-w-[52px] items-center justify-center gap-1 rounded-lg px-2 text-[10px] font-bold" style={{ backgroundColor: closestHandwritingWidth(width) === option.value ? "#FFFFFF" : "rgba(255,255,255,.06)", color: closestHandwritingWidth(width) === option.value ? "#17171F" : "rgba(255,255,255,.72)", border: `1px solid ${closestHandwritingWidth(width) === option.value ? "#FFFFFF" : "rgba(255,255,255,.07)"}` }}><span className="inline-block w-3 rounded-full" style={{ height: Math.max(1, option.value / 2), backgroundColor: closestHandwritingWidth(width) === option.value ? "#17171F" : "#FFFFFF" }} />{option.label}</button>)}
+            {selectedMark?.tool === "text" && <button type="button" onClick={deleteSelectedMark} aria-label="선택한 손메모 삭제" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: "rgba(255,59,48,.16)", color: "#FF8A84", border: "1px solid rgba(255,59,48,.24)" }}><Trash2 size={15} /></button>}
+          </div>
         </div>
-        {(tool === "hline" || tool === "vline") && (
-          <p className="text-xs font-semibold text-white opacity-80">화면을 누른 채로 위치를 옮기고, 손을 떼면 선이 그려집니다.</p>
-        )}
-        {tool === "angle" && (
-          <p className="text-xs font-semibold text-white opacity-80">
-            {pending ? "두 번째 점을 찍으면 두 점을 잇는 선의 각도가 나옵니다" : "점을 한 번 찍고, 이어서 다음 점을 찍으면 수평 대비 각도가 표시됩니다"}
-          </p>
-        )}
-        {ruler && (
-          <p className="text-xs font-semibold text-white opacity-80">자 <b>윗변</b>을 따라서만 그어집니다 · 자 몸통과 아래쪽은 그어지지 않습니다 · 두 손가락으로 옮기고 돌리세요</p>
-        )}
-        <div className="flex items-center gap-2">
-          {["#6C5FD4", "#FF3B30"].map((c) => (
-            <button key={c} onClick={() => setColor(c)} className="h-7 w-7 rounded-full"
-              aria-label={c === "#6C5FD4" ? "보라색" : "빨간색"} aria-pressed={color === c}
-              style={{ backgroundColor: c, border: color === c ? "3px solid #FFFFFF" : "2px solid rgba(255,255,255,0.4)" }} />
-          ))}
-          <span className="ml-2 text-xs font-semibold text-white opacity-70">굵기</span>
-          {[{ value: 2, label: "얇게" }, { value: 4, label: "보통" }].map((option) => <button type="button" key={option.value} onClick={() => setWidth(option.value)} className="h-9 rounded-full px-3 text-xs font-bold" style={{ backgroundColor: width === option.value ? "#FFFFFF" : "rgba(255,255,255,.15)", color: width === option.value ? "#17171F" : "#FFFFFF" }}>{option.label}</button>)}
+        <div className="mt-1.5 flex items-center gap-2">
+          <p className="min-w-0 flex-1 px-1 text-[10px] font-semibold leading-snug" style={{ color: selectedMark ? "#C9C4FF" : "rgba(255,255,255,.52)" }}>{instruction}</p>
+          <button type="button" onClick={openExportPreview} className="flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-lg px-3 text-[10px] font-extrabold text-white" style={{ backgroundColor: "rgba(108,95,212,.92)", border: "1px solid rgba(255,255,255,.12)" }}><ImagePlus size={14} />저장·공유</button>
         </div>
-        {!ruler && <p className="text-center text-xs text-white opacity-60">두 손가락으로 벌리면 사진이 확대됩니다</p>}
-        <p className="text-center text-xs text-white opacity-60">
-          {tool === "angle" ? "점 두 개를 이으면 각도가 표시됩니다 · 자를 켜면 반듯하게 찍기 쉬워요" : tool === "text" ? "사진 위 원하는 위치를 눌러 텍스트를 입력하세요" : tool === "eraser" ? "지울 표시를 눌러 주세요" : "화면을 드래그해 그리세요"}
-        </p>
       </div>
-      {shot && (
-        <div className="safe-all fixed inset-0 z-50 flex items-center justify-center p-6" style={{ backgroundColor: "rgba(0,0,0,0.85)" }} onClick={() => setShot(null)}>
-          <div className="text-center">
-            <img src={shot} alt="분석 결과" className="mx-auto rounded-2xl" style={{ maxHeight: "70vh" }} />
-            <p className="mt-3 text-xs text-white opacity-70">자동 저장이 막힌 기기에서는 이미지를 길게 눌러 저장하세요</p>
+      {exportPreview && (
+        <div className="safe-all fixed inset-0 z-[60] flex flex-col bg-photo" style={{ backgroundColor: "#111620" }}>
+          <div className="flex items-center gap-2 px-3 py-2.5" style={{ backgroundColor: "rgba(24,29,40,.98)", borderBottom: "1px solid rgba(255,255,255,.08)" }}>
+            <button type="button" onClick={() => setExportPreview(null)} aria-label="편집으로 돌아가기" className="flex h-11 w-11 items-center justify-center rounded-xl" style={{ backgroundColor: "rgba(255,255,255,.08)" }}><ChevronLeft size={19} color="#fff" /></button>
+            <span className="min-w-0 flex-1"><span className="block text-sm font-extrabold text-white">최종 이미지 미리보기</span><span className="block text-[10px]" style={{ color: "rgba(255,255,255,.55)" }}>보이는 모습 그대로 저장·공유됩니다</span></span>
+          </div>
+          <div className="flex min-h-0 flex-1 items-center justify-center p-3"><img src={exportPreview.url} alt="직접그리기 최종 이미지" className="max-h-full max-w-full rounded-xl object-contain" style={{ boxShadow: "0 18px 42px rgba(0,0,0,.42)" }} /></div>
+          {exportPreview.manual && <p className="px-4 pb-2 text-center text-xs font-bold text-white">자동 저장이 막힌 기기에서는 위 이미지를 길게 눌러 저장하세요.</p>}
+          <div className="grid grid-cols-3 gap-2 px-3 pb-3 pt-2" style={{ backgroundColor: "rgba(24,29,40,.98)", borderTop: "1px solid rgba(255,255,255,.08)" }}>
+            <button type="button" disabled={exportBusy} onClick={() => setExportPreview(null)} className="flex h-12 items-center justify-center gap-1 text-xs font-bold text-white disabled:opacity-50" style={{ borderRadius: 11, backgroundColor: "rgba(255,255,255,.08)" }}><ChevronLeft size={15} />뒤로</button>
+            <button type="button" disabled={exportBusy} onClick={() => runPreviewExport(true)} className="flex h-12 items-center justify-center gap-1 text-xs font-extrabold text-white disabled:opacity-50" style={{ borderRadius: 11, backgroundColor: BRAND }}><Download size={15} />이미지 저장</button>
+            <button type="button" disabled={exportBusy} onClick={() => runPreviewExport(false)} className="flex h-12 items-center justify-center gap-1 text-xs font-extrabold disabled:opacity-50" style={{ borderRadius: 11, backgroundColor: "#FFFFFF", color: "#17171F" }}><Share2 size={15} />공유</button>
           </div>
         </div>
       )}
-      {guideSheet && <ScheduleBottomSheet title="기준선 선택" subtitle="자주 쓰는 두 기준선을 먼저 보여드립니다" onClose={() => setGuideSheet(false)}>
+      {guideSheet && <ScheduleBottomSheet title="기준선 선택" subtitle="종류를 고른 뒤 사진 위에서 원하는 위치를 직접 눌러 조절하세요" onClose={() => setGuideSheet(false)}>
         <div className="space-y-2">
-          {[{ key: "shoulder", label: "어깨선", sub: "좌우 어깨 높이 확인" }, { key: "pelvis", label: "골반선", sub: "좌우 골반 높이 확인" }, { key: "spine", label: "척추 중심선", sub: "수직 중심 정렬" }, { key: "knee", label: "무릎선", sub: "좌우 무릎 높이" }, { key: "ankle", label: "발목선", sub: "좌우 발목 높이" }].map((item, index) => <button type="button" key={item.key} onClick={() => addGuide(item.key)} className="flex min-h-12 w-full items-center gap-3 px-3 text-left" style={{ borderRadius: 10, backgroundColor: index < 2 ? TINT : CANVAS, border: `1px solid ${index < 2 ? "#D5D1EB" : LINE}` }}><span className="min-w-0 flex-1"><span className="block text-sm font-bold" style={{ color: INK }}>{item.label}</span><span className="mt-0.5 block text-xs" style={{ color: SUB }}>{item.sub}</span></span><ChevronRight size={15} style={{ color: FAINT }} /></button>)}
+          {[{ key: "shoulder", label: "어깨선", sub: "좌우 어깨 높이 확인" }, { key: "pelvis", label: "골반선", sub: "좌우 골반 높이 확인" }, { key: "spine", label: "척추 중심선", sub: "수직 중심 정렬" }, { key: "knee", label: "무릎선", sub: "좌우 무릎 높이" }, { key: "ankle", label: "발목선", sub: "좌우 발목 높이" }].map((item, index) => <button type="button" key={item.key} onClick={() => prepareGuide(item.key)} className="flex min-h-12 w-full items-center gap-3 px-3 text-left" style={{ borderRadius: 10, backgroundColor: index < 2 ? TINT : CANVAS, border: `1px solid ${index < 2 ? "#D5D1EB" : LINE}` }}><span className="min-w-0 flex-1"><span className="block text-sm font-bold" style={{ color: INK }}>{item.label}</span><span className="mt-0.5 block text-xs" style={{ color: SUB }}>{item.sub} · 위치는 다음 화면에서 지정</span></span><ChevronRight size={15} style={{ color: FAINT }} /></button>)}
         </div>
+      </ScheduleBottomSheet>}
+      {memoDraft && <ScheduleBottomSheet title="손글씨 메모" subtitle="여러 줄로 입력할 수 있고, 넣은 뒤 사진에서 다시 끌어 옮길 수 있습니다" onClose={() => setMemoDraft(null)}>
+        <div className="space-y-3"><textarea autoFocus rows={4} value={memoDraft.text} onChange={(event) => setMemoDraft((value) => ({ ...value, text: event.target.value }))} placeholder={"회원에게 보여줄 메모를 입력하세요\n줄을 바꿔 적어도 그대로 표시됩니다"} className="w-full resize-none px-3 py-3 outline-none" style={{ borderRadius: 11, border: `1px solid ${LINE}`, backgroundColor: CANVAS, color: INK, fontFamily: "'Nanum Pen Script', 'Segoe Print', cursive", fontSize: 24, lineHeight: 1.25 }} /><button type="button" disabled={!memoDraft.text.trim()} onClick={saveMemo} className="h-12 w-full text-sm font-extrabold text-white disabled:opacity-40" style={{ borderRadius: 11, backgroundColor: BRAND }}>사진에 넣고 위치 조정하기</button></div>
       </ScheduleBottomSheet>}
     </div>
   );
@@ -3529,7 +3953,7 @@ function MemberList({ members, selectedId, onSelect, onAdd, onOpenFav, favCount,
     </div>
   );
 }
-function ReferenceMemberList({ members, schedule, onSelect, onAdd }) {
+function ReferenceMemberList({ members, schedule, settings, onSelect, onAdd }) {
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState("all");
   const [sort, setSort] = useState("name");
@@ -3564,6 +3988,7 @@ function ReferenceMemberList({ members, schedule, onSelect, onAdd }) {
     if (k === "hold") return isHold(m);
     return isActive(m) && (left(m) <= 3 || (ddaySafe(m.contractEnd) ?? 999) <= 14);
   }).length;
+  const singleInstructorMode = !Array.isArray(settings?.staffMembers) || settings.staffMembers.length <= 1;
   return (
     <div className="flex h-full min-h-0 flex-col" style={{ backgroundColor: PAGE }}>
       <header className="flex shrink-0 items-center" style={{ height: 52, padding: "0 14px", backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
@@ -3597,7 +4022,7 @@ function ReferenceMemberList({ members, schedule, onSelect, onAdd }) {
           const remaining = left(m), expiry = ddaySafe(m.contractEnd), next = nextOf(m.id);
           const renew = isActive(m) && (remaining <= 3 || (expiry !== null && expiry <= 14));
           return (
-            <button type="button" key={m.id} onClick={() => onSelect(m.id)} className="mb-2 w-full text-left"
+            <div key={m.id} className="relative mb-2"><button type="button" onClick={() => onSelect(m.id)} className="w-full text-left"
               style={{ padding: "12px 14px", borderRadius: 14, backgroundColor: CARD, border: `1px solid ${LINE}`, boxShadow: "0 1px 4px rgba(28,36,51,.05)" }}>
               <div className="flex items-start gap-2">
                 <div className="min-w-0 flex-1">
@@ -3606,7 +4031,7 @@ function ReferenceMemberList({ members, schedule, onSelect, onAdd }) {
                     {isEnded(m) && <span style={{ padding: "2px 6px", borderRadius: 5, fontSize: 10, fontWeight: 600, backgroundColor: CANVAS, color: SUB }}>종료</span>}
                     {renew && <span style={{ padding: "2px 6px", borderRadius: 5, fontSize: 10, fontWeight: 600, backgroundColor: BAD_S, color: BAD }}>재등록 필요</span>}
                   </div>
-                  <p className="mt-1 truncate" style={{ fontSize: 12, color: SUB }}>{m.instructor || "담당 미지정"} · {m.duetWith ? "듀엣" : "개인"}</p>
+                  <p className="mt-1 truncate" style={{ fontSize: 12, color: SUB }}>{singleInstructorMode ? (m.duetWith ? "듀엣" : "개인") : `${m.instructor || "담당 미지정"} · ${m.duetWith ? "듀엣" : "개인"}`}</p>
                 </div>
                 <div className="shrink-0 text-right"><p className="tabular-nums" style={{ fontSize: 17, lineHeight: 1, fontWeight: 600, color: remaining <= 3 ? BAD : INK }}>{remaining}<span style={{ fontSize: 11 }}>회</span></p><p style={{ marginTop: 3, fontSize: 10, color: SUB }}>잔여</p></div>
                 <ChevronRight size={16} style={{ color: FAINT }} />
@@ -3615,7 +4040,7 @@ function ReferenceMemberList({ members, schedule, onSelect, onAdd }) {
                 <span className="truncate" style={{ fontSize: 11, color: SUB }}>만료 {m.contractEnd ? ymd(m.contractEnd) : "미설정"}</span><span style={{ color: LINE }}>·</span>
                 <span className="min-w-0 flex-1 truncate" style={{ fontSize: 11, color: next ? INK2 : SUB }}>다음 예약 {next ? `${md(next.date)} ${next.start}` : "없음"}</span>
               </div>
-            </button>
+            </button></div>
           );
         })}
       </div>
@@ -3661,23 +4086,80 @@ function MemberRegisterSheet({ members, onOpenExisting, onClose, onCreate }) {
   );
 }
 
-function ReferenceMemberDetail({ member, schedule, photos, onBack, onPatch, onSaveNote, onSchedule, onAssess }) {
+function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSettlement = true, onBack, onPatch, onSaveNote, onSchedule, onAssess, onToast }) {
   const [sheet, setSheet] = useState(null);
   const [edit, setEdit] = useState({});
   const [memo, setMemo] = useState("");
   const [memoMeta, setMemoMeta] = useState(null);
-  const [pass, setPass] = useState({ name: "", count: "", end: "" });
+  const [memoImportant, setMemoImportant] = useState(false);
+  const [pass, setPass] = useState({ name: "", regular: "", service: "", total: "", end: "" });
+  const [passConfirm, setPassConfirm] = useState(false);
+  const [rateEdit, setRateEdit] = useState("");
+  const [rateConfirm, setRateConfirm] = useState(false);
+  const [saving, setSaving] = useState("");
+  const [saveError, setSaveError] = useState("");
   const [hold, setHold] = useState({ start: todayISO(), end: shift(todayISO(), 14), reason: "", extend: true });
   const [releaseArmed, setReleaseArmed] = useState(false);
   const lessons = (schedule || []).filter((s) => hasMember(s, member.id)).sort((a, b) => `${b.date} ${b.start}`.localeCompare(`${a.date} ${a.start}`));
   const notes = [...(member.notes || [])].sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
+  const lessonNotes = notes.filter((note) => !["상담", "인바디"].includes(note.type));
+  const consultationNotes = notes.filter((note) => note.type === "상담").sort((a, b) => Number(Boolean(b.important)) - Number(Boolean(a.important)) || String(b.date || "").localeCompare(String(a.date || "")));
+  const latestLessonNote = lessonNotes[0] || null;
+  const latestSummary = latestLessonNote?.aiSummaryTeacherEdited || latestLessonNote?.aiSummary || null;
+  const latestStructuredRecord = latestLessonNote?.lessonRecord?.confirmedRecord || latestLessonNote?.lessonRecord?.structuredDraft || null;
+  const prepText = (value, fallback = "기록 없음") => Array.isArray(value) ? (value.map((item) => typeof item === "string" ? item : item?.text).filter(Boolean).join(" · ") || fallback) : (String(value || "").trim() || fallback);
+  const memoryBriefing = useMemo(() => createMemberBriefing({ member }), [member]);
+  const memorySummary = useMemo(() => memberMemorySummary(memoryBriefing), [memoryBriefing]);
+  useEffect(() => {
+    trackMemberMemoryUsage("briefing_rendered", { count: 1 });
+    trackMemberMemoryUsage("briefing_opened", { count: 1 });
+  }, [member.id]);
   const assessmentSets = useMemo(() => normalizeAssessmentSets(photos, { memberId: member.id }), [photos, member.id]);
+  const resumableAssessment = useMemo(() => selectResumableAssessment(assessmentSets, { memberId: member.id }), [assessmentSets, member.id]);
   const completedAssessments = assessmentSets.filter((assessment) => assessment.status === "completed");
   const lastAssessment = completedAssessments[0] || null;
   const retake = postureRetakeStatus(lastAssessment?.completedAt || lastAssessment?.at);
   const lastAssessmentMetrics = lastAssessment?.poses.flatMap((pose) => pose.metrics || []).slice(0, 2) || [];
   const next = lessons.filter((s) => `${s.date} ${s.start}` >= `${todayISO()} 00:00`).sort((a, b) => `${a.date} ${a.start}`.localeCompare(`${b.date} ${b.start}`))[0] || null;
-  const openEdit = () => { setEdit({ name: member.name || "", phone: member.phone || "", birth: member.birth || "", defaultLessonDuration: lessonDurationOf(member), goal: member.goal || "", focus: (member.focus || []).join(", ") }); setSheet("edit"); };
+  const recentLesson = lessons.find((lesson) => lesson.date <= todayISO() && attOf(lesson, member.id)?.status === "done") || null;
+  const memberUnit = paidAvg(member);
+  const settlementUnit = rateFor(member, member.lessonType === "group" ? "그룹" : "개인레슨", settings);
+  const singleInstructorMode = !Array.isArray(settings?.staffMembers) || settings.staffMembers.length <= 1;
+  const membership = membershipDisplay(member);
+  const openEdit = () => { setEdit({ name: member.name || "", phone: member.phone || "", birth: member.birth || "", instructor: member.instructor || "", lessonType: member.lessonType || "private", defaultLessonDuration: lessonDurationOf(member) }); setSaveError(""); setSheet("basic"); };
+  const openPreparation = () => { setEdit({ goal: member.goal || "", focus: (member.focus || []).join(", ") }); setSaveError(""); setSheet("preparation"); };
+  const openMembership = () => { setPass({ name: member.passName || "", regular: String(num(member.regular)), service: String(num(member.service)), total: String(num(member.total)), end: member.contractEnd || "" }); setPassConfirm(false); setSaveError(""); setSheet("membership"); };
+  const openRate = () => { setRateEdit(String(Number(member.payRate) > 0 ? Number(member.payRate) : settlementUnit)); setRateConfirm(false); setSaveError(""); setSheet("rate"); };
+  const openMemo = () => { setMemo(""); setMemoMeta(null); setMemoImportant(false); setSaveError(""); setSheet("memo"); };
+  const openRecord = () => { setMemo(""); setMemoMeta(null); setSaveError(""); setSheet("record"); };
+  const commitPatch = async (key, change, close = true) => {
+    setSaving(key); setSaveError("");
+    try {
+      const stored = await onPatch(change);
+      if (stored === false) throw new Error("save_failed");
+      onToast?.({ ok: true, msg: "변경한 영역을 저장했습니다." });
+      if (close) setSheet(null);
+      return true;
+    } catch (error) { setSaveError("저장하지 못했습니다. 입력 내용을 확인하고 다시 시도해 주세요."); return false; }
+    finally { setSaving(""); }
+  };
+  const commitNote = async () => {
+    if (!memo.trim()) return;
+    setSaving(sheet || "note"); setSaveError("");
+    try {
+      const stored = await onSaveNote(sheet === "memo" ? "상담" : "개인레슨", memo.trim(), memoMeta, { important: sheet === "memo" && memoImportant });
+      if (stored === false) throw new Error("save_failed");
+      setMemoMeta(null); setSheet(null);
+    } catch (error) { setSaveError("메모를 저장하지 못했습니다. 다시 시도해 주세요."); }
+    finally { setSaving(""); }
+  };
+  const rejectBriefingLine = async (briefingLine) => {
+    const targets = (briefingLine?.memoryIds || []).filter((memoryId) => memoryBriefing.memories.find((entry) => entry.id === memoryId)?.origin !== "instructor");
+    if (!targets.length) return;
+    let nextMemory = memoryBriefing.memories;
+    targets.forEach((memoryId) => { nextMemory = rejectMemoryEntry(nextMemory, memoryId); });
+    await commitPatch("memory-reject", { aiMemory: nextMemory }, false);
+  };
   const holdHistory = member.holdHistory || [];
   const sectionStyle = { backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: "12px 14px" };
   const Section = ({ title, action, children }) => <section style={sectionStyle}><div className="mb-2 flex items-center gap-2"><h2 className="min-w-0 flex-1" style={{ fontSize: 14, fontWeight: 600, color: INK }}>{title}</h2>{action}</div>{children}</section>;
@@ -3685,57 +4167,63 @@ function ReferenceMemberDetail({ member, schedule, photos, onBack, onPatch, onSa
     <div className="relative flex h-full min-h-0 flex-col" style={{ backgroundColor: PAGE }}>
       <header className="flex shrink-0 items-center" style={{ height: 52, padding: "0 8px", backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
         <button type="button" onClick={onBack} aria-label="회원 목록" className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={19} /></button>
-        <div className="min-w-0 flex-1"><h1 className="truncate" style={{ fontSize: 17, fontWeight: 600, color: INK }}>{member.name || "이름 미입력"}</h1><p style={{ fontSize: 11, color: SUB }}>{isHold(member) ? "홀딩" : isEnded(member) ? "종료" : "활성"} · 담당 {member.instructor || "미지정"}</p></div>
-        <button type="button" onClick={openEdit} style={{ height: 36, padding: "0 10px", borderRadius: 8, color: BRAND, fontSize: 13, fontWeight: 600 }}><Pencil size={14} className="inline" /> 수정</button>
+        <div className="min-w-0 flex-1"><h1 className="truncate" style={{ fontSize: 17, fontWeight: 600, color: INK }}>{member.name || "이름 미입력"}</h1><p style={{ fontSize: 11, color: SUB }}>{isHold(member) ? "홀딩" : isEnded(member) ? "종료" : "활성"}{singleInstructorMode ? "" : ` · 담당 ${member.instructor || "미지정"}`}</p></div>
       </header>
-      <main className="pt-scroll min-h-0 flex-1 overflow-y-auto" style={{ padding: "10px 12px 76px" }}>
+      <div className="grid shrink-0 grid-cols-3 gap-1.5" aria-label="회원 빠른 실행" style={{ padding: "7px 12px", backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
+        {[{ l: "수업 기록", I: Pencil, fn: openRecord }, { l: "메모 추가", I: MessageSquare, fn: openMemo }].map(({ l, I, fn }) => <button type="button" key={l} onClick={fn} className="flex h-10 items-center justify-center gap-1.5" style={{ borderRadius: 9, backgroundColor: TINT, color: BRAND_D, fontSize: 12, fontWeight: 700 }}><I size={14} />{l}</button>)}
+        <a href={member.phone ? `tel:${String(member.phone).replace(/[^0-9+]/g, "")}` : undefined} aria-disabled={!member.phone} onClick={(event) => { if (!member.phone) event.preventDefault(); }} className="flex h-10 items-center justify-center gap-1.5" style={{ borderRadius: 9, backgroundColor: CANVAS, color: member.phone ? INK2 : FAINT, fontSize: 12, fontWeight: 700 }}><Smartphone size={14} />연락하기</a>
+      </div>
+      <main className="pt-scroll min-h-0 flex-1 overflow-y-auto safe-scroll" style={{ padding: "8px 12px 18px" }}>
         <div className="space-y-2">
+          <section style={{ ...sectionStyle, backgroundColor: TINT, borderColor: RING }}>
+            <div className="flex items-center gap-3"><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-base font-extrabold text-white" style={{ background: GRAD }}>{(member.name || "?").slice(0, 1)}</span><span className="min-w-0 flex-1"><span className="block truncate text-base font-extrabold" style={{ color: INK }}>{member.name || "이름 미입력"}</span><span className="mt-0.5 block text-xs" style={{ color: SUB }}>다음 수업 {next ? `${ymd(next.date)} ${next.start}` : "예약 없음"}</span></span><span className="shrink-0 text-right"><span className="block text-2xl font-extrabold tabular-nums" style={{ color: left(member) <= 3 ? BAD : BRAND }}>{left(member)}회</span><span className="block text-[10px]" style={{ color: SUB }}>잔여</span></span></div>
+          </section>
+          <Section title="다음 수업 준비" action={<span style={{ fontSize: 9, color: SUB }}>확정 기록 · 규칙 기반</span>}>
+            <div className="grid grid-cols-2 gap-2">{[["지난 수업", memorySummary.lastLesson], ["반복 기록", memorySummary.repeated], ["다음 확인", memorySummary.nextCheck], ["최근 변화", memorySummary.recentChange]].map(([label, value]) => <div key={label} style={{ minHeight: 58, padding: "8px 9px", borderRadius: 8, backgroundColor: CANVAS }}><p style={{ fontSize: 9, color: SUB }}>{label}</p><p className="mt-1 line-clamp-2" style={{ fontSize: 11, lineHeight: 1.4, fontWeight: 650, color: label === "다음 확인" ? BRAND_D : INK2 }}>{value}</p></div>)}</div>
+            <div className="mt-2 space-y-1">{memoryBriefing.lines.slice(0, 5).map((briefingLine, index) => { const canReject = (briefingLine.memoryIds || []).some((memoryId) => memoryBriefing.memories.find((entry) => entry.id === memoryId)?.origin === "ai") && !(briefingLine.memoryIds || []).some((memoryId) => memoryBriefing.memories.find((entry) => entry.id === memoryId)?.origin === "instructor"); return <div key={`${briefingLine.kind}-${index}`} className="flex items-start gap-2"><p className="min-w-0 flex-1 text-[10px] leading-relaxed" style={{ color: briefingLine.kind === "conflict" ? WARN : SUB }}>{briefingLine.text}</p>{canReject && <button type="button" onClick={() => rejectBriefingLine(briefingLine)} className="shrink-0 text-[9px] font-bold" style={{ color: SUB }}>숨기기</button>}</div>; })}</div>
+          </Section>
+          <Section title="회원 기본정보 요약" action={<button type="button" onClick={openEdit} style={{ fontSize: 12, fontWeight: 700, color: BRAND }}><Pencil size={12} className="inline" /> 정보 수정</button>}>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-2">{[["이름", member.name || "-"], ["회원 상태", isHold(member) ? "홀딩" : isEnded(member) ? "종료" : "활성"], ...(!singleInstructorMode ? [["담당 강사", member.instructor || "미지정"]] : []), ["연락처", maskedPhone(member.phone)], ["수업 유형", member.lessonType === "duet" ? "듀엣" : member.lessonType === "group" ? "그룹" : "개인"], ["기본 수업시간", `${lessonDurationOf(member)}분`], ["생년월일 · 나이", maskedBirth(member.birth, ageOf(member))]].map(([k,v]) => <div key={k} className={k === "생년월일 · 나이" ? "col-span-2" : ""}><p style={{ fontSize: 10, color: SUB }}>{k}</p><p className="mt-0.5 truncate" style={{ fontSize: 12, fontWeight: 600, color: INK }}>{v}</p></div>)}</div>
+          </Section>
           <section style={{ ...sectionStyle, backgroundColor: TINT, borderColor: "#D5D1EB" }}>
-            <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center" style={{ borderRadius: 10, backgroundColor: BRAND, color: "#fff", fontSize: 16, fontWeight: 700 }}>{(member.name || "?").slice(0, 1)}</div>
-              <div className="min-w-0 flex-1"><p style={{ fontSize: 15, fontWeight: 600, color: INK }}>{member.passName || "이용권 미등록"}</p><p className="mt-0.5 truncate" style={{ fontSize: 11, color: SUB }}>{next ? `다음 예약 ${md(next.date)} ${next.start}` : "다음 예약 없음"}</p></div>
-              <div className="text-right"><p className="tabular-nums" style={{ fontSize: 22, lineHeight: 1, fontWeight: 600, color: left(member) <= 3 ? BAD : BRAND }}>{left(member)}<span style={{ fontSize: 11 }}>회</span></p><p style={{ marginTop: 4, fontSize: 10, color: SUB }}>{member.contractEnd ? `${ymd(member.contractEnd)}까지` : "만료일 미설정"}</p></div>
-            </div>
+            <div className="flex items-start gap-3"><div className="min-w-0 flex-1"><p style={{ fontSize: 11, color: SUB }}>현재 이용권</p><p className="mt-0.5 truncate" style={{ fontSize: 14, fontWeight: 700, color: INK }}>{member.passName || "이용권 없음"}</p></div><div className="text-right"><p className="tabular-nums" style={{ fontSize: 27, lineHeight: 1, fontWeight: 750, color: left(member) <= 3 ? BAD : BRAND }}>{left(member)}<span style={{ fontSize: 12 }}>회 남음</span></p><p className="mt-1" style={{ fontSize: 10, color: SUB }}>정규 {num(member.regular)} · 서비스 {num(member.service)}</p></div></div>
+            <div className="mt-3 grid grid-cols-2 gap-2">{[["누적 등록 횟수", membership.registeredTotal ? `${membership.registeredTotal}회` : "미등록"], ["이용권 만료일", member.contractEnd ? ymd(member.contractEnd) : "미설정"], ["회원 회당 금액", memberUnit ? `₩${won(memberUnit)}` : "결제 내역 없음"], ["최근 수업일", recentLesson ? `${md(recentLesson.date)} ${recentLesson.start}` : "수업 이력 없음"], ["다음 예약일", next ? `${md(next.date)} ${next.start}` : "예약 없음"]].map(([k,v]) => <div key={k} style={{ padding: "8px 9px", borderRadius: 8, backgroundColor: CARD }}><p style={{ fontSize: 9, color: SUB }}>{k}</p><p className="mt-0.5 truncate tabular-nums" style={{ fontSize: 11, fontWeight: 700, color: INK }}>{v}</p></div>)}</div>
+            {membership.needsLegacyReview && <p className="mt-2" style={{ padding: "8px 9px", borderRadius: 8, backgroundColor: WARN_S, color: WARN, fontSize: 10, lineHeight: 1.45 }}>잔여 합계가 누적 등록 횟수보다 큽니다. 기존 데이터 확인이 필요하며 자동으로 수정하지 않았습니다.</p>}
+            {canViewSettlement && <div className="mt-2 flex items-center gap-2" style={{ padding: "8px 9px", borderRadius: 8, backgroundColor: CARD }}><span className="min-w-0 flex-1"><span className="block" style={{ fontSize: 9, color: SUB }}>강사 정산 단가</span><span className="block text-xs font-bold tabular-nums" style={{ color: INK }}>₩{won(settlementUnit)}{Number(member.payRate) > 0 ? "" : " · 센터 기본"}</span></span><button type="button" onClick={openRate} style={{ fontSize: 11, fontWeight: 700, color: BRAND }}>단가 수정</button></div>}
+            <p className="mt-2" style={{ fontSize: 10, lineHeight: 1.45, color: SUB }}>회원 회당 금액은 총 결제액을 정규 유료 횟수로 나눕니다. 할인은 결제액에 반영하고 서비스 횟수는 제외합니다.</p>
+            <button type="button" onClick={openMembership} className="mt-2 h-10 w-full text-xs font-bold" style={{ borderRadius: 8, backgroundColor: BRAND, color: "#fff" }}>이용권 수정</button>
           </section>
+          <Section title="수업 준비 요약" action={<button type="button" onClick={openPreparation} style={{ fontSize: 12, fontWeight: 700, color: BRAND }}>목표·주의 수정</button>}>
+            <div className="space-y-2"><div><p style={{ fontSize: 10, color: SUB }}>운동 목표</p><p className="mt-0.5" style={{ fontSize: 12, lineHeight: 1.45, color: member.goal ? INK2 : SUB }}>{member.goal || "등록된 운동 목표가 없습니다"}</p></div><div style={{ padding: "9px 10px", borderRadius: 8, backgroundColor: WARN_S }}><p style={{ fontSize: 10, fontWeight: 700, color: WARN }}>통증 및 주의사항</p><p className="mt-1" style={{ fontSize: 12, lineHeight: 1.45, color: INK2 }}>{(member.focus || []).length ? member.focus.join(" · ") : "등록된 주의사항이 없습니다"}</p></div><div className="grid grid-cols-2 gap-2">{[["최근 수업 내용", latestLessonNote?.body || "기록 없음"], ["다음 수업 계획", prepText(latestStructuredRecord?.nextFocus || latestSummary?.nextGoals)], ["최근 관찰", prepText(latestStructuredRecord?.observations || latestSummary?.memberCondition)]].map(([k,v], index) => <div key={k} className={index === 0 ? "col-span-2" : ""} style={{ padding: "8px 9px", borderRadius: 8, backgroundColor: CANVAS }}><p style={{ fontSize: 9, color: SUB }}>{k}</p><p className="mt-0.5 line-clamp-2" style={{ fontSize: 11, lineHeight: 1.45, color: INK2 }}>{v}</p></div>)}</div><button type="button" onClick={openRecord} className="h-10 w-full text-xs font-bold" style={{ borderRadius: 8, backgroundColor: TINT, color: BRAND_D }}>수업 기록 작성</button></div>
+          </Section>
+          <Section title="상담 및 중요 메모" action={<div className="flex gap-3"><button type="button" onClick={() => setSheet("memos-all")} style={{ fontSize: 12, fontWeight: 600, color: SUB }}>전체 보기</button><button type="button" onClick={openMemo} style={{ fontSize: 12, fontWeight: 700, color: BRAND }}>메모 추가</button></div>}>
+            {consultationNotes.length ? consultationNotes.slice(0, 3).map((note) => <div key={note.id} className="flex items-start gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}` }}><button type="button" aria-label={note.important ? "중요 메모 고정 해제" : "중요 메모로 고정"} onClick={() => commitPatch("pin", { notes: (member.notes || []).map((item) => item.id === note.id ? { ...item, important: !item.important } : item) }, false)} className="mt-0.5 shrink-0" style={{ color: note.important ? WARN : FAINT }}><Star size={14} fill={note.important ? "currentColor" : "none"} /></button><span className="min-w-0 flex-1"><span className="block" style={{ fontSize: 10, color: SUB }}>{ymd(note.date)}{note.important ? " · 중요" : ""}</span><span className="mt-0.5 block line-clamp-2" style={{ fontSize: 12, lineHeight: 1.45, color: INK2 }}>{note.body}</span></span></div>) : <button type="button" onClick={openMemo} className="flex h-9 w-full items-center justify-between px-2 text-left" style={{ borderRadius: 8, backgroundColor: CANVAS, color: SUB, fontSize: 11 }}>등록된 상담 메모가 없습니다<span style={{ color: BRAND }}>추가하기</span></button>}
+          </Section>
+          <Section title="최근 수업 기록" action={<button type="button" onClick={() => setSheet("records-all")} style={{ fontSize: 12, fontWeight: 600, color: BRAND }}>전체 기록 보기</button>}>
+            {lessonNotes.length ? lessonNotes.slice(0, 3).map((note) => { const summary = note.aiSummaryTeacherEdited || note.aiSummary || {}; const structured = note.lessonRecord?.confirmedRecord || note.lessonRecord?.structuredDraft || {}; const detailCount = (structured.observations?.length || 0) + (structured.responses?.length || 0) + (summary.pain?.length || 0) + (summary.improvements?.length || 0); return <div key={note.id} style={{ padding: "8px 0", borderTop: `1px solid ${LINE}` }}><div className="flex items-center gap-2"><p className="min-w-0 flex-1" style={{ fontSize: 10, color: SUB }}>{ymd(note.date)} · {note.type || "수업"}</p>{note.lessonRecord?.status === "confirmed_unstructured" && <span style={{ fontSize: 9, color: WARN }}>미구조화</span>}{summary.memberCondition && <span style={{ fontSize: 9, color: BRAND_D }}>{summary.memberCondition}</span>}</div><p className="mt-1 line-clamp-2" style={{ fontSize: 12, lineHeight: 1.45, color: INK2 }}>{prepText(structured.didToday || summary.todayExercises, note.body)}</p>{detailCount > 0 && <p className="mt-1 line-clamp-2" style={{ fontSize: 10, color: WARN }}>{[prepText(structured.observations?.length ? structured.observations : summary.pain, ""), prepText(structured.responses?.length ? structured.responses : summary.improvements, "")].filter(Boolean).join(" · ")}</p>}</div>; }) : <p style={{ fontSize: 12, color: SUB }}>아직 작성된 수업 기록이 없습니다</p>}
+          </Section>
           <section style={{ ...sectionStyle, backgroundColor: retake.tone === "recommended" ? WARN_S : CARD }}>
-            <div className="flex items-start gap-3"><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: TINT, color: BRAND_D }}><Activity size={17} /></span><span className="min-w-0 flex-1"><span className="block text-sm font-bold" style={{ color: INK }}>마지막 체형분석</span><span className="mt-1 block text-xs" style={{ color: SUB }}>{lastAssessment ? `${ymd((lastAssessment.completedAt || lastAssessment.at).slice(0, 10))}${retake.days != null ? ` · ${retake.days}일 전` : ""}` : "아직 완료된 분석이 없습니다"}</span><span className="mt-1 block text-xs font-bold" style={{ color: retake.tone === "recommended" ? WARN : BRAND_D }}>{retake.label}</span></span></div>
-            {lastAssessmentMetrics.length > 0 && <p className="mt-3 line-clamp-2 text-xs leading-relaxed" style={{ color: INK2 }}>{lastAssessmentMetrics.map((metric) => `${metric.label} ${metric.value}${metric.unit}`).join(" · ")}</p>}
-            <div className="mt-3 grid grid-cols-[1.2fr_.8fr] gap-2"><button type="button" onClick={() => onAssess?.({ mode: "new" })} className="h-11 text-xs font-extrabold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>{retake.recommended ? "오늘 재촬영하기" : "새 체형분석 시작"}</button><button type="button" onClick={() => onAssess?.({ mode: "history" })} className="h-11 text-xs font-bold" style={{ borderRadius: 10, backgroundColor: CARD, border: `1px solid ${LINE}`, color: INK }}>이전 분석 보기</button></div>
+            <div className="flex items-start gap-3"><span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: TINT, color: BRAND_D }}><Activity size={16} /></span><span className="min-w-0 flex-1"><span className="block text-sm font-bold" style={{ color: INK }}>최신 체형분석</span><span className="mt-1 block text-xs" style={{ color: SUB }}>{lastAssessment ? `${ymd((lastAssessment.completedAt || lastAssessment.at).slice(0, 10))}${retake.days != null ? ` · ${retake.days}일 전` : ""}` : "아직 완료된 분석이 없습니다"}</span>{lastAssessmentMetrics.length > 0 && <span className="mt-1 block line-clamp-2 text-xs" style={{ color: INK2 }}>{lastAssessmentMetrics.map((metric) => `${metric.label} ${metric.value}${metric.unit}`).join(" · ")}</span>}<span className="mt-1 block text-[10px] font-bold" style={{ color: retake.tone === "recommended" ? WARN : BRAND_D }}>{retake.label}</span></span></div>
+            <div className="mt-2 grid grid-cols-2 gap-2"><button type="button" onClick={() => onAssess?.({ mode: "new" })} className="h-10 text-xs font-bold text-white" style={{ borderRadius: 8, backgroundColor: BRAND }}>새 체형분석</button><button type="button" onClick={() => onAssess?.({ mode: "history" })} className="h-10 text-xs font-bold" style={{ borderRadius: 8, backgroundColor: CARD, border: `1px solid ${LINE}`, color: INK }}>과거 이력</button></div>
           </section>
-          <Section title="목표"><p style={{ fontSize: 13, lineHeight: 1.55, color: member.goal ? INK2 : SUB }}>{member.goal || "등록된 목표가 없습니다"}</p></Section>
-          <Section title="주의사항"><div className="flex flex-wrap gap-1">{(member.focus || []).length ? member.focus.map((x) => <span key={x} style={{ padding: "4px 8px", borderRadius: 6, backgroundColor: WARN_S, color: WARN, fontSize: 11, fontWeight: 600 }}>{x}</span>) : <p style={{ fontSize: 12, color: SUB }}>등록된 주의사항이 없습니다</p>}</div></Section>
-          <Section title="최근 기록" action={<button type="button" onClick={() => { setMemo(""); setMemoMeta(null); setSheet("record"); }} style={{ fontSize: 12, fontWeight: 600, color: BRAND }}>기록하기</button>}>
-            {notes.length ? notes.slice(0, 3).map((n) => <div key={n.id} style={{ padding: "8px 0", borderTop: `1px solid ${LINE}` }}><p style={{ fontSize: 11, color: SUB }}>{ymd(n.date)} · {n.type || "기록"}</p><p className="mt-1 line-clamp-2" style={{ fontSize: 13, lineHeight: 1.45, color: INK2 }}>{n.body}</p></div>) : <p style={{ fontSize: 12, color: SUB }}>아직 기록이 없습니다</p>}
-          </Section>
-          <Section title="수업 이력">
-            {lessons.length ? lessons.slice(0, 5).map((s) => { const a = attOf(s, member.id); return <div key={s.id} className="flex items-center gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}` }}><span className="tabular-nums" style={{ fontSize: 11, color: SUB }}>{ymd(s.date)} {s.start}</span><span className="min-w-0 flex-1 truncate" style={{ fontSize: 12, color: INK2 }}>{s.type}</span><span style={{ fontSize: 11, fontWeight: 600, color: stOf(a?.status).color }}>{stOf(a?.status).label}</span></div>; }) : <p style={{ fontSize: 12, color: SUB }}>수업 이력이 없습니다</p>}
-          </Section>
-          <Section title="체형분석 이력" action={<button type="button" onClick={() => onAssess?.({ mode: "new" })} style={{ fontSize: 12, fontWeight: 600, color: BRAND }}>새 분석</button>}>
-            {assessmentSets.length ? assessmentSets.slice(0, 3).map((assessment) => { const representative = assessment.photos.front || Object.values(assessment.photos)[0]; const summary = assessment.poses.flatMap((pose) => pose.metrics || []).slice(0, 1)[0]; return <button type="button" key={assessment.id} onClick={() => onAssess?.(assessment.status === "completed" && assessment.poses[0]?.id ? { mode: "result", poseId: assessment.poses[0].id, assessmentId: assessment.id } : { mode: "resume", assessmentId: assessment.id })} className="flex w-full items-center gap-2 text-left" style={{ padding: "8px 0", borderTop: `1px solid ${LINE}` }}>{representative?.src ? <img src={representative.src} alt="체형분석 대표 사진" className="h-11 w-8 shrink-0 object-cover" style={{ borderRadius: 6, backgroundColor: PHOTO }} /> : <span className="flex h-11 w-8 shrink-0 items-center justify-center" style={{ borderRadius: 6, backgroundColor: CANVAS, color: BRAND }}><Activity size={13} /></span>}<span className="min-w-0 flex-1"><span className="block truncate" style={{ fontSize: 12, color: INK2 }}>{ymd((assessment.completedAt || assessment.at).slice(0, 10))} · {assessment.scope === "partial" ? "부위별" : "전신"}</span><span className="mt-0.5 block truncate" style={{ fontSize: 10, color: SUB }}>{summary ? `${summary.label} ${summary.value}${summary.unit}` : assessment.method === "draw" ? "강사 직접 기록" : "AI 해석 미연결"}</span></span><span style={{ padding: "2px 6px", borderRadius: 6, backgroundColor: assessment.status === "completed" ? GOOD_S : WARN_S, color: assessment.status === "completed" ? GOOD : WARN, fontSize: 9, fontWeight: 700 }}>{assessment.status === "completed" ? "완료" : "초안"}</span><ChevronRight size={13} style={{ color: SUB }} /></button>; }) : <p style={{ fontSize: 12, color: SUB }}>저장된 분석이 없습니다</p>}
+          <Section title="체형분석 과거 이력">
+            {assessmentSets.length ? assessmentSets.slice(0, 3).map((assessment) => { const representative = assessment.photos.front || Object.values(assessment.photos)[0]; const summary = assessment.poses.flatMap((pose) => pose.metrics || []).slice(0, 1)[0]; const resumable = assessment.id === resumableAssessment?.id; return <button type="button" key={assessment.id} onClick={() => onAssess?.(assessment.status === "completed" && assessment.poses[0]?.id ? { mode: "result", poseId: assessment.poses[0].id, assessmentId: assessment.id } : resumable ? { mode: "resume", assessmentId: assessment.id } : { mode: "history" })} className="flex w-full items-center gap-2 text-left" style={{ padding: "8px 0", borderTop: `1px solid ${LINE}` }}>{representative?.src ? <img src={representative.src} alt="체형분석 대표 사진" className="h-11 w-8 shrink-0 object-cover" style={{ borderRadius: 6, backgroundColor: PHOTO }} /> : <span className="flex h-11 w-8 shrink-0 items-center justify-center" style={{ borderRadius: 6, backgroundColor: CANVAS, color: BRAND }}><Activity size={13} /></span>}<span className="min-w-0 flex-1"><span className="block truncate" style={{ fontSize: 12, color: INK2 }}>{ymd((assessment.completedAt || assessment.at).slice(0, 10))} · {assessment.scope === "partial" ? "부위별" : "전신"}</span><span className="mt-0.5 block truncate" style={{ fontSize: 10, color: SUB }}>{summary ? `${summary.label} ${summary.value}${summary.unit}` : assessment.method === "draw" ? "강사 직접 기록" : "저장된 AI 해석 없음"}</span></span><span style={{ padding: "2px 6px", borderRadius: 6, backgroundColor: assessment.status === "completed" ? GOOD_S : WARN_S, color: assessment.status === "completed" ? GOOD : WARN, fontSize: 9, fontWeight: 700 }}>{assessment.status === "completed" ? "완료" : resumable ? "초안" : "이전 초안"}</span><ChevronRight size={13} style={{ color: SUB }} /></button>; }) : <p style={{ fontSize: 12, color: SUB }}>저장된 분석이 없습니다</p>}
             {assessmentSets.length > 3 && <button type="button" onClick={() => onAssess?.({ mode: "history" })} className="mt-2 h-9 w-full text-xs font-bold" style={{ borderRadius: 8, backgroundColor: CANVAS, color: BRAND_D }}>전체 히스토리 보기</button>}
           </Section>
-          <Section title="상담 메모" action={<button type="button" onClick={() => { setMemo(""); setMemoMeta(null); setSheet("memo"); }} style={{ fontSize: 12, fontWeight: 600, color: BRAND }}>메모 추가</button>}>
-            {notes.filter((n) => n.type === "상담").slice(0, 3).map((n) => <p key={n.id} style={{ padding: "7px 0", borderTop: `1px solid ${LINE}`, fontSize: 12, lineHeight: 1.5, color: INK2 }}>{n.body}</p>)}
-            {!notes.some((n) => n.type === "상담") && <p style={{ fontSize: 12, color: SUB }}>등록된 상담 메모가 없습니다</p>}
-          </Section>
-          <Section title="이용권 변경 이력" action={<button type="button" onClick={() => { setPass({ name: member.passName || "", count: "", end: member.contractEnd || "" }); setSheet("membership"); }} style={{ fontSize: 12, fontWeight: 600, color: BRAND }}>이용권 변경</button>}>
-            {(member.payments || []).length ? member.payments.slice(0, 4).map((p) => <div key={p.id || `${p.date}-${p.amount}`} className="flex items-center gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}` }}><span className="min-w-0 flex-1 truncate" style={{ fontSize: 12, color: INK2 }}>{ymd(p.date)} · {p.name || p.passName || "이용권"}</span><span className="tabular-nums" style={{ fontSize: 12, fontWeight: 600, color: INK }}>{num(p.count || p.sessions)}회</span></div>) : <p style={{ fontSize: 12, color: SUB }}>저장된 변경 이력이 없습니다</p>}
+          <Section title="이용권 변경 이력 및 상세 설정" action={<button type="button" onClick={openMembership} style={{ fontSize: 12, fontWeight: 700, color: BRAND }}>관리</button>}>
+            {(member.payments || []).length ? member.payments.slice(0, 4).map((p) => <div key={p.id || `${p.date}-${p.amount}`} className="flex items-center gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}` }}><span className="min-w-0 flex-1"><span className="block truncate" style={{ fontSize: 12, color: INK2 }}>{ymd(p.date)} · {p.name || p.passName || "이용권"}</span>{p.kind === "adjustment" && <span className="block truncate" style={{ fontSize: 10, color: SUB }}>잔여 {p.before?.remaining}회 → {p.after?.remaining}회 · 총 {p.before?.total}회 → {p.after?.total}회</span>}</span><span className="tabular-nums" style={{ fontSize: 12, fontWeight: 600, color: INK }}>{p.kind === "adjustment" ? "수정" : `${num(p.count || p.sessions)}회`}</span></div>) : <p style={{ fontSize: 12, color: SUB }}>저장된 변경 이력이 없습니다</p>}
             {holdHistory.slice(0, 4).map((h) => <div key={h.id} className="flex items-center gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}`, backgroundColor: CANVAS }}><span style={{ padding: "2px 6px", borderRadius: 5, color: INK2, fontSize: 10, fontWeight: 600 }}>홀딩</span><span className="min-w-0 flex-1 truncate" style={{ fontSize: 11, color: INK2 }}>{ymd(h.startDate)} ~ {ymd(h.releasedAt || h.endDate)}{h.extendDays ? ` · 만료 +${h.extendDays}일` : ""}</span></div>)}
-          </Section>
-          <Section title="회원 기본정보">
-            <div className="grid grid-cols-2 gap-x-3 gap-y-2">{[["이름", member.name || "-"], ["연락처", member.phone || "-"], ["생년월일", member.birth ? `${member.birth.replaceAll("-", ".")} · ${ageOf(member)}세` : "-"], ["수업 유형", member.lessonType === "duet" ? "듀엣" : member.lessonType === "group" ? "그룹" : "개인"], ["기본 수업시간", `${lessonDurationOf(member)}분`], ["상태", isHold(member) ? "홀딩" : isEnded(member) ? "종료" : "활성"]].map(([k,v]) => <div key={k}><p style={{ fontSize: 10, color: SUB }}>{k}</p><p className="truncate" style={{ marginTop: 2, fontSize: 12, color: INK }}>{v}</p></div>)}</div>
+            {(member.instructorHistory || []).slice(0, 3).map((entry) => <div key={entry.id || entry.date} className="flex gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}` }}><span style={{ fontSize: 10, color: SUB }}>담당 변경</span><span className="min-w-0 flex-1 truncate" style={{ fontSize: 11, color: INK2 }}>{ymd(entry.date)} · {entry.before || "미지정"} → {entry.after || "미지정"}</span></div>)}
             {isHold(member) && <div className="mt-2 flex items-start gap-2" style={{ padding: "9px 10px", borderRadius: 8, backgroundColor: CANVAS }}><AlertCircle size={14} className="mt-0.5 shrink-0" style={{ color: SUB }} /><p style={{ fontSize: 11, lineHeight: 1.5, color: INK2 }}>{ymd(member.holdFrom)} ~ {ymd(member.holdUntil)}{member.holdReason ? ` · ${member.holdReason}` : ""}</p></div>}
             <div className="mt-2 flex gap-2"><button type="button" onClick={openEdit} style={{ flex: 1, height: 42, borderRadius: 8, border: `1px solid ${LINE}`, color: INK2, fontSize: 12, fontWeight: 600 }}>정보 수정</button>{isHold(member) ? <button type="button" onClick={() => { if (!releaseArmed) { setReleaseArmed(true); return; } const releasedAt = todayISO(); onPatch({ status: "active", holdFrom: "", holdUntil: "", holdReason: "", holdHistory: [{ id: uid(), startDate: member.holdFrom, endDate: member.holdUntil, releasedAt, reason: member.holdReason, extendDays: num(member.holdExtendDays), createdAt: releasedAt }, ...holdHistory] }); setReleaseArmed(false); }} style={{ flex: 1.35, height: 42, borderRadius: 8, border: `1px solid ${releaseArmed ? BRAND : LINE}`, backgroundColor: releaseArmed ? TINT : CARD, color: BRAND_D, fontSize: 12, fontWeight: 600 }}>{releaseArmed ? "한 번 더 눌러 홀딩 해제" : "홀딩 해제"}</button> : <button type="button" onClick={() => { setHold({ start: todayISO(), end: shift(todayISO(), 14), reason: "", extend: true }); setSheet("hold"); }} style={{ flex: 1, height: 42, borderRadius: 8, border: `1px solid ${LINE}`, color: BRAND_D, fontSize: 12, fontWeight: 600 }}>홀딩 설정</button>}</div>
           </Section>
         </div>
       </main>
-      <div className="absolute bottom-0 left-0 right-0 grid grid-cols-4" style={{ height: 58, padding: "6px 10px", backgroundColor: CARD, borderTop: `1px solid ${LINE}` }}>
-        {[{ l: "일정", I: CalendarDays, fn: onSchedule }, { l: "기록", I: Pencil, fn: () => { setMemo(""); setMemoMeta(null); setSheet("record"); } }, { l: "체형분석", I: Activity, fn: () => onAssess?.({ mode: "new" }) }, { l: "메모", I: MessageSquare, fn: () => { setMemo(""); setMemoMeta(null); setSheet("memo"); } }].map(({ l, I, fn }) => <button type="button" key={l} onClick={fn} className="flex flex-col items-center justify-center gap-0.5" style={{ color: BRAND, fontSize: 10, fontWeight: 600 }}><I size={17} />{l}</button>)}
-      </div>
-      {sheet === "edit" && <Sheet title="회원 정보 수정" onClose={() => setSheet(null)} wide><div className="space-y-3">
-        <Field label="이름"><input value={edit.name || ""} onChange={(e) => setEdit({ ...edit, name: e.target.value })} className={inputCls} /></Field><Field label="연락처"><input value={edit.phone || ""} onChange={(e) => setEdit({ ...edit, phone: e.target.value })} className={inputCls} /></Field><Field label="생년월일"><input type="date" value={edit.birth || ""} onChange={(e) => setEdit({ ...edit, birth: e.target.value })} className={inputCls} /></Field><Field label="기본 수업시간"><select value={edit.defaultLessonDuration || DEFAULT_CLASS_DURATION} onChange={(e) => setEdit({ ...edit, defaultLessonDuration: Number(e.target.value) })} className={inputCls}>{[30, 50, 60, 80].map((value) => <option key={value} value={value}>{value}분</option>)}</select></Field><Field label="목표"><textarea rows={3} value={edit.goal || ""} onChange={(e) => setEdit({ ...edit, goal: e.target.value })} className={`${inputCls} h-auto py-3`} /></Field><Field label="주의사항" hint="쉼표로 구분"><input value={edit.focus || ""} onChange={(e) => setEdit({ ...edit, focus: e.target.value })} className={inputCls} /></Field>
-        <button type="button" disabled={!String(edit.name || "").trim()} onClick={() => { onPatch({ ...edit, name: edit.name.trim(), defaultLessonDuration: lessonDurationOf(edit), focus: String(edit.focus || "").split(",").map((x) => x.trim()).filter(Boolean) }); setSheet(null); }} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>저장</button>
+      {sheet === "basic" && <Sheet title="기본정보 수정" onClose={() => setSheet(null)} wide><div className="space-y-3">
+        <Field label="이름"><input value={edit.name || ""} onChange={(e) => setEdit({ ...edit, name: e.target.value })} className={inputCls} /></Field><div className="grid grid-cols-2 gap-2"><Field label="담당 강사"><input value={edit.instructor || ""} onChange={(e) => setEdit({ ...edit, instructor: e.target.value })} className={inputCls} /></Field><Field label="연락처"><input value={edit.phone || ""} onChange={(e) => setEdit({ ...edit, phone: e.target.value })} className={inputCls} /></Field></div><Field label="생년월일"><input type="date" value={edit.birth || ""} onChange={(e) => setEdit({ ...edit, birth: e.target.value })} className={inputCls} /></Field><div className="grid grid-cols-2 gap-2"><Field label="수업 유형"><select value={edit.lessonType || "private"} onChange={(e) => setEdit({ ...edit, lessonType: e.target.value })} className={inputCls}><option value="private">개인</option><option value="duet">듀엣</option><option value="group">그룹</option></select></Field><Field label="기본 수업시간"><select value={edit.defaultLessonDuration || DEFAULT_CLASS_DURATION} onChange={(e) => setEdit({ ...edit, defaultLessonDuration: Number(e.target.value) })} className={inputCls}>{[30, 50, 60, 80].map((value) => <option key={value} value={value}>{value}분</option>)}</select></Field></div>
+        {saveError && <p role="alert" style={{ fontSize: 11, color: BAD }}>{saveError}</p>}<button type="button" aria-busy={saving === "basic"} disabled={!String(edit.name || "").trim() || saving === "basic"} onClick={() => commitPatch("basic", { ...edit, name: edit.name.trim(), defaultLessonDuration: lessonDurationOf(edit), ...(String(edit.instructor || "") !== String(member.instructor || "") ? { instructorHistory: [{ id: uid(), date: todayISO(), before: member.instructor || "", after: edit.instructor || "" }, ...(member.instructorHistory || [])] } : {}) })} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>{saving === "basic" ? "저장 중…" : "기본정보 저장"}</button>
       </div></Sheet>}
+      {sheet === "preparation" && <Sheet title="목표·주의사항 수정" onClose={() => setSheet(null)}><div className="space-y-3"><Field label="운동 목표"><textarea rows={3} value={edit.goal || ""} onChange={(e) => setEdit({ ...edit, goal: e.target.value })} className={`${inputCls} h-auto py-3`} /></Field><Field label="통증 및 주의사항" hint="쉼표로 구분"><textarea rows={3} value={edit.focus || ""} onChange={(e) => setEdit({ ...edit, focus: e.target.value })} className={`${inputCls} h-auto py-3`} /></Field>{saveError && <p role="alert" style={{ fontSize: 11, color: BAD }}>{saveError}</p>}<button type="button" disabled={saving === "preparation"} onClick={() => commitPatch("preparation", { goal: String(edit.goal || "").trim(), focus: String(edit.focus || "").split(",").map((x) => x.trim()).filter(Boolean) })} className="h-12 w-full text-sm font-bold text-white disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND }}>{saving === "preparation" ? "저장 중…" : "목표·주의사항 저장"}</button></div></Sheet>}
       {sheet === "hold" && <Sheet title="홀딩 설정" sub={`${member.name} · 수업 기록과 분석 이력은 유지됩니다`} onClose={() => setSheet(null)}><div className="space-y-3">
         <div className="grid grid-cols-2 gap-2"><Field label="홀딩 시작일"><input type="date" value={hold.start} onChange={(e) => setHold({ ...hold, start: e.target.value })} className={inputCls} /></Field><Field label="종료 예정일"><input type="date" value={hold.end} onChange={(e) => setHold({ ...hold, end: e.target.value })} className={inputCls} /></Field></div>
         <Field label="홀딩 사유"><input value={hold.reason} onChange={(e) => setHold({ ...hold, reason: e.target.value })} placeholder="예: 개인 사정 · 부상 · 여행" className={inputCls} /></Field>
@@ -3743,8 +4231,11 @@ function ReferenceMemberDetail({ member, schedule, photos, onBack, onPatch, onSa
         <p style={{ fontSize: 11, lineHeight: 1.5, color: SUB }}>홀딩은 예정된 수업을 자동 취소하지 않습니다. 일정 탭에서 직접 확인해 주세요.</p>
         <button type="button" disabled={!hold.start || !hold.end || hold.end < hold.start} onClick={() => { const days = Math.max(0, Math.round((new Date(`${hold.end}T00:00:00`).getTime() - new Date(`${hold.start}T00:00:00`).getTime()) / 86400000)); onPatch({ status: "hold", holdFrom: hold.start, holdUntil: hold.end, holdReason: hold.reason.trim(), holdExtendDays: hold.extend ? days : 0, contractEnd: hold.extend && member.contractEnd ? shift(member.contractEnd, days) : member.contractEnd }); setSheet(null); }} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>홀딩 시작</button>
       </div></Sheet>}
-      {(sheet === "memo" || sheet === "record") && <Sheet title={sheet === "memo" ? "상담 메모" : "수업 기록"} onClose={() => setSheet(null)}><div className="space-y-2">{sheet === "record" && <VoiceNote memberId={member.id} onApply={(text, meta) => { setMemo((v) => v ? `${v}\n${text}` : text); setMemoMeta(meta); }} />}<textarea autoFocus rows={5} value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="내용을 입력하세요" className={`${inputCls} h-auto resize-none py-3`} /><button type="button" disabled={!memo.trim()} onClick={() => { onSaveNote(sheet === "memo" ? "상담" : "개인레슨", memo.trim(), memoMeta); setMemoMeta(null); setSheet(null); }} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>저장</button></div></Sheet>}
-      {sheet === "membership" && <Sheet title="이용권 변경" onClose={() => setSheet(null)}><div className="space-y-3"><Field label="이용권 이름"><input value={pass.name} onChange={(e) => setPass({ ...pass, name: e.target.value })} className={inputCls} /></Field><div className="grid grid-cols-2 gap-2"><Field label="추가 횟수"><input inputMode="numeric" value={pass.count} onChange={(e) => setPass({ ...pass, count: e.target.value.replace(/\D/g, "") })} className={inputCls} /></Field><Field label="만료일"><input type="date" value={pass.end} onChange={(e) => setPass({ ...pass, end: e.target.value })} className={inputCls} /></Field></div><button type="button" disabled={!num(pass.count)} onClick={() => { const count = num(pass.count); onPatch({ passName: pass.name, regular: num(member.regular) + count, total: num(member.total) + count, contractEnd: pass.end, payments: [{ id: uid(), date: todayISO(), name: pass.name, count }, ...(member.payments || [])] }); setSheet(null); }} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>변경 저장</button></div></Sheet>}
+      {(sheet === "memo" || sheet === "record") && <Sheet title={sheet === "memo" ? "상담 메모 추가" : "수업 기록"} onClose={() => setSheet(null)}><div className="space-y-2">{sheet === "record" && <VoiceNote memberId={member.id} onApply={(text, meta) => { setMemo((v) => v ? `${v}\n${text}` : text); setMemoMeta(meta); }} />}{sheet === "memo" && <button type="button" aria-pressed={memoImportant} onClick={() => setMemoImportant((value) => !value)} className="flex h-10 w-full items-center gap-2 px-3" style={{ borderRadius: 8, backgroundColor: memoImportant ? WARN_S : CANVAS, color: memoImportant ? WARN : SUB, fontSize: 12, fontWeight: 700 }}><Star size={14} fill={memoImportant ? "currentColor" : "none"} />중요 메모로 상단 고정</button>}<textarea autoFocus rows={5} value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="내용을 입력하세요" className={`${inputCls} h-auto resize-none py-3`} />{saveError && <p role="alert" style={{ fontSize: 11, color: BAD }}>{saveError}</p>}<button type="button" aria-busy={saving === sheet} disabled={!memo.trim() || saving === sheet} onClick={commitNote} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>{saving === sheet ? "저장 중…" : "이 영역 저장"}</button></div></Sheet>}
+      {sheet === "memos-all" && <Sheet title="상담 메모 전체 보기" onClose={() => setSheet(null)}><div className="space-y-2">{consultationNotes.length ? consultationNotes.map((note) => <div key={note.id} style={{ padding: 10, borderRadius: 8, backgroundColor: note.important ? WARN_S : CANVAS }}><p style={{ fontSize: 10, color: SUB }}>{ymd(note.date)}{note.important ? " · 중요 메모" : ""}</p><p className="mt-1" style={{ fontSize: 12, lineHeight: 1.5, color: INK2 }}>{note.body}</p></div>) : <p style={{ fontSize: 12, color: SUB }}>등록된 상담 메모가 없습니다</p>}<button type="button" onClick={openMemo} className="h-11 w-full text-xs font-bold" style={{ borderRadius: 8, backgroundColor: TINT, color: BRAND_D }}>메모 추가</button></div></Sheet>}
+      {sheet === "records-all" && <Sheet title="수업 기록 전체 보기" onClose={() => setSheet(null)}><div className="space-y-2">{lessonNotes.length ? lessonNotes.map((note) => <div key={note.id} style={{ padding: 10, borderRadius: 8, backgroundColor: CANVAS }}><p style={{ fontSize: 10, color: SUB }}>{ymd(note.date)} · {note.type || "수업"}</p><p className="mt-1" style={{ fontSize: 12, lineHeight: 1.5, color: INK2 }}>{note.body}</p></div>) : <p style={{ fontSize: 12, color: SUB }}>아직 작성된 수업 기록이 없습니다</p>}</div></Sheet>}
+      {sheet === "membership" && <Sheet title="현재 이용권 수정" onClose={() => setSheet(null)}><div className="space-y-3">{!passConfirm ? <><Field label="이용권 이름"><input value={pass.name} onChange={(e) => setPass({ ...pass, name: e.target.value })} className={inputCls} /></Field><div className="grid grid-cols-3 gap-2"><Field label="정규 잔여"><input inputMode="numeric" value={pass.regular} onChange={(e) => setPass({ ...pass, regular: e.target.value.replace(/\D/g, "") })} className={inputCls} /></Field><Field label="서비스 잔여"><input inputMode="numeric" value={pass.service} onChange={(e) => setPass({ ...pass, service: e.target.value.replace(/\D/g, "") })} className={inputCls} /></Field><Field label="누적 등록"><input inputMode="numeric" value={pass.total} onChange={(e) => setPass({ ...pass, total: e.target.value.replace(/\D/g, "") })} className={inputCls} /></Field></div><Field label="만료일"><input type="date" value={pass.end} onChange={(e) => setPass({ ...pass, end: e.target.value })} className={inputCls} /></Field><button type="button" onClick={() => setPassConfirm(true)} className="h-12 w-full text-sm font-bold text-white" style={{ borderRadius: 8, backgroundColor: BRAND }}>변경 내용 확인</button></> : <><div style={{ padding: 12, borderRadius: 10, backgroundColor: CANVAS }}><p className="mb-2 text-xs font-bold" style={{ color: INK }}>변경 전후를 확인해 주세요</p>{[["총 잔여", `${left(member)}회`, `${num(pass.regular) + num(pass.service)}회`], ["누적 등록", `${num(member.total)}회`, `${num(pass.total)}회`], ["만료일", member.contractEnd ? ymd(member.contractEnd) : "미설정", pass.end ? ymd(pass.end) : "미설정"]].map(([label,before,after]) => <div key={label} className="flex items-center gap-2 py-1"><span className="w-16 text-[10px]" style={{ color: SUB }}>{label}</span><span className="min-w-0 flex-1 text-right text-xs line-through" style={{ color: SUB }}>{before}</span><ChevronRight size={12} style={{ color: FAINT }} /><span className="min-w-0 flex-1 text-xs font-bold" style={{ color: BRAND_D }}>{after}</span></div>)}</div>{saveError && <p role="alert" style={{ fontSize: 11, color: BAD }}>{saveError}</p>}<div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => setPassConfirm(false)} className="h-12 text-sm font-bold" style={{ borderRadius: 8, backgroundColor: CANVAS, color: INK2 }}>다시 수정</button><button type="button" disabled={saving === "membership"} onClick={() => { const regular = num(pass.regular), service = num(pass.service), total = num(pass.total); commitPatch("membership", { passName: pass.name.trim(), regular, service, total, contractEnd: pass.end, payments: [{ id: uid(), date: todayISO(), kind: "adjustment", name: "이용권 수정", before: { remaining: left(member), total: num(member.total), end: member.contractEnd || "" }, after: { remaining: regular + service, total, end: pass.end } }, ...(member.payments || [])] }); }} className="h-12 text-sm font-bold text-white disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND }}>{saving === "membership" ? "저장 중…" : "확인 후 저장"}</button></div></>}</div></Sheet>}
+      {sheet === "rate" && canViewSettlement && <Sheet title="강사 정산 단가 수정" onClose={() => setSheet(null)}><div className="space-y-3">{!rateConfirm ? <><Field label="강사 정산 단가"><input inputMode="numeric" value={rateEdit} onChange={(e) => setRateEdit(e.target.value.replace(/\D/g, ""))} className={inputCls} /></Field><p style={{ fontSize: 11, lineHeight: 1.5, color: SUB }}>회원 회당 결제금액과 별도이며 급여 예상 계산에 사용됩니다.</p><button type="button" disabled={!num(rateEdit)} onClick={() => setRateConfirm(true)} className="h-12 w-full text-sm font-bold text-white disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND }}>변경 내용 확인</button></> : <><div className="flex items-center gap-3" style={{ padding: 12, borderRadius: 10, backgroundColor: CANVAS }}><span className="min-w-0 flex-1 text-right text-sm line-through" style={{ color: SUB }}>₩{won(settlementUnit)}</span><ChevronRight size={14} style={{ color: FAINT }} /><span className="min-w-0 flex-1 text-sm font-bold" style={{ color: BRAND_D }}>₩{won(rateEdit)}</span></div>{saveError && <p role="alert" style={{ fontSize: 11, color: BAD }}>{saveError}</p>}<div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => setRateConfirm(false)} className="h-12 text-sm font-bold" style={{ borderRadius: 8, backgroundColor: CANVAS, color: INK2 }}>다시 수정</button><button type="button" disabled={saving === "rate"} onClick={() => commitPatch("rate", { payRate: num(rateEdit) })} className="h-12 text-sm font-bold text-white disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND }}>{saving === "rate" ? "저장 중…" : "확인 후 저장"}</button></div></>}</div></Sheet>}
     </div>
   );
 }
@@ -3930,36 +4421,44 @@ const MK_W = 300, MK_H = 400;
 /* iOS 에서 사진을 길게 눌렀을 때 뜨는 '사진 저장/공유' 팝업을 막는다 */
 const NOPRESS = { WebkitTouchCallout: "none", WebkitUserSelect: "none", userSelect: "none" };
 const IMGP = { draggable: false, onContextMenu: (e) => e.preventDefault() };
+function AnnotationSvgMark({ mark, canvasWidth, canvasHeight, hideLabel = false }) {
+  if (!mark || !Array.isArray(mark.pts) || !mark.pts.length) return null;
+  const scale = canvasWidth / 300;
+  const point = (value) => ({ x: Number(value?.x || 0) * canvasWidth, y: Number(value?.y || 0) * canvasHeight });
+  const points = mark.pts.map(point), start = points[0], end = points[points.length - 1];
+  const stroke = mark.color || "#6C5FD4", strokeWidth = Math.max(0.8, (Number(mark.width) || 3) * scale), opacity = mark.opacity ?? 1;
+  if (mark.tool === "hline") return <line x1="0" y1={start.y} x2={canvasWidth} y2={start.y} stroke={stroke} strokeWidth={strokeWidth} strokeLinecap="round" opacity={opacity} />;
+  if (mark.tool === "vline") return <line x1={start.x} y1="0" x2={start.x} y2={canvasHeight} stroke={stroke} strokeWidth={strokeWidth} strokeLinecap="round" opacity={opacity} />;
+  if (mark.tool === "point") return <g opacity={opacity}><circle cx={start.x} cy={start.y} r={((Number(mark.width) || 3) + 3) * scale} fill={stroke} /><circle cx={start.x} cy={start.y} r={((Number(mark.width) || 3) + 9) * scale} fill="none" stroke={stroke} strokeWidth={Math.max(0.8, 1.5 * scale)} /></g>;
+  if (mark.tool === "circle" && points[1]) return <ellipse cx={(start.x + end.x) / 2} cy={(start.y + end.y) / 2} rx={Math.abs(end.x - start.x) / 2} ry={Math.abs(end.y - start.y) / 2} fill="none" stroke={stroke} strokeWidth={strokeWidth} opacity={opacity} />;
+  if (mark.tool === "rect" && points[1]) return <rect x={Math.min(start.x, end.x)} y={Math.min(start.y, end.y)} width={Math.abs(end.x - start.x)} height={Math.abs(end.y - start.y)} fill="none" stroke={stroke} strokeWidth={strokeWidth} rx={2 * scale} opacity={opacity} />;
+  if (mark.tool === "text") {
+    const lines = annotationTextLines(mark), fontSize = annotationFontSize(mark, scale), lineHeight = fontSize * 1.16, hand = mark.fontStyle === "handwriting";
+    return <text x={start.x} y={start.y} fill={stroke} fontSize={fontSize} fontWeight={hand ? "400" : "700"} fontFamily={hand ? "'Nanum Pen Script', 'Segoe Print', cursive" : "Pretendard, sans-serif"} dominantBaseline="hanging" opacity={opacity} stroke="rgba(0,0,0,.42)" strokeWidth={Math.max(0.8, 1.2 * scale)} paintOrder="stroke">
+      {lines.map((line, index) => <tspan key={`${mark.id || "text"}_${index}`} x={start.x} y={start.y + index * lineHeight}>{line || " "}</tspan>)}
+    </text>;
+  }
+  const path = points.map((value, index) => `${index ? "L" : "M"}${value.x.toFixed(1)} ${value.y.toFixed(1)}`).join(" ");
+  const arrow = mark.tool === "arrow" && points.length >= 2 ? arrowHeadPoints(start, end, (10 + (Number(mark.width) || 3) * 2) * scale) : null;
+  const centerX = (start.x + end.x) / 2, centerY = (start.y + end.y) / 2 - 9 * scale;
+  const label = mark.tool === "angle" && mark.label && !hideLabel ? String(mark.label) : "";
+  const labelWidth = label.length * 7 * scale + 12 * scale;
+  return <g opacity={opacity}>
+    <path d={path} fill="none" stroke={stroke} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+    {arrow && <path d={`M${arrow[0].x.toFixed(1)} ${arrow[0].y.toFixed(1)} L${end.x.toFixed(1)} ${end.y.toFixed(1)} L${arrow[1].x.toFixed(1)} ${arrow[1].y.toFixed(1)}`} fill="none" stroke={stroke} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />}
+    {mark.tool === "angle" && points.length === 2 && <>
+      <line x1={Math.min(start.x, end.x) - 20 * scale} y1={start.x <= end.x ? start.y : end.y} x2={Math.max(start.x, end.x) + 20 * scale} y2={start.x <= end.x ? start.y : end.y} stroke={stroke} strokeWidth={Math.max(0.8, scale)} strokeDasharray={`${5 * scale} ${5 * scale}`} opacity=".6" />
+      {points.map((value, index) => <circle key={`${mark.id || "angle"}_${index}`} cx={value.x} cy={value.y} r={((Number(mark.width) || 3) + 2) * scale} fill={stroke} />)}
+    </>}
+    {label && <g><rect x={centerX - labelWidth / 2} y={centerY - 11 * scale} width={labelWidth} height={18 * scale} rx={4 * scale} fill="rgba(10,10,16,.82)" stroke="rgba(255,255,255,.55)" strokeWidth={Math.max(0.5, 0.7 * scale)} /><text x={centerX} y={centerY + 2 * scale} textAnchor="middle" fontSize={10 * scale} fontWeight="700" fill="#fff">{label}</text></g>}
+  </g>;
+}
 function MarkLayer({ marks, hideLabel }) {
   const list = Array.isArray(marks) ? marks.filter((m) => m && Array.isArray(m.pts) && m.pts.length) : [];
   if (!list.length) return null;
   return (
     <svg viewBox={`0 0 ${MK_W} ${MK_H}`} className="pointer-events-none absolute inset-0 h-full w-full">
-      {list.map((m, i) => {
-        const P = (p) => ({ x: p.x * MK_W, y: p.y * MK_H });
-        const w = Math.max(0.8, (m.width || 3) * 0.5);
-        if (m.tool === "hline") { const y = m.pts[0].y * MK_H; return <line key={i} x1="0" y1={y} x2={MK_W} y2={y} stroke={m.color} strokeWidth={w} />; }
-        if (m.tool === "vline") { const x = m.pts[0].x * MK_W; return <line key={i} x1={x} y1="0" x2={x} y2={MK_H} stroke={m.color} strokeWidth={w} />; }
-        if (m.tool === "point") { const q = P(m.pts[0]); return <circle key={i} cx={q.x} cy={q.y} r={w + 1.5} fill={m.color} />; }
-        const pts = m.pts.map(P);
-        const d = pts.map((q, j) => `${j ? "L" : "M"}${q.x.toFixed(1)} ${q.y.toFixed(1)}`).join(" ");
-        const a = pts[0], b = pts[pts.length - 1];
-        const cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2 - 9;
-        const lab = m.tool === "angle" && m.label && !hideLabel ? String(m.label) : "";
-        const tw = lab.length * 5.2 + 9;
-        return (
-          <g key={i}>
-            <path d={d} fill="none" stroke={m.color} strokeWidth={w} strokeLinecap="round" strokeLinejoin="round" />
-            {m.tool === "angle" && pts.length === 2 && pts.map((q, j) => <circle key={j} cx={q.x} cy={q.y} r={w + 1.2} fill={m.color} />)}
-            {lab && (
-              <g>
-                <rect x={cx - tw / 2} y={cy - 7.5} width={tw} height={12} rx="4" fill="rgba(10,10,16,0.82)" stroke="rgba(255,255,255,0.55)" strokeWidth="0.6" />
-                <text x={cx} y={cy + 1.2} textAnchor="middle" fontSize="8" fontWeight="700" fill="#fff">{lab}</text>
-              </g>
-            )}
-          </g>
-        );
-      })}
+      {list.map((mark, index) => <AnnotationSvgMark key={mark.id || index} mark={mark} canvasWidth={MK_W} canvasHeight={MK_H} hideLabel={hideLabel} />)}
     </svg>
   );
 }
@@ -3970,7 +4469,7 @@ function Shot({ p, label, guides }) {
       <img {...IMGP} src={p.src} alt={label} className="absolute inset-0 h-full w-full object-cover" style={{ transform: ptf(p), ...NOPRESS }} />
       <MarkLayer marks={p.marks} hideLabel />
       {guides && <GuideOverlay />}
-      <span className="absolute bottom-2 left-2 rounded-md px-1.5 py-0.5 text-xs text-white" style={{ backgroundColor: "rgba(0,0,0,0.55)" }}>{ymd(p.date)}</span>
+      <span className="absolute bottom-2 left-2 rounded-md px-1.5 py-0.5 text-xs text-white" style={{ backgroundColor: "rgba(0,0,0,0.55)" }}>{ymd(p.date)}{timeOf(p.createdAt || p.at) ? ` · ${timeOf(p.createdAt || p.at)}` : ""}</span>
       {p.marks?.length > 0 && <span className="absolute right-2 top-2 rounded-md px-1.5 py-0.5 text-xs font-bold text-white" style={{ backgroundColor: BRAND }}>분석 {p.marks.length}</span>}
     </div>
   );
@@ -4478,9 +4977,11 @@ function OverallReview({ member, briefing, onToast, schedule }) {
   const gc = r.grade.tone === "good" ? GOOD : r.grade.tone === "bad" ? BAD : SUB;
   const make = async (kind) => {
     if (aiProvider.getStatus().status !== "connected") {
-      onToast({ ok: false, msg: "AI 분석 미연결 상태입니다. 실제 Provider 연결 전에는 문장을 생성하지 않습니다." });
+      onToast({ ok: false, msg: "현재 AI 문장 생성을 사용할 수 없습니다." });
       return;
     }
+    const consent = await ensureMemberAIConsent(member.id, "generateReport");
+    if (!consent.ok) { onToast({ ok: false, msg: consent.message }); return; }
     setLoading(true);
     const payload = {
       회원: member.name, 목표: member.goal, 비교구간: `${r.weeks}주`,
@@ -4492,13 +4993,13 @@ function OverallReview({ member, briefing, onToast, schedule }) {
       좋아진점: r.goods, 관리필요: r.cares,
     };
     try {
-      const result = await aiProvider.generateReport(buildReportInput({ reportType: kind === "member" ? "member_progress_message" : "instructor_coaching_note", memberId: member.id, source: payload }));
+      const result = await aiProvider.generateReport(buildReportInput({ reportType: kind === "member" ? "member_progress_message" : "instructor_coaching_note", memberId: member.id, memberName: member.name, source: payload }));
       if (result.status !== AI_STATUSES.DRAFT) throw new Error("not_connected");
       const t = formatAIReport(result.output);
       setTxt((x) => ({ ...x, [kind]: t }));
       onToast({ ok: true, msg: kind === "coach" ? "코칭노트를 만들었습니다." : "회원용 멘트를 만들었습니다." });
     } catch (e) {
-      onToast({ ok: false, msg: "AI 결과를 불러오지 못했습니다. 기존 지표는 그대로 유지됩니다." });
+      onToast({ ok: false, msg: `${aiFailureMessage(e, "AI 결과를 불러오지 못했습니다.")} 기존 지표는 그대로 유지됩니다.` });
     }
     finally { setLoading(false); }
   };
@@ -5043,7 +5544,8 @@ async function composeResultCard({ bRec, aRec, bSrc, aSrc, keys, colors, texts, 
   ctx.beginPath(); ctx.moveTo(W / 2 - 6, TOP + PH / 2 - 11); ctx.lineTo(W / 2 + 7, TOP + PH / 2); ctx.lineTo(W / 2 - 6, TOP + PH / 2 + 11); ctx.stroke();
   ctx.restore();
 
-  /* 항목별 점선 원 + 라벨 */
+  /* 관절점은 작게 표시하고 라벨은 고정된 줄에 배치한다.
+     사진 위 원·문구가 서로 겹쳐 결과가 안 보이던 문제를 피한다. */
   const drawMarks = (rec, map, x0, color, isAfter) => {
     const pts = rec?.pts || {};
     const mFor = (k) => (rec?.metrics || []).find((m) => m.key === k);
@@ -5051,20 +5553,16 @@ async function composeResultCard({ bRec, aRec, bSrc, aSrc, keys, colors, texts, 
     keys.forEach((k, i) => {
       const joints = (CARD_JOINTS[k] || []).map((j) => pts[j]).filter(Boolean);
       if (!joints.length) return;
-      ctx.strokeStyle = color; ctx.lineWidth = 4;
-      ctx.setLineDash(isAfter ? [] : [9, 8]);
+      ctx.fillStyle = color;
       joints.forEach((p) => {
         const q = map(p);
-        ctx.beginPath(); ctx.arc(q.x, q.y, 44, 0, Math.PI * 2); ctx.stroke();
+        ctx.beginPath(); ctx.arc(q.x, q.y, 7, 0, Math.PI * 2); ctx.fill();
       });
-      ctx.setLineDash([]);
-      const mid = joints.reduce((s, p) => ({ x: s.x + p.x / joints.length, y: s.y + p.y / joints.length }), { x: 0, y: 0 });
-      const q = map(mid);
       const m = mFor(k);
       const txt = isAfter
         ? `${CARD_SHORT[k] || k} ${m ? `${m.value}${m.unit}` : ""} 개선`.trim()
         : `${CARD_SHORT[k] || k} ${m ? `${m.value}${m.unit}` : ""}`.trim();
-      cardChip(ctx, txt, q.x, Math.max(TOP + 30, q.y - 74 - (i % 2) * 6), { bg: "rgba(20,20,28,.8)", fg: color === "#FFFFFF" ? "#fff" : color, maxX: x0 + PW });
+      cardChip(ctx, txt, x0 + PW / 2, TOP + 30 + i * 46, { bg: "rgba(20,20,28,.84)", fg: color === "#FFFFFF" ? "#fff" : color, maxX: x0 + PW });
     });
     ctx.restore();
   };
@@ -5075,7 +5573,8 @@ async function composeResultCard({ bRec, aRec, bSrc, aSrc, keys, colors, texts, 
   const py = TOP + PH;
   ctx.fillStyle = "#FFFFFF"; ctx.fillRect(0, py, W, PANEL);
   ctx.textAlign = "center"; ctx.textBaseline = "middle";
-  ctx.fillStyle = "#17171F"; ctx.font = "800 40px Pretendard, -apple-system, sans-serif";
+  const textColor = colors.text || "#17171F";
+  ctx.fillStyle = textColor; ctx.font = "800 40px Pretendard, -apple-system, sans-serif";
   ctx.fillText(texts.title, W / 2, py + 56, W - 60);
   ctx.textAlign = "left"; ctx.font = "600 27px Pretendard, -apple-system, sans-serif";
   const checks = [texts.c1, texts.c2].filter((t) => t && t.trim());
@@ -5084,20 +5583,20 @@ async function composeResultCard({ bRec, aRec, bSrc, aSrc, keys, colors, texts, 
     ctx.fillStyle = "#FFD43B"; roundRect(ctx, 84, y - 13, 26, 26, 6); ctx.fill();
     ctx.strokeStyle = "#7A5C00"; ctx.lineWidth = 3.4; ctx.lineCap = "round";
     ctx.beginPath(); ctx.moveTo(90, y); ctx.lineTo(96, y + 6); ctx.lineTo(105, y - 6); ctx.stroke();
-    ctx.fillStyle = "#2A2A32"; ctx.fillText(t, 124, y + 1, W - 200);
+    ctx.fillStyle = textColor; ctx.fillText(t, 124, y + 1, W - 200);
   });
   if (texts.close && texts.close.trim()) {
     ctx.font = "800 26px Pretendard, -apple-system, sans-serif";
     const tw = Math.min(W - 80, ctx.measureText(texts.close).width + 56);
     roundRect(ctx, W / 2 - tw / 2, py + 210, tw, 52, 14);
     ctx.fillStyle = "#FFF1BF"; ctx.fill();
-    ctx.fillStyle = "#3A2E00"; ctx.textAlign = "center";
+    ctx.fillStyle = textColor; ctx.textAlign = "center";
     ctx.fillText(texts.close, W / 2, py + 237, W - 120);
   }
   ctx.strokeStyle = "#D8D5CE"; ctx.lineWidth = 2;
   ctx.beginPath(); ctx.moveTo(120, py + 296); ctx.lineTo(W / 2 - 110, py + 296);
   ctx.moveTo(W / 2 + 110, py + 296); ctx.lineTo(W - 120, py + 296); ctx.stroke();
-  ctx.fillStyle = "#6E6A62"; ctx.font = "700 22px Pretendard, -apple-system, sans-serif";
+  ctx.fillStyle = textColor; ctx.globalAlpha = 0.68; ctx.font = "700 22px Pretendard, -apple-system, sans-serif";
   ctx.textAlign = "center";
   ctx.fillText((centerName || "PILATEACHER").toUpperCase(), W / 2, py + 297);
   return c;
@@ -5130,13 +5629,20 @@ function cardDrafts(bRec, aRec, keys) {
   };
 }
 
-function ResultCardMaker({ member, saved, centerName, onToast, onGoAnalyze }) {
-  const [open, setOpen] = useState(false);
+function ResultCardMaker({ member, saved, centerName, onToast, onGoAnalyze, initialOpen = false, beforeAssessmentId = null, afterAssessmentId = null }) {
+  const [open, setOpen] = useState(initialOpen);
   const usable = saved.filter((p) => p && p.pts && (p.cleanBlobId || p.blobId));
   const [bId, setBId] = useState(null);
   const [aId, setAId] = useState(null);
-  const bRec = usable.find((p) => p.id === bId) || usable[usable.length - 1] || null;
-  const aRec = usable.find((p) => p.id === aId) || (usable[0] && usable[0] !== bRec ? usable[0] : null);
+  const locked = Boolean(beforeAssessmentId && afterAssessmentId);
+  const pairView = ["front", "leftSide", "side", "back", "rightSide", "custom"].find((view) =>
+    usable.some((p) => p.assessmentId === beforeAssessmentId && normalizePostureView(p.view) === normalizePostureView(view))
+      && usable.some((p) => p.assessmentId === afterAssessmentId && normalizePostureView(p.view) === normalizePostureView(view))
+  );
+  const lockedBefore = locked ? usable.find((p) => p.assessmentId === beforeAssessmentId && normalizePostureView(p.view) === normalizePostureView(pairView)) : null;
+  const lockedAfter = locked ? usable.find((p) => p.assessmentId === afterAssessmentId && normalizePostureView(p.view) === normalizePostureView(pairView)) : null;
+  const bRec = lockedBefore || usable.find((p) => p.id === bId) || usable[usable.length - 1] || null;
+  const aRec = lockedAfter || usable.find((p) => p.id === aId) || (usable[0] && usable[0] !== bRec ? usable[0] : null);
   const both = bRec && aRec && bRec.id !== aRec.id;
   const commonKeys = both
     ? Object.keys(CARD_JOINTS).filter((k) => (bRec.metrics || []).some((m) => m.key === k) && (aRec.metrics || []).some((m) => m.key === k))
@@ -5148,6 +5654,7 @@ function ResultCardMaker({ member, saved, centerName, onToast, onGoAnalyze }) {
   }).slice(0, 3);
   const [cb, setCb] = useState("#FFFFFF");
   const [ca, setCa] = useState("#FFD43B");
+  const [textColor, setTextColor] = useState("#17171F");
   const confirmedCard = both ? saved.find((record) => record?.assessmentId === aRec?.assessmentId && record?.memberResultCard?.status === AI_STATUSES.CONFIRMED)?.memberResultCard : null;
   const confirmedCardText = confirmedCard?.teacherEditedOutput || confirmedCard?.output || null;
   const drafts = useMemo(() => {
@@ -5175,12 +5682,12 @@ function ResultCardMaker({ member, saved, centerName, onToast, onGoAnalyze }) {
         const bSrc = (await urlFor(bRec.cleanBlobId || bRec.blobId)) || bRec.src;
         const aSrc = (await urlFor(aRec.cleanBlobId || aRec.blobId)) || aRec.src;
         if (!bSrc || !aSrc || !alive) return;
-        const canvas = await composeResultCard({ bRec, aRec, bSrc, aSrc, keys, colors: { b: cb, a: ca }, texts: T, centerName });
+        const canvas = await composeResultCard({ bRec, aRec, bSrc, aSrc, keys, colors: { b: cb, a: ca, text: textColor }, texts: T, centerName });
         if (alive) setLive(canvas.toDataURL("image/jpeg", 0.72));
       } catch (e) {}
     }, 350);
     return () => { alive = false; clearTimeout(id); };
-  }, [both, bRec?.id, aRec?.id, JSON.stringify(keys), cb, ca, T.title, T.c1, T.c2, T.close, centerName]);
+  }, [both, bRec?.id, aRec?.id, JSON.stringify(keys), cb, ca, textColor, T.title, T.c1, T.c2, T.close, centerName]);
 
   const build = async () => {
     if (!both) return;
@@ -5189,7 +5696,7 @@ function ResultCardMaker({ member, saved, centerName, onToast, onGoAnalyze }) {
       const bSrc = (await urlFor(bRec.cleanBlobId || bRec.blobId)) || bRec.src;
       const aSrc = (await urlFor(aRec.cleanBlobId || aRec.blobId)) || aRec.src;
       if (!bSrc || !aSrc) throw new Error("no image");
-      const canvas = await composeResultCard({ bRec, aRec, bSrc, aSrc, keys, colors: { b: cb, a: ca }, texts: T, centerName });
+      const canvas = await composeResultCard({ bRec, aRec, bSrc, aSrc, keys, colors: { b: cb, a: ca, text: textColor }, texts: T, centerName });
       setPreview({ canvas, url: canvas.toDataURL("image/jpeg", 0.9) });
     } catch (e) { onToast?.({ ok: false, msg: "카드를 만들지 못했습니다. 분석을 다시 저장해 보세요." }); }
     setBusy(false);
@@ -5201,7 +5708,9 @@ function ResultCardMaker({ member, saved, centerName, onToast, onGoAnalyze }) {
     if (r.how === "manual") { setPreview((p) => (p ? { ...p, manual: true } : p)); onToast?.({ ok: false, msg: "자동 저장이 막힌 환경입니다. 사진을 길게 눌러 저장해 주세요." }); return; }
     if (r.how === "saved") onToast?.({ ok: true, msg: "카드를 저장했습니다." });
     if (r.how === "gallery") onToast?.({ ok: true, msg: "사진 앱(갤러리)에 저장했습니다." });
+    if (r.how === "documents") onToast?.({ ok: true, msg: "내 파일 > 문서 > PilaTeacher에 저장했습니다." });
     if (r.how === "copied") onToast?.({ ok: true, msg: "카드를 복사했습니다. 카톡 등에 붙여넣기 하세요." });
+    if (r.how === "cancel") return;
     setPreview(null);
   };
 
@@ -5258,7 +5767,8 @@ function ResultCardMaker({ member, saved, centerName, onToast, onGoAnalyze }) {
                   )}
                 </div>
               )}
-              {[{ slot: "b", label: "BEFORE", cur: bRec }, { slot: "a", label: "AFTER", cur: aRec }].map(({ slot, label, cur }) => (
+              {locked && both && <div className="flex items-center gap-2 rounded-xl px-3 py-2" style={{ backgroundColor: CANVAS }}><Check size={14} style={{ color: GOOD }} /><span className="text-xs font-bold" style={{ color: INK2 }}>히스토리에서 선택한 Before / After를 사용합니다</span></div>}
+              {!locked && [{ slot: "b", label: "BEFORE", cur: bRec }, { slot: "a", label: "AFTER", cur: aRec }].map(({ slot, label, cur }) => (
                 <div key={slot}>
                   <p className="mb-1 text-xs font-extrabold" style={{ color: SUB }}>{label} 사진 고르기 <span className="font-bold" style={{ color: PRIMARY }}>{usable.length}장 중</span></p>
                   <div className="flex flex-wrap gap-1.5">
@@ -5298,6 +5808,12 @@ function ResultCardMaker({ member, saved, centerName, onToast, onGoAnalyze }) {
                       </div>
                     </div>
                   ))}
+                  <div>
+                    <p className="mb-1 text-xs font-extrabold" style={{ color: SUB }}>글자 색</p>
+                    <div className="flex flex-wrap gap-2">
+                      {[{ k: "ink", c: "#17171F", name: "검정" }, ...CARD_COLORS.filter((o) => o.c !== "#FFFFFF")].map((o) => <button key={o.k} type="button" onClick={() => setTextColor(o.c)} aria-label={o.name} className="h-8 w-8 rounded-full" style={{ backgroundColor: o.c, boxShadow: textColor === o.c ? `0 0 0 3px ${CARD}, 0 0 0 5px ${PRIMARY}` : "none" }} />)}
+                    </div>
+                  </div>
                   {[{ k: "title", l: "제목" }, { k: "c1", l: "체크 문장 1" }, { k: "c2", l: "체크 문장 2" }, { k: "close", l: "마무리 문장" }].map(({ k, l }) => (
                     <Field key={k} label={l} hint="자동 초안 · 고쳐 쓸 수 있어요">
                       <input value={T[k]} onChange={(e) => setTxt({ ...T, [k]: e.target.value })} className={inputCls} />
@@ -5343,6 +5859,7 @@ function ResultCardMaker({ member, saved, centerName, onToast, onGoAnalyze }) {
 const aiMetaFrom = (result) => ({
   provider: result.provider, requestId: result.requestId, model: result.model, modelVersion: result.modelVersion,
   promptVersion: result.promptVersion, pipelineVersion: result.pipelineVersion, generatedAt: result.createdAt || new Date().toISOString(),
+  usage: result.usage || null,
 });
 const aiListText = (items) => (items || []).join("\n");
 const aiListValue = (value) => String(value || "").split(/\n+/).map((item) => item.trim()).filter(Boolean);
@@ -5397,7 +5914,9 @@ function BodyAIReview({ member, rec, records, onUpdate, onToast }) {
   };
   const requestAnalysis = async () => {
     if (!ready) { onToast?.({ ok: false, msg: "선택한 모든 촬영 방향의 분석을 저장해야 AI 분석을 시작할 수 있습니다." }); return; }
-    if (!connected) { setAnalysisStatus(AI_STATUSES.NOT_CONNECTED); onToast?.({ ok: false, msg: "AI 분석 미연결 상태입니다." }); return; }
+    if (!connected) { setAnalysisStatus(AI_STATUSES.NOT_CONNECTED); onToast?.({ ok: false, msg: "현재 AI 분석을 사용할 수 없습니다." }); return; }
+    const consent = await ensureMemberAIConsent(member?.id, "analyzeBody");
+    if (!consent.ok) { onToast?.({ ok: false, msg: consent.message }); return; }
     setBusy("analysis");
     try {
       const result = await aiProvider.analyzeBody(buildBodyAnalysisInput({ member, records: viewRecords, teacherNote }));
@@ -5409,7 +5928,7 @@ function BodyAIReview({ member, rec, records, onUpdate, onToast }) {
       onToast?.({ ok: true, msg: "AI 체형분석 초안을 저장했습니다. 강사가 검수해 주세요." });
     } catch (error) {
       setAnalysisStatus(AI_STATUSES.ERROR);
-      onToast?.({ ok: false, msg: `AI 체형분석을 불러오지 못했습니다${error?.code ? ` (${error.code})` : ""}.` });
+      onToast?.({ ok: false, msg: aiFailureMessage(error, "AI 체형분석을 불러오지 못했습니다.") });
     } finally { setBusy(""); }
   };
   const confirmAnalysis = async () => {
@@ -5428,17 +5947,19 @@ function BodyAIReview({ member, rec, records, onUpdate, onToast }) {
   };
   const requestReport = async () => {
     if (analysisStatus !== AI_STATUSES.CONFIRMED || !draft) { onToast?.({ ok: false, msg: "체형분석을 강사 확정한 뒤 결과카드를 만들 수 있습니다." }); return; }
-    if (!connected) { setReportStatus(AI_STATUSES.NOT_CONNECTED); onToast?.({ ok: false, msg: "AI 결과카드 미연결 상태입니다." }); return; }
+    if (!connected) { setReportStatus(AI_STATUSES.NOT_CONNECTED); onToast?.({ ok: false, msg: "현재 AI 결과카드를 만들 수 없습니다." }); return; }
+    const consent = await ensureMemberAIConsent(member?.id, "generateReport");
+    if (!consent.ok) { onToast?.({ ok: false, msg: consent.message }); return; }
     setBusy("report");
     try {
-      const result = await aiProvider.generateReport(buildReportInput({ reportType: "member_body_assessment_card", memberId: member?.id, source: { bodyAnalysis: draft, teacherNote } }));
+      const result = await aiProvider.generateReport(buildReportInput({ reportType: "member_body_assessment_card", memberId: member?.id, memberName: member?.name, source: { bodyAnalysis: draft, teacherNote } }));
       if (result.status === AI_STATUSES.NOT_CONNECTED) { setReportStatus(result.status); return; }
       const meta = aiMetaFrom(result);
       const next = { status: AI_STATUSES.DRAFT, output: result.output, teacherEditedOutput: result.output, meta };
       await persist({ memberResultCard: next });
       setReportOriginal(result.output); setReportDraft(result.output); setReportMeta(meta); setReportStatus(AI_STATUSES.DRAFT);
       onToast?.({ ok: true, msg: "회원 결과카드 초안을 저장했습니다." });
-    } catch (error) { setReportStatus(AI_STATUSES.ERROR); onToast?.({ ok: false, msg: "AI 결과카드 초안을 불러오지 못했습니다." }); }
+    } catch (error) { setReportStatus(AI_STATUSES.ERROR); onToast?.({ ok: false, msg: aiFailureMessage(error, "AI 결과카드 초안을 불러오지 못했습니다.") }); }
     finally { setBusy(""); }
   };
   const confirmReport = async () => {
@@ -5461,12 +5982,12 @@ function BodyAIReview({ member, rec, records, onUpdate, onToast }) {
       <div className="flex items-center gap-2">
         <Sparkles size={15} style={{ color: "#4C4399" }} />
         <p className="min-w-0 flex-1 text-sm font-extrabold">AI 체형분석</p>
-        <span className="rounded-full px-2 py-1 text-[10px] font-bold" style={{ backgroundColor: analysisStatus === AI_STATUSES.CONFIRMED ? "#E7F2EC" : "#ECEBF7", color: analysisStatus === AI_STATUSES.CONFIRMED ? "#2E7D5B" : "#4C4399" }}>{analysisStatus === AI_STATUSES.CONFIRMED ? "강사 확정" : analysisStatus === AI_STATUSES.DRAFT ? "초안" : connected ? "분석 가능" : "미연결"}</span>
+        <span className="rounded-full px-2 py-1 text-[10px] font-bold" style={{ backgroundColor: analysisStatus === AI_STATUSES.CONFIRMED ? "#E7F2EC" : "#ECEBF7", color: analysisStatus === AI_STATUSES.CONFIRMED ? "#2E7D5B" : "#4C4399" }}>{analysisStatus === AI_STATUSES.CONFIRMED ? "강사 확정" : analysisStatus === AI_STATUSES.DRAFT ? "초안" : connected ? "분석 가능" : "사용 불가"}</span>
       </div>
       <p className="mt-1 text-xs" style={{ color: "#6B7484" }}>좌표·각도·수동 수정 이력만 전송하며 사진 원본은 전송하지 않습니다. {viewRecords.length}/3 방향 준비</p>
       <textarea rows={2} value={teacherNote} onChange={(event) => setTeacherNote(event.target.value)} placeholder="강사 메모 (AI 입력에 포함)" className={`${inputCls} mt-2 h-auto resize-none py-2 text-xs`} />
       <button disabled={busy || !ready || !connected} onClick={requestAnalysis} className="mt-2 flex h-10 w-full items-center justify-center gap-1.5 rounded-lg text-xs font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: "#4C4399" }}>{busy === "analysis" ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} {draft ? "AI 초안 다시 생성" : "AI 체형분석 초안 생성"}</button>
-      {!connected && <p className="mt-2 text-xs font-bold" style={{ color: "#B45309" }}>AI 분석 미연결 · Gateway를 설정하기 전에는 결과를 생성하지 않습니다.</p>}
+      {!connected && <p className="mt-2 text-xs font-bold" style={{ color: "#B45309" }}>현재 자동 분석을 사용할 수 없습니다. 강사 메모는 직접 저장할 수 있습니다.</p>}
       {draft && <div className="mt-3 space-y-2 border-t pt-3" style={{ borderColor: "#E6E9EF" }}>
         {[...bodyAnalysisFields.list, ...bodyAnalysisFields.text].map((field) => {
           const isList = bodyAnalysisFields.list.includes(field);
@@ -5529,7 +6050,7 @@ function SavedPoseViewer({ rec, member, records, onUpdate, memberName, onClose, 
 }
 
 function PostureCaptureScreen({
-  member, assessmentId, captureViews, currentCapture, capturePhotos, draftSaved, busy,
+  member, assessmentId, roleLabel, captureViews, currentCapture, capturePhotos, draftSaved, busy,
   onSelectView, onAcceptCapture, onOpenAlbum, onDeleteCapture, onSaveDraft, onContinue, onExit,
 }) {
   const isNative = Capacitor.isNativePlatform();
@@ -5563,6 +6084,7 @@ function PostureCaptureScreen({
   const activePhoto = capturePhotos[activeView] || null;
   const capturesComplete = captureViews.every(({ key }) => !!capturePhotos[key]);
   const completedCount = captureViews.filter(({ key }) => !!capturePhotos[key]).length;
+  const captureCompleteIdle = capturesComplete && !pendingCapture && !["active", "capturing", "starting"].includes(cameraStatus);
 
   useEffect(() => {
     pendingCaptureRef.current = pendingCapture;
@@ -5956,6 +6478,9 @@ function PostureCaptureScreen({
     custom: "기록할 부위를 프레임 중앙에 맞춰 주세요.",
   }[activeView] || "가이드 안에 촬영 대상을 맞춰 주세요.";
   const sensorTone = sensor.isLevel ? "#63D7A3" : sensor.status === SENSOR_STATUSES.active ? "#F2B84B" : "#C7CDD7";
+  const sensorLabel = iosStableCaptureFallback || sensor.status !== SENSOR_STATUSES.active
+    ? "촬영 가능"
+    : sensor.isLevel ? "촬영 적합" : "조정 필요";
 
   const screen = (
     <div className="fixed inset-0 z-[200] flex flex-col overflow-hidden" style={{ height: "100dvh", backgroundColor: nativePreviewAvailable && cameraStatus === "active" ? "transparent" : "#0D1016", color: "#fff" }}>
@@ -5966,8 +6491,8 @@ function PostureCaptureScreen({
       <header className="safe-t shrink-0" style={{ background: "linear-gradient(180deg, rgba(13,16,22,.98), rgba(13,16,22,.82))", paddingLeft: 12, paddingRight: 12, paddingBottom: 8 }}>
         <div className="flex h-12 items-center gap-2">
           <button type="button" onClick={handleBack} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full" style={{ backgroundColor: "rgba(255,255,255,.10)" }} aria-label={countdown != null ? "카운트다운 취소" : "촬영 화면 닫기"}>{countdown != null ? <X size={19} /> : <ChevronLeft size={20} />}</button>
-          <span className="min-w-0 flex-1"><span className="block truncate text-sm font-extrabold">{member?.name || "회원"} · 체형 촬영</span><span className="block text-[10px] text-white/65">{completedCount}/{captureViews.length} 완료 · {postureViewLabel(activeView)}</span></span>
-          <span className="flex h-8 items-center gap-1 rounded-full px-2.5 text-[10px] font-bold" style={{ backgroundColor: "rgba(13,16,22,.66)", border: `1px solid ${sensorTone}`, color: sensorTone }}><span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: sensorTone }} />{iosStableCaptureFallback ? "안정 촬영" : sensor.isLevel ? "수평" : sensor.status === SENSOR_STATUSES.active ? `${sensor.roll > 0 ? "+" : ""}${sensor.roll ?? "-"}°` : "센서 확인"}</span>
+          <span className="min-w-0 flex-1"><span className="block truncate text-sm font-extrabold">{member?.name || "회원"} · {roleLabel || "미분류"} 촬영</span><span className="block text-[10px] text-white/65">{completedCount}/{captureViews.length} 완료 · {postureViewLabel(activeView)}</span></span>
+          <span className="flex h-8 items-center gap-1 rounded-full px-2.5 text-[10px] font-bold" style={{ backgroundColor: "rgba(13,16,22,.66)", border: `1px solid ${sensorTone}`, color: sensorTone }}><span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: sensorTone }} />{sensorLabel}</span>
         </div>
         <div className="grid gap-1" style={{ gridTemplateColumns: `repeat(${captureViews.length}, minmax(0, 1fr))` }}>
           {captureViews.map((capture, index) => { const selected = capture.key === activeView; const complete = !!capturePhotos[capture.key]; return <button key={capture.key} type="button" disabled={countdown != null || cameraStatus === "capturing"} onClick={() => onSelectView(capture.key)} className="flex h-8 min-w-0 items-center justify-center gap-1 rounded-lg px-1 text-[10px] font-bold disabled:opacity-45" style={{ backgroundColor: selected ? "rgba(76,67,153,.92)" : complete ? "rgba(46,125,91,.72)" : "rgba(255,255,255,.10)", border: `1px solid ${selected ? "#B9B2F4" : "rgba(255,255,255,.14)"}` }}><span>{complete ? <Check size={10} /> : index + 1}</span><span className="truncate">{capture.label}</span></button>; })}
@@ -5978,20 +6503,19 @@ function PostureCaptureScreen({
         <div ref={stageRef} id="posture-camera-preview" className="absolute overflow-hidden" style={{ left: "50%", top: "50%", width: stageSize.width || "75%", height: stageSize.height || "100%", aspectRatio: "3 / 4", transform: "translate(-50%, -50%)", backgroundColor: nativePreviewAvailable && cameraStatus === "active" ? "transparent" : "#111620" }}>
           {!nativePreviewAvailable && <video ref={videoRef} muted playsInline autoPlay className="h-full w-full object-contain" />}
           {pendingCapture?.src && <img src={pendingCapture.src} alt={`방금 촬영한 ${postureViewLabel(pendingCapture.view)} 사진`} className="absolute inset-0 h-full w-full object-contain" />}
-          {!pendingCapture && activePhoto?.src && cameraStatus !== "active" && <img src={activePhoto.src} alt={`${postureViewLabel(activeView)} 기존 촬영`} className="absolute inset-0 h-full w-full object-contain opacity-75" />}
-          {!pendingCapture && (
+          {!pendingCapture && !captureCompleteIdle && activePhoto?.src && cameraStatus !== "active" && <img src={activePhoto.src} alt={`${postureViewLabel(activeView)} 기존 촬영`} className="absolute inset-0 h-full w-full object-contain opacity-75" />}
+          {!pendingCapture && !captureCompleteIdle && (
             <div className="pointer-events-none absolute inset-0" aria-hidden="true" style={{ color: guideColor }}>
-              <span className="absolute left-[10%] right-[10%] top-[17%] border-t border-dashed" style={{ borderColor: "currentColor" }} />
-              <span className="absolute bottom-[10%] left-[10%] right-[10%] border-t border-dashed" style={{ borderColor: "currentColor" }} />
-              <span className="absolute bottom-[10%] left-1/2 top-[17%] border-l border-dashed opacity-80" style={{ borderColor: "currentColor" }} />
-              {[["left-[7%] top-[8%] border-l border-t"], ["right-[7%] top-[8%] border-r border-t"], ["bottom-[7%] left-[7%] border-b border-l"], ["bottom-[7%] right-[7%] border-b border-r"]].map(([position], index) => <span key={index} className={`absolute h-8 w-8 ${position}`} style={{ borderColor: "currentColor", borderWidth: 2 }} />)}
-              <span className="absolute left-[11%] top-[13%] text-[10px] font-bold">머리 위치</span>
-              <span className="absolute bottom-[6%] left-[11%] text-[10px] font-bold">발 위치</span>
+              <span className="absolute left-[8%] right-[8%] top-[15%] border-t-2 border-dashed" style={{ borderColor: "currentColor" }} />
+              <span className="absolute bottom-[15%] left-[8%] right-[8%] border-t-2 border-dashed" style={{ borderColor: "currentColor" }} />
+              <span className="absolute bottom-[15%] left-1/2 top-[15%] border-l border-dashed opacity-75" style={{ borderColor: "currentColor" }} />
+              <span className="absolute left-[9%] top-[16%] rounded-md px-2 py-1 text-[10px] font-extrabold" style={{ backgroundColor: "rgba(13,16,22,.72)" }}>머리 기준 · 이 선 아래</span>
+              <span className="absolute bottom-[16%] left-[9%] rounded-md px-2 py-1 text-[10px] font-extrabold" style={{ backgroundColor: "rgba(13,16,22,.72)" }}>발 기준 · 이 선 위</span>
             </div>
           )}
-          {!pendingCapture && <div className="pointer-events-none absolute inset-x-3 bottom-3 rounded-xl px-3 py-2 text-center" style={{ backgroundColor: "rgba(13,16,22,.72)", backdropFilter: "blur(8px)" }}><p className="text-xs font-bold" style={{ color: sensorTone }}>{sensor.message}</p><p className="mt-0.5 text-[10px] text-white/75">{directionGuide}</p></div>}
+          {!pendingCapture && !captureCompleteIdle && <div className="pointer-events-none absolute inset-x-3 bottom-3 rounded-xl px-3 py-2 text-center" style={{ backgroundColor: "rgba(13,16,22,.72)", backdropFilter: "blur(8px)" }}><p className="text-xs font-bold" style={{ color: sensorTone }}>{sensor.message}</p><p className="mt-0.5 text-[10px] text-white/75">{directionGuide}</p></div>}
 
-          {cameraStatus !== "active" && cameraStatus !== "capturing" && !pendingCapture && (
+          {cameraStatus !== "active" && cameraStatus !== "capturing" && !pendingCapture && !captureCompleteIdle && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#0D1016]/88 px-7 text-center">
               {cameraStatus === "starting" ? <Loader2 size={30} className="animate-spin" /> : cameraStatus === "error" || cameraStatus === "paused" ? <AlertTriangle size={30} style={{ color: "#F2B84B" }} /> : <Camera size={30} />}
               <div><p className="text-sm font-extrabold">{iosStableCaptureFallback ? "사진 촬영 또는 선택" : cameraStatus === "starting" ? "카메라 준비 중" : cameraStatus === "paused" ? "카메라가 일시 중지되었습니다" : cameraStatus === "error" ? "카메라를 열 수 없습니다" : "앱 안에서 바로 촬영합니다"}</p><p className="mt-1 text-xs leading-relaxed text-white/65">{iosStableCaptureFallback ? "App Store 안정화 빌드에서는 iOS 기본 사진 선택 화면을 사용합니다." : cameraError || "카메라 시작을 누르면 후면 카메라 프리뷰 위에 촬영 가이드가 표시됩니다."}</p></div>
@@ -6000,6 +6524,8 @@ function PostureCaptureScreen({
                 : <><button type="button" onClick={startCamera} className="h-11 rounded-xl px-5 text-sm font-bold text-white" style={{ backgroundColor: "#4C4399" }}>카메라 시작</button><button type="button" onClick={async () => { await stopCamera("album"); onOpenAlbum(activeView); }} className="h-10 px-4 text-xs font-bold text-white/80">앨범에서 선택</button></>)}
             </div>
           )}
+
+          {captureCompleteIdle && <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#0D1016] px-8 text-center"><span className="flex h-16 w-16 items-center justify-center rounded-full" style={{ backgroundColor: "rgba(46,125,91,.22)", color: "#8DE0BA" }}><Check size={30} /></span><p className="mt-4 text-lg font-extrabold">촬영이 완료되었습니다</p><p className="mt-2 text-xs leading-relaxed text-white/65">{captureViews.length}방향 사진을 이 기기에 저장했습니다.<br />다음 분석 단계로 진행해 주세요.</p></div>}
 
           {countdown != null && <button type="button" onClick={clearCountdown} aria-label="카운트다운 취소" className="absolute inset-0 flex flex-col items-center justify-center" style={{ backgroundColor: "rgba(13,16,22,.34)" }}><span className="text-[104px] font-black leading-none text-white" style={{ textShadow: "0 4px 24px rgba(0,0,0,.55)" }}>{countdown}</span><span className="mt-3 rounded-full bg-black/45 px-3 py-1 text-xs font-bold">화면을 눌러 취소</span></button>}
           {pendingCapture && <div className="absolute inset-x-0 top-3 text-center"><span className="rounded-full bg-black/65 px-3 py-1.5 text-xs font-bold">방금 촬영한 {postureViewLabel(pendingCapture.view)} 사진</span></div>}
@@ -6010,8 +6536,8 @@ function PostureCaptureScreen({
         {cameraError && pendingCapture && <p className="mb-2 rounded-lg px-3 py-2 text-center text-[11px] font-bold" style={{ backgroundColor: "rgba(179,57,46,.24)", color: "#FFB8B1" }}>{cameraError}</p>}
         {pendingCapture ? (
           <div className="grid grid-cols-2 gap-2 pb-1"><button type="button" onClick={retakePending} disabled={busy} className="flex h-12 items-center justify-center gap-2 rounded-xl text-sm font-bold disabled:opacity-40" style={{ border: "1px solid rgba(255,255,255,.22)" }}><RotateCcw size={16} />다시 촬영</button><button type="button" onClick={usePending} disabled={busy} className="flex h-12 items-center justify-center gap-2 rounded-xl text-sm font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: "#4C4399" }}>{busy ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}사용하기</button></div>
-        ) : capturesComplete && cameraStatus !== "active" ? (
-          <div className="grid gap-2 pb-1"><div className="flex items-center justify-between rounded-lg px-3 py-2" style={{ backgroundColor: "rgba(46,125,91,.18)", color: "#8DE0BA" }}><span className="text-xs font-bold">{captureViews.length}방향 촬영 완료</span><span className="text-[10px]">분석 준비가 끝났습니다</span></div><button type="button" onClick={onContinue} disabled={busy} className="flex h-12 items-center justify-center gap-2 rounded-xl text-sm font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: "#4C4399" }}><ChevronRight size={17} />다음 분석 단계</button></div>
+        ) : captureCompleteIdle ? (
+          <div className="grid gap-2 pb-1"><button type="button" onClick={onContinue} disabled={busy} className="flex h-12 items-center justify-center gap-2 rounded-xl text-sm font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: "#4C4399" }}><ChevronRight size={17} />다음 분석 단계</button><button type="button" onClick={() => iosStableCaptureFallback ? onOpenAlbum(activeView) : startCamera()} disabled={busy} className="h-10 text-xs font-bold text-white/70 disabled:opacity-40"><RotateCcw size={13} className="mr-1 inline" />{postureViewLabel(activeView)} 다시 촬영</button></div>
         ) : iosStableCaptureFallback ? (
           <button type="button" onClick={() => onOpenAlbum(activeView)} disabled={busy} className="flex h-12 w-full items-center justify-center gap-2 rounded-xl text-sm font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: "#4C4399" }}><ImagePlus size={17} />사진 촬영 또는 선택</button>
         ) : (
@@ -6107,15 +6633,15 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
         groups.set(photo.assessmentId, group);
       });
     });
-    const poseViews = new Map();
+    const completedPoseViews = new Map();
     allSaved.forEach((pose) => {
-      if (!pose.assessmentId) return;
-      const views = poseViews.get(pose.assessmentId) || new Set();
+      if (!pose.assessmentId || !(pose.assessmentComplete || pose.assessmentStatus === "completed" || pose.completedAt)) return;
+      const views = completedPoseViews.get(pose.assessmentId) || new Set();
       views.add(normalizePostureView(pose.view));
-      poseViews.set(pose.assessmentId, views);
+      completedPoseViews.set(pose.assessmentId, views);
     });
     return [...groups.values()]
-      .filter((group) => (poseViews.get(group.id)?.size || 0) < captureViews.length)
+      .filter((group) => (completedPoseViews.get(group.id)?.size || 0) < captureViews.length)
       .sort((a, b) => b.at.localeCompare(a.at))[0] || null;
   }, [photos, allSaved, captureViews, resumeAssessmentId, member?.id]);
 
@@ -6536,22 +7062,25 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
       return false;
     }
     const willComplete = captureViews.every(({ key }) => key === nextView || drawnViews[key]);
-    if (!(photos?.poses || []).some((record) => record?.assessmentId === assessmentId.current && record?.view === nextView && record?.analysisSource === "draw")) {
-      const poseStored = await onSavePose?.({ id: `${assessmentId.current}_${nextView}_draw`, assessmentId: assessmentId.current, date: todayISO(), createdAt: new Date().toISOString(), completedAt: willComplete ? new Date().toISOString() : null, view: nextView, memberId: analysisMemberId.current,
-        scope, selectedViews: captureKeys, assessmentStatus: willComplete ? "completed" : "analyzing", analysisSource: "draw", annotationPhotoId: recordId, assessmentRole: analysisRole.current, assessmentComplete: willComplete, metrics: [], interpretation: null, interpretationStatus: "not_connected" });
-      if (poseStored === false) {
-        onToast?.({ ok: false, msg: "분석 기록 저장에 실패했습니다. 작성한 내용은 화면에 유지됩니다." });
-        return false;
-      }
+    const existingDraw = (photos?.poses || []).find((record) => record?.assessmentId === assessmentId.current && normalizePostureView(record?.view) === nextView && record?.analysisSource === "draw");
+    const now = new Date().toISOString();
+    const poseStored = await onSavePose?.({ ...existingDraw, id: existingDraw?.id || `${assessmentId.current}_${nextView}_draw`, assessmentId: assessmentId.current, date: existingDraw?.date || todayISO(), createdAt: existingDraw?.createdAt || now, completedAt: willComplete ? now : existingDraw?.completedAt || null, view: nextView, memberId: analysisMemberId.current,
+      scope, selectedViews: captureKeys, assessmentStatus: willComplete ? "completed" : "analyzing", analysisSource: "draw", annotationPhotoId: recordId, assessmentRole: analysisRole.current, assessmentComplete: willComplete, metrics: existingDraw?.metrics || [], interpretation: existingDraw?.interpretation || null, interpretationStatus: existingDraw?.interpretationStatus || "not_connected" });
+    if (poseStored === false) {
+      onToast?.({ ok: false, msg: "분석 기록 저장에 실패했습니다. 작성한 내용은 화면에 유지됩니다." });
+      return false;
     }
     const complete = { ...drawnViews, [nextView]: true };
     setDrawnViews(complete);
     const upcoming = captureViews.find(({ key }) => !complete[key])?.key;
     if (upcoming) setDrawingView(upcoming);
     else {
+      const finalized = await onSaved?.(analysisRole.current, assessmentId.current);
+      if (finalized === false) {
+        onToast?.({ ok: false, msg: "사진은 유지했지만 완료 상태를 저장하지 못했습니다. 다시 완료를 눌러 주세요." });
+        return false;
+      }
       setDrawingView(null); setAnalysisStarted(false); setAnalysisMethod(null); setCapturePhotos(captureStateFor(captureViews)); setDraftSaved({});
-      onToast?.({ ok: true, msg: `${roleLabel || "직접 기록"} ${captureViews.length}방향 Annotation을 저장했습니다.` });
-      onSaved?.(analysisRole.current, assessmentId.current);
     }
     return true;
   };
@@ -6702,13 +7231,17 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
     if (nextView) {
       await beginCapturedAnalysis(nextView);
     } else {
+      const finalized = await onSaved?.(analysisRole.current, assessmentId.current);
+      if (finalized === false) {
+        onToast?.({ ok: false, msg: "분석은 유지했지만 완료 상태를 저장하지 못했습니다. 다시 저장해 주세요." });
+        return;
+      }
       setImg(null);
       setAnalysisStarted(false);
       setAnalysisMethod(null);
       setAnalyzedViews({});
       setCapturePhotos(captureStateFor(captureViews));
       setCaptureTarget(captureViews[0]?.key || "front");
-      onSaved?.(analysisRole.current, assessmentId.current);
     }
   };
   const copy = async () => {
@@ -6795,7 +7328,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
             </div>
           )}
           {analysisMethod && !analysisStarted && <PostureCaptureScreen
-            member={member} assessmentId={assessmentId.current} captureViews={captureViews} currentCapture={currentCapture}
+            member={member} assessmentId={assessmentId.current} roleLabel={roleLabel} captureViews={captureViews} currentCapture={currentCapture}
             capturePhotos={capturePhotos} draftSaved={draftSaved} busy={busy} onSelectView={setCaptureTarget}
             onAcceptCapture={(blob, metadata) => acceptCaptureBlob(blob, { ...metadata, preserveResolution: true })}
             onOpenAlbum={openCapture} onDeleteCapture={deleteCurrentCapture} onSaveDraft={saveCaptureDraft}
@@ -6976,7 +7509,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
                       {s.src ? <img src={s.src} alt="" className="h-full w-full object-cover" /> : <Activity size={16} style={{ color: PRIMARY, margin: "0 auto" }} />}
                     </button>
                     <button onClick={() => setSeeSaved(s)} className="min-w-0 flex-1 text-left">
-                      <p className="text-xs font-extrabold" style={{ color: INK }}>{ymd(s.date)} · {s.view === "front" ? "전면" : s.view === "side" ? "측면" : "후면"}</p>
+                      <p className="text-xs font-extrabold" style={{ color: INK }}>{ymd(s.date)}{timeOf(s.createdAt || s.at) ? ` · ${timeOf(s.createdAt || s.at)}` : ""} · {s.view === "front" ? "전면" : s.view === "side" ? "측면" : "후면"}</p>
                       <p className="mt-0.5 truncate text-xs tabular-nums" style={{ color: SUB }}>
                         {s.metrics.slice(0, 3).map((m) => `${m.label.replace(/\(.*\)/, "").trim()} ${m.value}${m.unit}`).join(" · ")}
                       </p>
@@ -7317,28 +7850,14 @@ function NextClassCard({ members, schedule, photos, onStatus, onOpenMember, onWr
         <div className="mt-3 rounded-2xl p-3" style={{ backgroundColor: GOOD_S }}>
           <p className="text-xs font-extrabold" style={{ color: INK }}>✓ 출석 처리했습니다 · 오늘 수업을 기록할까요?</p>
           <div className="mt-2 grid grid-cols-2 gap-1.5">
-            <button onClick={() => setStep("rec")} className="flex items-center justify-center gap-1.5 rounded-2xl py-2.5 text-xs font-extrabold text-white" style={{ background: GRAD }}>
-              <Pencil size={13} /> 기록하기
+            <button onClick={() => { onVoiceNote && onVoiceNote(held.m.id, held.s.id); setStep(null); }} className="flex items-center justify-center gap-1.5 rounded-2xl py-2.5 text-xs font-extrabold text-white" style={{ background: GRAD }}>
+              <Smartphone size={13} /> 말하기
             </button>
+            <button onClick={() => { onWriteNote && onWriteNote(held.m.id, held.s.id); setStep(null); }} className="flex items-center justify-center gap-1.5 rounded-2xl py-2.5 text-xs font-extrabold" style={{ backgroundColor: CARD, color: INK }}><Pencil size={13} /> 직접입력</button>
             <button onClick={() => { onNoComment && onNoComment(held.m.id, held.s.type, held.s.id); setStep(null); }}
               className="rounded-2xl py-2.5 text-xs font-extrabold" style={{ backgroundColor: CARD, color: SUB }}>노코멘트</button>
+            <button onClick={() => setStep(null)} className="rounded-2xl py-2.5 text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: SUB }}>나중에</button>
           </div>
-        </div>
-      )}
-      {step === "rec" && held && (
-        <div className="mt-3 rounded-2xl p-3" style={{ backgroundColor: TINT }}>
-          <p className="text-xs font-extrabold" style={{ color: PRIMARY }}>어떻게 기록할까요?</p>
-          <div className="mt-2 grid grid-cols-2 gap-1.5">
-            <button onClick={() => { onVoiceNote && onVoiceNote(held.m.id, held.s.id); setStep(null); }}
-              className="flex items-center justify-center gap-1.5 rounded-2xl py-3 text-xs font-extrabold text-white" style={{ background: GRAD }}>
-              <Smartphone size={13} /> AI 음성 기록
-            </button>
-            <button onClick={() => { onWriteNote && onWriteNote(held.m.id, held.s.id); setStep(null); }}
-              className="flex items-center justify-center gap-1.5 rounded-2xl py-3 text-xs font-extrabold" style={{ backgroundColor: CARD, color: INK }}>
-              <Pencil size={13} /> 직접 기록
-            </button>
-          </div>
-          <button onClick={() => setStep("done")} className="mt-1.5 w-full text-xs font-bold" style={{ color: SUB }}>뒤로</button>
         </div>
       )}
       {step === "noshow" && held && (
@@ -7787,7 +8306,7 @@ function AnalysisTab({ members, photos, selectedId, onSelect, onOpen, onToast, h
                 {m.name || "이름 미입력"}
                 {ageOf(m) !== null && <span className="text-xs font-medium" style={{ color: SUB }}>{ageOf(m)}세</span>}
               </p>
-              <Sub className="block">{ymd(rec.date)} · {rec.view === "front" ? "전면" : rec.view === "side" ? "측면" : "후면"}</Sub>
+              <Sub className="block">{ymd(rec.date)}{timeOf(rec.createdAt || rec.at) ? ` · ${timeOf(rec.createdAt || rec.at)}` : ""} · {rec.view === "front" ? "전면" : rec.view === "side" ? "측면" : "후면"}</Sub>
               <div className="mt-1 flex flex-wrap gap-1">
                 {(rec.metrics || []).slice(0, 3).map((x) => (
                   <span key={x.key} className="flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-bold" style={{ backgroundColor: CANVAS, color: INK2 }}>
@@ -7812,17 +8331,8 @@ function AnalysisTab({ members, photos, selectedId, onSelect, onOpen, onToast, h
 function AssessmentAnnotationOverlay({ marks = [] }) {
   if (!marks.length) return null;
   return (
-    <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true">
-      {marks.map((mark) => {
-        const pts = (mark.pts || []).map((point) => ({ x: point.x * 1000, y: point.y * 1000 }));
-        const stroke = mark.color || "#4C4399", sw = Math.max(2, (mark.width || 3) * 2), opacity = mark.opacity ?? 1;
-        if (!pts.length) return null;
-        if (mark.tool === "circle" && pts[1]) return <ellipse key={mark.id} cx={(pts[0].x + pts[1].x) / 2} cy={(pts[0].y + pts[1].y) / 2} rx={Math.abs(pts[1].x - pts[0].x) / 2} ry={Math.abs(pts[1].y - pts[0].y) / 2} fill="none" stroke={stroke} strokeWidth={sw} opacity={opacity} />;
-        if (mark.tool === "rect" && pts[1]) return <rect key={mark.id} x={Math.min(pts[0].x, pts[1].x)} y={Math.min(pts[0].y, pts[1].y)} width={Math.abs(pts[1].x - pts[0].x)} height={Math.abs(pts[1].y - pts[0].y)} fill="none" stroke={stroke} strokeWidth={sw} opacity={opacity} />;
-        if (mark.tool === "text") return <text key={mark.id} x={pts[0].x} y={pts[0].y} fill={stroke} fontSize={Math.max(28, (mark.width || 3) * 12)} fontWeight="700" opacity={opacity}>{mark.label || ""}</text>;
-        const pointString = pts.map((point) => `${point.x},${point.y}`).join(" ");
-        return <polyline key={mark.id} points={pointString} fill="none" stroke={stroke} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" opacity={opacity} />;
-      })}
+    <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox={`0 0 ${MK_W} ${MK_H}`} preserveAspectRatio="none" aria-hidden="true">
+      {marks.map((mark, index) => <AnnotationSvgMark key={mark.id || index} mark={mark} canvasWidth={MK_W} canvasHeight={MK_H} />)}
     </svg>
   );
 }
@@ -7831,11 +8341,115 @@ function AssessmentSetFrame({ photo, label, annotation = true, onOpen }) {
   return (
     <button type="button" onClick={photo ? onOpen : undefined} disabled={!photo} className="relative min-w-0 overflow-hidden text-left"
       style={{ aspectRatio: "3 / 4", borderRadius: 10, backgroundColor: PHOTO, border: `1px solid ${LINE}` }}>
-      {photo?.src ? <img src={photo.src} alt={`${label} 사진`} className="h-full w-full object-cover" /> : <span className="absolute inset-0 flex items-center justify-center text-[10px] font-semibold" style={{ color: FAINT }}>{label}</span>}
+      {photo?.src ? <img src={photo.src} alt={`${label} 사진`} className="absolute inset-0 h-full w-full object-cover" style={{ transform: ptf(photo), transformOrigin: "center" }} /> : <span className="absolute inset-0 flex items-center justify-center text-[10px] font-semibold" style={{ color: FAINT }}>{label}</span>}
       {photo && annotation && <AssessmentAnnotationOverlay marks={photo.marks || []} />}
       <span className="absolute bottom-1.5 left-1.5 rounded-md px-1.5 py-0.5 text-[9px] font-bold text-white" style={{ backgroundColor: "rgba(28,36,51,.72)" }}>{label}</span>
       {photo && <span className="absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full" style={{ backgroundColor: GOOD }}><Check size={11} color="#fff" /></span>}
     </button>
+  );
+}
+
+function PostureReferenceOverlay({ pose, color = BRAND, opacity = 1 }) {
+  const lines = postureReferenceLines(pose);
+  if (!lines.length) return null;
+  return (
+    <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true" style={{ opacity }}>
+      {lines.map((line) => {
+        const points = line.points.map((point) => `${Math.round(point.x * 1000)},${Math.round(point.y * 1000)}`).join(" ");
+        return <polyline key={line.key} points={points} fill="none" stroke={color} strokeWidth={line.key === "center" ? 6 : 8} strokeDasharray={line.key === "center" ? "18 12" : undefined} strokeLinecap="round" strokeLinejoin="round" />;
+      })}
+    </svg>
+  );
+}
+
+function AssessmentComparisonLayer({ photo, pose, label, color, transform, clipPath, opacity = 1, showMarks, showLines }) {
+  if (!photo?.src) return null;
+  return (
+    <div className="absolute inset-0 overflow-hidden" style={{ clipPath, opacity }}>
+      <div className="absolute inset-0" style={{ transform, transformOrigin: "center" }}>
+        <img src={photo.src} alt={label} className="absolute inset-0 h-full w-full object-cover" style={{ transform: ptf(photo), transformOrigin: "center" }} />
+        {showMarks && <AssessmentAnnotationOverlay marks={photo.marks || []} />}
+        {showLines && <PostureReferenceOverlay pose={pose} color={color} />}
+      </div>
+    </div>
+  );
+}
+
+function AssessmentComparisonViewer({ beforeSet, afterSet, view, showGuides, memberName, onToast }) {
+  const [mode, setMode] = useState("slider");
+  const [curtain, setCurtain] = useState(50);
+  const [opacity, setOpacity] = useState(50);
+  const [alignEnabled, setAlignEnabled] = useState(true);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [savingSide, setSavingSide] = useState(false);
+  const drag = useRef(null);
+  const normalizedView = normalizePostureView(view);
+  const beforePhoto = beforeSet?.photos?.[normalizedView] || null;
+  const afterPhoto = afterSet?.photos?.[normalizedView] || null;
+  const poseFor = (set) => (set?.poses || []).find((pose) => normalizePostureView(pose.view) === normalizedView) || null;
+  const beforePose = poseFor(beforeSet), afterPose = poseFor(afterSet);
+  const alignment = postureAlignmentTransform(beforePose, afterPose, { view: normalizedView });
+  const beforeLines = postureReferenceLines(beforePose), afterLines = postureReferenceLines(afterPose);
+  const metrics = compareAssessmentMetrics(beforeSet, afterSet, { view: normalizedView, limit: 6 });
+  const resolutionOf = (photo) => photo?.captureQuality?.resolution || {};
+  const beforeResolution = resolutionOf(beforePhoto), afterResolution = resolutionOf(afterPhoto);
+  const beforeRatio = Number(beforeResolution.width) > 0 && Number(beforeResolution.height) > 0 ? Number(beforeResolution.width) / Number(beforeResolution.height) : 0.75;
+  const afterRatio = Number(afterResolution.width) > 0 && Number(afterResolution.height) > 0 ? Number(afterResolution.width) / Number(afterResolution.height) : beforeRatio;
+  const aspectRatio = Math.abs(beforeRatio - afterRatio) <= 0.03 ? Math.max(0.5, Math.min(0.95, (beforeRatio + afterRatio) / 2)) : 0.75;
+  const commonTransform = `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`;
+  const afterTransform = alignEnabled && alignment.available
+    ? `${commonTransform} translate(${alignment.offsetX * 100}%, ${alignment.offsetY * 100}%) scale(${alignment.scale})`
+    : commonTransform;
+  const lineReady = beforeLines.length > 0 && afterLines.length > 0;
+  const resetView = () => { setZoom(1); setPan({ x: 0, y: 0 }); };
+  useEffect(() => { setCurtain(50); setOpacity(50); resetView(); }, [beforeSet?.id, afterSet?.id, normalizedView, mode]);
+  useEffect(() => { setAlignEnabled(true); }, [beforeSet?.id, afterSet?.id, normalizedView]);
+  const onPointerDown = (event) => {
+    if (zoom <= 1 || mode === "side") return;
+    drag.current = { id: event.pointerId, x: event.clientX, y: event.clientY, px: pan.x, py: pan.y };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  };
+  const onPointerMove = (event) => {
+    if (!drag.current || drag.current.id !== event.pointerId) return;
+    setPan({ x: drag.current.px + event.clientX - drag.current.x, y: drag.current.py + event.clientY - drag.current.y });
+  };
+  const stopPointer = () => { drag.current = null; };
+  const frameStyle = { aspectRatio, borderRadius: 14, backgroundColor: PHOTO, border: `1px solid ${LINE}` };
+  const modes = [
+    { key: "slider", label: "슬라이더" },
+    { key: "overlay", label: "겹치기" },
+    { key: "lines", label: "자동 기준선" },
+    { key: "side", label: "나란히" },
+  ];
+  return (
+    <div className="mt-3">
+      <div className="grid grid-cols-4 gap-1 rounded-xl p-1" style={{ backgroundColor: CANVAS }}>
+        {modes.map((item) => <button type="button" key={item.key} onClick={() => setMode(item.key)} className="min-h-10 px-1 text-[10px] font-extrabold" style={{ borderRadius: 8, backgroundColor: mode === item.key ? CARD : "transparent", color: mode === item.key ? BRAND_D : SUB, boxShadow: mode === item.key ? "0 1px 3px rgba(28,36,51,.1)" : "none" }}>{item.label}</button>)}
+      </div>
+      {mode !== "side" && <div className="mt-2 flex items-center gap-2 rounded-xl px-3 py-2" style={{ backgroundColor: alignment.available ? GOOD_S : CANVAS }}><span className="min-w-0 flex-1"><span className="block text-xs font-extrabold" style={{ color: alignment.available ? GOOD : INK2 }}>신체 자동 정렬</span><span className="block text-[10px]" style={{ color: SUB }}>{alignment.available ? "신체 높이와 중심 위치를 Before에 맞춥니다" : "두 사진의 저장된 관절점이 부족합니다"}</span></span><button type="button" disabled={!alignment.available} aria-pressed={alignEnabled && alignment.available} onClick={() => setAlignEnabled((value) => !value)} className="h-9 min-w-14 rounded-full px-2 text-[10px] font-extrabold disabled:opacity-45" style={{ backgroundColor: alignEnabled && alignment.available ? GOOD : CARD, color: alignEnabled && alignment.available ? "#fff" : SUB, border: `1px solid ${alignment.available ? GOOD : LINE}` }}>{alignEnabled && alignment.available ? "ON" : "OFF"}</button></div>}
+      {mode === "side" ? (
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          {[{ photo: beforePhoto, pose: beforePose, label: "BEFORE", color: "#356AE6" }, { photo: afterPhoto, pose: afterPose, label: "AFTER", color: "#F28C28" }].map((item) => <div key={item.label}><div className="relative overflow-hidden" style={{ ...frameStyle, border: `3px solid ${item.color}` }}><AssessmentComparisonLayer photo={item.photo} pose={item.pose} label={item.label} color={item.color} transform="none" showMarks={showGuides} showLines={showGuides} /></div><p className="mt-1 rounded-full py-1 text-center text-[10px] font-extrabold text-white" style={{ backgroundColor: item.color }}>{item.label}</p></div>)}
+        </div>
+      ) : (
+        <div onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={stopPointer} onPointerCancel={stopPointer} className="relative mt-3 overflow-hidden" style={{ ...frameStyle, touchAction: zoom > 1 ? "none" : "pan-y" }}>
+          <AssessmentComparisonLayer photo={beforePhoto} pose={beforePose} label="Before" color="#4CC3FF" transform={commonTransform} opacity={mode === "lines" ? 0.5 : 1} showMarks={showGuides && mode !== "lines"} showLines={showGuides && mode === "lines"} />
+          <AssessmentComparisonLayer photo={afterPhoto} pose={afterPose} label="After" color={MINT} transform={afterTransform} clipPath={mode === "slider" ? `inset(0 ${100 - curtain}% 0 0)` : undefined} opacity={mode === "overlay" ? opacity / 100 : mode === "lines" ? 0.5 : 1} showMarks={showGuides && mode !== "lines"} showLines={showGuides && mode === "lines"} />
+          {mode === "slider" && <><span className="pointer-events-none absolute bottom-0 top-0 w-0.5 bg-white" style={{ left: `${curtain}%`, boxShadow: "0 0 0 1px rgba(28,36,51,.35)" }} /><span className="pointer-events-none absolute left-2 top-2 rounded-full px-2 py-1 text-[9px] font-bold text-white" style={{ backgroundColor: "rgba(28,36,51,.72)" }}>BEFORE</span><span className="pointer-events-none absolute right-2 top-2 rounded-full px-2 py-1 text-[9px] font-bold text-white" style={{ backgroundColor: "rgba(46,125,91,.82)" }}>AFTER</span></>}
+          {mode === "lines" && <div className="pointer-events-none absolute bottom-2 left-2 right-2 flex justify-between"><span className="rounded-full px-2 py-1 text-[9px] font-extrabold text-white" style={{ backgroundColor: "#2389B8" }}>Before 기준선</span><span className="rounded-full px-2 py-1 text-[9px] font-extrabold text-white" style={{ backgroundColor: GOOD }}>After 기준선</span></div>}
+        </div>
+      )}
+      {mode === "slider" && <input aria-label="Before After 비교 슬라이더" type="range" min="0" max="100" value={curtain} onChange={(event) => setCurtain(Number(event.target.value))} className="mt-3 w-full" style={{ accentColor: BRAND }} />}
+      {mode === "overlay" && <div className="mt-3 flex items-center gap-2"><span className="text-[10px] font-bold" style={{ color: SUB }}>After 투명도</span><input aria-label="After 투명도" type="range" min="0" max="100" value={opacity} onChange={(event) => setOpacity(Number(event.target.value))} className="min-w-0 flex-1" style={{ accentColor: GOOD }} /><span className="w-8 text-right text-[10px] font-bold tabular-nums" style={{ color: GOOD }}>{opacity}%</span></div>}
+      {mode === "lines" && !lineReady && <p className="mt-2 rounded-lg px-3 py-2 text-[11px] font-bold" style={{ backgroundColor: WARN_S, color: WARN }}>두 분석 모두에 저장된 관절점이 있어야 자동 기준선을 함께 표시할 수 있습니다.</p>}
+      {mode !== "side" && <div className="mt-2 flex items-center gap-2"><span className="text-xs font-bold" style={{ color: SUB }}>동시 확대</span>{[1, 1.5, 2].map((value) => <button type="button" key={value} onClick={() => { setZoom(value); if (value === 1) setPan({ x: 0, y: 0 }); }} className="h-9 min-w-11 rounded-full text-xs font-bold" style={{ backgroundColor: zoom === value ? TINT : CANVAS, color: zoom === value ? BRAND_D : SUB }}>{value}×</button>)}</div>}
+      {mode === "side" && <button type="button" disabled={savingSide || !beforePhoto?.src || !afterPhoto?.src} onClick={async () => { setSavingSide(true); await shareBeforeAfter(beforePhoto, afterPhoto, memberName, onToast, true); setSavingSide(false); }} className="mt-3 flex h-11 w-full items-center justify-center gap-2 text-xs font-extrabold text-white disabled:opacity-45" style={{ borderRadius: 10, backgroundColor: BRAND }}>{savingSide ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}나란히 이미지 저장</button>}
+      <div className="mt-3" style={{ padding: 11, borderRadius: 11, backgroundColor: CANVAS }}>
+        <p className="text-xs font-extrabold" style={{ color: INK }}>측정값 변화</p>
+        {metrics.length ? <div className="mt-2 space-y-2">{metrics.map((metric) => <div key={metric.id} className="grid grid-cols-[1fr_auto] gap-2"><span className="min-w-0"><span className="block truncate text-xs font-bold" style={{ color: INK2 }}>{metric.label}</span><span className="block text-[10px]" style={{ color: SUB }}>{metric.summary}</span></span><span className="text-xs font-extrabold tabular-nums" style={{ color: BRAND_D }}>{metric.beforeValue}{metric.unit} → {metric.afterValue}{metric.unit}</span></div>)}</div> : <p className="mt-1 text-xs" style={{ color: SUB }}>이 방향에서 함께 비교할 수 있는 저장 측정값이 없습니다.</p>}
+      </div>
+    </div>
   );
 }
 
@@ -7995,7 +8609,7 @@ function LegacyAssessmentWorkspace({ member, photos, settings, initialSavedId, o
                 <div style={{ padding: 10, borderRadius: 10, backgroundColor: GOOD_S }}><p className="text-xs font-bold" style={{ color: GOOD }}>좋은 점</p><div className="mt-1 space-y-1">{goodMetrics.length ? goodMetrics.map((metric, index) => <p key={`${metric.key}_${index}`} className="text-xs" style={{ color: INK2 }}>{metric.label} {metric.value}{metric.unit}</p>) : <p className="text-xs" style={{ color: SUB }}>저장된 측정 결과 없음</p>}</div></div>
                 <div style={{ padding: 10, borderRadius: 10, backgroundColor: cautionMetrics.length ? WARN_S : CANVAS }}><p className="text-xs font-bold" style={{ color: cautionMetrics.length ? WARN : INK2 }}>주의할 점</p><div className="mt-1 space-y-1">{cautionMetrics.length ? cautionMetrics.map((metric, index) => <p key={`${metric.key}_${index}`} className="text-xs" style={{ color: INK2 }}>{metric.label} {metric.value}{metric.unit}</p>) : <p className="text-xs" style={{ color: SUB }}>기록된 주의 결과 없음</p>}</div></div>
                 <div style={{ padding: 10, borderRadius: 10, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>추천 운동</p>{recommendedExercises.length ? <div className="mt-1 space-y-1">{recommendedExercises.map((item, index) => <p key={`${item}_${index}`} className="text-xs leading-relaxed" style={{ color: INK2 }}>· {item}</p>)}</div> : <p className="mt-1 text-xs leading-relaxed" style={{ color: SUB }}>확정 저장된 추천 운동이 없습니다.</p>}</div>
-                <div style={{ padding: 10, borderRadius: 10, backgroundColor: LAVENDER_S }}><p className="text-xs font-bold" style={{ color: BRAND_D }}>AI 해석</p><p className="mt-1 text-xs leading-relaxed" style={{ color: aiText ? INK2 : SUB }}>{aiText || "AI 분석 미연결"}</p></div>
+                <div style={{ padding: 10, borderRadius: 10, backgroundColor: LAVENDER_S }}><p className="text-xs font-bold" style={{ color: BRAND_D }}>AI 해석</p><p className="mt-1 text-xs leading-relaxed" style={{ color: aiText ? INK2 : SUB }}>{aiText || "저장된 AI 분석 없음"}</p></div>
                 <div className="sm:col-span-2" style={{ padding: 10, borderRadius: 10, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>강사 메모</p><p className="mt-1 text-xs leading-relaxed" style={{ color: teacherMemo ? INK2 : SUB }}>{teacherMemo || "저장된 강사 메모가 없습니다."}</p></div>
               </div>
               {resultPoses[0] && <button type="button" onClick={() => setViewingPose(resultPoses[0])} className="mt-2 flex h-10 w-full items-center justify-center gap-1.5 text-xs font-bold" style={{ borderRadius: 8, backgroundColor: TINT, color: BRAND_D }}><Pencil size={13} />AI 해석·강사 메모 검수</button>}
@@ -8007,13 +8621,13 @@ function LegacyAssessmentWorkspace({ member, photos, settings, initialSavedId, o
       {setPicker && <ChoiceBottomSheet title={setPicker === "before" ? "비포 세트 선택" : "에프터 세트 선택"} subtitle="전면·측면·후면이 완료된 Assessment Set만 표시합니다" value={setPicker === "before" ? beforeSet?.id : afterSet?.id} onClose={() => setSetPicker(null)}
         options={completeSets.map((set) => ({ value: set.id, label: `${roleLabelOf(set.role)} · ${set.at ? ymd(set.at.slice(0, 10)) : "날짜 미확인"}`, description: `${methodLabel(set.method)} · 전면/측면/후면 완료` }))}
         onSelect={(id) => { if (setPicker === "before") setBeforeSetId(id); else setAfterSetId(id); }} />}
-      {zoomPhoto?.src && <ScheduleBottomSheet title="사진 확대" subtitle="원본 사진과 저장된 Annotation" onClose={() => setZoomPhoto(null)}><div className="relative mx-auto overflow-hidden" style={{ maxWidth: 360, aspectRatio: "3 / 4", borderRadius: 12, backgroundColor: PHOTO }}><img src={zoomPhoto.src} alt="체형분석 확대 사진" className="h-full w-full object-contain" />{showAnnotations && <AssessmentAnnotationOverlay marks={zoomPhoto.marks || []} />}</div></ScheduleBottomSheet>}
+      {zoomPhoto?.src && <ScheduleBottomSheet title="사진 확대" subtitle="원본 사진과 저장된 Annotation" onClose={() => setZoomPhoto(null)}><div className="relative mx-auto overflow-hidden" style={{ maxWidth: 360, aspectRatio: "3 / 4", borderRadius: 12, backgroundColor: PHOTO }}><img src={zoomPhoto.src} alt="체형분석 확대 사진" className="absolute inset-0 h-full w-full object-cover" style={{ transform: ptf(zoomPhoto), transformOrigin: "center" }} />{showAnnotations && <AssessmentAnnotationOverlay marks={zoomPhoto.marks || []} />}</div></ScheduleBottomSheet>}
       {viewingPose && <SavedPoseViewer rec={viewingPose} member={member} memberName={member?.name} records={resultPoses} onUpdate={onUpdatePose} onClose={() => setViewingPose(null)} onToast={onToast} />}
     </div>
   );
 }
 
-function AssessmentWorkspace({ member, photos, settings, initialSavedId, initialAssessmentId = null, initialMode = "home", onSavePose, onUpdatePose, onDeletePose, onSaveCaptureDraft, onDeleteCaptureDraft, onSaveMarks, onSaveAssessmentRole, onToast, onSaved }) {
+function AssessmentWorkspace({ member, photos, settings, initialSavedId, initialAssessmentId = null, initialMode = "home", onSavePose, onUpdatePose, onDeletePose, onSaveCaptureDraft, onDeleteCaptureDraft, onDiscardAssessmentDraft, onCompleteAssessment, onSaveMarks, onSaveAssessmentRole, onToggleAssessmentFavorite, onToast, onSaved }) {
   const [screen, setScreen] = useState(initialSavedId ? "result" : ["history", "resume"].includes(initialMode) ? "history" : "home");
   const [workflow, setWorkflow] = useState(() => createPostureWorkflowState());
   const [scope, setScope] = useState("full_body");
@@ -8021,36 +8635,46 @@ function AssessmentWorkspace({ member, photos, settings, initialSavedId, initial
   const [captureKey, setCaptureKey] = useState(0);
   const [pendingRole, setPendingRole] = useState(null);
   const [roleSheet, setRoleSheet] = useState(false);
+  const [draftGuard, setDraftGuard] = useState(null);
   const [selectedSetId, setSelectedSetId] = useState(null);
   const [resumeAssessmentId, setResumeAssessmentId] = useState(null);
   const [setPicker, setSetPicker] = useState(null);
   const [beforeSetId, setBeforeSetId] = useState(null);
   const [afterSetId, setAfterSetId] = useState(null);
   const [compareView, setCompareView] = useState("front");
-  const [comparePercent, setComparePercent] = useState(50);
-  const [compareZoom, setCompareZoom] = useState(1);
-  const [comparePan, setComparePan] = useState({ x: 0, y: 0 });
   const [showAnnotations, setShowAnnotations] = useState(true);
   const [viewingPose, setViewingPose] = useState(null);
+  const [editingAnnotation, setEditingAnnotation] = useState(null);
+  const [annotationPicker, setAnnotationPicker] = useState(false);
+  const [comparisonSelection, setComparisonSelection] = useState(null);
+  const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [captureReturnScreen, setCaptureReturnScreen] = useState("directions");
-  const compareDrag = useRef(null);
   const entryInitialized = useRef(false);
+  const assessmentAction = useRef(null);
   const sets = useMemo(() => normalizeAssessmentSets(photos, { memberId: member?.id }), [photos, member?.id]);
-  const completeSets = useMemo(() => sets.filter((set) => set.status === "completed" && set.scope === "full_body"), [sets]);
+  const resumableAssessment = useMemo(() => selectResumableAssessment(sets, { memberId: member?.id }), [sets, member?.id]);
+  const completeSets = useMemo(() => sets.filter((set) => set.status === "completed"), [sets]);
+  const visibleHistorySets = favoritesOnly ? sets.filter((set) => set.favorite) : sets;
+  const completedPoses = useMemo(() => completeSets.flatMap((set) => set.poses || []), [completeSets]);
   const completeFullSets = useMemo(() => completeSets.filter((set) => set.scope === "full_body"), [completeSets]);
-  const automaticComparison = useMemo(() => selectAutomaticComparison(sets, { scope: "full_body" }), [sets]);
-  const beforeSet = completeFullSets.find((set) => set.id === beforeSetId) || automaticComparison.before;
-  const afterSet = completeFullSets.find((set) => set.id === afterSetId) || automaticComparison.after;
+  const latestCompletedScope = completeSets[0]?.scope || "full_body";
+  const automaticComparison = useMemo(() => selectAutomaticComparison(sets, { scope: latestCompletedScope }), [sets, latestCompletedScope]);
+  const beforeSet = completeSets.find((set) => set.id === beforeSetId) || automaticComparison.before;
+  const afterSet = completeSets.find((set) => set.id === afterSetId) || automaticComparison.after;
+  const comparisonIsManualResult = ["draw", "manual"].includes(afterSet?.method);
   const selected = sets.find((set) => set.id === selectedSetId)
     || sets.find((set) => set.id === workflow.selectedHistoryAssessmentId)
     || sets.find((set) => set.id === initialAssessmentId)
     || sets.find((set) => set.poses.some((pose) => pose.id === initialSavedId))
     || sets[0] || null;
-  const requestedResumableSet = sets.find((set) => set.id === initialAssessmentId && (set.status === "draft" || set.status === "analyzing")) || null;
+  const selectedIsManualResult = ["draw", "manual"].includes(selected?.method);
+  const requestedResumableSet = resumableAssessment?.id === initialAssessmentId ? resumableAssessment : null;
   const requestedCompletedSet = sets.find((set) => set.status === "completed" && (
     set.id === initialAssessmentId || set.poses.some((pose) => pose.id === initialSavedId)
   )) || null;
   const lastCompleted = completeSets[0] || null;
+  const hasCompletedComparison = Boolean(automaticComparison.before && automaticComparison.after);
+  const nextCaptureLabel = completeSets.length ? "에프터 촬영 시작" : "비포 촬영 시작";
   const retake = postureRetakeStatus(lastCompleted?.completedAt || lastCompleted?.at);
   const selectedDate = selected?.completedAt || selected?.at || "";
   const resultPoses = selected?.poses || [];
@@ -8078,9 +8702,14 @@ function AssessmentWorkspace({ member, photos, settings, initialSavedId, initial
   const roleLabelOf = (role) => role === "before" ? "비포" : role === "after" ? "에프터" : "미분류";
   const setDate = (set) => set?.completedAt || set?.at || "";
   const setPhoto = (set, view) => set?.photos?.[normalizePostureView(view)] || null;
+  const comparableViewsFor = (left, right) => ["custom", ...POSTURE_VIEW_KEYS].filter((view) => setPhoto(left, view) && setPhoto(right, view));
+  const comparisonCandidatesFor = (targetSet) => completeSets.filter((candidate) => candidate.scope === targetSet?.scope && comparableViewsFor(candidate, targetSet).length > 0);
   const selectedViewList = POSTURE_VIEW_KEYS.filter((view) => selectedViews.has(view));
   const resumeSet = (set) => {
-    if (!set?.id) return;
+    if (!set?.id || set.id !== resumableAssessment?.id) {
+      onToast?.({ ok: false, msg: "가장 최근에 저장한 진행 중 분석에서 이어갈 수 있습니다." });
+      return;
+    }
     try {
       const next = transitionPostureWorkflow(workflow, {
         type: POSTURE_WORKFLOW_EVENTS.RESUME_DRAFT,
@@ -8102,35 +8731,78 @@ function AssessmentWorkspace({ member, photos, settings, initialSavedId, initial
     setScreen("capture");
   };
   const startNew = () => {
-    const next = transitionPostureWorkflow(workflow, startNewAssessmentEvent(newAssessmentId));
+    if (assessmentAction.current) return;
+    assessmentAction.current = "start";
+    let next;
+    try {
+      next = transitionPostureWorkflow(workflow, startNewAssessmentEvent(newAssessmentId));
+    } catch (error) {
+      assessmentAction.current = null;
+      onToast?.({ ok: false, msg: "새 체형분석을 시작하지 못했습니다. 다시 시도해 주세요." });
+      return;
+    }
     setWorkflow(next);
     setResumeAssessmentId(next.resumeAssessmentId);
     setSelectedSetId(null);
     setBeforeSetId(null);
     setAfterSetId(null);
     setCompareView("front");
-    setComparePercent(50);
-    setCompareZoom(1);
-    setComparePan({ x: 0, y: 0 });
     setShowAnnotations(true);
     setViewingPose(null);
     setSetPicker(null);
     setRoleSheet(false);
-    setPendingRole(!completeSets.length ? "before" : completeSets.length === 1 ? "after" : "unassigned");
+    setDraftGuard(null);
+    setPendingRole(completeSets.length ? "after" : "before");
     setScope("full_body");
     setSelectedViews(new Set(POSTURE_VIEW_KEYS));
     setCaptureReturnScreen("directions");
     setCaptureKey((value) => value + 1);
     setScreen("purpose");
   };
+  const requestStartNew = () => {
+    if (assessmentAction.current) return;
+    if (resumableAssessment) {
+      setDraftGuard({ step: "choice", assessment: resumableAssessment });
+      return;
+    }
+    startNew();
+  };
+  const confirmDiscardAndStartNew = async () => {
+    const assessment = draftGuard?.assessment;
+    if (draftGuard?.step !== "confirm" || !assessment?.id || assessmentAction.current) return;
+    assessmentAction.current = "discard";
+    setDraftGuard({ step: "discarding", assessment });
+    try {
+      const discarded = await onDiscardAssessmentDraft?.(assessment);
+      if (discarded !== true) {
+        setDraftGuard({ step: "confirm", assessment });
+        onToast?.({ ok: false, msg: "진행 중인 분석을 정리하지 못해 새 분석을 시작하지 않았습니다." });
+        return;
+      }
+      assessmentAction.current = null;
+      setDraftGuard(null);
+      startNew();
+    } catch (error) {
+      setDraftGuard({ step: "confirm", assessment });
+      onToast?.({ ok: false, msg: "진행 중인 분석을 정리하지 못해 새 분석을 시작하지 않았습니다." });
+    } finally {
+      if (assessmentAction.current === "discard") assessmentAction.current = null;
+    }
+  };
+  const closeDraftGuard = () => {
+    if (assessmentAction.current !== "discard") setDraftGuard(null);
+  };
   const startCapture = (nextScope, views) => {
-    let nextWorkflow = workflow;
+    const nextWorkflow = workflow;
     if (!nextWorkflow.activeAssessmentId) {
-      nextWorkflow = transitionPostureWorkflow(nextWorkflow, startNewAssessmentEvent(newAssessmentId));
-      setWorkflow(nextWorkflow);
+      onToast?.({ ok: false, msg: "새 분석 시작 정보를 확인하지 못했습니다. 처음부터 다시 시작해 주세요." });
+      setScreen("home");
+      return;
     }
     setResumeAssessmentId(nextWorkflow.resumeAssessmentId);
     setScope(nextScope);
+    const completedInScope = completeSets.filter((set) => set.scope === nextScope);
+    setPendingRole(completedInScope.length ? "after" : "before");
     setSelectedViews(new Set(views));
     setCaptureReturnScreen(nextScope === "full_body" ? "directions" : "purpose");
     setCaptureKey((value) => value + 1);
@@ -8152,9 +8824,10 @@ function AssessmentWorkspace({ member, photos, settings, initialSavedId, initial
     }
   };
   const comparisonPairFor = (targetSet) => {
-    const ordered = [...completeFullSets].sort((a, b) => String(setDate(a)).localeCompare(String(setDate(b))));
+    const candidates = targetSet?.status === "completed" ? comparisonCandidatesFor(targetSet) : completeSets.filter((set) => set.scope === latestCompletedScope);
+    const ordered = [...candidates].sort((a, b) => String(setDate(a)).localeCompare(String(setDate(b))));
     if (ordered.length < 2) return { before: ordered[0] || null, after: null };
-    const target = targetSet?.status === "completed" && targetSet?.scope === "full_body" ? targetSet : ordered.at(-1);
+    const target = targetSet?.status === "completed" ? targetSet : ordered.at(-1);
     const targetIndex = ordered.findIndex((set) => set.id === target?.id);
     if (targetIndex <= 0) return { before: ordered[0], after: ordered.at(-1) };
     return { before: ordered[0], after: target };
@@ -8164,7 +8837,41 @@ function AssessmentWorkspace({ member, photos, settings, initialSavedId, initial
     if (!pair.before || !pair.after || pair.before.id === pair.after.id) return;
     setBeforeSetId(pair.before.id);
     setAfterSetId(pair.after.id);
+    setCompareView(comparableViewsFor(pair.before, pair.after)[0] || "front");
     setSelectedSetId(targetSet?.id || pair.after.id);
+    setScreen("compare");
+  };
+  const chooseComparisonSet = (targetSet) => {
+    if (!targetSet || targetSet.status !== "completed") return;
+    const current = comparisonSelection || { beforeId: null, afterId: null, confirm: false };
+    if (current.beforeId === targetSet.id) {
+      setComparisonSelection({ beforeId: null, afterId: null, confirm: false });
+      return;
+    }
+    if (!current.beforeId) {
+      setComparisonSelection({ beforeId: targetSet.id, afterId: null, confirm: false });
+      return;
+    }
+    if (current.afterId === targetSet.id) {
+      setComparisonSelection({ ...current, afterId: null, confirm: false });
+      return;
+    }
+    const before = completeSets.find((set) => set.id === current.beforeId);
+    if (!before || before.scope !== targetSet.scope || !comparableViewsFor(before, targetSet).length) {
+      onToast?.({ ok: false, msg: "Before와 같은 촬영 유형·방향이 있는 분석을 After로 선택해 주세요." });
+      return;
+    }
+    setComparisonSelection({ beforeId: current.beforeId, afterId: targetSet.id, confirm: true });
+  };
+  const confirmComparisonSelection = () => {
+    const before = completeSets.find((set) => set.id === comparisonSelection?.beforeId);
+    const after = completeSets.find((set) => set.id === comparisonSelection?.afterId);
+    if (!before || !after) return;
+    setBeforeSetId(before.id);
+    setAfterSetId(after.id);
+    setCompareView(comparableViewsFor(before, after)[0] || "front");
+    setSelectedSetId(after.id);
+    setComparisonSelection(null);
     setScreen("compare");
   };
   const openReportForSet = (targetSet) => {
@@ -8185,52 +8892,31 @@ function AssessmentWorkspace({ member, photos, settings, initialSavedId, initial
     }
   };
   const stageScreen = ["capture", "analysis"].includes(screen) ? screen : screen === "result" || screen === "compare" || screen === "report" || screen === "history" ? "result" : "capture";
-  const comparisonPhotoBefore = setPhoto(beforeSet, compareView);
-  const comparisonPhotoAfter = setPhoto(afterSet, compareView);
-  const comparisonTransform = `translate(${comparePan.x}px, ${comparePan.y}px) scale(${compareZoom})`;
-  const onCompareDown = (event) => {
-    compareDrag.current = { id: event.pointerId, x: event.clientX, y: event.clientY, px: comparePan.x, py: comparePan.y };
-    event.currentTarget.setPointerCapture?.(event.pointerId);
-  };
-  const onCompareMove = (event) => {
-    const drag = compareDrag.current;
-    if (!drag || drag.id !== event.pointerId || compareZoom <= 1) return;
-    setComparePan({ x: drag.px + event.clientX - drag.x, y: drag.py + event.clientY - drag.y });
-  };
-  const finishCompareMove = () => { compareDrag.current = null; };
   useEffect(() => {
     if (!beforeSet || !afterSet || (setPhoto(beforeSet, compareView) && setPhoto(afterSet, compareView))) return;
-    const commonView = POSTURE_VIEW_KEYS.find((view) => setPhoto(beforeSet, view) && setPhoto(afterSet, view));
+    const commonView = comparableViewsFor(beforeSet, afterSet)[0];
     if (commonView) {
       setCompareView(commonView);
-      setComparePan({ x: 0, y: 0 });
     }
   }, [beforeSet?.id, afterSet?.id, compareView]);
   const reportPair = useMemo(() => {
     if (!selected || selected.status !== "completed" || selected.scope !== "full_body") return { before: null, after: selected || null };
+    if (beforeSet && afterSet && beforeSet.id !== afterSet.id && selected.id === afterSet.id && comparableViewsFor(beforeSet, afterSet).length) {
+      return { before: beforeSet, after: afterSet };
+    }
     const ordered = [...completeFullSets].sort((a, b) => String(setDate(a)).localeCompare(String(setDate(b))));
     const targetIndex = ordered.findIndex((set) => set.id === selected.id);
     return targetIndex > 0 ? { before: ordered[0], after: selected } : { before: null, after: selected };
-  }, [selected, completeFullSets]);
-  const metricChangesBetween = (previousSet, currentSet) => {
-    if (!previousSet || !currentSet) return [];
-    const previous = new Map(previousSet.poses.flatMap((pose) => (pose.metrics || []).map((metric) => [`${normalizePostureView(pose.view)}:${metric.key}`, metric])));
-    return currentSet.poses.flatMap((pose) => pose.metrics || []).map((metric) => {
-      const view = normalizePostureView(pose.view);
-      const id = `${view}:${metric.key}`;
-      const old = previous.get(id);
-      if (!old || !Number.isFinite(Number(old.value)) || !Number.isFinite(Number(metric.value))) return null;
-      const difference = Math.round((Number(metric.value) - Number(old.value)) * 10) / 10;
-      return { id, label: `${postureViewLabel(view)} · ${metric.label}`, difference, unit: metric.unit || "" };
-    }).filter(Boolean).slice(0, 4);
-  };
-  const comparisonMetricChanges = useMemo(() => metricChangesBetween(beforeSet, afterSet), [beforeSet, afterSet]);
-  const reportMetricChanges = useMemo(() => metricChangesBetween(reportPair.before, reportPair.after), [reportPair.before, reportPair.after]);
-  const metricChanges = screen === "report" ? reportMetricChanges : comparisonMetricChanges;
+  }, [selected, completeFullSets, beforeSet?.id, afterSet?.id]);
+  const metricChanges = useMemo(() => compareAssessmentMetrics(reportPair.before, reportPair.after, { limit: 4 }), [reportPair.before, reportPair.after]);
   const entrySummary = lastCompleted?.poses.flatMap((pose) => pose.metrics || []).slice(0, 2) || [];
   const reportRetakeDate = selectedDate ? shift(selectedDate.slice(0, 10), POSTURE_RETAKE_DAYS.recommended) : "";
   const excludedComparisonId = setPicker === "before" ? afterSet?.id : setPicker === "after" ? beforeSet?.id : null;
-  const setOptions = completeFullSets.filter((set) => set.id !== excludedComparisonId).map((set) => ({ value: set.id, label: `${roleLabelOf(set.role)} · ${setDate(set) ? ymd(setDate(set).slice(0, 10)) : "날짜 미확인"}`, description: `${methodLabel(set.method)} · ${set.selectedViews.map(postureViewLabel).join("/")}` }));
+  const pairedSet = setPicker === "before" ? afterSet : setPicker === "after" ? beforeSet : null;
+  const setOptions = completeSets.filter((set) => set.id !== excludedComparisonId && (!pairedSet || (set.scope === pairedSet.scope && comparableViewsFor(set, pairedSet).length > 0))).map((set) => ({ value: set.id, label: setDate(set) ? ymd(setDate(set).slice(0, 10)) : "날짜 미확인", description: `${set.scope === "partial" ? "부위별" : "전신"} · ${methodLabel(set.method)} · ${set.selectedViews.map(postureViewLabel).join("/")}` }));
+  useEffect(() => {
+    if (assessmentAction.current === "start") assessmentAction.current = null;
+  }, [workflow.activeAssessmentId]);
   useEffect(() => {
     if (entryInitialized.current) return;
     if (initialSavedId || initialMode === "result") {
@@ -8247,7 +8933,7 @@ function AssessmentWorkspace({ member, photos, settings, initialSavedId, initial
     }
     if (initialMode !== "new") return;
     entryInitialized.current = true;
-    startNew();
+    requestStartNew();
   }, [initialMode, initialSavedId, member?.id, requestedCompletedSet?.id, requestedResumableSet?.id]);
 
   return (
@@ -8258,8 +8944,10 @@ function AssessmentWorkspace({ member, photos, settings, initialSavedId, initial
 
       {screen === "home" && <section style={{ padding: 16, borderRadius: 18, backgroundColor: CARD, border: `1px solid ${LINE}` }}>
         <div className="flex items-start gap-3"><span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: TINT, color: BRAND_D }}><Activity size={19} /></span><span className="min-w-0 flex-1"><span className="block text-lg font-extrabold" style={{ color: INK }}>{member?.name} 회원</span><span className="mt-1 block text-xs" style={{ color: SUB }}>{lastCompleted ? `마지막 분석 ${ymd(setDate(lastCompleted).slice(0, 10))}${retake.days != null ? ` · ${retake.days}일 전` : ""}` : "아직 완료된 체형분석이 없습니다"}</span></span></div>
-        {lastCompleted && <div className="mt-4" style={{ padding: 12, borderRadius: 12, backgroundColor: retake.tone === "recommended" ? WARN_S : CANVAS }}><p className="text-xs font-bold" style={{ color: retake.tone === "recommended" ? WARN : INK }}>{retake.label}</p><p className="mt-1 text-xs leading-relaxed" style={{ color: SUB }}>{entrySummary.length ? entrySummary.map((metric) => `${metric.label} ${metric.value}${metric.unit}`).join(" · ") : "최근 측정값을 결과 화면에서 확인할 수 있습니다."}</p></div>}
-        <button type="button" onClick={startNew} className="mt-5 flex h-13 min-h-[52px] w-full items-center justify-center gap-2 text-sm font-extrabold text-white" style={{ borderRadius: 13, backgroundColor: BRAND }}><Camera size={17} />새 체형분석 시작</button>
+        <div className="mt-4 flex items-center gap-2" style={{ padding: 10, borderRadius: 11, backgroundColor: GOOD_S }}><Check size={15} style={{ color: GOOD }} /><span className="min-w-0 flex-1 text-xs font-bold" style={{ color: GOOD }}>{lastCompleted ? "최근 분석 저장 완료" : "촬영 전"}</span><span className="text-[10px] font-bold" style={{ color: SUB }}>이 기기에만 저장</span></div>
+        {lastCompleted && <div className="mt-2" style={{ padding: 12, borderRadius: 12, backgroundColor: retake.tone === "recommended" ? WARN_S : CANVAS }}><p className="text-xs font-bold" style={{ color: retake.tone === "recommended" ? WARN : INK }}>{hasCompletedComparison ? "비포·에프터 비교 준비 완료" : "비포 저장 완료 · 에프터 촬영이 필요합니다"}</p><p className="mt-1 text-xs leading-relaxed" style={{ color: SUB }}>{entrySummary.length ? entrySummary.map((metric) => `${metric.label} ${metric.value}${metric.unit}`).join(" · ") : "최근 측정값을 결과 화면에서 확인할 수 있습니다."}</p></div>}
+        <button type="button" onClick={requestStartNew} className="mt-5 flex h-13 min-h-[52px] w-full items-center justify-center gap-2 text-sm font-extrabold text-white" style={{ borderRadius: 13, backgroundColor: BRAND }}><Camera size={17} />{nextCaptureLabel}</button>
+        {hasCompletedComparison && <button type="button" onClick={() => openComparisonFromSet(automaticComparison.after)} className="mt-2 flex h-12 w-full items-center justify-center gap-2 text-sm font-extrabold" style={{ borderRadius: 12, backgroundColor: TINT, color: BRAND_D }}><ArrowUpDown size={16} />비포·에프터 변화 비교</button>}
         <button type="button" onClick={() => setScreen("history")} className="mt-2 flex h-12 w-full items-center justify-center gap-2 text-sm font-bold" style={{ borderRadius: 12, backgroundColor: CARD, border: `1px solid ${LINE}`, color: INK }}><Activity size={16} />이전 분석 보기</button>
       </section>}
 
@@ -8279,29 +8967,73 @@ function AssessmentWorkspace({ member, photos, settings, initialSavedId, initial
 
       {(screen === "capture" || screen === "analysis") && <PoseAnalyzer key={`${member.id}_${workflow.activeAssessmentId || "none"}_${captureKey}`} embedded member={member} photos={photos} defaultMethod={scope === "partial" ? "draw" : "ai"} assessmentRole={pendingRole} roleLabel={roleLabelOf(pendingRole)} initialAssessmentId={workflow.activeAssessmentId} resumeAssessmentId={resumeAssessmentId} selectedViews={selectedViewList} scope={scope}
         onRequestRole={() => setRoleSheet(true)} onSavePose={onSavePose} onUpdatePose={onUpdatePose} onDeletePose={onDeletePose} onSaveCaptureDraft={onSaveCaptureDraft} onDeleteCaptureDraft={onDeleteCaptureDraft} onSaveMarks={onSaveMarks} onToast={onToast}
-        onCaptureExit={() => setScreen(captureReturnScreen)} onStageChange={(stage) => setScreen(stage === "analysis" ? "analysis" : "capture")} onSaved={async (role, assessmentId) => { const nextRole = role || pendingRole; setWorkflow(transitionPostureWorkflow(workflow, { type: POSTURE_WORKFLOW_EVENTS.OPEN_COMPLETED_ASSESSMENT, assessmentId, assessment: { id: assessmentId, status: "completed" } })); setResumeAssessmentId(null); setSelectedSetId(assessmentId); setScreen("result"); try { const stored = await onSaveAssessmentRole?.(assessmentId, nextRole); if (stored === false) throw new Error("assessment_role_save_failed"); } catch (error) { onToast?.({ ok: false, msg: "촬영 역할 저장을 확인하지 못했습니다. 역할을 다시 선택해 주세요." }); setRoleSheet(true); } onSaved?.(nextRole); }} />}
+        onCaptureExit={() => setScreen(captureReturnScreen)} onStageChange={(stage) => setScreen(stage === "analysis" ? "analysis" : "capture")} onSaved={async (role, assessmentId) => { const nextRole = role || pendingRole || (completeSets.length ? "after" : "before"); const stored = await onCompleteAssessment?.(assessmentId, nextRole); if (stored !== true) return false; setWorkflow(transitionPostureWorkflow(workflow, { type: POSTURE_WORKFLOW_EVENTS.OPEN_COMPLETED_ASSESSMENT, assessmentId, assessment: { id: assessmentId, status: "completed" } })); setResumeAssessmentId(null); setSelectedSetId(assessmentId); setScreen("result"); onSaved?.(nextRole); return true; }} />}
 
       {screen === "history" && <section style={{ padding: 14, borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}>
-        <div className="flex items-center gap-2"><button type="button" aria-label="체형분석 시작 화면" onClick={() => setScreen("home")} className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={18} /></button><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>체형분석 히스토리</span><span className="block text-xs" style={{ color: SUB }}>최신순 · Assessment Set {sets.length}개</span></span><button type="button" onClick={startNew} className="h-10 px-3 text-xs font-bold text-white" style={{ borderRadius: 9, backgroundColor: BRAND }}>새 분석</button></div>
-        {!sets.length ? <div className="py-12 text-center"><Activity size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>아직 체형분석 이력이 없습니다</p></div> : <div className="relative mt-3 space-y-3">{sets.map((set) => { const representative = setPhoto(set, "front") || Object.values(set.photos)[0]; const missing = set.missingPhotos || []; const summary = set.poses.map((pose) => pose.aiAnalysis?.teacherEditedOutput || pose.aiAnalysis?.output).find(Boolean); const setTeacherMemo = set.poses.map((pose) => pose.comment || pose.teacherMemo || "").find(Boolean); const completed = set.status === "completed"; return <article key={set.id} style={{ padding: 12, borderRadius: 13, backgroundColor: CANVAS, border: `1px solid ${LINE}` }}><div className="flex gap-3">{representative?.src ? <img src={representative.src} alt="대표 촬영" className="h-20 w-14 shrink-0 object-cover" style={{ borderRadius: 8, backgroundColor: PHOTO }} /> : <span className="flex h-20 w-14 shrink-0 items-center justify-center" style={{ borderRadius: 8, backgroundColor: CARD, color: FAINT }}><Camera size={17} /></span>}<div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-1.5"><span className="text-sm font-extrabold" style={{ color: INK }}>{setDate(set) ? ymd(setDate(set).slice(0, 10)) : "날짜 미확인"}</span><span style={{ padding: "2px 6px", borderRadius: 6, backgroundColor: completed ? GOOD_S : set.status === "failed" ? BAD_S : WARN_S, color: completed ? GOOD : set.status === "failed" ? BAD : WARN, fontSize: 9, fontWeight: 700 }}>{completed ? "완료" : set.status === "failed" ? "저장 실패" : set.status === "analyzing" ? "분석 중" : "초안"}</span></div><p className="mt-1 text-xs" style={{ color: INK2 }}>{set.scope === "partial" ? "부위별 기록" : "전신 분석"} · {methodLabel(set.method)}</p><p className="mt-1 line-clamp-2 text-[11px] leading-relaxed" style={{ color: SUB }}>{missing.length ? `사진 일부 누락: ${missing.map(postureViewLabel).join(", ")}` : summary ? "AI 해석 초안 있음" : "AI 해석 미연결"}{setTeacherMemo ? ` · 강사 메모 있음` : ""}</p></div></div><div className="mt-3 grid grid-cols-2 gap-2"><button type="button" onClick={() => completed ? openSet(set, "result") : resumeSet(set)} className="h-10 text-xs font-bold" style={{ borderRadius: 9, backgroundColor: CARD, color: INK }}>{completed ? "결과 카드 보기" : "초안 이어하기"}</button><button type="button" disabled={!completed || completeSets.length < 2} onClick={() => openComparisonFromSet(set)} className="h-10 text-xs font-bold disabled:opacity-40" style={{ borderRadius: 9, backgroundColor: TINT, color: BRAND_D }}>변화 비교</button></div></article>; })}</div>}
+        <div className="flex items-center gap-2"><button type="button" aria-label="체형분석 시작 화면" onClick={() => { setComparisonSelection(null); setScreen("home"); }} className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={18} /></button><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>체형분석 히스토리</span><span className="block text-xs" style={{ color: SUB }}>최신순 · 분석 {sets.length}개</span></span><button type="button" onClick={requestStartNew} className="h-10 px-3 text-xs font-bold text-white" style={{ borderRadius: 9, backgroundColor: BRAND }}>새 분석</button></div>
+        {!!sets.length && <button type="button" aria-pressed={favoritesOnly} onClick={() => setFavoritesOnly((value) => !value)} className="mt-2 flex h-10 w-full items-center justify-center gap-2 text-xs font-bold" style={{ borderRadius: 9, backgroundColor: favoritesOnly ? WARN_S : CANVAS, color: favoritesOnly ? WARN : SUB }}><Star size={14} fill={favoritesOnly ? WARN : "none"} />{favoritesOnly ? "즐겨찾기만 보는 중" : "즐겨찾기만 보기"}</button>}
+        {completeSets.length >= 2 && <button type="button" onClick={() => setComparisonSelection((value) => value ? null : { beforeId: null, afterId: null, confirm: false })} className="mt-3 flex h-11 w-full items-center justify-center gap-2 text-xs font-extrabold" style={{ borderRadius: 10, backgroundColor: comparisonSelection ? BRAND : TINT, color: comparisonSelection ? "#fff" : BRAND_D }}><ArrowUpDown size={14} />{comparisonSelection ? "비교 선택 취소" : "비교할 Before / After 직접 선택"}</button>}
+        {comparisonSelection && <div className="mt-2 flex items-center gap-2 px-3 py-2" style={{ borderRadius: 10, backgroundColor: CANVAS, color: INK2 }}><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10px] font-extrabold text-white" style={{ backgroundColor: comparisonSelection.beforeId ? GOOD : BRAND }}>{comparisonSelection.beforeId ? "2" : "1"}</span><span className="text-xs font-bold">{comparisonSelection.beforeId ? "이제 After로 사용할 분석을 누르세요." : "먼저 Before로 사용할 분석을 누르세요."}</span></div>}
+        {!sets.length ? <div className="py-12 text-center"><Activity size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>아직 체형분석 이력이 없습니다</p></div> : !visibleHistorySets.length ? <div className="py-10 text-center"><Star size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>즐겨찾기한 분석이 없습니다</p></div> : <div className="relative mt-3 space-y-3">{visibleHistorySets.map((set) => {
+          const representative = setPhoto(set, "front") || Object.values(set.photos)[0];
+          const missing = set.missingPhotos || [];
+          const summary = set.poses.map((pose) => pose.aiAnalysis?.teacherEditedOutput || pose.aiAnalysis?.output).find(Boolean);
+          const setTeacherMemo = set.poses.map((pose) => pose.comment || pose.teacherMemo || "").find(Boolean);
+          const completed = set.status === "completed";
+          const setIsManualResult = ["draw", "manual"].includes(set.method);
+          const resumable = set.id === resumableAssessment?.id;
+          const comparablePair = comparisonPairFor(set);
+          const pickedBefore = comparisonSelection?.beforeId === set.id;
+          const pickedAfter = comparisonSelection?.afterId === set.id;
+          return <article key={set.id} onClick={() => comparisonSelection && chooseComparisonSet(set)} style={{ padding: 12, borderRadius: 13, backgroundColor: pickedBefore ? TINT : pickedAfter ? GOOD_S : CANVAS, border: `2px solid ${pickedBefore ? BRAND : pickedAfter ? GOOD : LINE}`, cursor: comparisonSelection ? "pointer" : "default" }}>
+            <div className="flex gap-3">{representative?.src ? <img src={representative.src} alt="대표 촬영" className="h-20 w-14 shrink-0 object-cover" style={{ borderRadius: 8, backgroundColor: PHOTO }} /> : <span className="flex h-20 w-14 shrink-0 items-center justify-center" style={{ borderRadius: 8, backgroundColor: CARD, color: FAINT }}><Camera size={17} /></span>}<div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-1.5"><span className="text-sm font-extrabold" style={{ color: INK }}>{setDate(set) ? ymd(setDate(set).slice(0, 10)) : "날짜 미확인"}{timeOf(representative?.createdAt || representative?.at || setDate(set)) ? ` · ${timeOf(representative?.createdAt || representative?.at || setDate(set))}` : ""}</span>{pickedBefore && <span className="rounded-full px-2 py-0.5 text-[9px] font-extrabold text-white" style={{ backgroundColor: BRAND }}>BEFORE</span>}{pickedAfter && <span className="rounded-full px-2 py-0.5 text-[9px] font-extrabold text-white" style={{ backgroundColor: GOOD }}>AFTER</span>}<span style={{ padding: "2px 6px", borderRadius: 6, backgroundColor: completed ? GOOD_S : set.status === "failed" ? BAD_S : WARN_S, color: completed ? GOOD : set.status === "failed" ? BAD : WARN, fontSize: 9, fontWeight: 700 }}>{completed ? "기기 저장 완료" : set.status === "failed" ? "저장 실패" : set.status === "analyzing" ? "분석 중" : "초안"}</span><button type="button" aria-label={set.favorite ? "사진 즐겨찾기 해제" : "사진 즐겨찾기"} onClick={async (event) => { event.stopPropagation(); await onToggleAssessmentFavorite?.(set.id, !set.favorite); }} className="ml-auto flex h-8 w-8 items-center justify-center rounded-full" style={{ backgroundColor: set.favorite ? WARN_S : CARD }}><Star size={16} color={set.favorite ? WARN : FAINT} fill={set.favorite ? WARN : "none"} /></button></div><p className="mt-1 text-xs" style={{ color: INK2 }}>{set.scope === "partial" ? "부위별 기록" : "전신 분석"} · {methodLabel(set.method)}</p><p className="mt-1 line-clamp-2 text-[11px] leading-relaxed" style={{ color: SUB }}>{missing.length ? `사진 일부 누락: ${missing.map(postureViewLabel).join(", ")}` : setIsManualResult ? ((representative?.marks || []).length ? "사진 표시와 손메모 저장됨" : "사진 기록 저장됨") : summary ? "AI 해석 초안 있음" : "저장된 AI 해석 없음"}{!setIsManualResult && setTeacherMemo ? " · 강사 메모 있음" : ""}</p></div></div>
+            {comparisonSelection ? <button type="button" disabled={!completed} onClick={(event) => { event.stopPropagation(); chooseComparisonSet(set); }} className="mt-3 h-11 w-full text-xs font-extrabold disabled:opacity-35" style={{ borderRadius: 9, backgroundColor: pickedBefore ? BRAND : pickedAfter ? GOOD : CARD, color: pickedBefore || pickedAfter ? "#fff" : INK }}>{pickedBefore ? "Before 선택됨 · 누르면 해제" : pickedAfter ? "After 선택됨 · 누르면 해제" : comparisonSelection.beforeId ? "After로 선택" : "Before로 선택"}</button> : <div className="mt-3 grid grid-cols-2 gap-2"><button type="button" disabled={!completed && !resumable} onClick={() => completed ? openSet(set, "result") : resumeSet(set)} className="h-10 text-xs font-bold disabled:opacity-40" style={{ borderRadius: 9, backgroundColor: CARD, color: INK }}>{completed ? setIsManualResult ? "사진 기록 보기" : "결과 카드 보기" : resumable ? "초안 이어하기" : "이전 중복 초안"}</button><button type="button" disabled={!completed || !comparablePair.after} onClick={() => openComparisonFromSet(set)} className="h-10 text-xs font-bold disabled:opacity-40" style={{ borderRadius: 9, backgroundColor: TINT, color: BRAND_D }}>변화 비교</button></div>}
+          </article>;
+        })}</div>}
       </section>}
 
       {screen === "result" && <>
-        <section style={{ padding: 14, borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}><div className="flex items-center gap-2"><button type="button" aria-label="체형분석 시작 화면" onClick={() => setScreen("home")} className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={18} /></button><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>분석 결과</span><span className="block text-xs" style={{ color: SUB }}>{selected ? `${ymd(setDate(selected).slice(0, 10))} · ${methodLabel(selected.method)}` : "완료된 결과 없음"}</span></span><button type="button" onClick={() => setScreen("history")} className="h-10 px-3 text-xs font-bold" style={{ borderRadius: 9, backgroundColor: CANVAS, color: INK }}>히스토리</button></div>
-          {!selected ? <div className="py-10 text-center"><Activity size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>표시할 분석 결과가 없습니다</p><button type="button" onClick={startNew} className="mt-4 h-11 px-5 text-xs font-bold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>새 체형분석 시작</button></div> : selected.status !== "completed" ? <div className="py-10 text-center"><AlertCircle size={22} className="mx-auto" style={{ color: WARN }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>아직 완료되지 않은 분석입니다</p><p className="mt-1 text-xs" style={{ color: SUB }}>저장된 사진과 분석 상태를 유지한 채 이어서 진행할 수 있습니다.</p><button type="button" onClick={() => resumeSet(selected)} className="mt-4 h-11 px-5 text-xs font-bold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>초안 이어하기</button></div> : <><div className="mt-3 grid gap-1.5" style={{ gridTemplateColumns: `repeat(${Math.max(1, selected.selectedViews.length)}, minmax(0, 1fr))` }}>{selected.selectedViews.map((view) => <AssessmentSetFrame key={view} photo={setPhoto(selected, view)} label={postureViewLabel(view)} annotation onOpen={() => { const pose = selected.poses.find((item) => normalizePostureView(item.view) === view); if (pose) setViewingPose(pose); }} />)}</div><div className="mt-3 grid grid-cols-2 gap-2"><button type="button" disabled={!beforeSet || !afterSet} onClick={() => openComparisonFromSet(selected)} className="h-11 text-xs font-bold disabled:opacity-40" style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D }}>Before / After 비교</button><button type="button" onClick={() => openReportForSet(selected)} className="h-11 text-xs font-bold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>결과 리포트 카드</button></div></>}
+        <section style={{ padding: 14, borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}><div className="flex items-center gap-2"><button type="button" aria-label="체형분석 시작 화면" onClick={() => setScreen("home")} className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={18} /></button><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>{selectedIsManualResult ? "사진 기록" : "분석 결과"}</span><span className="block text-xs" style={{ color: SUB }}>{selected ? `${ymd(setDate(selected).slice(0, 10))} · ${methodLabel(selected.method)}` : "완료된 결과 없음"}</span></span><button type="button" onClick={() => setScreen("history")} className="h-10 px-3 text-xs font-bold" style={{ borderRadius: 9, backgroundColor: CANVAS, color: INK }}>히스토리</button></div>
+          {selected?.status === "completed" && <div className="mt-3 flex items-center gap-2" style={{ padding: 10, borderRadius: 10, backgroundColor: GOOD_S }}><Check size={15} style={{ color: GOOD }} /><span className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: GOOD }}>{selectedIsManualResult ? "사진 기록 저장 완료" : "분석 저장 완료"}</span><span className="text-[10px] font-bold" style={{ color: SUB }}>이 기기에만 저장됨</span></div>}
+          {!selected ? <div className="py-10 text-center"><Activity size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>표시할 분석 결과가 없습니다</p><button type="button" onClick={requestStartNew} className="mt-4 h-11 px-5 text-xs font-bold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>새 체형분석 시작</button></div> : selected.status !== "completed" ? <div className="py-10 text-center"><AlertCircle size={22} className="mx-auto" style={{ color: WARN }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>아직 완료되지 않은 분석입니다</p><p className="mt-1 text-xs" style={{ color: SUB }}>저장된 사진과 분석 상태를 유지한 채 이어서 진행할 수 있습니다.</p><button type="button" onClick={() => resumeSet(selected)} className="mt-4 h-11 px-5 text-xs font-bold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>초안 이어하기</button></div> : <><div className="mt-3 grid gap-1.5" style={{ gridTemplateColumns: `repeat(${Math.max(1, selected.selectedViews.length)}, minmax(0, 1fr))` }}>{selected.selectedViews.map((view) => <AssessmentSetFrame key={view} photo={setPhoto(selected, view)} label={postureViewLabel(view)} annotation onOpen={selectedIsManualResult ? undefined : () => { const pose = selected.poses.find((item) => normalizePostureView(item.view) === view); if (pose) setViewingPose(pose); }} />)}</div><button type="button" onClick={() => { const available = selected.selectedViews.map((view) => ({ view, photo: setPhoto(selected, view) })).filter((item) => item.photo); if (available.length === 1) setEditingAnnotation(available[0]); else if (available.length > 1) setAnnotationPicker(true); }} className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 text-xs font-bold" style={{ borderRadius: 10, backgroundColor: CANVAS, color: INK }}><Pencil size={13} />사진 표시 다시 수정하기</button><div className={`mt-2 grid gap-2 ${selectedIsManualResult ? "grid-cols-1" : "grid-cols-2"}`}><button type="button" disabled={!comparisonPairFor(selected).after} onClick={() => openComparisonFromSet(selected)} className="h-11 text-xs font-bold disabled:opacity-40" style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D }}>Before / After 비교</button>{!selectedIsManualResult && <button type="button" onClick={() => openReportForSet(selected)} className="h-11 text-xs font-bold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>결과 리포트 카드</button>}</div>{!comparisonPairFor(selected).after && <button type="button" onClick={requestStartNew} className="mt-2 flex h-11 w-full items-center justify-center gap-2 text-xs font-extrabold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}><Camera size={14} />에프터 촬영 시작</button>}</>}
         </section>
-        {selected?.status === "completed" && <section style={{ padding: 13, borderRadius: 14, backgroundColor: CARD, border: `1px solid ${LINE}` }}><h2 className="text-sm font-extrabold" style={{ color: INK }}>관찰 결과</h2><div className="mt-3 grid gap-2 sm:grid-cols-2"><div style={{ padding: 10, borderRadius: 10, backgroundColor: GOOD_S }}><p className="text-xs font-bold" style={{ color: GOOD }}>좋은 점</p>{goodMetrics.length ? goodMetrics.map((metric, index) => <p key={`${metric.key}_${index}`} className="mt-1 text-xs" style={{ color: INK2 }}>{metric.label} {metric.value}{metric.unit}</p>) : <p className="mt-1 text-xs" style={{ color: SUB }}>정상 범위로 저장된 측정값 없음</p>}</div><div style={{ padding: 10, borderRadius: 10, backgroundColor: cautionMetrics.length ? WARN_S : CANVAS }}><p className="text-xs font-bold" style={{ color: cautionMetrics.length ? WARN : INK2 }}>관찰 필요</p>{cautionMetrics.length ? cautionMetrics.map((metric, index) => <p key={`${metric.key}_${index}`} className="mt-1 text-xs" style={{ color: INK2 }}>{metric.label} {metric.value}{metric.unit}</p>) : <p className="mt-1 text-xs" style={{ color: SUB }}>기록된 주의 결과 없음</p>}</div><div style={{ padding: 10, borderRadius: 10, backgroundColor: LAVENDER_S }}><p className="text-xs font-bold" style={{ color: BRAND_D }}>AI 해석</p><p className="mt-1 text-xs leading-relaxed" style={{ color: aiText ? INK2 : SUB }}>{aiText || "AI 해석 미연결"}</p></div><div style={{ padding: 10, borderRadius: 10, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>강사 메모</p><p className="mt-1 text-xs leading-relaxed" style={{ color: teacherMemo ? INK2 : SUB }}>{teacherMemo || "저장된 강사 메모가 없습니다."}</p></div></div>{resultPoses[0] && <button type="button" onClick={() => setViewingPose(resultPoses[0])} className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 text-xs font-bold" style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D }}><Pencil size={13} />측정값·AI 초안·강사 메모 검수</button>}</section>}
+        {!selectedIsManualResult && selected?.status === "completed" && <section style={{ padding: 13, borderRadius: 14, backgroundColor: CARD, border: `1px solid ${LINE}` }}><h2 className="text-sm font-extrabold" style={{ color: INK }}>관찰 결과</h2><div className="mt-3 grid gap-2 sm:grid-cols-2"><div style={{ padding: 10, borderRadius: 10, backgroundColor: GOOD_S }}><p className="text-xs font-bold" style={{ color: GOOD }}>좋은 점</p>{goodMetrics.length ? goodMetrics.map((metric, index) => <p key={`${metric.key}_${index}`} className="mt-1 text-xs" style={{ color: INK2 }}>{metric.label} {metric.value}{metric.unit}</p>) : <p className="mt-1 text-xs" style={{ color: SUB }}>정상 범위로 저장된 측정값 없음</p>}</div><div style={{ padding: 10, borderRadius: 10, backgroundColor: cautionMetrics.length ? WARN_S : CANVAS }}><p className="text-xs font-bold" style={{ color: cautionMetrics.length ? WARN : INK2 }}>관찰 필요</p>{cautionMetrics.length ? cautionMetrics.map((metric, index) => <p key={`${metric.key}_${index}`} className="mt-1 text-xs" style={{ color: INK2 }}>{metric.label} {metric.value}{metric.unit}</p>) : <p className="mt-1 text-xs" style={{ color: SUB }}>기록된 주의 결과 없음</p>}</div><div style={{ padding: 10, borderRadius: 10, backgroundColor: LAVENDER_S }}><p className="text-xs font-bold" style={{ color: BRAND_D }}>AI 해석</p><p className="mt-1 text-xs leading-relaxed" style={{ color: aiText ? INK2 : SUB }}>{aiText || "저장된 AI 해석 없음"}</p></div><div style={{ padding: 10, borderRadius: 10, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>강사 메모</p><p className="mt-1 text-xs leading-relaxed" style={{ color: teacherMemo ? INK2 : SUB }}>{teacherMemo || "저장된 강사 메모가 없습니다."}</p></div></div>{resultPoses[0] && <button type="button" onClick={() => setViewingPose(resultPoses[0])} className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 text-xs font-bold" style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D }}><Pencil size={13} />분석 내용 확인·수정</button>}</section>}
       </>}
 
-      {screen === "compare" && <section style={{ padding: 14, borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}><div className="flex items-center gap-2"><button type="button" onClick={() => setScreen("result")} aria-label="결과로 돌아가기" className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={18} /></button><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>Before / After</span><span className="block text-xs" style={{ color: SUB }}>가장 오래된 유효 분석과 최근 완료 분석을 자동 선택</span></span><button type="button" onClick={() => setShowAnnotations((value) => !value)} className="h-9 px-2 text-[10px] font-bold" style={{ borderRadius: 8, backgroundColor: showAnnotations ? TINT : CANVAS, color: showAnnotations ? BRAND_D : SUB }}>기준선 {showAnnotations ? "ON" : "OFF"}</button></div>
-        {!beforeSet || !afterSet ? <div className="py-12 text-center"><Activity size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>다음 분석부터 변화 비교가 가능합니다</p><p className="mt-1 text-xs" style={{ color: SUB }}>현재 결과는 결과 카드에서 확인할 수 있습니다.</p></div> : <><div className="mt-3 grid grid-cols-2 gap-2"><button type="button" onClick={() => setSetPicker("before")} className="min-h-12 px-3 text-left" style={{ borderRadius: 9, backgroundColor: TINT, border: `1px solid #D5D1EB` }}><span className="block text-[10px] font-bold" style={{ color: SUB }}>Before</span><span className="block text-xs font-bold" style={{ color: BRAND_D }}>{ymd(setDate(beforeSet).slice(0, 10))}</span></button><button type="button" onClick={() => setSetPicker("after")} className="min-h-12 px-3 text-left" style={{ borderRadius: 9, backgroundColor: GOOD_S, border: `1px solid ${LINE}` }}><span className="block text-[10px] font-bold" style={{ color: SUB }}>After</span><span className="block text-xs font-bold" style={{ color: GOOD }}>{ymd(setDate(afterSet).slice(0, 10))}</span></button></div><div className="mt-3 flex gap-1 overflow-x-auto">{POSTURE_VIEWS.filter((view) => setPhoto(beforeSet, view.key) && setPhoto(afterSet, view.key)).map((view) => <button type="button" key={view.key} onClick={() => { setCompareView(view.key); setComparePan({ x: 0, y: 0 }); }} className="h-9 shrink-0 px-3 text-xs font-bold" style={{ borderRadius: 9, backgroundColor: compareView === view.key ? TINT : CANVAS, color: compareView === view.key ? BRAND_D : SUB }}>{view.label}</button>)}</div><div onPointerDown={onCompareDown} onPointerMove={onCompareMove} onPointerUp={finishCompareMove} onPointerCancel={finishCompareMove} className="relative mt-3 overflow-hidden" style={{ aspectRatio: "2 / 3", borderRadius: 14, backgroundColor: PHOTO, touchAction: compareZoom > 1 ? "none" : "pan-y" }}>{comparisonPhotoBefore?.src && <div className="absolute inset-0 overflow-hidden"><img src={comparisonPhotoBefore.src} alt="Before" className="h-full w-full object-contain" style={{ transform: comparisonTransform, transformOrigin: "center" }} />{showAnnotations && <AssessmentAnnotationOverlay marks={comparisonPhotoBefore.marks || []} />}</div>}{comparisonPhotoAfter?.src && <div className="absolute inset-0 overflow-hidden" style={{ clipPath: `inset(0 ${100 - comparePercent}% 0 0)` }}><img src={comparisonPhotoAfter.src} alt="After" className="h-full w-full object-contain" style={{ transform: comparisonTransform, transformOrigin: "center" }} />{showAnnotations && <AssessmentAnnotationOverlay marks={comparisonPhotoAfter.marks || []} />}</div>}<span className="absolute bottom-0 top-0 w-0.5 bg-white" style={{ left: `${comparePercent}%`, boxShadow: "0 0 0 1px rgba(28,36,51,.35)" }} /><span className="absolute top-3 rounded-full px-2 py-1 text-[10px] font-bold text-white" style={{ left: 8, backgroundColor: "rgba(28,36,51,.72)" }}>Before</span><span className="absolute right-2 top-3 rounded-full px-2 py-1 text-[10px] font-bold text-white" style={{ backgroundColor: "rgba(76,67,153,.82)" }}>After</span></div><input aria-label="Before After 비교 슬라이더" type="range" min="0" max="100" value={comparePercent} onChange={(event) => setComparePercent(Number(event.target.value))} className="mt-3 w-full" style={{ accentColor: BRAND }} /><div className="mt-2 flex items-center gap-2"><span className="text-xs font-bold" style={{ color: SUB }}>동시 확대</span>{[1, 1.5, 2].map((zoom) => <button type="button" key={zoom} onClick={() => { setCompareZoom(zoom); if (zoom === 1) setComparePan({ x: 0, y: 0 }); }} className="h-9 min-w-11 rounded-full text-xs font-bold" style={{ backgroundColor: compareZoom === zoom ? TINT : CANVAS, color: compareZoom === zoom ? BRAND_D : SUB }}>{zoom}×</button>)}</div><div className="mt-3" style={{ padding: 11, borderRadius: 11, backgroundColor: LAVENDER_S }}><p className="text-xs font-bold" style={{ color: BRAND_D }}>After AI 관찰</p><p className="mt-1 text-xs leading-relaxed" style={{ color: SUB }}>{aiText || "AI 해석 미연결"}</p>{metricChanges.length > 0 && <div className="mt-2 space-y-1">{metricChanges.map((change) => <p key={change.id} className="text-xs" style={{ color: INK2 }}>{change.label} {change.difference > 0 ? "+" : ""}{change.difference}{change.unit}</p>)}</div>}</div></>}
+      {screen === "compare" && <section style={{ padding: 14, borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}><div className="flex items-center gap-2"><button type="button" onClick={() => setScreen("result")} aria-label="결과로 돌아가기" className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={18} /></button><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>Before / After</span><span className="block text-xs" style={{ color: SUB }}>선택한 두 분석을 같은 촬영 방향으로 비교</span></span><button type="button" onClick={() => setShowAnnotations((value) => !value)} className="h-9 px-2 text-[10px] font-bold" style={{ borderRadius: 8, backgroundColor: showAnnotations ? TINT : CANVAS, color: showAnnotations ? BRAND_D : SUB }}>기준선 {showAnnotations ? "ON" : "OFF"}</button></div>
+        {!beforeSet || !afterSet ? <div className="py-12 text-center"><Activity size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>다음 분석부터 변화 비교가 가능합니다</p><p className="mt-1 text-xs" style={{ color: SUB }}>같은 유형과 촬영 방향의 완료 분석이 2개 이상 필요합니다.</p></div> : <>
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <button type="button" onClick={() => setSetPicker("before")} className="min-h-12 px-3 text-left" style={{ borderRadius: 9, backgroundColor: TINT, border: `1px solid #D5D1EB` }}><span className="block text-[10px] font-bold" style={{ color: SUB }}>Before</span><span className="block text-xs font-bold" style={{ color: BRAND_D }}>{ymd(setDate(beforeSet).slice(0, 10))}</span></button>
+            <button type="button" onClick={() => setSetPicker("after")} className="min-h-12 px-3 text-left" style={{ borderRadius: 9, backgroundColor: GOOD_S, border: `1px solid ${LINE}` }}><span className="block text-[10px] font-bold" style={{ color: SUB }}>After</span><span className="block text-xs font-bold" style={{ color: GOOD }}>{ymd(setDate(afterSet).slice(0, 10))}</span></button>
+          </div>
+          <div className="mt-3 flex gap-1 overflow-x-auto">{comparableViewsFor(beforeSet, afterSet).map((view) => <button type="button" key={view} onClick={() => setCompareView(view)} className="h-9 shrink-0 px-3 text-xs font-bold" style={{ borderRadius: 9, backgroundColor: compareView === view ? TINT : CANVAS, color: compareView === view ? BRAND_D : SUB }}>{postureViewLabel(view)}</button>)}</div>
+          <AssessmentComparisonViewer beforeSet={beforeSet} afterSet={afterSet} view={compareView} showGuides={showAnnotations} memberName={member?.name} onToast={onToast} />
+          {!comparisonIsManualResult && <div className="mt-3" style={{ padding: 11, borderRadius: 11, backgroundColor: LAVENDER_S }}><p className="text-xs font-bold" style={{ color: BRAND_D }}>After AI 관찰</p><p className="mt-1 text-xs leading-relaxed" style={{ color: aiText ? INK2 : SUB }}>{aiText || "저장된 AI 해석 없음"}</p></div>}
+        </>}
       </section>}
 
-      {screen === "report" && <section style={{ overflow: "hidden", borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}><div className="flex items-center gap-2 px-3 pt-2"><button type="button" onClick={() => setScreen("result")} aria-label="결과로 돌아가기" className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={18} /></button><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>체형분석 결과 카드</span><span className="block text-xs" style={{ color: SUB }}>회원 상담용 요약</span></span></div><div className="p-4 pt-2"><div className="flex items-end gap-2"><div className="min-w-0 flex-1"><p className="text-lg font-extrabold" style={{ color: INK }}>{member?.name} 회원</p><p className="mt-1 text-xs" style={{ color: SUB }}>{selectedDate ? ymd(selectedDate.slice(0, 10)) : "분석일 미확인"}</p></div><span className="rounded-full px-2 py-1 text-[10px] font-bold" style={{ backgroundColor: TINT, color: BRAND_D }}>{selected ? methodLabel(selected.method) : "결과 없음"}</span></div>{selected?.scope === "full_body" && reportPair.before && reportPair.after && <div className="mt-4 grid grid-cols-2 gap-2"><div><p className="mb-1 text-[10px] font-bold" style={{ color: SUB }}>Before</p><AssessmentSetFrame photo={setPhoto(reportPair.before, "front") || Object.values(reportPair.before.photos)[0]} label="Before" /></div><div><p className="mb-1 text-[10px] font-bold" style={{ color: SUB }}>After</p><AssessmentSetFrame photo={setPhoto(reportPair.after, "front") || Object.values(reportPair.after.photos)[0]} label="After" /></div></div>}<div className="mt-4 space-y-2"><div style={{ padding: 11, borderRadius: 11, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>핵심 변화</p>{metricChanges.length ? metricChanges.map((change) => <p key={change.id} className="mt-1 text-xs" style={{ color: INK2 }}>{change.label}: {change.difference > 0 ? "+" : ""}{change.difference}{change.unit}</p>) : <p className="mt-1 text-xs" style={{ color: SUB }}>비교 가능한 실제 측정값이 아직 없습니다.</p>}</div><div style={{ padding: 11, borderRadius: 11, backgroundColor: LAVENDER_S }}><p className="text-xs font-bold" style={{ color: BRAND_D }}>AI 관찰 내용</p><p className="mt-1 text-xs leading-relaxed" style={{ color: aiText ? INK2 : SUB }}>{aiText || "AI 해석 미연결"}</p></div><div style={{ padding: 11, borderRadius: 11, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>강사 메모</p><p className="mt-1 text-xs leading-relaxed" style={{ color: teacherMemo ? INK2 : SUB }}>{teacherMemo || "저장된 강사 메모가 없습니다."}</p></div><div style={{ padding: 11, borderRadius: 11, backgroundColor: GOOD_S }}><p className="text-xs font-bold" style={{ color: GOOD }}>오늘 수업 집중 포인트</p><p className="mt-1 text-xs leading-relaxed" style={{ color: INK2 }}>{(member?.focus || []).length ? member.focus.join(" · ") : "강사가 수업 기록에서 확정할 수 있습니다."}</p></div><div className="flex items-center gap-2" style={{ padding: 11, borderRadius: 11, backgroundColor: CANVAS }}><CalendarDays size={15} style={{ color: BRAND }} /><span className="min-w-0 flex-1 text-xs" style={{ color: INK2 }}>다음 재평가 권장일</span><span className="text-xs font-bold" style={{ color: INK }}>{reportRetakeDate ? ymd(reportRetakeDate) : "확인 필요"}</span></div></div><div className="mt-4 grid grid-cols-2 gap-2"><button type="button" disabled className="h-11 text-xs font-bold disabled:opacity-55" style={{ borderRadius: 10, backgroundColor: CANVAS, color: SUB }}>이미지 저장 · 연결 예정</button><button type="button" disabled className="h-11 text-xs font-bold disabled:opacity-55" style={{ borderRadius: 10, backgroundColor: CANVAS, color: SUB }}>공유 · 연결 예정</button></div></div></section>}
+      {screen === "report" && <section style={{ overflow: "hidden", borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}><div className="flex items-center gap-2 px-3 pt-2"><button type="button" onClick={() => setScreen("result")} aria-label="결과로 돌아가기" className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={18} /></button><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>체형분석 결과 카드</span><span className="block text-xs" style={{ color: SUB }}>회원 상담용 요약</span></span></div><div className="p-4 pt-2"><div className="flex items-end gap-2"><div className="min-w-0 flex-1"><p className="text-lg font-extrabold" style={{ color: INK }}>{member?.name} 회원</p><p className="mt-1 text-xs" style={{ color: SUB }}>{selectedDate ? ymd(selectedDate.slice(0, 10)) : "분석일 미확인"}</p></div><span className="rounded-full px-2 py-1 text-[10px] font-bold" style={{ backgroundColor: TINT, color: BRAND_D }}>{selected ? methodLabel(selected.method) : "결과 없음"}</span></div>{selected?.scope === "full_body" && reportPair.before && reportPair.after && <div className="mt-4 grid grid-cols-2 gap-2"><div><p className="mb-1 text-[10px] font-bold" style={{ color: "#356AE6" }}>Before</p><AssessmentSetFrame photo={setPhoto(reportPair.before, "front") || Object.values(reportPair.before.photos)[0]} label="Before" /></div><div><p className="mb-1 text-[10px] font-bold" style={{ color: "#F28C28" }}>After</p><AssessmentSetFrame photo={setPhoto(reportPair.after, "front") || Object.values(reportPair.after.photos)[0]} label="After" /></div></div>}<div className="mt-4 space-y-2"><div style={{ padding: 11, borderRadius: 11, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>핵심 변화</p>{metricChanges.length ? metricChanges.map((change) => <p key={change.id} className="mt-1 text-xs" style={{ color: INK2 }}>{postureViewLabel(change.view)} · {change.label}: {change.beforeValue}{change.unit} → {change.afterValue}{change.unit}</p>) : <p className="mt-1 text-xs" style={{ color: SUB }}>비교 가능한 실제 측정값이 아직 없습니다.</p>}</div><div style={{ padding: 11, borderRadius: 11, backgroundColor: LAVENDER_S }}><p className="text-xs font-bold" style={{ color: BRAND_D }}>AI 관찰 내용</p><p className="mt-1 text-xs leading-relaxed" style={{ color: aiText ? INK2 : SUB }}>{aiText || "저장된 AI 관찰이 없어 측정값으로 리포트를 구성합니다."}</p></div><div style={{ padding: 11, borderRadius: 11, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>강사 메모</p><p className="mt-1 text-xs leading-relaxed" style={{ color: teacherMemo ? INK2 : SUB }}>{teacherMemo || "저장된 강사 메모가 없습니다."}</p></div><div style={{ padding: 11, borderRadius: 11, backgroundColor: GOOD_S }}><p className="text-xs font-bold" style={{ color: GOOD }}>오늘 수업 집중 포인트</p><p className="mt-1 text-xs leading-relaxed" style={{ color: INK2 }}>{(member?.focus || []).length ? member.focus.join(" · ") : "강사가 수업 기록에서 확정할 수 있습니다."}</p></div><div className="flex items-center gap-2" style={{ padding: 11, borderRadius: 11, backgroundColor: CANVAS }}><CalendarDays size={15} style={{ color: BRAND }} /><span className="min-w-0 flex-1 text-xs" style={{ color: INK2 }}>다음 재평가 권장일</span><span className="text-xs font-bold" style={{ color: INK }}>{reportRetakeDate ? ymd(reportRetakeDate) : "확인 필요"}</span></div></div><div className="mt-4"><ResultCardMaker member={member} saved={completedPoses.filter((pose) => pose && pose.metrics)} centerName={settings?.centerName || ""} onToast={onToast} initialOpen beforeAssessmentId={reportPair.before?.id} afterAssessmentId={reportPair.after?.id} /></div></div></section>}
 
+      {draftGuard?.step === "choice" && <ScheduleBottomSheet title="진행 중인 체형분석이 있습니다" subtitle="이전에 저장하던 체형분석을 이어서 진행할 수 있습니다." onClose={() => setDraftGuard(null)}>
+        <div className="space-y-2">
+          <button type="button" onClick={() => { const assessment = draftGuard.assessment; setDraftGuard(null); resumeSet(assessment); }} className="flex min-h-12 w-full items-center justify-between px-3 text-left" style={{ borderRadius: 11, backgroundColor: TINT, border: `1px solid ${BRAND}`, color: BRAND_D }}><span className="text-sm font-extrabold">이어하기</span><ChevronRight size={16} /></button>
+          <button type="button" onClick={() => setDraftGuard({ step: "confirm", assessment: draftGuard.assessment })} className="flex min-h-12 w-full items-center justify-between px-3 text-left" style={{ borderRadius: 11, backgroundColor: CANVAS, border: `1px solid ${LINE}`, color: INK }}><span className="text-sm font-bold">새로 시작</span><RotateCcw size={15} /></button>
+        </div>
+      </ScheduleBottomSheet>}
+      {(draftGuard?.step === "confirm" || draftGuard?.step === "discarding") && <ScheduleBottomSheet title="진행 중인 체형분석을 삭제하고 새로 시작할까요?" subtitle="현재 저장된 사진과 분석 기록을 정리한 뒤 새 분석을 시작합니다." onClose={closeDraftGuard} dismissible={draftGuard.step !== "discarding"}>
+        <div className="grid grid-cols-2 gap-2">
+          <button type="button" disabled={draftGuard.step === "discarding"} onClick={() => setDraftGuard(null)} className="h-12 text-sm font-bold disabled:opacity-50" style={{ borderRadius: 11, backgroundColor: CANVAS, color: SUB }}>취소</button>
+          <button type="button" disabled={draftGuard.step === "discarding"} onClick={confirmDiscardAndStartNew} className="flex h-12 items-center justify-center gap-2 text-sm font-extrabold text-white disabled:opacity-60" style={{ borderRadius: 11, backgroundColor: BAD }}>{draftGuard.step === "discarding" ? <><Loader2 size={15} className="animate-spin" />정리 중</> : "삭제하고 새로 시작"}</button>
+        </div>
+      </ScheduleBottomSheet>}
       {roleSheet && <ChoiceBottomSheet title="촬영 구분 선택" subtitle="이 촬영 세트를 비포·애프터 비교에서 어떻게 사용할지 선택해 주세요" value={pendingRole} options={[{ value: "before", label: "비포", description: "비교 기준이 되는 촬영" }, { value: "after", label: "에프터", description: "변화를 비교할 촬영" }, { value: "unassigned", label: "나중에 선택", description: "촬영 후에도 구분할 수 있습니다" }]} onClose={() => setRoleSheet(false)} onSelect={saveSelectedRole} />}
-      {setPicker && <ChoiceBottomSheet title={setPicker === "before" ? "Before 분석 선택" : "After 분석 선택"} subtitle="완료된 전신 분석만 표시합니다" value={setPicker === "before" ? beforeSet?.id : afterSet?.id} options={setOptions} onClose={() => setSetPicker(null)} onSelect={(id) => { if (setPicker === "before") setBeforeSetId(id); else setAfterSetId(id); }} />}
-      {viewingPose && <SavedPoseViewer rec={viewingPose} member={member} memberName={member?.name} records={resultPoses} onUpdate={onUpdatePose} onClose={() => setViewingPose(null)} onToast={onToast} />}
+      {comparisonSelection?.confirm && <ScheduleBottomSheet title="선택한 Before / After로 비교할까요?" subtitle="첫 번째로 고른 분석이 Before, 두 번째가 After로 사용됩니다" onClose={() => setComparisonSelection((value) => value ? { ...value, afterId: null, confirm: false } : null)}>
+        <div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => setComparisonSelection((value) => value ? { ...value, afterId: null, confirm: false } : null)} className="h-12 text-sm font-bold" style={{ borderRadius: 11, backgroundColor: CANVAS, color: INK }}>아니오 · 다시 선택</button><button type="button" onClick={confirmComparisonSelection} className="h-12 text-sm font-extrabold text-white" style={{ borderRadius: 11, backgroundColor: BRAND }}>예 · 비교하기</button></div>
+      </ScheduleBottomSheet>}
+      {setPicker && <ChoiceBottomSheet title={setPicker === "before" ? "Before 분석 선택" : "After 분석 선택"} subtitle="같은 유형과 공통 촬영 방향이 있는 완료 분석만 표시합니다" value={setPicker === "before" ? beforeSet?.id : afterSet?.id} options={setOptions} onClose={() => setSetPicker(null)} onSelect={(id) => { if (setPicker === "before") setBeforeSetId(id); else setAfterSetId(id); }} />}
+      {annotationPicker && <ChoiceBottomSheet title="다시 수정할 사진 선택" subtitle="저장된 표시를 불러와 이어서 수정합니다" value="" options={(selected?.selectedViews || []).map((view) => ({ value: view, label: postureViewLabel(view), description: setPhoto(selected, view)?.marks?.length ? "저장된 표시 있음" : "표시 새로 추가" })).filter((option) => setPhoto(selected, option.value))} onClose={() => setAnnotationPicker(false)} onSelect={(view) => { const photo = setPhoto(selected, view); setAnnotationPicker(false); if (photo) setEditingAnnotation({ view, photo }); }} />}
+      {editingAnnotation?.photo?.src && <PostureCanvas key={`reedit_${editingAnnotation.view}_${editingAnnotation.photo.id}`} photo={editingAnnotation.photo} label={`${postureViewLabel(editingAnnotation.view)} · 다시 수정`} initialTool="pen" onClose={() => setEditingAnnotation(null)} onCancel={() => setEditingAnnotation(null)} onDraft={(marks) => onSaveMarks?.(editingAnnotation.view, editingAnnotation.photo.id, marks, { quiet: true })} onSave={(marks) => onSaveMarks?.(editingAnnotation.view, editingAnnotation.photo.id, marks)} onToast={onToast} />}
+      {!selectedIsManualResult && viewingPose && <SavedPoseViewer rec={viewingPose} member={member} memberName={member?.name} records={resultPoses} onUpdate={onUpdatePose} onClose={() => setViewingPose(null)} onToast={onToast} />}
     </div>
   );
 }
@@ -8345,7 +9077,7 @@ function ReferenceAnalysisTab({ members, photos, selectedId, selectedPoseId, onS
       </header>
       <main className="pt-scroll min-h-0 flex-1 overflow-y-auto" style={{ padding: "2px 14px 18px" }}>
         {!rows.length && <div className="py-12 text-center"><Activity size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-semibold" style={{ color: INK }}>조건에 맞는 회원이 없습니다</p></div>}
-        {rows.map(({ m, assessmentSets, last, draftCount, comparable, status }) => { const displayedViews = last?.selectedViews || POSTURE_VIEW_KEYS; const completedViews = new Set([...(last ? Object.keys(last.photos) : []), ...(last?.poses || []).map((pose) => normalizePostureView(pose.view))]); return <div key={m.id} className="mb-2" style={{ padding: "11px 12px", borderRadius: 14, backgroundColor: CARD, border: `1px solid ${LINE}` }}><button type="button" onClick={() => onSelect(m.id, null)} className="flex w-full items-center gap-2 text-left">
+        {rows.map(({ m, assessmentSets, last, draftCount, comparable, status }) => { const displayedViews = last?.selectedViews || POSTURE_VIEW_KEYS; const completedViews = new Set([...(last ? Object.keys(last.photos) : []), ...(last?.poses || []).map((pose) => normalizePostureView(pose.view))]); return <div key={m.id} className="relative mb-2" style={{ padding: "11px 12px", borderRadius: 14, backgroundColor: CARD, border: `1px solid ${LINE}` }}><button type="button" onClick={() => onSelect(m.id, null)} className="flex w-full items-center gap-2 text-left">
           <span className="min-w-0 flex-1"><span className="flex items-center gap-1.5"><span className="block max-w-[44%] truncate" style={{ fontSize: 14, fontWeight: 600, color: INK }}>{m.name}</span>{status !== "none" && <span style={{ padding: "2px 6px", borderRadius: 6, backgroundColor: status === "review" ? WARN_S : status === "done" ? GOOD_S : CANVAS, color: status === "review" ? WARN : status === "done" ? GOOD : INK2, fontSize: 10, fontWeight: 600 }}>{status === "review" ? "검토 필요" : status === "done" ? "완료" : "작성 중"}</span>}{comparable && <span style={{ padding: "2px 6px", borderRadius: 6, backgroundColor: TINT, color: BRAND_D, fontSize: 10, fontWeight: 600 }}>비교 가능</span>}</span><span className="mt-1 flex items-center gap-2" style={{ fontSize: 11, color: SUB }}><span>{last ? `최근 ${ymd((last.completedAt || last.at).slice(0, 10))}` : "아직 체형분석 이력이 없어요"}</span><span className="flex items-center gap-1" aria-label={`촬영 등록 ${last ? completedViews.size : draftCount}/${displayedViews.length}`}>{displayedViews.map((view) => <i key={view} aria-hidden="true" style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: (last ? completedViews.has(view) : (photos[m.id]?.[view] || []).length > 0) ? BRAND : "#D5DAE3" }} />)}<span>{last ? completedViews.size : draftCount}/{displayedViews.length}</span></span>{last && <span>세트 {assessmentSets.length}개</span>}</span></span>
           <ChevronRight size={15} style={{ color: FAINT }} />
         </button>{!last && <button type="button" onClick={() => onSelect(m.id, null)} className="mt-2 w-full" style={{ height: 38, borderRadius: 8, border: `1px solid #D5D1EB`, backgroundColor: TINT, color: BRAND_D, fontSize: 12, fontWeight: 600 }}>첫 체형분석 시작</button>}</div>; })}
@@ -8667,19 +9399,16 @@ function InbodyForm({ member, last, onSave, onDelete, onPatch, onToast }) {
           </>
   );
 }
-/* ===== 음성으로 일지 쓰기 =====
-   설치된 네이티브 음성 인식이 있으면 우선하고, 없으면 Web Speech API를 쓴다.
-   녹음 원본은 사진과 같은 로컬 IndexedDB에 저장하며 외부 API로 전송하지 않는다. */
-const nativeSTT = () => {
-  try {
-    if (Capacitor.isNativePlatform()) return SpeechRecognition;
-    return window.Capacitor?.Plugins?.SpeechRecognition || null;
-  } catch (e) { return null; }
-};
-const webSTT = () => { try { return window.SpeechRecognition || window.webkitSpeechRecognition || null; } catch (e) { return null; } };
-const sttOK = () => typeof window !== "undefined" && (!!nativeSTT() || !!webSTT());
+/* ===== AI 수업기록 =====
+   STT 장치는 SttProvider 뒤에서 선택하고, LLM은 기존 Firebase AI Gateway만 사용한다.
+   브라우저에서 확보한 원음은 확정 저장까지 로컬 IndexedDB에만 임시 보관한다. */
+const sttRuntime = () => createSttProvider();
+const nativeSTT = () => sttRuntime().native;
+const webSTT = () => sttRuntime().web;
+const sttOK = () => typeof window !== "undefined" && sttRuntime().isAvailable();
 const mediaRecordOK = () => typeof window !== "undefined" && !!navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== "undefined";
 const voiceTime = (seconds) => `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+const lessonRecordLlm = new GatewayLlmProvider({ gatewayProvider: aiProvider, maxRetries: 2 });
 
 function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = null }) {
   const [on, setOn] = useState(false);
@@ -8709,34 +9438,77 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
   const sourceRef = useRef(null);
   const nativeListenersRef = useRef([]);
   const finishTimerRef = useRef(null);
+  const speechSessionRef = useRef(0);
   const stoppingRef = useRef(false);
   const heardRef = useRef(false);
   const textRef = useRef("");
   const audioBlobRef = useRef(null);
   const audioTransferredRef = useRef(false);
   const discardRecordingRef = useRef(false);
+  const recordingStartedAtRef = useRef(0);
+  const sttTrackedRef = useRef(false);
+  const autoStructureRef = useRef(false);
   useEffect(() => { textRef.current = text; }, [text]);
+  useEffect(() => {
+    const pending = loadPendingLessonRecord(memberId, lessonId);
+    if (!pending?.rawTranscript) return;
+    setText(pending.rawTranscript);
+    textRef.current = pending.rawTranscript;
+    setSource(pending.source || "pending");
+    sourceRef.current = pending.source || "pending";
+    if (pending.audioBlobId) {
+      audioBlobRef.current = pending.audioBlobId;
+      setAudioBlobId(pending.audioBlobId);
+      setAudioState("saved");
+    }
+    if (pending.structuredDraft) {
+      setSummaryOriginal(pending.structuredDraft);
+      setSummaryDraft(pending.structuredDraft);
+      setSummaryMeta(pending.aiMeta || null);
+      setSummaryStatus(AI_STATUSES.DRAFT);
+    } else if (pending.status === "queued" || pending.status === "unstructured") {
+      setSummaryStatus(pending.status);
+    }
+  }, [memberId, lessonId]);
   const clearNativeListeners = () => {
     const listeners = nativeListenersRef.current.splice(0);
     listeners.forEach((listener) => {
       try { Promise.resolve(listener?.remove?.()).catch(() => {}); } catch (e) {}
     });
   };
-  const finishRecognition = (showEmpty = true) => {
+  const finishRecognition = (showEmpty = true, sessionId = speechSessionRef.current, emptyMessage = SPEECH_NO_RESULT_MESSAGE) => {
+    if (sessionId !== speechSessionRef.current) return;
     if (finishTimerRef.current) clearTimeout(finishTimerRef.current);
     finishTimerRef.current = null;
     stoppingRef.current = false;
     recRef.current = null;
     setOn(false);
     setFinishing(false);
+    setText((current) => {
+      const finalized = current.replace(/\s*⟨([^⟩]*)⟩\s*$/, (_, live) => ` ${live}`).trim();
+      textRef.current = finalized;
+      return finalized;
+    });
     clearNativeListeners();
     if (showEmpty && !heardRef.current && !textRef.current.trim()) {
-      setErr("음성이 인식되지 않았습니다. 조금 더 크게 말한 뒤 다시 시도해 주세요.");
+      setErr(emptyMessage);
     }
+    if (!sttTrackedRef.current && recordingStartedAtRef.current) {
+      sttTrackedRef.current = true;
+      trackLessonRecordUsage("stt_complete", { seconds: Math.min(MAX_STT_SECONDS, Math.max(1, Math.round((Date.now() - recordingStartedAtRef.current) / 1000))) });
+    }
+    setTimeout(() => {
+      if (!autoStructureRef.current && textRef.current.trim()) {
+        autoStructureRef.current = true;
+        requestSummary(textRef.current);
+      }
+    }, 180);
+    /* Late native callbacks from the completed/timed-out recognizer are stale. */
+    speechSessionRef.current = sessionId + 1;
   };
-  const scheduleFinish = (delay = 1200, showEmpty = true) => {
+  const scheduleFinish = (delay = 1200, showEmpty = true, sessionId = speechSessionRef.current, emptyMessage = SPEECH_NO_RESULT_MESSAGE) => {
     if (finishTimerRef.current) clearTimeout(finishTimerRef.current);
-    finishTimerRef.current = setTimeout(() => finishRecognition(showEmpty), delay);
+    finishTimerRef.current = setTimeout(() => finishRecognition(showEmpty, sessionId, emptyMessage), delay);
   };
   useEffect(() => {
     if (!on) return;
@@ -8798,11 +9570,18 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
     setAudioState("recording");
   };
   const start = async () => {
+    const sessionId = speechSessionRef.current + 1;
+    speechSessionRef.current = sessionId;
     if (finishTimerRef.current) clearTimeout(finishTimerRef.current);
     finishTimerRef.current = null;
     stoppingRef.current = false;
     heardRef.current = false;
+    sttTrackedRef.current = false;
+    autoStructureRef.current = false;
+    recordingStartedAtRef.current = Date.now();
+    trackLessonRecordUsage("record_started");
     setFinishing(false);
+    setErr("");
     const NS = nativeSTT();
     const R = webSTT();
     if (!NS && !R && !mediaRecordOK()) {
@@ -8817,17 +9596,24 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
     }
     audioTransferredRef.current = false;
     let mediaError = null;
-    try {
-      await prepareMedia();
-    } catch (error) {
-      const denied = error?.name === "NotAllowedError" || error?.name === "PermissionDeniedError";
-      mediaError = error;
-      setAudioState(denied ? "denied" : "unsupported");
-      deviceLog("microphone_permission_failed", { memberId, lessonId, permission: "record_audio", state: denied ? "denied" : "failed", ...deviceError(error) });
-      if (!NS && !R) {
-        setErr(denied ? "마이크 권한이 거부되었습니다. 앱 설정에서 허용하거나 직접 입력해 주세요." : "마이크를 시작하지 못했습니다. 직접 입력을 이용해 주세요.");
-        return;
+    /* Android SpeechRecognizer와 MediaRecorder가 동시에 마이크를 잡으면
+       녹음 파일만 남고 전사 결과가 오지 않는다. 네이티브 앱에서는 전사를
+       우선하고, 브라우저 경로에서만 별도 녹음 원본을 만든다. */
+    if (!NS) {
+      try {
+        await prepareMedia();
+      } catch (error) {
+        const denied = error?.name === "NotAllowedError" || error?.name === "PermissionDeniedError";
+        mediaError = error;
+        setAudioState(denied ? "denied" : "unsupported");
+        deviceLog("microphone_permission_failed", { memberId, lessonId, permission: "record_audio", state: denied ? "denied" : "failed", ...deviceError(error) });
+        if (!R) {
+          setErr(denied ? "마이크 권한이 거부되었습니다. 앱 설정에서 허용하거나 직접 입력해 주세요." : "마이크를 시작하지 못했습니다. 직접 입력을 이용해 주세요.");
+          return;
+        }
       }
+    } else {
+      setAudioState("idle");
     }
     if (!NS && !R) {
       setErr("녹음은 가능하지만 자동 전사는 지원되지 않습니다. 중지 후 원문을 직접 입력해 주세요.");
@@ -8839,54 +9625,58 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
     if (NS) {
       try {
         const availability = await NS.available?.().catch(() => null);
+        if (sessionId !== speechSessionRef.current) return;
         if (availability && availability.available === false) throw new Error("speech_recognition_unavailable");
         const perm = await NS.checkPermissions?.().catch(() => null);
+        if (sessionId !== speechSessionRef.current) return;
         deviceLog("speech_permission_checked", { memberId, lessonId, permission: "speech_recognition", state: perm?.speechRecognition || "unknown", source: "native" });
-        if (!perm || perm.speechRecognition !== "granted") {
+        if (!isSpeechPermissionGranted(perm)) {
           const req = await NS.requestPermissions?.().catch(() => null);
-          if (req && req.speechRecognition !== "granted") {
+          if (sessionId !== speechSessionRef.current) return;
+          if (!isSpeechPermissionGranted(req)) {
             stopMedia();
-            setErr("음성 인식 권한이 거부되었습니다. 직접 입력을 이용해 주세요.");
+            setErr(describeSpeechError(new Error("permission denied")).message);
             deviceLog("speech_permission_denied", { memberId, lessonId, permission: "speech_recognition", state: "denied", source: "native" });
             return;
           }
         }
         setErr(mediaError ? "음성 인식은 시작됐지만 녹음 원본은 저장되지 않습니다." : ""); setOn(true); setSource("native"); sourceRef.current = "native";
         clearNativeListeners();
-        const partialListener = await NS.addListener?.("partialResults", (d) => {
-          const t = (d?.matches && d.matches[0]) || "";
-          if (t) {
-            heardRef.current = true;
-            setText((p) => (p ? p.split(" ⟨")[0] : "") + " ⟨" + t + "⟩");
-            if (stoppingRef.current) scheduleFinish(350, false);
-          }
-        });
         const stateListener = await NS.addListener?.("listeningState", (d) => {
+          if (sessionId !== speechSessionRef.current) return;
           if (d?.status === "started") { setOn(true); setFinishing(false); }
-          else if (d?.status === "stopped") { setOn(false); setFinishing(true); scheduleFinish(800); }
-        });
-        nativeListenersRef.current = [partialListener, stateListener].filter(Boolean);
-        recRef.current = { native: true, stop: () => NS.stop?.() };
-        Promise.resolve(NS.start({ language: "ko-KR", partialResults: true, popup: false })).then((result) => {
-          const got = (result?.matches && result.matches[0]) || "";
-          if (got) {
-            heardRef.current = true;
-            setText((previous) => `${previous ? previous.split(" ⟨")[0].trim() + " " : ""}${got}`.trim());
+          else if (d?.status === "stopped") {
+            setOn(false);
+            setFinishing(true);
+            /* Android의 stopped는 발화 종료일 뿐 최종 텍스트 완료가 아니다. */
+            scheduleFinish(NATIVE_SPEECH_RESULT_TIMEOUT_MS, true, sessionId, SPEECH_RESULT_TIMEOUT_MESSAGE);
           }
-          if (stoppingRef.current) scheduleFinish(got ? 250 : 800, !got);
-        }).catch((error) => {
-          if (stoppingRef.current) { scheduleFinish(0); return; }
-          setErr("음성 인식이 중단되었습니다. 기존 작성 내용은 유지됩니다.");
-          deviceLog("voice_transcription_failed", { memberId, lessonId, source: "native", ...deviceError(error) });
-          clearNativeListeners(); setOn(false); setFinishing(false); stopMedia();
         });
+        nativeListenersRef.current = [stateListener].filter(Boolean);
+        recRef.current = { native: true, sessionId, stop: () => NS.stop?.() };
         deviceLog("voice_record_started", { memberId, lessonId, source: "native", storage: "indexedDB" });
+        /* Final-result mode keeps the start Promise pending until onResults/onError.
+           This avoids the plugin 7.x partial-mode bug that loses late Android errors. */
+        const result = await NS.start({ language: "ko-KR", maxResults: 3, partialResults: false, popup: false });
+        if (sessionId !== speechSessionRef.current) return;
+        const got = String(result?.matches?.[0] || "").trim();
+        if (got) {
+          heardRef.current = true;
+          setText((previous) => {
+            const nextText = `${previous ? previous.replace(/\s*⟨[^⟩]*⟩\s*$/, "").trim() + " " : ""}${got}`.trim();
+            textRef.current = nextText;
+            return nextText;
+          });
+        }
+        finishRecognition(!got, sessionId);
         return;
       } catch (error) {
+        if (sessionId !== speechSessionRef.current) return;
+        const diagnostic = describeSpeechError(error);
         clearNativeListeners(); stopMedia();
-        setErr("음성 인식을 시작하지 못했습니다. 직접 입력을 이용해 주세요.");
-        setOn(false); setFinishing(false);
-        deviceLog("voice_transcription_failed", { memberId, lessonId, source: "native", ...deviceError(error) });
+        finishRecognition(false, sessionId);
+        setErr(diagnostic.message);
+        deviceLog("voice_transcription_failed", { memberId, lessonId, source: "native", kind: diagnostic.kind, ...deviceError(error) });
         return;
       }
     }
@@ -8895,31 +9685,45 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
       r.lang = "ko-KR"; r.continuous = true; r.interimResults = true;
       let fixed = text ? text + " " : "";
       r.onresult = (e) => {
+        if (sessionId !== speechSessionRef.current) return;
         let live = "";
         for (let i = e.resultIndex; i < e.results.length; i++) {
           const t = e.results[i][0].transcript;
           if (t) heardRef.current = true;
           if (e.results[i].isFinal) fixed += t + " "; else live += t;
         }
-        setText((fixed + live).trim());
+        const nextText = (fixed + live).trim();
+        textRef.current = nextText;
+        setText(nextText);
       };
       r.onerror = (event) => {
-        setErr(event?.error === "not-allowed" ? "마이크 권한이 거부되었습니다. 직접 입력을 이용해 주세요." : "음성 인식이 중단되었습니다. 기존 작성 내용은 유지됩니다.");
+        if (sessionId !== speechSessionRef.current) return;
+        const diagnostic = describeSpeechError({ code: event?.error, message: event?.message });
         setOn(false); stopMedia();
-        finishRecognition(false);
-        deviceLog("voice_transcription_failed", { memberId, lessonId, source: "web_speech", code: event?.error || "unknown", message: "speech recognition stopped" });
+        finishRecognition(false, sessionId);
+        setErr(diagnostic.message);
+        deviceLog("voice_transcription_failed", { memberId, lessonId, source: "web_speech", kind: diagnostic.kind, code: event?.error || "unknown", message: "speech recognition stopped" });
       };
-      r.onend = () => { setOn(false); stopMedia(); if (stoppingRef.current) scheduleFinish(250); else finishRecognition(true); };
+      r.onend = () => {
+        if (sessionId !== speechSessionRef.current) return;
+        setOn(false); stopMedia();
+        if (stoppingRef.current) scheduleFinish(250, true, sessionId); else finishRecognition(true, sessionId);
+      };
+      r.sessionId = sessionId;
       recRef.current = r; setErr(""); setOn(true); setSource("web_speech"); sourceRef.current = "web_speech"; r.start();
       deviceLog("voice_record_started", { memberId, lessonId, source: "web_speech", storage: "indexedDB" });
     } catch (error) {
+      if (sessionId !== speechSessionRef.current) return;
+      const diagnostic = describeSpeechError(error);
       stopMedia();
-      setErr("음성 인식을 시작하지 못했습니다. 직접 입력을 이용해 주세요.");
-      deviceLog("voice_transcription_failed", { memberId, lessonId, source: "web_speech", ...deviceError(error) });
+      finishRecognition(false, sessionId);
+      setErr(diagnostic.message);
+      deviceLog("voice_transcription_failed", { memberId, lessonId, source: "web_speech", kind: diagnostic.kind, ...deviceError(error) });
     }
   };
   const stop = () => {
     const rec = recRef.current;
+    const sessionId = rec?.sessionId || speechSessionRef.current;
     stoppingRef.current = true;
     setOn(false);
     setFinishing(true);
@@ -8927,46 +9731,93 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
     try {
       /* Android 플러그인의 stop Promise가 끝나지 않는 버전이 있어 기다리지 않는다. */
       const pending = rec?.stop?.();
-      Promise.resolve(pending).catch(() => scheduleFinish(0));
-    } catch (e) { scheduleFinish(0); }
+      Promise.resolve(pending).catch((error) => {
+        const diagnostic = describeSpeechError(error);
+        deviceLog("voice_record_stop_failed", { memberId, lessonId, source: sourceRef.current || "unknown", kind: diagnostic.kind, ...deviceError(error) });
+      });
+    } catch (error) {
+      const diagnostic = describeSpeechError(error);
+      deviceLog("voice_record_stop_failed", { memberId, lessonId, source: sourceRef.current || "unknown", kind: diagnostic.kind, ...deviceError(error) });
+    }
     stopMedia();
     /* 마지막 partial/final 결과와 녹음 저장 완료를 받은 뒤 반드시 다음 UI를 보여 준다. */
-    scheduleFinish(rec?.native ? 1800 : rec ? 1200 : 500, !!rec);
+    scheduleFinish(
+      rec?.native ? NATIVE_SPEECH_RESULT_TIMEOUT_MS : rec ? 1200 : 500,
+      !!rec,
+      sessionId,
+      rec?.native ? SPEECH_RESULT_TIMEOUT_MESSAGE : SPEECH_NO_RESULT_MESSAGE,
+    );
     deviceLog("voice_record_stopped", { memberId, lessonId, source: sourceRef.current || "unknown", storage: "indexedDB" });
   };
-  const requestSummary = async () => {
+  useEffect(() => {
+    if (on && elapsed >= MAX_STT_SECONDS) {
+      setErr(`${MAX_STT_SECONDS}초 상한에 도달해 녹음을 멈췄습니다.`);
+      stop();
+    }
+  }, [on, elapsed]);
+  useEffect(() => {
     const transcript = text.trim();
     if (!transcript) return;
-    if (aiProvider.getStatus().status !== "connected") { setSummaryStatus(AI_STATUSES.NOT_CONNECTED); setErr("AI 요약 미연결 상태입니다. 전사 원문은 그대로 저장할 수 있습니다."); return; }
+    savePendingLessonRecord(memberId, lessonId, {
+      schemaVersion: 2,
+      status: summaryDraft ? "structured" : summaryStatus === "queued" ? "queued" : "pending",
+      rawTranscript: transcript,
+      termMap: mapPilatesTerms(transcript),
+      structuredDraft: summaryDraft,
+      aiMeta: summaryMeta,
+      audioBlobId: audioBlobId || null,
+      source: source || "unknown",
+    });
+  }, [text, summaryDraft, summaryMeta, summaryStatus, audioBlobId, source, memberId, lessonId]);
+  const requestSummary = async (transcriptOverride = "") => {
+    const transcript = String(transcriptOverride || textRef.current || text).trim();
+    if (!transcript) return;
+    const termMap = mapPilatesTerms(transcript);
+    if (globalThis.navigator?.onLine === false) {
+      setSummaryStatus("queued");
+      savePendingLessonRecord(memberId, lessonId, { schemaVersion: 2, status: "queued", rawTranscript: transcript, termMap, audioBlobId: audioBlobId || null, source: source || "unknown" });
+      setErr("오프라인 상태입니다. 원문은 이 기기의 미작성 큐에 보관했으며 지금 바로 미구조화 기록으로 저장할 수 있습니다.");
+      return;
+    }
+    if (aiProvider.getStatus().status !== "connected") { setSummaryStatus(AI_STATUSES.NOT_CONNECTED); setErr("현재 AI 정리를 사용할 수 없습니다. 전사 원문은 미구조화 기록으로 저장할 수 있습니다."); return; }
+    const consent = await ensureMemberAIConsent(memberId, "summarizeVoice");
+    if (!consent.ok) { setErr(consent.message); return; }
     setSummaryBusy(true); setErr("");
     try {
-      const result = await aiProvider.summarizeVoice(buildVoiceSummaryInput({ transcript, memberId, lessonId }));
-      if (result.status === AI_STATUSES.NOT_CONNECTED) { setSummaryStatus(result.status); return; }
-      setSummaryOriginal(result.output); setSummaryDraft(result.output); setSummaryMeta(aiMetaFrom(result)); setSummaryStatus(AI_STATUSES.DRAFT);
+      const result = await lessonRecordLlm.structureLessonRecord(buildLessonRecordInput({ rawTranscript: transcript, termMap, memberId, lessonId }));
+      if (result.status !== "structured") {
+        setSummaryStatus(result.status === "queued" ? "queued" : "unstructured");
+        trackLessonRecordUsage("llm_failed", result);
+        setErr("AI가 형식을 확인하지 못했습니다. 원문은 유지되며 미구조화로 저장하거나 다시 정리할 수 있습니다.");
+        return;
+      }
+      setSummaryOriginal(result.output); setSummaryDraft(result.output); setSummaryMeta(aiMetaFrom(result.meta)); setSummaryStatus(AI_STATUSES.DRAFT);
+      trackLessonRecordUsage("llm_complete", result);
     } catch (error) {
-      setSummaryStatus(AI_STATUSES.ERROR);
-      setErr(`AI 요약을 불러오지 못했습니다${error?.code ? ` (${error.code})` : ""}. 전사 원문은 유지됩니다.`);
+      setSummaryStatus("unstructured");
+      trackLessonRecordUsage("llm_failed", { attempts: 3, latencyMs: 0 });
+      setErr(`${aiFailureMessage(error, "AI 수업기록을 정리하지 못했습니다.")} 전사 원문은 유지되며 미구조화로 저장할 수 있습니다.`);
     } finally { setSummaryBusy(false); }
   };
-  const setSummaryField = (field, value, isList = true) => setSummaryDraft((current) => ({ ...(current || {}), [field]: isList ? aiListValue(value) : value }));
+  const setSummaryField = (field, value) => setSummaryDraft((current) => editStructuredField(current || {}, field, value));
   useEffect(() => () => {
+    speechSessionRef.current += 1;
     if (finishTimerRef.current) clearTimeout(finishTimerRef.current);
-    discardRecordingRef.current = true;
+    discardRecordingRef.current = false;
     try { recRef.current?.stop?.(); } catch (e) {}
     clearNativeListeners();
     const recorder = mediaRef.current;
     if (recorder && recorder.state !== "inactive") { try { recorder.stop(); } catch (e) {} }
     streamRef.current?.getTracks?.().forEach((track) => track.stop());
-    if (audioBlobRef.current && !audioTransferredRef.current) forgetBlobs([audioBlobRef.current]);
   }, []);
   const supported = sttOK() || mediaRecordOK();
   return (
     <div ref={boxRef} className="rounded-2xl p-3" style={{ backgroundColor: CANVAS, boxShadow: highlight ? `0 0 0 2.5px ${PRIMARY}` : "none", transition: "box-shadow .4s ease" }}>
       <div className="flex items-center gap-2">
-        <p className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: INK }}>음성으로 일지 쓰기</p>
+        <div className="min-w-0 flex-1"><p className="text-xs font-extrabold" style={{ color: INK }}>AI 수업기록</p><p className="mt-0.5 text-[10px]" style={{ color: SUB }}>수업 후 10초만 말하면 AI가 기록을 정리합니다.</p></div>
         <button onClick={on ? stop : start} disabled={!supported || audioState === "saving" || finishing} aria-label={on ? "음성 녹음 멈추기" : "음성으로 말하기 시작"} className="flex shrink-0 items-center gap-1.5 rounded-full px-3 py-2 text-xs font-extrabold text-white disabled:opacity-40"
           style={{ backgroundColor: on ? BAD : BRAND }}>
-          {finishing ? <><Loader2 size={12} className="animate-spin" /> 음성 정리 중…</> : on ? <><span className="h-2 w-2 animate-pulse rounded-full bg-white" /> {voiceTime(elapsed)} · 멈추기</> : <><Smartphone size={12} /> 말하기 시작</>}
+          {finishing ? <><Loader2 size={12} className="animate-spin" /> 전사 중…</> : on ? <><span className="h-2 w-2 animate-pulse rounded-full bg-white" /> {voiceTime(elapsed)} / 01:30 · 멈추기</> : <><Smartphone size={12} /> 말하기 시작</>}
         </button>
       </div>
       {!supported && <Sub className="mt-1.5 block leading-relaxed" style={{ color: BAD }}>녹음과 음성 인식을 지원하지 않는 기기입니다. 아래 직접 입력란을 이용해 주세요.</Sub>}
@@ -8981,26 +9832,30 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
       {(text || audioState === "saved" || audioState === "saving") && (
         <>
           <textarea rows={4} value={text} onChange={(event) => { setText(event.target.value); setSummaryOriginal(null); setSummaryDraft(null); setSummaryMeta(null); setSummaryStatus(AI_STATUSES.NOT_CONNECTED); }} aria-label="음성 전사 원문" className={`${inputCls} mt-2 h-auto resize-none py-2 text-sm leading-relaxed`} />
-          <Sub className="mt-1.5 block">전사 완료 · {summaryStatus === AI_STATUSES.DRAFT ? "AI 요약 초안" : aiProvider.getStatus().status === "connected" ? "AI 요약 대기" : "AI 요약 미연결"} · 저장 전 강사 확인 필요{audioState === "saved" ? " · 녹음 원본 로컬 저장됨" : audioState === "saving" ? " · 녹음 저장 중" : ""}</Sub>
-          <button disabled={on || summaryBusy || !text.trim() || aiProvider.getStatus().status !== "connected"} onClick={requestSummary} className="mt-2 flex h-10 w-full items-center justify-center gap-1.5 rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: TINT, color: PRIMARY }}>
-            {summaryBusy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} {summaryDraft ? "AI 요약 다시 생성" : "AI 요약 생성"}
+          <Sub className="mt-1.5 block">원문 보존 · 용어 매핑 분리 · {summaryStatus === AI_STATUSES.DRAFT ? "구조화 초안" : summaryStatus === "queued" ? "오프라인 대기" : summaryStatus === "unstructured" ? "미구조화" : "정리 대기"} · 저장 전 강사 확인 필요{audioState === "saved" ? " · 원음 임시 보관" : audioState === "saving" ? " · 원음 저장 중" : ""}</Sub>
+          <button disabled={on || summaryBusy || !text.trim()} onClick={() => requestSummary()} className="mt-2 flex h-10 w-full items-center justify-center gap-1.5 rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: TINT, color: PRIMARY }}>
+            {summaryBusy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} {summaryDraft || summaryStatus === "unstructured" || summaryStatus === "queued" ? "다시 정리" : "AI로 정리"}
           </button>
           {summaryDraft && <div className="mt-2 space-y-2 rounded-xl p-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
-            {[{ k: "todayExercises", l: "오늘 운동" }, { k: "memberCondition", l: "회원 상태", text: true }, { k: "pain", l: "통증" }, { k: "improvements", l: "개선" }, { k: "nextGoals", l: "다음 목표" }, { k: "homework", l: "숙제" }, { k: "precautions", l: "주의사항" }].map((field) => (
-              <label key={field.k} className="block"><span className="mb-1 block text-[11px] font-bold" style={{ color: SUB }}>{field.l}</span><textarea rows={field.text ? 1 : 2} value={field.text ? summaryDraft[field.k] || "" : aiListText(summaryDraft[field.k])} onChange={(event) => setSummaryField(field.k, event.target.value, !field.text)} className={`${inputCls} h-auto resize-none py-2 text-xs`} /></label>
+            {[{ k: "didToday", l: "오늘 한 내용" }, { k: "observations", l: "관찰" }, { k: "responses", l: "회원 반응" }, { k: "nextFocus", l: "다음 초점" }, { k: "uncertain", l: "확인 필요" }].map((field) => (
+              <label key={field.k} className="block"><span className="mb-1 block text-[11px] font-bold" style={{ color: SUB }}>{field.l}</span><textarea rows={2} value={structuredFieldText(summaryDraft, field.k)} onChange={(event) => setSummaryField(field.k, event.target.value)} placeholder="한 줄에 한 항목" className={`${inputCls} h-auto resize-none py-2 text-xs`} /></label>
             ))}
           </div>}
           <div className="mt-2 flex gap-1.5">
-            <button onClick={() => { setText(""); setErr(""); setSummaryOriginal(null); setSummaryDraft(null); setSummaryMeta(null); setSummaryStatus(AI_STATUSES.NOT_CONNECTED); if (audioBlobId) forgetBlobs([audioBlobId]); audioBlobRef.current = null; setAudioBlobId(null); setAudioState("idle"); }} className="rounded-xl px-3 py-2 text-xs font-bold" style={{ backgroundColor: CARD, color: SUB }}>지우기</button>
+            <button onClick={() => { setText(""); textRef.current = ""; setErr(""); setSummaryOriginal(null); setSummaryDraft(null); setSummaryMeta(null); setSummaryStatus(AI_STATUSES.NOT_CONNECTED); if (audioBlobId) forgetBlobs([audioBlobId]); audioBlobRef.current = null; setAudioBlobId(null); setAudioState("idle"); removePendingLessonRecord(memberId, lessonId); }} className="rounded-xl px-3 py-2 text-xs font-bold" style={{ backgroundColor: CARD, color: SUB }}>취소</button>
+            <button disabled={on || finishing} onClick={() => { setText(""); textRef.current = ""; setErr(""); setSummaryOriginal(null); setSummaryDraft(null); setSummaryMeta(null); setSummaryStatus(AI_STATUSES.NOT_CONNECTED); if (audioBlobId) forgetBlobs([audioBlobId]); audioBlobRef.current = null; setAudioBlobId(null); setAudioState("idle"); removePendingLessonRecord(memberId, lessonId); setTimeout(() => start(), 0); }} className="rounded-xl px-3 py-2 text-xs font-bold" style={{ backgroundColor: TINT, color: PRIMARY }}>재녹음</button>
             <button disabled={on || audioState === "saving" || !text.trim()} onClick={() => {
               const transcript = text.trim();
-              const teacherText = summaryDraft ? formatVoiceSummary(summaryDraft) : transcript;
-              onApply(teacherText, { transcript, aiSummary: summaryOriginal, aiSummaryTeacherEdited: summaryDraft, aiSummaryStatus: summaryDraft ? AI_STATUSES.DRAFT : AI_STATUSES.NOT_CONNECTED, aiMeta: summaryMeta, audioBlobId: audioBlobId || null, voiceSource: source || "unknown", recordedAt: new Date().toISOString() });
+              const termMap = mapPilatesTerms(transcript);
+              const teacherText = summaryDraft ? structuredRecordBody(summaryDraft, transcript) : transcript;
+              const lessonRecord = createLessonRecordMeta({ rawTranscript: transcript, termMap, structuredDraft: summaryDraft, status: summaryDraft ? "structured" : "unstructured", source: source || "unknown", recordedAt: new Date().toISOString(), audioBlobId: audioBlobId || null, aiMeta: summaryMeta, usage: summaryMeta?.usage || null });
+              savePendingLessonRecord(memberId, lessonId, lessonRecord);
+              onApply(teacherText, { transcript, aiSummary: summaryOriginal, aiSummaryTeacherEdited: summaryDraft, aiSummaryStatus: summaryDraft ? AI_STATUSES.DRAFT : "unstructured", aiMeta: summaryMeta, lessonRecord, audioBlobId: audioBlobId || null, voiceSource: source || "unknown", recordedAt: lessonRecord.recordedAt });
               audioTransferredRef.current = true;
               audioBlobRef.current = null;
               setText(""); setSummaryOriginal(null); setSummaryDraft(null); setSummaryMeta(null); setSummaryStatus(AI_STATUSES.NOT_CONNECTED); setAudioBlobId(null); setAudioState("idle");
             }} className="flex-1 rounded-xl py-2 text-xs font-extrabold text-white disabled:opacity-40" style={{ background: GRAD }}>
-              {summaryDraft ? "강사 확인 요약 적용" : "전사 원문 적용"}
+              {summaryDraft ? "확인한 초안 적용" : "미구조화 원문 적용"}
             </button>
           </div>
         </>
@@ -9073,7 +9928,7 @@ function NoteForm({ member, schedule, onSave, settings, onSettings, backHint, vo
         </div>
         <VoiceNote memberId={member.id} highlight={voiceHint} onSeen={onVoiceSeen} onApply={(t, meta) => { setN((x) => ({ ...x, body: x.body.trim() ? `${x.body.trim()}\n${t}` : t })); setVoiceMeta(meta); }} />
         <Field label="피드백 내용" hint={`${n.body.length}자`}>
-          <textarea rows={5} value={n.body} onChange={(e) => setN({ ...n, body: e.target.value })}
+          <textarea rows={5} value={n.body} onChange={(e) => { const value = e.target.value; setN({ ...n, body: value }); setVoiceMeta((meta) => meta?.lessonRecord ? { ...meta, lessonRecord: { ...meta.lessonRecord, instructorBodyOverride: value, instructorBodyOrigin: "instructor" } } : meta); }}
             placeholder="위 문구를 눌러 채우거나 직접 입력하세요" className={`${inputCls} resize-none leading-relaxed`} />
         </Field>
         {n.body && (
@@ -9088,12 +9943,13 @@ function NoteForm({ member, schedule, onSave, settings, onSettings, backHint, vo
             <span className="text-xs font-bold" style={{ color: INK }}>저장하면 오늘 일정으로 돌아갑니다 · 다음 회원을 이어서 처리하세요</span>
           </div>
         )}
-        <PrimaryBtn disabled={!n.body.trim()} onClick={() => {
-          onSave(member.id, {
+        <PrimaryBtn disabled={!n.body.trim()} onClick={async () => {
+          const stored = await onSave(member.id, {
             id: uid(), date: n.date, type: n.type, instructor: member.instructor, body: n.body.trim(),
             tags: n.tags.split(",").map((t) => t.trim()).filter(Boolean),
             ...(voiceMeta || {}),
           });
+          if (stored === false) return;
           setN({ ...n, body: "", tags: "" });
           setVoiceMeta(null);
         }}>
@@ -9448,7 +10304,7 @@ function InfoForm({ member, members, onPatch, onDelete, onToast }) {
           <div className="grid grid-cols-3 gap-2">
             <Field label="정규 잔여"><input inputMode="numeric" value={d.regular} onChange={(e) => S({ regular: Math.max(0, parseInt(e.target.value || "0", 10)) })} className={inputCls} /></Field>
             <Field label="서비스 잔여"><input inputMode="numeric" value={d.service} onChange={(e) => S({ service: Math.max(0, parseInt(e.target.value || "0", 10)) })} className={inputCls} /></Field>
-            <Field label="등록 총 횟수"><input inputMode="numeric" value={d.total} onChange={(e) => S({ total: Math.max(0, parseInt(e.target.value || "0", 10)) })} className={inputCls} /></Field>
+            <Field label="누적 등록 횟수"><input inputMode="numeric" value={d.total} onChange={(e) => S({ total: Math.max(0, parseInt(e.target.value || "0", 10)) })} className={inputCls} /></Field>
           </div>
           <div className="grid grid-cols-2 gap-2">
             <Field label="시작일"><input type="date" value={d.startDate} onChange={(e) => S({ startDate: e.target.value })} className={inputCls} /></Field>
@@ -9709,8 +10565,8 @@ function HandoffCard({ db, photos, account, onImport, onToast }) {
             <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md" style={{ backgroundColor: withPhotos ? BRAND : CARD, border: `1px solid ${withPhotos ? BRAND : LINE}` }}>
               {withPhotos && <Check size={12} color="#fff" />}
             </span>
-            <span className="min-w-0 flex-1 text-left text-xs font-bold" style={{ color: INK }}>비포애프터 사진도 함께 넘기기</span>
-            <Sub>용량이 커집니다</Sub>
+            <span className="min-w-0 flex-1 text-left text-xs font-bold" style={{ color: INK }}>사진도 함께 넘기기</span>
+            <Sub>기본 미포함 · 용량 증가</Sub>
           </button>
           <button onClick={make} disabled={busy} className="flex w-full items-center justify-center gap-1.5 rounded-2xl py-3.5 text-sm font-extrabold text-white disabled:opacity-60" style={{ backgroundColor: BRAND }}>
             {busy ? <Loader2 size={15} className="animate-spin" /> : <Ticket size={15} />} 인계 코드 만들기
@@ -9718,7 +10574,7 @@ function HandoffCard({ db, photos, account, onImport, onToast }) {
           <button onClick={exportAll} className="flex w-full items-center justify-center gap-1.5 rounded-2xl py-3 text-sm font-bold" style={{ backgroundColor: CANVAS, color: INK }}>
             <Download size={14} /> 백업 파일로 내보내기 (.json)
           </button>
-          <Sub>기기가 바뀌거나 고장 났을 때 되살리는 유일한 방법입니다. 일주일에 한 번은 내보내 두세요.</Sub>
+          <Sub>백업 파일(.json)에는 원본 사진이 포함됩니다. 인계 코드는 위 ‘사진도 함께 넘기기’를 선택해야 사진이 포함됩니다.</Sub>
           {pack && (
             <div className="rounded-2xl p-4" style={{ backgroundColor: TINT }}>
               <Sub>인계 번호</Sub>
@@ -9963,7 +10819,7 @@ function SettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings,
     </div>
   );
 }
-function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords }) {
+function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding }) {
   const [view, setView] = useState("hub");
   const [busy, setBusy] = useState(false);
   const [deleteStep, setDeleteStep] = useState("intro");
@@ -10011,10 +10867,11 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
       { key: "assessment", title: "체형분석 설정", description: "기본 방식 · AI 분석 · 직접 포인트/그리기", Icon: Activity },
       { key: "center", title: "센터 정보", description: "센터명 · 담당자 · 개인/그룹 단가", Icon: SettingsIcon },
       { key: "theme", title: "화면 설정", description: "폰 설정 · 라이트 · 다크", Icon: Smartphone },
-      { key: "data", title: "데이터 상태", description: "기기 저장 · 로그인 · Firebase 상태", Icon: Check },
+      { key: "data", title: "데이터 상태", description: "기기 저장 · 로그인 상태", Icon: Check },
       { key: "backup", title: "데이터 이관 · 백업", description: "기기 이동 · 백업 파일", Icon: Download },
     ] },
     { label: "기타", items: [
+      { key: "onboarding", title: "PilaTeacher 사용법", description: "기록 → 기억 → 다음 수업 흐름 다시 보기", Icon: Play, action: onOpenOnboarding },
       { key: "knowledge", title: "오늘의 지식", description: "해부학 · 영양학 모아보기", Icon: Star },
       { key: "account", title: "계정", description: "프로필 사진 · 이메일 계정 · 로그아웃", Icon: Users },
       { key: "app", title: "앱 정보", description: "앱 버전 확인", Icon: AlertCircle },
@@ -10200,10 +11057,13 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
 
 export default function App() {
   const [phase, setPhase] = useState("splash");
+  const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const onboardingCheckedRef = useRef(false);
   const [accounts, setAccounts] = useState([]);
   const [account, setAccount] = useState(null);
   const [db, setDb] = useState(emptyDb("", ""));
   const [photos, setPhotos] = useState({});
+  const photosRef = useRef({});
   const [tab, setTab] = useState("schedule");
   const [section, setSection] = useState("inbody");
   const [selectedId, setSelectedId] = useState(null);
@@ -10218,10 +11078,24 @@ export default function App() {
   const briefing = false;
   const [savedAt, setSavedAt] = useState(null);
   const [toast, setToast] = useState(null);
+  const [localPhotoWarning, setLocalPhotoWarning] = useState(false);
   const [brief, setBrief] = useState(null);
   const [favOpen, setFavOpen] = useState(false);
   const [themePref, setThemePref] = useState("system");
   const [sysDark, setSysDark] = useState(sysDarkNow());
+  const closeOnboarding = useCallback(() => {
+    completeOnboarding(window.localStorage);
+    setOnboardingOpen(false);
+  }, []);
+  useBackClose(onboardingOpen, closeOnboarding);
+  useEffect(() => {
+    if (phase === "splash" || onboardingCheckedRef.current) return;
+    onboardingCheckedRef.current = true;
+    setOnboardingOpen(!hasCompletedOnboarding(window.localStorage));
+  }, [phase]);
+  const showLocalPhotoWarningOnce = () => {
+    if (claimLocalPhotoNotice(window.localStorage)) setLocalPhotoWarning(true);
+  };
   useEffect(() => {
     let mq;
     try { mq = window.matchMedia("(prefers-color-scheme: dark)"); } catch (e) { return; }
@@ -10386,6 +11260,7 @@ export default function App() {
         if (records.length) deviceLog("member_photos_restored", { memberId, view, storage: "indexedDB", count: records.filter((photo) => !!photo?.src).length, state: records.every((photo) => !!photo?.src) ? "complete" : "partial" });
       });
     });
+    photosRef.current = hyd;
     setPhotos(hyd);
     setSelectedId(data.members[0]?.id || null);
     setAnalysisMemberId(null);
@@ -10438,6 +11313,7 @@ export default function App() {
   const cloudTimer = useRef(null);
   const cloudPending = useRef(null);
   const accountDeletionInFlight = useRef(false);
+  const attendanceMutationsInFlight = useRef(new Set());
   const queueCloud = useCallback((uidStr, data) => {
     if (!fbReady || !uidStr) return;
     cloudPending.current = { uid: uidStr, data };
@@ -10512,11 +11388,12 @@ export default function App() {
       else await legacyWrite();
       return true;
     }
-    catch (e) { setDb(prev); deviceLog("app_data_save_failed", { storage: "localStorage", operation: dualWrite?.operation || "legacy_write", ...deviceError(e) }); setToast({ ok: false, msg: "저장하지 못했습니다. 방금 입력한 내용을 다시 확인해 주세요." }); }
+    catch (e) { setDb(prev); deviceLog("app_data_save_failed", { storage: "localStorage", operation: dualWrite?.operation || "legacy_write", ...deviceError(e) }); setToast({ ok: false, msg: "저장하지 못했습니다. 방금 입력한 내용을 다시 확인해 주세요." }); return false; }
   }, [account, db, queueCloud]);
   const savePhotos = useCallback(async (next) => {
     if (accountDeletionInFlight.current) return false;
-    const prev = photos;
+    const prev = photosRef.current;
+    photosRef.current = next;
     setPhotos(next);
     if (!account) return;
     try {
@@ -10526,16 +11403,17 @@ export default function App() {
       return true;
     }
     catch (e) {
+      photosRef.current = prev;
       setPhotos(prev);
       deviceLog("photo_metadata_save_failed", { storage: "localStorage", operation: "metadata_write", ...deviceError(e) });
       setToast({ ok: false, msg: "저장 공간이 가득 찼습니다. 오래된 사진을 지운 뒤 다시 찍어 주세요." });
       return false;
     }
-  }, [account, photos]);
+  }, [account]);
 
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 2600); return () => clearTimeout(t); }, [toast]);
 
-  const patch = (id, p, duet) => {
+  const patch = async (id, p, duet) => {
     let members = db.members.map((m) => (m.id === id ? { ...m, ...p } : m));
     if (duet) {
       const { duetPrev, duetNext } = duet;
@@ -10548,7 +11426,7 @@ export default function App() {
       });
     }
     const changed = members.find((m) => m.id === id);
-    saveDb({ ...db, members }, changed && {
+    return saveDb({ ...db, members }, changed && {
       entityType: "client", entityId: id, operation: "update", payload: changed,
     });
   };
@@ -10563,31 +11441,60 @@ export default function App() {
   /* 일정 탭에서 '기록하기'로 들어왔으면 저장 후 다시 일정으로 돌려보낸다 */
   const [noteBack, setNoteBack] = useState(false);
   const [noteSid, setNoteSid] = useState(null);
-  const saveScheduleComment = (id, type, sid, body, voiceMeta = null) => {
+  const saveScheduleComment = async (id, type, sid, body, voiceMeta = null, noteOptions = null) => {
     const text = String(body || "").trim();
-    if (!text) return;
+    if (!text) return false;
     setNoteBack(false);
     const target = db.members.find((m) => m.id === id);
-    if (!target) { setToast({ ok: false, msg: "회원을 찾을 수 없습니다." }); return; }
+    if (!target) { setToast({ ok: false, msg: "회원을 찾을 수 없습니다." }); return false; }
+    const confirmedAt = voiceMeta ? new Date().toISOString() : undefined;
+    const confirmedLessonRecord = voiceMeta?.lessonRecord ? {
+      ...voiceMeta.lessonRecord,
+      stage: "confirmed_record",
+      status: voiceMeta.lessonRecord.structuredDraft ? "confirmed" : "confirmed_unstructured",
+      confirmedRecord: voiceMeta.lessonRecord.structuredDraft || { rawTranscript: String(voiceMeta.transcript || "").trim(), origin: "raw" },
+      confirmedAt,
+      audioBlobId: undefined,
+    } : null;
     const note = {
       id: uid(), date: todayISO(), sid: sid || undefined, type: type || "개인레슨", instructor: target.instructor,
-      body: text, tags: [], deductFrom: null,
+      body: text, tags: [], deductFrom: null, important: noteOptions?.important === true,
       ...(voiceMeta ? {
         transcript: String(voiceMeta.transcript || "").trim() || undefined,
         aiSummary: voiceMeta.aiSummary || null,
         aiSummaryTeacherEdited: voiceMeta.aiSummaryTeacherEdited || null,
-        aiSummaryStatus: voiceMeta.aiSummaryTeacherEdited ? AI_STATUSES.CONFIRMED : AI_STATUSES.NOT_CONNECTED,
+        aiSummaryStatus: voiceMeta.aiSummaryTeacherEdited ? AI_STATUSES.CONFIRMED : voiceMeta.lessonRecord ? "unstructured" : AI_STATUSES.NOT_CONNECTED,
         aiMeta: voiceMeta.aiMeta || null,
         teacherSummary: text,
-        confirmedAt: voiceMeta.aiSummaryTeacherEdited ? new Date().toISOString() : undefined,
-        audioBlobId: voiceMeta.audioBlobId || undefined,
+        confirmedAt,
+        lessonRecord: confirmedLessonRecord,
         voiceSource: voiceMeta.voiceSource || "unknown",
         recordedAt: voiceMeta.recordedAt || new Date().toISOString(),
       } : {}),
     };
-    saveDb({ ...db, members: db.members.map((m) => (m.id === id ? { ...m, notes: [note, ...(m.notes || [])] } : m)) });
+    const nextNotes = [note, ...(target.notes || [])];
+    const memoryResult = buildMemberMemory({ memberId: id, notes: nextNotes, existingMemory: target.aiMemory || [] });
+    const stored = await saveDb({ ...db, members: db.members.map((m) => (m.id === id ? { ...m, notes: nextNotes, aiMemory: memoryResult.memories } : m)) });
+    if (stored === false) return false;
+    if (voiceMeta?.audioBlobId) {
+      try {
+        dropUrl(voiceMeta.audioBlobId);
+        await blobDel(voiceMeta.audioBlobId);
+        deviceLog("voice_record_deleted_after_confirm", { memberId: id, lessonId: sid, storage: "indexedDB" });
+      } catch (error) {
+        deviceLog("voice_record_delete_retry_required", { memberId: id, lessonId: sid, storage: "indexedDB", ...deviceError(error) });
+      }
+    }
+    if (voiceMeta) {
+      removePendingLessonRecord(id, sid);
+      trackLessonRecordUsage("record_confirmed");
+    }
+    trackMemberMemoryUsage("memory_candidates", { count: memoryResult.stats.candidateCount });
+    trackMemberMemoryUsage("memory_merged", { count: memoryResult.stats.mergedCount });
+    trackMemberMemoryUsage("patterns", { count: memoryResult.stats.patternCount });
     deviceLog("lesson_note_saved", { memberId: id, lessonId: sid, storage: "localStorage", source: voiceMeta ? voiceMeta.voiceSource || "voice" : "direct_input" });
     setToast({ ok: true, msg: text === "특이사항 없음" ? "특이사항 없음으로 기록했습니다." : `${target.name || "회원"} 기록을 저장했습니다.` });
+    return true;
   };
   const noComment = (id, type, sid) => saveScheduleComment(id, type, sid, "특이사항 없음");
 
@@ -10622,6 +11529,15 @@ export default function App() {
     );
     setToast({ ok: true, msg: "수업을 삭제했습니다." });
   };
+  const saveAttendanceOnce = (lessonId, next, descriptor) => {
+    if (attendanceMutationsInFlight.current.has(lessonId)) {
+      setToast({ ok: true, msg: "출석 상태를 처리하고 있습니다." });
+      return false;
+    }
+    attendanceMutationsInFlight.current.add(lessonId);
+    Promise.resolve(saveDb(next, descriptor)).finally(() => attendanceMutationsInFlight.current.delete(lessonId));
+    return true;
+  };
   const setStatus = (id, status, memberId) => {
     const s0 = db.schedule.find((x) => x.id === id);
     if (!s0) return;
@@ -10630,25 +11546,28 @@ export default function App() {
     const mid = memberId || list[0].memberId;
     const cur = list.find((a) => a.memberId === mid);
     if (!cur) return;
-    let members = db.members, msg = "";
-    if (cur.deductFrom) { members = restoreOne(members, mid, cur.deductFrom); msg = `${cur.deductFrom} 1회 복구`; }
-    let deductFrom = null;
-    if (status === "done") {
-      const r = deductOne(members, mid);
-      members = r.members; deductFrom = r.from;
-      if (deductFrom) {
-        const rest = left(members.find((x) => x.id === mid));
-        msg = `${db.members.find((x) => x.id === mid)?.name || ""} 출석 · ${deductFrom} 1회 차감 (잔여 ${rest}회)`;
-        if (rest <= 10) msg += " · 재등록 알림 대상";
-      } else { setToast({ ok: false, msg: "잔여 0회 — 수강권을 먼저 등록해 주세요. 출석만 기록됩니다." }); msg = "출석 기록(차감 없음)"; }
+    const transition = transitionAttendance({ members: db.members, attendees: list, memberIds: [mid], status });
+    if (!transition.changed) {
+      setToast({ ok: true, msg: `이미 ${stOf(status).label} 처리되어 있습니다.` });
+      return;
     }
-    const attendees = list.map((a) => (a.memberId === mid ? { ...a, status, deductFrom, noshowFee: null } : a));
+    const change = transition.changes[0];
+    let msg = "";
+    if (status === "booked") msg = change.restoredFrom ? `${change.restoredFrom} 1회와 출석 상태를 되돌렸습니다.` : "출석 상태를 되돌렸습니다.";
+    else if (status === "done") {
+      if (change.deductFrom) {
+        const rest = left(transition.members.find((x) => x.id === mid));
+        msg = `${db.members.find((x) => x.id === mid)?.name || ""} 출석 · ${change.deductFrom} 1회 차감 (잔여 ${rest}회)`;
+        if (rest <= 10) msg += " · 재등록 알림 대상";
+      } else msg = "잔여 0회 — 차감 없이 출석만 기록했습니다.";
+    } else if (change.restoredFrom) msg = `${change.restoredFrom} 1회 복구 · ${stOf(status).label} 처리했습니다.`;
+    const attendees = transition.attendees;
     const schedule = db.schedule.map((x) => (x.id === id ? { ...x, attendees, status: undefined, deductFrom: undefined, noshowFee: undefined } : x));
     const attendanceStatus = { booked: "booked", done: "attended", noshow: "noshow", cancel: "cancelled" }[status] || "booked";
-    saveDb({ ...db, members, schedule }, {
+    if (!saveAttendanceOnce(id, { ...db, members: transition.members, schedule }, {
       entityType: "lesson", entityId: id, operation: "save_attendance",
       attendance: [{ clientId: mid, status: attendanceStatus }],
-    });
+    })) return;
     setToast({ ok: true, msg: msg || `${stOf(status).label} 처리했습니다.` });
   };
   /* 듀엣처럼 여러 명인 수업을 한 번에 처리 — 따로 두 번 호출하면 뒤엣것이 앞엣것을 덮는다 */
@@ -10657,26 +11576,23 @@ export default function App() {
     if (!s0) return;
     const list = attendeesOf(s0);
     if (!list.length) return;
-    let members = db.members;
-    const zero = [];
-    const attendees = list.map((a) => {
-      if (a.deductFrom) members = restoreOne(members, a.memberId, a.deductFrom);
-      let deductFrom = null;
-      if (status === "done") {
-        const r = deductOne(members, a.memberId);
-        members = r.members; deductFrom = r.from;
-        if (!deductFrom) zero.push(db.members.find((x) => x.id === a.memberId)?.name || "회원");
-      }
-      return { ...a, status, deductFrom, noshowFee: null };
-    });
+    const transition = transitionAttendance({ members: db.members, attendees: list, memberIds: list.map((a) => a.memberId), status });
+    if (!transition.changed) {
+      setToast({ ok: true, msg: `모두 이미 ${stOf(status).label} 처리되어 있습니다.` });
+      return;
+    }
+    const zero = transition.changes.filter((change) => status === "done" && !change.deductFrom)
+      .map((change) => db.members.find((x) => x.id === change.memberId)?.name || "회원");
+    const attendees = transition.attendees;
     const attendanceStatus = { booked: "booked", done: "attended", noshow: "noshow", cancel: "cancelled" }[status] || "booked";
-    saveDb(
-      { ...db, members, schedule: db.schedule.map((x) => (x.id === id ? { ...x, attendees, status: undefined, deductFrom: undefined, noshowFee: undefined } : x)) },
+    if (!saveAttendanceOnce(
+      id,
+      { ...db, members: transition.members, schedule: db.schedule.map((x) => (x.id === id ? { ...x, attendees, status: undefined, deductFrom: undefined, noshowFee: undefined } : x)) },
       {
         entityType: "lesson", entityId: id, operation: "save_attendance",
-        attendance: attendees.map((a) => ({ clientId: a.memberId, status: attendanceStatus })),
+        attendance: transition.changes.map((change) => ({ clientId: change.memberId, status: attendanceStatus })),
       },
-    );
+    )) return;
     setToast(zero.length
       ? { ok: false, msg: `${zero.join(", ")} 잔여 0 — 차감 없이 기록했습니다.` }
       : { ok: true, msg: `${list.length}명 ${stOf(status).label} 처리했습니다.` });
@@ -10700,7 +11616,7 @@ export default function App() {
       deductFrom = null;
     } else msg = charge ? "이미 차감된 노쇼입니다." : "차감 없이 기록합니다.";
     const attendees = list.map((a) => (a.memberId === mid ? { ...a, noshowFee: charge, deductFrom } : a));
-    saveDb({ ...db, members, schedule: db.schedule.map((x) => (x.id === id ? { ...x, attendees } : x)) });
+    if (!saveAttendanceOnce(id, { ...db, members, schedule: db.schedule.map((x) => (x.id === id ? { ...x, attendees } : x)) })) return;
     setToast({ ok: true, msg });
   };
   const setGroupDone = (id, nextState) => {
@@ -10780,22 +11696,55 @@ export default function App() {
     patch(id, { inbody: t.inbody.filter((r) => (r.id || r.date) !== recId) });
     setToast({ ok: true, msg: "측정 기록을 삭제했습니다." });
   };
-  const saveNote = (id, note) => {
+  const saveNote = async (id, note) => {
     const t = db.members.find((m) => m.id === id);
-    patch(id, { notes: [{ ...note, sid: noteSid || undefined }, ...(t.notes || [])] });
+    const confirmedAt = note.lessonRecord ? new Date().toISOString() : note.confirmedAt;
+    const audioBlobId = note.audioBlobId || note.lessonRecord?.audioBlobId || null;
+    const finalized = note.lessonRecord ? {
+      ...note,
+      confirmedAt,
+      audioBlobId: undefined,
+      lessonRecord: {
+        ...note.lessonRecord,
+        stage: "confirmed_record",
+        status: note.lessonRecord.structuredDraft ? "confirmed" : "confirmed_unstructured",
+        confirmedRecord: note.lessonRecord.structuredDraft || { rawTranscript: note.transcript || note.lessonRecord.rawTranscript || "", origin: "raw" },
+        confirmedAt,
+        audioBlobId: undefined,
+      },
+    } : note;
+    const finalizedWithSession = { ...finalized, sid: noteSid || undefined };
+    const nextNotes = [finalizedWithSession, ...(t.notes || [])];
+    const memoryResult = buildMemberMemory({ memberId: id, notes: nextNotes, existingMemory: t.aiMemory || [] });
+    const stored = await patch(id, { notes: nextNotes, aiMemory: memoryResult.memories });
+    if (stored === false) return false;
+    if (audioBlobId) {
+      try { dropUrl(audioBlobId); await blobDel(audioBlobId); }
+      catch (error) { deviceLog("voice_record_delete_retry_required", { memberId: id, lessonId: noteSid, storage: "indexedDB", ...deviceError(error) }); }
+    }
+    if (note.lessonRecord) {
+      removePendingLessonRecord(id, noteSid);
+      trackLessonRecordUsage("record_confirmed");
+    }
+    trackMemberMemoryUsage("memory_candidates", { count: memoryResult.stats.candidateCount });
+    trackMemberMemoryUsage("memory_merged", { count: memoryResult.stats.mergedCount });
+    trackMemberMemoryUsage("patterns", { count: memoryResult.stats.patternCount });
     deviceLog("member_note_saved", { memberId: id, lessonId: noteSid, storage: "localStorage", source: note.voiceSource || "direct_input" });
     setNoteSid(null);
     if (noteBack) {
       setNoteBack(false);
       setTab("schedule");
       setToast({ ok: true, msg: `${t?.name || "회원"} 코멘트 저장 · 다음 회원으로 갑니다` });
-      return;
+      return true;
     }
     setToast({ ok: true, msg: "코멘트를 저장했습니다." });
+    return true;
   };
   const deleteNote = (nid) => {
     const gone = member.notes.find((note) => note.id === nid);
-    patch(member.id, { notes: member.notes.filter((note) => note.id !== nid) });
+    const nextNotes = member.notes.filter((note) => note.id !== nid);
+    const memoryResult = buildMemberMemory({ memberId: member.id, notes: nextNotes, existingMemory: member.aiMemory || [] });
+    patch(member.id, { notes: nextNotes, aiMemory: memoryResult.memories });
     if (gone?.audioBlobId) forgetBlobs([gone.audioBlobId]);
   };
   const analysisMember = (memberId) => {
@@ -10824,6 +11773,7 @@ export default function App() {
     const stored = await savePhotos({ ...photos, [target.id]: { ...cur, [view]: nextList, sets } });
     if (!stored) { if (rec?.blobId) forgetBlobs([rec.blobId]); return; }
     deviceLog("member_photo_saved", { memberId: target.id, view, storage: rec?.blobId ? "indexedDB" : "localStorage", operation: slot || "capture" });
+    showLocalPhotoWarningOnce();
     setToast({ ok: true, msg: "사진을 등록했습니다." });
     return shot;
   };
@@ -10833,7 +11783,8 @@ export default function App() {
     const payload = input.captures ? input : { assessmentId: newAssessmentId(), analysisMethod: "ai", captures: input };
     const assessmentId = String(payload.assessmentId || newAssessmentId());
     const captures = payload.captures || {};
-    const cur = photos[target.id] || {};
+    const currentPhotos = photosRef.current;
+    const cur = currentPhotos[target.id] || {};
     const next = { ...cur };
     const newBlobIds = [];
     const replacedBlobIds = [];
@@ -10875,24 +11826,126 @@ export default function App() {
       forgetBlobs(newBlobIds);
       return false;
     }
-    const stored = await savePhotos({ ...photos, [target.id]: next });
+    const stored = await savePhotos({ ...currentPhotos, [target.id]: next });
     if (!stored) { forgetBlobs(newBlobIds); return false; }
     forgetBlobs(replacedBlobIds);
     deviceLog("assessment_photos_saved", { memberId: target.id, assessmentId, storage: "indexedDB", count: savedCount });
+    showLocalPhotoWarningOnce();
+    return true;
+  };
+  const completeAssessment = async (memberId, assessmentId, role) => {
+    const target = analysisMember(memberId);
+    if (!target || !assessmentId) return false;
+    const completedAt = new Date().toISOString();
+    const currentPhotos = photosRef.current;
+    const cur = currentPhotos[target.id] || {};
+    const completion = completeAssessmentRecords(cur, {
+      memberId: target.id,
+      assessmentId,
+      role,
+      completedAt,
+    });
+    if (completion.blockedReason || !completion.updatedRecords.length) {
+      deviceLog("assessment_completion_blocked", { memberId: target.id, assessmentId, reason: completion.blockedReason || "records_not_found" });
+      return false;
+    }
+    const stored = await savePhotos({ ...currentPhotos, [target.id]: completion.memberPhotos });
+    if (stored !== true) return false;
+    deviceLog("assessment_completed", {
+      memberId: target.id,
+      assessmentId,
+      role,
+      storage: "device",
+      records: completion.updatedRecords.length,
+    });
+    setToast({ ok: true, msg: `${role === "before" ? "비포" : role === "after" ? "에프터" : "체형분석"} 저장 완료 · 이 기기에만 저장됩니다.` });
     return true;
   };
   const deleteCaptureDraft = async (memberId, assessmentId, view) => {
     const target = analysisMember(memberId);
     if (!target || !assessmentId || !POSTURE_STORAGE_KEYS.includes(view)) return false;
-    const cur = photos[target.id] || {};
+    const currentPhotos = photosRef.current;
+    const cur = currentPhotos[target.id] || {};
     const gone = (cur[view] || []).filter((photo) => photo.assessmentId === assessmentId && photo.captureStatus === "draft");
     const stored = await savePhotos({
-      ...photos,
+      ...currentPhotos,
       [target.id]: { ...cur, [view]: (cur[view] || []).filter((photo) => !(photo.assessmentId === assessmentId && photo.captureStatus === "draft")) },
     });
     if (!stored) return false;
     forgetBlobs(gone.map((photo) => photo.blobId).filter(Boolean));
     deviceLog("assessment_photo_deleted", { memberId: target.id, assessmentId, view, storage: "indexedDB" });
+    return true;
+  };
+  const discardAssessmentDraft = async (memberId, assessment) => {
+    const target = analysisMember(memberId);
+    const assessmentId = String(assessment?.id || "").trim();
+    if (!target || !account || !assessmentId || assessment?.memberId !== target.id) return false;
+
+    const currentPhotos = photosRef.current;
+    const currentMemberPhotos = currentPhotos[target.id] || {};
+    const activeAssessment = selectResumableAssessment(
+      normalizeAssessmentSets(currentMemberPhotos, { memberId: target.id }),
+      { memberId: target.id },
+    );
+    if (!activeAssessment || activeAssessment.id !== assessmentId) {
+      deviceLog("assessment_draft_discard_rejected", { memberId: target.id, assessmentId, reason: "not_active_resumable" });
+      return false;
+    }
+
+    const removal = removeAssessmentDraftRecords(currentMemberPhotos, { memberId: target.id, assessmentId });
+    if (!removal.removedRecords.length) {
+      deviceLog("assessment_draft_discard_rejected", { memberId: target.id, assessmentId, reason: removal.blockedReason || "records_not_found" });
+      return false;
+    }
+
+    const nextPhotos = { ...currentPhotos, [target.id]: removal.memberPhotos };
+    const retainedBlobIds = new Set(Object.values(nextPhotos).flatMap((memberPhotos) => blobIdsOf(memberPhotos)));
+    const discardedBlobIds = [...new Set(removal.removedRecords.flatMap((record) => [record?.blobId, record?.cleanBlobId]).filter(Boolean))]
+      .filter((blobId) => !retainedBlobIds.has(blobId));
+    const blobSnapshots = new Map();
+    try {
+      for (const blobId of discardedBlobIds) {
+        const blob = await blobGet(blobId);
+        if (blob) blobSnapshots.set(blobId, blob);
+      }
+    } catch (error) {
+      deviceLog("assessment_draft_discard_failed", { memberId: target.id, assessmentId, stage: "blob_inspection", ...deviceError(error) });
+      return false;
+    }
+
+    const metadataStored = await savePhotos(nextPhotos);
+    if (metadataStored !== true) {
+      deviceLog("assessment_draft_discard_failed", { memberId: target.id, assessmentId, stage: "metadata_delete" });
+      return false;
+    }
+
+    const deletionResults = await Promise.allSettled(discardedBlobIds.map((blobId) => blobDel(blobId)));
+    const failedBlobDeletes = deletionResults.filter((result) => result.status === "rejected");
+    if (failedBlobDeletes.length) {
+      const restorationResults = await Promise.allSettled(
+        [...blobSnapshots].map(([blobId, blob]) => blobPut(blobId, blob)),
+      );
+      const failedBlobRestores = restorationResults.filter((result) => result.status === "rejected");
+      const metadataRestored = failedBlobRestores.length === 0 ? await savePhotos(currentPhotos) : false;
+      deviceLog("assessment_draft_discard_failed", {
+        memberId: target.id,
+        assessmentId,
+        stage: "blob_delete",
+        failedBlobDeletes: failedBlobDeletes.length,
+        failedBlobRestores: failedBlobRestores.length,
+        metadataRestored: metadataRestored === true,
+      });
+      return false;
+    }
+
+    discardedBlobIds.forEach(dropUrl);
+    deviceLog("assessment_draft_discarded", {
+      memberId: target.id,
+      assessmentId,
+      records: removal.removedRecords.length,
+      blobs: discardedBlobIds.length,
+      storage: "indexedDB",
+    });
     return true;
   };
   const removePhoto = (memberId, view, pid) => {
@@ -10953,10 +12006,11 @@ export default function App() {
     if (rec.cleanBlob) {
       try { const cid = newBlobId(); await blobPut(cid, rec.cleanBlob); out.cleanBlobId = cid; } catch (e) {}
     }
-    const cur = photos[target.id] || {};
+    const currentPhotos = photosRef.current;
+    const cur = currentPhotos[target.id] || {};
     const previous = (cur.poses || []).find((pose) => pose?.id === out.id) || null;
     const keep = [out, ...(cur.poses || []).filter((pose) => pose?.id !== out.id)];
-    const stored = await savePhotos({ ...photos, [target.id]: { ...cur, poses: keep } });
+    const stored = await savePhotos({ ...currentPhotos, [target.id]: { ...cur, poses: keep } });
     if (!stored) {
       forgetBlobs([out.blobId, out.cleanBlobId].filter(Boolean));
       return false;
@@ -11001,23 +12055,39 @@ export default function App() {
   const saveMarks = async (memberId, view, pid, marks, options = {}) => {
     const target = analysisMember(memberId);
     if (!target || !POSTURE_STORAGE_KEYS.includes(view) || !pid) return false;
-    const cur = photos[target.id] || {};
+    const currentPhotos = photosRef.current;
+    const cur = currentPhotos[target.id] || {};
     const exists = (cur[view] || []).some((photo) => photo?.id === pid && (!photo.memberId || photo.memberId === target.id));
     if (!exists) return false;
-    const stored = await savePhotos({ ...photos, [target.id]: { ...cur, [view]: (cur[view] || []).map((photo) => photo.id === pid ? { ...photo, marks, annotationUpdatedAt: new Date().toISOString() } : photo) } });
+    const stored = await savePhotos({ ...currentPhotos, [target.id]: { ...cur, [view]: (cur[view] || []).map((photo) => photo.id === pid ? { ...photo, marks, annotationUpdatedAt: new Date().toISOString() } : photo) } });
     if (stored !== false && !options.quiet) setToast({ ok: true, msg: "체형 분석을 저장했습니다." });
+    return stored !== false;
+  };
+  const toggleAssessmentFavorite = async (memberId, assessmentId, favorite) => {
+    const target = analysisMember(memberId);
+    if (!target || !assessmentId) return false;
+    const currentPhotos = photosRef.current;
+    const cur = currentPhotos[target.id] || {};
+    const next = { ...cur };
+    POSTURE_STORAGE_KEYS.forEach((view) => {
+      next[view] = (cur[view] || []).map((photo) => photo?.assessmentId === assessmentId ? { ...photo, favorite: Boolean(favorite) } : photo);
+    });
+    next.poses = (cur.poses || []).map((pose) => pose?.assessmentId === assessmentId ? { ...pose, favorite: Boolean(favorite) } : pose);
+    const stored = await savePhotos({ ...currentPhotos, [target.id]: next });
+    if (stored !== false) setToast({ ok: true, msg: favorite ? "이 분석을 즐겨찾기에 저장했습니다." : "즐겨찾기에서 해제했습니다." });
     return stored !== false;
   };
   const saveAssessmentRole = async (memberId, assessmentId, role) => {
     const target = analysisMember(memberId);
     if (!target || !assessmentId || !["before", "after", "unassigned"].includes(role)) return false;
-    const cur = photos[target.id] || {};
+    const currentPhotos = photosRef.current;
+    const cur = currentPhotos[target.id] || {};
     const next = { ...cur };
     POSTURE_STORAGE_KEYS.forEach((view) => {
       next[view] = (cur[view] || []).map((photo) => photo?.assessmentId === assessmentId ? { ...photo, assessmentRole: role } : photo);
     });
     next.poses = (cur.poses || []).map((pose) => pose?.assessmentId === assessmentId ? { ...pose, assessmentRole: role } : pose);
-    const stored = await savePhotos({ ...photos, [target.id]: next });
+    const stored = await savePhotos({ ...currentPhotos, [target.id]: next });
     if (stored !== false) deviceLog("assessment_role_saved", { memberId: target.id, assessmentId, storage: "localStorage", role });
     return stored !== false;
   };
@@ -11056,6 +12126,7 @@ export default function App() {
   const style = (
     <style>{`
       @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css');
+      @import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&display=swap');
       .app-root { min-height: 100vh; min-height: 100dvh; font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', sans-serif; -webkit-font-smoothing: antialiased; color: ${INK}; color-scheme: ${THEME}; }
       .app-root .bg-white { background-color: ${CARD}; }
       .app-root .bg-slate-50 { background-color: ${CANVAS}; }
@@ -11120,6 +12191,7 @@ export default function App() {
       <div className="app-root">
         {style}
         <AuthScreen accounts={accounts} onLogin={handleLogin} onSignup={handleSignup} onToast={setToast} />
+        {onboardingOpen && <Onboarding onFinish={closeOnboarding} onSkip={closeOnboarding} />}
         {toast && (
           <div className="safe-b fixed inset-x-0 bottom-5 z-50 flex justify-center px-4">
             <div className="flex items-center gap-2 rounded-full px-4 py-3" style={{ backgroundColor: toast.ok ? TOAST : BAD, boxShadow: SHADOW }}>
@@ -11139,10 +12211,11 @@ export default function App() {
           <Guard key={tab}>
             {tab === "schedule" && <ScheduleManager db={db} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} />}
             {tab === "members" && (mobileView === "detail" && member ? (
-              <ReferenceMemberDetail key={member.id} member={member} schedule={db.schedule} photos={photos[member.id]} onBack={() => setMobileView("list")}
-                onPatch={(change) => patch(member.id, change)} onSaveNote={(type, body, voiceMeta) => saveScheduleComment(member.id, type, null, body, voiceMeta)}
-                onSchedule={() => { setScheduleMemberId(member.id); setTab("schedule"); }} onAssess={(entry = {}) => { setAnalysisRecordId(entry.poseId || null); setAnalysisAssessmentId(entry.assessmentId || null); setAnalysisEntryMode(entry.mode || "home"); setAnalysisMemberId(member.id); setTab("analysis"); }} />
-            ) : <ReferenceMemberList members={db.members} schedule={db.schedule} onAdd={addMember} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} />)}
+              <ReferenceMemberDetail key={member.id} member={member} schedule={db.schedule} photos={photos[member.id]} settings={db.settings}
+                canViewSettlement={!account?.role || ["owner", "manager", "admin", "director"].includes(String(account.role).toLowerCase())} onBack={() => setMobileView("list")}
+                onPatch={(change) => patch(member.id, change)} onSaveNote={(type, body, voiceMeta, noteOptions) => saveScheduleComment(member.id, type, null, body, voiceMeta, noteOptions)}
+                onSchedule={() => { setScheduleMemberId(member.id); setTab("schedule"); }} onAssess={(entry = {}) => { setAnalysisRecordId(entry.poseId || null); setAnalysisAssessmentId(entry.assessmentId || null); setAnalysisEntryMode(entry.mode || "home"); setAnalysisMemberId(member.id); setTab("analysis"); }} onToast={setToast} />
+            ) : <ReferenceMemberList members={db.members} schedule={db.schedule} settings={db.settings} onAdd={addMember} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} />)}
             {tab === "analysis" && <ReferenceAnalysisTab members={db.members} photos={photos} selectedId={analysisMemberId} selectedPoseId={analysisRecordId}
               onSelect={(id, poseId = null) => { setAnalysisMemberId(id); setAnalysisRecordId(poseId); setAnalysisAssessmentId(null); setAnalysisEntryMode(poseId ? "result" : "home"); }}
               hub={(id, initialSavedId) => {
@@ -11151,15 +12224,25 @@ export default function App() {
                 return <Guard label="체형분석"><AssessmentWorkspace key={`${id}_${analysisEntryMode}_${initialSavedId || "none"}_${analysisAssessmentId || "none"}`} member={m} photos={photos[id]} settings={db.settings} initialSavedId={initialSavedId} initialAssessmentId={analysisAssessmentId} initialMode={analysisEntryMode}
                   onSavePose={(rec) => savePose(id, { ...rec, memberId: id })} onUpdatePose={(pid, posePatch) => updatePose(id, pid, posePatch)} onDeletePose={(pid) => deletePose(id, pid)}
                   onSaveCaptureDraft={(captures) => saveCaptureDraft(id, captures)} onDeleteCaptureDraft={(assessmentId, view) => deleteCaptureDraft(id, assessmentId, view)}
-                  onSaveMarks={(view, photoId, marks, options) => saveMarks(id, view, photoId, marks, options)} onSaveAssessmentRole={(assessmentId, role) => saveAssessmentRole(id, assessmentId, role)}
+                  onDiscardAssessmentDraft={(assessment) => discardAssessmentDraft(id, assessment)}
+                  onCompleteAssessment={(assessmentId, role) => completeAssessment(id, assessmentId, role)}
+                  onSaveMarks={(view, photoId, marks, options) => saveMarks(id, view, photoId, marks, options)} onSaveAssessmentRole={(assessmentId, role) => saveAssessmentRole(id, assessmentId, role)} onToggleAssessmentFavorite={(assessmentId, favorite) => toggleAssessmentFavorite(id, assessmentId, favorite)}
                   onToast={setToast} onSaved={(mode) => setAnalysisDone({ id, mode })} /></Guard>;
               }} />}
             {tab === "settings" && <ReferenceSettingsTab db={db} photos={photos} account={account} savedAt={savedAt} demoMode={demoMode} onChangeSettings={(s) => saveDb({ ...db, settings: s })} onChangePhoto={changePhoto} onToast={setToast} themePref={themePref} onChangeTheme={changeTheme} onLogout={handleLogout} onDeleteAccount={handleDeleteAccount} onImport={importHandoff}
-              onOpenSchedule={() => { setScheduleQuickAddRequest((request) => request + 1); setTab("schedule"); }} onOpenRecords={() => { setMobileView("list"); setTab("members"); }} />}
+              onOpenSchedule={() => { setScheduleQuickAddRequest((request) => request + 1); setTab("schedule"); }} onOpenRecords={() => { setMobileView("list"); setTab("members"); }} onOpenOnboarding={() => setOnboardingOpen(true)} />}
           </Guard>
         </div>
         <Tabs tab={tab} setTab={goTab} />
       </div>
+      {localPhotoWarning && <ScheduleBottomSheet title="원본 사진 저장 안내" subtitle="사진 기록을 안전하게 보관해 주세요" onClose={() => setLocalPhotoWarning(false)}>
+        <div className="space-y-3">
+          <p className="text-sm font-bold leading-relaxed" style={{ color: INK }}>{LOCAL_PHOTO_NOTICE_MESSAGE}</p>
+          <p className="text-xs leading-relaxed" style={{ color: SUB }}>설정의 백업 파일로 내보내기(.json)는 사진을 포함합니다. 인계 코드는 ‘사진도 함께 넘기기’를 선택한 경우에만 사진이 포함됩니다.</p>
+          <button type="button" onClick={() => setLocalPhotoWarning(false)} className="h-12 w-full text-sm font-extrabold text-white" style={{ borderRadius: 11, backgroundColor: BRAND }}>확인했습니다</button>
+        </div>
+      </ScheduleBottomSheet>}
+      {onboardingOpen && <Onboarding onFinish={closeOnboarding} onSkip={closeOnboarding} />}
       {toast && (
         <div className="fixed inset-x-0 z-[70] flex justify-center px-4" style={{ bottom: "calc(62px + max(env(safe-area-inset-bottom, 0px), 8px))" }}>
           <div className="flex max-w-[360px] items-center gap-2 px-4 py-2.5" style={{ borderRadius: 8, backgroundColor: toast.ok ? TOAST : BAD, boxShadow: SHADOW }}>

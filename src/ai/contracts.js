@@ -7,6 +7,7 @@ export const AI_PROVIDERS = Object.freeze({
 export const AI_OPERATIONS = Object.freeze({
   ANALYZE_BODY: "analyzeBody",
   SUMMARIZE_VOICE: "summarizeVoice",
+  STRUCTURE_LESSON_RECORD: "structureLessonRecord",
   RECOMMEND_SEQUENCE: "recommendSequence",
   GENERATE_REPORT: "generateReport",
 });
@@ -23,6 +24,7 @@ export const BODY_VIEWS = Object.freeze(["front", "leftSide", "back", "rightSide
 const BODY_TEXT_FIELDS = Object.freeze(["pelvis", "thorax", "scapula", "head", "knees", "feet"]);
 const BODY_LIST_FIELDS = Object.freeze(["bodyCharacteristics", "asymmetries", "recommendedExercises", "precautions"]);
 const VOICE_LIST_FIELDS = Object.freeze(["todayExercises", "pain", "improvements", "nextGoals", "homework", "precautions"]);
+const LESSON_RECORD_LIST_FIELDS = Object.freeze(["didToday", "observations", "responses", "nextFocus", "uncertain"]);
 
 const cleanText = (value, max = 4000) => String(value ?? "").trim().slice(0, max);
 const cleanList = (value, maxItems = 20) => {
@@ -57,6 +59,12 @@ export function normalizeVoiceSummary(value) {
   const output = { memberCondition: cleanText(source.memberCondition) };
   VOICE_LIST_FIELDS.forEach((field) => { output[field] = cleanList(source[field]); });
   return output;
+}
+
+export function normalizeLessonRecord(value) {
+  const source = requireObject(value, "lesson record output");
+  requireFields(source, LESSON_RECORD_LIST_FIELDS, "lesson record output");
+  return Object.fromEntries(LESSON_RECORD_LIST_FIELDS.map((field) => [field, cleanList(source[field])]));
 }
 
 export function normalizeSequenceRecommendation(value) {
@@ -95,6 +103,7 @@ export function normalizeReport(value) {
 export function normalizeAIOutput(operation, value) {
   if (operation === AI_OPERATIONS.ANALYZE_BODY) return normalizeBodyAnalysis(value);
   if (operation === AI_OPERATIONS.SUMMARIZE_VOICE) return normalizeVoiceSummary(value);
+  if (operation === AI_OPERATIONS.STRUCTURE_LESSON_RECORD) return normalizeLessonRecord(value);
   if (operation === AI_OPERATIONS.RECOMMEND_SEQUENCE) return normalizeSequenceRecommendation(value);
   if (operation === AI_OPERATIONS.GENERATE_REPORT) return normalizeReport(value);
   throw new TypeError(`unsupported AI operation: ${operation}`);
@@ -102,3 +111,4 @@ export function normalizeAIOutput(operation, value) {
 
 export const bodyAnalysisFields = Object.freeze({ text: BODY_TEXT_FIELDS, list: BODY_LIST_FIELDS });
 export const voiceSummaryFields = Object.freeze({ list: VOICE_LIST_FIELDS });
+export const lessonRecordFields = Object.freeze({ list: LESSON_RECORD_LIST_FIELDS });

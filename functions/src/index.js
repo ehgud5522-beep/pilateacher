@@ -5,22 +5,30 @@ const { getAuth } = require("firebase-admin/auth");
 const { getFirestore } = require("firebase-admin/firestore");
 const { getStorage } = require("firebase-admin/storage");
 const { logger } = require("firebase-functions/logger");
+const { defineSecret } = require("firebase-functions/params");
 const { HttpsError, onCall, onRequest } = require("firebase-functions/v2/https");
 const { createAccountDeletionService } = require("./account-deletion");
+const { createAIGatewayHandler } = require("./ai-gateway");
 const { applyCors, parseAllowedOrigins } = require("./cors");
 const { sendError, GatewayError } = require("./errors");
-const { createDisabledIdempotencyStore } = require("./idempotency");
-const { DEFAULT_MODEL, createOpenAIVoiceSummaryProvider } = require("./openai-provider");
-const { createDisabledPolicyService } = require("./policy");
-const { createVoiceSummaryHandler } = require("./voice-summary");
+const { createFirestoreIdempotencyStore } = require("./idempotency");
+const { DEFAULT_MODEL, createOpenAIProvider } = require("./openai-provider");
+const { createFirestorePolicyService } = require("./policy");
 
 if (!getApps().length) initializeApp();
 
-const OPENAI_API_KEY = "OPENAI_API_KEY";
-const VOICE_SUMMARY_ROUTE = "/v1/ai/voice-summary";
+const OPENAI_API_KEY = defineSecret("OPENAI_API_KEY");
+const AI_EXECUTE_ROUTE = "/v1/ai/execute";
 const allowedOrigins = parseAllowedOrigins(process.env.AI_ALLOWED_ORIGINS);
-const policyService = createDisabledPolicyService();
-const idempotencyStore = createDisabledIdempotencyStore();
+const firestore = getFirestore();
+const policyService = createFirestorePolicyService({
+  firestore,
+  mode: process.env.AI_POLICY_MODE,
+  consentPolicyVersion: "2026-08-23",
+  minuteLimit: process.env.AI_RATE_LIMIT_PER_MINUTE || 8,
+  dailyLimit: process.env.AI_RATE_LIMIT_PER_DAY || 80,
+});
+const idempotencyStore = createFirestoreIdempotencyStore({ firestore });
 let openAIProvider;
 
 const accountDeletionService = createAccountDeletionService({
@@ -55,18 +63,18 @@ const accountDeletionService = createAccountDeletionService({
   },
 });
 
-const handler = createVoiceSummaryHandler({
+const handler = createAIGatewayHandler({
   verifyIdToken: (token) => getAuth().verifyIdToken(token, true),
   policyService,
   idempotencyStore,
-  summarizeVoice: async (input) => {
+  getProvider: async () => {
     if (!openAIProvider) {
-      openAIProvider = createOpenAIVoiceSummaryProvider({
-        apiKey: process.env[OPENAI_API_KEY] || "",
-        model: process.env.AI_VOICE_SUMMARY_MODEL || DEFAULT_MODEL,
+      openAIProvider = createOpenAIProvider({
+        apiKey: OPENAI_API_KEY.value(),
+        model: process.env.AI_MODEL || DEFAULT_MODEL,
       });
     }
-    return openAIProvider.summarize(input);
+    return openAIProvider;
   },
 });
 
@@ -85,7 +93,7 @@ exports.aiGateway = onRequest({
 }, async (req, res) => {
   try {
     if (applyCors(req, res, allowedOrigins)) return;
-    if (requestPath(req) !== VOICE_SUMMARY_ROUTE) throw new GatewayError("invalid_request", { status: 404 });
+    if (requestPath(req) !== AI_EXECUTE_ROUTE) throw new GatewayError("invalid_request", { status: 404 });
     await handler(req, res);
   } catch (error) {
     sendError(res, error);
@@ -131,7 +139,7 @@ exports.deleteCurrentUserAccount = onCall({
 });
 
 exports._test = {
+  AI_EXECUTE_ROUTE,
   accountDeletionHttpsError,
   requestPath,
-  VOICE_SUMMARY_ROUTE,
 };

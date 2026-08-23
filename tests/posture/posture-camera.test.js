@@ -171,14 +171,14 @@ test("screen orientation correction yields zero roll and pitch for canonical upr
 });
 
 test("sensor state and level guidance distinguish permission, support, and real tilt", () => {
-  assert.equal(LEVEL_THRESHOLD_DEG, 2);
+  assert.equal(LEVEL_THRESHOLD_DEG, 4);
   assert.equal(resolveSensorStatus({ supported: false }), SENSOR_STATUSES.unavailable);
   assert.equal(resolveSensorStatus({ permission: "prompt" }), SENSOR_STATUSES.permissionRequired);
   assert.equal(resolveSensorStatus({ permission: "denied" }), SENSOR_STATUSES.denied);
   assert.equal(resolveSensorStatus({ hasReading: true }), SENSOR_STATUSES.active);
 
-  assert.equal(evaluateDeviceLevel({ roll: 2, pitch: -2 }).isLevel, true);
-  const left = evaluateDeviceLevel({ roll: -4, pitch: 1 });
+  assert.equal(evaluateDeviceLevel({ roll: 4, pitch: -4 }).isLevel, true);
+  const left = evaluateDeviceLevel({ roll: -5, pitch: 1 });
   assert.equal(left.code, "tilted_left");
   assert.match(left.message, /오른쪽/);
   const missing = evaluateDeviceLevel({ status: SENSOR_STATUSES.unavailable });

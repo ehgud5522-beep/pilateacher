@@ -7,7 +7,7 @@ const { createRequest, createResponse } = require("./helpers");
 
 test("CORS allows exact localhost and configured hosting origins", () => {
   const allowed = parseAllowedOrigins("https://pilateacher.web.app");
-  for (const origin of ["http://localhost:5174", "https://pilateacher.web.app"]) {
+  for (const origin of ["http://localhost:5174", "https://localhost", "https://pilateacher.web.app"]) {
     const req = createRequest({ headers: { origin } });
     const res = createResponse();
     assert.equal(applyCors(req, res, allowed), false);

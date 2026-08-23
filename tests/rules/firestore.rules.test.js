@@ -7,6 +7,7 @@ import {
   initializeTestEnvironment,
 } from "@firebase/rules-unit-testing";
 import {
+  Timestamp,
   deleteDoc,
   doc,
   getDoc,
@@ -105,6 +106,28 @@ describe("authentication and organization isolation", () => {
     await assertSucceeds(getDoc(doc(dbFor(users.member), "users", users.member)));
     await assertSucceeds(setDoc(doc(dbFor(users.member), "users", users.member, "backup", "latest"), { data: {} }));
     await assertFails(getDoc(doc(dbFor(users.outsider), "users", users.member)));
+  });
+
+  test("AI consent is owner-only, scope-limited, and versioned", async () => {
+    const consentRef = doc(dbFor(users.member), "users", users.member, "aiConsents", "member_local_1");
+    await assertSucceeds(setDoc(consentRef, {
+      status: "granted",
+      policyVersion: "2026-08-23",
+      scopes: ["analyzeBody", "summarizeVoice", "recommendSequence", "generateReport"],
+      grantedAt: Timestamp.now(),
+      revokedAt: null,
+      updatedAt: Timestamp.now(),
+    }));
+    await assertSucceeds(getDoc(consentRef));
+    await assertFails(getDoc(doc(dbFor(users.outsider), "users", users.member, "aiConsents", "member_local_1")));
+    await assertFails(setDoc(doc(dbFor(users.member), "users", users.member, "aiConsents", "member_local_2"), {
+      status: "granted",
+      policyVersion: "old-policy",
+      scopes: ["analyzeBody", "exportEveryPhoto"],
+      grantedAt: Timestamp.now(),
+      revokedAt: null,
+      updatedAt: Timestamp.now(),
+    }));
   });
 });
 

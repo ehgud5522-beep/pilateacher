@@ -26,7 +26,12 @@ export function createAIProvider(options = {}) {
   });
 }
 
-const runtimeEnv = (/** @type {any} */ (import.meta)).env || {};
+// Each key is accessed directly so Vite substitutes the production values.
+const runtimeEnv = typeof window === "undefined" ? {} : {
+  VITE_AI_ENABLED: import.meta.env.VITE_AI_ENABLED,
+  VITE_AI_PROVIDER: import.meta.env.VITE_AI_PROVIDER,
+  VITE_AI_GATEWAY_URL: import.meta.env.VITE_AI_GATEWAY_URL,
+};
 export const aiProvider = createAIProvider({ env: runtimeEnv, getAccessToken: getFirebaseIdToken });
 
 export * from "./contracts.js";

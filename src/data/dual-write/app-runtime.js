@@ -5,8 +5,15 @@ import { FirestoreClientRepository, FirestoreLessonRepository } from "../reposit
 import { CLIENT_STATUS, LESSON_STATUS, RECORD_STATUS } from "../schema/constants.js";
 
 const retryStore = typeof globalThis.window === "undefined" ? null : new RetryMetadataStore(globalThis.window.localStorage);
+const dualWriteEnv = typeof window === "undefined" ? {} : {
+  MODE: import.meta.env.MODE,
+  PROD: import.meta.env.PROD,
+  VITE_FIREBASE_DUAL_WRITE_ENABLED: import.meta.env.VITE_FIREBASE_DUAL_WRITE_ENABLED,
+  VITE_FIREBASE_DUAL_WRITE_UID_ALLOWLIST: import.meta.env.VITE_FIREBASE_DUAL_WRITE_UID_ALLOWLIST,
+  VITE_FIREBASE_DUAL_WRITE_ORG_ALLOWLIST: import.meta.env.VITE_FIREBASE_DUAL_WRITE_ORG_ALLOWLIST,
+};
 const coordinator = new DualWriteCoordinator({
-  enabled: (context) => dualWriteEnabled(/** @type {any} */ (import.meta).env, context),
+  enabled: (context) => dualWriteEnabled(dualWriteEnv, context),
   retryStore,
 });
 

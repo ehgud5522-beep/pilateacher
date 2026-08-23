@@ -31,11 +31,14 @@ export function postureAnalysisPlane(view) {
 }
 
 function stampOf(record) {
-  return String(record?.completedAt || record?.updatedAt || record?.createdAt || (record?.date ? `${record.date}T00:00:00.000Z` : ""));
+  return String(record?.completedAt || record?.updatedAt || record?.annotationUpdatedAt || record?.createdAt || record?.at || (record?.date ? `${record.date}T00:00:00.000Z` : ""));
 }
 
 function newest(current, incoming) {
   if (!current) return incoming;
+  const currentTime = Date.parse(stampOf(current));
+  const incomingTime = Date.parse(stampOf(incoming));
+  if (Number.isFinite(currentTime) && Number.isFinite(incomingTime)) return incomingTime >= currentTime ? incoming : current;
   return stampOf(incoming) >= stampOf(current) ? incoming : current;
 }
 
@@ -58,6 +61,7 @@ export function normalizeAssessmentSets(photos, { memberId = null } = {}) {
       role: null,
       method: "ai",
       status: "draft",
+      favorite: false,
       at: "",
       completedAt: "",
     };
@@ -79,6 +83,7 @@ export function normalizeAssessmentSets(photos, { memberId = null } = {}) {
       group.status = photo.assessmentStatus || group.status;
       group.at = [group.at, stampOf(photo)].sort().at(-1) || "";
       group.completedAt = [group.completedAt, photo.completedAt || ""].sort().at(-1) || "";
+      group.favorite = group.favorite || Boolean(photo.favorite);
       const selected = Array.isArray(photo.selectedViews) ? photo.selectedViews : [];
       group.selectedViews = [...new Set([...group.selectedViews, ...selected.map(normalizePostureView), view])];
     });
@@ -98,6 +103,7 @@ export function normalizeAssessmentSets(photos, { memberId = null } = {}) {
     group.status = pose.assessmentStatus || (pose.assessmentComplete ? "completed" : group.status);
     group.at = [group.at, stampOf(pose)].sort().at(-1) || "";
     group.completedAt = [group.completedAt, pose.completedAt || (pose.assessmentComplete ? stampOf(pose) : "")].sort().at(-1) || "";
+    group.favorite = group.favorite || Boolean(pose.favorite);
     const selected = Array.isArray(pose.selectedViews) ? pose.selectedViews : [];
     group.selectedViews = [...new Set([...group.selectedViews, ...selected.map(normalizePostureView), view])];
   });
@@ -127,10 +133,290 @@ export function normalizeAssessmentSets(photos, { memberId = null } = {}) {
   return ascending.reverse();
 }
 
+function recordActivityKey(record) {
+  const values = [record?.updatedAt, record?.annotationUpdatedAt, record?.createdAt, record?.at, record?.date];
+  for (const value of values) {
+    const text = String(value || "").trim();
+    if (!text) continue;
+    const time = Date.parse(text);
+    if (Number.isFinite(time)) return time;
+  }
+  return Number.NEGATIVE_INFINITY;
+}
+
+function assessmentRecords(assessment) {
+  const photos = assessment?.photos && typeof assessment.photos === "object" ? Object.values(assessment.photos) : [];
+  const poses = Array.isArray(assessment?.poses) ? assessment.poses : [];
+  return [...photos, ...poses].filter(Boolean);
+}
+
+function assessmentActivityKey(assessment) {
+  return [assessment, ...assessmentRecords(assessment)]
+    .reduce((latest, record) => Math.max(latest, recordActivityKey(record)), Number.NEGATIVE_INFINITY);
+}
+
+function recordHasCompletionEvidence(record) {
+  return Boolean(record?.assessmentComplete || record?.assessmentStatus === "completed" || record?.completedAt);
+}
+
+function hasPersistentAssessmentIdentity(assessment) {
+  const hasNormalizedRecords = Boolean(assessment?.photos && typeof assessment.photos === "object") || Array.isArray(assessment?.poses);
+  if (!hasNormalizedRecords) return true;
+  return assessmentRecords(assessment).some((record) => record?.assessmentId === assessment.id);
+}
+
+function hasCompletionEvidence(assessment) {
+  return Boolean(assessment?.completedAt) || assessmentRecords(assessment).some(recordHasCompletionEvidence);
+}
+
+function compareResumableRecency(left, right) {
+  const leftKey = assessmentActivityKey(left);
+  const rightKey = assessmentActivityKey(right);
+  if (leftKey !== rightKey) return leftKey > rightKey ? 1 : -1;
+  const leftId = String(left?.id || "");
+  const rightId = String(right?.id || "");
+  if (leftId === rightId) return 0;
+  return leftId > rightId ? 1 : -1;
+}
+
+export function selectResumableAssessment(sets, { memberId = null } = {}) {
+  if (!memberId) return null;
+  return (sets || []).reduce((selected, assessment) => {
+    if (!assessment?.id || assessment.memberId !== memberId || !["draft", "analyzing"].includes(assessment.status)) return selected;
+    if (!hasPersistentAssessmentIdentity(assessment) || hasCompletionEvidence(assessment)) return selected;
+    if (!selected || compareResumableRecency(assessment, selected) > 0) return assessment;
+    return selected;
+  }, null);
+}
+
+export function completeAssessmentRecords(memberPhotos, {
+  memberId = null,
+  assessmentId = null,
+  role = "unassigned",
+  completedAt = new Date().toISOString(),
+} = {}) {
+  const source = memberPhotos && typeof memberPhotos === "object" ? memberPhotos : {};
+  const next = { ...source };
+  const updatedRecords = [];
+  const safeRole = ["before", "after", "unassigned"].includes(role) ? role : "unassigned";
+  if (!memberId || !assessmentId) return { memberPhotos: next, updatedRecords, blockedReason: "invalid_identity" };
+
+  const assessment = normalizeAssessmentSets(source, { memberId }).find((set) => set.id === assessmentId);
+  if (!assessment) return { memberPhotos: next, updatedRecords, blockedReason: "not_found" };
+  if (assessment.status !== "completed") return { memberPhotos: next, updatedRecords, blockedReason: "incomplete" };
+
+  [...POSTURE_STORAGE_KEYS, "poses"].forEach((storageKey) => {
+    const records = Array.isArray(source[storageKey]) ? source[storageKey] : [];
+    next[storageKey] = records.map((record) => {
+      const owned = record?.assessmentId === assessmentId && (!record.memberId || record.memberId === memberId);
+      if (!owned) return record;
+      const completed = {
+        ...record,
+        memberId,
+        assessmentRole: safeRole,
+        assessmentStatus: "completed",
+        assessmentComplete: true,
+        completedAt,
+        ...(storageKey === "poses" ? {} : { captureStatus: "completed" }),
+      };
+      updatedRecords.push(completed);
+      return completed;
+    });
+  });
+
+  return {
+    memberPhotos: next,
+    updatedRecords,
+    blockedReason: updatedRecords.length ? null : "not_found",
+  };
+}
+
+export function removeAssessmentDraftRecords(memberPhotos, { memberId = null, assessmentId = null } = {}) {
+  const source = memberPhotos && typeof memberPhotos === "object" ? memberPhotos : {};
+  const next = { ...source };
+  const removedRecords = [];
+  if (!memberId || !assessmentId) return { memberPhotos: next, removedRecords, blockedReason: null };
+
+  const storageKeys = [...POSTURE_STORAGE_KEYS, "poses"];
+  const matchingRecords = storageKeys.flatMap((storageKey) => (Array.isArray(source[storageKey]) ? source[storageKey] : []))
+    .filter((record) => record?.assessmentId === assessmentId && (!record.memberId || record.memberId === memberId));
+  if (matchingRecords.some(recordHasCompletionEvidence)) {
+    return { memberPhotos: next, removedRecords, blockedReason: "completed" };
+  }
+
+  storageKeys.forEach((storageKey) => {
+    const records = Array.isArray(source[storageKey]) ? source[storageKey] : [];
+    const kept = records.filter((record) => {
+      const owned = record?.assessmentId === assessmentId && (!record.memberId || record.memberId === memberId);
+      if (owned) removedRecords.push(record);
+      return !owned;
+    });
+    if (kept.length !== records.length) next[storageKey] = kept;
+  });
+
+  return { memberPhotos: next, removedRecords, blockedReason: null };
+}
+
+function usablePoint(point) {
+  return point && Number.isFinite(Number(point.x)) && Number.isFinite(Number(point.y))
+    ? { x: Number(point.x), y: Number(point.y) }
+    : null;
+}
+
+function midpoint(left, right) {
+  const a = usablePoint(left), b = usablePoint(right);
+  return a && b ? { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } : a || b;
+}
+
+function preferredPoint(points, primary, left, right) {
+  const direct = usablePoint(points?.[primary]);
+  if (direct) return direct;
+  const a = usablePoint(points?.[left]), b = usablePoint(points?.[right]);
+  if (!a) return b;
+  if (!b) return a;
+  return Number(points?.[left]?.score ?? 0) >= Number(points?.[right]?.score ?? 0) ? a : b;
+}
+
+export function postureReferenceLines(pose, { view = pose?.view } = {}) {
+  const points = pose?.pts && typeof pose.pts === "object" ? pose.pts : {};
+  const normalizedView = normalizePostureView(view);
+  const lines = [];
+  const addSegment = (key, label, left, right) => {
+    const a = usablePoint(points[left]), b = usablePoint(points[right]);
+    if (a && b) lines.push({ key, label, kind: "segment", points: [a, b] });
+  };
+
+  if (normalizedView === "front" || normalizedView === "back") {
+    addSegment("head", "머리선", "earL", "earR");
+    addSegment("shoulder", "어깨선", "shL", "shR");
+    addSegment("pelvis", "골반선", "hipL", "hipR");
+    addSegment("knee", "무릎선", "kneeL", "kneeR");
+    addSegment("ankle", "발목선", "ankL", "ankR");
+    const center = [
+      usablePoint(points.nose) || midpoint(points.earL, points.earR),
+      midpoint(points.shL, points.shR),
+      midpoint(points.hipL, points.hipR),
+      midpoint(points.ankL, points.ankR) || midpoint(points.footL, points.footR),
+    ].filter(Boolean);
+    if (center.length >= 2) lines.push({ key: "center", label: "중심선", kind: "path", points: center });
+    return lines;
+  }
+
+  const center = [
+    preferredPoint(points, "ear", "earL", "earR"),
+    preferredPoint(points, "sh", "shL", "shR"),
+    preferredPoint(points, "hip", "hipL", "hipR"),
+    preferredPoint(points, "knee", "kneeL", "kneeR"),
+    preferredPoint(points, "ank", "ankL", "ankR"),
+  ].filter(Boolean);
+  if (center.length >= 2) lines.push({ key: "center", label: "측면 중심선", kind: "path", points: center });
+  return lines;
+}
+
+function averagePoint(points) {
+  const valid = points.map(usablePoint).filter(Boolean);
+  if (!valid.length) return null;
+  return {
+    x: valid.reduce((sum, point) => sum + point.x, 0) / valid.length,
+    y: valid.reduce((sum, point) => sum + point.y, 0) / valid.length,
+  };
+}
+
+function postureAlignmentAnchors(pose, view) {
+  const points = pose?.pts && typeof pose.pts === "object" ? pose.pts : {};
+  const normalizedView = normalizePostureView(view || pose?.view);
+  if (!["front", "back", "leftSide", "rightSide"].includes(normalizedView)) return null;
+  const side = postureAnalysisPlane(normalizedView) === "side";
+  const head = side
+    ? preferredPoint(points, "ear", "earL", "earR")
+    : usablePoint(points.nose) || midpoint(points.earL, points.earR);
+  const shoulder = side
+    ? preferredPoint(points, "sh", "shL", "shR")
+    : midpoint(points.shL, points.shR);
+  const pelvis = side
+    ? preferredPoint(points, "hip", "hipL", "hipR")
+    : midpoint(points.hipL, points.hipR);
+  const ankle = side
+    ? preferredPoint(points, "ank", "ankL", "ankR")
+    : midpoint(points.ankL, points.ankR);
+  const foot = side
+    ? preferredPoint(points, "foot", "footL", "footR")
+    : midpoint(points.footL, points.footR);
+  const floor = foot || ankle;
+  const center = averagePoint([shoulder, pelvis, floor]);
+  if (!head || !floor || !center) return null;
+  const height = floor.y - head.y;
+  if (!Number.isFinite(height) || height < 0.2) return null;
+  const availableAnchors = [head, shoulder, pelvis, floor].filter(Boolean).length;
+  return { anchor: { x: center.x, y: floor.y }, height, availableAnchors };
+}
+
+export function postureAlignmentTransform(beforePose, afterPose, { view = beforePose?.view || afterPose?.view } = {}) {
+  const before = postureAlignmentAnchors(beforePose, view);
+  const after = postureAlignmentAnchors(afterPose, view);
+  if (!before || !after) return { available: false, reason: "insufficient_landmarks" };
+  const scale = before.height / after.height;
+  if (!Number.isFinite(scale) || scale < 0.65 || scale > 1.55) return { available: false, reason: "unsafe_scale" };
+  const scaledAnchor = {
+    x: 0.5 + scale * (after.anchor.x - 0.5),
+    y: 0.5 + scale * (after.anchor.y - 0.5),
+  };
+  return {
+    available: true,
+    scale: Math.round(scale * 10000) / 10000,
+    offsetX: Math.round((before.anchor.x - scaledAnchor.x) * 10000) / 10000,
+    offsetY: Math.round((before.anchor.y - scaledAnchor.y) * 10000) / 10000,
+    confidence: Math.min(before.availableAnchors, after.availableAnchors) >= 4 ? "high" : "medium",
+    basis: "body_height_and_center",
+  };
+}
+
+const ZERO_CENTERED_METRICS = new Set(["shoulder", "pelvis", "twist", "knee", "head", "fha", "trunk", "kneeSide", "align"]);
+
+export function compareAssessmentMetrics(beforeSet, afterSet, { view = null, limit = 8 } = {}) {
+  if (!beforeSet || !afterSet) return [];
+  const normalizedView = view ? normalizePostureView(view) : null;
+  const records = (set) => (set?.poses || []).filter((pose) => !normalizedView || normalizePostureView(pose.view) === normalizedView);
+  const beforeMetrics = new Map(records(beforeSet).flatMap((pose) => (pose.metrics || []).map((metric) => [
+    `${normalizePostureView(pose.view)}:${metric.key}`,
+    metric,
+  ])));
+  return records(afterSet).flatMap((pose) => (pose.metrics || []).map((metric) => {
+    const previous = beforeMetrics.get(`${normalizePostureView(pose.view)}:${metric.key}`);
+    const beforeValue = Number(previous?.value), afterValue = Number(metric?.value);
+    if (!Number.isFinite(beforeValue) || !Number.isFinite(afterValue)) return null;
+    const difference = Math.round((afterValue - beforeValue) * 10) / 10;
+    const absoluteDifference = Math.round((Math.abs(afterValue) - Math.abs(beforeValue)) * 10) / 10;
+    const threshold = metric.unit === "°" ? 0.5 : 0.1;
+    const summary = Math.abs(difference) < threshold
+      ? "변화 폭 작음"
+      : ZERO_CENTERED_METRICS.has(metric.key)
+        ? absoluteDifference < 0 ? "0° 기준에 가까워짐" : absoluteDifference > 0 ? "0° 기준에서 멀어짐" : "변화 없음"
+        : difference > 0 ? "수치 증가" : "수치 감소";
+    return {
+      id: `${normalizePostureView(pose.view)}:${metric.key}`,
+      key: metric.key,
+      view: normalizePostureView(pose.view),
+      label: metric.label,
+      beforeValue,
+      afterValue,
+      difference,
+      unit: metric.unit || previous?.unit || "",
+      summary,
+    };
+  })).filter(Boolean).slice(0, Math.max(0, Number(limit) || 0));
+}
+
 export function selectAutomaticComparison(sets, { scope = "full_body" } = {}) {
-  const valid = (sets || [])
-    .filter((set) => set?.status === "completed" && set.scope === scope)
-    .sort((a, b) => String(a.completedAt || a.at).localeCompare(String(b.completedAt || b.at)));
+  const eligible = (sets || []).filter((set) => set?.status === "completed" && set.scope === scope);
+  const dated = eligible.filter((set) => Number.isFinite(Date.parse(set.completedAt || set.at || "")));
+  const valid = (dated.length >= 2 ? dated : eligible)
+    .sort((a, b) => {
+      const left = Date.parse(a.completedAt || a.at || ""), right = Date.parse(b.completedAt || b.at || "");
+      if (Number.isFinite(left) !== Number.isFinite(right)) return Number.isFinite(left) ? -1 : 1;
+      if (Number.isFinite(left) && Number.isFinite(right) && left !== right) return left - right;
+      return String(a.id || "").localeCompare(String(b.id || ""));
+    });
   if (valid.length < 2) return { before: valid[0] || null, after: null };
   return { before: valid[0], after: valid[valid.length - 1] };
 }

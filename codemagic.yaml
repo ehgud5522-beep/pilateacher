@@ -19,6 +19,9 @@ workflows:
       vars:
         XCODE_SCHEME: "App"
         BUNDLE_ID: "com.pilateacher.app"
+        VITE_AI_ENABLED: "true"
+        VITE_AI_PROVIDER: "openai"
+        VITE_AI_GATEWAY_URL: "https://asia-northeast3-pilateacher.cloudfunctions.net/aiGateway/v1/ai/execute"
 
     scripts:
       - name: Install npm packages
@@ -246,3 +249,5 @@ workflows:
       app_store_connect:
         auth: integration
         submit_to_testflight: true
+        submit_to_app_store: true
+        release_type: MANUAL

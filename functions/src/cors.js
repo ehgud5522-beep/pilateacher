@@ -9,6 +9,7 @@ const DEFAULT_ALLOWED_ORIGINS = Object.freeze([
   "http://127.0.0.1:5174",
   "capacitor://localhost",
   "http://localhost",
+  "https://localhost",
   "https://pilateacher.web.app",
   "https://pilateacher.firebaseapp.com",
 ]);

@@ -2,7 +2,7 @@ export const CAPTURE_TIMER_OPTIONS = Object.freeze([0, 3, 5, 10]);
 export const DEFAULT_CAPTURE_TIMER_SECONDS = 3;
 export const CAPTURE_TIMER_STORAGE_KEY = "pilateacher.posture.captureTimerSeconds";
 
-export const LEVEL_THRESHOLD_DEG = 2;
+export const LEVEL_THRESHOLD_DEG = 4;
 export const SENSOR_STATUSES = Object.freeze({
   loading: "loading",
   active: "active",
@@ -311,7 +311,7 @@ export function evaluateDeviceLevel({
       pitch: normalizedPitch,
       isLevel: true,
       code: "level",
-      message: "좋아요. 수평이 맞습니다.",
+      message: "현재 자세로 촬영하기에 적합합니다.",
     });
   }
 

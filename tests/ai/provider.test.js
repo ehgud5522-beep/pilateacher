@@ -1,12 +1,28 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { AI_STATUSES, buildBodyAnalysisInput, createAIProvider, makeAIRequestId } from "../../src/ai/index.js";
+import { readFile } from "node:fs/promises";
+import {
+  AI_STATUSES,
+  buildBodyAnalysisInput,
+  buildReportInput,
+  buildVoiceSummaryInput,
+  createAIProvider,
+  makeAIRequestId,
+} from "../../src/ai/index.js";
 
 const bodyOutput = {
   bodyCharacteristics: ["흉곽 회전 경향"], asymmetries: ["오른쪽 어깨 높이 차이"],
   pelvis: "전방 경사 경향", thorax: "회전 경향", scapula: "좌우 차이", head: "전방 이동 경향", knees: "중립", feet: "중립",
   recommendedExercises: ["호흡 기반 흉곽 가동성"], precautions: ["통증 발생 시 중단"],
 };
+
+test("production config uses Vite's statically replaceable import.meta.env access", async () => {
+  const source = await readFile(new URL("../../src/ai/index.js", import.meta.url), "utf8");
+  assert.match(source, /VITE_AI_ENABLED: import\.meta\.env\.VITE_AI_ENABLED/);
+  assert.match(source, /VITE_AI_PROVIDER: import\.meta\.env\.VITE_AI_PROVIDER/);
+  assert.match(source, /VITE_AI_GATEWAY_URL: import\.meta\.env\.VITE_AI_GATEWAY_URL/);
+  assert.doesNotMatch(source, /const runtimeEnv = import\.meta\.env/);
+});
 
 test("disabled provider is safely not_connected and never calls fetch", async () => {
   let calls = 0;
@@ -33,10 +49,39 @@ test("provider switch and structured body output use the secure gateway contract
   assert.deepEqual(result.output.recommendedExercises, ["호흡 기반 흉곽 가동성"]);
 });
 
-test("idempotency key is deterministic for normalized object order", () => {
+test("each user action gets a new opaque idempotency key", () => {
   const first = makeAIRequestId("anthropic", "summarizeVoice", { lessonId: "l1", transcript: "기록" });
   const second = makeAIRequestId("anthropic", "summarizeVoice", { transcript: "기록", lessonId: "l1" });
-  assert.equal(first, second);
+  assert.notEqual(first, second);
+  assert.match(first, /^ai_anthropic_summarizeVoice_[a-f0-9]{32}$/);
+  assert.equal(first.includes("기록"), false);
+});
+
+test("an explicit request id is preserved for a real network retry", async () => {
+  const ids = [];
+  const provider = createAIProvider({
+    env: { VITE_AI_ENABLED: "true", VITE_AI_PROVIDER: "openai", VITE_AI_GATEWAY_URL: "https://ai.example.com/v1/ai/execute" },
+    getAccessToken: async () => "firebase-token",
+    fetchImpl: async (_url, request) => {
+      ids.push(JSON.parse(request.body).requestId);
+      return { ok: true, json: async () => ({ provider: "openai", output: bodyOutput }) };
+    },
+  });
+  const requestId = "ai_openai_analyzeBody_retry12345678";
+  await provider.analyzeBody({ memberId: "m1", views: [] }, { requestId });
+  await provider.analyzeBody({ memberId: "m1", views: [] }, { requestId });
+  assert.deepEqual(ids, [requestId, requestId]);
+});
+
+test("configured Firebase authentication fails closed before fetch when its token is empty", async () => {
+  let calls = 0;
+  const provider = createAIProvider({
+    config: { enabled: true, provider: "openai", gatewayUrl: "https://ai.example.com/v1/ai/execute" },
+    getAccessToken: async () => "",
+    fetchImpl: async () => { calls += 1; },
+  });
+  await assert.rejects(provider.analyzeBody({ memberId: "m1", views: [] }), (error) => (/** @type {any} */ (error)).code === "unauthenticated");
+  assert.equal(calls, 0);
 });
 
 test("voice summary maps the Firebase Gateway result contract to the existing client contract", async () => {
@@ -136,4 +181,31 @@ test("body AI input contains four canonical pose views but never photo or blob p
   assert.equal(serialized.includes("base64"), false);
   assert.equal(serialized.includes("blob-secret"), false);
   assert.equal(serialized.includes('"blob"'), false);
+});
+
+test("client builders bound text and remove direct PII before the gateway", () => {
+  const voice = buildVoiceSummaryInput({
+    memberId: "m1", lessonId: "l1", transcript: `${"x".repeat(13000)} 010-1234-5678 member@example.com`,
+  });
+  assert.equal(voice.transcript.length, 12000);
+  assert.equal(voice.transcript.includes("010-1234-5678"), false);
+  const redactedVoice = buildVoiceSummaryInput({ memberId: "m1", lessonId: "l1", transcript: "연락처 010-1234-5678 member@example.com" });
+  assert.equal(redactedVoice.transcript.includes("010-1234-5678"), false);
+  assert.equal(redactedVoice.transcript.includes("member@example.com"), false);
+
+  const report = buildReportInput({
+    reportType: "member_progress_message",
+    memberId: "m1",
+    source: {
+      회원: "김지민",
+      목표: "코어",
+      수행능력: [{ name: "균형", now: 70 }],
+      photo: "data:image/jpeg;base64,AAAA",
+      unsupported: "drop",
+    },
+  });
+  assert.equal(report.source.회원, undefined);
+  assert.equal(report.source.photo, undefined);
+  assert.equal(report.source.unsupported, undefined);
+  assert.deepEqual(report.source.수행능력, [{ label: "균형", now: 70 }]);
 });

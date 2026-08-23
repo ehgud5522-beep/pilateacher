@@ -49,6 +49,31 @@ service cloud.firestore {
         allow read, create, update: if signedIn() && request.auth.uid == userId;
         allow delete: if false;
       }
+
+      match /aiConsents/{memberId} {
+        allow read: if signedIn() && request.auth.uid == userId;
+        allow create, update: if signedIn()
+          && request.auth.uid == userId
+          && memberId.size() > 0
+          && memberId.size() <= 160
+          && request.resource.data.keys().hasOnly([
+            "status", "policyVersion", "scopes", "grantedAt", "revokedAt", "updatedAt"
+          ])
+          && request.resource.data.status in ["granted", "revoked"]
+          && request.resource.data.policyVersion == "2026-08-23"
+          && request.resource.data.scopes is list
+          && request.resource.data.scopes.size() <= 4
+          && request.resource.data.scopes.hasOnly([
+            "analyzeBody", "summarizeVoice", "recommendSequence", "generateReport"
+          ])
+          && request.resource.data.updatedAt is timestamp
+          && (
+            request.resource.data.status == "granted"
+              ? request.resource.data.grantedAt is timestamp && request.resource.data.revokedAt == null
+              : request.resource.data.revokedAt is timestamp && request.resource.data.scopes.size() == 0
+          );
+        allow delete: if false;
+      }
     }
 
     match /organizations/{organizationId} {

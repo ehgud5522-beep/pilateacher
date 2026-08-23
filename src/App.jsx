@@ -268,6 +268,7 @@ const DEVICE_LOG_FIELDS = new Set([
   "memberId", "assessmentId", "lessonId", "view", "storage", "operation",
   "permission", "state", "source", "code", "message", "count", "provider",
   "stage", "kind", "firebaseCode", "nativeCode", "nativeMessage", "credentialState",
+  "httpStatus", "requestId", "retryCount", "path", "expected", "received", "reason",
 ]);
 const deviceLog = (event, details = {}) => {
   try {
@@ -1140,8 +1141,8 @@ function Sheet({ title, sub, subtitle, onClose, children, wide = false }) {
     <div className="fixed inset-0" style={{ zIndex: 60 }} role="dialog" aria-modal="true" aria-label={title}>
       <div className="absolute inset-0" style={{ background: "rgba(28,36,51,0.32)" }} onClick={onClose} />
       <section ref={panelRef} tabIndex={-1} onKeyDown={onKeyDown}
-        className="sheet-in absolute bottom-0 left-1/2 flex w-full flex-col bg-white"
-        style={{ transform: "translateX(-50%)", maxWidth: 420, maxHeight: wide ? "92dvh" : "86dvh",
+        className="pt-generic-sheet sheet-in absolute bottom-0 left-1/2 flex w-full flex-col bg-white"
+        style={{ transform: "translateX(-50%)", maxHeight: wide ? "92dvh" : "86dvh",
           borderRadius: "16px 16px 0 0", boxShadow: "0 -8px 24px rgba(28,36,51,0.12)",
           paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
         <div className="flex items-start justify-between" style={{ padding: "16px 16px 6px" }}>
@@ -1276,8 +1277,8 @@ function ScheduleBottomSheet({ title, subtitle, onClose, returnFocusRef, childre
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center px-0 sm:px-3" style={{ backgroundColor: SCRIM, animation: "sheet-fade .18s ease-out" }} onPointerDown={(e) => { if (dismissible && e.target === e.currentTarget) onClose(); }}>
       <section ref={panelRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="schedule-sheet-title" aria-busy={!dismissible}
-        className="flex w-full min-h-0 flex-col overflow-hidden"
-        style={{ maxWidth: 420, maxHeight: "92dvh", borderRadius: "20px 20px 0 0", backgroundColor: CARD,
+        className="pt-schedule-sheet flex w-full min-h-0 flex-col overflow-hidden"
+        style={{ maxHeight: "92dvh", borderRadius: "20px 20px 0 0", backgroundColor: CARD,
           border: `1px solid ${LINE}`, borderBottom: 0, boxShadow: "0 -18px 54px rgba(28,36,51,.18)", paddingBottom: "env(safe-area-inset-bottom, 0px)", animation: "sheet-rise .24s cubic-bezier(.2,.8,.2,1)" }}>
         {dismissible && <button type="button" aria-label="아래로 끌어 닫기" onPointerDown={startHandleDrag} onPointerMove={moveHandleDrag} onPointerUp={finishDrag} onPointerCancel={finishDrag}
           className="flex h-7 w-full shrink-0 touch-none cursor-grab items-center justify-center active:cursor-grabbing">
@@ -1815,7 +1816,7 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
 function Header({ settings, account, alertCount, onProfile, onAlerts }) {
   return (
     <header className="bg-white" style={{ borderBottom: `1px solid ${LINE}` }}>
-      <div className="mx-auto flex items-center gap-2.5 px-3" style={{ height: 44, maxWidth: 420 }}>
+      <div className="pt-header-inner mx-auto flex items-center gap-2.5 px-3" style={{ height: 44 }}>
         <Logo size={26} radius={0.24} />
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-extrabold" style={{ color: INK, maxWidth: "100%" }}>{settings.center || "필라티쳐"}</p>
@@ -2668,25 +2669,25 @@ function WeekGrid({ days, byDate, nameOf, memberOf, briefingOf, cursor, onOpen, 
   }).filter((b) => b.top >= -GRID_ROW && b.top < totalHeight);
 
   return (
-    <div ref={gridRef} className="flex h-full min-h-0 flex-col" style={{ padding: `0 ${GRID_PAD_X}px`, backgroundColor: CARD }}>
+    <div ref={gridRef} className="pt-week-grid flex h-full min-h-0 flex-col" style={{ padding: `0 ${GRID_PAD_X}px`, backgroundColor: CARD }}>
           <div className="min-h-0 flex-1 overflow-y-auto">
-          <div ref={gridHeaderRef} className="sticky top-0 z-20 grid shrink-0" style={{ gridTemplateColumns: `${AXIS}px repeat(${days.length}, minmax(0, 1fr))`, backgroundColor: "var(--card)", borderBottom: "1px solid var(--line)" }}>
+          <div ref={gridHeaderRef} className="sticky top-0 z-20 grid shrink-0" style={{ gridTemplateColumns: `var(--pt-week-axis, ${AXIS}px) repeat(${days.length}, minmax(0, 1fr))`, backgroundColor: "var(--card)", borderBottom: "1px solid var(--line)" }}>
             <div />
             {days.map((d) => {
               const today = d === todayISO(), on = d === cursor;
               return (
                 <div key={d} className="min-w-0 py-1.5 text-center" style={{ borderLeft: "1px solid var(--line)", backgroundColor: today ? "var(--tint)" : "var(--card)" }}>
-                  <p className="font-extrabold" style={{ fontSize: 11, color: today ? "var(--primary)" : redInk(d, SUB) }}>{dow(d)}</p>
-                  <p className="font-extrabold tabular-nums" style={{ fontSize: 13, color: today ? "var(--primary)" : redInk(d, on ? INK : SUB) }}>{Number(d.slice(8, 10))}</p>
+                  <p className="pt-week-day font-extrabold" style={{ color: today ? "var(--primary)" : redInk(d, SUB) }}>{dow(d)}</p>
+                  <p className="pt-week-date font-extrabold tabular-nums" style={{ color: today ? "var(--primary)" : redInk(d, on ? INK : SUB) }}>{Number(d.slice(8, 10))}</p>
                 </div>
               );
             })}
           </div>
-          <div className="relative grid" style={{ gridTemplateColumns: `${AXIS}px repeat(${days.length}, minmax(0, 1fr))` }}>
+          <div className="relative grid" style={{ gridTemplateColumns: `var(--pt-week-axis, ${AXIS}px) repeat(${days.length}, minmax(0, 1fr))` }}>
             <div style={{ height: totalHeight }}>
               {Array.from({ length: rows }, (_, i) => (
                 <div key={i} className="flex items-start justify-end pr-1 pt-0.5" style={{ height: heightOf(GRID_H0 + i), borderTop: i ? `1px solid ${LINE}` : "none" }}>
-                  <span className="font-bold tabular-nums" style={{ color: FAINT, fontSize: 9 }}>{hourLabel(GRID_H0 + i)}</span>
+                  <span className="pt-week-time font-bold tabular-nums" style={{ color: FAINT }}>{hourLabel(GRID_H0 + i)}</span>
                 </div>
               ))}
             </div>
@@ -3703,36 +3704,37 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
           )}
         </div>
       </div>
-      <div className="px-2 pb-2 pt-2" style={{ background: "linear-gradient(180deg, rgba(19,24,34,.9), rgba(15,19,28,.98))", borderTop: "1px solid rgba(255,255,255,.07)", boxShadow: "0 -12px 28px rgba(0,0,0,.22)" }}>
-        <div className="rounded-xl p-2" style={{ backgroundColor: "rgba(31,38,52,.94)", border: "1px solid rgba(255,255,255,.08)", boxShadow: "0 8px 24px rgba(0,0,0,.2)" }}>
-          <div className="pt-hscroll flex gap-1.5 overflow-x-auto pb-0.5">
+      <div className="px-1.5 pb-1.5 pt-1.5" style={{ background: "linear-gradient(180deg, rgba(19,24,34,.9), rgba(15,19,28,.98))", borderTop: "1px solid rgba(255,255,255,.07)", boxShadow: "0 -12px 28px rgba(0,0,0,.22)" }}>
+        <div className="rounded-xl p-1.5" style={{ backgroundColor: "rgba(31,38,52,.94)", border: "1px solid rgba(255,255,255,.08)", boxShadow: "0 8px 24px rgba(0,0,0,.2)" }}>
+          <div className="pt-hscroll flex gap-1 overflow-x-auto">
             {toolItems.map(({ k, l, I }) => {
               const active = k === "guide" ? ["hline", "vline"].includes(tool) : k === "ruler" ? Boolean(ruler) : tool === k;
-              return <button key={k} onClick={() => { if (k === "guide") setGuideSheet(true); else if (k === "ruler") { setRuler((value) => value ? null : { cx: 0.5, cy: 0.58, deg: 0 }); pickTool("pen"); } else pickTool(k); }} className="flex h-11 min-w-[54px] shrink-0 items-center justify-center gap-1.5 rounded-lg px-2 text-[10px] font-bold"
+              return <button key={k} onClick={() => { if (k === "guide") setGuideSheet(true); else if (k === "ruler") { setRuler((value) => value ? null : { cx: 0.5, cy: 0.58, deg: 0 }); pickTool("pen"); } else pickTool(k); }} className="flex h-11 min-w-[50px] shrink-0 items-center justify-center gap-1 rounded-lg px-1.5 text-[11px] font-bold"
                 style={active ? { backgroundColor: BRAND, color: "#fff", boxShadow: "0 5px 12px rgba(76,67,153,.32)" } : { backgroundColor: "rgba(255,255,255,.055)", color: "rgba(255,255,255,.76)", border: "1px solid rgba(255,255,255,.055)" }}
-                aria-pressed={active}><I size={14} strokeWidth={2.2} /><span className="whitespace-nowrap">{l}</span></button>;
+                aria-pressed={active}><I size={20} strokeWidth={2.1} /><span className="whitespace-nowrap">{l}</span></button>;
             })}
           </div>
-          <div className="mt-1.5 border-t pt-1.5" style={{ borderColor: "rgba(255,255,255,.08)" }}>
-            <div className="pt-hscroll flex items-center gap-1 overflow-x-auto pb-0.5">
+          <div className="mt-1 border-t pt-1" style={{ borderColor: "rgba(255,255,255,.08)" }}>
+            <div className="pt-hscroll flex items-center gap-0.5 overflow-x-auto">
               {[...ANNOTATION_PRESET_COLORS, ...customRecentColors].map(({ color: optionColor, label: optionLabel }) => (
-                <button key={optionColor} onClick={() => chooseColor(optionColor)} className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full" aria-label={optionLabel} aria-pressed={color === optionColor}
-                  style={{ backgroundColor: optionColor, border: color === optionColor ? "3px solid #FFFFFF" : "1px solid rgba(255,255,255,.22)", boxShadow: color === optionColor ? "0 0 0 2px #6C5FD4" : optionColor === "#FFFFFF" ? "inset 0 0 0 1px rgba(0,0,0,.14)" : "none" }}>
-                  {color === optionColor && <Check size={14} strokeWidth={3} color={["#FFFFFF", "#FFD43B"].includes(optionColor) ? "#17171F" : "#FFFFFF"} />}
+                <button key={optionColor} onClick={() => chooseColor(optionColor)} className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full" aria-label={optionLabel} aria-pressed={color === optionColor}>
+                  <span className="flex h-8 w-8 items-center justify-center rounded-full" style={{ backgroundColor: optionColor, border: color === optionColor ? "3px solid #FFFFFF" : "1px solid rgba(255,255,255,.22)", boxShadow: color === optionColor ? "0 0 0 2px #6C5FD4" : optionColor === "#FFFFFF" ? "inset 0 0 0 1px rgba(0,0,0,.14)" : "none" }}>
+                    {color === optionColor && <Check size={13} strokeWidth={3} color={["#FFFFFF", "#FFD43B"].includes(optionColor) ? "#17171F" : "#FFFFFF"} />}
+                  </span>
                 </button>
               ))}
-              <button type="button" onClick={openColorPicker} className="relative flex h-11 min-w-[44px] shrink-0 items-center justify-center gap-0.5 rounded-lg" style={{ color: "#fff", backgroundColor: "rgba(255,255,255,.08)", border: "1px solid rgba(255,255,255,.12)" }} aria-label="다른 색 직접 선택">
+              <button type="button" onClick={openColorPicker} className="relative flex h-11 min-w-[44px] shrink-0 items-center justify-center gap-0.5 rounded-lg" style={{ color: "#fff", backgroundColor: "rgba(255,255,255,.065)", border: "1px solid rgba(255,255,255,.10)" }} aria-label="다른 색 직접 선택">
                 <Plus size={13} /><Palette size={14} />
               </button>
             </div>
           </div>
-          <div className="mt-1.5 flex items-center gap-1.5 border-t pt-1.5" style={{ borderColor: "rgba(255,255,255,.08)" }}>
+          <div className="mt-1 flex min-h-11 items-center gap-1 border-t pt-1" style={{ borderColor: "rgba(255,255,255,.08)" }}>
             <span className="mr-auto text-[10px] font-bold text-white">{tool === "memo" || selectedMark?.tool === "text" ? "손메모 크기" : "선 굵기"}</span>
-            {(tool === "memo" || selectedMark?.tool === "text" ? HANDWRITING_SIZE_OPTIONS : [{ value: 2, label: "얇게" }, { value: 4, label: "보통" }, { value: 6, label: "굵게" }]).map((option) => <button type="button" key={option.value} onClick={() => tool === "memo" || selectedMark?.tool === "text" ? setHandwritingSize(option.value) : setWidth(option.value)} className="flex h-11 min-w-[52px] items-center justify-center gap-1 rounded-lg px-2 text-[10px] font-bold" style={{ backgroundColor: closestHandwritingWidth(width) === option.value ? "#FFFFFF" : "rgba(255,255,255,.06)", color: closestHandwritingWidth(width) === option.value ? "#17171F" : "rgba(255,255,255,.72)", border: `1px solid ${closestHandwritingWidth(width) === option.value ? "#FFFFFF" : "rgba(255,255,255,.07)"}` }}><span className="inline-block w-3 rounded-full" style={{ height: Math.max(1, option.value / 2), backgroundColor: closestHandwritingWidth(width) === option.value ? "#17171F" : "#FFFFFF" }} />{option.label}</button>)}
+            {(tool === "memo" || selectedMark?.tool === "text" ? HANDWRITING_SIZE_OPTIONS : [{ value: 2, label: "얇게" }, { value: 4, label: "보통" }, { value: 6, label: "굵게" }]).map((option) => <button type="button" key={option.value} onClick={() => tool === "memo" || selectedMark?.tool === "text" ? setHandwritingSize(option.value) : setWidth(option.value)} className="flex h-11 min-w-[48px] items-center justify-center gap-1 rounded-md px-1.5 text-[10px] font-bold" style={{ backgroundColor: closestHandwritingWidth(width) === option.value ? "#FFFFFF" : "rgba(255,255,255,.06)", color: closestHandwritingWidth(width) === option.value ? "#17171F" : "rgba(255,255,255,.72)", border: `1px solid ${closestHandwritingWidth(width) === option.value ? "#FFFFFF" : "rgba(255,255,255,.07)"}` }}><span className="inline-block w-3 rounded-full" style={{ height: Math.max(1, option.value / 2), backgroundColor: closestHandwritingWidth(width) === option.value ? "#17171F" : "#FFFFFF" }} />{option.label}</button>)}
             {selectedMark?.tool === "text" && <button type="button" onClick={deleteSelectedMark} aria-label="선택한 손메모 삭제" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: "rgba(255,59,48,.16)", color: "#FF8A84", border: "1px solid rgba(255,59,48,.24)" }}><Trash2 size={15} /></button>}
           </div>
         </div>
-        <div className="mt-1.5 flex items-center gap-2">
+        <div className="mt-1 flex min-h-11 items-center gap-1.5">
           <p className="min-w-0 flex-1 px-1 text-[10px] font-semibold leading-snug" style={{ color: selectedMark ? "#C9C4FF" : "rgba(255,255,255,.52)" }}>{instruction}</p>
           <button type="button" onClick={openExportPreview} className="flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-lg px-3 text-[10px] font-extrabold text-white" style={{ backgroundColor: "rgba(108,95,212,.92)", border: "1px solid rgba(255,255,255,.12)" }}><ImagePlus size={14} />저장·공유</button>
         </div>
@@ -6068,7 +6070,7 @@ function SavedPoseViewer({ rec, member, records, onUpdate, memberName, onClose, 
 
 function PostureCaptureScreen({
   member, assessmentId, roleLabel, captureViews, currentCapture, capturePhotos, draftSaved, busy,
-  onSelectView, onAcceptCapture, onOpenAlbum, onDeleteCapture, onSaveDraft, onContinue, onExit,
+  captureImportError = "", onSelectView, onAcceptCapture, onOpenAlbum, onDeleteCapture, onSaveDraft, onContinue, onExit,
 }) {
   const isNative = Capacitor.isNativePlatform();
   const iosStableCaptureFallback = Capacitor.getPlatform() === "ios" && !IOS_NATIVE_CAPTURE_ENABLED;
@@ -6431,7 +6433,6 @@ function PostureCaptureScreen({
 
   const usePending = async () => {
     if (!pendingCapture || busy) return;
-    const willComplete = captureViews.every(({ key }) => key === pendingCapture.view || !!capturePhotos[key]);
     const stored = await onAcceptCapture(pendingCapture.blob, {
       source: pendingCapture.source || (nativePreviewAvailable ? "native_preview" : "getUserMedia"), memberId: pendingCapture.memberId,
       assessmentId: pendingCapture.assessmentId, view: pendingCapture.view,
@@ -6445,7 +6446,6 @@ function PostureCaptureScreen({
     setPendingCapture(null);
     setCameraError("");
     setCameraStatus("idle");
-    if (!willComplete) window.setTimeout(() => startCamera(), 0);
   };
 
   const handleBack = async () => {
@@ -6469,6 +6469,10 @@ function PostureCaptureScreen({
   useEffect(() => {
     const onVisibility = () => {
       if (document.visibilityState !== "hidden") return;
+      if (iosStableCaptureFallback) {
+        setCameraStatus("idle");
+        return;
+      }
       stopCamera("background").finally(() => {
         if (!mounted.current) return;
         setCameraError("앱으로 돌아온 뒤 카메라를 다시 시작해 주세요.");
@@ -6484,7 +6488,7 @@ function PostureCaptureScreen({
       if (pendingCaptureRef.current?.src) URL.revokeObjectURL(pendingCaptureRef.current.src);
       stopCamera("unmount");
     };
-  }, [stopCamera]);
+  }, [iosStableCaptureFallback, stopCamera]);
 
   const guideColor = sensor.isLevel ? "#63D7A3" : sensor.status === SENSOR_STATUSES.active ? "#F2B84B" : "rgba(236,235,247,.88)";
   const directionGuide = {
@@ -6519,8 +6523,8 @@ function PostureCaptureScreen({
       <main ref={viewportRef} className="relative min-h-0 flex-1 overflow-hidden" style={{ backgroundColor: nativePreviewAvailable && cameraStatus === "active" ? "transparent" : "#0D1016" }}>
         <div ref={stageRef} id="posture-camera-preview" className="absolute overflow-hidden" style={{ left: "50%", top: "50%", width: stageSize.width || "75%", height: stageSize.height || "100%", aspectRatio: "3 / 4", transform: "translate(-50%, -50%)", backgroundColor: nativePreviewAvailable && cameraStatus === "active" ? "transparent" : "#111620" }}>
           {!nativePreviewAvailable && <video ref={videoRef} muted playsInline autoPlay className="h-full w-full object-contain" />}
-          {pendingCapture?.src && <img src={pendingCapture.src} alt={`방금 촬영한 ${postureViewLabel(pendingCapture.view)} 사진`} className="absolute inset-0 h-full w-full object-contain" />}
-          {!pendingCapture && !captureCompleteIdle && activePhoto?.src && cameraStatus !== "active" && <img src={activePhoto.src} alt={`${postureViewLabel(activeView)} 기존 촬영`} className="absolute inset-0 h-full w-full object-contain opacity-75" />}
+          {pendingCapture?.src && <img src={pendingCapture.src} alt={`방금 촬영한 ${postureViewLabel(pendingCapture.view)} 사진`} className="absolute inset-0 h-full w-full object-contain" onError={() => setCameraError("사진을 불러오지 못했습니다. 다시 시도해 주세요.")} />}
+          {!pendingCapture && !captureCompleteIdle && activePhoto?.src && cameraStatus !== "active" && <img src={activePhoto.src} alt={`${postureViewLabel(activeView)} 기존 촬영`} className="absolute inset-0 h-full w-full object-contain" onError={() => setCameraError("사진을 불러오지 못했습니다. 다시 시도해 주세요.")} />}
           {!pendingCapture && !captureCompleteIdle && (
             <div className="pointer-events-none absolute inset-0" aria-hidden="true" style={{ color: guideColor }}>
               <span className="absolute left-[8%] right-[8%] top-[15%] border-t-2 border-dashed" style={{ borderColor: "currentColor" }} />
@@ -6550,7 +6554,7 @@ function PostureCaptureScreen({
       </main>
 
       <footer className="safe-b shrink-0 px-3 pt-2" style={{ background: "linear-gradient(0deg, rgba(13,16,22,1), rgba(13,16,22,.9))" }}>
-        {cameraError && pendingCapture && <p className="mb-2 rounded-lg px-3 py-2 text-center text-[11px] font-bold" style={{ backgroundColor: "rgba(179,57,46,.24)", color: "#FFB8B1" }}>{cameraError}</p>}
+        {(cameraError || captureImportError) && <p className="mb-2 rounded-lg px-3 py-2 text-center text-[11px] font-bold" style={{ backgroundColor: "rgba(179,57,46,.24)", color: "#FFB8B1" }}>{cameraError || captureImportError}</p>}
         {pendingCapture ? (
           <div className="grid grid-cols-2 gap-2 pb-1"><button type="button" onClick={retakePending} disabled={busy} className="flex h-12 items-center justify-center gap-2 rounded-xl text-sm font-bold disabled:opacity-40" style={{ border: "1px solid rgba(255,255,255,.22)" }}><RotateCcw size={16} />다시 촬영</button><button type="button" onClick={usePending} disabled={busy} className="flex h-12 items-center justify-center gap-2 rounded-xl text-sm font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: "#4C4399" }}>{busy ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}사용하기</button></div>
         ) : captureCompleteIdle ? (
@@ -6590,6 +6594,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
   const [captureTarget, setCaptureTarget] = useState(captureViews[0]?.key || "front");
   const [capturePhotos, setCapturePhotos] = useState(() => captureStateFor(captureViews));
   const [draftSaved, setDraftSaved] = useState({});
+  const [captureImportError, setCaptureImportError] = useState("");
   const [analysisStarted, setAnalysisStarted] = useState(false);
   const [analyzedViews, setAnalyzedViews] = useState({});
   const [drawnViews, setDrawnViews] = useState({});
@@ -6843,6 +6848,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
 
   const openCapture = (targetView) => {
     setCaptureTarget(targetView);
+    setCaptureImportError("");
     captureSource.current = "system_photo_picker";
     deviceLog("assessment_photo_input_opened", {
       memberId: analysisMemberId.current, assessmentId: assessmentId.current, view: targetView,
@@ -6858,6 +6864,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
     const expectedAssessmentId = metadata.assessmentId || assessmentId.current;
     setBusy(true); setPts(null);
     let src = null;
+    let previewStaged = false;
     try {
       if (analysisMemberId.current !== member?.id || expectedMemberId !== member?.id || expectedAssessmentId !== assessmentId.current) {
         deviceLog("assessment_capture_identity_mismatch", { memberId: analysisMemberId.current, assessmentId: assessmentId.current, view: capturedView, state: "blocked" });
@@ -6878,27 +6885,31 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
         previewGeometry: metadata.geometry || null,
       };
       const captured = { src, blob, w: im.naturalWidth, h: im.naturalHeight, element: im, captureQuality: quality };
-      if (onSaveCaptureDraft) {
-        const stored = await onSaveCaptureDraft({ assessmentId: assessmentId.current, analysisMethod, scope, selectedViews: captureKeys, assessmentRole: analysisRole.current, captures: { [capturedView]: blob }, captureQuality: { [capturedView]: quality } });
-        if (stored === false) throw Object.assign(new Error("capture draft rejected"), { code: "capture_draft_rejected" });
-      }
       setCapturePhotos((previous) => {
         const old = previous[capturedView];
         if (old?.src?.startsWith("blob:")) { try { URL.revokeObjectURL(old.src); } catch {} }
         return { ...previous, [capturedView]: { ...captured, recordId: `${assessmentId.current}_${capturedView}` } };
       });
+      setDraftSaved((previous) => ({ ...previous, [capturedView]: false }));
+      setCaptureImportError("");
+      previewStaged = true;
+      if (onSaveCaptureDraft) {
+        const stored = await onSaveCaptureDraft({ assessmentId: assessmentId.current, analysisMethod, scope, selectedViews: captureKeys, assessmentRole: analysisRole.current, captures: { [capturedView]: blob }, captureQuality: { [capturedView]: quality } });
+        if (stored === false) throw Object.assign(new Error("capture draft rejected"), { code: "capture_draft_rejected" });
+      }
       setDraftSaved((previous) => ({ ...previous, [capturedView]: true }));
       deviceLog("assessment_draft_saved", { memberId: analysisMemberId.current, assessmentId: assessmentId.current, view: capturedView, storage: "indexedDB", source: metadata.source || captureSource.current, count: 1 });
       const nextTarget = captureViews.find(({ key }) => key !== capturedView && !capturePhotos[key]);
-      if (nextTarget) {
-        setCaptureTarget(nextTarget.key);
-        onToast?.({ ok: true, msg: `${postureViewLabel(capturedView)} 촬영이 완료되었습니다. 다음은 ${postureViewLabel(nextTarget.key)}입니다.` });
-      } else onToast?.({ ok: true, msg: `${postureViewLabel(capturedView)} 촬영이 완료되었습니다. 분석 준비가 끝났습니다.` });
+      if (nextTarget) onToast?.({ ok: true, msg: `${postureViewLabel(capturedView)} 사진을 저장했습니다. 사진을 확인한 뒤 ${postureViewLabel(nextTarget.key)}을 선택해 주세요.` });
+      else onToast?.({ ok: true, msg: `${postureViewLabel(capturedView)} 촬영이 완료되었습니다. 분석 준비가 끝났습니다.` });
       return true;
     } catch (error) {
-      if (src) { try { URL.revokeObjectURL(src); } catch {} }
+      if (src && !previewStaged) { try { URL.revokeObjectURL(src); } catch {} }
+      setCaptureImportError(previewStaged
+        ? "사진은 화면에 임시로 유지 중입니다. 초안 저장을 다시 시도해 주세요."
+        : "사진을 불러오지 못했습니다. 다시 시도해 주세요.");
       deviceLog("assessment_draft_save_failed", { memberId: analysisMemberId.current, assessmentId: assessmentId.current, view: capturedView, storage: "indexedDB", ...deviceError(error) });
-      onToast?.({ ok: false, msg: `${postureViewLabel(capturedView)} 새 사진 저장에 실패했습니다. 기존 사진은 그대로 유지됩니다.` });
+      onToast?.({ ok: false, msg: previewStaged ? `${postureViewLabel(capturedView)} 사진은 유지 중이며 저장을 다시 시도할 수 있습니다.` : "사진을 불러오지 못했습니다. 다시 시도해 주세요." });
       return false;
     } finally { setBusy(false); }
   };
@@ -7036,6 +7047,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
       if (stored === false) throw Object.assign(new Error("capture draft rejected"), { code: "capture_draft_rejected" });
       setDraftSaved((prev) => ({ ...prev, ...Object.fromEntries(pendingKeys.map((key) => [key, true])) }));
       setCapturePhotos((prev) => ({ ...prev, ...Object.fromEntries(pendingKeys.map((key) => [key, { ...prev[key], recordId: `${assessmentId.current}_${key}` }])) }));
+      setCaptureImportError("");
       deviceLog("assessment_draft_saved", { memberId: analysisMemberId.current, assessmentId: assessmentId.current, storage: "indexedDB", count: pendingKeys.length });
       if (!quiet) onToast?.({ ok: true, msg: `${pendingKeys.length}방향 촬영 초안을 저장했습니다.` });
       return true;
@@ -7346,13 +7358,13 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
           )}
           {analysisMethod && !analysisStarted && <PostureCaptureScreen
             member={member} assessmentId={assessmentId.current} roleLabel={roleLabel} captureViews={captureViews} currentCapture={currentCapture}
-            capturePhotos={capturePhotos} draftSaved={draftSaved} busy={busy} onSelectView={setCaptureTarget}
+            capturePhotos={capturePhotos} draftSaved={draftSaved} busy={busy} captureImportError={captureImportError} onSelectView={(nextView) => { setCaptureImportError(""); setCaptureTarget(nextView); }}
             onAcceptCapture={(blob, metadata) => acceptCaptureBlob(blob, { ...metadata, preserveResolution: true })}
             onOpenAlbum={openCapture} onDeleteCapture={deleteCurrentCapture} onSaveDraft={saveCaptureDraft}
             onContinue={() => analysisMethod === "draw" ? beginDrawing(captureViews.find(({ key }) => !drawnViews[key])?.key || "front") : beginCapturedAnalysis(captureViews.find(({ key }) => !analyzedViews[key])?.key || "front")}
             onExit={() => onCaptureExit?.()}
           />}
-          <input ref={albumRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; pickFile(f); }} />
+          <input ref={albumRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) pickFile(f); }} />
           {analysisStarted && busy && (
             <section role="status" aria-live="polite" className="py-8 text-center" style={{ borderRadius: 16, backgroundColor: LAVENDER_S, border: `1px solid #D5D1EB` }}>
               <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-full" style={{ backgroundColor: CARD, color: BRAND_D }}><Loader2 size={24} className="animate-spin" /></span>
@@ -8754,6 +8766,7 @@ function AssessmentWorkspace({ member, photos, settings, initialSavedId, initial
     try {
       next = transitionPostureWorkflow(workflow, startNewAssessmentEvent(newAssessmentId));
     } catch (error) {
+      setCaptureImportError("사진 초안을 저장하지 못했습니다. 사진은 화면에 유지되며 다시 시도할 수 있습니다.");
       assessmentAction.current = null;
       onToast?.({ ok: false, msg: "새 체형분석을 시작하지 못했습니다. 다시 시도해 주세요." });
       return;
@@ -9425,10 +9438,12 @@ const webSTT = () => sttRuntime().web;
 const sttOK = () => typeof window !== "undefined" && sttRuntime().isAvailable();
 const mediaRecordOK = () => typeof window !== "undefined" && !!navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== "undefined";
 const voiceTime = (seconds) => `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
-const lessonRecordLlm = new GatewayLlmProvider({ gatewayProvider: aiProvider, maxRetries: 2 });
+const lessonRecordLlm = new GatewayLlmProvider({ gatewayProvider: aiProvider, maxRetries: 1 });
 
 function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = null }) {
   const [on, setOn] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const [manualEntry, setManualEntry] = useState(false);
   const [finishing, setFinishing] = useState(false);
   const [text, setText] = useState("");
   const [elapsed, setElapsed] = useState(0);
@@ -9458,6 +9473,8 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
   const finishTimerRef = useRef(null);
   const speechSessionRef = useRef(0);
   const stoppingRef = useRef(false);
+  const startRequestRef = useRef(false);
+  const nativeListeningStartedRef = useRef(false);
   const heardRef = useRef(false);
   const textRef = useRef("");
   const audioBlobRef = useRef(null);
@@ -9466,6 +9483,7 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
   const recordingStartedAtRef = useRef(0);
   const sttTrackedRef = useRef(false);
   const autoStructureRef = useRef(false);
+  const transcriptInputRef = useRef(null);
   useEffect(() => { textRef.current = text; }, [text]);
   useEffect(() => {
     const pending = loadPendingLessonRecord(memberId, lessonId);
@@ -9499,8 +9517,11 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
     if (finishTimerRef.current) clearTimeout(finishTimerRef.current);
     finishTimerRef.current = null;
     stoppingRef.current = false;
+    startRequestRef.current = false;
+    nativeListeningStartedRef.current = false;
     recRef.current = null;
     setOn(false);
+    setStarting(false);
     setFinishing(false);
     setText((current) => {
       const finalized = current.replace(/\s*⟨([^⟩]*)⟩\s*$/, (_, live) => ` ${live}`).trim();
@@ -9588,6 +9609,21 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
     setAudioState("recording");
   };
   const start = async () => {
+    if (startRequestRef.current || on || finishing) return;
+    startRequestRef.current = true;
+    nativeListeningStartedRef.current = false;
+    setStarting(true);
+    setManualEntry(false);
+    deviceLog("speech_start_requested", { memberId, lessonId, source: "pending", state: "starting" });
+    const failStart = (message, details = {}) => {
+      startRequestRef.current = false;
+      nativeListeningStartedRef.current = false;
+      setStarting(false);
+      setOn(false);
+      setFinishing(false);
+      setErr(message || "음성 인식을 시작하지 못했습니다.");
+      deviceLog("speech_start_failed", { memberId, lessonId, ...details });
+    };
     const sessionId = speechSessionRef.current + 1;
     speechSessionRef.current = sessionId;
     if (finishTimerRef.current) clearTimeout(finishTimerRef.current);
@@ -9603,7 +9639,7 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
     const NS = nativeSTT();
     const R = webSTT();
     if (!NS && !R && !mediaRecordOK()) {
-      setErr("이 기기에서는 녹음과 음성 인식을 지원하지 않습니다. 직접 입력을 이용해 주세요.");
+      failStart("음성 인식을 시작하지 못했습니다.", { state: "direct_input_required", reason: "unsupported" });
       deviceLog("voice_record_unavailable", { memberId, lessonId, state: "direct_input_required" });
       return;
     }
@@ -9626,7 +9662,7 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
         setAudioState(denied ? "denied" : "unsupported");
         deviceLog("microphone_permission_failed", { memberId, lessonId, permission: "record_audio", state: denied ? "denied" : "failed", ...deviceError(error) });
         if (!R) {
-          setErr(denied ? "마이크 권한이 거부되었습니다. 앱 설정에서 허용하거나 직접 입력해 주세요." : "마이크를 시작하지 못했습니다. 직접 입력을 이용해 주세요.");
+          failStart(denied ? "마이크 권한이 거부되었습니다. 앱 설정에서 허용하거나 직접 입력해 주세요." : "음성 인식을 시작하지 못했습니다.", { source: "media_recorder", state: denied ? "denied" : "failed", ...deviceError(error) });
           return;
         }
       }
@@ -9636,6 +9672,8 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
     if (!NS && !R) {
       setErr("녹음은 가능하지만 자동 전사는 지원되지 않습니다. 중지 후 원문을 직접 입력해 주세요.");
       setOn(true); setSource("media_recorder"); sourceRef.current = "media_recorder";
+      startRequestRef.current = false;
+      setStarting(false);
       deviceLog("voice_record_started", { memberId, lessonId, source: "media_recorder", storage: "indexedDB" });
       deviceLog("voice_transcription_unavailable", { memberId, lessonId, state: "direct_input_required", source: "media_recorder" });
       return;
@@ -9653,17 +9691,28 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
           if (sessionId !== speechSessionRef.current) return;
           if (!isSpeechPermissionGranted(req)) {
             stopMedia();
-            setErr(describeSpeechError(new Error("permission denied")).message);
+            failStart(describeSpeechError(new Error("permission denied")).message, { permission: "speech_recognition", state: "denied", source: "native", reason: "permission_denied" });
             deviceLog("speech_permission_denied", { memberId, lessonId, permission: "speech_recognition", state: "denied", source: "native" });
             return;
           }
         }
-        setErr(mediaError ? "음성 인식은 시작됐지만 녹음 원본은 저장되지 않습니다." : ""); setOn(true); setSource("native"); sourceRef.current = "native";
+        setErr(mediaError ? "음성 인식은 시작됐지만 녹음 원본은 저장되지 않습니다." : ""); setSource("native"); sourceRef.current = "native";
         clearNativeListeners();
         const stateListener = await NS.addListener?.("listeningState", (d) => {
           if (sessionId !== speechSessionRef.current) return;
-          if (d?.status === "started") { setOn(true); setFinishing(false); }
+          if (d?.status === "started") {
+            nativeListeningStartedRef.current = true;
+            startRequestRef.current = false;
+            setStarting(false);
+            setOn(true);
+            setFinishing(false);
+            deviceLog("speech_start_succeeded", { memberId, lessonId, source: "native", state: "started" });
+          }
           else if (d?.status === "stopped") {
+            if (!nativeListeningStartedRef.current && !stoppingRef.current) {
+              deviceLog("voice_transcription_unexpected_end", { memberId, lessonId, source: "native", state: "ignored_pre_start_stopped", reason: "listener_initial_state" });
+              return;
+            }
             setOn(false);
             setFinishing(true);
             /* Android의 stopped는 발화 종료일 뿐 최종 텍스트 완료가 아니다. */
@@ -9672,28 +9721,41 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
         });
         nativeListenersRef.current = [stateListener].filter(Boolean);
         recRef.current = { native: true, sessionId, stop: () => NS.stop?.() };
-        deviceLog("voice_record_started", { memberId, lessonId, source: "native", storage: "indexedDB" });
+        deviceLog("speech_start_dispatched", { memberId, lessonId, source: "native", state: "dispatched" });
         /* Final-result mode keeps the start Promise pending until onResults/onError.
            This avoids the plugin 7.x partial-mode bug that loses late Android errors. */
-        const result = await NS.start({ language: "ko-KR", maxResults: 3, partialResults: false, popup: false });
-        if (sessionId !== speechSessionRef.current) return;
-        const got = String(result?.matches?.[0] || "").trim();
-        if (got) {
-          heardRef.current = true;
-          setText((previous) => {
-            const nextText = `${previous ? previous.replace(/\s*⟨[^⟩]*⟩\s*$/, "").trim() + " " : ""}${got}`.trim();
-            textRef.current = nextText;
-            return nextText;
-          });
-        }
-        finishRecognition(!got, sessionId);
+        const pendingResult = NS.start({ language: "ko-KR", maxResults: 3, partialResults: false, popup: false });
+        setOn(true);
+        setStarting(false);
+        startRequestRef.current = false;
+        deviceLog("voice_record_started", { memberId, lessonId, source: "native", storage: "indexedDB", state: "started" });
+        Promise.resolve(pendingResult).then((result) => {
+          if (sessionId !== speechSessionRef.current) return;
+          const got = String(result?.matches?.[0] || "").trim();
+          if (got) {
+            heardRef.current = true;
+            setText((previous) => {
+              const nextText = `${previous ? previous.replace(/\s*⟨[^⟩]*⟩\s*$/, "").trim() + " " : ""}${got}`.trim();
+              textRef.current = nextText;
+              return nextText;
+            });
+          }
+          finishRecognition(!got, sessionId);
+        }).catch((error) => {
+          if (sessionId !== speechSessionRef.current) return;
+          const diagnostic = describeSpeechError(error);
+          clearNativeListeners(); stopMedia();
+          finishRecognition(false, sessionId);
+          setErr("음성 인식을 시작하지 못했습니다.");
+          deviceLog("voice_transcription_failed", { memberId, lessonId, source: "native", kind: diagnostic.kind, ...deviceError(error) });
+        });
         return;
       } catch (error) {
         if (sessionId !== speechSessionRef.current) return;
         const diagnostic = describeSpeechError(error);
         clearNativeListeners(); stopMedia();
         finishRecognition(false, sessionId);
-        setErr(diagnostic.message);
+        failStart("음성 인식을 시작하지 못했습니다.", { source: "native", kind: diagnostic.kind, ...deviceError(error) });
         deviceLog("voice_transcription_failed", { memberId, lessonId, source: "native", kind: diagnostic.kind, ...deviceError(error) });
         return;
       }
@@ -9728,18 +9790,21 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
         if (stoppingRef.current) scheduleFinish(250, true, sessionId); else finishRecognition(true, sessionId);
       };
       r.sessionId = sessionId;
-      recRef.current = r; setErr(""); setOn(true); setSource("web_speech"); sourceRef.current = "web_speech"; r.start();
+      recRef.current = r; setErr(""); setSource("web_speech"); sourceRef.current = "web_speech"; r.start();
+      startRequestRef.current = false; setStarting(false); setOn(true);
       deviceLog("voice_record_started", { memberId, lessonId, source: "web_speech", storage: "indexedDB" });
     } catch (error) {
       if (sessionId !== speechSessionRef.current) return;
       const diagnostic = describeSpeechError(error);
       stopMedia();
       finishRecognition(false, sessionId);
-      setErr(diagnostic.message);
+      failStart("음성 인식을 시작하지 못했습니다.", { source: "web_speech", kind: diagnostic.kind, ...deviceError(error) });
       deviceLog("voice_transcription_failed", { memberId, lessonId, source: "web_speech", kind: diagnostic.kind, ...deviceError(error) });
     }
   };
   const stop = () => {
+    startRequestRef.current = false;
+    setStarting(false);
     const rec = recRef.current;
     const sessionId = rec?.sessionId || speechSessionRef.current;
     stoppingRef.current = true;
@@ -9787,6 +9852,18 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
       source: source || "unknown",
     });
   }, [text, summaryDraft, summaryMeta, summaryStatus, audioBlobId, source, memberId, lessonId]);
+  const applyCurrentRecord = () => {
+    const transcript = textRef.current.trim();
+    if (!transcript) return;
+    const termMap = mapPilatesTerms(transcript);
+    const teacherText = summaryDraft ? structuredRecordBody(summaryDraft, transcript) : transcript;
+    const lessonRecord = createLessonRecordMeta({ rawTranscript: transcript, termMap, structuredDraft: summaryDraft, status: summaryDraft ? "structured" : "unstructured", source: source || "unknown", recordedAt: new Date().toISOString(), audioBlobId: audioBlobId || null, aiMeta: summaryMeta, usage: summaryMeta?.usage || null });
+    savePendingLessonRecord(memberId, lessonId, lessonRecord);
+    onApply(teacherText, { transcript, aiSummary: summaryOriginal, aiSummaryTeacherEdited: summaryDraft, aiSummaryStatus: summaryDraft ? AI_STATUSES.DRAFT : "unstructured", aiMeta: summaryMeta, lessonRecord, audioBlobId: audioBlobId || null, voiceSource: source || "unknown", recordedAt: lessonRecord.recordedAt });
+    audioTransferredRef.current = true;
+    audioBlobRef.current = null;
+    setText(""); setSummaryOriginal(null); setSummaryDraft(null); setSummaryMeta(null); setSummaryStatus(AI_STATUSES.NOT_CONNECTED); setAudioBlobId(null); setAudioState("idle");
+  };
   const requestSummary = async (transcriptOverride = "") => {
     const transcript = String(transcriptOverride || textRef.current || text).trim();
     if (!transcript) return;
@@ -9811,15 +9888,18 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
       if (result.status !== "structured") {
         setSummaryStatus(result.status === "queued" ? "queued" : "unstructured");
         trackLessonRecordUsage("llm_failed", result);
-        setSummaryError("AI가 형식을 확인하지 못했습니다. 원문은 유지되며 미구조화로 저장하거나 다시 정리할 수 있습니다.");
+        deviceLog("ai_structure_failed", { memberId, lessonId, provider: "openai", retryCount: Math.max(0, (result.attempts || 1) - 1), code: result.reason || result.error?.code || "invalid_output", httpStatus: result.error?.status, requestId: result.error?.requestId, path: result.error?.path || result.error?.cause?.path, expected: result.error?.expected || result.error?.cause?.expected, received: result.error?.received || result.error?.cause?.received });
+        setSummaryError("AI 정리에 실패했습니다. 전사 원문은 그대로 유지됩니다.");
         return;
       }
       setSummaryOriginal(result.output); setSummaryDraft(result.output); setSummaryMeta(aiMetaFrom(result.meta)); setSummaryStatus(AI_STATUSES.DRAFT);
       trackLessonRecordUsage("llm_complete", result);
+      deviceLog("ai_structure_succeeded", { memberId, lessonId, provider: "openai", retryCount: Math.max(0, (result.attempts || 1) - 1), requestId: result.meta?.requestId, state: "structured" });
     } catch (error) {
       setSummaryStatus("unstructured");
-      trackLessonRecordUsage("llm_failed", { attempts: 3, latencyMs: 0 });
-      setSummaryError(`${aiFailureMessage(error, "AI 수업기록을 정리하지 못했습니다.")} 전사 원문은 유지되며 미구조화로 저장할 수 있습니다.`);
+      trackLessonRecordUsage("llm_failed", { attempts: 2, latencyMs: 0 });
+      deviceLog("ai_structure_failed", { memberId, lessonId, provider: "openai", retryCount: 1, code: error?.code || "unknown", httpStatus: error?.status, requestId: error?.requestId, path: error?.path || error?.cause?.path, expected: error?.expected || error?.cause?.expected, received: error?.received || error?.cause?.received });
+      setSummaryError(`${aiFailureMessage(error, "AI 정리에 실패했습니다.")} 전사 원문은 그대로 유지됩니다.`);
     } finally { setSummaryBusy(false); }
   };
   const setSummaryField = (field, value) => setSummaryDraft((current) => editStructuredField(current || {}, field, value));
@@ -9838,9 +9918,9 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
     <div ref={boxRef} className="rounded-2xl p-3" style={{ backgroundColor: CANVAS, boxShadow: highlight ? `0 0 0 2.5px ${PRIMARY}` : "none", transition: "box-shadow .4s ease" }}>
       <div className="flex items-center gap-2">
         <div className="min-w-0 flex-1"><p className="text-xs font-extrabold" style={{ color: INK }}>AI 수업기록</p><p className="mt-0.5 text-[10px]" style={{ color: SUB }}>수업 후 10초만 말하면 AI가 기록을 정리합니다.</p></div>
-        <button onClick={on ? stop : start} disabled={!supported || audioState === "saving" || finishing} aria-label={on ? "음성 녹음 멈추기" : "음성으로 말하기 시작"} className="flex shrink-0 items-center gap-1.5 rounded-full px-3 py-2 text-xs font-extrabold text-white disabled:opacity-40"
+        <button onClick={on ? stop : start} disabled={!supported || audioState === "saving" || finishing || starting} aria-label={on ? "음성 녹음 멈추기" : "음성으로 말하기 시작"} className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-full px-3 py-2 text-xs font-extrabold text-white disabled:opacity-40"
           style={{ backgroundColor: on ? BAD : BRAND }}>
-          {finishing ? <><Loader2 size={12} className="animate-spin" /> 전사 중…</> : on ? <><span className="h-2 w-2 animate-pulse rounded-full bg-white" /> {voiceTime(elapsed)} / 01:30 · 멈추기</> : <><Smartphone size={12} /> 말하기 시작</>}
+          {starting ? <><Loader2 size={12} className="animate-spin" /> 시작 중…</> : finishing ? <><Loader2 size={12} className="animate-spin" /> 전사 중…</> : on ? <><span className="h-2 w-2 animate-pulse rounded-full bg-white" /> {voiceTime(elapsed)} / 01:30 · 멈추기</> : <><Smartphone size={12} /> 말하기 시작</>}
         </button>
       </div>
       {!supported && <Sub className="mt-1.5 block leading-relaxed" style={{ color: BAD }}>녹음과 음성 인식을 지원하지 않는 기기입니다. 아래 직접 입력란을 이용해 주세요.</Sub>}
@@ -9851,16 +9931,16 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
           "오른쪽 어깨 가동범위가 좋아졌습니다. 허리 통증은 없다고 하셨고요. 코어 안정성 향상됐습니다. 다음 시간에는 흉추 신전 이어서 하겠습니다."
         </Sub>
       )}
-      {err && <Sub className="mt-1.5 block" style={{ color: BAD }}>{err}</Sub>}
-      {(text || audioState === "saved" || audioState === "saving") && (
+      {err && !on && !finishing && <div role="alert" className="mt-2 rounded-xl p-3" style={{ backgroundColor: BAD_S, border: `1px solid ${BAD}` }}><p className="text-[11px] leading-relaxed" style={{ color: BAD }}>{err}</p><div className="mt-2 grid grid-cols-2 gap-1.5"><button type="button" disabled={starting} onClick={start} className="h-11 rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: CARD, color: BAD }}>다시 시도</button><button type="button" onClick={() => { setManualEntry(true); setErr(""); window.setTimeout(() => transcriptInputRef.current?.focus(), 0); }} className="h-11 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: PRIMARY }}>직접 입력</button></div></div>}
+      {(text || manualEntry || audioState === "saved" || audioState === "saving") && (
         <>
-          <textarea rows={4} value={text} onChange={(event) => { setText(event.target.value); setSummaryOriginal(null); setSummaryDraft(null); setSummaryMeta(null); setSummaryError(""); setSummaryStatus(AI_STATUSES.NOT_CONNECTED); }} aria-label="음성 전사 원문" className={`${inputCls} mt-2 h-auto resize-none py-2 text-sm leading-relaxed`} />
+          <textarea ref={transcriptInputRef} rows={4} value={text} onChange={(event) => { setText(event.target.value); setSummaryOriginal(null); setSummaryDraft(null); setSummaryMeta(null); setSummaryError(""); setSummaryStatus(AI_STATUSES.NOT_CONNECTED); }} aria-label="음성 전사 원문" placeholder="수업 내용을 직접 입력하세요" className={`${inputCls} mt-2 h-auto resize-none py-2 text-sm leading-relaxed`} />
           <Sub className="mt-1.5 block">원문 보존 · 용어 매핑 분리 · {summaryStatus === AI_STATUSES.DRAFT ? "구조화 초안" : summaryStatus === "queued" ? "오프라인 대기" : summaryStatus === "unstructured" ? "미구조화" : "정리 대기"} · 저장 전 강사 확인 필요{audioState === "saved" ? " · 원음 임시 보관" : audioState === "saving" ? " · 원음 저장 중" : ""}</Sub>
           <button disabled={on || summaryBusy || !text.trim()} onClick={() => requestSummary()} className="mt-2 flex h-10 w-full items-center justify-center gap-1.5 rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: TINT, color: PRIMARY }}>
             {summaryBusy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} {summaryDraft || summaryStatus === "unstructured" || summaryStatus === "queued" ? "다시 정리" : "AI로 정리"}
           </button>
           {summaryBusy && <p aria-live="polite" className="mt-2 text-center text-[11px] font-bold" style={{ color: BRAND_D }}>AI가 수업 기록을 정리하고 있습니다…</p>}
-          {summaryError && <div role="alert" className="mt-2 rounded-xl p-3" style={{ backgroundColor: BAD_S, border: `1px solid ${BAD}` }}><p className="text-[11px] leading-relaxed" style={{ color: BAD }}>{summaryError}</p><button type="button" disabled={summaryBusy} onClick={() => requestSummary()} className="mt-2 h-9 w-full rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: CARD, color: BAD }}>다시 시도</button></div>}
+          {summaryError && <div role="alert" className="mt-2 rounded-xl p-3" style={{ backgroundColor: BAD_S, border: `1px solid ${BAD}` }}><p className="text-[11px] leading-relaxed" style={{ color: BAD }}>{summaryError}</p><div className="mt-2 grid grid-cols-3 gap-1"><button type="button" disabled={summaryBusy} onClick={() => requestSummary()} className="h-11 rounded-lg text-[11px] font-extrabold disabled:opacity-40" style={{ backgroundColor: CARD, color: BAD }}>다시 정리</button><button type="button" onClick={() => transcriptInputRef.current?.focus()} className="h-11 rounded-lg text-[11px] font-extrabold" style={{ backgroundColor: CARD, color: PRIMARY }}>직접 수정</button><button type="button" disabled={!text.trim()} onClick={applyCurrentRecord} className="h-11 rounded-lg text-[11px] font-extrabold disabled:opacity-40" style={{ backgroundColor: CARD, color: INK }}>원문으로 저장</button></div></div>}
           {summaryDraft && <div className="mt-2 space-y-2 rounded-xl p-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
             {[{ k: "didToday", l: "오늘 진행" }, { k: "observations", l: "관찰" }, { k: "responses", l: "반응/변화" }, { k: "nextFocus", l: "다음 확인" }, { k: "uncertain", l: "확인 필요" }].map((field) => (
               <label key={field.k} className="block"><span className="mb-1 block text-[11px] font-bold" style={{ color: SUB }}>{field.l}</span><textarea rows={2} value={structuredFieldText(summaryDraft, field.k)} onChange={(event) => setSummaryField(field.k, event.target.value)} placeholder="한 줄에 한 항목" className={`${inputCls} h-auto resize-none py-2 text-xs`} /></label>
@@ -9869,17 +9949,7 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
           <div className="mt-2 flex gap-1.5">
             <button onClick={() => { setText(""); textRef.current = ""; setErr(""); setSummaryError(""); setSummaryOriginal(null); setSummaryDraft(null); setSummaryMeta(null); setSummaryStatus(AI_STATUSES.NOT_CONNECTED); if (audioBlobId) forgetBlobs([audioBlobId]); audioBlobRef.current = null; setAudioBlobId(null); setAudioState("idle"); removePendingLessonRecord(memberId, lessonId); }} className="rounded-xl px-3 py-2 text-xs font-bold" style={{ backgroundColor: CARD, color: SUB }}>취소</button>
             <button disabled={on || finishing} onClick={() => { setText(""); textRef.current = ""; setErr(""); setSummaryError(""); setSummaryOriginal(null); setSummaryDraft(null); setSummaryMeta(null); setSummaryStatus(AI_STATUSES.NOT_CONNECTED); if (audioBlobId) forgetBlobs([audioBlobId]); audioBlobRef.current = null; setAudioBlobId(null); setAudioState("idle"); removePendingLessonRecord(memberId, lessonId); setTimeout(() => start(), 0); }} className="rounded-xl px-3 py-2 text-xs font-bold" style={{ backgroundColor: TINT, color: PRIMARY }}>재녹음</button>
-            <button disabled={on || audioState === "saving" || !text.trim()} onClick={() => {
-              const transcript = text.trim();
-              const termMap = mapPilatesTerms(transcript);
-              const teacherText = summaryDraft ? structuredRecordBody(summaryDraft, transcript) : transcript;
-              const lessonRecord = createLessonRecordMeta({ rawTranscript: transcript, termMap, structuredDraft: summaryDraft, status: summaryDraft ? "structured" : "unstructured", source: source || "unknown", recordedAt: new Date().toISOString(), audioBlobId: audioBlobId || null, aiMeta: summaryMeta, usage: summaryMeta?.usage || null });
-              savePendingLessonRecord(memberId, lessonId, lessonRecord);
-              onApply(teacherText, { transcript, aiSummary: summaryOriginal, aiSummaryTeacherEdited: summaryDraft, aiSummaryStatus: summaryDraft ? AI_STATUSES.DRAFT : "unstructured", aiMeta: summaryMeta, lessonRecord, audioBlobId: audioBlobId || null, voiceSource: source || "unknown", recordedAt: lessonRecord.recordedAt });
-              audioTransferredRef.current = true;
-              audioBlobRef.current = null;
-              setText(""); setSummaryOriginal(null); setSummaryDraft(null); setSummaryMeta(null); setSummaryStatus(AI_STATUSES.NOT_CONNECTED); setAudioBlobId(null); setAudioState("idle");
-            }} className="flex-1 rounded-xl py-2 text-xs font-extrabold text-white disabled:opacity-40" style={{ background: GRAD }}>
+            <button disabled={on || audioState === "saving" || !text.trim()} onClick={applyCurrentRecord} className="flex-1 rounded-xl py-2 text-xs font-extrabold text-white disabled:opacity-40" style={{ background: GRAD }}>
               {summaryDraft ? "확인한 초안 적용" : "미구조화 원문 적용"}
             </button>
           </div>
@@ -12182,6 +12252,11 @@ export default function App() {
       /* 49px 하단 탭바와 홈 인디케이터에 본문이 가려지지 않도록 여백 확보 */
       .safe-scroll { padding-bottom: calc(69px + max(env(safe-area-inset-bottom, 0px), 12px)); }
       .pt-scroll { -webkit-overflow-scrolling: touch; overscroll-behavior: contain; scrollbar-width: thin; }
+      .pt-app-shell, .pt-header-inner { width: 100%; max-width: 420px; }
+      .pt-generic-sheet, .pt-schedule-sheet { max-width: 420px; }
+      .pt-week-day { font-size: 11px; }
+      .pt-week-date { font-size: 13px; }
+      .pt-week-time { font-size: 9px; }
       .touch-none { touch-action: none; }
       .line-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
       @keyframes pop { 0% { transform: scale(.86); opacity: 0 } 60% { transform: scale(1.04); opacity: 1 } 100% { transform: scale(1) } }
@@ -12202,6 +12277,22 @@ export default function App() {
       @keyframes rowRise { 0% { transform: translateY(18px); opacity: .3 } 55% { transform: translateY(-5px); opacity: 1 } 78% { transform: translateY(2px) } 100% { transform: translateY(0) } }
       @keyframes rowSink { 0% { transform: translateY(-12px) scale(.98); opacity: .45 } 70% { transform: translateY(2px) scale(1) } 100% { transform: translateY(0); opacity: 1 } }
       .week-strip { animation: weekIn .22s ease both }
+      @media (min-width: 768px) {
+        .pt-app-shell, .pt-header-inner { max-width: min(900px, 100vw); }
+        .pt-generic-sheet, .pt-schedule-sheet { max-width: min(760px, calc(100vw - 32px)); }
+        .pt-generic-sheet, .pt-schedule-sheet { border-radius: 20px 20px 0 0 !important; }
+        .pt-schedule-sheet .pt-scroll { padding-left: 24px; padding-right: 24px; }
+        .pt-week-grid { --pt-week-axis: 40px; }
+        .pt-week-day { font-size: 13px; }
+        .pt-week-date { font-size: 16px; }
+        .pt-week-time { font-size: 11px; }
+        .pt-week-grid button { font-size: 11px !important; }
+        .safe-scroll { padding-left: 20px; padding-right: 20px; }
+      }
+      @media (min-width: 1024px) and (orientation: landscape) {
+        .pt-app-shell, .pt-header-inner { max-width: min(960px, 100vw); }
+        .pt-generic-sheet, .pt-schedule-sheet { max-width: min(820px, calc(100vw - 48px)); }
+      }
       @media (prefers-reduced-motion: reduce) { .app-root *, .splash-pop, .splash-fade { animation: none !important; transition: none !important } }
     `}</style>
   );
@@ -12227,7 +12318,7 @@ export default function App() {
   return (
     <div className="app-root flex justify-center" style={{ minHeight: "100vh", height: "100dvh", backgroundColor: PAGE, overflow: "hidden" }}>
       {style}
-      <div className="safe-t flex h-full min-h-0 w-full flex-col" style={{ maxWidth: 420, backgroundColor: PAGE, boxShadow: "0 0 0 1px rgba(28,36,51,.04)" }}>
+      <div className="pt-app-shell safe-t flex h-full min-h-0 w-full flex-col" style={{ backgroundColor: PAGE, boxShadow: "0 0 0 1px rgba(28,36,51,.04)" }}>
         <div className="relative min-h-0 flex-1 overflow-hidden">
           <Guard key={tab}>
             {tab === "schedule" && <ScheduleManager db={db} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} />}

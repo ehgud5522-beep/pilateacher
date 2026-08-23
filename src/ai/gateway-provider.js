@@ -23,6 +23,10 @@ export class AIProviderError extends Error {
     this.code = code;
     this.retryable = !!options.retryable;
     this.status = options.status ?? null;
+    this.requestId = options.requestId ?? null;
+    this.path = options.path ?? options.cause?.path ?? null;
+    this.expected = options.expected ?? options.cause?.expected ?? null;
+    this.received = options.received ?? options.cause?.received ?? null;
   }
 }
 
@@ -109,14 +113,14 @@ export class GatewayAIProvider extends AIProvider {
         } catch (_error) {
           // A non-JSON gateway failure remains a generic, non-sensitive error.
         }
-        throw new AIProviderError(errorCode, `AI Gateway request failed (${response.status})`, { status: response.status, retryable: response.status === 429 || response.status >= 500 });
+        throw new AIProviderError(errorCode, `AI Gateway request failed (${response.status})`, { status: response.status, requestId, retryable: response.status === 429 || response.status >= 500 });
       }
       const payload = await response.json();
       if (payload?.requestId && payload.requestId !== requestId) throw new AIProviderError("request_mismatch", "AI Gateway response requestId mismatch");
       if (payload?.provider && payload.provider !== this.providerId) throw new AIProviderError("provider_mismatch", "AI Gateway response provider mismatch");
       let output;
       try { output = normalizeAIOutput(operation, normalizeGatewayPayload(operation, payload)); }
-      catch (error) { throw new AIProviderError("invalid_output", "AI Gateway returned an invalid structured output", { cause: error }); }
+      catch (error) { throw new AIProviderError("invalid_output", "AI Gateway returned an invalid structured output", { cause: error, requestId, path: error?.path, expected: error?.expected, received: error?.received }); }
       return {
         status: AI_STATUSES.DRAFT,
         provider: payload?.provider || this.providerId,
@@ -136,8 +140,8 @@ export class GatewayAIProvider extends AIProvider {
       };
     } catch (error) {
       if (error instanceof AIProviderError) throw error;
-      if (error?.name === "AbortError") throw new AIProviderError("timeout", "AI Gateway request timed out", { retryable: true, cause: error });
-      throw new AIProviderError("network_error", "AI Gateway request failed", { retryable: true, cause: error });
+      if (error?.name === "AbortError") throw new AIProviderError("timeout", "AI Gateway request timed out", { retryable: true, cause: error, requestId });
+      throw new AIProviderError("network_error", "AI Gateway request failed", { retryable: true, cause: error, requestId });
     } finally {
       clearTimeout(timeout);
       options.signal?.removeEventListener?.("abort", abortFromCaller);

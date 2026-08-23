@@ -10,14 +10,24 @@ function normalizeItem(value, defaultOrigin = "ai") {
   return { text, origin: isOrigin(value?.origin) ? value.origin : defaultOrigin };
 }
 
+function validationError(path, expected, received) {
+  const error = new TypeError(`${path || "root"} must be ${expected}`);
+  Object.assign(error, { code: "invalid_output", path: path || "root", expected, received });
+  return error;
+}
+
 export function validateStructuredOutput(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("structured lesson record must be an object");
-  const keys = Object.keys(value).sort();
-  const expected = [...LESSON_RECORD_FIELDS].sort();
-  if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])) throw new TypeError("structured lesson record fields are invalid");
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw validationError("root", "object", Array.isArray(value) ? "array" : typeof value);
+  const extra = Object.keys(value).find((field) => !LESSON_RECORD_FIELDS.includes(field));
+  if (extra) throw validationError(extra, LESSON_RECORD_FIELDS.join("|"), "unsupported_field");
   return Object.fromEntries(LESSON_RECORD_FIELDS.map((field) => {
-    if (!Array.isArray(value[field]) || value[field].length > 20) throw new TypeError(`${field} must be an array`);
-    const items = value[field].map((item) => normalizeItem(item, "ai")).filter(Boolean);
+    const rawItems = value[field] == null ? [] : value[field];
+    if (!Array.isArray(rawItems) || rawItems.length > 20) throw validationError(field, "array(max 20)", Array.isArray(rawItems) ? `array(${rawItems.length})` : typeof rawItems);
+    const items = rawItems.map((item, index) => {
+      const normalized = normalizeItem(item, "ai");
+      if (!normalized && item != null && item !== "") throw validationError(`${field}[${index}]`, "string or {text:string}", Array.isArray(item) ? "array" : typeof item);
+      return normalized;
+    }).filter(Boolean);
     return [field, items];
   }));
 }

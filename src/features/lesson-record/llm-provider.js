@@ -11,10 +11,10 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const retryable = (error) => error?.retryable === true || ["timeout", "network_error", "provider_unavailable", "invalid_output"].includes(String(error?.code || ""));
 
 export class GatewayLlmProvider extends LlmProvider {
-  constructor({ gatewayProvider, maxRetries = 2, retryDelayMs = 250, online = () => globalThis.navigator?.onLine !== false } = {}) {
+  constructor({ gatewayProvider, maxRetries = 1, retryDelayMs = 250, online = () => globalThis.navigator?.onLine !== false } = {}) {
     super();
     this.gatewayProvider = gatewayProvider;
-    this.maxRetries = Math.max(0, Math.min(2, Number(maxRetries) || 0));
+    this.maxRetries = Math.max(0, Math.min(1, Number(maxRetries) || 0));
     this.retryDelayMs = Math.max(0, Number(retryDelayMs) || 0);
     this.online = online;
   }

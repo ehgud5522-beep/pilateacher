@@ -6,6 +6,7 @@ const {
   DEFAULT_MODEL,
   createOpenAIProvider,
   createOpenAIVoiceSummaryProvider,
+  parseJsonObject,
   validateVoiceSummaryResult,
 } = require("../src/openai-provider");
 const { OPERATIONS } = require("../src/operation-contracts");
@@ -68,12 +69,21 @@ test("missing Secret Manager value fails safely before an API request", () => {
   );
 });
 
+test("JSON output parser accepts fences or explanation text and extracts one object", () => {
+  assert.deepEqual(parseJsonObject('```json\n{"didToday":[]}\n```'), { didToday: [] });
+  assert.deepEqual(parseJsonObject('정리 결과입니다.\n{"didToday":["브릿지"],"note":"중괄호 { 유지"}\n확인해 주세요.'), { didToday: ["브릿지"], note: "중괄호 { 유지" });
+  assert.throws(() => parseJsonObject("JSON이 없습니다"));
+});
+
 const operationOutputs = Object.freeze({
   [OPERATIONS.ANALYZE_BODY]: {
     bodyCharacteristics: ["정렬 차이 경향"], asymmetries: [], pelvis: "중립 경향", thorax: "", scapula: "", head: "", knees: "", feet: "", recommendedExercises: [], precautions: [],
   },
   [OPERATIONS.SUMMARIZE_VOICE]: {
     memberCondition: "불편감 없음", todayExercises: ["호흡"], pain: [], improvements: [], nextGoals: [], homework: [], precautions: [],
+  },
+  [OPERATIONS.STRUCTURE_LESSON_RECORD]: {
+    didToday: ["브릿지"], observations: ["오른쪽 어깨 확인"], responses: ["지난번보다 편하다고 말함"], nextFocus: [], uncertain: [],
   },
   [OPERATIONS.RECOMMEND_SEQUENCE]: {
     title: "다음 수업 초안", exercises: [{ name: "브리지", purpose: "코어 협응", dosage: "8회" }], rationale: [], precautions: [],
@@ -102,7 +112,7 @@ test("generic provider applies server prompts and a strict schema to all operati
     assert.deepEqual(result.output, output);
     assert.match(result.promptVersion, /_v1$/);
   }
-  assert.equal(calls.length, 4);
+  assert.equal(calls.length, 5);
   for (const { params, options } of calls) {
     assert.equal(params.store, false);
     assert.equal(params.text.format.strict, true);

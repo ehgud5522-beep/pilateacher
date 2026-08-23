@@ -160,8 +160,9 @@ function validateVoice(value) {
 
 function validateLessonRecord(value) {
   const required = OUTPUT_SCHEMAS[OPERATIONS.STRUCTURE_LESSON_RECORD].required;
-  const source = requireExactObject(value, required);
-  return Object.fromEntries(required.map((field) => [field, cleanList(source[field])]));
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new GatewayError("invalid_output");
+  if (Object.keys(value).some((field) => !required.includes(field))) throw new GatewayError("invalid_output");
+  return Object.fromEntries(required.map((field) => [field, cleanList(value[field] ?? [])]));
 }
 
 function validateSequence(value) {

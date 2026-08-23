@@ -80,6 +80,36 @@ function mapProviderError(error) {
   return new GatewayError("provider_unavailable", { cause: error });
 }
 
+function parseJsonObject(outputText) {
+  const text = String(outputText || "").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') { inString = true; continue; }
+    if (char === "{") {
+      if (start < 0) start = index;
+      depth += 1;
+    } else if (char === "}" && start >= 0) {
+      depth -= 1;
+      if (depth === 0) {
+        const parsed = JSON.parse(text.slice(start, index + 1));
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("JSON output is not an object");
+        return parsed;
+      }
+    }
+  }
+  throw new Error("JSON object was not found");
+}
+
 function createOpenAIProvider({ apiKey, model = DEFAULT_MODEL, client = null, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
   const normalizedModel = String(model || DEFAULT_MODEL).trim() || DEFAULT_MODEL;
   if (!client && !String(apiKey || "").trim()) throw new GatewayError("provider_unavailable");
@@ -127,7 +157,7 @@ function createOpenAIProvider({ apiKey, model = DEFAULT_MODEL, client = null, ti
         if (!outputText) throw new GatewayError("invalid_output");
         let parsed;
         try {
-          parsed = JSON.parse(outputText);
+          parsed = parseJsonObject(outputText);
         } catch (error) {
           throw new GatewayError("invalid_output", { cause: error });
         }
@@ -190,7 +220,7 @@ function createOpenAIVoiceSummaryProvider({ apiKey, model = DEFAULT_MODEL, clien
         if (!outputText) throw new GatewayError("invalid_output");
         let parsed;
         try {
-          parsed = JSON.parse(outputText);
+          parsed = parseJsonObject(outputText);
         } catch (error) {
           throw new GatewayError("invalid_output", { cause: error });
         }
@@ -214,4 +244,5 @@ module.exports = {
   createOpenAIProvider,
   createOpenAIVoiceSummaryProvider,
   validateVoiceSummaryResult,
+  parseJsonObject,
 };

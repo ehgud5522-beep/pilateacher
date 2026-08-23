@@ -86,6 +86,11 @@ test("capture timer, motion lifecycle, and storage handoff are connected to the 
   assert.match(source, /await onSaveCaptureDraft\(\{ assessmentId: assessmentId\.current/);
   assert.match(source, /if \(stored === false\) throw/);
   assert.match(source, /storage:\s*"indexedDB"/);
+  assert.match(source, /previewStaged = true/);
+  assert.match(source, /사진을 불러오지 못했습니다\. 다시 시도해 주세요/);
+  assert.match(source, /사진을 확인한 뒤/);
+  assert.match(source, /if \(f\) pickFile\(f\)/);
+  assert.doesNotMatch(source.slice(source.indexOf("const usePending = async"), source.indexOf("const handleBack = async")), /startCamera\(\)/);
 });
 
 test("direct annotation exposes opt-in guides, ruler, handwriting, colors, re-edit, and a real report-card path", async () => {

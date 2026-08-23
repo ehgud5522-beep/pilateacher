@@ -9,6 +9,11 @@ const { fingerprintRequest, parseGatewayRequest } = require("./request-contracts
 
 const PIPELINE_VERSION = "ai-gateway-v1";
 const consentOperation = (operation) => operation === "structureLessonRecord" ? "summarizeVoice" : operation;
+const diagnosticsEnabled = () => process.env.NODE_ENV !== "production" || process.env.AI_GATEWAY_DIAGNOSTICS === "1";
+const diagnosticLog = (event, details = {}) => {
+  if (!diagnosticsEnabled()) return;
+  globalThis.console.info(`[PilaTeacher/aiGateway] ${event}`, details);
+};
 
 function safetyIdentifier(uid) {
   return createHash("sha256").update(`pilateacher:${String(uid || "")}`).digest("hex");
@@ -40,6 +45,7 @@ function createAIGatewayHandler({
       const { uid } = await verifyFirebaseRequest(req, verifyIdToken);
       const request = parseGatewayRequest(req);
       requestId = request.requestId;
+      diagnosticLog("request_authenticated", { requestId, operation: request.operation, httpStatus: 0, auth: "success" });
       const authorization = await policyService.authorize({
         uid,
         memberId: request.input.memberId,
@@ -78,6 +84,12 @@ function createAIGatewayHandler({
         input: providerInput,
         safetyIdentifier: safetyIdentifier(uid),
       });
+      diagnosticLog("model_call_succeeded", {
+        requestId,
+        operation: request.operation,
+        model: String(providerResponse?.model || ""),
+        outputShape: Object.fromEntries(Object.entries(providerResponse?.output || {}).map(([field, value]) => [field, Array.isArray(value) ? `array:${value.every((item) => typeof item === "string") ? "string" : "mixed"}` : typeof value])),
+      });
       const output = validateOperationOutput(request.operation, providerResponse?.output);
       const model = String(providerResponse?.model || "").trim();
       const promptVersion = String(providerResponse?.promptVersion || "").trim();
@@ -103,8 +115,10 @@ function createAIGatewayHandler({
         fingerprint,
         response,
       });
+      diagnosticLog("gateway_completed", { requestId, operation: request.operation, httpStatus: 200, validation: "success" });
       return res.status(200).json(response);
     } catch (error) {
+      diagnosticLog("gateway_failed", { requestId, httpStatus: Number(error?.status) || 500, code: String(error?.code || "internal_error") });
       if (idempotencyClaim?.state === "new" && idempotencyClaim.storageKey) {
         try {
           await idempotencyStore.fail({

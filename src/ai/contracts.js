@@ -31,6 +31,23 @@ const cleanList = (value, maxItems = 20) => {
   if (!Array.isArray(value)) return [];
   return value.map((item) => cleanText(item, 500)).filter(Boolean).slice(0, maxItems);
 };
+const cleanLessonList = (value, field, maxItems = 20) => {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    const error = new TypeError(`${field} must be an array`);
+    Object.assign(error, { code: "invalid_output", path: field, expected: "string[]", received: typeof value });
+    throw error;
+  }
+  return value.map((item, index) => {
+    const raw = typeof item === "string" ? item : item?.text;
+    if (typeof raw !== "string") {
+      const error = new TypeError(`${field}[${index}] must be a string`);
+      Object.assign(error, { code: "invalid_output", path: `${field}[${index}]`, expected: "string", received: Array.isArray(item) ? "array" : typeof item });
+      throw error;
+    }
+    return cleanText(raw, 500);
+  }).filter(Boolean).slice(0, maxItems);
+};
 
 const requireObject = (value, label) => {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError(`${label} must be an object`);
@@ -63,8 +80,13 @@ export function normalizeVoiceSummary(value) {
 
 export function normalizeLessonRecord(value) {
   const source = requireObject(value, "lesson record output");
-  requireFields(source, LESSON_RECORD_LIST_FIELDS, "lesson record output");
-  return Object.fromEntries(LESSON_RECORD_LIST_FIELDS.map((field) => [field, cleanList(source[field])]));
+  const extra = Object.keys(source).find((field) => !LESSON_RECORD_LIST_FIELDS.includes(field));
+  if (extra) {
+    const error = new TypeError(`lesson record output has unsupported field: ${extra}`);
+    Object.assign(error, { code: "invalid_output", path: extra, expected: LESSON_RECORD_LIST_FIELDS.join("|"), received: extra });
+    throw error;
+  }
+  return Object.fromEntries(LESSON_RECORD_LIST_FIELDS.map((field) => [field, cleanLessonList(source[field], field)]));
 }
 
 export function normalizeSequenceRecommendation(value) {

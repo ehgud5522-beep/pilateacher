@@ -33,17 +33,20 @@ test("structured records validate exact fields and instructor edits retain origi
   assert.deepEqual(edited.didToday.map((item) => item.origin), ["instructor", "instructor"]);
   assert.match(structuredRecordBody(edited), /오늘 한 내용: 체어 풋워크 · 브릿지/);
   assert.throws(() => validateStructuredOutput({ ...structured, diagnosis: [] }));
+  const missingNormalized = validateStructuredOutput({ didToday: ["브릿지"], responses: [{ text: "편안함" }] });
+  assert.deepEqual(missingNormalized.observations, []);
+  assert.equal(missingNormalized.responses[0].text, "편안함");
 });
 
-test("LlmProvider retries twice, validates output, and downgrades to raw after failure", async () => {
+test("LlmProvider repairs once, validates output, and downgrades to raw after failure", async () => {
   let calls = 0;
   const provider = new GatewayLlmProvider({
-    gatewayProvider: { async structureLessonRecord() { calls += 1; if (calls < 3) throw Object.assign(new Error("temporary"), { code: "invalid_output" }); return { status: AI_STATUSES.DRAFT, output: structured, usage: { totalTokens: 42 } }; } },
+    gatewayProvider: { async structureLessonRecord() { calls += 1; if (calls < 2) throw Object.assign(new Error("temporary"), { code: "invalid_output" }); return { status: AI_STATUSES.DRAFT, output: structured, usage: { totalTokens: 42 } }; } },
     retryDelayMs: 0,
   });
   const result = await provider.structureLessonRecord({ rawTranscript: "원문" });
   assert.equal(result.status, "structured");
-  assert.equal(result.attempts, 3);
+  assert.equal(result.attempts, 2);
   assert.equal(result.output.didToday[0].origin, "ai");
 
   const failed = new GatewayLlmProvider({ gatewayProvider: { async structureLessonRecord() { throw Object.assign(new Error("down"), { code: "provider_unavailable", retryable: true }); } }, retryDelayMs: 0 });
@@ -83,4 +86,8 @@ test("App exposes four post-attendance choices, 90-second cap, pending save and 
   assert.ok(saveIndex >= 0 && deleteIndex > saveIndex, "temporary audio must be deleted only after persistence succeeds");
   assert.match(source, /stage: "confirmed_record"/);
   assert.match(source, /status: voiceMeta\.lessonRecord\.structuredDraft \? "confirmed" : "confirmed_unstructured"/);
+  assert.match(source, /ignored_pre_start_stopped/);
+  assert.match(source, /startRequestRef\.current/);
+  assert.match(source, /시작 중…/);
+  assert.match(source, /원문으로 저장/);
 });

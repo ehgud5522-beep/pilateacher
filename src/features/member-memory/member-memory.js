@@ -214,6 +214,54 @@ export function buildMemberMemory({ memberId, notes = [], existingMemory = [], n
   };
 }
 
+export function addPostureMilestone(existingMemory, {
+  memberId = null,
+  assessmentId = null,
+  role = "unassigned",
+  date = new Date().toISOString(),
+  text = "",
+  metricIds = [],
+} = {}) {
+  const safeMemberId = clean(memberId, 160);
+  const safeAssessmentId = clean(assessmentId, 160);
+  const milestoneDate = dateOnly(date);
+  const milestoneText = clean(text);
+  if (!safeMemberId || !safeAssessmentId || !milestoneDate || !milestoneText) return [...(existingMemory || [])];
+  const safeRole = ["before", "after", "unassigned"].includes(role) ? role : "unassigned";
+  const id = `posture_milestone_${hash(`${safeMemberId}|${safeAssessmentId}`)}`;
+  const sourceRef = {
+    type: "assessment",
+    id: safeAssessmentId,
+    date: milestoneDate,
+    field: "posture_milestone",
+    role: safeRole,
+  };
+  const milestone = {
+    id,
+    memberId: safeMemberId,
+    type: "milestone",
+    category: "posture",
+    text: milestoneText,
+    bodyKey: { region: "posture", side: "unspecified", movementOrContext: `assessment.${safeAssessmentId}`, quality: "neutral" },
+    normalizedKey: `posture|unspecified|assessment.${safeAssessmentId}`,
+    /* 기존 assessment 출처 보호 경로를 재사용하고, 화면 표시는 presentationOrigin으로 구분한다. */
+    origin: "instructor",
+    presentationOrigin: "ai",
+    generatedBy: "posture_metric_template",
+    source: "posture_analysis",
+    milestoneRole: safeRole,
+    metricIds: [...new Set((metricIds || []).map((value) => clean(value, 160)).filter(Boolean))].slice(0, 2),
+    status: "active",
+    sourceRefs: [sourceRef],
+    firstSeenAt: milestoneDate,
+    lastSeenAt: milestoneDate,
+    seenCount: 1,
+    confidence: 1,
+  };
+  return [milestone, ...(existingMemory || []).filter((entry) => entry?.id !== id)]
+    .sort((a, b) => `${b?.lastSeenAt || ""}|${b?.id || ""}`.localeCompare(`${a?.lastSeenAt || ""}|${a?.id || ""}`));
+}
+
 export function rejectMemoryEntry(memories, memoryId, rejectedAt = new Date().toISOString()) {
   return (memories || []).map((entry) => entry.id === memoryId && entry.origin !== "instructor"
     ? { ...entry, status: "rejected", rejectedAt }

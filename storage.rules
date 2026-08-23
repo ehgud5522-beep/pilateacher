@@ -1,0 +1,17 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /users/{userId}/photos/{photoId}/{fileName} {
+      allow read: if request.auth != null && request.auth.uid == userId;
+      allow create, update: if request.auth != null
+        && request.auth.uid == userId
+        && photoId.size() > 0
+        && photoId.size() <= 160
+        && fileName in ["image.jpg", "thumb.jpg"]
+        && request.resource.size < 10 * 1024 * 1024
+        && request.resource.contentType == "image/jpeg";
+      allow delete: if false;
+    }
+  }
+}

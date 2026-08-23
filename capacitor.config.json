@@ -6,6 +6,9 @@
     "FirebaseAuthentication": {
       "skipNativeAuth": true,
       "providers": ["google.com", "apple.com"]
+    },
+    "LocalNotifications": {
+      "presentationOptions": ["badge", "sound", "banner", "list"]
     }
   }
 }

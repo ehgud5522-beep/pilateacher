@@ -7,6 +7,7 @@ const { getStorage } = require("firebase-admin/storage");
 const { logger } = require("firebase-functions/logger");
 const { defineSecret } = require("firebase-functions/params");
 const { HttpsError, onCall, onRequest } = require("firebase-functions/v2/https");
+const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { createAccountDeletionService } = require("./account-deletion");
 const { createAIGatewayHandler } = require("./ai-gateway");
 const { applyCors, parseAllowedOrigins } = require("./cors");
@@ -14,6 +15,7 @@ const { sendError, GatewayError } = require("./errors");
 const { createFirestoreIdempotencyStore } = require("./idempotency");
 const { DEFAULT_MODEL, createOpenAIProvider } = require("./openai-provider");
 const { createFirestorePolicyService } = require("./policy");
+const { createPhotoBackupCleanupService } = require("./photo-backup-cleanup");
 
 if (!getApps().length) initializeApp();
 
@@ -29,6 +31,7 @@ const policyService = createFirestorePolicyService({
   dailyLimit: process.env.AI_RATE_LIMIT_PER_DAY || 80,
 });
 const idempotencyStore = createFirestoreIdempotencyStore({ firestore });
+const photoBackupCleanupService = createPhotoBackupCleanupService({ firestore, bucket: getStorage().bucket() });
 let openAIProvider;
 
 const accountDeletionService = createAccountDeletionService({
@@ -136,6 +139,33 @@ exports.deleteCurrentUserAccount = onCall({
     });
     throw accountDeletionHttpsError(error);
   }
+});
+
+exports.purgeExpiredPhotoBackups = onCall({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  timeoutSeconds: 120,
+  memory: "256MiB",
+  invoker: "public",
+}, async (request) => {
+  const uid = String(request?.auth?.uid || "").trim();
+  if (!uid) throw new HttpsError("unauthenticated", "Authentication is required.");
+  try {
+    return await photoBackupCleanupService.purgeForUser(uid);
+  } catch (error) {
+    logger.error("photo_backup_cleanup_failed", { code: String(error?.code || "unknown") });
+    throw new HttpsError("internal", "Photo backup cleanup failed.");
+  }
+});
+
+exports.cleanupExpiredPhotoBackups = onSchedule({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  schedule: "every day 03:00",
+  timeZone: "Asia/Seoul",
+  timeoutSeconds: 300,
+  memory: "256MiB",
+}, async () => {
+  const result = await photoBackupCleanupService.purgeExpiredGlobal();
+  logger.info("photo_backup_cleanup_completed", { purged: result.purged, remaining: result.remaining });
 });
 
 exports._test = {

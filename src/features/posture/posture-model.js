@@ -407,6 +407,42 @@ export function compareAssessmentMetrics(beforeSet, afterSet, { view = null, lim
   })).filter(Boolean).slice(0, Math.max(0, Number(limit) || 0));
 }
 
+export function postureMilestoneTemplate({ role = "unassigned", beforeSet = null, afterSet = null } = {}) {
+  if (role !== "after") return { text: role === "before" ? "비포 촬영" : "체형 촬영", details: [], metricIds: [] };
+  const changes = compareAssessmentMetrics(beforeSet, afterSet, { limit: 2 });
+  const details = changes.map((change) => {
+    const values = `${change.beforeValue}${change.unit} → ${change.afterValue}${change.unit}`;
+    return `${postureViewLabel(change.view)} ${change.label}: ${values} (${change.summary})`;
+  });
+  return {
+    text: details.length ? `애프터 촬영 · ${details.join(" · ")}` : "애프터 촬영",
+    details,
+    metricIds: changes.map((change) => change.id),
+  };
+}
+
+export function postureAfterReminder(sets, now = new Date()) {
+  const completed = (sets || []).filter((set) => set?.status === "completed");
+  if (!completed.length) return { show: false, recommended: false, days: null, lastDate: "", label: "" };
+  const dated = [...completed].sort((a, b) => String(b.completedAt || b.at || "").localeCompare(String(a.completedAt || a.at || "")));
+  const last = dated[0];
+  const lastDate = String(last?.completedAt || last?.at || "").slice(0, 10);
+  const hasAfter = completed.some((set) => set?.role === "after");
+  const parsed = lastDate ? new Date(`${lastDate}T00:00:00`) : null;
+  const current = new Date(now);
+  current.setHours(0, 0, 0, 0);
+  if (!parsed || Number.isNaN(parsed.getTime())) return { show: false, recommended: false, days: null, lastDate, label: "" };
+  const days = Math.max(0, Math.floor((current.getTime() - parsed.getTime()) / 86400000));
+  const recommended = !hasAfter && days >= 28;
+  return {
+    show: recommended,
+    recommended,
+    days,
+    lastDate,
+    label: recommended ? "애프터 촬영 추천 시점" : "",
+  };
+}
+
 export function selectAutomaticComparison(sets, { scope = "full_body" } = {}) {
   const eligible = (sets || []).filter((set) => set?.status === "completed" && set.scope === scope);
   const dated = eligible.filter((set) => Number.isFinite(Date.parse(set.completedAt || set.at || "")));

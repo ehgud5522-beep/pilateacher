@@ -72,12 +72,26 @@ function readOutputText(response) {
   return "";
 }
 
+function safeProviderDiagnostic(error, stage = "provider_http") {
+  const providerStatus = Number(error?.status ?? error?.statusCode ?? error?.response?.status);
+  const safeToken = (value, max = 120) => String(value || "")
+    .replace(/[^A-Za-z0-9._:/-]/g, "_")
+    .slice(0, max);
+  return Object.freeze({
+    stage,
+    providerStatus: Number.isFinite(providerStatus) ? providerStatus : 0,
+    providerCode: safeToken(error?.code || error?.error?.code || "unknown"),
+    providerType: safeToken(error?.type || error?.error?.type || error?.name || "unknown"),
+    providerRequestId: safeToken(error?.request_id || error?.requestId || error?.headers?.["x-request-id"] || "", 160),
+  });
+}
+
 function mapProviderError(error) {
   if (error instanceof GatewayError) return error;
   if (error?.name === "AbortError" || error?.name === "APIConnectionTimeoutError" || error?.code === "ETIMEDOUT") {
-    return new GatewayError("timeout", { cause: error });
+    return new GatewayError("timeout", { cause: error, diagnostic: safeProviderDiagnostic(error, "provider_timeout") });
   }
-  return new GatewayError("provider_unavailable", { cause: error });
+  return new GatewayError("provider_unavailable", { cause: error, diagnostic: safeProviderDiagnostic(error) });
 }
 
 function parseJsonObject(outputText) {
@@ -112,7 +126,11 @@ function parseJsonObject(outputText) {
 
 function createOpenAIProvider({ apiKey, model = DEFAULT_MODEL, client = null, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
   const normalizedModel = String(model || DEFAULT_MODEL).trim() || DEFAULT_MODEL;
-  if (!client && !String(apiKey || "").trim()) throw new GatewayError("provider_unavailable");
+  if (!client && !String(apiKey || "").trim()) {
+    throw new GatewayError("provider_unavailable", {
+      diagnostic: { stage: "provider_initialization", providerStatus: 0, providerCode: "secret_missing", providerType: "configuration", providerRequestId: "" },
+    });
+  }
   const openai = client || new OpenAI({ apiKey, timeout: timeoutMs, maxRetries: 0 });
 
   return Object.freeze({
@@ -182,7 +200,11 @@ function createOpenAIProvider({ apiKey, model = DEFAULT_MODEL, client = null, ti
 
 function createOpenAIVoiceSummaryProvider({ apiKey, model = DEFAULT_MODEL, client = null, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
   const normalizedModel = String(model || DEFAULT_MODEL).trim() || DEFAULT_MODEL;
-  if (!client && !String(apiKey || "").trim()) throw new GatewayError("provider_unavailable");
+  if (!client && !String(apiKey || "").trim()) {
+    throw new GatewayError("provider_unavailable", {
+      diagnostic: { stage: "provider_initialization", providerStatus: 0, providerCode: "secret_missing", providerType: "configuration", providerRequestId: "" },
+    });
+  }
   const openai = client || new OpenAI({ apiKey, timeout: timeoutMs, maxRetries: 0 });
 
   return Object.freeze({
@@ -245,4 +267,5 @@ module.exports = {
   createOpenAIVoiceSummaryProvider,
   validateVoiceSummaryResult,
   parseJsonObject,
+  safeProviderDiagnostic,
 };

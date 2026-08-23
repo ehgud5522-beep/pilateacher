@@ -27,6 +27,10 @@ export class AIProviderError extends Error {
     this.path = options.path ?? options.cause?.path ?? null;
     this.expected = options.expected ?? options.cause?.expected ?? null;
     this.received = options.received ?? options.cause?.received ?? null;
+    this.failureStage = options.failureStage ?? options.cause?.failureStage ?? null;
+    this.providerStatus = options.providerStatus ?? options.cause?.providerStatus ?? null;
+    this.providerCode = options.providerCode ?? options.cause?.providerCode ?? null;
+    this.providerType = options.providerType ?? options.cause?.providerType ?? null;
   }
 }
 
@@ -107,20 +111,34 @@ export class GatewayAIProvider extends AIProvider {
       });
       if (!response.ok) {
         let errorCode = "gateway_error";
+        let errorRequestId = requestId;
+        let diagnostic = null;
         try {
           const errorPayload = await response.json();
           if (typeof errorPayload?.error?.code === "string") errorCode = errorPayload.error.code;
+          if (typeof errorPayload?.error?.requestId === "string") errorRequestId = errorPayload.error.requestId;
+          if (errorPayload?.error?.diagnostic && typeof errorPayload.error.diagnostic === "object") diagnostic = errorPayload.error.diagnostic;
         } catch (_error) {
           // A non-JSON gateway failure remains a generic, non-sensitive error.
         }
-        throw new AIProviderError(errorCode, `AI Gateway request failed (${response.status})`, { status: response.status, requestId, retryable: response.status === 429 || response.status >= 500 });
+        const providerCode = String(diagnostic?.providerCode || "");
+        const quotaExhausted = Number(diagnostic?.providerStatus) === 429 && providerCode === "insufficient_quota";
+        throw new AIProviderError(quotaExhausted ? "provider_quota_exhausted" : errorCode, `AI Gateway request failed (${response.status})`, {
+          status: response.status,
+          requestId: errorRequestId,
+          retryable: !quotaExhausted && (response.status === 429 || response.status >= 500),
+          failureStage: String(diagnostic?.stage || "gateway_http"),
+          providerStatus: Number(diagnostic?.providerStatus) || null,
+          providerCode,
+          providerType: String(diagnostic?.providerType || ""),
+        });
       }
       const payload = await response.json();
       if (payload?.requestId && payload.requestId !== requestId) throw new AIProviderError("request_mismatch", "AI Gateway response requestId mismatch");
       if (payload?.provider && payload.provider !== this.providerId) throw new AIProviderError("provider_mismatch", "AI Gateway response provider mismatch");
       let output;
       try { output = normalizeAIOutput(operation, normalizeGatewayPayload(operation, payload)); }
-      catch (error) { throw new AIProviderError("invalid_output", "AI Gateway returned an invalid structured output", { cause: error, requestId, path: error?.path, expected: error?.expected, received: error?.received }); }
+      catch (error) { throw new AIProviderError("invalid_output", "AI Gateway returned an invalid structured output", { cause: error, requestId, retryable: true, failureStage: "client_schema_validation", path: error?.path, expected: error?.expected, received: error?.received }); }
       return {
         status: AI_STATUSES.DRAFT,
         provider: payload?.provider || this.providerId,

@@ -6,7 +6,7 @@ test("App persists sourced memory and renders deterministic briefing in all thre
   const source = await readFile(new URL("../../src/App.jsx", import.meta.url), "utf8");
   assert.match(source, /aiMemory: memoryResult\.memories/);
   assert.match(source, /briefingLine.*b\.h >= 24/);
-  assert.match(source, /aria-label="다음 수업 브리핑"/);
+  assert.match(source, /aria-label="지난 수업 이어서 보기"/);
   assert.match(source, /data-member-section="memory-first"/);
   assert.match(source, /반복해서 기록된 내용/);
   assert.match(source, /currentSessionId: draft\.id/);

@@ -53,6 +53,17 @@ test("LlmProvider repairs once, validates output, and downgrades to raw after fa
   assert.equal((await failed.structureLessonRecord({ rawTranscript: "그대로" })).status, "unstructured");
   const offline = new GatewayLlmProvider({ gatewayProvider: {}, online: () => false });
   assert.equal((await offline.structureLessonRecord({ rawTranscript: "대기" })).status, "queued");
+
+  let quotaCalls = 0;
+  const quota = new GatewayLlmProvider({ gatewayProvider: { async structureLessonRecord() {
+    quotaCalls += 1;
+    throw Object.assign(new Error("quota"), { code: "provider_quota_exhausted", retryable: false, failureStage: "provider_http", providerStatus: 429, providerCode: "insufficient_quota" });
+  } }, retryDelayMs: 0 });
+  const quotaResult = await quota.structureLessonRecord({ rawTranscript: "그대로" });
+  assert.equal(quotaCalls, 1);
+  assert.equal(quotaResult.failureStage, "provider_http");
+  assert.equal(quotaResult.providerStatus, 429);
+  assert.equal(quotaResult.providerCode, "insufficient_quota");
 });
 
 test("pending queue survives exit and usage telemetry stores counters without transcript", () => {
@@ -89,5 +100,8 @@ test("App exposes four post-attendance choices, 90-second cap, pending save and 
   assert.match(source, /ignored_pre_start_stopped/);
   assert.match(source, /startRequestRef\.current/);
   assert.match(source, /시작 중…/);
-  assert.match(source, /원문으로 저장/);
+  assert.match(source, /입력한 내용 그대로 저장/);
+  assert.match(source, /AI 수업 요약/);
+  assert.match(source, /무엇을 말하면 되나요\?/);
+  assert.doesNotMatch(source, />미구조화</);
 });

@@ -109,3 +109,35 @@ test("authorization and missing Secret both fail before provider execution or qu
   assert.equal(secretResponse.body.error.code, "provider_unavailable");
   assert.equal(rateCalls, 0);
 });
+
+test("provider failures return only allowlisted diagnostic fields", async () => {
+  const handler = createAIGatewayHandler({
+    verifyIdToken: async () => ({ uid: "verified-user" }),
+    policyService: {
+      authorize: async () => ({ allowed: true, memberName: "" }),
+      consumeRateLimit: async () => ({ allowed: true }),
+    },
+    idempotencyStore: createMemoryIdempotencyStore(),
+    getProvider: async () => ({
+      execute: async () => { throw new GatewayError("provider_unavailable", { diagnostic: {
+        stage: "provider_http",
+        providerStatus: 401,
+        providerCode: "invalid_api_key",
+        providerType: "invalid_request_error",
+        providerRequestId: "req_safe_1",
+        transcript: "private",
+      } }); },
+    }),
+  });
+  const response = await invoke(handler);
+  assert.equal(response.statusCode, 503);
+  assert.deepEqual(response.body.error.diagnostic, {
+    stage: "provider_http",
+    providerStatus: 401,
+    providerCode: "invalid_api_key",
+    providerType: "invalid_request_error",
+    providerRequestId: "req_safe_1",
+  });
+  assert.equal(JSON.stringify(response.body).includes("private"), false);
+  assert.equal(JSON.stringify(response.body).includes("transcript"), false);
+});

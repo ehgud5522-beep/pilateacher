@@ -6,7 +6,7 @@ if (typeof window !== "undefined" && !window.storage) {
   };
 }
 
-import { useState, useEffect, useMemo, useRef, useCallback, Component } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback, useContext, createContext, Component } from "react";
 import { createPortal } from "react-dom";
 import { Capacitor } from "@capacitor/core";
 import { CameraPreview } from "@capgo/camera-preview";
@@ -24,6 +24,7 @@ import {
   fbReady, fbSignInSocial, fbSignInEmail, fbSignUpEmail, fbSignOut, fbOnAuth,
   fbLoadProfile, fbSaveProfile, fbPushBackup, fbPullBackup, fbReauthenticate,
   fbRevokeAppleAccess, fbDeleteCurrentUserAccount, fbLoadAIConsent, fbGrantAIConsent,
+  fbListPhotoBackups, fbUploadPhotoBackup, fbDownloadPhotoBackup, fbSoftDeletePhotoBackup, fbPurgeExpiredPhotoBackups,
   AI_CONSENT_POLICY_VERSION, AI_CONSENT_SCOPES,
 } from "./lib/firebase";
 import { runAppDualWrite } from "./data/dual-write/app-runtime";
@@ -40,7 +41,7 @@ import {
   POSTURE_RETAKE_DAYS, POSTURE_STORAGE_KEYS, POSTURE_VIEW_DEFS, POSTURE_VIEW_KEYS,
   compareAssessmentMetrics, completeAssessmentRecords, correctedPoseSource, normalizeAssessmentSets, normalizePostureView, postureAnalysisPlane,
   postureAlignmentTransform, postureReferenceLines,
-  postureRetakeStatus, postureViewLabel, removeAssessmentDraftRecords, selectAutomaticComparison,
+  postureAfterReminder, postureMilestoneTemplate, postureViewLabel, removeAssessmentDraftRecords, selectAutomaticComparison,
   selectResumableAssessment,
 } from "./features/posture/posture-model.js";
 import {
@@ -60,8 +61,11 @@ import {
   loadPendingLessonRecord, removePendingLessonRecord, savePendingLessonRecord,
 } from "./features/lesson-record/draft-queue.js";
 import { trackLessonRecordUsage } from "./features/lesson-record/usage-telemetry.js";
-import { createMemberBriefing, memberMemorySummary } from "./features/member-memory/briefing.js";
-import { buildMemberMemory, rejectMemoryEntry } from "./features/member-memory/member-memory.js";
+import {
+  lessonRecordPresentation, markLessonRecordGuideUsed, shouldShowLessonRecordGuide,
+} from "./features/lesson-record/lesson-record-presentation.js";
+import { createMemberBriefing, memberMemorySummary, selectScheduleBriefing } from "./features/member-memory/briefing.js";
+import { addPostureMilestone, buildMemberMemory, rejectMemoryEntry } from "./features/member-memory/member-memory.js";
 import { trackMemberMemoryUsage } from "./features/member-memory/usage-telemetry.js";
 import Onboarding from "./features/onboarding/Onboarding.jsx";
 import { completeOnboarding, hasCompletedOnboarding } from "./features/onboarding/onboarding-storage.js";
@@ -77,7 +81,16 @@ import {
   readRecentAnnotationColors, rememberAnnotationColor, screenPointToImagePoint,
 } from "./features/posture/posture-annotations.js";
 import { LOCAL_PHOTO_NOTICE_MESSAGE, claimLocalPhotoNotice } from "./features/posture/photo-storage-notice.js";
+import { classifyLessonRecordFailure, lessonRecordFailureMessage, LESSON_RECORD_FAILURE } from "./features/lesson-record/failure-diagnostics.js";
 import { classifyAuthError, createSingleFlightGate, safeAuthDiagnostic } from "./features/auth/apple-sign-in.js";
+import {
+  CLOUD_PHOTO_CONSENT_VERSION, backupCounts, buildPhotoGraph, buildPhotoManifest, createPhotoQueue,
+  createEmergencyBackupEnvelope, drainPhotoQueue, mergePhotoGraph, mergePhotoMetadata, storageUsage,
+} from "./features/backup/cloud-backup.js";
+import { optimizePhotoBackup } from "./features/backup/photo-optimizer.js";
+import {
+  listenForLessonNotificationActions, syncLessonNotifications,
+} from "./features/notifications/local-notifications.js";
 import {
   ACCOUNT_DELETION_PHASE_LABELS, ACCOUNT_DELETION_PHASES, DELETE_CONFIRMATION_PHRASE,
   collectOwnedBlobIds, runAccountDeletion,
@@ -102,19 +115,20 @@ const sysDarkNow = () => {
 };
 
 /* 파일이 실제로 교체됐는지 1초 만에 확인하는 표시 — 설정 탭 맨 아래에 뜬다 */
-const APP_VER = "1.1.17 (21) · 2026-08-24";
+const APP_VER = "1.1.19 (23) · 2026-08-24";
 const RELEASE_VERSION = String(import.meta.env.VITE_APP_VERSION || "").trim();
 const RELEASE_BUILD_NUMBER = String(import.meta.env.VITE_BUILD_NUMBER || "").trim();
 const RELEASE_COMMIT_SHORT = String(import.meta.env.VITE_BUILD_COMMIT || "").trim().slice(0, 7);
+const RELEASE_BUILD_IDENTIFIER = String(import.meta.env.VITE_BUILD_IDENTIFIER || "").trim().slice(0, 32);
 const APP_BUILD_LABEL = RELEASE_VERSION && RELEASE_BUILD_NUMBER
-  ? `${RELEASE_VERSION} (${RELEASE_BUILD_NUMBER})${RELEASE_COMMIT_SHORT ? ` · ${RELEASE_COMMIT_SHORT}` : ""}`
+  ? `${RELEASE_VERSION} (${RELEASE_BUILD_NUMBER})${RELEASE_COMMIT_SHORT ? ` · ${RELEASE_COMMIT_SHORT}` : ""}${RELEASE_BUILD_IDENTIFIER ? ` · ${RELEASE_BUILD_IDENTIFIER}` : ""}`
   : APP_VER;
 try { if (typeof window !== "undefined") window.PILATEACHER_VER = APP_BUILD_LABEL; } catch (e) {}
 
 const AI_CONSENT_PROMPT = [
   "AI 초안 생성을 위한 회원 동의 확인",
   "",
-  "회원의 수업 기록·음성 전사·체형 좌표와 각도를 AI가 처리하는 데 회원의 동의를 받았나요?",
+  "회원의 수업 기록·말한 내용·체형 좌표와 각도를 AI가 처리하는 데 회원의 동의를 받았나요?",
   "",
   "사진 원본은 AI로 전송하지 않으며, 생성 결과는 강사 검수 전 초안으로만 사용됩니다.",
 ].join("\n");
@@ -152,6 +166,7 @@ const aiFailureMessage = (error, fallback = "AI 결과를 불러오지 못했습
     consent_required: "회원 동의 또는 최신 클라우드 백업을 확인한 뒤 다시 시도해 주세요.",
     rate_limited: "AI 요청이 잠시 많습니다. 잠시 뒤 다시 시도해 주세요.",
     provider_unavailable: "AI 서버 설정이 아직 완료되지 않았거나 일시적으로 응답하지 않습니다.",
+    provider_quota_exhausted: "AI 정리를 지금 사용할 수 없습니다. 입력한 내용 그대로 저장하거나 직접 수정해 주세요.",
     invalid_request: "AI에 보낼 기록 형식을 확인하지 못했습니다. 기록을 저장한 뒤 다시 시도해 주세요.",
     invalid_output: "AI 응답 형식을 확인하지 못했습니다. 잠시 뒤 다시 생성해 주세요.",
     timeout: "AI 응답이 늦어지고 있습니다. 네트워크를 확인한 뒤 다시 시도해 주세요.",
@@ -166,6 +181,9 @@ const ACCOUNT_DELETION_PENDING_KEY = "pilateacher_account_deletion_pending_v1";
 const DUAL_WRITE_RETRY_KEY = "pilateacher_dual_write_retry_v1";
 const dbKey = (id) => `pilateacher_db_${id}`;
 const phKey = (id) => `pilateacher_photos_${id}`;
+const cloudSyncKey = (id) => `pilateacher_cloud_sync_v1_${id}`;
+const readCloudSyncMarker = (id) => { try { return JSON.parse(window.localStorage?.getItem(cloudSyncKey(id)) || "null"); } catch (error) { return null; } };
+const writeCloudSyncMarker = (id, patch) => { try { window.localStorage?.setItem(cloudSyncKey(id), JSON.stringify({ ...(readCloudSyncMarker(id) || {}), ...patch })); } catch (error) {} };
 
 const METRICS = {
   weight: { key: "weight", label: "체중", unit: "kg", get color() { return PRIMARY; }, goodDir: -1 },
@@ -269,6 +287,8 @@ const DEVICE_LOG_FIELDS = new Set([
   "permission", "state", "source", "code", "message", "count", "provider",
   "stage", "kind", "firebaseCode", "nativeCode", "nativeMessage", "credentialState",
   "httpStatus", "requestId", "retryCount", "path", "expected", "received", "reason",
+  "failureStage", "providerStatus", "providerCode", "providerType",
+  "failureClass", "appBuild",
 ]);
 const deviceLog = (event, details = {}) => {
   try {
@@ -489,6 +509,7 @@ const blobIdsOf = (ph) => {
   PHOTO_KEYS.forEach((k) => (Array.isArray(ph?.[k]) ? ph[k] : []).forEach((p) => {
     if (p?.blobId) out.push(p.blobId);
     if (p?.cleanBlobId) out.push(p.cleanBlobId);
+    if (p?.thumbnailBlobId) out.push(p.thumbnailBlobId);
   }));
   return out;
 };
@@ -529,6 +550,8 @@ async function cleanupLocalAccountData(accountId, snapshot = null) {
   if (!session || session.accountId === accountId) await removeStoredKey(SES_KEY);
   await removeStoredKey(dbKey(accountId));
   await removeStoredKey(phKey(accountId));
+  try { window.localStorage?.removeItem(cloudSyncKey(accountId)); } catch (error) {}
+  try { createPhotoQueue(window.localStorage, accountId).clear(); } catch (error) {}
 
   try {
     const retries = JSON.parse(window.localStorage?.getItem(DUAL_WRITE_RETRY_KEY) || "[]");
@@ -550,7 +573,7 @@ const stripSrc = (map) => {
     const next = { ...cur };
     PHOTO_KEYS.forEach((k) => {
       if (!Array.isArray(cur[k])) return;
-      next[k] = cur[k].map((p) => { const q = { ...p }; if (q.blobId) delete q.src; return q; });
+      next[k] = cur[k].map((p) => { const q = { ...p }; if (q.blobId || q.thumbnailBlobId) delete q.src; return q; });
     });
     out[mid] = next;
   });
@@ -577,7 +600,8 @@ async function adoptPhotos(map) {
             changed = true;
           } catch (e) {}
         }
-        arr.push(q.blobId ? { ...q, src: (await urlFor(q.blobId)) || q.src || null } : q);
+        const previewBlobId = q.blobId || q.thumbnailBlobId;
+        arr.push(previewBlobId ? { ...q, src: (await urlFor(previewBlobId)) || q.src || null } : q);
       }
       next[k] = arr;
     }
@@ -1791,7 +1815,7 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
         </div>
 
         <p className="text-center text-xs leading-relaxed" style={{ color: FAINT }}>
-          {fbReady ? "회원 사진은 이 기기에만 저장되며 외부로 전송되지 않습니다." : "회원 정보와 사진은 이 기기에만 저장되며 외부 서버로 전송되지 않습니다."}<br />
+          {fbReady ? "회원 사진은 먼저 이 기기에 저장되며, 별도 동의 후 본인 계정 클라우드 백업을 켤 수 있습니다." : "회원 정보와 사진은 이 기기에만 저장되며 외부 서버로 전송되지 않습니다."}<br />
           로그인하면 이용약관 및 개인정보 처리방침에 동의하게 됩니다.
         </p>
       </div>
@@ -2204,7 +2228,7 @@ function SchedItem({ s, members, del, setDel, setEditing, onStatus, onNoshowFee,
   );
 }
 
-function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset, quickAddRequest, onConsumeQuickAdd }) {
+function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset, quickAddRequest, onConsumeQuickAdd, onOpenMember }) {
   const initialDisplay = useMemo(() => {
     try { return JSON.parse(localStorage.getItem(SCHEDULE_VIEW_KEY) || "null") || {}; }
     catch (e) { return {}; }
@@ -2214,6 +2238,7 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
   const [showSundaySetting, setShowSundaySetting] = useState(initialDisplay.showSundaySetting === true);
   const [displaySettings, setDisplaySettings] = useState(false);
   const [listOpen, setListOpen] = useState(false);
+  const [briefingList, setBriefingList] = useState(null);
   const [queueOpen, setQueueOpen] = useState(false);
   const scheduleTriggerRef = useRef(null);
   const queueTriggerRef = useRef(null);
@@ -2246,6 +2271,11 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
     const target = db.members.find((item) => item.id === memberId);
     return target ? createMemberBriefing({ member: target, currentSessionId: sessionId }) : null;
   }, [db.members]);
+  const scheduleBriefingsOf = useCallback((lesson) => attendeesOf(lesson).map((attendee) => {
+    const member = db.members.find((item) => item.id === attendee.memberId);
+    const briefing = selectScheduleBriefing(briefingOf(attendee.memberId, lesson.id));
+    return member && briefing ? { member, briefing } : null;
+  }).filter(Boolean), [briefingOf, db.members]);
   const week = useMemo(() => Array.from({ length: 7 }, (_, i) => shift(monStart(cursor), i)), [cursor]);
   const byDate = (d) => db.schedule.filter((s) => s.date === d).sort((a, b) => a.start.localeCompare(b.start));
   const seatsOn = (d) => byDate(d).reduce((n, s) => n + attendeesOf(s).length, 0);
@@ -2493,21 +2523,58 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
               return (
                 <section key={date}>
                   <p className="mb-1.5 text-xs font-semibold tabular-nums" style={{ color: date === todayISO() ? PRIMARY : SUB }}>{dow(date)} {md(date)}</p>
-                  {rows.length ? rows.map((s) => { const cardAttendees = attendeesOf(s); const cardBriefing = !isPersonalEvt(s) && !isEquipGroup(s) && cardAttendees.length === 1 ? briefingOf(cardAttendees[0].memberId, s.id)?.lines?.[0]?.text || "" : ""; return (
-                    <button key={s.id} type="button" onClick={(e) => { scheduleTriggerRef.current = e.currentTarget; setListOpen(false); setEditing(s); }}
-                      className="mb-1 flex min-h-11 w-full items-center gap-2 rounded-lg px-3 py-2 text-left"
-                      style={{ backgroundColor: CANVAS, border: `1px solid ${LINE}` }}>
-                      <span className="shrink-0 text-xs font-semibold tabular-nums" style={{ color: PRIMARY }}>{s.start}</span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm font-semibold" style={{ color: INK }}>{isPersonalEvt(s) ? s.title : isEquipGroup(s) ? `${s.equip || "그룹"} · ${num(s.groupCount) || 0}명` : cardAttendees.map((a) => nameOf(a.memberId)).join(" · ")}</span>
-                        {cardBriefing && <span className="mt-0.5 block truncate" style={{ fontSize: 10, color: SUB }}>{cardBriefing}</span>}
-                      </span>
-                      <ChevronRight size={14} style={{ color: SUB }} />
-                    </button>
-                  ); }) : <p className="rounded-lg px-3 py-2 text-xs" style={{ backgroundColor: CANVAS, color: SUB }}>일정 없음</p>}
+                  {rows.length ? rows.map((s) => {
+                    const cardAttendees = attendeesOf(s);
+                    const memberBriefings = !isPersonalEvt(s) && !isEquipGroup(s) ? scheduleBriefingsOf(s) : [];
+                    const singleBriefing = cardAttendees.length === 1 ? memberBriefings[0] || null : null;
+                    const groupBriefingCount = cardAttendees.length > 1 ? memberBriefings.length : 0;
+                    return (
+                      <div key={s.id} className="mb-1 rounded-lg" style={{ backgroundColor: CANVAS, border: `1px solid ${LINE}` }}>
+                        <button type="button" onClick={(e) => { scheduleTriggerRef.current = e.currentTarget; setListOpen(false); setEditing(s); }}
+                          className="flex min-h-11 w-full items-center gap-2 px-3 py-2 text-left">
+                          <span className="shrink-0 text-xs font-semibold tabular-nums" style={{ color: PRIMARY }}>{s.start}</span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-sm font-semibold" style={{ color: INK }}>{isPersonalEvt(s) ? s.title : isEquipGroup(s) ? `${s.equip || "그룹"} · ${num(s.groupCount) || 0}명` : cardAttendees.map((a) => nameOf(a.memberId)).join(" · ")}</span>
+                          </span>
+                          <ChevronRight size={14} style={{ color: SUB }} />
+                        </button>
+                        {singleBriefing && (
+                          <button type="button" onClick={() => { setListOpen(false); onOpenMember?.(singleBriefing.member.id); }}
+                            className="flex min-h-11 w-full items-center gap-2 border-t px-3 py-2 text-left" style={{ borderColor: LINE }}>
+                            <Sparkles size={13} className="shrink-0" style={{ color: PRIMARY }} />
+                            <span className="min-w-0 flex-1 truncate text-xs font-semibold" style={{ color: INK2 }}>{singleBriefing.briefing.displayText}</span>
+                          </button>
+                        )}
+                        {groupBriefingCount > 0 && (
+                          <button type="button" onClick={(event) => { scheduleTriggerRef.current = event.currentTarget; setListOpen(false); setBriefingList({ lesson: s, items: memberBriefings }); }}
+                            className="mx-3 mb-2 flex min-h-11 items-center rounded-full px-3 text-xs font-extrabold" style={{ backgroundColor: TINT, color: PRIMARY }}>
+                            확인할 회원 {groupBriefingCount}명
+                            <ChevronRight size={13} className="ml-auto" />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  }) : <p className="rounded-lg px-3 py-2 text-xs" style={{ backgroundColor: CANVAS, color: SUB }}>일정 없음</p>}
                 </section>
               );
             })}
+          </div>
+        </Sheet>
+      )}
+      {briefingList && (
+        <Sheet title="회원별 브리핑" sub={`${ymd(briefingList.lesson.date)} · ${briefingList.lesson.start}`} onClose={() => setBriefingList(null)}>
+          <div className="space-y-2">
+            {briefingList.items.map(({ member, briefing }) => (
+              <button key={member.id} type="button" onClick={() => { setBriefingList(null); onOpenMember?.(member.id); }}
+                className="flex min-h-14 w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left" style={{ backgroundColor: CANVAS, border: `1px solid ${LINE}` }}>
+                <Avatar name={member.name} size={34} />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-extrabold" style={{ color: INK }}>{member.name}</span>
+                  <span className="mt-0.5 block text-xs leading-relaxed" style={{ color: INK2 }}>{briefing.displayText}</span>
+                </span>
+                <ChevronRight size={14} className="shrink-0" style={{ color: SUB }} />
+              </button>
+            ))}
           </div>
         </Sheet>
       )}
@@ -2664,7 +2731,7 @@ function WeekGrid({ days, byDate, nameOf, memberOf, briefingOf, cursor, onOpen, 
     const done = pv ? false : eq ? !!s.groupDone : list.length > 0 && list.every((a) => a.status !== "booked");
     const status = list[0]?.status || "booked";
     const needsRecord = !pv && !eq && list.some((a) => a.status === "done" && !(memberOf?.(a.memberId)?.notes || []).some((n) => n?.sid === s.id));
-    const briefingLine = !pv && !eq && list.length === 1 ? briefingOf?.(list[0].memberId, s.id)?.lines?.[0]?.text || "" : "";
+    const briefingLine = !pv && !eq && list.some((attendee) => !!selectScheduleBriefing(briefingOf?.(attendee.memberId, s.id)));
     return { s, top: topOf(st), h: Math.max(20, topOf(en) - topOf(st) - 2), label, briefingLine, done, cancelled: (eq && !!s.groupCancelled) || status === "cancel", noshow: status === "noshow", eq, pv, next: s.id === nextId, needsRecord, groupPeople };
   }).filter((b) => b.top >= -GRID_ROW && b.top < totalHeight);
 
@@ -2709,7 +2776,7 @@ function WeekGrid({ days, byDate, nameOf, memberOf, briefingOf, cursor, onOpen, 
                 {blocksOf(d).map((b) => {
                   const memberMatch = !focusedMemberId || attendeesOf(b.s).some((a) => a.memberId === focusedMemberId);
                   return (
-                  <button key={b.s.id} title={b.briefingLine ? `${b.label}\n${b.briefingLine}` : b.label} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); onOpen(b.s, e.currentTarget); }}
+                  <button key={b.s.id} title={b.label} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); onOpen(b.s, e.currentTarget); }}
                     className="absolute left-0.5 right-0.5 flex min-w-0 items-center justify-center overflow-hidden text-center"
                     style={{ top: b.top + 1, height: Math.max(18, b.h - 1), borderRadius: 4,
                       background: b.pv ? "var(--card)" : b.cancelled ? "transparent" : b.noshow ? "var(--bad-s)" : b.done ? "var(--canvas)" : b.next ? "var(--tint)" : "var(--card)",
@@ -2721,8 +2788,9 @@ function WeekGrid({ days, byDate, nameOf, memberOf, briefingOf, cursor, onOpen, 
                       opacity: memberMatch ? 1 : 0.22, boxShadow: focusedMemberId && memberMatch ? `0 0 0 2px ${RING}` : "none", transition: "opacity .18s ease, box-shadow .18s ease" }}>
                     {b.next && <Play size={7} fill={BRAND} className="absolute left-0.5 top-0.5" />}
                     {!b.pv && !b.eq && <span className="absolute" aria-hidden="true" style={{ left: 2, bottom: 2, width: 5, height: 5, borderRadius: 3, backgroundColor: idColor(attendeesOf(b.s)[0]?.memberId), opacity: b.done ? .45 : 1 }} />}
-                    <span className="w-full min-w-0"><span className="block truncate" style={{ textDecoration: b.cancelled ? "line-through" : "none" }}>{b.label}</span>{b.briefingLine && b.h >= 24 && <span className="mt-0.5 block truncate" style={{ fontSize: 7.5, fontWeight: 500, opacity: .78 }}>{b.briefingLine}</span>}</span>
-                    {b.needsRecord && <span className="absolute" aria-label="기록 필요" style={{ top: 2, right: 2, width: 5, height: 5, borderRadius: 3, backgroundColor: BRAND }} />}
+                    <span className="w-full min-w-0"><span className="block truncate" style={{ textDecoration: b.cancelled ? "line-through" : "none" }}>{b.label}</span></span>
+                    {b.briefingLine && <span className="absolute" aria-label="브리핑 있음" style={{ top: 2, right: 2, width: b.h >= 24 ? 5 : 4, height: b.h >= 24 ? 5 : 4, borderRadius: 3, backgroundColor: PRIMARY }} />}
+                    {b.needsRecord && <span className="absolute" aria-label="기록 필요" style={{ bottom: 2, right: 2, width: 5, height: 5, borderRadius: 3, backgroundColor: BRAND }} />}
                   </button>
                   );
                 })}
@@ -2748,6 +2816,7 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
   const [editingInfo, setEditingInfo] = useState(!draft.id);
   const [activeMemberId, setActiveMemberId] = useState(currentIds[0] || "");
   const [recordMode, setRecordMode] = useState(null);
+  const [recordFallback, setRecordFallback] = useState("");
   const [recordBody, setRecordBody] = useState("");
   const [recordMeta, setRecordMeta] = useState(null);
   const [picker, setPicker] = useState(null);
@@ -2895,8 +2964,8 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
             </div>
 
             {activeMember && activeBriefing && (
-              <section className="rounded-xl p-3" aria-label="다음 수업 브리핑" style={{ backgroundColor: LAVENDER_S, border: `1px solid ${RING}` }}>
-                <div className="mb-2 flex items-center gap-2"><Sparkles size={14} style={{ color: BRAND_D }} /><p className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: BRAND_D }}>다음 수업 브리핑</p><span style={{ fontSize: 9, color: SUB }}>확정 기록 기반</span></div>
+              <section className="rounded-xl p-3" aria-label="지난 수업 이어서 보기" style={{ backgroundColor: LAVENDER_S, border: `1px solid ${RING}` }}>
+                <div className="mb-2 flex items-center gap-2"><Sparkles size={14} style={{ color: BRAND_D }} /><p className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: BRAND_D }}>지난 수업 이어서 보기</p><span style={{ fontSize: 9, color: SUB }}>저장한 기록 기준</span></div>
                 <div className="space-y-1.5">{activeBriefing.lines.slice(0, 5).map((briefingLine, index) => <p key={`${briefingLine.kind}-${index}`} className="text-xs leading-relaxed" style={{ color: briefingLine.kind === "conflict" ? WARN : INK2 }}>• {briefingLine.text}</p>)}</div>
               </section>
             )}
@@ -2942,17 +3011,18 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
 
                 {activeAttendee.status !== "booked" && <>
                 <div className="grid grid-cols-2 gap-2">
-                  <button onClick={() => setRecordMode(recordMode === "voice" ? null : "voice")} className="flex h-12 items-center justify-center gap-1.5 rounded-lg text-xs font-extrabold" style={{ backgroundColor: recordMode === "voice" ? PRIMARY : TINT, color: recordMode === "voice" ? "#fff" : PRIMARY, border: `1px solid ${recordMode === "voice" ? PRIMARY : "#D9D7EE"}` }}><Smartphone size={15} /> 말하기</button>
-                  <button onClick={() => setRecordMode(recordMode === "write" ? null : "write")} className="flex h-12 items-center justify-center gap-1 rounded-lg text-xs font-extrabold" style={{ backgroundColor: recordMode === "write" ? TINT : CARD, color: recordMode === "write" ? PRIMARY : INK, border: `1px solid ${LINE}` }}><Pencil size={13} /> 직접입력</button>
+                  <button onClick={() => { setRecordFallback(""); setRecordMode(recordMode === "voice" ? null : "voice"); }} className="flex h-12 items-center justify-center gap-1.5 rounded-lg text-xs font-extrabold" style={{ backgroundColor: recordMode === "voice" ? PRIMARY : TINT, color: recordMode === "voice" ? "#fff" : PRIMARY, border: `1px solid ${recordMode === "voice" ? PRIMARY : "#D9D7EE"}` }}><Smartphone size={15} /> 기록하기</button>
+                  <button onClick={() => { setRecordFallback(""); setRecordMode(recordMode === "write" ? null : "write"); }} className="flex h-12 items-center justify-center gap-1 rounded-lg text-xs font-extrabold" style={{ backgroundColor: recordMode === "write" ? TINT : CARD, color: recordMode === "write" ? PRIMARY : INK, border: `1px solid ${LINE}` }}><Pencil size={13} /> 직접입력</button>
                   <button onClick={async () => { const stored = await onNoComment?.(activeMemberId, draft.type, draft.id); if (stored !== false) onClose(); }} className="h-12 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: SUB, border: `1px solid ${LINE}` }}>노코멘트</button>
                   <button onClick={onClose} className="h-12 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: SUB, border: `1px solid ${LINE}` }}>나중에</button>
                 </div>
 
                 {recordMode && (
                   <div className="space-y-2 rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
-                    {recordMode === "voice" && <VoiceNote memberId={activeMemberId} lessonId={draft.id} onApply={(text, meta) => { setRecordBody((body) => body.trim() ? `${body.trim()}\n${text}` : text); setRecordMeta(meta); }} />}
+                    {recordFallback && <p role="status" className="rounded-lg px-3 py-2 text-xs font-bold" style={{ backgroundColor: WARN_S, color: WARN }}>{recordFallback}</p>}
+                    {recordMode === "voice" && <VoiceNote autoStart memberId={activeMemberId} lessonId={draft.id} onDirectEntry={(message) => { setRecordFallback(message || "음성 인식을 사용할 수 없어 직접 입력으로 전환했습니다."); setRecordMode("write"); }} onApply={(text, meta) => { setRecordBody((body) => body.trim() ? `${body.trim()}\n${text}` : text); setRecordMeta(meta); }} />}
                     <textarea rows={4} value={recordBody} onChange={(e) => { const value = e.target.value; setRecordBody(value); setRecordMeta((meta) => meta?.lessonRecord ? { ...meta, lessonRecord: { ...meta.lessonRecord, instructorBodyOverride: value, instructorBodyOrigin: "instructor" } } : meta); }} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} />
-                    <button disabled={!recordBody.trim()} onClick={async () => { const stored = await onSaveNote?.(activeMemberId, draft.type, draft.id, recordBody.trim(), recordMeta); if (stored !== false) onClose(); }} className="h-11 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35" style={{ backgroundColor: PRIMARY }}>확인 후 기록 저장</button>
+                    <button disabled={!recordBody.trim()} onClick={async () => { const stored = await onSaveNote?.(activeMemberId, draft.type, draft.id, recordBody.trim(), recordMeta); if (stored !== false) onClose(); }} className="h-11 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35" style={{ backgroundColor: PRIMARY }}>확인하고 저장</button>
                   </div>
                 )}
                 </>}
@@ -4126,7 +4196,32 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
   const prepText = (value, fallback = "기록 없음") => Array.isArray(value) ? (value.map((item) => typeof item === "string" ? item : item?.text).filter(Boolean).join(" · ") || fallback) : (String(value || "").trim() || fallback);
   const memoryBriefing = useMemo(() => createMemberBriefing({ member }), [member]);
   const memorySummary = useMemo(() => memberMemorySummary(memoryBriefing), [memoryBriefing]);
-  const hasMemoryOverview = lessonNotes.length > 0;
+  const activeMemory = (memoryBriefing.memories || []).filter((entry) => ["active", "conflict"].includes(entry?.status));
+  const latestMemoryOf = (predicate) => activeMemory.filter(predicate).sort((a, b) => String(b.lastSeenAt || "").localeCompare(String(a.lastSeenAt || "")))[0] || null;
+  const repeatedMemory = latestMemoryOf((entry) => entry.status !== "conflict" && Number(entry.seenCount) >= 2);
+  const nextCheckMemory = latestMemoryOf((entry) => entry.type === "next_focus");
+  const recentChangeMemories = activeMemory.filter((entry) => entry.status === "conflict" || entry.type === "response" || entry.type === "milestone")
+    .sort((a, b) => String(b.lastSeenAt || "").localeCompare(String(a.lastSeenAt || ""))).slice(0, 3);
+  const latestMemorySession = memoryBriefing.sessions?.at(-1) || null;
+  const memorySourceDate = (entry) => {
+    const sourced = (entry?.sourceRefs || []).filter((source) => (source?.type === "session" || source?.type === "assessment") && source?.date).map((source) => String(source.date)).sort().at(-1);
+    return sourced || String(entry?.lastSeenAt || "");
+  };
+  const memoryDateLabel = (value) => {
+    const match = String(value || "").match(/^\d{4}-(\d{2})-(\d{2})/);
+    return match ? `${Number(match[1])}.${Number(match[2])}` : "";
+  };
+  const latestRecord = latestMemorySession?.record || null;
+  const latestRecordItems = [latestRecord?.didToday, latestRecord?.observations, latestRecord?.responses].find((items) => Array.isArray(items) && items.length) || [];
+  const latestRecordValue = prepText(latestRecordItems, latestMemorySession?.note?.body || latestRecord?.rawTranscript || "");
+  const latestRecordOrigin = latestRecordItems.some((item) => item?.origin === "ai") ? "ai" : latestRecordItems.some((item) => item?.origin === "instructor") ? "instructor" : null;
+  const memoryRows = [
+    latestMemorySession && latestRecordValue ? { key: "last", label: "지난 수업", value: latestRecordValue, date: latestMemorySession.date, origin: latestRecordOrigin, memory: null } : null,
+    repeatedMemory ? { key: "repeated", label: "반복해서 기록된 내용", value: memorySummary.repeated, date: memorySourceDate(repeatedMemory), origin: repeatedMemory.origin, memory: repeatedMemory } : null,
+    nextCheckMemory ? { key: "next", label: "선생님이 남긴 다음 확인", value: nextCheckMemory.text, date: memorySourceDate(nextCheckMemory), origin: nextCheckMemory.origin, memory: nextCheckMemory } : null,
+    ...recentChangeMemories.map((entry) => ({ key: `change-${entry.id}`, label: "최근 변화", value: entry.status === "conflict" ? "최근 기록이 달라졌습니다" : entry.text, date: memorySourceDate(entry), origin: entry.presentationOrigin || entry.origin, memory: entry })),
+  ].filter(Boolean);
+  const hasMemoryOverview = memoryRows.length > 0;
   useEffect(() => {
     trackMemberMemoryUsage("briefing_rendered", { count: 1 });
     trackMemberMemoryUsage("briefing_opened", { count: 1 });
@@ -4135,9 +4230,9 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
   const resumableAssessment = useMemo(() => selectResumableAssessment(assessmentSets, { memberId: member.id }), [assessmentSets, member.id]);
   const completedAssessments = assessmentSets.filter((assessment) => assessment.status === "completed");
   const lastAssessment = completedAssessments[0] || null;
-  const retake = postureRetakeStatus(lastAssessment?.completedAt || lastAssessment?.at);
+  const afterReminder = postureAfterReminder(completedAssessments);
   const lastAssessmentMetrics = lastAssessment?.poses.flatMap((pose) => pose.metrics || []).slice(0, 2) || [];
-  const next = lessons.filter((s) => `${s.date} ${s.start}` >= `${todayISO()} 00:00`).sort((a, b) => `${a.date} ${a.start}`.localeCompare(`${b.date} ${b.start}`))[0] || null;
+  const next = lessons.filter((s) => attOf(s, member.id)?.status === "booked" && new Date(`${s.date}T${s.start || "00:00"}:00`).getTime() >= Date.now()).sort((a, b) => `${a.date} ${a.start}`.localeCompare(`${b.date} ${b.start}`))[0] || null;
   const recentLesson = lessons.find((lesson) => lesson.date <= todayISO() && attOf(lesson, member.id)?.status === "done") || null;
   const memberUnit = paidAvg(member);
   const settlementUnit = rateFor(member, member.lessonType === "group" ? "그룹" : "개인레슨", settings);
@@ -4192,29 +4287,35 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
       </div>
       <main className="pt-scroll min-h-0 flex-1 overflow-y-auto safe-scroll" style={{ padding: "8px 12px 18px" }}>
         <div className="space-y-2">
-          <section style={{ ...sectionStyle, backgroundColor: TINT, borderColor: RING }}>
-            <div className="flex items-center gap-3"><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-base font-extrabold text-white" style={{ background: GRAD }}>{(member.name || "?").slice(0, 1)}</span><span className="min-w-0 flex-1"><span className="block truncate text-base font-extrabold" style={{ color: INK }}>{member.name || "이름 미입력"}</span><span className="mt-0.5 block text-xs" style={{ color: SUB }}>다음 수업 {next ? `${ymd(next.date)} ${next.start}` : "예약 없음"}</span></span><span className="shrink-0 text-right"><span className="block text-2xl font-extrabold tabular-nums" style={{ color: left(member) <= 3 ? BAD : BRAND }}>{left(member)}회</span><span className="block text-[10px]" style={{ color: SUB }}>잔여</span></span></div>
+          <section data-member-section="top-summary" style={{ ...sectionStyle, backgroundColor: TINT, borderColor: RING }}>
+            <div className="flex items-center gap-3"><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-base font-extrabold text-white" style={{ background: GRAD }}>{(member.name || "?").slice(0, 1)}</span><span className="min-w-0 flex-1"><span className="block truncate text-base font-extrabold" style={{ color: INK }}>{member.name || "이름 미입력"}</span><span className="mt-0.5 block text-xs" style={{ color: SUB }}>{next ? `다음 수업 ${ymd(next.date)} ${next.start}` : "다음 예약 없음"}</span></span><span className="shrink-0 text-right"><span className="block text-2xl font-extrabold tabular-nums" style={{ color: left(member) <= 3 ? BAD : BRAND }}>{left(member)}회</span><span className="block text-[10px]" style={{ color: SUB }}>잔여</span></span></div>
           </section>
-          <section data-member-section="memory-first" style={{ ...sectionStyle, padding: hasMemoryOverview ? "4px 14px" : "11px 14px" }}>
-            {!hasMemoryOverview ? <p style={{ fontSize: 12, color: SUB }}>아직 작성된 수업 기록이 없습니다.</p> : <>
-              {[["지난 수업", memorySummary.lastLesson], ["반복해서 기록된 내용", memorySummary.repeated === "반복 기록 없음" ? "아직 반복 기록이 없습니다" : memorySummary.repeated], ["다음 확인", memorySummary.nextCheck], ["최근 변화", memorySummary.recentChange]].map(([label, value], index) => <div key={label} className="flex items-start gap-3" style={{ padding: "9px 0", borderTop: index ? `1px solid ${LINE}` : "none" }}><p className="w-[104px] shrink-0" style={{ fontSize: 10, fontWeight: 700, color: SUB }}>{label}</p><p className="min-w-0 flex-1 line-clamp-2" style={{ fontSize: 11, lineHeight: 1.45, fontWeight: 650, color: label === "다음 확인" ? BRAND_D : INK2 }}>{value}</p></div>)}
-              {memoryBriefing.lines.some((briefingLine) => !["first_lesson", "no_memory"].includes(briefingLine.kind)) && <div style={{ padding: "8px 0", borderTop: `1px solid ${LINE}` }}>{memoryBriefing.lines.filter((briefingLine) => !["first_lesson", "no_memory"].includes(briefingLine.kind)).slice(0, 5).map((briefingLine, index) => { const canReject = (briefingLine.memoryIds || []).some((memoryId) => memoryBriefing.memories.find((entry) => entry.id === memoryId)?.origin === "ai") && !(briefingLine.memoryIds || []).some((memoryId) => memoryBriefing.memories.find((entry) => entry.id === memoryId)?.origin === "instructor"); return <div key={`${briefingLine.kind}-${index}`} className="flex items-start gap-2"><p className="min-w-0 flex-1 text-[10px] leading-relaxed" style={{ color: briefingLine.kind === "conflict" ? WARN : SUB }}>{briefingLine.text}</p>{canReject && <button type="button" onClick={() => rejectBriefingLine(briefingLine)} className="shrink-0 text-[9px] font-bold" style={{ color: SUB }}>숨기기</button>}</div>; })}</div>}
-            </>}
+          <section data-member-section="memory-first" aria-label={`AI가 기억하는 ${member.name || "회원"}님`} style={{ ...sectionStyle, padding: hasMemoryOverview ? "10px 14px 4px" : "12px 14px" }}>
+            <div className="mb-1 flex items-center gap-2"><Sparkles size={14} style={{ color: BRAND_D }} /><h2 className="min-w-0 flex-1 truncate text-sm font-extrabold" style={{ color: INK }}>AI가 기억하는 {member.name || "회원"}님</h2></div>
+            {!hasMemoryOverview ? <div className="rounded-lg px-3 py-3" style={{ backgroundColor: CANVAS }}><p style={{ fontSize: 12, color: INK2 }}>아직 작성된 수업 기록이 없습니다.</p><p className="mt-1" style={{ fontSize: 10, lineHeight: 1.45, color: SUB }}>수업 기록을 저장하면 지난 수업과 다음 확인 내용을 이곳에서 이어서 볼 수 있어요.</p></div> : memoryRows.map((row, index) => <div key={row.key} className="flex items-start gap-3" style={{ padding: "9px 0", borderTop: index ? `1px solid ${LINE}` : "none" }}><p className="w-[112px] shrink-0" style={{ fontSize: 10, fontWeight: 700, color: SUB }}>{row.label}</p><div className="min-w-0 flex-1"><p className="line-clamp-2" style={{ fontSize: 11, lineHeight: 1.45, fontWeight: 650, color: row.key === "next" ? BRAND_D : INK2 }}>{row.value}</p><div className="mt-1 flex min-h-[14px] items-center gap-1.5">{row.origin === "ai" && <span style={{ fontSize: 9, fontWeight: 700, color: BRAND_D }}>[AI]</span>}{row.memory?.source === "posture_analysis" && <span style={{ fontSize: 9, fontWeight: 700, color: SUB }}>체형분석</span>}{memoryDateLabel(row.date) && <span className="tabular-nums" style={{ fontSize: 9, color: SUB }}>· {memoryDateLabel(row.date)}</span>}{row.memory?.origin === "ai" && <button type="button" onClick={() => rejectBriefingLine({ memoryIds: [row.memory.id] })} className="ml-auto shrink-0 text-[9px] font-bold" style={{ color: SUB }}>숨기기</button>}</div></div></div>)}
           </section>
-          {lessonNotes.length > 0 && <Section title="최근 수업 기록" action={<button type="button" onClick={() => setSheet("records-all")} style={{ fontSize: 12, fontWeight: 600, color: BRAND }}>전체 기록 보기</button>}>
-            {lessonNotes.slice(0, 3).map((note) => { const summary = note.aiSummaryTeacherEdited || note.aiSummary || {}; const structured = note.lessonRecord?.confirmedRecord || note.lessonRecord?.structuredDraft || {}; const detailCount = (structured.observations?.length || 0) + (structured.responses?.length || 0) + (summary.pain?.length || 0) + (summary.improvements?.length || 0); return <div key={note.id} style={{ padding: "8px 0", borderTop: `1px solid ${LINE}` }}><div className="flex items-center gap-2"><p className="min-w-0 flex-1" style={{ fontSize: 10, color: SUB }}>{ymd(note.date)} · {note.type || "수업"}</p>{note.lessonRecord?.status === "confirmed_unstructured" && <span style={{ fontSize: 9, color: WARN }}>미구조화</span>}{summary.memberCondition && <span style={{ fontSize: 9, color: BRAND_D }}>{summary.memberCondition}</span>}</div><p className="mt-1 line-clamp-2" style={{ fontSize: 12, lineHeight: 1.45, color: INK2 }}>{prepText(structured.didToday || summary.todayExercises, note.body)}</p>{detailCount > 0 && <p className="mt-1 line-clamp-2" style={{ fontSize: 10, color: WARN }}>{[prepText(structured.observations?.length ? structured.observations : summary.pain, ""), prepText(structured.responses?.length ? structured.responses : summary.improvements, "")].filter(Boolean).join(" · ")}</p>}</div>; })}
-          </Section>}
-          <Section title="상담 및 중요 메모" action={<div className="flex gap-3"><button type="button" onClick={() => setSheet("memos-all")} style={{ fontSize: 12, fontWeight: 600, color: SUB }}>전체 보기</button><button type="button" onClick={openMemo} style={{ fontSize: 12, fontWeight: 700, color: BRAND }}>메모 추가</button></div>}>
-            {consultationNotes.length ? consultationNotes.slice(0, 3).map((note) => <div key={note.id} className="flex items-start gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}` }}><button type="button" aria-label={note.important ? "중요 메모 고정 해제" : "중요 메모로 고정"} onClick={() => commitPatch("pin", { notes: (member.notes || []).map((item) => item.id === note.id ? { ...item, important: !item.important } : item) }, false)} className="mt-0.5 shrink-0" style={{ color: note.important ? WARN : FAINT }}><Star size={14} fill={note.important ? "currentColor" : "none"} /></button><span className="min-w-0 flex-1"><span className="block" style={{ fontSize: 10, color: SUB }}>{ymd(note.date)}{note.important ? " · 중요" : ""}</span><span className="mt-0.5 block line-clamp-2" style={{ fontSize: 12, lineHeight: 1.45, color: INK2 }}>{note.body}</span></span></div>) : <button type="button" onClick={openMemo} className="flex h-9 w-full items-center justify-between px-2 text-left" style={{ borderRadius: 8, backgroundColor: CANVAS, color: SUB, fontSize: 11 }}>등록된 상담 메모가 없습니다<span style={{ color: BRAND }}>추가하기</span></button>}
-          </Section>
-          <section style={{ ...sectionStyle, backgroundColor: retake.tone === "recommended" ? WARN_S : CARD }}>
-            <div className="flex items-start gap-3"><span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: TINT, color: BRAND_D }}><Activity size={16} /></span><span className="min-w-0 flex-1"><span className="block text-sm font-bold" style={{ color: INK }}>최신 체형분석</span><span className="mt-1 block text-xs" style={{ color: SUB }}>{lastAssessment ? `${ymd((lastAssessment.completedAt || lastAssessment.at).slice(0, 10))}${retake.days != null ? ` · ${retake.days}일 전` : ""}` : "아직 완료된 분석이 없습니다"}</span>{lastAssessmentMetrics.length > 0 && <span className="mt-1 block line-clamp-2 text-xs" style={{ color: INK2 }}>{lastAssessmentMetrics.map((metric) => `${metric.label} ${metric.value}${metric.unit}`).join(" · ")}</span>}<span className="mt-1 block text-[10px] font-bold" style={{ color: retake.tone === "recommended" ? WARN : BRAND_D }}>{retake.label}</span></span></div>
+          <details data-member-management-card="recent-lessons" style={{ ...sectionStyle, padding: 0, overflow: "hidden" }}>
+            <summary aria-label="최근 수업기록 관리 카드 열기" className="flex min-h-14 cursor-pointer list-none items-center gap-3 px-3.5 py-3"><span className="min-w-0 flex-1"><span className="block truncate text-sm font-extrabold" style={{ color: INK }}>최근 수업기록</span><span className="mt-0.5 block truncate text-[10px]" style={{ color: SUB }}>{lessonNotes.length ? `${ymd(lessonNotes[0].date)} · ${lessonNotes[0].type || "수업"}` : "아직 작성된 기록이 없습니다"}</span></span><ChevronDown size={16} style={{ color: SUB }} /></summary>
+            <div data-member-management-content="recent-lessons" style={{ padding: "0 12px 12px" }}>{lessonNotes.length > 0 ? <Section title="최근 수업 기록" action={<button type="button" onClick={() => setSheet("records-all")} style={{ fontSize: 12, fontWeight: 600, color: BRAND }}>전체 기록 보기</button>}>
+              {lessonNotes.slice(0, 3).map((note) => { const summary = note.aiSummaryTeacherEdited || note.aiSummary || {}; const structured = note.lessonRecord?.confirmedRecord || note.lessonRecord?.structuredDraft || {}; const detailCount = (structured.observations?.length || 0) + (structured.responses?.length || 0) + (summary.pain?.length || 0) + (summary.improvements?.length || 0); return <div key={note.id} style={{ padding: "8px 0", borderTop: `1px solid ${LINE}` }}><div className="flex items-center gap-2"><p className="min-w-0 flex-1" style={{ fontSize: 10, color: SUB }}>{ymd(note.date)} · {note.type || "수업"}</p>{note.lessonRecord?.status === "confirmed_unstructured" && <span style={{ fontSize: 9, color: WARN }}>직접 작성</span>}{summary.memberCondition && <span style={{ fontSize: 9, color: BRAND_D }}>{summary.memberCondition}</span>}</div><p className="mt-1 line-clamp-2" style={{ fontSize: 12, lineHeight: 1.45, color: INK2 }}>{prepText(structured.didToday || summary.todayExercises, note.body)}</p>{detailCount > 0 && <p className="mt-1 line-clamp-2" style={{ fontSize: 10, color: WARN }}>{[prepText(structured.observations?.length ? structured.observations : summary.pain, ""), prepText(structured.responses?.length ? structured.responses : summary.improvements, "")].filter(Boolean).join(" · ")}</p>}</div>; })}
+            </Section> : <p className="py-3 text-xs" style={{ color: SUB }}>아직 작성된 수업 기록이 없습니다</p>}</div>
+          </details>
+          <details data-member-management-card="posture" style={{ ...sectionStyle, padding: 0, overflow: "hidden", backgroundColor: afterReminder.show ? WARN_S : CARD }}>
+            <summary aria-label="체형변화·사진 관리 카드 열기" className="flex min-h-14 cursor-pointer list-none items-center gap-3 px-3.5 py-3"><span className="min-w-0 flex-1"><span className="block truncate text-sm font-extrabold" style={{ color: INK }}>체형변화·사진</span><span className="mt-0.5 block truncate text-[10px]" style={{ color: SUB }}>{lastAssessment ? `마지막 촬영 ${ymd((lastAssessment.completedAt || lastAssessment.at).slice(0, 10))}` : "아직 완료된 분석이 없습니다"}</span></span>{afterReminder.show && <span className="shrink-0 rounded-full px-2 py-1 text-[9px] font-extrabold" style={{ backgroundColor: CARD, color: WARN }}>{afterReminder.label}</span>}<ChevronDown size={16} style={{ color: SUB }} /></summary>
+            <div data-member-management-content="posture" style={{ padding: "0 12px 12px" }}>
+          <section data-member-section="posture" style={{ ...sectionStyle, backgroundColor: afterReminder.show ? WARN_S : CARD }}>
+            <div className="flex items-start gap-3"><span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: TINT, color: BRAND_D }}><Activity size={16} /></span><span className="min-w-0 flex-1"><span className="flex items-center gap-2"><span className="min-w-0 flex-1 truncate text-sm font-bold" style={{ color: INK }}>체형변화·사진</span>{afterReminder.show && <span className="shrink-0 rounded-full px-2 py-1 text-[9px] font-extrabold" style={{ backgroundColor: CARD, color: WARN }}>{afterReminder.label}</span>}</span><span className="mt-1 block text-xs" style={{ color: SUB }}>{lastAssessment ? `마지막 촬영 ${ymd((lastAssessment.completedAt || lastAssessment.at).slice(0, 10))}${afterReminder.days != null ? ` · ${afterReminder.days}일 전` : ""}` : "아직 완료된 분석이 없습니다"}</span>{lastAssessmentMetrics.length > 0 && <span className="mt-1 block line-clamp-2 text-xs" style={{ color: INK2 }}>{lastAssessmentMetrics.map((metric) => `${metric.label} ${metric.value}${metric.unit}`).join(" · ")}</span>}</span></div>
             <div className="mt-2 grid grid-cols-2 gap-2"><button type="button" onClick={() => onAssess?.({ mode: "new" })} className="h-10 text-xs font-bold text-white" style={{ borderRadius: 8, backgroundColor: BRAND }}>새 체형분석</button><button type="button" onClick={() => onAssess?.({ mode: "history" })} className="h-10 text-xs font-bold" style={{ borderRadius: 8, backgroundColor: CARD, border: `1px solid ${LINE}`, color: INK }}>과거 이력</button></div>
           </section>
           <Section title="체형분석 과거 이력">
             {assessmentSets.length ? assessmentSets.slice(0, 3).map((assessment) => { const representative = assessment.photos.front || Object.values(assessment.photos)[0]; const summary = assessment.poses.flatMap((pose) => pose.metrics || []).slice(0, 1)[0]; const resumable = assessment.id === resumableAssessment?.id; return <button type="button" key={assessment.id} onClick={() => onAssess?.(assessment.status === "completed" && assessment.poses[0]?.id ? { mode: "result", poseId: assessment.poses[0].id, assessmentId: assessment.id } : resumable ? { mode: "resume", assessmentId: assessment.id } : { mode: "history" })} className="flex w-full items-center gap-2 text-left" style={{ padding: "8px 0", borderTop: `1px solid ${LINE}` }}>{representative?.src ? <img src={representative.src} alt="체형분석 대표 사진" className="h-11 w-8 shrink-0 object-cover" style={{ borderRadius: 6, backgroundColor: PHOTO }} /> : <span className="flex h-11 w-8 shrink-0 items-center justify-center" style={{ borderRadius: 6, backgroundColor: CANVAS, color: BRAND }}><Activity size={13} /></span>}<span className="min-w-0 flex-1"><span className="block truncate" style={{ fontSize: 12, color: INK2 }}>{ymd((assessment.completedAt || assessment.at).slice(0, 10))} · {assessment.scope === "partial" ? "부위별" : "전신"}</span><span className="mt-0.5 block truncate" style={{ fontSize: 10, color: SUB }}>{summary ? `${summary.label} ${summary.value}${summary.unit}` : assessment.method === "draw" ? "강사 직접 기록" : "저장된 AI 해석 없음"}</span></span><span style={{ padding: "2px 6px", borderRadius: 6, backgroundColor: assessment.status === "completed" ? GOOD_S : WARN_S, color: assessment.status === "completed" ? GOOD : WARN, fontSize: 9, fontWeight: 700 }}>{assessment.status === "completed" ? "완료" : resumable ? "초안" : "이전 초안"}</span><ChevronRight size={13} style={{ color: SUB }} /></button>; }) : <p style={{ fontSize: 12, color: SUB }}>저장된 분석이 없습니다</p>}
             {assessmentSets.length > 3 && <button type="button" onClick={() => onAssess?.({ mode: "history" })} className="mt-2 h-9 w-full text-xs font-bold" style={{ borderRadius: 8, backgroundColor: CANVAS, color: BRAND_D }}>전체 히스토리 보기</button>}
           </Section>
+            </div>
+          </details>
+          <details data-member-management-card="membership" style={{ ...sectionStyle, padding: 0, overflow: "hidden", backgroundColor: TINT, borderColor: "#D5D1EB" }}>
+            <summary aria-label="이용권·결제 관리 카드 열기" className="flex min-h-14 cursor-pointer list-none items-center gap-3 px-3.5 py-3"><span className="min-w-0 flex-1"><span className="block truncate text-sm font-extrabold" style={{ color: INK }}>이용권·결제</span><span className="mt-0.5 block truncate text-[10px]" style={{ color: SUB }}>{member.passName || "이용권 없음"} · 잔여 {left(member)}회 (정규 {num(member.regular)} · 서비스 {num(member.service)}) · {member.contractEnd ? ymd(member.contractEnd) : "만료일 미설정"}</span></span><ChevronDown size={16} style={{ color: SUB }} /></summary>
+            <div data-member-management-content="membership" style={{ padding: "0 12px 12px" }}>
           <section data-member-section="membership" style={{ ...sectionStyle, backgroundColor: TINT, borderColor: "#D5D1EB" }}>
             <div className="flex items-start gap-3"><div className="min-w-0 flex-1"><p style={{ fontSize: 11, color: SUB }}>현재 이용권</p><p className="mt-0.5 truncate" style={{ fontSize: 14, fontWeight: 700, color: INK }}>{member.passName || "이용권 없음"}</p></div><div className="text-right"><p className="tabular-nums" style={{ fontSize: 27, lineHeight: 1, fontWeight: 750, color: left(member) <= 3 ? BAD : BRAND }}>{left(member)}<span style={{ fontSize: 12 }}>회 남음</span></p><p className="mt-1" style={{ fontSize: 10, color: SUB }}>정규 {num(member.regular)} · 서비스 {num(member.service)}</p></div></div>
             <div className="mt-3 grid grid-cols-2 gap-2">{[["누적 등록 횟수", membership.registeredTotal ? `${membership.registeredTotal}회` : "미등록"], ["이용권 만료일", member.contractEnd ? ymd(member.contractEnd) : "미설정"], ["회원 회당 금액", memberUnit ? `₩${won(memberUnit)}` : "결제 내역 없음"], ["최근 수업일", recentLesson ? `${md(recentLesson.date)} ${recentLesson.start}` : "수업 이력 없음"], ["다음 예약일", next ? `${md(next.date)} ${next.start}` : "예약 없음"]].map(([k,v]) => <div key={k} style={{ padding: "8px 9px", borderRadius: 8, backgroundColor: CARD }}><p style={{ fontSize: 9, color: SUB }}>{k}</p><p className="mt-0.5 truncate tabular-nums" style={{ fontSize: 11, fontWeight: 700, color: INK }}>{v}</p></div>)}</div>
@@ -4230,12 +4331,22 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
             {isHold(member) && <div className="mt-2 flex items-start gap-2" style={{ padding: "9px 10px", borderRadius: 8, backgroundColor: CANVAS }}><AlertCircle size={14} className="mt-0.5 shrink-0" style={{ color: SUB }} /><p style={{ fontSize: 11, lineHeight: 1.5, color: INK2 }}>{ymd(member.holdFrom)} ~ {ymd(member.holdUntil)}{member.holdReason ? ` · ${member.holdReason}` : ""}</p></div>}
             <div className="mt-2 flex gap-2"><button type="button" onClick={openEdit} style={{ flex: 1, height: 42, borderRadius: 8, border: `1px solid ${LINE}`, color: INK2, fontSize: 12, fontWeight: 600 }}>정보 수정</button>{isHold(member) ? <button type="button" onClick={() => { if (!releaseArmed) { setReleaseArmed(true); return; } const releasedAt = todayISO(); onPatch({ status: "active", holdFrom: "", holdUntil: "", holdReason: "", holdHistory: [{ id: uid(), startDate: member.holdFrom, endDate: member.holdUntil, releasedAt, reason: member.holdReason, extendDays: num(member.holdExtendDays), createdAt: releasedAt }, ...holdHistory] }); setReleaseArmed(false); }} style={{ flex: 1.35, height: 42, borderRadius: 8, border: `1px solid ${releaseArmed ? BRAND : LINE}`, backgroundColor: releaseArmed ? TINT : CARD, color: BRAND_D, fontSize: 12, fontWeight: 600 }}>{releaseArmed ? "한 번 더 눌러 홀딩 해제" : "홀딩 해제"}</button> : <button type="button" onClick={() => { setHold({ start: todayISO(), end: shift(todayISO(), 14), reason: "", extend: true }); setSheet("hold"); }} style={{ flex: 1, height: 42, borderRadius: 8, border: `1px solid ${LINE}`, color: BRAND_D, fontSize: 12, fontWeight: 600 }}>홀딩 설정</button>}</div>
           </Section>
+            </div>
+          </details>
+          <details data-member-management-card="basic-and-memos" style={{ ...sectionStyle, padding: 0, overflow: "hidden" }}>
+            <summary aria-label="기본정보·상담메모 관리 카드 열기" className="flex min-h-14 cursor-pointer list-none items-center gap-3 px-3.5 py-3"><span className="min-w-0 flex-1"><span className="block truncate text-sm font-extrabold" style={{ color: INK }}>기본정보·상담메모</span><span className="mt-0.5 block truncate text-[10px]" style={{ color: SUB }}>{maskedPhone(member.phone)} · {consultationNotes.length ? `상담메모 ${consultationNotes.length}건` : "상담메모 없음"}</span></span><ChevronDown size={16} style={{ color: SUB }} /></summary>
+            <div data-member-management-content="basic-and-memos" className="space-y-2" style={{ padding: "0 12px 12px" }}>
           <Section title="목표·주의사항" action={<button type="button" onClick={openPreparation} style={{ fontSize: 12, fontWeight: 700, color: BRAND }}>수정</button>}>
             <div className="space-y-2"><div><p style={{ fontSize: 10, color: SUB }}>운동 목표</p><p className="mt-0.5" style={{ fontSize: 12, lineHeight: 1.45, color: member.goal ? INK2 : SUB }}>{member.goal || "등록된 운동 목표가 없습니다"}</p></div><div style={{ padding: "9px 10px", borderRadius: 8, backgroundColor: WARN_S }}><p style={{ fontSize: 10, fontWeight: 700, color: WARN }}>통증 및 주의사항</p><p className="mt-1" style={{ fontSize: 12, lineHeight: 1.45, color: INK2 }}>{(member.focus || []).length ? member.focus.join(" · ") : "등록된 주의사항이 없습니다"}</p></div></div>
           </Section>
           <Section title="회원 기본정보" action={<button type="button" onClick={openEdit} style={{ fontSize: 12, fontWeight: 700, color: BRAND }}><Pencil size={12} className="inline" /> 정보 수정</button>}>
             <div className="grid grid-cols-2 gap-x-3 gap-y-2">{[["이름", member.name || "-"], ["회원 상태", isHold(member) ? "홀딩" : isEnded(member) ? "종료" : "활성"], ...(!singleInstructorMode ? [["담당 강사", member.instructor || "미지정"]] : []), ["연락처", maskedPhone(member.phone)], ["수업 유형", member.lessonType === "duet" ? "듀엣" : member.lessonType === "group" ? "그룹" : "개인"], ["기본 수업시간", `${lessonDurationOf(member)}분`], ["생년월일 · 나이", maskedBirth(member.birth, ageOf(member))]].map(([k,v]) => <div key={k} className={k === "생년월일 · 나이" ? "col-span-2" : ""}><p style={{ fontSize: 10, color: SUB }}>{k}</p><p className="mt-0.5 truncate" style={{ fontSize: 12, fontWeight: 600, color: INK }}>{v}</p></div>)}</div>
           </Section>
+          <Section title="상담 및 중요 메모" action={<div className="flex gap-3"><button type="button" onClick={() => setSheet("memos-all")} style={{ fontSize: 12, fontWeight: 600, color: SUB }}>전체 보기</button><button type="button" onClick={openMemo} style={{ fontSize: 12, fontWeight: 700, color: BRAND }}>메모 추가</button></div>}>
+            {consultationNotes.length ? consultationNotes.slice(0, 3).map((note) => <div key={note.id} className="flex items-start gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}` }}><button type="button" aria-label={note.important ? "중요 메모 고정 해제" : "중요 메모로 고정"} onClick={() => commitPatch("pin", { notes: (member.notes || []).map((item) => item.id === note.id ? { ...item, important: !item.important } : item) }, false)} className="mt-0.5 shrink-0" style={{ color: note.important ? WARN : FAINT }}><Star size={14} fill={note.important ? "currentColor" : "none"} /></button><span className="min-w-0 flex-1"><span className="block" style={{ fontSize: 10, color: SUB }}>{ymd(note.date)}{note.important ? " · 중요" : ""}</span><span className="mt-0.5 block line-clamp-2" style={{ fontSize: 12, lineHeight: 1.45, color: INK2 }}>{note.body}</span></span></div>) : <button type="button" onClick={openMemo} className="flex h-9 w-full items-center justify-between px-2 text-left" style={{ borderRadius: 8, backgroundColor: CANVAS, color: SUB, fontSize: 11 }}>등록된 상담 메모가 없습니다<span style={{ color: BRAND }}>추가하기</span></button>}
+          </Section>
+            </div>
+          </details>
         </div>
       </main>
       {sheet === "basic" && <Sheet title="기본정보 수정" onClose={() => setSheet(null)} wide><div className="space-y-3">
@@ -4595,7 +4706,7 @@ function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveM
           </span>
           <div className="min-w-0">
             <h3 className="font-extrabold" style={{ color: INK }}>비포애프터 분석</h3>
-            <Sub>중심선 정렬 · 회원 동의 후 촬영, 이 기기에만 저장</Sub>
+            <Sub>중심선 정렬 · 회원 동의 후 촬영 · 기기 우선 저장</Sub>
           </div>
         </div>
         <div className="flex gap-1 rounded-full p-1" style={{ backgroundColor: CANVAS }}>
@@ -7825,7 +7936,7 @@ function NextClassCard({ members, schedule, photos, onStatus, onOpenMember, onWr
         <div className="flex items-center gap-2">
           <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: GOOD_S }}><Check size={16} style={{ color: GOOD }} /></span>
           <div className="min-w-0 flex-1">
-            <h3 className="font-extrabold" style={{ color: INK }}>다음 수업 브리핑</h3>
+            <h3 className="font-extrabold" style={{ color: INK }}>지난 수업 이어서 보기</h3>
             <Sub>오늘 남은 수업이 없습니다</Sub>
           </div>
         </div>
@@ -8974,7 +9085,7 @@ function AssessmentWorkspace({ member, photos, settings, initialSavedId, initial
 
       {screen === "home" && <section style={{ padding: 16, borderRadius: 18, backgroundColor: CARD, border: `1px solid ${LINE}` }}>
         <div className="flex items-start gap-3"><span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: TINT, color: BRAND_D }}><Activity size={19} /></span><span className="min-w-0 flex-1"><span className="block text-lg font-extrabold" style={{ color: INK }}>{member?.name} 회원</span><span className="mt-1 block text-xs" style={{ color: SUB }}>{lastCompleted ? `마지막 분석 ${ymd(setDate(lastCompleted).slice(0, 10))}${retake.days != null ? ` · ${retake.days}일 전` : ""}` : "아직 완료된 체형분석이 없습니다"}</span></span></div>
-        <div className="mt-4 flex items-center gap-2" style={{ padding: 10, borderRadius: 11, backgroundColor: GOOD_S }}><Check size={15} style={{ color: GOOD }} /><span className="min-w-0 flex-1 text-xs font-bold" style={{ color: GOOD }}>{lastCompleted ? "최근 분석 저장 완료" : "촬영 전"}</span><span className="text-[10px] font-bold" style={{ color: SUB }}>이 기기에만 저장</span></div>
+        <div className="mt-4 flex items-center gap-2" style={{ padding: 10, borderRadius: 11, backgroundColor: GOOD_S }}><Check size={15} style={{ color: GOOD }} /><span className="min-w-0 flex-1 text-xs font-bold" style={{ color: GOOD }}>{lastCompleted ? "최근 분석 저장 완료" : "촬영 전"}</span><span className="text-[10px] font-bold" style={{ color: SUB }}>기기 우선 저장</span></div>
         {lastCompleted && <div className="mt-2" style={{ padding: 12, borderRadius: 12, backgroundColor: retake.tone === "recommended" ? WARN_S : CANVAS }}><p className="text-xs font-bold" style={{ color: retake.tone === "recommended" ? WARN : INK }}>{hasCompletedComparison ? "비포·에프터 비교 준비 완료" : "비포 저장 완료 · 에프터 촬영이 필요합니다"}</p><p className="mt-1 text-xs leading-relaxed" style={{ color: SUB }}>{entrySummary.length ? entrySummary.map((metric) => `${metric.label} ${metric.value}${metric.unit}`).join(" · ") : "최근 측정값을 결과 화면에서 확인할 수 있습니다."}</p></div>}
         <button type="button" onClick={requestStartNew} className="mt-5 flex h-13 min-h-[52px] w-full items-center justify-center gap-2 text-sm font-extrabold text-white" style={{ borderRadius: 13, backgroundColor: BRAND }}><Camera size={17} />{nextCaptureLabel}</button>
         {hasCompletedComparison && <button type="button" onClick={() => openComparisonFromSet(automaticComparison.after)} className="mt-2 flex h-12 w-full items-center justify-center gap-2 text-sm font-extrabold" style={{ borderRadius: 12, backgroundColor: TINT, color: BRAND_D }}><ArrowUpDown size={16} />비포·에프터 변화 비교</button>}
@@ -9024,7 +9135,7 @@ function AssessmentWorkspace({ member, photos, settings, initialSavedId, initial
 
       {screen === "result" && <>
         <section style={{ padding: 14, borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}><div className="flex items-center gap-2"><button type="button" aria-label="체형분석 시작 화면" onClick={() => setScreen("home")} className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={18} /></button><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>{selectedIsManualResult ? "사진 기록" : "분석 결과"}</span><span className="block text-xs" style={{ color: SUB }}>{selected ? `${ymd(setDate(selected).slice(0, 10))} · ${methodLabel(selected.method)}` : "완료된 결과 없음"}</span></span><button type="button" onClick={() => setScreen("history")} className="h-10 px-3 text-xs font-bold" style={{ borderRadius: 9, backgroundColor: CANVAS, color: INK }}>히스토리</button></div>
-          {selected?.status === "completed" && <div className="mt-3 flex items-center gap-2" style={{ padding: 10, borderRadius: 10, backgroundColor: GOOD_S }}><Check size={15} style={{ color: GOOD }} /><span className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: GOOD }}>{selectedIsManualResult ? "사진 기록 저장 완료" : "분석 저장 완료"}</span><span className="text-[10px] font-bold" style={{ color: SUB }}>이 기기에만 저장됨</span></div>}
+          {selected?.status === "completed" && <div className="mt-3 flex items-center gap-2" style={{ padding: 10, borderRadius: 10, backgroundColor: GOOD_S }}><Check size={15} style={{ color: GOOD }} /><span className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: GOOD }}>{selectedIsManualResult ? "사진 기록 저장 완료" : "분석 저장 완료"}</span><span className="text-[10px] font-bold" style={{ color: SUB }}>기기 우선 저장</span></div>}
           {!selected ? <div className="py-10 text-center"><Activity size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>표시할 분석 결과가 없습니다</p><button type="button" onClick={requestStartNew} className="mt-4 h-11 px-5 text-xs font-bold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>새 체형분석 시작</button></div> : selected.status !== "completed" ? <div className="py-10 text-center"><AlertCircle size={22} className="mx-auto" style={{ color: WARN }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>아직 완료되지 않은 분석입니다</p><p className="mt-1 text-xs" style={{ color: SUB }}>저장된 사진과 분석 상태를 유지한 채 이어서 진행할 수 있습니다.</p><button type="button" onClick={() => resumeSet(selected)} className="mt-4 h-11 px-5 text-xs font-bold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>초안 이어하기</button></div> : <><div className="mt-3 grid gap-1.5" style={{ gridTemplateColumns: `repeat(${Math.max(1, selected.selectedViews.length)}, minmax(0, 1fr))` }}>{selected.selectedViews.map((view) => <AssessmentSetFrame key={view} photo={setPhoto(selected, view)} label={postureViewLabel(view)} annotation onOpen={selectedIsManualResult ? undefined : () => { const pose = selected.poses.find((item) => normalizePostureView(item.view) === view); if (pose) setViewingPose(pose); }} />)}</div><button type="button" onClick={() => { const available = selected.selectedViews.map((view) => ({ view, photo: setPhoto(selected, view) })).filter((item) => item.photo); if (available.length === 1) setEditingAnnotation(available[0]); else if (available.length > 1) setAnnotationPicker(true); }} className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 text-xs font-bold" style={{ borderRadius: 10, backgroundColor: CANVAS, color: INK }}><Pencil size={13} />사진 표시 다시 수정하기</button><div className={`mt-2 grid gap-2 ${selectedIsManualResult ? "grid-cols-1" : "grid-cols-2"}`}><button type="button" disabled={!comparisonPairFor(selected).after} onClick={() => openComparisonFromSet(selected)} className="h-11 text-xs font-bold disabled:opacity-40" style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D }}>Before / After 비교</button>{!selectedIsManualResult && <button type="button" onClick={() => openReportForSet(selected)} className="h-11 text-xs font-bold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>결과 리포트 카드</button>}</div>{!comparisonPairFor(selected).after && <button type="button" onClick={requestStartNew} className="mt-2 flex h-11 w-full items-center justify-center gap-2 text-xs font-extrabold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}><Camera size={14} />에프터 촬영 시작</button>}</>}
         </section>
         {!selectedIsManualResult && selected?.status === "completed" && <section style={{ padding: 13, borderRadius: 14, backgroundColor: CARD, border: `1px solid ${LINE}` }}><h2 className="text-sm font-extrabold" style={{ color: INK }}>관찰 결과</h2><div className="mt-3 grid gap-2 sm:grid-cols-2"><div style={{ padding: 10, borderRadius: 10, backgroundColor: GOOD_S }}><p className="text-xs font-bold" style={{ color: GOOD }}>좋은 점</p>{goodMetrics.length ? goodMetrics.map((metric, index) => <p key={`${metric.key}_${index}`} className="mt-1 text-xs" style={{ color: INK2 }}>{metric.label} {metric.value}{metric.unit}</p>) : <p className="mt-1 text-xs" style={{ color: SUB }}>정상 범위로 저장된 측정값 없음</p>}</div><div style={{ padding: 10, borderRadius: 10, backgroundColor: cautionMetrics.length ? WARN_S : CANVAS }}><p className="text-xs font-bold" style={{ color: cautionMetrics.length ? WARN : INK2 }}>관찰 필요</p>{cautionMetrics.length ? cautionMetrics.map((metric, index) => <p key={`${metric.key}_${index}`} className="mt-1 text-xs" style={{ color: INK2 }}>{metric.label} {metric.value}{metric.unit}</p>) : <p className="mt-1 text-xs" style={{ color: SUB }}>기록된 주의 결과 없음</p>}</div><div style={{ padding: 10, borderRadius: 10, backgroundColor: LAVENDER_S }}><p className="text-xs font-bold" style={{ color: BRAND_D }}>AI 해석</p><p className="mt-1 text-xs leading-relaxed" style={{ color: aiText ? INK2 : SUB }}>{aiText || "저장된 AI 해석 없음"}</p></div><div style={{ padding: 10, borderRadius: 10, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>강사 메모</p><p className="mt-1 text-xs leading-relaxed" style={{ color: teacherMemo ? INK2 : SUB }}>{teacherMemo || "저장된 강사 메모가 없습니다."}</p></div></div>{resultPoses[0] && <button type="button" onClick={() => setViewingPose(resultPoses[0])} className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 text-xs font-bold" style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D }}><Pencil size={13} />분석 내용 확인·수정</button>}</section>}
@@ -9435,12 +9546,14 @@ function InbodyForm({ member, last, onSave, onDelete, onPatch, onToast }) {
 const sttRuntime = () => createSttProvider();
 const nativeSTT = () => sttRuntime().native;
 const webSTT = () => sttRuntime().web;
-const sttOK = () => typeof window !== "undefined" && sttRuntime().isAvailable();
+const sttOK = () => typeof window !== "undefined" && sttRuntime().capability.available;
 const mediaRecordOK = () => typeof window !== "undefined" && !!navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== "undefined";
 const voiceTime = (seconds) => `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
 const lessonRecordLlm = new GatewayLlmProvider({ gatewayProvider: aiProvider, maxRetries: 1 });
+const AIGatewayContextSync = createContext(null);
 
-function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = null }) {
+function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = null, autoStart = false, onDirectEntry = null }) {
+  const prepareAIGatewayContext = useContext(AIGatewayContextSync);
   const [on, setOn] = useState(false);
   const [starting, setStarting] = useState(false);
   const [manualEntry, setManualEntry] = useState(false);
@@ -9456,6 +9569,11 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
   const [summaryStatus, setSummaryStatus] = useState(AI_STATUSES.NOT_CONNECTED);
   const [summaryBusy, setSummaryBusy] = useState(false);
   const [summaryError, setSummaryError] = useState("");
+  const [summaryFailureClass, setSummaryFailureClass] = useState("");
+  const [summaryRetryBlocked, setSummaryRetryBlocked] = useState(false);
+  const [summaryEditing, setSummaryEditing] = useState(false);
+  const [showValueGuide, setShowValueGuide] = useState(() => shouldShowLessonRecordGuide(globalThis.localStorage));
+  useEffect(() => { setSummaryRetryBlocked(false); }, [text]);
   const boxRef = useRef(null);
   useEffect(() => {
     if (!highlight || !boxRef.current) return;
@@ -9477,12 +9595,14 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
   const nativeListeningStartedRef = useRef(false);
   const heardRef = useRef(false);
   const textRef = useRef("");
+  const textAtStartRef = useRef("");
   const audioBlobRef = useRef(null);
   const audioTransferredRef = useRef(false);
   const discardRecordingRef = useRef(false);
   const recordingStartedAtRef = useRef(0);
   const sttTrackedRef = useRef(false);
   const autoStructureRef = useRef(false);
+  const autoStartHandledRef = useRef(false);
   const transcriptInputRef = useRef(null);
   useEffect(() => { textRef.current = text; }, [text]);
   useEffect(() => {
@@ -9502,6 +9622,7 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
       setSummaryDraft(pending.structuredDraft);
       setSummaryMeta(pending.aiMeta || null);
       setSummaryStatus(AI_STATUSES.DRAFT);
+      setSummaryEditing(false);
     } else if (pending.status === "queued" || pending.status === "unstructured") {
       setSummaryStatus(pending.status);
     }
@@ -9608,6 +9729,12 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
     recorder.start(1000);
     setAudioState("recording");
   };
+  const fallbackToDirectEntry = (message) => {
+    const fallbackMessage = message || "음성 인식을 사용할 수 없어 직접 입력으로 전환했습니다.";
+    setManualEntry(true);
+    if (typeof onDirectEntry === "function") onDirectEntry(fallbackMessage);
+    else window.setTimeout(() => transcriptInputRef.current?.focus(), 0);
+  };
   const start = async () => {
     if (startRequestRef.current || on || finishing) return;
     startRequestRef.current = true;
@@ -9624,12 +9751,19 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
       setErr(message || "음성 인식을 시작하지 못했습니다.");
       deviceLog("speech_start_failed", { memberId, lessonId, ...details });
     };
+    if (!sttOK()) {
+      const message = "이 기기에서는 음성 인식을 사용할 수 없어 직접 입력으로 전환했습니다.";
+      failStart(message, { state: "direct_input_required", reason: "unsupported" });
+      fallbackToDirectEntry(message);
+      return;
+    }
     const sessionId = speechSessionRef.current + 1;
     speechSessionRef.current = sessionId;
     if (finishTimerRef.current) clearTimeout(finishTimerRef.current);
     finishTimerRef.current = null;
     stoppingRef.current = false;
     heardRef.current = false;
+    textAtStartRef.current = textRef.current;
     sttTrackedRef.current = false;
     autoStructureRef.current = false;
     recordingStartedAtRef.current = Date.now();
@@ -9670,7 +9804,7 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
       setAudioState("idle");
     }
     if (!NS && !R) {
-      setErr("녹음은 가능하지만 자동 전사는 지원되지 않습니다. 중지 후 원문을 직접 입력해 주세요.");
+      setErr("녹음은 가능하지만 음성을 글자로 바꾸는 기능은 지원되지 않습니다. 멈춘 뒤 수업 내용을 직접 입력해 주세요.");
       setOn(true); setSource("media_recorder"); sourceRef.current = "media_recorder";
       startRequestRef.current = false;
       setStarting(false);
@@ -9691,8 +9825,10 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
           if (sessionId !== speechSessionRef.current) return;
           if (!isSpeechPermissionGranted(req)) {
             stopMedia();
-            failStart(describeSpeechError(new Error("permission denied")).message, { permission: "speech_recognition", state: "denied", source: "native", reason: "permission_denied" });
+            const message = "마이크 권한이 거부되어 직접 입력으로 전환했습니다.";
+            failStart(message, { permission: "speech_recognition", state: "denied", source: "native", reason: "permission_denied" });
             deviceLog("speech_permission_denied", { memberId, lessonId, permission: "speech_recognition", state: "denied", source: "native" });
+            fallbackToDirectEntry(message);
             return;
           }
         }
@@ -9757,6 +9893,7 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
         finishRecognition(false, sessionId);
         failStart("음성 인식을 시작하지 못했습니다.", { source: "native", kind: diagnostic.kind, ...deviceError(error) });
         deviceLog("voice_transcription_failed", { memberId, lessonId, source: "native", kind: diagnostic.kind, ...deviceError(error) });
+        if (String(error?.message || "").includes("unavailable")) fallbackToDirectEntry("이 기기에서는 음성 인식을 사용할 수 없어 직접 입력으로 전환했습니다.");
         return;
       }
     }
@@ -9783,6 +9920,7 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
         finishRecognition(false, sessionId);
         setErr(diagnostic.message);
         deviceLog("voice_transcription_failed", { memberId, lessonId, source: "web_speech", kind: diagnostic.kind, code: event?.error || "unknown", message: "speech recognition stopped" });
+        if (["not-allowed", "service-not-allowed"].includes(event?.error)) fallbackToDirectEntry("마이크 권한이 거부되어 직접 입력으로 전환했습니다.");
       };
       r.onend = () => {
         if (sessionId !== speechSessionRef.current) return;
@@ -9802,6 +9940,16 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
       deviceLog("voice_transcription_failed", { memberId, lessonId, source: "web_speech", kind: diagnostic.kind, ...deviceError(error) });
     }
   };
+  useEffect(() => {
+    if (!autoStart || autoStartHandledRef.current) return undefined;
+    let active = true;
+    Promise.resolve().then(() => {
+      if (!active || autoStartHandledRef.current) return;
+      autoStartHandledRef.current = true;
+      start();
+    });
+    return () => { active = false; };
+  }, [autoStart, memberId, lessonId]);
   const stop = () => {
     startRequestRef.current = false;
     setStarting(false);
@@ -9832,6 +9980,31 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
     );
     deviceLog("voice_record_stopped", { memberId, lessonId, source: sourceRef.current || "unknown", storage: "indexedDB" });
   };
+  const cancelRecording = () => {
+    speechSessionRef.current += 1;
+    startRequestRef.current = false;
+    stoppingRef.current = false;
+    nativeListeningStartedRef.current = false;
+    if (finishTimerRef.current) clearTimeout(finishTimerRef.current);
+    finishTimerRef.current = null;
+    discardRecordingRef.current = true;
+    try { recRef.current?.stop?.(); } catch (error) {
+      deviceLog("voice_record_cancel_failed", { memberId, lessonId, source: sourceRef.current || "unknown", ...deviceError(error) });
+    }
+    recRef.current = null;
+    clearNativeListeners();
+    stopMedia();
+    const previousText = textAtStartRef.current || "";
+    textRef.current = previousText;
+    setText(previousText);
+    setOn(false);
+    setStarting(false);
+    setFinishing(false);
+    setElapsed(0);
+    setErr("");
+    setAudioState("idle");
+    deviceLog("voice_record_cancelled", { memberId, lessonId, source: sourceRef.current || "unknown" });
+  };
   useEffect(() => {
     if (on && elapsed >= MAX_STT_SECONDS) {
       setErr(`${MAX_STT_SECONDS}초 상한에 도달해 녹음을 멈췄습니다.`);
@@ -9860,6 +10033,7 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
     const lessonRecord = createLessonRecordMeta({ rawTranscript: transcript, termMap, structuredDraft: summaryDraft, status: summaryDraft ? "structured" : "unstructured", source: source || "unknown", recordedAt: new Date().toISOString(), audioBlobId: audioBlobId || null, aiMeta: summaryMeta, usage: summaryMeta?.usage || null });
     savePendingLessonRecord(memberId, lessonId, lessonRecord);
     onApply(teacherText, { transcript, aiSummary: summaryOriginal, aiSummaryTeacherEdited: summaryDraft, aiSummaryStatus: summaryDraft ? AI_STATUSES.DRAFT : "unstructured", aiMeta: summaryMeta, lessonRecord, audioBlobId: audioBlobId || null, voiceSource: source || "unknown", recordedAt: lessonRecord.recordedAt });
+    if (showValueGuide) { markLessonRecordGuideUsed(globalThis.localStorage); setShowValueGuide(false); }
     audioTransferredRef.current = true;
     audioBlobRef.current = null;
     setText(""); setSummaryOriginal(null); setSummaryDraft(null); setSummaryMeta(null); setSummaryStatus(AI_STATUSES.NOT_CONNECTED); setAudioBlobId(null); setAudioState("idle");
@@ -9870,36 +10044,65 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
     const termMap = mapPilatesTerms(transcript);
     setSummaryBusy(true);
     setSummaryError("");
+    setSummaryFailureClass("");
     try {
       if (globalThis.navigator?.onLine === false) {
         setSummaryStatus("queued");
         savePendingLessonRecord(memberId, lessonId, { schemaVersion: 2, status: "queued", rawTranscript: transcript, termMap, audioBlobId: audioBlobId || null, source: source || "unknown" });
-        setSummaryError("오프라인 상태입니다. 원문은 이 기기의 미작성 큐에 보관했으며 지금 바로 미구조화 기록으로 저장할 수 있습니다.");
+        setSummaryFailureClass(LESSON_RECORD_FAILURE.NETWORK);
+        setSummaryError(lessonRecordFailureMessage(LESSON_RECORD_FAILURE.NETWORK));
+        deviceLog("ai_structure_failed", { memberId, lessonId, provider: "openai", code: "offline", failureClass: LESSON_RECORD_FAILURE.NETWORK, appBuild: APP_BUILD_LABEL });
         return;
       }
       if (aiProvider.getStatus().status !== "connected") {
         setSummaryStatus(AI_STATUSES.NOT_CONNECTED);
-        setSummaryError("AI 연결 설정을 확인하지 못했습니다. 전사 원문은 유지됩니다. 다시 시도하거나 미구조화 원문으로 저장해 주세요.");
+        setSummaryFailureClass(LESSON_RECORD_FAILURE.STALE_BUILD);
+        setSummaryError(lessonRecordFailureMessage(LESSON_RECORD_FAILURE.STALE_BUILD));
+        deviceLog("ai_structure_failed", { memberId, lessonId, provider: "openai", code: "not_connected", failureClass: LESSON_RECORD_FAILURE.STALE_BUILD, appBuild: APP_BUILD_LABEL });
         return;
       }
       const consent = await ensureMemberAIConsent(memberId, "summarizeVoice");
-      if (!consent.ok) { setSummaryError(consent.message); return; }
-      const result = await lessonRecordLlm.structureLessonRecord(buildLessonRecordInput({ rawTranscript: transcript, termMap, memberId, lessonId }));
-      if (result.status !== "structured") {
-        setSummaryStatus(result.status === "queued" ? "queued" : "unstructured");
-        trackLessonRecordUsage("llm_failed", result);
-        deviceLog("ai_structure_failed", { memberId, lessonId, provider: "openai", retryCount: Math.max(0, (result.attempts || 1) - 1), code: result.reason || result.error?.code || "invalid_output", httpStatus: result.error?.status, requestId: result.error?.requestId, path: result.error?.path || result.error?.cause?.path, expected: result.error?.expected || result.error?.cause?.expected, received: result.error?.received || result.error?.cause?.received });
-        setSummaryError("AI 정리에 실패했습니다. 전사 원문은 그대로 유지됩니다.");
+      if (!consent.ok) {
+        setSummaryFailureClass(LESSON_RECORD_FAILURE.CONSENT);
+        setSummaryError(consent.message || lessonRecordFailureMessage(LESSON_RECORD_FAILURE.CONSENT));
+        deviceLog("ai_structure_failed", { memberId, lessonId, provider: "openai", code: "consent_required", failureClass: LESSON_RECORD_FAILURE.CONSENT, appBuild: APP_BUILD_LABEL });
         return;
       }
-      setSummaryOriginal(result.output); setSummaryDraft(result.output); setSummaryMeta(aiMetaFrom(result.meta)); setSummaryStatus(AI_STATUSES.DRAFT);
+      if (typeof prepareAIGatewayContext === "function") {
+        try {
+          await prepareAIGatewayContext({ memberId, lessonId });
+        } catch (contextError) {
+          const failureClass = classifyLessonRecordFailure({ code: contextError?.code, status: contextError?.status, contextStage: contextError?.contextStage || "member_authorization_backup" });
+          setSummaryStatus("unstructured");
+          setSummaryRetryBlocked(contextError?.retryable === false);
+          setSummaryFailureClass(failureClass);
+          setSummaryError(lessonRecordFailureMessage(failureClass));
+          deviceLog("ai_structure_failed", { memberId, lessonId, provider: "openai", code: contextError?.code || "authorization_context_failed", failureStage: contextError?.contextStage || "member_authorization_backup", failureClass, appBuild: APP_BUILD_LABEL });
+          return;
+        }
+      }
+      const result = await lessonRecordLlm.structureLessonRecord(buildLessonRecordInput({ rawTranscript: transcript, termMap, memberId, lessonId }));
+      if (result.status !== "structured") {
+        const failureClass = classifyLessonRecordFailure({ code: result.reason || result.error?.code, status: result.error?.status, failureStage: result.failureStage });
+        setSummaryStatus(result.status === "queued" ? "queued" : "unstructured");
+        setSummaryRetryBlocked(result.error?.retryable === false);
+        setSummaryFailureClass(failureClass);
+        trackLessonRecordUsage("llm_failed", result);
+        deviceLog("ai_structure_failed", { memberId, lessonId, provider: "openai", retryCount: Math.max(0, (result.attempts || 1) - 1), code: result.reason || result.error?.code || "invalid_output", httpStatus: result.error?.status, requestId: result.error?.requestId, failureStage: result.failureStage, providerStatus: result.providerStatus, providerCode: result.providerCode, providerType: result.error?.providerType, path: result.error?.path || result.error?.cause?.path, expected: result.error?.expected || result.error?.cause?.expected, received: result.error?.received || result.error?.cause?.received, failureClass, appBuild: APP_BUILD_LABEL });
+        setSummaryError(lessonRecordFailureMessage(failureClass));
+        return;
+      }
+      setSummaryOriginal(result.output); setSummaryDraft(result.output); setSummaryMeta(aiMetaFrom(result.meta)); setSummaryStatus(AI_STATUSES.DRAFT); setSummaryEditing(false); setSummaryFailureClass("");
       trackLessonRecordUsage("llm_complete", result);
-      deviceLog("ai_structure_succeeded", { memberId, lessonId, provider: "openai", retryCount: Math.max(0, (result.attempts || 1) - 1), requestId: result.meta?.requestId, state: "structured" });
+      deviceLog("ai_structure_succeeded", { memberId, lessonId, provider: "openai", retryCount: Math.max(0, (result.attempts || 1) - 1), requestId: result.meta?.requestId, state: "structured", appBuild: APP_BUILD_LABEL });
     } catch (error) {
+      const failureClass = classifyLessonRecordFailure({ code: error?.code, status: error?.status, failureStage: error?.failureStage });
       setSummaryStatus("unstructured");
+      setSummaryRetryBlocked(error?.retryable === false);
+      setSummaryFailureClass(failureClass);
       trackLessonRecordUsage("llm_failed", { attempts: 2, latencyMs: 0 });
-      deviceLog("ai_structure_failed", { memberId, lessonId, provider: "openai", retryCount: 1, code: error?.code || "unknown", httpStatus: error?.status, requestId: error?.requestId, path: error?.path || error?.cause?.path, expected: error?.expected || error?.cause?.expected, received: error?.received || error?.cause?.received });
-      setSummaryError(`${aiFailureMessage(error, "AI 정리에 실패했습니다.")} 전사 원문은 그대로 유지됩니다.`);
+      deviceLog("ai_structure_failed", { memberId, lessonId, provider: "openai", retryCount: 1, code: error?.code || "unknown", httpStatus: error?.status, requestId: error?.requestId, path: error?.path || error?.cause?.path, expected: error?.expected || error?.cause?.expected, received: error?.received || error?.cause?.received, failureStage: error?.failureStage, failureClass, appBuild: APP_BUILD_LABEL });
+      setSummaryError(lessonRecordFailureMessage(failureClass));
     } finally { setSummaryBusy(false); }
   };
   const setSummaryField = (field, value) => setSummaryDraft((current) => editStructuredField(current || {}, field, value));
@@ -9914,44 +10117,55 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
     streamRef.current?.getTracks?.().forEach((track) => track.stop());
   }, []);
   const supported = sttOK() || mediaRecordOK();
+  const summaryView = useMemo(() => lessonRecordPresentation(summaryDraft || {}), [summaryDraft]);
   return (
     <div ref={boxRef} className="rounded-2xl p-3" style={{ backgroundColor: CANVAS, boxShadow: highlight ? `0 0 0 2.5px ${PRIMARY}` : "none", transition: "box-shadow .4s ease" }}>
       <div className="flex items-center gap-2">
         <div className="min-w-0 flex-1"><p className="text-xs font-extrabold" style={{ color: INK }}>AI 수업기록</p><p className="mt-0.5 text-[10px]" style={{ color: SUB }}>수업 후 10초만 말하면 AI가 기록을 정리합니다.</p></div>
-        <button onClick={on ? stop : start} disabled={!supported || audioState === "saving" || finishing || starting} aria-label={on ? "음성 녹음 멈추기" : "음성으로 말하기 시작"} className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-full px-3 py-2 text-xs font-extrabold text-white disabled:opacity-40"
-          style={{ backgroundColor: on ? BAD : BRAND }}>
-          {starting ? <><Loader2 size={12} className="animate-spin" /> 시작 중…</> : finishing ? <><Loader2 size={12} className="animate-spin" /> 전사 중…</> : on ? <><span className="h-2 w-2 animate-pulse rounded-full bg-white" /> {voiceTime(elapsed)} / 01:30 · 멈추기</> : <><Smartphone size={12} /> 말하기 시작</>}
-        </button>
+        {on || starting ? (
+          <div className="flex shrink-0 gap-1.5">
+            <button type="button" onClick={cancelRecording} className="min-h-11 rounded-full px-3 text-xs font-extrabold" style={{ backgroundColor: CARD, color: SUB, border: `1px solid ${LINE}` }}>취소</button>
+            <button type="button" onClick={stop} disabled={starting} aria-label="음성 녹음 완료" className="flex min-h-11 items-center gap-1.5 rounded-full px-3 py-2 text-xs font-extrabold text-white disabled:opacity-60" style={{ backgroundColor: BAD }}>
+              {starting ? <><Loader2 size={12} className="animate-spin" /> 시작 중…</> : <><span className="h-2 w-2 animate-pulse rounded-full bg-white" /> {voiceTime(elapsed)} · 완료</>}
+            </button>
+          </div>
+        ) : (
+          <button type="button" onClick={start} disabled={!supported || audioState === "saving" || finishing} aria-label="음성으로 말하기 시작" className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-full px-3 py-2 text-xs font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: BRAND }}>
+            {finishing ? <><Loader2 size={12} className="animate-spin" /> 내용 확인 중…</> : <><Smartphone size={12} /> 말하기 시작</>}
+          </button>
+        )}
       </div>
       {!supported && <Sub className="mt-1.5 block leading-relaxed" style={{ color: BAD }}>녹음과 음성 인식을 지원하지 않는 기기입니다. 아래 직접 입력란을 이용해 주세요.</Sub>}
       {finishing && <Sub className="mt-1.5 block leading-relaxed">마지막 음성을 정리하고 있습니다. 잠시만 기다려 주세요.</Sub>}
-      {!text && !on && !finishing && (
-        <Sub className="mt-1.5 block leading-relaxed">
-          이렇게 말해 보세요 —<br />
-          "오른쪽 어깨 가동범위가 좋아졌습니다. 허리 통증은 없다고 하셨고요. 코어 안정성 향상됐습니다. 다음 시간에는 흉추 신전 이어서 하겠습니다."
-        </Sub>
-      )}
+      {!text && !on && !finishing && <div className="mt-3 rounded-xl p-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
+        <p className="text-sm font-extrabold" style={{ color: INK }}>수업 내용을 편하게 말해주세요</p>
+        <p className="mt-1 text-xs font-bold" style={{ color: BRAND_D }}>무엇을 말하면 되나요?</p>
+        <div className="mt-2 grid grid-cols-2 gap-1.5">{["① 회원의 변화", "② 오늘 한 운동", "③ 회원 반응", "④ 다음 확인"].map((label) => <span key={label} className="rounded-lg px-2 py-2 text-[11px] font-bold" style={{ backgroundColor: CANVAS, color: INK2 }}>{label}</span>)}</div>
+        <p className="mt-3 text-[11px] leading-relaxed" style={{ color: INK2 }}>예: 오른쪽 어깨 움직임이 좋아졌어요. 오늘 흉추 회전 운동을 했고 전보다 훨씬 부드러웠어요. 다음에는 견갑 안정화 운동을 해볼게요.</p>
+        <p className="mt-2 text-[11px] font-bold leading-relaxed" style={{ color: SUB }}>순서대로 말하지 않아도 괜찮아요. 편하게 말하면 AI가 알아서 정리해요.</p>
+        {showValueGuide && <div className="mt-3 rounded-lg px-3 py-2.5" style={{ backgroundColor: TINT }}><p className="text-[11px] font-extrabold" style={{ color: BRAND_D }}>이렇게 활용돼요</p><p className="mt-1 text-[10px] leading-relaxed" style={{ color: INK2 }}>저장된 변화·운동·반응·다음 계획을 바탕으로 다음 수업 전에 지난 기록을 이어서 보여드려요.</p></div>}
+      </div>}
       {err && !on && !finishing && <div role="alert" className="mt-2 rounded-xl p-3" style={{ backgroundColor: BAD_S, border: `1px solid ${BAD}` }}><p className="text-[11px] leading-relaxed" style={{ color: BAD }}>{err}</p><div className="mt-2 grid grid-cols-2 gap-1.5"><button type="button" disabled={starting} onClick={start} className="h-11 rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: CARD, color: BAD }}>다시 시도</button><button type="button" onClick={() => { setManualEntry(true); setErr(""); window.setTimeout(() => transcriptInputRef.current?.focus(), 0); }} className="h-11 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: PRIMARY }}>직접 입력</button></div></div>}
       {(text || manualEntry || audioState === "saved" || audioState === "saving") && (
         <>
-          <textarea ref={transcriptInputRef} rows={4} value={text} onChange={(event) => { setText(event.target.value); setSummaryOriginal(null); setSummaryDraft(null); setSummaryMeta(null); setSummaryError(""); setSummaryStatus(AI_STATUSES.NOT_CONNECTED); }} aria-label="음성 전사 원문" placeholder="수업 내용을 직접 입력하세요" className={`${inputCls} mt-2 h-auto resize-none py-2 text-sm leading-relaxed`} />
-          <Sub className="mt-1.5 block">원문 보존 · 용어 매핑 분리 · {summaryStatus === AI_STATUSES.DRAFT ? "구조화 초안" : summaryStatus === "queued" ? "오프라인 대기" : summaryStatus === "unstructured" ? "미구조화" : "정리 대기"} · 저장 전 강사 확인 필요{audioState === "saved" ? " · 원음 임시 보관" : audioState === "saving" ? " · 원음 저장 중" : ""}</Sub>
+          <textarea ref={transcriptInputRef} rows={4} value={text} onChange={(event) => { setText(event.target.value); setSummaryOriginal(null); setSummaryDraft(null); setSummaryMeta(null); setSummaryError(""); setSummaryFailureClass(""); setSummaryEditing(false); setSummaryStatus(AI_STATUSES.NOT_CONNECTED); }} aria-label="말하거나 입력한 수업 내용" placeholder="회원의 변화, 오늘 한 운동, 반응, 다음 계획을 편하게 입력하세요" className={`${inputCls} mt-2 h-auto resize-none py-2 text-sm leading-relaxed`} />
+          <Sub className="mt-1.5 block">저장하기 전에 내용을 직접 확인하고 수정할 수 있어요{audioState === "saved" ? " · 녹음 파일 임시 저장됨" : audioState === "saving" ? " · 녹음 파일 저장 중" : ""}</Sub>
           <button disabled={on || summaryBusy || !text.trim()} onClick={() => requestSummary()} className="mt-2 flex h-10 w-full items-center justify-center gap-1.5 rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: TINT, color: PRIMARY }}>
-            {summaryBusy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} {summaryDraft || summaryStatus === "unstructured" || summaryStatus === "queued" ? "다시 정리" : "AI로 정리"}
+            {summaryBusy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} {summaryError ? "다시 시도" : "AI로 정리"}
           </button>
           {summaryBusy && <p aria-live="polite" className="mt-2 text-center text-[11px] font-bold" style={{ color: BRAND_D }}>AI가 수업 기록을 정리하고 있습니다…</p>}
-          {summaryError && <div role="alert" className="mt-2 rounded-xl p-3" style={{ backgroundColor: BAD_S, border: `1px solid ${BAD}` }}><p className="text-[11px] leading-relaxed" style={{ color: BAD }}>{summaryError}</p><div className="mt-2 grid grid-cols-3 gap-1"><button type="button" disabled={summaryBusy} onClick={() => requestSummary()} className="h-11 rounded-lg text-[11px] font-extrabold disabled:opacity-40" style={{ backgroundColor: CARD, color: BAD }}>다시 정리</button><button type="button" onClick={() => transcriptInputRef.current?.focus()} className="h-11 rounded-lg text-[11px] font-extrabold" style={{ backgroundColor: CARD, color: PRIMARY }}>직접 수정</button><button type="button" disabled={!text.trim()} onClick={applyCurrentRecord} className="h-11 rounded-lg text-[11px] font-extrabold disabled:opacity-40" style={{ backgroundColor: CARD, color: INK }}>원문으로 저장</button></div></div>}
-          {summaryDraft && <div className="mt-2 space-y-2 rounded-xl p-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
-            {[{ k: "didToday", l: "오늘 진행" }, { k: "observations", l: "관찰" }, { k: "responses", l: "반응/변화" }, { k: "nextFocus", l: "다음 확인" }, { k: "uncertain", l: "확인 필요" }].map((field) => (
-              <label key={field.k} className="block"><span className="mb-1 block text-[11px] font-bold" style={{ color: SUB }}>{field.l}</span><textarea rows={2} value={structuredFieldText(summaryDraft, field.k)} onChange={(event) => setSummaryField(field.k, event.target.value)} placeholder="한 줄에 한 항목" className={`${inputCls} h-auto resize-none py-2 text-xs`} /></label>
-            ))}
+          {summaryError && <div role="alert" data-ai-failure={summaryFailureClass || undefined} className="mt-2 rounded-xl p-3" style={{ backgroundColor: BAD_S, border: `1px solid ${BAD}` }}><p className="text-[11px] leading-relaxed" style={{ color: BAD }}>{summaryError}</p><div className="mt-2 grid grid-cols-2 gap-1.5"><button type="button" disabled={summaryBusy || summaryRetryBlocked} onClick={() => requestSummary()} className="h-11 rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: CARD, color: BAD }}>다시 시도</button><button type="button" onClick={() => transcriptInputRef.current?.focus()} className="h-11 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: PRIMARY }}>직접 수정</button></div><button type="button" disabled={!text.trim()} onClick={applyCurrentRecord} className="mt-2 h-10 w-full rounded-lg text-[11px] font-bold disabled:opacity-40" style={{ backgroundColor: CANVAS, color: INK }}>입력한 내용 그대로 저장</button></div>}
+          {summaryDraft && <div className="mt-3 space-y-3 rounded-xl p-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
+            <div><p className="text-xs font-extrabold" style={{ color: GOOD }}>AI가 수업 내용을 정리했어요.</p><p className="mt-1 text-[11px] leading-relaxed" style={{ color: SUB }}>아래 내용을 확인하고 필요한 부분만 수정한 뒤 저장해 주세요.</p></div>
+            <section><p className="text-xs font-extrabold" style={{ color: INK }}>AI 수업 요약</p><div className="mt-2 grid grid-cols-2 gap-1.5">{summaryView.cards.map((item) => <div key={item.key} className="rounded-lg p-2.5" style={{ backgroundColor: item.key === "nextFocus" ? TINT : CANVAS }}><p className="text-[10px] font-extrabold" style={{ color: item.key === "nextFocus" ? BRAND_D : SUB }}>{item.label}</p><p className="mt-1 text-[11px] font-bold leading-relaxed" style={{ color: item.value === "추가해 주세요" || item.value === "아직 계획 없음" ? FAINT : INK2 }}>{item.value}</p></div>)}</div></section>
+            <section className="rounded-lg p-3" style={{ backgroundColor: CANVAS }}><p className="text-xs font-extrabold" style={{ color: INK }}>수업 기록</p><p className="mt-2 text-xs leading-relaxed" style={{ color: summaryView.narrative ? INK2 : SUB }}>{summaryView.narrative || "말한 내용에서 정리할 항목을 찾지 못했어요. 필요한 내용을 직접 추가해 주세요."}</p></section>
+            {summaryEditing && <div className="space-y-2">{[{ k: "observations", l: "회원의 변화" }, { k: "didToday", l: "오늘 수업" }, { k: "responses", l: "회원 반응/특이사항" }, { k: "nextFocus", l: "다음 확인" }, { k: "uncertain", l: "확인이 필요한 내용" }].map((field) => <label key={field.k} className="block"><span className="mb-1 block text-[11px] font-bold" style={{ color: SUB }}>{field.l}</span><textarea rows={2} value={structuredFieldText(summaryDraft, field.k)} onChange={(event) => setSummaryField(field.k, event.target.value)} placeholder="한 줄에 한 항목" className={`${inputCls} h-auto resize-none py-2 text-xs`} /></label>)}</div>}
+            <div className="grid grid-cols-2 gap-1.5"><button type="button" onClick={() => setSummaryEditing((value) => !value)} className="h-11 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: PRIMARY }}>{summaryEditing ? "수정 닫기" : "수정하기"}</button><button type="button" disabled={audioState === "saving"} onClick={applyCurrentRecord} className="h-11 rounded-lg text-xs font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: BRAND }}>확인하고 저장</button></div>
           </div>}
           <div className="mt-2 flex gap-1.5">
             <button onClick={() => { setText(""); textRef.current = ""; setErr(""); setSummaryError(""); setSummaryOriginal(null); setSummaryDraft(null); setSummaryMeta(null); setSummaryStatus(AI_STATUSES.NOT_CONNECTED); if (audioBlobId) forgetBlobs([audioBlobId]); audioBlobRef.current = null; setAudioBlobId(null); setAudioState("idle"); removePendingLessonRecord(memberId, lessonId); }} className="rounded-xl px-3 py-2 text-xs font-bold" style={{ backgroundColor: CARD, color: SUB }}>취소</button>
             <button disabled={on || finishing} onClick={() => { setText(""); textRef.current = ""; setErr(""); setSummaryError(""); setSummaryOriginal(null); setSummaryDraft(null); setSummaryMeta(null); setSummaryStatus(AI_STATUSES.NOT_CONNECTED); if (audioBlobId) forgetBlobs([audioBlobId]); audioBlobRef.current = null; setAudioBlobId(null); setAudioState("idle"); removePendingLessonRecord(memberId, lessonId); setTimeout(() => start(), 0); }} className="rounded-xl px-3 py-2 text-xs font-bold" style={{ backgroundColor: TINT, color: PRIMARY }}>재녹음</button>
-            <button disabled={on || audioState === "saving" || !text.trim()} onClick={applyCurrentRecord} className="flex-1 rounded-xl py-2 text-xs font-extrabold text-white disabled:opacity-40" style={{ background: GRAD }}>
-              {summaryDraft ? "확인한 초안 적용" : "미구조화 원문 적용"}
-            </button>
+            {!summaryDraft && !summaryError && <button disabled={on || audioState === "saving" || !text.trim()} onClick={applyCurrentRecord} className="flex-1 rounded-xl py-2 text-xs font-extrabold text-white disabled:opacity-40" style={{ background: GRAD }}>입력한 내용 그대로 저장</button>}
           </div>
         </>
       )}
@@ -10525,15 +10739,16 @@ const normCode = (v) => String(v || "").toUpperCase().replace(/[^0-9A-Z]/g, "").
 const fmtCode = (v) => { const x = normCode(v); return x.length > 4 ? x.slice(0, 4) + "-" + x.slice(4) : x; };
 const handoffKey = (code) => "pilateacher_handoff_" + normCode(code);
 const packHandoff = (db, photos, withPhotos, from) => JSON.stringify({
-  app: "pilateacher", kind: "handoff", ver: 1, at: new Date().toISOString(),
+  app: "pilateacher", kind: "handoff", ver: 2, at: new Date().toISOString(),
   from: from || "", center: (db && db.settings && db.settings.center) || "",
   members: (db && db.members) || [], schedule: (db && db.schedule) || [],
   photos: withPhotos ? (photos || {}) : {},
 });
+const packBackup = (db, photos, withPhotoBinary, from) => JSON.stringify(createEmergencyBackupEnvelope({ data: db, photos, photoBinary: withPhotoBinary ? photos : null, from }));
 function readHandoff(text) {
   let d = null;
   try { d = JSON.parse(String(text || "").trim()); } catch (e) { return null; }
-  if (!d || d.kind !== "handoff" || !Array.isArray(d.members)) return null;
+  if (!d || !["handoff", "backup"].includes(d.kind) || !Array.isArray(d.members)) return null;
   return d;
 }
 function mergeHandoff(cur, inc, staff) {
@@ -10567,15 +10782,16 @@ function HandoffCard({ db, photos, account, onImport, onToast }) {
     try { await navigator.clipboard.writeText(t); onToast({ ok: true, msg }); }
     catch (e) { onToast({ ok: false, msg: "복사하지 못했습니다. 길게 눌러 직접 복사해 주세요." }); }
   };
-  const exportAll = async () => {
+  const exportAll = async (withPhotoBinary = false) => {
     try {
-      const text = packHandoff(db, await photosForExport(photos), true, account && account.name);
+      const photoPayload = withPhotoBinary ? await photosForExport(photos) : photos;
+      const text = packBackup(db, photoPayload, withPhotoBinary, account && account.name);
       const blob = new Blob([text], { type: "application/json" });
       const filename = `필라티쳐_백업_${todayISO()}.json`;
       try {
         const file = new File([blob], filename, { type: "application/json" });
         if (navigator.canShare && navigator.canShare({ files: [file] })) {
-          await navigator.share({ files: [file], title: "필라티쳐 백업" });
+          await navigator.share({ files: [file], title: withPhotoBinary ? "필라티쳐 사진 포함 백업" : "필라티쳐 비상 백업" });
           return;
         }
       } catch (e) {}
@@ -10583,7 +10799,7 @@ function HandoffCard({ db, photos, account, onImport, onToast }) {
       const a = document.createElement("a");
       a.href = url; a.download = filename; a.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
-      onToast({ ok: true, msg: "백업 파일을 저장했습니다." });
+      onToast({ ok: true, msg: withPhotoBinary ? "사진 포함 호환 백업 파일을 저장했습니다." : "기록·사진 목록 중심 비상 백업 파일을 저장했습니다." });
     } catch (e) { onToast({ ok: false, msg: "백업 파일을 만들지 못했습니다." }); }
   };
   const importFile = async (file) => {
@@ -10666,10 +10882,11 @@ function HandoffCard({ db, photos, account, onImport, onToast }) {
           <button onClick={make} disabled={busy} className="flex w-full items-center justify-center gap-1.5 rounded-2xl py-3.5 text-sm font-extrabold text-white disabled:opacity-60" style={{ backgroundColor: BRAND }}>
             {busy ? <Loader2 size={15} className="animate-spin" /> : <Ticket size={15} />} 인계 코드 만들기
           </button>
-          <button onClick={exportAll} className="flex w-full items-center justify-center gap-1.5 rounded-2xl py-3 text-sm font-bold" style={{ backgroundColor: CANVAS, color: INK }}>
-            <Download size={14} /> 백업 파일로 내보내기 (.json)
+          <button onClick={() => exportAll(false)} className="flex w-full items-center justify-center gap-1.5 rounded-2xl py-3 text-sm font-bold" style={{ backgroundColor: CANVAS, color: INK }}>
+            <Download size={14} /> 비상 백업 파일 내보내기 (.json)
           </button>
-          <Sub>백업 파일(.json)에는 원본 사진이 포함됩니다. 인계 코드는 위 ‘사진도 함께 넘기기’를 선택해야 사진이 포함됩니다.</Sub>
+          <button onClick={() => exportAll(true)} className="flex w-full items-center justify-center gap-1.5 rounded-2xl py-2.5 text-xs font-bold" style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, color: SUB }}><Download size={13} /> 사진 포함 호환 백업</button>
+          <Sub>기본 비상 백업은 회원·수업·Memory·체형/annotation·사진 manifest 중심이라 작습니다. 기존 방식의 사진 binary 전체 JSON도 호환 옵션으로 유지합니다. 인계 코드는 위 ‘사진도 함께 넘기기’를 선택해야 사진이 포함됩니다.</Sub>
           {pack && (
             <div className="rounded-2xl p-4" style={{ backgroundColor: TINT }}>
               <Sub>인계 번호</Sub>
@@ -10737,6 +10954,41 @@ function HandoffCard({ db, photos, account, onImport, onToast }) {
     </Card>
   );
 }
+const backupTimeLabel = (value) => {
+  const date = value?.toDate?.() || (value ? new Date(value) : null);
+  if (!date || Number.isNaN(date.getTime())) return "아직 없음";
+  return `${date.getMonth() + 1}/${date.getDate()} ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+};
+const compactBytes = (value) => {
+  const bytes = Math.max(0, Number(value) || 0);
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1048576).toFixed(1)} MB`;
+};
+function CloudBackupCard({ status, onEnablePhotos, onRetry }) {
+  const photoCovered = status?.photoEnabled || Number(status?.localPhotoCount || 0) === 0;
+  const safe = status?.state === "safe" && Number(status?.pendingPhotos || 0) === 0 && photoCovered;
+  const counts = status?.counts || {};
+  const usage = status?.storageUsage || {};
+  return (
+    <Card className="p-4">
+      <div className="flex items-start gap-3">
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: safe ? GOOD_S : TINT, color: safe ? GOOD : BRAND }}><Upload size={16} /></span>
+        <div className="min-w-0 flex-1"><h2 style={{ fontSize: 14, fontWeight: 700, color: INK }}>클라우드 백업</h2><p className="mt-0.5" style={{ fontSize: 12, fontWeight: 700, color: safe ? GOOD : status?.state === "blocked" || status?.state === "error" ? BAD : BRAND }}>{safe ? "✓ 안전하게 백업됨" : status?.state === "safe" && !photoCovered ? "기록 백업됨 · 사진 백업 꺼짐" : status?.state === "backing_up" ? "백업 중" : status?.state === "blocked" ? "복원 확인 필요" : status?.state === "error" ? "백업을 확인해 주세요" : "백업 준비"}</p></div>
+        {(status?.state === "error" || status?.state === "blocked") && <button type="button" onClick={onRetry} className="h-9 rounded-lg px-3 text-xs font-bold" style={{ backgroundColor: TINT, color: BRAND }}>다시 확인</button>}
+      </div>
+      <p className="mt-3" style={{ fontSize: 11, color: SUB }}>마지막 백업: {backupTimeLabel(status?.lastBackupAt)}</p>
+      <div className="mt-2 grid grid-cols-2 gap-2">
+        {[{ l: "회원", v: `${counts.members || 0}명` }, { l: "수업", v: `${counts.sessions || 0}건` }, { l: "사진", v: `${counts.photos || 0}장` }, { l: status?.photoEnabled ? "사진 백업 대기" : "사진 미백업", v: `${status?.photoEnabled ? status?.pendingPhotos || 0 : status?.localPhotoCount || 0}장`, warn: status?.photoEnabled ? status?.pendingPhotos > 0 : status?.localPhotoCount > 0 }].map((item) => <div key={item.l} className="rounded-lg px-3 py-2" style={{ backgroundColor: CANVAS }}><p style={{ fontSize: 10, color: SUB }}>{item.l}</p><p className="mt-0.5 tabular-nums" style={{ fontSize: 13, fontWeight: 700, color: item.warn ? WARN : INK }}>{item.v}</p></div>)}
+      </div>
+      <p className="mt-2" style={{ fontSize: 10, color: SUB }}>사진 {compactBytes(usage.photoBytes)} · 썸네일 {compactBytes(usage.thumbnailBytes)} · 데이터 {compactBytes(counts.firestoreBytes)}</p>
+      {!status?.photoEnabled && <button type="button" onClick={onEnablePhotos} className="mt-3 h-11 w-full rounded-lg text-sm font-bold text-white" style={{ backgroundColor: BRAND }}>사진 클라우드 백업 켜기</button>}
+      {status?.photoEnabled && <p className="mt-3 rounded-lg px-3 py-2" style={{ backgroundColor: GOOD_S, fontSize: 11, lineHeight: 1.5, color: GOOD }}>사진 복구 백업 사용 중 · 고화질 최적화본과 썸네일을 본인 계정에 저장합니다.</p>}
+    </Card>
+  );
+}
+const patchPhotoById = (photoMap, photoId, patch) => Object.fromEntries(Object.entries(photoMap || {}).map(([memberId, buckets]) => [memberId, Object.fromEntries(Object.entries(buckets || {}).map(([bucketKey, records]) => [bucketKey, Array.isArray(records) ? records.map((record) => ((record?.photoId || record?.id) === photoId ? { ...record, ...patch, cloud: { ...record.cloud, ...patch.cloud } } : record)) : records]))]));
+
 function SettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings, onChangePhoto, onReset, onClear, onLogout, onToast, themePref, onChangeTheme, onImport }) {
   const [confirm, setConfirm] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -10881,12 +11133,12 @@ function SettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings,
         </div>
         <p className="mt-2.5 text-xs leading-relaxed" style={{ color: INK2 }}>
           {fbReady
-            ? <>회원 <b style={{ color: INK }}>사진은 이 기기 안에만</b> 저장되며 외부로 전송하지 않습니다. 회원 이름 · 수업 · 기록은 기기 교체와 분실에 대비해 <b style={{ color: INK }}>본인 계정으로 암호화 보관</b>됩니다.</>
+            ? <>회원 사진은 먼저 이 기기에 저장됩니다. <b style={{ color: INK }}>사진 클라우드 백업을 별도로 동의해 켠 경우에만</b> 고화질 최적화본과 썸네일이 본인 계정에 보관됩니다. 회원 이름 · 수업 · 기록은 기기 교체와 분실에 대비해 본인 계정으로 보관됩니다.</>
             : <>회원 정보 · 사진 · 기록은 <b style={{ color: INK }}>이 기기 안에만</b> 저장됩니다. 외부 서버로 전송하거나 보관하지 않습니다.</>}
         </p>
         <p className="mt-1.5 text-xs leading-relaxed" style={{ color: INK2 }}>
           {fbReady
-            ? <>같은 계정으로 새 기기에서 로그인하면 회원 기록이 자동으로 돌아옵니다. 다만 <b style={{ color: INK }}>사진은 돌아오지 않습니다.</b> 사진까지 지키려면 아래 백업 파일을 받아 두세요.</>
+            ? <>새 기기에서 기존 데이터가 발견되면 먼저 복원 여부를 확인합니다. 사진 백업을 켜지 않았다면 사진은 복원되지 않으므로 JSON 백업 파일도 함께 보관해 주세요.</>
             : <>그래서 기기를 잃어버리거나 앱을 지우면 <b style={{ color: INK }}>되살릴 수 없습니다.</b> 위 '회원 인계 · DB 넘기기'에서 정기적으로 백업해 두세요.</>}
         </p>
         <p className="mt-1.5 text-xs leading-relaxed" style={{ color: INK2 }}>
@@ -10910,7 +11162,7 @@ function SettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings,
     </div>
   );
 }
-function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding }) {
+function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, backupStatus, onEnablePhotoBackup, onRetryBackup }) {
   const [view, setView] = useState("hub");
   const [busy, setBusy] = useState(false);
   const [deleteStep, setDeleteStep] = useState("intro");
@@ -10959,7 +11211,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
       { key: "center", title: "센터 정보", description: "센터명 · 담당자 · 그룹 단가", Icon: SettingsIcon },
       { key: "theme", title: "화면 설정", description: "폰 설정 · 라이트 · 다크", Icon: Smartphone },
       { key: "data", title: "데이터 상태", description: "기기 저장 · 로그인 상태", Icon: Check },
-      { key: "backup", title: "데이터 이관 · 백업", description: "기기 이동 · 백업 파일", Icon: Download },
+      { key: "backup", title: "데이터 이관 · 백업", description: "자동 클라우드 백업 · 회원 인계 · 백업 파일", Icon: Download },
     ] },
     { label: "기타", items: [
       { key: "onboarding", title: "PilaTeacher 사용법", description: "기록 → 기억 → 다음 수업 흐름 다시 보기", Icon: Play, action: onOpenOnboarding },
@@ -11090,7 +11342,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
             {demoMode && <section style={{ ...sectionStyle, backgroundColor: WARN_S, borderColor: WARN }}><p style={{ fontSize: 12, fontWeight: 700, color: WARN }}>개발·데모 데이터 사용 중</p><p className="mt-1" style={{ fontSize: 11, lineHeight: 1.5, color: INK2 }}>현재 데이터는 실제 운영 데이터가 아닙니다.</p></section>}
           </div>
         )}
-        {view === "backup" && <HandoffCard db={db} photos={photos} account={account} onImport={onImport} onToast={onToast} />}
+        {view === "backup" && <div className="space-y-3"><CloudBackupCard status={backupStatus} onEnablePhotos={onEnablePhotoBackup} onRetry={onRetryBackup} /><HandoffCard db={db} photos={photos} account={account} onImport={onImport} onToast={onToast} /></div>}
         {view === "knowledge" && (
           <section style={{ overflow: "hidden", borderRadius: 12, border: `1px solid ${LINE}`, backgroundColor: CARD }}>
             {KNOW.map((knowledge, index) => <div key={knowledge} className="flex gap-3" style={{ padding: "12px", borderTop: index ? `1px solid ${LINE}` : "none" }}><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full" style={{ backgroundColor: TINT, color: BRAND, fontSize: 10, fontWeight: 700 }}>{index + 1}</span><p style={{ paddingTop: 2, fontSize: 12, lineHeight: 1.55, color: INK2 }}>{knowledge}</p></div>)}
@@ -11138,7 +11390,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
         {view === "app" && (
           <section style={sectionStyle}>
             <div className="flex items-center gap-3"><span className="flex h-10 w-10 items-center justify-center" style={{ borderRadius: 11, backgroundColor: TINT, color: BRAND }}><Activity size={18} /></span><div><h2 style={{ fontSize: 15, fontWeight: 700, color: INK }}>PilaTeacher</h2><p className="mt-0.5 tabular-nums" style={{ fontSize: 11, color: SUB }}>{APP_BUILD_LABEL}</p></div></div>
-            <p className="mt-4" style={{ fontSize: 11, lineHeight: 1.6, color: INK2 }}>회원 사진은 기기에 저장됩니다. 회원 이름·수업·기록의 보관 상태는 데이터 상태에서 확인하고, 기기 변경 전에는 데이터 이관·백업을 이용해 주세요.</p>
+            <p className="mt-4" style={{ fontSize: 11, lineHeight: 1.6, color: INK2 }}>회원 사진은 기기에 먼저 저장됩니다. 사진 클라우드 백업은 데이터 이관·백업에서 별도 동의 후 켤 수 있으며, 실제 완료 여부와 대기 수를 같은 화면에서 확인할 수 있습니다.</p>
           </section>
         )}
       </main>
@@ -11168,12 +11420,51 @@ export default function App() {
   const [mobileView, setMobileView] = useState("list");
   const briefing = false;
   const [savedAt, setSavedAt] = useState(null);
+  const [cloudBackupStatus, setCloudBackupStatus] = useState({ state: "idle", counts: {}, pendingPhotos: 0, localPhotoCount: 0, storageUsage: {}, photoEnabled: false, lastBackupAt: null });
+  const [restoreOffer, setRestoreOffer] = useState(null);
+  const [restoreBusy, setRestoreBusy] = useState(false);
+  const restoreBlockedRef = useRef(false);
+  const photoProcessingRef = useRef(false);
+  const hydratingPhotosRef = useRef(new Set());
   const [toast, setToast] = useState(null);
   const [localPhotoWarning, setLocalPhotoWarning] = useState(false);
   const [brief, setBrief] = useState(null);
   const [favOpen, setFavOpen] = useState(false);
   const [themePref, setThemePref] = useState("system");
   const [sysDark, setSysDark] = useState(sysDarkNow());
+  const notificationDataRef = useRef({ schedule: [], members: [] });
+  useEffect(() => {
+    notificationDataRef.current = { schedule: db.schedule || [], members: db.members || [] };
+  }, [db.schedule, db.members]);
+  useEffect(() => {
+    if (phase !== "app" || !account?.id) return undefined;
+    let removeActionListener = () => {};
+    let active = true;
+    const refresh = () => {
+      const current = notificationDataRef.current;
+      syncLessonNotifications({ schedule: current.schedule, members: current.members }).catch(() => {});
+    };
+    const onVisibility = () => { if (document.visibilityState === "visible") refresh(); };
+    const onForeground = () => refresh();
+    refresh();
+    listenForLessonNotificationActions(() => {
+      setMobileView("list");
+      setTab("schedule");
+    }).then((remove) => {
+      if (active) removeActionListener = remove;
+      else remove();
+    }).catch(() => {});
+    document.addEventListener("visibilitychange", onVisibility);
+    document.addEventListener("resume", onForeground);
+    window.addEventListener("focus", onForeground);
+    return () => {
+      active = false;
+      removeActionListener();
+      document.removeEventListener("visibilitychange", onVisibility);
+      document.removeEventListener("resume", onForeground);
+      window.removeEventListener("focus", onForeground);
+    };
+  }, [phase, account?.id]);
   const closeOnboarding = useCallback(() => {
     completeOnboarding(window.localStorage);
     setOnboardingOpen(false);
@@ -11301,22 +11592,38 @@ export default function App() {
   const loadAccount = async (acc) => {
     revokeAllUrls();
     setAccount(acc);
-    let data = null, ph = {}, restored = false, reviewPhotos = null;
+    restoreBlockedRef.current = false;
+    setRestoreOffer(null);
+    let data = null, ph = {}, restored = false, reviewPhotos = null, cloudSnapshot = null, cloudManifest = [];
     try { const r = await window.storage.get(dbKey(acc.id)); if (r?.value) data = JSON.parse(r.value); } catch (e) {}
     try { const r = await window.storage.get(phKey(acc.id)); if (r?.value) ph = JSON.parse(r.value); } catch (e) {}
     const needsReviewBootstrap = acc.appReviewDemo === true && !Object.keys(ph || {}).length;
-    if (fbReady && (!data || !(Array.isArray(data.members) && data.members.length) || needsReviewBootstrap)) {
+    if (fbReady) {
       try {
-        const cloud = await fbPullBackup(acc.id);
-        if (cloud && cloud.data && Array.isArray(cloud.data.members) && cloud.data.members.length) {
-          data = cloud.data;
+        cloudSnapshot = await fbPullBackup(acc.id);
+        try { cloudManifest = await fbListPhotoBackups(acc.id); }
+        catch (photoError) { deviceLog("cloud_backup_load_failed", { stage: "photo_manifest", ...deviceError(photoError) }); }
+        const cloudHasData = cloudSnapshot?.data && Array.isArray(cloudSnapshot.data.members) && cloudSnapshot.data.members.length > 0;
+        const localHasData = data && Array.isArray(data.members) && data.members.length > 0;
+        if (cloudHasData && (!localHasData || needsReviewBootstrap) && acc.appReviewDemo === true) {
+          data = cloudSnapshot.data;
           restored = true;
-          if (acc.appReviewDemo === true && cloud.appReviewDemo === true && cloud.reviewPhotos && typeof cloud.reviewPhotos === "object") {
-            reviewPhotos = cloud.reviewPhotos;
+          if (cloudSnapshot.appReviewDemo === true && cloudSnapshot.reviewPhotos && typeof cloudSnapshot.reviewPhotos === "object") {
+            reviewPhotos = cloudSnapshot.reviewPhotos;
           }
           try { await window.storage.set(dbKey(acc.id), JSON.stringify(data)); } catch (e) {}
+        } else if (cloudHasData && !localHasData) {
+          restoreBlockedRef.current = true;
+          setRestoreOffer({ accountId: acc.id, cloud: cloudSnapshot, manifest: cloudManifest.filter((item) => item?.status !== "deleted") });
+        } else if (cloudHasData && localHasData) {
+          const marker = readCloudSyncMarker(acc.id);
+          const cloudMillis = cloudSnapshot?.at?.toMillis?.() || new Date(cloudSnapshot?.at || 0).getTime();
+          if (marker?.lastCloudAt && Number.isFinite(cloudMillis) && cloudMillis > Number(marker.lastCloudAt) + 1000) {
+            restoreBlockedRef.current = true;
+            setRestoreOffer({ accountId: acc.id, cloud: cloudSnapshot, manifest: cloudManifest.filter((item) => item?.status !== "deleted") });
+          }
         }
-      } catch (e) {}
+      } catch (e) { deviceLog("cloud_backup_load_failed", { stage: "manifest", ...deviceError(e) }); }
     }
     const useDemo = !data && !fbReady;
     if (!data) data = fbReady ? emptyDb(acc.center, acc.name) : sampleDb(acc.center, acc.name);
@@ -11340,6 +11647,8 @@ export default function App() {
     setDemoMode(useDemo);
     let hyd = ph && typeof ph === "object" ? ph : {};
     if (!Object.keys(hyd).length && reviewPhotos) hyd = reviewPhotos;
+    if (cloudManifest.length && !restoreBlockedRef.current) hyd = mergePhotoMetadata(hyd, cloudManifest);
+    if (cloudSnapshot?.photoGraph && !restoreBlockedRef.current) hyd = mergePhotoGraph(hyd, cloudSnapshot.photoGraph);
     try {
       const a = await adoptPhotos(hyd);
       hyd = a.map;
@@ -11356,7 +11665,18 @@ export default function App() {
     setSelectedId(data.members[0]?.id || null);
     setAnalysisMemberId(null);
     setTab("schedule");
-    if (restored) setToast({ ok: true, msg: `\ud074\ub77c\uc6b0\ub4dc\uc5d0\uc11c \ud68c\uc6d0 ${data.members.length}\uba85\uc744 \ubcf5\uad6c\ud588\uc2b5\ub2c8\ub2e4. \uc0ac\uc9c4\uc740 \uc774\uc804 \uae30\uae30\uc5d0\ub9cc \uc788\uc2b5\ub2c8\ub2e4.` });
+    const manifestUsage = storageUsage(cloudManifest);
+    setCloudBackupStatus({
+      state: restoreBlockedRef.current ? "blocked" : "safe",
+      counts: cloudSnapshot?.counts || backupCounts(data, cloudManifest),
+      pendingPhotos: Math.max(0, Number(cloudSnapshot?.photoPending) || 0),
+      localPhotoCount: buildPhotoManifest(hyd).length,
+      storageUsage: cloudSnapshot?.storageUsage || manifestUsage,
+      photoEnabled: data.settings?.cloudPhotoBackupEnabled === true && data.settings?.cloudPhotoConsentVersion === CLOUD_PHOTO_CONSENT_VERSION,
+      lastBackupAt: cloudSnapshot?.at || null,
+    });
+    if (restored) setToast({ ok: true, msg: `클라우드에서 회원 ${data.members.length}명을 복구했습니다.` });
+    if (!restoreBlockedRef.current && fbReady) fbPurgeExpiredPhotoBackups().catch(() => {});
   };
 
   const persistAccounts = async (list) => {
@@ -11407,16 +11727,121 @@ export default function App() {
   const attendanceMutationsInFlight = useRef(new Set());
   const queueCloud = useCallback((uidStr, data) => {
     if (!fbReady || !uidStr) return;
+    if (restoreBlockedRef.current) {
+      setCloudBackupStatus((current) => ({ ...current, state: "blocked" }));
+      return;
+    }
     cloudPending.current = { uid: uidStr, data };
     if (cloudTimer.current) clearTimeout(cloudTimer.current);
+    const currentManifest = buildPhotoManifest(photosRef.current);
+    setCloudBackupStatus((current) => ({ ...current, state: "backing_up", localPhotoCount: currentManifest.length, counts: backupCounts(data, currentManifest.filter((item) => item.storagePath && item.thumbnailPath), buildPhotoGraph(photosRef.current)) }));
     cloudTimer.current = setTimeout(async () => {
       const p = cloudPending.current;
       cloudPending.current = null; cloudTimer.current = null;
       if (!p) return;
-      try { await fbPushBackup(p.uid, p.data); } catch (e) {}
+      const manifest = buildPhotoManifest(photosRef.current);
+      const uploadedManifest = manifest.filter((item) => item.storagePath && item.thumbnailPath);
+      const queue = createPhotoQueue(window.localStorage, p.uid).read();
+      const usage = storageUsage(uploadedManifest);
+      try {
+        const photoGraph = buildPhotoGraph(photosRef.current);
+        await fbPushBackup(p.uid, p.data, { photoCount: uploadedManifest.length, photoPending: queue.length, storageUsage: usage, photoManifest: uploadedManifest, photoGraph });
+        writeCloudSyncMarker(p.uid, { localSavedAt: Date.now(), lastCloudAt: Date.now() });
+        setCloudBackupStatus((current) => ({ ...current, state: queue.length ? "backing_up" : "safe", counts: backupCounts(p.data, uploadedManifest, photoGraph), pendingPhotos: queue.length, localPhotoCount: manifest.length, storageUsage: usage, photoEnabled: p.data.settings?.cloudPhotoBackupEnabled === true, lastBackupAt: new Date().toISOString() }));
+      } catch (e) {
+        if (e?.code === "backup/overwrite-blocked") {
+          restoreBlockedRef.current = true;
+          try {
+            const [cloud, manifest] = await Promise.all([fbPullBackup(p.uid), fbListPhotoBackups(p.uid)]);
+            if (cloud?.data) setRestoreOffer({ accountId: p.uid, cloud, manifest: manifest.filter((item) => item?.status !== "deleted") });
+          } catch (restoreError) {}
+        }
+        setCloudBackupStatus((current) => ({ ...current, state: e?.code === "backup/overwrite-blocked" ? "blocked" : "error" }));
+        deviceLog("cloud_backup_write_failed", { stage: "backup", code: e?.code || "unknown" });
+      }
     }, 3000);
   }, []);
   useEffect(() => () => { if (cloudTimer.current) clearTimeout(cloudTimer.current); }, []);
+
+  const processPhotoQueue = useCallback(async (uidStr = account?.id, data = db) => {
+    if (!uidStr || photoProcessingRef.current || restoreBlockedRef.current) return;
+    const photoEnabled = data?.settings?.cloudPhotoBackupEnabled === true && data?.settings?.cloudPhotoConsentVersion === CLOUD_PHOTO_CONSENT_VERSION;
+    if (!photoEnabled || (typeof navigator !== "undefined" && navigator.onLine === false)) return;
+    const queue = createPhotoQueue(window.localStorage, uidStr);
+    if (!queue.read().length) return;
+    photoProcessingRef.current = true;
+    setCloudBackupStatus((current) => ({ ...current, state: "backing_up", pendingPhotos: queue.read().length, photoEnabled: true }));
+    try {
+      const drain = await drainPhotoQueue(queue, async (task) => {
+        if (task.action === "delete") {
+          await fbSoftDeletePhotoBackup(uidStr, task.photoId);
+          return;
+        }
+        const item = buildPhotoManifest(photosRef.current).find((entry) => entry.photoId === task.photoId);
+        if (!item) return;
+        let optimized = null;
+        if (!item.storagePath || !item.thumbnailPath) {
+          const localBlob = item.blobId ? await blobGet(item.blobId) : null;
+          if (!localBlob) throw Object.assign(new Error("Local photo blob is missing."), { code: "backup/photo-missing" });
+          optimized = await optimizePhotoBackup(localBlob);
+        }
+        const uploaded = await fbUploadPhotoBackup(uidStr, item, optimized);
+        const nextPhotos = patchPhotoById(photosRef.current, item.photoId, {
+          width: uploaded.width || item.width,
+          height: uploaded.height || item.height,
+          cloud: { storagePath: uploaded.storagePath, thumbnailPath: uploaded.thumbnailPath, imageBytes: uploaded.imageBytes, thumbnailBytes: uploaded.thumbnailBytes, updatedAt: uploaded.updatedAt },
+        });
+        photosRef.current = nextPhotos;
+        setPhotos(nextPhotos);
+        await window.storage.set(phKey(uidStr), JSON.stringify(stripSrc(nextPhotos)));
+      });
+      if (drain.failed) throw Object.assign(new Error("Photo backup queue stopped after a failed item."), { code: "backup/queue-failed" });
+      const manifest = buildPhotoManifest(photosRef.current);
+      const uploadedManifest = manifest.filter((item) => item.storagePath && item.thumbnailPath);
+      const usage = storageUsage(uploadedManifest);
+      const photoGraph = buildPhotoGraph(photosRef.current);
+      await fbPushBackup(uidStr, data, { photoCount: uploadedManifest.length, photoPending: queue.read().length, storageUsage: usage, photoManifest: uploadedManifest, photoGraph });
+      writeCloudSyncMarker(uidStr, { localSavedAt: Date.now(), lastCloudAt: Date.now() });
+      setCloudBackupStatus({ state: "safe", counts: backupCounts(data, uploadedManifest, photoGraph), pendingPhotos: 0, localPhotoCount: manifest.length, storageUsage: usage, photoEnabled: true, lastBackupAt: new Date().toISOString() });
+    } catch (error) {
+      setCloudBackupStatus((current) => ({ ...current, state: "error", pendingPhotos: queue.read().length, photoEnabled: true }));
+      deviceLog("photo_backup_failed", { stage: "upload_queue", code: error?.code || "unknown" });
+    } finally {
+      photoProcessingRef.current = false;
+    }
+  }, [account?.id, db]);
+
+  const prepareAIGatewayContext = useCallback(async ({ memberId, lessonId } = {}) => {
+    const accountId = String(account?.id || "").trim();
+    const safeMemberId = String(memberId || "").trim();
+    const safeLessonId = String(lessonId || "").trim();
+    if (!accountId) throw Object.assign(new Error("Firebase authentication is required."), { code: "unauthenticated", contextStage: "auth", retryable: false });
+    if (restoreBlockedRef.current) throw Object.assign(new Error("Cloud restore must be completed first."), { code: "backup/overwrite-blocked", contextStage: "member_authorization_backup", retryable: false });
+    if (!safeMemberId || !db.members?.some((item) => item?.id === safeMemberId)) {
+      throw Object.assign(new Error("The selected member is not available locally."), { code: "ai/member-not-owned-local", contextStage: "member_authorization", retryable: false });
+    }
+    if (safeLessonId) {
+      const lesson = db.schedule?.find((item) => item?.id === safeLessonId);
+      const lessonHasSelectedMember = lesson?.memberId === safeMemberId || lesson?.memberIds?.includes?.(safeMemberId) || lesson?.attendees?.some?.((item) => item?.memberId === safeMemberId);
+      if (!lesson || !lessonHasSelectedMember) {
+        throw Object.assign(new Error("The selected lesson is not linked to the member."), { code: "ai/lesson-not-owned-local", contextStage: "member_authorization", retryable: false });
+      }
+    }
+    const manifest = buildPhotoManifest(photosRef.current);
+    const uploadedManifest = manifest.filter((item) => item.storagePath && item.thumbnailPath);
+    const photoGraph = buildPhotoGraph(photosRef.current);
+    const queue = createPhotoQueue(window.localStorage, accountId).read();
+    await fbPushBackup(accountId, db, {
+      photoCount: uploadedManifest.length,
+      photoPending: queue.length,
+      storageUsage: storageUsage(uploadedManifest),
+      photoManifest: uploadedManifest,
+      photoGraph,
+    });
+    writeCloudSyncMarker(accountId, { localSavedAt: Date.now(), lastCloudAt: Date.now() });
+    deviceLog("ai_authorization_context_ready", { memberId: safeMemberId, lessonId: safeLessonId, stage: "member_authorization_backup", state: "ready", appBuild: APP_BUILD_LABEL });
+    return { memberId: safeMemberId, lessonId: safeLessonId };
+  }, [account?.id, db]);
 
   const handleDeleteAccount = async ({ confirmationPhrase, password, onPhase }) => {
     if (!account || accountDeletionInFlight.current) throw new Error("이미 계정 삭제를 처리하고 있습니다.");
@@ -11471,6 +11896,7 @@ export default function App() {
     try {
       const legacyWrite = async () => {
         await window.storage.set(dbKey(account.id), JSON.stringify(next));
+        writeCloudSyncMarker(account.id, { localSavedAt: Date.now() });
         setSavedAt(new Date());
         queueCloud(account.id, next);
         deviceLog("app_data_saved", { storage: "localStorage", operation: dualWrite?.operation || "legacy_write", count: (next.members?.length || 0) + (next.schedule?.length || 0) });
@@ -11490,6 +11916,18 @@ export default function App() {
     try {
       await window.storage.set(phKey(account.id), JSON.stringify(stripSrc(next)));
       setSavedAt(new Date());
+      const queue = createPhotoQueue(window.localStorage, account.id);
+      const before = new Map(buildPhotoManifest(prev).map((item) => [item.photoId, item]));
+      const after = buildPhotoManifest(next);
+      const afterIds = new Set(after.map((item) => item.photoId));
+      after.filter((item) => item.blobId).forEach((item) => queue.upsert([{ action: "upload", photoId: item.photoId }]));
+      before.forEach((item, photoId) => {
+        if (afterIds.has(photoId)) return;
+        if (item.storagePath) queue.upsert([{ action: "delete", photoId }]);
+        else queue.remove(photoId, "upload");
+      });
+      setCloudBackupStatus((current) => ({ ...current, localPhotoCount: after.length, pendingPhotos: queue.read().length, state: queue.read().length && current.photoEnabled ? "backing_up" : current.state }));
+      processPhotoQueue(account.id, db).catch(() => {});
       deviceLog("photo_metadata_saved", { storage: "localStorage", operation: "metadata_write", count: Object.keys(next || {}).length });
       return true;
     }
@@ -11500,7 +11938,99 @@ export default function App() {
       setToast({ ok: false, msg: "저장 공간이 가득 찼습니다. 오래된 사진을 지운 뒤 다시 찍어 주세요." });
       return false;
     }
-  }, [account]);
+  }, [account, db, processPhotoQueue]);
+
+  useEffect(() => {
+    const retry = () => processPhotoQueue().catch(() => {});
+    window.addEventListener("online", retry);
+    retry();
+    return () => window.removeEventListener("online", retry);
+  }, [processPhotoQueue]);
+
+  const enablePhotoBackup = useCallback(async () => {
+    if (!account) return;
+    const accepted = window.confirm("사진 기록을 기기 변경·분실 시 복구할 수 있도록 클라우드에 암호화 저장합니다. 체형분석·비포애프터·직접그리기 사진의 고화질 최적화본과 썸네일만 본인 계정의 Firebase Storage에 저장되고 촬영 메타데이터는 제거됩니다. 계속할까요?");
+    if (!accepted) return;
+    const next = { ...db, settings: { ...db.settings, cloudPhotoBackupEnabled: true, cloudPhotoConsentVersion: CLOUD_PHOTO_CONSENT_VERSION, cloudPhotoConsentAt: new Date().toISOString() } };
+    const saved = await saveDb(next);
+    if (!saved) return;
+    const queue = createPhotoQueue(window.localStorage, account.id);
+    queue.upsert(buildPhotoManifest(photosRef.current).filter((item) => item.blobId).map((item) => ({ action: "upload", photoId: item.photoId })));
+    setCloudBackupStatus((current) => ({ ...current, photoEnabled: true, state: queue.read().length ? "backing_up" : "safe", pendingPhotos: queue.read().length }));
+    await processPhotoQueue(account.id, next);
+  }, [account, db, processPhotoQueue, saveDb]);
+
+  const applyCloudRestore = useCallback(async () => {
+    if (!restoreOffer || restoreBusy || restoreOffer.accountId !== account?.id) return;
+    setRestoreBusy(true);
+    try {
+      const restoredDb = normalizeDb(restoreOffer.cloud.data, account.name);
+      let restoredPhotos = mergePhotoGraph(mergePhotoMetadata({}, restoreOffer.manifest), restoreOffer.cloud?.photoGraph || {});
+      let thumbnailFailures = 0;
+      for (const item of restoreOffer.manifest) {
+        try {
+          const thumbnail = await fbDownloadPhotoBackup(account.id, item, true);
+          const thumbnailBlobId = newBlobId();
+          await blobPut(thumbnailBlobId, thumbnail);
+          restoredPhotos = patchPhotoById(restoredPhotos, item.photoId, { thumbnailBlobId, src: await urlFor(thumbnailBlobId) });
+        } catch (error) { thumbnailFailures += 1; }
+      }
+      await Promise.all([
+        window.storage.set(dbKey(account.id), JSON.stringify(restoredDb)),
+        window.storage.set(phKey(account.id), JSON.stringify(stripSrc(restoredPhotos))),
+      ]);
+      setDb(restoredDb);
+      photosRef.current = restoredPhotos;
+      setPhotos(restoredPhotos);
+      setSelectedId(restoredDb.members[0]?.id || null);
+      writeCloudSyncMarker(account.id, { localSavedAt: Date.now(), lastCloudAt: restoreOffer.cloud?.at?.toMillis?.() || Date.now() });
+      restoreBlockedRef.current = false;
+      setRestoreOffer(null);
+      const usage = storageUsage(restoreOffer.manifest);
+      setCloudBackupStatus({ state: thumbnailFailures ? "error" : "safe", counts: restoreOffer.cloud.counts || backupCounts(restoredDb, restoreOffer.manifest), pendingPhotos: Math.max(0, Number(restoreOffer.cloud.photoPending) || 0), localPhotoCount: restoreOffer.manifest.length, storageUsage: restoreOffer.cloud.storageUsage || usage, photoEnabled: restoredDb.settings?.cloudPhotoBackupEnabled === true, lastBackupAt: restoreOffer.cloud.at || null });
+      setToast({ ok: true, msg: `회원 ${restoredDb.members.length}명 · 수업 ${restoredDb.schedule.length}건 · 사진 ${restoreOffer.manifest.length}장의 기록을 복원했습니다.${thumbnailFailures ? ` 썸네일 ${thumbnailFailures}장은 화면에서 다시 불러옵니다.` : ""}` });
+    } catch (error) {
+      setToast({ ok: false, msg: "기존 데이터를 복원하지 못했습니다. 네트워크를 확인한 뒤 다시 시도해 주세요." });
+      deviceLog("cloud_restore_failed", { stage: "restore", code: error?.code || "unknown" });
+    } finally { setRestoreBusy(false); }
+  }, [account, restoreBusy, restoreOffer]);
+
+  const hydrateMemberCloudPhotos = useCallback(async (memberId) => {
+    if (!account?.id || !memberId) return;
+    const targets = buildPhotoManifest({ [memberId]: photosRef.current?.[memberId] || {} }).filter((item) => item.storagePath && !item.blobId && !hydratingPhotosRef.current.has(item.photoId));
+    if (!targets.length) return;
+    let changed = false;
+    let working = photosRef.current;
+    for (const item of targets) {
+      hydratingPhotosRef.current.add(item.photoId);
+      try {
+        const blob = await fbDownloadPhotoBackup(account.id, item, false);
+        const blobId = newBlobId();
+        await blobPut(blobId, blob);
+        working = patchPhotoById(working, item.photoId, { blobId, src: await urlFor(blobId) });
+        changed = true;
+      } catch (error) {
+        deviceLog("cloud_photo_download_failed", { stage: "lazy_restore", code: error?.code || "unknown" });
+      } finally { hydratingPhotosRef.current.delete(item.photoId); }
+    }
+    if (changed) {
+      photosRef.current = working;
+      setPhotos(working);
+      await window.storage.set(phKey(account.id), JSON.stringify(stripSrc(working)));
+    }
+  }, [account?.id]);
+
+  useEffect(() => {
+    const memberId = tab === "analysis" ? analysisMemberId : tab === "members" && mobileView === "detail" ? selectedId : null;
+    if (memberId) hydrateMemberCloudPhotos(memberId).catch(() => {});
+  }, [analysisMemberId, hydrateMemberCloudPhotos, mobileView, selectedId, tab]);
+
+  const retryCloudBackup = useCallback(() => {
+    if (restoreOffer) return;
+    restoreBlockedRef.current = false;
+    queueCloud(account?.id, db);
+    processPhotoQueue(account?.id, db).catch(() => {});
+  }, [account?.id, db, processPhotoQueue, queueCloud, restoreOffer]);
 
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 2600); return () => clearTimeout(t); }, [toast]);
 
@@ -11596,13 +12126,16 @@ export default function App() {
       const keep = new Set(attendeesOf(item).map((a) => a.memberId));
       attendeesOf(prev).forEach((a) => { if (a.deductFrom && !keep.has(a.memberId)) members = restoreOne(members, a.memberId, a.deductFrom); });
     }
-    saveDb(
-      { ...db, members, schedule: prev ? db.schedule.map((s) => (s.id === item.id ? item : s)) : [...db.schedule, item] },
+    const next = { ...db, members, schedule: prev ? db.schedule.map((s) => (s.id === item.id ? item : s)) : [...db.schedule, item] };
+    Promise.resolve(saveDb(
+      next,
       {
         entityType: "lesson", entityId: item.id, operation: prev ? "update" : "create",
         payload: { ...item, participantCount: attendeesOf(item).length },
       },
-    );
+    )).then((saved) => {
+      if (saved !== false) syncLessonNotifications({ schedule: next.schedule, members: next.members }).catch(() => {});
+    });
     setToast({ ok: true, msg: item.personal
       ? (prev ? "일정을 수정했습니다." : "일정을 등록했습니다.")
       : prev ? "수업을 수정했습니다." : "수업을 등록했습니다." });
@@ -11611,13 +12144,16 @@ export default function App() {
     const s0 = db.schedule.find((x) => x.id === id);
     let members = db.members;
     if (s0) attendeesOf(s0).forEach((a) => { if (a.deductFrom) members = restoreOne(members, a.memberId, a.deductFrom); });
-    saveDb(
-      { ...db, members, schedule: db.schedule.filter((x) => x.id !== id) },
+    const next = { ...db, members, schedule: db.schedule.filter((x) => x.id !== id) };
+    Promise.resolve(saveDb(
+      next,
       s0 && {
         entityType: "lesson", entityId: id, operation: "update",
         payload: { ...s0, status: "cancel", participantCount: attendeesOf(s0).length },
       },
-    );
+    )).then((saved) => {
+      if (saved !== false) syncLessonNotifications({ schedule: next.schedule, members: next.members }).catch(() => {});
+    });
     setToast({ ok: true, msg: "수업을 삭제했습니다." });
   };
   const saveAttendanceOnce = (lessonId, next, descriptor) => {
@@ -11942,14 +12478,33 @@ export default function App() {
     }
     const stored = await savePhotos({ ...currentPhotos, [target.id]: completion.memberPhotos });
     if (stored !== true) return false;
+    const completedSets = normalizeAssessmentSets(completion.memberPhotos, { memberId: target.id });
+    const completedSet = completedSets.find((set) => set.id === assessmentId) || null;
+    const beforeSet = role === "after" ? completedSets.find((set) => set.id !== assessmentId && set.status === "completed" && set.role === "before" && set.scope === completedSet?.scope) || null : null;
+    const milestoneTemplate = postureMilestoneTemplate({ role, beforeSet, afterSet: completedSet });
+    const nextMemory = addPostureMilestone(target.aiMemory || [], {
+      memberId: target.id,
+      assessmentId,
+      role,
+      date: completedSet?.completedAt || completedAt,
+      text: milestoneTemplate.text,
+      metricIds: milestoneTemplate.metricIds,
+    });
+    const milestoneStored = await patch(target.id, { aiMemory: nextMemory });
+    if (milestoneStored !== true) {
+      deviceLog("assessment_milestone_save_failed", { memberId: target.id, assessmentId, role, storage: "localStorage" });
+      setToast({ ok: false, msg: "체형분석은 저장됐지만 기억 항목을 저장하지 못했습니다. 완료를 다시 눌러 주세요." });
+      return false;
+    }
     deviceLog("assessment_completed", {
       memberId: target.id,
       assessmentId,
       role,
       storage: "device",
       records: completion.updatedRecords.length,
+      milestoneId: nextMemory.find((entry) => entry?.type === "milestone" && entry?.sourceRefs?.some((source) => source?.type === "assessment" && source?.id === assessmentId))?.id || null,
     });
-    setToast({ ok: true, msg: `${role === "before" ? "비포" : role === "after" ? "에프터" : "체형분석"} 저장 완료 · 이 기기에만 저장됩니다.` });
+    setToast({ ok: true, msg: `${role === "before" ? "비포" : role === "after" ? "에프터" : "체형분석"} 기기 저장 완료${db.settings?.cloudPhotoBackupEnabled ? " · 클라우드 백업 대기열에 추가됨" : ""}` });
     return true;
   };
   const deleteCaptureDraft = async (memberId, assessmentId, view) => {
@@ -12197,8 +12752,9 @@ export default function App() {
   };
   const importHandoff = async (inc, how) => {
     if (!inc) return;
+    const importedSettings = inc.kind === "backup" && inc.settings && typeof inc.settings === "object" ? inc.settings : db.settings;
     const next = how === "replace"
-      ? normalizeDb({ settings: db.settings, members: inc.members || [], schedule: inc.schedule || [] }, account?.name)
+      ? normalizeDb({ settings: importedSettings, members: inc.members || [], schedule: inc.schedule || [] }, account?.name)
       : mergeHandoff(db, inc, account?.name);
     saveDb(next);
     const ph = inc.photos && typeof inc.photos === "object" ? inc.photos : null;
@@ -12207,6 +12763,10 @@ export default function App() {
       try { got = (await adoptPhotos(ph)).map; } catch (e) {}
       if (how === "replace") wipePhotos();
       savePhotos(how === "replace" ? got : { ...photos, ...got });
+    } else if ((Array.isArray(inc.photoManifest) && inc.photoManifest.length) || (inc.photoGraph && Object.keys(inc.photoGraph).length)) {
+      const metadata = mergePhotoGraph(mergePhotoMetadata({}, inc.photoManifest), inc.photoGraph || {});
+      if (how === "replace") wipePhotos();
+      savePhotos(how === "replace" ? metadata : mergePhotoGraph(mergePhotoMetadata(photos, inc.photoManifest), inc.photoGraph || {}));
     } else if (how === "replace") wipePhotos();
     setSelectedId(next.members[0]?.id || null);
     setAnalysisMemberId(null);
@@ -12316,12 +12876,13 @@ export default function App() {
     );
 
   return (
+    <AIGatewayContextSync.Provider value={prepareAIGatewayContext}>
     <div className="app-root flex justify-center" style={{ minHeight: "100vh", height: "100dvh", backgroundColor: PAGE, overflow: "hidden" }}>
       {style}
       <div className="pt-app-shell safe-t flex h-full min-h-0 w-full flex-col" style={{ backgroundColor: PAGE, boxShadow: "0 0 0 1px rgba(28,36,51,.04)" }}>
         <div className="relative min-h-0 flex-1 overflow-hidden">
           <Guard key={tab}>
-            {tab === "schedule" && <ScheduleManager db={db} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} />}
+            {tab === "schedule" && <ScheduleManager db={db} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
             {tab === "members" && (mobileView === "detail" && member ? (
               <ReferenceMemberDetail key={member.id} member={member} schedule={db.schedule} photos={photos[member.id]} settings={db.settings}
                 canViewSettlement={!account?.role || ["owner", "manager", "admin", "director"].includes(String(account.role).toLowerCase())} onBack={() => setMobileView("list")}
@@ -12342,16 +12903,26 @@ export default function App() {
                   onToast={setToast} onSaved={(mode) => setAnalysisDone({ id, mode })} /></Guard>;
               }} />}
             {tab === "settings" && <ReferenceSettingsTab db={db} photos={photos} account={account} savedAt={savedAt} demoMode={demoMode} onChangeSettings={(s) => saveDb({ ...db, settings: s })} onChangePhoto={changePhoto} onToast={setToast} themePref={themePref} onChangeTheme={changeTheme} onLogout={handleLogout} onDeleteAccount={handleDeleteAccount} onImport={importHandoff}
-              onOpenSchedule={() => { setScheduleQuickAddRequest((request) => request + 1); setTab("schedule"); }} onOpenRecords={() => { setMobileView("list"); setTab("members"); }} onOpenOnboarding={() => setOnboardingOpen(true)} />}
+              onOpenSchedule={() => { setScheduleQuickAddRequest((request) => request + 1); setTab("schedule"); }} onOpenRecords={() => { setMobileView("list"); setTab("members"); }} onOpenOnboarding={() => setOnboardingOpen(true)} backupStatus={cloudBackupStatus} onEnablePhotoBackup={enablePhotoBackup} onRetryBackup={retryCloudBackup} />}
           </Guard>
         </div>
         <Tabs tab={tab} setTab={goTab} />
       </div>
       {localPhotoWarning && <ScheduleBottomSheet title="원본 사진 저장 안내" subtitle="사진 기록을 안전하게 보관해 주세요" onClose={() => setLocalPhotoWarning(false)}>
         <div className="space-y-3">
-          <p className="text-sm font-bold leading-relaxed" style={{ color: INK }}>{LOCAL_PHOTO_NOTICE_MESSAGE}</p>
-          <p className="text-xs leading-relaxed" style={{ color: SUB }}>설정의 백업 파일로 내보내기(.json)는 사진을 포함합니다. 인계 코드는 ‘사진도 함께 넘기기’를 선택한 경우에만 사진이 포함됩니다.</p>
+          <p className="text-sm font-bold leading-relaxed" style={{ color: INK }}>{cloudBackupStatus.photoEnabled ? "원본 사진은 이 기기에 저장되고, 복구용 고화질 최적화본과 썸네일은 본인 계정에 백업됩니다. 백업 화면의 ‘사진 백업 대기’가 0장이 될 때까지 앱을 닫지 마세요." : LOCAL_PHOTO_NOTICE_MESSAGE}</p>
+          <p className="text-xs leading-relaxed" style={{ color: SUB }}>설정에서 ‘사진 포함 호환 백업’을 선택한 경우에만 JSON 파일에 사진이 포함됩니다. 사진 클라우드 백업을 켜지 않은 경우 앱 삭제·기기 변경·분실 시 사진을 복구하지 못할 수 있습니다.</p>
           <button type="button" onClick={() => setLocalPhotoWarning(false)} className="h-12 w-full text-sm font-extrabold text-white" style={{ borderRadius: 11, backgroundColor: BRAND }}>확인했습니다</button>
+        </div>
+      </ScheduleBottomSheet>}
+      {restoreOffer && <ScheduleBottomSheet title="기존 데이터가 발견되었습니다" subtitle={`마지막 백업 ${backupTimeLabel(restoreOffer.cloud?.at)} · 빈 데이터 업로드를 안전하게 멈췄습니다`} onClose={() => {}} dismissible={false}>
+        <div className="space-y-3">
+          <p className="text-sm leading-relaxed" style={{ color: INK2 }}>이 계정에 저장된 기존 기록을 먼저 복원해 주세요. 복원이 끝나기 전에는 이 기기의 빈 데이터가 클라우드에 업로드되지 않습니다.</p>
+          <div className="grid grid-cols-4 gap-2">
+            {[{ label: "회원", value: `${restoreOffer.cloud?.counts?.members ?? restoreOffer.cloud?.members ?? 0}명` }, { label: "수업", value: `${restoreOffer.cloud?.counts?.sessions ?? restoreOffer.cloud?.data?.schedule?.length ?? 0}건` }, { label: "체형분석", value: `${restoreOffer.cloud?.counts?.assessments ?? new Set((restoreOffer.manifest || []).map((item) => item.assessmentId).filter(Boolean)).size}건` }, { label: "사진", value: `${restoreOffer.manifest?.length || 0}장` }].map((item) => <div key={item.label} className="rounded-xl p-2 text-center" style={{ backgroundColor: CANVAS }}><p className="text-[9px]" style={{ color: SUB }}>{item.label}</p><p className="mt-1 text-xs font-extrabold" style={{ color: INK }}>{item.value}</p></div>)}
+          </div>
+          <button type="button" disabled={restoreBusy} onClick={applyCloudRestore} className="flex h-12 w-full items-center justify-center gap-2 rounded-xl text-sm font-extrabold text-white disabled:opacity-50" style={{ backgroundColor: BRAND }}>{restoreBusy ? <><Loader2 size={16} className="animate-spin" />복원 중…</> : "기존 데이터 복원"}</button>
+          <p className="text-[11px] leading-relaxed" style={{ color: SUB }}>먼저 회원·수업 메타데이터와 사진 썸네일을 복원합니다. 고화질 사진은 해당 회원/체형분석 화면을 열 때 내려받아 기기에 캐시합니다.</p>
         </div>
       </ScheduleBottomSheet>}
       {onboardingOpen && <Onboarding onFinish={closeOnboarding} onSkip={closeOnboarding} />}
@@ -12364,5 +12935,6 @@ export default function App() {
         </div>
       )}
     </div>
+    </AIGatewayContextSync.Provider>
   );
 }

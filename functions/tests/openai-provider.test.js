@@ -7,6 +7,7 @@ const {
   createOpenAIProvider,
   createOpenAIVoiceSummaryProvider,
   parseJsonObject,
+  safeProviderDiagnostic,
   validateVoiceSummaryResult,
 } = require("../src/openai-provider");
 const { OPERATIONS } = require("../src/operation-contracts");
@@ -67,6 +68,26 @@ test("missing Secret Manager value fails safely before an API request", () => {
     () => createOpenAIVoiceSummaryProvider({ apiKey: "" }),
     (error) => error.code === "provider_unavailable",
   );
+});
+
+test("provider diagnostics retain only safe status and identifier fields", async () => {
+  const diagnostic = safeProviderDiagnostic({
+    status: 401,
+    code: "invalid_api_key",
+    type: "invalid_request_error",
+    request_id: "req_safe-123",
+    message: "secret transcript and sk-private-value",
+    response: { data: { transcript: "private" } },
+  });
+  assert.deepEqual(diagnostic, {
+    stage: "provider_http",
+    providerStatus: 401,
+    providerCode: "invalid_api_key",
+    providerType: "invalid_request_error",
+    providerRequestId: "req_safe-123",
+  });
+  assert.equal(JSON.stringify(diagnostic).includes("private"), false);
+  assert.equal(JSON.stringify(diagnostic).includes("transcript"), false);
 });
 
 test("JSON output parser accepts fences or explanation text and extracts one object", () => {

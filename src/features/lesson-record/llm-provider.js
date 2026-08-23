@@ -8,7 +8,9 @@ export class LlmProvider {
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const retryable = (error) => error?.retryable === true || ["timeout", "network_error", "provider_unavailable", "invalid_output"].includes(String(error?.code || ""));
+const retryable = (error) => typeof error?.retryable === "boolean"
+  ? error.retryable
+  : ["timeout", "network_error", "provider_unavailable", "invalid_output"].includes(String(error?.code || ""));
 
 export class GatewayLlmProvider extends LlmProvider {
   constructor({ gatewayProvider, maxRetries = 1, retryDelayMs = 250, online = () => globalThis.navigator?.onLine !== false } = {}) {
@@ -51,6 +53,9 @@ export class GatewayLlmProvider extends LlmProvider {
       output: null,
       usage: null,
       error: lastError,
+      failureStage: String(lastError?.failureStage || "unknown"),
+      providerStatus: lastError?.providerStatus ?? null,
+      providerCode: String(lastError?.providerCode || ""),
     };
   }
 }

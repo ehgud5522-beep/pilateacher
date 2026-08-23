@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { createSttProvider } from "../../src/features/lesson-record/stt-provider.js";
 
 const appPath = new URL("../../src/App.jsx", import.meta.url);
 const annotationPath = new URL("../../src/features/posture/posture-annotations.js", import.meta.url);
@@ -177,14 +178,23 @@ test("schedule detail uses three final statuses and native speech recognition ow
   assert.doesNotMatch(schedule, /출석·노쇼·취소 중 하나를 선택하면/);
   assert.doesNotMatch(schedule, /AI 수업 시퀀스 추천|추천 생성|Provider/);
   assert.match(schedule, /grid grid-cols-2 gap-2/);
-  assert.match(schedule, /> 말하기<\/button>/);
-  assert.match(schedule, /> 직접입력<\/button>/);
-  assert.match(schedule, />노코멘트<\/button>/);
-  assert.match(schedule, />나중에<\/button>/);
-  assert.match(schedule, />닫기<\/button>/);
+  assert.doesNotMatch(schedule, /\b말하기\b/);
+  ["기록하기", "직접입력", "노코멘트", "나중에", "닫기"].forEach((label) => assert.match(schedule, new RegExp(label)));
+  assert.match(schedule, /setRecordMode\(recordMode === "voice" \? null : "voice"\)/);
+  assert.match(schedule, /<VoiceNote autoStart/);
+  assert.match(schedule, /onDirectEntry=\{\(message\) => \{[\s\S]*setRecordMode\("write"\)/);
   assert.match(source, /const timeOf = \(stamp\) =>/);
+  assert.match(voice, /if \(!autoStart \|\| autoStartHandledRef\.current\) return undefined;[\s\S]*autoStartHandledRef\.current = true;[\s\S]*start\(\)/);
   assert.match(voice, /if \(!NS\) \{[\s\S]*await prepareMedia\(\)/);
   assert.match(voice, /Android SpeechRecognizer와 MediaRecorder가 동시에 마이크를 잡으면/);
+  assert.match(voice, /if \(!sttOK\(\)\)[\s\S]*fallbackToDirectEntry\(message\)/);
+  assert.match(voice, /NS\.requestPermissions[\s\S]*fallbackToDirectEntry\(message\)/);
+
+  let startCalls = 0;
+  const provider = createSttProvider({ native: { start: async () => { startCalls += 1; return { matches: ["테스트 전사"] }; } }, web: null });
+  await provider.native.start({ language: "ko-KR" });
+  assert.equal(startCalls, 1, "the provider start contract must dispatch immediately once");
+  assert.equal(createSttProvider({ native: null, web: null }).isAvailable(), false, "unsupported devices must be detectable for direct-entry fallback");
 });
 
 test("draft restore rejects records explicitly owned by another member", async () => {

@@ -183,6 +183,25 @@ test("body AI input contains four canonical pose views but never photo or blob p
   assert.equal(serialized.includes('"blob"'), false);
 });
 
+test("provider quota diagnostics remain internal and disable identical retries", async () => {
+  const provider = createAIProvider({
+    config: { enabled: true, provider: "openai", gatewayUrl: "https://ai.example.com/v1/ai/execute" },
+    fetchImpl: async () => ({ ok: false, status: 503, json: async () => ({ error: {
+      code: "provider_unavailable",
+      requestId: "ai_safe_request_12345678",
+      diagnostic: { stage: "provider_http", providerStatus: 429, providerCode: "insufficient_quota", providerType: "insufficient_quota" },
+    } }) }),
+  });
+  await assert.rejects(
+    provider.structureLessonRecord({ rawTranscript: "원문" }),
+    (error) => (/** @type {any} */ (error)).code === "provider_quota_exhausted"
+      && (/** @type {any} */ (error)).retryable === false
+      && (/** @type {any} */ (error)).failureStage === "provider_http"
+      && (/** @type {any} */ (error)).providerStatus === 429
+      && (/** @type {any} */ (error)).providerCode === "insufficient_quota",
+  );
+});
+
 test("client builders bound text and remove direct PII before the gateway", () => {
   const voice = buildVoiceSummaryInput({
     memberId: "m1", lessonId: "l1", transcript: `${"x".repeat(13000)} 010-1234-5678 member@example.com`,

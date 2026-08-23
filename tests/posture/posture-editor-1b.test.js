@@ -107,6 +107,6 @@ test("photo notice is emitted only after successful persistence and backup copy 
   assert.match(saveCapture, /const stored = await savePhotos/);
   assert.match(saveCapture, /if \(!stored\)[\s\S]*return false/);
   assert.ok(saveCapture.indexOf("showLocalPhotoWarningOnce()") > saveCapture.indexOf("if (!stored)"));
-  assert.match(source, /백업 파일\(\.json\)에는 원본 사진이 포함됩니다/);
+  assert.match(source, /‘사진 포함 호환 백업’을 선택한 경우에만 JSON 파일에 사진이 포함됩니다/);
   assert.match(source, /인계 코드는 위 ‘사진도 함께 넘기기’를 선택해야 사진이 포함됩니다/);
 });

@@ -3,7 +3,7 @@
    config 는 pilateacher 프로젝트 값입니다.
    (Analytics 는 뺐습니다 - 개인정보 신고가 '수집 안 함'으로 유지됩니다)
 
-   ⚠️ 회원 사진(비포애프터·체형분석)은 여기로 절대 올라가지 않습니다.
+   회원 사진 클라우드 백업은 별도 동의를 받은 경우에만 사용자 전용 경로로 업로드합니다.
    =================================================================== */
 
 import { initializeApp } from "firebase/app";
@@ -15,10 +15,12 @@ import {
   EmailAuthProvider, createUserWithEmailAndPassword, signInWithEmailAndPassword,
   reauthenticateWithCredential, reauthenticateWithPopup, revokeAccessToken, updateProfile,
 } from "firebase/auth";
-import { getFirestore, doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
+import { getFirestore, collection, doc, getDoc, getDocs, runTransaction, setDoc, serverTimestamp } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
+import { getStorage, ref as storageRef, uploadBytes, getBlob } from "firebase/storage";
 import { withAuthTimeout } from "../features/auth/apple-sign-in.js";
 import { googleNativeSignInOptions } from "../features/auth/google-sign-in.js";
+import { CLOUD_BACKUP_VERSION, backupCounts, evaluateOverwriteRisk } from "../features/backup/cloud-backup.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyABFqCur9nKHUuD_-EvvRNtxVbEhif9gjs",
@@ -31,12 +33,13 @@ const firebaseConfig = {
 
 export const fbReady = !!(firebaseConfig.apiKey && firebaseConfig.projectId);
 
-let app = null, auth = null, fs = null, functions = null;
+let app = null, auth = null, fs = null, functions = null, storage = null;
 if (fbReady) {
   app = initializeApp(firebaseConfig);
   auth = getAuth(app);
   fs = getFirestore(app);
   functions = getFunctions(app, "asia-northeast3");
+  storage = getStorage(app);
 }
 
 const AUTH_REQUEST_TIMEOUT_MS = 20000;
@@ -266,7 +269,7 @@ export async function fbSaveProfile(uid, profile) {
   );
 }
 
-/* ---------------- 백업 (사진 제외) ---------------- */
+/* ---------------- 자동 클라우드 백업 ---------------- */
 const deviceTag = () => {
   try {
     const ua = navigator.userAgent || "";
@@ -274,17 +277,35 @@ const deviceTag = () => {
   } catch (e) { return "기타"; }
 };
 
-export async function fbPushBackup(uid, data) {
+export async function fbPushBackup(uid, data, options = {}) {
   if (!fs || !uid || !data) return;
+  const counts = backupCounts(data, options.photoManifest || [], options.photoGraph || {});
   await withAuthTimeout(
-    () => setDoc(doc(fs, "users", uid, "backup", "latest"), {
-      data,
-      device: deviceTag(),
-      at: serverTimestamp(),
-      members: Array.isArray(data.members) ? data.members.length : 0,
+    () => runTransaction(fs, async (transaction) => {
+      const backupRef = doc(fs, "users", uid, "backup", "latest");
+      const snapshot = await transaction.get(backupRef);
+      const current = snapshot.exists() ? snapshot.data() : null;
+      const risk = current ? evaluateOverwriteRisk(data, current) : { blocked: false, reasons: [] };
+      if (risk.blocked && options.allowDestructiveOverwrite !== true) {
+        const error = new Error("Cloud backup overwrite was blocked.");
+        Object.assign(error, { code: "backup/overwrite-blocked", reasons: risk.reasons, risk });
+        throw error;
+      }
+      transaction.set(backupRef, {
+        schemaVersion: CLOUD_BACKUP_VERSION,
+        data,
+        device: deviceTag(),
+        at: serverTimestamp(),
+        members: counts.members,
+        counts: { ...counts, photos: Number.isFinite(Number(options.photoCount)) ? Math.max(0, Number(options.photoCount)) : Math.max(0, Number(current?.counts?.photos) || 0) },
+        photoPending: Math.max(0, Number(options.photoPending) || 0),
+        storageUsage: options.storageUsage && typeof options.storageUsage === "object" ? options.storageUsage : current?.storageUsage || null,
+        photoGraph: options.photoGraph && typeof options.photoGraph === "object" ? options.photoGraph : current?.photoGraph || {},
+      });
     }),
     { timeoutMs: FIRESTORE_WRITE_TIMEOUT_MS, provider: "firebase", stage: "backup_write" },
   );
+  return { counts };
 }
 
 export async function fbPullBackup(uid) {
@@ -296,6 +317,122 @@ export async function fbPullBackup(uid) {
     );
     return snap.exists() ? snap.data() : null;
   } catch (e) { return null; }
+}
+
+const assertOwnPhotoPath = (uid, photoId) => {
+  const currentUid = auth?.currentUser?.uid;
+  const safeUid = String(uid || "").trim();
+  const safePhotoId = String(photoId || "").trim().replace(/[^A-Za-z0-9._:-]/g, "_").slice(0, 160);
+  if (!safeUid || currentUid !== safeUid || !safePhotoId) throw Object.assign(new Error("Photo backup authentication is required."), { code: "auth/unauthenticated" });
+  return { safeUid, safePhotoId };
+};
+
+const firestoreSafe = (value) => JSON.parse(JSON.stringify(value ?? null));
+
+export async function fbListPhotoBackups(uid) {
+  if (!fs || !uid || auth?.currentUser?.uid !== uid) return [];
+  const snapshot = await withAuthTimeout(
+    () => getDocs(collection(fs, "users", uid, "photoBackups")),
+    { timeoutMs: FIRESTORE_READ_TIMEOUT_MS, provider: "firebase", stage: "photo_manifest_read" },
+  );
+  return snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() }));
+}
+
+export async function fbUploadPhotoBackup(uid, item, optimized = null) {
+  if (!fs || !storage) throw Object.assign(new Error("Cloud photo backup is unavailable."), { code: "backup/unavailable" });
+  const { safeUid, safePhotoId } = assertOwnPhotoPath(uid, item?.photoId);
+  const imagePath = `users/${safeUid}/photos/${safePhotoId}/image.jpg`;
+  const thumbnailPath = `users/${safeUid}/photos/${safePhotoId}/thumb.jpg`;
+  let imageBytes = Math.max(0, Number(item?.imageBytes) || 0);
+  let thumbnailBytes = Math.max(0, Number(item?.thumbnailBytes) || 0);
+  if (optimized?.image?.blob && optimized?.thumbnail?.blob) {
+    const metadata = { contentType: "image/jpeg", cacheControl: "private,max-age=3600", customMetadata: { photoId: safePhotoId } };
+    const [imageResult, thumbnailResult] = await Promise.all([
+      uploadBytes(storageRef(storage, imagePath), optimized.image.blob, metadata),
+      uploadBytes(storageRef(storage, thumbnailPath), optimized.thumbnail.blob, metadata),
+    ]);
+    imageBytes = imageResult.metadata.size || optimized.image.blob.size;
+    thumbnailBytes = thumbnailResult.metadata.size || optimized.thumbnail.blob.size;
+  } else if (!item?.storagePath || !item?.thumbnailPath) {
+    throw Object.assign(new Error("Local photo data is required for the first cloud upload."), { code: "backup/photo-missing" });
+  }
+  const payload = {
+    schemaVersion: 1,
+    photoId: safePhotoId,
+    memberId: String(item?.memberId || "").slice(0, 160),
+    assessmentId: String(item?.assessmentId || "").slice(0, 160),
+    bucketKey: String(item?.bucketKey || "").slice(0, 80),
+    view: String(item?.view || "").slice(0, 40),
+    date: String(item?.date || "").slice(0, 40),
+    width: Math.max(0, Number(optimized?.image?.width || item?.width) || 0),
+    height: Math.max(0, Number(optimized?.image?.height || item?.height) || 0),
+    storagePath: item?.storagePath || imagePath,
+    thumbnailPath: item?.thumbnailPath || thumbnailPath,
+    imageBytes,
+    thumbnailBytes,
+    status: "active",
+    record: firestoreSafe(item?.record || {}),
+    references: firestoreSafe(Array.isArray(item?.references) ? item.references.slice(0, 20) : []),
+    uploadedAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    deletedAt: null,
+    purgeAfter: null,
+  };
+  await withAuthTimeout(
+    () => setDoc(doc(fs, "users", safeUid, "photoBackups", safePhotoId), payload, { merge: false }),
+    { timeoutMs: 30000, provider: "firebase", stage: "photo_backup_write" },
+  );
+  return { ...payload, uploadedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+}
+
+export async function fbDownloadPhotoBackup(uid, item, thumbnail = false) {
+  if (!storage) throw Object.assign(new Error("Cloud photo backup is unavailable."), { code: "backup/unavailable" });
+  assertOwnPhotoPath(uid, item?.photoId);
+  const path = thumbnail ? item?.thumbnailPath : item?.storagePath;
+  if (!path) throw Object.assign(new Error("Cloud photo path is missing."), { code: "backup/photo-missing" });
+  return withAuthTimeout(
+    () => getBlob(storageRef(storage, path)),
+    { timeoutMs: 30000, provider: "firebase", stage: thumbnail ? "photo_thumbnail_download" : "photo_download" },
+  );
+}
+
+export async function fbSoftDeletePhotoBackup(uid, photoId) {
+  if (!fs) return;
+  const ids = assertOwnPhotoPath(uid, photoId);
+  const purgeAfter = new Date(Date.now() + 30 * 86400000);
+  const imagePath = `users/${ids.safeUid}/photos/${ids.safePhotoId}/image.jpg`;
+  const thumbnailPath = `users/${ids.safeUid}/photos/${ids.safePhotoId}/thumb.jpg`;
+  await withAuthTimeout(
+    () => setDoc(doc(fs, "users", ids.safeUid, "photoBackups", ids.safePhotoId), {
+      schemaVersion: 1,
+      photoId: ids.safePhotoId,
+      memberId: "",
+      assessmentId: "",
+      bucketKey: "",
+      view: "",
+      date: "",
+      width: 0,
+      height: 0,
+      storagePath: imagePath,
+      thumbnailPath,
+      imageBytes: 0,
+      thumbnailBytes: 0,
+      status: "deleted",
+      record: {},
+      references: [],
+      deletedAt: serverTimestamp(),
+      purgeAfter,
+      updatedAt: serverTimestamp(),
+    }, { merge: true }),
+    { timeoutMs: FIRESTORE_WRITE_TIMEOUT_MS, provider: "firebase", stage: "photo_soft_delete" },
+  );
+}
+
+export async function fbPurgeExpiredPhotoBackups() {
+  if (!functions || !auth?.currentUser) return { purged: 0 };
+  const call = httpsCallable(functions, "purgeExpiredPhotoBackups");
+  const response = await call({});
+  return response?.data || { purged: 0 };
 }
 
 /* ---------------- AI 처리 동의 (사진·전사·회원정보는 저장하지 않음) ---------------- */

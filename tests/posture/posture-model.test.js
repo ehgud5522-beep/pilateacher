@@ -275,7 +275,7 @@ test("direct drawing completion upgrades an existing draft and partial sets rema
   assert.match(source, /const completeAssessment = async[\s\S]*completeAssessmentRecords\(cur,[\s\S]*storage: "device"/);
   assert.match(workspace, /onCompleteAssessment\?\.\(assessmentId, nextRole\)/);
   assert.match(workspace, /completeSets\.length \? "after" : "before"/);
-  assert.match(workspace, /이 기기에만 저장됨/);
+  assert.match(workspace, /기기 우선 저장/);
 });
 
 test("retake thresholds use real calendar days", () => {

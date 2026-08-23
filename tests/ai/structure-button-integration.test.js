@@ -19,17 +19,19 @@ test("AI structure action starts loading before provider, consent, and gateway w
   assert.match(request, /finally \{ setSummaryBusy\(false\); \}/);
 });
 
-test("AI structure success renders all five editable sections", () => {
-  ["오늘 진행", "관찰", "반응/변화", "다음 확인", "확인 필요"].forEach((label) => assert.match(voice, new RegExp(label)));
+test("AI result renders the teacher-facing summary and all five editable sections", () => {
+  ["회원의 변화", "오늘 수업", "회원 반응/특이사항", "다음 확인", "확인이 필요한 내용"].forEach((label) => assert.match(voice, new RegExp(label)));
+  ["AI 수업 요약", "수업 기록", "확인하고 저장"].forEach((label) => assert.match(voice, new RegExp(label)));
   assert.match(voice, /AI가 수업 기록을 정리하고 있습니다/);
   assert.match(voice, /structuredFieldText\(summaryDraft, field\.k\)/);
 });
 
-test("AI structure failure is visible and retryable without losing raw transcript", () => {
+test("AI structure failure preserves raw text and blocks a known non-retryable repeat", () => {
   assert.match(voice, /role="alert"/);
-  assert.match(voice, />다시 시도<\/button>/);
-  assert.match(voice, /전사 원문은 유지/);
-  assert.match(voice, /미구조화 원문 적용/);
+  assert.match(voice, /setSummaryRetryBlocked\(result\.error\?\.retryable === false\)/);
+  assert.match(voice, /disabled=\{summaryBusy \|\| summaryRetryBlocked\}/);
+  assert.match(voice, /입력한 내용 그대로 저장/);
+  assert.match(voice, /직접 수정/);
 });
 
 test("Android production config points only to the existing authenticated gateway", async () => {

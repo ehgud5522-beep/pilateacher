@@ -38,7 +38,7 @@ test("lesson sequence UI is deferred while its provider and schema contracts rem
 
 test("AI consent copy discloses transmitted data and excludes original photos", async () => {
   const source = await readFile(new URL("../../src/App.jsx", import.meta.url), "utf8");
-  assert.match(source, /수업 기록·음성 전사·체형 좌표와 각도/);
+  assert.match(source, /수업 기록·말한 내용·체형 좌표와 각도/);
   assert.match(source, /사진 원본은 AI로 전송하지 않으며/);
   assert.match(source, /강사 검수 전 초안/);
 });

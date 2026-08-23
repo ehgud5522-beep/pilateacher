@@ -14,6 +14,7 @@ import {
   setDoc,
   updateDoc,
 } from "firebase/firestore";
+import { deleteObject, getMetadata, ref, uploadBytes } from "firebase/storage";
 
 const PROJECT_ID = "pilateacher-dev";
 const ORG_A = "org-a";
@@ -31,6 +32,9 @@ let testEnv;
 
 function dbFor(userId) {
   return userId ? testEnv.authenticatedContext(userId).firestore() : testEnv.unauthenticatedContext().firestore();
+}
+function storageFor(userId) {
+  return userId ? testEnv.authenticatedContext(userId).storage() : testEnv.unauthenticatedContext().storage();
 }
 
 async function seed() {
@@ -81,11 +85,15 @@ before(async () => {
     firestore: {
       rules: await readFile(new URL("../../firestore.foundation.rules", import.meta.url), "utf8"),
     },
+    storage: {
+      rules: await readFile(new URL("../../storage.rules", import.meta.url), "utf8"),
+    },
   });
 });
 
 beforeEach(async () => {
   await testEnv.clearFirestore();
+  await testEnv.clearStorage();
   await seed();
 });
 
@@ -128,6 +136,29 @@ describe("authentication and organization isolation", () => {
       revokedAt: null,
       updatedAt: Timestamp.now(),
     }));
+  });
+
+  test("photo backup metadata is owner-only and path constrained", async () => {
+    const payload = {
+      schemaVersion: 1, photoId: "photo-1", memberId: "member-1", assessmentId: "assessment-1",
+      bucketKey: "front", view: "front", date: "2026-08-24", width: 1800, height: 1200,
+      storagePath: `users/${users.member}/photos/photo-1/image.jpg`,
+      thumbnailPath: `users/${users.member}/photos/photo-1/thumb.jpg`,
+      imageBytes: 1200, thumbnailBytes: 120, status: "active", record: {}, references: [],
+    };
+    await assertSucceeds(setDoc(doc(dbFor(users.member), "users", users.member, "photoBackups", "photo-1"), payload));
+    await assertFails(getDoc(doc(dbFor(users.outsider), "users", users.member, "photoBackups", "photo-1")));
+    await assertFails(setDoc(doc(dbFor(users.member), "users", users.member, "photoBackups", "photo-2"), { ...payload, photoId: "photo-2" }));
+  });
+
+  test("photo binaries allow only owner JPEG writes and deny client deletes", async () => {
+    const path = `users/${users.member}/photos/photo-1/image.jpg`;
+    const ownerRef = ref(storageFor(users.member), path);
+    await assertSucceeds(uploadBytes(ownerRef, new Uint8Array([1, 2, 3]), { contentType: "image/jpeg" }));
+    await assertSucceeds(getMetadata(ownerRef));
+    await assertFails(getMetadata(ref(storageFor(users.outsider), path)));
+    await assertFails(uploadBytes(ref(storageFor(users.member), `users/${users.member}/photos/photo-2/image.jpg`), new Uint8Array([1]), { contentType: "image/png" }));
+    await assertFails(deleteObject(ownerRef));
   });
 });
 

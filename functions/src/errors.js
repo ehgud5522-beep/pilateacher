@@ -19,6 +19,9 @@ class GatewayError extends Error {
     this.code = ERROR_DEFINITIONS[code] ? code : "internal_error";
     this.status = options.status || definition.status;
     this.publicMessage = options.publicMessage || definition.message;
+    this.diagnostic = options.diagnostic && typeof options.diagnostic === "object"
+      ? Object.freeze({ ...options.diagnostic })
+      : null;
   }
 }
 
@@ -36,6 +39,15 @@ function sendError(res, error, requestId = "") {
     },
   };
   if (requestId) payload.error.requestId = requestId;
+  if (safeError.diagnostic) {
+    payload.error.diagnostic = {
+      stage: String(safeError.diagnostic.stage || "unknown"),
+      providerStatus: Number(safeError.diagnostic.providerStatus) || 0,
+      providerCode: String(safeError.diagnostic.providerCode || "unknown"),
+      providerType: String(safeError.diagnostic.providerType || "unknown"),
+      providerRequestId: String(safeError.diagnostic.providerRequestId || ""),
+    };
+  }
   return res.status(safeError.status).json(payload);
 }
 

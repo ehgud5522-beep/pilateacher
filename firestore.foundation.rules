@@ -74,6 +74,26 @@ service cloud.firestore {
           );
         allow delete: if false;
       }
+
+      match /photoBackups/{photoId} {
+        allow read: if signedIn() && request.auth.uid == userId;
+        allow create, update: if signedIn()
+          && request.auth.uid == userId
+          && photoId.size() > 0
+          && photoId.size() <= 160
+          && request.resource.data.photoId == photoId
+          && request.resource.data.memberId is string
+          && request.resource.data.memberId.size() <= 160
+          && request.resource.data.status in ["active", "deleted"]
+          && request.resource.data.storagePath == "users/" + userId + "/photos/" + photoId + "/image.jpg"
+          && request.resource.data.thumbnailPath == "users/" + userId + "/photos/" + photoId + "/thumb.jpg"
+          && request.resource.data.imageBytes is int
+          && request.resource.data.thumbnailBytes is int
+          && request.resource.data.references is list
+          && request.resource.data.references.size() <= 20;
+        // Physical deletion is server-owned after the 30-day retention period.
+        allow delete: if false;
+      }
     }
 
     match /organizations/{organizationId} {

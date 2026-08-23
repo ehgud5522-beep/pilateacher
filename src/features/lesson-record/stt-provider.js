@@ -4,6 +4,7 @@ import { SpeechRecognition } from "@capacitor-community/speech-recognition";
 export class SttProvider {
   constructor(kind) { this.kind = kind; }
   isAvailable() { return false; }
+  get capability() { return { available: this.isAvailable(), kind: this.kind }; }
   get native() { return null; }
   get web() { return null; }
 }

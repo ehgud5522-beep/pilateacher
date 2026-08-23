@@ -1,5 +1,16 @@
 node_modules/
 .env
+.env.*
+!.env.example
+build/
+*.apk
+*.aab
+*.bak
+*.backup
+*service-account*.json
+*serviceAccount*.json
+tools/ai/live-*.mjs
+tools/backup/live-*.mjs
 cert_key.pemdist/ 
 cert_key.pem 
 .firebase/

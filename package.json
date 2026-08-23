@@ -18,7 +18,7 @@
     "android:release:guard": "node tools/android/release-guard.mjs --stage preflight",
     "android:release:build": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/android/build-release.ps1",
     "android:release:verify": "node tools/android/release-guard.mjs --stage artifact --aab",
-    "test:rules": "firebase emulators:exec --only firestore --project pilateacher-dev --config firebase.foundation.json \"node --test tests/rules/firestore.rules.test.js\"",
+    "test:rules": "firebase emulators:exec --only firestore,storage --project pilateacher-dev --config firebase.foundation.json \"node --test tests/rules/firestore.rules.test.js\"",
     "backfill:dry-run": "node tools/migration/cli.js --fixture tests/fixtures/legacy-backup.json",
     "validate:fixture": "node tools/validation/cli.js --legacy tests/fixtures/legacy-backup.json --new tests/fixtures/new-structure.json --format markdown"
   },
@@ -30,6 +30,7 @@
     "@capacitor/core": "^8.4.2",
     "@capacitor/filesystem": "^8.1.3",
     "@capacitor/ios": "^8.4.2",
+    "@capacitor/local-notifications": "^8.3.1",
     "@capacitor/motion": "8.0.1",
     "@capacitor/share": "^8.0.1",
     "@capgo/camera-preview": "8.11.2",

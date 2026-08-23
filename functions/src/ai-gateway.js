@@ -32,6 +32,7 @@ function createAIGatewayHandler({
 
   return async function aiGatewayHandler(req, res) {
     let requestId = "";
+    let operation = "";
     let idempotencyClaim = null;
     let fingerprint = "";
     try {
@@ -45,6 +46,7 @@ function createAIGatewayHandler({
       const { uid } = await verifyFirebaseRequest(req, verifyIdToken);
       const request = parseGatewayRequest(req);
       requestId = request.requestId;
+      operation = request.operation;
       diagnosticLog("request_authenticated", { requestId, operation: request.operation, httpStatus: 0, auth: "success" });
       const authorization = await policyService.authorize({
         uid,
@@ -118,6 +120,20 @@ function createAIGatewayHandler({
       diagnosticLog("gateway_completed", { requestId, operation: request.operation, httpStatus: 200, validation: "success" });
       return res.status(200).json(response);
     } catch (error) {
+      if (error?.diagnostic && typeof error.diagnostic === "object") {
+        const details = error.diagnostic;
+        globalThis.console.warn("[PilaTeacher/aiGateway] provider_failed", {
+          requestId,
+          operation,
+          httpStatus: Number(error?.status) || 500,
+          code: String(error?.code || "internal_error"),
+          stage: String(details.stage || "unknown"),
+          providerStatus: Number(details.providerStatus) || 0,
+          providerCode: String(details.providerCode || "unknown"),
+          providerType: String(details.providerType || "unknown"),
+          providerRequestId: String(details.providerRequestId || ""),
+        });
+      }
       diagnosticLog("gateway_failed", { requestId, httpStatus: Number(error?.status) || 500, code: String(error?.code || "internal_error") });
       if (idempotencyClaim?.state === "new" && idempotencyClaim.storageKey) {
         try {

@@ -7,32 +7,46 @@ const start = source.indexOf("function ReferenceMemberDetail(");
 const end = source.indexOf("\nfunction ChangeSummary(", start);
 const detail = source.slice(start, end);
 
-test("member detail follows the memory-first card order", () => {
-  const headings = [
-    "지난 수업",
-    "반복해서 기록된 내용",
-    "다음 확인",
-    "최근 변화",
-    "최근 수업 기록",
-    "최신 체형분석",
-    "현재 이용권",
-    "이용권 변경 이력 및 상세 설정",
-    "회원 기본정보",
+const requiredIndex = (needle) => {
+  const index = detail.indexOf(needle);
+  assert.notEqual(index, -1, `${needle} must exist in member detail`);
+  return index;
+};
+
+test("member detail follows quick actions, summary, memory, then four management cards", () => {
+  const orderedAnchors = [
+    'aria-label="회원 빠른 실행"',
+    'data-member-section="top-summary"',
+    'data-member-section="memory-first"',
+    'data-member-management-card="recent-lessons"',
+    'data-member-management-card="posture"',
+    'data-member-management-card="membership"',
+    'data-member-management-card="basic-and-memos"',
   ];
-  let cursor = -1;
-  headings.forEach((heading) => {
-    const next = detail.indexOf(heading);
-    assert.ok(next > cursor, `${heading} must appear in the requested order`);
-    cursor = next;
-  });
+  const positions = orderedAnchors.map(requiredIndex);
+  positions.slice(1).forEach((position, index) => assert.ok(position > positions[index], `${orderedAnchors[index + 1]} must follow ${orderedAnchors[index]}`));
+  ["최근 수업기록", "체형변화·사진", "이용권·결제", "기본정보·상담메모"].forEach((label) => assert.match(detail, new RegExp(label)));
 });
 
-test("member detail uses one compact empty memory state and keeps legacy data below memory", () => {
+test("member detail keeps the compact empty memory state and provenance dates", () => {
   assert.match(detail, /data-member-section="memory-first"/);
   assert.match(detail, /아직 작성된 수업 기록이 없습니다\./);
-  assert.match(detail, /lessonNotes\.length > 0 && <Section title="최근 수업 기록"/);
-  assert.ok(detail.indexOf("data-member-section=\"memory-first\"") < detail.indexOf("data-member-section=\"membership\""));
-  assert.ok(detail.indexOf("최신 체형분석") < detail.indexOf("data-member-section=\"membership\""));
+  assert.match(detail, /memoryDateLabel\(row\.date\)/);
+  assert.match(detail, /memorySourceDate\(.*Memory\)/);
+  assert.ok(requiredIndex('data-member-section="memory-first"') < requiredIndex('data-member-management-card="membership"'));
+});
+
+test("membership data and posture entry live inside their management cards", () => {
+  const postureStart = requiredIndex('data-member-management-card="posture"');
+  const membershipStart = requiredIndex('data-member-management-card="membership"');
+  const basicStart = requiredIndex('data-member-management-card="basic-and-memos"');
+  const postureCard = detail.slice(postureStart, membershipStart);
+  const membershipCard = detail.slice(membershipStart, basicStart);
+  ["새 체형분석", "과거 이력", "체형분석 과거 이력"].forEach((label) => assert.match(postureCard, new RegExp(label)));
+  ["누적 등록 횟수", "이용권 만료일", "회원 회당 금액", "최근 수업일", "정규", "서비스"].forEach((label) => assert.match(membershipCard, new RegExp(label)));
+  assert.doesNotMatch(detail.slice(0, membershipStart), /data-member-section="membership"/);
+  assert.match(detail.slice(basicStart), /상담 및 중요 메모/);
+  assert.match(detail.slice(basicStart), /회원 기본정보/);
 });
 
 test("member price keeps paid sessions policy and excludes service sessions", () => {

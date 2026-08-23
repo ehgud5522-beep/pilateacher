@@ -15,3 +15,13 @@ test("monthly schedule and report pay both consume the fallback rate", () => {
   assert.ok(matches.length >= 1, "monthly report must use member-or-center fallback");
   assert.match(source, /sum \+= rateFor\(db\.members\.find\(\(x\) => x\.id === a\.memberId\), s\.type, db\.settings\)/);
 });
+
+test("center settings hide the personal rate input without removing the stored fallback", () => {
+  const legacyStart = source.indexOf("function SettingsTab(");
+  const legacyEnd = source.indexOf("function ReferenceSettingsTab(", legacyStart);
+  const referenceStart = legacyEnd;
+  const referenceEnd = source.indexOf("function App(", referenceStart);
+  assert.doesNotMatch(source.slice(legacyStart, legacyEnd), /<Field label="개인 1회당 원">/);
+  assert.doesNotMatch(source.slice(referenceStart, referenceEnd), /<Field label="개인 1회당 원">/);
+  assert.match(source, /st\?\.payRate/);
+});

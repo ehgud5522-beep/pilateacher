@@ -73,7 +73,8 @@ import {
 import {
   ANNOTATION_PRESET_COLORS, HANDWRITING_SIZE_OPTIONS, annotationFont, annotationFontSize,
   annotationTextBounds, annotationTextLines, applyAnnotationDrag, arrowHeadPoints,
-  closestHandwritingWidth, hitTestAnnotations, normalizeAnnotationColor, readRecentAnnotationColors, rememberAnnotationColor,
+  closestHandwritingWidth, hexToHsl, hitTestAnnotations, hslToHex, normalizeAnnotationColor,
+  readRecentAnnotationColors, rememberAnnotationColor, screenPointToImagePoint,
 } from "./features/posture/posture-annotations.js";
 import { LOCAL_PHOTO_NOTICE_MESSAGE, claimLocalPhotoNotice } from "./features/posture/photo-storage-notice.js";
 import { classifyAuthError, createSingleFlightGate, safeAuthDiagnostic } from "./features/auth/apple-sign-in.js";
@@ -101,7 +102,7 @@ const sysDarkNow = () => {
 };
 
 /* 파일이 실제로 교체됐는지 1초 만에 확인하는 표시 — 설정 탭 맨 아래에 뜬다 */
-const APP_VER = "1.1.16 (20) · 2026-08-23";
+const APP_VER = "1.1.17 (21) · 2026-08-24";
 const RELEASE_VERSION = String(import.meta.env.VITE_APP_VERSION || "").trim();
 const RELEASE_BUILD_NUMBER = String(import.meta.env.VITE_BUILD_NUMBER || "").trim();
 const RELEASE_COMMIT_SHORT = String(import.meta.env.VITE_BUILD_COMMIT || "").trim().slice(0, 7);
@@ -3107,7 +3108,7 @@ function drawAnnotationMark(ctx, mark, width, height, options = {}) {
   const offsetX = Number(options.offsetX) || 0, offsetY = Number(options.offsetY) || 0;
   const lineScale = Math.max(0.01, Number(options.lineScale) || 1);
   const fontScale = Math.max(0.01, Number(options.fontScale) || lineScale);
-  const strokeWidth = Math.max(0.8, (Number(mark.width) || 3) * lineScale);
+  const strokeWidth = Math.max(0.8, (Number(mark.width) || 3) * (mark.tool === "arrow" ? 0.78 : 1) * lineScale);
   const point = (value) => ({ x: offsetX + Number(value?.x || 0) * width, y: offsetY + Number(value?.y || 0) * height });
   const start = point(mark.pts[0]), end = point(mark.pts[mark.pts.length - 1]);
   ctx.save();
@@ -3142,7 +3143,7 @@ function drawAnnotationMark(ctx, mark, width, height, options = {}) {
     else mark.pts.forEach((value, index) => { const next = point(value); index ? ctx.lineTo(next.x, next.y) : ctx.moveTo(next.x, next.y); });
     ctx.stroke();
     if (mark.tool === "arrow" && mark.pts.length >= 2) {
-      const [left, right] = arrowHeadPoints(start, end, (10 + (Number(mark.width) || 3) * 2) * lineScale);
+      const [left, right] = arrowHeadPoints(start, end, (7 + (Number(mark.width) || 3) * 1.4) * lineScale);
       ctx.beginPath(); ctx.moveTo(end.x, end.y); ctx.lineTo(left.x, left.y); ctx.moveTo(end.x, end.y); ctx.lineTo(right.x, right.y); ctx.stroke();
     }
   }
@@ -3183,7 +3184,8 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
   const [grid] = useState(false);
   const [ruler, setRuler] = useState(null);
   const [memoDraft, setMemoDraft] = useState(null);
-  const colorInputRef = useRef(null);
+  const [colorPickerOpen, setColorPickerOpen] = useState(false);
+  const [customColor, setCustomColor] = useState(() => hexToHsl("#6C5FD4"));
   const editRef = useRef(null);
   const memoTapRef = useRef(null);
   const rulerDrag = useRef(null);
@@ -3245,6 +3247,8 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
     setRecentColors(rememberAnnotationColor(window.localStorage, next));
     if (selectedMarkId) commitMarks((items) => items.map((mark) => mark.id === selectedMarkId ? { ...mark, color: next } : mark));
   };
+  const openColorPicker = () => { setCustomColor(hexToHsl(color)); setColorPickerOpen(true); };
+  const customColorPreview = hslToHex(customColor.h, customColor.s, customColor.l);
   const setHandwritingSize = (value) => {
     const next = closestHandwritingWidth(value);
     setWidth(next);
@@ -3291,6 +3295,7 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
   }, []);
 
   const degText = (deg) => `${Math.abs(deg).toFixed(1)}°`;
+  const imageFrame = () => wrapRef.current?.getBoundingClientRect() || canvasRef.current?.getBoundingClientRect();
 
   /* ---- 자(눈금자) 기하 ---- */
   const rulerGeom = (w, h) => {
@@ -3306,7 +3311,7 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
   const rulerZone = (p) => {
     const c = canvasRef.current;
     if (!c || !ruler) return { ok: true, pt: p };
-    const r = c.getBoundingClientRect(), w = r.width, h = r.height;
+    const r = imageFrame(), w = r.width, h = r.height;
     const g = rulerGeom(w, h);
     const lp = toLocal(g, { x: p.x * w, y: p.y * h });
     if (lp.y >= -1) return { ok: false, pt: p, lp };      /* 자 몸통과 그 아래 — 금지 */
@@ -3326,13 +3331,13 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
     ctx.save();
     if (mark.tool === "arrow" && mark.pts?.length >= 2) {
       const values = [mark.pts[0], mark.pts[mark.pts.length - 1]].map((point) => ({ x: point.x * w, y: point.y * h }));
-      ctx.setLineDash([4, 4]); ctx.strokeStyle = "rgba(255,255,255,.88)"; ctx.lineWidth = Math.max(6, (mark.width || 3) * renderScale + 5);
+      ctx.setLineDash([4, 4]); ctx.strokeStyle = "rgba(255,255,255,.88)"; ctx.lineWidth = Math.max(3, (mark.width || 3) * 0.78 * renderScale + 2);
       ctx.beginPath(); ctx.moveTo(values[0].x, values[0].y); ctx.lineTo(values[1].x, values[1].y); ctx.stroke(); ctx.setLineDash([]);
       drawAnnotationMark(ctx, mark, w, h, { lineScale: renderScale, fontScale: renderScale });
       values.forEach((value, index) => {
-        ctx.beginPath(); ctx.arc(value.x, value.y, 11, 0, Math.PI * 2); ctx.fillStyle = "rgba(18,22,32,.9)"; ctx.fill();
-        ctx.strokeStyle = "#FFFFFF"; ctx.lineWidth = 2.5; ctx.stroke();
-        ctx.beginPath(); ctx.arc(value.x, value.y, index ? 5 : 4, 0, Math.PI * 2); ctx.fillStyle = mark.color || color; ctx.fill();
+        ctx.beginPath(); ctx.arc(value.x, value.y, 6, 0, Math.PI * 2); ctx.fillStyle = "rgba(18,22,32,.9)"; ctx.fill();
+        ctx.strokeStyle = "#FFFFFF"; ctx.lineWidth = 1.5; ctx.stroke();
+        ctx.beginPath(); ctx.arc(value.x, value.y, index ? 2.8 : 2.3, 0, Math.PI * 2); ctx.fillStyle = mark.color || color; ctx.fill();
       });
     } else if (mark.tool === "text") {
       const bounds = annotationTextBounds(mark, { width: w, height: h }, measureCanvasText, renderScale);
@@ -3397,9 +3402,14 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
   }, [marks, draft, pending, grid, ruler, color, width, opacity, photo, size, selectedMarkId]);
   useEffect(() => { draw(); }, [draw]);
 
-  const pos = (e) => {
-    const r = canvasRef.current.getBoundingClientRect();
-    return { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height };
+  const pos = (e) => screenPointToImagePoint(e, imageFrame(), { zoom, panX: pan.x, panY: pan.y });
+  const baseViewport = () => {
+    const rect = imageFrame();
+    return { width: Math.max(1, rect?.width || size.w || 1), height: Math.max(1, rect?.height || size.h || 1) };
+  };
+  const interactionViewport = () => {
+    const viewport = baseViewport();
+    return { width: viewport.width * zoom, height: viewport.height * zoom };
   };
   const down = (e) => {
     e.currentTarget.setPointerCapture?.(e.pointerId);
@@ -3432,10 +3442,11 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
     }
     if (ptrs.current.size > 1) return;
     const raw = pos(e);
-    const rect = canvasRef.current.getBoundingClientRect();
-    const viewport = { width: rect.width, height: rect.height };
+    const rect = imageFrame();
+    const viewport = interactionViewport();
+    const hitFontScale = (rect.width / 300) * zoom;
     if (tool === "eraser") {
-      const hit = hitTestAnnotations(marks, raw, viewport, { includeHandles: false, measureText: measureCanvasText, fontScale: rect.width / 300, bodyTolerance: 18 });
+      const hit = hitTestAnnotations(marks, raw, viewport, { includeHandles: false, measureText: measureCanvasText, fontScale: hitFontScale, bodyTolerance: 18 });
       if (hit) {
         if (!window.confirm("선택한 표시를 삭제할까요?")) return;
         commitMarks((items) => items.filter((_, index) => index !== hit.index));
@@ -3444,7 +3455,7 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
       return;
     }
     if (ruler) {
-      const rct = canvasRef.current.getBoundingClientRect();
+      const rct = imageFrame();
       const g = rulerGeom(rct.width, rct.height);
       const P = { x: raw.x * rct.width, y: raw.y * rct.height };
       const lp = toLocal(g, P);
@@ -3453,7 +3464,7 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
       /* 자 몸통과 그 아래에서는 절대 그어지지 않는다 — 누르면 자를 옮긴다 */
       if (lp.y >= -1) { rulerDrag.current = { mode: "move", dx: P.x - g.C.x, dy: P.y - g.C.y }; return; }
     }
-    const editable = hitTestAnnotations(marks, raw, viewport, { tools: ["arrow", "text"], measureText: measureCanvasText, fontScale: rect.width / 300, handleRadius: 24, bodyTolerance: 16 });
+    const editable = hitTestAnnotations(marks, raw, viewport, { tools: ["arrow", "text"], measureText: measureCanvasText, fontScale: hitFontScale, handleRadius: 22, bodyTolerance: 14 });
     if (editable) {
       const kind = editable.mark.tool === "text" ? "move-text" : editable.part === "start" ? "arrow-start" : editable.part === "end" ? "arrow-end" : "move-arrow";
       const anchor = editable.mark.pts?.[0] || raw;
@@ -3509,7 +3520,7 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
     }
     if (gest.current && ptrs.current.size >= 2 && ruler) {
       const el = canvasRef.current; if (!el) return;
-      const r = el.getBoundingClientRect();
+      const r = imageFrame();
       const [p1, p2] = [...ptrs.current.values()];
       const mx = (p1.x + p2.x) / 2, my = (p1.y + p2.y) / 2;
       const ang = (Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180) / Math.PI;
@@ -3524,7 +3535,7 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
     if (ptrs.current.size > 1) return;
     const raw = pos(e);
     if (rulerDrag.current && ruler) {
-      const rct = canvasRef.current.getBoundingClientRect();
+      const rct = imageFrame();
       const P = { x: raw.x * rct.width, y: raw.y * rct.height };
       const d = rulerDrag.current;
       if (d.mode === "move") setRuler((r) => ({ ...r, cx: Math.min(0.98, Math.max(0.02, (P.x - d.dx) / rct.width)), cy: Math.min(0.98, Math.max(0.02, (P.y - d.dy) / rct.height)) }));
@@ -3532,7 +3543,7 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
       return;
     }
     if (editRef.current && editRef.current.pointerId === e.pointerId) {
-      const edit = editRef.current, rect = canvasRef.current.getBoundingClientRect();
+      const edit = editRef.current, rect = imageFrame();
       const next = applyAnnotationDrag(edit.originalMark, edit, raw, { width: rect.width, height: rect.height }, { measureText: measureCanvasText, fontScale: rect.width / 300 });
       replaceMarks(marksRef.current.map((mark) => mark.id === edit.markId ? next : mark));
       return;
@@ -3710,10 +3721,9 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
                   {color === optionColor && <Check size={14} strokeWidth={3} color={["#FFFFFF", "#FFD43B"].includes(optionColor) ? "#17171F" : "#FFFFFF"} />}
                 </button>
               ))}
-              <label className="relative flex h-11 min-w-[44px] shrink-0 cursor-pointer items-center justify-center gap-0.5 rounded-lg" style={{ color: "#fff", backgroundColor: "rgba(255,255,255,.08)", border: "1px solid rgba(255,255,255,.12)" }} aria-label="다른 색 직접 선택">
+              <button type="button" onClick={openColorPicker} className="relative flex h-11 min-w-[44px] shrink-0 items-center justify-center gap-0.5 rounded-lg" style={{ color: "#fff", backgroundColor: "rgba(255,255,255,.08)", border: "1px solid rgba(255,255,255,.12)" }} aria-label="다른 색 직접 선택">
                 <Plus size={13} /><Palette size={14} />
-                <input ref={colorInputRef} type="color" value={color} onInput={(event) => chooseColor(event.currentTarget.value)} onChange={(event) => chooseColor(event.currentTarget.value)} aria-label="다른 색 직접 선택" className="absolute inset-0 h-full w-full cursor-pointer opacity-0" />
-              </label>
+              </button>
             </div>
           </div>
           <div className="mt-1.5 flex items-center gap-1.5 border-t pt-1.5" style={{ borderColor: "rgba(255,255,255,.08)" }}>
@@ -3745,6 +3755,13 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
       {guideSheet && <ScheduleBottomSheet title="기준선 선택" subtitle="종류를 고른 뒤 사진 위에서 원하는 위치를 직접 눌러 조절하세요" onClose={() => setGuideSheet(false)}>
         <div className="space-y-2">
           {[{ key: "shoulder", label: "어깨선", sub: "좌우 어깨 높이 확인" }, { key: "pelvis", label: "골반선", sub: "좌우 골반 높이 확인" }, { key: "spine", label: "척추 중심선", sub: "수직 중심 정렬" }, { key: "knee", label: "무릎선", sub: "좌우 무릎 높이" }, { key: "ankle", label: "발목선", sub: "좌우 발목 높이" }].map((item, index) => <button type="button" key={item.key} onClick={() => prepareGuide(item.key)} className="flex min-h-12 w-full items-center gap-3 px-3 text-left" style={{ borderRadius: 10, backgroundColor: index < 2 ? TINT : CANVAS, border: `1px solid ${index < 2 ? "#D5D1EB" : LINE}` }}><span className="min-w-0 flex-1"><span className="block text-sm font-bold" style={{ color: INK }}>{item.label}</span><span className="mt-0.5 block text-xs" style={{ color: SUB }}>{item.sub} · 위치는 다음 화면에서 지정</span></span><ChevronRight size={15} style={{ color: FAINT }} /></button>)}
+        </div>
+      </ScheduleBottomSheet>}
+      {colorPickerOpen && <ScheduleBottomSheet title="사용자 지정 색상" subtitle="화면 안에서 색을 확인한 뒤 적용하세요" onClose={() => setColorPickerOpen(false)}>
+        <div className="space-y-4">
+          <div className="flex items-center gap-3 rounded-xl p-3" style={{ backgroundColor: CANVAS }}><span className="h-12 w-12 shrink-0 rounded-xl" style={{ backgroundColor: customColorPreview, border: `1px solid ${LINE}` }} /><span className="min-w-0 flex-1"><span className="block text-xs font-bold" style={{ color: INK }}>미리보기</span><span className="mt-1 block text-xs font-extrabold tabular-nums" style={{ color: SUB }}>{customColorPreview}</span></span></div>
+          {[{ key: "h", label: "색상", min: 0, max: 359, background: "linear-gradient(90deg,#FF3B30,#FFD43B,#34C759,#35B8FF,#356AE6,#AF52DE,#FF3B30)" }, { key: "s", label: "선명도", min: 0, max: 100, background: `linear-gradient(90deg,${hslToHex(customColor.h, 0, customColor.l)},${hslToHex(customColor.h, 100, customColor.l)})` }, { key: "l", label: "밝기", min: 5, max: 95, background: `linear-gradient(90deg,#000000,${hslToHex(customColor.h, customColor.s, 50)},#FFFFFF)` }].map((row) => <label key={row.key} className="block"><span className="mb-2 block text-xs font-bold" style={{ color: INK2 }}>{row.label}</span><input type="range" min={row.min} max={row.max} value={customColor[row.key]} onChange={(event) => setCustomColor((current) => ({ ...current, [row.key]: Number(event.target.value) }))} className="h-11 w-full" style={{ accentColor: customColorPreview, background: row.background, touchAction: "pan-x" }} /></label>)}
+          <div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => setColorPickerOpen(false)} className="h-12 text-sm font-bold" style={{ borderRadius: 10, backgroundColor: CANVAS, color: INK2 }}>취소</button><button type="button" onClick={() => { chooseColor(customColorPreview); setColorPickerOpen(false); }} className="h-12 text-sm font-extrabold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>적용</button></div>
         </div>
       </ScheduleBottomSheet>}
       {memoDraft && <ScheduleBottomSheet title="손글씨 메모" subtitle="여러 줄로 입력할 수 있고, 넣은 뒤 사진에서 다시 끌어 옮길 수 있습니다" onClose={() => setMemoDraft(null)}>
@@ -4104,12 +4121,10 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
   const notes = [...(member.notes || [])].sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
   const lessonNotes = notes.filter((note) => !["상담", "인바디"].includes(note.type));
   const consultationNotes = notes.filter((note) => note.type === "상담").sort((a, b) => Number(Boolean(b.important)) - Number(Boolean(a.important)) || String(b.date || "").localeCompare(String(a.date || "")));
-  const latestLessonNote = lessonNotes[0] || null;
-  const latestSummary = latestLessonNote?.aiSummaryTeacherEdited || latestLessonNote?.aiSummary || null;
-  const latestStructuredRecord = latestLessonNote?.lessonRecord?.confirmedRecord || latestLessonNote?.lessonRecord?.structuredDraft || null;
   const prepText = (value, fallback = "기록 없음") => Array.isArray(value) ? (value.map((item) => typeof item === "string" ? item : item?.text).filter(Boolean).join(" · ") || fallback) : (String(value || "").trim() || fallback);
   const memoryBriefing = useMemo(() => createMemberBriefing({ member }), [member]);
   const memorySummary = useMemo(() => memberMemorySummary(memoryBriefing), [memoryBriefing]);
+  const hasMemoryOverview = lessonNotes.length > 0;
   useEffect(() => {
     trackMemberMemoryUsage("briefing_rendered", { count: 1 });
     trackMemberMemoryUsage("briefing_opened", { count: 1 });
@@ -4178,29 +4193,17 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
           <section style={{ ...sectionStyle, backgroundColor: TINT, borderColor: RING }}>
             <div className="flex items-center gap-3"><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-base font-extrabold text-white" style={{ background: GRAD }}>{(member.name || "?").slice(0, 1)}</span><span className="min-w-0 flex-1"><span className="block truncate text-base font-extrabold" style={{ color: INK }}>{member.name || "이름 미입력"}</span><span className="mt-0.5 block text-xs" style={{ color: SUB }}>다음 수업 {next ? `${ymd(next.date)} ${next.start}` : "예약 없음"}</span></span><span className="shrink-0 text-right"><span className="block text-2xl font-extrabold tabular-nums" style={{ color: left(member) <= 3 ? BAD : BRAND }}>{left(member)}회</span><span className="block text-[10px]" style={{ color: SUB }}>잔여</span></span></div>
           </section>
-          <Section title="다음 수업 준비" action={<span style={{ fontSize: 9, color: SUB }}>확정 기록 · 규칙 기반</span>}>
-            <div className="grid grid-cols-2 gap-2">{[["지난 수업", memorySummary.lastLesson], ["반복 기록", memorySummary.repeated], ["다음 확인", memorySummary.nextCheck], ["최근 변화", memorySummary.recentChange]].map(([label, value]) => <div key={label} style={{ minHeight: 58, padding: "8px 9px", borderRadius: 8, backgroundColor: CANVAS }}><p style={{ fontSize: 9, color: SUB }}>{label}</p><p className="mt-1 line-clamp-2" style={{ fontSize: 11, lineHeight: 1.4, fontWeight: 650, color: label === "다음 확인" ? BRAND_D : INK2 }}>{value}</p></div>)}</div>
-            <div className="mt-2 space-y-1">{memoryBriefing.lines.slice(0, 5).map((briefingLine, index) => { const canReject = (briefingLine.memoryIds || []).some((memoryId) => memoryBriefing.memories.find((entry) => entry.id === memoryId)?.origin === "ai") && !(briefingLine.memoryIds || []).some((memoryId) => memoryBriefing.memories.find((entry) => entry.id === memoryId)?.origin === "instructor"); return <div key={`${briefingLine.kind}-${index}`} className="flex items-start gap-2"><p className="min-w-0 flex-1 text-[10px] leading-relaxed" style={{ color: briefingLine.kind === "conflict" ? WARN : SUB }}>{briefingLine.text}</p>{canReject && <button type="button" onClick={() => rejectBriefingLine(briefingLine)} className="shrink-0 text-[9px] font-bold" style={{ color: SUB }}>숨기기</button>}</div>; })}</div>
-          </Section>
-          <Section title="회원 기본정보 요약" action={<button type="button" onClick={openEdit} style={{ fontSize: 12, fontWeight: 700, color: BRAND }}><Pencil size={12} className="inline" /> 정보 수정</button>}>
-            <div className="grid grid-cols-2 gap-x-3 gap-y-2">{[["이름", member.name || "-"], ["회원 상태", isHold(member) ? "홀딩" : isEnded(member) ? "종료" : "활성"], ...(!singleInstructorMode ? [["담당 강사", member.instructor || "미지정"]] : []), ["연락처", maskedPhone(member.phone)], ["수업 유형", member.lessonType === "duet" ? "듀엣" : member.lessonType === "group" ? "그룹" : "개인"], ["기본 수업시간", `${lessonDurationOf(member)}분`], ["생년월일 · 나이", maskedBirth(member.birth, ageOf(member))]].map(([k,v]) => <div key={k} className={k === "생년월일 · 나이" ? "col-span-2" : ""}><p style={{ fontSize: 10, color: SUB }}>{k}</p><p className="mt-0.5 truncate" style={{ fontSize: 12, fontWeight: 600, color: INK }}>{v}</p></div>)}</div>
-          </Section>
-          <section style={{ ...sectionStyle, backgroundColor: TINT, borderColor: "#D5D1EB" }}>
-            <div className="flex items-start gap-3"><div className="min-w-0 flex-1"><p style={{ fontSize: 11, color: SUB }}>현재 이용권</p><p className="mt-0.5 truncate" style={{ fontSize: 14, fontWeight: 700, color: INK }}>{member.passName || "이용권 없음"}</p></div><div className="text-right"><p className="tabular-nums" style={{ fontSize: 27, lineHeight: 1, fontWeight: 750, color: left(member) <= 3 ? BAD : BRAND }}>{left(member)}<span style={{ fontSize: 12 }}>회 남음</span></p><p className="mt-1" style={{ fontSize: 10, color: SUB }}>정규 {num(member.regular)} · 서비스 {num(member.service)}</p></div></div>
-            <div className="mt-3 grid grid-cols-2 gap-2">{[["누적 등록 횟수", membership.registeredTotal ? `${membership.registeredTotal}회` : "미등록"], ["이용권 만료일", member.contractEnd ? ymd(member.contractEnd) : "미설정"], ["회원 회당 금액", memberUnit ? `₩${won(memberUnit)}` : "결제 내역 없음"], ["최근 수업일", recentLesson ? `${md(recentLesson.date)} ${recentLesson.start}` : "수업 이력 없음"], ["다음 예약일", next ? `${md(next.date)} ${next.start}` : "예약 없음"]].map(([k,v]) => <div key={k} style={{ padding: "8px 9px", borderRadius: 8, backgroundColor: CARD }}><p style={{ fontSize: 9, color: SUB }}>{k}</p><p className="mt-0.5 truncate tabular-nums" style={{ fontSize: 11, fontWeight: 700, color: INK }}>{v}</p></div>)}</div>
-            {membership.needsLegacyReview && <p className="mt-2" style={{ padding: "8px 9px", borderRadius: 8, backgroundColor: WARN_S, color: WARN, fontSize: 10, lineHeight: 1.45 }}>잔여 합계가 누적 등록 횟수보다 큽니다. 기존 데이터 확인이 필요하며 자동으로 수정하지 않았습니다.</p>}
-            {canViewSettlement && <div className="mt-2 flex items-center gap-2" style={{ padding: "8px 9px", borderRadius: 8, backgroundColor: CARD }}><span className="min-w-0 flex-1"><span className="block" style={{ fontSize: 9, color: SUB }}>강사 정산 단가</span><span className="block text-xs font-bold tabular-nums" style={{ color: INK }}>₩{won(settlementUnit)}{Number(member.payRate) > 0 ? "" : " · 센터 기본"}</span></span><button type="button" onClick={openRate} style={{ fontSize: 11, fontWeight: 700, color: BRAND }}>단가 수정</button></div>}
-            <p className="mt-2" style={{ fontSize: 10, lineHeight: 1.45, color: SUB }}>회원 회당 금액은 총 결제액을 정규 유료 횟수로 나눕니다. 할인은 결제액에 반영하고 서비스 횟수는 제외합니다.</p>
-            <button type="button" onClick={openMembership} className="mt-2 h-10 w-full text-xs font-bold" style={{ borderRadius: 8, backgroundColor: BRAND, color: "#fff" }}>이용권 수정</button>
+          <section data-member-section="memory-first" style={{ ...sectionStyle, padding: hasMemoryOverview ? "4px 14px" : "11px 14px" }}>
+            {!hasMemoryOverview ? <p style={{ fontSize: 12, color: SUB }}>아직 작성된 수업 기록이 없습니다.</p> : <>
+              {[["지난 수업", memorySummary.lastLesson], ["반복해서 기록된 내용", memorySummary.repeated === "반복 기록 없음" ? "아직 반복 기록이 없습니다" : memorySummary.repeated], ["다음 확인", memorySummary.nextCheck], ["최근 변화", memorySummary.recentChange]].map(([label, value], index) => <div key={label} className="flex items-start gap-3" style={{ padding: "9px 0", borderTop: index ? `1px solid ${LINE}` : "none" }}><p className="w-[104px] shrink-0" style={{ fontSize: 10, fontWeight: 700, color: SUB }}>{label}</p><p className="min-w-0 flex-1 line-clamp-2" style={{ fontSize: 11, lineHeight: 1.45, fontWeight: 650, color: label === "다음 확인" ? BRAND_D : INK2 }}>{value}</p></div>)}
+              {memoryBriefing.lines.some((briefingLine) => !["first_lesson", "no_memory"].includes(briefingLine.kind)) && <div style={{ padding: "8px 0", borderTop: `1px solid ${LINE}` }}>{memoryBriefing.lines.filter((briefingLine) => !["first_lesson", "no_memory"].includes(briefingLine.kind)).slice(0, 5).map((briefingLine, index) => { const canReject = (briefingLine.memoryIds || []).some((memoryId) => memoryBriefing.memories.find((entry) => entry.id === memoryId)?.origin === "ai") && !(briefingLine.memoryIds || []).some((memoryId) => memoryBriefing.memories.find((entry) => entry.id === memoryId)?.origin === "instructor"); return <div key={`${briefingLine.kind}-${index}`} className="flex items-start gap-2"><p className="min-w-0 flex-1 text-[10px] leading-relaxed" style={{ color: briefingLine.kind === "conflict" ? WARN : SUB }}>{briefingLine.text}</p>{canReject && <button type="button" onClick={() => rejectBriefingLine(briefingLine)} className="shrink-0 text-[9px] font-bold" style={{ color: SUB }}>숨기기</button>}</div>; })}</div>}
+            </>}
           </section>
-          <Section title="수업 준비 요약" action={<button type="button" onClick={openPreparation} style={{ fontSize: 12, fontWeight: 700, color: BRAND }}>목표·주의 수정</button>}>
-            <div className="space-y-2"><div><p style={{ fontSize: 10, color: SUB }}>운동 목표</p><p className="mt-0.5" style={{ fontSize: 12, lineHeight: 1.45, color: member.goal ? INK2 : SUB }}>{member.goal || "등록된 운동 목표가 없습니다"}</p></div><div style={{ padding: "9px 10px", borderRadius: 8, backgroundColor: WARN_S }}><p style={{ fontSize: 10, fontWeight: 700, color: WARN }}>통증 및 주의사항</p><p className="mt-1" style={{ fontSize: 12, lineHeight: 1.45, color: INK2 }}>{(member.focus || []).length ? member.focus.join(" · ") : "등록된 주의사항이 없습니다"}</p></div><div className="grid grid-cols-2 gap-2">{[["최근 수업 내용", latestLessonNote?.body || "기록 없음"], ["다음 수업 계획", prepText(latestStructuredRecord?.nextFocus || latestSummary?.nextGoals)], ["최근 관찰", prepText(latestStructuredRecord?.observations || latestSummary?.memberCondition)]].map(([k,v], index) => <div key={k} className={index === 0 ? "col-span-2" : ""} style={{ padding: "8px 9px", borderRadius: 8, backgroundColor: CANVAS }}><p style={{ fontSize: 9, color: SUB }}>{k}</p><p className="mt-0.5 line-clamp-2" style={{ fontSize: 11, lineHeight: 1.45, color: INK2 }}>{v}</p></div>)}</div><button type="button" onClick={openRecord} className="h-10 w-full text-xs font-bold" style={{ borderRadius: 8, backgroundColor: TINT, color: BRAND_D }}>수업 기록 작성</button></div>
-          </Section>
+          {lessonNotes.length > 0 && <Section title="최근 수업 기록" action={<button type="button" onClick={() => setSheet("records-all")} style={{ fontSize: 12, fontWeight: 600, color: BRAND }}>전체 기록 보기</button>}>
+            {lessonNotes.slice(0, 3).map((note) => { const summary = note.aiSummaryTeacherEdited || note.aiSummary || {}; const structured = note.lessonRecord?.confirmedRecord || note.lessonRecord?.structuredDraft || {}; const detailCount = (structured.observations?.length || 0) + (structured.responses?.length || 0) + (summary.pain?.length || 0) + (summary.improvements?.length || 0); return <div key={note.id} style={{ padding: "8px 0", borderTop: `1px solid ${LINE}` }}><div className="flex items-center gap-2"><p className="min-w-0 flex-1" style={{ fontSize: 10, color: SUB }}>{ymd(note.date)} · {note.type || "수업"}</p>{note.lessonRecord?.status === "confirmed_unstructured" && <span style={{ fontSize: 9, color: WARN }}>미구조화</span>}{summary.memberCondition && <span style={{ fontSize: 9, color: BRAND_D }}>{summary.memberCondition}</span>}</div><p className="mt-1 line-clamp-2" style={{ fontSize: 12, lineHeight: 1.45, color: INK2 }}>{prepText(structured.didToday || summary.todayExercises, note.body)}</p>{detailCount > 0 && <p className="mt-1 line-clamp-2" style={{ fontSize: 10, color: WARN }}>{[prepText(structured.observations?.length ? structured.observations : summary.pain, ""), prepText(structured.responses?.length ? structured.responses : summary.improvements, "")].filter(Boolean).join(" · ")}</p>}</div>; })}
+          </Section>}
           <Section title="상담 및 중요 메모" action={<div className="flex gap-3"><button type="button" onClick={() => setSheet("memos-all")} style={{ fontSize: 12, fontWeight: 600, color: SUB }}>전체 보기</button><button type="button" onClick={openMemo} style={{ fontSize: 12, fontWeight: 700, color: BRAND }}>메모 추가</button></div>}>
             {consultationNotes.length ? consultationNotes.slice(0, 3).map((note) => <div key={note.id} className="flex items-start gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}` }}><button type="button" aria-label={note.important ? "중요 메모 고정 해제" : "중요 메모로 고정"} onClick={() => commitPatch("pin", { notes: (member.notes || []).map((item) => item.id === note.id ? { ...item, important: !item.important } : item) }, false)} className="mt-0.5 shrink-0" style={{ color: note.important ? WARN : FAINT }}><Star size={14} fill={note.important ? "currentColor" : "none"} /></button><span className="min-w-0 flex-1"><span className="block" style={{ fontSize: 10, color: SUB }}>{ymd(note.date)}{note.important ? " · 중요" : ""}</span><span className="mt-0.5 block line-clamp-2" style={{ fontSize: 12, lineHeight: 1.45, color: INK2 }}>{note.body}</span></span></div>) : <button type="button" onClick={openMemo} className="flex h-9 w-full items-center justify-between px-2 text-left" style={{ borderRadius: 8, backgroundColor: CANVAS, color: SUB, fontSize: 11 }}>등록된 상담 메모가 없습니다<span style={{ color: BRAND }}>추가하기</span></button>}
-          </Section>
-          <Section title="최근 수업 기록" action={<button type="button" onClick={() => setSheet("records-all")} style={{ fontSize: 12, fontWeight: 600, color: BRAND }}>전체 기록 보기</button>}>
-            {lessonNotes.length ? lessonNotes.slice(0, 3).map((note) => { const summary = note.aiSummaryTeacherEdited || note.aiSummary || {}; const structured = note.lessonRecord?.confirmedRecord || note.lessonRecord?.structuredDraft || {}; const detailCount = (structured.observations?.length || 0) + (structured.responses?.length || 0) + (summary.pain?.length || 0) + (summary.improvements?.length || 0); return <div key={note.id} style={{ padding: "8px 0", borderTop: `1px solid ${LINE}` }}><div className="flex items-center gap-2"><p className="min-w-0 flex-1" style={{ fontSize: 10, color: SUB }}>{ymd(note.date)} · {note.type || "수업"}</p>{note.lessonRecord?.status === "confirmed_unstructured" && <span style={{ fontSize: 9, color: WARN }}>미구조화</span>}{summary.memberCondition && <span style={{ fontSize: 9, color: BRAND_D }}>{summary.memberCondition}</span>}</div><p className="mt-1 line-clamp-2" style={{ fontSize: 12, lineHeight: 1.45, color: INK2 }}>{prepText(structured.didToday || summary.todayExercises, note.body)}</p>{detailCount > 0 && <p className="mt-1 line-clamp-2" style={{ fontSize: 10, color: WARN }}>{[prepText(structured.observations?.length ? structured.observations : summary.pain, ""), prepText(structured.responses?.length ? structured.responses : summary.improvements, "")].filter(Boolean).join(" · ")}</p>}</div>; }) : <p style={{ fontSize: 12, color: SUB }}>아직 작성된 수업 기록이 없습니다</p>}
           </Section>
           <section style={{ ...sectionStyle, backgroundColor: retake.tone === "recommended" ? WARN_S : CARD }}>
             <div className="flex items-start gap-3"><span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: TINT, color: BRAND_D }}><Activity size={16} /></span><span className="min-w-0 flex-1"><span className="block text-sm font-bold" style={{ color: INK }}>최신 체형분석</span><span className="mt-1 block text-xs" style={{ color: SUB }}>{lastAssessment ? `${ymd((lastAssessment.completedAt || lastAssessment.at).slice(0, 10))}${retake.days != null ? ` · ${retake.days}일 전` : ""}` : "아직 완료된 분석이 없습니다"}</span>{lastAssessmentMetrics.length > 0 && <span className="mt-1 block line-clamp-2 text-xs" style={{ color: INK2 }}>{lastAssessmentMetrics.map((metric) => `${metric.label} ${metric.value}${metric.unit}`).join(" · ")}</span>}<span className="mt-1 block text-[10px] font-bold" style={{ color: retake.tone === "recommended" ? WARN : BRAND_D }}>{retake.label}</span></span></div>
@@ -4210,12 +4213,26 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
             {assessmentSets.length ? assessmentSets.slice(0, 3).map((assessment) => { const representative = assessment.photos.front || Object.values(assessment.photos)[0]; const summary = assessment.poses.flatMap((pose) => pose.metrics || []).slice(0, 1)[0]; const resumable = assessment.id === resumableAssessment?.id; return <button type="button" key={assessment.id} onClick={() => onAssess?.(assessment.status === "completed" && assessment.poses[0]?.id ? { mode: "result", poseId: assessment.poses[0].id, assessmentId: assessment.id } : resumable ? { mode: "resume", assessmentId: assessment.id } : { mode: "history" })} className="flex w-full items-center gap-2 text-left" style={{ padding: "8px 0", borderTop: `1px solid ${LINE}` }}>{representative?.src ? <img src={representative.src} alt="체형분석 대표 사진" className="h-11 w-8 shrink-0 object-cover" style={{ borderRadius: 6, backgroundColor: PHOTO }} /> : <span className="flex h-11 w-8 shrink-0 items-center justify-center" style={{ borderRadius: 6, backgroundColor: CANVAS, color: BRAND }}><Activity size={13} /></span>}<span className="min-w-0 flex-1"><span className="block truncate" style={{ fontSize: 12, color: INK2 }}>{ymd((assessment.completedAt || assessment.at).slice(0, 10))} · {assessment.scope === "partial" ? "부위별" : "전신"}</span><span className="mt-0.5 block truncate" style={{ fontSize: 10, color: SUB }}>{summary ? `${summary.label} ${summary.value}${summary.unit}` : assessment.method === "draw" ? "강사 직접 기록" : "저장된 AI 해석 없음"}</span></span><span style={{ padding: "2px 6px", borderRadius: 6, backgroundColor: assessment.status === "completed" ? GOOD_S : WARN_S, color: assessment.status === "completed" ? GOOD : WARN, fontSize: 9, fontWeight: 700 }}>{assessment.status === "completed" ? "완료" : resumable ? "초안" : "이전 초안"}</span><ChevronRight size={13} style={{ color: SUB }} /></button>; }) : <p style={{ fontSize: 12, color: SUB }}>저장된 분석이 없습니다</p>}
             {assessmentSets.length > 3 && <button type="button" onClick={() => onAssess?.({ mode: "history" })} className="mt-2 h-9 w-full text-xs font-bold" style={{ borderRadius: 8, backgroundColor: CANVAS, color: BRAND_D }}>전체 히스토리 보기</button>}
           </Section>
+          <section data-member-section="membership" style={{ ...sectionStyle, backgroundColor: TINT, borderColor: "#D5D1EB" }}>
+            <div className="flex items-start gap-3"><div className="min-w-0 flex-1"><p style={{ fontSize: 11, color: SUB }}>현재 이용권</p><p className="mt-0.5 truncate" style={{ fontSize: 14, fontWeight: 700, color: INK }}>{member.passName || "이용권 없음"}</p></div><div className="text-right"><p className="tabular-nums" style={{ fontSize: 27, lineHeight: 1, fontWeight: 750, color: left(member) <= 3 ? BAD : BRAND }}>{left(member)}<span style={{ fontSize: 12 }}>회 남음</span></p><p className="mt-1" style={{ fontSize: 10, color: SUB }}>정규 {num(member.regular)} · 서비스 {num(member.service)}</p></div></div>
+            <div className="mt-3 grid grid-cols-2 gap-2">{[["누적 등록 횟수", membership.registeredTotal ? `${membership.registeredTotal}회` : "미등록"], ["이용권 만료일", member.contractEnd ? ymd(member.contractEnd) : "미설정"], ["회원 회당 금액", memberUnit ? `₩${won(memberUnit)}` : "결제 내역 없음"], ["최근 수업일", recentLesson ? `${md(recentLesson.date)} ${recentLesson.start}` : "수업 이력 없음"], ["다음 예약일", next ? `${md(next.date)} ${next.start}` : "예약 없음"]].map(([k,v]) => <div key={k} style={{ padding: "8px 9px", borderRadius: 8, backgroundColor: CARD }}><p style={{ fontSize: 9, color: SUB }}>{k}</p><p className="mt-0.5 truncate tabular-nums" style={{ fontSize: 11, fontWeight: 700, color: INK }}>{v}</p></div>)}</div>
+            {membership.needsLegacyReview && <p className="mt-2" style={{ padding: "8px 9px", borderRadius: 8, backgroundColor: WARN_S, color: WARN, fontSize: 10, lineHeight: 1.45 }}>잔여 합계가 누적 등록 횟수보다 큽니다. 기존 데이터 확인이 필요하며 자동으로 수정하지 않았습니다.</p>}
+            {canViewSettlement && <div className="mt-2 flex items-center gap-2" style={{ padding: "8px 9px", borderRadius: 8, backgroundColor: CARD }}><span className="min-w-0 flex-1"><span className="block" style={{ fontSize: 9, color: SUB }}>강사 정산 단가</span><span className="block text-xs font-bold tabular-nums" style={{ color: INK }}>₩{won(settlementUnit)}{Number(member.payRate) > 0 ? "" : " · 센터 기본"}</span></span><button type="button" onClick={openRate} style={{ fontSize: 11, fontWeight: 700, color: BRAND }}>단가 수정</button></div>}
+            <p className="mt-2" style={{ fontSize: 10, lineHeight: 1.45, color: SUB }}>회원 회당 금액은 총 결제액을 정규 유료 횟수로 나눕니다. 할인은 결제액에 반영하고 서비스 횟수는 제외합니다.</p>
+            <button type="button" onClick={openMembership} className="mt-2 h-10 w-full text-xs font-bold" style={{ borderRadius: 8, backgroundColor: BRAND, color: "#fff" }}>이용권 수정</button>
+          </section>
           <Section title="이용권 변경 이력 및 상세 설정" action={<button type="button" onClick={openMembership} style={{ fontSize: 12, fontWeight: 700, color: BRAND }}>관리</button>}>
             {(member.payments || []).length ? member.payments.slice(0, 4).map((p) => <div key={p.id || `${p.date}-${p.amount}`} className="flex items-center gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}` }}><span className="min-w-0 flex-1"><span className="block truncate" style={{ fontSize: 12, color: INK2 }}>{ymd(p.date)} · {p.name || p.passName || "이용권"}</span>{p.kind === "adjustment" && <span className="block truncate" style={{ fontSize: 10, color: SUB }}>잔여 {p.before?.remaining}회 → {p.after?.remaining}회 · 총 {p.before?.total}회 → {p.after?.total}회</span>}</span><span className="tabular-nums" style={{ fontSize: 12, fontWeight: 600, color: INK }}>{p.kind === "adjustment" ? "수정" : `${num(p.count || p.sessions)}회`}</span></div>) : <p style={{ fontSize: 12, color: SUB }}>저장된 변경 이력이 없습니다</p>}
             {holdHistory.slice(0, 4).map((h) => <div key={h.id} className="flex items-center gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}`, backgroundColor: CANVAS }}><span style={{ padding: "2px 6px", borderRadius: 5, color: INK2, fontSize: 10, fontWeight: 600 }}>홀딩</span><span className="min-w-0 flex-1 truncate" style={{ fontSize: 11, color: INK2 }}>{ymd(h.startDate)} ~ {ymd(h.releasedAt || h.endDate)}{h.extendDays ? ` · 만료 +${h.extendDays}일` : ""}</span></div>)}
             {(member.instructorHistory || []).slice(0, 3).map((entry) => <div key={entry.id || entry.date} className="flex gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}` }}><span style={{ fontSize: 10, color: SUB }}>담당 변경</span><span className="min-w-0 flex-1 truncate" style={{ fontSize: 11, color: INK2 }}>{ymd(entry.date)} · {entry.before || "미지정"} → {entry.after || "미지정"}</span></div>)}
             {isHold(member) && <div className="mt-2 flex items-start gap-2" style={{ padding: "9px 10px", borderRadius: 8, backgroundColor: CANVAS }}><AlertCircle size={14} className="mt-0.5 shrink-0" style={{ color: SUB }} /><p style={{ fontSize: 11, lineHeight: 1.5, color: INK2 }}>{ymd(member.holdFrom)} ~ {ymd(member.holdUntil)}{member.holdReason ? ` · ${member.holdReason}` : ""}</p></div>}
             <div className="mt-2 flex gap-2"><button type="button" onClick={openEdit} style={{ flex: 1, height: 42, borderRadius: 8, border: `1px solid ${LINE}`, color: INK2, fontSize: 12, fontWeight: 600 }}>정보 수정</button>{isHold(member) ? <button type="button" onClick={() => { if (!releaseArmed) { setReleaseArmed(true); return; } const releasedAt = todayISO(); onPatch({ status: "active", holdFrom: "", holdUntil: "", holdReason: "", holdHistory: [{ id: uid(), startDate: member.holdFrom, endDate: member.holdUntil, releasedAt, reason: member.holdReason, extendDays: num(member.holdExtendDays), createdAt: releasedAt }, ...holdHistory] }); setReleaseArmed(false); }} style={{ flex: 1.35, height: 42, borderRadius: 8, border: `1px solid ${releaseArmed ? BRAND : LINE}`, backgroundColor: releaseArmed ? TINT : CARD, color: BRAND_D, fontSize: 12, fontWeight: 600 }}>{releaseArmed ? "한 번 더 눌러 홀딩 해제" : "홀딩 해제"}</button> : <button type="button" onClick={() => { setHold({ start: todayISO(), end: shift(todayISO(), 14), reason: "", extend: true }); setSheet("hold"); }} style={{ flex: 1, height: 42, borderRadius: 8, border: `1px solid ${LINE}`, color: BRAND_D, fontSize: 12, fontWeight: 600 }}>홀딩 설정</button>}</div>
+          </Section>
+          <Section title="목표·주의사항" action={<button type="button" onClick={openPreparation} style={{ fontSize: 12, fontWeight: 700, color: BRAND }}>수정</button>}>
+            <div className="space-y-2"><div><p style={{ fontSize: 10, color: SUB }}>운동 목표</p><p className="mt-0.5" style={{ fontSize: 12, lineHeight: 1.45, color: member.goal ? INK2 : SUB }}>{member.goal || "등록된 운동 목표가 없습니다"}</p></div><div style={{ padding: "9px 10px", borderRadius: 8, backgroundColor: WARN_S }}><p style={{ fontSize: 10, fontWeight: 700, color: WARN }}>통증 및 주의사항</p><p className="mt-1" style={{ fontSize: 12, lineHeight: 1.45, color: INK2 }}>{(member.focus || []).length ? member.focus.join(" · ") : "등록된 주의사항이 없습니다"}</p></div></div>
+          </Section>
+          <Section title="회원 기본정보" action={<button type="button" onClick={openEdit} style={{ fontSize: 12, fontWeight: 700, color: BRAND }}><Pencil size={12} className="inline" /> 정보 수정</button>}>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-2">{[["이름", member.name || "-"], ["회원 상태", isHold(member) ? "홀딩" : isEnded(member) ? "종료" : "활성"], ...(!singleInstructorMode ? [["담당 강사", member.instructor || "미지정"]] : []), ["연락처", maskedPhone(member.phone)], ["수업 유형", member.lessonType === "duet" ? "듀엣" : member.lessonType === "group" ? "그룹" : "개인"], ["기본 수업시간", `${lessonDurationOf(member)}분`], ["생년월일 · 나이", maskedBirth(member.birth, ageOf(member))]].map(([k,v]) => <div key={k} className={k === "생년월일 · 나이" ? "col-span-2" : ""}><p style={{ fontSize: 10, color: SUB }}>{k}</p><p className="mt-0.5 truncate" style={{ fontSize: 12, fontWeight: 600, color: INK }}>{v}</p></div>)}</div>
           </Section>
         </div>
       </main>
@@ -4426,7 +4443,7 @@ function AnnotationSvgMark({ mark, canvasWidth, canvasHeight, hideLabel = false 
   const scale = canvasWidth / 300;
   const point = (value) => ({ x: Number(value?.x || 0) * canvasWidth, y: Number(value?.y || 0) * canvasHeight });
   const points = mark.pts.map(point), start = points[0], end = points[points.length - 1];
-  const stroke = mark.color || "#6C5FD4", strokeWidth = Math.max(0.8, (Number(mark.width) || 3) * scale), opacity = mark.opacity ?? 1;
+  const stroke = mark.color || "#6C5FD4", strokeWidth = Math.max(0.8, (Number(mark.width) || 3) * (mark.tool === "arrow" ? 0.78 : 1) * scale), opacity = mark.opacity ?? 1;
   if (mark.tool === "hline") return <line x1="0" y1={start.y} x2={canvasWidth} y2={start.y} stroke={stroke} strokeWidth={strokeWidth} strokeLinecap="round" opacity={opacity} />;
   if (mark.tool === "vline") return <line x1={start.x} y1="0" x2={start.x} y2={canvasHeight} stroke={stroke} strokeWidth={strokeWidth} strokeLinecap="round" opacity={opacity} />;
   if (mark.tool === "point") return <g opacity={opacity}><circle cx={start.x} cy={start.y} r={((Number(mark.width) || 3) + 3) * scale} fill={stroke} /><circle cx={start.x} cy={start.y} r={((Number(mark.width) || 3) + 9) * scale} fill="none" stroke={stroke} strokeWidth={Math.max(0.8, 1.5 * scale)} /></g>;
@@ -4439,7 +4456,7 @@ function AnnotationSvgMark({ mark, canvasWidth, canvasHeight, hideLabel = false 
     </text>;
   }
   const path = points.map((value, index) => `${index ? "L" : "M"}${value.x.toFixed(1)} ${value.y.toFixed(1)}`).join(" ");
-  const arrow = mark.tool === "arrow" && points.length >= 2 ? arrowHeadPoints(start, end, (10 + (Number(mark.width) || 3) * 2) * scale) : null;
+  const arrow = mark.tool === "arrow" && points.length >= 2 ? arrowHeadPoints(start, end, (7 + (Number(mark.width) || 3) * 1.4) * scale) : null;
   const centerX = (start.x + end.x) / 2, centerY = (start.y + end.y) / 2 - 9 * scale;
   const label = mark.tool === "angle" && mark.label && !hideLabel ? String(mark.label) : "";
   const labelWidth = label.length * 7 * scale + 12 * scale;
@@ -9423,6 +9440,7 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
   const [summaryMeta, setSummaryMeta] = useState(null);
   const [summaryStatus, setSummaryStatus] = useState(AI_STATUSES.NOT_CONNECTED);
   const [summaryBusy, setSummaryBusy] = useState(false);
+  const [summaryError, setSummaryError] = useState("");
   const boxRef = useRef(null);
   useEffect(() => {
     if (!highlight || !boxRef.current) return;
@@ -9773,22 +9791,27 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
     const transcript = String(transcriptOverride || textRef.current || text).trim();
     if (!transcript) return;
     const termMap = mapPilatesTerms(transcript);
-    if (globalThis.navigator?.onLine === false) {
-      setSummaryStatus("queued");
-      savePendingLessonRecord(memberId, lessonId, { schemaVersion: 2, status: "queued", rawTranscript: transcript, termMap, audioBlobId: audioBlobId || null, source: source || "unknown" });
-      setErr("오프라인 상태입니다. 원문은 이 기기의 미작성 큐에 보관했으며 지금 바로 미구조화 기록으로 저장할 수 있습니다.");
-      return;
-    }
-    if (aiProvider.getStatus().status !== "connected") { setSummaryStatus(AI_STATUSES.NOT_CONNECTED); setErr("현재 AI 정리를 사용할 수 없습니다. 전사 원문은 미구조화 기록으로 저장할 수 있습니다."); return; }
-    const consent = await ensureMemberAIConsent(memberId, "summarizeVoice");
-    if (!consent.ok) { setErr(consent.message); return; }
-    setSummaryBusy(true); setErr("");
+    setSummaryBusy(true);
+    setSummaryError("");
     try {
+      if (globalThis.navigator?.onLine === false) {
+        setSummaryStatus("queued");
+        savePendingLessonRecord(memberId, lessonId, { schemaVersion: 2, status: "queued", rawTranscript: transcript, termMap, audioBlobId: audioBlobId || null, source: source || "unknown" });
+        setSummaryError("오프라인 상태입니다. 원문은 이 기기의 미작성 큐에 보관했으며 지금 바로 미구조화 기록으로 저장할 수 있습니다.");
+        return;
+      }
+      if (aiProvider.getStatus().status !== "connected") {
+        setSummaryStatus(AI_STATUSES.NOT_CONNECTED);
+        setSummaryError("AI 연결 설정을 확인하지 못했습니다. 전사 원문은 유지됩니다. 다시 시도하거나 미구조화 원문으로 저장해 주세요.");
+        return;
+      }
+      const consent = await ensureMemberAIConsent(memberId, "summarizeVoice");
+      if (!consent.ok) { setSummaryError(consent.message); return; }
       const result = await lessonRecordLlm.structureLessonRecord(buildLessonRecordInput({ rawTranscript: transcript, termMap, memberId, lessonId }));
       if (result.status !== "structured") {
         setSummaryStatus(result.status === "queued" ? "queued" : "unstructured");
         trackLessonRecordUsage("llm_failed", result);
-        setErr("AI가 형식을 확인하지 못했습니다. 원문은 유지되며 미구조화로 저장하거나 다시 정리할 수 있습니다.");
+        setSummaryError("AI가 형식을 확인하지 못했습니다. 원문은 유지되며 미구조화로 저장하거나 다시 정리할 수 있습니다.");
         return;
       }
       setSummaryOriginal(result.output); setSummaryDraft(result.output); setSummaryMeta(aiMetaFrom(result.meta)); setSummaryStatus(AI_STATUSES.DRAFT);
@@ -9796,7 +9819,7 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
     } catch (error) {
       setSummaryStatus("unstructured");
       trackLessonRecordUsage("llm_failed", { attempts: 3, latencyMs: 0 });
-      setErr(`${aiFailureMessage(error, "AI 수업기록을 정리하지 못했습니다.")} 전사 원문은 유지되며 미구조화로 저장할 수 있습니다.`);
+      setSummaryError(`${aiFailureMessage(error, "AI 수업기록을 정리하지 못했습니다.")} 전사 원문은 유지되며 미구조화로 저장할 수 있습니다.`);
     } finally { setSummaryBusy(false); }
   };
   const setSummaryField = (field, value) => setSummaryDraft((current) => editStructuredField(current || {}, field, value));
@@ -9831,19 +9854,21 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
       {err && <Sub className="mt-1.5 block" style={{ color: BAD }}>{err}</Sub>}
       {(text || audioState === "saved" || audioState === "saving") && (
         <>
-          <textarea rows={4} value={text} onChange={(event) => { setText(event.target.value); setSummaryOriginal(null); setSummaryDraft(null); setSummaryMeta(null); setSummaryStatus(AI_STATUSES.NOT_CONNECTED); }} aria-label="음성 전사 원문" className={`${inputCls} mt-2 h-auto resize-none py-2 text-sm leading-relaxed`} />
+          <textarea rows={4} value={text} onChange={(event) => { setText(event.target.value); setSummaryOriginal(null); setSummaryDraft(null); setSummaryMeta(null); setSummaryError(""); setSummaryStatus(AI_STATUSES.NOT_CONNECTED); }} aria-label="음성 전사 원문" className={`${inputCls} mt-2 h-auto resize-none py-2 text-sm leading-relaxed`} />
           <Sub className="mt-1.5 block">원문 보존 · 용어 매핑 분리 · {summaryStatus === AI_STATUSES.DRAFT ? "구조화 초안" : summaryStatus === "queued" ? "오프라인 대기" : summaryStatus === "unstructured" ? "미구조화" : "정리 대기"} · 저장 전 강사 확인 필요{audioState === "saved" ? " · 원음 임시 보관" : audioState === "saving" ? " · 원음 저장 중" : ""}</Sub>
           <button disabled={on || summaryBusy || !text.trim()} onClick={() => requestSummary()} className="mt-2 flex h-10 w-full items-center justify-center gap-1.5 rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: TINT, color: PRIMARY }}>
             {summaryBusy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} {summaryDraft || summaryStatus === "unstructured" || summaryStatus === "queued" ? "다시 정리" : "AI로 정리"}
           </button>
+          {summaryBusy && <p aria-live="polite" className="mt-2 text-center text-[11px] font-bold" style={{ color: BRAND_D }}>AI가 수업 기록을 정리하고 있습니다…</p>}
+          {summaryError && <div role="alert" className="mt-2 rounded-xl p-3" style={{ backgroundColor: BAD_S, border: `1px solid ${BAD}` }}><p className="text-[11px] leading-relaxed" style={{ color: BAD }}>{summaryError}</p><button type="button" disabled={summaryBusy} onClick={() => requestSummary()} className="mt-2 h-9 w-full rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: CARD, color: BAD }}>다시 시도</button></div>}
           {summaryDraft && <div className="mt-2 space-y-2 rounded-xl p-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
-            {[{ k: "didToday", l: "오늘 한 내용" }, { k: "observations", l: "관찰" }, { k: "responses", l: "회원 반응" }, { k: "nextFocus", l: "다음 초점" }, { k: "uncertain", l: "확인 필요" }].map((field) => (
+            {[{ k: "didToday", l: "오늘 진행" }, { k: "observations", l: "관찰" }, { k: "responses", l: "반응/변화" }, { k: "nextFocus", l: "다음 확인" }, { k: "uncertain", l: "확인 필요" }].map((field) => (
               <label key={field.k} className="block"><span className="mb-1 block text-[11px] font-bold" style={{ color: SUB }}>{field.l}</span><textarea rows={2} value={structuredFieldText(summaryDraft, field.k)} onChange={(event) => setSummaryField(field.k, event.target.value)} placeholder="한 줄에 한 항목" className={`${inputCls} h-auto resize-none py-2 text-xs`} /></label>
             ))}
           </div>}
           <div className="mt-2 flex gap-1.5">
-            <button onClick={() => { setText(""); textRef.current = ""; setErr(""); setSummaryOriginal(null); setSummaryDraft(null); setSummaryMeta(null); setSummaryStatus(AI_STATUSES.NOT_CONNECTED); if (audioBlobId) forgetBlobs([audioBlobId]); audioBlobRef.current = null; setAudioBlobId(null); setAudioState("idle"); removePendingLessonRecord(memberId, lessonId); }} className="rounded-xl px-3 py-2 text-xs font-bold" style={{ backgroundColor: CARD, color: SUB }}>취소</button>
-            <button disabled={on || finishing} onClick={() => { setText(""); textRef.current = ""; setErr(""); setSummaryOriginal(null); setSummaryDraft(null); setSummaryMeta(null); setSummaryStatus(AI_STATUSES.NOT_CONNECTED); if (audioBlobId) forgetBlobs([audioBlobId]); audioBlobRef.current = null; setAudioBlobId(null); setAudioState("idle"); removePendingLessonRecord(memberId, lessonId); setTimeout(() => start(), 0); }} className="rounded-xl px-3 py-2 text-xs font-bold" style={{ backgroundColor: TINT, color: PRIMARY }}>재녹음</button>
+            <button onClick={() => { setText(""); textRef.current = ""; setErr(""); setSummaryError(""); setSummaryOriginal(null); setSummaryDraft(null); setSummaryMeta(null); setSummaryStatus(AI_STATUSES.NOT_CONNECTED); if (audioBlobId) forgetBlobs([audioBlobId]); audioBlobRef.current = null; setAudioBlobId(null); setAudioState("idle"); removePendingLessonRecord(memberId, lessonId); }} className="rounded-xl px-3 py-2 text-xs font-bold" style={{ backgroundColor: CARD, color: SUB }}>취소</button>
+            <button disabled={on || finishing} onClick={() => { setText(""); textRef.current = ""; setErr(""); setSummaryError(""); setSummaryOriginal(null); setSummaryDraft(null); setSummaryMeta(null); setSummaryStatus(AI_STATUSES.NOT_CONNECTED); if (audioBlobId) forgetBlobs([audioBlobId]); audioBlobRef.current = null; setAudioBlobId(null); setAudioState("idle"); removePendingLessonRecord(memberId, lessonId); setTimeout(() => start(), 0); }} className="rounded-xl px-3 py-2 text-xs font-bold" style={{ backgroundColor: TINT, color: PRIMARY }}>재녹음</button>
             <button disabled={on || audioState === "saving" || !text.trim()} onClick={() => {
               const transcript = text.trim();
               const termMap = mapPilatesTerms(transcript);
@@ -10725,12 +10750,8 @@ function SettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings,
           <Field label="센터명"><input value={db.settings.center} onChange={(e) => onChangeSettings({ ...db.settings, center: e.target.value })} className={inputCls} /></Field>
           <div className="rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
             <p className="text-xs font-extrabold" style={{ color: INK }}>내 수업료 기본값</p>
-            <Sub className="mb-2 block">회원마다 다르면 그 회원 정보에서 따로 넣으세요 · 비워 두면 이 값을 씁니다</Sub>
-            <div className="grid grid-cols-2 gap-2">
-              <Field label="개인 1회당 원">
-                <input inputMode="numeric" value={db.settings.payRate ?? DEF_RATE} placeholder={String(DEF_RATE)}
-                  onChange={(e) => onChangeSettings({ ...db.settings, payRate: Number(e.target.value.replace(/[^0-9]/g, "")) || 0 })} className={inputCls} />
-              </Field>
+            <Sub className="mb-2 block">그룹 수업 정산에 사용하는 기본값입니다</Sub>
+            <div>
               <Field label="그룹 1회당 원">
                 <input inputMode="numeric" value={db.settings.groupRate ?? DEF_GROUP_RATE} placeholder={String(DEF_GROUP_RATE)}
                   onChange={(e) => onChangeSettings({ ...db.settings, groupRate: Number(e.target.value.replace(/[^0-9]/g, "")) || 0 })} className={inputCls} />
@@ -10865,7 +10886,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
     ] },
     { label: "운영 · 설정", items: [
       { key: "assessment", title: "체형분석 설정", description: "기본 방식 · AI 분석 · 직접 포인트/그리기", Icon: Activity },
-      { key: "center", title: "센터 정보", description: "센터명 · 담당자 · 개인/그룹 단가", Icon: SettingsIcon },
+      { key: "center", title: "센터 정보", description: "센터명 · 담당자 · 그룹 단가", Icon: SettingsIcon },
       { key: "theme", title: "화면 설정", description: "폰 설정 · 라이트 · 다크", Icon: Smartphone },
       { key: "data", title: "데이터 상태", description: "기기 저장 · 로그인 상태", Icon: Check },
       { key: "backup", title: "데이터 이관 · 백업", description: "기기 이동 · 백업 파일", Icon: Download },
@@ -10976,7 +10997,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
         {view === "center" && (
           <section style={sectionStyle}>
             <div className="mb-3"><h2 style={{ fontSize: 14, fontWeight: 600, color: INK }}>센터 기본 정보</h2><p style={{ marginTop: 3, fontSize: 11, color: SUB }}>일정과 회원 관리에 사용하는 기존 저장값입니다.</p></div>
-            <div className="space-y-3"><Field label="센터명"><input value={db.settings.center} onChange={(e) => onChangeSettings({ ...db.settings, center: e.target.value })} className={inputCls} /></Field><Field label="기본 담당자"><input value={db.settings.staff} onChange={(e) => onChangeSettings({ ...db.settings, staff: e.target.value })} className={inputCls} /></Field><div className="grid grid-cols-2 gap-2"><Field label="개인 1회당 원"><input inputMode="numeric" value={db.settings.payRate ?? DEF_RATE} onChange={(e) => onChangeSettings({ ...db.settings, payRate: num(e.target.value.replace(/\D/g, "")) })} className={inputCls} /></Field><Field label="그룹 1회당 원"><input inputMode="numeric" value={db.settings.groupRate ?? DEF_GROUP_RATE} onChange={(e) => onChangeSettings({ ...db.settings, groupRate: num(e.target.value.replace(/\D/g, "")) })} className={inputCls} /></Field></div></div>
+            <div className="space-y-3"><Field label="센터명"><input value={db.settings.center} onChange={(e) => onChangeSettings({ ...db.settings, center: e.target.value })} className={inputCls} /></Field><Field label="기본 담당자"><input value={db.settings.staff} onChange={(e) => onChangeSettings({ ...db.settings, staff: e.target.value })} className={inputCls} /></Field><Field label="그룹 1회당 원"><input inputMode="numeric" value={db.settings.groupRate ?? DEF_GROUP_RATE} onChange={(e) => onChangeSettings({ ...db.settings, groupRate: num(e.target.value.replace(/\D/g, "")) })} className={inputCls} /></Field></div>
           </section>
         )}
         {view === "theme" && (

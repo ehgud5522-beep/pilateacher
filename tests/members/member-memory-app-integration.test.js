@@ -7,7 +7,8 @@ test("App persists sourced memory and renders deterministic briefing in all thre
   assert.match(source, /aiMemory: memoryResult\.memories/);
   assert.match(source, /briefingLine.*b\.h >= 24/);
   assert.match(source, /aria-label="다음 수업 브리핑"/);
-  assert.match(source, /title="다음 수업 준비"/);
+  assert.match(source, /data-member-section="memory-first"/);
+  assert.match(source, /반복해서 기록된 내용/);
   assert.match(source, /currentSessionId: draft\.id/);
   assert.match(source, /rejectMemoryEntry\(nextMemory, memoryId\)/);
   assert.match(source, />숨기기<\/button>/);

@@ -108,7 +108,9 @@ test("direct annotation exposes opt-in guides, ruler, handwriting, colors, re-ed
   const prepareGuideEnd = canvas.indexOf("const saveMemo =", prepareGuideStart);
   assert.ok(prepareGuideStart >= 0 && prepareGuideEnd > prepareGuideStart);
   assert.doesNotMatch(canvas.slice(prepareGuideStart, prepareGuideEnd), /setMarks/);
-  assert.match(canvas, /type="color"/);
+  assert.doesNotMatch(canvas, /type="color"/);
+  assert.match(canvas, /사용자 지정 색상/);
+  assert.match(canvas, /customColorPreview/);
   assert.match(canvas, /hitTestAnnotations/);
   assert.match(canvas, /applyAnnotationDrag/);
   assert.match(canvas, /selectedMarkId/);

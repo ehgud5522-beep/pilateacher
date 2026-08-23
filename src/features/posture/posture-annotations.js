@@ -46,6 +46,54 @@ export function normalizeAnnotationColor(value, fallback = "#6C5FD4") {
   return fallback;
 }
 
+export function hslToHex(hue, saturation = 70, lightness = 55) {
+  const h = ((Number(hue) || 0) % 360 + 360) % 360;
+  const s = clampAnnotationNumber(Number(saturation) / 100) * 100;
+  const l = clampAnnotationNumber(Number(lightness) / 100) * 100;
+  const chroma = (1 - Math.abs((2 * l) / 100 - 1)) * (s / 100);
+  const segment = h / 60;
+  const secondary = chroma * (1 - Math.abs((segment % 2) - 1));
+  const [r1, g1, b1] = segment < 1 ? [chroma, secondary, 0]
+    : segment < 2 ? [secondary, chroma, 0]
+      : segment < 3 ? [0, chroma, secondary]
+        : segment < 4 ? [0, secondary, chroma]
+          : segment < 5 ? [secondary, 0, chroma]
+            : [chroma, 0, secondary];
+  const match = l / 100 - chroma / 2;
+  return `#${[r1, g1, b1].map((value) => Math.round((value + match) * 255).toString(16).padStart(2, "0")).join("")}`.toUpperCase();
+}
+
+export function hexToHsl(value) {
+  const hex = normalizeAnnotationColor(value);
+  const [r, g, b] = [1, 3, 5].map((index) => parseInt(hex.slice(index, index + 2), 16) / 255);
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), delta = max - min;
+  let hue = 0;
+  if (delta) {
+    if (max === r) hue = 60 * (((g - b) / delta) % 6);
+    else if (max === g) hue = 60 * ((b - r) / delta + 2);
+    else hue = 60 * ((r - g) / delta + 4);
+  }
+  const lightness = (max + min) / 2;
+  const saturation = delta ? delta / (1 - Math.abs(2 * lightness - 1)) : 0;
+  return { h: Math.round((hue + 360) % 360), s: Math.round(saturation * 100), l: Math.round(lightness * 100) };
+}
+
+/**
+ * Converts a screen pointer into the persisted image coordinate system.
+ * Marks remain normalized to the unzoomed image frame; zoom and pan are
+ * display-only transforms and are deliberately not written to mark data.
+ */
+export function screenPointToImagePoint(point, frame, transform = {}) {
+  const width = Math.max(1, Number(frame?.width) || 1);
+  const height = Math.max(1, Number(frame?.height) || 1);
+  const zoom = Math.max(0.01, Number(transform?.zoom) || 1);
+  const panX = Number(transform?.panX) || 0;
+  const panY = Number(transform?.panY) || 0;
+  const localX = ((Number(point?.clientX) - Number(frame?.left || 0) - width / 2 - panX) / zoom) + width / 2;
+  const localY = ((Number(point?.clientY) - Number(frame?.top || 0) - height / 2 - panY) / zoom) + height / 2;
+  return clampAnnotationPoint({ x: localX / width, y: localY / height });
+}
+
 export function addRecentAnnotationColor(colors, value, limit = 6) {
   const color = normalizeAnnotationColor(value);
   const previous = Array.isArray(colors) ? colors : [];

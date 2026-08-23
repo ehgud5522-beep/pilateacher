@@ -7,15 +7,17 @@ const start = source.indexOf("function ReferenceMemberDetail(");
 const end = source.indexOf("\nfunction ChangeSummary(", start);
 const detail = source.slice(start, end);
 
-test("member detail follows the instructor-first card order", () => {
+test("member detail follows the memory-first card order", () => {
   const headings = [
-    "회원 기본정보 요약",
-    "현재 이용권",
-    "수업 준비 요약",
-    "상담 및 중요 메모",
+    "지난 수업",
+    "반복해서 기록된 내용",
+    "다음 확인",
+    "최근 변화",
     "최근 수업 기록",
     "최신 체형분석",
+    "현재 이용권",
     "이용권 변경 이력 및 상세 설정",
+    "회원 기본정보",
   ];
   let cursor = -1;
   headings.forEach((heading) => {
@@ -23,6 +25,14 @@ test("member detail follows the instructor-first card order", () => {
     assert.ok(next > cursor, `${heading} must appear in the requested order`);
     cursor = next;
   });
+});
+
+test("member detail uses one compact empty memory state and keeps legacy data below memory", () => {
+  assert.match(detail, /data-member-section="memory-first"/);
+  assert.match(detail, /아직 작성된 수업 기록이 없습니다\./);
+  assert.match(detail, /lessonNotes\.length > 0 && <Section title="최근 수업 기록"/);
+  assert.ok(detail.indexOf("data-member-section=\"memory-first\"") < detail.indexOf("data-member-section=\"membership\""));
+  assert.ok(detail.indexOf("최신 체형분석") < detail.indexOf("data-member-section=\"membership\""));
 });
 
 test("member price keeps paid sessions policy and excludes service sessions", () => {

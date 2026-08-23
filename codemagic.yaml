@@ -4,6 +4,15 @@ workflows:
     max_build_duration: 60
     instance_type: mac_mini_m2
 
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: codex/android-private-test-v14
+          include: true
+          source: true
+      cancel_previous_builds: false
+
     integrations:
       app_store_connect: 필라티쳐
 

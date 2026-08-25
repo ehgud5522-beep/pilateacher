@@ -41,9 +41,26 @@ test("lesson record output schema is exact and prompt forbids invention and diag
   );
   assert.deepEqual(OUTPUT_SCHEMAS[OPERATIONS.STRUCTURE_LESSON_RECORD].properties.summary.type, ["string", "null"]);
   const prompt = getPrompt(OPERATIONS.STRUCTURE_LESSON_RECORD);
+  assert.equal(prompt.promptVersion, "lesson_record_v3");
+  assert.equal(
+    prompt.instructions.split("\n")[0],
+    "당신은 범용 운동·의료 추론 AI가 아닙니다. 강사가 수업 직후 말한 내용을 네 칸으로 최소 변환하는 기록 도구이며, 새 의미를 해석하지 않고 발화에 실제로 있는 내용만 옮깁니다.",
+  );
   assert.match(prompt.instructions, /새로 만들어내지/);
   assert.match(prompt.instructions, /의료 진단/);
-  assert.match(prompt.instructions, /자동 교정하지 말고/);
+  assert.match(prompt.instructions, /전문용어로 격상 금지/);
+  assert.match(prompt.instructions, /신체 부위 명칭과 좌·우는 강사가 말한 그대로/);
+  assert.match(prompt.instructions, /모르는 운동명을 다른 운동으로 교정하지/);
+  assert.match(prompt.instructions, /didToday와 summary에서 그 표현만 생략/);
+  assert.match(prompt.instructions, /STT 오류로 보이는 단어를 정리 단계에서 임의 교정하지/);
+  assert.match(prompt.instructions, /실제로 낮춘 수업 강도는 didToday/);
+  assert.match(prompt.instructions, /강도 낮춰 진행/);
+  assert.match(prompt.instructions, /정보가 없는 칸은 빈 배열/);
+  assert.match(prompt.instructions, /단순한 표현은 단순하게/);
+  assert.match(prompt.instructions, /⑤를 위해 ①~③을 희생하지/);
+  assert.match(prompt.instructions, /사전은 전사 단계에서만 사용/);
+  assert.match(prompt.instructions, /흉추 회전 시 전보다 부드러움/);
+  assert.match(prompt.instructions, /responses=\[\]/);
   assert.match(prompt.instructions, /summary/);
-  assert.equal((prompt.instructions.match(/summary='/g) || []).length, 6);
+  assert.equal((prompt.instructions.match(/summary='/g) || []).length, 8);
 });

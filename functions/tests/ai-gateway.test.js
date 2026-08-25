@@ -268,7 +268,7 @@ test("audio operation uses the authorized member name and never logs audio or tr
         providerInput = input;
         return {
           model: "gpt-5-mini-2025-08-07",
-          promptVersion: "lesson_record_v2",
+          promptVersion: "lesson_record_v3",
           status: "completed",
           transcriptionModel: "gpt-4o-mini-transcribe",
           output: {

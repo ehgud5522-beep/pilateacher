@@ -23,6 +23,7 @@ export function describeSpeechError(error) {
   if (/permission|not.allowed|denied|insufficient/.test(detail)) {
     return {
       kind: "permission",
+      code: "mic_permission_denied",
       message: "마이크와 음성 인식 권한이 필요합니다. 기기 설정에서 필라티쳐의 마이크 권한을 허용해 주세요.",
     };
   }
@@ -47,15 +48,24 @@ export function describeSpeechError(error) {
   if (/no match|no speech|speech timeout|didn.t understand/.test(detail)) {
     return { kind: "no_speech", message: SPEECH_NO_RESULT_MESSAGE };
   }
-  if (/recognitionservice busy|recognizer busy|client side|server disconnected|error.server|error 11|ongoing/.test(detail)) {
+  if (/recognitionservice busy|recognizer busy|client side|ongoing|error[_ .-]*recognizer[_ .-]*busy|error 8\b/.test(detail)) {
+    return {
+      kind: "busy",
+      code: "recognizer_busy",
+      message: "기기의 음성 인식 서비스가 응답하지 않습니다. 잠시 기다린 뒤 다시 시도해 주세요.",
+    };
+  }
+  if (/server disconnected|error.server|error 11/.test(detail)) {
     return {
       kind: "service",
+      code: "stt_provider_error",
       message: "기기의 음성 인식 서비스가 응답하지 않습니다. 잠시 기다린 뒤 다시 시도해 주세요.",
     };
   }
   if (/unavailable|not implemented|unimplemented/.test(detail)) {
     return {
       kind: "unavailable",
+      code: "recognizer_unavailable",
       message: "이 기기에서는 음성 인식을 사용할 수 없습니다. 아래 직접 입력란을 이용해 주세요.",
     };
   }

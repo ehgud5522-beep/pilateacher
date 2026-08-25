@@ -8,6 +8,9 @@ export const LESSON_RECORD_FAILURE = LESSON_RECORD_FAILURE_CATEGORY;
 
 const detailsByCode = Object.freeze({
   stt_no_speech: { category: "INPUT", userCode: "E-VOICE", title: "말소리가 인식되지 않았어요", description: "다시 말하거나 직접 입력할 수 있어요.", retry: true },
+  mic_permission_denied: { category: "INPUT", userCode: "E-MIC-PERMISSION", title: "마이크 권한이 필요해요", description: "기기 설정에서 마이크와 음성 인식 권한을 허용해 주세요.", retry: false },
+  recognizer_busy: { category: "TEMPORARY", userCode: "E-STT-BUSY", title: "음성 인식을 준비하고 있어요", description: "잠시 후 다시 시도하거나 직접 입력할 수 있어요.", retry: true },
+  recognizer_unavailable: { category: "SERVICE", userCode: "E-STT-UNAVAILABLE", title: "이 기기에서는 말하기를 사용할 수 없어요", description: "직접 입력으로 수업 기록을 남길 수 있어요.", retry: false },
   consent_missing: { category: "INPUT", userCode: "E-CONSENT", title: "AI 처리 동의가 필요해요", description: "동의를 확인한 뒤 말하기를 시작할 수 있어요.", retry: false },
   stt_provider_error: { category: "TEMPORARY", userCode: "E-STT", title: "음성 인식 연결이 불안정해요", description: "말씀하신 내용이 있다면 이 기기에 저장되어 있어요.", retry: true },
   network_offline: { category: "TEMPORARY", userCode: "E-NETWORK", title: "연결이 불안정해요", description: "말씀하신 내용은 저장되어 있어요.", retry: true },
@@ -28,6 +31,9 @@ export function normalizeLessonRecordFailureCode({ code = "", status = null, rea
   const stage = String(failureStage || contextStage || "").toLowerCase();
   const httpStatus = Number(status) || 0;
   if (["stt_no_speech", "no_speech", "no-speech"].includes(raw)) return "stt_no_speech";
+  if (raw === "mic_permission_denied") return "mic_permission_denied";
+  if (raw === "recognizer_busy") return "recognizer_busy";
+  if (raw === "recognizer_unavailable") return "recognizer_unavailable";
   if (raw === "consent_required" || raw === "consent_missing" || stage.includes("consent")) return "consent_missing";
   if (raw === "provider_quota_exhausted" || (httpStatus === 429 && raw.includes("quota"))) return "provider_quota_exhausted";
   if (raw === "rate_limited" || raw === "provider_rate_limited" || httpStatus === 429) return "provider_rate_limited";

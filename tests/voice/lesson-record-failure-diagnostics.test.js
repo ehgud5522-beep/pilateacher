@@ -11,6 +11,9 @@ import {
 
 const cases = [
   ["stt_no_speech", "INPUT", true],
+  ["mic_permission_denied", "INPUT", false],
+  ["recognizer_busy", "TEMPORARY", true],
+  ["recognizer_unavailable", "SERVICE", false],
   ["stt_provider_error", "TEMPORARY", true],
   ["network_offline", "TEMPORARY", true],
   ["timeout", "TEMPORARY", true],

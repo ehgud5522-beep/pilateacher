@@ -181,10 +181,13 @@ test("schedule detail uses three final statuses and native speech recognition ow
   assert.doesNotMatch(schedule, /\b말하기\b/);
   ["기록하기", "직접입력", "노코멘트", "나중에", "닫기"].forEach((label) => assert.match(schedule, new RegExp(label)));
   assert.match(schedule, /setRecordMode\(recordMode === "voice" \? null : "voice"\)/);
-  assert.match(schedule, /<VoiceNote autoStart/);
+  assert.match(schedule, /<VoiceNote memberId=/);
+  assert.doesNotMatch(schedule, /<VoiceNote autoStart/);
   assert.match(schedule, /onDirectEntry=\{\(message\) => \{[\s\S]*setRecordMode\("write"\)/);
   assert.match(source, /const timeOf = \(stamp\) =>/);
-  assert.match(voice, /if \(!autoStart \|\| autoStartHandledRef\.current\) return undefined;[\s\S]*autoStartHandledRef\.current = true;[\s\S]*start\(\)/);
+  assert.doesNotMatch(voice, /autoStart|autoStartHandledRef/);
+  assert.match(voice, /voiceAvailability/);
+  assert.match(voice, /onClick=\{start\}/);
   assert.match(voice, /if \(!NS\) \{[\s\S]*await prepareMedia\(\)/);
   assert.match(voice, /Android SpeechRecognizer와 MediaRecorder가 동시에 마이크를 잡으면/);
   assert.match(voice, /if \(!sttOK\(\)\)[\s\S]*fallbackToDirectEntry\(message\)/);

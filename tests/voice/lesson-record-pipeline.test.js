@@ -154,7 +154,10 @@ test("App exposes four post-attendance choices, 90-second cap, pending save and 
   assert.match(source, /status: voiceMeta\.lessonRecord\.structuredDraft \? "confirmed" : "confirmed_unstructured"/);
   assert.match(source, /ignored_pre_start_stopped/);
   assert.match(source, /startRequestRef\.current/);
-  assert.match(source, /시작 중…/);
+  assert.match(source, /준비 중…/);
+  assert.match(source, /듣고 있어요/);
+  assert.match(source, /이어서 말하기/);
+  assert.match(source, /VOICE_SILENCE_LIMIT_MS/);
   assert.match(source, /pendingLessonRecordLabel/);
   assert.match(source, /recordQueueLabel/);
   assert.match(source, /AI 수업 요약/);

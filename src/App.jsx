@@ -52,6 +52,10 @@ import {
   NATIVE_SPEECH_RESULT_TIMEOUT_MS, SPEECH_NO_RESULT_MESSAGE, SPEECH_RESULT_TIMEOUT_MESSAGE,
   describeSpeechError, isSpeechPermissionGranted,
 } from "./features/voice/speech-session.js";
+import {
+  RECOGNIZER_BUSY_RETRY_MS, VOICE_SILENCE_LIMIT_MS, createSilenceGuard,
+  isRecognizerBusyError, resolveVoicePhase, stitchSpeechTranscript,
+} from "./features/voice/voice-session.js";
 import { GatewayLlmProvider } from "./features/lesson-record/llm-provider.js";
 import { mapPilatesTerms } from "./features/lesson-record/term-mapper.js";
 import {
@@ -3060,7 +3064,7 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
                 {recordMode && (
                   <div className="space-y-2 rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
                     {recordFallback && <p role="status" className="rounded-lg px-3 py-2 text-xs font-bold" style={{ backgroundColor: WARN_S, color: WARN }}>{recordFallback}</p>}
-                    {recordMode === "voice" && <VoiceNote autoStart memberId={activeMemberId} lessonId={draft.id} onLater={() => setRecordMode(null)} onDirectEntry={(message) => { setRecordFallback(message || "음성 인식을 사용할 수 없어 직접 입력으로 전환했습니다."); setRecordMode("write"); }} onApply={(text, meta) => { setRecordBody((body) => body.trim() ? `${body.trim()}\n${text}` : text); setRecordMeta(meta); }} />}
+                    {recordMode === "voice" && <VoiceNote memberId={activeMemberId} lessonId={draft.id} onLater={() => setRecordMode(null)} onDirectEntry={(message) => { setRecordFallback(message || "음성 인식을 사용할 수 없어 직접 입력으로 전환했습니다."); setRecordMode("write"); }} onApply={(text, meta) => { setRecordBody((body) => body.trim() ? `${body.trim()}\n${text}` : text); setRecordMeta(meta); }} />}
                     <textarea rows={4} value={recordBody} onChange={(e) => { const value = e.target.value; setRecordBody(value); setRecordMeta((meta) => meta?.lessonRecord ? { ...meta, lessonRecord: { ...meta.lessonRecord, instructorBodyOverride: value, instructorBodyOrigin: "instructor" } } : meta); }} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} />
                     <button disabled={!recordBody.trim()} onClick={async () => { const stored = await onSaveNote?.(activeMemberId, draft.type, draft.id, recordBody.trim(), recordMeta); if (stored !== false) onClose(); }} className="h-11 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35" style={{ backgroundColor: PRIMARY }}>확인하고 저장</button>
                   </div>
@@ -3160,7 +3164,7 @@ function ScheduleQueueSheet({ tasks, members, returnFocusRef, onClose, onNoComme
               </div>
               {recordMode && (
                 <div className="mt-3 space-y-2 rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
-                  {recordMode === "voice" && <VoiceNote autoStart memberId={task.a.memberId} lessonId={task.s.id} onLater={() => setRecordMode(null)} onDirectEntry={() => setRecordMode("write")} onApply={(text, meta) => { setRecordBody((body) => body.trim() ? `${body.trim()}\n${text}` : text); setRecordMeta(meta); }} />}
+                  {recordMode === "voice" && <VoiceNote memberId={task.a.memberId} lessonId={task.s.id} onLater={() => setRecordMode(null)} onDirectEntry={() => setRecordMode("write")} onApply={(text, meta) => { setRecordBody((body) => body.trim() ? `${body.trim()}\n${text}` : text); setRecordMeta(meta); }} />}
                   <textarea rows={4} value={recordBody} onChange={(e) => { const value = e.target.value; setRecordBody(value); setRecordMeta((meta) => meta?.lessonRecord ? { ...meta, lessonRecord: { ...meta.lessonRecord, instructorBodyOverride: value, instructorBodyOrigin: "instructor" } } : meta); }} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} />
                   <button disabled={!recordBody.trim()} onClick={() => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, recordBody.trim(), recordMeta)} className="h-11 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35" style={{ backgroundColor: PRIMARY }}>확인 후 저장 · 다음</button>
                 </div>
@@ -9601,11 +9605,14 @@ const voiceTime = (seconds) => `${String(Math.floor(seconds / 60)).padStart(2, "
 const lessonRecordLlm = new GatewayLlmProvider({ gatewayProvider: aiProvider, maxRetries: 1 });
 const AIRecordingStatusContext = createContext({ status: AI_RECORDING_STATUS.NORMAL, updateStatus: () => {} });
 
-function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = null, autoStart = false, onDirectEntry = null, onLater = null }) {
+function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = null, onDirectEntry = null, onLater = null }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const [on, setOn] = useState(false);
   const [starting, setStarting] = useState(false);
   const [manualEntry, setManualEntry] = useState(false);
+  const [voiceAvailability, setVoiceAvailability] = useState("checking");
+  const [userAttemptedStart, setUserAttemptedStart] = useState(false);
+  const [silenceNotice, setSilenceNotice] = useState("");
   const [finishing, setFinishing] = useState(false);
   const [text, setText] = useState("");
   const [elapsed, setElapsed] = useState(0);
@@ -9652,9 +9659,45 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
   const recordingStartedAtRef = useRef(0);
   const sttTrackedRef = useRef(false);
   const autoStructureRef = useRef(false);
-  const autoStartHandledRef = useRef(false);
+  const silenceGuardRef = useRef(null);
+  const silenceTimeoutActionRef = useRef(() => {});
   const transcriptInputRef = useRef(null);
   useEffect(() => { textRef.current = text; }, [text]);
+  useEffect(() => {
+    silenceGuardRef.current = createSilenceGuard({
+      limitMs: VOICE_SILENCE_LIMIT_MS,
+      onTimeout: () => silenceTimeoutActionRef.current?.(),
+    });
+    return () => silenceGuardRef.current?.stop();
+  }, []);
+  useEffect(() => {
+    let active = true;
+    const inspect = async () => {
+      setVoiceAvailability("checking");
+      const runtime = sttRuntime();
+      if (runtime.native) {
+        const availability = await runtime.native.available?.().catch(() => null);
+        if (!active) return;
+        if (availability?.available === false) {
+          setVoiceAvailability("unsupported");
+          setManualEntry(true);
+          return;
+        }
+        const permission = await runtime.native.checkPermissions?.().catch(() => null);
+        if (!active) return;
+        setVoiceAvailability(isSpeechPermissionGranted(permission) ? "ready" : "permission_required");
+        return;
+      }
+      if (runtime.web) {
+        setVoiceAvailability("ready");
+        return;
+      }
+      setVoiceAvailability("unsupported");
+      setManualEntry(true);
+    };
+    inspect();
+    return () => { active = false; };
+  }, [memberId, lessonId]);
   useEffect(() => {
     const restore = () => {
       const pending = loadPendingLessonRecord(memberId, lessonId);
@@ -9723,6 +9766,7 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
   };
   const finishRecognition = (showEmpty = true, sessionId = speechSessionRef.current, emptyMessage = SPEECH_NO_RESULT_MESSAGE) => {
     if (sessionId !== speechSessionRef.current) return;
+    silenceGuardRef.current?.stop();
     if (finishTimerRef.current) clearTimeout(finishTimerRef.current);
     finishTimerRef.current = null;
     stoppingRef.current = false;
@@ -9822,12 +9866,31 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
     if (typeof onDirectEntry === "function") onDirectEntry(fallbackMessage);
     else window.setTimeout(() => transcriptInputRef.current?.focus(), 0);
   };
+  const requestVoicePermission = async () => {
+    const NS = nativeSTT();
+    if (!NS) {
+      setVoiceAvailability(sttOK() ? "ready" : "unsupported");
+      return;
+    }
+    setVoiceAvailability("checking");
+    const permission = await NS.requestPermissions?.().catch(() => null);
+    const granted = isSpeechPermissionGranted(permission);
+    setVoiceAvailability(granted ? "ready" : "permission_required");
+    deviceLog("speech_permission_requested", { memberId, lessonId, permission: "speech_recognition", state: granted ? "granted" : "denied", source: "native" });
+  };
   const start = async () => {
     if (startRequestRef.current || on || finishing) return;
+    setUserAttemptedStart(true);
     startRequestRef.current = true;
     nativeListeningStartedRef.current = false;
     setStarting(true);
     setManualEntry(false);
+    setSilenceNotice("");
+    setSummaryOriginal(null);
+    setSummaryDraft(null);
+    setSummaryMeta(null);
+    setSummaryError("");
+    setSummaryFailure(null);
     deviceLog("speech_start_requested", { memberId, lessonId, source: "pending", state: "starting" });
     const failStart = (message, details = {}) => {
       startRequestRef.current = false;
@@ -9835,12 +9898,14 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
       setStarting(false);
       setOn(false);
       setFinishing(false);
+      const failureCode = details.reason || details.code || "stt_provider_error";
       setErr(message || "음성 인식을 시작하지 못했습니다.");
-      deviceLog("speech_start_failed", { memberId, lessonId, ...details });
+      deviceLog("speech_start_failed", { memberId, lessonId, code: failureCode, ...details });
     };
     if (!sttOK()) {
       const message = "이 기기에서는 음성 인식을 사용할 수 없어 직접 입력으로 전환했습니다.";
-      failStart(message, { state: "direct_input_required", reason: "unsupported" });
+      setVoiceAvailability("unsupported");
+      failStart(message, { state: "direct_input_required", reason: "recognizer_unavailable" });
       fallbackToDirectEntry(message);
       return;
     }
@@ -9927,7 +9992,8 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
           if (!isSpeechPermissionGranted(req)) {
             stopMedia();
             const message = "마이크 권한이 거부되어 직접 입력으로 전환했습니다.";
-            failStart(message, { permission: "speech_recognition", state: "denied", source: "native", reason: "permission_denied" });
+            setVoiceAvailability("permission_required");
+            failStart(message, { permission: "speech_recognition", state: "denied", source: "native", reason: "mic_permission_denied" });
             deviceLog("speech_permission_denied", { memberId, lessonId, permission: "speech_recognition", state: "denied", source: "native" });
             fallbackToDirectEntry(message);
             return;
@@ -9950,42 +10016,69 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
               deviceLog("voice_transcription_unexpected_end", { memberId, lessonId, source: "native", state: "ignored_pre_start_stopped", reason: "listener_initial_state" });
               return;
             }
-            setOn(false);
-            setFinishing(true);
-            /* Android의 stopped는 발화 종료일 뿐 최종 텍스트 완료가 아니다. */
-            scheduleFinish(NATIVE_SPEECH_RESULT_TIMEOUT_MS, true, sessionId, SPEECH_RESULT_TIMEOUT_MESSAGE);
+            if (stoppingRef.current) {
+              setOn(false);
+              setFinishing(true);
+              /* 사용자가 종료했을 때만 최종 결과를 기다린다. */
+              scheduleFinish(NATIVE_SPEECH_RESULT_TIMEOUT_MS, true, sessionId, SPEECH_RESULT_TIMEOUT_MESSAGE);
+            } else {
+              setOn(true);
+              setFinishing(false);
+              deviceLog("voice_transcription_unexpected_end", { memberId, lessonId, source: "native", state: "restarting", reason: "engine_early_end" });
+            }
           }
         });
         nativeListenersRef.current = [stateListener].filter(Boolean);
         recRef.current = { native: true, sessionId, stop: () => NS.stop?.() };
-        deviceLog("speech_start_dispatched", { memberId, lessonId, source: "native", state: "dispatched" });
-        /* Final-result mode keeps the start Promise pending until onResults/onError.
-           This avoids the plugin 7.x partial-mode bug that loses late Android errors. */
-        const pendingResult = NS.start({ language: "ko-KR", maxResults: 3, partialResults: false, popup: false });
         setOn(true);
         setStarting(false);
         startRequestRef.current = false;
+        silenceGuardRef.current?.start();
         deviceLog("voice_record_started", { memberId, lessonId, source: "native", storage: "indexedDB", state: "started" });
-        Promise.resolve(pendingResult).then((result) => {
-          if (sessionId !== speechSessionRef.current) return;
-          const got = String(result?.matches?.[0] || "").trim();
-          if (got) {
-            heardRef.current = true;
-            const previous = textRef.current;
-            const nextText = `${previous ? previous.replace(/\s*⟨[^⟩]*⟩\s*$/, "").trim() + " " : ""}${got}`.trim();
-            textRef.current = nextText;
-            setText(nextText);
-            persistRawDraft(nextText);
+        const startNativeSegment = async (busyRetry = 0) => {
+          if (sessionId !== speechSessionRef.current || stoppingRef.current) return;
+          try {
+            nativeListeningStartedRef.current = false;
+            deviceLog("speech_start_dispatched", { memberId, lessonId, source: "native", state: busyRetry ? "busy_retry" : "dispatched" });
+            /* 한 엔진 세션이 조기 종료돼도 사용자 녹음 세션은 유지한다. */
+            const result = await NS.start({ language: "ko-KR", maxResults: 3, partialResults: false, popup: false });
+            if (sessionId !== speechSessionRef.current) return;
+            const got = String(result?.matches?.[0] || "").trim();
+            if (got) {
+              heardRef.current = true;
+              const nextText = stitchSpeechTranscript(textRef.current, got);
+              textRef.current = nextText;
+              setText(nextText);
+              persistRawDraft(nextText);
+              silenceGuardRef.current?.heard();
+            }
+            if (stoppingRef.current) {
+              finishRecognition(!got, sessionId);
+              return;
+            }
+            setOn(true);
+            setFinishing(false);
+            window.setTimeout(() => startNativeSegment(0), 80);
+          } catch (error) {
+            if (sessionId !== speechSessionRef.current || stoppingRef.current) return;
+            if (isRecognizerBusyError(error) && busyRetry === 0) {
+              deviceLog("speech_start_busy_retry", { memberId, lessonId, source: "native", code: "recognizer_busy", retryDelayMs: RECOGNIZER_BUSY_RETRY_MS });
+              window.setTimeout(() => startNativeSegment(1), RECOGNIZER_BUSY_RETRY_MS);
+              return;
+            }
+            const diagnostic = describeSpeechError(error);
+            if (diagnostic.kind === "no_speech") {
+              setOn(true);
+              window.setTimeout(() => startNativeSegment(0), 80);
+              return;
+            }
+            clearNativeListeners(); stopMedia();
+            finishRecognition(false, sessionId);
+            setErr(diagnostic.message || "음성 인식을 시작하지 못했습니다.");
+            deviceLog("voice_transcription_failed", { memberId, lessonId, source: "native", code: diagnostic.code || "stt_provider_error", kind: diagnostic.kind, ...deviceError(error) });
           }
-          finishRecognition(!got, sessionId);
-        }).catch((error) => {
-          if (sessionId !== speechSessionRef.current) return;
-          const diagnostic = describeSpeechError(error);
-          clearNativeListeners(); stopMedia();
-          finishRecognition(false, sessionId);
-          setErr("음성 인식을 시작하지 못했습니다.");
-          deviceLog("voice_transcription_failed", { memberId, lessonId, source: "native", kind: diagnostic.kind, ...deviceError(error) });
-        });
+        };
+        startNativeSegment();
         return;
       } catch (error) {
         if (sessionId !== speechSessionRef.current) return;
@@ -9994,44 +10087,103 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
         finishRecognition(false, sessionId);
         failStart("음성 인식을 시작하지 못했습니다.", { source: "native", kind: diagnostic.kind, ...deviceError(error) });
         deviceLog("voice_transcription_failed", { memberId, lessonId, source: "native", kind: diagnostic.kind, ...deviceError(error) });
-        if (String(error?.message || "").includes("unavailable")) fallbackToDirectEntry("이 기기에서는 음성 인식을 사용할 수 없어 직접 입력으로 전환했습니다.");
+        if (String(error?.message || "").includes("unavailable")) {
+          setVoiceAvailability("unsupported");
+          fallbackToDirectEntry("이 기기에서는 음성 인식을 사용할 수 없어 직접 입력으로 전환했습니다.");
+        }
         return;
       }
     }
     try {
       const r = new R();
       r.lang = "ko-KR"; r.continuous = true; r.interimResults = true;
-      let fixed = text ? text + " " : "";
+      let fixed = textRef.current.replace(/\s*⟨([^⟩]*)⟩\s*$/, (_, live) => ` ${live}`).trim();
+      let restartTimer = null;
+      let busyRetryUsed = false;
+      const scheduleWebRestart = (delay, busyRetry = 0) => {
+        if (restartTimer !== null) window.clearTimeout(restartTimer);
+        restartTimer = window.setTimeout(() => {
+          restartTimer = null;
+          startWebRecognition(busyRetry);
+        }, delay);
+      };
       r.onresult = (e) => {
         if (sessionId !== speechSessionRef.current) return;
         let live = "";
         for (let i = e.resultIndex; i < e.results.length; i++) {
           const t = e.results[i][0].transcript;
           if (t) heardRef.current = true;
-          if (e.results[i].isFinal) fixed += t + " "; else live += t;
+          if (e.results[i].isFinal) fixed = stitchSpeechTranscript(fixed, t);
+          else live += t;
         }
-        const nextText = (fixed + live).trim();
+        const nextText = live ? `${fixed}${fixed ? " " : ""}⟨${live.trim()}⟩` : fixed;
         textRef.current = nextText;
         setText(nextText);
         if (nextText) persistRawDraft(nextText);
+        if (live || fixed) {
+          busyRetryUsed = false;
+          silenceGuardRef.current?.heard();
+        }
       };
       r.onerror = (event) => {
         if (sessionId !== speechSessionRef.current) return;
         const diagnostic = describeSpeechError({ code: event?.error, message: event?.message });
+        if (!stoppingRef.current && diagnostic.kind === "busy" && !busyRetryUsed) {
+          busyRetryUsed = true;
+          scheduleWebRestart(RECOGNIZER_BUSY_RETRY_MS, 1);
+          return;
+        }
+        if (!stoppingRef.current && diagnostic.kind === "no_speech") {
+          scheduleWebRestart(80, 0);
+          return;
+        }
         setOn(false); stopMedia();
         finishRecognition(false, sessionId);
         setErr(diagnostic.message);
-        deviceLog("voice_transcription_failed", { memberId, lessonId, source: "web_speech", kind: diagnostic.kind, code: event?.error || "unknown", message: "speech recognition stopped" });
-        if (["not-allowed", "service-not-allowed"].includes(event?.error)) fallbackToDirectEntry("마이크 권한이 거부되어 직접 입력으로 전환했습니다.");
+        deviceLog("voice_transcription_failed", { memberId, lessonId, source: "web_speech", kind: diagnostic.kind, code: diagnostic.code || event?.error || "unknown", message: "speech recognition stopped" });
+        if (["not-allowed", "service-not-allowed"].includes(event?.error)) {
+          setVoiceAvailability("permission_required");
+          fallbackToDirectEntry("마이크 권한이 거부되어 직접 입력으로 전환했습니다.");
+        }
       };
       r.onend = () => {
         if (sessionId !== speechSessionRef.current) return;
-        setOn(false); stopMedia();
-        if (stoppingRef.current) scheduleFinish(250, true, sessionId); else finishRecognition(true, sessionId);
+        if (!stoppingRef.current && restartTimer !== null) return;
+        fixed = textRef.current.replace(/\s*⟨([^⟩]*)⟩\s*$/, (_, live) => ` ${live}`).trim();
+        textRef.current = fixed;
+        setText(fixed);
+        if (fixed) persistRawDraft(fixed);
+        if (stoppingRef.current) {
+          setOn(false); stopMedia();
+          scheduleFinish(250, true, sessionId);
+        } else {
+          setOn(true);
+          deviceLog("voice_transcription_unexpected_end", { memberId, lessonId, source: "web_speech", state: "restarting", reason: "engine_early_end" });
+          scheduleWebRestart(80, 0);
+        }
       };
-      r.sessionId = sessionId;
-      recRef.current = r; setErr(""); setSource("web_speech"); sourceRef.current = "web_speech"; r.start();
-      startRequestRef.current = false; setStarting(false); setOn(true);
+      const startWebRecognition = (busyRetry = 0) => {
+        if (sessionId !== speechSessionRef.current || stoppingRef.current) return;
+        try {
+          r.start();
+          startRequestRef.current = false; setStarting(false); setOn(true);
+        } catch (error) {
+          if (isRecognizerBusyError(error) && busyRetry === 0) {
+            deviceLog("speech_start_busy_retry", { memberId, lessonId, source: "web_speech", code: "recognizer_busy", retryDelayMs: RECOGNIZER_BUSY_RETRY_MS });
+            scheduleWebRestart(RECOGNIZER_BUSY_RETRY_MS, 1);
+            return;
+          }
+          const diagnostic = describeSpeechError(error);
+          stopMedia();
+          finishRecognition(false, sessionId);
+          setErr(diagnostic.message);
+          deviceLog("voice_transcription_failed", { memberId, lessonId, source: "web_speech", kind: diagnostic.kind, code: diagnostic.code || "stt_provider_error", ...deviceError(error) });
+        }
+      };
+      recRef.current = { sessionId, native: false, stop: () => { if (restartTimer !== null) window.clearTimeout(restartTimer); r.stop(); } };
+      setErr(""); setSource("web_speech"); sourceRef.current = "web_speech";
+      silenceGuardRef.current?.start();
+      startWebRecognition();
       deviceLog("voice_record_started", { memberId, lessonId, source: "web_speech", storage: "indexedDB" });
     } catch (error) {
       if (sessionId !== speechSessionRef.current) return;
@@ -10042,17 +10194,8 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
       deviceLog("voice_transcription_failed", { memberId, lessonId, source: "web_speech", kind: diagnostic.kind, ...deviceError(error) });
     }
   };
-  useEffect(() => {
-    if (!autoStart || autoStartHandledRef.current) return undefined;
-    let active = true;
-    Promise.resolve().then(() => {
-      if (!active || autoStartHandledRef.current) return;
-      autoStartHandledRef.current = true;
-      start();
-    });
-    return () => { active = false; };
-  }, [autoStart, memberId, lessonId]);
-  const stop = () => {
+  const stop = (reason = "manual") => {
+    silenceGuardRef.current?.stop();
     startRequestRef.current = false;
     setStarting(false);
     const rec = recRef.current;
@@ -10080,9 +10223,15 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
       sessionId,
       rec?.native ? SPEECH_RESULT_TIMEOUT_MESSAGE : SPEECH_NO_RESULT_MESSAGE,
     );
-    deviceLog("voice_record_stopped", { memberId, lessonId, source: sourceRef.current || "unknown", storage: "indexedDB" });
+    deviceLog("voice_record_stopped", { memberId, lessonId, source: sourceRef.current || "unknown", storage: "indexedDB", reason });
+  };
+  silenceTimeoutActionRef.current = () => {
+    if (stoppingRef.current || speechSessionRef.current <= 0) return;
+    setSilenceNotice("8초 동안 말씀이 없어 녹음을 마치고 내용을 정리합니다.");
+    stop("silence_timeout");
   };
   const cancelRecording = () => {
+    silenceGuardRef.current?.stop();
     speechSessionRef.current += 1;
     startRequestRef.current = false;
     stoppingRef.current = false;
@@ -10112,7 +10261,7 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
   useEffect(() => {
     if (on && elapsed >= MAX_STT_SECONDS) {
       setErr(`${MAX_STT_SECONDS}초 상한에 도달해 녹음을 멈췄습니다.`);
-      stop();
+      stop("maximum_duration");
     }
   }, [on, elapsed]);
   useEffect(() => {
@@ -10207,28 +10356,49 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
     if (recorder && recorder.state !== "inactive") { try { recorder.stop(); } catch (e) {} }
     streamRef.current?.getTracks?.().forEach((track) => track.stop());
   }, []);
-  const supported = sttOK() || mediaRecordOK();
+  const supported = voiceAvailability !== "unsupported";
+  const voicePhase = resolveVoicePhase({
+    availability: voiceAvailability,
+    starting,
+    listening: on,
+    finishing,
+    organizing: summaryBusy,
+    hasResult: !!summaryDraft,
+    attempted: userAttemptedStart,
+    error: err,
+  });
   const summaryView = useMemo(() => lessonRecordPresentation(summaryDraft || {}), [summaryDraft]);
   return (
     <div ref={boxRef} className="rounded-2xl p-3" style={{ backgroundColor: CANVAS, boxShadow: highlight ? `0 0 0 2.5px ${PRIMARY}` : "none", transition: "box-shadow .4s ease" }}>
       <div className="flex items-center gap-2">
         <div className="min-w-0 flex-1"><p className="text-xs font-extrabold" style={{ color: INK }}>AI 수업기록</p><p className="mt-0.5 text-[10px]" style={{ color: SUB }}>수업 후 10초만 말하면 AI가 기록을 정리합니다.</p></div>
-        {on || starting ? (
+        {voicePhase === "listening" ? (
           <div className="flex shrink-0 gap-1.5">
             <button type="button" onClick={cancelRecording} className="min-h-11 rounded-full px-3 text-xs font-extrabold" style={{ backgroundColor: CARD, color: SUB, border: `1px solid ${LINE}` }}>취소</button>
-            <button type="button" onClick={stop} disabled={starting} aria-label="음성 녹음 완료" className="flex min-h-11 items-center gap-1.5 rounded-full px-3 py-2 text-xs font-extrabold text-white disabled:opacity-60" style={{ backgroundColor: BAD }}>
-              {starting ? <><Loader2 size={12} className="animate-spin" /> 시작 중…</> : <><span className="h-2 w-2 animate-pulse rounded-full bg-white" /> {voiceTime(elapsed)} · 완료</>}
+            <button type="button" onClick={() => stop("manual")} aria-label="음성 녹음 완료" className="flex min-h-11 items-center gap-1.5 rounded-full px-3 py-2 text-xs font-extrabold text-white" style={{ backgroundColor: BAD }}>
+              <span className="h-2 w-2 animate-pulse rounded-full bg-white" /> {voiceTime(elapsed)} · 완료
             </button>
           </div>
-        ) : (
-          <button type="button" onClick={start} disabled={!supported || audioState === "saving" || finishing} aria-label="음성으로 말하기 시작" className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-full px-3 py-2 text-xs font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: BRAND }}>
-            {finishing ? <><Loader2 size={12} className="animate-spin" /> 내용 확인 중…</> : <><Smartphone size={12} /> 말하기 시작</>}
+        ) : voicePhase === "preparing" ? (
+          <div className="flex shrink-0 gap-1.5">
+            {userAttemptedStart && <button type="button" onClick={cancelRecording} className="min-h-11 rounded-full px-3 text-xs font-extrabold" style={{ backgroundColor: CARD, color: SUB, border: `1px solid ${LINE}` }}>취소</button>}
+            <button type="button" disabled className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-full px-3 py-2 text-xs font-extrabold text-white opacity-60" style={{ backgroundColor: BRAND }}><Loader2 size={12} className="animate-spin" /> 준비 중…</button>
+          </div>
+        ) : voicePhase === "organizing" ? (
+          <button type="button" disabled className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-full px-3 py-2 text-xs font-extrabold text-white opacity-60" style={{ backgroundColor: BRAND }}><Loader2 size={12} className="animate-spin" /> 정리 중…</button>
+        ) : voicePhase === "permission_required" ? (
+          <button type="button" onClick={requestVoicePermission} className="min-h-11 shrink-0 rounded-full px-3 text-xs font-extrabold" style={{ backgroundColor: TINT, color: BRAND_D }}>권한 설정</button>
+        ) : voicePhase === "unsupported" ? null : (
+          <button type="button" onClick={start} disabled={!supported || audioState === "saving"} aria-label={text ? "음성으로 이어서 말하기" : "음성으로 말하기 시작"} className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-full px-3 py-2 text-xs font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: BRAND }}>
+            <Smartphone size={12} /> {text ? "이어서 말하기" : "말하기 시작"}
           </button>
         )}
       </div>
-      {!supported && <Sub className="mt-1.5 block leading-relaxed" style={{ color: BAD }}>녹음과 음성 인식을 지원하지 않는 기기입니다. 아래 직접 입력란을 이용해 주세요.</Sub>}
-      {finishing && <Sub className="mt-1.5 block leading-relaxed">마지막 음성을 정리하고 있습니다. 잠시만 기다려 주세요.</Sub>}
-      {!text && !on && !finishing && <div className="mt-3 rounded-xl p-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
+      {voicePhase === "permission_required" && <Sub className="mt-1.5 block leading-relaxed">말하기를 사용하려면 마이크와 음성 인식 권한을 허용해 주세요.</Sub>}
+      {voicePhase === "unsupported" && <Sub className="mt-1.5 block leading-relaxed">이 기기에서는 말하기를 지원하지 않아 직접 입력으로 기록할 수 있어요.</Sub>}
+      {voicePhase === "listening" && <Sub className="mt-1.5 block font-bold leading-relaxed" style={{ color: BRAND_D }}>듣고 있어요 · 잠시 생각하며 멈춰도 괜찮아요.</Sub>}
+      {voicePhase === "organizing" && <Sub className="mt-1.5 block leading-relaxed">{silenceNotice || "마지막 음성을 정리하고 있습니다. 잠시만 기다려 주세요."}</Sub>}
+      {!text && ["idle", "permission_required", "unsupported"].includes(voicePhase) && <div className="mt-3 rounded-xl p-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
         <p className="text-sm font-extrabold" style={{ color: INK }}>수업 내용을 편하게 말해주세요</p>
         <p className="mt-1 text-xs font-bold" style={{ color: BRAND_D }}>무엇을 말하면 되나요?</p>
         <div className="mt-2 grid grid-cols-2 gap-1.5">{["① 회원의 변화", "② 오늘 한 운동", "③ 회원 반응", "④ 다음 확인"].map((label) => <span key={label} className="rounded-lg px-2 py-2 text-[11px] font-bold" style={{ backgroundColor: CANVAS, color: INK2 }}>{label}</span>)}</div>
@@ -10236,13 +10406,13 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
         <p className="mt-2 text-[11px] font-bold leading-relaxed" style={{ color: SUB }}>순서대로 말하지 않아도 괜찮아요. 편하게 말하면 AI가 알아서 정리해요.</p>
         {showValueGuide && <div className="mt-3 rounded-lg px-3 py-2.5" style={{ backgroundColor: TINT }}><p className="text-[11px] font-extrabold" style={{ color: BRAND_D }}>이렇게 활용돼요</p><p className="mt-1 text-[10px] leading-relaxed" style={{ color: INK2 }}>저장된 변화·운동·반응·다음 계획을 바탕으로 다음 수업 전에 지난 기록을 이어서 보여드려요.</p></div>}
       </div>}
-      {err && !on && !finishing && <div role="alert" className="mt-2 rounded-xl p-3" style={{ backgroundColor: BAD_S, border: `1px solid ${BAD}` }}><p className="text-[11px] leading-relaxed" style={{ color: BAD }}>{err}</p><div className="mt-2 grid grid-cols-2 gap-1.5"><button type="button" disabled={starting} onClick={start} className="h-11 rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: CARD, color: BAD }}>다시 시도</button><button type="button" onClick={() => { setManualEntry(true); setErr(""); window.setTimeout(() => transcriptInputRef.current?.focus(), 0); }} className="h-11 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: PRIMARY }}>직접 입력</button></div></div>}
+      {voicePhase === "failed" && <div role="alert" className="mt-2 rounded-xl p-3" style={{ backgroundColor: BAD_S, border: `1px solid ${BAD}` }}><p className="text-[11px] leading-relaxed" style={{ color: BAD }}>{err}</p><div className="mt-2 grid grid-cols-2 gap-1.5"><button type="button" onClick={start} className="h-11 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: BAD }}>다시 시도</button><button type="button" onClick={() => { setManualEntry(true); setErr(""); window.setTimeout(() => transcriptInputRef.current?.focus(), 0); }} className="h-11 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: PRIMARY }}>직접 입력</button></div></div>}
       {(text || manualEntry || audioState === "saved" || audioState === "saving") && (
         <>
           <textarea ref={transcriptInputRef} rows={4} value={text} onChange={(event) => { setText(event.target.value); setSummaryOriginal(null); setSummaryDraft(null); setSummaryMeta(null); setSummaryError(""); setSummaryFailureClass(""); setSummaryEditing(false); setSummaryStatus(AI_STATUSES.NOT_CONNECTED); }} aria-label="말하거나 입력한 수업 내용" placeholder="회원의 변화, 오늘 한 운동, 반응, 다음 계획을 편하게 입력하세요" className={`${inputCls} mt-2 h-auto resize-none py-2 text-sm leading-relaxed`} />
           <Sub className="mt-1.5 block">저장하기 전에 내용을 직접 확인하고 수정할 수 있어요{audioState === "saved" ? " · 녹음 파일 임시 저장됨" : audioState === "saving" ? " · 녹음 파일 저장 중" : ""}</Sub>
-          {!summaryError && <button disabled={on || summaryBusy || !text.trim()} onClick={() => requestSummary()} className="mt-2 flex h-10 w-full items-center justify-center gap-1.5 rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: TINT, color: PRIMARY }}>
-            {summaryBusy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} AI로 정리
+          {!summaryError && !summaryBusy && !summaryDraft && <button disabled={on || !text.trim()} onClick={() => requestSummary()} className="mt-2 flex h-10 w-full items-center justify-center gap-1.5 rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: TINT, color: PRIMARY }}>
+            <Sparkles size={14} /> AI로 정리
           </button>}
           {summaryBusy && <p aria-live="polite" className="mt-2 text-center text-[11px] font-bold" style={{ color: BRAND_D }}>AI가 수업 기록을 정리하고 있습니다…</p>}
           {summaryError && summaryFailure && <div role="alert" data-ai-failure={summaryFailureClass || undefined} className="mt-2 rounded-xl p-3" style={{ backgroundColor: BAD_S, border: `1px solid ${BAD}` }}>

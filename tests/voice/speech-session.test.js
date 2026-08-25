@@ -20,16 +20,19 @@ test("native speech failures produce cause-specific guidance", () => {
   assert.equal(describeSpeechError(new Error("error from server")).kind, "network");
   assert.equal(describeSpeechError(new Error("Audio recording error")).kind, "audio");
   assert.equal(describeSpeechError(new Error("No match")).kind, "no_speech");
-  assert.equal(describeSpeechError(new Error("RecognitionService busy")).kind, "service");
+  assert.equal(describeSpeechError(new Error("RecognitionService busy")).kind, "busy");
+  assert.equal(describeSpeechError(new Error("RecognitionService busy")).code, "recognizer_busy");
   assert.equal(describeSpeechError(new Error("Insufficient permissions")).kind, "permission");
+  assert.equal(describeSpeechError(new Error("Insufficient permissions")).code, "mic_permission_denied");
   assert.equal(describeSpeechError(new Error("speech_recognition_unavailable")).kind, "unavailable");
+  assert.equal(describeSpeechError(new Error("speech_recognition_unavailable")).code, "recognizer_unavailable");
   assert.ok(NATIVE_SPEECH_RESULT_TIMEOUT_MS >= 5000);
 });
 
 test("VoiceNote gives the native recognizer exclusive microphone ownership", async () => {
   const source = await readFile(new URL("../../src/App.jsx", import.meta.url), "utf8");
   const startIndex = source.indexOf("  const start = async () => {");
-  const stopIndex = source.indexOf("  const stop = () => {", startIndex);
+  const stopIndex = source.indexOf("  const stop = (reason = \"manual\") => {", startIndex);
   assert.ok(startIndex >= 0 && stopIndex > startIndex);
   const startSource = source.slice(startIndex, stopIndex);
 
@@ -38,6 +41,9 @@ test("VoiceNote gives the native recognizer exclusive microphone ownership", asy
   assert.doesNotMatch(startSource, /NS\.start\(\{[^}]*partialResults: true/);
   assert.match(startSource, /sessionId !== speechSessionRef\.current/);
   assert.match(startSource, /NATIVE_SPEECH_RESULT_TIMEOUT_MS/);
+  assert.match(startSource, /startNativeSegment/);
+  assert.match(startSource, /RECOGNIZER_BUSY_RETRY_MS/);
+  assert.match(startSource, /stitchSpeechTranscript/);
 });
 
 test("native packaging declares Android and iOS speech requirements", async () => {

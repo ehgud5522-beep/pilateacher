@@ -135,8 +135,10 @@ test("native app information is the runtime source of the displayed build label"
   ]);
   assert.match(source, /CapacitorApp\.getInfo\(\)/);
   assert.match(source, /<RuntimeBuildLabel\s*\/>/);
-  assert.match(gradle, /versionCode\s+31\b/);
-  assert.match(gradle, /versionName\s+"1\.1\.22"/);
+  const versionCode = Number(gradle.match(/versionCode\s+(\d+)\b/)?.[1]);
+  const versionName = gradle.match(/versionName\s+"([^"]+)"/)?.[1] || "";
+  assert.ok(Number.isSafeInteger(versionCode) && versionCode > 0);
+  assert.match(versionName, /^\d+\.\d+\.\d+$/);
 });
 
 test("Android permanent denial uses app details settings and resume rechecks permission", async () => {

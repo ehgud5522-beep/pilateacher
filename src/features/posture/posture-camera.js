@@ -342,8 +342,8 @@ export function evaluateDeviceLevel({
 }
 
 export function createCaptureCountdown({
-  setTimer = globalThis.setTimeout,
-  clearTimer = globalThis.clearTimeout,
+  setTimer = (...args) => globalThis.setTimeout(...args),
+  clearTimer = (...args) => globalThis.clearTimeout(...args),
   onTick = () => {},
   onComplete = () => {},
 } = {}) {

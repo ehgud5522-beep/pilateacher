@@ -1,11 +1,24 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
+import react from "@vitejs/plugin-react";
+
+const projectRoot = fileURLToPath(new URL("../../", import.meta.url));
 
 test("all primary tabs and detail surfaces render without a ReferenceError", async (t) => {
-  const vite = await createServer({ appType: "custom", server: { middlewareMode: true }, ssr: { noExternal: ["@capgo/camera-preview"] }, logLevel: "silent" });
+  const vite = await createServer({
+    root: projectRoot,
+    configFile: false,
+    plugins: [react()],
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] },
+    server: { middlewareMode: true },
+    ssr: { noExternal: ["@capgo/camera-preview"] },
+    logLevel: "silent",
+  });
   t.after(() => vite.close());
   const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
   const cases = createAppScreenSmokeCases();

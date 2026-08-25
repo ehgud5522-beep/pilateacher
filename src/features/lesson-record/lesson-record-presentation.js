@@ -5,6 +5,14 @@ const valuesOf = (draft, field) => (Array.isArray(draft?.[field]) ? draft[field]
 const joined = (values) => values.join(" · ");
 
 export function lessonRecordPresentation(draft) {
+  const source = String(draft?.provenanceSource || "openai");
+  if (source === "fallback_raw") {
+    return {
+      cards: [],
+      narrative: String(draft?.rawTranscript || "").trim(),
+      narrativeLabel: "선생님 기록",
+    };
+  }
   const didToday = valuesOf(draft, "didToday");
   const observations = valuesOf(draft, "observations");
   const responses = valuesOf(draft, "responses");
@@ -15,9 +23,8 @@ export function lessonRecordPresentation(draft) {
     { key: "responses", label: "회원 반응", value: joined(responses) || "추가해 주세요" },
     { key: "nextFocus", label: "다음 확인", value: joined(nextFocus) || "아직 계획 없음" },
   ];
-  const source = String(draft?.provenanceSource || "openai");
-  const narrative = source === "fallback_raw" ? String(draft?.rawTranscript || "").trim() : String(draft?.summary || "").trim();
-  return { cards, narrative, narrativeLabel: source === "fallback_raw" ? "선생님 기록" : "수업 기록" };
+  const narrative = String(draft?.summary || "").trim();
+  return { cards, narrative, narrativeLabel: "수업 기록" };
 }
 
 export function shouldShowLessonRecordGuide(storage, limit = 3) {

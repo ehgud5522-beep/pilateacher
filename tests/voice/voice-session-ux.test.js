@@ -4,10 +4,14 @@ import test from "node:test";
 
 import {
   RECOGNIZER_BUSY_RETRY_MS,
+  VOICE_SESSION_DIAGNOSTIC_LIMIT,
   VOICE_SILENCE_LIMIT_MS,
+  appendVoiceSessionDiagnostic,
   createSilenceGuard,
   isRecognizerBusyError,
+  readVoiceSessionDiagnostics,
   resolveVoicePhase,
+  shouldRestartRecognizer,
   stitchSpeechTranscript,
 } from "../../src/features/voice/voice-session.js";
 import { describeLessonRecordFailure } from "../../src/features/lesson-record/failure-diagnostics.js";
@@ -45,12 +49,37 @@ test("voice phase resolver always yields one mutually exclusive visible state", 
   assert.equal(resolveVoicePhase({ attempted: true, error: "failed" }), "failed");
 });
 
-test("recognizer busy gets one short retry classification while unsupported and permission failures never auto retry", () => {
+test("recognizer busy uses bounded 300ms restarts while unsupported and permission failures never auto retry", () => {
   assert.equal(isRecognizerBusyError(new Error("RecognitionService busy")), true);
   assert.equal(RECOGNIZER_BUSY_RETRY_MS, 300);
   assert.equal(describeLessonRecordFailure({ code: "recognizer_busy" }).category, "TEMPORARY");
   assert.equal(describeLessonRecordFailure({ code: "mic_permission_denied" }).retry, false);
   assert.equal(describeLessonRecordFailure({ code: "recognizer_unavailable" }).retry, false);
+});
+
+test("engine ends and repeated busy callbacks cannot finish before 8 seconds of silence or the 90 second cap", () => {
+  const startedAt = 1_000;
+  assert.equal(shouldRestartRecognizer({ sessionStartedAt: startedAt, lastSpeechAt: 4_000, now: 8_000 }), true, "a second final followed by a 4 second pause stays active");
+  assert.equal(shouldRestartRecognizer({ sessionStartedAt: startedAt, lastSpeechAt: 8_000, now: 15_900 }), true, "every final renews the full silence window");
+  assert.equal(shouldRestartRecognizer({ sessionStartedAt: startedAt, lastSpeechAt: 8_000, now: 16_000 }), false, "8 seconds of actual silence ends restart attempts");
+  assert.equal(shouldRestartRecognizer({ sessionStartedAt: startedAt, lastSpeechAt: 89_500, now: 91_000 }), false, "the 90 second session cap always wins");
+  assert.equal(shouldRestartRecognizer({ stopping: true, sessionStartedAt: startedAt, lastSpeechAt: 8_000, now: 8_100 }), false);
+});
+
+test("voice diagnostics retain only 30 privacy-safe events with device-local timestamps", () => {
+  const values = new Map();
+  const storage = { getItem: (key) => values.get(key) || null, setItem: (key, value) => values.set(key, value) };
+  for (let index = 0; index < VOICE_SESSION_DIAGNOSTIC_LIMIT + 3; index += 1) {
+    appendVoiceSessionDiagnostic(index % 2 ? "restart" : "error", {
+      source: "native", code: "recognizer_busy", attempt: index, delayMs: 300,
+      transcript: "must never be stored",
+    }, storage, () => new Date(`2026-08-26T00:${String(index).padStart(2, "0")}:00+09:00`));
+  }
+  const entries = readVoiceSessionDiagnostics(storage);
+  assert.equal(entries.length, VOICE_SESSION_DIAGNOSTIC_LIMIT);
+  assert.equal(entries[0].attempt, 32);
+  assert.match(entries[0].localTime, /2026/);
+  assert.equal(JSON.stringify(entries).includes("must never be stored"), false);
 });
 
 test("VoiceNote waits for a user tap, keeps toggle controls, and exposes continuation without overlapping failure UI", async () => {
@@ -63,5 +92,20 @@ test("VoiceNote waits for a user tap, keeps toggle controls, and exposes continu
   assert.match(voice, /이어서 말하기/);
   assert.match(voice, /voicePhase === "failed"/);
   assert.match(voice, /RECOGNIZER_BUSY_RETRY_MS/);
+  assert.match(voice, /shouldRestartRecognizer/);
+  assert.doesNotMatch(voice, /busyRetry === 0|busyRetryUsed/);
+  assert.match(voice, /voiceDiagnostic\("restart"[\s\S]*recognizer_busy/);
+  assert.match(voice, /voiceDiagnostic\("start", \{ source: "native", phase: "dispatched", attempt: busyRetry \}\)/);
   assert.match(voice, /silence_timeout/);
+});
+
+test("native app information is the runtime source of the displayed build label", async () => {
+  const [source, gradle] = await Promise.all([
+    readFile(new URL("../../src/App.jsx", import.meta.url), "utf8"),
+    readFile(new URL("../../android/app/build.gradle", import.meta.url), "utf8"),
+  ]);
+  assert.match(source, /CapacitorApp\.getInfo\(\)/);
+  assert.match(source, /<RuntimeBuildLabel\s*\/>/);
+  assert.match(gradle, /versionCode\s+30\b/);
+  assert.match(gradle, /versionName\s+"1\.1\.22"/);
 });

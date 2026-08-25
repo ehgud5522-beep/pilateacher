@@ -9,6 +9,7 @@ if (typeof window !== "undefined" && !window.storage) {
 import { useState, useEffect, useMemo, useRef, useCallback, useContext, createContext, Component } from "react";
 import { createPortal } from "react-dom";
 import { Capacitor } from "@capacitor/core";
+import { App as CapacitorApp } from "@capacitor/app";
 import { CameraPreview } from "@capgo/camera-preview";
 import { Motion } from "@capacitor/motion";
 import { Avatar, Card, Field, PrimaryBtn, Sub } from "./design-system/components/index.js";
@@ -53,8 +54,8 @@ import {
   describeSpeechError, isSpeechPermissionGranted,
 } from "./features/voice/speech-session.js";
 import {
-  RECOGNIZER_BUSY_RETRY_MS, VOICE_SILENCE_LIMIT_MS, createSilenceGuard,
-  isRecognizerBusyError, resolveVoicePhase, stitchSpeechTranscript,
+  RECOGNIZER_BUSY_RETRY_MS, VOICE_SILENCE_LIMIT_MS, appendVoiceSessionDiagnostic, createSilenceGuard,
+  isRecognizerBusyError, readVoiceSessionDiagnostics, resolveVoicePhase, shouldRestartRecognizer, stitchSpeechTranscript,
 } from "./features/voice/voice-session.js";
 import { GatewayLlmProvider } from "./features/lesson-record/llm-provider.js";
 import { mapPilatesTerms } from "./features/lesson-record/term-mapper.js";
@@ -129,10 +130,24 @@ const RELEASE_VERSION = String(import.meta.env.VITE_APP_VERSION || "").trim();
 const RELEASE_BUILD_NUMBER = String(import.meta.env.VITE_BUILD_NUMBER || "").trim();
 const RELEASE_COMMIT_SHORT = String(import.meta.env.VITE_BUILD_COMMIT || "").trim().slice(0, 7);
 const RELEASE_BUILD_IDENTIFIER = String(import.meta.env.VITE_BUILD_IDENTIFIER || "").trim().slice(0, 32);
-const APP_BUILD_LABEL = RELEASE_VERSION && RELEASE_BUILD_NUMBER
+let APP_BUILD_LABEL = RELEASE_VERSION && RELEASE_BUILD_NUMBER
   ? `${RELEASE_VERSION} (${RELEASE_BUILD_NUMBER})${RELEASE_COMMIT_SHORT ? ` · ${RELEASE_COMMIT_SHORT}` : ""}${RELEASE_BUILD_IDENTIFIER ? ` · ${RELEASE_BUILD_IDENTIFIER}` : ""}`
   : APP_VER;
 try { if (typeof window !== "undefined") window.PILATEACHER_VER = APP_BUILD_LABEL; } catch (e) {}
+const RUNTIME_BUILD_LABEL = Capacitor.isNativePlatform()
+  ? CapacitorApp.getInfo().then((info) => {
+    const version = String(info?.version || "").trim();
+    const build = String(info?.build || "").trim();
+    if (version && build) APP_BUILD_LABEL = `${version} (${build})`;
+    try { window.PILATEACHER_VER = APP_BUILD_LABEL; } catch (_error) {}
+    return APP_BUILD_LABEL;
+  }).catch(() => APP_BUILD_LABEL)
+  : Promise.resolve(APP_BUILD_LABEL);
+function RuntimeBuildLabel() {
+  const [label, setLabel] = useState(APP_BUILD_LABEL);
+  useEffect(() => { let active = true; RUNTIME_BUILD_LABEL.then((value) => { if (active) setLabel(value); }); return () => { active = false; }; }, []);
+  return label;
+}
 
 const AI_CONSENT_PROMPT = [
   "AI 초안 생성을 위한 회원 동의 확인",
@@ -4341,7 +4356,7 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
           <details data-member-management-card="recent-lessons" style={{ ...sectionStyle, padding: 0, overflow: "hidden" }}>
             <summary aria-label="최근 수업기록 관리 카드 열기" className="flex min-h-14 cursor-pointer list-none items-center gap-3 px-3.5 py-3"><span className="min-w-0 flex-1"><span className="block truncate text-sm font-extrabold" style={{ color: INK }}>최근 수업기록</span><span className="mt-0.5 block truncate text-[10px]" style={{ color: SUB }}>{lessonNotes.length ? `${ymd(lessonNotes[0].date)} · ${lessonNotes[0].type || "수업"}` : "아직 작성된 기록이 없습니다"}</span></span><ChevronDown size={16} style={{ color: SUB }} /></summary>
             <div data-member-management-content="recent-lessons" style={{ padding: "0 12px 12px" }}>{lessonNotes.length > 0 ? <Section title="최근 수업 기록" action={<button type="button" onClick={() => setSheet("records-all")} style={{ fontSize: 12, fontWeight: 600, color: BRAND }}>전체 기록 보기</button>}>
-              {lessonNotes.slice(0, 3).map((note) => { const summary = note.aiSummaryTeacherEdited || note.aiSummary || {}; const structured = note.lessonRecord?.confirmedRecord || note.lessonRecord?.structuredDraft || {}; const detailCount = (structured.observations?.length || 0) + (structured.responses?.length || 0) + (summary.pain?.length || 0) + (summary.improvements?.length || 0); return <div key={note.id} style={{ padding: "8px 0", borderTop: `1px solid ${LINE}` }}><div className="flex items-center gap-2"><p className="min-w-0 flex-1" style={{ fontSize: 10, color: SUB }}>{ymd(note.date)} · {note.type || "수업"}</p>{note.lessonRecord?.reconcileStatus === "link_review_required" && <span style={{ fontSize: 9, color: WARN }}>연결 확인 필요</span>}{note.lessonRecord?.status === "confirmed_unstructured" && <span style={{ fontSize: 9, color: WARN }}>직접 작성</span>}{summary.memberCondition && <span style={{ fontSize: 9, color: BRAND_D }}>{summary.memberCondition}</span>}</div><p className="mt-1 line-clamp-2" style={{ fontSize: 12, lineHeight: 1.45, color: INK2 }}>{prepText(structured.didToday || summary.todayExercises, note.body)}</p>{detailCount > 0 && <p className="mt-1 line-clamp-2" style={{ fontSize: 10, color: WARN }}>{[prepText(structured.observations?.length ? structured.observations : summary.pain, ""), prepText(structured.responses?.length ? structured.responses : summary.improvements, "")].filter(Boolean).join(" · ")}</p>}</div>; })}
+              {lessonNotes.slice(0, 3).map((note) => { const summary = note.aiSummaryTeacherEdited || note.aiSummary || {}; const structured = note.lessonRecord?.confirmedRecord || note.lessonRecord?.structuredDraft || {}; const provenanceSource = lessonRecordProvenanceSource(note.lessonRecord); const rawOnly = provenanceSource === "fallback_raw"; const rawText = String(structured.rawTranscript || note.lessonRecord?.rawTranscript || note.transcript || note.body || "").trim(); const detailCount = rawOnly ? 0 : (structured.observations?.length || 0) + (structured.responses?.length || 0) + (summary.pain?.length || 0) + (summary.improvements?.length || 0); return <div key={note.id} style={{ padding: "8px 0", borderTop: `1px solid ${LINE}` }}><div className="flex items-center gap-2"><p className="min-w-0 flex-1" style={{ fontSize: 10, color: SUB }}>{ymd(note.date)} · {note.type || "수업"}</p>{note.lessonRecord?.reconcileStatus === "link_review_required" && <span style={{ fontSize: 9, color: WARN }}>연결 확인 필요</span>}{note.lessonRecord?.status === "confirmed_unstructured" && <span style={{ fontSize: 9, color: WARN }}>직접 작성</span>}{!rawOnly && summary.memberCondition && <span style={{ fontSize: 9, color: BRAND_D }}>{summary.memberCondition}</span>}</div><p className="mt-1 line-clamp-2" style={{ fontSize: 12, lineHeight: 1.45, color: INK2 }}>{rawOnly ? rawText : prepText(structured.didToday || summary.todayExercises, note.body)}</p>{detailCount > 0 && <p className="mt-1 line-clamp-2" style={{ fontSize: 10, color: WARN }}>{[prepText(structured.observations?.length ? structured.observations : summary.pain, ""), prepText(structured.responses?.length ? structured.responses : summary.improvements, "")].filter(Boolean).join(" · ")}</p>}</div>; })}
             </Section> : <p className="py-3 text-xs" style={{ color: SUB }}>아직 작성된 수업 기록이 없습니다</p>}</div>
           </details>
           <details data-member-management-card="posture" style={{ ...sectionStyle, padding: 0, overflow: "hidden", backgroundColor: afterReminder.show ? WARN_S : CARD }}>
@@ -9654,11 +9669,22 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
   const audioTransferredRef = useRef(false);
   const discardRecordingRef = useRef(false);
   const recordingStartedAtRef = useRef(0);
+  const lastSpeechAtRef = useRef(0);
   const sttTrackedRef = useRef(false);
   const autoStructureRef = useRef(false);
   const silenceGuardRef = useRef(null);
   const silenceTimeoutActionRef = useRef(() => {});
   const transcriptInputRef = useRef(null);
+  const voiceDiagnostic = (event, details = {}) => appendVoiceSessionDiagnostic(event, {
+    source: details.source || sourceRef.current || "unknown",
+    ...details,
+  });
+  const canRestartRecognizer = () => shouldRestartRecognizer({
+    stopping: stoppingRef.current,
+    sessionStartedAt: recordingStartedAtRef.current,
+    lastSpeechAt: lastSpeechAtRef.current,
+    maxDurationMs: MAX_STT_SECONDS * 1000,
+  });
   useEffect(() => { textRef.current = text; }, [text]);
   useEffect(() => {
     silenceGuardRef.current = createSilenceGuard({
@@ -9889,6 +9915,7 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
     setSummaryError("");
     setSummaryFailure(null);
     deviceLog("speech_start_requested", { memberId, lessonId, source: "pending", state: "starting" });
+    voiceDiagnostic("start", { source: "pending", phase: "requested" });
     const failStart = (message, details = {}) => {
       startRequestRef.current = false;
       nativeListeningStartedRef.current = false;
@@ -9898,6 +9925,7 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
       const failureCode = details.reason || details.code || "stt_provider_error";
       setErr(message || "음성 인식을 시작하지 못했습니다.");
       deviceLog("speech_start_failed", { memberId, lessonId, code: failureCode, ...details });
+      voiceDiagnostic("error", { source: details.source || "pending", code: failureCode, phase: "start" });
     };
     if (!sttOK()) {
       const message = "이 기기에서는 음성 인식을 사용할 수 없어 직접 입력으로 전환했습니다.";
@@ -9930,6 +9958,7 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
     sttTrackedRef.current = false;
     autoStructureRef.current = false;
     recordingStartedAtRef.current = Date.now();
+    lastSpeechAtRef.current = recordingStartedAtRef.current;
     trackLessonRecordUsage("record_started");
     setFinishing(false);
     setErr("");
@@ -10007,6 +10036,7 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
             setOn(true);
             setFinishing(false);
             deviceLog("speech_start_succeeded", { memberId, lessonId, source: "native", state: "started" });
+            voiceDiagnostic("start", { source: "native", phase: "succeeded" });
           }
           else if (d?.status === "stopped") {
             if (!nativeListeningStartedRef.current && !stoppingRef.current) {
@@ -10022,6 +10052,7 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
               setOn(true);
               setFinishing(false);
               deviceLog("voice_transcription_unexpected_end", { memberId, lessonId, source: "native", state: "restarting", reason: "engine_early_end" });
+              voiceDiagnostic("engine_end", { source: "native", reason: "engine_early_end" });
             }
           }
         });
@@ -10037,17 +10068,20 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
           try {
             nativeListeningStartedRef.current = false;
             deviceLog("speech_start_dispatched", { memberId, lessonId, source: "native", state: busyRetry ? "busy_retry" : "dispatched" });
+            voiceDiagnostic("start", { source: "native", phase: "dispatched", attempt: busyRetry });
             /* 한 엔진 세션이 조기 종료돼도 사용자 녹음 세션은 유지한다. */
             const result = await NS.start({ language: "ko-KR", maxResults: 3, partialResults: false, popup: false });
             if (sessionId !== speechSessionRef.current) return;
             const got = String(result?.matches?.[0] || "").trim();
             if (got) {
               heardRef.current = true;
+              lastSpeechAtRef.current = Date.now();
               const nextText = stitchSpeechTranscript(textRef.current, got);
               textRef.current = nextText;
               setText(nextText);
               persistRawDraft(nextText);
               silenceGuardRef.current?.heard();
+              voiceDiagnostic("final", { source: "native", charCount: got.length });
             }
             if (stoppingRef.current) {
               finishRecognition(!got, sessionId);
@@ -10055,17 +10089,25 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
             }
             setOn(true);
             setFinishing(false);
-            window.setTimeout(() => startNativeSegment(0), 80);
+            voiceDiagnostic("engine_end", { source: "native", reason: "segment_complete" });
+            if (canRestartRecognizer()) {
+              voiceDiagnostic("restart", { source: "native", reason: "segment_complete", delayMs: 80, attempt: 0 });
+              window.setTimeout(() => startNativeSegment(0), 80);
+            }
           } catch (error) {
             if (sessionId !== speechSessionRef.current || stoppingRef.current) return;
-            if (isRecognizerBusyError(error) && busyRetry === 0) {
+            if (isRecognizerBusyError(error) && canRestartRecognizer()) {
               deviceLog("speech_start_busy_retry", { memberId, lessonId, source: "native", code: "recognizer_busy", retryDelayMs: RECOGNIZER_BUSY_RETRY_MS });
-              window.setTimeout(() => startNativeSegment(1), RECOGNIZER_BUSY_RETRY_MS);
+              voiceDiagnostic("error", { source: "native", code: "recognizer_busy", phase: "start", attempt: busyRetry });
+              voiceDiagnostic("restart", { source: "native", reason: "recognizer_busy", delayMs: RECOGNIZER_BUSY_RETRY_MS, attempt: busyRetry + 1 });
+              window.setTimeout(() => startNativeSegment(busyRetry + 1), RECOGNIZER_BUSY_RETRY_MS);
               return;
             }
             const diagnostic = describeSpeechError(error);
-            if (diagnostic.kind === "no_speech") {
+            if (diagnostic.kind === "no_speech" && canRestartRecognizer()) {
               setOn(true);
+              voiceDiagnostic("engine_end", { source: "native", reason: "no_speech" });
+              voiceDiagnostic("restart", { source: "native", reason: "no_speech", delayMs: 80, attempt: 0 });
               window.setTimeout(() => startNativeSegment(0), 80);
               return;
             }
@@ -10073,6 +10115,7 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
             finishRecognition(false, sessionId);
             setErr(diagnostic.message || "음성 인식을 시작하지 못했습니다.");
             deviceLog("voice_transcription_failed", { memberId, lessonId, source: "native", code: diagnostic.code || "stt_provider_error", kind: diagnostic.kind, ...deviceError(error) });
+            voiceDiagnostic("error", { source: "native", code: diagnostic.code || "stt_provider_error", phase: "recognition" });
           }
         };
         startNativeSegment();
@@ -10096,9 +10139,10 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
       r.lang = "ko-KR"; r.continuous = true; r.interimResults = true;
       let fixed = textRef.current.replace(/\s*⟨([^⟩]*)⟩\s*$/, (_, live) => ` ${live}`).trim();
       let restartTimer = null;
-      let busyRetryUsed = false;
-      const scheduleWebRestart = (delay, busyRetry = 0) => {
+      const scheduleWebRestart = (delay, busyRetry = 0, reason = "engine_early_end") => {
+        if (!canRestartRecognizer()) return;
         if (restartTimer !== null) window.clearTimeout(restartTimer);
+        voiceDiagnostic("restart", { source: "web_speech", reason, delayMs: delay, attempt: busyRetry });
         restartTimer = window.setTimeout(() => {
           restartTimer = null;
           startWebRecognition(busyRetry);
@@ -10109,29 +10153,36 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
         let live = "";
         for (let i = e.resultIndex; i < e.results.length; i++) {
           const t = e.results[i][0].transcript;
-          if (t) heardRef.current = true;
-          if (e.results[i].isFinal) fixed = stitchSpeechTranscript(fixed, t);
-          else live += t;
+          if (t) {
+            heardRef.current = true;
+            lastSpeechAtRef.current = Date.now();
+          }
+          if (e.results[i].isFinal) {
+            fixed = stitchSpeechTranscript(fixed, t);
+            if (t) voiceDiagnostic("final", { source: "web_speech", charCount: t.trim().length });
+          } else {
+            live += t;
+            if (t) voiceDiagnostic("interim", { source: "web_speech", charCount: t.trim().length });
+          }
         }
         const nextText = live ? `${fixed}${fixed ? " " : ""}⟨${live.trim()}⟩` : fixed;
         textRef.current = nextText;
         setText(nextText);
         if (nextText) persistRawDraft(nextText);
         if (live || fixed) {
-          busyRetryUsed = false;
           silenceGuardRef.current?.heard();
         }
       };
       r.onerror = (event) => {
         if (sessionId !== speechSessionRef.current) return;
         const diagnostic = describeSpeechError({ code: event?.error, message: event?.message });
-        if (!stoppingRef.current && diagnostic.kind === "busy" && !busyRetryUsed) {
-          busyRetryUsed = true;
-          scheduleWebRestart(RECOGNIZER_BUSY_RETRY_MS, 1);
+        voiceDiagnostic("error", { source: "web_speech", code: diagnostic.code || event?.error || "stt_provider_error", phase: "recognition" });
+        if (!stoppingRef.current && diagnostic.kind === "busy" && canRestartRecognizer()) {
+          scheduleWebRestart(RECOGNIZER_BUSY_RETRY_MS, 1, "recognizer_busy");
           return;
         }
-        if (!stoppingRef.current && diagnostic.kind === "no_speech") {
-          scheduleWebRestart(80, 0);
+        if (!stoppingRef.current && diagnostic.kind === "no_speech" && canRestartRecognizer()) {
+          scheduleWebRestart(80, 0, "no_speech");
           return;
         }
         setOn(false); stopMedia();
@@ -10145,6 +10196,7 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
       };
       r.onend = () => {
         if (sessionId !== speechSessionRef.current) return;
+        voiceDiagnostic("engine_end", { source: "web_speech", reason: stoppingRef.current ? "requested_stop" : "engine_early_end" });
         if (!stoppingRef.current && restartTimer !== null) return;
         fixed = textRef.current.replace(/\s*⟨([^⟩]*)⟩\s*$/, (_, live) => ` ${live}`).trim();
         textRef.current = fixed;
@@ -10156,7 +10208,7 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
         } else {
           setOn(true);
           deviceLog("voice_transcription_unexpected_end", { memberId, lessonId, source: "web_speech", state: "restarting", reason: "engine_early_end" });
-          scheduleWebRestart(80, 0);
+          scheduleWebRestart(80, 0, "engine_early_end");
         }
       };
       const startWebRecognition = (busyRetry = 0) => {
@@ -10164,10 +10216,12 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
         try {
           r.start();
           startRequestRef.current = false; setStarting(false); setOn(true);
+          voiceDiagnostic("start", { source: "web_speech", phase: "succeeded", attempt: busyRetry });
         } catch (error) {
-          if (isRecognizerBusyError(error) && busyRetry === 0) {
+          if (isRecognizerBusyError(error) && canRestartRecognizer()) {
             deviceLog("speech_start_busy_retry", { memberId, lessonId, source: "web_speech", code: "recognizer_busy", retryDelayMs: RECOGNIZER_BUSY_RETRY_MS });
-            scheduleWebRestart(RECOGNIZER_BUSY_RETRY_MS, 1);
+            voiceDiagnostic("error", { source: "web_speech", code: "recognizer_busy", phase: "start", attempt: busyRetry });
+            scheduleWebRestart(RECOGNIZER_BUSY_RETRY_MS, busyRetry + 1, "recognizer_busy");
             return;
           }
           const diagnostic = describeSpeechError(error);
@@ -10175,6 +10229,7 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
           finishRecognition(false, sessionId);
           setErr(diagnostic.message);
           deviceLog("voice_transcription_failed", { memberId, lessonId, source: "web_speech", kind: diagnostic.kind, code: diagnostic.code || "stt_provider_error", ...deviceError(error) });
+          voiceDiagnostic("error", { source: "web_speech", code: diagnostic.code || "stt_provider_error", phase: "start", attempt: busyRetry });
         }
       };
       recRef.current = { sessionId, native: false, stop: () => { if (restartTimer !== null) window.clearTimeout(restartTimer); r.stop(); } };
@@ -10192,6 +10247,9 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
     }
   };
   const stop = (reason = "manual") => {
+    if (reason === "silence_timeout") voiceDiagnostic("silence_end", { reason });
+    else if (reason === "maximum_duration") voiceDiagnostic("cap_end", { reason });
+    else voiceDiagnostic("user_end", { reason });
     silenceGuardRef.current?.stop();
     startRequestRef.current = false;
     setStarting(false);
@@ -10228,6 +10286,7 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
     stop("silence_timeout");
   };
   const cancelRecording = () => {
+    voiceDiagnostic("user_end", { reason: "cancel" });
     silenceGuardRef.current?.stop();
     speechSessionRef.current += 1;
     startRequestRef.current = false;
@@ -11423,7 +11482,7 @@ function SettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings,
         )}
         <div className="mt-3 flex items-center gap-2 rounded-xl px-3 py-2" style={{ backgroundColor: CANVAS }}>
           <span className="text-xs font-bold" style={{ color: SUB }}>앱 버전</span>
-          <span className="ml-auto text-xs font-extrabold tabular-nums" style={{ color: PRIMARY }}>{APP_BUILD_LABEL}</span>
+          <span className="ml-auto text-xs font-extrabold tabular-nums" style={{ color: PRIMARY }}><RuntimeBuildLabel /></span>
         </div>
       </Card>
     </div>
@@ -11452,10 +11511,32 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
   const reportYm = monthKey(todayISO());
   const reportStats = useMemo(() => monthStats(db.schedule, reportYm), [db.schedule, reportYm]);
   const diagnosticRecordSources = useMemo(() => {
-    const confirmed = (db.members || []).flatMap((member) => (member.notes || []).flatMap((note) => note?.lessonRecord?.stage === "confirmed_record" ? [{ at: note.confirmedAt || note.date || "", status: note.lessonRecord.status || "confirmed", source: lessonRecordProvenanceSource(note.lessonRecord) }] : []));
-    const pending = listPendingLessonRecords().filter((record) => record?.rawTranscript).map((record) => ({ at: record.updatedAt || record.recordedAt || "", status: record.structuredDraft ? "structured" : "raw", source: lessonRecordProvenanceSource(record) }));
+    const pickDate = (candidates) => {
+      const match = candidates.find(([, value]) => String(value || "").trim());
+      return match ? { at: match[1], dateSource: match[0] } : { at: "", dateSource: `missing:${candidates.map(([path]) => path).join("|")}` };
+    };
+    const confirmed = (db.members || []).flatMap((member) => (member.notes || []).flatMap((note) => {
+      if (note?.lessonRecord?.stage !== "confirmed_record") return [];
+      const date = pickDate([
+        ["note.confirmedAt", note.confirmedAt], ["note.date", note.date],
+        ["lessonRecord.confirmedAt", note.lessonRecord?.confirmedAt], ["lessonRecord.recordedAt", note.lessonRecord?.recordedAt],
+        ["confirmedRecord.recordedAt", note.lessonRecord?.confirmedRecord?.recordedAt],
+      ]);
+      return [{ ...date, status: note.lessonRecord.status || "confirmed", source: lessonRecordProvenanceSource(note.lessonRecord) }];
+    }));
+    const pending = listPendingLessonRecords().filter((record) => record?.rawTranscript).map((record) => ({
+      ...pickDate([["pending.updatedAt", record.updatedAt], ["pending.recordedAt", record.recordedAt]]),
+      status: record.structuredDraft ? "structured" : "raw",
+      source: lessonRecordProvenanceSource(record),
+    }));
     return [...confirmed, ...pending].sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 10);
   }, [db.members]);
+  const voiceSessionDiagnostics = useMemo(() => showLessonDiagnostics ? readVoiceSessionDiagnostics() : [], [showLessonDiagnostics]);
+  const diagnosticLocalTime = (value) => {
+    if (!value) return "날짜 없음";
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toLocaleString("ko-KR", { hour12: false });
+  };
   const reportPay = useMemo(() => {
     let total = 0;
     db.schedule.forEach((scheduleItem) => {
@@ -11664,13 +11745,17 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
         )}
         {view === "app" && (
           <section style={sectionStyle}>
-            <div className="flex items-center gap-3"><span className="flex h-10 w-10 items-center justify-center" style={{ borderRadius: 11, backgroundColor: TINT, color: BRAND }}><Activity size={18} /></span><div><h2 style={{ fontSize: 15, fontWeight: 700, color: INK }}>PilaTeacher</h2><button type="button" onClick={() => { const next = diagnosticTapCount + 1; setDiagnosticTapCount(next); if (next >= 7) setShowLessonDiagnostics(true); }} className="mt-0.5 tabular-nums" style={{ fontSize: 11, color: SUB }}>{APP_BUILD_LABEL}</button></div></div>
+            <div className="flex items-center gap-3"><span className="flex h-10 w-10 items-center justify-center" style={{ borderRadius: 11, backgroundColor: TINT, color: BRAND }}><Activity size={18} /></span><div><h2 style={{ fontSize: 15, fontWeight: 700, color: INK }}>PilaTeacher</h2><button type="button" onClick={() => { const next = diagnosticTapCount + 1; setDiagnosticTapCount(next); if (next >= 7) setShowLessonDiagnostics(true); }} className="mt-0.5 tabular-nums" style={{ fontSize: 11, color: SUB }}><RuntimeBuildLabel /></button></div></div>
             <p className="mt-4" style={{ fontSize: 11, lineHeight: 1.6, color: INK2 }}>회원 사진은 기기에 먼저 저장됩니다. 사진 클라우드 백업은 데이터 이관·백업에서 별도 동의 후 켤 수 있으며, 실제 완료 여부와 대기 수를 같은 화면에서 확인할 수 있습니다.</p>
             {showLessonDiagnostics && <div className="mt-4 rounded-lg p-3" style={{ backgroundColor: CANVAS, border: `1px solid ${LINE}` }}>
               <p style={{ fontSize: 11, fontWeight: 700, color: INK }}>AI 수업기록 진단</p>
               <p className="mt-1" style={{ fontSize: 10, color: SUB }}>상태 {aiRecording.status} · 대기 {listPendingLessonRecords().length}건</p>
-              <div className="mt-2 space-y-1">{diagnosticRecordSources.map((record, index) => <p key={`${record.at}-${index}`} className="tabular-nums" style={{ fontSize: 9, color: SUB }}>기록 {index + 1} · {String(record.at || "날짜 없음").slice(0, 16).replace("T", " ")} · {record.status} · source={record.source}</p>)}</div>
-              <div className="mt-2 space-y-1">{readLessonRecordDiagnostics().map((item, index) => <p key={`${item.at}-${index}`} className="tabular-nums" style={{ fontSize: 9, color: SUB }}>{String(item.at).slice(5, 16).replace("T", " ")} · {item.code} · {item.stage}{item.model ? ` · ${item.model}` : ""}{item.requestId ? ` · ${item.requestId.slice(-8)}` : ""}</p>)}</div>
+              <p className="mt-1 break-all" style={{ fontSize: 9, lineHeight: 1.45, color: SUB }}>Gateway: {aiProvider.getStatus().gatewayUrl || "미설정"}</p>
+              <div className="mt-2 space-y-1">{diagnosticRecordSources.map((record, index) => <p key={`${record.at}-${index}`} className="tabular-nums" style={{ fontSize: 9, color: SUB }}>기록 {index + 1} · {diagnosticLocalTime(record.at)} · {record.status} · source={record.source} · date={record.dateSource}</p>)}</div>
+              <p className="mt-3" style={{ fontSize: 10, fontWeight: 700, color: INK }}>음성 세션 최근 30건</p>
+              <div className="mt-1.5 space-y-1">{voiceSessionDiagnostics.map((item, index) => <p key={`${item.at}-${index}`} className="break-all tabular-nums" style={{ fontSize: 9, lineHeight: 1.45, color: item.event === "error" ? BAD : SUB }}>{item.localTime || diagnosticLocalTime(item.at)} · {item.event} · {item.source}{item.code ? ` · ${item.code}` : ""}{item.reason ? ` · ${item.reason}` : ""}{item.attempt != null ? ` · attempt ${item.attempt}` : ""}{item.delayMs != null ? ` · ${item.delayMs}ms` : ""}</p>)}</div>
+              {!voiceSessionDiagnostics.length && <p className="mt-1" style={{ fontSize: 10, color: SUB }}>음성 세션 기록 없음</p>}
+              <div className="mt-2 space-y-1.5">{readLessonRecordDiagnostics().map((item, index) => <div key={`${item.at}-${index}`} className="rounded-md px-2 py-1" style={{ backgroundColor: PAGE }}><p className="tabular-nums" style={{ fontSize: 9, color: SUB }}>{String(item.at).slice(5, 16).replace("T", " ")} · {item.transportCode || item.code} · {item.stage}{item.httpStatus ? ` · HTTP ${item.httpStatus}` : ""}{item.model ? ` · ${item.model}` : ""}{item.requestId ? ` · ${item.requestId.slice(-8)}` : ""}</p>{item.gatewayUrl && <p className="mt-0.5 break-all" style={{ fontSize: 8, lineHeight: 1.4, color: SUB }}>{item.gatewayUrl}</p>}{item.causeMessage && <p className="mt-0.5 break-all" style={{ fontSize: 8, lineHeight: 1.4, color: BAD }}>{item.causeName ? `${item.causeName}: ` : ""}{item.causeMessage}</p>}</div>)}</div>
               {!readLessonRecordDiagnostics().length && <p className="mt-2" style={{ fontSize: 10, color: SUB }}>최근 오류 없음</p>}
             </div>}
           </section>

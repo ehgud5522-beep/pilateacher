@@ -17,9 +17,12 @@ test("speech permission checks fail closed", () => {
 
 test("native speech failures produce cause-specific guidance", () => {
   assert.equal(describeSpeechError(new Error("Network timeout")).kind, "network");
+  assert.equal(describeSpeechError(new Error("Network timeout")).code, "stt_network");
   assert.equal(describeSpeechError(new Error("error from server")).kind, "network");
   assert.equal(describeSpeechError(new Error("Audio recording error")).kind, "audio");
+  assert.equal(describeSpeechError(new Error("Audio recording error")).code, "stt_audio");
   assert.equal(describeSpeechError(new Error("No match")).kind, "no_speech");
+  assert.equal(describeSpeechError(new Error("No match")).code, "stt_no_speech");
   assert.equal(describeSpeechError(new Error("RecognitionService busy")).kind, "busy");
   assert.equal(describeSpeechError(new Error("RecognitionService busy")).code, "recognizer_busy");
   assert.equal(describeSpeechError(new Error("Insufficient permissions")).kind, "permission");

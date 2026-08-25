@@ -27,7 +27,10 @@ test("missing model summary hides the narrative while raw fallback stays a teach
   const raw = lessonRecordPresentation({
     provenanceSource: "fallback_raw",
     rawTranscript: "오늘은 평소대로 진행했습니다.",
+    didToday: [{ text: "몸이 좋아지고" }],
+    observations: [{ text: "운동이 잘 안 됐습니다" }],
   });
+  assert.deepEqual(raw.cards, [], "raw fallback must never expose locally chopped four-card content");
   assert.equal(raw.narrative, "오늘은 평소대로 진행했습니다.");
   assert.equal(raw.narrativeLabel, "선생님 기록");
 });

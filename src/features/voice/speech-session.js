@@ -30,23 +30,26 @@ export function describeSpeechError(error) {
   if (/network|timeout.*network|error from server|server error/.test(detail)) {
     return {
       kind: "network",
+      code: "stt_network",
       message: "네트워크 문제로 음성 인식을 완료하지 못했습니다. 연결 상태를 확인한 뒤 다시 시도해 주세요.",
     };
   }
   if (/audio recording|error.audio|microphone|audio.*error/.test(detail)) {
     return {
       kind: "audio",
+      code: "stt_audio",
       message: "마이크를 사용할 수 없습니다. 통화나 다른 녹음 앱을 종료하고 다시 시도해 주세요.",
     };
   }
   if (/language.*(not supported|unavailable)|not supported.*language/.test(detail)) {
     return {
       kind: "language",
+      code: "stt_language",
       message: "한국어 음성 인식 언어를 사용할 수 없습니다. 기기의 음성 인식 언어 설정을 확인해 주세요.",
     };
   }
   if (/no match|no speech|speech timeout|didn.t understand/.test(detail)) {
-    return { kind: "no_speech", message: SPEECH_NO_RESULT_MESSAGE };
+    return { kind: "no_speech", code: "stt_no_speech", message: SPEECH_NO_RESULT_MESSAGE };
   }
   if (/recognitionservice busy|recognizer busy|client side|ongoing|error[_ .-]*recognizer[_ .-]*busy|error 8\b/.test(detail)) {
     return {
@@ -71,6 +74,7 @@ export function describeSpeechError(error) {
   }
   return {
     kind: "unknown",
+    code: "stt_unknown",
     message: "음성 인식이 중단되었습니다. 작성된 내용은 유지됩니다. 잠시 후 다시 시도해 주세요.",
   };
 }

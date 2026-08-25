@@ -7,7 +7,7 @@ const { createRequest, createResponse } = require("./helpers");
 
 test("CORS allows exact localhost and configured hosting origins", () => {
   const allowed = parseAllowedOrigins("https://pilateacher.web.app");
-  for (const origin of ["http://localhost:5174", "https://localhost", "https://pilateacher.web.app"]) {
+  for (const origin of ["http://localhost:5174", "https://localhost", "capacitor://localhost", "https://pilateacher.web.app"]) {
     const req = createRequest({ headers: { origin } });
     const res = createResponse();
     assert.equal(applyCors(req, res, allowed), false);
@@ -27,4 +27,5 @@ test("CORS rejects unlisted origins and handles an allowed preflight", () => {
   assert.equal(applyCors(req, res, allowed), true);
   assert.equal(res.statusCode, 204);
   assert.equal(res.headers["Access-Control-Allow-Methods"], "POST, OPTIONS");
+  assert.equal(res.headers["Access-Control-Allow-Headers"], "Authorization, Content-Type, X-Idempotency-Key");
 });

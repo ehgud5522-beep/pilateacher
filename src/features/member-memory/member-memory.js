@@ -113,16 +113,13 @@ export function selectLastLessonMemoryRecord(session) {
       sourceLabel: provenanceSource === LESSON_RECORD_PROVENANCE_SOURCE.OPENAI ? "[AI]" : "선생님 기록",
     };
   }
-  const instructorEdited = session.note?.lessonRecord?.instructorBodyOrigin === "instructor";
-  const recordSentence = provenanceSource === LESSON_RECORD_PROVENANCE_SOURCE.OPENAI || instructorEdited
-    ? clean(session.note?.teacherSummary || session.note?.body, 12000)
-    : "";
-  if (recordSentence && isCompleteStructuredPhrase(recordSentence)) {
+  const summary = clean(session.record.summary, 1200);
+  if (provenanceSource === LESSON_RECORD_PROVENANCE_SOURCE.OPENAI && summary && isCompleteStructuredPhrase(summary)) {
     return {
-      text: recordSentence,
-      origin: instructorEdited ? "instructor" : provenanceSource === LESSON_RECORD_PROVENANCE_SOURCE.OPENAI ? "ai" : "instructor",
+      text: summary,
+      origin: "ai",
       provenanceSource,
-      sourceLabel: instructorEdited || provenanceSource === LESSON_RECORD_PROVENANCE_SOURCE.FALLBACK_RAW ? "선생님 기록" : "[AI]",
+      sourceLabel: "[AI]",
     };
   }
   const rawTranscript = clean(session.record.rawTranscript || session.note?.lessonRecord?.rawTranscript || session.note?.transcript, 12000);

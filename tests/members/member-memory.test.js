@@ -97,11 +97,16 @@ test("raw-only record is quoted briefly and first lesson stays literal", () => {
   assert.deepEqual(first.lines.map((entry) => entry.text), ["첫 수업"]);
 });
 
-test("last lesson uses today lesson first and raw fallback is labelled as teacher record without AI provenance", () => {
+test("last lesson uses today lesson, then model summary, then raw teacher record", () => {
   const structured = note("s1", "2026-08-18", { didToday: [item("브릿지")] });
   structured.lessonRecord.provenanceSource = "openai";
   const structuredDisplay = selectLastLessonMemoryRecord(confirmedSessions([structured])[0]);
   assert.deepEqual({ text: structuredDisplay.text, source: structuredDisplay.provenanceSource, label: structuredDisplay.sourceLabel }, { text: "브릿지", source: "openai", label: "[AI]" });
+
+  const summarized = note("s1-summary", "2026-08-18", { summary: "오른쪽 허리 움직임이 좋아졌고 운동 중에는 힘들어했습니다." });
+  summarized.lessonRecord.provenanceSource = "openai";
+  const summaryDisplay = selectLastLessonMemoryRecord(confirmedSessions([summarized])[0]);
+  assert.deepEqual({ text: summaryDisplay.text, source: summaryDisplay.provenanceSource, label: summaryDisplay.sourceLabel }, { text: "오른쪽 허리 움직임이 좋아졌고 운동 중에는 힘들어했습니다.", source: "openai", label: "[AI]" });
 
   const raw = note("s2", "2026-08-19", {}, { raw: "운동을 할 때 힘들었고 오른쪽 허리가 좋아졌습니다" });
   raw.lessonRecord.provenanceSource = "fallback_raw";

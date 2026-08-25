@@ -115,7 +115,7 @@ const operationOutputs = Object.freeze({
     memberCondition: "불편감 없음", todayExercises: ["호흡"], pain: [], improvements: [], nextGoals: [], homework: [], precautions: [],
   },
   [OPERATIONS.STRUCTURE_LESSON_RECORD]: {
-    didToday: ["브릿지"], observations: ["오른쪽 어깨 확인"], responses: ["지난번보다 편하다고 말함"], nextFocus: [], uncertain: [],
+    didToday: ["브릿지"], observations: ["오른쪽 어깨 확인"], responses: ["지난번보다 편하다고 말함"], nextFocus: [], uncertain: [], summary: "브릿지를 진행했고 오른쪽 어깨를 확인했습니다.",
   },
   [OPERATIONS.RECOMMEND_SEQUENCE]: {
     title: "다음 수업 초안", exercises: [{ name: "브리지", purpose: "코어 협응", dosage: "8회" }], rationale: [], precautions: [],

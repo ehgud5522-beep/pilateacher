@@ -17,7 +17,7 @@ const memoryStorage = () => {
   return { getItem: (key) => data.get(key) ?? null, setItem: (key, value) => data.set(key, String(value)), removeItem: (key) => data.delete(key), dump: () => [...data.values()].join("\n") };
 };
 
-const structured = { didToday: ["리포머 풋워크"], observations: ["흉추 가동성 관찰"], responses: ["편안하다고 말함"], nextFocus: ["브릿지 확인"], uncertain: [] };
+const structured = { didToday: ["리포머 풋워크"], observations: ["흉추 가동성 관찰"], responses: ["편안하다고 말함"], nextFocus: ["브릿지 확인"], uncertain: [], summary: "리포머 풋워크를 진행했고 흉추 가동성을 확인했습니다." };
 
 test("term mapping preserves raw transcript and keeps uncertain candidates separate", () => {
   const raw = "리포머에서 브리지 후 고관절 가동성을 확인했다. 캐딜락크도 사용했다.";
@@ -34,13 +34,48 @@ test("structured records validate exact fields and instructor edits retain origi
   assert.equal(draft.didToday[0].origin, "ai");
   const edited = editStructuredField(draft, "didToday", "체어 풋워크\n브릿지");
   assert.deepEqual(edited.didToday.map((item) => item.origin), ["instructor", "instructor"]);
-  assert.match(structuredRecordBody(edited), /오늘 한 내용: 체어 풋워크 · 브릿지/);
+  assert.match(structuredRecordBody(edited), /오늘 수업: 체어 풋워크 · 브릿지/);
+  assert.match(structuredRecordBody(edited), /변화: 흉추 가동성 관찰/);
   assert.throws(() => validateStructuredOutput({ ...structured, diagnosis: [] }));
   const missingNormalized = validateStructuredOutput({ didToday: ["브릿지"], responses: [{ text: "편안함" }] });
   assert.deepEqual(missingNormalized.observations, []);
   assert.equal(missingNormalized.responses[0].text, "편안함");
   assert.throws(() => validateStructuredOutput({ ...structured, responses: ["운동할 때 힘들었고"] }), (error) => error.code === "invalid_output" && error.path === "responses[0]");
   assert.throws(() => validateStructuredOutput({ ...structured, observations: ["오른쪽 허리가 좋아졌습니다입니다"] }), (error) => error.code === "invalid_output" && error.path === "observations[0]");
+  assert.throws(() => validateStructuredOutput({ ...structured, summary: "오늘 수업에서는 다음 내용을 진행했습니다: 브릿지." }), (error) => error.code === "invalid_output" && error.path === "summary" && error.summaryOnly === true);
+  assert.equal(validateStructuredOutput({ didToday: [], observations: [], responses: [], nextFocus: [], uncertain: [], summary: null }).summary, null);
+});
+
+test("summary-only validation retries once then keeps four fields with a dropped marker", async () => {
+  let calls = 0;
+  const provider = new GatewayLlmProvider({
+    gatewayProvider: { async structureLessonRecord() {
+      calls += 1;
+      return { status: AI_STATUSES.DRAFT, output: { ...structured, summary: calls === 1 ? "오른쪽 허리가 좋아졌고" : "오른쪽 허리가 좋아졌습니다입니다" } };
+    } },
+    retryDelayMs: 0,
+  });
+  const result = await provider.structureLessonRecord({ rawTranscript: "원문" });
+  assert.equal(calls, 2);
+  assert.equal(result.status, "structured");
+  assert.equal(result.provenanceSource, "openai");
+  assert.equal(result.output.didToday[0].text, "리포머 풋워크");
+  assert.equal(result.output.summary, null);
+  assert.equal(result.output.summaryStatus, "dropped");
+  assert.equal(result.meta.summaryStatus, "dropped");
+});
+
+test("invalid four-field output still retries once and downgrades the entire record to raw", async () => {
+  let calls = 0;
+  const provider = new GatewayLlmProvider({
+    gatewayProvider: { async structureLessonRecord() { calls += 1; return { status: AI_STATUSES.DRAFT, output: { ...structured, responses: ["운동할 때 힘들었고"] } }; } },
+    retryDelayMs: 0,
+  });
+  const result = await provider.structureLessonRecord({ rawTranscript: "원문" });
+  assert.equal(calls, 2);
+  assert.equal(result.status, "unstructured");
+  assert.equal(result.output, null);
+  assert.equal(result.provenanceSource, "fallback_raw");
 });
 
 test("LlmProvider repairs once, validates output, and downgrades to raw after failure", async () => {

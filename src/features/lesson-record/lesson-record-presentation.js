@@ -15,12 +15,9 @@ export function lessonRecordPresentation(draft) {
     { key: "responses", label: "회원 반응", value: joined(responses) || "추가해 주세요" },
     { key: "nextFocus", label: "다음 확인", value: joined(nextFocus) || "아직 계획 없음" },
   ];
-  const sentences = [];
-  if (observations.length) sentences.push(`회원의 변화는 ${joined(observations)}입니다.`);
-  if (didToday.length) sentences.push(`오늘 수업에서는 다음 내용을 진행했습니다: ${joined(didToday)}.`);
-  if (responses.length) sentences.push(`회원 반응은 ${joined(responses)}입니다.`);
-  if (nextFocus.length) sentences.push(`다음 수업 계획은 ${joined(nextFocus)}입니다.`);
-  return { cards, narrative: sentences.join(" ") };
+  const source = String(draft?.provenanceSource || "openai");
+  const narrative = source === "fallback_raw" ? String(draft?.rawTranscript || "").trim() : String(draft?.summary || "").trim();
+  return { cards, narrative, narrativeLabel: source === "fallback_raw" ? "선생님 기록" : "수업 기록" };
 }
 
 export function shouldShowLessonRecordGuide(storage, limit = 3) {

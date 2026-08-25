@@ -13,6 +13,7 @@ const OPERATIONS = Object.freeze({
 // Responses Structured Outputs accepts a deliberately small JSON Schema
 // subset. Length/count limits are enforced again by validateOperationOutput.
 const stringField = () => ({ type: "string" });
+const nullableStringField = () => ({ type: ["string", "null"] });
 const stringList = () => ({
   type: "array",
   items: stringField(),
@@ -65,6 +66,7 @@ const OUTPUT_SCHEMAS = Object.freeze({
       responses: stringList(),
       nextFocus: stringList(),
       uncertain: stringList(),
+      summary: nullableStringField(),
     },
     required: ["didToday", "observations", "responses", "nextFocus", "uncertain"],
   },
@@ -161,8 +163,11 @@ function validateVoice(value) {
 function validateLessonRecord(value) {
   const required = OUTPUT_SCHEMAS[OPERATIONS.STRUCTURE_LESSON_RECORD].required;
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new GatewayError("invalid_output");
-  if (Object.keys(value).some((field) => !required.includes(field))) throw new GatewayError("invalid_output");
-  return Object.fromEntries(required.map((field) => [field, cleanList(value[field] ?? [])]));
+  if (Object.keys(value).some((field) => ![...required, "summary"].includes(field))) throw new GatewayError("invalid_output");
+  return {
+    ...Object.fromEntries(required.map((field) => [field, cleanList(value[field] ?? [])])),
+    summary: value.summary == null ? null : cleanString(value.summary, 1200),
+  };
 }
 
 function validateSequence(value) {

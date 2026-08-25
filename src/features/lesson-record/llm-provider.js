@@ -32,11 +32,28 @@ export class GatewayLlmProvider extends LlmProvider {
       try {
         const result = await this.gatewayProvider.structureLessonRecord(input, options);
         if (result?.status === AI_STATUSES.NOT_CONNECTED) return { status: "unstructured", reason: "not_connected", attempts: attempt, latencyMs: Date.now() - startedAt, output: null, usage: null, provenanceSource: LESSON_RECORD_PROVENANCE_SOURCE.FALLBACK_RAW };
+        let output;
+        try {
+          output = validateStructuredOutput(result.output);
+        } catch (error) {
+          if (!error?.summaryOnly) throw error;
+          if (attempt <= this.maxRetries) throw error;
+          output = validateStructuredOutput({ ...error.partialOutput, summary: null, summaryStatus: "dropped" });
+          return {
+            status: "structured",
+            attempts: attempt,
+            latencyMs: Date.now() - startedAt,
+            output,
+            usage: result.usage || null,
+            provenanceSource: LESSON_RECORD_PROVENANCE_SOURCE.OPENAI,
+            meta: { ...result, provenanceSource: LESSON_RECORD_PROVENANCE_SOURCE.OPENAI, summaryStatus: "dropped" },
+          };
+        }
         return {
           status: "structured",
           attempts: attempt,
           latencyMs: Date.now() - startedAt,
-          output: validateStructuredOutput(result.output),
+          output,
           usage: result.usage || null,
           provenanceSource: LESSON_RECORD_PROVENANCE_SOURCE.OPENAI,
           meta: { ...result, provenanceSource: LESSON_RECORD_PROVENANCE_SOURCE.OPENAI },

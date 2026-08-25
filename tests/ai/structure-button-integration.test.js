@@ -26,6 +26,16 @@ test("AI result renders the teacher-facing summary and all five editable section
   assert.match(voice, /structuredFieldText\(summaryDraft, field\.k\)/);
 });
 
+test("AI narrative is omitted when the model did not return a valid summary", () => {
+  const narrativeGuard = voice.indexOf("summaryView.narrative &&");
+  const narrativeLabel = voice.indexOf("summaryView.narrativeLabel", narrativeGuard);
+  const narrativeValue = voice.indexOf("summaryView.narrative}", narrativeGuard);
+  assert.ok(narrativeGuard >= 0);
+  assert.ok(narrativeLabel > narrativeGuard);
+  assert.ok(narrativeValue > narrativeLabel);
+  assert.doesNotMatch(voice, /말한 내용에서 정리할 항목이 아직 없습니다/);
+});
+
 test("AI structure failure preserves raw text and only offers retry for temporary failures", () => {
   assert.match(voice, /role="alert"/);
   assert.match(voice, /summaryFailure\.category === LESSON_RECORD_FAILURE_CATEGORY\.TEMPORARY/);

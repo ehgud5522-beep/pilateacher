@@ -89,26 +89,32 @@ export class GatewayAIProvider extends AIProvider {
     const abortFromCaller = () => controller.abort();
     if (options.signal?.aborted) controller.abort();
     else options.signal?.addEventListener?.("abort", abortFromCaller, { once: true });
-    const headers = { "Content-Type": "application/json", "X-Idempotency-Key": requestId };
+    const requestBody = JSON.stringify({
+      schemaVersion: 1,
+      requestId,
+      provider: this.providerId,
+      operation,
+      input,
+    });
     try {
-      const token = this.getAccessToken ? await this.getAccessToken() : "";
-      if (this.getAccessToken && !String(token || "").trim()) {
-        throw new AIProviderError("unauthenticated", "Firebase authentication is required for AI Gateway requests");
+      let response = null;
+      for (let authAttempt = 0; authAttempt < 2; authAttempt += 1) {
+        const token = this.getAccessToken ? await this.getAccessToken(authAttempt === 1) : "";
+        if (this.getAccessToken && !String(token || "").trim()) {
+          if (authAttempt === 0) continue;
+          throw new AIProviderError("auth_refresh_failed", "Firebase authentication could not be refreshed", { retryable: false, failureStage: "auth_refresh" });
+        }
+        const headers = { "Content-Type": "application/json", "X-Idempotency-Key": requestId };
+        if (token) headers.Authorization = `Bearer ${token}`;
+        response = await this.fetchImpl(resolveGatewayUrl(this.gatewayUrl), {
+          method: "POST",
+          credentials: "omit",
+          headers,
+          body: requestBody,
+          signal: controller.signal,
+        });
+        if (response.status !== 401 || authAttempt === 1 || !this.getAccessToken) break;
       }
-      if (token) headers.Authorization = `Bearer ${token}`;
-      const response = await this.fetchImpl(resolveGatewayUrl(this.gatewayUrl), {
-        method: "POST",
-        credentials: "omit",
-        headers,
-        body: JSON.stringify({
-          schemaVersion: 1,
-          requestId,
-          provider: this.providerId,
-          operation,
-          input,
-        }),
-        signal: controller.signal,
-      });
       if (!response.ok) {
         let errorCode = "gateway_error";
         let errorRequestId = requestId;
@@ -123,11 +129,12 @@ export class GatewayAIProvider extends AIProvider {
         }
         const providerCode = String(diagnostic?.providerCode || "");
         const quotaExhausted = Number(diagnostic?.providerStatus) === 429 && providerCode === "insufficient_quota";
-        throw new AIProviderError(quotaExhausted ? "provider_quota_exhausted" : errorCode, `AI Gateway request failed (${response.status})`, {
+        const exhaustedAuthRefresh = response.status === 401 && Boolean(this.getAccessToken);
+        throw new AIProviderError(quotaExhausted ? "provider_quota_exhausted" : exhaustedAuthRefresh ? "auth_refresh_failed" : errorCode, `AI Gateway request failed (${response.status})`, {
           status: response.status,
           requestId: errorRequestId,
           retryable: !quotaExhausted && (response.status === 429 || response.status >= 500),
-          failureStage: String(diagnostic?.stage || "gateway_http"),
+          failureStage: exhaustedAuthRefresh ? "auth_refresh" : String(diagnostic?.stage || "gateway_http"),
           providerStatus: Number(diagnostic?.providerStatus) || null,
           providerCode,
           providerType: String(diagnostic?.providerType || ""),

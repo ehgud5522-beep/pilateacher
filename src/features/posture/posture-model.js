@@ -470,6 +470,15 @@ export function postureRetakeStatus(lastCompletedAt, now = new Date()) {
   return { days, tone: "recent", label: "최근 분석 완료", recommended: false };
 }
 
+export function getPostureRetakeStatus(assessments, now = new Date()) {
+  const completed = (Array.isArray(assessments) ? assessments : [])
+    .filter((assessment) => assessment?.status === "completed")
+    .filter((assessment) => Number.isFinite(Date.parse(assessment.completedAt || assessment.at || "")))
+    .sort((left, right) => Date.parse(right.completedAt || right.at) - Date.parse(left.completedAt || left.at));
+  if (!completed.length) return null;
+  return postureRetakeStatus(completed[0].completedAt || completed[0].at, now);
+}
+
 export function correctedPoseSource(source, changed) {
   if (!changed) return source || "ai";
   return String(source || "ai").startsWith("ai") ? "ai_manual_corrected" : "manual";

@@ -25,15 +25,21 @@ test("every AI action checks member consent before invoking the gateway", async 
   }
 });
 
-test("lesson sequence UI is deferred while its provider and schema contracts remain", async () => {
-  const [source, inputBuilders, operationContracts] = await Promise.all([
+test("lesson sequence UI and client call are deferred while schema contracts remain", async () => {
+  const [source, providerSource, inputBuilders, operationContracts, gatewaySource, promptsSource] = await Promise.all([
     readFile(new URL("../../src/App.jsx", import.meta.url), "utf8"),
+    readFile(new URL("../../src/ai/provider.js", import.meta.url), "utf8"),
     readFile(new URL("../../src/ai/input-builders.js", import.meta.url), "utf8"),
     readFile(new URL("../../functions/src/operation-contracts.js", import.meta.url), "utf8"),
+    readFile(new URL("../../functions/src/ai-gateway.js", import.meta.url), "utf8"),
+    readFile(new URL("../../functions/src/prompts.js", import.meta.url), "utf8"),
   ]);
   assert.doesNotMatch(source, /AI 수업 시퀀스 추천|aiProvider\.recommendSequence|추천 생성/);
+  assert.doesNotMatch(providerSource, /recommendSequence\s*\(/);
   assert.match(inputBuilders, /export function buildSequenceInput/);
   assert.match(operationContracts, /recommendSequence/);
+  assert.match(gatewaySource, /DEFERRED_OPERATIONS\.has\(request\.operation\)/);
+  assert.match(promptsSource, /DEFER:/);
 });
 
 test("AI consent copy discloses transmitted data and excludes original photos", async () => {

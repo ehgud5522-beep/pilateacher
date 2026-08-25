@@ -1,34 +1,72 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { classifyLessonRecordFailure, lessonRecordFailureMessage, LESSON_RECORD_FAILURE } from "../../src/features/lesson-record/failure-diagnostics.js";
+import {
+  describeLessonRecordFailure,
+  LESSON_RECORD_DEBUG_CODES,
+  LESSON_RECORD_FAILURE_CATEGORY,
+  setLessonRecordDebugFailure,
+  takeLessonRecordDebugFailure,
+} from "../../src/features/lesson-record/failure-diagnostics.js";
 
-test("lesson record failures are classified without transcript or member data", () => {
-  assert.equal(classifyLessonRecordFailure({ code: "network_error" }), LESSON_RECORD_FAILURE.NETWORK);
-  assert.equal(classifyLessonRecordFailure({ code: "unauthenticated", status: 401 }), LESSON_RECORD_FAILURE.AUTH);
-  assert.equal(classifyLessonRecordFailure({ code: "consent_required", status: 403 }), LESSON_RECORD_FAILURE.CONSENT);
-  assert.equal(classifyLessonRecordFailure({ code: "backup/overwrite-blocked", contextStage: "member_authorization_backup" }), LESSON_RECORD_FAILURE.MEMBER_AUTHORIZATION);
-  assert.equal(classifyLessonRecordFailure({ code: "invalid_output", status: 502 }), LESSON_RECORD_FAILURE.RESPONSE);
-  assert.equal(classifyLessonRecordFailure({ code: "invalid_output", failureStage: "client_schema_validation" }), LESSON_RECORD_FAILURE.CLIENT_MAPPING);
-  assert.equal(classifyLessonRecordFailure({ code: "not_connected" }), LESSON_RECORD_FAILURE.STALE_BUILD);
+const cases = [
+  ["stt_no_speech", "INPUT", true],
+  ["stt_provider_error", "TEMPORARY", true],
+  ["network_offline", "TEMPORARY", true],
+  ["timeout", "TEMPORARY", true],
+  ["auth_expired", "TEMPORARY", true],
+  ["auth_refresh_failed", "SERVICE", false],
+  ["consent_missing", "INPUT", false],
+  ["member_session_unresolved", "SERVICE", false],
+  ["provider_quota_exhausted", "SERVICE", false],
+  ["provider_rate_limited", "TEMPORARY", true],
+  ["provider_5xx", "TEMPORARY", true],
+  ["schema_invalid", "SERVICE", false],
+];
+
+test("all pipeline failure codes map to three user categories and meaningful retry behavior", () => {
+  for (const [code, category, retry] of cases) {
+    const result = describeLessonRecordFailure({ code });
+    assert.equal(result.category, category, code);
+    assert.equal(result.retry, retry, code);
+    assert.match(result.userCode, /^E-/);
+    assert.ok(result.title.length > 0);
+    assert.doesNotMatch(`${result.title} ${result.description}`, /schema|normalization|structuredDraft|mapping|sourceRef|백업 상태/i);
+  }
+  assert.equal(describeLessonRecordFailure({ code: "unauthenticated", status: 401 }).internalCode, "auth_expired");
+  assert.equal(describeLessonRecordFailure({ code: "rate_limited", status: 429 }).internalCode, "provider_rate_limited");
+  assert.equal(describeLessonRecordFailure({ code: "invalid_output", failureStage: "client_schema_validation" }).internalCode, "schema_invalid");
+  assert.equal(LESSON_RECORD_FAILURE_CATEGORY.SERVICE, "SERVICE");
 });
 
-test("failure messages preserve the user's input and avoid developer contract terms", () => {
-  for (const failureClass of Object.values(LESSON_RECORD_FAILURE)) {
-    const message = lessonRecordFailureMessage(failureClass);
-    assert.ok(message.length > 0);
-    assert.doesNotMatch(message, /schema|normalization|structuredDraft|mapping|sourceRef/i);
+test("debug hook can force every documented internal failure once", () => {
+  const target = {};
+  for (const code of LESSON_RECORD_DEBUG_CODES) {
+    setLessonRecordDebugFailure(code, target);
+    assert.equal(takeLessonRecordDebugFailure(target), code);
+    assert.equal(takeLessonRecordDebugFailure(target), "");
   }
 });
 
-test("the app synchronizes the guarded owner backup before the exact Gateway request", async () => {
+test("raw persistence precedes Gateway work and cloud reconcile runs only after confirmed local save", async () => {
   const source = await readFile(new URL("../../src/App.jsx", import.meta.url), "utf8");
-  const syncStart = source.indexOf("const prepareAIGatewayContext = useCallback");
-  const backupWrite = source.indexOf("await fbPushBackup(accountId, db", syncStart);
-  const providerCall = source.indexOf("await lessonRecordLlm.structureLessonRecord", source.indexOf("const requestSummary"));
-  const prepareCall = source.indexOf("await prepareAIGatewayContext({ memberId, lessonId })", source.indexOf("const requestSummary"));
-  assert.ok(syncStart > 0 && backupWrite > syncStart);
-  assert.ok(prepareCall > 0 && providerCall > prepareCall);
-  assert.match(source, /restoreBlockedRef\.current/);
-  assert.match(source, /data-ai-failure=\{summaryFailureClass/);
+  const requestStart = source.indexOf("const requestSummary = async");
+  const rawSave = source.indexOf("persistRawDraft(transcript", requestStart);
+  const providerCall = source.indexOf("await lessonRecordLlm.structureLessonRecord", requestStart);
+  assert.ok(rawSave > requestStart && providerCall > rawSave);
+  assert.equal(source.indexOf("prepareAIGatewayContext"), -1);
+  const saveStart = source.indexOf("const saveScheduleComment");
+  const localSave = source.indexOf("const stored = await saveDb(nextDb)", saveStart);
+  const reconcile = source.indexOf("reconcileLessonRecordContext", localSave);
+  assert.ok(localSave > saveStart && reconcile > localSave);
+  const voiceSource = source.slice(source.indexOf("function VoiceNote"), source.indexOf("function NoteForm"));
+  assert.equal(voiceSource.includes("removePendingLessonRecord"), false, "VoiceNote must never delete a raw draft");
+  const cancelStart = voiceSource.indexOf("const cancelRecording = () =>");
+  const cancelEnd = voiceSource.indexOf("useEffect(() => {", cancelStart);
+  const cancelSource = voiceSource.slice(cancelStart, cancelEnd);
+  assert.match(cancelSource, /persistRawDraft\(preservedText\)/, "cancelling after STT text exists must preserve that text");
+  assert.doesNotMatch(cancelSource, /setText\(previousText\)/, "cancel must not roll back and discard newly recognized text");
+  assert.doesNotMatch(voiceSource, /회원·수업 정보를 클라우드와 확인하지 못했어요|백업 상태를 확인한 뒤/);
+  assert.match(voiceSource, /summaryFailure\.category === LESSON_RECORD_FAILURE_CATEGORY\.TEMPORARY/);
+  assert.match(voiceSource, /AI 정리 잠시 점검 중/);
 });

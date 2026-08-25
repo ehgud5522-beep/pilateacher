@@ -73,15 +73,56 @@ test("an explicit request id is preserved for a real network retry", async () =>
   assert.deepEqual(ids, [requestId, requestId]);
 });
 
-test("configured Firebase authentication fails closed before fetch when its token is empty", async () => {
+test("configured Firebase authentication refreshes once then fails closed before fetch when its token stays empty", async () => {
+  let calls = 0;
+  const tokenRefreshes = [];
+  const provider = createAIProvider({
+    config: { enabled: true, provider: "openai", gatewayUrl: "https://ai.example.com/v1/ai/execute" },
+    getAccessToken: async (force) => { tokenRefreshes.push(force); return ""; },
+    fetchImpl: async () => { calls += 1; },
+  });
+  await assert.rejects(provider.analyzeBody({ memberId: "m1", views: [] }), (error) => (/** @type {any} */ (error)).code === "auth_refresh_failed");
+  assert.deepEqual(tokenRefreshes, [false, true]);
+  assert.equal(calls, 0);
+});
+
+test("an expired Firebase token is force-refreshed once with the same idempotency key", async () => {
+  const tokenRefreshes = [];
+  const requestIds = [];
   let calls = 0;
   const provider = createAIProvider({
     config: { enabled: true, provider: "openai", gatewayUrl: "https://ai.example.com/v1/ai/execute" },
-    getAccessToken: async () => "",
-    fetchImpl: async () => { calls += 1; },
+    getAccessToken: async (force) => { tokenRefreshes.push(force); return force ? "fresh" : "expired"; },
+    fetchImpl: async (_url, init) => {
+      calls += 1;
+      requestIds.push(JSON.parse(init.body).requestId);
+      if (calls === 1) return { ok: false, status: 401, json: async () => ({ error: { code: "unauthenticated" } }) };
+      return { ok: true, status: 200, json: async () => ({ requestId: requestIds[0], provider: "openai", model: "gpt-5-mini", promptVersion: "v1", output: { didToday: [], observations: [], responses: [], nextFocus: [], uncertain: [] } }) };
+    },
   });
-  await assert.rejects(provider.analyzeBody({ memberId: "m1", views: [] }), (error) => (/** @type {any} */ (error)).code === "unauthenticated");
-  assert.equal(calls, 0);
+  const result = await provider.structureLessonRecord({ memberId: "m1", lessonId: "l1", rawTranscript: "기록" });
+  assert.equal(result.status, AI_STATUSES.DRAFT);
+  assert.deepEqual(tokenRefreshes, [false, true]);
+  assert.equal(new Set(requestIds).size, 1);
+});
+
+test("an expired Firebase token becomes a non-retryable service failure after one unsuccessful refresh", async () => {
+  const tokenRefreshes = [];
+  let calls = 0;
+  const provider = createAIProvider({
+    config: { enabled: true, provider: "openai", gatewayUrl: "https://ai.example.com/v1/ai/execute" },
+    getAccessToken: async (force) => { tokenRefreshes.push(force); return force ? "still-invalid" : "expired"; },
+    fetchImpl: async () => {
+      calls += 1;
+      return { ok: false, status: 401, json: async () => ({ error: { code: "unauthenticated" } }) };
+    },
+  });
+  await assert.rejects(provider.structureLessonRecord({ memberId: "m1", lessonId: "l1", rawTranscript: "기록" }), (error) => {
+    const actual = /** @type {any} */ (error);
+    return actual.code === "auth_refresh_failed" && actual.retryable === false && actual.failureStage === "auth_refresh";
+  });
+  assert.deepEqual(tokenRefreshes, [false, true]);
+  assert.equal(calls, 2);
 });
 
 test("voice summary maps the Firebase Gateway result contract to the existing client contract", async () => {
@@ -149,15 +190,13 @@ test("malformed provider output fails instead of fabricating AI content", async 
   await assert.rejects(() => provider.summarizeVoice({ transcript: "기록" }), (error) => (/** @type {any} */ (error))?.code === "invalid_output");
 });
 
-test("OpenAI, Gemini, and Anthropic are interchangeable without changing operation callers", async () => {
+test("deferred sequence recommendation has no client convenience call path", async () => {
   for (const providerId of ["openai", "gemini", "anthropic"]) {
     const provider = createAIProvider({
       config: { enabled: true, provider: providerId, gatewayUrl: "https://ai.example.com/v1/execute" },
-      fetchImpl: async (_url, init) => ({ ok: true, json: async () => ({ requestId: init.headers["X-Idempotency-Key"], provider: providerId, output: { title: "시퀀스", exercises: [{ name: "브리딩", purpose: "호흡", dosage: "5회" }], rationale: [], precautions: [] } }) }),
+      fetchImpl: async () => { throw new Error("deferred operation must not reach fetch"); },
     });
-    const result = await provider.recommendSequence({ memberId: "m1" });
-    assert.equal(result.provider, providerId);
-    assert.equal(result.output.exercises[0].name, "브리딩");
+    assert.equal(provider.recommendSequence, undefined);
   }
 });
 

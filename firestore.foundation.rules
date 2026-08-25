@@ -96,6 +96,11 @@ service cloud.firestore {
       }
     }
 
+    match /runtimeConfig/aiRecording {
+      allow read: if signedIn();
+      allow write: if false;
+    }
+
     match /organizations/{organizationId} {
       allow read: if isActiveMember(organizationId);
       allow create, delete: if false;

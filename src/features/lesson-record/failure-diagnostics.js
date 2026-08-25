@@ -1,39 +1,78 @@
-export const LESSON_RECORD_FAILURE = Object.freeze({
-  NETWORK: "NETWORK",
-  AUTH: "AUTH",
-  CONSENT: "CONSENT",
-  MEMBER_AUTHORIZATION: "MEMBER_AUTHORIZATION",
-  GATEWAY: "GATEWAY",
-  PROVIDER: "PROVIDER",
-  RESPONSE: "RESPONSE",
-  SCHEMA: "SCHEMA",
-  CLIENT_MAPPING: "CLIENT_MAPPING",
-  STALE_BUILD: "STALE_BUILD",
-  UNKNOWN: "UNKNOWN",
+export const LESSON_RECORD_FAILURE_CATEGORY = Object.freeze({
+  INPUT: "INPUT",
+  TEMPORARY: "TEMPORARY",
+  SERVICE: "SERVICE",
 });
 
-export function classifyLessonRecordFailure({ code = "", status = null, reason = "", failureStage = "", contextStage = "" } = {}) {
-  const normalizedCode = String(code || reason || "").toLowerCase();
-  const normalizedStage = String(failureStage || contextStage || "").toLowerCase();
+export const LESSON_RECORD_FAILURE = LESSON_RECORD_FAILURE_CATEGORY;
+
+const detailsByCode = Object.freeze({
+  stt_no_speech: { category: "INPUT", userCode: "E-VOICE", title: "말소리가 인식되지 않았어요", description: "다시 말하거나 직접 입력할 수 있어요.", retry: true },
+  consent_missing: { category: "INPUT", userCode: "E-CONSENT", title: "AI 처리 동의가 필요해요", description: "동의를 확인한 뒤 말하기를 시작할 수 있어요.", retry: false },
+  stt_provider_error: { category: "TEMPORARY", userCode: "E-STT", title: "음성 인식 연결이 불안정해요", description: "말씀하신 내용이 있다면 이 기기에 저장되어 있어요.", retry: true },
+  network_offline: { category: "TEMPORARY", userCode: "E-NETWORK", title: "연결이 불안정해요", description: "말씀하신 내용은 저장되어 있어요.", retry: true },
+  timeout: { category: "TEMPORARY", userCode: "E-TIMEOUT", title: "연결이 잠시 늦어지고 있어요", description: "말씀하신 내용은 저장되어 있어요.", retry: true },
+  auth_expired: { category: "TEMPORARY", userCode: "E-AUTH", title: "로그인 연결을 다시 확인하고 있어요", description: "말씀하신 내용은 저장되어 있어요.", retry: true },
+  auth_refresh_failed: { category: "SERVICE", userCode: "E-AUTH", title: "로그인 연결을 확인해 주세요", description: "말씀하신 내용은 저장되어 있어요.", retry: false },
+  provider_rate_limited: { category: "TEMPORARY", userCode: "E-BUSY", title: "AI 요청이 잠시 많아요", description: "말씀하신 내용은 저장되어 있어요.", retry: true },
+  provider_5xx: { category: "TEMPORARY", userCode: "E-SERVICE", title: "AI 연결이 잠시 불안정해요", description: "말씀하신 내용은 저장되어 있어요.", retry: true },
+  provider_quota_exhausted: { category: "SERVICE", userCode: "E-QUOTA", title: "AI 정리를 지금 사용할 수 없어요", description: "말씀하신 내용은 저장되어 있어요.", retry: false },
+  provider_configuration: { category: "SERVICE", userCode: "E-CONFIG", title: "AI 정리를 지금 사용할 수 없어요", description: "말씀하신 내용은 저장되어 있어요.", retry: false },
+  schema_invalid: { category: "SERVICE", userCode: "E-FORMAT", title: "내용을 자동으로 정리하지 못했어요", description: "말씀하신 내용은 저장되어 있어요.", retry: false },
+  member_session_unresolved: { category: "SERVICE", userCode: "E-LINK", title: "기록 연결을 확인하고 있어요", description: "말씀하신 내용은 회원 기록에 안전하게 남아 있어요.", retry: false },
+  unknown: { category: "SERVICE", userCode: "E-AI", title: "AI 정리를 지금 사용할 수 없어요", description: "말씀하신 내용은 저장되어 있어요.", retry: false },
+});
+
+export function normalizeLessonRecordFailureCode({ code = "", status = null, reason = "", failureStage = "", contextStage = "" } = {}) {
+  const raw = String(code || reason || "").toLowerCase();
+  const stage = String(failureStage || contextStage || "").toLowerCase();
   const httpStatus = Number(status) || 0;
-  if (normalizedStage.includes("backup") || normalizedStage.includes("member_authorization") || normalizedCode.startsWith("backup/") || normalizedCode.startsWith("ai/member") || normalizedCode.startsWith("ai/lesson")) return LESSON_RECORD_FAILURE.MEMBER_AUTHORIZATION;
-  if (["offline", "network_error", "timeout"].includes(normalizedCode) || normalizedStage.includes("network")) return LESSON_RECORD_FAILURE.NETWORK;
-  if (normalizedCode.includes("unauthenticated") || httpStatus === 401) return LESSON_RECORD_FAILURE.AUTH;
-  if (normalizedCode === "consent_required" || normalizedStage.includes("consent")) return LESSON_RECORD_FAILURE.CONSENT;
-  if (normalizedCode === "not_connected" || normalizedCode === "invalid_gateway_url") return LESSON_RECORD_FAILURE.STALE_BUILD;
-  if (normalizedStage === "client_schema_validation") return LESSON_RECORD_FAILURE.CLIENT_MAPPING;
-  if (normalizedCode === "invalid_output" && httpStatus === 502) return LESSON_RECORD_FAILURE.RESPONSE;
-  if (normalizedCode === "invalid_output" || normalizedStage.includes("schema")) return LESSON_RECORD_FAILURE.SCHEMA;
-  if (normalizedCode.startsWith("provider_") || normalizedStage.startsWith("provider")) return LESSON_RECORD_FAILURE.PROVIDER;
-  if (normalizedCode.includes("gateway") || httpStatus >= 400) return LESSON_RECORD_FAILURE.GATEWAY;
-  return LESSON_RECORD_FAILURE.UNKNOWN;
+  if (["stt_no_speech", "no_speech", "no-speech"].includes(raw)) return "stt_no_speech";
+  if (raw === "consent_required" || raw === "consent_missing" || stage.includes("consent")) return "consent_missing";
+  if (raw === "provider_quota_exhausted" || (httpStatus === 429 && raw.includes("quota"))) return "provider_quota_exhausted";
+  if (raw === "rate_limited" || raw === "provider_rate_limited" || httpStatus === 429) return "provider_rate_limited";
+  if (["offline", "network_error", "network_offline"].includes(raw) || stage.includes("network")) return "network_offline";
+  if (raw === "timeout" || httpStatus === 504) return "timeout";
+  if (raw === "auth_refresh_failed" || stage === "auth_refresh") return "auth_refresh_failed";
+  if (raw.includes("unauthenticated") || raw === "auth_expired" || httpStatus === 401) return "auth_expired";
+  if (["speech_recognition_unavailable", "stt_provider_error"].includes(raw) || stage.includes("stt")) return "stt_provider_error";
+  if (raw === "invalid_output" || raw === "schema_invalid" || stage.includes("schema")) return "schema_invalid";
+  if (raw === "provider_unavailable" || raw === "provider_5xx" || httpStatus >= 500) return "provider_5xx";
+  if (raw === "not_connected" || raw === "invalid_gateway_url" || raw === "provider_configuration") return "provider_configuration";
+  if (raw.includes("member") || raw.includes("lesson") || stage.includes("authorization") || stage.includes("backup")) return "member_session_unresolved";
+  return "unknown";
 }
 
-export function lessonRecordFailureMessage(failureClass) {
-  if (failureClass === LESSON_RECORD_FAILURE.NETWORK) return "인터넷에 연결되지 않았어요. 작성한 내용은 이 기기에 남아 있습니다. 연결 후 다시 시도하거나 직접 수정할 수 있어요.";
-  if (failureClass === LESSON_RECORD_FAILURE.AUTH) return "로그인 상태를 확인하지 못했어요. 다시 로그인한 뒤 시도해 주세요. 작성한 내용은 그대로 남아 있습니다.";
-  if (failureClass === LESSON_RECORD_FAILURE.CONSENT) return "회원의 AI 처리 동의를 확인한 뒤 다시 시도해 주세요. 작성한 내용은 그대로 남아 있습니다.";
-  if (failureClass === LESSON_RECORD_FAILURE.MEMBER_AUTHORIZATION) return "회원·수업 정보를 클라우드와 확인하지 못했어요. 백업 상태를 확인한 뒤 다시 시도해 주세요. 작성한 내용은 그대로 남아 있습니다.";
-  if (failureClass === LESSON_RECORD_FAILURE.STALE_BUILD) return "현재 앱 빌드에서는 AI 수업기록 연결을 확인하지 못했어요. 앱 버전을 확인한 뒤 다시 시도해 주세요.";
-  return "내용을 자동으로 정리하지 못했어요. 작성한 내용은 그대로 남아 있습니다. 다시 시도하거나 직접 수정할 수 있어요.";
+export function describeLessonRecordFailure(context = {}) {
+  const internalCode = normalizeLessonRecordFailureCode(context);
+  return { internalCode, ...(detailsByCode[internalCode] || detailsByCode.unknown) };
 }
+
+export function classifyLessonRecordFailure(context = {}) {
+  return describeLessonRecordFailure(context).category;
+}
+
+export function lessonRecordFailureMessage(value) {
+  if (value && typeof value === "object") return describeLessonRecordFailure(value).title;
+  const byCategory = Object.values(detailsByCode).find((item) => item.category === value);
+  return byCategory?.title || detailsByCode.unknown.title;
+}
+
+export function canAutoRetryLessonRecordFailure(context = {}) {
+  return describeLessonRecordFailure(context).category === LESSON_RECORD_FAILURE_CATEGORY.TEMPORARY;
+}
+
+export const LESSON_RECORD_FAILURE_DETAILS = detailsByCode;
+
+const DEBUG_FAILURE_KEY = "__PILATEACHER_LESSON_RECORD_FAILURE__";
+export function setLessonRecordDebugFailure(code, target = globalThis) {
+  target[DEBUG_FAILURE_KEY] = String(code || "");
+}
+
+export function takeLessonRecordDebugFailure(target = globalThis) {
+  const code = String(target?.[DEBUG_FAILURE_KEY] || "");
+  if (target) target[DEBUG_FAILURE_KEY] = "";
+  return code;
+}
+
+export const LESSON_RECORD_DEBUG_CODES = Object.freeze(Object.keys(detailsByCode).filter((code) => code !== "unknown"));

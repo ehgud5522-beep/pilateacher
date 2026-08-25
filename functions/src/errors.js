@@ -4,6 +4,7 @@ const ERROR_DEFINITIONS = Object.freeze({
   unauthenticated: { status: 401, message: "Authentication is required." },
   invalid_request: { status: 400, message: "The request is invalid." },
   consent_required: { status: 403, message: "AI usage consent is required." },
+  operation_deferred: { status: 404, message: "The requested AI operation is deferred." },
   rate_limited: { status: 429, message: "The AI request limit has been reached." },
   provider_unavailable: { status: 503, message: "The AI provider is temporarily unavailable." },
   invalid_output: { status: 502, message: "The AI provider returned an invalid response." },

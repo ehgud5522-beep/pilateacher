@@ -10,6 +10,7 @@ const { HttpsError, onCall, onRequest } = require("firebase-functions/v2/https")
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { createAccountDeletionService } = require("./account-deletion");
 const { createAIGatewayHandler } = require("./ai-gateway");
+const { createAIRecordingOperations } = require("./ai-recording-operations");
 const { applyCors, parseAllowedOrigins } = require("./cors");
 const { sendError, GatewayError } = require("./errors");
 const { createFirestoreIdempotencyStore } = require("./idempotency");
@@ -31,6 +32,7 @@ const policyService = createFirestorePolicyService({
   dailyLimit: process.env.AI_RATE_LIMIT_PER_DAY || 80,
 });
 const idempotencyStore = createFirestoreIdempotencyStore({ firestore });
+const aiRecordingOperations = createAIRecordingOperations({ firestore, logger });
 const photoBackupCleanupService = createPhotoBackupCleanupService({ firestore, bucket: getStorage().bucket() });
 let openAIProvider;
 
@@ -70,6 +72,7 @@ const handler = createAIGatewayHandler({
   verifyIdToken: (token) => getAuth().verifyIdToken(token, true),
   policyService,
   idempotencyStore,
+  aiRecordingOperations,
   getProvider: async () => {
     if (!openAIProvider) {
       openAIProvider = createOpenAIProvider({

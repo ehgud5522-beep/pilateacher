@@ -8,10 +8,15 @@ const { prepareProviderInput } = require("./privacy");
 const { fingerprintRequest, parseGatewayRequest } = require("./request-contracts");
 
 const PIPELINE_VERSION = "ai-gateway-v1";
+const DEFERRED_OPERATIONS = new Set(["recommendSequence"]);
 const consentOperation = (operation) => operation === "structureLessonRecord" ? "summarizeVoice" : operation;
 const diagnosticsEnabled = () => process.env.NODE_ENV !== "production" || process.env.AI_GATEWAY_DIAGNOSTICS === "1";
+const ALWAYS_LOG_EVENTS = new Set(["model_call_succeeded", "gateway_completed"]);
+const safeLogToken = (value, max = 120) => String(value || "")
+  .replace(/[^A-Za-z0-9._:/-]/g, "_")
+  .slice(0, max);
 const diagnosticLog = (event, details = {}) => {
-  if (!diagnosticsEnabled()) return;
+  if (!diagnosticsEnabled() && !ALWAYS_LOG_EVENTS.has(event)) return;
   globalThis.console.info(`[PilaTeacher/aiGateway] ${event}`, details);
 };
 
@@ -24,6 +29,7 @@ function createAIGatewayHandler({
   policyService,
   idempotencyStore,
   getProvider,
+  aiRecordingOperations = null,
   clock = () => new Date(),
 }) {
   if (typeof verifyIdToken !== "function" || !policyService || !idempotencyStore || typeof getProvider !== "function") {
@@ -48,6 +54,9 @@ function createAIGatewayHandler({
       requestId = request.requestId;
       operation = request.operation;
       diagnosticLog("request_authenticated", { requestId, operation: request.operation, httpStatus: 0, auth: "success" });
+      // DEFER: Sequence recommendation keeps its request/output contracts for a
+      // future release, but has no active Gateway route or provider execution.
+      if (DEFERRED_OPERATIONS.has(request.operation)) throw new GatewayError("operation_deferred");
       const authorization = await policyService.authorize({
         uid,
         memberId: request.input.memberId,
@@ -89,7 +98,7 @@ function createAIGatewayHandler({
       diagnosticLog("model_call_succeeded", {
         requestId,
         operation: request.operation,
-        model: String(providerResponse?.model || ""),
+        model: safeLogToken(providerResponse?.model),
         outputShape: Object.fromEntries(Object.entries(providerResponse?.output || {}).map(([field, value]) => [field, Array.isArray(value) ? `array:${value.every((item) => typeof item === "string") ? "string" : "mixed"}` : typeof value])),
       });
       const output = validateOperationOutput(request.operation, providerResponse?.output);
@@ -117,9 +126,15 @@ function createAIGatewayHandler({
         fingerprint,
         response,
       });
-      diagnosticLog("gateway_completed", { requestId, operation: request.operation, httpStatus: 200, validation: "success" });
+      diagnosticLog("gateway_completed", { requestId, operation: request.operation, model: safeLogToken(model), httpStatus: 200, validation: "success" });
       return res.status(200).json(response);
     } catch (error) {
+      if (aiRecordingOperations?.handleFailure) {
+        try { await aiRecordingOperations.handleFailure(error, { requestId, operation }); }
+        catch (operationsError) {
+          globalThis.console.error("[PilaTeacher/aiGateway] operational_alert_failed", { code: String(operationsError?.code || "unknown") });
+        }
+      }
       if (error?.diagnostic && typeof error.diagnostic === "object") {
         const details = error.diagnostic;
         globalThis.console.warn("[PilaTeacher/aiGateway] provider_failed", {
@@ -151,6 +166,7 @@ function createAIGatewayHandler({
 }
 
 module.exports = {
+  DEFERRED_OPERATIONS,
   PIPELINE_VERSION,
   createAIGatewayHandler,
   safetyIdentifier,

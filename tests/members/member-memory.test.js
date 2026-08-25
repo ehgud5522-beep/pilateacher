@@ -92,7 +92,7 @@ test("raw-only record is quoted briefly and first lesson stays literal", () => {
   const raw = note("s1", "2026-08-18", {}, { raw: "오늘 회원이 직접 말한 원문을 그대로 저장했습니다." });
   const rawBriefing = createMemberBriefing({ member: member([raw]), now: "2026-08-19" });
   assert.equal(rawBriefing.kind, "raw_only");
-  assert.equal(rawBriefing.lines[0].text, "[8/18] 원문: 오늘 회원이 직접 말한 원문을 그대로 저장했습니다.");
+  assert.equal(rawBriefing.lines[0].text, "[8/18] 수업 기록: 오늘 회원이 직접 말한 원문을 그대로 저장했습니다.");
   const first = createMemberBriefing({ member: member([]), now: "2026-08-19" });
   assert.deepEqual(first.lines.map((entry) => entry.text), ["첫 수업"]);
 });

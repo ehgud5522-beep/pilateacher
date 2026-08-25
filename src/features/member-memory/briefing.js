@@ -13,7 +13,7 @@ function rawFallback(sessions, config) {
   const raw = [...sessions].reverse().find((session) => session.rawOnly);
   if (!raw) return null;
   const transcript = clean(raw.record.rawTranscript || raw.note?.lessonRecord?.rawTranscript || raw.note?.transcript, config.rawPreviewLength);
-  return transcript ? line("raw", `[${shortDate(raw.date)}] 원문: ${transcript}`, [], [{ type: "session", id: raw.id, date: raw.date }]) : null;
+  return transcript ? line("raw", `[${shortDate(raw.date)}] 수업 기록: ${transcript}`, [], [{ type: "session", id: raw.id, date: raw.date }]) : null;
 }
 
 function conflictLines(memories) {

@@ -502,3 +502,22 @@ export async function fbRevokeAIConsent(memberId) {
     { timeoutMs: FIRESTORE_WRITE_TIMEOUT_MS, provider: "firebase", stage: "ai_consent_revoke" },
   );
 }
+
+export async function fbLoadAIRecordingStatus() {
+  if (!fs || !auth?.currentUser) return { status: "normal", reasonCode: "", updatedAt: "" };
+  try {
+    const snap = await withAuthTimeout(
+      () => getDoc(doc(fs, "runtimeConfig", "aiRecording")),
+      { timeoutMs: FIRESTORE_READ_TIMEOUT_MS, provider: "firebase", stage: "ai_recording_status_read" },
+    );
+    if (!snap.exists()) return { status: "normal", reasonCode: "", updatedAt: "" };
+    const data = snap.data() || {};
+    return {
+      status: ["normal", "degraded", "off"].includes(data.status) ? data.status : "normal",
+      reasonCode: String(data.reasonCode || ""),
+      updatedAt: typeof data.updatedAt?.toDate === "function" ? data.updatedAt.toDate().toISOString() : String(data.updatedAt || ""),
+    };
+  } catch (_error) {
+    return null;
+  }
+}

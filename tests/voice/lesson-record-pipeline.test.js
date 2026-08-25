@@ -4,7 +4,10 @@ import test from "node:test";
 
 import { AI_STATUSES } from "../../src/ai/contracts.js";
 import { GatewayLlmProvider } from "../../src/features/lesson-record/llm-provider.js";
-import { listPendingLessonRecords, loadPendingLessonRecord, removePendingLessonRecord, savePendingLessonRecord } from "../../src/features/lesson-record/draft-queue.js";
+import { LESSON_RECORD_DRAFT_STATE, listPendingLessonRecords, loadPendingLessonRecord, pendingLessonRecordLabel, removePendingLessonRecord, savePendingLessonRecord } from "../../src/features/lesson-record/draft-queue.js";
+import { runLessonRecordRetryCycle, scheduleLessonRecordRetry } from "../../src/features/lesson-record/retry-queue.js";
+import { readAIRecordingStatus, writeAIRecordingStatus } from "../../src/features/lesson-record/ai-recording-status.js";
+import { appendLessonRecordDiagnostic, readLessonRecordDiagnostics } from "../../src/features/lesson-record/pipeline-diagnostics.js";
 import { editStructuredField, structuredRecordBody, validateStructuredOutput } from "../../src/features/lesson-record/record-schema.js";
 import { mapPilatesTerms, PILATES_TERMS } from "../../src/features/lesson-record/term-mapper.js";
 import { readLessonRecordUsage, trackLessonRecordUsage } from "../../src/features/lesson-record/usage-telemetry.js";
@@ -69,7 +72,10 @@ test("LlmProvider repairs once, validates output, and downgrades to raw after fa
 test("pending queue survives exit and usage telemetry stores counters without transcript", () => {
   const storage = memoryStorage();
   savePendingLessonRecord("m1", "l1", { rawTranscript: "민감한 원문", status: "queued" }, storage);
-  assert.equal(loadPendingLessonRecord("m1", "l1", storage).rawTranscript, "민감한 원문");
+  const restored = loadPendingLessonRecord("m1", "l1", storage);
+  assert.equal(restored.rawTranscript, "민감한 원문");
+  assert.equal(restored.state, LESSON_RECORD_DRAFT_STATE.RAW);
+  assert.equal(pendingLessonRecordLabel(restored), "정리 전(원문 있음)");
   assert.equal(listPendingLessonRecords(storage).length, 1);
   removePendingLessonRecord("m1", "l1", storage);
   assert.equal(listPendingLessonRecords(storage).length, 0);
@@ -82,6 +88,55 @@ test("pending queue survives exit and usage telemetry stores counters without tr
   assert.equal(usage.totalTokens, 15);
   assert.equal(usage.completedRecords, 1);
   assert.doesNotMatch(storage.dump(), /저장 금지 원문/);
+});
+
+test("hidden diagnostics retain safe request model metadata without lesson content", () => {
+  const storage = memoryStorage();
+  appendLessonRecordDiagnostic({
+    code: "success",
+    stage: "ai_gateway",
+    category: "SUCCESS",
+    model: "gpt-5-mini-2026-08-07",
+    requestId: "ai_openai_structureLessonRecord_safe12345678",
+    transcript: "저장하면 안 되는 회원 원문",
+  }, storage);
+  const [event] = readLessonRecordDiagnostics(storage);
+  assert.equal(event.model, "gpt-5-mini-2026-08-07");
+  assert.equal(event.requestId, "ai_openai_structureLessonRecord_safe12345678");
+  assert.doesNotMatch(storage.dump(), /저장하면 안 되는 회원 원문|transcript/);
+});
+
+test("temporary failures back off and background success promotes raw to structured without confirming", async () => {
+  const storage = memoryStorage();
+  savePendingLessonRecord("m1", "l1", { rawTranscript: "오늘 브릿지", status: "raw" }, storage);
+  const scheduled = scheduleLessonRecordRetry("m1", "l1", { code: "network_offline" }, storage, 1000);
+  assert.equal(scheduled.retry.nextRetryAt, 31000);
+  let calls = 0;
+  const diagnostics = [];
+  const result = await runLessonRecordRetryCycle({
+    storage,
+    now: 31000,
+    aiStatus: "normal",
+    llmProvider: { async structureLessonRecord() { calls += 1; return { status: "structured", output: validateStructuredOutput(structured), meta: { requestId: "safe", model: "gpt-5-mini" } }; } },
+    onDiagnostic: (event) => diagnostics.push(event),
+  });
+  assert.deepEqual(result, { processed: 1, promoted: 1, failed: 0 });
+  assert.equal(calls, 1);
+  const promoted = loadPendingLessonRecord("m1", "l1", storage);
+  assert.equal(promoted.state, LESSON_RECORD_DRAFT_STATE.STRUCTURED);
+  assert.equal(promoted.status, "structured");
+  assert.equal(pendingLessonRecordLabel(promoted), "확인 대기(정리됨)");
+  assert.notEqual(promoted.status, "confirmed");
+  assert.deepEqual(diagnostics, [{ code: "success", stage: "background_retry", category: "SUCCESS", model: "gpt-5-mini", requestId: "safe" }]);
+});
+
+test("service failures never schedule an identical retry and remote status cache survives reload", () => {
+  const storage = memoryStorage();
+  savePendingLessonRecord("m1", "l1", { rawTranscript: "안전한 기록", status: "raw" }, storage);
+  const draft = scheduleLessonRecordRetry("m1", "l1", { code: "provider_quota_exhausted" }, storage, 1000);
+  assert.equal(draft.retry, null);
+  writeAIRecordingStatus({ status: "degraded", reasonCode: "provider_quota_exhausted", updatedAt: "2026-08-24T00:00:00.000Z" }, storage);
+  assert.equal(readAIRecordingStatus(storage).status, "degraded");
 });
 
 test("App exposes four post-attendance choices, 90-second cap, pending save and post-confirm audio deletion", async () => {
@@ -100,8 +155,9 @@ test("App exposes four post-attendance choices, 90-second cap, pending save and 
   assert.match(source, /ignored_pre_start_stopped/);
   assert.match(source, /startRequestRef\.current/);
   assert.match(source, /시작 중…/);
-  assert.match(source, /입력한 내용 그대로 저장/);
+  assert.match(source, /pendingLessonRecordLabel/);
+  assert.match(source, /recordQueueLabel/);
   assert.match(source, /AI 수업 요약/);
   assert.match(source, /무엇을 말하면 되나요\?/);
-  assert.doesNotMatch(source, />미구조화</);
+  assert.doesNotMatch(source, />미구조화|입력한 내용 그대로 저장</);
 });

@@ -44,6 +44,28 @@ async function invoke(handler, request = gatewayRequest()) {
   return response;
 }
 
+function sequenceGatewayRequest() {
+  const requestId = "ai_openai_recommendSequence_12345678";
+  return createRequest({
+    headers: { authorization: "Bearer valid-token", "x-idempotency-key": requestId },
+    body: {
+      schemaVersion: 1,
+      requestId,
+      provider: "openai",
+      operation: "recommendSequence",
+      input: {
+        schemaVersion: 1,
+        memberId: "member-1",
+        goals: ["코어"],
+        precautions: [],
+        bodyAssessment: null,
+        recentLessons: [],
+        recentNotes: [],
+      },
+    },
+  });
+}
+
 test("gateway verifies auth, strips identifiers, and returns the client contract", async () => {
   let calls = 0;
   let providerInput;
@@ -140,4 +162,50 @@ test("provider failures return only allowlisted diagnostic fields", async () => 
   });
   assert.equal(JSON.stringify(response.body).includes("private"), false);
   assert.equal(JSON.stringify(response.body).includes("transcript"), false);
+});
+
+test("deferred sequence recommendation stops before policy, quota, or provider execution", async () => {
+  let policyCalls = 0;
+  let providerCalls = 0;
+  const handler = createAIGatewayHandler({
+    verifyIdToken: async () => ({ uid: "verified-user" }),
+    policyService: {
+      authorize: async () => { policyCalls += 1; return { allowed: true }; },
+      consumeRateLimit: async () => { policyCalls += 1; return { allowed: true }; },
+    },
+    idempotencyStore: createMemoryIdempotencyStore(),
+    getProvider: async () => { providerCalls += 1; return { execute: async () => ({}) }; },
+  });
+  const response = await invoke(handler, sequenceGatewayRequest());
+  assert.equal(response.statusCode, 404);
+  assert.equal(response.body.error.code, "operation_deferred");
+  assert.equal(policyCalls, 0);
+  assert.equal(providerCalls, 0);
+});
+
+test("successful request logs the actual response model with its request id", async () => {
+  const logs = [];
+  const originalInfo = globalThis.console.info;
+  globalThis.console.info = (message, details) => logs.push({ message, details });
+  try {
+    const handler = createAIGatewayHandler({
+      verifyIdToken: async () => ({ uid: "verified-user" }),
+      policyService: {
+        authorize: async () => ({ allowed: true, memberName: "" }),
+        consumeRateLimit: async () => ({ allowed: true }),
+      },
+      idempotencyStore: createMemoryIdempotencyStore(),
+      getProvider: async () => ({ execute: async () => ({ model: "gpt-5-mini-2026-08-07", promptVersion: "voice_v1", output: voiceOutput }) }),
+    });
+    const response = await invoke(handler);
+    assert.equal(response.statusCode, 200);
+    const modelLog = logs.find((entry) => entry.message.includes("model_call_succeeded"));
+    const completionLog = logs.find((entry) => entry.message.includes("gateway_completed"));
+    assert.equal(modelLog.details.model, "gpt-5-mini-2026-08-07");
+    assert.equal(modelLog.details.requestId, response.body.requestId);
+    assert.equal(completionLog.details.model, "gpt-5-mini-2026-08-07");
+    assert.equal(completionLog.details.requestId, response.body.requestId);
+  } finally {
+    globalThis.console.info = originalInfo;
+  }
 });

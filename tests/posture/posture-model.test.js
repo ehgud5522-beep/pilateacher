@@ -6,6 +6,7 @@ import {
   compareAssessmentMetrics,
   completeAssessmentRecords,
   correctedPoseSource,
+  getPostureRetakeStatus,
   normalizeAssessmentSets,
   normalizePostureView,
   postureAlignmentTransform,
@@ -289,6 +290,18 @@ test("edited AI points retain a distinct source", () => {
   assert.equal(correctedPoseSource("ai", true), "ai_manual_corrected");
   assert.equal(correctedPoseSource("manual", true), "manual");
   assert.equal(correctedPoseSource("ai", false), "ai");
+});
+
+test("assessment-based retake status is null for empty history and uses the latest completed assessment", () => {
+  const now = new Date("2026-08-03T12:00:00+09:00");
+  assert.equal(getPostureRetakeStatus([], now), null);
+  assert.equal(getPostureRetakeStatus([{ id: "draft", status: "draft", at: "2026-08-02" }], now), null);
+  const status = getPostureRetakeStatus([
+    { id: "older", status: "completed", completedAt: "2026-05-01" },
+    { id: "latest", status: "completed", completedAt: "2026-07-10" },
+  ], now);
+  assert.equal(status.tone, "recent");
+  assert.equal(status.days, 24);
 });
 
 test("CASE 1: no draft starts one new assessment with exactly one ID", async () => {

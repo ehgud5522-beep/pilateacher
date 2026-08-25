@@ -7,15 +7,15 @@ const voiceStart = source.indexOf("function VoiceNote(");
 const voiceEnd = source.indexOf("function NoteForm(", voiceStart);
 const voice = source.slice(voiceStart, voiceEnd);
 
-test("AI structure action starts loading before provider, consent, and gateway work", () => {
+test("AI structure action persists raw input and starts loading before gateway work", () => {
   const requestStart = voice.indexOf("const requestSummary = async");
   const requestEnd = voice.indexOf("const setSummaryField", requestStart);
   const request = voice.slice(requestStart, requestEnd);
   const busy = request.indexOf("setSummaryBusy(true)");
   assert.ok(busy >= 0);
   assert.ok(busy < request.indexOf("aiProvider.getStatus()"));
-  assert.ok(busy < request.indexOf("ensureMemberAIConsent"));
-  assert.ok(request.indexOf("lessonRecordLlm.structureLessonRecord") > request.indexOf("ensureMemberAIConsent"));
+  assert.ok(request.indexOf("persistRawDraft(transcript") < request.indexOf("lessonRecordLlm.structureLessonRecord"));
+  assert.equal(request.indexOf("prepareAIGatewayContext"), -1);
   assert.match(request, /finally \{ setSummaryBusy\(false\); \}/);
 });
 
@@ -26,12 +26,13 @@ test("AI result renders the teacher-facing summary and all five editable section
   assert.match(voice, /structuredFieldText\(summaryDraft, field\.k\)/);
 });
 
-test("AI structure failure preserves raw text and blocks a known non-retryable repeat", () => {
+test("AI structure failure preserves raw text and only offers retry for temporary failures", () => {
   assert.match(voice, /role="alert"/);
-  assert.match(voice, /setSummaryRetryBlocked\(result\.error\?\.retryable === false\)/);
-  assert.match(voice, /disabled=\{summaryBusy \|\| summaryRetryBlocked\}/);
-  assert.match(voice, /입력한 내용 그대로 저장/);
-  assert.match(voice, /직접 수정/);
+  assert.match(voice, /summaryFailure\.category === LESSON_RECORD_FAILURE_CATEGORY\.TEMPORARY/);
+  assert.match(voice, /직접 정리/);
+  assert.match(voice, /나중에/);
+  assert.match(voice, /summaryFailure\.userCode/);
+  assert.doesNotMatch(voice, /입력한 내용 그대로 저장|회원·수업 정보를 클라우드와 확인하지 못했어요/);
 });
 
 test("Android production config points only to the existing authenticated gateway", async () => {

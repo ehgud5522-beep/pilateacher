@@ -76,6 +76,7 @@ async function seed() {
     });
     await setDoc(doc(db, "events", "event-1"), { organizationId: ORG_A, type: "fixture" });
     await setDoc(doc(db, "auditLogs", "audit-1"), { organizationId: ORG_A, action: "fixture" });
+    await setDoc(doc(db, "runtimeConfig", "aiRecording"), { status: "normal", reasonCode: "", updatedAt: Timestamp.now() });
   });
 }
 
@@ -228,6 +229,12 @@ describe("role permissions", () => {
 });
 
 describe("protected and append-only data", () => {
+  test("signed-in clients can read but never write the server-owned AI recording status", async () => {
+    await assertSucceeds(getDoc(doc(dbFor(users.instructor), "runtimeConfig", "aiRecording")));
+    await assertFails(getDoc(doc(dbFor(null), "runtimeConfig", "aiRecording")));
+    await assertFails(updateDoc(doc(dbFor(users.owner), "runtimeConfig", "aiRecording"), { status: "off" }));
+  });
+
   test("ordinary users cannot change roles", async () => {
     await assertFails(updateDoc(doc(dbFor(users.owner), "memberships", `${ORG_A}_${users.owner}`), {
       role: "member",

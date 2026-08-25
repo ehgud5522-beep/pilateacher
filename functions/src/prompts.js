@@ -35,6 +35,8 @@ const PROMPTS = Object.freeze({
       "운동, 반응, 계획을 새로 만들어내지 말고 의료 진단·처방·치료 효과 표현을 생성하지 마세요.",
     ].join("\n"),
   },
+  // DEFER: Keep the prompt/schema contract for a future release, but aiGateway
+  // rejects this operation before authorization, quota, or provider execution.
   [OPERATIONS.RECOMMEND_SEQUENCE]: {
     promptVersion: "sequence_v1",
     maxOutputTokens: 1800,

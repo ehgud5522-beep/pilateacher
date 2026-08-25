@@ -26,9 +26,8 @@ export class AIProvider {
     return this.execute(AI_OPERATIONS.STRUCTURE_LESSON_RECORD, input, options);
   }
 
-  recommendSequence(input, options) {
-    return this.execute(AI_OPERATIONS.RECOMMEND_SEQUENCE, input, options);
-  }
+  // DEFER: sequence contracts remain for forward compatibility, but the
+  // client exposes no callable recommendation path while the feature is off.
 
   generateReport(input, options) {
     return this.execute(AI_OPERATIONS.GENERATE_REPORT, input, options);

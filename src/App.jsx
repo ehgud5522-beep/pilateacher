@@ -71,7 +71,7 @@ import {
   lessonRecordPresentation, markLessonRecordGuideUsed, shouldShowLessonRecordGuide,
 } from "./features/lesson-record/lesson-record-presentation.js";
 import { createMemberBriefing, memberMemorySummary, selectScheduleBriefing } from "./features/member-memory/briefing.js";
-import { addPostureMilestone, buildMemberMemory, rejectMemoryEntry } from "./features/member-memory/member-memory.js";
+import { addPostureMilestone, buildMemberMemory, rejectMemoryEntry, selectLastLessonMemoryRecord } from "./features/member-memory/member-memory.js";
 import { trackMemberMemoryUsage } from "./features/member-memory/usage-telemetry.js";
 import Onboarding from "./features/onboarding/Onboarding.jsx";
 import { completeOnboarding, hasCompletedOnboarding } from "./features/onboarding/onboarding-storage.js";
@@ -87,7 +87,7 @@ import {
   readRecentAnnotationColors, rememberAnnotationColor, screenPointToImagePoint,
 } from "./features/posture/posture-annotations.js";
 import { LOCAL_PHOTO_NOTICE_MESSAGE, claimLocalPhotoNotice } from "./features/posture/photo-storage-notice.js";
-import { describeLessonRecordFailure, LESSON_RECORD_FAILURE_CATEGORY, takeLessonRecordDebugFailure } from "./features/lesson-record/failure-diagnostics.js";
+import { describeLessonRecordFailure, LESSON_RECORD_FAILURE_CATEGORY, lessonRecordProvenanceSource, takeLessonRecordDebugFailure } from "./features/lesson-record/failure-diagnostics.js";
 import { appendLessonRecordDiagnostic, readLessonRecordDiagnostics } from "./features/lesson-record/pipeline-diagnostics.js";
 import { aiRecordingAvailable, AI_RECORDING_STATUS, readAIRecordingStatus, writeAIRecordingStatus } from "./features/lesson-record/ai-recording-status.js";
 import { runLessonRecordRetryCycle, scheduleLessonRecordRetry } from "./features/lesson-record/retry-queue.js";
@@ -4258,12 +4258,9 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
     const match = String(value || "").match(/^\d{4}-(\d{2})-(\d{2})/);
     return match ? `${Number(match[1])}.${Number(match[2])}` : "";
   };
-  const latestRecord = latestMemorySession?.record || null;
-  const latestRecordItems = [latestRecord?.didToday, latestRecord?.observations, latestRecord?.responses].find((items) => Array.isArray(items) && items.length) || [];
-  const latestRecordValue = prepText(latestRecordItems, latestMemorySession?.note?.body || latestRecord?.rawTranscript || "");
-  const latestRecordOrigin = latestRecordItems.some((item) => item?.origin === "ai") ? "ai" : latestRecordItems.some((item) => item?.origin === "instructor") ? "instructor" : null;
+  const latestRecordDisplay = selectLastLessonMemoryRecord(latestMemorySession);
   const memoryRows = [
-    latestMemorySession && latestRecordValue ? { key: "last", label: "지난 수업", value: latestRecordValue, date: latestMemorySession.date, origin: latestRecordOrigin, memory: null } : null,
+    latestMemorySession && latestRecordDisplay ? { key: "last", label: "지난 수업", value: latestRecordDisplay.text, date: latestMemorySession.date, origin: latestRecordDisplay.origin, sourceLabel: latestRecordDisplay.sourceLabel, provenanceSource: latestRecordDisplay.provenanceSource, memory: null } : null,
     repeatedMemory ? { key: "repeated", label: "반복해서 기록된 내용", value: memorySummary.repeated, date: memorySourceDate(repeatedMemory), origin: repeatedMemory.origin, memory: repeatedMemory } : null,
     nextCheckMemory ? { key: "next", label: "선생님이 남긴 다음 확인", value: nextCheckMemory.text, date: memorySourceDate(nextCheckMemory), origin: nextCheckMemory.origin, memory: nextCheckMemory } : null,
     ...recentChangeMemories.map((entry) => ({ key: `change-${entry.id}`, label: "최근 변화", value: entry.status === "conflict" ? "최근 기록이 달라졌습니다" : entry.text, date: memorySourceDate(entry), origin: entry.presentationOrigin || entry.origin, memory: entry })),
@@ -4339,7 +4336,7 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
           </section>
           <section data-member-section="memory-first" aria-label={`AI가 기억하는 ${member.name || "회원"}님`} style={{ ...sectionStyle, padding: hasMemoryOverview ? "10px 14px 4px" : "12px 14px" }}>
             <div className="mb-1 flex items-center gap-2"><Sparkles size={14} style={{ color: BRAND_D }} /><h2 className="min-w-0 flex-1 truncate text-sm font-extrabold" style={{ color: INK }}>AI가 기억하는 {member.name || "회원"}님</h2></div>
-            {!hasMemoryOverview ? <div className="rounded-lg px-3 py-3" style={{ backgroundColor: CANVAS }}><p style={{ fontSize: 12, color: INK2 }}>아직 작성된 수업 기록이 없습니다.</p><p className="mt-1" style={{ fontSize: 10, lineHeight: 1.45, color: SUB }}>수업 기록을 저장하면 지난 수업과 다음 확인 내용을 이곳에서 이어서 볼 수 있어요.</p></div> : memoryRows.map((row, index) => <div key={row.key} className="flex items-start gap-3" style={{ padding: "9px 0", borderTop: index ? `1px solid ${LINE}` : "none" }}><p className="w-[112px] shrink-0" style={{ fontSize: 10, fontWeight: 700, color: SUB }}>{row.label}</p><div className="min-w-0 flex-1"><p className="line-clamp-2" style={{ fontSize: 11, lineHeight: 1.45, fontWeight: 650, color: row.key === "next" ? BRAND_D : INK2 }}>{row.value}</p><div className="mt-1 flex min-h-[14px] items-center gap-1.5">{row.origin === "ai" && <span style={{ fontSize: 9, fontWeight: 700, color: BRAND_D }}>[AI]</span>}{row.memory?.source === "posture_analysis" && <span style={{ fontSize: 9, fontWeight: 700, color: SUB }}>체형분석</span>}{memoryDateLabel(row.date) && <span className="tabular-nums" style={{ fontSize: 9, color: SUB }}>· {memoryDateLabel(row.date)}</span>}{row.memory?.origin === "ai" && <button type="button" onClick={() => rejectBriefingLine({ memoryIds: [row.memory.id] })} className="ml-auto shrink-0 text-[9px] font-bold" style={{ color: SUB }}>숨기기</button>}</div></div></div>)}
+            {!hasMemoryOverview ? <div className="rounded-lg px-3 py-3" style={{ backgroundColor: CANVAS }}><p style={{ fontSize: 12, color: INK2 }}>아직 작성된 수업 기록이 없습니다.</p><p className="mt-1" style={{ fontSize: 10, lineHeight: 1.45, color: SUB }}>수업 기록을 저장하면 지난 수업과 다음 확인 내용을 이곳에서 이어서 볼 수 있어요.</p></div> : memoryRows.map((row, index) => <div key={row.key} className="flex items-start gap-3" style={{ padding: "9px 0", borderTop: index ? `1px solid ${LINE}` : "none" }}><p className="w-[112px] shrink-0" style={{ fontSize: 10, fontWeight: 700, color: SUB }}>{row.label}</p><div className="min-w-0 flex-1"><p className="line-clamp-2" style={{ fontSize: 11, lineHeight: 1.45, fontWeight: 650, color: row.key === "next" ? BRAND_D : INK2 }}>{row.value}</p><div className="mt-1 flex min-h-[14px] items-center gap-1.5">{row.sourceLabel ? <span style={{ fontSize: 9, fontWeight: 700, color: row.sourceLabel === "[AI]" ? BRAND_D : SUB }}>{row.sourceLabel}</span> : row.origin === "ai" && <span style={{ fontSize: 9, fontWeight: 700, color: BRAND_D }}>[AI]</span>}{row.memory?.source === "posture_analysis" && <span style={{ fontSize: 9, fontWeight: 700, color: SUB }}>체형분석</span>}{memoryDateLabel(row.date) && <span className="tabular-nums" style={{ fontSize: 9, color: SUB }}>· {memoryDateLabel(row.date)}</span>}{row.memory?.origin === "ai" && <button type="button" onClick={() => rejectBriefingLine({ memoryIds: [row.memory.id] })} className="ml-auto shrink-0 text-[9px] font-bold" style={{ color: SUB }}>숨기기</button>}</div></div></div>)}
           </section>
           <details data-member-management-card="recent-lessons" style={{ ...sectionStyle, padding: 0, overflow: "hidden" }}>
             <summary aria-label="최근 수업기록 관리 카드 열기" className="flex min-h-14 cursor-pointer list-none items-center gap-3 px-3.5 py-3"><span className="min-w-0 flex-1"><span className="block truncate text-sm font-extrabold" style={{ color: INK }}>최근 수업기록</span><span className="mt-0.5 block truncate text-[10px]" style={{ color: SUB }}>{lessonNotes.length ? `${ymd(lessonNotes[0].date)} · ${lessonNotes[0].type || "수업"}` : "아직 작성된 기록이 없습니다"}</span></span><ChevronDown size={16} style={{ color: SUB }} /></summary>
@@ -11454,6 +11451,11 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
   };
   const reportYm = monthKey(todayISO());
   const reportStats = useMemo(() => monthStats(db.schedule, reportYm), [db.schedule, reportYm]);
+  const diagnosticRecordSources = useMemo(() => {
+    const confirmed = (db.members || []).flatMap((member) => (member.notes || []).flatMap((note) => note?.lessonRecord?.stage === "confirmed_record" ? [{ at: note.confirmedAt || note.date || "", status: note.lessonRecord.status || "confirmed", source: lessonRecordProvenanceSource(note.lessonRecord) }] : []));
+    const pending = listPendingLessonRecords().filter((record) => record?.rawTranscript).map((record) => ({ at: record.updatedAt || record.recordedAt || "", status: record.structuredDraft ? "structured" : "raw", source: lessonRecordProvenanceSource(record) }));
+    return [...confirmed, ...pending].sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 10);
+  }, [db.members]);
   const reportPay = useMemo(() => {
     let total = 0;
     db.schedule.forEach((scheduleItem) => {
@@ -11667,6 +11669,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
             {showLessonDiagnostics && <div className="mt-4 rounded-lg p-3" style={{ backgroundColor: CANVAS, border: `1px solid ${LINE}` }}>
               <p style={{ fontSize: 11, fontWeight: 700, color: INK }}>AI 수업기록 진단</p>
               <p className="mt-1" style={{ fontSize: 10, color: SUB }}>상태 {aiRecording.status} · 대기 {listPendingLessonRecords().length}건</p>
+              <div className="mt-2 space-y-1">{diagnosticRecordSources.map((record, index) => <p key={`${record.at}-${index}`} className="tabular-nums" style={{ fontSize: 9, color: SUB }}>기록 {index + 1} · {String(record.at || "날짜 없음").slice(0, 16).replace("T", " ")} · {record.status} · source={record.source}</p>)}</div>
               <div className="mt-2 space-y-1">{readLessonRecordDiagnostics().map((item, index) => <p key={`${item.at}-${index}`} className="tabular-nums" style={{ fontSize: 9, color: SUB }}>{String(item.at).slice(5, 16).replace("T", " ")} · {item.code} · {item.stage}{item.model ? ` · ${item.model}` : ""}{item.requestId ? ` · ${item.requestId.slice(-8)}` : ""}</p>)}</div>
               {!readLessonRecordDiagnostics().length && <p className="mt-2" style={{ fontSize: 10, color: SUB }}>최근 오류 없음</p>}
             </div>}

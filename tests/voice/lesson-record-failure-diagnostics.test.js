@@ -21,10 +21,11 @@ const cases = [
   ["auth_refresh_failed", "SERVICE", false],
   ["consent_missing", "INPUT", false],
   ["member_session_unresolved", "SERVICE", false],
-  ["provider_quota_exhausted", "SERVICE", false],
+  ["provider_quota_exhausted", "TEMPORARY", true],
   ["provider_rate_limited", "TEMPORARY", true],
   ["provider_5xx", "TEMPORARY", true],
   ["schema_invalid", "SERVICE", false],
+  ["provider_configuration", "TEMPORARY", true],
 ];
 
 test("all pipeline failure codes map to three user categories and meaningful retry behavior", () => {

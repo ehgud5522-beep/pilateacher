@@ -8,7 +8,7 @@ import { LESSON_RECORD_DRAFT_STATE, listPendingLessonRecords, loadPendingLessonR
 import { runLessonRecordRetryCycle, scheduleLessonRecordRetry } from "../../src/features/lesson-record/retry-queue.js";
 import { readAIRecordingStatus, writeAIRecordingStatus } from "../../src/features/lesson-record/ai-recording-status.js";
 import { appendLessonRecordDiagnostic, readLessonRecordDiagnostics } from "../../src/features/lesson-record/pipeline-diagnostics.js";
-import { editStructuredField, structuredRecordBody, validateStructuredOutput } from "../../src/features/lesson-record/record-schema.js";
+import { createLessonRecordMeta, editStructuredField, structuredRecordBody, validateStructuredOutput } from "../../src/features/lesson-record/record-schema.js";
 import { mapPilatesTerms, PILATES_TERMS } from "../../src/features/lesson-record/term-mapper.js";
 import { readLessonRecordUsage, trackLessonRecordUsage } from "../../src/features/lesson-record/usage-telemetry.js";
 
@@ -39,6 +39,8 @@ test("structured records validate exact fields and instructor edits retain origi
   const missingNormalized = validateStructuredOutput({ didToday: ["브릿지"], responses: [{ text: "편안함" }] });
   assert.deepEqual(missingNormalized.observations, []);
   assert.equal(missingNormalized.responses[0].text, "편안함");
+  assert.throws(() => validateStructuredOutput({ ...structured, responses: ["운동할 때 힘들었고"] }), (error) => error.code === "invalid_output" && error.path === "responses[0]");
+  assert.throws(() => validateStructuredOutput({ ...structured, observations: ["오른쪽 허리가 좋아졌습니다입니다"] }), (error) => error.code === "invalid_output" && error.path === "observations[0]");
 });
 
 test("LlmProvider repairs once, validates output, and downgrades to raw after failure", async () => {
@@ -53,7 +55,13 @@ test("LlmProvider repairs once, validates output, and downgrades to raw after fa
   assert.equal(result.output.didToday[0].origin, "ai");
 
   const failed = new GatewayLlmProvider({ gatewayProvider: { async structureLessonRecord() { throw Object.assign(new Error("down"), { code: "provider_unavailable", retryable: true }); } }, retryDelayMs: 0 });
-  assert.equal((await failed.structureLessonRecord({ rawTranscript: "그대로" })).status, "unstructured");
+  const rawFallback = await failed.structureLessonRecord({ rawTranscript: "그대로" });
+  assert.equal(rawFallback.status, "unstructured");
+  assert.equal(rawFallback.provenanceSource, "fallback_raw");
+  assert.equal(rawFallback.output, null);
+  const rawMeta = createLessonRecordMeta({ rawTranscript: "그대로", structuredDraft: null, status: "unstructured" });
+  assert.equal(rawMeta.provenanceSource, "fallback_raw");
+  assert.equal(rawMeta.structuredDraft, null);
   const offline = new GatewayLlmProvider({ gatewayProvider: {}, online: () => false });
   assert.equal((await offline.structureLessonRecord({ rawTranscript: "대기" })).status, "queued");
 
@@ -130,11 +138,13 @@ test("temporary failures back off and background success promotes raw to structu
   assert.deepEqual(diagnostics, [{ code: "success", stage: "background_retry", category: "SUCCESS", model: "gpt-5-mini", requestId: "safe" }]);
 });
 
-test("service failures never schedule an identical retry and remote status cache survives reload", () => {
+test("quota failures preserve raw and enter bounded backoff while remote status cache survives reload", () => {
   const storage = memoryStorage();
   savePendingLessonRecord("m1", "l1", { rawTranscript: "안전한 기록", status: "raw" }, storage);
   const draft = scheduleLessonRecordRetry("m1", "l1", { code: "provider_quota_exhausted" }, storage, 1000);
-  assert.equal(draft.retry, null);
+  assert.equal(draft.status, "queued");
+  assert.equal(draft.structuredDraft, undefined);
+  assert.deepEqual(draft.retry, { state: "waiting", attempts: 0, nextRetryAt: 31000 });
   writeAIRecordingStatus({ status: "degraded", reasonCode: "provider_quota_exhausted", updatedAt: "2026-08-24T00:00:00.000Z" }, storage);
   assert.equal(readAIRecordingStatus(storage).status, "degraded");
 });

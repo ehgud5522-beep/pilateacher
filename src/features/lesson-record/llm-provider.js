@@ -1,4 +1,5 @@
 import { AI_STATUSES } from "../../ai/contracts.js";
+import { LESSON_RECORD_PROVENANCE_SOURCE } from "./failure-diagnostics.js";
 import { validateStructuredOutput } from "./record-schema.js";
 
 export class LlmProvider {
@@ -23,21 +24,22 @@ export class GatewayLlmProvider extends LlmProvider {
 
   async structureLessonRecord(input, options = {}) {
     const startedAt = Date.now();
-    if (!this.online()) return { status: "queued", reason: "offline", attempts: 0, latencyMs: 0, output: null, usage: null };
+    if (!this.online()) return { status: "queued", reason: "offline", attempts: 0, latencyMs: 0, output: null, usage: null, provenanceSource: LESSON_RECORD_PROVENANCE_SOURCE.FALLBACK_RAW };
     let lastError = null;
     let attempts = 0;
     for (let attempt = 1; attempt <= this.maxRetries + 1; attempt += 1) {
       attempts = attempt;
       try {
         const result = await this.gatewayProvider.structureLessonRecord(input, options);
-        if (result?.status === AI_STATUSES.NOT_CONNECTED) return { status: "unstructured", reason: "not_connected", attempts: attempt, latencyMs: Date.now() - startedAt, output: null, usage: null };
+        if (result?.status === AI_STATUSES.NOT_CONNECTED) return { status: "unstructured", reason: "not_connected", attempts: attempt, latencyMs: Date.now() - startedAt, output: null, usage: null, provenanceSource: LESSON_RECORD_PROVENANCE_SOURCE.FALLBACK_RAW };
         return {
           status: "structured",
           attempts: attempt,
           latencyMs: Date.now() - startedAt,
           output: validateStructuredOutput(result.output),
           usage: result.usage || null,
-          meta: result,
+          provenanceSource: LESSON_RECORD_PROVENANCE_SOURCE.OPENAI,
+          meta: { ...result, provenanceSource: LESSON_RECORD_PROVENANCE_SOURCE.OPENAI },
         };
       } catch (error) {
         lastError = error;
@@ -52,6 +54,7 @@ export class GatewayLlmProvider extends LlmProvider {
       latencyMs: Date.now() - startedAt,
       output: null,
       usage: null,
+      provenanceSource: LESSON_RECORD_PROVENANCE_SOURCE.FALLBACK_RAW,
       error: lastError,
       failureStage: String(lastError?.failureStage || "unknown"),
       providerStatus: lastError?.providerStatus ?? null,

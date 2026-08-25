@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createMemberBriefing } from "../../src/features/member-memory/briefing.js";
-import { buildMemberMemory, rejectMemoryEntry } from "../../src/features/member-memory/member-memory.js";
+import { buildMemberMemory, confirmedSessions, rejectMemoryEntry, selectLastLessonMemoryRecord } from "../../src/features/member-memory/member-memory.js";
 import { readMemberMemoryUsage, trackMemberMemoryUsage } from "../../src/features/member-memory/usage-telemetry.js";
 
 const item = (text, origin = "ai") => ({ text, origin });
@@ -95,6 +95,19 @@ test("raw-only record is quoted briefly and first lesson stays literal", () => {
   assert.equal(rawBriefing.lines[0].text, "[8/18] 수업 기록: 오늘 회원이 직접 말한 원문을 그대로 저장했습니다.");
   const first = createMemberBriefing({ member: member([]), now: "2026-08-19" });
   assert.deepEqual(first.lines.map((entry) => entry.text), ["첫 수업"]);
+});
+
+test("last lesson uses today lesson first and raw fallback is labelled as teacher record without AI provenance", () => {
+  const structured = note("s1", "2026-08-18", { didToday: [item("브릿지")] });
+  structured.lessonRecord.provenanceSource = "openai";
+  const structuredDisplay = selectLastLessonMemoryRecord(confirmedSessions([structured])[0]);
+  assert.deepEqual({ text: structuredDisplay.text, source: structuredDisplay.provenanceSource, label: structuredDisplay.sourceLabel }, { text: "브릿지", source: "openai", label: "[AI]" });
+
+  const raw = note("s2", "2026-08-19", {}, { raw: "운동을 할 때 힘들었고 오른쪽 허리가 좋아졌습니다" });
+  raw.lessonRecord.provenanceSource = "fallback_raw";
+  const rawDisplay = selectLastLessonMemoryRecord(confirmedSessions([raw])[0]);
+  assert.deepEqual({ text: rawDisplay.text, source: rawDisplay.provenanceSource, label: rawDisplay.sourceLabel }, { text: "운동을 할 때 힘들었고 오른쪽 허리가 좋아졌습니다", source: "fallback_raw", label: "선생님 기록" });
+  assert.notEqual(rawDisplay.sourceLabel, "[AI]");
 });
 
 test("no-comment does not create memory or masquerade as confirmed history", () => {

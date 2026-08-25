@@ -6,6 +6,20 @@ export const LESSON_RECORD_FAILURE_CATEGORY = Object.freeze({
 
 export const LESSON_RECORD_FAILURE = LESSON_RECORD_FAILURE_CATEGORY;
 
+export const LESSON_RECORD_PROVENANCE_SOURCE = Object.freeze({
+  OPENAI: "openai",
+  FALLBACK_RAW: "fallback_raw",
+});
+
+export function lessonRecordProvenanceSource(value) {
+  const record = value?.lessonRecord || value || {};
+  if (Object.values(LESSON_RECORD_PROVENANCE_SOURCE).includes(record.provenanceSource)) return record.provenanceSource;
+  if (record.structuredDraft || (record.stage === "confirmed_record" && Array.isArray(record.confirmedRecord?.didToday))) {
+    return LESSON_RECORD_PROVENANCE_SOURCE.OPENAI;
+  }
+  return LESSON_RECORD_PROVENANCE_SOURCE.FALLBACK_RAW;
+}
+
 const detailsByCode = Object.freeze({
   stt_no_speech: { category: "INPUT", userCode: "E-VOICE", title: "말소리가 인식되지 않았어요", description: "다시 말하거나 직접 입력할 수 있어요.", retry: true },
   mic_permission_denied: { category: "INPUT", userCode: "E-MIC-PERMISSION", title: "마이크 권한이 필요해요", description: "기기 설정에서 마이크와 음성 인식 권한을 허용해 주세요.", retry: false },
@@ -19,8 +33,8 @@ const detailsByCode = Object.freeze({
   auth_refresh_failed: { category: "SERVICE", userCode: "E-AUTH", title: "로그인 연결을 확인해 주세요", description: "말씀하신 내용은 저장되어 있어요.", retry: false },
   provider_rate_limited: { category: "TEMPORARY", userCode: "E-BUSY", title: "AI 요청이 잠시 많아요", description: "말씀하신 내용은 저장되어 있어요.", retry: true },
   provider_5xx: { category: "TEMPORARY", userCode: "E-SERVICE", title: "AI 연결이 잠시 불안정해요", description: "말씀하신 내용은 저장되어 있어요.", retry: true },
-  provider_quota_exhausted: { category: "SERVICE", userCode: "E-QUOTA", title: "AI 정리를 지금 사용할 수 없어요", description: "말씀하신 내용은 저장되어 있어요.", retry: false },
-  provider_configuration: { category: "SERVICE", userCode: "E-CONFIG", title: "AI 정리를 지금 사용할 수 없어요", description: "말씀하신 내용은 저장되어 있어요.", retry: false },
+  provider_quota_exhausted: { category: "TEMPORARY", userCode: "E-QUOTA", title: "AI 정리를 지금 사용할 수 없어요", description: "말씀하신 내용은 저장되어 있고, 연결이 회복되면 다시 정리해요.", retry: true },
+  provider_configuration: { category: "TEMPORARY", userCode: "E-CONFIG", title: "AI 정리를 지금 사용할 수 없어요", description: "말씀하신 내용은 저장되어 있고, 연결이 회복되면 다시 정리해요.", retry: true },
   schema_invalid: { category: "SERVICE", userCode: "E-FORMAT", title: "내용을 자동으로 정리하지 못했어요", description: "말씀하신 내용은 저장되어 있어요.", retry: false },
   member_session_unresolved: { category: "SERVICE", userCode: "E-LINK", title: "기록 연결을 확인하고 있어요", description: "말씀하신 내용은 회원 기록에 안전하게 남아 있어요.", retry: false },
   unknown: { category: "SERVICE", userCode: "E-AI", title: "AI 정리를 지금 사용할 수 없어요", description: "말씀하신 내용은 저장되어 있어요.", retry: false },

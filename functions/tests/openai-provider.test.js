@@ -142,7 +142,7 @@ test("generic provider applies server prompts and a strict schema to all operati
       safetyIdentifier: "hashed-user-identifier",
     });
     assert.deepEqual(result.output, output);
-    assert.match(result.promptVersion, /_v1$/);
+    assert.match(result.promptVersion, /_v\d+$/);
   }
   assert.equal(calls.length, 5);
   for (const { params, options } of calls) {

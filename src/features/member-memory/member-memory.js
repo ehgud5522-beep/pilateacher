@@ -1,4 +1,6 @@
 import { mapPilatesTerms, PILATES_TERMS } from "../lesson-record/term-mapper.js";
+import { isCompleteStructuredPhrase } from "../lesson-record/record-schema.js";
+import { LESSON_RECORD_PROVENANCE_SOURCE, lessonRecordProvenanceSource } from "../lesson-record/failure-diagnostics.js";
 import { MEMBER_MEMORY_CONFIG } from "./memory-config.js";
 
 const MEMORY_FIELDS = Object.freeze([
@@ -83,14 +85,53 @@ export function confirmedSessions(notes, { excludeSessionId = null } = {}) {
     const record = confirmedRecordOf(note);
     const id = sourceId(note);
     if (!record || !id || id === excludeSessionId) return [];
+    const provenanceSource = lessonRecordProvenanceSource(note.lessonRecord);
     return [{
       id,
       date: dateOnly(note.date || note.confirmedAt || note.lessonRecord?.confirmedAt || note.recordedAt),
       note,
       record,
+      provenanceSource,
       rawOnly: !Array.isArray(record.observations) && Boolean(clean(record.rawTranscript || note.lessonRecord?.rawTranscript || note.transcript)),
     }];
   }).sort((a, b) => `${a.date}|${a.id}`.localeCompare(`${b.date}|${b.id}`));
+}
+
+const recordValues = (record, field) => (Array.isArray(record?.[field]) ? record[field] : [])
+  .map((item) => ({ text: clean(typeof item === "string" ? item : item?.text), origin: item?.origin }))
+  .filter((item) => item.text && isCompleteStructuredPhrase(item.text));
+
+export function selectLastLessonMemoryRecord(session) {
+  if (!session?.record) return null;
+  const didToday = recordValues(session.record, "didToday");
+  const provenanceSource = session.provenanceSource || lessonRecordProvenanceSource(session.note?.lessonRecord);
+  if (didToday.length) {
+    return {
+      text: didToday.map((item) => item.text).join(" · "),
+      origin: didToday.some((item) => item.origin === "ai") ? "ai" : "instructor",
+      provenanceSource,
+      sourceLabel: provenanceSource === LESSON_RECORD_PROVENANCE_SOURCE.OPENAI ? "[AI]" : "선생님 기록",
+    };
+  }
+  const instructorEdited = session.note?.lessonRecord?.instructorBodyOrigin === "instructor";
+  const recordSentence = provenanceSource === LESSON_RECORD_PROVENANCE_SOURCE.OPENAI || instructorEdited
+    ? clean(session.note?.teacherSummary || session.note?.body, 12000)
+    : "";
+  if (recordSentence && isCompleteStructuredPhrase(recordSentence)) {
+    return {
+      text: recordSentence,
+      origin: instructorEdited ? "instructor" : provenanceSource === LESSON_RECORD_PROVENANCE_SOURCE.OPENAI ? "ai" : "instructor",
+      provenanceSource,
+      sourceLabel: instructorEdited || provenanceSource === LESSON_RECORD_PROVENANCE_SOURCE.FALLBACK_RAW ? "선생님 기록" : "[AI]",
+    };
+  }
+  const rawTranscript = clean(session.record.rawTranscript || session.note?.lessonRecord?.rawTranscript || session.note?.transcript, 12000);
+  return rawTranscript ? {
+    text: rawTranscript,
+    origin: "instructor",
+    provenanceSource: LESSON_RECORD_PROVENANCE_SOURCE.FALLBACK_RAW,
+    sourceLabel: "선생님 기록",
+  } : null;
 }
 
 function itemOf(value) {
@@ -113,7 +154,7 @@ export function memoryCandidatesFromSession(memberId, session) {
       if (inSession.has(mergeKey)) return;
       inSession.add(mergeKey);
       const normalizedKey = normalizedBodyKey(bodyKey);
-      const sourceRef = { type: "session", id: session.id, date: session.date, field, text: item.text };
+      const sourceRef = { type: "session", id: session.id, date: session.date, field, text: item.text, provenanceSource: session.provenanceSource };
       candidates.push({
         id: `memory_${hash(`${memberId}|${mergeKey}`)}`,
         memberId,
@@ -122,6 +163,7 @@ export function memoryCandidatesFromSession(memberId, session) {
         bodyKey,
         normalizedKey,
         origin: item.origin,
+        provenanceSource: session.provenanceSource,
         status: "active",
         sourceRefs: [sourceRef],
         firstSeenAt: session.date,

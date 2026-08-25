@@ -1,8 +1,11 @@
+import { LESSON_RECORD_PROVENANCE_SOURCE } from "./failure-diagnostics.js";
+
 export const LESSON_RECORD_FIELDS = Object.freeze(["didToday", "observations", "responses", "nextFocus", "uncertain"]);
 export const LESSON_RECORD_SCHEMA_VERSION = 2;
 
 const cleanText = (value, max = 500) => String(value ?? "").trim().slice(0, max);
 const isOrigin = (value) => value === "ai" || value === "instructor" || value === "raw";
+const TRAILING_CONNECTIVE = /(?:고|며|서)\s*[.!?…]*$/u;
 
 function normalizeItem(value, defaultOrigin = "ai") {
   const text = cleanText(typeof value === "string" ? value : value?.text);
@@ -16,6 +19,11 @@ function validationError(path, expected, received) {
   return error;
 }
 
+export function isCompleteStructuredPhrase(value) {
+  const text = cleanText(value);
+  return Boolean(text) && !TRAILING_CONNECTIVE.test(text) && !/(?:습니다|입니다){2,}|진행했습니다\s*:/u.test(text);
+}
+
 export function validateStructuredOutput(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw validationError("root", "object", Array.isArray(value) ? "array" : typeof value);
   const extra = Object.keys(value).find((field) => !LESSON_RECORD_FIELDS.includes(field));
@@ -26,6 +34,7 @@ export function validateStructuredOutput(value) {
     const items = rawItems.map((item, index) => {
       const normalized = normalizeItem(item, "ai");
       if (!normalized && item != null && item !== "") throw validationError(`${field}[${index}]`, "string or {text:string}", Array.isArray(item) ? "array" : typeof item);
+      if (normalized && !isCompleteStructuredPhrase(normalized.text)) throw validationError(`${field}[${index}]`, "complete Korean phrase", "trailing_connective_or_malformed_sentence");
       return normalized;
     }).filter(Boolean);
     return [field, items];
@@ -53,13 +62,18 @@ export function structuredRecordBody(draft, rawTranscript = "") {
 
 export function createLessonRecordMeta({ rawTranscript, termMap, structuredDraft = null, status = "pending", source = "unknown", recordedAt, audioBlobId = null, aiMeta = null, usage = null }) {
   const transcript = cleanText(rawTranscript, 12000);
+  const normalizedDraft = structuredDraft ? validateStructuredOutput(structuredDraft) : null;
+  const provenanceSource = normalizedDraft
+    ? LESSON_RECORD_PROVENANCE_SOURCE.OPENAI
+    : LESSON_RECORD_PROVENANCE_SOURCE.FALLBACK_RAW;
   return {
     schemaVersion: LESSON_RECORD_SCHEMA_VERSION,
     stage: status === "confirmed" ? "confirmed_record" : status === "structured" ? "structured_draft" : "raw_transcript",
     status,
     rawTranscript: transcript,
     termMap: termMap || { version: 1, rawTranscript: transcript, mapped: [], uncertain: [] },
-    structuredDraft: structuredDraft ? validateStructuredOutput(structuredDraft) : null,
+    structuredDraft: normalizedDraft,
+    provenanceSource,
     source,
     recordedAt: recordedAt || new Date().toISOString(),
     audioBlobId,

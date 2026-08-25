@@ -1,12 +1,16 @@
 "use strict";
 
 const OpenAI = require("openai");
+const { decodeAudioBase64 } = require("./audio-contract");
 const { GatewayError } = require("./errors");
-const { OUTPUT_NAMES, OUTPUT_SCHEMAS, validateOperationOutput } = require("./operation-contracts");
+const { OPERATIONS, OUTPUT_NAMES, OUTPUT_SCHEMAS, validateOperationOutput } = require("./operation-contracts");
 const { getPrompt } = require("./prompts");
+const { buildTranscriptionPrompt } = require("./transcription-config");
 
 const DEFAULT_MODEL = "gpt-5-mini";
 const DEFAULT_TIMEOUT_MS = 25000;
+const PRIMARY_TRANSCRIPTION_MODEL = "gpt-4o-mini-transcribe";
+const FALLBACK_TRANSCRIPTION_MODEL = "whisper-1";
 
 const RESULT_STRING_FIELDS = Object.freeze([
   "memberCondition",
@@ -117,7 +121,13 @@ function parseJsonObject(outputText) {
   throw new Error("JSON object was not found");
 }
 
-function createOpenAIProvider({ apiKey, model = DEFAULT_MODEL, client = null, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+function createOpenAIProvider({
+  apiKey,
+  model = DEFAULT_MODEL,
+  client = null,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  onAudioDisposed = null,
+} = {}) {
   const normalizedModel = String(model || DEFAULT_MODEL).trim() || DEFAULT_MODEL;
   if (!client && !String(apiKey || "").trim()) {
     throw new GatewayError("provider_unavailable", {
@@ -126,10 +136,7 @@ function createOpenAIProvider({ apiKey, model = DEFAULT_MODEL, client = null, ti
   }
   const openai = client || new OpenAI({ apiKey, timeout: timeoutMs, maxRetries: 0 });
 
-  return Object.freeze({
-    provider: "openai",
-    model: normalizedModel,
-    async execute({ operation, input, safetyIdentifier = "" }) {
+  async function execute({ operation, input, safetyIdentifier = "" }) {
       const prompt = getPrompt(operation);
       const schema = OUTPUT_SCHEMAS[operation];
       const outputName = OUTPUT_NAMES[operation];
@@ -211,12 +218,99 @@ function createOpenAIProvider({ apiKey, model = DEFAULT_MODEL, client = null, ti
       } finally {
         clearTimeout(timer);
       }
-    },
+  }
+
+  async function transcribe(buffer, metadata, memberName) {
+    const prompt = buildTranscriptionPrompt(memberName);
+    let primaryError = null;
+    for (const transcriptionModel of [PRIMARY_TRANSCRIPTION_MODEL, FALLBACK_TRANSCRIPTION_MODEL]) {
+      const startedAt = Date.now();
+      try {
+        const file = await OpenAI.toFile(buffer, metadata.filename, { type: metadata.mimeType });
+        const response = await openai.audio.transcriptions.create({
+          file,
+          model: transcriptionModel,
+          language: "ko",
+          prompt,
+          response_format: "json",
+        });
+        const transcript = String(response?.text || "").trim();
+        if (!transcript || transcript.length > 12000) throw new GatewayError("invalid_output");
+        return {
+          transcript,
+          model: transcriptionModel,
+          latencyMs: Math.max(0, Date.now() - startedAt),
+          usage: response?.usage || null,
+        };
+      } catch (error) {
+        if (transcriptionModel === PRIMARY_TRANSCRIPTION_MODEL) {
+          primaryError = error;
+          continue;
+        }
+        throw mapProviderError(error || primaryError);
+      }
+    }
+    throw mapProviderError(primaryError || new Error("transcription failed"));
+  }
+
+  async function executeAudio({ input, safetyIdentifier = "" }) {
+    const startedAt = Date.now();
+    const { buffer, metadata } = decodeAudioBase64(input?.audio);
+    let audioDisposed = false;
+    const disposeAudio = () => {
+      if (audioDisposed) return;
+      buffer.fill(0);
+      audioDisposed = true;
+      if (typeof onAudioDisposed === "function") {
+        onAudioDisposed({ bytes: metadata.bytes, cleared: buffer.every((byte) => byte === 0) });
+      }
+    };
+    try {
+      const transcription = await transcribe(buffer, metadata, input?.memberName);
+      disposeAudio();
+      const structured = await execute({
+        operation: OPERATIONS.STRUCTURE_LESSON_RECORD,
+        input: {
+          rawTranscript: transcription.transcript,
+          language: "ko-KR",
+          termMap: { version: 1, mapped: [], uncertain: [] },
+        },
+        safetyIdentifier,
+      });
+      const fields = Object.fromEntries(
+        ["didToday", "observations", "responses", "nextFocus"]
+          .map((field) => [field, structured.output[field]]),
+      );
+      return {
+        ...structured,
+        latencyMs: Math.max(0, Date.now() - startedAt),
+        transcriptionModel: transcription.model,
+        transcriptionLatencyMs: transcription.latencyMs,
+        transcriptionUsage: transcription.usage,
+        output: {
+          transcript: transcription.transcript,
+          fields,
+          summary: structured.output.summary,
+          provenance: { stt: "openai", llm: "openai" },
+        },
+      };
+    } finally {
+      disposeAudio();
+    }
+  }
+
+  return Object.freeze({
+    provider: "openai",
+    model: normalizedModel,
+    execute,
+    executeAudio,
   });
 }
 
 module.exports = {
   DEFAULT_MODEL,
+  FALLBACK_TRANSCRIPTION_MODEL,
+  PRIMARY_TRANSCRIPTION_MODEL,
   createOpenAIProvider,
   validateVoiceSummaryResult,
   parseJsonObject,

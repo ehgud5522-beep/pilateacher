@@ -34,7 +34,11 @@ test("lesson record output schema is exact and prompt forbids invention and diag
   assert.deepEqual(validateOperationOutput(OPERATIONS.STRUCTURE_LESSON_RECORD, { didToday: ["풋워크"] }), { didToday: ["풋워크"], observations: [], responses: [], nextFocus: [], uncertain: [], summary: null });
   assert.equal(validateOperationOutput(OPERATIONS.STRUCTURE_LESSON_RECORD, { ...valid, summary: null }).summary, null);
   assert.throws(() => validateOperationOutput(OPERATIONS.STRUCTURE_LESSON_RECORD, { ...valid, diagnosis: ["질환"] }));
-  assert.deepEqual(OUTPUT_SCHEMAS[OPERATIONS.STRUCTURE_LESSON_RECORD].required, ["didToday", "observations", "responses", "nextFocus", "uncertain"]);
+  assert.deepEqual(OUTPUT_SCHEMAS[OPERATIONS.STRUCTURE_LESSON_RECORD].required, ["didToday", "observations", "responses", "nextFocus", "uncertain", "summary"]);
+  assert.deepEqual(
+    Object.keys(OUTPUT_SCHEMAS[OPERATIONS.STRUCTURE_LESSON_RECORD].properties).sort(),
+    OUTPUT_SCHEMAS[OPERATIONS.STRUCTURE_LESSON_RECORD].required.slice().sort(),
+  );
   assert.deepEqual(OUTPUT_SCHEMAS[OPERATIONS.STRUCTURE_LESSON_RECORD].properties.summary.type, ["string", "null"]);
   const prompt = getPrompt(OPERATIONS.STRUCTURE_LESSON_RECORD);
   assert.match(prompt.instructions, /새로 만들어내지/);

@@ -3,6 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { parseGatewayRequest } = require("../src/request-contracts");
+const { createM4aFixture } = require("./audio-fixtures");
 
 const envelope = (operation, input, requestId = `ai_openai_${operation}_12345678`) => ({
   method: "POST",
@@ -32,6 +33,14 @@ test("single execute contract accepts each allowlisted operation", () => {
   const inputs = {
     analyzeBody: bodyInput(),
     summarizeVoice: { schemaVersion: 1, memberId: "member-1", lessonId: "lesson-1", transcript: "브리지를 진행했다.", language: "ko-KR" },
+    lesson_record_from_audio: {
+      schemaVersion: 1,
+      memberId: "member-1",
+      lessonId: "lesson-1",
+      audio: createM4aFixture(20).toString("base64"),
+      memberName: "김지민",
+      language: "ko",
+    },
     recommendSequence: {
       schemaVersion: 1, memberId: "member-1", goals: ["코어"], precautions: [], bodyAssessment: null,
       recentLessons: [{ lessonId: "lesson-1", date: "2026-08-23", type: "개인", status: "done" }],
@@ -44,6 +53,22 @@ test("single execute contract accepts each allowlisted operation", () => {
     assert.equal(parsed.operation, operation);
     assert.equal(parsed.input.memberId, "member-1");
   }
+});
+
+test("audio lesson request enforces the 2MB and 90 second media contract", () => {
+  const valid = {
+    schemaVersion: 1,
+    memberId: "member-1",
+    lessonId: "lesson-1",
+    audio: createM4aFixture(89).toString("base64"),
+    memberName: "김지민",
+    language: "ko",
+  };
+  assert.equal(parseGatewayRequest(envelope("lesson_record_from_audio", valid)).input.language, "ko");
+  assert.throws(
+    () => parseGatewayRequest(envelope("lesson_record_from_audio", { ...valid, audio: createM4aFixture(91).toString("base64") })),
+    (error) => error.code === "invalid_request",
+  );
 });
 
 test("voice summary accepts a member-owned note before a lesson id exists", () => {

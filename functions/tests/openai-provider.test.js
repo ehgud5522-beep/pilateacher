@@ -12,6 +12,7 @@ const {
 const openAIProviderExports = require("../src/openai-provider");
 const { OPERATIONS } = require("../src/operation-contracts");
 const { validResult } = require("./helpers");
+const { createM4aFixture } = require("./audio-fixtures");
 
 const voiceOutput = Object.freeze({
   memberCondition: "불편감 없음",
@@ -227,4 +228,75 @@ test("generic provider rejects extra output fields after Structured Outputs", as
     provider.execute({ operation: OPERATIONS.GENERATE_REPORT, input: {} }),
     (error) => error.code === "invalid_output",
   );
+});
+
+test("audio lesson provider transcribes, falls back once, preserves valid fields, and clears audio memory", async () => {
+  const transcriptionModels = [];
+  const lifecycle = [];
+  let disposed;
+  const provider = createOpenAIProvider({
+    onAudioDisposed: (details) => { disposed = details; lifecycle.push("audio_disposed"); },
+    client: {
+      audio: { transcriptions: { create: async ({ model }) => {
+        transcriptionModels.push(model);
+        if (model === "gpt-4o-mini-transcribe") throw new Error("temporary primary failure");
+        return { text: "브릿지를 했고 오른쪽 어깨 움직임이 좋아졌어요." };
+      } } },
+      responses: { create: async () => {
+        lifecycle.push("structure_requested");
+        return {
+          model: "gpt-5-mini-2025-08-07",
+          status: "completed",
+          output_text: JSON.stringify({
+            didToday: "invalid-list",
+            observations: ["오른쪽 어깨 움직임이 좋아짐"],
+            responses: [],
+            nextFocus: [],
+            uncertain: [],
+            summary: "오른쪽 어깨 움직임이 좋아졌습니다.",
+          }),
+        };
+      } },
+    },
+  });
+  const result = await provider.executeAudio({
+    input: {
+      audio: createM4aFixture(12).toString("base64"),
+      memberName: "김지민",
+      language: "ko",
+    },
+  });
+  assert.deepEqual(transcriptionModels, ["gpt-4o-mini-transcribe", "whisper-1"]);
+  assert.equal(result.transcriptionModel, "whisper-1");
+  assert.deepEqual(result.output.fields, {
+    didToday: [],
+    observations: ["오른쪽 어깨 움직임이 좋아짐"],
+    responses: [],
+    nextFocus: [],
+  });
+  assert.equal(result.output.transcript, "브릿지를 했고 오른쪽 어깨 움직임이 좋아졌어요.");
+  assert.deepEqual(result.output.provenance, { stt: "openai", llm: "openai" });
+  assert.deepEqual(disposed, { bytes: 96, cleared: true });
+  assert.deepEqual(lifecycle, ["audio_disposed", "structure_requested"]);
+});
+
+test("audio lesson provider rejects JSON parse failure or four invalid core fields", async () => {
+  let outputText = "not-json";
+  const provider = createOpenAIProvider({
+    client: {
+      audio: { transcriptions: { create: async () => ({ text: "수업 기록" }) } },
+      responses: { create: async () => ({ status: "completed", output_text: outputText }) },
+    },
+  });
+  const input = { audio: createM4aFixture(5).toString("base64"), memberName: "", language: "ko" };
+  await assert.rejects(provider.executeAudio({ input }), (error) => error.code === "invalid_output");
+  outputText = JSON.stringify({
+    didToday: null,
+    observations: null,
+    responses: null,
+    nextFocus: null,
+    uncertain: [],
+    summary: null,
+  });
+  await assert.rejects(provider.executeAudio({ input }), (error) => error.code === "invalid_output");
 });

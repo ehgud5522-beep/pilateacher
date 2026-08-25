@@ -3,13 +3,17 @@
 const { createHash } = require("node:crypto");
 const { verifyFirebaseRequest } = require("./auth");
 const { GatewayError, sendError } = require("./errors");
-const { validateOperationOutput } = require("./operation-contracts");
+const { OPERATIONS, validateOperationOutput } = require("./operation-contracts");
 const { prepareProviderInput } = require("./privacy");
 const { fingerprintRequest, parseGatewayRequest } = require("./request-contracts");
 
 const PIPELINE_VERSION = "ai-gateway-v1";
 const DEFERRED_OPERATIONS = new Set(["recommendSequence"]);
-const consentOperation = (operation) => operation === "structureLessonRecord" ? "summarizeVoice" : operation;
+const consentOperation = (operation) => (
+  operation === OPERATIONS.STRUCTURE_LESSON_RECORD || operation === OPERATIONS.LESSON_RECORD_FROM_AUDIO
+    ? OPERATIONS.SUMMARIZE_VOICE
+    : operation
+);
 const diagnosticsEnabled = () => process.env.NODE_ENV !== "production" || process.env.AI_GATEWAY_DIAGNOSTICS === "1";
 const ALWAYS_LOG_EVENTS = new Set(["model_call_succeeded", "gateway_completed"]);
 const safeLogToken = (value, max = 120) => String(value || "")
@@ -68,7 +72,8 @@ function createAIGatewayHandler({
       // Resolve the Secret-backed provider before consuming quota. An absent Secret
       // therefore fails closed without creating a billable request.
       const provider = await getProvider();
-      if (!provider || typeof provider.execute !== "function") throw new GatewayError("provider_unavailable");
+      const providerMethod = request.operation === OPERATIONS.LESSON_RECORD_FROM_AUDIO ? "executeAudio" : "execute";
+      if (!provider || typeof provider[providerMethod] !== "function") throw new GatewayError("provider_unavailable");
 
       fingerprint = fingerprintRequest(uid, request);
       idempotencyClaim = await idempotencyStore.begin({
@@ -89,12 +94,29 @@ function createAIGatewayHandler({
         throw new GatewayError("rate_limited");
       }
 
-      const providerInput = prepareProviderInput(request.input, { memberName: authorization.memberName });
-      const providerResponse = await provider.execute({
-        operation: request.operation,
-        input: providerInput,
-        safetyIdentifier: safetyIdentifier(uid),
-      });
+      let providerResponse;
+      if (request.operation === OPERATIONS.LESSON_RECORD_FROM_AUDIO) {
+        if (typeof provider.executeAudio !== "function") throw new GatewayError("provider_unavailable");
+        try {
+          providerResponse = await provider.executeAudio({
+            input: {
+              audio: request.input.audio,
+              memberName: authorization.memberName || request.input.memberName,
+              language: "ko",
+            },
+            safetyIdentifier: safetyIdentifier(uid),
+          });
+        } finally {
+          request.input.audio = "";
+        }
+      } else {
+        const providerInput = prepareProviderInput(request.input, { memberName: authorization.memberName });
+        providerResponse = await provider.execute({
+          operation: request.operation,
+          input: providerInput,
+          safetyIdentifier: safetyIdentifier(uid),
+        });
+      }
       diagnosticLog("model_call_succeeded", {
         requestId,
         operation: request.operation,
@@ -109,6 +131,8 @@ function createAIGatewayHandler({
         },
         latencyMs: Math.max(0, Number(providerResponse?.latencyMs) || 0),
         validation: safeLogToken(providerResponse?.validation || "success"),
+        transcriptionModel: safeLogToken(providerResponse?.transcriptionModel || ""),
+        transcriptionLatencyMs: Math.max(0, Number(providerResponse?.transcriptionLatencyMs) || 0),
         outputShape: Object.fromEntries(Object.entries(providerResponse?.output || {}).map(([field, value]) => [field, Array.isArray(value) ? `array:${value.every((item) => typeof item === "string") ? "string" : "mixed"}` : typeof value])),
       });
       const output = validateOperationOutput(request.operation, providerResponse?.output);

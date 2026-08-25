@@ -6,6 +6,7 @@ const OPERATIONS = Object.freeze({
   ANALYZE_BODY: "analyzeBody",
   SUMMARIZE_VOICE: "summarizeVoice",
   STRUCTURE_LESSON_RECORD: "structureLessonRecord",
+  LESSON_RECORD_FROM_AUDIO: "lesson_record_from_audio",
   RECOMMEND_SEQUENCE: "recommendSequence",
   GENERATE_REPORT: "generateReport",
 });
@@ -68,7 +69,36 @@ const OUTPUT_SCHEMAS = Object.freeze({
       uncertain: stringList(),
       summary: nullableStringField(),
     },
-    required: ["didToday", "observations", "responses", "nextFocus", "uncertain"],
+    required: ["didToday", "observations", "responses", "nextFocus", "uncertain", "summary"],
+  },
+  [OPERATIONS.LESSON_RECORD_FROM_AUDIO]: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      transcript: stringField(),
+      fields: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          didToday: stringList(),
+          observations: stringList(),
+          responses: stringList(),
+          nextFocus: stringList(),
+        },
+        required: ["didToday", "observations", "responses", "nextFocus"],
+      },
+      summary: nullableStringField(),
+      provenance: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          stt: { type: "string", enum: ["openai"] },
+          llm: { type: "string", enum: ["openai"] },
+        },
+        required: ["stt", "llm"],
+      },
+    },
+    required: ["transcript", "fields", "summary", "provenance"],
   },
   [OPERATIONS.RECOMMEND_SEQUENCE]: {
     type: "object",
@@ -112,6 +142,7 @@ const OUTPUT_NAMES = Object.freeze({
   [OPERATIONS.ANALYZE_BODY]: "pilateacher_body_analysis",
   [OPERATIONS.SUMMARIZE_VOICE]: "pilateacher_voice_summary",
   [OPERATIONS.STRUCTURE_LESSON_RECORD]: "pilateacher_lesson_record",
+  [OPERATIONS.LESSON_RECORD_FROM_AUDIO]: "pilateacher_lesson_record_from_audio",
   [OPERATIONS.RECOMMEND_SEQUENCE]: "pilateacher_sequence_recommendation",
   [OPERATIONS.GENERATE_REPORT]: "pilateacher_report",
 });
@@ -160,13 +191,47 @@ function validateVoice(value) {
   return output;
 }
 
-function validateLessonRecord(value) {
+function validateLessonRecordFields(value) {
+  const listFields = ["didToday", "observations", "responses", "nextFocus", "uncertain"];
   const required = OUTPUT_SCHEMAS[OPERATIONS.STRUCTURE_LESSON_RECORD].required;
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new GatewayError("invalid_output");
-  if (Object.keys(value).some((field) => ![...required, "summary"].includes(field))) throw new GatewayError("invalid_output");
+  if (Object.keys(value).some((field) => !required.includes(field))) throw new GatewayError("invalid_output");
+  let failedCoreFields = 0;
+  const output = {};
+  for (const field of listFields) {
+    try {
+      if (!Object.prototype.hasOwnProperty.call(value, field)) throw new GatewayError("invalid_output");
+      output[field] = cleanList(value[field]);
+    } catch (_error) {
+      output[field] = [];
+      if (field !== "uncertain") failedCoreFields += 1;
+    }
+  }
+  if (failedCoreFields === 4) throw new GatewayError("invalid_output");
+  try {
+    output.summary = value.summary == null ? null : cleanString(value.summary, 1200);
+  } catch (_error) {
+    output.summary = null;
+  }
+  return output;
+}
+
+function validateLessonRecord(value) {
+  return validateLessonRecordFields(value);
+}
+
+function validateAudioLessonRecord(value) {
+  const source = requireExactObject(value, OUTPUT_SCHEMAS[OPERATIONS.LESSON_RECORD_FROM_AUDIO].required);
+  const fields = requireExactObject(source.fields, ["didToday", "observations", "responses", "nextFocus"]);
+  const provenance = requireExactObject(source.provenance, ["stt", "llm"]);
+  if (provenance.stt !== "openai" || provenance.llm !== "openai") throw new GatewayError("invalid_output");
+  const transcript = cleanString(source.transcript, 12000);
+  if (!transcript) throw new GatewayError("invalid_output");
   return {
-    ...Object.fromEntries(required.map((field) => [field, cleanList(value[field] ?? [])])),
-    summary: value.summary == null ? null : cleanString(value.summary, 1200),
+    transcript,
+    fields: Object.fromEntries(Object.keys(fields).map((field) => [field, cleanList(fields[field])])),
+    summary: source.summary == null ? null : cleanString(source.summary, 1200),
+    provenance: { stt: "openai", llm: "openai" },
   };
 }
 
@@ -211,6 +276,7 @@ function validateOperationOutput(operation, value) {
   if (operation === OPERATIONS.ANALYZE_BODY) return validateBody(value);
   if (operation === OPERATIONS.SUMMARIZE_VOICE) return validateVoice(value);
   if (operation === OPERATIONS.STRUCTURE_LESSON_RECORD) return validateLessonRecord(value);
+  if (operation === OPERATIONS.LESSON_RECORD_FROM_AUDIO) return validateAudioLessonRecord(value);
   if (operation === OPERATIONS.RECOMMEND_SEQUENCE) return validateSequence(value);
   if (operation === OPERATIONS.GENERATE_REPORT) return validateReport(value);
   throw new GatewayError("invalid_request");
@@ -220,5 +286,6 @@ module.exports = {
   OPERATIONS,
   OUTPUT_NAMES,
   OUTPUT_SCHEMAS,
+  validateLessonRecordFields,
   validateOperationOutput,
 };

@@ -6,6 +6,7 @@ const { createAIGatewayHandler } = require("../src/ai-gateway");
 const { GatewayError } = require("../src/errors");
 const { createMemoryIdempotencyStore } = require("../src/idempotency");
 const { createRequest, createResponse } = require("./helpers");
+const { createM4aFixture } = require("./audio-fixtures");
 
 const voiceOutput = Object.freeze({
   memberCondition: "불편감 없음",
@@ -61,6 +62,27 @@ function sequenceGatewayRequest() {
         bodyAssessment: null,
         recentLessons: [],
         recentNotes: [],
+      },
+    },
+  });
+}
+
+function audioGatewayRequest() {
+  const requestId = "ai_openai_lesson_audio_12345678";
+  return createRequest({
+    headers: { authorization: "Bearer valid-token", "x-idempotency-key": requestId },
+    body: {
+      schemaVersion: 1,
+      requestId,
+      provider: "openai",
+      operation: "lesson_record_from_audio",
+      input: {
+        schemaVersion: 1,
+        memberId: "member-1",
+        lessonId: "lesson-1",
+        audio: createM4aFixture(12).toString("base64"),
+        memberName: "위조 이름",
+        language: "ko",
       },
     },
   });
@@ -224,6 +246,49 @@ test("successful request logs the actual response model with its request id", as
     assert.deepEqual(completionLog.details.usage, { input: 90, output: 40, reasoning: 10 });
     assert.equal(completionLog.details.latencyMs, 842);
     assert.equal(response.body.usage.reasoningTokens, 10);
+  } finally {
+    globalThis.console.info = originalInfo;
+  }
+});
+
+test("audio operation uses the authorized member name and never logs audio or transcript content", async () => {
+  let providerInput;
+  const logs = [];
+  const originalInfo = globalThis.console.info;
+  globalThis.console.info = (message, details) => logs.push({ message, details });
+  try {
+    const handler = createAIGatewayHandler({
+      verifyIdToken: async () => ({ uid: "verified-user" }),
+      policyService: {
+        authorize: async () => ({ allowed: true, memberName: "김지민" }),
+        consumeRateLimit: async () => ({ allowed: true }),
+      },
+      idempotencyStore: createMemoryIdempotencyStore(),
+      getProvider: async () => ({ executeAudio: async ({ input }) => {
+        providerInput = input;
+        return {
+          model: "gpt-5-mini-2025-08-07",
+          promptVersion: "lesson_record_v2",
+          status: "completed",
+          transcriptionModel: "gpt-4o-mini-transcribe",
+          output: {
+            transcript: "민감한 전사 원문",
+            fields: { didToday: [], observations: [], responses: [], nextFocus: [] },
+            summary: null,
+            provenance: { stt: "openai", llm: "openai" },
+          },
+        };
+      } }),
+    });
+    const response = await invoke(handler, audioGatewayRequest());
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(Object.keys(providerInput).sort(), ["audio", "language", "memberName"]);
+    assert.equal(providerInput.memberName, "김지민");
+    assert.equal(providerInput.language, "ko");
+    const logText = JSON.stringify(logs);
+    assert.equal(logText.includes("민감한 전사 원문"), false);
+    assert.equal(logText.includes(providerInput.audio), false);
+    assert.equal(logText.includes("김지민"), false);
   } finally {
     globalThis.console.info = originalInfo;
   }

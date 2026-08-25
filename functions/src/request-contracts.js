@@ -2,12 +2,14 @@
 
 const { createHash } = require("node:crypto");
 const { readHeader } = require("./auth");
+const { decodeAudioBase64 } = require("./audio-contract");
 const { GatewayError } = require("./errors");
 const { OPERATIONS, validateOperationOutput } = require("./operation-contracts");
 
 const ID_PATTERN = /^[A-Za-z0-9._:-]{1,160}$/;
 const IDEMPOTENCY_PATTERN = /^[A-Za-z0-9._:-]{8,160}$/;
 const MAX_REQUEST_BYTES = 256000;
+const MAX_AUDIO_REQUEST_BYTES = 3 * 1024 * 1024;
 const BODY_VIEWS = new Set(["front", "leftSide", "back", "rightSide"]);
 const REPORT_TYPES = new Set([
   "renewal_consultation",
@@ -193,6 +195,27 @@ function parseLessonRecordInput(raw) {
   };
 }
 
+function parseAudioLessonRecordInput(raw) {
+  const input = requireExactKeys(
+    raw,
+    ["schemaVersion", "memberId", "lessonId", "audio", "memberName", "language"],
+    "input",
+  );
+  if (input.schemaVersion !== 1 || input.language !== "ko") {
+    throw invalid("audio lesson record input version or language is invalid");
+  }
+  const decoded = decodeAudioBase64(input.audio);
+  decoded.buffer.fill(0);
+  return {
+    schemaVersion: 1,
+    memberId: requireId(input.memberId, "input.memberId"),
+    lessonId: input.lessonId ? requireId(input.lessonId, "input.lessonId") : "",
+    audio: input.audio,
+    memberName: requireString(input.memberName, "input.memberName", 160),
+    language: "ko",
+  };
+}
+
 function parseSequenceInput(raw) {
   const input = requireExactKeys(raw, ["schemaVersion", "memberId", "goals", "precautions", "bodyAssessment", "recentLessons", "recentNotes"], "input");
   if (input.schemaVersion !== 1) throw invalid("input.schemaVersion is invalid");
@@ -254,6 +277,7 @@ function parseOperationInput(operation, raw) {
   if (operation === OPERATIONS.ANALYZE_BODY) return parseBodyInput(raw);
   if (operation === OPERATIONS.SUMMARIZE_VOICE) return parseVoiceInput(raw);
   if (operation === OPERATIONS.STRUCTURE_LESSON_RECORD) return parseLessonRecordInput(raw);
+  if (operation === OPERATIONS.LESSON_RECORD_FROM_AUDIO) return parseAudioLessonRecordInput(raw);
   if (operation === OPERATIONS.RECOMMEND_SEQUENCE) return parseSequenceInput(raw);
   if (operation === OPERATIONS.GENERATE_REPORT) return parseReportInput(raw);
   throw invalid("operation is unsupported");
@@ -266,7 +290,10 @@ function parseGatewayRequest(req) {
   } catch (_error) {
     throw invalid("request body is not serializable");
   }
-  if (bodySize > MAX_REQUEST_BYTES) throw invalid("request body is too large");
+  const requestLimit = req?.body?.operation === OPERATIONS.LESSON_RECORD_FROM_AUDIO
+    ? MAX_AUDIO_REQUEST_BYTES
+    : MAX_REQUEST_BYTES;
+  if (bodySize > requestLimit) throw invalid("request body is too large");
   const body = requireExactKeys(req.body, ["schemaVersion", "requestId", "provider", "operation", "input"], "request");
   if (body.schemaVersion !== 1 || body.provider !== "openai" || !Object.values(OPERATIONS).includes(body.operation)) {
     throw invalid("gateway envelope is invalid");
@@ -297,6 +324,7 @@ function fingerprintRequest(uid, request) {
 
 module.exports = {
   MAX_REQUEST_BYTES,
+  MAX_AUDIO_REQUEST_BYTES,
   REPORT_SOURCE_FIELDS,
   REPORT_TYPES,
   fingerprintRequest,

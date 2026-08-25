@@ -7,6 +7,7 @@ const ERROR_DEFINITIONS = Object.freeze({
   operation_deferred: { status: 404, message: "The requested AI operation is deferred." },
   rate_limited: { status: 429, message: "The AI request limit has been reached." },
   provider_unavailable: { status: 503, message: "The AI provider is temporarily unavailable." },
+  provider_incomplete: { status: 502, message: "The AI provider response was incomplete." },
   invalid_output: { status: 502, message: "The AI provider returned an invalid response." },
   timeout: { status: 504, message: "The AI request timed out." },
   internal_error: { status: 500, message: "An internal error occurred." },

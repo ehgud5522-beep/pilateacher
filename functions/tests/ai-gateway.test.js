@@ -195,7 +195,16 @@ test("successful request logs the actual response model with its request id", as
         consumeRateLimit: async () => ({ allowed: true }),
       },
       idempotencyStore: createMemoryIdempotencyStore(),
-      getProvider: async () => ({ execute: async () => ({ model: "gpt-5-mini-2026-08-07", promptVersion: "voice_v1", output: voiceOutput }) }),
+      getProvider: async () => ({ execute: async () => ({
+        model: "gpt-5-mini-2026-08-07",
+        promptVersion: "voice_v1",
+        status: "completed",
+        incompleteReason: "",
+        usage: { inputTokens: 90, outputTokens: 40, reasoningTokens: 10, totalTokens: 130 },
+        latencyMs: 842,
+        validation: "success",
+        output: voiceOutput,
+      }) }),
     });
     const response = await invoke(handler);
     assert.equal(response.statusCode, 200);
@@ -203,8 +212,18 @@ test("successful request logs the actual response model with its request id", as
     const completionLog = logs.find((entry) => entry.message.includes("gateway_completed"));
     assert.equal(modelLog.details.model, "gpt-5-mini-2026-08-07");
     assert.equal(modelLog.details.requestId, response.body.requestId);
+    assert.equal(modelLog.details.promptVersion, "voice_v1");
+    assert.equal(modelLog.details.status, "completed");
+    assert.deepEqual(modelLog.details.usage, { input: 90, output: 40, reasoning: 10 });
+    assert.equal(modelLog.details.latencyMs, 842);
+    assert.equal(modelLog.details.validation, "success");
     assert.equal(completionLog.details.model, "gpt-5-mini-2026-08-07");
     assert.equal(completionLog.details.requestId, response.body.requestId);
+    assert.equal(completionLog.details.promptVersion, "voice_v1");
+    assert.equal(completionLog.details.status, "completed");
+    assert.deepEqual(completionLog.details.usage, { input: 90, output: 40, reasoning: 10 });
+    assert.equal(completionLog.details.latencyMs, 842);
+    assert.equal(response.body.usage.reasoningTokens, 10);
   } finally {
     globalThis.console.info = originalInfo;
   }

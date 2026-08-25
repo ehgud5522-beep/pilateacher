@@ -28,7 +28,7 @@ const PROMPTS = Object.freeze({
   },
   [OPERATIONS.STRUCTURE_LESSON_RECORD]: {
     promptVersion: "lesson_record_v2",
-    maxOutputTokens: 1400,
+    maxOutputTokens: 4000,
     task: [
       "rawTranscript 원문에 실제로 언급된 사실만 아래 네 칸으로 분류하세요.",
       "didToday(오늘 수업): 진행한 운동, 동작, 기구만 적습니다.",

@@ -32,7 +32,17 @@ test("OpenAI provider uses Responses API structured output without storing the r
         create: async (nextParams, nextOptions) => {
           params = nextParams;
           options = nextOptions;
-          return { model: DEFAULT_MODEL, output_text: JSON.stringify(voiceOutput) };
+          return {
+            model: DEFAULT_MODEL,
+            status: "completed",
+            usage: {
+              input_tokens: 80,
+              output_tokens: 35,
+              output_tokens_details: { reasoning_tokens: 12 },
+              total_tokens: 115,
+            },
+            output_text: JSON.stringify(voiceOutput),
+          };
         },
       },
     },
@@ -43,8 +53,57 @@ test("OpenAI provider uses Responses API structured output without storing the r
   assert.equal(params.text.format.type, "json_schema");
   assert.equal(params.text.format.strict, true);
   assert.equal(params.text.format.schema.additionalProperties, false);
+  assert.equal(params.text.verbosity, "low");
+  assert.equal(params.reasoning.effort, "minimal");
   assert.ok(options.signal);
   assert.deepEqual(response.output, voiceOutput);
+  assert.deepEqual(response.usage, {
+    inputTokens: 80,
+    outputTokens: 35,
+    reasoningTokens: 12,
+    totalTokens: 115,
+  });
+  assert.equal(response.status, "completed");
+});
+
+test("lesson record requests reserve 4000 output tokens", async () => {
+  let params;
+  const provider = createOpenAIProvider({
+    client: { responses: { create: async (nextParams) => {
+      params = nextParams;
+      return {
+        status: "completed",
+        output_text: JSON.stringify(operationOutputs[OPERATIONS.STRUCTURE_LESSON_RECORD]),
+      };
+    } } },
+  });
+  await provider.execute({ operation: OPERATIONS.STRUCTURE_LESSON_RECORD, input: { rawTranscript: "브릿지" } });
+  assert.equal(params.max_output_tokens, 4000);
+});
+
+test("incomplete provider response is distinct from malformed output", async () => {
+  const provider = createOpenAIProvider({
+    client: { responses: { create: async () => ({
+      id: "resp_safe_123",
+      status: "incomplete",
+      incomplete_details: { reason: "max_output_tokens" },
+      usage: {
+        input_tokens: 120,
+        output_tokens: 4000,
+        output_tokens_details: { reasoning_tokens: 3988 },
+        total_tokens: 4120,
+      },
+      output_text: "",
+    }) } },
+  });
+  await assert.rejects(
+    provider.execute({ operation: OPERATIONS.STRUCTURE_LESSON_RECORD, input: { rawTranscript: "브릿지" } }),
+    (error) => error.code === "provider_incomplete"
+      && error.status === 502
+      && error.diagnostic.incompleteReason === "max_output_tokens"
+      && error.diagnostic.usage.reasoningTokens === 3988
+      && error.diagnostic.validation === "not_run",
+  );
 });
 
 test("OpenAI provider rejects malformed or invented-shaped output", async () => {

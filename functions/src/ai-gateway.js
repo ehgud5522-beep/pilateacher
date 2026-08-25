@@ -99,6 +99,16 @@ function createAIGatewayHandler({
         requestId,
         operation: request.operation,
         model: safeLogToken(providerResponse?.model),
+        promptVersion: safeLogToken(providerResponse?.promptVersion),
+        status: safeLogToken(providerResponse?.status || "completed"),
+        incompleteReason: safeLogToken(providerResponse?.incompleteReason || ""),
+        usage: {
+          input: Math.max(0, Number(providerResponse?.usage?.inputTokens) || 0),
+          output: Math.max(0, Number(providerResponse?.usage?.outputTokens) || 0),
+          reasoning: Math.max(0, Number(providerResponse?.usage?.reasoningTokens) || 0),
+        },
+        latencyMs: Math.max(0, Number(providerResponse?.latencyMs) || 0),
+        validation: safeLogToken(providerResponse?.validation || "success"),
         outputShape: Object.fromEntries(Object.entries(providerResponse?.output || {}).map(([field, value]) => [field, Array.isArray(value) ? `array:${value.every((item) => typeof item === "string") ? "string" : "mixed"}` : typeof value])),
       });
       const output = validateOperationOutput(request.operation, providerResponse?.output);
@@ -117,6 +127,7 @@ function createAIGatewayHandler({
         usage: providerResponse?.usage && typeof providerResponse.usage === "object" ? {
           inputTokens: Math.max(0, Number(providerResponse.usage.inputTokens) || 0),
           outputTokens: Math.max(0, Number(providerResponse.usage.outputTokens) || 0),
+          reasoningTokens: Math.max(0, Number(providerResponse.usage.reasoningTokens) || 0),
           totalTokens: Math.max(0, Number(providerResponse.usage.totalTokens) || 0),
         } : null,
         output,
@@ -126,7 +137,22 @@ function createAIGatewayHandler({
         fingerprint,
         response,
       });
-      diagnosticLog("gateway_completed", { requestId, operation: request.operation, model: safeLogToken(model), httpStatus: 200, validation: "success" });
+      diagnosticLog("gateway_completed", {
+        requestId,
+        operation: request.operation,
+        model: safeLogToken(model),
+        promptVersion: safeLogToken(promptVersion),
+        status: safeLogToken(providerResponse?.status || "completed"),
+        incompleteReason: safeLogToken(providerResponse?.incompleteReason || ""),
+        usage: {
+          input: Math.max(0, Number(providerResponse?.usage?.inputTokens) || 0),
+          output: Math.max(0, Number(providerResponse?.usage?.outputTokens) || 0),
+          reasoning: Math.max(0, Number(providerResponse?.usage?.reasoningTokens) || 0),
+        },
+        latencyMs: Math.max(0, Number(providerResponse?.latencyMs) || 0),
+        httpStatus: 200,
+        validation: "success",
+      });
       return res.status(200).json(response);
     } catch (error) {
       if (aiRecordingOperations?.handleFailure) {
@@ -147,6 +173,15 @@ function createAIGatewayHandler({
           providerCode: String(details.providerCode || "unknown"),
           providerType: String(details.providerType || "unknown"),
           providerRequestId: String(details.providerRequestId || ""),
+          responseStatus: safeLogToken(details.responseStatus || "unknown"),
+          incompleteReason: safeLogToken(details.incompleteReason || ""),
+          usage: {
+            input: Math.max(0, Number(details.usage?.inputTokens) || 0),
+            output: Math.max(0, Number(details.usage?.outputTokens) || 0),
+            reasoning: Math.max(0, Number(details.usage?.reasoningTokens) || 0),
+          },
+          latencyMs: Math.max(0, Number(details.latencyMs) || 0),
+          validation: safeLogToken(details.validation || "not_run"),
         });
       }
       diagnosticLog("gateway_failed", { requestId, httpStatus: Number(error?.status) || 500, code: String(error?.code || "internal_error") });

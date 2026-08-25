@@ -31,8 +31,30 @@ export class AIProviderError extends Error {
     this.providerStatus = options.providerStatus ?? options.cause?.providerStatus ?? null;
     this.providerCode = options.providerCode ?? options.cause?.providerCode ?? null;
     this.providerType = options.providerType ?? options.cause?.providerType ?? null;
+    this.transportCode = options.transportCode ?? options.cause?.transportCode ?? null;
+    this.gatewayUrl = options.gatewayUrl ?? options.cause?.gatewayUrl ?? null;
+    this.causeName = options.causeName ?? options.cause?.causeName ?? null;
+    this.causeMessage = options.causeMessage ?? options.cause?.causeMessage ?? null;
   }
 }
+
+const safeNetworkText = (value, max = 180) => String(value || "")
+  .replace(/[\r\n\t]+/g, " ")
+  .replace(/Bearer\s+\S+/gi, "Bearer_[redacted]")
+  .replace(/sk-[A-Za-z0-9_-]+/g, "sk_[redacted]")
+  .slice(0, max);
+
+export const bindFetchToEnvironment = (fetchImpl, target = globalThis) => {
+  const candidate = fetchImpl || target?.fetch;
+  if (typeof candidate !== "function") return candidate;
+  return candidate === target?.fetch ? candidate.bind(target) : candidate;
+};
+
+const isFetchInvocationError = (error) => {
+  const name = String(error?.name || "").toLowerCase();
+  const message = String(error?.message || "");
+  return name === "typeerror" && /illegal invocation|failed to execute ['"]?fetch['"]? on ['"]?window/i.test(message);
+};
 
 const resolveGatewayUrl = (rawUrl) => {
   const base = globalThis.location?.origin || "http://localhost";
@@ -42,6 +64,20 @@ const resolveGatewayUrl = (rawUrl) => {
     throw new AIProviderError("invalid_gateway_url", "AI Gateway must use HTTPS outside localhost");
   }
   return url.toString();
+};
+
+export const gatewayUrlForDiagnostics = (rawUrl) => {
+  if (!String(rawUrl || "").trim()) return "";
+  try {
+    const url = new URL(String(rawUrl || ""), globalThis.location?.origin || "http://localhost");
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch (_error) {
+    return safeNetworkText(rawUrl, 500).replace(/\/\/[^/@]+@/, "//[redacted]@").split(/[?#]/)[0];
+  }
 };
 
 const optionalList = (value) => {
@@ -63,11 +99,11 @@ const normalizeGatewayPayload = (operation, payload) => {
 };
 
 export class GatewayAIProvider extends AIProvider {
-  constructor({ providerId, enabled = false, gatewayUrl = "", fetchImpl = globalThis.fetch, getAccessToken = null, timeoutMs = 30000 }) {
+  constructor({ providerId, enabled = false, gatewayUrl = "", fetchImpl = null, getAccessToken = null, timeoutMs = 30000 }) {
     super(providerId);
     this.enabled = enabled === true;
     this.gatewayUrl = String(gatewayUrl || "").trim();
-    this.fetchImpl = fetchImpl;
+    this.fetchImpl = bindFetchToEnvironment(fetchImpl);
     this.getAccessToken = getAccessToken;
     this.timeoutMs = timeoutMs;
   }
@@ -76,6 +112,7 @@ export class GatewayAIProvider extends AIProvider {
     return {
       status: this.enabled && this.gatewayUrl && typeof this.fetchImpl === "function" ? "connected" : AI_STATUSES.NOT_CONNECTED,
       provider: this.providerId,
+      gatewayUrl: gatewayUrlForDiagnostics(this.gatewayUrl),
     };
   }
 
@@ -84,6 +121,7 @@ export class GatewayAIProvider extends AIProvider {
       return { status: AI_STATUSES.NOT_CONNECTED, provider: this.providerId, operation, output: null };
     }
     const requestId = options.requestId || makeAIRequestId(this.providerId, operation, input);
+    const diagnosticGatewayUrl = gatewayUrlForDiagnostics(this.gatewayUrl);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     const abortFromCaller = () => controller.abort();
@@ -102,7 +140,7 @@ export class GatewayAIProvider extends AIProvider {
         const token = this.getAccessToken ? await this.getAccessToken(authAttempt === 1) : "";
         if (this.getAccessToken && !String(token || "").trim()) {
           if (authAttempt === 0) continue;
-          throw new AIProviderError("auth_refresh_failed", "Firebase authentication could not be refreshed", { retryable: false, failureStage: "auth_refresh" });
+          throw new AIProviderError("auth_refresh_failed", "Firebase authentication could not be refreshed", { retryable: false, failureStage: "auth_refresh", gatewayUrl: diagnosticGatewayUrl });
         }
         const headers = { "Content-Type": "application/json", "X-Idempotency-Key": requestId };
         if (token) headers.Authorization = `Bearer ${token}`;
@@ -134,6 +172,8 @@ export class GatewayAIProvider extends AIProvider {
           status: response.status,
           requestId: errorRequestId,
           retryable: !quotaExhausted && (response.status === 429 || response.status >= 500),
+          transportCode: `E-HTTP-${response.status}`,
+          gatewayUrl: diagnosticGatewayUrl,
           failureStage: exhaustedAuthRefresh ? "auth_refresh" : String(diagnostic?.stage || "gateway_http"),
           providerStatus: Number(diagnostic?.providerStatus) || null,
           providerCode,
@@ -141,11 +181,11 @@ export class GatewayAIProvider extends AIProvider {
         });
       }
       const payload = await response.json();
-      if (payload?.requestId && payload.requestId !== requestId) throw new AIProviderError("request_mismatch", "AI Gateway response requestId mismatch");
-      if (payload?.provider && payload.provider !== this.providerId) throw new AIProviderError("provider_mismatch", "AI Gateway response provider mismatch");
+      if (payload?.requestId && payload.requestId !== requestId) throw new AIProviderError("request_mismatch", "AI Gateway response requestId mismatch", { requestId, gatewayUrl: diagnosticGatewayUrl });
+      if (payload?.provider && payload.provider !== this.providerId) throw new AIProviderError("provider_mismatch", "AI Gateway response provider mismatch", { requestId, gatewayUrl: diagnosticGatewayUrl });
       let output;
       try { output = normalizeAIOutput(operation, normalizeGatewayPayload(operation, payload)); }
-      catch (error) { throw new AIProviderError("invalid_output", "AI Gateway returned an invalid structured output", { cause: error, requestId, retryable: true, failureStage: "client_schema_validation", path: error?.path, expected: error?.expected, received: error?.received }); }
+      catch (error) { throw new AIProviderError("invalid_output", "AI Gateway returned an invalid structured output", { cause: error, requestId, retryable: true, failureStage: "client_schema_validation", path: error?.path, expected: error?.expected, received: error?.received, gatewayUrl: diagnosticGatewayUrl }); }
       return {
         status: AI_STATUSES.DRAFT,
         provider: payload?.provider || this.providerId,
@@ -161,12 +201,23 @@ export class GatewayAIProvider extends AIProvider {
           outputTokens: Math.max(0, Number(payload.usage.outputTokens) || 0),
           totalTokens: Math.max(0, Number(payload.usage.totalTokens) || 0),
         } : null,
+        gatewayUrl: diagnosticGatewayUrl,
         output,
       };
     } catch (error) {
       if (error instanceof AIProviderError) throw error;
-      if (error?.name === "AbortError") throw new AIProviderError("timeout", "AI Gateway request timed out", { retryable: true, cause: error, requestId });
-      throw new AIProviderError("network_error", "AI Gateway request failed", { retryable: true, cause: error, requestId });
+      if (error?.name === "AbortError") throw new AIProviderError("timeout", "AI Gateway request timed out", {
+        retryable: true, cause: error, requestId, transportCode: "E-TIMEOUT", gatewayUrl: diagnosticGatewayUrl,
+        causeName: safeNetworkText(error?.name || "AbortError", 80), causeMessage: safeNetworkText(error?.message),
+      });
+      if (isFetchInvocationError(error)) throw new AIProviderError("client_invocation_error", "AI Gateway client invocation failed", {
+        retryable: false, cause: error, requestId, failureStage: "fetch_internal", transportCode: "E-INTERNAL", gatewayUrl: diagnosticGatewayUrl,
+        causeName: safeNetworkText(error?.name || "TypeError", 80), causeMessage: safeNetworkText(error?.message),
+      });
+      throw new AIProviderError("network_error", "AI Gateway request failed", {
+        retryable: true, cause: error, requestId, failureStage: "fetch_network", transportCode: "E-NETWORK", gatewayUrl: diagnosticGatewayUrl,
+        causeName: safeNetworkText(error?.name || "Error", 80), causeMessage: safeNetworkText(error?.message || String(error || "network failure")),
+      });
     } finally {
       clearTimeout(timeout);
       options.signal?.removeEventListener?.("abort", abortFromCaller);

@@ -8,6 +8,7 @@ export const LESSON_RECORD_DRAFT_STATE = Object.freeze({
 
 export const LESSON_RECORD_QUEUE_LABEL = Object.freeze({
   MISSING: "미기록",
+  AUDIO: "음성 정리 대기",
   RAW: "정리 전(원문 있음)",
   STRUCTURED: "확인 대기(정리됨)",
 });
@@ -61,6 +62,7 @@ export function patchPendingLessonRecord(memberId, lessonId, patch, storage = gl
 }
 
 export function pendingLessonRecordLabel(draft) {
+  if ((draft?.audioClips || []).some((clip) => clip?.blobId && clip?.state !== "uploaded")) return LESSON_RECORD_QUEUE_LABEL.AUDIO;
   if (!draft?.rawTranscript) return LESSON_RECORD_QUEUE_LABEL.MISSING;
   return draft?.structuredDraft || draft?.state === LESSON_RECORD_DRAFT_STATE.STRUCTURED
     ? LESSON_RECORD_QUEUE_LABEL.STRUCTURED
@@ -71,7 +73,8 @@ export function wakeDormantLessonRecordRetries(storage = globalThis.localStorage
   const all = readAll(storage);
   let changed = false;
   Object.entries(all).forEach(([key, draft]) => {
-    if (draft?.retry?.state !== "sleeping" || !draft?.rawTranscript || draft?.structuredDraft) return;
+    const hasPendingAudio = (draft?.audioClips || []).some((clip) => clip?.blobId && clip?.state !== "uploaded");
+    if (draft?.retry?.state !== "sleeping" || (!draft?.rawTranscript && !hasPendingAudio) || draft?.structuredDraft) return;
     all[key] = { ...draft, retry: { ...draft.retry, state: "waiting", attempts: 0, nextRetryAt: now } };
     changed = true;
   });

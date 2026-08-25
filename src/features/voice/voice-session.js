@@ -7,6 +7,7 @@ const VOICE_SESSION_EVENT_TYPES = new Set([
   "start", "interim", "final", "engine_end", "restart",
   "silence_end", "user_end", "cap_end", "error",
   "permission_state", "open_app_settings",
+  "record_start", "record_end", "upload", "transcribed", "structured", "failed",
 ]);
 
 const normalizeSpace = (value) => String(value || "").replace(/\s+/g, " ").trim();
@@ -89,6 +90,10 @@ export function appendVoiceSessionDiagnostic(event, details = {}, storage = glob
     ...(Number.isFinite(Number(details.attempt)) ? { attempt: Math.max(0, Number(details.attempt)) } : {}),
     ...(Number.isFinite(Number(details.delayMs)) ? { delayMs: Math.max(0, Number(details.delayMs)) } : {}),
     ...(Number.isFinite(Number(details.charCount)) ? { charCount: Math.max(0, Number(details.charCount)) } : {}),
+    ...(Number.isFinite(Number(details.durationMs)) ? { durationMs: Math.max(0, Number(details.durationMs)) } : {}),
+    ...(Number.isFinite(Number(details.seconds)) ? { seconds: Math.max(0, Number(details.seconds)) } : {}),
+    ...(Number.isFinite(Number(details.bytes)) ? { bytes: Math.max(0, Number(details.bytes)) } : {}),
+    ...(details.requestId ? { requestId: safeDiagnosticText(details.requestId, 80) } : {}),
   };
   try {
     const current = readVoiceSessionDiagnostics(storage).reverse();

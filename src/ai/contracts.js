@@ -8,6 +8,7 @@ export const AI_OPERATIONS = Object.freeze({
   ANALYZE_BODY: "analyzeBody",
   SUMMARIZE_VOICE: "summarizeVoice",
   STRUCTURE_LESSON_RECORD: "structureLessonRecord",
+  LESSON_RECORD_FROM_AUDIO: "lesson_record_from_audio",
   RECOMMEND_SEQUENCE: "recommendSequence",
   GENERATE_REPORT: "generateReport",
 });
@@ -80,13 +81,36 @@ export function normalizeVoiceSummary(value) {
 
 export function normalizeLessonRecord(value) {
   const source = requireObject(value, "lesson record output");
-  const extra = Object.keys(source).find((field) => !LESSON_RECORD_LIST_FIELDS.includes(field));
+  const supported = [...LESSON_RECORD_LIST_FIELDS, "summary"];
+  const extra = Object.keys(source).find((field) => !supported.includes(field));
   if (extra) {
     const error = new TypeError(`lesson record output has unsupported field: ${extra}`);
-    Object.assign(error, { code: "invalid_output", path: extra, expected: LESSON_RECORD_LIST_FIELDS.join("|"), received: extra });
+    Object.assign(error, { code: "invalid_output", path: extra, expected: supported.join("|"), received: extra });
     throw error;
   }
-  return Object.fromEntries(LESSON_RECORD_LIST_FIELDS.map((field) => [field, cleanLessonList(source[field], field)]));
+  return {
+    ...Object.fromEntries(LESSON_RECORD_LIST_FIELDS.map((field) => [field, cleanLessonList(source[field], field)])),
+    summary: source.summary == null ? null : cleanText(source.summary, 1200),
+  };
+}
+
+export function normalizeAudioLessonRecord(value) {
+  const source = requireObject(value, "audio lesson record output");
+  const audioFields = ["transcript", "fields", "summary", "provenance"];
+  requireFields(source, audioFields, "audio lesson record output");
+  if (Object.keys(source).some((field) => !audioFields.includes(field))) throw new TypeError("audio lesson record output has unsupported fields");
+  const fields = requireObject(source.fields, "audio lesson record fields");
+  requireFields(fields, ["didToday", "observations", "responses", "nextFocus"], "audio lesson record fields");
+  const provenance = requireObject(source.provenance, "audio lesson record provenance");
+  if (provenance.stt !== "openai" || provenance.llm !== "openai") throw new TypeError("audio lesson record provenance is invalid");
+  const transcript = cleanText(source.transcript, 12000);
+  if (!transcript) throw new TypeError("audio lesson record transcript is empty");
+  return {
+    transcript,
+    fields: Object.fromEntries(["didToday", "observations", "responses", "nextFocus"].map((field) => [field, cleanLessonList(fields[field], `fields.${field}`)])),
+    summary: source.summary == null ? null : cleanText(source.summary, 1200),
+    provenance: { stt: "openai", llm: "openai" },
+  };
 }
 
 export function normalizeSequenceRecommendation(value) {
@@ -126,6 +150,7 @@ export function normalizeAIOutput(operation, value) {
   if (operation === AI_OPERATIONS.ANALYZE_BODY) return normalizeBodyAnalysis(value);
   if (operation === AI_OPERATIONS.SUMMARIZE_VOICE) return normalizeVoiceSummary(value);
   if (operation === AI_OPERATIONS.STRUCTURE_LESSON_RECORD) return normalizeLessonRecord(value);
+  if (operation === AI_OPERATIONS.LESSON_RECORD_FROM_AUDIO) return normalizeAudioLessonRecord(value);
   if (operation === AI_OPERATIONS.RECOMMEND_SEQUENCE) return normalizeSequenceRecommendation(value);
   if (operation === AI_OPERATIONS.GENERATE_REPORT) return normalizeReport(value);
   throw new TypeError(`unsupported AI operation: ${operation}`);

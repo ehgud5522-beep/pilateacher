@@ -141,11 +141,18 @@ test("hidden diagnostics retain safe request model metadata without lesson conte
     category: "SUCCESS",
     model: "gpt-5-mini-2026-08-07",
     requestId: "ai_openai_structureLessonRecord_safe12345678",
+    transportCode: "E-NETWORK",
+    gatewayUrl: "https://asia-northeast3-pilateacher.cloudfunctions.net/aiGateway/v1/ai/execute",
+    causeName: "TypeError",
+    causeMessage: "Failed to fetch",
     transcript: "저장하면 안 되는 회원 원문",
   }, storage);
   const [event] = readLessonRecordDiagnostics(storage);
   assert.equal(event.model, "gpt-5-mini-2026-08-07");
   assert.equal(event.requestId, "ai_openai_structureLessonRecord_safe12345678");
+  assert.equal(event.transportCode, "E-NETWORK");
+  assert.equal(event.gatewayUrl, "https://asia-northeast3-pilateacher.cloudfunctions.net/aiGateway/v1/ai/execute");
+  assert.equal(event.causeMessage, "Failed to fetch");
   assert.doesNotMatch(storage.dump(), /저장하면 안 되는 회원 원문|transcript/);
 });
 
@@ -170,7 +177,7 @@ test("temporary failures back off and background success promotes raw to structu
   assert.equal(promoted.status, "structured");
   assert.equal(pendingLessonRecordLabel(promoted), "확인 대기(정리됨)");
   assert.notEqual(promoted.status, "confirmed");
-  assert.deepEqual(diagnostics, [{ code: "success", stage: "background_retry", category: "SUCCESS", model: "gpt-5-mini", requestId: "safe" }]);
+  assert.deepEqual(diagnostics, [{ code: "success", stage: "background_retry", category: "SUCCESS", model: "gpt-5-mini", requestId: "safe", gatewayUrl: undefined, httpStatus: 200 }]);
 });
 
 test("quota failures preserve raw and enter bounded backoff while remote status cache survives reload", () => {
@@ -182,6 +189,18 @@ test("quota failures preserve raw and enter bounded backoff while remote status 
   assert.deepEqual(draft.retry, { state: "waiting", attempts: 0, nextRetryAt: 31000 });
   writeAIRecordingStatus({ status: "degraded", reasonCode: "provider_quota_exhausted", updatedAt: "2026-08-24T00:00:00.000Z" }, storage);
   assert.equal(readAIRecordingStatus(storage).status, "degraded");
+});
+
+test("client invocation defects are never placed in the automatic retry loop", () => {
+  const storage = memoryStorage();
+  savePendingLessonRecord("m1", "l1", { rawTranscript: "안전한 기록", status: "raw" }, storage);
+  const draft = scheduleLessonRecordRetry("m1", "l1", {
+    code: "client_invocation_error",
+    failureStage: "fetch_internal",
+    transportCode: "E-INTERNAL",
+  }, storage, 1000);
+  assert.equal(draft.failure.code, "client_internal");
+  assert.equal(draft.retry, null);
 });
 
 test("App exposes four post-attendance choices, 90-second cap, pending save and post-confirm audio deletion", async () => {

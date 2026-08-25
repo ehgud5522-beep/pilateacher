@@ -26,6 +26,10 @@ export class AIProvider {
     return this.execute(AI_OPERATIONS.STRUCTURE_LESSON_RECORD, input, options);
   }
 
+  lessonRecordFromAudio(input, options) {
+    return this.execute(AI_OPERATIONS.LESSON_RECORD_FROM_AUDIO, input, options);
+  }
+
   // DEFER: sequence contracts remain for forward compatibility, but the
   // client exposes no callable recommendation path while the feature is off.
 

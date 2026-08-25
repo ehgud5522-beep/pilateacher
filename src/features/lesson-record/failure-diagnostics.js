@@ -35,14 +35,16 @@ const detailsByCode = Object.freeze({
   provider_5xx: { category: "TEMPORARY", userCode: "E-SERVICE", title: "AI 연결이 잠시 불안정해요", description: "말씀하신 내용은 저장되어 있어요.", retry: true },
   provider_quota_exhausted: { category: "TEMPORARY", userCode: "E-QUOTA", title: "AI 정리를 지금 사용할 수 없어요", description: "말씀하신 내용은 저장되어 있고, 연결이 회복되면 다시 정리해요.", retry: true },
   provider_configuration: { category: "TEMPORARY", userCode: "E-CONFIG", title: "AI 정리를 지금 사용할 수 없어요", description: "말씀하신 내용은 저장되어 있고, 연결이 회복되면 다시 정리해요.", retry: true },
+  client_internal: { category: "SERVICE", userCode: "E-INTERNAL", title: "AI 정리를 지금 사용할 수 없어요", description: "말씀하신 내용은 저장되어 있어요.", retry: false },
   schema_invalid: { category: "SERVICE", userCode: "E-FORMAT", title: "내용을 자동으로 정리하지 못했어요", description: "말씀하신 내용은 저장되어 있어요.", retry: false },
   member_session_unresolved: { category: "SERVICE", userCode: "E-LINK", title: "기록 연결을 확인하고 있어요", description: "말씀하신 내용은 회원 기록에 안전하게 남아 있어요.", retry: false },
   unknown: { category: "SERVICE", userCode: "E-AI", title: "AI 정리를 지금 사용할 수 없어요", description: "말씀하신 내용은 저장되어 있어요.", retry: false },
 });
 
-export function normalizeLessonRecordFailureCode({ code = "", status = null, reason = "", failureStage = "", contextStage = "" } = {}) {
+export function normalizeLessonRecordFailureCode({ code = "", status = null, reason = "", failureStage = "", contextStage = "", transportCode = "" } = {}) {
   const raw = String(code || reason || "").toLowerCase();
   const stage = String(failureStage || contextStage || "").toLowerCase();
+  const transport = String(transportCode || "").toUpperCase();
   const httpStatus = Number(status) || 0;
   if (["stt_no_speech", "no_speech", "no-speech"].includes(raw)) return "stt_no_speech";
   if (raw === "mic_permission_denied") return "mic_permission_denied";
@@ -51,6 +53,7 @@ export function normalizeLessonRecordFailureCode({ code = "", status = null, rea
   if (raw === "consent_required" || raw === "consent_missing" || stage.includes("consent")) return "consent_missing";
   if (raw === "provider_quota_exhausted" || (httpStatus === 429 && raw.includes("quota"))) return "provider_quota_exhausted";
   if (raw === "rate_limited" || raw === "provider_rate_limited" || httpStatus === 429) return "provider_rate_limited";
+  if (raw === "client_invocation_error" || transport === "E-INTERNAL" || stage === "fetch_internal") return "client_internal";
   if (["offline", "network_error", "network_offline"].includes(raw) || stage.includes("network")) return "network_offline";
   if (raw === "timeout" || httpStatus === 504) return "timeout";
   if (raw === "auth_refresh_failed" || stage === "auth_refresh") return "auth_refresh_failed";

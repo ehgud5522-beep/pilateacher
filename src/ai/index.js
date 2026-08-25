@@ -20,7 +20,7 @@ export function createAIProvider(options = {}) {
   return new ProviderClass({
     enabled: config.enabled,
     gatewayUrl: config.gatewayUrl,
-    fetchImpl: options.fetchImpl || globalThis.fetch,
+    fetchImpl: options.fetchImpl,
     getAccessToken: options.getAccessToken || null,
     timeoutMs: options.timeoutMs,
   });

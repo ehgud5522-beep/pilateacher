@@ -24,6 +24,7 @@ const cases = [
   ["provider_quota_exhausted", "TEMPORARY", true],
   ["provider_rate_limited", "TEMPORARY", true],
   ["provider_5xx", "TEMPORARY", true],
+  ["client_internal", "SERVICE", false],
   ["schema_invalid", "SERVICE", false],
   ["provider_configuration", "TEMPORARY", true],
 ];
@@ -40,6 +41,7 @@ test("all pipeline failure codes map to three user categories and meaningful ret
   assert.equal(describeLessonRecordFailure({ code: "unauthenticated", status: 401 }).internalCode, "auth_expired");
   assert.equal(describeLessonRecordFailure({ code: "rate_limited", status: 429 }).internalCode, "provider_rate_limited");
   assert.equal(describeLessonRecordFailure({ code: "invalid_output", failureStage: "client_schema_validation" }).internalCode, "schema_invalid");
+  assert.equal(describeLessonRecordFailure({ code: "client_invocation_error", failureStage: "fetch_internal", transportCode: "E-INTERNAL" }).internalCode, "client_internal");
   assert.equal(LESSON_RECORD_FAILURE_CATEGORY.SERVICE, "SERVICE");
 });
 
@@ -73,4 +75,7 @@ test("raw persistence precedes Gateway work and cloud reconcile runs only after 
   assert.doesNotMatch(voiceSource, /회원·수업 정보를 클라우드와 확인하지 못했어요|백업 상태를 확인한 뒤/);
   assert.match(voiceSource, /summaryFailure\.category === LESSON_RECORD_FAILURE_CATEGORY\.TEMPORARY/);
   assert.match(voiceSource, /AI 정리 잠시 점검 중/);
+  assert.match(voiceSource, /ai_structure_requested/);
+  assert.match(voiceSource, /transportCode/);
+  assert.match(source, /Gateway:/);
 });

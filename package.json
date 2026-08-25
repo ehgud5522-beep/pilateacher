@@ -38,6 +38,7 @@
     "@capacitor/motion": "8.0.1",
     "@capacitor/share": "^8.0.1",
     "@capgo/camera-preview": "8.11.2",
+    "@capgo/capacitor-audio-recorder": "^8.2.7",
     "firebase": "^12.16.0",
     "jsqr": "^1.4.0",
     "lucide-react": "^0.396.0",

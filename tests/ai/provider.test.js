@@ -86,6 +86,66 @@ test("configured Firebase authentication refreshes once then fails closed before
   assert.equal(calls, 0);
 });
 
+test("network failures preserve the exact sanitized Gateway URL and have no HTTP status", async () => {
+  const gatewayUrl = "https://asia-northeast3-pilateacher.cloudfunctions.net/aiGateway/v1/ai/execute";
+  const provider = createAIProvider({
+    config: { enabled: true, provider: "openai", gatewayUrl },
+    getAccessToken: async () => "firebase-token",
+    fetchImpl: async () => { throw new TypeError("Failed to fetch"); },
+  });
+  assert.equal(provider.getStatus().gatewayUrl, gatewayUrl);
+  await assert.rejects(provider.structureLessonRecord({ memberId: "m1", lessonId: "l1", rawTranscript: "기록" }), (error) => {
+    const actual = /** @type {any} */ (error);
+    return actual.code === "network_error"
+      && actual.status === null
+      && actual.failureStage === "fetch_network"
+      && actual.transportCode === "E-NETWORK"
+      && actual.gatewayUrl === gatewayUrl
+      && actual.causeName === "TypeError"
+      && actual.causeMessage === "Failed to fetch";
+  });
+});
+
+test("default browser fetch keeps its Window receiver when the provider stores and invokes it", async () => {
+  const originalFetch = globalThis.fetch;
+  let observedReceiver = null;
+  globalThis.fetch = /** @type {typeof globalThis.fetch} */ (function receiverSensitiveFetch(_url, init) {
+    observedReceiver = this;
+    if (this !== globalThis) throw new TypeError("Failed to execute 'fetch' on 'Window': Illegal invocation");
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      json: async () => ({ requestId: init.headers["X-Idempotency-Key"], provider: "openai", output: bodyOutput }),
+    });
+  });
+  try {
+    const provider = createAIProvider({
+      config: { enabled: true, provider: "openai", gatewayUrl: "https://ai.example.com/v1/ai/execute" },
+      getAccessToken: async () => "firebase-token",
+    });
+    const result = await provider.analyzeBody({ memberId: "m1", views: [] });
+    assert.equal(result.status, AI_STATUSES.DRAFT);
+    assert.equal(observedReceiver, globalThis);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("fetch Illegal invocation is an internal non-retryable defect, not a network failure", async () => {
+  const provider = createAIProvider({
+    config: { enabled: true, provider: "openai", gatewayUrl: "https://ai.example.com/v1/ai/execute" },
+    getAccessToken: async () => "firebase-token",
+    fetchImpl: async () => { throw new TypeError("Failed to execute 'fetch' on 'Window': Illegal invocation"); },
+  });
+  await assert.rejects(provider.analyzeBody({ memberId: "m1", views: [] }), (error) => {
+    const actual = /** @type {any} */ (error);
+    return actual.code === "client_invocation_error"
+      && actual.retryable === false
+      && actual.failureStage === "fetch_internal"
+      && actual.transportCode === "E-INTERNAL";
+  });
+});
+
 test("an expired Firebase token is force-refreshed once with the same idempotency key", async () => {
   const tokenRefreshes = [];
   const requestIds = [];
@@ -237,7 +297,9 @@ test("provider quota diagnostics remain internal and disable identical retries",
       && (/** @type {any} */ (error)).retryable === false
       && (/** @type {any} */ (error)).failureStage === "provider_http"
       && (/** @type {any} */ (error)).providerStatus === 429
-      && (/** @type {any} */ (error)).providerCode === "insufficient_quota",
+      && (/** @type {any} */ (error)).providerCode === "insufficient_quota"
+      && (/** @type {any} */ (error)).transportCode === "E-HTTP-503"
+      && (/** @type {any} */ (error)).gatewayUrl === "https://ai.example.com/v1/ai/execute",
   );
 });
 

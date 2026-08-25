@@ -6,6 +6,7 @@ export const VOICE_SESSION_DIAGNOSTIC_KEY = "pilateacher_voice_session_diagnosti
 const VOICE_SESSION_EVENT_TYPES = new Set([
   "start", "interim", "final", "engine_end", "restart",
   "silence_end", "user_end", "cap_end", "error",
+  "permission_state", "open_app_settings",
 ]);
 
 const normalizeSpace = (value) => String(value || "").replace(/\s+/g, " ").trim();
@@ -40,6 +41,7 @@ export function resolveVoicePhase({ availability = "ready", starting = false, li
   if (attempted && error) return "failed";
   if (hasResult) return "result";
   if (availability === "unsupported") return "unsupported";
+  if (availability === "permission_permanently_denied") return "permission_permanently_denied";
   if (availability === "permission_required") return "permission_required";
   return "idle";
 }
@@ -83,6 +85,7 @@ export function appendVoiceSessionDiagnostic(event, details = {}, storage = glob
     ...(details.code ? { code: safeDiagnosticText(details.code) } : {}),
     ...(details.reason ? { reason: safeDiagnosticText(details.reason) } : {}),
     ...(details.phase ? { phase: safeDiagnosticText(details.phase) } : {}),
+    ...(details.state ? { state: safeDiagnosticText(details.state) } : {}),
     ...(Number.isFinite(Number(details.attempt)) ? { attempt: Math.max(0, Number(details.attempt)) } : {}),
     ...(Number.isFinite(Number(details.delayMs)) ? { delayMs: Math.max(0, Number(details.delayMs)) } : {}),
     ...(Number.isFinite(Number(details.charCount)) ? { charCount: Math.max(0, Number(details.charCount)) } : {}),
@@ -92,6 +95,26 @@ export function appendVoiceSessionDiagnostic(event, details = {}, storage = glob
     storage?.setItem?.(VOICE_SESSION_DIAGNOSTIC_KEY, JSON.stringify([...current, entry].slice(-VOICE_SESSION_DIAGNOSTIC_LIMIT)));
   } catch (_error) {}
   return entry;
+}
+
+export async function runVoicePermissionAction({
+  permissionState,
+  requestPermission = async () => null,
+  openAppSettings = async () => null,
+  onEvent = () => {},
+} = {}) {
+  if (permissionState === "permanently_denied") {
+    onEvent("permission_state", { state: "permanently_denied" });
+    onEvent("open_app_settings", { state: "requested" });
+    await openAppSettings();
+    return { permissionState, requested: false, openedSettings: true };
+  }
+  if (permissionState === "granted") {
+    onEvent("permission_state", { state: "granted" });
+    return { permissionState, requested: false, openedSettings: false };
+  }
+  const result = await requestPermission();
+  return { permissionState: result, requested: true, openedSettings: false };
 }
 
 export function createSilenceGuard({

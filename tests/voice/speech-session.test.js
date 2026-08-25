@@ -4,8 +4,11 @@ import test from "node:test";
 
 import {
   NATIVE_SPEECH_RESULT_TIMEOUT_MS,
+  SPEECH_PERMISSION_STATE,
   describeSpeechError,
   isSpeechPermissionGranted,
+  speechPermissionAvailability,
+  speechPermissionState,
 } from "../../src/features/voice/speech-session.js";
 
 test("speech permission checks fail closed", () => {
@@ -13,6 +16,15 @@ test("speech permission checks fail closed", () => {
   assert.equal(isSpeechPermissionGranted({ speechRecognition: "denied" }), false);
   assert.equal(isSpeechPermissionGranted(null), false);
   assert.equal(isSpeechPermissionGranted(undefined), false);
+});
+
+test("Android speech permission states distinguish grant, retryable denial, and permanent denial", () => {
+  assert.equal(speechPermissionState({ speechRecognition: "granted" }), SPEECH_PERMISSION_STATE.GRANTED);
+  assert.equal(speechPermissionState({ speechRecognition: "prompt" }), SPEECH_PERMISSION_STATE.DENIED);
+  assert.equal(speechPermissionState({ speechRecognition: "prompt-with-rationale" }), SPEECH_PERMISSION_STATE.DENIED);
+  assert.equal(speechPermissionState({ speechRecognition: "denied" }), SPEECH_PERMISSION_STATE.PERMANENTLY_DENIED);
+  assert.equal(speechPermissionAvailability({ speechRecognition: "granted" }), "ready");
+  assert.equal(speechPermissionAvailability({ speechRecognition: "denied" }), "permission_permanently_denied");
 });
 
 test("native speech failures produce cause-specific guidance", () => {

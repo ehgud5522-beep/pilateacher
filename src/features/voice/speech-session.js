@@ -6,8 +6,28 @@ export const SPEECH_NO_RESULT_MESSAGE =
 export const SPEECH_RESULT_TIMEOUT_MESSAGE =
   "음성 인식 결과가 늦어지고 있습니다. 네트워크 연결을 확인한 뒤 다시 시도해 주세요.";
 
+export const SPEECH_PERMISSION_STATE = Object.freeze({
+  GRANTED: "granted",
+  DENIED: "denied",
+  PERMANENTLY_DENIED: "permanently_denied",
+});
+
+export function speechPermissionState(status) {
+  const state = String(status?.speechRecognition || "").trim().toLowerCase();
+  if (state === "granted") return SPEECH_PERMISSION_STATE.GRANTED;
+  if (state === "denied") return SPEECH_PERMISSION_STATE.PERMANENTLY_DENIED;
+  return SPEECH_PERMISSION_STATE.DENIED;
+}
+
+export function speechPermissionAvailability(status) {
+  const state = speechPermissionState(status);
+  if (state === SPEECH_PERMISSION_STATE.GRANTED) return "ready";
+  if (state === SPEECH_PERMISSION_STATE.PERMANENTLY_DENIED) return "permission_permanently_denied";
+  return "permission_required";
+}
+
 export function isSpeechPermissionGranted(status) {
-  return status?.speechRecognition === "granted";
+  return speechPermissionState(status) === SPEECH_PERMISSION_STATE.GRANTED;
 }
 
 function speechErrorText(error) {

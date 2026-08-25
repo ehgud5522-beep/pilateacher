@@ -8,7 +8,7 @@ if (typeof window !== "undefined" && !window.storage) {
 
 import { useState, useEffect, useMemo, useRef, useCallback, useContext, createContext, Component } from "react";
 import { createPortal } from "react-dom";
-import { Capacitor } from "@capacitor/core";
+import { Capacitor, registerPlugin } from "@capacitor/core";
 import { App as CapacitorApp } from "@capacitor/app";
 import { CameraPreview } from "@capgo/camera-preview";
 import { Motion } from "@capacitor/motion";
@@ -51,11 +51,12 @@ import {
 } from "./features/posture/posture-workflow.js";
 import {
   NATIVE_SPEECH_RESULT_TIMEOUT_MS, SPEECH_NO_RESULT_MESSAGE, SPEECH_RESULT_TIMEOUT_MESSAGE,
-  describeSpeechError, isSpeechPermissionGranted,
+  SPEECH_PERMISSION_STATE, describeSpeechError, speechPermissionAvailability, speechPermissionState,
 } from "./features/voice/speech-session.js";
 import {
   RECOGNIZER_BUSY_RETRY_MS, VOICE_SILENCE_LIMIT_MS, appendVoiceSessionDiagnostic, createSilenceGuard,
-  isRecognizerBusyError, readVoiceSessionDiagnostics, resolveVoicePhase, shouldRestartRecognizer, stitchSpeechTranscript,
+  isRecognizerBusyError, readVoiceSessionDiagnostics, resolveVoicePhase, runVoicePermissionAction,
+  shouldRestartRecognizer, stitchSpeechTranscript,
 } from "./features/voice/voice-session.js";
 import { GatewayLlmProvider } from "./features/lesson-record/llm-provider.js";
 import { mapPilatesTerms } from "./features/lesson-record/term-mapper.js";
@@ -108,6 +109,7 @@ import {
 import { Users, Settings as SettingsIcon, Search, ChevronRight, ChevronLeft, Plus, Camera, MessageSquare, Check, X, Trash2, ArrowLeft, Target, ClipboardList, RotateCcw, Redo2, Palette, Sparkles, Copy, ArrowUpRight, ArrowDownRight, Loader as Loader2, Pencil, UserPlus, Activity, Ticket, Calendar, Clock, Bell, Download, Share2, TriangleAlert as AlertTriangle, CircleAlert as AlertCircle, LogOut, Mail, Star, Sun, Moon, Smartphone, Move, Crosshair, ChevronDown, ImagePlus, SlidersHorizontal, CalendarDays, ArrowUpDown, Minus, Upload, Link2, Users as Users2, Play } from "lucide-react";
 
 const IOS_NATIVE_CAPTURE_ENABLED = String(import.meta.env.VITE_IOS_NATIVE_CAPTURE_ENABLED || "").trim().toLowerCase() === "true";
+const AppSettings = registerPlugin("AppSettings");
 
 /* ================= 토큰 · 테마 ================= */
 applyTheme("light");
@@ -9685,6 +9687,12 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
     lastSpeechAt: lastSpeechAtRef.current,
     maxDurationMs: MAX_STT_SECONDS * 1000,
   });
+  const applySpeechPermission = (permission, diagnosticSource = "native") => {
+    const state = speechPermissionState(permission);
+    setVoiceAvailability(speechPermissionAvailability(permission));
+    voiceDiagnostic("permission_state", { source: diagnosticSource, state });
+    return state;
+  };
   useEffect(() => { textRef.current = text; }, [text]);
   useEffect(() => {
     silenceGuardRef.current = createSilenceGuard({
@@ -9708,7 +9716,7 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
         }
         const permission = await runtime.native.checkPermissions?.().catch(() => null);
         if (!active) return;
-        setVoiceAvailability(isSpeechPermissionGranted(permission) ? "ready" : "permission_required");
+        applySpeechPermission(permission);
         return;
       }
       if (runtime.web) {
@@ -9720,6 +9728,21 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
     };
     inspect();
     return () => { active = false; };
+  }, [memberId, lessonId]);
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return undefined;
+    let active = true;
+    let listener = null;
+    CapacitorApp.addListener("resume", async () => {
+      const NS = nativeSTT();
+      if (!NS) return;
+      const permission = await NS.checkPermissions?.().catch(() => null);
+      if (active) applySpeechPermission(permission, "native_resume");
+    }).then((handle) => {
+      if (active) listener = handle;
+      else handle.remove();
+    }).catch(() => {});
+    return () => { active = false; listener?.remove?.(); };
   }, [memberId, lessonId]);
   useEffect(() => {
     const restore = () => {
@@ -9895,11 +9918,21 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
       setVoiceAvailability(sttOK() ? "ready" : "unsupported");
       return;
     }
-    setVoiceAvailability("checking");
-    const permission = await NS.requestPermissions?.().catch(() => null);
-    const granted = isSpeechPermissionGranted(permission);
-    setVoiceAvailability(granted ? "ready" : "permission_required");
-    deviceLog("speech_permission_requested", { memberId, lessonId, permission: "speech_recognition", state: granted ? "granted" : "denied", source: "native" });
+    const current = await NS.checkPermissions?.().catch(() => null);
+    const currentState = applySpeechPermission(current);
+    const action = await runVoicePermissionAction({
+      permissionState: currentState,
+      requestPermission: async () => {
+        setVoiceAvailability("checking");
+        const permission = await NS.requestPermissions?.().catch(() => null);
+        const state = applySpeechPermission(permission);
+        deviceLog("speech_permission_requested", { memberId, lessonId, permission: "speech_recognition", state, source: "native" });
+        return state;
+      },
+      openAppSettings: async () => AppSettings.open(),
+      onEvent: (event, details) => voiceDiagnostic(event, { source: "native", ...details }),
+    }).catch(() => ({ permissionState: currentState, requested: false, openedSettings: currentState === SPEECH_PERMISSION_STATE.PERMANENTLY_DENIED }));
+    if (action.openedSettings) setVoiceAvailability("permission_permanently_denied");
   };
   const start = async () => {
     if (startRequestRef.current || on || finishing) return;
@@ -10012,16 +10045,25 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
         const perm = await NS.checkPermissions?.().catch(() => null);
         if (sessionId !== speechSessionRef.current) return;
         deviceLog("speech_permission_checked", { memberId, lessonId, permission: "speech_recognition", state: perm?.speechRecognition || "unknown", source: "native" });
-        if (!isSpeechPermissionGranted(perm)) {
+        const permissionState = applySpeechPermission(perm);
+        if (permissionState === SPEECH_PERMISSION_STATE.PERMANENTLY_DENIED) {
+          startRequestRef.current = false;
+          setStarting(false);
+          setOn(false);
+          setErr("");
+          return;
+        }
+        if (permissionState !== SPEECH_PERMISSION_STATE.GRANTED) {
           const req = await NS.requestPermissions?.().catch(() => null);
           if (sessionId !== speechSessionRef.current) return;
-          if (!isSpeechPermissionGranted(req)) {
+          const requestedState = applySpeechPermission(req);
+          if (requestedState !== SPEECH_PERMISSION_STATE.GRANTED) {
             stopMedia();
-            const message = "마이크 권한이 거부되어 직접 입력으로 전환했습니다.";
-            setVoiceAvailability("permission_required");
-            failStart(message, { permission: "speech_recognition", state: "denied", source: "native", reason: "mic_permission_denied" });
+            startRequestRef.current = false;
+            setStarting(false);
+            setOn(false);
+            setErr("");
             deviceLog("speech_permission_denied", { memberId, lessonId, permission: "speech_recognition", state: "denied", source: "native" });
-            fallbackToDirectEntry(message);
             return;
           }
         }
@@ -10442,7 +10484,7 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
           </div>
         ) : voicePhase === "organizing" ? (
           <button type="button" disabled className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-full px-3 py-2 text-xs font-extrabold text-white opacity-60" style={{ backgroundColor: BRAND }}><Loader2 size={12} className="animate-spin" /> 정리 중…</button>
-        ) : voicePhase === "permission_required" ? (
+        ) : ["permission_required", "permission_permanently_denied"].includes(voicePhase) ? (
           <button type="button" onClick={requestVoicePermission} className="min-h-11 shrink-0 rounded-full px-3 text-xs font-extrabold" style={{ backgroundColor: TINT, color: BRAND_D }}>권한 설정</button>
         ) : voicePhase === "unsupported" ? null : (
           <button type="button" onClick={start} disabled={!supported || audioState === "saving"} aria-label={text ? "음성으로 이어서 말하기" : "음성으로 말하기 시작"} className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-full px-3 py-2 text-xs font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: BRAND }}>
@@ -10451,10 +10493,11 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, lessonId = nul
         )}
       </div>
       {voicePhase === "permission_required" && <Sub className="mt-1.5 block leading-relaxed">말하기를 사용하려면 마이크와 음성 인식 권한을 허용해 주세요.</Sub>}
+      {voicePhase === "permission_permanently_denied" && <Sub className="mt-1.5 block leading-relaxed">설정에서 마이크 권한을 켜주세요</Sub>}
       {voicePhase === "unsupported" && <Sub className="mt-1.5 block leading-relaxed">이 기기에서는 말하기를 지원하지 않아 직접 입력으로 기록할 수 있어요.</Sub>}
       {voicePhase === "listening" && <Sub className="mt-1.5 block font-bold leading-relaxed" style={{ color: BRAND_D }}>듣고 있어요 · 잠시 생각하며 멈춰도 괜찮아요.</Sub>}
       {voicePhase === "organizing" && <Sub className="mt-1.5 block leading-relaxed">{silenceNotice || "마지막 음성을 정리하고 있습니다. 잠시만 기다려 주세요."}</Sub>}
-      {!text && ["idle", "permission_required", "unsupported"].includes(voicePhase) && <div className="mt-3 rounded-xl p-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
+      {!text && ["idle", "permission_required", "permission_permanently_denied", "unsupported"].includes(voicePhase) && <div className="mt-3 rounded-xl p-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
         <p className="text-sm font-extrabold" style={{ color: INK }}>수업 내용을 편하게 말해주세요</p>
         <p className="mt-1 text-xs font-bold" style={{ color: BRAND_D }}>무엇을 말하면 되나요?</p>
         <div className="mt-2 grid grid-cols-2 gap-1.5">{["① 회원의 변화", "② 오늘 한 운동", "③ 회원 반응", "④ 다음 확인"].map((label) => <span key={label} className="rounded-lg px-2 py-2 text-[11px] font-bold" style={{ backgroundColor: CANVAS, color: INK2 }}>{label}</span>)}</div>

@@ -11,6 +11,7 @@ import {
   isRecognizerBusyError,
   readVoiceSessionDiagnostics,
   resolveVoicePhase,
+  runVoicePermissionAction,
   shouldRestartRecognizer,
   stitchSpeechTranscript,
 } from "../../src/features/voice/voice-session.js";
@@ -47,6 +48,34 @@ test("voice phase resolver always yields one mutually exclusive visible state", 
   assert.equal(resolveVoicePhase({ listening: true, error: "stale", attempted: true }), "listening");
   assert.equal(resolveVoicePhase({ hasResult: true }), "result");
   assert.equal(resolveVoicePhase({ attempted: true, error: "failed" }), "failed");
+  assert.equal(resolveVoicePhase({ availability: "permission_permanently_denied" }), "permission_permanently_denied");
+});
+
+test("permanent microphone denial opens app settings without requesting runtime permission", async () => {
+  let requests = 0;
+  let settingsOpened = 0;
+  const events = [];
+  const result = await runVoicePermissionAction({
+    permissionState: "permanently_denied",
+    requestPermission: async () => { requests += 1; return "granted"; },
+    openAppSettings: async () => { settingsOpened += 1; },
+    onEvent: (event, details) => events.push({ event, ...details }),
+  });
+  assert.equal(requests, 0);
+  assert.equal(settingsOpened, 1);
+  assert.equal(result.openedSettings, true);
+  assert.deepEqual(events.map((entry) => entry.event), ["permission_state", "open_app_settings"]);
+});
+
+test("retryable microphone denial requests once and a granted resume maps back to idle", async () => {
+  let requests = 0;
+  const result = await runVoicePermissionAction({
+    permissionState: "denied",
+    requestPermission: async () => { requests += 1; return "granted"; },
+  });
+  assert.equal(requests, 1);
+  assert.equal(result.permissionState, "granted");
+  assert.equal(resolveVoicePhase({ availability: "ready" }), "idle");
 });
 
 test("recognizer busy uses bounded 300ms restarts while unsupported and permission failures never auto retry", () => {
@@ -106,6 +135,20 @@ test("native app information is the runtime source of the displayed build label"
   ]);
   assert.match(source, /CapacitorApp\.getInfo\(\)/);
   assert.match(source, /<RuntimeBuildLabel\s*\/>/);
-  assert.match(gradle, /versionCode\s+30\b/);
+  assert.match(gradle, /versionCode\s+31\b/);
   assert.match(gradle, /versionName\s+"1\.1\.22"/);
+});
+
+test("Android permanent denial uses app details settings and resume rechecks permission", async () => {
+  const [source, plugin, activity] = await Promise.all([
+    readFile(new URL("../../src/App.jsx", import.meta.url), "utf8"),
+    readFile(new URL("../../android/app/src/main/java/com/pilateacher/app/AppSettingsPlugin.java", import.meta.url), "utf8"),
+    readFile(new URL("../../android/app/src/main/java/com/pilateacher/app/MainActivity.java", import.meta.url), "utf8"),
+  ]);
+  assert.match(plugin, /ACTION_APPLICATION_DETAILS_SETTINGS/);
+  assert.match(plugin, /getContext\(\)\.getPackageName\(\)/);
+  assert.match(activity, /registerPlugin\(AppSettingsPlugin\.class\)/);
+  assert.match(source, /CapacitorApp\.addListener\("resume"/);
+  assert.match(source, /NS\.checkPermissions/);
+  assert.match(source, /설정에서 마이크 권한을 켜주세요/);
 });

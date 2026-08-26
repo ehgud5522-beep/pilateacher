@@ -1,0 +1,42 @@
+{
+  "generatedAt": "2026-08-26T04:23:33.322Z",
+  "renderer": "Playwright deterministic demo UI; no Firebase/network/real member data",
+  "playScreenshotCount": 6,
+  "cleanScreenshotCount": 6,
+  "screenshotSize": "1080x2340",
+  "featureGraphicSize": "1024x500",
+  "captionCoveragePercent": 10,
+  "sampleCenter": "샘플 필라테스",
+  "sampleInstructor": "김강사",
+  "sampleMemberCount": 5,
+  "phoneNumberCount": 0,
+  "appNameCharacters": 22,
+  "shortDescriptionCharacters": 58,
+  "fullDescriptionCharacters": 737,
+  "scenes": [
+    {
+      "file": "01-member-memory.png",
+      "caption": "다음 수업 전에 지난 수업이 떠 있어요"
+    },
+    {
+      "file": "02-voice-listening.png",
+      "caption": "수업 끝나고 10초만 말하세요"
+    },
+    {
+      "file": "03-record-result.png",
+      "caption": "AI가 4칸으로 정리해요"
+    },
+    {
+      "file": "04-week-schedule.png",
+      "caption": "수업 일정과 기록을 한눈에"
+    },
+    {
+      "file": "05-member-list.png",
+      "caption": "재등록이 필요한 회원을 놓치지 않아요"
+    },
+    {
+      "file": "06-posture-analysis.png",
+      "caption": "체형 변화를 사진으로 이어서 기록해요"
+    }
+  ]
+}

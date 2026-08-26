@@ -43,6 +43,15 @@ for permission_key in (
     "NSMicrophoneUsageDescription",
 ):
     require(str(info.get(permission_key, "")).strip(), f"{permission_key} is missing")
+expected_usage_descriptions = {
+    "NSCameraUsageDescription": "회원의 체형 사진을 촬영하고 측정 결과 코드를 읽기 위해 카메라를 사용합니다.",
+    "NSMicrophoneUsageDescription": "수업 직후 음성으로 기록을 남기기 위해 마이크를 사용합니다",
+}
+for permission_key, expected in expected_usage_descriptions.items():
+    actual = str(info.get(permission_key, "")).strip()
+    require(actual == expected,
+            f"{permission_key} is {actual!r}, expected {expected!r}")
+    print(f"{permission_key}: {actual}")
 require("Default" in (entitlements.get("com.apple.developer.applesignin") or []),
         "Sign in with Apple entitlement is missing")
 
@@ -79,8 +88,10 @@ require(plugin_guard >= 0 and plugin_configure > plugin_guard,
         "Firebase Authentication plugin initialization guard changed")
 
 storyboard = (root / "ios/App/App/Base.lproj/Main.storyboard").read_text(encoding="utf-8")
-require('customClass="CAPBridgeViewController"' in storyboard,
-        "standard Capacitor bridge controller is not configured")
+require('customClass="PilaTeacherBridgeViewController"' in storyboard,
+        "PilaTeacher Capacitor bridge controller is not configured")
+require("class PilaTeacherBridgeViewController: CAPBridgeViewController" in app_delegate,
+        "PilaTeacher bridge controller no longer inherits CAPBridgeViewController")
 
 package_json = json.loads((root / "package.json").read_text(encoding="utf-8"))
 require(package_json.get("dependencies", {}).get("@capgo/camera-preview") == "8.11.2",

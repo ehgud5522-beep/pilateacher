@@ -9,7 +9,7 @@ const VOICE_SESSION_EVENT_TYPES = new Set([
   "silence_end", "user_end", "cap_end", "error",
   "permission_state", "open_app_settings",
   "record_start", "record_end", "upload", "transcribed", "structured", "failed",
-  "prepared", "trimmed",
+  "prepared", "trimmed", "audio_record_start_failed", "camera_preview_start_failed", "camera_fallback",
 ]);
 
 const normalizeSpace = (value) => String(value || "").replace(/\s+/g, " ").trim();
@@ -74,6 +74,20 @@ const safeDiagnosticText = (value, max = 80) => String(value || "")
   .replace(/[^A-Za-z0-9._:/-]/g, "_")
   .slice(0, max);
 
+const safeDiagnosticMessage = (value, max = 240) => String(value || "")
+  .replace(/[\r\n\t]+/g, " ")
+  .replace(/Bearer\s+\S+/gi, "Bearer_[redacted]")
+  .replace(/sk-[A-Za-z0-9_-]+/g, "sk_[redacted]")
+  .slice(0, max);
+
+export function nativeAudioPermissionState(status, platform = "") {
+  const value = String(status?.recordAudio || status || "prompt").trim().toLowerCase();
+  if (value === "granted") return "granted";
+  if (value === "prompt" || value === "prompt-with-rationale" || value === "limited") return "prompt";
+  if (value === "denied" && String(platform).toLowerCase() === "ios") return "permanently_denied";
+  return value === "denied" ? "denied" : "prompt";
+}
+
 export function readVoiceSessionDiagnostics(storage = globalThis.localStorage) {
   try {
     const parsed = JSON.parse(storage?.getItem?.(VOICE_SESSION_DIAGNOSTIC_KEY) || "[]");
@@ -104,6 +118,14 @@ export function appendVoiceSessionDiagnostic(event, details = {}, storage = glob
     ...(Number.isFinite(Number(details.captureLatencyMs)) ? { captureLatencyMs: Math.max(0, Number(details.captureLatencyMs)) } : {}),
     ...(Array.isArray(details.flags) ? { flags: details.flags.map((flag) => safeDiagnosticText(flag, 40)).slice(0, 4) } : {}),
     ...(details.requestId ? { requestId: safeDiagnosticText(details.requestId, 80) } : {}),
+    ...(details.pluginError ? { pluginError: safeDiagnosticMessage(details.pluginError) } : {}),
+    ...(details.permissionState ? { permissionState: safeDiagnosticText(details.permissionState, 40) } : {}),
+    ...(details.audioSessionCategory ? { audioSessionCategory: safeDiagnosticText(details.audioSessionCategory, 80) } : {}),
+    ...(details.audioSessionMode ? { audioSessionMode: safeDiagnosticText(details.audioSessionMode, 80) } : {}),
+    ...(Number.isFinite(Number(details.x)) ? { x: Number(details.x) } : {}),
+    ...(Number.isFinite(Number(details.y)) ? { y: Number(details.y) } : {}),
+    ...(Number.isFinite(Number(details.width)) ? { width: Math.max(0, Number(details.width)) } : {}),
+    ...(Number.isFinite(Number(details.height)) ? { height: Math.max(0, Number(details.height)) } : {}),
   };
   try {
     const current = readVoiceSessionDiagnostics(storage).reverse();

@@ -15,6 +15,10 @@ root = pathlib.Path(os.environ["CM_BUILD_DIR"]).resolve()
 expected_bundle_id = "com.pilateacher.app"
 expected_build = os.environ["BUILD_NUMBER"]
 expected_version = os.environ["VITE_APP_VERSION"]
+expected_usage_descriptions = {
+    "NSCameraUsageDescription": "회원의 체형 사진을 촬영하고 측정 결과 코드를 읽기 위해 카메라를 사용합니다.",
+    "NSMicrophoneUsageDescription": "수업 직후 음성으로 기록을 남기기 위해 마이크를 사용합니다",
+}
 
 
 def fail(message):
@@ -58,6 +62,11 @@ def validate_app_info(path, label):
         fail(f"{label} contains unused location permission keys: {location_keys}")
     if info.get("ITSAppUsesNonExemptEncryption") is not False:
         fail(f"{label} ITSAppUsesNonExemptEncryption is not Boolean false")
+    for key, expected in expected_usage_descriptions.items():
+        actual = str(info.get(key, "")).strip()
+        if actual != expected:
+            fail(f"{label} {key} is {actual!r}, expected {expected!r}")
+        print(f"{label} {key}: {actual}")
     executable = str(info.get("CFBundleExecutable", "")).strip()
     if not executable:
         fail(f"{label} CFBundleExecutable is empty")

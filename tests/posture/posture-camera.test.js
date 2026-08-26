@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
@@ -14,11 +15,28 @@ import {
   evaluateDeviceLevel,
   mapPreviewPointToCapture,
   normalizeCaptureTimer,
+  normalizeCameraPermissionState,
   normalizeScreenAngle,
   readCaptureTimer,
   resolveSensorStatus,
   writeCaptureTimer,
 } from "../../src/features/posture/posture-camera.js";
+
+test("camera permission prompt is distinct from denial so the first iOS tap requests once", () => {
+  assert.equal(normalizeCameraPermissionState({ camera: "prompt" }), "prompt");
+  assert.equal(normalizeCameraPermissionState({ camera: "prompt-with-rationale" }), "prompt");
+  assert.equal(normalizeCameraPermissionState({ camera: "granted" }), "granted");
+  assert.equal(normalizeCameraPermissionState({ camera: "denied" }), "denied");
+});
+
+test("iOS camera preview failure has an official native capture fallback", async () => {
+  const source = await readFile(new URL("../../src/App.jsx", import.meta.url), "utf8");
+  assert.match(source, /CapacitorCamera\.getPhoto/);
+  assert.match(source, /CameraSource\.Camera/);
+  assert.match(source, /captureWithSystemCamera\("preview_start_failed"\)/);
+  assert.match(source, /camera_preview_start_failed/);
+  assert.match(source, /permissionState,\s*x: box\?\.x, y: box\?\.y, width: box\?\.width, height: box\?\.height/);
+});
 
 function memoryStorage(initial = {}) {
   const values = new Map(Object.entries(initial));

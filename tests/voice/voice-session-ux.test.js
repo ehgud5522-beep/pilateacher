@@ -10,6 +10,7 @@ import {
   appendVoiceSessionDiagnostic,
   createSilenceGuard,
   isRecognizerBusyError,
+  nativeAudioPermissionState,
   readVoiceSessionDiagnostics,
   resolveVoicePhase,
   runVoicePermissionAction,
@@ -17,6 +18,22 @@ import {
   shouldRestartRecognizer,
   stitchSpeechTranscript,
 } from "../../src/features/voice/voice-session.js";
+
+test("server audio permission preserves iOS prompt and logs start failure diagnostics", () => {
+  assert.equal(nativeAudioPermissionState({ recordAudio: "prompt" }, "ios"), "prompt");
+  assert.equal(nativeAudioPermissionState({ recordAudio: "prompt-with-rationale" }, "ios"), "prompt");
+  assert.equal(nativeAudioPermissionState({ recordAudio: "denied" }, "ios"), "permanently_denied");
+  assert.equal(nativeAudioPermissionState({ recordAudio: "denied" }, "android"), "denied");
+  const values = new Map();
+  const storage = { getItem: (key) => values.get(key) || null, setItem: (key, value) => values.set(key, value) };
+  const entry = appendVoiceSessionDiagnostic("audio_record_start_failed", {
+    source: "server_audio", pluginError: "Failed to start recording: AVAudioSession busy",
+    permissionState: "granted", audioSessionCategory: "playAndRecord", audioSessionMode: "measurement",
+  }, storage, () => new Date("2026-08-26T00:00:00Z"));
+  assert.equal(entry.permissionState, "granted");
+  assert.equal(entry.audioSessionCategory, "playAndRecord");
+  assert.match(entry.pluginError, /AVAudioSession busy/);
+});
 import { describeLessonRecordFailure } from "../../src/features/lesson-record/failure-diagnostics.js";
 
 test("engine segment transcripts stitch without repeating the overlap", () => {

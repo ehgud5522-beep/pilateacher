@@ -12,6 +12,13 @@ export const SENSOR_STATUSES = Object.freeze({
   error: "error",
 });
 
+export function normalizeCameraPermissionState(status) {
+  const value = String(status?.camera || status || "prompt").trim().toLowerCase();
+  if (value === "granted" || value === "limited") return "granted";
+  if (value === "denied") return "denied";
+  return "prompt";
+}
+
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 const round = (value, digits = 4) => {
   const scale = 10 ** digits;

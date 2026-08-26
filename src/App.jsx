@@ -10,6 +10,7 @@ import { useState, useEffect, useMemo, useRef, useCallback, useContext, createCo
 import { createPortal } from "react-dom";
 import { Capacitor, registerPlugin } from "@capacitor/core";
 import { App as CapacitorApp } from "@capacitor/app";
+import { Camera as CapacitorCamera, CameraDirection, CameraResultType, CameraSource } from "@capacitor/camera";
 import { Filesystem } from "@capacitor/filesystem";
 import { Haptics, ImpactStyle } from "@capacitor/haptics";
 import { CapacitorAudioRecorder } from "@capgo/capacitor-audio-recorder";
@@ -58,7 +59,7 @@ import {
 } from "./features/voice/speech-session.js";
 import {
   BACKGROUND_RECORDING_INTERRUPTED_MESSAGE, RECOGNIZER_BUSY_RETRY_MS, VOICE_SILENCE_LIMIT_MS, appendVoiceSessionDiagnostic, createSilenceGuard,
-  isRecognizerBusyError, readVoiceSessionDiagnostics, resolveVoicePhase, runVoicePermissionAction,
+  isRecognizerBusyError, nativeAudioPermissionState, readVoiceSessionDiagnostics, resolveVoicePhase, runVoicePermissionAction,
   shouldInterruptServerRecordingOnPause, shouldRestartRecognizer, stitchSpeechTranscript,
 } from "./features/voice/voice-session.js";
 import {
@@ -87,7 +88,7 @@ import Onboarding from "./features/onboarding/Onboarding.jsx";
 import { completeOnboarding, hasCompletedOnboarding } from "./features/onboarding/onboarding-storage.js";
 import {
   CAPTURE_TIMER_OPTIONS, LEVEL_THRESHOLD_DEG, SENSOR_STATUSES, base64ToBlob,
-  computePreviewGeometry, correctOrientationForScreen, createCaptureGeometryMetadata,
+  computePreviewGeometry, correctOrientationForScreen, createCaptureGeometryMetadata, normalizeCameraPermissionState,
   evaluateDeviceLevel, readCaptureTimer, writeCaptureTimer,
 } from "./features/posture/posture-camera.js";
 import {
@@ -117,8 +118,15 @@ import {
 } from "./features/account/account-deletion.js";
 import { Users, Settings as SettingsIcon, Search, ChevronRight, ChevronLeft, Plus, Camera, MessageSquare, Check, X, Trash2, ArrowLeft, Target, ClipboardList, RotateCcw, Redo2, Palette, Sparkles, Copy, ArrowUpRight, ArrowDownRight, Loader as Loader2, Pencil, UserPlus, Activity, Ticket, Calendar, Clock, Bell, Download, Share2, TriangleAlert as AlertTriangle, CircleAlert as AlertCircle, LogOut, Mail, Star, Sun, Moon, Smartphone, Move, Crosshair, ChevronDown, ImagePlus, SlidersHorizontal, CalendarDays, ArrowUpDown, Minus, Upload, Link2, Users as Users2, Play } from "lucide-react";
 
-const IOS_NATIVE_CAPTURE_ENABLED = String(import.meta.env.VITE_IOS_NATIVE_CAPTURE_ENABLED || "").trim().toLowerCase() === "true";
+const IOS_NATIVE_CAPTURE_ENABLED = String(import.meta.env.VITE_IOS_NATIVE_CAPTURE_ENABLED || "true").trim().toLowerCase() !== "false";
 const VOICE_ENGINE_MODE = resolveVoiceEngine(import.meta.env.VITE_VOICE_ENGINE || DEFAULT_VOICE_ENGINE);
+const SERVER_AUDIO_RECORDING_OPTIONS = Object.freeze({
+  bitRate: 8000,
+  sampleRate: 16000,
+  audioSessionMode: "MEASUREMENT",
+  audioSessionCategoryOptions: ["DUCK_OTHERS"],
+});
+const SERVER_AUDIO_SESSION_DIAGNOSTIC = Object.freeze({ audioSessionCategory: "playAndRecord", audioSessionMode: "measurement" });
 const AppSettings = registerPlugin("AppSettings");
 const LESSON_RECORD_EXAMPLES_SEEN_KEY = "pilateacher_lesson_record_examples_seen_v1";
 const restoreDecisionKey = (accountId) => `pilateacher_restore_decision_v1:${String(accountId || "")}`;
@@ -1401,9 +1409,9 @@ function LessonRecordExamplesModal({ onClose, onPractice }) {
     onClose?.();
   };
   return createPortal(
-    <div className="fixed inset-0 z-[90] flex items-end justify-center" role="dialog" aria-modal="true" aria-label="AI 수업기록 예시">
+    <div className="pt-example-modal fixed inset-0 z-[90] flex items-end justify-center" role="dialog" aria-modal="true" aria-label="AI 수업기록 예시">
       <button type="button" aria-label="예시 닫기" onClick={close} className="absolute inset-0" style={{ backgroundColor: SCRIM }} />
-      <section className="relative flex max-h-[90dvh] w-full max-w-[620px] flex-col overflow-hidden bg-white" style={{ borderRadius: "18px 18px 0 0", paddingBottom: "max(env(safe-area-inset-bottom, 0px), 12px)", boxShadow: SHADOW }}>
+      <section className="relative flex max-h-[90dvh] w-full max-w-[560px] flex-col overflow-hidden" style={{ borderRadius: "18px 18px 0 0", paddingBottom: "max(env(safe-area-inset-bottom, 0px), 12px)", backgroundColor: CARD, border: `1px solid ${LINE}`, boxShadow: SHADOW }}>
         <header className="flex items-center px-4 py-3"><div className="min-w-0 flex-1"><p className="text-base font-extrabold" style={{ color: INK }}>이렇게 말해보세요</p><p className="mt-0.5 text-[11px]" style={{ color: SUB }}>{lessonRecordExamples.label}</p></div><button type="button" onClick={close} aria-label="닫기" className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><X size={18} /></button></header>
         <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-3" style={{ touchAction: "pan-y" }}>
           {!tipPage ? <div data-example-card={page + 1}>
@@ -2836,7 +2844,8 @@ function WeekGrid({ days, byDate, nameOf, memberOf, briefingOf, cursor, onOpen, 
     const status = list[0]?.status || "booked";
     const needsRecord = !pv && !eq && list.some((a) => a.status === "done" && !(memberOf?.(a.memberId)?.notes || []).some((n) => n?.sid === s.id));
     const briefingLine = !pv && !eq && list.some((attendee) => !!selectScheduleBriefing(briefingOf?.(attendee.memberId, s.id)));
-    return { s, top: topOf(st), h: Math.max(20, topOf(en) - topOf(st) - 2), label, briefingLine, done, cancelled: (eq && !!s.groupCancelled) || status === "cancel", noshow: status === "noshow", eq, pv, next: s.id === nextId, needsRecord, groupPeople };
+    const typeLabel = pv ? "개인 일정" : eq ? (s.equip || "그룹") : (s.type || (list.length > 1 ? "듀엣" : "개인"));
+    return { s, top: topOf(st), h: Math.max(20, topOf(en) - topOf(st) - 2), label, typeLabel, briefingLine, done, cancelled: (eq && !!s.groupCancelled) || status === "cancel", noshow: status === "noshow", eq, pv, next: s.id === nextId, needsRecord, groupPeople };
   }).filter((b) => b.top >= -GRID_ROW && b.top < totalHeight);
 
   return (
@@ -2892,7 +2901,7 @@ function WeekGrid({ days, byDate, nameOf, memberOf, briefingOf, cursor, onOpen, 
                       opacity: memberMatch ? 1 : 0.22, boxShadow: focusedMemberId && memberMatch ? `0 0 0 2px ${RING}` : "none", transition: "opacity .18s ease, box-shadow .18s ease" }}>
                     {b.next && <Play size={7} fill={BRAND} className="absolute left-0.5 top-0.5" />}
                     {!b.pv && !b.eq && <span className="absolute" aria-hidden="true" style={{ left: 2, bottom: 2, width: 5, height: 5, borderRadius: 3, backgroundColor: idColor(attendeesOf(b.s)[0]?.memberId), opacity: b.done ? .45 : 1 }} />}
-                    <span className="w-full min-w-0"><span className="block truncate" style={{ textDecoration: b.cancelled ? "line-through" : "none" }}>{b.label}</span></span>
+                    <span className="w-full min-w-0"><span className="block truncate" style={{ textDecoration: b.cancelled ? "line-through" : "none" }}>{b.label}</span><span className="pt-week-event-type truncate">{b.typeLabel}</span></span>
                     {b.briefingLine && <span className="absolute" aria-label="브리핑 있음" style={{ top: 2, right: 2, width: b.h >= 24 ? 5 : 4, height: b.h >= 24 ? 5 : 4, borderRadius: 3, backgroundColor: PRIMARY }} />}
                     {b.needsRecord && <span className="absolute" aria-label="기록 필요" style={{ bottom: 2, right: 2, width: 5, height: 5, borderRadius: 3, backgroundColor: BRAND }} />}
                   </button>
@@ -4211,11 +4220,11 @@ function ReferenceMemberList({ members, schedule, settings, onSelect, onAdd }) {
       </div>
       <div className="pt-scroll min-h-0 flex-1 overflow-y-auto" style={{ padding: "10px 12px 16px" }}>
         {!list.length && <div className="py-12 text-center"><Users size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-semibold" style={{ color: INK }}>{q ? "검색 결과가 없습니다" : "조건에 맞는 회원이 없습니다"}</p></div>}
-        {list.map((m) => {
+        <div className="pt-member-card-grid">{list.map((m) => {
           const remaining = left(m), expiry = ddaySafe(m.contractEnd), next = nextOf(m.id);
           const renew = isActive(m) && (remaining <= 3 || (expiry !== null && expiry <= 14));
           return (
-            <div key={m.id} className="relative mb-2"><button type="button" onClick={() => onSelect(m.id)} className="w-full text-left"
+            <div key={m.id} className="relative"><button type="button" onClick={() => onSelect(m.id)} className="h-full w-full text-left"
               style={{ padding: "12px 14px", borderRadius: 14, backgroundColor: CARD, border: `1px solid ${LINE}`, boxShadow: "0 1px 4px rgba(28,36,51,.05)" }}>
               <div className="flex items-start gap-2">
                 <div className="min-w-0 flex-1">
@@ -4235,7 +4244,7 @@ function ReferenceMemberList({ members, schedule, settings, onSelect, onAdd }) {
               </div>
             </button></div>
           );
-        })}
+        })}</div>
       </div>
       {registerOpen && <MemberRegisterSheet members={realMembers} onClose={() => setRegisterOpen(false)}
         onOpenExisting={(id) => { setRegisterOpen(false); onSelect(id); }}
@@ -4420,7 +4429,7 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
   return (
     <div className="relative flex h-full min-h-0 flex-col" style={{ backgroundColor: PAGE }}>
       <header className="flex shrink-0 items-center" style={{ height: 52, padding: "0 8px", backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
-        <button type="button" onClick={onBack} aria-label="회원 목록" className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={19} /></button>
+        <button type="button" onClick={onBack} aria-label="회원 목록" className="pt-member-back flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={19} /></button>
         <div className="min-w-0 flex-1"><h1 className="truncate" style={{ fontSize: 17, fontWeight: 600, color: INK }}>{member.name || "이름 미입력"}</h1><p style={{ fontSize: 11, color: SUB }}>{isHold(member) ? "홀딩" : isEnded(member) ? "종료" : "활성"}{singleInstructorMode ? "" : ` · 담당 ${member.instructor || "미지정"}`}</p></div>
       </header>
       <div className="grid shrink-0 grid-cols-3 gap-1.5" aria-label="회원 빠른 실행" style={{ padding: "7px 12px", backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
@@ -6526,6 +6535,51 @@ function PostureCaptureScreen({
     return "카메라 프리뷰를 시작하지 못했습니다. 앨범에서 사진을 선택하거나 다시 시도해 주세요.";
   };
 
+  const decodeBlobSize = async (blob) => {
+    const src = URL.createObjectURL(blob);
+    try {
+      const image = new window.Image();
+      await new Promise((resolve, reject) => { image.onload = resolve; image.onerror = reject; image.src = src; });
+      return { width: image.naturalWidth, height: image.naturalHeight };
+    } finally { URL.revokeObjectURL(src); }
+  };
+
+  const captureWithSystemCamera = useCallback(async (reason = "preview_unavailable") => {
+    const box = stageRef.current?.getBoundingClientRect();
+    const checked = await CapacitorCamera.checkPermissions().catch(() => ({ camera: "prompt" }));
+    let permissionState = normalizeCameraPermissionState(checked);
+    if (permissionState === "prompt") {
+      const requested = await CapacitorCamera.requestPermissions({ permissions: ["camera"] });
+      permissionState = normalizeCameraPermissionState(requested);
+    }
+    if (permissionState !== "granted") throw Object.assign(new Error("camera permission denied"), { code: "permission_denied", permissionState });
+    const photo = await CapacitorCamera.getPhoto({
+      quality: 92, allowEditing: false, resultType: CameraResultType.Uri, source: CameraSource.Camera,
+      direction: CameraDirection.Rear, correctOrientation: true, saveToGallery: false, presentationStyle: "fullscreen",
+    });
+    let blob;
+    if (photo.webPath) {
+      const response = await globalThis.fetch.bind(globalThis)(photo.webPath);
+      if (!response.ok) throw Object.assign(new Error(`camera webPath ${response.status}`), { code: "camera_webpath_failed" });
+      blob = await response.blob();
+    } else if (photo.path) {
+      const file = await Filesystem.readFile({ path: photo.path });
+      blob = base64ToBlob(file.data, { defaultMimeType: `image/${photo.format || "jpeg"}` });
+    } else {
+      throw Object.assign(new Error("camera result missing webPath/path"), { code: "camera_result_missing" });
+    }
+    const size = await decodeBlobSize(blob);
+    const src = URL.createObjectURL(blob);
+    setPendingCapture({ blob, src, memberId: member?.id || null, assessmentId, view: activeView, geometry: null, motion: null, source: "capacitor_camera" });
+    setCameraStatus("confirming");
+    setCameraError("");
+    appendVoiceSessionDiagnostic("camera_fallback", {
+      source: "capacitor_camera", reason, permissionState, width: box?.width, height: box?.height,
+    });
+    deviceLog("posture_camera_fallback_captured", { memberId: member?.id, assessmentId, view: activeView, source: "capacitor_camera", reason, width: size.width, height: size.height });
+    return true;
+  }, [activeView, assessmentId, member?.id]);
+
   const startCamera = useCallback(async () => {
     if (iosStableCaptureFallback || cameraRunning.current || cameraStarting.current || busy) return;
     const generation = cameraGeneration.current + 1;
@@ -6543,13 +6597,12 @@ function PostureCaptureScreen({
       if (nativePreviewAvailable) {
         const checked = await CameraPreview.checkPermissions({ disableAudio: true });
         ensureCurrent();
-        let cameraPermission = checked.camera;
+        let cameraPermission = normalizeCameraPermissionState(checked);
         if (cameraPermission === "granted") cameraPermissionDenied.current = false;
         if (cameraPermission !== "granted") {
-          if (cameraPermissionDenied.current) throw Object.assign(new Error("camera permission denied"), { code: "permission_denied" });
           const requested = await CameraPreview.requestPermissions({ disableAudio: true, showSettingsAlert: false });
           ensureCurrent();
-          cameraPermission = requested.camera;
+          cameraPermission = normalizeCameraPermissionState(requested);
         }
         if (cameraPermission !== "granted") {
           cameraPermissionDenied.current = true;
@@ -6594,22 +6647,28 @@ function PostureCaptureScreen({
       }
       await stopCamera("error");
       if (!mounted.current) return;
+      const permission = await CameraPreview.checkPermissions({ disableAudio: true }).catch(() => ({ camera: "prompt" }));
+      const permissionState = normalizeCameraPermissionState(permission);
+      const box = stageRef.current?.getBoundingClientRect();
+      const message = cameraErrorMessage(error);
+      appendVoiceSessionDiagnostic("camera_preview_start_failed", {
+        source: nativePreviewAvailable ? "native_preview" : "getUserMedia", code: error?.code || error?.name || "camera_preview_failed",
+        pluginError: error?.message || String(error), permissionState,
+        x: box?.x, y: box?.y, width: box?.width, height: box?.height,
+      });
       setCameraStatus("error");
-      setCameraError(cameraErrorMessage(error));
-      deviceLog("posture_camera_preview_failed", { memberId: member?.id, assessmentId, view: activeView, source: nativePreviewAvailable ? "native_preview" : "getUserMedia", ...deviceError(error) });
+      setCameraError(`카메라를 열지 못했어요 · ${message}`);
+      window.dispatchEvent(new CustomEvent("pilateacher:toast", { detail: { ok: false, msg: `카메라를 열지 못했어요 · ${message}` } }));
+      deviceLog("posture_camera_preview_failed", { memberId: member?.id, assessmentId, view: activeView, source: nativePreviewAvailable ? "native_preview" : "getUserMedia", permissionState, x: box?.x, y: box?.y, width: box?.width, height: box?.height, ...deviceError(error) });
+      if (Capacitor.getPlatform() === "ios" && permissionState === "granted") {
+        try { await captureWithSystemCamera("preview_start_failed"); } catch (fallbackError) {
+          appendVoiceSessionDiagnostic("camera_fallback", { source: "capacitor_camera", reason: "failed", code: fallbackError?.code || "camera_fallback_failed", pluginError: fallbackError?.message || String(fallbackError), permissionState });
+        }
+      }
     } finally {
       if (cameraGeneration.current === generation) cameraStarting.current = false;
     }
-  }, [activeView, assessmentId, busy, iosStableCaptureFallback, member?.id, nativePreviewAvailable, startMotion, stopCamera, syncPreviewBounds]);
-
-  const decodeBlobSize = async (blob) => {
-    const src = URL.createObjectURL(blob);
-    try {
-      const image = new window.Image();
-      await new Promise((resolve, reject) => { image.onload = resolve; image.onerror = reject; image.src = src; });
-      return { width: image.naturalWidth, height: image.naturalHeight };
-    } finally { URL.revokeObjectURL(src); }
-  };
+  }, [activeView, assessmentId, busy, captureWithSystemCamera, iosStableCaptureFallback, member?.id, nativePreviewAvailable, startMotion, stopCamera, syncPreviewBounds]);
 
   const captureBrowserFrame = async () => {
     const video = videoRef.current;
@@ -9370,10 +9429,10 @@ function ReferenceAnalysisTab({ members, photos, selectedId, selectedPoseId, onS
       </header>
       <main className="pt-scroll min-h-0 flex-1 overflow-y-auto" style={{ padding: "2px 14px 18px" }}>
         {!rows.length && <div className="py-12 text-center"><Activity size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-semibold" style={{ color: INK }}>조건에 맞는 회원이 없습니다</p></div>}
-        {rows.map(({ m, assessmentSets, last, draftCount, comparable, status }) => { const displayedViews = last?.selectedViews || POSTURE_VIEW_KEYS; const completedViews = new Set([...(last ? Object.keys(last.photos) : []), ...(last?.poses || []).map((pose) => normalizePostureView(pose.view))]); return <div key={m.id} className="relative mb-2" style={{ padding: "11px 12px", borderRadius: 14, backgroundColor: CARD, border: `1px solid ${LINE}` }}><button type="button" onClick={() => onSelect(m.id, null)} className="flex w-full items-center gap-2 text-left">
+        <div className="pt-analysis-card-grid">{rows.map(({ m, assessmentSets, last, draftCount, comparable, status }) => { const displayedViews = last?.selectedViews || POSTURE_VIEW_KEYS; const completedViews = new Set([...(last ? Object.keys(last.photos) : []), ...(last?.poses || []).map((pose) => normalizePostureView(pose.view))]); return <div key={m.id} className="relative" style={{ padding: "11px 12px", borderRadius: 14, backgroundColor: CARD, border: `1px solid ${LINE}` }}><button type="button" onClick={() => onSelect(m.id, null)} className="flex w-full items-center gap-2 text-left">
           <span className="min-w-0 flex-1"><span className="flex items-center gap-1.5"><span className="block max-w-[44%] truncate" style={{ fontSize: 14, fontWeight: 600, color: INK }}>{m.name}</span>{status !== "none" && <span style={{ padding: "2px 6px", borderRadius: 6, backgroundColor: status === "review" ? WARN_S : status === "done" ? GOOD_S : CANVAS, color: status === "review" ? WARN : status === "done" ? GOOD : INK2, fontSize: 10, fontWeight: 600 }}>{status === "review" ? "검토 필요" : status === "done" ? "완료" : "작성 중"}</span>}{comparable && <span style={{ padding: "2px 6px", borderRadius: 6, backgroundColor: TINT, color: BRAND_D, fontSize: 10, fontWeight: 600 }}>비교 가능</span>}</span><span className="mt-1 flex items-center gap-2" style={{ fontSize: 11, color: SUB }}><span>{last ? `최근 ${ymd((last.completedAt || last.at).slice(0, 10))}` : "아직 체형분석 이력이 없어요"}</span><span className="flex items-center gap-1" aria-label={`촬영 등록 ${last ? completedViews.size : draftCount}/${displayedViews.length}`}>{displayedViews.map((view) => <i key={view} aria-hidden="true" style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: (last ? completedViews.has(view) : (photos[m.id]?.[view] || []).length > 0) ? BRAND : "#D5DAE3" }} />)}<span>{last ? completedViews.size : draftCount}/{displayedViews.length}</span></span>{last && <span>세트 {assessmentSets.length}개</span>}</span></span>
           <ChevronRight size={15} style={{ color: FAINT }} />
-        </button>{!last && <button type="button" onClick={() => onSelect(m.id, null)} className="mt-2 w-full" style={{ height: 38, borderRadius: 8, border: `1px solid #D5D1EB`, backgroundColor: TINT, color: BRAND_D, fontSize: 12, fontWeight: 600 }}>첫 체형분석 시작</button>}</div>; })}
+        </button>{!last && <button type="button" onClick={() => onSelect(m.id, null)} className="mt-2 w-full" style={{ height: 38, borderRadius: 8, border: `1px solid #D5D1EB`, backgroundColor: TINT, color: BRAND_D, fontSize: 12, fontWeight: 600 }}>첫 체형분석 시작</button>}</div>; })}</div>
       </main>
     </div>
   );
@@ -9828,13 +9887,13 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       if (VOICE_ENGINE_MODE === "server") {
         const permission = await CapacitorAudioRecorder.checkPermissions().catch(() => null);
         if (!active) return;
-        const state = String(permission?.recordAudio || "prompt");
-        setVoiceAvailability(state === "granted" ? "ready" : state === "denied" ? "permission_permanently_denied" : "permission_required");
-        voiceDiagnostic("permission_state", { source: "server_audio", state: state === "granted" ? "granted" : state === "denied" ? "permanently_denied" : "denied" });
+        const state = nativeAudioPermissionState(permission, Capacitor.getPlatform());
+        setVoiceAvailability(state === "granted" ? "ready" : state === "permanently_denied" ? "permission_permanently_denied" : "permission_required");
+        voiceDiagnostic("permission_state", { source: "server_audio", state, permissionState: state });
         if (state === "granted") {
-          await CapacitorAudioRecorder.prepareRecording({ bitRate: 8000, sampleRate: 16000 }).then(() => {
+          await CapacitorAudioRecorder.prepareRecording(SERVER_AUDIO_RECORDING_OPTIONS).then(() => {
             recorderPrewarmedRef.current = true;
-            voiceDiagnostic("prepared", { source: "server_audio" });
+            voiceDiagnostic("prepared", { source: "server_audio", ...SERVER_AUDIO_SESSION_DIAGNOSTIC });
           }).catch(() => { recorderPrewarmedRef.current = false; });
         }
         return;
@@ -9885,13 +9944,13 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       if (VOICE_ENGINE_MODE === "server") {
         const permission = await CapacitorAudioRecorder.checkPermissions().catch(() => null);
         if (active) {
-          const state = String(permission?.recordAudio || "prompt");
-          setVoiceAvailability(state === "granted" ? "ready" : state === "denied" ? "permission_permanently_denied" : "permission_required");
-          voiceDiagnostic("permission_state", { source: "server_audio_resume", state: state === "granted" ? "granted" : state === "denied" ? "permanently_denied" : "denied" });
+          const state = nativeAudioPermissionState(permission, Capacitor.getPlatform());
+          setVoiceAvailability(state === "granted" ? "ready" : state === "permanently_denied" ? "permission_permanently_denied" : "permission_required");
+          voiceDiagnostic("permission_state", { source: "server_audio_resume", state, permissionState: state });
           if (state === "granted") {
-            await CapacitorAudioRecorder.prepareRecording({ bitRate: 8000, sampleRate: 16000 }).then(() => {
+            await CapacitorAudioRecorder.prepareRecording(SERVER_AUDIO_RECORDING_OPTIONS).then(() => {
               recorderPrewarmedRef.current = true;
-              voiceDiagnostic("prepared", { source: "server_audio_resume" });
+              voiceDiagnostic("prepared", { source: "server_audio_resume", ...SERVER_AUDIO_SESSION_DIAGNOSTIC });
             }).catch(() => { recorderPrewarmedRef.current = false; });
           }
         }
@@ -10093,7 +10152,8 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
   const requestVoicePermission = async () => {
     if (VOICE_ENGINE_MODE === "server") {
       const current = await CapacitorAudioRecorder.checkPermissions().catch(() => null);
-      if (current?.recordAudio === "denied") {
+      const currentState = nativeAudioPermissionState(current, Capacitor.getPlatform());
+      if (currentState === "permanently_denied") {
         voiceDiagnostic("permission_state", { source: "server_audio", state: "permanently_denied" });
         voiceDiagnostic("open_app_settings", { source: "server_audio", state: "requested" });
         await AppSettings.open().catch(() => {});
@@ -10101,9 +10161,9 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       }
       setVoiceAvailability("checking");
       const permission = await CapacitorAudioRecorder.requestPermissions().catch(() => null);
-      const state = String(permission?.recordAudio || "denied");
-      setVoiceAvailability(state === "granted" ? "ready" : state === "denied" ? "permission_permanently_denied" : "permission_required");
-      voiceDiagnostic("permission_state", { source: "server_audio", state: state === "granted" ? "granted" : state === "denied" ? "permanently_denied" : "denied" });
+      const state = nativeAudioPermissionState(permission, Capacitor.getPlatform());
+      setVoiceAvailability(state === "granted" ? "ready" : state === "permanently_denied" ? "permission_permanently_denied" : "permission_required");
+      voiceDiagnostic("permission_state", { source: "server_audio", state, permissionState: state });
       return;
     }
     const NS = nativeSTT();
@@ -10417,21 +10477,25 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       return;
     }
     let permission = await CapacitorAudioRecorder.checkPermissions().catch(() => null);
-    if (permission?.recordAudio !== "granted") permission = await CapacitorAudioRecorder.requestPermissions().catch(() => null);
-    if (permission?.recordAudio !== "granted") {
+    let permissionState = nativeAudioPermissionState(permission, Capacitor.getPlatform());
+    if (permissionState === "prompt" || permissionState === "denied") {
+      permission = await CapacitorAudioRecorder.requestPermissions().catch(() => null);
+      permissionState = nativeAudioPermissionState(permission, Capacitor.getPlatform());
+    }
+    if (permissionState !== "granted") {
       startRequestRef.current = false;
       setStarting(false);
-      setVoiceAvailability(permission?.recordAudio === "denied" ? "permission_permanently_denied" : "permission_required");
-      voiceDiagnostic("permission_state", { source: "server_audio", state: permission?.recordAudio === "denied" ? "permanently_denied" : "denied" });
+      setVoiceAvailability(permissionState === "permanently_denied" ? "permission_permanently_denied" : "permission_required");
+      voiceDiagnostic("permission_state", { source: "server_audio", state: permissionState, permissionState });
       return;
     }
     try {
       if (!recorderPrewarmedRef.current) {
-        await CapacitorAudioRecorder.prepareRecording({ bitRate: 8000, sampleRate: 16000 });
+        await CapacitorAudioRecorder.prepareRecording(SERVER_AUDIO_RECORDING_OPTIONS);
         recorderPrewarmedRef.current = true;
-        voiceDiagnostic("prepared", { source: "server_audio", phase: "tap" });
+        voiceDiagnostic("prepared", { source: "server_audio", phase: "tap", ...SERVER_AUDIO_SESSION_DIAGNOSTIC });
       }
-      await CapacitorAudioRecorder.startRecording({ bitRate: 8000, sampleRate: 16000 });
+      await CapacitorAudioRecorder.startRecording(SERVER_AUDIO_RECORDING_OPTIONS);
       recorderPrewarmedRef.current = false;
       captureLatencyMsRef.current = Math.max(0, Math.round((globalThis.performance?.now?.() || Date.now()) - captureRequestedAtRef.current));
       Haptics.impact({ style: ImpactStyle.Light }).catch(() => {});
@@ -10446,7 +10510,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       setBackgroundInterrupted(false);
       setAudioState("recording");
       setElapsed(0);
-      voiceDiagnostic("record_start", { source: "server_audio", captureLatencyMs: captureLatencyMsRef.current });
+      voiceDiagnostic("record_start", { source: "server_audio", captureLatencyMs: captureLatencyMsRef.current, permissionState: "granted", ...SERVER_AUDIO_SESSION_DIAGNOSTIC });
       amplitudeTimerRef.current = setInterval(async () => {
         const level = await CapacitorAudioRecorder.getCurrentAmplitude().catch(() => ({ value: 0 }));
         const value = Math.max(0, Math.min(1, Number(level?.value) || 0));
@@ -10458,7 +10522,13 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       setStarting(false);
       setOn(false);
       setErr("음성 녹음을 시작하지 못했습니다.");
-      voiceDiagnostic("failed", { source: "server_audio", code: error?.code || "audio_record_start_failed" });
+      const current = await CapacitorAudioRecorder.checkPermissions().catch(() => null);
+      const failedPermissionState = nativeAudioPermissionState(current, Capacitor.getPlatform());
+      voiceDiagnostic("audio_record_start_failed", {
+        source: "server_audio", code: error?.code || "audio_record_start_failed",
+        pluginError: error?.message || String(error), permissionState: failedPermissionState,
+        ...SERVER_AUDIO_SESSION_DIAGNOSTIC,
+      });
     }
   };
   const start = async () => {
@@ -14019,6 +14089,11 @@ export default function App() {
       .pt-scroll { -webkit-overflow-scrolling: touch; overscroll-behavior: contain; scrollbar-width: thin; }
       .pt-app-shell, .pt-header-inner { width: 100%; max-width: 420px; }
       .pt-generic-sheet, .pt-schedule-sheet { max-width: 420px; }
+      .pt-member-detail-pane { display: none; }
+      .pt-member-detail-active .pt-member-list-pane { display: none; }
+      .pt-member-detail-active .pt-member-detail-pane { display: block; }
+      .pt-member-card-grid, .pt-analysis-card-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+      .pt-week-event-type { display: none; }
       .pt-week-day { font-size: 11px; }
       .pt-week-date { font-size: 13px; }
       .pt-week-time { font-size: 9px; }
@@ -14043,20 +14118,32 @@ export default function App() {
       @keyframes rowSink { 0% { transform: translateY(-12px) scale(.98); opacity: .45 } 70% { transform: translateY(2px) scale(1) } 100% { transform: translateY(0); opacity: 1 } }
       .week-strip { animation: weekIn .22s ease both }
       @media (min-width: 768px) {
-        .pt-app-shell, .pt-header-inner { max-width: min(900px, 100vw); }
-        .pt-generic-sheet, .pt-schedule-sheet { max-width: min(760px, calc(100vw - 32px)); }
+        .pt-app-shell, .pt-header-inner { max-width: min(1180px, 100vw); }
+        .pt-generic-sheet { max-width: min(760px, calc(100vw - 32px)); }
+        .pt-schedule-sheet { max-width: min(560px, calc(100vw - 32px)); }
         .pt-generic-sheet, .pt-schedule-sheet { border-radius: 20px 20px 0 0 !important; }
         .pt-schedule-sheet .pt-scroll { padding-left: 24px; padding-right: 24px; }
-        .pt-week-grid { --pt-week-axis: 40px; }
+        .pt-week-grid { --pt-week-axis: 46px; }
         .pt-week-day { font-size: 13px; }
         .pt-week-date { font-size: 16px; }
         .pt-week-time { font-size: 11px; }
         .pt-week-grid button { font-size: 11px !important; }
+        .pt-week-event-type { display: block; margin-top: 2px; font-size: 9px; font-weight: 500; opacity: .7; }
+        .pt-member-card-grid, .pt-analysis-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+        .pt-member-detail-active { display: grid; grid-template-columns: minmax(270px, 34%) minmax(0, 1fr); height: 100%; min-height: 0; }
+        .pt-member-detail-active .pt-member-list-pane, .pt-member-detail-active .pt-member-detail-pane { display: block; min-width: 0; min-height: 0; overflow: hidden; }
+        .pt-member-detail-active .pt-member-list-pane { border-right: 1px solid var(--line); }
+        .pt-member-detail-active .pt-member-card-grid { grid-template-columns: minmax(0, 1fr); }
+        .pt-member-back { display: none !important; }
+        .pt-example-modal { align-items: center; padding: 24px; }
+        .pt-example-modal > section { border-radius: 20px !important; }
         .safe-scroll { padding-left: 20px; padding-right: 20px; }
       }
-      @media (min-width: 1024px) and (orientation: landscape) {
-        .pt-app-shell, .pt-header-inner { max-width: min(960px, 100vw); }
-        .pt-generic-sheet, .pt-schedule-sheet { max-width: min(820px, calc(100vw - 48px)); }
+      @media (min-width: 1024px) {
+        .pt-app-shell, .pt-header-inner { max-width: min(1280px, 100vw); }
+        .pt-member-card-grid, .pt-analysis-card-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+        .pt-member-detail-active { grid-template-columns: minmax(320px, 31%) minmax(0, 1fr); }
+        .pt-member-detail-active .pt-member-card-grid { grid-template-columns: minmax(0, 1fr); }
       }
       @media (prefers-reduced-motion: reduce) { .app-root *, .splash-pop, .splash-fade { animation: none !important; transition: none !important } }
     `}</style>
@@ -14088,12 +14175,15 @@ export default function App() {
         <div className="relative min-h-0 flex-1 overflow-hidden">
           <Guard key={tab}>
             {tab === "schedule" && <ScheduleManager db={db} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
-            {tab === "members" && (mobileView === "detail" && member ? (
-              <ReferenceMemberDetail key={member.id} member={member} schedule={db.schedule} photos={photos[member.id]} settings={db.settings}
-                canViewSettlement={!account?.role || ["owner", "manager", "admin", "director"].includes(String(account.role).toLowerCase())} onBack={() => setMobileView("list")}
-                onPatch={(change) => patch(member.id, change)} onSaveNote={(type, body, voiceMeta, noteOptions) => saveScheduleComment(member.id, type, null, body, voiceMeta, noteOptions)}
-                onSchedule={() => { setScheduleMemberId(member.id); setTab("schedule"); }} onAssess={(entry = {}) => { setAnalysisRecordId(entry.poseId || null); setAnalysisAssessmentId(entry.assessmentId || null); setAnalysisEntryMode(entry.mode || "home"); setAnalysisMemberId(member.id); setTab("analysis"); }} onToast={setToast} />
-            ) : <ReferenceMemberList members={db.members} schedule={db.schedule} settings={db.settings} onAdd={addMember} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} />)}
+            {tab === "members" && <div className={`h-full min-h-0 ${mobileView === "detail" && member ? "pt-member-detail-active" : ""}`}>
+              <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList members={db.members} schedule={db.schedule} settings={db.settings} onAdd={addMember} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
+              {mobileView === "detail" && member && <div className="pt-member-detail-pane h-full min-h-0">
+                <ReferenceMemberDetail key={member.id} member={member} schedule={db.schedule} photos={photos[member.id]} settings={db.settings}
+                  canViewSettlement={!account?.role || ["owner", "manager", "admin", "director"].includes(String(account.role).toLowerCase())} onBack={() => setMobileView("list")}
+                  onPatch={(change) => patch(member.id, change)} onSaveNote={(type, body, voiceMeta, noteOptions) => saveScheduleComment(member.id, type, null, body, voiceMeta, noteOptions)}
+                  onSchedule={() => { setScheduleMemberId(member.id); setTab("schedule"); }} onAssess={(entry = {}) => { setAnalysisRecordId(entry.poseId || null); setAnalysisAssessmentId(entry.assessmentId || null); setAnalysisEntryMode(entry.mode || "home"); setAnalysisMemberId(member.id); setTab("analysis"); }} onToast={setToast} />
+              </div>}
+            </div>}
             {tab === "analysis" && <ReferenceAnalysisTab members={db.members} photos={photos} selectedId={analysisMemberId} selectedPoseId={analysisRecordId}
               onSelect={(id, poseId = null) => { setAnalysisMemberId(id); setAnalysisRecordId(poseId); setAnalysisAssessmentId(null); setAnalysisEntryMode(poseId ? "result" : "home"); }}
               hub={(id, initialSavedId) => {

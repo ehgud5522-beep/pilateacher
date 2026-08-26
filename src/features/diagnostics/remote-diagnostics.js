@@ -42,6 +42,14 @@ const voiceEvent = (event) => ({
   speechSeconds: finite(event?.speechSeconds),
   trimmedMs: finite(event?.trimmedMs),
   captureLatencyMs: finite(event?.captureLatencyMs),
+  pluginError: safeDeviceText(event?.pluginError, 240),
+  permissionState: safeToken(event?.permissionState, 40),
+  audioSessionCategory: safeToken(event?.audioSessionCategory, 80),
+  audioSessionMode: safeToken(event?.audioSessionMode, 80),
+  x: finite(event?.x),
+  y: finite(event?.y),
+  width: finite(event?.width),
+  height: finite(event?.height),
 });
 
 export function buildRemoteDiagnosticReport({ pipelineEvents = [], voiceEvents = [], appInfo = {}, deviceInfo = {}, now = new Date() } = {}) {

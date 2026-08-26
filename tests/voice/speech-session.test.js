@@ -46,7 +46,7 @@ test("native speech failures produce cause-specific guidance", () => {
 
 test("VoiceNote gives the native recognizer exclusive microphone ownership", async () => {
   const source = await readFile(new URL("../../src/App.jsx", import.meta.url), "utf8");
-  const startIndex = source.indexOf("  const start = async () => {");
+  const startIndex = source.indexOf("  const start = async (options = {}) => {");
   const stopIndex = source.indexOf("  const stop = (reason = \"manual\") => {", startIndex);
   assert.ok(startIndex >= 0 && stopIndex > startIndex);
   const startSource = source.slice(startIndex, stopIndex);

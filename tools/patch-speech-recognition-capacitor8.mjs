@@ -70,6 +70,208 @@ if (!iosSource.includes("CAPBridgedPlugin")) {
   console.log("[postinstall] Speech Recognition iOS Capacitor 8 bridge patch already applied");
 }
 
+if (!iosSource.includes('CAPPluginMethod(name: "releaseAudioSession"')) {
+  iosSource = iosSource.replace(
+    '        CAPPluginMethod(name: "stop", returnType: CAPPluginReturnPromise),\n',
+    '        CAPPluginMethod(name: "stop", returnType: CAPPluginReturnPromise),\n        CAPPluginMethod(name: "releaseAudioSession", returnType: CAPPluginReturnPromise),\n',
+  );
+}
+
+if (!iosSource.includes("private var inputTapInstalled = false")) {
+  iosSource = iosSource.replace(
+    "    private var recognitionTask: SFSpeechRecognitionTask?\n",
+    "    private var recognitionTask: SFSpeechRecognitionTask?\n    private var inputTapInstalled = false\n",
+  );
+}
+
+if (!iosSource.includes("private func releaseRecognitionAudioSession()")) {
+  iosSource = iosSource.replace(
+    "    @objc func available(_ call: CAPPluginCall) {\n",
+    `    private func requestMicrophonePermission(_ completion: @escaping (Bool) -> Void) {
+        if #available(iOS 17.0, *) {
+            switch AVAudioApplication.shared.recordPermission {
+            case .granted:
+                completion(true)
+            case .denied:
+                completion(false)
+            case .undetermined:
+                AVAudioApplication.requestRecordPermission { granted in completion(granted) }
+            @unknown default:
+                completion(false)
+            }
+            return
+        }
+        AVAudioSession.sharedInstance().requestRecordPermission { granted in completion(granted) }
+    }
+
+    private func releaseRecognitionAudioSession() {
+        recognitionRequest?.endAudio()
+        recognitionTask?.cancel()
+        if let engine = audioEngine {
+            if engine.isRunning { engine.stop() }
+            if inputTapInstalled {
+                engine.inputNode.removeTap(onBus: 0)
+                inputTapInstalled = false
+            }
+        }
+        recognitionTask = nil
+        recognitionRequest = nil
+        speechRecognizer = nil
+        audioEngine = nil
+        do {
+            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        } catch {
+            let nsError = error as NSError
+            CAPLog.print(
+                "SpeechRecognition",
+                "releaseAudioSession domain=\\(nsError.domain) code=\\(nsError.code) localizedDescription=\\(nsError.localizedDescription)"
+            )
+        }
+    }
+
+    @objc func releaseAudioSession(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            self.releaseRecognitionAudioSession()
+            call.resolve([
+                "released": true,
+                "audioSessionCategory": AVAudioSession.sharedInstance().category.rawValue,
+                "audioSessionMode": AVAudioSession.sharedInstance().mode.rawValue
+            ])
+        }
+    }
+
+    @objc func available(_ call: CAPPluginCall) {
+`,
+  );
+}
+
+iosSource = iosSource.replace(
+  `        if self.audioEngine != nil {
+            if self.audioEngine!.isRunning {
+                call.reject(self.messageOngoing)
+                return
+            }
+        }
+`,
+  `        if self.audioEngine != nil {
+            if self.audioEngine!.isRunning {
+                call.reject(self.messageOngoing)
+                return
+            }
+            self.releaseRecognitionAudioSession()
+        }
+`,
+);
+iosSource = iosSource.replace(
+  "        AVAudioSession.sharedInstance().requestRecordPermission { (granted) in\n",
+  "        self.requestMicrophonePermission { (granted) in\n",
+);
+iosSource = iosSource.replace(
+  `            let audioSession: AVAudioSession = AVAudioSession.sharedInstance()
+            do {
+                try audioSession.setCategory(AVAudioSession.Category.playAndRecord, options: AVAudioSession.CategoryOptions.defaultToSpeaker)
+                try audioSession.setMode(AVAudioSession.Mode.default)
+                do {
+                    try audioSession.setActive(true, options: AVAudioSession.SetActiveOptions.notifyOthersOnDeactivation)
+                } catch {
+                      call.reject("Microphone is already in use by another application.")
+                      return
+                }
+            } catch {
+
+            }
+`,
+  `            let audioSession: AVAudioSession = AVAudioSession.sharedInstance()
+            do {
+                try audioSession.setCategory(
+                    .playAndRecord,
+                    mode: .default,
+                    options: [.allowBluetooth, .defaultToSpeaker]
+                )
+                try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+            } catch {
+                let nsError = error as NSError
+                CAPLog.print(
+                    "SpeechRecognition",
+                    "start domain=\\(nsError.domain) code=\\(nsError.code) localizedDescription=\\(nsError.localizedDescription)"
+                )
+                self.releaseRecognitionAudioSession()
+                call.reject("Unable to activate the microphone audio session.", nil, error)
+                return
+            }
+`,
+);
+iosSource = iosSource.replace(
+  `                    if result!.isFinal {
+                        self.audioEngine!.stop()
+                        self.audioEngine?.inputNode.removeTap(onBus: 0)
+                        self.notifyListeners("listeningState", data: ["status": "stopped"])
+                        self.recognitionTask = nil
+                        self.recognitionRequest = nil
+                    }
+`,
+  `                    if result!.isFinal {
+                        self.releaseRecognitionAudioSession()
+                        self.notifyListeners("listeningState", data: ["status": "stopped"])
+                    }
+`,
+);
+iosSource = iosSource.replace(
+  `                if error != nil {
+                    self.audioEngine!.stop()
+                    self.audioEngine?.inputNode.removeTap(onBus: 0)
+                    self.recognitionRequest = nil
+                    self.recognitionTask = nil
+                    self.notifyListeners("listeningState", data: ["status": "stopped"])
+                    call.reject(error!.localizedDescription)
+                }
+`,
+  `                if error != nil {
+                    self.releaseRecognitionAudioSession()
+                    self.notifyListeners("listeningState", data: ["status": "stopped"])
+                    call.reject(error!.localizedDescription)
+                }
+`,
+);
+iosSource = iosSource.replace(
+  `            inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { (buffer: AVAudioPCMBuffer, _: AVAudioTime) in
+                self.recognitionRequest?.append(buffer)
+            }
+`,
+  `            inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { (buffer: AVAudioPCMBuffer, _: AVAudioTime) in
+                self.recognitionRequest?.append(buffer)
+            }
+            self.inputTapInstalled = true
+`,
+);
+iosSource = iosSource.replace(
+  `    @objc func stop(_ call: CAPPluginCall) {
+        DispatchQueue.global(qos: DispatchQoS.QoSClass.default).async {
+            if let engine = self.audioEngine, engine.isRunning {
+                engine.stop()
+                self.recognitionRequest?.endAudio()
+                self.notifyListeners("listeningState", data: ["status": "stopped"])
+            }
+            call.resolve()
+        }
+    }
+`,
+  `    @objc func stop(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            self.releaseRecognitionAudioSession()
+            self.notifyListeners("listeningState", data: ["status": "stopped"])
+            call.resolve()
+        }
+    }
+`,
+);
+iosSource = iosSource.replace(
+  "                    AVAudioSession.sharedInstance().requestRecordPermission { (granted: Bool) in\n",
+  "                    self.requestMicrophonePermission { (granted: Bool) in\n",
+);
+await writeFile(iosPluginPath, iosSource, "utf8");
+console.log("[postinstall] Speech Recognition iOS audio-session release patch applied");
+
 const swiftPackage = `// swift-tools-version: 5.9
 import PackageDescription
 

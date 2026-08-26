@@ -3,6 +3,11 @@ import path from "node:path";
 
 const root = process.cwd();
 const packageRoot = path.join(root, "node_modules", "@capgo", "capacitor-audio-recorder");
+const expectedVersion = "8.2.7";
+const installedVersion = JSON.parse(fs.readFileSync(path.join(packageRoot, "package.json"), "utf8")).version;
+if (installedVersion !== expectedVersion) {
+  throw new Error(`Audio Recorder patch expected ${expectedVersion}, found ${installedVersion}`);
+}
 const files = {
   android: path.join(packageRoot, "android", "src", "main", "java", "app", "capgo", "audiorecorder", "CapacitorAudioRecorderPlugin.java"),
   ios: path.join(packageRoot, "ios", "Sources", "CapacitorAudioRecorderPlugin", "CapacitorAudioRecorderPlugin.swift"),
@@ -164,7 +169,7 @@ function patchIos(source) {
   );
   next = replaceOnce(next,
     "        CAPPluginMethod(name: \"startRecording\", returnType: CAPPluginReturnPromise),\n",
-    "        CAPPluginMethod(name: \"prepareRecording\", returnType: CAPPluginReturnPromise),\n        CAPPluginMethod(name: \"startRecording\", returnType: CAPPluginReturnPromise),\n        CAPPluginMethod(name: \"trimRecording\", returnType: CAPPluginReturnPromise),\n",
+    "        CAPPluginMethod(name: \"prepareRecording\", returnType: CAPPluginReturnPromise),\n        CAPPluginMethod(name: \"runMicrophoneTest\", returnType: CAPPluginReturnPromise),\n        CAPPluginMethod(name: \"startRecording\", returnType: CAPPluginReturnPromise),\n        CAPPluginMethod(name: \"trimRecording\", returnType: CAPPluginReturnPromise),\n",
     "ios plugin methods");
   next = replaceOnce(next,
     "        case inactive = \"INACTIVE\"\n        case recording = \"RECORDING\"\n",
@@ -198,6 +203,110 @@ function patchIos(source) {
         guard status == .inactive || status == .prepared else {
 `,
     "ios prepare method");
+  next = replaceOnce(next,
+    "    private var interruptionObserver: NSObjectProtocol?\n",
+    "    private var interruptionObserver: NSObjectProtocol?\n    private var microphoneTestRecorder: AVAudioRecorder?\n",
+    "ios microphone test recorder");
+  next = replaceOnce(next,
+    "    @objc func trimRecording(_ call: CAPPluginCall) {\n",
+    `    @objc func runMicrophoneTest(_ call: CAPPluginCall) {
+        var steps: [[String: Any]] = []
+        let finishFailure: (String, NSError) -> Void = { stage, error in
+            steps.append(self.diagnosticStep(stage: stage, success: false, error: error))
+            self.logNSError(stage: stage, error: error)
+            self.microphoneTestRecorder?.stop()
+            self.microphoneTestRecorder = nil
+            self.deactivateSessionIfNeeded()
+            call.resolve([
+                "ok": false,
+                "steps": steps,
+                "domain": error.domain,
+                "code": error.code,
+                "localizedDescription": error.localizedDescription
+            ])
+        }
+
+        ensurePermission { granted in
+            guard granted else {
+                finishFailure("permission", NSError(
+                    domain: "AVAudioApplication.RecordPermission",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Microphone permission not granted."]
+                ))
+                return
+            }
+            steps.append(self.diagnosticStep(stage: "permission", success: true))
+            steps.append(self.diagnosticStep(stage: "session_before_start", success: true))
+
+            do {
+                try self.audioSession.setCategory(
+                    .playAndRecord,
+                    mode: .default,
+                    options: [.allowBluetooth, .defaultToSpeaker]
+                )
+                steps.append(self.diagnosticStep(stage: "set_category", success: true))
+            } catch {
+                finishFailure("set_category", error as NSError)
+                return
+            }
+
+            do {
+                try self.audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+                steps.append(self.diagnosticStep(stage: "set_active", success: true))
+            } catch {
+                finishFailure("set_active", error as NSError)
+                return
+            }
+
+            do {
+                let fileURL = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("pilateacher-microphone-test-\\(UUID().uuidString).m4a")
+                let recorder = try AVAudioRecorder(url: fileURL, settings: [
+                    AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+                    AVSampleRateKey: 16_000,
+                    AVNumberOfChannelsKey: 1,
+                    AVEncoderBitRateKey: 8_000,
+                    AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
+                ])
+                recorder.prepareToRecord()
+                guard recorder.record() else {
+                    throw NSError(
+                        domain: "PilaTeacher.AudioSession",
+                        code: 2,
+                        userInfo: [NSLocalizedDescriptionKey: "AVAudioRecorder.record() returned false."]
+                    )
+                }
+                self.microphoneTestRecorder = recorder
+                steps.append(self.diagnosticStep(stage: "record_start", success: true))
+
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                    recorder.stop()
+                    let durationMs = Int(max(0, recorder.currentTime) * 1_000)
+                    let fileSize = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? NSNumber)?.intValue ?? 0
+                    self.microphoneTestRecorder = nil
+                    let success = durationMs > 0 && fileSize > 0
+                    let error = success ? nil : NSError(
+                        domain: "PilaTeacher.AudioSession",
+                        code: 3,
+                        userInfo: [NSLocalizedDescriptionKey: "The one-second microphone test produced no audio file."]
+                    )
+                    steps.append(self.diagnosticStep(stage: "record_stop", success: success, error: error, extra: [
+                        "durationMs": durationMs,
+                        "fileSize": fileSize
+                    ]))
+                    try? FileManager.default.removeItem(at: fileURL)
+                    self.deactivateSessionIfNeeded()
+                    call.resolve(["ok": success, "steps": steps])
+                }
+            } catch {
+                finishFailure("record_start", error as NSError)
+            }
+        }
+    }
+
+    @objc func trimRecording(_ call: CAPPluginCall) {
+`,
+    "ios microphone test method");
   next = replaceOnce(next,
     "                try self.configureAudioSession(options: call)\n                try self.beginRecording(call)\n",
     "                if self.status != .prepared {\n                    try self.configureAudioSession(options: call)\n                    try self.prepareRecorder(call)\n                }\n                try self.beginRecording()\n",
@@ -264,6 +373,158 @@ function patchIos(source) {
     }
 `,
     "ios begin prepared recorder");
+  next = replaceOnce(next,
+    `    private func configureAudioSession(options call: CAPPluginCall) throws {
+        var categoryOptions: AVAudioSession.CategoryOptions = []
+        if let options = call.getArray("audioSessionCategoryOptions", String.self) {
+            options.forEach {
+                if let option = mapCategoryOption(from: $0) {
+                    categoryOptions.insert(option)
+                }
+            }
+        } else {
+            categoryOptions.insert(.duckOthers)
+        }
+
+        let mode = mapSessionMode(from: call.getString("audioSessionMode")) ?? .measurement
+
+        try audioSession.setCategory(.playAndRecord, mode: mode, options: categoryOptions.union([.allowBluetooth, .defaultToSpeaker]))
+        try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+    }
+`,
+    `    private func configureAudioSession(options call: CAPPluginCall) throws {
+        try audioSession.setCategory(
+            .playAndRecord,
+            mode: .default,
+            options: [.allowBluetooth, .defaultToSpeaker]
+        )
+        try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+    }
+`,
+    "ios deterministic audio session");
+  next = replaceOnce(next,
+    "    private func ensurePermission(completion: @escaping (Bool) -> Void) {\n        switch audioSession.recordPermission {\n",
+    `    private func diagnosticStep(
+        stage: String,
+        success: Bool,
+        error: NSError? = nil,
+        extra: [String: Any] = [:]
+    ) -> [String: Any] {
+        var payload: [String: Any] = [
+            "stage": stage,
+            "success": success,
+            "audioSessionCategory": audioSession.category.rawValue,
+            "audioSessionMode": audioSession.mode.rawValue,
+            "inputAvailable": audioSession.isInputAvailable,
+            "otherAudioPlaying": audioSession.isOtherAudioPlaying,
+            "secondaryAudioShouldBeSilencedHint": audioSession.secondaryAudioShouldBeSilencedHint,
+            "otherSessionOwner": "not_exposed_by_ios",
+            "routeInputs": audioSession.currentRoute.inputs.map { "\\($0.portType.rawValue):\\($0.portName)" },
+            "routeOutputs": audioSession.currentRoute.outputs.map { "\\($0.portType.rawValue):\\($0.portName)" }
+        ]
+        if let error {
+            payload["domain"] = error.domain
+            payload["code"] = error.code
+            payload["localizedDescription"] = error.localizedDescription
+        }
+        extra.forEach { payload[$0.key] = $0.value }
+        return payload
+    }
+
+    private func logNSError(stage: String, error: NSError) {
+        CAPLog.print(
+            "CapacitorAudioRecorderPlugin",
+            "stage=\\(stage) domain=\\(error.domain) code=\\(error.code) localizedDescription=\\(error.localizedDescription)"
+        )
+    }
+
+    private func ensurePermission(completion: @escaping (Bool) -> Void) {
+        if #available(iOS 17.0, *) {
+            switch AVAudioApplication.shared.recordPermission {
+            case .granted:
+                completion(true)
+            case .denied:
+                completion(false)
+            case .undetermined:
+                AVAudioApplication.requestRecordPermission { granted in
+                    DispatchQueue.main.async { completion(granted) }
+                }
+            @unknown default:
+                completion(false)
+            }
+            return
+        }
+        switch audioSession.recordPermission {
+`,
+    "ios modern permission request");
+  next = replaceOnce(next,
+    "    private func microphonePermissionState() -> String {\n        switch audioSession.recordPermission {\n",
+    `    private func microphonePermissionState() -> String {
+        if #available(iOS 17.0, *) {
+            switch AVAudioApplication.shared.recordPermission {
+            case .granted: return "granted"
+            case .denied: return "denied"
+            case .undetermined: return "prompt"
+            @unknown default: return "prompt"
+            }
+        }
+        switch audioSession.recordPermission {
+`,
+    "ios modern permission state");
+  next = next.replace(
+    `            } catch {
+                self.resetRecorder(deleteFile: true)
+                call.reject("Failed to prepare recording.", nil, error)
+            }
+`,
+    `            } catch {
+                self.logNSError(stage: "prepare_recording", error: error as NSError)
+                self.resetRecorder(deleteFile: true)
+                call.reject("Failed to prepare recording.", nil, error)
+            }
+`,
+  );
+  next = next.replace(
+    `            } catch {
+                self.resetRecorder(deleteFile: true)
+                call.reject("Failed to start recording.", nil, error)
+            }
+`,
+    `            } catch {
+                self.logNSError(stage: "start_recording", error: error as NSError)
+                self.resetRecorder(deleteFile: true)
+                call.reject("Failed to start recording.", nil, error)
+            }
+`,
+  );
+  next = next.replace(
+    `        case .began:
+            // iOS is interrupting (call, Siri, alarm, Bluetooth disconnect).
+`,
+    `        case .began:
+            CAPLog.print("CapacitorAudioRecorderPlugin", "audioSessionInterruption began")
+            // iOS is interrupting (call, Siri, alarm, Bluetooth disconnect).
+`,
+  );
+  next = next.replace(
+    `        case .ended:
+            // Interruption ended. iOS hints whether we should resume via the
+`,
+    `        case .ended:
+            CAPLog.print("CapacitorAudioRecorderPlugin", "audioSessionInterruption ended")
+            // Interruption ended. iOS hints whether we should resume via the
+`,
+  );
+  next = next.replace(
+    `                } catch {
+                    CAPLog.print("CapacitorAudioRecorderPlugin", "Failed to resume after interruption: \(error.localizedDescription)")
+                }
+`,
+    `                } catch {
+                    self.logNSError(stage: "interruption_resume", error: error as NSError)
+                }
+`,
+  );
   return next;
 }
 
@@ -275,16 +536,17 @@ function patchDefinitions(source) {
     "definition prepared status");
   next = replaceOnce(next,
     "    startRecording(options?: StartRecordingOptions): Promise<void>;\n",
-    "    prepareRecording(options?: StartRecordingOptions): Promise<void>;\n    startRecording(options?: StartRecordingOptions): Promise<void>;\n    trimRecording(options: { uri: string; startMs: number; endMs: number }): Promise<StopRecordingResult>;\n",
+    "    prepareRecording(options?: StartRecordingOptions): Promise<void>;\n    runMicrophoneTest(): Promise<{ ok: boolean; steps: Array<Record<string, unknown>> }>;\n    startRecording(options?: StartRecordingOptions): Promise<void>;\n    trimRecording(options: { uri: string; startMs: number; endMs: number }): Promise<StopRecordingResult>;\n",
     "definition edge methods");
   return next;
 }
 
 function patchWeb(source) {
-  return replaceOnce(source,
+  let next = replaceOnce(source,
     "    async startRecording(_options) {\n",
-    "    async prepareRecording(_options) {\n        return;\n    }\n    async trimRecording(options) {\n        return { uri: options === null || options === void 0 ? void 0 : options.uri, duration: Math.max(0, Number((options === null || options === void 0 ? void 0 : options.endMs) || 0) - Number((options === null || options === void 0 ? void 0 : options.startMs) || 0)) };\n    }\n    async startRecording(_options) {\n",
+    "    async prepareRecording(_options) {\n        return;\n    }\n    async runMicrophoneTest() {\n        return { ok: false, steps: [{ stage: 'availability', success: false, domain: 'CapacitorWeb', code: -1, localizedDescription: 'Native iOS microphone test is unavailable on web.' }] };\n    }\n    async trimRecording(options) {\n        return { uri: options === null || options === void 0 ? void 0 : options.uri, duration: Math.max(0, Number((options === null || options === void 0 ? void 0 : options.endMs) || 0) - Number((options === null || options === void 0 ? void 0 : options.startMs) || 0)) };\n    }\n    async startRecording(_options) {\n",
     "web edge methods");
+  return next;
 }
 
 for (const [kind, file] of Object.entries(files)) {

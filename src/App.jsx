@@ -123,10 +123,10 @@ const VOICE_ENGINE_MODE = resolveVoiceEngine(import.meta.env.VITE_VOICE_ENGINE |
 const SERVER_AUDIO_RECORDING_OPTIONS = Object.freeze({
   bitRate: 8000,
   sampleRate: 16000,
-  audioSessionMode: "MEASUREMENT",
-  audioSessionCategoryOptions: ["DUCK_OTHERS"],
+  audioSessionMode: "DEFAULT",
+  audioSessionCategoryOptions: ["ALLOW_BLUETOOTH", "DEFAULT_TO_SPEAKER"],
 });
-const SERVER_AUDIO_SESSION_DIAGNOSTIC = Object.freeze({ audioSessionCategory: "playAndRecord", audioSessionMode: "measurement" });
+const SERVER_AUDIO_SESSION_DIAGNOSTIC = Object.freeze({ audioSessionCategory: "playAndRecord", audioSessionMode: "default" });
 const AppSettings = registerPlugin("AppSettings");
 const LESSON_RECORD_EXAMPLES_SEEN_KEY = "pilateacher_lesson_record_examples_seen_v1";
 const restoreDecisionKey = (accountId) => `pilateacher_restore_decision_v1:${String(accountId || "")}`;
@@ -357,6 +357,8 @@ const DEVICE_LOG_FIELDS = new Set([
   "httpStatus", "requestId", "retryCount", "path", "expected", "received", "reason",
   "failureStage", "providerStatus", "providerCode", "providerType",
   "failureClass", "appBuild", "model", "gatewayUrl", "transportCode", "causeName", "causeMessage",
+  "domain", "localizedDescription", "audioSessionCategory", "audioSessionMode", "otherAudioPlaying",
+  "secondaryAudioShouldBeSilencedHint", "otherSessionOwner", "inputAvailable", "routeInputs", "routeOutputs", "voiceEngine",
 ]);
 const deviceLog = (event, details = {}) => {
   try {
@@ -9781,6 +9783,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
   const [audioReviewEdited, setAudioReviewEdited] = useState(false);
   const [replacementUndoVisible, setReplacementUndoVisible] = useState(false);
   const [backgroundInterrupted, setBackgroundInterrupted] = useState(false);
+  const [microphoneTest, setMicrophoneTest] = useState({ status: "idle", steps: [] });
   const [source, setSource] = useState(null);
   const [summaryOriginal, setSummaryOriginal] = useState(null);
   const [summaryDraft, setSummaryDraft] = useState(null);
@@ -9828,6 +9831,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
   const amplitudeTimerRef = useRef(null);
   const amplitudeSamplesRef = useRef([]);
   const recorderPrewarmedRef = useRef(false);
+  const serverStartFailuresRef = useRef(0);
   const captureRequestedAtRef = useRef(0);
   const captureLatencyMsRef = useRef(0);
   const recordingModeRef = useRef("append");
@@ -9851,6 +9855,18 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     setVoiceAvailability(speechPermissionAvailability(permission));
     voiceDiagnostic("permission_state", { source: diagnosticSource, state });
     return state;
+  };
+  const releaseSpeechAudioSession = async (stage = "before_server_recording") => {
+    if (!Capacitor.isNativePlatform() || Capacitor.getPlatform() !== "ios") return;
+    const speech = nativeSTT();
+    if (!speech) return;
+    try {
+      if (typeof speech.releaseAudioSession === "function") await speech.releaseAudioSession();
+      else if (typeof speech.stop === "function") await speech.stop();
+      deviceLog("speech_audio_session_released", { memberId, lessonId, source: "native", stage, voiceEngine: "server" });
+    } catch (error) {
+      deviceLog("speech_audio_session_release_failed", { memberId, lessonId, source: "native", stage, voiceEngine: "server", ...deviceError(error) });
+    }
   };
   useEffect(() => { textRef.current = text; }, [text]);
   useEffect(() => { recordingActiveRef.current = on; }, [on]);
@@ -9890,7 +9906,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
         const state = nativeAudioPermissionState(permission, Capacitor.getPlatform());
         setVoiceAvailability(state === "granted" ? "ready" : state === "permanently_denied" ? "permission_permanently_denied" : "permission_required");
         voiceDiagnostic("permission_state", { source: "server_audio", state, permissionState: state });
-        if (state === "granted") {
+        if (state === "granted" && Capacitor.getPlatform() !== "ios") {
           await CapacitorAudioRecorder.prepareRecording(SERVER_AUDIO_RECORDING_OPTIONS).then(() => {
             recorderPrewarmedRef.current = true;
             voiceDiagnostic("prepared", { source: "server_audio", ...SERVER_AUDIO_SESSION_DIAGNOSTIC });
@@ -9947,7 +9963,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
           const state = nativeAudioPermissionState(permission, Capacitor.getPlatform());
           setVoiceAvailability(state === "granted" ? "ready" : state === "permanently_denied" ? "permission_permanently_denied" : "permission_required");
           voiceDiagnostic("permission_state", { source: "server_audio_resume", state, permissionState: state });
-          if (state === "granted") {
+          if (state === "granted" && Capacitor.getPlatform() !== "ios") {
             await CapacitorAudioRecorder.prepareRecording(SERVER_AUDIO_RECORDING_OPTIONS).then(() => {
               recorderPrewarmedRef.current = true;
               voiceDiagnostic("prepared", { source: "server_audio_resume", ...SERVER_AUDIO_SESSION_DIAGNOSTIC });
@@ -10186,6 +10202,39 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       onEvent: (event, details) => voiceDiagnostic(event, { source: "native", ...details }),
     }).catch(() => ({ permissionState: currentState, requested: false, openedSettings: currentState === SPEECH_PERMISSION_STATE.PERMANENTLY_DENIED }));
     if (action.openedSettings) setVoiceAvailability("permission_permanently_denied");
+  };
+  const runMicrophoneTest = async () => {
+    setMicrophoneTest({ status: "running", steps: [] });
+    if (!Capacitor.isNativePlatform() || Capacitor.getPlatform() !== "ios" || typeof CapacitorAudioRecorder.runMicrophoneTest !== "function") {
+      const steps = [{ stage: "availability", success: false, domain: "PilaTeacher.AudioSession", code: -1, localizedDescription: "iOS native microphone test is unavailable." }];
+      setMicrophoneTest({ status: "failed", steps });
+      console.info("[PilaTeacher/microphone-test]", steps[0]);
+      return;
+    }
+    await releaseSpeechAudioSession("microphone_test");
+    try {
+      const result = await CapacitorAudioRecorder.runMicrophoneTest();
+      const steps = Array.isArray(result?.steps) ? result.steps : [];
+      steps.forEach((step) => {
+        console.info("[PilaTeacher/microphone-test]", step);
+        deviceLog("microphone_test_step", {
+          memberId, lessonId, stage: step?.stage, state: step?.success ? "success" : "failed",
+          domain: step?.domain, code: step?.code, localizedDescription: step?.localizedDescription,
+          audioSessionCategory: step?.audioSessionCategory, audioSessionMode: step?.audioSessionMode,
+          otherAudioPlaying: step?.otherAudioPlaying, secondaryAudioShouldBeSilencedHint: step?.secondaryAudioShouldBeSilencedHint,
+          otherSessionOwner: step?.otherSessionOwner,
+          inputAvailable: step?.inputAvailable, routeInputs: step?.routeInputs, routeOutputs: step?.routeOutputs,
+        });
+      });
+      setMicrophoneTest({ status: result?.ok ? "success" : "failed", steps });
+    } catch (error) {
+      const step = {
+        stage: "bridge", success: false, domain: error?.domain || "CapacitorBridge",
+        code: error?.code || "bridge_error", localizedDescription: error?.localizedDescription || error?.message || String(error),
+      };
+      console.info("[PilaTeacher/microphone-test]", step);
+      setMicrophoneTest({ status: "failed", steps: [step] });
+    }
   };
   const mergeAudioStructuredDraft = (previous, next) => {
     if (!previous) return next;
@@ -10490,12 +10539,14 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       return;
     }
     try {
+      await releaseSpeechAudioSession("before_server_recording");
       if (!recorderPrewarmedRef.current) {
         await CapacitorAudioRecorder.prepareRecording(SERVER_AUDIO_RECORDING_OPTIONS);
         recorderPrewarmedRef.current = true;
         voiceDiagnostic("prepared", { source: "server_audio", phase: "tap", ...SERVER_AUDIO_SESSION_DIAGNOSTIC });
       }
       await CapacitorAudioRecorder.startRecording(SERVER_AUDIO_RECORDING_OPTIONS);
+      serverStartFailuresRef.current = 0;
       recorderPrewarmedRef.current = false;
       captureLatencyMsRef.current = Math.max(0, Math.round((globalThis.performance?.now?.() || Date.now()) - captureRequestedAtRef.current));
       Haptics.impact({ style: ImpactStyle.Light }).catch(() => {});
@@ -10518,6 +10569,8 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
         setAmplitude(value);
       }, 100);
     } catch (error) {
+      const failedAttempts = serverStartFailuresRef.current + 1;
+      serverStartFailuresRef.current = failedAttempts;
       startRequestRef.current = false;
       setStarting(false);
       setOn(false);
@@ -10526,13 +10579,21 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       const failedPermissionState = nativeAudioPermissionState(current, Capacitor.getPlatform());
       voiceDiagnostic("audio_record_start_failed", {
         source: "server_audio", code: error?.code || "audio_record_start_failed",
-        pluginError: error?.message || String(error), permissionState: failedPermissionState,
+        pluginError: error?.message || String(error), permissionState: failedPermissionState, count: failedAttempts,
         ...SERVER_AUDIO_SESSION_DIAGNOSTIC,
       });
+      deviceLog("audio_record_start_failed", { memberId, lessonId, source: "server_audio", voiceEngine: "server", count: failedAttempts, ...deviceError(error) });
+      if (Capacitor.isNativePlatform() && Capacitor.getPlatform() === "ios" && failedAttempts >= 2) {
+        voiceDiagnostic("fallback", { source: "native", reason: "server_audio_start_failed_twice", count: failedAttempts });
+        deviceLog("voice_engine_fallback", { memberId, lessonId, source: "native", voiceEngine: "native", reason: "server_audio_start_failed_twice", count: failedAttempts });
+        setErr("녹음 시작에 실패해 iOS 음성 인식으로 전환합니다.");
+        window.setTimeout(() => start({ forceNative: true }), 0);
+      }
     }
   };
-  const start = async () => {
-    if (VOICE_ENGINE_MODE === "server") return startServerRecording("append");
+  const start = async (options = {}) => {
+    const forceNative = options?.forceNative === true;
+    if (VOICE_ENGINE_MODE === "server" && !forceNative) return startServerRecording("append");
     if (startRequestRef.current || on || finishing) return;
     setUserAttemptedStart(true);
     startRequestRef.current = true;
@@ -10545,7 +10606,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     setSummaryMeta(null);
     setSummaryError("");
     setSummaryFailure(null);
-    deviceLog("speech_start_requested", { memberId, lessonId, source: "pending", state: "starting" });
+    deviceLog("speech_start_requested", { memberId, lessonId, source: "pending", state: "starting", voiceEngine: forceNative ? "native" : VOICE_ENGINE_MODE });
     voiceDiagnostic("start", { source: "pending", phase: "requested" });
     const failStart = (message, details = {}) => {
       startRequestRef.current = false;
@@ -10887,7 +10948,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     }
   };
   const stop = (reason = "manual") => {
-    if (VOICE_ENGINE_MODE === "server") {
+    if (VOICE_ENGINE_MODE === "server" && sourceRef.current !== "native") {
       if (reason === "maximum_duration") voiceDiagnostic("cap_end", { source: "server_audio", reason });
       else voiceDiagnostic("user_end", { source: "server_audio", reason });
       finishServerRecording(reason);
@@ -10932,7 +10993,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     stop("silence_timeout");
   };
   const cancelRecording = () => {
-    if (VOICE_ENGINE_MODE === "server") {
+    if (VOICE_ENGINE_MODE === "server" && sourceRef.current !== "native") {
       if (amplitudeTimerRef.current) clearInterval(amplitudeTimerRef.current);
       amplitudeTimerRef.current = null;
       CapacitorAudioRecorder.cancelRecording().catch(() => {});
@@ -11180,6 +11241,13 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       {voicePhase === "permission_required" && <Sub className="mt-1.5 block leading-relaxed">말하기를 사용하려면 마이크 권한을 허용해 주세요.</Sub>}
       {voicePhase === "permission_permanently_denied" && <Sub className="mt-1.5 block leading-relaxed">설정에서 마이크 권한을 켜주세요</Sub>}
       {voicePhase === "unsupported" && <Sub className="mt-1.5 block leading-relaxed">이 기기에서는 말하기를 지원하지 않아 직접 입력으로 기록할 수 있어요.</Sub>}
+      {Capacitor.isNativePlatform() && Capacitor.getPlatform() === "ios" && <div className="mt-2 rounded-xl p-2.5" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
+        <button type="button" onClick={runMicrophoneTest} disabled={microphoneTest.status === "running" || on || starting || finishing} className="min-h-11 w-full rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: TINT, color: BRAND_D }}>{microphoneTest.status === "running" ? "마이크 테스트 중…" : "마이크 테스트"}</button>
+        {microphoneTest.steps.length > 0 && <div className="mt-2 space-y-1" aria-live="polite">{microphoneTest.steps.map((step, index) => <div key={`${step.stage || "step"}-${index}`} className="rounded-lg px-2 py-1.5 text-[10px] leading-relaxed" style={{ backgroundColor: step.success ? GOOD_S : BAD_S, color: step.success ? GOOD : BAD }}>
+          <p className="font-extrabold">{step.stage || "unknown"} · {step.success ? "성공" : "실패"}</p>
+          {(step.domain || step.code !== undefined || step.localizedDescription) && <p className="break-words">{String(step.domain || "-")} · {String(step.code ?? "-")} · {String(step.localizedDescription || "-")}</p>}
+        </div>)}</div>}
+      </div>}
       {voicePhase === "listening" && <Sub className="mt-1.5 block font-bold leading-relaxed" style={{ color: BRAND_D }}>듣고 있어요 · 잠시 생각하며 멈춰도 괜찮아요.</Sub>}
       {voicePhase === "listening" && VOICE_ENGINE_MODE === "server" && <div aria-label="마이크 음량" className="mt-2 flex h-8 items-center justify-center gap-1 overflow-hidden rounded-lg px-2" style={{ backgroundColor: CARD }}>{Array.from({ length: 18 }, (_, index) => { const wave = Math.max(0.12, amplitude * (0.45 + ((index * 7) % 10) / 10)); return <span key={index} className="w-1 rounded-full" style={{ height: `${Math.round(6 + wave * 20)}px`, backgroundColor: index % 3 === 0 ? BRAND : LAVENDER, transition: "height 100ms linear" }} />; })}</div>}
       {voicePhase === "organizing" && <Sub className="mt-1.5 block leading-relaxed">{silenceNotice || "마지막 음성을 정리하고 있습니다. 잠시만 기다려 주세요."}</Sub>}

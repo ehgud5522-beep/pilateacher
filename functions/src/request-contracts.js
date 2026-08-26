@@ -209,7 +209,7 @@ function parseAudioLessonRecordInput(raw) {
   decoded.buffer.fill(0);
   let audioMetrics = null;
   if (input.audioMetrics !== undefined && input.audioMetrics !== null) {
-    const metrics = requireExactKeys(input.audioMetrics, ["intervalMs", "amplitudes"], "input.audioMetrics");
+    const metrics = requireExactKeys(input.audioMetrics, ["intervalMs", "amplitudes", "trimmedMs", "captureLatencyMs"], "input.audioMetrics", ["intervalMs", "amplitudes"]);
     const intervalMs = Number(metrics.intervalMs);
     if (!Number.isFinite(intervalMs) || intervalMs < 50 || intervalMs > 250 || !Array.isArray(metrics.amplitudes) || !metrics.amplitudes.length || metrics.amplitudes.length > 2000) {
       throw invalid("input.audioMetrics is invalid");
@@ -219,7 +219,10 @@ function parseAudioLessonRecordInput(raw) {
       if (!Number.isFinite(amplitude) || amplitude < 0 || amplitude > 1) throw invalid(`input.audioMetrics.amplitudes[${index}] is invalid`);
       return Math.round(amplitude * 10000) / 10000;
     });
-    audioMetrics = { intervalMs, amplitudes };
+    const trimmedMs = Math.max(0, Number(metrics.trimmedMs) || 0);
+    const captureLatencyMs = Math.max(0, Number(metrics.captureLatencyMs) || 0);
+    if (trimmedMs > 90000 || captureLatencyMs > 30000) throw invalid("input.audioMetrics timing is invalid");
+    audioMetrics = { intervalMs, amplitudes, trimmedMs, captureLatencyMs };
   }
   return {
     schemaVersion: 1,

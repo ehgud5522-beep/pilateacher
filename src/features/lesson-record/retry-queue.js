@@ -56,6 +56,7 @@ export async function runLessonRecordRetryCycle({ llmProvider, audioProvider = n
         });
         const resultKind = String(result?.output?.result || "ok");
         const outputFlags = Array.isArray(result?.output?.flags) ? result.output.flags : [];
+        const reviewFlags = outputFlags.filter((flag) => flag === "no_speech" || flag === "low_confidence");
         const rawTranscript = resultKind === "no_speech" ? String(draft.rawTranscript || "").trim() : appendTranscript(draft.rawTranscript, result.output.transcript);
         const audioClips = (draft.audioClips || []).map((clip) => clip.requestId === pendingAudio.requestId ? { ...clip, state: "uploaded", uploadedAt: new Date(now).toISOString(), blobId: null } : clip);
         const hasMoreAudio = audioClips.some((clip) => clip?.blobId && clip?.state !== "uploaded");
@@ -67,7 +68,7 @@ export async function runLessonRecordRetryCycle({ llmProvider, audioProvider = n
           termMap: mapPilatesTerms(rawTranscript),
           structuredDraft: hasMoreAudio || resultKind !== "ok" ? null : structuredDraft,
           aiMeta: { ...result, output: undefined },
-          reviewFlags: outputFlags,
+          reviewFlags,
           reviewEdited: false,
           audioClips,
           retry: hasMoreAudio ? { state: "waiting", attempts: 0, nextRetryAt: now } : null,

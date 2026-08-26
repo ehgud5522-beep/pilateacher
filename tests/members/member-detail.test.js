@@ -36,6 +36,11 @@ test("member detail keeps the compact empty memory state and provenance dates", 
   assert.ok(requiredIndex('data-member-section="memory-first"') < requiredIndex('data-member-management-card="membership"'));
 });
 
+test("member responses are labelled as responses and never masquerade as recent change", () => {
+  assert.match(detail, /entry\.type === "response" \? "회원 반응" : "최근 변화"/);
+  assert.match(detail, /entry\.type === "response"/);
+});
+
 test("membership data and posture entry live inside their management cards", () => {
   const postureStart = requiredIndex('data-member-management-card="posture"');
   const membershipStart = requiredIndex('data-member-management-card="membership"');

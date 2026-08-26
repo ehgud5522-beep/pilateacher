@@ -227,7 +227,7 @@ function createOpenAIProvider({
       }
   }
 
-  async function transcribe(buffer, metadata, memberName) {
+  async function transcribe(buffer, metadata, memberName, energy) {
     const prompt = buildTranscriptionPrompt(memberName);
     let primaryError = null;
     for (const transcriptionModel of [PRIMARY_TRANSCRIPTION_MODEL, FALLBACK_TRANSCRIPTION_MODEL]) {
@@ -247,7 +247,7 @@ function createOpenAIProvider({
             : { include: ["logprobs"] }),
         });
         const assessment = isWhisper
-          ? assessWhisperTranscription(response)
+          ? assessWhisperTranscription(response, { speechEndSeconds: Number(energy?.lastSpeechMs) / 1000 })
           : assessGptTranscription(response);
         if (!assessment.accepted) {
           return {
@@ -277,7 +277,9 @@ function createOpenAIProvider({
             averageLogprob: assessment.averageLogprob,
             rejectedSegments: assessment.rejectedSegments,
             totalSegments: assessment.totalSegments,
+            tailDroppedSegments: assessment.tailDroppedSegments || 0,
           },
+          flags: assessment.tailDropped ? ["tail_dropped"] : [],
         };
       } catch (error) {
         if (transcriptionModel === PRIMARY_TRANSCRIPTION_MODEL) {
@@ -319,6 +321,8 @@ function createOpenAIProvider({
           speechSeconds: energy.speechSeconds,
           transcriptionConfidence: energy.confidence,
           transcriptionFlags: ["no_speech"],
+          trimmedMs: energy.trimmedMs,
+          captureLatencyMs: energy.captureLatencyMs,
           output: {
             transcript: "",
             result: "no_speech",
@@ -331,7 +335,7 @@ function createOpenAIProvider({
           },
         };
       }
-      const transcription = await transcribe(buffer, metadata, input?.memberName);
+      const transcription = await transcribe(buffer, metadata, input?.memberName, energy);
       disposeAudio();
       if (transcription.result === "no_speech") {
         return {
@@ -348,6 +352,8 @@ function createOpenAIProvider({
           speechSeconds: energy.speechSeconds,
           transcriptionConfidence: transcription.confidence,
           transcriptionFlags: ["no_speech"],
+          trimmedMs: energy.trimmedMs,
+          captureLatencyMs: energy.captureLatencyMs,
           confidenceDiagnostic: transcription.confidenceDiagnostic,
           output: {
             transcript: "",
@@ -381,6 +387,8 @@ function createOpenAIProvider({
           speechSeconds: energy.speechSeconds,
           transcriptionConfidence: transcription.confidence,
           transcriptionFlags: ["low_confidence"],
+          trimmedMs: energy.trimmedMs,
+          captureLatencyMs: energy.captureLatencyMs,
           confidenceDiagnostic: { ...transcription.confidenceDiagnostic, ...consistency },
           output: {
             transcript: transcription.transcript,
@@ -407,6 +415,7 @@ function createOpenAIProvider({
         ["didToday", "observations", "responses", "nextFocus"]
           .map((field) => [field, structured.output[field]]),
       );
+      const transcriptionFlags = Array.isArray(transcription.flags) ? transcription.flags : [];
       return {
         ...structured,
         latencyMs: Math.max(0, Date.now() - startedAt),
@@ -420,12 +429,14 @@ function createOpenAIProvider({
           summary: structured.output.summary,
           speechSeconds: energy.speechSeconds,
           confidence: transcription.confidence,
-          flags: [],
+          flags: transcriptionFlags,
           provenance: { stt: "openai", llm: "openai" },
         },
         speechSeconds: energy.speechSeconds,
         transcriptionConfidence: transcription.confidence,
-        transcriptionFlags: [],
+        transcriptionFlags,
+        trimmedMs: energy.trimmedMs,
+        captureLatencyMs: energy.captureLatencyMs,
         confidenceDiagnostic: transcription.confidenceDiagnostic,
       };
     } finally {

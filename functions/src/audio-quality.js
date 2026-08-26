@@ -46,6 +46,7 @@ function analyzeEnergyEnvelope(metrics, { minimumSpeechSeconds = MIN_SPEECH_SECO
     for (let fill = start; fill <= end; fill += 1) padded[fill] = true;
   });
   const activeIndexes = padded.flatMap((isActive, index) => isActive ? [index] : []);
+  const rawActiveIndexes = active.flatMap((isActive, index) => isActive ? [index] : []);
   const speechSeconds = Number((activeIndexes.length * intervalMs / 1000).toFixed(2));
   const activeAverage = activeIndexes.length
     ? activeIndexes.reduce((sum, index) => sum + amplitudes[index], 0) / activeIndexes.length
@@ -56,6 +57,10 @@ function analyzeEnergyEnvelope(metrics, { minimumSpeechSeconds = MIN_SPEECH_SECO
     speechSeconds,
     confidence: Number(confidence.toFixed(4)),
     threshold: Number(threshold.toFixed(4)),
+    firstSpeechMs: rawActiveIndexes.length ? rawActiveIndexes[0] * intervalMs : null,
+    lastSpeechMs: rawActiveIndexes.length ? (rawActiveIndexes.at(-1) + 1) * intervalMs : null,
+    trimmedMs: Math.max(0, Number(metrics?.trimmedMs) || 0),
+    captureLatencyMs: Math.max(0, Number(metrics?.captureLatencyMs) || 0),
     reason: speechSeconds >= minimumSpeechSeconds ? "speech_detected" : "speech_too_short",
   });
 }
@@ -89,9 +94,14 @@ function whisperSegmentAccepted(segment) {
     && (!Number.isFinite(compression) || compression <= WHISPER_MAX_COMPRESSION_RATIO);
 }
 
-function assessWhisperTranscription(response) {
+function assessWhisperTranscription(response, { speechEndSeconds = Number.POSITIVE_INFINITY } = {}) {
   const segments = Array.isArray(response?.segments) ? response.segments : [];
-  const acceptedSegments = segments.filter(whisperSegmentAccepted);
+  const confidenceAccepted = segments.filter(whisperSegmentAccepted);
+  const tailSegments = Number.isFinite(speechEndSeconds)
+    ? confidenceAccepted.filter((segment) => Number.isFinite(Number(segment?.start)) && Number(segment.start) > speechEndSeconds + 0.2)
+    : [];
+  const tailSet = new Set(tailSegments);
+  const acceptedSegments = confidenceAccepted.filter((segment) => !tailSet.has(segment));
   const transcript = acceptedSegments.map((segment) => String(segment?.text || "").trim()).filter(Boolean).join(" ").trim();
   const confidenceValues = acceptedSegments.map((segment) => Math.exp(Math.min(0, Number(segment.avg_logprob))));
   const confidence = confidenceValues.length ? confidenceValues.reduce((sum, value) => sum + value, 0) / confidenceValues.length : 0;
@@ -104,6 +114,8 @@ function assessWhisperTranscription(response) {
       : null,
     rejectedSegments: Math.max(0, segments.length - acceptedSegments.length),
     totalSegments: segments.length,
+    tailDropped: tailSegments.length > 0,
+    tailDroppedSegments: tailSegments.length,
   });
 }
 

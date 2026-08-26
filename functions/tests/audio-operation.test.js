@@ -21,6 +21,8 @@ test("audio operation exposes the exact transcript, four fields, summary, and pr
     provenance: { stt: "openai", llm: "openai" },
   };
   assert.deepEqual(validateOperationOutput(OPERATIONS.LESSON_RECORD_FROM_AUDIO, value), value);
+  const tailDropped = { ...value, flags: ["tail_dropped"] };
+  assert.deepEqual(validateOperationOutput(OPERATIONS.LESSON_RECORD_FROM_AUDIO, tailDropped), tailDropped);
   assert.deepEqual(
     OUTPUT_SCHEMAS[OPERATIONS.LESSON_RECORD_FROM_AUDIO].required,
     ["transcript", "result", "fields", "summary", "speechSeconds", "confidence", "flags", "provenance"],

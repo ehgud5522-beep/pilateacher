@@ -11,6 +11,7 @@ import { createPortal } from "react-dom";
 import { Capacitor, registerPlugin } from "@capacitor/core";
 import { App as CapacitorApp } from "@capacitor/app";
 import { Filesystem } from "@capacitor/filesystem";
+import { Haptics, ImpactStyle } from "@capacitor/haptics";
 import { CapacitorAudioRecorder } from "@capgo/capacitor-audio-recorder";
 import { CameraPreview } from "@capgo/camera-preview";
 import { Motion } from "@capacitor/motion";
@@ -61,7 +62,7 @@ import {
   shouldRestartRecognizer, stitchSpeechTranscript,
 } from "./features/voice/voice-session.js";
 import {
-  DEFAULT_VOICE_ENGINE, SERVER_AUDIO_ENERGY_INTERVAL_MS, SERVER_AUDIO_FOREGROUND_WAIT_MS, analyzeRecordedSpeech, buildAudioMetrics, createStableAudioRequestId,
+  DEFAULT_VOICE_ENGINE, SERVER_AUDIO_ENERGY_INTERVAL_MS, SERVER_AUDIO_FOREGROUND_WAIT_MS, buildAudioMetrics, createAudioTrimPlan, createStableAudioRequestId,
   recordingResultToBlob, resolveVoiceEngine, settleWithin, structuredDraftFromAudioOutput, uploadAudioClip,
 } from "./features/voice/server-audio-session.js";
 import { GatewayLlmProvider } from "./features/lesson-record/llm-provider.js";
@@ -4287,7 +4288,7 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
     latestMemorySession && latestRecordDisplay ? { key: "last", label: "지난 수업", value: latestRecordDisplay.text, date: latestMemorySession.date, origin: latestRecordDisplay.origin, sourceLabel: latestRecordDisplay.sourceLabel, provenanceSource: latestRecordDisplay.provenanceSource, memory: null } : null,
     repeatedMemory ? { key: "repeated", label: "반복해서 기록된 내용", value: memorySummary.repeated, date: memorySourceDate(repeatedMemory), origin: repeatedMemory.origin, memory: repeatedMemory } : null,
     nextCheckMemory ? { key: "next", label: "선생님이 남긴 다음 확인", value: nextCheckMemory.text, date: memorySourceDate(nextCheckMemory), origin: nextCheckMemory.origin, memory: nextCheckMemory } : null,
-    ...recentChangeMemories.map((entry) => ({ key: `change-${entry.id}`, label: "최근 변화", value: entry.status === "conflict" ? "최근 기록이 달라졌습니다" : entry.text, date: memorySourceDate(entry), origin: entry.presentationOrigin || entry.origin, memory: entry })),
+    ...recentChangeMemories.map((entry) => ({ key: `change-${entry.id}`, label: entry.type === "response" ? "회원 반응" : "최근 변화", value: entry.status === "conflict" ? "최근 기록이 달라졌습니다" : entry.text, date: memorySourceDate(entry), origin: entry.presentationOrigin || entry.origin, memory: entry })),
   ].filter(Boolean);
   const hasMemoryOverview = memoryRows.length > 0;
   useEffect(() => {
@@ -9690,6 +9691,9 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, memberName = "
   const transcriptInputRef = useRef(null);
   const amplitudeTimerRef = useRef(null);
   const amplitudeSamplesRef = useRef([]);
+  const recorderPrewarmedRef = useRef(false);
+  const captureRequestedAtRef = useRef(0);
+  const captureLatencyMsRef = useRef(0);
   const recordingModeRef = useRef("append");
   const replacementSnapshotRef = useRef(null);
   const replacementUndoTimerRef = useRef(null);
@@ -9727,6 +9731,12 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, memberName = "
         const state = String(permission?.recordAudio || "prompt");
         setVoiceAvailability(state === "granted" ? "ready" : state === "denied" ? "permission_permanently_denied" : "permission_required");
         voiceDiagnostic("permission_state", { source: "server_audio", state: state === "granted" ? "granted" : state === "denied" ? "permanently_denied" : "denied" });
+        if (state === "granted") {
+          await CapacitorAudioRecorder.prepareRecording({ bitRate: 8000, sampleRate: 16000 }).then(() => {
+            recorderPrewarmedRef.current = true;
+            voiceDiagnostic("prepared", { source: "server_audio" });
+          }).catch(() => { recorderPrewarmedRef.current = false; });
+        }
         return;
       }
       const runtime = sttRuntime();
@@ -9764,6 +9774,12 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, memberName = "
           const state = String(permission?.recordAudio || "prompt");
           setVoiceAvailability(state === "granted" ? "ready" : state === "denied" ? "permission_permanently_denied" : "permission_required");
           voiceDiagnostic("permission_state", { source: "server_audio_resume", state: state === "granted" ? "granted" : state === "denied" ? "permanently_denied" : "denied" });
+          if (state === "granted") {
+            await CapacitorAudioRecorder.prepareRecording({ bitRate: 8000, sampleRate: 16000 }).then(() => {
+              recorderPrewarmedRef.current = true;
+              voiceDiagnostic("prepared", { source: "server_audio_resume" });
+            }).catch(() => { recorderPrewarmedRef.current = false; });
+          }
         }
         return;
       }
@@ -10024,6 +10040,14 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, memberName = "
     const resultKind = String(result?.output?.result || "ok");
     const resultFlags = Array.isArray(result?.output?.flags) ? result.output.flags : [];
     const incomingTranscript = String(result?.output?.transcript || "").trim();
+    voiceDiagnostic("transcribed", {
+      source: "server_audio",
+      requestId: clip.requestId,
+      speechSeconds: result?.output?.speechSeconds,
+      trimmedMs: clip?.audioMetrics?.trimmedMs,
+      captureLatencyMs: clip?.audioMetrics?.captureLatencyMs,
+      flags: resultFlags,
+    });
     const combinedTranscript = stitchSpeechTranscript(previousDraft?.rawTranscript || textRef.current, incomingTranscript);
     const aiMeta = aiMetaFrom(result);
     const audioClips = (previousDraft?.audioClips || [clip]).map((item) => item.requestId === clip.requestId
@@ -10139,27 +10163,31 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, memberName = "
     setSummaryBusy(true);
     setSilenceNotice("음성 정리 대기");
     const amplitudeSamples = [...amplitudeSamplesRef.current];
-    const speechAssessment = analyzeRecordedSpeech(amplitudeSamples, SERVER_AUDIO_ENERGY_INTERVAL_MS);
     if (amplitudeTimerRef.current) clearInterval(amplitudeTimerRef.current);
     amplitudeTimerRef.current = null;
     setAmplitude(0);
     let result;
     try {
       result = await CapacitorAudioRecorder.stopRecording();
-      if (!speechAssessment.accepted) {
+      recorderPrewarmedRef.current = false;
+      const durationMs = Math.max(0, Number(result?.duration) || Date.now() - recordingStartedAtRef.current);
+      const trimPlan = createAudioTrimPlan(amplitudeSamples, SERVER_AUDIO_ENERGY_INTERVAL_MS, durationMs);
+      if (!trimPlan.accepted) {
         if (result?.uri) await Filesystem.deleteFile({ path: result.uri }).catch(() => {});
         setFinishing(false);
         setSummaryBusy(false);
         setAudioState("idle");
         setErr("말소리가 녹음되지 않았어요. 다시 말해주세요");
-        voiceDiagnostic("failed", { source: "server_audio", code: "no_speech", speechSeconds: speechAssessment.speechSeconds });
+        voiceDiagnostic("failed", { source: "server_audio", code: "no_speech", speechSeconds: trimPlan.speechSeconds, captureLatencyMs: captureLatencyMsRef.current, flags: ["no_speech"] });
         return;
       }
-      const blob = await recordingResultToBlob(result, { readFile: (options) => Filesystem.readFile(options) });
-      const durationMs = Math.max(0, Number(result?.duration) || Date.now() - recordingStartedAtRef.current);
+      if (!result?.uri) throw Object.assign(new Error("native recording URI is missing"), { code: "audio_missing" });
+      const trimmed = await CapacitorAudioRecorder.trimRecording({ uri: result.uri, startMs: trimPlan.startMs, endMs: trimPlan.endMs });
+      const blob = await recordingResultToBlob(trimmed, { readFile: (options) => Filesystem.readFile(options) });
       const blobId = newAudioBlobId();
       await blobPut(blobId, blob);
       if (result?.uri) await Filesystem.deleteFile({ path: result.uri }).catch(() => {});
+      if (trimmed?.uri && trimmed.uri !== result?.uri) await Filesystem.deleteFile({ path: trimmed.uri }).catch(() => {});
       const previousDraft = recordingModeRef.current === "replace" ? {} : (loadPendingLessonRecord(memberId, lessonId) || {});
       const clipIndex = (previousDraft.audioClips || []).length;
       const requestId = createStableAudioRequestId(memberId, lessonId, clipIndex);
@@ -10168,9 +10196,12 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, memberName = "
         requestId,
         clipId: requestId,
         memberName,
-        durationMs,
+        durationMs: Math.max(0, trimPlan.endMs - trimPlan.startMs),
         bytes: blob.size,
-        audioMetrics: buildAudioMetrics(amplitudeSamples, SERVER_AUDIO_ENERGY_INTERVAL_MS),
+        audioMetrics: buildAudioMetrics(trimPlan.amplitudes, SERVER_AUDIO_ENERGY_INTERVAL_MS, {
+          trimmedMs: trimPlan.trimmedMs,
+          captureLatencyMs: captureLatencyMsRef.current,
+        }),
         state: "pending",
         createdAt: new Date().toISOString(),
       };
@@ -10188,7 +10219,8 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, memberName = "
         source: "server_audio",
         retry: { state: "waiting", attempts: 0, nextRetryAt: Date.now() },
       });
-      voiceDiagnostic("record_end", { source: "server_audio", reason, seconds: Math.round(durationMs / 1000), bytes: blob.size });
+      voiceDiagnostic("trimmed", { source: "server_audio", speechSeconds: trimPlan.speechSeconds, trimmedMs: trimPlan.trimmedMs, captureLatencyMs: captureLatencyMsRef.current });
+      voiceDiagnostic("record_end", { source: "server_audio", reason, seconds: Math.round(durationMs / 1000), bytes: blob.size, speechSeconds: trimPlan.speechSeconds, trimmedMs: trimPlan.trimmedMs, captureLatencyMs: captureLatencyMsRef.current, flags: [] });
       if (globalThis.navigator?.onLine === false) {
         setFinishing(false);
         setSummaryBusy(false);
@@ -10224,6 +10256,7 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, memberName = "
   };
   const startServerRecording = async (mode = "append") => {
     if (startRequestRef.current || on || finishing) return;
+    captureRequestedAtRef.current = globalThis.performance?.now?.() || Date.now();
     recordingModeRef.current = mode === "replace" ? "replace" : "append";
     if (recordingModeRef.current === "replace" && textRef.current.trim()) {
       replacementSnapshotRef.current = {
@@ -10274,7 +10307,15 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, memberName = "
       return;
     }
     try {
+      if (!recorderPrewarmedRef.current) {
+        await CapacitorAudioRecorder.prepareRecording({ bitRate: 8000, sampleRate: 16000 });
+        recorderPrewarmedRef.current = true;
+        voiceDiagnostic("prepared", { source: "server_audio", phase: "tap" });
+      }
       await CapacitorAudioRecorder.startRecording({ bitRate: 8000, sampleRate: 16000 });
+      recorderPrewarmedRef.current = false;
+      captureLatencyMsRef.current = Math.max(0, Math.round((globalThis.performance?.now?.() || Date.now()) - captureRequestedAtRef.current));
+      Haptics.impact({ style: ImpactStyle.Light }).catch(() => {});
       sourceRef.current = "server_audio";
       setSource("server_audio");
       recordingStartedAtRef.current = Date.now();
@@ -10285,7 +10326,7 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, memberName = "
       setOn(true);
       setAudioState("recording");
       setElapsed(0);
-      voiceDiagnostic("record_start", { source: "server_audio" });
+      voiceDiagnostic("record_start", { source: "server_audio", captureLatencyMs: captureLatencyMsRef.current });
       amplitudeTimerRef.current = setInterval(async () => {
         const level = await CapacitorAudioRecorder.getCurrentAmplitude().catch(() => ({ value: 0 }));
         const value = Math.max(0, Math.min(1, Number(level?.value) || 0));
@@ -10705,6 +10746,7 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, memberName = "
       if (amplitudeTimerRef.current) clearInterval(amplitudeTimerRef.current);
       amplitudeTimerRef.current = null;
       CapacitorAudioRecorder.cancelRecording().catch(() => {});
+      recorderPrewarmedRef.current = false;
       startRequestRef.current = false;
       setOn(false);
       setStarting(false);
@@ -12229,7 +12271,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
               <p className="mt-1 break-all" style={{ fontSize: 9, lineHeight: 1.45, color: SUB }}>Gateway: {aiProvider.getStatus().gatewayUrl || "미설정"}</p>
               <div className="mt-2 space-y-1">{diagnosticRecordSources.map((record, index) => <p key={`${record.at}-${index}`} className="tabular-nums" style={{ fontSize: 9, color: SUB }}>기록 {index + 1} · {diagnosticLocalTime(record.at)} · {record.status} · source={record.source} · date={record.dateSource}</p>)}</div>
               <p className="mt-3" style={{ fontSize: 10, fontWeight: 700, color: INK }}>음성 세션 최근 30건</p>
-              <div className="mt-1.5 space-y-1">{voiceSessionDiagnostics.map((item, index) => <p key={`${item.at}-${index}`} className="break-all tabular-nums" style={{ fontSize: 9, lineHeight: 1.45, color: ["error", "failed"].includes(item.event) ? BAD : SUB }}>{item.localTime || diagnosticLocalTime(item.at)} · {item.event} · {item.source}{item.code ? ` · ${item.code}` : ""}{item.reason ? ` · ${item.reason}` : ""}{item.seconds != null ? ` · ${item.seconds}s` : ""}{item.bytes != null ? ` · ${Math.round(item.bytes / 1024)}KB` : ""}{item.durationMs != null ? ` · ${item.durationMs}ms` : ""}{item.requestId ? ` · ${item.requestId.slice(-8)}` : ""}{item.attempt != null ? ` · attempt ${item.attempt}` : ""}{item.delayMs != null ? ` · ${item.delayMs}ms` : ""}</p>)}</div>
+              <div className="mt-1.5 space-y-1">{voiceSessionDiagnostics.map((item, index) => <p key={`${item.at}-${index}`} className="break-all tabular-nums" style={{ fontSize: 9, lineHeight: 1.45, color: ["error", "failed"].includes(item.event) ? BAD : SUB }}>{item.localTime || diagnosticLocalTime(item.at)} · {item.event} · {item.source}{item.code ? ` · ${item.code}` : ""}{item.reason ? ` · ${item.reason}` : ""}{item.seconds != null ? ` · ${item.seconds}s` : ""}{item.speechSeconds != null ? ` · speech ${item.speechSeconds}s` : ""}{item.trimmedMs != null ? ` · trim ${item.trimmedMs}ms` : ""}{item.captureLatencyMs != null ? ` · capture ${item.captureLatencyMs}ms` : ""}{item.flags?.length ? ` · ${item.flags.join(",")}` : ""}{item.bytes != null ? ` · ${Math.round(item.bytes / 1024)}KB` : ""}{item.durationMs != null ? ` · ${item.durationMs}ms` : ""}{item.requestId ? ` · ${item.requestId.slice(-8)}` : ""}{item.attempt != null ? ` · attempt ${item.attempt}` : ""}{item.delayMs != null ? ` · ${item.delayMs}ms` : ""}</p>)}</div>
               {!voiceSessionDiagnostics.length && <p className="mt-1" style={{ fontSize: 10, color: SUB }}>음성 세션 기록 없음</p>}
               <div className="mt-2 space-y-1.5">{readLessonRecordDiagnostics().map((item, index) => <div key={`${item.at}-${index}`} className="rounded-md px-2 py-1" style={{ backgroundColor: PAGE }}><p className="tabular-nums" style={{ fontSize: 9, color: SUB }}>{String(item.at).slice(5, 16).replace("T", " ")} · {item.transportCode || item.code} · {item.stage}{item.httpStatus ? ` · HTTP ${item.httpStatus}` : ""}{item.model ? ` · ${item.model}` : ""}{item.requestId ? ` · ${item.requestId.slice(-8)}` : ""}</p>{item.gatewayUrl && <p className="mt-0.5 break-all" style={{ fontSize: 8, lineHeight: 1.4, color: SUB }}>{item.gatewayUrl}</p>}{item.causeMessage && <p className="mt-0.5 break-all" style={{ fontSize: 8, lineHeight: 1.4, color: BAD }}>{item.causeName ? `${item.causeName}: ` : ""}{item.causeMessage}</p>}</div>)}</div>
               {!readLessonRecordDiagnostics().length && <p className="mt-2" style={{ fontSize: 10, color: SUB }}>최근 오류 없음</p>}

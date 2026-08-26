@@ -125,7 +125,7 @@ export function normalizeAudioLessonRecord(value) {
   }
   const fields = requireObject(source.fields, "audio lesson record fields");
   requireFields(fields, ["didToday", "observations", "responses", "nextFocus"], "audio lesson record fields");
-  if (provenance.llm !== "openai" || flags.length) throw new TypeError("audio lesson record ok provenance is invalid");
+  if (provenance.llm !== "openai" || flags.some((flag) => flag !== "tail_dropped")) throw new TypeError("audio lesson record ok provenance is invalid");
   return {
     transcript,
     result,

@@ -236,10 +236,10 @@ function validateAudioLessonRecord(value) {
   const confidence = Number(source.confidence);
   if (!result || !Number.isFinite(speechSeconds) || speechSeconds < 0 || speechSeconds > 90 || !Number.isFinite(confidence) || confidence < 0 || confidence > 1) throw new GatewayError("invalid_output");
   const flags = cleanList(source.flags, 2, 40);
-  if (flags.some((flag) => !["no_speech", "low_confidence"].includes(flag))) throw new GatewayError("invalid_output");
+  if (flags.some((flag) => !["no_speech", "low_confidence", "tail_dropped"].includes(flag))) throw new GatewayError("invalid_output");
   if (result === "ok") {
     const fields = requireExactObject(source.fields, ["didToday", "observations", "responses", "nextFocus"]);
-    if (!transcript || provenance.stt !== "openai" || provenance.llm !== "openai" || flags.length) throw new GatewayError("invalid_output");
+    if (!transcript || provenance.stt !== "openai" || provenance.llm !== "openai" || flags.some((flag) => flag !== "tail_dropped")) throw new GatewayError("invalid_output");
     return {
       transcript,
       result,
@@ -247,7 +247,7 @@ function validateAudioLessonRecord(value) {
       summary: source.summary == null ? null : cleanString(source.summary, 1200),
       speechSeconds,
       confidence,
-      flags: [],
+      flags,
       provenance: { stt: "openai", llm: "openai" },
     };
   }

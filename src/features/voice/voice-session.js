@@ -8,6 +8,7 @@ const VOICE_SESSION_EVENT_TYPES = new Set([
   "silence_end", "user_end", "cap_end", "error",
   "permission_state", "open_app_settings",
   "record_start", "record_end", "upload", "transcribed", "structured", "failed",
+  "prepared", "trimmed",
 ]);
 
 const normalizeSpace = (value) => String(value || "").replace(/\s+/g, " ").trim();
@@ -93,6 +94,10 @@ export function appendVoiceSessionDiagnostic(event, details = {}, storage = glob
     ...(Number.isFinite(Number(details.durationMs)) ? { durationMs: Math.max(0, Number(details.durationMs)) } : {}),
     ...(Number.isFinite(Number(details.seconds)) ? { seconds: Math.max(0, Number(details.seconds)) } : {}),
     ...(Number.isFinite(Number(details.bytes)) ? { bytes: Math.max(0, Number(details.bytes)) } : {}),
+    ...(Number.isFinite(Number(details.speechSeconds)) ? { speechSeconds: Math.max(0, Number(details.speechSeconds)) } : {}),
+    ...(Number.isFinite(Number(details.trimmedMs)) ? { trimmedMs: Math.max(0, Number(details.trimmedMs)) } : {}),
+    ...(Number.isFinite(Number(details.captureLatencyMs)) ? { captureLatencyMs: Math.max(0, Number(details.captureLatencyMs)) } : {}),
+    ...(Array.isArray(details.flags) ? { flags: details.flags.map((flag) => safeDiagnosticText(flag, 40)).slice(0, 4) } : {}),
     ...(details.requestId ? { requestId: safeDiagnosticText(details.requestId, 80) } : {}),
   };
   try {

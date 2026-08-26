@@ -17,6 +17,7 @@ const output = {
 test("client validates the deployed audio lesson contract", () => {
   assert.equal(AI_OPERATIONS.LESSON_RECORD_FROM_AUDIO, "lesson_record_from_audio");
   assert.deepEqual(normalizeAIOutput(AI_OPERATIONS.LESSON_RECORD_FROM_AUDIO, output), output);
+  assert.deepEqual(normalizeAIOutput(AI_OPERATIONS.LESSON_RECORD_FROM_AUDIO, { ...output, flags: ["tail_dropped"] }).flags, ["tail_dropped"]);
   assert.throws(() => normalizeAIOutput(AI_OPERATIONS.LESSON_RECORD_FROM_AUDIO, { ...output, audio: "forbidden" }));
   assert.deepEqual(normalizeAIOutput(AI_OPERATIONS.LESSON_RECORD_FROM_AUDIO, {
     transcript: "", result: "no_speech", fields: null, summary: null, speechSeconds: 0, confidence: 0,

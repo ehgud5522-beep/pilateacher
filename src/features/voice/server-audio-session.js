@@ -6,6 +6,8 @@ export const SERVER_AUDIO_MAX_SECONDS = 90;
 export const SERVER_AUDIO_MAX_BYTES = 2 * 1024 * 1024;
 export const SERVER_AUDIO_ENERGY_INTERVAL_MS = 100;
 export const SERVER_AUDIO_MIN_SPEECH_SECONDS = 1.5;
+export const SERVER_AUDIO_LEAD_PADDING_MS = 300;
+export const SERVER_AUDIO_TAIL_PADDING_MS = 500;
 
 const safeIdPart = (value) => String(value || "unknown").replace(/[^A-Za-z0-9._:-]/g, "_").slice(0, 40);
 
@@ -57,10 +59,36 @@ export function analyzeRecordedSpeech(amplitudes, intervalMs = SERVER_AUDIO_ENER
   };
 }
 
-export function buildAudioMetrics(amplitudes, intervalMs = SERVER_AUDIO_ENERGY_INTERVAL_MS) {
+export function createAudioTrimPlan(amplitudes, intervalMs = SERVER_AUDIO_ENERGY_INTERVAL_MS, durationMs = null) {
+  const values = Array.isArray(amplitudes) ? amplitudes.map(clampAmplitude) : [];
+  const analyzed = analyzeRecordedSpeech(values, intervalMs);
+  if (!values.length || !analyzed.accepted) {
+    return { ...analyzed, startMs: 0, endMs: 0, trimmedMs: 0, amplitudes: [] };
+  }
+  const sorted = [...values].sort((a, b) => a - b);
+  const noiseFloor = sorted[Math.floor((sorted.length - 1) * 0.2)] || 0;
+  const threshold = Math.max(0.015, noiseFloor * 2.5 + 0.006);
+  const active = values.flatMap((value, index) => value >= threshold ? [index] : []);
+  const measuredDurationMs = Math.max(values.length * intervalMs, Number(durationMs) || 0);
+  const startMs = Math.max(0, active[0] * intervalMs - SERVER_AUDIO_LEAD_PADDING_MS);
+  const endMs = Math.min(measuredDurationMs, (active.at(-1) + 1) * intervalMs + SERVER_AUDIO_TAIL_PADDING_MS);
+  const firstSample = Math.max(0, Math.floor(startMs / intervalMs));
+  const lastSample = Math.min(values.length, Math.ceil(endMs / intervalMs));
+  return {
+    ...analyzed,
+    startMs,
+    endMs,
+    trimmedMs: Math.max(0, measuredDurationMs - (endMs - startMs)),
+    amplitudes: values.slice(firstSample, lastSample),
+  };
+}
+
+export function buildAudioMetrics(amplitudes, intervalMs = SERVER_AUDIO_ENERGY_INTERVAL_MS, details = {}) {
   return {
     intervalMs,
     amplitudes: (amplitudes || []).map((value) => Math.round(clampAmplitude(value) * 10000) / 10000).slice(0, 2000),
+    trimmedMs: Math.max(0, Math.round(Number(details.trimmedMs) || 0)),
+    captureLatencyMs: Math.max(0, Math.round(Number(details.captureLatencyMs) || 0)),
   };
 }
 
@@ -105,7 +133,8 @@ export function audioGatewayInput({ audio, memberId, lessonId, memberName, clipI
 }
 
 export function structuredDraftFromAudioOutput(output) {
-  if (!output?.fields || output?.result !== "ok" || (output?.flags || []).length) return null;
+  const blockingFlags = (output?.flags || []).filter((flag) => flag !== "tail_dropped");
+  if (!output?.fields || output?.result !== "ok" || blockingFlags.length) return null;
   const fields = output?.fields || {};
   return {
     didToday: fields.didToday || [],

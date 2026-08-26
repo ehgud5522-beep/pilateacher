@@ -31,12 +31,26 @@ test("model-specific confidence rejects weak output and keeps accepted Whisper s
   assert.equal(whisper.rejectedSegments, 1);
 });
 
+test("Whisper drops accepted-looking segments that begin after the measured speech tail", () => {
+  const whisper = assessWhisperTranscription({ segments: [
+    { start: 0.1, text: "브릿지.", no_speech_prob: 0.02, avg_logprob: -0.1, compression_ratio: 1.1 },
+    { start: 1.2, text: "별거 없었어요 평소대로.", no_speech_prob: 0.03, avg_logprob: -0.12, compression_ratio: 1.1 },
+    { start: 5.4, text: "재등록 의사를 밝혔습니다.", no_speech_prob: 0.04, avg_logprob: -0.15, compression_ratio: 1.1 },
+  ] }, { speechEndSeconds: 3 });
+  assert.equal(whisper.transcript, "브릿지. 별거 없었어요 평소대로.");
+  assert.equal(whisper.tailDropped, true);
+  assert.equal(whisper.tailDroppedSegments, 1);
+});
+
 test("implausible Korean speed and four consecutive glossary terms block structuring", () => {
   assert.deepEqual(assessTranscriptConsistency("리포머 캐딜락 체어 바렐", 5, PILATES_TRANSCRIPTION_TERMS).flags, ["glossary_sequence"]);
   assert.ok(assessTranscriptConsistency("오른쪽허리가아주많이좋아졌습니다", 1, PILATES_TRANSCRIPTION_TERMS).flags.includes("implausible_transcript_rate"));
   assert.equal(assessTranscriptConsistency("브릿지", 1.5, PILATES_TRANSCRIPTION_TERMS).accepted, true);
   const prompt = buildTranscriptionPrompt("제이");
   assert.match(prompt, /같은 용어가 나올 수 있습니다/);
+  assert.match(prompt, /흉추·요추·경추·견갑·고관절/);
+  assert.match(prompt, /지난주/);
+  assert.match(prompt, /낮췄다·올렸다/);
   assert.doesNotMatch(prompt, /필라테스 용어 참고:/);
 });
 

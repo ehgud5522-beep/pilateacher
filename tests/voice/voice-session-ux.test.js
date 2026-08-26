@@ -111,6 +111,20 @@ test("voice diagnostics retain only 30 privacy-safe events with device-local tim
   assert.equal(JSON.stringify(entries).includes("must never be stored"), false);
 });
 
+test("voice diagnostics expose timing and safety flags without transcript content", () => {
+  const values = new Map();
+  const storage = { getItem: (key) => values.get(key) || null, setItem: (key, value) => values.set(key, value) };
+  const entry = appendVoiceSessionDiagnostic("trimmed", {
+    source: "server_audio", speechSeconds: 2.7, trimmedMs: 3100, captureLatencyMs: 92,
+    flags: ["tail_dropped"], transcript: "저장하면 안 되는 원문",
+  }, storage, () => new Date("2026-08-26T08:00:00+09:00"));
+  assert.equal(entry.speechSeconds, 2.7);
+  assert.equal(entry.trimmedMs, 3100);
+  assert.equal(entry.captureLatencyMs, 92);
+  assert.deepEqual(entry.flags, ["tail_dropped"]);
+  assert.equal(JSON.stringify(entry).includes("저장하면 안 되는 원문"), false);
+});
+
 test("VoiceNote waits for a user tap, keeps toggle controls, and exposes continuation without overlapping failure UI", async () => {
   const source = await readFile(new URL("../../src/App.jsx", import.meta.url), "utf8");
   const voice = source.slice(source.indexOf("function VoiceNote("), source.indexOf("function NoteForm("));

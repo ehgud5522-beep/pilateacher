@@ -333,3 +333,33 @@ test("audio safety gates never call transcription or structuring for silence and
   assert.equal(transcriptionCalls, 1);
   assert.equal(structureCalls, 0);
 });
+
+test("audio provider removes a confident hallucinated tail after the measured last speech segment", async () => {
+  let structuredTranscript = "";
+  const provider = createOpenAIProvider({
+    client: {
+      audio: { transcriptions: { create: async () => ({
+        text: "브릿지. 별거 없었어요 평소대로. 재등록 의사를 밝혔습니다.",
+        segments: [
+          { start: 0.1, text: "브릿지.", no_speech_prob: 0.02, avg_logprob: -0.1, compression_ratio: 1.1 },
+          { start: 1.2, text: "별거 없었어요 평소대로.", no_speech_prob: 0.03, avg_logprob: -0.1, compression_ratio: 1.1 },
+          { start: 5.3, text: "재등록 의사를 밝혔습니다.", no_speech_prob: 0.03, avg_logprob: -0.1, compression_ratio: 1.1 },
+        ],
+      }) } },
+      responses: { create: async (input) => {
+        structuredTranscript = JSON.parse(String(input.input).slice(String(input.input).indexOf("\n") + 1)).rawTranscript;
+        return { status: "completed", output_text: JSON.stringify({ didToday: ["브릿지"], observations: [], responses: [], nextFocus: [], uncertain: [], summary: "브릿지를 진행했고 별다른 변화 없이 평소대로 수업했습니다." }) };
+      } },
+    },
+  });
+  const result = await provider.executeAudio({ input: {
+    audio: createM4aFixture(8).toString("base64"), memberName: "", language: "ko",
+    audioMetrics: { intervalMs: 100, amplitudes: [...Array(2).fill(0.002), ...Array(28).fill(0.25), ...Array(50).fill(0.002)], trimmedMs: 3000, captureLatencyMs: 90 },
+  } });
+  assert.equal(structuredTranscript, "브릿지. 별거 없었어요 평소대로.");
+  assert.equal(result.output.transcript, "브릿지. 별거 없었어요 평소대로.");
+  assert.deepEqual(result.output.flags, ["tail_dropped"]);
+  assert.equal(result.confidenceDiagnostic.tailDroppedSegments, 1);
+  assert.equal(result.trimmedMs, 3000);
+  assert.equal(result.captureLatencyMs, 90);
+});

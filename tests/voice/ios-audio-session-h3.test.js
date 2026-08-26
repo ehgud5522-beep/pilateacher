@@ -27,6 +27,8 @@ test("the microphone diagnostic exposes every native stage and exact NSError fie
   }
   assert.match(recorderPatch, /\.now\(\) \+ 1\.0/);
   assert.match(recorderPatch, /"otherSessionOwner": "not_exposed_by_ios"/);
+  assert.match(recorderPatch, /if \(\s*source\.includes\("    @objc func runMicrophoneTest/);
+  assert.match(recorderPatch, /"    @objc func pauseRecording\(_ call: CAPPluginCall\) \{\\n"/);
 });
 
 test("native recorder patch uses modern permission API and interruption diagnostics", async () => {

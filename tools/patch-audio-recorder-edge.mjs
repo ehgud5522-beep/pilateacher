@@ -163,6 +163,14 @@ function patchAndroid(source) {
 }
 
 function patchIos(source) {
+  if (
+    source.includes("    @objc func runMicrophoneTest(_ call: CAPPluginCall) {")
+    && source.includes("    private func diagnosticStep(")
+    && source.includes("AVAudioApplication.shared.recordPermission")
+    && source.includes("        case prepared = \"PREPARED\"")
+  ) {
+    return source;
+  }
   let next = source.replace(
     'appendingPathComponent("(UUID().uuidString)-trimmed.m4a")',
     String.raw`appendingPathComponent("\(UUID().uuidString)-trimmed.m4a")`,
@@ -207,8 +215,9 @@ function patchIos(source) {
     "    private var interruptionObserver: NSObjectProtocol?\n",
     "    private var interruptionObserver: NSObjectProtocol?\n    private var microphoneTestRecorder: AVAudioRecorder?\n",
     "ios microphone test recorder");
-  next = replaceOnce(next,
-    "    @objc func trimRecording(_ call: CAPPluginCall) {\n",
+  if (!next.includes("    @objc func runMicrophoneTest(_ call: CAPPluginCall) {")) {
+    next = replaceOnce(next,
+    "    @objc func pauseRecording(_ call: CAPPluginCall) {\n",
     `    @objc func runMicrophoneTest(_ call: CAPPluginCall) {
         var steps: [[String: Any]] = []
         let finishFailure: (String, NSError) -> Void = { stage, error in
@@ -304,9 +313,10 @@ function patchIos(source) {
         }
     }
 
-    @objc func trimRecording(_ call: CAPPluginCall) {
+    @objc func pauseRecording(_ call: CAPPluginCall) {
 `,
     "ios microphone test method");
+  }
   next = replaceOnce(next,
     "                try self.configureAudioSession(options: call)\n                try self.beginRecording(call)\n",
     "                if self.status != .prepared {\n                    try self.configureAudioSession(options: call)\n                    try self.prepareRecorder(call)\n                }\n                try self.beginRecording()\n",

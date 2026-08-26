@@ -357,10 +357,10 @@ const DEVICE_LOG_FIELDS = new Set([
   "httpStatus", "requestId", "retryCount", "path", "expected", "received", "reason",
   "failureStage", "providerStatus", "providerCode", "providerType",
   "failureClass", "appBuild", "model", "gatewayUrl", "transportCode", "causeName", "causeMessage",
-  "domain", "localizedDescription", "audioSessionCategory", "audioSessionMode", "otherAudioPlaying",
+  "domain", "localizedDescription", "audioSessionCategory", "audioSessionMode", "audioSessionCategoryOptions", "otherAudioPlaying",
   "secondaryAudioShouldBeSilencedHint", "otherSessionOwner", "inputAvailable", "routeInputs", "routeOutputs", "voiceEngine",
   "prepareToRecord", "recordingSettings", "fileURL", "fileExistedBefore", "previousRecorderAlive",
-  "millisecondsSinceLastStop", "sessionInterrupted", "attempt", "shouldResume",
+  "millisecondsSinceLastStop", "sessionInterrupted", "attempt", "shouldResume", "width", "height", "bytes",
 ]);
 const deviceLog = (event, details = {}) => {
   try {
@@ -371,6 +371,11 @@ const deviceLog = (event, details = {}) => {
     });
     console.info(`[PilaTeacher/device] ${event}`, safe);
   } catch (e) {}
+};
+const cameraPipelineLog = (stage, details = {}) => {
+  const source = details.source || "camera";
+  appendVoiceSessionDiagnostic(stage, { ...details, source, phase: stage });
+  deviceLog(`posture_camera_${stage}`, { ...details, source, stage });
 };
 const deviceError = (error) => ({
   code: error?.code || error?.name || "unknown",
@@ -6436,18 +6441,24 @@ function PostureCaptureScreen({
     captureRunning.current = false;
     cameraStarting.current = false;
     if (nativePreviewAvailable) {
-      try { await CameraPreview.stop({ force: true }); } catch {}
+      try {
+        await CameraPreview.stop({ force: true });
+        cameraPipelineLog("preview_stopped", { memberId: member?.id, assessmentId, view: activeView, source: "native_preview", reason, state: "success" });
+      } catch (error) {
+        cameraPipelineLog("preview_stopped", { memberId: member?.id, assessmentId, view: activeView, source: "native_preview", reason, state: "failed", ...deviceError(error) });
+      }
     } else {
       const stream = streamRef.current;
       streamRef.current = null;
       stream?.getTracks?.().forEach((track) => track.stop());
       if (videoRef.current) videoRef.current.srcObject = null;
+      if (stream) cameraPipelineLog("preview_stopped", { memberId: member?.id, assessmentId, view: activeView, source: "getUserMedia", reason, state: "success" });
     }
     cameraRunning.current = false;
     document.documentElement.classList.remove("posture-camera-native-active");
     await stopMotion();
     if (mounted.current && reason !== "capture") setCameraStatus(reason === "background" ? "paused" : "idle");
-  }, [clearCountdown, nativePreviewAvailable, stopMotion]);
+  }, [activeView, assessmentId, clearCountdown, member?.id, nativePreviewAvailable, stopMotion]);
 
   const startMotion = useCallback(async (generation) => {
     if (motionHandle.current) return;
@@ -6550,6 +6561,8 @@ function PostureCaptureScreen({
 
   const captureWithSystemCamera = useCallback(async (reason = "preview_unavailable") => {
     const box = stageRef.current?.getBoundingClientRect();
+    const source = "capacitor_camera";
+    cameraPipelineLog("capture_start", { memberId: member?.id, assessmentId, view: activeView, source, reason });
     const checked = await CapacitorCamera.checkPermissions().catch(() => ({ camera: "prompt" }));
     let permissionState = normalizeCameraPermissionState(checked);
     if (permissionState === "prompt") {
@@ -6573,6 +6586,8 @@ function PostureCaptureScreen({
       throw Object.assign(new Error("camera result missing webPath/path"), { code: "camera_result_missing" });
     }
     const size = await decodeBlobSize(blob);
+    cameraPipelineLog("captured", { memberId: member?.id, assessmentId, view: activeView, source, reason, width: size.width, height: size.height, bytes: blob.size });
+    cameraPipelineLog("preview_stopped", { memberId: member?.id, assessmentId, view: activeView, source, reason, state: "system_camera_returned" });
     const src = URL.createObjectURL(blob);
     setPendingCapture({ blob, src, memberId: member?.id || null, assessmentId, view: activeView, geometry: null, motion: null, source: "capacitor_camera" });
     setCameraStatus("confirming");
@@ -6581,6 +6596,7 @@ function PostureCaptureScreen({
       source: "capacitor_camera", reason, permissionState, width: box?.width, height: box?.height,
     });
     deviceLog("posture_camera_fallback_captured", { memberId: member?.id, assessmentId, view: activeView, source: "capacitor_camera", reason, width: size.width, height: size.height });
+    cameraPipelineLog("returned", { memberId: member?.id, assessmentId, view: activeView, source, reason, state: "awaiting_confirmation" });
     return true;
   }, [activeView, assessmentId, member?.id]);
 
@@ -6703,13 +6719,15 @@ function PostureCaptureScreen({
     const captureMemberId = member?.id || null;
     const captureAssessmentId = assessmentId;
     const captureView = activeView;
+    const captureSource = nativePreviewAvailable ? "native_preview" : "getUserMedia";
+    cameraPipelineLog("capture_start", { memberId: captureMemberId, assessmentId: captureAssessmentId, view: captureView, source: captureSource });
     try {
       let blob;
       let width;
       let height;
       let geometry;
       if (nativePreviewAvailable) {
-        const result = await CameraPreview.capture({ quality: 92, width: 1440, height: 1920, format: "jpeg", saveToGallery: false, mirrorFrontCamera: false, photoQualityPrioritization: "quality" });
+        const result = await CameraPreview.capture({ quality: 85, width: 1080, height: 1440, format: "jpeg", saveToGallery: false, mirrorFrontCamera: false, photoQualityPrioritization: "balanced" });
         blob = base64ToBlob(result.value, { defaultMimeType: "image/jpeg" });
         ({ width, height } = await decodeBlobSize(blob));
         const rect = stageRef.current?.getBoundingClientRect() || previewRect;
@@ -6717,6 +6735,7 @@ function PostureCaptureScreen({
       } else {
         ({ blob, width, height, geometry } = await captureBrowserFrame());
       }
+      cameraPipelineLog("captured", { memberId: captureMemberId, assessmentId: captureAssessmentId, view: captureView, source: captureSource, width, height, bytes: blob.size });
       const measuredAt = new Date().toISOString();
       const geometryMetadata = createCaptureGeometryMetadata({ geometry, captureWidth: width, captureHeight: height, orientationDegrees: window.screen?.orientation?.angle || 0, previewMirrored: false, captureMirrored: false, measuredAt });
       const motionMetadata = sensor.status === SENSOR_STATUSES.active ? { roll: sensor.roll, pitch: sensor.pitch, isLevel: sensor.isLevel, measuredAt } : null;
@@ -6724,6 +6743,7 @@ function PostureCaptureScreen({
       await stopCamera("capture");
       setCameraStatus("confirming");
       setPendingCapture({ blob, src, memberId: captureMemberId, assessmentId: captureAssessmentId, view: captureView, geometry: geometryMetadata, motion: motionMetadata, source: nativePreviewAvailable ? "native_preview" : "getUserMedia" });
+      cameraPipelineLog("returned", { memberId: captureMemberId, assessmentId: captureAssessmentId, view: captureView, source: captureSource, state: "awaiting_confirmation" });
       deviceLog("posture_camera_photo_captured", { memberId: captureMemberId, assessmentId: captureAssessmentId, view: captureView, source: nativePreviewAvailable ? "native_preview" : "getUserMedia", state: "awaiting_confirmation" });
     } catch (error) {
       setCameraStatus(cameraRunning.current ? "active" : "error");
@@ -6773,6 +6793,7 @@ function PostureCaptureScreen({
     setPendingCapture(null);
     setCameraError("");
     setCameraStatus("idle");
+    cameraPipelineLog("returned", { memberId: pendingCapture.memberId, assessmentId: pendingCapture.assessmentId, view: pendingCapture.view, source: pendingCapture.source, state: "capture_confirmed" });
   };
 
   const handleBack = async () => {
@@ -7226,6 +7247,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
       }
       setDraftSaved((previous) => ({ ...previous, [capturedView]: true }));
       deviceLog("assessment_draft_saved", { memberId: analysisMemberId.current, assessmentId: assessmentId.current, view: capturedView, storage: "indexedDB", source: metadata.source || captureSource.current, count: 1 });
+      cameraPipelineLog("saved", { memberId: analysisMemberId.current, assessmentId: assessmentId.current, view: capturedView, storage: "indexedDB", source: metadata.source || captureSource.current, width: im.naturalWidth, height: im.naturalHeight, bytes: blob.size });
       const nextTarget = captureViews.find(({ key }) => key !== capturedView && !capturePhotos[key]);
       if (nextTarget) onToast?.({ ok: true, msg: `${postureViewLabel(capturedView)} 사진을 저장했습니다. 사진을 확인한 뒤 ${postureViewLabel(nextTarget.key)}을 선택해 주세요.` });
       else onToast?.({ ok: true, msg: `${postureViewLabel(capturedView)} 촬영이 완료되었습니다. 분석 준비가 끝났습니다.` });
@@ -9786,6 +9808,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
   const [replacementUndoVisible, setReplacementUndoVisible] = useState(false);
   const [backgroundInterrupted, setBackgroundInterrupted] = useState(false);
   const [microphoneTest, setMicrophoneTest] = useState({ status: "idle", steps: [] });
+  const [cameraTest, setCameraTest] = useState({ status: "idle", steps: [] });
   const [source, setSource] = useState(null);
   const [summaryOriginal, setSummaryOriginal] = useState(null);
   const [summaryDraft, setSummaryDraft] = useState(null);
@@ -9875,6 +9898,9 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     inputAvailable: diagnostic?.inputAvailable,
     routeInputs: diagnostic?.routeInputs,
     routeOutputs: diagnostic?.routeOutputs,
+    audioSessionCategory: diagnostic?.audioSessionCategory,
+    audioSessionMode: diagnostic?.audioSessionMode,
+    audioSessionCategoryOptions: diagnostic?.audioSessionCategoryOptions,
     otherAudioPlaying: diagnostic?.otherAudioPlaying,
     recordingSettings: diagnostic?.recordingSettings,
     fileURL: diagnostic?.fileURL,
@@ -10269,6 +10295,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
           memberId, lessonId, stage: step?.stage, state: step?.success ? "success" : "failed",
           domain: step?.domain, code: step?.code, localizedDescription: step?.localizedDescription,
           audioSessionCategory: step?.audioSessionCategory, audioSessionMode: step?.audioSessionMode,
+          audioSessionCategoryOptions: step?.audioSessionCategoryOptions,
           otherAudioPlaying: step?.otherAudioPlaying, secondaryAudioShouldBeSilencedHint: step?.secondaryAudioShouldBeSilencedHint,
           otherSessionOwner: step?.otherSessionOwner,
           inputAvailable: step?.inputAvailable, routeInputs: step?.routeInputs, routeOutputs: step?.routeOutputs,
@@ -10286,6 +10313,87 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       };
       console.info("[PilaTeacher/microphone-test]", step);
       setMicrophoneTest({ status: "failed", steps: [step] });
+    }
+  };
+  const runCameraTest = async () => {
+    const steps = [];
+    let previewStarted = false;
+    let tempPath = null;
+    let failed = false;
+    const publishStep = (stage, success, details = {}) => {
+      const step = {
+        stage, success, domain: details.domain || (success ? "PilaTeacher.CameraSession" : "CapacitorCameraPreview"),
+        code: details.code ?? (success ? 0 : "camera_test_failed"),
+        localizedDescription: details.localizedDescription || (success ? "completed" : "camera test failed"),
+      };
+      steps.push(step);
+      setCameraTest({ status: success ? "running" : "failed", steps: [...steps] });
+      console.info("[PilaTeacher/camera-test]", step);
+      return step;
+    };
+    setCameraTest({ status: "running", steps: [] });
+    if (!Capacitor.isNativePlatform() || Capacitor.getPlatform() !== "ios" || !Capacitor.isPluginAvailable("CameraPreview")) {
+      publishStep("availability", false, { code: "unavailable", localizedDescription: "iOS native camera test is unavailable." });
+      return;
+    }
+    try {
+      const checked = await CameraPreview.checkPermissions({ disableAudio: true });
+      let permissionState = normalizeCameraPermissionState(checked);
+      if (permissionState === "prompt") {
+        const requested = await CameraPreview.requestPermissions({ disableAudio: true, showSettingsAlert: false });
+        permissionState = normalizeCameraPermissionState(requested);
+      }
+      if (permissionState !== "granted") throw Object.assign(new Error("camera permission denied"), { code: "permission_denied" });
+      publishStep("permission", true, { localizedDescription: permissionState });
+      document.documentElement.classList.add("posture-camera-native-active");
+      await CameraPreview.start({
+        position: "rear", toBack: true, aspectRatio: "4:3", aspectMode: "contain", positioning: "center",
+        storeToFile: false, disableAudio: true, rotateWhenOrientationChanged: true, lockAndroidOrientation: false,
+      });
+      previewStarted = true;
+      cameraPipelineLog("capture_start", { memberId, lessonId, source: "camera_test", state: "preview_started" });
+      publishStep("capture_start", true, { localizedDescription: "preview started" });
+      const result = await CameraPreview.capture({
+        quality: 80, width: 720, height: 960, format: "jpeg", saveToGallery: false,
+        mirrorFrontCamera: false, photoQualityPrioritization: "balanced",
+      });
+      const base64 = String(result?.value || "").replace(/^data:[^;]+;base64,/, "");
+      if (!base64) throw Object.assign(new Error("camera capture returned no image"), { code: "empty_capture" });
+      const bytes = Math.floor((base64.length * 3) / 4);
+      cameraPipelineLog("captured", { memberId, lessonId, source: "camera_test", width: 720, height: 960, bytes });
+      publishStep("captured", true, { localizedDescription: `${bytes} bytes` });
+      tempPath = `PilaTeacher/diagnostics/camera-test-${Date.now()}-${uid()}.jpg`;
+      await Filesystem.writeFile({ path: tempPath, data: base64, directory: "CACHE", recursive: true });
+      cameraPipelineLog("saved", { memberId, lessonId, source: "camera_test", storage: "cache", bytes });
+      publishStep("saved", true, { localizedDescription: "temporary cache file saved" });
+      await CameraPreview.stop({ force: true });
+      previewStarted = false;
+      document.documentElement.classList.remove("posture-camera-native-active");
+      cameraPipelineLog("preview_stopped", { memberId, lessonId, source: "camera_test", state: "success" });
+      publishStep("preview_stopped", true);
+      cameraPipelineLog("returned", { memberId, lessonId, source: "camera_test", state: "success" });
+      publishStep("returned", true, { localizedDescription: "web view restored" });
+      setCameraTest({ status: "success", steps: [...steps] });
+    } catch (error) {
+      failed = true;
+      publishStep("failed", false, {
+        domain: error?.domain || "CapacitorCameraPreview", code: error?.code || error?.name || "camera_test_failed",
+        localizedDescription: error?.localizedDescription || error?.message || String(error),
+      });
+    } finally {
+      if (previewStarted) {
+        try {
+          await CameraPreview.stop({ force: true });
+          cameraPipelineLog("preview_stopped", { memberId, lessonId, source: "camera_test", state: "cleanup_after_failure" });
+          publishStep("preview_stopped", true, { localizedDescription: "cleanup completed" });
+        } catch (error) {
+          cameraPipelineLog("preview_stopped", { memberId, lessonId, source: "camera_test", state: "failed", ...deviceError(error) });
+          publishStep("preview_stopped", false, { code: error?.code || "stop_failed", localizedDescription: error?.message || String(error) });
+        }
+      }
+      document.documentElement.classList.remove("posture-camera-native-active");
+      if (tempPath) await Filesystem.deleteFile({ path: tempPath, directory: "CACHE" }).catch(() => {});
+      if (failed) setCameraTest((previous) => ({ ...previous, status: "failed" }));
     }
   };
   const mergeAudioStructuredDraft = (previous, next) => {
@@ -11296,9 +11404,16 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       {voicePhase === "permission_permanently_denied" && <Sub className="mt-1.5 block leading-relaxed">설정에서 마이크 권한을 켜주세요</Sub>}
       {voicePhase === "unsupported" && <Sub className="mt-1.5 block leading-relaxed">이 기기에서는 말하기를 지원하지 않아 직접 입력으로 기록할 수 있어요.</Sub>}
       {Capacitor.isNativePlatform() && Capacitor.getPlatform() === "ios" && <div className="mt-2 rounded-xl p-2.5" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
-        <button type="button" onClick={runMicrophoneTest} disabled={microphoneTest.status === "running" || on || starting || finishing} className="min-h-11 w-full rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: TINT, color: BRAND_D }}>{microphoneTest.status === "running" ? "마이크 테스트 중…" : "마이크 테스트"}</button>
+        <div className="grid grid-cols-2 gap-1.5">
+          <button type="button" onClick={runMicrophoneTest} disabled={microphoneTest.status === "running" || cameraTest.status === "running" || on || starting || finishing} className="min-h-11 w-full rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: TINT, color: BRAND_D }}>{microphoneTest.status === "running" ? "마이크 테스트 중…" : "마이크 테스트"}</button>
+          <button type="button" onClick={runCameraTest} disabled={cameraTest.status === "running" || microphoneTest.status === "running" || on || starting || finishing} className="min-h-11 w-full rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: TINT, color: BRAND_D }}>{cameraTest.status === "running" ? "카메라 테스트 중…" : "카메라 테스트"}</button>
+        </div>
         {microphoneTest.steps.length > 0 && <div className="mt-2 space-y-1" aria-live="polite">{microphoneTest.steps.map((step, index) => <div key={`${step.stage || "step"}-${index}`} className="rounded-lg px-2 py-1.5 text-[10px] leading-relaxed" style={{ backgroundColor: step.success ? GOOD_S : BAD_S, color: step.success ? GOOD : BAD }}>
           <p className="font-extrabold">{step.stage || "unknown"} · {step.success ? "성공" : "실패"}</p>
+          {(step.domain || step.code !== undefined || step.localizedDescription) && <p className="break-words">{String(step.domain || "-")} · {String(step.code ?? "-")} · {String(step.localizedDescription || "-")}</p>}
+        </div>)}</div>}
+        {cameraTest.steps.length > 0 && <div className="mt-2 space-y-1" aria-live="polite">{cameraTest.steps.map((step, index) => <div key={`camera-${step.stage || "step"}-${index}`} className="rounded-lg px-2 py-1.5 text-[10px] leading-relaxed" style={{ backgroundColor: step.success ? GOOD_S : BAD_S, color: step.success ? GOOD : BAD }}>
+          <p className="font-extrabold">카메라 · {step.stage || "unknown"} · {step.success ? "성공" : "실패"}</p>
           {(step.domain || step.code !== undefined || step.localizedDescription) && <p className="break-words">{String(step.domain || "-")} · {String(step.code ?? "-")} · {String(step.localizedDescription || "-")}</p>}
         </div>)}</div>}
       </div>}

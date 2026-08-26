@@ -99,8 +99,18 @@ require(package_json.get("dependencies", {}).get("@capgo/camera-preview") == "8.
 postinstall = package_json.get("scripts", {}).get("postinstall", "")
 require("node tools/patch-camera-preview-ios-no-location.mjs" in postinstall,
         "camera preview no-location postinstall is missing")
+require("node tools/patch-camera-preview-ios-session-safety.mjs" in postinstall,
+        "camera preview session-safety postinstall is missing")
 require("node tools/patch-firebase-auth-ios-first-login-profile.mjs" in postinstall,
         "Firebase Authentication first-login profile postinstall is missing")
+require("node tools/patch-audio-recorder-h5.mjs" in postinstall,
+        "audio recorder H-5 postinstall is missing")
+require(postinstall.index("patch-camera-preview-ios-session-safety.mjs") >
+        postinstall.index("patch-camera-preview-ios-no-location.mjs"),
+        "camera preview session-safety patch does not run after its base patch")
+require(postinstall.index("patch-audio-recorder-h5.mjs") >
+        postinstall.index("patch-audio-recorder-h4.mjs"),
+        "audio recorder H-5 patch does not run after its H-4 prerequisite")
 
 capacitor_config = json.loads((root / "capacitor.config.json").read_text(encoding="utf-8"))
 auth_providers = capacitor_config.get("plugins", {}).get("FirebaseAuthentication", {}).get("providers", [])
@@ -132,10 +142,40 @@ for swift_file in camera_sources.rglob("*.swift"):
     found = [token for token in forbidden_location_tokens if token in source]
     require(not found, f"{swift_file.relative_to(root)} still contains {found}")
 
+audio_recorder = (
+    root / "node_modules/@capgo/capacitor-audio-recorder/ios/Sources/CapacitorAudioRecorderPlugin/CapacitorAudioRecorderPlugin.swift"
+).read_text(encoding="utf-8")
+require("PILATEACHER_H5_SESSION_PER_START" in audio_recorder,
+        "audio recorder H-5 patch is not installed")
+require("configureAndActivateAudioSession()" in audio_recorder,
+        "audio session is not configured immediately before recording")
+require("AVSampleRateKey: 44_100.0" in audio_recorder and
+        "AVNumberOfChannelsKey: 1" in audio_recorder and
+        "kAudioFormatMPEG4AAC" in audio_recorder,
+        "audio recorder safe m4a settings are missing")
+require("configureCategoryOnce" not in audio_recorder and
+        "categoryConfigured" not in audio_recorder,
+        "load-time audio category configuration remains installed")
+
+camera_controller = (
+    camera_sources / "CapgoCameraPreviewPlugin/CameraController.swift"
+).read_text(encoding="utf-8")
+camera_plugin = (
+    camera_sources / "CapgoCameraPreviewPlugin/Plugin.swift"
+).read_text(encoding="utf-8")
+require("PILATEACHER_H5_CAMERA_SESSION_SAFETY" in camera_controller and
+        "PILATEACHER_H5_CAMERA_SESSION_SAFETY" in camera_plugin,
+        "camera preview H-5 session-safety patch is not installed")
+require("requestPilaTeacherSafeCleanup" in camera_controller and
+        "restorePilaTeacherAudioSessionAfterCamera" in camera_plugin,
+        "camera teardown or audio-session restoration is missing")
+
 require(not (root / "ios/App/App/cert_key.pem").exists(),
         "cert_key.pem must not be bundled")
 print("Firebase launch order: validated")
 print("Firebase duplicate initialization guards: validated")
 print("Camera preview iOS location APIs: absent after deterministic patch")
+print("Audio recorder H-5 per-start session: validated")
+print("Camera preview H-5 teardown and audio isolation: validated")
 print("Info.plist location permission keys: absent")
 print("ITSAppUsesNonExemptEncryption: Boolean false")

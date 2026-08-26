@@ -10,6 +10,7 @@ const VOICE_SESSION_EVENT_TYPES = new Set([
   "permission_state", "open_app_settings",
   "record_start", "record_end", "upload", "transcribed", "structured", "failed",
   "prepared", "trimmed", "audio_record_start_failed", "camera_preview_start_failed", "camera_fallback",
+  "capture_start", "captured", "saved", "preview_stopped", "returned",
 ]);
 
 const normalizeSpace = (value) => String(value || "").replace(/\s+/g, " ").trim();

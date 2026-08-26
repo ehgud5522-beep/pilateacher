@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "postinstall": "node tools/patch-camera-preview-ios-no-location.mjs && node tools/patch-firebase-auth-ios-first-login-profile.mjs && node tools/patch-speech-recognition-capacitor8.mjs && node tools/patch-audio-recorder-edge.mjs && node tools/patch-audio-recorder-h4.mjs",
+    "postinstall": "node tools/patch-camera-preview-ios-no-location.mjs && node tools/patch-camera-preview-ios-session-safety.mjs && node tools/patch-firebase-auth-ios-first-login-profile.mjs && node tools/patch-speech-recognition-capacitor8.mjs && node tools/patch-audio-recorder-edge.mjs && node tools/patch-audio-recorder-h4.mjs && node tools/patch-audio-recorder-h5.mjs",
     "dev": "vite",
     "prebuild": "npm run typecheck && npm run lint:runtime && npm run test:screen-smoke",
     "build": "vite build",

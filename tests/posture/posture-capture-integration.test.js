@@ -56,7 +56,8 @@ test("posture capture render path uses a real rear preview with browser fallback
   assert.match(capture, /createPortal\(screen, document\.body\)/);
   assert.match(capture, /height:\s*"100dvh"/);
   assert.match(capture, /aspectRatio:\s*"3 \/ 4"/);
-  assert.match(capture, /width:\s*1440, height:\s*1920/);
+  assert.match(capture, /quality:\s*85, width:\s*1080, height:\s*1440/);
+  assert.match(capture, /photoQualityPrioritization:\s*"balanced"/);
   assert.match(capture, /머리 기준 · 이 선 아래/);
   assert.match(capture, /발 기준 · 이 선 위/);
   assert.match(capture, /bottom-\[15%\] left-1\/2 top-\[15%\] border-l/);

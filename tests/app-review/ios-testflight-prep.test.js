@@ -11,6 +11,18 @@ test("iOS release metadata and privacy usage descriptions are review-ready", asy
   assert.equal((project.match(/MARKETING_VERSION = 1\.1\.22;/g) || []).length, 2);
 });
 
+test("iOS permanent microphone denial opens native app settings through a registered Capacitor plugin", async () => {
+  const [delegate, storyboard] = await Promise.all([
+    read("../../ios/App/App/AppDelegate.swift"),
+    read("../../ios/App/App/Base.lproj/Main.storyboard"),
+  ]);
+  assert.match(delegate, /class AppSettingsPlugin: CAPPlugin, CAPBridgedPlugin/);
+  assert.match(delegate, /UIApplication\.openSettingsURLString/);
+  assert.match(delegate, /registerPluginType\(AppSettingsPlugin\.self\)/);
+  assert.match(storyboard, /customClass="PilaTeacherBridgeViewController"/);
+  assert.match(storyboard, /customModule="App"/);
+});
+
 test("Codemagic builds main with Node 22, signing group, and TestFlight only", async () => {
   const yaml = await read("../../codemagic.yaml");
   assert.match(yaml, /pattern: main/);

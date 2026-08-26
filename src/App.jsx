@@ -57,9 +57,9 @@ import {
   SPEECH_PERMISSION_STATE, describeSpeechError, speechPermissionAvailability, speechPermissionState,
 } from "./features/voice/speech-session.js";
 import {
-  RECOGNIZER_BUSY_RETRY_MS, VOICE_SILENCE_LIMIT_MS, appendVoiceSessionDiagnostic, createSilenceGuard,
+  BACKGROUND_RECORDING_INTERRUPTED_MESSAGE, RECOGNIZER_BUSY_RETRY_MS, VOICE_SILENCE_LIMIT_MS, appendVoiceSessionDiagnostic, createSilenceGuard,
   isRecognizerBusyError, readVoiceSessionDiagnostics, resolveVoicePhase, runVoicePermissionAction,
-  shouldRestartRecognizer, stitchSpeechTranscript,
+  shouldInterruptServerRecordingOnPause, shouldRestartRecognizer, stitchSpeechTranscript,
 } from "./features/voice/voice-session.js";
 import {
   DEFAULT_VOICE_ENGINE, SERVER_AUDIO_ENERGY_INTERVAL_MS, SERVER_AUDIO_FOREGROUND_WAIT_MS, buildAudioMetrics, createAudioTrimPlan, createStableAudioRequestId,
@@ -9721,6 +9721,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
   const [audioReviewFlags, setAudioReviewFlags] = useState([]);
   const [audioReviewEdited, setAudioReviewEdited] = useState(false);
   const [replacementUndoVisible, setReplacementUndoVisible] = useState(false);
+  const [backgroundInterrupted, setBackgroundInterrupted] = useState(false);
   const [source, setSource] = useState(null);
   const [summaryOriginal, setSummaryOriginal] = useState(null);
   const [summaryDraft, setSummaryDraft] = useState(null);
@@ -9773,6 +9774,8 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
   const recordingModeRef = useRef("append");
   const replacementSnapshotRef = useRef(null);
   const replacementUndoTimerRef = useRef(null);
+  const recordingActiveRef = useRef(false);
+  const backgroundStopRef = useRef(false);
   const publishedDraftSignatureRef = useRef("");
   const voiceDiagnostic = (event, details = {}) => appendVoiceSessionDiagnostic(event, {
     source: details.source || sourceRef.current || "unknown",
@@ -9791,6 +9794,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     return state;
   };
   useEffect(() => { textRef.current = text; }, [text]);
+  useEffect(() => { recordingActiveRef.current = on; }, [on]);
   useEffect(() => {
     let timer = null;
     try {
@@ -9862,7 +9866,21 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
   useEffect(() => {
     if (!Capacitor.isNativePlatform()) return undefined;
     let active = true;
-    let listener = null;
+    let resumeListener = null;
+    let pauseListener = null;
+    CapacitorApp.addListener("pause", () => {
+      if (Capacitor.getPlatform() !== "ios") return;
+      if (!shouldInterruptServerRecordingOnPause({ engineMode: VOICE_ENGINE_MODE, recording: recordingActiveRef.current, stopping: backgroundStopRef.current })) return;
+      backgroundStopRef.current = true;
+      setBackgroundInterrupted(true);
+      voiceDiagnostic("user_end", { source: "server_audio", reason: "background" });
+      Promise.resolve(finishServerRecording("background")).catch((error) => {
+        voiceDiagnostic("failed", { source: "server_audio", code: error?.code || "background_stop_failed" });
+      }).finally(() => { backgroundStopRef.current = false; });
+    }).then((handle) => {
+      if (active) pauseListener = handle;
+      else handle.remove();
+    }).catch(() => {});
     CapacitorApp.addListener("resume", async () => {
       if (VOICE_ENGINE_MODE === "server") {
         const permission = await CapacitorAudioRecorder.checkPermissions().catch(() => null);
@@ -9884,10 +9902,10 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       const permission = await NS.checkPermissions?.().catch(() => null);
       if (active) applySpeechPermission(permission, "native_resume");
     }).then((handle) => {
-      if (active) listener = handle;
+      if (active) resumeListener = handle;
       else handle.remove();
     }).catch(() => {});
-    return () => { active = false; listener?.remove?.(); };
+    return () => { active = false; pauseListener?.remove?.(); resumeListener?.remove?.(); };
   }, [memberId, lessonId]);
   useEffect(() => {
     const restore = () => {
@@ -10425,6 +10443,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       setStarting(false);
       setFinishing(false);
       setOn(true);
+      setBackgroundInterrupted(false);
       setAudioState("recording");
       setElapsed(0);
       voiceDiagnostic("record_start", { source: "server_audio", captureLatencyMs: captureLatencyMsRef.current });
@@ -11086,6 +11105,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
           </button>
         )}
       </div>
+      {backgroundInterrupted && voicePhase !== "listening" && <div role="status" className="mt-2 flex min-h-11 items-center gap-2 rounded-xl px-3 py-2" style={{ backgroundColor: WARN_S, border: `1px solid ${WARN}` }}><p className="min-w-0 flex-1 text-[11px] font-bold leading-relaxed" style={{ color: INK2 }}>{BACKGROUND_RECORDING_INTERRUPTED_MESSAGE}</p><button type="button" disabled={voicePhase === "organizing" || voicePhase === "preparing"} onClick={() => startServerRecording("append")} className="min-h-11 shrink-0 rounded-lg px-3 text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: CARD, color: BRAND_D }}>이어서 말하기</button></div>}
       {replacementUndoVisible && <button type="button" onClick={restorePreviousRecording} className="mt-2 min-h-11 w-full rounded-xl text-xs font-extrabold" style={{ backgroundColor: WARN_S, color: WARN }}>이전 녹음 복원</button>}
       {voicePhase === "permission_required" && <Sub className="mt-1.5 block leading-relaxed">말하기를 사용하려면 마이크 권한을 허용해 주세요.</Sub>}
       {voicePhase === "permission_permanently_denied" && <Sub className="mt-1.5 block leading-relaxed">설정에서 마이크 권한을 켜주세요</Sub>}

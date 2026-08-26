@@ -2,6 +2,39 @@ import UIKit
 import Capacitor
 import FirebaseCore
 
+@objc(AppSettingsPlugin)
+public class AppSettingsPlugin: CAPPlugin, CAPBridgedPlugin {
+    public let identifier = "AppSettingsPlugin"
+    public let jsName = "AppSettings"
+    public let pluginMethods: [CAPPluginMethod] = [
+        CAPPluginMethod(name: "open", returnType: CAPPluginReturnPromise)
+    ]
+
+    @objc func open(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            guard let url = URL(string: UIApplication.openSettingsURLString),
+                  UIApplication.shared.canOpenURL(url) else {
+                call.reject("App settings are unavailable.")
+                return
+            }
+            UIApplication.shared.open(url, options: [:]) { opened in
+                if opened {
+                    call.resolve(["opened": true])
+                } else {
+                    call.reject("Could not open app settings.")
+                }
+            }
+        }
+    }
+}
+
+@objc(PilaTeacherBridgeViewController)
+public class PilaTeacherBridgeViewController: CAPBridgeViewController {
+    public override func capacitorDidLoad() {
+        bridge?.registerPluginType(AppSettingsPlugin.self)
+    }
+}
+
 @UIApplicationMain
 class AppDelegate: UIResponder, UIApplicationDelegate {
 

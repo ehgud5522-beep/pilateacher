@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+  BACKGROUND_RECORDING_INTERRUPTED_MESSAGE,
   RECOGNIZER_BUSY_RETRY_MS,
   VOICE_SESSION_DIAGNOSTIC_LIMIT,
   VOICE_SILENCE_LIMIT_MS,
@@ -12,6 +13,7 @@ import {
   readVoiceSessionDiagnostics,
   resolveVoicePhase,
   runVoicePermissionAction,
+  shouldInterruptServerRecordingOnPause,
   shouldRestartRecognizer,
   stitchSpeechTranscript,
 } from "../../src/features/voice/voice-session.js";
@@ -95,6 +97,14 @@ test("engine ends and repeated busy callbacks cannot finish before 8 seconds of 
   assert.equal(shouldRestartRecognizer({ stopping: true, sessionStartedAt: startedAt, lastSpeechAt: 8_000, now: 8_100 }), false);
 });
 
+test("iOS background transition interrupts only an active server recording and exposes continuation copy", () => {
+  assert.equal(shouldInterruptServerRecordingOnPause({ engineMode: "server", recording: true, stopping: false }), true);
+  assert.equal(shouldInterruptServerRecordingOnPause({ engineMode: "server", recording: false, stopping: false }), false);
+  assert.equal(shouldInterruptServerRecordingOnPause({ engineMode: "server", recording: true, stopping: true }), false);
+  assert.equal(shouldInterruptServerRecordingOnPause({ engineMode: "native", recording: true, stopping: false }), false);
+  assert.equal(BACKGROUND_RECORDING_INTERRUPTED_MESSAGE, "녹음이 중단됐어요 · 이어서 말하기");
+});
+
 test("voice diagnostics retain only 30 privacy-safe events with device-local timestamps", () => {
   const values = new Map();
   const storage = { getItem: (key) => values.get(key) || null, setItem: (key, value) => values.set(key, value) };
@@ -140,6 +150,9 @@ test("VoiceNote waits for a user tap, keeps toggle controls, and exposes continu
   assert.match(voice, /voiceDiagnostic\("restart"[\s\S]*recognizer_busy/);
   assert.match(voice, /voiceDiagnostic\("start", \{ source: "native", phase: "dispatched", attempt: busyRetry \}\)/);
   assert.match(voice, /silence_timeout/);
+  assert.match(voice, /CapacitorApp\.addListener\("pause"/);
+  assert.match(voice, /finishServerRecording\("background"\)/);
+  assert.match(voice, /BACKGROUND_RECORDING_INTERRUPTED_MESSAGE/);
 });
 
 test("native app information is the runtime source of the displayed build label", async () => {

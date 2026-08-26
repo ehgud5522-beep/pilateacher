@@ -2,6 +2,7 @@ export const VOICE_SILENCE_LIMIT_MS = 8000;
 export const RECOGNIZER_BUSY_RETRY_MS = 300;
 export const VOICE_SESSION_DIAGNOSTIC_LIMIT = 30;
 export const VOICE_SESSION_DIAGNOSTIC_KEY = "pilateacher_voice_session_diagnostics_v1";
+export const BACKGROUND_RECORDING_INTERRUPTED_MESSAGE = "녹음이 중단됐어요 · 이어서 말하기";
 
 const VOICE_SESSION_EVENT_TYPES = new Set([
   "start", "interim", "final", "engine_end", "restart",
@@ -12,6 +13,10 @@ const VOICE_SESSION_EVENT_TYPES = new Set([
 ]);
 
 const normalizeSpace = (value) => String(value || "").replace(/\s+/g, " ").trim();
+
+export function shouldInterruptServerRecordingOnPause({ engineMode = "server", recording = false, stopping = false } = {}) {
+  return engineMode === "server" && recording === true && stopping !== true;
+}
 
 export function stitchSpeechTranscript(current, incoming) {
   const base = normalizeSpace(current).replace(/\s*⟨[^⟩]*⟩\s*$/, "").trim();

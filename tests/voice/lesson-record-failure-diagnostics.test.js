@@ -73,7 +73,8 @@ test("raw persistence precedes Gateway work and cloud reconcile runs only after 
   assert.match(cancelSource, /persistRawDraft\(preservedText\)/, "cancelling after STT text exists must preserve that text");
   assert.doesNotMatch(cancelSource, /setText\(previousText\)/, "cancel must not roll back and discard newly recognized text");
   assert.doesNotMatch(voiceSource, /회원·수업 정보를 클라우드와 확인하지 못했어요|백업 상태를 확인한 뒤/);
-  assert.match(voiceSource, /summaryFailure\.category === LESSON_RECORD_FAILURE_CATEGORY\.TEMPORARY/);
+  assert.match(voiceSource, /정리 실패 · 자동 재시도/);
+  assert.match(voiceSource, /onDraftChange/);
   assert.match(voiceSource, /AI 정리 잠시 점검 중/);
   assert.match(voiceSource, /ai_structure_requested/);
   assert.match(voiceSource, /transportCode/);

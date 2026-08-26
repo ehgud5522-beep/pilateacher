@@ -65,7 +65,7 @@
 	<key>NSMotionUsageDescription</key>
 	<string>체형 사진 촬영 시 기기의 수평 상태를 안내하기 위해 동작 센서를 사용합니다.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>수업 기록과 음성 메모를 녹음하기 위해 마이크를 사용합니다.</string>
+	<string>수업 직후 음성으로 기록을 남기기 위해 마이크를 사용합니다</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>말한 내용을 글자로 바꿔 수업 일지에 기록하기 위해 사용합니다.</string>
 	<key>NSPhotoLibraryUsageDescription</key>

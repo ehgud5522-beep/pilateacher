@@ -359,6 +359,8 @@ const DEVICE_LOG_FIELDS = new Set([
   "failureClass", "appBuild", "model", "gatewayUrl", "transportCode", "causeName", "causeMessage",
   "domain", "localizedDescription", "audioSessionCategory", "audioSessionMode", "otherAudioPlaying",
   "secondaryAudioShouldBeSilencedHint", "otherSessionOwner", "inputAvailable", "routeInputs", "routeOutputs", "voiceEngine",
+  "prepareToRecord", "recordingSettings", "fileURL", "fileExistedBefore", "previousRecorderAlive",
+  "millisecondsSinceLastStop", "sessionInterrupted", "attempt", "shouldResume",
 ]);
 const deviceLog = (event, details = {}) => {
   try {
@@ -9863,11 +9865,57 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     try {
       if (typeof speech.releaseAudioSession === "function") await speech.releaseAudioSession();
       else if (typeof speech.stop === "function") await speech.stop();
-      deviceLog("speech_audio_session_released", { memberId, lessonId, source: "native", stage, voiceEngine: "server" });
+      deviceLog("speech_audio_session_released", { memberId, lessonId, source: "native", stage, voiceEngine: "server_audio" });
     } catch (error) {
-      deviceLog("speech_audio_session_release_failed", { memberId, lessonId, source: "native", stage, voiceEngine: "server", ...deviceError(error) });
+      deviceLog("speech_audio_session_release_failed", { memberId, lessonId, source: "native", stage, voiceEngine: "server_audio", ...deviceError(error) });
     }
   };
+  const recorderDiagnosticFields = (diagnostic = {}) => ({
+    prepareToRecord: diagnostic?.prepareToRecord,
+    inputAvailable: diagnostic?.inputAvailable,
+    routeInputs: diagnostic?.routeInputs,
+    routeOutputs: diagnostic?.routeOutputs,
+    otherAudioPlaying: diagnostic?.otherAudioPlaying,
+    recordingSettings: diagnostic?.recordingSettings,
+    fileURL: diagnostic?.fileURL,
+    fileExistedBefore: diagnostic?.fileExistedBefore,
+    previousRecorderAlive: diagnostic?.previousRecorderAlive,
+    millisecondsSinceLastStop: diagnostic?.millisecondsSinceLastStop,
+    sessionInterrupted: diagnostic?.sessionInterrupted,
+    attempt: diagnostic?.attempt,
+  });
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform() || Capacitor.getPlatform() !== "ios" || typeof CapacitorAudioRecorder.addListener !== "function") return undefined;
+    let active = true;
+    const handles = [];
+    const register = async () => {
+      const began = await CapacitorAudioRecorder.addListener("recordingInterruptionBegan", () => {
+        if (!active) return;
+        const message = "녹음이 중단됐어요 · 이어서 말하기";
+        setErr(message);
+        setBackgroundInterrupted(true);
+        deviceLog("audio_session_interruption", { memberId, lessonId, state: "began", voiceEngine: sourceRef.current === "native" ? "native" : "server_audio" });
+      }).catch(() => null);
+      const ended = await CapacitorAudioRecorder.addListener("recordingInterruptionEnded", (event) => {
+        if (!active) return;
+        const message = event?.message || "녹음이 중단됐어요 · 이어서 말하기";
+        setErr(message);
+        setBackgroundInterrupted(true);
+        deviceLog("audio_session_interruption", { memberId, lessonId, state: "ended", shouldResume: Boolean(event?.shouldResume), voiceEngine: sourceRef.current === "native" ? "native" : "server_audio" });
+        if (sourceRef.current === "server_audio" && recordingActiveRef.current && !backgroundStopRef.current) {
+          backgroundStopRef.current = true;
+          Promise.resolve(finishServerRecording("interruption")).catch((error) => {
+            deviceLog("voice_record_stop_failed", { memberId, lessonId, source: "server_audio", voiceEngine: "server_audio", reason: "interruption", ...deviceError(error) });
+          }).finally(() => { backgroundStopRef.current = false; });
+        }
+      }).catch(() => null);
+      if (began) handles.push(began);
+      if (ended) handles.push(ended);
+      if (!active) handles.splice(0).forEach((handle) => handle?.remove?.());
+    };
+    register();
+    return () => { active = false; handles.splice(0).forEach((handle) => handle?.remove?.()); };
+  }, [memberId, lessonId]);
   useEffect(() => { textRef.current = text; }, [text]);
   useEffect(() => { recordingActiveRef.current = on; }, [on]);
   useEffect(() => {
@@ -10148,7 +10196,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
         audioTransferredRef.current = false;
         setAudioBlobId(id);
         setAudioState("saved");
-        deviceLog("voice_record_saved", { memberId, lessonId, storage: "indexedDB", source: sourceRef.current || "media_recorder" });
+        deviceLog("voice_record_saved", { memberId, lessonId, storage: "indexedDB", source: sourceRef.current || "media_recorder", voiceEngine: sourceRef.current === "native" ? "native" : sourceRef.current === "server_audio" ? "server_audio" : sourceRef.current || "media_recorder" });
       } catch (error) {
         setAudioState("failed");
         deviceLog("voice_record_save_failed", { memberId, lessonId, storage: "indexedDB", ...deviceError(error) });
@@ -10224,6 +10272,10 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
           otherAudioPlaying: step?.otherAudioPlaying, secondaryAudioShouldBeSilencedHint: step?.secondaryAudioShouldBeSilencedHint,
           otherSessionOwner: step?.otherSessionOwner,
           inputAvailable: step?.inputAvailable, routeInputs: step?.routeInputs, routeOutputs: step?.routeOutputs,
+          prepareToRecord: step?.prepareToRecord, recordingSettings: step?.recordingSettings,
+          fileURL: step?.fileURL, fileExistedBefore: step?.fileExistedBefore,
+          previousRecorderAlive: step?.previousRecorderAlive, millisecondsSinceLastStop: step?.millisecondsSinceLastStop,
+          sessionInterrupted: step?.sessionInterrupted, attempt: step?.attempt,
         });
       });
       setMicrophoneTest({ status: result?.ok ? "success" : "failed", steps });
@@ -10541,11 +10593,11 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     try {
       await releaseSpeechAudioSession("before_server_recording");
       if (!recorderPrewarmedRef.current) {
-        await CapacitorAudioRecorder.prepareRecording(SERVER_AUDIO_RECORDING_OPTIONS);
+        const prepared = await CapacitorAudioRecorder.prepareRecording(SERVER_AUDIO_RECORDING_OPTIONS);
         recorderPrewarmedRef.current = true;
-        voiceDiagnostic("prepared", { source: "server_audio", phase: "tap", ...SERVER_AUDIO_SESSION_DIAGNOSTIC });
+        voiceDiagnostic("prepared", { source: "server_audio", phase: "tap", voiceEngine: "server_audio", ...SERVER_AUDIO_SESSION_DIAGNOSTIC, ...recorderDiagnosticFields(prepared?.diagnostic) });
       }
-      await CapacitorAudioRecorder.startRecording(SERVER_AUDIO_RECORDING_OPTIONS);
+      const started = await CapacitorAudioRecorder.startRecording(SERVER_AUDIO_RECORDING_OPTIONS);
       serverStartFailuresRef.current = 0;
       recorderPrewarmedRef.current = false;
       captureLatencyMsRef.current = Math.max(0, Math.round((globalThis.performance?.now?.() || Date.now()) - captureRequestedAtRef.current));
@@ -10561,7 +10613,9 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       setBackgroundInterrupted(false);
       setAudioState("recording");
       setElapsed(0);
-      voiceDiagnostic("record_start", { source: "server_audio", captureLatencyMs: captureLatencyMsRef.current, permissionState: "granted", ...SERVER_AUDIO_SESSION_DIAGNOSTIC });
+      const nativeDiagnostic = recorderDiagnosticFields(started?.diagnostic);
+      voiceDiagnostic("record_start", { source: "server_audio", voiceEngine: "server_audio", captureLatencyMs: captureLatencyMsRef.current, permissionState: "granted", ...SERVER_AUDIO_SESSION_DIAGNOSTIC, ...nativeDiagnostic });
+      deviceLog("voice_record_started", { memberId, lessonId, source: "server_audio", voiceEngine: "server_audio", storage: "temporary_file", ...nativeDiagnostic });
       amplitudeTimerRef.current = setInterval(async () => {
         const level = await CapacitorAudioRecorder.getCurrentAmplitude().catch(() => ({ value: 0 }));
         const value = Math.max(0, Math.min(1, Number(level?.value) || 0));
@@ -10582,7 +10636,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
         pluginError: error?.message || String(error), permissionState: failedPermissionState, count: failedAttempts,
         ...SERVER_AUDIO_SESSION_DIAGNOSTIC,
       });
-      deviceLog("audio_record_start_failed", { memberId, lessonId, source: "server_audio", voiceEngine: "server", count: failedAttempts, ...deviceError(error) });
+      deviceLog("audio_record_start_failed", { memberId, lessonId, source: "server_audio", voiceEngine: "server_audio", count: failedAttempts, ...deviceError(error) });
       if (Capacitor.isNativePlatform() && Capacitor.getPlatform() === "ios" && failedAttempts >= 2) {
         voiceDiagnostic("fallback", { source: "native", reason: "server_audio_start_failed_twice", count: failedAttempts });
         deviceLog("voice_engine_fallback", { memberId, lessonId, source: "native", voiceEngine: "native", reason: "server_audio_start_failed_twice", count: failedAttempts });
@@ -10736,7 +10790,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
             setStarting(false);
             setOn(true);
             setFinishing(false);
-            deviceLog("speech_start_succeeded", { memberId, lessonId, source: "native", state: "started" });
+            deviceLog("speech_start_succeeded", { memberId, lessonId, source: "native", state: "started", voiceEngine: "native" });
             voiceDiagnostic("start", { source: "native", phase: "succeeded" });
           }
           else if (d?.status === "stopped") {
@@ -10763,7 +10817,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
         setStarting(false);
         startRequestRef.current = false;
         silenceGuardRef.current?.start();
-        deviceLog("voice_record_started", { memberId, lessonId, source: "native", storage: "indexedDB", state: "started" });
+        deviceLog("voice_record_started", { memberId, lessonId, source: "native", voiceEngine: "native", storage: "indexedDB", state: "started" });
         const startNativeSegment = async (busyRetry = 0) => {
           if (sessionId !== speechSessionRef.current || stoppingRef.current) return;
           try {
@@ -10985,7 +11039,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       sessionId,
       rec?.native ? SPEECH_RESULT_TIMEOUT_MESSAGE : SPEECH_NO_RESULT_MESSAGE,
     );
-    deviceLog("voice_record_stopped", { memberId, lessonId, source: sourceRef.current || "unknown", storage: "indexedDB", reason });
+    deviceLog("voice_record_stopped", { memberId, lessonId, source: sourceRef.current || "unknown", voiceEngine: sourceRef.current === "native" ? "native" : sourceRef.current === "server_audio" ? "server_audio" : sourceRef.current || "unknown", storage: "indexedDB", reason });
   };
   silenceTimeoutActionRef.current = () => {
     if (stoppingRef.current || speechSessionRef.current <= 0) return;

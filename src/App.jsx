@@ -61,7 +61,7 @@ import {
   shouldRestartRecognizer, stitchSpeechTranscript,
 } from "./features/voice/voice-session.js";
 import {
-  DEFAULT_VOICE_ENGINE, SERVER_AUDIO_FOREGROUND_WAIT_MS, createStableAudioRequestId,
+  DEFAULT_VOICE_ENGINE, SERVER_AUDIO_ENERGY_INTERVAL_MS, SERVER_AUDIO_FOREGROUND_WAIT_MS, analyzeRecordedSpeech, buildAudioMetrics, createStableAudioRequestId,
   recordingResultToBlob, resolveVoiceEngine, settleWithin, structuredDraftFromAudioOutput, uploadAudioClip,
 } from "./features/voice/server-audio-session.js";
 import { GatewayLlmProvider } from "./features/lesson-record/llm-provider.js";
@@ -9640,6 +9640,9 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, memberName = "
   const [audioState, setAudioState] = useState("idle");
   const [audioBlobId, setAudioBlobId] = useState(null);
   const [amplitude, setAmplitude] = useState(0);
+  const [audioReviewFlags, setAudioReviewFlags] = useState([]);
+  const [audioReviewEdited, setAudioReviewEdited] = useState(false);
+  const [replacementUndoVisible, setReplacementUndoVisible] = useState(false);
   const [source, setSource] = useState(null);
   const [summaryOriginal, setSummaryOriginal] = useState(null);
   const [summaryDraft, setSummaryDraft] = useState(null);
@@ -9686,6 +9689,10 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, memberName = "
   const silenceTimeoutActionRef = useRef(() => {});
   const transcriptInputRef = useRef(null);
   const amplitudeTimerRef = useRef(null);
+  const amplitudeSamplesRef = useRef([]);
+  const recordingModeRef = useRef("append");
+  const replacementSnapshotRef = useRef(null);
+  const replacementUndoTimerRef = useRef(null);
   const voiceDiagnostic = (event, details = {}) => appendVoiceSessionDiagnostic(event, {
     source: details.source || sourceRef.current || "unknown",
     ...details,
@@ -9778,6 +9785,8 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, memberName = "
       textRef.current = String(pending.rawTranscript || "");
       setSource(pending.source || "pending");
       sourceRef.current = pending.source || "pending";
+      setAudioReviewFlags(Array.isArray(pending.reviewFlags) ? pending.reviewFlags : []);
+      setAudioReviewEdited(Boolean(pending.reviewEdited));
       if (pending.audioBlobId) {
         audioBlobRef.current = pending.audioBlobId;
         setAudioBlobId(pending.audioBlobId);
@@ -10012,14 +10021,67 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, memberName = "
     else if (typeof onLater === "function") onLater();
   };
   const promoteServerAudioResult = async (result, clip, previousDraft) => {
+    const resultKind = String(result?.output?.result || "ok");
+    const resultFlags = Array.isArray(result?.output?.flags) ? result.output.flags : [];
     const incomingTranscript = String(result?.output?.transcript || "").trim();
     const combinedTranscript = stitchSpeechTranscript(previousDraft?.rawTranscript || textRef.current, incomingTranscript);
-    const incomingStructured = structuredDraftFromAudioOutput(result.output);
-    const structuredDraft = mergeAudioStructuredDraft(previousDraft?.structuredDraft || summaryDraft, incomingStructured);
     const aiMeta = aiMetaFrom(result);
     const audioClips = (previousDraft?.audioClips || [clip]).map((item) => item.requestId === clip.requestId
       ? { ...item, blobId: null, state: "uploaded", uploadedAt: new Date().toISOString() }
       : item);
+    forgetBlobs([clip.blobId]);
+    if (resultKind === "no_speech") {
+      savePendingLessonRecord(memberId, lessonId, {
+        ...previousDraft,
+        audioBlobId: null,
+        audioClips,
+        retry: null,
+      });
+      setFinishing(false);
+      setSummaryBusy(false);
+      setAudioBlobId(null);
+      setAudioState("idle");
+      setErr("말소리가 녹음되지 않았어요. 다시 말해주세요");
+      voiceDiagnostic("failed", { source: "server_audio", code: "no_speech", requestId: clip.requestId });
+      return null;
+    }
+    if (resultKind === "low_confidence") {
+      savePendingLessonRecord(memberId, lessonId, {
+        ...previousDraft,
+        schemaVersion: 2,
+        status: "review_required",
+        rawTranscript: combinedTranscript,
+        termMap: mapPilatesTerms(combinedTranscript),
+        structuredDraft: null,
+        aiMeta,
+        audioBlobId: null,
+        audioClips,
+        source: "server_audio",
+        reviewFlags: resultFlags,
+        reviewEdited: false,
+        retry: null,
+        failure: null,
+      });
+      textRef.current = combinedTranscript;
+      setText(combinedTranscript);
+      setSummaryOriginal(null);
+      setSummaryDraft(null);
+      setSummaryMeta(aiMeta);
+      setSummaryStatus("review_required");
+      setSummaryBusy(false);
+      setFinishing(false);
+      setSummaryError("");
+      setSummaryFailure(null);
+      setAudioReviewFlags(resultFlags);
+      setAudioReviewEdited(false);
+      setAudioBlobId(null);
+      setAudioState("uploaded");
+      setSilenceNotice("녹음 확인 필요");
+      voiceDiagnostic("failed", { source: "server_audio", code: "low_confidence", requestId: clip.requestId });
+      return null;
+    }
+    const incomingStructured = structuredDraftFromAudioOutput(result.output);
+    const structuredDraft = mergeAudioStructuredDraft(previousDraft?.structuredDraft || summaryDraft, incomingStructured);
     savePendingLessonRecord(memberId, lessonId, {
       ...previousDraft,
       schemaVersion: 2,
@@ -10033,8 +10095,9 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, memberName = "
       source: "server_audio",
       retry: null,
       failure: null,
+      reviewFlags: [],
+      reviewEdited: false,
     });
-    forgetBlobs([clip.blobId]);
     textRef.current = combinedTranscript;
     setText(combinedTranscript);
     setSummaryOriginal(structuredDraft);
@@ -10044,6 +10107,8 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, memberName = "
     setSummaryBusy(false);
     setSummaryError("");
     setSummaryFailure(null);
+    setAudioReviewFlags([]);
+    setAudioReviewEdited(false);
     setAudioBlobId(null);
     setAudioState("uploaded");
     appendLessonRecordDiagnostic({ code: "success", stage: "server_audio", category: "SUCCESS", model: aiMeta.model, requestId: aiMeta.requestId, gatewayUrl: aiMeta.gatewayUrl, httpStatus: 200 });
@@ -10060,6 +10125,8 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, memberName = "
       lessonId,
       memberName,
       requestId: clip.requestId,
+      clipId: clip.clipId || clip.requestId,
+      audioMetrics: clip.audioMetrics || null,
       onEvent: (event, details) => voiceDiagnostic(event, { source: "server_audio", ...details }),
     });
     return promoteServerAudioResult(result, clip, previousDraft);
@@ -10071,24 +10138,39 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, memberName = "
     setFinishing(true);
     setSummaryBusy(true);
     setSilenceNotice("음성 정리 대기");
+    const amplitudeSamples = [...amplitudeSamplesRef.current];
+    const speechAssessment = analyzeRecordedSpeech(amplitudeSamples, SERVER_AUDIO_ENERGY_INTERVAL_MS);
     if (amplitudeTimerRef.current) clearInterval(amplitudeTimerRef.current);
     amplitudeTimerRef.current = null;
     setAmplitude(0);
     let result;
     try {
       result = await CapacitorAudioRecorder.stopRecording();
+      if (!speechAssessment.accepted) {
+        if (result?.uri) await Filesystem.deleteFile({ path: result.uri }).catch(() => {});
+        setFinishing(false);
+        setSummaryBusy(false);
+        setAudioState("idle");
+        setErr("말소리가 녹음되지 않았어요. 다시 말해주세요");
+        voiceDiagnostic("failed", { source: "server_audio", code: "no_speech", speechSeconds: speechAssessment.speechSeconds });
+        return;
+      }
       const blob = await recordingResultToBlob(result, { readFile: (options) => Filesystem.readFile(options) });
       const durationMs = Math.max(0, Number(result?.duration) || Date.now() - recordingStartedAtRef.current);
       const blobId = newAudioBlobId();
       await blobPut(blobId, blob);
-      const previousDraft = loadPendingLessonRecord(memberId, lessonId) || {};
+      if (result?.uri) await Filesystem.deleteFile({ path: result.uri }).catch(() => {});
+      const previousDraft = recordingModeRef.current === "replace" ? {} : (loadPendingLessonRecord(memberId, lessonId) || {});
       const clipIndex = (previousDraft.audioClips || []).length;
+      const requestId = createStableAudioRequestId(memberId, lessonId, clipIndex);
       const clip = {
         blobId,
-        requestId: createStableAudioRequestId(memberId, lessonId, clipIndex),
+        requestId,
+        clipId: requestId,
         memberName,
         durationMs,
         bytes: blob.size,
+        audioMetrics: buildAudioMetrics(amplitudeSamples, SERVER_AUDIO_ENERGY_INTERVAL_MS),
         state: "pending",
         createdAt: new Date().toISOString(),
       };
@@ -10140,8 +10222,35 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, memberName = "
       voiceDiagnostic("failed", { source: "server_audio", code: error?.code || "audio_record_failed" });
     }
   };
-  const startServerRecording = async () => {
+  const startServerRecording = async (mode = "append") => {
     if (startRequestRef.current || on || finishing) return;
+    recordingModeRef.current = mode === "replace" ? "replace" : "append";
+    if (recordingModeRef.current === "replace" && textRef.current.trim()) {
+      replacementSnapshotRef.current = {
+        pending: loadPendingLessonRecord(memberId, lessonId),
+        text: textRef.current,
+        summaryOriginal,
+        summaryDraft,
+        summaryMeta,
+        summaryStatus,
+        source,
+        reviewFlags: audioReviewFlags,
+        reviewEdited: audioReviewEdited,
+      };
+      textRef.current = "";
+      setText("");
+      setSummaryOriginal(null);
+      setSummaryDraft(null);
+      setSummaryMeta(null);
+      setAudioReviewFlags([]);
+      setAudioReviewEdited(false);
+      setReplacementUndoVisible(true);
+      if (replacementUndoTimerRef.current) clearTimeout(replacementUndoTimerRef.current);
+      replacementUndoTimerRef.current = setTimeout(() => {
+        setReplacementUndoVisible(false);
+        replacementSnapshotRef.current = null;
+      }, 10000);
+    }
     setUserAttemptedStart(true);
     startRequestRef.current = true;
     setStarting(true);
@@ -10169,6 +10278,7 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, memberName = "
       sourceRef.current = "server_audio";
       setSource("server_audio");
       recordingStartedAtRef.current = Date.now();
+      amplitudeSamplesRef.current = [];
       startRequestRef.current = false;
       setStarting(false);
       setFinishing(false);
@@ -10178,7 +10288,9 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, memberName = "
       voiceDiagnostic("record_start", { source: "server_audio" });
       amplitudeTimerRef.current = setInterval(async () => {
         const level = await CapacitorAudioRecorder.getCurrentAmplitude().catch(() => ({ value: 0 }));
-        setAmplitude(Math.max(0, Math.min(1, Number(level?.value) || 0)));
+        const value = Math.max(0, Math.min(1, Number(level?.value) || 0));
+        amplitudeSamplesRef.current.push(value);
+        setAmplitude(value);
       }, 100);
     } catch (error) {
       startRequestRef.current = false;
@@ -10189,7 +10301,7 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, memberName = "
     }
   };
   const start = async () => {
-    if (VOICE_ENGINE_MODE === "server") return startServerRecording();
+    if (VOICE_ENGINE_MODE === "server") return startServerRecording("append");
     if (startRequestRef.current || on || finishing) return;
     setUserAttemptedStart(true);
     startRequestRef.current = true;
@@ -10599,6 +10711,7 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, memberName = "
       setFinishing(false);
       setElapsed(0);
       setAmplitude(0);
+      amplitudeSamplesRef.current = [];
       setAudioState("idle");
       voiceDiagnostic("user_end", { source: "server_audio", reason: "cancel" });
       return;
@@ -10631,6 +10744,27 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, memberName = "
     setAudioState("idle");
     deviceLog("voice_record_cancelled", { memberId, lessonId, source: sourceRef.current || "unknown" });
   };
+  const restorePreviousRecording = () => {
+    const snapshot = replacementSnapshotRef.current;
+    if (!snapshot) return;
+    if (on || starting) cancelRecording();
+    if (snapshot.pending) savePendingLessonRecord(memberId, lessonId, snapshot.pending);
+    textRef.current = snapshot.text || "";
+    setText(snapshot.text || "");
+    setSummaryOriginal(snapshot.summaryOriginal || null);
+    setSummaryDraft(snapshot.summaryDraft || null);
+    setSummaryMeta(snapshot.summaryMeta || null);
+    setSummaryStatus(snapshot.summaryStatus || AI_STATUSES.NOT_CONNECTED);
+    setSource(snapshot.source || "pending");
+    sourceRef.current = snapshot.source || "pending";
+    setAudioReviewFlags(snapshot.reviewFlags || []);
+    setAudioReviewEdited(Boolean(snapshot.reviewEdited));
+    setReplacementUndoVisible(false);
+    replacementSnapshotRef.current = null;
+    if (replacementUndoTimerRef.current) clearTimeout(replacementUndoTimerRef.current);
+    replacementUndoTimerRef.current = null;
+    window.dispatchEvent(new CustomEvent("pilateacher:toast", { detail: { ok: true, msg: "이전 녹음을 복원했어요" } }));
+  };
   useEffect(() => {
     if (on && elapsed >= MAX_STT_SECONDS) {
       setErr(`${MAX_STT_SECONDS}초 상한에 도달해 녹음을 멈췄습니다.`);
@@ -10649,11 +10783,13 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, memberName = "
       aiMeta: summaryMeta,
       audioBlobId: audioBlobId || null,
       source: source || "unknown",
+      reviewFlags: audioReviewFlags,
+      reviewEdited: audioReviewEdited,
     });
-  }, [text, summaryDraft, summaryMeta, summaryStatus, audioBlobId, source, memberId, lessonId]);
+  }, [text, summaryDraft, summaryMeta, summaryStatus, audioBlobId, source, audioReviewFlags, audioReviewEdited, memberId, lessonId]);
   const applyCurrentRecord = () => {
     const transcript = textRef.current.trim();
-    if (!transcript) return;
+    if (!transcript || (audioReviewFlags.length && !audioReviewEdited)) return;
     const termMap = mapPilatesTerms(transcript);
     const teacherText = summaryDraft ? structuredRecordBody(summaryDraft, transcript) : transcript;
     const lessonRecord = createLessonRecordMeta({ rawTranscript: transcript, termMap, structuredDraft: summaryDraft, status: summaryDraft ? "structured" : "unstructured", source: source || "unknown", recordedAt: new Date().toISOString(), audioBlobId: audioBlobId || null, aiMeta: summaryMeta, usage: summaryMeta?.usage || null });
@@ -10662,7 +10798,7 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, memberName = "
     if (showValueGuide) { markLessonRecordGuideUsed(globalThis.localStorage); setShowValueGuide(false); }
     audioTransferredRef.current = true;
     audioBlobRef.current = null;
-    setText(""); setSummaryOriginal(null); setSummaryDraft(null); setSummaryMeta(null); setSummaryStatus(AI_STATUSES.NOT_CONNECTED); setAudioBlobId(null); setAudioState("idle");
+    setText(""); setSummaryOriginal(null); setSummaryDraft(null); setSummaryMeta(null); setSummaryStatus(AI_STATUSES.NOT_CONNECTED); setAudioBlobId(null); setAudioState("idle"); setAudioReviewFlags([]); setAudioReviewEdited(false);
   };
   const requestSummary = async (transcriptOverride = "") => {
     const transcript = String(transcriptOverride || textRef.current || text).trim();
@@ -10731,6 +10867,7 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, memberName = "
   const setSummaryField = (field, value) => setSummaryDraft((current) => editStructuredField(current || {}, field, value));
   useEffect(() => () => {
     if (amplitudeTimerRef.current) clearInterval(amplitudeTimerRef.current);
+    if (replacementUndoTimerRef.current) clearTimeout(replacementUndoTimerRef.current);
     if (VOICE_ENGINE_MODE === "server") CapacitorAudioRecorder.cancelRecording().catch(() => {});
     silenceGuardRef.current?.stop();
     speechSessionRef.current += 1;
@@ -10774,12 +10911,18 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, memberName = "
           <button type="button" disabled className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-full px-3 py-2 text-xs font-extrabold text-white opacity-60" style={{ backgroundColor: BRAND }}><Loader2 size={12} className="animate-spin" /> 정리 중…</button>
         ) : ["permission_required", "permission_permanently_denied"].includes(voicePhase) ? (
           <button type="button" onClick={requestVoicePermission} className="min-h-11 shrink-0 rounded-full px-3 text-xs font-extrabold" style={{ backgroundColor: TINT, color: BRAND_D }}>권한 설정</button>
-        ) : voicePhase === "unsupported" ? null : (
-          <button type="button" onClick={start} disabled={!supported || audioState === "saving"} aria-label={text ? "음성으로 이어서 말하기" : "음성으로 말하기 시작"} className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-full px-3 py-2 text-xs font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: BRAND }}>
-            <Smartphone size={12} /> {text ? "이어서 말하기" : "말하기 시작"}
+        ) : voicePhase === "unsupported" ? null : text && VOICE_ENGINE_MODE === "server" ? (
+          <div className="flex shrink-0 gap-1">
+            <button type="button" onClick={() => startServerRecording("append")} disabled={!supported || audioState === "saving"} aria-label="음성으로 이어서 말하기" className="min-h-11 rounded-full px-2.5 text-[11px] font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: BRAND }}>이어서 말하기</button>
+            <button type="button" onClick={() => startServerRecording("replace")} disabled={!supported || audioState === "saving"} aria-label="음성 다시 말하기" className="min-h-11 rounded-full px-2.5 text-[11px] font-extrabold disabled:opacity-40" style={{ backgroundColor: CARD, color: BRAND_D, border: `1px solid ${LINE}` }}>다시 말하기</button>
+          </div>
+        ) : (
+          <button type="button" onClick={start} disabled={!supported || audioState === "saving"} aria-label="음성으로 말하기 시작" className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-full px-3 py-2 text-xs font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: BRAND }}>
+            <Smartphone size={12} /> 말하기 시작
           </button>
         )}
       </div>
+      {replacementUndoVisible && <button type="button" onClick={restorePreviousRecording} className="mt-2 min-h-11 w-full rounded-xl text-xs font-extrabold" style={{ backgroundColor: WARN_S, color: WARN }}>이전 녹음 복원</button>}
       {voicePhase === "permission_required" && <Sub className="mt-1.5 block leading-relaxed">말하기를 사용하려면 마이크 권한을 허용해 주세요.</Sub>}
       {voicePhase === "permission_permanently_denied" && <Sub className="mt-1.5 block leading-relaxed">설정에서 마이크 권한을 켜주세요</Sub>}
       {voicePhase === "unsupported" && <Sub className="mt-1.5 block leading-relaxed">이 기기에서는 말하기를 지원하지 않아 직접 입력으로 기록할 수 있어요.</Sub>}
@@ -10797,9 +10940,10 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, memberName = "
       {voicePhase === "failed" && <div role="alert" className="mt-2 rounded-xl p-3" style={{ backgroundColor: BAD_S, border: `1px solid ${BAD}` }}><p className="text-[11px] leading-relaxed" style={{ color: BAD }}>{err}</p><div className="mt-2 grid grid-cols-2 gap-1.5"><button type="button" onClick={start} className="h-11 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: BAD }}>다시 시도</button><button type="button" onClick={() => { setManualEntry(true); setErr(""); window.setTimeout(() => transcriptInputRef.current?.focus(), 0); }} className="h-11 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: PRIMARY }}>직접 입력</button></div></div>}
       {(text || manualEntry || audioState === "saved" || audioState === "saving") && (
         <>
-          <textarea ref={transcriptInputRef} rows={4} value={text} onChange={(event) => { setText(event.target.value); setSummaryOriginal(null); setSummaryDraft(null); setSummaryMeta(null); setSummaryError(""); setSummaryFailureClass(""); setSummaryEditing(false); setSummaryStatus(AI_STATUSES.NOT_CONNECTED); }} aria-label="말하거나 입력한 수업 내용" placeholder="회원의 변화, 오늘 한 운동, 반응, 다음 계획을 편하게 입력하세요" className={`${inputCls} mt-2 h-auto resize-none py-2 text-sm leading-relaxed`} />
+          {audioReviewFlags.includes("low_confidence") && <div role="status" className="mt-2 rounded-xl p-3" style={{ backgroundColor: WARN_S, border: `1px solid ${WARN}` }}><p className="text-xs font-extrabold" style={{ color: WARN }}>녹음 확인 필요</p><p className="mt-1 text-[11px] leading-relaxed" style={{ color: INK2 }}>정확하지 않을 수 있어요. 내용을 직접 수정한 뒤 저장해 주세요.</p></div>}
+          <textarea ref={transcriptInputRef} rows={4} value={text} onChange={(event) => { setText(event.target.value); textRef.current = event.target.value; if (audioReviewFlags.length) { setAudioReviewEdited(true); setAudioReviewFlags([]); } setSummaryOriginal(null); setSummaryDraft(null); setSummaryMeta(null); setSummaryError(""); setSummaryFailureClass(""); setSummaryEditing(false); setSummaryStatus(AI_STATUSES.NOT_CONNECTED); }} aria-label="말하거나 입력한 수업 내용" placeholder="회원의 변화, 오늘 한 운동, 반응, 다음 계획을 편하게 입력하세요" className={`${inputCls} mt-2 h-auto resize-none py-2 text-sm leading-relaxed`} />
           <Sub className="mt-1.5 block">저장하기 전에 내용을 직접 확인하고 수정할 수 있어요{audioState === "saved" ? " · 녹음 파일 임시 저장됨" : audioState === "saving" ? " · 녹음 파일 저장 중" : ""}</Sub>
-          {!summaryError && !summaryBusy && !summaryDraft && <button disabled={on || !text.trim()} onClick={() => requestSummary()} className="mt-2 flex h-10 w-full items-center justify-center gap-1.5 rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: TINT, color: PRIMARY }}>
+          {!summaryError && !summaryBusy && !summaryDraft && <button disabled={on || !text.trim() || (audioReviewFlags.length > 0 && !audioReviewEdited)} onClick={() => requestSummary()} className="mt-2 flex h-10 w-full items-center justify-center gap-1.5 rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: TINT, color: PRIMARY }}>
             <Sparkles size={14} /> AI로 정리
           </button>}
           {summaryBusy && <p aria-live="polite" className="mt-2 text-center text-[11px] font-bold" style={{ color: BRAND_D }}>AI가 수업 기록을 정리하고 있습니다…</p>}
@@ -10824,7 +10968,7 @@ function VoiceNote({ onApply, highlight, onSeen, memberId = null, memberName = "
             {summaryEditing && <div className="space-y-2">{[{ k: "observations", l: "회원의 변화" }, { k: "didToday", l: "오늘 수업" }, { k: "responses", l: "회원 반응/특이사항" }, { k: "nextFocus", l: "다음 확인" }, { k: "uncertain", l: "확인이 필요한 내용" }].map((field) => <label key={field.k} className="block"><span className="mb-1 block text-[11px] font-bold" style={{ color: SUB }}>{field.l}</span><textarea rows={2} value={structuredFieldText(summaryDraft, field.k)} onChange={(event) => setSummaryField(field.k, event.target.value)} placeholder="한 줄에 한 항목" className={`${inputCls} h-auto resize-none py-2 text-xs`} /></label>)}</div>}
             <div className="grid grid-cols-2 gap-1.5"><button type="button" onClick={() => setSummaryEditing((value) => !value)} className="h-11 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: PRIMARY }}>{summaryEditing ? "수정 닫기" : "수정하기"}</button><button type="button" disabled={audioState === "saving"} onClick={applyCurrentRecord} className="h-11 rounded-lg text-xs font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: BRAND }}>확인하고 저장</button></div>
           </div>}
-          {!summaryDraft && !summaryError && !summaryBusy && <button disabled={on || audioState === "saving" || !text.trim()} onClick={applyCurrentRecord} className="mt-2 h-11 w-full rounded-xl text-xs font-extrabold text-white disabled:opacity-40" style={{ background: GRAD }}>확인하고 저장</button>}
+          {!summaryDraft && !summaryError && !summaryBusy && <button disabled={on || audioState === "saving" || !text.trim() || (audioReviewFlags.length > 0 && !audioReviewEdited)} onClick={applyCurrentRecord} className="mt-2 h-11 w-full rounded-xl text-xs font-extrabold text-white disabled:opacity-40" style={{ background: GRAD }}>확인하고 저장</button>}
         </>
       )}
     </div>

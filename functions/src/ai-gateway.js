@@ -103,6 +103,8 @@ function createAIGatewayHandler({
               audio: request.input.audio,
               memberName: authorization.memberName || request.input.memberName,
               language: "ko",
+              clipId: request.input.clipId,
+              audioMetrics: request.input.audioMetrics,
             },
             safetyIdentifier: safetyIdentifier(uid),
           });
@@ -133,6 +135,16 @@ function createAIGatewayHandler({
         validation: safeLogToken(providerResponse?.validation || "success"),
         transcriptionModel: safeLogToken(providerResponse?.transcriptionModel || ""),
         transcriptionLatencyMs: Math.max(0, Number(providerResponse?.transcriptionLatencyMs) || 0),
+        speechSeconds: Math.max(0, Number(providerResponse?.speechSeconds) || 0),
+        transcriptionConfidence: Math.max(0, Number(providerResponse?.transcriptionConfidence) || 0),
+        transcriptionFlags: Array.isArray(providerResponse?.transcriptionFlags) ? providerResponse.transcriptionFlags : [],
+        confidenceDiagnostic: providerResponse?.confidenceDiagnostic ? {
+          averageLogprob: Number.isFinite(providerResponse.confidenceDiagnostic.averageLogprob) ? Number(providerResponse.confidenceDiagnostic.averageLogprob) : null,
+          rejectedSegments: Math.max(0, Number(providerResponse.confidenceDiagnostic.rejectedSegments) || 0),
+          totalSegments: Math.max(0, Number(providerResponse.confidenceDiagnostic.totalSegments) || 0),
+          syllablesPerSecond: Number.isFinite(providerResponse.confidenceDiagnostic.syllablesPerSecond) ? Number(providerResponse.confidenceDiagnostic.syllablesPerSecond) : null,
+          glossaryRunLength: Math.max(0, Number(providerResponse.confidenceDiagnostic.glossaryRunLength) || 0),
+        } : null,
         outputShape: Object.fromEntries(Object.entries(providerResponse?.output || {}).map(([field, value]) => [field, Array.isArray(value) ? `array:${value.every((item) => typeof item === "string") ? "string" : "mixed"}` : typeof value])),
       });
       const output = validateOperationOutput(request.operation, providerResponse?.output);

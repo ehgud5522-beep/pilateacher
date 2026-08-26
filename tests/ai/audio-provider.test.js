@@ -5,8 +5,12 @@ import { OpenAIProvider } from "../../src/ai/providers.js";
 
 const output = {
   transcript: "브릿지를 진행했습니다.",
+  result: "ok",
   fields: { didToday: ["브릿지"], observations: [], responses: [], nextFocus: [] },
   summary: "브릿지를 진행했습니다.",
+  speechSeconds: 2.1,
+  confidence: 0.91,
+  flags: [],
   provenance: { stt: "openai", llm: "openai" },
 };
 
@@ -14,6 +18,14 @@ test("client validates the deployed audio lesson contract", () => {
   assert.equal(AI_OPERATIONS.LESSON_RECORD_FROM_AUDIO, "lesson_record_from_audio");
   assert.deepEqual(normalizeAIOutput(AI_OPERATIONS.LESSON_RECORD_FROM_AUDIO, output), output);
   assert.throws(() => normalizeAIOutput(AI_OPERATIONS.LESSON_RECORD_FROM_AUDIO, { ...output, audio: "forbidden" }));
+  assert.deepEqual(normalizeAIOutput(AI_OPERATIONS.LESSON_RECORD_FROM_AUDIO, {
+    transcript: "", result: "no_speech", fields: null, summary: null, speechSeconds: 0, confidence: 0,
+    flags: ["no_speech"], provenance: { stt: null, llm: null },
+  }).result, "no_speech");
+  assert.deepEqual(normalizeAIOutput(AI_OPERATIONS.LESSON_RECORD_FROM_AUDIO, {
+    transcript: "브릿지", result: "low_confidence", fields: null, summary: null, speechSeconds: 1.8, confidence: 0.2,
+    flags: ["low_confidence"], provenance: { stt: "openai", llm: null },
+  }).result, "low_confidence");
 });
 
 test("gateway client sends audio with the caller's stable idempotency key", async () => {

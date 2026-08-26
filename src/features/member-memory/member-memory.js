@@ -84,7 +84,8 @@ export function confirmedSessions(notes, { excludeSessionId = null } = {}) {
   return (notes || []).flatMap((note) => {
     const record = confirmedRecordOf(note);
     const id = sourceId(note);
-    if (!record || !id || id === excludeSessionId) return [];
+    const reviewFlags = note?.lessonRecord?.reviewFlags || record?.reviewFlags || [];
+    if (!record || !id || id === excludeSessionId || (Array.isArray(reviewFlags) && reviewFlags.length)) return [];
     const provenanceSource = lessonRecordProvenanceSource(note.lessonRecord);
     return [{
       id,

@@ -2,15 +2,22 @@
 
 const OpenAI = require("openai");
 const { decodeAudioBase64 } = require("./audio-contract");
+const {
+  analyzeEnergyEnvelope,
+  assessGptTranscription,
+  assessTranscriptConsistency,
+  assessWhisperTranscription,
+} = require("./audio-quality");
 const { GatewayError } = require("./errors");
 const { OPERATIONS, OUTPUT_NAMES, OUTPUT_SCHEMAS, validateOperationOutput } = require("./operation-contracts");
 const { getPrompt } = require("./prompts");
-const { buildTranscriptionPrompt } = require("./transcription-config");
+const { PILATES_TRANSCRIPTION_TERMS, buildTranscriptionPrompt } = require("./transcription-config");
 
 const DEFAULT_MODEL = "gpt-5-mini";
 const DEFAULT_TIMEOUT_MS = 25000;
-const PRIMARY_TRANSCRIPTION_MODEL = "gpt-4o-mini-transcribe";
-const FALLBACK_TRANSCRIPTION_MODEL = "whisper-1";
+const PRIMARY_TRANSCRIPTION_MODEL = "whisper-1";
+const FALLBACK_TRANSCRIPTION_MODEL = "gpt-4o-mini-transcribe";
+const AUDIO_VAD_PROMPT_VERSION = "audio_vad_v1";
 
 const RESULT_STRING_FIELDS = Object.freeze([
   "memberCondition",
@@ -227,20 +234,50 @@ function createOpenAIProvider({
       const startedAt = Date.now();
       try {
         const file = await OpenAI.toFile(buffer, metadata.filename, { type: metadata.mimeType });
+        const isWhisper = transcriptionModel === "whisper-1";
         const response = await openai.audio.transcriptions.create({
           file,
           model: transcriptionModel,
           language: "ko",
           prompt,
-          response_format: "json",
+          response_format: isWhisper ? "verbose_json" : "json",
+          temperature: 0,
+          ...(isWhisper
+            ? { timestamp_granularities: ["segment"] }
+            : { include: ["logprobs"] }),
         });
-        const transcript = String(response?.text || "").trim();
-        if (!transcript || transcript.length > 12000) throw new GatewayError("invalid_output");
+        const assessment = isWhisper
+          ? assessWhisperTranscription(response)
+          : assessGptTranscription(response);
+        if (!assessment.accepted) {
+          return {
+            result: "no_speech",
+            transcript: "",
+            model: transcriptionModel,
+            latencyMs: Math.max(0, Date.now() - startedAt),
+            usage: response?.usage || null,
+            confidence: assessment.confidence,
+            confidenceDiagnostic: {
+              averageLogprob: assessment.averageLogprob,
+              rejectedSegments: assessment.rejectedSegments,
+              totalSegments: assessment.totalSegments,
+            },
+          };
+        }
+        const transcript = assessment.transcript;
+        if (transcript.length > 12000) throw new GatewayError("invalid_output");
         return {
+          result: "ok",
           transcript,
           model: transcriptionModel,
           latencyMs: Math.max(0, Date.now() - startedAt),
           usage: response?.usage || null,
+          confidence: assessment.confidence,
+          confidenceDiagnostic: {
+            averageLogprob: assessment.averageLogprob,
+            rejectedSegments: assessment.rejectedSegments,
+            totalSegments: assessment.totalSegments,
+          },
         };
       } catch (error) {
         if (transcriptionModel === PRIMARY_TRANSCRIPTION_MODEL) {
@@ -256,6 +293,7 @@ function createOpenAIProvider({
   async function executeAudio({ input, safetyIdentifier = "" }) {
     const startedAt = Date.now();
     const { buffer, metadata } = decodeAudioBase64(input?.audio);
+    const energy = analyzeEnergyEnvelope(input?.audioMetrics);
     let audioDisposed = false;
     const disposeAudio = () => {
       if (audioDisposed) return;
@@ -266,8 +304,96 @@ function createOpenAIProvider({
       }
     };
     try {
+      if (!energy.accepted) {
+        return {
+          model: normalizedModel,
+          promptVersion: AUDIO_VAD_PROMPT_VERSION,
+          status: "completed",
+          incompleteReason: "",
+          usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0 },
+          latencyMs: Math.max(0, Date.now() - startedAt),
+          validation: "no_speech",
+          transcriptionModel: "",
+          transcriptionLatencyMs: 0,
+          transcriptionUsage: null,
+          speechSeconds: energy.speechSeconds,
+          transcriptionConfidence: energy.confidence,
+          transcriptionFlags: ["no_speech"],
+          output: {
+            transcript: "",
+            result: "no_speech",
+            fields: null,
+            summary: null,
+            speechSeconds: energy.speechSeconds,
+            confidence: energy.confidence,
+            flags: ["no_speech"],
+            provenance: { stt: null, llm: null },
+          },
+        };
+      }
       const transcription = await transcribe(buffer, metadata, input?.memberName);
       disposeAudio();
+      if (transcription.result === "no_speech") {
+        return {
+          model: normalizedModel,
+          promptVersion: AUDIO_VAD_PROMPT_VERSION,
+          status: "completed",
+          incompleteReason: "",
+          usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0 },
+          latencyMs: Math.max(0, Date.now() - startedAt),
+          validation: "no_speech",
+          transcriptionModel: transcription.model,
+          transcriptionLatencyMs: transcription.latencyMs,
+          transcriptionUsage: transcription.usage,
+          speechSeconds: energy.speechSeconds,
+          transcriptionConfidence: transcription.confidence,
+          transcriptionFlags: ["no_speech"],
+          confidenceDiagnostic: transcription.confidenceDiagnostic,
+          output: {
+            transcript: "",
+            result: "no_speech",
+            fields: null,
+            summary: null,
+            speechSeconds: energy.speechSeconds,
+            confidence: transcription.confidence,
+            flags: ["no_speech"],
+            provenance: { stt: null, llm: null },
+          },
+        };
+      }
+      const consistency = assessTranscriptConsistency(
+        transcription.transcript,
+        energy.speechSeconds,
+        PILATES_TRANSCRIPTION_TERMS,
+      );
+      if (!consistency.accepted) {
+        return {
+          model: normalizedModel,
+          promptVersion: AUDIO_VAD_PROMPT_VERSION,
+          status: "completed",
+          incompleteReason: "",
+          usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0 },
+          latencyMs: Math.max(0, Date.now() - startedAt),
+          validation: "low_confidence",
+          transcriptionModel: transcription.model,
+          transcriptionLatencyMs: transcription.latencyMs,
+          transcriptionUsage: transcription.usage,
+          speechSeconds: energy.speechSeconds,
+          transcriptionConfidence: transcription.confidence,
+          transcriptionFlags: ["low_confidence"],
+          confidenceDiagnostic: { ...transcription.confidenceDiagnostic, ...consistency },
+          output: {
+            transcript: transcription.transcript,
+            result: "low_confidence",
+            fields: null,
+            summary: null,
+            speechSeconds: energy.speechSeconds,
+            confidence: transcription.confidence,
+            flags: ["low_confidence"],
+            provenance: { stt: "openai", llm: null },
+          },
+        };
+      }
       const structured = await execute({
         operation: OPERATIONS.STRUCTURE_LESSON_RECORD,
         input: {
@@ -289,10 +415,18 @@ function createOpenAIProvider({
         transcriptionUsage: transcription.usage,
         output: {
           transcript: transcription.transcript,
+          result: "ok",
           fields,
           summary: structured.output.summary,
+          speechSeconds: energy.speechSeconds,
+          confidence: transcription.confidence,
+          flags: [],
           provenance: { stt: "openai", llm: "openai" },
         },
+        speechSeconds: energy.speechSeconds,
+        transcriptionConfidence: transcription.confidence,
+        transcriptionFlags: [],
+        confidenceDiagnostic: transcription.confidenceDiagnostic,
       };
     } finally {
       disposeAudio();
@@ -310,6 +444,7 @@ function createOpenAIProvider({
 module.exports = {
   DEFAULT_MODEL,
   FALLBACK_TRANSCRIPTION_MODEL,
+  AUDIO_VAD_PROMPT_VERSION,
   PRIMARY_TRANSCRIPTION_MODEL,
   createOpenAIProvider,
   validateVoiceSummaryResult,

@@ -62,5 +62,8 @@ test("lesson record output schema is exact and prompt forbids invention and diag
   assert.match(prompt.instructions, /흉추 회전 시 전보다 부드러움/);
   assert.match(prompt.instructions, /responses=\[\]/);
   assert.match(prompt.instructions, /summary/);
-  assert.equal((prompt.instructions.match(/summary='/g) || []).length, 8);
+  assert.match(prompt.instructions, /같은 내용이 반복되면 한 번만/);
+  assert.match(prompt.instructions, /나중에 말한 내용을 따르세요/);
+  assert.match(prompt.instructions, /음성 회귀 예:[\s\S]*didToday=\['오른쪽 허리 운동'\][\s\S]*nextFocus=\['리포머로 흉추 운동'\]/);
+  assert.ok((prompt.instructions.match(/summary='/g) || []).length >= 9);
 });

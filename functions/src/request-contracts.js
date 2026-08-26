@@ -198,14 +198,29 @@ function parseLessonRecordInput(raw) {
 function parseAudioLessonRecordInput(raw) {
   const input = requireExactKeys(
     raw,
-    ["schemaVersion", "memberId", "lessonId", "audio", "memberName", "language"],
+    ["schemaVersion", "memberId", "lessonId", "audio", "memberName", "language", "clipId", "audioMetrics"],
     "input",
+    ["schemaVersion", "memberId", "lessonId", "audio", "memberName", "language"],
   );
   if (input.schemaVersion !== 1 || input.language !== "ko") {
     throw invalid("audio lesson record input version or language is invalid");
   }
   const decoded = decodeAudioBase64(input.audio);
   decoded.buffer.fill(0);
+  let audioMetrics = null;
+  if (input.audioMetrics !== undefined && input.audioMetrics !== null) {
+    const metrics = requireExactKeys(input.audioMetrics, ["intervalMs", "amplitudes"], "input.audioMetrics");
+    const intervalMs = Number(metrics.intervalMs);
+    if (!Number.isFinite(intervalMs) || intervalMs < 50 || intervalMs > 250 || !Array.isArray(metrics.amplitudes) || !metrics.amplitudes.length || metrics.amplitudes.length > 2000) {
+      throw invalid("input.audioMetrics is invalid");
+    }
+    const amplitudes = metrics.amplitudes.map((value, index) => {
+      const amplitude = Number(value);
+      if (!Number.isFinite(amplitude) || amplitude < 0 || amplitude > 1) throw invalid(`input.audioMetrics.amplitudes[${index}] is invalid`);
+      return Math.round(amplitude * 10000) / 10000;
+    });
+    audioMetrics = { intervalMs, amplitudes };
+  }
   return {
     schemaVersion: 1,
     memberId: requireId(input.memberId, "input.memberId"),
@@ -213,6 +228,8 @@ function parseAudioLessonRecordInput(raw) {
     audio: input.audio,
     memberName: requireString(input.memberName, "input.memberName", 160),
     language: "ko",
+    clipId: input.clipId === undefined ? "" : requireId(input.clipId, "input.clipId"),
+    audioMetrics,
   };
 }
 

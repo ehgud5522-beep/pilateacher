@@ -96,19 +96,44 @@ export function normalizeLessonRecord(value) {
 
 export function normalizeAudioLessonRecord(value) {
   const source = requireObject(value, "audio lesson record output");
-  const audioFields = ["transcript", "fields", "summary", "provenance"];
+  const audioFields = ["transcript", "result", "fields", "summary", "speechSeconds", "confidence", "flags", "provenance"];
   requireFields(source, audioFields, "audio lesson record output");
   if (Object.keys(source).some((field) => !audioFields.includes(field))) throw new TypeError("audio lesson record output has unsupported fields");
+  const result = String(source.result || "");
+  if (!["ok", "no_speech", "low_confidence"].includes(result)) throw new TypeError("audio lesson record result is invalid");
+  const speechSeconds = Number(source.speechSeconds);
+  const confidence = Number(source.confidence);
+  if (!Number.isFinite(speechSeconds) || speechSeconds < 0) throw new TypeError("audio lesson record speechSeconds is invalid");
+  if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) throw new TypeError("audio lesson record confidence is invalid");
+  const flags = Array.isArray(source.flags) ? source.flags.map((flag) => cleanText(flag, 80)).filter(Boolean) : null;
+  if (!flags) throw new TypeError("audio lesson record flags are invalid");
+  const transcript = cleanText(source.transcript, 12000);
+  if (result === "no_speech") {
+    if (transcript || source.fields != null || source.summary != null || !flags.includes("no_speech") || source.provenance?.stt != null || source.provenance?.llm != null) {
+      throw new TypeError("audio lesson record no_speech output is invalid");
+    }
+    return { transcript: "", result, fields: null, summary: null, speechSeconds, confidence, flags, provenance: { stt: null, llm: null } };
+  }
+  const provenance = requireObject(source.provenance, "audio lesson record provenance");
+  if (provenance.stt !== "openai") throw new TypeError("audio lesson record stt provenance is invalid");
+  if (!transcript) throw new TypeError("audio lesson record transcript is empty");
+  if (result === "low_confidence") {
+    if (source.fields != null || source.summary != null || !flags.includes("low_confidence") || provenance.llm != null) {
+      throw new TypeError("audio lesson record low_confidence output is invalid");
+    }
+    return { transcript, result, fields: null, summary: null, speechSeconds, confidence, flags, provenance: { stt: "openai", llm: null } };
+  }
   const fields = requireObject(source.fields, "audio lesson record fields");
   requireFields(fields, ["didToday", "observations", "responses", "nextFocus"], "audio lesson record fields");
-  const provenance = requireObject(source.provenance, "audio lesson record provenance");
-  if (provenance.stt !== "openai" || provenance.llm !== "openai") throw new TypeError("audio lesson record provenance is invalid");
-  const transcript = cleanText(source.transcript, 12000);
-  if (!transcript) throw new TypeError("audio lesson record transcript is empty");
+  if (provenance.llm !== "openai" || flags.length) throw new TypeError("audio lesson record ok provenance is invalid");
   return {
     transcript,
+    result,
     fields: Object.fromEntries(["didToday", "observations", "responses", "nextFocus"].map((field) => [field, cleanLessonList(fields[field], `fields.${field}`)])),
     summary: source.summary == null ? null : cleanText(source.summary, 1200),
+    speechSeconds,
+    confidence,
+    flags,
     provenance: { stt: "openai", llm: "openai" },
   };
 }

@@ -50,25 +50,31 @@ export async function runLessonRecordRetryCycle({ llmProvider, audioProvider = n
           lessonId: draft.lessonId,
           memberName: pendingAudio.memberName || "회원",
           requestId: pendingAudio.requestId,
+          clipId: pendingAudio.clipId || pendingAudio.requestId,
+          audioMetrics: pendingAudio.audioMetrics || null,
           onEvent: onVoiceEvent,
         });
-        const rawTranscript = appendTranscript(draft.rawTranscript, result.output.transcript);
+        const resultKind = String(result?.output?.result || "ok");
+        const outputFlags = Array.isArray(result?.output?.flags) ? result.output.flags : [];
+        const rawTranscript = resultKind === "no_speech" ? String(draft.rawTranscript || "").trim() : appendTranscript(draft.rawTranscript, result.output.transcript);
         const audioClips = (draft.audioClips || []).map((clip) => clip.requestId === pendingAudio.requestId ? { ...clip, state: "uploaded", uploadedAt: new Date(now).toISOString(), blobId: null } : clip);
         const hasMoreAudio = audioClips.some((clip) => clip?.blobId && clip?.state !== "uploaded");
         const structuredDraft = structuredDraftFromAudioOutput(result.output);
         savePendingLessonRecord(draft.memberId, draft.lessonId, {
           ...draft,
-          status: hasMoreAudio ? "queued" : "structured",
+          status: hasMoreAudio ? "queued" : resultKind === "ok" ? "structured" : resultKind === "low_confidence" ? "review_required" : "raw",
           rawTranscript,
           termMap: mapPilatesTerms(rawTranscript),
-          structuredDraft: hasMoreAudio ? null : structuredDraft,
+          structuredDraft: hasMoreAudio || resultKind !== "ok" ? null : structuredDraft,
           aiMeta: { ...result, output: undefined },
+          reviewFlags: outputFlags,
+          reviewEdited: false,
           audioClips,
           retry: hasMoreAudio ? { state: "waiting", attempts: 0, nextRetryAt: now } : null,
           failure: null,
         }, storage);
         if (typeof deleteAudio === "function") await deleteAudio(pendingAudio.blobId);
-        if (!hasMoreAudio) {
+        if (!hasMoreAudio && resultKind === "ok") {
           promoted += 1;
           onPromoted({ memberId: draft.memberId, lessonId: draft.lessonId });
         }

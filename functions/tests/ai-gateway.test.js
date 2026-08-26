@@ -83,6 +83,8 @@ function audioGatewayRequest() {
         audio: createM4aFixture(12).toString("base64"),
         memberName: "위조 이름",
         language: "ko",
+        clipId: requestId,
+        audioMetrics: { intervalMs: 100, amplitudes: Array(30).fill(0.2) },
       },
     },
   });
@@ -273,8 +275,12 @@ test("audio operation uses the authorized member name and never logs audio or tr
           transcriptionModel: "gpt-4o-mini-transcribe",
           output: {
             transcript: "민감한 전사 원문",
+            result: "ok",
             fields: { didToday: [], observations: [], responses: [], nextFocus: [] },
             summary: null,
+            speechSeconds: 2.8,
+            confidence: 0.9,
+            flags: [],
             provenance: { stt: "openai", llm: "openai" },
           },
         };
@@ -282,7 +288,7 @@ test("audio operation uses the authorized member name and never logs audio or tr
     });
     const response = await invoke(handler, audioGatewayRequest());
     assert.equal(response.statusCode, 200);
-    assert.deepEqual(Object.keys(providerInput).sort(), ["audio", "language", "memberName"]);
+    assert.deepEqual(Object.keys(providerInput).sort(), ["audio", "audioMetrics", "clipId", "language", "memberName"]);
     assert.equal(providerInput.memberName, "김지민");
     assert.equal(providerInput.language, "ko");
     const logText = JSON.stringify(logs);

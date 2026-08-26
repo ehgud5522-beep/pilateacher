@@ -76,8 +76,9 @@ const OUTPUT_SCHEMAS = Object.freeze({
     additionalProperties: false,
     properties: {
       transcript: stringField(),
+      result: { type: "string", enum: ["ok", "no_speech", "low_confidence"] },
       fields: {
-        type: "object",
+        type: ["object", "null"],
         additionalProperties: false,
         properties: {
           didToday: stringList(),
@@ -88,17 +89,23 @@ const OUTPUT_SCHEMAS = Object.freeze({
         required: ["didToday", "observations", "responses", "nextFocus"],
       },
       summary: nullableStringField(),
+      speechSeconds: { type: "number" },
+      confidence: { type: "number" },
+      flags: {
+        type: "array",
+        items: { type: "string", enum: ["no_speech", "low_confidence"] },
+      },
       provenance: {
         type: "object",
         additionalProperties: false,
         properties: {
-          stt: { type: "string", enum: ["openai"] },
-          llm: { type: "string", enum: ["openai"] },
+          stt: { type: ["string", "null"], enum: ["openai", null] },
+          llm: { type: ["string", "null"], enum: ["openai", null] },
         },
         required: ["stt", "llm"],
       },
     },
-    required: ["transcript", "fields", "summary", "provenance"],
+    required: ["transcript", "result", "fields", "summary", "speechSeconds", "confidence", "flags", "provenance"],
   },
   [OPERATIONS.RECOMMEND_SEQUENCE]: {
     type: "object",
@@ -222,16 +229,40 @@ function validateLessonRecord(value) {
 
 function validateAudioLessonRecord(value) {
   const source = requireExactObject(value, OUTPUT_SCHEMAS[OPERATIONS.LESSON_RECORD_FROM_AUDIO].required);
-  const fields = requireExactObject(source.fields, ["didToday", "observations", "responses", "nextFocus"]);
   const provenance = requireExactObject(source.provenance, ["stt", "llm"]);
-  if (provenance.stt !== "openai" || provenance.llm !== "openai") throw new GatewayError("invalid_output");
   const transcript = cleanString(source.transcript, 12000);
-  if (!transcript) throw new GatewayError("invalid_output");
+  const result = ["ok", "no_speech", "low_confidence"].includes(source.result) ? source.result : null;
+  const speechSeconds = Number(source.speechSeconds);
+  const confidence = Number(source.confidence);
+  if (!result || !Number.isFinite(speechSeconds) || speechSeconds < 0 || speechSeconds > 90 || !Number.isFinite(confidence) || confidence < 0 || confidence > 1) throw new GatewayError("invalid_output");
+  const flags = cleanList(source.flags, 2, 40);
+  if (flags.some((flag) => !["no_speech", "low_confidence"].includes(flag))) throw new GatewayError("invalid_output");
+  if (result === "ok") {
+    const fields = requireExactObject(source.fields, ["didToday", "observations", "responses", "nextFocus"]);
+    if (!transcript || provenance.stt !== "openai" || provenance.llm !== "openai" || flags.length) throw new GatewayError("invalid_output");
+    return {
+      transcript,
+      result,
+      fields: Object.fromEntries(Object.keys(fields).map((field) => [field, cleanList(fields[field])])),
+      summary: source.summary == null ? null : cleanString(source.summary, 1200),
+      speechSeconds,
+      confidence,
+      flags: [],
+      provenance: { stt: "openai", llm: "openai" },
+    };
+  }
+  if (source.fields !== null || source.summary !== null || !flags.includes(result) || provenance.llm !== null) throw new GatewayError("invalid_output");
+  if (result === "no_speech" && (transcript || provenance.stt !== null)) throw new GatewayError("invalid_output");
+  if (result === "low_confidence" && (!transcript || provenance.stt !== "openai")) throw new GatewayError("invalid_output");
   return {
     transcript,
-    fields: Object.fromEntries(Object.keys(fields).map((field) => [field, cleanList(fields[field])])),
-    summary: source.summary == null ? null : cleanString(source.summary, 1200),
-    provenance: { stt: "openai", llm: "openai" },
+    result,
+    fields: null,
+    summary: null,
+    speechSeconds,
+    confidence,
+    flags,
+    provenance: { stt: provenance.stt, llm: null },
   };
 }
 

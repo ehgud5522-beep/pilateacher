@@ -115,6 +115,13 @@ test("last lesson uses today lesson, then model summary, then raw teacher record
   assert.notEqual(rawDisplay.sourceLabel, "[AI]");
 });
 
+test("unreviewed low-confidence records never enter member memory", () => {
+  const flagged = note("flagged-1", "2026-08-26", { observations: [item("오른쪽 허리 좋아짐")] });
+  flagged.lessonRecord.reviewFlags = ["low_confidence"];
+  assert.deepEqual(confirmedSessions([flagged]), []);
+  assert.equal(buildMemberMemory({ memberId: "m1", notes: [flagged], now: "2026-08-26" }).memories.length, 0);
+});
+
 test("no-comment does not create memory or masquerade as confirmed history", () => {
   const briefing = createMemberBriefing({ member: member([{ id: "n1", sid: "s1", date: "2026-08-18", body: "특이사항 없음" }]), now: "2026-08-19" });
   assert.equal(briefing.kind, "first_lesson");

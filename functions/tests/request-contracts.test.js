@@ -40,6 +40,8 @@ test("single execute contract accepts each allowlisted operation", () => {
       audio: createM4aFixture(20).toString("base64"),
       memberName: "김지민",
       language: "ko",
+      clipId: "clip-lesson-1",
+      audioMetrics: { intervalMs: 100, amplitudes: Array(30).fill(0.2) },
     },
     recommendSequence: {
       schemaVersion: 1, memberId: "member-1", goals: ["코어"], precautions: [], bodyAssessment: null,
@@ -63,8 +65,11 @@ test("audio lesson request enforces the 2MB and 90 second media contract", () =>
     audio: createM4aFixture(89).toString("base64"),
     memberName: "김지민",
     language: "ko",
+    clipId: "clip-lesson-1",
+    audioMetrics: { intervalMs: 100, amplitudes: Array(30).fill(0.2) },
   };
   assert.equal(parseGatewayRequest(envelope("lesson_record_from_audio", valid)).input.language, "ko");
+  assert.equal(parseGatewayRequest(envelope("lesson_record_from_audio", valid)).input.audioMetrics.amplitudes.length, 30);
   assert.throws(
     () => parseGatewayRequest(envelope("lesson_record_from_audio", { ...valid, audio: createM4aFixture(91).toString("base64") })),
     (error) => error.code === "invalid_request",

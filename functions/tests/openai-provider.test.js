@@ -239,8 +239,8 @@ test("audio lesson provider transcribes, falls back once, preserves valid fields
     client: {
       audio: { transcriptions: { create: async ({ model }) => {
         transcriptionModels.push(model);
-        if (model === "gpt-4o-mini-transcribe") throw new Error("temporary primary failure");
-        return { text: "브릿지를 했고 오른쪽 어깨 움직임이 좋아졌어요." };
+        if (model === "whisper-1") throw new Error("temporary primary failure");
+        return { text: "브릿지를 했고 오른쪽 어깨 움직임이 좋아졌어요.", logprobs: [{ logprob: -0.2 }] };
       } } },
       responses: { create: async () => {
         lifecycle.push("structure_requested");
@@ -264,10 +264,11 @@ test("audio lesson provider transcribes, falls back once, preserves valid fields
       audio: createM4aFixture(12).toString("base64"),
       memberName: "김지민",
       language: "ko",
+      audioMetrics: { intervalMs: 100, amplitudes: [...Array(5).fill(0.002), ...Array(20).fill(0.25), ...Array(5).fill(0.002)] },
     },
   });
-  assert.deepEqual(transcriptionModels, ["gpt-4o-mini-transcribe", "whisper-1"]);
-  assert.equal(result.transcriptionModel, "whisper-1");
+  assert.deepEqual(transcriptionModels, ["whisper-1", "gpt-4o-mini-transcribe"]);
+  assert.equal(result.transcriptionModel, "gpt-4o-mini-transcribe");
   assert.deepEqual(result.output.fields, {
     didToday: [],
     observations: ["오른쪽 어깨 움직임이 좋아짐"],
@@ -276,6 +277,8 @@ test("audio lesson provider transcribes, falls back once, preserves valid fields
   });
   assert.equal(result.output.transcript, "브릿지를 했고 오른쪽 어깨 움직임이 좋아졌어요.");
   assert.deepEqual(result.output.provenance, { stt: "openai", llm: "openai" });
+  assert.equal(result.output.result, "ok");
+  assert.deepEqual(result.output.flags, []);
   assert.deepEqual(disposed, { bytes: 96, cleared: true });
   assert.deepEqual(lifecycle, ["audio_disposed", "structure_requested"]);
 });
@@ -284,11 +287,14 @@ test("audio lesson provider rejects JSON parse failure or four invalid core fiel
   let outputText = "not-json";
   const provider = createOpenAIProvider({
     client: {
-      audio: { transcriptions: { create: async () => ({ text: "수업 기록" }) } },
+      audio: { transcriptions: { create: async () => ({
+        text: "수업 기록",
+        segments: [{ text: "수업 기록", no_speech_prob: 0.01, avg_logprob: -0.1, compression_ratio: 1.1 }],
+      }) } },
       responses: { create: async () => ({ status: "completed", output_text: outputText }) },
     },
   });
-  const input = { audio: createM4aFixture(5).toString("base64"), memberName: "", language: "ko" };
+  const input = { audio: createM4aFixture(5).toString("base64"), memberName: "", language: "ko", audioMetrics: { intervalMs: 100, amplitudes: [...Array(5).fill(0.002), ...Array(20).fill(0.25), ...Array(5).fill(0.002)] } };
   await assert.rejects(provider.executeAudio({ input }), (error) => error.code === "invalid_output");
   outputText = JSON.stringify({
     didToday: null,
@@ -299,4 +305,31 @@ test("audio lesson provider rejects JSON parse failure or four invalid core fiel
     summary: null,
   });
   await assert.rejects(provider.executeAudio({ input }), (error) => error.code === "invalid_output");
+});
+
+test("audio safety gates never call transcription or structuring for silence and never structure a glossary run", async () => {
+  let transcriptionCalls = 0;
+  let structureCalls = 0;
+  const provider = createOpenAIProvider({
+    client: {
+      audio: { transcriptions: { create: async () => {
+        transcriptionCalls += 1;
+        return { text: "리포머 캐딜락 체어 바렐", segments: [
+          { text: "리포머 캐딜락 체어 바렐", no_speech_prob: 0.05, avg_logprob: -0.1, compression_ratio: 1.1 },
+        ] };
+      } } },
+      responses: { create: async () => { structureCalls += 1; throw new Error("must not structure"); } },
+    },
+  });
+  const base = { audio: createM4aFixture(5).toString("base64"), memberName: "", language: "ko" };
+  const silence = await provider.executeAudio({ input: { ...base, audioMetrics: { intervalMs: 100, amplitudes: Array(50).fill(0.001) } } });
+  assert.equal(silence.output.result, "no_speech");
+  assert.equal(transcriptionCalls, 0);
+  assert.equal(structureCalls, 0);
+  const glossary = await provider.executeAudio({ input: { ...base, audioMetrics: { intervalMs: 100, amplitudes: [...Array(5).fill(0.002), ...Array(20).fill(0.2), ...Array(5).fill(0.002)] } } });
+  assert.equal(glossary.output.result, "low_confidence");
+  assert.equal(glossary.output.transcript, "리포머 캐딜락 체어 바렐");
+  assert.deepEqual(glossary.output.flags, ["low_confidence"]);
+  assert.equal(transcriptionCalls, 1);
+  assert.equal(structureCalls, 0);
 });

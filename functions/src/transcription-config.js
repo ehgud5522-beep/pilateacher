@@ -9,10 +9,9 @@ const PILATES_TRANSCRIPTION_TERMS = Object.freeze([
 function buildTranscriptionPrompt(memberName = "") {
   const name = String(memberName || "").trim().slice(0, 160);
   return [
-    "한국어 필라테스 수업 기록입니다. 들리는 말을 원문 의미 그대로 전사하세요.",
-    `필라테스 용어 참고: ${PILATES_TRANSCRIPTION_TERMS.join(", ")}`,
-    name ? `회원 이름 참고: ${name}` : "",
-    "추측하거나 내용을 보충하지 마세요.",
+    `필라테스 수업 직후 강사의 짧은 한국어 기록입니다. ${PILATES_TRANSCRIPTION_TERMS.join("·")} 같은 용어가 나올 수 있습니다.`,
+    name ? `회원 이름은 ${name}일 수 있습니다.` : "",
+    "실제로 들리는 말만 원문 의미 그대로 전사하고, 들리지 않는 내용은 만들지 마세요.",
   ].filter(Boolean).join("\n");
 }
 

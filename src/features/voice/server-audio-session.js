@@ -4,6 +4,8 @@ export const SERVER_AUDIO_FOREGROUND_WAIT_MS = 10000;
 export const SERVER_AUDIO_GATEWAY_TIMEOUT_MS = 30000;
 export const SERVER_AUDIO_MAX_SECONDS = 90;
 export const SERVER_AUDIO_MAX_BYTES = 2 * 1024 * 1024;
+export const SERVER_AUDIO_ENERGY_INTERVAL_MS = 100;
+export const SERVER_AUDIO_MIN_SPEECH_SECONDS = 1.5;
 
 const safeIdPart = (value) => String(value || "unknown").replace(/[^A-Za-z0-9._:-]/g, "_").slice(0, 40);
 
@@ -16,6 +18,50 @@ export function resolveVoiceEngine(value) {
 export function createStableAudioRequestId(memberId, lessonId, clipIndex = 0, nonce = "") {
   const random = String(nonce || globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random()}`).replace(/[^A-Za-z0-9]/g, "");
   return `audio_${safeIdPart(memberId)}_${safeIdPart(lessonId || "general")}_${Math.max(0, Number(clipIndex) || 0)}_${random}`.slice(0, 160);
+}
+
+const clampAmplitude = (value) => Math.max(0, Math.min(1, Number(value) || 0));
+
+export function analyzeRecordedSpeech(amplitudes, intervalMs = SERVER_AUDIO_ENERGY_INTERVAL_MS) {
+  const values = Array.isArray(amplitudes) ? amplitudes.map(clampAmplitude) : [];
+  if (!values.length || !Number.isFinite(intervalMs) || intervalMs < 50 || intervalMs > 250) {
+    return { accepted: false, speechSeconds: 0, threshold: 0, confidence: 0 };
+  }
+  const sorted = [...values].sort((a, b) => a - b);
+  const noiseFloor = sorted[Math.floor((sorted.length - 1) * 0.2)] || 0;
+  const threshold = Math.max(0.015, noiseFloor * 2.5 + 0.006);
+  const active = values.map((value) => value >= threshold);
+  const bridge = Math.max(1, Math.round(300 / intervalMs));
+  let previous = -1;
+  active.forEach((isActive, index) => {
+    if (!isActive) return;
+    if (previous >= 0 && index - previous - 1 <= bridge) {
+      for (let fill = previous + 1; fill < index; fill += 1) active[fill] = true;
+    }
+    previous = index;
+  });
+  const padded = [...active];
+  active.forEach((isActive, index) => {
+    if (!isActive) return;
+    for (let fill = Math.max(0, index - bridge); fill <= Math.min(active.length - 1, index + bridge); fill += 1) padded[fill] = true;
+  });
+  const activeIndexes = padded.flatMap((isActive, index) => isActive ? [index] : []);
+  const speechSeconds = Number((activeIndexes.length * intervalMs / 1000).toFixed(2));
+  const activeAverage = activeIndexes.length ? activeIndexes.reduce((sum, index) => sum + values[index], 0) / activeIndexes.length : 0;
+  const confidence = Math.max(0, Math.min(1, (activeAverage - noiseFloor) / Math.max(0.08, 1 - noiseFloor)));
+  return {
+    accepted: speechSeconds >= SERVER_AUDIO_MIN_SPEECH_SECONDS,
+    speechSeconds,
+    threshold: Number(threshold.toFixed(4)),
+    confidence: Number(confidence.toFixed(4)),
+  };
+}
+
+export function buildAudioMetrics(amplitudes, intervalMs = SERVER_AUDIO_ENERGY_INTERVAL_MS) {
+  return {
+    intervalMs,
+    amplitudes: (amplitudes || []).map((value) => Math.round(clampAmplitude(value) * 10000) / 10000).slice(0, 2000),
+  };
 }
 
 export async function blobToBase64(blob) {
@@ -45,7 +91,7 @@ export async function recordingResultToBlob(result, { readFile } = {}) {
   return new Blob([bytes], { type: mime });
 }
 
-export function audioGatewayInput({ audio, memberId, lessonId, memberName }) {
+export function audioGatewayInput({ audio, memberId, lessonId, memberName, clipId, audioMetrics }) {
   return {
     schemaVersion: 1,
     memberId: String(memberId || ""),
@@ -53,10 +99,13 @@ export function audioGatewayInput({ audio, memberId, lessonId, memberName }) {
     audio: String(audio || ""),
     memberName: String(memberName || "회원"),
     language: "ko",
+    clipId: String(clipId || ""),
+    audioMetrics: audioMetrics || null,
   };
 }
 
 export function structuredDraftFromAudioOutput(output) {
+  if (!output?.fields || output?.result !== "ok" || (output?.flags || []).length) return null;
   const fields = output?.fields || {};
   return {
     didToday: fields.didToday || [],
@@ -82,12 +131,12 @@ export async function settleWithin(promise, timeoutMs = SERVER_AUDIO_FOREGROUND_
   return result;
 }
 
-export async function uploadAudioClip({ provider, blob, memberId, lessonId, memberName, requestId, onEvent = () => {} }) {
+export async function uploadAudioClip({ provider, blob, memberId, lessonId, memberName, requestId, clipId = requestId, audioMetrics, onEvent = () => {} }) {
   const startedAt = Date.now();
   const audio = await blobToBase64(blob);
   onEvent("upload", { bytes: blob.size, requestId });
   const result = await provider.lessonRecordFromAudio(
-    audioGatewayInput({ audio, memberId, lessonId, memberName }),
+    audioGatewayInput({ audio, memberId, lessonId, memberName, clipId, audioMetrics }),
     { requestId },
   );
   onEvent("transcribed", { durationMs: Date.now() - startedAt, requestId });

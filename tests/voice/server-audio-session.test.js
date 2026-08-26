@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   DEFAULT_VOICE_ENGINE, SERVER_AUDIO_FOREGROUND_WAIT_MS, blobToBase64,
-  createStableAudioRequestId, recordingResultToBlob, resolveVoiceEngine,
+  analyzeRecordedSpeech, buildAudioMetrics, createStableAudioRequestId, recordingResultToBlob, resolveVoiceEngine,
   settleWithin, structuredDraftFromAudioOutput, uploadAudioClip,
 } from "../../src/features/voice/server-audio-session.js";
 import { runLessonRecordRetryCycle } from "../../src/features/lesson-record/retry-queue.js";
@@ -26,8 +26,12 @@ const memoryStorage = () => {
 
 const audioOutput = {
   transcript: "브릿지를 했고 오른쪽 어깨 움직임이 좋아졌어요.",
+  result: "ok",
   fields: { didToday: ["브릿지"], observations: ["오른쪽 어깨 움직임이 좋아짐"], responses: [], nextFocus: [] },
   summary: "브릿지를 진행했고 오른쪽 어깨 움직임이 좋아졌습니다.",
+  speechSeconds: 3,
+  confidence: 0.9,
+  flags: [],
   provenance: { stt: "openai", llm: "openai" },
 };
 
@@ -55,6 +59,15 @@ test("recording result is converted, uploaded once, and keeps the supplied idemp
   assert.equal(calls[0].input.audio, await blobToBase64(blob));
   assert.equal(result.output.transcript, audioOutput.transcript);
   assert.deepEqual(structuredDraftFromAudioOutput(result.output).didToday, ["브릿지"]);
+});
+
+test("client energy VAD blocks silence and low-confidence output never becomes four fields", () => {
+  assert.equal(analyzeRecordedSpeech(Array(50).fill(0.001)).accepted, false);
+  const speech = analyzeRecordedSpeech([...Array(5).fill(0.002), ...Array(20).fill(0.2), ...Array(5).fill(0.002)]);
+  assert.equal(speech.accepted, true);
+  assert.ok(speech.speechSeconds >= 1.5);
+  assert.deepEqual(buildAudioMetrics([0, 0.123456, 2]), { intervalMs: 100, amplitudes: [0, 0.1235, 1] });
+  assert.equal(structuredDraftFromAudioOutput({ ...audioOutput, result: "low_confidence", fields: null, flags: ["low_confidence"] }), null);
 });
 
 test("native URI recording data becomes a Blob without persisting a native path", async () => {
@@ -105,6 +118,51 @@ test("offline audio remains queued and online retry promotes it with the same re
   assert.equal(restored.status, "structured");
   assert.equal(restored.audioClips[0].blobId, null);
   assert.equal(storage.getItem(LESSON_RECORD_QUEUE_STORAGE_KEY).includes("AQID"), false);
+});
+
+test("background retry keeps no-speech empty and low-confidence transcript review-only", async () => {
+  const cases = [
+    {
+      lessonId: "lesson-silent",
+      output: { transcript: "", result: "no_speech", fields: null, summary: null, speechSeconds: 0, confidence: 0, flags: ["no_speech"], provenance: { stt: null, llm: null } },
+      status: "raw",
+      transcript: "",
+    },
+    {
+      lessonId: "lesson-review",
+      output: { transcript: "브릿지처럼 들립니다", result: "low_confidence", fields: null, summary: null, speechSeconds: 2, confidence: 0.2, flags: ["low_confidence"], provenance: { stt: "openai", llm: null } },
+      status: "review_required",
+      transcript: "브릿지처럼 들립니다",
+    },
+  ];
+  for (const fixture of cases) {
+    const storage = memoryStorage();
+    const requestId = createStableAudioRequestId("member-1", fixture.lessonId, 0, "safetycase");
+    savePendingLessonRecord("member-1", fixture.lessonId, {
+      status: "audio_pending",
+      rawTranscript: "",
+      structuredDraft: null,
+      audioClips: [{ blobId: "clip-safe", clipId: requestId, requestId, memberName: "제이", state: "pending", audioMetrics: buildAudioMetrics(Array(20).fill(0.2)) }],
+      retry: { state: "waiting", attempts: 0, nextRetryAt: 0 },
+    }, storage);
+    const deleted = [];
+    const result = await runLessonRecordRetryCycle({
+      llmProvider: {},
+      audioProvider: { lessonRecordFromAudio: async (_input, options) => ({ status: "draft", requestId: options.requestId, output: fixture.output }) },
+      loadAudio: async () => new Blob([new Uint8Array([1, 2, 3])], { type: "audio/mp4" }),
+      deleteAudio: async (blobId) => deleted.push(blobId),
+      storage,
+      online: true,
+      now: 1,
+    });
+    const restored = loadPendingLessonRecord("member-1", fixture.lessonId, storage);
+    assert.equal(result.promoted, 0);
+    assert.equal(restored.status, fixture.status);
+    assert.equal(restored.rawTranscript, fixture.transcript);
+    assert.equal(restored.structuredDraft, null);
+    assert.deepEqual(restored.reviewFlags, fixture.output.flags);
+    assert.deepEqual(deleted, ["clip-safe"]);
+  }
 });
 
 test("cancel uses the recorder discard API rather than saving a partial file", () => {

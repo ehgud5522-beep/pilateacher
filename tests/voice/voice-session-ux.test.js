@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   BACKGROUND_RECORDING_INTERRUPTED_MESSAGE,
   RECOGNIZER_BUSY_RETRY_MS,
+  VOICE_ORGANIZING_TIMEOUT_MS,
   VOICE_SESSION_DIAGNOSTIC_LIMIT,
   VOICE_SILENCE_LIMIT_MS,
   appendVoiceSessionDiagnostic,
@@ -62,12 +63,24 @@ test("silence guard tolerates a 3-5 second pause and ends only after 8 seconds w
 });
 
 test("voice phase resolver always yields one mutually exclusive visible state", () => {
-  assert.equal(resolveVoicePhase({ availability: "checking", attempted: false, error: "stale" }), "preparing");
-  assert.equal(resolveVoicePhase({ listening: true, finishing: true, error: "stale", attempted: true }), "organizing");
+  const allowed = new Set(["waiting", "listening", "organizing", "result", "failed", "permission_required"]);
+  assert.equal(resolveVoicePhase({ availability: "checking", attempted: false, error: "stale" }), "waiting");
+  assert.equal(resolveVoicePhase({ listening: true, finishing: true, error: "stale", attempted: true }), "listening");
   assert.equal(resolveVoicePhase({ listening: true, error: "stale", attempted: true }), "listening");
-  assert.equal(resolveVoicePhase({ hasResult: true }), "result");
+  assert.equal(resolveVoicePhase({ hasResult: true, finishing: true, organizing: true, summaryFailed: true }), "result");
   assert.equal(resolveVoicePhase({ attempted: true, error: "failed" }), "failed");
-  assert.equal(resolveVoicePhase({ availability: "permission_permanently_denied" }), "permission_permanently_denied");
+  assert.equal(resolveVoicePhase({ summaryFailed: true, organizing: true }), "failed");
+  assert.equal(resolveVoicePhase({ timedOut: true, organizing: true }), "failed");
+  assert.equal(resolveVoicePhase({ availability: "permission_permanently_denied" }), "permission_required");
+  [
+    {},
+    { listening: true },
+    { organizing: true },
+    { hasResult: true, organizing: true },
+    { summaryFailed: true },
+    { availability: "permission_required" },
+  ].forEach((input) => assert.equal(allowed.has(resolveVoicePhase(input)), true));
+  assert.equal(VOICE_ORGANIZING_TIMEOUT_MS, 30_000);
 });
 
 test("permanent microphone denial opens app settings without requesting runtime permission", async () => {
@@ -86,7 +99,7 @@ test("permanent microphone denial opens app settings without requesting runtime 
   assert.deepEqual(events.map((entry) => entry.event), ["permission_state", "open_app_settings"]);
 });
 
-test("retryable microphone denial requests once and a granted resume maps back to idle", async () => {
+test("retryable microphone denial requests once and a granted resume maps back to waiting", async () => {
   let requests = 0;
   const result = await runVoicePermissionAction({
     permissionState: "denied",
@@ -94,7 +107,7 @@ test("retryable microphone denial requests once and a granted resume maps back t
   });
   assert.equal(requests, 1);
   assert.equal(result.permissionState, "granted");
-  assert.equal(resolveVoicePhase({ availability: "ready" }), "idle");
+  assert.equal(resolveVoicePhase({ availability: "ready" }), "waiting");
 });
 
 test("recognizer busy uses bounded 300ms restarts while unsupported and permission failures never auto retry", () => {

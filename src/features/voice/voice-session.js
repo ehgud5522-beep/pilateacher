@@ -3,6 +3,7 @@ export const RECOGNIZER_BUSY_RETRY_MS = 300;
 export const VOICE_SESSION_DIAGNOSTIC_LIMIT = 30;
 export const VOICE_SESSION_DIAGNOSTIC_KEY = "pilateacher_voice_session_diagnostics_v1";
 export const BACKGROUND_RECORDING_INTERRUPTED_MESSAGE = "녹음이 중단됐어요 · 이어서 말하기";
+export const VOICE_ORGANIZING_TIMEOUT_MS = 30000;
 
 const VOICE_SESSION_EVENT_TYPES = new Set([
   "start", "interim", "final", "engine_end", "restart",
@@ -42,16 +43,16 @@ export function isRecognizerBusyError(error) {
   return /recognitionservice busy|recognizer busy|client side|ongoing|error[_ .-]*recognizer[_ .-]*busy|error 8\b/.test(detail);
 }
 
-export function resolveVoicePhase({ availability = "ready", starting = false, listening = false, finishing = false, organizing = false, hasResult = false, attempted = false, error = "" } = {}) {
-  if (organizing || finishing) return "organizing";
-  if (listening) return "listening";
-  if (starting || availability === "checking") return "preparing";
-  if (attempted && error) return "failed";
+export function resolveVoicePhase({ availability = "ready", starting = false, listening = false, finishing = false, organizing = false, hasResult = false, summaryFailed = false, timedOut = false, attempted = false, error = "" } = {}) {
+  // One derived state owns both the header and body. A late async flag must
+  // never cover an already available result or a terminal failure.
   if (hasResult) return "result";
-  if (availability === "unsupported") return "unsupported";
-  if (availability === "permission_permanently_denied") return "permission_permanently_denied";
-  if (availability === "permission_required") return "permission_required";
-  return "idle";
+  if (listening) return "listening";
+  if (summaryFailed || timedOut || (attempted && error)) return "failed";
+  if (organizing || finishing) return "organizing";
+  if (availability === "permission_permanently_denied" || availability === "permission_required") return "permission_required";
+  if (starting || availability === "checking") return "waiting";
+  return "waiting";
 }
 
 export function shouldRestartRecognizer({

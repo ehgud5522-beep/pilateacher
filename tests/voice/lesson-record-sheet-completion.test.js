@@ -20,8 +20,20 @@ test("voice completion saves a pending draft, keeps results visible, and defers 
 test("voice UI has one conditional direct-entry textarea and mutually exclusive phases", () => {
   assert.equal((voice.match(/aria-label="직접 입력하는 수업 내용"/g) || []).length, 1);
   assert.match(voice, /manualEntry \? <>/);
-  assert.match(voice, /!\["preparing", "listening", "organizing"\]\.includes\(voicePhase\)/);
-  ["preparing", "listening", "organizing", "result", "failed", "permission_required"].forEach((phase) => assert.match(voice, new RegExp(phase)));
+  assert.match(voice, /!\["listening", "organizing"\]\.includes\(voicePhase\)/);
+  ["waiting", "listening", "organizing", "result", "failed", "permission_required"].forEach((phase) => assert.match(voice, new RegExp(phase)));
+  assert.doesNotMatch(voice, />마이크 테스트</);
+  assert.doesNotMatch(voice, />카메라 테스트</);
+  assert.match(source, /diagnosticTapCount[\s\S]*next >= 7[\s\S]*IOSMediaDiagnosticPanel/);
+});
+
+test("voice result, failure, and timeout terminate the organizing header", () => {
+  assert.match(voice, /hasResult: !!summaryDraft/);
+  assert.match(voice, /summaryFailed: Boolean\(summaryFailure \|\| summaryError\)/);
+  assert.match(voice, /VOICE_ORGANIZING_TIMEOUT_MS/);
+  assert.match(voice, /setSummaryBusy\(false\)[\s\S]*setFinishing\(false\)[\s\S]*정리 실패 · 자동 재시도/);
+  assert.match(voice, /voicePhase === "result"[\s\S]*>결과<\/span>/);
+  assert.match(voice, /voicePhase === "failed"[\s\S]*>실패<\/span>/);
 });
 
 test("pending AI records expose optional confirmation and suppress review-flagged records", () => {

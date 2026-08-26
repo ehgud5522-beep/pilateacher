@@ -58,7 +58,7 @@ import {
   SPEECH_PERMISSION_STATE, describeSpeechError, speechPermissionAvailability, speechPermissionState,
 } from "./features/voice/speech-session.js";
 import {
-  BACKGROUND_RECORDING_INTERRUPTED_MESSAGE, RECOGNIZER_BUSY_RETRY_MS, VOICE_SILENCE_LIMIT_MS, appendVoiceSessionDiagnostic, createSilenceGuard,
+  BACKGROUND_RECORDING_INTERRUPTED_MESSAGE, RECOGNIZER_BUSY_RETRY_MS, VOICE_ORGANIZING_TIMEOUT_MS, VOICE_SILENCE_LIMIT_MS, appendVoiceSessionDiagnostic, createSilenceGuard,
   isRecognizerBusyError, nativeAudioPermissionState, readVoiceSessionDiagnostics, resolveVoicePhase, runVoicePermissionAction,
   shouldInterruptServerRecordingOnPause, shouldRestartRecognizer, stitchSpeechTranscript,
 } from "./features/voice/voice-session.js";
@@ -9837,6 +9837,90 @@ const voiceTime = (seconds) => `${String(Math.floor(seconds / 60)).padStart(2, "
 const lessonRecordLlm = new GatewayLlmProvider({ gatewayProvider: aiProvider, maxRetries: 1 });
 const AIRecordingStatusContext = createContext({ status: AI_RECORDING_STATUS.NORMAL, updateStatus: () => {} });
 
+function IOSMediaDiagnosticPanel({ memberId = "diagnostics", lessonId = "hidden-diagnostics" }) {
+  const [microphoneTest, setMicrophoneTest] = useState({ status: "idle", steps: [] });
+  const [cameraTest, setCameraTest] = useState({ status: "idle", steps: [] });
+  const runMicrophoneTest = async () => {
+    setMicrophoneTest({ status: "running", steps: [] });
+    if (!Capacitor.isNativePlatform() || Capacitor.getPlatform() !== "ios" || typeof CapacitorAudioRecorder.runMicrophoneTest !== "function") {
+      setMicrophoneTest({ status: "failed", steps: [{ stage: "availability", success: false, domain: "PilaTeacher.AudioSession", code: -1, localizedDescription: "iOS native microphone test is unavailable." }] });
+      return;
+    }
+    try {
+      const speech = nativeSTT();
+      if (typeof speech?.releaseAudioSession === "function") await speech.releaseAudioSession();
+      else if (typeof speech?.stop === "function") await speech.stop();
+      const result = await CapacitorAudioRecorder.runMicrophoneTest();
+      const steps = Array.isArray(result?.steps) ? result.steps : [];
+      steps.forEach((step) => deviceLog("microphone_test_step", { memberId, lessonId, stage: step?.stage, state: step?.success ? "success" : "failed", domain: step?.domain, code: step?.code, localizedDescription: step?.localizedDescription, inputAvailable: step?.inputAvailable, routeInputs: step?.routeInputs, routeOutputs: step?.routeOutputs, prepareToRecord: step?.prepareToRecord, recordingSettings: step?.recordingSettings, fileExists: step?.fileExists, fileBytes: step?.fileBytes, isRecording: step?.isRecording, averagePower: step?.averagePower, sample: step?.sample }));
+      setMicrophoneTest({ status: result?.ok ? "success" : "failed", steps });
+    } catch (error) {
+      setMicrophoneTest({ status: "failed", steps: [{ stage: "bridge", success: false, domain: error?.domain || "CapacitorBridge", code: error?.code || "bridge_error", localizedDescription: error?.localizedDescription || error?.message || String(error) }] });
+    }
+  };
+  const runCameraTest = async () => {
+    const steps = [];
+    let previewStarted = false;
+    let tempPath = null;
+    const publish = (stage, success, details = {}) => {
+      const step = { stage, success, domain: details.domain || (success ? "PilaTeacher.CameraSession" : "CapacitorCameraPreview"), code: details.code ?? (success ? 0 : "camera_test_failed"), localizedDescription: details.localizedDescription || (success ? "completed" : "camera test failed") };
+      steps.push(step);
+      setCameraTest({ status: success ? "running" : "failed", steps: [...steps] });
+    };
+    setCameraTest({ status: "running", steps: [] });
+    if (!Capacitor.isNativePlatform() || Capacitor.getPlatform() !== "ios" || !Capacitor.isPluginAvailable("CameraPreview")) {
+      publish("availability", false, { code: "unavailable", localizedDescription: "iOS native camera test is unavailable." });
+      return;
+    }
+    try {
+      const checked = await CameraPreview.checkPermissions({ disableAudio: true });
+      let permissionState = normalizeCameraPermissionState(checked);
+      if (permissionState === "prompt") permissionState = normalizeCameraPermissionState(await CameraPreview.requestPermissions({ disableAudio: true, showSettingsAlert: false }));
+      if (permissionState !== "granted") throw Object.assign(new Error("camera permission denied"), { code: "permission_denied" });
+      publish("permission", true, { localizedDescription: permissionState });
+      document.documentElement.classList.add("posture-camera-native-active");
+      await CameraPreview.start({ position: "rear", toBack: true, aspectRatio: "4:3", aspectMode: "contain", positioning: "center", videoQuality: "4:3", enableVideoMode: false, storeToFile: false, disableAudio: true, rotateWhenOrientationChanged: true, lockAndroidOrientation: false });
+      previewStarted = true;
+      cameraPipelineLog("capture_start", { memberId, lessonId, source: "camera_test", state: "preview_started" });
+      publish("capture_start", true, { localizedDescription: "preview started" });
+      const readiness = await waitForCameraPhotoOutput({ timeoutMs: 1500, pollMs: 100 });
+      publish("photo_output_ready", Boolean(readiness?.ready), { code: readiness?.ready ? 0 : "photo_output_not_ready", localizedDescription: readiness?.ready ? "photo output and preview attached" : "using system camera fallback" });
+      let base64 = "";
+      if (readiness?.ready) {
+        const result = await CameraPreview.capture({ quality: 80, width: 720, height: 960, format: "jpeg", saveToGallery: false, mirrorFrontCamera: false, photoQualityPrioritization: "balanced" });
+        base64 = String(result?.value || "").replace(/^data:[^;]+;base64,/, "");
+      } else {
+        await CameraPreview.stop({ force: true });
+        previewStarted = false;
+        document.documentElement.classList.remove("posture-camera-native-active");
+        const fallback = await CapacitorCamera.getPhoto({ quality: 85, allowEditing: false, resultType: CameraResultType.Base64, source: CameraSource.Camera, direction: CameraDirection.Rear, correctOrientation: true, saveToGallery: false, presentationStyle: "fullscreen" });
+        base64 = String(fallback?.base64String || "").replace(/^data:[^;]+;base64,/, "");
+        publish("camera_fallback", true, { localizedDescription: "system camera returned a photo" });
+      }
+      if (!base64) throw Object.assign(new Error("camera capture returned no image"), { code: "empty_capture" });
+      const bytes = Math.floor((base64.length * 3) / 4);
+      publish("captured", true, { localizedDescription: `${bytes} bytes` });
+      tempPath = `PilaTeacher/diagnostics/camera-test-${Date.now()}-${uid()}.jpg`;
+      await Filesystem.writeFile({ path: tempPath, data: base64, directory: "CACHE", recursive: true });
+      publish("saved", true, { localizedDescription: "temporary cache file saved" });
+      if (previewStarted) await CameraPreview.stop({ force: true });
+      previewStarted = false;
+      publish("preview_stopped", true);
+      publish("returned", true, { localizedDescription: "web view restored" });
+      setCameraTest({ status: "success", steps: [...steps] });
+    } catch (error) {
+      publish("failed", false, { domain: error?.domain, code: error?.code || error?.name, localizedDescription: error?.localizedDescription || error?.message || String(error) });
+    } finally {
+      if (previewStarted) await CameraPreview.stop({ force: true }).catch(() => {});
+      document.documentElement.classList.remove("posture-camera-native-active");
+      if (tempPath) await Filesystem.deleteFile({ path: tempPath, directory: "CACHE" }).catch(() => {});
+    }
+  };
+  const StepList = ({ title, steps }) => steps.length ? <div className="mt-2 space-y-1" aria-live="polite"><p className="text-[10px] font-extrabold" style={{ color: INK }}>{title}</p>{steps.map((step, index) => <div key={`${title}-${step.stage || "step"}-${index}`} className="rounded-lg px-2 py-1.5 text-[10px] leading-relaxed" style={{ backgroundColor: step.success ? GOOD_S : BAD_S, color: step.success ? GOOD : BAD }}><p className="font-extrabold">{step.stage || "unknown"} · {step.success ? "성공" : "실패"}</p><p className="break-words">{String(step.domain || "-")} · {String(step.code ?? "-")} · {String(step.localizedDescription || "-")}</p>{(step.averagePower !== undefined || step.fileBytes !== undefined) && <p>{step.averagePower !== undefined ? `${Number(step.averagePower).toFixed(1)}dB · ` : ""}{step.fileBytes !== undefined ? `${step.fileBytes} bytes` : ""}</p>}</div>)}</div> : null;
+  if (!Capacitor.isNativePlatform() || Capacitor.getPlatform() !== "ios") return <p style={{ fontSize: 10, color: SUB }}>iOS 실기기에서만 실행할 수 있습니다.</p>;
+  return <div className="mt-3 rounded-lg p-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}><p style={{ fontSize: 11, fontWeight: 700, color: INK }}>iOS 미디어 진단</p><div className="mt-2 grid grid-cols-2 gap-1.5"><button type="button" onClick={runMicrophoneTest} disabled={microphoneTest.status === "running" || cameraTest.status === "running"} className="min-h-11 rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: TINT, color: BRAND_D }}>{microphoneTest.status === "running" ? "마이크 테스트 중…" : "마이크 테스트"}</button><button type="button" onClick={runCameraTest} disabled={cameraTest.status === "running" || microphoneTest.status === "running"} className="min-h-11 rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: TINT, color: BRAND_D }}>{cameraTest.status === "running" ? "카메라 테스트 중…" : "카메라 테스트"}</button></div><StepList title="마이크" steps={microphoneTest.steps} /><StepList title="카메라" steps={cameraTest.steps} /></div>;
+}
+
 function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId = null, memberName = "회원", lessonId = null, onDirectEntry = null, onLater = null, onClose = null, onDeferred = null }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const [on, setOn] = useState(false);
@@ -9866,9 +9950,10 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
   const [summaryError, setSummaryError] = useState("");
   const [summaryFailureClass, setSummaryFailureClass] = useState("");
   const [summaryFailure, setSummaryFailure] = useState(null);
+  const [organizationTimedOut, setOrganizationTimedOut] = useState(false);
   const [summaryEditing, setSummaryEditing] = useState(false);
   const [showValueGuide, setShowValueGuide] = useState(() => shouldShowLessonRecordGuide(globalThis.localStorage));
-  useEffect(() => { setSummaryFailure(null); }, [text]);
+  useEffect(() => { setSummaryFailure(null); setOrganizationTimedOut(false); }, [text]);
   const boxRef = useRef(null);
   useEffect(() => {
     if (!highlight || !boxRef.current) return;
@@ -9913,6 +9998,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
   const recordingActiveRef = useRef(false);
   const backgroundStopRef = useRef(false);
   const publishedDraftSignatureRef = useRef("");
+  const organizationTimeoutRef = useRef(null);
   const voiceDiagnostic = (event, details = {}) => appendVoiceSessionDiagnostic(event, {
     source: details.source || sourceRef.current || "unknown",
     ...details,
@@ -10184,6 +10270,30 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     }
     return descriptor;
   };
+  useEffect(() => {
+    if (organizationTimeoutRef.current) {
+      window.clearTimeout(organizationTimeoutRef.current);
+      organizationTimeoutRef.current = null;
+    }
+    if (!(summaryBusy || finishing) || summaryDraft || summaryFailure) return undefined;
+    organizationTimeoutRef.current = window.setTimeout(() => {
+      organizationTimeoutRef.current = null;
+      const timeoutError = { code: "organization_timeout", transportCode: "E-TIMEOUT", retryable: true };
+      setOrganizationTimedOut(true);
+      setSummaryBusy(false);
+      setFinishing(false);
+      setSilenceNotice("");
+      setSummaryError("정리 실패 · 자동 재시도");
+      setSummaryFailure({ title: "정리 실패 · 자동 재시도", category: "TIMEOUT", internalCode: "organization_timeout" });
+      setSummaryFailureClass("TIMEOUT");
+      scheduleLessonRecordRetry(memberId, lessonId, timeoutError);
+      voiceDiagnostic("failed", { source: sourceRef.current || "server_audio", code: "organization_timeout", delayMs: VOICE_ORGANIZING_TIMEOUT_MS });
+    }, VOICE_ORGANIZING_TIMEOUT_MS);
+    return () => {
+      if (organizationTimeoutRef.current) window.clearTimeout(organizationTimeoutRef.current);
+      organizationTimeoutRef.current = null;
+    };
+  }, [summaryBusy, finishing, summaryDraft, summaryFailure, memberId, lessonId]);
   const clearNativeListeners = () => {
     const listeners = nativeListenersRef.current.splice(0);
     listeners.forEach((listener) => {
@@ -10473,6 +10583,10 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       if (failed) setCameraTest((previous) => ({ ...previous, status: "failed" }));
     }
   };
+  // H-7 renders these controls only in the hidden settings diagnostics panel.
+  // Keep the established runner available here until the remaining voice
+  // recorder lifecycle is extracted from this component.
+  void microphoneTest; void cameraTest; void runMicrophoneTest; void runCameraTest;
   const mergeAudioStructuredDraft = (previous, next) => {
     if (!previous) return next;
     const fields = ["didToday", "observations", "responses", "nextFocus", "uncertain"];
@@ -10528,6 +10642,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       });
       setFinishing(false);
       setSummaryBusy(false);
+      setOrganizationTimedOut(false);
       setAudioBlobId(null);
       setAudioState("idle");
       setErr("말소리가 녹음되지 않았어요. 다시 말해주세요");
@@ -10559,6 +10674,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       setSummaryMeta(aiMeta);
       setSummaryStatus("review_required");
       setSummaryBusy(false);
+      setOrganizationTimedOut(false);
       setFinishing(false);
       setSummaryError("");
       setSummaryFailure(null);
@@ -10596,6 +10712,9 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     setSummaryMeta(aiMeta);
     setSummaryStatus(AI_STATUSES.DRAFT);
     setSummaryBusy(false);
+    setFinishing(false);
+    setOrganizationTimedOut(false);
+    setSilenceNotice("");
     setSummaryError("");
     setSummaryFailure(null);
     setAudioReviewFlags([]);
@@ -10628,6 +10747,9 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     setOn(false);
     setFinishing(true);
     setSummaryBusy(true);
+    setOrganizationTimedOut(false);
+    setSummaryFailure(null);
+    setSummaryError("");
     setSilenceNotice("음성 정리 대기");
     const amplitudeSamples = [...amplitudeSamplesRef.current];
     if (amplitudeTimerRef.current) clearInterval(amplitudeTimerRef.current);
@@ -11362,6 +11484,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     setSummaryDraft(null);
     setSummaryMeta(null);
     setSummaryBusy(true);
+    setOrganizationTimedOut(false);
     setSummaryError("");
     setSummaryFailureClass("");
     setSummaryFailure(null);
@@ -11447,6 +11570,8 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     finishing,
     organizing: summaryBusy,
     hasResult: !!summaryDraft,
+    summaryFailed: Boolean(summaryFailure || summaryError),
+    timedOut: organizationTimedOut,
     attempted: userAttemptedStart,
     error: err,
   });
@@ -11462,16 +11587,20 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
               <span className="h-2 w-2 animate-pulse rounded-full bg-white" /> {voiceTime(elapsed)} · 완료
             </button>
           </div>
-        ) : voicePhase === "preparing" ? (
+        ) : voicePhase === "waiting" && (starting || voiceAvailability === "checking") ? (
           <div className="flex shrink-0 gap-1.5">
             {userAttemptedStart && <button type="button" onClick={cancelRecording} className="min-h-11 rounded-full px-3 text-xs font-extrabold" style={{ backgroundColor: CARD, color: SUB, border: `1px solid ${LINE}` }}>취소</button>}
-            <button type="button" disabled className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-full px-3 py-2 text-xs font-extrabold text-white opacity-60" style={{ backgroundColor: BRAND }}><Loader2 size={12} className="animate-spin" /> 준비 중…</button>
+            <button type="button" disabled className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-full px-3 py-2 text-xs font-extrabold text-white opacity-60" style={{ backgroundColor: BRAND }}><Loader2 size={12} className="animate-spin" /> 대기 중…</button>
           </div>
         ) : voicePhase === "organizing" ? (
           <button type="button" disabled className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-full px-3 py-2 text-xs font-extrabold text-white opacity-60" style={{ backgroundColor: BRAND }}><Loader2 size={12} className="animate-spin" /> 정리 중…</button>
-        ) : ["permission_required", "permission_permanently_denied"].includes(voicePhase) ? (
+        ) : voicePhase === "result" ? (
+          <span className="flex min-h-11 shrink-0 items-center rounded-full px-3 text-xs font-extrabold" style={{ backgroundColor: GOOD_S, color: GOOD }}>결과</span>
+        ) : voicePhase === "failed" ? (
+          <span className="flex min-h-11 shrink-0 items-center rounded-full px-3 text-xs font-extrabold" style={{ backgroundColor: BAD_S, color: BAD }}>실패</span>
+        ) : voicePhase === "permission_required" ? (
           <button type="button" onClick={requestVoicePermission} className="min-h-11 shrink-0 rounded-full px-3 text-xs font-extrabold" style={{ backgroundColor: TINT, color: BRAND_D }}>권한 설정</button>
-        ) : voicePhase === "unsupported" ? null : text && VOICE_ENGINE_MODE === "server" ? (
+        ) : voiceAvailability === "unsupported" ? null : text && VOICE_ENGINE_MODE === "server" ? (
           <div className="flex shrink-0 gap-1">
             <button type="button" onClick={() => startServerRecording("append")} disabled={!supported || audioState === "saving"} aria-label="음성으로 이어서 말하기" className="min-h-11 rounded-full px-2.5 text-[11px] font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: BRAND }}>이어서 말하기</button>
             <button type="button" onClick={() => startServerRecording("replace")} disabled={!supported || audioState === "saving"} aria-label="음성 다시 말하기" className="min-h-11 rounded-full px-2.5 text-[11px] font-extrabold disabled:opacity-40" style={{ backgroundColor: CARD, color: BRAND_D, border: `1px solid ${LINE}` }}>다시 말하기</button>
@@ -11482,30 +11611,14 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
           </button>
         )}
       </div>
-      {backgroundInterrupted && voicePhase !== "listening" && <div role="status" className="mt-2 flex min-h-11 items-center gap-2 rounded-xl px-3 py-2" style={{ backgroundColor: WARN_S, border: `1px solid ${WARN}` }}><p className="min-w-0 flex-1 text-[11px] font-bold leading-relaxed" style={{ color: INK2 }}>{BACKGROUND_RECORDING_INTERRUPTED_MESSAGE}</p><button type="button" disabled={voicePhase === "organizing" || voicePhase === "preparing"} onClick={() => startServerRecording("append")} className="min-h-11 shrink-0 rounded-lg px-3 text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: CARD, color: BRAND_D }}>이어서 말하기</button></div>}
+      {backgroundInterrupted && voicePhase !== "listening" && <div role="status" className="mt-2 flex min-h-11 items-center gap-2 rounded-xl px-3 py-2" style={{ backgroundColor: WARN_S, border: `1px solid ${WARN}` }}><p className="min-w-0 flex-1 text-[11px] font-bold leading-relaxed" style={{ color: INK2 }}>{BACKGROUND_RECORDING_INTERRUPTED_MESSAGE}</p><button type="button" disabled={voicePhase === "organizing" || starting} onClick={() => startServerRecording("append")} className="min-h-11 shrink-0 rounded-lg px-3 text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: CARD, color: BRAND_D }}>이어서 말하기</button></div>}
       {replacementUndoVisible && <button type="button" onClick={restorePreviousRecording} className="mt-2 min-h-11 w-full rounded-xl text-xs font-extrabold" style={{ backgroundColor: WARN_S, color: WARN }}>이전 녹음 복원</button>}
-      {voicePhase === "permission_required" && <Sub className="mt-1.5 block leading-relaxed">말하기를 사용하려면 마이크 권한을 허용해 주세요.</Sub>}
-      {voicePhase === "permission_permanently_denied" && <Sub className="mt-1.5 block leading-relaxed">설정에서 마이크 권한을 켜주세요</Sub>}
-      {voicePhase === "unsupported" && <Sub className="mt-1.5 block leading-relaxed">이 기기에서는 말하기를 지원하지 않아 직접 입력으로 기록할 수 있어요.</Sub>}
-      {Capacitor.isNativePlatform() && Capacitor.getPlatform() === "ios" && <div className="mt-2 rounded-xl p-2.5" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
-        <div className="grid grid-cols-2 gap-1.5">
-          <button type="button" onClick={runMicrophoneTest} disabled={microphoneTest.status === "running" || cameraTest.status === "running" || on || starting || finishing} className="min-h-11 w-full rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: TINT, color: BRAND_D }}>{microphoneTest.status === "running" ? "마이크 테스트 중…" : "마이크 테스트"}</button>
-          <button type="button" onClick={runCameraTest} disabled={cameraTest.status === "running" || microphoneTest.status === "running" || on || starting || finishing} className="min-h-11 w-full rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: TINT, color: BRAND_D }}>{cameraTest.status === "running" ? "카메라 테스트 중…" : "카메라 테스트"}</button>
-        </div>
-        {microphoneTest.steps.length > 0 && <div className="mt-2 space-y-1" aria-live="polite">{microphoneTest.steps.map((step, index) => <div key={`${step.stage || "step"}-${index}`} className="rounded-lg px-2 py-1.5 text-[10px] leading-relaxed" style={{ backgroundColor: step.success ? GOOD_S : BAD_S, color: step.success ? GOOD : BAD }}>
-          <p className="font-extrabold">{step.stage || "unknown"} · {step.success ? "성공" : "실패"}</p>
-          {(step.domain || step.code !== undefined || step.localizedDescription) && <p className="break-words">{String(step.domain || "-")} · {String(step.code ?? "-")} · {String(step.localizedDescription || "-")}</p>}
-          {(step.isRecording !== undefined || step.averagePower !== undefined || step.fileExists !== undefined || step.fileBytes !== undefined) && <p className="break-words">{step.sample ? `샘플 ${step.sample} · ` : ""}{step.isRecording !== undefined ? `recording ${step.isRecording} · ` : ""}{step.averagePower !== undefined ? `${Number(step.averagePower).toFixed(1)}dB · ` : ""}{step.fileExists !== undefined ? `file ${step.fileExists ? "있음" : "없음"} · ` : ""}{step.fileBytes !== undefined ? `${step.fileBytes} bytes` : ""}</p>}
-        </div>)}</div>}
-        {cameraTest.steps.length > 0 && <div className="mt-2 space-y-1" aria-live="polite">{cameraTest.steps.map((step, index) => <div key={`camera-${step.stage || "step"}-${index}`} className="rounded-lg px-2 py-1.5 text-[10px] leading-relaxed" style={{ backgroundColor: step.success ? GOOD_S : BAD_S, color: step.success ? GOOD : BAD }}>
-          <p className="font-extrabold">카메라 · {step.stage || "unknown"} · {step.success ? "성공" : "실패"}</p>
-          {(step.domain || step.code !== undefined || step.localizedDescription) && <p className="break-words">{String(step.domain || "-")} · {String(step.code ?? "-")} · {String(step.localizedDescription || "-")}</p>}
-        </div>)}</div>}
-      </div>}
+      {voicePhase === "permission_required" && <Sub className="mt-1.5 block leading-relaxed">{voiceAvailability === "permission_permanently_denied" ? "설정에서 마이크 권한을 켜주세요" : "말하기를 사용하려면 마이크 권한을 허용해 주세요."}</Sub>}
+      {voiceAvailability === "unsupported" && <Sub className="mt-1.5 block leading-relaxed">이 기기에서는 말하기를 지원하지 않아 직접 입력으로 기록할 수 있어요.</Sub>}
       {voicePhase === "listening" && <Sub className="mt-1.5 block font-bold leading-relaxed" style={{ color: BRAND_D }}>듣고 있어요 · 잠시 생각하며 멈춰도 괜찮아요.</Sub>}
       {voicePhase === "listening" && VOICE_ENGINE_MODE === "server" && <div aria-label="마이크 음량" className="mt-2 flex h-8 items-center justify-center gap-1 overflow-hidden rounded-lg px-2" style={{ backgroundColor: CARD }}>{Array.from({ length: 18 }, (_, index) => { const wave = Math.max(0.12, amplitude * (0.45 + ((index * 7) % 10) / 10)); return <span key={index} className="w-1 rounded-full" style={{ height: `${Math.round(6 + wave * 20)}px`, backgroundColor: index % 3 === 0 ? BRAND : LAVENDER, transition: "height 100ms linear" }} />; })}</div>}
       {voicePhase === "organizing" && <Sub className="mt-1.5 block leading-relaxed">{silenceNotice || "마지막 음성을 정리하고 있습니다. 잠시만 기다려 주세요."}</Sub>}
-      {!text && ["idle", "permission_required", "permission_permanently_denied", "unsupported"].includes(voicePhase) && <div className="mt-3 rounded-xl p-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
+      {!text && ["waiting", "permission_required"].includes(voicePhase) && <div className="mt-3 rounded-xl p-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
         <p className="text-sm font-extrabold" style={{ color: INK }}>수업 내용을 편하게 말해주세요</p>
         <p className="mt-1 text-xs font-bold" style={{ color: BRAND_D }}>무엇을 말하면 되나요?</p>
         <div className="mt-2 grid grid-cols-2 gap-1.5">{["① 회원의 변화", "② 오늘 한 운동", "③ 회원 반응", "④ 다음 확인"].map((label) => <span key={label} className="rounded-lg px-2 py-2 text-[11px] font-bold" style={{ backgroundColor: CANVAS, color: INK2 }}>{label}</span>)}</div>
@@ -11515,7 +11628,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
         {showValueGuide && <div className="mt-3 rounded-lg px-3 py-2.5" style={{ backgroundColor: TINT }}><p className="text-[11px] font-extrabold" style={{ color: BRAND_D }}>이렇게 활용돼요</p><p className="mt-1 text-[10px] leading-relaxed" style={{ color: INK2 }}>저장된 변화·운동·반응·다음 계획을 바탕으로 다음 수업 전에 지난 기록을 이어서 보여드려요.</p></div>}
       </div>}
       {voicePhase === "failed" && <div role="alert" className="mt-2 rounded-xl p-3" style={{ backgroundColor: BAD_S, border: `1px solid ${BAD}` }}><p className="text-[11px] leading-relaxed" style={{ color: BAD }}>{err}</p><div className="mt-2 grid grid-cols-2 gap-1.5"><button type="button" onClick={start} className="h-11 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: BAD }}>다시 시도</button><button type="button" onClick={() => { setManualEntry(true); setErr(""); window.setTimeout(() => transcriptInputRef.current?.focus(), 0); }} className="h-11 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: PRIMARY }}>직접 입력</button></div></div>}
-      {(text || manualEntry || audioState === "saved" || audioState === "saving") && !["preparing", "listening", "organizing"].includes(voicePhase) && (
+      {(text || manualEntry || audioState === "saved" || audioState === "saving") && !["listening", "organizing"].includes(voicePhase) && (
         <>
           {audioReviewFlags.includes("low_confidence") && <div role="status" className="mt-2 rounded-xl p-3" style={{ backgroundColor: WARN_S, border: `1px solid ${WARN}` }}><p className="text-xs font-extrabold" style={{ color: WARN }}>녹음 확인 필요</p><p className="mt-1 text-[11px] leading-relaxed" style={{ color: INK2 }}>정확하지 않을 수 있어요. 내용을 직접 수정한 뒤 저장해 주세요.</p></div>}
           {manualEntry ? <><textarea ref={transcriptInputRef} rows={4} value={text} onChange={(event) => { setText(event.target.value); textRef.current = event.target.value; if (audioReviewFlags.length) { setAudioReviewEdited(true); setAudioReviewFlags([]); } setSummaryOriginal(null); setSummaryDraft(null); setSummaryMeta(null); setSummaryError(""); setSummaryFailureClass(""); setSummaryEditing(false); setSummaryStatus(AI_STATUSES.NOT_CONNECTED); }} aria-label="직접 입력하는 수업 내용" placeholder="수업 내용과 회원 반응을 입력하세요" className={`${inputCls} mt-2 h-auto resize-none py-2 text-sm leading-relaxed`} /><button type="button" disabled={!text.trim()} onClick={applyCurrentRecord} className="mt-2 h-11 w-full rounded-xl text-xs font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: BRAND }}>저장</button></> : text && <div className="mt-2 rounded-xl p-3" aria-label="말한 수업 내용" style={{ backgroundColor: CANVAS, border: `1px solid ${LINE}` }}><p className="text-[10px] font-extrabold" style={{ color: SUB }}>{summaryDraft ? "말한 내용" : summaryError ? "선생님 기록" : "음성 기록"}</p><p className="mt-1 whitespace-pre-wrap text-xs leading-relaxed" style={{ color: INK2 }}>{text}</p></div>}
@@ -12816,6 +12929,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
               <p className="mt-1 break-all" style={{ fontSize: 9, lineHeight: 1.45, color: SUB }}>Gateway: {aiProvider.getStatus().gatewayUrl || "미설정"}</p>
               <button type="button" aria-label="진단 보내기" disabled={diagnosticSending} onClick={sendRemoteDiagnostics} className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 rounded-lg text-xs font-extrabold text-white disabled:opacity-45" style={{ backgroundColor: BRAND }}>{diagnosticSending ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}진단 보내기</button>
               <p className="mt-1.5" style={{ fontSize: 9, lineHeight: 1.45, color: SUB }}>최근 진단 50건과 앱·기기 정보만 전송합니다. 음성·말한 내용은 보내지 않습니다.</p>
+              <IOSMediaDiagnosticPanel memberId={account?.id || "diagnostics"} lessonId="hidden-diagnostics" />
               <div className="mt-2 space-y-1">{diagnosticRecordSources.map((record, index) => <p key={`${record.at}-${index}`} className="tabular-nums" style={{ fontSize: 9, color: SUB }}>기록 {index + 1} · {diagnosticLocalTime(record.at)} · {record.status} · source={record.source} · date={record.dateSource}</p>)}</div>
               <p className="mt-3" style={{ fontSize: 10, fontWeight: 700, color: INK }}>음성 세션 최근 30건</p>
               <div className="mt-1.5 space-y-1">{voiceSessionDiagnostics.map((item, index) => <p key={`${item.at}-${index}`} className="break-all tabular-nums" style={{ fontSize: 9, lineHeight: 1.45, color: ["error", "failed"].includes(item.event) ? BAD : SUB }}>{item.localTime || diagnosticLocalTime(item.at)} · {item.event} · {item.source}{item.code ? ` · ${item.code}` : ""}{item.reason ? ` · ${item.reason}` : ""}{item.seconds != null ? ` · ${item.seconds}s` : ""}{item.speechSeconds != null ? ` · speech ${item.speechSeconds}s` : ""}{item.trimmedMs != null ? ` · trim ${item.trimmedMs}ms` : ""}{item.captureLatencyMs != null ? ` · capture ${item.captureLatencyMs}ms` : ""}{item.flags?.length ? ` · ${item.flags.join(",")}` : ""}{item.bytes != null ? ` · ${Math.round(item.bytes / 1024)}KB` : ""}{item.durationMs != null ? ` · ${item.durationMs}ms` : ""}{item.requestId ? ` · ${item.requestId.slice(-8)}` : ""}{item.attempt != null ? ` · attempt ${item.attempt}` : ""}{item.delayMs != null ? ` · ${item.delayMs}ms` : ""}</p>)}</div>

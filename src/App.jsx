@@ -361,6 +361,10 @@ const DEVICE_LOG_FIELDS = new Set([
   "secondaryAudioShouldBeSilencedHint", "otherSessionOwner", "inputAvailable", "routeInputs", "routeOutputs", "voiceEngine",
   "prepareToRecord", "recordingSettings", "fileURL", "fileExistedBefore", "previousRecorderAlive",
   "millisecondsSinceLastStop", "sessionInterrupted", "attempt", "shouldResume", "width", "height", "bytes",
+  "fileExists", "fileBytes", "isRecording", "averagePower", "sample", "ready", "outputsPrepared",
+  "photoOutputAvailable", "photoOutputAttached", "photoConnectionAvailable", "photoConnectionEnabled",
+  "sessionRunning", "previewLayerAttached", "firstFrameReceived", "previewAttached", "previewX", "previewY",
+  "previewWidth", "previewHeight", "previewZIndex", "previewBackgroundAlpha", "parentBackgroundAlpha", "webViewOpaque",
 ]);
 const deviceLog = (event, details = {}) => {
   try {
@@ -376,6 +380,19 @@ const cameraPipelineLog = (stage, details = {}) => {
   const source = details.source || "camera";
   appendVoiceSessionDiagnostic(stage, { ...details, source, phase: stage });
   deviceLog(`posture_camera_${stage}`, { ...details, source, stage });
+};
+const waitForCameraPhotoOutput = async ({ timeoutMs = 1500, pollMs = 100 } = {}) => {
+  const startedAt = Date.now();
+  let state = { ready: typeof CameraPreview.getPilaTeacherCameraState !== "function" };
+  while (Date.now() - startedAt <= timeoutMs) {
+    if (typeof CameraPreview.getPilaTeacherCameraState !== "function") return state;
+    try { state = await CameraPreview.getPilaTeacherCameraState(); } catch (error) {
+      state = { ready: false, code: error?.code || "camera_state_failed", message: error?.message || String(error) };
+    }
+    if (state?.ready) return state;
+    await new Promise((resolve) => window.setTimeout(resolve, pollMs));
+  }
+  return state;
 };
 const deviceError = (error) => ({
   code: error?.code || error?.name || "unknown",
@@ -3143,7 +3160,7 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
                 {recordMode && (
                   <div className="space-y-2 rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
                     {recordFallback && <p role="status" className="rounded-lg px-3 py-2 text-xs font-bold" style={{ backgroundColor: WARN_S, color: WARN }}>{recordFallback}</p>}
-                    {recordMode === "voice" && <VoiceNote memberId={activeMemberId} memberName={activeMember?.name || "회원"} lessonId={draft.id} onLater={() => setRecordMode(null)} onDeferred={onClose} onDirectEntry={(message) => { setRecordFallback(message || "음성 인식을 사용할 수 없어 직접 입력으로 전환했습니다."); setRecordMode("write"); }} onDraftChange={(text, meta, options) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, options)} onApply={async (text, meta) => { const stored = await onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, { confirmed: true, upsert: true }); if (stored !== false) onClose(); }} />}
+                    {recordMode === "voice" && <VoiceNote memberId={activeMemberId} memberName={activeMember?.name || "회원"} lessonId={draft.id} onLater={() => setRecordMode(null)} onClose={onClose} onDeferred={onClose} onDirectEntry={(message) => { setRecordFallback(message || "음성 인식을 사용할 수 없어 직접 입력으로 전환했습니다."); setRecordMode("write"); }} onDraftChange={(text, meta, options) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, options)} onApply={(text, meta) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, { confirmed: true, upsert: true })} />}
                     {recordMode === "write" && <><textarea rows={4} value={recordBody} onChange={(e) => setRecordBody(e.target.value)} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} /><button disabled={!recordBody.trim()} onClick={async () => { const stored = await onSaveNote?.(activeMemberId, draft.type, draft.id, recordBody.trim(), null); if (stored !== false) onClose(); }} className="h-11 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35" style={{ backgroundColor: PRIMARY }}>저장</button></>}
                   </div>
                 )}
@@ -3240,7 +3257,7 @@ function ScheduleQueueSheet({ tasks, members, returnFocusRef, onClose, onNoComme
               </div>
               {recordMode && (
                 <div className="mt-3 space-y-2 rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
-                  {recordMode === "voice" && <VoiceNote memberId={task.a.memberId} memberName={memberName} lessonId={task.s.id} onLater={() => setRecordMode(null)} onDeferred={onClose} onDirectEntry={() => setRecordMode("write")} onDraftChange={(text, meta, options) => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, text, meta, options)} onApply={(text, meta) => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, text, meta, { confirmed: true, upsert: true })} />}
+                  {recordMode === "voice" && <VoiceNote memberId={task.a.memberId} memberName={memberName} lessonId={task.s.id} onLater={() => setRecordMode(null)} onClose={onClose} onDeferred={onClose} onDirectEntry={() => setRecordMode("write")} onDraftChange={(text, meta, options) => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, text, meta, options)} onApply={(text, meta) => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, text, meta, { confirmed: true, upsert: true })} />}
                   {recordMode === "write" && <><textarea rows={4} value={recordBody} onChange={(e) => setRecordBody(e.target.value)} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} /><button disabled={!recordBody.trim()} onClick={() => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, recordBody.trim(), null)} className="h-11 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35" style={{ backgroundColor: PRIMARY }}>저장 · 다음</button></>}
                 </div>
               )}
@@ -4521,7 +4538,7 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
         <p style={{ fontSize: 11, lineHeight: 1.5, color: SUB }}>홀딩은 예정된 수업을 자동 취소하지 않습니다. 일정 탭에서 직접 확인해 주세요.</p>
         <button type="button" disabled={!hold.start || !hold.end || hold.end < hold.start} onClick={() => { const days = Math.max(0, Math.round((new Date(`${hold.end}T00:00:00`).getTime() - new Date(`${hold.start}T00:00:00`).getTime()) / 86400000)); onPatch({ status: "hold", holdFrom: hold.start, holdUntil: hold.end, holdReason: hold.reason.trim(), holdExtendDays: hold.extend ? days : 0, contractEnd: hold.extend && member.contractEnd ? shift(member.contractEnd, days) : member.contractEnd }); setSheet(null); }} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>홀딩 시작</button>
       </div></Sheet>}
-      {(sheet === "memo" || sheet === "record") && <Sheet title={sheet === "memo" ? "상담 메모 추가" : "수업 기록"} onClose={() => setSheet(null)}><div className="space-y-2">{sheet === "record" && <VoiceNote memberId={member.id} memberName={member.name || "회원"} onDeferred={() => setSheet(null)} onDraftChange={(text, meta, options) => onSaveNote("개인레슨", text, meta, options)} onApply={async (text, meta) => { const stored = await onSaveNote("개인레슨", text, meta, { confirmed: true, upsert: true }); if (stored !== false) setSheet(null); }} />}{sheet === "memo" && <><button type="button" aria-pressed={memoImportant} onClick={() => setMemoImportant((value) => !value)} className="flex h-10 w-full items-center gap-2 px-3" style={{ borderRadius: 8, backgroundColor: memoImportant ? WARN_S : CANVAS, color: memoImportant ? WARN : SUB, fontSize: 12, fontWeight: 700 }}><Star size={14} fill={memoImportant ? "currentColor" : "none"} />중요 메모로 상단 고정</button><textarea autoFocus rows={5} value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="내용을 입력하세요" className={`${inputCls} h-auto resize-none py-3`} />{saveError && <p role="alert" style={{ fontSize: 11, color: BAD }}>{saveError}</p>}<button type="button" aria-busy={saving === sheet} disabled={!memo.trim() || saving === sheet} onClick={commitNote} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>{saving === sheet ? "저장 중…" : "저장"}</button></>}</div></Sheet>}
+      {(sheet === "memo" || sheet === "record") && <Sheet title={sheet === "memo" ? "상담 메모 추가" : "수업 기록"} onClose={() => setSheet(null)}><div className="space-y-2">{sheet === "record" && <VoiceNote memberId={member.id} memberName={member.name || "회원"} onClose={() => setSheet(null)} onDeferred={() => setSheet(null)} onDraftChange={(text, meta, options) => onSaveNote("개인레슨", text, meta, options)} onApply={(text, meta) => onSaveNote("개인레슨", text, meta, { confirmed: true, upsert: true })} />}{sheet === "memo" && <><button type="button" aria-pressed={memoImportant} onClick={() => setMemoImportant((value) => !value)} className="flex h-10 w-full items-center gap-2 px-3" style={{ borderRadius: 8, backgroundColor: memoImportant ? WARN_S : CANVAS, color: memoImportant ? WARN : SUB, fontSize: 12, fontWeight: 700 }}><Star size={14} fill={memoImportant ? "currentColor" : "none"} />중요 메모로 상단 고정</button><textarea autoFocus rows={5} value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="내용을 입력하세요" className={`${inputCls} h-auto resize-none py-3`} />{saveError && <p role="alert" style={{ fontSize: 11, color: BAD }}>{saveError}</p>}<button type="button" aria-busy={saving === sheet} disabled={!memo.trim() || saving === sheet} onClick={commitNote} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>{saving === sheet ? "저장 중…" : "저장"}</button></>}</div></Sheet>}
       {sheet === "record-review" && reviewDraft && <Sheet title="AI 수업기록 확인" sub="확인은 선택입니다. 정리된 기록은 이미 저장되어 있어요." onClose={() => setSheet(null)}><div className="space-y-3"><div className="grid grid-cols-2 gap-2">{[{ k: "didToday", l: "오늘 수업" }, { k: "observations", l: "변화" }, { k: "responses", l: "회원 반응" }, { k: "nextFocus", l: "다음 확인" }].map((field) => <div key={field.k} className="rounded-xl p-3" style={{ backgroundColor: CANVAS }}><p className="text-[10px] font-extrabold" style={{ color: SUB }}>{field.l}</p>{reviewEditing ? <textarea rows={2} aria-label={`${field.l} 수정`} value={structuredFieldText(reviewDraft, field.k)} onChange={(event) => setReviewDraft((current) => editStructuredField(current, field.k, event.target.value))} className={`${inputCls} mt-1 h-auto resize-none py-2 text-xs`} /> : <p className="mt-1 text-xs font-bold leading-relaxed" style={{ color: INK2 }}>{prepText(reviewDraft[field.k], "기록 없음")}</p>}</div>)}</div><div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => setReviewEditing((value) => !value)} className="h-12 rounded-xl text-sm font-extrabold" style={{ backgroundColor: CANVAS, color: BRAND_D }}>{reviewEditing ? "수정 닫기" : "수정"}</button><button type="button" onClick={confirmRecordReview} className="h-12 rounded-xl text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>확인</button></div></div></Sheet>}
       {sheet === "memos-all" && <Sheet title="상담 메모 전체 보기" onClose={() => setSheet(null)}><div className="space-y-2">{consultationNotes.length ? consultationNotes.map((note) => <div key={note.id} style={{ padding: 10, borderRadius: 8, backgroundColor: note.important ? WARN_S : CANVAS }}><p style={{ fontSize: 10, color: SUB }}>{ymd(note.date)}{note.important ? " · 중요 메모" : ""}</p><p className="mt-1" style={{ fontSize: 12, lineHeight: 1.5, color: INK2 }}>{note.body}</p></div>) : <p style={{ fontSize: 12, color: SUB }}>등록된 상담 메모가 없습니다</p>}<button type="button" onClick={openMemo} className="h-11 w-full text-xs font-bold" style={{ borderRadius: 8, backgroundColor: TINT, color: BRAND_D }}>메모 추가</button></div></Sheet>}
       {sheet === "records-all" && <Sheet title="수업 기록 전체 보기" onClose={() => setSheet(null)}><div className="space-y-2">{lessonNotes.length ? lessonNotes.map((note) => <div key={note.id} style={{ padding: 10, borderRadius: 8, backgroundColor: CANVAS }}><p style={{ fontSize: 10, color: SUB }}>{ymd(note.date)} · {note.type || "수업"}</p><p className="mt-1" style={{ fontSize: 12, lineHeight: 1.5, color: INK2 }}>{note.body}</p></div>) : <p style={{ fontSize: 12, color: SUB }}>아직 작성된 수업 기록이 없습니다</p>}</div></Sheet>}
@@ -6372,7 +6389,9 @@ function PostureCaptureScreen({
   const motionReadingTimeout = useRef(null);
   const countdownTimer = useRef(null);
   const pendingCaptureRef = useRef(null);
+  const cameraPhotoReadyRef = useRef(false);
   const [cameraStatus, setCameraStatus] = useState("idle");
+  const [cameraPhotoReady, setCameraPhotoReady] = useState(false);
   const [cameraError, setCameraError] = useState("");
   const [previewRect, setPreviewRect] = useState(null);
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
@@ -6440,6 +6459,8 @@ function PostureCaptureScreen({
     clearCountdown();
     captureRunning.current = false;
     cameraStarting.current = false;
+    cameraPhotoReadyRef.current = false;
+    if (mounted.current) setCameraPhotoReady(false);
     if (nativePreviewAvailable) {
       try {
         await CameraPreview.stop({ force: true });
@@ -6610,6 +6631,8 @@ function PostureCaptureScreen({
       }
     };
     cameraStarting.current = true;
+    cameraPhotoReadyRef.current = false;
+    setCameraPhotoReady(false);
     setCameraStatus("starting");
     setCameraError("");
     const motionPromise = startMotion(generation);
@@ -6631,12 +6654,18 @@ function PostureCaptureScreen({
         document.documentElement.classList.add("posture-camera-native-active");
         await CameraPreview.start({
           position: "rear", toBack: true, aspectRatio: "4:3", aspectMode: "contain", positioning: "center",
-          storeToFile: false, disableAudio: true, rotateWhenOrientationChanged: true, lockAndroidOrientation: false,
+          videoQuality: "4:3", enableVideoMode: false, storeToFile: false, disableAudio: true,
+          rotateWhenOrientationChanged: true, lockAndroidOrientation: false,
         });
         ensureCurrent();
         cameraRunning.current = true;
         await syncPreviewBounds();
         ensureCurrent();
+        const readiness = await waitForCameraPhotoOutput({ timeoutMs: 1500, pollMs: 100 });
+        cameraPipelineLog("photo_output_ready", { memberId: member?.id, assessmentId, view: activeView, source: "native_preview", ...readiness });
+        if (!readiness?.ready) throw Object.assign(new Error("native photo output was not ready within 1.5 seconds"), { code: "photo_output_not_ready", cameraState: readiness });
+        cameraPhotoReadyRef.current = true;
+        setCameraPhotoReady(true);
       } else {
         if (!navigator.mediaDevices?.getUserMedia) throw Object.assign(new Error("getUserMedia unavailable"), { code: "unavailable" });
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -6722,6 +6751,11 @@ function PostureCaptureScreen({
     const captureSource = nativePreviewAvailable ? "native_preview" : "getUserMedia";
     cameraPipelineLog("capture_start", { memberId: captureMemberId, assessmentId: captureAssessmentId, view: captureView, source: captureSource });
     try {
+      if (nativePreviewAvailable && !cameraPhotoReadyRef.current) {
+        await stopCamera("photo_output_not_ready");
+        await captureWithSystemCamera("photo_output_not_ready");
+        return;
+      }
       let blob;
       let width;
       let height;
@@ -6746,14 +6780,24 @@ function PostureCaptureScreen({
       cameraPipelineLog("returned", { memberId: captureMemberId, assessmentId: captureAssessmentId, view: captureView, source: captureSource, state: "awaiting_confirmation" });
       deviceLog("posture_camera_photo_captured", { memberId: captureMemberId, assessmentId: captureAssessmentId, view: captureView, source: nativePreviewAvailable ? "native_preview" : "getUserMedia", state: "awaiting_confirmation" });
     } catch (error) {
+      deviceLog("posture_camera_capture_failed", { memberId: captureMemberId, assessmentId: captureAssessmentId, view: captureView, source: nativePreviewAvailable ? "native_preview" : "getUserMedia", ...deviceError(error) });
+      const photoOutputFailure = nativePreviewAvailable && /photo output|photo_output|not available/i.test(`${error?.code || ""} ${error?.message || ""}`);
+      if (photoOutputFailure) {
+        try {
+          await stopCamera("photo_output_failed");
+          await captureWithSystemCamera("photo_output_failed");
+          return;
+        } catch (fallbackError) {
+          deviceLog("posture_camera_fallback_failed", { memberId: captureMemberId, assessmentId: captureAssessmentId, view: captureView, source: "capacitor_camera", ...deviceError(fallbackError) });
+        }
+      }
       setCameraStatus(cameraRunning.current ? "active" : "error");
       setCameraError("사진 촬영에 실패했습니다. 기존 사진은 그대로 유지됩니다. 다시 시도해 주세요.");
-      deviceLog("posture_camera_capture_failed", { memberId: captureMemberId, assessmentId: captureAssessmentId, view: captureView, source: nativePreviewAvailable ? "native_preview" : "getUserMedia", ...deviceError(error) });
     } finally { captureRunning.current = false; }
-  }, [activeView, assessmentId, busy, member?.id, nativePreviewAvailable, previewRect, sensor, stopCamera]);
+  }, [activeView, assessmentId, busy, captureWithSystemCamera, member?.id, nativePreviewAvailable, previewRect, sensor, stopCamera]);
 
   const beginCountdown = () => {
-    if (countdown != null || captureRunning.current || cameraStatus !== "active") return;
+    if (countdown != null || captureRunning.current || cameraStatus !== "active" || (nativePreviewAvailable && !cameraPhotoReadyRef.current)) return;
     if (timerSeconds === 0) { captureNow(); return; }
     let remaining = timerSeconds;
     setCountdown(remaining);
@@ -6912,7 +6956,7 @@ function PostureCaptureScreen({
         ) : (
           <div className="relative flex items-center justify-between gap-3 pb-1">
             <button type="button" onClick={async () => { await stopCamera("album"); onOpenAlbum(activeView); }} disabled={countdown != null || busy} className="flex h-11 w-16 flex-col items-center justify-center gap-0.5 rounded-xl text-[10px] font-bold disabled:opacity-40" style={{ backgroundColor: "rgba(255,255,255,.10)" }}><ImagePlus size={16} />앨범</button>
-            <button type="button" onClick={beginCountdown} disabled={cameraStatus !== "active" || countdown != null || busy} className="flex h-[66px] w-[66px] shrink-0 items-center justify-center rounded-full disabled:opacity-40" style={{ border: "4px solid #fff", backgroundColor: "rgba(255,255,255,.22)", boxShadow: "0 0 0 2px rgba(255,255,255,.18)" }} aria-label={`${timerSeconds ? `${timerSeconds}초 후` : "즉시"} 촬영`}><span className="h-[48px] w-[48px] rounded-full bg-white" /></button>
+            <button type="button" onClick={beginCountdown} disabled={cameraStatus !== "active" || (nativePreviewAvailable && !cameraPhotoReady) || countdown != null || busy} className="flex h-[66px] w-[66px] shrink-0 items-center justify-center rounded-full disabled:opacity-40" style={{ border: "4px solid #fff", backgroundColor: "rgba(255,255,255,.22)", boxShadow: "0 0 0 2px rgba(255,255,255,.18)" }} aria-label={`${timerSeconds ? `${timerSeconds}초 후` : "즉시"} 촬영`}><span className="h-[48px] w-[48px] rounded-full bg-white" /></button>
             <div className="relative"><button type="button" onClick={() => setTimerOpen((value) => !value)} disabled={countdown != null || busy} className="flex h-11 w-16 flex-col items-center justify-center gap-0.5 rounded-xl text-[10px] font-bold disabled:opacity-40" style={{ backgroundColor: "rgba(255,255,255,.10)" }}><Clock size={16} />{timerSeconds === 0 ? "즉시" : `${timerSeconds}초`}</button>{timerOpen && <div className="absolute bottom-14 right-0 grid w-[188px] grid-cols-4 gap-1 rounded-xl p-2" style={{ backgroundColor: "#202631", boxShadow: "0 12px 32px rgba(0,0,0,.42)" }}>{CAPTURE_TIMER_OPTIONS.map((seconds) => <button type="button" key={seconds} onClick={() => chooseTimer(seconds)} className="h-9 rounded-lg text-[11px] font-bold" style={{ backgroundColor: timerSeconds === seconds ? "#4C4399" : "rgba(255,255,255,.08)" }}>{seconds === 0 ? "즉시" : `${seconds}초`}</button>)}</div>}</div>
           </div>
         )}
@@ -9433,33 +9477,37 @@ function ReferenceAnalysisTab({ members, photos, selectedId, selectedPoseId, onS
     && (filter === "all" || filter === "comparable" ? (filter === "all" || x.comparable) : x.status === filter))
     .sort((a, b) => String(b.last?.completedAt || b.last?.at || "").localeCompare(String(a.last?.completedAt || a.last?.at || "")) || String(a.m.name).localeCompare(String(b.m.name), "ko"));
   const member = members.find((m) => m.id === selectedId) || null;
-  if (member) {
-    return (
-      <div className="flex h-full min-h-0 flex-col" style={{ backgroundColor: PAGE }}>
-        <header className="flex shrink-0 items-center" style={{ height: 52, padding: "0 8px", backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
-          <button type="button" onClick={() => onSelect(null)} aria-label="체형분석 목록" className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={19} /></button>
-           <div className="min-w-0 flex-1"><h1 className="truncate" style={{ fontSize: 17, fontWeight: 700, color: INK }}>{member.name} 체형분석</h1></div>
-        </header>
-        <main className="pt-scroll min-h-0 flex-1 overflow-y-auto" style={{ padding: "10px 12px 18px" }}>{hub(member.id, selectedPoseId)}</main>
-      </div>
-    );
-  }
   const done = allRows.filter((r) => r.last).length;
-  return (
+  const listPane = (
     <div className="flex h-full min-h-0 flex-col" style={{ backgroundColor: PAGE }}>
       <header className="shrink-0" style={{ padding: "10px 14px 0", backgroundColor: PAGE }}>
         <h1 style={{ fontSize: 18, fontWeight: 700, color: INK }}>체형분석</h1>
-        <p style={{ marginTop: 3, marginBottom: 8, fontSize: 12.5, color: SUB }}>회원의 체형 변화를 기록하고 비교하세요.</p>
+        <p style={{ marginTop: 3, marginBottom: 8, fontSize: 12.5, color: SUB }}>회원의 체형 변화를 기록하고 비교하세요. · 완료 {done}명</p>
         <div className="relative"><Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: SUB }} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="회원 이름 검색" className="w-full pl-9 pr-3 text-sm outline-none" style={{ height: 44, borderRadius: 12, border: `1px solid ${LINE}`, backgroundColor: CARD, color: INK }} /></div>
         <div className="flex flex-wrap gap-1.5 py-2">{[{k:"all",l:"전체"},{k:"draft",l:"작성 중"},{k:"review",l:"검토 필요"},{k:"done",l:"완료"},{k:"comparable",l:"비교 가능"}].map((o) => <button type="button" key={o.k} onClick={() => setFilter(o.k)} className="shrink-0" style={{ minHeight: 36, padding: "0 11px", borderRadius: 999, border: `1px solid ${filter === o.k ? BRAND : LINE}`, backgroundColor: filter === o.k ? LAVENDER_S : CARD, color: filter === o.k ? BRAND_D : INK2, fontSize: 12, fontWeight: 600 }}>{o.l}</button>)}</div>
       </header>
       <main className="pt-scroll min-h-0 flex-1 overflow-y-auto" style={{ padding: "2px 14px 18px" }}>
         {!rows.length && <div className="py-12 text-center"><Activity size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-semibold" style={{ color: INK }}>조건에 맞는 회원이 없습니다</p></div>}
-        <div className="pt-analysis-card-grid">{rows.map(({ m, assessmentSets, last, draftCount, comparable, status }) => { const displayedViews = last?.selectedViews || POSTURE_VIEW_KEYS; const completedViews = new Set([...(last ? Object.keys(last.photos) : []), ...(last?.poses || []).map((pose) => normalizePostureView(pose.view))]); return <div key={m.id} className="relative" style={{ padding: "11px 12px", borderRadius: 14, backgroundColor: CARD, border: `1px solid ${LINE}` }}><button type="button" onClick={() => onSelect(m.id, null)} className="flex w-full items-center gap-2 text-left">
+        <div className="pt-analysis-card-grid">{rows.map(({ m, assessmentSets, last, draftCount, comparable, status }) => { const displayedViews = last?.selectedViews || POSTURE_VIEW_KEYS; const completedViews = new Set([...(last ? Object.keys(last.photos) : []), ...(last?.poses || []).map((pose) => normalizePostureView(pose.view))]); const active = m.id === selectedId; return <div key={m.id} className="relative" style={{ padding: "11px 12px", borderRadius: 14, backgroundColor: active ? LAVENDER_S : CARD, border: `1px solid ${active ? BRAND : LINE}` }}><button type="button" onClick={() => onSelect(m.id, null)} className="flex w-full items-center gap-2 text-left">
           <span className="min-w-0 flex-1"><span className="flex items-center gap-1.5"><span className="block max-w-[44%] truncate" style={{ fontSize: 14, fontWeight: 600, color: INK }}>{m.name}</span>{status !== "none" && <span style={{ padding: "2px 6px", borderRadius: 6, backgroundColor: status === "review" ? WARN_S : status === "done" ? GOOD_S : CANVAS, color: status === "review" ? WARN : status === "done" ? GOOD : INK2, fontSize: 10, fontWeight: 600 }}>{status === "review" ? "검토 필요" : status === "done" ? "완료" : "작성 중"}</span>}{comparable && <span style={{ padding: "2px 6px", borderRadius: 6, backgroundColor: TINT, color: BRAND_D, fontSize: 10, fontWeight: 600 }}>비교 가능</span>}</span><span className="mt-1 flex items-center gap-2" style={{ fontSize: 11, color: SUB }}><span>{last ? `최근 ${ymd((last.completedAt || last.at).slice(0, 10))}` : "아직 체형분석 이력이 없어요"}</span><span className="flex items-center gap-1" aria-label={`촬영 등록 ${last ? completedViews.size : draftCount}/${displayedViews.length}`}>{displayedViews.map((view) => <i key={view} aria-hidden="true" style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: (last ? completedViews.has(view) : (photos[m.id]?.[view] || []).length > 0) ? BRAND : "#D5DAE3" }} />)}<span>{last ? completedViews.size : draftCount}/{displayedViews.length}</span></span>{last && <span>세트 {assessmentSets.length}개</span>}</span></span>
           <ChevronRight size={15} style={{ color: FAINT }} />
         </button>{!last && <button type="button" onClick={() => onSelect(m.id, null)} className="mt-2 w-full" style={{ height: 38, borderRadius: 8, border: `1px solid #D5D1EB`, backgroundColor: TINT, color: BRAND_D, fontSize: 12, fontWeight: 600 }}>첫 체형분석 시작</button>}</div>; })}</div>
       </main>
+    </div>
+  );
+  if (!member) return listPane;
+  return (
+    <div className="pt-analysis-detail-active h-full min-h-0">
+      <div className="pt-analysis-list-pane h-full min-h-0">{listPane}</div>
+      <div className="pt-analysis-detail-pane h-full min-h-0">
+        <div className="flex h-full min-h-0 flex-col" style={{ backgroundColor: PAGE }}>
+          <header className="flex shrink-0 items-center" style={{ height: 52, padding: "0 8px", backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
+            <button type="button" onClick={() => onSelect(null)} aria-label="체형분석 목록" className="pt-analysis-back flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={19} /></button>
+            <div className="min-w-0 flex-1"><h1 className="truncate" style={{ fontSize: 17, fontWeight: 700, color: INK }}>{member.name} 체형분석</h1></div>
+          </header>
+          <main className="pt-scroll min-h-0 flex-1 overflow-y-auto" style={{ padding: "10px 12px 18px" }}>{hub(member.id, selectedPoseId)}</main>
+        </div>
+      </div>
     </div>
   );
 }
@@ -9789,7 +9837,7 @@ const voiceTime = (seconds) => `${String(Math.floor(seconds / 60)).padStart(2, "
 const lessonRecordLlm = new GatewayLlmProvider({ gatewayProvider: aiProvider, maxRetries: 1 });
 const AIRecordingStatusContext = createContext({ status: AI_RECORDING_STATUS.NORMAL, updateStatus: () => {} });
 
-function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId = null, memberName = "회원", lessonId = null, onDirectEntry = null, onLater = null, onDeferred = null }) {
+function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId = null, memberName = "회원", lessonId = null, onDirectEntry = null, onLater = null, onClose = null, onDeferred = null }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const [on, setOn] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -9909,6 +9957,11 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     millisecondsSinceLastStop: diagnostic?.millisecondsSinceLastStop,
     sessionInterrupted: diagnostic?.sessionInterrupted,
     attempt: diagnostic?.attempt,
+    fileExists: diagnostic?.fileExists,
+    fileBytes: diagnostic?.fileBytes,
+    isRecording: diagnostic?.isRecording,
+    averagePower: diagnostic?.averagePower,
+    sample: diagnostic?.sample,
   });
   useEffect(() => {
     if (!Capacitor.isNativePlatform() || Capacitor.getPlatform() !== "ios" || typeof CapacitorAudioRecorder.addListener !== "function") return undefined;
@@ -10303,6 +10356,8 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
           fileURL: step?.fileURL, fileExistedBefore: step?.fileExistedBefore,
           previousRecorderAlive: step?.previousRecorderAlive, millisecondsSinceLastStop: step?.millisecondsSinceLastStop,
           sessionInterrupted: step?.sessionInterrupted, attempt: step?.attempt,
+          fileExists: step?.fileExists, fileBytes: step?.fileBytes,
+          isRecording: step?.isRecording, averagePower: step?.averagePower, sample: step?.sample,
         });
       });
       setMicrophoneTest({ status: result?.ok ? "success" : "failed", steps });
@@ -10348,26 +10403,48 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       document.documentElement.classList.add("posture-camera-native-active");
       await CameraPreview.start({
         position: "rear", toBack: true, aspectRatio: "4:3", aspectMode: "contain", positioning: "center",
-        storeToFile: false, disableAudio: true, rotateWhenOrientationChanged: true, lockAndroidOrientation: false,
+        videoQuality: "4:3", enableVideoMode: false, storeToFile: false, disableAudio: true,
+        rotateWhenOrientationChanged: true, lockAndroidOrientation: false,
       });
       previewStarted = true;
       cameraPipelineLog("capture_start", { memberId, lessonId, source: "camera_test", state: "preview_started" });
       publishStep("capture_start", true, { localizedDescription: "preview started" });
-      const result = await CameraPreview.capture({
-        quality: 80, width: 720, height: 960, format: "jpeg", saveToGallery: false,
-        mirrorFrontCamera: false, photoQualityPrioritization: "balanced",
-      });
-      const base64 = String(result?.value || "").replace(/^data:[^;]+;base64,/, "");
+      const readiness = await waitForCameraPhotoOutput({ timeoutMs: 1500, pollMs: 100 });
+      cameraPipelineLog("photo_output_ready", { memberId, lessonId, source: "camera_test", ...readiness });
+      publishStep("photo_output_ready", Boolean(readiness?.ready), { code: readiness?.ready ? 0 : "photo_output_not_ready", localizedDescription: readiness?.ready ? "photo output and preview attached" : "native photo output was not ready within 1.5 seconds; using system camera" });
+      let base64 = "";
+      let captureSource = "camera_test";
+      if (readiness?.ready) {
+        const result = await CameraPreview.capture({
+          quality: 80, width: 720, height: 960, format: "jpeg", saveToGallery: false,
+          mirrorFrontCamera: false, photoQualityPrioritization: "balanced",
+        });
+        base64 = String(result?.value || "").replace(/^data:[^;]+;base64,/, "");
+      } else {
+        await CameraPreview.stop({ force: true });
+        previewStarted = false;
+        document.documentElement.classList.remove("posture-camera-native-active");
+        cameraPipelineLog("preview_stopped", { memberId, lessonId, source: "camera_test", state: "before_system_fallback" });
+        const fallbackPhoto = await CapacitorCamera.getPhoto({
+          quality: 85, allowEditing: false, resultType: CameraResultType.Base64, source: CameraSource.Camera,
+          direction: CameraDirection.Rear, correctOrientation: true, saveToGallery: false, presentationStyle: "fullscreen",
+        });
+        base64 = String(fallbackPhoto?.base64String || "").replace(/^data:[^;]+;base64,/, "");
+        captureSource = "capacitor_camera_fallback";
+        publishStep("camera_fallback", true, { localizedDescription: "system camera returned a photo" });
+      }
       if (!base64) throw Object.assign(new Error("camera capture returned no image"), { code: "empty_capture" });
       const bytes = Math.floor((base64.length * 3) / 4);
-      cameraPipelineLog("captured", { memberId, lessonId, source: "camera_test", width: 720, height: 960, bytes });
+      cameraPipelineLog("captured", { memberId, lessonId, source: captureSource, width: 720, height: 960, bytes });
       publishStep("captured", true, { localizedDescription: `${bytes} bytes` });
       tempPath = `PilaTeacher/diagnostics/camera-test-${Date.now()}-${uid()}.jpg`;
       await Filesystem.writeFile({ path: tempPath, data: base64, directory: "CACHE", recursive: true });
       cameraPipelineLog("saved", { memberId, lessonId, source: "camera_test", storage: "cache", bytes });
       publishStep("saved", true, { localizedDescription: "temporary cache file saved" });
-      await CameraPreview.stop({ force: true });
-      previewStarted = false;
+      if (previewStarted) {
+        await CameraPreview.stop({ force: true });
+        previewStarted = false;
+      }
       document.documentElement.classList.remove("posture-camera-native-active");
       cameraPipelineLog("preview_stopped", { memberId, lessonId, source: "camera_test", state: "success" });
       publishStep("preview_stopped", true);
@@ -10417,6 +10494,10 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     window.dispatchEvent(new CustomEvent("pilateacher:toast", { detail: { ok: true, msg: message } }));
     if (typeof onDeferred === "function") onDeferred();
     else if (typeof onLater === "function") onLater();
+  };
+  const waitBeforeDeferredClose = async (startedAt) => {
+    const remaining = Math.max(0, SERVER_AUDIO_FOREGROUND_WAIT_MS - (Date.now() - startedAt));
+    if (remaining > 0) await new Promise((resolve) => window.setTimeout(resolve, remaining));
   };
   const promoteServerAudioResult = async (result, clip, previousDraft) => {
     const resultKind = String(result?.output?.result || "ok");
@@ -10608,11 +10689,13 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       });
       voiceDiagnostic("trimmed", { source: "server_audio", speechSeconds: trimPlan.speechSeconds, trimmedMs: trimPlan.trimmedMs, captureLatencyMs: captureLatencyMsRef.current });
       voiceDiagnostic("record_end", { source: "server_audio", reason, seconds: Math.round(durationMs / 1000), bytes: blob.size, speechSeconds: trimPlan.speechSeconds, trimmedMs: trimPlan.trimmedMs, captureLatencyMs: captureLatencyMsRef.current, flags: [] });
+      const foregroundStartedAt = Date.now();
       if (globalThis.navigator?.onLine === false) {
         setFinishing(false);
         setSummaryBusy(false);
         setSilenceNotice("연결되면 정리돼요.");
-        showDeferredToast("저장됨 · 연결되면 정리돼요");
+        await waitBeforeDeferredClose(foregroundStartedAt);
+        showDeferredToast("기록 저장됨 · AI가 정리 중");
         return;
       }
       const uploadPromise = uploadServerAudio(clip, pendingDraft).catch((error) => {
@@ -10626,13 +10709,14 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
         setFinishing(false);
         setSummaryBusy(false);
         setSilenceNotice("저장됨 · 정리 중");
-        showDeferredToast("저장됨 · 정리 중");
+        showDeferredToast("기록 저장됨 · AI가 정리 중");
         return;
       }
       if (foreground.error) {
         setFinishing(false);
         setSummaryBusy(false);
-        showDeferredToast("저장됨 · 정리 중");
+        await waitBeforeDeferredClose(foregroundStartedAt);
+        showDeferredToast("기록 저장됨 · AI가 정리 중");
       }
     } catch (error) {
       setFinishing(false);
@@ -11411,6 +11495,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
         {microphoneTest.steps.length > 0 && <div className="mt-2 space-y-1" aria-live="polite">{microphoneTest.steps.map((step, index) => <div key={`${step.stage || "step"}-${index}`} className="rounded-lg px-2 py-1.5 text-[10px] leading-relaxed" style={{ backgroundColor: step.success ? GOOD_S : BAD_S, color: step.success ? GOOD : BAD }}>
           <p className="font-extrabold">{step.stage || "unknown"} · {step.success ? "성공" : "실패"}</p>
           {(step.domain || step.code !== undefined || step.localizedDescription) && <p className="break-words">{String(step.domain || "-")} · {String(step.code ?? "-")} · {String(step.localizedDescription || "-")}</p>}
+          {(step.isRecording !== undefined || step.averagePower !== undefined || step.fileExists !== undefined || step.fileBytes !== undefined) && <p className="break-words">{step.sample ? `샘플 ${step.sample} · ` : ""}{step.isRecording !== undefined ? `recording ${step.isRecording} · ` : ""}{step.averagePower !== undefined ? `${Number(step.averagePower).toFixed(1)}dB · ` : ""}{step.fileExists !== undefined ? `file ${step.fileExists ? "있음" : "없음"} · ` : ""}{step.fileBytes !== undefined ? `${step.fileBytes} bytes` : ""}</p>}
         </div>)}</div>}
         {cameraTest.steps.length > 0 && <div className="mt-2 space-y-1" aria-live="polite">{cameraTest.steps.map((step, index) => <div key={`camera-${step.stage || "step"}-${index}`} className="rounded-lg px-2 py-1.5 text-[10px] leading-relaxed" style={{ backgroundColor: step.success ? GOOD_S : BAD_S, color: step.success ? GOOD : BAD }}>
           <p className="font-extrabold">카메라 · {step.stage || "unknown"} · {step.success ? "성공" : "실패"}</p>
@@ -11444,6 +11529,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
             {summaryView.narrative && <section className="rounded-lg p-3" style={{ backgroundColor: CANVAS }}><p className="text-xs font-extrabold" style={{ color: INK }}>{summaryView.narrativeLabel}</p><p className="mt-2 text-xs leading-relaxed" style={{ color: INK2 }}>{summaryView.narrative}</p></section>}
             {summaryEditing && <div className="space-y-2">{[{ k: "observations", l: "회원의 변화" }, { k: "didToday", l: "오늘 수업" }, { k: "responses", l: "회원 반응/특이사항" }, { k: "nextFocus", l: "다음 확인" }, { k: "uncertain", l: "확인이 필요한 내용" }].map((field) => <label key={field.k} className="block"><span className="mb-1 block text-[11px] font-bold" style={{ color: SUB }}>{field.l}</span><textarea rows={2} value={structuredFieldText(summaryDraft, field.k)} onChange={(event) => setSummaryField(field.k, event.target.value)} placeholder="한 줄에 한 항목" className={`${inputCls} h-auto resize-none py-2 text-xs`} /></label>)}</div>}
             <button type="button" onClick={() => setSummaryEditing((value) => !value)} className="h-11 w-full rounded-lg text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: PRIMARY }}>{summaryEditing ? "수정 닫기" : "수정"}</button>
+            {typeof onClose === "function" && <button type="button" onClick={onClose} className="h-11 w-full rounded-lg text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>닫기</button>}
           </div>}
         </>
       )}
@@ -14329,6 +14415,9 @@ export default function App() {
       .pt-member-detail-pane { display: none; }
       .pt-member-detail-active .pt-member-list-pane { display: none; }
       .pt-member-detail-active .pt-member-detail-pane { display: block; }
+      .pt-analysis-detail-pane { display: none; }
+      .pt-analysis-detail-active .pt-analysis-list-pane { display: none; }
+      .pt-analysis-detail-active .pt-analysis-detail-pane { display: block; }
       .pt-member-card-grid, .pt-analysis-card-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
       .pt-week-event-type { display: none; }
       .pt-week-day { font-size: 11px; }
@@ -14372,6 +14461,11 @@ export default function App() {
         .pt-member-detail-active .pt-member-list-pane { border-right: 1px solid var(--line); }
         .pt-member-detail-active .pt-member-card-grid { grid-template-columns: minmax(0, 1fr); }
         .pt-member-back { display: none !important; }
+        .pt-analysis-detail-active { display: grid; grid-template-columns: minmax(270px, 34%) minmax(0, 1fr); height: 100%; min-height: 0; }
+        .pt-analysis-detail-active .pt-analysis-list-pane, .pt-analysis-detail-active .pt-analysis-detail-pane { display: block; min-width: 0; min-height: 0; overflow: hidden; }
+        .pt-analysis-detail-active .pt-analysis-list-pane { border-right: 1px solid var(--line); }
+        .pt-analysis-detail-active .pt-analysis-card-grid { grid-template-columns: minmax(0, 1fr); }
+        .pt-analysis-back { display: none !important; }
         .pt-example-modal { align-items: center; padding: 24px; }
         .pt-example-modal > section { border-radius: 20px !important; }
         .safe-scroll { padding-left: 20px; padding-right: 20px; }
@@ -14381,6 +14475,8 @@ export default function App() {
         .pt-member-card-grid, .pt-analysis-card-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
         .pt-member-detail-active { grid-template-columns: minmax(320px, 31%) minmax(0, 1fr); }
         .pt-member-detail-active .pt-member-card-grid { grid-template-columns: minmax(0, 1fr); }
+        .pt-analysis-detail-active { grid-template-columns: minmax(320px, 31%) minmax(0, 1fr); }
+        .pt-analysis-detail-active .pt-analysis-card-grid { grid-template-columns: minmax(0, 1fr); }
       }
       @media (prefers-reduced-motion: reduce) { .app-root *, .splash-pop, .splash-fade { animation: none !important; transition: none !important } }
     `}</style>

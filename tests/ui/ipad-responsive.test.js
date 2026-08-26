@@ -21,11 +21,21 @@ test("tablet weekly schedule improves legibility without global scaling", () => 
   assert.doesNotMatch(source, /\.pt-app-shell[^}]*transform:\s*scale\(/);
 });
 
-test("tablet member and posture cards use 2/3 columns and member detail is split", () => {
+test("tablet member and posture cards use 2/3 columns and both detail screens are split", () => {
   assert.match(source, /\.pt-member-card-grid, \.pt-analysis-card-grid \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
   assert.match(source, /\.pt-member-card-grid, \.pt-analysis-card-grid \{ grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/);
   assert.match(source, /\.pt-member-detail-active \{ display: grid; grid-template-columns: minmax\(270px, 34%\) minmax\(0, 1fr\)/);
   assert.match(source, /\.pt-member-back \{ display: none !important; \}/);
+  assert.match(source, /\.pt-analysis-detail-active \{ display: grid; grid-template-columns: minmax\(270px, 34%\) minmax\(0, 1fr\)/);
+  assert.match(source, /\.pt-analysis-detail-active \.pt-analysis-list-pane, \.pt-analysis-detail-active \.pt-analysis-detail-pane \{ display: block/);
+  assert.match(source, /\.pt-analysis-back \{ display: none !important; \}/);
+  assert.match(source, /\.pt-analysis-detail-active \{ grid-template-columns: minmax\(320px, 31%\) minmax\(0, 1fr\)/);
+});
+
+test("posture capture remains a full viewport portal and comparison stays side by side", () => {
+  assert.match(source, /className="fixed inset-0 z-\[200\] flex flex-col overflow-hidden" style=\{\{ height: "100dvh"/);
+  assert.match(source, /createPortal\(screen, document\.body\)/);
+  assert.match(source, /screen === "compare"[\s\S]*grid grid-cols-2 gap-2/);
 });
 
 test("tablet event cells expose a second type line while phone keeps it hidden", () => {

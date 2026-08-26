@@ -1,5 +1,5 @@
 export const CAPTURE_TIMER_OPTIONS = Object.freeze([0, 3, 5, 10]);
-export const DEFAULT_CAPTURE_TIMER_SECONDS = 3;
+export const DEFAULT_CAPTURE_TIMER_SECONDS = 0;
 export const CAPTURE_TIMER_STORAGE_KEY = "pilateacher.posture.captureTimerSeconds";
 
 export const LEVEL_THRESHOLD_DEG = 4;

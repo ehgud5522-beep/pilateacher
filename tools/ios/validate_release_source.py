@@ -101,16 +101,26 @@ require("node tools/patch-camera-preview-ios-no-location.mjs" in postinstall,
         "camera preview no-location postinstall is missing")
 require("node tools/patch-camera-preview-ios-session-safety.mjs" in postinstall,
         "camera preview session-safety postinstall is missing")
+require("node tools/patch-camera-preview-ios-h6.mjs" in postinstall,
+        "camera preview H-6 readiness postinstall is missing")
 require("node tools/patch-firebase-auth-ios-first-login-profile.mjs" in postinstall,
         "Firebase Authentication first-login profile postinstall is missing")
 require("node tools/patch-audio-recorder-h5.mjs" in postinstall,
         "audio recorder H-5 postinstall is missing")
+require("node tools/patch-audio-recorder-h6.mjs" in postinstall,
+        "audio recorder H-6 postinstall is missing")
 require(postinstall.index("patch-camera-preview-ios-session-safety.mjs") >
         postinstall.index("patch-camera-preview-ios-no-location.mjs"),
         "camera preview session-safety patch does not run after its base patch")
 require(postinstall.index("patch-audio-recorder-h5.mjs") >
         postinstall.index("patch-audio-recorder-h4.mjs"),
         "audio recorder H-5 patch does not run after its H-4 prerequisite")
+require(postinstall.index("patch-camera-preview-ios-h6.mjs") >
+        postinstall.index("patch-camera-preview-ios-session-safety.mjs"),
+        "camera preview H-6 patch does not run after H-5 session safety")
+require(postinstall.index("patch-audio-recorder-h6.mjs") >
+        postinstall.index("patch-audio-recorder-h5.mjs"),
+        "audio recorder H-6 patch does not run after its H-5 prerequisite")
 
 capacitor_config = json.loads((root / "capacitor.config.json").read_text(encoding="utf-8"))
 auth_providers = capacitor_config.get("plugins", {}).get("FirebaseAuthentication", {}).get("providers", [])
@@ -156,6 +166,11 @@ require("AVSampleRateKey: 44_100.0" in audio_recorder and
 require("configureCategoryOnce" not in audio_recorder and
         "categoryConfigured" not in audio_recorder,
         "load-time audio category configuration remains installed")
+require("PILATEACHER_H6_INPUT_FILE_GUARDS" in audio_recorder and
+        "input_route_before_record" in audio_recorder and
+        "input_level_sample" in audio_recorder and
+        '"fileBytes": fileState.bytes' in audio_recorder,
+        "audio recorder H-6 route, level, or file guards are missing")
 
 camera_controller = (
     camera_sources / "CapgoCameraPreviewPlugin/CameraController.swift"
@@ -169,6 +184,11 @@ require("PILATEACHER_H5_CAMERA_SESSION_SAFETY" in camera_controller and
 require("requestPilaTeacherSafeCleanup" in camera_controller and
         "restorePilaTeacherAudioSessionAfterCamera" in camera_plugin,
         "camera teardown or audio-session restoration is missing")
+require("PILATEACHER_H6_PHOTO_OUTPUT_READINESS" in camera_controller and
+        "PILATEACHER_H6_PHOTO_OUTPUT_READINESS" in camera_plugin and
+        "getPilaTeacherCameraState" in camera_plugin and
+        "self.outputsPrepared = false" in camera_controller,
+        "camera preview H-6 output recreation or readiness diagnostics are missing")
 
 require(not (root / "ios/App/App/cert_key.pem").exists(),
         "cert_key.pem must not be bundled")
@@ -177,5 +197,7 @@ print("Firebase duplicate initialization guards: validated")
 print("Camera preview iOS location APIs: absent after deterministic patch")
 print("Audio recorder H-5 per-start session: validated")
 print("Camera preview H-5 teardown and audio isolation: validated")
+print("Audio recorder H-6 input levels and file bytes: validated")
+print("Camera preview H-6 photo output readiness and recreation: validated")
 print("Info.plist location permission keys: absent")
 print("ITSAppUsesNonExemptEncryption: Boolean false")

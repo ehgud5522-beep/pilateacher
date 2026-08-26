@@ -69,11 +69,11 @@ function fakeTimers() {
   };
 }
 
-test("timer preference accepts only 0, 3, 5, or 10 and safely defaults to 3", () => {
+test("timer preference accepts only 0, 3, 5, or 10 and safely defaults to immediate", () => {
   const storage = memoryStorage();
   assert.equal(normalizeCaptureTimer("5"), 5);
-  assert.equal(normalizeCaptureTimer(4), 3);
-  assert.equal(readCaptureTimer(storage), 3);
+  assert.equal(normalizeCaptureTimer(4), 0);
+  assert.equal(readCaptureTimer(storage), 0);
   assert.equal(writeCaptureTimer(storage, 10), 10);
   assert.equal(storage.value(CAPTURE_TIMER_STORAGE_KEY), "10");
   assert.equal(readCaptureTimer(storage), 10);
@@ -82,7 +82,7 @@ test("timer preference accepts only 0, 3, 5, or 10 and safely defaults to 3", ()
     getItem() { throw new Error("blocked"); },
     setItem() { throw new Error("blocked"); },
   };
-  assert.equal(readCaptureTimer(blocked), 3);
+  assert.equal(readCaptureTimer(blocked), 0);
   assert.equal(writeCaptureTimer(blocked, 5), 5);
 });
 

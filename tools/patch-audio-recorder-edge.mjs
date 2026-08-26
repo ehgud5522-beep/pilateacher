@@ -539,6 +539,9 @@ function patchIos(source) {
 }
 
 function patchDefinitions(source) {
+  if (source.includes("prepareRecording(options?: StartRecordingOptions)")
+      && source.includes("runMicrophoneTest()")
+      && source.includes("trimRecording(options:")) return source;
   let next = source;
   next = replaceOnce(next,
     "    Inactive = \"INACTIVE\",\n    Recording = \"RECORDING\",\n",

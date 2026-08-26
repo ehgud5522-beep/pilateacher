@@ -329,6 +329,57 @@ const assertOwnPhotoPath = (uid, photoId) => {
 
 const firestoreSafe = (value) => JSON.parse(JSON.stringify(value ?? null));
 
+const diagnosticDocumentId = (value) => String(value || "")
+  .replace(/[^A-Za-z0-9._:-]/g, "_")
+  .slice(0, 160);
+
+export async function fbSendDiagnosticReport(uid, report) {
+  const currentUid = auth?.currentUser?.uid;
+  const safeUid = String(uid || "").trim();
+  if (!fs || !safeUid || currentUid !== safeUid) throw Object.assign(new Error("Authentication is required."), { code: "auth/unauthenticated" });
+  const reportId = diagnosticDocumentId(String(Date.now()));
+  const payload = firestoreSafe(report || {});
+  await withAuthTimeout(
+    () => setDoc(doc(fs, "diagnostics", safeUid, "reports", reportId), {
+      ...payload,
+      uid: safeUid,
+      uploadedAt: serverTimestamp(),
+    }, { merge: false }),
+    { timeoutMs: FIRESTORE_WRITE_TIMEOUT_MS, provider: "firebase", stage: "diagnostic_report_write" },
+  );
+  return { reportId, path: `diagnostics/${safeUid}/reports/${reportId}` };
+}
+
+const pilotMetricDate = (date = new Date()) => {
+  try { return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit" }).format(date); }
+  catch (_error) { return date.toISOString().slice(0, 10); }
+};
+
+export async function fbWritePilotMetricAttempt(details = {}) {
+  const currentUid = auth?.currentUser?.uid;
+  const attemptId = diagnosticDocumentId(details.requestId);
+  if (!fs || !currentUid || !attemptId) return null;
+  const allowedFlags = new Set(["no_speech", "low_confidence", "tail_dropped"]);
+  const flags = [...new Set((details.flags || []).map((flag) => String(flag || "")).filter((flag) => allowedFlags.has(flag)))].slice(0, 3);
+  const result = ["ok", "no_speech", "low_confidence", "failed"].includes(details.result) ? details.result : "failed";
+  const payload = {
+    schemaVersion: 1,
+    uid: currentUid,
+    date: pilotMetricDate(),
+    result,
+    flags,
+    confirmed: details.confirmed === true,
+    latencyMs: Math.max(0, Math.min(120000, Math.round(Number(details.latencyMs) || 0))),
+    source: String(details.source || "server_audio").replace(/[^A-Za-z0-9._:-]/g, "_").slice(0, 40),
+    updatedAt: serverTimestamp(),
+  };
+  await withAuthTimeout(
+    () => setDoc(doc(fs, "pilotMetrics", currentUid, "attempts", attemptId), payload, { merge: true }),
+    { timeoutMs: FIRESTORE_WRITE_TIMEOUT_MS, provider: "firebase", stage: "pilot_metric_write" },
+  );
+  return { attemptId };
+}
+
 export async function fbListPhotoBackups(uid) {
   if (!fs || !uid || auth?.currentUser?.uid !== uid) return [];
   const snapshot = await withAuthTimeout(

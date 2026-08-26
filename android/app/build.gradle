@@ -1,5 +1,11 @@
 apply plugin: 'com.android.application'
 
+def releaseKeystorePropertiesFile = rootProject.file('keystore.properties')
+def releaseKeystoreProperties = new Properties()
+if (releaseKeystorePropertiesFile.exists()) {
+    releaseKeystorePropertiesFile.withInputStream { releaseKeystoreProperties.load(it) }
+}
+
 android {
     namespace = "com.pilateacher.app"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -7,7 +13,7 @@ android {
         applicationId "com.pilateacher.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 36
+        versionCode 37
         versionName "1.1.22"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
@@ -16,10 +22,33 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        release {
+            if (releaseKeystorePropertiesFile.exists()) {
+                storeFile file(releaseKeystoreProperties['storeFile'])
+                storePassword releaseKeystoreProperties['storePassword']
+                keyAlias releaseKeystoreProperties['keyAlias']
+                keyPassword releaseKeystoreProperties['keyPassword']
+            }
+        }
+    }
     buildTypes {
         release {
+            signingConfig signingConfigs.release
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+}
+
+gradle.taskGraph.whenReady { graph ->
+    if (graph.allTasks.any { task -> task.name.toLowerCase().contains('release') }) {
+        def requiredKeys = ['storeFile', 'storePassword', 'keyAlias', 'keyPassword']
+        if (!releaseKeystorePropertiesFile.exists() || requiredKeys.any { key -> !releaseKeystoreProperties[key]?.toString()?.trim() }) {
+            throw new GradleException('android/keystore.properties must contain all release signing values.')
+        }
+        if (!file(releaseKeystoreProperties['storeFile']).exists()) {
+            throw new GradleException('The configured release keystore file does not exist.')
         }
     }
 }

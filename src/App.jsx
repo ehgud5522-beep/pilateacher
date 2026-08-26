@@ -28,7 +28,7 @@ import {
   fbReady, fbSignInSocial, fbSignInEmail, fbSignUpEmail, fbSignOut, fbOnAuth,
   fbLoadProfile, fbSaveProfile, fbPushBackup, fbPullBackup, fbReauthenticate,
   fbRevokeAppleAccess, fbDeleteCurrentUserAccount, fbLoadAIConsent, fbGrantAIConsent,
-  fbLoadAIRecordingStatus,
+  fbLoadAIRecordingStatus, fbSendDiagnosticReport, fbWritePilotMetricAttempt,
   fbListPhotoBackups, fbUploadPhotoBackup, fbDownloadPhotoBackup, fbSoftDeletePhotoBackup, fbPurgeExpiredPhotoBackups,
   AI_CONSENT_POLICY_VERSION, AI_CONSENT_SCOPES,
 } from "./lib/firebase";
@@ -99,6 +99,7 @@ import {
 import { LOCAL_PHOTO_NOTICE_MESSAGE, claimLocalPhotoNotice } from "./features/posture/photo-storage-notice.js";
 import { describeLessonRecordFailure, LESSON_RECORD_FAILURE_CATEGORY, lessonRecordProvenanceSource, takeLessonRecordDebugFailure } from "./features/lesson-record/failure-diagnostics.js";
 import { appendLessonRecordDiagnostic, readLessonRecordDiagnostics } from "./features/lesson-record/pipeline-diagnostics.js";
+import { buildRemoteDiagnosticReport } from "./features/diagnostics/remote-diagnostics.js";
 import { aiRecordingAvailable, AI_RECORDING_STATUS, readAIRecordingStatus, writeAIRecordingStatus } from "./features/lesson-record/ai-recording-status.js";
 import { runLessonRecordRetryCycle, scheduleLessonRecordRetry } from "./features/lesson-record/retry-queue.js";
 import { classifyAuthError, createSingleFlightGate, safeAuthDiagnostic } from "./features/auth/apple-sign-in.js";
@@ -6132,6 +6133,9 @@ const aiMetaFrom = (result) => ({
   provider: result.provider, requestId: result.requestId, model: result.model, modelVersion: result.modelVersion,
   promptVersion: result.promptVersion, pipelineVersion: result.pipelineVersion, generatedAt: result.createdAt || new Date().toISOString(),
   usage: result.usage || null, gatewayUrl: result.gatewayUrl || "",
+  result: result.result || result.output?.result || "",
+  flags: Array.isArray(result.flags) ? result.flags : Array.isArray(result.output?.flags) ? result.output.flags : [],
+  latencyMs: Math.max(0, Number(result.latencyMs) || 0),
 });
 const buildMemberMemorySafely = (input) => {
   try { return { ...buildMemberMemory(input), failed: false }; }
@@ -10140,12 +10144,14 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       flags: resultFlags,
     });
     const combinedTranscript = stitchSpeechTranscript(previousDraft?.rawTranscript || textRef.current, incomingTranscript);
-    const aiMeta = aiMetaFrom(result);
+    const completionToResultLatencyMs = Math.max(0, Date.now() - (Date.parse(clip?.createdAt || "") || Date.now()));
+    const aiMeta = { ...aiMetaFrom(result), result: resultKind, flags: resultFlags, latencyMs: completionToResultLatencyMs };
     const audioClips = (previousDraft?.audioClips || [clip]).map((item) => item.requestId === clip.requestId
       ? { ...item, blobId: null, state: "uploaded", uploadedAt: new Date().toISOString() }
       : item);
     forgetBlobs([clip.blobId]);
     if (resultKind === "no_speech") {
+      Promise.resolve(fbWritePilotMetricAttempt({ requestId: clip.requestId, result: resultKind, flags: resultFlags, latencyMs: completionToResultLatencyMs, source: "server_audio" })).catch(() => {});
       savePendingLessonRecord(memberId, lessonId, {
         ...previousDraft,
         audioBlobId: null,
@@ -10161,6 +10167,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       return null;
     }
     if (resultKind === "low_confidence") {
+      Promise.resolve(fbWritePilotMetricAttempt({ requestId: clip.requestId, result: resultKind, flags: resultFlags, latencyMs: completionToResultLatencyMs, source: "server_audio" })).catch(() => {});
       savePendingLessonRecord(memberId, lessonId, {
         ...previousDraft,
         schemaVersion: 2,
@@ -10197,6 +10204,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     }
     const incomingStructured = structuredDraftFromAudioOutput(result.output);
     const structuredDraft = mergeAudioStructuredDraft(previousDraft?.structuredDraft || summaryDraft, incomingStructured);
+    Promise.resolve(fbWritePilotMetricAttempt({ requestId: clip.requestId, result: "ok", flags: resultFlags, latencyMs: completionToResultLatencyMs, source: "server_audio" })).catch(() => {});
     savePendingLessonRecord(memberId, lessonId, {
       ...previousDraft,
       schemaVersion: 2,
@@ -10265,6 +10273,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       const trimPlan = createAudioTrimPlan(amplitudeSamples, SERVER_AUDIO_ENERGY_INTERVAL_MS, durationMs);
       if (!trimPlan.accepted) {
         if (result?.uri) await Filesystem.deleteFile({ path: result.uri }).catch(() => {});
+        Promise.resolve(fbWritePilotMetricAttempt({ requestId: `local_no_speech_${uid()}`, result: "no_speech", flags: ["no_speech"], latencyMs: 0, source: "client_vad" })).catch(() => {});
         setFinishing(false);
         setSummaryBusy(false);
         setAudioState("idle");
@@ -10321,6 +10330,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       }
       const uploadPromise = uploadServerAudio(clip, pendingDraft).catch((error) => {
         voiceDiagnostic("failed", { source: "server_audio", code: error?.code || "audio_upload_failed", requestId: clip.requestId });
+        Promise.resolve(fbWritePilotMetricAttempt({ requestId: clip.requestId, result: "failed", flags: [], latencyMs: Math.max(0, Date.now() - Date.parse(clip.createdAt)), source: "server_audio" })).catch(() => {});
         scheduleLessonRecordRetry(memberId, lessonId, error);
         throw error;
       });
@@ -12110,6 +12120,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
   const [deleteError, setDeleteError] = useState("");
   const [diagnosticTapCount, setDiagnosticTapCount] = useState(0);
   const [showLessonDiagnostics, setShowLessonDiagnostics] = useState(false);
+  const [diagnosticSending, setDiagnosticSending] = useState(false);
   const cameraRef = useRef(null), albumRef = useRef(null);
   useBackClose(view !== "hub", () => setView(view === "account-delete" ? "account" : "hub"));
   const pickPhoto = async (file) => {
@@ -12147,6 +12158,33 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
     if (!value) return "날짜 없음";
     const parsed = new Date(value);
     return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toLocaleString("ko-KR", { hour12: false });
+  };
+  const sendRemoteDiagnostics = async () => {
+    if (!account?.id || diagnosticSending) return;
+    setDiagnosticSending(true);
+    try {
+      const appInfo = await CapacitorApp.getInfo().catch(() => ({ id: "com.pilateacher.app", name: "PilaTeacher", version: APP_BUILD_LABEL, build: "" }));
+      const report = buildRemoteDiagnosticReport({
+        pipelineEvents: readLessonRecordDiagnostics(),
+        voiceEvents: readVoiceSessionDiagnostics(),
+        appInfo,
+        deviceInfo: {
+          platform: Capacitor.getPlatform(),
+          userAgent: globalThis.navigator?.userAgent || "",
+          language: globalThis.navigator?.language || "",
+          screenWidth: globalThis.screen?.width,
+          screenHeight: globalThis.screen?.height,
+          pixelRatio: globalThis.devicePixelRatio,
+          online: globalThis.navigator?.onLine !== false,
+        },
+      });
+      await fbSendDiagnosticReport(account.id, report);
+      onToast?.({ ok: true, msg: "진단 정보를 보냈습니다." });
+    } catch (_error) {
+      onToast?.({ ok: false, msg: "진단 정보를 보내지 못했습니다. 연결을 확인해 주세요." });
+    } finally {
+      setDiagnosticSending(false);
+    }
   };
   const reportPay = useMemo(() => {
     let total = 0;
@@ -12363,6 +12401,8 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
               <p style={{ fontSize: 11, fontWeight: 700, color: INK }}>AI 수업기록 진단</p>
               <p className="mt-1" style={{ fontSize: 10, color: SUB }}>상태 {aiRecording.status} · 대기 {listPendingLessonRecords().length}건</p>
               <p className="mt-1 break-all" style={{ fontSize: 9, lineHeight: 1.45, color: SUB }}>Gateway: {aiProvider.getStatus().gatewayUrl || "미설정"}</p>
+              <button type="button" aria-label="진단 보내기" disabled={diagnosticSending} onClick={sendRemoteDiagnostics} className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 rounded-lg text-xs font-extrabold text-white disabled:opacity-45" style={{ backgroundColor: BRAND }}>{diagnosticSending ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}진단 보내기</button>
+              <p className="mt-1.5" style={{ fontSize: 9, lineHeight: 1.45, color: SUB }}>최근 진단 50건과 앱·기기 정보만 전송합니다. 음성·말한 내용은 보내지 않습니다.</p>
               <div className="mt-2 space-y-1">{diagnosticRecordSources.map((record, index) => <p key={`${record.at}-${index}`} className="tabular-nums" style={{ fontSize: 9, color: SUB }}>기록 {index + 1} · {diagnosticLocalTime(record.at)} · {record.status} · source={record.source} · date={record.dateSource}</p>)}</div>
               <p className="mt-3" style={{ fontSize: 10, fontWeight: 700, color: INK }}>음성 세션 최근 30건</p>
               <div className="mt-1.5 space-y-1">{voiceSessionDiagnostics.map((item, index) => <p key={`${item.at}-${index}`} className="break-all tabular-nums" style={{ fontSize: 9, lineHeight: 1.45, color: ["error", "failed"].includes(item.event) ? BAD : SUB }}>{item.localTime || diagnosticLocalTime(item.at)} · {item.event} · {item.source}{item.code ? ` · ${item.code}` : ""}{item.reason ? ` · ${item.reason}` : ""}{item.seconds != null ? ` · ${item.seconds}s` : ""}{item.speechSeconds != null ? ` · speech ${item.speechSeconds}s` : ""}{item.trimmedMs != null ? ` · trim ${item.trimmedMs}ms` : ""}{item.captureLatencyMs != null ? ` · capture ${item.captureLatencyMs}ms` : ""}{item.flags?.length ? ` · ${item.flags.join(",")}` : ""}{item.bytes != null ? ` · ${Math.round(item.bytes / 1024)}KB` : ""}{item.durationMs != null ? ` · ${item.durationMs}ms` : ""}{item.requestId ? ` · ${item.requestId.slice(-8)}` : ""}{item.attempt != null ? ` · attempt ${item.attempt}` : ""}{item.delayMs != null ? ` · ${item.delayMs}ms` : ""}</p>)}</div>
@@ -13204,6 +13244,16 @@ export default function App() {
     const nextDb = { ...db, members: db.members.map((m) => (m.id === id ? { ...m, notes: nextNotes, aiMemory: memoryResult.memories, memoryRebuildNeeded: memoryResult.failed } : m)) };
     const stored = await saveDb(nextDb);
     if (stored === false) return false;
+    if (voiceMeta?.aiMeta?.requestId) {
+      Promise.resolve(fbWritePilotMetricAttempt({
+        requestId: voiceMeta.aiMeta.requestId,
+        result: voiceMeta.aiMeta.result || (voiceMeta.aiSummaryTeacherEdited ? "ok" : "failed"),
+        flags: voiceMeta.aiMeta.flags || storedLessonRecord?.reviewFlags || [],
+        confirmed: shouldConfirm,
+        latencyMs: voiceMeta.aiMeta.latencyMs,
+        source: voiceMeta.voiceSource || "voice",
+      })).catch(() => {});
+    }
     if (shouldConfirm) Promise.resolve(reconcileLessonRecordContext({ memberId: id, lessonId: sid, data: nextDb })).catch((error) => {
       appendLessonRecordDiagnostic({ code: error?.code || "write_conflict", stage: "post_save_reconcile", category: LESSON_RECORD_FAILURE_CATEGORY.SERVICE });
     });

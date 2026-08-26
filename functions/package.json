@@ -10,7 +10,8 @@
   "scripts": {
     "lint": "eslint src scripts tests",
     "test": "node --test tests/*.test.js",
-    "seed:app-review": "node scripts/seed-app-review.js"
+    "seed:app-review": "node scripts/seed-app-review.js",
+    "pilot:metrics": "node scripts/pilot-daily-metrics.js"
   },
   "dependencies": {
     "@firebase/app": "0.15.1",

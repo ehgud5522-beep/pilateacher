@@ -101,6 +101,50 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    match /diagnostics/{userId}/reports/{reportId} {
+      allow read: if signedIn() && request.auth.uid == userId;
+      allow create: if signedIn()
+        && request.auth.uid == userId
+        && request.resource.data.uid == userId
+        && request.resource.data.keys().hasOnly([
+          "schemaVersion", "createdAt", "app", "device", "logs", "logCount", "uid", "uploadedAt"
+        ])
+        && request.resource.data.schemaVersion == 1
+        && request.resource.data.createdAt is string
+        && request.resource.data.app is map
+        && request.resource.data.device is map
+        && request.resource.data.logs is list
+        && request.resource.data.logs.size() <= 50
+        && request.resource.data.logCount == request.resource.data.logs.size()
+        && request.resource.data.uploadedAt is timestamp;
+      allow update, delete: if false;
+    }
+
+    match /pilotMetrics/{userId}/attempts/{attemptId} {
+      allow read: if signedIn() && request.auth.uid == userId;
+      allow create, update: if signedIn()
+        && request.auth.uid == userId
+        && request.resource.data.uid == userId
+        && request.resource.data.keys().hasOnly([
+          "schemaVersion", "uid", "date", "result", "flags", "confirmed", "latencyMs", "source", "updatedAt"
+        ])
+        && request.resource.data.schemaVersion == 1
+        && request.resource.data.date is string
+        && request.resource.data.date.size() == 10
+        && request.resource.data.result in ["ok", "no_speech", "low_confidence", "failed"]
+        && request.resource.data.flags is list
+        && request.resource.data.flags.size() <= 3
+        && request.resource.data.flags.hasOnly(["no_speech", "low_confidence", "tail_dropped"])
+        && request.resource.data.confirmed is bool
+        && request.resource.data.latencyMs is int
+        && request.resource.data.latencyMs >= 0
+        && request.resource.data.latencyMs <= 120000
+        && request.resource.data.source is string
+        && request.resource.data.source.size() <= 40
+        && request.resource.data.updatedAt is timestamp;
+      allow delete: if false;
+    }
+
     match /organizations/{organizationId} {
       allow read: if isActiveMember(organizationId);
       allow create, delete: if false;

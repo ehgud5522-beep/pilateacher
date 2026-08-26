@@ -161,6 +161,44 @@ describe("authentication and organization isolation", () => {
     await assertFails(uploadBytes(ref(storageFor(users.member), `users/${users.member}/photos/photo-2/image.jpg`), new Uint8Array([1]), { contentType: "image/png" }));
     await assertFails(deleteObject(ownerRef));
   });
+
+  test("remote diagnostics are owner-only, append-only, and bounded", async () => {
+    const reportRef = doc(dbFor(users.member), "diagnostics", users.member, "reports", "1724634000000");
+    const report = {
+      schemaVersion: 1,
+      createdAt: "2026-08-26T00:00:00.000Z",
+      app: { id: "com.pilateacher.app", version: "1.1.22", build: "37" },
+      device: { platform: "android", online: true },
+      logs: [{ kind: "voice", event: "failed", code: "no_speech" }],
+      logCount: 1,
+      uid: users.member,
+      uploadedAt: Timestamp.now(),
+    };
+    await assertSucceeds(setDoc(reportRef, report));
+    await assertSucceeds(getDoc(reportRef));
+    await assertFails(getDoc(doc(dbFor(users.outsider), "diagnostics", users.member, "reports", "1724634000000")));
+    await assertFails(updateDoc(reportRef, { logCount: 0 }));
+    await assertFails(setDoc(doc(dbFor(users.member), "diagnostics", users.member, "reports", "bad"), { ...report, transcript: "forbidden" }));
+  });
+
+  test("pilot metric attempts contain aggregates only and stay owner-scoped", async () => {
+    const metricRef = doc(dbFor(users.member), "pilotMetrics", users.member, "attempts", "audio-safe-1");
+    const metric = {
+      schemaVersion: 1,
+      uid: users.member,
+      date: "2026-08-26",
+      result: "ok",
+      flags: ["tail_dropped"],
+      confirmed: false,
+      latencyMs: 2340,
+      source: "server_audio",
+      updatedAt: Timestamp.now(),
+    };
+    await assertSucceeds(setDoc(metricRef, metric));
+    await assertSucceeds(updateDoc(metricRef, { confirmed: true, updatedAt: Timestamp.now() }));
+    await assertFails(getDoc(doc(dbFor(users.outsider), "pilotMetrics", users.member, "attempts", "audio-safe-1")));
+    await assertFails(setDoc(doc(dbFor(users.member), "pilotMetrics", users.member, "attempts", "bad"), { ...metric, transcript: "forbidden" }));
+  });
 });
 
 describe("role permissions", () => {

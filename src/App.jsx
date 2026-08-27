@@ -101,7 +101,7 @@ import {
   readRecentAnnotationColors, rememberAnnotationColor, screenPointToImagePoint,
 } from "./features/posture/posture-annotations.js";
 import { LOCAL_PHOTO_NOTICE_MESSAGE, claimLocalPhotoNotice } from "./features/posture/photo-storage-notice.js";
-import { describeLessonRecordFailure, LESSON_RECORD_FAILURE_CATEGORY, lessonRecordProvenanceSource, takeLessonRecordDebugFailure } from "./features/lesson-record/failure-diagnostics.js";
+import { describeLessonRecordFailure, failureCauseDetail, LESSON_RECORD_FAILURE_CATEGORY, lessonRecordProvenanceSource, takeLessonRecordDebugFailure } from "./features/lesson-record/failure-diagnostics.js";
 import { appendLessonRecordDiagnostic, readLessonRecordDiagnostics } from "./features/lesson-record/pipeline-diagnostics.js";
 import { buildRemoteDiagnosticReport } from "./features/diagnostics/remote-diagnostics.js";
 import { aiRecordingAvailable, AI_RECORDING_STATUS, readAIRecordingStatus, writeAIRecordingStatus } from "./features/lesson-record/ai-recording-status.js";
@@ -10357,8 +10357,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       transportCode: context?.transportCode,
       httpStatus: context?.status,
       gatewayUrl: context?.gatewayUrl,
-      causeName: context?.causeName,
-      causeMessage: context?.causeMessage,
+      ...failureCauseDetail(context),
       draftMemberId: memberId,
       requestedMemberId: memberId,
       scheduleId: lessonId,
@@ -10932,8 +10931,8 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     if (remoteConsent.ok) {
       const link = await lessonLink.prepare?.({ memberId, lessonId, stage: "consent_recovery_preflight" });
       if (link?.state === "link_review_required") {
-        const linkFailure = { ...descriptor, category: "SERVICE", internalCode: "member_session_unresolved", title: "회원·수업 연결을 확인해 주세요", link };
-        setLinkReview(link); setSummaryError(linkFailure.title); setSummaryFailure(linkFailure); setSummaryFailureClass("SERVICE"); setErr(linkFailure.title);
+        const linkFailure = { ...descriptor, ...describeLessonRecordFailure({ code: "member_session_unresolved" }), link };
+        setLinkReview(link); setSummaryError(linkFailure.title); setSummaryFailure(linkFailure); setSummaryFailureClass(linkFailure.category); setErr(linkFailure.title);
         return linkFailure;
       }
       if (allowConsentPrompt) {
@@ -10946,8 +10945,10 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       return descriptor;
     }
     if (!allowConsentPrompt) {
+      const linkFailure = { ...descriptor, ...describeLessonRecordFailure({ code: "member_session_unresolved" }) };
       setSummaryError("동의는 저장됐지만 회원·수업 연결을 확인하지 못했습니다.");
-      setSummaryFailure({ ...descriptor, title: "회원·수업 연결을 확인해 주세요" });
+      setSummaryFailure(linkFailure);
+      setSummaryFailureClass(linkFailure.category);
       setErr("동의는 저장됐지만 서버에서 회원·수업 연결을 확인하지 못했습니다. 직접 입력으로 기록해 주세요.");
       return descriptor;
     }
@@ -10965,6 +10966,20 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       }
     }, "AI 수업기록 이용 동의가 필요합니다.", () => discardConsentAudio(clip, pendingDraft));
     return descriptor;
+  };
+  const retryServerAudioUpload = async () => {
+    const currentDraft = loadPendingLessonRecord(memberId, lessonId);
+    const clip = (currentDraft?.audioClips || []).find((item) => item?.blobId && item.state !== "uploaded");
+    setSummaryError("");
+    setSummaryFailure(null);
+    setSummaryFailureClass("");
+    setErr("");
+    if (!clip) { requestSummary(textRef.current); return; }
+    setFinishing(true);
+    setSummaryBusy(true);
+    voiceDiagnostic("upload", { source: "server_audio_manual_retry", requestId: clip.requestId });
+    try { await uploadServerAudio(clip, currentDraft); }
+    catch (error) { await handleServerAudioFailure(error, clip, loadPendingLessonRecord(memberId, lessonId) || currentDraft, false); }
   };
   const finishServerRecording = async (reason = "manual") => {
     startRequestRef.current = false;
@@ -11041,7 +11056,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       }
       let deferred = false;
       const uploadPromise = uploadServerAudio(clip, pendingDraft).catch(async (error) => {
-        voiceDiagnostic("failed", { source: "server_audio", code: error?.code || "audio_upload_failed", requestId: clip.requestId });
+        voiceDiagnostic("failed", { source: "server_audio", ...failureCauseDetail(error), code: error?.code || "audio_upload_failed", httpStatus: error?.status, requestId: clip.requestId });
         Promise.resolve(fbWritePilotMetricAttempt({ requestId: clip.requestId, result: "failed", flags: [], latencyMs: Math.max(0, Date.now() - Date.parse(clip.createdAt)), source: "server_audio" })).catch(() => {});
         if (deferred) await handleServerAudioFailure(error, clip, loadPendingLessonRecord(memberId, lessonId) || pendingDraft);
         throw error;
@@ -11063,7 +11078,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       setSummaryBusy(false);
       setAudioState("failed");
       setErr("녹음을 저장하지 못했습니다. 다시 시도해 주세요.");
-      voiceDiagnostic("failed", { source: "server_audio", code: error?.code || "audio_record_failed" });
+      voiceDiagnostic("failed", { source: "server_audio", ...failureCauseDetail(error), code: error?.code || "audio_record_failed" });
     }
   };
   const startServerRecording = async (mode = "append", options = {}) => {
@@ -11756,7 +11771,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       }
       const result = await lessonRecordLlm.structureLessonRecord(buildLessonRecordInput({ rawTranscript: transcript, termMap, memberId, lessonId }), { requestId });
       if (result.status !== "structured") {
-        const failureContext = { code: result.reason || result.error?.code, status: result.error?.status, failureStage: result.failureStage, requestId: result.error?.requestId, transportCode: result.error?.transportCode, gatewayUrl: result.error?.gatewayUrl || gatewayUrl, causeName: result.error?.causeName, causeMessage: result.error?.causeMessage };
+        const failureContext = { ...failureCauseDetail(result.error), code: result.reason || result.error?.code, status: result.error?.status, failureStage: result.failureStage, requestId: result.error?.requestId, transportCode: result.error?.transportCode, gatewayUrl: result.error?.gatewayUrl || gatewayUrl };
         const descriptor = recordPipelineFailure(failureContext, result.failureStage || "ai_gateway");
         if (descriptor.internalCode === "consent_missing") invalidateMemberAIConsent(memberId);
         setSummaryStatus(result.status === "queued" ? "queued" : "unstructured");
@@ -11885,8 +11900,9 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
           {manualEntry ? <><textarea ref={transcriptInputRef} rows={4} value={text} onChange={(event) => { setText(event.target.value); textRef.current = event.target.value; if (audioReviewFlags.length) { setAudioReviewEdited(true); setAudioReviewFlags([]); } setSummaryOriginal(null); setSummaryDraft(null); setSummaryMeta(null); setSummaryError(""); setSummaryFailureClass(""); setSummaryEditing(false); setSummaryStatus(AI_STATUSES.NOT_CONNECTED); }} aria-label="직접 입력하는 수업 내용" placeholder="수업 내용과 회원 반응을 입력하세요" className={`${inputCls} mt-2 h-auto resize-none py-2 text-sm leading-relaxed`} /><button type="button" disabled={!text.trim()} onClick={applyCurrentRecord} className="mt-2 h-11 w-full rounded-xl text-xs font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: BRAND }}>저장</button></> : text && <div className="mt-2 rounded-xl p-3" aria-label="말한 수업 내용" style={{ backgroundColor: CANVAS, border: `1px solid ${LINE}` }}><p className="text-[10px] font-extrabold" style={{ color: SUB }}>{summaryDraft ? "말한 내용" : summaryError ? "선생님 기록" : "음성 기록"}</p><p className="mt-1 whitespace-pre-wrap text-xs leading-relaxed" style={{ color: INK2 }}>{text}</p></div>}
           {summaryError && summaryFailure && !consentGate && <div role="alert" data-ai-failure={summaryFailureClass || undefined} className="mt-2 rounded-xl p-3" style={{ backgroundColor: BAD_S, border: `1px solid ${BAD}` }}>
             <p className="text-xs font-extrabold" style={{ color: BAD }}>{summaryFailure.title || summaryError}</p>
-            <p className="mt-1 text-[11px] leading-relaxed" style={{ color: INK2 }}>{summaryFailure.category === "TEMPORARY" || summaryFailure.category === "TIMEOUT" ? "말한 내용은 선생님 기록으로 저장되어 있습니다. 연결이 안정되면 자동으로 다시 정리합니다." : "자동 재시도하지 않습니다. 직접 입력으로 기록을 이어갈 수 있습니다."}</p>
-            {linkReview && lessonId && <button type="button" onClick={async () => {
+            <p className="mt-1 text-[11px] leading-relaxed" style={{ color: INK2 }}>{summaryFailure.category === "TEMPORARY" || summaryFailure.category === "TIMEOUT" ? "말한 내용은 선생님 기록으로 저장되어 있습니다. 연결이 안정되면 자동으로 다시 정리합니다." : `${summaryFailure.description || "말씀하신 내용은 저장되어 있어요."} 자동 재시도하지 않습니다. 직접 입력으로 기록을 이어갈 수 있습니다.`}</p>
+            {summaryFailure.manualRetry && <button type="button" onClick={retryServerAudioUpload} className="mt-2 h-11 w-full rounded-lg text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>다시 시도</button>}
+            {summaryFailure.linkReview && linkReview && lessonId && <button type="button" onClick={async () => {
               const resolved = await lessonLink.resolve?.({ memberId, lessonId });
               if (resolved?.state === "linked") { setLinkReview(null); setSummaryError(""); setSummaryFailure(null); setErr(""); requestSummary(textRef.current); }
             }} className="mt-2 h-11 w-full rounded-lg text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>이 회원으로 연결</button>}
@@ -13756,20 +13772,32 @@ export default function App() {
     appendLessonRecordDiagnostic(diagnostic);
     if (link.state === "link_review_required") return link;
     if (!accountId || restoreBlockedRef.current) return { ...link, state: "pending", reason: !accountId ? "auth" : "restore_pending" };
-    const manifest = buildPhotoManifest(photosRef.current);
-    const uploadedManifest = manifest.filter((item) => item.storagePath && item.thumbnailPath);
-    const photoGraph = buildPhotoGraph(photosRef.current);
-    const queue = createPhotoQueue(window.localStorage, accountId).read();
-    await fbPushBackup(accountId, data, {
-      photoCount: uploadedManifest.length,
-      photoPending: queue.length,
-      storageUsage: storageUsage(uploadedManifest),
-      photoManifest: uploadedManifest,
-      photoGraph,
-    });
-    writeCloudSyncMarker(accountId, { localSavedAt: Date.now(), lastCloudAt: Date.now() });
-    deviceLog("lesson_record_reconciled", { memberId: link.memberId, lessonId: link.lessonId, stage, state: link.state, appBuild: APP_BUILD_LABEL });
-    return link;
+    // The server policy reads the cloud backup, so refresh it here - but a
+    // backup failure is a backup problem and must never cancel a recording the
+    // teacher already made. If a stale backup does break authorization, the
+    // Gateway says so and that answer is what reaches the teacher.
+    try {
+      const manifest = buildPhotoManifest(photosRef.current);
+      const uploadedManifest = manifest.filter((item) => item.storagePath && item.thumbnailPath);
+      const photoGraph = buildPhotoGraph(photosRef.current);
+      const queue = createPhotoQueue(window.localStorage, accountId).read();
+      await fbPushBackup(accountId, data, {
+        photoCount: uploadedManifest.length,
+        photoPending: queue.length,
+        storageUsage: storageUsage(uploadedManifest),
+        photoManifest: uploadedManifest,
+        photoGraph,
+      });
+      writeCloudSyncMarker(accountId, { localSavedAt: Date.now(), lastCloudAt: Date.now() });
+      deviceLog("lesson_record_reconciled", { memberId: link.memberId, lessonId: link.lessonId, stage, state: link.state, appBuild: APP_BUILD_LABEL });
+      return { ...link, backupSynced: true };
+    } catch (error) {
+      const cause = failureCauseDetail(error);
+      setCloudBackupStatus((current) => ({ ...current, state: error?.code === "backup/overwrite-blocked" ? "blocked" : "error" }));
+      deviceLog("cloud_backup_write_failed", { stage: `${stage}_backup`, ...deviceError(error) });
+      appendLessonRecordDiagnostic({ ...diagnostic, code: "cloud_backup_failed", category: LESSON_RECORD_FAILURE_CATEGORY.SERVICE, stage: `${stage}_backup`, ...cause });
+      return { ...link, backupSynced: false, backupError: cause };
+    }
   }, [account?.id, db]);
   lessonRecordContextSyncRef.current = prepareLessonRecordContext;
   const reconcileLessonRecordContext = useCallback((context = {}) => prepareLessonRecordContext({ ...context, stage: "post_save_reconcile" }), [prepareLessonRecordContext]);
@@ -14040,15 +14068,19 @@ export default function App() {
     const lessonLinkedToMember = !sid || linkedLesson?.memberId === id || linkedLesson?.memberIds?.includes?.(id) || linkedLesson?.attendees?.some?.((item) => item?.memberId === id);
     const reconcileStatus = lessonLinkedToMember ? (sid ? "linked" : "member_only") : "link_review_required";
     const shouldConfirm = !voiceMeta || noteOptions?.confirmed !== false;
-    const confirmedAt = voiceMeta && shouldConfirm ? new Date().toISOString() : undefined;
+    // A key whose value is `undefined` survives into the in-memory database and
+    // makes every later Firestore backup write fail with "invalid-argument".
+    // An absent value therefore leaves the key out instead.
+    const confirmedAt = voiceMeta && shouldConfirm ? new Date().toISOString() : "";
+    const confirmedAtField = confirmedAt ? { confirmedAt } : {};
+    const { audioBlobId: _releasedAudioBlobId, ...confirmedLessonRecordBase } = voiceMeta?.lessonRecord || {};
     const storedLessonRecord = voiceMeta?.lessonRecord ? (shouldConfirm ? {
-      ...voiceMeta.lessonRecord,
+      ...confirmedLessonRecordBase,
       stage: "confirmed_record",
       status: voiceMeta.lessonRecord.structuredDraft ? "confirmed" : "confirmed_unstructured",
       confirmationStatus: "confirmed",
       confirmedRecord: voiceMeta.lessonRecord.structuredDraft || { rawTranscript: String(voiceMeta.transcript || "").trim(), origin: "raw" },
-      confirmedAt,
-      audioBlobId: undefined,
+      ...confirmedAtField,
       reconcileStatus,
     } : {
       ...voiceMeta.lessonRecord,
@@ -14062,17 +14094,24 @@ export default function App() {
       : noteOptions?.upsert && voiceMeta && sid
         ? (target.notes || []).find((item) => String(item.sid || "") === String(sid || ""))
         : null;
+    const resolvedSid = String(sid || existingPending?.sid || "");
+    const transcriptText = String(voiceMeta?.transcript || "").trim();
+    // A note saved back as a pending draft must not keep the confirmation stamp
+    // of an earlier save, so drop it rather than shadowing it with undefined.
+    const carriedNote = voiceMeta && !shouldConfirm
+      ? Object.fromEntries(Object.entries(existingPending || {}).filter(([key]) => key !== "confirmedAt"))
+      : (existingPending || {});
     const note = {
-      ...(existingPending || {}), id: existingPending?.id || uid(), date: existingPending?.date || todayISO(), sid: sid || existingPending?.sid || undefined, type: type || "개인레슨", instructor: target.instructor,
+      ...carriedNote, id: existingPending?.id || uid(), date: existingPending?.date || todayISO(), ...(resolvedSid ? { sid: resolvedSid } : {}), type: type || "개인레슨", instructor: target.instructor,
       body: text, tags: [], deductFrom: null, important: noteOptions?.important === true,
       ...(voiceMeta ? {
-        transcript: String(voiceMeta.transcript || "").trim() || undefined,
+        ...(transcriptText ? { transcript: transcriptText } : {}),
         aiSummary: voiceMeta.aiSummary || null,
         aiSummaryTeacherEdited: voiceMeta.aiSummaryTeacherEdited || null,
         aiSummaryStatus: shouldConfirm ? (voiceMeta.aiSummaryTeacherEdited ? AI_STATUSES.CONFIRMED : voiceMeta.lessonRecord ? "unstructured" : AI_STATUSES.NOT_CONNECTED) : voiceMeta.aiSummaryTeacherEdited ? AI_STATUSES.DRAFT : "unstructured",
         aiMeta: voiceMeta.aiMeta || null,
         teacherSummary: text,
-        confirmedAt,
+        ...confirmedAtField,
         lessonRecord: storedLessonRecord,
         confirmationStatus: shouldConfirm ? "confirmed" : "pending",
         reviewFlags: storedLessonRecord?.reviewFlags || [],

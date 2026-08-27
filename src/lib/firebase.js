@@ -20,7 +20,7 @@ import { getFunctions, httpsCallable } from "firebase/functions";
 import { getStorage, ref as storageRef, uploadBytes, getBlob } from "firebase/storage";
 import { withAuthTimeout } from "../features/auth/apple-sign-in.js";
 import { googleNativeSignInOptions } from "../features/auth/google-sign-in.js";
-import { CLOUD_BACKUP_VERSION, backupCounts, evaluateOverwriteRisk } from "../features/backup/cloud-backup.js";
+import { CLOUD_BACKUP_VERSION, backupCounts, evaluateOverwriteRisk, sanitizeFirestorePayload } from "../features/backup/cloud-backup.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyABFqCur9nKHUuD_-EvvRNtxVbEhif9gjs",
@@ -280,13 +280,19 @@ const deviceTag = () => {
 
 export async function fbPushBackup(uid, data, options = {}) {
   if (!fs || !uid || !data) return;
-  const counts = backupCounts(data, options.photoManifest || [], options.photoGraph || {});
+  // The in-memory app database can hold keys whose value is `undefined`; only
+  // the localStorage copy ever passes through JSON. Firestore rejects the whole
+  // write for those with code "invalid-argument", so drop them at this boundary.
+  const payload = sanitizeFirestorePayload(data);
+  const photoManifest = sanitizeFirestorePayload(options.photoManifest || []);
+  const photoGraph = sanitizeFirestorePayload(options.photoGraph || {});
+  const counts = backupCounts(payload, photoManifest, photoGraph);
   await withAuthTimeout(
     () => runTransaction(fs, async (transaction) => {
       const backupRef = doc(fs, "users", uid, "backup", "latest");
       const snapshot = await transaction.get(backupRef);
       const current = snapshot.exists() ? snapshot.data() : null;
-      const risk = current ? evaluateOverwriteRisk(data, current) : { blocked: false, reasons: [] };
+      const risk = current ? evaluateOverwriteRisk(payload, current) : { blocked: false, reasons: [] };
       if (risk.blocked && options.allowDestructiveOverwrite !== true) {
         const error = new Error("Cloud backup overwrite was blocked.");
         Object.assign(error, { code: "backup/overwrite-blocked", reasons: risk.reasons, risk });
@@ -294,14 +300,14 @@ export async function fbPushBackup(uid, data, options = {}) {
       }
       transaction.set(backupRef, {
         schemaVersion: CLOUD_BACKUP_VERSION,
-        data,
+        data: payload,
         device: deviceTag(),
         at: serverTimestamp(),
         members: counts.members,
         counts: { ...counts, photos: Number.isFinite(Number(options.photoCount)) ? Math.max(0, Number(options.photoCount)) : Math.max(0, Number(current?.counts?.photos) || 0) },
         photoPending: Math.max(0, Number(options.photoPending) || 0),
-        storageUsage: options.storageUsage && typeof options.storageUsage === "object" ? options.storageUsage : current?.storageUsage || null,
-        photoGraph: options.photoGraph && typeof options.photoGraph === "object" ? options.photoGraph : current?.photoGraph || {},
+        storageUsage: options.storageUsage && typeof options.storageUsage === "object" ? sanitizeFirestorePayload(options.storageUsage) : current?.storageUsage || null,
+        photoGraph: options.photoGraph && typeof options.photoGraph === "object" ? photoGraph : current?.photoGraph || {},
       });
     }),
     { timeoutMs: FIRESTORE_WRITE_TIMEOUT_MS, provider: "firebase", stage: "backup_write" },

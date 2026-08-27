@@ -24,6 +24,7 @@ export class AIProviderError extends Error {
     this.retryable = !!options.retryable;
     this.status = options.status ?? null;
     this.requestId = options.requestId ?? null;
+    this.serverMessage = options.serverMessage ?? options.cause?.serverMessage ?? null;
     this.path = options.path ?? options.cause?.path ?? null;
     this.expected = options.expected ?? options.cause?.expected ?? null;
     this.received = options.received ?? options.cause?.received ?? null;
@@ -157,10 +158,14 @@ export class GatewayAIProvider extends AIProvider {
         let errorCode = "gateway_error";
         let errorRequestId = requestId;
         let diagnostic = null;
+        let serverMessage = "";
         try {
           const errorPayload = await response.json();
           if (typeof errorPayload?.error?.code === "string") errorCode = errorPayload.error.code;
           if (typeof errorPayload?.error?.requestId === "string") errorRequestId = errorPayload.error.requestId;
+          // Keep whatever the Gateway said verbatim: it is the only place a
+          // rejected field name can ever reach the on-device diagnostics.
+          if (typeof errorPayload?.error?.message === "string") serverMessage = safeNetworkText(errorPayload.error.message, 400);
           if (errorPayload?.error?.diagnostic && typeof errorPayload.error.diagnostic === "object") diagnostic = errorPayload.error.diagnostic;
         } catch (_error) {
           // A non-JSON gateway failure remains a generic, non-sensitive error.
@@ -172,6 +177,9 @@ export class GatewayAIProvider extends AIProvider {
           status: response.status,
           requestId: errorRequestId,
           retryable: !quotaExhausted && (response.status === 429 || response.status >= 500),
+          serverMessage,
+          causeName: `gateway_${errorCode}`,
+          causeMessage: [serverMessage, diagnostic?.stage ? `stage=${diagnostic.stage}` : "", diagnostic?.providerCode ? `providerCode=${diagnostic.providerCode}` : ""].filter(Boolean).join(" "),
           transportCode: `E-HTTP-${response.status}`,
           gatewayUrl: diagnosticGatewayUrl,
           failureStage: exhaustedAuthRefresh ? "auth_refresh" : String(diagnostic?.stage || "gateway_http"),

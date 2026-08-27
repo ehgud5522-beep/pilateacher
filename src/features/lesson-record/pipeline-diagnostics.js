@@ -31,7 +31,10 @@ export function appendLessonRecordDiagnostic(event, storage = globalThis.localSt
     httpStatus: Number(event?.httpStatus) || 0,
     gatewayUrl: event?.gatewayUrl ? safeText(event.gatewayUrl) : "",
     causeName: event?.causeName ? safeToken(event.causeName, 80) : "",
-    causeMessage: event?.causeMessage ? safeText(event.causeMessage, 180) : "",
+    // The rejecting layer's own wording is kept whole: a Gateway field name or
+    // the Firestore document path is only ever stated here.
+    causeMessage: event?.causeMessage ? safeText(event.causeMessage, 400) : "",
+    rawCode: event?.rawCode ? safeToken(event.rawCode, 80) : "",
     draftMemberId: event?.draftMemberId ? safeToken(event.draftMemberId, 120) : "",
     requestedMemberId: event?.requestedMemberId ? safeToken(event.requestedMemberId, 120) : "",
     scheduleId: event?.scheduleId ? safeToken(event.scheduleId, 120) : "",

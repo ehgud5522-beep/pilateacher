@@ -59,7 +59,7 @@ export function listPendingLessonRecords(storage = globalThis.localStorage) {
   return Object.values(readAll(storage));
 }
 
-const NON_RETRYABLE_FAILURE_CODES = new Set(["consent_required", "consent_missing", "member_session_unresolved", "link_review_required", "stt_no_speech", "no_speech"]);
+const NON_RETRYABLE_FAILURE_CODES = new Set(["consent_required", "consent_missing", "member_session_unresolved", "link_review_required", "request_rejected", "invalid-argument", "invalid_request", "stt_no_speech", "no_speech"]);
 const pendingBlobIdsOf = (draft) => [...new Set([
   draft?.audioBlobId,
   ...(draft?.audioClips || []).filter((clip) => clip?.state !== "uploaded").map((clip) => clip?.blobId),

@@ -125,6 +125,11 @@ export function appendVoiceSessionDiagnostic(event, details = {}, storage = glob
     ...(Array.isArray(details.flags) ? { flags: details.flags.map((flag) => safeDiagnosticText(flag, 40)).slice(0, 4) } : {}),
     ...(details.requestId ? { requestId: safeDiagnosticText(details.requestId, 80) } : {}),
     ...(details.pluginError ? { pluginError: safeDiagnosticMessage(details.pluginError) } : {}),
+    ...(details.causeName ? { causeName: safeDiagnosticText(details.causeName) } : {}),
+    // Verbatim wording from the rejecting layer, including the field or document
+    // path it named. Nothing else on the device records it.
+    ...(details.causeMessage ? { causeMessage: safeDiagnosticMessage(details.causeMessage, 400) } : {}),
+    ...(details.httpStatus ? { httpStatus: Math.max(0, Number(details.httpStatus) || 0) } : {}),
     ...(details.permissionState ? { permissionState: safeDiagnosticText(details.permissionState, 40) } : {}),
     ...(details.audioSessionCategory ? { audioSessionCategory: safeDiagnosticText(details.audioSessionCategory, 80) } : {}),
     ...(details.audioSessionMode ? { audioSessionMode: safeDiagnosticText(details.audioSessionMode, 80) } : {}),

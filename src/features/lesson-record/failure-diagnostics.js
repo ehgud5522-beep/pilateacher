@@ -37,9 +37,36 @@ const detailsByCode = Object.freeze({
   provider_configuration: { category: "TEMPORARY", userCode: "E-CONFIG", title: "AI 정리를 지금 사용할 수 없어요", description: "말씀하신 내용은 저장되어 있고, 연결이 회복되면 다시 정리해요.", retry: true },
   client_internal: { category: "SERVICE", userCode: "E-INTERNAL", title: "AI 정리를 지금 사용할 수 없어요", description: "말씀하신 내용은 저장되어 있어요.", retry: false },
   schema_invalid: { category: "SERVICE", userCode: "E-FORMAT", title: "내용을 자동으로 정리하지 못했어요", description: "말씀하신 내용은 저장되어 있어요.", retry: false },
-  member_session_unresolved: { category: "SERVICE", userCode: "E-LINK", title: "기록 연결을 확인하고 있어요", description: "말씀하신 내용은 회원 기록에 안전하게 남아 있어요.", retry: false },
+  member_session_unresolved: { category: "SERVICE", userCode: "E-LINK", title: "회원·수업 연결을 확인해 주세요", description: "말씀하신 내용은 회원 기록에 안전하게 남아 있어요.", retry: false, linkReview: true },
+  request_rejected: { category: "SERVICE", userCode: "E-REQUEST", title: "기록 처리 중 문제가 발생했어요", description: "녹음 내용은 보관했습니다.", retry: false, manualRetry: true },
+  cloud_backup_failed: { category: "SERVICE", userCode: "E-BACKUP", title: "클라우드 백업이 늦어지고 있어요", description: "기록은 이 기기에 저장되어 있어요.", retry: false },
   unknown: { category: "SERVICE", userCode: "E-AI", title: "AI 정리를 지금 사용할 수 없어요", description: "말씀하신 내용은 저장되어 있어요.", retry: false },
 });
+
+const RAW_CAUSE_MAX = 400;
+
+// The exact wording a rejecting layer produced - a Gateway field name, or the
+// document path Firestore refused - is the only thing that identifies the
+// offending value, so keep it verbatim (minus credentials) instead of
+// collapsing it into the normalized internal code.
+export function failureCauseDetail(context = {}) {
+  const source = context && typeof context === "object" ? context : {};
+  const seen = new Set();
+  const causeMessage = [source.causeMessage, source.serverMessage, source.message, source.cause?.message]
+    .map((value) => String(value || "").replace(/[\r\n\t]+/g, " ").trim())
+    .filter((value) => {
+      if (!value || seen.has(value)) return false;
+      seen.add(value);
+      return true;
+    })
+    .join(" | ")
+    .slice(0, RAW_CAUSE_MAX);
+  return {
+    causeName: String(source.causeName || source.name || "").slice(0, 80),
+    causeMessage,
+    rawCode: String(source.code || source.reason || "").slice(0, 80),
+  };
+}
 
 export function normalizeLessonRecordFailureCode({ code = "", status = null, reason = "", failureStage = "", contextStage = "", transportCode = "" } = {}) {
   const raw = String(code || reason || "").toLowerCase();
@@ -55,9 +82,18 @@ export function normalizeLessonRecordFailureCode({ code = "", status = null, rea
   if (raw === "rate_limited" || raw === "provider_rate_limited" || httpStatus === 429) return "provider_rate_limited";
   if (raw === "client_invocation_error" || transport === "E-INTERNAL" || stage === "fetch_internal") return "client_internal";
   if (["offline", "network_error", "network_offline"].includes(raw) || stage.includes("network")) return "network_offline";
-  if (raw === "timeout" || httpStatus === 504) return "timeout";
+  if (raw === "timeout" || raw === "deadline-exceeded" || httpStatus === 504) return "timeout";
   if (raw === "auth_refresh_failed" || stage === "auth_refresh") return "auth_refresh_failed";
   if (raw.includes("unauthenticated") || raw === "auth_expired" || httpStatus === 401) return "auth_expired";
+  // The Gateway answers 403 with invalid_request when the member or the lesson
+  // is absent from the server-side backup, which is a link problem, not a
+  // malformed request.
+  if (raw === "invalid_request" && httpStatus === 403) return "member_session_unresolved";
+  // A deterministic rejection of the request as sent. `invalid-argument` reaches
+  // here from the Firebase SDK, which uses it for a write it refused locally.
+  if (["invalid-argument", "invalid_argument", "invalid_request", "failed-precondition", "out-of-range"].includes(raw) || httpStatus === 400) return "request_rejected";
+  if (["unavailable", "aborted", "resource-exhausted"].includes(raw)) return "provider_5xx";
+  if (raw === "backup/overwrite-blocked" || raw === "cloud_backup_failed") return "cloud_backup_failed";
   if (["speech_recognition_unavailable", "stt_provider_error"].includes(raw) || stage.includes("stt")) return "stt_provider_error";
   if (raw === "invalid_output" || raw === "schema_invalid" || stage.includes("schema")) return "schema_invalid";
   if (raw === "provider_unavailable" || raw === "provider_5xx" || httpStatus >= 500) return "provider_5xx";

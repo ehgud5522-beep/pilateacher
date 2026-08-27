@@ -12,6 +12,33 @@ const stripBinaryDeep = (value) => {
   return Object.fromEntries(Object.entries(value).filter(([key, item]) => !blocked.has(key) && typeof item !== "function").map(([key, item]) => [key, stripBinaryDeep(item)]));
 };
 
+const isPlainObject = (value) => {
+  if (!value || typeof value !== "object") return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+};
+
+// Firestore rejects an entire write when any nested value is `undefined`
+// (FirebaseError code "invalid-argument"), and an in-memory app database keeps
+// such keys alive because only the localStorage copy ever goes through JSON.
+// Drop those keys here instead. Every meaningful falsy value - "", 0, false,
+// null, [] - is preserved, and non-plain objects such as Date or a Firestore
+// sentinel pass through untouched.
+export function sanitizeFirestorePayload(value, seen = new WeakSet()) {
+  if (value === undefined || typeof value === "function" || typeof value === "symbol") return undefined;
+  if (Array.isArray(value)) {
+    if (seen.has(value)) return [];
+    seen.add(value);
+    return value.map((item) => sanitizeFirestorePayload(item, seen)).filter((item) => item !== undefined);
+  }
+  if (!isPlainObject(value)) return value;
+  if (seen.has(value)) return {};
+  seen.add(value);
+  return Object.fromEntries(Object.entries(value)
+    .map(([key, item]) => [key, sanitizeFirestorePayload(item, seen)])
+    .filter(([, item]) => item !== undefined));
+}
+
 export function backupCounts(data, photoManifest = [], photoGraph = {}) {
   const members = Array.isArray(data?.members) ? data.members.length : 0;
   const sessions = Array.isArray(data?.schedule) ? data.schedule.length : 0;

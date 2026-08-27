@@ -11824,12 +11824,11 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
             <p className="mt-1 text-[11px] leading-relaxed" style={{ color: INK2 }}>{summaryFailure.category === "TEMPORARY" || summaryFailure.category === "TIMEOUT" ? "말한 내용은 선생님 기록으로 저장되어 있습니다. 연결이 안정되면 자동으로 다시 정리합니다." : "자동 재시도하지 않습니다. 직접 입력으로 기록을 이어갈 수 있습니다."}</p>
           </div>}
           {summaryDraft && <div className="mt-3 space-y-3 rounded-xl p-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
-            <div><p className="text-xs font-extrabold" style={{ color: GOOD }}>AI가 수업 내용을 정리했어요.</p><p className="mt-1 text-[11px] leading-relaxed" style={{ color: SUB }}>기록은 자동으로 저장됐습니다. 고치고 싶을 때만 수정해 주세요.</p></div>
+            <div className="flex items-start gap-2"><div className="min-w-0 flex-1"><p className="text-xs font-extrabold" style={{ color: GOOD }}>AI가 수업 내용을 정리했어요.</p><p className="mt-1 text-[11px] leading-relaxed" style={{ color: SUB }}>기록이 저장됐어요. 고치고 싶을 때만 수정하세요.</p></div><button type="button" onClick={() => setSummaryEditing((value) => !value)} className="min-h-11 shrink-0 rounded-lg px-3 text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: PRIMARY }}>{summaryEditing ? "수정 완료" : "수정"}</button></div>
             <section><p className="text-xs font-extrabold" style={{ color: INK }}>AI 수업 요약</p><div className="mt-2 grid grid-cols-2 gap-1.5">{summaryView.cards.map((item) => <div key={item.key} className="rounded-lg p-2.5" style={{ backgroundColor: item.key === "nextFocus" ? TINT : CANVAS }}><p className="text-[10px] font-extrabold" style={{ color: item.key === "nextFocus" ? BRAND_D : SUB }}>{item.label}</p><p className="mt-1 text-[11px] font-bold leading-relaxed" style={{ color: item.value === "추가해 주세요" || item.value === "아직 계획 없음" ? FAINT : INK2 }}>{item.value}</p></div>)}</div></section>
             {summaryView.narrative && <section className="rounded-lg p-3" style={{ backgroundColor: CANVAS }}><p className="text-xs font-extrabold" style={{ color: INK }}>{summaryView.narrativeLabel}</p><p className="mt-2 text-xs leading-relaxed" style={{ color: INK2 }}>{summaryView.narrative}</p></section>}
             {summaryEditing && <div className="space-y-2">{[{ k: "observations", l: "회원의 변화" }, { k: "didToday", l: "오늘 수업" }, { k: "responses", l: "회원 반응/특이사항" }, { k: "nextFocus", l: "다음 확인" }, { k: "uncertain", l: "확인이 필요한 내용" }].map((field) => <label key={field.k} className="block"><span className="mb-1 block text-[11px] font-bold" style={{ color: SUB }}>{field.l}</span><textarea rows={2} value={structuredFieldText(summaryDraft, field.k)} onChange={(event) => setSummaryField(field.k, event.target.value)} placeholder="한 줄에 한 항목" className={`${inputCls} h-auto resize-none py-2 text-xs`} /></label>)}</div>}
-            <button type="button" onClick={() => setSummaryEditing((value) => !value)} className="h-11 w-full rounded-lg text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: PRIMARY }}>{summaryEditing ? "수정 닫기" : "수정"}</button>
-            {typeof onClose === "function" && <button type="button" onClick={onClose} className="h-11 w-full rounded-lg text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>닫기</button>}
+            {typeof onClose === "function" && <button type="button" onClick={onClose} className="h-11 w-full rounded-lg text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>확인</button>}
           </div>}
         </>
       )}
@@ -13942,6 +13941,7 @@ export default function App() {
   /* 일정 탭에서 '기록하기'로 들어왔으면 저장 후 다시 일정으로 돌려보낸다 */
   const [noteBack, setNoteBack] = useState(false);
   const [noteSid, setNoteSid] = useState(null);
+  const savedLessonRecordToastKeysRef = useRef(new Set());
   const saveScheduleComment = async (id, type, sid, body, voiceMeta = null, noteOptions = null) => {
     const text = String(body || "").trim();
     if (!text) return false;
@@ -14044,7 +14044,8 @@ export default function App() {
       const existing = (target.notes || []).find((note) => String(note.sid || "") === String(lessonId || "") && note.lessonRecord?.stage !== "confirmed_record");
       const body = structuredRecordBody(pending.structuredDraft, pending.rawTranscript || "");
       const lessonRecord = { ...pending, confirmationStatus: "pending", stage: "structured_draft", status: "structured" };
-      saveScheduleComment(memberId, existing?.type || "개인레슨", lessonId, body, {
+      const saveToastKey = String(pending.aiMeta?.requestId || `${memberId}:${lessonId}:${pending.updatedAt || pending.recordedAt || "structured"}`);
+      Promise.resolve(saveScheduleComment(memberId, existing?.type || "개인레슨", lessonId, body, {
         transcript: pending.rawTranscript || "",
         aiSummary: pending.structuredDraft,
         aiSummaryTeacherEdited: pending.structuredDraft,
@@ -14053,7 +14054,11 @@ export default function App() {
         lessonRecord,
         voiceSource: pending.source || "unknown",
         recordedAt: pending.recordedAt || pending.updatedAt,
-      }, { confirmed: false, upsert: true, existingNoteId: existing?.id });
+      }, { confirmed: false, upsert: true, existingNoteId: existing?.id })).then((stored) => {
+        if (stored === false || savedLessonRecordToastKeysRef.current.has(saveToastKey)) return;
+        savedLessonRecordToastKeysRef.current.add(saveToastKey);
+        setToast({ ok: true, msg: `${target.name || "회원"}님 기록 저장됨` });
+      }).catch(() => {});
     };
     window.addEventListener("pilateacher:lesson-record-updated", promotePendingNote);
     return () => window.removeEventListener("pilateacher:lesson-record-updated", promotePendingNote);

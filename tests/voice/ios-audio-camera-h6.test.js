@@ -49,7 +49,7 @@ test("voice result remains visible and only deferred processing closes after ten
   assert.match(app, /waitBeforeDeferredClose/);
   assert.match(app, /기록 저장됨 · AI가 정리 중/);
   assert.match(app, /summaryDraft &&[\s\S]*AI 수업 요약[\s\S]*summaryView\.cards/);
-  assert.match(app, /typeof onClose === "function"[\s\S]*>닫기<\/button>/);
+  assert.match(app, /typeof onClose === "function"[\s\S]*>확인<\/button>/);
   assert.doesNotMatch(app, /onApply=\{async \(text, meta\)[^\n]*onClose\(\)/);
 });
 

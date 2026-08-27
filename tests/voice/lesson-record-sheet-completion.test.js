@@ -13,7 +13,10 @@ test("voice completion saves a pending draft, keeps results visible, and defers 
   assert.match(voice, /waitBeforeDeferredClose/);
   assert.match(voice, /showDeferredToast\("기록 저장됨 · AI가 정리 중"\)/);
   assert.match(voice, /summaryView\.cards/);
-  assert.match(voice, /typeof onClose === "function"[\s\S]*>닫기<\/button>/);
+  assert.match(voice, /기록이 저장됐어요\. 고치고 싶을 때만 수정하세요\./);
+  assert.match(voice, /typeof onClose === "function"[\s\S]*>확인<\/button>/);
+  assert.equal((voice.match(/>확인<\/button>/g) || []).length, 1);
+  assert.doesNotMatch(voice, />닫기<\/button>|수정 닫기/);
   assert.doesNotMatch(voice, /확인하고 저장|AI로 정리|이 영역 저장/);
 });
 
@@ -25,6 +28,13 @@ test("voice UI has one conditional direct-entry textarea and mutually exclusive 
   assert.doesNotMatch(voice, />마이크 테스트</);
   assert.doesNotMatch(voice, />카메라 테스트</);
   assert.match(source, /diagnosticTapCount[\s\S]*next >= 7[\s\S]*IOSMediaDiagnosticPanel/);
+});
+
+test("successful structured lesson persistence emits one member-specific saved toast", () => {
+  assert.match(source, /savedLessonRecordToastKeysRef\s*=\s*useRef\(new Set\(\)\)/);
+  assert.match(source, /Promise\.resolve\(saveScheduleComment\([\s\S]*savedLessonRecordToastKeysRef\.current\.has\(saveToastKey\)/);
+  assert.match(source, /savedLessonRecordToastKeysRef\.current\.add\(saveToastKey\)/);
+  assert.match(source, /`\$\{target\.name \|\| "회원"\}님 기록 저장됨`/);
 });
 
 test("voice result, failure, and timeout terminate the organizing header", () => {

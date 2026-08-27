@@ -21,7 +21,7 @@ test("AI structure action persists raw input and starts loading before gateway w
 
 test("AI result auto-saves and renders the teacher-facing summary with optional editing", () => {
   ["회원의 변화", "오늘 수업", "회원 반응/특이사항", "다음 확인", "확인이 필요한 내용"].forEach((label) => assert.match(voice, new RegExp(label)));
-  ["AI 수업 요약", "기록은 자동으로 저장됐습니다", "수정"].forEach((label) => assert.match(voice, new RegExp(label)));
+  ["AI 수업 요약", "기록이 저장됐어요. 고치고 싶을 때만 수정하세요.", "수정", "확인"].forEach((label) => assert.match(voice, new RegExp(label)));
   assert.doesNotMatch(voice, /확인하고 저장|AI로 정리/);
   assert.match(voice, /onDraftChange/);
   assert.match(voice, /structuredFieldText\(summaryDraft, field\.k\)/);

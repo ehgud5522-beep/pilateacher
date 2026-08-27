@@ -331,6 +331,14 @@ function verifyArtifact(policy) {
   console.log(`최종 AAB 검증 통과: ${aabPath}`);
   console.log(`SHA-256: ${artifactSha256}`);
   console.log(`검증 기록: ${proofPath}`);
+  // The policy is what stops a duplicate versionCode reaching Play, and it is
+  // only as good as its last update. Say exactly what to write, at the moment
+  // the numbers are on screen, so the step cannot be lost between sessions.
+  console.log("");
+  console.log("Play 게시가 끝나면 release/android-release-policy.json을 갱신하세요:");
+  console.log(`  "lastPublishedVersionCode": ${candidate.version.versionCode},`);
+  console.log(`  "lastPublishedVersionName": "${candidate.version.versionName}",`);
+  console.log("게시 전에는 갱신하지 않습니다. 갱신 후 다음 릴리스는 versionName을 반드시 올려야 합니다.");
 }
 
 function main() {

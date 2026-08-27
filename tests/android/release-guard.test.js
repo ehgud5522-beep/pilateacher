@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  blockedVersionReason,
   compareNumericVersions,
   hasFirebaseWebClient,
   isAllowedBranch,
@@ -45,6 +46,20 @@ test("이전 또는 같은 버전을 새 버전으로 보지 않는다", () => {
   assert.equal(compareNumericVersions("1.1.11", "1.1.10"), 1);
   assert.equal(compareNumericVersions("1.1.10", "1.1.10"), 0);
   assert.equal(compareNumericVersions("1.1.9", "1.1.10"), -1);
+});
+
+test("versionCode는 반드시 오르고, versionName은 같아도 되지만 낮아질 수 없다", () => {
+  const policy = { lastPublishedVersionCode: 42, lastPublishedVersionName: "1.1.22" };
+  assert.equal(blockedVersionReason({ versionCode: 43, versionName: "1.1.22" }, policy), null,
+    "한 마케팅 버전으로 여러 테스트 빌드를 내는 것이 현재 방식이다");
+  assert.equal(blockedVersionReason({ versionCode: 44, versionName: "1.1.23" }, policy), null);
+  assert.match(blockedVersionReason({ versionCode: 42, versionName: "1.1.22" }, policy), /versionCode 42/,
+    "이미 게시된 코드는 재사용할 수 없다");
+  assert.match(blockedVersionReason({ versionCode: 41, versionName: "1.1.23" }, policy), /versionCode 41/);
+  assert.match(blockedVersionReason({ versionCode: 43, versionName: "1.1.21" }, policy), /versionName 1\.1\.21/,
+    "versionName이 뒤로 가는 것은 실수다");
+  assert.equal(blockedVersionReason({ versionCode: 43, versionName: "beta" }, policy), null,
+    "숫자로 비교할 수 없는 이름은 versionCode 규칙만 적용한다");
 });
 
 test("Android 전용 릴리스 브랜치만 허용한다", () => {

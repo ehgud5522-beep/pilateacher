@@ -37,6 +37,20 @@ export function compareNumericVersions(left, right) {
   return 0;
 }
 
+// Play only requires versionCode to increase, and this project ships several
+// test builds under one marketing version. So an equal versionName is normal;
+// only a versionName going backwards is a mistake.
+export function blockedVersionReason(version, policy) {
+  if (version.versionCode <= policy.lastPublishedVersionCode) {
+    return `versionCode ${version.versionCode}은 Play의 마지막 코드 ${policy.lastPublishedVersionCode}보다 커야 합니다.`;
+  }
+  const nameComparison = compareNumericVersions(version.versionName, policy.lastPublishedVersionName);
+  if (nameComparison !== null && nameComparison < 0) {
+    return `versionName ${version.versionName}은 마지막 버전 ${policy.lastPublishedVersionName}보다 낮습니다.`;
+  }
+  return null;
+}
+
 export function isAllowedBranch(branch, patterns) {
   return patterns.some((pattern) => new RegExp(pattern).test(branch));
 }
@@ -132,17 +146,8 @@ function currentReleaseInfo(policy) {
   if (capacitor.webDir !== "dist") {
     throw new Error(`Capacitor webDir가 dist가 아닙니다: ${capacitor.webDir}`);
   }
-  if (version.versionCode <= policy.lastPublishedVersionCode) {
-    throw new Error(
-      `versionCode ${version.versionCode}은 Play의 마지막 코드 ${policy.lastPublishedVersionCode}보다 커야 합니다.`,
-    );
-  }
-  const nameComparison = compareNumericVersions(version.versionName, policy.lastPublishedVersionName);
-  if (nameComparison !== null && nameComparison <= 0) {
-    throw new Error(
-      `versionName ${version.versionName}은 마지막 버전 ${policy.lastPublishedVersionName}보다 커야 합니다.`,
-    );
-  }
+  const versionProblem = blockedVersionReason(version, policy);
+  if (versionProblem) throw new Error(versionProblem);
 
   const allDependencies = { ...packageJson.dependencies, ...packageJson.devDependencies };
   const missingDependencies = policy.requiredDependencies.filter((name) => !allDependencies[name]);
@@ -338,7 +343,7 @@ function verifyArtifact(policy) {
   console.log("Play 게시가 끝나면 release/android-release-policy.json을 갱신하세요:");
   console.log(`  "lastPublishedVersionCode": ${candidate.version.versionCode},`);
   console.log(`  "lastPublishedVersionName": "${candidate.version.versionName}",`);
-  console.log("게시 전에는 갱신하지 않습니다. 갱신 후 다음 릴리스는 versionName을 반드시 올려야 합니다.");
+  console.log("게시 전에는 갱신하지 않습니다. 다음 릴리스는 versionCode만 올리면 되고, versionName은 같아도 됩니다.");
 }
 
 function main() {

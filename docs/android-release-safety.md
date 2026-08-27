@@ -10,7 +10,9 @@
 
 ### 1. versionCode 올리기
 
-`android/app/build.gradle`의 `versionCode`를 `release/android-release-policy.json`의 `lastPublishedVersionCode`보다 크게 올립니다. `versionName`은 정책의 `lastPublishedVersionName`보다 **반드시 커야 합니다** — 가드는 같은 이름의 재배포를 허용하지 않습니다.
+`android/app/build.gradle`의 `versionCode`를 `release/android-release-policy.json`의 `lastPublishedVersionCode`보다 크게 올립니다. Play가 강제하는 것도 이것뿐입니다.
+
+`versionName`은 정책의 `lastPublishedVersionName`과 **같아도 됩니다**. 한 마케팅 버전으로 테스트 빌드를 여러 번 돌리는 것이 현재 방식이라, 가드는 versionName이 **낮아지는 경우에만** 막습니다.
 
 `tests/android/upgrade-data-preservation.test.js`가 현재 `versionCode`를 고정하고 있으므로 같이 갱신합니다.
 
@@ -45,7 +47,7 @@ npm run android:release:verify -- C:\absolute\path\to\signed-release.aab
 
 배포가 실제로 승인·게시된 뒤에 `release/android-release-policy.json`을 갱신하고 커밋합니다.
 
-- `lastPublishedVersionCode`: 방금 Play에 게시된 버전 코드 — **Play의 최대 versionCode와 항상 같아야 합니다**
+- `lastPublishedVersionCode`: 방금 Play에 게시된 버전 코드 — **Play의 최대 versionCode와 항상 같아야 합니다**. 이 값 하나가 중복 versionCode를 막는 유일한 장치입니다
 - `lastPublishedVersionName`: 방금 게시된 버전 이름
 - `approvedUiBaseCommit`: UI 기준선이 바뀐 릴리스에서만 갱신
 

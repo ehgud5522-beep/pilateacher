@@ -19,6 +19,7 @@ import { getFirestore, collection, deleteDoc, doc, getDoc, getDocs, runTransacti
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { getStorage, ref as storageRef, uploadBytes, getBlob } from "firebase/storage";
 import { withAuthTimeout } from "../features/auth/apple-sign-in.js";
+import { AUTH_STAGES } from "../features/auth/auth-diagnostics.js";
 import { googleNativeSignInOptions } from "../features/auth/google-sign-in.js";
 import { CLOUD_BACKUP_VERSION, backupCounts, evaluateOverwriteRisk, sanitizeFirestorePayload } from "../features/backup/cloud-backup.js";
 
@@ -120,29 +121,66 @@ const requireNativeCredential = (provider, result) => {
 /* ---------------- 로그인 ----------------
    앱에서는 팝업이 뜨지 않으므로 네이티브 로그인 화면을 쓴다.
    웹(브라우저)에서는 기존 팝업 방식 그대로. */
-export async function fbSignInSocial(provider) {
+/**
+ * `onStage` receives one record per step of the native sign-in so a failure can
+ * be located at the stage that produced it. It never receives a token, a nonce,
+ * a credential or an authorization code - only whether each was present.
+ */
+export async function fbSignInSocial(provider, { onStage = () => {} } = {}) {
   if (provider !== "google" && provider !== "apple") providerObject(provider);
   const native = isNative();
   const NA = nativeAuth();
+  const stage = (name, details = {}) => { try { onStage(name, { provider, ...details }); } catch (_error) {} };
   if (native) {
     if (!NA) {
+      stage(AUTH_STAGES.NATIVE_PLUGIN_MISSING, { outcome: "failed", errorDomain: "capacitor_plugin", errorCode: "auth/native-plugin-unavailable" });
       throw Object.assign(new Error("Firebase Authentication native plugin is unavailable."), {
         code: "auth/native-plugin-unavailable",
         authStage: "native_configuration",
         provider,
       });
     }
-    const res = await withAuthTimeout(
-      () => provider === "apple"
-        ? NA.signInWithApple({ skipNativeAuth: true })
-        : NA.signInWithGoogle(googleNativeSignInOptions(nativePlatform())),
-      { timeoutMs: 30000, provider, stage: "native_credential" },
-    );
-    const nativeCredential = requireNativeCredential(provider, res);
-    const out = await withAuthTimeout(
-      () => signInWithCredential(auth, nativeCredential.credential),
-      { timeoutMs: 20000, provider, stage: "firebase_credential_exchange" },
-    );
+    let startedAt = Date.now();
+    stage(AUTH_STAGES.NATIVE_AUTHORIZATION_STARTED);
+    let res;
+    try {
+      res = await withAuthTimeout(
+        () => provider === "apple"
+          ? NA.signInWithApple({ skipNativeAuth: true })
+          : NA.signInWithGoogle(googleNativeSignInOptions(nativePlatform())),
+        { timeoutMs: 30000, provider, stage: "native_credential" },
+      );
+    } catch (error) {
+      stage(AUTH_STAGES.NATIVE_AUTHORIZATION_FAILED, { outcome: "failed", error, elapsedMs: Date.now() - startedAt });
+      throw error;
+    }
+    stage(AUTH_STAGES.NATIVE_AUTHORIZATION_SUCCEEDED, { elapsedMs: Date.now() - startedAt });
+    stage(AUTH_STAGES.CREDENTIAL_INSPECTED, {
+      hasIdToken: Boolean(res?.credential?.idToken),
+      hasNonce: Boolean(res?.credential?.nonce),
+      hasAuthorizationCode: Boolean(res?.credential?.authorizationCode),
+    });
+    let nativeCredential;
+    try {
+      nativeCredential = requireNativeCredential(provider, res);
+    } catch (error) {
+      stage(AUTH_STAGES.CREDENTIAL_REJECTED, { outcome: "failed", error });
+      throw error;
+    }
+    stage(AUTH_STAGES.FIREBASE_CREDENTIAL_CREATED);
+    startedAt = Date.now();
+    stage(AUTH_STAGES.FIREBASE_SIGN_IN_STARTED);
+    let out;
+    try {
+      out = await withAuthTimeout(
+        () => signInWithCredential(auth, nativeCredential.credential),
+        { timeoutMs: 20000, provider, stage: "firebase_credential_exchange" },
+      );
+    } catch (error) {
+      stage(AUTH_STAGES.FIREBASE_AUTH_FAILED, { outcome: "failed", error, elapsedMs: Date.now() - startedAt });
+      throw error;
+    }
+    stage(AUTH_STAGES.FIREBASE_AUTH_SUCCEEDED, { outcome: "succeeded", elapsedMs: Date.now() - startedAt });
     const user = shape(out.user);
     return {
       ...user,

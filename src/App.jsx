@@ -101,6 +101,7 @@ import {
   readRecentAnnotationColors, rememberAnnotationColor, screenPointToImagePoint,
 } from "./features/posture/posture-annotations.js";
 import { LOCAL_PHOTO_NOTICE_MESSAGE, claimLocalPhotoNotice } from "./features/posture/photo-storage-notice.js";
+import { AUTH_STAGES, appendAuthDiagnostic, firstFailedAuthStage, readAuthDiagnostics, readAuthErrorIdentity } from "./features/auth/auth-diagnostics.js";
 import { describeLessonRecordFailure, failureCauseDetail, LESSON_RECORD_FAILURE_CATEGORY, lessonRecordProvenanceSource, takeLessonRecordDebugFailure } from "./features/lesson-record/failure-diagnostics.js";
 import { appendLessonRecordDiagnostic, readLessonRecordDiagnostics } from "./features/lesson-record/pipeline-diagnostics.js";
 import { buildRemoteDiagnosticReport } from "./features/diagnostics/remote-diagnostics.js";
@@ -422,6 +423,30 @@ const deviceLog = (event, details = {}) => {
     });
     console.info(`[PilaTeacher/device] ${event}`, safe);
   } catch (e) {}
+};
+// Which device this is, for a sign-in failure that reproduces on one handset
+// and not another. Model and OS come from the web view user agent; no
+// identifier that could single out a person is read.
+const authDeviceContext = () => {
+  const agent = String(globalThis.navigator?.userAgent || "");
+  const ios = /(?:iPhone|iPad|CPU) OS (\d+(?:[._]\d+)*)/.exec(agent);
+  const android = /Android (\d+(?:\.\d+)*)/.exec(agent);
+  return {
+    appBuild: APP_BUILD_LABEL,
+    platform: Capacitor.getPlatform(),
+    osVersion: (ios?.[1] || android?.[1] || "").replace(/_/g, "."),
+    deviceModel: /\b(iPad|iPhone|iPod)\b/.exec(agent)?.[1] || (Capacitor.getPlatform() === "android" ? "android" : "web"),
+  };
+};
+const recordAuthStage = (stage, details = {}) => {
+  const identity = details.error ? readAuthErrorIdentity(details.error) : {};
+  const entry = appendAuthDiagnostic(stage, { ...authDeviceContext(), ...details, ...identity });
+  deviceLog(`auth_stage_${entry.stage}`, {
+    stage: entry.stage, provider: entry.provider, state: entry.outcome,
+    domain: entry.errorDomain, code: entry.errorCode, message: entry.message,
+    appBuild: entry.appBuild, model: entry.deviceModel,
+  });
+  return entry;
 };
 const cameraPipelineLog = (stage, details = {}) => {
   const source = details.source || "camera";
@@ -1843,10 +1868,14 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
       }
       if (socialGateRef.current.busy) return;
       setBusy(provider);
+      const correlationId = `auth_${provider}_${Date.now().toString(36)}`;
+      const stage = (name, details = {}) => recordAuthStage(name, { provider, correlationId, ...details });
+      stage(AUTH_STAGES.LOGIN_START);
       try {
         await socialGateRef.current.run(async () => {
-          const u = await fbSignInSocial(provider);
+          const u = await fbSignInSocial(provider, { onStage: stage });
           const prof = await fbLoadProfile(u.id);
+          stage(AUTH_STAGES.PROFILE_LOADED, { outcome: "succeeded" });
           if (prof && prof.center) onLogin({ ...u, ...prof, id: u.id }, auto);
           else setSignup({ ...u, provider, center: "", phone: "", fb: true });
         });
@@ -1854,14 +1883,22 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
         const diagnostic = safeAuthDiagnostic(e, { provider, stage: e?.authStage || "sign_in" });
         deviceLog("auth_sign_in_failed", diagnostic);
         const kind = classifyAuthError(e);
-        if (kind !== "cancelled") {
+        // A cancelled sheet is not a failure: record it as its own outcome and
+        // leave the login screen exactly as it was.
+        if (kind === "cancelled") {
+          stage(AUTH_STAGES.LOGIN_CANCELLED, { outcome: "cancelled", error: e });
+        } else {
+          const failure = stage(AUTH_STAGES.LOGIN_FAILED, { outcome: "failed", error: e });
+          const label = provider === "apple" ? "Apple" : "Google";
           const message = kind === "network"
             ? "네트워크 연결을 확인한 뒤 다시 시도해 주세요."
             : kind === "configuration"
-              ? `${provider === "apple" ? "Apple" : "Google"} 로그인 설정을 확인할 수 없습니다. 잠시 뒤 다시 시도해 주세요.`
+              ? `${label} 로그인 설정을 확인할 수 없습니다. 잠시 뒤 다시 시도해 주세요.`
               : kind === "credential"
                 ? "로그인 정보가 만료되었거나 유효하지 않습니다. 다시 로그인해 주세요."
-                : "로그인하지 못했습니다. 잠시 뒤 다시 시도해 주세요.";
+                // An unclassified failure still has to be traceable from the
+                // device, so it carries the code the failing layer produced.
+                : `${label} 로그인을 완료하지 못했습니다 (코드 ${failure.errorCode || "unknown"}).`;
           onToast({ ok: false, msg: message });
         }
       } finally {
@@ -12951,6 +12988,8 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
     return [...confirmed, ...pending].sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 10);
   }, [db.members]);
   const voiceSessionDiagnostics = useMemo(() => showLessonDiagnostics ? readVoiceSessionDiagnostics() : [], [showLessonDiagnostics]);
+  const authDiagnostics = useMemo(() => showLessonDiagnostics ? readAuthDiagnostics() : [], [showLessonDiagnostics]);
+  const firstAuthFailure = useMemo(() => firstFailedAuthStage(authDiagnostics), [authDiagnostics]);
   const diagnosticQueue = useMemo(() => showLessonDiagnostics ? listQueuedLessonRecords() : [], [showLessonDiagnostics, diagnosticQueueRevision]);
   useEffect(() => {
     if (!showLessonDiagnostics) return undefined;
@@ -12971,6 +13010,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
       const report = buildRemoteDiagnosticReport({
         pipelineEvents: readLessonRecordDiagnostics(),
         voiceEvents: readVoiceSessionDiagnostics(),
+        authEvents: readAuthDiagnostics(),
         appInfo,
         deviceInfo: {
           platform: Capacitor.getPlatform(),
@@ -13234,6 +13274,20 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
               <p className="mt-1 break-all" style={{ fontSize: 9, lineHeight: 1.45, color: SUB }}>Gateway: {aiProvider.getStatus().gatewayUrl || "미설정"}</p>
               <button type="button" aria-label="진단 보내기" disabled={diagnosticSending} onClick={sendRemoteDiagnostics} className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 rounded-lg text-xs font-extrabold text-white disabled:opacity-45" style={{ backgroundColor: BRAND }}>{diagnosticSending ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}진단 보내기</button>
               <p className="mt-1.5" style={{ fontSize: 9, lineHeight: 1.45, color: SUB }}>최근 진단 50건과 앱·기기 정보만 전송합니다. 음성·말한 내용은 보내지 않습니다.</p>
+              <div className="mt-3 rounded-lg p-2.5" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
+                <p style={{ fontSize: 11, fontWeight: 700, color: INK }}>로그인 단계 진단</p>
+                {firstAuthFailure
+                  ? <p className="mt-1 break-all" style={{ fontSize: 10, lineHeight: 1.5, color: BAD }}>최초 실패 단계: {firstAuthFailure.stage} · {firstAuthFailure.errorDomain || "domain 없음"} · {firstAuthFailure.errorCode || "code 없음"}</p>
+                  : <p className="mt-1" style={{ fontSize: 10, color: SUB }}>실패한 단계 없음</p>}
+                <div className="mt-2 space-y-1">{authDiagnostics.map((item, index) => <div key={`${item.at}-${index}`} className="rounded-md px-2 py-1" style={{ backgroundColor: PAGE }}>
+                  <p className="tabular-nums" style={{ fontSize: 9, color: item.outcome === "failed" ? BAD : SUB }}>{String(item.at).slice(5, 19).replace("T", " ")} · {item.stage} · {item.outcome}{item.elapsedMs === null ? "" : ` · ${item.elapsedMs}ms`}</p>
+                  {(item.errorDomain || item.errorCode) && <p className="mt-0.5 break-all" style={{ fontSize: 9, lineHeight: 1.4, color: BAD }}>{item.errorDomain} · {item.errorCode}</p>}
+                  {item.message && <p className="mt-0.5 break-all" style={{ fontSize: 8, lineHeight: 1.4, color: SUB }}>{item.message}</p>}
+                  {item.hasIdToken !== null && <p style={{ fontSize: 8, color: SUB }}>idToken {item.hasIdToken ? "있음" : "없음"} · nonce {item.hasNonce ? "있음" : "없음"} · authCode {item.hasAuthorizationCode ? "있음" : "없음"}</p>}
+                  {index === 0 && <p style={{ fontSize: 8, color: SUB }}>{item.platform} {item.osVersion} · {item.deviceModel} · {item.appBuild}</p>}
+                </div>)}</div>
+                {!authDiagnostics.length && <p className="mt-1" style={{ fontSize: 10, color: SUB }}>로그인 시도 기록 없음</p>}
+              </div>
               <IOSMediaDiagnosticPanel memberId={account?.id || "diagnostics"} lessonId="hidden-diagnostics" />
               <div className="mt-2 space-y-1">{diagnosticRecordSources.map((record, index) => <p key={`${record.at}-${index}`} className="tabular-nums" style={{ fontSize: 9, color: SUB }}>기록 {index + 1} · {diagnosticLocalTime(record.at)} · {record.status} · source={record.source} · date={record.dateSource}</p>)}</div>
               <p className="mt-3" style={{ fontSize: 10, fontWeight: 700, color: INK }}>음성 세션 최근 30건</p>

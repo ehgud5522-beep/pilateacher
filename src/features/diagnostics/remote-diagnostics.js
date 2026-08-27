@@ -52,10 +52,38 @@ const voiceEvent = (event) => ({
   height: finite(event?.height),
 });
 
-export function buildRemoteDiagnosticReport({ pipelineEvents = [], voiceEvents = [], appInfo = {}, deviceInfo = {}, now = new Date() } = {}) {
+// Sign-in stage records already arrive scrubbed from auth-diagnostics.js; this
+// only bounds their length so one report cannot grow without limit.
+const authEvent = (event) => ({
+  kind: "auth",
+  at: String(event?.at || ""),
+  feature: safeToken(event?.feature, 40),
+  stage: safeToken(event?.stage, 48),
+  outcome: safeToken(event?.outcome, 16),
+  provider: safeToken(event?.provider, 16),
+  errorDomain: safeToken(event?.errorDomain, 96),
+  errorCode: safeToken(event?.errorCode, 64),
+  message: safeDeviceText(event?.message, 240),
+  correlationId: safeToken(event?.correlationId, 64),
+  appBuild: safeToken(event?.appBuild, 40),
+  platform: safeToken(event?.platform, 24),
+  osVersion: safeToken(event?.osVersion, 40),
+  deviceModel: safeToken(event?.deviceModel, 40),
+  elapsedMs: finite(event?.elapsedMs),
+  hasIdToken: typeof event?.hasIdToken === "boolean" ? event.hasIdToken : null,
+  hasNonce: typeof event?.hasNonce === "boolean" ? event.hasNonce : null,
+  hasAuthorizationCode: typeof event?.hasAuthorizationCode === "boolean" ? event.hasAuthorizationCode : null,
+});
+
+/**
+ * @param {{ pipelineEvents?: any[], voiceEvents?: any[], authEvents?: any[],
+ *   appInfo?: Record<string, any>, deviceInfo?: Record<string, any>, now?: Date }} [options]
+ */
+export function buildRemoteDiagnosticReport({ pipelineEvents = [], voiceEvents = [], authEvents = [], appInfo = {}, deviceInfo = {}, now = new Date() } = {}) {
   const logs = [
     ...pipelineEvents.map(pipelineEvent),
     ...voiceEvents.map(voiceEvent),
+    ...authEvents.map(authEvent),
   ].filter((event) => event.at)
     .sort((a, b) => String(b.at).localeCompare(String(a.at)))
     .slice(0, MAX_REMOTE_DIAGNOSTICS);

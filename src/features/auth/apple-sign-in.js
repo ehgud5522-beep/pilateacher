@@ -135,9 +135,40 @@ function matchesAny(haystack, values) {
   return values.some((value) => haystack.includes(value));
 }
 
+export const APPLE_AUTHORIZATION_ERROR_DOMAIN = "com.apple.AuthenticationServices.AuthorizationError";
+
+// ASAuthorizationError codes. Apple states the outcome exactly, so this must be
+// read before any text matching: the localized description of a cancellation
+// says nothing about cancelling, and guessing from words is how a cancelled
+// sheet ends up reported as a network problem.
+const APPLE_AUTHORIZATION_KINDS = Object.freeze({
+  1000: APPLE_SIGN_IN_ERROR_KINDS.UNKNOWN,
+  1001: APPLE_SIGN_IN_ERROR_KINDS.CANCELLED,
+  1002: APPLE_SIGN_IN_ERROR_KINDS.CREDENTIAL,
+  1003: APPLE_SIGN_IN_ERROR_KINDS.UNKNOWN,
+  1004: APPLE_SIGN_IN_ERROR_KINDS.UNKNOWN,
+  1005: APPLE_SIGN_IN_ERROR_KINDS.UNKNOWN,
+});
+
+/** Reads the ASAuthorizationError code, whether it arrives as a field or inside the code string. */
+export function appleAuthorizationErrorCode(error) {
+  if (!error || typeof error !== "object") return undefined;
+  const domain = boundedString(readErrorField(error, "errorDomain"), 96);
+  const code = boundedString(readErrorField(error, "code"), 160);
+  const fromCode = new RegExp(`^native:${APPLE_AUTHORIZATION_ERROR_DOMAIN.replace(/\./g, "\\.")}:(-?\\d+)$`).exec(code);
+  if (fromCode) return Number(fromCode[1]);
+  if (domain !== APPLE_AUTHORIZATION_ERROR_DOMAIN) return undefined;
+  const raw = readErrorField(error, "errorCode");
+  const numeric = typeof raw === "number" ? raw : Number(boundedString(raw, 16));
+  return Number.isFinite(numeric) ? numeric : undefined;
+}
+
 export function classifyAppleSignInError(error) {
   const searchText = errorSearchText(error);
   const numericCode = errorNumericCode(error);
+
+  const authorizationCode = appleAuthorizationErrorCode(error);
+  if (authorizationCode !== undefined) return APPLE_AUTHORIZATION_KINDS[authorizationCode] ?? APPLE_SIGN_IN_ERROR_KINDS.UNKNOWN;
 
   if (numericCode === 1001 || matchesAny(searchText, CODE_PATTERNS.cancelled)) {
     return APPLE_SIGN_IN_ERROR_KINDS.CANCELLED;

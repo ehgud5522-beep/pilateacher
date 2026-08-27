@@ -20,6 +20,7 @@ export function readLessonRecordDiagnostics(storage = globalThis.localStorage) {
 }
 
 export function appendLessonRecordDiagnostic(event, storage = globalThis.localStorage) {
+  const safeIds = (values) => Array.isArray(values) ? values.slice(0, 8).map((value) => safeToken(value, 120)) : [];
   const next = [{
     code: safeToken(event?.code),
     stage: safeToken(event?.stage),
@@ -31,6 +32,18 @@ export function appendLessonRecordDiagnostic(event, storage = globalThis.localSt
     gatewayUrl: event?.gatewayUrl ? safeText(event.gatewayUrl) : "",
     causeName: event?.causeName ? safeToken(event.causeName, 80) : "",
     causeMessage: event?.causeMessage ? safeText(event.causeMessage, 180) : "",
+    draftMemberId: event?.draftMemberId ? safeToken(event.draftMemberId, 120) : "",
+    requestedMemberId: event?.requestedMemberId ? safeToken(event.requestedMemberId, 120) : "",
+    scheduleId: event?.scheduleId ? safeToken(event.scheduleId, 120) : "",
+    lessonId: event?.lessonId ? safeToken(event.lessonId, 120) : "",
+    scheduleMemberId: event?.scheduleMemberId ? safeToken(event.scheduleMemberId, 120) : "",
+    scheduleMemberIds: safeIds(event?.scheduleMemberIds),
+    memberDocumentId: event?.memberDocumentId ? safeToken(event.memberDocumentId, 120) : "",
+    existingNoteId: event?.existingNoteId ? safeToken(event.existingNoteId, 120) : "",
+    previousNoteId: event?.previousNoteId ? safeToken(event.previousNoteId, 120) : "",
+    previousLessonId: event?.previousLessonId ? safeToken(event.previousLessonId, 120) : "",
+    linkDecision: event?.linkDecision ? safeToken(event.linkDecision, 80) : "",
+    linkReason: event?.linkReason ? safeToken(event.linkReason, 80) : "",
     at: String(event?.at || new Date().toISOString()),
   }, ...readLessonRecordDiagnostics(storage)].slice(0, MAX_EVENTS);
   try { storage?.setItem(STORAGE_KEY, JSON.stringify(next)); } catch (_error) {}

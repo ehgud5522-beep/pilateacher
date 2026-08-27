@@ -20,9 +20,10 @@ const coordinator = new DualWriteCoordinator({
 let writerPromise;
 async function getWriter() {
   if (!writerPromise) {
-    writerPromise = import("firebase/firestore").then(({ doc, getFirestore, serverTimestamp, setDoc }) => ({
+    writerPromise = import("firebase/firestore").then(({ deleteDoc, doc, getFirestore, serverTimestamp, setDoc }) => ({
       serverTimestamp,
       merge: (path, data) => setDoc(doc(getFirestore(), path), data, { merge: true }),
+      remove: (path) => deleteDoc(doc(getFirestore(), path)),
     }));
   }
   return writerPromise;
@@ -61,6 +62,7 @@ export async function runAppDualWrite(account, descriptor, legacyWrite) {
         if (descriptor.operation === "archive") {
           return repository.archiveClient(context, { ...descriptor.payload, status: CLIENT_STATUS.ENDED });
         }
+        if (descriptor.operation === "delete") return repository.deleteClient(context, descriptor.entityId);
         return descriptor.operation === "create"
           ? repository.createClient(context, descriptor.payload)
           : repository.updateClient(context, descriptor.payload);

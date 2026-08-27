@@ -75,6 +75,9 @@ export class FirestoreClientRepository extends ClientRepository {
   archiveClient(context, client) {
     return this.saveClientSnapshot(context, { ...client, status: CLIENT_STATUS.ENDED });
   }
+  deleteClient(context, clientId) {
+    return this.writer.remove(paths.organizationClient(context.organizationId, required(clientId, "clientId")));
+  }
   getClientById() { throw new Error("New Firestore reads are disabled in dual-write v1"); }
   listClients() { throw new Error("New Firestore reads are disabled in dual-write v1"); }
   saveClientSnapshot(context, client) {

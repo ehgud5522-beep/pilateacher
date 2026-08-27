@@ -25,7 +25,7 @@ export function scheduleLessonRecordRetry(memberId, lessonId, failure, storage =
 
 const appendTranscript = (current, incoming) => [String(current || "").trim(), String(incoming || "").trim()].filter(Boolean).join(" ").trim();
 
-export async function runLessonRecordRetryCycle({ llmProvider, audioProvider = null, loadAudio = null, deleteAudio = null, storage = globalThis.localStorage, now = Date.now(), online = globalThis.navigator?.onLine !== false, aiStatus = "normal", onDiagnostic = () => {}, onVoiceEvent = () => {}, onPromoted = () => {} } = {}) {
+export async function runLessonRecordRetryCycle({ llmProvider, audioProvider = null, loadAudio = null, deleteAudio = null, beforeAttempt = null, storage = globalThis.localStorage, now = Date.now(), online = globalThis.navigator?.onLine !== false, aiStatus = "normal", onDiagnostic = () => {}, onVoiceEvent = () => {}, onPromoted = () => {} } = {}) {
   if (!online || aiStatus !== "normal" || !llmProvider) return { processed: 0, promoted: 0, failed: 0 };
   let processed = 0;
   let promoted = 0;
@@ -39,6 +39,16 @@ export async function runLessonRecordRetryCycle({ llmProvider, audioProvider = n
     processed += 1;
     const attempts = Math.max(0, Number(draft.retry.attempts) || 0) + 1;
     try {
+      if (typeof beforeAttempt === "function") {
+        const link = await beforeAttempt({ memberId: draft.memberId, lessonId: draft.lessonId, draft });
+        if (link?.state === "link_review_required") {
+          throw Object.assign(new Error("current lesson and member are not linked"), {
+            code: "member_session_unresolved",
+            retryable: false,
+            link,
+          });
+        }
+      }
       if (pendingAudio) {
         if (!audioProvider || typeof loadAudio !== "function") throw Object.assign(new Error("audio retry dependencies unavailable"), { code: "provider_configuration", retryable: false });
         const blob = await loadAudio(pendingAudio.blobId);
@@ -112,7 +122,10 @@ export async function runLessonRecordRetryCycle({ llmProvider, audioProvider = n
         retry: retryable ? { state: "waiting", attempts, nextRetryAt: now + LESSON_RECORD_RETRY_DELAYS_MS[Math.min(attempts, 4)] } : null,
       }, storage);
       failed += 1;
-      onDiagnostic({ code: descriptor.internalCode, stage: "background_retry", category: descriptor.category, requestId: error?.requestId, transportCode: error?.transportCode, httpStatus: error?.status, gatewayUrl: error?.gatewayUrl, causeName: error?.causeName, causeMessage: error?.causeMessage });
+      onDiagnostic({ code: descriptor.internalCode, stage: "background_retry", category: descriptor.category, requestId: error?.requestId, transportCode: error?.transportCode, httpStatus: error?.status, gatewayUrl: error?.gatewayUrl, causeName: error?.causeName, causeMessage: error?.causeMessage,
+        draftMemberId: draft.memberId, requestedMemberId: draft.memberId, scheduleId: draft.lessonId, lessonId: draft.lessonId,
+        scheduleMemberId: error?.link?.scheduleMemberId, scheduleMemberIds: error?.link?.scheduleMemberIds,
+        memberDocumentId: error?.link?.memberDocumentId, linkDecision: error?.link?.state, linkReason: error?.link?.reason });
     } finally {
       inFlight.delete(key);
     }

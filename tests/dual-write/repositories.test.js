@@ -17,6 +17,13 @@ test("client repository uses stable ID and organization-scoped path", async () =
   assert.equal("createdBy" in writes[1][1], false);
 });
 
+test("client repository physically deletes the selected member document", async () => {
+  const removals = [];
+  const repository = new FirestoreClientRepository({ merge: async () => {}, remove: async (...args) => removals.push(args) });
+  await repository.deleteClient(context, "client-1");
+  assert.deepEqual(removals, [["organizations/org-1/clients/client-1"]]);
+});
+
 test("lesson document stores a count and never embeds participant arrays", async () => {
   const writes = [];
   const repository = new FirestoreLessonRepository({ merge: async (...args) => writes.push(args) });

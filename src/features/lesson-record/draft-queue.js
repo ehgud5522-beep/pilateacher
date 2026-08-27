@@ -1,5 +1,5 @@
 const STORAGE_KEY = "pilateacher_lesson_record_queue_v1";
-const keyOf = (memberId, lessonId) => `${String(memberId || "unknown")}:${String(lessonId || "general")}`;
+export const lessonRecordSessionKey = (memberId, lessonId) => `${String(memberId || "unknown")}:${String(lessonId || "general")}`;
 
 export const LESSON_RECORD_DRAFT_STATE = Object.freeze({
   RAW: "draft_raw",
@@ -21,7 +21,7 @@ const readAll = (storage) => {
 
 export function savePendingLessonRecord(memberId, lessonId, draft, storage = globalThis.localStorage) {
   const all = readAll(storage);
-  const key = keyOf(memberId, lessonId);
+  const key = lessonRecordSessionKey(memberId, lessonId);
   const previous = all[key] || {};
   const now = new Date().toISOString();
   const structured = Boolean(draft?.structuredDraft);
@@ -43,12 +43,15 @@ export function savePendingLessonRecord(memberId, lessonId, draft, storage = glo
 }
 
 export function loadPendingLessonRecord(memberId, lessonId, storage = globalThis.localStorage) {
-  return readAll(storage)[keyOf(memberId, lessonId)] || null;
+  const draft = readAll(storage)[lessonRecordSessionKey(memberId, lessonId)] || null;
+  if (!draft) return null;
+  return String(draft.memberId || "") === String(memberId || "")
+    && String(draft.lessonId || "") === String(lessonId || "") ? draft : null;
 }
 
 export function removePendingLessonRecord(memberId, lessonId, storage = globalThis.localStorage) {
   const all = readAll(storage);
-  delete all[keyOf(memberId, lessonId)];
+  delete all[lessonRecordSessionKey(memberId, lessonId)];
   try { storage?.setItem(STORAGE_KEY, JSON.stringify(all)); } catch (_error) {}
 }
 
@@ -56,7 +59,7 @@ export function listPendingLessonRecords(storage = globalThis.localStorage) {
   return Object.values(readAll(storage));
 }
 
-const NON_RETRYABLE_FAILURE_CODES = new Set(["consent_required", "consent_missing", "stt_no_speech", "no_speech"]);
+const NON_RETRYABLE_FAILURE_CODES = new Set(["consent_required", "consent_missing", "member_session_unresolved", "link_review_required", "stt_no_speech", "no_speech"]);
 const pendingBlobIdsOf = (draft) => [...new Set([
   draft?.audioBlobId,
   ...(draft?.audioClips || []).filter((clip) => clip?.state !== "uploaded").map((clip) => clip?.blobId),
@@ -83,7 +86,7 @@ export function clearQueuedLessonRecordAudio(targets, storage = globalThis.local
   const blobIds = [];
   let cleared = 0;
   (targets || []).forEach((target) => {
-    const key = keyOf(target?.memberId, target?.lessonId);
+    const key = lessonRecordSessionKey(target?.memberId, target?.lessonId);
     const draft = all[key];
     if (!draft) return;
     const removedBlobIds = [...new Set((target?.blobIds || []).filter(Boolean))];
@@ -128,6 +131,21 @@ export function clearQueuedLessonRecords(storage = globalThis.localStorage) {
     blobIds: pendingBlobIdsOf(draft),
     clearRetry: true,
   })), storage);
+}
+
+export function removePendingLessonRecordsForMember(memberId, storage = globalThis.localStorage) {
+  const target = String(memberId || "");
+  const all = readAll(storage);
+  const blobIds = [];
+  let removed = 0;
+  Object.entries(all).forEach(([key, draft]) => {
+    if (String(draft?.memberId || "") !== target) return;
+    blobIds.push(...pendingBlobIdsOf(draft));
+    delete all[key];
+    removed += 1;
+  });
+  try { storage?.setItem(STORAGE_KEY, JSON.stringify(all)); } catch (_error) {}
+  return { removed, blobIds: [...new Set(blobIds)] };
 }
 
 export function patchPendingLessonRecord(memberId, lessonId, patch, storage = globalThis.localStorage) {

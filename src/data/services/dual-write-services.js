@@ -14,8 +14,12 @@ export class ClientDualWriteService {
   archive(context, client, legacyWrite) {
     return this.run(context, client, DUAL_WRITE_OPERATION.ARCHIVE, legacyWrite, () => this.repository.archiveClient(context, client));
   }
+  delete(context, clientId, legacyWrite) {
+    return this.run(context, clientId, DUAL_WRITE_OPERATION.DELETE, legacyWrite, () => this.repository.deleteClient(context, clientId));
+  }
   run(context, client, operation, legacyWrite, newWrite) {
-    return this.coordinator.execute({ context, entityType: "client", entityId: client.id, operation, legacyWrite, newWrite });
+    const entityId = typeof client === "string" ? client : client.id;
+    return this.coordinator.execute({ context, entityType: "client", entityId, operation, legacyWrite, newWrite });
   }
 }
 

@@ -12,6 +12,7 @@ export class LegacyClientRepository extends ClientRepository {
   createClient(context, client) { return this.callbacks.createClient(context, client); }
   updateClient(context, client) { return this.callbacks.updateClient(context, client); }
   archiveClient(context, client) { return this.callbacks.archiveClient(context, client); }
+  deleteClient(context, clientId) { return this.callbacks.deleteClient(context, clientId); }
   getClientById(context, clientId) { return this.callbacks.getClientById(context, clientId); }
   listClients(context) { return this.callbacks.listClients(context); }
   saveClientSnapshot(context, client) { return this.callbacks.saveClientSnapshot(context, client); }

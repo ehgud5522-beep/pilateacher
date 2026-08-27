@@ -6,6 +6,7 @@ export class ClientRepository {
   createClient(_context, _client) { throw new Error("Not implemented"); }
   updateClient(_context, _client) { throw new Error("Not implemented"); }
   archiveClient(_context, _client) { throw new Error("Not implemented"); }
+  deleteClient(_context, _clientId) { throw new Error("Not implemented"); }
   getClientById(_context, _clientId) { throw new Error("Not implemented"); }
   listClients(_context) { throw new Error("Not implemented"); }
   saveClientSnapshot(_context, _client) { throw new Error("Not implemented"); }

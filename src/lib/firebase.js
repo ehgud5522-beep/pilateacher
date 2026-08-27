@@ -15,7 +15,7 @@ import {
   EmailAuthProvider, createUserWithEmailAndPassword, signInWithEmailAndPassword,
   reauthenticateWithCredential, reauthenticateWithPopup, revokeAccessToken, updateProfile,
 } from "firebase/auth";
-import { getFirestore, collection, doc, getDoc, getDocs, runTransaction, setDoc, serverTimestamp } from "firebase/firestore";
+import { getFirestore, collection, deleteDoc, doc, getDoc, getDocs, runTransaction, setDoc, serverTimestamp } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { getStorage, ref as storageRef, uploadBytes, getBlob } from "firebase/storage";
 import { withAuthTimeout } from "../features/auth/apple-sign-in.js";
@@ -553,6 +553,17 @@ export async function fbRevokeAIConsent(memberId) {
     }, { merge: true }),
     { timeoutMs: FIRESTORE_WRITE_TIMEOUT_MS, provider: "firebase", stage: "ai_consent_revoke" },
   );
+}
+
+export async function fbDeleteAIConsent(memberId) {
+  const user = auth?.currentUser;
+  if (!fs || !user) return false;
+  const safeMemberId = aiConsentMemberId(memberId);
+  await withAuthTimeout(
+    () => deleteDoc(doc(fs, "users", user.uid, "aiConsents", safeMemberId)),
+    { timeoutMs: FIRESTORE_WRITE_TIMEOUT_MS, provider: "firebase", stage: "ai_consent_delete" },
+  );
+  return true;
 }
 
 export async function fbLoadAIRecordingStatus() {

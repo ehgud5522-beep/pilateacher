@@ -182,7 +182,7 @@ test("schedule detail uses three final statuses and native speech recognition ow
   assert.doesNotMatch(schedule, /\b말하기\b/);
   ["기록하기", "직접입력", "노코멘트", "나중에", "닫기"].forEach((label) => assert.match(schedule, new RegExp(label)));
   assert.match(schedule, /setRecordMode\(recordMode === "voice" \? null : "voice"\)/);
-  assert.match(schedule, /<VoiceNote memberId=/);
+  assert.match(schedule, /<VoiceNote[^>]*memberId=/);
   assert.doesNotMatch(schedule, /<VoiceNote autoStart/);
   assert.match(schedule, /onDirectEntry=\{\(message\) => \{[\s\S]*setRecordMode\("write"\)/);
   assert.match(source, /const timeOf = \(stamp\) =>/);

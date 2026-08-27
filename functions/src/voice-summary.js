@@ -77,11 +77,16 @@ function createVoiceSummaryHandler({
         uid,
         lessonId: input.lessonId,
         memberId: input.memberId,
-        operation: OPERATION,
+        operation: CLIENT_OPERATION,
         idempotencyKey: input.idempotencyKey,
       };
       const consent = await policyService.checkConsent(policyContext);
-      if (consent?.allowed !== true) throw new GatewayError("consent_required");
+      if (consent?.allowed !== true) {
+        const reason = String(consent?.reason || "authorization_denied");
+        if (["consent_missing", "consent_not_granted"].includes(reason)) throw new GatewayError("consent_required");
+        if (["backup_missing", "member_not_owned", "lesson_not_owned"].includes(reason)) throw new GatewayError("invalid_request", { status: 403 });
+        throw new GatewayError("provider_unavailable");
+      }
       const rateLimit = await policyService.checkRateLimit(policyContext);
       if (rateLimit?.allowed !== true) {
         if (Number.isFinite(rateLimit?.retryAfterSeconds)) res.set("Retry-After", String(Math.max(1, Math.ceil(rateLimit.retryAfterSeconds))));

@@ -21,7 +21,7 @@ export function lessonRecordProvenanceSource(value) {
 }
 
 const detailsByCode = Object.freeze({
-  stt_no_speech: { category: "INPUT", userCode: "E-VOICE", title: "말소리가 인식되지 않았어요", description: "다시 말하거나 직접 입력할 수 있어요.", retry: true },
+  stt_no_speech: { category: "INPUT", userCode: "E-VOICE", title: "말소리가 인식되지 않았어요", description: "다시 말하거나 직접 입력할 수 있어요.", retry: false },
   mic_permission_denied: { category: "INPUT", userCode: "E-MIC-PERMISSION", title: "마이크 권한이 필요해요", description: "기기 설정에서 마이크와 음성 인식 권한을 허용해 주세요.", retry: false },
   recognizer_busy: { category: "TEMPORARY", userCode: "E-STT-BUSY", title: "음성 인식을 준비하고 있어요", description: "잠시 후 다시 시도하거나 직접 입력할 수 있어요.", retry: true },
   recognizer_unavailable: { category: "SERVICE", userCode: "E-STT-UNAVAILABLE", title: "이 기기에서는 말하기를 사용할 수 없어요", description: "직접 입력으로 수업 기록을 남길 수 있어요.", retry: false },

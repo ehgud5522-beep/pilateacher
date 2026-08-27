@@ -28,7 +28,7 @@ import {
 import {
   fbReady, fbSignInSocial, fbSignInEmail, fbSignUpEmail, fbSignOut, fbOnAuth,
   fbLoadProfile, fbSaveProfile, fbPushBackup, fbPullBackup, fbReauthenticate,
-  fbRevokeAppleAccess, fbDeleteCurrentUserAccount, fbLoadAIConsent, fbGrantAIConsent,
+  fbRevokeAppleAccess, fbDeleteCurrentUserAccount, fbLoadAIConsent, fbGrantAIConsent, fbCurrentUserId,
   fbLoadAIRecordingStatus, fbSendDiagnosticReport, fbWritePilotMetricAttempt,
   fbListPhotoBackups, fbUploadPhotoBackup, fbDownloadPhotoBackup, fbSoftDeletePhotoBackup, fbPurgeExpiredPhotoBackups,
   AI_CONSENT_POLICY_VERSION, AI_CONSENT_SCOPES,
@@ -73,7 +73,7 @@ import {
 } from "./features/lesson-record/record-schema.js";
 import { createSttProvider, MAX_STT_SECONDS } from "./features/lesson-record/stt-provider.js";
 import {
-  listPendingLessonRecords, loadPendingLessonRecord, pendingLessonRecordLabel,
+  clearQueuedLessonRecordAudio, listPendingLessonRecords, listQueuedLessonRecords, loadPendingLessonRecord, pendingLessonRecordLabel,
   removePendingLessonRecord, savePendingLessonRecord, wakeDormantLessonRecordRetries,
 } from "./features/lesson-record/draft-queue.js";
 import { trackLessonRecordUsage } from "./features/lesson-record/usage-telemetry.js";
@@ -182,19 +182,41 @@ const AI_CONSENT_PROMPT = [
 ].join("\n");
 
 const AI_CONSENT_CACHE_KEY = "pilateacher_ai_consent_cache_v1";
+const AI_CONSENT_SESSION_CHECKS = new Set();
+const resetAIConsentSessionChecks = () => AI_CONSENT_SESSION_CHECKS.clear();
 const readAIConsentCache = () => {
   try { return JSON.parse(globalThis.localStorage?.getItem(AI_CONSENT_CACHE_KEY) || "{}") || {}; }
   catch (_error) { return {}; }
 };
-const cacheMemberAIConsent = (memberId, consent) => {
+const aiConsentCacheId = (memberId, accountId = fbCurrentUserId()) => `${String(accountId || "signed-out")}:${String(memberId || "")}`;
+const cacheMemberAIConsent = (memberId, consent, accountId = fbCurrentUserId()) => {
   try {
     const all = readAIConsentCache();
-    all[String(memberId)] = { policyVersion: consent.policyVersion, scopes: consent.scopes, cachedAt: new Date().toISOString() };
+    const key = aiConsentCacheId(memberId, accountId);
+    all[key] = {
+      accountId: String(accountId || ""),
+      memberId: String(memberId || ""),
+      status: consent.status || "granted",
+      policyVersion: consent.policyVersion,
+      scopes: consent.scopes,
+      revokedAt: consent.revokedAt || null,
+      cachedAt: new Date().toISOString(),
+    };
     globalThis.localStorage?.setItem(AI_CONSENT_CACHE_KEY, JSON.stringify(all));
+    AI_CONSENT_SESSION_CHECKS.add(key);
   } catch (_error) {}
 };
-const invalidateMemberAIConsent = (memberId) => {
-  try { const all = readAIConsentCache(); delete all[String(memberId)]; globalThis.localStorage?.setItem(AI_CONSENT_CACHE_KEY, JSON.stringify(all)); }
+const invalidateMemberAIConsent = (memberId, accountId = fbCurrentUserId()) => {
+  try {
+    const all = readAIConsentCache();
+    const key = aiConsentCacheId(memberId, accountId);
+    delete all[key];
+    // Remove the pre-H-8 UID-blind entry so a recreated Firebase account can
+    // never reuse consent cached for the previous uid.
+    delete all[String(memberId)];
+    AI_CONSENT_SESSION_CHECKS.delete(key);
+    globalThis.localStorage?.setItem(AI_CONSENT_CACHE_KEY, JSON.stringify(all));
+  }
   catch (_error) {}
 };
 
@@ -206,17 +228,35 @@ const aiConsentAllows = (consent, operation) => Boolean(
   && !consent?.revokedAt
 );
 
-async function ensureMemberAIConsent(memberId, operation) {
+async function grantMemberAIConsent(memberId, scopes = AI_CONSENT_SCOPES, expectedAccountId = fbCurrentUserId()) {
+  if (!expectedAccountId || fbCurrentUserId() !== expectedAccountId) throw Object.assign(new Error("Authentication changed."), { code: "auth/unauthenticated" });
+  const current = await fbLoadAIConsent(memberId);
+  if (fbCurrentUserId() !== expectedAccountId) throw Object.assign(new Error("Authentication changed."), { code: "auth/unauthenticated" });
+  const existingScopes = current?.status === "granted" && current?.policyVersion === AI_CONSENT_POLICY_VERSION && !current?.revokedAt
+    ? current.scopes || []
+    : [];
+  const granted = await fbGrantAIConsent(memberId, [...new Set([...existingScopes, ...scopes])]);
+  if (fbCurrentUserId() !== expectedAccountId) throw Object.assign(new Error("Authentication changed."), { code: "auth/unauthenticated" });
+  cacheMemberAIConsent(memberId, granted, expectedAccountId);
+  return granted;
+}
+
+async function ensureMemberAIConsent(memberId, operation, { prompt = true, forceRemote = false } = {}) {
   if (!memberId) return { ok: false, message: "AI 처리를 적용할 회원을 먼저 선택해 주세요." };
-  const cached = readAIConsentCache()[String(memberId)];
-  if (cached?.policyVersion === AI_CONSENT_POLICY_VERSION && cached?.scopes?.includes?.(operation)) return { ok: true, cached: true };
+  const accountId = fbCurrentUserId();
+  if (!accountId) return { ok: false, message: "AI 기능을 사용하려면 다시 로그인해 주세요." };
+  const cacheKey = aiConsentCacheId(memberId, accountId);
+  const cached = readAIConsentCache()[cacheKey];
+  if (!forceRemote && AI_CONSENT_SESSION_CHECKS.has(cacheKey) && aiConsentAllows(cached, operation)) return { ok: true, cached: true };
   try {
     const current = await fbLoadAIConsent(memberId);
-    if (aiConsentAllows(current, operation)) { cacheMemberAIConsent(memberId, current); return { ok: true, newlyGranted: false }; }
+    if (fbCurrentUserId() !== accountId) return { ok: false, message: "로그인 상태가 변경되었습니다. 다시 시도해 주세요." };
+    if (aiConsentAllows(current, operation)) { cacheMemberAIConsent(memberId, current, accountId); return { ok: true, newlyGranted: false }; }
+    invalidateMemberAIConsent(memberId, accountId);
+    if (!prompt) return { ok: false, code: "consent_required", message: "AI 수업기록 이용 동의가 필요합니다." };
     const accepted = typeof window !== "undefined" && window.confirm(AI_CONSENT_PROMPT);
     if (!accepted) return { ok: false, message: "회원의 AI 처리 동의를 확인한 뒤 다시 시도해 주세요." };
-    const granted = await fbGrantAIConsent(memberId, AI_CONSENT_SCOPES);
-    cacheMemberAIConsent(memberId, granted);
+    await grantMemberAIConsent(memberId, AI_CONSENT_SCOPES, accountId);
     return { ok: true, newlyGranted: true };
   } catch (error) {
     return {
@@ -9950,6 +9990,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
   const [summaryError, setSummaryError] = useState("");
   const [summaryFailureClass, setSummaryFailureClass] = useState("");
   const [summaryFailure, setSummaryFailure] = useState(null);
+  const [consentGate, setConsentGate] = useState(null);
   const [organizationTimedOut, setOrganizationTimedOut] = useState(false);
   const [summaryEditing, setSummaryEditing] = useState(false);
   const [showValueGuide, setShowValueGuide] = useState(() => shouldShowLessonRecordGuide(globalThis.localStorage));
@@ -9988,6 +10029,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
   const transcriptInputRef = useRef(null);
   const amplitudeTimerRef = useRef(null);
   const amplitudeSamplesRef = useRef([]);
+  const amplitudeMeterErrorLoggedRef = useRef(false);
   const recorderPrewarmedRef = useRef(false);
   const serverStartFailuresRef = useRef(0);
   const captureRequestedAtRef = useRef(0);
@@ -9999,6 +10041,8 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
   const backgroundStopRef = useRef(false);
   const publishedDraftSignatureRef = useRef("");
   const organizationTimeoutRef = useRef(null);
+  const consentContinuationRef = useRef(null);
+  const consentDeclineRef = useRef(null);
   const voiceDiagnostic = (event, details = {}) => appendVoiceSessionDiagnostic(event, {
     source: details.source || sourceRef.current || "unknown",
     ...details,
@@ -10221,9 +10265,29 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       } else if (pending.status === "queued" || pending.status === "unstructured") {
         setSummaryStatus(pending.status);
       }
-      if ((pending.audioClips || []).some((clip) => clip?.blobId && clip?.state !== "uploaded")) {
+      const pendingAudio = (pending.audioClips || []).find((clip) => clip?.blobId && clip?.state !== "uploaded");
+      if (pendingAudio) {
         setAudioState("saved");
-        setSilenceNotice(globalThis.navigator?.onLine === false ? "연결되면 정리돼요." : "저장됨 · 정리 중");
+        if (pending?.failure?.code === "consent_missing") {
+          window.setTimeout(() => presentVoiceConsent(async () => {
+            setFinishing(true);
+            setSummaryBusy(true);
+            try {
+              await uploadServerAudio(pendingAudio, loadPendingLessonRecord(memberId, lessonId) || pending);
+            } catch (error) {
+              await handleServerAudioFailure(error, pendingAudio, loadPendingLessonRecord(memberId, lessonId) || pending, false);
+            }
+          }, "AI 수업기록 이용 동의가 필요합니다.", () => discardConsentAudio(pendingAudio, pending)), 0);
+        } else if (pending?.retry?.state) {
+          setSilenceNotice(globalThis.navigator?.onLine === false ? "연결되면 정리돼요." : "저장됨 · 정리 중");
+        } else {
+          const failure = describeLessonRecordFailure({ code: pending?.failure?.code || "unknown" });
+          setSummaryFailure(failure);
+          setSummaryFailureClass(failure.category);
+          setSummaryError(failure.title);
+          setErr(failure.title);
+          setSilenceNotice("");
+        }
       }
     };
     const onUpdated = (event) => {
@@ -10401,6 +10465,49 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     setManualEntry(true);
     if (typeof onDirectEntry === "function") onDirectEntry(fallbackMessage);
     else window.setTimeout(() => transcriptInputRef.current?.focus(), 0);
+  };
+  const presentVoiceConsent = (continuation, message = "AI 수업기록 이용 동의가 필요합니다.", onDecline = null) => {
+    consentContinuationRef.current = typeof continuation === "function" ? continuation : null;
+    consentDeclineRef.current = typeof onDecline === "function" ? onDecline : null;
+    setFinishing(false);
+    setSummaryBusy(false);
+    setOrganizationTimedOut(false);
+    setSilenceNotice("");
+    setErr("");
+    setSummaryError(message);
+    setSummaryFailureClass("INPUT");
+    setSummaryFailure({ title: message, category: "INPUT", internalCode: "consent_missing" });
+    setConsentGate({ busy: false, error: "" });
+  };
+  const approveVoiceConsent = async () => {
+    if (consentGate?.busy) return;
+    setConsentGate((current) => ({ ...(current || {}), busy: true, error: "" }));
+    try {
+      await grantMemberAIConsent(memberId, ["summarizeVoice"]);
+      const continuation = consentContinuationRef.current;
+      consentContinuationRef.current = null;
+      consentDeclineRef.current = null;
+      setConsentGate(null);
+      setSummaryError("");
+      setSummaryFailureClass("");
+      setSummaryFailure(null);
+      setErr("");
+      if (continuation) await continuation();
+    } catch (error) {
+      setConsentGate({ busy: false, error: error?.code === "auth/unauthenticated" ? "로그인이 만료되었습니다. 다시 로그인해 주세요." : "동의를 저장하지 못했습니다. 네트워크를 확인한 뒤 다시 시도해 주세요." });
+    }
+  };
+  const declineVoiceConsent = () => {
+    const onDecline = consentDeclineRef.current;
+    consentContinuationRef.current = null;
+    consentDeclineRef.current = null;
+    setConsentGate(null);
+    setSummaryError("");
+    setSummaryFailureClass("");
+    setSummaryFailure(null);
+    setErr("");
+    try { onDecline?.(); } catch (_error) {}
+    fallbackToDirectEntry("동의하지 않아 직접 입력으로 전환했습니다.");
   };
   const requestVoicePermission = async () => {
     if (VOICE_ENGINE_MODE === "server") {
@@ -10741,6 +10848,68 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     });
     return promoteServerAudioResult(result, clip, previousDraft);
   };
+  const discardConsentAudio = (clip, previousDraft) => {
+    if (clip?.blobId) forgetBlobs([clip.blobId]);
+    const currentDraft = loadPendingLessonRecord(memberId, lessonId) || previousDraft || {};
+    const remainingClips = (currentDraft.audioClips || []).filter((item) => item?.requestId !== clip?.requestId);
+    const rawTranscript = String(currentDraft.rawTranscript || "").trim();
+    if (!rawTranscript && !currentDraft.structuredDraft && !remainingClips.length) {
+      removePendingLessonRecord(memberId, lessonId);
+    } else {
+      savePendingLessonRecord(memberId, lessonId, {
+        ...currentDraft,
+        status: currentDraft.structuredDraft ? "structured" : "raw",
+        audioBlobId: currentDraft.audioBlobId === clip?.blobId ? null : (currentDraft.audioBlobId || null),
+        audioClips: remainingClips,
+        retry: null,
+        failure: null,
+      });
+    }
+    audioBlobRef.current = null;
+    setAudioBlobId(null);
+    setAudioState("idle");
+  };
+  const handleServerAudioFailure = async (error, clip, pendingDraft, allowConsentPrompt = true) => {
+    const descriptor = recordPipelineFailure(error, "server_audio_upload");
+    scheduleLessonRecordRetry(memberId, lessonId, error);
+    setFinishing(false);
+    setSummaryBusy(false);
+    setOrganizationTimedOut(false);
+    setSilenceNotice("");
+    setAudioState("saved");
+    setErr(descriptor.title);
+    if (descriptor.internalCode !== "consent_missing") return descriptor;
+    invalidateMemberAIConsent(memberId);
+    const remoteConsent = await ensureMemberAIConsent(memberId, "summarizeVoice", { prompt: false, forceRemote: true });
+    if (remoteConsent.ok) {
+      const linkFailure = { ...descriptor, category: "SERVICE", internalCode: "member_session_unresolved", title: "회원·수업 연결을 확인해 주세요" };
+      setSummaryError("회원·수업 연결을 확인해 주세요.");
+      setSummaryFailure(linkFailure);
+      setSummaryFailureClass("SERVICE");
+      setErr("AI 동의는 확인됐지만 서버에서 회원·수업 연결을 확인하지 못했습니다. 직접 입력으로 기록해 주세요.");
+      return linkFailure;
+    }
+    if (!allowConsentPrompt) {
+      setSummaryError("동의는 저장됐지만 회원·수업 연결을 확인하지 못했습니다.");
+      setSummaryFailure({ ...descriptor, title: "회원·수업 연결을 확인해 주세요" });
+      setErr("동의는 저장됐지만 서버에서 회원·수업 연결을 확인하지 못했습니다. 직접 입력으로 기록해 주세요.");
+      return descriptor;
+    }
+    presentVoiceConsent(async () => {
+      setFinishing(true);
+      setSummaryBusy(true);
+      setSummaryError("");
+      setSummaryFailure(null);
+      setErr("");
+      try {
+        const currentDraft = loadPendingLessonRecord(memberId, lessonId) || pendingDraft;
+        await uploadServerAudio(clip, currentDraft);
+      } catch (retryError) {
+        await handleServerAudioFailure(retryError, clip, loadPendingLessonRecord(memberId, lessonId) || pendingDraft, false);
+      }
+    }, "AI 수업기록 이용 동의가 필요합니다.", () => discardConsentAudio(clip, pendingDraft));
+    return descriptor;
+  };
   const finishServerRecording = async (reason = "manual") => {
     startRequestRef.current = false;
     setStarting(false);
@@ -10761,23 +10930,13 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       recorderPrewarmedRef.current = false;
       const durationMs = Math.max(0, Number(result?.duration) || Date.now() - recordingStartedAtRef.current);
       const trimPlan = createAudioTrimPlan(amplitudeSamples, SERVER_AUDIO_ENERGY_INTERVAL_MS, durationMs);
-      if (!trimPlan.accepted) {
-        if (result?.uri) await Filesystem.deleteFile({ path: result.uri }).catch(() => {});
-        Promise.resolve(fbWritePilotMetricAttempt({ requestId: `local_no_speech_${uid()}`, result: "no_speech", flags: ["no_speech"], latencyMs: 0, source: "client_vad" })).catch(() => {});
-        setFinishing(false);
-        setSummaryBusy(false);
-        setAudioState("idle");
-        setErr("말소리가 녹음되지 않았어요. 다시 말해주세요");
-        voiceDiagnostic("failed", { source: "server_audio", code: "no_speech", speechSeconds: trimPlan.speechSeconds, captureLatencyMs: captureLatencyMsRef.current, flags: ["no_speech"] });
-        return;
-      }
+      // Metering is diagnostic only. A failed/quiet meter must never discard a
+      // real recording; only the server transcription can conclude no_speech.
       if (!result?.uri) throw Object.assign(new Error("native recording URI is missing"), { code: "audio_missing" });
-      const trimmed = await CapacitorAudioRecorder.trimRecording({ uri: result.uri, startMs: trimPlan.startMs, endMs: trimPlan.endMs });
-      const blob = await recordingResultToBlob(trimmed, { readFile: (options) => Filesystem.readFile(options) });
+      const blob = await recordingResultToBlob(result, { readFile: (options) => Filesystem.readFile(options) });
       const blobId = newAudioBlobId();
       await blobPut(blobId, blob);
       if (result?.uri) await Filesystem.deleteFile({ path: result.uri }).catch(() => {});
-      if (trimmed?.uri && trimmed.uri !== result?.uri) await Filesystem.deleteFile({ path: trimmed.uri }).catch(() => {});
       const previousDraft = recordingModeRef.current === "replace" ? {} : (loadPendingLessonRecord(memberId, lessonId) || {});
       const clipIndex = (previousDraft.audioClips || []).length;
       const requestId = createStableAudioRequestId(memberId, lessonId, clipIndex);
@@ -10786,10 +10945,14 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
         requestId,
         clipId: requestId,
         memberName,
-        durationMs: Math.max(0, trimPlan.endMs - trimPlan.startMs),
+        durationMs,
+        recordedSeconds: Number((durationMs / 1000).toFixed(2)),
+        speechSeconds: trimPlan.speechSeconds,
+        trimStart: trimPlan.startMs,
+        trimEnd: trimPlan.endMs,
         bytes: blob.size,
-        audioMetrics: buildAudioMetrics(trimPlan.amplitudes, SERVER_AUDIO_ENERGY_INTERVAL_MS, {
-          trimmedMs: trimPlan.trimmedMs,
+        audioMetrics: buildAudioMetrics(amplitudeSamples, SERVER_AUDIO_ENERGY_INTERVAL_MS, {
+          trimmedMs: 0,
           captureLatencyMs: captureLatencyMsRef.current,
         }),
         state: "pending",
@@ -10809,8 +10972,8 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
         source: "server_audio",
         retry: { state: "waiting", attempts: 0, nextRetryAt: Date.now() },
       });
-      voiceDiagnostic("trimmed", { source: "server_audio", speechSeconds: trimPlan.speechSeconds, trimmedMs: trimPlan.trimmedMs, captureLatencyMs: captureLatencyMsRef.current });
-      voiceDiagnostic("record_end", { source: "server_audio", reason, seconds: Math.round(durationMs / 1000), bytes: blob.size, speechSeconds: trimPlan.speechSeconds, trimmedMs: trimPlan.trimmedMs, captureLatencyMs: captureLatencyMsRef.current, flags: [] });
+      voiceDiagnostic("speech_markers", { source: "server_audio", recordedSeconds: Number((durationMs / 1000).toFixed(2)), speechSeconds: trimPlan.speechSeconds, trimStart: trimPlan.startMs, trimEnd: trimPlan.endMs, maxAmplitude: trimPlan.maxAmplitude, trimmedMs: 0, captureLatencyMs: captureLatencyMsRef.current });
+      voiceDiagnostic("record_end", { source: "server_audio", reason, seconds: Math.round(durationMs / 1000), recordedSeconds: Number((durationMs / 1000).toFixed(2)), bytes: blob.size, speechSeconds: trimPlan.speechSeconds, trimStart: trimPlan.startMs, trimEnd: trimPlan.endMs, maxAmplitude: trimPlan.maxAmplitude, trimmedMs: 0, captureLatencyMs: captureLatencyMsRef.current, flags: [] });
       const foregroundStartedAt = Date.now();
       if (globalThis.navigator?.onLine === false) {
         setFinishing(false);
@@ -10820,14 +10983,16 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
         showDeferredToast("기록 저장됨 · AI가 정리 중");
         return;
       }
-      const uploadPromise = uploadServerAudio(clip, pendingDraft).catch((error) => {
+      let deferred = false;
+      const uploadPromise = uploadServerAudio(clip, pendingDraft).catch(async (error) => {
         voiceDiagnostic("failed", { source: "server_audio", code: error?.code || "audio_upload_failed", requestId: clip.requestId });
         Promise.resolve(fbWritePilotMetricAttempt({ requestId: clip.requestId, result: "failed", flags: [], latencyMs: Math.max(0, Date.now() - Date.parse(clip.createdAt)), source: "server_audio" })).catch(() => {});
-        scheduleLessonRecordRetry(memberId, lessonId, error);
+        if (deferred) await handleServerAudioFailure(error, clip, loadPendingLessonRecord(memberId, lessonId) || pendingDraft);
         throw error;
       });
       const foreground = await settleWithin(uploadPromise, SERVER_AUDIO_FOREGROUND_WAIT_MS);
       if (foreground.timedOut) {
+        deferred = true;
         setFinishing(false);
         setSummaryBusy(false);
         setSilenceNotice("저장됨 · 정리 중");
@@ -10835,10 +11000,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
         return;
       }
       if (foreground.error) {
-        setFinishing(false);
-        setSummaryBusy(false);
-        await waitBeforeDeferredClose(foregroundStartedAt);
-        showDeferredToast("기록 저장됨 · AI가 정리 중");
+        await handleServerAudioFailure(foreground.error, clip, loadPendingLessonRecord(memberId, lessonId) || pendingDraft);
       }
     } catch (error) {
       setFinishing(false);
@@ -10848,8 +11010,23 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       voiceDiagnostic("failed", { source: "server_audio", code: error?.code || "audio_record_failed" });
     }
   };
-  const startServerRecording = async (mode = "append") => {
+  const startServerRecording = async (mode = "append", options = {}) => {
     if (startRequestRef.current || on || finishing) return;
+    setUserAttemptedStart(true);
+    startRequestRef.current = true;
+    setStarting(true);
+    setErr("");
+    setSummaryError("");
+    setSummaryFailure(null);
+    if (options?.skipConsent !== true) {
+      const consent = await ensureMemberAIConsent(memberId, "summarizeVoice", { prompt: false });
+      if (!consent.ok) {
+        startRequestRef.current = false;
+        setStarting(false);
+        presentVoiceConsent(() => startServerRecording(mode, { skipConsent: true }), consent.message);
+        return;
+      }
+    }
     captureRequestedAtRef.current = globalThis.performance?.now?.() || Date.now();
     recordingModeRef.current = mode === "replace" ? "replace" : "append";
     if (recordingModeRef.current === "replace" && textRef.current.trim()) {
@@ -10877,19 +11054,6 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
         setReplacementUndoVisible(false);
         replacementSnapshotRef.current = null;
       }, 10000);
-    }
-    setUserAttemptedStart(true);
-    startRequestRef.current = true;
-    setStarting(true);
-    setErr("");
-    setSummaryError("");
-    setSummaryFailure(null);
-    const consent = await ensureMemberAIConsent(memberId, "summarizeVoice");
-    if (!consent.ok) {
-      startRequestRef.current = false;
-      setStarting(false);
-      fallbackToDirectEntry(consent.message || "AI 수업기록 이용 동의가 필요합니다.");
-      return;
     }
     let permission = await CapacitorAudioRecorder.checkPermissions().catch(() => null);
     let permissionState = nativeAudioPermissionState(permission, Capacitor.getPlatform());
@@ -10920,6 +11084,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       setSource("server_audio");
       recordingStartedAtRef.current = Date.now();
       amplitudeSamplesRef.current = [];
+      amplitudeMeterErrorLoggedRef.current = false;
       startRequestRef.current = false;
       setStarting(false);
       setFinishing(false);
@@ -10931,8 +11096,15 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       voiceDiagnostic("record_start", { source: "server_audio", voiceEngine: "server_audio", captureLatencyMs: captureLatencyMsRef.current, permissionState: "granted", ...SERVER_AUDIO_SESSION_DIAGNOSTIC, ...nativeDiagnostic });
       deviceLog("voice_record_started", { memberId, lessonId, source: "server_audio", voiceEngine: "server_audio", storage: "temporary_file", ...nativeDiagnostic });
       amplitudeTimerRef.current = setInterval(async () => {
-        const level = await CapacitorAudioRecorder.getCurrentAmplitude().catch(() => ({ value: 0 }));
-        const value = Math.max(0, Math.min(1, Number(level?.value) || 0));
+        const level = await CapacitorAudioRecorder.getCurrentAmplitude().catch((error) => {
+          if (!amplitudeMeterErrorLoggedRef.current) {
+            amplitudeMeterErrorLoggedRef.current = true;
+            voiceDiagnostic("amplitude_unavailable", { source: "server_audio", code: error?.code || "meter_failed" });
+          }
+          return null;
+        });
+        if (!level || !Number.isFinite(Number(level.value))) return;
+        const value = Math.max(0, Math.min(1, Number(level.value)));
         amplitudeSamplesRef.current.push(value);
         setAmplitude(value);
       }, 100);
@@ -10961,6 +11133,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
   };
   const start = async (options = {}) => {
     const forceNative = options?.forceNative === true;
+    const skipConsent = options?.skipConsent === true;
     if (VOICE_ENGINE_MODE === "server" && !forceNative) return startServerRecording("append");
     if (startRequestRef.current || on || finishing) return;
     setUserAttemptedStart(true);
@@ -11000,13 +11173,17 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       fallbackToDirectEntry(message);
       return;
     }
-    const consent = await ensureMemberAIConsent(memberId, "summarizeVoice");
-    if (!consent.ok) {
-      const failure = describeLessonRecordFailure({ code: "consent_missing" });
-      appendLessonRecordDiagnostic({ code: failure.internalCode, stage: "consent_gate", category: failure.category });
-      failStart(consent.message || failure.title, { state: "direct_input_required", reason: "consent_missing" });
-      fallbackToDirectEntry(consent.message || failure.title);
-      return;
+    if (!skipConsent) {
+      const consent = await ensureMemberAIConsent(memberId, "summarizeVoice", { prompt: false });
+      if (!consent.ok) {
+        const failure = describeLessonRecordFailure({ code: "consent_missing" });
+        appendLessonRecordDiagnostic({ code: failure.internalCode, stage: "consent_gate", category: failure.category });
+        startRequestRef.current = false;
+        setStarting(false);
+        setOn(false);
+        presentVoiceConsent(() => start({ ...options, skipConsent: true }), consent.message || failure.title);
+        return;
+      }
     }
     const sessionId = speechSessionRef.current + 1;
     speechSessionRef.current = sessionId;
@@ -11458,7 +11635,10 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       confirmationStatus: confirmed ? "confirmed" : "pending",
       reviewFlags: [...audioReviewFlags],
       reviewEdited: audioReviewEdited,
-      ...(summaryError ? { organizationStatus: "failed", retryStatus: "automatic" } : summaryBusy ? { organizationStatus: "pending" } : {}),
+      ...(summaryError ? {
+        organizationStatus: "failed",
+        retryStatus: ["TEMPORARY", "TIMEOUT"].includes(summaryFailure?.category) ? "automatic" : "manual",
+      } : summaryBusy ? { organizationStatus: "pending" } : {}),
     };
     return { transcript, teacherText, lessonRecord, meta: { transcript, aiSummary: summaryOriginal, aiSummaryTeacherEdited: summaryDraft, aiSummaryStatus: confirmed ? AI_STATUSES.CONFIRMED : summaryDraft ? AI_STATUSES.DRAFT : "unstructured", aiMeta: summaryMeta, lessonRecord, audioBlobId: audioBlobId || null, voiceSource: source || "unknown", recordedAt: lessonRecord.recordedAt } };
   };
@@ -11563,7 +11743,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     streamRef.current?.getTracks?.().forEach((track) => track.stop());
   }, []);
   const supported = voiceAvailability !== "unsupported";
-  const voicePhase = resolveVoicePhase({
+  const voicePhase = summaryDraft ? "result" : consentGate ? "failed" : resolveVoicePhase({
     availability: voiceAvailability,
     starting,
     listening: on,
@@ -11597,7 +11777,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
         ) : voicePhase === "result" ? (
           <span className="flex min-h-11 shrink-0 items-center rounded-full px-3 text-xs font-extrabold" style={{ backgroundColor: GOOD_S, color: GOOD }}>결과</span>
         ) : voicePhase === "failed" ? (
-          <span className="flex min-h-11 shrink-0 items-center rounded-full px-3 text-xs font-extrabold" style={{ backgroundColor: BAD_S, color: BAD }}>실패</span>
+          <span className="flex min-h-11 shrink-0 items-center rounded-full px-3 text-xs font-extrabold" style={{ backgroundColor: consentGate ? TINT : BAD_S, color: consentGate ? BRAND_D : BAD }}>{consentGate ? "동의 필요" : "실패"}</span>
         ) : voicePhase === "permission_required" ? (
           <button type="button" onClick={requestVoicePermission} className="min-h-11 shrink-0 rounded-full px-3 text-xs font-extrabold" style={{ backgroundColor: TINT, color: BRAND_D }}>권한 설정</button>
         ) : voiceAvailability === "unsupported" ? null : text && VOICE_ENGINE_MODE === "server" ? (
@@ -11618,7 +11798,14 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       {voicePhase === "listening" && <Sub className="mt-1.5 block font-bold leading-relaxed" style={{ color: BRAND_D }}>듣고 있어요 · 잠시 생각하며 멈춰도 괜찮아요.</Sub>}
       {voicePhase === "listening" && VOICE_ENGINE_MODE === "server" && <div aria-label="마이크 음량" className="mt-2 flex h-8 items-center justify-center gap-1 overflow-hidden rounded-lg px-2" style={{ backgroundColor: CARD }}>{Array.from({ length: 18 }, (_, index) => { const wave = Math.max(0.12, amplitude * (0.45 + ((index * 7) % 10) / 10)); return <span key={index} className="w-1 rounded-full" style={{ height: `${Math.round(6 + wave * 20)}px`, backgroundColor: index % 3 === 0 ? BRAND : LAVENDER, transition: "height 100ms linear" }} />; })}</div>}
       {voicePhase === "organizing" && <Sub className="mt-1.5 block leading-relaxed">{silenceNotice || "마지막 음성을 정리하고 있습니다. 잠시만 기다려 주세요."}</Sub>}
-      {!text && ["waiting", "permission_required"].includes(voicePhase) && <div className="mt-3 rounded-xl p-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
+      {consentGate && <div role="dialog" aria-label="AI 음성기록 이용 동의" className="mt-3 rounded-xl p-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
+        <p className="text-xs font-extrabold" style={{ color: INK }}>AI 음성기록 이용 동의</p>
+        <p className="mt-2 text-[11px] leading-relaxed" style={{ color: INK2 }}>음성은 기록 정리를 위해 서버로 전송된 뒤 즉시 삭제되며 보관하지 않습니다.</p>
+        <a href="https://pilateacher.vercel.app/privacy.html" target="_blank" rel="noreferrer" className="mt-2 inline-flex min-h-11 items-center text-[11px] font-extrabold underline" style={{ color: BRAND_D }}>개인정보처리방침 보기</a>
+        {consentGate.error && <p role="alert" className="mt-1 text-[11px] font-bold leading-relaxed" style={{ color: BAD }}>{consentGate.error}</p>}
+        <div className="mt-2 grid grid-cols-2 gap-1.5"><button type="button" onClick={declineVoiceConsent} disabled={consentGate.busy} className="h-11 rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: CANVAS, color: INK2 }}>직접 입력</button><button type="button" onClick={approveVoiceConsent} disabled={consentGate.busy} className="flex h-11 items-center justify-center gap-1.5 rounded-lg text-xs font-extrabold text-white disabled:opacity-50" style={{ backgroundColor: BRAND }}>{consentGate.busy && <Loader2 size={12} className="animate-spin" />}동의하고 계속</button></div>
+      </div>}
+      {!consentGate && !text && ["waiting", "permission_required"].includes(voicePhase) && <div className="mt-3 rounded-xl p-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
         <p className="text-sm font-extrabold" style={{ color: INK }}>수업 내용을 편하게 말해주세요</p>
         <p className="mt-1 text-xs font-bold" style={{ color: BRAND_D }}>무엇을 말하면 되나요?</p>
         <div className="mt-2 grid grid-cols-2 gap-1.5">{["① 회원의 변화", "② 오늘 한 운동", "③ 회원 반응", "④ 다음 확인"].map((label) => <span key={label} className="rounded-lg px-2 py-2 text-[11px] font-bold" style={{ backgroundColor: CANVAS, color: INK2 }}>{label}</span>)}</div>
@@ -11627,14 +11814,14 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
         <button type="button" onClick={() => window.dispatchEvent(new CustomEvent("pilateacher:open-record-examples"))} className="mt-3 min-h-11 w-full rounded-lg text-xs font-extrabold" style={{ backgroundColor: TINT, color: BRAND_D }}>예시 보기</button>
         {showValueGuide && <div className="mt-3 rounded-lg px-3 py-2.5" style={{ backgroundColor: TINT }}><p className="text-[11px] font-extrabold" style={{ color: BRAND_D }}>이렇게 활용돼요</p><p className="mt-1 text-[10px] leading-relaxed" style={{ color: INK2 }}>저장된 변화·운동·반응·다음 계획을 바탕으로 다음 수업 전에 지난 기록을 이어서 보여드려요.</p></div>}
       </div>}
-      {voicePhase === "failed" && <div role="alert" className="mt-2 rounded-xl p-3" style={{ backgroundColor: BAD_S, border: `1px solid ${BAD}` }}><p className="text-[11px] leading-relaxed" style={{ color: BAD }}>{err}</p><div className="mt-2 grid grid-cols-2 gap-1.5"><button type="button" onClick={start} className="h-11 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: BAD }}>다시 시도</button><button type="button" onClick={() => { setManualEntry(true); setErr(""); window.setTimeout(() => transcriptInputRef.current?.focus(), 0); }} className="h-11 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: PRIMARY }}>직접 입력</button></div></div>}
+      {voicePhase === "failed" && !consentGate && !summaryFailure && <div role="alert" className="mt-2 rounded-xl p-3" style={{ backgroundColor: BAD_S, border: `1px solid ${BAD}` }}><p className="text-[11px] leading-relaxed" style={{ color: BAD }}>{err || summaryError || "정리를 완료하지 못했습니다."}</p><div className="mt-2 grid grid-cols-2 gap-1.5"><button type="button" onClick={start} className="h-11 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: BAD }}>다시 시도</button><button type="button" onClick={() => { setManualEntry(true); setErr(""); window.setTimeout(() => transcriptInputRef.current?.focus(), 0); }} className="h-11 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: PRIMARY }}>직접 입력</button></div></div>}
       {(text || manualEntry || audioState === "saved" || audioState === "saving") && !["listening", "organizing"].includes(voicePhase) && (
         <>
           {audioReviewFlags.includes("low_confidence") && <div role="status" className="mt-2 rounded-xl p-3" style={{ backgroundColor: WARN_S, border: `1px solid ${WARN}` }}><p className="text-xs font-extrabold" style={{ color: WARN }}>녹음 확인 필요</p><p className="mt-1 text-[11px] leading-relaxed" style={{ color: INK2 }}>정확하지 않을 수 있어요. 내용을 직접 수정한 뒤 저장해 주세요.</p></div>}
           {manualEntry ? <><textarea ref={transcriptInputRef} rows={4} value={text} onChange={(event) => { setText(event.target.value); textRef.current = event.target.value; if (audioReviewFlags.length) { setAudioReviewEdited(true); setAudioReviewFlags([]); } setSummaryOriginal(null); setSummaryDraft(null); setSummaryMeta(null); setSummaryError(""); setSummaryFailureClass(""); setSummaryEditing(false); setSummaryStatus(AI_STATUSES.NOT_CONNECTED); }} aria-label="직접 입력하는 수업 내용" placeholder="수업 내용과 회원 반응을 입력하세요" className={`${inputCls} mt-2 h-auto resize-none py-2 text-sm leading-relaxed`} /><button type="button" disabled={!text.trim()} onClick={applyCurrentRecord} className="mt-2 h-11 w-full rounded-xl text-xs font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: BRAND }}>저장</button></> : text && <div className="mt-2 rounded-xl p-3" aria-label="말한 수업 내용" style={{ backgroundColor: CANVAS, border: `1px solid ${LINE}` }}><p className="text-[10px] font-extrabold" style={{ color: SUB }}>{summaryDraft ? "말한 내용" : summaryError ? "선생님 기록" : "음성 기록"}</p><p className="mt-1 whitespace-pre-wrap text-xs leading-relaxed" style={{ color: INK2 }}>{text}</p></div>}
-          {summaryError && summaryFailure && <div role="alert" data-ai-failure={summaryFailureClass || undefined} className="mt-2 rounded-xl p-3" style={{ backgroundColor: BAD_S, border: `1px solid ${BAD}` }}>
-            <p className="text-xs font-extrabold" style={{ color: BAD }}>정리 실패 · 자동 재시도</p>
-            <p className="mt-1 text-[11px] leading-relaxed" style={{ color: INK2 }}>말한 내용은 선생님 기록으로 저장되어 있습니다. 연결이 안정되면 자동으로 다시 정리합니다.</p>
+          {summaryError && summaryFailure && !consentGate && <div role="alert" data-ai-failure={summaryFailureClass || undefined} className="mt-2 rounded-xl p-3" style={{ backgroundColor: BAD_S, border: `1px solid ${BAD}` }}>
+            <p className="text-xs font-extrabold" style={{ color: BAD }}>{summaryFailure.title || summaryError}</p>
+            <p className="mt-1 text-[11px] leading-relaxed" style={{ color: INK2 }}>{summaryFailure.category === "TEMPORARY" || summaryFailure.category === "TIMEOUT" ? "말한 내용은 선생님 기록으로 저장되어 있습니다. 연결이 안정되면 자동으로 다시 정리합니다." : "자동 재시도하지 않습니다. 직접 입력으로 기록을 이어갈 수 있습니다."}</p>
           </div>}
           {summaryDraft && <div className="mt-3 space-y-3 rounded-xl p-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
             <div><p className="text-xs font-extrabold" style={{ color: GOOD }}>AI가 수업 내용을 정리했어요.</p><p className="mt-1 text-[11px] leading-relaxed" style={{ color: SUB }}>기록은 자동으로 저장됐습니다. 고치고 싶을 때만 수정해 주세요.</p></div>
@@ -12647,6 +12834,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
   const [diagnosticTapCount, setDiagnosticTapCount] = useState(0);
   const [showLessonDiagnostics, setShowLessonDiagnostics] = useState(false);
   const [diagnosticSending, setDiagnosticSending] = useState(false);
+  const [diagnosticQueueRevision, setDiagnosticQueueRevision] = useState(0);
   const cameraRef = useRef(null), albumRef = useRef(null);
   useBackClose(view !== "hub", () => setView(view === "account-delete" ? "account" : "hub"));
   const pickPhoto = async (file) => {
@@ -12680,6 +12868,13 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
     return [...confirmed, ...pending].sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 10);
   }, [db.members]);
   const voiceSessionDiagnostics = useMemo(() => showLessonDiagnostics ? readVoiceSessionDiagnostics() : [], [showLessonDiagnostics]);
+  const diagnosticQueue = useMemo(() => showLessonDiagnostics ? listQueuedLessonRecords() : [], [showLessonDiagnostics, diagnosticQueueRevision]);
+  useEffect(() => {
+    if (!showLessonDiagnostics) return undefined;
+    const refresh = () => setDiagnosticQueueRevision((value) => value + 1);
+    window.addEventListener("pilateacher:lesson-record-updated", refresh);
+    return () => window.removeEventListener("pilateacher:lesson-record-updated", refresh);
+  }, [showLessonDiagnostics]);
   const diagnosticLocalTime = (value) => {
     if (!value) return "날짜 없음";
     const parsed = new Date(value);
@@ -12711,6 +12906,33 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
     } finally {
       setDiagnosticSending(false);
     }
+  };
+  const clearDiagnosticQueue = async () => {
+    const queued = listQueuedLessonRecords();
+    if (!queued.length) {
+      onToast?.({ ok: true, msg: "비울 대기 기록이 없습니다." });
+      return;
+    }
+    const confirmed = globalThis.confirm?.(`AI 정리 대기 ${queued.length}건을 비울까요? 입력된 원문은 유지하고, 아직 전송되지 않은 음성 파일만 삭제합니다.`);
+    if (!confirmed) return;
+    let deletionFailed = false;
+    const clearedTargets = [];
+    for (const draft of queued) {
+      const blobIds = [...new Set([
+        draft.audioBlobId,
+        ...(draft.audioClips || []).filter((clip) => clip?.blobId && clip?.state !== "uploaded").map((clip) => clip.blobId),
+      ].filter(Boolean))];
+      const deletion = await Promise.allSettled(blobIds.map((blobId) => blobDel(blobId)));
+      const deletedBlobIds = blobIds.filter((_blobId, index) => deletion[index]?.status === "fulfilled");
+      const allDeleted = deletedBlobIds.length === blobIds.length;
+      deletionFailed = deletionFailed || !allDeleted;
+      clearedTargets.push({ memberId: draft.memberId, lessonId: draft.lessonId, blobIds: deletedBlobIds, clearRetry: allDeleted });
+    }
+    clearQueuedLessonRecordAudio(clearedTargets);
+    setDiagnosticQueueRevision((value) => value + 1);
+    onToast?.(deletionFailed
+      ? { ok: false, msg: "일부 음성 파일만 지웠습니다. 실패한 대기는 그대로 유지됩니다." }
+      : { ok: true, msg: `대기 ${queued.length}건을 비웠습니다.` });
   };
   const reportPay = useMemo(() => {
     let total = 0;
@@ -12925,14 +13147,14 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
             <p className="mt-4" style={{ fontSize: 11, lineHeight: 1.6, color: INK2 }}>회원 사진은 기기에 먼저 저장됩니다. 사진 클라우드 백업은 데이터 이관·백업에서 별도 동의 후 켤 수 있으며, 실제 완료 여부와 대기 수를 같은 화면에서 확인할 수 있습니다.</p>
             {showLessonDiagnostics && <div className="mt-4 rounded-lg p-3" style={{ backgroundColor: CANVAS, border: `1px solid ${LINE}` }}>
               <p style={{ fontSize: 11, fontWeight: 700, color: INK }}>AI 수업기록 진단</p>
-              <p className="mt-1" style={{ fontSize: 10, color: SUB }}>상태 {aiRecording.status} · 대기 {listPendingLessonRecords().length}건</p>
+              <div className="mt-1 flex items-center gap-2"><p className="min-w-0 flex-1" style={{ fontSize: 10, color: SUB }}>상태 {aiRecording.status} · 대기 {diagnosticQueue.length}건</p><button type="button" onClick={clearDiagnosticQueue} disabled={!diagnosticQueue.length} className="min-h-11 shrink-0 rounded-lg px-3 text-[10px] font-extrabold disabled:opacity-40" style={{ backgroundColor: CARD, color: BAD, border: `1px solid ${LINE}` }}>대기 비우기</button></div>
               <p className="mt-1 break-all" style={{ fontSize: 9, lineHeight: 1.45, color: SUB }}>Gateway: {aiProvider.getStatus().gatewayUrl || "미설정"}</p>
               <button type="button" aria-label="진단 보내기" disabled={diagnosticSending} onClick={sendRemoteDiagnostics} className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 rounded-lg text-xs font-extrabold text-white disabled:opacity-45" style={{ backgroundColor: BRAND }}>{diagnosticSending ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}진단 보내기</button>
               <p className="mt-1.5" style={{ fontSize: 9, lineHeight: 1.45, color: SUB }}>최근 진단 50건과 앱·기기 정보만 전송합니다. 음성·말한 내용은 보내지 않습니다.</p>
               <IOSMediaDiagnosticPanel memberId={account?.id || "diagnostics"} lessonId="hidden-diagnostics" />
               <div className="mt-2 space-y-1">{diagnosticRecordSources.map((record, index) => <p key={`${record.at}-${index}`} className="tabular-nums" style={{ fontSize: 9, color: SUB }}>기록 {index + 1} · {diagnosticLocalTime(record.at)} · {record.status} · source={record.source} · date={record.dateSource}</p>)}</div>
               <p className="mt-3" style={{ fontSize: 10, fontWeight: 700, color: INK }}>음성 세션 최근 30건</p>
-              <div className="mt-1.5 space-y-1">{voiceSessionDiagnostics.map((item, index) => <p key={`${item.at}-${index}`} className="break-all tabular-nums" style={{ fontSize: 9, lineHeight: 1.45, color: ["error", "failed"].includes(item.event) ? BAD : SUB }}>{item.localTime || diagnosticLocalTime(item.at)} · {item.event} · {item.source}{item.code ? ` · ${item.code}` : ""}{item.reason ? ` · ${item.reason}` : ""}{item.seconds != null ? ` · ${item.seconds}s` : ""}{item.speechSeconds != null ? ` · speech ${item.speechSeconds}s` : ""}{item.trimmedMs != null ? ` · trim ${item.trimmedMs}ms` : ""}{item.captureLatencyMs != null ? ` · capture ${item.captureLatencyMs}ms` : ""}{item.flags?.length ? ` · ${item.flags.join(",")}` : ""}{item.bytes != null ? ` · ${Math.round(item.bytes / 1024)}KB` : ""}{item.durationMs != null ? ` · ${item.durationMs}ms` : ""}{item.requestId ? ` · ${item.requestId.slice(-8)}` : ""}{item.attempt != null ? ` · attempt ${item.attempt}` : ""}{item.delayMs != null ? ` · ${item.delayMs}ms` : ""}</p>)}</div>
+              <div className="mt-1.5 space-y-1">{voiceSessionDiagnostics.map((item, index) => <p key={`${item.at}-${index}`} className="break-all tabular-nums" style={{ fontSize: 9, lineHeight: 1.45, color: ["error", "failed"].includes(item.event) ? BAD : SUB }}>{item.localTime || diagnosticLocalTime(item.at)} · {item.event} · {item.source}{item.code ? ` · ${item.code}` : ""}{item.reason ? ` · ${item.reason}` : ""}{item.seconds != null ? ` · ${item.seconds}s` : ""}{item.recordedSeconds != null ? ` · recorded ${item.recordedSeconds}s` : ""}{item.speechSeconds != null ? ` · speech ${item.speechSeconds}s` : ""}{item.trimStart != null ? ` · start ${item.trimStart}ms` : ""}{item.trimEnd != null ? ` · end ${item.trimEnd}ms` : ""}{item.maxAmplitude != null ? ` · peak ${item.maxAmplitude}` : ""}{item.trimmedMs != null ? ` · trim ${item.trimmedMs}ms` : ""}{item.captureLatencyMs != null ? ` · capture ${item.captureLatencyMs}ms` : ""}{item.flags?.length ? ` · ${item.flags.join(",")}` : ""}{item.bytes != null ? ` · ${Math.round(item.bytes / 1024)}KB` : ""}{item.durationMs != null ? ` · ${item.durationMs}ms` : ""}{item.requestId ? ` · ${item.requestId.slice(-8)}` : ""}{item.attempt != null ? ` · attempt ${item.attempt}` : ""}{item.delayMs != null ? ` · ${item.delayMs}ms` : ""}</p>)}</div>
               {!voiceSessionDiagnostics.length && <p className="mt-1" style={{ fontSize: 10, color: SUB }}>음성 세션 기록 없음</p>}
               <div className="mt-2 space-y-1.5">{readLessonRecordDiagnostics().map((item, index) => <div key={`${item.at}-${index}`} className="rounded-md px-2 py-1" style={{ backgroundColor: PAGE }}><p className="tabular-nums" style={{ fontSize: 9, color: SUB }}>{String(item.at).slice(5, 16).replace("T", " ")} · {item.transportCode || item.code} · {item.stage}{item.httpStatus ? ` · HTTP ${item.httpStatus}` : ""}{item.model ? ` · ${item.model}` : ""}{item.requestId ? ` · ${item.requestId.slice(-8)}` : ""}</p>{item.gatewayUrl && <p className="mt-0.5 break-all" style={{ fontSize: 8, lineHeight: 1.4, color: SUB }}>{item.gatewayUrl}</p>}{item.causeMessage && <p className="mt-0.5 break-all" style={{ fontSize: 8, lineHeight: 1.4, color: BAD }}>{item.causeName ? `${item.causeName}: ` : ""}{item.causeMessage}</p>}</div>)}</div>
               {!readLessonRecordDiagnostics().length && <p className="mt-2" style={{ fontSize: 10, color: SUB }}>최근 오류 없음</p>}
@@ -13178,9 +13400,15 @@ export default function App() {
       setAccounts(accs);
       if (fbReady) {
         let first = true;
+        let consentAuthId = "__startup__";
         startupStage = "firebase_auth_state";
         const off = fbOnAuth(async (u) => {
           if (!alive) return;
+          const nextConsentAuthId = String(u?.id || "signed-out");
+          if (nextConsentAuthId !== consentAuthId) {
+            resetAIConsentSessionChecks();
+            consentAuthId = nextConsentAuthId;
+          }
           if (!u) {
             try {
               const pendingUid = window.localStorage?.getItem(ACCOUNT_DELETION_PENDING_KEY) || "";

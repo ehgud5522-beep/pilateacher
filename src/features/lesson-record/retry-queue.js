@@ -96,19 +96,20 @@ export async function runLessonRecordRetryCycle({ llmProvider, audioProvider = n
         const descriptor = describeLessonRecordFailure(failure);
         const retryable = canAutoRetryLessonRecordFailure(failure) && attempts < 5;
         patchPendingLessonRecord(draft.memberId, draft.lessonId, {
-          status: "queued",
+          status: retryable ? "queued" : "raw",
           failure: { code: descriptor.internalCode, category: descriptor.category, at: new Date(now).toISOString() },
-          retry: retryable ? { state: "waiting", attempts, nextRetryAt: now + LESSON_RECORD_RETRY_DELAYS_MS[Math.min(attempts, 4)] } : { state: "sleeping", attempts, nextRetryAt: null },
+          retry: retryable ? { state: "waiting", attempts, nextRetryAt: now + LESSON_RECORD_RETRY_DELAYS_MS[Math.min(attempts, 4)] } : null,
         }, storage);
         failed += 1;
         onDiagnostic({ code: descriptor.internalCode, stage: "background_retry", category: descriptor.category, requestId: result.error?.requestId, transportCode: result.error?.transportCode, httpStatus: result.error?.status, gatewayUrl: result.error?.gatewayUrl, causeName: result.error?.causeName, causeMessage: result.error?.causeMessage });
       }
     } catch (error) {
       const descriptor = describeLessonRecordFailure({ code: error?.code, status: error?.status, failureStage: error?.failureStage });
+      const retryable = canAutoRetryLessonRecordFailure(error) && attempts < 5;
       patchPendingLessonRecord(draft.memberId, draft.lessonId, {
-        status: "queued",
+        status: retryable ? "queued" : "raw",
         failure: { code: descriptor.internalCode, category: descriptor.category, at: new Date(now).toISOString() },
-        retry: canAutoRetryLessonRecordFailure(error) && attempts < 5 ? { state: "waiting", attempts, nextRetryAt: now + LESSON_RECORD_RETRY_DELAYS_MS[Math.min(attempts, 4)] } : { state: "sleeping", attempts, nextRetryAt: null },
+        retry: retryable ? { state: "waiting", attempts, nextRetryAt: now + LESSON_RECORD_RETRY_DELAYS_MS[Math.min(attempts, 4)] } : null,
       }, storage);
       failed += 1;
       onDiagnostic({ code: descriptor.internalCode, stage: "background_retry", category: descriptor.category, requestId: error?.requestId, transportCode: error?.transportCode, httpStatus: error?.status, gatewayUrl: error?.gatewayUrl, causeName: error?.causeName, causeMessage: error?.causeMessage });

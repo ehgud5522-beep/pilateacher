@@ -20,12 +20,12 @@ function seedPreviousBuildStorage(source) {
   };
 }
 
-test("previous Android build data remains readable after the version 38 upgrade", () => {
+test("previous Android build data remains readable after the version 39 upgrade", () => {
   const storage = seedPreviousBuildStorage(fixture);
   const userId = fixture.userId;
 
   assert.match(gradleSource, /applicationId\s+["']com\.pilateacher\.app["']/);
-  assert.match(gradleSource, /versionCode\s+38\b/);
+  assert.match(gradleSource, /versionCode\s+39\b/);
   assert.match(appSource, /`pilateacher_db_\$\{id\}`/);
   assert.match(appSource, /`pilateacher_photos_\$\{id\}`/);
 

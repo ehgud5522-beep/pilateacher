@@ -131,13 +131,24 @@ test("authorization and missing Secret both fail before provider execution or qu
   let getProviderCalls = 0;
   const denied = createAIGatewayHandler({
     verifyIdToken: async () => ({ uid: "verified-user" }),
-    policyService: { authorize: async () => ({ allowed: false }), consumeRateLimit: async () => ({ allowed: true }) },
+    policyService: { authorize: async () => ({ allowed: false, reason: "consent_missing" }), consumeRateLimit: async () => ({ allowed: true }) },
     idempotencyStore: createMemoryIdempotencyStore(),
     getProvider: async () => { getProviderCalls += 1; return {}; },
   });
   const deniedResponse = await invoke(denied);
   assert.equal(deniedResponse.statusCode, 403);
   assert.equal(deniedResponse.body.error.code, "consent_required");
+  assert.equal(getProviderCalls, 0);
+
+  const brokenLink = createAIGatewayHandler({
+    verifyIdToken: async () => ({ uid: "verified-user" }),
+    policyService: { authorize: async () => ({ allowed: false, reason: "lesson_not_owned" }), consumeRateLimit: async () => ({ allowed: true }) },
+    idempotencyStore: createMemoryIdempotencyStore(),
+    getProvider: async () => { getProviderCalls += 1; return {}; },
+  });
+  const brokenLinkResponse = await invoke(brokenLink);
+  assert.equal(brokenLinkResponse.statusCode, 403);
+  assert.equal(brokenLinkResponse.body.error.code, "invalid_request");
   assert.equal(getProviderCalls, 0);
 
   let rateCalls = 0;

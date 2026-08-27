@@ -227,7 +227,7 @@ function createOpenAIProvider({
       }
   }
 
-  async function transcribe(buffer, metadata, memberName, energy) {
+  async function transcribe(buffer, metadata, memberName, _energy) {
     const prompt = buildTranscriptionPrompt(memberName);
     let primaryError = null;
     for (const transcriptionModel of [PRIMARY_TRANSCRIPTION_MODEL, FALLBACK_TRANSCRIPTION_MODEL]) {
@@ -247,12 +247,15 @@ function createOpenAIProvider({
             : { include: ["logprobs"] }),
         });
         const assessment = isWhisper
-          ? assessWhisperTranscription(response, { speechEndSeconds: Number(energy?.lastSpeechMs) / 1000 })
+          // H-9 uploads the complete recording. Client energy samples are
+          // diagnostic only and must not cut off quiet speech at the tail.
+          ? assessWhisperTranscription(response, { speechEndSeconds: Number.POSITIVE_INFINITY })
           : assessGptTranscription(response);
         if (!assessment.accepted) {
+          const rejectedTranscript = String(response?.text || "").trim();
           return {
-            result: "no_speech",
-            transcript: "",
+            result: rejectedTranscript ? "low_confidence" : "no_speech",
+            transcript: rejectedTranscript,
             model: transcriptionModel,
             latencyMs: Math.max(0, Date.now() - startedAt),
             usage: response?.usage || null,
@@ -306,35 +309,6 @@ function createOpenAIProvider({
       }
     };
     try {
-      if (!energy.accepted) {
-        return {
-          model: normalizedModel,
-          promptVersion: AUDIO_VAD_PROMPT_VERSION,
-          status: "completed",
-          incompleteReason: "",
-          usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0 },
-          latencyMs: Math.max(0, Date.now() - startedAt),
-          validation: "no_speech",
-          transcriptionModel: "",
-          transcriptionLatencyMs: 0,
-          transcriptionUsage: null,
-          speechSeconds: energy.speechSeconds,
-          transcriptionConfidence: energy.confidence,
-          transcriptionFlags: ["no_speech"],
-          trimmedMs: energy.trimmedMs,
-          captureLatencyMs: energy.captureLatencyMs,
-          output: {
-            transcript: "",
-            result: "no_speech",
-            fields: null,
-            summary: null,
-            speechSeconds: energy.speechSeconds,
-            confidence: energy.confidence,
-            flags: ["no_speech"],
-            provenance: { stt: null, llm: null },
-          },
-        };
-      }
       const transcription = await transcribe(buffer, metadata, input?.memberName, energy);
       disposeAudio();
       if (transcription.result === "no_speech") {
@@ -367,9 +341,39 @@ function createOpenAIProvider({
           },
         };
       }
+      if (transcription.result === "low_confidence") {
+        return {
+          model: normalizedModel,
+          promptVersion: AUDIO_VAD_PROMPT_VERSION,
+          status: "completed",
+          incompleteReason: "",
+          usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0 },
+          latencyMs: Math.max(0, Date.now() - startedAt),
+          validation: "low_confidence",
+          transcriptionModel: transcription.model,
+          transcriptionLatencyMs: transcription.latencyMs,
+          transcriptionUsage: transcription.usage,
+          speechSeconds: energy.speechSeconds,
+          transcriptionConfidence: transcription.confidence,
+          transcriptionFlags: ["low_confidence"],
+          trimmedMs: energy.trimmedMs,
+          captureLatencyMs: energy.captureLatencyMs,
+          confidenceDiagnostic: transcription.confidenceDiagnostic,
+          output: {
+            transcript: transcription.transcript,
+            result: "low_confidence",
+            fields: null,
+            summary: null,
+            speechSeconds: energy.speechSeconds,
+            confidence: transcription.confidence,
+            flags: ["low_confidence"],
+            provenance: { stt: "openai", llm: null },
+          },
+        };
+      }
       const consistency = assessTranscriptConsistency(
         transcription.transcript,
-        energy.speechSeconds,
+        metadata.durationSeconds,
         PILATES_TRANSCRIPTION_TERMS,
       );
       if (!consistency.accepted) {

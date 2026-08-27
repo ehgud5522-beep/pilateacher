@@ -33,7 +33,10 @@ test("voice result, failure, and timeout terminate the organizing header", () =>
   assert.match(voice, /VOICE_ORGANIZING_TIMEOUT_MS/);
   assert.match(voice, /setSummaryBusy\(false\)[\s\S]*setFinishing\(false\)[\s\S]*정리 실패 · 자동 재시도/);
   assert.match(voice, /voicePhase === "result"[\s\S]*>결과<\/span>/);
-  assert.match(voice, /voicePhase === "failed"[\s\S]*>실패<\/span>/);
+  assert.match(voice, /voicePhase === "failed"[\s\S]*consentGate \? "동의 필요" : "실패"/);
+  assert.match(voice, /const voicePhase = summaryDraft \? "result" : consentGate \? "failed"/);
+  assert.match(voice, /voicePhase === "failed" && !consentGate && !summaryFailure/);
+  assert.equal((voice.match(/summaryError && summaryFailure && !consentGate/g) || []).length, 1);
 });
 
 test("pending AI records expose optional confirmation and suppress review-flagged records", () => {

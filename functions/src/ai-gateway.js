@@ -15,7 +15,7 @@ const consentOperation = (operation) => (
     : operation
 );
 const diagnosticsEnabled = () => process.env.NODE_ENV !== "production" || process.env.AI_GATEWAY_DIAGNOSTICS === "1";
-const ALWAYS_LOG_EVENTS = new Set(["model_call_succeeded", "gateway_completed"]);
+const ALWAYS_LOG_EVENTS = new Set(["authorization_denied", "model_call_succeeded", "gateway_completed"]);
 const safeLogToken = (value, max = 120) => String(value || "")
   .replace(/[^A-Za-z0-9._:/-]/g, "_")
   .slice(0, max);
@@ -67,7 +67,22 @@ function createAIGatewayHandler({
         lessonId: request.input.lessonId || "",
         operation: consentOperation(request.operation),
       });
-      if (authorization?.allowed !== true) throw new GatewayError("consent_required");
+      if (authorization?.allowed !== true) {
+        const authorizationReason = String(authorization?.reason || "authorization_denied").slice(0, 80);
+        diagnosticLog("authorization_denied", {
+          requestId,
+          operation: request.operation,
+          httpStatus: 403,
+          reason: authorizationReason,
+        });
+        if (["consent_missing", "consent_not_granted"].includes(authorizationReason)) {
+          throw new GatewayError("consent_required");
+        }
+        if (["backup_missing", "member_not_owned", "lesson_not_owned"].includes(authorizationReason)) {
+          throw new GatewayError("invalid_request", { status: 403 });
+        }
+        throw new GatewayError("provider_unavailable");
+      }
 
       // Resolve the Secret-backed provider before consuming quota. An absent Secret
       // therefore fails closed without creating a billable request.

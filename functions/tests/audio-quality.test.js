@@ -12,11 +12,16 @@ const { PILATES_TRANSCRIPTION_TERMS, buildTranscriptionPrompt } = require("../sr
 
 const voicedEnvelope = () => ({ intervalMs: 100, amplitudes: [...Array(5).fill(0.002), ...Array(20).fill(0.22), ...Array(5).fill(0.002)] });
 
-test("energy VAD blocks silence and accepts at least 1.5 seconds of speech", () => {
-  assert.equal(analyzeEnergyEnvelope({ intervalMs: 100, amplitudes: Array(50).fill(0.001) }).accepted, false);
+test("energy envelope is diagnostic and marks only an entirely silent recording", () => {
+  const silent = analyzeEnergyEnvelope({ intervalMs: 100, amplitudes: Array(50).fill(0.001) });
+  assert.equal(silent.accepted, false);
+  assert.equal(silent.allSilent, true);
   const speech = analyzeEnergyEnvelope(voicedEnvelope());
   assert.equal(speech.accepted, true);
   assert.ok(speech.speechSeconds >= 1.5);
+  const quietShort = analyzeEnergyEnvelope({ intervalMs: 100, amplitudes: [...Array(10).fill(0.002), ...Array(5).fill(0.012), ...Array(10).fill(0.002)] });
+  assert.equal(quietShort.accepted, true);
+  assert.ok(quietShort.speechSeconds < 1.5);
   assert.equal(analyzeEnergyEnvelope(null).reason, "missing_energy_envelope");
 });
 

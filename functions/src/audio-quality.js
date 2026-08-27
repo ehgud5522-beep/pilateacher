@@ -1,9 +1,10 @@
 "use strict";
 
-const MIN_SPEECH_SECONDS = 1.5;
+const MIN_SPEECH_SECONDS = 0;
 const ENERGY_INTERVAL_MIN_MS = 50;
 const ENERGY_INTERVAL_MAX_MS = 250;
-const ENERGY_ABSOLUTE_FLOOR = 0.015;
+const ENERGY_ABSOLUTE_FLOOR = 0.008;
+const SILENCE_MAX_AMPLITUDE = 0.003;
 const GPT_MIN_MEAN_LOGPROB = -1;
 const WHISPER_MAX_NO_SPEECH = 0.6;
 const WHISPER_MIN_AVG_LOGPROB = -1;
@@ -18,15 +19,17 @@ function percentile(values, ratio) {
   return sorted[Math.min(sorted.length - 1, Math.max(0, Math.floor((sorted.length - 1) * ratio)))];
 }
 
-function analyzeEnergyEnvelope(metrics, { minimumSpeechSeconds = MIN_SPEECH_SECONDS } = {}) {
+function analyzeEnergyEnvelope(metrics) {
   const intervalMs = Number(metrics?.intervalMs);
   const raw = Array.isArray(metrics?.amplitudes) ? metrics.amplitudes : [];
   if (!Number.isFinite(intervalMs) || intervalMs < ENERGY_INTERVAL_MIN_MS || intervalMs > ENERGY_INTERVAL_MAX_MS || !raw.length || raw.length > 2000) {
-    return Object.freeze({ accepted: false, speechSeconds: 0, confidence: 0, threshold: 0, reason: "missing_energy_envelope" });
+    return Object.freeze({ accepted: false, allSilent: false, speechSeconds: 0, recordedSeconds: 0, confidence: 0, threshold: 0, maxAmplitude: 0, reason: "missing_energy_envelope" });
   }
   const amplitudes = raw.map(clamp01);
   const noiseFloor = percentile(amplitudes, 0.2);
-  const threshold = Math.max(ENERGY_ABSOLUTE_FLOOR, noiseFloor * 2.5 + 0.006);
+  const threshold = Math.max(ENERGY_ABSOLUTE_FLOOR, noiseFloor * 1.8 + 0.003);
+  const maxAmplitude = Math.max(...amplitudes);
+  const allSilent = maxAmplitude <= SILENCE_MAX_AMPLITUDE && maxAmplitude - noiseFloor <= 0.0015;
   const active = amplitudes.map((value) => value >= threshold);
   const gapSamples = Math.max(1, Math.round(300 / intervalMs));
   let previous = -1;
@@ -37,15 +40,7 @@ function analyzeEnergyEnvelope(metrics, { minimumSpeechSeconds = MIN_SPEECH_SECO
     }
     previous = index;
   }
-  const paddingSamples = Math.max(1, Math.round(300 / intervalMs));
-  const padded = [...active];
-  active.forEach((isActive, index) => {
-    if (!isActive) return;
-    const start = Math.max(0, index - paddingSamples);
-    const end = Math.min(active.length - 1, index + paddingSamples);
-    for (let fill = start; fill <= end; fill += 1) padded[fill] = true;
-  });
-  const activeIndexes = padded.flatMap((isActive, index) => isActive ? [index] : []);
+  const activeIndexes = active.flatMap((isActive, index) => isActive ? [index] : []);
   const rawActiveIndexes = active.flatMap((isActive, index) => isActive ? [index] : []);
   const speechSeconds = Number((activeIndexes.length * intervalMs / 1000).toFixed(2));
   const activeAverage = activeIndexes.length
@@ -53,15 +48,20 @@ function analyzeEnergyEnvelope(metrics, { minimumSpeechSeconds = MIN_SPEECH_SECO
     : 0;
   const confidence = clamp01((activeAverage - noiseFloor) / Math.max(0.08, 1 - noiseFloor));
   return Object.freeze({
-    accepted: speechSeconds >= minimumSpeechSeconds,
+    // Energy is diagnostic only. The transcription result, not an estimated
+    // speech duration, is authoritative for no_speech.
+    accepted: !allSilent,
+    allSilent,
     speechSeconds,
+    recordedSeconds: Number((amplitudes.length * intervalMs / 1000).toFixed(2)),
     confidence: Number(confidence.toFixed(4)),
     threshold: Number(threshold.toFixed(4)),
+    maxAmplitude: Number(maxAmplitude.toFixed(4)),
     firstSpeechMs: rawActiveIndexes.length ? rawActiveIndexes[0] * intervalMs : null,
     lastSpeechMs: rawActiveIndexes.length ? (rawActiveIndexes.at(-1) + 1) * intervalMs : null,
     trimmedMs: Math.max(0, Number(metrics?.trimmedMs) || 0),
     captureLatencyMs: Math.max(0, Number(metrics?.captureLatencyMs) || 0),
-    reason: speechSeconds >= minimumSpeechSeconds ? "speech_detected" : "speech_too_short",
+    reason: allSilent ? "entire_recording_silent" : activeIndexes.length ? "speech_detected" : "quiet_audio_forwarded",
   });
 }
 

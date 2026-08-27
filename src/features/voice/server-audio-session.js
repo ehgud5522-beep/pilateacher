@@ -5,9 +5,11 @@ export const SERVER_AUDIO_GATEWAY_TIMEOUT_MS = 30000;
 export const SERVER_AUDIO_MAX_SECONDS = 90;
 export const SERVER_AUDIO_MAX_BYTES = 2 * 1024 * 1024;
 export const SERVER_AUDIO_ENERGY_INTERVAL_MS = 100;
-export const SERVER_AUDIO_MIN_SPEECH_SECONDS = 1.5;
-export const SERVER_AUDIO_LEAD_PADDING_MS = 300;
-export const SERVER_AUDIO_TAIL_PADDING_MS = 500;
+export const SERVER_AUDIO_MIN_SPEECH_SECONDS = 0;
+export const SERVER_AUDIO_LEAD_PADDING_MS = 500;
+export const SERVER_AUDIO_TAIL_PADDING_MS = 1000;
+export const SERVER_AUDIO_ENERGY_ABSOLUTE_FLOOR = 0.008;
+export const SERVER_AUDIO_SILENCE_MAX_AMPLITUDE = 0.003;
 
 const safeIdPart = (value) => String(value || "unknown").replace(/[^A-Za-z0-9._:-]/g, "_").slice(0, 40);
 
@@ -27,11 +29,14 @@ const clampAmplitude = (value) => Math.max(0, Math.min(1, Number(value) || 0));
 export function analyzeRecordedSpeech(amplitudes, intervalMs = SERVER_AUDIO_ENERGY_INTERVAL_MS) {
   const values = Array.isArray(amplitudes) ? amplitudes.map(clampAmplitude) : [];
   if (!values.length || !Number.isFinite(intervalMs) || intervalMs < 50 || intervalMs > 250) {
-    return { accepted: false, speechSeconds: 0, threshold: 0, confidence: 0 };
+    return { accepted: false, allSilent: true, speechSeconds: 0, recordedSeconds: 0, threshold: 0, confidence: 0, maxAmplitude: 0 };
   }
   const sorted = [...values].sort((a, b) => a - b);
   const noiseFloor = sorted[Math.floor((sorted.length - 1) * 0.2)] || 0;
-  const threshold = Math.max(0.015, noiseFloor * 2.5 + 0.006);
+  const threshold = Math.max(SERVER_AUDIO_ENERGY_ABSOLUTE_FLOOR, noiseFloor * 1.8 + 0.003);
+  const maxAmplitude = Math.max(...values);
+  const dynamicRange = maxAmplitude - noiseFloor;
+  const allSilent = maxAmplitude <= SERVER_AUDIO_SILENCE_MAX_AMPLITUDE && dynamicRange <= 0.0015;
   const active = values.map((value) => value >= threshold);
   const bridge = Math.max(1, Math.round(300 / intervalMs));
   let previous = -1;
@@ -42,51 +47,56 @@ export function analyzeRecordedSpeech(amplitudes, intervalMs = SERVER_AUDIO_ENER
     }
     previous = index;
   });
-  const padded = [...active];
-  active.forEach((isActive, index) => {
-    if (!isActive) return;
-    for (let fill = Math.max(0, index - bridge); fill <= Math.min(active.length - 1, index + bridge); fill += 1) padded[fill] = true;
-  });
-  const activeIndexes = padded.flatMap((isActive, index) => isActive ? [index] : []);
+  const activeIndexes = active.flatMap((isActive, index) => isActive ? [index] : []);
   const speechSeconds = Number((activeIndexes.length * intervalMs / 1000).toFixed(2));
   const activeAverage = activeIndexes.length ? activeIndexes.reduce((sum, index) => sum + values[index], 0) / activeIndexes.length : 0;
   const confidence = Math.max(0, Math.min(1, (activeAverage - noiseFloor) / Math.max(0.08, 1 - noiseFloor)));
   return {
-    accepted: speechSeconds >= SERVER_AUDIO_MIN_SPEECH_SECONDS,
+    accepted: !allSilent,
+    allSilent,
     speechSeconds,
+    recordedSeconds: Number((values.length * intervalMs / 1000).toFixed(2)),
     threshold: Number(threshold.toFixed(4)),
     confidence: Number(confidence.toFixed(4)),
+    maxAmplitude: Number(maxAmplitude.toFixed(4)),
   };
 }
 
 export function createAudioTrimPlan(amplitudes, intervalMs = SERVER_AUDIO_ENERGY_INTERVAL_MS, durationMs = null) {
   const values = Array.isArray(amplitudes) ? amplitudes.map(clampAmplitude) : [];
   const analyzed = analyzeRecordedSpeech(values, intervalMs);
-  if (!values.length || !analyzed.accepted) {
+  if (!values.length) {
     return { ...analyzed, startMs: 0, endMs: 0, trimmedMs: 0, amplitudes: [] };
   }
   const sorted = [...values].sort((a, b) => a - b);
   const noiseFloor = sorted[Math.floor((sorted.length - 1) * 0.2)] || 0;
-  const threshold = Math.max(0.015, noiseFloor * 2.5 + 0.006);
+  const threshold = Math.max(SERVER_AUDIO_ENERGY_ABSOLUTE_FLOOR, noiseFloor * 1.8 + 0.003);
   const active = values.flatMap((value, index) => value >= threshold ? [index] : []);
   const measuredDurationMs = Math.max(values.length * intervalMs, Number(durationMs) || 0);
-  const startMs = Math.max(0, active[0] * intervalMs - SERVER_AUDIO_LEAD_PADDING_MS);
-  const endMs = Math.min(measuredDurationMs, (active.at(-1) + 1) * intervalMs + SERVER_AUDIO_TAIL_PADDING_MS);
-  const firstSample = Math.max(0, Math.floor(startMs / intervalMs));
-  const lastSample = Math.min(values.length, Math.ceil(endMs / intervalMs));
+  const sampledDurationMs = values.length * intervalMs;
+  const timingScale = sampledDurationMs > 0 ? measuredDurationMs / sampledDurationMs : 1;
+  const effectiveIntervalMs = intervalMs * timingScale;
+  const startMs = active.length ? Math.max(0, active[0] * effectiveIntervalMs - SERVER_AUDIO_LEAD_PADDING_MS) : 0;
+  const endMs = active.length ? Math.min(measuredDurationMs, (active.at(-1) + 1) * effectiveIntervalMs + SERVER_AUDIO_TAIL_PADDING_MS) : measuredDurationMs;
   return {
     ...analyzed,
+    recordedSeconds: Number((measuredDurationMs / 1000).toFixed(2)),
+    speechSeconds: Number(Math.min(measuredDurationMs / 1000, analyzed.speechSeconds * timingScale).toFixed(2)),
     startMs,
     endMs,
-    trimmedMs: Math.max(0, measuredDurationMs - (endMs - startMs)),
-    amplitudes: values.slice(firstSample, lastSample),
+    // H-9: these are diagnostic speech markers only. The original recording and
+    // the complete amplitude envelope are retained and uploaded unchanged.
+    trimmedMs: 0,
+    amplitudes: values,
   };
 }
 
 export function buildAudioMetrics(amplitudes, intervalMs = SERVER_AUDIO_ENERGY_INTERVAL_MS, details = {}) {
+  const values = (amplitudes || []).map((value) => Math.round(clampAmplitude(value) * 10000) / 10000).slice(0, 2000);
+  if (!values.length) return null;
   return {
     intervalMs,
-    amplitudes: (amplitudes || []).map((value) => Math.round(clampAmplitude(value) * 10000) / 10000).slice(0, 2000),
+    amplitudes: values,
     trimmedMs: Math.max(0, Math.round(Number(details.trimmedMs) || 0)),
     captureLatencyMs: Math.max(0, Math.round(Number(details.captureLatencyMs) || 0)),
   };

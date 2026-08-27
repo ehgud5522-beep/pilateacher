@@ -32,6 +32,7 @@ const firebaseConfig = {
 };
 
 export const fbReady = !!(firebaseConfig.apiKey && firebaseConfig.projectId);
+export const fbCurrentUserId = () => String(auth?.currentUser?.uid || "");
 
 let app = null, auth = null, fs = null, functions = null, storage = null;
 if (fbReady) {

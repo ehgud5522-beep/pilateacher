@@ -33,12 +33,12 @@ test("policy requires explicit mode, owned member and exact consent scope", asyn
   const result = await policy.authorize({ uid: "user-1", memberId: "member-1", operation: "analyzeBody" });
   assert.equal(result.allowed, true);
   assert.equal(result.memberName, "김지민");
-  assert.equal((await policy.authorize({ uid: "user-1", memberId: "unknown", operation: "analyzeBody" })).allowed, false);
+  assert.equal((await policy.authorize({ uid: "user-1", memberId: "unknown", operation: "analyzeBody" })).reason, "consent_missing");
 
   const wrongScope = createFirestorePolicyService({ firestore: createFakeFirestore(seed(consent({ scopes: ["generateReport"] }))), mode: "legacy_owner_backup" });
-  assert.equal((await wrongScope.authorize({ uid: "user-1", memberId: "member-1", operation: "analyzeBody" })).allowed, false);
+  assert.equal((await wrongScope.authorize({ uid: "user-1", memberId: "member-1", operation: "analyzeBody" })).reason, "consent_not_granted");
   const incomplete = createFirestorePolicyService({ firestore: createFakeFirestore(seed(consent({ grantedAt: "not-a-timestamp", revokedAt: undefined }))), mode: "legacy_owner_backup" });
-  assert.equal((await incomplete.authorize({ uid: "user-1", memberId: "member-1", operation: "analyzeBody" })).allowed, false);
+  assert.equal((await incomplete.authorize({ uid: "user-1", memberId: "member-1", operation: "analyzeBody" })).reason, "consent_not_granted");
 });
 
 test("voice operation verifies that the lesson contains the owned member", async () => {

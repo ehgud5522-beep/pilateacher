@@ -4,7 +4,7 @@ import test from "node:test";
 
 import { AI_STATUSES } from "../../src/ai/contracts.js";
 import { GatewayLlmProvider } from "../../src/features/lesson-record/llm-provider.js";
-import { LESSON_RECORD_DRAFT_STATE, listPendingLessonRecords, loadPendingLessonRecord, pendingLessonRecordLabel, removePendingLessonRecord, savePendingLessonRecord } from "../../src/features/lesson-record/draft-queue.js";
+import { clearQueuedLessonRecordAudio, clearQueuedLessonRecords, LESSON_RECORD_DRAFT_STATE, listPendingLessonRecords, listQueuedLessonRecords, loadPendingLessonRecord, pendingLessonRecordLabel, removePendingLessonRecord, savePendingLessonRecord } from "../../src/features/lesson-record/draft-queue.js";
 import { runLessonRecordRetryCycle, scheduleLessonRecordRetry } from "../../src/features/lesson-record/retry-queue.js";
 import { readAIRecordingStatus, writeAIRecordingStatus } from "../../src/features/lesson-record/ai-recording-status.js";
 import { appendLessonRecordDiagnostic, readLessonRecordDiagnostics } from "../../src/features/lesson-record/pipeline-diagnostics.js";
@@ -201,6 +201,59 @@ test("client invocation defects are never placed in the automatic retry loop", (
   }, storage, 1000);
   assert.equal(draft.failure.code, "client_internal");
   assert.equal(draft.retry, null);
+});
+
+test("consent and no-speech failures are excluded from retry count and queue clear preserves typed text", () => {
+  const storage = memoryStorage();
+  savePendingLessonRecord("m1", "consent", {
+    status: "audio_pending",
+    rawTranscript: "",
+    audioClips: [{ blobId: "consent-audio", state: "pending" }],
+    retry: { state: "waiting", attempts: 0, nextRetryAt: 0 },
+  }, storage);
+  scheduleLessonRecordRetry("m1", "consent", { code: "consent_required" }, storage, 1);
+  savePendingLessonRecord("m1", "silent", { status: "raw", rawTranscript: "", retry: null, failure: { code: "stt_no_speech", category: "INPUT" } }, storage);
+  savePendingLessonRecord("m1", "network", {
+    status: "audio_pending",
+    rawTranscript: "강사가 입력한 원문",
+    audioClips: [{ blobId: "network-audio", state: "pending" }],
+    retry: { state: "waiting", attempts: 0, nextRetryAt: 0 },
+  }, storage);
+  assert.deepEqual(listQueuedLessonRecords(storage).map((item) => item.lessonId), ["network"]);
+  const cleared = clearQueuedLessonRecords(storage);
+  assert.deepEqual(cleared, { cleared: 1, blobIds: ["network-audio"] });
+  const preserved = loadPendingLessonRecord("m1", "network", storage);
+  assert.equal(preserved.rawTranscript, "강사가 입력한 원문");
+  assert.equal(preserved.retry, null);
+  assert.deepEqual(preserved.audioClips, []);
+  assert.equal(listQueuedLessonRecords(storage).length, 0);
+});
+
+test("legacy nonretryable failures stay out of the queue and partial clear removes only deleted blob references", () => {
+  const storage = memoryStorage();
+  savePendingLessonRecord("m1", "legacy-consent", {
+    status: "audio_pending",
+    rawTranscript: "",
+    audioBlobId: "legacy-consent-audio",
+    retry: { state: "waiting", attempts: 0, nextRetryAt: 0 },
+    failure: { code: "consent_missing" },
+  }, storage);
+  assert.equal(listQueuedLessonRecords(storage).length, 0);
+  assert.equal(pendingLessonRecordLabel(loadPendingLessonRecord("m1", "legacy-consent", storage)), "동의 필요");
+
+  savePendingLessonRecord("m1", "partial", {
+    status: "audio_pending",
+    rawTranscript: "보존할 원문",
+    audioBlobId: "first",
+    audioClips: [{ blobId: "first", state: "pending" }, { blobId: "second", state: "pending" }],
+    retry: { state: "waiting", attempts: 0, nextRetryAt: 0 },
+  }, storage);
+  clearQueuedLessonRecordAudio([{ memberId: "m1", lessonId: "partial", blobIds: ["first"] }], storage);
+  const partial = loadPendingLessonRecord("m1", "partial", storage);
+  assert.equal(partial.rawTranscript, "보존할 원문");
+  assert.equal(partial.audioBlobId, null);
+  assert.deepEqual(partial.audioClips.map((clip) => clip.blobId), ["second"]);
+  assert.equal(partial.retry.state, "waiting");
 });
 
 test("App exposes four post-attendance choices, 90-second cap, pending save and post-confirm audio deletion", async () => {

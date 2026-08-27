@@ -61,28 +61,32 @@ test("recording result is converted, uploaded once, and keeps the supplied idemp
   assert.deepEqual(structuredDraftFromAudioOutput(result.output).didToday, ["브릿지"]);
 });
 
-test("client energy VAD blocks silence and low-confidence output never becomes four fields", () => {
+test("client energy VAD blocks only an entirely silent recording and keeps quiet short speech", () => {
   assert.equal(analyzeRecordedSpeech(Array(50).fill(0.001)).accepted, false);
   const speech = analyzeRecordedSpeech([...Array(5).fill(0.002), ...Array(20).fill(0.2), ...Array(5).fill(0.002)]);
   assert.equal(speech.accepted, true);
   assert.ok(speech.speechSeconds >= 1.5);
+  const quietShort = analyzeRecordedSpeech([...Array(10).fill(0.002), ...Array(5).fill(0.012), ...Array(10).fill(0.002)]);
+  assert.equal(quietShort.accepted, true);
+  assert.ok(quietShort.speechSeconds < 1.5);
   assert.deepEqual(buildAudioMetrics([0, 0.123456, 2]), { intervalMs: 100, amplitudes: [0, 0.1235, 1], trimmedMs: 0, captureLatencyMs: 0 });
+  assert.equal(buildAudioMetrics([]), null, "a failed meter must omit metrics instead of fabricating silence");
   assert.equal(structuredDraftFromAudioOutput({ ...audioOutput, result: "low_confidence", fields: null, flags: ["low_confidence"] }), null);
   assert.deepEqual(structuredDraftFromAudioOutput({ ...audioOutput, flags: ["tail_dropped"] })?.didToday, ["브릿지"]);
 });
 
-test("client trim plan keeps 300 ms before and 500 ms after speech and removes a silent tail", () => {
+test("client speech markers keep 500 ms before and 1000 ms after speech without trimming the original", () => {
   const amplitudes = [...Array(10).fill(0.002), ...Array(20).fill(0.22), ...Array(30).fill(0.002)];
   const plan = createAudioTrimPlan(amplitudes, 100, 6000);
   assert.equal(plan.accepted, true);
-  assert.equal(plan.startMs, 700);
-  assert.equal(plan.endMs, 3500);
-  assert.equal(plan.trimmedMs, 3200);
-  assert.equal(plan.amplitudes.length, 28);
+  assert.equal(plan.startMs, 500);
+  assert.equal(plan.endMs, 4000);
+  assert.equal(plan.trimmedMs, 0);
+  assert.deepEqual(plan.amplitudes, amplitudes);
   assert.deepEqual(buildAudioMetrics(plan.amplitudes, 100, { trimmedMs: plan.trimmedMs, captureLatencyMs: 88 }), {
     intervalMs: 100,
     amplitudes: plan.amplitudes,
-    trimmedMs: 3200,
+    trimmedMs: 0,
     captureLatencyMs: 88,
   });
 });
@@ -94,7 +98,9 @@ test("recorder is prewarmed and only switches to capture after start with haptic
   const hapticIndex = appSource.indexOf("Haptics.impact", startIndex);
   assert.ok(startIndex >= 0 && hapticIndex > startIndex && listeningIndex > hapticIndex);
   assert.match(appSource, /captureLatencyMsRef\.current/);
-  assert.match(appSource, /CapacitorAudioRecorder\.trimRecording/);
+  assert.doesNotMatch(appSource, /CapacitorAudioRecorder\.trimRecording/);
+  assert.match(appSource, /recordingResultToBlob\(result/);
+  assert.doesNotMatch(appSource, /trimPlan\.allSilent\)[\s\S]{0,500}return;/, "metering must not discard the original before server transcription");
 });
 
 test("native URI recording data becomes a Blob without persisting a native path", async () => {

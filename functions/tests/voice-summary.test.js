@@ -62,8 +62,8 @@ test("disabled production policy never treats missing consent data as true", asy
     summarizeVoice: async () => { providerCalls += 1; return { model: "gpt-5-mini", result: validResult }; },
   });
   const response = await invoke(handler);
-  assert.equal(response.statusCode, 403);
-  assert.equal(response.body.error.code, "consent_required");
+  assert.equal(response.statusCode, 503);
+  assert.equal(response.body.error.code, "provider_unavailable");
   assert.equal(providerCalls, 0);
 });
 

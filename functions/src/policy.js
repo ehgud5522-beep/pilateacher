@@ -82,7 +82,8 @@ function createFirestorePolicyService({
       const backupRef = firestore.doc(`users/${uid}/backup/latest`);
       const consentRef = firestore.doc(`users/${uid}/aiConsents/${memberId}`);
       const [backupSnapshot, consentSnapshot] = await Promise.all([backupRef.get(), consentRef.get()]);
-      if (!exists(backupSnapshot) || !exists(consentSnapshot)) return { allowed: false, reason: "policy_record_missing" };
+      if (!exists(backupSnapshot)) return { allowed: false, reason: "backup_missing" };
+      if (!exists(consentSnapshot)) return { allowed: false, reason: "consent_missing" };
       const backup = dataOf(backupSnapshot) || {};
       const database = backup.data && typeof backup.data === "object" ? backup.data : {};
       const member = Array.isArray(database.members) ? database.members.find((item) => item?.id === memberId) : null;

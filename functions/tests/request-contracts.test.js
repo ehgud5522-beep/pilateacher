@@ -66,11 +66,11 @@ test("audio lesson request enforces the 2MB and 90 second media contract", () =>
     memberName: "김지민",
     language: "ko",
     clipId: "clip-lesson-1",
-    audioMetrics: { intervalMs: 100, amplitudes: Array(30).fill(0.2), trimmedMs: 3200, captureLatencyMs: 88 },
+    audioMetrics: { intervalMs: 100, amplitudes: Array(30).fill(0.2), trimmedMs: 0, captureLatencyMs: 88 },
   };
   assert.equal(parseGatewayRequest(envelope("lesson_record_from_audio", valid)).input.language, "ko");
   assert.equal(parseGatewayRequest(envelope("lesson_record_from_audio", valid)).input.audioMetrics.amplitudes.length, 30);
-  assert.equal(parseGatewayRequest(envelope("lesson_record_from_audio", valid)).input.audioMetrics.trimmedMs, 3200);
+  assert.equal(parseGatewayRequest(envelope("lesson_record_from_audio", valid)).input.audioMetrics.trimmedMs, 0);
   assert.equal(parseGatewayRequest(envelope("lesson_record_from_audio", valid)).input.audioMetrics.captureLatencyMs, 88);
   assert.throws(
     () => parseGatewayRequest(envelope("lesson_record_from_audio", { ...valid, audio: createM4aFixture(91).toString("base64") })),

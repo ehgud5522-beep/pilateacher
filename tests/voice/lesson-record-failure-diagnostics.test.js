@@ -10,7 +10,7 @@ import {
 } from "../../src/features/lesson-record/failure-diagnostics.js";
 
 const cases = [
-  ["stt_no_speech", "INPUT", true],
+  ["stt_no_speech", "INPUT", false],
   ["mic_permission_denied", "INPUT", false],
   ["recognizer_busy", "TEMPORARY", true],
   ["recognizer_unavailable", "SERVICE", false],
@@ -66,7 +66,13 @@ test("raw persistence precedes Gateway work and cloud reconcile runs only after 
   const reconcile = source.indexOf("reconcileLessonRecordContext", localSave);
   assert.ok(localSave > saveStart && reconcile > localSave);
   const voiceSource = source.slice(source.indexOf("function VoiceNote"), source.indexOf("function NoteForm"));
-  assert.equal(voiceSource.includes("removePendingLessonRecord"), false, "VoiceNote must never delete a raw draft");
+  const discardStart = voiceSource.indexOf("const discardConsentAudio =");
+  const discardEnd = voiceSource.indexOf("const handleServerAudioFailure =", discardStart);
+  const discardSource = voiceSource.slice(discardStart, discardEnd);
+  assert.match(discardSource, /!rawTranscript && !currentDraft\.structuredDraft && !remainingClips\.length[\s\S]*removePendingLessonRecord/,
+    "declining consent may remove only an empty audio-only draft");
+  assert.match(discardSource, /savePendingLessonRecord[\s\S]*\.\.\.currentDraft[\s\S]*status: currentDraft\.structuredDraft \? "structured" : "raw"/,
+    "declining consent must preserve an existing raw or structured draft");
   const cancelStart = voiceSource.indexOf("const cancelRecording = () =>");
   const cancelEnd = voiceSource.indexOf("useEffect(() => {", cancelStart);
   const cancelSource = voiceSource.slice(cancelStart, cancelEnd);

@@ -12,6 +12,7 @@ import {
   AUTH_STAGES,
   FORBIDDEN_FIELD,
   appendAuthDiagnostic,
+  authDiagnosticDetail,
   firstFailedAuthStage,
   readAuthDiagnostics,
   readAuthErrorIdentity,
@@ -99,6 +100,17 @@ test("no token, nonce, credential, authorization code, password or e-mail can be
 test("scrubbing keeps the sentence readable while removing the secret", () => {
   assert.equal(scrubAuthMessage("nonce=ABC123 rejected"), "nonce=[redacted] rejected");
   assert.equal(scrubAuthMessage("The operation couldn’t be completed. (error 1004.)"), "The operation couldn’t be completed. (error 1004.)");
+});
+
+test("credential details show the recorded build and safe presence flags in UI and copy", () => {
+  const storage = memoryStorage();
+  const entry = appendAuthDiagnostic(AUTH_STAGES.CREDENTIAL_INSPECTED, {
+    appBuild: "1.1.22 (91)", hasIdToken: true, hasNonce: true, hasAuthorizationCode: false,
+    idToken: "secret-token", nonce: "secret-nonce", authorizationCode: "secret-code",
+  }, storage);
+  assert.equal(authDiagnosticDetail(entry), `idToken 있음 · nonce 있음 · authCode 없음 · build ${entry.appBuild}`);
+  assert.doesNotMatch(authDiagnosticDetail(entry), /secret/);
+  assert.equal(authDiagnosticDetail({}), "build 미기록", "old logs must not inherit the current build");
 });
 
 test("a stage trace names the first stage that failed, not the last", () => {

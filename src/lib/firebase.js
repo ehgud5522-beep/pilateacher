@@ -11,7 +11,7 @@ import { Capacitor } from "@capacitor/core";
 import { FirebaseAuthentication } from "@capacitor-firebase/authentication";
 import {
   getAuth, onAuthStateChanged, signOut,
-  GoogleAuthProvider, OAuthProvider, signInWithPopup, signInWithCredential,
+  GoogleAuthProvider, OAuthProvider, signInWithPopup,
   EmailAuthProvider, createUserWithEmailAndPassword, signInWithEmailAndPassword,
   reauthenticateWithCredential, reauthenticateWithPopup, revokeAccessToken, updateProfile,
 } from "firebase/auth";
@@ -19,6 +19,7 @@ import { getFirestore, collection, deleteDoc, doc, getDoc, getDocs, runTransacti
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { getStorage, ref as storageRef, uploadBytes, getBlob } from "firebase/storage";
 import { withAuthTimeout } from "../features/auth/apple-sign-in.js";
+import { signInWithCredentialSafe } from "../features/auth/credential-sign-in.js";
 import { AUTH_FEATURES, AUTH_STAGES } from "../features/auth/auth-diagnostics.js";
 import { googleNativeSignInOptions } from "../features/auth/google-sign-in.js";
 import { CLOUD_BACKUP_VERSION, backupCounts, evaluateOverwriteRisk, sanitizeFirestorePayload } from "../features/backup/cloud-backup.js";
@@ -170,18 +171,18 @@ export async function fbSignInSocial(provider, { onStage = () => {} } = {}) {
     stage(AUTH_STAGES.FIREBASE_CREDENTIAL_CREATED);
     startedAt = Date.now();
     stage(AUTH_STAGES.FIREBASE_SIGN_IN_STARTED);
-    let out;
+    let signedInUser;
     try {
-      out = await withAuthTimeout(
-        () => signInWithCredential(auth, nativeCredential.credential),
-        { timeoutMs: 20000, provider, stage: "firebase_credential_exchange" },
+      signedInUser = await signInWithCredentialSafe(
+        auth, nativeCredential.credential,
+        (name, outcome, details) => stage(name, { outcome, ...details }),
       );
     } catch (error) {
       stage(AUTH_STAGES.FIREBASE_AUTH_FAILED, { outcome: "failed", error, elapsedMs: Date.now() - startedAt });
       throw error;
     }
     stage(AUTH_STAGES.FIREBASE_AUTH_SUCCEEDED, { outcome: "succeeded", elapsedMs: Date.now() - startedAt });
-    const user = shape(out.user);
+    const user = shape(signedInUser);
     return {
       ...user,
       name: user.name || nativeCredential.firstName,

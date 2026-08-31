@@ -25,6 +25,9 @@ export const AUTH_STAGES = Object.freeze({
   CREDENTIAL_REJECTED: "credential_rejected",
   FIREBASE_CREDENTIAL_CREATED: "firebase_credential_created",
   FIREBASE_SIGN_IN_STARTED: "firebase_sign_in_started",
+  FIREBASE_SIGN_IN_SETTLED: "firebase_sign_in_settled",
+  FIREBASE_SIGN_IN_RETRY: "firebase_sign_in_retry",
+  AUTHSTATE_LISTENER_FAILED: "authstate_listener_failed",
   FIREBASE_AUTH_SUCCEEDED: "firebase_auth_succeeded",
   FIREBASE_AUTH_FAILED: "firebase_auth_failed",
   PROFILE_LOADED: "profile_loaded",
@@ -111,6 +114,18 @@ export function readAuthDiagnostics(storage = globalThis.localStorage) {
 
 export function clearAuthDiagnostics(storage = globalThis.localStorage) {
   try { storage?.removeItem?.(AUTH_DIAGNOSTIC_STORAGE_KEY); } catch (_error) {}
+}
+
+/** Shared by both diagnostic screens and clipboard export; only stored fields. */
+export function authDiagnosticDetail(entry) {
+  const parts = [];
+  if (typeof entry.hasIdToken === "boolean") {
+    parts.push(`idToken ${entry.hasIdToken ? "있음" : "없음"}`);
+    parts.push(`nonce ${typeof entry.hasNonce !== "boolean" ? "미기록" : entry.hasNonce ? "있음" : "없음"}`);
+    parts.push(`authCode ${typeof entry.hasAuthorizationCode !== "boolean" ? "미기록" : entry.hasAuthorizationCode ? "있음" : "없음"}`);
+  }
+  parts.push(`build ${entry.appBuild || "미기록"}`);
+  return parts.join(" · ");
 }
 
 /**

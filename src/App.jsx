@@ -101,7 +101,7 @@ import {
   readRecentAnnotationColors, rememberAnnotationColor, screenPointToImagePoint,
 } from "./features/posture/posture-annotations.js";
 import { LOCAL_PHOTO_NOTICE_MESSAGE, claimLocalPhotoNotice } from "./features/posture/photo-storage-notice.js";
-import { AUTH_FEATURES, AUTH_STAGES, appendAuthDiagnostic, clearAuthDiagnostics, firstFailedAuthStage, readAuthDiagnostics, readAuthErrorIdentity } from "./features/auth/auth-diagnostics.js";
+import { AUTH_FEATURES, AUTH_STAGES, appendAuthDiagnostic, authDiagnosticDetail, clearAuthDiagnostics, firstFailedAuthStage, readAuthDiagnostics, readAuthErrorIdentity } from "./features/auth/auth-diagnostics.js";
 import { runAuthPreflight } from "./features/auth/connectivity-probe.js";
 import { describeLessonRecordFailure, failureCauseDetail, LESSON_RECORD_FAILURE_CATEGORY, lessonRecordProvenanceSource, takeLessonRecordDebugFailure } from "./features/lesson-record/failure-diagnostics.js";
 import { appendLessonRecordDiagnostic, readLessonRecordDiagnostics } from "./features/lesson-record/pipeline-diagnostics.js";
@@ -1884,6 +1884,7 @@ function AuthDiagnosticsPanel({ onClose, onToast }) {
       entry.errorDomain,
       entry.errorCode,
       entry.message,
+      authDiagnosticDetail(entry),
     ].filter(Boolean).join(" · ")),
   ].join("\n");
   const recheck = async () => {
@@ -1923,6 +1924,7 @@ function AuthDiagnosticsPanel({ onClose, onToast }) {
             <p className="tabular-nums" style={{ fontSize: 9, color: entry.outcome === "failed" ? BAD : SUB }}>{String(entry.at).slice(5, 19).replace("T", " ")} · {entry.provider} · {entry.stage} · {entry.outcome}{entry.elapsedMs === null ? "" : ` · ${entry.elapsedMs}ms`}</p>
             {(entry.errorDomain || entry.errorCode) && <p className="mt-0.5 break-all" style={{ fontSize: 9, lineHeight: 1.4, color: BAD }}>{entry.errorDomain} · {entry.errorCode}</p>}
             {entry.message && <p className="mt-0.5 break-all" style={{ fontSize: 8, lineHeight: 1.4, color: SUB }}>{entry.message}</p>}
+            <p className="mt-0.5 break-all" style={{ fontSize: 8, lineHeight: 1.4, color: SUB }}>{authDiagnosticDetail(entry)}</p>
           </div>)}</div>
           {!attempts.length && <p className="mt-1" style={{ fontSize: 10, color: SUB }}>로그인 시도 기록 없음</p>}
         </section>
@@ -13380,7 +13382,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
                   <p className="tabular-nums" style={{ fontSize: 9, color: item.outcome === "failed" ? BAD : SUB }}>{String(item.at).slice(5, 19).replace("T", " ")} · {item.stage} · {item.outcome}{item.elapsedMs === null ? "" : ` · ${item.elapsedMs}ms`}</p>
                   {(item.errorDomain || item.errorCode) && <p className="mt-0.5 break-all" style={{ fontSize: 9, lineHeight: 1.4, color: BAD }}>{item.errorDomain} · {item.errorCode}</p>}
                   {item.message && <p className="mt-0.5 break-all" style={{ fontSize: 8, lineHeight: 1.4, color: SUB }}>{item.message}</p>}
-                  {item.hasIdToken !== null && <p style={{ fontSize: 8, color: SUB }}>idToken {item.hasIdToken ? "있음" : "없음"} · nonce {item.hasNonce ? "있음" : "없음"} · authCode {item.hasAuthorizationCode ? "있음" : "없음"}</p>}
+                  <p style={{ fontSize: 8, color: SUB }}>{authDiagnosticDetail(item)}</p>
                   {index === 0 && <p style={{ fontSize: 8, color: SUB }}>{item.platform} {item.osVersion} · {item.deviceModel} · {item.appBuild}</p>}
                 </div>)}</div>
                 {!authDiagnostics.length && <p className="mt-1" style={{ fontSize: 10, color: SUB }}>로그인 시도 기록 없음</p>}

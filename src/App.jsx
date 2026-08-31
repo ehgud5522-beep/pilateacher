@@ -97,6 +97,7 @@ import {
 } from "./features/lesson-record/lesson-record-presentation.js";
 import lessonRecordExamples from "./features/lesson-record/lesson-record-examples.json";
 import { createMemberBriefing, memberMemorySummary, selectScheduleBriefing } from "./features/member-memory/briefing.js";
+import { LESSON_SHEET_BRIEFING_KIND, selectLessonSheetBriefing } from "./features/member-memory/lesson-sheet-briefing.js";
 import { addPostureMilestone, buildMemberMemory, rejectMemoryEntry, selectLastLessonMemoryRecord } from "./features/member-memory/member-memory.js";
 import { trackMemberMemoryUsage } from "./features/member-memory/usage-telemetry.js";
 import Onboarding from "./features/onboarding/Onboarding.jsx";
@@ -3213,6 +3214,8 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
   const latestNote = (activeMember?.notes || []).slice().sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")))[0] || null;
   const currentLessonNote = (activeMember?.notes || []).find((note) => String(note?.sid || "") === String(draft.id || "")) || null;
   const activeBriefing = useMemo(() => activeMember ? (briefingOf?.(activeMember.id, draft.id) || createMemberBriefing({ member: activeMember, currentSessionId: draft.id })) : null, [activeMember, briefingOf, draft.id]);
+  /* 시트에 그릴 것만 고른다 — 촬영 이벤트 로그는 숨기고, 고를 게 없으면 섹션을 안 그린다 */
+  const sheetBriefing = useMemo(() => selectLessonSheetBriefing(activeBriefing), [activeBriefing]);
   const openedBriefingRef = useRef("");
   useEffect(() => {
     if (!activeMember?.id || !draft.id || !activeBriefing) return;
@@ -3369,6 +3372,8 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
         </>}
         {draft.id && !isGroup && isMemberLesson && attendeesOf(draft).length > 0 && (
           <div className="space-y-3 border-t pt-3" style={{ borderColor: LINE }}>
+            {/* 회원 전환 탭은 듀엣 전용 — 1명이면 아래 상세 카드가 같은 이름을 두 번 그린다 */}
+            {attendeesOf(draft).length > 1 && (
             <div className="flex gap-2 overflow-x-auto pb-0.5">
               {attendeesOf(draft).map((a) => {
                 const m = members.find((x) => x.id === a.memberId);
@@ -3376,24 +3381,40 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
                 return (
                   <button key={a.memberId} onClick={() => { setActiveMemberId(a.memberId); setRecordMode(null); setRecordBody(""); }}
                     className="min-w-[132px] flex-1 rounded-xl p-3 text-left"
-                    style={{ backgroundColor: active ? TINT : CANVAS, border: `1px solid ${active ? "#D9D7EE" : LINE}` }}>
-                    <p className="truncate text-sm font-extrabold" style={{ color: active ? PRIMARY : INK }}>{m?.name || "삭제된 회원"}</p>
+                    style={{ backgroundColor: CANVAS, border: `1px solid ${active ? INK : LINE}` }}>
+                    <p className="truncate text-sm" style={{ color: INK, fontWeight: active ? 800 : 600 }}>{m?.name || "삭제된 회원"}</p>
                     <p className="mt-0.5 text-xs" style={{ color: SUB }}>잔여 {left(m)}회{m?.contractEnd ? ` · ${m.contractEnd.slice(5).replace("-", ".")}까지` : ""}</p>
                   </button>
                 );
               })}
             </div>
+            )}
 
-            {activeMember && activeBriefing && (
-              <section className="rounded-xl p-3" aria-label="지난 수업 이어서 보기" style={{ backgroundColor: LAVENDER_S, border: `1px solid ${RING}` }}>
-                <div className="mb-2 flex items-center gap-2"><Sparkles size={14} style={{ color: BRAND_D }} /><p className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: BRAND_D }}>지난 수업 이어서 보기</p><span style={{ fontSize: 9, color: SUB }}>저장한 기록 기준</span></div>
-                <div className="space-y-1.5">{activeBriefing.lines.slice(0, 5).map((briefingLine, index) => <p key={`${briefingLine.kind}-${index}`} className="text-xs leading-relaxed" style={{ color: briefingLine.kind === "conflict" ? WARN : INK2 }}>• {briefingLine.text}</p>)}</div>
+            {activeMember && sheetBriefing && (
+              <section className="rounded-xl p-3" aria-label={sheetBriefing.title} style={{ backgroundColor: CARD, border: `1px solid ${FAINT}` }}>
+                <div className="mb-2 flex items-center gap-2">
+                  <Sparkles size={14} style={{ color: SUB }} />
+                  <p className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: INK }}>{sheetBriefing.title}</p>
+                  {sheetBriefing.dateBadge && <span className="shrink-0 rounded-full px-2 py-0.5 tabular-nums" style={{ fontSize: 9, fontWeight: 700, color: SUB, backgroundColor: CANVAS }}>{sheetBriefing.dateBadge}</span>}
+                </div>
+                {sheetBriefing.kind === LESSON_SHEET_BRIEFING_KIND.POSTURE ? (
+                  <div className="space-y-1.5">{sheetBriefing.metrics.map((metric) => (
+                    <div key={metric.label} className="flex min-w-0 items-baseline gap-2 text-xs leading-relaxed">
+                      <span className="min-w-0 flex-1 truncate" style={{ color: INK2 }}>{metric.label}</span>
+                      <span className="shrink-0 tabular-nums font-bold" style={{ color: INK }}>{metric.before} → {metric.after}</span>
+                      <span className="shrink-0" style={{ fontSize: 10, color: SUB }}>({metric.summary})</span>
+                    </div>
+                  ))}</div>
+                ) : (
+                  <div className="space-y-1.5">{sheetBriefing.lines.map((briefingLine, index) => <p key={`${briefingLine.kind}-${index}`} className="text-xs leading-relaxed" style={{ color: briefingLine.kind === "conflict" ? WARN : INK2 }}>• {briefingLine.text}</p>)}</div>
+                )}
+                {sheetBriefing.nextFocus && <p className="mt-2 border-t pt-2 text-xs font-bold leading-relaxed" style={{ borderColor: LINE, color: INK }}>오늘 이어서: {sheetBriefing.nextFocus}</p>}
               </section>
             )}
 
             {activeMember && (
               <button type="button" onClick={() => onFocusMemberWeek?.(activeMember.id)} className="flex h-11 w-full items-center justify-center gap-2 rounded-lg text-xs font-bold"
-                style={{ backgroundColor: TINT, color: BRAND_D, border: `1px solid #D5D1EB` }}>
+                style={{ backgroundColor: TINT, color: BRAND_D, border: `1px solid ${LINE}` }}>
                 <CalendarDays size={14} /> 이번 주 이 회원 일정만 보기
               </button>
             )}
@@ -3405,6 +3426,7 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-extrabold" style={{ color: INK }}>{activeMember.name}</p>
                       <p className="mt-0.5 text-xs" style={{ color: SUB }}>{activeMember.goal || "목표 미입력"}</p>
+                      <p className="mt-0.5 text-xs tabular-nums" style={{ color: SUB }}>잔여 {left(activeMember)}회{activeMember.contractEnd ? ` · ${activeMember.contractEnd.slice(5).replace("-", ".")}까지` : ""}</p>
                     </div>
                     <span className="shrink-0 rounded-full px-2.5 py-1 text-xs font-extrabold" style={{ backgroundColor: stOf(activeAttendee.status).bg, color: stOf(activeAttendee.status).color }}>{stOf(activeAttendee.status).label}</span>
                   </div>
@@ -3418,7 +3440,7 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
                   <div className="grid grid-cols-3 gap-2">
                     {[{ k: "done", l: "출석" }, { k: "noshow", l: "노쇼" }, { k: "cancel", l: "취소" }].map((o) => (
                       <button key={o.k} onClick={() => onStatus?.(draft.id, o.k, activeMemberId)} className="h-9 rounded-lg text-xs font-bold"
-                        style={activeAttendee.status === o.k ? { backgroundColor: stOf(o.k).color, color: "#fff" } : { backgroundColor: CANVAS, color: SUB }}>{o.l}</button>
+                        style={activeAttendee.status === o.k ? { backgroundColor: stOf(o.k).color, color: "#fff", border: `1px solid ${FAINT}` } : { backgroundColor: CANVAS, color: SUB, border: `1px solid ${FAINT}` }}>{o.l}</button>
                     ))}
                   </div>
                   {activeAttendee.status !== "booked" && <button type="button" onClick={() => onStatus?.(draft.id, "booked", activeMemberId)} className="mt-2 h-9 w-full rounded-lg text-xs font-bold" style={{ backgroundColor: CARD, color: BRAND_D, border: `1px solid ${LINE}` }}>처리 되돌리기</button>}
@@ -3434,7 +3456,7 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
                 {activeAttendee.status !== "booked" && <>
                 {!aiRecordingAvailable(aiRecording) && <p className="rounded-lg px-3 py-2 text-xs font-bold" style={{ backgroundColor: WARN_S, color: WARN }}>AI 정리 잠시 점검 중 · 직접 입력으로 기록할 수 있어요.</p>}
                 <div className="grid grid-cols-2 gap-2">
-                  {aiRecordingAvailable(aiRecording) && <button onClick={() => { setRecordFallback(""); setRecordMode(recordMode === "voice" ? null : "voice"); }} className="flex h-12 items-center justify-center gap-1.5 rounded-lg text-xs font-extrabold" style={{ backgroundColor: recordMode === "voice" ? PRIMARY : TINT, color: recordMode === "voice" ? "#fff" : PRIMARY, border: `1px solid ${recordMode === "voice" ? PRIMARY : "#D9D7EE"}` }}><Smartphone size={15} /> 기록하기</button>}
+                  {aiRecordingAvailable(aiRecording) && <button onClick={() => { setRecordFallback(""); setRecordMode(recordMode === "voice" ? null : "voice"); }} className="flex h-12 items-center justify-center gap-1.5 rounded-lg text-xs font-extrabold" style={{ backgroundColor: recordMode === "voice" ? PRIMARY : TINT, color: recordMode === "voice" ? "#fff" : PRIMARY, border: `1px solid ${recordMode === "voice" ? PRIMARY : LINE}` }}><Smartphone size={15} /> 기록하기</button>}
                   <button onClick={() => { setRecordFallback(""); setRecordMode(recordMode === "write" ? null : "write"); }} className="flex h-12 items-center justify-center gap-1 rounded-lg text-xs font-extrabold" style={{ backgroundColor: recordMode === "write" ? TINT : CARD, color: recordMode === "write" ? PRIMARY : INK, border: `1px solid ${LINE}` }}><Pencil size={13} /> 직접입력</button>
                   <button onClick={async () => { const stored = await onNoComment?.(activeMemberId, draft.type, draft.id); if (stored !== false) onClose(); }} className="h-12 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: SUB, border: `1px solid ${LINE}` }}>노코멘트</button>
                   <button onClick={onClose} className="h-12 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: SUB, border: `1px solid ${LINE}` }}>나중에</button>

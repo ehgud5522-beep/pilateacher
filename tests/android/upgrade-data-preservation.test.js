@@ -25,7 +25,7 @@ test("previous Android build data remains readable after the version 43 upgrade"
   const userId = fixture.userId;
 
   assert.match(gradleSource, /applicationId\s+["']com\.pilateacher\.app["']/);
-  assert.match(gradleSource, /versionCode\s+43\b/);
+  assert.match(gradleSource, /versionCode\s+44\b/);
   assert.match(appSource, /`pilateacher_db_\$\{id\}`/);
   assert.match(appSource, /`pilateacher_photos_\$\{id\}`/);
 

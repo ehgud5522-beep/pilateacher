@@ -44,12 +44,28 @@ export const AUTH_STAGES = Object.freeze({
   INDEXED_DB_PROBE: "indexed_db_probe",
   LOCAL_STORAGE_PROBE: "local_storage_probe",
   NETWORK_STATE: "network_state",
+  // Whether the Auth instance itself finished initializing. Every sign-in call
+  // queues behind that promise, so an initialization that never settles and a
+  // network hang are the same silence unless they are measured apart.
+  AUTH_INIT_READY: "auth_init_ready",
+  AUTH_INIT_TIMEOUT: "auth_init_timeout",
+  // Whether a request actually left the device, recorded by the fetch wrapper
+  // installed before the bundle. Path, status and duration only.
+  IDP_FETCH_STARTED: "idp_fetch_started",
+  IDP_FETCH_DONE: "idp_fetch_done",
+  IDP_FETCH_ERROR: "idp_fetch_error",
+  // One-shot clearing of Firebase Auth's own stored session.
+  AUTH_RECOVERY_STARTED: "auth_recovery_started",
+  AUTH_RECOVERY_RELOAD: "auth_recovery_reload",
+  AUTH_RECOVERY_DEFERRED: "auth_recovery_deferred",
+  AUTH_RECOVERY_SKIPPED: "auth_recovery_skipped",
 });
 
 export const AUTH_FEATURES = Object.freeze({
   APPLE_SIGN_IN: "apple_sign_in",
   EMAIL_SIGN_IN: "email_sign_in",
   CONNECTIVITY: "auth_connectivity",
+  INITIALIZATION: "auth_init",
 });
 
 // The stored entry is built from this fixed list of fields and nothing else, so
@@ -116,6 +132,24 @@ export function clearAuthDiagnostics(storage = globalThis.localStorage) {
   try { storage?.removeItem?.(AUTH_DIAGNOSTIC_STORAGE_KEY); } catch (_error) {}
 }
 
+/**
+ * The one-line header of a record. Both diagnostic screens and the clipboard
+ * export render this same string: a stage that is only legible on one of the
+ * two screens makes comparing two devices' logs pointless.
+ */
+export function authDiagnosticSummary(entry = {}) {
+  return [
+    String(entry.at || "").slice(5, 19).replace("T", " "),
+    entry.feature,
+    entry.provider,
+    entry.stage,
+    entry.outcome,
+    entry.path,
+    entry.httpStatus ? `HTTP ${entry.httpStatus}` : "",
+    entry.elapsedMs === null || entry.elapsedMs === undefined ? "" : `${entry.elapsedMs}ms`,
+  ].filter(Boolean).join(" · ");
+}
+
 /** Shared by both diagnostic screens and clipboard export; only stored fields. */
 export function authDiagnosticDetail(entry) {
   const parts = [];
@@ -146,6 +180,8 @@ export function appendAuthDiagnostic(stage, details = {}, storage = globalThis.l
     errorCode: token(source.errorCode, 64),
     message: scrubAuthMessage(source.message),
     correlationId: token(source.correlationId, 64),
+    // The Identity Toolkit method name only, never the URL or its query string.
+    path: token(source.path, 64),
     appBuild: token(source.appBuild, 40),
     platform: token(source.platform, 24),
     osVersion: token(source.osVersion, 40),

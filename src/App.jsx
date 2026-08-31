@@ -101,7 +101,8 @@ import {
   readRecentAnnotationColors, rememberAnnotationColor, screenPointToImagePoint,
 } from "./features/posture/posture-annotations.js";
 import { LOCAL_PHOTO_NOTICE_MESSAGE, claimLocalPhotoNotice } from "./features/posture/photo-storage-notice.js";
-import { AUTH_FEATURES, AUTH_STAGES, appendAuthDiagnostic, authDiagnosticDetail, clearAuthDiagnostics, firstFailedAuthStage, readAuthDiagnostics, readAuthErrorIdentity } from "./features/auth/auth-diagnostics.js";
+import { AUTH_FEATURES, AUTH_STAGES, appendAuthDiagnostic, authDiagnosticDetail, authDiagnosticSummary, clearAuthDiagnostics, firstFailedAuthStage, readAuthDiagnostics, readAuthErrorIdentity } from "./features/auth/auth-diagnostics.js";
+import { connectAuthInitLog } from "./features/auth/auth-init-log.js";
 import { runAuthPreflight } from "./features/auth/connectivity-probe.js";
 import { describeLessonRecordFailure, failureCauseDetail, LESSON_RECORD_FAILURE_CATEGORY, lessonRecordProvenanceSource, takeLessonRecordDebugFailure } from "./features/lesson-record/failure-diagnostics.js";
 import { appendLessonRecordDiagnostic, readLessonRecordDiagnostics } from "./features/lesson-record/pipeline-diagnostics.js";
@@ -449,6 +450,9 @@ const recordAuthStage = (stage, details = {}) => {
   });
   return entry;
 };
+/* The Auth initialization probe and the fetch wrapper both run before this
+   module body; they buffer until this line hands them the recorder. */
+connectAuthInitLog(recordAuthStage);
 let authPreflightStarted = false;
 const runAuthConnectivityPreflight = async ({ force = false } = {}) => {
   if (authPreflightStarted && !force) return readAuthDiagnostics().filter((entry) => entry.feature === AUTH_FEATURES.CONNECTIVITY);
@@ -1864,6 +1868,21 @@ function Splash() {
   );
 }
 
+/* One record, rendered the same way on the login diagnostics panel and in the
+   hidden lesson diagnostics. A field that is only legible on one of the two
+   screens makes comparing two devices' logs pointless, so both screens render
+   this component and the clipboard export uses the same summary line. */
+function AuthDiagnosticRow({ entry }) {
+  return (
+    <div className="rounded-md px-2 py-1" style={{ backgroundColor: PAGE }}>
+      <p className="break-all tabular-nums" style={{ fontSize: 9, lineHeight: 1.5, color: entry.outcome === "failed" ? BAD : SUB }}>{authDiagnosticSummary(entry)}</p>
+      {(entry.errorDomain || entry.errorCode) && <p className="mt-0.5 break-all" style={{ fontSize: 9, lineHeight: 1.4, color: BAD }}>{entry.errorDomain || "domain 없음"} · {entry.errorCode || "code 없음"}</p>}
+      {entry.message && <p className="mt-0.5 break-all" style={{ fontSize: 8, lineHeight: 1.4, color: SUB }}>{entry.message}</p>}
+      <p className="mt-0.5 break-all" style={{ fontSize: 8, lineHeight: 1.4, color: SUB }}>{authDiagnosticDetail(entry)}</p>
+    </div>
+  );
+}
+
 function AuthDiagnosticsPanel({ onClose, onToast }) {
   const [entries, setEntries] = useState(() => readAuthDiagnostics());
   const [rechecking, setRechecking] = useState(false);
@@ -1876,11 +1895,7 @@ function AuthDiagnosticsPanel({ onClose, onToast }) {
     `PilaTeacher 로그인 진단`,
     `${context.platform} ${context.osVersion} · ${context.deviceModel} · ${context.appBuild}`,
     ...entries.map((entry) => [
-      String(entry.at).slice(0, 19).replace("T", " "),
-      entry.stage,
-      entry.outcome,
-      entry.httpStatus ? `HTTP ${entry.httpStatus}` : "",
-      entry.elapsedMs === null ? "" : `${entry.elapsedMs}ms`,
+      authDiagnosticSummary(entry),
       entry.errorDomain,
       entry.errorCode,
       entry.message,
@@ -1911,7 +1926,7 @@ function AuthDiagnosticsPanel({ onClose, onToast }) {
             <button type="button" onClick={recheck} disabled={rechecking} className="min-h-11 shrink-0 rounded-lg px-3 text-[10px] font-extrabold disabled:opacity-40" style={{ backgroundColor: TINT, color: BRAND_D }}>{rechecking ? "점검 중" : "다시 점검"}</button>
           </div>
           {connectivity.length
-            ? <div className="mt-2 space-y-1">{connectivity.map((entry, index) => <p key={`${entry.at}-${index}`} className="break-all tabular-nums" style={{ fontSize: 10, lineHeight: 1.5, color: entry.outcome === "failed" ? BAD : INK2 }}>{entry.stage} · {entry.outcome}{entry.httpStatus ? ` · HTTP ${entry.httpStatus}` : ""}{entry.elapsedMs === null ? "" : ` · ${entry.elapsedMs}ms`}{entry.errorCode ? ` · ${entry.errorDomain}/${entry.errorCode}` : ""}{entry.message ? ` · ${entry.message}` : ""}</p>)}</div>
+            ? <div className="mt-2 space-y-1">{connectivity.map((entry, index) => <AuthDiagnosticRow key={`${entry.at}-${index}`} entry={entry} />)}</div>
             : <p className="mt-2" style={{ fontSize: 10, color: SUB }}>점검 기록 없음 · [다시 점검]을 눌러 주세요</p>}
         </section>
 
@@ -1920,12 +1935,7 @@ function AuthDiagnosticsPanel({ onClose, onToast }) {
           {failure
             ? <p className="mt-1 break-all" style={{ fontSize: 10, lineHeight: 1.5, color: BAD }}>최초 실패 단계: {failure.stage} · {failure.errorDomain || "domain 없음"} · {failure.errorCode || "code 없음"}</p>
             : <p className="mt-1" style={{ fontSize: 10, color: SUB }}>실패한 단계 없음</p>}
-          <div className="mt-2 space-y-1">{attempts.map((entry, index) => <div key={`${entry.at}-${index}`} className="rounded-md px-2 py-1" style={{ backgroundColor: PAGE }}>
-            <p className="tabular-nums" style={{ fontSize: 9, color: entry.outcome === "failed" ? BAD : SUB }}>{String(entry.at).slice(5, 19).replace("T", " ")} · {entry.provider} · {entry.stage} · {entry.outcome}{entry.elapsedMs === null ? "" : ` · ${entry.elapsedMs}ms`}</p>
-            {(entry.errorDomain || entry.errorCode) && <p className="mt-0.5 break-all" style={{ fontSize: 9, lineHeight: 1.4, color: BAD }}>{entry.errorDomain} · {entry.errorCode}</p>}
-            {entry.message && <p className="mt-0.5 break-all" style={{ fontSize: 8, lineHeight: 1.4, color: SUB }}>{entry.message}</p>}
-            <p className="mt-0.5 break-all" style={{ fontSize: 8, lineHeight: 1.4, color: SUB }}>{authDiagnosticDetail(entry)}</p>
-          </div>)}</div>
+          <div className="mt-2 space-y-1">{attempts.map((entry, index) => <AuthDiagnosticRow key={`${entry.at}-${index}`} entry={entry} />)}</div>
           {!attempts.length && <p className="mt-1" style={{ fontSize: 10, color: SUB }}>로그인 시도 기록 없음</p>}
         </section>
 
@@ -13089,6 +13099,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
   const voiceSessionDiagnostics = useMemo(() => showLessonDiagnostics ? readVoiceSessionDiagnostics() : [], [showLessonDiagnostics]);
   const authDiagnostics = useMemo(() => showLessonDiagnostics ? readAuthDiagnostics() : [], [showLessonDiagnostics]);
   const firstAuthFailure = useMemo(() => firstFailedAuthStage(authDiagnostics), [authDiagnostics]);
+  const authContext = authDeviceContext();
   const diagnosticQueue = useMemo(() => showLessonDiagnostics ? listQueuedLessonRecords() : [], [showLessonDiagnostics, diagnosticQueueRevision]);
   useEffect(() => {
     if (!showLessonDiagnostics) return undefined;
@@ -13378,13 +13389,8 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
                 {firstAuthFailure
                   ? <p className="mt-1 break-all" style={{ fontSize: 10, lineHeight: 1.5, color: BAD }}>최초 실패 단계: {firstAuthFailure.stage} · {firstAuthFailure.errorDomain || "domain 없음"} · {firstAuthFailure.errorCode || "code 없음"}</p>
                   : <p className="mt-1" style={{ fontSize: 10, color: SUB }}>실패한 단계 없음</p>}
-                <div className="mt-2 space-y-1">{authDiagnostics.map((item, index) => <div key={`${item.at}-${index}`} className="rounded-md px-2 py-1" style={{ backgroundColor: PAGE }}>
-                  <p className="tabular-nums" style={{ fontSize: 9, color: item.outcome === "failed" ? BAD : SUB }}>{String(item.at).slice(5, 19).replace("T", " ")} · {item.stage} · {item.outcome}{item.elapsedMs === null ? "" : ` · ${item.elapsedMs}ms`}</p>
-                  {(item.errorDomain || item.errorCode) && <p className="mt-0.5 break-all" style={{ fontSize: 9, lineHeight: 1.4, color: BAD }}>{item.errorDomain} · {item.errorCode}</p>}
-                  {item.message && <p className="mt-0.5 break-all" style={{ fontSize: 8, lineHeight: 1.4, color: SUB }}>{item.message}</p>}
-                  <p style={{ fontSize: 8, color: SUB }}>{authDiagnosticDetail(item)}</p>
-                  {index === 0 && <p style={{ fontSize: 8, color: SUB }}>{item.platform} {item.osVersion} · {item.deviceModel} · {item.appBuild}</p>}
-                </div>)}</div>
+                <p className="mt-1" style={{ fontSize: 9, color: SUB }}>{authContext.platform} {authContext.osVersion} · {authContext.deviceModel} · {authContext.appBuild}</p>
+                <div className="mt-2 space-y-1">{authDiagnostics.map((item, index) => <AuthDiagnosticRow key={`${item.at}-${index}`} entry={item} />)}</div>
                 {!authDiagnostics.length && <p className="mt-1" style={{ fontSize: 10, color: SUB }}>로그인 시도 기록 없음</p>}
               </div>
               <IOSMediaDiagnosticPanel memberId={account?.id || "diagnostics"} lessonId="hidden-diagnostics" />

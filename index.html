@@ -2,6 +2,52 @@
 <html lang="ko">
   <head>
     <meta charset="UTF-8" />
+    <!--
+      Identity Toolkit request trace. Firebase Auth reads window.fetch when it
+      sends a request, so this is installed before anything else on the page: it
+      is the only way to tell "the request left the device and got no answer"
+      apart from "the request was never sent". Vite injects the bundle's
+      <script type="module"> after this tag, and a module script is deferred, so
+      this wrapper is always in place first. Events raised before the app has a
+      logger wait in __authFetchQueue and are drained by
+      src/features/auth/auth-init-log.js.
+
+      Only the method name, the HTTP status and the elapsed time are recorded.
+      The URL, its query string (which carries the API key), the request body
+      and every token stay out of the log.
+    -->
+    <script id="pilateacher-auth-fetch-instrument">
+      (function () {
+        var original = window.fetch;
+        if (typeof original !== "function") return;
+        window.__authFetchQueue = window.__authFetchQueue || [];
+        function emit(stage, details) {
+          if (typeof window.__authFetchLog === "function") {
+            try { window.__authFetchLog(stage, details); return; } catch (error) {}
+          }
+          if (window.__authFetchQueue.length < 40) window.__authFetchQueue.push([stage, details]);
+        }
+        window.fetch = function () {
+          var args = arguments;
+          var input = args[0];
+          var url = String(input && input.url ? input.url : input);
+          if (!/identitytoolkit|securetoken/.test(url)) return original.apply(window, args);
+          var startedAt = Date.now();
+          var path = url.split("?")[0].split("/").pop();
+          emit("idp_fetch_started", { path: path });
+          return original.apply(window, args).then(function (response) {
+            emit("idp_fetch_done", { path: path, httpStatus: response && response.status, elapsedMs: Date.now() - startedAt });
+            return response;
+          }, function (error) {
+            emit("idp_fetch_error", {
+              path: path, elapsedMs: Date.now() - startedAt,
+              errorDomain: "auth_endpoint", errorCode: String((error && error.name) || "fetch_failed"),
+            });
+            throw error;
+          });
+        };
+      })();
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#2563EB" />
     <meta name="description" content="필라테스 강사를 위한 회원 관리 · 스케줄 · 체형 분석 앱" />

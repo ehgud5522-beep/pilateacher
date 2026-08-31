@@ -10,7 +10,8 @@ import { initializeApp } from "firebase/app";
 import { Capacitor } from "@capacitor/core";
 import { FirebaseAuthentication } from "@capacitor-firebase/authentication";
 import {
-  getAuth, onAuthStateChanged, signOut,
+  initializeAuth, browserLocalPersistence, browserPopupRedirectResolver,
+  onAuthStateChanged, signOut,
   GoogleAuthProvider, OAuthProvider, signInWithPopup,
   EmailAuthProvider, createUserWithEmailAndPassword, signInWithEmailAndPassword,
   reauthenticateWithCredential, reauthenticateWithPopup, revokeAccessToken, updateProfile,
@@ -21,6 +22,9 @@ import { getStorage, ref as storageRef, uploadBytes, getBlob } from "firebase/st
 import { withAuthTimeout } from "../features/auth/apple-sign-in.js";
 import { signInWithCredentialSafe } from "../features/auth/credential-sign-in.js";
 import { AUTH_FEATURES, AUTH_STAGES } from "../features/auth/auth-diagnostics.js";
+import { setAuthInstance } from "../features/auth/auth-instance.js";
+import { attachAuthFetchBridge, recordAuthInitEvent } from "../features/auth/auth-init-log.js";
+import { measureAuthInitialization, recoverAuthStorage } from "../features/auth/auth-init-guard.js";
 import { googleNativeSignInOptions } from "../features/auth/google-sign-in.js";
 import { CLOUD_BACKUP_VERSION, backupCounts, evaluateOverwriteRisk, sanitizeFirestorePayload } from "../features/backup/cloud-backup.js";
 
@@ -37,13 +41,46 @@ export const fbReady = !!(firebaseConfig.apiKey && firebaseConfig.projectId);
 export const fbCurrentUserId = () => String(auth?.currentUser?.uid || "");
 
 let app = null, auth = null, fs = null, functions = null, storage = null;
+/* How many sign-in requests are in flight. The one-shot storage recovery
+   reloads the web view, which must never happen while the teacher is looking
+   at the Apple authorization sheet. */
+let authRequestsInFlight = 0;
+const authInitLog = (stage, details = {}) => recordAuthInitEvent(stage, {
+  feature: AUTH_FEATURES.INITIALIZATION, provider: "firebase", ...details,
+});
 if (fbReady) {
   app = initializeApp(firebaseConfig);
-  auth = getAuth(app);
+  /* getAuth() is deliberately not used.
+     It puts indexedDBLocalPersistence first and attaches
+     browserPopupRedirectResolver, and on iOS the resolver is initialized
+     proactively *inside* Auth's initialization promise - it loads the
+     cross-origin auth iframe with a 30-60s timeout. Every sign-in call, Apple
+     and e-mail alike, queues behind that promise, so a web view that stalls on
+     either the IndexedDB cycle or that iframe produces exactly what this device
+     reports: 45 seconds of silence, no HTTP request and no Firebase code.
+     Native sign-in comes from the Capacitor plugin, so neither is needed here,
+     and localStorage is the store this device measured as working. */
+  auth = initializeAuth(app, { persistence: browserLocalPersistence });
+  setAuthInstance(auth);
+  attachAuthFetchBridge();
+  /* Floats on purpose: this measures the boot, it does not gate it. */
+  measureAuthInitialization(auth, {
+    log: authInitLog,
+    onTimeout: () => recoverAuthStorage({
+      isBusy: () => authRequestsInFlight > 0,
+      log: authInitLog,
+    }),
+  });
   fs = getFirestore(app);
   functions = getFunctions(app, "asia-northeast3");
   storage = getStorage(app);
 }
+
+const trackAuthRequest = async (run) => {
+  authRequestsInFlight += 1;
+  try { return await run(); }
+  finally { authRequestsInFlight -= 1; }
+};
 
 const AUTH_REQUEST_TIMEOUT_MS = 20000;
 const FIRESTORE_READ_TIMEOUT_MS = 8000;
@@ -127,7 +164,11 @@ const requireNativeCredential = (provider, result) => {
  * be located at the stage that produced it. It never receives a token, a nonce,
  * a credential or an authorization code - only whether each was present.
  */
-export async function fbSignInSocial(provider, { onStage = () => {} } = {}) {
+export async function fbSignInSocial(provider, options = {}) {
+  return trackAuthRequest(() => runSignInSocial(provider, options));
+}
+
+async function runSignInSocial(provider, { onStage = () => {} } = {}) {
   if (provider !== "google" && provider !== "apple") providerObject(provider);
   const native = isNative();
   const NA = nativeAuth();
@@ -190,14 +231,21 @@ export async function fbSignInSocial(provider, { onStage = () => {} } = {}) {
       provider,
     };
   }
+  /* The resolver is passed here instead of being attached to the instance, so
+     the browser popup keeps working without putting the auth iframe in the
+     startup path of every device. */
   const res = await withAuthTimeout(
-    () => signInWithPopup(auth, providerObject(provider)),
+    () => signInWithPopup(auth, providerObject(provider), browserPopupRedirectResolver),
     { timeoutMs: AUTH_REQUEST_TIMEOUT_MS, provider, stage: "web_popup" },
   );
   return { ...shape(res.user), provider };
 }
 
 export async function fbReauthenticate(provider, password = "") {
+  return trackAuthRequest(() => runReauthenticate(provider, password));
+}
+
+async function runReauthenticate(provider, password = "") {
   const user = auth?.currentUser;
   if (!user) throw Object.assign(new Error("No signed-in user."), { code: "auth/unauthenticated" });
   if (provider === "email") {
@@ -231,7 +279,7 @@ export async function fbReauthenticate(provider, password = "") {
     }
     return { provider, authorizationCode: nativeCredential.authorizationCode };
   }
-  await reauthenticateWithPopup(user, providerObject(provider));
+  await reauthenticateWithPopup(user, providerObject(provider), browserPopupRedirectResolver);
   await user.getIdToken(true);
   return { provider, authorizationCode: "" };
 }
@@ -261,6 +309,7 @@ async function runEmailAuthRequest(operation, { authStage, onStage }) {
   const stage = (name, details = {}) => { try { onStage(name, { feature: AUTH_FEATURES.EMAIL_SIGN_IN, provider: "email", ...details }); } catch (_error) {} };
   const startedAt = Date.now();
   stage(AUTH_STAGES.EMAIL_REQUEST_START, { message: authStage });
+  authRequestsInFlight += 1;
   try {
     const result = await withAuthTimeout(operation, { timeoutMs: AUTH_REQUEST_TIMEOUT_MS, provider: "email", stage: authStage });
     stage(AUTH_STAGES.EMAIL_AUTH_SUCCEEDED, { outcome: "succeeded", elapsedMs: Date.now() - startedAt });
@@ -268,6 +317,8 @@ async function runEmailAuthRequest(operation, { authStage, onStage }) {
   } catch (error) {
     stage(AUTH_STAGES.EMAIL_AUTH_FAILED, { outcome: "failed", error, elapsedMs: Date.now() - startedAt, message: authStage });
     throw error;
+  } finally {
+    authRequestsInFlight -= 1;
   }
 }
 

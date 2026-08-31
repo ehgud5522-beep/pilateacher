@@ -38,10 +38,12 @@ test("posture capture remains a full viewport portal and comparison stays side b
   assert.match(source, /screen === "compare"[\s\S]*grid grid-cols-2 gap-2/);
 });
 
-test("tablet event cells expose a second type line while phone keeps it hidden", () => {
-  assert.match(source, /\.pt-week-event-type \{ display: none; \}/);
-  assert.match(source, /\.pt-week-event-type \{ display: block;/);
-  assert.match(source, /<span className="pt-week-event-type truncate">\{b\.typeLabel\}<\/span>/);
+test("event cells keep a second equipment line on phone and enlarge it on tablet", () => {
+  assert.match(source, /\.pt-week-equip \{ display: block; margin-top: 1px; font-size: 8\.5px;/);
+  assert.match(source, /\.pt-week-equip \{ margin-top: 2px; font-size: 10px; \}/);
+  assert.match(source, /\.pt-week-type \{ font-size: 7\.5px;/);
+  assert.match(source, /\.pt-week-type \{ font-size: 9px; \}/);
+  assert.match(source, /className="pt-week-equip flex w-full min-w-0 items-center"[\s\S]{0,400}\{b\.equipText\}/);
 });
 
 test("app, header, sheets, and weekly grid use responsive classes", () => {

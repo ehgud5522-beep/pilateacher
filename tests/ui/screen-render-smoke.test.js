@@ -24,6 +24,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
   const cases = createAppScreenSmokeCases();
   assert.deepEqual(cases.map((item) => item.name), [
     "일정 탭",
+    "일정 탭 · 하루 11건 혼합",
     "회원 목록",
     "회원 상세",
     "체형분석 목록",

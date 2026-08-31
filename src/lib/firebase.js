@@ -19,7 +19,7 @@ import { getFirestore, collection, deleteDoc, doc, getDoc, getDocs, runTransacti
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { getStorage, ref as storageRef, uploadBytes, getBlob } from "firebase/storage";
 import { withAuthTimeout } from "../features/auth/apple-sign-in.js";
-import { AUTH_STAGES } from "../features/auth/auth-diagnostics.js";
+import { AUTH_FEATURES, AUTH_STAGES } from "../features/auth/auth-diagnostics.js";
 import { googleNativeSignInOptions } from "../features/auth/google-sign-in.js";
 import { CLOUD_BACKUP_VERSION, backupCounts, evaluateOverwriteRisk, sanitizeFirestorePayload } from "../features/backup/cloud-backup.js";
 
@@ -251,22 +251,44 @@ export async function fbDeleteCurrentUserAccount() {
   return response?.data || null;
 }
 
-export async function fbSignUpEmail(email, pw, name) {
-  const res = await withAuthTimeout(
+/**
+ * Wraps one email request so the diagnostics can say whether the SDK answered,
+ * refused, or never came back - and how long it took. No address or password is
+ * passed to `onStage`.
+ */
+async function runEmailAuthRequest(operation, { authStage, onStage }) {
+  const stage = (name, details = {}) => { try { onStage(name, { feature: AUTH_FEATURES.EMAIL_SIGN_IN, provider: "email", ...details }); } catch (_error) {} };
+  const startedAt = Date.now();
+  stage(AUTH_STAGES.EMAIL_REQUEST_START, { message: authStage });
+  try {
+    const result = await withAuthTimeout(operation, { timeoutMs: AUTH_REQUEST_TIMEOUT_MS, provider: "email", stage: authStage });
+    stage(AUTH_STAGES.EMAIL_AUTH_SUCCEEDED, { outcome: "succeeded", elapsedMs: Date.now() - startedAt });
+    return result;
+  } catch (error) {
+    stage(AUTH_STAGES.EMAIL_AUTH_FAILED, { outcome: "failed", error, elapsedMs: Date.now() - startedAt, message: authStage });
+    throw error;
+  }
+}
+
+export async function fbSignUpEmail(email, pw, name, { onStage = () => {} } = {}) {
+  const res = await runEmailAuthRequest(
     () => createUserWithEmailAndPassword(auth, email, pw),
-    { timeoutMs: AUTH_REQUEST_TIMEOUT_MS, provider: "email", stage: "email_sign_up" },
+    { authStage: "email_sign_up", onStage },
   );
   if (name) { try { await updateProfile(res.user, { displayName: name }); } catch (e) {} }
   return { ...shape(res.user), name: name || "", provider: "email" };
 }
 
-export async function fbSignInEmail(email, pw) {
-  const res = await withAuthTimeout(
+export async function fbSignInEmail(email, pw, { onStage = () => {} } = {}) {
+  const res = await runEmailAuthRequest(
     () => signInWithEmailAndPassword(auth, email, pw),
-    { timeoutMs: AUTH_REQUEST_TIMEOUT_MS, provider: "email", stage: "email_sign_in" },
+    { authStage: "email_sign_in", onStage },
   );
   return { ...shape(res.user), provider: "email" };
 }
+
+/** The public Web API key, so a probe can exercise the exact route the SDK uses. */
+export const fbAuthApiKey = firebaseConfig.apiKey;
 
 export async function fbSignOut() {
   const NA = nativeAuth();

@@ -30,6 +30,23 @@ export const AUTH_STAGES = Object.freeze({
   PROFILE_LOADED: "profile_loaded",
   LOGIN_CANCELLED: "login_cancelled",
   LOGIN_FAILED: "login_failed",
+  // Email sign-in and sign-up run entirely on the Firebase JavaScript SDK, so
+  // they fail in the same place a credential exchange does.
+  EMAIL_REQUEST_START: "email_request_start",
+  EMAIL_AUTH_SUCCEEDED: "email_auth_succeeded",
+  EMAIL_AUTH_FAILED: "email_auth_failed",
+  // Reachability of the layers a sign-in needs, measured before one is tried.
+  PREFLIGHT_STARTED: "connectivity_preflight_started",
+  AUTH_ENDPOINT_PROBE: "auth_endpoint_probe",
+  INDEXED_DB_PROBE: "indexed_db_probe",
+  LOCAL_STORAGE_PROBE: "local_storage_probe",
+  NETWORK_STATE: "network_state",
+});
+
+export const AUTH_FEATURES = Object.freeze({
+  APPLE_SIGN_IN: "apple_sign_in",
+  EMAIL_SIGN_IN: "email_sign_in",
+  CONNECTIVITY: "auth_connectivity",
 });
 
 // The stored entry is built from this fixed list of fields and nothing else, so
@@ -119,6 +136,7 @@ export function appendAuthDiagnostic(stage, details = {}, storage = globalThis.l
     osVersion: token(source.osVersion, 40),
     deviceModel: token(source.deviceModel, 40),
     elapsedMs: Number.isFinite(Number(source.elapsedMs)) ? Math.max(0, Math.round(Number(source.elapsedMs))) : null,
+    httpStatus: Number.isFinite(Number(source.httpStatus)) ? Math.max(0, Math.round(Number(source.httpStatus))) : null,
     // Presence only. The values themselves must never appear here.
     hasIdToken: typeof source.hasIdToken === "boolean" ? source.hasIdToken : null,
     hasNonce: typeof source.hasNonce === "boolean" ? source.hasNonce : null,

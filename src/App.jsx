@@ -26,7 +26,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
 } from "recharts";
 import {
-  fbReady, fbSignInSocial, fbSignInEmail, fbSignUpEmail, fbSignOut, fbOnAuth,
+  fbReady, fbAuthApiKey, fbSignInSocial, fbSignInEmail, fbSignUpEmail, fbSignOut, fbOnAuth,
   fbLoadProfile, fbSaveProfile, fbPushBackup, fbPullBackup, fbReauthenticate,
   fbRevokeAppleAccess, fbDeleteCurrentUserAccount, fbLoadAIConsent, fbGrantAIConsent, fbCurrentUserId,
   fbDeleteAIConsent,
@@ -101,7 +101,8 @@ import {
   readRecentAnnotationColors, rememberAnnotationColor, screenPointToImagePoint,
 } from "./features/posture/posture-annotations.js";
 import { LOCAL_PHOTO_NOTICE_MESSAGE, claimLocalPhotoNotice } from "./features/posture/photo-storage-notice.js";
-import { AUTH_STAGES, appendAuthDiagnostic, firstFailedAuthStage, readAuthDiagnostics, readAuthErrorIdentity } from "./features/auth/auth-diagnostics.js";
+import { AUTH_FEATURES, AUTH_STAGES, appendAuthDiagnostic, clearAuthDiagnostics, firstFailedAuthStage, readAuthDiagnostics, readAuthErrorIdentity } from "./features/auth/auth-diagnostics.js";
+import { runAuthPreflight } from "./features/auth/connectivity-probe.js";
 import { describeLessonRecordFailure, failureCauseDetail, LESSON_RECORD_FAILURE_CATEGORY, lessonRecordProvenanceSource, takeLessonRecordDebugFailure } from "./features/lesson-record/failure-diagnostics.js";
 import { appendLessonRecordDiagnostic, readLessonRecordDiagnostics } from "./features/lesson-record/pipeline-diagnostics.js";
 import { buildRemoteDiagnosticReport } from "./features/diagnostics/remote-diagnostics.js";
@@ -447,6 +448,19 @@ const recordAuthStage = (stage, details = {}) => {
     appBuild: entry.appBuild, model: entry.deviceModel,
   });
   return entry;
+};
+let authPreflightStarted = false;
+const runAuthConnectivityPreflight = async ({ force = false } = {}) => {
+  if (authPreflightStarted && !force) return readAuthDiagnostics().filter((entry) => entry.feature === AUTH_FEATURES.CONNECTIVITY);
+  authPreflightStarted = true;
+  const shared = { feature: AUTH_FEATURES.CONNECTIVITY, provider: "firebase" };
+  recordAuthStage(AUTH_STAGES.PREFLIGHT_STARTED, shared);
+  try {
+    const records = await runAuthPreflight({ apiKey: fbAuthApiKey });
+    return records.map((record) => recordAuthStage(record.stage, { ...shared, ...record }));
+  } catch (error) {
+    return [recordAuthStage(AUTH_STAGES.PREFLIGHT_STARTED, { ...shared, outcome: "failed", error })];
+  }
 };
 const cameraPipelineLog = (stage, details = {}) => {
   const source = details.source || "camera";
@@ -1850,6 +1864,79 @@ function Splash() {
   );
 }
 
+function AuthDiagnosticsPanel({ onClose, onToast }) {
+  const [entries, setEntries] = useState(() => readAuthDiagnostics());
+  const [rechecking, setRechecking] = useState(false);
+  const refresh = () => setEntries(readAuthDiagnostics());
+  const connectivity = entries.filter((entry) => entry.feature === AUTH_FEATURES.CONNECTIVITY);
+  const attempts = entries.filter((entry) => entry.feature !== AUTH_FEATURES.CONNECTIVITY);
+  const failure = firstFailedAuthStage(attempts);
+  const context = authDeviceContext();
+  const asText = () => [
+    `PilaTeacher 로그인 진단`,
+    `${context.platform} ${context.osVersion} · ${context.deviceModel} · ${context.appBuild}`,
+    ...entries.map((entry) => [
+      String(entry.at).slice(0, 19).replace("T", " "),
+      entry.stage,
+      entry.outcome,
+      entry.httpStatus ? `HTTP ${entry.httpStatus}` : "",
+      entry.elapsedMs === null ? "" : `${entry.elapsedMs}ms`,
+      entry.errorDomain,
+      entry.errorCode,
+      entry.message,
+    ].filter(Boolean).join(" · ")),
+  ].join("\n");
+  const recheck = async () => {
+    setRechecking(true);
+    try { await runAuthConnectivityPreflight({ force: true }); refresh(); }
+    finally { setRechecking(false); }
+  };
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(asText()); onToast?.({ ok: true, msg: "진단 내용을 복사했습니다." }); }
+    catch (_error) { onToast?.({ ok: false, msg: "복사하지 못했습니다. 화면을 캡처해 주세요." }); }
+  };
+  return (
+    <div role="dialog" aria-label="로그인 진단" className="fixed inset-0 z-50 overflow-y-auto safe-all" style={{ backgroundColor: PAGE }}>
+      <div className="mx-auto w-full max-w-md px-5 py-6">
+        <div className="flex items-center gap-3">
+          <h2 className="min-w-0 flex-1 text-lg font-extrabold" style={{ color: INK }}>로그인 진단</h2>
+          <button type="button" onClick={onClose} className="min-h-11 rounded-lg px-3 text-xs font-extrabold" style={{ backgroundColor: CARD, color: INK2, border: `1px solid ${LINE}` }}>닫기</button>
+        </div>
+        <p className="mt-1" style={{ fontSize: 11, lineHeight: 1.5, color: SUB }}>{context.platform} {context.osVersion} · {context.deviceModel} · {context.appBuild}</p>
+
+        <section className="mt-4 rounded-xl p-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
+          <div className="flex items-center gap-2">
+            <p className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: INK }}>연결 점검</p>
+            <button type="button" onClick={recheck} disabled={rechecking} className="min-h-11 shrink-0 rounded-lg px-3 text-[10px] font-extrabold disabled:opacity-40" style={{ backgroundColor: TINT, color: BRAND_D }}>{rechecking ? "점검 중" : "다시 점검"}</button>
+          </div>
+          {connectivity.length
+            ? <div className="mt-2 space-y-1">{connectivity.map((entry, index) => <p key={`${entry.at}-${index}`} className="break-all tabular-nums" style={{ fontSize: 10, lineHeight: 1.5, color: entry.outcome === "failed" ? BAD : INK2 }}>{entry.stage} · {entry.outcome}{entry.httpStatus ? ` · HTTP ${entry.httpStatus}` : ""}{entry.elapsedMs === null ? "" : ` · ${entry.elapsedMs}ms`}{entry.errorCode ? ` · ${entry.errorDomain}/${entry.errorCode}` : ""}{entry.message ? ` · ${entry.message}` : ""}</p>)}</div>
+            : <p className="mt-2" style={{ fontSize: 10, color: SUB }}>점검 기록 없음 · [다시 점검]을 눌러 주세요</p>}
+        </section>
+
+        <section className="mt-3 rounded-xl p-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
+          <p className="text-xs font-extrabold" style={{ color: INK }}>최근 로그인 시도</p>
+          {failure
+            ? <p className="mt-1 break-all" style={{ fontSize: 10, lineHeight: 1.5, color: BAD }}>최초 실패 단계: {failure.stage} · {failure.errorDomain || "domain 없음"} · {failure.errorCode || "code 없음"}</p>
+            : <p className="mt-1" style={{ fontSize: 10, color: SUB }}>실패한 단계 없음</p>}
+          <div className="mt-2 space-y-1">{attempts.map((entry, index) => <div key={`${entry.at}-${index}`} className="rounded-md px-2 py-1" style={{ backgroundColor: PAGE }}>
+            <p className="tabular-nums" style={{ fontSize: 9, color: entry.outcome === "failed" ? BAD : SUB }}>{String(entry.at).slice(5, 19).replace("T", " ")} · {entry.provider} · {entry.stage} · {entry.outcome}{entry.elapsedMs === null ? "" : ` · ${entry.elapsedMs}ms`}</p>
+            {(entry.errorDomain || entry.errorCode) && <p className="mt-0.5 break-all" style={{ fontSize: 9, lineHeight: 1.4, color: BAD }}>{entry.errorDomain} · {entry.errorCode}</p>}
+            {entry.message && <p className="mt-0.5 break-all" style={{ fontSize: 8, lineHeight: 1.4, color: SUB }}>{entry.message}</p>}
+          </div>)}</div>
+          {!attempts.length && <p className="mt-1" style={{ fontSize: 10, color: SUB }}>로그인 시도 기록 없음</p>}
+        </section>
+
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <button type="button" onClick={copy} className="h-11 rounded-lg text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>내용 복사</button>
+          <button type="button" onClick={() => { clearAuthDiagnostics(); refresh(); }} className="h-11 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: BAD, border: `1px solid ${LINE}` }}>기록 비우기</button>
+        </div>
+        <p className="mt-2" style={{ fontSize: 9, lineHeight: 1.5, color: SUB }}>단계·오류 코드·소요 시간만 기록합니다. 이메일·비밀번호·토큰은 저장하지 않습니다.</p>
+      </div>
+    </div>
+  );
+}
+
 function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
   const [mode, setMode] = useState("main");
   const [emailTab, setEmailTab] = useState("login");
@@ -1858,6 +1945,8 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
   const [f, setF] = useState({ name: "", email: "", pw: "", center: "", phone: "" });
 
   const [busy, setBusy] = useState("");
+  const [diagnosticTaps, setDiagnosticTaps] = useState(0);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const socialGateRef = useRef(null);
   if (!socialGateRef.current) socialGateRef.current = createSingleFlightGate();
   const handleSocial = async (provider) => {
@@ -1965,20 +2054,23 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
                   onClick={async () => {
                     if (fbReady) {
                       setBusy("email");
+                      const emailCorrelationId = `auth_email_${Date.now().toString(36)}`;
                       try {
+                        const emailStage = (name, details = {}) => recordAuthStage(name, { feature: AUTH_FEATURES.EMAIL_SIGN_IN, provider: "email", correlationId: emailCorrelationId, ...details });
                         if (emailTab === "signup") {
-                          const u = await fbSignUpEmail(f.email, f.pw, f.name);
+                          const u = await fbSignUpEmail(f.email, f.pw, f.name, { onStage: emailStage });
                           onSignup({ ...u, provider: "email", name: f.name, email: f.email, center: f.center, phone: f.phone, fb: true }, auto);
                         } else {
-                          const u = await fbSignInEmail(f.email, f.pw);
+                          const u = await fbSignInEmail(f.email, f.pw, { onStage: emailStage });
                           const prof = await fbLoadProfile(u.id);
                           if (prof && prof.center) onLogin({ ...u, ...prof, id: u.id }, auto);
                           else setSignup({ ...u, provider: "email", center: "", phone: "", fb: true });
                         }
                       } catch (e) {
                         const c = (e && e.code) || "";
+                        recordAuthStage(AUTH_STAGES.LOGIN_FAILED, { feature: AUTH_FEATURES.EMAIL_SIGN_IN, provider: "email", correlationId: emailCorrelationId, outcome: "failed", error: e });
                         onToast({ ok: false, msg:
-                          c === "auth/operation-timeout" ? "로그인 서버 응답이 늦어 중단했습니다. 네트워크를 확인한 뒤 다시 시도해 주세요."
+                          c === "auth/operation-timeout" ? "로그인 서버 응답이 늦어 중단했습니다. 앱 버전을 7번 눌러 진단을 확인해 주세요."
                           : c === "auth/network-request-failed" ? "네트워크 연결을 확인한 뒤 다시 시도해 주세요."
                           : c === "auth/email-already-in-use" ? "\uc774\ubbf8 \uac00\uc785\ub41c \uc774\uba54\uc77c\uc785\ub2c8\ub2e4."
                           : c === "auth/weak-password" ? "\ube44\ubc00\ubc88\ud638\ub97c 6\uc790 \uc774\uc0c1\uc73c\ub85c \ub9cc\ub4e4\uc5b4 \uc8fc\uc138\uc694."
@@ -2034,7 +2126,12 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
           로그인 정보와 회원·수업 기록은 클라우드에 안전하게 백업됩니다. 음성은 기록 정리를 위해 서버로 전송된 뒤 즉시 삭제되며 보관하지 않습니다. 체형 사진은 이 기기에만 저장됩니다.<br />
           로그인하면 이용약관 및 개인정보 처리방침에 동의하게 됩니다.
         </p>
+        <button type="button" aria-label="앱 버전"
+          onClick={() => { const next = diagnosticTaps + 1; setDiagnosticTaps(next); if (next >= 7) { setDiagnosticTaps(0); setDiagnosticsOpen(true); } }}
+          className="mt-3 w-full text-center tabular-nums" style={{ fontSize: 10, color: FAINT }}><RuntimeBuildLabel /></button>
       </div>
+
+      {diagnosticsOpen && <AuthDiagnosticsPanel onClose={() => setDiagnosticsOpen(false)} onToast={onToast} />}
 
       {signup && (
         <Sheet title={`${PROVIDER_LABEL[signup.provider]} 계정으로 가입`} onClose={() => setSignup(null)}>
@@ -13493,6 +13590,10 @@ export default function App() {
     setThemePref(pref);
     try { const p = window.storage.set(THEME_KEY, pref); if (p && p.catch) p.catch(() => {}); } catch (e) {}
   };
+
+  // Runs once per launch, before any sign-in, so the answer exists even when a
+  // sign-in hangs and the app never leaves the login screen.
+  useEffect(() => { runAuthConnectivityPreflight(); }, []);
 
   /* 키보드가 올라오면 입력칸이 가려진다 — 초점이 간 칸을 화면 가운데로 올려 준다 */
   useEffect(() => {

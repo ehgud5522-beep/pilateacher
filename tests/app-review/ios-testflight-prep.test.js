@@ -8,7 +8,7 @@ test("iOS release metadata and privacy usage descriptions are review-ready", asy
   const [plist, project] = await Promise.all([read("../../ios/App/App/Info.plist"), read("../../ios/App/App.xcodeproj/project.pbxproj")]);
   assert.match(plist, /NSMicrophoneUsageDescription[\s\S]*수업 직후 음성으로 기록을 남기기 위해 마이크를 사용합니다/);
   ["NSCameraUsageDescription", "NSPhotoLibraryUsageDescription", "NSPhotoLibraryAddUsageDescription", "ITSAppUsesNonExemptEncryption"].forEach((key) => assert.match(plist, new RegExp(key)));
-  assert.equal((project.match(/MARKETING_VERSION = 1\.1\.23;/g) || []).length, 2);
+  assert.equal((project.match(/MARKETING_VERSION = 1\.1\.24;/g) || []).length, 2);
 });
 
 test("iOS permanent microphone denial opens native app settings through a registered Capacitor plugin", async () => {

@@ -86,7 +86,14 @@ export function signInWithCredentialSafe(auth, credential, log, {
     Promise.resolve().then(async () => {
       // Include persistence initialization in the deadline, and snapshot only
       // after it settles so the initial listener notification cannot win.
-      await auth.authStateReady();
+      record(AUTH_STAGES.AUTH_STATE_READY_STARTED);
+      try {
+        await auth.authStateReady();
+        record(AUTH_STAGES.AUTH_STATE_READY_SUCCEEDED);
+      } catch (error) {
+        record(AUTH_STAGES.AUTH_STATE_READY_FAILED, readAuthErrorIdentity(error));
+        throw error;
+      }
       if (done) return;
       initialUid = auth.currentUser?.uid ?? null;
       try {

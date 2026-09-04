@@ -1,6 +1,6 @@
 /**
  * Measures whether the Firebase Auth instance ever finishes initializing, and
- * clears its stored session once if it does not.
+ * reloads once if it does not, without deleting its stored session.
  *
  * A sign-in call is queued behind `auth._initializationPromise`. When that
  * promise never settles, every sign-in - Apple, Google or e-mail - waits with
@@ -17,9 +17,8 @@ import { AUTH_STAGES } from "./auth-diagnostics.js";
 
 export const AUTH_INIT_TIMEOUT_MS = 8000;
 export const AUTH_RECOVERY_FLAG = "pilateacher:auth_recovery_attempted";
-/** Firebase Auth's own IndexedDB database; nothing of the teacher's is in it. */
+/** Legacy identifiers retained for diagnostic compatibility; recovery no longer deletes them. */
 export const AUTH_PERSISTENCE_DATABASE = "firebaseLocalStorageDb";
-/** Only Firebase Auth's own localStorage keys are removed. */
 export const AUTH_STORAGE_PREFIXES = Object.freeze(["firebase:authUser:", "firebase:persistence:"]);
 
 const readyPromise = (auth) => {
@@ -62,43 +61,41 @@ export function measureAuthInitialization(auth, {
     try { log(stage, { elapsedMs: Math.max(0, Math.round(now() - startedAt)) }); }
     catch (_error) { /* Diagnostics must not break a boot. */ }
   };
+  record(AUTH_STAGES.AUTH_STATE_READY_STARTED);
   return Promise.race([readyPromise(auth), deadline]).then(
-    () => { clearTimer(timer); record(AUTH_STAGES.AUTH_INIT_READY); return true; },
-    () => {
+    () => { clearTimer(timer); record(AUTH_STAGES.AUTH_STATE_READY_SUCCEEDED); return true; },
+    (error) => {
       clearTimer(timer);
-      record(AUTH_STAGES.AUTH_INIT_TIMEOUT);
-      try { onTimeout(); } catch (_error) { /* Recovery failure must not throw here. */ }
+      const timedOut = error?.message === "init-timeout";
+      try {
+        log(AUTH_STAGES.AUTH_STATE_READY_FAILED, {
+          elapsedMs: Math.max(0, Math.round(now() - startedAt)),
+          errorDomain: "firebase_auth",
+          errorCode: timedOut ? "auth_state_ready_timeout" : "auth_state_ready_failed",
+          message: error?.message || "Firebase Auth initialization timed out.",
+        });
+      } catch (_error) { /* Diagnostics must not break a boot. */ }
+      if (timedOut) {
+        try { onTimeout(); } catch (_error) { /* Recovery failure must not throw here. */ }
+      }
       return false;
     },
   );
 }
 
-const storageKeys = (store) => {
-  try {
-    if (store && typeof store.key === "function" && Number.isFinite(store.length)) {
-      return Array.from({ length: store.length }, (_value, index) => store.key(index))
-        .filter((key) => typeof key === "string");
-    }
-    return Object.keys(store || {}).filter((key) => typeof key === "string");
-  } catch (_error) {
-    return [];
-  }
-};
-
 /**
- * Clears Firebase Auth's own stored session once and reloads, so a broken store
- * does not require the teacher to delete and reinstall the app.
+ * Reloads once without deleting Firebase Auth persistence. A timeout is not
+ * proof that the stored session is corrupt, so valid sessions must survive it.
  *
  * Returns why it stopped, which is what the tests hold it to:
  * `"reloaded" | "deferred" | "already_attempted" | "flag_unavailable"`.
  *
  * @param {{ session?: any, local?: any, databases?: any, reload?: Function,
  *   isBusy?: () => boolean, log?: Function, flag?: string }} [options]
+ * `local` and `databases` are accepted for caller compatibility and ignored.
  */
 export function recoverAuthStorage({
   session = globalThis.sessionStorage,
-  local = globalThis.localStorage,
-  databases = globalThis.indexedDB,
   reload = () => globalThis.location?.reload?.(),
   isBusy = () => false,
   log = () => {},
@@ -135,13 +132,8 @@ export function recoverAuthStorage({
     });
     return "flag_unavailable";
   }
-  record(AUTH_STAGES.AUTH_RECOVERY_STARTED, {});
-  try { databases?.deleteDatabase?.(AUTH_PERSISTENCE_DATABASE); } catch (_error) { /* Best effort. */ }
-  for (const key of storageKeys(local)) {
-    if (!AUTH_STORAGE_PREFIXES.some((prefix) => key.startsWith(prefix))) continue;
-    try { local.removeItem(key); } catch (_error) { /* Best effort. */ }
-  }
-  record(AUTH_STAGES.AUTH_RECOVERY_RELOAD, {});
+  record(AUTH_STAGES.AUTH_RECOVERY_STARTED, { message: "Firebase session preserved" });
+  record(AUTH_STAGES.AUTH_RECOVERY_RELOAD, { message: "Firebase session preserved" });
   try { reload(); } catch (_error) { /* A web view that refuses to reload keeps the flag set. */ }
   return "reloaded";
 }

@@ -47,6 +47,20 @@ export const AUTH_STAGES = Object.freeze({
   // Whether the Auth instance itself finished initializing. Every sign-in call
   // queues behind that promise, so an initialization that never settles and a
   // network hang are the same silence unless they are measured apart.
+  AUTH_INIT_STARTED: "auth_init_started",
+  AUTH_INSTANCE_CREATED: "auth_instance_created",
+  PERSISTENCE_CONFIGURED: "persistence_configured",
+  AUTH_STATE_READY_STARTED: "auth_state_ready_started",
+  AUTH_STATE_READY_SUCCEEDED: "auth_state_ready_succeeded",
+  AUTH_STATE_READY_FAILED: "auth_state_ready_failed",
+  AUTH_STATE_FIRST_CALLBACK: "auth_state_first_callback",
+  INITIAL_USER_PRESENT: "initial_user_present",
+  INITIAL_USER_ABSENT: "initial_user_absent",
+  AUTH_STATE_SIGNED_OUT: "auth_state_signed_out",
+  PROFILE_LOAD_STARTED: "profile_load_started",
+  PROFILE_LOAD_SUCCEEDED: "profile_load_succeeded",
+  PROFILE_LOAD_FAILED: "profile_load_failed",
+  // Retained so diagnostics written by the previous build remain readable.
   AUTH_INIT_READY: "auth_init_ready",
   AUTH_INIT_TIMEOUT: "auth_init_timeout",
   // Whether a request actually left the device, recorded by the fetch wrapper
@@ -186,6 +200,11 @@ export function appendAuthDiagnostic(stage, details = {}, storage = globalThis.l
     platform: token(source.platform, 24),
     osVersion: token(source.osVersion, 40),
     deviceModel: token(source.deviceModel, 40),
+    requestStartedAt: token(source.requestStartedAt, 40),
+    requestEndedAt: token(source.requestEndedAt, 40),
+    errorName: token(source.errorName, 64),
+    userState: token(source.userState, 24),
+    profileState: token(source.profileState, 24),
     elapsedMs: Number.isFinite(Number(source.elapsedMs)) ? Math.max(0, Math.round(Number(source.elapsedMs))) : null,
     httpStatus: Number.isFinite(Number(source.httpStatus)) ? Math.max(0, Math.round(Number(source.httpStatus))) : null,
     // Presence only. The values themselves must never appear here.

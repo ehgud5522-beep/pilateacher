@@ -41,6 +41,7 @@ export const fbReady = !!(firebaseConfig.apiKey && firebaseConfig.projectId);
 export const fbCurrentUserId = () => String(auth?.currentUser?.uid || "");
 
 let app = null, auth = null, fs = null, functions = null, storage = null;
+let authReadyPromise = Promise.resolve(false);
 /* How many sign-in requests are in flight. The one-shot storage recovery
    reloads the web view, which must never happen while the teacher is looking
    at the Apple authorization sheet. */
@@ -49,6 +50,7 @@ const authInitLog = (stage, details = {}) => recordAuthInitEvent(stage, {
   feature: AUTH_FEATURES.INITIALIZATION, provider: "firebase", ...details,
 });
 if (fbReady) {
+  authInitLog(AUTH_STAGES.AUTH_INIT_STARTED);
   app = initializeApp(firebaseConfig);
   /* getAuth() is deliberately not used.
      It puts indexedDBLocalPersistence first and attaches
@@ -61,10 +63,11 @@ if (fbReady) {
      Native sign-in comes from the Capacitor plugin, so neither is needed here,
      and localStorage is the store this device measured as working. */
   auth = initializeAuth(app, { persistence: browserLocalPersistence });
+  authInitLog(AUTH_STAGES.AUTH_INSTANCE_CREATED);
+  authInitLog(AUTH_STAGES.PERSISTENCE_CONFIGURED, { message: "browserLocalPersistence" });
   setAuthInstance(auth);
   attachAuthFetchBridge();
-  /* Floats on purpose: this measures the boot, it does not gate it. */
-  measureAuthInitialization(auth, {
+  authReadyPromise = measureAuthInitialization(auth, {
     log: authInitLog,
     onTimeout: () => recoverAuthStorage({
       isBusy: () => authRequestsInFlight > 0,
@@ -342,6 +345,9 @@ export async function fbSignInEmail(email, pw, { onStage = () => {} } = {}) {
 /** The public Web API key, so a probe can exercise the exact route the SDK uses. */
 export const fbAuthApiKey = firebaseConfig.apiKey;
 
+/** Resolves only after the single Firebase Auth instance has completed startup. */
+export const fbAuthStateReady = () => authReadyPromise;
+
 export async function fbSignOut() {
   const NA = nativeAuth();
   if (NA) { try { await NA.signOut(); } catch (e) {} }
@@ -364,14 +370,23 @@ export function fbOnAuth(cb) {
 
 /* ---------------- 강사 프로필 ---------------- */
 export async function fbLoadProfile(uid) {
-  if (!fs || !uid) return null;
+  const result = await fbLoadProfileState(uid);
+  return result.profile;
+}
+
+export async function fbLoadProfileState(uid) {
+  if (!fs || !uid) return { status: "missing", profile: null, error: null };
   try {
     const snap = await withAuthTimeout(
       () => getDoc(doc(fs, "users", uid)),
       { timeoutMs: FIRESTORE_READ_TIMEOUT_MS, provider: "firebase", stage: "profile_read" },
     );
-    return snap.exists() ? snap.data() : null;
-  } catch (e) { return null; }
+    return snap.exists()
+      ? { status: "found", profile: snap.data(), error: null }
+      : { status: "missing", profile: null, error: null };
+  } catch (error) {
+    return { status: "error", profile: null, error };
+  }
 }
 
 export async function fbSaveProfile(uid, profile) {

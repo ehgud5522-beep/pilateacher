@@ -12,7 +12,8 @@
       logger wait in __authFetchQueue and are drained by
       src/features/auth/auth-init-log.js.
 
-      Only the method name, the HTTP status and the elapsed time are recorded.
+      Only the method name, request timestamps, HTTP status, elapsed time and a
+      scrubbed rejection identity are recorded.
       The URL, its query string (which carries the API key), the request body
       and every token stay out of the log.
     -->
@@ -33,15 +34,27 @@
           var url = String(input && input.url ? input.url : input);
           if (!/identitytoolkit|securetoken/.test(url)) return original.apply(window, args);
           var startedAt = Date.now();
+          var requestStartedAt = new Date(startedAt).toISOString();
           var path = url.split("?")[0].split("/").pop();
-          emit("idp_fetch_started", { path: path });
+          emit("idp_fetch_started", { path: path, requestStartedAt: requestStartedAt });
           return original.apply(window, args).then(function (response) {
-            emit("idp_fetch_done", { path: path, httpStatus: response && response.status, elapsedMs: Date.now() - startedAt });
+            var endedAt = Date.now();
+            emit("idp_fetch_done", {
+              path: path, httpStatus: response && response.status, elapsedMs: endedAt - startedAt,
+              requestStartedAt: requestStartedAt, requestEndedAt: new Date(endedAt).toISOString(),
+            });
             return response;
           }, function (error) {
+            var endedAt = Date.now();
+            var message = String((error && error.message) || "fetch rejected")
+              .replace(/https?:\/\/\S+/gi, "[redacted-url]")
+              .replace(/((?:key|token|code|credential)=)[^&\s]+/gi, "$1[redacted]")
+              .slice(0, 160);
             emit("idp_fetch_error", {
-              path: path, elapsedMs: Date.now() - startedAt,
+              path: path, elapsedMs: endedAt - startedAt,
+              requestStartedAt: requestStartedAt, requestEndedAt: new Date(endedAt).toISOString(),
               errorDomain: "auth_endpoint", errorCode: String((error && error.name) || "fetch_failed"),
+              errorName: String((error && error.name) || "fetch_failed"), message: message,
             });
             throw error;
           });
@@ -59,10 +72,10 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="필라티쳐" />
     <title>필라티쳐 — 강사를 위한 회원 관리</title>
-    <script type="module" crossorigin src="/assets/index-BR8wasVP.js"></script>
+    <script type="module" crossorigin src="/assets/index-BZ8KZdEa.js"></script>
     <link rel="stylesheet" crossorigin href="/assets/index-B6IPIT3a.css">
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root"></div>
   </body>
 </html>

@@ -22,7 +22,6 @@ import {
 } from "../../src/features/auth/auth-diagnostics.js";
 import {
   AUTH_RECOVERY_FLAG,
-  AUTH_STORAGE_PREFIXES,
   measureAuthInitialization,
   recoverAuthStorage,
 } from "../../src/features/auth/auth-init-guard.js";
@@ -115,9 +114,11 @@ test("initialization that completes is recorded as ready, with how long it took"
     },
   );
   assert.equal(settled, true);
-  assert.equal(events.length, 1);
-  assert.equal(events[0][0], AUTH_STAGES.AUTH_INIT_READY);
-  assert.ok(events[0][1].elapsedMs >= 0);
+  assert.deepEqual(events.map(([stage]) => stage), [
+    AUTH_STAGES.AUTH_STATE_READY_STARTED,
+    AUTH_STAGES.AUTH_STATE_READY_SUCCEEDED,
+  ]);
+  assert.ok(events.every(([, details]) => details.elapsedMs >= 0));
 });
 
 test("initialization that never completes is recorded as a timeout and triggers recovery once", async () => {
@@ -132,7 +133,11 @@ test("initialization that never completes is recorded as a timeout and triggers 
     onTimeout: () => { recoveries += 1; },
   });
   assert.equal(settled, false);
-  assert.deepEqual(events.map(([stage]) => stage), [AUTH_STAGES.AUTH_INIT_TIMEOUT]);
+  assert.deepEqual(events.map(([stage]) => stage), [
+    AUTH_STAGES.AUTH_STATE_READY_STARTED,
+    AUTH_STAGES.AUTH_STATE_READY_FAILED,
+  ]);
+  assert.equal(events[1][1].errorCode, "auth_state_ready_timeout");
   assert.equal(recoveries, 1);
 });
 
@@ -155,13 +160,13 @@ test("an SDK without authStateReady falls back to the first auth state notificat
   assert.equal(typeof listener, "function");
   listener();
   assert.equal(await promise, true);
-  assert.deepEqual(events, [AUTH_STAGES.AUTH_INIT_READY]);
+  assert.deepEqual(events, [AUTH_STAGES.AUTH_STATE_READY_STARTED, AUTH_STAGES.AUTH_STATE_READY_SUCCEEDED]);
   assert.equal(listener, null, "the fallback listener is disposed once it has answered");
 });
 
 /* ------------------------------------------------------------------ Task 4 */
 
-test("the recovery runs once per session and cannot loop the app", () => {
+test("the recovery runs once per session, preserves Firebase persistence, and cannot loop the app", () => {
   const session = memoryStorage();
   const local = memoryStorage();
   local.setItem("firebase:authUser:key", "1");
@@ -179,9 +184,11 @@ test("the recovery runs once per session and cannot loop the app", () => {
   });
 
   assert.equal(run(), "reloaded");
-  assert.deepEqual(deleted, ["firebaseLocalStorageDb"]);
-  assert.deepEqual(local.keys(), ["pilateacher_auth_diagnostics_v1", "pilateacher_db"],
-    "only Firebase Auth's own keys may be removed");
+  assert.deepEqual(deleted, [], "a timeout must not delete Firebase Auth IndexedDB");
+  assert.deepEqual(local.keys(), [
+    "firebase:authUser:key", "firebase:persistence:key",
+    "pilateacher_auth_diagnostics_v1", "pilateacher_db",
+  ], "a timeout must preserve the normal Firebase session and app data");
   assert.equal(session.getItem(AUTH_RECOVERY_FLAG), "1");
   assert.deepEqual(events, [AUTH_STAGES.AUTH_RECOVERY_STARTED, AUTH_STAGES.AUTH_RECOVERY_RELOAD]);
 
@@ -224,8 +231,10 @@ test("the recovery never reloads while a sign-in is in flight", () => {
   assert.deepEqual(events, [AUTH_STAGES.AUTH_RECOVERY_DEFERRED]);
 });
 
-test("recovery keys are limited to Firebase Auth's own prefixes", () => {
-  assert.deepEqual([...AUTH_STORAGE_PREFIXES], ["firebase:authUser:", "firebase:persistence:"]);
+test("the recovery implementation has no persistence deletion call", async () => {
+  const recovery = await readSource("src/features/auth/auth-init-guard.js");
+  const implementation = recovery.slice(recovery.indexOf("export function recoverAuthStorage"));
+  assert.doesNotMatch(implementation, /deleteDatabase|removeItem/);
 });
 
 test("the sign-in paths report themselves as in flight so the recovery can stand down", async () => {
@@ -275,10 +284,12 @@ test("a sign-in request records its method name, status and duration and no secr
 
   const stages = win.__authFetchQueue.map(([stage]) => stage);
   assert.deepEqual(stages, ["idp_fetch_started", "idp_fetch_done", "idp_fetch_started", "idp_fetch_done"]);
-  assert.deepEqual(win.__authFetchQueue[0][1], { path: "accounts:signInWithIdp" });
+  assert.equal(win.__authFetchQueue[0][1].path, "accounts:signInWithIdp");
+  assert.match(win.__authFetchQueue[0][1].requestStartedAt, /^\d{4}-\d{2}-\d{2}T/);
   assert.equal(win.__authFetchQueue[1][1].path, "accounts:signInWithIdp");
   assert.equal(win.__authFetchQueue[1][1].httpStatus, 200);
   assert.ok(win.__authFetchQueue[1][1].elapsedMs >= 0);
+  assert.match(win.__authFetchQueue[1][1].requestEndedAt, /^\d{4}-\d{2}-\d{2}T/);
   assert.equal(win.__authFetchQueue[2][1].path, "token");
 
   const serialized = JSON.stringify(win.__authFetchQueue);
@@ -297,7 +308,11 @@ test("a request that never answers is recorded as an error and the rejection sti
   assert.equal(started[0], "idp_fetch_started");
   assert.equal(failed[0], "idp_fetch_error");
   assert.equal(failed[1].errorCode, "TypeError");
+  assert.equal(failed[1].errorName, "TypeError");
   assert.equal(failed[1].errorDomain, "auth_endpoint");
+  assert.equal(failed[1].message, "Load failed");
+  assert.match(failed[1].requestStartedAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.match(failed[1].requestEndedAt, /^\d{4}-\d{2}-\d{2}T/);
 });
 
 test("events raised before the app has a logger are flushed in order, once one exists", async () => {
@@ -384,11 +399,19 @@ test("the new stages carry the names the diagnostics are read by", () => {
   assert.deepEqual(
     [
       AUTH_STAGES.AUTH_INIT_READY, AUTH_STAGES.AUTH_INIT_TIMEOUT,
+      AUTH_STAGES.AUTH_STATE_READY_STARTED, AUTH_STAGES.AUTH_STATE_READY_SUCCEEDED,
+      AUTH_STAGES.AUTH_STATE_READY_FAILED, AUTH_STAGES.AUTH_STATE_FIRST_CALLBACK,
+      AUTH_STAGES.INITIAL_USER_PRESENT, AUTH_STAGES.INITIAL_USER_ABSENT, AUTH_STAGES.AUTH_STATE_SIGNED_OUT,
+      AUTH_STAGES.PROFILE_LOAD_STARTED, AUTH_STAGES.PROFILE_LOAD_SUCCEEDED, AUTH_STAGES.PROFILE_LOAD_FAILED,
       AUTH_STAGES.IDP_FETCH_STARTED, AUTH_STAGES.IDP_FETCH_DONE, AUTH_STAGES.IDP_FETCH_ERROR,
       AUTH_STAGES.AUTH_RECOVERY_STARTED, AUTH_STAGES.AUTH_RECOVERY_RELOAD,
     ],
     [
       "auth_init_ready", "auth_init_timeout",
+      "auth_state_ready_started", "auth_state_ready_succeeded",
+      "auth_state_ready_failed", "auth_state_first_callback",
+      "initial_user_present", "initial_user_absent", "auth_state_signed_out",
+      "profile_load_started", "profile_load_succeeded", "profile_load_failed",
       "idp_fetch_started", "idp_fetch_done", "idp_fetch_error",
       "auth_recovery_started", "auth_recovery_reload",
     ],
@@ -406,4 +429,26 @@ test("the credential exchange keeps its existing deadlines and its two windows",
   assert.doesNotMatch(credential, /tryNo = [3-9]/, "no third attempt may be added");
   assert.doesNotMatch(credential, /tryNo === 2/, "the second window is the last one");
   assert.match(credential, /await auth\.authStateReady\(\);/);
+});
+
+test("startup waits for authStateReady and the watchdog never switches to login", async () => {
+  const app = await readSource("src/App.jsx");
+  const startup = app.slice(app.indexOf("useEffect(() => {", app.indexOf("export default function App")), app.indexOf("const loadAccount = async"));
+  assert.ok(startup.indexOf("await fbAuthStateReady()") < startup.indexOf("fbOnAuth(async (u)"));
+  assert.match(startup, /fallback: "wait_for_auth"/);
+  const watchdog = startup.slice(startup.indexOf("const startupWatchdog"), startup.indexOf("(async () =>"));
+  assert.doesNotMatch(watchdog, /setPhase\("auth"\)|finishStartup\("auth"\)/);
+  assert.match(startup, /AUTH_STATE_FIRST_CALLBACK/);
+  assert.match(startup, /INITIAL_USER_PRESENT/);
+  assert.match(startup, /INITIAL_USER_ABSENT/);
+  assert.match(startup, /AUTH_STATE_SIGNED_OUT/);
+});
+
+test("profile read failure preserves the authenticated session instead of showing login", async () => {
+  const app = await readSource("src/App.jsx");
+  const startup = app.slice(app.indexOf("useEffect(() => {", app.indexOf("export default function App")), app.indexOf("const loadAccount = async"));
+  const failed = startup.slice(startup.indexOf('profileResult.status === "error"'), startup.indexOf("const prof = profileResult.profile"));
+  assert.match(failed, /await loadAccount\(preservedSessionAccount\)/);
+  assert.match(failed, /finishStartup\("app"/);
+  assert.doesNotMatch(failed, /finishStartup\("auth"\)|fbSignOut/);
 });

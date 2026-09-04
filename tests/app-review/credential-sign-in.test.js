@@ -201,7 +201,11 @@ test("listener or logger failure cannot prevent normal SDK success", async (t) =
   const signedIn = user("new");
   h.exchange.resolve({ user: signedIn });
   assert.equal(await h.pending, signedIn);
-  assert.equal(h.events[0].stage, AUTH_STAGES.AUTHSTATE_LISTENER_FAILED);
+  assert.deepEqual(h.events.slice(0, 3).map((event) => event.stage), [
+    AUTH_STAGES.AUTH_STATE_READY_STARTED,
+    AUTH_STAGES.AUTH_STATE_READY_SUCCEEDED,
+    AUTH_STAGES.AUTHSTATE_LISTENER_FAILED,
+  ]);
   assert.doesNotMatch(JSON.stringify(h.events), /secret/);
   t.mock.timers.tick(100000);
   assert.equal(h.settled().length, 1);

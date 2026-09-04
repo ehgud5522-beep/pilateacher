@@ -27,7 +27,7 @@ import {
 } from "recharts";
 import {
   fbReady, fbAuthApiKey, fbSignInSocial, fbSignInEmail, fbSignUpEmail, fbSignOut, fbOnAuth,
-  fbLoadProfile, fbSaveProfile, fbPushBackup, fbPullBackup, fbReauthenticate,
+  fbAuthStateReady, fbLoadProfileState, fbSaveProfile, fbPushBackup, fbPullBackup, fbReauthenticate,
   fbRevokeAppleAccess, fbDeleteCurrentUserAccount, fbLoadAIConsent, fbGrantAIConsent, fbCurrentUserId,
   fbDeleteAIConsent,
   fbLoadAIRecordingStatus, fbSendDiagnosticReport, fbWritePilotMetricAttempt,
@@ -459,6 +459,8 @@ const recordAuthStage = (stage, details = {}) => {
     stage: entry.stage, provider: entry.provider, state: entry.outcome,
     domain: entry.errorDomain, code: entry.errorCode, message: entry.message,
     appBuild: entry.appBuild, model: entry.deviceModel,
+    requestStartedAt: entry.requestStartedAt, requestEndedAt: entry.requestEndedAt,
+    errorName: entry.errorName, userState: entry.userState, profileState: entry.profileState,
   });
   return entry;
 };
@@ -1996,8 +1998,14 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
       try {
         await socialGateRef.current.run(async () => {
           const u = await fbSignInSocial(provider, { onStage: stage });
-          const prof = await fbLoadProfile(u.id);
-          stage(AUTH_STAGES.PROFILE_LOADED, { outcome: "succeeded" });
+          stage(AUTH_STAGES.PROFILE_LOAD_STARTED);
+          const profileResult = await fbLoadProfileState(u.id);
+          if (profileResult.status === "error") {
+            stage(AUTH_STAGES.PROFILE_LOAD_FAILED, { outcome: "failed", error: profileResult.error });
+            throw profileResult.error;
+          }
+          const prof = profileResult.profile;
+          stage(AUTH_STAGES.PROFILE_LOAD_SUCCEEDED, { outcome: "succeeded", profileState: profileResult.status });
           if (prof && prof.center) onLogin({ ...u, ...prof, id: u.id }, auto);
           else setSignup({ ...u, provider, center: "", phone: "", fb: true });
         });
@@ -2095,7 +2103,14 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
                           onSignup({ ...u, provider: "email", name: f.name, email: f.email, center: f.center, phone: f.phone, fb: true }, auto);
                         } else {
                           const u = await fbSignInEmail(f.email, f.pw, { onStage: emailStage });
-                          const prof = await fbLoadProfile(u.id);
+                          emailStage(AUTH_STAGES.PROFILE_LOAD_STARTED);
+                          const profileResult = await fbLoadProfileState(u.id);
+                          if (profileResult.status === "error") {
+                            emailStage(AUTH_STAGES.PROFILE_LOAD_FAILED, { outcome: "failed", error: profileResult.error });
+                            throw profileResult.error;
+                          }
+                          const prof = profileResult.profile;
+                          emailStage(AUTH_STAGES.PROFILE_LOAD_SUCCEEDED, { outcome: "succeeded", profileState: profileResult.status });
                           if (prof && prof.center) onLogin({ ...u, ...prof, id: u.id }, auto);
                           else setSignup({ ...u, provider: "email", center: "", phone: "", fb: true });
                         }
@@ -13839,9 +13854,8 @@ export default function App() {
     };
     const startupWatchdog = setTimeout(() => {
       if (!alive) return;
-      deviceLog("app_startup_timeout", { stage: startupStage, fallback: "auth" });
-      setPhase("auth");
-    }, 6000);
+      deviceLog("app_startup_timeout", { stage: startupStage, fallback: "wait_for_auth" });
+    }, 12000);
     (async () => {
       let accs = [];
       try { const r = await window.storage.get(ACC_KEY); if (r?.value) accs = JSON.parse(r.value); } catch (e) {}
@@ -13856,9 +13870,27 @@ export default function App() {
       if (fbReady) {
         let first = true;
         let consentAuthId = "__startup__";
+        startupStage = "firebase_auth_state_ready";
+        const ready = await fbAuthStateReady();
+        if (!alive || !ready) return;
         startupStage = "firebase_auth_state";
         const off = fbOnAuth(async (u) => {
           if (!alive) return;
+          const isFirstCallback = first;
+          if (isFirstCallback) {
+            recordAuthStage(AUTH_STAGES.AUTH_STATE_FIRST_CALLBACK, {
+              feature: AUTH_FEATURES.INITIALIZATION, provider: "firebase",
+              outcome: "succeeded", userState: u ? "present" : "absent",
+            });
+            recordAuthStage(u ? AUTH_STAGES.INITIAL_USER_PRESENT : AUTH_STAGES.INITIAL_USER_ABSENT, {
+              feature: AUTH_FEATURES.INITIALIZATION, provider: "firebase", userState: u ? "present" : "absent",
+            });
+          } else if (!u) {
+            recordAuthStage(AUTH_STAGES.AUTH_STATE_SIGNED_OUT, {
+              feature: AUTH_FEATURES.INITIALIZATION, provider: "firebase", userState: "absent",
+            });
+          }
+          first = false;
           const nextConsentAuthId = String(u?.id || "signed-out");
           if (nextConsentAuthId !== consentAuthId) {
             resetAIConsentSessionChecks();
@@ -13874,19 +13906,38 @@ export default function App() {
             } catch (error) {
               deviceLog("account_deletion_local_cleanup_failed", { stage: "auth_state_recovery", ...deviceError(error) });
             }
-            if (first) { first = false; finishStartup("auth", 1400); } else { finishStartup("auth"); }
+            if (isFirstCallback) finishStartup("auth", 1400); else finishStartup("auth");
             return;
           }
           startupStage = "firebase_profile";
-          const prof = await fbLoadProfile(u.id);
+          recordAuthStage(AUTH_STAGES.PROFILE_LOAD_STARTED, {
+            feature: AUTH_FEATURES.INITIALIZATION, provider: "firebase", userState: "present",
+          });
+          const profileResult = await fbLoadProfileState(u.id);
+          if (profileResult.status === "error") {
+            recordAuthStage(AUTH_STAGES.PROFILE_LOAD_FAILED, {
+              feature: AUTH_FEATURES.INITIALIZATION, provider: "firebase", outcome: "failed",
+              userState: "present", error: profileResult.error,
+            });
+            const cached = accs.find((item) => item.id === u.id);
+            const preservedSessionAccount = { ...(cached || {}), ...u, id: u.id };
+            startupStage = "account_restore_after_profile_error";
+            await loadAccount(preservedSessionAccount);
+            if (alive) finishStartup("app", isFirstCallback ? 1400 : 0);
+            return;
+          }
+          const prof = profileResult.profile;
+          recordAuthStage(AUTH_STAGES.PROFILE_LOAD_SUCCEEDED, {
+            feature: AUTH_FEATURES.INITIALIZATION, provider: "firebase", outcome: "succeeded",
+            userState: "present", profileState: profileResult.status,
+          });
           const acc = { ...u, ...(prof || {}), id: u.id };
           if (!alive) return;
-          if (!acc.center) { if (first) { first = false; finishStartup("auth", 1400); } else finishStartup("auth"); return; }
+          if (!acc.center) { if (isFirstCallback) finishStartup("auth", 1400); else finishStartup("auth"); return; }
           startupStage = "account_restore";
           await loadAccount(acc);
           if (!alive) return;
-          const wait = first ? 1400 : 0;
-          first = false;
+          const wait = isFirstCallback ? 1400 : 0;
           finishStartup("app", wait);
         });
         cleanup = off;

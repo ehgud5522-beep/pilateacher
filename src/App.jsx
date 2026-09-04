@@ -57,6 +57,7 @@ import {
   sheetDragOffset, shouldDismissSheet, shouldStartContentDismiss,
 } from "./features/ui/bottom-sheet-gesture.js";
 import { installFocusVisibilityGuard } from "./features/ui/focus-visibility.js";
+import { scheduleMemberLayoutSnapshots } from "./features/ui/member-layout-diagnostics.js";
 import {
   POSTURE_RETAKE_DAYS, POSTURE_STORAGE_KEYS, POSTURE_VIEW_DEFS, POSTURE_VIEW_KEYS,
   compareAssessmentMetrics, completeAssessmentRecords, correctedPoseSource, normalizeAssessmentSets, normalizePostureView, postureAnalysisPlane,
@@ -428,6 +429,9 @@ const DEVICE_LOG_FIELDS = new Set([
   "photoOutputAvailable", "photoOutputAttached", "photoConnectionAvailable", "photoConnectionEnabled",
   "sessionRunning", "previewLayerAttached", "firstFrameReceived", "previewAttached", "previewX", "previewY",
   "previewWidth", "previewHeight", "previewZIndex", "previewBackgroundAlpha", "parentBackgroundAlpha", "webViewOpaque",
+  "frame", "root", "actionBar", "scrollContainer", "firstSummary", "recentCard",
+  "scrollTop", "clientHeight", "scrollHeight", "hitTagName", "hitClassName", "hitIsCard", "hitInsideCard",
+  "cardAboveContainer", "cardBelowContainer", "actionBarOverlapsContainer", "ancestorHasClip", "ancestorHasTransform", "clippingAncestors",
 ]);
 const deviceLog = (event, details = {}) => {
   try {
@@ -1393,7 +1397,7 @@ function Sheet({ title, sub, subtitle, onClose, children, wide = false, safeTop 
             <X size={18} />
           </button>
         </div>
-        <div className="pt-scroll min-h-0 flex-1" style={{ overflowY: "auto", padding: "4px 16px calc(20px + var(--pt-keyboard-inset, 0px))" }}>{children}</div>
+        <div className="pt-scroll min-h-0 flex-1" style={{ overflowY: "auto", padding: "4px 16px 20px" }}>{children}</div>
         {footer && <div className="shrink-0 px-4 pt-3" style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 12px)" }}>{footer}</div>}
       </section>
     </div>
@@ -4633,6 +4637,11 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
   const [reviewEditing, setReviewEditing] = useState(false);
   const [deleteName, setDeleteName] = useState("");
   const [deleteBusy, setDeleteBusy] = useState(false);
+  const layoutRootRef = useRef(null);
+  const actionBarRef = useRef(null);
+  const scrollContainerRef = useRef(null);
+  const firstSummaryRef = useRef(null);
+  const recentCardRef = useRef(null);
   useEffect(() => {
     if (!reviewNote) return;
     setReviewDraft(reviewNote.lessonRecord?.structuredDraft || null);
@@ -4687,6 +4696,18 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
     trackMemberMemoryUsage("briefing_rendered", { count: 1 });
     trackMemberMemoryUsage("briefing_opened", { count: 1 });
   }, [member.id]);
+  useEffect(() => scheduleMemberLayoutSnapshots({
+    elements: {
+      root: layoutRootRef.current,
+      actionBar: actionBarRef.current,
+      scrollContainer: scrollContainerRef.current,
+      firstSummary: firstSummaryRef.current,
+      recentCard: recentCardRef.current,
+    },
+    documentRef: document,
+    windowRef: window,
+    onSnapshot: (snapshot) => deviceLog("member_detail_layout_snapshot", snapshot),
+  }), [member.id, hasMemoryOverview, memoryRows.length]);
   const assessmentSets = useMemo(() => normalizeAssessmentSets(photos, { memberId: member.id }), [photos, member.id]);
   const resumableAssessment = useMemo(() => selectResumableAssessment(assessmentSets, { memberId: member.id }), [assessmentSets, member.id]);
   const completedAssessments = assessmentSets.filter((assessment) => assessment.status === "completed");
@@ -4760,21 +4781,21 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
   const sectionStyle = { backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: "12px 14px" };
   const Section = ({ title, action, children }) => <section style={sectionStyle}><div className="mb-2 flex items-center gap-2"><h2 className="min-w-0 flex-1" style={{ fontSize: 14, fontWeight: 600, color: INK }}>{title}</h2>{action}</div>{children}</section>;
   return (
-    <div className="relative flex h-full min-h-0 flex-col" style={{ backgroundColor: PAGE }}>
+    <div ref={layoutRootRef} className="relative flex h-full min-h-0 flex-col" style={{ backgroundColor: PAGE }}>
       <header className="flex shrink-0 items-center" style={{ height: 52, padding: "0 8px", backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
         <button type="button" onClick={onBack} aria-label="회원 목록" className="pt-member-back flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={19} /></button>
         <div className="min-w-0 flex-1"><h1 className="truncate" style={{ fontSize: 17, fontWeight: 600, color: INK }}>{member.name || "이름 미입력"}</h1><p style={{ fontSize: 11, color: SUB }}>{isHold(member) ? "홀딩" : isEnded(member) ? "종료" : "활성"}{singleInstructorMode ? "" : ` · 담당 ${member.instructor || "미지정"}`}</p></div>
       </header>
-      <div className="grid shrink-0 grid-cols-3 gap-1.5" aria-label="회원 빠른 실행" style={{ padding: "7px 12px", backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
+      <div ref={actionBarRef} className="grid shrink-0 grid-cols-3 gap-1.5" aria-label="회원 빠른 실행" style={{ padding: "7px 12px", backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
         {[{ l: "수업 기록", I: Pencil, fn: openRecord }, { l: "메모 추가", I: MessageSquare, fn: openMemo }].map(({ l, I, fn }) => <button type="button" key={l} onClick={fn} className="flex h-10 items-center justify-center gap-1.5" style={{ borderRadius: 9, backgroundColor: TINT, color: BRAND_D, fontSize: 12, fontWeight: 700 }}><I size={14} />{l}</button>)}
         <a href={member.phone ? `tel:${String(member.phone).replace(/[^0-9+]/g, "")}` : undefined} aria-disabled={!member.phone} onClick={(event) => { if (!member.phone) event.preventDefault(); }} className="flex h-10 items-center justify-center gap-1.5" style={{ borderRadius: 9, backgroundColor: CANVAS, color: member.phone ? INK2 : FAINT, fontSize: 12, fontWeight: 700 }}><Smartphone size={14} />연락하기</a>
       </div>
-      <main className="pt-scroll min-h-0 flex-1 overflow-y-auto" style={{ padding: "8px 12px calc(18px + max(env(safe-area-inset-bottom, 0px), 12px))", scrollPaddingTop: 8 }}>
+      <main ref={scrollContainerRef} className="pt-scroll min-h-0 flex-1 overflow-y-auto" style={{ padding: "8px 12px calc(18px + max(env(safe-area-inset-bottom, 0px), 12px))" }}>
         <div className="space-y-2">
-          <section data-member-section="top-summary" style={{ ...sectionStyle, backgroundColor: TINT, borderColor: RING }}>
+          <section ref={firstSummaryRef} data-member-section="top-summary" style={{ ...sectionStyle, backgroundColor: TINT, borderColor: RING }}>
             <div className="flex items-center gap-3"><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-base font-extrabold text-white" style={{ background: GRAD }}>{(member.name || "?").slice(0, 1)}</span><span className="min-w-0 flex-1"><span className="block truncate text-base font-extrabold" style={{ color: INK }}>{member.name || "이름 미입력"}</span><span className="mt-0.5 block text-xs" style={{ color: SUB }}>{next ? `다음 수업 ${ymd(next.date)} ${next.start}` : "다음 예약 없음"}</span></span><span className="shrink-0 text-right"><span className="block text-2xl font-extrabold tabular-nums" style={{ color: left(member) <= 3 ? BAD : BRAND }}>{left(member)}회</span><span className="block text-[10px]" style={{ color: SUB }}>잔여</span></span></div>
           </section>
-          <section data-member-section="memory-first" aria-label={`AI가 기억하는 ${member.name || "회원"}님`} style={{ ...sectionStyle, padding: hasMemoryOverview ? "10px 14px 4px" : "12px 14px" }}>
+          <section ref={recentCardRef} data-member-section="memory-first" aria-label={`AI가 기억하는 ${member.name || "회원"}님`} style={{ ...sectionStyle, padding: hasMemoryOverview ? "10px 14px 4px" : "12px 14px" }}>
             <div className="mb-1 flex items-center gap-2"><Sparkles size={14} style={{ color: BRAND_D }} /><h2 className="min-w-0 flex-1 truncate text-sm font-extrabold" style={{ color: INK }}>AI가 기억하는 {member.name || "회원"}님</h2></div>
             {!hasMemoryOverview ? <div className="rounded-lg px-3 py-3" style={{ backgroundColor: CANVAS }}><p style={{ fontSize: 12, color: INK2 }}>아직 작성된 수업 기록이 없습니다.</p><p className="mt-1" style={{ fontSize: 10, lineHeight: 1.45, color: SUB }}>수업 기록을 저장하면 지난 수업과 다음 확인 내용을 이곳에서 이어서 볼 수 있어요.</p></div> : memoryRows.map((row, index) => <div key={row.key} className="flex items-start gap-3" style={{ padding: "9px 0", borderTop: index ? `1px solid ${LINE}` : "none" }}><p className="w-[112px] shrink-0" style={{ fontSize: 10, fontWeight: 700, color: SUB }}>{row.label}</p><div className="min-w-0 flex-1"><p className="line-clamp-2" style={{ fontSize: 11, lineHeight: 1.45, fontWeight: 650, color: row.key === "next" ? BRAND_D : INK2 }}>{row.value}</p><div className="mt-1 flex min-h-[14px] items-center gap-1.5">{row.sourceLabel ? row.pendingNote ? <button type="button" onClick={() => { setReviewNote(row.pendingNote); setSheet("record-review"); }} className="rounded-full px-1.5 py-0.5" style={{ fontSize: 9, fontWeight: 700, color: BRAND_D, backgroundColor: TINT }}>{row.sourceLabel}</button> : <span style={{ fontSize: 9, fontWeight: 700, color: row.sourceLabel === "[AI]" ? BRAND_D : SUB }}>{row.sourceLabel}</span> : row.origin === "ai" && <span style={{ fontSize: 9, fontWeight: 700, color: BRAND_D }}>[AI]</span>}{row.memory?.source === "posture_analysis" && <span style={{ fontSize: 9, fontWeight: 700, color: SUB }}>체형분석</span>}{memoryDateLabel(row.date) && <span className="tabular-nums" style={{ fontSize: 9, color: SUB }}>· {memoryDateLabel(row.date)}</span>}{row.memory?.origin === "ai" && <button type="button" onClick={() => rejectBriefingLine({ memoryIds: [row.memory.id] })} className="ml-auto shrink-0 text-[9px] font-bold" style={{ color: SUB }}>숨기기</button>}</div></div></div>)}
           </section>
@@ -15294,7 +15315,7 @@ export default function App() {
       .app-root p, .app-root h1, .app-root h2, .app-root h3, .app-root span, .app-root button, .app-root li { word-break: keep-all; overflow-wrap: break-word; }
       .app-root *:focus-visible { outline: 2px solid ${PRIMARY}; outline-offset: 2px; }
       .app-root input[type=range] { height: 28px; }
-      .app-root input:not([type=range]), .app-root textarea, .app-root select { font-size: 16px; }
+      .app-root.pt-native-ios input:not([type=range]), .app-root.pt-native-ios textarea, .app-root.pt-native-ios select { font-size: 16px; }
       /* 노치·홈바 여백.
          아이폰은 env() 로 정확한 값이 오지만 안드로이드(갤럭시 등)는 0을 주는 경우가 많아
          max() 로 최소 여백을 보장한다. 좌우도 가로모드·곡면 화면 대비로 함께 잡는다. */
@@ -15387,10 +15408,11 @@ export default function App() {
     `}</style>
   );
 
-  if (phase === "splash") return <div className="app-root">{style}<Splash /></div>;
+  const appRootClassName = `app-root${Capacitor.isNativePlatform() && Capacitor.getPlatform() === "ios" ? " pt-native-ios" : ""}`;
+  if (phase === "splash") return <div className={appRootClassName}>{style}<Splash /></div>;
   if (phase === "auth")
     return (
-      <div className="app-root">
+      <div className={appRootClassName}>
         {style}
         <AuthScreen accounts={accounts} onLogin={handleLogin} onSignup={handleSignup} onToast={setToast} />
         {onboardingOpen && <Onboarding onFinish={closeOnboarding} onSkip={closeOnboarding} />}
@@ -15408,7 +15430,7 @@ export default function App() {
   return (
     <AIRecordingStatusContext.Provider value={{ ...aiRecordingStatus, updateStatus: updateAIRecordingStatus }}>
     <LessonRecordLinkContext.Provider value={{ prepare: prepareLessonRecordContext, resolve: resolveLessonRecordLink }}>
-    <div className="app-root flex justify-center" style={{ minHeight: "100vh", height: "100dvh", backgroundColor: PAGE, overflow: "hidden" }}>
+    <div className={`${appRootClassName} flex justify-center`} style={{ minHeight: "100vh", height: "100dvh", backgroundColor: PAGE, overflow: "hidden" }}>
       {style}
       <div className="pt-app-shell safe-t flex h-full min-h-0 w-full flex-col" style={{ backgroundColor: PAGE, boxShadow: "0 0 0 1px rgba(28,36,51,.04)" }}>
         <div className="relative min-h-0 flex-1 overflow-hidden">

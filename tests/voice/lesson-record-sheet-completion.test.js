@@ -50,8 +50,9 @@ test("voice result, failure, and timeout terminate the organizing header", () =>
 });
 
 test("pending AI records expose optional confirmation and suppress review-flagged records", () => {
-  assert.match(source, /\[AI · 확인 전\]/);
-  assert.match(source, />확인 필요<\/button>/);
+  assert.match(source, /AI 요약 · \{formatMemberLessonDate\(latestLessonSession\.date\)\}/);
+  assert.match(source, /latestLessonSession\.confirmationState !== "confirmed" \? " · 확인 필요" : ""/);
+  assert.match(source, /pendingLessonState\(pendingItem\)/);
   assert.match(source, /title="AI 수업기록 확인"/);
   assert.match(source, />확인<\/button>/);
   assert.match(source, /LESSON_RECORD_REVIEW_FLAGS/);

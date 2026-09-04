@@ -116,16 +116,17 @@ export function normalizeAudioLessonRecord(value) {
   }
   const provenance = requireObject(source.provenance, "audio lesson record provenance");
   if (provenance.stt !== "openai") throw new TypeError("audio lesson record stt provenance is invalid");
-  if (!transcript) throw new TypeError("audio lesson record transcript is empty");
   if (result === "low_confidence") {
-    if (source.fields != null || source.summary != null || !flags.includes("low_confidence") || provenance.llm != null) {
+    const rejectedHallucination = flags.includes("hallucination_phrase") && !transcript;
+    if (source.fields != null || source.summary != null || (!flags.includes("low_confidence") && !rejectedHallucination) || provenance.llm != null) {
       throw new TypeError("audio lesson record low_confidence output is invalid");
     }
     return { transcript, result, fields: null, summary: null, speechSeconds, confidence, flags, provenance: { stt: "openai", llm: null } };
   }
+  if (!transcript) throw new TypeError("audio lesson record transcript is empty");
   const fields = requireObject(source.fields, "audio lesson record fields");
   requireFields(fields, ["didToday", "observations", "responses", "nextFocus"], "audio lesson record fields");
-  if (provenance.llm !== "openai" || flags.some((flag) => flag !== "tail_dropped")) throw new TypeError("audio lesson record ok provenance is invalid");
+  if (provenance.llm !== "openai" || flags.some((flag) => !["tail_dropped", "hallucination_phrase_removed"].includes(flag))) throw new TypeError("audio lesson record ok provenance is invalid");
   return {
     transcript,
     result,

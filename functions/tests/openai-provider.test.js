@@ -283,6 +283,41 @@ test("audio lesson provider transcribes, falls back once, preserves valid fields
   assert.deepEqual(lifecycle, ["audio_disposed", "structure_requested"]);
 });
 
+test("audio lesson provider removes only hallucinated sentences before structuring and rejects an all-hallucination transcript", async () => {
+  const executeCase = async (transcript) => {
+    let structureInput = "";
+    const provider = createOpenAIProvider({
+      client: {
+        audio: { transcriptions: { create: async () => ({
+          text: transcript,
+          segments: [{ text: transcript, no_speech_prob: 0.01, avg_logprob: -0.1, compression_ratio: 1.1 }],
+        }) } },
+        responses: { create: async (params) => {
+          structureInput = params.input;
+          return { status: "completed", output_text: JSON.stringify(operationOutputs[OPERATIONS.STRUCTURE_LESSON_RECORD]) };
+        } },
+      },
+    });
+    const result = await provider.executeAudio({ input: {
+      audio: createM4aFixture(12).toString("base64"), memberName: "", language: "ko",
+      audioMetrics: { intervalMs: 100, amplitudes: Array(50).fill(0.2) },
+    } });
+    return { result, structureInput };
+  };
+
+  const partial = await executeCase("오늘 리포머를 진행했습니다. 영상이 도움이 되셨다면 구독과 좋아요 부탁드립니다.");
+  assert.equal(partial.result.output.transcript, "오늘 리포머를 진행했습니다.");
+  assert.deepEqual(partial.result.output.flags, ["hallucination_phrase_removed"]);
+  assert.match(partial.structureInput, /오늘 리포머를 진행했습니다/);
+  assert.doesNotMatch(partial.structureInput, /구독과 좋아요/);
+
+  const rejected = await executeCase("시청해주셔서 감사합니다. 구독 부탁드립니다.");
+  assert.equal(rejected.result.output.result, "low_confidence");
+  assert.equal(rejected.result.output.transcript, "");
+  assert.deepEqual(rejected.result.output.flags, ["hallucination_phrase"]);
+  assert.equal(rejected.structureInput, "");
+});
+
 test("audio lesson provider rejects JSON parse failure or four invalid core fields", async () => {
   let outputText = "not-json";
   const provider = createOpenAIProvider({

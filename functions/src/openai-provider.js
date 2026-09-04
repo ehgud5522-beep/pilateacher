@@ -12,6 +12,7 @@ const { GatewayError } = require("./errors");
 const { OPERATIONS, OUTPUT_NAMES, OUTPUT_SCHEMAS, validateOperationOutput } = require("./operation-contracts");
 const { getPrompt } = require("./prompts");
 const { PILATES_TRANSCRIPTION_TERMS, buildTranscriptionPrompt } = require("./transcription-config");
+const { filterSttHallucinations } = require("./stt-quality");
 
 const DEFAULT_MODEL = "gpt-5-mini";
 const DEFAULT_TIMEOUT_MS = 25000;
@@ -267,7 +268,25 @@ function createOpenAIProvider({
             },
           };
         }
-        const transcript = assessment.transcript;
+        const filteredTranscript = filterSttHallucinations(assessment.transcript);
+        if (filteredTranscript.removedAll) {
+          return {
+            result: "low_confidence",
+            transcript: "",
+            model: transcriptionModel,
+            latencyMs: Date.now() - startedAt,
+            usage: response?.usage || null,
+            confidence: assessment.confidence,
+            flags: ["hallucination_phrase"],
+            confidenceDiagnostic: {
+              averageLogprob: assessment.averageLogprob,
+              rejectedSegments: assessment.rejectedSegments,
+              totalSegments: assessment.totalSegments,
+              tailDroppedSegments: assessment.tailDroppedSegments || 0,
+            },
+          };
+        }
+        const transcript = filteredTranscript.transcript;
         if (transcript.length > 12000) throw new GatewayError("invalid_output");
         return {
           result: "ok",
@@ -282,7 +301,10 @@ function createOpenAIProvider({
             totalSegments: assessment.totalSegments,
             tailDroppedSegments: assessment.tailDroppedSegments || 0,
           },
-          flags: assessment.tailDropped ? ["tail_dropped"] : [],
+          flags: [
+            ...(assessment.tailDropped ? ["tail_dropped"] : []),
+            ...(filteredTranscript.removedCount ? ["hallucination_phrase_removed"] : []),
+          ],
         };
       } catch (error) {
         if (transcriptionModel === PRIMARY_TRANSCRIPTION_MODEL) {
@@ -342,6 +364,9 @@ function createOpenAIProvider({
         };
       }
       if (transcription.result === "low_confidence") {
+        const transcriptionFlags = Array.isArray(transcription.flags) && transcription.flags.length
+          ? transcription.flags
+          : ["low_confidence"];
         return {
           model: normalizedModel,
           promptVersion: AUDIO_VAD_PROMPT_VERSION,
@@ -355,7 +380,7 @@ function createOpenAIProvider({
           transcriptionUsage: transcription.usage,
           speechSeconds: energy.speechSeconds,
           transcriptionConfidence: transcription.confidence,
-          transcriptionFlags: ["low_confidence"],
+          transcriptionFlags,
           trimmedMs: energy.trimmedMs,
           captureLatencyMs: energy.captureLatencyMs,
           confidenceDiagnostic: transcription.confidenceDiagnostic,
@@ -366,7 +391,7 @@ function createOpenAIProvider({
             summary: null,
             speechSeconds: energy.speechSeconds,
             confidence: transcription.confidence,
-            flags: ["low_confidence"],
+            flags: transcriptionFlags,
             provenance: { stt: "openai", llm: null },
           },
         };

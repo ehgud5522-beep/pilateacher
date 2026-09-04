@@ -18,6 +18,7 @@ test("client validates the deployed audio lesson contract", () => {
   assert.equal(AI_OPERATIONS.LESSON_RECORD_FROM_AUDIO, "lesson_record_from_audio");
   assert.deepEqual(normalizeAIOutput(AI_OPERATIONS.LESSON_RECORD_FROM_AUDIO, output), output);
   assert.deepEqual(normalizeAIOutput(AI_OPERATIONS.LESSON_RECORD_FROM_AUDIO, { ...output, flags: ["tail_dropped"] }).flags, ["tail_dropped"]);
+  assert.deepEqual(normalizeAIOutput(AI_OPERATIONS.LESSON_RECORD_FROM_AUDIO, { ...output, flags: ["hallucination_phrase_removed"] }).flags, ["hallucination_phrase_removed"]);
   assert.throws(() => normalizeAIOutput(AI_OPERATIONS.LESSON_RECORD_FROM_AUDIO, { ...output, audio: "forbidden" }));
   assert.deepEqual(normalizeAIOutput(AI_OPERATIONS.LESSON_RECORD_FROM_AUDIO, {
     transcript: "", result: "no_speech", fields: null, summary: null, speechSeconds: 0, confidence: 0,
@@ -27,6 +28,10 @@ test("client validates the deployed audio lesson contract", () => {
     transcript: "브릿지", result: "low_confidence", fields: null, summary: null, speechSeconds: 1.8, confidence: 0.2,
     flags: ["low_confidence"], provenance: { stt: "openai", llm: null },
   }).result, "low_confidence");
+  assert.deepEqual(normalizeAIOutput(AI_OPERATIONS.LESSON_RECORD_FROM_AUDIO, {
+    transcript: "", result: "low_confidence", fields: null, summary: null, speechSeconds: 1.8, confidence: 0.9,
+    flags: ["hallucination_phrase"], provenance: { stt: "openai", llm: null },
+  }).flags, ["hallucination_phrase"]);
 });
 
 test("gateway client sends audio with the caller's stable idempotency key", async () => {

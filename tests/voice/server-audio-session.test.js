@@ -73,6 +73,7 @@ test("client energy VAD blocks only an entirely silent recording and keeps quiet
   assert.equal(buildAudioMetrics([]), null, "a failed meter must omit metrics instead of fabricating silence");
   assert.equal(structuredDraftFromAudioOutput({ ...audioOutput, result: "low_confidence", fields: null, flags: ["low_confidence"] }), null);
   assert.deepEqual(structuredDraftFromAudioOutput({ ...audioOutput, flags: ["tail_dropped"] })?.didToday, ["브릿지"]);
+  assert.deepEqual(structuredDraftFromAudioOutput({ ...audioOutput, flags: ["hallucination_phrase_removed"] })?.didToday, ["브릿지"]);
 });
 
 test("client speech markers keep 500 ms before and 1000 ms after speech without trimming the original", () => {

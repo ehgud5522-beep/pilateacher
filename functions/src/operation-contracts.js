@@ -93,7 +93,7 @@ const OUTPUT_SCHEMAS = Object.freeze({
       confidence: { type: "number" },
       flags: {
         type: "array",
-        items: { type: "string", enum: ["no_speech", "low_confidence"] },
+        items: { type: "string", enum: ["no_speech", "low_confidence", "tail_dropped", "hallucination_phrase", "hallucination_phrase_removed"] },
       },
       provenance: {
         type: "object",
@@ -236,10 +236,10 @@ function validateAudioLessonRecord(value) {
   const confidence = Number(source.confidence);
   if (!result || !Number.isFinite(speechSeconds) || speechSeconds < 0 || speechSeconds > 90 || !Number.isFinite(confidence) || confidence < 0 || confidence > 1) throw new GatewayError("invalid_output");
   const flags = cleanList(source.flags, 2, 40);
-  if (flags.some((flag) => !["no_speech", "low_confidence", "tail_dropped"].includes(flag))) throw new GatewayError("invalid_output");
+  if (flags.some((flag) => !["no_speech", "low_confidence", "tail_dropped", "hallucination_phrase", "hallucination_phrase_removed"].includes(flag))) throw new GatewayError("invalid_output");
   if (result === "ok") {
     const fields = requireExactObject(source.fields, ["didToday", "observations", "responses", "nextFocus"]);
-    if (!transcript || provenance.stt !== "openai" || provenance.llm !== "openai" || flags.some((flag) => flag !== "tail_dropped")) throw new GatewayError("invalid_output");
+    if (!transcript || provenance.stt !== "openai" || provenance.llm !== "openai" || flags.some((flag) => !["tail_dropped", "hallucination_phrase_removed"].includes(flag))) throw new GatewayError("invalid_output");
     return {
       transcript,
       result,
@@ -251,9 +251,10 @@ function validateAudioLessonRecord(value) {
       provenance: { stt: "openai", llm: "openai" },
     };
   }
-  if (source.fields !== null || source.summary !== null || !flags.includes(result) || provenance.llm !== null) throw new GatewayError("invalid_output");
+  const rejectionFlag = flags.includes(result) || (result === "low_confidence" && flags.includes("hallucination_phrase"));
+  if (source.fields !== null || source.summary !== null || !rejectionFlag || provenance.llm !== null) throw new GatewayError("invalid_output");
   if (result === "no_speech" && (transcript || provenance.stt !== null)) throw new GatewayError("invalid_output");
-  if (result === "low_confidence" && (!transcript || provenance.stt !== "openai")) throw new GatewayError("invalid_output");
+  if (result === "low_confidence" && ((!transcript && !flags.includes("hallucination_phrase")) || provenance.stt !== "openai")) throw new GatewayError("invalid_output");
   return {
     transcript,
     result,

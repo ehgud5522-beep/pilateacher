@@ -6,6 +6,7 @@ const PREFIX_SCAN = new RegExp(`(?:^|\\s+)(${PREFIX_NAMES})\\s*[:：]\\s*`, "g")
 const INTERNAL_ORIGIN_TAG = /\[(?:AI|MANUAL|STT)\]/gi;
 const LEADING_DATE_TAG = /^\s*\[(\d{1,2})\/(\d{1,2})\]\s*/;
 const EMPTY_TODAY = new Set(["", "운동", "수업", "진행", "함", "했음"]);
+const SETTLED_ATTENDANCE = new Set(["done", "noshow", "cancel"]);
 
 const clean = (value) => String(value ?? "").replace(INTERNAL_ORIGIN_TAG, "").trim().replace(/\s+/g, " ");
 const normalized = (value) => clean(value).toLocaleLowerCase("ko-KR").replace(/[\s.,!?;:'"`()\[\]{}·~_-]+/g, "");
@@ -58,6 +59,20 @@ export function parseLegacyLessonRecordBody(value) {
 export function meaningfulToday(value) {
   const text = stripLessonRecordTags(value).text;
   return EMPTY_TODAY.has(normalized(text)) ? "기록 없음" : (text || "기록 없음");
+}
+
+export function lessonSessionRepresentative(session) {
+  const fields = [
+    ["today", "", session?.today === "기록 없음" ? "" : session?.today],
+    ["change", "변화", session?.change],
+    ["reaction", "회원 반응", session?.reaction],
+    ["next", "다음 확인", session?.next],
+  ];
+  const selected = fields.find(([, , value]) => clean(value));
+  if (!selected) return { field: "empty", label: "", text: "기록 없음", display: "기록 없음" };
+  const [field, label, value] = selected;
+  const text = clean(value);
+  return { field, label, text, display: label ? `${label} · ${text}` : text };
 }
 
 export function normalizedLessonType(value) {
@@ -187,7 +202,7 @@ export function selectMemberLessonSessions({ member, schedule = [] } = {}) {
 
 export function selectLessonSheetBriefing({ sessions = [], briefing = null } = {}) {
   const lesson = sessions[0] || null;
-  if (lesson) return { source: "lesson_record", date: lesson.date, session: lesson, text: lesson.today, next: lesson.next };
+  if (lesson) return { source: "lesson_record", date: lesson.date, session: lesson, text: lessonSessionRepresentative(lesson).display, next: lesson.next };
   const fallback = (briefing?.lines || []).find((entry) => !["first_lesson", "no_memory", "membership"].includes(entry?.kind)) || null;
   if (!fallback) return null;
   const stripped = stripLessonRecordTags(fallback.text);
@@ -235,6 +250,48 @@ const lessonEnded = (lesson, now) => {
   return date && !Number.isNaN(at) && at <= now.getTime();
 };
 
+const attendanceStatusFor = (lesson, memberId) => {
+  const attendee = (lesson?.attendees || []).find((item) => String(item?.memberId || "") === String(memberId || ""));
+  if (attendee) return String(attendee.status || "booked");
+  if (String(lesson?.memberId || "") === String(memberId || "")) return String(lesson?.status || "booked");
+  return "";
+};
+
+export function isPastUnresolvedAttendance({ lesson, memberId, now = new Date() } = {}) {
+  const status = attendanceStatusFor(lesson, memberId);
+  return Boolean(status) && lessonEnded(lesson, now) && !SETTLED_ATTENDANCE.has(status);
+}
+
+export function pendingLessonState(item) {
+  const reasons = item?.reasons || [];
+  if (reasons.includes("attendance")) return { key: "attendance", label: "출석 미처리", action: "출석 처리" };
+  if (reasons.includes("record")) return { key: "record", label: "기록 필요", action: "기록하기" };
+  if (item?.session?.confirmationState === "partial") {
+    return { key: "partial", label: `일부 확인 (${item.session.confirmedCount}/${item.session.confirmableCount})`, action: "확인" };
+  }
+  if (reasons.includes("confirmation") || reasons.includes("local_draft")) return { key: "confirmation", label: "확인 필요", action: "확인" };
+  return { key: "confirmed", label: "확인 완료", action: "" };
+}
+
+export function formatMemberLessonHeader(session, sessions = [], options = {}) {
+  const sameDateCount = sessions.filter((item) => item?.date && item.date === session?.date).length;
+  const time = sameDateCount > 1 && session?.startTime ? ` ${session.startTime}` : "";
+  const type = options.includeType === false ? "" : ` · ${session?.type || "수업"}`;
+  return `${formatMemberLessonDate(session?.date, { weekday: options.weekday !== false })}${time}${type}`;
+}
+
+export function selectMemberLessonCounts({ member, schedule = [], now = new Date() } = {}) {
+  const memberId = String(member?.id || "");
+  return schedule.reduce((counts, lesson) => {
+    const status = attendanceStatusFor(lesson, memberId);
+    if (!status || lesson?.personal) return counts;
+    if (status === "done") counts.completed += 1;
+    else if (isPastUnresolvedAttendance({ lesson, memberId, now })) counts.unresolved += 1;
+    else if (status === "booked") counts.reserved += 1;
+    return counts;
+  }, { completed: 0, reserved: 0, unresolved: 0 });
+}
+
 export function selectPendingLessonSessions({ members = [], schedule = [], pendingDrafts = [], now = new Date() } = {}) {
   const pending = new Map();
   const add = (key, payload, reason) => {
@@ -251,10 +308,15 @@ export function selectPendingLessonSessions({ members = [], schedule = [], pendi
 
   schedule.filter((lesson) => lessonEnded(lesson, now) && !lesson?.personal).forEach((lesson) => {
     (lesson.attendees || []).forEach((attendee) => {
-      if (attendee?.status !== "done") return;
       const memberId = String(attendee?.memberId || "");
       const key = `${memberId}|${lesson.id}`;
       const session = (sessionsByMember.get(memberId) || []).find((item) => item.key === String(lesson.id)) || null;
+      if (isPastUnresolvedAttendance({ lesson, memberId, now })) {
+        add(key, { memberId, lessonId: lesson.id, lesson, session }, "attendance");
+        if (session && session.confirmationState !== "confirmed") add(key, { memberId, lessonId: lesson.id, lesson, session }, "confirmation");
+        return;
+      }
+      if (attendee?.status !== "done") return;
       if (attendee?.status === "done" && !session) add(key, { memberId, lessonId: lesson.id, lesson, session }, "record");
       if (session && session.confirmationState !== "confirmed") add(key, { memberId, lessonId: lesson.id, lesson, session }, "confirmation");
     });

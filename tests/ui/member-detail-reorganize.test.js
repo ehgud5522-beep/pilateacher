@@ -2,11 +2,15 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
+  formatMemberLessonHeader,
   formatMemberLessonDate,
+  lessonSessionRepresentative,
   meaningfulToday,
   parseLegacyLessonRecordBody,
+  pendingLessonState,
   selectLessonSheetBriefing,
   selectMemberDetailStatus,
+  selectMemberLessonCounts,
   selectMemberLessonSessions,
   selectPendingLessonSessions,
   stripLessonRecordTags,
@@ -106,6 +110,28 @@ test("a completed lesson with no note is one pending session", () => {
   assert.equal(selectPendingLessonSessions({ members, schedule, now: new Date("2026-09-02T00:00:00") }).count, 1);
 });
 
+test("09.01 16:30 past booked attendance is one unresolved session, while future booked and settled statuses are not", () => {
+  const members = [{ id: "m", notes: [] }];
+  const lesson = (id, date, status, start = "09:00", end = "09:50") => ({ id, date, start, end, type: "개인레슨", attendees: [{ memberId: "m", status }] });
+  const summary = selectPendingLessonSessions({
+    members,
+    schedule: [lesson("past-booked", "2026-09-01", "booked", "16:30", "17:20"), lesson("future-booked", "2026-09-10", "booked"), lesson("noshow", "2026-09-01", "noshow"), lesson("cancel", "2026-09-01", "cancel")],
+    now: new Date("2026-09-05T12:00:00"),
+  });
+  assert.equal(summary.count, 1);
+  assert.deepEqual(summary.sessions[0].reasons, ["attendance"]);
+  assert.equal(pendingLessonState(summary.sessions[0]).action, "출석 처리");
+});
+
+test("attendance is the visible priority when the same session also has an unconfirmed record", () => {
+  const member = { id: "m", notes: [note("n1", "s1", "2026-09-01", pending())] };
+  const schedule = [{ id: "s1", date: "2026-09-01", start: "09:00", end: "09:50", type: "개인레슨", attendees: [{ memberId: "m", status: "booked" }] }];
+  const summary = selectPendingLessonSessions({ members: [member], schedule, now: new Date("2026-09-05T12:00:00") });
+  assert.equal(summary.count, 1);
+  assert.deepEqual(summary.sessions[0].reasons.sort(), ["attendance", "confirmation"]);
+  assert.deepEqual(pendingLessonState(summary.sessions[0]), { key: "attendance", label: "출석 미처리", action: "출석 처리" });
+});
+
 test("schedule banner and member detail share the same pending-session count", () => {
   const members = [
     { id: "m1", notes: [note("n1", "s-pending", "2026-09-01", pending())] },
@@ -181,6 +207,56 @@ test("lesson sheet prefers a real lesson record over posture memory and keeps po
   assert.equal(fallback.source, "posture_fallback");
   assert.equal(fallback.text, "체형분석: 비포 촬영");
   assert.equal(fallback.date, "2026-08-26");
+});
+
+test("lesson representative falls back to reaction and same-date history headers include time", () => {
+  const reactionOnly = { date: "2026-08-27", startTime: "09:00", type: "개인", today: "기록 없음", change: "", reaction: "허리가 편했다고 함", next: "" };
+  const later = { ...reactionOnly, key: "later", startTime: "18:00", reaction: "" };
+  const middle = { ...reactionOnly, key: "middle", startTime: "14:00", reaction: "" };
+  assert.deepEqual(lessonSessionRepresentative(reactionOnly), { field: "reaction", label: "회원 반응", text: "허리가 편했다고 함", display: "회원 반응 · 허리가 편했다고 함" });
+  assert.equal(formatMemberLessonHeader(reactionOnly, [reactionOnly, middle, later], { now: new Date("2026-09-05") }), "08.27 (목) 09:00 · 개인");
+});
+
+test("existing structured fields remain visible and a wholly empty session has one representative placeholder", () => {
+  const fields = [
+    ["didToday", "today", "브릿지"],
+    ["observations", "change", "흉추 회전 개선"],
+    ["responses", "reaction", "허리가 편했다고 함"],
+    ["nextFocus", "next", "캐딜락 확인"],
+  ];
+  fields.forEach(([storedField, viewField, value], index) => {
+    const structured = { didToday: [], observations: [], responses: [], nextFocus: [], [storedField]: [value] };
+    const session = selectMemberLessonSessions({ member: { id: "m", notes: [note(`field-${index}`, `s-${index}`, "2026-08-27", confirmed({ confirmedRecord: structured }))] } })[0];
+    assert.equal(session[viewField], value);
+    assert.notEqual(lessonSessionRepresentative(session).field, "empty");
+  });
+  const empty = selectMemberLessonSessions({ member: { id: "m", notes: [note("empty", "empty-session", "2026-08-27", confirmed({ confirmedRecord: { didToday: [], observations: [], responses: [], nextFocus: [] } }))] } })[0];
+  assert.deepEqual(lessonSessionRepresentative(empty), { field: "empty", label: "", text: "기록 없음", display: "기록 없음" });
+});
+
+test("lesson counts distinguish completed, reserved, and unresolved attendance", () => {
+  const member = { id: "m" };
+  const schedule = [
+    ...Array.from({ length: 4 }, (_, index) => ({ id: `done-${index}`, date: `2026-09-0${index + 1}`, start: "09:00", end: "09:50", attendees: [{ memberId: "m", status: "done" }] })),
+    { id: "past-booked", date: "2026-09-01", start: "18:00", end: "18:50", attendees: [{ memberId: "m", status: "booked" }] },
+    { id: "future-booked", date: "2026-09-10", start: "18:00", end: "18:50", attendees: [{ memberId: "m", status: "booked" }] },
+  ];
+  assert.deepEqual(selectMemberLessonCounts({ member, schedule, now: new Date("2026-09-05T12:00:00") }), { completed: 4, reserved: 1, unresolved: 1 });
+});
+
+test("member and lesson-sheet source use one card, past labels, and exact lesson navigation", async () => {
+  const source = await readFile(new URL("../../src/App.jsx", import.meta.url), "utf8");
+  const scheduleForm = source.slice(source.indexOf("function ScheduleForm"), source.indexOf("function ScheduleQueueSheet"));
+  assert.match(scheduleForm, /\+ 목표 추가/);
+  assert.doesNotMatch(scheduleForm, /목표 미입력/);
+  assert.equal((scheduleForm.match(/\{m\?\.name \|\| "삭제된 회원"\}/g) || []).length, 1);
+  assert.match(source, /pastLesson && key === "today" \? "수업 내용" : label/);
+  assert.match(source, /onOpenLesson\?\.\(session\.lesson\?\.id \|\| session\.key\)/);
+  assert.match(source, /`수업 \$\{lessonCounts\.completed\}건`/);
+  assert.match(source, /`예약 \$\{lessonCounts\.reserved\}건`/);
+  assert.match(source, /`미처리 \$\{lessonCounts\.unresolved\}건`/);
+  const statusCard = source.slice(source.indexOf('data-member-section="status"'), source.indexOf('data-member-section="next-preparation"'));
+  assert.doesNotMatch(statusCard, /Avatar|detailStatus\.reasons|>상태</);
 });
 
 test("L: member detail and lesson sheet declare bounded vertical-only scroll containers", async () => {

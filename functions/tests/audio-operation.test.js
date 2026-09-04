@@ -23,6 +23,8 @@ test("audio operation exposes the exact transcript, four fields, summary, and pr
   assert.deepEqual(validateOperationOutput(OPERATIONS.LESSON_RECORD_FROM_AUDIO, value), value);
   const tailDropped = { ...value, flags: ["tail_dropped"] };
   assert.deepEqual(validateOperationOutput(OPERATIONS.LESSON_RECORD_FROM_AUDIO, tailDropped), tailDropped);
+  const filtered = { ...value, transcript: "브릿지를 진행했습니다.", flags: ["hallucination_phrase_removed"] };
+  assert.deepEqual(validateOperationOutput(OPERATIONS.LESSON_RECORD_FROM_AUDIO, filtered), filtered);
   assert.deepEqual(
     OUTPUT_SCHEMAS[OPERATIONS.LESSON_RECORD_FROM_AUDIO].required,
     ["transcript", "result", "fields", "summary", "speechSeconds", "confidence", "flags", "provenance"],
@@ -41,6 +43,10 @@ test("audio operation exposes the exact transcript, four fields, summary, and pr
     speechSeconds: 5, confidence: 0.5, flags: ["low_confidence"], provenance: { stt: "openai", llm: null },
   };
   assert.deepEqual(validateOperationOutput(OPERATIONS.LESSON_RECORD_FROM_AUDIO, lowConfidence), lowConfidence);
+  const hallucination = {
+    ...lowConfidence, transcript: "", flags: ["hallucination_phrase"],
+  };
+  assert.deepEqual(validateOperationOutput(OPERATIONS.LESSON_RECORD_FROM_AUDIO, hallucination), hallucination);
 });
 
 test("lesson field validation clears only invalid fields and rejects four invalid fields", () => {

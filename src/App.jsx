@@ -87,13 +87,15 @@ import {
   createLessonRecordMeta, editStructuredField, structuredFieldText, structuredRecordBody,
 } from "./features/lesson-record/record-schema.js";
 import { createSttProvider, MAX_STT_SECONDS } from "./features/lesson-record/stt-provider.js";
+import { assessSttQuality, detectSustainedLowVolume } from "./features/lesson-record/stt-quality.js";
 import {
   clearQueuedLessonRecordAudio, lessonRecordSessionKey, listPendingLessonRecords, listQueuedLessonRecords, loadPendingLessonRecord, pendingLessonRecordLabel,
   removePendingLessonRecord, removePendingLessonRecordsForMember, savePendingLessonRecord, wakeDormantLessonRecordRetries,
 } from "./features/lesson-record/draft-queue.js";
 import { evaluateLessonRecordLink, linkScheduleToMember, upsertLessonRecordNote } from "./features/lesson-record/link-context.js";
 import {
-  formatMemberLessonDate, selectLessonSheetBriefing, selectMemberDetailStatus, selectMemberLessonSessions, selectPendingLessonSessions,
+  formatMemberLessonDate, formatMemberLessonHeader, lessonSessionRepresentative, normalizedLessonType, pendingLessonState,
+  selectLessonSheetBriefing, selectMemberDetailStatus, selectMemberLessonCounts, selectMemberLessonSessions, selectPendingLessonSessions,
 } from "./features/lesson-record/member-detail-selectors.js";
 import { deactivateMemberRecord, deleteMemberData, visibleMembers } from "./features/members/member-lifecycle.js";
 import { trackLessonRecordUsage } from "./features/lesson-record/usage-telemetry.js";
@@ -2598,7 +2600,7 @@ function SchedItem({ s, members, del, setDel, setEditing, onStatus, onNoshowFee,
   );
 }
 
-function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset, quickAddRequest, onConsumeQuickAdd, onOpenMember }) {
+function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset, quickAddRequest, onConsumeQuickAdd, openLessonId, onConsumeOpenLesson, onOpenMember }) {
   const initialDisplay = useMemo(() => {
     try { return JSON.parse(localStorage.getItem(SCHEDULE_VIEW_KEY) || "null") || {}; }
     catch (e) { return {}; }
@@ -2640,6 +2642,12 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
     setEditing({ id: null, memberIds: [], date: todayISO(), start: "10:00", dur: DEFAULT_CLASS_DURATION, type: "개인레슨", instructor: db.settings.staff, room: "", memo: "" });
     onConsumeQuickAdd?.();
   }, [quickAddRequest]);
+  useEffect(() => {
+    if (!openLessonId) return;
+    const target = db.schedule.find((lesson) => String(lesson?.id || "") === String(openLessonId));
+    if (target) { setCursor(target.date || todayISO()); setEditing(target); }
+    onConsumeOpenLesson?.();
+  }, [openLessonId, db.schedule]);
   useEffect(() => {
     try { localStorage.setItem(SCHEDULE_VIEW_KEY, JSON.stringify({ foldEmpty, showSundaySetting })); } catch (e) {}
   }, [foldEmpty, showSundaySetting]);
@@ -2789,7 +2797,7 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
     const pendingDraft = item.pendingDraft || loadPendingLessonRecord(item.memberId, item.lessonId);
     return {
       ...item,
-      kind: item.reasons.includes("confirmation") ? "confirmation" : "note",
+      kind: item.reasons.includes("attendance") ? "attendance" : item.reasons.includes("record") ? "note" : "confirmation",
       s,
       a,
       m,
@@ -2868,11 +2876,11 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
       {editing && <ScheduleForm draft={liveEditing} members={db.members} schedule={db.schedule} briefingOf={briefingOf} scheduleColors={scheduleColors} returnFocusRef={scheduleTriggerRef} onClose={() => setEditing(null)}
         onSubmit={(v) => { onSave(v); setEditing(null); }} onDelete={(id) => { onDelete(id); setEditing(null); }}
         onStatus={onStatus} onStatusAll={onStatusAll} onNoshowFee={onNoshowFee} onGroupDone={onGroupDone}
-        onNoComment={onNoComment} onSaveNote={onSaveNote} onFocusMemberWeek={(memberId) => { setFocusedMemberId(memberId); setEditing(null); }} />}
+        onNoComment={onNoComment} onSaveNote={onSaveNote} onOpenMember={onOpenMember} onFocusMemberWeek={(memberId) => { setFocusedMemberId(memberId); setEditing(null); }} />}
       {queueOpen && (
         <ScheduleQueueSheet tasks={taskQueue} members={db.members} returnFocusRef={queueTriggerRef} onClose={() => setQueueOpen(false)}
           onNoComment={onNoComment} onSaveNote={onSaveNote}
-          onConfirmSession={confirmQueueSession} />
+          onConfirmSession={confirmQueueSession} onOpenLesson={(lesson) => { setQueueOpen(false); if (lesson) { setCursor(lesson.date || todayISO()); setEditing(lesson); } }} />
       )}
       {displaySettings && (
         <Sheet title="일정 표시 설정" onClose={() => setDisplaySettings(false)}>
@@ -3209,10 +3217,10 @@ const LESSON_RECORD_VIEW_FIELDS = [
   ["today", "오늘 수업"], ["change", "변화"], ["reaction", "회원 반응"], ["next", "다음 확인"],
 ];
 
-function LessonRecordFieldRows({ session, compact = false, fields = null, hideEmpty = false }) {
+function LessonRecordFieldRows({ session, compact = false, fields = null, hideEmpty = false, pastLesson = false }) {
   if (!session) return null;
   const rows = LESSON_RECORD_VIEW_FIELDS.filter(([key]) => (!fields || fields.includes(key)) && (!compact || key === "today" || key === "next") && (!hideEmpty || (session[key] && session[key] !== "기록 없음")));
-  return <div className="min-w-0 space-y-1.5" data-lesson-record-fields>{rows.map(([key, label]) => <div key={key} className="grid min-w-0 grid-cols-[72px_minmax(0,1fr)] gap-2"><span className="text-[10px] font-bold" style={{ color: SUB }}>{label}</span><span className="min-w-0 break-words text-xs leading-relaxed" style={{ color: INK2 }}>{session[key] || "기록 없음"}</span></div>)}</div>;
+  return <div className="min-w-0 space-y-1.5" data-lesson-record-fields>{rows.map(([key, label]) => <div key={key} className="grid min-w-0 grid-cols-[72px_minmax(0,1fr)] gap-2"><span className="text-[10px] font-bold" style={{ color: SUB }}>{pastLesson && key === "today" ? "수업 내용" : label}</span><span className="min-w-0 break-words text-xs leading-relaxed" style={{ color: INK2 }}>{session[key]}</span></div>)}</div>;
 }
 
 function confirmedLessonNoteArgs(note, reviewedDraft = null) {
@@ -3238,7 +3246,7 @@ function confirmedLessonNoteArgs(note, reviewedDraft = null) {
   };
 }
 
-function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, onClose, onSubmit, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onFocusMemberWeek, scheduleColors = null }) {
+function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, onClose, onSubmit, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onOpenMember, onFocusMemberWeek, scheduleColors = null }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const currentIds = draft.memberIds || attendeesOf(draft).map((a) => a.memberId).filter(Boolean);
   const initialKind = draft.personal
@@ -3431,12 +3439,13 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
                 const m = members.find((x) => x.id === a.memberId);
                 const active = a.memberId === activeMemberId;
                 return (
-                  <button key={a.memberId} onClick={() => { setActiveMemberId(a.memberId); setRecordMode(null); setRecordBody(""); }}
-                    className="min-w-0 rounded-xl p-3 text-left"
-                    style={{ backgroundColor: active ? TINT : CANVAS, border: `1px solid ${active ? "#D9D7EE" : LINE}` }}>
-                    <p className="truncate text-sm font-extrabold" style={{ color: active ? PRIMARY : INK }}>{m?.name || "삭제된 회원"}</p>
-                    <p className="mt-0.5 text-xs" style={{ color: SUB }}>잔여 {left(m)}회{m?.contractEnd ? ` · ${m.contractEnd.slice(5).replace("-", ".")}까지` : ""}</p>
-                  </button>
+                  <div key={a.memberId} className="min-w-0 rounded-xl p-3 text-left" style={{ backgroundColor: active ? TINT : CANVAS, border: `1px solid ${active ? "#D9D7EE" : LINE}` }}>
+                    <button type="button" onClick={() => { setActiveMemberId(a.memberId); setRecordMode(null); setRecordBody(""); }} className="w-full min-w-0 text-left">
+                      <span className="flex min-w-0 items-center gap-2"><span className="min-w-0 flex-1 truncate text-sm font-extrabold" style={{ color: active ? PRIMARY : INK }}>{m?.name || "삭제된 회원"}</span><span className="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-extrabold" style={{ backgroundColor: stOf(a.status).bg, color: stOf(a.status).color }}>{stOf(a.status).label}</span></span>
+                      <span className="mt-0.5 block text-xs" style={{ color: SUB }}>잔여 {left(m)}회{m?.contractEnd ? ` · ${m.contractEnd.slice(5).replace("-", ".")}까지` : ""}</span>
+                    </button>
+                    {m?.goal ? <p className="mt-1 line-clamp-2 text-xs" style={{ color: INK2 }}>목표 · {m.goal}</p> : <button type="button" onClick={() => onOpenMember?.(a.memberId)} className="mt-1 text-xs font-extrabold" style={{ color: BRAND_D }}>+ 목표 추가</button>}
+                  </div>
                 );
               })}
             </div>
@@ -3444,7 +3453,7 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
             {activeMember && lessonSheetBriefing && (
               <section className="min-w-0 rounded-xl p-3" aria-label="지난 수업과 다음 수업 준비" style={{ backgroundColor: LAVENDER_S, border: `1px solid ${RING}` }}>
                 <div className="mb-2 flex items-center gap-2"><Sparkles size={14} style={{ color: BRAND_D }} /><p className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: BRAND_D }}>{lessonSheetBriefing.source === "lesson_record" ? "지난 수업" : lessonSheetBriefing.source === "posture_fallback" ? "체형분석 참고" : "이전 기록 참고"}</p>{lessonSheetBriefing.date && <span className="shrink-0 text-[9px] tabular-nums" style={{ color: SUB }}>{formatMemberLessonDate(lessonSheetBriefing.date)}{previousLessonSession ? ` · ${previousLessonSession.type}` : ""}</span>}</div>
-                {previousLessonSession ? <LessonRecordFieldRows session={previousLessonSession} fields={["today", "reaction"]} hideEmpty /> : <p className="break-words text-xs leading-relaxed" style={{ color: INK2 }}>{lessonSheetBriefing.text || "이전 기록 없음"}</p>}
+                {previousLessonSession ? <LessonRecordFieldRows session={previousLessonSession} fields={["today", "reaction"]} hideEmpty pastLesson /> : <p className="break-words text-xs leading-relaxed" style={{ color: INK2 }}>{lessonSheetBriefing.text || "이전 기록 없음"}</p>}
                 <div className="mt-3 border-t pt-2" style={{ borderColor: LINE }}><p className="mb-1 text-[10px] font-bold" style={{ color: SUB }}>다음 수업 준비</p><p className="break-words text-xs font-bold leading-relaxed" style={{ color: BRAND_D }}>{previousLessonSession?.next || selectScheduleBriefing(activeBriefing)?.text || "다음 확인 없음"}</p></div>
               </section>
             )}
@@ -3458,18 +3467,11 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
 
             {activeMember && activeAttendee && (
               <>
-                <div className="rounded-xl p-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
-                  <div className="flex items-center gap-2">
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-extrabold" style={{ color: INK }}>{activeMember.name}</p>
-                      <p className="mt-0.5 text-xs" style={{ color: SUB }}>{activeMember.goal || "목표 미입력"}</p>
-                    </div>
-                    <span className="shrink-0 rounded-full px-2.5 py-1 text-xs font-extrabold" style={{ backgroundColor: stOf(activeAttendee.status).bg, color: stOf(activeAttendee.status).color }}>{stOf(activeAttendee.status).label}</span>
-                  </div>
+                {((activeMember.focus || []).length > 0 || currentLessonSession || (latestNote && !latestNote.lessonRecord)) && <div className="rounded-xl p-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
                   {(activeMember.focus || []).length > 0 && <p className="mt-2 text-xs leading-relaxed" style={{ color: WARN }}>주의 · {(activeMember.focus || []).join(" · ")}</p>}
                   {currentLessonSession && <div className="mt-3 border-t pt-2" style={{ borderColor: LINE }}><LessonRecordFieldRows session={currentLessonSession} hideEmpty /></div>}
                   {latestNote && !latestNote.lessonRecord && <p className="mt-2 line-clamp-2 text-xs leading-relaxed" style={{ color: INK2 }}>최근 기록 · {latestNote.body}</p>}
-                </div>
+                </div>}
 
                 <div>
                   <p className="mb-1.5 text-xs font-extrabold" style={{ color: INK }}>출석 · 차감</p>
@@ -3549,7 +3551,7 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
   );
 }
 
-function ScheduleQueueSheet({ tasks, members, returnFocusRef, onClose, onNoComment, onSaveNote, onConfirmSession }) {
+function ScheduleQueueSheet({ tasks, members, returnFocusRef, onClose, onNoComment, onSaveNote, onConfirmSession, onOpenLesson }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const task = tasks[0] || null;
   const [recordMode, setRecordMode] = useState(null);
@@ -3561,6 +3563,7 @@ function ScheduleQueueSheet({ tasks, members, returnFocusRef, onClose, onNoComme
     setConfirming(false);
   }, [task?.key]);
   const memberName = task?.m?.name || members.find((m) => String(m.id) === String(task?.memberId || task?.a?.memberId))?.name || "회원";
+  const taskState = pendingLessonState(task);
   return (
     <ScheduleBottomSheet title="확인할 수업" subtitle={`남은 ${tasks.length}건`} returnFocusRef={returnFocusRef} onClose={onClose}>
       {!task ? (
@@ -3574,8 +3577,11 @@ function ScheduleQueueSheet({ tasks, members, returnFocusRef, onClose, onNoComme
           <div className="rounded-xl px-3 py-3" style={{ backgroundColor: CANVAS, border: `1px solid ${LINE}` }}>
             <p className="text-xs font-bold tabular-nums" style={{ color: PRIMARY }}>{task.s ? `${dow(task.s.date)} ${task.s.date?.slice(5).replace("-", ".")} · ${task.s.start || "시간 없음"}` : "저장되지 않은 수업 초안"}</p>
             <p className="mt-1 truncate text-base font-extrabold" style={{ color: INK }}>{memberName}</p>
+            <p className="mt-1 text-xs font-extrabold" style={{ color: taskState.key === "confirmed" ? SUB : WARN }}>{taskState.label}</p>
             {task.kind === "note" && <p className="mt-1 text-xs font-bold" style={{ color: task.pendingDraft?.structuredDraft ? GOOD : task.pendingDraft?.rawTranscript ? WARN : SUB }}>{task.recordQueueLabel}</p>}
           </div>
+
+          {task.kind === "attendance" && <button type="button" onClick={() => onOpenLesson?.(task.s || task.lesson)} className="h-12 w-full rounded-lg text-sm font-extrabold text-white" style={{ backgroundColor: PRIMARY }}>출석 처리</button>}
 
           {task.kind === "confirmation" && (
             <div className="space-y-3">
@@ -4632,7 +4638,7 @@ function MemberRegisterSheet({ members, onOpenExisting, onClose, onCreate }) {
   );
 }
 
-function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSettlement = true, onBack, onPatch, onSaveNote, onSchedule, onAssess, onToast, onDelete, onDeactivate }) {
+function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSettlement = true, onBack, onPatch, onSaveNote, onSchedule, onOpenLesson, onAssess, onToast, onDelete, onDeactivate }) {
   const [sheet, setSheet] = useState(null);
   const [edit, setEdit] = useState({});
   const [memo, setMemo] = useState("");
@@ -4676,6 +4682,14 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
   const detailStatus = useMemo(() => selectMemberDetailStatus({ member, schedule }), [member, schedule]);
   const pendingLessonSummary = useMemo(() => selectPendingLessonSessions({ members: [member], schedule, pendingDrafts: listPendingLessonRecords().filter((draft) => String(draft?.memberId || "") === String(member.id)) }), [member, schedule, recordQueueRevision]);
   const pendingSessionCount = pendingLessonSummary.countForMember(member.id);
+  const pendingByLesson = useMemo(() => new Map(pendingLessonSummary.sessions.map((item) => [String(item.lessonId || item.session?.key || ""), item])), [pendingLessonSummary]);
+  const attendanceRows = useMemo(() => pendingLessonSummary.sessions.filter((item) => item.reasons.includes("attendance") && !item.session).map((item) => ({
+    key: String(item.lessonId), date: item.lesson?.date || "", startTime: item.lesson?.start || "", type: normalizedLessonType(item.lesson?.type),
+    today: "기록 없음", change: "", reaction: "", next: "", source: "manual", confirmationState: "pending", confirmedAt: "",
+    confirmedCount: 0, confirmableCount: 0, records: [], lesson: item.lesson, warning: "",
+  })), [pendingLessonSummary]);
+  const historySessions = useMemo(() => [...lessonSessions, ...attendanceRows].sort((a, b) => `${b.date}|${b.startTime}|${b.key}`.localeCompare(`${a.date}|${a.startTime}|${a.key}`)), [lessonSessions, attendanceRows]);
+  const lessonCounts = useMemo(() => selectMemberLessonCounts({ member, schedule }), [member, schedule]);
   const memoryBriefing = useMemo(() => createMemberBriefing({ member }), [member]);
   const memorySummary = useMemo(() => memberMemorySummary(memoryBriefing), [memoryBriefing]);
   const preparation = {
@@ -4684,6 +4698,7 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
     change: latestLessonSession?.change || memorySummary.recentChange || "기록 없음",
     reaction: latestLessonSession?.reaction || "기록 없음",
   };
+  const latestLessonRepresentative = lessonSessionRepresentative(latestLessonSession);
   const hasMemoryOverview = Boolean(latestLessonSession || memoryBriefing.lines?.length);
   useEffect(() => {
     trackMemberMemoryUsage("briefing_rendered", { count: 1 });
@@ -4789,20 +4804,22 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
       <main ref={scrollContainerRef} data-member-detail-scroll className="pt-scroll min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden" style={{ padding: "8px 12px calc(18px + max(env(safe-area-inset-bottom, 0px), 12px))" }}>
         <div data-member-detail-content className="min-w-0 max-w-full space-y-2">
           <section ref={firstSummaryRef} data-member-section="status" style={{ ...sectionStyle, backgroundColor: statusSurface, borderColor: statusInk }}>
-            <div className="flex min-w-0 items-center gap-3"><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-base font-extrabold text-white" style={{ background: GRAD }}>{(member.name || "?").slice(0, 1)}</span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-extrabold" style={{ color: INK }}>상태</span><span className="mt-1 block break-words text-xs tabular-nums" style={{ color: statusInk }}>잔여 {detailStatus.remaining}회 · 다음 예약 {detailStatus.nextLesson ? formatMemberLessonDate(detailStatus.nextLesson.date) : "없음"} · {detailStatus.expiry ? `${formatMemberLessonDate(detailStatus.expiry)} 만료` : "만료일 없음"}</span>{detailStatus.reasons.length > 0 && <span className="mt-1 block text-[10px] font-bold" style={{ color: statusInk }}>{detailStatus.reasons.join(" · ")}</span>}</span>{pendingSessionCount > 0 && <span className="shrink-0 rounded-full px-2 py-1 text-[10px] font-extrabold" style={{ backgroundColor: CARD, color: WARN }}>확인 {pendingSessionCount}</span>}</div>
+            <div className="flex min-w-0 items-center gap-3"><span className="min-w-0 flex-1 break-words text-xs font-extrabold tabular-nums" style={{ color: statusInk }}>잔여 {detailStatus.remaining}회 · 다음 예약 {detailStatus.nextLesson ? formatMemberLessonDate(detailStatus.nextLesson.date) : "없음"} · {detailStatus.expiry ? `${formatMemberLessonDate(detailStatus.expiry)} 만료` : "만료일 없음"}</span>{pendingSessionCount > 0 && <span className="shrink-0 rounded-full px-2 py-1 text-[10px] font-extrabold" style={{ backgroundColor: CARD, color: WARN }}>확인 {pendingSessionCount}</span>}</div>
           </section>
           <section ref={recentCardRef} data-member-section="next-preparation" aria-label="다음 수업 준비" style={sectionStyle}>
             <div className="mb-2 flex min-w-0 items-center gap-2"><Sparkles size={14} className="shrink-0" style={{ color: BRAND_D }} /><h2 className="min-w-0 flex-1 truncate text-sm font-extrabold" style={{ color: INK }}>다음 수업 준비</h2>{latestLessonSession?.source === "ai" && <span className="shrink-0 text-[9px] font-bold" style={{ color: BRAND_D }}>AI 요약 · {formatMemberLessonDate(latestLessonSession.date)}{latestLessonSession.confirmationState !== "confirmed" ? " · 확인 필요" : ""}</span>}</div>
-            <div className="grid min-w-0 grid-cols-[72px_minmax(0,1fr)] gap-x-2 gap-y-2"><span className="text-[10px] font-bold" style={{ color: SUB }}>지난 수업</span><span className="min-w-0 break-words text-xs font-bold" style={{ color: INK2 }}>{latestLessonSession ? `${formatMemberLessonDate(latestLessonSession.date)} · ${latestLessonSession.type}` : "기록 없음"}</span><span className="text-[10px] font-bold" style={{ color: SUB }}>다음 확인</span><span className="min-w-0 break-words text-xs font-bold" style={{ color: BRAND_D }}>{preparation.next}</span></div>
+            <div className="grid min-w-0 grid-cols-[72px_minmax(0,1fr)] gap-x-2 gap-y-2"><span className="text-[10px] font-bold" style={{ color: SUB }}>지난 수업</span><span className="min-w-0 break-words text-xs font-bold" style={{ color: INK2 }}>{latestLessonSession ? `${formatMemberLessonDate(latestLessonSession.date)} · ${latestLessonRepresentative.display}` : "기록 없음"}</span><span className="text-[10px] font-bold" style={{ color: SUB }}>다음 확인</span><span className="min-w-0 break-words text-xs font-bold" style={{ color: BRAND_D }}>{preparation.next}</span></div>
             {hasMemoryOverview && <details className="mt-2 min-w-0 border-t pt-2" style={{ borderColor: LINE }}><summary className="cursor-pointer list-none text-[10px] font-bold" style={{ color: SUB }}>변화·회원 반응 자세히 보기</summary><div className="mt-2 grid min-w-0 grid-cols-[72px_minmax(0,1fr)] gap-2"><span className="text-[10px] font-bold" style={{ color: SUB }}>변화</span><span className="break-words text-xs" style={{ color: INK2 }}>{preparation.change}</span><span className="text-[10px] font-bold" style={{ color: SUB }}>회원 반응</span><span className="break-words text-xs" style={{ color: INK2 }}>{preparation.reaction}</span></div></details>}
           </section>
           <section data-member-section="lesson-history" style={sectionStyle}>
-            <div className="mb-2 flex min-w-0 items-center gap-2"><h2 className="min-w-0 flex-1 text-sm font-extrabold" style={{ color: INK }}>수업 기록</h2><span className="shrink-0 text-[10px] tabular-nums" style={{ color: SUB }}>{lessonSessions.length}개 수업</span>{pendingSessionCount > 0 && <button type="button" disabled={Boolean(saving)} onClick={async () => { for (const session of lessonSessions.filter((item) => item.confirmationState !== "confirmed")) await confirmSessionRecords(session); }} className="shrink-0 text-[10px] font-extrabold" style={{ color: BRAND_D }}>모두 확인</button>}</div>
-            {lessonSessions.length === 0 ? <p className="py-3 text-xs" style={{ color: SUB }}>아직 작성된 수업 기록이 없습니다</p> : <div className="min-w-0 space-y-2">{lessonSessions.map((session) => {
-              const stateLabel = session.confirmationState === "partial" ? `일부 확인 (${session.confirmedCount}/${session.confirmableCount})` : session.confirmationState === "pending" ? "확인 필요" : "확인 완료";
+            <div className="mb-2 flex min-w-0 items-center gap-2"><h2 className="min-w-0 flex-1 text-sm font-extrabold" style={{ color: INK }}>수업 기록</h2><span className="shrink-0 text-[10px] tabular-nums" style={{ color: SUB }}>{[`수업 ${lessonCounts.completed}건`, lessonCounts.reserved ? `예약 ${lessonCounts.reserved}건` : "", lessonCounts.unresolved ? `미처리 ${lessonCounts.unresolved}건` : ""].filter(Boolean).join(" · ")}</span>{pendingSessionCount > 0 && <button type="button" disabled={Boolean(saving)} onClick={async () => { for (const session of lessonSessions.filter((item) => item.confirmationState !== "confirmed")) await confirmSessionRecords(session); }} className="shrink-0 text-[10px] font-extrabold" style={{ color: BRAND_D }}>모두 확인</button>}</div>
+            {historySessions.length === 0 ? <p className="py-3 text-xs" style={{ color: SUB }}>아직 작성된 수업 기록이 없습니다</p> : <div className="min-w-0 space-y-2">{historySessions.map((session) => {
+              const pendingItem = pendingByLesson.get(String(session.lesson?.id || session.key));
+              const state = pendingItem ? pendingLessonState(pendingItem) : { key: "confirmed", label: "확인 완료", action: "" };
+              const representative = lessonSessionRepresentative(session);
               const pendingRecords = session.records.filter((note) => note?.lessonRecord && note.lessonRecord.stage !== "confirmed_record");
               const reviewable = pendingRecords.length === 1 && pendingRecords[0]?.lessonRecord?.structuredDraft;
-              return <div key={session.key} className="flex min-w-0 items-start gap-2 rounded-lg p-2.5" style={{ backgroundColor: CANVAS }}><details className="min-w-0 flex-1"><summary className="min-w-0 cursor-pointer list-none"><span className="flex min-w-0 items-center gap-2"><span className="min-w-0 flex-1 truncate text-xs font-extrabold" style={{ color: INK }}>{formatMemberLessonDate(session.date, { weekday: true })} · {session.type}</span><span className="shrink-0 text-[9px] font-bold" style={{ color: session.confirmationState === "confirmed" ? SUB : WARN }}>{stateLabel}</span></span><span className="mt-1 block truncate text-xs" style={{ color: INK2 }}>{session.today}</span><span className="mt-1 block truncate text-[10px]" style={{ color: SUB }}>다음 · {session.next || "기록 없음"}</span>{session.confirmationState === "partial" && <span className="mt-1 block text-[9px] font-bold" style={{ color: WARN }}>확인할 기록 {pendingRecords.length}건</span>}{session.warning && <span className="mt-1 block text-[9px]" style={{ color: SUB }}>{session.warning}</span>}</summary><div className="mt-3 border-t pt-2" style={{ borderColor: LINE }}><LessonRecordFieldRows session={session} />{session.sourceDateHint && <p className="mt-2 text-[9px] tabular-nums" style={{ color: SUB }}>원문 날짜 {session.sourceDateHint}</p>}</div></details>{session.confirmationState !== "confirmed" && <button type="button" disabled={Boolean(saving)} onClick={() => reviewable ? openRecordReview(pendingRecords[0]) : confirmSessionRecords(session)} className="h-8 shrink-0 rounded-lg px-2 text-[10px] font-extrabold" style={{ backgroundColor: TINT, color: BRAND_D }}>확인</button>}</div>;
+              return <div key={session.key} className="flex min-w-0 items-start gap-2 rounded-lg p-2.5" style={{ backgroundColor: CANVAS }}><details className="min-w-0 flex-1"><summary className="min-w-0 cursor-pointer list-none"><span className="flex min-w-0 items-center gap-2"><span className="min-w-0 flex-1 truncate text-xs font-extrabold" style={{ color: INK }}>{formatMemberLessonHeader(session, historySessions)}</span><span className="shrink-0 text-[9px] font-bold" style={{ color: state.key === "confirmed" ? SUB : WARN }}>{state.label}</span></span><span className="mt-1 block truncate text-xs" style={{ color: INK2 }}>{representative.display}</span>{session.next && representative.field !== "next" && <span className="mt-1 block truncate text-[10px]" style={{ color: SUB }}>다음 · {session.next}</span>}{session.warning && <span className="mt-1 block text-[9px]" style={{ color: SUB }}>{session.warning}</span>}</summary>{representative.field !== "empty" && <div className="mt-3 border-t pt-2" style={{ borderColor: LINE }}><LessonRecordFieldRows session={session} hideEmpty pastLesson />{session.sourceDateHint && <p className="mt-2 text-[9px] tabular-nums" style={{ color: SUB }}>원문 날짜 {session.sourceDateHint}</p>}</div>}</details>{state.key === "attendance" ? <button type="button" onClick={() => onOpenLesson?.(session.lesson?.id || session.key)} className="h-8 shrink-0 rounded-lg px-2 text-[10px] font-extrabold" style={{ backgroundColor: TINT, color: BRAND_D }}>출석 처리</button> : session.confirmationState !== "confirmed" && session.records.length > 0 ? <button type="button" disabled={Boolean(saving)} onClick={() => reviewable ? openRecordReview(pendingRecords[0]) : confirmSessionRecords(session)} className="h-8 shrink-0 rounded-lg px-2 text-[10px] font-extrabold" style={{ backgroundColor: TINT, color: BRAND_D }}>확인</button> : null}</div>;
             })}</div>}
           </section>
           <details data-member-management-card="posture" style={{ ...sectionStyle, padding: 0, overflow: "hidden", backgroundColor: afterReminder.show ? WARN_S : CARD }}>
@@ -10297,6 +10314,8 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
   const [consentGate, setConsentGate] = useState(null);
   const [organizationTimedOut, setOrganizationTimedOut] = useState(false);
   const [summaryEditing, setSummaryEditing] = useState(false);
+  const [qualityRejection, setQualityRejection] = useState(null);
+  const [lowVolumeNotice, setLowVolumeNotice] = useState("");
   const [showValueGuide, setShowValueGuide] = useState(() => shouldShowLessonRecordGuide(globalThis.localStorage));
   useEffect(() => { setSummaryFailure(null); setOrganizationTimedOut(false); }, [text]);
   const boxRef = useRef(null);
@@ -10334,6 +10353,8 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
   const amplitudeTimerRef = useRef(null);
   const amplitudeSamplesRef = useRef([]);
   const amplitudeMeterErrorLoggedRef = useRef(false);
+  const webConfidenceRef = useRef([]);
+  const lowVolumeRef = useRef(false);
   const recorderPrewarmedRef = useRef(false);
   const serverStartFailuresRef = useRef(0);
   const captureRequestedAtRef = useRef(0);
@@ -10351,6 +10372,40 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     source: details.source || sourceRef.current || "unknown",
     ...details,
   });
+  const rejectSttQuality = (assessment, retainedDraft = null) => {
+    const reason = assessment?.reasons?.[0] || "no_substantive_content";
+    if (retainedDraft?.rawTranscript || retainedDraft?.structuredDraft || (retainedDraft?.audioClips || []).length) {
+      savePendingLessonRecord(memberId, lessonId, retainedDraft);
+    } else {
+      removePendingLessonRecord(memberId, lessonId);
+    }
+    textRef.current = String(retainedDraft?.rawTranscript || "");
+    setText(textRef.current);
+    setSummaryOriginal(retainedDraft?.structuredDraft || null);
+    setSummaryDraft(retainedDraft?.structuredDraft || null);
+    setSummaryMeta(retainedDraft?.aiMeta || null);
+    setSummaryBusy(false);
+    setFinishing(false);
+    setQualityRejection({ reason });
+    setSummaryFailure({ title: "잘 들리지 않아 기록하지 않았습니다.", category: "INPUT", internalCode: "stt_quality_rejected" });
+    setSummaryFailureClass("INPUT");
+    setSummaryError("잘 들리지 않아 기록하지 않았습니다.");
+    setErr("");
+    appendLessonRecordDiagnostic({ code: "stt_quality_rejected", stage: "stt_quality_gate", category: "INPUT", reason });
+    deviceLog("stt_quality_rejected", { memberId, lessonId, reason, source: sourceRef.current || "unknown" });
+    return null;
+  };
+  const gateTranscript = (transcript, options = {}) => {
+    const assessment = assessSttQuality({
+      transcript,
+      confidence: options.confidence,
+      lowVolume: options.lowVolume === true,
+    });
+    if (!assessment.accepted) return rejectSttQuality(assessment, options.retainedDraft || null);
+    setQualityRejection(null);
+    if (assessment.lowConfidence) setAudioReviewFlags((flags) => [...new Set([...flags, "low_confidence"])]);
+    return assessment;
+  };
   const canRestartRecognizer = () => shouldRestartRecognizer({
     stopping: stoppingRef.current,
     sessionStartedAt: recordingStartedAtRef.current,
@@ -10550,7 +10605,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       setAudioReviewFlags([]); setAudioReviewEdited(false); setSource(null); sourceRef.current = null;
       setSummaryOriginal(null); setSummaryDraft(null); setSummaryMeta(null); setSummaryStatus(AI_STATUSES.NOT_CONNECTED);
       setSummaryBusy(false); setSummaryError(""); setSummaryFailureClass(""); setSummaryFailure(null); setLinkReview(null);
-      setConsentGate(null); setOrganizationTimedOut(false); setSummaryEditing(false); setErr("");
+      setConsentGate(null); setOrganizationTimedOut(false); setSummaryEditing(false); setQualityRejection(null); setLowVolumeNotice(""); setErr("");
       publishedDraftSignatureRef.current = "";
       const pending = loadPendingLessonRecord(memberId, lessonId);
       if (!pending?.rawTranscript && !(pending?.audioClips || []).some((clip) => clip?.blobId)) return;
@@ -10695,10 +10750,18 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     setOn(false);
     setStarting(false);
     setFinishing(false);
-    const finalized = textRef.current.replace(/\s*⟨([^⟩]*)⟩\s*$/, (_, live) => ` ${live}`).trim();
-    textRef.current = finalized;
-    setText(finalized);
-    if (finalized) persistRawDraft(finalized);
+    const captured = textRef.current.replace(/\s*⟨([^⟩]*)⟩\s*$/, (_, live) => ` ${live}`).trim();
+    const confidenceValues = webConfidenceRef.current.filter(Number.isFinite);
+    const confidence = sourceRef.current === "web_speech" && confidenceValues.length
+      ? confidenceValues.reduce((sum, value) => sum + value, 0) / confidenceValues.length
+      : null;
+    const quality = captured ? gateTranscript(captured, { confidence, lowVolume: false }) : null;
+    const finalized = quality?.transcript || "";
+    if (quality) {
+      textRef.current = finalized;
+      setText(finalized);
+      persistRawDraft(finalized, { confidence: quality.confidence, qualityFlags: quality.lowConfidence ? ["low_confidence"] : [] });
+    }
     clearNativeListeners();
     if (showEmpty && !heardRef.current && !textRef.current.trim()) {
       setErr(emptyMessage);
@@ -10710,7 +10773,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     setTimeout(() => {
       if (!autoStructureRef.current && finalized) {
         autoStructureRef.current = true;
-        requestSummary(finalized);
+        requestSummary(finalized, { qualityChecked: true });
       }
     }, 180);
     /* Late native callbacks from the completed/timed-out recognizer are stale. */
@@ -11051,7 +11114,6 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       captureLatencyMs: clip?.audioMetrics?.captureLatencyMs,
       flags: resultFlags,
     });
-    const combinedTranscript = stitchSpeechTranscript(previousDraft?.rawTranscript || textRef.current, incomingTranscript);
     const completionToResultLatencyMs = Math.max(0, Date.now() - (Date.parse(clip?.createdAt || "") || Date.now()));
     const aiMeta = { ...aiMetaFrom(result), result: resultKind, flags: resultFlags, latencyMs: completionToResultLatencyMs };
     const audioClips = (previousDraft?.audioClips || [clip]).map((item) => item.requestId === clip.requestId
@@ -11075,14 +11137,33 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       voiceDiagnostic("failed", { source: "server_audio", code: "no_speech", requestId: clip.requestId });
       return null;
     }
+    const serverLowVolume = detectSustainedLowVolume(clip?.audioMetrics?.amplitudes, clip?.audioMetrics?.intervalMs || SERVER_AUDIO_ENERGY_INTERVAL_MS);
+    const quality = resultFlags.includes("hallucination_phrase") && !incomingTranscript
+      ? { accepted: false, transcript: "", reasons: ["hallucination_phrase"] }
+      : assessSttQuality({ transcript: incomingTranscript, confidence: result?.output?.confidence, lowVolume: serverLowVolume });
+    if (!quality.accepted) {
+      const retainedDraft = {
+        ...previousDraft,
+        status: previousDraft?.structuredDraft ? "structured" : "raw",
+        audioBlobId: null,
+        audioClips: audioClips.filter((item) => item?.requestId !== clip.requestId),
+        retry: null,
+        failure: null,
+      };
+      setAudioBlobId(null);
+      setAudioState("uploaded");
+      return rejectSttQuality(quality, retainedDraft);
+    }
+    const acceptedTranscript = quality.transcript;
+    const combinedTranscript = stitchSpeechTranscript(previousDraft?.rawTranscript || textRef.current, acceptedTranscript);
     if (resultKind === "low_confidence") {
       Promise.resolve(fbWritePilotMetricAttempt({ requestId: clip.requestId, result: resultKind, flags: resultFlags, latencyMs: completionToResultLatencyMs, source: "server_audio" })).catch(() => {});
       savePendingLessonRecord(memberId, lessonId, {
         ...previousDraft,
         schemaVersion: 2,
         status: "review_required",
-        rawTranscript: combinedTranscript,
-        termMap: mapPilatesTerms(combinedTranscript),
+        rawTranscript: stitchSpeechTranscript(previousDraft?.rawTranscript || textRef.current, acceptedTranscript),
+        termMap: mapPilatesTerms(stitchSpeechTranscript(previousDraft?.rawTranscript || textRef.current, acceptedTranscript)),
         structuredDraft: null,
         aiMeta,
         audioBlobId: null,
@@ -11093,8 +11174,9 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
         retry: null,
         failure: null,
       });
-      textRef.current = combinedTranscript;
-      setText(combinedTranscript);
+      const reviewTranscript = stitchSpeechTranscript(previousDraft?.rawTranscript || textRef.current, acceptedTranscript);
+      textRef.current = reviewTranscript;
+      setText(reviewTranscript);
       setSummaryOriginal(null);
       setSummaryDraft(null);
       setSummaryMeta(aiMeta);
@@ -11269,7 +11351,8 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     setSummaryFailure(null);
     setSummaryError("");
     setSilenceNotice("음성 정리 대기");
-    const amplitudeSamples = [...amplitudeSamplesRef.current];
+      const amplitudeSamples = [...amplitudeSamplesRef.current];
+      lowVolumeRef.current = detectSustainedLowVolume(amplitudeSamples, SERVER_AUDIO_ENERGY_INTERVAL_MS);
     if (amplitudeTimerRef.current) clearInterval(amplitudeTimerRef.current);
     amplitudeTimerRef.current = null;
     setAmplitude(0);
@@ -11433,6 +11516,8 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       setSource("server_audio");
       recordingStartedAtRef.current = Date.now();
       amplitudeSamplesRef.current = [];
+      lowVolumeRef.current = false;
+      setLowVolumeNotice("");
       amplitudeMeterErrorLoggedRef.current = false;
       startRequestRef.current = false;
       setStarting(false);
@@ -11456,6 +11541,9 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
         const value = Math.max(0, Math.min(1, Number(level.value)));
         amplitudeSamplesRef.current.push(value);
         setAmplitude(value);
+        const low = detectSustainedLowVolume(amplitudeSamplesRef.current, SERVER_AUDIO_ENERGY_INTERVAL_MS);
+        lowVolumeRef.current = low;
+        setLowVolumeNotice(low ? "소리가 작습니다 · 조금 더 크게 말해 주세요" : "");
       }, 100);
     } catch (error) {
       const failedAttempts = serverStartFailuresRef.current + 1;
@@ -11543,6 +11631,10 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     textAtStartRef.current = textRef.current;
     sttTrackedRef.current = false;
     autoStructureRef.current = false;
+    webConfidenceRef.current = [];
+    lowVolumeRef.current = false;
+    setLowVolumeNotice("");
+    setQualityRejection(null);
     recordingStartedAtRef.current = Date.now();
     lastSpeechAtRef.current = recordingStartedAtRef.current;
     trackLessonRecordUsage("record_started");
@@ -11674,7 +11766,6 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
               const nextText = stitchSpeechTranscript(textRef.current, got);
               textRef.current = nextText;
               setText(nextText);
-              persistRawDraft(nextText);
               silenceGuardRef.current?.heard();
               voiceDiagnostic("final", { source: "native", charCount: got.length });
             }
@@ -11747,13 +11838,15 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
         if (sessionId !== speechSessionRef.current) return;
         let live = "";
         for (let i = e.resultIndex; i < e.results.length; i++) {
-          const t = e.results[i][0].transcript;
+          const alternative = e.results[i][0];
+          const t = alternative.transcript;
           if (t) {
             heardRef.current = true;
             lastSpeechAtRef.current = Date.now();
           }
           if (e.results[i].isFinal) {
             fixed = stitchSpeechTranscript(fixed, t);
+            if (Number.isFinite(Number(alternative.confidence)) && Number(alternative.confidence) >= 0) webConfidenceRef.current.push(Number(alternative.confidence));
             if (t) voiceDiagnostic("final", { source: "web_speech", charCount: t.trim().length });
           } else {
             live += t;
@@ -11763,7 +11856,6 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
         const nextText = live ? `${fixed}${fixed ? " " : ""}⟨${live.trim()}⟩` : fixed;
         textRef.current = nextText;
         setText(nextText);
-        if (nextText) persistRawDraft(nextText);
         if (live || fixed) {
           silenceGuardRef.current?.heard();
         }
@@ -11796,7 +11888,6 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
         fixed = textRef.current.replace(/\s*⟨([^⟩]*)⟩\s*$/, (_, live) => ` ${live}`).trim();
         textRef.current = fixed;
         setText(fixed);
-        if (fixed) persistRawDraft(fixed);
         if (stoppingRef.current) {
           setOn(false); stopMedia();
           scheduleFinish(250, true, sessionId);
@@ -11919,7 +12010,9 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     clearNativeListeners();
     stopMedia();
     const capturedText = textRef.current.replace(/\s*⟨([^⟩]*)⟩\s*$/, (_, live) => ` ${live}`).trim();
-    const preservedText = capturedText || textAtStartRef.current || "";
+    const candidateText = capturedText || textAtStartRef.current || "";
+    const quality = candidateText ? gateTranscript(candidateText) : null;
+    const preservedText = quality?.transcript || "";
     textRef.current = preservedText;
     setText(preservedText);
     if (preservedText) persistRawDraft(preservedText);
@@ -12002,9 +12095,17 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     audioBlobRef.current = null;
     setText(""); setSummaryOriginal(null); setSummaryDraft(null); setSummaryMeta(null); setSummaryStatus(AI_STATUSES.NOT_CONNECTED); setAudioBlobId(null); setAudioState("idle"); setAudioReviewFlags([]); setAudioReviewEdited(false);
   };
-  const requestSummary = async (transcriptOverride = "") => {
-    const transcript = String(transcriptOverride || textRef.current || text).trim();
-    if (!transcript) return;
+  const requestSummary = async (transcriptOverride = "", options = {}) => {
+    const candidateTranscript = String(transcriptOverride || textRef.current || text).trim();
+    if (!candidateTranscript) return;
+    const quality = options.qualityChecked ? { accepted: true, transcript: candidateTranscript } : gateTranscript(candidateTranscript, {
+      confidence: options.confidence,
+      lowVolume: options.lowVolume,
+    });
+    if (!quality) return;
+    const transcript = quality.transcript;
+    textRef.current = transcript;
+    setText(transcript);
     const termMap = mapPilatesTerms(transcript);
     const existingDraft = loadPendingLessonRecord(memberId, lessonId) || {};
     const requestId = existingDraft.requestId || createStableAudioRequestId(memberId, lessonId, "text");
@@ -12154,6 +12255,8 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       {voiceAvailability === "unsupported" && <Sub className="mt-1.5 block leading-relaxed">이 기기에서는 말하기를 지원하지 않아 직접 입력으로 기록할 수 있어요.</Sub>}
       {voicePhase === "listening" && <Sub className="mt-1.5 block font-bold leading-relaxed" style={{ color: BRAND_D }}>듣고 있어요 · 잠시 생각하며 멈춰도 괜찮아요.</Sub>}
       {voicePhase === "listening" && VOICE_ENGINE_MODE === "server" && <div aria-label="마이크 음량" className="mt-2 flex h-8 items-center justify-center gap-1 overflow-hidden rounded-lg px-2" style={{ backgroundColor: CARD }}>{Array.from({ length: 18 }, (_, index) => { const wave = Math.max(0.12, amplitude * (0.45 + ((index * 7) % 10) / 10)); return <span key={index} className="w-1 rounded-full" style={{ height: `${Math.round(6 + wave * 20)}px`, backgroundColor: index % 3 === 0 ? BRAND : LAVENDER, transition: "height 100ms linear" }} />; })}</div>}
+      {voicePhase === "listening" && lowVolumeNotice && <p role="status" className="mt-1.5 text-[11px] font-bold" style={{ color: WARN }}>{lowVolumeNotice}</p>}
+      {qualityRejection && <div role="alert" aria-label="음성 품질 확인 실패" className="mt-3 rounded-xl p-3" style={{ backgroundColor: WARN_S, border: `1px solid ${WARN}` }}><p className="text-xs font-extrabold" style={{ color: INK }}>잘 들리지 않아 기록하지 않았습니다.</p><p className="mt-1 text-[11px] leading-relaxed" style={{ color: INK2 }}>조금 더 크게 천천히 말씀해 주세요.</p><div className="mt-2 grid grid-cols-2 gap-1.5"><button type="button" onClick={() => { setQualityRejection(null); setSummaryFailure(null); setSummaryError(""); if (VOICE_ENGINE_MODE === "server") startServerRecording("append"); else start(); }} className="h-11 rounded-lg text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>다시 말하기</button><button type="button" onClick={() => { setQualityRejection(null); setSummaryFailure(null); setSummaryError(""); fallbackToDirectEntry("음성 품질을 확인하지 못해 직접 입력으로 전환했습니다."); }} className="h-11 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: BRAND_D }}>직접 입력</button></div></div>}
       {voicePhase === "organizing" && <Sub className="mt-1.5 block leading-relaxed">{silenceNotice || "마지막 음성을 정리하고 있습니다. 잠시만 기다려 주세요."}</Sub>}
       {consentGate && <div role="dialog" aria-label="AI 음성기록 이용 동의" className="mt-3 rounded-xl p-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
         <p className="text-xs font-extrabold" style={{ color: INK }}>AI 음성기록 이용 동의</p>
@@ -13704,6 +13807,7 @@ export default function App() {
   const [analysisEntryMode, setAnalysisEntryMode] = useState("home");
   const [scheduleMemberId, setScheduleMemberId] = useState(null);
   const [scheduleQuickAddRequest, setScheduleQuickAddRequest] = useState(0);
+  const [scheduleOpenLessonId, setScheduleOpenLessonId] = useState(null);
   const [demoMode, setDemoMode] = useState(false);
   const [mobileView, setMobileView] = useState("list");
   const briefing = false;
@@ -15439,14 +15543,14 @@ export default function App() {
       <div className="pt-app-shell safe-t flex h-full min-h-0 w-full flex-col" style={{ backgroundColor: PAGE, boxShadow: "0 0 0 1px rgba(28,36,51,.04)" }}>
         <div className="relative min-h-0 flex-1 overflow-hidden">
           <Guard key={tab}>
-            {tab === "schedule" && <ScheduleManager db={db} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
+            {tab === "schedule" && <ScheduleManager db={db} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
             {tab === "members" && <div className={`h-full min-h-0 ${mobileView === "detail" && member ? "pt-member-detail-active" : ""}`}>
               <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList members={db.members} schedule={db.schedule} settings={db.settings} onAdd={addMember} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
               {mobileView === "detail" && member && <div className="pt-member-detail-pane h-full min-h-0">
                 <ReferenceMemberDetail key={member.id} member={member} schedule={db.schedule} photos={photos[member.id]} settings={db.settings}
                   canViewSettlement={!account?.role || ["owner", "manager", "admin", "director"].includes(String(account.role).toLowerCase())} onBack={() => setMobileView("list")}
                   onPatch={(change) => patch(member.id, change)} onSaveNote={(type, body, voiceMeta, noteOptions) => saveScheduleComment(member.id, type, null, body, voiceMeta, noteOptions)}
-                  onSchedule={() => { setScheduleMemberId(member.id); setTab("schedule"); }} onAssess={(entry = {}) => { setAnalysisRecordId(entry.poseId || null); setAnalysisAssessmentId(entry.assessmentId || null); setAnalysisEntryMode(entry.mode || "home"); setAnalysisMemberId(member.id); setTab("analysis"); }} onToast={setToast} onDelete={removeMember} onDeactivate={deactivateMember} />
+                  onSchedule={() => { setScheduleMemberId(member.id); setTab("schedule"); }} onOpenLesson={(lessonId) => { setScheduleOpenLessonId(lessonId); setTab("schedule"); }} onAssess={(entry = {}) => { setAnalysisRecordId(entry.poseId || null); setAnalysisAssessmentId(entry.assessmentId || null); setAnalysisEntryMode(entry.mode || "home"); setAnalysisMemberId(member.id); setTab("analysis"); }} onToast={setToast} onDelete={removeMember} onDeactivate={deactivateMember} />
               </div>}
             </div>}
             {tab === "analysis" && <ReferenceAnalysisTab members={db.members} photos={photos} selectedId={analysisMemberId} selectedPoseId={analysisRecordId}

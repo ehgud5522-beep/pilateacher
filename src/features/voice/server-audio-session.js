@@ -143,7 +143,8 @@ export function audioGatewayInput({ audio, memberId, lessonId, memberName, clipI
 }
 
 export function structuredDraftFromAudioOutput(output) {
-  const blockingFlags = (output?.flags || []).filter((flag) => flag !== "tail_dropped");
+  const informationalFlags = new Set(["tail_dropped", "hallucination_phrase_removed"]);
+  const blockingFlags = (output?.flags || []).filter((flag) => !informationalFlags.has(flag));
   if (!output?.fields || output?.result !== "ok" || blockingFlags.length) return null;
   const fields = output?.fields || {};
   return {

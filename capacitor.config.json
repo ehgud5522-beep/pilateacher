@@ -9,6 +9,10 @@
     },
     "LocalNotifications": {
       "presentationOptions": ["badge", "sound", "banner", "list"]
+    },
+    "Keyboard": {
+      "resize": "native",
+      "resizeOnFullScreen": true
     }
   }
 }

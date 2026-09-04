@@ -56,6 +56,7 @@ import { maskedBirth, maskedPhone, membershipDisplay } from "./features/members/
 import {
   sheetDragOffset, shouldDismissSheet, shouldStartContentDismiss,
 } from "./features/ui/bottom-sheet-gesture.js";
+import { installFocusVisibilityGuard } from "./features/ui/focus-visibility.js";
 import {
   POSTURE_RETAKE_DAYS, POSTURE_STORAGE_KEYS, POSTURE_VIEW_DEFS, POSTURE_VIEW_KEYS,
   compareAssessmentMetrics, completeAssessmentRecords, correctedPoseSource, normalizeAssessmentSets, normalizePostureView, postureAnalysisPlane,
@@ -1351,7 +1352,7 @@ function useScrollLock() {
   }, []);
 }
 
-function Sheet({ title, sub, subtitle, onClose, children, wide = false }) {
+function Sheet({ title, sub, subtitle, onClose, children, wide = false, safeTop = false, footer = null }) {
   const panelRef = useRef(null);
   const lastFocus = useRef(null);
   useBackClose(true, onClose);
@@ -1381,8 +1382,8 @@ function Sheet({ title, sub, subtitle, onClose, children, wide = false }) {
         className="pt-generic-sheet sheet-in absolute bottom-0 left-1/2 flex w-full flex-col bg-white"
         style={{ transform: "translateX(-50%)", maxHeight: wide ? "92dvh" : "86dvh",
           borderRadius: "16px 16px 0 0", boxShadow: "0 -8px 24px rgba(28,36,51,0.12)",
-          paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
-        <div className="flex items-start justify-between" style={{ padding: "16px 16px 6px" }}>
+          paddingBottom: footer ? 0 : "env(safe-area-inset-bottom, 0px)" }}>
+        <div className="flex shrink-0 items-start justify-between" style={{ padding: safeTop ? "calc(env(safe-area-inset-top, 0px) + 12px) 16px 6px" : "16px 16px 6px" }}>
           <div className="min-w-0">
             <h3 style={{ fontSize: 17, lineHeight: 1.35, fontWeight: 600, color: INK }}>{title}</h3>
             {secondary ? <p className="tabular-nums" style={{ fontSize: 12, color: INK2, marginTop: 2 }}>{secondary}</p> : null}
@@ -1392,7 +1393,8 @@ function Sheet({ title, sub, subtitle, onClose, children, wide = false }) {
             <X size={18} />
           </button>
         </div>
-        <div className="pt-scroll" style={{ overflowY: "auto", padding: "4px 16px 20px" }}>{children}</div>
+        <div className="pt-scroll min-h-0 flex-1" style={{ overflowY: "auto", padding: "4px 16px calc(20px + var(--pt-keyboard-inset, 0px))" }}>{children}</div>
+        {footer && <div className="shrink-0 px-4 pt-3" style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 12px)" }}>{footer}</div>}
       </section>
     </div>
   );
@@ -4593,12 +4595,13 @@ function MemberRegisterSheet({ members, onOpenExisting, onClose, onCreate }) {
       notes: f.memo.trim() ? [{ id: uid(), date: todayISO(), type: "상담", body: f.memo.trim(), tags: [] }] : [] });
   };
   return (
-    <Sheet title="회원 등록" sub="필수 정보를 입력하면 실제 회원 데이터로 저장됩니다" onClose={onClose} wide>
+    <Sheet title="회원 등록" sub="필수 정보를 입력하면 실제 회원 데이터로 저장됩니다" onClose={onClose} wide safeTop
+      footer={<button type="button" disabled={!f.name.trim() || !num(f.regular)} onClick={submit} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>회원 등록</button>}>
       <div className="space-y-3">
         <Field label="회원 이름"><input autoFocus value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} className={inputCls} /></Field>
         <Field label="연락처"><input value={f.phone} onChange={(e) => setF({ ...f, phone: e.target.value })} className={inputCls} /></Field>
         <Field label="생년월일" hint={f.birth ? `${ageFromBirth(f.birth)}세 · 오늘 기준 자동 계산` : "나이는 자동 계산됩니다"}><input type="date" value={f.birth} max={todayISO()} onChange={(e) => setF({ ...f, birth: e.target.value })} className={inputCls} /></Field>
-        <Field label="수업 유형"><div className="grid grid-cols-3 gap-1">{[{k:"private",l:"개인"},{k:"duet",l:"듀엣"},{k:"group",l:"그룹"}].map((o) => <button type="button" key={o.k} onClick={() => setF({ ...f, lessonType: o.k, passName: `${o.l} ${f.regular || 0}회` })} style={{ height: 38, borderRadius: 8, border: `1px solid ${f.lessonType === o.k ? BRAND : LINE}`, backgroundColor: f.lessonType === o.k ? TINT : CARD, color: f.lessonType === o.k ? BRAND_D : SUB, fontSize: 12, fontWeight: 600 }}>{o.l}</button>)}</div></Field>
+        <Field label="수업 유형"><div className="grid w-full min-w-0 grid-cols-3 gap-2">{[{k:"private",l:"개인"},{k:"duet",l:"듀엣"},{k:"group",l:"그룹"}].map((o) => <button type="button" key={o.k} onClick={() => setF({ ...f, lessonType: o.k, passName: `${o.l} ${f.regular || 0}회` })} className="min-w-0 whitespace-nowrap px-1" style={{ height: 38, borderRadius: 8, border: `1px solid ${f.lessonType === o.k ? BRAND : LINE}`, backgroundColor: f.lessonType === o.k ? TINT : CARD, color: f.lessonType === o.k ? BRAND_D : SUB, fontSize: 12, fontWeight: 600 }}>{o.l}</button>)}</div></Field>
         <Field label="기본 수업시간" hint="새 일정을 만들 때 자동 적용됩니다"><select value={f.defaultLessonDuration} onChange={(e) => setF({ ...f, defaultLessonDuration: e.target.value })} className={inputCls}>{[30, 50, 60, 80].map((value) => <option key={value} value={value}>{value}분</option>)}</select></Field>
         <Field label="목표"><input value={f.goal} onChange={(e) => setF({ ...f, goal: e.target.value })} className={inputCls} /></Field>
         <Field label="주의사항" hint="한 줄에 하나"><textarea rows={2} value={f.focus} onChange={(e) => setF({ ...f, focus: e.target.value })} className={`${inputCls} h-auto resize-none py-2.5`} /></Field>
@@ -4606,7 +4609,6 @@ function MemberRegisterSheet({ members, onOpenExisting, onClose, onCreate }) {
         <div className="grid grid-cols-2 gap-2"><Field label="시작일"><input type="date" value={f.startDate} onChange={(e) => setF({ ...f, startDate: e.target.value })} className={inputCls} /></Field><Field label="만료일"><input type="date" value={f.contractEnd} onChange={(e) => setF({ ...f, contractEnd: e.target.value })} className={inputCls} /></Field></div>
         <Field label="상담 메모"><textarea rows={2} value={f.memo} onChange={(e) => setF({ ...f, memo: e.target.value })} className={`${inputCls} h-auto resize-none py-2.5`} /></Field>
         {error && <div className="flex items-center gap-2" style={{ padding: "9px 10px", borderRadius: 8, backgroundColor: WARN_S, color: WARN, fontSize: 12 }}><AlertCircle size={14} />{error}{error.includes("이미") && <button type="button" className="ml-auto font-semibold" onClick={() => { const name = f.name.trim(), phone = f.phone.replace(/\D/g, ""); const d = (members || []).find((m) => String(m.name || "").trim() === name && (!phone || String(m.phone || "").replace(/\D/g, "") === phone)); if (d) onOpenExisting(d.id); }}>기존 회원 열기</button>}</div>}
-        <button type="button" disabled={!f.name.trim() || !num(f.regular)} onClick={submit} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>회원 등록</button>
       </div>
     </Sheet>
   );
@@ -4767,7 +4769,7 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
         {[{ l: "수업 기록", I: Pencil, fn: openRecord }, { l: "메모 추가", I: MessageSquare, fn: openMemo }].map(({ l, I, fn }) => <button type="button" key={l} onClick={fn} className="flex h-10 items-center justify-center gap-1.5" style={{ borderRadius: 9, backgroundColor: TINT, color: BRAND_D, fontSize: 12, fontWeight: 700 }}><I size={14} />{l}</button>)}
         <a href={member.phone ? `tel:${String(member.phone).replace(/[^0-9+]/g, "")}` : undefined} aria-disabled={!member.phone} onClick={(event) => { if (!member.phone) event.preventDefault(); }} className="flex h-10 items-center justify-center gap-1.5" style={{ borderRadius: 9, backgroundColor: CANVAS, color: member.phone ? INK2 : FAINT, fontSize: 12, fontWeight: 700 }}><Smartphone size={14} />연락하기</a>
       </div>
-      <main className="pt-scroll min-h-0 flex-1 overflow-y-auto safe-scroll" style={{ padding: "8px 12px 18px" }}>
+      <main className="pt-scroll min-h-0 flex-1 overflow-y-auto" style={{ padding: "8px 12px calc(18px + max(env(safe-area-inset-bottom, 0px), 12px))", scrollPaddingTop: 8 }}>
         <div className="space-y-2">
           <section data-member-section="top-summary" style={{ ...sectionStyle, backgroundColor: TINT, borderColor: RING }}>
             <div className="flex items-center gap-3"><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-base font-extrabold text-white" style={{ background: GRAD }}>{(member.name || "?").slice(0, 1)}</span><span className="min-w-0 flex-1"><span className="block truncate text-base font-extrabold" style={{ color: INK }}>{member.name || "이름 미입력"}</span><span className="mt-0.5 block text-xs" style={{ color: SUB }}>{next ? `다음 수업 ${ymd(next.date)} ${next.start}` : "다음 예약 없음"}</span></span><span className="shrink-0 text-right"><span className="block text-2xl font-extrabold tabular-nums" style={{ color: left(member) <= 3 ? BAD : BRAND }}>{left(member)}회</span><span className="block text-[10px]" style={{ color: SUB }}>잔여</span></span></div>
@@ -4786,7 +4788,7 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
             <summary aria-label="체형변화·사진 관리 카드 열기" className="flex min-h-14 cursor-pointer list-none items-center gap-3 px-3.5 py-3"><span className="min-w-0 flex-1"><span className="block truncate text-sm font-extrabold" style={{ color: INK }}>체형변화·사진</span><span className="mt-0.5 block truncate text-[10px]" style={{ color: SUB }}>{lastAssessment ? `마지막 촬영 ${ymd((lastAssessment.completedAt || lastAssessment.at).slice(0, 10))}` : "아직 완료된 분석이 없습니다"}</span></span>{afterReminder.show && <span className="shrink-0 rounded-full px-2 py-1 text-[9px] font-extrabold" style={{ backgroundColor: CARD, color: WARN }}>{afterReminder.label}</span>}<ChevronDown size={16} style={{ color: SUB }} /></summary>
             <div data-member-management-content="posture" style={{ padding: "0 12px 12px" }}>
           <section data-member-section="posture" style={{ ...sectionStyle, backgroundColor: afterReminder.show ? WARN_S : CARD }}>
-            <div className="flex items-start gap-3"><span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: TINT, color: BRAND_D }}><Activity size={16} /></span><span className="min-w-0 flex-1"><span className="flex items-center gap-2"><span className="min-w-0 flex-1 truncate text-sm font-bold" style={{ color: INK }}>체형변화·사진</span>{afterReminder.show && <span className="shrink-0 rounded-full px-2 py-1 text-[9px] font-extrabold" style={{ backgroundColor: CARD, color: WARN }}>{afterReminder.label}</span>}</span><span className="mt-1 block text-xs" style={{ color: SUB }}>{lastAssessment ? `마지막 촬영 ${ymd((lastAssessment.completedAt || lastAssessment.at).slice(0, 10))}${afterReminder.days != null ? ` · ${afterReminder.days}일 전` : ""}` : "아직 완료된 분석이 없습니다"}</span>{lastAssessmentMetrics.length > 0 && <span className="mt-1 block line-clamp-2 text-xs" style={{ color: INK2 }}>{lastAssessmentMetrics.map((metric) => `${metric.label} ${metric.value}${metric.unit}`).join(" · ")}</span>}</span></div>
+            <div className="flex items-start gap-3"><span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: TINT, color: BRAND_D }}><Activity size={16} /></span><span className="min-w-0 flex-1"><span className="flex items-center gap-2">{afterReminder.show && <span className="ml-auto shrink-0 rounded-full px-2 py-1 text-[9px] font-extrabold" style={{ backgroundColor: CARD, color: WARN }}>{afterReminder.label}</span>}</span><span className="mt-1 block text-xs" style={{ color: SUB }}>{lastAssessment ? `마지막 촬영 ${ymd((lastAssessment.completedAt || lastAssessment.at).slice(0, 10))}${afterReminder.days != null ? ` · ${afterReminder.days}일 전` : ""}` : "아직 완료된 분석이 없습니다"}</span>{lastAssessmentMetrics.length > 0 && <span className="mt-1 block line-clamp-2 text-xs" style={{ color: INK2 }}>{lastAssessmentMetrics.map((metric) => `${metric.label} ${metric.value}${metric.unit}`).join(" · ")}</span>}</span></div>
             <div className="mt-2 grid grid-cols-2 gap-2"><button type="button" onClick={() => onAssess?.({ mode: "new" })} className="h-10 text-xs font-bold text-white" style={{ borderRadius: 8, backgroundColor: BRAND }}>새 체형분석</button><button type="button" onClick={() => onAssess?.({ mode: "history" })} className="h-10 text-xs font-bold" style={{ borderRadius: 8, backgroundColor: CARD, border: `1px solid ${LINE}`, color: INK }}>과거 이력</button></div>
           </section>
           <Section title="체형분석 과거 이력">
@@ -13825,17 +13827,7 @@ export default function App() {
   // sign-in hangs and the app never leaves the login screen.
   useEffect(() => { runAuthConnectivityPreflight(); }, []);
 
-  /* 키보드가 올라오면 입력칸이 가려진다 — 초점이 간 칸을 화면 가운데로 올려 준다 */
-  useEffect(() => {
-    const onFocusIn = (e) => {
-      const el = e.target;
-      if (!el || !/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName || "")) return;
-      if (el.type === "range" || el.type === "file" || el.type === "checkbox") return;
-      setTimeout(() => { try { el.scrollIntoView({ block: "center", behavior: "smooth" }); } catch (err) {} }, 320);
-    };
-    document.addEventListener("focusin", onFocusIn);
-    return () => document.removeEventListener("focusin", onFocusIn);
-  }, []);
+  useEffect(() => installFocusVisibilityGuard({ documentRef: document, windowRef: window }), []);
 
   useEffect(() => {
     let alive = true;
@@ -15302,6 +15294,7 @@ export default function App() {
       .app-root p, .app-root h1, .app-root h2, .app-root h3, .app-root span, .app-root button, .app-root li { word-break: keep-all; overflow-wrap: break-word; }
       .app-root *:focus-visible { outline: 2px solid ${PRIMARY}; outline-offset: 2px; }
       .app-root input[type=range] { height: 28px; }
+      .app-root input:not([type=range]), .app-root textarea, .app-root select { font-size: 16px; }
       /* 노치·홈바 여백.
          아이폰은 env() 로 정확한 값이 오지만 안드로이드(갤럭시 등)는 0을 주는 경우가 많아
          max() 로 최소 여백을 보장한다. 좌우도 가로모드·곡면 화면 대비로 함께 잡는다. */

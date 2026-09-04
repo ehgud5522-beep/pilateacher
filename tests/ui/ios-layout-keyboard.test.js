@@ -70,7 +70,7 @@ test("member registration uses one safe-area header and a separate safe footer",
   const sheet = app.slice(app.indexOf("function Sheet("), app.indexOf("function ScheduleBottomSheet("));
   const register = app.slice(app.indexOf("function MemberRegisterSheet("), app.indexOf("function ReferenceMemberDetail("));
   assert.match(sheet, /safeTop \? "calc\(env\(safe-area-inset-top, 0px\) \+ 12px\)/);
-  assert.match(sheet, /className="pt-scroll min-h-0 flex-1"/);
+  assert.match(sheet, /className="pt-scroll min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden"/);
   assert.match(sheet, /footer && <div[\s\S]*calc\(env\(safe-area-inset-bottom, 0px\) \+ 12px\)/);
   assert.match(register, /wide safeTop/);
   assert.match(register, /footer=\{<button[\s\S]*>회원 등록<\/button>\}/);

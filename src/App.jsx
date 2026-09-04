@@ -92,6 +92,9 @@ import {
   removePendingLessonRecord, removePendingLessonRecordsForMember, savePendingLessonRecord, wakeDormantLessonRecordRetries,
 } from "./features/lesson-record/draft-queue.js";
 import { evaluateLessonRecordLink, linkScheduleToMember, upsertLessonRecordNote } from "./features/lesson-record/link-context.js";
+import {
+  formatMemberLessonDate, selectLessonSheetBriefing, selectMemberDetailStatus, selectMemberLessonSessions, selectPendingLessonSessions,
+} from "./features/lesson-record/member-detail-selectors.js";
 import { deactivateMemberRecord, deleteMemberData, visibleMembers } from "./features/members/member-lifecycle.js";
 import { trackLessonRecordUsage } from "./features/lesson-record/usage-telemetry.js";
 import {
@@ -99,7 +102,7 @@ import {
 } from "./features/lesson-record/lesson-record-presentation.js";
 import lessonRecordExamples from "./features/lesson-record/lesson-record-examples.json";
 import { createMemberBriefing, memberMemorySummary, selectScheduleBriefing } from "./features/member-memory/briefing.js";
-import { addPostureMilestone, buildMemberMemory, rejectMemoryEntry, selectLastLessonMemoryRecord } from "./features/member-memory/member-memory.js";
+import { addPostureMilestone, buildMemberMemory } from "./features/member-memory/member-memory.js";
 import { trackMemberMemoryUsage } from "./features/member-memory/usage-telemetry.js";
 import Onboarding from "./features/onboarding/Onboarding.jsx";
 import { completeOnboarding, hasCompletedOnboarding } from "./features/onboarding/onboarding-storage.js";
@@ -1397,7 +1400,7 @@ function Sheet({ title, sub, subtitle, onClose, children, wide = false, safeTop 
             <X size={18} />
           </button>
         </div>
-        <div className="pt-scroll min-h-0 flex-1" style={{ overflowY: "auto", padding: "4px 16px 20px" }}>{children}</div>
+        <div className="pt-scroll min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden" style={{ padding: "4px 16px 20px" }}>{children}</div>
         {footer && <div className="shrink-0 px-4 pt-3" style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 12px)" }}>{footer}</div>}
       </section>
     </div>
@@ -1536,7 +1539,7 @@ function ScheduleBottomSheet({ title, subtitle, onClose, returnFocusRef, childre
             <X size={18} />
           </button>}
         </div>
-        <div ref={scrollRef} className="pt-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-5" style={{ touchAction: "pan-y" }}>
+        <div ref={scrollRef} data-schedule-sheet-scroll className="pt-scroll min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain px-4 pb-5" style={{ touchAction: "pan-y" }}>
           {children}
         </div>
       </section>
@@ -2774,42 +2777,39 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
     });
     return n;
   }, [db.schedule, T0]);
-  const doneRows = db.schedule
-    .filter((s) => s?.date === T0 && !isPersonalEvt(s) && !isEquipGroup(s))
-    .flatMap((s) => attendeesOf(s).filter((a) => a.status === "done").map((a) => ({ id: a.memberId, sid: s.id })));
-  const unwrittenRows = doneRows.filter((r) => !(memberOf(r.id)?.notes || []).some((x) => x?.sid === r.sid));
-  const unwritten = unwrittenRows.length;
-  const firstUnwritten = unwrittenRows[0] || null;
-  const nextTarget0 = nextTarget(db.schedule, db.members);
-  const taskQueue = useMemo(() => {
-    const endDate = todayISO();
-    const startDate = shift(endDate, -27);
-    const out = [];
-    db.schedule
-      .filter((s) => s?.date >= startDate && s.date <= endDate && !isPersonalEvt(s))
-      .sort((a, b) => `${a.date} ${a.start}`.localeCompare(`${b.date} ${b.start}`))
-      .forEach((s) => {
-        const end = s.end || addMin(s.start || "00:00", Number(s.dur) || 50);
-        if (new Date(`${s.date}T${end}:00`).getTime() > Date.now()) return;
-        if (isEquipGroup(s)) {
-          if (!s.groupCancelled && (s.actualCount === undefined || s.actualCount === null || s.actualCount === "")) {
-            out.push({ key: `group:${s.id}`, kind: "group", s });
-          }
-          return;
-        }
-        attendeesOf(s).forEach((a) => {
-          const m = memberOf(a.memberId);
-          if (a.status === "done" && !(m?.notes || []).some((n) => n?.sid === s.id)) {
-            const pendingDraft = loadPendingLessonRecord(a.memberId, s.id);
-            out.push({ key: `note:${s.id}:${a.memberId}`, kind: "note", s, a, m, pendingDraft, recordQueueLabel: pendingLessonRecordLabel(pendingDraft) });
-          }
-          if (a.status === "noshow" && a.noshowFee == null) {
-            out.push({ key: `noshow:${s.id}:${a.memberId}`, kind: "noshow", s, a, m });
-          }
-        });
-      });
-    return out;
-  }, [db.schedule, db.members, recordQueueRevision]);
+  const pendingLessonSummary = useMemo(() => selectPendingLessonSessions({
+    members: db.members,
+    schedule: db.schedule,
+    pendingDrafts: listPendingLessonRecords(),
+  }), [db.schedule, db.members, recordQueueRevision]);
+  const taskQueue = useMemo(() => pendingLessonSummary.sessions.map((item) => {
+    const s = item.lesson || item.session?.lesson || db.schedule.find((lesson) => String(lesson?.id || "") === String(item.lessonId || "")) || null;
+    const m = memberOf(item.memberId);
+    const a = attendeesOf(s).find((attendee) => String(attendee?.memberId || "") === String(item.memberId || "")) || { memberId: item.memberId };
+    const pendingDraft = item.pendingDraft || loadPendingLessonRecord(item.memberId, item.lessonId);
+    return {
+      ...item,
+      kind: item.reasons.includes("confirmation") ? "confirmation" : "note",
+      s,
+      a,
+      m,
+      pendingDraft,
+      recordQueueLabel: pendingLessonRecordLabel(pendingDraft),
+    };
+  }), [pendingLessonSummary, db.schedule]);
+  const confirmQueueSession = async (task) => {
+    let failed = 0;
+    const notes = (task?.session?.records || []).filter((note) => note?.lessonRecord?.stage !== "confirmed_record");
+    for (const note of notes) {
+      const args = confirmedLessonNoteArgs(note);
+      if (!args) continue;
+      try {
+        const stored = await onSaveNote?.(task.memberId, args.type, note.sid || task.lessonId, args.body, args.meta, args.options);
+        if (stored === false) failed += 1;
+      } catch (error) { failed += 1; }
+    }
+    if (failed) onToast?.({ ok: false, msg: `${failed}건을 저장하지 못했습니다. 남은 기록을 다시 확인해 주세요.` });
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -2851,17 +2851,17 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
 
       {/* ─── 하단 고정 업무 요약 ─── */}
       <div className="shrink-0" style={{ padding: "6px 12px 8px", backgroundColor: PAGE }}>
-        <button onClick={(e) => { if (taskQueue.length) { queueTriggerRef.current = e.currentTarget; setQueueOpen(true); } }} disabled={!taskQueue.length}
+        <button onClick={(e) => { if (pendingLessonSummary.count) { queueTriggerRef.current = e.currentTarget; setQueueOpen(true); } }} disabled={!pendingLessonSummary.count}
           className="flex h-14 w-full items-center gap-3 rounded-xl px-3 text-left disabled:opacity-80"
-          style={{ backgroundColor: taskQueue.length ? TINT : CARD, border: `1px solid ${taskQueue.length ? RING : LINE}`, boxShadow: "0 1px 4px rgba(28,36,51,.06)" }}>
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: taskQueue.length ? TINT : GOOD_S }}>
-            {taskQueue.length ? <Pencil size={14} style={{ color: PRIMARY }} /> : <Check size={14} style={{ color: GOOD }} />}
+          style={{ backgroundColor: pendingLessonSummary.count ? TINT : CARD, border: `1px solid ${pendingLessonSummary.count ? RING : LINE}`, boxShadow: "0 1px 4px rgba(28,36,51,.06)" }}>
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: pendingLessonSummary.count ? TINT : GOOD_S }}>
+            {pendingLessonSummary.count ? <Pencil size={14} style={{ color: PRIMARY }} /> : <Check size={14} style={{ color: GOOD }} />}
           </span>
           <span className="min-w-0 flex-1">
-            <span className="block text-sm font-extrabold" style={{ color: INK }}>{taskQueue.length ? `처리할 업무 ${taskQueue.length}건` : "남은 수업 없음"}</span>
-            <span className="block text-xs" style={{ color: SUB }}>{taskQueue.length ? "기록 · 인원체크 · 차감 결정" : "처리할 업무가 없습니다"}</span>
+            <span className="block text-sm font-extrabold" style={{ color: INK }}>{pendingLessonSummary.count ? `확인할 수업 ${pendingLessonSummary.count}건` : "오늘 할 일 없음"}</span>
+            <span className="block text-xs" style={{ color: SUB }}>{pendingLessonSummary.count ? "미기록 수업과 확인 전 기록" : "확인할 수업이 없습니다"}</span>
           </span>
-          {taskQueue.length > 0 && <span className="shrink-0 text-xs font-extrabold" style={{ color: PRIMARY }}>지금 처리</span>}
+          {pendingLessonSummary.count > 0 && <span className="shrink-0 text-xs font-extrabold" style={{ color: PRIMARY }}>지금 처리</span>}
         </button>
       </div>
 
@@ -2872,7 +2872,7 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
       {queueOpen && (
         <ScheduleQueueSheet tasks={taskQueue} members={db.members} returnFocusRef={queueTriggerRef} onClose={() => setQueueOpen(false)}
           onNoComment={onNoComment} onSaveNote={onSaveNote}
-          onNoshowFee={onNoshowFee} onSaveSchedule={onSave} />
+          onConfirmSession={confirmQueueSession} />
       )}
       {displaySettings && (
         <Sheet title="일정 표시 설정" onClose={() => setDisplaySettings(false)}>
@@ -3205,6 +3205,39 @@ function WeekGrid({ days, byDate, nameOf, memberOf, briefingOf, cursor, onOpen, 
   );
 }
 
+const LESSON_RECORD_VIEW_FIELDS = [
+  ["today", "오늘 수업"], ["change", "변화"], ["reaction", "회원 반응"], ["next", "다음 확인"],
+];
+
+function LessonRecordFieldRows({ session, compact = false, fields = null, hideEmpty = false }) {
+  if (!session) return null;
+  const rows = LESSON_RECORD_VIEW_FIELDS.filter(([key]) => (!fields || fields.includes(key)) && (!compact || key === "today" || key === "next") && (!hideEmpty || (session[key] && session[key] !== "기록 없음")));
+  return <div className="min-w-0 space-y-1.5" data-lesson-record-fields>{rows.map(([key, label]) => <div key={key} className="grid min-w-0 grid-cols-[72px_minmax(0,1fr)] gap-2"><span className="text-[10px] font-bold" style={{ color: SUB }}>{label}</span><span className="min-w-0 break-words text-xs leading-relaxed" style={{ color: INK2 }}>{session[key] || "기록 없음"}</span></div>)}</div>;
+}
+
+function confirmedLessonNoteArgs(note, reviewedDraft = null) {
+  if (!note?.lessonRecord) return null;
+  const structured = reviewedDraft || note.lessonRecord.structuredDraft || note.lessonRecord.confirmedRecord || null;
+  const lessonRecord = { ...note.lessonRecord, ...(structured ? { structuredDraft: structured } : {}), confirmationStatus: "confirmed" };
+  const transcript = String(lessonRecord.rawTranscript || note.transcript || "").trim();
+  const body = structured ? structuredRecordBody(structured, transcript) : String(note.body || transcript || "특이사항 없음").trim();
+  return {
+    type: note.type || "개인레슨",
+    body,
+    meta: {
+      transcript,
+      aiSummary: note.aiSummary || structured,
+      aiSummaryTeacherEdited: structured,
+      aiSummaryStatus: AI_STATUSES.CONFIRMED,
+      aiMeta: note.aiMeta || lessonRecord.aiMeta || null,
+      lessonRecord,
+      voiceSource: note.voiceSource || lessonRecord.source || "unknown",
+      recordedAt: note.recordedAt || lessonRecord.recordedAt,
+    },
+    options: { confirmed: true, upsert: true, existingNoteId: note.id },
+  };
+}
+
 function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, onClose, onSubmit, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onFocusMemberWeek, scheduleColors = null }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const currentIds = draft.memberIds || attendeesOf(draft).map((a) => a.memberId).filter(Boolean);
@@ -3232,8 +3265,11 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
   const activeMember = members.find((m) => m.id === activeMemberId) || null;
   const activeAttendee = attendeesOf(draft).find((a) => a.memberId === activeMemberId) || null;
   const latestNote = (activeMember?.notes || []).slice().sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")))[0] || null;
-  const currentLessonNote = (activeMember?.notes || []).find((note) => String(note?.sid || "") === String(draft.id || "")) || null;
   const activeBriefing = useMemo(() => activeMember ? (briefingOf?.(activeMember.id, draft.id) || createMemberBriefing({ member: activeMember, currentSessionId: draft.id })) : null, [activeMember, briefingOf, draft.id]);
+  const activeLessonSessions = useMemo(() => activeMember ? selectMemberLessonSessions({ member: activeMember, schedule }) : [], [activeMember, schedule]);
+  const currentLessonSession = activeLessonSessions.find((session) => session.key === String(draft.id || "")) || null;
+  const previousLessonSession = activeLessonSessions.find((session) => session.key !== String(draft.id || "")) || null;
+  const lessonSheetBriefing = useMemo(() => selectLessonSheetBriefing({ sessions: previousLessonSession ? [previousLessonSession] : [], briefing: activeBriefing }), [previousLessonSession, activeBriefing]);
   const openedBriefingRef = useRef("");
   useEffect(() => {
     if (!activeMember?.id || !draft.id || !activeBriefing) return;
@@ -3390,13 +3426,13 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
         </>}
         {draft.id && !isGroup && isMemberLesson && attendeesOf(draft).length > 0 && (
           <div className="space-y-3 border-t pt-3" style={{ borderColor: LINE }}>
-            <div className="flex gap-2 overflow-x-auto pb-0.5">
+            <div className="grid min-w-0 grid-cols-[repeat(auto-fit,minmax(0,1fr))] gap-2 pb-0.5">
               {attendeesOf(draft).map((a) => {
                 const m = members.find((x) => x.id === a.memberId);
                 const active = a.memberId === activeMemberId;
                 return (
                   <button key={a.memberId} onClick={() => { setActiveMemberId(a.memberId); setRecordMode(null); setRecordBody(""); }}
-                    className="min-w-[132px] flex-1 rounded-xl p-3 text-left"
+                    className="min-w-0 rounded-xl p-3 text-left"
                     style={{ backgroundColor: active ? TINT : CANVAS, border: `1px solid ${active ? "#D9D7EE" : LINE}` }}>
                     <p className="truncate text-sm font-extrabold" style={{ color: active ? PRIMARY : INK }}>{m?.name || "삭제된 회원"}</p>
                     <p className="mt-0.5 text-xs" style={{ color: SUB }}>잔여 {left(m)}회{m?.contractEnd ? ` · ${m.contractEnd.slice(5).replace("-", ".")}까지` : ""}</p>
@@ -3405,10 +3441,11 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
               })}
             </div>
 
-            {activeMember && activeBriefing && (
-              <section className="rounded-xl p-3" aria-label="지난 수업 이어서 보기" style={{ backgroundColor: LAVENDER_S, border: `1px solid ${RING}` }}>
-                <div className="mb-2 flex items-center gap-2"><Sparkles size={14} style={{ color: BRAND_D }} /><p className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: BRAND_D }}>지난 수업 이어서 보기</p><span style={{ fontSize: 9, color: SUB }}>저장한 기록 기준</span></div>
-                <div className="space-y-1.5">{activeBriefing.lines.slice(0, 5).map((briefingLine, index) => <p key={`${briefingLine.kind}-${index}`} className="text-xs leading-relaxed" style={{ color: briefingLine.kind === "conflict" ? WARN : INK2 }}>• {briefingLine.text}</p>)}</div>
+            {activeMember && lessonSheetBriefing && (
+              <section className="min-w-0 rounded-xl p-3" aria-label="지난 수업과 다음 수업 준비" style={{ backgroundColor: LAVENDER_S, border: `1px solid ${RING}` }}>
+                <div className="mb-2 flex items-center gap-2"><Sparkles size={14} style={{ color: BRAND_D }} /><p className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: BRAND_D }}>{lessonSheetBriefing.source === "lesson_record" ? "지난 수업" : lessonSheetBriefing.source === "posture_fallback" ? "체형분석 참고" : "이전 기록 참고"}</p>{lessonSheetBriefing.date && <span className="shrink-0 text-[9px] tabular-nums" style={{ color: SUB }}>{formatMemberLessonDate(lessonSheetBriefing.date)}{previousLessonSession ? ` · ${previousLessonSession.type}` : ""}</span>}</div>
+                {previousLessonSession ? <LessonRecordFieldRows session={previousLessonSession} fields={["today", "reaction"]} hideEmpty /> : <p className="break-words text-xs leading-relaxed" style={{ color: INK2 }}>{lessonSheetBriefing.text || "이전 기록 없음"}</p>}
+                <div className="mt-3 border-t pt-2" style={{ borderColor: LINE }}><p className="mb-1 text-[10px] font-bold" style={{ color: SUB }}>다음 수업 준비</p><p className="break-words text-xs font-bold leading-relaxed" style={{ color: BRAND_D }}>{previousLessonSession?.next || selectScheduleBriefing(activeBriefing)?.text || "다음 확인 없음"}</p></div>
               </section>
             )}
 
@@ -3430,7 +3467,7 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
                     <span className="shrink-0 rounded-full px-2.5 py-1 text-xs font-extrabold" style={{ backgroundColor: stOf(activeAttendee.status).bg, color: stOf(activeAttendee.status).color }}>{stOf(activeAttendee.status).label}</span>
                   </div>
                   {(activeMember.focus || []).length > 0 && <p className="mt-2 text-xs leading-relaxed" style={{ color: WARN }}>주의 · {(activeMember.focus || []).join(" · ")}</p>}
-                  {currentLessonNote && <p className="mt-2 line-clamp-2 text-xs font-bold leading-relaxed" style={{ color: GOOD }}>이 수업 기록 · {currentLessonNote.body}</p>}
+                  {currentLessonSession && <div className="mt-3 border-t pt-2" style={{ borderColor: LINE }}><LessonRecordFieldRows session={currentLessonSession} hideEmpty /></div>}
                   {latestNote && !latestNote.lessonRecord && <p className="mt-2 line-clamp-2 text-xs leading-relaxed" style={{ color: INK2 }}>최근 기록 · {latestNote.body}</p>}
                 </div>
 
@@ -3512,42 +3549,40 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
   );
 }
 
-function ScheduleQueueSheet({ tasks, members, returnFocusRef, onClose, onNoComment, onSaveNote, onNoshowFee, onSaveSchedule }) {
+function ScheduleQueueSheet({ tasks, members, returnFocusRef, onClose, onNoComment, onSaveNote, onConfirmSession }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const task = tasks[0] || null;
-  const [groupCount, setGroupCount] = useState(0);
-  const [lastGroup, setLastGroup] = useState(null);
   const [recordMode, setRecordMode] = useState(null);
   const [recordBody, setRecordBody] = useState("");
+  const [confirming, setConfirming] = useState(false);
   useEffect(() => {
-    if (task?.kind === "group") setGroupCount(num(task.s.actualCount ?? task.s.groupCount ?? 0));
     setRecordMode(null);
     setRecordBody("");
+    setConfirming(false);
   }, [task?.key]);
-  const memberName = task?.m?.name || members.find((m) => m.id === task?.a?.memberId)?.name || "회원";
-  const targetName = task?.kind === "group" ? "그룹수업" : memberName;
+  const memberName = task?.m?.name || members.find((m) => String(m.id) === String(task?.memberId || task?.a?.memberId))?.name || "회원";
   return (
-    <ScheduleBottomSheet title="처리할 업무" subtitle={`남은 ${tasks.length}건 · 최근 4주`} returnFocusRef={returnFocusRef} onClose={onClose}>
+    <ScheduleBottomSheet title="확인할 수업" subtitle={`남은 ${tasks.length}건`} returnFocusRef={returnFocusRef} onClose={onClose}>
       {!task ? (
         <div className="py-8 text-center">
           <span className="mx-auto flex h-10 w-10 items-center justify-center rounded-xl" style={{ backgroundColor: GOOD_S }}><Check size={18} style={{ color: GOOD }} /></span>
-          <p className="mt-3 text-sm font-extrabold" style={{ color: INK }}>남은 수업 없음</p>
-          {lastGroup && <button onClick={() => { onSaveSchedule?.({ ...lastGroup, actualCount: undefined, groupDone: false }); setLastGroup(null); }} className="mt-2 text-xs font-extrabold" style={{ color: GOOD }}>방금 저장한 그룹 인원을 미체크로 되돌리기</button>}
+          <p className="mt-3 text-sm font-extrabold" style={{ color: INK }}>오늘 할 일 없음</p>
           <button onClick={onClose} className="mt-4 h-10 rounded-lg px-5 text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: SUB }}>닫기</button>
         </div>
       ) : (
         <div className="space-y-3">
-          {lastGroup && (
-            <div className="flex items-center gap-2 rounded-lg px-3 py-2" style={{ backgroundColor: GOOD_S }}>
-              <span className="min-w-0 flex-1 text-xs font-bold" style={{ color: GOOD }}>그룹 인원을 저장했습니다.</span>
-              <button onClick={() => { onSaveSchedule?.({ ...lastGroup, actualCount: undefined, groupDone: false }); setLastGroup(null); }} className="shrink-0 text-xs font-extrabold" style={{ color: GOOD }}>미체크로 되돌리기</button>
-            </div>
-          )}
           <div className="rounded-xl px-3 py-3" style={{ backgroundColor: CANVAS, border: `1px solid ${LINE}` }}>
-            <p className="text-xs font-bold tabular-nums" style={{ color: PRIMARY }}>{dow(task.s.date)} {task.s.date?.slice(5).replace("-", ".")} · {task.s.start}</p>
-            <p className="mt-1 truncate text-base font-extrabold" style={{ color: INK }}>{targetName}</p>
+            <p className="text-xs font-bold tabular-nums" style={{ color: PRIMARY }}>{task.s ? `${dow(task.s.date)} ${task.s.date?.slice(5).replace("-", ".")} · ${task.s.start || "시간 없음"}` : "저장되지 않은 수업 초안"}</p>
+            <p className="mt-1 truncate text-base font-extrabold" style={{ color: INK }}>{memberName}</p>
             {task.kind === "note" && <p className="mt-1 text-xs font-bold" style={{ color: task.pendingDraft?.structuredDraft ? GOOD : task.pendingDraft?.rawTranscript ? WARN : SUB }}>{task.recordQueueLabel}</p>}
           </div>
+
+          {task.kind === "confirmation" && (
+            <div className="space-y-3">
+              <LessonRecordFieldRows session={task.session} />
+              <button type="button" disabled={confirming} onClick={async () => { setConfirming(true); try { await onConfirmSession?.(task); } finally { setConfirming(false); } }} className="h-12 w-full rounded-lg text-sm font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: PRIMARY }}>{confirming ? "저장 중" : task.session?.confirmationState === "partial" ? `남은 기록 확인 (${task.session.confirmedCount}/${task.session.confirmableCount})` : "이 수업 기록 확인"}</button>
+            </div>
+          )}
 
           {task.kind === "note" && (
             <div>
@@ -3568,27 +3603,6 @@ function ScheduleQueueSheet({ tasks, members, returnFocusRef, onClose, onNoComme
             </div>
           )}
 
-          {task.kind === "group" && (
-            <div>
-              <p className="mb-2 text-xs font-bold" style={{ color: SUB }}>참석 인원</p>
-              <div className="flex items-center gap-2">
-                <button aria-label="참석 인원 줄이기" onClick={() => setGroupCount((n) => Math.max(0, n - 1))} className="flex h-11 w-11 items-center justify-center rounded-lg" style={{ backgroundColor: CANVAS, border: `1px solid ${LINE}` }}><Minus size={16} /></button>
-                <span className="flex h-11 min-w-0 flex-1 items-center justify-center rounded-lg text-lg font-extrabold tabular-nums" style={{ backgroundColor: CANVAS, color: INK }}>{groupCount}명</span>
-                <button aria-label="참석 인원 늘리기" onClick={() => setGroupCount((n) => Math.min(num(task.s.groupCount) || 99, n + 1))} className="flex h-11 w-11 items-center justify-center rounded-lg" style={{ backgroundColor: CANVAS, border: `1px solid ${LINE}` }}><Plus size={16} /></button>
-              </div>
-              <button onClick={() => { setLastGroup(task.s); onSaveSchedule?.({ ...task.s, actualCount: groupCount, groupDone: true, groupCancelled: false }); }} className="mt-3 h-12 w-full rounded-lg text-sm font-extrabold text-white" style={{ backgroundColor: PRIMARY }}>저장</button>
-            </div>
-          )}
-
-          {task.kind === "noshow" && (
-            <div>
-              <p className="mb-2 text-xs font-bold" style={{ color: SUB }}>노쇼 수강권 차감 여부</p>
-              <div className="grid grid-cols-2 gap-2">
-                <button onClick={() => onNoshowFee?.(task.s.id, true, task.a.memberId)} className="h-12 rounded-lg text-sm font-extrabold text-white" style={{ backgroundColor: BAD }}>차감</button>
-                <button onClick={() => onNoshowFee?.(task.s.id, false, task.a.memberId)} className="h-12 rounded-lg text-sm font-extrabold" style={{ backgroundColor: CANVAS, color: SUB, border: `1px solid ${LINE}` }}>비차감</button>
-              </div>
-            </div>
-          )}
         </div>
       )}
     </ScheduleBottomSheet>
@@ -4635,6 +4649,7 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
   const [reviewNote, setReviewNote] = useState(null);
   const [reviewDraft, setReviewDraft] = useState(null);
   const [reviewEditing, setReviewEditing] = useState(false);
+  const [recordQueueRevision, setRecordQueueRevision] = useState(0);
   const [deleteName, setDeleteName] = useState("");
   const [deleteBusy, setDeleteBusy] = useState(false);
   const layoutRootRef = useRef(null);
@@ -4643,55 +4658,33 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
   const firstSummaryRef = useRef(null);
   const recentCardRef = useRef(null);
   useEffect(() => {
+    const refresh = () => setRecordQueueRevision((value) => value + 1);
+    window.addEventListener("pilateacher:lesson-record-updated", refresh);
+    return () => window.removeEventListener("pilateacher:lesson-record-updated", refresh);
+  }, []);
+  useEffect(() => {
     if (!reviewNote) return;
     setReviewDraft(reviewNote.lessonRecord?.structuredDraft || null);
     setReviewEditing(false);
   }, [reviewNote]);
   const lessons = (schedule || []).filter((s) => hasMember(s, member.id)).sort((a, b) => `${b.date} ${b.start}`.localeCompare(`${a.date} ${a.start}`));
   const notes = [...(member.notes || [])].sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
-  const lessonNotes = notes.filter((note) => !["상담", "인바디"].includes(note.type));
-  /* 수업기록에 붙는 기구는 강사가 일정에서 고른 값이다 — 기록 본문(AI 요약)에서 추론하지 않는다 */
-  const noteEquipText = (note) => {
-    const lesson = (schedule || []).find((item) => String(item?.id || "") === String(note?.sid || ""));
-    return lesson ? lessonEquipFullText(lesson) : "";
-  };
   const consultationNotes = notes.filter((note) => note.type === "상담").sort((a, b) => Number(Boolean(b.important)) - Number(Boolean(a.important)) || String(b.date || "").localeCompare(String(a.date || "")));
   const prepText = (value, fallback = "기록 없음") => Array.isArray(value) ? (value.map((item) => typeof item === "string" ? item : item?.text).filter(Boolean).join(" · ") || fallback) : (String(value || "").trim() || fallback);
+  const lessonSessions = useMemo(() => selectMemberLessonSessions({ member, schedule }), [member, schedule]);
+  const latestLessonSession = lessonSessions[0] || null;
+  const detailStatus = useMemo(() => selectMemberDetailStatus({ member, schedule }), [member, schedule]);
+  const pendingLessonSummary = useMemo(() => selectPendingLessonSessions({ members: [member], schedule, pendingDrafts: listPendingLessonRecords().filter((draft) => String(draft?.memberId || "") === String(member.id)) }), [member, schedule, recordQueueRevision]);
+  const pendingSessionCount = pendingLessonSummary.countForMember(member.id);
   const memoryBriefing = useMemo(() => createMemberBriefing({ member }), [member]);
   const memorySummary = useMemo(() => memberMemorySummary(memoryBriefing), [memoryBriefing]);
-  const activeMemory = (memoryBriefing.memories || []).filter((entry) => ["active", "conflict"].includes(entry?.status));
-  const latestMemoryOf = (predicate) => activeMemory.filter(predicate).sort((a, b) => String(b.lastSeenAt || "").localeCompare(String(a.lastSeenAt || "")))[0] || null;
-  const repeatedMemory = latestMemoryOf((entry) => entry.status !== "conflict" && Number(entry.seenCount) >= 2);
-  const nextCheckMemory = latestMemoryOf((entry) => entry.type === "next_focus");
-  const recentChangeMemories = activeMemory.filter((entry) => entry.status === "conflict" || entry.type === "response" || entry.type === "milestone")
-    .sort((a, b) => String(b.lastSeenAt || "").localeCompare(String(a.lastSeenAt || ""))).slice(0, 3);
-  const latestMemorySession = memoryBriefing.sessions?.at(-1) || null;
-  const memorySourceDate = (entry) => {
-    const sourced = (entry?.sourceRefs || []).filter((source) => (source?.type === "session" || source?.type === "assessment") && source?.date).map((source) => String(source.date)).sort().at(-1);
-    return sourced || String(entry?.lastSeenAt || "");
+  const preparation = {
+    last: latestLessonSession?.today || (memorySummary.lastLesson === "첫 수업" ? "첫 수업" : "기록 없음"),
+    next: latestLessonSession?.next || memorySummary.nextCheck || "다음 확인 없음",
+    change: latestLessonSession?.change || memorySummary.recentChange || "기록 없음",
+    reaction: latestLessonSession?.reaction || "기록 없음",
   };
-  const memoryDateLabel = (value) => {
-    const match = String(value || "").match(/^\d{4}-(\d{2})-(\d{2})/);
-    return match ? `${Number(match[1])}.${Number(match[2])}` : "";
-  };
-  const latestRecordDisplay = selectLastLessonMemoryRecord(latestMemorySession);
-  const pendingStructuredNote = lessonNotes.find((note) => note?.lessonRecord?.stage === "structured_draft" && note.lessonRecord?.structuredDraft && !hasLessonRecordReviewFlag(note.lessonRecord));
-  const pendingRawNote = lessonNotes.find((note) => note?.lessonRecord?.stage === "raw_transcript" && !hasLessonRecordReviewFlag(note.lessonRecord));
-  const pendingStructured = pendingStructuredNote?.lessonRecord?.structuredDraft || null;
-  const pendingDate = pendingStructuredNote?.date || pendingRawNote?.date || "";
-  const pendingRows = pendingStructured ? [
-    ["didToday", "지난 수업", pendingStructured.didToday],
-    ["observations", "최근 변화", pendingStructured.observations],
-    ["responses", "회원 반응", pendingStructured.responses],
-    ["nextFocus", "선생님이 남긴 다음 확인", pendingStructured.nextFocus],
-  ].map(([key, label, value]) => ({ key: `pending-${key}`, label, value: prepText(value, ""), date: pendingDate, origin: "ai", sourceLabel: "[AI · 확인 전]", pendingNote: pendingStructuredNote })).filter((row) => row.value) : pendingRawNote ? [{ key: "pending-raw", label: "지난 수업", value: String(pendingRawNote.lessonRecord?.rawTranscript || pendingRawNote.transcript || pendingRawNote.body || "").trim(), date: pendingDate, origin: "instructor", sourceLabel: "선생님 기록", pendingNote: null }] : [];
-  const memoryRows = pendingRows.length ? pendingRows : [
-    latestMemorySession && latestRecordDisplay ? { key: "last", label: "지난 수업", value: latestRecordDisplay.text, date: latestMemorySession.date, origin: latestRecordDisplay.origin, sourceLabel: latestRecordDisplay.sourceLabel, provenanceSource: latestRecordDisplay.provenanceSource, memory: null } : null,
-    repeatedMemory ? { key: "repeated", label: "반복해서 기록된 내용", value: memorySummary.repeated, date: memorySourceDate(repeatedMemory), origin: repeatedMemory.origin, memory: repeatedMemory } : null,
-    nextCheckMemory ? { key: "next", label: "선생님이 남긴 다음 확인", value: nextCheckMemory.text, date: memorySourceDate(nextCheckMemory), origin: nextCheckMemory.origin, memory: nextCheckMemory } : null,
-    ...recentChangeMemories.map((entry) => ({ key: `change-${entry.id}`, label: entry.type === "response" ? "회원 반응" : "최근 변화", value: entry.status === "conflict" ? "최근 기록이 달라졌습니다" : entry.text, date: memorySourceDate(entry), origin: entry.presentationOrigin || entry.origin, memory: entry })),
-  ].filter(Boolean);
-  const hasMemoryOverview = memoryRows.length > 0;
+  const hasMemoryOverview = Boolean(latestLessonSession || memoryBriefing.lines?.length);
   useEffect(() => {
     trackMemberMemoryUsage("briefing_rendered", { count: 1 });
     trackMemberMemoryUsage("briefing_opened", { count: 1 });
@@ -4707,10 +4700,11 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
     documentRef: document,
     windowRef: window,
     onSnapshot: (snapshot) => deviceLog("member_detail_layout_snapshot", snapshot),
-  }), [member.id, hasMemoryOverview, memoryRows.length]);
+  }), [member.id, hasMemoryOverview, lessonSessions.length]);
   const assessmentSets = useMemo(() => normalizeAssessmentSets(photos, { memberId: member.id }), [photos, member.id]);
   const resumableAssessment = useMemo(() => selectResumableAssessment(assessmentSets, { memberId: member.id }), [assessmentSets, member.id]);
   const completedAssessments = assessmentSets.filter((assessment) => assessment.status === "completed");
+  const assessmentPhotoCount = assessmentSets.reduce((count, assessment) => count + Object.values(assessment.photos || {}).filter(Boolean).length, 0);
   const lastAssessment = completedAssessments[0] || null;
   const afterReminder = postureAfterReminder(completedAssessments);
   const lastAssessmentMetrics = lastAssessment?.poses.flatMap((pose) => pose.metrics || []).slice(0, 2) || [];
@@ -4753,32 +4747,34 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
     setReviewEditing(false);
     setSheet("record-review");
   };
+  const confirmLessonRecord = async (note, reviewedDraft = null) => {
+    const args = confirmedLessonNoteArgs(note, reviewedDraft);
+    return args ? onSaveNote(args.type, args.body, args.meta, args.options) : true;
+  };
   const confirmRecordReview = async () => {
     if (!reviewNote || !reviewDraft) return;
-    const lessonRecord = { ...reviewNote.lessonRecord, structuredDraft: reviewDraft, confirmationStatus: "confirmed" };
-    const transcript = String(lessonRecord.rawTranscript || reviewNote.transcript || "").trim();
-    const body = structuredRecordBody(reviewDraft, transcript);
-    const stored = await onSaveNote(reviewNote.type || "개인레슨", body, {
-      transcript,
-      aiSummary: reviewNote.aiSummary || reviewDraft,
-      aiSummaryTeacherEdited: reviewDraft,
-      aiSummaryStatus: AI_STATUSES.CONFIRMED,
-      aiMeta: reviewNote.aiMeta || lessonRecord.aiMeta || null,
-      lessonRecord,
-      voiceSource: reviewNote.voiceSource || lessonRecord.source || "unknown",
-      recordedAt: reviewNote.recordedAt || lessonRecord.recordedAt,
-    }, { confirmed: true, upsert: true, existingNoteId: reviewNote.id });
+    const stored = await confirmLessonRecord(reviewNote, reviewDraft);
     if (stored !== false) { setReviewNote(null); setReviewDraft(null); setSheet(null); }
   };
-  const rejectBriefingLine = async (briefingLine) => {
-    const targets = (briefingLine?.memoryIds || []).filter((memoryId) => memoryBriefing.memories.find((entry) => entry.id === memoryId)?.origin !== "instructor");
-    if (!targets.length) return;
-    let nextMemory = memoryBriefing.memories;
-    targets.forEach((memoryId) => { nextMemory = rejectMemoryEntry(nextMemory, memoryId); });
-    await commitPatch("memory-reject", { aiMemory: nextMemory }, false);
+  const confirmSessionRecords = async (session) => {
+    const pendingRecords = (session?.records || []).filter((note) => note?.lessonRecord
+      && note.lessonRecord?.confirmationStatus !== "confirmed" && note.lessonRecord?.stage !== "confirmed_record");
+    if (!pendingRecords.length) return true;
+    setSaving(`confirm:${session.key}`);
+    let failed = 0;
+    try {
+      for (const note of pendingRecords) {
+        try { if (await confirmLessonRecord(note) === false) failed += 1; }
+        catch (_error) { failed += 1; }
+      }
+      onToast?.(failed ? { ok: false, msg: `${failed}건이 남았습니다. 확인 상태를 다시 확인해 주세요.` } : { ok: true, msg: "수업 기록을 확인했습니다." });
+      return failed === 0;
+    } finally { setSaving(""); }
   };
   const holdHistory = member.holdHistory || [];
   const sectionStyle = { backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: "12px 14px" };
+  const statusSurface = detailStatus.risk === "critical" ? BAD_S : detailStatus.risk === "warning" ? WARN_S : TINT;
+  const statusInk = detailStatus.risk === "critical" ? BAD : detailStatus.risk === "warning" ? WARN : BRAND_D;
   const Section = ({ title, action, children }) => <section style={sectionStyle}><div className="mb-2 flex items-center gap-2"><h2 className="min-w-0 flex-1" style={{ fontSize: 14, fontWeight: 600, color: INK }}>{title}</h2>{action}</div>{children}</section>;
   return (
     <div ref={layoutRootRef} className="relative flex h-full min-h-0 flex-col" style={{ backgroundColor: PAGE }}>
@@ -4790,23 +4786,27 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
         {[{ l: "수업 기록", I: Pencil, fn: openRecord }, { l: "메모 추가", I: MessageSquare, fn: openMemo }].map(({ l, I, fn }) => <button type="button" key={l} onClick={fn} className="flex h-10 items-center justify-center gap-1.5" style={{ borderRadius: 9, backgroundColor: TINT, color: BRAND_D, fontSize: 12, fontWeight: 700 }}><I size={14} />{l}</button>)}
         <a href={member.phone ? `tel:${String(member.phone).replace(/[^0-9+]/g, "")}` : undefined} aria-disabled={!member.phone} onClick={(event) => { if (!member.phone) event.preventDefault(); }} className="flex h-10 items-center justify-center gap-1.5" style={{ borderRadius: 9, backgroundColor: CANVAS, color: member.phone ? INK2 : FAINT, fontSize: 12, fontWeight: 700 }}><Smartphone size={14} />연락하기</a>
       </div>
-      <main ref={scrollContainerRef} className="pt-scroll min-h-0 flex-1 overflow-y-auto" style={{ padding: "8px 12px calc(18px + max(env(safe-area-inset-bottom, 0px), 12px))" }}>
-        <div className="space-y-2">
-          <section ref={firstSummaryRef} data-member-section="top-summary" style={{ ...sectionStyle, backgroundColor: TINT, borderColor: RING }}>
-            <div className="flex items-center gap-3"><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-base font-extrabold text-white" style={{ background: GRAD }}>{(member.name || "?").slice(0, 1)}</span><span className="min-w-0 flex-1"><span className="block truncate text-base font-extrabold" style={{ color: INK }}>{member.name || "이름 미입력"}</span><span className="mt-0.5 block text-xs" style={{ color: SUB }}>{next ? `다음 수업 ${ymd(next.date)} ${next.start}` : "다음 예약 없음"}</span></span><span className="shrink-0 text-right"><span className="block text-2xl font-extrabold tabular-nums" style={{ color: left(member) <= 3 ? BAD : BRAND }}>{left(member)}회</span><span className="block text-[10px]" style={{ color: SUB }}>잔여</span></span></div>
+      <main ref={scrollContainerRef} data-member-detail-scroll className="pt-scroll min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden" style={{ padding: "8px 12px calc(18px + max(env(safe-area-inset-bottom, 0px), 12px))" }}>
+        <div data-member-detail-content className="min-w-0 max-w-full space-y-2">
+          <section ref={firstSummaryRef} data-member-section="status" style={{ ...sectionStyle, backgroundColor: statusSurface, borderColor: statusInk }}>
+            <div className="flex min-w-0 items-center gap-3"><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-base font-extrabold text-white" style={{ background: GRAD }}>{(member.name || "?").slice(0, 1)}</span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-extrabold" style={{ color: INK }}>상태</span><span className="mt-1 block break-words text-xs tabular-nums" style={{ color: statusInk }}>잔여 {detailStatus.remaining}회 · 다음 예약 {detailStatus.nextLesson ? formatMemberLessonDate(detailStatus.nextLesson.date) : "없음"} · {detailStatus.expiry ? `${formatMemberLessonDate(detailStatus.expiry)} 만료` : "만료일 없음"}</span>{detailStatus.reasons.length > 0 && <span className="mt-1 block text-[10px] font-bold" style={{ color: statusInk }}>{detailStatus.reasons.join(" · ")}</span>}</span>{pendingSessionCount > 0 && <span className="shrink-0 rounded-full px-2 py-1 text-[10px] font-extrabold" style={{ backgroundColor: CARD, color: WARN }}>확인 {pendingSessionCount}</span>}</div>
           </section>
-          <section ref={recentCardRef} data-member-section="memory-first" aria-label={`AI가 기억하는 ${member.name || "회원"}님`} style={{ ...sectionStyle, padding: hasMemoryOverview ? "10px 14px 4px" : "12px 14px" }}>
-            <div className="mb-1 flex items-center gap-2"><Sparkles size={14} style={{ color: BRAND_D }} /><h2 className="min-w-0 flex-1 truncate text-sm font-extrabold" style={{ color: INK }}>AI가 기억하는 {member.name || "회원"}님</h2></div>
-            {!hasMemoryOverview ? <div className="rounded-lg px-3 py-3" style={{ backgroundColor: CANVAS }}><p style={{ fontSize: 12, color: INK2 }}>아직 작성된 수업 기록이 없습니다.</p><p className="mt-1" style={{ fontSize: 10, lineHeight: 1.45, color: SUB }}>수업 기록을 저장하면 지난 수업과 다음 확인 내용을 이곳에서 이어서 볼 수 있어요.</p></div> : memoryRows.map((row, index) => <div key={row.key} className="flex items-start gap-3" style={{ padding: "9px 0", borderTop: index ? `1px solid ${LINE}` : "none" }}><p className="w-[112px] shrink-0" style={{ fontSize: 10, fontWeight: 700, color: SUB }}>{row.label}</p><div className="min-w-0 flex-1"><p className="line-clamp-2" style={{ fontSize: 11, lineHeight: 1.45, fontWeight: 650, color: row.key === "next" ? BRAND_D : INK2 }}>{row.value}</p><div className="mt-1 flex min-h-[14px] items-center gap-1.5">{row.sourceLabel ? row.pendingNote ? <button type="button" onClick={() => { setReviewNote(row.pendingNote); setSheet("record-review"); }} className="rounded-full px-1.5 py-0.5" style={{ fontSize: 9, fontWeight: 700, color: BRAND_D, backgroundColor: TINT }}>{row.sourceLabel}</button> : <span style={{ fontSize: 9, fontWeight: 700, color: row.sourceLabel === "[AI]" ? BRAND_D : SUB }}>{row.sourceLabel}</span> : row.origin === "ai" && <span style={{ fontSize: 9, fontWeight: 700, color: BRAND_D }}>[AI]</span>}{row.memory?.source === "posture_analysis" && <span style={{ fontSize: 9, fontWeight: 700, color: SUB }}>체형분석</span>}{memoryDateLabel(row.date) && <span className="tabular-nums" style={{ fontSize: 9, color: SUB }}>· {memoryDateLabel(row.date)}</span>}{row.memory?.origin === "ai" && <button type="button" onClick={() => rejectBriefingLine({ memoryIds: [row.memory.id] })} className="ml-auto shrink-0 text-[9px] font-bold" style={{ color: SUB }}>숨기기</button>}</div></div></div>)}
+          <section ref={recentCardRef} data-member-section="next-preparation" aria-label="다음 수업 준비" style={sectionStyle}>
+            <div className="mb-2 flex min-w-0 items-center gap-2"><Sparkles size={14} className="shrink-0" style={{ color: BRAND_D }} /><h2 className="min-w-0 flex-1 truncate text-sm font-extrabold" style={{ color: INK }}>다음 수업 준비</h2>{latestLessonSession?.source === "ai" && <span className="shrink-0 text-[9px] font-bold" style={{ color: BRAND_D }}>AI 요약 · {formatMemberLessonDate(latestLessonSession.date)}{latestLessonSession.confirmationState !== "confirmed" ? " · 확인 필요" : ""}</span>}</div>
+            <div className="grid min-w-0 grid-cols-[72px_minmax(0,1fr)] gap-x-2 gap-y-2"><span className="text-[10px] font-bold" style={{ color: SUB }}>지난 수업</span><span className="min-w-0 break-words text-xs font-bold" style={{ color: INK2 }}>{latestLessonSession ? `${formatMemberLessonDate(latestLessonSession.date)} · ${latestLessonSession.type}` : "기록 없음"}</span><span className="text-[10px] font-bold" style={{ color: SUB }}>다음 확인</span><span className="min-w-0 break-words text-xs font-bold" style={{ color: BRAND_D }}>{preparation.next}</span></div>
+            {hasMemoryOverview && <details className="mt-2 min-w-0 border-t pt-2" style={{ borderColor: LINE }}><summary className="cursor-pointer list-none text-[10px] font-bold" style={{ color: SUB }}>변화·회원 반응 자세히 보기</summary><div className="mt-2 grid min-w-0 grid-cols-[72px_minmax(0,1fr)] gap-2"><span className="text-[10px] font-bold" style={{ color: SUB }}>변화</span><span className="break-words text-xs" style={{ color: INK2 }}>{preparation.change}</span><span className="text-[10px] font-bold" style={{ color: SUB }}>회원 반응</span><span className="break-words text-xs" style={{ color: INK2 }}>{preparation.reaction}</span></div></details>}
           </section>
-          <details data-member-management-card="recent-lessons" style={{ ...sectionStyle, padding: 0, overflow: "hidden" }}>
-            <summary aria-label="최근 수업기록 관리 카드 열기" className="flex min-h-14 cursor-pointer list-none items-center gap-3 px-3.5 py-3"><span className="min-w-0 flex-1"><span className="block truncate text-sm font-extrabold" style={{ color: INK }}>최근 수업기록</span><span className="mt-0.5 block truncate text-[10px]" style={{ color: SUB }}>{lessonNotes.length ? `${ymd(lessonNotes[0].date)} · ${lessonNotes[0].type || "수업"}` : "아직 작성된 기록이 없습니다"}</span></span><ChevronDown size={16} style={{ color: SUB }} /></summary>
-            <div data-member-management-content="recent-lessons" style={{ padding: "0 12px 12px" }}>{lessonNotes.length > 0 ? <Section title="최근 수업 기록" action={<button type="button" onClick={() => setSheet("records-all")} style={{ fontSize: 12, fontWeight: 600, color: BRAND }}>전체 기록 보기</button>}>
-              {lessonNotes.slice(0, 3).map((note) => { const summary = note.aiSummaryTeacherEdited || note.aiSummary || {}; const structured = note.lessonRecord?.confirmedRecord || note.lessonRecord?.structuredDraft || {}; const provenanceSource = lessonRecordProvenanceSource(note.lessonRecord); const rawOnly = provenanceSource === "fallback_raw"; const rawText = String(structured.rawTranscript || note.lessonRecord?.rawTranscript || note.transcript || note.body || "").trim(); const detailCount = rawOnly ? 0 : (structured.observations?.length || 0) + (structured.responses?.length || 0) + (summary.pain?.length || 0) + (summary.improvements?.length || 0); const pending = note.lessonRecord?.stage === "structured_draft"; const reviewRequired = hasLessonRecordReviewFlag(note.lessonRecord) || hasLessonRecordReviewFlag(note); return <div key={note.id} style={{ padding: "8px 0", borderTop: `1px solid ${LINE}` }}><div className="flex items-center gap-2"><p className="min-w-0 flex-1 truncate" style={{ fontSize: 10, color: SUB }}>{ymd(note.date)} · {note.type || "수업"}{noteEquipText(note) ? ` · ${noteEquipText(note)}` : ""}</p>{reviewRequired ? <span style={{ fontSize: 9, color: WARN }}>녹음 확인 필요</span> : pending ? <button type="button" onClick={() => { setReviewNote(note); setSheet("record-review"); }} className="rounded-full px-2 py-1" style={{ fontSize: 9, fontWeight: 700, color: BRAND_D, backgroundColor: TINT }}>확인 필요</button> : null}{note.lessonRecord?.reconcileStatus === "link_review_required" && <span style={{ fontSize: 9, color: WARN }}>연결 확인 필요</span>}{note.lessonRecord?.status === "confirmed_unstructured" && <span style={{ fontSize: 9, color: WARN }}>직접 작성</span>}{!rawOnly && summary.memberCondition && <span style={{ fontSize: 9, color: BRAND_D }}>{summary.memberCondition}</span>}</div><p className="mt-1 line-clamp-2" style={{ fontSize: 12, lineHeight: 1.45, color: INK2 }}>{reviewRequired ? "녹음 내용을 확인한 뒤 기록에 반영해 주세요." : rawOnly ? rawText : prepText(structured.didToday || summary.todayExercises, note.body)}</p>{!reviewRequired && detailCount > 0 && <p className="mt-1 line-clamp-2" style={{ fontSize: 10, color: WARN }}>{[prepText(structured.observations?.length ? structured.observations : summary.pain, ""), prepText(structured.responses?.length ? structured.responses : summary.improvements, "")].filter(Boolean).join(" · ")}</p>}</div>; })}
-            </Section> : <p className="py-3 text-xs" style={{ color: SUB }}>아직 작성된 수업 기록이 없습니다</p>}</div>
-          </details>
+          <section data-member-section="lesson-history" style={sectionStyle}>
+            <div className="mb-2 flex min-w-0 items-center gap-2"><h2 className="min-w-0 flex-1 text-sm font-extrabold" style={{ color: INK }}>수업 기록</h2><span className="shrink-0 text-[10px] tabular-nums" style={{ color: SUB }}>{lessonSessions.length}개 수업</span>{pendingSessionCount > 0 && <button type="button" disabled={Boolean(saving)} onClick={async () => { for (const session of lessonSessions.filter((item) => item.confirmationState !== "confirmed")) await confirmSessionRecords(session); }} className="shrink-0 text-[10px] font-extrabold" style={{ color: BRAND_D }}>모두 확인</button>}</div>
+            {lessonSessions.length === 0 ? <p className="py-3 text-xs" style={{ color: SUB }}>아직 작성된 수업 기록이 없습니다</p> : <div className="min-w-0 space-y-2">{lessonSessions.map((session) => {
+              const stateLabel = session.confirmationState === "partial" ? `일부 확인 (${session.confirmedCount}/${session.confirmableCount})` : session.confirmationState === "pending" ? "확인 필요" : "확인 완료";
+              const pendingRecords = session.records.filter((note) => note?.lessonRecord && note.lessonRecord.stage !== "confirmed_record");
+              const reviewable = pendingRecords.length === 1 && pendingRecords[0]?.lessonRecord?.structuredDraft;
+              return <div key={session.key} className="flex min-w-0 items-start gap-2 rounded-lg p-2.5" style={{ backgroundColor: CANVAS }}><details className="min-w-0 flex-1"><summary className="min-w-0 cursor-pointer list-none"><span className="flex min-w-0 items-center gap-2"><span className="min-w-0 flex-1 truncate text-xs font-extrabold" style={{ color: INK }}>{formatMemberLessonDate(session.date, { weekday: true })} · {session.type}</span><span className="shrink-0 text-[9px] font-bold" style={{ color: session.confirmationState === "confirmed" ? SUB : WARN }}>{stateLabel}</span></span><span className="mt-1 block truncate text-xs" style={{ color: INK2 }}>{session.today}</span><span className="mt-1 block truncate text-[10px]" style={{ color: SUB }}>다음 · {session.next || "기록 없음"}</span>{session.confirmationState === "partial" && <span className="mt-1 block text-[9px] font-bold" style={{ color: WARN }}>확인할 기록 {pendingRecords.length}건</span>}{session.warning && <span className="mt-1 block text-[9px]" style={{ color: SUB }}>{session.warning}</span>}</summary><div className="mt-3 border-t pt-2" style={{ borderColor: LINE }}><LessonRecordFieldRows session={session} />{session.sourceDateHint && <p className="mt-2 text-[9px] tabular-nums" style={{ color: SUB }}>원문 날짜 {session.sourceDateHint}</p>}</div></details>{session.confirmationState !== "confirmed" && <button type="button" disabled={Boolean(saving)} onClick={() => reviewable ? openRecordReview(pendingRecords[0]) : confirmSessionRecords(session)} className="h-8 shrink-0 rounded-lg px-2 text-[10px] font-extrabold" style={{ backgroundColor: TINT, color: BRAND_D }}>확인</button>}</div>;
+            })}</div>}
+          </section>
           <details data-member-management-card="posture" style={{ ...sectionStyle, padding: 0, overflow: "hidden", backgroundColor: afterReminder.show ? WARN_S : CARD }}>
-            <summary aria-label="체형변화·사진 관리 카드 열기" className="flex min-h-14 cursor-pointer list-none items-center gap-3 px-3.5 py-3"><span className="min-w-0 flex-1"><span className="block truncate text-sm font-extrabold" style={{ color: INK }}>체형변화·사진</span><span className="mt-0.5 block truncate text-[10px]" style={{ color: SUB }}>{lastAssessment ? `마지막 촬영 ${ymd((lastAssessment.completedAt || lastAssessment.at).slice(0, 10))}` : "아직 완료된 분석이 없습니다"}</span></span>{afterReminder.show && <span className="shrink-0 rounded-full px-2 py-1 text-[9px] font-extrabold" style={{ backgroundColor: CARD, color: WARN }}>{afterReminder.label}</span>}<ChevronDown size={16} style={{ color: SUB }} /></summary>
+            <summary aria-label="체형변화·사진 관리 카드 열기" className="flex min-h-14 cursor-pointer list-none items-center gap-3 px-3.5 py-3"><span className="min-w-0 flex-1"><span className="block truncate text-sm font-extrabold" style={{ color: INK }}>체형변화·사진</span><span className="mt-0.5 block truncate text-[10px]" style={{ color: SUB }}>사진 {assessmentPhotoCount}장 · 마지막 {lastAssessment ? formatMemberLessonDate((lastAssessment.completedAt || lastAssessment.at).slice(0, 10)) : "없음"} · 분석 {completedAssessments.length}건</span></span>{afterReminder.show && <span className="shrink-0 rounded-full px-2 py-1 text-[9px] font-extrabold" style={{ backgroundColor: CARD, color: WARN }}>{afterReminder.label}</span>}<ChevronDown size={16} style={{ color: SUB }} /></summary>
             <div data-member-management-content="posture" style={{ padding: "0 12px 12px" }}>
           <section data-member-section="posture" style={{ ...sectionStyle, backgroundColor: afterReminder.show ? WARN_S : CARD }}>
             <div className="flex items-start gap-3"><span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: TINT, color: BRAND_D }}><Activity size={16} /></span><span className="min-w-0 flex-1"><span className="flex items-center gap-2">{afterReminder.show && <span className="ml-auto shrink-0 rounded-full px-2 py-1 text-[9px] font-extrabold" style={{ backgroundColor: CARD, color: WARN }}>{afterReminder.label}</span>}</span><span className="mt-1 block text-xs" style={{ color: SUB }}>{lastAssessment ? `마지막 촬영 ${ymd((lastAssessment.completedAt || lastAssessment.at).slice(0, 10))}${afterReminder.days != null ? ` · ${afterReminder.days}일 전` : ""}` : "아직 완료된 분석이 없습니다"}</span>{lastAssessmentMetrics.length > 0 && <span className="mt-1 block line-clamp-2 text-xs" style={{ color: INK2 }}>{lastAssessmentMetrics.map((metric) => `${metric.label} ${metric.value}${metric.unit}`).join(" · ")}</span>}</span></div>
@@ -4842,10 +4842,10 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
             <summary aria-label="기본정보·상담메모 관리 카드 열기" className="flex min-h-14 cursor-pointer list-none items-center gap-3 px-3.5 py-3"><span className="min-w-0 flex-1"><span className="block truncate text-sm font-extrabold" style={{ color: INK }}>기본정보·상담메모</span><span className="mt-0.5 block truncate text-[10px]" style={{ color: SUB }}>{maskedPhone(member.phone)} · {consultationNotes.length ? `상담메모 ${consultationNotes.length}건` : "상담메모 없음"}</span></span><ChevronDown size={16} style={{ color: SUB }} /></summary>
             <div data-member-management-content="basic-and-memos" className="space-y-2" style={{ padding: "0 12px 12px" }}>
           <Section title="목표·주의사항" action={<button type="button" onClick={openPreparation} style={{ fontSize: 12, fontWeight: 700, color: BRAND }}>수정</button>}>
-            <div className="space-y-2"><div><p style={{ fontSize: 10, color: SUB }}>운동 목표</p><p className="mt-0.5" style={{ fontSize: 12, lineHeight: 1.45, color: member.goal ? INK2 : SUB }}>{member.goal || "등록된 운동 목표가 없습니다"}</p></div><div style={{ padding: "9px 10px", borderRadius: 8, backgroundColor: WARN_S }}><p style={{ fontSize: 10, fontWeight: 700, color: WARN }}>통증 및 주의사항</p><p className="mt-1" style={{ fontSize: 12, lineHeight: 1.45, color: INK2 }}>{(member.focus || []).length ? member.focus.join(" · ") : "등록된 주의사항이 없습니다"}</p></div></div>
+            <div className="space-y-2"><div><p style={{ fontSize: 10, color: SUB }}>운동 목표</p>{member.goal ? <p className="mt-0.5" style={{ fontSize: 12, lineHeight: 1.45, color: INK2 }}>{member.goal}</p> : <button type="button" onClick={openPreparation} className="mt-0.5 text-xs font-bold" style={{ color: BRAND }}>+ 목표 추가</button>}</div><div style={{ padding: "9px 10px", borderRadius: 8, backgroundColor: WARN_S }}><p style={{ fontSize: 10, fontWeight: 700, color: WARN }}>통증 및 주의사항</p><p className="mt-1" style={{ fontSize: 12, lineHeight: 1.45, color: INK2 }}>{(member.focus || []).length ? member.focus.join(" · ") : "등록된 주의사항이 없습니다"}</p></div></div>
           </Section>
           <Section title="회원 기본정보" action={<button type="button" onClick={openEdit} style={{ fontSize: 12, fontWeight: 700, color: BRAND }}><Pencil size={12} className="inline" /> 정보 수정</button>}>
-            <div className="grid grid-cols-2 gap-x-3 gap-y-2">{[["이름", member.name || "-"], ["회원 상태", isHold(member) ? "홀딩" : isEnded(member) ? "종료" : "활성"], ...(!singleInstructorMode ? [["담당 강사", member.instructor || "미지정"]] : []), ["연락처", maskedPhone(member.phone)], ["수업 유형", member.lessonType === "duet" ? "듀엣" : member.lessonType === "group" ? "그룹" : "개인"], ["기본 수업시간", `${lessonDurationOf(member)}분`], ["생년월일 · 나이", maskedBirth(member.birth, ageOf(member))]].map(([k,v]) => <div key={k} className={k === "생년월일 · 나이" ? "col-span-2" : ""}><p style={{ fontSize: 10, color: SUB }}>{k}</p><p className="mt-0.5 truncate" style={{ fontSize: 12, fontWeight: 600, color: INK }}>{v}</p></div>)}</div>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-2">{[["이름", member.name || "-"], ["회원 상태", isHold(member) ? "홀딩" : isEnded(member) ? "종료" : "활성"], ...(!singleInstructorMode ? [["담당 강사", member.instructor || "미지정"]] : []), ["연락처", member.phone ? maskedPhone(member.phone) : "번호 추가"], ["수업 유형", member.lessonType === "duet" ? "듀엣" : member.lessonType === "group" ? "그룹" : "개인"], ["기본 수업시간", `${lessonDurationOf(member)}분`], ["생년월일 · 나이", maskedBirth(member.birth, ageOf(member))]].map(([k,v]) => <div key={k} className={k === "생년월일 · 나이" ? "col-span-2" : ""}><p style={{ fontSize: 10, color: SUB }}>{k}</p><p className="mt-0.5 truncate" style={{ fontSize: 12, fontWeight: 600, color: INK }}>{v}</p></div>)}</div>
           </Section>
           <Section title="상담 및 중요 메모" action={<div className="flex gap-3"><button type="button" onClick={() => setSheet("memos-all")} style={{ fontSize: 12, fontWeight: 600, color: SUB }}>전체 보기</button><button type="button" onClick={openMemo} style={{ fontSize: 12, fontWeight: 700, color: BRAND }}>메모 추가</button></div>}>
             {consultationNotes.length ? consultationNotes.slice(0, 3).map((note) => <div key={note.id} className="flex items-start gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}` }}><button type="button" aria-label={note.important ? "중요 메모 고정 해제" : "중요 메모로 고정"} onClick={() => commitPatch("pin", { notes: (member.notes || []).map((item) => item.id === note.id ? { ...item, important: !item.important } : item) }, false)} className="mt-0.5 shrink-0" style={{ color: note.important ? WARN : FAINT }}><Star size={14} fill={note.important ? "currentColor" : "none"} /></button><span className="min-w-0 flex-1"><span className="block" style={{ fontSize: 10, color: SUB }}>{ymd(note.date)}{note.important ? " · 중요" : ""}</span><span className="mt-0.5 block line-clamp-2" style={{ fontSize: 12, lineHeight: 1.45, color: INK2 }}>{note.body}</span></span></div>) : <button type="button" onClick={openMemo} className="flex h-9 w-full items-center justify-between px-2 text-left" style={{ borderRadius: 8, backgroundColor: CANVAS, color: SUB, fontSize: 11 }}>등록된 상담 메모가 없습니다<span style={{ color: BRAND }}>추가하기</span></button>}
@@ -4881,7 +4881,7 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
       {(sheet === "memo" || sheet === "record") && <Sheet title={sheet === "memo" ? "상담 메모 추가" : "수업 기록"} onClose={() => setSheet(null)}><div className="space-y-2">{sheet === "record" && <VoiceNote key={lessonRecordSessionKey(member.id, null)} memberId={member.id} memberName={member.name || "회원"} onClose={() => setSheet(null)} onDeferred={() => setSheet(null)} onDraftChange={(text, meta, options) => onSaveNote("개인레슨", text, meta, options)} onApply={(text, meta) => onSaveNote("개인레슨", text, meta, { confirmed: true, upsert: true })} />}{sheet === "memo" && <><button type="button" aria-pressed={memoImportant} onClick={() => setMemoImportant((value) => !value)} className="flex h-10 w-full items-center gap-2 px-3" style={{ borderRadius: 8, backgroundColor: memoImportant ? WARN_S : CANVAS, color: memoImportant ? WARN : SUB, fontSize: 12, fontWeight: 700 }}><Star size={14} fill={memoImportant ? "currentColor" : "none"} />중요 메모로 상단 고정</button><textarea autoFocus rows={5} value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="내용을 입력하세요" className={`${inputCls} h-auto resize-none py-3`} />{saveError && <p role="alert" style={{ fontSize: 11, color: BAD }}>{saveError}</p>}<button type="button" aria-busy={saving === sheet} disabled={!memo.trim() || saving === sheet} onClick={commitNote} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>{saving === sheet ? "저장 중…" : "저장"}</button></>}</div></Sheet>}
       {sheet === "record-review" && reviewDraft && <Sheet title="AI 수업기록 확인" sub="확인은 선택입니다. 정리된 기록은 이미 저장되어 있어요." onClose={() => setSheet(null)}><div className="space-y-3"><div className="grid grid-cols-2 gap-2">{[{ k: "didToday", l: "오늘 수업" }, { k: "observations", l: "변화" }, { k: "responses", l: "회원 반응" }, { k: "nextFocus", l: "다음 확인" }].map((field) => <div key={field.k} className="rounded-xl p-3" style={{ backgroundColor: CANVAS }}><p className="text-[10px] font-extrabold" style={{ color: SUB }}>{field.l}</p>{reviewEditing ? <textarea rows={2} aria-label={`${field.l} 수정`} value={structuredFieldText(reviewDraft, field.k)} onChange={(event) => setReviewDraft((current) => editStructuredField(current, field.k, event.target.value))} className={`${inputCls} mt-1 h-auto resize-none py-2 text-xs`} /> : <p className="mt-1 text-xs font-bold leading-relaxed" style={{ color: INK2 }}>{prepText(reviewDraft[field.k], "기록 없음")}</p>}</div>)}</div><div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => setReviewEditing((value) => !value)} className="h-12 rounded-xl text-sm font-extrabold" style={{ backgroundColor: CANVAS, color: BRAND_D }}>{reviewEditing ? "수정 닫기" : "수정"}</button><button type="button" onClick={confirmRecordReview} className="h-12 rounded-xl text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>확인</button></div></div></Sheet>}
       {sheet === "memos-all" && <Sheet title="상담 메모 전체 보기" onClose={() => setSheet(null)}><div className="space-y-2">{consultationNotes.length ? consultationNotes.map((note) => <div key={note.id} style={{ padding: 10, borderRadius: 8, backgroundColor: note.important ? WARN_S : CANVAS }}><p style={{ fontSize: 10, color: SUB }}>{ymd(note.date)}{note.important ? " · 중요 메모" : ""}</p><p className="mt-1" style={{ fontSize: 12, lineHeight: 1.5, color: INK2 }}>{note.body}</p></div>) : <p style={{ fontSize: 12, color: SUB }}>등록된 상담 메모가 없습니다</p>}<button type="button" onClick={openMemo} className="h-11 w-full text-xs font-bold" style={{ borderRadius: 8, backgroundColor: TINT, color: BRAND_D }}>메모 추가</button></div></Sheet>}
-      {sheet === "records-all" && <Sheet title="수업 기록 전체 보기" onClose={() => setSheet(null)}><div className="space-y-2">{lessonNotes.length ? lessonNotes.map((note) => <div key={note.id} style={{ padding: 10, borderRadius: 8, backgroundColor: CANVAS }}><p style={{ fontSize: 10, color: SUB }}>{ymd(note.date)} · {note.type || "수업"}{noteEquipText(note) ? ` · ${noteEquipText(note)}` : ""}</p><p className="mt-1" style={{ fontSize: 12, lineHeight: 1.5, color: INK2 }}>{note.body}</p></div>) : <p style={{ fontSize: 12, color: SUB }}>아직 작성된 수업 기록이 없습니다</p>}</div></Sheet>}
+      {sheet === "records-all" && <Sheet title="수업 기록 전체 보기" onClose={() => setSheet(null)}><div className="min-w-0 space-y-2">{lessonSessions.length ? lessonSessions.map((session) => <div key={session.key} className="min-w-0" style={{ padding: 10, borderRadius: 8, backgroundColor: CANVAS }}><p className="mb-2 text-[10px] tabular-nums" style={{ color: SUB }}>{formatMemberLessonDate(session.date, { weekday: true })} · {session.type}</p><LessonRecordFieldRows session={session} />{session.warning && <p className="mt-2 text-[9px]" style={{ color: SUB }}>{session.warning}</p>}</div>) : <p style={{ fontSize: 12, color: SUB }}>아직 작성된 수업 기록이 없습니다</p>}</div></Sheet>}
       {sheet === "membership" && <Sheet title="현재 이용권 수정" onClose={() => setSheet(null)}><div className="space-y-3">{!passConfirm ? <><Field label="이용권 이름"><input value={pass.name} onChange={(e) => setPass({ ...pass, name: e.target.value })} className={inputCls} /></Field><div className="grid grid-cols-3 gap-2"><Field label="정규 잔여"><input inputMode="numeric" value={pass.regular} onChange={(e) => setPass({ ...pass, regular: e.target.value.replace(/\D/g, "") })} className={inputCls} /></Field><Field label="서비스 잔여"><input inputMode="numeric" value={pass.service} onChange={(e) => setPass({ ...pass, service: e.target.value.replace(/\D/g, "") })} className={inputCls} /></Field><Field label="누적 등록"><input inputMode="numeric" value={pass.total} onChange={(e) => setPass({ ...pass, total: e.target.value.replace(/\D/g, "") })} className={inputCls} /></Field></div><Field label="만료일"><input type="date" value={pass.end} onChange={(e) => setPass({ ...pass, end: e.target.value })} className={inputCls} /></Field><button type="button" onClick={() => setPassConfirm(true)} className="h-12 w-full text-sm font-bold text-white" style={{ borderRadius: 8, backgroundColor: BRAND }}>변경 내용 확인</button></> : <><div style={{ padding: 12, borderRadius: 10, backgroundColor: CANVAS }}><p className="mb-2 text-xs font-bold" style={{ color: INK }}>변경 전후를 확인해 주세요</p>{[["총 잔여", `${left(member)}회`, `${num(pass.regular) + num(pass.service)}회`], ["누적 등록", `${num(member.total)}회`, `${num(pass.total)}회`], ["만료일", member.contractEnd ? ymd(member.contractEnd) : "미설정", pass.end ? ymd(pass.end) : "미설정"]].map(([label,before,after]) => <div key={label} className="flex items-center gap-2 py-1"><span className="w-16 text-[10px]" style={{ color: SUB }}>{label}</span><span className="min-w-0 flex-1 text-right text-xs line-through" style={{ color: SUB }}>{before}</span><ChevronRight size={12} style={{ color: FAINT }} /><span className="min-w-0 flex-1 text-xs font-bold" style={{ color: BRAND_D }}>{after}</span></div>)}</div>{saveError && <p role="alert" style={{ fontSize: 11, color: BAD }}>{saveError}</p>}<div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => setPassConfirm(false)} className="h-12 text-sm font-bold" style={{ borderRadius: 8, backgroundColor: CANVAS, color: INK2 }}>다시 수정</button><button type="button" disabled={saving === "membership"} onClick={() => { const regular = num(pass.regular), service = num(pass.service), total = num(pass.total); commitPatch("membership", { passName: pass.name.trim(), regular, service, total, contractEnd: pass.end, payments: [{ id: uid(), date: todayISO(), kind: "adjustment", name: "이용권 수정", before: { remaining: left(member), total: num(member.total), end: member.contractEnd || "" }, after: { remaining: regular + service, total, end: pass.end } }, ...(member.payments || [])] }); }} className="h-12 text-sm font-bold text-white disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND }}>{saving === "membership" ? "저장 중…" : "확인 후 저장"}</button></div></>}</div></Sheet>}
       {sheet === "rate" && canViewSettlement && <Sheet title="강사 정산 단가 수정" onClose={() => setSheet(null)}><div className="space-y-3">{!rateConfirm ? <><Field label="강사 정산 단가"><input inputMode="numeric" value={rateEdit} onChange={(e) => setRateEdit(e.target.value.replace(/\D/g, ""))} className={inputCls} /></Field><p style={{ fontSize: 11, lineHeight: 1.5, color: SUB }}>회원 회당 결제금액과 별도이며 급여 예상 계산에 사용됩니다.</p><button type="button" disabled={!num(rateEdit)} onClick={() => setRateConfirm(true)} className="h-12 w-full text-sm font-bold text-white disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND }}>변경 내용 확인</button></> : <><div className="flex items-center gap-3" style={{ padding: 12, borderRadius: 10, backgroundColor: CANVAS }}><span className="min-w-0 flex-1 text-right text-sm line-through" style={{ color: SUB }}>₩{won(settlementUnit)}</span><ChevronRight size={14} style={{ color: FAINT }} /><span className="min-w-0 flex-1 text-sm font-bold" style={{ color: BRAND_D }}>₩{won(rateEdit)}</span></div>{saveError && <p role="alert" style={{ fontSize: 11, color: BAD }}>{saveError}</p>}<div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => setRateConfirm(false)} className="h-12 text-sm font-bold" style={{ borderRadius: 8, backgroundColor: CANVAS, color: INK2 }}>다시 수정</button><button type="button" disabled={saving === "rate"} onClick={() => commitPatch("rate", { payRate: num(rateEdit) })} className="h-12 text-sm font-bold text-white disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND }}>{saving === "rate" ? "저장 중…" : "확인 후 저장"}</button></div></>}</div></Sheet>}
     </div>
@@ -13691,6 +13691,8 @@ export default function App() {
   const [accounts, setAccounts] = useState([]);
   const [account, setAccount] = useState(null);
   const [db, setDb] = useState(emptyDb("", ""));
+  const lessonRecordDbRef = useRef(db);
+  useEffect(() => { lessonRecordDbRef.current = db; }, [db]);
   const [photos, setPhotos] = useState({});
   const photosRef = useRef({});
   const [tab, setTab] = useState("schedule");
@@ -14283,7 +14285,8 @@ export default function App() {
 
   const saveDb = useCallback(async (next, dualWrite) => {
     if (accountDeletionInFlight.current) return false;
-    const prev = db;
+    const prev = lessonRecordDbRef.current;
+    lessonRecordDbRef.current = next;
     setDb(next);
     if (!account) return;
     try {
@@ -14298,8 +14301,8 @@ export default function App() {
       else await legacyWrite();
       return true;
     }
-    catch (e) { setDb(prev); deviceLog("app_data_save_failed", { storage: "localStorage", operation: dualWrite?.operation || "legacy_write", ...deviceError(e) }); setToast({ ok: false, msg: "저장하지 못했습니다. 방금 입력한 내용을 다시 확인해 주세요." }); return false; }
-  }, [account, db, queueCloud]);
+    catch (e) { lessonRecordDbRef.current = prev; setDb(prev); deviceLog("app_data_save_failed", { storage: "localStorage", operation: dualWrite?.operation || "legacy_write", ...deviceError(e) }); setToast({ ok: false, msg: "저장하지 못했습니다. 방금 입력한 내용을 다시 확인해 주세요." }); return false; }
+  }, [account, queueCloud]);
 
   const resolveLessonRecordLink = useCallback(async ({ memberId, lessonId } = {}) => {
     const current = evaluateLessonRecordLink({ members: db.members, schedule: db.schedule, memberId, lessonId });
@@ -14496,9 +14499,10 @@ export default function App() {
     const text = String(body || "").trim();
     if (!text) return false;
     setNoteBack(false);
-    const target = db.members.find((m) => m.id === id);
+    const currentDb = lessonRecordDbRef.current;
+    const target = currentDb.members.find((m) => m.id === id);
     if (!target) { setToast({ ok: false, msg: "회원을 찾을 수 없습니다." }); return false; }
-    const linkedLesson = sid ? db.schedule.find((lesson) => lesson?.id === sid) : null;
+    const linkedLesson = sid ? currentDb.schedule.find((lesson) => lesson?.id === sid) : null;
     const lessonLinkedToMember = !sid || linkedLesson?.memberId === id || linkedLesson?.memberIds?.includes?.(id) || linkedLesson?.attendees?.some?.((item) => item?.memberId === id);
     const reconcileStatus = lessonLinkedToMember ? (sid ? "linked" : "member_only") : "link_review_required";
     const shouldConfirm = !voiceMeta || noteOptions?.confirmed !== false;
@@ -14559,7 +14563,7 @@ export default function App() {
     const memoryResult = shouldConfirm
       ? buildMemberMemorySafely({ memberId: id, notes: nextNotes, existingMemory: target.aiMemory || [] })
       : { memories: target.aiMemory || [], failed: false, stats: { candidateCount: 0, mergedCount: 0, patternCount: 0 } };
-    const nextDb = { ...db, members: db.members.map((m) => (m.id === id ? { ...m, notes: nextNotes, aiMemory: memoryResult.memories, memoryRebuildNeeded: memoryResult.failed } : m)) };
+    const nextDb = { ...currentDb, members: currentDb.members.map((m) => (m.id === id ? { ...m, notes: nextNotes, aiMemory: memoryResult.memories, memoryRebuildNeeded: memoryResult.failed } : m)) };
     const stored = await saveDb(nextDb);
     if (stored === false) return false;
     if (voiceMeta?.aiMeta?.requestId) {

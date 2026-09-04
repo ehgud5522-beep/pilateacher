@@ -13,32 +13,32 @@ const requiredIndex = (needle) => {
   return index;
 };
 
-test("member detail follows quick actions, summary, memory, then four management cards", () => {
+test("member detail follows state, preparation, history, then three management cards", () => {
   const orderedAnchors = [
     'aria-label="회원 빠른 실행"',
-    'data-member-section="top-summary"',
-    'data-member-section="memory-first"',
-    'data-member-management-card="recent-lessons"',
+    'data-member-section="status"',
+    'data-member-section="next-preparation"',
+    'data-member-section="lesson-history"',
     'data-member-management-card="posture"',
     'data-member-management-card="membership"',
     'data-member-management-card="basic-and-memos"',
   ];
   const positions = orderedAnchors.map(requiredIndex);
   positions.slice(1).forEach((position, index) => assert.ok(position > positions[index], `${orderedAnchors[index + 1]} must follow ${orderedAnchors[index]}`));
-  ["최근 수업기록", "체형변화·사진", "이용권·결제", "기본정보·상담메모"].forEach((label) => assert.match(detail, new RegExp(label)));
+  ["상태", "다음 수업 준비", "수업 기록", "체형변화·사진", "이용권·결제", "기본정보·상담메모"].forEach((label) => assert.match(detail, new RegExp(label)));
 });
 
-test("member detail keeps the compact empty memory state and provenance dates", () => {
-  assert.match(detail, /data-member-section="memory-first"/);
-  assert.match(detail, /아직 작성된 수업 기록이 없습니다\./);
-  assert.match(detail, /memoryDateLabel\(row\.date\)/);
-  assert.match(detail, /memorySourceDate\(.*Memory\)/);
-  assert.ok(requiredIndex('data-member-section="memory-first"') < requiredIndex('data-member-management-card="membership"'));
+test("member detail keeps compact empty history and render-only provenance dates", () => {
+  assert.match(detail, /data-member-section="lesson-history"/);
+  assert.match(detail, /아직 작성된 수업 기록이 없습니다/);
+  assert.match(detail, /session\.sourceDateHint/);
+  assert.match(detail, /원문 날짜/);
+  assert.ok(requiredIndex('data-member-section="lesson-history"') < requiredIndex('data-member-management-card="membership"'));
 });
 
-test("member responses are labelled as responses and never masquerade as recent change", () => {
-  assert.match(detail, /entry\.type === "response" \? "회원 반응" : "최근 변화"/);
-  assert.match(detail, /entry\.type === "response"/);
+test("lesson records render response and change as separate labelled fields", () => {
+  assert.match(source, /\["change", "변화"\], \["reaction", "회원 반응"\]/);
+  assert.match(detail, /<LessonRecordFieldRows session=\{session\}/);
 });
 
 test("membership data and posture entry live inside their management cards", () => {

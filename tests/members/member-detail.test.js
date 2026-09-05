@@ -25,7 +25,7 @@ test("member detail follows state, preparation, history, then three management c
   ];
   const positions = orderedAnchors.map(requiredIndex);
   positions.slice(1).forEach((position, index) => assert.ok(position > positions[index], `${orderedAnchors[index + 1]} must follow ${orderedAnchors[index]}`));
-  ["상태", "다음 수업 준비", "수업 기록", "체형변화·사진", "이용권·결제", "기본정보·상담메모"].forEach((label) => assert.match(detail, new RegExp(label)));
+  ["상태", "다음 수업 준비", "수업 기록", "체형 변화", "이용권·결제", "기본정보·상담메모"].forEach((label) => assert.match(detail, new RegExp(label)));
 });
 
 test("member detail keeps compact empty history and render-only provenance dates", () => {
@@ -41,13 +41,13 @@ test("lesson records render response and change as separate labelled fields", ()
   assert.match(detail, /<LessonRecordFieldRows session=\{session\}/);
 });
 
-test("membership data and posture entry live inside their management cards", () => {
+test("membership data and body-photo surfacing live inside their management cards", () => {
   const postureStart = requiredIndex('data-member-management-card="posture"');
   const membershipStart = requiredIndex('data-member-management-card="membership"');
   const basicStart = requiredIndex('data-member-management-card="basic-and-memos"');
   const postureCard = detail.slice(postureStart, membershipStart);
   const membershipCard = detail.slice(membershipStart, basicStart);
-  ["새 체형분석", "과거 이력", "체형분석 과거 이력"].forEach((label) => assert.match(postureCard, new RegExp(label)));
+  ["체형 변화", "첫 사진 촬영", "비교 카드 만들어 보내기", "전체 보기"].forEach((label) => assert.match(postureCard, new RegExp(label)));
   ["누적 등록 횟수", "이용권 만료일", "회원 회당 금액", "최근 수업일", "정규", "서비스"].forEach((label) => assert.match(membershipCard, new RegExp(label)));
   assert.doesNotMatch(detail.slice(0, membershipStart), /data-member-section="membership"/);
   assert.match(detail.slice(basicStart), /상담 및 중요 메모/);

@@ -533,7 +533,7 @@ test("all active new-analysis entry points use the common guard", async () => {
   assert.doesNotMatch(workspace, /onClick=\{startNew\}/);
   assert.match(workspace, /if \(initialMode !== "new"\) return;[\s\S]*requestStartNew\(\);/);
   assert.match(source, /onAssess\?\.\(\{ mode: "new" \}\)/);
-  assert.match(source, /resumable \? \{ mode: "resume", assessmentId: assessment\.id \} : \{ mode: "history" \}/);
+  assert.match(source, /resumableAssessment && <button[\s\S]*mode: "resume", assessmentId: resumableAssessment\.id/);
   assert.match(workspace, /const closeDraftGuard = \(\) => \{[\s\S]*assessmentAction\.current !== "discard"/);
   assert.match(workspace, /ScheduleBottomSheet title="진행 중인 체형분석을 삭제하고 새로 시작할까요\?"[^>]*onClose=\{closeDraftGuard\}[^>]*dismissible=\{draftGuard\.step !== "discarding"\}/);
   assert.match(source, /window\.addEventListener\("popstate", \(event\) => \{\s*if \(backSwallow <= 0\) return;\s*backSwallow -= 1;\s*swallowedBackEvents\.add\(event\);\s*\}, true\);/);

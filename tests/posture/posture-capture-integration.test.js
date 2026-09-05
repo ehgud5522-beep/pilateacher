@@ -159,7 +159,7 @@ test("new, resumed, and completed assessment entry routes are distinct", async (
   assert.match(workspace, /POSTURE_WORKFLOW_EVENTS\.OPEN_COMPLETED_ASSESSMENT/);
   assert.match(workspace, /openSet\(requestedCompletedSet, "result"\)/);
   assert.match(workspace, /initialAssessmentId=\{workflow\.activeAssessmentId\}/);
-  assert.match(source, /mode:\s*"resume", assessmentId:\s*assessment\.id/);
+  assert.match(source, /mode:\s*"resume", assessmentId:\s*resumableAssessment\.id/);
 });
 
 test("schedule detail uses three final statuses and native speech recognition owns the microphone", async () => {

@@ -78,15 +78,16 @@ test("member registration uses one safe-area header and a separate safe footer",
   assert.match(register, /className="min-w-0 whitespace-nowrap px-1"/);
 });
 
-test("posture details retain capture data and actions without repeating their outer title", async () => {
+test("posture details surface body-photo states without repeating their outer title", async () => {
   const app = await readSource("src/App.jsx");
   const start = app.indexOf('data-member-management-card="posture"');
   const end = app.indexOf('data-member-management-card="membership"', start);
   const posture = app.slice(start, end);
-  assert.equal((posture.match(/체형변화·사진/g) || []).length, 2, "visible outer title plus aria-label only");
-  assert.match(posture, /마지막 촬영/);
-  assert.match(posture, /새 체형분석/);
-  assert.match(posture, /과거 이력/);
+  assert.equal((posture.match(/체형 변화/g) || []).length, 1);
+  assert.match(posture, /bodyPhotoSurface\.state === "empty"/);
+  assert.match(posture, /첫 사진 촬영/);
+  assert.match(posture, /비교 카드 만들어 보내기/);
+  assert.match(posture, /grid-cols-2 gap-2 overflow-hidden/);
 });
 
 test("16px form-control floor is scoped to iOS Capacitor only", async () => {

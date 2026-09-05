@@ -457,6 +457,82 @@ export function selectAutomaticComparison(sets, { scope = "full_body" } = {}) {
   return { before: valid[0], after: valid[valid.length - 1] };
 }
 
+function photoDateValue(photo) {
+  const value = String(photo?.completedAt || photo?.createdAt || photo?.updatedAt || photo?.at || photo?.date || "").trim();
+  const time = Date.parse(value);
+  return { value, time: Number.isFinite(time) ? time : null };
+}
+
+function calendarDateIndex(value) {
+  const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!match) return null;
+  return Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])) / 86400000;
+}
+
+export function postureCalendarDays(from, to) {
+  const start = calendarDateIndex(from);
+  const end = calendarDateIndex(to);
+  return start === null || end === null ? null : Math.max(0, Math.round(end - start));
+}
+
+export function selectMemberBodyPhotoSurface(photos, { now = new Date() } = {}) {
+  const records = [];
+  const seen = new Set();
+  POSTURE_STORAGE_KEYS.forEach((storageKey) => {
+    const view = normalizePostureView(storageKey);
+    if (!POSTURE_VIEW_KEYS.includes(view)) return;
+    (photos?.[storageKey] || []).filter(Boolean).forEach((photo, index) => {
+      const normalizedView = normalizePostureView(photo.view || storageKey);
+      if (!POSTURE_VIEW_KEYS.includes(normalizedView)) return;
+      const identity = String(photo.id || photo.photoId || photo.blobId || `${storageKey}:${index}`);
+      const uniqueKey = `${normalizedView}:${identity}`;
+      if (seen.has(uniqueKey)) return;
+      seen.add(uniqueKey);
+      const stamp = photoDateValue(photo);
+      records.push({ photo, view: normalizedView, stamp: stamp.value, time: stamp.time, order: records.length });
+    });
+  });
+
+  const ordered = [...records].sort((left, right) => {
+    if (left.time !== null && right.time !== null && left.time !== right.time) return left.time - right.time;
+    if (left.time !== null && right.time === null) return 1;
+    if (left.time === null && right.time !== null) return -1;
+    return left.order - right.order;
+  });
+  const latestEntry = ordered.at(-1) || null;
+  const candidateViews = ["front", ...POSTURE_VIEW_KEYS.filter((view) => view !== "front")];
+  let pair = null;
+  for (const view of candidateViews) {
+    const sameView = ordered.filter((entry) => entry.view === view && entry.time !== null);
+    const before = sameView[0] || null;
+    const latest = sameView.at(-1) || null;
+    if (before && latest && before.photo !== latest.photo && before.time !== latest.time) {
+      pair = { view, before, latest };
+      break;
+    }
+  }
+
+  const today = now instanceof Date && !Number.isNaN(now.getTime())
+    ? `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`
+    : "";
+  const beforeDate = pair?.before.stamp.slice(0, 10) || "";
+  const latestDate = (pair?.latest || latestEntry)?.stamp.slice(0, 10) || "";
+  return {
+    state: pair ? "comparison" : records.length ? "single" : "empty",
+    photoCount: records.length,
+    comparisonPairAvailable: Boolean(pair),
+    view: pair?.view || latestEntry?.view || null,
+    before: pair?.before.photo || null,
+    latest: pair?.latest.photo || latestEntry?.photo || null,
+    beforeDate,
+    latestDate,
+    comparisonElapsedDays: pair ? postureCalendarDays(beforeDate, latestDate) : null,
+    daysSinceLatest: latestDate && today ? postureCalendarDays(latestDate, today) : null,
+    beforeAssessmentId: pair?.before.photo?.assessmentId || null,
+    afterAssessmentId: pair?.latest.photo?.assessmentId || null,
+  };
+}
+
 export function postureRetakeStatus(lastCompletedAt, now = new Date()) {
   if (!lastCompletedAt) return { days: null, tone: "empty", label: "아직 완료된 분석이 없습니다", recommended: false };
   const value = String(lastCompletedAt).slice(0, 10);

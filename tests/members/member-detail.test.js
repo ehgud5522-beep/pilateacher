@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const source = await readFile(new URL("../../src/App.jsx", import.meta.url), "utf8");
+const lessonRowSource = await readFile(new URL("../../src/features/lesson-record/LessonHistorySessionRow.jsx", import.meta.url), "utf8");
 const start = source.indexOf("function ReferenceMemberDetail(");
 const end = source.indexOf("\nfunction ChangeSummary(", start);
 const detail = source.slice(start, end);
@@ -31,8 +32,8 @@ test("member detail follows state, preparation, history, then three management c
 test("member detail keeps compact empty history and render-only provenance dates", () => {
   assert.match(detail, /data-member-section="lesson-history"/);
   assert.match(detail, /아직 작성된 수업 기록이 없습니다/);
-  assert.match(detail, /session\.sourceDateHint/);
-  assert.match(detail, /원문 날짜/);
+  assert.match(lessonRowSource, /session\.sourceDateHint/);
+  assert.match(lessonRowSource, /원문 날짜/);
   assert.ok(requiredIndex('data-member-section="lesson-history"') < requiredIndex('data-member-management-card="membership"'));
 });
 

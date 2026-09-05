@@ -97,6 +97,7 @@ import {
   formatMemberLessonDate, formatMemberLessonHeader, lessonSessionRepresentative, normalizedLessonType, pendingLessonState,
   selectLessonSheetBriefing, selectMemberDetailStatus, selectMemberHistoryRows, selectMemberLessonCounts, selectMemberLessonSessions, selectPendingLessonSessions,
 } from "./features/lesson-record/member-detail-selectors.js";
+import LessonHistorySessionRow from "./features/lesson-record/LessonHistorySessionRow.jsx";
 import { deactivateMemberRecord, deleteMemberData, visibleMembers } from "./features/members/member-lifecycle.js";
 import { trackLessonRecordUsage } from "./features/lesson-record/usage-telemetry.js";
 import {
@@ -107,7 +108,7 @@ import { createMemberBriefing, memberMemorySummary, selectScheduleBriefing } fro
 import { addPostureMilestone, buildMemberMemory } from "./features/member-memory/member-memory.js";
 import { trackMemberMemoryUsage } from "./features/member-memory/usage-telemetry.js";
 import Onboarding from "./features/onboarding/Onboarding.jsx";
-import { completeOnboarding, hasCompletedOnboarding } from "./features/onboarding/onboarding-storage.js";
+import { completeOnboarding, resolveOnboardingCompletion } from "./features/onboarding/onboarding-storage.js";
 import {
   CAPTURE_TIMER_OPTIONS, LEVEL_THRESHOLD_DEG, SENSOR_STATUSES, base64ToBlob,
   computePreviewGeometry, correctOrientationForScreen, createCaptureGeometryMetadata, normalizeCameraPermissionState,
@@ -4831,10 +4832,9 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
             {historySessions.length === 0 ? <p className="py-3 text-xs" style={{ color: SUB }}>아직 작성된 수업 기록이 없습니다</p> : <div className="min-w-0 space-y-2">{historyVisibility.rows.map((session) => {
               const pendingItem = pendingByLesson.get(String(session.lesson?.id || session.key));
               const state = pendingItem ? pendingLessonState(pendingItem) : { key: "confirmed", label: "확인 완료", action: "" };
-              const representative = lessonSessionRepresentative(session);
               const pendingRecords = session.records.filter((note) => note?.lessonRecord && note.lessonRecord.stage !== "confirmed_record");
               const reviewable = pendingRecords.length === 1 && pendingRecords[0]?.lessonRecord?.structuredDraft;
-              return <div key={session.key} className="flex min-w-0 items-start gap-2 rounded-lg p-2.5" style={{ backgroundColor: CANVAS }}><details className="min-w-0 flex-1"><summary className="min-w-0 cursor-pointer list-none"><span className="flex min-w-0 items-center gap-2"><span className="min-w-0 flex-1 truncate text-xs font-extrabold" style={{ color: INK }}>{formatMemberLessonHeader(session, historySessions)}</span><span className="shrink-0 text-[9px] font-bold" style={{ color: state.key === "confirmed" ? SUB : WARN }}>{state.label}</span></span><span className="mt-1 block truncate text-xs" style={{ color: INK2 }}>{representative.display}</span>{session.next && representative.field !== "next" && <span className="mt-1 block truncate text-[10px]" style={{ color: SUB }}>다음 · {session.next}</span>}{session.warning && <span className="mt-1 block text-[9px]" style={{ color: SUB }}>{session.warning}</span>}</summary>{representative.field !== "empty" && <div className="mt-3 border-t pt-2" style={{ borderColor: LINE }}><LessonRecordFieldRows session={session} hideEmpty pastLesson />{session.sourceDateHint && <p className="mt-2 text-[9px] tabular-nums" style={{ color: SUB }}>원문 날짜 {session.sourceDateHint}</p>}</div>}</details>{state.key === "attendance" ? <button type="button" onClick={() => onOpenLesson?.(session.lesson?.id || session.key)} className="h-8 shrink-0 rounded-lg px-2 text-[10px] font-extrabold" style={{ backgroundColor: TINT, color: BRAND_D }}>출석 처리</button> : session.confirmationState !== "confirmed" && session.records.length > 0 ? <button type="button" disabled={Boolean(saving)} onClick={() => reviewable ? openRecordReview(pendingRecords[0]) : confirmSessionRecords(session)} className="h-8 shrink-0 rounded-lg px-2 text-[10px] font-extrabold" style={{ backgroundColor: TINT, color: BRAND_D }}>확인</button> : null}</div>;
+              return <LessonHistorySessionRow key={session.key} session={session} sessions={historySessions} status={state} disabled={Boolean(saving)} onOpenSheet={(item) => onOpenLesson?.(item.lesson?.id || item.key)} onConfirm={() => reviewable ? openRecordReview(pendingRecords[0]) : confirmSessionRecords(session)} />;
             })}{(historyVisibility.hidden > 0 || historyExpanded) && <button type="button" onClick={() => setHistoryExpanded((value) => !value)} className="h-10 w-full text-xs font-extrabold" style={{ borderRadius: 9, backgroundColor: CANVAS, color: BRAND_D }}>{historyExpanded ? "접기" : `더보기 · ${historyVisibility.hidden}건`}</button>}</div>}
           </section>
           <section data-member-management-card="posture" data-member-section="posture" className="min-w-0 max-w-full" style={{ ...sectionStyle, overflow: "hidden", backgroundColor: CARD }}>
@@ -13816,7 +13816,7 @@ export function createAppScreenSmokeCases() {
 export default function App() {
   const [phase, setPhase] = useState("splash");
   const [onboardingOpen, setOnboardingOpen] = useState(false);
-  const onboardingCheckedRef = useRef(false);
+  const onboardingCheckedAccountRef = useRef("");
   const [accounts, setAccounts] = useState([]);
   const [account, setAccount] = useState(null);
   const [db, setDb] = useState(emptyDb("", ""));
@@ -13948,15 +13948,17 @@ export default function App() {
     };
   }, [phase, account?.id]);
   const closeOnboarding = useCallback(() => {
-    completeOnboarding(window.localStorage);
+    if (account?.id) completeOnboarding(window.localStorage, account.id);
     setOnboardingOpen(false);
-  }, []);
+  }, [account?.id]);
   useBackClose(onboardingOpen, closeOnboarding);
   useEffect(() => {
-    if (phase === "splash" || onboardingCheckedRef.current) return;
-    onboardingCheckedRef.current = true;
-    setOnboardingOpen(!hasCompletedOnboarding(window.localStorage));
-  }, [phase]);
+    const accountId = String(account?.id || "").trim();
+    if (phase !== "app" || !accountId || onboardingCheckedAccountRef.current === accountId) return;
+    onboardingCheckedAccountRef.current = accountId;
+    const decision = resolveOnboardingCompletion(window.localStorage, accountId);
+    if (decision.resolved) setOnboardingOpen(!decision.completed);
+  }, [phase, account?.id]);
   const showLocalPhotoWarningOnce = () => {
     if (claimLocalPhotoNotice(window.localStorage)) setLocalPhotoWarning(true);
   };

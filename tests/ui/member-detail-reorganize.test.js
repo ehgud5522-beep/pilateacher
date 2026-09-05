@@ -276,7 +276,7 @@ test("member and lesson-sheet source use one card, past labels, and exact lesson
   assert.match(source, /pastLesson && key === "today" \? "수업 내용" : label/);
   assert.match(source, /pendingLessonSummary\.sessions\.filter\(\(item\) => !item\.session\)/);
   assert.doesNotMatch(source, /pendingLessonSummary\.sessions\.filter\(\(item\) => item\.reasons\.includes\("attendance"\) && !item\.session\)/);
-  assert.match(source, /onOpenLesson\?\.\(session\.lesson\?\.id \|\| session\.key\)/);
+  assert.match(source, /onOpenSheet=\{\(item\) => onOpenLesson\?\.\(item\.lesson\?\.id \|\| item\.key\)\}/);
   assert.match(source, /수업 \{historySessions\.length\}건/);
   assert.match(source, /확인 필요 \$\{pendingSessionCount\}/);
   const statusCard = source.slice(source.indexOf('data-member-section="status"'), source.indexOf('data-member-section="next-preparation"'));

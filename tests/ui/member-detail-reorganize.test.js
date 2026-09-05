@@ -298,10 +298,10 @@ test("dark-mode critical and warning status colors meet 4.5:1 contrast", async (
     return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
   };
   const contrast = (a, b) => { const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x); return (hi + 0.05) / (lo + 0.05); };
-  const [badLight, badDark] = value("bad");
-  const [badSLight, badSDark] = value("badS");
-  const [warnLight, warnDark] = value("warn");
-  const [warnSLight, warnSDark] = value("warnS");
+  const [, badDark] = value("bad");
+  const [, badSDark] = value("badS");
+  const [, warnDark] = value("warn");
+  const [, warnSDark] = value("warnS");
   assert.ok(contrast(badDark, badSDark) >= 4.5);
   assert.ok(contrast(warnDark, warnSDark) >= 4.5);
 });

@@ -64,10 +64,11 @@ export function buildLessonNotificationPlan({
   const currentMs = current.getTime();
   if (!Number.isFinite(currentMs)) return [];
   const windowEndMs = currentMs + Math.max(0, Number(windowDays) || 0) * DAY_MS;
+  const sampleIds = new Set((members || []).filter((member) => member?.isSample === true).map((member) => String(member?.id || "")));
 
   return (Array.isArray(schedule) ? schedule : [])
     .flatMap((lesson) => {
-      if (!lesson?.id || lesson.personal) return [];
+      if (!lesson?.id || lesson.personal || lesson.isSample === true || normalizedAttendees(lesson).some((attendee) => sampleIds.has(String(attendee?.memberId || "")))) return [];
       const startAt = lessonStart(lesson);
       if (!startAt || startAt.getTime() > windowEndMs) return [];
       const triggerAt = new Date(startAt.getTime() - REMINDER_MS);
@@ -134,16 +135,21 @@ const ensureAndroidChannel = async () => {
   androidChannelReady = true;
 };
 
-const requestDisplayPermissionIfNeeded = async () => {
+export async function checkLessonNotificationPermission() {
+  if (!Capacitor.isNativePlatform()) return "unavailable";
   const current = await LocalNotifications.checkPermissions();
-  if (current.display === "granted") return true;
-  if ((current.display === "prompt" || current.display === "prompt-with-rationale") && !permissionRequestedThisSession) {
-    permissionRequestedThisSession = true;
-    const requested = await LocalNotifications.requestPermissions();
-    return requested.display === "granted";
-  }
-  return false;
-};
+  return current?.display || "prompt";
+}
+
+export async function requestLessonNotificationPermission() {
+  if (!Capacitor.isNativePlatform()) return { status: "skipped", reason: "web", granted: false };
+  const current = await LocalNotifications.checkPermissions();
+  if (current?.display === "granted") return { status: "ready", granted: true, permission: "granted" };
+  if (permissionRequestedThisSession) return { status: "skipped", reason: "already_requested", granted: false, permission: current?.display || "prompt" };
+  permissionRequestedThisSession = true;
+  const requested = await LocalNotifications.requestPermissions();
+  return { status: requested?.display === "granted" ? "ready" : "skipped", reason: requested?.display === "granted" ? null : "permission_denied", granted: requested?.display === "granted", permission: requested?.display || "denied" };
+}
 
 const cancelPendingLessonNotifications = async (pending) => {
   const { cancel } = reconcileLessonNotificationPlan(pending, []);
@@ -154,13 +160,14 @@ const cancelPendingLessonNotifications = async (pending) => {
 const synchronizeLessonNotifications = async ({ schedule = [], members = [], now = new Date() } = {}) => {
   if (!Capacitor.isNativePlatform()) return { status: "skipped", reason: "web", scheduled: 0, cancelled: 0 };
 
+  const permission = await checkLessonNotificationPermission();
+  if (permission !== "granted") return { status: "skipped", reason: "permission_not_granted", permission, scheduled: 0, cancelled: 0 };
+
   const desired = buildLessonNotificationPlan({ schedule, members, now });
   const pendingResult = await LocalNotifications.getPending();
   const cancelled = await cancelPendingLessonNotifications(pendingResult.notifications);
   if (!desired.length) return { status: "ready", scheduled: 0, cancelled, exact: true };
 
-  const permissionGranted = await requestDisplayPermissionIfNeeded();
-  if (!permissionGranted) return { status: "skipped", reason: "permission_denied", scheduled: 0, cancelled };
   await ensureAndroidChannel();
 
   let exact = true;

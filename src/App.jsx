@@ -107,8 +107,12 @@ import lessonRecordExamples from "./features/lesson-record/lesson-record-example
 import { createMemberBriefing, memberMemorySummary, selectScheduleBriefing } from "./features/member-memory/briefing.js";
 import { addPostureMilestone, buildMemberMemory } from "./features/member-memory/member-memory.js";
 import { trackMemberMemoryUsage } from "./features/member-memory/usage-telemetry.js";
-import Onboarding from "./features/onboarding/Onboarding.jsx";
+import Onboarding, { PermissionGuide } from "./features/onboarding/Onboarding.jsx";
 import { completeOnboarding, resolveOnboardingCompletion } from "./features/onboarding/onboarding-storage.js";
+import { ONBOARD_SAMPLE_SESSION } from "./features/onboarding/onboarding-sample.js";
+import {
+  claimNotificationSoftPrompt, createOnboardingSampleData, removeOnboardingSampleData, withoutSampleData,
+} from "./features/onboarding/first-run.js";
 import {
   CAPTURE_TIMER_OPTIONS, LEVEL_THRESHOLD_DEG, SENSOR_STATUSES, base64ToBlob,
   computePreviewGeometry, correctOrientationForScreen, createCaptureGeometryMetadata, normalizeCameraPermissionState,
@@ -136,7 +140,7 @@ import {
 } from "./features/backup/cloud-backup.js";
 import { optimizePhotoBackup } from "./features/backup/photo-optimizer.js";
 import {
-  listenForLessonNotificationActions, syncLessonNotifications,
+  checkLessonNotificationPermission, listenForLessonNotificationActions, requestLessonNotificationPermission, syncLessonNotifications,
 } from "./features/notifications/local-notifications.js";
 import {
   ACCOUNT_DELETION_PHASE_LABELS, ACCOUNT_DELETION_PHASES, DELETE_CONFIRMATION_PHRASE,
@@ -558,6 +562,7 @@ const groupHeadcountText = (s) => `그룹${num(s?.groupCount) > 0 ? ` ${num(s.gr
 const attOf = (s, id) => attendeesOf(s).find((a) => a.memberId === id);
 const hasMember = (s, id) => attendeesOf(s).some((a) => a.memberId === id);
 const doneBy = (s, id) => attOf(s, id)?.status === "done";
+const isSampleLesson = (lesson) => lesson?.isSample === true;
 
 const lastDoneOf = (schedule, memberId) => {
   const t = todayISO();
@@ -592,7 +597,7 @@ const monthKey = (iso) => iso.slice(0, 7);
 const monthLabel = (iso) => `${iso.slice(0, 4)}년 ${Number(iso.slice(5, 7))}월`;
 function monthStats(schedule, ym) {
   const st = { cls: 0, seats: 0, done: 0, noshow: 0, cancel: 0, booked: 0, group: 0 };
-  (Array.isArray(schedule) ? schedule : []).filter((s) => s?.date && s.date.startsWith(ym)).forEach((s) => {
+  (Array.isArray(schedule) ? schedule : []).filter((s) => s?.date && s.date.startsWith(ym) && !isSampleLesson(s)).forEach((s) => {
     st.cls += 1;
     if (attendeesOf(s).length > 1) st.group += 1;
     attendeesOf(s).forEach((a) => {
@@ -2601,7 +2606,7 @@ function SchedItem({ s, members, del, setDel, setEditing, onStatus, onNoshowFee,
   );
 }
 
-function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset, quickAddRequest, onConsumeQuickAdd, openLessonId, onConsumeOpenLesson, onOpenMember }) {
+function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset, quickAddRequest, onConsumeQuickAdd, openLessonId, onConsumeOpenLesson, onOpenMember, onAddMember }) {
   const initialDisplay = useMemo(() => {
     try { return JSON.parse(localStorage.getItem(SCHEDULE_VIEW_KEY) || "null") || {}; }
     catch (e) { return {}; }
@@ -2674,7 +2679,7 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
     const cm = monthKey(todayISO());
     let sum = 0;
     db.schedule.forEach((s) => {
-      if (!s?.date || !s.date.startsWith(cm) || isPersonalEvt(s)) return;
+      if (!s?.date || !s.date.startsWith(cm) || isPersonalEvt(s) || isSampleLesson(s)) return;
       if (isEquipGroup(s)) { if (s.groupDone) sum += rateBase(db.settings).group; return; }
       attendeesOf(s).forEach((a) => {
         if (!a.deductFrom) return;
@@ -2685,7 +2690,7 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
   }, [db.schedule, db.members, db.settings]);
   const monthDone = useMemo(() => {
     const cm = monthKey(todayISO());
-    return db.schedule.filter((s) => s?.date && s.date.startsWith(cm) && (isEquipGroup(s) ? !!s.groupDone : attendeesOf(s).some((a) => a.deductFrom))).length;
+    return db.schedule.filter((s) => s?.date && s.date.startsWith(cm) && !isSampleLesson(s) && (isEquipGroup(s) ? !!s.groupDone : attendeesOf(s).some((a) => a.deductFrom))).length;
   }, [db.schedule]);
 
   const sundayHasLessons = db.schedule.some((s) => s?.date === week[6]);
@@ -2779,7 +2784,7 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
     const pm = `${p.getFullYear()}-${String(p.getMonth() + 1).padStart(2, "0")}`;
     let n = 0;
     db.schedule.forEach((s) => {
-      if (!s?.date || !s.date.startsWith(pm) || isPersonalEvt(s)) return;
+      if (!s?.date || !s.date.startsWith(pm) || isPersonalEvt(s) || isSampleLesson(s)) return;
       if (Number(s.date.slice(8, 10)) > day) return;
       if (isEquipGroup(s)) { if (s.groupDone) n += 1; return; }
       n += attendeesOf(s).filter((a) => a.deductFrom).length;
@@ -2853,13 +2858,13 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
             <button type="button" onClick={() => setFocusedMemberId(null)} className="flex h-7 shrink-0 items-center gap-1 px-2 text-xs font-semibold" style={{ borderRadius: 7, backgroundColor: CARD, color: SUB, border: `1px solid ${LINE}` }}><X size={12} />필터 해제</button>
           </div>
         )}
-        <WeekGrid days={visibleDays} byDate={byDate} nameOf={nameOf} memberOf={(id) => db.members.find((m) => m.id === id)} briefingOf={briefingOf} cursor={cursor} foldEmpty={foldEmpty} focusedMemberId={focusedMemberId} scheduleColors={scheduleColors}
+        {db.members.length === 0 ? <div className="flex h-full flex-col items-center justify-center px-7 text-center"><Users size={28} style={{ color: FAINT }} /><p className="mt-3 text-sm font-extrabold" style={{ color: INK }}>먼저 회원을 등록해 주세요</p><p className="mt-2 text-xs leading-relaxed" style={{ color: SUB }}>회원이 있어야 수업을 등록하고<br />수업 후 기록을 이어갈 수 있습니다</p><button type="button" onClick={onAddMember} className="mt-5 h-11 rounded-lg px-5 text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>회원 등록</button></div> : db.schedule.length === 0 ? <div className="flex h-full flex-col items-center justify-center px-7 text-center"><Calendar size={28} style={{ color: FAINT }} /><p className="mt-3 text-sm font-extrabold" style={{ color: INK }}>등록된 수업이 없습니다</p><p className="mt-2 text-xs leading-relaxed" style={{ color: SUB }}>시간표 빈 칸을 눌러 수업을 넣어보세요<br />수업이 끝나면 여기서 출석과 기록을 처리합니다</p><button type="button" onClick={() => setEditing({ id: null, memberIds: [], date: todayISO(), start: "10:00", dur: DEFAULT_CLASS_DURATION, type: "개인레슨", instructor: db.settings.staff, room: "", memo: "" })} className="mt-5 h-11 rounded-lg px-5 text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>수업 등록</button></div> : <WeekGrid days={visibleDays} byDate={byDate} nameOf={nameOf} memberOf={(id) => db.members.find((m) => m.id === id)} briefingOf={briefingOf} cursor={cursor} foldEmpty={foldEmpty} focusedMemberId={focusedMemberId} scheduleColors={scheduleColors}
           onOpen={(s, trigger) => { scheduleTriggerRef.current = trigger; setEditing(s); }}
-          onNew={(date, start, dur, trigger) => { scheduleTriggerRef.current = trigger; setEditing({ id: null, memberIds: [], date, start, dur: dur || DEFAULT_CLASS_DURATION, type: "개인레슨", instructor: db.settings.staff, room: "", memo: "" }); }} />
+          onNew={(date, start, dur, trigger) => { scheduleTriggerRef.current = trigger; setEditing({ id: null, memberIds: [], date, start, dur: dur || DEFAULT_CLASS_DURATION, type: "개인레슨", instructor: db.settings.staff, room: "", memo: "" }); }} />}
       </div>
 
       {/* ─── 하단 고정 업무 요약 ─── */}
-      <div className="shrink-0" style={{ padding: "6px 12px 8px", backgroundColor: PAGE }}>
+      {db.members.length > 0 && db.schedule.length > 0 && <div className="shrink-0" style={{ padding: "6px 12px 8px", backgroundColor: PAGE }}>
         <button onClick={(e) => { if (pendingLessonSummary.count) { queueTriggerRef.current = e.currentTarget; setQueueOpen(true); } }} disabled={!pendingLessonSummary.count}
           className="flex h-14 w-full items-center gap-3 rounded-xl px-3 text-left disabled:opacity-80"
           style={{ backgroundColor: pendingLessonSummary.count ? TINT : CARD, border: `1px solid ${pendingLessonSummary.count ? RING : LINE}`, boxShadow: "0 1px 4px rgba(28,36,51,.06)" }}>
@@ -2872,7 +2877,7 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
           </span>
           {pendingLessonSummary.count > 0 && <span className="shrink-0 text-xs font-extrabold" style={{ color: PRIMARY }}>지금 처리</span>}
         </button>
-      </div>
+      </div>}
 
       {editing && <ScheduleForm draft={liveEditing} members={db.members} schedule={db.schedule} briefingOf={briefingOf} scheduleColors={scheduleColors} returnFocusRef={scheduleTriggerRef} onClose={() => setEditing(null)}
         onSubmit={(v) => { onSave(v); setEditing(null); }} onDelete={(id) => { onDelete(id); setEditing(null); }}
@@ -4506,12 +4511,15 @@ function MemberList({ members, selectedId, onSelect, onAdd, onOpenFav, favCount,
     </div>
   );
 }
-function ReferenceMemberList({ members, schedule, settings, onSelect, onAdd }) {
+function ReferenceMemberList({ members, schedule, settings, onSelect, onAdd, onDeleteSamples, registerRequest = 0 }) {
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState("all");
   const [sort, setSort] = useState("name");
   const [registerOpen, setRegisterOpen] = useState(false);
   const realMembers = visibleMembers(members).filter((m) => !isDraft(m));
+  const sampleMembers = realMembers.filter((member) => member?.isSample === true);
+  const actualMembers = realMembers.filter((member) => member?.isSample !== true);
+  useEffect(() => { if (registerRequest) setRegisterOpen(true); }, [registerRequest]);
   const nextOf = (memberId) => (schedule || [])
     .filter((s) => hasMember(s, memberId) && `${s.date} ${s.start}` >= `${todayISO()} 00:00`)
     .sort((a, b) => `${a.date} ${a.start}`.localeCompare(`${b.date} ${b.start}`))[0] || null;
@@ -4570,7 +4578,9 @@ function ReferenceMemberList({ members, schedule, settings, onSelect, onAdd }) {
         </div>
       </div>
       <div className="pt-scroll min-h-0 flex-1 overflow-y-auto" style={{ padding: "10px 12px 16px" }}>
-        {!list.length && <div className="py-12 text-center"><Users size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-semibold" style={{ color: INK }}>{q ? "검색 결과가 없습니다" : "조건에 맞는 회원이 없습니다"}</p></div>}
+        {sampleMembers.length > 0 && actualMembers.length > 0 && <div className="mb-2 flex min-w-0 items-center gap-2 rounded-xl px-3 py-2" style={{ backgroundColor: TINT, border: `1px solid ${RING}` }}><span className="min-w-0 flex-1 text-xs font-bold" style={{ color: INK2 }}>예시 회원을 지울까요?</span><button type="button" onClick={onDeleteSamples} className="h-8 shrink-0 px-2 text-xs font-extrabold" style={{ color: BRAND_D }}>지우기</button></div>}
+        {!realMembers.length && <div className="px-4 py-12 text-center"><Users size={26} className="mx-auto" style={{ color: FAINT }} /><p className="mt-3 text-sm font-extrabold" style={{ color: INK }}>아직 등록한 회원이 없습니다</p><p className="mt-2 text-xs leading-relaxed" style={{ color: SUB }}>회원을 등록하면 수업 기록 · 체형 변화 · 재등록 시점을<br />한 사람씩 모아서 볼 수 있습니다</p><button type="button" onClick={() => setRegisterOpen(true)} className="mt-5 h-11 rounded-lg px-5 text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>회원 등록</button></div>}
+        {realMembers.length > 0 && !list.length && <div className="py-12 text-center"><Users size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-semibold" style={{ color: INK }}>{q ? "검색 결과가 없습니다" : "조건에 맞는 회원이 없습니다"}</p></div>}
         <div className="pt-member-card-grid">{list.map((m) => {
           const remaining = left(m), expiry = ddaySafe(m.contractEnd), next = nextOf(m.id);
           const renew = isActive(m) && (remaining <= 3 || (expiry !== null && expiry <= 14));
@@ -4580,6 +4590,7 @@ function ReferenceMemberList({ members, schedule, settings, onSelect, onAdd }) {
               <div className="flex items-start gap-2">
                 <div className="min-w-0 flex-1">
                   <div className="flex min-w-0 items-center gap-1.5"><p className="truncate" style={{ fontSize: 15, fontWeight: 600, color: INK }}>{m.name}</p>
+                    {m.isSample === true && <span className="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold" style={{ backgroundColor: TINT, color: BRAND_D, border: `1px solid ${RING}` }}>예시</span>}
                     {isHold(m) && <span style={{ padding: "2px 6px", borderRadius: 5, fontSize: 10, fontWeight: 600, backgroundColor: WARN_S, color: WARN }}>홀딩</span>}
                     {isEnded(m) && <span style={{ padding: "2px 6px", borderRadius: 5, fontSize: 10, fontWeight: 600, backgroundColor: CANVAS, color: SUB }}>종료</span>}
                     {renew && <span style={{ padding: "2px 6px", borderRadius: 5, fontSize: 10, fontWeight: 600, backgroundColor: BAD_S, color: BAD }}>재등록 필요</span>}
@@ -4810,7 +4821,7 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
     <div ref={layoutRootRef} className="relative flex h-full min-h-0 flex-col" style={{ backgroundColor: PAGE }}>
       <header className="flex shrink-0 items-center" style={{ height: 52, padding: "0 8px", backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
         <button type="button" onClick={onBack} aria-label="회원 목록" className="pt-member-back flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={19} /></button>
-        <div className="min-w-0 flex-1"><h1 className="truncate" style={{ fontSize: 17, fontWeight: 600, color: INK }}>{member.name || "이름 미입력"}</h1><p style={{ fontSize: 11, color: SUB }}>{isHold(member) ? "홀딩" : isEnded(member) ? "종료" : "활성"}{singleInstructorMode ? "" : ` · 담당 ${member.instructor || "미지정"}`}</p></div>
+        <div className="min-w-0 flex-1"><div className="flex min-w-0 items-center gap-2"><h1 className="truncate" style={{ fontSize: 17, fontWeight: 600, color: INK }}>{member.name || "이름 미입력"}</h1>{member.isSample === true && <span className="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold" style={{ backgroundColor: TINT, color: BRAND_D, border: `1px solid ${RING}` }}>예시</span>}</div><p style={{ fontSize: 11, color: SUB }}>{isHold(member) ? "홀딩" : isEnded(member) ? "종료" : "활성"}{singleInstructorMode ? "" : ` · 담당 ${member.instructor || "미지정"}`}</p></div>
       </header>
       <div ref={actionBarRef} className="grid shrink-0 grid-cols-3 gap-1.5" aria-label="회원 빠른 실행" style={{ padding: "7px 12px", backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
         {[{ l: "수업 기록", I: Pencil, fn: openRecord }, { l: "메모 추가", I: MessageSquare, fn: openMemo }].map(({ l, I, fn }) => <button type="button" key={l} onClick={fn} className="flex h-10 items-center justify-center gap-1.5" style={{ borderRadius: 9, backgroundColor: TINT, color: BRAND_D, fontSize: 12, fontWeight: 700 }}><I size={14} />{l}</button>)}
@@ -4829,7 +4840,7 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
           </section>
           <section data-member-section="lesson-history" style={sectionStyle}>
             <div className="mb-2 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1"><h2 className="min-w-0 flex-1 text-sm font-extrabold" style={{ color: INK }}>수업 기록</h2><span className="shrink-0 text-[10px] tabular-nums" style={{ color: SUB }}>수업 {historySessions.length}건{pendingSessionCount ? ` · 확인 필요 ${pendingSessionCount}` : ""}{lessonCounts.reserved ? ` · 예약 ${lessonCounts.reserved}` : ""}</span>{pendingSessionCount > 0 && <button type="button" disabled={Boolean(saving)} onClick={async () => { for (const session of lessonSessions.filter((item) => item.confirmationState !== "confirmed")) await confirmSessionRecords(session); }} className="shrink-0 text-[10px] font-extrabold" style={{ color: BRAND_D }}>모두 확인</button>}</div>
-            {historySessions.length === 0 ? <p className="py-3 text-xs" style={{ color: SUB }}>아직 작성된 수업 기록이 없습니다</p> : <div className="min-w-0 space-y-2">{historyVisibility.rows.map((session) => {
+            {historySessions.length === 0 ? <div className="py-2"><p className="text-xs font-extrabold" style={{ color: INK }}>아직 수업 기록이 없습니다</p><p className="mt-1 text-xs leading-relaxed" style={{ color: SUB }}>수업이 끝나면 기록하기를 눌러<br />10초만 말해보세요.</p><p className="mb-2 mt-4 text-[10px] font-bold" style={{ color: SUB }}>이렇게 정리됩니다</p><LessonHistorySessionRow session={ONBOARD_SAMPLE_SESSION} variant="preview" /></div> : <div className="min-w-0 space-y-2">{historyVisibility.rows.map((session) => {
               const pendingItem = pendingByLesson.get(String(session.lesson?.id || session.key));
               const state = pendingItem ? pendingLessonState(pendingItem) : { key: "confirmed", label: "확인 완료", action: "" };
               const pendingRecords = session.records.filter((note) => note?.lessonRecord && note.lessonRecord.stage !== "confirmed_record");
@@ -12895,10 +12906,13 @@ const handoffKey = (code) => "pilateacher_handoff_" + normCode(code);
 const packHandoff = (db, photos, withPhotos, from) => JSON.stringify({
   app: "pilateacher", kind: "handoff", ver: 2, at: new Date().toISOString(),
   from: from || "", center: (db && db.settings && db.settings.center) || "",
-  members: (db && db.members) || [], schedule: (db && db.schedule) || [],
-  photos: withPhotos ? (photos || {}) : {},
+  members: withoutSampleData(db, photos).db.members, schedule: withoutSampleData(db, photos).db.schedule,
+  photos: withPhotos ? withoutSampleData(db, photos).photos : {},
 });
-const packBackup = (db, photos, withPhotoBinary, from) => JSON.stringify(createEmergencyBackupEnvelope({ data: db, photos, photoBinary: withPhotoBinary ? photos : null, from }));
+const packBackup = (db, photos, withPhotoBinary, from) => {
+  const operational = withoutSampleData(db, photos);
+  return JSON.stringify(createEmergencyBackupEnvelope({ data: operational.db, photos: operational.photos, photoBinary: withPhotoBinary ? operational.photos : null, from }));
+};
 function readHandoff(text) {
   let d = null;
   try { d = JSON.parse(String(text || "").trim()); } catch (e) { return null; }
@@ -13046,7 +13060,7 @@ function HandoffCard({ db, photos, account, onImport, onToast }) {
               <Sub>인계 번호</Sub>
               <p className="mt-0.5 text-3xl font-extrabold tabular-nums tracking-widest" style={{ color: PRIMARY }}>{pack.code}</p>
               <p className="mt-2 text-xs font-bold" style={{ color: INK }}>
-                회원 {(db.members || []).length}명 · 수업 {(db.schedule || []).length}건{withPhotos ? " · 사진 포함" : ""} · {packSize(pack.text)}MB
+                회원 {withoutSampleData(db, photos).db.members.length}명 · 수업 {withoutSampleData(db, photos).db.schedule.length}건{withPhotos ? " · 사진 포함" : ""} · {packSize(pack.text)}MB
               </p>
               <div className="mt-3 flex flex-wrap gap-1.5">
                 <button onClick={() => copy(pack.code, "인계 번호를 복사했습니다.")} className="flex items-center gap-1 rounded-full bg-white px-3 py-2 text-xs font-extrabold" style={{ color: PRIMARY }}><Copy size={12} /> 번호 복사</button>
@@ -13194,7 +13208,7 @@ function SettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings,
           <div className="rounded-xl p-2.5" style={{ backgroundColor: SAND }}><Sub>센터</Sub><p className="truncate text-sm font-extrabold" style={{ color: INK }}>{account?.center || "-"}</p></div>
           <div className="rounded-xl p-2.5" style={{ backgroundColor: SAND }}><Sub>연락처</Sub><p className="truncate text-sm font-extrabold" style={{ color: INK }}>{account?.phone || "-"}</p></div>
           <div className="rounded-xl p-2.5" style={{ backgroundColor: SAND }}><Sub>가입일</Sub><p className="text-sm font-extrabold tabular-nums" style={{ color: INK }}>{ymd(account?.joinedAt)}</p></div>
-          <div className="rounded-xl p-2.5" style={{ backgroundColor: SAND }}><Sub>관리 회원</Sub><p className="text-sm font-extrabold tabular-nums" style={{ color: INK }}>{db.members.length}명</p></div>
+          <div className="rounded-xl p-2.5" style={{ backgroundColor: SAND }}><Sub>관리 회원</Sub><p className="text-sm font-extrabold tabular-nums" style={{ color: INK }}>{withoutSampleData(db, photos).db.members.length}명</p></div>
         </div>
         <button onClick={onLogout} className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 rounded-xl text-sm font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>
           <LogOut size={14} /> 로그아웃
@@ -13325,8 +13339,23 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
   const [showLessonDiagnostics, setShowLessonDiagnostics] = useState(false);
   const [diagnosticSending, setDiagnosticSending] = useState(false);
   const [diagnosticQueueRevision, setDiagnosticQueueRevision] = useState(0);
+  const [permissionStatuses, setPermissionStatuses] = useState({ microphone: "확인 필요", camera: "확인 필요", photos: "필요할 때 선택", notifications: "확인 필요" });
   const cameraRef = useRef(null), albumRef = useRef(null);
   useBackClose(view !== "hub", () => setView(view === "account-delete" ? "account" : "hub"));
+  useEffect(() => {
+    if (view !== "permissions") return undefined;
+    let active = true;
+    const label = (value) => value === "granted" ? "허용" : ["denied", "restricted", "limited"].includes(value) ? "꺼짐" : "확인 필요";
+    Promise.all([
+      CapacitorAudioRecorder.checkPermissions().catch(() => null),
+      CameraPreview.checkPermissions({ disableAudio: true }).catch(() => null),
+      checkLessonNotificationPermission().catch(() => "prompt"),
+    ]).then(([microphone, camera, notifications]) => {
+      if (!active) return;
+      setPermissionStatuses({ microphone: label(microphone?.recordAudio || microphone?.microphone), camera: label(camera?.camera), photos: "필요할 때 선택", notifications: label(notifications) });
+    });
+    return () => { active = false; };
+  }, [view]);
   const pickPhoto = async (file) => {
     if (!file) return;
     setBusy(true);
@@ -13432,7 +13461,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
   const reportPay = useMemo(() => {
     let total = 0;
     db.schedule.forEach((scheduleItem) => {
-      if (!scheduleItem?.date?.startsWith(reportYm) || isPersonalEvt(scheduleItem)) return;
+      if (!scheduleItem?.date?.startsWith(reportYm) || isPersonalEvt(scheduleItem) || isSampleLesson(scheduleItem)) return;
       if (isEquipGroup(scheduleItem)) {
         if (scheduleItem.groupDone) total += rateBase(db.settings).group;
         return;
@@ -13446,7 +13475,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
   }, [db.schedule, db.members, db.settings, reportYm]);
   const detailTitles = {
     report: "월간 리포트", assessment: "체형분석 설정", center: "센터 정보", theme: "화면 설정", "schedule-colors": "일정 색상",
-    data: "데이터 상태", backup: "데이터 이관 · 백업", knowledge: "오늘의 지식", account: "계정", "account-delete": "계정 삭제", app: "앱 정보",
+    data: "데이터 상태", backup: "데이터 이관 · 백업", permissions: "접근권한 안내", knowledge: "오늘의 지식", account: "계정", "account-delete": "계정 삭제", app: "앱 정보",
   };
   const menuGroups = [
     { label: "업무", items: [
@@ -13463,7 +13492,8 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
       { key: "backup", title: "데이터 이관 · 백업", description: "자동 클라우드 백업 · 회원 인계 · 백업 파일", Icon: Download },
     ] },
     { label: "기타", items: [
-      { key: "onboarding", title: "PilaTeacher 사용법", description: "기록 → 기억 → 다음 수업 흐름 다시 보기", Icon: Play, action: onOpenOnboarding },
+      { key: "onboarding", title: "사용법 다시 보기", description: "기록 → 기억 → 다음 수업 흐름 다시 보기", Icon: Play, action: onOpenOnboarding },
+      { key: "permissions", title: "접근권한 안내", description: "기능별 선택 권한과 현재 상태", Icon: Check },
       { key: "lesson-examples", title: "AI 수업기록 예시", description: "10~20초 말하기 예시 다시 보기", Icon: MessageSquare, action: onOpenLessonExamples },
       { key: "knowledge", title: "오늘의 지식", description: "해부학 · 영양학 모아보기", Icon: Star },
       { key: "account", title: "계정", description: "프로필 사진 · 이메일 계정 · 로그아웃", Icon: Users },
@@ -13659,6 +13689,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
           </div>
         )}
         {view === "backup" && <div className="space-y-3"><CloudBackupCard status={backupStatus} onEnablePhotos={onEnablePhotoBackup} onRetry={onRetryBackup} /><HandoffCard db={db} photos={photos} account={account} onImport={onImport} onToast={onToast} /></div>}
+        {view === "permissions" && <section style={sectionStyle}><PermissionGuide statuses={permissionStatuses} /></section>}
         {view === "knowledge" && (
           <section style={{ overflow: "hidden", borderRadius: 12, border: `1px solid ${LINE}`, backgroundColor: CARD }}>
             {KNOW.map((knowledge, index) => <div key={knowledge} className="flex gap-3" style={{ padding: "12px", borderTop: index ? `1px solid ${LINE}` : "none" }}><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full" style={{ backgroundColor: TINT, color: BRAND, fontSize: 10, fontWeight: 700 }}>{index + 1}</span><p style={{ paddingTop: 2, fontSize: 12, lineHeight: 1.55, color: INK2 }}>{knowledge}</p></div>)}
@@ -13816,6 +13847,9 @@ export function createAppScreenSmokeCases() {
 export default function App() {
   const [phase, setPhase] = useState("splash");
   const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const [onboardingReplay, setOnboardingReplay] = useState(false);
+  const [memberRegistrationRequest, setMemberRegistrationRequest] = useState(0);
+  const [notificationSoftPrompt, setNotificationSoftPrompt] = useState(false);
   const onboardingCheckedAccountRef = useRef("");
   const [accounts, setAccounts] = useState([]);
   const [account, setAccount] = useState(null);
@@ -13947,17 +13981,18 @@ export default function App() {
       window.removeEventListener("focus", onForeground);
     };
   }, [phase, account?.id]);
-  const closeOnboarding = useCallback(() => {
+  const completeAndCloseOnboarding = useCallback(() => {
     if (account?.id) completeOnboarding(window.localStorage, account.id);
     setOnboardingOpen(false);
+    setOnboardingReplay(false);
   }, [account?.id]);
-  useBackClose(onboardingOpen, closeOnboarding);
+  const openOnboardingReplay = useCallback(() => { setOnboardingReplay(true); setOnboardingOpen(true); }, []);
   useEffect(() => {
     const accountId = String(account?.id || "").trim();
     if (phase !== "app" || !accountId || onboardingCheckedAccountRef.current === accountId) return;
     onboardingCheckedAccountRef.current = accountId;
     const decision = resolveOnboardingCompletion(window.localStorage, accountId);
-    if (decision.resolved) setOnboardingOpen(!decision.completed);
+    if (decision.resolved) { setOnboardingReplay(false); setOnboardingOpen(!decision.completed); }
   }, [phase, account?.id]);
   const showLocalPhotoWarningOnce = () => {
     if (claimLocalPhotoNotice(window.localStorage)) setLocalPhotoWarning(true);
@@ -14248,10 +14283,11 @@ export default function App() {
       setCloudBackupStatus((current) => ({ ...current, state: "blocked" }));
       return;
     }
-    cloudPending.current = { uid: uidStr, data };
+    const operationalData = withoutSampleData(data, photosRef.current).db;
+    cloudPending.current = { uid: uidStr, data: operationalData };
     if (cloudTimer.current) clearTimeout(cloudTimer.current);
     const currentManifest = buildPhotoManifest(photosRef.current);
-    setCloudBackupStatus((current) => ({ ...current, state: "backing_up", localPhotoCount: currentManifest.length, counts: backupCounts(data, currentManifest.filter((item) => item.storagePath && item.thumbnailPath), buildPhotoGraph(photosRef.current)) }));
+    setCloudBackupStatus((current) => ({ ...current, state: "backing_up", localPhotoCount: currentManifest.length, counts: backupCounts(operationalData, currentManifest.filter((item) => item.storagePath && item.thumbnailPath), buildPhotoGraph(photosRef.current)) }));
     cloudTimer.current = setTimeout(async () => {
       const p = cloudPending.current;
       cloudPending.current = null; cloudTimer.current = null;
@@ -14313,13 +14349,14 @@ export default function App() {
         await window.storage.set(phKey(uidStr), JSON.stringify(stripSrc(nextPhotos)));
       });
       if (drain.failed) throw Object.assign(new Error("Photo backup queue stopped after a failed item."), { code: "backup/queue-failed" });
-      const manifest = buildPhotoManifest(photosRef.current);
+      const operational = withoutSampleData(data, photosRef.current);
+      const manifest = buildPhotoManifest(operational.photos);
       const uploadedManifest = manifest.filter((item) => item.storagePath && item.thumbnailPath);
       const usage = storageUsage(uploadedManifest);
-      const photoGraph = buildPhotoGraph(photosRef.current);
-      await fbPushBackup(uidStr, data, { photoCount: uploadedManifest.length, photoPending: queue.read().length, storageUsage: usage, photoManifest: uploadedManifest, photoGraph });
+      const photoGraph = buildPhotoGraph(operational.photos);
+      await fbPushBackup(uidStr, operational.db, { photoCount: uploadedManifest.length, photoPending: queue.read().length, storageUsage: usage, photoManifest: uploadedManifest, photoGraph });
       writeCloudSyncMarker(uidStr, { localSavedAt: Date.now(), lastCloudAt: Date.now() });
-      setCloudBackupStatus({ state: "safe", counts: backupCounts(data, uploadedManifest, photoGraph), pendingPhotos: 0, localPhotoCount: manifest.length, storageUsage: usage, photoEnabled: true, lastBackupAt: new Date().toISOString() });
+      setCloudBackupStatus({ state: "safe", counts: backupCounts(operational.db, uploadedManifest, photoGraph), pendingPhotos: 0, localPhotoCount: manifest.length, storageUsage: usage, photoEnabled: true, lastBackupAt: new Date().toISOString() });
     } catch (error) {
       setCloudBackupStatus((current) => ({ ...current, state: "error", pendingPhotos: queue.read().length, photoEnabled: true }));
       deviceLog("photo_backup_failed", { stage: "upload_queue", code: error?.code || "unknown" });
@@ -14350,7 +14387,7 @@ export default function App() {
       const uploadedManifest = manifest.filter((item) => item.storagePath && item.thumbnailPath);
       const photoGraph = buildPhotoGraph(photosRef.current);
       const queue = createPhotoQueue(window.localStorage, accountId).read();
-      await fbPushBackup(accountId, data, {
+      await fbPushBackup(accountId, withoutSampleData(data, photosRef.current).db, {
         photoCount: uploadedManifest.length,
         photoPending: queue.length,
         storageUsage: storageUsage(uploadedManifest),
@@ -14617,8 +14654,12 @@ export default function App() {
     });
   };
   const member = db.members.find((m) => m.id === selectedId) || db.members[0];
-  const alerts = useMemo(() => detectAlerts(db.members, db.schedule), [db.members, db.schedule]);
-  const spent = useMemo(() => spentMembers(db.members, db.schedule), [db.members, db.schedule]);
+  const operationalData = useMemo(() => withoutSampleData(db, photos).db, [db, photos]);
+  const alerts = useMemo(() => detectAlerts(operationalData.members, operationalData.schedule), [operationalData]);
+  const spent = useMemo(() => spentMembers(operationalData.members, operationalData.schedule), [operationalData]);
+  const offerNotificationSoftPrompt = useCallback(() => {
+    if (account?.id && claimNotificationSoftPrompt(window.localStorage, account.id)) setNotificationSoftPrompt(true);
+  }, [account?.id]);
   const goTab = (k) => { if (k === "members") setMobileView("list"); setTab(k); };
   const [detailTab, setDetailTab] = useState("summary");   /* 회원 상세 안: 요약 / 기록 입력 */
   const [analysisDone, setAnalysisDone] = useState(null);
@@ -14729,6 +14770,7 @@ export default function App() {
     trackMemberMemoryUsage("memory_merged", { count: memoryResult.stats.mergedCount });
     trackMemberMemoryUsage("patterns", { count: memoryResult.stats.patternCount });
     deviceLog("lesson_note_saved", { memberId: id, lessonId: sid, storage: "localStorage", source: voiceMeta ? voiceMeta.voiceSource || "voice" : "direct_input" });
+    if (target.isSample !== true) offerNotificationSoftPrompt();
     if (shouldConfirm || !voiceMeta) setToast({ ok: true, msg: text === "특이사항 없음" ? "특이사항 없음으로 기록했습니다." : `${target.name || "회원"} 기록을 저장했습니다.` });
     return true;
   };
@@ -14779,7 +14821,10 @@ export default function App() {
         payload: { ...item, participantCount: attendeesOf(item).length },
       },
     )).then((saved) => {
-      if (saved !== false) syncLessonNotifications({ schedule: next.schedule, members: next.members }).catch(() => {});
+      if (saved !== false) {
+        syncLessonNotifications({ schedule: next.schedule, members: next.members }).catch(() => {});
+        if (!prev && !item.personal && attendeesOf(item).some((attendee) => db.members.find((memberItem) => memberItem.id === attendee.memberId)?.isSample !== true)) offerNotificationSoftPrompt();
+      }
     });
     setToast({ ok: true, msg: item.personal
       ? (prev ? "일정을 수정했습니다." : "일정을 등록했습니다.")
@@ -14908,6 +14953,37 @@ export default function App() {
     );
     setSelectedId(m.id); setSection("info"); setDetailTab("record"); setMobileView("detail"); setTab("members");
     setToast({ ok: true, msg: "새 회원을 추가했습니다." });
+  };
+  const finishOnboardingToMembers = () => {
+    completeAndCloseOnboarding();
+    setMobileView("list");
+    setTab("members");
+  };
+  const finishOnboardingAndRegister = () => {
+    finishOnboardingToMembers();
+    setMemberRegistrationRequest((value) => value + 1);
+  };
+  const finishOnboardingWithSample = async () => {
+    const result = createOnboardingSampleData(db, { instructor: db.settings?.staff || account?.name || "" });
+    if (result.created) await saveDb(result.db);
+    completeAndCloseOnboarding();
+    setSelectedId(result.memberId);
+    setMobileView("detail");
+    setTab("members");
+  };
+  const deleteSampleMembers = async () => {
+    const result = removeOnboardingSampleData(db, photos);
+    const removedPhotoIds = [...result.sampleIds].flatMap((memberId) => photos[memberId] ? blobIdsOf(photos[memberId]) : []);
+    const stored = await saveDb(result.db);
+    if (stored === false) return;
+    if (result.sampleIds.size) {
+      photosRef.current = result.photos;
+      setPhotos(result.photos);
+      await savePhotos(result.photos);
+      await Promise.allSettled(removedPhotoIds.map((blobId) => blobDel(blobId)));
+    }
+    if (result.sampleIds.has(String(selectedId))) { setSelectedId(result.db.members[0]?.id || null); setMobileView("list"); }
+    setToast({ ok: true, msg: "예시 회원과 예시 기록을 삭제했습니다." });
   };
   const snoozedCount = useMemo(() => db.members.filter((m) => isSnoozed(m)).length, [db.members]);
   const snoozeAlert = (memberId, days) => {
@@ -15552,7 +15628,7 @@ export default function App() {
       <div className={appRootClassName}>
         {style}
         <AuthScreen accounts={accounts} onLogin={handleLogin} onSignup={handleSignup} onToast={setToast} />
-        {onboardingOpen && <Onboarding onFinish={closeOnboarding} onSkip={closeOnboarding} />}
+        {onboardingOpen && <Onboarding replay={onboardingReplay} onSkip={completeAndCloseOnboarding} onRegisterMember={finishOnboardingAndRegister} onExploreSample={finishOnboardingWithSample} onLater={finishOnboardingToMembers} />}
         {toast && (
           <div className="safe-b fixed inset-x-0 bottom-5 z-50 flex justify-center px-4">
             <div className="flex items-center gap-2 rounded-full px-4 py-3" style={{ backgroundColor: toast.ok ? TOAST : BAD, boxShadow: SHADOW }}>
@@ -15572,9 +15648,9 @@ export default function App() {
       <div className="pt-app-shell safe-t flex h-full min-h-0 w-full flex-col" style={{ backgroundColor: PAGE, boxShadow: "0 0 0 1px rgba(28,36,51,.04)" }}>
         <div className="relative min-h-0 flex-1 overflow-hidden">
           <Guard key={tab}>
-            {tab === "schedule" && <ScheduleManager db={db} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
+            {tab === "schedule" && <ScheduleManager db={db} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={() => { setMemberRegistrationRequest((value) => value + 1); setTab("members"); }} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
             {tab === "members" && <div className={`h-full min-h-0 ${mobileView === "detail" && member ? "pt-member-detail-active" : ""}`}>
-              <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList members={db.members} schedule={db.schedule} settings={db.settings} onAdd={addMember} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
+              <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList members={db.members} schedule={db.schedule} settings={db.settings} registerRequest={memberRegistrationRequest} onDeleteSamples={deleteSampleMembers} onAdd={addMember} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
               {mobileView === "detail" && member && <div className="pt-member-detail-pane h-full min-h-0">
                 <ReferenceMemberDetail key={member.id} member={member} schedule={db.schedule} photos={photos[member.id]} settings={db.settings}
                   canViewSettlement={!account?.role || ["owner", "manager", "admin", "director"].includes(String(account.role).toLowerCase())} onBack={() => setMobileView("list")}
@@ -15596,7 +15672,7 @@ export default function App() {
                   onToast={setToast} onSaved={(mode) => setAnalysisDone({ id, mode })} /></Guard>;
               }} />}
             {tab === "settings" && <ReferenceSettingsTab db={db} photos={photos} account={account} savedAt={savedAt} demoMode={demoMode} onChangeSettings={(s) => saveDb({ ...db, settings: s })} onChangePhoto={changePhoto} onToast={setToast} themePref={themePref} onChangeTheme={changeTheme} onLogout={handleLogout} onDeleteAccount={handleDeleteAccount} onImport={importHandoff}
-              onOpenSchedule={() => { setScheduleQuickAddRequest((request) => request + 1); setTab("schedule"); }} onOpenRecords={() => { setMobileView("list"); setTab("members"); }} onOpenOnboarding={() => setOnboardingOpen(true)} onOpenLessonExamples={() => setLessonExamplesOpen(true)} backupStatus={cloudBackupStatus} onEnablePhotoBackup={enablePhotoBackup} onRetryBackup={retryCloudBackup} />}
+              onOpenSchedule={() => { setScheduleQuickAddRequest((request) => request + 1); setTab("schedule"); }} onOpenRecords={() => { setMobileView("list"); setTab("members"); }} onOpenOnboarding={openOnboardingReplay} onOpenLessonExamples={() => setLessonExamplesOpen(true)} backupStatus={cloudBackupStatus} onEnablePhotoBackup={enablePhotoBackup} onRetryBackup={retryCloudBackup} />}
           </Guard>
         </div>
         <Tabs tab={tab} setTab={goTab} />
@@ -15614,7 +15690,8 @@ export default function App() {
           {!restoreStartConfirm ? <><button type="button" disabled={restoreBusy} onClick={applyCloudRestore} className="flex h-12 w-full items-center justify-center gap-2 rounded-xl text-sm font-extrabold text-white disabled:opacity-50" style={{ backgroundColor: BRAND }}>{restoreBusy ? <><Loader2 size={16} className="animate-spin" />불러오는 중…</> : "기록 불러오기"}</button><button type="button" disabled={restoreBusy} onClick={() => setRestoreStartConfirm(true)} className="h-12 w-full rounded-xl text-sm font-extrabold" style={{ backgroundColor: CANVAS, color: INK }}>새로 시작하기</button></> : <div className="rounded-xl p-3" style={{ backgroundColor: CANVAS }}><p className="text-sm font-bold leading-relaxed" style={{ color: INK }}>기존 기록은 클라우드에 그대로 남아요. 이 기기에서만 새로 시작할까요?</p><div className="mt-3 grid grid-cols-2 gap-2"><button type="button" onClick={() => setRestoreStartConfirm(false)} className="h-11 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: INK2 }}>돌아가기</button><button type="button" onClick={startFreshOnDevice} className="h-11 rounded-lg text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>이 기기에서 시작</button></div></div>}
         </div></section></div>}
       {lessonExamplesOpen && <LessonRecordExamplesModal onClose={() => setLessonExamplesOpen(false)} onPractice={(speech) => { setLessonExamplesOpen(false); window.dispatchEvent(new CustomEvent("pilateacher:practice-record-example", { detail: { speech } })); }} />}
-      {onboardingOpen && <Onboarding onFinish={closeOnboarding} onSkip={closeOnboarding} />}
+      {onboardingOpen && <Onboarding replay={onboardingReplay} onSkip={completeAndCloseOnboarding} onRegisterMember={finishOnboardingAndRegister} onExploreSample={finishOnboardingWithSample} onLater={finishOnboardingToMembers} />}
+      {notificationSoftPrompt && <ScheduleBottomSheet title="다음 수업 전에 알려드릴까요?" subtitle="수업 10분 전 알림을 받을 수 있어요" onClose={() => setNotificationSoftPrompt(false)}><div className="space-y-2"><button type="button" onClick={async () => { const permission = await requestLessonNotificationPermission(); if (permission.granted) await syncLessonNotifications(notificationDataRef.current); setNotificationSoftPrompt(false); setToast(permission.granted ? { ok: true, msg: "수업 알림을 켰습니다." } : { ok: false, msg: "알림 권한이 꺼져 있습니다." }); }} className="h-12 w-full rounded-lg text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>알림 받기</button><button type="button" onClick={() => setNotificationSoftPrompt(false)} className="h-11 w-full rounded-lg text-sm font-bold" style={{ color: SUB }}>나중에</button></div></ScheduleBottomSheet>}
       {toast && (
         <div className="fixed inset-x-0 z-[70] flex justify-center px-4" style={{ bottom: "calc(62px + max(env(safe-area-inset-bottom, 0px), 8px))" }}>
           <div className="flex max-w-[360px] items-center gap-2 px-4 py-2.5" style={{ borderRadius: 8, backgroundColor: toast.ok ? TOAST : BAD, boxShadow: SHADOW }}>

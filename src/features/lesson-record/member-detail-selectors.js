@@ -293,20 +293,26 @@ export function selectMemberLessonCounts({ member, schedule = [], now = new Date
 }
 
 export function selectPendingLessonSessions({ members = [], schedule = [], pendingDrafts = [], now = new Date() } = {}) {
+  const operationalMembers = (members || []).filter((member) => member?.isSample !== true);
+  const sampleIds = new Set((members || []).filter((member) => member?.isSample === true).map((member) => String(member?.id || "")));
+  const operationalSchedule = (schedule || []).filter((lesson) => lesson?.isSample !== true
+    && !sampleIds.has(String(lesson?.memberId || ""))
+    && !(lesson?.memberIds || []).some((memberId) => sampleIds.has(String(memberId)))
+    && !(lesson?.attendees || []).some((attendee) => sampleIds.has(String(attendee?.memberId || ""))));
   const pending = new Map();
   const add = (key, payload, reason) => {
     const current = pending.get(key) || { ...payload, key, reasons: [] };
     if (!current.reasons.includes(reason)) current.reasons.push(reason);
     pending.set(key, current);
   };
-  const sessionsByMember = new Map(members.map((member) => [String(member?.id || ""), selectMemberLessonSessions({ member, schedule })]));
+  const sessionsByMember = new Map(operationalMembers.map((member) => [String(member?.id || ""), selectMemberLessonSessions({ member, schedule: operationalSchedule })]));
 
-  members.forEach((member) => {
+  operationalMembers.forEach((member) => {
     (sessionsByMember.get(String(member?.id || "")) || []).filter((session) => session.confirmationState !== "confirmed")
       .forEach((session) => add(`${member.id}|${session.key}`, { memberId: member.id, lessonId: session.lesson?.id || "", session }, "confirmation"));
   });
 
-  schedule.filter((lesson) => lessonEnded(lesson, now) && !lesson?.personal).forEach((lesson) => {
+  operationalSchedule.filter((lesson) => lessonEnded(lesson, now) && !lesson?.personal).forEach((lesson) => {
     (lesson.attendees || []).forEach((attendee) => {
       const memberId = String(attendee?.memberId || "");
       const key = `${memberId}|${lesson.id}`;
@@ -322,11 +328,11 @@ export function selectPendingLessonSessions({ members = [], schedule = [], pendi
     });
   });
 
-  (pendingDrafts || []).forEach((draft) => {
+  (pendingDrafts || []).filter((draft) => !sampleIds.has(String(draft?.memberId || ""))).forEach((draft) => {
     const memberId = String(draft?.memberId || "");
     const lessonId = String(draft?.lessonId || "");
     if (!memberId || !lessonId) return;
-    const lesson = schedule.find((item) => String(item?.id || "") === lessonId) || null;
+    const lesson = operationalSchedule.find((item) => String(item?.id || "") === lessonId) || null;
     const session = (sessionsByMember.get(memberId) || []).find((item) => item.key === lessonId) || null;
     add(`${memberId}|${lessonId}`, { memberId, lessonId, lesson, session, pendingDraft: draft }, "local_draft");
   });

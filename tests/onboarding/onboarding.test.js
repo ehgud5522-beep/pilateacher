@@ -83,22 +83,28 @@ test("logout session removal does not remove account completion", () => {
   assert.equal(hasCompletedOnboarding(storage, "account-a"), true);
 });
 
-test("onboarding is demo-only and never requests AI or microphone access", () => {
+test("onboarding has four permission-safe pages and reuses the real preview row", () => {
   const file = path.resolve("src/features/onboarding/Onboarding.jsx");
   const source = fs.readFileSync(file, "utf8");
-  assert.match(source, /실제 회원 데이터가 아닙니다/);
-  assert.match(source, /수업은 선생님이/);
-  assert.match(source, /PilaTeacher 시작하기/);
-  assert.doesNotMatch(source, /getUserMedia|SpeechRecognition|aiProvider|fetch\s*\(/);
+  assert.match(source, /ONBOARDING_PAGE_COUNT = 4/);
+  assert.match(source, /수업을 기억하는 앱/);
+  assert.match(source, /필라티쳐가 사용하는 접근권한/);
+  assert.match(source, /첫 회원을 등록해볼까요/);
+  assert.match(source, /LessonHistorySessionRow session=\{ONBOARD_SAMPLE_SESSION\} variant="preview"/);
+  const backHandler = source.slice(source.indexOf("const onPop"), source.indexOf("window.addEventListener(\"popstate\""));
+  assert.match(backHandler, /pageRef\.current > 0/);
+  assert.doesNotMatch(backHandler, /onSkip|onRegisterMember|onExploreSample|onLater|completeOnboarding/);
+  assert.doesNotMatch(source, /SummaryCard|getUserMedia|SpeechRecognition|requestPermissions|aiProvider|fetch\s*\(/);
 });
 
 test("app exposes onboarding replay from More without adding startup delay", () => {
   const source = fs.readFileSync(path.resolve("src/App.jsx"), "utf8");
-  assert.match(source, /PilaTeacher 사용법/);
-  assert.match(source, /onOpenOnboarding=\{\(\) => setOnboardingOpen\(true\)\}/);
+  assert.match(source, /사용법 다시 보기/);
+  assert.match(source, /onOpenOnboarding=\{openOnboardingReplay\}/);
   assert.match(source, /phase !== "app" \|\| !accountId/);
   assert.match(source, /resolveOnboardingCompletion\(window\.localStorage, accountId\)/);
-  assert.match(source, /completeOnboarding\(window\.localStorage, account\.id\)/);
+  assert.match(source, /completeAndCloseOnboarding/);
+  assert.doesNotMatch(source, /useBackClose\(onboardingOpen/);
 
   const onboardingSource = fs.readFileSync(path.resolve("src/features/onboarding/Onboarding.jsx"), "utf8");
   assert.doesNotMatch(onboardingSource, /setTimeout|setInterval/);

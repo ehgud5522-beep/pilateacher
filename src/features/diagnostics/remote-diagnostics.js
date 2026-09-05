@@ -21,6 +21,9 @@ const pipelineEvent = (event) => ({
   transportCode: safeToken(event?.transportCode, 40),
   httpStatus: finite(event?.httpStatus) || 0,
   causeName: safeToken(event?.causeName, 80),
+  validationReason: safeToken(event?.validationReason, 80),
+  invalidField: safeToken(event?.invalidField, 120),
+  operation: safeToken(event?.operation, 80),
 });
 
 const voiceEvent = (event) => ({
@@ -30,6 +33,9 @@ const voiceEvent = (event) => ({
   source: safeToken(event?.source, 40),
   code: safeToken(event?.code, 80),
   reason: safeToken(event?.reason, 80),
+  validationReason: safeToken(event?.validationReason, 80),
+  invalidField: safeToken(event?.invalidField, 120),
+  operation: safeToken(event?.operation, 80),
   phase: safeToken(event?.phase, 40),
   state: safeToken(event?.state, 40),
   requestId: safeToken(event?.requestId, 160),

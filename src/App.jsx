@@ -52,12 +52,14 @@ import {
   DEFAULT_SCHEDULE_COLORS, SCHEDULE_COLOR_PRESETS, isDefaultScheduleColors,
   normalizeScheduleColors, resolveScheduleTypeTone, scheduleTypeTones, setScheduleTypeColor,
 } from "./features/schedule/schedule-colors.js";
+import { appendMemberWithoutScheduleMutation, dedupeScheduleByLessonId } from "./features/schedule/schedule-integrity.js";
 import { maskedBirth, maskedPhone, membershipDisplay } from "./features/members/member-display.js";
 import {
   sheetDragOffset, shouldDismissSheet, shouldStartContentDismiss,
 } from "./features/ui/bottom-sheet-gesture.js";
 import { installFocusVisibilityGuard } from "./features/ui/focus-visibility.js";
 import { scheduleMemberLayoutSnapshots } from "./features/ui/member-layout-diagnostics.js";
+import { scrollRecordSectionIntoView } from "./features/ui/record-section-scroll.js";
 import {
   POSTURE_RETAKE_DAYS, POSTURE_STORAGE_KEYS, POSTURE_VIEW_DEFS, POSTURE_VIEW_KEYS,
   assessmentMediaForView, compareAssessmentMetrics, completeAssessmentRecords, correctedPoseSource, countPosturePhotoRecords, normalizeAssessmentSets, normalizePostureView, postureAnalysisPlane,
@@ -1164,7 +1166,7 @@ function normalizeDb(data, staff) {
       notes: Array.isArray(m.notes) ? m.notes.filter(Boolean) : [],
       payments: Array.isArray(m.payments) ? m.payments.filter(Boolean) : [],
     })) : [],
-    schedule: Array.isArray(d.schedule) ? d.schedule.filter((x) => x && x.date).map((x) => ({
+    schedule: Array.isArray(d.schedule) ? dedupeScheduleByLessonId(d.schedule.filter((x) => x && x.date)).map((x) => ({
       ...x,
       /* 기구는 강사가 고른 값이다 — 있는 일정만 정리하고, 없는 옛 일정에 값을 만들어 넣지 않는다 */
       ...(Array.isArray(x.equipmentIds) ? { equipmentIds: normalizeEquipmentIds(x.equipmentIds) } : {}),
@@ -2811,20 +2813,6 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
       recordQueueLabel: pendingLessonRecordLabel(pendingDraft),
     };
   }), [pendingLessonSummary, db.schedule]);
-  const confirmQueueSession = async (task) => {
-    let failed = 0;
-    const notes = (task?.session?.records || []).filter((note) => note?.lessonRecord?.stage !== "confirmed_record");
-    for (const note of notes) {
-      const args = confirmedLessonNoteArgs(note);
-      if (!args) continue;
-      try {
-        const stored = await onSaveNote?.(task.memberId, args.type, note.sid || task.lessonId, args.body, args.meta, args.options);
-        if (stored === false) failed += 1;
-      } catch (error) { failed += 1; }
-    }
-    if (failed) onToast?.({ ok: false, msg: `${failed}건을 저장하지 못했습니다. 남은 기록을 다시 확인해 주세요.` });
-  };
-
   return (
     <div className="flex h-full min-h-0 flex-col">
       {/* ─── 상단 헤더: 주 범위 + 이동 + 오늘 + 등록 ─── */}
@@ -2886,7 +2874,7 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
       {queueOpen && (
         <ScheduleQueueSheet tasks={taskQueue} members={db.members} returnFocusRef={queueTriggerRef} onClose={() => setQueueOpen(false)}
           onNoComment={onNoComment} onSaveNote={onSaveNote}
-          onConfirmSession={confirmQueueSession} onOpenLesson={(lesson) => { setQueueOpen(false); if (lesson) { setCursor(lesson.date || todayISO()); setEditing(lesson); } }} />
+          onOpenLesson={(lesson) => { setQueueOpen(false); if (lesson) { setCursor(lesson.date || todayISO()); setEditing(lesson); } }} />
       )}
       {displaySettings && (
         <Sheet title="일정 표시 설정" onClose={() => setDisplaySettings(false)}>
@@ -3272,7 +3260,16 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
   const [recordMode, setRecordMode] = useState(null);
   const [recordFallback, setRecordFallback] = useState("");
   const [recordBody, setRecordBody] = useState("");
+  const recordSectionRef = useRef(null);
   const [picker, setPicker] = useState(null);
+  useEffect(() => {
+    if (!recordMode) return undefined;
+    const scroll = () => scrollRecordSectionIntoView(recordSectionRef.current);
+    const frame = globalThis.requestAnimationFrame?.(scroll);
+    if (frame !== undefined) return () => globalThis.cancelAnimationFrame?.(frame);
+    const timer = globalThis.setTimeout?.(scroll, 0);
+    return () => globalThis.clearTimeout?.(timer);
+  }, [activeMemberId, recordMode]);
   const isGroup = kind === "group";
   const isDuet = kind === "duet";
   const isMemberLesson = kind === "solo" || isDuet;
@@ -3507,7 +3504,7 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
                 </div>
 
                 {recordMode && (
-                  <div className="space-y-2 rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
+                  <div ref={recordSectionRef} data-lesson-record-entry className="space-y-2 rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
                     {recordFallback && <p role="status" className="rounded-lg px-3 py-2 text-xs font-bold" style={{ backgroundColor: WARN_S, color: WARN }}>{recordFallback}</p>}
                     {recordMode === "voice" && <VoiceNote key={lessonRecordSessionKey(activeMemberId, draft.id)} memberId={activeMemberId} memberName={activeMember?.name || "회원"} lessonId={draft.id} onLater={() => setRecordMode(null)} onClose={onClose} onDeferred={onClose} onDirectEntry={(message) => { setRecordFallback(message || "음성 인식을 사용할 수 없어 직접 입력으로 전환했습니다."); setRecordMode("write"); }} onDraftChange={(text, meta, options) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, options)} onApply={(text, meta) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, { confirmed: true, upsert: true })} />}
                     {recordMode === "write" && <><textarea rows={4} value={recordBody} onChange={(e) => setRecordBody(e.target.value)} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} /><button disabled={!recordBody.trim()} onClick={async () => { const stored = await onSaveNote?.(activeMemberId, draft.type, draft.id, recordBody.trim(), null); if (stored !== false) onClose(); }} className="h-11 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35" style={{ backgroundColor: PRIMARY }}>저장</button></>}
@@ -3557,17 +3554,24 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
   );
 }
 
-function ScheduleQueueSheet({ tasks, members, returnFocusRef, onClose, onNoComment, onSaveNote, onConfirmSession, onOpenLesson }) {
+function ScheduleQueueSheet({ tasks, members, returnFocusRef, onClose, onNoComment, onSaveNote, onOpenLesson }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const task = tasks[0] || null;
   const [recordMode, setRecordMode] = useState(null);
   const [recordBody, setRecordBody] = useState("");
-  const [confirming, setConfirming] = useState(false);
+  const recordSectionRef = useRef(null);
   useEffect(() => {
     setRecordMode(null);
     setRecordBody("");
-    setConfirming(false);
   }, [task?.key]);
+  useEffect(() => {
+    if (!recordMode) return undefined;
+    const scroll = () => scrollRecordSectionIntoView(recordSectionRef.current);
+    const frame = globalThis.requestAnimationFrame?.(scroll);
+    if (frame !== undefined) return () => globalThis.cancelAnimationFrame?.(frame);
+    const timer = globalThis.setTimeout?.(scroll, 0);
+    return () => globalThis.clearTimeout?.(timer);
+  }, [recordMode, task?.key]);
   const memberName = task?.m?.name || members.find((m) => String(m.id) === String(task?.memberId || task?.a?.memberId))?.name || "회원";
   const taskState = pendingLessonState(task);
   return (
@@ -3592,7 +3596,7 @@ function ScheduleQueueSheet({ tasks, members, returnFocusRef, onClose, onNoComme
           {task.kind === "confirmation" && (
             <div className="space-y-3">
               <LessonRecordFieldRows session={task.session} />
-              <button type="button" disabled={confirming} onClick={async () => { setConfirming(true); try { await onConfirmSession?.(task); } finally { setConfirming(false); } }} className="h-12 w-full rounded-lg text-sm font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: PRIMARY }}>{confirming ? "저장 중" : task.session?.confirmationState === "partial" ? `남은 기록 확인 (${task.session.confirmedCount}/${task.session.confirmableCount})` : "이 수업 기록 확인"}</button>
+              <button type="button" onClick={() => onOpenLesson?.(task.s || task.lesson)} className="h-12 w-full rounded-lg text-sm font-extrabold text-white" style={{ backgroundColor: PRIMARY }}>{task.session?.confirmationState === "partial" ? `남은 기록 확인 (${task.session.confirmedCount}/${task.session.confirmableCount})` : "이 수업 기록 확인"}</button>
             </div>
           )}
 
@@ -3607,7 +3611,7 @@ function ScheduleQueueSheet({ tasks, members, returnFocusRef, onClose, onNoComme
                 <button onClick={onClose} className="h-12 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: SUB, border: `1px solid ${LINE}` }}>나중에</button>
               </div>
               {recordMode && (
-                <div className="mt-3 space-y-2 rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
+                <div ref={recordSectionRef} data-lesson-record-entry className="mt-3 space-y-2 rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
                   {recordMode === "voice" && <VoiceNote key={lessonRecordSessionKey(task.a.memberId, task.s.id)} memberId={task.a.memberId} memberName={memberName} lessonId={task.s.id} onLater={() => setRecordMode(null)} onClose={onClose} onDeferred={onClose} onDirectEntry={() => setRecordMode("write")} onDraftChange={(text, meta, options) => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, text, meta, options)} onApply={(text, meta) => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, text, meta, { confirmed: true, upsert: true })} />}
                   {recordMode === "write" && <><textarea rows={4} value={recordBody} onChange={(e) => setRecordBody(e.target.value)} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} /><button disabled={!recordBody.trim()} onClick={() => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, recordBody.trim(), null)} className="h-11 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35" style={{ backgroundColor: PRIMARY }}>저장 · 다음</button></>}
                 </div>
@@ -4511,7 +4515,7 @@ function MemberList({ members, selectedId, onSelect, onAdd, onOpenFav, favCount,
     </div>
   );
 }
-function ReferenceMemberList({ members, schedule, settings, onSelect, onAdd, onDeleteSamples, registerRequest = 0 }) {
+function ReferenceMemberList({ members, schedule, settings, onSelect, onAdd, onDeleteSamples, registerRequest = 0, onConsumeRegisterRequest }) {
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState("all");
   const [sort, setSort] = useState("name");
@@ -4519,7 +4523,11 @@ function ReferenceMemberList({ members, schedule, settings, onSelect, onAdd, onD
   const realMembers = visibleMembers(members).filter((m) => !isDraft(m));
   const sampleMembers = realMembers.filter((member) => member?.isSample === true);
   const actualMembers = realMembers.filter((member) => member?.isSample !== true);
-  useEffect(() => { if (registerRequest) setRegisterOpen(true); }, [registerRequest]);
+  useEffect(() => {
+    if (!registerRequest) return;
+    setRegisterOpen(true);
+    onConsumeRegisterRequest?.();
+  }, [onConsumeRegisterRequest, registerRequest]);
   const nextOf = (memberId) => (schedule || [])
     .filter((s) => hasMember(s, memberId) && `${s.date} ${s.start}` >= `${todayISO()} 00:00`)
     .sort((a, b) => `${a.date} ${a.start}`.localeCompare(`${b.date} ${b.start}`))[0] || null;
@@ -13756,9 +13764,9 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
               <IOSMediaDiagnosticPanel memberId={account?.id || "diagnostics"} lessonId="hidden-diagnostics" />
               <div className="mt-2 space-y-1">{diagnosticRecordSources.map((record, index) => <p key={`${record.at}-${index}`} className="tabular-nums" style={{ fontSize: 9, color: SUB }}>기록 {index + 1} · {diagnosticLocalTime(record.at)} · {record.status} · source={record.source} · date={record.dateSource}</p>)}</div>
               <p className="mt-3" style={{ fontSize: 10, fontWeight: 700, color: INK }}>음성 세션 최근 30건</p>
-              <div className="mt-1.5 space-y-1">{voiceSessionDiagnostics.map((item, index) => <p key={`${item.at}-${index}`} className="break-all tabular-nums" style={{ fontSize: 9, lineHeight: 1.45, color: ["error", "failed"].includes(item.event) ? BAD : SUB }}>{item.localTime || diagnosticLocalTime(item.at)} · {item.event} · {item.source}{item.code ? ` · ${item.code}` : ""}{item.reason ? ` · ${item.reason}` : ""}{item.seconds != null ? ` · ${item.seconds}s` : ""}{item.recordedSeconds != null ? ` · recorded ${item.recordedSeconds}s` : ""}{item.speechSeconds != null ? ` · speech ${item.speechSeconds}s` : ""}{item.trimStart != null ? ` · start ${item.trimStart}ms` : ""}{item.trimEnd != null ? ` · end ${item.trimEnd}ms` : ""}{item.maxAmplitude != null ? ` · peak ${item.maxAmplitude}` : ""}{item.trimmedMs != null ? ` · trim ${item.trimmedMs}ms` : ""}{item.captureLatencyMs != null ? ` · capture ${item.captureLatencyMs}ms` : ""}{item.flags?.length ? ` · ${item.flags.join(",")}` : ""}{item.bytes != null ? ` · ${Math.round(item.bytes / 1024)}KB` : ""}{item.durationMs != null ? ` · ${item.durationMs}ms` : ""}{item.requestId ? ` · ${item.requestId.slice(-8)}` : ""}{item.attempt != null ? ` · attempt ${item.attempt}` : ""}{item.delayMs != null ? ` · ${item.delayMs}ms` : ""}</p>)}</div>
+              <div className="mt-1.5 space-y-1">{voiceSessionDiagnostics.map((item, index) => <p key={`${item.at}-${index}`} className="break-all tabular-nums" style={{ fontSize: 9, lineHeight: 1.45, color: ["error", "failed"].includes(item.event) ? BAD : SUB }}>{item.localTime || diagnosticLocalTime(item.at)} · {item.event} · {item.source}{item.code ? ` · ${item.code}` : ""}{item.reason ? ` · ${item.reason}` : ""}{item.validationReason ? ` · ${item.validationReason}` : ""}{item.invalidField ? ` · ${item.invalidField}` : ""}{item.operation ? ` · ${item.operation}` : ""}{item.httpStatus ? ` · HTTP ${item.httpStatus}` : ""}{item.seconds != null ? ` · ${item.seconds}s` : ""}{item.recordedSeconds != null ? ` · recorded ${item.recordedSeconds}s` : ""}{item.speechSeconds != null ? ` · speech ${item.speechSeconds}s` : ""}{item.trimStart != null ? ` · start ${item.trimStart}ms` : ""}{item.trimEnd != null ? ` · end ${item.trimEnd}ms` : ""}{item.maxAmplitude != null ? ` · peak ${item.maxAmplitude}` : ""}{item.trimmedMs != null ? ` · trim ${item.trimmedMs}ms` : ""}{item.captureLatencyMs != null ? ` · capture ${item.captureLatencyMs}ms` : ""}{item.flags?.length ? ` · ${item.flags.join(",")}` : ""}{item.bytes != null ? ` · ${Math.round(item.bytes / 1024)}KB` : ""}{item.durationMs != null ? ` · ${item.durationMs}ms` : ""}{item.requestId ? ` · ${item.requestId.slice(-8)}` : ""}{item.attempt != null ? ` · attempt ${item.attempt}` : ""}{item.delayMs != null ? ` · ${item.delayMs}ms` : ""}</p>)}</div>
               {!voiceSessionDiagnostics.length && <p className="mt-1" style={{ fontSize: 10, color: SUB }}>음성 세션 기록 없음</p>}
-              <div className="mt-2 space-y-1.5">{readLessonRecordDiagnostics().map((item, index) => <div key={`${item.at}-${index}`} className="rounded-md px-2 py-1" style={{ backgroundColor: PAGE }}><p className="tabular-nums" style={{ fontSize: 9, color: SUB }}>{String(item.at).slice(5, 16).replace("T", " ")} · {item.transportCode || item.code} · {item.stage}{item.httpStatus ? ` · HTTP ${item.httpStatus}` : ""}{item.model ? ` · ${item.model}` : ""}{item.requestId ? ` · ${item.requestId.slice(-8)}` : ""}</p>{item.gatewayUrl && <p className="mt-0.5 break-all" style={{ fontSize: 8, lineHeight: 1.4, color: SUB }}>{item.gatewayUrl}</p>}{item.causeMessage && <p className="mt-0.5 break-all" style={{ fontSize: 8, lineHeight: 1.4, color: BAD }}>{item.causeName ? `${item.causeName}: ` : ""}{item.causeMessage}</p>}</div>)}</div>
+              <div className="mt-2 space-y-1.5">{readLessonRecordDiagnostics().map((item, index) => <div key={`${item.at}-${index}`} className="rounded-md px-2 py-1" style={{ backgroundColor: PAGE }}><p className="tabular-nums" style={{ fontSize: 9, color: SUB }}>{String(item.at).slice(5, 16).replace("T", " ")} · {item.transportCode || item.code} · {item.stage}{item.httpStatus ? ` · HTTP ${item.httpStatus}` : ""}{item.validationReason ? ` · ${item.validationReason}` : ""}{item.invalidField ? ` · ${item.invalidField}` : ""}{item.operation ? ` · ${item.operation}` : ""}{item.model ? ` · ${item.model}` : ""}{item.requestId ? ` · ${item.requestId.slice(-8)}` : ""}</p>{item.gatewayUrl && <p className="mt-0.5 break-all" style={{ fontSize: 8, lineHeight: 1.4, color: SUB }}>{item.gatewayUrl}</p>}{item.causeMessage && <p className="mt-0.5 break-all" style={{ fontSize: 8, lineHeight: 1.4, color: BAD }}>{item.causeName ? `${item.causeName}: ` : ""}{item.causeMessage}</p>}</div>)}</div>
               {!readLessonRecordDiagnostics().length && <p className="mt-2" style={{ fontSize: 10, color: SUB }}>최근 오류 없음</p>}
             </div>}
           </section>
@@ -14948,7 +14956,7 @@ export default function App() {
   const addMember = (initial = {}) => {
     const m = { ...blankMember(db.settings.staff), ...initial };
     saveDb(
-      { ...db, members: [m, ...db.members] },
+      appendMemberWithoutScheduleMutation(db, m),
       { entityType: "client", entityId: m.id, operation: "create", payload: m },
     );
     setSelectedId(m.id); setSection("info"); setDetailTab("record"); setMobileView("detail"); setTab("members");
@@ -15650,7 +15658,7 @@ export default function App() {
           <Guard key={tab}>
             {tab === "schedule" && <ScheduleManager db={db} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={() => { setMemberRegistrationRequest((value) => value + 1); setTab("members"); }} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
             {tab === "members" && <div className={`h-full min-h-0 ${mobileView === "detail" && member ? "pt-member-detail-active" : ""}`}>
-              <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList members={db.members} schedule={db.schedule} settings={db.settings} registerRequest={memberRegistrationRequest} onDeleteSamples={deleteSampleMembers} onAdd={addMember} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
+              <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList members={db.members} schedule={db.schedule} settings={db.settings} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
               {mobileView === "detail" && member && <div className="pt-member-detail-pane h-full min-h-0">
                 <ReferenceMemberDetail key={member.id} member={member} schedule={db.schedule} photos={photos[member.id]} settings={db.settings}
                   canViewSettlement={!account?.role || ["owner", "manager", "admin", "director"].includes(String(account.role).toLowerCase())} onBack={() => setMobileView("list")}

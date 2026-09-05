@@ -78,6 +78,24 @@ test("audio lesson request enforces the 2MB and 90 second media contract", () =>
   );
 });
 
+test("invalid audio exposes only a safe structured validation reason", () => {
+  const input = {
+    schemaVersion: 1,
+    memberId: "member-1",
+    lessonId: "lesson-1",
+    audio: Buffer.alloc(64).toString("base64"),
+    memberName: "김지민",
+    language: "ko",
+  };
+  assert.throws(
+    () => parseGatewayRequest(envelope("lesson_record_from_audio", input)),
+    (error) => error.code === "invalid_request"
+      && error.diagnostic?.stage === "request_validation"
+      && error.diagnostic?.validationReason === "unsupported_audio_type_or_duration"
+      && error.diagnostic?.invalidField === "input.audio",
+  );
+});
+
 test("voice summary accepts a member-owned note before a lesson id exists", () => {
   const parsed = parseGatewayRequest(envelope("summarizeVoice", {
     schemaVersion: 1,

@@ -65,6 +65,9 @@ export function failureCauseDetail(context = {}) {
     causeName: String(source.causeName || source.name || "").slice(0, 80),
     causeMessage,
     rawCode: String(source.code || source.reason || "").slice(0, 80),
+    validationReason: String(source.validationReason || "").slice(0, 80),
+    invalidField: String(source.invalidField || "").slice(0, 120),
+    operation: String(source.operation || "").slice(0, 80),
   };
 }
 

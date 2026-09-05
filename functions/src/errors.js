@@ -34,6 +34,9 @@ function asGatewayError(error) {
 
 function sendError(res, error, requestId = "") {
   const safeError = asGatewayError(error);
+  const safeDiagnosticToken = (value, max = 120) => String(value || "")
+    .replace(/[^A-Za-z0-9_.:[\]-]/g, "_")
+    .slice(0, max);
   const payload = {
     error: {
       code: safeError.code,
@@ -49,6 +52,9 @@ function sendError(res, error, requestId = "") {
       providerType: String(safeError.diagnostic.providerType || "unknown"),
       providerRequestId: String(safeError.diagnostic.providerRequestId || ""),
     };
+    if (safeError.diagnostic.validationReason) payload.error.diagnostic.validationReason = safeDiagnosticToken(safeError.diagnostic.validationReason, 80);
+    if (safeError.diagnostic.invalidField) payload.error.diagnostic.invalidField = safeDiagnosticToken(safeError.diagnostic.invalidField, 120);
+    if (safeError.diagnostic.operation) payload.error.diagnostic.operation = safeDiagnosticToken(safeError.diagnostic.operation, 80);
   }
   return res.status(safeError.status).json(payload);
 }

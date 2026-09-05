@@ -32,6 +32,9 @@ export class AIProviderError extends Error {
     this.providerStatus = options.providerStatus ?? options.cause?.providerStatus ?? null;
     this.providerCode = options.providerCode ?? options.cause?.providerCode ?? null;
     this.providerType = options.providerType ?? options.cause?.providerType ?? null;
+    this.validationReason = options.validationReason ?? options.cause?.validationReason ?? null;
+    this.invalidField = options.invalidField ?? options.cause?.invalidField ?? null;
+    this.operation = options.operation ?? options.cause?.operation ?? null;
     this.transportCode = options.transportCode ?? options.cause?.transportCode ?? null;
     this.gatewayUrl = options.gatewayUrl ?? options.cause?.gatewayUrl ?? null;
     this.causeName = options.causeName ?? options.cause?.causeName ?? null;
@@ -171,6 +174,9 @@ export class GatewayAIProvider extends AIProvider {
           // A non-JSON gateway failure remains a generic, non-sensitive error.
         }
         const providerCode = String(diagnostic?.providerCode || "");
+        const validationReason = safeNetworkText(diagnostic?.validationReason, 80);
+        const invalidField = safeNetworkText(diagnostic?.invalidField, 120);
+        const rejectedOperation = safeNetworkText(diagnostic?.operation, 80);
         const quotaExhausted = Number(diagnostic?.providerStatus) === 429 && providerCode === "insufficient_quota";
         const exhaustedAuthRefresh = response.status === 401 && Boolean(this.getAccessToken);
         throw new AIProviderError(quotaExhausted ? "provider_quota_exhausted" : exhaustedAuthRefresh ? "auth_refresh_failed" : errorCode, `AI Gateway request failed (${response.status})`, {
@@ -179,13 +185,16 @@ export class GatewayAIProvider extends AIProvider {
           retryable: !quotaExhausted && (response.status === 429 || response.status >= 500),
           serverMessage,
           causeName: `gateway_${errorCode}`,
-          causeMessage: [serverMessage, diagnostic?.stage ? `stage=${diagnostic.stage}` : "", diagnostic?.providerCode ? `providerCode=${diagnostic.providerCode}` : ""].filter(Boolean).join(" "),
+          causeMessage: [serverMessage, diagnostic?.stage ? `stage=${diagnostic.stage}` : "", validationReason ? `reason=${validationReason}` : "", invalidField ? `field=${invalidField}` : "", rejectedOperation ? `operation=${rejectedOperation}` : "", diagnostic?.providerCode && diagnostic.providerCode !== "unknown" ? `providerCode=${diagnostic.providerCode}` : ""].filter(Boolean).join(" "),
           transportCode: `E-HTTP-${response.status}`,
           gatewayUrl: diagnosticGatewayUrl,
           failureStage: exhaustedAuthRefresh ? "auth_refresh" : String(diagnostic?.stage || "gateway_http"),
           providerStatus: Number(diagnostic?.providerStatus) || null,
           providerCode,
           providerType: String(diagnostic?.providerType || ""),
+          validationReason,
+          invalidField,
+          operation: rejectedOperation || operation,
         });
       }
       const payload = await response.json();

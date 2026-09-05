@@ -44,3 +44,13 @@ test("remote diagnostic serialization contains no audio, transcript, member, or 
   assert.equal(serialized.includes('"audio":'), false);
   assert.equal(serialized.includes('"memberName":'), false);
 });
+
+test("remote diagnostics retain only allowlisted validation coordinates", () => {
+  const report = buildRemoteDiagnosticReport({
+    pipelineEvents: [{ at: "2026-08-26T00:00:00.000Z", code: "request_rejected", validationReason: "invalid_value", invalidField: "input.clipId", operation: "lesson_record_from_audio", transcript: "private" }],
+  });
+  assert.equal(report.logs[0].validationReason, "invalid_value");
+  assert.equal(report.logs[0].invalidField, "input.clipId");
+  assert.equal(report.logs[0].operation, "lesson_record_from_audio");
+  assert.equal(Object.hasOwn(report.logs[0], "transcript"), false);
+});

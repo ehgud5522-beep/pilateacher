@@ -79,7 +79,12 @@ function createAIGatewayHandler({
           throw new GatewayError("consent_required");
         }
         if (["backup_missing", "member_not_owned", "lesson_not_owned"].includes(authorizationReason)) {
-          throw new GatewayError("invalid_request", { status: 403 });
+          throw new GatewayError("invalid_request", { status: 403, diagnostic: {
+            stage: "authorization",
+            validationReason: authorizationReason,
+            invalidField: authorizationReason === "member_not_owned" ? "input.memberId" : authorizationReason === "lesson_not_owned" ? "input.lessonId" : "request",
+            operation: request.operation,
+          } });
         }
         throw new GatewayError("provider_unavailable");
       }
@@ -96,7 +101,7 @@ function createAIGatewayHandler({
         key: requestId,
         fingerprint,
       });
-      if (idempotencyClaim?.state === "conflict") throw new GatewayError("invalid_request");
+      if (idempotencyClaim?.state === "conflict") throw new GatewayError("invalid_request", { diagnostic: { stage: "idempotency", validationReason: "idempotency_conflict", invalidField: "requestId", operation: request.operation } });
       if (idempotencyClaim?.state === "pending") throw new GatewayError("provider_unavailable");
       if (idempotencyClaim?.state === "cached") return res.status(200).json(idempotencyClaim.response);
       if (idempotencyClaim?.state !== "new" || !idempotencyClaim.storageKey) throw new GatewayError("internal_error");
@@ -209,6 +214,17 @@ function createAIGatewayHandler({
       });
       return res.status(200).json(response);
     } catch (error) {
+      if (error?.code === "invalid_request") {
+        const candidateOperation = operation || req?.body?.operation;
+        const safeOperation = Object.values(OPERATIONS).includes(candidateOperation) ? candidateOperation : "unknown";
+        error.diagnostic = Object.freeze({
+          stage: "request_validation",
+          validationReason: "invalid_request",
+          invalidField: "request",
+          ...(error.diagnostic || {}),
+          operation: error.diagnostic?.operation || safeOperation,
+        });
+      }
       if (aiRecordingOperations?.handleFailure) {
         try { await aiRecordingOperations.handleFailure(error, { requestId, operation }); }
         catch (operationsError) {

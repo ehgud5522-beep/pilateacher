@@ -149,6 +149,10 @@ test("authorization and missing Secret both fail before provider execution or qu
   const brokenLinkResponse = await invoke(brokenLink);
   assert.equal(brokenLinkResponse.statusCode, 403);
   assert.equal(brokenLinkResponse.body.error.code, "invalid_request");
+  assert.equal(brokenLinkResponse.body.error.diagnostic.stage, "authorization");
+  assert.equal(brokenLinkResponse.body.error.diagnostic.validationReason, "lesson_not_owned");
+  assert.equal(brokenLinkResponse.body.error.diagnostic.invalidField, "input.lessonId");
+  assert.equal(brokenLinkResponse.body.error.diagnostic.operation, "summarizeVoice");
   assert.equal(getProviderCalls, 0);
 
   let rateCalls = 0;

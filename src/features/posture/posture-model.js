@@ -444,23 +444,18 @@ export function postureAfterReminder(sets, now = new Date()) {
 }
 
 export function selectAutomaticComparison(sets, { scope = "full_body" } = {}) {
-  const eligible = (sets || []).filter((set) => set?.status === "completed" && set.scope === scope);
-  const dated = eligible.filter((set) => Number.isFinite(Date.parse(set.completedAt || set.at || "")));
-  const valid = (dated.length >= 2 ? dated : eligible)
-    .sort((a, b) => {
-      const left = Date.parse(a.completedAt || a.at || ""), right = Date.parse(b.completedAt || b.at || "");
-      if (Number.isFinite(left) !== Number.isFinite(right)) return Number.isFinite(left) ? -1 : 1;
-      if (Number.isFinite(left) && Number.isFinite(right) && left !== right) return left - right;
-      return String(a.id || "").localeCompare(String(b.id || ""));
-    });
-  if (valid.length < 2) return { before: valid[0] || null, after: null };
-  return { before: valid[0], after: valid[valid.length - 1] };
-}
-
-function photoDateValue(photo) {
-  const value = String(photo?.completedAt || photo?.createdAt || photo?.updatedAt || photo?.at || photo?.date || "").trim();
-  const time = Date.parse(value);
-  return { value, time: Number.isFinite(time) ? time : null };
+  const eligible = (sets || []).filter((set) => set?.status === "completed" && set.scope === scope)
+    .filter((set) => calendarDateOfAssessment(set))
+    .sort(compareAssessmentDates);
+  for (let beforeIndex = 0; beforeIndex < eligible.length - 1; beforeIndex += 1) {
+    for (let afterIndex = eligible.length - 1; afterIndex > beforeIndex; afterIndex -= 1) {
+      const before = eligible[beforeIndex], after = eligible[afterIndex];
+      if (calendarDateOfAssessment(before) === calendarDateOfAssessment(after)) continue;
+      const view = commonCanonicalView(before, after);
+      if (view) return { before, after, view };
+    }
+  }
+  return { before: eligible[0] || null, after: null, view: null };
 }
 
 function calendarDateIndex(value) {
@@ -475,61 +470,75 @@ export function postureCalendarDays(from, to) {
   return start === null || end === null ? null : Math.max(0, Math.round(end - start));
 }
 
-export function selectMemberBodyPhotoSurface(photos, { now = new Date() } = {}) {
-  const records = [];
+function calendarDateOfAssessment(assessment) {
+  return String(assessment?.completedAt || assessment?.at || "").match(/^\d{4}-\d{2}-\d{2}/)?.[0] || "";
+}
+
+function compareAssessmentDates(left, right) {
+  const byDate = calendarDateOfAssessment(left).localeCompare(calendarDateOfAssessment(right));
+  return byDate || String(left?.id || "").localeCompare(String(right?.id || ""));
+}
+
+export function assessmentMediaForView(assessment, view) {
+  const normalizedView = normalizePostureView(view);
+  if (!POSTURE_VIEW_KEYS.includes(normalizedView) && normalizedView !== "custom") return null;
+  const photo = assessment?.photos?.[normalizedView];
+  if (photo) return photo;
+  return (assessment?.poses || []).filter((pose) => normalizePostureView(pose?.view) === normalizedView && pose?.src)
+    .sort((left, right) => recordActivityKey(right) - recordActivityKey(left))[0] || null;
+}
+
+function commonCanonicalView(before, after) {
+  return ["front", ...POSTURE_VIEW_KEYS.filter((view) => view !== "front")]
+    .find((view) => assessmentMediaForView(before, view) && assessmentMediaForView(after, view)) || null;
+}
+
+export function countPosturePhotoRecords(photos) {
   const seen = new Set();
   POSTURE_STORAGE_KEYS.forEach((storageKey) => {
-    const view = normalizePostureView(storageKey);
-    if (!POSTURE_VIEW_KEYS.includes(view)) return;
     (photos?.[storageKey] || []).filter(Boolean).forEach((photo, index) => {
-      const normalizedView = normalizePostureView(photo.view || storageKey);
-      if (!POSTURE_VIEW_KEYS.includes(normalizedView)) return;
       const identity = String(photo.id || photo.photoId || photo.blobId || `${storageKey}:${index}`);
-      const uniqueKey = `${normalizedView}:${identity}`;
-      if (seen.has(uniqueKey)) return;
-      seen.add(uniqueKey);
-      const stamp = photoDateValue(photo);
-      records.push({ photo, view: normalizedView, stamp: stamp.value, time: stamp.time, order: records.length });
+      seen.add(identity);
     });
   });
+  return seen.size;
+}
 
-  const ordered = [...records].sort((left, right) => {
-    if (left.time !== null && right.time !== null && left.time !== right.time) return left.time - right.time;
-    if (left.time !== null && right.time === null) return 1;
-    if (left.time === null && right.time !== null) return -1;
-    return left.order - right.order;
-  });
-  const latestEntry = ordered.at(-1) || null;
-  const candidateViews = ["front", ...POSTURE_VIEW_KEYS.filter((view) => view !== "front")];
-  let pair = null;
-  for (const view of candidateViews) {
-    const sameView = ordered.filter((entry) => entry.view === view && entry.time !== null);
-    const before = sameView[0] || null;
-    const latest = sameView.at(-1) || null;
-    if (before && latest && before.photo !== latest.photo && before.time !== latest.time) {
-      pair = { view, before, latest };
-      break;
-    }
-  }
+export function selectMemberBodyPhotoSurface(assessments, { now = new Date(), photoCount = 0 } = {}) {
+  const ordered = [...(assessments || [])].filter(Boolean).sort(compareAssessmentDates);
+  const latestAssessment = ordered.at(-1) || null;
+  const automatic = selectAutomaticComparison(ordered, { scope: latestAssessment?.scope || "full_body" });
+  const pair = automatic.before && automatic.after && automatic.view ? automatic : null;
+  const latestView = pair?.view || ["front", ...POSTURE_VIEW_KEYS.filter((view) => view !== "front"), "custom"]
+    .find((view) => assessmentMediaForView(latestAssessment, view)) || null;
+  const latestMedia = pair ? assessmentMediaForView(pair.after, pair.view) : assessmentMediaForView(latestAssessment, latestView);
+  const beforeMedia = pair ? assessmentMediaForView(pair.before, pair.view) : null;
 
   const today = now instanceof Date && !Number.isNaN(now.getTime())
     ? `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`
     : "";
-  const beforeDate = pair?.before.stamp.slice(0, 10) || "";
-  const latestDate = (pair?.latest || latestEntry)?.stamp.slice(0, 10) || "";
+  const beforeDate = pair ? calendarDateOfAssessment(pair.before) : "";
+  const latestDate = calendarDateOfAssessment(pair?.after || latestAssessment);
+  const completed = ordered.filter((assessment) => assessment.status === "completed");
+  const sameDayOnly = !pair && completed.length >= 2 && completed.some((before, index) => completed.slice(index + 1)
+    .some((after) => calendarDateOfAssessment(before) && calendarDateOfAssessment(before) === calendarDateOfAssessment(after)
+      && commonCanonicalView(before, after)));
   return {
-    state: pair ? "comparison" : records.length ? "single" : "empty",
-    photoCount: records.length,
+    state: pair ? "comparison" : ordered.length ? "single" : "empty",
+    assessmentCount: ordered.length,
+    photoCount,
     comparisonPairAvailable: Boolean(pair),
-    view: pair?.view || latestEntry?.view || null,
-    before: pair?.before.photo || null,
-    latest: pair?.latest.photo || latestEntry?.photo || null,
+    sameDayOnly,
+    view: pair?.view || latestView,
+    before: beforeMedia,
+    latest: latestMedia,
     beforeDate,
     latestDate,
     comparisonElapsedDays: pair ? postureCalendarDays(beforeDate, latestDate) : null,
     daysSinceLatest: latestDate && today ? postureCalendarDays(latestDate, today) : null,
-    beforeAssessmentId: pair?.before.photo?.assessmentId || null,
-    afterAssessmentId: pair?.latest.photo?.assessmentId || null,
+    latestAssessmentId: latestAssessment?.id || null,
+    beforeAssessmentId: pair?.before?.id || null,
+    afterAssessmentId: pair?.after?.id || null,
   };
 }
 

@@ -71,10 +71,10 @@ test("member isolation excludes records that belong to another member", () => {
 
 test("automatic comparison picks oldest and newest completed set in the same scope", () => {
   const sets = [
-    { id: "middle", status: "completed", scope: "full_body", at: "2026-02-01" },
-    { id: "new", status: "completed", scope: "full_body", at: "2026-03-01" },
-    { id: "old", status: "completed", scope: "full_body", at: "2026-01-01" },
-    { id: "partial", status: "completed", scope: "partial", at: "2025-01-01" },
+    { id: "middle", status: "completed", scope: "full_body", at: "2026-02-01", photos: { front: { src: "middle" } } },
+    { id: "new", status: "completed", scope: "full_body", at: "2026-03-01", photos: { front: { src: "new" } } },
+    { id: "old", status: "completed", scope: "full_body", at: "2026-01-01", photos: { front: { src: "old" } } },
+    { id: "partial", status: "completed", scope: "partial", at: "2025-01-01", photos: { front: { src: "partial" } } },
   ];
   const selected = selectAutomaticComparison(sets);
   assert.equal(selected.before.id, "old");
@@ -89,16 +89,17 @@ test("assessment favorite is aggregated from its device-only photo and pose reco
   assert.equal(sets[0].favorite, true);
 });
 
-test("automatic comparison orders real instants across timezones and keeps invalid dates deterministic", () => {
+test("automatic comparison uses distinct calendar dates and excludes undated sets", () => {
   const completed = [
-    { id: "invalid", status: "completed", scope: "full_body", at: "unknown" },
-    { id: "after", status: "completed", scope: "full_body", completedAt: "2026-08-20T18:00:00Z" },
-    { id: "before", status: "completed", scope: "full_body", completedAt: "2026-08-21T01:00:00+09:00" },
-    { id: "middle", status: "completed", scope: "full_body", completedAt: "2026-08-20T17:00:00Z" },
+    { id: "invalid", status: "completed", scope: "full_body", at: "unknown", photos: { front: { src: "invalid" } } },
+    { id: "after", status: "completed", scope: "full_body", completedAt: "2026-08-20T18:00:00Z", photos: { front: { src: "after" } } },
+    { id: "before", status: "completed", scope: "full_body", completedAt: "2026-08-21T01:00:00+09:00", photos: { front: { src: "before" } } },
+    { id: "middle", status: "completed", scope: "full_body", completedAt: "2026-08-20T17:00:00Z", photos: { front: { src: "middle" } } },
   ];
   const selected = selectAutomaticComparison(completed);
-  assert.equal(selected.before.id, "before");
-  assert.equal(selected.after.id, "after");
+  assert.equal(selected.before.id, "after");
+  assert.equal(selected.after.id, "before");
+  assert.equal(selected.view, "front");
 });
 
 test("reference lines are derived from saved normalized pose points without mutating them", () => {
@@ -264,7 +265,7 @@ test("direct drawing completion upgrades an existing draft and partial sets rema
   assert.match(analyzer, /completedPoseViews[\s\S]*pose\.assessmentComplete \|\| pose\.assessmentStatus === "completed" \|\| pose\.completedAt/);
 
   assert.ok(workspace.includes('sets.filter((set) => set.status === "completed")'));
-  assert.match(workspace, /\["custom", \.\.\.POSTURE_VIEW_KEYS\]/);
+  assert.match(workspace, /\[\.\.\.POSTURE_VIEW_KEYS, "custom"\]/);
   assert.match(workspace, /const completedInScope = completeSets\.filter\(\(set\) => set\.scope === nextScope\)/);
   assert.match(workspace, /같은 유형과 촬영 방향의 완료 분석이 2개 이상 필요합니다/);
   assert.match(workspace, /comparableViewsFor\(beforeSet, afterSet\)\.map/);

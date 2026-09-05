@@ -10,6 +10,7 @@ import {
   pendingLessonState,
   selectLessonSheetBriefing,
   selectMemberDetailStatus,
+  selectMemberHistoryRows,
   selectMemberLessonCounts,
   selectMemberLessonSessions,
   selectPendingLessonSessions,
@@ -244,6 +245,28 @@ test("lesson counts distinguish completed, reserved, and unresolved attendance",
   assert.deepEqual(selectMemberLessonCounts({ member, schedule, now: new Date("2026-09-05T12:00:00") }), { completed: 4, reserved: 1, unresolved: 1 });
 });
 
+test("collapsed history keeps every pending session, four normal sessions, and no duplicates", () => {
+  const sessions = Array.from({ length: 12 }, (_, index) => ({
+    key: `session-${index}`,
+    lesson: { id: `session-${index}` },
+    confirmationState: index < 3 ? "pending" : "confirmed",
+  }));
+  const pendingSessions = [
+    { lessonId: "session-0", reasons: ["attendance", "confirmation"] },
+    { lessonId: "session-1", reasons: ["confirmation"] },
+    { lessonId: "session-2", reasons: ["confirmation"] },
+  ];
+  const collapsed = selectMemberHistoryRows({ sessions: [...sessions, sessions[0]], pendingSessions });
+  assert.equal(collapsed.total, 12);
+  assert.equal(collapsed.rows.length, 7);
+  assert.deepEqual(collapsed.rows.slice(0, 3).map((row) => row.key), ["session-0", "session-1", "session-2"]);
+  assert.equal(new Set(collapsed.rows.map((row) => row.key)).size, 7);
+  assert.equal(collapsed.hidden, 5);
+  const expanded = selectMemberHistoryRows({ sessions: [...sessions, sessions[0]], pendingSessions, expanded: true });
+  assert.equal(expanded.rows.length, 12);
+  assert.equal(new Set(expanded.rows.map((row) => row.key)).size, 12);
+});
+
 test("member and lesson-sheet source use one card, past labels, and exact lesson navigation", async () => {
   const source = await readFile(new URL("../../src/App.jsx", import.meta.url), "utf8");
   const scheduleForm = source.slice(source.indexOf("function ScheduleForm"), source.indexOf("function ScheduleQueueSheet"));
@@ -251,10 +274,11 @@ test("member and lesson-sheet source use one card, past labels, and exact lesson
   assert.doesNotMatch(scheduleForm, /목표 미입력/);
   assert.equal((scheduleForm.match(/\{m\?\.name \|\| "삭제된 회원"\}/g) || []).length, 1);
   assert.match(source, /pastLesson && key === "today" \? "수업 내용" : label/);
+  assert.match(source, /pendingLessonSummary\.sessions\.filter\(\(item\) => !item\.session\)/);
+  assert.doesNotMatch(source, /pendingLessonSummary\.sessions\.filter\(\(item\) => item\.reasons\.includes\("attendance"\) && !item\.session\)/);
   assert.match(source, /onOpenLesson\?\.\(session\.lesson\?\.id \|\| session\.key\)/);
-  assert.match(source, /`수업 \$\{lessonCounts\.completed\}건`/);
-  assert.match(source, /`예약 \$\{lessonCounts\.reserved\}건`/);
-  assert.match(source, /`미처리 \$\{lessonCounts\.unresolved\}건`/);
+  assert.match(source, /수업 \{historySessions\.length\}건/);
+  assert.match(source, /확인 필요 \$\{pendingSessionCount\}/);
   const statusCard = source.slice(source.indexOf('data-member-section="status"'), source.indexOf('data-member-section="next-preparation"'));
   assert.doesNotMatch(statusCard, /Avatar|detailStatus\.reasons|>상태</);
 });

@@ -60,7 +60,7 @@ import { installFocusVisibilityGuard } from "./features/ui/focus-visibility.js";
 import { scheduleMemberLayoutSnapshots } from "./features/ui/member-layout-diagnostics.js";
 import {
   POSTURE_RETAKE_DAYS, POSTURE_STORAGE_KEYS, POSTURE_VIEW_DEFS, POSTURE_VIEW_KEYS,
-  compareAssessmentMetrics, completeAssessmentRecords, correctedPoseSource, normalizeAssessmentSets, normalizePostureView, postureAnalysisPlane,
+  assessmentMediaForView, compareAssessmentMetrics, completeAssessmentRecords, correctedPoseSource, countPosturePhotoRecords, normalizeAssessmentSets, normalizePostureView, postureAnalysisPlane,
   getPostureRetakeStatus, postureAlignmentTransform, postureReferenceLines,
   postureMilestoneTemplate, postureViewLabel, removeAssessmentDraftRecords, selectAutomaticComparison,
   selectMemberBodyPhotoSurface, selectResumableAssessment,
@@ -95,7 +95,7 @@ import {
 import { evaluateLessonRecordLink, linkScheduleToMember, upsertLessonRecordNote } from "./features/lesson-record/link-context.js";
 import {
   formatMemberLessonDate, formatMemberLessonHeader, lessonSessionRepresentative, normalizedLessonType, pendingLessonState,
-  selectLessonSheetBriefing, selectMemberDetailStatus, selectMemberLessonCounts, selectMemberLessonSessions, selectPendingLessonSessions,
+  selectLessonSheetBriefing, selectMemberDetailStatus, selectMemberHistoryRows, selectMemberLessonCounts, selectMemberLessonSessions, selectPendingLessonSessions,
 } from "./features/lesson-record/member-detail-selectors.js";
 import { deactivateMemberRecord, deleteMemberData, visibleMembers } from "./features/members/member-lifecycle.js";
 import { trackLessonRecordUsage } from "./features/lesson-record/usage-telemetry.js";
@@ -998,10 +998,10 @@ async function composeBeforeAfter(before, after, memberName) {
       ctx.fillStyle = color; ctx.fillRect(x + 24, 24, w, 64);
       ctx.fillStyle = "#fff"; ctx.fillText(txt, x + 46, 57);
     };
-    tag(`BEFORE  ${ymd(before.date)}`, 0, "#356AE6");
-    tag(`AFTER  ${ymd(after.date)}`, W + GAP, "#F28C28");
+    tag(`BEFORE  ${formatMemberLessonDate(before.date)}`, 0, INK2);
+    tag(`AFTER  ${formatMemberLessonDate(after.date)}`, W + GAP, BRAND);
     ctx.font = "700 34px Pretendard, -apple-system, sans-serif";
-    ctx.fillStyle = "#A594FF";
+    ctx.fillStyle = BRAND;
     ctx.fillText(`${memberName || "회원"} · ${weeksBetween(before.date, after.date)}주 변화`, 28, H + FOOT / 2);
     return c;
   }
@@ -1408,7 +1408,7 @@ function Sheet({ title, sub, subtitle, onClose, children, wide = false, safeTop 
     </div>
   );
 }
-function ScheduleBottomSheet({ title, subtitle, onClose, returnFocusRef, children, dismissible = true }) {
+function ScheduleBottomSheet({ title, subtitle, onClose, returnFocusRef, children, dismissible = true, aboveTabBar = false }) {
   const panelRef = useRef(null);
   const scrollRef = useRef(null);
   const dragRef = useRef(null);
@@ -1523,11 +1523,11 @@ function ScheduleBottomSheet({ title, subtitle, onClose, returnFocusRef, childre
     };
   }, [dismissible, finishDrag, paintDrag]);
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center px-0 sm:px-3" style={{ backgroundColor: SCRIM, animation: "sheet-fade .18s ease-out" }} onPointerDown={(e) => { if (dismissible && e.target === e.currentTarget) onClose(); }}>
+    <div className="fixed left-0 right-0 top-0 z-50 flex items-end justify-center px-0 sm:px-3" style={{ bottom: aboveTabBar ? "calc(var(--pt-tabbar-height) + max(env(safe-area-inset-bottom, 0px), 8px))" : 0, backgroundColor: SCRIM, animation: "sheet-fade .18s ease-out" }} onPointerDown={(e) => { if (dismissible && e.target === e.currentTarget) onClose(); }}>
       <section ref={panelRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="schedule-sheet-title" aria-busy={!dismissible}
         className="pt-schedule-sheet flex w-full min-h-0 flex-col overflow-hidden"
         style={{ maxHeight: "92dvh", borderRadius: "20px 20px 0 0", backgroundColor: CARD,
-          border: `1px solid ${LINE}`, borderBottom: 0, boxShadow: "0 -18px 54px rgba(28,36,51,.18)", paddingBottom: "env(safe-area-inset-bottom, 0px)", animation: "sheet-rise .24s cubic-bezier(.2,.8,.2,1)" }}>
+          border: `1px solid ${LINE}`, borderBottom: 0, boxShadow: "0 -18px 54px rgba(28,36,51,.18)", paddingBottom: aboveTabBar ? 0 : "env(safe-area-inset-bottom, 0px)", animation: "sheet-rise .24s cubic-bezier(.2,.8,.2,1)" }}>
         {dismissible && <button type="button" aria-label="아래로 끌어 닫기" onPointerDown={startHandleDrag} onPointerMove={moveHandleDrag} onPointerUp={finishDrag} onPointerCancel={finishDrag}
           className="flex h-7 w-full shrink-0 touch-none cursor-grab items-center justify-center active:cursor-grabbing">
           <span aria-hidden="true" style={{ width: 36, height: 4, borderRadius: 999, backgroundColor: LINE }} />
@@ -2238,13 +2238,13 @@ function Tabs({ tab, setTab }) {
   ];
   return (
     <nav className="safe-tab z-40 flex shrink-0" aria-label="주요 메뉴"
-      style={{ height: 49, boxSizing: "content-box", borderTop: `1px solid ${LINE}`, backgroundColor: CARD }}>
-      <div className="flex h-[49px] w-full items-center">
+      style={{ height: "var(--pt-tabbar-height)", boxSizing: "content-box", borderTop: `1px solid ${LINE}`, backgroundColor: CARD }}>
+      <div className="flex w-full items-center" style={{ height: "var(--pt-tabbar-height)" }}>
         {items.map((it) => {
           const on = tab === it.key, Icon = it.icon;
           return (
-            <button key={it.key} type="button" aria-current={on ? "page" : undefined} onClick={() => setTab(it.key)} className="relative flex h-[49px] flex-1 flex-col items-center justify-center gap-0.5 text-[10px] font-medium"
-              style={{ color: on ? BRAND : SUB }}>
+            <button key={it.key} type="button" aria-current={on ? "page" : undefined} onClick={() => setTab(it.key)} className="relative flex flex-1 flex-col items-center justify-center gap-0.5 text-[10px] font-medium"
+              style={{ height: "var(--pt-tabbar-height)", color: on ? BRAND : SUB }}>
               <span className="relative flex items-center justify-center">
                 <Icon size={20} strokeWidth={on ? 2.2 : 1.7} />
                 {on && <span aria-hidden="true" className="absolute" style={{ bottom: -3, width: 18, height: 2, borderRadius: 1, backgroundColor: BRAND }} />}
@@ -4239,16 +4239,16 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
       </div>
       <div className="px-1.5 pb-1.5 pt-1.5" style={{ background: "linear-gradient(180deg, rgba(19,24,34,.9), rgba(15,19,28,.98))", borderTop: "1px solid rgba(255,255,255,.07)", boxShadow: "0 -12px 28px rgba(0,0,0,.22)" }}>
         <div className="rounded-xl p-1.5" style={{ backgroundColor: "rgba(31,38,52,.94)", border: "1px solid rgba(255,255,255,.08)", boxShadow: "0 8px 24px rgba(0,0,0,.2)" }}>
-          <div className="pt-hscroll flex gap-1 overflow-x-auto">
+          <div className="grid grid-cols-3 gap-1" data-posture-tool-grid>
             {toolItems.map(({ k, l, I }) => {
               const active = k === "guide" ? ["hline", "vline"].includes(tool) : k === "ruler" ? Boolean(ruler) : tool === k;
-              return <button key={k} onClick={() => { if (k === "guide") setGuideSheet(true); else if (k === "ruler") { setRuler((value) => value ? null : { cx: 0.5, cy: 0.58, deg: 0 }); pickTool("pen"); } else pickTool(k); }} className="flex h-11 min-w-[50px] shrink-0 items-center justify-center gap-1 rounded-lg px-1.5 text-[11px] font-bold"
+              return <button key={k} onClick={() => { if (k === "guide") setGuideSheet(true); else if (k === "ruler") { setRuler((value) => value ? null : { cx: 0.5, cy: 0.58, deg: 0 }); pickTool("pen"); } else pickTool(k); }} className="flex h-11 min-w-0 items-center justify-center gap-1 rounded-lg px-1 text-[11px] font-bold"
                 style={active ? { backgroundColor: BRAND, color: "#fff", boxShadow: "0 5px 12px rgba(76,67,153,.32)" } : { backgroundColor: "rgba(255,255,255,.055)", color: "rgba(255,255,255,.76)", border: "1px solid rgba(255,255,255,.055)" }}
                 aria-pressed={active}><I size={20} strokeWidth={2.1} /><span className="whitespace-nowrap">{l}</span></button>;
             })}
           </div>
           <div className="mt-1 border-t pt-1" style={{ borderColor: "rgba(255,255,255,.08)" }}>
-            <div className="pt-hscroll flex items-center gap-0.5 overflow-x-auto">
+            <div className="flex flex-wrap items-center justify-center gap-0.5" data-posture-color-grid>
               {[...ANNOTATION_PRESET_COLORS, ...customRecentColors].map(({ color: optionColor, label: optionLabel }) => (
                 <button key={optionColor} onClick={() => chooseColor(optionColor)} className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full" aria-label={optionLabel} aria-pressed={color === optionColor}>
                   <span className="flex h-8 w-8 items-center justify-center rounded-full" style={{ backgroundColor: optionColor, border: color === optionColor ? "3px solid #FFFFFF" : "1px solid rgba(255,255,255,.22)", boxShadow: color === optionColor ? "0 0 0 2px #6C5FD4" : optionColor === "#FFFFFF" ? "inset 0 0 0 1px rgba(0,0,0,.14)" : "none" }}>
@@ -4658,6 +4658,7 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
   const [recordQueueRevision, setRecordQueueRevision] = useState(0);
   const [deleteName, setDeleteName] = useState("");
   const [deleteBusy, setDeleteBusy] = useState(false);
+  const [historyExpanded, setHistoryExpanded] = useState(false);
   const layoutRootRef = useRef(null);
   const actionBarRef = useRef(null);
   const scrollContainerRef = useRef(null);
@@ -4683,12 +4684,13 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
   const pendingLessonSummary = useMemo(() => selectPendingLessonSessions({ members: [member], schedule, pendingDrafts: listPendingLessonRecords().filter((draft) => String(draft?.memberId || "") === String(member.id)) }), [member, schedule, recordQueueRevision]);
   const pendingSessionCount = pendingLessonSummary.countForMember(member.id);
   const pendingByLesson = useMemo(() => new Map(pendingLessonSummary.sessions.map((item) => [String(item.lessonId || item.session?.key || ""), item])), [pendingLessonSummary]);
-  const attendanceRows = useMemo(() => pendingLessonSummary.sessions.filter((item) => item.reasons.includes("attendance") && !item.session).map((item) => ({
+  const pendingRows = useMemo(() => pendingLessonSummary.sessions.filter((item) => !item.session).map((item) => ({
     key: String(item.lessonId), date: item.lesson?.date || "", startTime: item.lesson?.start || "", type: normalizedLessonType(item.lesson?.type),
     today: "기록 없음", change: "", reaction: "", next: "", source: "manual", confirmationState: "pending", confirmedAt: "",
     confirmedCount: 0, confirmableCount: 0, records: [], lesson: item.lesson, warning: "",
   })), [pendingLessonSummary]);
-  const historySessions = useMemo(() => [...lessonSessions, ...attendanceRows].sort((a, b) => `${b.date}|${b.startTime}|${b.key}`.localeCompare(`${a.date}|${a.startTime}|${a.key}`)), [lessonSessions, attendanceRows]);
+  const historySessions = useMemo(() => [...lessonSessions, ...pendingRows].sort((a, b) => `${b.date}|${b.startTime}|${b.key}`.localeCompare(`${a.date}|${a.startTime}|${a.key}`)), [lessonSessions, pendingRows]);
+  const historyVisibility = useMemo(() => selectMemberHistoryRows({ sessions: historySessions, pendingSessions: pendingLessonSummary.sessions, expanded: historyExpanded }), [historySessions, pendingLessonSummary, historyExpanded]);
   const lessonCounts = useMemo(() => selectMemberLessonCounts({ member, schedule }), [member, schedule]);
   const memoryBriefing = useMemo(() => createMemberBriefing({ member }), [member]);
   const memorySummary = useMemo(() => memberMemorySummary(memoryBriefing), [memoryBriefing]);
@@ -4717,8 +4719,10 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
     onSnapshot: (snapshot) => deviceLog("member_detail_layout_snapshot", snapshot),
   }), [member.id, hasMemoryOverview, lessonSessions.length]);
   const assessmentSets = useMemo(() => normalizeAssessmentSets(photos, { memberId: member.id }), [photos, member.id]);
-  const bodyPhotoSurface = useMemo(() => selectMemberBodyPhotoSurface(photos), [photos]);
+  const rawPhotoCount = useMemo(() => countPosturePhotoRecords(photos), [photos]);
+  const bodyPhotoSurface = useMemo(() => selectMemberBodyPhotoSurface(assessmentSets, { photoCount: rawPhotoCount }), [assessmentSets, rawPhotoCount]);
   const resumableAssessment = useMemo(() => selectResumableAssessment(assessmentSets, { memberId: member.id }), [assessmentSets, member.id]);
+  useEffect(() => { setHistoryExpanded(false); }, [member.id]);
   const next = lessons.filter((s) => attOf(s, member.id)?.status === "booked" && new Date(`${s.date}T${s.start || "00:00"}:00`).getTime() >= Date.now()).sort((a, b) => `${a.date} ${a.start}`.localeCompare(`${b.date} ${b.start}`))[0] || null;
   const recentLesson = lessons.find((lesson) => lesson.date <= todayISO() && attOf(lesson, member.id)?.status === "done") || null;
   const memberUnit = paidAvg(member);
@@ -4823,25 +4827,25 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
             {hasMemoryOverview && <details className="mt-2 min-w-0 border-t pt-2" style={{ borderColor: LINE }}><summary className="cursor-pointer list-none text-[10px] font-bold" style={{ color: SUB }}>변화·회원 반응 자세히 보기</summary><div className="mt-2 grid min-w-0 grid-cols-[72px_minmax(0,1fr)] gap-2"><span className="text-[10px] font-bold" style={{ color: SUB }}>변화</span><span className="break-words text-xs" style={{ color: INK2 }}>{preparation.change}</span><span className="text-[10px] font-bold" style={{ color: SUB }}>회원 반응</span><span className="break-words text-xs" style={{ color: INK2 }}>{preparation.reaction}</span></div></details>}
           </section>
           <section data-member-section="lesson-history" style={sectionStyle}>
-            <div className="mb-2 flex min-w-0 items-center gap-2"><h2 className="min-w-0 flex-1 text-sm font-extrabold" style={{ color: INK }}>수업 기록</h2><span className="shrink-0 text-[10px] tabular-nums" style={{ color: SUB }}>{[`수업 ${lessonCounts.completed}건`, lessonCounts.reserved ? `예약 ${lessonCounts.reserved}건` : "", lessonCounts.unresolved ? `미처리 ${lessonCounts.unresolved}건` : ""].filter(Boolean).join(" · ")}</span>{pendingSessionCount > 0 && <button type="button" disabled={Boolean(saving)} onClick={async () => { for (const session of lessonSessions.filter((item) => item.confirmationState !== "confirmed")) await confirmSessionRecords(session); }} className="shrink-0 text-[10px] font-extrabold" style={{ color: BRAND_D }}>모두 확인</button>}</div>
-            {historySessions.length === 0 ? <p className="py-3 text-xs" style={{ color: SUB }}>아직 작성된 수업 기록이 없습니다</p> : <div className="min-w-0 space-y-2">{historySessions.map((session) => {
+            <div className="mb-2 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1"><h2 className="min-w-0 flex-1 text-sm font-extrabold" style={{ color: INK }}>수업 기록</h2><span className="shrink-0 text-[10px] tabular-nums" style={{ color: SUB }}>수업 {historySessions.length}건{pendingSessionCount ? ` · 확인 필요 ${pendingSessionCount}` : ""}{lessonCounts.reserved ? ` · 예약 ${lessonCounts.reserved}` : ""}</span>{pendingSessionCount > 0 && <button type="button" disabled={Boolean(saving)} onClick={async () => { for (const session of lessonSessions.filter((item) => item.confirmationState !== "confirmed")) await confirmSessionRecords(session); }} className="shrink-0 text-[10px] font-extrabold" style={{ color: BRAND_D }}>모두 확인</button>}</div>
+            {historySessions.length === 0 ? <p className="py-3 text-xs" style={{ color: SUB }}>아직 작성된 수업 기록이 없습니다</p> : <div className="min-w-0 space-y-2">{historyVisibility.rows.map((session) => {
               const pendingItem = pendingByLesson.get(String(session.lesson?.id || session.key));
               const state = pendingItem ? pendingLessonState(pendingItem) : { key: "confirmed", label: "확인 완료", action: "" };
               const representative = lessonSessionRepresentative(session);
               const pendingRecords = session.records.filter((note) => note?.lessonRecord && note.lessonRecord.stage !== "confirmed_record");
               const reviewable = pendingRecords.length === 1 && pendingRecords[0]?.lessonRecord?.structuredDraft;
               return <div key={session.key} className="flex min-w-0 items-start gap-2 rounded-lg p-2.5" style={{ backgroundColor: CANVAS }}><details className="min-w-0 flex-1"><summary className="min-w-0 cursor-pointer list-none"><span className="flex min-w-0 items-center gap-2"><span className="min-w-0 flex-1 truncate text-xs font-extrabold" style={{ color: INK }}>{formatMemberLessonHeader(session, historySessions)}</span><span className="shrink-0 text-[9px] font-bold" style={{ color: state.key === "confirmed" ? SUB : WARN }}>{state.label}</span></span><span className="mt-1 block truncate text-xs" style={{ color: INK2 }}>{representative.display}</span>{session.next && representative.field !== "next" && <span className="mt-1 block truncate text-[10px]" style={{ color: SUB }}>다음 · {session.next}</span>}{session.warning && <span className="mt-1 block text-[9px]" style={{ color: SUB }}>{session.warning}</span>}</summary>{representative.field !== "empty" && <div className="mt-3 border-t pt-2" style={{ borderColor: LINE }}><LessonRecordFieldRows session={session} hideEmpty pastLesson />{session.sourceDateHint && <p className="mt-2 text-[9px] tabular-nums" style={{ color: SUB }}>원문 날짜 {session.sourceDateHint}</p>}</div>}</details>{state.key === "attendance" ? <button type="button" onClick={() => onOpenLesson?.(session.lesson?.id || session.key)} className="h-8 shrink-0 rounded-lg px-2 text-[10px] font-extrabold" style={{ backgroundColor: TINT, color: BRAND_D }}>출석 처리</button> : session.confirmationState !== "confirmed" && session.records.length > 0 ? <button type="button" disabled={Boolean(saving)} onClick={() => reviewable ? openRecordReview(pendingRecords[0]) : confirmSessionRecords(session)} className="h-8 shrink-0 rounded-lg px-2 text-[10px] font-extrabold" style={{ backgroundColor: TINT, color: BRAND_D }}>확인</button> : null}</div>;
-            })}</div>}
+            })}{(historyVisibility.hidden > 0 || historyExpanded) && <button type="button" onClick={() => setHistoryExpanded((value) => !value)} className="h-10 w-full text-xs font-extrabold" style={{ borderRadius: 9, backgroundColor: CANVAS, color: BRAND_D }}>{historyExpanded ? "접기" : `더보기 · ${historyVisibility.hidden}건`}</button>}</div>}
           </section>
           <section data-member-management-card="posture" data-member-section="posture" className="min-w-0 max-w-full" style={{ ...sectionStyle, overflow: "hidden", backgroundColor: CARD }}>
-            <div className="flex min-w-0 items-center gap-2"><h2 className="min-w-0 flex-1 text-sm font-extrabold" style={{ color: INK }}>체형 변화</h2>{bodyPhotoSurface.photoCount > 0 && <button type="button" onClick={() => onAssess?.({ mode: "history" })} className="shrink-0 text-[10px] font-bold" style={{ color: BRAND_D }}>전체 보기</button>}</div>
+            <div className="flex min-w-0 items-center gap-2"><h2 className="min-w-0 flex-1 text-sm font-extrabold" style={{ color: INK }}>체형 변화</h2>{bodyPhotoSurface.assessmentCount > 0 && <><span className="shrink-0 text-[10px] tabular-nums" style={{ color: SUB }}>체형기록 {bodyPhotoSurface.assessmentCount}회 · 최근 {formatMemberLessonDate(bodyPhotoSurface.latestDate)}</span><button type="button" onClick={() => onAssess?.({ mode: "history" })} className="shrink-0 text-[10px] font-bold" style={{ color: BRAND_D }}>전체 보기</button></>}</div>
             {bodyPhotoSurface.state === "empty" ? <div className="mt-3 rounded-xl p-3 text-center" style={{ backgroundColor: CANVAS }}><span className="mx-auto flex h-16 w-16 items-center justify-center rounded-xl" style={{ backgroundColor: CARD, color: BRAND }}><Camera size={22} /></span><p className="mt-2 text-xs font-bold" style={{ color: INK }}>지금 찍어두면 나중에 변화를 보여줄 수 있습니다.</p><p className="mt-1 text-[10px]" style={{ color: INK2 }}>첫 수업 전에 사진 한 장 남겨두면 나중에 변화를 비교할 수 있습니다.</p><button type="button" onClick={() => onAssess?.({ mode: "new" })} className="mt-3 h-10 w-full text-xs font-extrabold text-white" style={{ borderRadius: 9, backgroundColor: BRAND }}>첫 사진 촬영</button></div> : bodyPhotoSurface.state === "comparison" ? <>
               <div data-body-photo-pair-view={bodyPhotoSurface.view} className="mt-3 grid min-w-0 grid-cols-2 gap-2 overflow-hidden">
                 {[{ label: "Before", photo: bodyPhotoSurface.before, date: bodyPhotoSurface.beforeDate }, { label: "Latest", photo: bodyPhotoSurface.latest, date: bodyPhotoSurface.latestDate }].map((item) => <div key={item.label} className="min-w-0"><div className="aspect-[3/4] w-full overflow-hidden rounded-xl" style={{ backgroundColor: PHOTO }}>{item.photo?.src ? <img src={item.photo.src} alt={`${postureViewLabel(bodyPhotoSurface.view)} ${item.label}`} className="h-full w-full object-cover" /> : <span className="flex h-full w-full items-center justify-center" style={{ color: FAINT }}><Camera size={20} /></span>}</div><p className="mt-1 truncate text-center text-[10px] font-bold tabular-nums" style={{ color: INK2 }}>{formatMemberLessonDate(item.date)}</p></div>)}
               </div>
-              <p className="mt-2 text-center text-[11px] font-bold tabular-nums" style={{ color: INK2 }}>{bodyPhotoSurface.comparisonElapsedDays}일간 변화 · 사진 {bodyPhotoSurface.photoCount}장</p>
+              <p className="mt-2 text-center text-[11px] font-bold tabular-nums" style={{ color: INK2 }}>{bodyPhotoSurface.comparisonElapsedDays}일간 변화 · 체형기록 {bodyPhotoSurface.assessmentCount}회 · 사진 {bodyPhotoSurface.photoCount}장</p>
               <button type="button" onClick={openBodyPhotoCard} className="mt-3 h-10 w-full text-xs font-extrabold text-white" style={{ borderRadius: 9, backgroundColor: BRAND }}>비교 카드 만들어 보내기</button>
-            </> : <div className="mt-3"><div className="grid min-w-0 grid-cols-2 gap-2 overflow-hidden"><div className="min-w-0"><div className="aspect-[3/4] w-full overflow-hidden rounded-xl" style={{ backgroundColor: PHOTO }}>{bodyPhotoSurface.latest?.src ? <img src={bodyPhotoSurface.latest.src} alt={`${postureViewLabel(bodyPhotoSurface.view)} 현재 사진`} className="h-full w-full object-cover" /> : <span className="flex h-full w-full items-center justify-center" style={{ color: FAINT }}><Camera size={20} /></span>}</div><p className="mt-1 truncate text-center text-[10px] font-bold tabular-nums" style={{ color: INK2 }}>{formatMemberLessonDate(bodyPhotoSurface.latestDate)}</p></div><button type="button" onClick={() => onAssess?.({ mode: "new" })} className="flex aspect-[3/4] min-w-0 flex-col items-center justify-center rounded-xl" style={{ border: `1px dashed ${LINE}`, backgroundColor: CANVAS, color: BRAND_D }}><Plus size={20} /><span className="mt-1 text-xs font-bold">촬영</span></button></div><p className="mt-2 break-words text-center text-[11px] leading-relaxed" style={{ color: INK2 }}>한두 달 뒤 같은 자세로 한 장 더 찍으면 변화를 비교할 수 있습니다.</p></div>}
+            </> : <div className="mt-3"><div className="grid min-w-0 grid-cols-2 gap-2 overflow-hidden"><div className="min-w-0"><div className="aspect-[3/4] w-full overflow-hidden rounded-xl" style={{ backgroundColor: PHOTO }}>{bodyPhotoSurface.latest?.src ? <img src={bodyPhotoSurface.latest.src} alt={`${postureViewLabel(bodyPhotoSurface.view)} 현재 사진`} className="h-full w-full object-cover" /> : <span className="flex h-full w-full items-center justify-center" style={{ color: FAINT }}><Camera size={20} /></span>}</div><p className="mt-1 truncate text-center text-[10px] font-bold tabular-nums" style={{ color: INK2 }}>{formatMemberLessonDate(bodyPhotoSurface.latestDate)}</p></div><button type="button" onClick={() => onAssess?.({ mode: "new" })} className="flex aspect-[3/4] min-w-0 flex-col items-center justify-center rounded-xl" style={{ border: `1px dashed ${LINE}`, backgroundColor: CANVAS, color: BRAND_D }}><Plus size={20} /><span className="mt-1 text-xs font-bold">다음 촬영</span></button></div><p className="mt-2 break-words text-center text-[11px] leading-relaxed" style={{ color: INK2 }}>{bodyPhotoSurface.sameDayOnly ? "같은 날 촬영한 기록만 있습니다. 다른 날짜에 한 번 더 촬영하면 변화를 비교할 수 있습니다." : "한두 달 뒤 같은 자세로 한 번 더 촬영하면 변화를 비교할 수 있습니다."}</p><p className="mt-1 text-center text-[10px] tabular-nums" style={{ color: SUB }}>체형기록 {bodyPhotoSurface.assessmentCount}회 · 사진 {bodyPhotoSurface.photoCount}장</p></div>}
             {resumableAssessment && <button type="button" onClick={() => onAssess?.({ mode: "resume", assessmentId: resumableAssessment.id })} className="mt-2 h-10 w-full text-xs font-bold" style={{ borderRadius: 9, backgroundColor: CANVAS, color: BRAND_D }}>진행 중 분석 이어가기</button>}
           </section>
           <details data-member-management-card="membership" style={{ ...sectionStyle, padding: 0, overflow: "hidden", backgroundColor: TINT, borderColor: "#D5D1EB" }}>
@@ -5789,7 +5793,7 @@ function SetViewer({ item, onClose, onToggleFav }) {
             <img src={after.src} alt="애프터" className="absolute inset-0 h-full w-full object-cover" style={{ opacity: t / 100, transform: ptf(after) }} />
             <GuideOverlay />
             <span className="absolute left-3 top-3 rounded-full px-2.5 py-1 text-xs font-extrabold text-white" style={{ backgroundColor: "rgba(0,0,0,0.55)" }}>
-              {t < 50 ? `BEFORE ${ymd(before.date)}` : `AFTER ${ymd(after.date)}`}
+              {t < 50 ? `BEFORE ${formatMemberLessonDate(before.date)}` : `AFTER ${formatMemberLessonDate(after.date)}`}
             </span>
           </div>
         )}
@@ -5797,11 +5801,11 @@ function SetViewer({ item, onClose, onToggleFav }) {
       <div className="space-y-2 px-4 pb-6 pt-3">
         {!side && <input type="range" min="0" max="100" value={t} onChange={(e) => setT(Number(e.target.value))} className="w-full" style={{ accentColor: PRIMARY, touchAction: "none" }} />}
         <div className="flex items-center justify-between">
-          <span className="text-xs font-bold text-white opacity-70">{ymd(before.date)}</span>
+          <span className="text-xs font-bold text-white opacity-70">{formatMemberLessonDate(before.date)}</span>
           <button onClick={() => setSide((v) => !v)} className="rounded-full px-3 py-1.5 text-xs font-bold text-white" style={{ backgroundColor: "rgba(255,255,255,0.15)" }}>
             {side ? "겹쳐 보기" : "나란히 보기"}
           </button>
-          <span className="text-xs font-bold text-white opacity-70">{ymd(after.date)}</span>
+          <span className="text-xs font-bold text-white opacity-70">{formatMemberLessonDate(after.date)}</span>
         </div>
       </div>
     </div>
@@ -9181,8 +9185,8 @@ function AssessmentComparisonViewer({ beforeSet, afterSet, view, showGuides, mem
   const [savingSide, setSavingSide] = useState(false);
   const drag = useRef(null);
   const normalizedView = normalizePostureView(view);
-  const beforePhoto = beforeSet?.photos?.[normalizedView] || null;
-  const afterPhoto = afterSet?.photos?.[normalizedView] || null;
+  const beforePhoto = assessmentMediaForView(beforeSet, normalizedView);
+  const afterPhoto = assessmentMediaForView(afterSet, normalizedView);
   const poseFor = (set) => (set?.poses || []).find((pose) => normalizePostureView(pose.view) === normalizedView) || null;
   const beforePose = poseFor(beforeSet), afterPose = poseFor(afterSet);
   const alignment = postureAlignmentTransform(beforePose, afterPose, { view: normalizedView });
@@ -9198,6 +9202,9 @@ function AssessmentComparisonViewer({ beforeSet, afterSet, view, showGuides, mem
     ? `${commonTransform} translate(${alignment.offsetX * 100}%, ${alignment.offsetY * 100}%) scale(${alignment.scale})`
     : commonTransform;
   const lineReady = beforeLines.length > 0 && afterLines.length > 0;
+  const beforeCalendarDate = String(beforeSet?.completedAt || beforeSet?.at || "").slice(0, 10);
+  const afterCalendarDate = String(afterSet?.completedAt || afterSet?.at || "").slice(0, 10);
+  const sameDayComparison = Boolean(beforeCalendarDate && beforeCalendarDate === afterCalendarDate);
   const resetView = () => { setZoom(1); setPan({ x: 0, y: 0 }); };
   useEffect(() => { setCurtain(50); setOpacity(50); resetView(); }, [beforeSet?.id, afterSet?.id, normalizedView, mode]);
   useEffect(() => { setAlignEnabled(true); }, [beforeSet?.id, afterSet?.id, normalizedView]);
@@ -9226,21 +9233,22 @@ function AssessmentComparisonViewer({ beforeSet, afterSet, view, showGuides, mem
       {mode !== "side" && <div className="mt-2 flex items-center gap-2 rounded-xl px-3 py-2" style={{ backgroundColor: alignment.available ? GOOD_S : CANVAS }}><span className="min-w-0 flex-1"><span className="block text-xs font-extrabold" style={{ color: alignment.available ? GOOD : INK2 }}>신체 자동 정렬</span><span className="block text-[10px]" style={{ color: SUB }}>{alignment.available ? "신체 높이와 중심 위치를 Before에 맞춥니다" : "두 사진의 저장된 관절점이 부족합니다"}</span></span><button type="button" disabled={!alignment.available} aria-pressed={alignEnabled && alignment.available} onClick={() => setAlignEnabled((value) => !value)} className="h-9 min-w-14 rounded-full px-2 text-[10px] font-extrabold disabled:opacity-45" style={{ backgroundColor: alignEnabled && alignment.available ? GOOD : CARD, color: alignEnabled && alignment.available ? "#fff" : SUB, border: `1px solid ${alignment.available ? GOOD : LINE}` }}>{alignEnabled && alignment.available ? "ON" : "OFF"}</button></div>}
       {mode === "side" ? (
         <div className="mt-3 grid grid-cols-2 gap-2">
-          {[{ photo: beforePhoto, pose: beforePose, label: "BEFORE", color: "#356AE6" }, { photo: afterPhoto, pose: afterPose, label: "AFTER", color: "#F28C28" }].map((item) => <div key={item.label}><div className="relative overflow-hidden" style={{ ...frameStyle, border: `3px solid ${item.color}` }}><AssessmentComparisonLayer photo={item.photo} pose={item.pose} label={item.label} color={item.color} transform="none" showMarks={showGuides} showLines={showGuides} /></div><p className="mt-1 rounded-full py-1 text-center text-[10px] font-extrabold text-white" style={{ backgroundColor: item.color }}>{item.label}</p></div>)}
+          {[{ photo: beforePhoto, pose: beforePose, label: "BEFORE", lineColor: INK2, backgroundColor: CARD, textColor: INK }, { photo: afterPhoto, pose: afterPose, label: "AFTER", lineColor: BRAND, backgroundColor: TINT, textColor: BRAND_D }].map((item) => <div key={item.label}><div className="relative overflow-hidden" style={{ ...frameStyle, border: `3px solid ${item.lineColor}` }}><AssessmentComparisonLayer photo={item.photo} pose={item.pose} label={item.label} color={item.lineColor} transform="none" showMarks={showGuides} showLines={showGuides} /></div><p className="mt-1 rounded-full py-1 text-center text-[10px] font-extrabold" style={{ backgroundColor: item.backgroundColor, color: item.textColor, border: `1px solid ${item.lineColor}` }}>{item.label}</p></div>)}
         </div>
       ) : (
         <div onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={stopPointer} onPointerCancel={stopPointer} className="relative mt-3 overflow-hidden" style={{ ...frameStyle, touchAction: zoom > 1 ? "none" : "pan-y" }}>
-          <AssessmentComparisonLayer photo={beforePhoto} pose={beforePose} label="Before" color="#4CC3FF" transform={commonTransform} opacity={mode === "lines" ? 0.5 : 1} showMarks={showGuides && mode !== "lines"} showLines={showGuides && mode === "lines"} />
-          <AssessmentComparisonLayer photo={afterPhoto} pose={afterPose} label="After" color={MINT} transform={afterTransform} clipPath={mode === "slider" ? `inset(0 ${100 - curtain}% 0 0)` : undefined} opacity={mode === "overlay" ? opacity / 100 : mode === "lines" ? 0.5 : 1} showMarks={showGuides && mode !== "lines"} showLines={showGuides && mode === "lines"} />
-          {mode === "slider" && <><span className="pointer-events-none absolute bottom-0 top-0 w-0.5 bg-white" style={{ left: `${curtain}%`, boxShadow: "0 0 0 1px rgba(28,36,51,.35)" }} /><span className="pointer-events-none absolute left-2 top-2 rounded-full px-2 py-1 text-[9px] font-bold text-white" style={{ backgroundColor: "rgba(28,36,51,.72)" }}>BEFORE</span><span className="pointer-events-none absolute right-2 top-2 rounded-full px-2 py-1 text-[9px] font-bold text-white" style={{ backgroundColor: "rgba(46,125,91,.82)" }}>AFTER</span></>}
-          {mode === "lines" && <div className="pointer-events-none absolute bottom-2 left-2 right-2 flex justify-between"><span className="rounded-full px-2 py-1 text-[9px] font-extrabold text-white" style={{ backgroundColor: "#2389B8" }}>Before 기준선</span><span className="rounded-full px-2 py-1 text-[9px] font-extrabold text-white" style={{ backgroundColor: GOOD }}>After 기준선</span></div>}
+          <AssessmentComparisonLayer photo={beforePhoto} pose={beforePose} label="Before" color={INK2} transform={commonTransform} opacity={mode === "lines" ? 0.5 : 1} showMarks={showGuides && mode !== "lines"} showLines={showGuides && mode === "lines"} />
+          <AssessmentComparisonLayer photo={afterPhoto} pose={afterPose} label="After" color={BRAND} transform={afterTransform} clipPath={mode === "slider" ? `inset(0 ${100 - curtain}% 0 0)` : undefined} opacity={mode === "overlay" ? opacity / 100 : mode === "lines" ? 0.5 : 1} showMarks={showGuides && mode !== "lines"} showLines={showGuides && mode === "lines"} />
+          {mode === "slider" && <><span className="pointer-events-none absolute bottom-0 top-0 w-0.5 bg-white" style={{ left: `${curtain}%`, boxShadow: "0 0 0 1px rgba(28,36,51,.35)" }} /><span className="pointer-events-none absolute left-2 top-2 rounded-full px-2 py-1 text-[9px] font-bold" style={{ backgroundColor: CARD, color: INK, border: `1px solid ${INK2}` }}>BEFORE</span><span className="pointer-events-none absolute right-2 top-2 rounded-full px-2 py-1 text-[9px] font-bold" style={{ backgroundColor: TINT, color: BRAND_D, border: `1px solid ${BRAND}` }}>AFTER</span></>}
+          {mode === "lines" && <div className="pointer-events-none absolute bottom-2 left-2 right-2 flex justify-between"><span className="rounded-full px-2 py-1 text-[9px] font-extrabold" style={{ backgroundColor: CARD, color: INK, border: `1px solid ${INK2}` }}>Before 기준선</span><span className="rounded-full px-2 py-1 text-[9px] font-extrabold" style={{ backgroundColor: TINT, color: BRAND_D, border: `1px solid ${BRAND}` }}>After 기준선</span></div>}
         </div>
       )}
       {mode === "slider" && <input aria-label="Before After 비교 슬라이더" type="range" min="0" max="100" value={curtain} onChange={(event) => setCurtain(Number(event.target.value))} className="mt-3 w-full" style={{ accentColor: BRAND }} />}
-      {mode === "overlay" && <div className="mt-3 flex items-center gap-2"><span className="text-[10px] font-bold" style={{ color: SUB }}>After 투명도</span><input aria-label="After 투명도" type="range" min="0" max="100" value={opacity} onChange={(event) => setOpacity(Number(event.target.value))} className="min-w-0 flex-1" style={{ accentColor: GOOD }} /><span className="w-8 text-right text-[10px] font-bold tabular-nums" style={{ color: GOOD }}>{opacity}%</span></div>}
+      {mode === "overlay" && <div className="mt-3 flex items-center gap-2"><span className="text-[10px] font-bold" style={{ color: SUB }}>After 투명도</span><input aria-label="After 투명도" type="range" min="0" max="100" value={opacity} onChange={(event) => setOpacity(Number(event.target.value))} className="min-w-0 flex-1" style={{ accentColor: BRAND }} /><span className="w-8 text-right text-[10px] font-bold tabular-nums" style={{ color: BRAND_D }}>{opacity}%</span></div>}
       {mode === "lines" && !lineReady && <p className="mt-2 rounded-lg px-3 py-2 text-[11px] font-bold" style={{ backgroundColor: WARN_S, color: WARN }}>두 분석 모두에 저장된 관절점이 있어야 자동 기준선을 함께 표시할 수 있습니다.</p>}
       {mode !== "side" && <div className="mt-2 flex items-center gap-2"><span className="text-xs font-bold" style={{ color: SUB }}>동시 확대</span>{[1, 1.5, 2].map((value) => <button type="button" key={value} onClick={() => { setZoom(value); if (value === 1) setPan({ x: 0, y: 0 }); }} className="h-9 min-w-11 rounded-full text-xs font-bold" style={{ backgroundColor: zoom === value ? TINT : CANVAS, color: zoom === value ? BRAND_D : SUB }}>{value}×</button>)}</div>}
       {mode === "side" && <button type="button" disabled={savingSide || !beforePhoto?.src || !afterPhoto?.src} onClick={async () => { setSavingSide(true); await shareBeforeAfter(beforePhoto, afterPhoto, memberName, onToast, true); setSavingSide(false); }} className="mt-3 flex h-11 w-full items-center justify-center gap-2 text-xs font-extrabold text-white disabled:opacity-45" style={{ borderRadius: 10, backgroundColor: BRAND }}>{savingSide ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}나란히 이미지 저장</button>}
+      {sameDayComparison && <p className="mt-2 text-center text-[11px] font-bold" style={{ color: SUB }}>같은 날 촬영</p>}
       <div className="mt-3" style={{ padding: 11, borderRadius: 11, backgroundColor: CANVAS }}>
         <p className="text-xs font-extrabold" style={{ color: INK }}>측정값 변화</p>
         {metrics.length ? <div className="mt-2 space-y-2">{metrics.map((metric) => <div key={metric.id} className="grid grid-cols-[1fr_auto] gap-2"><span className="min-w-0"><span className="block truncate text-xs font-bold" style={{ color: INK2 }}>{metric.label}</span><span className="block text-[10px]" style={{ color: SUB }}>{metric.summary}</span></span><span className="text-xs font-extrabold tabular-nums" style={{ color: BRAND_D }}>{metric.beforeValue}{metric.unit} → {metric.afterValue}{metric.unit}</span></div>)}</div> : <p className="mt-1 text-xs" style={{ color: SUB }}>이 방향에서 함께 비교할 수 있는 저장 측정값이 없습니다.</p>}
@@ -9497,8 +9505,9 @@ function AssessmentWorkspace({ member, photos, settings, initialSavedId, initial
   const methodLabel = (method) => method === "draw" ? "강사 직접 기록" : method === "manual" ? "직접 포인트" : "AI 체형분석";
   const roleLabelOf = (role) => role === "before" ? "비포" : role === "after" ? "에프터" : "미분류";
   const setDate = (set) => set?.completedAt || set?.at || "";
-  const setPhoto = (set, view) => set?.photos?.[normalizePostureView(view)] || null;
-  const comparableViewsFor = (left, right) => ["custom", ...POSTURE_VIEW_KEYS].filter((view) => setPhoto(left, view) && setPhoto(right, view));
+  const ymd = (value) => formatMemberLessonDate(value);
+  const setPhoto = (set, view) => assessmentMediaForView(set, view);
+  const comparableViewsFor = (left, right) => [...POSTURE_VIEW_KEYS, "custom"].filter((view) => setPhoto(left, view) && setPhoto(right, view));
   const comparisonCandidatesFor = (targetSet) => completeSets.filter((candidate) => candidate.scope === targetSet?.scope && comparableViewsFor(candidate, targetSet).length > 0);
   const selectedViewList = POSTURE_VIEW_KEYS.filter((view) => selectedViews.has(view));
   const resumeSet = (set) => {
@@ -9710,7 +9719,7 @@ function AssessmentWorkspace({ member, photos, settings, initialSavedId, initial
   const reportRetakeDate = selectedDate ? shift(selectedDate.slice(0, 10), POSTURE_RETAKE_DAYS.recommended) : "";
   const excludedComparisonId = setPicker === "before" ? afterSet?.id : setPicker === "after" ? beforeSet?.id : null;
   const pairedSet = setPicker === "before" ? afterSet : setPicker === "after" ? beforeSet : null;
-  const setOptions = completeSets.filter((set) => set.id !== excludedComparisonId && (!pairedSet || (set.scope === pairedSet.scope && comparableViewsFor(set, pairedSet).length > 0))).map((set) => ({ value: set.id, label: setDate(set) ? ymd(setDate(set).slice(0, 10)) : "날짜 미확인", description: `${set.scope === "partial" ? "부위별" : "전신"} · ${methodLabel(set.method)} · ${set.selectedViews.map(postureViewLabel).join("/")}` }));
+  const setOptions = completeSets.filter((set) => set.id !== excludedComparisonId && (!pairedSet || (set.scope === pairedSet.scope && comparableViewsFor(set, pairedSet).length > 0))).map((set) => ({ value: set.id, label: setDate(set) ? formatMemberLessonDate(setDate(set).slice(0, 10)) : "날짜 미확인", description: `${set.scope === "partial" ? "부위별" : "전신"} · ${methodLabel(set.method)} · ${set.selectedViews.map(postureViewLabel).join("/")}` }));
   useEffect(() => {
     if (assessmentAction.current === "start") assessmentAction.current = null;
   }, [workflow.activeAssessmentId]);
@@ -9800,8 +9809,8 @@ function AssessmentWorkspace({ member, photos, settings, initialSavedId, initial
       {screen === "compare" && <section style={{ padding: 14, borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}><div className="flex items-center gap-2"><button type="button" onClick={() => setScreen("result")} aria-label="결과로 돌아가기" className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={18} /></button><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>Before / After</span><span className="block text-xs" style={{ color: SUB }}>선택한 두 분석을 같은 촬영 방향으로 비교</span></span><button type="button" onClick={() => setShowAnnotations((value) => !value)} className="h-9 px-2 text-[10px] font-bold" style={{ borderRadius: 8, backgroundColor: showAnnotations ? TINT : CANVAS, color: showAnnotations ? BRAND_D : SUB }}>기준선 {showAnnotations ? "ON" : "OFF"}</button></div>
         {!beforeSet || !afterSet ? <div className="py-12 text-center"><Activity size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>다음 분석부터 변화 비교가 가능합니다</p><p className="mt-1 text-xs" style={{ color: SUB }}>같은 유형과 촬영 방향의 완료 분석이 2개 이상 필요합니다.</p></div> : <>
           <div className="mt-3 grid grid-cols-2 gap-2">
-            <button type="button" onClick={() => setSetPicker("before")} className="min-h-12 px-3 text-left" style={{ borderRadius: 9, backgroundColor: TINT, border: `1px solid #D5D1EB` }}><span className="block text-[10px] font-bold" style={{ color: SUB }}>Before</span><span className="block text-xs font-bold" style={{ color: BRAND_D }}>{ymd(setDate(beforeSet).slice(0, 10))}</span></button>
-            <button type="button" onClick={() => setSetPicker("after")} className="min-h-12 px-3 text-left" style={{ borderRadius: 9, backgroundColor: GOOD_S, border: `1px solid ${LINE}` }}><span className="block text-[10px] font-bold" style={{ color: SUB }}>After</span><span className="block text-xs font-bold" style={{ color: GOOD }}>{ymd(setDate(afterSet).slice(0, 10))}</span></button>
+            <button type="button" onClick={() => setSetPicker("before")} className="min-h-12 px-3 text-left" style={{ borderRadius: 9, backgroundColor: CARD, border: `1px solid ${INK2}` }}><span className="block text-[10px] font-bold" style={{ color: SUB }}>Before</span><span className="block text-xs font-bold" style={{ color: INK }}>{formatMemberLessonDate(setDate(beforeSet).slice(0, 10))}</span></button>
+            <button type="button" onClick={() => setSetPicker("after")} className="min-h-12 px-3 text-left" style={{ borderRadius: 9, backgroundColor: TINT, border: `1px solid ${BRAND}` }}><span className="block text-[10px] font-bold" style={{ color: SUB }}>After</span><span className="block text-xs font-bold" style={{ color: BRAND_D }}>{formatMemberLessonDate(setDate(afterSet).slice(0, 10))}</span></button>
           </div>
           <div className="mt-3 flex gap-1 overflow-x-auto">{comparableViewsFor(beforeSet, afterSet).map((view) => <button type="button" key={view} onClick={() => setCompareView(view)} className="h-9 shrink-0 px-3 text-xs font-bold" style={{ borderRadius: 9, backgroundColor: compareView === view ? TINT : CANVAS, color: compareView === view ? BRAND_D : SUB }}>{postureViewLabel(view)}</button>)}</div>
           <AssessmentComparisonViewer beforeSet={beforeSet} afterSet={afterSet} view={compareView} showGuides={showAnnotations} memberName={member?.name} onToast={onToast} />
@@ -9809,15 +9818,15 @@ function AssessmentWorkspace({ member, photos, settings, initialSavedId, initial
         </>}
       </section>}
 
-      {screen === "report" && <section style={{ overflow: "hidden", borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}><div className="flex items-center gap-2 px-3 pt-2"><button type="button" onClick={() => setScreen("result")} aria-label="결과로 돌아가기" className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={18} /></button><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>체형분석 결과 카드</span><span className="block text-xs" style={{ color: SUB }}>회원 상담용 요약</span></span></div><div className="p-4 pt-2"><div className="flex items-end gap-2"><div className="min-w-0 flex-1"><p className="text-lg font-extrabold" style={{ color: INK }}>{member?.name} 회원</p><p className="mt-1 text-xs" style={{ color: SUB }}>{selectedDate ? ymd(selectedDate.slice(0, 10)) : "분석일 미확인"}</p></div><span className="rounded-full px-2 py-1 text-[10px] font-bold" style={{ backgroundColor: TINT, color: BRAND_D }}>{selected ? methodLabel(selected.method) : "결과 없음"}</span></div>{selected?.scope === "full_body" && reportPair.before && reportPair.after && reportView && <div className="mt-4 grid grid-cols-2 gap-2"><div><p className="mb-1 text-[10px] font-bold" style={{ color: "#356AE6" }}>Before</p><AssessmentSetFrame photo={setPhoto(reportPair.before, reportView)} label="Before" /></div><div><p className="mb-1 text-[10px] font-bold" style={{ color: "#F28C28" }}>After</p><AssessmentSetFrame photo={setPhoto(reportPair.after, reportView)} label="After" /></div></div>}<div className="mt-4 space-y-2"><div style={{ padding: 11, borderRadius: 11, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>핵심 변화</p>{metricChanges.length ? metricChanges.map((change) => <p key={change.id} className="mt-1 text-xs" style={{ color: INK2 }}>{postureViewLabel(change.view)} · {change.label}: {change.beforeValue}{change.unit} → {change.afterValue}{change.unit}</p>) : <p className="mt-1 text-xs" style={{ color: SUB }}>비교 가능한 실제 측정값이 아직 없습니다.</p>}</div><div style={{ padding: 11, borderRadius: 11, backgroundColor: LAVENDER_S }}><p className="text-xs font-bold" style={{ color: BRAND_D }}>AI 관찰 내용</p><p className="mt-1 text-xs leading-relaxed" style={{ color: aiText ? INK2 : SUB }}>{aiText || "저장된 AI 관찰이 없어 측정값으로 리포트를 구성합니다."}</p></div><div style={{ padding: 11, borderRadius: 11, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>강사 메모</p><p className="mt-1 text-xs leading-relaxed" style={{ color: teacherMemo ? INK2 : SUB }}>{teacherMemo || "저장된 강사 메모가 없습니다."}</p></div><div style={{ padding: 11, borderRadius: 11, backgroundColor: GOOD_S }}><p className="text-xs font-bold" style={{ color: GOOD }}>오늘 수업 집중 포인트</p><p className="mt-1 text-xs leading-relaxed" style={{ color: INK2 }}>{(member?.focus || []).length ? member.focus.join(" · ") : "강사가 수업 기록에서 확정할 수 있습니다."}</p></div><div className="flex items-center gap-2" style={{ padding: 11, borderRadius: 11, backgroundColor: CANVAS }}><CalendarDays size={15} style={{ color: BRAND }} /><span className="min-w-0 flex-1 text-xs" style={{ color: INK2 }}>다음 재평가 권장일</span><span className="text-xs font-bold" style={{ color: INK }}>{reportRetakeDate ? ymd(reportRetakeDate) : "확인 필요"}</span></div></div><div className="mt-4"><ResultCardMaker member={member} saved={completedPoses.filter((pose) => pose && pose.metrics)} centerName={settings?.centerName || ""} onToast={onToast} initialOpen beforeAssessmentId={reportPair.before?.id} afterAssessmentId={reportPair.after?.id} /></div></div></section>}
+      {screen === "report" && <section style={{ overflow: "hidden", borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}><div className="flex items-center gap-2 px-3 pt-2"><button type="button" onClick={() => setScreen("result")} aria-label="결과로 돌아가기" className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={18} /></button><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>체형분석 결과 카드</span><span className="block text-xs" style={{ color: SUB }}>회원 상담용 요약</span></span></div><div className="p-4 pt-2"><div className="flex items-end gap-2"><div className="min-w-0 flex-1"><p className="text-lg font-extrabold" style={{ color: INK }}>{member?.name} 회원</p><p className="mt-1 text-xs" style={{ color: SUB }}>{selectedDate ? ymd(selectedDate.slice(0, 10)) : "분석일 미확인"}</p></div><span className="rounded-full px-2 py-1 text-[10px] font-bold" style={{ backgroundColor: TINT, color: BRAND_D }}>{selected ? methodLabel(selected.method) : "결과 없음"}</span></div>{selected?.scope === "full_body" && reportPair.before && reportPair.after && reportView && <div className="mt-4 grid grid-cols-2 gap-2"><div><p className="mb-1 text-[10px] font-bold" style={{ color: INK }}>BEFORE</p><AssessmentSetFrame photo={setPhoto(reportPair.before, reportView)} label="Before" /></div><div><p className="mb-1 text-[10px] font-bold" style={{ color: BRAND_D }}>AFTER</p><AssessmentSetFrame photo={setPhoto(reportPair.after, reportView)} label="After" /></div></div>}<div className="mt-4 space-y-2"><div style={{ padding: 11, borderRadius: 11, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>핵심 변화</p>{metricChanges.length ? metricChanges.map((change) => <p key={change.id} className="mt-1 text-xs" style={{ color: INK2 }}>{postureViewLabel(change.view)} · {change.label}: {change.beforeValue}{change.unit} → {change.afterValue}{change.unit}</p>) : <p className="mt-1 text-xs" style={{ color: SUB }}>비교 가능한 실제 측정값이 아직 없습니다.</p>}</div><div style={{ padding: 11, borderRadius: 11, backgroundColor: LAVENDER_S }}><p className="text-xs font-bold" style={{ color: BRAND_D }}>AI 관찰 내용</p><p className="mt-1 text-xs leading-relaxed" style={{ color: aiText ? INK2 : SUB }}>{aiText || "저장된 AI 관찰이 없어 측정값으로 리포트를 구성합니다."}</p></div><div style={{ padding: 11, borderRadius: 11, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>강사 메모</p><p className="mt-1 text-xs leading-relaxed" style={{ color: teacherMemo ? INK2 : SUB }}>{teacherMemo || "저장된 강사 메모가 없습니다."}</p></div><div style={{ padding: 11, borderRadius: 11, backgroundColor: GOOD_S }}><p className="text-xs font-bold" style={{ color: GOOD }}>오늘 수업 집중 포인트</p><p className="mt-1 text-xs leading-relaxed" style={{ color: INK2 }}>{(member?.focus || []).length ? member.focus.join(" · ") : "강사가 수업 기록에서 확정할 수 있습니다."}</p></div><div className="flex items-center gap-2" style={{ padding: 11, borderRadius: 11, backgroundColor: CANVAS }}><CalendarDays size={15} style={{ color: BRAND }} /><span className="min-w-0 flex-1 text-xs" style={{ color: INK2 }}>다음 재평가 권장일</span><span className="text-xs font-bold" style={{ color: INK }}>{reportRetakeDate ? ymd(reportRetakeDate) : "확인 필요"}</span></div></div><div className="mt-4"><ResultCardMaker member={member} saved={completedPoses.filter((pose) => pose && pose.metrics)} centerName={settings?.centerName || ""} onToast={onToast} initialOpen beforeAssessmentId={reportPair.before?.id} afterAssessmentId={reportPair.after?.id} /></div></div></section>}
 
-      {draftGuard?.step === "choice" && <ScheduleBottomSheet title="진행 중인 체형분석이 있습니다" subtitle="이전에 저장하던 체형분석을 이어서 진행할 수 있습니다." onClose={() => setDraftGuard(null)}>
+      {draftGuard?.step === "choice" && <ScheduleBottomSheet title="진행 중인 체형분석이 있습니다" subtitle="이전에 저장하던 체형분석을 이어서 진행할 수 있습니다." onClose={() => setDraftGuard(null)} aboveTabBar>
         <div className="space-y-2">
           <button type="button" onClick={() => { const assessment = draftGuard.assessment; setDraftGuard(null); resumeSet(assessment); }} className="flex min-h-12 w-full items-center justify-between px-3 text-left" style={{ borderRadius: 11, backgroundColor: TINT, border: `1px solid ${BRAND}`, color: BRAND_D }}><span className="text-sm font-extrabold">이어하기</span><ChevronRight size={16} /></button>
           <button type="button" onClick={() => setDraftGuard({ step: "confirm", assessment: draftGuard.assessment })} className="flex min-h-12 w-full items-center justify-between px-3 text-left" style={{ borderRadius: 11, backgroundColor: CANVAS, border: `1px solid ${LINE}`, color: INK }}><span className="text-sm font-bold">새로 시작</span><RotateCcw size={15} /></button>
         </div>
       </ScheduleBottomSheet>}
-      {(draftGuard?.step === "confirm" || draftGuard?.step === "discarding") && <ScheduleBottomSheet title="진행 중인 체형분석을 삭제하고 새로 시작할까요?" subtitle="현재 저장된 사진과 분석 기록을 정리한 뒤 새 분석을 시작합니다." onClose={closeDraftGuard} dismissible={draftGuard.step !== "discarding"}>
+      {(draftGuard?.step === "confirm" || draftGuard?.step === "discarding") && <ScheduleBottomSheet title="진행 중인 체형분석을 삭제하고 새로 시작할까요?" subtitle="현재 저장된 사진과 분석 기록을 정리한 뒤 새 분석을 시작합니다." onClose={closeDraftGuard} dismissible={draftGuard.step !== "discarding"} aboveTabBar>
         <div className="grid grid-cols-2 gap-2">
           <button type="button" disabled={draftGuard.step === "discarding"} onClick={() => setDraftGuard(null)} className="h-12 text-sm font-bold disabled:opacity-50" style={{ borderRadius: 11, backgroundColor: CANVAS, color: SUB }}>취소</button>
           <button type="button" disabled={draftGuard.step === "discarding"} onClick={confirmDiscardAndStartNew} className="flex h-12 items-center justify-center gap-2 text-sm font-extrabold text-white disabled:opacity-60" style={{ borderRadius: 11, backgroundColor: BAD }}>{draftGuard.step === "discarding" ? <><Loader2 size={15} className="animate-spin" />정리 중</> : "삭제하고 새로 시작"}</button>
@@ -9836,6 +9845,7 @@ function AssessmentWorkspace({ member, photos, settings, initialSavedId, initial
 }
 
 function ReferenceAnalysisTab({ members, photos, selectedId, selectedPoseId, onSelect, hub }) {
+  const ymd = (value) => formatMemberLessonDate(value);
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState("all");
   const allRows = visibleMembers(members).filter((m) => !isDraft(m)).map((m) => {
@@ -9844,7 +9854,7 @@ function ReferenceAnalysisTab({ members, photos, selectedId, selectedPoseId, onS
     const last = assessmentSets[0] || null;
     const draftCount = POSTURE_STORAGE_KEYS.filter((view) => (ph[view] || []).some((photo) => photo?.captureStatus === "draft")).length;
     const complete = assessmentSets.filter((set) => set.status === "completed" && set.scope === "full_body");
-    const comparable = complete.length >= 2;
+    const comparable = Boolean(selectAutomaticComparison(complete, { scope: "full_body" }).after);
     const status = assessmentSets.some((set) => set.poses.some((pose) => pose.reviewRequired)) ? "review" : last?.status === "completed" ? "done" : last || draftCount ? "draft" : "none";
     return { m, assessmentSets, last, draftCount, comparable, status };
   });
@@ -15422,7 +15432,7 @@ export default function App() {
     <style>{`
       @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css');
       @import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&display=swap');
-      .app-root { min-height: 100vh; min-height: 100dvh; font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', sans-serif; -webkit-font-smoothing: antialiased; color: ${INK}; color-scheme: ${THEME}; }
+      .app-root { --pt-tabbar-height: 49px; min-height: 100vh; min-height: 100dvh; font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', sans-serif; -webkit-font-smoothing: antialiased; color: ${INK}; color-scheme: ${THEME}; }
       .app-root .bg-white { background-color: ${CARD}; }
       .app-root .bg-slate-50 { background-color: ${CANVAS}; }
       .app-root .ring-slate-200 { --tw-ring-color: ${LINE}; }

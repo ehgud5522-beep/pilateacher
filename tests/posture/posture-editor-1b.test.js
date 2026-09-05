@@ -53,8 +53,9 @@ test("direct drawing has a compact toolbar, exact preview, and single-photo comp
   const analyzerEnd = source.indexOf("function AssessmentWorkspace(", analyzerStart);
   const analyzer = source.slice(analyzerStart, analyzerEnd);
 
-  assert.match(canvas, /pt-hscroll flex gap-1 overflow-x-auto/);
-  assert.match(canvas, /h-11 min-w-\[50px\]/);
+  assert.match(canvas, /grid grid-cols-3 gap-1" data-posture-tool-grid/);
+  assert.match(canvas, /data-posture-color-grid/);
+  assert.doesNotMatch(canvas, /data-posture-tool-grid[^>]*overflow-x-auto/);
   assert.match(canvas, /h-8 w-8 items-center justify-center rounded-full/);
   assert.match(canvas, /min-h-11 items-center gap-1 border-t/);
   assert.match(canvas, /HANDWRITING_SIZE_OPTIONS/);

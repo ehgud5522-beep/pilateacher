@@ -338,3 +338,28 @@ export function selectPendingLessonSessions({ members = [], schedule = [], pendi
     countForMember: (memberId) => sessions.filter((session) => String(session.memberId) === String(memberId)).length,
   };
 }
+
+export function selectMemberHistoryRows({ sessions = [], pendingSessions = [], expanded = false, normalLimit = 4 } = {}) {
+  const unique = [];
+  const seen = new Set();
+  (sessions || []).forEach((session) => {
+    const key = String(session?.key || "");
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    unique.push(session);
+  });
+  if (expanded) return { rows: unique, total: unique.length, hidden: 0 };
+
+  const pendingFor = (session) => (pendingSessions || []).find((item) => {
+    const lessonId = String(item?.lessonId || item?.session?.key || "");
+    return lessonId && lessonId === String(session?.lesson?.id || session?.key || "");
+  }) || null;
+  const attendance = unique.filter((session) => pendingFor(session)?.reasons?.includes("attendance"));
+  const attendanceKeys = new Set(attendance.map((session) => session.key));
+  const confirmation = unique.filter((session) => !attendanceKeys.has(session.key)
+    && (session.confirmationState !== "confirmed" || Boolean(pendingFor(session))));
+  const priorityKeys = new Set([...attendance, ...confirmation].map((session) => session.key));
+  const normal = unique.filter((session) => !priorityKeys.has(session.key)).slice(0, Math.max(0, Number(normalLimit) || 0));
+  const rows = [...attendance, ...confirmation, ...normal];
+  return { rows, total: unique.length, hidden: Math.max(0, unique.length - rows.length) };
+}

@@ -81,15 +81,96 @@ const authEvent = (event) => ({
   hasAuthorizationCode: typeof event?.hasAuthorizationCode === "boolean" ? event.hasAuthorizationCode : null,
 });
 
+const postureRecord = (record) => ({
+  recordType: safeToken(record?.recordType, 12),
+  recordIdHash: safeToken(record?.recordIdHash, 40),
+  assessmentIdHash: safeToken(record?.assessmentIdHash, 40),
+  recordMemberIdHash: safeToken(record?.recordMemberIdHash, 40),
+  blobIdHash: safeToken(record?.blobIdHash, 40),
+  view: safeToken(record?.view, 24),
+  assessmentStatus: safeToken(record?.assessmentStatus, 40),
+  captureStatus: safeToken(record?.captureStatus, 40),
+  blobIdPresent: typeof record?.blobIdPresent === "boolean" ? record.blobIdPresent : null,
+  idbLookupAttempted: typeof record?.idbLookupAttempted === "boolean" ? record.idbLookupAttempted : null,
+  idbLookupFound: typeof record?.idbLookupFound === "boolean" ? record.idbLookupFound : null,
+  idbLookupMissing: typeof record?.idbLookupMissing === "boolean" ? record.idbLookupMissing : null,
+  idbLookupFailed: typeof record?.idbLookupFailed === "boolean" ? record.idbLookupFailed : null,
+});
+
+const postureReasonCounts = (value) => Object.fromEntries(Object.entries(value && typeof value === "object" ? value : {})
+  .map(([reason, count]) => [safeToken(reason, 64), finite(count) || 0])
+  .slice(0, 12));
+
+const postureEvent = (event) => ({
+  kind: "posture",
+  at: String(event?.at || ""),
+  event: safeToken(event?.event, 48),
+  reason: safeToken(event?.reason, 80),
+  failureReason: safeToken(event?.failureReason, 80),
+  errorName: safeToken(event?.errorName, 80),
+  accountPresent: typeof event?.accountPresent === "boolean" ? event.accountPresent : null,
+  accountIdHash: safeToken(event?.accountIdHash, 40),
+  memberIdHash: safeToken(event?.memberIdHash, 40),
+  selectedMemberIdHash: safeToken(event?.selectedMemberIdHash, 40),
+  photosBucketMemberIdHash: safeToken(event?.photosBucketMemberIdHash, 40),
+  recordMemberIdHash: safeToken(event?.recordMemberIdHash, 40),
+  assessmentIdHash: safeToken(event?.assessmentIdHash, 40),
+  latestAssessmentIdHash: safeToken(event?.latestAssessmentIdHash, 40),
+  photosBucketExists: typeof event?.photosBucketExists === "boolean" ? event.photosBucketExists : null,
+  memberIdMatches: typeof event?.memberIdMatches === "boolean" ? event.memberIdMatches : null,
+  assessmentComplete: typeof event?.assessmentComplete === "boolean" ? event.assessmentComplete : null,
+  metadataExists: typeof event?.metadataExists === "boolean" ? event.metadataExists : null,
+  metadataParsed: typeof event?.metadataParsed === "boolean" ? event.metadataParsed : null,
+  targetMemberBucketExists: typeof event?.targetMemberBucketExists === "boolean" ? event.targetMemberBucketExists : null,
+  blobIdPresent: typeof event?.blobIdPresent === "boolean" ? event.blobIdPresent : null,
+  cleanBlobIdPresent: typeof event?.cleanBlobIdPresent === "boolean" ? event.cleanBlobIdPresent : null,
+  ptsPresent: typeof event?.ptsPresent === "boolean" ? event.ptsPresent : null,
+  rawPhotoCount: finite(event?.rawPhotoCount),
+  poseCount: finite(event?.poseCount),
+  normalizedAssessmentCount: finite(event?.normalizedAssessmentCount),
+  completedAssessmentCount: finite(event?.completedAssessmentCount),
+  photoRecords: finite(event?.photoRecords),
+  poseRecords: finite(event?.poseRecords),
+  beforeRawPhotoCount: finite(event?.beforeRawPhotoCount),
+  afterRawPhotoCount: finite(event?.afterRawPhotoCount),
+  beforePoseCount: finite(event?.beforePoseCount),
+  afterPoseCount: finite(event?.afterPoseCount),
+  beforeAssessmentCount: finite(event?.beforeAssessmentCount),
+  afterAssessmentCount: finite(event?.afterAssessmentCount),
+  beforePhotoRecords: finite(event?.beforePhotoRecords),
+  afterPhotoRecords: finite(event?.afterPhotoRecords),
+  beforePoseRecords: finite(event?.beforePoseRecords),
+  afterPoseRecords: finite(event?.afterPoseRecords),
+  metadataMemberBucketCount: finite(event?.metadataMemberBucketCount),
+  blobKeyCount: finite(event?.blobKeyCount),
+  adoptAttempted: finite(event?.adoptAttempted),
+  adoptRestored: finite(event?.adoptRestored),
+  adoptMissingBlob: finite(event?.adoptMissingBlob),
+  adoptFailed: finite(event?.adoptFailed),
+  excludedRecordCount: finite(event?.excludedRecordCount),
+  assessmentStatus: safeToken(event?.assessmentStatus, 40),
+  idbOpen: safeToken(event?.idbOpen, 16),
+  views: Array.isArray(event?.views) ? event.views.map((view) => safeToken(view, 24)).filter(Boolean).slice(0, 6) : [],
+  selectedViews: Array.isArray(event?.selectedViews) ? event.selectedViews.map((view) => safeToken(view, 24)).filter(Boolean).slice(0, 6) : [],
+  rejectReasons: Array.isArray(event?.rejectReasons) ? event.rejectReasons.map((reason) => safeToken(reason, 64)).filter(Boolean).slice(0, 12) : [],
+  failureReasons: Array.isArray(event?.failureReasons) ? event.failureReasons.map((reason) => safeToken(reason, 64)).filter(Boolean).slice(0, 12) : [],
+  excludedByReason: postureReasonCounts(event?.excludedByReason),
+  metadataWriteSucceeded: typeof event?.metadataWriteSucceeded === "boolean" ? event.metadataWriteSucceeded : null,
+  completionPromoted: typeof event?.completionPromoted === "boolean" ? event.completionPromoted : null,
+  memoryPatchSucceeded: typeof event?.memoryPatchSucceeded === "boolean" ? event.memoryPatchSucceeded : null,
+  recordDiagnostics: Array.isArray(event?.recordDiagnostics) ? event.recordDiagnostics.map(postureRecord).slice(0, 32) : [],
+});
+
 /**
- * @param {{ pipelineEvents?: any[], voiceEvents?: any[], authEvents?: any[],
+ * @param {{ pipelineEvents?: any[], voiceEvents?: any[], authEvents?: any[], postureEvents?: any[],
  *   appInfo?: Record<string, any>, deviceInfo?: Record<string, any>, now?: Date }} [options]
  */
-export function buildRemoteDiagnosticReport({ pipelineEvents = [], voiceEvents = [], authEvents = [], appInfo = {}, deviceInfo = {}, now = new Date() } = {}) {
+export function buildRemoteDiagnosticReport({ pipelineEvents = [], voiceEvents = [], authEvents = [], postureEvents = [], appInfo = {}, deviceInfo = {}, now = new Date() } = {}) {
   const logs = [
     ...pipelineEvents.map(pipelineEvent),
     ...voiceEvents.map(voiceEvent),
     ...authEvents.map(authEvent),
+    ...postureEvents.map(postureEvent),
   ].filter((event) => event.at)
     .sort((a, b) => String(b.at).localeCompare(String(a.at)))
     .slice(0, MAX_REMOTE_DIAGNOSTICS);

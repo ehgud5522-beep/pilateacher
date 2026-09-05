@@ -54,3 +54,67 @@ test("remote diagnostics retain only allowlisted validation coordinates", () => 
   assert.equal(report.logs[0].operation, "lesson_record_from_audio");
   assert.equal(Object.hasOwn(report.logs[0], "transcript"), false);
 });
+
+test("remote diagnostics include allowlisted posture counts without private posture content", () => {
+  const forbidden = "김회원 data:image/jpeg;base64,private transcript secret-token";
+  const report = buildRemoteDiagnosticReport({
+    postureEvents: [{
+      at: "2026-09-06T02:00:00.000Z",
+      event: "POSTURE_STORAGE_RESTORED",
+      accountIdHash: "acct_safehash",
+      memberIdHash: "member_safehash",
+      selectedMemberIdHash: "member_selectedhash",
+      recordMemberIdHash: "member_recordhash",
+      assessmentIdHash: "asmt_safehash",
+      rawPhotoCount: 2,
+      poseCount: 2,
+      normalizedAssessmentCount: 1,
+      memberIdMatches: true,
+      views: ["front", "leftSide"],
+      excludedRecordCount: 1,
+      excludedByReason: { missing_assessment_id: 1 },
+      metadataWriteSucceeded: true,
+      completionPromoted: true,
+      memoryPatchSucceeded: false,
+      recordDiagnostics: [{
+        recordType: "photo",
+        recordIdHash: "record_safehash",
+        assessmentIdHash: "asmt_safehash",
+        recordMemberIdHash: "member_recordhash",
+        blobIdHash: "blob_safehash",
+        view: "front",
+        assessmentStatus: "completed",
+        captureStatus: "completed",
+        blobIdPresent: true,
+        idbLookupAttempted: true,
+        idbLookupFound: false,
+        idbLookupMissing: true,
+        idbLookupFailed: false,
+        blobId: "blob-private",
+      }],
+      selectedMemberName: "김회원",
+      resolvedMemberName: "기",
+      memberId: "member-private",
+      assessmentId: "assessment-private",
+      transcript: forbidden,
+      memberName: forbidden,
+      photo: forbidden,
+      token: forbidden,
+    }],
+  });
+  assert.equal(report.logs[0].kind, "posture");
+  assert.equal(report.logs[0].rawPhotoCount, 2);
+  assert.equal(report.logs[0].normalizedAssessmentCount, 1);
+  assert.deepEqual(report.logs[0].views, ["front", "leftSide"]);
+  assert.equal(report.logs[0].excludedRecordCount, 1);
+  assert.deepEqual(report.logs[0].excludedByReason, { missing_assessment_id: 1 });
+  assert.equal(report.logs[0].recordDiagnostics[0].idbLookupMissing, true);
+  assert.equal(report.logs[0].recordDiagnostics[0].blobIdHash, "blob_safehash");
+  const serialized = JSON.stringify(report);
+  assert.equal(serialized.includes(forbidden), false);
+  assert.equal(serialized.includes("memberName"), false);
+  assert.equal(serialized.includes("transcript"), false);
+  ["member-private", "assessment-private", "blob-private", "김회원", "기"].forEach((value) => assert.equal(serialized.includes(value), false, value));
+  assert.equal(Object.hasOwn(report.logs[0], "selectedMemberName"), false);
+  assert.equal(Object.hasOwn(report.logs[0], "resolvedMemberName"), false);
+});

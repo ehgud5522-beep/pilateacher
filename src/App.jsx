@@ -68,6 +68,12 @@ import {
   selectMemberBodyPhotoSurface, selectResumableAssessment,
 } from "./features/posture/posture-model.js";
 import {
+  POSTURE_PERSISTENCE_EVENTS, POSTURE_PERSISTENCE_FAILURES,
+  appendPosturePersistenceDiagnostic, appendPosturePersistenceFailure,
+  buildPosturePersistenceSnapshot, buildPostureRecordDiagnostic, buildPostureRestoreDiagnostic, buildPostureSaveDiagnostic,
+  postureDiagnosticId, posturePersistenceDiagnosticSummary, postureRecordAssessmentId, readPosturePersistenceDiagnostics,
+} from "./features/posture/persistence-diagnostics.js";
+import {
   POSTURE_WORKFLOW_EVENTS, createPostureWorkflowState, startNewAssessmentEvent, transitionPostureWorkflow,
 } from "./features/posture/posture-workflow.js";
 import {
@@ -678,8 +684,33 @@ function idbRun(mode, fn) {
 const blobPut = (k, b) => idbRun("readwrite", (s) => s.put(b, k));
 const blobGet = (k) => idbRun("readonly", (s) => s.get(k));
 const blobDel = (k) => idbRun("readwrite", (s) => s.delete(k));
+const blobKeys = () => idbRun("readonly", (s) => s.getAllKeys());
 const newBlobId = () => "b_" + Date.now().toString(36) + "_" + uid();
 const newAudioBlobId = () => "a_" + Date.now().toString(36) + "_" + uid();
+
+async function probePostureRecordBlobs(memberPhotos = {}, targetAssessmentId = null) {
+  const entries = [
+    ...POSTURE_STORAGE_KEYS.flatMap((storageKey) => (memberPhotos?.[storageKey] || []).filter(Boolean).map((record) => ({ record, storageKey, kind: "photo" }))),
+    ...(memberPhotos?.poses || []).filter(Boolean).map((record) => ({ record, storageKey: "poses", kind: "pose" })),
+  ].filter(({ record, kind }) => !targetAssessmentId || postureRecordAssessmentId(record, { kind }) === targetAssessmentId);
+  const diagnostics = [];
+  for (const entry of entries) {
+    const blobId = entry.record?.blobId || entry.record?.thumbnailBlobId || "";
+    let lookup = { idbLookupAttempted: false, idbLookupFound: false, idbLookupMissing: false, idbLookupFailed: false };
+    if (blobId) {
+      lookup = { ...lookup, idbLookupAttempted: true };
+      try {
+        const blob = await blobGet(blobId);
+        lookup.idbLookupFound = Boolean(blob);
+        lookup.idbLookupMissing = !blob;
+      } catch (_error) {
+        lookup.idbLookupFailed = true;
+      }
+    }
+    diagnostics.push(buildPostureRecordDiagnostic({ ...entry, lookup }));
+  }
+  return diagnostics;
+}
 
 const blobToDataUrl = (b) => new Promise((res, rej) => {
   const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(b);
@@ -716,7 +747,7 @@ function dropUrl(id) {
   const u = objUrls.get(id);
   if (u) { try { URL.revokeObjectURL(u); } catch (e) {} objUrls.delete(id); }
 }
-async function urlFor(blobId) {
+async function urlFor(blobId, { onError } = {}) {
   if (!blobId) return null;
   if (objUrls.has(blobId)) return objUrls.get(blobId);
   try {
@@ -725,7 +756,7 @@ async function urlFor(blobId) {
     const u = URL.createObjectURL(b);
     objUrls.set(blobId, u);
     return u;
-  } catch (e) { return null; }
+  } catch (e) { onError?.(e); return null; }
 }
 const blobIdsOf = (ph) => {
   const out = [];
@@ -803,8 +834,9 @@ const stripSrc = (map) => {
   return out;
 };
 /* 불러올 때: 옛 base64 는 IndexedDB 로 이사시키고, 화면용 blob: 주소를 붙인다 */
-async function adoptPhotos(map) {
+async function adoptPhotos(map, { onFailure } = {}) {
   let changed = false;
+  const stats = { attempted: 0, restored: 0, missingBlob: 0, failed: 0 };
   const out = {};
   for (const mid of Object.keys(map || {})) {
     const cur = map[mid] || {};
@@ -814,6 +846,7 @@ async function adoptPhotos(map) {
       const arr = [];
       for (const p of cur[k]) {
         if (!p) continue;
+        stats.attempted += 1;
         let q = p;
         if (!q.blobId && typeof q.src === "string" && q.src.slice(0, 5) === "data:") {
           try {
@@ -821,16 +854,27 @@ async function adoptPhotos(map) {
             await blobPut(id, await dataUrlToBlob(q.src));
             q = { ...q, blobId: id };
             changed = true;
-          } catch (e) {}
+          } catch (e) {
+            stats.failed += 1;
+            onFailure?.(POSTURE_PERSISTENCE_FAILURES.PHOTO_BLOB_SAVE_FAILED, e);
+          }
         }
         const previewBlobId = q.blobId || q.thumbnailBlobId;
-        arr.push(previewBlobId ? { ...q, src: (await urlFor(previewBlobId)) || q.src || null } : q);
+        let readFailed = false;
+        const restoredSrc = previewBlobId ? await urlFor(previewBlobId, { onError: (error) => {
+          readFailed = true;
+          stats.failed += 1;
+          onFailure?.(POSTURE_PERSISTENCE_FAILURES.IDB_BLOB_READ_FAILED, error);
+        } }) : null;
+        if (restoredSrc) stats.restored += 1;
+        else if (previewBlobId && !readFailed) stats.missingBlob += 1;
+        arr.push(previewBlobId ? { ...q, src: restoredSrc || q.src || null } : q);
       }
       next[k] = arr;
     }
     out[mid] = next;
   }
-  return { map: out, changed };
+  return { map: out, changed, ...stats };
 }
 /* 백업·인계용: Blob 을 다시 base64 로 (다른 기기에서도 열리게) */
 async function photosForExport(map) {
@@ -9450,7 +9494,7 @@ function LegacyAssessmentWorkspace({ member, photos, settings, initialSavedId, o
   );
 }
 
-function AssessmentWorkspace({ member, photos, settings, initialSavedId, initialAssessmentId = null, initialMode = "home", initialBeforeAssessmentId = null, initialAfterAssessmentId = null, initialCompareView = "front", onSavePose, onUpdatePose, onDeletePose, onSaveCaptureDraft, onDeleteCaptureDraft, onDiscardAssessmentDraft, onCompleteAssessment, onSaveMarks, onSaveAssessmentRole, onToggleAssessmentFavorite, onToast, onSaved }) {
+function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = null, diagnosticPhotosBucketExists = false, initialSavedId, initialAssessmentId = null, initialMode = "home", initialBeforeAssessmentId = null, initialAfterAssessmentId = null, initialCompareView = "front", onSavePose, onUpdatePose, onDeletePose, onSaveCaptureDraft, onDeleteCaptureDraft, onDiscardAssessmentDraft, onCompleteAssessment, onSaveMarks, onSaveAssessmentRole, onToggleAssessmentFavorite, onToast, onSaved }) {
   const [screen, setScreen] = useState(initialSavedId ? "result" : initialMode === "report" ? "report" : ["history", "resume"].includes(initialMode) ? "history" : "home");
   const [workflow, setWorkflow] = useState(() => createPostureWorkflowState());
   const [scope, setScope] = useState("full_body");
@@ -9475,6 +9519,32 @@ function AssessmentWorkspace({ member, photos, settings, initialSavedId, initial
   const entryInitialized = useRef(false);
   const assessmentAction = useRef(null);
   const sets = useMemo(() => normalizeAssessmentSets(photos, { memberId: member?.id }), [photos, member?.id]);
+  const workspaceDiagnosticRecorded = useRef(false);
+  useEffect(() => {
+    if (workspaceDiagnosticRecorded.current || !member?.id) return;
+    workspaceDiagnosticRecorded.current = true;
+    const photoMap = diagnosticPhotosBucketExists ? { [member.id]: photos || {} } : {};
+    const diagnosticTargetAssessmentId = initialAssessmentId
+      || sets.find((set) => set.poses?.some((pose) => pose?.id === initialSavedId))?.id
+      || sets[0]?.id
+      || null;
+    probePostureRecordBlobs(photos || {}, diagnosticTargetAssessmentId).then((recordLookups) => {
+      appendPosturePersistenceDiagnostic(
+        POSTURE_PERSISTENCE_EVENTS.WORKSPACE_ENTER,
+        buildPosturePersistenceSnapshot({
+          accountId: diagnosticAccountId,
+          memberId: member.id,
+          selectedMemberId: member.id,
+          selectedMemberName: member.name,
+          resolvedMemberName: member.name,
+          photoMap,
+          photosBucketMemberId: member.id,
+          assessmentId: diagnosticTargetAssessmentId,
+          recordLookups,
+        }),
+      );
+    });
+  }, [diagnosticAccountId, diagnosticPhotosBucketExists, initialAssessmentId, initialSavedId, member?.id, member?.name, photos, sets]);
   const resumableAssessment = useMemo(() => selectResumableAssessment(sets, { memberId: member?.id }), [sets, member?.id]);
   const completeSets = useMemo(() => sets.filter((set) => set.status === "completed"), [sets]);
   const visibleHistorySets = favoritesOnly ? sets.filter((set) => set.favorite) : sets;
@@ -13397,6 +13467,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
   }, [db.members]);
   const voiceSessionDiagnostics = useMemo(() => showLessonDiagnostics ? readVoiceSessionDiagnostics() : [], [showLessonDiagnostics]);
   const authDiagnostics = useMemo(() => showLessonDiagnostics ? readAuthDiagnostics() : [], [showLessonDiagnostics]);
+  const posturePersistenceDiagnostics = useMemo(() => showLessonDiagnostics ? readPosturePersistenceDiagnostics() : [], [showLessonDiagnostics]);
   const firstAuthFailure = useMemo(() => firstFailedAuthStage(authDiagnostics), [authDiagnostics]);
   const authContext = authDeviceContext();
   const diagnosticQueue = useMemo(() => showLessonDiagnostics ? listQueuedLessonRecords() : [], [showLessonDiagnostics, diagnosticQueueRevision]);
@@ -13420,6 +13491,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
         pipelineEvents: readLessonRecordDiagnostics(),
         voiceEvents: readVoiceSessionDiagnostics(),
         authEvents: readAuthDiagnostics(),
+        postureEvents: readPosturePersistenceDiagnostics(),
         appInfo,
         deviceInfo: {
           platform: Capacitor.getPlatform(),
@@ -13762,6 +13834,11 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
                 {!authDiagnostics.length && <p className="mt-1" style={{ fontSize: 10, color: SUB }}>로그인 시도 기록 없음</p>}
               </div>
               <IOSMediaDiagnosticPanel memberId={account?.id || "diagnostics"} lessonId="hidden-diagnostics" />
+              <div className="mt-3 rounded-lg p-2.5" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
+                <p style={{ fontSize: 11, fontWeight: 700, color: INK }}>체형 저장 진단</p>
+                <div className="mt-1.5 space-y-1">{posturePersistenceDiagnostics.map((item, index) => <p key={`${item.at}-${index}`} className="break-all tabular-nums" style={{ fontSize: 9, lineHeight: 1.45, color: item.event === POSTURE_PERSISTENCE_EVENTS.FAILURE ? BAD : SUB }}>{diagnosticLocalTime(item.at)} · {posturePersistenceDiagnosticSummary(item)}</p>)}</div>
+                {!posturePersistenceDiagnostics.length && <p className="mt-1" style={{ fontSize: 10, color: SUB }}>체형 저장 진단 없음</p>}
+              </div>
               <div className="mt-2 space-y-1">{diagnosticRecordSources.map((record, index) => <p key={`${record.at}-${index}`} className="tabular-nums" style={{ fontSize: 9, color: SUB }}>기록 {index + 1} · {diagnosticLocalTime(record.at)} · {record.status} · source={record.source} · date={record.dateSource}</p>)}</div>
               <p className="mt-3" style={{ fontSize: 10, fontWeight: 700, color: INK }}>음성 세션 최근 30건</p>
               <div className="mt-1.5 space-y-1">{voiceSessionDiagnostics.map((item, index) => <p key={`${item.at}-${index}`} className="break-all tabular-nums" style={{ fontSize: 9, lineHeight: 1.45, color: ["error", "failed"].includes(item.event) ? BAD : SUB }}>{item.localTime || diagnosticLocalTime(item.at)} · {item.event} · {item.source}{item.code ? ` · ${item.code}` : ""}{item.reason ? ` · ${item.reason}` : ""}{item.validationReason ? ` · ${item.validationReason}` : ""}{item.invalidField ? ` · ${item.invalidField}` : ""}{item.operation ? ` · ${item.operation}` : ""}{item.httpStatus ? ` · HTTP ${item.httpStatus}` : ""}{item.seconds != null ? ` · ${item.seconds}s` : ""}{item.recordedSeconds != null ? ` · recorded ${item.recordedSeconds}s` : ""}{item.speechSeconds != null ? ` · speech ${item.speechSeconds}s` : ""}{item.trimStart != null ? ` · start ${item.trimStart}ms` : ""}{item.trimEnd != null ? ` · end ${item.trimEnd}ms` : ""}{item.maxAmplitude != null ? ` · peak ${item.maxAmplitude}` : ""}{item.trimmedMs != null ? ` · trim ${item.trimmedMs}ms` : ""}{item.captureLatencyMs != null ? ` · capture ${item.captureLatencyMs}ms` : ""}{item.flags?.length ? ` · ${item.flags.join(",")}` : ""}{item.bytes != null ? ` · ${Math.round(item.bytes / 1024)}KB` : ""}{item.durationMs != null ? ` · ${item.durationMs}ms` : ""}{item.requestId ? ` · ${item.requestId.slice(-8)}` : ""}{item.attempt != null ? ` · attempt ${item.attempt}` : ""}{item.delayMs != null ? ` · ${item.delayMs}ms` : ""}</p>)}</div>
@@ -14158,8 +14235,29 @@ export default function App() {
     restoreBlockedRef.current = false;
     setRestoreOffer(null);
     let data = null, ph = {}, restored = false, reviewPhotos = null, cloudSnapshot = null, cloudManifest = [];
+    let photoMetadataExists = false, photoMetadataParsed = false;
+    const previousPostureTarget = readPosturePersistenceDiagnostics().find((entry) => entry?.selectedMemberIdHash || entry?.memberIdHash) || null;
+    const postureRestoreFailures = new Set();
+    const recordPostureRestoreFailure = (failureReason, error) => {
+      const firstOccurrence = !postureRestoreFailures.has(failureReason);
+      postureRestoreFailures.add(failureReason);
+      if (!firstOccurrence) return;
+      appendPosturePersistenceFailure(failureReason, {
+        accountIdHash: postureDiagnosticId(acc.id, "acct"),
+        errorName: error?.name || error?.code || "unknown",
+      });
+    };
     try { const r = await window.storage.get(dbKey(acc.id)); if (r?.value) data = JSON.parse(r.value); } catch (e) {}
-    try { const r = await window.storage.get(phKey(acc.id)); if (r?.value) ph = JSON.parse(r.value); } catch (e) {}
+    try {
+      const r = await window.storage.get(phKey(acc.id));
+      photoMetadataExists = Boolean(r?.value);
+      if (r?.value) {
+        try { ph = JSON.parse(r.value); photoMetadataParsed = true; }
+        catch (error) { recordPostureRestoreFailure(POSTURE_PERSISTENCE_FAILURES.PHOTO_METADATA_PARSE_FAILED, error); }
+      }
+    } catch (error) {
+      recordPostureRestoreFailure(POSTURE_PERSISTENCE_FAILURES.PHOTO_METADATA_LOAD_FAILED, error);
+    }
     const needsReviewBootstrap = acc.appReviewDemo === true && !Object.keys(ph || {}).length;
     if (fbReady) {
       try {
@@ -14209,11 +14307,28 @@ export default function App() {
     if (!Object.keys(hyd).length && reviewPhotos) hyd = reviewPhotos;
     if (cloudManifest.length && !restoreBlockedRef.current) hyd = mergePhotoMetadata(hyd, cloudManifest);
     if (cloudSnapshot?.photoGraph && !restoreBlockedRef.current) hyd = mergePhotoGraph(hyd, cloudSnapshot.photoGraph);
+    let adoptStats = { attempted: 0, restored: 0, missingBlob: 0, failed: 0 };
     try {
-      const a = await adoptPhotos(hyd);
+      const a = await adoptPhotos(hyd, { onFailure: recordPostureRestoreFailure });
       hyd = a.map;
-      if (a.changed) { try { await window.storage.set(phKey(acc.id), JSON.stringify(stripSrc(hyd))); } catch (e) {} }
-    } catch (e) { deviceLog("photo_restore_failed", { storage: "indexedDB", ...deviceError(e) }); }
+      adoptStats = { attempted: a.attempted, restored: a.restored, missingBlob: a.missingBlob, failed: a.failed };
+      if (a.changed) {
+        try { await window.storage.set(phKey(acc.id), JSON.stringify(stripSrc(hyd))); }
+        catch (error) { recordPostureRestoreFailure(POSTURE_PERSISTENCE_FAILURES.PHOTO_METADATA_SAVE_FAILED, error); }
+      }
+    } catch (e) {
+      recordPostureRestoreFailure(POSTURE_PERSISTENCE_FAILURES.IDB_BLOB_READ_FAILED, e);
+      deviceLog("photo_restore_failed", { storage: "indexedDB", ...deviceError(e) });
+    }
+    let idbOpenState = "unknown", blobKeyCount = 0;
+    try {
+      const keys = await blobKeys();
+      idbOpenState = "success";
+      blobKeyCount = Array.isArray(keys) ? keys.length : 0;
+    } catch (error) {
+      idbOpenState = "fail";
+      recordPostureRestoreFailure(POSTURE_PERSISTENCE_FAILURES.IDB_BLOB_READ_FAILED, error);
+    }
     Object.entries(hyd).forEach(([memberId, memberPhotos]) => {
       POSTURE_STORAGE_KEYS.forEach((view) => {
         const records = Array.isArray(memberPhotos?.[view]) ? memberPhotos[view] : [];
@@ -14222,6 +14337,42 @@ export default function App() {
     });
     photosRef.current = hyd;
     setPhotos(hyd);
+    const previousMemberHash = previousPostureTarget?.selectedMemberIdHash || previousPostureTarget?.memberIdHash || "";
+    const diagnosticMember = data.members.find((memberItem) => postureDiagnosticId(memberItem?.id, "member") === previousMemberHash)
+      || data.members[0]
+      || null;
+    const diagnosticMemberPhotos = diagnosticMember ? hyd[diagnosticMember.id] || {} : {};
+    const previousAssessmentHash = previousPostureTarget?.assessmentIdHash || previousPostureTarget?.latestAssessmentIdHash || "";
+    const diagnosticAssessment = normalizeAssessmentSets(diagnosticMemberPhotos, { memberId: diagnosticMember?.id || null })
+      .find((assessment) => postureDiagnosticId(assessment?.id, "asmt") === previousAssessmentHash)
+      || null;
+    probePostureRecordBlobs(diagnosticMemberPhotos, diagnosticAssessment?.id || null).then((recordLookups) => {
+      appendPosturePersistenceDiagnostic(
+        POSTURE_PERSISTENCE_EVENTS.STORAGE_RESTORED,
+        buildPostureRestoreDiagnostic({
+          photoMap: hyd,
+          metadataPhotoMap: ph,
+          accountId: acc.id,
+          memberId: diagnosticMember?.id || null,
+          selectedMemberId: diagnosticMember?.id || null,
+          selectedMemberIdHashOverride: previousMemberHash,
+          selectedMemberName: previousPostureTarget?.selectedMemberName || "",
+          resolvedMemberName: diagnosticMember?.name || "",
+          assessmentId: diagnosticAssessment?.id || null,
+          assessmentIdHashOverride: previousAssessmentHash,
+          metadataExists: photoMetadataExists,
+          metadataParsed: photoMetadataParsed,
+          idbOpen: idbOpenState,
+          blobKeyCount,
+          adoptAttempted: adoptStats.attempted,
+          adoptRestored: adoptStats.restored,
+          adoptMissingBlob: adoptStats.missingBlob,
+          adoptFailed: adoptStats.failed,
+          failureReasons: [...postureRestoreFailures],
+          recordLookups,
+        }),
+      );
+    });
     setSelectedId(data.members[0]?.id || null);
     setAnalysisMemberId(null);
     setTab("schedule");
@@ -14534,6 +14685,10 @@ export default function App() {
     catch (e) {
       photosRef.current = prev;
       setPhotos(prev);
+      appendPosturePersistenceFailure(POSTURE_PERSISTENCE_FAILURES.PHOTO_METADATA_SAVE_FAILED, {
+        accountIdHash: postureDiagnosticId(account?.id, "acct"),
+        errorName: e?.name || e?.code || "unknown",
+      });
       deviceLog("photo_metadata_save_failed", { storage: "localStorage", operation: "metadata_write", ...deviceError(e) });
       setToast({ ok: false, msg: "저장 공간이 가득 찼습니다. 오래된 사진을 지운 뒤 다시 찍어 주세요." });
       return false;
@@ -15206,6 +15361,24 @@ export default function App() {
     const completedAt = new Date().toISOString();
     const currentPhotos = photosRef.current;
     const cur = currentPhotos[target.id] || {};
+    const appendCompletionDiagnostic = (afterPhotoMap, states, reason = "") => {
+      appendPosturePersistenceDiagnostic(
+        POSTURE_PERSISTENCE_EVENTS.SAVE_COMMITTED,
+        buildPostureSaveDiagnostic({
+          accountId: account?.id || null,
+          memberId: target.id,
+          selectedMemberId: memberId,
+          selectedMemberName: db.members.find((memberItem) => memberItem.id === memberId)?.name || "",
+          resolvedMemberName: target.name || "",
+          photosBucketMemberId: target.id,
+          assessmentId,
+          beforePhotoMap: currentPhotos,
+          afterPhotoMap,
+          failureReason: reason,
+          ...states,
+        }),
+      );
+    };
     const completion = completeAssessmentRecords(cur, {
       memberId: target.id,
       assessmentId,
@@ -15213,13 +15386,26 @@ export default function App() {
       completedAt,
     });
     if (completion.blockedReason || !completion.updatedRecords.length) {
+      appendCompletionDiagnostic(currentPhotos, {
+        metadataWriteSucceeded: false,
+        completionPromoted: false,
+        memoryPatchSucceeded: false,
+      }, completion.blockedReason || "records_not_found");
       deviceLog("assessment_completion_blocked", { memberId: target.id, assessmentId, reason: completion.blockedReason || "records_not_found" });
       return false;
     }
     const stored = await savePhotos({ ...currentPhotos, [target.id]: completion.memberPhotos });
-    if (stored !== true) return false;
+    if (stored !== true) {
+      appendCompletionDiagnostic(photosRef.current, {
+        metadataWriteSucceeded: false,
+        completionPromoted: false,
+        memoryPatchSucceeded: false,
+      }, "metadata_write_failed");
+      return false;
+    }
     const completedSets = normalizeAssessmentSets(completion.memberPhotos, { memberId: target.id });
     const completedSet = completedSets.find((set) => set.id === assessmentId) || null;
+    const completionPromoted = completedSet?.status === "completed";
     const beforeSet = role === "after" ? completedSets.find((set) => set.id !== assessmentId && set.status === "completed" && set.role === "before" && set.scope === completedSet?.scope) || null : null;
     const milestoneTemplate = postureMilestoneTemplate({ role, beforeSet, afterSet: completedSet });
     const nextMemory = addPostureMilestone(target.aiMemory || [], {
@@ -15232,6 +15418,11 @@ export default function App() {
     });
     const milestoneStored = await patch(target.id, { aiMemory: nextMemory });
     if (milestoneStored !== true) {
+      appendCompletionDiagnostic(photosRef.current, {
+        metadataWriteSucceeded: true,
+        completionPromoted,
+        memoryPatchSucceeded: false,
+      }, "memory_patch_failed");
       deviceLog("assessment_milestone_save_failed", { memberId: target.id, assessmentId, role, storage: "localStorage" });
       setToast({ ok: false, msg: "체형분석은 저장됐지만 기억 항목을 저장하지 못했습니다. 완료를 다시 눌러 주세요." });
       return false;
@@ -15243,6 +15434,11 @@ export default function App() {
       storage: "device",
       records: completion.updatedRecords.length,
       milestoneId: nextMemory.find((entry) => entry?.type === "milestone" && entry?.sourceRefs?.some((source) => source?.type === "assessment" && source?.id === assessmentId))?.id || null,
+    });
+    appendCompletionDiagnostic(photosRef.current, {
+      metadataWriteSucceeded: true,
+      completionPromoted,
+      memoryPatchSucceeded: true,
     });
     setToast({ ok: true, msg: `${role === "before" ? "비포" : role === "after" ? "에프터" : "체형분석"} 기기 저장 완료${db.settings?.cloudPhotoBackupEnabled ? " · 클라우드 백업 대기열에 추가됨" : ""}` });
     return true;
@@ -15387,10 +15583,26 @@ export default function App() {
     delete out.blob; delete out.cleanBlob;
     if (rec.blob) {
       try { const bid = newBlobId(); await blobPut(bid, rec.blob); out.blobId = bid; out.src = URL.createObjectURL(rec.blob); }
-      catch (e) { try { out.src = await blobToDataUrl(rec.blob); } catch (e2) {} }
+      catch (e) {
+        appendPosturePersistenceFailure(POSTURE_PERSISTENCE_FAILURES.POSE_BLOB_SAVE_FAILED, {
+          accountIdHash: postureDiagnosticId(account?.id, "acct"),
+          memberIdHash: postureDiagnosticId(target.id, "member"),
+          assessmentIdHash: postureDiagnosticId(rec.assessmentId, "asmt"),
+          errorName: e?.name || e?.code || "unknown",
+        });
+        try { out.src = await blobToDataUrl(rec.blob); } catch (e2) {}
+      }
     }
     if (rec.cleanBlob) {
-      try { const cid = newBlobId(); await blobPut(cid, rec.cleanBlob); out.cleanBlobId = cid; } catch (e) {}
+      try { const cid = newBlobId(); await blobPut(cid, rec.cleanBlob); out.cleanBlobId = cid; }
+      catch (e) {
+        appendPosturePersistenceFailure(POSTURE_PERSISTENCE_FAILURES.CLEAN_BLOB_SAVE_FAILED, {
+          accountIdHash: postureDiagnosticId(account?.id, "acct"),
+          memberIdHash: postureDiagnosticId(target.id, "member"),
+          assessmentIdHash: postureDiagnosticId(rec.assessmentId, "asmt"),
+          errorName: e?.name || e?.code || "unknown",
+        });
+      }
     }
     const currentPhotos = photosRef.current;
     const cur = currentPhotos[target.id] || {};
@@ -15671,7 +15883,7 @@ export default function App() {
               hub={(id, initialSavedId) => {
                 const m = db.members.find((x) => x.id === id);
                 if (!m) return null;
-                return <Guard label="체형분석"><AssessmentWorkspace key={`${id}_${analysisEntryMode}_${initialSavedId || "none"}_${analysisAssessmentId || "none"}_${analysisComparisonEntry?.beforeAssessmentId || "none"}_${analysisComparisonEntry?.afterAssessmentId || "none"}`} member={m} photos={photos[id]} settings={db.settings} initialSavedId={initialSavedId} initialAssessmentId={analysisAssessmentId} initialMode={analysisEntryMode} initialBeforeAssessmentId={analysisComparisonEntry?.beforeAssessmentId || null} initialAfterAssessmentId={analysisComparisonEntry?.afterAssessmentId || null} initialCompareView={analysisComparisonEntry?.compareView || "front"}
+                return <Guard label="체형분석"><AssessmentWorkspace key={`${id}_${analysisEntryMode}_${initialSavedId || "none"}_${analysisAssessmentId || "none"}_${analysisComparisonEntry?.beforeAssessmentId || "none"}_${analysisComparisonEntry?.afterAssessmentId || "none"}`} member={m} photos={photos[id]} settings={db.settings} diagnosticAccountId={account?.id || null} diagnosticPhotosBucketExists={Object.prototype.hasOwnProperty.call(photos || {}, id)} initialSavedId={initialSavedId} initialAssessmentId={analysisAssessmentId} initialMode={analysisEntryMode} initialBeforeAssessmentId={analysisComparisonEntry?.beforeAssessmentId || null} initialAfterAssessmentId={analysisComparisonEntry?.afterAssessmentId || null} initialCompareView={analysisComparisonEntry?.compareView || "front"}
                   onSavePose={(rec) => savePose(id, { ...rec, memberId: id })} onUpdatePose={(pid, posePatch) => updatePose(id, pid, posePatch)} onDeletePose={(pid) => deletePose(id, pid)}
                   onSaveCaptureDraft={(captures) => saveCaptureDraft(id, captures)} onDeleteCaptureDraft={(assessmentId, view) => deleteCaptureDraft(id, assessmentId, view)}
                   onDiscardAssessmentDraft={(assessment) => discardAssessmentDraft(id, assessment)}

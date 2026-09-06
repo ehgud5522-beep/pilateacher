@@ -62,7 +62,7 @@ import { scheduleMemberLayoutSnapshots } from "./features/ui/member-layout-diagn
 import { scrollRecordSectionIntoView } from "./features/ui/record-section-scroll.js";
 import {
   POSTURE_RETAKE_DAYS, POSTURE_STORAGE_KEYS, POSTURE_VIEW_DEFS, POSTURE_VIEW_KEYS,
-  assessmentMediaForView, compareAssessmentMetrics, completeAssessmentRecords, correctedPoseSource, countPosturePhotoRecords, normalizeAssessmentSets, normalizePostureView, postureAnalysisPlane,
+  assessmentMediaForView, commonPostureComparisonViews, compareAssessmentMetrics, completeAssessmentRecords, correctedPoseSource, countPosturePhotoRecords, normalizeAssessmentSets, normalizePostureView, postureAnalysisPlane,
   getPostureRetakeStatus, postureAlignmentTransform, postureReferenceLines,
   postureMilestoneTemplate, postureViewLabel, removeAssessmentDraftRecords, selectAutomaticComparison,
   selectMemberBodyPhotoSurface, selectResumableAssessment,
@@ -2290,7 +2290,7 @@ function Header({ settings, account, alertCount, onProfile, onAlerts }) {
 function Tabs({ tab, setTab }) {
   const items = [
     { key: "schedule", label: "일정", icon: Calendar }, { key: "members", label: "회원", icon: Users },
-    { key: "analysis", label: "체형분석", icon: Activity }, { key: "settings", label: "더보기", icon: SettingsIcon },
+    { key: "analysis", label: "변화 기록", icon: Activity }, { key: "settings", label: "더보기", icon: SettingsIcon },
   ];
   return (
     <nav className="safe-tab z-40 flex shrink-0" aria-label="주요 메뉴"
@@ -3503,7 +3503,7 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
 
             {activeMember && lessonSheetBriefing && (
               <section className="min-w-0 rounded-xl p-3" aria-label="지난 수업과 다음 수업 준비" style={{ backgroundColor: LAVENDER_S, border: `1px solid ${RING}` }}>
-                <div className="mb-2 flex items-center gap-2"><Sparkles size={14} style={{ color: BRAND_D }} /><p className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: BRAND_D }}>{lessonSheetBriefing.source === "lesson_record" ? "지난 수업" : lessonSheetBriefing.source === "posture_fallback" ? "체형분석 참고" : "이전 기록 참고"}</p>{lessonSheetBriefing.date && <span className="shrink-0 text-[9px] tabular-nums" style={{ color: SUB }}>{formatMemberLessonDate(lessonSheetBriefing.date)}{previousLessonSession ? ` · ${previousLessonSession.type}` : ""}</span>}</div>
+                <div className="mb-2 flex items-center gap-2"><Sparkles size={14} style={{ color: BRAND_D }} /><p className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: BRAND_D }}>{lessonSheetBriefing.source === "lesson_record" ? "지난 수업" : lessonSheetBriefing.source === "posture_fallback" ? "변화 기록 참고" : "이전 기록 참고"}</p>{lessonSheetBriefing.date && <span className="shrink-0 text-[9px] tabular-nums" style={{ color: SUB }}>{formatMemberLessonDate(lessonSheetBriefing.date)}{previousLessonSession ? ` · ${previousLessonSession.type}` : ""}</span>}</div>
                 {previousLessonSession ? <LessonRecordFieldRows session={previousLessonSession} fields={["today", "reaction"]} hideEmpty pastLesson /> : <p className="break-words text-xs leading-relaxed" style={{ color: INK2 }}>{lessonSheetBriefing.text || "이전 기록 없음"}</p>}
                 <div className="mt-3 border-t pt-2" style={{ borderColor: LINE }}><p className="mb-1 text-[10px] font-bold" style={{ color: SUB }}>다음 수업 준비</p><p className="break-words text-xs font-bold leading-relaxed" style={{ color: BRAND_D }}>{previousLessonSession?.next || selectScheduleBriefing(activeBriefing)?.text || "다음 확인 없음"}</p></div>
               </section>
@@ -4952,7 +4952,7 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
         </div>
       </main>
       {sheet === "delete-member" && <Sheet title="회원 삭제" sub="삭제하거나 기록을 보존한 채 목록에서 숨길 수 있습니다" onClose={() => !deleteBusy && setSheet(null)}><div className="space-y-3">
-        <div className="rounded-xl p-3" style={{ backgroundColor: BAD_S, border: `1px solid ${BAD}` }}><p className="text-sm font-extrabold leading-relaxed" style={{ color: BAD }}>{member.name}님과 수업기록·체형분석·사진이 모두 삭제됩니다. 되돌릴 수 없어요.</p><p className="mt-2 text-[11px] leading-relaxed" style={{ color: INK2 }}>이미 지난 일정은 삭제하지 않고 ‘삭제된 회원’으로 표시하며, 예정 일정에서는 회원 연결을 해제합니다.</p></div>
+        <div className="rounded-xl p-3" style={{ backgroundColor: BAD_S, border: `1px solid ${BAD}` }}><p className="text-sm font-extrabold leading-relaxed" style={{ color: BAD }}>{member.name}님과 수업기록·변화 기록·사진이 모두 삭제됩니다. 되돌릴 수 없어요.</p><p className="mt-2 text-[11px] leading-relaxed" style={{ color: INK2 }}>이미 지난 일정은 삭제하지 않고 ‘삭제된 회원’으로 표시하며, 예정 일정에서는 회원 연결을 해제합니다.</p></div>
         <Field label={`확인을 위해 “${member.name}” 입력`}><input autoComplete="off" value={deleteName} onChange={(event) => setDeleteName(event.target.value)} className={inputCls} /></Field>
         {saveError && <p role="alert" className="text-xs font-bold" style={{ color: BAD }}>{saveError}</p>}
         <button type="button" disabled={deleteBusy} onClick={async () => { setDeleteBusy(true); setSaveError(""); try { const saved = await onDeactivate?.(member.id); if (saved !== false) { setSheet(null); onBack?.(); } } catch (error) { setSaveError("회원을 비활성으로 전환하지 못했습니다."); } finally { setDeleteBusy(false); } }} className="h-12 w-full rounded-lg text-sm font-extrabold disabled:opacity-40" style={{ backgroundColor: CANVAS, color: BRAND_D }}>비활성으로 두기</button>
@@ -4963,7 +4963,7 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
         {saveError && <p role="alert" style={{ fontSize: 11, color: BAD }}>{saveError}</p>}<button type="button" aria-busy={saving === "basic"} disabled={!String(edit.name || "").trim() || saving === "basic"} onClick={() => commitPatch("basic", { ...edit, name: edit.name.trim(), defaultLessonDuration: lessonDurationOf(edit), ...(String(edit.instructor || "") !== String(member.instructor || "") ? { instructorHistory: [{ id: uid(), date: todayISO(), before: member.instructor || "", after: edit.instructor || "" }, ...(member.instructorHistory || [])] } : {}) })} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>{saving === "basic" ? "저장 중…" : "기본정보 저장"}</button>
       </div></Sheet>}
       {sheet === "preparation" && <Sheet title="목표·주의사항 수정" onClose={() => setSheet(null)}><div className="space-y-3"><Field label="운동 목표"><textarea rows={3} value={edit.goal || ""} onChange={(e) => setEdit({ ...edit, goal: e.target.value })} className={`${inputCls} h-auto py-3`} /></Field><Field label="통증 및 주의사항" hint="쉼표로 구분"><textarea rows={3} value={edit.focus || ""} onChange={(e) => setEdit({ ...edit, focus: e.target.value })} className={`${inputCls} h-auto py-3`} /></Field>{saveError && <p role="alert" style={{ fontSize: 11, color: BAD }}>{saveError}</p>}<button type="button" disabled={saving === "preparation"} onClick={() => commitPatch("preparation", { goal: String(edit.goal || "").trim(), focus: String(edit.focus || "").split(",").map((x) => x.trim()).filter(Boolean) })} className="h-12 w-full text-sm font-bold text-white disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND }}>{saving === "preparation" ? "저장 중…" : "목표·주의사항 저장"}</button></div></Sheet>}
-      {sheet === "hold" && <Sheet title="홀딩 설정" sub={`${member.name} · 수업 기록과 분석 이력은 유지됩니다`} onClose={() => setSheet(null)}><div className="space-y-3">
+      {sheet === "hold" && <Sheet title="홀딩 설정" sub={`${member.name} · 수업 기록과 변화 기록은 유지됩니다`} onClose={() => setSheet(null)}><div className="space-y-3">
         <div className="grid grid-cols-2 gap-2"><Field label="홀딩 시작일"><input type="date" value={hold.start} onChange={(e) => setHold({ ...hold, start: e.target.value })} className={inputCls} /></Field><Field label="종료 예정일"><input type="date" value={hold.end} onChange={(e) => setHold({ ...hold, end: e.target.value })} className={inputCls} /></Field></div>
         <Field label="홀딩 사유"><input value={hold.reason} onChange={(e) => setHold({ ...hold, reason: e.target.value })} placeholder="예: 개인 사정 · 부상 · 여행" className={inputCls} /></Field>
         <button type="button" onClick={() => setHold({ ...hold, extend: !hold.extend })} className="flex w-full items-center justify-between" style={{ height: 42, padding: "0 12px", borderRadius: 8, border: `1px solid ${hold.extend ? BRAND : LINE}`, backgroundColor: hold.extend ? TINT : CARD, color: hold.extend ? BRAND_D : INK2, fontSize: 12, fontWeight: 600 }}><span>이용권 만료일 연장</span><span>{hold.extend ? "연장" : "연장 안 함"}</span></button>
@@ -5470,7 +5470,7 @@ function PhotoCompare({ member, photos, briefing, onSavePhoto, onRemove, onSaveM
               {s.p ? (
                 <>
                   <Shot p={s.p} label={s.label} guides={guides} />
-                  <button onClick={() => setPosture({ p: s.p, label: s.label })} className="mt-2 w-full rounded-xl py-2 text-xs font-bold" style={{ backgroundColor: CANVAS, color: PRIMARY }}>체형 분석</button>
+                  <button onClick={() => setPosture({ p: s.p, label: s.label })} className="mt-2 w-full rounded-xl py-2 text-xs font-bold" style={{ backgroundColor: CANVAS, color: PRIMARY }}>변화 기록</button>
                   {!briefing && (
                     <button onClick={() => setAdjust({ p: s.p, label: s.label === "BEFORE" ? "비포" : "애프터" })} className="mt-1.5 flex w-full items-center justify-center gap-1 rounded-xl py-2 text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>
                       <SlidersHorizontal size={12} /> 사진 조정
@@ -6397,7 +6397,7 @@ function ResultCardMaker({ member, saved, centerName, onToast, onGoAnalyze, init
     if (!both) return { title: "", c1: "", c2: "", close: "" };
     if (!confirmedCardText) return cardDrafts(bRec, aRec, keys);
     return {
-      title: confirmedCardText.title || "체형분석 결과",
+      title: confirmedCardText.title || "변화 기록 결과",
       c1: confirmedCardText.highlights?.[0] || confirmedCardText.summary || "",
       c2: confirmedCardText.highlights?.[1] || confirmedCardText.recommendations?.[0] || "",
       close: confirmedCardText.recommendations?.[0] || confirmedCardText.precautions?.[0] || "",
@@ -6477,7 +6477,7 @@ function ResultCardMaker({ member, saved, centerName, onToast, onGoAnalyze, init
             <div className="rounded-2xl p-4" style={{ backgroundColor: CANVAS }}>
               <p className="text-sm font-extrabold" style={{ color: INK }}>비포·애프터 사진이 둘 다 있어야 만들 수 있어요</p>
               <p className="mt-1 text-xs leading-relaxed" style={{ color: INK2 }}>
-                <b style={{ color: PRIMARY }}>AI 체형 분석</b>에서 <b style={{ color: INK }}>비포 사진 1장</b>과 <b style={{ color: INK }}>애프터 사진 1장</b>을 각각 분석·저장하면
+                <b style={{ color: PRIMARY }}>AI 변화 분석</b>에서 <b style={{ color: INK }}>비포 사진 1장</b>과 <b style={{ color: INK }}>애프터 사진 1장</b>을 각각 분석·저장하면
                 여기서 자동으로 비교 카드가 만들어집니다. (지금 {usable.length}장)
               </p>
               {saved.length > usable.length && (
@@ -6658,10 +6658,10 @@ function BodyAIReview({ member, rec, records, onUpdate, onToast }) {
       const next = { status: AI_STATUSES.DRAFT, output: result.output, teacherEditedOutput: result.output, teacherNote, meta };
       await persist({ aiAnalysis: next, interpretation: result.output, interpretationStatus: AI_STATUSES.DRAFT, comment: teacherNote });
       setOriginal(result.output); setDraft(result.output); setAnalysisMeta(meta); setAnalysisStatus(AI_STATUSES.DRAFT);
-      onToast?.({ ok: true, msg: "AI 체형분석 초안을 저장했습니다. 강사가 검수해 주세요." });
+      onToast?.({ ok: true, msg: "AI 변화 분석 초안을 저장했습니다. 강사가 검수해 주세요." });
     } catch (error) {
       setAnalysisStatus(AI_STATUSES.ERROR);
-      onToast?.({ ok: false, msg: aiFailureMessage(error, "AI 체형분석을 불러오지 못했습니다.") });
+      onToast?.({ ok: false, msg: aiFailureMessage(error, "AI 변화 분석을 불러오지 못했습니다.") });
     } finally { setBusy(""); }
   };
   const confirmAnalysis = async () => {
@@ -6679,7 +6679,7 @@ function BodyAIReview({ member, rec, records, onUpdate, onToast }) {
     finally { setBusy(""); }
   };
   const requestReport = async () => {
-    if (analysisStatus !== AI_STATUSES.CONFIRMED || !draft) { onToast?.({ ok: false, msg: "체형분석을 강사 확정한 뒤 결과카드를 만들 수 있습니다." }); return; }
+    if (analysisStatus !== AI_STATUSES.CONFIRMED || !draft) { onToast?.({ ok: false, msg: "변화 분석을 강사 확정한 뒤 결과카드를 만들 수 있습니다." }); return; }
     if (!connected) { setReportStatus(AI_STATUSES.NOT_CONNECTED); onToast?.({ ok: false, msg: "현재 AI 결과카드를 만들 수 없습니다." }); return; }
     const consent = await ensureMemberAIConsent(member?.id, "generateReport");
     if (!consent.ok) { onToast?.({ ok: false, msg: consent.message }); return; }
@@ -6714,12 +6714,12 @@ function BodyAIReview({ member, rec, records, onUpdate, onToast }) {
     <div className="rounded-xl p-3" style={{ backgroundColor: "rgba(255,255,255,.96)", color: "#1C2433" }}>
       <div className="flex items-center gap-2">
         <Sparkles size={15} style={{ color: "#4C4399" }} />
-        <p className="min-w-0 flex-1 text-sm font-extrabold">AI 체형분석</p>
+        <p className="min-w-0 flex-1 text-sm font-extrabold">AI 변화 분석</p>
         <span className="rounded-full px-2 py-1 text-[10px] font-bold" style={{ backgroundColor: analysisStatus === AI_STATUSES.CONFIRMED ? "#E7F2EC" : "#ECEBF7", color: analysisStatus === AI_STATUSES.CONFIRMED ? "#2E7D5B" : "#4C4399" }}>{analysisStatus === AI_STATUSES.CONFIRMED ? "강사 확정" : analysisStatus === AI_STATUSES.DRAFT ? "초안" : connected ? "분석 가능" : "사용 불가"}</span>
       </div>
       <p className="mt-1 text-xs" style={{ color: "#6B7484" }}>좌표·각도·수동 수정 이력만 전송하며 사진 원본은 전송하지 않습니다. {viewRecords.length}/3 방향 준비</p>
       <textarea rows={2} value={teacherNote} onChange={(event) => setTeacherNote(event.target.value)} placeholder="강사 메모 (AI 입력에 포함)" className={`${inputCls} mt-2 h-auto resize-none py-2 text-xs`} />
-      <button disabled={busy || !ready || !connected} onClick={requestAnalysis} className="mt-2 flex h-10 w-full items-center justify-center gap-1.5 rounded-lg text-xs font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: "#4C4399" }}>{busy === "analysis" ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} {draft ? "AI 초안 다시 생성" : "AI 체형분석 초안 생성"}</button>
+      <button disabled={busy || !ready || !connected} onClick={requestAnalysis} className="mt-2 flex h-10 w-full items-center justify-center gap-1.5 rounded-lg text-xs font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: "#4C4399" }}>{busy === "analysis" ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} {draft ? "AI 초안 다시 생성" : "AI 변화 분석 초안 생성"}</button>
       {!connected && <p className="mt-2 text-xs font-bold" style={{ color: "#B45309" }}>현재 자동 분석을 사용할 수 없습니다. 강사 메모는 직접 저장할 수 있습니다.</p>}
       {draft && <div className="mt-3 space-y-2 border-t pt-3" style={{ borderColor: "#E6E9EF" }}>
         {[...bodyAnalysisFields.list, ...bodyAnalysisFields.text].map((field) => {
@@ -6755,7 +6755,7 @@ function SavedPoseViewer({ rec, member, records, onUpdate, memberName, onClose, 
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-6">
         {rec.src
-          ? <img src={rec.src} alt="분석 결과" className="mx-auto rounded-2xl" style={{ maxWidth: "min(100%, 620px)" }} />
+          ? <img src={rec.src} alt="변화 기록 결과" className="mx-auto rounded-2xl" style={{ maxWidth: "min(100%, 620px)" }} />
           : <div className="mx-auto rounded-2xl px-4 py-10 text-center" style={{ maxWidth: 620, backgroundColor: "rgba(255,255,255,0.08)" }}>
               <p className="text-sm font-bold text-white">이 분석은 이미지가 남아 있지 않습니다</p>
               <p className="mt-1 text-xs text-white opacity-60">다른 기기에서 만든 기록이거나 저장 공간이 부족했던 경우입니다. 수치는 아래에 그대로 있습니다.</p>
@@ -8001,12 +8001,12 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
     setPoseQuality((quality) => ({ ...quality, missing: quality.missing.includes(key) ? quality.missing : [...quality.missing, key] }));
     setEditedJoints((items) => items.filter((item) => item !== key));
   };
-  const download = () => shareCanvas(canvasRef.current, `${member?.name || "회원"}_체형분석_${todayISO()}.jpg`, "체형 분석", onToast);
+  const download = () => shareCanvas(canvasRef.current, `${member?.name || "회원"}_변화기록_${todayISO()}.jpg`, "변화 기록", onToast);
   /* 분석 화면(뼈대·각도 포함)을 이미지로 내보낸다 */
   const shot = async (saveOnly = true) => {
     const c = canvasRef.current; if (!c) return;
-    const name = `체형분석_${member?.name || "회원"}_${todayISO()}.jpg`;
-    const r = await exportCanvas(c, name, "체형 분석", saveOnly);
+    const name = `변화기록_${member?.name || "회원"}_${todayISO()}.jpg`;
+    const r = await exportCanvas(c, name, "변화 기록", saveOnly);
     if (r.how === "fail") { onToast?.({ ok: false, msg: "이미지를 만들지 못했습니다." }); return; }
     if (r.how === "manual") { onToast?.({ ok: false, msg: "자동 저장이 막힌 환경입니다. 아래 사진을 길게 눌러 저장해 주세요." }); return; }
     if (r.how === "gallery") onToast?.({ ok: true, msg: "사진 앱(갤러리)에 저장했습니다." });
@@ -8061,7 +8061,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
       interpretation: null, interpretationStatus: "not_connected",
     });
     if (stored === false) {
-      onToast?.({ ok: false, msg: "분석 결과를 저장하지 못했습니다. 현재 관절 수정 내용은 유지됩니다." });
+      onToast?.({ ok: false, msg: "변화 기록을 저장하지 못했습니다. 현재 관절 수정 내용은 유지됩니다." });
       return;
     }
     deviceLog("pose_saved", { memberId: analysisMemberId.current, assessmentId: assessmentId.current, view, storage: "indexedDB", source, count: res.items.length });
@@ -8119,7 +8119,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
           <Activity size={16} color="#fff" />
         </span>
         <span className="min-w-0 flex-1">
-          <span className="block font-extrabold" style={{ color: INK }}>AI 체형 분석</span>
+          <span className="block font-extrabold" style={{ color: INK }}>AI 변화 분석</span>
           <Sub>전면·측면·후면 사진으로 관절 정렬을 확인</Sub>
         </span>
         {saved.length > 0 && <span className="rounded-full px-2 py-1 text-xs font-bold" style={{ backgroundColor: TINT, color: PRIMARY }}>{saved.length}건</span>}
@@ -8155,7 +8155,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
           {!analysisMethod && (
           <div className="grid gap-2">
               <button onClick={() => startAssessment("ai")} className="p-3.5 text-left" style={{ borderRadius: 14, backgroundColor: LAVENDER_S, border: `1.5px solid ${LAVENDER}` }}>
-                <p className="flex items-center gap-1.5 text-[15px] font-bold" style={{ color: INK }}><Sparkles size={15} style={{ color: LAVENDER }} /> AI 체형분석</p>
+                <p className="flex items-center gap-1.5 text-[15px] font-bold" style={{ color: INK }}><Sparkles size={15} style={{ color: LAVENDER }} /> AI 변화 분석</p>
                 <Sub className="mt-1">선택한 {captureViews.length}방향 촬영 후 관절을 자동 추출하고 직접 보정합니다.</Sub>
               </button>
               <button onClick={() => startAssessment("manual")} className="p-3.5 text-left" style={{ borderRadius: 14, backgroundColor: CARD, border: `1.5px solid ${LINE}` }}>
@@ -9048,7 +9048,7 @@ function AnalysisTab({ members, photos, selectedId, onSelect, onOpen, onToast, h
         <div className="flex items-center gap-3">
           <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: TINT }}><Activity size={18} style={{ color: PRIMARY }} /></span>
           <div className="min-w-0 flex-1">
-            <h2 className="text-base font-extrabold" style={{ color: INK }}>체형분석</h2>
+            <h2 className="text-base font-extrabold" style={{ color: INK }}>변화 기록</h2>
             <Sub>촬영부터 결과 카드까지 한 흐름으로 관리합니다</Sub>
           </div>
           <div className="grid shrink-0 grid-cols-2 gap-1.5 text-center">
@@ -9217,8 +9217,7 @@ function AssessmentComparisonLayer({ photo, pose, label, color, transform, clipP
 }
 
 function AssessmentComparisonViewer({ beforeSet, afterSet, view, showGuides, memberName, onToast }) {
-  const [mode, setMode] = useState("slider");
-  const [curtain, setCurtain] = useState(50);
+  const [mode, setMode] = useState("side");
   const [opacity, setOpacity] = useState(50);
   const [alignEnabled, setAlignEnabled] = useState(true);
   const [zoom, setZoom] = useState(1);
@@ -9231,7 +9230,6 @@ function AssessmentComparisonViewer({ beforeSet, afterSet, view, showGuides, mem
   const poseFor = (set) => (set?.poses || []).find((pose) => normalizePostureView(pose.view) === normalizedView) || null;
   const beforePose = poseFor(beforeSet), afterPose = poseFor(afterSet);
   const alignment = postureAlignmentTransform(beforePose, afterPose, { view: normalizedView });
-  const beforeLines = postureReferenceLines(beforePose), afterLines = postureReferenceLines(afterPose);
   const metrics = compareAssessmentMetrics(beforeSet, afterSet, { view: normalizedView, limit: 6 });
   const resolutionOf = (photo) => photo?.captureQuality?.resolution || {};
   const beforeResolution = resolutionOf(beforePhoto), afterResolution = resolutionOf(afterPhoto);
@@ -9242,12 +9240,11 @@ function AssessmentComparisonViewer({ beforeSet, afterSet, view, showGuides, mem
   const afterTransform = alignEnabled && alignment.available
     ? `${commonTransform} translate(${alignment.offsetX * 100}%, ${alignment.offsetY * 100}%) scale(${alignment.scale})`
     : commonTransform;
-  const lineReady = beforeLines.length > 0 && afterLines.length > 0;
   const beforeCalendarDate = String(beforeSet?.completedAt || beforeSet?.at || "").slice(0, 10);
   const afterCalendarDate = String(afterSet?.completedAt || afterSet?.at || "").slice(0, 10);
   const sameDayComparison = Boolean(beforeCalendarDate && beforeCalendarDate === afterCalendarDate);
   const resetView = () => { setZoom(1); setPan({ x: 0, y: 0 }); };
-  useEffect(() => { setCurtain(50); setOpacity(50); resetView(); }, [beforeSet?.id, afterSet?.id, normalizedView, mode]);
+  useEffect(() => { setOpacity(50); resetView(); }, [beforeSet?.id, afterSet?.id, normalizedView, mode]);
   useEffect(() => { setAlignEnabled(true); }, [beforeSet?.id, afterSet?.id, normalizedView]);
   const onPointerDown = (event) => {
     if (zoom <= 1 || mode === "side") return;
@@ -9260,12 +9257,7 @@ function AssessmentComparisonViewer({ beforeSet, afterSet, view, showGuides, mem
   };
   const stopPointer = () => { drag.current = null; };
   const frameStyle = { aspectRatio, borderRadius: 14, backgroundColor: PHOTO, border: `1px solid ${LINE}` };
-  const modes = [
-    { key: "slider", label: "슬라이더" },
-    { key: "overlay", label: "겹치기" },
-    { key: "lines", label: "자동 기준선" },
-    { key: "side", label: "나란히" },
-  ];
+  const modes = [{ key: "side", label: "나란히" }, { key: "overlay", label: "겹쳐보기" }];
   return (
     <div className="mt-3">
       {mode === "side" ? (
@@ -9274,25 +9266,22 @@ function AssessmentComparisonViewer({ beforeSet, afterSet, view, showGuides, mem
         </div>
       ) : (
         <div onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={stopPointer} onPointerCancel={stopPointer} className="relative overflow-hidden" style={{ ...frameStyle, touchAction: zoom > 1 ? "none" : "pan-y" }}>
-          <AssessmentComparisonLayer photo={beforePhoto} pose={beforePose} label="Before" color={INK2} transform={commonTransform} opacity={mode === "lines" ? 0.5 : 1} showMarks={showGuides && mode !== "lines"} showLines={showGuides && mode === "lines"} />
-          <AssessmentComparisonLayer photo={afterPhoto} pose={afterPose} label="After" color={BRAND} transform={afterTransform} clipPath={mode === "slider" ? `inset(0 ${100 - curtain}% 0 0)` : undefined} opacity={mode === "overlay" ? opacity / 100 : mode === "lines" ? 0.5 : 1} showMarks={showGuides && mode !== "lines"} showLines={showGuides && mode === "lines"} />
-          {mode === "slider" && <><span className="pointer-events-none absolute bottom-0 top-0 w-0.5 bg-white" style={{ left: `${curtain}%`, boxShadow: "0 0 0 1px rgba(28,36,51,.35)" }} /><span className="pointer-events-none absolute left-2 top-2 rounded-full px-2 py-1 text-[9px] font-bold" style={{ backgroundColor: CARD, color: INK, border: `1px solid ${INK2}` }}>BEFORE</span><span className="pointer-events-none absolute right-2 top-2 rounded-full px-2 py-1 text-[9px] font-bold" style={{ backgroundColor: TINT, color: BRAND_D, border: `1px solid ${BRAND}` }}>AFTER</span></>}
-          {mode === "lines" && <div className="pointer-events-none absolute bottom-2 left-2 right-2 flex justify-between"><span className="rounded-full px-2 py-1 text-[9px] font-extrabold" style={{ backgroundColor: CARD, color: INK, border: `1px solid ${INK2}` }}>Before 기준선</span><span className="rounded-full px-2 py-1 text-[9px] font-extrabold" style={{ backgroundColor: TINT, color: BRAND_D, border: `1px solid ${BRAND}` }}>After 기준선</span></div>}
+          <AssessmentComparisonLayer photo={beforePhoto} pose={beforePose} label="Before" color={INK2} transform={commonTransform} showMarks={showGuides} showLines={false} />
+          <AssessmentComparisonLayer photo={afterPhoto} pose={afterPose} label="After" color={BRAND} transform={afterTransform} opacity={opacity / 100} showMarks={showGuides} showLines={false} />
+          <span className="pointer-events-none absolute left-2 top-2 rounded-full px-2 py-1 text-[9px] font-bold" style={{ backgroundColor: CARD, color: INK, border: `1px solid ${INK2}` }}>BEFORE</span><span className="pointer-events-none absolute right-2 top-2 rounded-full px-2 py-1 text-[9px] font-bold" style={{ backgroundColor: TINT, color: BRAND_D, border: `1px solid ${BRAND}` }}>AFTER</span>
         </div>
       )}
-      <div className="mt-3 grid grid-cols-4 gap-1 rounded-xl p-1" style={{ backgroundColor: CANVAS }}>
+      <div className="mt-3 grid grid-cols-2 gap-1 rounded-xl p-1" style={{ backgroundColor: CANVAS }}>
         {modes.map((item) => <button type="button" key={item.key} onClick={() => setMode(item.key)} className="min-h-10 px-1 text-[10px] font-extrabold" style={{ borderRadius: 8, backgroundColor: mode === item.key ? CARD : "transparent", color: mode === item.key ? BRAND_D : SUB, boxShadow: mode === item.key ? "0 1px 3px rgba(28,36,51,.1)" : "none" }}>{item.label}</button>)}
       </div>
       {mode !== "side" && <div className="mt-2 flex items-center gap-2 rounded-xl px-3 py-2" style={{ backgroundColor: alignment.available ? GOOD_S : CANVAS }}><span className="min-w-0 flex-1"><span className="block text-xs font-extrabold" style={{ color: alignment.available ? GOOD : INK2 }}>신체 자동 정렬</span><span className="block text-[10px]" style={{ color: SUB }}>{alignment.available ? "신체 높이와 중심 위치를 Before에 맞춥니다" : "두 사진의 저장된 관절점이 부족합니다"}</span></span><button type="button" disabled={!alignment.available} aria-pressed={alignEnabled && alignment.available} onClick={() => setAlignEnabled((value) => !value)} className="h-9 min-w-14 rounded-full px-2 text-[10px] font-extrabold disabled:opacity-45" style={{ backgroundColor: alignEnabled && alignment.available ? GOOD : CARD, color: alignEnabled && alignment.available ? "#fff" : SUB, border: `1px solid ${alignment.available ? GOOD : LINE}` }}>{alignEnabled && alignment.available ? "ON" : "OFF"}</button></div>}
-      {mode === "slider" && <input aria-label="Before After 비교 슬라이더" type="range" min="0" max="100" value={curtain} onChange={(event) => setCurtain(Number(event.target.value))} className="mt-3 w-full" style={{ accentColor: BRAND }} />}
       {mode === "overlay" && <div className="mt-3 flex items-center gap-2"><span className="text-[10px] font-bold" style={{ color: SUB }}>After 투명도</span><input aria-label="After 투명도" type="range" min="0" max="100" value={opacity} onChange={(event) => setOpacity(Number(event.target.value))} className="min-w-0 flex-1" style={{ accentColor: BRAND }} /><span className="w-8 text-right text-[10px] font-bold tabular-nums" style={{ color: BRAND_D }}>{opacity}%</span></div>}
-      {mode === "lines" && !lineReady && <p className="mt-2 rounded-lg px-3 py-2 text-[11px] font-bold" style={{ backgroundColor: WARN_S, color: WARN }}>두 분석 모두에 저장된 관절점이 있어야 자동 기준선을 함께 표시할 수 있습니다.</p>}
       {mode !== "side" && <div className="mt-2 flex items-center gap-2"><span className="text-xs font-bold" style={{ color: SUB }}>동시 확대</span>{[1, 1.5, 2].map((value) => <button type="button" key={value} onClick={() => { setZoom(value); if (value === 1) setPan({ x: 0, y: 0 }); }} className="h-9 min-w-11 rounded-full text-xs font-bold" style={{ backgroundColor: zoom === value ? TINT : CANVAS, color: zoom === value ? BRAND_D : SUB }}>{value}×</button>)}</div>}
       {mode === "side" && <button type="button" disabled={savingSide || !beforePhoto?.src || !afterPhoto?.src} onClick={async () => { setSavingSide(true); await shareBeforeAfter(beforePhoto, afterPhoto, memberName, onToast, true); setSavingSide(false); }} className="mt-3 flex h-11 w-full items-center justify-center gap-2 text-xs font-extrabold text-white disabled:opacity-45" style={{ borderRadius: 10, backgroundColor: BRAND }}>{savingSide ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}나란히 이미지 저장</button>}
       {sameDayComparison && <p className="mt-2 text-center text-[11px] font-bold" style={{ color: SUB }}>같은 날 촬영</p>}
       {!!metrics.length && <div className="mt-3" style={{ padding: 11, borderRadius: 11, backgroundColor: CANVAS }}>
         <p className="text-xs font-extrabold" style={{ color: INK }}>측정값 변화</p>
-        <div className="mt-2 space-y-2">{metrics.map((metric) => <div key={metric.id} className="grid grid-cols-[1fr_auto] gap-2"><span className="min-w-0"><span className="block truncate text-xs font-bold" style={{ color: INK2 }}>{metric.label}</span><span className="block text-[10px]" style={{ color: SUB }}>{metric.summary}</span></span><span className="text-xs font-extrabold tabular-nums" style={{ color: BRAND_D }}>{memberMetricValue(metric.beforeValue, metric.unit)}{metric.unit} → {memberMetricValue(metric.afterValue, metric.unit)}{metric.unit}</span></div>)}</div>
+        <div className="mt-2 space-y-2">{metrics.map((metric) => <div key={metric.id} className="grid gap-1"><span className="truncate text-xs font-bold" style={{ color: INK2 }}>{metric.label}</span><span className="text-[11px] font-bold tabular-nums" style={{ color: BRAND_D }}>Before {memberMetricValue(metric.beforeValue, metric.unit)}{metric.unit} · After {memberMetricValue(metric.afterValue, metric.unit)}{metric.unit} · 차이 {metric.difference > 0 ? "+" : ""}{memberMetricValue(metric.difference, metric.unit)}{metric.unit}</span></div>)}</div>
       </div>}
     </div>
   );
@@ -9344,7 +9333,7 @@ function LegacyAssessmentWorkspace({ member, photos, settings, initialSavedId, o
     if (!beforeSetId && defaultBeforeSet) setBeforeSetId(defaultBeforeSet.id);
     if (!afterSetId && defaultAfterSet) setAfterSetId(defaultAfterSet.id);
   }, [defaultBeforeSet?.id, defaultAfterSet?.id]);
-  const methodLabel = (method) => method === "draw" ? "강사 직접 기록" : method === "manual" ? "직접 포인트" : "AI 체형분석";
+  const methodLabel = (method) => method === "draw" ? "강사 직접 기록" : method === "manual" ? "직접 포인트" : "AI 변화 분석";
   const roleLabelOf = (role) => role === "before" ? "비포" : role === "after" ? "에프터" : "미분류";
   const roleOrdinal = (role) => Math.max(1, sets.filter((set) => set.role === role).length + 1);
   const pendingRoleLabel = pendingRole === "before" ? `비포 ${roleOrdinal("before")}` : pendingRole === "after" ? `에프터 ${roleOrdinal("after")}` : "미분류";
@@ -9367,7 +9356,7 @@ function LegacyAssessmentWorkspace({ member, photos, settings, initialSavedId, o
   const resultPhoto = (set, view) => set?.photos?.[view] || null;
   const stageScreen = screen === "analysis" ? "analysis" : screen === "result" ? "result" : "capture";
   const methodOptions = [
-    { value: "ai", label: "AI 체형분석", description: "MediaPipe로 관절을 추출한 뒤 강사가 보정합니다.", icon: <Sparkles size={17} /> },
+    { value: "ai", label: "AI 변화 분석", description: "MediaPipe로 관절을 추출한 뒤 강사가 보정합니다.", icon: <Sparkles size={17} /> },
     { value: "manual", label: "직접 포인트 분석", description: "관절 포인트를 강사가 직접 지정하고 측정합니다.", icon: <Crosshair size={17} /> },
     { value: "draw", label: "직접 그리기", description: "AI 없이 선·도형·각도·텍스트를 사진 위에 기록합니다.", icon: <Pencil size={17} /> },
   ];
@@ -9466,7 +9455,7 @@ function LegacyAssessmentWorkspace({ member, photos, settings, initialSavedId, o
       {setPicker && <ChoiceBottomSheet title={setPicker === "before" ? "비포 세트 선택" : "에프터 세트 선택"} subtitle="전면·측면·후면이 완료된 Assessment Set만 표시합니다" value={setPicker === "before" ? beforeSet?.id : afterSet?.id} onClose={() => setSetPicker(null)}
         options={completeSets.map((set) => ({ value: set.id, label: `${roleLabelOf(set.role)} · ${set.at ? ymd(set.at.slice(0, 10)) : "날짜 미확인"}`, description: `${methodLabel(set.method)} · 전면/측면/후면 완료` }))}
         onSelect={(id) => { if (setPicker === "before") setBeforeSetId(id); else setAfterSetId(id); }} />}
-      {zoomPhoto?.src && <ScheduleBottomSheet title="사진 확대" subtitle="원본 사진과 저장된 Annotation" onClose={() => setZoomPhoto(null)}><div className="relative mx-auto overflow-hidden" style={{ maxWidth: 360, aspectRatio: "3 / 4", borderRadius: 12, backgroundColor: PHOTO }}><img src={zoomPhoto.src} alt="체형분석 확대 사진" className="absolute inset-0 h-full w-full object-cover" style={{ transform: ptf(zoomPhoto), transformOrigin: "center" }} />{showAnnotations && <AssessmentAnnotationOverlay marks={zoomPhoto.marks || []} />}</div></ScheduleBottomSheet>}
+      {zoomPhoto?.src && <ScheduleBottomSheet title="사진 확대" subtitle="원본 사진과 저장된 Annotation" onClose={() => setZoomPhoto(null)}><div className="relative mx-auto overflow-hidden" style={{ maxWidth: 360, aspectRatio: "3 / 4", borderRadius: 12, backgroundColor: PHOTO }}><img src={zoomPhoto.src} alt="변화 기록 확대 사진" className="absolute inset-0 h-full w-full object-cover" style={{ transform: ptf(zoomPhoto), transformOrigin: "center" }} />{showAnnotations && <AssessmentAnnotationOverlay marks={zoomPhoto.marks || []} />}</div></ScheduleBottomSheet>}
       {viewingPose && <SavedPoseViewer rec={viewingPose} member={member} memberName={member?.name} records={resultPoses} onUpdate={onUpdatePose} onClose={() => setViewingPose(null)} onToast={onToast} />}
     </div>
   );
@@ -9529,7 +9518,6 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
   const automaticComparison = useMemo(() => selectAutomaticComparison(sets, { scope: latestCompletedScope }), [sets, latestCompletedScope]);
   const beforeSet = completeSets.find((set) => set.id === beforeSetId) || automaticComparison.before;
   const afterSet = completeSets.find((set) => set.id === afterSetId) || automaticComparison.after;
-  const comparisonIsManualResult = ["draw", "manual"].includes(afterSet?.method);
   const selected = sets.find((set) => set.id === selectedSetId)
     || sets.find((set) => set.id === workflow.selectedHistoryAssessmentId)
     || sets.find((set) => set.id === initialAssessmentId)
@@ -9562,16 +9550,15 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
     return payload ? [payload.summary, ...(payload.highlights || []), ...(payload.recommendations || []), ...(payload.precautions || [])].filter(Boolean).join(" · ") : "";
   };
   const selectedAiText = aiTextForSet(selected);
-  const comparisonAiText = aiTextForSet(afterSet);
   const reportAiText = reportTextForSet(selected) || selectedAiText;
-  const aiText = screen === "compare" ? comparisonAiText : screen === "report" ? reportAiText : selectedAiText;
+  const aiText = screen === "report" ? reportAiText : selectedAiText;
   const teacherMemo = memoForSet(selected);
-  const methodLabel = (method) => method === "draw" ? "강사 직접 기록" : method === "manual" ? "직접 포인트" : "AI 체형분석";
+  const methodLabel = (method) => method === "draw" ? "강사 직접 기록" : method === "manual" ? "직접 포인트" : "AI 변화 분석";
   const roleLabelOf = (role) => role === "before" ? "비포" : role === "after" ? "에프터" : "미분류";
   const setDate = (set) => set?.completedAt || set?.at || "";
   const ymd = (value) => formatMemberLessonDate(value);
   const setPhoto = (set, view) => assessmentMediaForView(set, view);
-  const comparableViewsFor = (left, right) => [...POSTURE_VIEW_KEYS, "custom"].filter((view) => setPhoto(left, view) && setPhoto(right, view));
+  const comparableViewsFor = (left, right) => commonPostureComparisonViews(left, right);
   const comparisonCandidatesFor = (targetSet) => completeSets.filter((candidate) => candidate.scope === targetSet?.scope && comparableViewsFor(candidate, targetSet).length > 0);
   const selectedViewList = POSTURE_VIEW_KEYS.filter((view) => selectedViews.has(view));
   const resumeSet = (set) => {
@@ -9607,7 +9594,7 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
       next = transitionPostureWorkflow(workflow, startNewAssessmentEvent(newAssessmentId));
     } catch (error) {
       assessmentAction.current = null;
-      onToast?.({ ok: false, msg: "새 체형분석을 시작하지 못했습니다. 다시 시도해 주세요." });
+      onToast?.({ ok: false, msg: "새 변화 기록을 시작하지 못했습니다. 다시 시도해 주세요." });
       return;
     }
     setWorkflow(next);
@@ -9645,7 +9632,7 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
       const discarded = await onDiscardAssessmentDraft?.(assessment);
       if (discarded !== true) {
         setDraftGuard({ step: "confirm", assessment });
-        onToast?.({ ok: false, msg: "진행 중인 분석을 정리하지 못해 새 분석을 시작하지 않았습니다." });
+        onToast?.({ ok: false, msg: "진행 중인 기록을 정리하지 못해 새 변화 기록을 시작하지 않았습니다." });
         return;
       }
       assessmentAction.current = null;
@@ -9653,7 +9640,7 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
       startNew();
     } catch (error) {
       setDraftGuard({ step: "confirm", assessment });
-      onToast?.({ ok: false, msg: "진행 중인 분석을 정리하지 못해 새 분석을 시작하지 않았습니다." });
+      onToast?.({ ok: false, msg: "진행 중인 기록을 정리하지 못해 새 변화 기록을 시작하지 않았습니다." });
     } finally {
       if (assessmentAction.current === "discard") assessmentAction.current = null;
     }
@@ -9664,7 +9651,7 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
   const startCapture = (nextScope, views) => {
     const nextWorkflow = workflow;
     if (!nextWorkflow.activeAssessmentId) {
-      onToast?.({ ok: false, msg: "새 분석 시작 정보를 확인하지 못했습니다. 처음부터 다시 시작해 주세요." });
+      onToast?.({ ok: false, msg: "새 변화 기록 시작 정보를 확인하지 못했습니다. 처음부터 다시 시작해 주세요." });
       setScreen("home");
       return;
     }
@@ -9748,8 +9735,7 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
   const entrySummary = lastCompleted?.poses.flatMap((pose) => pose.metrics || []).slice(0, 2) || [];
   const reportRetakeDate = selectedDate ? shift(selectedDate.slice(0, 10), POSTURE_RETAKE_DAYS.recommended) : "";
   const excludedComparisonId = setPicker === "before" ? afterSet?.id : setPicker === "after" ? beforeSet?.id : null;
-  const pairedSet = setPicker === "before" ? afterSet : setPicker === "after" ? beforeSet : null;
-  const setOptions = completeSets.filter((set) => set.id !== excludedComparisonId && (!pairedSet || (set.scope === pairedSet.scope && comparableViewsFor(set, pairedSet).length > 0))).map((set) => ({ value: set.id, label: setDate(set) ? formatMemberLessonDate(setDate(set).slice(0, 10)) : "날짜 미확인", description: `${set.scope === "partial" ? "부위별" : "전신"} · ${methodLabel(set.method)} · ${set.selectedViews.map(postureViewLabel).join("/")}` }));
+  const setOptions = completeSets.filter((set) => set.id !== excludedComparisonId && setDate(set) && POSTURE_VIEW_KEYS.some((view) => setPhoto(set, view))).map((set) => ({ value: set.id, label: formatMemberLessonDate(setDate(set).slice(0, 10)), description: `${set.scope === "partial" ? "부위별" : "전신"} · ${methodLabel(set.method)} · ${set.selectedViews.filter((view) => POSTURE_VIEW_KEYS.includes(view)).map(postureViewLabel).join("/")}` }));
   useEffect(() => {
     if (assessmentAction.current === "start") assessmentAction.current = null;
   }, [workflow.activeAssessmentId]);
@@ -9775,8 +9761,8 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
   return (
     <div className="space-y-3">
       {screen === "home" && <section style={{ padding: 16, borderRadius: 18, backgroundColor: CARD, border: `1px solid ${LINE}` }}>
-        <div className="flex items-start gap-3"><span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: TINT, color: BRAND_D }}><Activity size={19} /></span><span className="min-w-0 flex-1"><span className="block text-lg font-extrabold" style={{ color: INK }}>{member?.name} 회원</span><span className="mt-1 block text-xs" style={{ color: SUB }}>{lastCompleted ? `마지막 분석 ${ymd(setDate(lastCompleted).slice(0, 10))}${retake?.days != null ? ` · ${retake.days}일 전` : ""}` : "아직 완료된 체형분석이 없습니다"}</span></span></div>
-        <div className="mt-4 flex items-center gap-2" style={{ padding: 10, borderRadius: 11, backgroundColor: GOOD_S }}><Check size={15} style={{ color: GOOD }} /><span className="min-w-0 flex-1 text-xs font-bold" style={{ color: GOOD }}>{lastCompleted ? "최근 분석 저장 완료" : "촬영 전"}</span><span className="text-[10px] font-bold" style={{ color: SUB }}>기기 우선 저장</span></div>
+        <div className="flex items-start gap-3"><span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: TINT, color: BRAND_D }}><Activity size={19} /></span><span className="min-w-0 flex-1"><span className="block text-lg font-extrabold" style={{ color: INK }}>{member?.name} 회원</span><span className="mt-1 block text-xs" style={{ color: SUB }}>{lastCompleted ? `최근 기록 ${ymd(setDate(lastCompleted).slice(0, 10))}${retake?.days != null ? ` · ${retake.days}일 전` : ""}` : "아직 완료된 변화 기록이 없습니다"}</span></span></div>
+        <div className="mt-4 flex items-center gap-2" style={{ padding: 10, borderRadius: 11, backgroundColor: GOOD_S }}><Check size={15} style={{ color: GOOD }} /><span className="min-w-0 flex-1 text-xs font-bold" style={{ color: GOOD }}>{lastCompleted ? "최근 변화 기록 저장 완료" : "촬영 전"}</span><span className="text-[10px] font-bold" style={{ color: SUB }}>기기 우선 저장</span></div>
         {lastCompleted && <div className="mt-2" style={{ padding: 12, borderRadius: 12, backgroundColor: retake?.tone === "recommended" ? WARN_S : CANVAS }}><p className="text-xs font-bold" style={{ color: retake?.tone === "recommended" ? WARN : INK }}>{hasCompletedComparison ? "비포·에프터 비교 준비 완료" : "비포 저장 완료 · 에프터 촬영이 필요합니다"}</p>{!!entrySummary.length && <p className="mt-1 text-xs leading-relaxed" style={{ color: SUB }}>{entrySummary.map((metric) => `${metric.label} ${memberMetricValue(metric.value, metric.unit)}${metric.unit}`).join(" · ")}</p>}</div>}
         <button type="button" onClick={requestStartNew} className="mt-5 flex h-13 min-h-[52px] w-full items-center justify-center gap-2 text-sm font-extrabold text-white" style={{ borderRadius: 13, backgroundColor: BRAND }}><Camera size={17} />{nextCaptureLabel}</button>
         {hasCompletedComparison && <button type="button" onClick={() => openComparisonFromSet(automaticComparison.after)} className="mt-2 flex h-12 w-full items-center justify-center gap-2 text-sm font-extrabold" style={{ borderRadius: 12, backgroundColor: TINT, color: BRAND_D }}><ArrowUpDown size={16} />비포·에프터 변화 비교</button>}
@@ -9785,9 +9771,9 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
 
       {screen === "purpose" && <section style={{ padding: 16, borderRadius: 18, backgroundColor: CARD, border: `1px solid ${LINE}` }}>
         <button type="button" onClick={() => setScreen("home")} className="flex h-11 items-center gap-1 text-xs font-bold" style={{ color: SUB }}><ChevronLeft size={16} />돌아가기</button>
-        <p className="mt-2 text-xs font-bold" style={{ color: BRAND }}>새 체형분석</p><h2 className="mt-1 text-xl font-extrabold" style={{ color: INK }}>무엇을 촬영할까요?</h2><p className="mt-1 text-xs leading-relaxed" style={{ color: SUB }}>촬영 목적에 맞는 가장 짧은 흐름으로 안내합니다.</p>
+        <p className="mt-2 text-xs font-bold" style={{ color: BRAND }}>새 변화 기록</p><h2 className="mt-1 text-xl font-extrabold" style={{ color: INK }}>무엇을 촬영할까요?</h2><p className="mt-1 text-xs leading-relaxed" style={{ color: SUB }}>촬영 목적에 맞는 가장 짧은 흐름으로 안내합니다.</p>
         <div className="mt-5 space-y-2"><button type="button" onClick={() => { setScope("full_body"); setScreen("directions"); }} className="flex min-h-[92px] w-full items-center gap-3 p-4 text-left" style={{ borderRadius: 14, backgroundColor: TINT, border: `1px solid #D5D1EB` }}><span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: CARD, color: BRAND_D }}><Activity size={18} /></span><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>전신 분석</span><span className="mt-1 block text-xs leading-relaxed" style={{ color: SUB }}>AI 분석 가능 · 전면/좌측면/후면/우측면</span></span><ChevronRight size={17} style={{ color: FAINT }} /></button>
-          <button type="button" onClick={() => startCapture("partial", ["custom"])} className="flex min-h-[92px] w-full items-center gap-3 p-4 text-left" style={{ borderRadius: 14, backgroundColor: CANVAS, border: `1px solid ${LINE}` }}><span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: CARD, color: BRAND_D }}><Pencil size={18} /></span><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>부위별 기록</span><span className="mt-1 block text-xs leading-relaxed" style={{ color: SUB }}>AI 체형분석 미지원 · 사진 위 직접 표시와 메모</span></span><ChevronRight size={17} style={{ color: FAINT }} /></button></div>
+          <button type="button" onClick={() => startCapture("partial", ["custom"])} className="flex min-h-[92px] w-full items-center gap-3 p-4 text-left" style={{ borderRadius: 14, backgroundColor: CANVAS, border: `1px solid ${LINE}` }}><span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: CARD, color: BRAND_D }}><Pencil size={18} /></span><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>부위별 기록</span><span className="mt-1 block text-xs leading-relaxed" style={{ color: SUB }}>AI 변화 분석 미지원 · 사진 위 직접 표시와 메모</span></span><ChevronRight size={17} style={{ color: FAINT }} /></button></div>
       </section>}
 
       {screen === "directions" && <section style={{ padding: 16, borderRadius: 18, backgroundColor: CARD, border: `1px solid ${LINE}` }}>
@@ -9802,8 +9788,8 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
         onCaptureExit={() => setScreen(captureReturnScreen)} onStageChange={(stage) => setScreen(stage === "analysis" ? "analysis" : "capture")} onSaved={async (role, assessmentId) => { const nextRole = role || pendingRole || (completeSets.length ? "after" : "before"); const stored = await onCompleteAssessment?.(assessmentId, nextRole); if (stored !== true) return false; setWorkflow(transitionPostureWorkflow(workflow, { type: POSTURE_WORKFLOW_EVENTS.OPEN_COMPLETED_ASSESSMENT, assessmentId, assessment: { id: assessmentId, status: "completed" } })); setResumeAssessmentId(null); setSelectedSetId(assessmentId); setScreen("history"); onSaved?.(nextRole); return true; }} />}
 
       {screen === "history" && <section style={{ padding: 14, borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}>
-        <div className="flex items-center gap-2"><button type="button" aria-label="체형분석 시작 화면" onClick={() => setScreen("home")} className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={18} /></button><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>체형분석 히스토리</span><span className="block text-xs" style={{ color: SUB }}>최신순 · 분석 {sets.length}개</span></span><button type="button" onClick={requestStartNew} className="h-10 px-3 text-xs font-bold text-white" style={{ borderRadius: 9, backgroundColor: BRAND }}>새 분석</button></div>
-        {!sets.length ? <div className="py-12 text-center"><Activity size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>아직 체형분석 이력이 없습니다</p></div> : <div className="relative mt-3 space-y-3">{sets.map((set) => {
+        <div className="flex items-center gap-2"><button type="button" aria-label="변화 기록 시작 화면" onClick={() => setScreen("home")} className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={18} /></button><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>변화 기록 히스토리</span><span className="block text-xs" style={{ color: SUB }}>최신순 · 기록 {sets.length}개</span></span><button type="button" onClick={requestStartNew} className="h-10 px-3 text-xs font-bold text-white" style={{ borderRadius: 9, backgroundColor: BRAND }}>새 기록</button></div>
+        {!sets.length ? <div className="py-12 text-center"><Activity size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>아직 변화 기록이 없습니다</p></div> : <div className="relative mt-3 space-y-3">{sets.map((set) => {
           const representative = setPhoto(set, "front") || Object.values(set.photos)[0];
           const missing = set.missingPhotos || [];
           const summary = set.poses.map((pose) => pose.aiAnalysis?.teacherEditedOutput || pose.aiAnalysis?.output).find(Boolean);
@@ -9821,30 +9807,29 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
       </section>}
 
       {screen === "result" && <>
-        <section style={{ padding: 14, borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}><div className="flex items-center gap-2"><button type="button" aria-label="체형분석 시작 화면" onClick={() => setScreen("home")} className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={18} /></button><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>{selectedIsManualResult ? "사진 기록" : "분석 결과"}</span><span className="block text-xs" style={{ color: SUB }}>{selected ? `${ymd(setDate(selected).slice(0, 10))} · ${methodLabel(selected.method)}` : "완료된 결과 없음"}</span></span><button type="button" onClick={() => setScreen("history")} className="h-10 px-3 text-xs font-bold" style={{ borderRadius: 9, backgroundColor: CANVAS, color: INK }}>히스토리</button></div>
-          {selected?.status === "completed" && <div className="mt-3 flex items-center gap-2" style={{ padding: 10, borderRadius: 10, backgroundColor: GOOD_S }}><Check size={15} style={{ color: GOOD }} /><span className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: GOOD }}>{selectedIsManualResult ? "사진 기록 저장 완료" : "분석 저장 완료"}</span><span className="text-[10px] font-bold" style={{ color: SUB }}>기기 우선 저장</span></div>}
-          {!selected ? <div className="py-10 text-center"><Activity size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>표시할 분석 결과가 없습니다</p><button type="button" onClick={requestStartNew} className="mt-4 h-11 px-5 text-xs font-bold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>새 체형분석 시작</button></div> : selected.status !== "completed" ? <div className="py-10 text-center"><AlertCircle size={22} className="mx-auto" style={{ color: WARN }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>아직 완료되지 않은 분석입니다</p><p className="mt-1 text-xs" style={{ color: SUB }}>저장된 사진과 분석 상태를 유지한 채 이어서 진행할 수 있습니다.</p><button type="button" onClick={() => resumeSet(selected)} className="mt-4 h-11 px-5 text-xs font-bold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>초안 이어하기</button></div> : <><div className="mt-3 grid gap-1.5" style={{ gridTemplateColumns: `repeat(${Math.max(1, selected.selectedViews.length)}, minmax(0, 1fr))` }}>{selected.selectedViews.map((view) => <AssessmentSetFrame key={view} photo={setPhoto(selected, view)} label={postureViewLabel(view)} annotation onOpen={selectedIsManualResult ? undefined : () => { const pose = selected.poses.find((item) => normalizePostureView(item.view) === view); if (pose) setViewingPose(pose); }} />)}</div><button type="button" onClick={() => { const available = selected.selectedViews.map((view) => ({ view, photo: setPhoto(selected, view) })).filter((item) => item.photo); if (available.length === 1) setEditingAnnotation(available[0]); else if (available.length > 1) setAnnotationPicker(true); }} className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 text-xs font-bold" style={{ borderRadius: 10, backgroundColor: CANVAS, color: INK }}><Pencil size={13} />사진 표시 다시 수정하기</button><div className={`mt-2 grid gap-2 ${comparisonPairFor(selected).after && !selectedIsManualResult ? "grid-cols-2" : "grid-cols-1"}`}>{comparisonPairFor(selected).after && <button type="button" onClick={() => openComparisonFromSet(selected)} className="h-11 text-xs font-bold" style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D }}>Before / After 비교</button>}{!selectedIsManualResult && <button type="button" onClick={() => openReportForSet(selected)} className="h-11 text-xs font-bold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>결과 리포트 카드</button>}</div></>}
+        <section style={{ padding: 14, borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}><div className="flex items-center gap-2"><button type="button" aria-label="변화 기록 시작 화면" onClick={() => setScreen("home")} className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={18} /></button><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>{selectedIsManualResult ? "사진 기록" : "변화 기록"}</span><span className="block text-xs" style={{ color: SUB }}>{selected ? `${ymd(setDate(selected).slice(0, 10))} · ${methodLabel(selected.method)}` : "완료된 결과 없음"}</span></span><button type="button" onClick={() => setScreen("history")} className="h-10 px-3 text-xs font-bold" style={{ borderRadius: 9, backgroundColor: CANVAS, color: INK }}>히스토리</button></div>
+          {selected?.status === "completed" && <div className="mt-3 flex items-center gap-2" style={{ padding: 10, borderRadius: 10, backgroundColor: GOOD_S }}><Check size={15} style={{ color: GOOD }} /><span className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: GOOD }}>{selectedIsManualResult ? "사진 기록 저장 완료" : "변화 기록 저장 완료"}</span><span className="text-[10px] font-bold" style={{ color: SUB }}>기기 우선 저장</span></div>}
+          {!selected ? <div className="py-10 text-center"><Activity size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>표시할 변화 기록이 없습니다</p><button type="button" onClick={requestStartNew} className="mt-4 h-11 px-5 text-xs font-bold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>새 변화 기록 시작</button></div> : selected.status !== "completed" ? <div className="py-10 text-center"><AlertCircle size={22} className="mx-auto" style={{ color: WARN }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>아직 완료되지 않은 기록입니다</p><p className="mt-1 text-xs" style={{ color: SUB }}>저장된 사진과 처리 상태를 유지한 채 이어서 진행할 수 있습니다.</p><button type="button" onClick={() => resumeSet(selected)} className="mt-4 h-11 px-5 text-xs font-bold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>초안 이어하기</button></div> : <><div className="mt-3 grid gap-1.5" style={{ gridTemplateColumns: `repeat(${Math.max(1, selected.selectedViews.length)}, minmax(0, 1fr))` }}>{selected.selectedViews.map((view) => <AssessmentSetFrame key={view} photo={setPhoto(selected, view)} label={postureViewLabel(view)} annotation onOpen={selectedIsManualResult ? undefined : () => { const pose = selected.poses.find((item) => normalizePostureView(item.view) === view); if (pose) setViewingPose(pose); }} />)}</div><button type="button" onClick={() => { const available = selected.selectedViews.map((view) => ({ view, photo: setPhoto(selected, view) })).filter((item) => item.photo); if (available.length === 1) setEditingAnnotation(available[0]); else if (available.length > 1) setAnnotationPicker(true); }} className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 text-xs font-bold" style={{ borderRadius: 10, backgroundColor: CANVAS, color: INK }}><Pencil size={13} />사진 표시 다시 수정하기</button><div className={`mt-2 grid gap-2 ${comparisonPairFor(selected).after && !selectedIsManualResult ? "grid-cols-2" : "grid-cols-1"}`}>{comparisonPairFor(selected).after && <button type="button" onClick={() => openComparisonFromSet(selected)} className="h-11 text-xs font-bold" style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D }}>변화 비교</button>}{!selectedIsManualResult && <button type="button" onClick={() => openReportForSet(selected)} className="h-11 text-xs font-bold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>결과 리포트 카드</button>}</div></>}
         </section>
         {!selectedIsManualResult && selected?.status === "completed" && (goodMetrics.length > 0 || cautionMetrics.length > 0 || aiText || teacherMemo || resultPoses[0]) && <section style={{ padding: 13, borderRadius: 14, backgroundColor: CARD, border: `1px solid ${LINE}` }}><h2 className="text-sm font-extrabold" style={{ color: INK }}>관찰 결과</h2><div className="mt-3 grid gap-2 sm:grid-cols-2">{!!goodMetrics.length && <div style={{ padding: 10, borderRadius: 10, backgroundColor: GOOD_S }}><p className="text-xs font-bold" style={{ color: GOOD }}>좋은 점</p>{goodMetrics.map((metric, index) => <p key={`${metric.key}_${index}`} className="mt-1 text-xs" style={{ color: INK2 }}>{metric.label} {memberMetricValue(metric.value, metric.unit)}{metric.unit}</p>)}</div>}{!!cautionMetrics.length && <div style={{ padding: 10, borderRadius: 10, backgroundColor: WARN_S }}><p className="text-xs font-bold" style={{ color: WARN }}>관찰 필요</p>{cautionMetrics.map((metric, index) => <p key={`${metric.key}_${index}`} className="mt-1 text-xs" style={{ color: INK2 }}>{metric.label} {memberMetricValue(metric.value, metric.unit)}{metric.unit}</p>)}</div>}{aiText && <div style={{ padding: 10, borderRadius: 10, backgroundColor: LAVENDER_S }}><p className="text-xs font-bold" style={{ color: BRAND_D }}>AI 해석</p><p className="mt-1 text-xs leading-relaxed" style={{ color: INK2 }}>{aiText}</p></div>}{teacherMemo && <div style={{ padding: 10, borderRadius: 10, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>강사 메모</p><p className="mt-1 text-xs leading-relaxed" style={{ color: INK2 }}>{teacherMemo}</p></div>}</div>{resultPoses[0] && <button type="button" onClick={() => setViewingPose(resultPoses[0])} className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 text-xs font-bold" style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D }}><Pencil size={13} />분석 내용 확인·수정</button>}</section>}
       </>}
 
-      {screen === "compare" && <section style={{ padding: 14, borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}><div className="flex items-center gap-2"><button type="button" onClick={() => setScreen("result")} aria-label="결과로 돌아가기" className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={18} /></button><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>Before / After</span><span className="block text-xs" style={{ color: SUB }}>선택한 두 분석을 같은 촬영 방향으로 비교</span></span><button type="button" onClick={() => setShowAnnotations((value) => !value)} className="h-9 px-2 text-[10px] font-bold" style={{ borderRadius: 8, backgroundColor: showAnnotations ? TINT : CANVAS, color: showAnnotations ? BRAND_D : SUB }}>기준선 {showAnnotations ? "ON" : "OFF"}</button></div>
-        {!beforeSet || !afterSet ? <div className="py-12 text-center"><Activity size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>다음 분석부터 변화 비교가 가능합니다</p><p className="mt-1 text-xs" style={{ color: SUB }}>같은 유형과 촬영 방향의 완료 분석이 2개 이상 필요합니다.</p></div> : <>
+      {screen === "compare" && <section style={{ padding: 14, borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}><div className="flex items-center gap-2"><button type="button" onClick={() => setScreen("result")} aria-label="결과로 돌아가기" className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={18} /></button><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>변화 비교</span><span className="block text-xs" style={{ color: SUB }}>선택한 두 기록을 같은 촬영 방향으로 비교</span></span><button type="button" onClick={() => setShowAnnotations((value) => !value)} className="h-9 px-2 text-[10px] font-bold" style={{ borderRadius: 8, backgroundColor: showAnnotations ? TINT : CANVAS, color: showAnnotations ? BRAND_D : SUB }}>사진 표시 {showAnnotations ? "ON" : "OFF"}</button></div>
+        {!beforeSet || !afterSet ? <div className="py-12 text-center"><Activity size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>다음 기록부터 변화 비교가 가능합니다</p><p className="mt-1 text-xs" style={{ color: SUB }}>같은 촬영 방향의 완료 기록이 2개 이상 필요합니다.</p></div> : !comparableViewsFor(beforeSet, afterSet).length ? <div className="py-10 text-center"><Activity size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>공통 촬영 방향이 없습니다</p><p className="mt-1 text-xs" style={{ color: SUB }}>같은 방향이 있는 두 날짜를 다시 선택해 주세요.</p><div className="mx-auto mt-4 grid max-w-xs grid-cols-2 gap-2"><button type="button" onClick={() => setSetPicker("before")} className="h-10 text-xs font-bold" style={{ borderRadius: 9, backgroundColor: CANVAS, color: INK }}>Before 날짜</button><button type="button" onClick={() => setSetPicker("after")} className="h-10 text-xs font-bold" style={{ borderRadius: 9, backgroundColor: TINT, color: BRAND_D }}>After 날짜</button></div></div> : <>
           <AssessmentComparisonViewer beforeSet={beforeSet} afterSet={afterSet} view={compareView} showGuides={showAnnotations} memberName={member?.name} onToast={onToast} />
           <div className="mt-3 grid gap-1" style={{ gridTemplateColumns: `repeat(${Math.max(1, comparableViewsFor(beforeSet, afterSet).length)}, minmax(0, 1fr))` }}>{comparableViewsFor(beforeSet, afterSet).map((view) => <button type="button" key={view} onClick={() => setCompareView(view)} className="h-9 min-w-0 px-1 text-[11px] font-bold" style={{ borderRadius: 9, backgroundColor: compareView === view ? TINT : CANVAS, color: compareView === view ? BRAND_D : SUB }}>{postureViewLabel(view)}</button>)}</div>
           <details className="mt-3 rounded-xl" style={{ backgroundColor: CANVAS }}>
             <summary className="flex min-h-11 cursor-pointer list-none items-center justify-center gap-2 px-3 text-xs font-bold" style={{ color: INK }}>비교 사진 바꾸기 <ChevronDown size={14} style={{ color: SUB }} /></summary>
             <div className="grid grid-cols-2 gap-2 px-3 pb-3">
-              <button type="button" onClick={() => setSetPicker("before")} className="min-h-11 px-3 text-left" style={{ borderRadius: 9, backgroundColor: CARD, border: `1px solid ${INK2}` }}><span className="block text-[10px] font-bold" style={{ color: SUB }}>Before</span><span className="block text-xs font-bold" style={{ color: INK }}>{formatMemberLessonDate(setDate(beforeSet).slice(0, 10))}</span></button>
-              <button type="button" onClick={() => setSetPicker("after")} className="min-h-11 px-3 text-left" style={{ borderRadius: 9, backgroundColor: TINT, border: `1px solid ${BRAND}` }}><span className="block text-[10px] font-bold" style={{ color: SUB }}>After</span><span className="block text-xs font-bold" style={{ color: BRAND_D }}>{formatMemberLessonDate(setDate(afterSet).slice(0, 10))}</span></button>
+              <button type="button" onClick={() => setSetPicker("before")} className="min-h-11 px-3 text-left" style={{ borderRadius: 9, backgroundColor: CARD, border: `1px solid ${INK2}` }}><span className="block text-[10px] font-bold" style={{ color: SUB }}>Before 날짜</span><span className="block text-xs font-bold" style={{ color: INK }}>{formatMemberLessonDate(setDate(beforeSet).slice(0, 10))}</span></button>
+              <button type="button" onClick={() => setSetPicker("after")} className="min-h-11 px-3 text-left" style={{ borderRadius: 9, backgroundColor: TINT, border: `1px solid ${BRAND}` }}><span className="block text-[10px] font-bold" style={{ color: SUB }}>After 날짜</span><span className="block text-xs font-bold" style={{ color: BRAND_D }}>{formatMemberLessonDate(setDate(afterSet).slice(0, 10))}</span></button>
             </div>
           </details>
-          {!comparisonIsManualResult && aiText && <div className="mt-3" style={{ padding: 11, borderRadius: 11, backgroundColor: LAVENDER_S }}><p className="text-xs font-bold" style={{ color: BRAND_D }}>After AI 관찰</p><p className="mt-1 text-xs leading-relaxed" style={{ color: INK2 }}>{aiText}</p></div>}
         </>}
       </section>}
 
       {screen === "report" && <section style={{ overflow: "hidden", borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}>
-        <div className="flex items-center gap-2 px-3 pt-2"><button type="button" onClick={() => setScreen("result")} aria-label="결과로 돌아가기" className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={18} /></button><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>체형분석 결과 카드</span><span className="block text-xs" style={{ color: SUB }}>회원 상담용 요약</span></span></div>
+        <div className="flex items-center gap-2 px-3 pt-2"><button type="button" onClick={() => setScreen("result")} aria-label="결과로 돌아가기" className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={18} /></button><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>변화 기록 결과 카드</span><span className="block text-xs" style={{ color: SUB }}>회원 상담용 요약</span></span></div>
         <div className="p-4 pt-2">
           <div className="flex items-end gap-2"><div className="min-w-0 flex-1"><p className="text-lg font-extrabold" style={{ color: INK }}>{member?.name} 회원</p><p className="mt-1 text-xs" style={{ color: SUB }}>{selectedDate ? ymd(selectedDate.slice(0, 10)) : "분석일 미확인"}</p></div><span className="rounded-full px-2 py-1 text-[10px] font-bold" style={{ backgroundColor: TINT, color: BRAND_D }}>{selected ? methodLabel(selected.method) : "결과 없음"}</span></div>
           {selected?.scope === "full_body" && reportPair.before && reportPair.after && reportView && <div className="mt-4 grid grid-cols-2 gap-2"><div><p className="mb-1 text-[10px] font-bold" style={{ color: INK }}>BEFORE</p><AssessmentSetFrame photo={setPhoto(reportPair.before, reportView)} label="Before" /></div><div><p className="mb-1 text-[10px] font-bold" style={{ color: BRAND_D }}>AFTER</p><AssessmentSetFrame photo={setPhoto(reportPair.after, reportView)} label="After" /></div></div>}
@@ -9859,20 +9844,20 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
         </div>
       </section>}
 
-      {draftGuard?.step === "choice" && <ScheduleBottomSheet title="진행 중인 체형분석이 있습니다" subtitle="이전에 저장하던 체형분석을 이어서 진행할 수 있습니다." onClose={() => setDraftGuard(null)} aboveTabBar>
+      {draftGuard?.step === "choice" && <ScheduleBottomSheet title="진행 중인 변화 기록이 있습니다" subtitle="이전에 저장하던 변화 기록을 이어서 진행할 수 있습니다." onClose={() => setDraftGuard(null)} aboveTabBar>
         <div className="space-y-2">
           <button type="button" onClick={() => { const assessment = draftGuard.assessment; setDraftGuard(null); resumeSet(assessment); }} className="flex min-h-12 w-full items-center justify-between px-3 text-left" style={{ borderRadius: 11, backgroundColor: TINT, border: `1px solid ${BRAND}`, color: BRAND_D }}><span className="text-sm font-extrabold">이어하기</span><ChevronRight size={16} /></button>
           <button type="button" onClick={() => setDraftGuard({ step: "confirm", assessment: draftGuard.assessment })} className="flex min-h-12 w-full items-center justify-between px-3 text-left" style={{ borderRadius: 11, backgroundColor: CANVAS, border: `1px solid ${LINE}`, color: INK }}><span className="text-sm font-bold">새로 시작</span><RotateCcw size={15} /></button>
         </div>
       </ScheduleBottomSheet>}
-      {(draftGuard?.step === "confirm" || draftGuard?.step === "discarding") && <ScheduleBottomSheet title="진행 중인 체형분석을 삭제하고 새로 시작할까요?" subtitle="현재 저장된 사진과 분석 기록을 정리한 뒤 새 분석을 시작합니다." onClose={closeDraftGuard} dismissible={draftGuard.step !== "discarding"} aboveTabBar>
+      {(draftGuard?.step === "confirm" || draftGuard?.step === "discarding") && <ScheduleBottomSheet title="진행 중인 변화 기록을 삭제하고 새로 시작할까요?" subtitle="현재 저장된 사진과 기록을 정리한 뒤 새 변화 기록을 시작합니다." onClose={closeDraftGuard} dismissible={draftGuard.step !== "discarding"} aboveTabBar>
         <div className="grid grid-cols-2 gap-2">
           <button type="button" disabled={draftGuard.step === "discarding"} onClick={() => setDraftGuard(null)} className="h-12 text-sm font-bold disabled:opacity-50" style={{ borderRadius: 11, backgroundColor: CANVAS, color: SUB }}>취소</button>
           <button type="button" disabled={draftGuard.step === "discarding"} onClick={confirmDiscardAndStartNew} className="flex h-12 items-center justify-center gap-2 text-sm font-extrabold text-white disabled:opacity-60" style={{ borderRadius: 11, backgroundColor: BAD }}>{draftGuard.step === "discarding" ? <><Loader2 size={15} className="animate-spin" />정리 중</> : "삭제하고 새로 시작"}</button>
         </div>
       </ScheduleBottomSheet>}
       {roleSheet && <ChoiceBottomSheet title="촬영 구분 선택" subtitle="이 촬영 세트를 비포·애프터 비교에서 어떻게 사용할지 선택해 주세요" value={pendingRole} options={[{ value: "before", label: "비포", description: "비교 기준이 되는 촬영" }, { value: "after", label: "에프터", description: "변화를 비교할 촬영" }, { value: "unassigned", label: "나중에 선택", description: "촬영 후에도 구분할 수 있습니다" }]} onClose={() => setRoleSheet(false)} onSelect={saveSelectedRole} />}
-      {setPicker && <ChoiceBottomSheet title={setPicker === "before" ? "Before 분석 선택" : "After 분석 선택"} subtitle="같은 유형과 공통 촬영 방향이 있는 완료 분석만 표시합니다" value={setPicker === "before" ? beforeSet?.id : afterSet?.id} options={setOptions} onClose={() => setSetPicker(null)} onSelect={(id) => { if (setPicker === "before") setBeforeSetId(id); else setAfterSetId(id); }} />}
+      {setPicker && <ChoiceBottomSheet title={setPicker === "before" ? "Before 날짜 선택" : "After 날짜 선택"} subtitle="사진이 저장된 완료 기록 중에서 선택합니다" value={setPicker === "before" ? beforeSet?.id : afterSet?.id} options={setOptions} onClose={() => setSetPicker(null)} onSelect={(id) => { if (setPicker === "before") setBeforeSetId(id); else setAfterSetId(id); }} />}
       {annotationPicker && <ChoiceBottomSheet title="다시 수정할 사진 선택" subtitle="저장된 표시를 불러와 이어서 수정합니다" value="" options={(selected?.selectedViews || []).map((view) => ({ value: view, label: postureViewLabel(view), description: setPhoto(selected, view)?.marks?.length ? "저장된 표시 있음" : "표시 새로 추가" })).filter((option) => setPhoto(selected, option.value))} onClose={() => setAnnotationPicker(false)} onSelect={(view) => { const photo = setPhoto(selected, view); setAnnotationPicker(false); if (photo) setEditingAnnotation({ view, photo }); }} />}
       {editingAnnotation?.photo?.src && <PostureCanvas key={`reedit_${editingAnnotation.view}_${editingAnnotation.photo.id}`} photo={editingAnnotation.photo} label={`${postureViewLabel(editingAnnotation.view)} · 다시 수정`} initialTool="pen" onClose={() => setEditingAnnotation(null)} onCancel={() => setEditingAnnotation(null)} onDraft={(marks) => onSaveMarks?.(editingAnnotation.view, editingAnnotation.photo.id, marks, { quiet: true })} onSave={(marks) => onSaveMarks?.(editingAnnotation.view, editingAnnotation.photo.id, marks)} onToast={onToast} />}
       {!selectedIsManualResult && viewingPose && <SavedPoseViewer rec={viewingPose} member={member} memberName={member?.name} records={resultPoses} onUpdate={onUpdatePose} onClose={() => setViewingPose(null)} onToast={onToast} />}
@@ -9902,7 +9887,7 @@ function ReferenceAnalysisTab({ members, photos, selectedId, selectedPoseId, onS
   const listPane = (
     <div className="flex h-full min-h-0 flex-col" style={{ backgroundColor: PAGE }}>
       <header className="shrink-0" style={{ padding: "10px 14px 0", backgroundColor: PAGE }}>
-        <h1 style={{ fontSize: 18, fontWeight: 700, color: INK }}>체형분석</h1>
+        <h1 style={{ fontSize: 18, fontWeight: 700, color: INK }}>변화 기록</h1>
         <p style={{ marginTop: 3, marginBottom: 8, fontSize: 12.5, color: SUB }}>회원의 체형 변화를 기록하고 비교하세요. · 완료 {done}명</p>
         <div className="relative"><Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: SUB }} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="회원 이름 검색" className="w-full pl-9 pr-3 text-sm outline-none" style={{ height: 44, borderRadius: 12, border: `1px solid ${LINE}`, backgroundColor: CARD, color: INK }} /></div>
         <div className="flex flex-wrap gap-1.5 py-2">{[{k:"all",l:"전체"},{k:"draft",l:"작성 중"},{k:"review",l:"검토 필요"},{k:"done",l:"완료"},{k:"comparable",l:"비교 가능"}].map((o) => <button type="button" key={o.k} onClick={() => setFilter(o.k)} className="shrink-0" style={{ minHeight: 36, padding: "0 11px", borderRadius: 999, border: `1px solid ${filter === o.k ? BRAND : LINE}`, backgroundColor: filter === o.k ? LAVENDER_S : CARD, color: filter === o.k ? BRAND_D : INK2, fontSize: 12, fontWeight: 600 }}>{o.l}</button>)}</div>
@@ -9910,9 +9895,9 @@ function ReferenceAnalysisTab({ members, photos, selectedId, selectedPoseId, onS
       <main className="pt-scroll min-h-0 flex-1 overflow-y-auto" style={{ padding: "2px 14px 18px" }}>
         {!rows.length && <div className="py-12 text-center"><Activity size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-semibold" style={{ color: INK }}>조건에 맞는 회원이 없습니다</p></div>}
         <div className="pt-analysis-card-grid">{rows.map(({ m, assessmentSets, last, draftCount, comparable, status }) => { const displayedViews = last?.selectedViews || POSTURE_VIEW_KEYS; const completedViews = new Set([...(last ? Object.keys(last.photos) : []), ...(last?.poses || []).map((pose) => normalizePostureView(pose.view))]); const active = m.id === selectedId; return <div key={m.id} className="relative" style={{ padding: "11px 12px", borderRadius: 14, backgroundColor: active ? LAVENDER_S : CARD, border: `1px solid ${active ? BRAND : LINE}` }}><button type="button" onClick={() => onSelect(m.id, null)} className="flex w-full items-center gap-2 text-left">
-          <span className="min-w-0 flex-1"><span className="flex items-center gap-1.5"><span className="block max-w-[44%] truncate" style={{ fontSize: 14, fontWeight: 600, color: INK }}>{m.name}</span>{status !== "none" && <span style={{ padding: "2px 6px", borderRadius: 6, backgroundColor: status === "review" ? WARN_S : status === "done" ? GOOD_S : CANVAS, color: status === "review" ? WARN : status === "done" ? GOOD : INK2, fontSize: 10, fontWeight: 600 }}>{status === "review" ? "검토 필요" : status === "done" ? "완료" : "작성 중"}</span>}{comparable && <span style={{ padding: "2px 6px", borderRadius: 6, backgroundColor: TINT, color: BRAND_D, fontSize: 10, fontWeight: 600 }}>비교 가능</span>}</span><span className="mt-1 flex items-center gap-2" style={{ fontSize: 11, color: SUB }}><span>{last ? `최근 ${ymd((last.completedAt || last.at).slice(0, 10))}` : "아직 체형분석 이력이 없어요"}</span><span className="flex items-center gap-1" aria-label={`촬영 등록 ${last ? completedViews.size : draftCount}/${displayedViews.length}`}>{displayedViews.map((view) => <i key={view} aria-hidden="true" style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: (last ? completedViews.has(view) : (photos[m.id]?.[view] || []).length > 0) ? BRAND : "#D5DAE3" }} />)}<span>{last ? completedViews.size : draftCount}/{displayedViews.length}</span></span>{last && <span>세트 {assessmentSets.length}개</span>}</span></span>
+          <span className="min-w-0 flex-1"><span className="flex items-center gap-1.5"><span className="block max-w-[44%] truncate" style={{ fontSize: 14, fontWeight: 600, color: INK }}>{m.name}</span>{status !== "none" && <span style={{ padding: "2px 6px", borderRadius: 6, backgroundColor: status === "review" ? WARN_S : status === "done" ? GOOD_S : CANVAS, color: status === "review" ? WARN : status === "done" ? GOOD : INK2, fontSize: 10, fontWeight: 600 }}>{status === "review" ? "검토 필요" : status === "done" ? "완료" : "작성 중"}</span>}{comparable && <span style={{ padding: "2px 6px", borderRadius: 6, backgroundColor: TINT, color: BRAND_D, fontSize: 10, fontWeight: 600 }}>비교 가능</span>}</span><span className="mt-1 flex items-center gap-2" style={{ fontSize: 11, color: SUB }}><span>{last ? `최근 ${ymd((last.completedAt || last.at).slice(0, 10))}` : "아직 변화 기록이 없어요"}</span><span className="flex items-center gap-1" aria-label={`촬영 등록 ${last ? completedViews.size : draftCount}/${displayedViews.length}`}>{displayedViews.map((view) => <i key={view} aria-hidden="true" style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: (last ? completedViews.has(view) : (photos[m.id]?.[view] || []).length > 0) ? BRAND : "#D5DAE3" }} />)}<span>{last ? completedViews.size : draftCount}/{displayedViews.length}</span></span>{last && <span>세트 {assessmentSets.length}개</span>}</span></span>
           <ChevronRight size={15} style={{ color: FAINT }} />
-        </button>{!last && <button type="button" onClick={() => onSelect(m.id, null)} className="mt-2 w-full" style={{ height: 38, borderRadius: 8, border: `1px solid #D5D1EB`, backgroundColor: TINT, color: BRAND_D, fontSize: 12, fontWeight: 600 }}>첫 체형분석 시작</button>}</div>; })}</div>
+        </button>{!last && <button type="button" onClick={() => onSelect(m.id, null)} className="mt-2 w-full" style={{ height: 38, borderRadius: 8, border: `1px solid #D5D1EB`, backgroundColor: TINT, color: BRAND_D, fontSize: 12, fontWeight: 600 }}>첫 변화 사진 촬영</button>}</div>; })}</div>
       </main>
     </div>
   );
@@ -9923,8 +9908,8 @@ function ReferenceAnalysisTab({ members, photos, selectedId, selectedPoseId, onS
       <div className="pt-analysis-detail-pane h-full min-h-0">
         <div className="flex h-full min-h-0 flex-col" style={{ backgroundColor: PAGE }}>
           <header className="flex shrink-0 items-center" style={{ height: 52, padding: "0 8px", backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
-            <button type="button" onClick={() => onSelect(null)} aria-label="체형분석 목록" className="pt-analysis-back flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={19} /></button>
-            <div className="min-w-0 flex-1"><h1 className="truncate" style={{ fontSize: 17, fontWeight: 700, color: INK }}>{member.name} 체형분석</h1></div>
+            <button type="button" onClick={() => onSelect(null)} aria-label="변화 기록 목록" className="pt-analysis-back flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={19} /></button>
+            <div className="min-w-0 flex-1"><h1 className="truncate" style={{ fontSize: 17, fontWeight: 700, color: INK }}>{member.name} 변화 기록</h1></div>
           </header>
           <main className="pt-scroll min-h-0 flex-1 overflow-y-auto" style={{ padding: "10px 12px 18px" }}>{hub(member.id, selectedPoseId)}</main>
         </div>
@@ -9953,7 +9938,7 @@ function InbodyPanel({ member, onGo }) {
 /* 사진·체형 관련 4개를 한 카드 안 탭으로 묶는다 (스크롤 단축) */
 function PhotoHub(p) {
   const TABS = [
-    { k: "pose", l: "AI 체형 분석" },
+    { k: "pose", l: "AI 변화 분석" },
     { k: "card", l: "결과 카드" },
     { k: "compare", l: "비포·애프터" },
     { k: "sets", l: "사진 모음" },
@@ -9968,7 +9953,7 @@ function PhotoHub(p) {
         ))}
       </div>
       {tab === "compare" && <Guard label="비포애프터 분석"><PhotoCompare member={p.member} photos={p.photos} briefing={p.briefing} onSavePhoto={p.onSavePhoto} onRemove={p.onRemovePhoto} onSaveMarks={p.onSaveMarks} onAdjust={p.onAdjustPhoto} onToast={p.onToast} onSaveSet={p.onSaveSet} /></Guard>}
-      {tab === "pose" && <Guard label="AI 체형 분석"><PoseAnalyzer member={p.member} photos={p.photos} onSavePose={p.onSavePose} onDeletePose={p.onDeletePose} onSaveCaptureDraft={p.onSaveCaptureDraft} onToast={p.onToast} onSaved={p.onSaved} roleLabel={p.roleLabel} /></Guard>}
+      {tab === "pose" && <Guard label="AI 변화 분석"><PoseAnalyzer member={p.member} photos={p.photos} onSavePose={p.onSavePose} onDeletePose={p.onDeletePose} onSaveCaptureDraft={p.onSaveCaptureDraft} onToast={p.onToast} onSaved={p.onSaved} roleLabel={p.roleLabel} /></Guard>}
       {tab === "card" && <Guard label="결과 카드"><ResultCardMaker member={p.member} saved={(p.photos?.poses || []).filter((x) => x && x.metrics)} centerName={p.centerName} onToast={p.onToast} onGoAnalyze={() => setTab("pose")} /></Guard>}
       {tab === "sets" && <Guard label="사진 모음"><BeforeAfterSets memberName={p.member.name} photos={p.photos} onToggleFav={p.onToggleFav} onDelete={p.onDeleteSet} /></Guard>}
     </div>
@@ -10033,13 +10018,13 @@ function Dashboard({ member, photos, schedule, onBack, briefing, onSavePhoto, on
         </Card>
       )}
       <Guard label="인바디"><InbodyPanel member={member} onGo={() => goRecord("inbody")} /></Guard>
-      <Guard label="체형분석 안내">
+      <Guard label="변화 기록 안내">
         <Card className="p-4">
           <button onClick={() => goAnalysis && goAnalysis()} className="flex w-full items-center gap-3 text-left">
             <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl" style={{ background: GRAD }}><Activity size={18} color="#fff" /></span>
             <div className="min-w-0 flex-1">
-              <p className="font-extrabold" style={{ color: INK }}>체형분석 · 결과 카드</p>
-              <Sub>사진 촬영과 카드 만들기는 <b style={{ color: PRIMARY }}>체형분석 탭</b>에서</Sub>
+              <p className="font-extrabold" style={{ color: INK }}>변화 기록 · 결과 카드</p>
+              <Sub>사진 촬영과 카드 만들기는 <b style={{ color: PRIMARY }}>변화 기록 탭</b>에서</Sub>
             </div>
             <span className="shrink-0 rounded-full px-3 py-1.5 text-xs font-extrabold" style={{ backgroundColor: TINT, color: PRIMARY }}>
               {(photos?.poses || []).filter((p) => p && p.metrics).length}건
@@ -13606,7 +13591,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
     return total;
   }, [db.schedule, db.members, db.settings, reportYm]);
   const detailTitles = {
-    report: "월간 리포트", assessment: "체형분석 설정", center: "센터 정보", theme: "화면 설정", "schedule-colors": "일정 색상",
+    report: "월간 리포트", assessment: "변화 기록 설정", center: "센터 정보", theme: "화면 설정", "schedule-colors": "일정 색상",
     data: "데이터 상태", backup: "데이터 이관 · 백업", permissions: "접근권한 안내", knowledge: "오늘의 지식", account: "계정", "account-delete": "계정 삭제", app: "앱 정보",
   };
   const menuGroups = [
@@ -13616,7 +13601,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
       { key: "report", title: "월간 리포트", description: "이달 수업 · 성과 · 예상 급여", Icon: ArrowUpRight },
     ] },
     { label: "운영 · 설정", items: [
-      { key: "assessment", title: "체형분석 설정", description: "기본 방식 · AI 분석 · 직접 포인트/그리기", Icon: Activity },
+      { key: "assessment", title: "변화 기록 설정", description: "기본 방식 · AI 분석 · 직접 포인트/그리기", Icon: Activity },
       { key: "center", title: "센터 정보", description: "센터명 · 담당자 · 그룹 단가", Icon: SettingsIcon },
       { key: "schedule-colors", title: "일정 색상", description: "개인 · 듀엣 · 그룹 · 상담 · 휴무 카드 색", Icon: Palette },
       { key: "theme", title: "화면 설정", description: "폰 설정 · 라이트 · 다크", Icon: Smartphone },
@@ -13718,9 +13703,9 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
         )}
         {view === "assessment" && (
           <section style={sectionStyle}>
-            <div className="mb-3"><h2 style={{ fontSize: 14, fontWeight: 600, color: INK }}>기본 체형분석 방식</h2><p style={{ marginTop: 3, fontSize: 11, lineHeight: 1.45, color: SUB }}>AI를 사용하지 않아도 촬영과 비교 기능을 모두 사용할 수 있습니다.</p></div>
+            <div className="mb-3"><h2 style={{ fontSize: 14, fontWeight: 600, color: INK }}>기본 변화 기록 방식</h2><p style={{ marginTop: 3, fontSize: 11, lineHeight: 1.45, color: SUB }}>AI를 사용하지 않아도 촬영과 비교 기능을 모두 사용할 수 있습니다.</p></div>
             <div className="grid grid-cols-2 gap-1.5">{[
-              { k: "always", l: "매번 선택", I: SlidersHorizontal }, { k: "ai", l: "AI 체형분석", I: Sparkles },
+              { k: "always", l: "매번 선택", I: SlidersHorizontal }, { k: "ai", l: "AI 변화 분석", I: Sparkles },
               { k: "manual", l: "직접 포인트", I: Crosshair }, { k: "draw", l: "직접 그리기", I: Pencil },
             ].map(({ k, l, I }) => {
               const active = (db.settings.defaultAssessmentMethod || "always") === k;
@@ -14767,7 +14752,7 @@ export default function App() {
 
   const enablePhotoBackup = useCallback(async () => {
     if (!account) return;
-    const accepted = window.confirm("사진 기록을 기기 변경·분실 시 복구할 수 있도록 클라우드에 암호화 저장합니다. 체형분석·비포애프터·직접그리기 사진의 고화질 최적화본과 썸네일만 본인 계정의 Firebase Storage에 저장되고 촬영 메타데이터는 제거됩니다. 계속할까요?");
+    const accepted = window.confirm("사진 기록을 기기 변경·분실 시 복구할 수 있도록 클라우드에 암호화 저장합니다. 변화 기록·비포애프터·직접그리기 사진의 고화질 최적화본과 썸네일만 본인 계정의 Firebase Storage에 저장되고 촬영 메타데이터는 제거됩니다. 계속할까요?");
     if (!accepted) return;
     const next = { ...db, settings: { ...db.settings, cloudPhotoBackupEnabled: true, cloudPhotoConsentVersion: CLOUD_PHOTO_CONSENT_VERSION, cloudPhotoConsentAt: new Date().toISOString() } };
     const saved = await saveDb(next);
@@ -15485,7 +15470,7 @@ export default function App() {
         memoryPatchSucceeded: false,
       }, "memory_patch_failed");
       deviceLog("assessment_milestone_save_failed", { memberId: target.id, assessmentId, role, storage: "localStorage" });
-      setToast({ ok: false, msg: "체형분석은 저장됐지만 기억 항목을 저장하지 못했습니다. 완료를 다시 눌러 주세요." });
+      setToast({ ok: false, msg: "변화 기록은 저장됐지만 기억 항목을 저장하지 못했습니다. 완료를 다시 눌러 주세요." });
       return false;
     }
     deviceLog("assessment_completed", {
@@ -15501,7 +15486,7 @@ export default function App() {
       completionPromoted,
       memoryPatchSucceeded: true,
     });
-    setToast({ ok: true, msg: `${role === "before" ? "비포" : role === "after" ? "에프터" : "체형분석"} 기기 저장 완료${db.settings?.cloudPhotoBackupEnabled ? " · 클라우드 백업 대기열에 추가됨" : ""}` });
+    setToast({ ok: true, msg: `${role === "before" ? "비포" : role === "after" ? "에프터" : "변화 기록"} 기기 저장 완료${db.settings?.cloudPhotoBackupEnabled ? " · 클라우드 백업 대기열에 추가됨" : ""}` });
     return true;
   };
   const deleteCaptureDraft = async (memberId, assessmentId, view) => {
@@ -15719,7 +15704,7 @@ export default function App() {
     const exists = (cur[view] || []).some((photo) => photo?.id === pid && (!photo.memberId || photo.memberId === target.id));
     if (!exists) return false;
     const stored = await savePhotos({ ...currentPhotos, [target.id]: { ...cur, [view]: (cur[view] || []).map((photo) => photo.id === pid ? { ...photo, marks, annotationUpdatedAt: new Date().toISOString() } : photo) } });
-    if (stored !== false && !options.quiet) setToast({ ok: true, msg: "체형 분석을 저장했습니다." });
+    if (stored !== false && !options.quiet) setToast({ ok: true, msg: "변화 기록을 저장했습니다." });
     return stored !== false;
   };
   const toggleAssessmentFavorite = async (memberId, assessmentId, favorite) => {
@@ -15944,7 +15929,7 @@ export default function App() {
               hub={(id, initialSavedId) => {
                 const m = db.members.find((x) => x.id === id);
                 if (!m) return null;
-                return <Guard label="체형분석"><AssessmentWorkspace key={`${id}_${analysisEntryMode}_${initialSavedId || "none"}_${analysisAssessmentId || "none"}_${analysisComparisonEntry?.beforeAssessmentId || "none"}_${analysisComparisonEntry?.afterAssessmentId || "none"}`} member={m} photos={photos[id]} settings={db.settings} diagnosticAccountId={account?.id || null} diagnosticPhotosBucketExists={Object.prototype.hasOwnProperty.call(photos || {}, id)} initialSavedId={initialSavedId} initialAssessmentId={analysisAssessmentId} initialMode={analysisEntryMode} initialBeforeAssessmentId={analysisComparisonEntry?.beforeAssessmentId || null} initialAfterAssessmentId={analysisComparisonEntry?.afterAssessmentId || null} initialCompareView={analysisComparisonEntry?.compareView || "front"}
+                return <Guard label="변화 기록"><AssessmentWorkspace key={`${id}_${analysisEntryMode}_${initialSavedId || "none"}_${analysisAssessmentId || "none"}_${analysisComparisonEntry?.beforeAssessmentId || "none"}_${analysisComparisonEntry?.afterAssessmentId || "none"}`} member={m} photos={photos[id]} settings={db.settings} diagnosticAccountId={account?.id || null} diagnosticPhotosBucketExists={Object.prototype.hasOwnProperty.call(photos || {}, id)} initialSavedId={initialSavedId} initialAssessmentId={analysisAssessmentId} initialMode={analysisEntryMode} initialBeforeAssessmentId={analysisComparisonEntry?.beforeAssessmentId || null} initialAfterAssessmentId={analysisComparisonEntry?.afterAssessmentId || null} initialCompareView={analysisComparisonEntry?.compareView || "front"}
                   onSavePose={(rec) => savePose(id, { ...rec, memberId: id })} onUpdatePose={(pid, posePatch) => updatePose(id, pid, posePatch)} onDeletePose={(pid) => deletePose(id, pid)}
                   onSaveCaptureDraft={(captures) => saveCaptureDraft(id, captures)} onDeleteCaptureDraft={(assessmentId, view) => deleteCaptureDraft(id, assessmentId, view)}
                   onDiscardAssessmentDraft={(assessment) => discardAssessmentDraft(id, assessment)}

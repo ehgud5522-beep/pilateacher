@@ -488,9 +488,13 @@ export function assessmentMediaForView(assessment, view) {
     .sort((left, right) => recordActivityKey(right) - recordActivityKey(left))[0] || null;
 }
 
-function commonCanonicalView(before, after) {
+export function commonPostureComparisonViews(before, after) {
   return ["front", ...POSTURE_VIEW_KEYS.filter((view) => view !== "front")]
-    .find((view) => assessmentMediaForView(before, view) && assessmentMediaForView(after, view)) || null;
+    .filter((view) => assessmentMediaForView(before, view) && assessmentMediaForView(after, view));
+}
+
+function commonCanonicalView(before, after) {
+  return commonPostureComparisonViews(before, after)[0] || null;
 }
 
 export function countPosturePhotoRecords(photos) {

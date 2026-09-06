@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+  commonPostureComparisonViews,
   compareAssessmentMetrics,
   completeAssessmentRecords,
   correctedPoseSource,
@@ -79,6 +80,13 @@ test("automatic comparison picks oldest and newest completed set in the same sco
   const selected = selectAutomaticComparison(sets);
   assert.equal(selected.before.id, "old");
   assert.equal(selected.after.id, "new");
+});
+
+test("comparison views require media with the same canonical direction", () => {
+  const before = { photos: { front: { src: "before-front" }, custom: { src: "before-custom" } }, poses: [] };
+  const after = { photos: { front: { src: "after-front" }, back: { src: "after-back" }, custom: { src: "after-custom" } }, poses: [] };
+  assert.deepEqual(commonPostureComparisonViews(before, after), ["front"]);
+  assert.deepEqual(commonPostureComparisonViews({ photos: { front: { src: "front" } } }, { photos: { back: { src: "back" } } }), []);
 });
 
 test("assessment favorite is aggregated from its device-only photo and pose records", () => {
@@ -172,19 +180,24 @@ test("pose alignment matches body height and center without rotating or mutating
   assert.equal(postureAlignmentTransform(makePose(0.5, 0.1, 0.9), makePose(0.5, 0.45, 0.65)).reason, "unsafe_scale");
 });
 
-test("active Before After screen exposes four comparison modes and shared helpers", async () => {
+test("active change comparison starts side-by-side and offers only side-by-side or overlay", async () => {
   const source = await readFile(appPath, "utf8");
   const start = source.indexOf("function AssessmentComparisonViewer(");
   const end = source.indexOf("function LegacyAssessmentWorkspace(", start);
   const viewer = source.slice(start, end);
   assert.ok(start >= 0 && end > start);
-  ["슬라이더", "겹치기", "자동 기준선", "나란히"].forEach((label) => assert.match(viewer, new RegExp(label)));
-  assert.match(viewer, /postureReferenceLines\(beforePose\)/);
+  ["나란히", "겹쳐보기"].forEach((label) => assert.match(viewer, new RegExp(label)));
+  ["슬라이더", "자동 기준선"].forEach((label) => assert.doesNotMatch(viewer, new RegExp(label)));
+  assert.match(viewer, /useState\("side"\)/);
+  assert.match(viewer, /aria-label="After 투명도"/);
   assert.match(viewer, /postureAlignmentTransform\(beforePose, afterPose/);
   assert.match(viewer, /compareAssessmentMetrics\(beforeSet, afterSet/);
   assert.match(viewer, /신체 자동 정렬/);
   assert.match(viewer, /alignment\.offsetX \* 100/);
   assert.match(source, /<AssessmentComparisonViewer beforeSet=\{beforeSet\} afterSet=\{afterSet\}/);
+  assert.match(source, /commonPostureComparisonViews\(left, right\)/);
+  assert.match(source, /Before 날짜 선택/);
+  assert.match(source, /After 날짜 선택/);
   assert.doesNotMatch(source, /comparePercent/);
 });
 
@@ -265,9 +278,10 @@ test("direct drawing completion upgrades an existing draft and partial sets rema
   assert.match(analyzer, /completedPoseViews[\s\S]*pose\.assessmentComplete \|\| pose\.assessmentStatus === "completed" \|\| pose\.completedAt/);
 
   assert.ok(workspace.includes('sets.filter((set) => set.status === "completed")'));
-  assert.match(workspace, /\[\.\.\.POSTURE_VIEW_KEYS, "custom"\]/);
+  assert.match(workspace, /const comparableViewsFor = \(left, right\) => commonPostureComparisonViews\(left, right\)/);
+  assert.doesNotMatch(workspace, /\[\.\.\.POSTURE_VIEW_KEYS, "custom"\]/);
   assert.match(workspace, /const completedInScope = completeSets\.filter\(\(set\) => set\.scope === nextScope\)/);
-  assert.match(workspace, /같은 유형과 촬영 방향의 완료 분석이 2개 이상 필요합니다/);
+  assert.match(workspace, /같은 촬영 방향의 완료 기록이 2개 이상 필요합니다/);
   assert.match(workspace, /comparableViewsFor\(beforeSet, afterSet\)\.map/);
   assert.match(source, /const photosRef = useRef\(\{\}\)/);
   assert.match(source, /const prev = photosRef\.current;[\s\S]*photosRef\.current = next;[\s\S]*setPhotos\(next\)/);
@@ -336,8 +350,8 @@ test("CASE 2: one draft opens the resume choice without creating an ID", async (
   assert.ok(guard.indexOf("if (resumableAssessment)") < guard.indexOf("startNew();"));
   assert.match(guard, /setDraftGuard\(\{ step: "choice", assessment: resumableAssessment \}\);[\s\S]*return;/);
   assert.doesNotMatch(guard.slice(0, guard.indexOf("startNew();")), /newAssessmentId/);
-  assert.match(workspace, /진행 중인 체형분석이 있습니다/);
-  assert.match(workspace, /이전에 저장하던 체형분석을 이어서 진행할 수 있습니다\./);
+  assert.match(workspace, /진행 중인 변화 기록이 있습니다/);
+  assert.match(workspace, /이전에 저장하던 변화 기록을 이어서 진행할 수 있습니다\./);
   assert.match(workspace, />이어하기</);
   assert.match(workspace, />새로 시작</);
 });
@@ -382,7 +396,7 @@ test("CASE 4: cancelling start-over preserves the draft and creates no ID", asyn
   assert.deepEqual(original, before);
 
   const { workspace } = await assessmentWorkspaceSource();
-  const confirmStart = workspace.indexOf("진행 중인 체형분석을 삭제하고 새로 시작할까요?");
+  const confirmStart = workspace.indexOf("진행 중인 변화 기록을 삭제하고 새로 시작할까요?");
   const confirmEnd = workspace.indexOf("{roleSheet", confirmStart);
   const confirmUi = workspace.slice(confirmStart, confirmEnd);
   assert.match(confirmUi, /onClick=\{\(\) => setDraftGuard\(null\)\}[\s\S]*>취소<\/button>/);
@@ -536,7 +550,7 @@ test("all active new-analysis entry points use the common guard", async () => {
   assert.match(source, /onAssess\?\.\(\{ mode: "new" \}\)/);
   assert.match(source, /resumableAssessment && <button[\s\S]*mode: "resume", assessmentId: resumableAssessment\.id/);
   assert.match(workspace, /const closeDraftGuard = \(\) => \{[\s\S]*assessmentAction\.current !== "discard"/);
-  assert.match(workspace, /ScheduleBottomSheet title="진행 중인 체형분석을 삭제하고 새로 시작할까요\?"[^>]*onClose=\{closeDraftGuard\}[^>]*dismissible=\{draftGuard\.step !== "discarding"\}/);
+  assert.match(workspace, /ScheduleBottomSheet title="진행 중인 변화 기록을 삭제하고 새로 시작할까요\?"[^>]*onClose=\{closeDraftGuard\}[^>]*dismissible=\{draftGuard\.step !== "discarding"\}/);
   assert.match(source, /window\.addEventListener\("popstate", \(event\) => \{\s*if \(backSwallow <= 0\) return;\s*backSwallow -= 1;\s*swallowedBackEvents\.add\(event\);\s*\}, true\);/);
   assert.match(source, /function useBackClose\(open, close, locked = false\)[\s\S]*const restoreEntry = \(\) => \{[\s\S]*if \(mine\) return;[\s\S]*window\.history\.pushState\(\{ ptk: token \}/);
   assert.match(source, /if \(backStack\[backStack\.length - 1\] !== entry\) return;[\s\S]*if \(swallowedBackEvents\.has\(event\)\) \{ restoreEntry\(\); return; \}[\s\S]*if \(lockedRef\.current\) \{\s*restoreEntry\(\);[\s\S]*Date\.now\(\) - bornAt < 400\) \{ restoreEntry\(\); return; \}/);

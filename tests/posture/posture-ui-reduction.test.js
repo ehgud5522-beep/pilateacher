@@ -68,6 +68,18 @@ test("empty result rows stay hidden and comparison content precedes secondary co
   assert.doesNotMatch(workspace, /overflow-x-auto/);
 });
 
+test("change comparison keeps photos primary and reports neutral values without AI interpretation", async () => {
+  const { source, viewer, workspace } = await postureSources();
+  assert.match(viewer, /Before \{memberMetricValue\(metric\.beforeValue, metric\.unit\)\}/);
+  assert.match(viewer, /After \{memberMetricValue\(metric\.afterValue, metric\.unit\)\}/);
+  assert.match(viewer, /차이 \{metric\.difference > 0 \? "\+" : ""\}/);
+  assert.doesNotMatch(viewer, /metric\.summary/);
+  assert.doesNotMatch(workspace, /After AI 관찰/);
+  assert.match(workspace, /공통 촬영 방향이 없습니다/);
+  assert.match(source, /label: "변화 기록"/);
+  assert.match(workspace, />변화 비교<\/button>/);
+});
+
 test("drawing keeps the photo primary and hides advanced color controls by default", async () => {
   const { source } = await postureSources();
   const start = source.indexOf("function PostureCanvas(");

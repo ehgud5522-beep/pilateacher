@@ -196,6 +196,6 @@ test("posture dates reuse the member date formatter and draft sheets stop above 
   assert.match(analysis, /const ymd = \(value\) => formatMemberLessonDate\(value\)/);
   assert.match(source, /--pt-tabbar-height: 49px/);
   assert.match(sheet, /aboveTabBar \? "calc\(var\(--pt-tabbar-height\) \+ max\(env\(safe-area-inset-bottom, 0px\), 8px\)\)" : 0/);
-  assert.match(workspace, /진행 중인 체형분석이 있습니다[^\n]*aboveTabBar/);
-  assert.match(workspace, /진행 중인 체형분석을 삭제하고 새로 시작할까요\?[^\n]*aboveTabBar/);
+  assert.match(workspace, /진행 중인 변화 기록이 있습니다[^\n]*aboveTabBar/);
+  assert.match(workspace, /진행 중인 변화 기록을 삭제하고 새로 시작할까요\?[^\n]*aboveTabBar/);
 });

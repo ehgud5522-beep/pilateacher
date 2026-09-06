@@ -60,6 +60,10 @@ test("implausible Korean speed and four consecutive glossary terms block structu
   assert.match(prompt, /게릴락·캐딜라/);
   assert.match(prompt, /문맥상 캐딜락이 명확할 때만/);
   assert.match(prompt, /확실하지 않으면 들리는 표현을 유지/);
+  assert.ok(PILATES_TRANSCRIPTION_TERMS.includes("운동"));
+  assert.match(prompt, /음봉·응동·은근/);
+  assert.match(prompt, /문장 문맥과 조사가 운동을 명확히 뜻할 때만/);
+  assert.match(prompt, /실제 일반어일 가능성이 있으면 들리는 표현을 유지/);
   assert.ok(PILATES_TRANSCRIPTION_TERMS.includes("바디포머"));
   assert.ok(PILATES_TRANSCRIPTION_TERMS.includes("스파인 코렉터"));
   assert.doesNotMatch(prompt, /필라테스 용어 참고:/);

@@ -3261,10 +3261,17 @@ const LESSON_RECORD_VIEW_FIELDS = [
   ["today", "오늘 수업"], ["change", "변화"], ["reaction", "회원 반응"], ["next", "다음 확인"],
 ];
 
-function LessonRecordFieldRows({ session, compact = false, fields = null, hideEmpty = false, pastLesson = false }) {
+function LessonRecordValue({ value, bounded = false }) {
+  const text = String(value || "");
+  const needsDetails = bounded && (text.length > 120 || text.split(/\r?\n/u).length > 3);
+  if (!needsDetails) return <span className="min-w-0 break-words text-xs leading-relaxed" style={{ color: INK2 }}>{text}</span>;
+  return <details className="min-w-0"><summary className="cursor-pointer list-none"><span className="line-clamp-3 min-w-0 break-words text-xs leading-relaxed" style={{ color: INK2 }}>{text}</span><span className="mt-1 block text-[10px] font-bold" style={{ color: BRAND_D }}>상세 보기</span></summary><p className="mt-2 min-w-0 break-words text-xs leading-relaxed" style={{ color: INK2 }}>{text}</p></details>;
+}
+
+function LessonRecordFieldRows({ session, compact = false, fields = null, hideEmpty = false, pastLesson = false, bounded = false }) {
   if (!session) return null;
   const rows = LESSON_RECORD_VIEW_FIELDS.filter(([key]) => (!fields || fields.includes(key)) && (!compact || key === "today" || key === "next") && (!hideEmpty || (session[key] && session[key] !== "기록 없음")));
-  return <div className="min-w-0 space-y-1.5" data-lesson-record-fields>{rows.map(([key, label]) => <div key={key} className="grid min-w-0 grid-cols-[72px_minmax(0,1fr)] gap-2"><span className="text-[10px] font-bold" style={{ color: SUB }}>{pastLesson && key === "today" ? "수업 내용" : label}</span><span className="min-w-0 break-words text-xs leading-relaxed" style={{ color: INK2 }}>{session[key]}</span></div>)}</div>;
+  return <div className="min-w-0 space-y-1.5" data-lesson-record-fields>{rows.map(([key, label]) => <div key={key} className="grid min-w-0 grid-cols-[72px_minmax(0,1fr)] gap-2"><span className="text-[10px] font-bold" style={{ color: SUB }}>{pastLesson && key === "today" ? "수업 내용" : label}</span><LessonRecordValue value={session[key]} bounded={bounded} /></div>)}</div>;
 }
 
 function confirmedLessonNoteArgs(note, reviewedDraft = null) {
@@ -3506,7 +3513,7 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
             {activeMember && lessonSheetBriefing && (
               <section className="min-w-0 rounded-xl p-3" aria-label="지난 수업과 다음 수업 준비" style={{ backgroundColor: LAVENDER_S, border: `1px solid ${RING}` }}>
                 <div className="mb-2 flex items-center gap-2"><Sparkles size={14} style={{ color: BRAND_D }} /><p className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: BRAND_D }}>{lessonSheetBriefing.source === "lesson_record" ? "지난 수업" : lessonSheetBriefing.source === "posture_fallback" ? "변화 기록 참고" : "이전 기록 참고"}</p>{lessonSheetBriefing.date && <span className="shrink-0 text-[9px] tabular-nums" style={{ color: SUB }}>{formatMemberLessonDate(lessonSheetBriefing.date)}{previousLessonSession ? ` · ${previousLessonSession.type}` : ""}</span>}</div>
-                {previousLessonSession ? <LessonRecordFieldRows session={previousLessonSession} fields={["today", "reaction"]} hideEmpty pastLesson /> : <p className="break-words text-xs leading-relaxed" style={{ color: INK2 }}>{lessonSheetBriefing.text || "이전 기록 없음"}</p>}
+                {previousLessonSession ? <LessonRecordFieldRows session={previousLessonSession} fields={["today", "reaction"]} hideEmpty pastLesson bounded /> : <p className="line-clamp-3 break-words text-xs leading-relaxed" style={{ color: INK2 }}>{lessonSheetBriefing.text || "이전 기록 없음"}</p>}
                 <div className="mt-3 border-t pt-2" style={{ borderColor: LINE }}><p className="mb-1 text-[10px] font-bold" style={{ color: SUB }}>다음 수업 준비</p><p className="break-words text-xs font-bold leading-relaxed" style={{ color: BRAND_D }}>{previousLessonSession?.next || selectScheduleBriefing(activeBriefing)?.text || "다음 확인 없음"}</p></div>
               </section>
             )}
@@ -3522,7 +3529,7 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
               <>
                 {((activeMember.focus || []).length > 0 || currentLessonSession || (latestNote && !latestNote.lessonRecord)) && <div className="rounded-xl p-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
                   {(activeMember.focus || []).length > 0 && <p className="mt-2 text-xs leading-relaxed" style={{ color: WARN }}>주의 · {(activeMember.focus || []).join(" · ")}</p>}
-                  {currentLessonSession && <div className="mt-3 border-t pt-2" style={{ borderColor: LINE }}><LessonRecordFieldRows session={currentLessonSession} hideEmpty /></div>}
+                  {currentLessonSession && <div className="mt-3 border-t pt-2" style={{ borderColor: LINE }}><LessonRecordFieldRows session={currentLessonSession} hideEmpty bounded /></div>}
                   {latestNote && !latestNote.lessonRecord && <p className="mt-2 line-clamp-2 text-xs leading-relaxed" style={{ color: INK2 }}>최근 기록 · {latestNote.body}</p>}
                 </div>}
 
@@ -4795,7 +4802,6 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
   const openMembership = () => { setPass({ name: member.passName || "", regular: String(num(member.regular)), service: String(num(member.service)), total: String(num(member.total)), end: member.contractEnd || "" }); setPassConfirm(false); setSaveError(""); setSheet("membership"); };
   const openRate = () => { setRateEdit(String(Number(member.payRate) > 0 ? Number(member.payRate) : settlementUnit)); setRateConfirm(false); setSaveError(""); setSheet("rate"); };
   const openMemo = () => { setMemo(""); setMemoMeta(null); setMemoImportant(false); setSaveError(""); setSheet("memo"); };
-  const openRecord = () => { setMemo(""); setMemoMeta(null); setSaveError(""); setSheet("record"); };
   const commitPatch = async (key, change, close = true) => {
     setSaving(key); setSaveError("");
     try {
@@ -4872,10 +4878,6 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
         <button type="button" onClick={onBack} aria-label="회원 목록" className="pt-member-back flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={19} /></button>
         <div className="min-w-0 flex-1"><div className="flex min-w-0 items-center gap-2"><h1 className="truncate" style={{ fontSize: 17, fontWeight: 600, color: INK }}>{member.name || "이름 미입력"}</h1>{member.isSample === true && <span className="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold" style={{ backgroundColor: TINT, color: BRAND_D, border: `1px solid ${RING}` }}>예시</span>}</div><p style={{ fontSize: 11, color: SUB }}>{isHold(member) ? "홀딩" : isEnded(member) ? "종료" : "활성"}{singleInstructorMode ? "" : ` · 담당 ${member.instructor || "미지정"}`}</p></div>
       </header>
-      <div ref={actionBarRef} className="grid shrink-0 grid-cols-3 gap-1.5" aria-label="회원 빠른 실행" style={{ padding: "7px 12px", backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
-        {[{ l: "수업 기록", I: Pencil, fn: openRecord }, { l: "메모 추가", I: MessageSquare, fn: openMemo }].map(({ l, I, fn }) => <button type="button" key={l} onClick={fn} className="flex h-10 items-center justify-center gap-1.5" style={{ borderRadius: 9, backgroundColor: TINT, color: BRAND_D, fontSize: 12, fontWeight: 700 }}><I size={14} />{l}</button>)}
-        <a href={member.phone ? `tel:${String(member.phone).replace(/[^0-9+]/g, "")}` : undefined} aria-disabled={!member.phone} onClick={(event) => { if (!member.phone) event.preventDefault(); }} className="flex h-10 items-center justify-center gap-1.5" style={{ borderRadius: 9, backgroundColor: CANVAS, color: member.phone ? INK2 : FAINT, fontSize: 12, fontWeight: 700 }}><Smartphone size={14} />연락하기</a>
-      </div>
       <main ref={scrollContainerRef} data-member-detail-scroll className="pt-scroll min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden" style={{ padding: "8px 12px calc(18px + max(env(safe-area-inset-bottom, 0px), 12px))" }}>
         <div data-member-detail-content className="min-w-0 max-w-full space-y-2">
           <section ref={firstSummaryRef} data-member-section="status" style={{ ...sectionStyle, backgroundColor: statusSurface, borderColor: statusInk }}>
@@ -11197,18 +11199,23 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     forgetBlobs([clip.blobId]);
     if (resultKind === "no_speech") {
       Promise.resolve(fbWritePilotMetricAttempt({ requestId: clip.requestId, result: resultKind, flags: resultFlags, latencyMs: completionToResultLatencyMs, source: "server_audio" })).catch(() => {});
-      savePendingLessonRecord(memberId, lessonId, {
-        ...previousDraft,
-        audioBlobId: null,
-        audioClips,
-        retry: null,
-      });
+      const replacementSnapshot = recordingModeRef.current === "replace" ? replacementSnapshotRef.current : null;
+      if (replacementSnapshot) restorePreviousRecording({ cancelActive: false, notify: false });
+      else if (previousDraft?.rawTranscript || previousDraft?.structuredDraft || (previousDraft?.audioClips || []).length > 1) {
+        savePendingLessonRecord(memberId, lessonId, {
+          ...previousDraft,
+          audioBlobId: null,
+          audioClips: audioClips.filter((item) => item?.requestId !== clip.requestId),
+          retry: null,
+          failure: null,
+        });
+      } else removePendingLessonRecord(memberId, lessonId);
       setFinishing(false);
       setSummaryBusy(false);
       setOrganizationTimedOut(false);
       setAudioBlobId(null);
       setAudioState("idle");
-      setErr("말소리가 녹음되지 않았어요. 다시 말해주세요");
+      setErr("말한 내용이 들리지 않았어요. 다시 녹음해 주세요.");
       voiceDiagnostic("failed", { source: "server_audio", code: "no_speech", requestId: clip.requestId });
       return null;
     }
@@ -14999,7 +15006,6 @@ export default function App() {
     trackMemberMemoryUsage("memory_merged", { count: memoryResult.stats.mergedCount });
     trackMemberMemoryUsage("patterns", { count: memoryResult.stats.patternCount });
     deviceLog("lesson_note_saved", { memberId: id, lessonId: sid, storage: "localStorage", source: voiceMeta ? voiceMeta.voiceSource || "voice" : "direct_input" });
-    if (target.isSample !== true) offerNotificationSoftPrompt();
     if (shouldConfirm || !voiceMeta) setToast({ ok: true, msg: text === "특이사항 없음" ? "특이사항 없음으로 기록했습니다." : `${target.name || "회원"} 기록을 저장했습니다.` });
     return true;
   };

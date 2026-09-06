@@ -34,6 +34,18 @@ test("replacement recording preserves the previous result until success and rest
   assert.match(cancellation, /recordingModeRef\.current === "replace"[\s\S]*restorePreviousRecording\(\{ cancelActive: false, notify: false \}\)/);
   const promotion = voice.slice(voice.indexOf("const promoteServerAudioResult"), voice.indexOf("const uploadServerAudio"));
   assert.match(promotion, /setSummaryDraft\(structuredDraft\)[\s\S]*recordingModeRef\.current === "replace"[\s\S]*replacementSnapshotRef\.current = null/);
+  const noSpeech = promotion.slice(promotion.indexOf('if (resultKind === "no_speech")'), promotion.indexOf("const serverLowVolume"));
+  assert.match(noSpeech, /restorePreviousRecording\(\{ cancelActive: false, notify: false \}\)/);
+  assert.match(noSpeech, /말한 내용이 들리지 않았어요\. 다시 녹음해 주세요\./);
+  assert.match(noSpeech, /removePendingLessonRecord\(memberId, lessonId\)/);
+});
+
+test("lesson-record persistence does not open the notification soft prompt", () => {
+  const saveStart = source.indexOf("const saveScheduleComment = async");
+  const saveEnd = source.indexOf("const noComment =", saveStart);
+  const saveSource = source.slice(saveStart, saveEnd);
+  assert.doesNotMatch(saveSource, /offerNotificationSoftPrompt\(\)/);
+  assert.match(source.slice(saveEnd), /offerNotificationSoftPrompt\(\)/);
 });
 
 test("voice UI has one conditional direct-entry textarea and mutually exclusive phases", () => {

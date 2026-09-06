@@ -19,6 +19,27 @@ export function normalizeCameraPermissionState(status) {
   return "prompt";
 }
 
+export function resolveNativePhotoOutputReadiness({ platform = "", startResolved = false, probeState = null } = {}) {
+  const nativePlatform = String(platform || "").toLowerCase();
+  if (!startResolved) return Object.freeze({ ready: false, readinessSource: "camera_start_pending" });
+  if (nativePlatform === "android") {
+    return Object.freeze({
+      ready: true,
+      photoOutputAvailable: true,
+      sessionRunning: true,
+      readinessSource: "android_camera_start_resolved",
+    });
+  }
+  if (!probeState) {
+    return Object.freeze({ ready: true, readinessSource: "camera_start_resolved_no_probe" });
+  }
+  return Object.freeze({
+    ...probeState,
+    ready: probeState.ready === true,
+    readinessSource: "native_camera_state_probe",
+  });
+}
+
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 const round = (value, digits = 4) => {
   const scale = 10 ** digits;

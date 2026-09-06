@@ -124,7 +124,7 @@ import {
 import {
   CAPTURE_TIMER_OPTIONS, LEVEL_THRESHOLD_DEG, SENSOR_STATUSES, base64ToBlob,
   computePreviewGeometry, correctOrientationForScreen, createCaptureGeometryMetadata, normalizeCameraPermissionState,
-  evaluateDeviceLevel, readCaptureTimer, writeCaptureTimer,
+  evaluateDeviceLevel, readCaptureTimer, resolveNativePhotoOutputReadiness, writeCaptureTimer,
 } from "./features/posture/posture-camera.js";
 import {
   ANNOTATION_PRESET_COLORS, HANDWRITING_SIZE_OPTIONS, annotationFont, annotationFontSize,
@@ -434,6 +434,7 @@ const timeOf = (stamp) => {
 const uid = () => Math.random().toString(36).slice(2, 9);
 const DEVICE_LOG_FIELDS = new Set([
   "memberId", "assessmentId", "lessonId", "view", "storage", "operation",
+  "platform", "lifecycleState",
   "permission", "state", "source", "code", "message", "count", "provider",
   "stage", "kind", "firebaseCode", "nativeCode", "nativeMessage", "credentialState",
   "httpStatus", "requestId", "retryCount", "path", "expected", "received", "reason",
@@ -508,18 +509,21 @@ const cameraPipelineLog = (stage, details = {}) => {
   appendVoiceSessionDiagnostic(stage, { ...details, source, phase: stage });
   deviceLog(`posture_camera_${stage}`, { ...details, source, stage });
 };
-const waitForCameraPhotoOutput = async ({ timeoutMs = 1500, pollMs = 100 } = {}) => {
+const waitForCameraPhotoOutput = async ({ platform = Capacitor.getPlatform(), timeoutMs = 1500, pollMs = 100 } = {}) => {
+  if (platform === "android") return resolveNativePhotoOutputReadiness({ platform, startResolved: true });
   const startedAt = Date.now();
-  let state = { ready: typeof CameraPreview.getPilaTeacherCameraState !== "function" };
+  let state = null;
+  if (typeof CameraPreview.getPilaTeacherCameraState !== "function") {
+    return resolveNativePhotoOutputReadiness({ platform, startResolved: true, probeState: null });
+  }
   while (Date.now() - startedAt <= timeoutMs) {
-    if (typeof CameraPreview.getPilaTeacherCameraState !== "function") return state;
     try { state = await CameraPreview.getPilaTeacherCameraState(); } catch (error) {
       state = { ready: false, code: error?.code || "camera_state_failed", message: error?.message || String(error) };
     }
-    if (state?.ready) return state;
+    if (state?.ready) return resolveNativePhotoOutputReadiness({ platform, startResolved: true, probeState: state });
     await new Promise((resolve) => window.setTimeout(resolve, pollMs));
   }
-  return state;
+  return resolveNativePhotoOutputReadiness({ platform, startResolved: true, probeState: state });
 };
 const deviceError = (error) => ({
   code: error?.code || error?.name || "unknown",
@@ -7064,6 +7068,7 @@ function PostureCaptureScreen({
 
   const startCamera = useCallback(async () => {
     if (iosStableCaptureFallback || cameraRunning.current || cameraStarting.current || busy) return;
+    const cameraPlatform = Capacitor.getPlatform();
     const generation = cameraGeneration.current + 1;
     cameraGeneration.current = generation;
     const ensureCurrent = () => {
@@ -7076,6 +7081,7 @@ function PostureCaptureScreen({
     setCameraPhotoReady(false);
     setCameraStatus("starting");
     setCameraError("");
+    cameraPipelineLog("camera_prepare_started", { memberId: member?.id, assessmentId, view: activeView, source: nativePreviewAvailable ? "native_preview" : "getUserMedia", platform: cameraPlatform, lifecycleState: "preparing" });
     const motionPromise = startMotion(generation);
     try {
       if (nativePreviewAvailable) {
@@ -7092,7 +7098,9 @@ function PostureCaptureScreen({
           cameraPermissionDenied.current = true;
           throw Object.assign(new Error("camera permission denied"), { code: "permission_denied" });
         }
+        cameraPipelineLog("camera_permission_ready", { memberId: member?.id, assessmentId, view: activeView, source: "native_preview", platform: cameraPlatform, lifecycleState: "ready", permissionState: cameraPermission });
         document.documentElement.classList.add("posture-camera-native-active");
+        cameraPipelineLog("camera_preview_start_requested", { memberId: member?.id, assessmentId, view: activeView, source: "native_preview", platform: cameraPlatform, lifecycleState: "starting" });
         await CameraPreview.start({
           position: "rear", toBack: true, aspectRatio: "4:3", aspectMode: "contain", positioning: "center",
           videoQuality: "4:3", enableVideoMode: false, storeToFile: false, disableAudio: true,
@@ -7102,8 +7110,8 @@ function PostureCaptureScreen({
         cameraRunning.current = true;
         await syncPreviewBounds();
         ensureCurrent();
-        const readiness = await waitForCameraPhotoOutput({ timeoutMs: 1500, pollMs: 100 });
-        cameraPipelineLog("photo_output_ready", { memberId: member?.id, assessmentId, view: activeView, source: "native_preview", ...readiness });
+        const readiness = await waitForCameraPhotoOutput({ platform: cameraPlatform, timeoutMs: 1500, pollMs: 100 });
+        cameraPipelineLog("camera_photo_output_ready", { memberId: member?.id, assessmentId, view: activeView, source: "native_preview", platform: cameraPlatform, lifecycleState: readiness?.ready ? "ready" : "error", state: readiness?.ready ? "ready" : "not_ready", reason: readiness?.readinessSource, code: readiness?.code });
         if (!readiness?.ready) throw Object.assign(new Error("native photo output was not ready within 1.5 seconds"), { code: "photo_output_not_ready", cameraState: readiness });
         cameraPhotoReadyRef.current = true;
         setCameraPhotoReady(true);
@@ -7128,6 +7136,7 @@ function PostureCaptureScreen({
       }
       ensureCurrent();
       setCameraStatus("active");
+      cameraPipelineLog("camera_preview_started", { memberId: member?.id, assessmentId, view: activeView, source: nativePreviewAvailable ? "native_preview" : "getUserMedia", platform: cameraPlatform, lifecycleState: "running" });
       deviceLog("posture_camera_preview_started", { memberId: member?.id, assessmentId, view: activeView, source: nativePreviewAvailable ? "native_preview" : "getUserMedia", permission: "granted" });
       await motionPromise;
     } catch (error) {
@@ -7141,8 +7150,9 @@ function PostureCaptureScreen({
       const permissionState = normalizeCameraPermissionState(permission);
       const box = stageRef.current?.getBoundingClientRect();
       const message = cameraErrorMessage(error);
-      appendVoiceSessionDiagnostic("camera_preview_start_failed", {
+      cameraPipelineLog("camera_preview_start_failed", {
         source: nativePreviewAvailable ? "native_preview" : "getUserMedia", code: error?.code || error?.name || "camera_preview_failed",
+        reason: error?.code || error?.name || "camera_preview_failed", platform: cameraPlatform, lifecycleState: "error",
         pluginError: error?.message || String(error), permissionState,
         x: box?.x, y: box?.y, width: box?.width, height: box?.height,
       });

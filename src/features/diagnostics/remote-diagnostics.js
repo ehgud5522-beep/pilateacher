@@ -41,6 +41,7 @@ const voiceEvent = (event) => ({
   phase: safeToken(event?.phase, 40),
   state: safeToken(event?.state, 40),
   platform: safeToken(event?.platform, 24),
+  lifecycleState: safeToken(event?.lifecycleState, 40),
   causeMessage: safeDeviceText(event?.causeMessage, 400),
   blobIdHash: safeToken(event?.blobIdHash, 80),
   uriPresent: typeof event?.uriPresent === "boolean" ? event.uriPresent : null,

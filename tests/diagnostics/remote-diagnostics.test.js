@@ -118,3 +118,17 @@ test("remote diagnostics include allowlisted posture counts without private post
   assert.equal(Object.hasOwn(report.logs[0], "selectedMemberName"), false);
   assert.equal(Object.hasOwn(report.logs[0], "resolvedMemberName"), false);
 });
+
+test("remote diagnostics retain camera platform and lifecycle stage", () => {
+  const report = buildRemoteDiagnosticReport({
+    voiceEvents: [{
+      at: "2026-09-06T03:00:00.000Z",
+      event: "camera_photo_output_ready",
+      source: "native_preview",
+      platform: "android",
+      lifecycleState: "ready",
+    }],
+  });
+  assert.equal(report.logs[0].platform, "android");
+  assert.equal(report.logs[0].lifecycleState, "ready");
+});

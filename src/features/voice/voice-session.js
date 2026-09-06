@@ -12,6 +12,17 @@ const VOICE_SESSION_EVENT_TYPES = new Set([
   "record_start", "record_end", "upload", "transcribed", "structured", "failed",
   "prepared", "trimmed", "audio_record_start_failed", "camera_preview_start_failed", "camera_fallback",
   "capture_start", "captured", "saved", "preview_stopped", "returned",
+  "speech_markers", "amplitude_unavailable", "fallback",
+  "voice_start_tapped", "voice_consent_checked", "voice_permission_checked",
+  "voice_audio_session_release_started", "voice_audio_session_release_succeeded", "voice_audio_session_release_failed",
+  "voice_prepare_started", "voice_prepare_succeeded", "voice_prepare_failed",
+  "voice_record_start_called", "voice_record_start_succeeded", "voice_record_start_failed",
+  "voice_stop_called", "voice_stop_succeeded", "voice_stop_failed",
+  "voice_file_read_succeeded", "voice_blob_saved",
+  "voice_upload_started", "voice_upload_succeeded",
+  "voice_stt_started", "voice_stt_succeeded", "voice_structure_started", "voice_structure_succeeded",
+  "voice_pipeline_failed", "voice_fallback_triggered",
+  "prewarm_started", "prewarm_succeeded", "prewarm_failed",
 ]);
 
 const normalizeSpace = (value) => String(value || "").replace(/\s+/g, " ").trim();
@@ -82,6 +93,17 @@ const safeDiagnosticMessage = (value, max = 240) => String(value || "")
   .replace(/sk-[A-Za-z0-9_-]+/g, "sk_[redacted]")
   .slice(0, max);
 
+export function voiceDiagnosticId(value, prefix = "id") {
+  const text = String(value || "");
+  if (!text) return "";
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${safeDiagnosticText(prefix, 12)}_${(hash >>> 0).toString(36).padStart(7, "0")}`;
+}
+
 export function nativeAudioPermissionState(status, platform = "") {
   const value = String(status?.recordAudio || status || "prompt").trim().toLowerCase();
   if (value === "granted") return "granted";
@@ -112,8 +134,16 @@ export function appendVoiceSessionDiagnostic(event, details = {}, storage = glob
     ...(details.operation ? { operation: safeDiagnosticText(details.operation, 80) } : {}),
     ...(details.phase ? { phase: safeDiagnosticText(details.phase) } : {}),
     ...(details.state ? { state: safeDiagnosticText(details.state) } : {}),
+    ...(details.platform ? { platform: safeDiagnosticText(details.platform, 24) } : {}),
+    ...(details.stage ? { stage: safeDiagnosticText(details.stage, 80) } : {}),
+    ...(details.message ? { message: safeDiagnosticMessage(details.message) } : {}),
+    ...(typeof details.consentRequired === "boolean" ? { consentRequired: details.consentRequired } : {}),
+    ...(typeof details.consentGranted === "boolean" ? { consentGranted: details.consentGranted } : {}),
+    ...(typeof details.uriPresent === "boolean" ? { uriPresent: details.uriPresent } : {}),
+    ...(details.blobIdHash ? { blobIdHash: safeDiagnosticText(details.blobIdHash, 80) } : {}),
     ...(Number.isFinite(Number(details.attempt)) ? { attempt: Math.max(0, Number(details.attempt)) } : {}),
     ...(Number.isFinite(Number(details.delayMs)) ? { delayMs: Math.max(0, Number(details.delayMs)) } : {}),
+    ...(Number.isFinite(Number(details.elapsedMs)) ? { elapsedMs: Math.max(0, Number(details.elapsedMs)) } : {}),
     ...(Number.isFinite(Number(details.charCount)) ? { charCount: Math.max(0, Number(details.charCount)) } : {}),
     ...(Number.isFinite(Number(details.durationMs)) ? { durationMs: Math.max(0, Number(details.durationMs)) } : {}),
     ...(Number.isFinite(Number(details.seconds)) ? { seconds: Math.max(0, Number(details.seconds)) } : {}),

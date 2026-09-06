@@ -281,8 +281,12 @@ test("audio operation uses the authorized member name and never logs audio or tr
         consumeRateLimit: async () => ({ allowed: true }),
       },
       idempotencyStore: createMemoryIdempotencyStore(),
-      getProvider: async () => ({ executeAudio: async ({ input }) => {
+      getProvider: async () => ({ executeAudio: async ({ input, onDiagnostic }) => {
         providerInput = input;
+        onDiagnostic("AUDIO_STT_STARTED", { elapsedMs: 0 });
+        onDiagnostic("AUDIO_STT_SUCCEEDED", { elapsedMs: 12 });
+        onDiagnostic("AUDIO_STRUCTURE_STARTED", { elapsedMs: 12 });
+        onDiagnostic("AUDIO_STRUCTURE_SUCCEEDED", { elapsedMs: 20 });
         return {
           model: "gpt-5-mini-2025-08-07",
           promptVersion: "lesson_record_v3",
@@ -310,6 +314,9 @@ test("audio operation uses the authorized member name and never logs audio or tr
     assert.equal(logText.includes("민감한 전사 원문"), false);
     assert.equal(logText.includes(providerInput.audio), false);
     assert.equal(logText.includes("김지민"), false);
+    assert.deepEqual(logs.filter((entry) => /AUDIO_(?:STT|STRUCTURE)_/.test(entry.message)).map((entry) => entry.message.split(" ").at(-1)), [
+      "AUDIO_STT_STARTED", "AUDIO_STT_SUCCEEDED", "AUDIO_STRUCTURE_STARTED", "AUDIO_STRUCTURE_SUCCEEDED",
+    ]);
   } finally {
     globalThis.console.info = originalInfo;
   }

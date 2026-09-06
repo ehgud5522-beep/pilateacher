@@ -173,13 +173,34 @@ export async function settleWithin(promise, timeoutMs = SERVER_AUDIO_FOREGROUND_
 
 export async function uploadAudioClip({ provider, blob, memberId, lessonId, memberName, requestId, clipId = requestId, audioMetrics, onEvent = () => {} }) {
   const startedAt = Date.now();
-  const audio = await blobToBase64(blob);
-  onEvent("upload", { bytes: blob.size, requestId });
-  const result = await provider.lessonRecordFromAudio(
-    audioGatewayInput({ audio, memberId, lessonId, memberName, clipId, audioMetrics }),
-    { requestId },
-  );
-  onEvent("transcribed", { durationMs: Date.now() - startedAt, requestId });
-  onEvent("structured", { durationMs: Date.now() - startedAt, requestId });
-  return result;
+  onEvent("voice_upload_started", { bytes: blob.size, requestId });
+  try {
+    const audio = await blobToBase64(blob);
+    onEvent("upload", { bytes: blob.size, requestId });
+    onEvent("voice_stt_started", { requestId, stage: "gateway_audio_pipeline" });
+    const result = await provider.lessonRecordFromAudio(
+      audioGatewayInput({ audio, memberId, lessonId, memberName, clipId, audioMetrics }),
+      { requestId },
+    );
+    const elapsedMs = Date.now() - startedAt;
+    onEvent("voice_upload_succeeded", { requestId, httpStatus: 200, elapsedMs });
+    onEvent("voice_stt_succeeded", { requestId, elapsedMs });
+    onEvent("transcribed", { durationMs: elapsedMs, requestId });
+    if (result?.output?.result === "ok") {
+      onEvent("voice_structure_started", { requestId, stage: "gateway_response" });
+      onEvent("voice_structure_succeeded", { requestId, elapsedMs });
+      onEvent("structured", { durationMs: elapsedMs, requestId });
+    }
+    return result;
+  } catch (error) {
+    onEvent("voice_pipeline_failed", {
+      stage: error?.failureStage || "voice_upload",
+      requestId,
+      code: error?.code || "audio_upload_failed",
+      message: error?.message || String(error),
+      httpStatus: error?.status,
+      elapsedMs: Date.now() - startedAt,
+    });
+    throw error;
+  }
 }

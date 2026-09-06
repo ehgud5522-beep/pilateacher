@@ -15,7 +15,11 @@ const consentOperation = (operation) => (
     : operation
 );
 const diagnosticsEnabled = () => process.env.NODE_ENV !== "production" || process.env.AI_GATEWAY_DIAGNOSTICS === "1";
-const ALWAYS_LOG_EVENTS = new Set(["authorization_denied", "model_call_succeeded", "gateway_completed"]);
+const ALWAYS_LOG_EVENTS = new Set([
+  "authorization_denied", "model_call_succeeded", "gateway_completed",
+  "AUDIO_STT_STARTED", "AUDIO_STT_SUCCEEDED", "AUDIO_STT_FAILED",
+  "AUDIO_STRUCTURE_STARTED", "AUDIO_STRUCTURE_SUCCEEDED", "AUDIO_STRUCTURE_FAILED",
+]);
 const safeLogToken = (value, max = 120) => String(value || "")
   .replace(/[^A-Za-z0-9._:/-]/g, "_")
   .slice(0, max);
@@ -127,6 +131,11 @@ function createAIGatewayHandler({
               audioMetrics: request.input.audioMetrics,
             },
             safetyIdentifier: safetyIdentifier(uid),
+            onDiagnostic: (event, details = {}) => diagnosticLog(event, {
+              requestId,
+              operation: request.operation,
+              ...details,
+            }),
           });
         } finally {
           request.input.audio = "";

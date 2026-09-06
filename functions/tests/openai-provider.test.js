@@ -233,6 +233,7 @@ test("generic provider rejects extra output fields after Structured Outputs", as
 test("audio lesson provider transcribes, falls back once, preserves valid fields, and clears audio memory", async () => {
   const transcriptionModels = [];
   const lifecycle = [];
+  const diagnostics = [];
   let disposed;
   const provider = createOpenAIProvider({
     onAudioDisposed: (details) => { disposed = details; lifecycle.push("audio_disposed"); },
@@ -266,6 +267,7 @@ test("audio lesson provider transcribes, falls back once, preserves valid fields
       language: "ko",
       audioMetrics: { intervalMs: 100, amplitudes: [...Array(5).fill(0.002), ...Array(20).fill(0.25), ...Array(5).fill(0.002)] },
     },
+    onDiagnostic: (event, details) => diagnostics.push({ event, ...details }),
   });
   assert.deepEqual(transcriptionModels, ["whisper-1", "gpt-4o-mini-transcribe"]);
   assert.equal(result.transcriptionModel, "gpt-4o-mini-transcribe");
@@ -281,6 +283,13 @@ test("audio lesson provider transcribes, falls back once, preserves valid fields
   assert.deepEqual(result.output.flags, []);
   assert.deepEqual(disposed, { bytes: 96, cleared: true });
   assert.deepEqual(lifecycle, ["audio_disposed", "structure_requested"]);
+  assert.deepEqual(diagnostics.map((entry) => entry.event), [
+    "AUDIO_STT_STARTED", "AUDIO_STT_SUCCEEDED", "AUDIO_STRUCTURE_STARTED", "AUDIO_STRUCTURE_SUCCEEDED",
+  ]);
+  const diagnosticText = JSON.stringify(diagnostics);
+  assert.equal(diagnosticText.includes(result.output.transcript), false);
+  assert.equal(diagnosticText.includes("김지민"), false);
+  assert.equal(diagnosticText.includes(createM4aFixture(12).toString("base64")), false);
 });
 
 test("audio lesson provider removes only hallucinated sentences before structuring and rejects an all-hallucination transcript", async () => {

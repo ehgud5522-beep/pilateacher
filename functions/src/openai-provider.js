@@ -317,7 +317,7 @@ function createOpenAIProvider({
     throw mapProviderError(primaryError || new Error("transcription failed"));
   }
 
-  async function executeAudio({ input, safetyIdentifier = "" }) {
+  async function executeAudio({ input, safetyIdentifier = "", onDiagnostic = null }) {
     const startedAt = Date.now();
     const { buffer, metadata } = decodeAudioBase64(input?.audio);
     const energy = analyzeEnergyEnvelope(input?.audioMetrics);
@@ -331,7 +331,26 @@ function createOpenAIProvider({
       }
     };
     try {
-      const transcription = await transcribe(buffer, metadata, input?.memberName, energy);
+      const emitDiagnostic = (event, details = {}) => {
+        try {
+          if (typeof onDiagnostic === "function") onDiagnostic(event, details);
+        } catch (_error) {
+          // Diagnostics are observational and must never change provider flow.
+        }
+      };
+      const sttStartedAt = Date.now();
+      emitDiagnostic("AUDIO_STT_STARTED", { elapsedMs: 0 });
+      let transcription;
+      try {
+        transcription = await transcribe(buffer, metadata, input?.memberName, energy);
+      } catch (error) {
+        emitDiagnostic("AUDIO_STT_FAILED", { code: String(error?.code || "stt_failed").slice(0, 80), elapsedMs: Math.max(0, Date.now() - sttStartedAt) });
+        throw error;
+      }
+      emitDiagnostic("AUDIO_STT_SUCCEEDED", {
+        result: String(transcription?.result || "unknown").slice(0, 40),
+        elapsedMs: Math.max(0, Date.now() - sttStartedAt),
+      });
       disposeAudio();
       if (transcription.result === "no_speech") {
         return {
@@ -431,15 +450,24 @@ function createOpenAIProvider({
           },
         };
       }
-      const structured = await execute({
-        operation: OPERATIONS.STRUCTURE_LESSON_RECORD,
-        input: {
-          rawTranscript: transcription.transcript,
-          language: "ko-KR",
-          termMap: { version: 1, mapped: [], uncertain: [] },
-        },
-        safetyIdentifier,
-      });
+      const structureStartedAt = Date.now();
+      emitDiagnostic("AUDIO_STRUCTURE_STARTED", { elapsedMs: Math.max(0, structureStartedAt - startedAt) });
+      let structured;
+      try {
+        structured = await execute({
+          operation: OPERATIONS.STRUCTURE_LESSON_RECORD,
+          input: {
+            rawTranscript: transcription.transcript,
+            language: "ko-KR",
+            termMap: { version: 1, mapped: [], uncertain: [] },
+          },
+          safetyIdentifier,
+        });
+      } catch (error) {
+        emitDiagnostic("AUDIO_STRUCTURE_FAILED", { code: String(error?.code || "structure_failed").slice(0, 80), elapsedMs: Math.max(0, Date.now() - structureStartedAt) });
+        throw error;
+      }
+      emitDiagnostic("AUDIO_STRUCTURE_SUCCEEDED", { elapsedMs: Math.max(0, Date.now() - structureStartedAt) });
       const fields = Object.fromEntries(
         ["didToday", "observations", "responses", "nextFocus"]
           .map((field) => [field, structured.output[field]]),

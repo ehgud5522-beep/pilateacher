@@ -83,7 +83,7 @@ import {
 import {
   BACKGROUND_RECORDING_INTERRUPTED_MESSAGE, RECOGNIZER_BUSY_RETRY_MS, VOICE_ORGANIZING_TIMEOUT_MS, VOICE_SILENCE_LIMIT_MS, appendVoiceSessionDiagnostic, createSilenceGuard,
   isRecognizerBusyError, nativeAudioPermissionState, readVoiceSessionDiagnostics, resolveVoicePhase, runVoicePermissionAction,
-  shouldInterruptServerRecordingOnPause, shouldRestartRecognizer, stitchSpeechTranscript,
+  shouldInterruptServerRecordingOnPause, shouldRestartRecognizer, stitchSpeechTranscript, voiceDiagnosticId,
 } from "./features/voice/voice-session.js";
 import {
   DEFAULT_VOICE_ENGINE, SERVER_AUDIO_ENERGY_INTERVAL_MS, SERVER_AUDIO_FOREGROUND_WAIT_MS, buildAudioMetrics, createAudioTrimPlan, createStableAudioRequestId,
@@ -10485,6 +10485,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
   const consentDeclineRef = useRef(null);
   const voiceDiagnostic = (event, details = {}) => appendVoiceSessionDiagnostic(event, {
     source: details.source || sourceRef.current || "unknown",
+    platform: details.platform || Capacitor.getPlatform(),
     ...details,
   });
   const rejectSttQuality = (assessment, retainedDraft = null) => {
@@ -10537,11 +10538,18 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     if (!Capacitor.isNativePlatform() || Capacitor.getPlatform() !== "ios") return;
     const speech = nativeSTT();
     if (!speech) return;
+    const startedAt = Date.now();
+    voiceDiagnostic("voice_audio_session_release_started", { source: "server_audio", stage });
     try {
       if (typeof speech.releaseAudioSession === "function") await speech.releaseAudioSession();
       else if (typeof speech.stop === "function") await speech.stop();
+      voiceDiagnostic("voice_audio_session_release_succeeded", { source: "server_audio", stage, elapsedMs: Date.now() - startedAt });
       deviceLog("speech_audio_session_released", { memberId, lessonId, source: "native", stage, voiceEngine: "server_audio" });
     } catch (error) {
+      voiceDiagnostic("voice_audio_session_release_failed", {
+        source: "server_audio", stage, code: error?.code || "audio_session_release_failed",
+        message: error?.message || String(error), pluginError: error?.message || String(error), elapsedMs: Date.now() - startedAt,
+      });
       deviceLog("speech_audio_session_release_failed", { memberId, lessonId, source: "native", stage, voiceEngine: "server_audio", ...deviceError(error) });
     }
   };
@@ -10632,16 +10640,30 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     const inspect = async () => {
       setVoiceAvailability("checking");
       if (VOICE_ENGINE_MODE === "server") {
-        const permission = await CapacitorAudioRecorder.checkPermissions().catch(() => null);
+        let permissionError = null;
+        const permission = await CapacitorAudioRecorder.checkPermissions().catch((error) => { permissionError = error; return null; });
         if (!active) return;
         const state = nativeAudioPermissionState(permission, Capacitor.getPlatform());
         setVoiceAvailability(state === "granted" ? "ready" : state === "permanently_denied" ? "permission_permanently_denied" : "permission_required");
         voiceDiagnostic("permission_state", { source: "server_audio", state, permissionState: state });
+        voiceDiagnostic("voice_permission_checked", {
+          source: "server_audio", phase: "mount", permissionState: state,
+          ...(permissionError ? { code: permissionError?.code || "permission_check_failed", message: permissionError?.message || String(permissionError), pluginError: permissionError?.message || String(permissionError) } : {}),
+        });
         if (state === "granted" && Capacitor.getPlatform() !== "ios") {
-          await CapacitorAudioRecorder.prepareRecording(SERVER_AUDIO_RECORDING_OPTIONS).then(() => {
+          const prewarmStartedAt = Date.now();
+          voiceDiagnostic("prewarm_started", { source: "server_audio", stage: "mount" });
+          await CapacitorAudioRecorder.prepareRecording(SERVER_AUDIO_RECORDING_OPTIONS).then((prepared) => {
             recorderPrewarmedRef.current = true;
+            voiceDiagnostic("prewarm_succeeded", { source: "server_audio", stage: "mount", elapsedMs: Date.now() - prewarmStartedAt, ...recorderDiagnosticFields(prepared?.diagnostic) });
             voiceDiagnostic("prepared", { source: "server_audio", ...SERVER_AUDIO_SESSION_DIAGNOSTIC });
-          }).catch(() => { recorderPrewarmedRef.current = false; });
+          }).catch((error) => {
+            recorderPrewarmedRef.current = false;
+            voiceDiagnostic("prewarm_failed", {
+              source: "server_audio", stage: "mount", code: error?.code || "prewarm_failed",
+              message: error?.message || String(error), pluginError: error?.message || String(error), elapsedMs: Date.now() - prewarmStartedAt,
+            });
+          });
         }
         return;
       }
@@ -11457,6 +11479,9 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     catch (error) { await handleServerAudioFailure(error, clip, loadPendingLessonRecord(memberId, lessonId) || currentDraft, false); }
   };
   const finishServerRecording = async (reason = "manual") => {
+    const stopStartedAt = Date.now();
+    let pipelineStage = "voice_stop";
+    voiceDiagnostic("voice_stop_called", { source: "server_audio", stage: pipelineStage, reason });
     startRequestRef.current = false;
     setStarting(false);
     setOn(false);
@@ -11474,15 +11499,21 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     let result;
     try {
       result = await CapacitorAudioRecorder.stopRecording();
+      voiceDiagnostic("voice_stop_succeeded", { source: "server_audio", uriPresent: Boolean(result?.uri), elapsedMs: Date.now() - stopStartedAt });
+      pipelineStage = "voice_file_output";
       recorderPrewarmedRef.current = false;
       const durationMs = Math.max(0, Number(result?.duration) || Date.now() - recordingStartedAtRef.current);
       const trimPlan = createAudioTrimPlan(amplitudeSamples, SERVER_AUDIO_ENERGY_INTERVAL_MS, durationMs);
       // Metering is diagnostic only. A failed/quiet meter must never discard a
       // real recording; only the server transcription can conclude no_speech.
       if (!result?.uri) throw Object.assign(new Error("native recording URI is missing"), { code: "audio_missing" });
+      pipelineStage = "voice_file_read";
       const blob = await recordingResultToBlob(result, { readFile: (options) => Filesystem.readFile(options) });
+      voiceDiagnostic("voice_file_read_succeeded", { source: "server_audio", bytes: blob.size, uriPresent: true, elapsedMs: Date.now() - stopStartedAt });
       const blobId = newAudioBlobId();
+      pipelineStage = "voice_blob_save";
       await blobPut(blobId, blob);
+      voiceDiagnostic("voice_blob_saved", { source: "server_audio", bytes: blob.size, blobIdHash: voiceDiagnosticId(blobId, "blob"), elapsedMs: Date.now() - stopStartedAt });
       if (result?.uri) await Filesystem.deleteFile({ path: result.uri }).catch(() => {});
       const previousDraft = recordingModeRef.current === "replace" ? {} : (loadPendingLessonRecord(memberId, lessonId) || {});
       const clipIndex = (previousDraft.audioClips || []).length;
@@ -11508,6 +11539,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       audioBlobRef.current = blobId;
       setAudioBlobId(blobId);
       setAudioState("saved");
+      pipelineStage = "voice_pending_save";
       const pendingDraft = savePendingLessonRecord(memberId, lessonId, {
         ...previousDraft,
         schemaVersion: 2,
@@ -11531,6 +11563,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
         return;
       }
       let deferred = false;
+      pipelineStage = "voice_upload";
       const uploadPromise = uploadServerAudio(clip, pendingDraft).catch(async (error) => {
         voiceDiagnostic("failed", { source: "server_audio", ...failureCauseDetail(error), code: error?.code || "audio_upload_failed", httpStatus: error?.status, requestId: clip.requestId });
         Promise.resolve(fbWritePilotMetricAttempt({ requestId: clip.requestId, result: "failed", flags: [], latencyMs: Math.max(0, Date.now() - Date.parse(clip.createdAt)), source: "server_audio" })).catch(() => {});
@@ -11550,11 +11583,23 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
         await handleServerAudioFailure(foreground.error, clip, loadPendingLessonRecord(memberId, lessonId) || pendingDraft);
       }
     } catch (error) {
+      const failureDetail = failureCauseDetail(error);
+      if (pipelineStage === "voice_stop") {
+        voiceDiagnostic("voice_stop_failed", {
+          source: "server_audio", stage: pipelineStage, code: error?.code || "audio_stop_failed",
+          message: error?.message || String(error), elapsedMs: Date.now() - stopStartedAt,
+        });
+      }
+      voiceDiagnostic("voice_pipeline_failed", {
+        source: "server_audio", stage: pipelineStage, code: error?.code || "audio_record_failed",
+        message: error?.message || String(error), httpStatus: error?.status,
+        requestId: error?.requestId, elapsedMs: Date.now() - stopStartedAt, ...failureDetail,
+      });
       setFinishing(false);
       setSummaryBusy(false);
       setAudioState("failed");
       setErr("녹음을 저장하지 못했습니다. 다시 시도해 주세요.");
-      voiceDiagnostic("failed", { source: "server_audio", ...failureCauseDetail(error), code: error?.code || "audio_record_failed" });
+      voiceDiagnostic("failed", { source: "server_audio", ...failureDetail, code: error?.code || "audio_record_failed" });
     }
   };
   const startServerRecording = async (mode = "append", options = {}) => {
@@ -11566,13 +11611,28 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     setSummaryError("");
     setSummaryFailure(null);
     if (options?.skipConsent !== true) {
-      const consent = await ensureMemberAIConsent(memberId, "summarizeVoice", { prompt: false });
+      const consentStartedAt = Date.now();
+      let consent;
+      try {
+        consent = await ensureMemberAIConsent(memberId, "summarizeVoice", { prompt: false });
+      } catch (error) {
+        voiceDiagnostic("voice_pipeline_failed", {
+          source: "server_audio", stage: "consent", code: error?.code || "consent_check_failed",
+          message: error?.message || String(error), elapsedMs: Date.now() - consentStartedAt,
+        });
+        throw error;
+      }
+      voiceDiagnostic("voice_consent_checked", {
+        source: "server_audio", consentRequired: !consent.ok, consentGranted: Boolean(consent.ok), elapsedMs: Date.now() - consentStartedAt,
+      });
       if (!consent.ok) {
         startRequestRef.current = false;
         setStarting(false);
         presentVoiceConsent(() => startServerRecording(mode, { skipConsent: true }), consent.message);
         return;
       }
+    } else {
+      voiceDiagnostic("voice_consent_checked", { source: "server_audio", phase: "approved_continuation", consentRequired: false, consentGranted: true });
     }
     captureRequestedAtRef.current = globalThis.performance?.now?.() || Date.now();
     recordingModeRef.current = mode === "replace" ? "replace" : "append";
@@ -11602,12 +11662,18 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
         replacementSnapshotRef.current = null;
       }, 10000);
     }
-    let permission = await CapacitorAudioRecorder.checkPermissions().catch(() => null);
+    const permissionStartedAt = Date.now();
+    let permissionError = null;
+    let permission = await CapacitorAudioRecorder.checkPermissions().catch((error) => { permissionError = error; return null; });
     let permissionState = nativeAudioPermissionState(permission, Capacitor.getPlatform());
     if (permissionState === "prompt" || permissionState === "denied") {
-      permission = await CapacitorAudioRecorder.requestPermissions().catch(() => null);
+      permission = await CapacitorAudioRecorder.requestPermissions().catch((error) => { permissionError = error; return null; });
       permissionState = nativeAudioPermissionState(permission, Capacitor.getPlatform());
     }
+    voiceDiagnostic("voice_permission_checked", {
+      source: "server_audio", permissionState, elapsedMs: Date.now() - permissionStartedAt,
+      ...(permissionError ? { code: permissionError?.code || "permission_check_failed", message: permissionError?.message || String(permissionError), pluginError: permissionError?.message || String(permissionError) } : {}),
+    });
     if (permissionState !== "granted") {
       startRequestRef.current = false;
       setStarting(false);
@@ -11615,14 +11681,34 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       voiceDiagnostic("permission_state", { source: "server_audio", state: permissionState, permissionState });
       return;
     }
+    let startStage = "audio_session_release";
+    const recordingStartStartedAt = Date.now();
+    let recordStartCalledAt = 0;
     try {
       await releaseSpeechAudioSession("before_server_recording");
       if (!recorderPrewarmedRef.current) {
-        const prepared = await CapacitorAudioRecorder.prepareRecording(SERVER_AUDIO_RECORDING_OPTIONS);
+        startStage = "prepare";
+        const prepareStartedAt = Date.now();
+        voiceDiagnostic("voice_prepare_started", { source: "server_audio", stage: "tap" });
+        let prepared;
+        try {
+          prepared = await CapacitorAudioRecorder.prepareRecording(SERVER_AUDIO_RECORDING_OPTIONS);
+        } catch (error) {
+          voiceDiagnostic("voice_prepare_failed", {
+            source: "server_audio", stage: "tap", code: error?.code || "prepare_failed",
+            message: error?.message || String(error), pluginError: error?.message || String(error), elapsedMs: Date.now() - prepareStartedAt,
+          });
+          throw error;
+        }
         recorderPrewarmedRef.current = true;
+        voiceDiagnostic("voice_prepare_succeeded", { source: "server_audio", stage: "tap", elapsedMs: Date.now() - prepareStartedAt, ...recorderDiagnosticFields(prepared?.diagnostic) });
         voiceDiagnostic("prepared", { source: "server_audio", phase: "tap", voiceEngine: "server_audio", ...SERVER_AUDIO_SESSION_DIAGNOSTIC, ...recorderDiagnosticFields(prepared?.diagnostic) });
       }
+      startStage = "record_start";
+      recordStartCalledAt = Date.now();
+      voiceDiagnostic("voice_record_start_called", { source: "server_audio", stage: startStage });
       const started = await CapacitorAudioRecorder.startRecording(SERVER_AUDIO_RECORDING_OPTIONS);
+      voiceDiagnostic("voice_record_start_succeeded", { source: "server_audio", stage: startStage, elapsedMs: Date.now() - recordStartCalledAt });
       serverStartFailuresRef.current = 0;
       recorderPrewarmedRef.current = false;
       captureLatencyMsRef.current = Math.max(0, Math.round((globalThis.performance?.now?.() || Date.now()) - captureRequestedAtRef.current));
@@ -11669,6 +11755,18 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       setErr("음성 녹음을 시작하지 못했습니다.");
       const current = await CapacitorAudioRecorder.checkPermissions().catch(() => null);
       const failedPermissionState = nativeAudioPermissionState(current, Capacitor.getPlatform());
+      if (startStage === "record_start") {
+        voiceDiagnostic("voice_record_start_failed", {
+          source: "server_audio", stage: startStage, code: error?.code || "audio_record_start_failed",
+          message: error?.message || String(error), pluginError: error?.message || String(error),
+          permissionState: failedPermissionState, elapsedMs: Date.now() - recordStartCalledAt,
+        });
+      }
+      voiceDiagnostic("voice_pipeline_failed", {
+        source: "server_audio", stage: startStage, code: error?.code || `${startStage}_failed`,
+        message: error?.message || String(error), pluginError: error?.message || String(error),
+        permissionState: failedPermissionState, elapsedMs: Date.now() - recordingStartStartedAt,
+      });
       voiceDiagnostic("audio_record_start_failed", {
         source: "server_audio", code: error?.code || "audio_record_start_failed",
         pluginError: error?.message || String(error), permissionState: failedPermissionState, count: failedAttempts,
@@ -11676,6 +11774,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       });
       deviceLog("audio_record_start_failed", { memberId, lessonId, source: "server_audio", voiceEngine: "server_audio", count: failedAttempts, ...deviceError(error) });
       if (Capacitor.isNativePlatform() && Capacitor.getPlatform() === "ios" && failedAttempts >= 2) {
+        voiceDiagnostic("voice_fallback_triggered", { source: "native", stage: startStage, reason: "server_audio_start_failed_twice", attempt: failedAttempts });
         voiceDiagnostic("fallback", { source: "native", reason: "server_audio_start_failed_twice", count: failedAttempts });
         deviceLog("voice_engine_fallback", { memberId, lessonId, source: "native", voiceEngine: "native", reason: "server_audio_start_failed_twice", count: failedAttempts });
         setErr("녹음 시작에 실패해 iOS 음성 인식으로 전환합니다.");
@@ -12047,6 +12146,14 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       deviceLog("voice_transcription_failed", { memberId, lessonId, source: "web_speech", kind: diagnostic.kind, ...deviceError(error) });
     }
   };
+  const startFromUserTap = (mode = "append") => {
+    voiceDiagnostic("voice_start_tapped", {
+      source: VOICE_ENGINE_MODE === "server" ? "server_audio" : "native",
+      phase: mode === "replace" ? "replace" : "append",
+    });
+    if (VOICE_ENGINE_MODE === "server") return startServerRecording(mode);
+    return start();
+  };
   const stop = (reason = "manual") => {
     if (VOICE_ENGINE_MODE === "server" && sourceRef.current !== "native") {
       if (reason === "maximum_duration") voiceDiagnostic("cap_end", { source: "server_audio", reason });
@@ -12355,23 +12462,23 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
           <button type="button" onClick={requestVoicePermission} className="min-h-11 shrink-0 rounded-full px-3 text-xs font-extrabold" style={{ backgroundColor: TINT, color: BRAND_D }}>권한 설정</button>
         ) : voiceAvailability === "unsupported" ? null : text && VOICE_ENGINE_MODE === "server" ? (
           <div className="flex shrink-0 gap-1">
-            <button type="button" onClick={() => startServerRecording("append")} disabled={!supported || audioState === "saving"} aria-label="음성으로 이어서 말하기" className="min-h-11 rounded-full px-2.5 text-[11px] font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: BRAND }}>이어서 말하기</button>
-            <button type="button" onClick={() => startServerRecording("replace")} disabled={!supported || audioState === "saving"} aria-label="음성 다시 말하기" className="min-h-11 rounded-full px-2.5 text-[11px] font-extrabold disabled:opacity-40" style={{ backgroundColor: CARD, color: BRAND_D, border: `1px solid ${LINE}` }}>다시 말하기</button>
+            <button type="button" onClick={() => startFromUserTap("append")} disabled={!supported || audioState === "saving"} aria-label="음성으로 이어서 말하기" className="min-h-11 rounded-full px-2.5 text-[11px] font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: BRAND }}>이어서 말하기</button>
+            <button type="button" onClick={() => startFromUserTap("replace")} disabled={!supported || audioState === "saving"} aria-label="음성 다시 말하기" className="min-h-11 rounded-full px-2.5 text-[11px] font-extrabold disabled:opacity-40" style={{ backgroundColor: CARD, color: BRAND_D, border: `1px solid ${LINE}` }}>다시 말하기</button>
           </div>
         ) : (
-          <button type="button" onClick={start} disabled={!supported || audioState === "saving"} aria-label="음성으로 말하기 시작" className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-full px-3 py-2 text-xs font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: BRAND }}>
+          <button type="button" onClick={() => startFromUserTap("append")} disabled={!supported || audioState === "saving"} aria-label="음성으로 말하기 시작" className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-full px-3 py-2 text-xs font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: BRAND }}>
             <Smartphone size={12} /> 말하기 시작
           </button>
         )}
       </div>
-      {backgroundInterrupted && voicePhase !== "listening" && <div role="status" className="mt-2 flex min-h-11 items-center gap-2 rounded-xl px-3 py-2" style={{ backgroundColor: WARN_S, border: `1px solid ${WARN}` }}><p className="min-w-0 flex-1 text-[11px] font-bold leading-relaxed" style={{ color: INK2 }}>{BACKGROUND_RECORDING_INTERRUPTED_MESSAGE}</p><button type="button" disabled={voicePhase === "organizing" || starting} onClick={() => startServerRecording("append")} className="min-h-11 shrink-0 rounded-lg px-3 text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: CARD, color: BRAND_D }}>이어서 말하기</button></div>}
+      {backgroundInterrupted && voicePhase !== "listening" && <div role="status" className="mt-2 flex min-h-11 items-center gap-2 rounded-xl px-3 py-2" style={{ backgroundColor: WARN_S, border: `1px solid ${WARN}` }}><p className="min-w-0 flex-1 text-[11px] font-bold leading-relaxed" style={{ color: INK2 }}>{BACKGROUND_RECORDING_INTERRUPTED_MESSAGE}</p><button type="button" disabled={voicePhase === "organizing" || starting} onClick={() => startFromUserTap("append")} className="min-h-11 shrink-0 rounded-lg px-3 text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: CARD, color: BRAND_D }}>이어서 말하기</button></div>}
       {replacementUndoVisible && <button type="button" onClick={restorePreviousRecording} className="mt-2 min-h-11 w-full rounded-xl text-xs font-extrabold" style={{ backgroundColor: WARN_S, color: WARN }}>이전 녹음 복원</button>}
       {voicePhase === "permission_required" && <Sub className="mt-1.5 block leading-relaxed">{voiceAvailability === "permission_permanently_denied" ? "설정에서 마이크 권한을 켜주세요" : "말하기를 사용하려면 마이크 권한을 허용해 주세요."}</Sub>}
       {voiceAvailability === "unsupported" && <Sub className="mt-1.5 block leading-relaxed">이 기기에서는 말하기를 지원하지 않아 직접 입력으로 기록할 수 있어요.</Sub>}
       {voicePhase === "listening" && <Sub className="mt-1.5 block font-bold leading-relaxed" style={{ color: BRAND_D }}>듣고 있어요 · 잠시 생각하며 멈춰도 괜찮아요.</Sub>}
       {voicePhase === "listening" && VOICE_ENGINE_MODE === "server" && <div aria-label="마이크 음량" className="mt-2 flex h-8 items-center justify-center gap-1 overflow-hidden rounded-lg px-2" style={{ backgroundColor: CARD }}>{Array.from({ length: 18 }, (_, index) => { const wave = Math.max(0.12, amplitude * (0.45 + ((index * 7) % 10) / 10)); return <span key={index} className="w-1 rounded-full" style={{ height: `${Math.round(6 + wave * 20)}px`, backgroundColor: index % 3 === 0 ? BRAND : LAVENDER, transition: "height 100ms linear" }} />; })}</div>}
       {voicePhase === "listening" && lowVolumeNotice && <p role="status" className="mt-1.5 text-[11px] font-bold" style={{ color: WARN }}>{lowVolumeNotice}</p>}
-      {qualityRejection && <div role="alert" aria-label="음성 품질 확인 실패" className="mt-3 rounded-xl p-3" style={{ backgroundColor: WARN_S, border: `1px solid ${WARN}` }}><p className="text-xs font-extrabold" style={{ color: INK }}>잘 들리지 않아 기록하지 않았습니다.</p><p className="mt-1 text-[11px] leading-relaxed" style={{ color: INK2 }}>조금 더 크게 천천히 말씀해 주세요.</p><div className="mt-2 grid grid-cols-2 gap-1.5"><button type="button" onClick={() => { setQualityRejection(null); setSummaryFailure(null); setSummaryError(""); if (VOICE_ENGINE_MODE === "server") startServerRecording("append"); else start(); }} className="h-11 rounded-lg text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>다시 말하기</button><button type="button" onClick={() => { setQualityRejection(null); setSummaryFailure(null); setSummaryError(""); fallbackToDirectEntry("음성 품질을 확인하지 못해 직접 입력으로 전환했습니다."); }} className="h-11 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: BRAND_D }}>직접 입력</button></div></div>}
+      {qualityRejection && <div role="alert" aria-label="음성 품질 확인 실패" className="mt-3 rounded-xl p-3" style={{ backgroundColor: WARN_S, border: `1px solid ${WARN}` }}><p className="text-xs font-extrabold" style={{ color: INK }}>잘 들리지 않아 기록하지 않았습니다.</p><p className="mt-1 text-[11px] leading-relaxed" style={{ color: INK2 }}>조금 더 크게 천천히 말씀해 주세요.</p><div className="mt-2 grid grid-cols-2 gap-1.5"><button type="button" onClick={() => { setQualityRejection(null); setSummaryFailure(null); setSummaryError(""); startFromUserTap("append"); }} className="h-11 rounded-lg text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>다시 말하기</button><button type="button" onClick={() => { setQualityRejection(null); setSummaryFailure(null); setSummaryError(""); fallbackToDirectEntry("음성 품질을 확인하지 못해 직접 입력으로 전환했습니다."); }} className="h-11 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: BRAND_D }}>직접 입력</button></div></div>}
       {voicePhase === "organizing" && <Sub className="mt-1.5 block leading-relaxed">{silenceNotice || "마지막 음성을 정리하고 있습니다. 잠시만 기다려 주세요."}</Sub>}
       {consentGate && <div role="dialog" aria-label="AI 음성기록 이용 동의" className="mt-3 rounded-xl p-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
         <p className="text-xs font-extrabold" style={{ color: INK }}>AI 음성기록 이용 동의</p>
@@ -12389,7 +12496,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
         <button type="button" onClick={() => window.dispatchEvent(new CustomEvent("pilateacher:open-record-examples"))} className="mt-3 min-h-11 w-full rounded-lg text-xs font-extrabold" style={{ backgroundColor: TINT, color: BRAND_D }}>예시 보기</button>
         {showValueGuide && <div className="mt-3 rounded-lg px-3 py-2.5" style={{ backgroundColor: TINT }}><p className="text-[11px] font-extrabold" style={{ color: BRAND_D }}>이렇게 활용돼요</p><p className="mt-1 text-[10px] leading-relaxed" style={{ color: INK2 }}>저장된 변화·운동·반응·다음 계획을 바탕으로 다음 수업 전에 지난 기록을 이어서 보여드려요.</p></div>}
       </div>}
-      {voicePhase === "failed" && !consentGate && !summaryFailure && <div role="alert" className="mt-2 rounded-xl p-3" style={{ backgroundColor: BAD_S, border: `1px solid ${BAD}` }}><p className="text-[11px] leading-relaxed" style={{ color: BAD }}>{err || summaryError || "정리를 완료하지 못했습니다."}</p><div className="mt-2 grid grid-cols-2 gap-1.5"><button type="button" onClick={start} className="h-11 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: BAD }}>다시 시도</button><button type="button" onClick={() => { setManualEntry(true); setErr(""); window.setTimeout(() => transcriptInputRef.current?.focus(), 0); }} className="h-11 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: PRIMARY }}>직접 입력</button></div></div>}
+      {voicePhase === "failed" && !consentGate && !summaryFailure && <div role="alert" className="mt-2 rounded-xl p-3" style={{ backgroundColor: BAD_S, border: `1px solid ${BAD}` }}><p className="text-[11px] leading-relaxed" style={{ color: BAD }}>{err || summaryError || "정리를 완료하지 못했습니다."}</p><div className="mt-2 grid grid-cols-2 gap-1.5"><button type="button" onClick={() => startFromUserTap("append")} className="h-11 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: BAD }}>다시 시도</button><button type="button" onClick={() => { setManualEntry(true); setErr(""); window.setTimeout(() => transcriptInputRef.current?.focus(), 0); }} className="h-11 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: PRIMARY }}>직접 입력</button></div></div>}
       {(text || manualEntry || audioState === "saved" || audioState === "saving") && !["listening", "organizing"].includes(voicePhase) && (
         <>
           {audioReviewFlags.includes("low_confidence") && <div role="status" className="mt-2 rounded-xl p-3" style={{ backgroundColor: WARN_S, border: `1px solid ${WARN}` }}><p className="text-xs font-extrabold" style={{ color: WARN }}>녹음 확인 필요</p><p className="mt-1 text-[11px] leading-relaxed" style={{ color: INK2 }}>정확하지 않을 수 있어요. 내용을 직접 수정한 뒤 저장해 주세요.</p></div>}
@@ -13841,7 +13948,18 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
               </div>
               <div className="mt-2 space-y-1">{diagnosticRecordSources.map((record, index) => <p key={`${record.at}-${index}`} className="tabular-nums" style={{ fontSize: 9, color: SUB }}>기록 {index + 1} · {diagnosticLocalTime(record.at)} · {record.status} · source={record.source} · date={record.dateSource}</p>)}</div>
               <p className="mt-3" style={{ fontSize: 10, fontWeight: 700, color: INK }}>음성 세션 최근 30건</p>
-              <div className="mt-1.5 space-y-1">{voiceSessionDiagnostics.map((item, index) => <p key={`${item.at}-${index}`} className="break-all tabular-nums" style={{ fontSize: 9, lineHeight: 1.45, color: ["error", "failed"].includes(item.event) ? BAD : SUB }}>{item.localTime || diagnosticLocalTime(item.at)} · {item.event} · {item.source}{item.code ? ` · ${item.code}` : ""}{item.reason ? ` · ${item.reason}` : ""}{item.validationReason ? ` · ${item.validationReason}` : ""}{item.invalidField ? ` · ${item.invalidField}` : ""}{item.operation ? ` · ${item.operation}` : ""}{item.httpStatus ? ` · HTTP ${item.httpStatus}` : ""}{item.seconds != null ? ` · ${item.seconds}s` : ""}{item.recordedSeconds != null ? ` · recorded ${item.recordedSeconds}s` : ""}{item.speechSeconds != null ? ` · speech ${item.speechSeconds}s` : ""}{item.trimStart != null ? ` · start ${item.trimStart}ms` : ""}{item.trimEnd != null ? ` · end ${item.trimEnd}ms` : ""}{item.maxAmplitude != null ? ` · peak ${item.maxAmplitude}` : ""}{item.trimmedMs != null ? ` · trim ${item.trimmedMs}ms` : ""}{item.captureLatencyMs != null ? ` · capture ${item.captureLatencyMs}ms` : ""}{item.flags?.length ? ` · ${item.flags.join(",")}` : ""}{item.bytes != null ? ` · ${Math.round(item.bytes / 1024)}KB` : ""}{item.durationMs != null ? ` · ${item.durationMs}ms` : ""}{item.requestId ? ` · ${item.requestId.slice(-8)}` : ""}{item.attempt != null ? ` · attempt ${item.attempt}` : ""}{item.delayMs != null ? ` · ${item.delayMs}ms` : ""}</p>)}</div>
+              <div className="mt-1.5 space-y-1">{voiceSessionDiagnostics.map((item, index) => <p key={`${item.at}-${index}`} className="break-all tabular-nums" style={{ fontSize: 9, lineHeight: 1.45, color: ["error", "failed", "voice_pipeline_failed", "voice_prepare_failed", "voice_record_start_failed", "voice_stop_failed"].includes(item.event) ? BAD : SUB }}>
+                {item.localTime || diagnosticLocalTime(item.at)} · {item.event} · {item.source}
+                {item.platform ? ` · ${item.platform}` : ""}{item.lifecycleState ? ` · ${item.lifecycleState}` : ""}
+                {item.state ? ` · state=${item.state}` : ""}{item.permissionState ? ` · permission=${item.permissionState}` : ""}{item.stage ? ` · stage=${item.stage}` : ""}
+                {item.code ? ` · ${item.code}` : ""}{item.reason ? ` · ${item.reason}` : ""}{item.validationReason ? ` · ${item.validationReason}` : ""}{item.invalidField ? ` · ${item.invalidField}` : ""}{item.operation ? ` · ${item.operation}` : ""}
+                {item.message ? ` · ${item.message}` : ""}{item.pluginError ? ` · plugin=${item.pluginError}` : ""}{item.causeMessage ? ` · cause=${item.causeMessage}` : ""}
+                {item.httpStatus ? ` · HTTP ${item.httpStatus}` : ""}{item.elapsedMs != null ? ` · elapsed ${item.elapsedMs}ms` : ""}
+                {item.seconds != null ? ` · ${item.seconds}s` : ""}{item.recordedSeconds != null ? ` · recorded ${item.recordedSeconds}s` : ""}{item.speechSeconds != null ? ` · speech ${item.speechSeconds}s` : ""}
+                {item.trimStart != null ? ` · start ${item.trimStart}ms` : ""}{item.trimEnd != null ? ` · end ${item.trimEnd}ms` : ""}{item.maxAmplitude != null ? ` · peak ${item.maxAmplitude}` : ""}{item.trimmedMs != null ? ` · trim ${item.trimmedMs}ms` : ""}{item.captureLatencyMs != null ? ` · capture ${item.captureLatencyMs}ms` : ""}
+                {item.flags?.length ? ` · ${item.flags.join(",")}` : ""}{item.bytes != null ? ` · ${Math.round(item.bytes / 1024)}KB` : ""}{item.durationMs != null ? ` · ${item.durationMs}ms` : ""}
+                {item.requestId ? ` · ${item.requestId.slice(-8)}` : ""}{item.attempt != null ? ` · attempt ${item.attempt}` : ""}{item.delayMs != null ? ` · ${item.delayMs}ms` : ""}
+              </p>)}</div>
               {!voiceSessionDiagnostics.length && <p className="mt-1" style={{ fontSize: 10, color: SUB }}>음성 세션 기록 없음</p>}
               <div className="mt-2 space-y-1.5">{readLessonRecordDiagnostics().map((item, index) => <div key={`${item.at}-${index}`} className="rounded-md px-2 py-1" style={{ backgroundColor: PAGE }}><p className="tabular-nums" style={{ fontSize: 9, color: SUB }}>{String(item.at).slice(5, 16).replace("T", " ")} · {item.transportCode || item.code} · {item.stage}{item.httpStatus ? ` · HTTP ${item.httpStatus}` : ""}{item.validationReason ? ` · ${item.validationReason}` : ""}{item.invalidField ? ` · ${item.invalidField}` : ""}{item.operation ? ` · ${item.operation}` : ""}{item.model ? ` · ${item.model}` : ""}{item.requestId ? ` · ${item.requestId.slice(-8)}` : ""}</p>{item.gatewayUrl && <p className="mt-0.5 break-all" style={{ fontSize: 8, lineHeight: 1.4, color: SUB }}>{item.gatewayUrl}</p>}{item.causeMessage && <p className="mt-0.5 break-all" style={{ fontSize: 8, lineHeight: 1.4, color: BAD }}>{item.causeName ? `${item.causeName}: ` : ""}{item.causeMessage}</p>}</div>)}</div>
               {!readLessonRecordDiagnostics().length && <p className="mt-2" style={{ fontSize: 10, color: SUB }}>최근 오류 없음</p>}

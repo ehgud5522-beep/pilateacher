@@ -67,6 +67,7 @@ import {
   postureMilestoneTemplate, postureViewLabel, removeAssessmentDraftRecords, selectAutomaticComparison, selectComparisonAssessmentOptions,
   selectMemberBodyPhotoSurface, selectResumableAssessment,
 } from "./features/posture/posture-model.js";
+import { postureRecordHasInvalidMeasurements, validatePostureMeasurement, validPostureMetrics } from "./features/posture/measurement-validity.js";
 import {
   POSTURE_PERSISTENCE_EVENTS, POSTURE_PERSISTENCE_FAILURES,
   appendPosturePersistenceDiagnostic, appendPosturePersistenceFailure,
@@ -6079,10 +6080,23 @@ function analyzePose(raw, { view, W, H, floorFix }) {
     if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) P[k] = { x: p.x * W, y: p.y * H, score: p.score ?? 1 };
   });
   const has = (...ks) => ks.every((k) => P[k]);
-  const items = [], notes = [];
+  const calculatedItems = [], notes = [], invalidMeasurements = [];
+  let floorReferenceValid = true;
+  const items = { push(item) {
+    const validity = validatePostureMeasurement({
+      metricKey: item.key,
+      points: raw,
+      transform: { coordinateSpace: "normalized", width: W, height: H, referenceValid: floorReferenceValid },
+      minConfidence: POSE_CONFIDENCE_MIN,
+    });
+    if (validity.valid) calculatedItems.push({ ...item, validity });
+    else invalidMeasurements.push({ key: item.key, reason: validity.reason });
+  } };
   if (view === "front") {
-    if (!has("shL", "shR", "hipL", "hipR")) return { items: [], notes: ["어깨·골반이 인식되지 않았습니다."], floor: 0 };
+    if (!has("shL", "shR", "hipL", "hipR")) return { items: [], notes: ["어깨·골반이 인식되지 않았습니다."], floor: 0, invalidMeasurements };
     const floor = has("ankL", "ankR") ? lineDeg(P.ankL, P.ankR) : 0;
+    const floorPairValidity = validatePostureMeasurement({ metricKey: "head", points: { earL: raw?.ankL, earR: raw?.ankR }, transform: { coordinateSpace: "normalized", width: W, height: H }, minConfidence: POSE_CONFIDENCE_MIN });
+    floorReferenceValid = !floorFix || floorPairValidity.valid;
     const fix = floorFix ? floor : 0;
     const sh = lineDeg(P.shL, P.shR) - fix;
     const hip = lineDeg(P.hipL, P.hipR) - fix;
@@ -6110,7 +6124,7 @@ function analyzePose(raw, { view, W, H, floorFix }) {
       const hh = P.earL.y < P.earR.y ? "왼쪽" : "오른쪽";
       items.push({ key: "head", label: "머리 기울기", value: Math.abs(r1(head)), unit: "°", level: lvDown(Math.abs(head), 2, 4), at: midOf(P.earL, P.earR), up: -1, dir: Math.abs(head) < 0.3 ? "수평" : `${hh} 기움`, desc: `귀 높이가 ${Math.abs(r1(head))}° 차이 납니다.`, tip: `${hh} 사각근·흉쇄유돌근 이완 · 턱 당기기(chin tuck) 병행` });
     }
-    if (has("ankL", "ankR")) {
+    if (has("ankL", "ankR") && floorPairValidity.valid) {
       const shW = Math.abs(P.shL.x - P.shR.x) || 1;
       const fr = floorFix ? (floor * Math.PI) / 180 : 0;
       const dSh = midOf(P.shL, P.shR), dAn = midOf(P.ankL, P.ankR);
@@ -6122,7 +6136,7 @@ function analyzePose(raw, { view, W, H, floorFix }) {
       if (Math.abs(floor) > 1.5)
         notes.push(`바닥선(발목)이 ${Math.abs(r1(floor))}° 기울어 있습니다 — 촬영 각도 영향일 수 있어 '바닥선 보정'을 켜고 다시 확인해 보세요.`);
     }
-    return { items, notes, floor: r1(floor) };
+    return { items: calculatedItems, notes, floor: r1(floor), invalidMeasurements };
   }
   const pick = (a, b) => {
     const pa = P[a], pb = P[b];
@@ -6134,7 +6148,7 @@ function analyzePose(raw, { view, W, H, floorFix }) {
   const hip = P.hip || pick("hipL", "hipR");
   const knee = P.knee || pick("kneeL", "kneeR");
   const ank = P.ank || pick("ankL", "ankR");
-  if (!(ear && sh && hip)) return { items: [], notes: ["귀·어깨·골반이 인식되지 않았습니다."], floor: 0 };
+  if (!(ear && sh && hip)) return { items: [], notes: ["귀·어깨·골반이 인식되지 않았습니다."], floor: 0, invalidMeasurements };
   let face = P.nose ? Math.sign(P.nose.x - sh.x) : Math.sign(ear.x - sh.x);
   if (!face) face = 1;
   const fw = (v) => (v * face > 0 ? "앞쪽" : "뒤쪽");
@@ -6151,7 +6165,7 @@ function analyzePose(raw, { view, W, H, floorFix }) {
     items.push({ key: "align", label: "전신 수직 정렬", value: Math.abs(r1(glob)), unit: "°", level: lvDown(Math.abs(glob), 4, 8), at: ank, up: -1, skipBadge: true, dir: Math.abs(glob) < 1 ? "정렬 양호" : `머리가 ${fw(glob)}`, desc: `복사뼈에서 올린 수직선 대비 귀가 ${Math.abs(r1(glob))}° ${fw(glob)}에 있습니다.`, tip: "발-골반-흉곽-머리 스택 재정렬 (벽 서기 30초 × 3)" });
   }
   notes.push("측면 골반 전·후방 경사는 사진 관절점만으로는 정확히 계산할 수 없어 제외했습니다. 촉진(ASIS·PSIS)으로 확인해 주세요.");
-  return { items, notes, floor: 0 };
+  return { items: calculatedItems, notes, floor: 0, invalidMeasurements };
 }
 function badge(ctx, x, y, text, color, up, placed, W, H) {
   ctx.font = "700 15px Pretendard, -apple-system, sans-serif";
@@ -6287,7 +6301,7 @@ async function composeResultCard({ bRec, aRec, bSrc, aSrc, keys, colors, texts, 
      사진 위 원·문구가 서로 겹쳐 결과가 안 보이던 문제를 피한다. */
   const drawMarks = (rec, map, x0, color, isAfter) => {
     const pts = rec?.pts || {};
-    const mFor = (k) => (rec?.metrics || []).find((m) => m.key === k);
+    const mFor = (k) => validPostureMetrics(rec).find((m) => m.key === k);
     ctx.save(); ctx.beginPath(); ctx.rect(x0, TOP, PW, PH); ctx.clip();
     keys.forEach((k, i) => {
       const joints = (CARD_JOINTS[k] || []).map((j) => pts[j]).filter(Boolean);
@@ -6347,7 +6361,7 @@ const josa = (w, a, b) => {
 };
 /* 개선 문구 자동 초안 */
 function cardDrafts(bRec, aRec, keys) {
-  const g = (rec, k) => (rec?.metrics || []).find((m) => m.key === k);
+  const g = (rec, k) => validPostureMetrics(rec).find((m) => m.key === k);
   const lines = [];
   keys.forEach((k) => {
     const b = g(bRec, k), a = g(aRec, k);
@@ -6385,17 +6399,19 @@ function ResultCardMaker({ member, saved, centerName, onToast, onGoAnalyze, init
   const sameView = Boolean(bRec && aRec && normalizePostureView(bRec.view) === normalizePostureView(aRec.view));
   const both = Boolean(bRec && aRec && bRec.id !== aRec.id && sameView);
   const commonKeys = both
-    ? Object.keys(CARD_JOINTS).filter((k) => (bRec.metrics || []).some((m) => m.key === k) && (aRec.metrics || []).some((m) => m.key === k))
+    ? Object.keys(CARD_JOINTS).filter((k) => validPostureMetrics(bRec).some((m) => m.key === k) && validPostureMetrics(aRec).some((m) => m.key === k))
     : [];
   const [sel, setSel] = useState(null);
   const keys = sel || commonKeys.filter((k) => {
-    const b = (bRec?.metrics || []).find((m) => m.key === k);
+    const b = validPostureMetrics(bRec).find((m) => m.key === k);
     return b && b.level !== "good";
   }).slice(0, 3);
   const cb = INK2;
   const ca = BRAND;
   const textColor = INK;
-  const confirmedCard = both ? saved.find((record) => record?.assessmentId === aRec?.assessmentId && record?.memberResultCard?.status === AI_STATUSES.CONFIRMED)?.memberResultCard : null;
+  const confirmedCard = both && !postureRecordHasInvalidMeasurements(bRec) && !postureRecordHasInvalidMeasurements(aRec)
+    ? saved.find((record) => record?.assessmentId === aRec?.assessmentId && !postureRecordHasInvalidMeasurements(record) && record?.memberResultCard?.status === AI_STATUSES.CONFIRMED)?.memberResultCard
+    : null;
   const confirmedCardText = confirmedCard?.teacherEditedOutput || confirmedCard?.output || null;
   const drafts = useMemo(() => {
     if (!both) return { title: "", c1: "", c2: "", close: "" };
@@ -6613,10 +6629,10 @@ function BodyAIReview({ member, rec, records, onUpdate, onToast }) {
     if (selected.length) return [...new Set(selected)];
     return POSTURE_VIEWS.map(({ key }) => key).filter((key) => group.some((record) => normalizePostureView(record?.view) === key));
   }, [group]);
-  const viewRecords = useMemo(() => expectedViews.map((key) => group.find((record) => normalizePostureView(record?.view) === key)).filter(Boolean), [group, expectedViews]);
+  const viewRecords = useMemo(() => expectedViews.map((key) => group.find((record) => normalizePostureView(record?.view) === key)).filter(Boolean).map((record) => ({ ...record, metrics: validPostureMetrics(record) })), [group, expectedViews]);
   const storedRecord = group.find((record) => record?.aiAnalysis) || rec;
-  const storedAnalysis = storedRecord?.aiAnalysis || null;
-  const storedCard = storedRecord?.memberResultCard || null;
+  const storedAnalysis = postureRecordHasInvalidMeasurements(storedRecord) ? null : storedRecord?.aiAnalysis || null;
+  const storedCard = postureRecordHasInvalidMeasurements(storedRecord) ? null : storedRecord?.memberResultCard || null;
   const [teacherNote, setTeacherNote] = useState(storedAnalysis?.teacherNote || rec?.comment || "");
   const [original, setOriginal] = useState(storedAnalysis?.output || null);
   const [draft, setDraft] = useState(storedAnalysis?.teacherEditedOutput || storedAnalysis?.output || null);
@@ -6630,7 +6646,7 @@ function BodyAIReview({ member, rec, records, onUpdate, onToast }) {
   const connected = aiProvider.getStatus().status === "connected";
   const ready = expectedViews.length > 0 && expectedViews.every((key) => {
     const record = group.find((item) => normalizePostureView(item?.view) === key);
-    return Boolean(record?.pts && (record?.metrics || []).length);
+    return Boolean(record?.pts && validPostureMetrics(record).length);
   });
 
   useEffect(() => {
@@ -6765,7 +6781,7 @@ function SavedPoseViewer({ rec, member, records, onUpdate, memberName, onClose, 
               <p className="mt-1 text-xs text-white opacity-60">다른 기기에서 만든 기록이거나 저장 공간이 부족했던 경우입니다. 수치는 아래에 그대로 있습니다.</p>
             </div>}
         <div className="mx-auto mt-3 space-y-2" style={{ maxWidth: 620 }}>
-          {(rec.metrics || []).map((m, i) => (
+          {validPostureMetrics(rec).map((m, i) => (
             <div key={i} className="flex items-center gap-2 rounded-2xl px-3 py-2.5" style={{ backgroundColor: "rgba(255,255,255,0.1)" }}>
               <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: LV_COLOR[m.level] || SUB }} />
               <span className="min-w-0 flex-1 truncate text-sm font-bold text-white">{m.label}</span>
@@ -8023,7 +8039,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
   };
   const save = async () => {
     if (!res || !res.items.length || poseQuality.missing.length) {
-      deviceLog("pose_save_blocked", { memberId: analysisMemberId.current, assessmentId: assessmentId.current, view, state: poseQuality.missing.length ? "missing_joints" : "no_measurements" });
+      deviceLog("pose_save_blocked", { memberId: analysisMemberId.current, assessmentId: assessmentId.current, view, state: poseQuality.missing.length ? "missing_joints" : res?.invalidMeasurements?.length ? "invalid_measurements" : "no_measurements", reasons: res?.invalidMeasurements?.map((item) => `${item.key}:${item.reason}`) || [] });
       onToast?.({ ok: false, msg: "미검출 관절을 보정하고 측정값을 확인한 뒤 저장해 주세요." });
       return;
     }
@@ -8065,13 +8081,15 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
       scope, selectedViews: captureKeys, assessmentRole: analysisRole.current, assessmentStatus: captureViews.every(({ key }) => !!nextAnalyzed[key]) ? "completed" : "analyzing",
       confidence: { threshold: POSE_CONFIDENCE_MIN, lowJoints: poseQuality.low, missingJoints: [] },
       editedJoints: [...editedJoints], assessmentComplete: captureViews.every(({ key }) => !!nextAnalyzed[key]),
-      metrics: res.items.map((i) => ({ key: i.key, label: i.label, value: i.value, unit: i.unit, level: i.level, dir: i.dir })),
+      measurementTransform: { coordinateSpace: "normalized", width: img.w, height: img.h },
+      metrics: res.items.map((i) => ({ key: i.key, label: i.label, value: i.value, unit: i.unit, level: i.level, dir: i.dir, validity: i.validity })),
       interpretation: null, interpretationStatus: "not_connected",
     });
     if (stored === false) {
       onToast?.({ ok: false, msg: "변화 기록을 저장하지 못했습니다. 현재 관절 수정 내용은 유지됩니다." });
       return;
     }
+    if (res.invalidMeasurements?.length) deviceLog("pose_measurements_rejected", { memberId: analysisMemberId.current, assessmentId: assessmentId.current, view, source, count: res.invalidMeasurements.length, reasons: res.invalidMeasurements.map((item) => `${item.key}:${item.reason}`) });
     deviceLog("pose_saved", { memberId: analysisMemberId.current, assessmentId: assessmentId.current, view, storage: "indexedDB", source, count: res.items.length });
     setAnalyzedViews(nextAnalyzed);
     setPts(null); setOriginalPts(null); setManual(null); setChoice(false); setZoom(1); setPan({ x: 0, y: 0 }); setPoseQuality({ missing: [], low: [] }); setEditedJoints([]);
@@ -8542,7 +8560,7 @@ function seqAdvice(member, schedule, photos) {
   if (first) return { first: true, name: member.name || "회원" };
   const last = notes[0] || null;
   const poses = (photos?.[member.id]?.poses || []).filter((p) => p && p.metrics);
-  const bad = (poses[0]?.metrics || []).filter((m) => m.level !== "good").map((m) => m.label);
+  const bad = validPostureMetrics(poses[0]).filter((m) => m.level !== "good").map((m) => m.label);
   const text = [
     ...(member.focus || []),
     last?.body || "",
@@ -8656,7 +8674,7 @@ function NextClassCard({ members, schedule, photos, onStatus, onOpenMember, onWr
   const rest = left(m);
   const cautions = [...(m.focus || [])];
   const poses = (photos?.[m.id]?.poses || []).filter((p) => p && p.metrics);
-  (poses[0]?.metrics || []).filter((x) => x.level === "bad").forEach((x) => cautions.push(x.label.replace(" 각도", "")));
+  validPostureMetrics(poses[0]).filter((x) => x.level === "bad").forEach((x) => cautions.push(x.label.replace(" 각도", "")));
   return (
     <Card className="p-5">
       <div className="flex items-center gap-2">
@@ -9157,7 +9175,7 @@ function AnalysisTab({ members, photos, selectedId, onSelect, onOpen, onToast, h
               </p>
               <Sub className="block">{ymd(rec.date)}{timeOf(rec.createdAt || rec.at) ? ` · ${timeOf(rec.createdAt || rec.at)}` : ""} · {rec.view === "front" ? "전면" : rec.view === "side" ? "측면" : "후면"}</Sub>
               <div className="mt-1 flex flex-wrap gap-1">
-                {(rec.metrics || []).slice(0, 3).map((x) => (
+                {validPostureMetrics(rec).slice(0, 3).map((x) => (
                   <span key={x.key} className="flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-bold" style={{ backgroundColor: CANVAS, color: INK2 }}>
                     <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: levelDot[x.level] || SUB }} />
                     {x.label.replace(" 각도", "")} {x.value}{x.unit}
@@ -9353,7 +9371,7 @@ function LegacyAssessmentWorkspace({ member, photos, settings, initialSavedId, o
     setScreen("role");
   };
   const resultPoses = selected?.poses.filter((pose) => Array.isArray(pose.metrics) && pose.metrics.length) || [];
-  const resultMetrics = resultPoses.flatMap((pose) => pose.metrics.map((metric) => ({ ...metric, view: pose.view })));
+  const resultMetrics = resultPoses.flatMap((pose) => validPostureMetrics(pose).map((metric) => ({ ...metric, view: pose.view })));
   const goodMetrics = resultMetrics.filter((metric) => metric.level === "good").slice(0, 3);
   const cautionMetrics = resultMetrics.filter((metric) => metric.level && metric.level !== "good").slice(0, 3);
   const aiPayload = resultPoses.map((pose) => pose.aiAnalysis?.teacherEditedOutput || pose.aiAnalysis?.output).find(Boolean) || null;
@@ -9542,10 +9560,11 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
   const retake = getPostureRetakeStatus(completeSets);
   const selectedDate = selected?.completedAt || selected?.at || "";
   const resultPoses = selected?.poses || [];
-  const resultMetrics = resultPoses.flatMap((pose) => (pose.metrics || []).map((metric) => ({ ...metric, view: pose.view })));
+  const resultMetrics = resultPoses.flatMap((pose) => validPostureMetrics(pose).map((metric) => ({ ...metric, view: pose.view })));
   const goodMetrics = resultMetrics.filter((metric) => metric.level === "good").slice(0, 3);
   const cautionMetrics = resultMetrics.filter((metric) => metric.level && metric.level !== "good").slice(0, 3);
   const aiTextForSet = (set) => {
+    if ((set?.poses || []).some(postureRecordHasInvalidMeasurements)) return "";
     const confirmed = (set?.poses || []).map((pose) => pose.aiAnalysis).find((analysis) => analysis?.status === AI_STATUSES.CONFIRMED);
     const payload = confirmed?.teacherEditedOutput || confirmed?.output || null;
     return payload ? [payload.bodyCharacteristics, payload.asymmetries, payload.pelvis, payload.thorax, payload.scapula, payload.head, payload.knees, payload.feet]
@@ -9553,6 +9572,7 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
   };
   const memoForSet = (set) => (set?.poses || []).map((pose) => pose.comment || pose.teacherMemo || "").find(Boolean) || "";
   const reportTextForSet = (set) => {
+    if ((set?.poses || []).some(postureRecordHasInvalidMeasurements)) return "";
     const confirmed = (set?.poses || []).map((pose) => pose.memberResultCard).find((card) => card?.status === AI_STATUSES.CONFIRMED);
     const payload = confirmed?.teacherEditedOutput || confirmed?.output || null;
     return payload ? [payload.summary, ...(payload.highlights || []), ...(payload.recommendations || []), ...(payload.precautions || [])].filter(Boolean).join(" · ") : "";
@@ -9740,7 +9760,7 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
   }, [selected, completeFullSets, beforeSet?.id, afterSet?.id]);
   const reportView = useMemo(() => comparableViewsFor(reportPair.before, reportPair.after).includes(compareView) ? compareView : comparableViewsFor(reportPair.before, reportPair.after)[0] || null, [reportPair.before, reportPair.after, compareView]);
   const metricChanges = useMemo(() => compareAssessmentMetrics(reportPair.before, reportPair.after, { view: reportView, limit: 4 }), [reportPair.before, reportPair.after, reportView]);
-  const entrySummary = lastCompleted?.poses.flatMap((pose) => pose.metrics || []).slice(0, 2) || [];
+  const entrySummary = lastCompleted?.poses.flatMap((pose) => validPostureMetrics(pose)).slice(0, 2) || [];
   const reportRetakeDate = selectedDate ? shift(selectedDate.slice(0, 10), POSTURE_RETAKE_DAYS.recommended) : "";
   const excludedComparisonId = setPicker === "before" ? afterSet?.id : setPicker === "after" ? beforeSet?.id : null;
   const setOptions = selectComparisonAssessmentOptions(completeSets, { excludeId: excludedComparisonId }).map((set) => ({ value: set.id, label: formatMemberLessonDate(setDate(set)), description: `${set.scope === "partial" ? "부위별" : "전신"} · ${methodLabel(set.method)} · ${set.selectedViews.filter((view) => POSTURE_VIEW_KEYS.includes(view)).map(postureViewLabel).join("/")}` }));

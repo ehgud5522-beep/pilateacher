@@ -3,6 +3,8 @@ export const POSTURE_RETAKE_DAYS = Object.freeze({
   recommended: 45,
 });
 
+import { validPostureMetrics } from "./measurement-validity.js";
+
 export const POSTURE_VIEW_DEFS = Object.freeze([
   Object.freeze({ key: "front", label: "전면", analysisPlane: "front" }),
   Object.freeze({ key: "leftSide", label: "좌측면", analysisPlane: "side" }),
@@ -395,11 +397,11 @@ export function compareAssessmentMetrics(beforeSet, afterSet, { view = null, lim
   if (!beforeSet || !afterSet) return [];
   const normalizedView = view ? normalizePostureView(view) : null;
   const records = (set) => (set?.poses || []).filter((pose) => !normalizedView || normalizePostureView(pose.view) === normalizedView);
-  const beforeMetrics = new Map(records(beforeSet).flatMap((pose) => (pose.metrics || []).map((metric) => [
+  const beforeMetrics = new Map(records(beforeSet).flatMap((pose) => validPostureMetrics(pose).map((metric) => [
     `${normalizePostureView(pose.view)}:${metric.key}`,
     metric,
   ])));
-  return records(afterSet).flatMap((pose) => (pose.metrics || []).map((metric) => {
+  return records(afterSet).flatMap((pose) => validPostureMetrics(pose).map((metric) => {
     const previous = beforeMetrics.get(`${normalizePostureView(pose.view)}:${metric.key}`);
     const beforeValue = Number(previous?.value), afterValue = Number(metric?.value);
     if (!Number.isFinite(beforeValue) || !Number.isFinite(afterValue)) return null;

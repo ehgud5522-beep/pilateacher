@@ -155,12 +155,12 @@ test("reference lines are derived from saved normalized pose points without muta
 
 test("comparison metrics match the same view and metric and show neutral before-to-after values", () => {
   const beforeSet = { poses: [
-    { view: "front", metrics: [{ key: "shoulder", label: "어깨 기울기", value: 4, unit: "°" }, { key: "align", label: "정렬", value: 2, unit: "°" }] },
-    { view: "back", metrics: [{ key: "shoulder", label: "어깨 기울기", value: -3, unit: "°" }] },
+    { view: "front", metrics: [{ key: "shoulder", label: "어깨 기울기", value: 4, unit: "°", validity: { valid: true } }, { key: "align", label: "정렬", value: 2, unit: "°", validity: { valid: true } }] },
+    { view: "back", metrics: [{ key: "shoulder", label: "어깨 기울기", value: -3, unit: "°", validity: { valid: true } }] },
   ] };
   const afterSet = { poses: [
-    { view: "front", metrics: [{ key: "shoulder", label: "어깨 기울기", value: 1.5, unit: "°" }, { key: "new", label: "신규", value: 9, unit: "°" }] },
-    { view: "back", metrics: [{ key: "shoulder", label: "어깨 기울기", value: -4, unit: "°" }] },
+    { view: "front", metrics: [{ key: "shoulder", label: "어깨 기울기", value: 1.5, unit: "°", validity: { valid: true } }, { key: "new", label: "신규", value: 9, unit: "°", validity: { valid: true } }] },
+    { view: "back", metrics: [{ key: "shoulder", label: "어깨 기울기", value: -4, unit: "°", validity: { valid: true } }] },
   ] };
   const before = structuredClone({ beforeSet, afterSet });
   const front = compareAssessmentMetrics(beforeSet, afterSet, { view: "front" });

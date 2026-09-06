@@ -530,7 +530,7 @@ test("CASE 8: legacy duplicates are not mutated and only the deterministic lates
 
 test("all active new-analysis entry points use the common guard", async () => {
   const { source, workspace } = await assessmentWorkspaceSource();
-  assert.equal((workspace.match(/onClick=\{requestStartNew\}/g) || []).length, 4);
+  assert.equal((workspace.match(/onClick=\{requestStartNew\}/g) || []).length, 3);
   assert.doesNotMatch(workspace, /onClick=\{startNew\}/);
   assert.match(workspace, /if \(initialMode !== "new"\) return;[\s\S]*requestStartNew\(\);/);
   assert.match(source, /onAssess\?\.\(\{ mode: "new" \}\)/);

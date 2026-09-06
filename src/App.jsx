@@ -4280,12 +4280,7 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
         <button aria-label="다시 실행" disabled={!redoStack.length} onClick={redoMarks} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl disabled:opacity-30" style={{ backgroundColor: "rgba(255,255,255,.08)" }}><Redo2 size={15} color="#fff" /></button>
         <button onClick={async () => { const next = marks.map((mark) => ({ ...mark, source: mark.source || "manual" })); try { const stored = await onSave(next); if (stored === false) throw Object.assign(new Error("annotation save rejected"), { code: "annotation_save_rejected" }); initialMarks.current = JSON.stringify(next); onClose(); } catch (error) { deviceLog("assessment_annotation_save_failed", { memberId: photo.memberId, assessmentId: photo.assessmentId, view: photo.view, ...deviceError(error) }); onToast?.({ ok: false, msg: "표시를 저장하지 못했습니다. 현재 편집 내용은 유지됩니다. 다시 시도해 주세요." }); } }} className="flex h-11 shrink-0 items-center rounded-xl px-4 text-xs font-extrabold text-white" style={{ backgroundColor: BRAND, boxShadow: "0 5px 14px rgba(76,67,153,.35)" }}>완료</button>
       </div>
-      {fresh && (
-        <p className="mx-4 mb-1 mt-2 rounded-xl px-3 py-2 text-center text-xs font-bold text-white" style={{ backgroundColor: "rgba(76,67,153,.88)", border: "1px solid rgba(185,178,244,.28)" }}>
-          사진이 등록됐습니다 · 필요한 표시나 손메모를 남겨 주세요 (건너뛰려면 왼쪽 위 X)
-        </p>
-      )}
-      <div className="flex min-h-0 flex-1 items-center justify-center px-2 py-1">
+      <div className="flex min-h-0 flex-1 items-center justify-center px-1.5 py-1">
         <div ref={wrapRef} className="relative overflow-hidden rounded-xl" style={{ aspectRatio: "3 / 4", maxHeight: "100%", maxWidth: "min(100%, 540px)", width: "100%", border: "1px solid rgba(255,255,255,.12)", boxShadow: "0 16px 36px rgba(0,0,0,.34)" }}>
           <canvas ref={canvasRef} className="absolute inset-0 touch-none" onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up}
             style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin: "center center" }} />
@@ -4295,35 +4290,34 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
           )}
         </div>
       </div>
-      <div className="px-1.5 pb-1.5 pt-1.5" style={{ background: "linear-gradient(180deg, rgba(19,24,34,.9), rgba(15,19,28,.98))", borderTop: "1px solid rgba(255,255,255,.07)", boxShadow: "0 -12px 28px rgba(0,0,0,.22)" }}>
-        <div className="rounded-xl p-1.5" style={{ backgroundColor: "rgba(31,38,52,.94)", border: "1px solid rgba(255,255,255,.08)", boxShadow: "0 8px 24px rgba(0,0,0,.2)" }}>
-          <div className="grid grid-cols-3 gap-1" data-posture-tool-grid>
+      <div className="px-1.5 pb-1 pt-1" style={{ background: "linear-gradient(180deg, rgba(19,24,34,.9), rgba(15,19,28,.98))", borderTop: "1px solid rgba(255,255,255,.07)", boxShadow: "0 -12px 28px rgba(0,0,0,.22)" }}>
+        <div className="rounded-xl p-1" style={{ backgroundColor: "rgba(31,38,52,.94)", border: "1px solid rgba(255,255,255,.08)", boxShadow: "0 8px 24px rgba(0,0,0,.2)" }}>
+          <div className="grid grid-cols-6 gap-1" data-posture-tool-grid>
             {toolItems.map(({ k, l, I }) => {
               const active = k === "guide" ? ["hline", "vline"].includes(tool) : k === "ruler" ? Boolean(ruler) : tool === k;
-              return <button key={k} onClick={() => { if (k === "guide") setGuideSheet(true); else if (k === "ruler") { setRuler((value) => value ? null : { cx: 0.5, cy: 0.58, deg: 0 }); pickTool("pen"); } else pickTool(k); }} className="flex h-11 min-w-0 items-center justify-center gap-1 rounded-lg px-1 text-[11px] font-bold"
+              return <button key={k} onClick={() => { if (k === "guide") setGuideSheet(true); else if (k === "ruler") { setRuler((value) => value ? null : { cx: 0.5, cy: 0.58, deg: 0 }); pickTool("pen"); } else pickTool(k); }} className="flex h-10 min-w-0 flex-col items-center justify-center gap-0.5 rounded-lg px-0.5 text-[9px] font-bold"
                 style={active ? { backgroundColor: BRAND, color: "#fff", boxShadow: "0 5px 12px rgba(76,67,153,.32)" } : { backgroundColor: "rgba(255,255,255,.055)", color: "rgba(255,255,255,.76)", border: "1px solid rgba(255,255,255,.055)" }}
-                aria-pressed={active}><I size={20} strokeWidth={2.1} /><span className="whitespace-nowrap">{l}</span></button>;
+                aria-pressed={active}><I size={16} strokeWidth={2.1} /><span className="whitespace-nowrap">{l}</span></button>;
             })}
           </div>
-          <div className="mt-1 border-t pt-1" style={{ borderColor: "rgba(255,255,255,.08)" }}>
+          <details className="mt-1 border-t pt-1" style={{ borderColor: "rgba(255,255,255,.08)" }}>
+            <summary className="flex h-9 cursor-pointer list-none items-center justify-center gap-2 rounded-lg text-[10px] font-bold text-white/75"><span className="h-3 w-3 rounded-full" style={{ backgroundColor: color, border: "1px solid rgba(255,255,255,.45)" }} />색상·굵기 <ChevronDown size={13} /></summary>
             <div className="flex flex-wrap items-center justify-center gap-0.5" data-posture-color-grid>
               {[...ANNOTATION_PRESET_COLORS, ...customRecentColors].map(({ color: optionColor, label: optionLabel }) => (
-                <button key={optionColor} onClick={() => chooseColor(optionColor)} className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full" aria-label={optionLabel} aria-pressed={color === optionColor}>
-                  <span className="flex h-8 w-8 items-center justify-center rounded-full" style={{ backgroundColor: optionColor, border: color === optionColor ? "3px solid #FFFFFF" : "1px solid rgba(255,255,255,.22)", boxShadow: color === optionColor ? "0 0 0 2px #6C5FD4" : optionColor === "#FFFFFF" ? "inset 0 0 0 1px rgba(0,0,0,.14)" : "none" }}>
-                    {color === optionColor && <Check size={13} strokeWidth={3} color={["#FFFFFF", "#FFD43B"].includes(optionColor) ? "#17171F" : "#FFFFFF"} />}
+                <button key={optionColor} onClick={() => chooseColor(optionColor)} className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-full" aria-label={optionLabel} aria-pressed={color === optionColor}>
+                  <span className="flex h-7 w-7 items-center justify-center rounded-full" style={{ backgroundColor: optionColor, border: color === optionColor ? "3px solid #FFFFFF" : "1px solid rgba(255,255,255,.22)", boxShadow: color === optionColor ? "0 0 0 2px #6C5FD4" : optionColor === "#FFFFFF" ? "inset 0 0 0 1px rgba(0,0,0,.14)" : "none" }}>
+                    {color === optionColor && <Check size={12} strokeWidth={3} color={["#FFFFFF", "#FFD43B"].includes(optionColor) ? "#17171F" : "#FFFFFF"} />}
                   </span>
                 </button>
               ))}
-              <button type="button" onClick={openColorPicker} className="relative flex h-11 min-w-[44px] shrink-0 items-center justify-center gap-0.5 rounded-lg" style={{ color: "#fff", backgroundColor: "rgba(255,255,255,.065)", border: "1px solid rgba(255,255,255,.10)" }} aria-label="다른 색 직접 선택">
-                <Plus size={13} /><Palette size={14} />
-              </button>
+              <button type="button" onClick={openColorPicker} className="relative flex h-10 min-w-[40px] shrink-0 items-center justify-center gap-0.5 rounded-lg" style={{ color: "#fff", backgroundColor: "rgba(255,255,255,.065)", border: "1px solid rgba(255,255,255,.10)" }} aria-label="다른 색 직접 선택"><Plus size={12} /><Palette size={13} /></button>
             </div>
-          </div>
-          <div className="mt-1 flex min-h-11 items-center gap-1 border-t pt-1" style={{ borderColor: "rgba(255,255,255,.08)" }}>
-            <span className="mr-auto text-[10px] font-bold text-white">{tool === "memo" || selectedMark?.tool === "text" ? "손메모 크기" : "선 굵기"}</span>
-            {(tool === "memo" || selectedMark?.tool === "text" ? HANDWRITING_SIZE_OPTIONS : [{ value: 2, label: "얇게" }, { value: 4, label: "보통" }, { value: 6, label: "굵게" }]).map((option) => <button type="button" key={option.value} onClick={() => tool === "memo" || selectedMark?.tool === "text" ? setHandwritingSize(option.value) : setWidth(option.value)} className="flex h-11 min-w-[48px] items-center justify-center gap-1 rounded-md px-1.5 text-[10px] font-bold" style={{ backgroundColor: closestHandwritingWidth(width) === option.value ? "#FFFFFF" : "rgba(255,255,255,.06)", color: closestHandwritingWidth(width) === option.value ? "#17171F" : "rgba(255,255,255,.72)", border: `1px solid ${closestHandwritingWidth(width) === option.value ? "#FFFFFF" : "rgba(255,255,255,.07)"}` }}><span className="inline-block w-3 rounded-full" style={{ height: Math.max(1, option.value / 2), backgroundColor: closestHandwritingWidth(width) === option.value ? "#17171F" : "#FFFFFF" }} />{option.label}</button>)}
-            {selectedMark?.tool === "text" && <button type="button" onClick={deleteSelectedMark} aria-label="선택한 손메모 삭제" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: "rgba(255,59,48,.16)", color: "#FF8A84", border: "1px solid rgba(255,59,48,.24)" }}><Trash2 size={15} /></button>}
-          </div>
+            <div className="flex min-h-10 items-center gap-1 border-t" style={{ borderColor: "rgba(255,255,255,.08)" }}>
+              <span className="mr-auto text-[10px] font-bold text-white">{tool === "memo" || selectedMark?.tool === "text" ? "손메모 크기" : "선 굵기"}</span>
+              {(tool === "memo" || selectedMark?.tool === "text" ? HANDWRITING_SIZE_OPTIONS : [{ value: 2, label: "얇게" }, { value: 4, label: "보통" }, { value: 6, label: "굵게" }]).map((option) => <button type="button" key={option.value} onClick={() => tool === "memo" || selectedMark?.tool === "text" ? setHandwritingSize(option.value) : setWidth(option.value)} className="flex h-10 min-w-[46px] items-center justify-center gap-1 rounded-md px-1 text-[10px] font-bold" style={{ backgroundColor: closestHandwritingWidth(width) === option.value ? "#FFFFFF" : "rgba(255,255,255,.06)", color: closestHandwritingWidth(width) === option.value ? "#17171F" : "rgba(255,255,255,.72)", border: `1px solid ${closestHandwritingWidth(width) === option.value ? "#FFFFFF" : "rgba(255,255,255,.07)"}` }}><span className="inline-block w-3 rounded-full" style={{ height: Math.max(1, option.value / 2), backgroundColor: closestHandwritingWidth(width) === option.value ? "#17171F" : "#FFFFFF" }} />{option.label}</button>)}
+              {selectedMark?.tool === "text" && <button type="button" onClick={deleteSelectedMark} aria-label="선택한 손메모 삭제" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: "rgba(255,59,48,.16)", color: "#FF8A84", border: "1px solid rgba(255,59,48,.24)" }}><Trash2 size={15} /></button>}
+            </div>
+          </details>
         </div>
         <div className="mt-1 flex min-h-11 items-center gap-1.5">
           <p className="min-w-0 flex-1 px-1 text-[10px] font-semibold leading-snug" style={{ color: selectedMark ? "#C9C4FF" : "rgba(255,255,255,.52)" }}>{instruction}</p>
@@ -6212,14 +6206,6 @@ function PoseMock() {
 /* 저장해 둔 체형 분석을 다시 크게 보는 화면 */
 
 /* ================= 결과 카드 (마케팅용 비포/애프터) ================= */
-const CARD_COLORS = [
-  { k: "white", c: "#FFFFFF", name: "흰색" },
-  { k: "yellow", c: "#FFD43B", name: "노랑" },
-  { k: "lavender", c: "#8A84C4", name: "라벤더" },
-  { k: "red", c: "#FF5A5A", name: "빨강" },
-  { k: "green", c: "#2FD07A", name: "초록" },
-  { k: "sky", c: "#4CC3FF", name: "하늘" },
-];
 /* 항목 → 원을 그릴 관절 (정면/측면) */
 const CARD_JOINTS = {
   shoulder: ["shL", "shR"], pelvis: ["hipL", "hipR"], knee: ["kneeL", "kneeR"],
@@ -6227,6 +6213,7 @@ const CARD_JOINTS = {
   fha: ["ear"], trunk: ["sh", "hip"], kneeSide: ["knee"], align: ["sh", "hip", "knee"],
 };
 const CARD_SHORT = { shoulder: "어깨", pelvis: "골반", knee: "무릎", head: "머리", twist: "어깨 회전", fha: "거북목", trunk: "몸통 기울기", kneeSide: "무릎(측면)", align: "정렬" };
+const memberMetricValue = (value, unit) => unit === "°" && Number.isFinite(Number(value)) ? String(Math.round(Number(value))) : String(value ?? "");
 
 async function loadImg(src) {
   return new Promise((res, rej) => { const i = new window.Image(); i.onload = () => res(i); i.onerror = rej; i.src = src; });
@@ -6306,9 +6293,7 @@ async function composeResultCard({ bRec, aRec, bSrc, aSrc, keys, colors, texts, 
         ctx.beginPath(); ctx.arc(q.x, q.y, 7, 0, Math.PI * 2); ctx.fill();
       });
       const m = mFor(k);
-      const txt = isAfter
-        ? `${CARD_SHORT[k] || k} ${m ? `${m.value}${m.unit}` : ""} 개선`.trim()
-        : `${CARD_SHORT[k] || k} ${m ? `${m.value}${m.unit}` : ""}`.trim();
+      const txt = `${CARD_SHORT[k] || k} ${m ? `${memberMetricValue(m.value, m.unit)}${m.unit}` : ""}${isAfter ? " · AFTER" : ""}`.trim();
       cardChip(ctx, txt, x0 + PW / 2, TOP + 30 + i * 46, { bg: "rgba(20,20,28,.84)", fg: color === "#FFFFFF" ? "#fff" : color, maxX: x0 + PW });
     });
     ctx.restore();
@@ -6361,15 +6346,15 @@ function cardDrafts(bRec, aRec, keys) {
   const lines = [];
   keys.forEach((k) => {
     const b = g(bRec, k), a = g(aRec, k);
-    if (b && a && Number.isFinite(b.value) && Number.isFinite(a.value) && a.value < b.value) {
-      lines.push(`${josa(b.label.replace(" 각도", ""), "이", "가")} ${b.value}${b.unit} → ${a.value}${a.unit}로 개선되었습니다.`);
+    if (b && a && Number.isFinite(b.value) && Number.isFinite(a.value)) {
+      lines.push(`${josa(b.label.replace(" 각도", ""), "을", "를")} 전후 사진으로 함께 확인했습니다.`);
     } else if (a) {
-      lines.push(`${a.label.replace(" 각도", "")} ${a.value}${a.unit} · 좋은 정렬을 유지하고 있습니다.`);
+      lines.push(`${a.label.replace(" 각도", "")} 정렬을 확인했습니다.`);
     }
   });
   const names = keys.map((k) => CARD_SHORT[k] || k).slice(0, 2).join("·");
   return {
-    title: names ? `${names} 정렬 개선으로 바디라인이 달라졌어요!` : "체형이 이렇게 달라졌어요!",
+    title: names ? `${names} 정렬 변화를 함께 확인했어요!` : "체형 변화를 함께 확인했어요!",
     c1: lines[0] || "",
     c2: lines[1] || "",
     close: "가동성을 높이고, 근육의 균형을 바로잡는 것이 바른 체형의 시작입니다.",
@@ -6378,6 +6363,7 @@ function cardDrafts(bRec, aRec, keys) {
 
 function ResultCardMaker({ member, saved, centerName, onToast, onGoAnalyze, initialOpen = false, beforeAssessmentId = null, afterAssessmentId = null }) {
   const [open, setOpen] = useState(initialOpen);
+  const [showPairPicker, setShowPairPicker] = useState(false);
   const usable = saved.filter((p) => p && p.pts && (p.cleanBlobId || p.blobId));
   const [bId, setBId] = useState(null);
   const [aId, setAId] = useState(null);
@@ -6401,9 +6387,9 @@ function ResultCardMaker({ member, saved, centerName, onToast, onGoAnalyze, init
     const b = (bRec?.metrics || []).find((m) => m.key === k);
     return b && b.level !== "good";
   }).slice(0, 3);
-  const [cb, setCb] = useState("#FFFFFF");
-  const [ca, setCa] = useState("#FFD43B");
-  const [textColor, setTextColor] = useState("#17171F");
+  const cb = INK2;
+  const ca = BRAND;
+  const textColor = INK;
   const confirmedCard = both ? saved.find((record) => record?.assessmentId === aRec?.assessmentId && record?.memberResultCard?.status === AI_STATUSES.CONFIRMED)?.memberResultCard : null;
   const confirmedCardText = confirmedCard?.teacherEditedOutput || confirmedCard?.output || null;
   const drafts = useMemo(() => {
@@ -6509,7 +6495,7 @@ function ResultCardMaker({ member, saved, centerName, onToast, onGoAnalyze, init
                   {live ? (
                     <button onClick={build} className="block w-full">
                       <img src={live} alt="실시간 미리보기" className="w-full rounded-2xl" style={{ boxShadow: SHADOW }} {...IMGP} />
-                      <Sub className="mt-1 block text-center">아래에서 사진·색·문구를 바꾸면 바로 반영됩니다 · 누르면 크게 보고 저장</Sub>
+                      <Sub className="mt-1 block text-center">아래에서 항목·문구를 바꾸면 바로 반영됩니다 · 누르면 크게 보고 저장</Sub>
                     </button>
                   ) : keys.length ? (
                     <div className="flex items-center justify-center gap-2 rounded-2xl py-10" style={{ backgroundColor: CANVAS }}>
@@ -6521,7 +6507,8 @@ function ResultCardMaker({ member, saved, centerName, onToast, onGoAnalyze, init
                 </div>
               )}
               {locked && both && <div className="flex items-center gap-2 rounded-xl px-3 py-2" style={{ backgroundColor: CANVAS }}><Check size={14} style={{ color: GOOD }} /><span className="text-xs font-bold" style={{ color: INK2 }}>히스토리에서 선택한 Before / After를 사용합니다</span></div>}
-              {!locked && [{ slot: "b", label: "BEFORE", cur: bRec }, { slot: "a", label: "AFTER", cur: aRec }].map(({ slot, label, cur }) => (
+              {!locked && <button type="button" aria-expanded={showPairPicker} onClick={() => setShowPairPicker((value) => !value)} className="h-10 w-full rounded-xl text-xs font-bold" style={{ backgroundColor: CANVAS, color: INK }}>{showPairPicker ? "비교 사진 선택 닫기" : "비교 사진 바꾸기"}</button>}
+              {!locked && showPairPicker && [{ slot: "b", label: "BEFORE", cur: bRec }, { slot: "a", label: "AFTER", cur: aRec }].map(({ slot, label, cur }) => (
                 <div key={slot}>
                   <p className="mb-1 text-xs font-extrabold" style={{ color: SUB }}>{label} 사진 고르기 <span className="font-bold" style={{ color: PRIMARY }}>{usable.length}장 중</span></p>
                   <div className="flex flex-wrap gap-1.5">
@@ -6549,24 +6536,6 @@ function ResultCardMaker({ member, saved, centerName, onToast, onGoAnalyze, init
                       ))}
                     </div>
                   </div>
-                  {[{ l: "BEFORE 표시 색", v: cb, set: setCb }, { l: "AFTER 표시 색", v: ca, set: setCa }].map(({ l, v, set }) => (
-                    <div key={l}>
-                      <p className="mb-1 text-xs font-extrabold" style={{ color: SUB }}>{l}</p>
-                      <div className="flex gap-2">
-                        {CARD_COLORS.map((o) => (
-                          <button key={o.k} onClick={() => set(o.c)} aria-label={o.name}
-                            className="h-8 w-8 rounded-full"
-                            style={{ backgroundColor: o.c, border: o.c === "#FFFFFF" ? `1px solid ${LINE}` : "none", boxShadow: v === o.c ? `0 0 0 3px ${CARD}, 0 0 0 5px ${PRIMARY}` : "none" }} />
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                  <div>
-                    <p className="mb-1 text-xs font-extrabold" style={{ color: SUB }}>글자 색</p>
-                    <div className="flex flex-wrap gap-2">
-                      {[{ k: "ink", c: "#17171F", name: "검정" }, ...CARD_COLORS.filter((o) => o.c !== "#FFFFFF")].map((o) => <button key={o.k} type="button" onClick={() => setTextColor(o.c)} aria-label={o.name} className="h-8 w-8 rounded-full" style={{ backgroundColor: o.c, boxShadow: textColor === o.c ? `0 0 0 3px ${CARD}, 0 0 0 5px ${PRIMARY}` : "none" }} />)}
-                    </div>
-                  </div>
                   {[{ k: "title", l: "제목" }, { k: "c1", l: "체크 문장 1" }, { k: "c2", l: "체크 문장 2" }, { k: "close", l: "마무리 문장" }].map(({ k, l }) => (
                     <Field key={k} label={l} hint="자동 초안 · 고쳐 쓸 수 있어요">
                       <input value={T[k]} onChange={(e) => setTxt({ ...T, [k]: e.target.value })} className={inputCls} />
@@ -6592,7 +6561,7 @@ function ResultCardMaker({ member, saved, centerName, onToast, onGoAnalyze, init
           <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-4">
             <img src={preview.url} alt="결과 카드" className="block h-auto rounded-2xl" style={{ maxWidth: "min(100%, 640px)", maxHeight: "72%", objectFit: "contain" }} {...IMGP} />
             <p className="mt-3 text-center text-xs" style={{ color: "rgba(255,255,255,.7)" }}>
-              {preview.manual ? "위 사진을 길게 눌러 저장하세요" : "마음에 안 들면 닫고 색·문구를 바꿔 보세요"}
+              {preview.manual ? "위 사진을 길게 눌러 저장하세요" : "마음에 안 들면 닫고 항목·문구를 바꿔 보세요"}
             </p>
           </div>
           <div className="flex gap-2 px-4 pb-5 pt-3">
@@ -7170,6 +7139,11 @@ function PostureCaptureScreen({
     }
   }, [activeView, assessmentId, busy, captureWithSystemCamera, iosStableCaptureFallback, member?.id, nativePreviewAvailable, startMotion, stopCamera, syncPreviewBounds]);
 
+  useEffect(() => {
+    if (iosStableCaptureFallback || capturesComplete || pendingCapture || cameraStatus !== "idle") return;
+    void startCamera();
+  }, [cameraStatus, capturesComplete, iosStableCaptureFallback, pendingCapture, startCamera]);
+
   const captureBrowserFrame = async () => {
     const video = videoRef.current;
     if (!video?.videoWidth || !video?.videoHeight) throw new Error("browser preview is not ready");
@@ -7342,10 +7316,6 @@ function PostureCaptureScreen({
     custom: "기록할 부위를 프레임 중앙에 맞춰 주세요.",
   }[activeView] || "가이드 안에 촬영 대상을 맞춰 주세요.";
   const sensorTone = sensor.isLevel ? "#63D7A3" : sensor.status === SENSOR_STATUSES.active ? "#F2B84B" : "#C7CDD7";
-  const sensorLabel = iosStableCaptureFallback || sensor.status !== SENSOR_STATUSES.active
-    ? "촬영 가능"
-    : sensor.isLevel ? "촬영 적합" : "조정 필요";
-
   const screen = (
     <div className="fixed inset-0 z-[200] flex flex-col overflow-hidden" style={{ height: "100dvh", backgroundColor: nativePreviewAvailable && cameraStatus === "active" ? "transparent" : "#0D1016", color: "#fff" }}>
       <style>{`
@@ -7356,7 +7326,6 @@ function PostureCaptureScreen({
         <div className="flex h-12 items-center gap-2">
           <button type="button" onClick={handleBack} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full" style={{ backgroundColor: "rgba(255,255,255,.10)" }} aria-label={countdown != null ? "카운트다운 취소" : "촬영 화면 닫기"}>{countdown != null ? <X size={19} /> : <ChevronLeft size={20} />}</button>
           <span className="min-w-0 flex-1"><span className="block truncate text-sm font-extrabold">{member?.name || "회원"} · {roleLabel || "미분류"} 촬영</span><span className="block text-[10px] text-white/65">{completedCount}/{captureViews.length} 완료 · {postureViewLabel(activeView)}</span></span>
-          <span className="flex h-8 items-center gap-1 rounded-full px-2.5 text-[10px] font-bold" style={{ backgroundColor: "rgba(13,16,22,.66)", border: `1px solid ${sensorTone}`, color: sensorTone }}><span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: sensorTone }} />{sensorLabel}</span>
         </div>
         <div className="grid gap-1" style={{ gridTemplateColumns: `repeat(${captureViews.length}, minmax(0, 1fr))` }}>
           {captureViews.map((capture, index) => { const selected = capture.key === activeView; const complete = !!capturePhotos[capture.key]; return <button key={capture.key} type="button" disabled={countdown != null || cameraStatus === "capturing"} onClick={() => onSelectView(capture.key)} className="flex h-8 min-w-0 items-center justify-center gap-1 rounded-lg px-1 text-[10px] font-bold disabled:opacity-45" style={{ backgroundColor: selected ? "rgba(76,67,153,.92)" : complete ? "rgba(46,125,91,.72)" : "rgba(255,255,255,.10)", border: `1px solid ${selected ? "#B9B2F4" : "rgba(255,255,255,.14)"}` }}><span>{complete ? <Check size={10} /> : index + 1}</span><span className="truncate">{capture.label}</span></button>; })}
@@ -7373,19 +7342,17 @@ function PostureCaptureScreen({
               <span className="absolute left-[8%] right-[8%] top-[15%] border-t-2 border-dashed" style={{ borderColor: "currentColor" }} />
               <span className="absolute bottom-[15%] left-[8%] right-[8%] border-t-2 border-dashed" style={{ borderColor: "currentColor" }} />
               <span className="absolute bottom-[15%] left-1/2 top-[15%] border-l border-dashed opacity-75" style={{ borderColor: "currentColor" }} />
-              <span className="absolute left-[9%] top-[16%] rounded-md px-2 py-1 text-[10px] font-extrabold" style={{ backgroundColor: "rgba(13,16,22,.72)" }}>머리 기준 · 이 선 아래</span>
-              <span className="absolute bottom-[16%] left-[9%] rounded-md px-2 py-1 text-[10px] font-extrabold" style={{ backgroundColor: "rgba(13,16,22,.72)" }}>발 기준 · 이 선 위</span>
             </div>
           )}
           {!pendingCapture && !captureCompleteIdle && <div className="pointer-events-none absolute inset-x-3 bottom-3 rounded-xl px-3 py-2 text-center" style={{ backgroundColor: "rgba(13,16,22,.72)", backdropFilter: "blur(8px)" }}><p className="text-xs font-bold" style={{ color: sensorTone }}>{sensor.message}</p><p className="mt-0.5 text-[10px] text-white/75">{directionGuide}</p></div>}
 
-          {cameraStatus !== "active" && cameraStatus !== "capturing" && !pendingCapture && !captureCompleteIdle && (
+          {(iosStableCaptureFallback || ["starting", "error", "paused"].includes(cameraStatus)) && !pendingCapture && !captureCompleteIdle && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#0D1016]/88 px-7 text-center">
               {cameraStatus === "starting" ? <Loader2 size={30} className="animate-spin" /> : cameraStatus === "error" || cameraStatus === "paused" ? <AlertTriangle size={30} style={{ color: "#F2B84B" }} /> : <Camera size={30} />}
-              <div><p className="text-sm font-extrabold">{iosStableCaptureFallback ? "사진 촬영 또는 선택" : cameraStatus === "starting" ? "카메라 준비 중" : cameraStatus === "paused" ? "카메라가 일시 중지되었습니다" : cameraStatus === "error" ? "카메라를 열 수 없습니다" : "앱 안에서 바로 촬영합니다"}</p><p className="mt-1 text-xs leading-relaxed text-white/65">{iosStableCaptureFallback ? "App Store 안정화 빌드에서는 iOS 기본 사진 선택 화면을 사용합니다." : cameraError || "카메라 시작을 누르면 후면 카메라 프리뷰 위에 촬영 가이드가 표시됩니다."}</p></div>
+              <div><p className="text-sm font-extrabold">{iosStableCaptureFallback ? "사진 촬영 또는 선택" : cameraStatus === "starting" ? "카메라 준비 중" : cameraStatus === "paused" ? "카메라가 일시 중지되었습니다" : "카메라를 열 수 없습니다"}</p>{(iosStableCaptureFallback || cameraError) && <p className="mt-1 text-xs leading-relaxed text-white/65">{iosStableCaptureFallback ? "App Store 안정화 빌드에서는 iOS 기본 사진 선택 화면을 사용합니다." : cameraError}</p>}</div>
               {cameraStatus !== "starting" && (iosStableCaptureFallback
                 ? <button type="button" onClick={() => onOpenAlbum(activeView)} className="h-11 rounded-xl px-5 text-sm font-bold text-white" style={{ backgroundColor: "#4C4399" }}>사진 촬영 또는 선택</button>
-                : <><button type="button" onClick={startCamera} className="h-11 rounded-xl px-5 text-sm font-bold text-white" style={{ backgroundColor: "#4C4399" }}>카메라 시작</button><button type="button" onClick={async () => { await stopCamera("album"); onOpenAlbum(activeView); }} className="h-10 px-4 text-xs font-bold text-white/80">앨범에서 선택</button></>)}
+                : <button type="button" onClick={startCamera} className="h-11 rounded-xl px-5 text-sm font-bold text-white" style={{ backgroundColor: "#4C4399" }}>다시 시도</button>)}
             </div>
           )}
 
@@ -7411,7 +7378,7 @@ function PostureCaptureScreen({
             <div className="relative"><button type="button" onClick={() => setTimerOpen((value) => !value)} disabled={countdown != null || busy} className="flex h-11 w-16 flex-col items-center justify-center gap-0.5 rounded-xl text-[10px] font-bold disabled:opacity-40" style={{ backgroundColor: "rgba(255,255,255,.10)" }}><Clock size={16} />{timerSeconds === 0 ? "즉시" : `${timerSeconds}초`}</button>{timerOpen && <div className="absolute bottom-14 right-0 grid w-[188px] grid-cols-4 gap-1 rounded-xl p-2" style={{ backgroundColor: "#202631", boxShadow: "0 12px 32px rgba(0,0,0,.42)" }}>{CAPTURE_TIMER_OPTIONS.map((seconds) => <button type="button" key={seconds} onClick={() => chooseTimer(seconds)} className="h-9 rounded-lg text-[11px] font-bold" style={{ backgroundColor: timerSeconds === seconds ? "#4C4399" : "rgba(255,255,255,.08)" }}>{seconds === 0 ? "즉시" : `${seconds}초`}</button>)}</div>}</div>
           </div>
         )}
-        {!pendingCapture && !capturesComplete && <div className="mt-1 flex items-center justify-between text-[10px] text-white/55"><span>{activePhoto ? `${postureViewLabel(activeView)} 재촬영 가능` : `${postureViewLabel(activeView)} 촬영 대기`}</span><span className="flex items-center gap-1">{activePhoto && <button type="button" onClick={async () => { await stopCamera("delete"); await onDeleteCapture?.(); }} disabled={busy || countdown != null} className="flex h-7 items-center gap-1 px-2 font-bold text-white/75 disabled:opacity-40"><Trash2 size={11} />삭제</button>}{captureViews.some(({ key }) => capturePhotos[key] && !draftSaved[key]) && <button type="button" onClick={onSaveDraft} disabled={busy} className="h-7 px-2 font-bold text-white/80">초안 저장 재시도</button>}</span></div>}
+        {!pendingCapture && !capturesComplete && (activePhoto || captureViews.some(({ key }) => capturePhotos[key] && !draftSaved[key])) && <div className="mt-1 flex items-center justify-end gap-1 text-[10px] text-white/55">{activePhoto && <button type="button" onClick={async () => { await stopCamera("delete"); await onDeleteCapture?.(); }} disabled={busy || countdown != null} className="flex h-7 items-center gap-1 px-2 font-bold text-white/75 disabled:opacity-40"><Trash2 size={11} />삭제</button>}{captureViews.some(({ key }) => capturePhotos[key] && !draftSaved[key]) && <button type="button" onClick={onSaveDraft} disabled={busy} className="h-7 px-2 font-bold text-white/80">초안 저장 재시도</button>}</div>}
       </footer>
     </div>
   );
@@ -9300,32 +9267,32 @@ function AssessmentComparisonViewer({ beforeSet, afterSet, view, showGuides, mem
   ];
   return (
     <div className="mt-3">
-      <div className="grid grid-cols-4 gap-1 rounded-xl p-1" style={{ backgroundColor: CANVAS }}>
-        {modes.map((item) => <button type="button" key={item.key} onClick={() => setMode(item.key)} className="min-h-10 px-1 text-[10px] font-extrabold" style={{ borderRadius: 8, backgroundColor: mode === item.key ? CARD : "transparent", color: mode === item.key ? BRAND_D : SUB, boxShadow: mode === item.key ? "0 1px 3px rgba(28,36,51,.1)" : "none" }}>{item.label}</button>)}
-      </div>
-      {mode !== "side" && <div className="mt-2 flex items-center gap-2 rounded-xl px-3 py-2" style={{ backgroundColor: alignment.available ? GOOD_S : CANVAS }}><span className="min-w-0 flex-1"><span className="block text-xs font-extrabold" style={{ color: alignment.available ? GOOD : INK2 }}>신체 자동 정렬</span><span className="block text-[10px]" style={{ color: SUB }}>{alignment.available ? "신체 높이와 중심 위치를 Before에 맞춥니다" : "두 사진의 저장된 관절점이 부족합니다"}</span></span><button type="button" disabled={!alignment.available} aria-pressed={alignEnabled && alignment.available} onClick={() => setAlignEnabled((value) => !value)} className="h-9 min-w-14 rounded-full px-2 text-[10px] font-extrabold disabled:opacity-45" style={{ backgroundColor: alignEnabled && alignment.available ? GOOD : CARD, color: alignEnabled && alignment.available ? "#fff" : SUB, border: `1px solid ${alignment.available ? GOOD : LINE}` }}>{alignEnabled && alignment.available ? "ON" : "OFF"}</button></div>}
       {mode === "side" ? (
-        <div className="mt-3 grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-2 gap-2">
           {[{ photo: beforePhoto, pose: beforePose, label: "BEFORE", lineColor: INK2, backgroundColor: CARD, textColor: INK }, { photo: afterPhoto, pose: afterPose, label: "AFTER", lineColor: BRAND, backgroundColor: TINT, textColor: BRAND_D }].map((item) => <div key={item.label}><div className="relative overflow-hidden" style={{ ...frameStyle, border: `3px solid ${item.lineColor}` }}><AssessmentComparisonLayer photo={item.photo} pose={item.pose} label={item.label} color={item.lineColor} transform="none" showMarks={showGuides} showLines={showGuides} /></div><p className="mt-1 rounded-full py-1 text-center text-[10px] font-extrabold" style={{ backgroundColor: item.backgroundColor, color: item.textColor, border: `1px solid ${item.lineColor}` }}>{item.label}</p></div>)}
         </div>
       ) : (
-        <div onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={stopPointer} onPointerCancel={stopPointer} className="relative mt-3 overflow-hidden" style={{ ...frameStyle, touchAction: zoom > 1 ? "none" : "pan-y" }}>
+        <div onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={stopPointer} onPointerCancel={stopPointer} className="relative overflow-hidden" style={{ ...frameStyle, touchAction: zoom > 1 ? "none" : "pan-y" }}>
           <AssessmentComparisonLayer photo={beforePhoto} pose={beforePose} label="Before" color={INK2} transform={commonTransform} opacity={mode === "lines" ? 0.5 : 1} showMarks={showGuides && mode !== "lines"} showLines={showGuides && mode === "lines"} />
           <AssessmentComparisonLayer photo={afterPhoto} pose={afterPose} label="After" color={BRAND} transform={afterTransform} clipPath={mode === "slider" ? `inset(0 ${100 - curtain}% 0 0)` : undefined} opacity={mode === "overlay" ? opacity / 100 : mode === "lines" ? 0.5 : 1} showMarks={showGuides && mode !== "lines"} showLines={showGuides && mode === "lines"} />
           {mode === "slider" && <><span className="pointer-events-none absolute bottom-0 top-0 w-0.5 bg-white" style={{ left: `${curtain}%`, boxShadow: "0 0 0 1px rgba(28,36,51,.35)" }} /><span className="pointer-events-none absolute left-2 top-2 rounded-full px-2 py-1 text-[9px] font-bold" style={{ backgroundColor: CARD, color: INK, border: `1px solid ${INK2}` }}>BEFORE</span><span className="pointer-events-none absolute right-2 top-2 rounded-full px-2 py-1 text-[9px] font-bold" style={{ backgroundColor: TINT, color: BRAND_D, border: `1px solid ${BRAND}` }}>AFTER</span></>}
           {mode === "lines" && <div className="pointer-events-none absolute bottom-2 left-2 right-2 flex justify-between"><span className="rounded-full px-2 py-1 text-[9px] font-extrabold" style={{ backgroundColor: CARD, color: INK, border: `1px solid ${INK2}` }}>Before 기준선</span><span className="rounded-full px-2 py-1 text-[9px] font-extrabold" style={{ backgroundColor: TINT, color: BRAND_D, border: `1px solid ${BRAND}` }}>After 기준선</span></div>}
         </div>
       )}
+      <div className="mt-3 grid grid-cols-4 gap-1 rounded-xl p-1" style={{ backgroundColor: CANVAS }}>
+        {modes.map((item) => <button type="button" key={item.key} onClick={() => setMode(item.key)} className="min-h-10 px-1 text-[10px] font-extrabold" style={{ borderRadius: 8, backgroundColor: mode === item.key ? CARD : "transparent", color: mode === item.key ? BRAND_D : SUB, boxShadow: mode === item.key ? "0 1px 3px rgba(28,36,51,.1)" : "none" }}>{item.label}</button>)}
+      </div>
+      {mode !== "side" && <div className="mt-2 flex items-center gap-2 rounded-xl px-3 py-2" style={{ backgroundColor: alignment.available ? GOOD_S : CANVAS }}><span className="min-w-0 flex-1"><span className="block text-xs font-extrabold" style={{ color: alignment.available ? GOOD : INK2 }}>신체 자동 정렬</span><span className="block text-[10px]" style={{ color: SUB }}>{alignment.available ? "신체 높이와 중심 위치를 Before에 맞춥니다" : "두 사진의 저장된 관절점이 부족합니다"}</span></span><button type="button" disabled={!alignment.available} aria-pressed={alignEnabled && alignment.available} onClick={() => setAlignEnabled((value) => !value)} className="h-9 min-w-14 rounded-full px-2 text-[10px] font-extrabold disabled:opacity-45" style={{ backgroundColor: alignEnabled && alignment.available ? GOOD : CARD, color: alignEnabled && alignment.available ? "#fff" : SUB, border: `1px solid ${alignment.available ? GOOD : LINE}` }}>{alignEnabled && alignment.available ? "ON" : "OFF"}</button></div>}
       {mode === "slider" && <input aria-label="Before After 비교 슬라이더" type="range" min="0" max="100" value={curtain} onChange={(event) => setCurtain(Number(event.target.value))} className="mt-3 w-full" style={{ accentColor: BRAND }} />}
       {mode === "overlay" && <div className="mt-3 flex items-center gap-2"><span className="text-[10px] font-bold" style={{ color: SUB }}>After 투명도</span><input aria-label="After 투명도" type="range" min="0" max="100" value={opacity} onChange={(event) => setOpacity(Number(event.target.value))} className="min-w-0 flex-1" style={{ accentColor: BRAND }} /><span className="w-8 text-right text-[10px] font-bold tabular-nums" style={{ color: BRAND_D }}>{opacity}%</span></div>}
       {mode === "lines" && !lineReady && <p className="mt-2 rounded-lg px-3 py-2 text-[11px] font-bold" style={{ backgroundColor: WARN_S, color: WARN }}>두 분석 모두에 저장된 관절점이 있어야 자동 기준선을 함께 표시할 수 있습니다.</p>}
       {mode !== "side" && <div className="mt-2 flex items-center gap-2"><span className="text-xs font-bold" style={{ color: SUB }}>동시 확대</span>{[1, 1.5, 2].map((value) => <button type="button" key={value} onClick={() => { setZoom(value); if (value === 1) setPan({ x: 0, y: 0 }); }} className="h-9 min-w-11 rounded-full text-xs font-bold" style={{ backgroundColor: zoom === value ? TINT : CANVAS, color: zoom === value ? BRAND_D : SUB }}>{value}×</button>)}</div>}
       {mode === "side" && <button type="button" disabled={savingSide || !beforePhoto?.src || !afterPhoto?.src} onClick={async () => { setSavingSide(true); await shareBeforeAfter(beforePhoto, afterPhoto, memberName, onToast, true); setSavingSide(false); }} className="mt-3 flex h-11 w-full items-center justify-center gap-2 text-xs font-extrabold text-white disabled:opacity-45" style={{ borderRadius: 10, backgroundColor: BRAND }}>{savingSide ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}나란히 이미지 저장</button>}
       {sameDayComparison && <p className="mt-2 text-center text-[11px] font-bold" style={{ color: SUB }}>같은 날 촬영</p>}
-      <div className="mt-3" style={{ padding: 11, borderRadius: 11, backgroundColor: CANVAS }}>
+      {!!metrics.length && <div className="mt-3" style={{ padding: 11, borderRadius: 11, backgroundColor: CANVAS }}>
         <p className="text-xs font-extrabold" style={{ color: INK }}>측정값 변화</p>
-        {metrics.length ? <div className="mt-2 space-y-2">{metrics.map((metric) => <div key={metric.id} className="grid grid-cols-[1fr_auto] gap-2"><span className="min-w-0"><span className="block truncate text-xs font-bold" style={{ color: INK2 }}>{metric.label}</span><span className="block text-[10px]" style={{ color: SUB }}>{metric.summary}</span></span><span className="text-xs font-extrabold tabular-nums" style={{ color: BRAND_D }}>{metric.beforeValue}{metric.unit} → {metric.afterValue}{metric.unit}</span></div>)}</div> : <p className="mt-1 text-xs" style={{ color: SUB }}>이 방향에서 함께 비교할 수 있는 저장 측정값이 없습니다.</p>}
-      </div>
+        <div className="mt-2 space-y-2">{metrics.map((metric) => <div key={metric.id} className="grid grid-cols-[1fr_auto] gap-2"><span className="min-w-0"><span className="block truncate text-xs font-bold" style={{ color: INK2 }}>{metric.label}</span><span className="block text-[10px]" style={{ color: SUB }}>{metric.summary}</span></span><span className="text-xs font-extrabold tabular-nums" style={{ color: BRAND_D }}>{memberMetricValue(metric.beforeValue, metric.unit)}{metric.unit} → {memberMetricValue(metric.afterValue, metric.unit)}{metric.unit}</span></div>)}</div>
+      </div>}
     </div>
   );
 }
@@ -9523,8 +9490,6 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
   const [viewingPose, setViewingPose] = useState(null);
   const [editingAnnotation, setEditingAnnotation] = useState(null);
   const [annotationPicker, setAnnotationPicker] = useState(false);
-  const [comparisonSelection, setComparisonSelection] = useState(null);
-  const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [captureReturnScreen, setCaptureReturnScreen] = useState("directions");
   const entryInitialized = useRef(false);
   const assessmentAction = useRef(null);
@@ -9557,7 +9522,6 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
   }, [diagnosticAccountId, diagnosticPhotosBucketExists, initialAssessmentId, initialSavedId, member?.id, member?.name, photos, sets]);
   const resumableAssessment = useMemo(() => selectResumableAssessment(sets, { memberId: member?.id }), [sets, member?.id]);
   const completeSets = useMemo(() => sets.filter((set) => set.status === "completed"), [sets]);
-  const visibleHistorySets = favoritesOnly ? sets.filter((set) => set.favorite) : sets;
   const completedPoses = useMemo(() => completeSets.flatMap((set) => set.poses || []), [completeSets]);
   const completeFullSets = useMemo(() => completeSets.filter((set) => set.scope === "full_body"), [completeSets]);
   const latestCompletedScope = completeSets[0]?.scope || "full_body";
@@ -9745,39 +9709,6 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
     setSelectedSetId(targetSet?.id || pair.after.id);
     setScreen("compare");
   };
-  const chooseComparisonSet = (targetSet) => {
-    if (!targetSet || targetSet.status !== "completed") return;
-    const current = comparisonSelection || { beforeId: null, afterId: null, confirm: false };
-    if (current.beforeId === targetSet.id) {
-      setComparisonSelection({ beforeId: null, afterId: null, confirm: false });
-      return;
-    }
-    if (!current.beforeId) {
-      setComparisonSelection({ beforeId: targetSet.id, afterId: null, confirm: false });
-      return;
-    }
-    if (current.afterId === targetSet.id) {
-      setComparisonSelection({ ...current, afterId: null, confirm: false });
-      return;
-    }
-    const before = completeSets.find((set) => set.id === current.beforeId);
-    if (!before || before.scope !== targetSet.scope || !comparableViewsFor(before, targetSet).length) {
-      onToast?.({ ok: false, msg: "Before와 같은 촬영 유형·방향이 있는 분석을 After로 선택해 주세요." });
-      return;
-    }
-    setComparisonSelection({ beforeId: current.beforeId, afterId: targetSet.id, confirm: true });
-  };
-  const confirmComparisonSelection = () => {
-    const before = completeSets.find((set) => set.id === comparisonSelection?.beforeId);
-    const after = completeSets.find((set) => set.id === comparisonSelection?.afterId);
-    if (!before || !after) return;
-    setBeforeSetId(before.id);
-    setAfterSetId(after.id);
-    setCompareView(comparableViewsFor(before, after)[0] || "front");
-    setSelectedSetId(after.id);
-    setComparisonSelection(null);
-    setScreen("compare");
-  };
   const openReportForSet = (targetSet) => {
     if (!targetSet || targetSet.status !== "completed") return;
     if (targetSet) setSelectedSetId(targetSet.id);
@@ -9795,7 +9726,6 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
       setRoleSheet(true);
     }
   };
-  const stageScreen = ["capture", "analysis"].includes(screen) ? screen : screen === "result" || screen === "compare" || screen === "report" || screen === "history" ? "result" : "capture";
   useEffect(() => {
     if (!beforeSet || !afterSet || (setPhoto(beforeSet, compareView) && setPhoto(afterSet, compareView))) return;
     const commonView = comparableViewsFor(beforeSet, afterSet)[0];
@@ -9843,14 +9773,10 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
 
   return (
     <div className="space-y-3">
-      {!['home', 'purpose', 'directions'].includes(screen) && <div className="grid grid-cols-3" style={{ padding: 3, borderRadius: 11, backgroundColor: CANVAS }}>
-        {[{ key: "capture", label: "촬영", number: 1 }, { key: "analysis", label: "분석", number: 2 }, { key: "result", label: "결과", number: 3 }].map((item) => { const active = stageScreen === item.key; return <div key={item.key} className="flex h-9 items-center justify-center gap-1.5" style={{ borderRadius: 8, backgroundColor: active ? CARD : "transparent", color: active ? BRAND_D : SUB, boxShadow: active ? "0 1px 3px rgba(28,36,51,.08)" : "none", fontSize: 12, fontWeight: active ? 700 : 600 }}><span className="flex h-5 w-5 items-center justify-center rounded-full" style={{ backgroundColor: active ? TINT : "transparent", border: `1px solid ${active ? BRAND : LINE}`, fontSize: 10 }}>{item.number}</span>{item.label}</div>; })}
-      </div>}
-
       {screen === "home" && <section style={{ padding: 16, borderRadius: 18, backgroundColor: CARD, border: `1px solid ${LINE}` }}>
         <div className="flex items-start gap-3"><span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: TINT, color: BRAND_D }}><Activity size={19} /></span><span className="min-w-0 flex-1"><span className="block text-lg font-extrabold" style={{ color: INK }}>{member?.name} 회원</span><span className="mt-1 block text-xs" style={{ color: SUB }}>{lastCompleted ? `마지막 분석 ${ymd(setDate(lastCompleted).slice(0, 10))}${retake?.days != null ? ` · ${retake.days}일 전` : ""}` : "아직 완료된 체형분석이 없습니다"}</span></span></div>
         <div className="mt-4 flex items-center gap-2" style={{ padding: 10, borderRadius: 11, backgroundColor: GOOD_S }}><Check size={15} style={{ color: GOOD }} /><span className="min-w-0 flex-1 text-xs font-bold" style={{ color: GOOD }}>{lastCompleted ? "최근 분석 저장 완료" : "촬영 전"}</span><span className="text-[10px] font-bold" style={{ color: SUB }}>기기 우선 저장</span></div>
-        {lastCompleted && <div className="mt-2" style={{ padding: 12, borderRadius: 12, backgroundColor: retake?.tone === "recommended" ? WARN_S : CANVAS }}><p className="text-xs font-bold" style={{ color: retake?.tone === "recommended" ? WARN : INK }}>{hasCompletedComparison ? "비포·에프터 비교 준비 완료" : "비포 저장 완료 · 에프터 촬영이 필요합니다"}</p><p className="mt-1 text-xs leading-relaxed" style={{ color: SUB }}>{entrySummary.length ? entrySummary.map((metric) => `${metric.label} ${metric.value}${metric.unit}`).join(" · ") : "최근 측정값을 결과 화면에서 확인할 수 있습니다."}</p></div>}
+        {lastCompleted && <div className="mt-2" style={{ padding: 12, borderRadius: 12, backgroundColor: retake?.tone === "recommended" ? WARN_S : CANVAS }}><p className="text-xs font-bold" style={{ color: retake?.tone === "recommended" ? WARN : INK }}>{hasCompletedComparison ? "비포·에프터 비교 준비 완료" : "비포 저장 완료 · 에프터 촬영이 필요합니다"}</p>{!!entrySummary.length && <p className="mt-1 text-xs leading-relaxed" style={{ color: SUB }}>{entrySummary.map((metric) => `${metric.label} ${memberMetricValue(metric.value, metric.unit)}${metric.unit}`).join(" · ")}</p>}</div>}
         <button type="button" onClick={requestStartNew} className="mt-5 flex h-13 min-h-[52px] w-full items-center justify-center gap-2 text-sm font-extrabold text-white" style={{ borderRadius: 13, backgroundColor: BRAND }}><Camera size={17} />{nextCaptureLabel}</button>
         {hasCompletedComparison && <button type="button" onClick={() => openComparisonFromSet(automaticComparison.after)} className="mt-2 flex h-12 w-full items-center justify-center gap-2 text-sm font-extrabold" style={{ borderRadius: 12, backgroundColor: TINT, color: BRAND_D }}><ArrowUpDown size={16} />비포·에프터 변화 비교</button>}
         <button type="button" onClick={() => setScreen("history")} className="mt-2 flex h-12 w-full items-center justify-center gap-2 text-sm font-bold" style={{ borderRadius: 12, backgroundColor: CARD, border: `1px solid ${LINE}`, color: INK }}><Activity size={16} />이전 분석 보기</button>
@@ -9872,27 +9798,23 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
 
       {(screen === "capture" || screen === "analysis") && <PoseAnalyzer key={`${member.id}_${workflow.activeAssessmentId || "none"}_${captureKey}`} embedded member={member} photos={photos} defaultMethod={scope === "partial" ? "draw" : "ai"} assessmentRole={pendingRole} roleLabel={roleLabelOf(pendingRole)} initialAssessmentId={workflow.activeAssessmentId} resumeAssessmentId={resumeAssessmentId} selectedViews={selectedViewList} scope={scope}
         onRequestRole={() => setRoleSheet(true)} onSavePose={onSavePose} onUpdatePose={onUpdatePose} onDeletePose={onDeletePose} onSaveCaptureDraft={onSaveCaptureDraft} onDeleteCaptureDraft={onDeleteCaptureDraft} onSaveMarks={onSaveMarks} onToast={onToast}
-        onCaptureExit={() => setScreen(captureReturnScreen)} onStageChange={(stage) => setScreen(stage === "analysis" ? "analysis" : "capture")} onSaved={async (role, assessmentId) => { const nextRole = role || pendingRole || (completeSets.length ? "after" : "before"); const stored = await onCompleteAssessment?.(assessmentId, nextRole); if (stored !== true) return false; setWorkflow(transitionPostureWorkflow(workflow, { type: POSTURE_WORKFLOW_EVENTS.OPEN_COMPLETED_ASSESSMENT, assessmentId, assessment: { id: assessmentId, status: "completed" } })); setResumeAssessmentId(null); setSelectedSetId(assessmentId); setScreen("result"); onSaved?.(nextRole); return true; }} />}
+        onCaptureExit={() => setScreen(captureReturnScreen)} onStageChange={(stage) => setScreen(stage === "analysis" ? "analysis" : "capture")} onSaved={async (role, assessmentId) => { const nextRole = role || pendingRole || (completeSets.length ? "after" : "before"); const stored = await onCompleteAssessment?.(assessmentId, nextRole); if (stored !== true) return false; setWorkflow(transitionPostureWorkflow(workflow, { type: POSTURE_WORKFLOW_EVENTS.OPEN_COMPLETED_ASSESSMENT, assessmentId, assessment: { id: assessmentId, status: "completed" } })); setResumeAssessmentId(null); setSelectedSetId(assessmentId); setScreen("history"); onSaved?.(nextRole); return true; }} />}
 
       {screen === "history" && <section style={{ padding: 14, borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}>
-        <div className="flex items-center gap-2"><button type="button" aria-label="체형분석 시작 화면" onClick={() => { setComparisonSelection(null); setScreen("home"); }} className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={18} /></button><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>체형분석 히스토리</span><span className="block text-xs" style={{ color: SUB }}>최신순 · 분석 {sets.length}개</span></span><button type="button" onClick={requestStartNew} className="h-10 px-3 text-xs font-bold text-white" style={{ borderRadius: 9, backgroundColor: BRAND }}>새 분석</button></div>
-        {!!sets.length && <button type="button" aria-pressed={favoritesOnly} onClick={() => setFavoritesOnly((value) => !value)} className="mt-2 flex h-10 w-full items-center justify-center gap-2 text-xs font-bold" style={{ borderRadius: 9, backgroundColor: favoritesOnly ? WARN_S : CANVAS, color: favoritesOnly ? WARN : SUB }}><Star size={14} fill={favoritesOnly ? WARN : "none"} />{favoritesOnly ? "즐겨찾기만 보는 중" : "즐겨찾기만 보기"}</button>}
-        {completeSets.length >= 2 && <button type="button" onClick={() => setComparisonSelection((value) => value ? null : { beforeId: null, afterId: null, confirm: false })} className="mt-3 flex h-11 w-full items-center justify-center gap-2 text-xs font-extrabold" style={{ borderRadius: 10, backgroundColor: comparisonSelection ? BRAND : TINT, color: comparisonSelection ? "#fff" : BRAND_D }}><ArrowUpDown size={14} />{comparisonSelection ? "비교 선택 취소" : "비교할 Before / After 직접 선택"}</button>}
-        {comparisonSelection && <div className="mt-2 flex items-center gap-2 px-3 py-2" style={{ borderRadius: 10, backgroundColor: CANVAS, color: INK2 }}><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10px] font-extrabold text-white" style={{ backgroundColor: comparisonSelection.beforeId ? GOOD : BRAND }}>{comparisonSelection.beforeId ? "2" : "1"}</span><span className="text-xs font-bold">{comparisonSelection.beforeId ? "이제 After로 사용할 분석을 누르세요." : "먼저 Before로 사용할 분석을 누르세요."}</span></div>}
-        {!sets.length ? <div className="py-12 text-center"><Activity size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>아직 체형분석 이력이 없습니다</p></div> : !visibleHistorySets.length ? <div className="py-10 text-center"><Star size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>즐겨찾기한 분석이 없습니다</p></div> : <div className="relative mt-3 space-y-3">{visibleHistorySets.map((set) => {
+        <div className="flex items-center gap-2"><button type="button" aria-label="체형분석 시작 화면" onClick={() => setScreen("home")} className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={18} /></button><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>체형분석 히스토리</span><span className="block text-xs" style={{ color: SUB }}>최신순 · 분석 {sets.length}개</span></span><button type="button" onClick={requestStartNew} className="h-10 px-3 text-xs font-bold text-white" style={{ borderRadius: 9, backgroundColor: BRAND }}>새 분석</button></div>
+        {!sets.length ? <div className="py-12 text-center"><Activity size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>아직 체형분석 이력이 없습니다</p></div> : <div className="relative mt-3 space-y-3">{sets.map((set) => {
           const representative = setPhoto(set, "front") || Object.values(set.photos)[0];
           const missing = set.missingPhotos || [];
           const summary = set.poses.map((pose) => pose.aiAnalysis?.teacherEditedOutput || pose.aiAnalysis?.output).find(Boolean);
           const setTeacherMemo = set.poses.map((pose) => pose.comment || pose.teacherMemo || "").find(Boolean);
+          const historySummary = missing.length ? `사진 일부 누락: ${missing.map(postureViewLabel).join(", ")}` : setIsManualResult ? ((representative?.marks || []).length ? "사진 표시와 손메모 저장됨" : "사진 기록 저장됨") : [summary ? "AI 해석 초안 있음" : "", setTeacherMemo ? "강사 메모 있음" : ""].filter(Boolean).join(" · ");
           const completed = set.status === "completed";
           const setIsManualResult = ["draw", "manual"].includes(set.method);
           const resumable = set.id === resumableAssessment?.id;
           const comparablePair = comparisonPairFor(set);
-          const pickedBefore = comparisonSelection?.beforeId === set.id;
-          const pickedAfter = comparisonSelection?.afterId === set.id;
-          return <article key={set.id} onClick={() => comparisonSelection && chooseComparisonSet(set)} style={{ padding: 12, borderRadius: 13, backgroundColor: pickedBefore ? TINT : pickedAfter ? GOOD_S : CANVAS, border: `2px solid ${pickedBefore ? BRAND : pickedAfter ? GOOD : LINE}`, cursor: comparisonSelection ? "pointer" : "default" }}>
-            <div className="flex gap-3">{representative?.src ? <img src={representative.src} alt="대표 촬영" className="h-20 w-14 shrink-0 object-cover" style={{ borderRadius: 8, backgroundColor: PHOTO }} /> : <span className="flex h-20 w-14 shrink-0 items-center justify-center" style={{ borderRadius: 8, backgroundColor: CARD, color: FAINT }}><Camera size={17} /></span>}<div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-1.5"><span className="text-sm font-extrabold" style={{ color: INK }}>{setDate(set) ? ymd(setDate(set).slice(0, 10)) : "날짜 미확인"}{timeOf(representative?.createdAt || representative?.at || setDate(set)) ? ` · ${timeOf(representative?.createdAt || representative?.at || setDate(set))}` : ""}</span>{pickedBefore && <span className="rounded-full px-2 py-0.5 text-[9px] font-extrabold text-white" style={{ backgroundColor: BRAND }}>BEFORE</span>}{pickedAfter && <span className="rounded-full px-2 py-0.5 text-[9px] font-extrabold text-white" style={{ backgroundColor: GOOD }}>AFTER</span>}<span style={{ padding: "2px 6px", borderRadius: 6, backgroundColor: completed ? GOOD_S : set.status === "failed" ? BAD_S : WARN_S, color: completed ? GOOD : set.status === "failed" ? BAD : WARN, fontSize: 9, fontWeight: 700 }}>{completed ? "기기 저장 완료" : set.status === "failed" ? "저장 실패" : set.status === "analyzing" ? "분석 중" : "초안"}</span><button type="button" aria-label={set.favorite ? "사진 즐겨찾기 해제" : "사진 즐겨찾기"} onClick={async (event) => { event.stopPropagation(); await onToggleAssessmentFavorite?.(set.id, !set.favorite); }} className="ml-auto flex h-8 w-8 items-center justify-center rounded-full" style={{ backgroundColor: set.favorite ? WARN_S : CARD }}><Star size={16} color={set.favorite ? WARN : FAINT} fill={set.favorite ? WARN : "none"} /></button></div><p className="mt-1 text-xs" style={{ color: INK2 }}>{set.scope === "partial" ? "부위별 기록" : "전신 분석"} · {methodLabel(set.method)}</p><p className="mt-1 line-clamp-2 text-[11px] leading-relaxed" style={{ color: SUB }}>{missing.length ? `사진 일부 누락: ${missing.map(postureViewLabel).join(", ")}` : setIsManualResult ? ((representative?.marks || []).length ? "사진 표시와 손메모 저장됨" : "사진 기록 저장됨") : summary ? "AI 해석 초안 있음" : "저장된 AI 해석 없음"}{!setIsManualResult && setTeacherMemo ? " · 강사 메모 있음" : ""}</p></div></div>
-            {comparisonSelection ? <button type="button" disabled={!completed} onClick={(event) => { event.stopPropagation(); chooseComparisonSet(set); }} className="mt-3 h-11 w-full text-xs font-extrabold disabled:opacity-35" style={{ borderRadius: 9, backgroundColor: pickedBefore ? BRAND : pickedAfter ? GOOD : CARD, color: pickedBefore || pickedAfter ? "#fff" : INK }}>{pickedBefore ? "Before 선택됨 · 누르면 해제" : pickedAfter ? "After 선택됨 · 누르면 해제" : comparisonSelection.beforeId ? "After로 선택" : "Before로 선택"}</button> : <div className="mt-3 grid grid-cols-2 gap-2"><button type="button" disabled={!completed && !resumable} onClick={() => completed ? openSet(set, "result") : resumeSet(set)} className="h-10 text-xs font-bold disabled:opacity-40" style={{ borderRadius: 9, backgroundColor: CARD, color: INK }}>{completed ? setIsManualResult ? "사진 기록 보기" : "결과 카드 보기" : resumable ? "초안 이어하기" : "이전 중복 초안"}</button><button type="button" disabled={!completed || !comparablePair.after} onClick={() => openComparisonFromSet(set)} className="h-10 text-xs font-bold disabled:opacity-40" style={{ borderRadius: 9, backgroundColor: TINT, color: BRAND_D }}>변화 비교</button></div>}
+          return <article key={set.id} style={{ padding: 12, borderRadius: 13, backgroundColor: CANVAS, border: `1px solid ${LINE}` }}>
+            <div className="flex gap-3">{representative?.src ? <img src={representative.src} alt="대표 촬영" className="h-20 w-14 shrink-0 object-cover" style={{ borderRadius: 8, backgroundColor: PHOTO }} /> : <span className="flex h-20 w-14 shrink-0 items-center justify-center" style={{ borderRadius: 8, backgroundColor: CARD, color: FAINT }}><Camera size={17} /></span>}<div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-1.5"><span className="text-sm font-extrabold" style={{ color: INK }}>{setDate(set) ? ymd(setDate(set).slice(0, 10)) : "날짜 미확인"}{timeOf(representative?.createdAt || representative?.at || setDate(set)) ? ` · ${timeOf(representative?.createdAt || representative?.at || setDate(set))}` : ""}</span><span style={{ padding: "2px 6px", borderRadius: 6, backgroundColor: completed ? GOOD_S : set.status === "failed" ? BAD_S : WARN_S, color: completed ? GOOD : set.status === "failed" ? BAD : WARN, fontSize: 9, fontWeight: 700 }}>{completed ? "기기 저장 완료" : set.status === "failed" ? "저장 실패" : set.status === "analyzing" ? "분석 중" : "초안"}</span></div><p className="mt-1 text-xs" style={{ color: INK2 }}>{set.scope === "partial" ? "부위별 기록" : "전신 분석"} · {methodLabel(set.method)}</p>{historySummary && <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed" style={{ color: SUB }}>{historySummary}</p>}</div></div>
+            <div className={`mt-3 grid gap-2 ${completed && comparablePair.after ? "grid-cols-2" : "grid-cols-1"}`}><button type="button" disabled={!completed && !resumable} onClick={() => completed ? openSet(set, "result") : resumeSet(set)} className="h-10 text-xs font-bold disabled:opacity-40" style={{ borderRadius: 9, backgroundColor: CARD, color: INK }}>{completed ? setIsManualResult ? "사진 기록 보기" : "결과 카드 보기" : resumable ? "초안 이어하기" : "이전 중복 초안"}</button>{completed && comparablePair.after && <button type="button" onClick={() => openComparisonFromSet(set)} className="h-10 text-xs font-bold" style={{ borderRadius: 9, backgroundColor: TINT, color: BRAND_D }}>변화 비교</button>}</div>
           </article>;
         })}</div>}
       </section>}
@@ -9900,24 +9822,41 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
       {screen === "result" && <>
         <section style={{ padding: 14, borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}><div className="flex items-center gap-2"><button type="button" aria-label="체형분석 시작 화면" onClick={() => setScreen("home")} className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={18} /></button><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>{selectedIsManualResult ? "사진 기록" : "분석 결과"}</span><span className="block text-xs" style={{ color: SUB }}>{selected ? `${ymd(setDate(selected).slice(0, 10))} · ${methodLabel(selected.method)}` : "완료된 결과 없음"}</span></span><button type="button" onClick={() => setScreen("history")} className="h-10 px-3 text-xs font-bold" style={{ borderRadius: 9, backgroundColor: CANVAS, color: INK }}>히스토리</button></div>
           {selected?.status === "completed" && <div className="mt-3 flex items-center gap-2" style={{ padding: 10, borderRadius: 10, backgroundColor: GOOD_S }}><Check size={15} style={{ color: GOOD }} /><span className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: GOOD }}>{selectedIsManualResult ? "사진 기록 저장 완료" : "분석 저장 완료"}</span><span className="text-[10px] font-bold" style={{ color: SUB }}>기기 우선 저장</span></div>}
-          {!selected ? <div className="py-10 text-center"><Activity size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>표시할 분석 결과가 없습니다</p><button type="button" onClick={requestStartNew} className="mt-4 h-11 px-5 text-xs font-bold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>새 체형분석 시작</button></div> : selected.status !== "completed" ? <div className="py-10 text-center"><AlertCircle size={22} className="mx-auto" style={{ color: WARN }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>아직 완료되지 않은 분석입니다</p><p className="mt-1 text-xs" style={{ color: SUB }}>저장된 사진과 분석 상태를 유지한 채 이어서 진행할 수 있습니다.</p><button type="button" onClick={() => resumeSet(selected)} className="mt-4 h-11 px-5 text-xs font-bold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>초안 이어하기</button></div> : <><div className="mt-3 grid gap-1.5" style={{ gridTemplateColumns: `repeat(${Math.max(1, selected.selectedViews.length)}, minmax(0, 1fr))` }}>{selected.selectedViews.map((view) => <AssessmentSetFrame key={view} photo={setPhoto(selected, view)} label={postureViewLabel(view)} annotation onOpen={selectedIsManualResult ? undefined : () => { const pose = selected.poses.find((item) => normalizePostureView(item.view) === view); if (pose) setViewingPose(pose); }} />)}</div><button type="button" onClick={() => { const available = selected.selectedViews.map((view) => ({ view, photo: setPhoto(selected, view) })).filter((item) => item.photo); if (available.length === 1) setEditingAnnotation(available[0]); else if (available.length > 1) setAnnotationPicker(true); }} className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 text-xs font-bold" style={{ borderRadius: 10, backgroundColor: CANVAS, color: INK }}><Pencil size={13} />사진 표시 다시 수정하기</button><div className={`mt-2 grid gap-2 ${selectedIsManualResult ? "grid-cols-1" : "grid-cols-2"}`}><button type="button" disabled={!comparisonPairFor(selected).after} onClick={() => openComparisonFromSet(selected)} className="h-11 text-xs font-bold disabled:opacity-40" style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D }}>Before / After 비교</button>{!selectedIsManualResult && <button type="button" onClick={() => openReportForSet(selected)} className="h-11 text-xs font-bold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>결과 리포트 카드</button>}</div>{!comparisonPairFor(selected).after && <button type="button" onClick={requestStartNew} className="mt-2 flex h-11 w-full items-center justify-center gap-2 text-xs font-extrabold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}><Camera size={14} />에프터 촬영 시작</button>}</>}
+          {!selected ? <div className="py-10 text-center"><Activity size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>표시할 분석 결과가 없습니다</p><button type="button" onClick={requestStartNew} className="mt-4 h-11 px-5 text-xs font-bold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>새 체형분석 시작</button></div> : selected.status !== "completed" ? <div className="py-10 text-center"><AlertCircle size={22} className="mx-auto" style={{ color: WARN }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>아직 완료되지 않은 분석입니다</p><p className="mt-1 text-xs" style={{ color: SUB }}>저장된 사진과 분석 상태를 유지한 채 이어서 진행할 수 있습니다.</p><button type="button" onClick={() => resumeSet(selected)} className="mt-4 h-11 px-5 text-xs font-bold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>초안 이어하기</button></div> : <><div className="mt-3 grid gap-1.5" style={{ gridTemplateColumns: `repeat(${Math.max(1, selected.selectedViews.length)}, minmax(0, 1fr))` }}>{selected.selectedViews.map((view) => <AssessmentSetFrame key={view} photo={setPhoto(selected, view)} label={postureViewLabel(view)} annotation onOpen={selectedIsManualResult ? undefined : () => { const pose = selected.poses.find((item) => normalizePostureView(item.view) === view); if (pose) setViewingPose(pose); }} />)}</div><button type="button" onClick={() => { const available = selected.selectedViews.map((view) => ({ view, photo: setPhoto(selected, view) })).filter((item) => item.photo); if (available.length === 1) setEditingAnnotation(available[0]); else if (available.length > 1) setAnnotationPicker(true); }} className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 text-xs font-bold" style={{ borderRadius: 10, backgroundColor: CANVAS, color: INK }}><Pencil size={13} />사진 표시 다시 수정하기</button><div className={`mt-2 grid gap-2 ${comparisonPairFor(selected).after && !selectedIsManualResult ? "grid-cols-2" : "grid-cols-1"}`}>{comparisonPairFor(selected).after && <button type="button" onClick={() => openComparisonFromSet(selected)} className="h-11 text-xs font-bold" style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D }}>Before / After 비교</button>}{!selectedIsManualResult && <button type="button" onClick={() => openReportForSet(selected)} className="h-11 text-xs font-bold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>결과 리포트 카드</button>}</div></>}
         </section>
-        {!selectedIsManualResult && selected?.status === "completed" && <section style={{ padding: 13, borderRadius: 14, backgroundColor: CARD, border: `1px solid ${LINE}` }}><h2 className="text-sm font-extrabold" style={{ color: INK }}>관찰 결과</h2><div className="mt-3 grid gap-2 sm:grid-cols-2"><div style={{ padding: 10, borderRadius: 10, backgroundColor: GOOD_S }}><p className="text-xs font-bold" style={{ color: GOOD }}>좋은 점</p>{goodMetrics.length ? goodMetrics.map((metric, index) => <p key={`${metric.key}_${index}`} className="mt-1 text-xs" style={{ color: INK2 }}>{metric.label} {metric.value}{metric.unit}</p>) : <p className="mt-1 text-xs" style={{ color: SUB }}>정상 범위로 저장된 측정값 없음</p>}</div><div style={{ padding: 10, borderRadius: 10, backgroundColor: cautionMetrics.length ? WARN_S : CANVAS }}><p className="text-xs font-bold" style={{ color: cautionMetrics.length ? WARN : INK2 }}>관찰 필요</p>{cautionMetrics.length ? cautionMetrics.map((metric, index) => <p key={`${metric.key}_${index}`} className="mt-1 text-xs" style={{ color: INK2 }}>{metric.label} {metric.value}{metric.unit}</p>) : <p className="mt-1 text-xs" style={{ color: SUB }}>기록된 주의 결과 없음</p>}</div><div style={{ padding: 10, borderRadius: 10, backgroundColor: LAVENDER_S }}><p className="text-xs font-bold" style={{ color: BRAND_D }}>AI 해석</p><p className="mt-1 text-xs leading-relaxed" style={{ color: aiText ? INK2 : SUB }}>{aiText || "저장된 AI 해석 없음"}</p></div><div style={{ padding: 10, borderRadius: 10, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>강사 메모</p><p className="mt-1 text-xs leading-relaxed" style={{ color: teacherMemo ? INK2 : SUB }}>{teacherMemo || "저장된 강사 메모가 없습니다."}</p></div></div>{resultPoses[0] && <button type="button" onClick={() => setViewingPose(resultPoses[0])} className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 text-xs font-bold" style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D }}><Pencil size={13} />분석 내용 확인·수정</button>}</section>}
+        {!selectedIsManualResult && selected?.status === "completed" && (goodMetrics.length > 0 || cautionMetrics.length > 0 || aiText || teacherMemo || resultPoses[0]) && <section style={{ padding: 13, borderRadius: 14, backgroundColor: CARD, border: `1px solid ${LINE}` }}><h2 className="text-sm font-extrabold" style={{ color: INK }}>관찰 결과</h2><div className="mt-3 grid gap-2 sm:grid-cols-2">{!!goodMetrics.length && <div style={{ padding: 10, borderRadius: 10, backgroundColor: GOOD_S }}><p className="text-xs font-bold" style={{ color: GOOD }}>좋은 점</p>{goodMetrics.map((metric, index) => <p key={`${metric.key}_${index}`} className="mt-1 text-xs" style={{ color: INK2 }}>{metric.label} {memberMetricValue(metric.value, metric.unit)}{metric.unit}</p>)}</div>}{!!cautionMetrics.length && <div style={{ padding: 10, borderRadius: 10, backgroundColor: WARN_S }}><p className="text-xs font-bold" style={{ color: WARN }}>관찰 필요</p>{cautionMetrics.map((metric, index) => <p key={`${metric.key}_${index}`} className="mt-1 text-xs" style={{ color: INK2 }}>{metric.label} {memberMetricValue(metric.value, metric.unit)}{metric.unit}</p>)}</div>}{aiText && <div style={{ padding: 10, borderRadius: 10, backgroundColor: LAVENDER_S }}><p className="text-xs font-bold" style={{ color: BRAND_D }}>AI 해석</p><p className="mt-1 text-xs leading-relaxed" style={{ color: INK2 }}>{aiText}</p></div>}{teacherMemo && <div style={{ padding: 10, borderRadius: 10, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>강사 메모</p><p className="mt-1 text-xs leading-relaxed" style={{ color: INK2 }}>{teacherMemo}</p></div>}</div>{resultPoses[0] && <button type="button" onClick={() => setViewingPose(resultPoses[0])} className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 text-xs font-bold" style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D }}><Pencil size={13} />분석 내용 확인·수정</button>}</section>}
       </>}
 
       {screen === "compare" && <section style={{ padding: 14, borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}><div className="flex items-center gap-2"><button type="button" onClick={() => setScreen("result")} aria-label="결과로 돌아가기" className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={18} /></button><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>Before / After</span><span className="block text-xs" style={{ color: SUB }}>선택한 두 분석을 같은 촬영 방향으로 비교</span></span><button type="button" onClick={() => setShowAnnotations((value) => !value)} className="h-9 px-2 text-[10px] font-bold" style={{ borderRadius: 8, backgroundColor: showAnnotations ? TINT : CANVAS, color: showAnnotations ? BRAND_D : SUB }}>기준선 {showAnnotations ? "ON" : "OFF"}</button></div>
         {!beforeSet || !afterSet ? <div className="py-12 text-center"><Activity size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>다음 분석부터 변화 비교가 가능합니다</p><p className="mt-1 text-xs" style={{ color: SUB }}>같은 유형과 촬영 방향의 완료 분석이 2개 이상 필요합니다.</p></div> : <>
-          <div className="mt-3 grid grid-cols-2 gap-2">
-            <button type="button" onClick={() => setSetPicker("before")} className="min-h-12 px-3 text-left" style={{ borderRadius: 9, backgroundColor: CARD, border: `1px solid ${INK2}` }}><span className="block text-[10px] font-bold" style={{ color: SUB }}>Before</span><span className="block text-xs font-bold" style={{ color: INK }}>{formatMemberLessonDate(setDate(beforeSet).slice(0, 10))}</span></button>
-            <button type="button" onClick={() => setSetPicker("after")} className="min-h-12 px-3 text-left" style={{ borderRadius: 9, backgroundColor: TINT, border: `1px solid ${BRAND}` }}><span className="block text-[10px] font-bold" style={{ color: SUB }}>After</span><span className="block text-xs font-bold" style={{ color: BRAND_D }}>{formatMemberLessonDate(setDate(afterSet).slice(0, 10))}</span></button>
-          </div>
-          <div className="mt-3 flex gap-1 overflow-x-auto">{comparableViewsFor(beforeSet, afterSet).map((view) => <button type="button" key={view} onClick={() => setCompareView(view)} className="h-9 shrink-0 px-3 text-xs font-bold" style={{ borderRadius: 9, backgroundColor: compareView === view ? TINT : CANVAS, color: compareView === view ? BRAND_D : SUB }}>{postureViewLabel(view)}</button>)}</div>
           <AssessmentComparisonViewer beforeSet={beforeSet} afterSet={afterSet} view={compareView} showGuides={showAnnotations} memberName={member?.name} onToast={onToast} />
-          {!comparisonIsManualResult && <div className="mt-3" style={{ padding: 11, borderRadius: 11, backgroundColor: LAVENDER_S }}><p className="text-xs font-bold" style={{ color: BRAND_D }}>After AI 관찰</p><p className="mt-1 text-xs leading-relaxed" style={{ color: aiText ? INK2 : SUB }}>{aiText || "저장된 AI 해석 없음"}</p></div>}
+          <div className="mt-3 grid gap-1" style={{ gridTemplateColumns: `repeat(${Math.max(1, comparableViewsFor(beforeSet, afterSet).length)}, minmax(0, 1fr))` }}>{comparableViewsFor(beforeSet, afterSet).map((view) => <button type="button" key={view} onClick={() => setCompareView(view)} className="h-9 min-w-0 px-1 text-[11px] font-bold" style={{ borderRadius: 9, backgroundColor: compareView === view ? TINT : CANVAS, color: compareView === view ? BRAND_D : SUB }}>{postureViewLabel(view)}</button>)}</div>
+          <details className="mt-3 rounded-xl" style={{ backgroundColor: CANVAS }}>
+            <summary className="flex min-h-11 cursor-pointer list-none items-center justify-center gap-2 px-3 text-xs font-bold" style={{ color: INK }}>비교 사진 바꾸기 <ChevronDown size={14} style={{ color: SUB }} /></summary>
+            <div className="grid grid-cols-2 gap-2 px-3 pb-3">
+              <button type="button" onClick={() => setSetPicker("before")} className="min-h-11 px-3 text-left" style={{ borderRadius: 9, backgroundColor: CARD, border: `1px solid ${INK2}` }}><span className="block text-[10px] font-bold" style={{ color: SUB }}>Before</span><span className="block text-xs font-bold" style={{ color: INK }}>{formatMemberLessonDate(setDate(beforeSet).slice(0, 10))}</span></button>
+              <button type="button" onClick={() => setSetPicker("after")} className="min-h-11 px-3 text-left" style={{ borderRadius: 9, backgroundColor: TINT, border: `1px solid ${BRAND}` }}><span className="block text-[10px] font-bold" style={{ color: SUB }}>After</span><span className="block text-xs font-bold" style={{ color: BRAND_D }}>{formatMemberLessonDate(setDate(afterSet).slice(0, 10))}</span></button>
+            </div>
+          </details>
+          {!comparisonIsManualResult && aiText && <div className="mt-3" style={{ padding: 11, borderRadius: 11, backgroundColor: LAVENDER_S }}><p className="text-xs font-bold" style={{ color: BRAND_D }}>After AI 관찰</p><p className="mt-1 text-xs leading-relaxed" style={{ color: INK2 }}>{aiText}</p></div>}
         </>}
       </section>}
 
-      {screen === "report" && <section style={{ overflow: "hidden", borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}><div className="flex items-center gap-2 px-3 pt-2"><button type="button" onClick={() => setScreen("result")} aria-label="결과로 돌아가기" className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={18} /></button><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>체형분석 결과 카드</span><span className="block text-xs" style={{ color: SUB }}>회원 상담용 요약</span></span></div><div className="p-4 pt-2"><div className="flex items-end gap-2"><div className="min-w-0 flex-1"><p className="text-lg font-extrabold" style={{ color: INK }}>{member?.name} 회원</p><p className="mt-1 text-xs" style={{ color: SUB }}>{selectedDate ? ymd(selectedDate.slice(0, 10)) : "분석일 미확인"}</p></div><span className="rounded-full px-2 py-1 text-[10px] font-bold" style={{ backgroundColor: TINT, color: BRAND_D }}>{selected ? methodLabel(selected.method) : "결과 없음"}</span></div>{selected?.scope === "full_body" && reportPair.before && reportPair.after && reportView && <div className="mt-4 grid grid-cols-2 gap-2"><div><p className="mb-1 text-[10px] font-bold" style={{ color: INK }}>BEFORE</p><AssessmentSetFrame photo={setPhoto(reportPair.before, reportView)} label="Before" /></div><div><p className="mb-1 text-[10px] font-bold" style={{ color: BRAND_D }}>AFTER</p><AssessmentSetFrame photo={setPhoto(reportPair.after, reportView)} label="After" /></div></div>}<div className="mt-4 space-y-2"><div style={{ padding: 11, borderRadius: 11, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>핵심 변화</p>{metricChanges.length ? metricChanges.map((change) => <p key={change.id} className="mt-1 text-xs" style={{ color: INK2 }}>{postureViewLabel(change.view)} · {change.label}: {change.beforeValue}{change.unit} → {change.afterValue}{change.unit}</p>) : <p className="mt-1 text-xs" style={{ color: SUB }}>비교 가능한 실제 측정값이 아직 없습니다.</p>}</div><div style={{ padding: 11, borderRadius: 11, backgroundColor: LAVENDER_S }}><p className="text-xs font-bold" style={{ color: BRAND_D }}>AI 관찰 내용</p><p className="mt-1 text-xs leading-relaxed" style={{ color: aiText ? INK2 : SUB }}>{aiText || "저장된 AI 관찰이 없어 측정값으로 리포트를 구성합니다."}</p></div><div style={{ padding: 11, borderRadius: 11, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>강사 메모</p><p className="mt-1 text-xs leading-relaxed" style={{ color: teacherMemo ? INK2 : SUB }}>{teacherMemo || "저장된 강사 메모가 없습니다."}</p></div><div style={{ padding: 11, borderRadius: 11, backgroundColor: GOOD_S }}><p className="text-xs font-bold" style={{ color: GOOD }}>오늘 수업 집중 포인트</p><p className="mt-1 text-xs leading-relaxed" style={{ color: INK2 }}>{(member?.focus || []).length ? member.focus.join(" · ") : "강사가 수업 기록에서 확정할 수 있습니다."}</p></div><div className="flex items-center gap-2" style={{ padding: 11, borderRadius: 11, backgroundColor: CANVAS }}><CalendarDays size={15} style={{ color: BRAND }} /><span className="min-w-0 flex-1 text-xs" style={{ color: INK2 }}>다음 재평가 권장일</span><span className="text-xs font-bold" style={{ color: INK }}>{reportRetakeDate ? ymd(reportRetakeDate) : "확인 필요"}</span></div></div><div className="mt-4"><ResultCardMaker member={member} saved={completedPoses.filter((pose) => pose && pose.metrics)} centerName={settings?.centerName || ""} onToast={onToast} initialOpen beforeAssessmentId={reportPair.before?.id} afterAssessmentId={reportPair.after?.id} /></div></div></section>}
+      {screen === "report" && <section style={{ overflow: "hidden", borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}>
+        <div className="flex items-center gap-2 px-3 pt-2"><button type="button" onClick={() => setScreen("result")} aria-label="결과로 돌아가기" className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={18} /></button><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>체형분석 결과 카드</span><span className="block text-xs" style={{ color: SUB }}>회원 상담용 요약</span></span></div>
+        <div className="p-4 pt-2">
+          <div className="flex items-end gap-2"><div className="min-w-0 flex-1"><p className="text-lg font-extrabold" style={{ color: INK }}>{member?.name} 회원</p><p className="mt-1 text-xs" style={{ color: SUB }}>{selectedDate ? ymd(selectedDate.slice(0, 10)) : "분석일 미확인"}</p></div><span className="rounded-full px-2 py-1 text-[10px] font-bold" style={{ backgroundColor: TINT, color: BRAND_D }}>{selected ? methodLabel(selected.method) : "결과 없음"}</span></div>
+          {selected?.scope === "full_body" && reportPair.before && reportPair.after && reportView && <div className="mt-4 grid grid-cols-2 gap-2"><div><p className="mb-1 text-[10px] font-bold" style={{ color: INK }}>BEFORE</p><AssessmentSetFrame photo={setPhoto(reportPair.before, reportView)} label="Before" /></div><div><p className="mb-1 text-[10px] font-bold" style={{ color: BRAND_D }}>AFTER</p><AssessmentSetFrame photo={setPhoto(reportPair.after, reportView)} label="After" /></div></div>}
+          <div className="mt-4 space-y-2">
+            {!!metricChanges.length && <div style={{ padding: 11, borderRadius: 11, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>핵심 변화</p>{metricChanges.map((change) => <p key={change.id} className="mt-1 text-xs" style={{ color: INK2 }}>{postureViewLabel(change.view)} · {change.label}: {memberMetricValue(change.beforeValue, change.unit)}{change.unit} → {memberMetricValue(change.afterValue, change.unit)}{change.unit}</p>)}</div>}
+            {aiText && <div style={{ padding: 11, borderRadius: 11, backgroundColor: LAVENDER_S }}><p className="text-xs font-bold" style={{ color: BRAND_D }}>AI 관찰 내용</p><p className="mt-1 text-xs leading-relaxed" style={{ color: INK2 }}>{aiText}</p></div>}
+            {teacherMemo && <div style={{ padding: 11, borderRadius: 11, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>강사 메모</p><p className="mt-1 text-xs leading-relaxed" style={{ color: INK2 }}>{teacherMemo}</p></div>}
+            {!!(member?.focus || []).length && <div style={{ padding: 11, borderRadius: 11, backgroundColor: GOOD_S }}><p className="text-xs font-bold" style={{ color: GOOD }}>오늘 수업 집중 포인트</p><p className="mt-1 text-xs leading-relaxed" style={{ color: INK2 }}>{member.focus.join(" · ")}</p></div>}
+            <div className="flex items-center gap-2" style={{ padding: 11, borderRadius: 11, backgroundColor: CANVAS }}><CalendarDays size={15} style={{ color: BRAND }} /><span className="min-w-0 flex-1 text-xs" style={{ color: INK2 }}>다음 재평가 권장일</span><span className="text-xs font-bold" style={{ color: INK }}>{reportRetakeDate ? ymd(reportRetakeDate) : "확인 필요"}</span></div>
+          </div>
+          <div className="mt-4"><ResultCardMaker member={member} saved={completedPoses.filter((pose) => pose && pose.metrics)} centerName={settings?.centerName || ""} onToast={onToast} initialOpen beforeAssessmentId={reportPair.before?.id} afterAssessmentId={reportPair.after?.id} /></div>
+        </div>
+      </section>}
 
       {draftGuard?.step === "choice" && <ScheduleBottomSheet title="진행 중인 체형분석이 있습니다" subtitle="이전에 저장하던 체형분석을 이어서 진행할 수 있습니다." onClose={() => setDraftGuard(null)} aboveTabBar>
         <div className="space-y-2">
@@ -9932,9 +9871,6 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
         </div>
       </ScheduleBottomSheet>}
       {roleSheet && <ChoiceBottomSheet title="촬영 구분 선택" subtitle="이 촬영 세트를 비포·애프터 비교에서 어떻게 사용할지 선택해 주세요" value={pendingRole} options={[{ value: "before", label: "비포", description: "비교 기준이 되는 촬영" }, { value: "after", label: "에프터", description: "변화를 비교할 촬영" }, { value: "unassigned", label: "나중에 선택", description: "촬영 후에도 구분할 수 있습니다" }]} onClose={() => setRoleSheet(false)} onSelect={saveSelectedRole} />}
-      {comparisonSelection?.confirm && <ScheduleBottomSheet title="선택한 Before / After로 비교할까요?" subtitle="첫 번째로 고른 분석이 Before, 두 번째가 After로 사용됩니다" onClose={() => setComparisonSelection((value) => value ? { ...value, afterId: null, confirm: false } : null)}>
-        <div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => setComparisonSelection((value) => value ? { ...value, afterId: null, confirm: false } : null)} className="h-12 text-sm font-bold" style={{ borderRadius: 11, backgroundColor: CANVAS, color: INK }}>아니오 · 다시 선택</button><button type="button" onClick={confirmComparisonSelection} className="h-12 text-sm font-extrabold text-white" style={{ borderRadius: 11, backgroundColor: BRAND }}>예 · 비교하기</button></div>
-      </ScheduleBottomSheet>}
       {setPicker && <ChoiceBottomSheet title={setPicker === "before" ? "Before 분석 선택" : "After 분석 선택"} subtitle="같은 유형과 공통 촬영 방향이 있는 완료 분석만 표시합니다" value={setPicker === "before" ? beforeSet?.id : afterSet?.id} options={setOptions} onClose={() => setSetPicker(null)} onSelect={(id) => { if (setPicker === "before") setBeforeSetId(id); else setAfterSetId(id); }} />}
       {annotationPicker && <ChoiceBottomSheet title="다시 수정할 사진 선택" subtitle="저장된 표시를 불러와 이어서 수정합니다" value="" options={(selected?.selectedViews || []).map((view) => ({ value: view, label: postureViewLabel(view), description: setPhoto(selected, view)?.marks?.length ? "저장된 표시 있음" : "표시 새로 추가" })).filter((option) => setPhoto(selected, option.value))} onClose={() => setAnnotationPicker(false)} onSelect={(view) => { const photo = setPhoto(selected, view); setAnnotationPicker(false); if (photo) setEditingAnnotation({ view, photo }); }} />}
       {editingAnnotation?.photo?.src && <PostureCanvas key={`reedit_${editingAnnotation.view}_${editingAnnotation.photo.id}`} photo={editingAnnotation.photo} label={`${postureViewLabel(editingAnnotation.view)} · 다시 수정`} initialTool="pen" onClose={() => setEditingAnnotation(null)} onCancel={() => setEditingAnnotation(null)} onDraft={(marks) => onSaveMarks?.(editingAnnotation.view, editingAnnotation.photo.id, marks, { quiet: true })} onSave={(marks) => onSaveMarks?.(editingAnnotation.view, editingAnnotation.photo.id, marks)} onToast={onToast} />}

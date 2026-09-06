@@ -170,7 +170,7 @@ test("posture UI keeps tool labels in bounded grids and comparison semantics out
   const canvas = source.slice(source.indexOf("function PostureCanvas("), source.indexOf("function MemberList("));
   const comparison = source.slice(source.indexOf("function AssessmentComparisonViewer("), source.indexOf("function LegacyAssessmentWorkspace("));
   const exportCard = source.slice(source.indexOf("async function composeBeforeAfter("), source.indexOf("async function shareBeforeAfter("));
-  assert.match(canvas, /grid grid-cols-3 gap-1" data-posture-tool-grid/);
+  assert.match(canvas, /grid grid-cols-6 gap-1" data-posture-tool-grid/);
   assert.match(canvas, /flex flex-wrap items-center justify-center gap-0\.5" data-posture-color-grid/);
   assert.doesNotMatch(canvas, /data-posture-tool-grid[^>]*overflow-x-auto/);
   assert.doesNotMatch(comparison, /#356AE6|#F28C28|#4CC3FF|#2389B8/);

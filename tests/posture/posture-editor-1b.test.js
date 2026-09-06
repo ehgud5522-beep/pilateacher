@@ -53,11 +53,11 @@ test("direct drawing has a compact toolbar, exact preview, and single-photo comp
   const analyzerEnd = source.indexOf("function AssessmentWorkspace(", analyzerStart);
   const analyzer = source.slice(analyzerStart, analyzerEnd);
 
-  assert.match(canvas, /grid grid-cols-3 gap-1" data-posture-tool-grid/);
+  assert.match(canvas, /grid grid-cols-6 gap-1" data-posture-tool-grid/);
   assert.match(canvas, /data-posture-color-grid/);
   assert.doesNotMatch(canvas, /data-posture-tool-grid[^>]*overflow-x-auto/);
-  assert.match(canvas, /h-8 w-8 items-center justify-center rounded-full/);
-  assert.match(canvas, /min-h-11 items-center gap-1 border-t/);
+  assert.match(canvas, /h-7 w-7 items-center justify-center rounded-full/);
+  assert.match(canvas, /<details className="mt-1 border-t pt-1"/);
   assert.match(canvas, /HANDWRITING_SIZE_OPTIONS/);
   assert.match(canvas, /setHandwritingSize/);
   assert.match(canvas, /선택한 손메모 삭제/);

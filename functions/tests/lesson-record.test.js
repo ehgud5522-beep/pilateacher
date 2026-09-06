@@ -41,7 +41,7 @@ test("lesson record output schema is exact and prompt forbids invention and diag
   );
   assert.deepEqual(OUTPUT_SCHEMAS[OPERATIONS.STRUCTURE_LESSON_RECORD].properties.summary.type, ["string", "null"]);
   const prompt = getPrompt(OPERATIONS.STRUCTURE_LESSON_RECORD);
-  assert.equal(prompt.promptVersion, "lesson_record_v3");
+  assert.equal(prompt.promptVersion, "lesson_record_v4");
   assert.equal(
     prompt.instructions.split("\n")[0],
     "당신은 범용 운동·의료 추론 AI가 아닙니다. 강사가 수업 직후 말한 내용을 네 칸으로 최소 변환하는 기록 도구이며, 새 의미를 해석하지 않고 발화에 실제로 있는 내용만 옮깁니다.",
@@ -56,12 +56,18 @@ test("lesson record output schema is exact and prompt forbids invention and diag
   assert.match(prompt.instructions, /실제로 낮춘 수업 강도는 didToday/);
   assert.match(prompt.instructions, /강도 낮춰 진행/);
   assert.match(prompt.instructions, /정보가 없는 칸은 빈 배열/);
+  assert.match(prompt.instructions, /여러 칸으로 쪼개 반복하지/);
+  assert.match(prompt.instructions, /'운동이 좋았다' 같은 일반 평가/);
+  assert.match(prompt.instructions, /구체적인 운동명을 뜻하지 않으며/);
   assert.match(prompt.instructions, /단순한 표현은 단순하게/);
   assert.match(prompt.instructions, /⑤를 위해 ①~③을 희생하지/);
   assert.match(prompt.instructions, /사전은 전사 단계에서만 사용/);
   assert.match(prompt.instructions, /흉추 회전 시 전보다 부드러움/);
   assert.match(prompt.instructions, /responses=\[\]/);
   assert.match(prompt.instructions, /summary/);
+  assert.match(prompt.instructions, /네 칸에 없는 사실·원인·시점·의학적 의미를 summary에만 추가하지/);
+  assert.match(prompt.instructions, /네 칸이 모두 비면 summary는 반드시 null/);
+  assert.match(prompt.instructions, /근거가 약하면 일부 칸이 채워져 있어도 summary를 생략/);
   assert.match(prompt.instructions, /같은 내용이 반복되면 한 번만/);
   assert.match(prompt.instructions, /나중에 말한 내용을 따르세요/);
   assert.match(prompt.instructions, /음성 회귀 예:[\s\S]*didToday=\['오른쪽 허리 운동'\][\s\S]*nextFocus=\['리포머로 흉추 운동'\]/);

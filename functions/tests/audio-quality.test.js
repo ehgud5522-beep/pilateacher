@@ -56,6 +56,12 @@ test("implausible Korean speed and four consecutive glossary terms block structu
   assert.match(prompt, /흉추·요추·경추·견갑·고관절/);
   assert.match(prompt, /지난주/);
   assert.match(prompt, /낮췄다·올렸다/);
+  assert.match(prompt, /리포머·캐딜락·체어·바렐·바디포머·스파인 코렉터/);
+  assert.match(prompt, /게릴락·캐딜라/);
+  assert.match(prompt, /문맥상 캐딜락이 명확할 때만/);
+  assert.match(prompt, /확실하지 않으면 들리는 표현을 유지/);
+  assert.ok(PILATES_TRANSCRIPTION_TERMS.includes("바디포머"));
+  assert.ok(PILATES_TRANSCRIPTION_TERMS.includes("스파인 코렉터"));
   assert.doesNotMatch(prompt, /필라테스 용어 참고:/);
 });
 

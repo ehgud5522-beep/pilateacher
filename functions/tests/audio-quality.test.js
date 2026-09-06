@@ -8,7 +8,7 @@ const {
   assessTranscriptConsistency,
   assessWhisperTranscription,
 } = require("../src/audio-quality");
-const { PILATES_TRANSCRIPTION_TERMS, buildTranscriptionPrompt } = require("../src/transcription-config");
+const { PILATES_TRANSCRIPTION_TERMS, buildTranscriptionPrompt, correctPilatesTranscription } = require("../src/transcription-config");
 
 const voicedEnvelope = () => ({ intervalMs: 100, amplitudes: [...Array(5).fill(0.002), ...Array(20).fill(0.22), ...Array(5).fill(0.002)] });
 
@@ -67,6 +67,20 @@ test("implausible Korean speed and four consecutive glossary terms block structu
   assert.ok(PILATES_TRANSCRIPTION_TERMS.includes("바디포머"));
   assert.ok(PILATES_TRANSCRIPTION_TERMS.includes("스파인 코렉터"));
   assert.doesNotMatch(prompt, /필라테스 용어 참고:/);
+});
+
+test("STT correction changes only explicit exercise-context mishearings", () => {
+  assert.deepEqual(correctPilatesTranscription("오늘 허리 음봉 했어요"), {
+    transcript: "오늘 허리 운동 했어요",
+    corrections: ["stt_corrected_eumbong_to_exercise"],
+  });
+  assert.deepEqual(correctPilatesTranscription("다음 응동은 리포머로 진행해요"), {
+    transcript: "다음 운동은 리포머로 진행해요",
+    corrections: ["stt_corrected_eungdong_to_exercise"],
+  });
+  assert.equal(correctPilatesTranscription("은근 허리가 편했어요").transcript, "은근 허리가 편했어요");
+  assert.equal(correctPilatesTranscription("음봉산을 봤어요").transcript, "음봉산을 봤어요");
+  assert.equal(correctPilatesTranscription("응동이라는 말을 들었어요").transcript, "응동이라는 말을 들었어요");
 });
 
 module.exports = { voicedEnvelope };

@@ -20,7 +20,32 @@ function buildTranscriptionPrompt(memberName = "") {
   ].filter(Boolean).join("\n");
 }
 
+const EXERCISE_MISHEARING_CODES = Object.freeze({
+  "음봉": "stt_corrected_eumbong_to_exercise",
+  "응동": "stt_corrected_eungdong_to_exercise",
+});
+
+function correctPilatesTranscription(value) {
+  let transcript = String(value || "").trim();
+  const corrections = [];
+  for (const [heard, code] of Object.entries(EXERCISE_MISHEARING_CODES)) {
+    const matcher = new RegExp(heard, "gu");
+    transcript = transcript.replace(matcher, (match, offset, fullText) => {
+      const before = fullText.slice(Math.max(0, offset - 24), offset);
+      const after = fullText.slice(offset + match.length, offset + match.length + 32);
+      const lessonAction = /^\s*(?:을|를|은|는|이|가)?\s*(?:했|해|할|합니다|진행|예정|좋|편|힘들|쉬웠|마쳤)/u.test(after);
+      const nextEquipment = /(?:^|[\s,.!?])다음\s*$/u.test(before)
+        && /^\s*(?:은|는|을|를)?\s*(?:리포머|캐딜락|체어|바렐|바디포머|스파인\s*코렉터|으로|로|에서)/u.test(after);
+      if (!lessonAction && !nextEquipment) return match;
+      corrections.push(code);
+      return "운동";
+    });
+  }
+  return Object.freeze({ transcript, corrections: Object.freeze([...new Set(corrections)]) });
+}
+
 module.exports = {
   PILATES_TRANSCRIPTION_TERMS,
   buildTranscriptionPrompt,
+  correctPilatesTranscription,
 };

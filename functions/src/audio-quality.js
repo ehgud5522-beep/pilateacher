@@ -48,8 +48,8 @@ function analyzeEnergyEnvelope(metrics) {
     : 0;
   const confidence = clamp01((activeAverage - noiseFloor) / Math.max(0.08, 1 - noiseFloor));
   return Object.freeze({
-    // Energy is diagnostic only. The transcription result, not an estimated
-    // speech duration, is authoritative for no_speech.
+    // The exact-silence and no-active-sample states are safe server guards;
+    // measured speech duration remains diagnostic for otherwise voiced audio.
     accepted: !allSilent,
     allSilent,
     speechSeconds,

@@ -8,7 +8,8 @@ const { prepareProviderInput } = require("./privacy");
 const { fingerprintRequest, parseGatewayRequest } = require("./request-contracts");
 
 const PIPELINE_VERSION = "ai-gateway-v1";
-const DEFERRED_OPERATIONS = new Set(["recommendSequence"]);
+const DEFERRED_OPERATIONS = new Set(["recommendSequence", "analyzeBody"]);
+const DEFERRED_REPORT_TYPES = new Set(["member_body_assessment_card"]);
 const consentOperation = (operation) => (
   operation === OPERATIONS.STRUCTURE_LESSON_RECORD || operation === OPERATIONS.LESSON_RECORD_FROM_AUDIO
     ? OPERATIONS.SUMMARIZE_VOICE
@@ -64,7 +65,10 @@ function createAIGatewayHandler({
       diagnosticLog("request_authenticated", { requestId, operation: request.operation, httpStatus: 0, auth: "success" });
       // DEFER: Sequence recommendation keeps its request/output contracts for a
       // future release, but has no active Gateway route or provider execution.
-      if (DEFERRED_OPERATIONS.has(request.operation)) throw new GatewayError("operation_deferred");
+      if (DEFERRED_OPERATIONS.has(request.operation)
+        || (request.operation === OPERATIONS.GENERATE_REPORT && DEFERRED_REPORT_TYPES.has(request.input.reportType))) {
+        throw new GatewayError("operation_deferred");
+      }
       const authorization = await policyService.authorize({
         uid,
         memberId: request.input.memberId,

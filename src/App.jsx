@@ -36,7 +36,7 @@ import {
 } from "./lib/firebase";
 import { runAppDualWrite } from "./data/dual-write/app-runtime";
 import {
-  AI_STATUSES, aiProvider, bodyAnalysisFields, buildBodyAnalysisInput, buildReportInput,
+  AI_STATUSES, aiProvider, buildReportInput,
   buildLessonRecordInput, formatAIReport,
 } from "./ai/index.js";
 import { transitionAttendance } from "./features/schedule/attendance-transitions.js";
@@ -61,13 +61,13 @@ import { installFocusVisibilityGuard } from "./features/ui/focus-visibility.js";
 import { scheduleMemberLayoutSnapshots } from "./features/ui/member-layout-diagnostics.js";
 import { scrollRecordSectionIntoView } from "./features/ui/record-section-scroll.js";
 import {
-  POSTURE_RETAKE_DAYS, POSTURE_STORAGE_KEYS, POSTURE_VIEW_DEFS, POSTURE_VIEW_KEYS,
+  POSTURE_STORAGE_KEYS, POSTURE_VIEW_DEFS, POSTURE_VIEW_KEYS,
   assessmentDisplayDate, assessmentMediaForView, commonPostureComparisonViews, compareAssessmentMetrics, completeAssessmentRecords, correctedPoseSource, countPosturePhotoRecords, normalizeAssessmentSets, normalizePostureView, postureAnalysisPlane,
-  getPostureRetakeStatus, postureAlignmentTransform, postureReferenceLines,
+  postureAlignmentTransform, postureReferenceLines,
   postureMilestoneTemplate, postureViewLabel, removeAssessmentDraftRecords, selectAutomaticComparison, selectComparisonAssessmentOptions,
   selectMemberBodyPhotoSurface, selectResumableAssessment,
 } from "./features/posture/posture-model.js";
-import { postureRecordHasInvalidMeasurements, validatePostureMeasurement, validPostureMetrics } from "./features/posture/measurement-validity.js";
+import { validatePostureMeasurement, validPostureMetrics } from "./features/posture/measurement-validity.js";
 import {
   POSTURE_PERSISTENCE_EVENTS, POSTURE_PERSISTENCE_FAILURES,
   appendPosturePersistenceDiagnostic, appendPosturePersistenceFailure,
@@ -6063,16 +6063,8 @@ function bendDeg(a, b, c) {
   const cos = Math.min(1, Math.max(-1, (v1.x * v2.x + v1.y * v2.y) / m));
   return 180 - Math.acos(cos) * D2;
 }
-function xDev(a, c, b) {
-  const t = (b.y - a.y) / ((c.y - a.y) || 1e-6);
-  return b.x - (a.x + (c.x - a.x) * t);
-}
 const midOf = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
-const LV_COLOR = { get good() { return GOOD; }, get warn() { return WARN; }, get bad() { return BAD; } };
-const LV_TEXT = { good: "양호", warn: "주의", bad: "교정 필요" };
-const lvDown = (v, ok, warn) => (v <= ok ? "good" : v <= warn ? "warn" : "bad");
-const lvUp = (v, ok, warn) => (v >= ok ? "good" : v >= warn ? "warn" : "bad");
-const LV_RANK = { good: 0, warn: 1, bad: 2 };
+const MEASUREMENT_COLOR = BRAND;
 function analyzePose(raw, { view, W, H, floorFix }) {
   const P = {};
   Object.keys(raw || {}).forEach((k) => {
@@ -6100,41 +6092,22 @@ function analyzePose(raw, { view, W, H, floorFix }) {
     const fix = floorFix ? floor : 0;
     const sh = lineDeg(P.shL, P.shR) - fix;
     const hip = lineDeg(P.hipL, P.hipR) - fix;
-    const shHigh = P.shL.y < P.shR.y ? "왼쪽" : "오른쪽";
-    const hipHigh = P.hipL.y < P.hipR.y ? "왼쪽" : "오른쪽";
-    items.push({ key: "shoulder", label: "어깨 틀어짐 각도", value: Math.abs(r1(sh)), unit: "°", level: lvDown(Math.abs(sh), 2, 4), at: midOf(P.shL, P.shR), up: -1, dir: Math.abs(sh) < 0.3 ? "수평" : `${shHigh} 높음`, desc: Math.abs(sh) < 0.3 ? "좌우 어깨 높이가 거의 같습니다." : `${shHigh} 어깨가 ${Math.abs(r1(sh))}° 올라가 있습니다.`, tip: `${shHigh} 상부승모근·견갑거근 이완 → 반대쪽 하부승모근·전거근 강화` });
-    items.push({ key: "pelvis", label: "골반 비대칭 각도", value: Math.abs(r1(hip)), unit: "°", level: lvDown(Math.abs(hip), 2, 4), at: midOf(P.hipL, P.hipR), up: 1, dir: Math.abs(hip) < 0.3 ? "수평" : `${hipHigh} 높음`, desc: Math.abs(hip) < 0.3 ? "좌우 골반 높이가 거의 같습니다." : `${hipHigh} 골반이 ${Math.abs(r1(hip))}° 올라가 있습니다.`, tip: `${hipHigh} 요방형근 이완 → 반대쪽 중둔근 활성 (사이드 라잉 시리즈)` });
+    items.push({ key: "shoulder", label: "어깨선 각도", value: Math.abs(r1(sh)), unit: "°", at: midOf(P.shL, P.shR), up: -1 });
+    items.push({ key: "pelvis", label: "골반선 각도", value: Math.abs(r1(hip)), unit: "°", at: midOf(P.hipL, P.hipR), up: 1 });
     const twist = Math.abs(sh - hip);
-    items.push({ key: "twist", label: "어깨-골반 기울기 차", value: r1(twist), unit: "°", level: lvDown(twist, 2, 5), at: midOf(midOf(P.shL, P.shR), midOf(P.hipL, P.hipR)), up: 0, skipBadge: true, dir: twist < 1 ? "정렬 양호" : sh * hip < 0 ? "반대로 기움" : "같은 방향", desc: `어깨선과 골반선의 기울기가 ${r1(twist)}° 차이 납니다.${sh * hip < 0 ? " 두 선이 서로 반대로 기운 형태로, 측만 성향을 함께 확인해 보세요." : ""}`, tip: "짧아진 쪽 측면 라인(요방형근·광배근) 이완 후 반대쪽 측면 강화 · 사이드 벤드 좌우 비교" });
+    items.push({ key: "twist", label: "어깨-골반선 각도 차", value: r1(twist), unit: "°", at: midOf(midOf(P.shL, P.shR), midOf(P.hipL, P.hipR)), up: 0, skipBadge: true });
     if (has("kneeL", "kneeR", "ankL", "ankR")) {
-      const midX = (P.hipL.x + P.hipR.x) / 2;
       const legs = ["L", "R"].map((s) => {
         const hipP = P["hip" + s], kneeP = P["knee" + s], ankP = P["ank" + s];
         const dev = bendDeg(hipP, kneeP, ankP);
-        const dx = xDev(hipP, ankP, kneeP);
-        const inward = (midX - kneeP.x) * dx > 0;
-        return { s, ko: s === "L" ? "왼쪽" : "오른쪽", dev: r1(dev), inward, at: kneeP };
+        return { s, ko: s === "L" ? "왼쪽" : "오른쪽", dev: r1(dev), at: kneeP };
       });
       const worst = legs[0].dev >= legs[1].dev ? legs[0] : legs[1];
-      const shape = worst.dev < 3 ? "정렬 양호" : worst.inward ? "X다리 성향" : "O다리 성향";
-      items.push({ key: "knee", label: "무릎 정렬 각도", value: worst.dev, unit: "°", level: lvDown(worst.dev, 3, 6), at: worst.at, up: -1, dir: shape, desc: `왼쪽 ${legs[0].dev}° · 오른쪽 ${legs[1].dev}° — ${shape}`, tip: worst.dev < 3 ? "현재 정렬 유지 · 스쿼트 시 무릎-2번 발가락 정렬 큐잉" : worst.inward ? "중둔근·고관절 외회전근 강화, 발 아치 지지" : "내전근·족부 회내 컨트롤, 스쿼트 무릎 궤적 교정" });
+      items.push({ key: "knee", label: "무릎선 각도", value: worst.dev, unit: "°", at: worst.at, up: -1 });
     }
     if (has("earL", "earR")) {
       const head = lineDeg(P.earL, P.earR) - fix;
-      const hh = P.earL.y < P.earR.y ? "왼쪽" : "오른쪽";
-      items.push({ key: "head", label: "머리 기울기", value: Math.abs(r1(head)), unit: "°", level: lvDown(Math.abs(head), 2, 4), at: midOf(P.earL, P.earR), up: -1, dir: Math.abs(head) < 0.3 ? "수평" : `${hh} 기움`, desc: `귀 높이가 ${Math.abs(r1(head))}° 차이 납니다.`, tip: `${hh} 사각근·흉쇄유돌근 이완 · 턱 당기기(chin tuck) 병행` });
-    }
-    if (has("ankL", "ankR") && floorPairValidity.valid) {
-      const shW = Math.abs(P.shL.x - P.shR.x) || 1;
-      const fr = floorFix ? (floor * Math.PI) / 180 : 0;
-      const dSh = midOf(P.shL, P.shR), dAn = midOf(P.ankL, P.ankR);
-      const off = (dSh.x - dAn.x) * Math.cos(fr) + (dSh.y - dAn.y) * Math.sin(fr);
-      const dirL = Math.sign(P.shL.x - P.shR.x) || 1;
-      const pct = Math.abs(Math.round((off / shW) * 100));
-      if (pct >= 4 && !(Math.abs(floor) > 1.5 && !floorFix))
-        notes.push(`좌우 무게중심: 상체 중심이 발 중심보다 어깨너비의 ${pct}%만큼 ${off * dirL > 0 ? "왼쪽" : "오른쪽"}으로 치우쳐 있습니다.`);
-      if (Math.abs(floor) > 1.5)
-        notes.push(`바닥선(발목)이 ${Math.abs(r1(floor))}° 기울어 있습니다 — 촬영 각도 영향일 수 있어 '바닥선 보정'을 켜고 다시 확인해 보세요.`);
+      items.push({ key: "head", label: "귀선 각도", value: Math.abs(r1(head)), unit: "°", at: midOf(P.earL, P.earR), up: -1 });
     }
     return { items: calculatedItems, notes, floor: r1(floor), invalidMeasurements };
   }
@@ -6149,22 +6122,16 @@ function analyzePose(raw, { view, W, H, floorFix }) {
   const knee = P.knee || pick("kneeL", "kneeR");
   const ank = P.ank || pick("ankL", "ankR");
   if (!(ear && sh && hip)) return { items: [], notes: ["귀·어깨·골반이 인식되지 않았습니다."], floor: 0, invalidMeasurements };
-  let face = P.nose ? Math.sign(P.nose.x - sh.x) : Math.sign(ear.x - sh.x);
-  if (!face) face = 1;
-  const fw = (v) => (v * face > 0 ? "앞쪽" : "뒤쪽");
   const fha = vertDeg(sh, ear);
-  items.push({ key: "fha", label: "거북목(머리 전방 이동)", value: Math.abs(r1(fha)), unit: "°", level: lvDown(Math.abs(fha), 7, 15), at: midOf(ear, sh), up: -1, dir: Math.abs(fha) < 3 ? "정렬 양호" : `머리가 ${fw(fha)}`, desc: `귀가 어깨 수직선보다 ${Math.abs(r1(fha))}° ${fw(fha)}에 있습니다. 7° 이내면 양호, 15°를 넘으면 전방 두부 자세로 봅니다.`, tip: "턱 당기기(chin tuck) 10회 × 3 · 흉추 신전 가동 · 모니터/베개 높이 점검" });
+  items.push({ key: "fha", label: "귀-어깨 수직선 각도", value: Math.abs(r1(fha)), unit: "°", at: midOf(ear, sh), up: -1 });
   const lean = vertDeg(hip, sh);
-  items.push({ key: "trunk", label: "몸통 기울기", value: Math.abs(r1(lean)), unit: "°", level: lvDown(Math.abs(lean), 3, 6), at: midOf(hip, sh), up: 0, dir: Math.abs(lean) < 1 ? "수직 정렬" : `${fw(lean)}으로 기움`, desc: `골반-어깨 선이 수직에서 ${Math.abs(r1(lean))}° 벗어나 있습니다.`, tip: "복부 심부근 활성 + 흉요추 분절 컨트롤 (footwork·bridging 큐잉)" });
+  items.push({ key: "trunk", label: "골반-어깨 수직선 각도", value: Math.abs(r1(lean)), unit: "°", at: midOf(hip, sh), up: 0 });
   if (knee && ank) {
     const dev = bendDeg(hip, knee, ank);
-    const dx = xDev(hip, ank, knee);
-    const back = dx * face < 0;
-    items.push({ key: "kneeSide", label: back ? "무릎 과신전(반장슬)" : "무릎 굴곡", value: r1(dev), unit: "°", level: lvDown(dev, 3, 6), at: knee, up: -1, dir: dev < 2 ? "중립" : back ? "뒤로 밀림" : "앞으로 굽음", desc: `고관절-발목 선 대비 무릎이 ${r1(dev)}° ${back ? "뒤" : "앞"}으로 벗어나 있습니다.`, tip: back ? "무릎 살짝 풀고 서기(soft knee) · 햄스트링·종아리 이완, 대퇴사두 편심 강화" : "고관절 신전 가동 확보 · 장요근 이완 후 둔근 활성" });
+    items.push({ key: "kneeSide", label: "고관절-무릎-발목 각도", value: r1(dev), unit: "°", at: knee, up: -1 });
     const glob = vertDeg(ank, ear);
-    items.push({ key: "align", label: "전신 수직 정렬", value: Math.abs(r1(glob)), unit: "°", level: lvDown(Math.abs(glob), 4, 8), at: ank, up: -1, skipBadge: true, dir: Math.abs(glob) < 1 ? "정렬 양호" : `머리가 ${fw(glob)}`, desc: `복사뼈에서 올린 수직선 대비 귀가 ${Math.abs(r1(glob))}° ${fw(glob)}에 있습니다.`, tip: "발-골반-흉곽-머리 스택 재정렬 (벽 서기 30초 × 3)" });
+    items.push({ key: "align", label: "복사뼈-귀 수직선 각도", value: Math.abs(r1(glob)), unit: "°", at: ank, up: -1, skipBadge: true });
   }
-  notes.push("측면 골반 전·후방 경사는 사진 관절점만으로는 정확히 계산할 수 없어 제외했습니다. 촉진(ASIS·PSIS)으로 확인해 주세요.");
   return { items: calculatedItems, notes, floor: 0, invalidMeasurements };
 }
 function badge(ctx, x, y, text, color, up, placed, W, H) {
@@ -6231,7 +6198,7 @@ const CARD_JOINTS = {
   head: ["earL", "earR"], twist: ["shL", "shR"],
   fha: ["ear"], trunk: ["sh", "hip"], kneeSide: ["knee"], align: ["sh", "hip", "knee"],
 };
-const CARD_SHORT = { shoulder: "어깨", pelvis: "골반", knee: "무릎", head: "머리", twist: "어깨 회전", fha: "거북목", trunk: "몸통 기울기", kneeSide: "무릎(측면)", align: "정렬" };
+const CARD_SHORT = { shoulder: "어깨선", pelvis: "골반선", knee: "무릎선", head: "귀선", twist: "어깨·골반선", fha: "귀·어깨선", trunk: "몸통선", kneeSide: "무릎선(측면)", align: "전신선" };
 const memberMetricValue = (value, unit) => unit === "°" && Number.isFinite(Number(value)) ? String(Math.round(Number(value))) : String(value ?? "");
 
 async function loadImg(src) {
@@ -6353,32 +6320,7 @@ async function composeResultCard({ bRec, aRec, bSrc, aSrc, keys, colors, texts, 
   return c;
 }
 
-/* 받침 유무로 이/가 를 고른다 — "틀어짐이", "비대칭이" */
-const josa = (w, a, b) => {
-  const ch = (w || "").charCodeAt((w || "").length - 1);
-  if (ch < 0xac00 || ch > 0xd7a3) return w + a;
-  return w + (((ch - 0xac00) % 28) ? a : b);
-};
-/* 개선 문구 자동 초안 */
-function cardDrafts(bRec, aRec, keys) {
-  const g = (rec, k) => validPostureMetrics(rec).find((m) => m.key === k);
-  const lines = [];
-  keys.forEach((k) => {
-    const b = g(bRec, k), a = g(aRec, k);
-    if (b && a && Number.isFinite(b.value) && Number.isFinite(a.value)) {
-      lines.push(`${josa(b.label.replace(" 각도", ""), "을", "를")} 전후 사진으로 함께 확인했습니다.`);
-    } else if (a) {
-      lines.push(`${a.label.replace(" 각도", "")} 정렬을 확인했습니다.`);
-    }
-  });
-  const names = keys.map((k) => CARD_SHORT[k] || k).slice(0, 2).join("·");
-  return {
-    title: names ? `${names} 정렬 변화를 함께 확인했어요!` : "체형 변화를 함께 확인했어요!",
-    c1: lines[0] || "",
-    c2: lines[1] || "",
-    close: "가동성을 높이고, 근육의 균형을 바로잡는 것이 바른 체형의 시작입니다.",
-  };
-}
+const cardDrafts = () => ({ title: "변화 기록", c1: "", c2: "", close: "" });
 
 function ResultCardMaker({ member, saved, centerName, onToast, onGoAnalyze, initialOpen = false, beforeAssessmentId = null, afterAssessmentId = null }) {
   const [open, setOpen] = useState(initialOpen);
@@ -6402,27 +6344,14 @@ function ResultCardMaker({ member, saved, centerName, onToast, onGoAnalyze, init
     ? Object.keys(CARD_JOINTS).filter((k) => validPostureMetrics(bRec).some((m) => m.key === k) && validPostureMetrics(aRec).some((m) => m.key === k))
     : [];
   const [sel, setSel] = useState(null);
-  const keys = sel || commonKeys.filter((k) => {
-    const b = validPostureMetrics(bRec).find((m) => m.key === k);
-    return b && b.level !== "good";
-  }).slice(0, 3);
+  const keys = sel || commonKeys.slice(0, 3);
   const cb = INK2;
   const ca = BRAND;
   const textColor = INK;
-  const confirmedCard = both && !postureRecordHasInvalidMeasurements(bRec) && !postureRecordHasInvalidMeasurements(aRec)
-    ? saved.find((record) => record?.assessmentId === aRec?.assessmentId && !postureRecordHasInvalidMeasurements(record) && record?.memberResultCard?.status === AI_STATUSES.CONFIRMED)?.memberResultCard
-    : null;
-  const confirmedCardText = confirmedCard?.teacherEditedOutput || confirmedCard?.output || null;
   const drafts = useMemo(() => {
     if (!both) return { title: "", c1: "", c2: "", close: "" };
-    if (!confirmedCardText) return cardDrafts(bRec, aRec, keys);
-    return {
-      title: confirmedCardText.title || "변화 기록 결과",
-      c1: confirmedCardText.highlights?.[0] || confirmedCardText.summary || "",
-      c2: confirmedCardText.highlights?.[1] || confirmedCardText.recommendations?.[0] || "",
-      close: confirmedCardText.recommendations?.[0] || confirmedCardText.precautions?.[0] || "",
-    };
-  }, [bId, aId, JSON.stringify(keys), confirmedCardText]);
+    return cardDrafts();
+  }, [bId, aId, JSON.stringify(keys), both]);
   const [txt, setTxt] = useState(null);
   const T = txt || drafts;
   const [preview, setPreview] = useState(null);
@@ -6614,150 +6543,20 @@ const buildMemberMemorySafely = (input) => {
     return { memories: input.existingMemory || [], stats: { candidateCount: 0, mergedCount: 0, patternCount: 0 }, failed: true };
   }
 };
-const aiListText = (items) => (items || []).join("\n");
-const aiListValue = (value) => String(value || "").split(/\n+/).map((item) => item.trim()).filter(Boolean);
-
-function BodyAIReview({ member, rec, records, onUpdate, onToast }) {
-  const group = useMemo(() => {
-    const same = (records || []).filter((record) => rec?.assessmentId && record?.assessmentId === rec.assessmentId);
-    return same.length ? same : [rec];
-  }, [records, rec?.assessmentId, rec?.id]);
-  const expectedViews = useMemo(() => {
-    const selected = group.flatMap((record) => Array.isArray(record?.selectedViews) ? record.selectedViews : [])
-      .map(normalizePostureView)
-      .filter((view) => POSTURE_VIEW_KEYS.includes(view));
-    if (selected.length) return [...new Set(selected)];
-    return POSTURE_VIEWS.map(({ key }) => key).filter((key) => group.some((record) => normalizePostureView(record?.view) === key));
-  }, [group]);
-  const viewRecords = useMemo(() => expectedViews.map((key) => group.find((record) => normalizePostureView(record?.view) === key)).filter(Boolean).map((record) => ({ ...record, metrics: validPostureMetrics(record) })), [group, expectedViews]);
-  const storedRecord = group.find((record) => record?.aiAnalysis) || rec;
-  const storedAnalysis = postureRecordHasInvalidMeasurements(storedRecord) ? null : storedRecord?.aiAnalysis || null;
-  const storedCard = postureRecordHasInvalidMeasurements(storedRecord) ? null : storedRecord?.memberResultCard || null;
-  const [teacherNote, setTeacherNote] = useState(storedAnalysis?.teacherNote || rec?.comment || "");
-  const [original, setOriginal] = useState(storedAnalysis?.output || null);
-  const [draft, setDraft] = useState(storedAnalysis?.teacherEditedOutput || storedAnalysis?.output || null);
-  const [analysisMeta, setAnalysisMeta] = useState(storedAnalysis?.meta || null);
-  const [analysisStatus, setAnalysisStatus] = useState(storedAnalysis?.status || AI_STATUSES.NOT_CONNECTED);
-  const [reportOriginal, setReportOriginal] = useState(storedCard?.output || null);
-  const [reportDraft, setReportDraft] = useState(storedCard?.teacherEditedOutput || storedCard?.output || null);
-  const [reportMeta, setReportMeta] = useState(storedCard?.meta || null);
-  const [reportStatus, setReportStatus] = useState(storedCard?.status || AI_STATUSES.NOT_CONNECTED);
-  const [busy, setBusy] = useState("");
-  const connected = aiProvider.getStatus().status === "connected";
-  const ready = expectedViews.length > 0 && expectedViews.every((key) => {
-    const record = group.find((item) => normalizePostureView(item?.view) === key);
-    return Boolean(record?.pts && validPostureMetrics(record).length);
-  });
-
-  useEffect(() => {
-    setTeacherNote(storedAnalysis?.teacherNote || rec?.comment || "");
-    setOriginal(storedAnalysis?.output || null);
-    setDraft(storedAnalysis?.teacherEditedOutput || storedAnalysis?.output || null);
-    setAnalysisMeta(storedAnalysis?.meta || null);
-    setAnalysisStatus(storedAnalysis?.status || AI_STATUSES.NOT_CONNECTED);
-    setReportOriginal(storedCard?.output || null);
-    setReportDraft(storedCard?.teacherEditedOutput || storedCard?.output || null);
-    setReportMeta(storedCard?.meta || null);
-    setReportStatus(storedCard?.status || AI_STATUSES.NOT_CONNECTED);
-  }, [storedRecord?.id, storedAnalysis?.status, storedCard?.status]);
-
-  const persist = async (patch) => {
-    const ok = await onUpdate?.(storedRecord?.id || rec.id, patch);
-    if (ok === false) throw new Error("save_failed");
-  };
-  const requestAnalysis = async () => {
-    if (!ready) { onToast?.({ ok: false, msg: "선택한 모든 촬영 방향의 분석을 저장해야 AI 분석을 시작할 수 있습니다." }); return; }
-    if (!connected) { setAnalysisStatus(AI_STATUSES.NOT_CONNECTED); onToast?.({ ok: false, msg: "현재 AI 분석을 사용할 수 없습니다." }); return; }
-    const consent = await ensureMemberAIConsent(member?.id, "analyzeBody");
-    if (!consent.ok) { onToast?.({ ok: false, msg: consent.message }); return; }
-    setBusy("analysis");
+function PostureTeacherMemo({ rec, onUpdate, onToast }) {
+  const [teacherNote, setTeacherNote] = useState(rec?.comment || rec?.teacherMemo || "");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { setTeacherNote(rec?.comment || rec?.teacherMemo || ""); }, [rec?.id, rec?.comment, rec?.teacherMemo]);
+  const save = async () => {
+    setBusy(true);
     try {
-      const result = await aiProvider.analyzeBody(buildBodyAnalysisInput({ member, records: viewRecords, teacherNote }));
-      if (result.status === AI_STATUSES.NOT_CONNECTED) { setAnalysisStatus(result.status); return; }
-      const meta = aiMetaFrom(result);
-      const next = { status: AI_STATUSES.DRAFT, output: result.output, teacherEditedOutput: result.output, teacherNote, meta };
-      await persist({ aiAnalysis: next, interpretation: result.output, interpretationStatus: AI_STATUSES.DRAFT, comment: teacherNote });
-      setOriginal(result.output); setDraft(result.output); setAnalysisMeta(meta); setAnalysisStatus(AI_STATUSES.DRAFT);
-      onToast?.({ ok: true, msg: "AI 변화 분석 초안을 저장했습니다. 강사가 검수해 주세요." });
-    } catch (error) {
-      setAnalysisStatus(AI_STATUSES.ERROR);
-      onToast?.({ ok: false, msg: aiFailureMessage(error, "AI 변화 분석을 불러오지 못했습니다.") });
-    } finally { setBusy(""); }
+      const ok = await onUpdate?.(rec.id, { comment: teacherNote });
+      if (ok === false) throw new Error("save_failed");
+      onToast?.({ ok: true, msg: "강사 메모를 저장했습니다." });
+    } catch (error) { onToast?.({ ok: false, msg: "강사 메모를 저장하지 못했습니다." }); }
+    finally { setBusy(false); }
   };
-  const confirmAnalysis = async () => {
-    if (!draft || !original) return;
-    setBusy("confirm");
-    try {
-      const confirmedAt = new Date().toISOString();
-      await persist({
-        aiAnalysis: { status: AI_STATUSES.CONFIRMED, output: original, teacherEditedOutput: draft, teacherNote, meta: analysisMeta, confirmedAt },
-        interpretation: draft, interpretationStatus: AI_STATUSES.CONFIRMED, comment: teacherNote,
-      });
-      setAnalysisStatus(AI_STATUSES.CONFIRMED);
-      onToast?.({ ok: true, msg: "강사 검수 결과를 확정했습니다." });
-    } catch (error) { onToast?.({ ok: false, msg: "AI 분석 확정본을 저장하지 못했습니다." }); }
-    finally { setBusy(""); }
-  };
-  const requestReport = async () => {
-    if (analysisStatus !== AI_STATUSES.CONFIRMED || !draft) { onToast?.({ ok: false, msg: "변화 분석을 강사 확정한 뒤 결과카드를 만들 수 있습니다." }); return; }
-    if (!connected) { setReportStatus(AI_STATUSES.NOT_CONNECTED); onToast?.({ ok: false, msg: "현재 AI 결과카드를 만들 수 없습니다." }); return; }
-    const consent = await ensureMemberAIConsent(member?.id, "generateReport");
-    if (!consent.ok) { onToast?.({ ok: false, msg: consent.message }); return; }
-    setBusy("report");
-    try {
-      const result = await aiProvider.generateReport(buildReportInput({ reportType: "member_body_assessment_card", memberId: member?.id, memberName: member?.name, source: { bodyAnalysis: draft, teacherNote } }));
-      if (result.status === AI_STATUSES.NOT_CONNECTED) { setReportStatus(result.status); return; }
-      const meta = aiMetaFrom(result);
-      const next = { status: AI_STATUSES.DRAFT, output: result.output, teacherEditedOutput: result.output, meta };
-      await persist({ memberResultCard: next });
-      setReportOriginal(result.output); setReportDraft(result.output); setReportMeta(meta); setReportStatus(AI_STATUSES.DRAFT);
-      onToast?.({ ok: true, msg: "회원 결과카드 초안을 저장했습니다." });
-    } catch (error) { setReportStatus(AI_STATUSES.ERROR); onToast?.({ ok: false, msg: aiFailureMessage(error, "AI 결과카드 초안을 불러오지 못했습니다.") }); }
-    finally { setBusy(""); }
-  };
-  const confirmReport = async () => {
-    if (!reportDraft || !reportOriginal) return;
-    setBusy("report-confirm");
-    try {
-      await persist({ memberResultCard: { status: AI_STATUSES.CONFIRMED, output: reportOriginal, teacherEditedOutput: reportDraft, meta: reportMeta, confirmedAt: new Date().toISOString() } });
-      setReportStatus(AI_STATUSES.CONFIRMED);
-      onToast?.({ ok: true, msg: "회원 결과카드를 확정했습니다." });
-    } catch (error) { onToast?.({ ok: false, msg: "회원 결과카드를 저장하지 못했습니다." }); }
-    finally { setBusy(""); }
-  };
-  const setBodyField = (field, value, isList) => setDraft((current) => ({ ...(current || {}), [field]: isList ? aiListValue(value) : value }));
-  const setReportField = (field, value, isList) => setReportDraft((current) => ({ ...(current || {}), [field]: isList ? aiListValue(value) : value }));
-  const bodyLabels = { bodyCharacteristics: "체형 특징", asymmetries: "좌우 불균형", pelvis: "골반", thorax: "흉곽", scapula: "견갑", head: "머리", knees: "무릎", feet: "발", recommendedExercises: "추천 운동", precautions: "주의사항" };
-  const reportLabels = { title: "카드 제목", summary: "회원 설명", highlights: "핵심 변화", recommendations: "추천 운동", precautions: "주의사항" };
-
-  return (
-    <div className="rounded-xl p-3" style={{ backgroundColor: "rgba(255,255,255,.96)", color: "#1C2433" }}>
-      <div className="flex items-center gap-2">
-        <Sparkles size={15} style={{ color: "#4C4399" }} />
-        <p className="min-w-0 flex-1 text-sm font-extrabold">AI 변화 분석</p>
-        <span className="rounded-full px-2 py-1 text-[10px] font-bold" style={{ backgroundColor: analysisStatus === AI_STATUSES.CONFIRMED ? "#E7F2EC" : "#ECEBF7", color: analysisStatus === AI_STATUSES.CONFIRMED ? "#2E7D5B" : "#4C4399" }}>{analysisStatus === AI_STATUSES.CONFIRMED ? "강사 확정" : analysisStatus === AI_STATUSES.DRAFT ? "초안" : connected ? "분석 가능" : "사용 불가"}</span>
-      </div>
-      <p className="mt-1 text-xs" style={{ color: "#6B7484" }}>좌표·각도·수동 수정 이력만 전송하며 사진 원본은 전송하지 않습니다. {viewRecords.length}/3 방향 준비</p>
-      <textarea rows={2} value={teacherNote} onChange={(event) => setTeacherNote(event.target.value)} placeholder="강사 메모 (AI 입력에 포함)" className={`${inputCls} mt-2 h-auto resize-none py-2 text-xs`} />
-      <button disabled={busy || !ready || !connected} onClick={requestAnalysis} className="mt-2 flex h-10 w-full items-center justify-center gap-1.5 rounded-lg text-xs font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: "#4C4399" }}>{busy === "analysis" ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} {draft ? "AI 초안 다시 생성" : "AI 변화 분석 초안 생성"}</button>
-      {!connected && <p className="mt-2 text-xs font-bold" style={{ color: "#B45309" }}>현재 자동 분석을 사용할 수 없습니다. 강사 메모는 직접 저장할 수 있습니다.</p>}
-      {draft && <div className="mt-3 space-y-2 border-t pt-3" style={{ borderColor: "#E6E9EF" }}>
-        {[...bodyAnalysisFields.list, ...bodyAnalysisFields.text].map((field) => {
-          const isList = bodyAnalysisFields.list.includes(field);
-          return <label key={field} className="block"><span className="mb-1 block text-[11px] font-bold" style={{ color: "#5E6673" }}>{bodyLabels[field]}</span><textarea rows={isList ? 2 : 1} value={isList ? aiListText(draft[field]) : draft[field] || ""} onChange={(event) => setBodyField(field, event.target.value, isList)} className={`${inputCls} h-auto resize-none py-2 text-xs`} /></label>;
-        })}
-        <button disabled={busy || !original} onClick={confirmAnalysis} className="h-10 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: "#2E7D5B" }}>{busy === "confirm" ? "저장 중…" : "강사 수정본 확정"}</button>
-      </div>}
-      {analysisStatus === AI_STATUSES.CONFIRMED && <div className="mt-3 border-t pt-3" style={{ borderColor: "#E6E9EF" }}>
-        <div className="flex items-center gap-2"><p className="min-w-0 flex-1 text-xs font-extrabold">회원 결과카드</p><span className="text-[10px] font-bold" style={{ color: reportStatus === AI_STATUSES.CONFIRMED ? "#2E7D5B" : "#6B7484" }}>{reportStatus === AI_STATUSES.CONFIRMED ? "확정" : reportStatus === AI_STATUSES.DRAFT ? "초안" : "미생성"}</span></div>
-        <button disabled={busy || !connected} onClick={requestReport} className="mt-2 h-10 w-full rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: "#ECEBF7", color: "#4C4399" }}>{busy === "report" ? "생성 중…" : reportDraft ? "결과카드 다시 생성" : "회원 결과카드 초안 생성"}</button>
-        {reportDraft && <div className="mt-2 space-y-2">
-          {["title", "summary", "highlights", "recommendations", "precautions"].map((field) => { const isList = ["highlights", "recommendations", "precautions"].includes(field); return <label key={field} className="block"><span className="mb-1 block text-[11px] font-bold" style={{ color: "#5E6673" }}>{reportLabels[field]}</span><textarea rows={isList ? 2 : 1} value={isList ? aiListText(reportDraft[field]) : reportDraft[field] || ""} onChange={(event) => setReportField(field, event.target.value, isList)} className={`${inputCls} h-auto resize-none py-2 text-xs`} /></label>; })}
-          <button disabled={busy || !reportOriginal} onClick={confirmReport} className="h-10 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: "#4C4399" }}>{busy === "report-confirm" ? "저장 중…" : "회원 결과카드 확정"}</button>
-        </div>}
-      </div>}
-    </div>
-  );
+  return <div className="rounded-xl p-3" style={{ backgroundColor: "rgba(255,255,255,.96)", color: "#1C2433" }}><p className="text-sm font-extrabold">강사 메모</p><textarea rows={3} value={teacherNote} onChange={(event) => setTeacherNote(event.target.value)} placeholder="직접 확인한 내용을 기록하세요" className={`${inputCls} mt-2 h-auto resize-none py-2 text-xs`} /><button type="button" disabled={busy} onClick={save} className="mt-2 h-10 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: "#4C4399" }}>{busy ? "저장 중…" : "강사 메모 저장"}</button></div>;
 }
 
 function SavedPoseViewer({ rec, member, records, onUpdate, memberName, onClose, onToast }) {
@@ -6783,10 +6582,9 @@ function SavedPoseViewer({ rec, member, records, onUpdate, memberName, onClose, 
         <div className="mx-auto mt-3 space-y-2" style={{ maxWidth: 620 }}>
           {validPostureMetrics(rec).map((m, i) => (
             <div key={i} className="flex items-center gap-2 rounded-2xl px-3 py-2.5" style={{ backgroundColor: "rgba(255,255,255,0.1)" }}>
-              <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: LV_COLOR[m.level] || SUB }} />
+              <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: MEASUREMENT_COLOR }} />
               <span className="min-w-0 flex-1 truncate text-sm font-bold text-white">{m.label}</span>
-              <span className="text-base font-extrabold tabular-nums" style={{ color: LV_COLOR[m.level] || "#fff" }}>{m.value}{m.unit}</span>
-              <span className="shrink-0 text-xs font-bold text-white opacity-70">{m.dir}</span>
+              <span className="text-base font-extrabold tabular-nums text-white">{m.value}{m.unit}</span>
             </div>
           ))}
           {rec.comment && (
@@ -6795,7 +6593,7 @@ function SavedPoseViewer({ rec, member, records, onUpdate, memberName, onClose, 
               <p className="mt-1 text-sm leading-relaxed text-white">{rec.comment}</p>
             </div>
           )}
-          <BodyAIReview member={member} rec={rec} records={records} onUpdate={onUpdate} onToast={onToast} />
+          <PostureTeacherMemo rec={rec} onUpdate={onUpdate} onToast={onToast} />
         </div>
       </div>
     </div>
@@ -7672,7 +7470,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
     if (showNum && res) {
       const placed = [];
       res.items.filter((i) => !i.skipBadge).forEach((i) => {
-        badge(ctx, i.at.x * (c.width / img.w), i.at.y * (c.height / img.h), `${i.label.replace(/\(.*\)/, "").trim()} ${i.value}${i.unit}`, LV_COLOR[i.level], i.up ?? -1, placed, c.width, c.height);
+        badge(ctx, i.at.x * (c.width / img.w), i.at.y * (c.height / img.h), `${i.label.replace(/\(.*\)/, "").trim()} ${i.value}${i.unit}`, MEASUREMENT_COLOR, i.up ?? -1, placed, c.width, c.height);
       });
     }
   }, [img, pts, poseView, showSkel, showNum, res, hot, poseQuality.low]);
@@ -8082,7 +7880,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
       confidence: { threshold: POSE_CONFIDENCE_MIN, lowJoints: poseQuality.low, missingJoints: [] },
       editedJoints: [...editedJoints], assessmentComplete: captureViews.every(({ key }) => !!nextAnalyzed[key]),
       measurementTransform: { coordinateSpace: "normalized", width: img.w, height: img.h },
-      metrics: res.items.map((i) => ({ key: i.key, label: i.label, value: i.value, unit: i.unit, level: i.level, dir: i.dir, validity: i.validity })),
+      metrics: res.items.map((i) => ({ key: i.key, label: i.label, value: i.value, unit: i.unit, validity: i.validity })),
       interpretation: null, interpretationStatus: "not_connected",
     });
     if (stored === false) {
@@ -8116,7 +7914,6 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
     try { await navigator.clipboard.writeText(txt); onToast?.({ ok: true, msg: "측정값을 복사했습니다." }); }
     catch (e) { onToast?.({ ok: false, msg: "복사가 지원되지 않는 환경입니다." }); }
   };
-  const worst = res ? [...res.items].sort((a, b) => LV_RANK[b.level] - LV_RANK[a.level] || b.value - a.value)[0] : null;
   const drawingPhoto = drawingView ? (() => {
     const recordId = capturePhotos[drawingView]?.recordId || `${assessmentId.current}_${drawingView}`;
     const stored = (photos?.[drawingView] || []).find((photo) => photo?.id === recordId);
@@ -8127,16 +7924,8 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
     const stored = (photos?.[correctionDrawingView] || []).find((photo) => photo?.id === recordId);
     return { ...(stored || {}), ...(capturePhotos[correctionDrawingView] || {}), id: recordId, marks: stored?.marks || [] };
   })() : null;
-  const history = saved.filter((record) => normalizePostureView(record.view) === normalizePostureView(view));
   const currentCapture = captureViews.find(({ key }) => key === captureTarget) || captureViews[0];
   const currentCapturePhoto = currentCapture ? capturePhotos[currentCapture.key] : null;
-  const trend = (key) => {
-    const list = history.filter((h) => h.metrics.some((m) => m.key === key)).slice(0, 6);
-    if (list.length < 2) return null;
-    const now = list[0].metrics.find((m) => m.key === key).value;
-    const old = list[list.length - 1].metrics.find((m) => m.key === key).value;
-    return { diff: r1(now - old), from: list[list.length - 1].date };
-  };
   return (
     <>
     <Card className={embedded ? "p-3" : "p-5"}>
@@ -8157,7 +7946,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
           <span className="min-w-0 flex-1">
             <span className="block text-sm font-extrabold" style={{ color: INK }}>이렇게 나옵니다</span>
             <span className="mt-1 block text-xs leading-relaxed" style={{ color: INK2 }}>
-              전신 사진을 올리면 어깨 · 골반 · 무릎을 찾아 좌우 기울기를 각도로 재고, 보완 운동까지 알려 줍니다.
+              전신 사진을 올리면 관절 위치를 찾아 각도 측정값을 기록합니다.
             </span>
             <span className="mt-1.5 inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-extrabold" style={{ backgroundColor: BRAND, color: "#fff" }}>
               사진 올리고 분석하기
@@ -8323,26 +8112,15 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
           {res && res.items.length > 0 && (
             <>
               <div className="space-y-2">
-                {res.items.map((i) => {
-                  const t = trend(i.key);
-                  return (
+                {res.items.map((i) => (
                     <div key={i.key} className="rounded-2xl p-3" style={{ backgroundColor: CANVAS }}>
                       <div className="flex items-center gap-2">
-                        <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: LV_COLOR[i.level] }} />
+                        <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: MEASUREMENT_COLOR }} />
                         <span className="min-w-0 flex-1 truncate text-sm font-extrabold" style={{ color: INK }}>{i.label}</span>
-                        <span className="text-base font-extrabold tabular-nums" style={{ color: LV_COLOR[i.level] }}>{i.value}{i.unit}</span>
-                        <span className="rounded-full px-2 py-0.5 text-xs font-bold" style={{ backgroundColor: `${LV_COLOR[i.level]}1A`, color: LV_COLOR[i.level] }}>{LV_TEXT[i.level]}</span>
+                        <span className="text-base font-extrabold tabular-nums" style={{ color: MEASUREMENT_COLOR }}>{i.value}{i.unit}</span>
                       </div>
-                      <p className="mt-1.5 text-xs leading-relaxed" style={{ color: INK2 }}>{i.desc}</p>
-                      <p className="mt-1 text-xs font-bold" style={{ color: PRIMARY }}>→ {i.tip}</p>
-                      {t && (
-                        <p className="mt-1 text-xs font-bold tabular-nums" style={{ color: i.goodHigh ? (t.diff >= 0 ? GOOD : BAD) : (t.diff <= 0 ? GOOD : BAD) }}>
-                          {ymd(t.from)} 대비 {t.diff > 0 ? "+" : ""}{t.diff}{i.unit}
-                        </p>
-                      )}
                     </div>
-                  );
-                })}
+                ))}
               </div>
               {res.notes.map((n, k) => (
                 <div key={k} className="flex gap-2 rounded-2xl px-3 py-2.5" style={{ backgroundColor: WARN_S }}>
@@ -8351,11 +8129,8 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
                 </div>
               ))}
               <div className="rounded-2xl p-4" style={{ background: GRAD_SOFT }}>
-                <p className="text-xs font-extrabold" style={{ color: PRIMARY }}>오늘의 우선 개선 포인트</p>
-                <p className="mt-1 text-sm font-extrabold" style={{ color: INK }}>
-                  {worst && worst.level !== "good" ? `${worst.label} ${worst.value}${worst.unit} · ${worst.dir}` : "주요 지표 모두 정상 범위"}
-                </p>
-                <p className="mt-2 text-sm leading-relaxed" style={{ color: INK2 }}>관절 좌표에서 계산한 측정값입니다. AI 해석은 아직 연결되지 않았으며, 강사가 관절 위치와 측정값을 확인한 뒤 저장해야 확정됩니다.</p>
+                <p className="text-xs font-extrabold" style={{ color: PRIMARY }}>측정값 확인</p>
+                <p className="mt-2 text-sm leading-relaxed" style={{ color: INK2 }}>관절 좌표에서 계산한 값입니다. 강사가 관절 위치와 측정값을 확인한 뒤 저장해야 확정됩니다.</p>
                 <div className="mt-3 grid grid-cols-[0.78fr_1.22fr] gap-2">
                   <button type="button" onClick={() => setCorrectionPicker(true)} className="flex h-12 items-center justify-center gap-1.5 text-sm font-bold" style={{ borderRadius: 12, backgroundColor: CARD, border: `1px solid ${LINE}`, color: INK }}><Pencil size={14} />수정하기</button>
                   <button onClick={save} disabled={poseQuality.missing.length > 0 || !res?.items?.length} className="flex h-12 items-center justify-center gap-1.5 text-sm font-extrabold text-white disabled:opacity-40" style={{ borderRadius: 12, backgroundColor: BRAND }}>
@@ -8552,19 +8327,16 @@ const KW_HINTS = [
   { kw: "스트레칭", hit: ["뭉침", "근육통", "통증", "긴장", "유연"] },
 ];
 /* 지난 수업 기록에서 오늘 무엇을 다룰지 뽑아낸다 */
-function seqAdvice(member, schedule, photos) {
+function seqAdvice(member, schedule) {
   if (!member) return null;
   const notes = (member.notes || []).slice().sort((a, b) => (b.date || "").localeCompare(a.date || ""));
   const att = attendanceOf(schedule, member.id);
   const first = notes.length === 0 && (!att || !att.done);
   if (first) return { first: true, name: member.name || "회원" };
   const last = notes[0] || null;
-  const poses = (photos?.[member.id]?.poses || []).filter((p) => p && p.metrics);
-  const bad = validPostureMetrics(poses[0]).filter((m) => m.level !== "good").map((m) => m.label);
   const text = [
     ...(member.focus || []),
     last?.body || "",
-    ...bad,
   ].join(" ").toLowerCase();
   const kws = [];
   KW_HINTS.forEach((h) => { if (h.hit.some((w) => text.includes(w.toLowerCase()))) kws.push(h.kw); });
@@ -8573,7 +8345,7 @@ function seqAdvice(member, schedule, photos) {
     name: member.name || "회원",
     kws: kws.slice(0, 3),
     last,
-    why: (member.focus || []).slice(0, 2).concat(bad.slice(0, 2)).slice(0, 3),
+    why: (member.focus || []).slice(0, 3),
   };
 }
 
@@ -8652,7 +8424,7 @@ function nextTarget(schedule, members) {
 
 function NextClassCard({ members, schedule, photos, onStatus, onOpenMember, onWriteNote, onNoshowFee, onNoComment, onVoiceNote }) {
   const target = useMemo(() => nextTarget(schedule, members), [schedule, members]);
-  const adv = useMemo(() => seqAdvice(target?.m, schedule, photos), [target, schedule, photos]);
+  const adv = useMemo(() => seqAdvice(target?.m, schedule), [target, schedule]);
   /* null → 출석/노쇼/취소 · done → 기록 여부 · rec → 기록 방법 · noshow → 차감 여부 */
   const [step, setStep] = useState(null);
   const [held, setHeld] = useState(null);
@@ -8673,8 +8445,6 @@ function NextClassCard({ members, schedule, photos, onStatus, onOpenMember, onWr
   const { m, s } = target;
   const rest = left(m);
   const cautions = [...(m.focus || [])];
-  const poses = (photos?.[m.id]?.poses || []).filter((p) => p && p.metrics);
-  validPostureMetrics(poses[0]).filter((x) => x.level === "bad").forEach((x) => cautions.push(x.label.replace(" 각도", "")));
   return (
     <Card className="p-5">
       <div className="flex items-center gap-2">
@@ -8880,7 +8650,7 @@ function SequenceCard({ members, schedule, photos, onWriteNote, onToast, compact
   const [play, setPlay] = useState(null);
   /* 오늘 아직 안 한 수업 중 가장 이른 회원을 기준으로 삼는다 */
   const target = useMemo(() => nextTarget(schedule, members), [schedule, members]);
-  const adv = useMemo(() => seqAdvice(target?.m, schedule, photos), [target, schedule, photos]);
+  const adv = useMemo(() => seqAdvice(target?.m, schedule), [target, schedule]);
   const [manualKw, setManualKw] = useState(false);
   /* 이 회원 기록에서 나온 항목을 맨 앞으로 */
   const orderedKw = useMemo(() => {
@@ -9048,7 +8818,6 @@ function AnalysisTab({ members, photos, selectedId, onSelect, onOpen, onToast, h
       });
   }, [members, photos, q]);
   const done = rows.filter((r) => r.last).length;
-  const levelDot = { good: GOOD, warn: WARN, bad: BAD };
   /* 비포만 있고 애프터가 없는 회원 = 애프터 촬영 대상 */
   const [cardFor, setCardFor] = useState(null);
   useEffect(() => {
@@ -9177,7 +8946,7 @@ function AnalysisTab({ members, photos, selectedId, onSelect, onOpen, onToast, h
               <div className="mt-1 flex flex-wrap gap-1">
                 {validPostureMetrics(rec).slice(0, 3).map((x) => (
                   <span key={x.key} className="flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-bold" style={{ backgroundColor: CANVAS, color: INK2 }}>
-                    <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: levelDot[x.level] || SUB }} />
+                    <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: MEASUREMENT_COLOR }} />
                     {x.label.replace(" 각도", "")} {x.value}{x.unit}
                   </span>
                 ))}
@@ -9372,12 +9141,7 @@ function LegacyAssessmentWorkspace({ member, photos, settings, initialSavedId, o
   };
   const resultPoses = selected?.poses.filter((pose) => Array.isArray(pose.metrics) && pose.metrics.length) || [];
   const resultMetrics = resultPoses.flatMap((pose) => validPostureMetrics(pose).map((metric) => ({ ...metric, view: pose.view })));
-  const goodMetrics = resultMetrics.filter((metric) => metric.level === "good").slice(0, 3);
-  const cautionMetrics = resultMetrics.filter((metric) => metric.level && metric.level !== "good").slice(0, 3);
-  const aiPayload = resultPoses.map((pose) => pose.aiAnalysis?.teacherEditedOutput || pose.aiAnalysis?.output).find(Boolean) || null;
-  const aiText = aiPayload ? [aiPayload.bodyCharacteristics, aiPayload.asymmetries, aiPayload.pelvis, aiPayload.thorax, aiPayload.scapula, aiPayload.head, aiPayload.knees, aiPayload.feet]
-    .flatMap((value) => Array.isArray(value) ? value : value ? [value] : []).join(" · ") : "";
-  const recommendedExercises = Array.isArray(aiPayload?.recommendedExercises) ? aiPayload.recommendedExercises : [];
+  const displayMetrics = resultMetrics.slice(0, 6);
   const teacherMemo = selected?.poses.map((pose) => pose.comment || pose.teacherMemo || "").find(Boolean) || "";
   const resultPhoto = (set, view) => set?.photos?.[view] || null;
   const stageScreen = screen === "analysis" ? "analysis" : screen === "result" ? "result" : "capture";
@@ -9466,13 +9230,10 @@ function LegacyAssessmentWorkspace({ member, photos, settings, initialSavedId, o
             <section style={{ padding: 13, borderRadius: 14, backgroundColor: CARD, border: `1px solid ${LINE}` }}>
               <div className="flex items-center gap-2"><h2 className="min-w-0 flex-1" style={{ fontSize: 15, fontWeight: 700, color: INK }}>결과 카드</h2><span style={{ padding: "3px 7px", borderRadius: 6, backgroundColor: TINT, color: BRAND_D, fontSize: 10, fontWeight: 700 }}>{methodLabel(selected.method)}</span></div>
               <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                <div style={{ padding: 10, borderRadius: 10, backgroundColor: GOOD_S }}><p className="text-xs font-bold" style={{ color: GOOD }}>좋은 점</p><div className="mt-1 space-y-1">{goodMetrics.length ? goodMetrics.map((metric, index) => <p key={`${metric.key}_${index}`} className="text-xs" style={{ color: INK2 }}>{metric.label} {metric.value}{metric.unit}</p>) : <p className="text-xs" style={{ color: SUB }}>저장된 측정 결과 없음</p>}</div></div>
-                <div style={{ padding: 10, borderRadius: 10, backgroundColor: cautionMetrics.length ? WARN_S : CANVAS }}><p className="text-xs font-bold" style={{ color: cautionMetrics.length ? WARN : INK2 }}>주의할 점</p><div className="mt-1 space-y-1">{cautionMetrics.length ? cautionMetrics.map((metric, index) => <p key={`${metric.key}_${index}`} className="text-xs" style={{ color: INK2 }}>{metric.label} {metric.value}{metric.unit}</p>) : <p className="text-xs" style={{ color: SUB }}>기록된 주의 결과 없음</p>}</div></div>
-                <div style={{ padding: 10, borderRadius: 10, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>추천 운동</p>{recommendedExercises.length ? <div className="mt-1 space-y-1">{recommendedExercises.map((item, index) => <p key={`${item}_${index}`} className="text-xs leading-relaxed" style={{ color: INK2 }}>· {item}</p>)}</div> : <p className="mt-1 text-xs leading-relaxed" style={{ color: SUB }}>확정 저장된 추천 운동이 없습니다.</p>}</div>
-                <div style={{ padding: 10, borderRadius: 10, backgroundColor: LAVENDER_S }}><p className="text-xs font-bold" style={{ color: BRAND_D }}>AI 해석</p><p className="mt-1 text-xs leading-relaxed" style={{ color: aiText ? INK2 : SUB }}>{aiText || "저장된 AI 분석 없음"}</p></div>
-                <div className="sm:col-span-2" style={{ padding: 10, borderRadius: 10, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>강사 메모</p><p className="mt-1 text-xs leading-relaxed" style={{ color: teacherMemo ? INK2 : SUB }}>{teacherMemo || "저장된 강사 메모가 없습니다."}</p></div>
+                {!!displayMetrics.length && <div style={{ padding: 10, borderRadius: 10, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>측정값</p><div className="mt-1 space-y-1">{displayMetrics.map((metric, index) => <p key={`${metric.key}_${index}`} className="text-xs" style={{ color: INK2 }}>{metric.label} {metric.value}{metric.unit}</p>)}</div></div>}
+                {teacherMemo && <div style={{ padding: 10, borderRadius: 10, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>강사 메모</p><p className="mt-1 text-xs leading-relaxed" style={{ color: INK2 }}>{teacherMemo}</p></div>}
               </div>
-              {resultPoses[0] && <button type="button" onClick={() => setViewingPose(resultPoses[0])} className="mt-2 flex h-10 w-full items-center justify-center gap-1.5 text-xs font-bold" style={{ borderRadius: 8, backgroundColor: TINT, color: BRAND_D }}><Pencil size={13} />AI 해석·강사 메모 검수</button>}
+              {resultPoses[0] && <button type="button" onClick={() => setViewingPose(resultPoses[0])} className="mt-2 flex h-10 w-full items-center justify-center gap-1.5 text-xs font-bold" style={{ borderRadius: 8, backgroundColor: TINT, color: BRAND_D }}><Pencil size={13} />측정값·강사 메모 확인</button>}
             </section>
           )}
         </>
@@ -9557,29 +9318,11 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
   const lastCompleted = completeSets[0] || null;
   const hasCompletedComparison = Boolean(automaticComparison.before && automaticComparison.after);
   const nextCaptureLabel = completeSets.length ? "에프터 촬영 시작" : "비포 촬영 시작";
-  const retake = getPostureRetakeStatus(completeSets);
   const selectedDate = selected?.completedAt || selected?.at || "";
   const resultPoses = selected?.poses || [];
   const resultMetrics = resultPoses.flatMap((pose) => validPostureMetrics(pose).map((metric) => ({ ...metric, view: pose.view })));
-  const goodMetrics = resultMetrics.filter((metric) => metric.level === "good").slice(0, 3);
-  const cautionMetrics = resultMetrics.filter((metric) => metric.level && metric.level !== "good").slice(0, 3);
-  const aiTextForSet = (set) => {
-    if ((set?.poses || []).some(postureRecordHasInvalidMeasurements)) return "";
-    const confirmed = (set?.poses || []).map((pose) => pose.aiAnalysis).find((analysis) => analysis?.status === AI_STATUSES.CONFIRMED);
-    const payload = confirmed?.teacherEditedOutput || confirmed?.output || null;
-    return payload ? [payload.bodyCharacteristics, payload.asymmetries, payload.pelvis, payload.thorax, payload.scapula, payload.head, payload.knees, payload.feet]
-      .flatMap((value) => Array.isArray(value) ? value : value ? [value] : []).join(" · ") : "";
-  };
+  const displayMetrics = resultMetrics.slice(0, 6);
   const memoForSet = (set) => (set?.poses || []).map((pose) => pose.comment || pose.teacherMemo || "").find(Boolean) || "";
-  const reportTextForSet = (set) => {
-    if ((set?.poses || []).some(postureRecordHasInvalidMeasurements)) return "";
-    const confirmed = (set?.poses || []).map((pose) => pose.memberResultCard).find((card) => card?.status === AI_STATUSES.CONFIRMED);
-    const payload = confirmed?.teacherEditedOutput || confirmed?.output || null;
-    return payload ? [payload.summary, ...(payload.highlights || []), ...(payload.recommendations || []), ...(payload.precautions || [])].filter(Boolean).join(" · ") : "";
-  };
-  const selectedAiText = aiTextForSet(selected);
-  const reportAiText = reportTextForSet(selected) || selectedAiText;
-  const aiText = screen === "report" ? reportAiText : selectedAiText;
   const teacherMemo = memoForSet(selected);
   const methodLabel = (method) => method === "draw" ? "강사 직접 기록" : method === "manual" ? "직접 포인트" : "AI 변화 분석";
   const roleLabelOf = (role) => role === "before" ? "비포" : role === "after" ? "에프터" : "미분류";
@@ -9761,7 +9504,6 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
   const reportView = useMemo(() => comparableViewsFor(reportPair.before, reportPair.after).includes(compareView) ? compareView : comparableViewsFor(reportPair.before, reportPair.after)[0] || null, [reportPair.before, reportPair.after, compareView]);
   const metricChanges = useMemo(() => compareAssessmentMetrics(reportPair.before, reportPair.after, { view: reportView, limit: 4 }), [reportPair.before, reportPair.after, reportView]);
   const entrySummary = lastCompleted?.poses.flatMap((pose) => validPostureMetrics(pose)).slice(0, 2) || [];
-  const reportRetakeDate = selectedDate ? shift(selectedDate.slice(0, 10), POSTURE_RETAKE_DAYS.recommended) : "";
   const excludedComparisonId = setPicker === "before" ? afterSet?.id : setPicker === "after" ? beforeSet?.id : null;
   const setOptions = selectComparisonAssessmentOptions(completeSets, { excludeId: excludedComparisonId }).map((set) => ({ value: set.id, label: formatMemberLessonDate(setDate(set)), description: `${set.scope === "partial" ? "부위별" : "전신"} · ${methodLabel(set.method)} · ${set.selectedViews.filter((view) => POSTURE_VIEW_KEYS.includes(view)).map(postureViewLabel).join("/")}` }));
   useEffect(() => {
@@ -9789,9 +9531,9 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
   return (
     <div className="space-y-3">
       {screen === "home" && <section style={{ padding: 16, borderRadius: 18, backgroundColor: CARD, border: `1px solid ${LINE}` }}>
-        <div className="flex items-start gap-3"><span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: TINT, color: BRAND_D }}><Activity size={19} /></span><span className="min-w-0 flex-1"><span className="block text-lg font-extrabold" style={{ color: INK }}>{member?.name} 회원</span><span className="mt-1 block text-xs" style={{ color: SUB }}>{lastCompleted ? `최근 기록 ${ymd(setDate(lastCompleted).slice(0, 10))}${retake?.days != null ? ` · ${retake.days}일 전` : ""}` : "아직 완료된 변화 기록이 없습니다"}</span></span></div>
+        <div className="flex items-start gap-3"><span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: TINT, color: BRAND_D }}><Activity size={19} /></span><span className="min-w-0 flex-1"><span className="block text-lg font-extrabold" style={{ color: INK }}>{member?.name} 회원</span><span className="mt-1 block text-xs" style={{ color: SUB }}>{lastCompleted ? `최근 기록 ${ymd(setDate(lastCompleted).slice(0, 10))}` : "아직 완료된 변화 기록이 없습니다"}</span></span></div>
         <div className="mt-4 flex items-center gap-2" style={{ padding: 10, borderRadius: 11, backgroundColor: GOOD_S }}><Check size={15} style={{ color: GOOD }} /><span className="min-w-0 flex-1 text-xs font-bold" style={{ color: GOOD }}>{lastCompleted ? "최근 변화 기록 저장 완료" : "촬영 전"}</span><span className="text-[10px] font-bold" style={{ color: SUB }}>기기 우선 저장</span></div>
-        {lastCompleted && <div className="mt-2" style={{ padding: 12, borderRadius: 12, backgroundColor: retake?.tone === "recommended" ? WARN_S : CANVAS }}><p className="text-xs font-bold" style={{ color: retake?.tone === "recommended" ? WARN : INK }}>{hasCompletedComparison ? "비포·에프터 비교 준비 완료" : "비포 저장 완료 · 에프터 촬영이 필요합니다"}</p>{!!entrySummary.length && <p className="mt-1 text-xs leading-relaxed" style={{ color: SUB }}>{entrySummary.map((metric) => `${metric.label} ${memberMetricValue(metric.value, metric.unit)}${metric.unit}`).join(" · ")}</p>}</div>}
+        {lastCompleted && <div className="mt-2" style={{ padding: 12, borderRadius: 12, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>{hasCompletedComparison ? "비포·에프터 비교 준비 완료" : "비포 저장 완료 · 에프터 촬영이 필요합니다"}</p>{!!entrySummary.length && <p className="mt-1 text-xs leading-relaxed" style={{ color: SUB }}>{entrySummary.map((metric) => `${metric.label} ${memberMetricValue(metric.value, metric.unit)}${metric.unit}`).join(" · ")}</p>}</div>}
         <button type="button" onClick={requestStartNew} className="mt-5 flex h-13 min-h-[52px] w-full items-center justify-center gap-2 text-sm font-extrabold text-white" style={{ borderRadius: 13, backgroundColor: BRAND }}><Camera size={17} />{nextCaptureLabel}</button>
         {hasCompletedComparison && <button type="button" onClick={() => openComparisonFromSet(automaticComparison.after)} className="mt-2 flex h-12 w-full items-center justify-center gap-2 text-sm font-extrabold" style={{ borderRadius: 12, backgroundColor: TINT, color: BRAND_D }}><ArrowUpDown size={16} />비포·에프터 변화 비교</button>}
         <button type="button" onClick={() => setScreen("history")} className="mt-2 flex h-12 w-full items-center justify-center gap-2 text-sm font-bold" style={{ borderRadius: 12, backgroundColor: CARD, border: `1px solid ${LINE}`, color: INK }}><Activity size={16} />이전 분석 보기</button>
@@ -9820,10 +9562,9 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
         {!sets.length ? <div className="py-12 text-center"><Activity size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>아직 변화 기록이 없습니다</p></div> : <div className="relative mt-3 space-y-3">{sets.map((set) => {
           const representative = setPhoto(set, "front") || Object.values(set.photos)[0];
           const missing = set.missingPhotos || [];
-          const summary = set.poses.map((pose) => pose.aiAnalysis?.teacherEditedOutput || pose.aiAnalysis?.output).find(Boolean);
           const setTeacherMemo = set.poses.map((pose) => pose.comment || pose.teacherMemo || "").find(Boolean);
           const setIsManualResult = ["draw", "manual"].includes(set.method);
-          const historySummary = missing.length ? `사진 일부 누락: ${missing.map(postureViewLabel).join(", ")}` : setIsManualResult ? ((representative?.marks || []).length ? "사진 표시와 손메모 저장됨" : "사진 기록 저장됨") : [summary ? "AI 해석 초안 있음" : "", setTeacherMemo ? "강사 메모 있음" : ""].filter(Boolean).join(" · ");
+          const historySummary = missing.length ? `사진 일부 누락: ${missing.map(postureViewLabel).join(", ")}` : setIsManualResult ? ((representative?.marks || []).length ? "사진 표시와 손메모 저장됨" : "사진 기록 저장됨") : (setTeacherMemo ? "강사 메모 있음" : "");
           const completed = set.status === "completed";
           const resumable = set.id === resumableAssessment?.id;
           const comparablePair = comparisonPairFor(set);
@@ -9839,7 +9580,7 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
           {selected?.status === "completed" && <div className="mt-3 flex items-center gap-2" style={{ padding: 10, borderRadius: 10, backgroundColor: GOOD_S }}><Check size={15} style={{ color: GOOD }} /><span className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: GOOD }}>{selectedIsManualResult ? "사진 기록 저장 완료" : "변화 기록 저장 완료"}</span><span className="text-[10px] font-bold" style={{ color: SUB }}>기기 우선 저장</span></div>}
           {!selected ? <div className="py-10 text-center"><Activity size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>표시할 변화 기록이 없습니다</p><button type="button" onClick={requestStartNew} className="mt-4 h-11 px-5 text-xs font-bold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>새 변화 기록 시작</button></div> : selected.status !== "completed" ? <div className="py-10 text-center"><AlertCircle size={22} className="mx-auto" style={{ color: WARN }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>아직 완료되지 않은 기록입니다</p><p className="mt-1 text-xs" style={{ color: SUB }}>저장된 사진과 처리 상태를 유지한 채 이어서 진행할 수 있습니다.</p><button type="button" onClick={() => resumeSet(selected)} className="mt-4 h-11 px-5 text-xs font-bold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>초안 이어하기</button></div> : <><div className="mt-3 grid gap-1.5" style={{ gridTemplateColumns: `repeat(${Math.max(1, selected.selectedViews.length)}, minmax(0, 1fr))` }}>{selected.selectedViews.map((view) => <AssessmentSetFrame key={view} photo={setPhoto(selected, view)} label={postureViewLabel(view)} annotation onOpen={selectedIsManualResult ? undefined : () => { const pose = selected.poses.find((item) => normalizePostureView(item.view) === view); if (pose) setViewingPose(pose); }} />)}</div><button type="button" onClick={() => { const available = selected.selectedViews.map((view) => ({ view, photo: setPhoto(selected, view) })).filter((item) => item.photo); if (available.length === 1) setEditingAnnotation(available[0]); else if (available.length > 1) setAnnotationPicker(true); }} className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 text-xs font-bold" style={{ borderRadius: 10, backgroundColor: CANVAS, color: INK }}><Pencil size={13} />사진 표시 다시 수정하기</button><div className={`mt-2 grid gap-2 ${comparisonPairFor(selected).after && !selectedIsManualResult ? "grid-cols-2" : "grid-cols-1"}`}>{comparisonPairFor(selected).after && <button type="button" onClick={() => openComparisonFromSet(selected)} className="h-11 text-xs font-bold" style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D }}>변화 비교</button>}{!selectedIsManualResult && <button type="button" onClick={() => openReportForSet(selected)} className="h-11 text-xs font-bold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>결과 리포트 카드</button>}</div></>}
         </section>
-        {!selectedIsManualResult && selected?.status === "completed" && (goodMetrics.length > 0 || cautionMetrics.length > 0 || aiText || teacherMemo || resultPoses[0]) && <section style={{ padding: 13, borderRadius: 14, backgroundColor: CARD, border: `1px solid ${LINE}` }}><h2 className="text-sm font-extrabold" style={{ color: INK }}>관찰 결과</h2><div className="mt-3 grid gap-2 sm:grid-cols-2">{!!goodMetrics.length && <div style={{ padding: 10, borderRadius: 10, backgroundColor: GOOD_S }}><p className="text-xs font-bold" style={{ color: GOOD }}>좋은 점</p>{goodMetrics.map((metric, index) => <p key={`${metric.key}_${index}`} className="mt-1 text-xs" style={{ color: INK2 }}>{metric.label} {memberMetricValue(metric.value, metric.unit)}{metric.unit}</p>)}</div>}{!!cautionMetrics.length && <div style={{ padding: 10, borderRadius: 10, backgroundColor: WARN_S }}><p className="text-xs font-bold" style={{ color: WARN }}>관찰 필요</p>{cautionMetrics.map((metric, index) => <p key={`${metric.key}_${index}`} className="mt-1 text-xs" style={{ color: INK2 }}>{metric.label} {memberMetricValue(metric.value, metric.unit)}{metric.unit}</p>)}</div>}{aiText && <div style={{ padding: 10, borderRadius: 10, backgroundColor: LAVENDER_S }}><p className="text-xs font-bold" style={{ color: BRAND_D }}>AI 해석</p><p className="mt-1 text-xs leading-relaxed" style={{ color: INK2 }}>{aiText}</p></div>}{teacherMemo && <div style={{ padding: 10, borderRadius: 10, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>강사 메모</p><p className="mt-1 text-xs leading-relaxed" style={{ color: INK2 }}>{teacherMemo}</p></div>}</div>{resultPoses[0] && <button type="button" onClick={() => setViewingPose(resultPoses[0])} className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 text-xs font-bold" style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D }}><Pencil size={13} />분석 내용 확인·수정</button>}</section>}
+        {!selectedIsManualResult && selected?.status === "completed" && (displayMetrics.length > 0 || teacherMemo || resultPoses[0]) && <section style={{ padding: 13, borderRadius: 14, backgroundColor: CARD, border: `1px solid ${LINE}` }}><h2 className="text-sm font-extrabold" style={{ color: INK }}>측정 기록</h2><div className="mt-3 grid gap-2 sm:grid-cols-2">{!!displayMetrics.length && <div style={{ padding: 10, borderRadius: 10, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>측정값</p>{displayMetrics.map((metric, index) => <p key={`${metric.key}_${index}`} className="mt-1 text-xs" style={{ color: INK2 }}>{metric.label} {memberMetricValue(metric.value, metric.unit)}{metric.unit}</p>)}</div>}{teacherMemo && <div style={{ padding: 10, borderRadius: 10, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>강사 메모</p><p className="mt-1 text-xs leading-relaxed" style={{ color: INK2 }}>{teacherMemo}</p></div>}</div>{resultPoses[0] && <button type="button" onClick={() => setViewingPose(resultPoses[0])} className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 text-xs font-bold" style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D }}><Pencil size={13} />측정값·강사 메모 확인</button>}</section>}
       </>}
 
       {screen === "compare" && <section style={{ padding: 14, borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}><div className="flex items-center gap-2"><button type="button" onClick={() => setScreen("result")} aria-label="결과로 돌아가기" className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={18} /></button><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>변화 비교</span><span className="block text-xs" style={{ color: SUB }}>선택한 두 기록을 같은 촬영 방향으로 비교</span></span><button type="button" onClick={() => setShowAnnotations((value) => !value)} className="h-9 px-2 text-[10px] font-bold" style={{ borderRadius: 8, backgroundColor: showAnnotations ? TINT : CANVAS, color: showAnnotations ? BRAND_D : SUB }}>사진 표시 {showAnnotations ? "ON" : "OFF"}</button></div>
@@ -9863,10 +9604,8 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
           {selected?.scope === "full_body" && reportPair.before && reportPair.after && reportView && <div className="mt-4 grid grid-cols-2 gap-2"><div><p className="mb-1 text-[10px] font-bold" style={{ color: INK }}>BEFORE</p><AssessmentSetFrame photo={setPhoto(reportPair.before, reportView)} label="Before" /></div><div><p className="mb-1 text-[10px] font-bold" style={{ color: BRAND_D }}>AFTER</p><AssessmentSetFrame photo={setPhoto(reportPair.after, reportView)} label="After" /></div></div>}
           <div className="mt-4 space-y-2">
             {!!metricChanges.length && <div style={{ padding: 11, borderRadius: 11, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>핵심 변화</p>{metricChanges.map((change) => <p key={change.id} className="mt-1 text-xs" style={{ color: INK2 }}>{postureViewLabel(change.view)} · {change.label}: {memberMetricValue(change.beforeValue, change.unit)}{change.unit} → {memberMetricValue(change.afterValue, change.unit)}{change.unit}</p>)}</div>}
-            {aiText && <div style={{ padding: 11, borderRadius: 11, backgroundColor: LAVENDER_S }}><p className="text-xs font-bold" style={{ color: BRAND_D }}>AI 관찰 내용</p><p className="mt-1 text-xs leading-relaxed" style={{ color: INK2 }}>{aiText}</p></div>}
             {teacherMemo && <div style={{ padding: 11, borderRadius: 11, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>강사 메모</p><p className="mt-1 text-xs leading-relaxed" style={{ color: INK2 }}>{teacherMemo}</p></div>}
             {!!(member?.focus || []).length && <div style={{ padding: 11, borderRadius: 11, backgroundColor: GOOD_S }}><p className="text-xs font-bold" style={{ color: GOOD }}>오늘 수업 집중 포인트</p><p className="mt-1 text-xs leading-relaxed" style={{ color: INK2 }}>{member.focus.join(" · ")}</p></div>}
-            <div className="flex items-center gap-2" style={{ padding: 11, borderRadius: 11, backgroundColor: CANVAS }}><CalendarDays size={15} style={{ color: BRAND }} /><span className="min-w-0 flex-1 text-xs" style={{ color: INK2 }}>다음 재평가 권장일</span><span className="text-xs font-bold" style={{ color: INK }}>{reportRetakeDate ? ymd(reportRetakeDate) : "확인 필요"}</span></div>
           </div>
           <div className="mt-4"><ResultCardMaker member={member} saved={completedPoses.filter((pose) => pose && pose.metrics)} centerName={settings?.centerName || ""} onToast={onToast} initialOpen beforeAssessmentId={reportPair.before?.id} afterAssessmentId={reportPair.after?.id} /></div>
         </div>

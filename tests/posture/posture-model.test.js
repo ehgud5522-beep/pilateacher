@@ -166,8 +166,8 @@ test("comparison metrics match the same view and metric and show neutral before-
   const front = compareAssessmentMetrics(beforeSet, afterSet, { view: "front" });
   assert.equal(front.length, 1);
   assert.deepEqual(front[0], {
-    id: "front:shoulder", key: "shoulder", view: "front", label: "어깨 기울기",
-    beforeValue: 4, afterValue: 1.5, difference: -2.5, unit: "°", summary: "0° 기준에 가까워짐",
+    id: "front:shoulder", key: "shoulder", view: "front", label: "어깨선 각도",
+    beforeValue: 4, afterValue: 1.5, difference: -2.5, unit: "°",
   });
   assert.deepEqual({ beforeSet, afterSet }, before);
 });

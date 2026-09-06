@@ -391,8 +391,6 @@ export function postureAlignmentTransform(beforePose, afterPose, { view = before
   };
 }
 
-const ZERO_CENTERED_METRICS = new Set(["shoulder", "pelvis", "twist", "knee", "head", "fha", "trunk", "kneeSide", "align"]);
-
 export function compareAssessmentMetrics(beforeSet, afterSet, { view = null, limit = 8 } = {}) {
   if (!beforeSet || !afterSet) return [];
   const normalizedView = view ? normalizePostureView(view) : null;
@@ -406,13 +404,6 @@ export function compareAssessmentMetrics(beforeSet, afterSet, { view = null, lim
     const beforeValue = Number(previous?.value), afterValue = Number(metric?.value);
     if (!Number.isFinite(beforeValue) || !Number.isFinite(afterValue)) return null;
     const difference = Math.round((afterValue - beforeValue) * 10) / 10;
-    const absoluteDifference = Math.round((Math.abs(afterValue) - Math.abs(beforeValue)) * 10) / 10;
-    const threshold = metric.unit === "°" ? 0.5 : 0.1;
-    const summary = Math.abs(difference) < threshold
-      ? "변화 폭 작음"
-      : ZERO_CENTERED_METRICS.has(metric.key)
-        ? absoluteDifference < 0 ? "0° 기준에 가까워짐" : absoluteDifference > 0 ? "0° 기준에서 멀어짐" : "변화 없음"
-        : difference > 0 ? "수치 증가" : "수치 감소";
     return {
       id: `${normalizePostureView(pose.view)}:${metric.key}`,
       key: metric.key,
@@ -422,23 +413,13 @@ export function compareAssessmentMetrics(beforeSet, afterSet, { view = null, lim
       afterValue,
       difference,
       unit: metric.unit || previous?.unit || "",
-      summary,
     };
   })).filter(Boolean).slice(0, Math.max(0, Number(limit) || 0));
 }
 
 export function postureMilestoneTemplate({ role = "unassigned", beforeSet = null, afterSet = null } = {}) {
   if (role !== "after") return { text: role === "before" ? "비포 촬영" : "체형 촬영", details: [], metricIds: [] };
-  const changes = compareAssessmentMetrics(beforeSet, afterSet, { limit: 2 });
-  const details = changes.map((change) => {
-    const values = `${change.beforeValue}${change.unit} → ${change.afterValue}${change.unit}`;
-    return `${postureViewLabel(change.view)} ${change.label}: ${values} (${change.summary})`;
-  });
-  return {
-    text: details.length ? `애프터 촬영 · ${details.join(" · ")}` : "애프터 촬영",
-    details,
-    metricIds: changes.map((change) => change.id),
-  };
+  return { text: "애프터 촬영", details: [], metricIds: [] };
 }
 
 export function postureAfterReminder(sets, now = new Date()) {

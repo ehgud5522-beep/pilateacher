@@ -17,6 +17,18 @@ const REQUIREMENTS = Object.freeze({
   align: { required: ["ank", "ear"], pairs: [["ank", "ear"]] },
 });
 
+const MEASUREMENT_LABELS = Object.freeze({
+  shoulder: "어깨선 각도",
+  pelvis: "골반선 각도",
+  twist: "어깨-골반선 각도 차",
+  knee: "무릎선 각도",
+  head: "귀선 각도",
+  fha: "귀-어깨 수직선 각도",
+  trunk: "골반-어깨 수직선 각도",
+  kneeSide: "고관절-무릎-발목 각도",
+  align: "복사뼈-귀 수직선 각도",
+});
+
 function finitePoint(point) {
   return point && Number.isFinite(Number(point.x)) && Number.isFinite(Number(point.y));
 }
@@ -62,7 +74,11 @@ export function postureMetricValidity(metric, pose) {
 }
 
 export function validPostureMetrics(pose) {
-  return (pose?.metrics || []).filter((metric) => postureMetricValidity(metric, pose).valid);
+  return (pose?.metrics || []).flatMap((metric) => {
+    if (!postureMetricValidity(metric, pose).valid) return [];
+    const { level, dir, desc, tip, goodHigh, ...rawMeasurement } = metric;
+    return [{ ...rawMeasurement, label: MEASUREMENT_LABELS[metric?.key] || String(metric?.label || "측정값") }];
+  });
 }
 
 export function postureRecordHasInvalidMeasurements(pose) {

@@ -11,11 +11,14 @@ const displayDate = (value) => {
   return match ? `${match[1]}.${match[2]}` : "";
 };
 const line = (kind, text, memoryIds = [], sourceRefs = []) => ({ kind, text, memoryIds, sourceRefs });
+const isPostureDerivedMemory = (entry) => entry?.category === "posture"
+  || entry?.source === "posture_analysis"
+  || (entry?.sourceRefs || []).some((source) => source?.type === "assessment");
 
 export function createMemberBriefing({ member, notes = member?.notes || [], existingMemory = member?.aiMemory || [], currentSessionId = null, schedule = [], config = MEMBER_MEMORY_CONFIG } = {}) {
   const sessions = memorySourceSessions(notes, { excludeSessionId: currentSessionId, schedule });
   const active = (existingMemory || []).flatMap((entry) => {
-    if (!isBriefingMemory(entry)) return [];
+    if (!isBriefingMemory(entry) || isPostureDerivedMemory(entry)) return [];
     const sessionRefs = (entry.sourceRefs || []).filter((source) => source?.type === "session");
     if (!currentSessionId || !sessionRefs.some((source) => String(source.id) === String(currentSessionId))) return [entry];
     const sourceRefs = (entry.sourceRefs || []).filter((source) => !(source?.type === "session" && String(source.id) === String(currentSessionId)));
@@ -70,7 +73,7 @@ export function createMemberBriefing({ member, notes = member?.notes || [], exis
 export function memberMemorySummary(briefing) {
   const entries = briefing?.memories || [];
   const latestSession = briefing?.sessions?.at(-1) || null;
-  const find = (predicate) => entries.filter(isBriefingMemory).filter(predicate).sort((a, b) => String(b.lastSeenAt || "").localeCompare(String(a.lastSeenAt || "")))[0] || null;
+  const find = (predicate) => entries.filter(isBriefingMemory).filter((entry) => !isPostureDerivedMemory(entry)).filter(predicate).sort((a, b) => String(b.lastSeenAt || "").localeCompare(String(a.lastSeenAt || "")))[0] || null;
   const repeated = find((entry) => entry.seenCount >= MEMBER_MEMORY_CONFIG.patternSeenCount && entry.status !== "conflict");
   const next = find((entry) => entry.type === "next_focus");
   const change = find((entry) => entry.status === "conflict" || entry.type === "response" || entry.type === "milestone");
@@ -98,7 +101,7 @@ const scheduleDateLabel = (value) => {
  * 다음 확인 > 최근 변화 > 반복 기록 순서로 활성 Memory 한 건만 선택한다.
  */
 export function selectScheduleBriefing(briefing) {
-  const active = (briefing?.memories || []).filter(isBriefingMemory);
+  const active = (briefing?.memories || []).filter(isBriefingMemory).filter((entry) => !isPostureDerivedMemory(entry));
   const ranked = (entries) => [...entries].sort((a, b) => {
     const instructorOrder = Number(b?.origin === "instructor") - Number(a?.origin === "instructor");
     return instructorOrder || String(b?.lastSeenAt || "").localeCompare(String(a?.lastSeenAt || ""));

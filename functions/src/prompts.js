@@ -16,10 +16,7 @@ const PROMPTS = Object.freeze({
   [OPERATIONS.ANALYZE_BODY]: {
     promptVersion: "body_v1",
     maxOutputTokens: 1800,
-    task: [
-      "카메라 사진 자체는 보지 못합니다. 제공된 관절 좌표, 측정값, 신뢰도, 강사 메모만 해석하세요.",
-      "좌표나 각도에서 직접 뒷받침되는 관찰을 '경향'으로 기술하고 운동 제안은 강사 검수용으로 제시하세요.",
-    ].join("\n"),
+    task: "자동 체형 해석, 진단, 원인 추론, 개선·악화 판정 또는 운동 처방을 생성하지 마세요. 이 작업은 현재 제공되지 않습니다.",
   },
   [OPERATIONS.SUMMARIZE_VOICE]: {
     promptVersion: "voice_v1",

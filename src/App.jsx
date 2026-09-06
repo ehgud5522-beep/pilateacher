@@ -62,9 +62,9 @@ import { scheduleMemberLayoutSnapshots } from "./features/ui/member-layout-diagn
 import { scrollRecordSectionIntoView } from "./features/ui/record-section-scroll.js";
 import {
   POSTURE_RETAKE_DAYS, POSTURE_STORAGE_KEYS, POSTURE_VIEW_DEFS, POSTURE_VIEW_KEYS,
-  assessmentMediaForView, commonPostureComparisonViews, compareAssessmentMetrics, completeAssessmentRecords, correctedPoseSource, countPosturePhotoRecords, normalizeAssessmentSets, normalizePostureView, postureAnalysisPlane,
+  assessmentDisplayDate, assessmentMediaForView, commonPostureComparisonViews, compareAssessmentMetrics, completeAssessmentRecords, correctedPoseSource, countPosturePhotoRecords, normalizeAssessmentSets, normalizePostureView, postureAnalysisPlane,
   getPostureRetakeStatus, postureAlignmentTransform, postureReferenceLines,
-  postureMilestoneTemplate, postureViewLabel, removeAssessmentDraftRecords, selectAutomaticComparison,
+  postureMilestoneTemplate, postureViewLabel, removeAssessmentDraftRecords, selectAutomaticComparison, selectComparisonAssessmentOptions,
   selectMemberBodyPhotoSurface, selectResumableAssessment,
 } from "./features/posture/posture-model.js";
 import {
@@ -9563,7 +9563,7 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
   const teacherMemo = memoForSet(selected);
   const methodLabel = (method) => method === "draw" ? "강사 직접 기록" : method === "manual" ? "직접 포인트" : "AI 변화 분석";
   const roleLabelOf = (role) => role === "before" ? "비포" : role === "after" ? "에프터" : "미분류";
-  const setDate = (set) => set?.completedAt || set?.at || "";
+  const setDate = (set) => assessmentDisplayDate(set);
   const ymd = (value) => formatMemberLessonDate(value);
   const setPhoto = (set, view) => assessmentMediaForView(set, view);
   const comparableViewsFor = (left, right) => commonPostureComparisonViews(left, right);
@@ -9743,7 +9743,7 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
   const entrySummary = lastCompleted?.poses.flatMap((pose) => pose.metrics || []).slice(0, 2) || [];
   const reportRetakeDate = selectedDate ? shift(selectedDate.slice(0, 10), POSTURE_RETAKE_DAYS.recommended) : "";
   const excludedComparisonId = setPicker === "before" ? afterSet?.id : setPicker === "after" ? beforeSet?.id : null;
-  const setOptions = completeSets.filter((set) => set.id !== excludedComparisonId && setDate(set) && POSTURE_VIEW_KEYS.some((view) => setPhoto(set, view))).map((set) => ({ value: set.id, label: formatMemberLessonDate(setDate(set).slice(0, 10)), description: `${set.scope === "partial" ? "부위별" : "전신"} · ${methodLabel(set.method)} · ${set.selectedViews.filter((view) => POSTURE_VIEW_KEYS.includes(view)).map(postureViewLabel).join("/")}` }));
+  const setOptions = selectComparisonAssessmentOptions(completeSets, { excludeId: excludedComparisonId }).map((set) => ({ value: set.id, label: formatMemberLessonDate(setDate(set)), description: `${set.scope === "partial" ? "부위별" : "전신"} · ${methodLabel(set.method)} · ${set.selectedViews.filter((view) => POSTURE_VIEW_KEYS.includes(view)).map(postureViewLabel).join("/")}` }));
   useEffect(() => {
     if (assessmentAction.current === "start") assessmentAction.current = null;
   }, [workflow.activeAssessmentId]);

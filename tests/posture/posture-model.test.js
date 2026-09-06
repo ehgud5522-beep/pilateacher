@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+  assessmentDisplayDate,
   commonPostureComparisonViews,
   compareAssessmentMetrics,
   completeAssessmentRecords,
@@ -15,8 +16,25 @@ import {
   postureRetakeStatus,
   removeAssessmentDraftRecords,
   selectAutomaticComparison,
+  selectComparisonAssessmentOptions,
   selectResumableAssessment,
 } from "../../src/features/posture/posture-model.js";
+
+test("comparison choices keep assessment dates and collapse duplicate media identities", () => {
+  const shared = { id: "media-back", memberId: "m1", view: "back", date: "2026-09-06", createdAt: "2026-09-07T01:00:00.000Z", completedAt: "2026-09-07T01:05:00.000Z", assessmentStatus: "completed", selectedViews: ["back"] };
+  const sets = normalizeAssessmentSets({ back: [
+    { ...shared, assessmentId: "assessment-a" },
+    { ...shared, assessmentId: "assessment-duplicate" },
+    { ...shared, id: "media-back-2", assessmentId: "assessment-b", date: "2026-09-07" },
+  ] }, { memberId: "m1" });
+
+  assert.equal(assessmentDisplayDate(sets.find((set) => set.id === "assessment-a")), "2026-09-06");
+  const options = selectComparisonAssessmentOptions(sets);
+  assert.equal(options.length, 2);
+  assert.equal(options.some((set) => set.id === "assessment-b"), true);
+  assert.equal(options.filter((set) => set.mediaIds.includes("media-back")).length, 1);
+  assert.equal(options.every((set) => set.photos.back.view === "back"), true);
+});
 import {
   POSTURE_WORKFLOW_EVENTS,
   createPostureWorkflowState,

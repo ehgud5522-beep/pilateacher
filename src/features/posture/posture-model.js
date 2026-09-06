@@ -34,6 +34,18 @@ function stampOf(record) {
   return String(record?.completedAt || record?.updatedAt || record?.annotationUpdatedAt || record?.createdAt || record?.at || (record?.date ? `${record.date}T00:00:00.000Z` : ""));
 }
 
+function calendarDate(value) {
+  return String(value || "").match(/^(\d{4}-\d{2}-\d{2})/)?.[1] || "";
+}
+
+function recordAssessmentDate(record) {
+  return calendarDate(record?.date) || calendarDate(record?.completedAt) || calendarDate(record?.createdAt) || calendarDate(record?.at);
+}
+
+function mediaIdentity(record) {
+  return String(record?.id || record?.photoId || record?.blobId || "").trim();
+}
+
 function newest(current, incoming) {
   if (!current) return incoming;
   const currentTime = Date.parse(stampOf(current));
@@ -63,7 +75,9 @@ export function normalizeAssessmentSets(photos, { memberId = null } = {}) {
       status: "draft",
       favorite: false,
       at: "",
+      date: "",
       completedAt: "",
+      mediaIds: [],
     };
     groups.set(key, current);
     return current;
@@ -82,7 +96,10 @@ export function normalizeAssessmentSets(photos, { memberId = null } = {}) {
       group.method = photo.analysisMethod || group.method;
       group.status = photo.assessmentStatus || group.status;
       group.at = [group.at, stampOf(photo)].sort().at(-1) || "";
+      group.date = group.date || recordAssessmentDate(photo);
       group.completedAt = [group.completedAt, photo.completedAt || ""].sort().at(-1) || "";
+      const identity = mediaIdentity(photo);
+      if (identity && !group.mediaIds.includes(identity)) group.mediaIds.push(identity);
       group.favorite = group.favorite || Boolean(photo.favorite);
       const selected = Array.isArray(photo.selectedViews) ? photo.selectedViews : [];
       group.selectedViews = [...new Set([...group.selectedViews, ...selected.map(normalizePostureView), view])];
@@ -102,6 +119,7 @@ export function normalizeAssessmentSets(photos, { memberId = null } = {}) {
     group.method = pose.analysisSource === "draw" ? "draw" : pose.analysisSource === "manual" ? "manual" : group.method;
     group.status = pose.assessmentStatus || (pose.assessmentComplete ? "completed" : group.status);
     group.at = [group.at, stampOf(pose)].sort().at(-1) || "";
+    group.date = group.date || recordAssessmentDate(pose);
     group.completedAt = [group.completedAt, pose.completedAt || (pose.assessmentComplete ? stampOf(pose) : "")].sort().at(-1) || "";
     group.favorite = group.favorite || Boolean(pose.favorite);
     const selected = Array.isArray(pose.selectedViews) ? pose.selectedViews : [];
@@ -471,7 +489,25 @@ export function postureCalendarDays(from, to) {
 }
 
 function calendarDateOfAssessment(assessment) {
-  return String(assessment?.completedAt || assessment?.at || "").match(/^\d{4}-\d{2}-\d{2}/)?.[0] || "";
+  return calendarDate(assessment?.date) || calendarDate(assessment?.completedAt) || calendarDate(assessment?.at);
+}
+
+export function assessmentDisplayDate(assessment) {
+  return calendarDateOfAssessment(assessment);
+}
+
+export function selectComparisonAssessmentOptions(sets, { excludeId = null } = {}) {
+  const seenMediaSets = new Set();
+  return (sets || []).filter((set) => set?.status === "completed" && set.id !== excludeId)
+    .filter((set) => calendarDateOfAssessment(set) && POSTURE_VIEW_KEYS.some((view) => assessmentMediaForView(set, view)))
+    .filter((set) => {
+      const identities = [...new Set((set.mediaIds || []).filter(Boolean))].sort();
+      if (!identities.length) return true;
+      const key = identities.join("|");
+      if (seenMediaSets.has(key)) return false;
+      seenMediaSets.add(key);
+      return true;
+    });
 }
 
 function compareAssessmentDates(left, right) {

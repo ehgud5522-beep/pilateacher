@@ -70,6 +70,8 @@ test("implausible Korean speed and four consecutive glossary terms block structu
 });
 
 test("STT correction changes only explicit exercise-context mishearings", () => {
+  assert.equal(correctPilatesTranscription("음봉.").transcript, "운동.");
+  assert.equal(correctPilatesTranscription("응동").transcript, "운동");
   assert.deepEqual(correctPilatesTranscription("오늘 허리 음봉 했어요"), {
     transcript: "오늘 허리 운동 했어요",
     corrections: ["stt_corrected_eumbong_to_exercise"],

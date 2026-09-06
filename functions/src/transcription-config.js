@@ -33,10 +33,11 @@ function correctPilatesTranscription(value) {
     transcript = transcript.replace(matcher, (match, offset, fullText) => {
       const before = fullText.slice(Math.max(0, offset - 24), offset);
       const after = fullText.slice(offset + match.length, offset + match.length + 32);
+      const standaloneLessonToken = fullText.replace(/[^가-힣]/gu, "") === match;
       const lessonAction = /^\s*(?:을|를|은|는|이|가)?\s*(?:했|해|할|합니다|진행|예정|좋|편|힘들|쉬웠|마쳤)/u.test(after);
       const nextEquipment = /(?:^|[\s,.!?])다음\s*$/u.test(before)
         && /^\s*(?:은|는|을|를)?\s*(?:리포머|캐딜락|체어|바렐|바디포머|스파인\s*코렉터|으로|로|에서)/u.test(after);
-      if (!lessonAction && !nextEquipment) return match;
+      if (!standaloneLessonToken && !lessonAction && !nextEquipment) return match;
       corrections.push(code);
       return "운동";
     });

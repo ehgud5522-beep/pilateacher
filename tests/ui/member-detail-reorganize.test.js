@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   formatMemberLessonHeader,
   formatMemberLessonDate,
+  isMeaningfulLessonSession,
   lessonSessionRepresentative,
   meaningfulToday,
   parseLegacyLessonRecordBody,
@@ -14,6 +15,7 @@ import {
   selectMemberLessonCounts,
   selectMemberLessonSessions,
   selectPendingLessonSessions,
+  selectUnresolvedLessonRows,
   stripLessonRecordTags,
 } from "../../src/features/lesson-record/member-detail-selectors.js";
 
@@ -245,26 +247,63 @@ test("lesson counts distinguish completed, reserved, and unresolved attendance",
   assert.deepEqual(selectMemberLessonCounts({ member, schedule, now: new Date("2026-09-05T12:00:00") }), { completed: 4, reserved: 1, unresolved: 1 });
 });
 
-test("collapsed history keeps every pending session, four normal sessions, and no duplicates", () => {
+test("history uses lesson datetime descending even when confirmation metadata is newer", () => {
+  const member = { id: "m", notes: [
+    note("older", "older", "2026-08-01", confirmed({ confirmedAt: "2026-09-30T23:00:00.000Z" })),
+    note("newer", "newer", "2026-09-01", confirmed({ confirmedAt: "2026-09-01T10:00:00.000Z" })),
+    note("same-day-early", "same-day-early", "2026-09-01", pending({ recordedAt: "2026-10-01T10:00:00.000Z" })),
+  ] };
+  const schedule = [
+    { id: "older", date: "2026-08-01", start: "09:00" },
+    { id: "newer", date: "2026-09-01", start: "18:00" },
+    { id: "same-day-early", date: "2026-09-01", start: "08:00" },
+  ];
+  assert.deepEqual(selectMemberLessonSessions({ member, schedule }).map((session) => session.key), ["newer", "same-day-early", "older"]);
+});
+
+test("meaningful history includes raw, structured, manual, and content-bearing drafts only", () => {
+  const sessions = [
+    { key: "raw", today: "기록 없음", records: [{ lessonRecord: { stage: "structured_draft", rawTranscript: "오늘 브릿지 진행" } }] },
+    { key: "structured", today: "브릿지", records: [{ lessonRecord: { structuredDraft: { didToday: ["브릿지"] } } }] },
+    { key: "manual", today: "기록 없음", records: [{ body: "강사 직접 메모" }] },
+    { key: "placeholder", today: "기록 없음", records: [{ body: "기록 없음" }] },
+    { key: "booking-only", today: "기록 없음", records: [] },
+  ];
+  assert.deepEqual(sessions.map(isMeaningfulLessonSession), [true, true, true, false, false]);
+  assert.deepEqual(selectMemberHistoryRows({ sessions }).rows.map((session) => session.key), ["raw", "structured", "manual"]);
+});
+
+test("collapsed history keeps five recent meaningful sessions and no duplicates", () => {
   const sessions = Array.from({ length: 12 }, (_, index) => ({
     key: `session-${index}`,
     lesson: { id: `session-${index}` },
     confirmationState: index < 3 ? "pending" : "confirmed",
+    today: `수업 기록 ${index}`,
+    records: [{ body: `수업 기록 ${index}` }],
   }));
-  const pendingSessions = [
-    { lessonId: "session-0", reasons: ["attendance", "confirmation"] },
-    { lessonId: "session-1", reasons: ["confirmation"] },
-    { lessonId: "session-2", reasons: ["confirmation"] },
-  ];
-  const collapsed = selectMemberHistoryRows({ sessions: [...sessions, sessions[0]], pendingSessions });
+  const collapsed = selectMemberHistoryRows({ sessions: [...sessions, sessions[0]] });
   assert.equal(collapsed.total, 12);
-  assert.equal(collapsed.rows.length, 7);
-  assert.deepEqual(collapsed.rows.slice(0, 3).map((row) => row.key), ["session-0", "session-1", "session-2"]);
-  assert.equal(new Set(collapsed.rows.map((row) => row.key)).size, 7);
-  assert.equal(collapsed.hidden, 5);
-  const expanded = selectMemberHistoryRows({ sessions: [...sessions, sessions[0]], pendingSessions, expanded: true });
+  assert.equal(collapsed.rows.length, 5);
+  assert.deepEqual(collapsed.rows.map((row) => row.key), ["session-0", "session-1", "session-2", "session-3", "session-4"]);
+  assert.equal(new Set(collapsed.rows.map((row) => row.key)).size, 5);
+  assert.equal(collapsed.hidden, 7);
+  const expanded = selectMemberHistoryRows({ sessions: [...sessions, sessions[0]], expanded: true });
   assert.equal(expanded.rows.length, 12);
   assert.equal(new Set(expanded.rows.map((row) => row.key)).size, 12);
+});
+
+test("recordless and empty unresolved lessons are separated while a meaningful draft stays in history", () => {
+  const meaningfulDraft = { key: "draft", date: "2026-09-03", today: "브릿지", records: [{ lessonRecord: { stage: "structured_draft", structuredDraft: { didToday: ["브릿지"] } } }] };
+  const emptyDraft = { key: "empty", date: "2026-09-02", today: "기록 없음", records: [{ lessonRecord: { stage: "structured_draft", structuredDraft: { didToday: [], observations: [], responses: [], nextFocus: [] } } }] };
+  const recordless = { lessonId: "recordless", lesson: { id: "recordless", date: "2026-09-01", start: "10:00", type: "개인" }, reasons: ["record"] };
+  const unresolved = selectUnresolvedLessonRows({ pendingSessions: [
+    { lessonId: "draft", session: meaningfulDraft, reasons: ["confirmation"] },
+    { lessonId: "empty", session: emptyDraft, reasons: ["confirmation"] },
+    recordless,
+    recordless,
+  ] });
+  assert.deepEqual(unresolved.map((session) => session.key), ["empty", "recordless"]);
+  assert.deepEqual(selectMemberHistoryRows({ sessions: [meaningfulDraft, emptyDraft] }).rows.map((session) => session.key), ["draft"]);
 });
 
 test("member and lesson-sheet source use one card, past labels, and exact lesson navigation", async () => {
@@ -274,11 +313,12 @@ test("member and lesson-sheet source use one card, past labels, and exact lesson
   assert.doesNotMatch(scheduleForm, /목표 미입력/);
   assert.equal((scheduleForm.match(/\{m\?\.name \|\| "삭제된 회원"\}/g) || []).length, 1);
   assert.match(source, /pastLesson && key === "today" \? "수업 내용" : label/);
-  assert.match(source, /pendingLessonSummary\.sessions\.filter\(\(item\) => !item\.session\)/);
-  assert.doesNotMatch(source, /pendingLessonSummary\.sessions\.filter\(\(item\) => item\.reasons\.includes\("attendance"\) && !item\.session\)/);
+  assert.match(source, /selectUnresolvedLessonRows\(\{ pendingSessions: pendingLessonSummary\.sessions \}\)/);
   assert.match(source, /onOpenSheet=\{\(item\) => onOpenLesson\?\.\(item\.lesson\?\.id \|\| item\.key\)\}/);
   assert.match(source, /수업 \{historySessions\.length\}건/);
   assert.match(source, /확인 필요 \$\{pendingSessionCount\}/);
+  assert.match(source, /미처리 수업 \{unresolvedLessonRows\.length\}건/);
+  assert.match(source, /이전 기록 더보기 · \$\{historyVisibility\.hidden\}건/);
   const statusCard = source.slice(source.indexOf('data-member-section="status"'), source.indexOf('data-member-section="next-preparation"'));
   assert.doesNotMatch(statusCard, /Avatar|detailStatus\.reasons|>상태</);
 });

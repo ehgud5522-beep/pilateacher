@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createMemberBriefing } from "../../src/features/member-memory/briefing.js";
+import { createMemberBriefing, selectScheduleBriefing } from "../../src/features/member-memory/briefing.js";
 import { buildMemberMemory, confirmedSessions, rejectMemoryEntry, selectLastLessonMemoryRecord } from "../../src/features/member-memory/member-memory.js";
 import { readMemberMemoryUsage, trackMemberMemoryUsage } from "../../src/features/member-memory/usage-telemetry.js";
 
@@ -147,6 +147,16 @@ test("closed loop returns the confirmed nextFocus on the same member's next sche
   assert.match(nextBriefing.lines[0].text, /^\[8\/23\] 선생님 메모: 오른쪽 고관절은 다음 시간에 다시 볼게요$/);
   assert.equal(nextBriefing.lines[0].sourceRefs[0].id, "jay-first");
   assert.ok(nextBriefing.memories.every((entry) => entry.memberId === "m1" && entry.sourceRefs.length > 0));
+});
+
+test("schedule memory date uses sourceRefs, then legacy lastSeenAt, and omits an unknown date", () => {
+  const memory = (overrides = {}) => ({ id: "memory-1", type: "next_focus", text: "흉추 확인", status: "active", seenCount: 1, sourceRefs: [], lastSeenAt: "", ...overrides });
+  const sourced = selectScheduleBriefing({ memories: [memory({ sourceRefs: [{ type: "session", id: "s1", date: "2026-09-03" }], lastSeenAt: "2026-09-02" })] });
+  assert.deepEqual({ sourceDate: sourced.sourceDate, dateLabel: sourced.dateLabel }, { sourceDate: "2026-09-03", dateLabel: "9.3" });
+  const legacy = selectScheduleBriefing({ memories: [memory({ lastSeenAt: "2026-08-20" })] });
+  assert.deepEqual({ sourceDate: legacy.sourceDate, dateLabel: legacy.dateLabel }, { sourceDate: "2026-08-20", dateLabel: "8.20" });
+  const unknown = selectScheduleBriefing({ memories: [memory()] });
+  assert.deepEqual({ sourceDate: unknown.sourceDate, dateLabel: unknown.dateLabel, displayText: unknown.displayText }, { sourceDate: "", dateLabel: "", displayText: "다음 확인: 흉추 확인" });
 });
 
 test("briefing telemetry counts only numeric aggregates and never stores lesson content or LLM calls", () => {

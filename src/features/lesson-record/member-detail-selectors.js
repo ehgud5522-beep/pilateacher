@@ -6,6 +6,7 @@ const PREFIX_SCAN = new RegExp(`(?:^|\\s+)(${PREFIX_NAMES})\\s*[:：]\\s*`, "g")
 const INTERNAL_ORIGIN_TAG = /\[(?:AI|MANUAL|STT)\]/gi;
 const LEADING_DATE_TAG = /^\s*\[(\d{1,2})\/(\d{1,2})\]\s*/;
 const EMPTY_TODAY = new Set(["", "운동", "수업", "진행", "함", "했음"]);
+const EMPTY_RECORD_TEXT = new Set(["", "기록없음", "특이사항없음", "수업기록"]);
 const SETTLED_ATTENDANCE = new Set(["done", "noshow", "cancel"]);
 
 const clean = (value) => String(value ?? "").replace(INTERNAL_ORIGIN_TAG, "").trim().replace(/\s+/g, " ");
@@ -73,6 +74,29 @@ export function lessonSessionRepresentative(session) {
   const [field, label, value] = selected;
   const text = clean(value);
   return { field, label, text, display: label ? `${label} · ${text}` : text };
+}
+
+const hasStructuredContent = (value) => [
+  value?.didToday,
+  value?.todayExercises,
+  value?.observations,
+  value?.pain,
+  value?.responses,
+  value?.improvements,
+  value?.nextFocus,
+].some((field) => Array.isArray(field) ? field.some((item) => itemText(item)) : Boolean(itemText(field)));
+
+export function isMeaningfulLessonSession(session) {
+  if ([session?.today === "기록 없음" ? "" : session?.today, session?.change, session?.reaction, session?.next].some((value) => clean(value))) return true;
+  return (session?.records || []).some((note) => {
+    const record = note?.lessonRecord || {};
+    if (clean(record.rawTranscript || record.confirmedRecord?.rawTranscript || note?.transcript)) return true;
+    if ([record.confirmedRecord, record.structuredDraft, note?.aiSummaryTeacherEdited, note?.aiSummary].some(hasStructuredContent)) return true;
+    return [note?.title, note?.body].some((value) => {
+      const text = stripLessonRecordTags(value).text;
+      return Boolean(text) && !EMPTY_RECORD_TEXT.has(normalized(text));
+    });
+  });
 }
 
 export function normalizedLessonType(value) {
@@ -197,7 +221,7 @@ export function selectMemberLessonSessions({ member, schedule = [] } = {}) {
       mergedWithoutTime,
       warning: mergedWithoutTime ? "시간 정보 없음 · 합쳐진 기록일 수 있음" : "",
     };
-  }).sort((a, b) => `${b.date}|${b.startTime}|${b.confirmedAt}|${b.key}`.localeCompare(`${a.date}|${a.startTime}|${a.confirmedAt}|${a.key}`));
+  }).sort((a, b) => `${b.date}|${b.startTime || "00:00"}|${b.key}`.localeCompare(`${a.date}|${a.startTime || "00:00"}|${a.key}`));
 }
 
 export function selectLessonSheetBriefing({ sessions = [], briefing = null } = {}) {
@@ -345,27 +369,43 @@ export function selectPendingLessonSessions({ members = [], schedule = [], pendi
   };
 }
 
-export function selectMemberHistoryRows({ sessions = [], pendingSessions = [], expanded = false, normalLimit = 4 } = {}) {
+export function selectMemberHistoryRows({ sessions = [], expanded = false, normalLimit = 5 } = {}) {
   const unique = [];
   const seen = new Set();
   (sessions || []).forEach((session) => {
     const key = String(session?.key || "");
     if (!key || seen.has(key)) return;
     seen.add(key);
-    unique.push(session);
+    if (isMeaningfulLessonSession(session)) unique.push(session);
   });
   if (expanded) return { rows: unique, total: unique.length, hidden: 0 };
-
-  const pendingFor = (session) => (pendingSessions || []).find((item) => {
-    const lessonId = String(item?.lessonId || item?.session?.key || "");
-    return lessonId && lessonId === String(session?.lesson?.id || session?.key || "");
-  }) || null;
-  const attendance = unique.filter((session) => pendingFor(session)?.reasons?.includes("attendance"));
-  const attendanceKeys = new Set(attendance.map((session) => session.key));
-  const confirmation = unique.filter((session) => !attendanceKeys.has(session.key)
-    && (session.confirmationState !== "confirmed" || Boolean(pendingFor(session))));
-  const priorityKeys = new Set([...attendance, ...confirmation].map((session) => session.key));
-  const normal = unique.filter((session) => !priorityKeys.has(session.key)).slice(0, Math.max(0, Number(normalLimit) || 0));
-  const rows = [...attendance, ...confirmation, ...normal];
+  const rows = unique.slice(0, Math.max(0, Number(normalLimit) || 0));
   return { rows, total: unique.length, hidden: Math.max(0, unique.length - rows.length) };
+}
+
+export function selectUnresolvedLessonRows({ pendingSessions = [] } = {}) {
+  const seen = new Set();
+  return (pendingSessions || []).filter((item) => !item?.session || !isMeaningfulLessonSession(item.session)).map((item) => item.session || ({
+    key: String(item?.lessonId || ""),
+    date: item?.lesson?.date || "",
+    startTime: item?.lesson?.start || "",
+    type: normalizedLessonType(item?.lesson?.type),
+    today: "기록 없음",
+    change: "",
+    reaction: "",
+    next: "",
+    source: "manual",
+    confirmationState: "pending",
+    confirmedAt: "",
+    confirmedCount: 0,
+    confirmableCount: 0,
+    records: [],
+    lesson: item?.lesson || null,
+    warning: "",
+  })).filter((session) => {
+    const key = String(session?.key || "");
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).sort((a, b) => `${b.date}|${b.startTime || "00:00"}|${b.key}`.localeCompare(`${a.date}|${a.startTime || "00:00"}|${a.key}`));
 }

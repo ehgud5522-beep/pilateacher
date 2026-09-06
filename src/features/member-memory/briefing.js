@@ -108,7 +108,7 @@ const scheduleSourceDate = (entry) => (entry?.sourceRefs || [])
   .filter((source) => (source?.type === "session" || source?.type === "assessment") && source?.date)
   .map((source) => String(source.date).slice(0, 10))
   .sort()
-  .at(-1) || "";
+  .at(-1) || String(entry?.lastSeenAt || "").slice(0, 10);
 
 const scheduleDateLabel = (value) => {
   const match = String(value || "").match(/^\d{4}-(\d{2})-(\d{2})/);

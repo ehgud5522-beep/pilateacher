@@ -102,8 +102,8 @@ import {
 } from "./features/lesson-record/draft-queue.js";
 import { evaluateLessonRecordLink, linkScheduleToMember, upsertLessonRecordNote } from "./features/lesson-record/link-context.js";
 import {
-  formatMemberLessonDate, formatMemberLessonHeader, lessonSessionRepresentative, normalizedLessonType, pendingLessonState,
-  selectLessonSheetBriefing, selectMemberDetailStatus, selectMemberHistoryRows, selectMemberLessonCounts, selectMemberLessonSessions, selectPendingLessonSessions,
+  formatMemberLessonDate, formatMemberLessonHeader, isMeaningfulLessonSession, lessonSessionRepresentative, pendingLessonState,
+  selectLessonSheetBriefing, selectMemberDetailStatus, selectMemberHistoryRows, selectMemberLessonCounts, selectMemberLessonSessions, selectPendingLessonSessions, selectUnresolvedLessonRows,
 } from "./features/lesson-record/member-detail-selectors.js";
 import LessonHistorySessionRow from "./features/lesson-record/LessonHistorySessionRow.jsx";
 import { deactivateMemberRecord, deleteMemberData, visibleMembers } from "./features/members/member-lifecycle.js";
@@ -4741,18 +4741,15 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
   const consultationNotes = notes.filter((note) => note.type === "상담").sort((a, b) => Number(Boolean(b.important)) - Number(Boolean(a.important)) || String(b.date || "").localeCompare(String(a.date || "")));
   const prepText = (value, fallback = "기록 없음") => Array.isArray(value) ? (value.map((item) => typeof item === "string" ? item : item?.text).filter(Boolean).join(" · ") || fallback) : (String(value || "").trim() || fallback);
   const lessonSessions = useMemo(() => selectMemberLessonSessions({ member, schedule }), [member, schedule]);
-  const latestLessonSession = lessonSessions[0] || null;
+  const meaningfulLessonSessions = useMemo(() => lessonSessions.filter(isMeaningfulLessonSession), [lessonSessions]);
+  const latestLessonSession = meaningfulLessonSessions[0] || null;
   const detailStatus = useMemo(() => selectMemberDetailStatus({ member, schedule }), [member, schedule]);
   const pendingLessonSummary = useMemo(() => selectPendingLessonSessions({ members: [member], schedule, pendingDrafts: listPendingLessonRecords().filter((draft) => String(draft?.memberId || "") === String(member.id)) }), [member, schedule, recordQueueRevision]);
   const pendingSessionCount = pendingLessonSummary.countForMember(member.id);
   const pendingByLesson = useMemo(() => new Map(pendingLessonSummary.sessions.map((item) => [String(item.lessonId || item.session?.key || ""), item])), [pendingLessonSummary]);
-  const pendingRows = useMemo(() => pendingLessonSummary.sessions.filter((item) => !item.session).map((item) => ({
-    key: String(item.lessonId), date: item.lesson?.date || "", startTime: item.lesson?.start || "", type: normalizedLessonType(item.lesson?.type),
-    today: "기록 없음", change: "", reaction: "", next: "", source: "manual", confirmationState: "pending", confirmedAt: "",
-    confirmedCount: 0, confirmableCount: 0, records: [], lesson: item.lesson, warning: "",
-  })), [pendingLessonSummary]);
-  const historySessions = useMemo(() => [...lessonSessions, ...pendingRows].sort((a, b) => `${b.date}|${b.startTime}|${b.key}`.localeCompare(`${a.date}|${a.startTime}|${a.key}`)), [lessonSessions, pendingRows]);
-  const historyVisibility = useMemo(() => selectMemberHistoryRows({ sessions: historySessions, pendingSessions: pendingLessonSummary.sessions, expanded: historyExpanded }), [historySessions, pendingLessonSummary, historyExpanded]);
+  const unresolvedLessonRows = useMemo(() => selectUnresolvedLessonRows({ pendingSessions: pendingLessonSummary.sessions }), [pendingLessonSummary]);
+  const historySessions = meaningfulLessonSessions;
+  const historyVisibility = useMemo(() => selectMemberHistoryRows({ sessions: historySessions, expanded: historyExpanded }), [historySessions, historyExpanded]);
   const lessonCounts = useMemo(() => selectMemberLessonCounts({ member, schedule }), [member, schedule]);
   const memoryBriefing = useMemo(() => createMemberBriefing({ member }), [member]);
   const memorySummary = useMemo(() => memberMemorySummary(memoryBriefing), [memoryBriefing]);
@@ -4896,7 +4893,11 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
               const pendingRecords = session.records.filter((note) => note?.lessonRecord && note.lessonRecord.stage !== "confirmed_record");
               const reviewable = pendingRecords.length === 1 && pendingRecords[0]?.lessonRecord?.structuredDraft;
               return <LessonHistorySessionRow key={session.key} session={session} sessions={historySessions} status={state} disabled={Boolean(saving)} onOpenSheet={(item) => onOpenLesson?.(item.lesson?.id || item.key)} onConfirm={() => reviewable ? openRecordReview(pendingRecords[0]) : confirmSessionRecords(session)} />;
-            })}{(historyVisibility.hidden > 0 || historyExpanded) && <button type="button" onClick={() => setHistoryExpanded((value) => !value)} className="h-10 w-full text-xs font-extrabold" style={{ borderRadius: 9, backgroundColor: CANVAS, color: BRAND_D }}>{historyExpanded ? "접기" : `더보기 · ${historyVisibility.hidden}건`}</button>}</div>}
+            })}{(historyVisibility.hidden > 0 || historyExpanded) && <button type="button" onClick={() => setHistoryExpanded((value) => !value)} className="h-10 w-full text-xs font-extrabold" style={{ borderRadius: 9, backgroundColor: CANVAS, color: BRAND_D }}>{historyExpanded ? "접기" : `이전 기록 더보기 · ${historyVisibility.hidden}건`}</button>}</div>}
+            {unresolvedLessonRows.length > 0 && <details className="mt-2 min-w-0 border-t pt-2" style={{ borderColor: LINE }}><summary className="cursor-pointer list-none text-xs font-extrabold" style={{ color: BRAND_D }}>미처리 수업 {unresolvedLessonRows.length}건</summary><div className="mt-2 min-w-0 space-y-2">{unresolvedLessonRows.map((session) => {
+              const pendingItem = pendingByLesson.get(String(session.lesson?.id || session.key));
+              return <LessonHistorySessionRow key={session.key} session={session} sessions={unresolvedLessonRows} status={pendingLessonState(pendingItem)} disabled={Boolean(saving)} onOpenSheet={(item) => onOpenLesson?.(item.lesson?.id || item.key)} onConfirm={() => confirmSessionRecords(session)} />;
+            })}</div></details>}
           </section>
           <section data-member-management-card="posture" data-member-section="posture" className="min-w-0 max-w-full" style={{ ...sectionStyle, overflow: "hidden", backgroundColor: CARD }}>
             <div className="flex min-w-0 items-center gap-2"><h2 className="min-w-0 flex-1 text-sm font-extrabold" style={{ color: INK }}>체형 변화</h2>{bodyPhotoSurface.assessmentCount > 0 && <><span className="shrink-0 text-[10px] tabular-nums" style={{ color: SUB }}>체형기록 {bodyPhotoSurface.assessmentCount}회 · 최근 {formatMemberLessonDate(bodyPhotoSurface.latestDate)}</span><button type="button" onClick={() => onAssess?.({ mode: "history" })} className="shrink-0 text-[10px] font-bold" style={{ color: BRAND_D }}>전체 보기</button></>}</div>

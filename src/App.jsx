@@ -2712,8 +2712,8 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
   const memberOf = (id) => db.members.find((m) => m.id === id);
   const briefingOf = useCallback((memberId, sessionId = null) => {
     const target = db.members.find((item) => item.id === memberId);
-    return target ? createMemberBriefing({ member: target, currentSessionId: sessionId }) : null;
-  }, [db.members]);
+    return target ? createMemberBriefing({ member: target, currentSessionId: sessionId, schedule: db.schedule }) : null;
+  }, [db.members, db.schedule]);
   const scheduleBriefingsOf = useCallback((lesson) => attendeesOf(lesson).map((attendee) => {
     const member = db.members.find((item) => item.id === attendee.memberId);
     const briefing = selectScheduleBriefing(briefingOf(attendee.memberId, lesson.id));
@@ -4751,7 +4751,7 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
   const historySessions = meaningfulLessonSessions;
   const historyVisibility = useMemo(() => selectMemberHistoryRows({ sessions: historySessions, expanded: historyExpanded }), [historySessions, historyExpanded]);
   const lessonCounts = useMemo(() => selectMemberLessonCounts({ member, schedule }), [member, schedule]);
-  const memoryBriefing = useMemo(() => createMemberBriefing({ member }), [member]);
+  const memoryBriefing = useMemo(() => createMemberBriefing({ member, schedule }), [member, schedule]);
   const memorySummary = useMemo(() => memberMemorySummary(memoryBriefing), [memoryBriefing]);
   const preparation = {
     last: latestLessonSession?.today || (memorySummary.lastLesson === "첫 수업" ? "첫 수업" : "기록 없음"),
@@ -14716,7 +14716,7 @@ export default function App() {
     memoryRebuildInFlightRef.current = true;
     const members = db.members.map((item) => {
       if (!item?.memoryRebuildNeeded) return item;
-      const result = buildMemberMemorySafely({ memberId: item.id, notes: item.notes || [], existingMemory: item.aiMemory || [] });
+      const result = buildMemberMemorySafely({ memberId: item.id, notes: item.notes || [], existingMemory: item.aiMemory || [], schedule: db.schedule });
       return result.failed ? item : { ...item, aiMemory: result.memories, memoryRebuildNeeded: false };
     });
     Promise.resolve(saveDb({ ...db, members })).finally(() => { memoryRebuildInFlightRef.current = false; });
@@ -14960,9 +14960,7 @@ export default function App() {
     const nextNotes = noteOptions?.upsert && sid
       ? upsertLessonRecordNote(target.notes || [], note, { lessonId: sid, existingNoteId: existingPending?.id })
       : existingPending ? (target.notes || []).map((item) => item.id === existingPending.id ? note : item) : [note, ...(target.notes || [])];
-    const memoryResult = shouldConfirm
-      ? buildMemberMemorySafely({ memberId: id, notes: nextNotes, existingMemory: target.aiMemory || [] })
-      : { memories: target.aiMemory || [], failed: false, stats: { candidateCount: 0, mergedCount: 0, patternCount: 0 } };
+    const memoryResult = buildMemberMemorySafely({ memberId: id, notes: nextNotes, existingMemory: target.aiMemory || [], schedule: currentDb.schedule });
     const nextDb = { ...currentDb, members: currentDb.members.map((m) => (m.id === id ? { ...m, notes: nextNotes, aiMemory: memoryResult.memories, memoryRebuildNeeded: memoryResult.failed } : m)) };
     const stored = await saveDb(nextDb);
     if (stored === false) return false;
@@ -15300,7 +15298,7 @@ export default function App() {
     } : note;
     const finalizedWithSession = { ...finalized, sid: noteSid || undefined };
     const nextNotes = [finalizedWithSession, ...(t.notes || [])];
-    const memoryResult = buildMemberMemorySafely({ memberId: id, notes: nextNotes, existingMemory: t.aiMemory || [] });
+    const memoryResult = buildMemberMemorySafely({ memberId: id, notes: nextNotes, existingMemory: t.aiMemory || [], schedule: db.schedule });
     const stored = await patch(id, { notes: nextNotes, aiMemory: memoryResult.memories, memoryRebuildNeeded: memoryResult.failed });
     if (stored === false) return false;
     if (audioBlobId) {
@@ -15328,7 +15326,7 @@ export default function App() {
   const deleteNote = (nid) => {
     const gone = member.notes.find((note) => note.id === nid);
     const nextNotes = member.notes.filter((note) => note.id !== nid);
-    const memoryResult = buildMemberMemorySafely({ memberId: member.id, notes: nextNotes, existingMemory: member.aiMemory || [] });
+    const memoryResult = buildMemberMemorySafely({ memberId: member.id, notes: nextNotes, existingMemory: member.aiMemory || [], schedule: db.schedule });
     patch(member.id, { notes: nextNotes, aiMemory: memoryResult.memories, memoryRebuildNeeded: memoryResult.failed });
     if (gone?.audioBlobId) forgetBlobs([gone.audioBlobId]);
   };

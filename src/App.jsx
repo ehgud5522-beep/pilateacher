@@ -11304,6 +11304,12 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     setAudioReviewEdited(false);
     setAudioBlobId(null);
     setAudioState("uploaded");
+    if (recordingModeRef.current === "replace") {
+      setReplacementUndoVisible(false);
+      replacementSnapshotRef.current = null;
+      if (replacementUndoTimerRef.current) clearTimeout(replacementUndoTimerRef.current);
+      replacementUndoTimerRef.current = null;
+    }
     appendLessonRecordDiagnostic({ code: "success", stage: "server_audio", category: "SUCCESS", model: aiMeta.model, requestId: aiMeta.requestId, gatewayUrl: aiMeta.gatewayUrl, httpStatus: 200 });
     window.dispatchEvent(new CustomEvent("pilateacher:lesson-record-updated", { detail: { memberId, lessonId, state: "draft_structured" } }));
     return structuredDraft;
@@ -11593,10 +11599,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       setAudioReviewEdited(false);
       setReplacementUndoVisible(true);
       if (replacementUndoTimerRef.current) clearTimeout(replacementUndoTimerRef.current);
-      replacementUndoTimerRef.current = setTimeout(() => {
-        setReplacementUndoVisible(false);
-        replacementSnapshotRef.current = null;
-      }, 10000);
+      replacementUndoTimerRef.current = null;
     }
     const permissionStartedAt = Date.now();
     let permissionError = null;
@@ -12135,7 +12138,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     setSilenceNotice("8초 동안 말씀이 없어 녹음을 마치고 내용을 정리합니다.");
     stop("silence_timeout");
   };
-  const cancelRecording = () => {
+  const cancelRecording = (options = {}) => {
     if (VOICE_ENGINE_MODE === "server" && sourceRef.current !== "native") {
       if (amplitudeTimerRef.current) clearInterval(amplitudeTimerRef.current);
       amplitudeTimerRef.current = null;
@@ -12150,6 +12153,9 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       amplitudeSamplesRef.current = [];
       setAudioState("idle");
       voiceDiagnostic("user_end", { source: "server_audio", reason: "cancel" });
+      if (options?.restoreReplacement !== false && recordingModeRef.current === "replace" && replacementSnapshotRef.current) {
+        restorePreviousRecording({ cancelActive: false, notify: false });
+      }
       return;
     }
     voiceDiagnostic("user_end", { reason: "cancel" });
@@ -12181,11 +12187,14 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     setErr("");
     setAudioState("idle");
     deviceLog("voice_record_cancelled", { memberId, lessonId, source: sourceRef.current || "unknown" });
+    if (options?.restoreReplacement !== false && recordingModeRef.current === "replace" && replacementSnapshotRef.current) {
+      restorePreviousRecording({ cancelActive: false, notify: false });
+    }
   };
-  const restorePreviousRecording = () => {
+  const restorePreviousRecording = (options = {}) => {
     const snapshot = replacementSnapshotRef.current;
     if (!snapshot) return;
-    if (on || starting) cancelRecording();
+    if ((on || starting) && options?.cancelActive !== false) cancelRecording({ restoreReplacement: false });
     if (snapshot.pending) savePendingLessonRecord(memberId, lessonId, snapshot.pending);
     textRef.current = snapshot.text || "";
     setText(snapshot.text || "");
@@ -12201,7 +12210,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     replacementSnapshotRef.current = null;
     if (replacementUndoTimerRef.current) clearTimeout(replacementUndoTimerRef.current);
     replacementUndoTimerRef.current = null;
-    window.dispatchEvent(new CustomEvent("pilateacher:toast", { detail: { ok: true, msg: "이전 녹음을 복원했어요" } }));
+    if (options?.notify !== false) window.dispatchEvent(new CustomEvent("pilateacher:toast", { detail: { ok: true, msg: "이전 녹음을 복원했어요" } }));
   };
   useEffect(() => {
     if (on && elapsed >= MAX_STT_SECONDS) {
@@ -12451,7 +12460,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
             <section><p className="text-xs font-extrabold" style={{ color: INK }}>AI 수업 요약</p><div className="mt-2 grid grid-cols-2 gap-1.5">{summaryView.cards.map((item) => <div key={item.key} className="rounded-lg p-2.5" style={{ backgroundColor: item.key === "nextFocus" ? TINT : CANVAS }}><p className="text-[10px] font-extrabold" style={{ color: item.key === "nextFocus" ? BRAND_D : SUB }}>{item.label}</p><p className="mt-1 text-[11px] font-bold leading-relaxed" style={{ color: item.value === "추가해 주세요" || item.value === "아직 계획 없음" ? FAINT : INK2 }}>{item.value}</p></div>)}</div></section>
             {summaryView.narrative && <section className="rounded-lg p-3" style={{ backgroundColor: CANVAS }}><p className="text-xs font-extrabold" style={{ color: INK }}>{summaryView.narrativeLabel}</p><p className="mt-2 text-xs leading-relaxed" style={{ color: INK2 }}>{summaryView.narrative}</p></section>}
             {summaryEditing && <div className="space-y-2">{[{ k: "observations", l: "회원의 변화" }, { k: "didToday", l: "오늘 수업" }, { k: "responses", l: "회원 반응/특이사항" }, { k: "nextFocus", l: "다음 확인" }, { k: "uncertain", l: "확인이 필요한 내용" }].map((field) => <label key={field.k} className="block"><span className="mb-1 block text-[11px] font-bold" style={{ color: SUB }}>{field.l}</span><textarea rows={2} value={structuredFieldText(summaryDraft, field.k)} onChange={(event) => setSummaryField(field.k, event.target.value)} placeholder="한 줄에 한 항목" className={`${inputCls} h-auto resize-none py-2 text-xs`} /></label>)}</div>}
-            {typeof onClose === "function" && <button type="button" onClick={onClose} className="h-11 w-full rounded-lg text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>확인</button>}
+            {typeof onClose === "function" && <div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => startFromUserTap("replace")} disabled={!supported || audioState === "saving"} className="h-11 rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: CANVAS, color: BRAND_D }}>다시 녹음</button><button type="button" onClick={onClose} className="h-11 rounded-lg text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>확인</button></div>}
           </div>}
         </>
       )}

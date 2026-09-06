@@ -73,7 +73,7 @@ test("raw persistence precedes Gateway work and cloud reconcile runs only after 
     "declining consent may remove only an empty audio-only draft");
   assert.match(discardSource, /savePendingLessonRecord[\s\S]*\.\.\.currentDraft[\s\S]*status: currentDraft\.structuredDraft \? "structured" : "raw"/,
     "declining consent must preserve an existing raw or structured draft");
-  const cancelStart = voiceSource.indexOf("const cancelRecording = () =>");
+  const cancelStart = voiceSource.indexOf("const cancelRecording =");
   const cancelEnd = voiceSource.indexOf("useEffect(() => {", cancelStart);
   const cancelSource = voiceSource.slice(cancelStart, cancelEnd);
   assert.match(cancelSource, /persistRawDraft\(preservedText\)/, "cancelling after STT text exists must preserve that text");

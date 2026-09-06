@@ -19,10 +19,21 @@ test("voice completion saves a pending draft and keeps delayed online results mo
   assert.doesNotMatch(onlineTimeout, /setFinishing\(false\)|setSummaryBusy\(false\)|showDeferredToast|onDeferred|onLater/);
   assert.match(voice, /summaryView\.cards/);
   assert.match(voice, /기록이 저장됐어요\. 고치고 싶을 때만 수정하세요\./);
-  assert.match(voice, /typeof onClose === "function"[\s\S]*>확인<\/button>/);
+  assert.match(voice, /typeof onClose === "function"[\s\S]*startFromUserTap\("replace"\)[\s\S]*>다시 녹음<\/button>[\s\S]*>확인<\/button>/);
   assert.equal((voice.match(/>확인<\/button>/g) || []).length, 1);
   assert.doesNotMatch(voice, />닫기<\/button>|수정 닫기/);
   assert.doesNotMatch(voice, /확인하고 저장|AI로 정리|이 영역 저장/);
+});
+
+test("replacement recording preserves the previous result until success and restores it automatically on cancel", () => {
+  const replaceStart = voice.slice(voice.indexOf('recordingModeRef.current = mode === "replace"'), voice.indexOf("const permissionStartedAt"));
+  assert.match(replaceStart, /replacementSnapshotRef\.current = \{[\s\S]*text: textRef\.current[\s\S]*summaryDraft/);
+  assert.doesNotMatch(replaceStart, /setTimeout\([\s\S]*replacementSnapshotRef\.current = null/);
+  const cancellation = voice.slice(voice.indexOf("const cancelRecording"), voice.indexOf("const restorePreviousRecording"));
+  assert.match(cancellation, /source: "server_audio", reason: "cancel"[\s\S]*restorePreviousRecording\(\{ cancelActive: false, notify: false \}\)[\s\S]*return;/);
+  assert.match(cancellation, /recordingModeRef\.current === "replace"[\s\S]*restorePreviousRecording\(\{ cancelActive: false, notify: false \}\)/);
+  const promotion = voice.slice(voice.indexOf("const promoteServerAudioResult"), voice.indexOf("const uploadServerAudio"));
+  assert.match(promotion, /setSummaryDraft\(structuredDraft\)[\s\S]*recordingModeRef\.current === "replace"[\s\S]*replacementSnapshotRef\.current = null/);
 });
 
 test("voice UI has one conditional direct-entry textarea and mutually exclusive phases", () => {

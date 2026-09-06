@@ -104,3 +104,13 @@ test("completed capture returns to history and comparison actions only render fo
   assert.match(workspace, /comparisonPairFor\(selected\)\.after && <button/);
   assert.doesNotMatch(workspace, /disabled=\{!completed \|\| !comparablePair\.after\}/);
 });
+
+test("saved history rows resolve their display mode before rendering and retain the render cause in posture diagnostics", async () => {
+  const { source, workspace } = await postureSources();
+  const historyStart = workspace.indexOf('screen === "history"');
+  const historyEnd = workspace.indexOf('screen === "result"', historyStart);
+  const history = workspace.slice(historyStart, historyEnd);
+  assert.ok(historyStart >= 0 && historyEnd > historyStart);
+  assert.ok(history.indexOf('const setIsManualResult = ["draw", "manual"].includes(set.method)') < history.indexOf("const historySummary ="));
+  assert.match(source, /surface === "변화 기록" \? \{ message:/);
+});

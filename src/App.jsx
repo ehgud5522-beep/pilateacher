@@ -448,7 +448,7 @@ const DEVICE_LOG_FIELDS = new Set([
   "photoOutputAvailable", "photoOutputAttached", "photoConnectionAvailable", "photoConnectionEnabled",
   "sessionRunning", "previewLayerAttached", "firstFrameReceived", "previewAttached", "previewX", "previewY",
   "previewWidth", "previewHeight", "previewZIndex", "previewBackgroundAlpha", "parentBackgroundAlpha", "webViewOpaque",
-  "frame", "root", "actionBar", "scrollContainer", "firstSummary", "recentCard",
+  "frame", "root", "actionBar", "scrollContainer", "firstSummary", "recentCard", "surface",
   "scrollTop", "clientHeight", "scrollHeight", "hitTagName", "hitClassName", "hitIsCard", "hitInsideCard",
   "cardAboveContainer", "cardBelowContainer", "actionBarOverlapsContainer", "ancestorHasClip", "ancestorHasTransform", "clippingAncestors",
 ]);
@@ -1232,9 +1232,11 @@ class Guard extends Component {
   componentDidCatch(err, info) {
     const line = (info?.componentStack || "").trim().split("\n")[0] || "";
     this.setState({ info: line.trim() });
+    const surface = String(this.props.label || "unknown").slice(0, 80);
     deviceLog("ui_render_failed", {
-      surface: String(this.props.label || "unknown").slice(0, 80),
+      surface,
       code: String(err?.name || "Error").slice(0, 80),
+      ...(surface === "변화 기록" ? { message: String(err?.message || err || "unknown render error").slice(0, 180) } : {}),
       appBuild: APP_BUILD_LABEL,
     });
   }
@@ -3770,7 +3772,7 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
   const [tool, setTool] = useState(initialTool === "guide" ? "pen" : initialTool);
   const [guideSheet, setGuideSheet] = useState(false);
   const [recentColors, setRecentColors] = useState(() => readRecentAnnotationColors(window.localStorage));
-  const [color, setColor] = useState(() => readRecentAnnotationColors(window.localStorage)[0] || "#6C5FD4");
+  const [color, setColor] = useState("#FFFFFF");
   const [width, setWidth] = useState(4);
   const [opacity] = useState(1);
   const [grid] = useState(false);
@@ -7526,6 +7528,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
       setAnalysisMethod(resumeDraft.method || "ai");
       setCapturePhotos({ ...captureStateFor(captureViews), ...restored });
       setDraftSaved(Object.fromEntries(Object.keys(restored).map((key) => [key, true])));
+      setCaptureTarget(captureViews.find(({ key }) => !restored[key])?.key || captureViews[0]?.key || "front");
       const completed = Object.fromEntries(saved.filter((pose) => pose.assessmentId === resumeDraft.id).map((pose) => [normalizePostureView(pose.view), true]));
       setAnalyzedViews(completed);
       setDrawnViews(Object.fromEntries(Object.entries(restored).filter(([, photo]) => (photo?.marks || []).length > 0).map(([key]) => [key, true])));
@@ -7712,7 +7715,10 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
       deviceLog("assessment_draft_saved", { memberId: analysisMemberId.current, assessmentId: assessmentId.current, view: capturedView, storage: "indexedDB", source: metadata.source || captureSource.current, count: 1 });
       cameraPipelineLog("saved", { memberId: analysisMemberId.current, assessmentId: assessmentId.current, view: capturedView, storage: "indexedDB", source: metadata.source || captureSource.current, width: im.naturalWidth, height: im.naturalHeight, bytes: blob.size });
       const nextTarget = captureViews.find(({ key }) => key !== capturedView && !capturePhotos[key]);
-      if (nextTarget) onToast?.({ ok: true, msg: `${postureViewLabel(capturedView)} 사진을 저장했습니다. 사진을 확인한 뒤 ${postureViewLabel(nextTarget.key)}을 선택해 주세요.` });
+      if (nextTarget) {
+        setCaptureTarget(nextTarget.key);
+        onToast?.({ ok: true, msg: `${postureViewLabel(capturedView)} 사진을 저장했습니다. ${postureViewLabel(nextTarget.key)} 촬영으로 이동합니다.` });
+      }
       else onToast?.({ ok: true, msg: `${postureViewLabel(capturedView)} 촬영이 완료되었습니다. 분석 준비가 끝났습니다.` });
       return true;
     } catch (error) {
@@ -9794,9 +9800,9 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
           const missing = set.missingPhotos || [];
           const summary = set.poses.map((pose) => pose.aiAnalysis?.teacherEditedOutput || pose.aiAnalysis?.output).find(Boolean);
           const setTeacherMemo = set.poses.map((pose) => pose.comment || pose.teacherMemo || "").find(Boolean);
+          const setIsManualResult = ["draw", "manual"].includes(set.method);
           const historySummary = missing.length ? `사진 일부 누락: ${missing.map(postureViewLabel).join(", ")}` : setIsManualResult ? ((representative?.marks || []).length ? "사진 표시와 손메모 저장됨" : "사진 기록 저장됨") : [summary ? "AI 해석 초안 있음" : "", setTeacherMemo ? "강사 메모 있음" : ""].filter(Boolean).join(" · ");
           const completed = set.status === "completed";
-          const setIsManualResult = ["draw", "manual"].includes(set.method);
           const resumable = set.id === resumableAssessment?.id;
           const comparablePair = comparisonPairFor(set);
           return <article key={set.id} style={{ padding: 12, borderRadius: 13, backgroundColor: CANVAS, border: `1px solid ${LINE}` }}>
@@ -13964,6 +13970,10 @@ export function createAppScreenSmokeCases() {
     schedule: [],
   };
   const photos = { [member.id]: {} };
+  const completedHistoryPhotos = {
+    front: [{ id: "smoke-assessment_front", memberId: member.id, assessmentId: "smoke-assessment", view: "front", selectedViews: ["front"], analysisMethod: "draw", assessmentStatus: "completed", captureStatus: "completed", date: "2026-09-06", completedAt: "2026-09-06T09:00:00.000Z", marks: [] }],
+    poses: [{ id: "smoke-assessment_front_draw", memberId: member.id, assessmentId: "smoke-assessment", view: "front", selectedViews: ["front"], analysisSource: "draw", assessmentStatus: "completed", assessmentComplete: true, completedAt: "2026-09-06T09:00:00.000Z", metrics: [] }],
+  };
   const provider = (child) => <AIRecordingStatusContext.Provider value={{ status: AI_RECORDING_STATUS.NORMAL, updateStatus: noop }}>{child}</AIRecordingStatusContext.Provider>;
   const busyDb = createScheduleFixtureDb();
   return [
@@ -13973,6 +13983,7 @@ export function createAppScreenSmokeCases() {
     { name: "회원 상세", element: <ReferenceMemberDetail member={member} schedule={db.schedule} photos={photos[member.id]} settings={db.settings} onBack={noop} onPatch={asyncNoop} onSaveNote={asyncNoop} onSchedule={noop} onAssess={noop} onToast={noop} /> },
     { name: "체형분석 목록", element: <ReferenceAnalysisTab members={db.members} photos={photos} selectedId={null} selectedPoseId={null} onSelect={noop} hub={noop} /> },
     { name: "체형분석 상세 빈 이력", element: <AssessmentWorkspace member={member} photos={photos[member.id]} settings={db.settings} onSavePose={asyncNoop} onUpdatePose={asyncNoop} onDeletePose={asyncNoop} onSaveCaptureDraft={asyncNoop} onDeleteCaptureDraft={asyncNoop} onDiscardAssessmentDraft={asyncNoop} onCompleteAssessment={asyncNoop} onSaveMarks={asyncNoop} onSaveAssessmentRole={asyncNoop} onToggleAssessmentFavorite={asyncNoop} onToast={noop} onSaved={noop} /> },
+    { name: "변화 기록 상세 저장 이력", element: <AssessmentWorkspace member={member} photos={completedHistoryPhotos} settings={db.settings} initialMode="history" onSavePose={asyncNoop} onUpdatePose={asyncNoop} onDeletePose={asyncNoop} onSaveCaptureDraft={asyncNoop} onDeleteCaptureDraft={asyncNoop} onDiscardAssessmentDraft={asyncNoop} onCompleteAssessment={asyncNoop} onSaveMarks={asyncNoop} onSaveAssessmentRole={asyncNoop} onToggleAssessmentFavorite={asyncNoop} onToast={noop} onSaved={noop} /> },
     { name: "더보기 탭", element: provider(<ReferenceSettingsTab db={db} photos={photos} account={{ id: "smoke-account", role: "owner" }} savedAt={null} demoMode={false} onChangeSettings={noop} onChangePhoto={noop} onLogout={noop} onDeleteAccount={noop} onToast={noop} themePref="light" onChangeTheme={noop} onImport={noop} onOpenSchedule={noop} onOpenRecords={noop} onOpenOnboarding={noop} backupStatus={{}} onEnablePhotoBackup={noop} onRetryBackup={noop} />) },
   ];
 }

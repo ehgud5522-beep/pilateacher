@@ -93,7 +93,9 @@ test("capture timer, motion lifecycle, and storage handoff are connected to the 
   assert.match(source, /storage:\s*"indexedDB"/);
   assert.match(source, /previewStaged = true/);
   assert.match(source, /사진을 불러오지 못했습니다\. 다시 시도해 주세요/);
-  assert.match(source, /사진을 확인한 뒤/);
+  assert.match(source, /setCaptureTarget\(nextTarget\.key\)/);
+  assert.match(source, /촬영으로 이동합니다/);
+  assert.match(source, /setCaptureTarget\(captureViews\.find\(\(\{ key \}\) => !restored\[key\]\)\?\.key/);
   assert.match(source, /if \(f\) pickFile\(f\)/);
   assert.doesNotMatch(source.slice(source.indexOf("const usePending = async"), source.indexOf("const handleBack = async")), /startCamera\(\)/);
 });
@@ -108,6 +110,8 @@ test("direct annotation exposes opt-in guides, ruler, handwriting, colors, re-ed
   const workspace = source.slice(workspaceStart, workspaceEnd);
 
   assert.match(canvas, /initialTool = "pen"/);
+  assert.match(canvas, /const \[color, setColor\] = useState\("#FFFFFF"\)/);
+  assert.match(canvas, /const chooseColor = \(value\) => \{[\s\S]*setColor\(next\)/);
   assert.match(canvas, /const \[guideSheet, setGuideSheet\] = useState\(false\)/);
   assert.match(canvas, /\{ k: "ruler", l: "자", I: Move \}/);
   assert.match(canvas, /\{ k: "memo", l: "손메모", I: MessageSquare \}/);

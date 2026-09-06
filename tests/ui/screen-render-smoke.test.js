@@ -29,6 +29,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "회원 상세",
     "체형분석 목록",
     "체형분석 상세 빈 이력",
+    "변화 기록 상세 저장 이력",
     "더보기 탭",
   ]);
   for (const item of cases) {
@@ -49,5 +50,7 @@ test("ErrorBoundary hides diagnostics in production and records a privacy-safe d
   assert.match(guard, /일시적인 문제가 발생했어요/);
   assert.match(guard, /showInternalDetails && <button[\s\S]*오류 복사/);
   assert.match(guard, /deviceLog\("ui_render_failed"/);
+  assert.match(source, /"recentCard", "surface"/);
+  assert.match(guard, /surface === "변화 기록" \? \{ message:/);
   assert.doesNotMatch(guard, /deviceLog\([^)]*msg/);
 });

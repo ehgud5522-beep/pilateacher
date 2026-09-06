@@ -11519,10 +11519,8 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       const foreground = await settleWithin(uploadPromise, SERVER_AUDIO_FOREGROUND_WAIT_MS);
       if (foreground.timedOut) {
         deferred = true;
-        setFinishing(false);
-        setSummaryBusy(false);
         setSilenceNotice("저장됨 · 정리 중");
-        showDeferredToast("기록 저장됨 · AI가 정리 중");
+        window.dispatchEvent(new CustomEvent("pilateacher:toast", { detail: { ok: true, msg: "기록 저장됨 · AI가 정리 중" } }));
         return;
       }
       if (foreground.error) {

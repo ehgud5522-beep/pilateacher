@@ -6,12 +6,17 @@ const source = await readFile(new URL("../../src/App.jsx", import.meta.url), "ut
 const voice = source.slice(source.indexOf("function VoiceNote("), source.indexOf("function NoteForm("));
 const examples = JSON.parse(await readFile(new URL("../../src/features/lesson-record/lesson-record-examples.json", import.meta.url), "utf8"));
 
-test("voice completion saves a pending draft, keeps results visible, and defers close for ten seconds", () => {
+test("voice completion saves a pending draft and keeps delayed online results mounted", () => {
   assert.match(voice, /currentRecordPayload\(false\)/);
   assert.match(voice, /onDraftChange\(payload\.teacherText, payload\.meta, \{ confirmed: false, upsert: true \}\)/);
   assert.match(voice, /SERVER_AUDIO_FOREGROUND_WAIT_MS/);
   assert.match(voice, /waitBeforeDeferredClose/);
   assert.match(voice, /showDeferredToast\("기록 저장됨 · AI가 정리 중"\)/);
+  const onlineTimeout = voice.slice(voice.indexOf("if (foreground.timedOut)"), voice.indexOf("if (foreground.error)"));
+  assert.match(onlineTimeout, /deferred = true/);
+  assert.match(onlineTimeout, /setSilenceNotice\("저장됨 · 정리 중"\)/);
+  assert.match(onlineTimeout, /pilateacher:toast/);
+  assert.doesNotMatch(onlineTimeout, /setFinishing\(false\)|setSummaryBusy\(false\)|showDeferredToast|onDeferred|onLater/);
   assert.match(voice, /summaryView\.cards/);
   assert.match(voice, /기록이 저장됐어요\. 고치고 싶을 때만 수정하세요\./);
   assert.match(voice, /typeof onClose === "function"[\s\S]*>확인<\/button>/);

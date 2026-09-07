@@ -6601,6 +6601,9 @@ function SavedPoseViewer({ rec, member, records, onUpdate, memberName, onClose, 
   );
 }
 
+const PREVIEW_BOUNDS_RETRY_LIMIT = 8;
+const PREVIEW_BOUNDS_RETRY_DELAY_MS = 120;
+
 function PostureCaptureScreen({
   member, assessmentId, roleLabel, captureViews, currentCapture, capturePhotos, draftSaved, busy,
   captureImportError = "", onSelectView, onAcceptCapture, onOpenAlbum, onDeleteCapture, onSaveDraft, onContinue, onExit,
@@ -6624,10 +6627,13 @@ function PostureCaptureScreen({
   const countdownTimer = useRef(null);
   const pendingCaptureRef = useRef(null);
   const cameraPhotoReadyRef = useRef(false);
+  const previewBoundsReadyRef = useRef(false);
+  const stopCameraRef = useRef(null);
   const [cameraStatus, setCameraStatus] = useState("idle");
   const [cameraPhotoReady, setCameraPhotoReady] = useState(false);
   const [cameraError, setCameraError] = useState("");
   const [previewRect, setPreviewRect] = useState(null);
+  const [previewBoundsReady, setPreviewBoundsReady] = useState(false);
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
   const [pendingCapture, setPendingCapture] = useState(null);
   const [timerSeconds, setTimerSeconds] = useState(() => readCaptureTimer(typeof window === "undefined" ? null : window.localStorage));
@@ -6694,7 +6700,11 @@ function PostureCaptureScreen({
     captureRunning.current = false;
     cameraStarting.current = false;
     cameraPhotoReadyRef.current = false;
-    if (mounted.current) setCameraPhotoReady(false);
+    previewBoundsReadyRef.current = false;
+    if (mounted.current) {
+      setCameraPhotoReady(false);
+      setPreviewBoundsReady(false);
+    }
     if (nativePreviewAvailable) {
       try {
         await CameraPreview.stop({ force: true });
@@ -6714,6 +6724,11 @@ function PostureCaptureScreen({
     await stopMotion();
     if (mounted.current && reason !== "capture") setCameraStatus(reason === "background" ? "paused" : "idle");
   }, [activeView, assessmentId, clearCountdown, member?.id, nativePreviewAvailable, stopMotion]);
+
+  // stopCamera is rebuilt whenever the selected view changes. Effects that only
+  // release the camera on background or unmount read it through this ref, so
+  // switching capture direction never tears the running preview down.
+  useEffect(() => { stopCameraRef.current = stopCamera; }, [stopCamera]);
 
   const startMotion = useCallback(async (generation) => {
     if (motionHandle.current) return;
@@ -6773,28 +6788,87 @@ function PostureCaptureScreen({
     }
   }, []);
 
+  const markPreviewBounds = useCallback((ready) => {
+    previewBoundsReadyRef.current = ready;
+    if (mounted.current) setPreviewBoundsReady(ready);
+  }, []);
+
   const syncPreviewBounds = useCallback(async () => {
     const box = stageRef.current?.getBoundingClientRect();
-    if (!box?.width || !box?.height) return null;
+    if (!box?.width || !box?.height) {
+      // The native surface sits behind the WebView, so an unmeasurable stage
+      // leaves it wherever it was last placed. Report the miss instead of
+      // silently returning and never retrying.
+      markPreviewBounds(false);
+      return null;
+    }
     const canonical = { x: box.left, y: box.top, width: box.width, height: box.height };
     setPreviewRect(canonical);
     if (nativePreviewAvailable && cameraRunning.current) {
-      await CameraPreview.setPreviewSize({
-        x: Math.round(box.left), y: Math.round(box.top), width: Math.round(box.width), height: Math.round(box.height),
-      });
+      try {
+        await CameraPreview.setPreviewSize({
+          x: Math.round(box.left), y: Math.round(box.top), width: Math.round(box.width), height: Math.round(box.height),
+        });
+      } catch (error) {
+        markPreviewBounds(false);
+        throw error;
+      }
     }
+    markPreviewBounds(true);
     return canonical;
-  }, [nativePreviewAvailable]);
+  }, [markPreviewBounds, nativePreviewAvailable]);
 
   useEffect(() => {
     if (!cameraRunning.current) return undefined;
-    const frame = window.requestAnimationFrame(() => {
-      syncPreviewBounds().catch((error) => {
-        deviceLog("posture_camera_preview_resize_failed", { memberId: member?.id, assessmentId, ...deviceError(error) });
+    if (previewBoundsReady) {
+      const settled = window.requestAnimationFrame(() => {
+        syncPreviewBounds().catch((error) => {
+          deviceLog("posture_camera_preview_resize_failed", { memberId: member?.id, assessmentId, view: activeView, ...deviceError(error) });
+        });
       });
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [assessmentId, member?.id, stageSize.height, stageSize.width, syncPreviewBounds]);
+      return () => window.cancelAnimationFrame(settled);
+    }
+
+    // The preview is running but its bounds never landed. Retry until the stage
+    // is measurable, then fail loudly with a code rather than leaving a blank
+    // preview behind a permanently disabled shutter.
+    let cancelled = false;
+    let attempt = 0;
+    let frame = 0;
+    let timer = 0;
+    const giveUp = () => {
+      cameraPipelineLog("camera_preview_bounds_failed", {
+        memberId: member?.id, assessmentId, view: activeView,
+        source: nativePreviewAvailable ? "native_preview" : "getUserMedia",
+        platform: Capacitor.getPlatform(), lifecycleState: "error", state: "not_applied",
+        code: "preview_bounds_unavailable", reason: "stage_rect_unmeasurable", attempts: attempt + 1,
+      });
+      setCameraError("카메라 화면 위치를 잡지 못했어요 (코드 preview_bounds_unavailable). 다시 시도하거나 앨범에서 사진을 선택해 주세요.");
+    };
+    const retryLater = () => {
+      if (cancelled) return;
+      if (attempt >= PREVIEW_BOUNDS_RETRY_LIMIT) { giveUp(); return; }
+      attempt += 1;
+      timer = window.setTimeout(runSync, PREVIEW_BOUNDS_RETRY_DELAY_MS);
+    };
+    function runSync() {
+      frame = window.requestAnimationFrame(() => {
+        if (cancelled) return;
+        syncPreviewBounds()
+          .then((bounds) => { if (!cancelled && !bounds) retryLater(); })
+          .catch((error) => {
+            deviceLog("posture_camera_preview_resize_failed", { memberId: member?.id, assessmentId, view: activeView, ...deviceError(error) });
+            retryLater();
+          });
+      });
+    }
+    runSync();
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+    };
+  }, [activeView, assessmentId, cameraStatus, member?.id, nativePreviewAvailable, previewBoundsReady, stageSize.height, stageSize.width, syncPreviewBounds]);
 
   const cameraErrorMessage = (error) => {
     const name = String(error?.name || error?.code || "");
@@ -6856,7 +6930,21 @@ function PostureCaptureScreen({
   }, [activeView, assessmentId, member?.id]);
 
   const startCamera = useCallback(async () => {
-    if (iosStableCaptureFallback || cameraRunning.current || cameraStarting.current || busy) return;
+    if (iosStableCaptureFallback) return;
+    if (cameraRunning.current || cameraStarting.current || busy) {
+      // A silent return here used to strand the screen on a blank preview with
+      // no trace, so every skip reason keeps its own code.
+      const skipCode = cameraRunning.current
+        ? "camera_already_running"
+        : cameraStarting.current ? "camera_start_in_flight" : "host_busy";
+      cameraPipelineLog("camera_start_skipped", {
+        memberId: member?.id, assessmentId, view: activeView,
+        source: nativePreviewAvailable ? "native_preview" : "getUserMedia",
+        platform: Capacitor.getPlatform(), lifecycleState: "skipped", state: "skipped",
+        code: skipCode, reason: skipCode,
+      });
+      return;
+    }
     const cameraPlatform = Capacitor.getPlatform();
     const generation = cameraGeneration.current + 1;
     cameraGeneration.current = generation;
@@ -6867,7 +6955,9 @@ function PostureCaptureScreen({
     };
     cameraStarting.current = true;
     cameraPhotoReadyRef.current = false;
+    previewBoundsReadyRef.current = false;
     setCameraPhotoReady(false);
+    setPreviewBoundsReady(false);
     setCameraStatus("starting");
     setCameraError("");
     cameraPipelineLog("camera_prepare_started", { memberId: member?.id, assessmentId, view: activeView, source: nativePreviewAvailable ? "native_preview" : "getUserMedia", platform: cameraPlatform, lifecycleState: "preparing" });
@@ -6897,7 +6987,14 @@ function PostureCaptureScreen({
         });
         ensureCurrent();
         cameraRunning.current = true;
-        await syncPreviewBounds();
+        const previewBounds = await syncPreviewBounds();
+        if (!previewBounds) {
+          cameraPipelineLog("camera_preview_bounds_pending", {
+            memberId: member?.id, assessmentId, view: activeView, source: "native_preview",
+            platform: cameraPlatform, lifecycleState: "starting", state: "not_applied",
+            code: "preview_bounds_unavailable", reason: "stage_rect_unmeasurable",
+          });
+        }
         ensureCurrent();
         const readiness = await waitForCameraPhotoOutput({ platform: cameraPlatform, timeoutMs: 1500, pollMs: 100 });
         cameraPipelineLog("camera_photo_output_ready", { memberId: member?.id, assessmentId, view: activeView, source: "native_preview", platform: cameraPlatform, lifecycleState: readiness?.ready ? "ready" : "error", state: readiness?.ready ? "ready" : "not_ready", reason: readiness?.readinessSource, code: readiness?.code });
@@ -6930,7 +7027,23 @@ function PostureCaptureScreen({
       await motionPromise;
     } catch (error) {
       if (error?.code === "camera_start_cancelled") {
-        if (nativePreviewAvailable) { try { await CameraPreview.stop({ force: true }); } catch {} }
+        // When the generation moved on, a newer owner (stopCamera, or the start
+        // that replaced us) already released the native session. While we still
+        // own it, release through the single teardown path so no ref, motion
+        // listener, or root-visibility class is left behind.
+        const superseded = cameraGeneration.current !== generation;
+        const backgrounded = typeof document !== "undefined" && document.visibilityState === "hidden";
+        // "background" parks the screen on "paused"; "start_cancelled" returns it
+        // to "idle". Using "idle" while the document is still hidden would re-arm
+        // the auto-start effect into a start/cancel loop.
+        if (!superseded) await stopCamera(backgrounded ? "background" : "start_cancelled");
+        cameraPipelineLog("camera_preview_start_cancelled", {
+          memberId: member?.id, assessmentId, view: activeView,
+          source: nativePreviewAvailable ? "native_preview" : "getUserMedia",
+          platform: cameraPlatform, lifecycleState: "cancelled", code: "camera_start_cancelled",
+          reason: superseded ? "superseded_by_newer_owner" : backgrounded ? "document_hidden" : "unmounted_or_stale",
+          state: superseded ? "released_by_owner" : "released",
+        });
         return;
       }
       await stopCamera("error");
@@ -7042,7 +7155,8 @@ function PostureCaptureScreen({
   }, [activeView, assessmentId, busy, captureWithSystemCamera, member?.id, nativePreviewAvailable, previewRect, sensor, stopCamera]);
 
   const beginCountdown = () => {
-    if (countdown != null || captureRunning.current || cameraStatus !== "active" || (nativePreviewAvailable && !cameraPhotoReadyRef.current)) return;
+    if (countdown != null || captureRunning.current || cameraStatus !== "active"
+      || (nativePreviewAvailable && (!cameraPhotoReadyRef.current || !previewBoundsReadyRef.current))) return;
     if (timerSeconds === 0) { captureNow(); return; }
     let remaining = timerSeconds;
     setCountdown(remaining);
@@ -7110,22 +7224,22 @@ function PostureCaptureScreen({
         setCameraStatus("idle");
         return;
       }
-      stopCamera("background").finally(() => {
+      Promise.resolve(stopCameraRef.current?.("background")).finally(() => {
         if (!mounted.current) return;
         setCameraError("앱으로 돌아온 뒤 카메라를 다시 시작해 주세요.");
         setCameraStatus("paused");
       });
     };
-    const onPageHide = () => { stopCamera("background"); };
+    const onPageHide = () => { stopCameraRef.current?.("background"); };
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("pagehide", onPageHide);
     return () => {
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("pagehide", onPageHide);
       if (pendingCaptureRef.current?.src) URL.revokeObjectURL(pendingCaptureRef.current.src);
-      stopCamera("unmount");
+      stopCameraRef.current?.("unmount");
     };
-  }, [iosStableCaptureFallback, stopCamera]);
+  }, [iosStableCaptureFallback]);
 
   const guideColor = sensor.isLevel ? "#63D7A3" : sensor.status === SENSOR_STATUSES.active ? "#F2B84B" : "rgba(236,235,247,.88)";
   const directionGuide = {
@@ -7194,7 +7308,7 @@ function PostureCaptureScreen({
         ) : (
           <div className="relative flex items-center justify-between gap-3 pb-1">
             <button type="button" onClick={async () => { await stopCamera("album"); onOpenAlbum(activeView); }} disabled={countdown != null || busy} className="flex h-11 w-16 flex-col items-center justify-center gap-0.5 rounded-xl text-[10px] font-bold disabled:opacity-40" style={{ backgroundColor: "rgba(255,255,255,.10)" }}><ImagePlus size={16} />앨범</button>
-            <button type="button" onClick={beginCountdown} disabled={cameraStatus !== "active" || (nativePreviewAvailable && !cameraPhotoReady) || countdown != null || busy} className="flex h-[66px] w-[66px] shrink-0 items-center justify-center rounded-full disabled:opacity-40" style={{ border: "4px solid #fff", backgroundColor: "rgba(255,255,255,.22)", boxShadow: "0 0 0 2px rgba(255,255,255,.18)" }} aria-label={`${timerSeconds ? `${timerSeconds}초 후` : "즉시"} 촬영`}><span className="h-[48px] w-[48px] rounded-full bg-white" /></button>
+            <button type="button" onClick={beginCountdown} disabled={cameraStatus !== "active" || (nativePreviewAvailable && (!cameraPhotoReady || !previewBoundsReady)) || countdown != null || busy} className="flex h-[66px] w-[66px] shrink-0 items-center justify-center rounded-full disabled:opacity-40" style={{ border: "4px solid #fff", backgroundColor: "rgba(255,255,255,.22)", boxShadow: "0 0 0 2px rgba(255,255,255,.18)" }} aria-label={`${timerSeconds ? `${timerSeconds}초 후` : "즉시"} 촬영`}><span className="h-[48px] w-[48px] rounded-full bg-white" /></button>
             <div className="relative"><button type="button" onClick={() => setTimerOpen((value) => !value)} disabled={countdown != null || busy} className="flex h-11 w-16 flex-col items-center justify-center gap-0.5 rounded-xl text-[10px] font-bold disabled:opacity-40" style={{ backgroundColor: "rgba(255,255,255,.10)" }}><Clock size={16} />{timerSeconds === 0 ? "즉시" : `${timerSeconds}초`}</button>{timerOpen && <div className="absolute bottom-14 right-0 grid w-[188px] grid-cols-4 gap-1 rounded-xl p-2" style={{ backgroundColor: "#202631", boxShadow: "0 12px 32px rgba(0,0,0,.42)" }}>{CAPTURE_TIMER_OPTIONS.map((seconds) => <button type="button" key={seconds} onClick={() => chooseTimer(seconds)} className="h-9 rounded-lg text-[11px] font-bold" style={{ backgroundColor: timerSeconds === seconds ? "#4C4399" : "rgba(255,255,255,.08)" }}>{seconds === 0 ? "즉시" : `${seconds}초`}</button>)}</div>}</div>
           </div>
         )}

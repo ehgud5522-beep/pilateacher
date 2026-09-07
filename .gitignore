@@ -12,8 +12,8 @@ android/keystore.properties
 *serviceAccount*.json
 tools/ai/live-*.mjs
 tools/backup/live-*.mjs
-cert_key.pemdist/ 
-cert_key.pem 
+cert_key.pem
+dist/
 .firebase/
 firebase-debug.log
 firestore-debug.log

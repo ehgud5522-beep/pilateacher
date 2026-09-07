@@ -29,7 +29,11 @@ export default function LessonHistorySessionRow({
   const representative = lessonSessionRepresentative(session);
 
   if (variant === "preview") {
-    return <div className="min-w-0 rounded-lg p-2.5" data-lesson-history-session-row data-variant="preview" style={{ backgroundColor: "var(--canvas)" }}><div className="flex min-w-0 items-center gap-2"><span className="min-w-0 flex-1 truncate text-xs font-extrabold" style={{ color: "var(--ink)" }}>{formatMemberLessonHeader(session, sessions)}</span>{session.source === "ai" && <span className="shrink-0 text-[9px] font-bold" style={{ color: "var(--brand)" }}>AI 요약</span>}</div><div className="mt-3 border-t pt-2" style={{ borderColor: "var(--line)" }}><FieldRows session={session} /></div></div>;
+    /* 수업이 0건인 회원 상세에 이 카드가 실제 기록과 똑같은 모양으로 서 있어,
+       기록이 하나 있는 것처럼 보였다. 회원 목록에서 이미 쓰는 "예시" 배지를 그대로
+       달고 테두리를 점선으로 둬서, 카드를 읽기 전에 예시임이 보이게 한다.
+       카드 자체는 남긴다 -- 처음 쓰는 강사에게 결과 모양을 보여주는 역할이다. */
+    return <div className="min-w-0 rounded-lg p-2.5" data-lesson-history-session-row data-variant="preview" style={{ backgroundColor: "var(--canvas)", border: "1px dashed var(--faint)" }}><div className="flex min-w-0 items-center gap-2"><span className="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold" style={{ backgroundColor: "var(--tint)", color: "var(--brand)", border: "1px solid var(--ring)" }}>예시</span><span className="min-w-0 flex-1 truncate text-xs font-extrabold" style={{ color: "var(--ink)" }}>{formatMemberLessonHeader(session, sessions)}</span>{session.source === "ai" && <span className="shrink-0 text-[9px] font-bold" style={{ color: "var(--brand)" }}>AI 요약</span>}</div><div className="mt-3 border-t pt-2" style={{ borderColor: "var(--line)" }}><FieldRows session={session} /></div></div>;
   }
 
   const detailsProps = expanded === undefined ? {} : { open: Boolean(expanded) };

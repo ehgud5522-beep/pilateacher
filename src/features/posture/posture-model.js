@@ -414,6 +414,22 @@ export function postureMetricDisplayValue(value, unit) {
   return unit === "°" ? roundHalfAwayFromZero(number) : number;
 }
 
+/* AFTER 라벨이 남겨 두는 최소 불투명도. 사진이 완전히 사라져도 라벨은 읽혀야
+   어느 쪽이 After 인지 알 수 있다. */
+export const OVERLAY_LABEL_MIN_OPACITY = 0.35;
+
+/* 겹쳐보기 슬라이더가 After 사진에 주는 불투명도를 AFTER 라벨에도 그대로 준다.
+   사진이 거의 사라졌는데 라벨만 또렷하면 무엇을 보고 있는지가 어긋난다. */
+export function overlayLabelOpacity(percent) {
+  // null 과 "" 는 Number() 를 지나면 0 -- 즉 가장 흐린 값이 된다. 값을 읽지 못한
+  // 것과 슬라이더를 0 으로 내린 것은 다르므로, 못 읽었으면 그대로 보여 준다.
+  if (percent === null || percent === undefined || percent === "") return 1;
+  const value = Number(percent);
+  if (!Number.isFinite(value)) return 1;
+  const ratio = Math.min(1, Math.max(0, value / 100));
+  return OVERLAY_LABEL_MIN_OPACITY + (1 - OVERLAY_LABEL_MIN_OPACITY) * ratio;
+}
+
 /* 같은 항목을 두 번 찍었을 때 쓰는 촬영 오차 폭. 이 안쪽 차이는 변화가 아니다. */
 export const POSTURE_CHANGE_TOLERANCE_DEG = 2;
 

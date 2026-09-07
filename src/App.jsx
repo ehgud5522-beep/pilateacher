@@ -63,7 +63,7 @@ import { scrollRecordSectionIntoView } from "./features/ui/record-section-scroll
 import {
   POSTURE_STORAGE_KEYS, POSTURE_VIEW_DEFS, POSTURE_VIEW_KEYS,
   assessmentDisplayDate, assessmentMediaForView, commonPostureComparisonViews, compareAssessmentMetrics, completeAssessmentRecords, correctedPoseSource, countPosturePhotoRecords, normalizeAssessmentSets, normalizePostureView, postureAnalysisPlane,
-  advanceManualCorrection, manualTapTarget, revertManualJoint, postureAlignmentTransform, postureMetricChangeText, postureMetricDisplayValue, postureReferenceLines,
+  advanceManualCorrection, manualTapTarget, overlayLabelOpacity, revertManualJoint, postureAlignmentTransform, postureMetricChangeText, postureMetricDisplayValue, postureReferenceLines,
   postureMilestoneTemplate, postureViewLabel, removeAssessmentDraftRecords, selectAutomaticComparison, selectComparisonAssessmentOptions,
   selectMemberBodyPhotoSurface, selectResumableAssessment,
 } from "./features/posture/posture-model.js";
@@ -9606,7 +9606,11 @@ function AssessmentComparisonViewer({ beforeSet, afterSet, view, showGuides, mem
         <div onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={stopPointer} onPointerCancel={stopPointer} className="relative overflow-hidden" style={{ ...frameStyle, touchAction: "none" }}>
           <AssessmentComparisonLayer photo={beforePhoto} pose={beforePose} label="Before" color={INK2} transform={commonTransform} showMarks={showGuides} showLines={false} />
           <AssessmentComparisonLayer photo={afterPhoto} pose={afterPose} label="After" color={BRAND} transform={afterTransform} opacity={opacity / 100} showMarks={showGuides} showLines={false} />
-          <span className="pointer-events-none absolute left-2 top-2 rounded-full px-2 py-1 text-[9px] font-bold" style={{ backgroundColor: CARD, color: INK, border: `1px solid ${INK2}` }}>BEFORE</span><span className="pointer-events-none absolute right-2 top-2 rounded-full px-2 py-1 text-[9px] font-bold" style={{ backgroundColor: TINT, color: BRAND_D, border: `1px solid ${BRAND}` }}>AFTER</span>
+          <span className="pointer-events-none absolute left-2 top-2 rounded-full px-2 py-1 text-[9px] font-bold" style={{ backgroundColor: CARD, color: INK, border: `1px solid ${INK2}` }}>BEFORE</span>
+          {/* After 투명도를 내려 사진이 거의 사라졌는데 AFTER 라벨만 또렷하면,
+              지금 무엇을 보고 있는지가 어긋난다. 라벨도 같은 비율로 흐려진다.
+              다만 완전히 지우지는 않는다 -- 어느 쪽이 After 인지는 계속 알아야 한다. */}
+          <span className="pointer-events-none absolute right-2 top-2 rounded-full px-2 py-1 text-[9px] font-bold" style={{ backgroundColor: TINT, color: BRAND_D, border: `1px solid ${BRAND}`, opacity: overlayLabelOpacity(opacity) }}>AFTER</span>
         </div>
       )}
       <div className="mt-3 grid grid-cols-2 gap-1 rounded-xl p-1" style={{ backgroundColor: CANVAS }}>

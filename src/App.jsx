@@ -6800,7 +6800,11 @@ function PostureCaptureScreen({
   const activePhoto = capturePhotos[activeView] || null;
   const capturesComplete = captureViews.every(({ key }) => !!capturePhotos[key]);
   const completedCount = captureViews.filter(({ key }) => !!capturePhotos[key]).length;
-  const captureCompleteIdle = capturesComplete && !pendingCapture && !["active", "capturing", "starting"].includes(cameraStatus);
+  /* 카메라가 꺼져 있다는 것만으로 촬영을 마쳤다고 볼 수 없다. 앨범을 열려면
+     프리뷰를 먼저 정지하는데, 그 순간 이 값이 참으로 뒤집혀 푸터가 "다음 분석
+     단계 / 다시 촬영"으로 바뀌었다. 강사는 앨범을 눌렀을 뿐인데 돌아와 보면
+     재촬영 버튼이 있었다 -- 라벨이 아니라 상태가 틀린 것이었다. */
+  const captureCompleteIdle = capturesComplete && !pendingCapture && !albumPending && !["active", "capturing", "starting"].includes(cameraStatus);
 
   useEffect(() => {
     pendingCaptureRef.current = pendingCapture;

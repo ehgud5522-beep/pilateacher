@@ -60,7 +60,13 @@ test("posture capture render path uses a real rear preview with browser fallback
   assert.match(capture, /photoQualityPrioritization:\s*"balanced"/);
   assert.doesNotMatch(capture, /머리 기준 · 이 선 아래/);
   assert.doesNotMatch(capture, /발 기준 · 이 선 위/);
-  assert.match(capture, /bottom-\[15%\] left-1\/2 top-\[15%\] border-l/);
+  // A single tall dashed frame replaced the two horizontal rules, and its
+  // colour is the state readout rather than a separate indicator.
+  assert.match(capture, /aspectRatio: "2 \/ 3\.5"/);
+  assert.match(capture, /border: `2px dashed \$\{frameColor\}`/);
+  assert.match(capture, /transition: "border-color 180ms ease"/);
+  assert.match(capture, /const frameColor = sensor\.isLevel \? "#63D7A3" : "#FF6B6B"/);
+  assert.doesNotMatch(capture, /top-\[15%\] border-t-2/, "the old horizontal guides are gone");
   assert.doesNotMatch(capture, /left-\[7%\] top-\[8%\]/);
   assert.doesNotMatch(capture, /<svg\b/i);
   assert.doesNotMatch(capture, /silhouette|body.?outline/i);

@@ -9,6 +9,13 @@ export const LEVEL_THRESHOLD_DEG = 6;
 // Leaving it again. The 2 deg band above the entry threshold is the hysteresis:
 // once green, a small excursion no longer drops the state.
 export const LEVEL_RELEASE_THRESHOLD_DEG = 8;
+/* Pitch gets its own, much wider window. Shooting a standing person from around
+   navel height means the phone is unavoidably tilted towards the body, which
+   parks pitch right on a 6 deg boundary and makes the guide flicker. Pitch also
+   costs less: it changes perspective but leaves the horizon -- and so the
+   shoulder-line angle the measurement reads -- level. */
+export const PITCH_LEVEL_THRESHOLD_DEG = 15;
+export const PITCH_RELEASE_THRESHOLD_DEG = 20;
 // How long the reading has to stay inside the entry threshold before it counts
 // as green, so a value that merely sweeps through does not trigger it.
 export const LEVEL_DWELL_MS = 400;
@@ -324,6 +331,7 @@ export function evaluateDeviceLevel({
   pitch,
   status = SENSOR_STATUSES.active,
   threshold = LEVEL_THRESHOLD_DEG,
+  pitchThreshold = PITCH_LEVEL_THRESHOLD_DEG,
   level = null,
 } = {}) {
   const statusMessages = {
@@ -340,6 +348,7 @@ export function evaluateDeviceLevel({
       roll: Number.isFinite(Number(roll)) ? Number(roll) : null,
       pitch: Number.isFinite(Number(pitch)) ? Number(pitch) : null,
       isLevel: false,
+      rollLevel: false,
       code: status,
       message: statusMessages[status] || statusMessages[SENSOR_STATUSES.error],
     });
@@ -348,33 +357,39 @@ export function evaluateDeviceLevel({
   const normalizedRoll = Number(roll);
   const normalizedPitch = Number(pitch);
   if (!Number.isFinite(normalizedRoll) || !Number.isFinite(normalizedPitch)) {
-    return evaluateDeviceLevel({ status: SENSOR_STATUSES.unavailable, threshold });
+    return evaluateDeviceLevel({ status: SENSOR_STATUSES.unavailable, threshold, pitchThreshold });
   }
 
-  const limit = Math.abs(Number(threshold)) || LEVEL_THRESHOLD_DEG;
+  const rollLimit = Math.abs(Number(threshold)) || LEVEL_THRESHOLD_DEG;
+  const pitchLimit = Math.abs(Number(pitchThreshold)) || PITCH_LEVEL_THRESHOLD_DEG;
+  /* Roll on its own. It is the axis that tilts the horizon, so it is what the
+     capture quality flag is judged on; pitch only shifts perspective. */
+  const rollLevel = Math.abs(normalizedRoll) <= rollLimit;
   // A hysteresis gate decides level across several readings and passes its
-  // verdict in. Without one, a single reading inside the threshold is enough.
+  // verdict in. Without one, a single reading inside the thresholds is enough.
   const isLevel = typeof level === "boolean"
     ? level
-    : Math.abs(normalizedRoll) <= limit && Math.abs(normalizedPitch) <= limit;
+    : rollLevel && Math.abs(normalizedPitch) <= pitchLimit;
   if (isLevel) {
     return Object.freeze({
       status,
       roll: normalizedRoll,
       pitch: normalizedPitch,
       isLevel: true,
+      rollLevel,
       code: "level",
       message: "현재 자세로 촬영하기에 적합합니다.",
     });
   }
 
-  if (Math.abs(normalizedRoll) >= Math.abs(normalizedPitch)) {
+  if ((Math.abs(normalizedRoll) - rollLimit) >= (Math.abs(normalizedPitch) - pitchLimit)) {
     const tiltsLeft = normalizedRoll < 0;
     return Object.freeze({
       status,
       roll: normalizedRoll,
       pitch: normalizedPitch,
       isLevel: false,
+      rollLevel,
       code: tiltsLeft ? "tilted_left" : "tilted_right",
       message: tiltsLeft
         ? "휴대폰을 오른쪽으로 조금 기울여주세요."
@@ -387,6 +402,7 @@ export function evaluateDeviceLevel({
     roll: normalizedRoll,
     pitch: normalizedPitch,
     isLevel: false,
+    rollLevel,
     code: normalizedPitch < 0 ? "tilted_forward" : "tilted_backward",
     message: normalizedPitch < 0
       ? "휴대폰 상단을 몸 쪽으로 조금 기울여주세요."
@@ -402,6 +418,8 @@ export function evaluateDeviceLevel({
 export function createLevelGate({
   enterThresholdDeg = LEVEL_THRESHOLD_DEG,
   releaseThresholdDeg = LEVEL_RELEASE_THRESHOLD_DEG,
+  pitchEnterThresholdDeg = PITCH_LEVEL_THRESHOLD_DEG,
+  pitchReleaseThresholdDeg = PITCH_RELEASE_THRESHOLD_DEG,
   dwellMs = LEVEL_DWELL_MS,
   invalidTolerance = INVALID_READING_TOLERANCE,
   smoothing = READING_SMOOTHING,
@@ -430,20 +448,24 @@ export function createLevelGate({
     roll = roll == null ? round(nextRoll, 1) : round((roll * smoothing) + (nextRoll * (1 - smoothing)), 1);
     pitch = pitch == null ? round(nextPitch, 1) : round((pitch * smoothing) + (nextPitch * (1 - smoothing)), 1);
 
-    const worst = Math.max(Math.abs(roll), Math.abs(pitch));
+    /* Each axis is compared against its own band, so a pitch sitting at 8 deg
+       -- normal when shooting from navel height -- no longer flickers the
+       guide, while roll stays held to the tight window the measurement needs. */
+    const withinEnter = Math.abs(roll) <= enterThresholdDeg && Math.abs(pitch) <= pitchEnterThresholdDeg;
+    const withinRelease = Math.abs(roll) <= releaseThresholdDeg && Math.abs(pitch) <= pitchReleaseThresholdDeg;
     if (level) {
-      if (worst > releaseThresholdDeg) {
+      if (!withinRelease) {
         level = false;
         candidateSince = null;
       }
-    } else if (worst <= enterThresholdDeg) {
+    } else if (withinEnter) {
       if (candidateSince == null) candidateSince = at;
       if (at - candidateSince >= dwellMs) level = true;
     } else {
       candidateSince = null;
     }
 
-    return evaluateDeviceLevel({ roll, pitch, status: SENSOR_STATUSES.active, threshold: enterThresholdDeg, level });
+    return evaluateDeviceLevel({ roll, pitch, status: SENSOR_STATUSES.active, threshold: enterThresholdDeg, pitchThreshold: pitchEnterThresholdDeg, level });
   };
 
   /* Returns null while the run of unusable readings is still inside the

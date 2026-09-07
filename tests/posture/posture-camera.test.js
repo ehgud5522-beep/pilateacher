@@ -7,6 +7,8 @@ import {
   INVALID_READING_TOLERANCE,
   LEVEL_DWELL_MS,
   LEVEL_RELEASE_THRESHOLD_DEG,
+  PITCH_LEVEL_THRESHOLD_DEG,
+  PITCH_RELEASE_THRESHOLD_DEG,
   LEVEL_THRESHOLD_DEG,
   READING_STALL_MS,
   SENSOR_STATUSES,
@@ -400,4 +402,62 @@ test("background stop requested during startup releases the resource after start
   assert.equal((await stopping).stopped, true);
   assert.equal(stops, 1);
   assert.equal(lifecycle.getState(), "idle");
+});
+
+test("pitch gets a much wider window than roll, because shooting forces it", () => {
+  assert.equal(LEVEL_THRESHOLD_DEG, 6);
+  assert.equal(LEVEL_RELEASE_THRESHOLD_DEG, 8);
+  assert.equal(PITCH_LEVEL_THRESHOLD_DEG, 15);
+  assert.equal(PITCH_RELEASE_THRESHOLD_DEG, 20);
+  assert.ok(PITCH_LEVEL_THRESHOLD_DEG > LEVEL_THRESHOLD_DEG, "pitch must be looser than roll");
+  assert.ok(PITCH_RELEASE_THRESHOLD_DEG > PITCH_LEVEL_THRESHOLD_DEG, "pitch needs its own hysteresis band");
+});
+
+test("a pitch that oscillates around the old boundary no longer flickers", () => {
+  /* Shooting from navel height parks pitch around 6-8 deg. Under one shared
+     threshold that straddled the boundary and the guide flipped on every
+     wobble; the wider pitch band has to absorb it. */
+  const gate = createLevelGate({ smoothing: 0 });
+  gate.reading({ roll: 1, pitch: 7, at: 0 });
+  assert.equal(gate.reading({ roll: 1, pitch: 7, at: LEVEL_DWELL_MS }).isLevel, true);
+
+  let flips = 0;
+  let previous = true;
+  for (let step = 1; step <= 60; step += 1) {
+    const pitch = 7 + (step % 2 ? 1.5 : -1.5);
+    const next = gate.reading({ roll: 1, pitch, at: LEVEL_DWELL_MS + step * 17 }).isLevel;
+    if (next !== previous) flips += 1;
+    previous = next;
+  }
+  assert.equal(flips, 0, "green must hold while pitch wobbles inside its band");
+});
+
+test("roll still loses green at its own tight threshold", () => {
+  const gate = createLevelGate({ smoothing: 0 });
+  gate.reading({ roll: 0, pitch: 10, at: 0 });
+  assert.equal(gate.reading({ roll: 0, pitch: 10, at: LEVEL_DWELL_MS }).isLevel, true, "10 deg of pitch is acceptable");
+  assert.equal(gate.reading({ roll: 9, pitch: 10, at: LEVEL_DWELL_MS + 20 }).isLevel, false, "9 deg of roll is not");
+});
+
+test("the coach names the axis that is actually out of range", () => {
+  // Comparing raw magnitudes would blame pitch here, because 12 > 7.
+  const outOfRoll = evaluateDeviceLevel({ roll: -7, pitch: 12 });
+  assert.equal(outOfRoll.isLevel, false);
+  assert.match(outOfRoll.message, /오른쪽/, "roll is the axis past its limit");
+
+  const outOfPitch = evaluateDeviceLevel({ roll: 2, pitch: 22 });
+  assert.equal(outOfPitch.code, "tilted_backward");
+});
+
+test("capture quality is judged on roll alone", () => {
+  /* Pitch only shifts perspective; roll tilts the horizon that the shoulder-line
+     angle is measured against. */
+  const tiltedPitch = evaluateDeviceLevel({ roll: 1, pitch: 25 });
+  assert.equal(tiltedPitch.isLevel, false, "25 deg of pitch is outside even the wide window");
+  assert.equal(tiltedPitch.rollLevel, true, "but the horizon is still level");
+
+  const tiltedRoll = evaluateDeviceLevel({ roll: 12, pitch: 1 });
+  assert.equal(tiltedRoll.rollLevel, false);
+
+  assert.equal(evaluateDeviceLevel({ status: SENSOR_STATUSES.unavailable }).rollLevel, false);
 });

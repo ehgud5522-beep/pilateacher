@@ -7340,7 +7340,9 @@ function PostureCaptureScreen({
       cameraPipelineLog("captured", { memberId: captureMemberId, assessmentId: captureAssessmentId, view: captureView, source: captureSource, width, height, bytes: blob.size });
       const measuredAt = new Date().toISOString();
       const geometryMetadata = createCaptureGeometryMetadata({ geometry, captureWidth: width, captureHeight: height, orientationDegrees: window.screen?.orientation?.angle || 0, previewMirrored: false, captureMirrored: false, measuredAt });
-      const motionMetadata = sensor.status === SENSOR_STATUSES.active ? { roll: sensor.roll, pitch: sensor.pitch, isLevel: sensor.isLevel, measuredAt } : null;
+      const motionMetadata = sensor.status === SENSOR_STATUSES.active
+        ? { roll: sensor.roll, pitch: sensor.pitch, isLevel: sensor.isLevel, rollLevel: sensor.rollLevel, measuredAt }
+        : null;
       const src = URL.createObjectURL(blob);
       await stopCamera("capture");
       setCameraStatus("confirming");
@@ -7451,7 +7453,7 @@ function PostureCaptureScreen({
     };
   }, [iosStableCaptureFallback]);
 
-  const guideColor = sensor.isLevel ? "#63D7A3" : sensor.status === SENSOR_STATUSES.active ? "#F2B84B" : "rgba(236,235,247,.88)";
+  const frameColor = sensor.isLevel ? "#63D7A3" : "#FF6B6B";
   const directionGuide = {
     front: "정면을 바라보고 양팔을 자연스럽게 내려 주세요.",
     leftSide: "왼쪽 어깨가 카메라를 향하도록 서 주세요.",
@@ -7482,13 +7484,19 @@ function PostureCaptureScreen({
           {pendingCapture?.src && <img src={pendingCapture.src} alt={`방금 촬영한 ${postureViewLabel(pendingCapture.view)} 사진`} className="absolute inset-0 h-full w-full object-contain" onError={() => setCameraError("사진을 불러오지 못했습니다. 다시 시도해 주세요.")} />}
           {!pendingCapture && !captureCompleteIdle && activePhoto?.src && cameraStatus !== "active" && <img src={activePhoto.src} alt={`${postureViewLabel(activeView)} 기존 촬영`} className="absolute inset-0 h-full w-full object-contain" onError={() => setCameraError("사진을 불러오지 못했습니다. 다시 시도해 주세요.")} />}
           {!pendingCapture && !captureCompleteIdle && (
-            <div className="pointer-events-none absolute inset-0" aria-hidden="true" style={{ color: guideColor }}>
-              <span className="absolute left-[8%] right-[8%] top-[15%] border-t-2 border-dashed" style={{ borderColor: "currentColor" }} />
-              <span className="absolute bottom-[15%] left-[8%] right-[8%] border-t-2 border-dashed" style={{ borderColor: "currentColor" }} />
-              <span className="absolute bottom-[15%] left-1/2 top-[15%] border-l border-dashed opacity-75" style={{ borderColor: "currentColor" }} />
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center" aria-hidden="true">
+              {/* One tall frame says "stand inside this" at a glance, and its
+                  colour is the whole state readout: red until the phone is
+                  level, green once it is. */}
+              <div className="relative" style={{
+                height: "75%", aspectRatio: "2 / 3.5", borderRadius: 14,
+                border: `2px dashed ${frameColor}`, transition: "border-color 180ms ease",
+              }}>
+                <span className="absolute inset-y-0 left-1/2 border-l border-dashed" style={{ borderColor: frameColor, opacity: 0.3, transition: "border-color 180ms ease" }} />
+              </div>
             </div>
           )}
-          {!pendingCapture && !captureCompleteIdle && <div className="pointer-events-none absolute inset-x-3 bottom-3 rounded-xl px-3 py-2 text-center" style={{ backgroundColor: "rgba(13,16,22,.72)", backdropFilter: "blur(8px)" }}><p className="text-xs font-bold" style={{ color: sensorTone }}>{sensor.message}</p><p className="mt-0.5 text-[10px] text-white/75">{directionGuide}</p></div>}
+          {!pendingCapture && !captureCompleteIdle && <div className="pointer-events-none absolute inset-x-3 bottom-3 rounded-xl px-3 py-2 text-center" style={{ backgroundColor: "rgba(13,16,22,.72)", backdropFilter: "blur(8px)" }}><p className="text-xs font-bold" style={{ color: sensorTone }}>{sensor.isLevel ? directionGuide : sensor.message}</p></div>}
 
           {(iosStableCaptureFallback || ["starting", "error", "paused"].includes(cameraStatus)) && !pendingCapture && !captureCompleteIdle && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#0D1016]/88 px-7 text-center">
@@ -7841,8 +7849,14 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
       const quality = {
         ...measuredQuality,
         tilt: metadata.motion ? {
-          source: "actual", state: metadata.motion.isLevel ? "good" : "review",
-          roll: metadata.motion.roll, pitch: metadata.motion.pitch, isLevel: metadata.motion.isLevel, measuredAt: metadata.motion.measuredAt,
+          /* Roll alone decides the flag. Pitch is allowed a much wider window
+             because shooting from navel height forces it, and it leaves the
+             horizon -- and the shoulder-line angle read off it -- level.
+             Records saved before rollLevel existed fall back to isLevel. */
+          source: "actual", state: (metadata.motion.rollLevel ?? metadata.motion.isLevel) ? "good" : "review",
+          roll: metadata.motion.roll, pitch: metadata.motion.pitch,
+          isLevel: metadata.motion.isLevel, rollLevel: metadata.motion.rollLevel ?? metadata.motion.isLevel,
+          measuredAt: metadata.motion.measuredAt,
         } : measuredQuality.tilt,
         previewGeometry: metadata.geometry || null,
       };

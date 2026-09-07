@@ -3451,10 +3451,18 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
         {editingInfo && <>
         <div>
           <p className="mb-1.5 text-xs font-bold" style={{ color: SUB }}>날짜</p>
-          <button type="button" onClick={() => setPicker({ type: "date" })} className="flex h-11 w-full items-center gap-2 px-3 text-left text-sm font-bold"
+          {/* 직접 만든 ±7일 목록은 그 범위 밖 날짜를 아예 고를 수 없었다. 기기의
+              달력을 그대로 쓰면 어느 날짜든 잡히고, 강사가 다른 앱에서 쓰던 것과
+              같은 화면이 열린다. */}
+          <label className="relative flex h-11 w-full items-center gap-2 px-3 text-left text-sm font-bold"
             style={{ borderRadius: 9, backgroundColor: CANVAS, border: `1px solid ${LINE}`, color: INK }}>
-            <CalendarDays size={15} style={{ color: BRAND }} />{ymd(f.date)} · {dow(f.date)}요일<ChevronDown size={14} className="ml-auto" style={{ color: SUB }} />
-          </button>
+            <CalendarDays size={15} style={{ color: BRAND }} />
+            <span className="min-w-0 flex-1 truncate">{ymd(f.date)} · {dow(f.date)}요일</span>
+            <input type="date" aria-label="날짜" value={f.date}
+              onChange={(event) => { const date = event.target.value; if (date) setF((current) => ({ ...current, date })); }}
+              className="absolute h-11 w-full opacity-0" style={{ left: 0 }} />
+            <ChevronDown size={14} style={{ color: SUB }} />
+          </label>
         </div>
         <div>
           <p className="mb-1.5 text-xs font-bold" style={{ color: SUB }}>시작 시간</p>
@@ -3644,9 +3652,6 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
         ) : null)}
       </div>
     </ScheduleBottomSheet>
-    {picker?.type === "date" && <ChoiceBottomSheet title="날짜 선택" subtitle="선택한 날짜로 일정이 등록됩니다" value={f.date} onClose={() => setPicker(null)}
-      options={Array.from({ length: 15 }, (_, index) => shift(f.date, index - 7)).map((date) => ({ value: date, label: `${ymd(date)} · ${dow(date)}요일`, description: date === todayISO() ? "오늘" : "" }))}
-      onSelect={(date) => setF((current) => ({ ...current, date }))} />}
     {picker?.type === "hour" && <ChoiceBottomSheet title="시 선택" value={hour} columns={2} onClose={() => setPicker(null)} options={Array.from({ length: 24 }, (_, value) => ({ value, label: `${value}시` }))} onSelect={(value) => setTime(value, minute)} />}
     {picker?.type === "minute" && <ChoiceBottomSheet title="분 선택" value={minute} columns={2} onClose={() => setPicker(null)} options={[0, 10, 20, 30, 40, 50].map((value) => ({ value, label: `${String(value).padStart(2, "0")}분` }))} onSelect={(value) => setTime(hour, value)} />}
     {picker?.type === "duration" && <ChoiceBottomSheet title="수업 길이" value={Number(f.dur)} columns={2} onClose={() => setPicker(null)} options={durationOptions.map((value) => ({ value, label: `${value}분` }))} onSelect={(value) => setF((current) => ({ ...current, dur: value }))} />}

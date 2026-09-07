@@ -72,6 +72,25 @@ export function resolveNativePhotoOutputReadiness({ platform = "", startResolved
    the first must call nothing, the second must keep retrying. Conflating them
    is what let a setPreviewSize get queued during a stop, to run after the
    native view was destroyed and take the process down with it. */
+/* The frame carries how far along the correction is, so the coach line can stay
+   a single instruction. Amber means one axis is already in range -- without it
+   an instructor who fixes roll first sees no change at all and assumes the
+   guidance is wrong. */
+export const LEVEL_TONES = Object.freeze({ red: "red", amber: "amber", green: "green" });
+export const LEVEL_TONE_COLORS = Object.freeze({
+  red: "#FF6B6B",
+  amber: "#F2B84B",
+  green: "#63D7A3",
+});
+
+export function resolveLevelTone({ isLevel = false, rollLevel = false, pitchLevel = false } = {}) {
+  if (isLevel) return LEVEL_TONES.green;
+  /* Both axes in range but not green yet means the dwell timer is still
+     running. That is the last moment before green, so it stays amber rather
+     than dropping back to red for 400ms. */
+  return rollLevel || pitchLevel ? LEVEL_TONES.amber : LEVEL_TONES.red;
+}
+
 export const PREVIEW_BOUNDS_STATES = Object.freeze({
   idle: "idle",
   pending: "pending",
@@ -373,6 +392,7 @@ export function evaluateDeviceLevel({
       pitch: Number.isFinite(Number(pitch)) ? Number(pitch) : null,
       isLevel: false,
       rollLevel: false,
+      pitchLevel: false,
       code: status,
       message: statusMessages[status] || statusMessages[SENSOR_STATUSES.error],
     });
@@ -389,11 +409,10 @@ export function evaluateDeviceLevel({
   /* Roll on its own. It is the axis that tilts the horizon, so it is what the
      capture quality flag is judged on; pitch only shifts perspective. */
   const rollLevel = Math.abs(normalizedRoll) <= rollLimit;
+  const pitchLevel = Math.abs(normalizedPitch) <= pitchLimit;
   // A hysteresis gate decides level across several readings and passes its
   // verdict in. Without one, a single reading inside the thresholds is enough.
-  const isLevel = typeof level === "boolean"
-    ? level
-    : rollLevel && Math.abs(normalizedPitch) <= pitchLimit;
+  const isLevel = typeof level === "boolean" ? level : rollLevel && pitchLevel;
   if (isLevel) {
     return Object.freeze({
       status,
@@ -401,12 +420,24 @@ export function evaluateDeviceLevel({
       pitch: normalizedPitch,
       isLevel: true,
       rollLevel,
+      pitchLevel,
       code: "level",
       message: "현재 자세로 촬영하기에 적합합니다.",
     });
   }
 
-  if ((Math.abs(normalizedRoll) - rollLimit) >= (Math.abs(normalizedPitch) - pitchLimit)) {
+  /* Pitch is coached first whenever it is out of range. It is set by how high
+     and at what angle the phone is held -- a large, deliberate adjustment --
+     while roll is a wrist tweak. Correcting roll first does nothing visible
+     while pitch is still out, which reads as the guidance being wrong. When
+     neither axis is out, the level flag came from the dwell timer, and the
+     older "furthest past its own limit" comparison decides the wording. */
+  const rollOut = !rollLevel;
+  const pitchOut = !pitchLevel;
+  const coachRoll = pitchOut
+    ? false
+    : rollOut || (Math.abs(normalizedRoll) - rollLimit) >= (Math.abs(normalizedPitch) - pitchLimit);
+  if (coachRoll) {
     const tiltsLeft = normalizedRoll < 0;
     return Object.freeze({
       status,
@@ -414,6 +445,7 @@ export function evaluateDeviceLevel({
       pitch: normalizedPitch,
       isLevel: false,
       rollLevel,
+      pitchLevel,
       code: tiltsLeft ? "tilted_left" : "tilted_right",
       message: tiltsLeft
         ? "휴대폰을 오른쪽으로 조금 기울여주세요."
@@ -427,6 +459,7 @@ export function evaluateDeviceLevel({
     pitch: normalizedPitch,
     isLevel: false,
     rollLevel,
+    pitchLevel,
     code: normalizedPitch < 0 ? "tilted_forward" : "tilted_backward",
     message: normalizedPitch < 0
       ? "휴대폰 상단을 몸 쪽으로 조금 기울여주세요."

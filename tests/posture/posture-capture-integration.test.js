@@ -65,7 +65,9 @@ test("posture capture render path uses a real rear preview with browser fallback
   assert.match(capture, /aspectRatio: "2 \/ 3\.5"/);
   assert.match(capture, /border: `2px dashed \$\{frameColor\}`/);
   assert.match(capture, /transition: "border-color 180ms ease"/);
-  assert.match(capture, /const frameColor = sensor\.isLevel \? "#63D7A3" : "#FF6B6B"/);
+  // The colour comes from the shared three-stage rule; level-coaching.test.js
+  // pins what each stage means.
+  assert.match(capture, /const frameColor = LEVEL_TONE_COLORS\[resolveLevelTone\(sensor\)\]/);
   assert.doesNotMatch(capture, /top-\[15%\] border-t-2/, "the old horizontal guides are gone");
   assert.doesNotMatch(capture, /left-\[7%\] top-\[8%\]/);
   assert.doesNotMatch(capture, /<svg\b/i);

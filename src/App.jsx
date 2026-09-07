@@ -125,8 +125,8 @@ import {
 } from "./features/onboarding/first-run.js";
 import {
   CAPTURE_TIMER_OPTIONS, READING_STALL_MS, SENSOR_STATUSES, base64ToBlob,
-  PREVIEW_BOUNDS_STATES, computePreviewGeometry, correctOrientationForScreen, createCaptureGeometryMetadata, createLevelGate,
-  resolvePreviewBoundsAction,
+  LEVEL_TONE_COLORS, PREVIEW_BOUNDS_STATES, computePreviewGeometry, correctOrientationForScreen,
+  createCaptureGeometryMetadata, createLevelGate, resolveLevelTone, resolvePreviewBoundsAction,
   evaluateDeviceLevel, normalizeCameraPermissionState, readCaptureTimer, resolveNativePhotoOutputReadiness,
   writeCaptureTimer,
 } from "./features/posture/posture-camera.js";
@@ -7478,7 +7478,8 @@ function PostureCaptureScreen({
     };
   }, [iosStableCaptureFallback]);
 
-  const frameColor = sensor.isLevel ? "#63D7A3" : "#FF6B6B";
+  // Red: both axes out. Amber: one already in range. Green: ready.
+  const frameColor = LEVEL_TONE_COLORS[resolveLevelTone(sensor)];
   const directionGuide = {
     front: "정면을 바라보고 양팔을 자연스럽게 내려 주세요.",
     leftSide: "왼쪽 어깨가 카메라를 향하도록 서 주세요.",

@@ -63,7 +63,7 @@ import { scrollRecordSectionIntoView } from "./features/ui/record-section-scroll
 import {
   POSTURE_STORAGE_KEYS, POSTURE_VIEW_DEFS, POSTURE_VIEW_KEYS,
   assessmentDisplayDate, assessmentMediaForView, commonPostureComparisonViews, compareAssessmentMetrics, completeAssessmentRecords, correctedPoseSource, countPosturePhotoRecords, normalizeAssessmentSets, normalizePostureView, postureAnalysisPlane,
-  advanceManualCorrection, manualTapTarget, postureAlignmentTransform, postureMetricDisplayValue, postureReferenceLines,
+  advanceManualCorrection, manualTapTarget, revertManualJoint, postureAlignmentTransform, postureMetricDisplayValue, postureReferenceLines,
   postureMilestoneTemplate, postureViewLabel, removeAssessmentDraftRecords, selectAutomaticComparison, selectComparisonAssessmentOptions,
   selectMemberBodyPhotoSurface, selectResumableAssessment,
 } from "./features/posture/posture-model.js";
@@ -6175,7 +6175,7 @@ function jointName(key, view) {
   return part ? `${key.endsWith("L") ? "왼" : "오른"}${part}` : key;
 }
 function manualHint(key, view) {
-  if (view !== "front") return `${PART_KO[key] || key}를 눌러주세요`;
+  if (view !== "front") return `${PART_KO[key] || key} 위치`;
   const part = PART_KO[key.slice(0, -1)] || key, isL = key.endsWith("L");
   return `회원 기준 ${isL ? "왼쪽" : "오른쪽"} ${part} — 화면에서는 ${isL ? "오른쪽" : "왼쪽"}입니다`;
 }
@@ -8290,12 +8290,22 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
     dragRef.current = null; setHot(null);
   };
   const undoPoint = () => {
-    if (!manual || manual.i === 0) return;
-    const key = manual.seq[manual.i - 1];
-    setPts((p) => { const q = { ...(p || {}) }; delete q[key]; return q; });
-    setManual((m) => ({ ...m, i: m.i - 1 }));
-    setPoseQuality((quality) => ({ ...quality, missing: quality.missing.includes(key) ? quality.missing : [...quality.missing, key] }));
-    setEditedJoints((items) => items.filter((item) => item !== key));
+    const next = revertManualJoint({
+      manual, points: pts, originalPoints: originalPts, quality: poseQuality,
+      editedJoints, confidenceMin: POSE_CONFIDENCE_MIN,
+    });
+    if (!next) return;
+    setPts(next.points);
+    setManual(next.manual);
+    setPoseQuality(next.quality);
+    setEditedJoints(next.editedJoints);
+    buzz(4);
+    /* 버튼은 "되돌리기" 하나로 두고, 실제로 무엇이 되돌아갔는지는 누른 뒤에
+       알린다. 되돌린 결과는 눌러 봐야 정해지는 값이라 버튼 위에 미리 적으면
+       강사가 그것을 예측해야 한다. */
+    onToast?.({ ok: true, msg: next.restored
+      ? `${jointName(next.key, poseView)}를 AI가 찾은 위치로 되돌렸습니다`
+      : `${jointName(next.key, poseView)}에 찍은 점을 지웠습니다` });
   };
   const download = () => shareCanvas(canvasRef.current, `${member?.name || "회원"}_변화기록_${todayISO()}.jpg`, "변화 기록", onToast);
   /* 분석 화면(뼈대·각도 포함)을 이미지로 내보낸다 */
@@ -8535,7 +8545,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
                           <span className="block text-xs" style={{ color: "rgba(255,255,255,.6)" }}>{manual.i + 1} / {manual.seq.length} · {pts?.[manual.seq[manual.i]] ? "점을 끌어서 미세 조정" : "찍은 뒤 끌어서 미세 조정"}</span>
                         </span>
                         {manual.i > 0 && (
-                          <button onClick={undoPoint} className="shrink-0 rounded-full px-2.5 py-1.5 text-xs font-bold text-white" style={{ backgroundColor: "rgba(255,255,255,.16)" }}>이전</button>
+                          <button onClick={undoPoint} className="shrink-0 rounded-full px-2.5 py-1.5 text-xs font-bold text-white" style={{ backgroundColor: "rgba(255,255,255,.16)" }}>되돌리기</button>
                         )}
                         <button onClick={() => setManual(null)} className="shrink-0 rounded-full px-2.5 py-1.5 text-xs font-bold" style={{ backgroundColor: "rgba(255,255,255,.16)", color: "rgba(255,255,255,.75)" }}>중단</button>
                       </div>

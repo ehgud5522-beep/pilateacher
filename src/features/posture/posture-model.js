@@ -443,6 +443,55 @@ export function compareAssessmentMetrics(beforeSet, afterSet, { view = null, lim
   })).filter(Boolean).slice(0, Math.max(0, Number(limit) || 0));
 }
 
+/* Put the joint the last step touched back the way it was found.
+
+   The button under the correction prompt used to delete the point outright
+   and step back. For a joint the instructor had just placed that is exactly
+   right -- before the placement there was nothing. For a joint the pose found
+   and the instructor then dragged, it destroyed the AI's own reading, so a
+   mis-drag had no way back and pressing "undo" made it worse.
+
+   The AI reading is kept: originalPts is cloned the moment the pose resolves.
+   So both cases are one concept -- return this joint to the state it was in
+   before the instructor touched it -- and only the starting state differs.
+
+   The confidence classification has to come back with the point: a restored
+   reading below the threshold was flagged low, and it is flagged low again. */
+export function revertManualJoint({ manual, points, originalPoints, quality, editedJoints, confidenceMin = 0.5 } = {}) {
+  if (!manual || !Array.isArray(manual.seq)) return null;
+  const index = Number(manual.i);
+  if (!Number.isInteger(index) || index <= 0 || index > manual.seq.length) return null;
+  const key = manual.seq[index - 1];
+  if (!key) return null;
+
+  const original = originalPoints && originalPoints[key] ? originalPoints[key] : null;
+  const nextPoints = { ...(points || {}) };
+  if (original) nextPoints[key] = { ...original };
+  else delete nextPoints[key];
+
+  const missing = new Set(Array.isArray(quality?.missing) ? quality.missing : []);
+  const low = new Set(Array.isArray(quality?.low) ? quality.low : []);
+  if (original) {
+    missing.delete(key);
+    if (Number(original.score ?? 1) < confidenceMin) low.add(key); else low.delete(key);
+  } else {
+    missing.add(key);
+    low.delete(key);
+  }
+
+  return {
+    key,
+    restored: Boolean(original),
+    points: nextPoints,
+    manual: { ...manual, i: index - 1 },
+    quality: { ...(quality || {}), missing: [...missing], low: [...low] },
+    // Nothing the instructor did to this joint survives, so the "edited" mark
+    // must not survive either -- it would be saved as a correction that is no
+    // longer there.
+    editedJoints: (Array.isArray(editedJoints) ? editedJoints : []).filter((item) => item !== key),
+  };
+}
+
 /* Which joint, if any, an empty-space tap is allowed to place.
 
    Tapping empty canvas used to teleport whichever joint the prompt was asking

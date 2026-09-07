@@ -63,7 +63,7 @@ import { scrollRecordSectionIntoView } from "./features/ui/record-section-scroll
 import {
   POSTURE_STORAGE_KEYS, POSTURE_VIEW_DEFS, POSTURE_VIEW_KEYS,
   assessmentDisplayDate, assessmentMediaForView, commonPostureComparisonViews, compareAssessmentMetrics, completeAssessmentRecords, correctedPoseSource, countPosturePhotoRecords, normalizeAssessmentSets, normalizePostureView, postureAnalysisPlane,
-  advanceManualCorrection, postureAlignmentTransform, postureMetricDisplayValue, postureReferenceLines,
+  advanceManualCorrection, manualTapTarget, postureAlignmentTransform, postureMetricDisplayValue, postureReferenceLines,
   postureMilestoneTemplate, postureViewLabel, removeAssessmentDraftRecords, selectAutomaticComparison, selectComparisonAssessmentOptions,
   selectMemberBodyPhotoSurface, selectResumableAssessment,
 } from "./features/posture/posture-model.js";
@@ -8242,8 +8242,11 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
       if (d < best) { best = d; near = k; }
     });
     if (near) { dragRef.current = near; setHot(near); buzz(8); e.currentTarget.setPointerCapture?.(e.pointerId); return; }
-    if (manual && manual.i < manual.seq.length) {
-      const key = manual.seq[manual.i];
+    /* 이미 찍혀 있는 관절은 끌어서만 옮긴다. 빈 곳을 탭했을 때 그 점이 손가락
+       밑으로 순간이동하던 것이 오조작의 원인이었다. 미검출 관절만 빈 곳 탭으로
+       지정할 수 있다. */
+    const key = manualTapTarget(manual, pts);
+    if (key) {
       setPts((p) => ({ ...(p || {}), [key]: { x: n.x, y: n.y, score: 1, source: manual.focused ? "ai_manual_corrected" : "manual" } }));
       setManual((m) => ({ ...m, i: m.i + 1 }));
       setPoseQuality((quality) => ({ missing: quality.missing.filter((item) => item !== key), low: quality.low.filter((item) => item !== key) }));
@@ -8529,7 +8532,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
                         </span>
                         <span className="min-w-0 flex-1">
                           <span className="block text-xs font-extrabold text-white">{manualHint(manual.seq[manual.i], poseView)}</span>
-                          <span className="block text-xs" style={{ color: "rgba(255,255,255,.6)" }}>{manual.i + 1} / {manual.seq.length} · 찍은 뒤 끌어서 미세 조정</span>
+                          <span className="block text-xs" style={{ color: "rgba(255,255,255,.6)" }}>{manual.i + 1} / {manual.seq.length} · {pts?.[manual.seq[manual.i]] ? "점을 끌어서 미세 조정" : "찍은 뒤 끌어서 미세 조정"}</span>
                         </span>
                         {manual.i > 0 && (
                           <button onClick={undoPoint} className="shrink-0 rounded-full px-2.5 py-1.5 text-xs font-bold text-white" style={{ backgroundColor: "rgba(255,255,255,.16)" }}>이전</button>

@@ -443,6 +443,23 @@ export function compareAssessmentMetrics(beforeSet, afterSet, { view = null, lim
   })).filter(Boolean).slice(0, Math.max(0, Number(limit) || 0));
 }
 
+/* Which joint, if any, an empty-space tap is allowed to place.
+
+   Tapping empty canvas used to teleport whichever joint the prompt was asking
+   for to the finger, so a stray touch threw an already-correct point across the
+   photo. A joint that exists is adjusted by dragging it and nothing else.
+
+   A joint the pose never found has no point to drag, so a tap is the only way
+   to give it one -- that is the single case this still allows. */
+export function manualTapTarget(manual, points) {
+  if (!manual || !Array.isArray(manual.seq)) return null;
+  const index = Number(manual.i);
+  if (!Number.isInteger(index) || index < 0 || index >= manual.seq.length) return null;
+  const key = manual.seq[index];
+  if (!key) return null;
+  return points && points[key] ? null : key;
+}
+
 /* Which joint the correction prompt should ask for next.
 
    The prompt only ever moved on when a point was placed on empty canvas. But

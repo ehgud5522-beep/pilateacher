@@ -63,7 +63,7 @@ import { scrollRecordSectionIntoView } from "./features/ui/record-section-scroll
 import {
   POSTURE_STORAGE_KEYS, POSTURE_VIEW_DEFS, POSTURE_VIEW_KEYS,
   assessmentDisplayDate, assessmentMediaForView, commonPostureComparisonViews, compareAssessmentMetrics, completeAssessmentRecords, correctedPoseSource, countPosturePhotoRecords, normalizeAssessmentSets, normalizePostureView, postureAnalysisPlane,
-  postureAlignmentTransform, postureReferenceLines,
+  postureAlignmentTransform, postureMetricDisplayValue, postureReferenceLines,
   postureMilestoneTemplate, postureViewLabel, removeAssessmentDraftRecords, selectAutomaticComparison, selectComparisonAssessmentOptions,
   selectMemberBodyPhotoSurface, selectResumableAssessment,
 } from "./features/posture/posture-model.js";
@@ -6212,7 +6212,10 @@ const CARD_JOINTS = {
   fha: ["ear"], trunk: ["sh", "hip"], kneeSide: ["knee"], align: ["sh", "hip", "knee"],
 };
 const CARD_SHORT = { shoulder: "어깨선", pelvis: "골반선", knee: "무릎선", head: "귀선", twist: "어깨·골반선", fha: "귀·어깨선", trunk: "몸통선", kneeSide: "무릎선(측면)", align: "전신선" };
-const memberMetricValue = (value, unit) => unit === "°" && Number.isFinite(Number(value)) ? String(Math.round(Number(value))) : String(value ?? "");
+const memberMetricValue = (value, unit) => {
+  const shown = postureMetricDisplayValue(value, unit);
+  return shown === null ? String(value ?? "") : String(shown);
+};
 
 async function loadImg(src) {
   return new Promise((res, rej) => { const i = new window.Image(); i.onload = () => res(i); i.onerror = rej; i.src = src; });

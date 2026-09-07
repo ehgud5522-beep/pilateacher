@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
+import { postureMetricDisplayValue } from "../../src/features/posture/posture-model.js";
+
 const appPath = new URL("../../src/App.jsx", import.meta.url);
 
 async function postureSources() {
@@ -42,7 +44,12 @@ test("posture workspace removes progress, favorite, and primary manual-pair cont
 test("comparison keeps integer degree presentation while the main result uses status text", async () => {
   const { source, maker, viewer, workspace } = await postureSources();
 
-  assert.match(source, /const memberMetricValue = \(value, unit\) => unit === "°"[\s\S]*Math\.round/);
+  // Degrees still present as whole numbers, but the rule now lives in
+  // postureMetricDisplayValue so the comparison delta is derived from the same
+  // rounding the row prints.
+  assert.equal(postureMetricDisplayValue(17.6, "°"), 18);
+  assert.equal(postureMetricDisplayValue(20.4, "°"), 20);
+  assert.match(source, /postureMetricDisplayValue\(value, unit\)/);
   assert.match(viewer, /memberMetricValue\(metric\.beforeValue, metric\.unit\)/);
   assert.match(viewer, /memberMetricValue\(metric\.afterValue, metric\.unit\)/);
   assert.match(workspace, /selectStoredPostureResultStates/);

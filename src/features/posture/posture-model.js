@@ -391,6 +391,29 @@ export function postureAlignmentTransform(beforePose, afterPose, { view = before
   };
 }
 
+/* Math.round breaks ties towards +Infinity, so it rounds 2.5 to 3 but -2.5 to
+   -2, which makes an improvement and a deterioration of the same size print
+   differently. Ties go away from zero here, so the two stay symmetric. */
+export function roundHalfAwayFromZero(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  const rounded = Math.sign(number) * Math.round(Math.abs(number));
+  return Object.is(rounded, -0) ? 0 : rounded;
+}
+
+/* The value as the screen shows it: angles print as whole degrees, so a
+   comparison delta has to be derived from this rather than from the stored
+   tenth-of-a-degree precision. Deriving it from the stored value is what let a
+   row read "20 -> 18, 차이 -3": 20.4 and 17.6 each round for display while
+   their exact difference, -2.8, rounded separately to -3. This is the one place
+   that decides the rule, so the delta and the two numbers beside it cannot
+   drift apart. */
+export function postureMetricDisplayValue(value, unit) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  return unit === "°" ? roundHalfAwayFromZero(number) : number;
+}
+
 export function compareAssessmentMetrics(beforeSet, afterSet, { view = null, limit = 8 } = {}) {
   if (!beforeSet || !afterSet) return [];
   const normalizedView = view ? normalizePostureView(view) : null;
@@ -403,7 +426,10 @@ export function compareAssessmentMetrics(beforeSet, afterSet, { view = null, lim
     const previous = beforeMetrics.get(`${normalizePostureView(pose.view)}:${metric.key}`);
     const beforeValue = Number(previous?.value), afterValue = Number(metric?.value);
     if (!Number.isFinite(beforeValue) || !Number.isFinite(afterValue)) return null;
-    const difference = Math.round((afterValue - beforeValue) * 10) / 10;
+    const unit = metric.unit || previous?.unit || "";
+    // The delta is the difference between the two numbers the row actually
+    // prints. beforeValue and afterValue keep their stored precision.
+    const difference = postureMetricDisplayValue(afterValue, unit) - postureMetricDisplayValue(beforeValue, unit);
     return {
       id: `${normalizePostureView(pose.view)}:${metric.key}`,
       key: metric.key,
@@ -411,8 +437,8 @@ export function compareAssessmentMetrics(beforeSet, afterSet, { view = null, lim
       label: metric.label,
       beforeValue,
       afterValue,
-      difference,
-      unit: metric.unit || previous?.unit || "",
+      difference: Object.is(difference, -0) ? 0 : difference,
+      unit,
     };
   })).filter(Boolean).slice(0, Math.max(0, Number(limit) || 0));
 }

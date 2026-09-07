@@ -3852,6 +3852,9 @@ function drawAnnotationMark(ctx, mark, width, height, options = {}) {
   ctx.restore();
 }
 
+/* 자 손잡이의 터치 반경. 그려진 원(15px·13px)보다 넉넉해야 손가락으로 잡힌다. */
+const RULER_HANDLE_HIT = 26;
+
 function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDraft, onToast, fresh, initialTool = "pen" }) {
   const wrapRef = useRef(null), canvasRef = useRef(null), imgRef = useRef(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
@@ -3878,7 +3881,6 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
   const rulerDrag = useRef(null);
   /* 두 손가락으로 자를 옮기고 돌린다 */
   const ptrs = useRef(new Map());
-  const gest = useRef(null);
   /* 자가 꺼져 있으면 두 손가락은 사진 확대·이동 */
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -3992,6 +3994,19 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
     return { C, rad, u: { x: Math.cos(rad), y: Math.sin(rad) }, n: { x: -Math.sin(rad), y: Math.cos(rad) }, L: Math.hypot(w, h) * 1.3 };
   };
   const toLocal = (g, P) => { const dx = P.x - g.C.x, dy = P.y - g.C.y; return { x: dx * g.u.x + dy * g.u.y, y: dx * g.n.x + dy * g.n.y }; };
+  /* 자를 잡는 곳은 자 위에 그려진 두 손잡이뿐이다.
+
+     예전에는 두 손가락을 자가 통째로 가져가 확대가 막혔고, 한 손가락도 자 몸통
+     아래 전체에서 자 이동으로 먹혀 펜이 닿지 않았다. 자는 화면에 떠 있는 보조
+     도구이지 모드가 아니므로, 잡는 면적을 실제 손잡이로 좁힌다. */
+  const rulerHandleAt = (g, P) => {
+    if (!g) return null;
+    const lp = toLocal(g, P);
+    const rx = Math.min(150, g.L / 2 - 30);
+    if (Math.hypot(lp.x - rx, lp.y - 26) < RULER_HANDLE_HIT) return "rot";
+    if (Math.hypot(lp.x, lp.y - 26) < RULER_HANDLE_HIT) return "move";
+    return null;
+  };
   /* 자를 켜면 '윗변'에서만 그릴 수 있다.
      실제 자처럼 — 자 몸통과 그 아래에는 아무것도 그어지지 않고,
      윗변 근처에 찍은 점은 자 선 위로 딱 붙는다. */
@@ -4101,29 +4116,17 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
   const down = (e) => {
     e.currentTarget.setPointerCapture?.(e.pointerId);
     ptrs.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    /* 손가락이 둘 — 자가 켜져 있으면 자 조절, 꺼져 있으면 사진 확대 */
-    if (ptrs.current.size === 2 && !ruler) {
+    /* 손가락이 둘이면 자가 켜져 있든 아니든 사진 확대·이동이다 */
+    if (ptrs.current.size === 2) {
       const [a, b] = [...ptrs.current.values()];
       memoTapRef.current = null;
       if (editRef.current) { replaceMarks(editRef.current.before); editRef.current = null; }
       setDraft(null);
+      rulerDrag.current = null;
       pinch.current = {
         d0: Math.max(1, Math.hypot(b.x - a.x, b.y - a.y)),
         mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2,
         z0: zoom, px: pan.x, py: pan.y,
-      };
-      return;
-    }
-    if (ptrs.current.size === 2 && ruler) {
-      const [p1, p2] = [...ptrs.current.values()];
-      memoTapRef.current = null;
-      if (editRef.current) { replaceMarks(editRef.current.before); editRef.current = null; }
-      setDraft(null);
-      rulerDrag.current = null;
-      gest.current = {
-        mx: (p1.x + p2.x) / 2, my: (p1.y + p2.y) / 2,
-        ang: (Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180) / Math.PI,
-        cx: ruler.cx, cy: ruler.cy, deg: ruler.deg,
       };
       return;
     }
@@ -4145,11 +4148,13 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
       const rct = imageFrame();
       const g = rulerGeom(rct.width, rct.height);
       const P = { x: raw.x * rct.width, y: raw.y * rct.height };
-      const lp = toLocal(g, P);
-      const rx = Math.min(150, g.L / 2 - 30);
-      if (Math.hypot(lp.x - rx, lp.y - 26) < 26) { rulerDrag.current = { mode: "rot", a0: Math.atan2(P.y - g.C.y, P.x - g.C.x) - g.rad }; return; }
-      /* 자 몸통과 그 아래에서는 절대 그어지지 않는다 — 누르면 자를 옮긴다 */
-      if (lp.y >= -1) { rulerDrag.current = { mode: "move", dx: P.x - g.C.x, dy: P.y - g.C.y }; return; }
+      const handle = rulerHandleAt(g, P);
+      if (handle === "rot") { rulerDrag.current = { mode: "rot", a0: Math.atan2(P.y - g.C.y, P.x - g.C.x) - g.rad }; return; }
+      if (handle === "move") { rulerDrag.current = { mode: "move", dx: P.x - g.C.x, dy: P.y - g.C.y }; return; }
+      /* 손잡이가 아니면 자를 잡지 않는다. 다만 실제 자처럼, 자 몸통과 그 아래에는
+         여전히 아무것도 그어지지 않는다 — 지금까지 move 가 가려서 이 규칙이
+         한 번도 드러나지 않았을 뿐이다. */
+      if (!rulerZone(raw).ok) return;
     }
     const editable = hitTestAnnotations(marks, raw, viewport, { tools: ["arrow", "text"], measureText: measureCanvasText, fontScale: hitFontScale, handleRadius: 22, bodyTolerance: 14 });
     if (editable) {
@@ -4195,7 +4200,7 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
       && Math.hypot(e.clientX - memoTapRef.current.startX, e.clientY - memoTapRef.current.startY) > 10) {
       memoTapRef.current.moved = true;
     }
-    if (pinch.current && ptrs.current.size >= 2 && !ruler) {
+    if (pinch.current && ptrs.current.size >= 2) {
       const el = canvasRef.current; if (!el) return;
       const [a, b] = [...ptrs.current.values()];
       const d = Math.max(1, Math.hypot(b.x - a.x, b.y - a.y));
@@ -4203,20 +4208,6 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
       setZoom(Math.min(5, Math.max(1, g.z0 * (d / g.d0))));
       const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
       setPan({ x: g.px + (mx - g.mx), y: g.py + (my - g.my) });
-      return;
-    }
-    if (gest.current && ptrs.current.size >= 2 && ruler) {
-      const el = canvasRef.current; if (!el) return;
-      const r = imageFrame();
-      const [p1, p2] = [...ptrs.current.values()];
-      const mx = (p1.x + p2.x) / 2, my = (p1.y + p2.y) / 2;
-      const ang = (Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180) / Math.PI;
-      const g = gest.current;
-      setRuler({
-        cx: Math.min(0.98, Math.max(0.02, g.cx + (mx - g.mx) / r.width)),
-        cy: Math.min(0.98, Math.max(0.02, g.cy + (my - g.my) / r.height)),
-        deg: g.deg + (ang - g.ang),
-      });
       return;
     }
     if (ptrs.current.size > 1) return;
@@ -4254,7 +4245,7 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
       if (e?.type !== "pointercancel" && !memoTap.moved) setMemoDraft({ point: memoTap.point, text: "" });
       return;
     }
-    if (ptrs.current.size < 2) { gest.current = null; pinch.current = null; }
+    if (ptrs.current.size < 2) pinch.current = null;
     if (zoom <= 1.02 && (pan.x !== 0 || pan.y !== 0)) setPan({ x: 0, y: 0 });
     if (editRef.current && editRef.current.pointerId === e?.pointerId) {
       const edit = editRef.current; editRef.current = null;
@@ -4265,7 +4256,7 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
       }
       return;
     }
-    if (ptrs.current.size >= 1 && gest.current === null && !draft) return;
+    if (ptrs.current.size >= 1 && !draft) return;
     if (rulerDrag.current) { rulerDrag.current = null; return; }
     if (!draft) return;
     const d = draft; setDraft(null);

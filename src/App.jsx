@@ -6139,6 +6139,9 @@ const MP_IDX = {
   hipL: 23, hipR: 24, kneeL: 25, kneeR: 26, ankL: 27, ankR: 28, footL: 31, footR: 32,
 };
 const POSE_CONFIDENCE_MIN = 0.5;
+// 겹쳐보기 확대 한계와, 원래 크기로 되돌리는 두드림 간격.
+const COMPARISON_MAX_ZOOM = 5;
+const COMPARISON_DOUBLE_TAP_MS = 280;
 const newAssessmentId = () => "asmt_" + Date.now().toString(36) + "_" + uid();
 const captureStateFor = (views) => Object.fromEntries((views || []).map((view) => [view.key || view, null]));
 const captureQualityFor = (image) => {
@@ -9520,6 +9523,11 @@ function AssessmentComparisonViewer({ beforeSet, afterSet, view, showGuides, mem
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [savingSide, setSavingSide] = useState(false);
   const drag = useRef(null);
+  /* 겹쳐보기에는 확대 제스처가 아예 없었다. 1×/1.5×/2× 버튼으로만 배율을 고를 수
+     있었고, 그마저 세 단계뿐이라 원하는 곳을 원하는 만큼 볼 수 없었다. */
+  const pointers = useRef(new Map());
+  const pinch = useRef(null);
+  const lastTap = useRef(0);
   const normalizedView = normalizePostureView(view);
   const beforePhoto = assessmentMediaForView(beforeSet, normalizedView);
   const afterPhoto = assessmentMediaForView(afterSet, normalizedView);
@@ -9543,15 +9551,49 @@ function AssessmentComparisonViewer({ beforeSet, afterSet, view, showGuides, mem
   useEffect(() => { setOpacity(50); resetView(); }, [beforeSet?.id, afterSet?.id, normalizedView, mode]);
   useEffect(() => { setAlignEnabled(true); }, [beforeSet?.id, afterSet?.id, normalizedView]);
   const onPointerDown = (event) => {
-    if (zoom <= 1 || mode === "side") return;
-    drag.current = { id: event.pointerId, x: event.clientX, y: event.clientY, px: pan.x, py: pan.y };
+    if (mode === "side") return;
+    pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
     event.currentTarget.setPointerCapture?.(event.pointerId);
+    if (pointers.current.size === 2) {
+      const [a, b] = [...pointers.current.values()];
+      drag.current = null;
+      pinch.current = {
+        d0: Math.max(1, Math.hypot(b.x - a.x, b.y - a.y)),
+        mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2,
+        z0: zoom, px: pan.x, py: pan.y,
+      };
+      return;
+    }
+    if (pointers.current.size > 1) return;
+    /* 두 번 두드리면 원래 크기로. 확대해 놓고 되돌릴 길이 없으면 갇힌다. */
+    const now = Date.now();
+    if (now - lastTap.current < COMPARISON_DOUBLE_TAP_MS) { lastTap.current = 0; resetView(); return; }
+    lastTap.current = now;
+    if (zoom <= 1) return;
+    drag.current = { id: event.pointerId, x: event.clientX, y: event.clientY, px: pan.x, py: pan.y };
   };
   const onPointerMove = (event) => {
+    if (pointers.current.has(event.pointerId)) pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (pinch.current && pointers.current.size >= 2) {
+      event.preventDefault?.();
+      const [a, b] = [...pointers.current.values()];
+      const distance = Math.max(1, Math.hypot(b.x - a.x, b.y - a.y));
+      const start = pinch.current;
+      setZoom(Math.min(COMPARISON_MAX_ZOOM, Math.max(1, start.z0 * (distance / start.d0))));
+      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+      setPan({ x: start.px + (mx - start.mx), y: start.py + (my - start.my) });
+      return;
+    }
     if (!drag.current || drag.current.id !== event.pointerId) return;
     setPan({ x: drag.current.px + event.clientX - drag.current.x, y: drag.current.py + event.clientY - drag.current.y });
   };
-  const stopPointer = () => { drag.current = null; };
+  const stopPointer = (event) => {
+    if (event?.pointerId != null) pointers.current.delete(event.pointerId);
+    if (pointers.current.size < 2) pinch.current = null;
+    drag.current = null;
+    // 손을 뗐을 때 배율이 1× 로 돌아왔다면 밀어 둔 위치도 함께 되돌린다.
+    if (zoom <= 1.02 && (pan.x !== 0 || pan.y !== 0)) setPan({ x: 0, y: 0 });
+  };
   const frameStyle = { aspectRatio, borderRadius: 14, backgroundColor: PHOTO, border: `1px solid ${LINE}` };
   const modes = [{ key: "side", label: "나란히" }, { key: "overlay", label: "겹쳐보기" }];
   return (
@@ -9561,7 +9603,7 @@ function AssessmentComparisonViewer({ beforeSet, afterSet, view, showGuides, mem
           {[{ photo: beforePhoto, pose: beforePose, label: "BEFORE", lineColor: INK2, backgroundColor: CARD, textColor: INK }, { photo: afterPhoto, pose: afterPose, label: "AFTER", lineColor: BRAND, backgroundColor: TINT, textColor: BRAND_D }].map((item) => <div key={item.label}><div className="relative overflow-hidden" style={{ ...frameStyle, border: `3px solid ${item.lineColor}` }}><AssessmentComparisonLayer photo={item.photo} pose={item.pose} label={item.label} color={item.lineColor} transform="none" showMarks={showGuides} showLines={showGuides} /></div><p className="mt-1 rounded-full py-1 text-center text-[10px] font-extrabold" style={{ backgroundColor: item.backgroundColor, color: item.textColor, border: `1px solid ${item.lineColor}` }}>{item.label}</p></div>)}
         </div>
       ) : (
-        <div onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={stopPointer} onPointerCancel={stopPointer} className="relative overflow-hidden" style={{ ...frameStyle, touchAction: zoom > 1 ? "none" : "pan-y" }}>
+        <div onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={stopPointer} onPointerCancel={stopPointer} className="relative overflow-hidden" style={{ ...frameStyle, touchAction: "none" }}>
           <AssessmentComparisonLayer photo={beforePhoto} pose={beforePose} label="Before" color={INK2} transform={commonTransform} showMarks={showGuides} showLines={false} />
           <AssessmentComparisonLayer photo={afterPhoto} pose={afterPose} label="After" color={BRAND} transform={afterTransform} opacity={opacity / 100} showMarks={showGuides} showLines={false} />
           <span className="pointer-events-none absolute left-2 top-2 rounded-full px-2 py-1 text-[9px] font-bold" style={{ backgroundColor: CARD, color: INK, border: `1px solid ${INK2}` }}>BEFORE</span><span className="pointer-events-none absolute right-2 top-2 rounded-full px-2 py-1 text-[9px] font-bold" style={{ backgroundColor: TINT, color: BRAND_D, border: `1px solid ${BRAND}` }}>AFTER</span>
@@ -9572,7 +9614,7 @@ function AssessmentComparisonViewer({ beforeSet, afterSet, view, showGuides, mem
       </div>
       {mode !== "side" && <div className="mt-2 flex items-center gap-2 rounded-xl px-3 py-2" style={{ backgroundColor: alignment.available ? GOOD_S : CANVAS }}><span className="min-w-0 flex-1"><span className="block text-xs font-extrabold" style={{ color: alignment.available ? GOOD : INK2 }}>신체 자동 정렬</span><span className="block text-[10px]" style={{ color: SUB }}>{alignment.available ? "신체 높이와 중심 위치를 Before에 맞춥니다" : "두 사진의 저장된 관절점이 부족합니다"}</span></span><button type="button" disabled={!alignment.available} aria-pressed={alignEnabled && alignment.available} onClick={() => setAlignEnabled((value) => !value)} className="h-9 min-w-14 rounded-full px-2 text-[10px] font-extrabold disabled:opacity-45" style={{ backgroundColor: alignEnabled && alignment.available ? GOOD : CARD, color: alignEnabled && alignment.available ? "#fff" : SUB, border: `1px solid ${alignment.available ? GOOD : LINE}` }}>{alignEnabled && alignment.available ? "ON" : "OFF"}</button></div>}
       {mode === "overlay" && <div className="mt-3 flex items-center gap-2"><span className="text-[10px] font-bold" style={{ color: SUB }}>After 투명도</span><input aria-label="After 투명도" type="range" min="0" max="100" value={opacity} onChange={(event) => setOpacity(Number(event.target.value))} className="min-w-0 flex-1" style={{ accentColor: BRAND }} /><span className="w-8 text-right text-[10px] font-bold tabular-nums" style={{ color: BRAND_D }}>{opacity}%</span></div>}
-      {mode !== "side" && <div className="mt-2 flex items-center gap-2"><span className="text-xs font-bold" style={{ color: SUB }}>동시 확대</span>{[1, 1.5, 2].map((value) => <button type="button" key={value} onClick={() => { setZoom(value); if (value === 1) setPan({ x: 0, y: 0 }); }} className="h-9 min-w-11 rounded-full text-xs font-bold" style={{ backgroundColor: zoom === value ? TINT : CANVAS, color: zoom === value ? BRAND_D : SUB }}>{value}×</button>)}</div>}
+      {mode !== "side" && <p className="mt-2 text-[10px] font-bold" style={{ color: SUB }}>{zoom > 1.02 ? `${zoom.toFixed(1)}× · 두 번 두드리면 원래 크기` : "두 손가락으로 확대·이동할 수 있습니다"}</p>}
       {mode === "side" && <button type="button" disabled={savingSide || !beforePhoto?.src || !afterPhoto?.src} onClick={async () => { setSavingSide(true); await shareBeforeAfter(beforePhoto, afterPhoto, memberName, onToast, true); setSavingSide(false); }} className="mt-3 flex h-11 w-full items-center justify-center gap-2 text-xs font-extrabold text-white disabled:opacity-45" style={{ borderRadius: 10, backgroundColor: BRAND }}>{savingSide ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}나란히 이미지 저장</button>}
       {sameDayComparison && <p className="mt-2 text-center text-[11px] font-bold" style={{ color: SUB }}>같은 날 촬영</p>}
       {!!metrics.length && <div className="mt-3" style={{ padding: 11, borderRadius: 11, backgroundColor: CANVAS }}>

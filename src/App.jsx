@@ -6753,7 +6753,7 @@ const PREVIEW_BOUNDS_RETRY_DELAY_MS = 120;
 
 function PostureCaptureScreen({
   member, assessmentId, roleLabel, captureViews, currentCapture, capturePhotos, draftSaved, busy, busyKind = null,
-  captureImportError = "", albumPending = false, onSelectView, onAcceptCapture, onOpenAlbum, onDeleteCapture, onSaveDraft, onContinue, onExit,
+  captureImportError = "", albumPending = false, albumReturn = false, onAlbumReturnUsed, onSelectView, onAcceptCapture, onOpenAlbum, onDeleteCapture, onSaveDraft, onContinue, onExit,
 }) {
   const isNative = Capacitor.isNativePlatform();
   const iosStableCaptureFallback = Capacitor.getPlatform() === "ios" && !IOS_NATIVE_CAPTURE_ENABLED;
@@ -7361,11 +7361,18 @@ function PostureCaptureScreen({
   }, [activeView, assessmentId, busy, captureWithSystemCamera, iosStableCaptureFallback, member?.id, nativePreviewAvailable, startMotion, stopCamera, syncPreviewBounds]);
 
   useEffect(() => {
-    if (iosStableCaptureFallback || capturesComplete || pendingCapture || cameraStatus !== "idle") return;
+    if (iosStableCaptureFallback || pendingCapture || cameraStatus !== "idle") return;
     // Restarting the preview on top of an open photo picker loses its result.
     if (albumPending) return;
+    /* 촬영을 마친 뒤에는 프리뷰를 켜 두지 않는다. 유일한 예외가 앨범을 취소하고
+       돌아온 직후이고, 그것도 한 번뿐이다. */
+    if (capturesComplete && !albumReturn) return;
+    /* 권한은 시작을 시도하는 이 자리에서 소진한다. 시작이 실패해도 소진되므로
+       재시작이 반복해서 걸릴 수 없고, 촬영이 끝나기 전에 취소하고 돌아온
+       경우에도 여기서 함께 비워져 나중까지 남지 않는다. */
+    if (albumReturn) onAlbumReturnUsed?.();
     void startCamera();
-  }, [albumPending, cameraStatus, capturesComplete, iosStableCaptureFallback, pendingCapture, startCamera]);
+  }, [albumPending, albumReturn, cameraStatus, capturesComplete, iosStableCaptureFallback, onAlbumReturnUsed, pendingCapture, startCamera]);
 
   const captureBrowserFrame = async () => {
     const video = videoRef.current;
@@ -7691,6 +7698,18 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
      selection was dropped. This holds the camera off until the picker is done. */
   const albumPending = useRef(false);
   const [albumHold, setAlbumHold] = useState(false);
+  /* 앨범을 취소하고 돌아왔을 때 프리뷰를 한 번 되살릴 권한.
+
+     촬영을 다 마치면 자동 재시작이 카메라를 붙잡지 않는다 -- 끝난 뒤에 프리뷰를
+     켜 둘 이유가 없기 때문이다. 그런데 다 찍은 뒤 한 방향만 다시 찍으려고 앨범을
+     열었다가 취소하면, 그 규칙에 걸려 카메라가 돌아오지 않고 완료 화면에 남았다.
+
+     사진을 실제로 고른 경우에는 주지 않는다. 고른 사진을 반영한 뒤에는 다음
+     방향으로 가거나 촬영을 마치는 것이 맞고, 거기서 프리뷰가 켜지면 방해다. */
+  const [albumReturn, setAlbumReturn] = useState(false);
+  /* 촬영 화면의 자동 재시작 effect 가 의존성으로 받는다. 렌더마다 새로 만들면
+     그 effect 가 매 렌더 다시 돌아 startCamera 를 반복해서 두드린다. */
+  const consumeAlbumReturn = useCallback(() => setAlbumReturn(false), []);
   const albumReleaseTimer = useRef(null);
   const captureSource = useRef("system_picker");
   const allSaved = useMemo(
@@ -7928,6 +7947,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
     if (!albumPending.current) return;
     albumPending.current = false;
     setAlbumHold(false);
+    setAlbumReturn(reason !== "change_with_file");
     cameraPipelineLog("album_picker_released", {
       memberId: analysisMemberId.current, assessmentId: assessmentId.current,
       source: "system_photo_picker", state: "released", reason,
@@ -7955,6 +7975,8 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
     captureSource.current = "system_photo_picker";
     albumPending.current = true;
     setAlbumHold(true);
+    // 새 앨범 왕복이 시작되면 지난 왕복의 권한은 무효다.
+    setAlbumReturn(false);
     cameraPipelineLog("album_picker_opened", {
       memberId: analysisMemberId.current, assessmentId: assessmentId.current, view: targetView,
       source: "system_photo_picker", state: "opened",
@@ -8491,7 +8513,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
           )}
           {analysisMethod && !analysisStarted && <PostureCaptureScreen
             member={member} assessmentId={assessmentId.current} roleLabel={roleLabel} captureViews={captureViews} currentCapture={currentCapture}
-            capturePhotos={capturePhotos} draftSaved={draftSaved} busy={busy} busyKind={busyKind} captureImportError={captureImportError} albumPending={albumHold} onSelectView={(nextView) => { setCaptureImportError(""); setCaptureTarget(nextView); }}
+            capturePhotos={capturePhotos} draftSaved={draftSaved} busy={busy} busyKind={busyKind} captureImportError={captureImportError} albumPending={albumHold} albumReturn={albumReturn} onAlbumReturnUsed={consumeAlbumReturn} onSelectView={(nextView) => { setCaptureImportError(""); setCaptureTarget(nextView); }}
             onAcceptCapture={(blob, metadata) => acceptCaptureBlob(blob, { ...metadata, preserveResolution: true })}
             onOpenAlbum={openCapture} onDeleteCapture={deleteCurrentCapture} onSaveDraft={saveCaptureDraft}
             onContinue={() => analysisMethod === "draw" ? beginDrawing(captureViews.find(({ key }) => !drawnViews[key])?.key || "front") : beginCapturedAnalysis(captureViews.find(({ key }) => !analyzedViews[key])?.key || "front")}

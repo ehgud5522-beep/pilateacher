@@ -16,9 +16,12 @@ test("the camera cannot restart while the photo picker is open", async () => {
   /* Opening the picker backgrounds the app, which stops the camera and leaves
      cameraStatus "idle" -- the auto-start condition. Restarting the preview on
      top of the picker is what dropped the first selection. */
-  assert.match(source, /if \(iosStableCaptureFallback \|\| capturesComplete \|\| pendingCapture \|\| cameraStatus !== "idle"\) return;\s*\r?\n\s*\/\/[^\r\n]*\r?\n\s*if \(albumPending\) return;/);
-  // The guard has to be a dependency, or the effect never re-runs when it lifts.
-  assert.match(source, /\}, \[albumPending, cameraStatus, capturesComplete, iosStableCaptureFallback, pendingCapture, startCamera\]\);/);
+  assert.match(source, /if \(iosStableCaptureFallback \|\| pendingCapture \|\| cameraStatus !== "idle"\) return;\s*\r?\n\s*\/\/[^\r\n]*\r?\n\s*if \(albumPending\) return;/);
+  /* The guard has to be a dependency, or the effect never re-runs when it
+     lifts. capturesComplete moved below this line -- it is now weighed against
+     the one-shot album return -- but the picker guard still comes first and
+     still returns outright. */
+  assert.match(source, /\}, \[albumPending, albumReturn, cameraStatus, capturesComplete, iosStableCaptureFallback, onAlbumReturnUsed, pendingCapture, startCamera\]\);/);
   assert.match(source, /albumPending=\{albumHold\}/, "the hold must reach the capture screen");
 });
 

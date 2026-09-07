@@ -16,7 +16,8 @@ const transferLabel = ({ albumPending = false, busyKind = null, cameraStatus = "
   albumPending ? "앨범에서 돌아오는 중"
     : busyKind === "album" ? "사진 불러오는 중"
       : cameraStatus === "capturing" ? "사진 저장 중"
-        : null;
+        : busyKind === "draft" ? "저장 중"
+          : null;
 
 /* ------------------ the two paths say different things ------------------ */
 
@@ -38,10 +39,14 @@ test("neither path can borrow the other's wording", () => {
   assert.notEqual(transferLabel({ albumPending: true }), transferLabel({ busyKind: "album" }));
 });
 
-test("the draft save is not mistaken for an album import", () => {
-  /* saveCaptureDraft raises the same busy flag. Labelling it "사진 불러오는 중"
-     would tell the instructor something that is not happening. */
-  assert.equal(transferLabel({ busyKind: "draft", cameraStatus: "idle" }), null);
+test("the draft save has a word of its own", () => {
+  /* saveCaptureDraft raises the same busy flag as the import. Labelling it
+     "사진 불러오는 중" would tell the instructor something that is not
+     happening; leaving it silent repeats the defect on a third path. */
+  assert.equal(transferLabel({ busyKind: "draft", cameraStatus: "idle" }), "저장 중");
+  assert.equal(transferLabel({ busyKind: "draft", cameraStatus: "active" }), "저장 중", "retrying a draft happens with the camera still running");
+  assert.notEqual(transferLabel({ busyKind: "draft" }), transferLabel({ busyKind: "album" }));
+  assert.notEqual(transferLabel({ busyKind: "draft" }), transferLabel({ cameraStatus: "capturing" }));
 });
 
 test("saving a confirmed photo is not mistaken for an album import", () => {
@@ -86,9 +91,9 @@ test("the photo is staged before the overlay lifts", async () => {
 
 /* ------------------------------ the wiring ------------------------------ */
 
-test("the screen derives the label from the three states", async () => {
+test("the screen derives the label from the four states", async () => {
   const screen = await captureScreen();
-  assert.match(screen, /const transferLabel = albumPending \? "앨범에서 돌아오는 중"\s*\r?\n\s*: busyKind === "album" \? "사진 불러오는 중"\s*\r?\n\s*: cameraStatus === "capturing" \? "사진 저장 중"\s*\r?\n\s*: null;/);
+  assert.match(screen, /const transferLabel = albumPending \? "앨범에서 돌아오는 중"\s*\r?\n\s*: busyKind === "album" \? "사진 불러오는 중"\s*\r?\n\s*: cameraStatus === "capturing" \? "사진 저장 중"\s*\r?\n\s*: busyKind === "draft" \? "저장 중"\s*\r?\n\s*: null;/);
   assert.match(screen, /draftSaved, busy, busyKind = null,/, "the kind has to reach the screen");
 });
 
@@ -107,8 +112,20 @@ test("the transfer overlay reuses the camera overlay, not a new one", async () =
   /* One block, one spinner. A second loading surface would drift from this one
      the first time either is touched. */
   assert.equal((screen.match(/absolute inset-0 flex flex-col items-center justify-center gap-3 bg-\[#0D1016\]\/88/g) || []).length, 1);
-  assert.match(screen, /\{\(transferLabel \|\| iosStableCaptureFallback \|\| \["starting", "error", "paused"\]\.includes\(cameraStatus\)\) && !pendingCapture && !captureCompleteIdle && \(/);
+  assert.match(screen, /\{\(transferLabel \|\| iosStableCaptureFallback \|\| \["starting", "error", "paused"\]\.includes\(cameraStatus\)\) && !pendingCapture && \(transferLabel \|\| !captureCompleteIdle\) && \(/);
   assert.match(screen, /\{transferLabel \|\| cameraStatus === "starting" \? <Loader2 size=\{30\} className="animate-spin" \/>/);
+});
+
+test("a running job is not hidden by the completion panel", async () => {
+  const screen = await captureScreen();
+  /* Importing the last photo, and the draft save behind "다음 분석 단계", both
+     happen once capturesComplete is already true. Gated on !captureCompleteIdle
+     alone, those two waits would pass in silence -- the same defect, one screen
+     further along. */
+  assert.match(screen, /&& \(transferLabel \|\| !captureCompleteIdle\) &&/);
+  // The completion panel itself is untouched and still wins when nothing runs.
+  assert.match(screen, /\{captureCompleteIdle && <div className="absolute inset-0[^"]*" *>?/);
+  assert.match(screen, /촬영이 완료되었습니다/);
 });
 
 test("a transfer offers no button to press", async () => {

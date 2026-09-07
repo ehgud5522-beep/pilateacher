@@ -108,7 +108,7 @@ import {
   selectLessonSheetBriefing, selectMemberDetailStatus, selectMemberHistoryRows, selectMemberLessonCounts, selectMemberLessonSessions, selectPendingLessonSessions, selectUnresolvedLessonRows,
 } from "./features/lesson-record/member-detail-selectors.js";
 import LessonHistorySessionRow from "./features/lesson-record/LessonHistorySessionRow.jsx";
-import { deactivateMemberRecord, deleteMemberData, visibleMembers } from "./features/members/member-lifecycle.js";
+import { deactivateMemberRecord, deleteMemberData, inactiveMembers, reactivateMemberRecord, visibleMembers } from "./features/members/member-lifecycle.js";
 import { trackLessonRecordUsage } from "./features/lesson-record/usage-telemetry.js";
 import {
   lessonRecordPresentation, markLessonRecordGuideUsed, shouldShowLessonRecordGuide,
@@ -4621,7 +4621,11 @@ function ReferenceMemberList({ members, schedule, settings, onSelect, onAdd, onD
   const [filter, setFilter] = useState("all");
   const [sort, setSort] = useState("name");
   const [registerOpen, setRegisterOpen] = useState(false);
-  const realMembers = visibleMembers(members).filter((m) => !isDraft(m));
+  const nonDraftMembers = members.filter((m) => !isDraft(m));
+  /* Inactive members are their own view rather than an extra row in the normal
+     list, so the everyday list stays what it was. Without this they were
+     reachable from nowhere at all. */
+  const realMembers = filter === "inactive" ? inactiveMembers(nonDraftMembers) : visibleMembers(nonDraftMembers);
   const sampleMembers = realMembers.filter((member) => member?.isSample === true);
   const actualMembers = realMembers.filter((member) => member?.isSample !== true);
   useEffect(() => {
@@ -4649,10 +4653,10 @@ function ReferenceMemberList({ members, schedule, settings, onSelect, onAdd, onD
     });
   const filters = [
     { k: "all", l: "전체" }, { k: "private", l: "개인" }, { k: "duet", l: "듀엣" },
-    { k: "hold", l: "홀딩" }, { k: "renew", l: "이용권 임박" },
+    { k: "hold", l: "홀딩" }, { k: "renew", l: "이용권 임박" }, { k: "inactive", l: "비활성" },
   ];
-  const countOf = (k) => realMembers.filter((m) => {
-    if (k === "all") return true;
+  const countOf = (k) => (k === "inactive" ? inactiveMembers(nonDraftMembers) : visibleMembers(nonDraftMembers)).filter((m) => {
+    if (k === "all" || k === "inactive") return true;
     if (k === "private") return isActive(m) && !m.duetWith;
     if (k === "duet") return isActive(m) && !!m.duetWith;
     if (k === "hold") return isHold(m);
@@ -4759,7 +4763,7 @@ function MemberRegisterSheet({ members, onOpenExisting, onClose, onCreate }) {
   );
 }
 
-function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSettlement = true, onBack, onPatch, onSaveNote, onSchedule, onOpenLesson, onAssess, onToast, onDelete, onDeactivate }) {
+function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSettlement = true, onBack, onPatch, onSaveNote, onSchedule, onOpenLesson, onAssess, onToast, onDelete, onDeactivate, onReactivate }) {
   const [sheet, setSheet] = useState(null);
   const [edit, setEdit] = useState({});
   const [memo, setMemo] = useState("");
@@ -4980,6 +4984,7 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
             {holdHistory.slice(0, 4).map((h) => <div key={h.id} className="flex items-center gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}`, backgroundColor: CANVAS }}><span style={{ padding: "2px 6px", borderRadius: 5, color: INK2, fontSize: 10, fontWeight: 600 }}>홀딩</span><span className="min-w-0 flex-1 truncate" style={{ fontSize: 11, color: INK2 }}>{ymd(h.startDate)} ~ {ymd(h.releasedAt || h.endDate)}{h.extendDays ? ` · 만료 +${h.extendDays}일` : ""}</span></div>)}
             {(member.instructorHistory || []).slice(0, 3).map((entry) => <div key={entry.id || entry.date} className="flex gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}` }}><span style={{ fontSize: 10, color: SUB }}>담당 변경</span><span className="min-w-0 flex-1 truncate" style={{ fontSize: 11, color: INK2 }}>{ymd(entry.date)} · {entry.before || "미지정"} → {entry.after || "미지정"}</span></div>)}
             {isHold(member) && <div className="mt-2 flex items-start gap-2" style={{ padding: "9px 10px", borderRadius: 8, backgroundColor: CANVAS }}><AlertCircle size={14} className="mt-0.5 shrink-0" style={{ color: SUB }} /><p style={{ fontSize: 11, lineHeight: 1.5, color: INK2 }}>{ymd(member.holdFrom)} ~ {ymd(member.holdUntil)}{member.holdReason ? ` · ${member.holdReason}` : ""}</p></div>}
+            {isInactive(member) && <button type="button" onClick={async () => { const saved = await onReactivate?.(member.id); if (saved !== false) onBack?.(); }} className="mt-2 h-11 w-full rounded-lg text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>활성으로 되돌리기</button>}
             <div className="mt-2 flex gap-2"><button type="button" onClick={openEdit} style={{ flex: 1, height: 42, borderRadius: 8, border: `1px solid ${LINE}`, color: INK2, fontSize: 12, fontWeight: 600 }}>정보 수정</button>{isHold(member) ? <button type="button" onClick={() => { if (!releaseArmed) { setReleaseArmed(true); return; } const releasedAt = todayISO(); onPatch({ status: "active", holdFrom: "", holdUntil: "", holdReason: "", holdHistory: [{ id: uid(), startDate: member.holdFrom, endDate: member.holdUntil, releasedAt, reason: member.holdReason, extendDays: num(member.holdExtendDays), createdAt: releasedAt }, ...holdHistory] }); setReleaseArmed(false); }} style={{ flex: 1.35, height: 42, borderRadius: 8, border: `1px solid ${releaseArmed ? BRAND : LINE}`, backgroundColor: releaseArmed ? TINT : CARD, color: BRAND_D, fontSize: 12, fontWeight: 600 }}>{releaseArmed ? "한 번 더 눌러 홀딩 해제" : "홀딩 해제"}</button> : <button type="button" onClick={() => { setHold({ start: todayISO(), end: shift(todayISO(), 14), reason: "", extend: true }); setSheet("hold"); }} style={{ flex: 1, height: 42, borderRadius: 8, border: `1px solid ${LINE}`, color: BRAND_D, fontSize: 12, fontWeight: 600 }}>홀딩 설정</button>}</div>
           </Section>
             </div>
@@ -15325,6 +15330,16 @@ export default function App() {
     setToast({ ok: true, msg: `작성 중이던 회원 ${ids.size}명을 정리했습니다.` });
   };
 
+  const reactivateMember = async (id) => {
+    const target = db.members.find((item) => item.id === id);
+    if (!target) return false;
+    const restored = reactivateMemberRecord(target);
+    const nextDb = { ...db, members: db.members.map((item) => item.id === id ? restored : item) };
+    const stored = await saveDb(nextDb, { entityType: "client", entityId: id, operation: "update", payload: restored });
+    if (stored === false) return false;
+    setToast({ ok: true, msg: `${target.name || "회원"}님을 다시 활성으로 전환했습니다.` });
+    return true;
+  };
   const deactivateMember = async (id) => {
     const target = db.members.find((item) => item.id === id);
     if (!target) return false;
@@ -16028,7 +16043,7 @@ export default function App() {
                 <ReferenceMemberDetail key={member.id} member={member} schedule={db.schedule} photos={photos[member.id]} settings={db.settings}
                   canViewSettlement={!account?.role || ["owner", "manager", "admin", "director"].includes(String(account.role).toLowerCase())} onBack={() => setMobileView("list")}
                   onPatch={(change) => patch(member.id, change)} onSaveNote={(type, body, voiceMeta, noteOptions) => saveScheduleComment(member.id, type, null, body, voiceMeta, noteOptions)}
-                  onSchedule={() => { setScheduleMemberId(member.id); setTab("schedule"); }} onOpenLesson={(lessonId) => { setScheduleOpenLessonId(lessonId); setTab("schedule"); }} onAssess={(entry = {}) => { setAnalysisRecordId(entry.poseId || null); setAnalysisAssessmentId(entry.assessmentId || null); setAnalysisEntryMode(entry.mode || "home"); setAnalysisComparisonEntry(entry.beforeAssessmentId && entry.afterAssessmentId ? { beforeAssessmentId: entry.beforeAssessmentId, afterAssessmentId: entry.afterAssessmentId, compareView: entry.compareView || "front" } : null); setAnalysisMemberId(member.id); setTab("analysis"); }} onToast={setToast} onDelete={removeMember} onDeactivate={deactivateMember} />
+                  onSchedule={() => { setScheduleMemberId(member.id); setTab("schedule"); }} onOpenLesson={(lessonId) => { setScheduleOpenLessonId(lessonId); setTab("schedule"); }} onAssess={(entry = {}) => { setAnalysisRecordId(entry.poseId || null); setAnalysisAssessmentId(entry.assessmentId || null); setAnalysisEntryMode(entry.mode || "home"); setAnalysisComparisonEntry(entry.beforeAssessmentId && entry.afterAssessmentId ? { beforeAssessmentId: entry.beforeAssessmentId, afterAssessmentId: entry.afterAssessmentId, compareView: entry.compareView || "front" } : null); setAnalysisMemberId(member.id); setTab("analysis"); }} onToast={setToast} onDelete={removeMember} onDeactivate={deactivateMember} onReactivate={reactivateMember} />
               </div>}
             </div>}
             {tab === "analysis" && <ReferenceAnalysisTab members={db.members} photos={photos} selectedId={analysisMemberId} selectedPoseId={analysisRecordId}

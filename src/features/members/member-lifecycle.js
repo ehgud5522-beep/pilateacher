@@ -15,8 +15,34 @@ const occurrenceTime = (lesson) => {
   return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
 };
 
+/* status carries two different things: the membership state and the inactive
+   flag. Deactivating therefore overwrites the membership state, so it is parked
+   here first -- otherwise reactivating an ended member would quietly promote
+   them back to active. */
+export const MEMBERSHIP_STATUSES = Object.freeze(["active", "hold", "ended"]);
+
+const membershipStatusOf = (value) => (MEMBERSHIP_STATUSES.includes(String(value || "")) ? String(value) : "active");
+
 export function deactivateMemberRecord(member, now = new Date().toISOString()) {
-  return { ...member, status: "inactive", inactiveAt: now };
+  return {
+    ...member,
+    statusBeforeInactive: membershipStatusOf(member?.status),
+    status: "inactive",
+    inactiveAt: now,
+  };
+}
+
+export function reactivateMemberRecord(member) {
+  return {
+    ...member,
+    status: membershipStatusOf(member?.statusBeforeInactive),
+    statusBeforeInactive: "",
+    inactiveAt: "",
+  };
+}
+
+export function inactiveMembers(members = []) {
+  return (members || []).filter((member) => String(member?.status || "active") === "inactive");
 }
 
 export function deleteMemberData(db, memberId, now = Date.now()) {

@@ -32,7 +32,7 @@ test("legacy AI interpretation and prescription fields are not read by posture r
   const source = await readFile(resolve(root, "src/App.jsx"), "utf8");
   const workspace = source.slice(source.indexOf("function AssessmentWorkspace("), source.indexOf("function ReferenceAnalysisTab("));
   assert.doesNotMatch(workspace, /recommendedExercises|memberResultCard|teacherEditedOutput|AI 관찰 내용|추천 운동|주의할 점|좋은 점/);
-  assert.match(workspace, /validPostureMetrics/);
+  assert.match(workspace, /selectStoredPostureResultStates/);
   assert.match(workspace, /강사 메모/);
 });
 

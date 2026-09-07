@@ -83,7 +83,8 @@ test("save failure keeps editor state and manual results omit AI-only cards", as
   const canvasEnd = source.indexOf("function MemberList(", canvasStart);
   const canvas = source.slice(canvasStart, canvasEnd);
   const workspaceStart = source.indexOf("function AssessmentWorkspace(");
-  const workspace = source.slice(workspaceStart);
+  const workspaceEnd = source.indexOf("function ReferenceAnalysisTab(", workspaceStart);
+  const workspace = source.slice(workspaceStart, workspaceEnd);
 
   assert.match(canvas, /if \(stored === false\) throw/);
   assert.match(canvas, /표시를 저장하지 못했습니다\. 현재 편집 내용은 유지됩니다/);
@@ -95,7 +96,7 @@ test("save failure keeps editor state and manual results omit AI-only cards", as
   assert.match(workspace, /const selectedIsManualResult = \["draw", "manual"\]/);
   assert.match(workspace, /selectedIsManualResult \? "사진 기록" : "변화 기록"/);
   assert.match(workspace, /!selectedIsManualResult && selected\?\.status === "completed"/);
-  assert.match(workspace, /!selectedIsManualResult && <button type="button" onClick=\{\(\) => openReportForSet\(selected\)\}/);
+  assert.doesNotMatch(workspace, /openReportForSet|결과 리포트 카드|<ResultCardMaker/);
   assert.match(workspace, />변화 비교<\/button>/);
   assert.match(workspace, /screen === "history"/);
 });

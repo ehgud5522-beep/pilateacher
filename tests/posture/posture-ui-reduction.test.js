@@ -39,15 +39,14 @@ test("posture workspace removes progress, favorite, and primary manual-pair cont
   assert.match(maker, /비교 사진 바꾸기/);
 });
 
-test("member-facing result UI uses integer degree presentation and fixed design-token colors", async () => {
+test("comparison keeps integer degree presentation while the main result uses status text", async () => {
   const { source, maker, viewer, workspace } = await postureSources();
 
   assert.match(source, /const memberMetricValue = \(value, unit\) => unit === "°"[\s\S]*Math\.round/);
   assert.match(viewer, /memberMetricValue\(metric\.beforeValue, metric\.unit\)/);
   assert.match(viewer, /memberMetricValue\(metric\.afterValue, metric\.unit\)/);
-  assert.match(workspace, /memberMetricValue\(metric\.value, metric\.unit\)/);
-  assert.match(workspace, /memberMetricValue\(change\.beforeValue, change\.unit\)/);
-  assert.match(workspace, /memberMetricValue\(change\.afterValue, change\.unit\)/);
+  assert.match(workspace, /selectStoredPostureResultStates/);
+  assert.doesNotMatch(workspace, /memberMetricValue\(metric\.value, metric\.unit\)/);
   assert.doesNotMatch(workspace, /\{metric\.value\}\{metric\.unit\}/);
   assert.doesNotMatch(workspace, /\{change\.beforeValue\}\{change\.unit\}/);
   assert.doesNotMatch(maker, /개선되었습니다|정렬 개선/);
@@ -101,7 +100,7 @@ test("completed capture returns to history and comparison actions only render fo
   assert.doesNotMatch(savedHandler, /setScreen\("result"\)/);
   assert.doesNotMatch(workspace, /에프터 촬영 시작<\/button>/);
   assert.match(workspace, /completed && comparablePair\.after && <button/);
-  assert.match(workspace, /comparisonPairFor\(selected\)\.after && <button/);
+  assert.match(workspace, /comparisonPairFor\(selected\)\.after && !selectedIsManualResult && <button/);
   assert.doesNotMatch(workspace, /disabled=\{!completed \|\| !comparablePair\.after\}/);
 });
 

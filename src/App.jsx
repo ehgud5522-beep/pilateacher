@@ -68,6 +68,7 @@ import {
   selectMemberBodyPhotoSurface, selectResumableAssessment,
 } from "./features/posture/posture-model.js";
 import { validatePostureMeasurement, validPostureMetrics } from "./features/posture/measurement-validity.js";
+import { selectPostureResultStates, selectStoredPostureResultStates } from "./features/posture/result-presentation.js";
 import {
   POSTURE_PERSISTENCE_EVENTS, POSTURE_PERSISTENCE_FAILURES,
   appendPosturePersistenceDiagnostic, appendPosturePersistenceFailure,
@@ -7230,6 +7231,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
   const [drawingView, setDrawingView] = useState(null);
   const [correctionDrawingView, setCorrectionDrawingView] = useState(null);
   const [correctionPicker, setCorrectionPicker] = useState(false);
+  const [correctionMode, setCorrectionMode] = useState(false);
   const analysisMemberId = useRef(member?.id || null);
   const assessmentId = useRef(initialAssessmentId || resumeAssessmentId || newAssessmentId());
   const [poseQuality, setPoseQuality] = useState({ missing: [], low: [] });
@@ -7237,7 +7239,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
   const [mirror, setMirror] = useState(false);
   const [floorFix, setFloorFix] = useState(false);
   const [showSkel, setShowSkel] = useState(true);
-  const [showNum, setShowNum] = useState(true);
+  const showNum = false;
   const [manual, setManual] = useState(null);
   const [choice, setChoice] = useState(false);  /* 사진 직후: AI / 직접 이지선다 */
   /* 관절을 정확히 찍으려면 확대가 필요하다 — 두 손가락으로 자유롭게 */
@@ -7308,6 +7310,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
     setDrawnViews({});
     setPoseQuality({ missing: [], low: [] });
     setEditedJoints([]);
+    setCorrectionMode(false);
     setOriginalPts(null);
     onStageChange?.("capture");
     deviceLog("assessment_started", { memberId: member?.id, assessmentId: assessmentId.current, source: method });
@@ -7377,6 +7380,11 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
     if (poseView === "side" && !P.nose) P.nose = { x: (P.ear?.x ?? 0.5) + faceDir * 0.05, y: P.ear?.y ?? 0.2, score: 1 };
     return analyzePose(P, { view: poseView, W: img.w, H: img.h, floorFix });
   }, [pts, img, poseView, mirror, floorFix, faceDir]);
+  const resultStates = useMemo(() => selectPostureResultStates({
+    metrics: res?.items || [],
+    invalidMeasurements: res?.invalidMeasurements || [],
+    points: pts || {},
+  }), [res, pts]);
 
   const draw = useCallback(() => {
     const c = canvasRef.current, im = imgRef.current;
@@ -7610,6 +7618,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
     setView(vv); setPts(base);
     setPoseQuality({ missing, low: [] });
     setEditedJoints([]);
+    setCorrectionMode(true);
     setManual({ seq: missing.length ? missing : required, i: 0 });
     deviceLog("pose_manual_correction_started", { memberId: analysisMemberId.current, assessmentId: assessmentId.current, view: vv, source: existing ? "ai_missing" : "manual" });
   };
@@ -7621,6 +7630,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
         : target === "spine" ? (side ? ["ear", "sh", "hip"] : ["shL", "shR", "hipL", "hipR"])
           : [];
     setCorrectionPicker(false);
+    setCorrectionMode(true);
     if (!keys.length) {
       setCorrectionDrawingView(view);
       return;
@@ -7649,6 +7659,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
     setView(nextView);
     setPts(null);
     setManual(null);
+    setCorrectionMode(false);
     setChoice(false);
     imgRef.current = captured.element;
     setImg({ src: captured.src, w: captured.w, h: captured.h });
@@ -7768,6 +7779,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
       return;
     }
     if (pz.current.size > 1) return;
+    if (!correctionMode && !manual) return;
     const n = toNorm(e);
     let near = null, best = 0.055;
     Object.keys(pts || {}).forEach((k) => {
@@ -7890,7 +7902,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
     if (res.invalidMeasurements?.length) deviceLog("pose_measurements_rejected", { memberId: analysisMemberId.current, assessmentId: assessmentId.current, view, source, count: res.invalidMeasurements.length, reasons: res.invalidMeasurements.map((item) => `${item.key}:${item.reason}`) });
     deviceLog("pose_saved", { memberId: analysisMemberId.current, assessmentId: assessmentId.current, view, storage: "indexedDB", source, count: res.items.length });
     setAnalyzedViews(nextAnalyzed);
-    setPts(null); setOriginalPts(null); setManual(null); setChoice(false); setZoom(1); setPan({ x: 0, y: 0 }); setPoseQuality({ missing: [], low: [] }); setEditedJoints([]);
+    setPts(null); setOriginalPts(null); setManual(null); setChoice(false); setZoom(1); setPan({ x: 0, y: 0 }); setPoseQuality({ missing: [], low: [] }); setEditedJoints([]); setCorrectionMode(false);
     onToast?.({ ok: true, msg: `${roleLabel || "분석"}을 저장했습니다.` });
     const nextView = captureViews.find(({ key }) => !nextAnalyzed[key])?.key;
     if (nextView) {
@@ -8000,30 +8012,17 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
               <p className="mt-2 text-[10px]" style={{ color: SUB }}>사진과 초안은 이미 기기에 저장되어 있습니다.</p>
             </section>
           )}
-          {analysisStarted && (
-            <div className="flex flex-wrap items-center gap-2 rounded-2xl px-3 py-2.5" style={{ background: GRAD_SOFT }}>
-              <span className="text-xs font-extrabold" style={{ color: PRIMARY }}>{postureViewLabel(view)} 분석</span>
-              {engine === "loading" && <><Loader2 size={13} className="animate-spin" style={{ color: PRIMARY }} /><Sub>AI 관절 인식 모델을 불러오는 중…</Sub></>}
-              {engine === "ready" && <><Sparkles size={13} style={{ color: PRIMARY }} /><span className="text-xs font-bold" style={{ color: PRIMARY }}>AI 자동 인식 사용 가능</span></>}
-              {engine === "manual" && <><AlertTriangle size={13} style={{ color: WARN }} /><span className="text-xs font-bold" style={{ color: WARN }}>수동 지정 모드로 계산합니다</span></>}
-              {img && !manual && <button onClick={() => startManual(view)} className="ml-auto rounded-xl px-3 py-1.5 text-xs font-bold" style={{ backgroundColor: CANVAS, color: PRIMARY }}>관절 직접 찍기</button>}
-              {img && analysisMethod === "ai" && engine === "ready" && (
-                <button onClick={() => beginCapturedAnalysis(view)} className="rounded-xl px-3 py-1.5 text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>AI로 다시 인식</button>
-              )}
-              {img && <button onClick={() => { setAnalysisStarted(false); setImg(null); setPts(null); setManual(null); setCaptureTarget(view); onStageChange?.("capture"); }} className="rounded-xl px-3 py-1.5 text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>{postureViewLabel(view)} 재촬영</button>}
-            </div>
-          )}
           {img && (
             <>
-              <div className="flex items-center gap-2">
+              {(correctionMode || manual) && <div className="flex items-center gap-2">
                 <Sub className="min-w-0 flex-1">두 손가락으로 벌리면 확대 · 오므리면 축소 · 확대한 채로 밀어서 이동</Sub>
                 {zoom > 1.02 && (
                   <button onClick={resetZoom} className="shrink-0 rounded-lg px-2.5 py-1 text-xs font-extrabold" style={{ backgroundColor: TINT, color: PRIMARY }}>
                     {zoom.toFixed(1)}× · 원래대로
                   </button>
                 )}
-              </div>
-              <div className="relative overflow-hidden rounded-2xl bg-photo" style={{ touchAction: "none" }}>
+              </div>}
+              <div aria-label="변화 기록 결과 사진" className={`relative overflow-hidden bg-photo ${res ? "-mx-3" : "rounded-2xl"}`} style={{ touchAction: "none", borderRadius: res ? 12 : undefined }}>
                 <canvas ref={canvasRef} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}
                   className="block w-full touch-none"
                   style={{ height: "auto", transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin: "center center" }} />
@@ -8071,20 +8070,20 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
                     </div>
                   </>
                 )}
-                {pts && Object.keys(pts).length > 0 && !manual && (
+                {correctionMode && pts && Object.keys(pts).length > 0 && !manual && (
                   <span className="pointer-events-none absolute right-3 top-3 flex items-center gap-1 rounded-full px-2.5 py-1.5 text-xs font-bold text-white"
                     style={{ backgroundColor: "rgba(17,17,31,.55)", backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)" }}>
                     <Move size={11} /> 점을 끌어 보정
                   </span>
                 )}
               </div>
-              {(poseQuality.missing.length > 0 || poseQuality.low.length > 0) && (
+              {(correctionMode || manual) && (poseQuality.missing.length > 0 || poseQuality.low.length > 0) && (
                 <div className="rounded-xl px-3 py-2 text-xs" style={{ backgroundColor: WARN_S, color: WARN }}>
                   {poseQuality.missing.length > 0 && <p className="font-bold">미검출 관절 {poseQuality.missing.length}개 · 직접 지정 전에는 저장할 수 없습니다.</p>}
                   {poseQuality.low.length > 0 && <p className="font-bold">신뢰도 낮음 {poseQuality.low.map((key) => jointName(key, poseView)).join(" · ")} · 노란 점을 확인해 주세요.</p>}
                 </div>
               )}
-              <div className="flex flex-wrap items-center gap-1.5">
+              {(correctionMode || manual) && <div className="flex flex-wrap items-center gap-1.5">
                 <div className="flex gap-1 rounded-full p-1" style={{ backgroundColor: CANVAS }}>
                   {captureViews.map((v) => (
                     <button key={v.key} onClick={() => beginCapturedAnalysis(v.key)} className="rounded-full px-3 py-1.5 text-xs font-bold"
@@ -8103,41 +8102,21 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
                   <button onClick={() => setFaceDir((d) => -d)} className="rounded-full px-3 py-1.5 text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>얼굴 방향 {faceDir > 0 ? "→" : "←"}</button>
                 )}
                 <button onClick={() => setShowSkel((s) => !s)} className="rounded-full px-3 py-1.5 text-xs font-bold" style={{ backgroundColor: showSkel ? TINT : CANVAS, color: showSkel ? PRIMARY : SUB }}>뼈대</button>
-                <button onClick={() => setShowNum((s) => !s)} className="rounded-full px-3 py-1.5 text-xs font-bold" style={{ backgroundColor: showNum ? TINT : CANVAS, color: showNum ? PRIMARY : SUB }}>수치</button>
-                <button onClick={download} className="ml-auto flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-bold" style={{ backgroundColor: CANVAS, color: INK }}><Download size={12} /> 공유</button>
-              </div>
-              <Sub>관절을 끌면 확대경이 뜨고, 손을 떼는 즉시 각도가 다시 계산됩니다.</Sub>
+              </div>}
             </>
           )}
-          {res && res.items.length > 0 && (
+          {res && (res.items.length > 0 || res.invalidMeasurements?.length > 0) && (
             <>
-              <div className="space-y-2">
-                {res.items.map((i) => (
-                    <div key={i.key} className="rounded-2xl p-3" style={{ backgroundColor: CANVAS }}>
-                      <div className="flex items-center gap-2">
-                        <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: MEASUREMENT_COLOR }} />
-                        <span className="min-w-0 flex-1 truncate text-sm font-extrabold" style={{ color: INK }}>{i.label}</span>
-                        <span className="text-base font-extrabold tabular-nums" style={{ color: MEASUREMENT_COLOR }}>{i.value}{i.unit}</span>
-                      </div>
-                    </div>
-                ))}
-              </div>
-              {res.notes.map((n, k) => (
-                <div key={k} className="flex gap-2 rounded-2xl px-3 py-2.5" style={{ backgroundColor: WARN_S }}>
-                  <AlertTriangle size={13} className="mt-0.5 shrink-0" style={{ color: WARN }} />
-                  <p className="text-xs leading-relaxed" style={{ color: INK2 }}>{n}</p>
-                </div>
-              ))}
-              <div className="rounded-2xl p-4" style={{ background: GRAD_SOFT }}>
-                <p className="text-xs font-extrabold" style={{ color: PRIMARY }}>측정값 확인</p>
-                <p className="mt-2 text-sm leading-relaxed" style={{ color: INK2 }}>관절 좌표에서 계산한 값입니다. 강사가 관절 위치와 측정값을 확인한 뒤 저장해야 확정됩니다.</p>
-                <div className="mt-3 grid grid-cols-[0.78fr_1.22fr] gap-2">
-                  <button type="button" onClick={() => setCorrectionPicker(true)} className="flex h-12 items-center justify-center gap-1.5 text-sm font-bold" style={{ borderRadius: 12, backgroundColor: CARD, border: `1px solid ${LINE}`, color: INK }}><Pencil size={14} />수정하기</button>
+              {!!resultStates.length && <div aria-label="핵심 상태" className="grid grid-cols-2 gap-2">
+                {resultStates.map((item) => <div key={item.key} className="min-w-0 rounded-xl p-3" style={{ backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: SUB }}>{item.label}</p><p className="mt-1 text-sm font-extrabold" style={{ color: INK }}>{item.status}</p></div>)}
+              </div>}
+              <div className="sticky bottom-0 -mx-1 rounded-2xl p-2" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
+                <div className="grid grid-cols-[0.78fr_1.22fr] gap-2">
+                  <button type="button" onClick={() => { if (correctionMode) { setCorrectionMode(false); setManual(null); setCorrectionPicker(false); } else setCorrectionPicker(true); }} className="flex h-12 items-center justify-center gap-1.5 text-sm font-bold" style={{ borderRadius: 12, backgroundColor: CANVAS, border: `1px solid ${LINE}`, color: INK }}><Pencil size={14} />{correctionMode ? "수정 완료" : "수정하기"}</button>
                   <button onClick={save} disabled={poseQuality.missing.length > 0 || !res?.items?.length} className="flex h-12 items-center justify-center gap-1.5 text-sm font-extrabold text-white disabled:opacity-40" style={{ borderRadius: 12, backgroundColor: BRAND }}>
                     <Check size={14} /> 결과 저장
                   </button>
                 </div>
-                <p className="mt-2 text-center text-[10px]" style={{ color: SUB }}>수정 없이 저장하거나, 틀린 부위만 빠르게 보정할 수 있습니다.</p>
               </div>
             </>
           )}
@@ -9249,7 +9228,7 @@ function LegacyAssessmentWorkspace({ member, photos, settings, initialSavedId, o
 }
 
 function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = null, diagnosticPhotosBucketExists = false, initialSavedId, initialAssessmentId = null, initialMode = "home", initialBeforeAssessmentId = null, initialAfterAssessmentId = null, initialCompareView = "front", onSavePose, onUpdatePose, onDeletePose, onSaveCaptureDraft, onDeleteCaptureDraft, onDiscardAssessmentDraft, onCompleteAssessment, onSaveMarks, onSaveAssessmentRole, onToggleAssessmentFavorite, onToast, onSaved }) {
-  const [screen, setScreen] = useState(initialSavedId ? "result" : initialMode === "report" ? "report" : ["history", "resume"].includes(initialMode) ? "history" : "home");
+  const [screen, setScreen] = useState(initialSavedId || initialMode === "report" ? "result" : ["history", "resume"].includes(initialMode) ? "history" : "home");
   const [workflow, setWorkflow] = useState(() => createPostureWorkflowState());
   const [scope, setScope] = useState("full_body");
   const [selectedViews, setSelectedViews] = useState(() => new Set(POSTURE_VIEW_KEYS));
@@ -9299,8 +9278,6 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
   }, [diagnosticAccountId, diagnosticPhotosBucketExists, initialAssessmentId, initialSavedId, member?.id, member?.name, photos, sets]);
   const resumableAssessment = useMemo(() => selectResumableAssessment(sets, { memberId: member?.id }), [sets, member?.id]);
   const completeSets = useMemo(() => sets.filter((set) => set.status === "completed"), [sets]);
-  const completedPoses = useMemo(() => completeSets.flatMap((set) => set.poses || []), [completeSets]);
-  const completeFullSets = useMemo(() => completeSets.filter((set) => set.scope === "full_body"), [completeSets]);
   const latestCompletedScope = completeSets[0]?.scope || "full_body";
   const automaticComparison = useMemo(() => selectAutomaticComparison(sets, { scope: latestCompletedScope }), [sets, latestCompletedScope]);
   const beforeSet = completeSets.find((set) => set.id === beforeSetId) || automaticComparison.before;
@@ -9320,10 +9297,7 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
   const nextCaptureLabel = completeSets.length ? "에프터 촬영 시작" : "비포 촬영 시작";
   const selectedDate = selected?.completedAt || selected?.at || "";
   const resultPoses = selected?.poses || [];
-  const resultMetrics = resultPoses.flatMap((pose) => validPostureMetrics(pose).map((metric) => ({ ...metric, view: pose.view })));
-  const displayMetrics = resultMetrics.slice(0, 6);
-  const memoForSet = (set) => (set?.poses || []).map((pose) => pose.comment || pose.teacherMemo || "").find(Boolean) || "";
-  const teacherMemo = memoForSet(selected);
+  const displayStates = resultPoses.flatMap(selectStoredPostureResultStates).filter((item, index, rows) => rows.findIndex((candidate) => candidate.key === item.key) === index).slice(0, 4);
   const methodLabel = (method) => method === "draw" ? "강사 직접 기록" : method === "manual" ? "직접 포인트" : "AI 변화 분석";
   const roleLabelOf = (role) => role === "before" ? "비포" : role === "after" ? "에프터" : "미분류";
   const setDate = (set) => assessmentDisplayDate(set);
@@ -9468,11 +9442,6 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
     setSelectedSetId(targetSet?.id || pair.after.id);
     setScreen("compare");
   };
-  const openReportForSet = (targetSet) => {
-    if (!targetSet || targetSet.status !== "completed") return;
-    if (targetSet) setSelectedSetId(targetSet.id);
-    setScreen("report");
-  };
   const saveSelectedRole = async (role) => {
     setPendingRole(role);
     if (screen !== "result" || !selected?.id) return;
@@ -9492,18 +9461,6 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
       setCompareView(commonView);
     }
   }, [beforeSet?.id, afterSet?.id, compareView]);
-  const reportPair = useMemo(() => {
-    if (!selected || selected.status !== "completed" || selected.scope !== "full_body") return { before: null, after: selected || null };
-    if (beforeSet && afterSet && beforeSet.id !== afterSet.id && selected.id === afterSet.id && comparableViewsFor(beforeSet, afterSet).length) {
-      return { before: beforeSet, after: afterSet };
-    }
-    const ordered = [...completeFullSets].sort((a, b) => String(setDate(a)).localeCompare(String(setDate(b))));
-    const targetIndex = ordered.findIndex((set) => set.id === selected.id);
-    return targetIndex > 0 ? { before: ordered[0], after: selected } : { before: null, after: selected };
-  }, [selected, completeFullSets, beforeSet?.id, afterSet?.id]);
-  const reportView = useMemo(() => comparableViewsFor(reportPair.before, reportPair.after).includes(compareView) ? compareView : comparableViewsFor(reportPair.before, reportPair.after)[0] || null, [reportPair.before, reportPair.after, compareView]);
-  const metricChanges = useMemo(() => compareAssessmentMetrics(reportPair.before, reportPair.after, { view: reportView, limit: 4 }), [reportPair.before, reportPair.after, reportView]);
-  const entrySummary = lastCompleted?.poses.flatMap((pose) => validPostureMetrics(pose)).slice(0, 2) || [];
   const excludedComparisonId = setPicker === "before" ? afterSet?.id : setPicker === "after" ? beforeSet?.id : null;
   const setOptions = selectComparisonAssessmentOptions(completeSets, { excludeId: excludedComparisonId }).map((set) => ({ value: set.id, label: formatMemberLessonDate(setDate(set)), description: `${set.scope === "partial" ? "부위별" : "전신"} · ${methodLabel(set.method)} · ${set.selectedViews.filter((view) => POSTURE_VIEW_KEYS.includes(view)).map(postureViewLabel).join("/")}` }));
   useEffect(() => {
@@ -9533,7 +9490,7 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
       {screen === "home" && <section style={{ padding: 16, borderRadius: 18, backgroundColor: CARD, border: `1px solid ${LINE}` }}>
         <div className="flex items-start gap-3"><span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: TINT, color: BRAND_D }}><Activity size={19} /></span><span className="min-w-0 flex-1"><span className="block text-lg font-extrabold" style={{ color: INK }}>{member?.name} 회원</span><span className="mt-1 block text-xs" style={{ color: SUB }}>{lastCompleted ? `최근 기록 ${ymd(setDate(lastCompleted).slice(0, 10))}` : "아직 완료된 변화 기록이 없습니다"}</span></span></div>
         <div className="mt-4 flex items-center gap-2" style={{ padding: 10, borderRadius: 11, backgroundColor: GOOD_S }}><Check size={15} style={{ color: GOOD }} /><span className="min-w-0 flex-1 text-xs font-bold" style={{ color: GOOD }}>{lastCompleted ? "최근 변화 기록 저장 완료" : "촬영 전"}</span><span className="text-[10px] font-bold" style={{ color: SUB }}>기기 우선 저장</span></div>
-        {lastCompleted && <div className="mt-2" style={{ padding: 12, borderRadius: 12, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>{hasCompletedComparison ? "비포·에프터 비교 준비 완료" : "비포 저장 완료 · 에프터 촬영이 필요합니다"}</p>{!!entrySummary.length && <p className="mt-1 text-xs leading-relaxed" style={{ color: SUB }}>{entrySummary.map((metric) => `${metric.label} ${memberMetricValue(metric.value, metric.unit)}${metric.unit}`).join(" · ")}</p>}</div>}
+        {lastCompleted && <div className="mt-2" style={{ padding: 12, borderRadius: 12, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>{hasCompletedComparison ? "비포·에프터 비교 준비 완료" : "비포 저장 완료 · 에프터 촬영이 필요합니다"}</p></div>}
         <button type="button" onClick={requestStartNew} className="mt-5 flex h-13 min-h-[52px] w-full items-center justify-center gap-2 text-sm font-extrabold text-white" style={{ borderRadius: 13, backgroundColor: BRAND }}><Camera size={17} />{nextCaptureLabel}</button>
         {hasCompletedComparison && <button type="button" onClick={() => openComparisonFromSet(automaticComparison.after)} className="mt-2 flex h-12 w-full items-center justify-center gap-2 text-sm font-extrabold" style={{ borderRadius: 12, backgroundColor: TINT, color: BRAND_D }}><ArrowUpDown size={16} />비포·에프터 변화 비교</button>}
         <button type="button" onClick={() => setScreen("history")} className="mt-2 flex h-12 w-full items-center justify-center gap-2 text-sm font-bold" style={{ borderRadius: 12, backgroundColor: CARD, border: `1px solid ${LINE}`, color: INK }}><Activity size={16} />이전 분석 보기</button>
@@ -9570,7 +9527,7 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
           const comparablePair = comparisonPairFor(set);
           return <article key={set.id} style={{ padding: 12, borderRadius: 13, backgroundColor: CANVAS, border: `1px solid ${LINE}` }}>
             <div className="flex gap-3">{representative?.src ? <img src={representative.src} alt="대표 촬영" className="h-20 w-14 shrink-0 object-cover" style={{ borderRadius: 8, backgroundColor: PHOTO }} /> : <span className="flex h-20 w-14 shrink-0 items-center justify-center" style={{ borderRadius: 8, backgroundColor: CARD, color: FAINT }}><Camera size={17} /></span>}<div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-1.5"><span className="text-sm font-extrabold" style={{ color: INK }}>{setDate(set) ? ymd(setDate(set).slice(0, 10)) : "날짜 미확인"}{timeOf(representative?.createdAt || representative?.at || setDate(set)) ? ` · ${timeOf(representative?.createdAt || representative?.at || setDate(set))}` : ""}</span><span style={{ padding: "2px 6px", borderRadius: 6, backgroundColor: completed ? GOOD_S : set.status === "failed" ? BAD_S : WARN_S, color: completed ? GOOD : set.status === "failed" ? BAD : WARN, fontSize: 9, fontWeight: 700 }}>{completed ? "기기 저장 완료" : set.status === "failed" ? "저장 실패" : set.status === "analyzing" ? "분석 중" : "초안"}</span></div><p className="mt-1 text-xs" style={{ color: INK2 }}>{set.scope === "partial" ? "부위별 기록" : "전신 분석"} · {methodLabel(set.method)}</p>{historySummary && <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed" style={{ color: SUB }}>{historySummary}</p>}</div></div>
-            <div className={`mt-3 grid gap-2 ${completed && comparablePair.after ? "grid-cols-2" : "grid-cols-1"}`}><button type="button" disabled={!completed && !resumable} onClick={() => completed ? openSet(set, "result") : resumeSet(set)} className="h-10 text-xs font-bold disabled:opacity-40" style={{ borderRadius: 9, backgroundColor: CARD, color: INK }}>{completed ? setIsManualResult ? "사진 기록 보기" : "결과 카드 보기" : resumable ? "초안 이어하기" : "이전 중복 초안"}</button>{completed && comparablePair.after && <button type="button" onClick={() => openComparisonFromSet(set)} className="h-10 text-xs font-bold" style={{ borderRadius: 9, backgroundColor: TINT, color: BRAND_D }}>변화 비교</button>}</div>
+            <div className={`mt-3 grid gap-2 ${completed && comparablePair.after ? "grid-cols-2" : "grid-cols-1"}`}><button type="button" disabled={!completed && !resumable} onClick={() => completed ? openSet(set, "result") : resumeSet(set)} className="h-10 text-xs font-bold disabled:opacity-40" style={{ borderRadius: 9, backgroundColor: CARD, color: INK }}>{completed ? setIsManualResult ? "사진 기록 보기" : "결과 보기" : resumable ? "초안 이어하기" : "이전 중복 초안"}</button>{completed && comparablePair.after && <button type="button" onClick={() => openComparisonFromSet(set)} className="h-10 text-xs font-bold" style={{ borderRadius: 9, backgroundColor: TINT, color: BRAND_D }}>변화 비교</button>}</div>
           </article>;
         })}</div>}
       </section>}
@@ -9578,9 +9535,9 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
       {screen === "result" && <>
         <section style={{ padding: 14, borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}><div className="flex items-center gap-2"><button type="button" aria-label="변화 기록 시작 화면" onClick={() => setScreen("home")} className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={18} /></button><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>{selectedIsManualResult ? "사진 기록" : "변화 기록"}</span><span className="block text-xs" style={{ color: SUB }}>{selected ? `${ymd(setDate(selected).slice(0, 10))} · ${methodLabel(selected.method)}` : "완료된 결과 없음"}</span></span><button type="button" onClick={() => setScreen("history")} className="h-10 px-3 text-xs font-bold" style={{ borderRadius: 9, backgroundColor: CANVAS, color: INK }}>히스토리</button></div>
           {selected?.status === "completed" && <div className="mt-3 flex items-center gap-2" style={{ padding: 10, borderRadius: 10, backgroundColor: GOOD_S }}><Check size={15} style={{ color: GOOD }} /><span className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: GOOD }}>{selectedIsManualResult ? "사진 기록 저장 완료" : "변화 기록 저장 완료"}</span><span className="text-[10px] font-bold" style={{ color: SUB }}>기기 우선 저장</span></div>}
-          {!selected ? <div className="py-10 text-center"><Activity size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>표시할 변화 기록이 없습니다</p><button type="button" onClick={requestStartNew} className="mt-4 h-11 px-5 text-xs font-bold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>새 변화 기록 시작</button></div> : selected.status !== "completed" ? <div className="py-10 text-center"><AlertCircle size={22} className="mx-auto" style={{ color: WARN }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>아직 완료되지 않은 기록입니다</p><p className="mt-1 text-xs" style={{ color: SUB }}>저장된 사진과 처리 상태를 유지한 채 이어서 진행할 수 있습니다.</p><button type="button" onClick={() => resumeSet(selected)} className="mt-4 h-11 px-5 text-xs font-bold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>초안 이어하기</button></div> : <><div className="mt-3 grid gap-1.5" style={{ gridTemplateColumns: `repeat(${Math.max(1, selected.selectedViews.length)}, minmax(0, 1fr))` }}>{selected.selectedViews.map((view) => <AssessmentSetFrame key={view} photo={setPhoto(selected, view)} label={postureViewLabel(view)} annotation onOpen={selectedIsManualResult ? undefined : () => { const pose = selected.poses.find((item) => normalizePostureView(item.view) === view); if (pose) setViewingPose(pose); }} />)}</div><button type="button" onClick={() => { const available = selected.selectedViews.map((view) => ({ view, photo: setPhoto(selected, view) })).filter((item) => item.photo); if (available.length === 1) setEditingAnnotation(available[0]); else if (available.length > 1) setAnnotationPicker(true); }} className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 text-xs font-bold" style={{ borderRadius: 10, backgroundColor: CANVAS, color: INK }}><Pencil size={13} />사진 표시 다시 수정하기</button><div className={`mt-2 grid gap-2 ${comparisonPairFor(selected).after && !selectedIsManualResult ? "grid-cols-2" : "grid-cols-1"}`}>{comparisonPairFor(selected).after && <button type="button" onClick={() => openComparisonFromSet(selected)} className="h-11 text-xs font-bold" style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D }}>변화 비교</button>}{!selectedIsManualResult && <button type="button" onClick={() => openReportForSet(selected)} className="h-11 text-xs font-bold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>결과 리포트 카드</button>}</div></>}
+          {!selected ? <div className="py-10 text-center"><Activity size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>표시할 변화 기록이 없습니다</p><button type="button" onClick={requestStartNew} className="mt-4 h-11 px-5 text-xs font-bold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>새 변화 기록 시작</button></div> : selected.status !== "completed" ? <div className="py-10 text-center"><AlertCircle size={22} className="mx-auto" style={{ color: WARN }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>아직 완료되지 않은 기록입니다</p><p className="mt-1 text-xs" style={{ color: SUB }}>저장된 사진과 처리 상태를 유지한 채 이어서 진행할 수 있습니다.</p><button type="button" onClick={() => resumeSet(selected)} className="mt-4 h-11 px-5 text-xs font-bold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>초안 이어하기</button></div> : <><div className="mt-3 grid grid-cols-2 gap-1.5">{selected.selectedViews.map((view) => <AssessmentSetFrame key={view} photo={setPhoto(selected, view)} label={postureViewLabel(view)} annotation onOpen={selectedIsManualResult ? undefined : () => { const pose = selected.poses.find((item) => normalizePostureView(item.view) === view); if (pose) setViewingPose(pose); }} />)}</div><button type="button" onClick={() => { const available = selected.selectedViews.map((view) => ({ view, photo: setPhoto(selected, view) })).filter((item) => item.photo); if (available.length === 1) setEditingAnnotation(available[0]); else if (available.length > 1) setAnnotationPicker(true); }} className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 text-xs font-bold" style={{ borderRadius: 10, backgroundColor: CANVAS, color: INK }}><Pencil size={13} />사진 표시 다시 수정하기</button>{comparisonPairFor(selected).after && !selectedIsManualResult && <button type="button" onClick={() => openComparisonFromSet(selected)} className="mt-2 h-11 w-full text-xs font-bold" style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D }}>변화 비교</button>}</>}
         </section>
-        {!selectedIsManualResult && selected?.status === "completed" && (displayMetrics.length > 0 || teacherMemo || resultPoses[0]) && <section style={{ padding: 13, borderRadius: 14, backgroundColor: CARD, border: `1px solid ${LINE}` }}><h2 className="text-sm font-extrabold" style={{ color: INK }}>측정 기록</h2><div className="mt-3 grid gap-2 sm:grid-cols-2">{!!displayMetrics.length && <div style={{ padding: 10, borderRadius: 10, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>측정값</p>{displayMetrics.map((metric, index) => <p key={`${metric.key}_${index}`} className="mt-1 text-xs" style={{ color: INK2 }}>{metric.label} {memberMetricValue(metric.value, metric.unit)}{metric.unit}</p>)}</div>}{teacherMemo && <div style={{ padding: 10, borderRadius: 10, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>강사 메모</p><p className="mt-1 text-xs leading-relaxed" style={{ color: INK2 }}>{teacherMemo}</p></div>}</div>{resultPoses[0] && <button type="button" onClick={() => setViewingPose(resultPoses[0])} className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 text-xs font-bold" style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D }}><Pencil size={13} />측정값·강사 메모 확인</button>}</section>}
+        {!selectedIsManualResult && selected?.status === "completed" && !!displayStates.length && <section style={{ padding: 13, borderRadius: 14, backgroundColor: CARD, border: `1px solid ${LINE}` }}><h2 className="text-sm font-extrabold" style={{ color: INK }}>핵심 상태</h2><div className="mt-3 grid grid-cols-2 gap-2">{displayStates.map((item) => <div key={item.key} className="min-w-0 rounded-xl p-3" style={{ backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: SUB }}>{item.label}</p><p className="mt-1 text-sm font-extrabold" style={{ color: INK }}>{item.status}</p></div>)}</div>{resultPoses[0] && <button type="button" onClick={() => setViewingPose(resultPoses[0])} className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 text-xs font-bold" style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D }}><Pencil size={13} />수정하기</button>}</section>}
       </>}
 
       {screen === "compare" && <section style={{ padding: 14, borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}><div className="flex items-center gap-2"><button type="button" onClick={() => setScreen("result")} aria-label="결과로 돌아가기" className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={18} /></button><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>변화 비교</span><span className="block text-xs" style={{ color: SUB }}>선택한 두 기록을 같은 촬영 방향으로 비교</span></span><button type="button" onClick={() => setShowAnnotations((value) => !value)} className="h-9 px-2 text-[10px] font-bold" style={{ borderRadius: 8, backgroundColor: showAnnotations ? TINT : CANVAS, color: showAnnotations ? BRAND_D : SUB }}>사진 표시 {showAnnotations ? "ON" : "OFF"}</button></div>
@@ -9595,20 +9552,6 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
             </div>
           </details>
         </>}
-      </section>}
-
-      {screen === "report" && <section style={{ overflow: "hidden", borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}>
-        <div className="flex items-center gap-2 px-3 pt-2"><button type="button" onClick={() => setScreen("result")} aria-label="결과로 돌아가기" className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={18} /></button><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>변화 기록 결과 카드</span><span className="block text-xs" style={{ color: SUB }}>회원 상담용 요약</span></span></div>
-        <div className="p-4 pt-2">
-          <div className="flex items-end gap-2"><div className="min-w-0 flex-1"><p className="text-lg font-extrabold" style={{ color: INK }}>{member?.name} 회원</p><p className="mt-1 text-xs" style={{ color: SUB }}>{selectedDate ? ymd(selectedDate.slice(0, 10)) : "분석일 미확인"}</p></div><span className="rounded-full px-2 py-1 text-[10px] font-bold" style={{ backgroundColor: TINT, color: BRAND_D }}>{selected ? methodLabel(selected.method) : "결과 없음"}</span></div>
-          {selected?.scope === "full_body" && reportPair.before && reportPair.after && reportView && <div className="mt-4 grid grid-cols-2 gap-2"><div><p className="mb-1 text-[10px] font-bold" style={{ color: INK }}>BEFORE</p><AssessmentSetFrame photo={setPhoto(reportPair.before, reportView)} label="Before" /></div><div><p className="mb-1 text-[10px] font-bold" style={{ color: BRAND_D }}>AFTER</p><AssessmentSetFrame photo={setPhoto(reportPair.after, reportView)} label="After" /></div></div>}
-          <div className="mt-4 space-y-2">
-            {!!metricChanges.length && <div style={{ padding: 11, borderRadius: 11, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>핵심 변화</p>{metricChanges.map((change) => <p key={change.id} className="mt-1 text-xs" style={{ color: INK2 }}>{postureViewLabel(change.view)} · {change.label}: {memberMetricValue(change.beforeValue, change.unit)}{change.unit} → {memberMetricValue(change.afterValue, change.unit)}{change.unit}</p>)}</div>}
-            {teacherMemo && <div style={{ padding: 11, borderRadius: 11, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>강사 메모</p><p className="mt-1 text-xs leading-relaxed" style={{ color: INK2 }}>{teacherMemo}</p></div>}
-            {!!(member?.focus || []).length && <div style={{ padding: 11, borderRadius: 11, backgroundColor: GOOD_S }}><p className="text-xs font-bold" style={{ color: GOOD }}>오늘 수업 집중 포인트</p><p className="mt-1 text-xs leading-relaxed" style={{ color: INK2 }}>{member.focus.join(" · ")}</p></div>}
-          </div>
-          <div className="mt-4"><ResultCardMaker member={member} saved={completedPoses.filter((pose) => pose && pose.metrics)} centerName={settings?.centerName || ""} onToast={onToast} initialOpen beforeAssessmentId={reportPair.before?.id} afterAssessmentId={reportPair.after?.id} /></div>
-        </div>
       </section>}
 
       {draftGuard?.step === "choice" && <ScheduleBottomSheet title="진행 중인 변화 기록이 있습니다" subtitle="이전에 저장하던 변화 기록을 이어서 진행할 수 있습니다." onClose={() => setDraftGuard(null)} aboveTabBar>

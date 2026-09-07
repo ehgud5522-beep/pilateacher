@@ -100,7 +100,7 @@ test("capture timer, motion lifecycle, and storage handoff are connected to the 
   assert.doesNotMatch(source.slice(source.indexOf("const usePending = async"), source.indexOf("const handleBack = async")), /startCamera\(\)/);
 });
 
-test("direct annotation exposes opt-in guides, ruler, handwriting, colors, re-edit, and a real report-card path", async () => {
+test("direct annotation exposes opt-in guides, ruler, handwriting, colors, and re-edit without the retired result-card route", async () => {
   const [source, annotationSource] = await Promise.all([appSource(), readFile(annotationPath, "utf8")]);
   const canvasStart = source.indexOf("function PostureCanvas(");
   const canvasEnd = source.indexOf("function MemberList(", canvasStart);
@@ -141,7 +141,8 @@ test("direct annotation exposes opt-in guides, ruler, handwriting, colors, re-ed
   assert.match(source, /function AssessmentComparisonLayer[\s\S]*object-cover[\s\S]*transform: ptf\(photo\)[\s\S]*<AssessmentAnnotationOverlay/);
   assert.match(source, /zoomPhoto\?\.src[\s\S]*transform: ptf\(zoomPhoto\)[\s\S]*<AssessmentAnnotationOverlay/);
   assert.match(workspace, /사진 표시 다시 수정하기/);
-  assert.match(workspace, /<ResultCardMaker[\s\S]*initialOpen/);
+  assert.doesNotMatch(workspace, /<ResultCardMaker[\s\S]*initialOpen/);
+  assert.doesNotMatch(workspace, /결과 리포트 카드/);
   assert.doesNotMatch(workspace, /이미지 저장 · 연결 예정/);
   assert.match(workspace, /비교 사진 바꾸기/);
   assert.match(workspace, /setSetPicker\("before"\)/);

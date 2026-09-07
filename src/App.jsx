@@ -6752,7 +6752,7 @@ const PREVIEW_BOUNDS_RETRY_LIMIT = 8;
 const PREVIEW_BOUNDS_RETRY_DELAY_MS = 120;
 
 function PostureCaptureScreen({
-  member, assessmentId, roleLabel, captureViews, currentCapture, capturePhotos, draftSaved, busy,
+  member, assessmentId, roleLabel, captureViews, currentCapture, capturePhotos, draftSaved, busy, busyKind = null,
   captureImportError = "", albumPending = false, onSelectView, onAcceptCapture, onOpenAlbum, onDeleteCapture, onSaveDraft, onContinue, onExit,
 }) {
   const isNative = Capacitor.isNativePlatform();
@@ -7539,6 +7539,16 @@ function PostureCaptureScreen({
     custom: "기록할 부위를 프레임 중앙에 맞춰 주세요.",
   }[activeView] || "가이드 안에 촬영 대상을 맞춰 주세요.";
   const sensorTone = sensor.isLevel ? "#63D7A3" : sensor.status === SENSOR_STATUSES.active ? "#F2B84B" : "#C7CDD7";
+  /* 사진이 오가는 동안 프리뷰는 멈춰 있고 버튼은 흐려진다. 지금까지 그 이유를
+     화면이 한 마디도 하지 않아 앱이 멈춘 것처럼 보였다.
+
+     같은 빈 화면을 한 문구로 뭉개지 않는다 — 앨범에서 돌아오는 중인지, 고른
+     사진을 읽는 중인지, 방금 찍은 사진을 저장하는 중인지 구분해서 말한다.
+     초안 저장(busyKind === "draft")은 이 화면의 대기 상태가 아니라 따로 두었다. */
+  const transferLabel = albumPending ? "앨범에서 돌아오는 중"
+    : busyKind === "album" ? "사진 불러오는 중"
+    : cameraStatus === "capturing" ? "사진 저장 중"
+    : null;
   const screen = (
     <div className="fixed inset-0 z-[200] flex flex-col overflow-hidden" style={{ height: "100dvh", backgroundColor: nativePreviewAvailable && cameraStatus === "active" ? "transparent" : "#0D1016", color: "#fff" }}>
       <style>{`
@@ -7575,11 +7585,12 @@ function PostureCaptureScreen({
           )}
           {!pendingCapture && !captureCompleteIdle && <div className="pointer-events-none absolute inset-x-3 bottom-3 rounded-xl px-3 py-2 text-center" style={{ backgroundColor: "rgba(13,16,22,.72)", backdropFilter: "blur(8px)" }}><p className="text-xs font-bold" style={{ color: sensorTone }}>{sensor.isLevel ? directionGuide : sensor.message}</p></div>}
 
-          {(iosStableCaptureFallback || ["starting", "error", "paused"].includes(cameraStatus)) && !pendingCapture && !captureCompleteIdle && (
+          {(transferLabel || iosStableCaptureFallback || ["starting", "error", "paused"].includes(cameraStatus)) && !pendingCapture && !captureCompleteIdle && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#0D1016]/88 px-7 text-center">
-              {cameraStatus === "starting" ? <Loader2 size={30} className="animate-spin" /> : cameraStatus === "error" || cameraStatus === "paused" ? <AlertTriangle size={30} style={{ color: "#F2B84B" }} /> : <Camera size={30} />}
-              <div><p className="text-sm font-extrabold">{iosStableCaptureFallback ? "사진 촬영 또는 선택" : cameraStatus === "starting" ? "카메라 준비 중" : cameraStatus === "paused" ? "카메라가 일시 중지되었습니다" : "카메라를 열 수 없습니다"}</p>{(iosStableCaptureFallback || cameraError) && <p className="mt-1 text-xs leading-relaxed text-white/65">{iosStableCaptureFallback ? "App Store 안정화 빌드에서는 iOS 기본 사진 선택 화면을 사용합니다." : cameraError}</p>}</div>
-              {cameraStatus !== "starting" && (iosStableCaptureFallback
+              {transferLabel || cameraStatus === "starting" ? <Loader2 size={30} className="animate-spin" /> : cameraStatus === "error" || cameraStatus === "paused" ? <AlertTriangle size={30} style={{ color: "#F2B84B" }} /> : <Camera size={30} />}
+              <div><p className="text-sm font-extrabold">{transferLabel || (iosStableCaptureFallback ? "사진 촬영 또는 선택" : cameraStatus === "starting" ? "카메라 준비 중" : cameraStatus === "paused" ? "카메라가 일시 중지되었습니다" : "카메라를 열 수 없습니다")}</p>{!transferLabel && (iosStableCaptureFallback || cameraError) && <p className="mt-1 text-xs leading-relaxed text-white/65">{iosStableCaptureFallback ? "App Store 안정화 빌드에서는 iOS 기본 사진 선택 화면을 사용합니다." : cameraError}</p>}</div>
+              {/* 진행 중에는 아무 버튼도 내주지 않는다. 다시 시도할 것이 없다. */}
+              {!transferLabel && cameraStatus !== "starting" && (iosStableCaptureFallback
                 ? <button type="button" onClick={() => onOpenAlbum(activeView)} className="h-11 rounded-xl px-5 text-sm font-bold text-white" style={{ backgroundColor: "#4C4399" }}>사진 촬영 또는 선택</button>
                 : <button type="button" onClick={startCamera} className="h-11 rounded-xl px-5 text-sm font-bold text-white" style={{ backgroundColor: "#4C4399" }}>다시 시도</button>)}
             </div>
@@ -7625,6 +7636,9 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
   const captureKeys = useMemo(() => captureViews.map(({ key }) => key), [captureViews]);
   const [engine, setEngine] = useState("idle");
   const [busy, setBusy] = useState(false);
+  /* busy 는 세 가지 작업이 함께 쓴다 — 앨범 가져오기, 촬영 사진 저장, 초안 저장.
+     어느 것이 도는지 알아야 촬영 화면이 맞는 문구를 고를 수 있다. */
+  const [busyKind, setBusyKind] = useState(null);
   const [img, setImg] = useState(null);
   const [pts, setPts] = useState(null);
   const [originalPts, setOriginalPts] = useState(null);
@@ -7949,7 +7963,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
     const capturedView = normalizePostureView(metadata.view || captureTarget);
     const expectedMemberId = metadata.memberId || analysisMemberId.current;
     const expectedAssessmentId = metadata.assessmentId || assessmentId.current;
-    setBusy(true); setPts(null);
+    setBusy(true); setBusyKind(metadata.source === "system_photo_picker" ? "album" : "photo"); setPts(null);
     let src = null;
     let previewStaged = false;
     try {
@@ -8008,7 +8022,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
       deviceLog("assessment_draft_save_failed", { memberId: analysisMemberId.current, assessmentId: assessmentId.current, view: capturedView, storage: "indexedDB", ...deviceError(error) });
       onToast?.({ ok: false, msg: previewStaged ? `${postureViewLabel(capturedView)} 사진은 유지 중이며 저장을 다시 시도할 수 있습니다.` : "사진을 불러오지 못했습니다. 다시 시도해 주세요." });
       return false;
-    } finally { setBusy(false); }
+    } finally { setBusy(false); setBusyKind(null); }
   };
 
   const pickFile = async (file) => acceptCaptureBlob(file, {
@@ -8136,7 +8150,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
       onToast?.({ ok: false, msg: "분석 대상 회원이 변경되어 초안을 저장하지 않았습니다." });
       return false;
     }
-    setBusy(true);
+    setBusy(true); setBusyKind("draft");
     try {
       const pending = Object.fromEntries(captureViews
         .filter(({ key }) => !draftSaved[key] && capturePhotos[key]?.blob)
@@ -8155,7 +8169,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
       deviceLog("assessment_draft_save_failed", { memberId: analysisMemberId.current, assessmentId: assessmentId.current, storage: "indexedDB", ...deviceError(error) });
       if (!quiet) onToast?.({ ok: false, msg: "촬영 초안을 저장하지 못했습니다. 기존 사진은 유지됩니다." });
       return false;
-    } finally { setBusy(false); }
+    } finally { setBusy(false); setBusyKind(null); }
   };
   const deleteCurrentCapture = async () => {
     if (!currentCapture || !currentCapturePhoto) return;
@@ -8469,7 +8483,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
           )}
           {analysisMethod && !analysisStarted && <PostureCaptureScreen
             member={member} assessmentId={assessmentId.current} roleLabel={roleLabel} captureViews={captureViews} currentCapture={currentCapture}
-            capturePhotos={capturePhotos} draftSaved={draftSaved} busy={busy} captureImportError={captureImportError} albumPending={albumHold} onSelectView={(nextView) => { setCaptureImportError(""); setCaptureTarget(nextView); }}
+            capturePhotos={capturePhotos} draftSaved={draftSaved} busy={busy} busyKind={busyKind} captureImportError={captureImportError} albumPending={albumHold} onSelectView={(nextView) => { setCaptureImportError(""); setCaptureTarget(nextView); }}
             onAcceptCapture={(blob, metadata) => acceptCaptureBlob(blob, { ...metadata, preserveResolution: true })}
             onOpenAlbum={openCapture} onDeleteCapture={deleteCurrentCapture} onSaveDraft={saveCaptureDraft}
             onContinue={() => analysisMethod === "draw" ? beginDrawing(captureViews.find(({ key }) => !drawnViews[key])?.key || "front") : beginCapturedAnalysis(captureViews.find(({ key }) => !analyzedViews[key])?.key || "front")}

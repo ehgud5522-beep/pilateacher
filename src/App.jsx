@@ -510,6 +510,36 @@ const runAuthConnectivityPreflight = async ({ force = false } = {}) => {
     return [recordAuthStage(AUTH_STAGES.PREFLIGHT_STARTED, { ...shared, outcome: "failed", error })];
   }
 };
+/* 웹 레이어가 실제로 불투명한 바탕을 칠하고 있는지 읽는다.
+
+   네이티브 WebView 자체의 투명도는 JS 에서 읽을 수 없다. 여기서 남기는 것은 웹이
+   통제하는 절반 — html·body·#root 의 계산된 배경 — 이고, 셋 다 투명하면 직전
+   화면의 합성 픽셀이 남을 수 있다. 카메라 시작·정지 시점에 각각 남기므로, 정지
+   뒤에 불투명으로 돌아왔는지를 진단 화면에서 확인할 수 있다. */
+const readWebViewOpacity = () => {
+  try {
+    if (typeof globalThis.getComputedStyle !== "function" || typeof document === "undefined") return {};
+    const read = (element) => (element ? String(globalThis.getComputedStyle(element).backgroundColor || "") : "");
+    const opaque = (value) => {
+      if (!value || value === "transparent") return false;
+      const alpha = value.match(/^rgba\([^)]*,\s*([0-9.]+)\s*\)$/);
+      return alpha ? Number(alpha[1]) > 0 : true;
+    };
+    const surface = read(document.documentElement);
+    const body = read(document.body);
+    const root = read(document.getElementById("root"));
+    return {
+      webViewOpaque: opaque(surface) || opaque(body) || opaque(root),
+      surface: opaque(surface) ? "opaque" : "transparent",
+      root: opaque(root) ? "opaque" : "transparent",
+      // 판정만 남기면 어느 색이 칠해졌는지 알 수 없다. 원본 값을 그대로 붙인다.
+      message: `html=${surface || "none"} body=${body || "none"} root=${root || "none"}`,
+    };
+  } catch (_error) {
+    // 읽지 못하면 값을 지어내지 않고 필드를 비운다.
+    return {};
+  }
+};
 const cameraPipelineLog = (stage, details = {}) => {
   const source = details.source || "camera";
   appendVoiceSessionDiagnostic(stage, { ...details, source, phase: stage });
@@ -6876,6 +6906,10 @@ function PostureCaptureScreen({
       if (stream) cameraPipelineLog("preview_stopped", { memberId: member?.id, assessmentId, view: activeView, source: "getUserMedia", reason, state: "success" });
     }
     document.documentElement.classList.remove("posture-camera-native-active");
+    cameraPipelineLog("camera_webview_opacity", {
+      memberId: member?.id, assessmentId, view: activeView, source: nativePreviewAvailable ? "native_preview" : "getUserMedia",
+      lifecycleState: "stopped", state: "camera_stopped", reason, ...readWebViewOpacity(),
+    });
     cameraStopping.current = false;
     await stopMotion();
     if (mounted.current && reason !== "capture") setCameraStatus(reason === "background" ? "paused" : "idle");
@@ -7269,6 +7303,10 @@ function PostureCaptureScreen({
       ensureCurrent();
       setCameraStatus("active");
       cameraPipelineLog("camera_preview_started", { memberId: member?.id, assessmentId, view: activeView, source: nativePreviewAvailable ? "native_preview" : "getUserMedia", platform: cameraPlatform, lifecycleState: "running" });
+      cameraPipelineLog("camera_webview_opacity", {
+        memberId: member?.id, assessmentId, view: activeView, source: nativePreviewAvailable ? "native_preview" : "getUserMedia",
+        platform: cameraPlatform, lifecycleState: "running", state: "camera_started", ...readWebViewOpacity(),
+      });
       deviceLog("posture_camera_preview_started", { memberId: member?.id, assessmentId, view: activeView, source: nativePreviewAvailable ? "native_preview" : "getUserMedia", permission: "granted" });
       await motionPromise;
     } catch (error) {

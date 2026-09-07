@@ -137,8 +137,15 @@ test("the screen derives its numbers from the shared rounding rule", async () =>
     "memberMetricValue must not round on its own",
   );
 
-  // And the row still prints all three through that one helper.
-  assert.match(source, /Before \{memberMetricValue\(metric\.beforeValue, metric\.unit\)\}/);
-  assert.match(source, /After \{memberMetricValue\(metric\.afterValue, metric\.unit\)\}/);
-  assert.match(source, /memberMetricValue\(metric\.difference, metric\.unit\)/);
+  // The two values still print through that one helper.
+  assert.match(source, /\{memberMetricValue\(metric\.beforeValue, metric\.unit\)\}\{metric\.unit\}/);
+  assert.match(source, /\{memberMetricValue\(metric\.afterValue, metric\.unit\)\}\{metric\.unit\}/);
+  /* The difference is no longer printed as a number of its own; it is stated
+     in words. It still comes from metric.difference, which compareAssessmentMetrics
+     takes from the same rounding rule -- so the sentence cannot disagree with
+     the pair above it either. */
+  assert.match(source, /\{postureMetricChangeText\(metric\.difference, metric\.unit\)\}/);
+  const model = await readFile(new URL("../../src/features/posture/posture-model.js", import.meta.url), "utf8");
+  assert.match(model, /const difference = postureMetricDisplayValue\(afterValue, unit\) - postureMetricDisplayValue\(beforeValue, unit\);/,
+    "the delta is still the difference of the two printed numbers");
 });

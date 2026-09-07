@@ -76,9 +76,14 @@ test("empty result rows stay hidden and comparison content precedes secondary co
 
 test("change comparison keeps photos primary and reports neutral values without AI interpretation", async () => {
   const { source, viewer, workspace } = await postureSources();
-  assert.match(viewer, /Before \{memberMetricValue\(metric\.beforeValue, metric\.unit\)\}/);
-  assert.match(viewer, /After \{memberMetricValue\(metric\.afterValue, metric\.unit\)\}/);
-  assert.match(viewer, /차이 \{metric\.difference > 0 \? "\+" : ""\}/);
+  /* The two readings, each under its own label, and the change stated in
+     words below them. The wording carries no judgement and no side -- see
+     tests/posture/metric-change-text.test.js. */
+  assert.match(viewer, />BEFORE<\/span>/);
+  assert.match(viewer, />AFTER<\/span>/);
+  assert.match(viewer, /\{memberMetricValue\(metric\.beforeValue, metric\.unit\)\}\{metric\.unit\}/);
+  assert.match(viewer, /\{memberMetricValue\(metric\.afterValue, metric\.unit\)\}\{metric\.unit\}/);
+  assert.match(viewer, /\{postureMetricChangeText\(metric\.difference, metric\.unit\)\}/);
   assert.doesNotMatch(viewer, /metric\.summary/);
   assert.doesNotMatch(workspace, /After AI 관찰/);
   assert.match(workspace, /공통 촬영 방향이 없습니다/);

@@ -46,6 +46,67 @@ export function normalizeAnnotationColor(value, fallback = "#6C5FD4") {
   return fallback;
 }
 
+/* A drawn line has to stay visible on a white wall and on a dark floor alike,
+   so every stroke carries a thin halo in the opposite luminance. Both renderers
+   -- the canvas editor and the read-only SVG overlay -- derive colour and width
+   from the helpers below, because two implementations computing this separately
+   is exactly how they drift apart. */
+export const ANNOTATION_OUTLINE_LIGHT = "#FFFFFF";
+export const ANNOTATION_OUTLINE_DARK = "#17171F";
+// Above this relative luminance a stroke is treated as light and gets the dark
+// halo. Placed so that only white, yellow, mint, green, sky and orange sit above.
+export const ANNOTATION_OUTLINE_LUMINANCE_THRESHOLD = 0.35;
+export const ANNOTATION_OUTLINE_MIN_WIDTH = 0.8;
+export const ANNOTATION_OUTLINE_MAX_WIDTH = 2.5;
+export const ANNOTATION_MIN_CORE_WIDTH = 0.6;
+
+/* WCAG relative luminance. normalizeAnnotationColor always yields #RRGGBB, so
+   there is no other notation to parse. */
+export function annotationRelativeLuminance(value) {
+  const hex = normalizeAnnotationColor(value, "#000000");
+  const [red, green, blue] = [1, 3, 5]
+    .map((index) => parseInt(hex.slice(index, index + 2), 16) / 255)
+    .map((channel) => (channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4));
+  return (0.2126 * red) + (0.7152 * green) + (0.0722 * blue);
+}
+
+export function annotationOutlineColor(value) {
+  return annotationRelativeLuminance(value) > ANNOTATION_OUTLINE_LUMINANCE_THRESHOLD
+    ? ANNOTATION_OUTLINE_DARK
+    : ANNOTATION_OUTLINE_LIGHT;
+}
+
+/* Scales with the render scale so the halo reads the same in the editor and in
+   an exported card, and is bounded so it never becomes a band of its own. */
+export function annotationOutlineWidth(lineScale = 1) {
+  const scale = Math.max(0.01, Number(lineScale) || 1);
+  return Math.min(ANNOTATION_OUTLINE_MAX_WIDTH, Math.max(ANNOTATION_OUTLINE_MIN_WIDTH, scale));
+}
+
+/* Half the halo grows outwards and half is taken off the core, so the stroke's
+   footprint grows by one outline width rather than two. */
+export function annotationStrokeLayers(strokeWidth, lineScale = 1) {
+  const width = Math.max(0.1, Number(strokeWidth) || 0.1);
+  const outline = annotationOutlineWidth(lineScale);
+  return Object.freeze({
+    outline,
+    halo: width + outline,
+    core: Math.max(ANNOTATION_MIN_CORE_WIDTH, width - outline),
+  });
+}
+
+/* A filled dot has no core to thin, so it simply gains the outline. */
+export function annotationOutlineRadius(radius, lineScale = 1) {
+  return Math.max(0, Number(radius) || 0) + annotationOutlineWidth(lineScale);
+}
+
+/* Text is outlined by painting the stroke behind the glyph -- strokeText on
+   canvas, paint-order: stroke in SVG. A stroke straddles the glyph edge, so it
+   takes twice the outline to show one outline's worth outside. */
+export function annotationTextOutlineWidth(fontScale = 1) {
+  return annotationOutlineWidth(fontScale) * 2;
+}
+
 export function hslToHex(hue, saturation = 70, lightness = 55) {
   const h = ((Number(hue) || 0) % 360 + 360) % 360;
   const s = clampAnnotationNumber(Number(saturation) / 100) * 100;

@@ -131,6 +131,7 @@ import {
 } from "./features/posture/posture-camera.js";
 import {
   ANNOTATION_PRESET_COLORS, HANDWRITING_SIZE_OPTIONS, annotationFont, annotationFontSize,
+  annotationOutlineColor, annotationOutlineRadius, annotationStrokeLayers, annotationTextOutlineWidth,
   annotationTextBounds, annotationTextLines, applyAnnotationDrag, arrowHeadPoints,
   closestHandwritingWidth, hexToHsl, hitTestAnnotations, hslToHex, normalizeAnnotationColor,
   readRecentAnnotationColors, rememberAnnotationColor, screenPointToImagePoint,
@@ -3724,50 +3725,85 @@ function drawAnnotationMark(ctx, mark, width, height, options = {}) {
   const lineScale = Math.max(0.01, Number(options.lineScale) || 1);
   const fontScale = Math.max(0.01, Number(options.fontScale) || lineScale);
   const strokeWidth = Math.max(0.8, (Number(mark.width) || 3) * (mark.tool === "arrow" ? 0.78 : 1) * lineScale);
+  const markColor = mark.color || "#6C5FD4";
+  const outlineColor = annotationOutlineColor(markColor);
   const point = (value) => ({ x: offsetX + Number(value?.x || 0) * width, y: offsetY + Number(value?.y || 0) * height });
   const start = point(mark.pts[0]), end = point(mark.pts[mark.pts.length - 1]);
   ctx.save();
   ctx.globalAlpha = mark.opacity ?? 1;
-  ctx.strokeStyle = mark.color || "#6C5FD4";
-  ctx.fillStyle = mark.color || "#6C5FD4";
+  ctx.strokeStyle = markColor;
+  ctx.fillStyle = markColor;
   ctx.lineWidth = strokeWidth;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
 
+  /* Canvas has no paint-order, so the halo is a second, wider pass underneath.
+     The path is traced again rather than reused via Path2D to stay on the same
+     primitives the rest of this file uses. globalAlpha is already set, so a
+     translucent mark keeps its halo equally translucent. */
+  const strokeOutlined = (trace, baseWidth = strokeWidth) => {
+    const layers = annotationStrokeLayers(baseWidth, lineScale);
+    trace(); ctx.strokeStyle = outlineColor; ctx.lineWidth = layers.halo; ctx.stroke();
+    trace(); ctx.strokeStyle = markColor; ctx.lineWidth = layers.core; ctx.stroke();
+  };
+  const fillOutlinedCircle = (centerX, centerY, radius) => {
+    ctx.beginPath(); ctx.arc(centerX, centerY, annotationOutlineRadius(radius, lineScale), 0, Math.PI * 2);
+    ctx.fillStyle = outlineColor; ctx.fill();
+    ctx.beginPath(); ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+    ctx.fillStyle = markColor; ctx.fill();
+  };
+
   if (mark.tool === "point") {
-    ctx.beginPath(); ctx.arc(start.x, start.y, ((Number(mark.width) || 3) + 3) * lineScale, 0, Math.PI * 2); ctx.fill();
-    ctx.lineWidth = Math.max(1, 1.5 * lineScale);
-    ctx.beginPath(); ctx.arc(start.x, start.y, ((Number(mark.width) || 3) + 9) * lineScale, 0, Math.PI * 2); ctx.stroke();
+    fillOutlinedCircle(start.x, start.y, ((Number(mark.width) || 3) + 3) * lineScale);
+    const ringRadius = ((Number(mark.width) || 3) + 9) * lineScale;
+    strokeOutlined(() => { ctx.beginPath(); ctx.arc(start.x, start.y, ringRadius, 0, Math.PI * 2); }, Math.max(0.8, 1.5 * lineScale));
     ctx.restore(); return;
   }
   if (mark.tool === "circle") {
-    ctx.beginPath();
-    ctx.ellipse((start.x + end.x) / 2, (start.y + end.y) / 2, Math.abs(end.x - start.x) / 2, Math.abs(end.y - start.y) / 2, 0, 0, Math.PI * 2);
-    ctx.stroke();
+    strokeOutlined(() => {
+      ctx.beginPath();
+      ctx.ellipse((start.x + end.x) / 2, (start.y + end.y) / 2, Math.abs(end.x - start.x) / 2, Math.abs(end.y - start.y) / 2, 0, 0, Math.PI * 2);
+    });
   } else if (mark.tool === "rect") {
-    ctx.strokeRect(Math.min(start.x, end.x), Math.min(start.y, end.y), Math.abs(end.x - start.x), Math.abs(end.y - start.y));
+    strokeOutlined(() => {
+      ctx.beginPath();
+      ctx.rect(Math.min(start.x, end.x), Math.min(start.y, end.y), Math.abs(end.x - start.x), Math.abs(end.y - start.y));
+    });
   } else if (mark.tool === "text") {
     const lines = annotationTextLines(mark), font = annotationFont(mark, fontScale), lineHeight = annotationFontSize(mark, fontScale) * 1.16;
     ctx.font = font; ctx.textAlign = "left"; ctx.textBaseline = "top";
-    ctx.shadowColor = "rgba(0,0,0,.58)"; ctx.shadowBlur = Math.max(1.5, 2.4 * fontScale); ctx.shadowOffsetY = Math.max(1, fontScale);
+    /* A real outline replaces the former drop shadow: it reads on a white wall
+       as well as on a dark floor, where a shadow only worked on light ground. */
+    ctx.lineJoin = "round"; ctx.miterLimit = 2;
+    ctx.strokeStyle = outlineColor; ctx.lineWidth = annotationTextOutlineWidth(fontScale);
+    lines.forEach((line, index) => ctx.strokeText(line || " ", start.x, start.y + index * lineHeight));
+    ctx.fillStyle = markColor;
     lines.forEach((line, index) => ctx.fillText(line || " ", start.x, start.y + index * lineHeight));
   } else {
-    ctx.beginPath();
-    if (mark.tool === "hline") { ctx.moveTo(offsetX, start.y); ctx.lineTo(offsetX + width, start.y); }
-    else if (mark.tool === "vline") { ctx.moveTo(start.x, offsetY); ctx.lineTo(start.x, offsetY + height); }
-    else mark.pts.forEach((value, index) => { const next = point(value); index ? ctx.lineTo(next.x, next.y) : ctx.moveTo(next.x, next.y); });
-    ctx.stroke();
+    strokeOutlined(() => {
+      ctx.beginPath();
+      if (mark.tool === "hline") { ctx.moveTo(offsetX, start.y); ctx.lineTo(offsetX + width, start.y); }
+      else if (mark.tool === "vline") { ctx.moveTo(start.x, offsetY); ctx.lineTo(start.x, offsetY + height); }
+      else mark.pts.forEach((value, index) => { const next = point(value); index ? ctx.lineTo(next.x, next.y) : ctx.moveTo(next.x, next.y); });
+    });
     if (mark.tool === "arrow" && mark.pts.length >= 2) {
       const [left, right] = arrowHeadPoints(start, end, (7 + (Number(mark.width) || 3) * 1.4) * lineScale);
-      ctx.beginPath(); ctx.moveTo(end.x, end.y); ctx.lineTo(left.x, left.y); ctx.moveTo(end.x, end.y); ctx.lineTo(right.x, right.y); ctx.stroke();
+      strokeOutlined(() => {
+        ctx.beginPath();
+        ctx.moveTo(end.x, end.y); ctx.lineTo(left.x, left.y); ctx.moveTo(end.x, end.y); ctx.lineTo(right.x, right.y);
+      });
     }
   }
 
   if (mark.tool === "angle" && mark.pts.length === 2) {
     const baseY = start.x <= end.x ? start.y : end.y;
     ctx.save(); ctx.setLineDash([5 * lineScale, 5 * lineScale]); ctx.globalAlpha *= 0.6;
-    ctx.beginPath(); ctx.moveTo(Math.min(start.x, end.x) - 20 * lineScale, baseY); ctx.lineTo(Math.max(start.x, end.x) + 20 * lineScale, baseY); ctx.stroke(); ctx.restore();
-    [start, end].forEach((value) => { ctx.beginPath(); ctx.arc(value.x, value.y, ((Number(mark.width) || 3) + 2) * lineScale, 0, Math.PI * 2); ctx.fill(); });
+    strokeOutlined(() => {
+      ctx.beginPath();
+      ctx.moveTo(Math.min(start.x, end.x) - 20 * lineScale, baseY); ctx.lineTo(Math.max(start.x, end.x) + 20 * lineScale, baseY);
+    }, Math.max(0.8, lineScale));
+    ctx.restore();
+    [start, end].forEach((value) => fillOutlinedCircle(value.x, value.y, ((Number(mark.width) || 3) + 2) * lineScale));
     if (mark.label && !options.hideLabel) {
       const centerX = (start.x + end.x) / 2, centerY = (start.y + end.y) / 2 - 14 * fontScale;
       ctx.font = `700 ${13 * fontScale}px Pretendard, sans-serif`;
@@ -5185,28 +5221,70 @@ function AnnotationSvgMark({ mark, canvasWidth, canvasHeight, hideLabel = false 
   const point = (value) => ({ x: Number(value?.x || 0) * canvasWidth, y: Number(value?.y || 0) * canvasHeight });
   const points = mark.pts.map(point), start = points[0], end = points[points.length - 1];
   const stroke = mark.color || "#6C5FD4", strokeWidth = Math.max(0.8, (Number(mark.width) || 3) * (mark.tool === "arrow" ? 0.78 : 1) * scale), opacity = mark.opacity ?? 1;
-  if (mark.tool === "hline") return <line x1="0" y1={start.y} x2={canvasWidth} y2={start.y} stroke={stroke} strokeWidth={strokeWidth} strokeLinecap="round" opacity={opacity} />;
-  if (mark.tool === "vline") return <line x1={start.x} y1="0" x2={start.x} y2={canvasHeight} stroke={stroke} strokeWidth={strokeWidth} strokeLinecap="round" opacity={opacity} />;
-  if (mark.tool === "point") return <g opacity={opacity}><circle cx={start.x} cy={start.y} r={((Number(mark.width) || 3) + 3) * scale} fill={stroke} /><circle cx={start.x} cy={start.y} r={((Number(mark.width) || 3) + 9) * scale} fill="none" stroke={stroke} strokeWidth={Math.max(0.8, 1.5 * scale)} /></g>;
-  if (mark.tool === "circle" && points[1]) return <ellipse cx={(start.x + end.x) / 2} cy={(start.y + end.y) / 2} rx={Math.abs(end.x - start.x) / 2} ry={Math.abs(end.y - start.y) / 2} fill="none" stroke={stroke} strokeWidth={strokeWidth} opacity={opacity} />;
-  if (mark.tool === "rect" && points[1]) return <rect x={Math.min(start.x, end.x)} y={Math.min(start.y, end.y)} width={Math.abs(end.x - start.x)} height={Math.abs(end.y - start.y)} fill="none" stroke={stroke} strokeWidth={strokeWidth} rx={2 * scale} opacity={opacity} />;
+  /* Same helpers as the canvas renderer, so the two cannot disagree on the halo. */
+  const outlineColor = annotationOutlineColor(stroke);
+  const layers = annotationStrokeLayers(strokeWidth, scale);
+  /* The halo is a wider copy painted first; SVG paints siblings in document
+     order, so it lands underneath. A translucent mark keeps its halo equally
+     translucent, matching the canvas globalAlpha behaviour. */
+  const outlined = (render) => <>{render(outlineColor, layers.halo, "halo")}{render(stroke, layers.core, "core")}</>;
+
+  if (mark.tool === "hline") {
+    return outlined((paint, paintWidth, key) => (
+      <line key={key} x1="0" y1={start.y} x2={canvasWidth} y2={start.y} stroke={paint} strokeWidth={paintWidth} strokeLinecap="round" opacity={opacity} />
+    ));
+  }
+  if (mark.tool === "vline") {
+    return outlined((paint, paintWidth, key) => (
+      <line key={key} x1={start.x} y1="0" x2={start.x} y2={canvasHeight} stroke={paint} strokeWidth={paintWidth} strokeLinecap="round" opacity={opacity} />
+    ));
+  }
+  if (mark.tool === "point") {
+    const dotRadius = ((Number(mark.width) || 3) + 3) * scale;
+    const ringRadius = ((Number(mark.width) || 3) + 9) * scale;
+    const ringLayers = annotationStrokeLayers(Math.max(0.8, 1.5 * scale), scale);
+    return <g opacity={opacity}>
+      <circle cx={start.x} cy={start.y} r={annotationOutlineRadius(dotRadius, scale)} fill={outlineColor} />
+      <circle cx={start.x} cy={start.y} r={dotRadius} fill={stroke} />
+      <circle cx={start.x} cy={start.y} r={ringRadius} fill="none" stroke={outlineColor} strokeWidth={ringLayers.halo} />
+      <circle cx={start.x} cy={start.y} r={ringRadius} fill="none" stroke={stroke} strokeWidth={ringLayers.core} />
+    </g>;
+  }
+  if (mark.tool === "circle" && points[1]) {
+    return outlined((paint, paintWidth, key) => (
+      <ellipse key={key} cx={(start.x + end.x) / 2} cy={(start.y + end.y) / 2} rx={Math.abs(end.x - start.x) / 2} ry={Math.abs(end.y - start.y) / 2} fill="none" stroke={paint} strokeWidth={paintWidth} opacity={opacity} />
+    ));
+  }
+  if (mark.tool === "rect" && points[1]) {
+    return outlined((paint, paintWidth, key) => (
+      <rect key={key} x={Math.min(start.x, end.x)} y={Math.min(start.y, end.y)} width={Math.abs(end.x - start.x)} height={Math.abs(end.y - start.y)} fill="none" stroke={paint} strokeWidth={paintWidth} rx={2 * scale} opacity={opacity} />
+    ));
+  }
   if (mark.tool === "text") {
     const lines = annotationTextLines(mark), fontSize = annotationFontSize(mark, scale), lineHeight = fontSize * 1.16, hand = mark.fontStyle === "handwriting";
-    return <text x={start.x} y={start.y} fill={stroke} fontSize={fontSize} fontWeight={hand ? "400" : "700"} fontFamily={hand ? "'Nanum Pen Script', 'Segoe Print', cursive" : "Pretendard, sans-serif"} dominantBaseline="hanging" opacity={opacity} stroke="rgba(0,0,0,.42)" strokeWidth={Math.max(0.8, 1.2 * scale)} paintOrder="stroke">
+    return <text x={start.x} y={start.y} fill={stroke} fontSize={fontSize} fontWeight={hand ? "400" : "700"} fontFamily={hand ? "'Nanum Pen Script', 'Segoe Print', cursive" : "Pretendard, sans-serif"} dominantBaseline="hanging" opacity={opacity} stroke={outlineColor} strokeWidth={annotationTextOutlineWidth(scale)} paintOrder="stroke">
       {lines.map((line, index) => <tspan key={`${mark.id || "text"}_${index}`} x={start.x} y={start.y + index * lineHeight}>{line || " "}</tspan>)}
     </text>;
   }
   const path = points.map((value, index) => `${index ? "L" : "M"}${value.x.toFixed(1)} ${value.y.toFixed(1)}`).join(" ");
   const arrow = mark.tool === "arrow" && points.length >= 2 ? arrowHeadPoints(start, end, (7 + (Number(mark.width) || 3) * 1.4) * scale) : null;
+  const arrowPath = arrow ? `M${arrow[0].x.toFixed(1)} ${arrow[0].y.toFixed(1)} L${end.x.toFixed(1)} ${end.y.toFixed(1)} L${arrow[1].x.toFixed(1)} ${arrow[1].y.toFixed(1)}` : "";
   const centerX = (start.x + end.x) / 2, centerY = (start.y + end.y) / 2 - 9 * scale;
   const label = mark.tool === "angle" && mark.label && !hideLabel ? String(mark.label) : "";
   const labelWidth = label.length * 7 * scale + 12 * scale;
+  const baseY = start.x <= end.x ? start.y : end.y;
+  const angleBaseline = annotationStrokeLayers(Math.max(0.8, scale), scale);
+  const dotRadius = ((Number(mark.width) || 3) + 2) * scale;
   return <g opacity={opacity}>
-    <path d={path} fill="none" stroke={stroke} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
-    {arrow && <path d={`M${arrow[0].x.toFixed(1)} ${arrow[0].y.toFixed(1)} L${end.x.toFixed(1)} ${end.y.toFixed(1)} L${arrow[1].x.toFixed(1)} ${arrow[1].y.toFixed(1)}`} fill="none" stroke={stroke} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />}
+    <path d={path} fill="none" stroke={outlineColor} strokeWidth={layers.halo} strokeLinecap="round" strokeLinejoin="round" />
+    <path d={path} fill="none" stroke={stroke} strokeWidth={layers.core} strokeLinecap="round" strokeLinejoin="round" />
+    {arrow && <path d={arrowPath} fill="none" stroke={outlineColor} strokeWidth={layers.halo} strokeLinecap="round" strokeLinejoin="round" />}
+    {arrow && <path d={arrowPath} fill="none" stroke={stroke} strokeWidth={layers.core} strokeLinecap="round" strokeLinejoin="round" />}
     {mark.tool === "angle" && points.length === 2 && <>
-      <line x1={Math.min(start.x, end.x) - 20 * scale} y1={start.x <= end.x ? start.y : end.y} x2={Math.max(start.x, end.x) + 20 * scale} y2={start.x <= end.x ? start.y : end.y} stroke={stroke} strokeWidth={Math.max(0.8, scale)} strokeDasharray={`${5 * scale} ${5 * scale}`} opacity=".6" />
-      {points.map((value, index) => <circle key={`${mark.id || "angle"}_${index}`} cx={value.x} cy={value.y} r={((Number(mark.width) || 3) + 2) * scale} fill={stroke} />)}
+      <line x1={Math.min(start.x, end.x) - 20 * scale} y1={baseY} x2={Math.max(start.x, end.x) + 20 * scale} y2={baseY} stroke={outlineColor} strokeWidth={angleBaseline.halo} strokeDasharray={`${5 * scale} ${5 * scale}`} opacity=".6" />
+      <line x1={Math.min(start.x, end.x) - 20 * scale} y1={baseY} x2={Math.max(start.x, end.x) + 20 * scale} y2={baseY} stroke={stroke} strokeWidth={angleBaseline.core} strokeDasharray={`${5 * scale} ${5 * scale}`} opacity=".6" />
+      {points.map((value, index) => <circle key={`${mark.id || "angle"}_${index}_halo`} cx={value.x} cy={value.y} r={annotationOutlineRadius(dotRadius, scale)} fill={outlineColor} />)}
+      {points.map((value, index) => <circle key={`${mark.id || "angle"}_${index}`} cx={value.x} cy={value.y} r={dotRadius} fill={stroke} />)}
     </>}
     {label && <g><rect x={centerX - labelWidth / 2} y={centerY - 11 * scale} width={labelWidth} height={18 * scale} rx={4 * scale} fill="rgba(10,10,16,.82)" stroke="rgba(255,255,255,.55)" strokeWidth={Math.max(0.5, 0.7 * scale)} /><text x={centerX} y={centerY + 2 * scale} textAnchor="middle" fontSize={10 * scale} fontWeight="700" fill="#fff">{label}</text></g>}
   </g>;
@@ -13913,6 +13991,11 @@ export function createScheduleFixtureDb() {
     schedule,
   };
 }
+
+/* Test hook. The canvas editor and the read-only SVG overlay draw the same
+   marks through two separate implementations, so a test needs both to prove they
+   agree on the contrast outline. Nothing in the app reads this. */
+export const annotationRenderers = { drawAnnotationMark, AnnotationSvgMark };
 
 export function createAppScreenSmokeCases() {
   const noop = () => {};

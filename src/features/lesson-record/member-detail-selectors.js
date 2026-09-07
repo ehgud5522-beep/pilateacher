@@ -317,7 +317,12 @@ export function selectMemberLessonCounts({ member, schedule = [], now = new Date
 }
 
 export function selectPendingLessonSessions({ members = [], schedule = [], pendingDrafts = [], now = new Date() } = {}) {
-  const operationalMembers = (members || []).filter((member) => member?.isSample !== true);
+  /* A lesson belonging to a member who is inactive or has been deleted cannot
+     be acted on -- there is no member to take attendance for or write a record
+     against -- so counting it only inflates the badge. */
+  const operationalMembers = (members || [])
+    .filter((member) => member?.isSample !== true && String(member?.status || "active") !== "inactive");
+  const actionableMemberIds = new Set(operationalMembers.map((member) => String(member?.id || "")));
   const sampleIds = new Set((members || []).filter((member) => member?.isSample === true).map((member) => String(member?.id || "")));
   const operationalSchedule = (schedule || []).filter((lesson) => lesson?.isSample !== true
     && !sampleIds.has(String(lesson?.memberId || ""))
@@ -339,6 +344,9 @@ export function selectPendingLessonSessions({ members = [], schedule = [], pendi
   operationalSchedule.filter((lesson) => lessonEnded(lesson, now) && !lesson?.personal).forEach((lesson) => {
     (lesson.attendees || []).forEach((attendee) => {
       const memberId = String(attendee?.memberId || "");
+      // The schedule keeps attendees after the member record is gone, which is
+      // how deleted members produced rows labelled only "회원".
+      if (!actionableMemberIds.has(memberId)) return;
       const key = `${memberId}|${lesson.id}`;
       const session = (sessionsByMember.get(memberId) || []).find((item) => item.key === String(lesson.id)) || null;
       if (isPastUnresolvedAttendance({ lesson, memberId, now })) {
@@ -352,7 +360,9 @@ export function selectPendingLessonSessions({ members = [], schedule = [], pendi
     });
   });
 
-  (pendingDrafts || []).filter((draft) => !sampleIds.has(String(draft?.memberId || ""))).forEach((draft) => {
+  (pendingDrafts || [])
+    .filter((draft) => !sampleIds.has(String(draft?.memberId || "")) && actionableMemberIds.has(String(draft?.memberId || "")))
+    .forEach((draft) => {
     const memberId = String(draft?.memberId || "");
     const lessonId = String(draft?.lessonId || "");
     if (!memberId || !lessonId) return;

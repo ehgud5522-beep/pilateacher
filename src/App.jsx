@@ -14969,7 +14969,17 @@ export default function App() {
       status: voiceMeta.lessonRecord.structuredDraft ? "structured" : "unstructured",
       confirmationStatus: "pending",
       reconcileStatus,
-    }) : null;
+    }) : {
+      // A directly typed record and 노코멘트 used to produce a note with no
+      // lessonRecord at all, so the lesson stayed in the "확인할 수업" queue no
+      // matter how often it was saved. confirmedRecord is deliberately left
+      // unset: it is what marks a note as AI-sourced, and this is not one.
+      stage: "confirmed_record",
+      status: "confirmed_manual",
+      confirmationStatus: "confirmed",
+      confirmedAt: new Date().toISOString(),
+      reconcileStatus,
+    };
     const existingPending = noteOptions?.existingNoteId
       ? (target.notes || []).find((item) => item.id === noteOptions.existingNoteId)
       : noteOptions?.upsert && voiceMeta && sid
@@ -15000,9 +15010,37 @@ export default function App() {
         recordedAt: voiceMeta.recordedAt || new Date().toISOString(),
       } : {}),
     };
-    const nextNotes = noteOptions?.upsert && sid
+    /* Writing a record for a lesson resolves that lesson, so any earlier note
+       still sitting at structured_draft or raw_transcript is confirmed too.
+       Otherwise the queue keeps the lesson forever: the new note is confirmed
+       while the old one is not, and the session is only clear when every
+       confirmable note on it is. The draft is promoted into confirmedRecord
+       exactly as the voice path does, so its content is not dropped. */
+    const confirmSiblingRecords = (notes) => {
+      if (!resolvedSid || !shouldConfirm) return notes;
+      return (notes || []).map((item) => {
+        if (item?.id === note.id) return item;
+        if (String(item?.sid || "") !== resolvedSid) return item;
+        const record = item?.lessonRecord;
+        if (!record || record.stage === "confirmed_record") return item;
+        return {
+          ...item,
+          confirmedAt: item.confirmedAt || new Date().toISOString(),
+          lessonRecord: {
+            ...record,
+            stage: "confirmed_record",
+            status: record.structuredDraft ? "confirmed" : "confirmed_unstructured",
+            confirmationStatus: "confirmed",
+            confirmedRecord: record.confirmedRecord || record.structuredDraft
+              || { rawTranscript: String(item?.transcript || record.rawTranscript || "").trim(), origin: "raw" },
+            confirmedAt: record.confirmedAt || new Date().toISOString(),
+          },
+        };
+      });
+    };
+    const nextNotes = confirmSiblingRecords(noteOptions?.upsert && sid
       ? upsertLessonRecordNote(target.notes || [], note, { lessonId: sid, existingNoteId: existingPending?.id })
-      : existingPending ? (target.notes || []).map((item) => item.id === existingPending.id ? note : item) : [note, ...(target.notes || [])];
+      : existingPending ? (target.notes || []).map((item) => item.id === existingPending.id ? note : item) : [note, ...(target.notes || [])]);
     const memoryResult = buildMemberMemorySafely({ memberId: id, notes: nextNotes, existingMemory: target.aiMemory || [], schedule: currentDb.schedule });
     const nextDb = { ...currentDb, members: currentDb.members.map((m) => (m.id === id ? { ...m, notes: nextNotes, aiMemory: memoryResult.memories, memoryRebuildNeeded: memoryResult.failed } : m)) };
     const stored = await saveDb(nextDb);
@@ -15029,10 +15067,8 @@ export default function App() {
         deviceLog("voice_record_delete_retry_required", { memberId: id, lessonId: sid, storage: "indexedDB", ...deviceError(error) });
       }
     }
-    if (voiceMeta && shouldConfirm) {
-      removePendingLessonRecord(id, sid);
-      trackLessonRecordUsage("record_confirmed");
-    }
+    if (shouldConfirm && sid) removePendingLessonRecord(id, sid);
+    if (voiceMeta && shouldConfirm) trackLessonRecordUsage("record_confirmed");
     trackMemberMemoryUsage("memory_candidates", { count: memoryResult.stats.candidateCount });
     trackMemberMemoryUsage("memory_merged", { count: memoryResult.stats.mergedCount });
     trackMemberMemoryUsage("patterns", { count: memoryResult.stats.patternCount });

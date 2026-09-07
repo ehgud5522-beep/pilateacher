@@ -63,7 +63,7 @@ import { scrollRecordSectionIntoView } from "./features/ui/record-section-scroll
 import {
   POSTURE_STORAGE_KEYS, POSTURE_VIEW_DEFS, POSTURE_VIEW_KEYS,
   assessmentDisplayDate, assessmentMediaForView, commonPostureComparisonViews, compareAssessmentMetrics, completeAssessmentRecords, correctedPoseSource, countPosturePhotoRecords, normalizeAssessmentSets, normalizePostureView, postureAnalysisPlane,
-  postureAlignmentTransform, postureMetricDisplayValue, postureReferenceLines,
+  advanceManualCorrection, postureAlignmentTransform, postureMetricDisplayValue, postureReferenceLines,
   postureMilestoneTemplate, postureViewLabel, removeAssessmentDraftRecords, selectAutomaticComparison, selectComparisonAssessmentOptions,
   selectMemberBodyPhotoSurface, selectResumableAssessment,
 } from "./features/posture/posture-model.js";
@@ -8241,7 +8241,11 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
     if (pz.current.size < 2) pinch.current = null;
     if (zoom <= 1.02 && (pan.x !== 0 || pan.y !== 0)) setPan({ x: 0, y: 0 });
     if (pz.current.size >= 1) return;
-    if (dragRef.current) buzz(4);
+    const adjusted = dragRef.current;
+    if (adjusted) {
+      buzz(4);
+      setManual((m) => advanceManualCorrection(m, adjusted));
+    }
     dragRef.current = null; setHot(null);
   };
   const undoPoint = () => {
@@ -8384,7 +8388,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
         </button>
       )}
       {open && (
-        <div className="mt-4 space-y-3">
+        <div className={`mt-4 space-y-3${res && (res.items.length > 0 || res.invalidMeasurements?.length > 0) ? " pb-20" : ""}`}>
           <div className="rounded-2xl px-3 py-2.5" style={{ backgroundColor: CANVAS }}>
             <p className="text-xs font-bold" style={{ color: SUB }}>분석 대상</p>
             <p className="mt-0.5 text-sm font-extrabold" style={{ color: INK }}>{member?.name || "회원"}</p>

@@ -443,6 +443,25 @@ export function compareAssessmentMetrics(beforeSet, afterSet, { view = null, lim
   })).filter(Boolean).slice(0, Math.max(0, Number(limit) || 0));
 }
 
+/* Which joint the correction prompt should ask for next.
+
+   The prompt only ever moved on when a point was placed on empty canvas. But
+   correction opens on a pose whose points all exist, so every touch landed on
+   an existing joint and the prompt never advanced past its first entry --
+   leaving the second half of the pair unasked. Finishing an adjustment on the
+   joint being asked for is what advances it now.
+
+   Adjusting any other joint leaves the prompt where it is, so nothing advances
+   by accident, and re-adjusting a joint already passed stays possible: only the
+   prompt moves forward, never the ability to edit. */
+export function advanceManualCorrection(manual, adjustedKey) {
+  if (!manual || !Array.isArray(manual.seq)) return manual;
+  const index = Number(manual.i);
+  if (!Number.isInteger(index) || index < 0 || index >= manual.seq.length) return manual;
+  if (!adjustedKey || manual.seq[index] !== adjustedKey) return manual;
+  return { ...manual, i: index + 1 };
+}
+
 export function postureMilestoneTemplate({ role = "unassigned", beforeSet = null, afterSet = null } = {}) {
   if (role !== "after") return { text: role === "before" ? "비포 촬영" : "체형 촬영", details: [], metricIds: [] };
   return { text: "애프터 촬영", details: [], metricIds: [] };

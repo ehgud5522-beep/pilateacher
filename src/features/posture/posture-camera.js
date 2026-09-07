@@ -66,6 +66,30 @@ export function resolveNativePhotoOutputReadiness({ platform = "", startResolved
   });
 }
 
+/* Where the native preview surface stands relative to the stage it should
+   cover. A boolean could not tell "the preview stopped" from "the preview is up
+   but its bounds have not landed yet", and the two demand opposite actions:
+   the first must call nothing, the second must keep retrying. Conflating them
+   is what let a setPreviewSize get queued during a stop, to run after the
+   native view was destroyed and take the process down with it. */
+export const PREVIEW_BOUNDS_STATES = Object.freeze({
+  idle: "idle",
+  pending: "pending",
+  ready: "ready",
+});
+
+export function resolvePreviewBoundsAction({
+  previewing = false,
+  stopping = false,
+  state = PREVIEW_BOUNDS_STATES.idle,
+} = {}) {
+  // Nothing may touch the preview while it is being torn down.
+  if (stopping || !previewing) return "skip";
+  if (state === PREVIEW_BOUNDS_STATES.pending) return "retry";
+  if (state === PREVIEW_BOUNDS_STATES.ready) return "resync";
+  return "skip";
+}
+
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 const round = (value, digits = 4) => {
   const scale = 10 ** digits;

@@ -125,7 +125,8 @@ import {
 } from "./features/onboarding/first-run.js";
 import {
   CAPTURE_TIMER_OPTIONS, READING_STALL_MS, SENSOR_STATUSES, base64ToBlob,
-  computePreviewGeometry, correctOrientationForScreen, createCaptureGeometryMetadata, createLevelGate,
+  PREVIEW_BOUNDS_STATES, computePreviewGeometry, correctOrientationForScreen, createCaptureGeometryMetadata, createLevelGate,
+  resolvePreviewBoundsAction,
   evaluateDeviceLevel, normalizeCameraPermissionState, readCaptureTimer, resolveNativePhotoOutputReadiness,
   writeCaptureTimer,
 } from "./features/posture/posture-camera.js";
@@ -6740,13 +6741,14 @@ function PostureCaptureScreen({
   const countdownTimer = useRef(null);
   const pendingCaptureRef = useRef(null);
   const cameraPhotoReadyRef = useRef(false);
-  const previewBoundsReadyRef = useRef(false);
+  const previewBoundsStateRef = useRef(PREVIEW_BOUNDS_STATES.idle);
+  const cameraStopping = useRef(false);
   const stopCameraRef = useRef(null);
   const [cameraStatus, setCameraStatus] = useState("idle");
   const [cameraPhotoReady, setCameraPhotoReady] = useState(false);
   const [cameraError, setCameraError] = useState("");
   const [previewRect, setPreviewRect] = useState(null);
-  const [previewBoundsReady, setPreviewBoundsReady] = useState(false);
+  const [previewBoundsState, setPreviewBoundsState] = useState(PREVIEW_BOUNDS_STATES.idle);
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
   const [pendingCapture, setPendingCapture] = useState(null);
   const [timerSeconds, setTimerSeconds] = useState(() => readCaptureTimer(typeof window === "undefined" ? null : window.localStorage));
@@ -6835,10 +6837,18 @@ function PostureCaptureScreen({
     captureRunning.current = false;
     cameraStarting.current = false;
     cameraPhotoReadyRef.current = false;
-    previewBoundsReadyRef.current = false;
+    /* Shut every setPreviewSize path before awaiting the native stop. The
+       plugin defers setPreviewSize onto the main looper, so a call made during
+       the await runs after the view is gone and throws an NPE that kills the
+       process. cameraRunning used to be cleared only after the await, which
+       left that window open, and the state flip below re-entered the retry
+       effect right inside it. */
+    cameraStopping.current = true;
+    cameraRunning.current = false;
+    previewBoundsStateRef.current = PREVIEW_BOUNDS_STATES.idle;
     if (mounted.current) {
       setCameraPhotoReady(false);
-      setPreviewBoundsReady(false);
+      setPreviewBoundsState(PREVIEW_BOUNDS_STATES.idle);
     }
     if (nativePreviewAvailable) {
       try {
@@ -6854,8 +6864,8 @@ function PostureCaptureScreen({
       if (videoRef.current) videoRef.current.srcObject = null;
       if (stream) cameraPipelineLog("preview_stopped", { memberId: member?.id, assessmentId, view: activeView, source: "getUserMedia", reason, state: "success" });
     }
-    cameraRunning.current = false;
     document.documentElement.classList.remove("posture-camera-native-active");
+    cameraStopping.current = false;
     await stopMotion();
     if (mounted.current && reason !== "capture") setCameraStatus(reason === "background" ? "paused" : "idle");
   }, [activeView, assessmentId, clearCountdown, member?.id, nativePreviewAvailable, stopMotion]);
@@ -7003,39 +7013,49 @@ function PostureCaptureScreen({
     }
   }, [motionLog]);
 
-  const markPreviewBounds = useCallback((ready) => {
-    previewBoundsReadyRef.current = ready;
-    if (mounted.current) setPreviewBoundsReady(ready);
+  const markPreviewBounds = useCallback((state) => {
+    previewBoundsStateRef.current = state;
+    if (mounted.current) setPreviewBoundsState(state);
   }, []);
 
+  const previewBoundsAction = useCallback(() => resolvePreviewBoundsAction({
+    previewing: cameraRunning.current,
+    stopping: cameraStopping.current,
+    state: previewBoundsStateRef.current,
+  }), []);
+
   const syncPreviewBounds = useCallback(async () => {
+    // The same rule the effect uses, so no caller can reach setPreviewSize
+    // while the preview is stopping or already down.
+    if (previewBoundsAction() === "skip") return null;
     const box = stageRef.current?.getBoundingClientRect();
     if (!box?.width || !box?.height) {
-      // The native surface sits behind the WebView, so an unmeasurable stage
-      // leaves it wherever it was last placed. Report the miss instead of
-      // silently returning and never retrying.
-      markPreviewBounds(false);
+      /* The native surface sits behind the WebView, so an unmeasurable stage
+         leaves it wherever it was last placed. Staying "pending" is what keeps
+         the retry running -- this is not the same as the preview being down. */
+      markPreviewBounds(PREVIEW_BOUNDS_STATES.pending);
       return null;
     }
     const canonical = { x: box.left, y: box.top, width: box.width, height: box.height };
     setPreviewRect(canonical);
-    if (nativePreviewAvailable && cameraRunning.current) {
+    if (nativePreviewAvailable && cameraRunning.current && !cameraStopping.current) {
       try {
         await CameraPreview.setPreviewSize({
           x: Math.round(box.left), y: Math.round(box.top), width: Math.round(box.width), height: Math.round(box.height),
         });
       } catch (error) {
-        markPreviewBounds(false);
+        markPreviewBounds(PREVIEW_BOUNDS_STATES.pending);
         throw error;
       }
     }
-    markPreviewBounds(true);
+    markPreviewBounds(PREVIEW_BOUNDS_STATES.ready);
     return canonical;
-  }, [markPreviewBounds, nativePreviewAvailable]);
+  }, [markPreviewBounds, nativePreviewAvailable, previewBoundsAction]);
 
   useEffect(() => {
-    if (!cameraRunning.current) return undefined;
-    if (previewBoundsReady) {
+    const action = previewBoundsAction();
+    if (action === "skip") return undefined;
+    if (action === "resync") {
       const settled = window.requestAnimationFrame(() => {
         syncPreviewBounds().catch((error) => {
           deviceLog("posture_camera_preview_resize_failed", { memberId: member?.id, assessmentId, view: activeView, ...deviceError(error) });
@@ -7083,7 +7103,7 @@ function PostureCaptureScreen({
       window.cancelAnimationFrame(frame);
       window.clearTimeout(timer);
     };
-  }, [activeView, assessmentId, cameraStatus, member?.id, nativePreviewAvailable, previewBoundsReady, stageSize.height, stageSize.width, syncPreviewBounds]);
+  }, [activeView, assessmentId, cameraStatus, member?.id, nativePreviewAvailable, previewBoundsAction, previewBoundsState, stageSize.height, stageSize.width, syncPreviewBounds]);
 
   const cameraErrorMessage = (error) => {
     const name = String(error?.name || error?.code || "");
@@ -7170,9 +7190,9 @@ function PostureCaptureScreen({
     };
     cameraStarting.current = true;
     cameraPhotoReadyRef.current = false;
-    previewBoundsReadyRef.current = false;
+    previewBoundsStateRef.current = PREVIEW_BOUNDS_STATES.pending;
     setCameraPhotoReady(false);
-    setPreviewBoundsReady(false);
+    setPreviewBoundsState(PREVIEW_BOUNDS_STATES.pending);
     setCameraStatus("starting");
     setCameraError("");
     cameraPipelineLog("camera_prepare_started", { memberId: member?.id, assessmentId, view: activeView, source: nativePreviewAvailable ? "native_preview" : "getUserMedia", platform: cameraPlatform, lifecycleState: "preparing" });
@@ -7373,7 +7393,7 @@ function PostureCaptureScreen({
 
   const beginCountdown = () => {
     if (countdown != null || captureRunning.current || cameraStatus !== "active"
-      || (nativePreviewAvailable && (!cameraPhotoReadyRef.current || !previewBoundsReadyRef.current))) return;
+      || (nativePreviewAvailable && (!cameraPhotoReadyRef.current || previewBoundsStateRef.current !== PREVIEW_BOUNDS_STATES.ready))) return;
     if (timerSeconds === 0) { captureNow(); return; }
     let remaining = timerSeconds;
     setCountdown(remaining);
@@ -7531,7 +7551,7 @@ function PostureCaptureScreen({
         ) : (
           <div className="relative flex items-center justify-between gap-3 pb-1">
             <button type="button" onClick={async () => { await stopCamera("album"); onOpenAlbum(activeView); }} disabled={countdown != null || busy} className="flex h-11 w-16 flex-col items-center justify-center gap-0.5 rounded-xl text-[10px] font-bold disabled:opacity-40" style={{ backgroundColor: "rgba(255,255,255,.10)" }}><ImagePlus size={16} />앨범</button>
-            <button type="button" onClick={beginCountdown} disabled={cameraStatus !== "active" || (nativePreviewAvailable && (!cameraPhotoReady || !previewBoundsReady)) || countdown != null || busy} className="flex h-[66px] w-[66px] shrink-0 items-center justify-center rounded-full disabled:opacity-40" style={{ border: "4px solid #fff", backgroundColor: "rgba(255,255,255,.22)", boxShadow: "0 0 0 2px rgba(255,255,255,.18)" }} aria-label={`${timerSeconds ? `${timerSeconds}초 후` : "즉시"} 촬영`}><span className="h-[48px] w-[48px] rounded-full bg-white" /></button>
+            <button type="button" onClick={beginCountdown} disabled={cameraStatus !== "active" || (nativePreviewAvailable && (!cameraPhotoReady || previewBoundsState !== PREVIEW_BOUNDS_STATES.ready)) || countdown != null || busy} className="flex h-[66px] w-[66px] shrink-0 items-center justify-center rounded-full disabled:opacity-40" style={{ border: "4px solid #fff", backgroundColor: "rgba(255,255,255,.22)", boxShadow: "0 0 0 2px rgba(255,255,255,.18)" }} aria-label={`${timerSeconds ? `${timerSeconds}초 후` : "즉시"} 촬영`}><span className="h-[48px] w-[48px] rounded-full bg-white" /></button>
             <div className="relative"><button type="button" onClick={() => setTimerOpen((value) => !value)} disabled={countdown != null || busy} className="flex h-11 w-16 flex-col items-center justify-center gap-0.5 rounded-xl text-[10px] font-bold disabled:opacity-40" style={{ backgroundColor: "rgba(255,255,255,.10)" }}><Clock size={16} />{timerSeconds === 0 ? "즉시" : `${timerSeconds}초`}</button>{timerOpen && <div className="absolute bottom-14 right-0 grid w-[188px] grid-cols-4 gap-1 rounded-xl p-2" style={{ backgroundColor: "#202631", boxShadow: "0 12px 32px rgba(0,0,0,.42)" }}>{CAPTURE_TIMER_OPTIONS.map((seconds) => <button type="button" key={seconds} onClick={() => chooseTimer(seconds)} className="h-9 rounded-lg text-[11px] font-bold" style={{ backgroundColor: timerSeconds === seconds ? "#4C4399" : "rgba(255,255,255,.08)" }}>{seconds === 0 ? "즉시" : `${seconds}초`}</button>)}</div>}</div>
           </div>
         )}

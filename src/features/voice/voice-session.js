@@ -12,6 +12,7 @@ const VOICE_SESSION_EVENT_TYPES = new Set([
   "record_start", "record_end", "upload", "transcribed", "structured", "failed",
   "prepared", "trimmed", "audio_record_start_failed", "camera_preview_start_failed", "camera_fallback",
   "camera_start_skipped", "camera_preview_start_cancelled", "photo_output_ready",
+  "album_picker_opened", "album_picker_change", "album_picker_released",
   "camera_preview_bounds_pending", "camera_preview_bounds_failed",
   "motion_listener_started", "motion_unsupported", "motion_permission_denied",
   "motion_listener_failed", "motion_listener_remove_failed", "motion_reading_timeout",

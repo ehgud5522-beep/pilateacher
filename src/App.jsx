@@ -6709,6 +6709,10 @@ function SavedPoseViewer({ rec, member, records, onUpdate, memberName, onClose, 
 
 // Deadline for the very first reading after the listener is attached. Later
 // readings re-arm the watchdog with the shorter READING_STALL_MS.
+// How long after returning from the photo picker to wait for its change event
+// before assuming it was dismissed and letting the camera start again.
+const ALBUM_RESUME_GRACE_MS = 1200;
+
 const MOTION_FIRST_READING_TIMEOUT_MS = 2500;
 // Caps how many stall/resume pairs one run may write, so a sensor that flaps
 // cannot evict the rest of the 30-entry diagnostic ring.
@@ -6719,7 +6723,7 @@ const PREVIEW_BOUNDS_RETRY_DELAY_MS = 120;
 
 function PostureCaptureScreen({
   member, assessmentId, roleLabel, captureViews, currentCapture, capturePhotos, draftSaved, busy,
-  captureImportError = "", onSelectView, onAcceptCapture, onOpenAlbum, onDeleteCapture, onSaveDraft, onContinue, onExit,
+  captureImportError = "", albumPending = false, onSelectView, onAcceptCapture, onOpenAlbum, onDeleteCapture, onSaveDraft, onContinue, onExit,
 }) {
   const isNative = Capacitor.isNativePlatform();
   const iosStableCaptureFallback = Capacitor.getPlatform() === "ios" && !IOS_NATIVE_CAPTURE_ENABLED;
@@ -7316,8 +7320,10 @@ function PostureCaptureScreen({
 
   useEffect(() => {
     if (iosStableCaptureFallback || capturesComplete || pendingCapture || cameraStatus !== "idle") return;
+    // Restarting the preview on top of an open photo picker loses its result.
+    if (albumPending) return;
     void startCamera();
-  }, [cameraStatus, capturesComplete, iosStableCaptureFallback, pendingCapture, startCamera]);
+  }, [albumPending, cameraStatus, capturesComplete, iosStableCaptureFallback, pendingCapture, startCamera]);
 
   const captureBrowserFrame = async () => {
     const video = videoRef.current;
@@ -7619,6 +7625,13 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
   const [hot, setHot] = useState(null);
   const canvasRef = useRef(null), imgRef = useRef(null), dragRef = useRef(null);
   const albumRef = useRef(null);
+  /* The photo picker sends the app to the background, which stops the camera
+     and leaves cameraStatus "idle" -- the exact condition the auto-start effect
+     waits for. It then restarted the camera on top of the open picker, and the
+     selection was dropped. This holds the camera off until the picker is done. */
+  const albumPending = useRef(false);
+  const [albumHold, setAlbumHold] = useState(false);
+  const albumReleaseTimer = useRef(null);
   const captureSource = useRef("system_picker");
   const allSaved = useMemo(
     () => (photos?.poses || []).filter((pose) => pose && (!pose.memberId || pose.memberId === member?.id)),
@@ -7849,10 +7862,43 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
   }, [img, pts, poseView, showSkel, showNum, res, hot, poseQuality.low]);
   useEffect(() => { draw(); }, [draw]);
 
+  const releaseAlbumPending = (reason) => {
+    if (albumReleaseTimer.current) window.clearTimeout(albumReleaseTimer.current);
+    albumReleaseTimer.current = null;
+    if (!albumPending.current) return;
+    albumPending.current = false;
+    setAlbumHold(false);
+    cameraPipelineLog("album_picker_released", {
+      memberId: analysisMemberId.current, assessmentId: assessmentId.current,
+      source: "system_photo_picker", state: "released", reason,
+    });
+  };
+  /* The picker fires no change event when it is dismissed, so returning to the
+     app also has to release the hold -- otherwise the camera never comes back.
+     A change arriving on resume wins the race by clearing the timer. */
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== "visible" || !albumPending.current) return;
+      if (albumReleaseTimer.current) window.clearTimeout(albumReleaseTimer.current);
+      albumReleaseTimer.current = window.setTimeout(() => releaseAlbumPending("resume_without_change"), ALBUM_RESUME_GRACE_MS);
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      if (albumReleaseTimer.current) window.clearTimeout(albumReleaseTimer.current);
+      albumReleaseTimer.current = null;
+    };
+  }, []);
   const openCapture = (targetView) => {
     setCaptureTarget(targetView);
     setCaptureImportError("");
     captureSource.current = "system_photo_picker";
+    albumPending.current = true;
+    setAlbumHold(true);
+    cameraPipelineLog("album_picker_opened", {
+      memberId: analysisMemberId.current, assessmentId: assessmentId.current, view: targetView,
+      source: "system_photo_picker", state: "opened",
+    });
     deviceLog("assessment_photo_input_opened", {
       memberId: analysisMemberId.current, assessmentId: assessmentId.current, view: targetView,
       source: "system_photo_picker", permission: "not_required", state: "opened",
@@ -8368,13 +8414,23 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
           )}
           {analysisMethod && !analysisStarted && <PostureCaptureScreen
             member={member} assessmentId={assessmentId.current} roleLabel={roleLabel} captureViews={captureViews} currentCapture={currentCapture}
-            capturePhotos={capturePhotos} draftSaved={draftSaved} busy={busy} captureImportError={captureImportError} onSelectView={(nextView) => { setCaptureImportError(""); setCaptureTarget(nextView); }}
+            capturePhotos={capturePhotos} draftSaved={draftSaved} busy={busy} captureImportError={captureImportError} albumPending={albumHold} onSelectView={(nextView) => { setCaptureImportError(""); setCaptureTarget(nextView); }}
             onAcceptCapture={(blob, metadata) => acceptCaptureBlob(blob, { ...metadata, preserveResolution: true })}
             onOpenAlbum={openCapture} onDeleteCapture={deleteCurrentCapture} onSaveDraft={saveCaptureDraft}
             onContinue={() => analysisMethod === "draw" ? beginDrawing(captureViews.find(({ key }) => !drawnViews[key])?.key || "front") : beginCapturedAnalysis(captureViews.find(({ key }) => !analyzedViews[key])?.key || "front")}
             onExit={() => onCaptureExit?.()}
           />}
-          <input ref={albumRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) pickFile(f); }} />
+          <input ref={albumRef} type="file" accept="image/*" className="hidden" onChange={(e) => {
+            const f = e.target.files?.[0];
+            e.target.value = "";
+            cameraPipelineLog("album_picker_change", {
+              memberId: analysisMemberId.current, assessmentId: assessmentId.current, view: captureTarget,
+              source: "system_photo_picker", state: f ? "file_received" : "no_file",
+              bytes: f ? f.size : 0,
+            });
+            releaseAlbumPending(f ? "change_with_file" : "change_without_file");
+            if (f) pickFile(f);
+          }} />
           {analysisStarted && busy && (
             <section role="status" aria-live="polite" className="py-8 text-center" style={{ borderRadius: 16, backgroundColor: LAVENDER_S, border: `1px solid #D5D1EB` }}>
               <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-full" style={{ backgroundColor: CARD, color: BRAND_D }}><Loader2 size={24} className="animate-spin" /></span>

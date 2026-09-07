@@ -68,7 +68,10 @@ import {
   selectMemberBodyPhotoSurface, selectResumableAssessment,
 } from "./features/posture/posture-model.js";
 import { validatePostureMeasurement, validPostureMetrics } from "./features/posture/measurement-validity.js";
-import { selectPostureResultStates, selectStoredPostureResultStates } from "./features/posture/result-presentation.js";
+import {
+  MANUAL_ONLY_RESULT_NOTICE, POSTURE_RESULT_METRIC_KEYS, isFullyManualAfterAiMiss,
+  selectPostureResultStates, selectStoredPostureResultStates,
+} from "./features/posture/result-presentation.js";
 import {
   POSTURE_PERSISTENCE_EVENTS, POSTURE_PERSISTENCE_FAILURES,
   appendPosturePersistenceDiagnostic, appendPosturePersistenceFailure,
@@ -7859,6 +7862,11 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
     invalidMeasurements: res?.invalidMeasurements || [],
     points: pts || {},
   }), [res, pts]);
+  /* 저장될 레코드와 같은 모양으로 물어본다. 저장 전과 후가 다른 답을 내면 안 된다. */
+  const manualOnlyResult = useMemo(() => isFullyManualAfterAiMiss({
+    analysisSource: analysisMethod === "manual" ? "manual" : "ai",
+    originalPts, pts,
+  }), [analysisMethod, originalPts, pts]);
 
   const draw = useCallback(() => {
     const c = canvasRef.current, im = imgRef.current;
@@ -8650,6 +8658,7 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
           )}
           {res && (res.items.length > 0 || res.invalidMeasurements?.length > 0) && (
             <>
+              {manualOnlyResult && <p className="rounded-xl px-3 py-2 text-xs font-bold" style={{ backgroundColor: WARN_S, color: WARN }}>{MANUAL_ONLY_RESULT_NOTICE}</p>}
               {!!resultStates.length && <div aria-label="핵심 상태" className="grid grid-cols-2 gap-2">
                 {resultStates.map((item) => <div key={item.key} className="min-w-0 rounded-xl p-3" style={{ backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: SUB }}>{item.label}</p><p className="mt-1 text-sm font-extrabold" style={{ color: INK }}>{item.status}</p></div>)}
               </div>}
@@ -9898,6 +9907,8 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
   const selectedDate = selected?.completedAt || selected?.at || "";
   const resultPoses = selected?.poses || [];
   const displayStates = resultPoses.flatMap(selectStoredPostureResultStates).filter((item, index, rows) => rows.findIndex((candidate) => candidate.key === item.key) === index).slice(0, 4);
+  // 저장된 기록에서도 같은 사실이 남아 있어야 한다. 저장 값만으로 판정된다.
+  const manualOnlyStored = resultPoses.some(isFullyManualAfterAiMiss);
   const methodLabel = (method) => method === "draw" ? "강사 직접 기록" : method === "manual" ? "직접 포인트" : "AI 변화 분석";
   const roleLabelOf = (role) => role === "before" ? "첫 촬영" : role === "after" ? "다음 촬영" : "미분류";
   const setDate = (set) => assessmentDisplayDate(set);
@@ -10139,7 +10150,7 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
           {selected?.status === "completed" && <div className="mt-3 flex items-center gap-2" style={{ padding: 10, borderRadius: 10, backgroundColor: GOOD_S }}><Check size={15} style={{ color: GOOD }} /><span className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: GOOD }}>{selectedIsManualResult ? "사진 기록 저장 완료" : "변화 기록 저장 완료"}</span><span className="text-[10px] font-bold" style={{ color: SUB }}>기기 우선 저장</span></div>}
           {!selected ? <div className="py-10 text-center"><Activity size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>표시할 변화 기록이 없습니다</p><button type="button" onClick={requestStartNew} className="mt-4 h-11 px-5 text-xs font-bold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>새 변화 기록 시작</button></div> : selected.status !== "completed" ? <div className="py-10 text-center"><AlertCircle size={22} className="mx-auto" style={{ color: WARN }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>아직 완료되지 않은 기록입니다</p><p className="mt-1 text-xs" style={{ color: SUB }}>저장된 사진과 처리 상태를 유지한 채 이어서 진행할 수 있습니다.</p><button type="button" onClick={() => resumeSet(selected)} className="mt-4 h-11 px-5 text-xs font-bold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>초안 이어하기</button></div> : <><div className="mt-3 grid grid-cols-2 gap-1.5">{selected.selectedViews.map((view) => <AssessmentSetFrame key={view} photo={setPhoto(selected, view)} label={postureViewLabel(view)} annotation onOpen={selectedIsManualResult ? undefined : () => { const pose = selected.poses.find((item) => normalizePostureView(item.view) === view); if (pose) setViewingPose(pose); }} />)}</div><button type="button" onClick={() => { const available = selected.selectedViews.map((view) => ({ view, photo: setPhoto(selected, view) })).filter((item) => item.photo); if (available.length === 1) setEditingAnnotation(available[0]); else if (available.length > 1) setAnnotationPicker(true); }} className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 text-xs font-bold" style={{ borderRadius: 10, backgroundColor: CANVAS, color: INK }}><Pencil size={13} />사진 표시 다시 수정하기</button>{comparisonPairFor(selected).after && !selectedIsManualResult && <button type="button" onClick={() => openComparisonFromSet(selected)} className="mt-2 h-11 w-full text-xs font-bold" style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D }}>변화 비교</button>}</>}
         </section>
-        {!selectedIsManualResult && selected?.status === "completed" && !!displayStates.length && <section style={{ padding: 13, borderRadius: 14, backgroundColor: CARD, border: `1px solid ${LINE}` }}><h2 className="text-sm font-extrabold" style={{ color: INK }}>핵심 상태</h2><div className="mt-3 grid grid-cols-2 gap-2">{displayStates.map((item) => <div key={item.key} className="min-w-0 rounded-xl p-3" style={{ backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: SUB }}>{item.label}</p><p className="mt-1 text-sm font-extrabold" style={{ color: INK }}>{item.status}</p></div>)}</div>{resultPoses[0] && <button type="button" onClick={() => setViewingPose(resultPoses[0])} className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 text-xs font-bold" style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D }}><Pencil size={13} />수정하기</button>}</section>}
+        {!selectedIsManualResult && selected?.status === "completed" && !!displayStates.length && <section style={{ padding: 13, borderRadius: 14, backgroundColor: CARD, border: `1px solid ${LINE}` }}><h2 className="text-sm font-extrabold" style={{ color: INK }}>핵심 상태</h2>{manualOnlyStored && <p className="mt-2 rounded-xl px-3 py-2 text-xs font-bold" style={{ backgroundColor: WARN_S, color: WARN }}>{MANUAL_ONLY_RESULT_NOTICE}</p>}<div className="mt-3 grid grid-cols-2 gap-2">{displayStates.map((item) => <div key={item.key} className="min-w-0 rounded-xl p-3" style={{ backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: SUB }}>{item.label}</p><p className="mt-1 text-sm font-extrabold" style={{ color: INK }}>{item.status}</p></div>)}</div>{resultPoses[0] && <button type="button" onClick={() => setViewingPose(resultPoses[0])} className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 text-xs font-bold" style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D }}><Pencil size={13} />수정하기</button>}</section>}
       </>}
 
       {screen === "compare" && <section style={{ padding: 14, borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}><div className="flex items-center gap-2"><button type="button" onClick={() => setScreen("result")} aria-label="결과로 돌아가기" className="flex h-11 w-11 items-center justify-center" style={{ color: SUB }}><ChevronLeft size={18} /></button><span className="min-w-0 flex-1"><span className="block text-base font-extrabold" style={{ color: INK }}>변화 비교</span><span className="block text-xs" style={{ color: SUB }}>선택한 두 기록을 같은 촬영 방향으로 비교</span></span><button type="button" onClick={() => setShowAnnotations((value) => !value)} className="h-9 px-2 text-[10px] font-bold" style={{ borderRadius: 8, backgroundColor: showAnnotations ? TINT : CANVAS, color: showAnnotations ? BRAND_D : SUB }}>사진 표시 {showAnnotations ? "ON" : "OFF"}</button></div>

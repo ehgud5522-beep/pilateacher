@@ -19,6 +19,38 @@ const CORE_RESULT_METRICS = Object.freeze([
   { key: "head", label: "머리", threshold: 2, left: "earL", right: "earR", directional: "tilt" },
 ]);
 
+/* 상태값을 낼 수 있는 항목. 화면과 결과 카드가 같은 목록을 봐야 한 쪽만 늘어나는
+   일이 생기지 않는다. */
+export const POSTURE_RESULT_METRIC_KEYS = Object.freeze(CORE_RESULT_METRICS.map(({ key }) => key));
+
+export const MANUAL_ONLY_RESULT_NOTICE = "AI가 사람을 찾지 못해 관절을 모두 직접 지정한 결과입니다";
+
+/* 사람이 없는 사진에서도 각도가 나온다는 신고가 있었다.
+
+   측정 게이트는 항목별 기하만 본다 -- 점이 있는지, 범위 안인지, 신뢰도가 되는지.
+   손으로 찍은 점은 신뢰도 1 로 저장되므로 그 검사를 통과한다. 즉 게이트는 사진에
+   사람이 있는지 묻지 않는다.
+
+   길 자체는 남겨 둔다. 조명이 나쁘거나 옷이 겹친 사진을 살리려고 만든 길이다.
+   대신 그렇게 나온 결과에는 어떻게 나왔는지를 붙인다.
+
+   판정하지 않는다. 점수도 매기지 않는다. 저장된 값이 이미 말하고 있는 사실만
+   읽는다 -- AI 가 아무 점도 내놓지 못했고(originalPts 없음), 모든 점이 손으로
+   찍혔다(source 가 전부 "manual"). AI 점을 끌어 옮긴 것은 "manual-corrected" 로
+   남으므로 여기에 섞이지 않는다. */
+export function isFullyManualAfterAiMiss(pose) {
+  if (!pose || typeof pose !== "object") return false;
+  // 처음부터 직접 찍기를 고른 경우는 AI 가 실패한 것이 아니다.
+  if (!String(pose.analysisSource || "").startsWith("ai")) return false;
+  const original = pose.originalPts;
+  if (original && Object.keys(original).length > 0) return false;
+  const points = pose.pts;
+  if (!points || typeof points !== "object") return false;
+  const entries = Object.values(points).filter(Boolean);
+  if (!entries.length) return false;
+  return entries.every((point) => point.source === "manual");
+}
+
 const sideFromPoints = (points, leftKey, rightKey) => {
   const left = points?.[leftKey];
   const right = points?.[rightKey];

@@ -449,7 +449,7 @@ const DEVICE_LOG_FIELDS = new Set([
   "secondaryAudioShouldBeSilencedHint", "otherSessionOwner", "inputAvailable", "routeInputs", "routeOutputs", "voiceEngine",
   "prepareToRecord", "recordingSettings", "fileURL", "fileExistedBefore", "previousRecorderAlive",
   "millisecondsSinceLastStop", "sessionInterrupted", "attempt", "shouldResume", "width", "height", "bytes",
-  "elapsedMs", "permissionState", "pluginError", "receivedEvents", "invalidEvents",
+  "elapsedMs", "permissionState", "pluginError", "receivedEvents", "invalidEvents", "previousAssessmentId",
   "fileExists", "fileBytes", "isRecording", "averagePower", "sample", "ready", "outputsPrepared",
   "photoOutputAvailable", "photoOutputAttached", "photoConnectionAvailable", "photoConnectionEnabled",
   "sessionRunning", "previewLayerAttached", "firstFrameReceived", "previewAttached", "previewX", "previewY",
@@ -7754,9 +7754,25 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
       .sort((a, b) => b.at.localeCompare(a.at))[0] || null;
   }, [photos, allSaved, captureViews, resumeAssessmentId, member?.id]);
 
+  /* 4방향을 한 번 찍었는데 세트가 2건으로 저장된다는 신고가 있었다.
+
+     세트는 assessmentId 로 묶이므로(normalizeAssessmentSets), 촬영 도중 이 값이
+     갈리면 한 번의 촬영이 둘로 나뉜다. 어디서 갈리는지는 추측하지 않는다 --
+     바뀌는 순간과 그 이유를 남겨 두고 기기에서 읽는다. */
+  const adoptAssessmentId = (next, reason) => {
+    const value = String(next || "");
+    if (!value || value === assessmentId.current) return;
+    cameraPipelineLog("assessment_id_changed", {
+      memberId: analysisMemberId.current, assessmentId: value,
+      previousAssessmentId: assessmentId.current || "", reason, source: "assessment",
+      state: assessmentId.current ? "replaced" : "first",
+    });
+    assessmentId.current = value;
+  };
+
   const startAssessment = (method) => {
     analysisMemberId.current = member?.id || null;
-    if (!assessmentId.current) assessmentId.current = initialAssessmentId || newAssessmentId();
+    if (!assessmentId.current) adoptAssessmentId(initialAssessmentId || newAssessmentId(), "start");
     analysisRole.current = assessmentRole || (allSaved.length === 0 ? "before" : "after");
     setAnalysisMethod(method);
     setCapturePhotos(captureStateFor(captureViews));
@@ -7798,7 +7814,9 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
         restored[key] = { src, blob, w: element.naturalWidth, h: element.naturalHeight, element, recordId: rec.id, marks: rec.marks || [] };
       }
       if (!alive || !Object.keys(restored).length) return;
-      assessmentId.current = resumeDraft.id;
+      /* 복원은 비동기라, 이 시점에 이미 다른 id 로 저장된 사진이 있으면 그 사진과
+         이후 결과가 서로 다른 세트로 갈린다. 바뀌는 것 자체가 신호다. */
+      adoptAssessmentId(resumeDraft.id, "resume_draft");
       analysisRole.current = resumeDraft.role || assessmentRole || analysisRole.current;
       setAnalysisMethod(resumeDraft.method || "ai");
       setCapturePhotos({ ...captureStateFor(captureViews), ...restored });
@@ -15712,6 +15730,14 @@ export default function App() {
     const target = analysisMember(memberId);
     if (!target || !input || typeof input !== "object") return false;
     const payload = input.captures ? input : { assessmentId: newAssessmentId(), analysisMethod: "ai", captures: input };
+    if (!input.captures || !input.assessmentId) {
+      /* 호출자가 id 를 주지 않아 여기서 만들어 붙인 경우. 촬영 화면은 항상 주므로
+         이 기록이 남는다면 그것만으로 세트가 갈린 이유가 된다. */
+      appendVoiceSessionDiagnostic("assessment_id_generated", {
+        source: "save_capture_draft", state: input.captures ? "missing_id" : "legacy_shape",
+        assessmentId: String(payload.assessmentId || ""),
+      });
+    }
     const assessmentId = String(payload.assessmentId || newAssessmentId());
     const captures = payload.captures || {};
     const currentPhotos = photosRef.current;

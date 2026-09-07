@@ -6405,9 +6405,15 @@ async function composeResultCard({ bRec, aRec, bSrc, aSrc, keys, colors, texts, 
 
   /* 관절점은 작게 표시하고 라벨은 고정된 줄에 배치한다.
      사진 위 원·문구가 서로 겹쳐 결과가 안 보이던 문제를 피한다. */
+  /* 레코드마다 한 번만 셀렉터를 돌리고 항목별로 꺼내 쓴다. */
+  const statesByRecord = new Map();
+  const statusFor = (rec, key) => {
+    if (!rec) return "";
+    if (!statesByRecord.has(rec)) statesByRecord.set(rec, new Map(selectStoredPostureResultStates(rec).map((item) => [item.key, item.status])));
+    return statesByRecord.get(rec).get(key) || "";
+  };
   const drawMarks = (rec, map, x0, color, isAfter) => {
     const pts = rec?.pts || {};
-    const mFor = (k) => validPostureMetrics(rec).find((m) => m.key === k);
     ctx.save(); ctx.beginPath(); ctx.rect(x0, TOP, PW, PH); ctx.clip();
     keys.forEach((k, i) => {
       const joints = (CARD_JOINTS[k] || []).map((j) => pts[j]).filter(Boolean);
@@ -6417,8 +6423,15 @@ async function composeResultCard({ bRec, aRec, bSrc, aSrc, keys, colors, texts, 
         const q = map(p);
         ctx.beginPath(); ctx.arc(q.x, q.y, 7, 0, Math.PI * 2); ctx.fill();
       });
-      const m = mFor(k);
-      const txt = `${CARD_SHORT[k] || k} ${m ? `${memberMetricValue(m.value, m.unit)}${m.unit}` : ""}${isAfter ? " · AFTER" : ""}`.trim();
+      /* 3-C 에서 결과 화면의 각도를 상태값으로 바꿨는데, 회원에게 보여주는 이 카드는
+         캔버스로 따로 그려서 그 변경이 닿지 않았다. 5.8° 같은 소수점이 그대로 남아
+         있었다.
+
+         상태값은 3-C 의 셀렉터를 그대로 부른다. 여기서 다시 만들면 두 화면이 갈라진다.
+         셀렉터가 다루지 않는 항목(측면·어깨골반차)은 항목명만 쓴다 -- 없는 상태값을
+         이 카드가 혼자 지어내는 것이 갈라짐의 시작이다. */
+      const state = statusFor(rec, k);
+      const txt = `${CARD_SHORT[k] || k}${state ? ` ${state}` : ""}${isAfter ? " · AFTER" : ""}`.trim();
       cardChip(ctx, txt, x0 + PW / 2, TOP + 30 + i * 46, { bg: "rgba(20,20,28,.84)", fg: color === "#FFFFFF" ? "#fff" : color, maxX: x0 + PW });
     });
     ctx.restore();
@@ -6620,10 +6633,11 @@ function ResultCardMaker({ member, saved, centerName, onToast, onGoAnalyze, init
                         <button key={k} onClick={() => { const cur = new Set(keys); cur.has(k) ? cur.delete(k) : cur.add(k); setSel([...cur]); setTxt(null); }}
                           className="rounded-full px-3 py-1.5 text-xs font-extrabold"
                           style={keys.includes(k) ? { backgroundColor: TINT, color: PRIMARY, boxShadow: `inset 0 0 0 1.5px ${PRIMARY}` } : { backgroundColor: CANVAS, color: SUB }}>
-                          {CARD_SHORT[k] || k}
+                          {CARD_SHORT[k] || k}{!POSTURE_RESULT_METRIC_KEYS.includes(k) && <span className="ml-1 font-bold opacity-70">이름만</span>}
                         </button>
                       ))}
                     </div>
+                    {commonKeys.some((k) => !POSTURE_RESULT_METRIC_KEYS.includes(k)) && <Sub className="mt-1 block">‘이름만’ 항목은 카드에 항목명만 나옵니다 · 상태값은 {POSTURE_RESULT_METRIC_KEYS.map((k) => CARD_SHORT[k] || k).join(" · ")}에만 있습니다</Sub>}
                   </div>
                   {[{ k: "title", l: "제목" }, { k: "c1", l: "체크 문장 1" }, { k: "c2", l: "체크 문장 2" }, { k: "close", l: "마무리 문장" }].map(({ k, l }) => (
                     <Field key={k} label={l} hint="자동 초안 · 고쳐 쓸 수 있어요">

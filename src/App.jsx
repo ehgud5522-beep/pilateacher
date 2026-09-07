@@ -3185,7 +3185,7 @@ function WeekGrid({ days, byDate, nameOf, memberOf, briefingOf, cursor, onOpen, 
     const needsRecord = !pv && !eq && list.some((a) => a.status === "done" && !(memberOf?.(a.memberId)?.notes || []).some((n) => n?.sid === s.id));
     const briefingLine = !pv && !eq && list.some((attendee) => !!selectScheduleBriefing(briefingOf?.(attendee.memberId, s.id)));
     const typeLabel = typeDef.label;
-    return { s, top: topOf(st), h: Math.max(20, topOf(en) - topOf(st) - 2), label, equipText, typeKey, typeShort: typeDef.short, typeLabel, briefingLine, done, cancelled: (eq && !!s.groupCancelled) || status === "cancel", noshow: status === "noshow", eq, pv, next: s.id === nextId, needsRecord, groupPeople };
+    return { s, top: topOf(st), h: Math.max(20, topOf(en) - topOf(st) - 2), label, equipText, typeKey,  typeLabel, briefingLine, done, cancelled: (eq && !!s.groupCancelled) || status === "cancel", noshow: status === "noshow", eq, pv, next: s.id === nextId, needsRecord, groupPeople };
   }).filter((b) => b.top >= -GRID_ROW && b.top < totalHeight);
 
   return (
@@ -3250,13 +3250,13 @@ function WeekGrid({ days, byDate, nameOf, memberOf, briefingOf, cursor, onOpen, 
                     {b.next && <Play size={7} fill={BRAND} className="absolute left-0.5 top-0.5" />}
                     {memberDot && !twoLine && <span className="absolute" aria-hidden="true" style={{ left: 2, bottom: 2, width: 5, height: 5, borderRadius: 3, backgroundColor: memberDot, opacity: b.done ? .45 : 1 }} />}
                     <span className="flex w-full min-w-0 items-center" style={{ paddingLeft: b.next ? 8 : 0 }}>
-                      {!twoLine && <span className="pt-week-type mr-0.5 shrink-0" aria-label={`${b.typeLabel} 수업`} style={{ color: tone.edge }}>{b.typeShort}</span>}
+                      {!twoLine && <span className="pt-week-type mr-0.5 shrink-0" aria-label={`${b.typeLabel} 수업`} style={{ color: tone.edge }}>{b.typeLabel}</span>}
                       {memberDot && twoLine && <span className="shrink-0" aria-hidden="true" style={{ width: 3.5, height: 3.5, borderRadius: 2, marginRight: 1.5, backgroundColor: memberDot, opacity: b.done ? .45 : 1 }} />}
                       <span className="min-w-0 flex-1 truncate" style={{ textDecoration: b.cancelled ? "line-through" : "none" }}>{b.label}</span>
                     </span>
                     {twoLine && (
                       <span className="pt-week-equip flex w-full min-w-0 items-center">
-                        <span className="pt-week-type mr-0.5 shrink-0" aria-label={`${b.typeLabel} 수업`} style={{ color: tone.edge }}>{b.typeShort}</span>
+                        <span className="pt-week-type mr-0.5 shrink-0" aria-label={`${b.typeLabel} 수업`} style={{ color: tone.edge }}>{b.typeLabel}</span>
                         <span className="min-w-0 flex-1 truncate" style={{ color: tone.ink }}>{b.equipText}</span>
                       </span>
                     )}
@@ -4732,6 +4732,10 @@ function ReferenceMemberList({ members, schedule, settings, onSelect, onAdd, onD
 function MemberRegisterSheet({ members, onOpenExisting, onClose, onCreate }) {
   const [f, setF] = useState({ name: "", phone: "", birth: "", lessonType: "private", defaultLessonDuration: String(DEFAULT_CLASS_DURATION), goal: "", focus: "", memo: "", passName: "개인 10회", regular: "10", startDate: todayISO(), contractEnd: shift(todayISO(), 90) });
   const [error, setError] = useState("");
+  /* Twelve fields at once is what a first-time user meets. Only the two that
+     actually shape the record stay up front; the rest keep their order and
+     their defaults behind a disclosure. Nothing is removed. */
+  const [moreOpen, setMoreOpen] = useState(false);
   const submit = () => {
     const name = f.name.trim(), phone = f.phone.replace(/\D/g, "");
     if (!name) { setError("회원 이름을 입력해 주세요."); return; }
@@ -4749,15 +4753,18 @@ function MemberRegisterSheet({ members, onOpenExisting, onClose, onCreate }) {
       footer={<button type="button" disabled={!f.name.trim() || !num(f.regular)} onClick={submit} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>회원 등록</button>}>
       <div className="space-y-3">
         <Field label="회원 이름"><input autoFocus value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} className={inputCls} /></Field>
+        <Field label="수업 유형"><div className="grid w-full min-w-0 grid-cols-3 gap-2">{[{k:"private",l:"개인"},{k:"duet",l:"듀엣"},{k:"group",l:"그룹"}].map((o) => <button type="button" key={o.k} onClick={() => setF({ ...f, lessonType: o.k, passName: `${o.l} ${f.regular || 0}회` })} className="min-w-0 whitespace-nowrap px-1" style={{ height: 38, borderRadius: 8, border: `1px solid ${f.lessonType === o.k ? BRAND : LINE}`, backgroundColor: f.lessonType === o.k ? TINT : CARD, color: f.lessonType === o.k ? BRAND_D : SUB, fontSize: 12, fontWeight: 600 }}>{o.l}</button>)}</div></Field>
+        <button type="button" aria-expanded={moreOpen} onClick={() => setMoreOpen((value) => !value)} className="flex h-11 w-full items-center justify-center gap-1 text-xs font-bold" style={{ borderRadius: 9, backgroundColor: CANVAS, color: BRAND_D }}>{moreOpen ? "간단히 입력하기" : "더 입력하기"}<ChevronRight size={14} style={{ transform: moreOpen ? "rotate(90deg)" : "none", transition: "transform 160ms ease" }} /></button>
+        {moreOpen && <>
         <Field label="연락처"><input value={f.phone} onChange={(e) => setF({ ...f, phone: e.target.value })} className={inputCls} /></Field>
         <Field label="생년월일" hint={f.birth ? `${ageFromBirth(f.birth)}세 · 오늘 기준 자동 계산` : "나이는 자동 계산됩니다"}><input type="date" value={f.birth} max={todayISO()} onChange={(e) => setF({ ...f, birth: e.target.value })} className={inputCls} /></Field>
-        <Field label="수업 유형"><div className="grid w-full min-w-0 grid-cols-3 gap-2">{[{k:"private",l:"개인"},{k:"duet",l:"듀엣"},{k:"group",l:"그룹"}].map((o) => <button type="button" key={o.k} onClick={() => setF({ ...f, lessonType: o.k, passName: `${o.l} ${f.regular || 0}회` })} className="min-w-0 whitespace-nowrap px-1" style={{ height: 38, borderRadius: 8, border: `1px solid ${f.lessonType === o.k ? BRAND : LINE}`, backgroundColor: f.lessonType === o.k ? TINT : CARD, color: f.lessonType === o.k ? BRAND_D : SUB, fontSize: 12, fontWeight: 600 }}>{o.l}</button>)}</div></Field>
         <Field label="기본 수업시간" hint="새 일정을 만들 때 자동 적용됩니다"><select value={f.defaultLessonDuration} onChange={(e) => setF({ ...f, defaultLessonDuration: e.target.value })} className={inputCls}>{[30, 50, 60, 80].map((value) => <option key={value} value={value}>{value}분</option>)}</select></Field>
         <Field label="목표"><input value={f.goal} onChange={(e) => setF({ ...f, goal: e.target.value })} className={inputCls} /></Field>
         <Field label="주의사항" hint="한 줄에 하나"><textarea rows={2} value={f.focus} onChange={(e) => setF({ ...f, focus: e.target.value })} className={`${inputCls} h-auto resize-none py-2.5`} /></Field>
         <div className="grid grid-cols-2 gap-2"><Field label="이용권"><input value={f.passName} onChange={(e) => setF({ ...f, passName: e.target.value })} className={inputCls} /></Field><Field label="총 횟수"><input inputMode="numeric" value={f.regular} onChange={(e) => setF({ ...f, regular: e.target.value.replace(/\D/g, "") })} className={inputCls} /></Field></div>
         <div className="grid grid-cols-2 gap-2"><Field label="시작일"><input type="date" value={f.startDate} onChange={(e) => setF({ ...f, startDate: e.target.value })} className={inputCls} /></Field><Field label="만료일"><input type="date" value={f.contractEnd} onChange={(e) => setF({ ...f, contractEnd: e.target.value })} className={inputCls} /></Field></div>
         <Field label="상담 메모"><textarea rows={2} value={f.memo} onChange={(e) => setF({ ...f, memo: e.target.value })} className={`${inputCls} h-auto resize-none py-2.5`} /></Field>
+        </>}
         {error && <div className="flex items-center gap-2" style={{ padding: "9px 10px", borderRadius: 8, backgroundColor: WARN_S, color: WARN, fontSize: 12 }}><AlertCircle size={14} />{error}{error.includes("이미") && <button type="button" className="ml-auto font-semibold" onClick={() => { const name = f.name.trim(), phone = f.phone.replace(/\D/g, ""); const d = (members || []).find((m) => String(m.name || "").trim() === name && (!phone || String(m.phone || "").replace(/\D/g, "") === phone)); if (d) onOpenExisting(d.id); }}>기존 회원 열기</button>}</div>}
       </div>
     </Sheet>
@@ -7497,7 +7504,7 @@ function PostureCaptureScreen({
       <header className="safe-t shrink-0" style={{ background: "linear-gradient(180deg, rgba(13,16,22,.98), rgba(13,16,22,.82))", paddingLeft: 12, paddingRight: 12, paddingBottom: 8 }}>
         <div className="flex h-12 items-center gap-2">
           <button type="button" onClick={handleBack} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full" style={{ backgroundColor: "rgba(255,255,255,.10)" }} aria-label={countdown != null ? "카운트다운 취소" : "촬영 화면 닫기"}>{countdown != null ? <X size={19} /> : <ChevronLeft size={20} />}</button>
-          <span className="min-w-0 flex-1"><span className="block truncate text-sm font-extrabold">{member?.name || "회원"} · {roleLabel || "미분류"} 촬영</span><span className="block text-[10px] text-white/65">{completedCount}/{captureViews.length} 완료 · {postureViewLabel(activeView)}</span></span>
+          <span className="min-w-0 flex-1"><span className="block truncate text-sm font-extrabold">{member?.name || "회원"} · {roleLabel || "미분류"}</span><span className="block text-[10px] text-white/65">{completedCount}/{captureViews.length} 완료 · {postureViewLabel(activeView)}</span></span>
         </div>
         <div className="grid gap-1" style={{ gridTemplateColumns: `repeat(${captureViews.length}, minmax(0, 1fr))` }}>
           {captureViews.map((capture, index) => { const selected = capture.key === activeView; const complete = !!capturePhotos[capture.key]; return <button key={capture.key} type="button" disabled={countdown != null || cameraStatus === "capturing"} onClick={() => onSelectView(capture.key)} className="flex h-8 min-w-0 items-center justify-center gap-1 rounded-lg px-1 text-[10px] font-bold disabled:opacity-45" style={{ backgroundColor: selected ? "rgba(76,67,153,.92)" : complete ? "rgba(46,125,91,.72)" : "rgba(255,255,255,.10)", border: `1px solid ${selected ? "#B9B2F4" : "rgba(255,255,255,.14)"}` }}><span>{complete ? <Check size={10} /> : index + 1}</span><span className="truncate">{capture.label}</span></button>; })}
@@ -9472,9 +9479,9 @@ function LegacyAssessmentWorkspace({ member, photos, settings, initialSavedId, o
     if (!afterSetId && defaultAfterSet) setAfterSetId(defaultAfterSet.id);
   }, [defaultBeforeSet?.id, defaultAfterSet?.id]);
   const methodLabel = (method) => method === "draw" ? "강사 직접 기록" : method === "manual" ? "직접 포인트" : "AI 변화 분석";
-  const roleLabelOf = (role) => role === "before" ? "비포" : role === "after" ? "에프터" : "미분류";
+  const roleLabelOf = (role) => role === "before" ? "첫 촬영" : role === "after" ? "다음 촬영" : "미분류";
   const roleOrdinal = (role) => Math.max(1, sets.filter((set) => set.role === role).length + 1);
-  const pendingRoleLabel = pendingRole === "before" ? `비포 ${roleOrdinal("before")}` : pendingRole === "after" ? `에프터 ${roleOrdinal("after")}` : "미분류";
+  const pendingRoleLabel = pendingRole === "before" ? `첫 촬영 ${roleOrdinal("before")}` : pendingRole === "after" ? `다음 촬영 ${roleOrdinal("after")}` : "미분류";
   const openMethodChoice = () => { setRoleSheet(false); setPendingMethod(null); setScreen("method"); };
   const startCapture = (method) => { setPendingMethod(method); setScreen("capture"); setCaptureKey((key) => key + 1); };
   const requestCapture = () => {
@@ -9494,8 +9501,8 @@ function LegacyAssessmentWorkspace({ member, photos, settings, initialSavedId, o
     { value: "draw", label: "직접 그리기", description: "AI 없이 선·도형·각도·텍스트를 사진 위에 기록합니다.", icon: <Pencil size={17} /> },
   ];
   const roleOptions = [
-    { value: "before", label: `비포 ${roleOrdinal("before")}`, description: "비교 기준이 되는 촬영 세트" },
-    { value: "after", label: `에프터 ${roleOrdinal("after")}`, description: "변화를 비교할 촬영 세트" },
+    { value: "before", label: `첫 촬영 ${roleOrdinal("before")}`, description: "비교 기준이 되는 촬영 세트" },
+    { value: "after", label: `다음 촬영 ${roleOrdinal("after")}`, description: "변화를 비교할 촬영 세트" },
     { value: "unassigned", label: "미분류", description: "비교 역할을 나중에 정합니다" },
   ];
   return (
@@ -9592,7 +9599,12 @@ function LegacyAssessmentWorkspace({ member, photos, settings, initialSavedId, o
 }
 
 function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = null, diagnosticPhotosBucketExists = false, initialSavedId, initialAssessmentId = null, initialMode = "home", initialBeforeAssessmentId = null, initialAfterAssessmentId = null, initialCompareView = "front", onSavePose, onUpdatePose, onDeletePose, onSaveCaptureDraft, onDeleteCaptureDraft, onDiscardAssessmentDraft, onCompleteAssessment, onSaveMarks, onSaveAssessmentRole, onToggleAssessmentFavorite, onToast, onSaved }) {
-  const [screen, setScreen] = useState(initialSavedId || initialMode === "report" ? "result" : ["history", "resume"].includes(initialMode) ? "history" : "home");
+  /* Entering from the member detail already means "take a photo", so it opens
+     on the purpose step. Going through the 변화 기록 tab still lands on home. */
+  const [screen, setScreen] = useState(initialSavedId || initialMode === "report" ? "result"
+    : ["history", "resume"].includes(initialMode) ? "history"
+      : initialMode === "new" ? "purpose"
+        : "home");
   const [workflow, setWorkflow] = useState(() => createPostureWorkflowState());
   const [scope, setScope] = useState("full_body");
   const [selectedViews, setSelectedViews] = useState(() => new Set(POSTURE_VIEW_KEYS));
@@ -9658,12 +9670,12 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
   )) || null;
   const lastCompleted = completeSets[0] || null;
   const hasCompletedComparison = Boolean(automaticComparison.before && automaticComparison.after);
-  const nextCaptureLabel = completeSets.length ? "에프터 촬영 시작" : "비포 촬영 시작";
+  const nextCaptureLabel = completeSets.length ? "다음 촬영 시작" : "첫 촬영 시작";
   const selectedDate = selected?.completedAt || selected?.at || "";
   const resultPoses = selected?.poses || [];
   const displayStates = resultPoses.flatMap(selectStoredPostureResultStates).filter((item, index, rows) => rows.findIndex((candidate) => candidate.key === item.key) === index).slice(0, 4);
   const methodLabel = (method) => method === "draw" ? "강사 직접 기록" : method === "manual" ? "직접 포인트" : "AI 변화 분석";
-  const roleLabelOf = (role) => role === "before" ? "비포" : role === "after" ? "에프터" : "미분류";
+  const roleLabelOf = (role) => role === "before" ? "첫 촬영" : role === "after" ? "다음 촬영" : "미분류";
   const setDate = (set) => assessmentDisplayDate(set);
   const ymd = (value) => formatMemberLessonDate(value);
   const setPhoto = (set, view) => assessmentMediaForView(set, view);
@@ -9853,8 +9865,10 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
     <div className="space-y-3">
       {screen === "home" && <section style={{ padding: 16, borderRadius: 18, backgroundColor: CARD, border: `1px solid ${LINE}` }}>
         <div className="flex items-start gap-3"><span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: TINT, color: BRAND_D }}><Activity size={19} /></span><span className="min-w-0 flex-1"><span className="block text-lg font-extrabold" style={{ color: INK }}>{member?.name} 회원</span><span className="mt-1 block text-xs" style={{ color: SUB }}>{lastCompleted ? `최근 기록 ${ymd(setDate(lastCompleted).slice(0, 10))}` : "아직 완료된 변화 기록이 없습니다"}</span></span></div>
-        <div className="mt-4 flex items-center gap-2" style={{ padding: 10, borderRadius: 11, backgroundColor: GOOD_S }}><Check size={15} style={{ color: GOOD }} /><span className="min-w-0 flex-1 text-xs font-bold" style={{ color: GOOD }}>{lastCompleted ? "최근 변화 기록 저장 완료" : "촬영 전"}</span><span className="text-[10px] font-bold" style={{ color: SUB }}>기기 우선 저장</span></div>
-        {lastCompleted && <div className="mt-2" style={{ padding: 12, borderRadius: 12, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>{hasCompletedComparison ? "비포·에프터 비교 준비 완료" : "비포 저장 완료 · 에프터 촬영이 필요합니다"}</p></div>}
+        {/* A green tick reads as "done". Before anything is captured the state
+            is simply neutral; only a real save earns the green. */}
+        <div className="mt-4 flex items-center gap-2" style={{ padding: 10, borderRadius: 11, backgroundColor: lastCompleted ? GOOD_S : CANVAS }}>{lastCompleted ? <Check size={15} style={{ color: GOOD }} /> : <Camera size={15} style={{ color: SUB }} />}<span className="min-w-0 flex-1 text-xs font-bold" style={{ color: lastCompleted ? GOOD : INK2 }}>{lastCompleted ? "최근 변화 기록 저장 완료" : "아직 촬영한 기록이 없습니다"}</span><span className="text-[10px] font-bold" style={{ color: SUB }}>기기 우선 저장</span></div>
+        {lastCompleted && <div className="mt-2" style={{ padding: 12, borderRadius: 12, backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: INK }}>{hasCompletedComparison ? "변화 비교 준비 완료" : "첫 촬영 저장 완료 · 다음 촬영이 필요합니다"}</p></div>}
         <button type="button" onClick={requestStartNew} className="mt-5 flex h-13 min-h-[52px] w-full items-center justify-center gap-2 text-sm font-extrabold text-white" style={{ borderRadius: 13, backgroundColor: BRAND }}><Camera size={17} />{nextCaptureLabel}</button>
         {hasCompletedComparison && <button type="button" onClick={() => openComparisonFromSet(automaticComparison.after)} className="mt-2 flex h-12 w-full items-center justify-center gap-2 text-sm font-extrabold" style={{ borderRadius: 12, backgroundColor: TINT, color: BRAND_D }}><ArrowUpDown size={16} />비포·에프터 변화 비교</button>}
         <button type="button" onClick={() => setScreen("history")} className="mt-2 flex h-12 w-full items-center justify-center gap-2 text-sm font-bold" style={{ borderRadius: 12, backgroundColor: CARD, border: `1px solid ${LINE}`, color: INK }}><Activity size={16} />이전 분석 보기</button>

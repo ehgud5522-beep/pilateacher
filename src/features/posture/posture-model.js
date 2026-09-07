@@ -414,6 +414,31 @@ export function postureMetricDisplayValue(value, unit) {
   return unit === "°" ? roundHalfAwayFromZero(number) : number;
 }
 
+/* 같은 항목을 두 번 찍었을 때 쓰는 촬영 오차 폭. 이 안쪽 차이는 변화가 아니다. */
+export const POSTURE_CHANGE_TOLERANCE_DEG = 2;
+
+/* 두 촬영의 차이를 강사가 읽는 한 줄로.
+
+   방향은 말하지 않는다. 저장된 값에는 각도의 크기만 있고 어느 쪽이 올라갔는지가
+   없어서, 좌우를 붙이려면 없는 정보를 지어내야 한다.
+
+   개선·악화도 말하지 않는다. 숫자가 줄었다는 것과 좋아졌다는 것은 다른 말이고,
+   뒤쪽은 강사가 판단할 몫이다.
+
+   2° 미만은 변화로 읽지 않는다. 그 폭은 카메라 각도와 서 있는 자세가 조금 달라도
+   생기므로, 두 촬영의 차이라고 부를 수 없다. */
+export function postureMetricChangeText(difference, unit = "°") {
+  // null 과 "" 는 Number() 를 통과하면 0 이 된다. 값이 없는 것을 "변화 없음"이라고
+  // 말하면 확인하지 않은 사실을 말하는 셈이라, 아무것도 그리지 않는다.
+  if (difference === null || difference === undefined || difference === "") return null;
+  const number = Number(difference);
+  if (!Number.isFinite(number)) return null;
+  const size = Math.abs(number);
+  const tolerance = unit === "°" ? POSTURE_CHANGE_TOLERANCE_DEG : 0;
+  if (size === 0 || size < tolerance) return "변화 없음";
+  return `변화 ${size}${unit} ${number > 0 ? "증가" : "감소"}`;
+}
+
 export function compareAssessmentMetrics(beforeSet, afterSet, { view = null, limit = 8 } = {}) {
   if (!beforeSet || !afterSet) return [];
   const normalizedView = view ? normalizePostureView(view) : null;

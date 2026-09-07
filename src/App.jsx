@@ -63,7 +63,7 @@ import { scrollRecordSectionIntoView } from "./features/ui/record-section-scroll
 import {
   POSTURE_STORAGE_KEYS, POSTURE_VIEW_DEFS, POSTURE_VIEW_KEYS,
   assessmentDisplayDate, assessmentMediaForView, commonPostureComparisonViews, compareAssessmentMetrics, completeAssessmentRecords, correctedPoseSource, countPosturePhotoRecords, normalizeAssessmentSets, normalizePostureView, postureAnalysisPlane,
-  advanceManualCorrection, manualTapTarget, revertManualJoint, postureAlignmentTransform, postureMetricDisplayValue, postureReferenceLines,
+  advanceManualCorrection, manualTapTarget, revertManualJoint, postureAlignmentTransform, postureMetricChangeText, postureMetricDisplayValue, postureReferenceLines,
   postureMilestoneTemplate, postureViewLabel, removeAssessmentDraftRecords, selectAutomaticComparison, selectComparisonAssessmentOptions,
   selectMemberBodyPhotoSurface, selectResumableAssessment,
 } from "./features/posture/posture-model.js";
@@ -9619,7 +9619,16 @@ function AssessmentComparisonViewer({ beforeSet, afterSet, view, showGuides, mem
       {sameDayComparison && <p className="mt-2 text-center text-[11px] font-bold" style={{ color: SUB }}>같은 날 촬영</p>}
       {!!metrics.length && <div className="mt-3" style={{ padding: 11, borderRadius: 11, backgroundColor: CANVAS }}>
         <p className="text-xs font-extrabold" style={{ color: INK }}>측정값 변화</p>
-        <div className="mt-2 space-y-2">{metrics.map((metric) => <div key={metric.id} className="grid gap-1"><span className="truncate text-xs font-bold" style={{ color: INK2 }}>{metric.label}</span><span className="text-[11px] font-bold tabular-nums" style={{ color: BRAND_D }}>Before {memberMetricValue(metric.beforeValue, metric.unit)}{metric.unit} · After {memberMetricValue(metric.afterValue, metric.unit)}{metric.unit} · 차이 {metric.difference > 0 ? "+" : ""}{memberMetricValue(metric.difference, metric.unit)}{metric.unit}</span></div>)}</div>
+        {/* 한 줄에 다섯 개 숫자가 붙어 있어 어느 것이 어느 촬영인지 읽어내야 했다.
+            항목마다 Before·After 를 좌우로 갈라 두고, 아래 한 줄로 요약한다. */}
+        <div className="mt-2 space-y-2">{metrics.map((metric) => <div key={metric.id} className="rounded-xl p-2" style={{ backgroundColor: CANVAS }}>
+          <span className="block truncate text-xs font-bold" style={{ color: INK2 }}>{metric.label}</span>
+          <div className="mt-1 grid grid-cols-2 gap-2">
+            <div className="text-center"><span className="block text-[9px] font-bold" style={{ color: SUB }}>BEFORE</span><span className="block text-sm font-extrabold tabular-nums" style={{ color: INK }}>{memberMetricValue(metric.beforeValue, metric.unit)}{metric.unit}</span></div>
+            <div className="text-center"><span className="block text-[9px] font-bold" style={{ color: BRAND_D }}>AFTER</span><span className="block text-sm font-extrabold tabular-nums" style={{ color: BRAND_D }}>{memberMetricValue(metric.afterValue, metric.unit)}{metric.unit}</span></div>
+          </div>
+          <p className="mt-1 text-center text-[11px] font-bold" style={{ color: SUB }}>{postureMetricChangeText(metric.difference, metric.unit)}</p>
+        </div>)}</div>
       </div>}
     </div>
   );

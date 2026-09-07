@@ -84,7 +84,10 @@ test("capture timer, motion lifecycle, and storage handoff are connected to the 
   assert.match(source, /readCaptureTimer\(/);
   assert.match(source, /writeCaptureTimer\(/);
   assert.match(source, /Motion\.addListener\("orientation"/);
-  assert.match(source, /threshold:\s*LEVEL_THRESHOLD_DEG/);
+  assert.match(source, /createLevelGate\(\)/);
+  assert.match(source, /gate\.reading\(\{ roll: corrected\.roll/);
+  assert.match(source, /armReadingWatchdog\(READING_STALL_MS\)/);
+  assert.match(source, /gate\.stall\(\)/);
   assert.match(source, /visibilitychange/);
   assert.match(source, /pagehide/);
   assert.match(source, /onAcceptCapture=\{\(blob, metadata\) => acceptCaptureBlob/);

@@ -2,13 +2,32 @@ export const CAPTURE_TIMER_OPTIONS = Object.freeze([0, 3, 5, 10]);
 export const DEFAULT_CAPTURE_TIMER_SECONDS = 0;
 export const CAPTURE_TIMER_STORAGE_KEY = "pilateacher.posture.captureTimerSeconds";
 
-export const LEVEL_THRESHOLD_DEG = 4;
+// Entering the green state. Widened from 4 deg: a handheld phone rarely holds
+// 4 deg, so the old window made the guide flicker between green and amber
+// while the framing was in practice fine.
+export const LEVEL_THRESHOLD_DEG = 6;
+// Leaving it again. The 2 deg band above the entry threshold is the hysteresis:
+// once green, a small excursion no longer drops the state.
+export const LEVEL_RELEASE_THRESHOLD_DEG = 8;
+// How long the reading has to stay inside the entry threshold before it counts
+// as green, so a value that merely sweeps through does not trigger it.
+export const LEVEL_DWELL_MS = 400;
+// Consecutive unusable readings tolerated before the state is downgraded. A
+// single null beta/gamma no longer wipes a good reading.
+export const INVALID_READING_TOLERANCE = 3;
+// No orientation event for this long means the feed stalled, and the last
+// reading must stop being presented as current.
+export const READING_STALL_MS = 1200;
+// Weight kept on the previous reading by the smoothing filter.
+export const READING_SMOOTHING = 0.7;
+
 export const SENSOR_STATUSES = Object.freeze({
   loading: "loading",
   active: "active",
   permissionRequired: "permission_required",
   denied: "denied",
   unavailable: "unavailable",
+  stale: "stale",
   error: "error",
 });
 
@@ -305,12 +324,14 @@ export function evaluateDeviceLevel({
   pitch,
   status = SENSOR_STATUSES.active,
   threshold = LEVEL_THRESHOLD_DEG,
+  level = null,
 } = {}) {
   const statusMessages = {
     [SENSOR_STATUSES.loading]: "기울기 센서를 확인하고 있습니다.",
     [SENSOR_STATUSES.permissionRequired]: "기울기 센서 권한이 필요합니다.",
     [SENSOR_STATUSES.denied]: "기울기 센서 권한이 거부되었습니다.",
     [SENSOR_STATUSES.unavailable]: "자동 수평 감지를 사용할 수 없습니다.",
+    [SENSOR_STATUSES.stale]: "기울기 값을 받지 못하고 있습니다. 기기를 잠시 움직여 주세요.",
     [SENSOR_STATUSES.error]: "기울기 센서를 불러오지 못했습니다.",
   };
   if (status !== SENSOR_STATUSES.active) {
@@ -331,7 +352,11 @@ export function evaluateDeviceLevel({
   }
 
   const limit = Math.abs(Number(threshold)) || LEVEL_THRESHOLD_DEG;
-  const isLevel = Math.abs(normalizedRoll) <= limit && Math.abs(normalizedPitch) <= limit;
+  // A hysteresis gate decides level across several readings and passes its
+  // verdict in. Without one, a single reading inside the threshold is enough.
+  const isLevel = typeof level === "boolean"
+    ? level
+    : Math.abs(normalizedRoll) <= limit && Math.abs(normalizedPitch) <= limit;
   if (isLevel) {
     return Object.freeze({
       status,
@@ -366,6 +391,92 @@ export function evaluateDeviceLevel({
     message: normalizedPitch < 0
       ? "휴대폰 상단을 몸 쪽으로 조금 기울여주세요."
       : "휴대폰 상단을 회원 쪽으로 조금 기울여주세요.",
+  });
+}
+
+/* Turns a stream of orientation readings into the level state shown on screen.
+   Holds the smoothing filter, the enter/release hysteresis, the dwell timer and
+   the tolerance for unusable readings, so all of it is testable without a
+   device. Time is supplied by the caller; nothing here reads a clock of its own
+   except as a default. */
+export function createLevelGate({
+  enterThresholdDeg = LEVEL_THRESHOLD_DEG,
+  releaseThresholdDeg = LEVEL_RELEASE_THRESHOLD_DEG,
+  dwellMs = LEVEL_DWELL_MS,
+  invalidTolerance = INVALID_READING_TOLERANCE,
+  smoothing = READING_SMOOTHING,
+} = {}) {
+  let roll = null;
+  let pitch = null;
+  let level = false;
+  let candidateSince = null;
+  let invalidStreak = 0;
+  let validReadings = 0;
+
+  const clearReading = () => {
+    roll = null;
+    pitch = null;
+    level = false;
+    candidateSince = null;
+  };
+
+  const reading = ({ roll: rawRoll, pitch: rawPitch, at = Date.now() } = {}) => {
+    const nextRoll = Number(rawRoll);
+    const nextPitch = Number(rawPitch);
+    if (!Number.isFinite(nextRoll) || !Number.isFinite(nextPitch)) return invalidReading({ at });
+
+    invalidStreak = 0;
+    validReadings += 1;
+    roll = roll == null ? round(nextRoll, 1) : round((roll * smoothing) + (nextRoll * (1 - smoothing)), 1);
+    pitch = pitch == null ? round(nextPitch, 1) : round((pitch * smoothing) + (nextPitch * (1 - smoothing)), 1);
+
+    const worst = Math.max(Math.abs(roll), Math.abs(pitch));
+    if (level) {
+      if (worst > releaseThresholdDeg) {
+        level = false;
+        candidateSince = null;
+      }
+    } else if (worst <= enterThresholdDeg) {
+      if (candidateSince == null) candidateSince = at;
+      if (at - candidateSince >= dwellMs) level = true;
+    } else {
+      candidateSince = null;
+    }
+
+    return evaluateDeviceLevel({ roll, pitch, status: SENSOR_STATUSES.active, threshold: enterThresholdDeg, level });
+  };
+
+  /* Returns null while the run of unusable readings is still inside the
+     tolerance, meaning the caller keeps whatever it is already showing. */
+  const invalidReading = ({ at: _at = Date.now() } = {}) => {
+    invalidStreak += 1;
+    if (invalidStreak < invalidTolerance) return null;
+    clearReading();
+    return evaluateDeviceLevel({ status: SENSOR_STATUSES.unavailable });
+  };
+
+  /* The feed stopped. The last reading is dropped rather than left on screen as
+     if it were current, so no stale value can read as "적합합니다". */
+  const stall = () => {
+    clearReading();
+    invalidStreak = 0;
+    return evaluateDeviceLevel({ status: SENSOR_STATUSES.stale });
+  };
+
+  const reset = () => {
+    clearReading();
+    invalidStreak = 0;
+    validReadings = 0;
+    return evaluateDeviceLevel({ status: SENSOR_STATUSES.loading });
+  };
+
+  return Object.freeze({
+    reading,
+    invalidReading,
+    stall,
+    reset,
+    hasValidReading: () => validReadings > 0,
+    getState: () => Object.freeze({ roll, pitch, level, invalidStreak, candidateSince, validReadings }),
   });
 }
 

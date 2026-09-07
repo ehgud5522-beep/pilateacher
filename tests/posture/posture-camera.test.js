@@ -4,7 +4,11 @@ import test from "node:test";
 
 import {
   CAPTURE_TIMER_STORAGE_KEY,
+  INVALID_READING_TOLERANCE,
+  LEVEL_DWELL_MS,
+  LEVEL_RELEASE_THRESHOLD_DEG,
   LEVEL_THRESHOLD_DEG,
+  READING_STALL_MS,
   SENSOR_STATUSES,
   base64ToBlob,
   computePreviewGeometry,
@@ -12,6 +16,7 @@ import {
   createCaptureCountdown,
   createCaptureGeometryMetadata,
   createIdempotentLifecycle,
+  createLevelGate,
   evaluateDeviceLevel,
   mapPreviewPointToCapture,
   normalizeCaptureTimer,
@@ -189,19 +194,119 @@ test("screen orientation correction yields zero roll and pitch for canonical upr
 });
 
 test("sensor state and level guidance distinguish permission, support, and real tilt", () => {
-  assert.equal(LEVEL_THRESHOLD_DEG, 4);
+  assert.equal(LEVEL_THRESHOLD_DEG, 6);
+  assert.equal(LEVEL_RELEASE_THRESHOLD_DEG, 8);
+  assert.ok(LEVEL_RELEASE_THRESHOLD_DEG > LEVEL_THRESHOLD_DEG, "releasing green must be looser than entering it");
   assert.equal(resolveSensorStatus({ supported: false }), SENSOR_STATUSES.unavailable);
   assert.equal(resolveSensorStatus({ permission: "prompt" }), SENSOR_STATUSES.permissionRequired);
   assert.equal(resolveSensorStatus({ permission: "denied" }), SENSOR_STATUSES.denied);
   assert.equal(resolveSensorStatus({ hasReading: true }), SENSOR_STATUSES.active);
 
   assert.equal(evaluateDeviceLevel({ roll: 4, pitch: -4 }).isLevel, true);
-  const left = evaluateDeviceLevel({ roll: -5, pitch: 1 });
+  assert.equal(evaluateDeviceLevel({ roll: -5, pitch: 1 }).isLevel, true, "5 deg is inside the widened window");
+  const left = evaluateDeviceLevel({ roll: -7, pitch: 1 });
   assert.equal(left.code, "tilted_left");
   assert.match(left.message, /오른쪽/);
   const missing = evaluateDeviceLevel({ status: SENSOR_STATUSES.unavailable });
   assert.equal(missing.isLevel, false);
   assert.match(missing.message, /사용할 수 없습니다/);
+});
+
+test("green needs the reading to hold inside the window, not merely touch it", () => {
+  const gate = createLevelGate({ smoothing: 0 });
+  // A reading that is inside the entry threshold from the first sample still is
+  // not green until it has stayed there for the dwell time.
+  assert.equal(gate.reading({ roll: 1, pitch: 1, at: 0 }).isLevel, false);
+  assert.equal(gate.reading({ roll: 1, pitch: 1, at: LEVEL_DWELL_MS - 1 }).isLevel, false);
+  assert.equal(gate.reading({ roll: 1, pitch: 1, at: LEVEL_DWELL_MS }).isLevel, true);
+});
+
+test("a reading sweeping through the window never turns green", () => {
+  const gate = createLevelGate({ smoothing: 0 });
+  gate.reading({ roll: 20, pitch: 0, at: 0 });
+  gate.reading({ roll: 1, pitch: 0, at: 100 });
+  // Left the window again well before the dwell time elapsed.
+  assert.equal(gate.reading({ roll: 20, pitch: 0, at: 200 }).isLevel, false);
+  assert.equal(gate.reading({ roll: 1, pitch: 0, at: 300 }).isLevel, false);
+  assert.equal(gate.getState().candidateSince, 300, "the dwell timer restarts on re-entry");
+});
+
+test("once green, a small excursion holds and a real one releases", () => {
+  const gate = createLevelGate({ smoothing: 0 });
+  gate.reading({ roll: 0, pitch: 0, at: 0 });
+  assert.equal(gate.reading({ roll: 0, pitch: 0, at: LEVEL_DWELL_MS }).isLevel, true);
+
+  const between = (LEVEL_THRESHOLD_DEG + LEVEL_RELEASE_THRESHOLD_DEG) / 2;
+  const drifted = gate.reading({ roll: between, pitch: 0, at: LEVEL_DWELL_MS + 100 });
+  assert.equal(drifted.isLevel, true, "past the entry threshold but inside the release threshold stays green");
+  assert.equal(drifted.code, "level");
+
+  const released = gate.reading({ roll: LEVEL_RELEASE_THRESHOLD_DEG + 1, pitch: 0, at: LEVEL_DWELL_MS + 200 });
+  assert.equal(released.isLevel, false);
+  assert.notEqual(released.code, "level");
+
+  // Coming back inside has to serve the dwell time again.
+  assert.equal(gate.reading({ roll: 0, pitch: 0, at: LEVEL_DWELL_MS + 300 }).isLevel, false);
+  assert.equal(gate.reading({ roll: 0, pitch: 0, at: LEVEL_DWELL_MS + 300 + LEVEL_DWELL_MS }).isLevel, true);
+});
+
+test("a run of unusable readings shorter than the tolerance changes nothing", () => {
+  const gate = createLevelGate({ smoothing: 0 });
+  gate.reading({ roll: 0, pitch: 0, at: 0 });
+  assert.equal(gate.reading({ roll: 0, pitch: 0, at: LEVEL_DWELL_MS }).isLevel, true);
+
+  for (let attempt = 1; attempt < INVALID_READING_TOLERANCE; attempt += 1) {
+    assert.equal(
+      gate.invalidReading({ at: LEVEL_DWELL_MS + attempt }),
+      null,
+      "the caller keeps showing what it already had",
+    );
+    assert.equal(gate.getState().level, true, "a single junk reading must not wipe a good one");
+  }
+
+  const downgraded = gate.invalidReading({ at: LEVEL_DWELL_MS + INVALID_READING_TOLERANCE });
+  assert.equal(downgraded.status, SENSOR_STATUSES.unavailable);
+  assert.equal(downgraded.isLevel, false);
+  assert.equal(downgraded.roll, null);
+});
+
+test("one good reading clears the run of unusable ones", () => {
+  const gate = createLevelGate({ smoothing: 0 });
+  gate.reading({ roll: 0, pitch: 0, at: 0 });
+  gate.reading({ roll: 0, pitch: 0, at: LEVEL_DWELL_MS });
+  for (let attempt = 1; attempt < INVALID_READING_TOLERANCE; attempt += 1) gate.invalidReading({ at: LEVEL_DWELL_MS + attempt });
+  gate.reading({ roll: 0, pitch: 0, at: LEVEL_DWELL_MS + INVALID_READING_TOLERANCE });
+  assert.equal(gate.getState().invalidStreak, 0);
+  // The tolerance is a run length, so the count starts over.
+  assert.equal(gate.invalidReading({ at: LEVEL_DWELL_MS + INVALID_READING_TOLERANCE + 1 }), null);
+});
+
+test("a stalled feed stops presenting its last reading as current", () => {
+  const gate = createLevelGate({ smoothing: 0 });
+  gate.reading({ roll: 0, pitch: 0, at: 0 });
+  const green = gate.reading({ roll: 0, pitch: 0, at: LEVEL_DWELL_MS });
+  assert.equal(green.isLevel, true);
+  assert.match(green.message, /적합합니다/);
+
+  const stalled = gate.stall();
+  assert.equal(stalled.status, SENSOR_STATUSES.stale);
+  assert.equal(stalled.isLevel, false, "no state may claim the pose is fine from a reading that stopped arriving");
+  assert.equal(stalled.roll, null);
+  assert.equal(stalled.pitch, null);
+  assert.doesNotMatch(stalled.message, /적합합니다/);
+  assert.ok(READING_STALL_MS > 0);
+
+  // Recovering re-serves the dwell time rather than snapping back to green.
+  assert.equal(gate.reading({ roll: 0, pitch: 0, at: 5000 }).isLevel, false);
+  assert.equal(gate.reading({ roll: 0, pitch: 0, at: 5000 + LEVEL_DWELL_MS }).isLevel, true);
+});
+
+test("smoothing damps a single outlier instead of following it", () => {
+  const gate = createLevelGate();
+  gate.reading({ roll: 0, pitch: 0, at: 0 });
+  const jolted = gate.reading({ roll: 30, pitch: 0, at: 16 });
+  assert.ok(Math.abs(jolted.roll) < 30, "the reported roll trails the raw sample");
+  assert.ok(Math.abs(jolted.roll) > 0);
 });
 
 test("countdown supports immediate, 3/5/10 second modes, cancellation, and duplicate prevention", () => {

@@ -124,9 +124,10 @@ import {
   claimNotificationSoftPrompt, createOnboardingSampleData, removeOnboardingSampleData, withoutSampleData,
 } from "./features/onboarding/first-run.js";
 import {
-  CAPTURE_TIMER_OPTIONS, LEVEL_THRESHOLD_DEG, SENSOR_STATUSES, base64ToBlob,
-  computePreviewGeometry, correctOrientationForScreen, createCaptureGeometryMetadata, normalizeCameraPermissionState,
-  evaluateDeviceLevel, readCaptureTimer, resolveNativePhotoOutputReadiness, writeCaptureTimer,
+  CAPTURE_TIMER_OPTIONS, READING_STALL_MS, SENSOR_STATUSES, base64ToBlob,
+  computePreviewGeometry, correctOrientationForScreen, createCaptureGeometryMetadata, createLevelGate,
+  evaluateDeviceLevel, normalizeCameraPermissionState, readCaptureTimer, resolveNativePhotoOutputReadiness,
+  writeCaptureTimer,
 } from "./features/posture/posture-camera.js";
 import {
   ANNOTATION_PRESET_COLORS, HANDWRITING_SIZE_OPTIONS, annotationFont, annotationFontSize,
@@ -446,6 +447,7 @@ const DEVICE_LOG_FIELDS = new Set([
   "secondaryAudioShouldBeSilencedHint", "otherSessionOwner", "inputAvailable", "routeInputs", "routeOutputs", "voiceEngine",
   "prepareToRecord", "recordingSettings", "fileURL", "fileExistedBefore", "previousRecorderAlive",
   "millisecondsSinceLastStop", "sessionInterrupted", "attempt", "shouldResume", "width", "height", "bytes",
+  "elapsedMs", "permissionState", "pluginError", "receivedEvents", "invalidEvents",
   "fileExists", "fileBytes", "isRecording", "averagePower", "sample", "ready", "outputsPrepared",
   "photoOutputAvailable", "photoOutputAttached", "photoConnectionAvailable", "photoConnectionEnabled",
   "sessionRunning", "previewLayerAttached", "firstFrameReceived", "previewAttached", "previewX", "previewY",
@@ -526,6 +528,16 @@ const waitForCameraPhotoOutput = async ({ platform = Capacitor.getPlatform(), ti
     await new Promise((resolve) => window.setTimeout(resolve, pollMs));
   }
   return resolveNativePhotoOutputReadiness({ platform, startResolved: true, probeState: state });
+};
+const rawErrorIdentity = (error) => ({
+  code: error?.code ?? error?.name ?? "unknown",
+  causeName: error?.name || "",
+  causeMessage: error?.message || String(error || ""),
+});
+const describeOrientationValue = (value) => {
+  if (value === null) return "null";
+  if (value === undefined) return "undefined";
+  return Number.isFinite(Number(value)) ? "finite" : "nan";
 };
 const deviceError = (error) => ({
   code: error?.code || error?.name || "unknown",
@@ -6601,6 +6613,13 @@ function SavedPoseViewer({ rec, member, records, onUpdate, memberName, onClose, 
   );
 }
 
+// Deadline for the very first reading after the listener is attached. Later
+// readings re-arm the watchdog with the shorter READING_STALL_MS.
+const MOTION_FIRST_READING_TIMEOUT_MS = 2500;
+// Caps how many stall/resume pairs one run may write, so a sensor that flaps
+// cannot evict the rest of the 30-entry diagnostic ring.
+const MOTION_STALL_LOG_LIMIT = 3;
+
 const PREVIEW_BOUNDS_RETRY_LIMIT = 8;
 const PREVIEW_BOUNDS_RETRY_DELAY_MS = 120;
 
@@ -6624,6 +6643,14 @@ function PostureCaptureScreen({
   const mounted = useRef(true);
   const motionHandle = useRef(null);
   const motionReadingTimeout = useRef(null);
+  const motionEventCount = useRef(0);
+  const motionValidCount = useRef(0);
+  const motionInvalidCount = useRef(0);
+  const motionInvalidLogged = useRef(false);
+  const motionLastEventAt = useRef(0);
+  const motionStalled = useRef(false);
+  const motionStallLogs = useRef(0);
+  const levelGate = useRef(null);
   const countdownTimer = useRef(null);
   const pendingCaptureRef = useRef(null);
   const cameraPhotoReadyRef = useRef(false);
@@ -6684,15 +6711,37 @@ function PostureCaptureScreen({
     setCountdown(null);
   }, []);
 
+  // Every motion diagnostic carries the received/valid/invalid counters, so a
+  // single entry is enough to tell "no orientation event arrived" from "events
+  // arrived and every payload was unusable".
+  const motionLog = useCallback((stage, details = {}) => {
+    cameraPipelineLog(stage, {
+      memberId: member?.id, assessmentId, view: activeView,
+      source: "device_motion", platform: Capacitor.getPlatform(),
+      receivedEvents: motionEventCount.current,
+      invalidEvents: motionInvalidCount.current,
+      ...details,
+    });
+  }, [activeView, assessmentId, member?.id]);
+
   const stopMotion = useCallback(async () => {
     if (motionReadingTimeout.current) window.clearTimeout(motionReadingTimeout.current);
     motionReadingTimeout.current = null;
     const handle = motionHandle.current;
     motionHandle.current = null;
     if (handle?.remove) {
-      try { await handle.remove(); } catch {}
+      try {
+        await handle.remove();
+      } catch (error) {
+        // The window listener stays attached while the ref is already null, so
+        // the next start adds a second one. This used to be swallowed silently.
+        motionLog("motion_listener_remove_failed", {
+          domain: "capacitor_plugin", state: "failed", lifecycleState: "stopping",
+          ...rawErrorIdentity(error),
+        });
+      }
     }
-  }, []);
+  }, [motionLog]);
 
   const stopCamera = useCallback(async (reason = "manual") => {
     cameraGeneration.current += 1;
@@ -6732,9 +6781,23 @@ function PostureCaptureScreen({
 
   const startMotion = useCallback(async (generation) => {
     if (motionHandle.current) return;
-    const isCurrent = () => mounted.current && cameraGeneration.current === generation;
+    motionEventCount.current = 0;
+    motionValidCount.current = 0;
+    motionInvalidCount.current = 0;
+    motionInvalidLogged.current = false;
+    motionLastEventAt.current = 0;
+    motionStalled.current = false;
+    motionStallLogs.current = 0;
+    const gate = createLevelGate();
+    levelGate.current = gate;
+    const isCurrent = () => mounted.current && cameraGeneration.current === generation && levelGate.current === gate;
     const orientationCtor = typeof window !== "undefined" ? window.DeviceOrientationEvent : null;
     if (!orientationCtor && !Motion?.addListener) {
+      motionLog("motion_unsupported", {
+        domain: "web_api", code: "device_orientation_unavailable",
+        state: "unsupported", lifecycleState: "unavailable",
+        reason: "no_device_orientation_event_and_no_motion_plugin",
+      });
       if (isCurrent()) setSensor(evaluateDeviceLevel({ status: SENSOR_STATUSES.unavailable }));
       return;
     }
@@ -6748,45 +6811,111 @@ function PostureCaptureScreen({
         }
         if (!isCurrent()) return;
         if (permission !== "granted") {
+          // code is the value the platform actually returned, not a normalized one.
+          motionLog("motion_permission_denied", {
+            domain: "device_orientation_permission", code: String(permission || "unknown"),
+            permissionState: String(permission || "unknown"), state: "denied", lifecycleState: "blocked",
+          });
           setSensor(evaluateDeviceLevel({ status: SENSOR_STATUSES.denied }));
           return;
         }
       }
       if (!isCurrent()) return;
-      setSensor(evaluateDeviceLevel({ status: SENSOR_STATUSES.loading }));
+      setSensor(gate.reset());
+
+      /* Re-armed on every reading, so a feed that stops mid-session is caught.
+         The one-shot timer this replaces only ever watched the first reading,
+         which let a stalled sensor keep presenting its last value as current. */
+      const onReadingOverdue = () => {
+        motionReadingTimeout.current = null;
+        if (!isCurrent()) return;
+        const receivedAny = motionValidCount.current > 0;
+        const idleMs = receivedAny
+          ? Date.now() - motionLastEventAt.current
+          : MOTION_FIRST_READING_TIMEOUT_MS;
+        motionStalled.current = true;
+        if (motionStallLogs.current < MOTION_STALL_LOG_LIMIT) {
+          motionStallLogs.current += 1;
+          motionLog(receivedAny ? "motion_reading_stalled" : "motion_reading_timeout", {
+            domain: "web_api",
+            code: receivedAny
+              ? "orientation_event_stalled"
+              : motionInvalidCount.current ? "orientation_event_unusable" : "no_orientation_event",
+            state: receivedAny ? "stalled" : "timeout",
+            lifecycleState: "running",
+            elapsedMs: idleMs,
+          });
+        }
+        // A reading that never arrived is an unsupported or blocked sensor; one
+        // that arrived and stopped is stale. Both drop the level state, so no
+        // last-known value is presented as "적합합니다".
+        setSensor(receivedAny ? gate.stall() : evaluateDeviceLevel({ status: SENSOR_STATUSES.unavailable }));
+      };
+      const armReadingWatchdog = (delayMs) => {
+        if (motionReadingTimeout.current) window.clearTimeout(motionReadingTimeout.current);
+        motionReadingTimeout.current = window.setTimeout(onReadingOverdue, delayMs);
+      };
+
       const handle = await Motion.addListener("orientation", (event) => {
         if (!isCurrent()) return;
-        if (motionReadingTimeout.current) window.clearTimeout(motionReadingTimeout.current);
-        motionReadingTimeout.current = null;
+        const eventAt = Date.now();
+        const sinceLastEvent = motionLastEventAt.current ? eventAt - motionLastEventAt.current : 0;
+        motionEventCount.current += 1;
+        motionLastEventAt.current = eventAt;
+        armReadingWatchdog(READING_STALL_MS);
+        if (motionStalled.current) {
+          motionStalled.current = false;
+          if (motionStallLogs.current <= MOTION_STALL_LOG_LIMIT) {
+            motionLog("motion_reading_resumed", {
+              state: "resumed", lifecycleState: "running", elapsedMs: sinceLastEvent,
+            });
+          }
+        }
         const screenAngle = window.screen?.orientation?.angle ?? window.orientation ?? 0;
         const corrected = correctOrientationForScreen({ beta: event?.beta, gamma: event?.gamma, screenAngle });
         if (!Number.isFinite(corrected.roll) || !Number.isFinite(corrected.pitch)) {
-          setSensor(evaluateDeviceLevel({ status: SENSOR_STATUSES.unavailable }));
+          motionInvalidCount.current += 1;
+          if (!motionInvalidLogged.current) {
+            // Events ARE arriving and the payload is unusable — the opposite of
+            // a stall. Logged once so the 30-entry ring keeps the rest of the run.
+            motionInvalidLogged.current = true;
+            motionLog("motion_reading_invalid", {
+              domain: "web_api", code: "non_finite_orientation", state: "invalid", lifecycleState: "running",
+              reason: `beta:${describeOrientationValue(event?.beta)} gamma:${describeOrientationValue(event?.gamma)}`,
+            });
+          }
+          // Null returns while the run of bad readings is still inside the
+          // gate's tolerance, so one junk event no longer wipes a good reading.
+          const downgraded = gate.invalidReading({ at: eventAt });
+          if (downgraded) setSensor(downgraded);
           return;
         }
-        setSensor((previous) => {
-          const roll = previous.roll == null ? corrected.roll : Math.round((previous.roll * 0.7 + corrected.roll * 0.3) * 10) / 10;
-          const pitch = previous.pitch == null ? corrected.pitch : Math.round((previous.pitch * 0.7 + corrected.pitch * 0.3) * 10) / 10;
-          return evaluateDeviceLevel({ roll, pitch, status: SENSOR_STATUSES.active, threshold: LEVEL_THRESHOLD_DEG });
-        });
+        motionValidCount.current += 1;
+        const next = gate.reading({ roll: corrected.roll, pitch: corrected.pitch, at: eventAt });
+        if (next) setSensor(next);
       });
       if (!isCurrent()) {
         try { await handle?.remove?.(); } catch {}
         return;
       }
       motionHandle.current = handle;
-      motionReadingTimeout.current = window.setTimeout(() => {
-        if (!isCurrent()) return;
-        setSensor((previous) => previous.status === SENSOR_STATUSES.active
-          ? previous
-          : evaluateDeviceLevel({ status: SENSOR_STATUSES.unavailable }));
-      }, 2500);
+      motionLog("motion_listener_started", { state: "started", lifecycleState: "running" });
+      armReadingWatchdog(MOTION_FIRST_READING_TIMEOUT_MS);
     } catch (error) {
-      if (!isCurrent()) return;
       const denied = /denied|permission/i.test(String(error?.message || error));
+      // The logged code and name are the originals. The legacy message match
+      // still drives the on-screen wording, so it is recorded separately as a
+      // reason rather than standing in for the code, which makes a disagreement
+      // between the two visible instead of silent.
+      motionLog("motion_listener_failed", {
+        domain: "capacitor_plugin", state: "failed", lifecycleState: "error",
+        ...rawErrorIdentity(error),
+        reason: denied ? "ui_classified_denied_by_message_match" : "ui_classified_error",
+      });
+      if (!isCurrent()) return;
       setSensor(evaluateDeviceLevel({ status: denied ? SENSOR_STATUSES.denied : SENSOR_STATUSES.error }));
     }
-  }, []);
+  }, [motionLog]);
 
   const markPreviewBounds = useCallback((ready) => {
     previewBoundsReadyRef.current = ready;

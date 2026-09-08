@@ -81,10 +81,36 @@ test("a single direction still opens rather than refusing", () => {
   assert.ok(html.includes(">후면<"));
 });
 
+test("a record with no analysed photo says so instead of loading forever", async () => {
+  /* Older records were saved without the 760px copy. Waiting on one that will
+     never arrive leaves the screen spinning with nothing to say. */
+  const source = withoutComments(await sheetSource());
+  assert.ok(source.includes(`const url = media?.cleanBlobId ? await resolvePhotoUrl(media.cleanBlobId) : null;`));
+  assert.ok(source.includes(`const next = url ? { status: "ready", url } : { status: "missing" };`));
+  assert.ok(source.includes(`shownPhoto?.status === "missing" ? NO_PHOTO_NOTE : "사진을 불러오는 중"`));
+  assert.ok(source.includes("이 기록에는 방향별 사진이 없어요"));
+});
+
+test("a direction that was shot is never told to go and shoot it", async () => {
+  /* An unreadable photo and an unshot direction are different facts. Greying
+     the button out would ask for a photo the instructor already took. */
+  const source = withoutComments(await sheetSource());
+  assert.ok(source.includes(`disabled={!entry.hasPhoto}`));
+  assert.ok(!source.includes("status === \"missing\" ? true"), "the empty state does not close the button");
+});
+
 /* --------------------------- what it claims to be ------------------------ */
 
 test("the screen says where the numbers came from", () => {
-  assert.ok(render({}).includes("정면·좌측면·후면·우측면 사진에서 측정한 값입니다"));
+  assert.ok(render({}).includes("전면·좌측면·후면·우측면 사진에서 측정한 값입니다"));
+});
+
+test("one word is used for a direction, on the buttons and in the sentence", async () => {
+  /* 전면 on the button and 정면 in the line below reads as two different
+     things being talked about. */
+  const html = render({});
+  assert.ok(html.includes(">전면<"), "the button uses the app's own label");
+  assert.ok(!html.includes("정면"), "and the sentence does not invent a second word");
 });
 
 test("nothing on screen offers a scan, a model, or an analysis in three dimensions", async () => {
@@ -114,12 +140,22 @@ test("the photo shown is the analysed one, never the untouched original", async 
 
 /* ------------------------------ the switch ------------------------------- */
 
+test("a reading with no place on the body is listed beside the photo, not on it", async () => {
+  /* The knee reading is one of these: a real number whose joint is not
+     recorded. It stays visible, and it stays off the body. */
+  const source = withoutComments(await sheetSource());
+  assert.ok(source.includes(`const placed = metrics.filter((metric) => metric.at);`));
+  assert.ok(source.includes(`const unplaced = metrics.filter((metric) => !metric.at);`));
+  assert.ok(source.includes(`{markersVisible && placed.map(`), "only the placed ones go on the photo");
+  assert.ok(source.includes(`markersVisible && unplaced.length > 0`), "the rest are listed");
+});
+
 test("the markers are held back until a direction has finished arriving", async () => {
   /* Mid-switch the outgoing body is still on screen. A marker drawn then would
      sit on the wrong body with the next direction's number. */
   const source = withoutComments(await sheetSource());
   assert.match(source, /markersVisible\s*=\s*phase === "idle"/);
-  assert.match(source, /\{markersVisible && metrics\.map\(/);
+  assert.ok(source.includes(`{markersVisible && placed.map(`));
 });
 
 test("the two bodies never share the screen at full strength", async () => {

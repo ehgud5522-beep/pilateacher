@@ -626,10 +626,10 @@ function postureMetricAnchorPoint(pose, key) {
     if (key === "shoulder") return shoulder;
     if (key === "pelvis") return pelvis;
     if (key === "head") return midpoint(points.earL, points.earR);
-    /* 무릎은 좌우 중 더 굽은 쪽의 값이지만 어느 쪽이었는지는 저장돼 있지
-       않다. 한쪽을 찍으면 틀릴 수 있어 두 무릎 사이에 둔다. 값은 저장된 그
-       값 그대로이고, 자리만 가운데다. */
-    if (key === "knee") return midpoint(points.kneeL, points.kneeR);
+    /* 무릎은 좌우 중 더 굽은 쪽에서 잰 값인데, 어느 쪽이었는지가 저장돼 있지
+       않다. 두 무릎 사이에 찍으면 재지 않은 자리에 수치를 놓는 셈이라 자리를
+       주지 않는다. 값은 사진 밖에서 그대로 보여 준다. */
+    if (key === "knee") return null;
     if (key === "twist") return shoulder && pelvis ? { x: (shoulder.x + pelvis.x) / 2, y: (shoulder.y + pelvis.y) / 2 } : null;
     return null;
   }
@@ -663,9 +663,11 @@ export function bodyViewMetrics(assessment, view, { previousAssessment = null } 
       .map((row) => [row.key, row]),
   );
   return validPostureMetrics(pose).flatMap((metric) => {
+    /* 자리를 모르는 값도 버리지 않는다. 사진 위에는 얹지 않고 목록으로만
+       내보낸다 -- 잰 값이 있는데 화면에서 사라지면 안 재진 것이 된다. */
     const at = postureMetricAnchorPoint(pose, metric.key);
     const value = Number(metric?.value);
-    if (!at || !Number.isFinite(value)) return [];
+    if (!Number.isFinite(value)) return [];
     const change = changes.get(metric.key) || null;
     return [{
       id: `${normalizedView}:${metric.key}`,
@@ -674,7 +676,7 @@ export function bodyViewMetrics(assessment, view, { previousAssessment = null } 
       label: metric.label,
       value,
       unit: metric.unit || "",
-      at,
+      at: at || null,
       previousValue: change ? change.beforeValue : null,
       difference: change ? change.difference : null,
       measuredAt: assessmentDisplayDate(assessment),

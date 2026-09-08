@@ -22,7 +22,8 @@ const FADE_OUT_MS = 110;
 const FADE_IN_MS = 130;
 
 const UNALIGNED_NOTE = "촬영 위치 차이로 자동 정렬이 적용되지 않았어요";
-const MEASURED_FROM_NOTE = "정면·좌측면·후면·우측면 사진에서 측정한 값입니다";
+const MEASURED_FROM_NOTE = "전면·좌측면·후면·우측면 사진에서 측정한 값입니다";
+const NO_PHOTO_NOTE = "이 기록에는 방향별 사진이 없어요";
 const NOT_A_MODEL_NOTE = "360° 바디뷰는 촬영한 사진을 방향별로 보여주는 기능이며 실제 3D 신체 모델을 생성하지 않습니다";
 const UNSHOT_NOTE = "촬영하면 이 방향도 확인할 수 있어요";
 
@@ -107,7 +108,9 @@ export default function BodyViewSheet({ assessment, previousAssessment = null, r
   const [phase, setPhase] = useState("idle");
   const [openMetricId, setOpenMetricId] = useState(null);
   const [helpOpen, setHelpOpen] = useState(false);
-  const [urls, setUrls] = useState({});
+  /* 방향마다 사진이 어떻게 됐는지: 아직 모름 / 떴음 / 없음. 없음을 따로 두지
+     않으면 옛 기록에서 "불러오는 중"이 영원히 걸려 있는다. */
+  const [photos, setPhotos] = useState({});
   const timers = useRef([]);
 
   useEffect(() => () => { timers.current.forEach(clearTimeout); timers.current = []; }, []);
@@ -133,13 +136,14 @@ export default function BodyViewSheet({ assessment, previousAssessment = null, r
     (async () => {
       for (const view of wanted) {
         const media = assessmentMediaForView(assessment, view);
-        /* cleanBlobId 는 분석에 쓴 760px 사진이다. 원본은 이 화면이 감당할
-           크기가 아니라 쓰지 않는다. */
-        const blobId = media?.cleanBlobId;
-        if (!blobId) continue;
-        const url = await resolvePhotoUrl(blobId);
-        if (!alive || !url) continue;
-        setUrls((previous) => (previous[view] === url ? previous : { ...previous, [view]: url }));
+        /* cleanBlobId 는 분석에 쓴 760px 사진이다. 원본은 뼈대가 구워진 큰
+           이미지라 이 화면에서 쓰지 않는다 -- 없으면 없는 것으로 끝낸다. */
+        const url = media?.cleanBlobId ? await resolvePhotoUrl(media.cleanBlobId) : null;
+        if (!alive) return;
+        const next = url ? { status: "ready", url } : { status: "missing" };
+        setPhotos((previous) => (previous[view]?.url === next.url && previous[view]?.status === next.status
+          ? previous
+          : { ...previous, [view]: next }));
       }
     })();
     return () => { alive = false; };
@@ -163,7 +167,11 @@ export default function BodyViewSheet({ assessment, previousAssessment = null, r
     () => (shownView ? bodyViewMetrics(assessment, shownView, { previousAssessment }) : []),
     [assessment, shownView, previousAssessment],
   );
+  /* 사진 위에 앉을 수 있는 값과 그럴 수 없는 값. 뒤쪽은 목록으로만 보여 준다. */
+  const placed = metrics.filter((metric) => metric.at);
+  const unplaced = metrics.filter((metric) => !metric.at);
   const openMetric = metrics.find((metric) => metric.id === openMetricId) || null;
+  const shownPhoto = photos[shownView] || null;
   /* 방향이 완전히 서 있을 때만 마커를 얹는다. 넘어가는 도중에 얹으면 아직
      지워지지 않은 몸 위에 다음 방향의 수치가 찍힌다. */
   const markersVisible = phase === "idle" && !!shownEntry;
@@ -183,9 +191,9 @@ export default function BodyViewSheet({ assessment, previousAssessment = null, r
       )}
 
       <div className="relative mx-3 mt-2 min-h-0 flex-1 overflow-hidden rounded-2xl" style={{ backgroundColor: "var(--photo)" }}>
-        {urls[shownView] ? (
+        {shownPhoto?.status === "ready" ? (
           <img
-            src={urls[shownView]}
+            src={shownPhoto.url}
             alt=""
             className="absolute inset-0 h-full w-full object-contain"
             style={{
@@ -198,11 +206,11 @@ export default function BodyViewSheet({ assessment, previousAssessment = null, r
           />
         ) : (
           <div className="absolute inset-0 flex items-center justify-center px-6 text-center">
-            <p className="text-xs font-bold" style={{ color: "var(--faint)" }}>사진을 불러오는 중</p>
+            <p className="text-xs font-bold" style={{ color: "var(--faint)" }}>{shownPhoto?.status === "missing" ? NO_PHOTO_NOTE : "사진을 불러오는 중"}</p>
           </div>
         )}
 
-        {markersVisible && metrics.map((metric) => (
+        {markersVisible && placed.map((metric) => (
           <button
             key={metric.id}
             type="button"
@@ -217,6 +225,24 @@ export default function BodyViewSheet({ assessment, previousAssessment = null, r
 
         {openMetric && <MetricDetail metric={openMetric} onClose={() => setOpenMetricId(null)} />}
       </div>
+
+      {/* 잰 자리를 말할 수 없는 값은 사진 밖에 둔다. 수치는 그대로 남기고,
+          몸의 어디라고는 말하지 않는다. */}
+      {markersVisible && unplaced.length > 0 && (
+        <div className="mx-3 mt-2 flex flex-wrap gap-1.5">
+          {unplaced.map((metric) => (
+            <button
+              key={metric.id}
+              type="button"
+              onClick={() => setOpenMetricId((current) => (current === metric.id ? null : metric.id))}
+              className="rounded-full px-2.5 py-1 text-[11px] font-bold"
+              style={{ backgroundColor: "var(--canvas)", color: "var(--ink2)" }}
+            >
+              {metric.label} <span className="font-extrabold tabular-nums" style={{ color: "var(--ink)" }}>{postureMetricDisplayValue(metric.value, metric.unit)}{metric.unit}</span>
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* 정렬이 안 된 방향에도 사진은 멀쩡히 떠 있다. 고장이 아니므로 크게
           경고하지 않고, 크기가 왜 다른지만 한 줄로 말한다. */}

@@ -234,9 +234,27 @@ test("a side photo carries the side readings", () => {
   assert.ok(rows.every((row) => row.at && Number.isFinite(row.at.x) && Number.isFinite(row.at.y)));
 });
 
-test("a reading with nowhere to sit is left out rather than placed at a guess", () => {
-  const set = assessment([pose("front", { metrics: [m("shoulder", "어깨선 각도", 3), m("mystery", "알 수 없음", 9)] })]);
-  assert.deepEqual(bodyViewMetrics(set, "front").map((row) => row.key), ["shoulder"]);
+test("the knee reading keeps its number but is given no place on the body", () => {
+  /* It is the more bent of the two knees, and which one that was is not in the
+     record. Dropping it between them would put a number on a joint that was
+     not the one measured. */
+  const set = assessment([pose("front", {
+    metrics: [m("shoulder", "어깨선 각도", 3), m("knee", "무릎선 각도", 6.4)],
+  })]);
+  const rows = bodyViewMetrics(set, "front");
+  const knee = rows.find((row) => row.key === "knee");
+  assert.ok(knee, "the reading is still reported");
+  assert.equal(knee.value, 6.4, "the stored number is untouched");
+  assert.equal(knee.at, null, "and it claims no spot");
+  assert.ok(rows.find((row) => row.key === "shoulder").at, "the ones that do know stay placed");
+});
+
+test("a reading whose landmark is unknown is reported without a place", () => {
+  /* Losing it would say it was never measured. */
+  const set = assessment([pose("front", { metrics: [m("mystery", "알 수 없음", 9)] })]);
+  const [row] = bodyViewMetrics(set, "front");
+  assert.equal(row.key, "mystery");
+  assert.equal(row.at, null);
 });
 
 /* ------------------------- the reading before it ------------------------- */

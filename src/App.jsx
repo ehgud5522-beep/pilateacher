@@ -96,6 +96,7 @@ import {
 } from "./features/voice/server-audio-session.js";
 import { GatewayLlmProvider } from "./features/lesson-record/llm-provider.js";
 import { mapPilatesTerms } from "./features/lesson-record/term-mapper.js";
+import { applyPilatesTermDictionary } from "./features/lesson-record/pilates-terms.js";
 import {
   LESSON_RECORD_FIELD_LABELS, applyLessonRecordSuggestion,
   createLessonRecordMeta, editStructuredField, structuredFieldText, structuredRecordBody,
@@ -12609,7 +12610,9 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       lowVolume: options.lowVolume,
     });
     if (!quality) return;
-    const transcript = quality.transcript;
+    /* 화면에 뜨는 전사도 같은 사전을 지난다. 강사가 보는 문장과 정리 단계로
+       넘어가는 문장이 다르면, 무엇이 고쳐졌는지 확인할 방법이 없다. */
+    const transcript = applyPilatesTermDictionary(quality.transcript);
     textRef.current = transcript;
     setText(transcript);
     const termMap = mapPilatesTerms(transcript);

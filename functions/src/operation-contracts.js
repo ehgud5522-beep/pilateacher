@@ -19,6 +19,20 @@ const stringList = () => ({
   type: "array",
   items: stringField(),
 });
+/* 추론은 네 칸에 섞이지 않고 이 자리로 온다. 강사가 눌러야 칸에 들어가므로,
+   어느 칸을 겨냥한 제안인지 함께 온다. */
+const suggestionList = () => ({
+  type: "array",
+  items: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      field: { type: "string", enum: ["didToday", "observations", "responses", "nextFocus"] },
+      text: stringField(),
+    },
+    required: ["field", "text"],
+  },
+});
 
 const OUTPUT_SCHEMAS = Object.freeze({
   [OPERATIONS.ANALYZE_BODY]: {
@@ -67,9 +81,10 @@ const OUTPUT_SCHEMAS = Object.freeze({
       responses: stringList(),
       nextFocus: stringList(),
       uncertain: stringList(),
+      suggestions: suggestionList(),
       summary: nullableStringField(),
     },
-    required: ["didToday", "observations", "responses", "nextFocus", "uncertain", "summary"],
+    required: ["didToday", "observations", "responses", "nextFocus", "uncertain", "suggestions", "summary"],
   },
   [OPERATIONS.LESSON_RECORD_FROM_AUDIO]: {
     type: "object",
@@ -154,6 +169,9 @@ const OUTPUT_NAMES = Object.freeze({
   [OPERATIONS.GENERATE_REPORT]: "pilateacher_report",
 });
 
+// 제안이 겨냥할 수 있는 칸. uncertain 은 강사 확인용이라 제안 대상이 아니다.
+const LESSON_RECORD_SUGGESTION_FIELDS = ["didToday", "observations", "responses", "nextFocus"];
+
 function cleanString(value, maxLength) {
   if (typeof value !== "string" || value.length > maxLength) throw new GatewayError("invalid_output");
   return value.trim();
@@ -215,6 +233,18 @@ function validateLessonRecordFields(value) {
     }
   }
   if (failedCoreFields === 4) throw new GatewayError("invalid_output");
+  /* 제안이 잘못 와도 기록 전체를 버리지 않는다. 제안은 부가물이고, 강사가 말한
+     네 칸이 본체다. 읽을 수 없으면 제안만 비운다. */
+  output.suggestions = [];
+  try {
+    const raw = Array.isArray(value.suggestions) ? value.suggestions.slice(0, 2) : [];
+    output.suggestions = raw
+      .filter((item) => item && typeof item === "object" && !Array.isArray(item))
+      .map((item) => ({ field: cleanString(item.field, 40), text: cleanString(item.text, 200) }))
+      .filter((item) => LESSON_RECORD_SUGGESTION_FIELDS.includes(item.field) && item.text);
+  } catch (_error) {
+    output.suggestions = [];
+  }
   try {
     output.summary = value.summary == null ? null : cleanString(value.summary, 1200);
   } catch (_error) {

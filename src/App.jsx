@@ -97,6 +97,7 @@ import {
 import { GatewayLlmProvider } from "./features/lesson-record/llm-provider.js";
 import { mapPilatesTerms } from "./features/lesson-record/term-mapper.js";
 import {
+  LESSON_RECORD_FIELD_LABELS, applyLessonRecordSuggestion,
   createLessonRecordMeta, editStructuredField, structuredFieldText, structuredRecordBody,
 } from "./features/lesson-record/record-schema.js";
 import { createSttProvider, MAX_STT_SECONDS } from "./features/lesson-record/stt-provider.js";
@@ -12796,6 +12797,20 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
           {summaryDraft && <div className="mt-3 space-y-3 rounded-xl p-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
             <div className="flex items-start gap-2"><div className="min-w-0 flex-1"><p className="text-xs font-extrabold" style={{ color: GOOD }}>AI가 수업 내용을 정리했어요.</p><p className="mt-1 text-[11px] leading-relaxed" style={{ color: SUB }}>기록이 저장됐어요. 고치고 싶을 때만 수정하세요.</p></div><button type="button" onClick={() => setSummaryEditing((value) => !value)} className="min-h-11 shrink-0 rounded-lg px-3 text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: PRIMARY }}>{summaryEditing ? "수정 완료" : "수정"}</button></div>
             <section><p className="text-xs font-extrabold" style={{ color: INK }}>AI 수업 요약</p><div className="mt-2 grid grid-cols-2 gap-1.5">{summaryView.cards.map((item) => <div key={item.key} className="rounded-lg p-2.5" style={{ backgroundColor: item.key === "nextFocus" ? TINT : CANVAS }}><p className="text-[10px] font-extrabold" style={{ color: item.key === "nextFocus" ? BRAND_D : SUB }}>{item.label}</p><p className="mt-1 text-[11px] font-bold leading-relaxed" style={{ color: item.value === "추가해 주세요" || item.value === "아직 계획 없음" ? FAINT : INK2 }}>{item.value}</p></div>)}</div></section>
+            {/* 추론은 네 칸에 섞이지 않고 여기에만 선다. 강사가 눌러야 칸으로
+                들어가므로 "AI 가 제안했다"와 "AI 가 지어냈다"가 갈린다. 네 칸과
+                배경·테두리로 구분해 두어, 읽는 순간 어느 쪽인지 보이게 한다. */}
+            {(summaryDraft.suggestions || []).length > 0 && <section className="rounded-lg p-3" style={{ backgroundColor: TINT, border: `1px dashed ${RING}` }}>
+              <p className="text-[10px] font-extrabold" style={{ color: BRAND_D }}>AI 제안 · 눌러서 추가</p>
+              <p className="mt-0.5 text-[10px] leading-relaxed" style={{ color: SUB }}>말한 내용이 아니라 제안입니다. 누른 것만 기록에 들어갑니다.</p>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {(summaryDraft.suggestions || []).map((item, index) => <button key={`${item.field}:${item.text}`} type="button"
+                  onClick={() => setSummaryDraft((current) => applyLessonRecordSuggestion(current, index))}
+                  className="min-h-11 rounded-full px-3 py-1.5 text-[11px] font-extrabold" style={{ backgroundColor: CARD, color: BRAND_D, border: `1px solid ${BRAND}` }}>
+                  {item.text}<span className="ml-1 font-bold opacity-60">→ {LESSON_RECORD_FIELD_LABELS[item.field] || item.field}</span>
+                </button>)}
+              </div>
+            </section>}
             {summaryView.narrative && <section className="rounded-lg p-3" style={{ backgroundColor: CANVAS }}><p className="text-xs font-extrabold" style={{ color: INK }}>{summaryView.narrativeLabel}</p><p className="mt-2 text-xs leading-relaxed" style={{ color: INK2 }}>{summaryView.narrative}</p></section>}
             {summaryEditing && <div className="space-y-2">{[{ k: "observations", l: "회원의 변화" }, { k: "didToday", l: "오늘 수업" }, { k: "responses", l: "회원 반응/특이사항" }, { k: "nextFocus", l: "다음 확인" }, { k: "uncertain", l: "확인이 필요한 내용" }].map((field) => <label key={field.k} className="block"><span className="mb-1 block text-[11px] font-bold" style={{ color: SUB }}>{field.l}</span><textarea rows={2} value={structuredFieldText(summaryDraft, field.k)} onChange={(event) => setSummaryField(field.k, event.target.value)} placeholder="한 줄에 한 항목" className={`${inputCls} h-auto resize-none py-2 text-xs`} /></label>)}</div>}
             {typeof onClose === "function" && <div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => startFromUserTap("replace")} disabled={!supported || audioState === "saving"} className="h-11 rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: CANVAS, color: BRAND_D }}>다시 녹음</button><button type="button" onClick={onClose} className="h-11 rounded-lg text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>확인</button></div>}

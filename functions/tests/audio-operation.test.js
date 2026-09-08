@@ -64,6 +64,8 @@ test("lesson field validation clears only invalid fields and rejects four invali
     responses: ["힘들다고 말함"],
     nextFocus: [],
     uncertain: [],
+    // 제안은 부가물이라, 읽히지 않으면 기록을 버리지 않고 제안만 빈다.
+    suggestions: [],
     summary: null,
   });
   assert.throws(() => validateLessonRecordFields({

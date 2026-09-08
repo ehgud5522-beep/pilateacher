@@ -65,6 +65,7 @@ import {
   assessmentDisplayDate, assessmentMediaForView, commonPostureComparisonViews, compareAssessmentMetrics, completeAssessmentRecords, correctedPoseSource, countPosturePhotoRecords, normalizeAssessmentSets, normalizePostureView, postureAnalysisPlane,
   advanceManualCorrection, manualTapTarget, overlayLabelOpacity, revertManualJoint, postureAlignmentTransform, postureMetricChangeText, postureMetricDisplayValue, postureReferenceLines,
   postureMilestoneTemplate, postureViewLabel, removeAssessmentDraftRecords, selectAutomaticComparison, selectComparisonAssessmentOptions,
+  selectPreviousAssessment, selectRecentAssessmentChanges,
   selectMemberBodyPhotoSurface, selectResumableAssessment,
 } from "./features/posture/posture-model.js";
 import { validatePostureMeasurement, validPostureMetrics } from "./features/posture/measurement-validity.js";
@@ -9928,6 +9929,16 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
   const displayStates = resultPoses.flatMap(selectStoredPostureResultStates).filter((item, index, rows) => rows.findIndex((candidate) => candidate.key === item.key) === index).slice(0, 4);
   // 저장된 기록에서도 같은 사실이 남아 있어야 한다. 저장 값만으로 판정된다.
   const manualOnlyStored = resultPoses.some(isFullyManualAfterAiMiss);
+  /* 지난 기록과 견준 이번 변화. 직전 것이 없으면 견줄 대상이 없고, 촬영 오차
+     안쪽 변화만 남으면 보여 줄 것도 없다 -- 어느 쪽이든 카드를 세우지 않는다. */
+  const previousAssessment = useMemo(() => selectPreviousAssessment(sets, selected), [sets, selected]);
+  const recentChanges = useMemo(
+    () => (previousAssessment && selected ? selectRecentAssessmentChanges(previousAssessment, selected) : []),
+    [previousAssessment, selected],
+  );
+  /* front 와 back 은 같은 어깨선을 각각 잰다. 한 줄에 둘이 섞여 있으면 어느
+     방향의 값인지 알 수 없으므로, 두 방향 이상이 섞일 때만 방향을 붙인다. */
+  const recentChangeShowsView = new Set(recentChanges.map((metric) => metric.view)).size > 1;
   const methodLabel = (method) => method === "draw" ? "강사 직접 기록" : method === "manual" ? "직접 포인트" : "AI 변화 분석";
   const roleLabelOf = (role) => role === "before" ? "첫 촬영" : role === "after" ? "다음 촬영" : "미분류";
   const setDate = (set) => assessmentDisplayDate(set);
@@ -10169,6 +10180,17 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
           {selected?.status === "completed" && <div className="mt-3 flex items-center gap-2" style={{ padding: 10, borderRadius: 10, backgroundColor: GOOD_S }}><Check size={15} style={{ color: GOOD }} /><span className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: GOOD }}>{selectedIsManualResult ? "사진 기록 저장 완료" : "변화 기록 저장 완료"}</span><span className="text-[10px] font-bold" style={{ color: SUB }}>기기 우선 저장</span></div>}
           {!selected ? <div className="py-10 text-center"><Activity size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>표시할 변화 기록이 없습니다</p><button type="button" onClick={requestStartNew} className="mt-4 h-11 px-5 text-xs font-bold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>새 변화 기록 시작</button></div> : selected.status !== "completed" ? <div className="py-10 text-center"><AlertCircle size={22} className="mx-auto" style={{ color: WARN }} /><p className="mt-2 text-sm font-bold" style={{ color: INK }}>아직 완료되지 않은 기록입니다</p><p className="mt-1 text-xs" style={{ color: SUB }}>저장된 사진과 처리 상태를 유지한 채 이어서 진행할 수 있습니다.</p><button type="button" onClick={() => resumeSet(selected)} className="mt-4 h-11 px-5 text-xs font-bold text-white" style={{ borderRadius: 10, backgroundColor: BRAND }}>초안 이어하기</button></div> : <><div className="mt-3 grid grid-cols-2 gap-1.5">{selected.selectedViews.map((view) => <AssessmentSetFrame key={view} photo={setPhoto(selected, view)} label={postureViewLabel(view)} annotation onOpen={selectedIsManualResult ? undefined : () => { const pose = selected.poses.find((item) => normalizePostureView(item.view) === view); if (pose) setViewingPose(pose); }} />)}</div><button type="button" onClick={() => { const available = selected.selectedViews.map((view) => ({ view, photo: setPhoto(selected, view) })).filter((item) => item.photo); if (available.length === 1) setEditingAnnotation(available[0]); else if (available.length > 1) setAnnotationPicker(true); }} className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 text-xs font-bold" style={{ borderRadius: 10, backgroundColor: CANVAS, color: INK }}><Pencil size={13} />사진 표시 다시 수정하기</button>{comparisonPairFor(selected).after && !selectedIsManualResult && <button type="button" onClick={() => openComparisonFromSet(selected)} className="mt-2 h-11 w-full text-xs font-bold" style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D }}>변화 비교</button>}</>}
         </section>
+        {!selectedIsManualResult && selected?.status === "completed" && !!recentChanges.length && <section style={{ padding: 13, borderRadius: 14, backgroundColor: CARD, border: `1px solid ${LINE}` }}>
+          <div className="flex items-baseline gap-2"><h2 className="text-sm font-extrabold" style={{ color: INK }}>이번 변화</h2><span className="text-[10px]" style={{ color: SUB }}>{ymd(setDate(previousAssessment).slice(0, 10))} 기록과 비교</span></div>
+          <div className="mt-3 space-y-2">{recentChanges.map((metric) => <div key={metric.id} className="flex items-center gap-2 rounded-xl px-3 py-2" style={{ backgroundColor: CANVAS }}>
+            <span className="min-w-0 flex-1 truncate text-xs font-bold" style={{ color: INK2 }}>{metric.label}{recentChangeShowsView ? ` · ${postureViewLabel(metric.view)}` : ""}</span>
+            {/* 두 숫자만 나란히 둔다. 어느 쪽이 나은지는 강사가 정할 몫이라
+                여기서 좋아졌다·나빠졌다를 말하지 않는다. */}
+            <span className="shrink-0 text-sm font-extrabold tabular-nums" style={{ color: SUB }}>{memberMetricValue(metric.beforeValue, metric.unit)}{metric.unit}</span>
+            <ChevronRight size={13} style={{ color: FAINT }} />
+            <span className="shrink-0 text-sm font-extrabold tabular-nums" style={{ color: INK }}>{memberMetricValue(metric.afterValue, metric.unit)}{metric.unit}</span>
+          </div>)}</div>
+        </section>}
         {!selectedIsManualResult && selected?.status === "completed" && !!displayStates.length && <section style={{ padding: 13, borderRadius: 14, backgroundColor: CARD, border: `1px solid ${LINE}` }}><h2 className="text-sm font-extrabold" style={{ color: INK }}>핵심 상태</h2>{manualOnlyStored && <p className="mt-2 rounded-xl px-3 py-2 text-xs font-bold" style={{ backgroundColor: WARN_S, color: WARN }}>{MANUAL_ONLY_RESULT_NOTICE}</p>}<div className="mt-3 grid grid-cols-2 gap-2">{displayStates.map((item) => <div key={item.key} className="min-w-0 rounded-xl p-3" style={{ backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: SUB }}>{item.label}</p><p className="mt-1 text-sm font-extrabold" style={{ color: INK }}>{item.status}</p></div>)}</div>{resultPoses[0] && <button type="button" onClick={() => setViewingPose(resultPoses[0])} className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 text-xs font-bold" style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D }}><Pencil size={13} />수정하기</button>}</section>}
       </>}
 

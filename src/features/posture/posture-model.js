@@ -455,6 +455,39 @@ export function postureMetricChangeText(difference, unit = "°") {
   return `변화 ${size}${unit} ${number > 0 ? "증가" : "감소"}`;
 }
 
+/* 이번 기록 바로 앞의 기록.
+
+   가장 오래된 것이 아니라 직전이다 -- "이번 변화"는 지난 수업과 견준 것이지
+   처음과 견준 것이 아니고, 둘은 다른 이야기다. */
+export function selectPreviousAssessment(sets, target) {
+  const targetId = String(target?.id || "");
+  if (!targetId) return null;
+  const ordered = (sets || [])
+    .filter((set) => set?.status === "completed")
+    .filter((set) => !target?.scope || set.scope === target.scope)
+    .slice()
+    .sort((a, b) => String(stampOf(a) || a?.at || "").localeCompare(String(stampOf(b) || b?.at || "")));
+  const index = ordered.findIndex((set) => String(set?.id || "") === targetId);
+  return index > 0 ? ordered[index - 1] : null;
+}
+
+/* 결과 화면 맨 위에 세울 "이번 변화" 줄들.
+
+   판정하지 않는다. 어느 쪽이 좋아진 것인지는 강사가 정할 몫이고, 여기서는 어떤
+   항목이 얼마나 움직였는지만 큰 순으로 고른다.
+
+   촬영 오차 안쪽(postureMetricChangeText 가 "변화 없음"이라고 답하는 것)은 빼고,
+   남는 것이 없으면 빈 배열이다 -- 빈 카드를 세우지 않기 위해서다. */
+export function selectRecentAssessmentChanges(beforeSet, afterSet, { limit = 3 } = {}) {
+  return compareAssessmentMetrics(beforeSet, afterSet, { limit: 64 })
+    .filter((metric) => {
+      const text = postureMetricChangeText(metric.difference, metric.unit);
+      return Boolean(text) && text !== "변화 없음";
+    })
+    .sort((a, b) => Math.abs(b.difference) - Math.abs(a.difference) || String(a.id).localeCompare(String(b.id)))
+    .slice(0, Math.max(0, Number(limit) || 0));
+}
+
 export function compareAssessmentMetrics(beforeSet, afterSet, { view = null, limit = 8 } = {}) {
   if (!beforeSet || !afterSet) return [];
   const normalizedView = view ? normalizePostureView(view) : null;

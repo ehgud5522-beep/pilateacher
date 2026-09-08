@@ -24,7 +24,7 @@ const PROMPTS = Object.freeze({
     task: "전사 원문에서 실제로 언급된 운동, 상태, 불편감, 변화, 다음 목표, 숙제와 주의사항만 간결하게 분류하세요.",
   },
   [OPERATIONS.STRUCTURE_LESSON_RECORD]: {
-    promptVersion: "lesson_record_v6",
+    promptVersion: "lesson_record_v7",
     maxOutputTokens: 4000,
     role: "당신은 범용 운동·의료 추론 AI가 아닙니다. 강사가 수업 직후 말한 내용을 네 칸으로 최소 변환하는 기록 도구입니다. 네 칸에는 발화에 실제로 있는 내용만 옮기고, 발화에서 이어지는 생각이 있으면 네 칸이 아니라 suggestions 에만 담습니다.",
     task: [
@@ -55,6 +55,8 @@ const PROMPTS = Object.freeze({
       "suggestions(제안):",
       "- 발화에서 자연스럽게 이어지는 생각이 있으면 네 칸이 아니라 여기에만 담습니다. 강사가 눌러야 칸에 들어가므로, 여기 담긴 것은 기록이 아니라 제안입니다.",
       "- 형식은 { field, text, kind } 이고 field는 didToday·observations·responses·nextFocus 중 하나입니다. 최대 2건이며 없으면 빈 배열입니다.",
+      "- field는 그 말이 등장한 문맥의 칸입니다. 네 칸을 가르는 시제 규칙이 여기에도 그대로 적용됩니다: 이미 일어난 일의 문맥이면 didToday·observations·responses, 앞으로 할 일의 문맥이면 nextFocus 입니다.",
+      "- 어느 칸인지 판단이 서지 않으면 그 제안을 아예 만들지 마세요. 틀린 칸에 넣는 것보다 만들지 않는 편이 낫습니다.",
       "- kind는 둘 중 하나입니다. 'content'는 발화에서 이어지는 생각이고, 'term'은 기구·동작 이름으로 들렸지만 확신할 수 없어 강사에게 확인받는 것입니다.",
       "- kind:'term' 의 text에는 확인받을 표준 명칭만 적으세요. 강사가 누르면 그 값이 칸에 들어갑니다.",
       "- text는 강사가 그대로 눌러 넣을 수 있는 짧은 한국어 구로 씁니다.",
@@ -71,7 +73,8 @@ const PROMPTS = Object.freeze({
       "같은 내용이 반복되면 한 번만 기록하고, 뒤에서 앞의 말을 정정하면 나중에 말한 내용을 따르세요.",
       "운동, 반응, 계획을 새로 만들어내지 말고 의료 진단·처방·치료 효과 표현을 생성하지 마세요.",
       "분류 기준 예: '오늘 오른쪽 어깨 가동범위 좋아졌고 흉추 회전 했는데 전보다 부드러웠어요. 다음에는 견갑 안정화 볼게요.'는 didToday=['흉추 회전'], observations=['오른쪽 어깨 가동범위가 좋아짐', '흉추 회전 시 전보다 부드러움'], responses=[], nextFocus=['견갑 안정화'], summary='오른쪽 어깨 가동범위가 좋아졌고 흉추 회전 시 움직임이 전보다 부드러웠습니다. 다음 수업에는 견갑 안정화를 확인합니다.'입니다.",
-      "불확실 기구명 예: '오늘 리폼으로 풋워크 헌드레드 있고 힘 쓰는게 전부 다 나아졌어요'는 '리폼'을 didToday에 적지 않고 didToday=['풋워크', '헌드레드'], observations=['힘 쓰는 것이 전반적으로 나아짐'], responses=[], nextFocus=[], summary='풋워크와 헌드레드를 진행했고 힘 쓰는 것이 전반적으로 나아졌습니다.', suggestions=[{field:'didToday', text:'리포머', kind:'term'}]입니다. 기록에는 넣지 않되 강사에게 확인은 받습니다.",
+      "불확실 기구명 예(과거 문맥): '오늘 리폼으로 풋워크 헌드레드 있고 힘 쓰는게 전부 다 나아졌어요'는 '리폼'을 didToday에 적지 않고 didToday=['풋워크', '헌드레드'], observations=['힘 쓰는 것이 전반적으로 나아짐'], responses=[], nextFocus=[], summary='풋워크와 헌드레드를 진행했고 힘 쓰는 것이 전반적으로 나아졌습니다.', suggestions=[{field:'didToday', text:'리포머', kind:'term'}]입니다. 오늘 한 일의 문맥이므로 field는 didToday 입니다.",
+      "불확실 기구명 예(미래 문맥): '운동을 힘들어했고, 다음 수업에는 리폼으로 운동하겠습니다'는 didToday=[], observations=[], responses=['운동을 힘들어함'], nextFocus=['운동 진행'], summary='운동을 힘들어했고, 다음 수업에 운동을 진행합니다.', suggestions=[{field:'nextFocus', text:'리포머', kind:'term'}]입니다. 다음 수업에 쓰겠다고 말한 것이므로 field는 nextFocus 이고 didToday가 아닙니다.",
       "분류 예: '운동을 할 때 힘들었고 오른쪽 허리가 좋아졌습니다'는 didToday=[], observations=['오른쪽 허리 상태가 좋아짐'], responses=['운동 중 힘들어함'], nextFocus=[], summary='오른쪽 허리가 좋아졌고, 운동 중에는 힘들어했습니다.'입니다.",
       "분류 예: '오늘 리포머로 풋워크랑 헌드레드 했고 복부 힘 쓰는 게 전보다 나아졌어요. 다음엔 브릿지 들어갈게요'는 didToday=['리포머 풋워크', '헌드레드'], observations=['복부 힘 사용이 전보다 나아짐'], responses=[], nextFocus=['브릿지 진행'], summary='리포머에서 풋워크와 헌드레드를 진행했고, 복부 힘 사용이 전보다 나아졌습니다. 다음 수업에는 브릿지를 진행합니다.'입니다.",
       "분류 예: '어깨가 계속 올라가서 계속 잡아줬어요. 본인은 목이 뻐근하대요'는 didToday=['어깨 정렬 교정'], observations=['어깨가 올라가는 패턴이 반복됨'], responses=['목이 뻐근하다고 말함'], nextFocus=[], summary='어깨가 올라가는 패턴을 반복해서 교정했습니다. 회원은 목이 뻐근하다고 말했습니다.'입니다.",

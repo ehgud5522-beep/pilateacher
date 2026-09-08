@@ -155,7 +155,7 @@ test("the prompt sends inference to the suggestion list only", async () => {
   // A suggestion is still not a diagnosis.
   assert.match(prompt, /여전히 금지: 의학적 진단, 통증의 원인 추정, 질환명, 치료 효과 표현/);
   assert.match(prompt, /근거가 발화에 없으면 제안도 만들지 말고 빈 배열로/);
-  assert.match(prompt, /promptVersion: "lesson_record_v6"/);
+  assert.match(prompt, /promptVersion: "lesson_record_v7"/);
 });
 
 test("the reported utterance is written into the prompt as its example", async () => {

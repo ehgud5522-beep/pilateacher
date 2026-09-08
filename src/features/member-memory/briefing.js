@@ -80,6 +80,10 @@ export function memberMemorySummary(briefing) {
   return {
     lastLesson: latestSession ? shortDate(latestSession.date) : "첫 수업",
     repeated: repeated ? `${memoryBodyLabel(repeated)} · ${repeated.seenCount}회` : "반복 기록 없음",
+    /* 위 문자열은 없을 때도 "반복 기록 없음"을 돌려주므로, 있고 없음을 물어야 하는
+       화면은 그 문구를 문자열로 비교하게 된다. 원본을 함께 내주어 줄을 통째로
+       생략할지 판단할 수 있게 한다. 기존 필드는 그대로 둔다. */
+    repeatedMemory: repeated,
     nextCheck: next?.text || "다음 확인 없음",
     recentChange: change?.status === "conflict" ? "최근 기록이 달라졌습니다" : change?.text || "최근 변화 없음",
   };

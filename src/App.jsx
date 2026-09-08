@@ -111,6 +111,8 @@ import {
   selectLessonSheetBriefing, selectMemberDetailStatus, selectMemberHistoryRows, selectMemberLessonCounts, selectMemberLessonSessions, selectPendingLessonSessions, selectUnresolvedLessonRows,
 } from "./features/lesson-record/member-detail-selectors.js";
 import LessonHistorySessionRow from "./features/lesson-record/LessonHistorySessionRow.jsx";
+import NextLessonReflection from "./features/lesson-record/NextLessonReflection.jsx";
+import { selectNextLessonReflection } from "./features/lesson-record/next-lesson-reflection.js";
 import { deactivateMemberRecord, deleteMemberData, inactiveMembers, reactivateMemberRecord, visibleMembers } from "./features/members/member-lifecycle.js";
 import { trackLessonRecordUsage } from "./features/lesson-record/usage-telemetry.js";
 import {
@@ -15240,6 +15242,8 @@ export default function App() {
   /* 일정 탭에서 '기록하기'로 들어왔으면 저장 후 다시 일정으로 돌려보낸다 */
   const [noteBack, setNoteBack] = useState(false);
   const [noteSid, setNoteSid] = useState(null);
+  // 저장 직후 한 번 띄우는 반영 화면. 확인을 누르면 비운다.
+  const [reflection, setReflection] = useState(null);
   const savedLessonRecordToastKeysRef = useRef(new Set());
   const saveScheduleComment = async (id, type, sid, body, voiceMeta = null, noteOptions = null) => {
     const text = String(body || "").trim();
@@ -15672,6 +15676,9 @@ export default function App() {
   };
   const saveNote = async (id, note) => {
     const t = db.members.find((m) => m.id === id);
+    /* 아래에서 stage 를 confirmed_record 로 덮어쓴다. 덮어쓴 뒤에 읽으면 언제나
+       확정 상태라, 재수정과 첫 확정을 구분할 수 없게 된다. */
+    const stageBeforeSave = String(note.lessonRecord?.stage || "");
     const confirmedAt = note.lessonRecord ? new Date().toISOString() : note.confirmedAt;
     const audioBlobId = note.audioBlobId || note.lessonRecord?.audioBlobId || null;
     const finalized = note.lessonRecord ? {
@@ -15705,6 +15712,13 @@ export default function App() {
     trackMemberMemoryUsage("patterns", { count: memoryResult.stats.patternCount });
     deviceLog("member_note_saved", { memberId: id, lessonId: noteSid, storage: "localStorage", source: note.voiceSource || "direct_input" });
     setNoteSid(null);
+    /* 저장이 끝나고 미기록 큐에서도 빠진 뒤에 묻는다. 그래야 화면이 말하는 상태가
+       실제 저장된 상태와 같다. */
+    const nextReflection = selectNextLessonReflection({
+      record: note.lessonRecord, stageBeforeSave, member: t, schedule: db.schedule,
+      recordDate: note.date || confirmedAt,
+    });
+    if (nextReflection) setReflection(nextReflection);
     if (noteBack) {
       setNoteBack(false);
       setTab("schedule");
@@ -16372,6 +16386,7 @@ export default function App() {
       {lessonExamplesOpen && <LessonRecordExamplesModal onClose={() => setLessonExamplesOpen(false)} onPractice={(speech) => { setLessonExamplesOpen(false); window.dispatchEvent(new CustomEvent("pilateacher:practice-record-example", { detail: { speech } })); }} />}
       {onboardingOpen && <Onboarding replay={onboardingReplay} onSkip={completeAndCloseOnboarding} onRegisterMember={finishOnboardingAndRegister} onExploreSample={finishOnboardingWithSample} onLater={finishOnboardingToMembers} />}
       {notificationSoftPrompt && <ScheduleBottomSheet title="다음 수업 전에 알려드릴까요?" subtitle="수업 10분 전 알림을 받을 수 있어요" onClose={() => setNotificationSoftPrompt(false)}><div className="space-y-2"><button type="button" onClick={async () => { const permission = await requestLessonNotificationPermission(); if (permission.granted) await syncLessonNotifications(notificationDataRef.current); setNotificationSoftPrompt(false); setToast(permission.granted ? { ok: true, msg: "수업 알림을 켰습니다." } : { ok: false, msg: "알림 권한이 꺼져 있습니다." }); }} className="h-12 w-full rounded-lg text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>알림 받기</button><button type="button" onClick={() => setNotificationSoftPrompt(false)} className="h-11 w-full rounded-lg text-sm font-bold" style={{ color: SUB }}>나중에</button></div></ScheduleBottomSheet>}
+      {reflection && <NextLessonReflection reflection={reflection} onConfirm={() => setReflection(null)} />}
       {toast && (
         <div className="fixed inset-x-0 z-[70] flex justify-center px-4" style={{ bottom: "calc(62px + max(env(safe-area-inset-bottom, 0px), 8px))" }}>
           <div className="flex max-w-[360px] items-center gap-2 px-4 py-2.5" style={{ borderRadius: 8, backgroundColor: toast.ok ? TOAST : BAD, boxShadow: SHADOW }}>

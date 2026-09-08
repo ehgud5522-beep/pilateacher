@@ -185,17 +185,17 @@ test("the component lives outside App.jsx", async () => {
   // App.jsx is the shell of screens not yet moved out; new code does not go in it.
   assert.match(source, /import NextLessonReflection from "\.\/features\/lesson-record\/NextLessonReflection\.jsx";/);
   assert.match(source, /import \{ selectNextLessonReflection \} from "\.\/features\/lesson-record\/next-lesson-reflection\.js";/);
-  assert.match(source, /\{reflection && <NextLessonReflection reflection=\{reflection\} onConfirm=\{\(\) => setReflection\(null\)\} \/>\}/);
+  assert.match(source, /\{reflection && <NextLessonReflection\s*\r?\n\s*reflection=\{reflection\}\s*\r?\n\s*onConfirm=\{\(\) => setReflection\(null\)\}/);
 });
 
-test("the queue button has a place but is not wired yet", async () => {
+test("the queue button is optional and off by itself", async () => {
   const source = await componentSource();
-  /* Jumping to the next unrecorded lesson needs an entry point that does not
-     exist; the props are here so that wiring is all that is left. */
+  /* Wired now, but the component still stands without it: a screen with
+     nothing left to record shows only 확인. */
   assert.match(source, /onNextPending = null,\s*\r?\n\s*pendingCount = 0,/);
   assert.match(source, /const showNext = Boolean\(onNextPending\) && Number\(pendingCount\) > 0;/);
   const app = await appSource();
-  assert.doesNotMatch(app, /onNextPending=/, "nothing passes it in this step");
+  assert.match(app, /onNextPending=\{reflectionPending\.sessions\[0\]\?\.lessonId/, "and the app supplies it");
 });
 
 test("the basis date is always stated", async () => {

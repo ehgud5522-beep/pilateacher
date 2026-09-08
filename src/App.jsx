@@ -15289,6 +15289,24 @@ export default function App() {
   const [noteSid, setNoteSid] = useState(null);
   // 저장 직후 한 번 띄우는 반영 화면. 확인을 누르면 비운다.
   const [reflection, setReflection] = useState(null);
+  /* 반영 화면에 남은 건수를 보여 주고 다음 대상을 고르기 위한 목록. 판정은 기존
+     셀렉터 그대로 쓴다 -- 어느 수업이 미기록인지는 한 곳에서만 정해져야 한다. */
+  const reflectionPending = useMemo(() => selectPendingLessonSessions({
+    members: db.members,
+    schedule: db.schedule,
+    pendingDrafts: listPendingLessonRecords(),
+  }), [db.members, db.schedule, reflection]);
+  /* 아직 기록하지 않은 수업으로 바로 넘어간다.
+
+     회원과 수업을 따로 실어 나르지 않는다 -- 일정 시트가 수업 id 하나로 열리고,
+     그 안에서 회원도 녹음 화면도 이미 정해진다. 새 경로를 만드는 대신 이미 있는
+     openLessonId 배선을 쓴다. */
+  const openLessonRecord = (lessonId) => {
+    if (!lessonId) return;
+    setReflection(null);
+    setScheduleOpenLessonId(String(lessonId));
+    setTab("schedule");
+  };
   const savedLessonRecordToastKeysRef = useRef(new Set());
   const saveScheduleComment = async (id, type, sid, body, voiceMeta = null, noteOptions = null) => {
     const text = String(body || "").trim();
@@ -16455,7 +16473,13 @@ export default function App() {
       {lessonExamplesOpen && <LessonRecordExamplesModal onClose={() => setLessonExamplesOpen(false)} onPractice={(speech) => { setLessonExamplesOpen(false); window.dispatchEvent(new CustomEvent("pilateacher:practice-record-example", { detail: { speech } })); }} />}
       {onboardingOpen && <Onboarding replay={onboardingReplay} onSkip={completeAndCloseOnboarding} onRegisterMember={finishOnboardingAndRegister} onExploreSample={finishOnboardingWithSample} onLater={finishOnboardingToMembers} />}
       {notificationSoftPrompt && <ScheduleBottomSheet title="다음 수업 전에 알려드릴까요?" subtitle="수업 10분 전 알림을 받을 수 있어요" onClose={() => setNotificationSoftPrompt(false)}><div className="space-y-2"><button type="button" onClick={async () => { const permission = await requestLessonNotificationPermission(); if (permission.granted) await syncLessonNotifications(notificationDataRef.current); setNotificationSoftPrompt(false); setToast(permission.granted ? { ok: true, msg: "수업 알림을 켰습니다." } : { ok: false, msg: "알림 권한이 꺼져 있습니다." }); }} className="h-12 w-full rounded-lg text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>알림 받기</button><button type="button" onClick={() => setNotificationSoftPrompt(false)} className="h-11 w-full rounded-lg text-sm font-bold" style={{ color: SUB }}>나중에</button></div></ScheduleBottomSheet>}
-      {reflection && <NextLessonReflection reflection={reflection} onConfirm={() => setReflection(null)} />}
+      {reflection && <NextLessonReflection
+        reflection={reflection}
+        onConfirm={() => setReflection(null)}
+        pendingCount={reflectionPending.count}
+        onNextPending={reflectionPending.sessions[0]?.lessonId
+          ? () => openLessonRecord(reflectionPending.sessions[0].lessonId)
+          : null} />}
       {toast && (
         <div className="fixed inset-x-0 z-[70] flex justify-center px-4" style={{ bottom: "calc(62px + max(env(safe-area-inset-bottom, 0px), 8px))" }}>
           <div className="flex max-w-[360px] items-center gap-2 px-4 py-2.5" style={{ borderRadius: 8, backgroundColor: toast.ok ? TOAST : BAD, boxShadow: SHADOW }}>

@@ -15301,6 +15301,9 @@ export default function App() {
     const lessonLinkedToMember = !sid || linkedLesson?.memberId === id || linkedLesson?.memberIds?.includes?.(id) || linkedLesson?.attendees?.some?.((item) => item?.memberId === id);
     const reconcileStatus = lessonLinkedToMember ? (sid ? "linked" : "member_only") : "link_review_required";
     const shouldConfirm = !voiceMeta || noteOptions?.confirmed !== false;
+    /* 아래 storedLessonRecord 가 stage 를 confirmed_record 로 덮는다. 덮은 뒤에
+       읽으면 언제나 확정 상태라, 첫 확정과 재수정을 가를 수 없다. */
+    const stageBeforeSave = String(voiceMeta?.lessonRecord?.stage || "");
     // A key whose value is `undefined` survives into the in-memory database and
     // makes every later Firestore backup write fail with "invalid-argument".
     // An absent value therefore leaves the key out instead.
@@ -15420,6 +15423,22 @@ export default function App() {
       }
     }
     if (shouldConfirm && sid) removePendingLessonRecord(id, sid);
+    /* 일정 시트에서 저장하는 것이 강사가 가장 많이 쓰는 길인데, 반영 화면이
+       회원 상세 경로에만 붙어 있어 여기서는 한 번도 뜨지 않았다.
+
+       판정도 표시 횟수도 두 경로가 같은 것을 쓴다. 강사에게는 같은 화면이므로
+       경로별로 따로 세면 최대 여섯 번 보게 된다. */
+    if (shouldConfirm) {
+      const nextReflection = selectNextLessonReflection({
+        record: voiceMeta?.lessonRecord, stageBeforeSave,
+        member: nextDb.members.find((m) => m.id === id) || target, schedule: currentDb.schedule,
+        recordDate: note.date || confirmedAt,
+      });
+      if (nextReflection && shouldShowNextLessonReflection(globalThis.localStorage)) {
+        markNextLessonReflectionShown(globalThis.localStorage);
+        setReflection(nextReflection);
+      }
+    }
     if (voiceMeta && shouldConfirm) trackLessonRecordUsage("record_confirmed");
     trackMemberMemoryUsage("memory_candidates", { count: memoryResult.stats.candidateCount });
     trackMemberMemoryUsage("memory_merged", { count: memoryResult.stats.mergedCount });

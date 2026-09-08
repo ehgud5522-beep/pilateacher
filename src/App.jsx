@@ -118,7 +118,8 @@ import { selectNextLessonReflection } from "./features/lesson-record/next-lesson
 import { deactivateMemberRecord, deleteMemberData, inactiveMembers, reactivateMemberRecord, visibleMembers } from "./features/members/member-lifecycle.js";
 import { trackLessonRecordUsage } from "./features/lesson-record/usage-telemetry.js";
 import {
-  lessonRecordPresentation, markLessonRecordGuideUsed, shouldShowLessonRecordGuide,
+  lessonRecordPresentation, markLessonRecordGuideUsed, markNextLessonReflectionShown,
+  shouldShowLessonRecordGuide, shouldShowNextLessonReflection,
 } from "./features/lesson-record/lesson-record-presentation.js";
 import lessonRecordExamples from "./features/lesson-record/lesson-record-examples.json";
 import { createMemberBriefing, memberMemorySummary, selectScheduleBriefing } from "./features/member-memory/briefing.js";
@@ -15742,7 +15743,12 @@ export default function App() {
       record: note.lessonRecord, stageBeforeSave, member: t, schedule: db.schedule,
       recordDate: note.date || confirmedAt,
     });
-    if (nextReflection) setReflection(nextReflection);
+    /* 처음 몇 번만 화면으로 보여 주고, 그 뒤로는 저장했다는 토스트로 돌아간다.
+       같은 것을 매번 가로막으면 알려 주던 것이 방해가 된다. */
+    if (nextReflection && shouldShowNextLessonReflection(globalThis.localStorage)) {
+      markNextLessonReflectionShown(globalThis.localStorage);
+      setReflection(nextReflection);
+    }
     if (noteBack) {
       setNoteBack(false);
       setTab("schedule");

@@ -11885,11 +11885,29 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       voiceDiagnostic("failed", { source: "server_audio", ...failureDetail, code: error?.code || "audio_record_failed" });
     }
   };
+  /* 재시작 깃발은 어떤 경로로 나가든 내려와야 한다.
+
+     동의 확인이 실패하면 그 자리에서 throw 하는데, 그 throw 는 아래 try 보다 앞에
+     있어 어느 catch 에도 잡히지 않았다. 깃발이 선 채로 함수를 빠져나가면 이후
+     "다시 녹음"은 첫 줄 가드에서 조용히 되돌아온다 -- 눌러도 아무 일이 없고 이유도
+     보이지 않는다. 화면을 닫았다 열어야 풀렸다.
+
+     개별 해제 지점을 늘리는 대신 finally 로 감싼다. 종료 경로가 여럿이라 한 곳을
+     막아도 다음 자리가 또 샌다. 성공 경로는 이미 자기 자리에서 깃발을 내리고 녹음을
+     시작하므로, finally 가 한 번 더 내려도 달라지는 것은 없다. */
   const startServerRecording = async (mode = "append", options = {}) => {
     if (startRequestRef.current || on || finishing) return;
     setUserAttemptedStart(true);
     startRequestRef.current = true;
     setStarting(true);
+    try {
+      await startServerRecordingBody(mode, options);
+    } finally {
+      startRequestRef.current = false;
+      setStarting(false);
+    }
+  };
+  const startServerRecordingBody = async (mode, options) => {
     setErr("");
     setSummaryError("");
     setSummaryFailure(null);

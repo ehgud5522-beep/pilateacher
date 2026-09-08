@@ -483,25 +483,7 @@ function createOpenAIProvider({
         emitDiagnostic("AUDIO_STRUCTURE_FAILED", { code: String(error?.code || "structure_failed").slice(0, 80), elapsedMs: Math.max(0, Date.now() - structureStartedAt) });
         throw error;
       }
-      // TEMP: 진단용, 확인 후 제거
-      /* 음성 경로는 아래에서 네 칸만 골라내고 suggestions 를 버린다. 그래서 앱까지
-         오지 않는데, 모델이 애초에 만들고 있는지를 알 수 없다. 전달을 고치기 전에
-         그것부터 확인한다.
-
-         숫자와 스키마에 정의된 필드명만 남긴다. 네 칸 내용도, 제안 문장도, 전사도,
-         그 길이도 남기지 않는다 -- 길이는 내용을 되짚을 수 있는 값이다.
-         didToday 는 비었는지만 참·거짓으로 본다. */
-      const TEMP_SUGGESTION_FIELDS = ["didToday", "observations", "responses", "nextFocus"];
-      const tempSuggestions = Array.isArray(structured.output?.suggestions) ? structured.output.suggestions : [];
-      emitDiagnostic("AUDIO_STRUCTURE_SUCCEEDED", {
-        elapsedMs: Math.max(0, Date.now() - structureStartedAt),
-        // TEMP: 진단용, 확인 후 제거 -- 아래 세 값
-        suggestionsCount: tempSuggestions.length,
-        suggestionFields: tempSuggestions
-          .map((item) => String(item?.field || ""))
-          .filter((field) => TEMP_SUGGESTION_FIELDS.includes(field)),
-        didTodayEmpty: (Array.isArray(structured.output?.didToday) ? structured.output.didToday.length : 0) === 0,
-      });
+      emitDiagnostic("AUDIO_STRUCTURE_SUCCEEDED", { elapsedMs: Math.max(0, Date.now() - structureStartedAt) });
       const fields = Object.fromEntries(
         ["didToday", "observations", "responses", "nextFocus"]
           .map((field) => [field, structured.output[field]]),

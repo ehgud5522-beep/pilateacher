@@ -3,10 +3,12 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
-  postureMetricChangeText, selectPreviousAssessment, selectRecentAssessmentChanges,
+  isWithinShootingTolerance, postureMetricChangeText,
+  selectPreviousAssessment, selectRecentAssessmentChanges,
 } from "../../src/features/posture/posture-model.js";
 
 const appSource = () => readFile(new URL("../../src/App.jsx", import.meta.url), "utf8");
+const modelSource = () => readFile(new URL("../../src/features/posture/posture-model.js", import.meta.url), "utf8");
 
 const metric = (key, label, value) => ({ key, label, value, unit: "°", validity: { valid: true } });
 const set = (id, at, poses) => ({ id, status: "completed", scope: "full_body", at, completedAt: at, poses });
@@ -74,11 +76,34 @@ test("the biggest movements come first, at most three", () => {
 });
 
 test("a movement inside the shooting tolerance is left out", () => {
-  /* 1.4 -> 1.2 both print as 1, and the same rule that says 변화 없음 in the
-     comparison view keeps it off this card. */
+  /* 1.4 -> 1.2 both print as 1, and the tolerance rule that keeps the
+     comparison view from calling that a change keeps it off this card too. */
   const rows = selectRecentAssessmentChanges(before, after);
   assert.ok(!rows.some((row) => row.key === "head"));
-  assert.equal(postureMetricChangeText(0), "변화 없음");
+  assert.equal(isWithinShootingTolerance(0), true);
+});
+
+test("the list is filtered by the rule, not by the wording", async () => {
+  /* The filter used to read the rendered sentence and compare it against a
+     literal string, so editing the copy silently changed which rows appear.
+     It asks the rule directly now. */
+  const source = (await modelSource()).replace(/\/\*[\s\S]*?\*\//g, "");
+  const start = source.indexOf("export function selectRecentAssessmentChanges");
+  assert.ok(start >= 0);
+  const body = source.slice(start, source.indexOf("\nexport ", start + 1));
+  assert.ok(body.includes("isWithinShootingTolerance"), "the filter asks the rule");
+  assert.ok(!body.includes("postureMetricChangeText"), "the filter never reads the sentence");
+});
+
+test("the rule and the line answer the same way", () => {
+  /* One decides which rows the card shows, the other decides what the row
+     says. If they ever disagreed, a row would appear saying it is not a
+     change -- or a real change would be dropped. */
+  for (const value of [-9, -2, -1, 0, 1, 2, 9]) {
+    const inside = isWithinShootingTolerance(value);
+    const text = postureMetricChangeText(value);
+    assert.equal(text.startsWith("변화"), !inside, `${value}° is described against the rule`);
+  }
 });
 
 test("nothing beyond the tolerance means no rows at all", () => {

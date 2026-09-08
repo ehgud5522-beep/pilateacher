@@ -443,6 +443,18 @@ export const POSTURE_CHANGE_TOLERANCE_DEG = 2;
 
    2° 미만은 변화로 읽지 않는다. 그 폭은 카메라 각도와 서 있는 자세가 조금 달라도
    생기므로, 두 촬영의 차이라고 부를 수 없다. */
+/* 이 차이가 촬영 오차 안쪽인가.
+
+   문구와 목록이 같은 판단을 봐야 한다. 예전에는 목록이 "변화 없음"이라는 문구를
+   문자열로 비교해 걸렀는데, 그러면 문구를 손대는 순간 목록이 조용히 달라진다. */
+export function isWithinShootingTolerance(difference, unit = "°") {
+  const number = Number(difference);
+  if (!Number.isFinite(number)) return false;
+  const size = Math.abs(number);
+  const tolerance = unit === "°" ? POSTURE_CHANGE_TOLERANCE_DEG : 0;
+  return size === 0 || size < tolerance;
+}
+
 export function postureMetricChangeText(difference, unit = "°") {
   // null 과 "" 는 Number() 를 통과하면 0 이 된다. 값이 없는 것을 "변화 없음"이라고
   // 말하면 확인하지 않은 사실을 말하는 셈이라, 아무것도 그리지 않는다.
@@ -450,8 +462,10 @@ export function postureMetricChangeText(difference, unit = "°") {
   const number = Number(difference);
   if (!Number.isFinite(number)) return null;
   const size = Math.abs(number);
-  const tolerance = unit === "°" ? POSTURE_CHANGE_TOLERANCE_DEG : 0;
-  if (size === 0 || size < tolerance) return "변화 없음";
+  /* "변화 없음"만 적어 두면 위에 3° 와 2° 가 나란히 있는 화면과 어긋나 보인다.
+     두 값이 반올림 경계를 사이에 두면 0.2° 차이도 다른 정수로 찍히기 때문이다.
+     그래서 차이를 함께 적고, 왜 변화로 읽지 않는지를 밝힌다. */
+  if (isWithinShootingTolerance(number, unit)) return `${size}${unit} 차이 · 촬영 오차 범위`;
   return `변화 ${size}${unit} ${number > 0 ? "증가" : "감소"}`;
 }
 
@@ -476,14 +490,12 @@ export function selectPreviousAssessment(sets, target) {
    판정하지 않는다. 어느 쪽이 좋아진 것인지는 강사가 정할 몫이고, 여기서는 어떤
    항목이 얼마나 움직였는지만 큰 순으로 고른다.
 
-   촬영 오차 안쪽(postureMetricChangeText 가 "변화 없음"이라고 답하는 것)은 빼고,
-   남는 것이 없으면 빈 배열이다 -- 빈 카드를 세우지 않기 위해서다. */
+   촬영 오차 안쪽은 빼고, 남는 것이 없으면 빈 배열이다 -- 빈 카드를 세우지 않기
+   위해서다. 걸러내는 기준은 문구가 아니라 규칙이라, 문구가 바뀌어도 목록은
+   그대로다. */
 export function selectRecentAssessmentChanges(beforeSet, afterSet, { limit = 3 } = {}) {
   return compareAssessmentMetrics(beforeSet, afterSet, { limit: 64 })
-    .filter((metric) => {
-      const text = postureMetricChangeText(metric.difference, metric.unit);
-      return Boolean(text) && text !== "변화 없음";
-    })
+    .filter((metric) => Number.isFinite(Number(metric.difference)) && !isWithinShootingTolerance(metric.difference, metric.unit))
     .sort((a, b) => Math.abs(b.difference) - Math.abs(a.difference) || String(a.id).localeCompare(String(b.id)))
     .slice(0, Math.max(0, Number(limit) || 0));
 }

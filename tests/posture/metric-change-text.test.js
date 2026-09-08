@@ -41,9 +41,13 @@ test("nothing in the line claims a side", () => {
 test("a difference inside the shooting tolerance is not a change", () => {
   // Camera angle and how the member happens to stand move it this much.
   assert.equal(POSTURE_CHANGE_TOLERANCE_DEG, 2);
-  assert.equal(postureMetricChangeText(0), "변화 없음");
-  assert.equal(postureMetricChangeText(1), "변화 없음");
-  assert.equal(postureMetricChangeText(-1), "변화 없음");
+  /* Saying only "변화 없음" reads as a contradiction of the 3° and 2° printed
+     right above it: two readings 0.2° apart land on different integers when a
+     rounding boundary falls between them. The line states the difference and
+     why it is not read as a change. */
+  assert.equal(postureMetricChangeText(0), "0° 차이 · 촬영 오차 범위");
+  assert.equal(postureMetricChangeText(1), "1° 차이 · 촬영 오차 범위");
+  assert.equal(postureMetricChangeText(-1), "1° 차이 · 촬영 오차 범위", "the sign is not shown");
 });
 
 test("the tolerance is a floor, not a window that swallows it", () => {
@@ -53,7 +57,7 @@ test("the tolerance is a floor, not a window that swallows it", () => {
 });
 
 test("a signed zero reads as no change, not as a decrease", () => {
-  assert.equal(postureMetricChangeText(-0), "변화 없음");
+  assert.equal(postureMetricChangeText(-0), "0° 차이 · 촬영 오차 범위");
 });
 
 test("a non-angle unit gets no degree tolerance", () => {
@@ -61,7 +65,7 @@ test("a non-angle unit gets no degree tolerance", () => {
      unit would silently hide a real difference. */
   assert.equal(postureMetricChangeText(1, "kg"), "변화 1kg 증가");
   assert.equal(postureMetricChangeText(-1, "kg"), "변화 1kg 감소");
-  assert.equal(postureMetricChangeText(0, "kg"), "변화 없음");
+  assert.equal(postureMetricChangeText(0, "kg"), "0kg 차이 · 촬영 오차 범위");
 });
 
 test("a value that is not a number produces no line at all", () => {
@@ -89,7 +93,7 @@ test("two readings that print the same never read as a change", () => {
   const pose = (view, value) => ({ view, metrics: [{ key: "fha", label: "귀-어깨", value, unit: "°", validity: { valid: true } }] });
   const [metric] = compareAssessmentMetrics({ poses: [pose("front", 1.4)] }, { poses: [pose("front", 0.6)] }, { view: "front" });
   assert.equal(metric.difference, 0, "both print 1");
-  assert.equal(postureMetricChangeText(metric.difference, metric.unit), "변화 없음");
+  assert.equal(postureMetricChangeText(metric.difference, metric.unit), "0° 차이 · 촬영 오차 범위");
 });
 
 /* ------------------------------ the layout ------------------------------ */

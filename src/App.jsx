@@ -68,6 +68,7 @@ import {
   selectPreviousAssessment, selectRecentAssessmentChanges,
   selectMemberBodyPhotoSurface, selectResumableAssessment,
 } from "./features/posture/posture-model.js";
+import BodyViewSheet from "./features/posture/BodyViewSheet.jsx";
 import { validatePostureMeasurement, validPostureMetrics } from "./features/posture/measurement-validity.js";
 import {
   MANUAL_ONLY_RESULT_NOTICE, POSTURE_RESULT_METRIC_KEYS, isFullyManualAfterAiMiss,
@@ -9876,6 +9877,7 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
   const [editingAnnotation, setEditingAnnotation] = useState(null);
   const [annotationPicker, setAnnotationPicker] = useState(false);
   const [captureReturnScreen, setCaptureReturnScreen] = useState("directions");
+  const [bodyViewOpen, setBodyViewOpen] = useState(false);
   const entryInitialized = useRef(false);
   const assessmentAction = useRef(null);
   const sets = useMemo(() => normalizeAssessmentSets(photos, { memberId: member?.id }), [photos, member?.id]);
@@ -9939,6 +9941,17 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
   /* front 와 back 은 같은 어깨선을 각각 잰다. 한 줄에 둘이 섞여 있으면 어느
      방향의 값인지 알 수 없으므로, 두 방향 이상이 섞일 때만 방향을 붙인다. */
   const recentChangeShowsView = new Set(recentChanges.map((metric) => metric.view)).size > 1;
+  /* 바디뷰로 들어가는 문은 하나다. "이번 변화" 카드가 있으면 그 카드의 발치에
+     붙고, 없으면 같은 자리에 혼자 선다 -- 카드가 뜨느냐에 따라 버튼이 화면
+     여기저기로 옮겨 다니면 강사가 매번 다시 찾아야 한다.
+
+     첫 촬영이라 견줄 것이 없는 회원에게도 볼 것은 있다. 이번 회차 네 방향이
+     그것이다. */
+  const canOpenBodyView = !selectedIsManualResult && selected?.status === "completed"
+    && POSTURE_VIEW_KEYS.some((view) => assessmentMediaForView(selected, view));
+  const bodyViewButton = canOpenBodyView ? (
+    <button type="button" onClick={() => setBodyViewOpen(true)} className="mt-3 h-11 w-full text-xs font-bold" style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D }}>360° 바디뷰에서 확인하기</button>
+  ) : null;
   const methodLabel = (method) => method === "draw" ? "강사 직접 기록" : method === "manual" ? "직접 포인트" : "AI 변화 분석";
   const roleLabelOf = (role) => role === "before" ? "첫 촬영" : role === "after" ? "다음 촬영" : "미분류";
   const setDate = (set) => assessmentDisplayDate(set);
@@ -10190,7 +10203,9 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
             <ChevronRight size={13} style={{ color: FAINT }} />
             <span className="shrink-0 text-sm font-extrabold tabular-nums" style={{ color: INK }}>{memberMetricValue(metric.afterValue, metric.unit)}{metric.unit}</span>
           </div>)}</div>
+          {bodyViewButton}
         </section>}
+        {!recentChanges.length && bodyViewButton && <section style={{ padding: 13, borderRadius: 14, backgroundColor: CARD, border: `1px solid ${LINE}` }}><h2 className="text-sm font-extrabold" style={{ color: INK }}>방향별로 보기</h2><p className="mt-1 text-xs" style={{ color: SUB }}>이번에 찍은 방향을 한 화면에서 넘겨 볼 수 있습니다</p>{bodyViewButton}</section>}
         {!selectedIsManualResult && selected?.status === "completed" && !!displayStates.length && <section style={{ padding: 13, borderRadius: 14, backgroundColor: CARD, border: `1px solid ${LINE}` }}><h2 className="text-sm font-extrabold" style={{ color: INK }}>핵심 상태</h2>{manualOnlyStored && <p className="mt-2 rounded-xl px-3 py-2 text-xs font-bold" style={{ backgroundColor: WARN_S, color: WARN }}>{MANUAL_ONLY_RESULT_NOTICE}</p>}<div className="mt-3 grid grid-cols-2 gap-2">{displayStates.map((item) => <div key={item.key} className="min-w-0 rounded-xl p-3" style={{ backgroundColor: CANVAS }}><p className="text-xs font-bold" style={{ color: SUB }}>{item.label}</p><p className="mt-1 text-sm font-extrabold" style={{ color: INK }}>{item.status}</p></div>)}</div>{resultPoses[0] && <button type="button" onClick={() => setViewingPose(resultPoses[0])} className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 text-xs font-bold" style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D }}><Pencil size={13} />수정하기</button>}</section>}
       </>}
 
@@ -10225,6 +10240,7 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
       {annotationPicker && <ChoiceBottomSheet title="다시 수정할 사진 선택" subtitle="저장된 표시를 불러와 이어서 수정합니다" value="" options={(selected?.selectedViews || []).map((view) => ({ value: view, label: postureViewLabel(view), description: setPhoto(selected, view)?.marks?.length ? "저장된 표시 있음" : "표시 새로 추가" })).filter((option) => setPhoto(selected, option.value))} onClose={() => setAnnotationPicker(false)} onSelect={(view) => { const photo = setPhoto(selected, view); setAnnotationPicker(false); if (photo) setEditingAnnotation({ view, photo }); }} />}
       {editingAnnotation?.photo?.src && <PostureCanvas key={`reedit_${editingAnnotation.view}_${editingAnnotation.photo.id}`} photo={editingAnnotation.photo} label={`${postureViewLabel(editingAnnotation.view)} · 다시 수정`} initialTool="pen" onClose={() => setEditingAnnotation(null)} onCancel={() => setEditingAnnotation(null)} onDraft={(marks) => onSaveMarks?.(editingAnnotation.view, editingAnnotation.photo.id, marks, { quiet: true })} onSave={(marks) => onSaveMarks?.(editingAnnotation.view, editingAnnotation.photo.id, marks)} onToast={onToast} />}
       {!selectedIsManualResult && viewingPose && <SavedPoseViewer rec={viewingPose} member={member} memberName={member?.name} records={resultPoses} onUpdate={onUpdatePose} onClose={() => setViewingPose(null)} onToast={onToast} />}
+      {bodyViewOpen && canOpenBodyView && <BodyViewSheet assessment={selected} previousAssessment={previousAssessment} resolvePhotoUrl={urlFor} onClose={() => setBodyViewOpen(false)} />}
     </div>
   );
 }

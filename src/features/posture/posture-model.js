@@ -529,6 +529,159 @@ export function compareAssessmentMetrics(beforeSet, afterSet, { view = null, lim
   })).filter(Boolean).slice(0, Math.max(0, Number(limit) || 0));
 }
 
+
+/* ------------------------- 360도 바디뷰 -- 정렬 ------------------------- */
+
+/* 방향을 갈아 끼우며 보는 화면이라, 방향마다 몸이 다른 크기로 다른 자리에 서
+   있으면 누를 때마다 몸이 튄다. 촬영이 원래 그렇다 -- 카메라와의 거리도,
+   회원이 선 자리도 방향마다 조금씩 다르다.
+
+   한 방향을 기준으로 삼고 나머지를 거기에 맞춘다. 사진을 고치는 것이 아니라
+   보여 줄 때 배율과 위치만 옮긴다. */
+
+export const BODY_VIEW_ALIGNMENT = Object.freeze({
+  aligned: "aligned",
+  missingAnchor: "unaligned_missing_anchor",
+  unsafeScale: "unaligned_unsafe_scale",
+});
+
+/* 기준을 고르는 차례. 정면이 몸을 가장 온전히 담고, 없으면 같은 평면인 후면이
+   다음이다. 측면은 마지막이다 -- 측면을 기준으로 삼으면 정면 쪽이 전부 그
+   좁은 폭에 맞춰진다. */
+const BODY_VIEW_BASE_ORDER = Object.freeze(["front", "back", "leftSide", "rightSide"]);
+
+/* postureAlignmentTransform 이 쓰는 것과 같은 범위다. 이 밖으로 나가는 배율은
+   맞춘 것이 아니라 사진을 왜곡한 것이라 적용하지 않는다. 두 곳이 같은 값을
+   본다는 것은 테스트가 지킨다. */
+export const POSTURE_ALIGNMENT_SCALE_MIN = 0.65;
+export const POSTURE_ALIGNMENT_SCALE_MAX = 1.55;
+
+const BODY_VIEW_IDENTITY_TRANSFORM = Object.freeze({ scale: 1, offsetX: 0, offsetY: 0 });
+
+function bodyViewPose(assessment, view) {
+  const normalizedView = normalizePostureView(view);
+  return (assessment?.poses || [])
+    .filter((pose) => normalizePostureView(pose?.view) === normalizedView)
+    .sort((left, right) => recordActivityKey(right) - recordActivityKey(left))[0] || null;
+}
+
+/* 방향마다 정렬이 됐는지, 안 됐다면 왜 안 됐는지를 함께 돌려준다.
+
+   상태를 값으로 남기는 이유는 나중에 "왜 이 방향만 크기가 이상한가"를 추측
+   없이 확인하기 위해서다. 저장 스키마에는 넣지 않는다 -- 사진과 landmark 에서
+   매번 다시 나오는 값이라 보관할 이유가 없다. */
+export function composeBodyViewAlignment(assessment) {
+  const entries = POSTURE_VIEW_KEYS.map((view) => ({
+    view,
+    hasPhoto: Boolean(assessmentMediaForView(assessment, view)),
+    pose: bodyViewPose(assessment, view),
+  })).map((entry) => ({ ...entry, anchors: entry.pose ? postureAlignmentAnchors(entry.pose, entry.view) : null }));
+
+  /* 사진이 있는 것과 기준이 될 수 있는 것은 다르다. 사진은 멀쩡해도 몸이
+     화면에 다 담기지 않았으면 anchors 가 없고, 그런 방향에 나머지를 맞추면
+     전부 함께 틀어진다. */
+  const base = BODY_VIEW_BASE_ORDER
+    .map((view) => entries.find((entry) => entry.view === view))
+    .find((entry) => entry?.anchors) || null;
+
+  return {
+    baseView: base?.view || null,
+    views: entries.map(({ view, hasPhoto, pose, anchors }) => {
+      const shared = { view, hasPhoto, hasPose: Boolean(pose), isBase: base?.view === view };
+      if (!base || !anchors) return { ...shared, status: BODY_VIEW_ALIGNMENT.missingAnchor, transform: null };
+      if (base.view === view) return { ...shared, status: BODY_VIEW_ALIGNMENT.aligned, transform: BODY_VIEW_IDENTITY_TRANSFORM };
+      const scale = base.anchors.height / anchors.height;
+      if (!Number.isFinite(scale) || scale < POSTURE_ALIGNMENT_SCALE_MIN || scale > POSTURE_ALIGNMENT_SCALE_MAX) {
+        return { ...shared, status: BODY_VIEW_ALIGNMENT.unsafeScale, transform: null };
+      }
+      const scaled = {
+        x: 0.5 + scale * (anchors.anchor.x - 0.5),
+        y: 0.5 + scale * (anchors.anchor.y - 0.5),
+      };
+      return {
+        ...shared,
+        status: BODY_VIEW_ALIGNMENT.aligned,
+        transform: {
+          scale: Math.round(scale * 10000) / 10000,
+          offsetX: Math.round((base.anchors.anchor.x - scaled.x) * 10000) / 10000,
+          offsetY: Math.round((base.anchors.anchor.y - scaled.y) * 10000) / 10000,
+        },
+      };
+    }),
+  };
+}
+
+/* ------------------------ 360도 바디뷰 -- 마커 -------------------------- */
+
+/* 마커가 앉을 자리. 측정할 때 쓴 지점을 저장하지 않기 때문에 -- 저장되는 것은
+   key, label, value, unit, validity 뿐이다 -- 저장된 landmark 에서 같은 규칙
+   으로 다시 구한다. 변화량이 아니라 landmark 가 자리를 정하므로, 수치가
+   어떻든 마커는 몸의 같은 곳에 붙는다. */
+function postureMetricAnchorPoint(pose, key) {
+  const points = pose?.pts && typeof pose.pts === "object" ? pose.pts : {};
+  const plane = postureAnalysisPlane(pose?.view);
+  if (plane === "front") {
+    const shoulder = midpoint(points.shL, points.shR);
+    const pelvis = midpoint(points.hipL, points.hipR);
+    if (key === "shoulder") return shoulder;
+    if (key === "pelvis") return pelvis;
+    if (key === "head") return midpoint(points.earL, points.earR);
+    /* 무릎은 좌우 중 더 굽은 쪽의 값이지만 어느 쪽이었는지는 저장돼 있지
+       않다. 한쪽을 찍으면 틀릴 수 있어 두 무릎 사이에 둔다. 값은 저장된 그
+       값 그대로이고, 자리만 가운데다. */
+    if (key === "knee") return midpoint(points.kneeL, points.kneeR);
+    if (key === "twist") return shoulder && pelvis ? { x: (shoulder.x + pelvis.x) / 2, y: (shoulder.y + pelvis.y) / 2 } : null;
+    return null;
+  }
+  const ear = preferredPoint(points, "ear", "earL", "earR");
+  const shoulder = preferredPoint(points, "sh", "shL", "shR");
+  const hip = preferredPoint(points, "hip", "hipL", "hipR");
+  const knee = preferredPoint(points, "knee", "kneeL", "kneeR");
+  const ankle = preferredPoint(points, "ank", "ankL", "ankR");
+  const between = (a, b) => (a && b ? { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } : null);
+  if (key === "fha") return between(ear, shoulder);
+  if (key === "trunk") return between(hip, shoulder);
+  if (key === "kneeSide") return knee;
+  if (key === "align") return ankle;
+  return null;
+}
+
+/* 이 방향에서 잰 값만. front 와 back 은 어깨선이라는 같은 이름을 쓰지만 각자
+   자기 사진에서 잰 것이고, 한쪽 값을 다른 쪽에 옮기면 그것은 다른 방향의
+   몸을 이 방향의 것이라고 말하는 셈이다.
+
+   표시할 것이 하나도 없는 방향도 있다 -- 그것은 고장이 아니다. 사진은 그대로
+   보여 주고 마커만 없다. */
+export function bodyViewMetrics(assessment, view, { previousAssessment = null } = {}) {
+  const normalizedView = normalizePostureView(view);
+  const pose = bodyViewPose(assessment, normalizedView);
+  if (!pose) return [];
+  /* 이전 값과 변화는 비교 화면이 쓰는 그 함수에서 그대로 가져온다. 반올림
+     규칙이 한 곳에 있어야 두 화면이 다른 숫자를 말하지 않는다. */
+  const changes = new Map(
+    (previousAssessment ? compareAssessmentMetrics(previousAssessment, assessment, { view: normalizedView, limit: 64 }) : [])
+      .map((row) => [row.key, row]),
+  );
+  return validPostureMetrics(pose).flatMap((metric) => {
+    const at = postureMetricAnchorPoint(pose, metric.key);
+    const value = Number(metric?.value);
+    if (!at || !Number.isFinite(value)) return [];
+    const change = changes.get(metric.key) || null;
+    return [{
+      id: `${normalizedView}:${metric.key}`,
+      view: normalizedView,
+      key: metric.key,
+      label: metric.label,
+      value,
+      unit: metric.unit || "",
+      at,
+      previousValue: change ? change.beforeValue : null,
+      difference: change ? change.difference : null,
+      measuredAt: assessmentDisplayDate(assessment),
+    }];
+  });
+}
+
 /* Put the joint the last step touched back the way it was found.
 
    The button under the correction prompt used to delete the point outright

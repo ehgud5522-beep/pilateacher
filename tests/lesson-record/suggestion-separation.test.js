@@ -155,7 +155,7 @@ test("the prompt sends inference to the suggestion list only", async () => {
   // A suggestion is still not a diagnosis.
   assert.match(prompt, /여전히 금지: 의학적 진단, 통증의 원인 추정, 질환명, 치료 효과 표현/);
   assert.match(prompt, /근거가 발화에 없으면 제안도 만들지 말고 빈 배열로/);
-  assert.match(prompt, /promptVersion: "lesson_record_v5"/);
+  assert.match(prompt, /promptVersion: "lesson_record_v6"/);
 });
 
 test("the reported utterance is written into the prompt as its example", async () => {
@@ -179,9 +179,46 @@ test("no chips means no section", async () => {
   assert.match(source, /\{\(summaryDraft\.suggestions \|\| \[\]\)\.length > 0 && <section/);
 });
 
-test("a chip says which field it will fill", async () => {
+test("a content chip says which field it will fill", async () => {
   const source = await appSource();
-  assert.match(source, /→ \{LESSON_RECORD_FIELD_LABELS\[item\.field\] \|\| item\.field\}/);
+  assert.match(source, /\$\{LESSON_RECORD_FIELD_LABELS\[item\.field\] \|\| item\.field\}/);
+});
+
+test("a term chip asks instead of proposing", async () => {
+  const source = await appSource();
+  /* "이렇게 들렸는데 맞나"와 "이런 게 이어지는데 넣을까"는 강사가 내리는 판단이
+     다르다. 같은 칩으로 보이면 무엇을 확인하는지 흐려진다. */
+  assert.match(source, /item\.kind === "term" \? <span className="mr-1 font-bold opacity-70">이렇게 들렸어요<\/span> : null/);
+  assert.match(source, /item\.kind === "term" \? " 맞나요\?" :/);
+});
+
+test("a term suggestion carries its kind through the schema", () => {
+  const output = validateStructuredOutput({
+    ...reportedCase,
+    suggestions: [{ field: "didToday", text: "리포머", kind: "term" }],
+  });
+  assert.deepEqual(output.suggestions, [{ field: "didToday", text: "리포머", kind: "term" }]);
+});
+
+test("a suggestion with no kind is treated as content, not as a term check", () => {
+  /* Asking "did I hear this right?" about something the model invented would
+     be a different claim entirely. */
+  const output = validateStructuredOutput({ ...reportedCase, suggestions: [{ field: "nextFocus", text: "x" }] });
+  assert.equal(output.suggestions[0].kind, "content");
+  const bogus = validateStructuredOutput({ ...reportedCase, suggestions: [{ field: "nextFocus", text: "x", kind: "diagnosis" }] });
+  assert.equal(bogus.suggestions[0].kind, "content", "an unknown kind falls back rather than passing through");
+});
+
+test("pressing a term chip puts the corrected word in its field", () => {
+  const draft = validateStructuredOutput({
+    ...reportedCase,
+    didToday: [],
+    suggestions: [{ field: "didToday", text: "리포머", kind: "term" }],
+  });
+  const next = applyLessonRecordSuggestion(draft, 0);
+  assert.deepEqual(next.didToday.map((item) => item.text), ["리포머"]);
+  assert.equal(next.didToday[0].origin, "instructor", "the instructor confirmed it, so it is theirs");
+  assert.deepEqual(next.suggestions, []);
 });
 
 test("pressing a chip goes through the shared rule", async () => {

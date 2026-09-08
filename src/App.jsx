@@ -12811,11 +12811,13 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
             {(summaryDraft.suggestions || []).length > 0 && <section className="rounded-lg p-3" style={{ backgroundColor: TINT, border: `1px dashed ${RING}` }}>
               <p className="text-[10px] font-extrabold" style={{ color: BRAND_D }}>AI 제안 · 눌러서 추가</p>
               <p className="mt-0.5 text-[10px] leading-relaxed" style={{ color: SUB }}>말한 내용이 아니라 제안입니다. 누른 것만 기록에 들어갑니다.</p>
+              {/* 용어 확인은 "이렇게 들렸는데 맞나"이고 내용 제안은 "이런 게 이어지는데
+                  넣을까"다. 같은 칩으로 보이면 강사가 무엇을 판단하는지 흐려진다. */}
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {(summaryDraft.suggestions || []).map((item, index) => <button key={`${item.field}:${item.text}`} type="button"
                   onClick={() => setSummaryDraft((current) => applyLessonRecordSuggestion(current, index))}
                   className="min-h-11 rounded-full px-3 py-1.5 text-[11px] font-extrabold" style={{ backgroundColor: CARD, color: BRAND_D, border: `1px solid ${BRAND}` }}>
-                  {item.text}<span className="ml-1 font-bold opacity-60">→ {LESSON_RECORD_FIELD_LABELS[item.field] || item.field}</span>
+                  {item.kind === "term" ? <span className="mr-1 font-bold opacity-70">이렇게 들렸어요</span> : null}{item.text}<span className="ml-1 font-bold opacity-60">{item.kind === "term" ? " 맞나요?" : ` → ${LESSON_RECORD_FIELD_LABELS[item.field] || item.field}`}</span>
                 </button>)}
               </div>
             </section>}

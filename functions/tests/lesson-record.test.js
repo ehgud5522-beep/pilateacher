@@ -41,7 +41,7 @@ test("lesson record output schema is exact and prompt forbids invention and diag
   );
   assert.deepEqual(OUTPUT_SCHEMAS[OPERATIONS.STRUCTURE_LESSON_RECORD].properties.summary.type, ["string", "null"]);
   const prompt = getPrompt(OPERATIONS.STRUCTURE_LESSON_RECORD);
-  assert.equal(prompt.promptVersion, "lesson_record_v5");
+  assert.equal(prompt.promptVersion, "lesson_record_v6");
   assert.equal(
     prompt.instructions.split("\n")[0],
     "당신은 범용 운동·의료 추론 AI가 아닙니다. 강사가 수업 직후 말한 내용을 네 칸으로 최소 변환하는 기록 도구입니다. 네 칸에는 발화에 실제로 있는 내용만 옮기고, 발화에서 이어지는 생각이 있으면 네 칸이 아니라 suggestions 에만 담습니다.",

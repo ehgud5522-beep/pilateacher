@@ -5,6 +5,9 @@ export const LESSON_RECORD_FIELDS = Object.freeze(["didToday", "observations", "
    제안 대상이 아니다. */
 export const LESSON_RECORD_SUGGESTION_FIELDS = Object.freeze(["didToday", "observations", "responses", "nextFocus"]);
 export const LESSON_RECORD_SUGGESTION_LIMIT = 2;
+/* content: 발화에서 이어지는 생각. term: 기구·동작 이름으로 들렸으나 확신할 수
+   없어 강사에게 확인받는 것. 강사가 읽는 문장이 달라야 하므로 구분해 둔다. */
+export const LESSON_RECORD_SUGGESTION_KINDS = Object.freeze(["content", "term"]);
 export const LESSON_RECORD_SCHEMA_VERSION = 2;
 
 const cleanText = (value, max = 500) => String(value ?? "").trim().slice(0, max);
@@ -72,7 +75,12 @@ function normalizeSuggestions(value) {
   if (!Array.isArray(value)) return [];
   return value
     .filter((item) => item && typeof item === "object" && !Array.isArray(item))
-    .map((item) => ({ field: cleanText(item.field, 40), text: cleanText(item.text, 200) }))
+    .map((item) => ({
+      field: cleanText(item.field, 40),
+      text: cleanText(item.text, 200),
+      // 종류가 없으면 내용 제안으로 본다. 용어 확인은 명시되어야 한다.
+      kind: LESSON_RECORD_SUGGESTION_KINDS.includes(item.kind) ? item.kind : "content",
+    }))
     .filter((item) => LESSON_RECORD_SUGGESTION_FIELDS.includes(item.field) && item.text)
     .slice(0, LESSON_RECORD_SUGGESTION_LIMIT);
 }

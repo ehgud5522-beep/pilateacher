@@ -14,6 +14,8 @@ test("audio operation exposes the exact transcript, four fields, summary, and pr
     transcript: "브릿지를 진행했습니다.",
     result: "ok",
     fields: { didToday: ["브릿지"], observations: [], responses: [], nextFocus: [] },
+    // 제안이 없는 응답도 그대로 통과한다 -- 제안은 기록의 조건이 아니다.
+    suggestions: [],
     summary: "브릿지를 진행했습니다.",
     speechSeconds: 2.4,
     confidence: 0.91,
@@ -27,19 +29,19 @@ test("audio operation exposes the exact transcript, four fields, summary, and pr
   assert.deepEqual(validateOperationOutput(OPERATIONS.LESSON_RECORD_FROM_AUDIO, filtered), filtered);
   assert.deepEqual(
     OUTPUT_SCHEMAS[OPERATIONS.LESSON_RECORD_FROM_AUDIO].required,
-    ["transcript", "result", "fields", "summary", "speechSeconds", "confidence", "flags", "provenance"],
+    ["transcript", "result", "fields", "suggestions", "summary", "speechSeconds", "confidence", "flags", "provenance"],
   );
   assert.throws(
     () => validateOperationOutput(OPERATIONS.LESSON_RECORD_FROM_AUDIO, { ...value, audio: "forbidden" }),
     (error) => error.code === "invalid_output",
   );
   const noSpeech = {
-    transcript: "", result: "no_speech", fields: null, summary: null,
+    transcript: "", result: "no_speech", fields: null, suggestions: [], summary: null,
     speechSeconds: 0.4, confidence: 0.02, flags: ["no_speech"], provenance: { stt: null, llm: null },
   };
   assert.deepEqual(validateOperationOutput(OPERATIONS.LESSON_RECORD_FROM_AUDIO, noSpeech), noSpeech);
   const lowConfidence = {
-    transcript: "리포머 캐딜락 체어 바렐", result: "low_confidence", fields: null, summary: null,
+    transcript: "리포머 캐딜락 체어 바렐", result: "low_confidence", fields: null, suggestions: [], summary: null,
     speechSeconds: 5, confidence: 0.5, flags: ["low_confidence"], provenance: { stt: "openai", llm: null },
   };
   assert.deepEqual(validateOperationOutput(OPERATIONS.LESSON_RECORD_FROM_AUDIO, lowConfidence), lowConfidence);

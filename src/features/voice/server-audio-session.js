@@ -153,6 +153,7 @@ export function structuredDraftFromAudioOutput(output) {
     responses: fields.responses || [],
     nextFocus: fields.nextFocus || [],
     uncertain: [],
+    suggestions: Array.isArray(output?.suggestions) ? output.suggestions : [],
     summary: output?.summary ?? null,
   };
 }

@@ -94,9 +94,27 @@ export function normalizeLessonRecord(value) {
   };
 }
 
+const AUDIO_SUGGESTION_FIELDS = ["didToday", "observations", "responses", "nextFocus"];
+const AUDIO_SUGGESTION_KINDS = ["content", "term"];
+
+function cleanAudioSuggestions(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item) => item && typeof item === "object" && !Array.isArray(item))
+    .map((item) => ({
+      field: cleanText(item.field, 40),
+      text: cleanText(item.text, 200),
+      kind: AUDIO_SUGGESTION_KINDS.includes(item.kind) ? item.kind : "content",
+    }))
+    .filter((item) => AUDIO_SUGGESTION_FIELDS.includes(item.field) && item.text)
+    .slice(0, 2);
+}
+
 export function normalizeAudioLessonRecord(value) {
-  const source = requireObject(value, "audio lesson record output");
-  const audioFields = ["transcript", "result", "fields", "summary", "speechSeconds", "confidence", "flags", "provenance"];
+  const raw = requireObject(value, "audio lesson record output");
+  /* 제안이 빠져 있다고 기록을 되돌리지 않는다. 네 칸이 본체이고 제안은 부가물이다. */
+  const source = Object.prototype.hasOwnProperty.call(raw, "suggestions") ? raw : { ...raw, suggestions: [] };
+  const audioFields = ["transcript", "result", "fields", "suggestions", "summary", "speechSeconds", "confidence", "flags", "provenance"];
   requireFields(source, audioFields, "audio lesson record output");
   if (Object.keys(source).some((field) => !audioFields.includes(field))) throw new TypeError("audio lesson record output has unsupported fields");
   const result = String(source.result || "");
@@ -112,7 +130,7 @@ export function normalizeAudioLessonRecord(value) {
     if (transcript || source.fields != null || source.summary != null || !flags.includes("no_speech") || source.provenance?.stt != null || source.provenance?.llm != null) {
       throw new TypeError("audio lesson record no_speech output is invalid");
     }
-    return { transcript: "", result, fields: null, summary: null, speechSeconds, confidence, flags, provenance: { stt: null, llm: null } };
+    return { transcript: "", result, fields: null, suggestions: [], summary: null, speechSeconds, confidence, flags, provenance: { stt: null, llm: null } };
   }
   const provenance = requireObject(source.provenance, "audio lesson record provenance");
   if (provenance.stt !== "openai") throw new TypeError("audio lesson record stt provenance is invalid");
@@ -121,7 +139,7 @@ export function normalizeAudioLessonRecord(value) {
     if (source.fields != null || source.summary != null || (!flags.includes("low_confidence") && !rejectedHallucination) || provenance.llm != null) {
       throw new TypeError("audio lesson record low_confidence output is invalid");
     }
-    return { transcript, result, fields: null, summary: null, speechSeconds, confidence, flags, provenance: { stt: "openai", llm: null } };
+    return { transcript, result, fields: null, suggestions: [], summary: null, speechSeconds, confidence, flags, provenance: { stt: "openai", llm: null } };
   }
   if (!transcript) throw new TypeError("audio lesson record transcript is empty");
   const fields = requireObject(source.fields, "audio lesson record fields");
@@ -131,6 +149,8 @@ export function normalizeAudioLessonRecord(value) {
     transcript,
     result,
     fields: Object.fromEntries(["didToday", "observations", "responses", "nextFocus"].map((field) => [field, cleanLessonList(fields[field], `fields.${field}`)])),
+    /* 제안은 기록이 아니므로 여기서 기록을 무르지 않는다. 읽히지 않으면 비운다. */
+    suggestions: cleanAudioSuggestions(source.suggestions),
     summary: source.summary == null ? null : cleanText(source.summary, 1200),
     speechSeconds,
     confidence,

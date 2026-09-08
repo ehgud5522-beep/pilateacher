@@ -506,6 +506,9 @@ function createOpenAIProvider({
         ["didToday", "observations", "responses", "nextFocus"]
           .map((field) => [field, structured.output[field]]),
       );
+      /* 제안은 네 칸 옆에 그대로 실어 보낸다. 여기서 잘려 나가는 바람에 모델이
+         만들어 놓고도 앱까지 닿지 못했다. */
+      const suggestions = Array.isArray(structured.output?.suggestions) ? structured.output.suggestions : [];
       const transcriptionFlags = Array.isArray(transcription.flags) ? transcription.flags : [];
       return {
         ...structured,
@@ -515,6 +518,7 @@ function createOpenAIProvider({
         transcriptionUsage: transcription.usage,
         output: {
           transcript: transcription.transcript,
+          suggestions,
           result: "ok",
           fields,
           summary: structured.output.summary,

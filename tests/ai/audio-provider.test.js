@@ -7,6 +7,8 @@ const output = {
   transcript: "브릿지를 진행했습니다.",
   result: "ok",
   fields: { didToday: ["브릿지"], observations: [], responses: [], nextFocus: [] },
+  // 제안이 없는 응답도 그대로 통과한다 -- 제안은 기록의 조건이 아니다.
+  suggestions: [],
   summary: "브릿지를 진행했습니다.",
   speechSeconds: 2.1,
   confidence: 0.91,

@@ -10,7 +10,12 @@ import react from "@vitejs/plugin-react";
 
 const appSource = () => readFile(new URL("../../src/App.jsx", import.meta.url), "utf8");
 const sheetSource = () => readFile(new URL("../../src/features/posture/BodyViewSheet.jsx", import.meta.url), "utf8");
-const withoutComments = (source) => source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+/* 줄바꿈은 파일마다 다르다. 여러 줄을 한 번에 보는 검사가 그것 때문에
+   깨지지 않도록 먼저 맞춰 둔다. */
+const withoutComments = (source) => String(source)
+  .replace(/\r\n/g, "\n")
+  .replace(/\/\*[\s\S]*?\*\//g, "")
+  .replace(/^\s*\/\/.*$/gm, "");
 
 const pt = (x, y) => ({ x, y, score: 1 });
 const frontPts = ({ top = 0.08, bottom = 0.92, cx = 0.5 } = {}) => ({
@@ -184,11 +189,104 @@ test("the alignment is worked out once per record, not once per frame", async ()
   assert.match(source, /bodyViewMetrics\(assessment, shownView, \{ previousAssessment \}\)/);
 });
 
-test("there is no dragging or swiping yet", async () => {
+/* ------------------------------- the drag -------------------------------- */
+
+test("a sideways push turns the body, a vertical one scrolls the page", async () => {
+  /* The photo fills most of the screen. If it swallowed every gesture the
+     instructor could not scroll past it. */
   const source = withoutComments(await sheetSource());
-  for (const handler of ["onTouchMove", "onPointerMove", "onTouchStart", "onDrag"]) {
-    assert.ok(!source.includes(handler), `${handler} belongs to the next step`);
+  assert.ok(source.includes('touchAction: "pan-y"'), "the browser keeps the vertical axis");
+  assert.ok(source.includes('drag.current.axis = Math.abs(dx) > Math.abs(dy) ? "x" : "y";'), "whichever wins decides");
+  assert.ok(source.includes('if (drag.current.axis !== "x") return;'), "a vertical drag is left alone");
+});
+
+test("the drag is wired to the frame, and lets go of it again", async () => {
+  const source = withoutComments(await sheetSource());
+  for (const handler of ["onPointerDown={onPointerDown}", "onPointerMove={onPointerMove}", "onPointerUp={endDrag}", "onPointerCancel={endDrag}"]) {
+    assert.ok(source.includes(handler), `${handler} is missing`);
   }
+});
+
+test("the buttons stay the way in; the drag is the extra one", async () => {
+  /* Four buttons are still the plain way to choose a direction. */
+  const html = render({ assessment: assessment(["front", "leftSide", "back", "rightSide"]) });
+  assert.equal((html.match(/aria-pressed=/g) || []).length, 4);
+});
+
+test("the markers come off the body while it is being dragged", async () => {
+  /* Mid-drag the photo is between two directions. A number pinned to it
+     would be pointing at a spot that is no longer where it was measured. */
+  const source = withoutComments(await sheetSource());
+  assert.ok(source.includes("const markersVisible = phase === \"idle\" && !dragging && introStage >= 2 && !!shownEntry;"));
+});
+
+test("the photo is moved, never bent", async () => {
+  /* The drag shifts the picture sideways. It does not turn it, skew it, or
+     stretch it towards an angle nobody photographed. */
+  const source = withoutComments(await sheetSource());
+  assert.ok(source.includes("transform: `translateX(${dragDx}px)"));
+  for (const forbidden of ["rotateY", "rotate3d", "skew", "perspective", "matrix3d"]) {
+    assert.ok(!source.includes(forbidden), `${forbidden} would bend the body`);
+  }
+});
+
+test("a device asked to reduce motion is not dragged along in real time", async () => {
+  const source = withoutComments(await sheetSource());
+  assert.ok(source.includes("if (!reduced) setDragDx(blocked ? dx * DRAG_EDGE_RESISTANCE : dx);"));
+});
+
+/* ----------------------------- the entrance ------------------------------ */
+
+test("the entrance runs once, and only once", async () => {
+  /* It is about the result being laid out. Replaying it on every button press
+     turns it into a delay between the instructor and the photo. */
+  const source = withoutComments(await sheetSource());
+  assert.ok(source.includes("if (introStarted.current) return undefined;"));
+  assert.ok(source.includes("introStarted.current = true;"));
+});
+
+test("touching anything ends the entrance instead of waiting it out", async () => {
+  const source = withoutComments(await sheetSource());
+  assert.ok(source.includes("const switchTo = useCallback((view) => {\n    if (!view || view === activeView) return;\n    finishIntro();"), "a button cuts it short");
+  assert.ok(source.includes("        finishIntro();\n        setDragging(true);"), "so does a finger");
+  assert.ok(source.includes("setIntroStage(3);\n    setRevealed(Number.MAX_SAFE_INTEGER);"), "and it lands on the finished state, not a half-drawn one");
+});
+
+test("the whole entrance fits inside a second", async () => {
+  const source = withoutComments(await sheetSource());
+  const value = (name) => Number(source.match(new RegExp("const " + name + " = (\\d+)"))?.[1]);
+  const total = value("PHOTO_FADE_MS") + value("INTRO_HOLD_MS") + value("MARKER_TOTAL_MAX_MS");
+  assert.ok(Number.isFinite(total), "the timings are written down");
+  assert.ok(total <= 1000, `the entrance takes ${total}ms`);
+  assert.ok(value("MARKER_STEP_MS") <= 80, "the markers do not trickle");
+  assert.ok(source.includes("const step = Math.min(MARKER_STEP_MS, MARKER_TOTAL_MAX_MS / count);"), "many markers speed up rather than run over");
+});
+
+test("the markers appear in the order they are listed, not by size", async () => {
+  /* Revealing the biggest first would rank them, and ranking is a judgement
+     about which reading matters. */
+  const source = withoutComments(await sheetSource());
+  assert.ok(!source.includes(".sort("), "nothing reorders the readings");
+  assert.ok(source.includes("placed.map((metric, index) => ("));
+  assert.ok(source.includes("hidden={index >= revealed}"), "the list order is the reveal order");
+});
+
+test("reduced motion gets the finished screen with no entrance at all", async () => {
+  const source = withoutComments(await sheetSource());
+  assert.ok(source.includes("useState(reduced ? 3 : 0)"));
+  assert.ok(source.includes('if (reduced || settled === "missing") { setIntroStage(3); setRevealed(Number.MAX_SAFE_INTEGER); return undefined; }'));
+});
+
+test("a record with no photo does not hold the readings behind an entrance", async () => {
+  /* There is nothing to fade in, so waiting on the fade would hide the list
+     of readings for good. */
+  const source = withoutComments(await sheetSource());
+  assert.ok(source.includes('if (settled !== "ready" && settled !== "missing") return undefined;'));
+});
+
+test("the timers are dropped when the screen closes", async () => {
+  const source = withoutComments(await sheetSource());
+  assert.ok(source.includes("introTimers.current.forEach(clearTimeout); introTimers.current = [];"));
 });
 
 /* --------------------------- an unaligned photo -------------------------- */

@@ -611,6 +611,46 @@ export function composeBodyViewAlignment(assessment) {
   };
 }
 
+
+/* ------------------------ 360도 바디뷰 -- 드래그 ------------------------ */
+
+/* 손가락으로 갈 수 있는 방향. 찍지 않은 방향과 읽을 수 없는 사진은 뛰어넘는다
+   -- 밀어서 빈 화면에 도착하면 밀다 만 것처럼 느껴진다.
+
+   버튼은 이 목록을 쓰지 않는다. 버튼은 "저기로 가겠다"는 지목이고 드래그는
+   몸을 따라 도는 동작이라, 이미 찍은 방향을 버튼으로는 열고 드래그로는
+   지나쳐도 어긋나지 않는다. */
+export function reachableBodyViews(assessment, { unreadable = [] } = {}) {
+  const skip = new Set((unreadable || []).map(normalizePostureView));
+  return POSTURE_VIEW_KEYS.filter((view) => !skip.has(view)
+    && Boolean(assessmentMediaForView(assessment, view)?.cleanBlobId));
+}
+
+/* 한 칸 옆. 감아 돌지 않으므로 양 끝에서는 갈 곳이 없다 -- 정면에서 더 밀면
+   우측면이 나오는 것은 몸을 도는 것이 아니라 목록을 도는 것이다. */
+export function stepBodyView(reachable, fromView, direction) {
+  const at = POSTURE_VIEW_KEYS.indexOf(normalizePostureView(fromView));
+  if (at < 0 || !Number.isFinite(Number(direction)) || Number(direction) === 0) return null;
+  const forward = Number(direction) > 0;
+  const ahead = (reachable || [])
+    .map(normalizePostureView)
+    .filter((view) => (forward ? POSTURE_VIEW_KEYS.indexOf(view) > at : POSTURE_VIEW_KEYS.indexOf(view) < at));
+  return (forward ? ahead[0] : ahead[ahead.length - 1]) || null;
+}
+
+/* 얼마나 밀어야 방향을 바꾸려던 것으로 보는가. 화면 폭에 비례하되 좁은 기기
+   에서도 실수로 넘어가지 않을 만큼의 하한을 둔다. */
+export const BODY_VIEW_DRAG_COMMIT_RATIO = 0.22;
+export const BODY_VIEW_DRAG_COMMIT_MIN_PX = 48;
+
+export function bodyViewDragCommits(dx, width) {
+  const distance = Math.abs(Number(dx));
+  if (!Number.isFinite(distance)) return false;
+  const span = Number(width);
+  const threshold = Math.max(BODY_VIEW_DRAG_COMMIT_MIN_PX, (Number.isFinite(span) ? span : 0) * BODY_VIEW_DRAG_COMMIT_RATIO);
+  return distance >= threshold;
+}
+
 /* ------------------------ 360도 바디뷰 -- 마커 -------------------------- */
 
 /* 마커가 앉을 자리. 측정할 때 쓴 지점을 저장하지 않기 때문에 -- 저장되는 것은

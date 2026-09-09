@@ -86,7 +86,7 @@ export default function NextLessonReflection({
                 적어 두면 없는 것을 굳이 알리는 셈이다. */}
             {reflection.repeated && (
               <div className="mt-3 flex items-center gap-2 rounded-xl px-3 py-2 text-left" style={{ backgroundColor: "var(--canvas)", ...textStyle }}>
-                <span className="shrink-0 text-[10px] font-bold" style={{ color: "var(--sub)" }}>최근 3회 반복</span>
+                <span className="shrink-0 text-caption font-bold" style={{ color: "var(--sub)" }}>최근 3회 반복</span>
                 <span className="min-w-0 flex-1 truncate text-xs font-bold" style={{ color: "var(--ink2)" }}>{reflection.repeated}</span>
               </div>
             )}
@@ -101,17 +101,17 @@ export default function NextLessonReflection({
               <div className="mt-3" style={textStyle}>
                 {reflection.layout === "A" ? (
                   <>
-                    <p className="text-[10px] font-bold" style={{ color: "var(--sub)" }}>오늘 확인</p>
+                    <p className="text-caption font-bold" style={{ color: "var(--sub)" }}>오늘 확인</p>
                     <p className="mt-1 text-sm font-extrabold leading-relaxed" style={{ color: "var(--ink)" }}>{reflection.focus}</p>
                     {/* 어느 기록에서 온 문장인지 밝힌다. 출처 없는 문장은 강사가
                         확인할 방법이 없다. */}
-                    <p className="mt-2 text-[10px]" style={{ color: "var(--sub)" }}>근거: {reflection.basisDate} 기록</p>
+                    <p className="mt-2 text-caption" style={{ color: "var(--sub)" }}>근거: {reflection.basisDate} 기록</p>
                   </>
                 ) : (
                   <>
-                    <p className="text-[10px] font-bold" style={{ color: "var(--sub)" }}>지난 수업</p>
+                    <p className="text-caption font-bold" style={{ color: "var(--sub)" }}>지난 수업</p>
                     <p className="mt-1 text-sm font-extrabold leading-relaxed" style={{ color: "var(--ink)" }}>{reflection.lastLesson || "기록 없음"}</p>
-                    <p className="mt-2 text-[10px]" style={{ color: "var(--sub)" }}>근거: {reflection.basisDate} 기록</p>
+                    <p className="mt-2 text-caption" style={{ color: "var(--sub)" }}>근거: {reflection.basisDate} 기록</p>
                   </>
                 )}
               </div>

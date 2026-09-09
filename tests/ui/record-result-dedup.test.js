@@ -35,7 +35,7 @@ test("the sentence survives where it is the only content", async () => {
 
 test("what was said is folded away once the cards exist", async () => {
   const source = await voiceNote();
-  assert.match(source, /<summary className="cursor-pointer list-none text-\[10px\] font-extrabold"[^>]*>말한 내용 보기<\/summary>/);
+  assert.match(source, /<summary className="cursor-pointer list-none text-caption font-extrabold"[^>]*>말한 내용 보기<\/summary>/);
   // Folded, not deleted -- it is the only place to check the term corrections.
   assert.match(source, /whitespace-pre-wrap text-xs leading-relaxed" aria-label="말한 수업 내용"/);
 });

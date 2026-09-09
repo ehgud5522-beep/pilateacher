@@ -7,7 +7,9 @@ import {
 } from "../../src/features/lesson-record/lesson-record-presentation.js";
 
 const appSource = () => readFile(new URL("../../src/App.jsx", import.meta.url), "utf8");
-const component = () => readFile(new URL("../../src/features/lesson-record/NextLessonReflection.jsx", import.meta.url), "utf8");
+/* 줄 끝은 체크아웃마다 달라진다. 소스를 문장으로 읽는 검사가 그것 때문에
+   깨지지 않도록, 읽는 자리에서 한 번 맞춰 둔다. */
+const component = async () => (await readFile(new URL("../../src/features/lesson-record/NextLessonReflection.jsx", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
 
 function memoryStorage(initial = {}) {
   const cells = new Map(Object.entries(initial));

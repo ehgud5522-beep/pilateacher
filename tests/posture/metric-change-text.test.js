@@ -112,7 +112,7 @@ test("Before and After are split into halves with the label above", async () => 
 
 test("the summary is one centred line under the pair", async () => {
   const source = await appSource();
-  assert.match(source, /<p className="mt-1 text-center text-\[11px\] font-bold" style=\{\{ color: SUB \}\}>\{postureMetricChangeText\(metric\.difference, metric\.unit\)\}<\/p>/);
+  assert.match(source, /<p className="mt-1 text-center text-caption font-bold" style=\{\{ color: SUB \}\}>\{postureMetricChangeText\(metric\.difference, metric\.unit\)\}<\/p>/);
 });
 
 test("the run-on row with a signed difference is gone", async () => {

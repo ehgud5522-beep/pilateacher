@@ -90,7 +90,8 @@ test("a record with no analysed photo says so instead of loading forever", async
   /* Older records were saved without the 760px copy. Waiting on one that will
      never arrive leaves the screen spinning with nothing to say. */
   const source = withoutComments(await sheetSource());
-  assert.ok(source.includes(`const url = media?.cleanBlobId ? await resolvePhotoUrl(media.cleanBlobId) : null;`));
+  assert.ok(source.includes(`const photoId = bodyViewPhotoId(assessment, view);`));
+  assert.ok(source.includes(`const url = photoId ? await resolvePhotoUrl(photoId) : null;`));
   assert.ok(source.includes(`const next = url ? { status: "ready", url } : { status: "missing" };`));
   assert.ok(source.includes(`shownPhoto?.status === "missing" ? NO_PHOTO_NOTE : "사진을 불러오는 중"`));
   assert.ok(source.includes("이 기록에는 방향별 사진이 없어요"));
@@ -139,7 +140,7 @@ test("no body is invented between the photographs", async () => {
 
 test("the photo shown is the analysed one, never the untouched original", async () => {
   const source = withoutComments(await sheetSource());
-  assert.ok(source.includes("cleanBlobId"));
+  assert.ok(source.includes("bodyViewPhotoId(assessment, view)"), "it asks for the clean copy by name");
   assert.ok(!/[^n]\.blobId/.test(source), "the full-size original is too large for this screen");
 });
 
@@ -151,7 +152,7 @@ test("a reading with no place on the body is listed beside the photo, not on it"
   const source = withoutComments(await sheetSource());
   assert.ok(source.includes(`const placed = metrics.filter((metric) => metric.at);`));
   assert.ok(source.includes(`const unplaced = metrics.filter((metric) => !metric.at);`));
-  assert.ok(source.includes(`{markersVisible && placed.map(`), "only the placed ones go on the photo");
+  assert.ok(source.includes(`{photoMarkersVisible && placed.map(`), "only the placed ones go on the photo");
   assert.ok(source.includes(`markersVisible && unplaced.length > 0`), "the rest are listed");
 });
 
@@ -160,7 +161,7 @@ test("the markers are held back until a direction has finished arriving", async 
      sit on the wrong body with the next direction's number. */
   const source = withoutComments(await sheetSource());
   assert.match(source, /markersVisible\s*=\s*phase === "idle"/);
-  assert.ok(source.includes(`{markersVisible && placed.map(`));
+  assert.ok(source.includes(`{photoMarkersVisible && placed.map(`));
 });
 
 test("the two bodies never share the screen at full strength", async () => {
@@ -213,6 +214,38 @@ test("the buttons stay the way in; the drag is the extra one", async () => {
   assert.equal((html.match(/aria-pressed=/g) || []).length, 4);
 });
 
+test("without a photo the readings are listed but never pinned", async () => {
+  /* A marker points at a spot on a photograph. On an empty frame it is a
+     number floating on black, and it lands on top of the line explaining that
+     there is no photo. */
+  const source = withoutComments(await sheetSource());
+  assert.ok(source.includes('const photoMarkersVisible = markersVisible && shownPhoto?.status === "ready" && !!photoRect;'));
+  assert.ok(source.includes("{photoMarkersVisible && placed.map((metric, index) => ("));
+  assert.ok(source.includes("{markersVisible && unplaced.length > 0"), "the list is not held back with them");
+});
+
+test("the bottom row is kept clear of the system bar", async () => {
+  /* The directions and the sentence under them sat behind the navigation bar
+     on a phone with gesture keys. */
+  const source = withoutComments(await sheetSource());
+  assert.ok(source.includes('<div className="safe-b px-3 pt-2">'));
+});
+
+test("the markers sit in the photo's own rectangle, not the frame's", async () => {
+  /* A portrait photo in a portrait frame still leaves black bands above and
+     below it. A marker coordinate is a fraction of the photo, so measuring it
+     against the frame lifts every marker off the body by the size of a band. */
+  const source = withoutComments(await sheetSource());
+  assert.ok(source.includes("const photoRect = containPhotoRect(frameSize, naturalSize);"), "the rectangle is measured, not guessed");
+  assert.ok(source.includes("observer.observe(node)"), "and re-measured when the frame changes");
+  /* Read out of the event before the state updater runs: by the time React
+     calls the updater, currentTarget is already cleared and reading through
+     it throws inside render. */
+  assert.ok(source.includes("const { naturalWidth: width, naturalHeight: height } = event.currentTarget;"), "its shape comes from the photo that loaded");
+  assert.ok(!source.includes("event.currentTarget.natural"), "and not from an event that has moved on");
+  const box = source.slice(source.indexOf("left: photoRect.left"), source.indexOf(") : ("));
+  assert.ok(box.includes("<img") && box.includes("placeOnFrame(metric.at"), "photo and markers share it");
+});
 test("the markers come off the body while it is being dragged", async () => {
   /* Mid-drag the photo is between two directions. A number pinned to it
      would be pointing at a spot that is no longer where it was measured. */

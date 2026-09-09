@@ -3,22 +3,48 @@ import test from "node:test";
 
 import {
   BODY_VIEW_DRAG_COMMIT_MIN_PX, BODY_VIEW_DRAG_COMMIT_RATIO, POSTURE_VIEW_KEYS,
-  bodyViewDragCommits, reachableBodyViews, stepBodyView,
+  bodyViewDragCommits, bodyViewPhotoId, containPhotoRect, reachableBodyViews, stepBodyView,
 } from "../../src/features/posture/posture-model.js";
 
+/* The two records for one direction are not the same shape. The capture
+   bucket keeps the original the camera produced; the 760px copy without the
+   skeleton drawn on it is written onto the pose. */
 const assessment = (views, { withoutImage = [] } = {}) => ({
   id: "a1", status: "completed", scope: "full_body", date: "2026-09-01",
   poses: views.map((view) => ({
     id: `p_${view}`, view, blobId: `raw_${view}`,
     ...(withoutImage.includes(view) ? {} : { cleanBlobId: `clean_${view}` }),
   })),
-  photos: Object.fromEntries(views.map((view) => [view, {
-    id: `p_${view}`, blobId: `raw_${view}`,
-    ...(withoutImage.includes(view) ? {} : { cleanBlobId: `clean_${view}` }),
-  }])),
+  photos: Object.fromEntries(views.map((view) => [view, { id: `p_${view}`, blobId: `raw_${view}` }])),
 });
 
 const ALL = ["front", "leftSide", "back", "rightSide"];
+
+/* ------------------------- which photo it reaches for -------------------- */
+
+test("the clean copy is read off the pose, not off the capture record", () => {
+  /* The capture record wins every lookup by view and carries only the
+     original. Reading the copy from there answers "no photo" for a direction
+     whose photo is on screen elsewhere in the app. */
+  const set = assessment(["front"]);
+  assert.equal(set.photos.front.cleanBlobId, undefined, "the fixture matches how the app saves");
+  assert.equal(bodyViewPhotoId(set, "front"), "clean_front");
+});
+
+test("a capture record that does carry the copy is still accepted", () => {
+  const set = assessment([]);
+  set.photos = { front: { id: "x", cleanBlobId: "clean_from_photo" } };
+  assert.equal(bodyViewPhotoId(set, "front"), "clean_from_photo");
+});
+
+test("without a clean copy anywhere there is no photo to show", () => {
+  /* The original has the skeleton drawn into it. Falling back to it would put
+     the analysis lines on a screen that is meant to show the body. */
+  const set = assessment(["front"], { withoutImage: ["front"] });
+  assert.equal(bodyViewPhotoId(set, "front"), null);
+  assert.equal(bodyViewPhotoId(set, "back"), null);
+  assert.equal(bodyViewPhotoId(null, "front"), null);
+});
 
 /* --------------------- which directions the finger reaches --------------- */
 
@@ -127,4 +153,47 @@ test("an unmeasurable frame falls back to the floor rather than to zero", () => 
 
 test("a distance that is not a number never commits", () => {
   for (const dx of [null, undefined, NaN, "abc"]) assert.equal(bodyViewDragCommits(dx, 400), false);
+});
+
+/* ---------------------- where the photo actually lands ------------------- */
+
+test("a photo narrower than its frame is centred with bands above and below", () => {
+  /* This is the ordinary case: a portrait photo in a taller portrait frame. A
+     marker coordinate is a fraction of the photo, so it has to be measured
+     from the top of the photo, not the top of the frame. */
+  const rect = containPhotoRect({ width: 600, height: 1000 }, { width: 3, height: 4 });
+  assert.deepEqual(rect, { left: 0, top: 100, width: 600, height: 800 });
+});
+
+test("a photo wider than its frame is centred with bands left and right", () => {
+  const rect = containPhotoRect({ width: 600, height: 1000 }, { width: 4, height: 3 });
+  assert.deepEqual(rect, { left: 0, top: 275, width: 600, height: 450 });
+});
+
+test("a photo of the frame's own shape fills it with no band at all", () => {
+  const rect = containPhotoRect({ width: 600, height: 800 }, { width: 300, height: 400 });
+  assert.deepEqual(rect, { left: 0, top: 0, width: 600, height: 800 });
+});
+
+test("the whole photo is always inside the frame", () => {
+  /* Cropping would hide part of the body, and a marker on the hidden part
+     would sit against the edge pointing at nothing. */
+  for (const photo of [{ width: 9, height: 16 }, { width: 16, height: 9 }, { width: 1, height: 1 }]) {
+    const rect = containPhotoRect({ width: 480, height: 900 }, photo);
+    assert.ok(rect.width <= 480 + 1e-9 && rect.height <= 900 + 1e-9, "it fits");
+    assert.ok(rect.left >= 0 && rect.top >= 0, "and it is not pushed out");
+    assert.ok(Math.abs(rect.width / rect.height - photo.width / photo.height) < 1e-9, "the shape is kept");
+  }
+});
+
+test("without a measurement there is no rectangle to guess at", () => {
+  for (const [frame, photo] of [
+    [null, { width: 3, height: 4 }],
+    [{ width: 600, height: 1000 }, null],
+    [{ width: 0, height: 1000 }, { width: 3, height: 4 }],
+    [{ width: 600, height: 1000 }, { width: 3, height: 0 }],
+    [{ width: NaN, height: 1000 }, { width: 3, height: 4 }],
+  ]) {
+    assert.equal(containPhotoRect(frame, photo), null);
+  }
 });

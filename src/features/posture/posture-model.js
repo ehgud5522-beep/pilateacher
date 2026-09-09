@@ -612,6 +612,22 @@ export function composeBodyViewAlignment(assessment) {
 }
 
 
+/* 비율을 지켜 넣은 사진이 틀 안에서 실제로 차지하는 사각형.
+
+   마커 좌표는 사진 안의 비율이다. 틀에 그대로 대면 위아래(또는 좌우) 여백만큼
+   어긋나서 몸에서 떠 붙는다. CSS 로 맞추려 해 봤자 높이를 못 박은 상자는
+   비율대로 줄어들지 않으므로, 여백을 직접 구한다. */
+export function containPhotoRect(frame, natural) {
+  const frameWidth = Number(frame?.width);
+  const frameHeight = Number(frame?.height);
+  const photoWidth = Number(natural?.width);
+  const photoHeight = Number(natural?.height);
+  if (![frameWidth, frameHeight, photoWidth, photoHeight].every((value) => Number.isFinite(value) && value > 0)) return null;
+  const scale = Math.min(frameWidth / photoWidth, frameHeight / photoHeight);
+  const width = photoWidth * scale;
+  const height = photoHeight * scale;
+  return { left: (frameWidth - width) / 2, top: (frameHeight - height) / 2, width, height };
+}
 /* ------------------------ 360도 바디뷰 -- 드래그 ------------------------ */
 
 /* 손가락으로 갈 수 있는 방향. 찍지 않은 방향과 읽을 수 없는 사진은 뛰어넘는다
@@ -620,10 +636,20 @@ export function composeBodyViewAlignment(assessment) {
    버튼은 이 목록을 쓰지 않는다. 버튼은 "저기로 가겠다"는 지목이고 드래그는
    몸을 따라 도는 동작이라, 이미 찍은 방향을 버튼으로는 열고 드래그로는
    지나쳐도 어긋나지 않는다. */
+/* 이 방향에서 쓸 사진의 id.
+
+   뼈대 없는 760px 사본은 pose 레코드에 붙어 있다. 촬영 버킷 쪽 레코드에는
+   원본 blobId 만 있어서, 그쪽을 먼저 보면 사본이 없다고 답하게 된다 -- 사진은
+   멀쩡히 있는데 바디뷰만 "사진이 없어요"라고 말하던 이유가 이것이었다. */
+export function bodyViewPhotoId(assessment, view) {
+  return bodyViewPose(assessment, view)?.cleanBlobId
+    || assessmentMediaForView(assessment, view)?.cleanBlobId
+    || null;
+}
+
 export function reachableBodyViews(assessment, { unreadable = [] } = {}) {
   const skip = new Set((unreadable || []).map(normalizePostureView));
-  return POSTURE_VIEW_KEYS.filter((view) => !skip.has(view)
-    && Boolean(assessmentMediaForView(assessment, view)?.cleanBlobId));
+  return POSTURE_VIEW_KEYS.filter((view) => !skip.has(view) && Boolean(bodyViewPhotoId(assessment, view)));
 }
 
 /* 한 칸 옆. 감아 돌지 않으므로 양 끝에서는 갈 곳이 없다 -- 정면에서 더 밀면

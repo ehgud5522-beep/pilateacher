@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
-  BODY_VIEW_ALIGNMENT, POSTURE_VIEW_KEYS, assessmentMediaForView, bodyViewDragCommits,
-  bodyViewMetrics, composeBodyViewAlignment, postureMetricChangeText,
+  BODY_VIEW_ALIGNMENT, POSTURE_VIEW_KEYS, bodyViewDragCommits, bodyViewMetrics,
+  bodyViewPhotoId, composeBodyViewAlignment, containPhotoRect, postureMetricChangeText,
   postureMetricDisplayValue, postureViewLabel, reachableBodyViews, stepBodyView,
 } from "./posture-model.js";
 
@@ -129,6 +129,10 @@ export default function BodyViewSheet({ assessment, previousAssessment = null, r
   /* 0 사진도 아직 / 1 사진이 뜨는 중 / 2 마커가 하나씩 / 3 다 놓임 */
   const [introStage, setIntroStage] = useState(reduced ? 3 : 0);
   const [revealed, setRevealed] = useState(0);
+  /* 사진마다 가로세로가 다르다. 마커를 앉힐 사각형을 세우려면 그 비율이
+     필요하고, 그것은 사진이 실제로 뜬 뒤에야 알 수 있다. */
+  const [natural, setNatural] = useState({});
+  const [frameSize, setFrameSize] = useState(null);
   const [dragDx, setDragDx] = useState(0);
   const [dragging, setDragging] = useState(false);
   const timers = useRef([]);
@@ -141,6 +145,19 @@ export default function BodyViewSheet({ assessment, previousAssessment = null, r
   useEffect(() => () => {
     timers.current.forEach(clearTimeout); timers.current = [];
     introTimers.current.forEach(clearTimeout); introTimers.current = [];
+  }, []);
+
+  /* 틀의 크기는 기기와 회전에 따라 달라진다. 마커 자리를 그 안에서 구하므로
+     크기가 바뀌면 다시 재야 한다. */
+  useEffect(() => {
+    const node = frame.current;
+    if (!node) return undefined;
+    const read = () => setFrameSize({ width: node.clientWidth, height: node.clientHeight });
+    read();
+    if (typeof ResizeObserver !== "function") return undefined;
+    const observer = new ResizeObserver(read);
+    observer.observe(node);
+    return () => observer.disconnect();
   }, []);
 
   /* 조작이 들어오면 연출은 거기서 끝난다. 보여 주려던 것보다 하려던 것이
@@ -173,10 +190,10 @@ export default function BodyViewSheet({ assessment, previousAssessment = null, r
       .filter((view) => shot.some((entry) => entry.view === view));
     (async () => {
       for (const view of wanted) {
-        const media = assessmentMediaForView(assessment, view);
-        /* cleanBlobId 는 분석에 쓴 760px 사진이다. 원본은 뼈대가 구워진 큰
-           이미지라 이 화면에서 쓰지 않는다 -- 없으면 없는 것으로 끝낸다. */
-        const url = media?.cleanBlobId ? await resolvePhotoUrl(media.cleanBlobId) : null;
+        /* 뼈대 없는 760px 사본만 쓴다. 원본은 뼈대가 구워진 큰 이미지라 이
+           화면에서 쓰지 않는다 -- 사본이 없으면 없는 것으로 끝낸다. */
+        const photoId = bodyViewPhotoId(assessment, view);
+        const url = photoId ? await resolvePhotoUrl(photoId) : null;
         if (!alive) return;
         const next = url ? { status: "ready", url } : { status: "missing" };
         setPhotos((previous) => (previous[view]?.url === next.url && previous[view]?.status === next.status
@@ -261,11 +278,16 @@ export default function BodyViewSheet({ assessment, previousAssessment = null, r
   const unplaced = metrics.filter((metric) => !metric.at);
   const openMetric = metrics.find((metric) => metric.id === openMetricId) || null;
   const shownPhoto = photos[shownView] || null;
+  const naturalSize = natural[shownView] || null;
+  const photoRect = containPhotoRect(frameSize, naturalSize);
   placedCount.current = placed.length;
   /* 방향이 완전히 서 있을 때만 마커를 얹는다. 넘어가는 도중에도, 손가락에
      끌려가는 동안에도 얹지 않는다 -- 아직 지워지지 않은 몸 위에 다음 방향의
      수치가 찍히기 때문이다. */
   const markersVisible = phase === "idle" && !dragging && introStage >= 2 && !!shownEntry;
+  /* 마커는 사진 위의 한 자리를 가리킨다. 사진이 없으면 가리킬 자리도 없어서,
+     검은 바탕에 뜬 숫자가 되고 없다는 안내마저 가린다. 목록은 그대로 낸다. */
+  const photoMarkersVisible = markersVisible && shownPhoto?.status === "ready" && !!photoRect;
 
   /* 사진이 처음 뜬 그 순간부터 한 번만. 시트를 닫으면 이 컴포넌트가 사라지므로
      다시 열면 처음이 맞다. */
@@ -309,46 +331,66 @@ export default function BodyViewSheet({ assessment, previousAssessment = null, r
         onPointerMove={onPointerMove}
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
-        className="relative mx-3 mt-2 min-h-0 flex-1 overflow-hidden rounded-2xl"
+        className="relative mx-3 mt-2 flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-2xl"
         style={{ backgroundColor: "var(--photo)", touchAction: "pan-y" }}
       >
         {shownPhoto?.status === "ready" ? (
-          <img
-            src={shownPhoto.url}
-            alt=""
-            className="absolute inset-0 h-full w-full object-contain"
-            style={{
-              opacity: phase === "out" || introStage === 0 ? 0 : 1,
-              transition: reduced ? "none"
-                : introStage === 1 ? `opacity ${PHOTO_FADE_MS}ms ease-out`
-                : `opacity ${phase === "out" ? FADE_OUT_MS : FADE_IN_MS}ms linear`,
-              /* 손가락만큼 옮겨 놓을 뿐 몸을 휘게 하지 않는다. 정렬이 준
-                 배율·위치는 그대로 두고 그 바깥에 이동만 얹는다. */
-              transform: `translateX(${dragDx}px)${shownEntry?.transform
-                ? ` translate(${shownEntry.transform.offsetX * 100}%, ${shownEntry.transform.offsetY * 100}%) scale(${shownEntry.transform.scale})`
-                : ""}`,
-              willChange: dragging ? "transform" : "auto",
-            }}
-          />
+          /* 사진은 세로로 긴 틀 안에 비율을 지켜 들어가므로 위아래에 검은 여백이
+             남는다. 마커 좌표는 사진 안의 비율이지 틀 안의 비율이 아니다 -- 틀에
+             그대로 대면 그 여백만큼 몸에서 떠올라 붙는다.
+
+             사진이 실제로 차지하는 사각형을 만들어 두고 사진과 마커를 둘 다 그
+             안에 넣는다. 여백을 손으로 계산하지 않아도 어긋나지 않는다. */
+          <div
+            className="absolute"
+            style={photoRect
+              ? { left: photoRect.left, top: photoRect.top, width: photoRect.width, height: photoRect.height }
+              : { inset: 0 }}
+          >
+            <img
+              src={shownPhoto.url}
+              alt=""
+              /* 크기는 지금 읽어 둔다. 갱신 함수는 나중에 실행되고, 그때
+                 currentTarget 은 이미 비워져 있다. */
+              onLoad={(event) => {
+                const { naturalWidth: width, naturalHeight: height } = event.currentTarget;
+                if (!width || !height) return;
+                setNatural((previous) => (previous[shownView] ? previous : { ...previous, [shownView]: { width, height } }));
+              }}
+              className="absolute inset-0 h-full w-full object-contain"
+              style={{
+                opacity: phase === "out" || introStage === 0 ? 0 : 1,
+                transition: reduced ? "none"
+                  : introStage === 1 ? `opacity ${PHOTO_FADE_MS}ms ease-out`
+                  : `opacity ${phase === "out" ? FADE_OUT_MS : FADE_IN_MS}ms linear`,
+                /* 손가락만큼 옮겨 놓을 뿐 몸을 휘게 하지 않는다. 정렬이 준
+                   배율·위치는 그대로 두고 그 바깥에 이동만 얹는다. */
+                transform: `translateX(${dragDx}px)${shownEntry?.transform
+                  ? ` translate(${shownEntry.transform.offsetX * 100}%, ${shownEntry.transform.offsetY * 100}%) scale(${shownEntry.transform.scale})`
+                  : ""}`,
+                willChange: dragging ? "transform" : "auto",
+              }}
+            />
+
+            {photoMarkersVisible && placed.map((metric, index) => (
+              <button
+                key={metric.id}
+                hidden={index >= revealed}
+                type="button"
+                onClick={() => setOpenMetricId((current) => (current === metric.id ? null : metric.id))}
+                aria-label={`${metric.label} 자세히`}
+                className="absolute -translate-x-1/2 -translate-y-1/2 rounded-full px-2 py-1 text-[10px] font-extrabold tabular-nums"
+                style={{ ...placeOnFrame(metric.at, shownEntry?.transform), backgroundColor: "var(--card)", color: "var(--ink)", boxShadow: "var(--shadow)", opacity: openMetricId && openMetricId !== metric.id ? 0.45 : 1 }}
+              >
+                {postureMetricDisplayValue(metric.value, metric.unit)}{metric.unit}
+              </button>
+            ))}
+          </div>
         ) : (
           <div className="absolute inset-0 flex items-center justify-center px-6 text-center">
             <p className="text-xs font-bold" style={{ color: "var(--faint)" }}>{shownPhoto?.status === "missing" ? NO_PHOTO_NOTE : "사진을 불러오는 중"}</p>
           </div>
         )}
-
-        {markersVisible && placed.map((metric, index) => (
-          <button
-            key={metric.id}
-            hidden={index >= revealed}
-            type="button"
-            onClick={() => setOpenMetricId((current) => (current === metric.id ? null : metric.id))}
-            aria-label={`${metric.label} 자세히`}
-            className="absolute -translate-x-1/2 -translate-y-1/2 rounded-full px-2 py-1 text-[10px] font-extrabold tabular-nums"
-            style={{ ...placeOnFrame(metric.at, shownEntry?.transform), backgroundColor: "var(--card)", color: "var(--ink)", boxShadow: "var(--shadow)", opacity: openMetricId && openMetricId !== metric.id ? 0.45 : 1 }}
-          >
-            {postureMetricDisplayValue(metric.value, metric.unit)}{metric.unit}
-          </button>
-        ))}
 
         {openMetric && <MetricDetail metric={openMetric} onClose={() => setOpenMetricId(null)} />}
       </div>
@@ -377,7 +419,7 @@ export default function BodyViewSheet({ assessment, previousAssessment = null, r
         <p className="mx-3 mt-2 text-[11px]" style={{ color: "var(--sub)" }}>{UNALIGNED_NOTE}</p>
       )}
 
-      <div className="px-3 pb-3 pt-2">
+      <div className="safe-b px-3 pt-2">
         <div className="grid grid-cols-4 gap-1.5">
           {entries.map((entry) => {
             const on = entry.view === activeView;

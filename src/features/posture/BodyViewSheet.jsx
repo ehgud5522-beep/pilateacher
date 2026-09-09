@@ -2,9 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   BODY_VIEW_ALIGNMENT, POSTURE_VIEW_KEYS, bodyViewDragCommits, bodyViewMetrics,
-  bodyViewPhotoId, composeBodyViewAlignment, containPhotoRect, postureMetricChangeText,
-  postureMetricDisplayValue, postureViewLabel, reachableBodyViews, stepBodyView,
+  bodyViewMarkerFraction, bodyViewPhotoId, clampLabelWithin, composeBodyViewAlignment,
+  containPhotoRect, normalizePostureView, postureMetricChangeText, postureMetricDisplayValue,
+  postureViewLabel, reachableBodyViews, stepBodyView,
 } from "./posture-model.js";
+import { isFullyManualAfterAiMiss } from "./result-presentation.js";
 
 /* 촬영한 네 방향을 한 화면에서 갈아 끼우며 본다.
 
@@ -31,6 +33,13 @@ const MARKER_TOTAL_MAX_MS = 400;
 
 /* 손가락이 이만큼은 움직여야 방향을 바꾸려는 것으로 본다. 그 전에는 세로로
    가는지 가로로 가는지도 알 수 없다. */
+/* 알약을 안으로 밀어 넣을 때 쓸 대략의 크기. 글자를 재지 않고 글자 수로
+   가늠한다 -- 몇 px 어긋나도 밀어 넣는 자리가 조금 달라질 뿐이고, 점은 잰
+   자리에 그대로 있다. */
+const MARKER_LABEL_CHAR_PX = 7;
+const MARKER_LABEL_PAD_PX = 20;
+const MARKER_LABEL_HEIGHT_PX = 24;
+
 const DRAG_AXIS_MIN_PX = 8;
 /* 끝에서 더 밀면 따라오기는 하되 거의 움직이지 않는다. 넘어갈 곳이 없다는
    것을 손으로 알려 주는 것이지, 넘어가라는 뜻이 아니다. */
@@ -58,18 +67,6 @@ function usePrefersReducedMotion() {
   return reduced;
 }
 
-/* 마커가 화면 어디에 찍히는가. 사진에 건 것과 똑같은 배율·이동을 좌표에도
-   걸어야 몸에서 떨어지지 않는다. 글자 크기까지 함께 커지면 읽기 어려우므로
-   사진을 늘리는 대신 좌표만 옮긴다. */
-function placeOnFrame(point, transform) {
-  const scale = Number(transform?.scale) || 1;
-  const offsetX = Number(transform?.offsetX) || 0;
-  const offsetY = Number(transform?.offsetY) || 0;
-  return {
-    left: `${(0.5 + scale * (point.x - 0.5) + offsetX) * 100}%`,
-    top: `${(0.5 + scale * (point.y - 0.5) + offsetY) * 100}%`,
-  };
-}
 
 function MetricDetail({ metric, onClose }) {
   const unit = metric.unit || "";
@@ -279,6 +276,11 @@ export default function BodyViewSheet({ assessment, previousAssessment = null, r
   const openMetric = metrics.find((metric) => metric.id === openMetricId) || null;
   const shownPhoto = photos[shownView] || null;
   const naturalSize = natural[shownView] || null;
+  /* 결과 화면이 쓰는 그 판정을 그대로 읽는다. 새로 매기지 않는다 -- 두 화면이
+     같은 기록을 두고 다른 말을 하면 어느 쪽을 믿을지 알 수 없다.
+     화면이 한 방향씩 보여 주므로 그 방향의 pose 에 대고 묻는다. */
+  const shownIsManualOnly = isFullyManualAfterAiMiss((assessment?.poses || [])
+    .find((pose) => normalizePostureView(pose?.view) === shownView) || null);
   const photoRect = containPhotoRect(frameSize, naturalSize);
   placedCount.current = placed.length;
   /* 방향이 완전히 서 있을 때만 마커를 얹는다. 넘어가는 도중에도, 손가락에
@@ -372,19 +374,45 @@ export default function BodyViewSheet({ assessment, previousAssessment = null, r
               }}
             />
 
-            {photoMarkersVisible && placed.map((metric, index) => (
-              <button
-                key={metric.id}
-                hidden={index >= revealed}
-                type="button"
-                onClick={() => setOpenMetricId((current) => (current === metric.id ? null : metric.id))}
-                aria-label={`${metric.label} 자세히`}
-                className="absolute -translate-x-1/2 -translate-y-1/2 rounded-full px-2 py-1 text-[10px] font-extrabold tabular-nums"
-                style={{ ...placeOnFrame(metric.at, shownEntry?.transform), backgroundColor: "var(--card)", color: "var(--ink)", boxShadow: "var(--shadow)", opacity: openMetricId && openMetricId !== metric.id ? 0.45 : 1 }}
-              >
-                {postureMetricDisplayValue(metric.value, metric.unit)}{metric.unit}
-              </button>
-            ))}
+            {photoMarkersVisible && (() => {
+              /* 점은 잰 자리에, 알약은 읽히는 자리에. 둘이 어긋난 것만 선으로 잇는다. */
+              const pins = placed.map((metric, index) => {
+                const fraction = bodyViewMarkerFraction(metric.at, shownEntry?.transform);
+                if (!fraction) return null;
+                const dot = { x: fraction.x * photoRect.width, y: fraction.y * photoRect.height };
+                const text = `${postureMetricDisplayValue(metric.value, metric.unit)}${metric.unit}`;
+                const label = clampLabelWithin(dot, photoRect, {
+                  width: text.length * MARKER_LABEL_CHAR_PX + MARKER_LABEL_PAD_PX,
+                  height: MARKER_LABEL_HEIGHT_PX,
+                });
+                const moved = Math.abs(label.x - dot.x) > 0.5 || Math.abs(label.y - dot.y) > 0.5;
+                return { metric, index, dot, label, text, moved };
+              }).filter(Boolean).filter((pin) => pin.index < revealed);
+              return (
+                <>
+                  <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox={`0 0 ${photoRect.width} ${photoRect.height}`} aria-hidden="true">
+                    {pins.map((pin) => (
+                      <g key={pin.metric.id} opacity={openMetricId && openMetricId !== pin.metric.id ? 0.45 : 1}>
+                        {pin.moved && <line x1={pin.dot.x} y1={pin.dot.y} x2={pin.label.x} y2={pin.label.y} stroke="var(--card)" strokeWidth="2" />}
+                        <circle cx={pin.dot.x} cy={pin.dot.y} r="3.5" fill="var(--card)" stroke="var(--ink)" strokeWidth="1.5" />
+                      </g>
+                    ))}
+                  </svg>
+                  {pins.map((pin) => (
+                    <button
+                      key={pin.metric.id}
+                      type="button"
+                      onClick={() => setOpenMetricId((current) => (current === pin.metric.id ? null : pin.metric.id))}
+                      aria-label={`${pin.metric.label} 자세히`}
+                      className="absolute -translate-x-1/2 -translate-y-1/2 rounded-full px-2 py-1 text-[10px] font-extrabold tabular-nums"
+                      style={{ left: pin.label.x, top: pin.label.y, backgroundColor: "var(--card)", color: "var(--ink)", boxShadow: "var(--shadow)", opacity: openMetricId && openMetricId !== pin.metric.id ? 0.45 : 1 }}
+                    >
+                      {pin.text}
+                    </button>
+                  ))}
+                </>
+              );
+            })()}
           </div>
         ) : (
           <div className="absolute inset-0 flex items-center justify-center px-6 text-center">
@@ -445,6 +473,9 @@ export default function BodyViewSheet({ assessment, previousAssessment = null, r
         {entries.some((entry) => !entry.hasPhoto) && (
           <p className="mt-2 text-[11px]" style={{ color: "var(--sub)" }}>{UNSHOT_NOTE}</p>
         )}
+        {/* 정직성 문구와 나란히 둔다. 둘 다 이 숫자가 어디서 왔는지를 말하는
+            문장이고, 미정렬 안내와 같은 톤으로 조용히 적는다. */}
+        {shownIsManualOnly && <p className="mt-2 text-[11px]" style={{ color: "var(--sub)" }}>관절을 직접 지정한 기록입니다</p>}
         <p className="mt-2 text-[11px]" style={{ color: "var(--sub)" }}>{MEASURED_FROM_NOTE}</p>
       </div>
     </div>

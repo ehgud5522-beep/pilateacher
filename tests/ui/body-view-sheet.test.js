@@ -152,7 +152,7 @@ test("a reading with no place on the body is listed beside the photo, not on it"
   const source = withoutComments(await sheetSource());
   assert.ok(source.includes(`const placed = metrics.filter((metric) => metric.at);`));
   assert.ok(source.includes(`const unplaced = metrics.filter((metric) => !metric.at);`));
-  assert.ok(source.includes(`{photoMarkersVisible && placed.map(`), "only the placed ones go on the photo");
+  assert.ok(source.includes(`{photoMarkersVisible && (() => {`), "only the placed ones go on the photo");
   assert.ok(source.includes(`markersVisible && unplaced.length > 0`), "the rest are listed");
 });
 
@@ -161,7 +161,7 @@ test("the markers are held back until a direction has finished arriving", async 
      sit on the wrong body with the next direction's number. */
   const source = withoutComments(await sheetSource());
   assert.match(source, /markersVisible\s*=\s*phase === "idle"/);
-  assert.ok(source.includes(`{photoMarkersVisible && placed.map(`));
+  assert.ok(source.includes(`{photoMarkersVisible && (() => {`));
 });
 
 test("the two bodies never share the screen at full strength", async () => {
@@ -220,7 +220,7 @@ test("without a photo the readings are listed but never pinned", async () => {
      there is no photo. */
   const source = withoutComments(await sheetSource());
   assert.ok(source.includes('const photoMarkersVisible = markersVisible && shownPhoto?.status === "ready" && !!photoRect;'));
-  assert.ok(source.includes("{photoMarkersVisible && placed.map((metric, index) => ("));
+  assert.ok(source.includes("{photoMarkersVisible && (() => {"));
   assert.ok(source.includes("{markersVisible && unplaced.length > 0"), "the list is not held back with them");
 });
 
@@ -244,7 +244,53 @@ test("the markers sit in the photo's own rectangle, not the frame's", async () =
   assert.ok(source.includes("const { naturalWidth: width, naturalHeight: height } = event.currentTarget;"), "its shape comes from the photo that loaded");
   assert.ok(!source.includes("event.currentTarget.natural"), "and not from an event that has moved on");
   const box = source.slice(source.indexOf("left: photoRect.left"), source.indexOf(") : ("));
-  assert.ok(box.includes("<img") && box.includes("placeOnFrame(metric.at"), "photo and markers share it");
+  assert.ok(box.includes("<img") && box.includes("bodyViewMarkerFraction(metric.at"), "photo and markers share it");
+});
+test("a reading at the edge of the photo keeps its point and moves only its label", async () => {
+  /* A landmark near the border used to put half the number outside the frame,
+     where it could not be read. The point stays where it was measured; only
+     the pill slides in, and a short line says which point it belongs to. */
+  const source = withoutComments(await sheetSource());
+  assert.ok(source.includes("const dot = { x: fraction.x * photoRect.width, y: fraction.y * photoRect.height };"), "the point is the measurement");
+  assert.ok(source.includes("const label = clampLabelWithin(dot, photoRect, {"), "only the label is moved");
+  assert.ok(source.includes("<circle cx={pin.dot.x} cy={pin.dot.y}"), "the point is drawn where it was measured");
+  assert.ok(source.includes("{pin.moved && <line x1={pin.dot.x} y1={pin.dot.y} x2={pin.label.x} y2={pin.label.y}"), "and joined to its label when they part");
+  assert.ok(source.includes("left: pin.label.x, top: pin.label.y"), "the pill follows the clamped place");
+});
+
+test("the label is placed by the frame edge, never by the size of the number", async () => {
+  /* Only the coordinate and the box decide. A bigger reading does not move.
+     (The label's own width is read from how many characters it has, which is
+     about the pill, not about the measurement.) */
+  const source = withoutComments(await sheetSource());
+  const block = source.slice(source.indexOf("const pins = placed.map("), source.indexOf("return ("));
+  assert.ok(!block.includes("metric.difference"), "the change never enters the placement");
+  assert.ok(!block.includes("Math.abs(metric.value"), "nor does the size of the value");
+});
+
+test("the record's own verdict about hand-placed joints is repeated here", async () => {
+  /* The result screen already says this about the same record. Saying it on
+     one screen and not the other leaves the instructor guessing which set of
+     numbers to trust. */
+  const source = withoutComments(await sheetSource());
+  assert.ok(source.includes("isFullyManualAfterAiMiss("), "the existing verdict is reused, not a new one");
+  assert.ok(source.includes("관절을 직접 지정한 기록입니다"));
+  const resultCopy = await readFile(new URL("../../src/features/posture/result-presentation.js", import.meta.url), "utf8");
+  assert.ok(resultCopy.includes("관절을 모두 직접 지정한 결과입니다"), "and it says the same thing the other screen says");
+});
+
+test("a record the AI did read says nothing about hand-placed joints", () => {
+  /* The fixture has no manual points, so the line must not appear. */
+  assert.ok(!render({}).includes("관절을 직접 지정한 기록입니다"));
+});
+
+test("the notice sits with the other honest line, not as a warning", async () => {
+  const source = withoutComments(await sheetSource());
+  const start = source.indexOf("관절을 직접 지정한 기록입니다");
+  const line = source.slice(source.lastIndexOf("<p", start), source.indexOf("</p>", start));
+  assert.ok(line.includes("var(--sub)"), "the same quiet colour as the unaligned note");
+  assert.ok(!line.includes("WARN") && !line.includes("--bad"), "it is not dressed as a fault");
+  assert.ok(source.indexOf("MEASURED_FROM_NOTE}</p>") > start, "and it comes just before the source line");
 });
 test("the markers come off the body while it is being dragged", async () => {
   /* Mid-drag the photo is between two directions. A number pinned to it
@@ -300,8 +346,8 @@ test("the markers appear in the order they are listed, not by size", async () =>
      about which reading matters. */
   const source = withoutComments(await sheetSource());
   assert.ok(!source.includes(".sort("), "nothing reorders the readings");
-  assert.ok(source.includes("placed.map((metric, index) => ("));
-  assert.ok(source.includes("hidden={index >= revealed}"), "the list order is the reveal order");
+  assert.ok(source.includes("const pins = placed.map((metric, index) => {"));
+  assert.ok(source.includes("filter((pin) => pin.index < revealed)"), "the list order is the reveal order");
 });
 
 test("reduced motion gets the finished screen with no entrance at all", async () => {

@@ -3,7 +3,8 @@ import test from "node:test";
 
 import {
   BODY_VIEW_DRAG_COMMIT_MIN_PX, BODY_VIEW_DRAG_COMMIT_RATIO, POSTURE_VIEW_KEYS,
-  bodyViewDragCommits, bodyViewPhotoId, containPhotoRect, reachableBodyViews, stepBodyView,
+  bodyViewDragCommits, bodyViewMarkerFraction, bodyViewPhotoId, clampLabelWithin,
+  containPhotoRect, reachableBodyViews, stepBodyView,
 } from "../../src/features/posture/posture-model.js";
 
 /* The two records for one direction are not the same shape. The capture
@@ -155,6 +156,61 @@ test("a distance that is not a number never commits", () => {
   for (const dx of [null, undefined, NaN, "abc"]) assert.equal(bodyViewDragCommits(dx, 400), false);
 });
 
+
+/* ------------------------ where a marker is drawn ------------------------ */
+
+test("the marker follows the same scale and shift the photo was given", () => {
+  /* If the photo is moved to line up with the base direction and the marker
+     is not, the number drifts off the joint it belongs to. */
+  const transform = { scale: 1.2, offsetX: 0.05, offsetY: -0.02 };
+  const placed = bodyViewMarkerFraction({ x: 0.5, y: 0.5 }, transform);
+  assert.ok(Math.abs(placed.x - 0.55) < 1e-9, "the centre only shifts");
+  assert.ok(Math.abs(placed.y - 0.48) < 1e-9);
+  const off = bodyViewMarkerFraction({ x: 0.25, y: 0.75 }, transform);
+  assert.ok(Math.abs(off.x - (0.5 + 1.2 * -0.25 + 0.05)) < 1e-9, "and scales about the centre");
+});
+
+test("an unaligned direction leaves the marker where the photo is", () => {
+  assert.deepEqual(bodyViewMarkerFraction({ x: 0.3, y: 0.7 }, null), { x: 0.3, y: 0.7 });
+});
+
+test("a point that is not a point has nowhere to go", () => {
+  for (const point of [null, undefined, {}, { x: 0.5 }, { x: "a", y: 0.2 }]) {
+    assert.equal(bodyViewMarkerFraction(point, null), null);
+  }
+});
+
+test("a label with room to spare is not moved at all", () => {
+  /* Most markers are well inside the body. Nudging them would break the tie
+     between the number and the joint for no reason. */
+  const centre = { x: 200, y: 400 };
+  assert.deepEqual(clampLabelWithin(centre, { width: 600, height: 900 }, { width: 48, height: 24 }), centre);
+});
+
+test("a label at the edge slides just inside, and no further", () => {
+  const box = { width: 600, height: 900 };
+  const size = { width: 48, height: 24 };
+  assert.deepEqual(clampLabelWithin({ x: 598, y: 400 }, box, size), { x: 576, y: 400 }, "half a pill in from the right");
+  assert.deepEqual(clampLabelWithin({ x: 2, y: 400 }, box, size), { x: 24, y: 400 }, "and from the left");
+  assert.deepEqual(clampLabelWithin({ x: 300, y: 0 }, box, size), { x: 300, y: 12 }, "and from the top");
+  assert.deepEqual(clampLabelWithin({ x: 300, y: 900 }, box, size), { x: 300, y: 888 }, "and from the bottom");
+});
+
+test("a label past the edge is brought back, not left outside", () => {
+  assert.deepEqual(clampLabelWithin({ x: -40, y: 1200 }, { width: 600, height: 900 }, { width: 48, height: 24 }), { x: 24, y: 888 });
+});
+
+test("a label bigger than the box is left where it is", () => {
+  /* Clamping it would push it out the other side, which is worse. */
+  assert.deepEqual(clampLabelWithin({ x: 10, y: 10 }, { width: 30, height: 12 }, { width: 48, height: 24 }), { x: 10, y: 10 });
+});
+
+test("without a measurable box nothing is moved", () => {
+  const centre = { x: 5, y: 6 };
+  assert.deepEqual(clampLabelWithin(centre, null, { width: 48, height: 24 }), centre);
+  assert.deepEqual(clampLabelWithin(centre, { width: 600, height: 900 }, null), centre);
+  assert.equal(clampLabelWithin(null, { width: 600, height: 900 }, { width: 48, height: 24 }), null);
+});
 /* ---------------------- where the photo actually lands ------------------- */
 
 test("a photo narrower than its frame is centred with bands above and below", () => {

@@ -612,6 +612,42 @@ export function composeBodyViewAlignment(assessment) {
 }
 
 
+/* 마커가 화면 어디에 오는가 -- 사진 안의 비율로.
+
+   정렬이 사진에 건 배율·이동을 좌표에도 똑같이 걸어야 몸에서 떨어지지 않는다.
+   글자까지 함께 커지면 읽기 어려우므로 사진을 늘리는 대신 좌표만 옮긴다. */
+export function bodyViewMarkerFraction(point, transform) {
+  const x = Number(point?.x);
+  const y = Number(point?.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  const scale = Number(transform?.scale) || 1;
+  const offsetX = Number(transform?.offsetX) || 0;
+  const offsetY = Number(transform?.offsetY) || 0;
+  return { x: 0.5 + scale * (x - 0.5) + offsetX, y: 0.5 + scale * (y - 0.5) + offsetY };
+}
+
+/* 가장자리의 landmark 위에 얹은 알약은 절반이 잘려 숫자가 안 읽힌다.
+
+   그렇다고 잰 자리를 옮길 수는 없다. 그래서 점은 그 자리에 두고 알약만 안으로
+   밀어 넣는다 -- 둘은 짧은 선으로 이어 어디를 잰 값인지 보이게 한다.
+
+   여유가 있으면 아무것도 하지 않는다. 값의 크기로 자리가 달라지는 일은 없다:
+   여기서 보는 것은 좌표와 상자뿐이다. */
+export function clampLabelWithin(centre, box, size) {
+  const x = Number(centre?.x);
+  const y = Number(centre?.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  const boxWidth = Number(box?.width);
+  const boxHeight = Number(box?.height);
+  const halfWidth = Number(size?.width) / 2;
+  const halfHeight = Number(size?.height) / 2;
+  if (![boxWidth, boxHeight, halfWidth, halfHeight].every((value) => Number.isFinite(value) && value >= 0)) return { x, y };
+  /* 알약이 상자보다 크면 밀어 넣을 곳이 없다. 그대로 둔다. */
+  return {
+    x: boxWidth < halfWidth * 2 ? x : Math.min(Math.max(x, halfWidth), boxWidth - halfWidth),
+    y: boxHeight < halfHeight * 2 ? y : Math.min(Math.max(y, halfHeight), boxHeight - halfHeight),
+  };
+}
 /* 비율을 지켜 넣은 사진이 틀 안에서 실제로 차지하는 사각형.
 
    마커 좌표는 사진 안의 비율이다. 틀에 그대로 대면 위아래(또는 좌우) 여백만큼

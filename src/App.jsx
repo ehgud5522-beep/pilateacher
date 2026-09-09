@@ -3225,7 +3225,7 @@ function WeekGrid({ days, byDate, nameOf, memberOf, briefingOf, cursor, onOpen, 
     const needsRecord = !pv && !eq && list.some((a) => a.status === "done" && !(memberOf?.(a.memberId)?.notes || []).some((n) => n?.sid === s.id));
     const briefingLine = !pv && !eq && list.some((attendee) => !!selectScheduleBriefing(briefingOf?.(attendee.memberId, s.id)));
     const typeLabel = typeDef.label;
-    return { s, top: topOf(st), h: Math.max(20, topOf(en) - topOf(st) - 2), label, equipText, typeKey,  typeLabel, briefingLine, done, cancelled: (eq && !!s.groupCancelled) || status === "cancel", noshow: status === "noshow", eq, pv, next: s.id === nextId, needsRecord, groupPeople };
+    return { s, top: topOf(st), h: Math.max(20, topOf(en) - topOf(st) - 2), label, equipText, typeKey,  typeLabel, typeShape: typeDef.shape, briefingLine, done, cancelled: (eq && !!s.groupCancelled) || status === "cancel", noshow: status === "noshow", eq, pv, next: s.id === nextId, needsRecord, groupPeople };
   }).filter((b) => b.top >= -GRID_ROW && b.top < totalHeight);
 
   return (
@@ -3273,11 +3273,18 @@ function WeekGrid({ days, byDate, nameOf, memberOf, briefingOf, cursor, onOpen, 
                   /* 카드는 최대 두 줄. 폭이 40px 남짓이라 첫 줄은 회원명에 모두 내주고,
                      유형 약자는 기구와 같은 두 번째 줄에 둔다. 두 줄이 안 들어가는
                      짧은 카드에서만 약자를 이름 앞에 붙인다 — 색만으로 구분하지 않기 위해서다. */
-                  const twoLine = b.h >= 26;
+                  const tall = b.h >= 26;
+                  /* 두 번째 줄에 적을 것이 기구뿐이라, 기구가 없으면 줄도 없다.
+                     개인·듀엣은 이름 한 줄로 끝난다 -- 이름만 있으면 개인이고,
+                     둘이면 "이름+1" 이라 내용이 이미 유형을 말한다. */
+                  const twoLine = tall && !!b.equipText;
                   /* 회원 점과 다음 수업 표시가 이름 폭을 먹는 만큼 글자를 한 단계 줄인다 */
-                  const labelLen = b.label.length + (twoLine && memberDot ? 1 : 0) + (b.next ? 1 : 0);
+                  const labelLen = b.label.length + (tall && memberDot ? 1 : 0) + (b.next ? 1 : 0);
                   return (
-                  <button key={b.s.id} title={[b.typeLabel, b.label, lessonEquipFullText(b.s)].filter(Boolean).join(" · ")} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); onOpen(b.s, e.currentTarget); }}
+                  /* 유형 글자가 화면에서 빠지므로 aria-label 이 읽어 주는
+                     유일한 경로가 된다. 도형은 눈으로 보는 쪽이고, 여기서는
+                     이름 그대로 말해 준다. */
+                  <button key={b.s.id} aria-label={[b.typeLabel, b.label, lessonEquipFullText(b.s)].filter(Boolean).join(" · ")} title={[b.typeLabel, b.label, lessonEquipFullText(b.s)].filter(Boolean).join(" · ")} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); onOpen(b.s, e.currentTarget); }}
                     className="absolute left-0.5 right-0.5 flex min-w-0 flex-col justify-center overflow-hidden text-left"
                     style={{ top: b.top + 1, height: Math.max(18, b.h - 1), borderRadius: 4,
                       background: b.cancelled ? "transparent" : b.noshow ? "var(--bad-s)" : tone.surface,
@@ -3288,15 +3295,17 @@ function WeekGrid({ days, byDate, nameOf, memberOf, briefingOf, cursor, onOpen, 
                       letterSpacing: labelLen >= 4 ? "-0.35px" : "-0.15px", lineHeight: 1.08, fontWeight: b.next || (focusedMemberId && memberMatch) ? 700 : 600,
                       opacity: memberMatch ? (b.done ? 0.74 : 1) : 0.22, boxShadow: focusedMemberId && memberMatch ? `0 0 0 2px ${RING}` : "none", transition: "opacity .18s ease, box-shadow .18s ease" }}>
                     {b.next && <Play size={7} fill={BRAND} className="absolute left-0.5 top-0.5" />}
-                    {memberDot && !twoLine && <span className="absolute" aria-hidden="true" style={{ left: 2, bottom: 2, width: 5, height: 5, borderRadius: 3, backgroundColor: memberDot, opacity: b.done ? .45 : 1 }} />}
+                    {memberDot && !tall && <span className="absolute" aria-hidden="true" style={{ left: 2, bottom: 2, width: 5, height: 5, borderRadius: 3, backgroundColor: memberDot, opacity: b.done ? .45 : 1 }} />}
                     <span className="flex w-full min-w-0 items-center" style={{ paddingLeft: b.next ? 8 : 0 }}>
-                      {!twoLine && <span className="pt-week-type mr-0.5 shrink-0" aria-label={`${b.typeLabel} 수업`} style={{ color: tone.edge }}>{b.typeLabel}</span>}
-                      {memberDot && twoLine && <span className="shrink-0" aria-hidden="true" style={{ width: 3.5, height: 3.5, borderRadius: 2, marginRight: 1.5, backgroundColor: memberDot, opacity: b.done ? .45 : 1 }} />}
+                      {/* 유형은 이제 도형 하나다. 이름 앞 한 자리만 쓰므로 이름이
+                          그만큼 길게 들어간다. 읽어 주는 것은 버튼의 aria-label 이라
+                          여기서는 화면에서 감춘다 -- 같은 말을 두 번 읽지 않는다. */}
+                      <span className="pt-week-type mr-0.5 shrink-0" aria-hidden="true" style={{ color: tone.edge }}>{b.typeShape}</span>
+                      {memberDot && tall && <span className="shrink-0" aria-hidden="true" style={{ width: 3.5, height: 3.5, borderRadius: 2, marginRight: 1.5, backgroundColor: memberDot, opacity: b.done ? .45 : 1 }} />}
                       <span className="min-w-0 flex-1 truncate" style={{ textDecoration: b.cancelled ? "line-through" : "none" }}>{b.label}</span>
                     </span>
                     {twoLine && (
                       <span className="pt-week-equip flex w-full min-w-0 items-center">
-                        <span className="pt-week-type mr-0.5 shrink-0" aria-label={`${b.typeLabel} 수업`} style={{ color: tone.edge }}>{b.typeLabel}</span>
                         <span className="min-w-0 flex-1 truncate" style={{ color: tone.ink }}>{b.equipText}</span>
                       </span>
                     )}

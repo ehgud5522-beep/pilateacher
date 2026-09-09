@@ -5,6 +5,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
 import react from "@vitejs/plugin-react";
 
+import { lessonTypeDef } from "../../src/features/schedule/lesson-types.js";
+
 const projectRoot = fileURLToPath(new URL("../../", import.meta.url));
 
 /* 주간 일정표를 실제로 렌더해서 카드가 유형 → 회원 → 기구 순으로 읽히는지 확인한다. */
@@ -25,10 +27,29 @@ test("weekly cards read type, member, then equipment", async (t) => {
   assert.ok(busy, "혼합 일정 fixture 화면이 없습니다");
   const markup = renderToStaticMarkup(busy.element);
 
-  await t.test("유형 5종이 약자로 함께 표시된다", () => {
-    ["개인 수업", "듀엣 수업", "그룹 수업", "상담 수업", "휴무 수업"].forEach((label) => {
-      assert.ok(markup.includes(`aria-label="${label}"`), `${label} 약자가 없습니다`);
-    });
+  /* 카드에서 유형 글자를 뺐다. 40px 남짓한 폭을 이름에 내주기 위해서인데,
+     색만 남기면 색으로만 구분하는 화면이 되므로 도형이 그 자리를 대신한다.
+     읽어 주는 쪽에는 도형이 소용없으므로 버튼 이름에 유형을 말로 남긴다. */
+  await t.test("유형 5종이 도형으로 구분된다", () => {
+    for (const key of ["private", "duet", "group", "consult", "off"]) {
+      const shape = lessonTypeDef(key).shape;
+      assert.ok(shape, `${key} 에 도형이 없습니다`);
+      assert.ok(markup.includes(`>${shape}</span>`), `${key} 도형이 카드에 없습니다`);
+    }
+    const shapes = ["private", "duet", "group", "consult", "off"].map((key) => lessonTypeDef(key).shape);
+    assert.equal(new Set(shapes).size, shapes.length, "도형이 겹치면 구분이 되지 않습니다");
+  });
+
+  await t.test("유형 글자는 화면에서 빠지고 읽어 주는 이름에만 남는다", () => {
+    for (const label of ["개인", "듀엣", "그룹", "상담", "휴무"]) {
+      assert.ok(markup.includes(`aria-label="${label} ·`) || markup.includes(`aria-label="${label}"`),
+        `${label} 이 버튼 이름에 없습니다 -- 화면에서 뺐으므로 여기가 유일한 경로입니다`);
+    }
+    const typeCells = [...markup.matchAll(/class="pt-week-type[^"]*"[^>]*>([^<]*)</g)].map((match) => match[1]);
+    assert.ok(typeCells.length > 0, "유형 자리가 사라졌습니다");
+    for (const cell of typeCells) {
+      assert.equal(/[가-힣]/.test(cell), false, `카드에 유형 글자가 남아 있습니다: ${cell}`);
+    }
   });
 
   /* 카드에 실제로 찍힌 기구 줄만 본다 — 전체 목록은 title 툴팁에만 있다 */
@@ -45,9 +66,12 @@ test("weekly cards read type, member, then equipment", async (t) => {
     });
   });
 
-  await t.test("기구 미선택 일정은 기구 글자 없이 유형 약자만 남는다", () => {
+  await t.test("기구가 없으면 두 번째 줄 자체가 없다", () => {
+    /* 예전에는 기구가 없어도 유형 약자를 담으려고 빈 줄이 섰다. 약자가
+       빠진 지금 그 줄에 적을 것이 없으므로 줄을 만들지 않는다 -- 카드가
+       한 줄이 되고, 그만큼 격자가 낮아진다. */
     assert.equal(equipLines.length, 8, "기구가 있는 일정 수와 기구 표시 수가 다릅니다");
-    assert.equal(equipRows.length - equipLines.length, 3, "기구 미선택 일정 수가 다릅니다");
+    assert.equal(equipRows.length, equipLines.length, "적을 것이 없는데 줄이 서 있습니다");
   });
 
   await t.test("회원명과 그룹 인원이 첫 줄에 남는다", () => {

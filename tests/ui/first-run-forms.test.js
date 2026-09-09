@@ -54,16 +54,32 @@ test("the saved payload and its defaults are untouched", async () => {
 
 /* ---------------------- 3. lesson type on the card ---------------------- */
 
-test("the schedule card spells the lesson type out", async () => {
+test("the weekly card carries the type as a shape, never as a letter", async () => {
+  /* The abbreviation was replaced by the word, and now the word is gone too:
+     a column is about 48px wide and the name needs all of it. What must not
+     come back is the single letter -- 개/듀/그 was unreadable at that size,
+     which is why it became a word in the first place. A shape reads at any
+     size and, unlike the colour beside it, survives being colour-blind. */
   const source = await appSource();
-  assert.doesNotMatch(source, /\{b\.typeShort\}/, "the one-character abbreviation is gone from the card");
-  // The rendered text, not the aria-label that also interpolates the label.
-  assert.equal((source.match(/>\{b\.typeLabel\}<\/span>/g) || []).length, 2, "both the one-line and two-line cards");
+  assert.doesNotMatch(source, /\{b\.typeShort\}/, "the one-character abbreviation stays gone");
+  assert.equal((source.match(/>\{b\.typeLabel\}<\/span>/g) || []).length, 0, "and the word is off the card");
+  assert.match(source, />\{b\.typeShape\}<\/span>/, "a shape stands where it was");
+  assert.match(source, /aria-label=\{\[b\.typeLabel, b\.label/, "and the word is what a screen reader hears");
 
-  // Duet and group must read as words too, not just private.
+  /* Every type needs its own shape, or two of them read the same. */
+  const shapes = LESSON_TYPES.map((item) => item.shape);
+  assert.equal(shapes.filter(Boolean).length, LESSON_TYPES.length, "every type has a shape");
+  assert.equal(new Set(shapes).size, shapes.length, "and no two share one");
+});
+
+test("the type is still a word everywhere there is room for one", async () => {
+  /* Only the weekly grid is short of space. The day list, the forms and the
+     detail sheet all spell it out, and the labels they read are the same
+     two-character words as before. */
+  const source = await appSource();
+  assert.match(source, /lessonTypeInfo\(s\)\.label/, "the day list still writes the type");
   for (const key of ["private", "duet", "group"]) {
-    const def = lessonTypeDef(key);
-    assert.equal(def.label.length, 2, `${key} label should be the full two-character word`);
+    assert.equal(lessonTypeDef(key).label.length, 2, `${key} label should be the full two-character word`);
   }
   assert.deepEqual(LESSON_TYPES.filter((t) => ["private", "duet", "group"].includes(t.key)).map((t) => t.label), ["개인", "듀엣", "그룹"]);
 });

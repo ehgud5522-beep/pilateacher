@@ -9945,7 +9945,7 @@ function LegacyAssessmentWorkspace({ member, photos, settings, initialSavedId, o
   );
 }
 
-function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = null, diagnosticPhotosBucketExists = false, initialSavedId, initialAssessmentId = null, initialMode = "home", initialBeforeAssessmentId = null, initialAfterAssessmentId = null, initialCompareView = "front", onSavePose, onUpdatePose, onDeletePose, onSaveCaptureDraft, onDeleteCaptureDraft, onDiscardPose, onDiscardAssessmentDraft, onCompleteAssessment, onSaveMarks, onSaveAssessmentRole, onToggleAssessmentFavorite, onToast, onSaved }) {
+function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = null, diagnosticPhotosBucketExists = false, initialSavedId, initialAssessmentId = null, initialMode = "home", initialBeforeAssessmentId = null, initialAfterAssessmentId = null, initialCompareView = "front", onSavePose, onUpdatePose, onDeletePose, onSaveCaptureDraft, onDeleteCaptureDraft, onDiscardPose, onSaveMask, onSegmenterEvent, onDiscardAssessmentDraft, onCompleteAssessment, onSaveMarks, onSaveAssessmentRole, onToggleAssessmentFavorite, onToast, onSaved }) {
   /* Entering from the member detail already means "take a photo", so it opens
      on the purpose step. Going through the 변화 기록 tab still lands on home. */
   const [screen, setScreen] = useState(initialSavedId || initialMode === "report" ? "result"
@@ -10333,7 +10333,7 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
       {annotationPicker && <ChoiceBottomSheet title="다시 수정할 사진 선택" subtitle="저장된 표시를 불러와 이어서 수정합니다" value="" options={(selected?.selectedViews || []).map((view) => ({ value: view, label: postureViewLabel(view), description: setPhoto(selected, view)?.marks?.length ? "저장된 표시 있음" : "표시 새로 추가" })).filter((option) => setPhoto(selected, option.value))} onClose={() => setAnnotationPicker(false)} onSelect={(view) => { const photo = setPhoto(selected, view); setAnnotationPicker(false); if (photo) setEditingAnnotation({ view, photo }); }} />}
       {editingAnnotation?.photo?.src && <PostureCanvas key={`reedit_${editingAnnotation.view}_${editingAnnotation.photo.id}`} photo={editingAnnotation.photo} label={`${postureViewLabel(editingAnnotation.view)} · 다시 수정`} initialTool="pen" onClose={() => setEditingAnnotation(null)} onCancel={() => setEditingAnnotation(null)} onDraft={(marks) => onSaveMarks?.(editingAnnotation.view, editingAnnotation.photo.id, marks, { quiet: true })} onSave={(marks) => onSaveMarks?.(editingAnnotation.view, editingAnnotation.photo.id, marks)} onToast={onToast} />}
       {!selectedIsManualResult && viewingPose && <SavedPoseViewer rec={viewingPose} member={member} memberName={member?.name} records={resultPoses} onUpdate={onUpdatePose} onClose={() => setViewingPose(null)} onToast={onToast} />}
-      {bodyViewOpen && canOpenBodyView && <BodyViewSheet assessment={selected} previousAssessment={previousAssessment} resolvePhotoUrl={urlFor} onClose={() => setBodyViewOpen(false)} />}
+      {bodyViewOpen && canOpenBodyView && <BodyViewSheet assessment={selected} previousAssessment={previousAssessment} resolvePhotoUrl={urlFor} onSaveMask={onSaveMask} onSegmenterEvent={onSegmenterEvent} onClose={() => setBodyViewOpen(false)} />}
     </div>
   );
 }
@@ -16147,6 +16147,34 @@ export default function App() {
 
      photosRef 를 읽는 이유: 바로 앞에서 촬영 초안이 저장돼 있고, 화면 state 를
      읽으면 그 저장을 되돌려 쓰게 된다. */
+  /* 인물 마스크를 그 방향 pose 에 붙여 둔다. 다음에 바디뷰를 열 때 다시
+     계산하지 않기 위해서다. 마스크는 기기 안에만 있고 백업으로도 나가지
+     않는다 -- maskBlobId 는 공용 목록에 등록돼 있어 백업에서 지워지고
+     계정 삭제에서 함께 쓸려 나간다.
+
+     photosRef 를 읽는 이유는 discardPoseForView 와 같다. 화면 state 는
+     이 사이에 일어난 다른 저장을 모른다. */
+  const saveMaskForView = async (memberId, assessmentId, view, blob) => {
+    const target = analysisMember(memberId);
+    if (!target || !assessmentId || !view || !blob) return null;
+    const poseId = `${assessmentId}_${view}_pose`;
+    const currentPhotos = photosRef.current;
+    const cur = currentPhotos[target.id] || {};
+    const pose = (cur.poses || []).find((record) => record?.id === poseId);
+    if (!pose) return null;
+    let maskBlobId = null;
+    try { maskBlobId = newBlobId(); await blobPut(maskBlobId, blob); }
+    catch (error) { deviceLog("posture_mask_save_failed", { memberId: target.id, assessmentId, view, storage: "indexedDB", ...deviceError(error) }); return null; }
+    const previous = pose.maskBlobId || null;
+    const stored = await savePhotos({
+      ...currentPhotos,
+      [target.id]: { ...cur, poses: (cur.poses || []).map((record) => (record?.id === poseId ? { ...record, maskBlobId } : record)) },
+    });
+    if (!stored) { forgetBlobs([maskBlobId]); return null; }
+    if (previous && previous !== maskBlobId) forgetBlobs([previous]);
+    deviceLog("posture_mask_saved", { memberId: target.id, assessmentId, view, storage: "indexedDB", bytes: blob.size });
+    return maskBlobId;
+  };
   const discardPoseForView = async (memberId, assessmentId, view) => {
     const target = analysisMember(memberId);
     if (!target || !assessmentId || !view) return false;
@@ -16609,6 +16637,8 @@ export default function App() {
                   onSavePose={(rec) => savePose(id, { ...rec, memberId: id })} onUpdatePose={(pid, posePatch) => updatePose(id, pid, posePatch)} onDeletePose={(pid) => deletePose(id, pid)}
                   onSaveCaptureDraft={(captures) => saveCaptureDraft(id, captures)} onDeleteCaptureDraft={(assessmentId, view) => deleteCaptureDraft(id, assessmentId, view)}
                   onDiscardPose={(assessmentId, view) => discardPoseForView(id, assessmentId, view)}
+                  onSaveMask={(assessmentId, view, blob) => saveMaskForView(id, assessmentId, view, blob)}
+                  onSegmenterEvent={(event, detail = {}) => cameraPipelineLog(event, { source: "body_segmenter", ...(detail.source ? { state: detail.source } : {}), ...(detail.error ? deviceError(detail.error) : {}) })}
                   onDiscardAssessmentDraft={(assessment) => discardAssessmentDraft(id, assessment)}
                   onCompleteAssessment={(assessmentId, role) => completeAssessment(id, assessmentId, role)}
                   onSaveMarks={(view, photoId, marks, options) => saveMarks(id, view, photoId, marks, options)} onSaveAssessmentRole={(assessmentId, role) => saveAssessmentRole(id, assessmentId, role)} onToggleAssessmentFavorite={(assessmentId, favorite) => toggleAssessmentFavorite(id, assessmentId, favorite)}

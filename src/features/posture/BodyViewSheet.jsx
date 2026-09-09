@@ -2,10 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   BODY_VIEW_ALIGNMENT, POSTURE_VIEW_KEYS, bodyViewDragCommits, bodyViewMetrics,
-  bodyViewMarkerFraction, bodyViewPhotoId, clampLabelWithin, composeBodyViewAlignment,
+  bodyViewMarkerFraction, bodyViewMaskId, bodyViewPhotoId, clampLabelWithin, composeBodyViewAlignment,
   containPhotoRect, normalizePostureView, postureMetricChangeText, postureMetricDisplayValue,
   postureViewLabel, reachableBodyViews, stepBodyView,
 } from "./posture-model.js";
+import { closeBodySegmenter, composePersonCutout, personMaskPng } from "./body-segmenter.js";
 import { isFullyManualAfterAiMiss } from "./result-presentation.js";
 
 /* 촬영한 네 방향을 한 화면에서 갈아 끼우며 본다.
@@ -68,6 +69,16 @@ function usePrefersReducedMotion() {
 }
 
 
+/* 마스크를 씌우려면 사진과 마스크가 둘 다 픽셀로 있어야 한다. */
+function decodeImage(src) {
+  return new Promise((resolve, reject) => {
+    const image = new window.Image();
+    image.onload = () => resolve(image);
+    image.onerror = reject;
+    image.src = src;
+  });
+}
+
 function MetricDetail({ metric, onClose }) {
   const unit = metric.unit || "";
   const change = metric.difference === null ? null : postureMetricChangeText(metric.difference, unit);
@@ -107,7 +118,7 @@ function MetricDetail({ metric, onClose }) {
   );
 }
 
-export default function BodyViewSheet({ assessment, previousAssessment = null, resolvePhotoUrl, onClose }) {
+export default function BodyViewSheet({ assessment, previousAssessment = null, resolvePhotoUrl, onSaveMask, onSegmenterEvent, onClose }) {
   const reduced = usePrefersReducedMotion();
   const alignment = useMemo(() => composeBodyViewAlignment(assessment), [assessment]);
   /* 부위 촬영은 방향이 아니다. 네 방향만 다룬다. */
@@ -130,6 +141,8 @@ export default function BodyViewSheet({ assessment, previousAssessment = null, r
      필요하고, 그것은 사진이 실제로 뜬 뒤에야 알 수 있다. */
   const [natural, setNatural] = useState({});
   const [frameSize, setFrameSize] = useState(null);
+  /* 방향별로 사람만 남긴 그림: 만드는 중 / 됐음 / 안 됨. */
+  const [cutouts, setCutouts] = useState({});
   const [dragDx, setDragDx] = useState(0);
   const [dragging, setDragging] = useState(false);
   const timers = useRef([]);
@@ -142,6 +155,8 @@ export default function BodyViewSheet({ assessment, previousAssessment = null, r
   useEffect(() => () => {
     timers.current.forEach(clearTimeout); timers.current = [];
     introTimers.current.forEach(clearTimeout); introTimers.current = [];
+    /* 모델은 화면과 함께 놓아준다. */
+    closeBodySegmenter();
   }, []);
 
   /* 틀의 크기는 기기와 회전에 따라 달라진다. 마커 자리를 그 안에서 구하므로
@@ -276,6 +291,7 @@ export default function BodyViewSheet({ assessment, previousAssessment = null, r
   const openMetric = metrics.find((metric) => metric.id === openMetricId) || null;
   const shownPhoto = photos[shownView] || null;
   const naturalSize = natural[shownView] || null;
+  const shownCutout = cutouts[shownView] || null;
   /* 결과 화면이 쓰는 그 판정을 그대로 읽는다. 새로 매기지 않는다 -- 두 화면이
      같은 기록을 두고 다른 말을 하면 어느 쪽을 믿을지 알 수 없다.
      화면이 한 방향씩 보여 주므로 그 방향의 pose 에 대고 묻는다. */
@@ -311,6 +327,44 @@ export default function BodyViewSheet({ assessment, previousAssessment = null, r
     return undefined;
   }, [photos, shownView, reduced]);
 
+
+
+  /* 사람만 남긴 그림을 만든다. 지금 보는 방향 하나만 -- 네 장을 한꺼번에
+     돌리면 값싼 기기가 멈춘다.
+
+     이미 만들어 둔 마스크가 있으면 읽고, 없으면 여기서 만들어 pose 에
+     붙인다. 다음에 열 때는 읽기만 한다. 과거 기록도 예외가 아니다 --
+     마스크가 없다는 사실 하나로 같은 길을 탄다.
+
+     원본은 이미 화면에 떠 있다. 다 되면 갈아 끼우고, 되지 않으면 그대로
+     둔다. 이 기능이 실패해도 바디뷰는 계속 쓸 수 있어야 한다. */
+  useEffect(() => {
+    if (!shownView || shownPhoto?.status !== "ready" || cutouts[shownView]) return undefined;
+    let alive = true;
+    const mark = (value) => { if (alive) setCutouts((previous) => ({ ...previous, [shownView]: value })); };
+    mark({ status: "working", url: null });
+    (async () => {
+      try {
+        const photo = await decodeImage(shownPhoto.url);
+        const savedMaskId = bodyViewMaskId(assessment, shownView);
+        let maskUrl = savedMaskId ? await resolvePhotoUrl?.(savedMaskId) : null;
+        if (!maskUrl) {
+          const made = await personMaskPng(photo, { log: onSegmenterEvent });
+          if (!made?.blob) { mark({ status: "none", url: null }); return; }
+          const storedId = await onSaveMask?.(assessment?.id, shownView, made.blob);
+          maskUrl = storedId ? await resolvePhotoUrl?.(storedId) : URL.createObjectURL(made.blob);
+        }
+        if (!alive || !maskUrl) { mark({ status: "none", url: null }); return; }
+        const mask = await decodeImage(maskUrl);
+        const cutout = await composePersonCutout(photo, mask);
+        if (!alive || !cutout) { mark({ status: "none", url: null }); return; }
+        mark({ status: "ready", url: URL.createObjectURL(cutout) });
+      } catch (_error) {
+        mark({ status: "none", url: null });
+      }
+    })();
+    return () => { alive = false; };
+  }, [assessment, shownView, shownPhoto, cutouts, resolvePhotoUrl, onSaveMask, onSegmenterEvent]);
 
   if (!firstView) return null;
 
@@ -350,7 +404,7 @@ export default function BodyViewSheet({ assessment, previousAssessment = null, r
               : { inset: 0 }}
           >
             <img
-              src={shownPhoto.url}
+              src={shownCutout?.status === "ready" ? shownCutout.url : shownPhoto.url}
               alt=""
               /* 크기는 지금 읽어 둔다. 갱신 함수는 나중에 실행되고, 그때
                  currentTarget 은 이미 비워져 있다. */

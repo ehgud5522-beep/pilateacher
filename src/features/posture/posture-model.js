@@ -683,6 +683,12 @@ export function bodyViewPhotoId(assessment, view) {
     || null;
 }
 
+/* 이 방향에 저장해 둔 인물 마스크. pose 에 붙어 있고, 없으면 아직 만든 적이
+   없다는 뜻이다 -- 예전 기록도 여기로 떨어져 원본으로 보인다. */
+export function bodyViewMaskId(assessment, view) {
+  return bodyViewPose(assessment, view)?.maskBlobId || null;
+}
+
 export function reachableBodyViews(assessment, { unreadable = [] } = {}) {
   const skip = new Set((unreadable || []).map(normalizePostureView));
   return POSTURE_VIEW_KEYS.filter((view) => !skip.has(view) && Boolean(bodyViewPhotoId(assessment, view)));

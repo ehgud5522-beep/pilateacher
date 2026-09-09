@@ -13,6 +13,8 @@ const VOICE_SESSION_EVENT_TYPES = new Set([
   "prepared", "trimmed", "audio_record_start_failed", "camera_preview_start_failed", "camera_fallback",
   "camera_start_skipped", "camera_preview_start_cancelled", "photo_output_ready",
   "album_picker_opened", "album_picker_change", "album_picker_released", "album_picker_away",
+  "segmenter_library_loaded", "segmenter_library_load_failed", "segmenter_ready",
+  "segmenter_gpu_fallback", "segmenter_failed",
   "camera_preview_bounds_pending", "camera_preview_bounds_failed",
   "motion_listener_started", "motion_unsupported", "motion_permission_denied",
   "motion_listener_failed", "motion_listener_remove_failed", "motion_reading_timeout",

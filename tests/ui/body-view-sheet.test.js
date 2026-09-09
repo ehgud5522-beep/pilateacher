@@ -130,12 +130,24 @@ test("nothing on screen offers a scan, a model, or an analysis in three dimensio
 });
 
 test("no body is invented between the photographs", async () => {
-  /* Four photographs is four photographs. Filling the gaps would be drawing a
-     body nobody shot. */
+  /* Four photographs is four photographs. Separating the person from the
+     background takes pixels away; nothing here puts pixels back, and no angle
+     is conjured between the four that were shot. */
   const source = withoutComments(await sheetSource());
-  for (const forbidden of ["Segmenter", "segmentation", "blur(", "perspective(", "rotateY", "rotate3d", "morph"]) {
+  for (const forbidden of ["blur(", "perspective(", "rotateY", "rotate3d", "skew", "morph", "inpaint"]) {
     assert.ok(!source.includes(forbidden), `"${forbidden}" would build something that was not photographed`);
   }
+});
+
+test("the person is separated on the device, and only the mask is kept", async () => {
+  /* The photo never leaves, and neither does the mask. The model file is the
+     only thing fetched. */
+  const segmenter = withoutComments(await readFile(new URL("../../src/features/posture/body-segmenter.js", import.meta.url), "utf8"));
+  for (const forbidden of ["fetch(", "XMLHttpRequest", "FormData", "upload", "navigator.sendBeacon"]) {
+    assert.ok(!segmenter.includes(forbidden), `${forbidden} would send the photo somewhere`);
+  }
+  assert.ok(segmenter.includes("storage.googleapis.com/mediapipe-models"), "the model is the one thing downloaded");
+  assert.ok(segmenter.includes("outputConfidenceMasks: true"), "soft edges, so hair and fingertips survive");
 });
 
 test("the photo shown is the analysed one, never the untouched original", async () => {
@@ -399,4 +411,58 @@ test("the door is there whether or not there is a change to show", async () => {
 test("the door stays shut for a record with no photograph to show", async () => {
   const source = withoutComments(await appSource());
   assert.match(source, /const canOpenBodyView = !selectedIsManualResult && selected\?\.status === "completed"\r?\n?\s*&& POSTURE_VIEW_KEYS\.some\(\(view\) => assessmentMediaForView\(selected, view\)\)/);
+});
+
+/* --------------------------- separating the person ----------------------- */
+
+test("only the direction on screen is separated", async () => {
+  /* Four masks at once is what stalls a cheap phone. The work is keyed to the
+     direction being looked at. */
+  const source = withoutComments(await sheetSource());
+  assert.ok(source.includes('if (!shownView || shownPhoto?.status !== "ready" || cutouts[shownView]) return undefined;'));
+});
+
+test("a mask already made is read, not made again", async () => {
+  /* Re-entering the screen must not re-run the model. The mask lives on the
+     pose, so the second visit is a read. */
+  const source = withoutComments(await sheetSource());
+  assert.ok(source.includes("const savedMaskId = bodyViewMaskId(assessment, shownView);"));
+  assert.ok(source.includes("let maskUrl = savedMaskId ? await resolvePhotoUrl?.(savedMaskId) : null;"));
+  const block = source.slice(source.indexOf("const savedMaskId"), source.indexOf("const mask = await decodeImage"));
+  assert.ok(block.indexOf("if (!maskUrl) {") < block.indexOf("personMaskPng"), "the model runs only when there is no mask");
+});
+
+test("a mask that had to be made is kept for next time", async () => {
+  const source = withoutComments(await sheetSource());
+  assert.ok(source.includes("const storedId = await onSaveMask?.(assessment?.id, shownView, made.blob);"));
+});
+
+test("the original stays on screen until the cutout is ready", async () => {
+  /* The photo is already up. Nothing waits on the model. */
+  const source = withoutComments(await sheetSource());
+  assert.ok(source.includes('src={shownCutout?.status === "ready" ? shownCutout.url : shownPhoto.url}'));
+});
+
+test("a failure anywhere leaves the photograph as it was", async () => {
+  /* Model missing, mask unreadable, compose failing -- every branch falls back
+     to the original rather than taking the direction away. */
+  const source = withoutComments(await sheetSource());
+  const block = source.slice(source.indexOf('mark({ status: "working"'), source.indexOf("return () => { alive = false; };", source.indexOf('mark({ status: "working"')));
+  assert.ok((block.match(/mark\(\{ status: "none", url: null \}\)/g) || []).length >= 4, "every dead end marks it and stops");
+  assert.ok(block.includes("catch (_error) {"), "and a thrown error does the same");
+});
+
+test("the alignment and the markers are untouched by the cutout", async () => {
+  /* Only the alpha channel of the same pixel grid changes, so the transform
+     the alignment produced and the coordinates the markers use still hold. */
+  const source = withoutComments(await sheetSource());
+  const img = source.slice(source.indexOf("<img"), source.indexOf("/>", source.indexOf("<img")));
+  assert.ok(img.includes("translateX(${dragDx}px)") && img.includes("shownEntry.transform.scale"), "the same transform as before");
+  assert.ok(source.includes("placeOnFrame") === false, "markers still read bodyViewMarkerFraction");
+  assert.ok(source.includes("bodyViewMarkerFraction(metric.at, shownEntry?.transform)"));
+});
+
+test("the model is let go when the screen closes", async () => {
+  const source = withoutComments(await sheetSource());
+  assert.ok(source.includes("closeBodySegmenter();"));
 });

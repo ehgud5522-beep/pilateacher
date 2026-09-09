@@ -78,6 +78,11 @@ token, nonce, credential, authorizationCode, identityToken, password, 이메일,
 - `appendLessonRecordDiagnostic(...)` — 수업기록 파이프라인 20건
 - Functions: `firebase functions:log --only aiGateway --project pilateacher`
 
+## 인물 분리(세그멘테이션)
+
+인물 분리는 기기 내 MediaPipe 로만 수행한다. 사진·마스크를 외부로 업로드하지
+않는다. 받아 오는 것은 모델 파일뿐이다.
+
 ## 하지 않는 것
 
 - 원인을 확정하기 전에 스키마를 느슨하게 만들거나 `additionalProperties: true` 로 우회하지 않는다

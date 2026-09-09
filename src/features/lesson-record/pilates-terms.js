@@ -21,7 +21,7 @@
    여기에 붙이면 된다. 두 글자짜리는 다른 낱말에 박혀 있어 쓰지 않는다. */
 export const PILATES_TERM_DICTIONARY = Object.freeze([
   // 기구
-  { canonical: "리포머", variants: ["리폼화", "디포먼트", "리포마", "리포머스", "리퍼머", "리포먼트"] },
+  { canonical: "리포머", variants: ["리폼화", "디포먼트", "리포마", "리포머스", "리퍼머", "리포먼트", "래퍼무어"] },
   { canonical: "캐딜락", variants: ["캐딜라", "게릴락", "캐들락", "카딜락"] },
   { canonical: "체어", variants: ["체어기구"] },
   { canonical: "바렐", variants: ["바렐기구"] },

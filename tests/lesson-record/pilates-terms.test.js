@@ -17,9 +17,16 @@ function memoryStorage() {
 
 /* --------------------------- the reported case -------------------------- */
 
-test("the two misheard spellings of 리포머 are put back", () => {
+test("the misheard spellings of 리포머 are put back", () => {
   assert.equal(correctPilatesTerms("오늘 리폼화로 풋워크 했어요").transcript, "오늘 리포머로 풋워크 했어요");
   assert.equal(correctPilatesTerms("디포먼트에서 헌드레드").transcript, "리포머에서 헌드레드");
+  /* Reported from use in September 2026. It is four syllables away from the
+     word it should be, so the fuzzy pass in term-mapper -- which only looks
+     one edit out -- was never going to reach it. The dictionary is the only
+     thing that catches a mishearing this far off. */
+  assert.equal(correctPilatesTerms("래퍼무어로 풋워크 했어요").transcript, "리포머로 풋워크 했어요");
+  assert.equal(correctPilatesTerms("래퍼무어를 했고 래퍼무어도 좋았어요").transcript, "리포머를 했고 리포머도 좋았어요",
+    "every occurrence, with its particle");
 });
 
 test("what was corrected is reported alongside the text", () => {

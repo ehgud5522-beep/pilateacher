@@ -7664,7 +7664,7 @@ function PostureCaptureScreen({
   return typeof document === "undefined" ? null : createPortal(screen, document.body);
 }
 
-function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, onSaveCaptureDraft, onDeleteCaptureDraft, onSaveMarks, onToast, onSaved, onStageChange, onCaptureExit, onRequestRole, roleLabel, assessmentRole = null, defaultMethod = "always", embedded = false, initialSavedId = null, initialAssessmentId = null, resumeAssessmentId = null, selectedViews = POSTURE_VIEW_KEYS, scope = "full_body" }) {
+function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, onSaveCaptureDraft, onDeleteCaptureDraft, onDiscardPose, onSaveMarks, onToast, onSaved, onStageChange, onCaptureExit, onRequestRole, roleLabel, assessmentRole = null, defaultMethod = "always", embedded = false, initialSavedId = null, initialAssessmentId = null, resumeAssessmentId = null, selectedViews = POSTURE_VIEW_KEYS, scope = "full_body" }) {
   const captureViews = useMemo(() => {
     if (scope === "partial") return [{ key: "custom", label: "부위" }];
     const allowed = new Set((selectedViews || []).map(normalizePostureView));
@@ -8034,6 +8034,19 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
     albumRef.current?.click();
   };
 
+  /* 한 방향의 사진이 바뀌거나 없어졌을 때 그 방향에 대해 해야 하는 일.
+     교체와 삭제 두 경로가 같은 일을 해야 하므로 한 곳에 둔다. */
+  const forgetAnalysisForView = async (view) => {
+    if (!view) return;
+    setAnalyzedViews((previous) => {
+      if (!previous[view]) return previous;
+      const next = { ...previous };
+      delete next[view];
+      return next;
+    });
+    await onDiscardPose?.(assessmentId.current, view);
+  };
+
   const acceptCaptureBlob = async (input, metadata = {}) => {
     if (!input) return false;
     const capturedView = normalizePostureView(metadata.view || captureTarget);
@@ -8081,6 +8094,10 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
         if (stored === false) throw Object.assign(new Error("capture draft rejected"), { code: "capture_draft_rejected" });
       }
       setDraftSaved((previous) => ({ ...previous, [capturedView]: true }));
+      /* 이 방향의 사진이 방금 다른 사진으로 바뀌었다. 앞서 잰 값은 더는 이
+         사진의 것이 아니므로 그 방향만 미분석으로 되돌리고 결과도 지운다.
+         저장이 확실히 끝난 뒤에만 한다 -- 실패했으면 사진도 안 바뀐 것이다. */
+      await forgetAnalysisForView(capturedView);
       deviceLog("assessment_draft_saved", { memberId: analysisMemberId.current, assessmentId: assessmentId.current, view: capturedView, storage: "indexedDB", source: metadata.source || captureSource.current, count: 1 });
       cameraPipelineLog("saved", { memberId: analysisMemberId.current, assessmentId: assessmentId.current, view: capturedView, storage: "indexedDB", source: metadata.source || captureSource.current, width: im.naturalWidth, height: im.naturalHeight, bytes: blob.size });
       const nextTarget = captureViews.find(({ key }) => key !== capturedView && !capturePhotos[key]);
@@ -8262,6 +8279,8 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
     }
     setCapturePhotos((previous) => ({ ...previous, [key]: null }));
     setDraftSaved((previous) => ({ ...previous, [key]: false }));
+    /* 사진이 없어졌으니 그 사진에서 잰 값도 남을 자리가 없다. */
+    await forgetAnalysisForView(key);
     deviceLog("assessment_photo_removed_from_capture", { memberId: analysisMemberId.current, assessmentId: assessmentId.current, view: key, state: "removed" });
   };
   const beginDrawing = async (nextView = "front") => {
@@ -9852,7 +9871,7 @@ function LegacyAssessmentWorkspace({ member, photos, settings, initialSavedId, o
   );
 }
 
-function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = null, diagnosticPhotosBucketExists = false, initialSavedId, initialAssessmentId = null, initialMode = "home", initialBeforeAssessmentId = null, initialAfterAssessmentId = null, initialCompareView = "front", onSavePose, onUpdatePose, onDeletePose, onSaveCaptureDraft, onDeleteCaptureDraft, onDiscardAssessmentDraft, onCompleteAssessment, onSaveMarks, onSaveAssessmentRole, onToggleAssessmentFavorite, onToast, onSaved }) {
+function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = null, diagnosticPhotosBucketExists = false, initialSavedId, initialAssessmentId = null, initialMode = "home", initialBeforeAssessmentId = null, initialAfterAssessmentId = null, initialCompareView = "front", onSavePose, onUpdatePose, onDeletePose, onSaveCaptureDraft, onDeleteCaptureDraft, onDiscardPose, onDiscardAssessmentDraft, onCompleteAssessment, onSaveMarks, onSaveAssessmentRole, onToggleAssessmentFavorite, onToast, onSaved }) {
   /* Entering from the member detail already means "take a photo", so it opens
      on the purpose step. Going through the 변화 기록 tab still lands on home. */
   const [screen, setScreen] = useState(initialSavedId || initialMode === "report" ? "result"
@@ -10167,7 +10186,7 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
       </section>}
 
       {(screen === "capture" || screen === "analysis") && <PoseAnalyzer key={`${member.id}_${workflow.activeAssessmentId || "none"}_${captureKey}`} embedded member={member} photos={photos} defaultMethod={scope === "partial" ? "draw" : "ai"} assessmentRole={pendingRole} roleLabel={roleLabelOf(pendingRole)} initialAssessmentId={workflow.activeAssessmentId} resumeAssessmentId={resumeAssessmentId} selectedViews={selectedViewList} scope={scope}
-        onRequestRole={() => setRoleSheet(true)} onSavePose={onSavePose} onUpdatePose={onUpdatePose} onDeletePose={onDeletePose} onSaveCaptureDraft={onSaveCaptureDraft} onDeleteCaptureDraft={onDeleteCaptureDraft} onSaveMarks={onSaveMarks} onToast={onToast}
+        onRequestRole={() => setRoleSheet(true)} onSavePose={onSavePose} onUpdatePose={onUpdatePose} onDeletePose={onDeletePose} onSaveCaptureDraft={onSaveCaptureDraft} onDeleteCaptureDraft={onDeleteCaptureDraft} onDiscardPose={onDiscardPose} onSaveMarks={onSaveMarks} onToast={onToast}
         onCaptureExit={() => setScreen(captureReturnScreen)} onStageChange={(stage) => setScreen(stage === "analysis" ? "analysis" : "capture")} onSaved={async (role, assessmentId) => { const nextRole = role || pendingRole || (completeSets.length ? "after" : "before"); const stored = await onCompleteAssessment?.(assessmentId, nextRole); if (stored !== true) return false; setWorkflow(transitionPostureWorkflow(workflow, { type: POSTURE_WORKFLOW_EVENTS.OPEN_COMPLETED_ASSESSMENT, assessmentId, assessment: { id: assessmentId, status: "completed" } })); setResumeAssessmentId(null); setSelectedSetId(assessmentId); setScreen("history"); onSaved?.(nextRole); return true; }} />}
 
       {screen === "history" && <section style={{ padding: 14, borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}>
@@ -16042,6 +16061,35 @@ export default function App() {
     setToast({ ok: true, msg: `${role === "before" ? "비포" : role === "after" ? "에프터" : "변화 기록"} 기기 저장 완료${db.settings?.cloudPhotoBackupEnabled ? " · 클라우드 백업 대기열에 추가됨" : ""}` });
     return true;
   };
+  /* 어느 방향의 사진이 바뀌면 그 방향에서 잰 값은 다른 사진의 것이 된다.
+
+     사진과 측정값을 잇는 id 가 없어서, 나중에 "이 pose 가 지금 사진에서 나온
+     것인가"를 물을 방법이 없다. 그래서 바뀌는 그 순간에 지운다 -- 그 자리에서는
+     어느 방향이 바뀌었는지 이미 알고 있다.
+
+     지우는 것은 그 방향 하나뿐이다. 다른 방향은 자기 사진을 그대로 두고 있다.
+     직접 그린 기록(_draw)은 사진의 marks 에서 다시 만들어지므로 건드리지
+     않는다.
+
+     photosRef 를 읽는 이유: 바로 앞에서 촬영 초안이 저장돼 있고, 화면 state 를
+     읽으면 그 저장을 되돌려 쓰게 된다. */
+  const discardPoseForView = async (memberId, assessmentId, view) => {
+    const target = analysisMember(memberId);
+    if (!target || !assessmentId || !view) return false;
+    const poseId = `${assessmentId}_${view}_pose`;
+    const currentPhotos = photosRef.current;
+    const cur = currentPhotos[target.id] || {};
+    const gone = (cur.poses || []).filter((pose) => pose?.id === poseId);
+    if (!gone.length) return true;
+    const stored = await savePhotos({
+      ...currentPhotos,
+      [target.id]: { ...cur, poses: (cur.poses || []).filter((pose) => pose?.id !== poseId) },
+    });
+    if (!stored) return false;
+    forgetBlobs(gone.flatMap((pose) => [pose.blobId, pose.cleanBlobId, pose.thumbnailBlobId]).filter(Boolean));
+    deviceLog("assessment_pose_discarded_on_photo_change", { memberId: target.id, assessmentId, view, storage: "indexedDB", count: gone.length });
+    return true;
+  };
   const deleteCaptureDraft = async (memberId, assessmentId, view) => {
     const target = analysisMember(memberId);
     if (!target || !assessmentId || !POSTURE_STORAGE_KEYS.includes(view)) return false;
@@ -16485,6 +16533,7 @@ export default function App() {
                 return <Guard label="변화 기록"><AssessmentWorkspace key={`${id}_${analysisEntryMode}_${initialSavedId || "none"}_${analysisAssessmentId || "none"}_${analysisComparisonEntry?.beforeAssessmentId || "none"}_${analysisComparisonEntry?.afterAssessmentId || "none"}`} member={m} photos={photos[id]} settings={db.settings} diagnosticAccountId={account?.id || null} diagnosticPhotosBucketExists={Object.prototype.hasOwnProperty.call(photos || {}, id)} initialSavedId={initialSavedId} initialAssessmentId={analysisAssessmentId} initialMode={analysisEntryMode} initialBeforeAssessmentId={analysisComparisonEntry?.beforeAssessmentId || null} initialAfterAssessmentId={analysisComparisonEntry?.afterAssessmentId || null} initialCompareView={analysisComparisonEntry?.compareView || "front"}
                   onSavePose={(rec) => savePose(id, { ...rec, memberId: id })} onUpdatePose={(pid, posePatch) => updatePose(id, pid, posePatch)} onDeletePose={(pid) => deletePose(id, pid)}
                   onSaveCaptureDraft={(captures) => saveCaptureDraft(id, captures)} onDeleteCaptureDraft={(assessmentId, view) => deleteCaptureDraft(id, assessmentId, view)}
+                  onDiscardPose={(assessmentId, view) => discardPoseForView(id, assessmentId, view)}
                   onDiscardAssessmentDraft={(assessment) => discardAssessmentDraft(id, assessment)}
                   onCompleteAssessment={(assessmentId, role) => completeAssessment(id, assessmentId, role)}
                   onSaveMarks={(view, photoId, marks, options) => saveMarks(id, view, photoId, marks, options)} onSaveAssessmentRole={(assessmentId, role) => saveAssessmentRole(id, assessmentId, role)} onToggleAssessmentFavorite={(assessmentId, favorite) => toggleAssessmentFavorite(id, assessmentId, favorite)}

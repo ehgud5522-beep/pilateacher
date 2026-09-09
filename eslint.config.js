@@ -57,6 +57,7 @@ export default [
         console: "readonly",
         createImageBitmap: "readonly",
         crypto: "readonly",
+        cancelAnimationFrame: "readonly",
         document: "readonly",
         fetch: "readonly",
         indexedDB: "readonly",

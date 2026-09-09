@@ -706,17 +706,68 @@ export function stepBodyView(reachable, fromView, direction) {
   return (forward ? ahead[0] : ahead[ahead.length - 1]) || null;
 }
 
-/* 얼마나 밀어야 방향을 바꾸려던 것으로 보는가. 화면 폭에 비례하되 좁은 기기
-   에서도 실수로 넘어가지 않을 만큼의 하한을 둔다. */
-export const BODY_VIEW_DRAG_COMMIT_RATIO = 0.22;
+/* 절반이 기준이다. 미는 동안 화면이 그만큼 따라오므로, 어디서 넘어가는지는
+   손가락이 이미 보고 있다 -- 반을 넘기면 다음 방향의 몸이 서 있다. */
+export const BODY_VIEW_DRAG_COMMIT_RATIO = 0.5;
 export const BODY_VIEW_DRAG_COMMIT_MIN_PX = 48;
+
+/* 끝에서 더 밀면 따라오기는 하되 거의 움직이지 않고, 아무리 밀어도 절반에
+   닿지 않는다. 넘어갈 곳이 없다는 것을 손으로 알려 주는 것이지 넘어가라는
+   뜻이 아니다. */
+export const BODY_VIEW_DRAG_EDGE_RESISTANCE = 0.22;
+export const BODY_VIEW_DRAG_EDGE_LIMIT = 0.12;
+
+/* 도는 것처럼 읽히게 하는 두 가지. 몸이 미는 쪽으로 빠졌다 돌아오고,
+   그 사이에 가로로 조금 좁아진다 -- 카드가 돌 때의 느낌이다.
+
+   가로 배율까지만 건드린다. 몸을 휘게 하는 warp 도, 깊이를 흉내 내는
+   perspective 도 쓰지 않는다. 없는 각도를 만들어 보여 주는 셈이 된다. */
+export const BODY_VIEW_DRAG_TRAVEL = 0.16;
+export const BODY_VIEW_DRAG_SQUEEZE = 0.16;
+
+/* 화면 폭의 절반을 1 로 본 값. 부호는 손가락이 간 쪽이다.
+
+   좁은 기기에서 절반이 몇십 px 밖에 안 되는 것을 막으려고 바닥을 두는데,
+   그 바닥을 여기 한 곳에만 둔다 -- 넘어가는 지점과 화면이 따라오는 양이
+   서로 다른 자를 쓰면, 몸은 이미 다음 방향인데 손을 떼면 되돌아온다. */
+function dragSpan(width) {
+  const span = Number(width);
+  return 2 * Math.max(BODY_VIEW_DRAG_COMMIT_MIN_PX, (Number.isFinite(span) ? span : 0) * BODY_VIEW_DRAG_COMMIT_RATIO);
+}
+
+export function bodyViewDragProgress(dx, width, { blocked = false } = {}) {
+  const distance = Number(dx);
+  if (!Number.isFinite(distance)) return 0;
+  const raw = distance / dragSpan(width);
+  if (blocked) {
+    const damped = raw * BODY_VIEW_DRAG_EDGE_RESISTANCE;
+    return Math.max(-BODY_VIEW_DRAG_EDGE_LIMIT, Math.min(BODY_VIEW_DRAG_EDGE_LIMIT, damped));
+  }
+  return Math.max(-1, Math.min(1, raw));
+}
 
 export function bodyViewDragCommits(dx, width) {
   const distance = Math.abs(Number(dx));
   if (!Number.isFinite(distance)) return false;
-  const span = Number(width);
-  const threshold = Math.max(BODY_VIEW_DRAG_COMMIT_MIN_PX, (Number.isFinite(span) ? span : 0) * BODY_VIEW_DRAG_COMMIT_RATIO);
-  return distance >= threshold;
+  return distance >= dragSpan(width) / 2;
+}
+
+/* 진행도 하나에서 화면이 할 일이 전부 나온다: 얼마나 밀렸는지, 얼마나
+   좁아졌는지, 지금 어느 방향의 몸이 서 있는지.
+
+   빠졌다 돌아오는 모양이라 절반에서 가장 많이 밀리고 가장 좁으며, 얼굴은
+   바로 그 순간에 바뀐다. 가장 좁은 자리에서 갈아 끼우므로 두 사람이 한꺼번에
+   보이지 않고, 다 밀면 다음 방향이 제자리에 똑바로 서 있다. */
+export function bodyViewDragFrame(progress) {
+  const value = Number(progress);
+  const at = Number.isFinite(value) ? Math.max(-1, Math.min(1, value)) : 0;
+  const away = Math.abs(at);
+  const swing = Math.sin(Math.PI * away);
+  return {
+    shift: (at < 0 ? -1 : 1) * swing * BODY_VIEW_DRAG_TRAVEL,
+    squeeze: 1 - BODY_VIEW_DRAG_SQUEEZE * swing,
+    showTarget: away >= BODY_VIEW_DRAG_COMMIT_RATIO,
+  };
 }
 
 /* ------------------------ 360도 바디뷰 -- 마커 -------------------------- */

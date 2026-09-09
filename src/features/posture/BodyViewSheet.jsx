@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import {
-  BODY_VIEW_ALIGNMENT, POSTURE_VIEW_KEYS, bodyViewDragCommits, bodyViewMetrics,
+  BODY_VIEW_ALIGNMENT, POSTURE_VIEW_KEYS, bodyViewDragCommits, bodyViewDragFrame,
+  bodyViewDragProgress, bodyViewMetrics,
   bodyViewMarkerFraction, bodyViewMaskId, bodyViewPhotoId, clampLabelWithin, composeBodyViewAlignment,
   containPhotoRect, normalizePostureView, postureMetricChangeText, postureMetricDisplayValue,
   postureViewLabel, reachableBodyViews, stepBodyView,
@@ -42,15 +43,19 @@ const MARKER_LABEL_PAD_PX = 20;
 const MARKER_LABEL_HEIGHT_PX = 24;
 
 const DRAG_AXIS_MIN_PX = 8;
-/* 끝에서 더 밀면 따라오기는 하되 거의 움직이지 않는다. 넘어갈 곳이 없다는
-   것을 손으로 알려 주는 것이지, 넘어가라는 뜻이 아니다. */
-const DRAG_EDGE_RESISTANCE = 0.22;
+/* 손을 뗀 뒤 제자리를 찾아가는 시간. 끌던 손을 놓았을 때 뚝 끊기지 않을
+   만큼만 짧게 -- 여기서 더 길어지면 기다림이 된다. */
+const DRAG_SETTLE_MS = 190;
 
 const UNALIGNED_NOTE = "촬영 위치 차이로 자동 정렬이 적용되지 않았어요";
 const MEASURED_FROM_NOTE = "전면·좌측면·후면·우측면 사진에서 측정한 값입니다";
 const NO_PHOTO_NOTE = "이 기록에는 방향별 사진이 없어요";
 const NOT_A_MODEL_NOTE = "360° 바디뷰는 촬영한 사진을 방향별로 보여주는 기능이며 실제 3D 신체 모델을 생성하지 않습니다";
 const UNSHOT_NOTE = "촬영하면 이 방향도 확인할 수 있어요";
+
+/* 그릴 것이 있는 곳에서만 레이아웃 단계에 붙는다. 문자열로 찍어 내는
+   곳에는 붙일 DOM 이 없고, 그때 useLayoutEffect 는 경고만 남긴다. */
+const useAfterPaint = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
 function usePrefersReducedMotion() {
   const [reduced, setReduced] = useState(() => {
@@ -147,14 +152,26 @@ export default function BodyViewSheet({ assessment, previousAssessment = null, r
   /* 화면이 아직 붙어 있는가. 이 하나만 본다 -- 실행마다 플래그를 두면
      의존성이 바뀔 때마다 정리 함수가 돌아 멀쩡한 결과를 버린다. */
   const onScreen = useRef(true);
-  const [dragDx, setDragDx] = useState(0);
   const [dragging, setDragging] = useState(false);
+  /* 손가락을 따라가는 동안 화면에 함께 놓이는 다음 방향. 방향이 바뀔 때만
+     -- 한 손짓에 많아야 한두 번 -- 다시 그린다. */
+  const [dragTarget, setDragTarget] = useState(null);
   const timers = useRef([]);
   const introTimers = useRef([]);
   const introStarted = useRef(false);
   const drag = useRef({ id: null, x0: 0, y0: 0, axis: null, dx: 0 });
   const frame = useRef(null);
   const placedCount = useRef(0);
+  /* 미는 동안 매 프레임 건드리는 것은 transform 과 opacity 뿐이다. 이것을
+     state 로 두면 프레임마다 컴포넌트가 통째로 다시 그려지고, 정렬도 마커
+     자리도 다시 셈하게 된다 -- 값싼 기기에서 그대로 끊긴다. */
+  const stage = useRef(null);
+  const incoming = useRef(null);
+  const dots = useRef({});
+  const progress = useRef(0);
+  const painting = useRef(0);
+  const settling = useRef(0);
+  const aim = useRef(null);
 
   useEffect(() => {
     /* 처음 값에만 기대지 않는다. StrictMode 는 같은 인스턴스를 한 번
@@ -163,6 +180,9 @@ export default function BodyViewSheet({ assessment, previousAssessment = null, r
     return () => {
       timers.current.forEach(clearTimeout); timers.current = [];
       introTimers.current.forEach(clearTimeout); introTimers.current = [];
+      if (painting.current) cancelAnimationFrame(painting.current);
+      if (settling.current) cancelAnimationFrame(settling.current);
+      painting.current = 0; settling.current = 0;
       onScreen.current = false;
       /* 모델은 화면과 함께 놓아준다. */
       closeBodySegmenter();
@@ -252,8 +272,82 @@ export default function BodyViewSheet({ assessment, previousAssessment = null, r
 
   const stepFrom = useCallback((view, direction) => stepBodyView(reachable, view, direction), [reachable]);
 
+  /* 손가락이 있는 자리를 화면에 그대로 옮긴다. 진행도 하나를 읽어 두 겹의
+     transform 과 opacity, 그리고 자리 표시 점만 고쳐 쓴다 -- React 를
+     거치지 않으므로 프레임마다 다시 그려지는 것이 없다. */
+  const paint = useCallback(() => {
+    painting.current = 0;
+    const width = frame.current?.clientWidth || 0;
+    const { shift, squeeze, showTarget } = bodyViewDragFrame(progress.current);
+    /* 뒤에 세울 몸이 실제로 있을 때만 앞의 몸을 감춘다. 사진을 아직 못
+       읽은 방향으로 넘어가는 중이면 감출 것이 아니라 그대로 두어야 한다
+       -- 아니면 도는 도중에 빈 화면이 지나간다. */
+    const turned = showTarget && aim.current && incoming.current ? aim.current : null;
+    const css = `translateX(${shift * width}px) scaleX(${squeeze})`;
+    if (stage.current) {
+      stage.current.style.transform = css;
+      stage.current.style.opacity = turned ? "0" : "1";
+    }
+    if (incoming.current) {
+      incoming.current.style.transform = css;
+      incoming.current.style.opacity = turned ? "1" : "0";
+    }
+    /* 점도 몸과 같은 순간에 넘어간다. 눈에는 다음 방향이 서 있는데 점은
+       아직 이전 방향이면, 둘 중 어느 쪽이 맞는지 알 수 없다. */
+    const eye = turned || shownView;
+    for (const view of POSTURE_VIEW_KEYS) {
+      const node = dots.current[view];
+      if (node) node.style.backgroundColor = view === eye ? "var(--brand)" : "transparent";
+    }
+  }, [shownView]);
+
+  /* React 가 다시 그리면 인라인 스타일도 함께 되돌아간다. 그린 직후에 다시
+     얹어 두어야 손가락 자리와 화면이 어긋나지 않는다. */
+  useAfterPaint(() => { paint(); });
+
+  const askForFrame = useCallback(() => {
+    if (painting.current) return;
+    painting.current = requestAnimationFrame(paint);
+  }, [paint]);
+
+  /* 손을 떼면 가까운 쪽으로 붙는다. 넘어가는 쪽이면 진행도를 끝까지 밀어
+     두고 -- 끝에서는 다음 방향이 제자리에 똑바로 서 있다 -- 바로 그 자리에서
+     방향을 갈아 끼운다. 그래서 갈아 끼우는 순간에 화면이 튀지 않는다. */
+  const settle = useCallback((target, sign) => {
+    const from = progress.current;
+    const to = target ? sign : 0;
+    const land = () => {
+      settling.current = 0;
+      progress.current = 0;
+      aim.current = null;
+      setDragTarget(null);
+      setDragging(false);
+      if (target) {
+        setOpenMetricId(null);
+        setActiveView(target);
+        setShownView(target);
+        setPhase("idle");
+      }
+      paint();
+    };
+    if (reduced || from === to) { land(); return; }
+    const started = Date.now();
+    const step = () => {
+      const t = Math.min(1, (Date.now() - started) / DRAG_SETTLE_MS);
+      /* 끝으로 갈수록 느려진다. 일정한 속도로 붙으면 자석처럼 끊긴다. */
+      progress.current = from + (to - from) * (1 - (1 - t) * (1 - t));
+      paint();
+      if (t < 1) { settling.current = requestAnimationFrame(step); return; }
+      land();
+    };
+    settling.current = requestAnimationFrame(step);
+  }, [paint, reduced]);
+
   const onPointerDown = useCallback((event) => {
     if (drag.current.id !== null) return;
+    /* 붙어 가던 중이라도 손이 다시 닿으면 손이 이긴다. 그대로 두면 두
+       가지가 같은 값을 서로 밀어 화면이 떤다. */
+    if (settling.current) { cancelAnimationFrame(settling.current); settling.current = 0; }
     drag.current = { id: event.pointerId, x0: event.clientX, y0: event.clientY, axis: null, dx: 0 };
   }, []);
 
@@ -267,28 +361,32 @@ export default function BodyViewSheet({ assessment, previousAssessment = null, r
       drag.current.axis = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
       if (drag.current.axis === "x") {
         finishIntro();
-        setDragging(true);
+        /* 마커를 감추는 것은 몸이 움직이기 때문이다. 움직이지 않기로 한
+           기기에서는 감출 이유도 없다 -- 감췄다 켜는 것 자체가 움직임이다. */
+        if (!reduced) setDragging(true);
         try { event.currentTarget.setPointerCapture?.(event.pointerId); } catch (_error) { /* 없어도 up 은 온다 */ }
       }
     }
     if (drag.current.axis !== "x") return;
     drag.current.dx = dx;
-    /* 갈 곳이 없는 쪽으로는 거의 따라가지 않는다. */
-    const blocked = !stepFrom(shownView, dx < 0 ? 1 : -1);
-    if (!reduced) setDragDx(blocked ? dx * DRAG_EDGE_RESISTANCE : dx);
-  }, [finishIntro, reduced, shownView, stepFrom]);
+    const target = stepFrom(shownView, dx < 0 ? 1 : -1);
+    /* 갈 곳이 없는 쪽이면 저항만 준다. 아무리 밀어도 절반에 닿지 않으므로
+       다음 방향의 몸이 서는 일도, 넘어가는 일도 없다. */
+    if (reduced) return;
+    if (target !== aim.current) { aim.current = target; setDragTarget(target); }
+    progress.current = bodyViewDragProgress(dx, frame.current?.clientWidth || 0, { blocked: !target });
+    askForFrame();
+  }, [askForFrame, finishIntro, reduced, shownView, stepFrom]);
 
   const endDrag = useCallback(() => {
     const { axis, dx } = drag.current;
     drag.current = { id: null, x0: 0, y0: 0, axis: null, dx: 0 };
-    setDragging(false);
-    setDragDx(0);
-    if (axis !== "x") return;
-    /* 임계에 못 미치면 아무 일도 없었던 것으로 돌아간다. */
-    if (!bodyViewDragCommits(dx, frame.current?.clientWidth || 0)) return;
+    if (axis !== "x") { setDragging(false); return; }
     const target = stepFrom(shownView, dx < 0 ? 1 : -1);
-    if (target) switchTo(target);
-  }, [shownView, stepFrom, switchTo]);
+    /* 절반에 못 미치면 원래 방향으로 돌아간다. */
+    const commits = Boolean(target) && bodyViewDragCommits(dx, frame.current?.clientWidth || 0);
+    settle(commits ? target : null, dx < 0 ? -1 : 1);
+  }, [settle, shownView, stepFrom]);
 
   const shownEntry = entries.find((entry) => entry.view === shownView) || null;
   const metrics = useMemo(
@@ -302,6 +400,12 @@ export default function BodyViewSheet({ assessment, previousAssessment = null, r
   const shownPhoto = photos[shownView] || null;
   const naturalSize = natural[shownView] || null;
   const shownCutout = cutouts[shownView] || null;
+  /* 손가락을 따라 들어오는 방향. 사람만 남긴 그림이 이미 있으면 그것을
+     쓴다 -- 들어올 때 배경이 있다가 자리를 잡고 나서 사라지면, 넘어간
+     것이 아니라 화면이 한 번 더 바뀐 것처럼 보인다. */
+  const aimEntry = dragTarget ? entries.find((entry) => entry.view === dragTarget) || null : null;
+  const aimPhoto = dragTarget ? photos[dragTarget] || null : null;
+  const aimCutout = dragTarget ? cutouts[dragTarget] || null : null;
   /* 결과 화면이 쓰는 그 판정을 그대로 읽는다. 새로 매기지 않는다 -- 두 화면이
      같은 기록을 두고 다른 말을 하면 어느 쪽을 믿을지 알 수 없다.
      화면이 한 방향씩 보여 주므로 그 방향의 pose 에 대고 묻는다. */
@@ -416,11 +520,15 @@ export default function BodyViewSheet({ assessment, previousAssessment = null, r
 
              사진이 실제로 차지하는 사각형을 만들어 두고 사진과 마커를 둘 다 그
              안에 넣는다. 여백을 손으로 계산하지 않아도 어긋나지 않는다. */
+          /* 미는 동안 움직이는 것은 이 사각형 하나다. 사진도 마커도 그 안에
+             함께 실려 가므로 마커 좌표를 따로 옮길 일이 없다. 압축도 사진의
+             한가운데를 기준으로 걸린다. */
           <div
+            ref={stage}
             className="absolute"
             style={photoRect
-              ? { left: photoRect.left, top: photoRect.top, width: photoRect.width, height: photoRect.height }
-              : { inset: 0 }}
+              ? { left: photoRect.left, top: photoRect.top, width: photoRect.width, height: photoRect.height, willChange: dragging ? "transform, opacity" : "auto" }
+              : { inset: 0, willChange: dragging ? "transform, opacity" : "auto" }}
           >
             <img
               src={shownCutout?.status === "ready" ? shownCutout.url : shownPhoto.url}
@@ -438,12 +546,12 @@ export default function BodyViewSheet({ assessment, previousAssessment = null, r
                 transition: reduced ? "none"
                   : introStage === 1 ? `opacity ${PHOTO_FADE_MS}ms ease-out`
                   : `opacity ${phase === "out" ? FADE_OUT_MS : FADE_IN_MS}ms linear`,
-                /* 손가락만큼 옮겨 놓을 뿐 몸을 휘게 하지 않는다. 정렬이 준
-                   배율·위치는 그대로 두고 그 바깥에 이동만 얹는다. */
-                transform: `translateX(${dragDx}px)${shownEntry?.transform
-                  ? ` translate(${shownEntry.transform.offsetX * 100}%, ${shownEntry.transform.offsetY * 100}%) scale(${shownEntry.transform.scale})`
-                  : ""}`,
-                willChange: dragging ? "transform" : "auto",
+                /* 정렬이 준 배율·위치만 여기에 있다. 손가락이 만드는 이동과
+                   압축은 이 사진을 담은 사각형에 걸리므로, 정렬 결과는
+                   미는 동안에도 그대로다. */
+                transform: shownEntry?.transform
+                  ? `translate(${shownEntry.transform.offsetX * 100}%, ${shownEntry.transform.offsetY * 100}%) scale(${shownEntry.transform.scale})`
+                  : "none",
               }}
             />
 
@@ -493,7 +601,55 @@ export default function BodyViewSheet({ assessment, previousAssessment = null, r
           </div>
         )}
 
+        {/* 넘어가는 도중에만 놓인다. 가장 좁아지는 그 순간에 둘이 자리를
+            바꾸므로 두 사람이 한꺼번에 보이지는 않는다. 마커는 얹지 않는다
+            -- 아직 서지 않은 몸에 수치를 찍는 셈이다. */}
+        {dragTarget && aimPhoto?.status === "ready" && (
+          <div
+            ref={incoming}
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0"
+            style={{ opacity: 0, willChange: "transform, opacity" }}
+          >
+            <img
+              src={aimCutout?.status === "ready" ? aimCutout.url : aimPhoto.url}
+              alt=""
+              className="absolute inset-0 h-full w-full object-contain"
+              style={{
+                transform: aimEntry?.transform
+                  ? `translate(${aimEntry.transform.offsetX * 100}%, ${aimEntry.transform.offsetY * 100}%) scale(${aimEntry.transform.scale})`
+                  : "none",
+              }}
+            />
+          </div>
+        )}
+
         {openMetric && <MetricDetail metric={openMetric} onClose={() => setOpenMetricId(null)} />}
+      </div>
+
+      {/* 지금 어디인가. 네 자리를 모두 두어 이 기록이 어느 방향까지 찍혔는지
+          함께 보이게 하고, 찍지 않은 자리는 흐리게 둔다. 아래 버튼이 같은
+          것을 이미 말하므로 읽어 주지는 않는다. */}
+      <div className="mt-2 flex items-center justify-center gap-2 px-3" aria-hidden="true">
+        <span className="text-[10px] font-bold" style={{ color: "var(--faint)" }}>{postureViewLabel(POSTURE_VIEW_KEYS[0])}</span>
+        <span className="flex items-center gap-1.5">
+          {POSTURE_VIEW_KEYS.map((view) => {
+            const shotHere = entries.some((entry) => entry.view === view && entry.hasPhoto);
+            return (
+              <span
+                key={view}
+                ref={(node) => { dots.current[view] = node; }}
+                className="h-1.5 w-1.5 rounded-full"
+                style={{
+                  backgroundColor: view === shownView ? "var(--brand)" : "transparent",
+                  boxShadow: shotHere ? "inset 0 0 0 1px var(--sub)" : "inset 0 0 0 1px var(--faint)",
+                  opacity: shotHere ? 1 : 0.45,
+                }}
+              />
+            );
+          })}
+        </span>
+        <span className="text-[10px] font-bold" style={{ color: "var(--faint)" }}>{postureViewLabel(POSTURE_VIEW_KEYS[POSTURE_VIEW_KEYS.length - 1])}</span>
       </div>
 
       {/* 잰 자리를 말할 수 없는 값은 사진 밖에 둔다. 수치는 그대로 남기고,

@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  BODY_VIEW_DRAG_COMMIT_MIN_PX, BODY_VIEW_DRAG_COMMIT_RATIO, POSTURE_VIEW_KEYS,
-  bodyViewDragCommits, bodyViewMarkerFraction, bodyViewPhotoId, clampLabelWithin,
-  containPhotoRect, reachableBodyViews, stepBodyView,
+  BODY_VIEW_DRAG_COMMIT_MIN_PX, BODY_VIEW_DRAG_COMMIT_RATIO, BODY_VIEW_DRAG_EDGE_LIMIT,
+  BODY_VIEW_DRAG_SQUEEZE, BODY_VIEW_DRAG_TRAVEL, POSTURE_VIEW_KEYS,
+  bodyViewDragCommits, bodyViewDragFrame, bodyViewDragProgress, bodyViewMarkerFraction,
+  bodyViewPhotoId, clampLabelWithin, containPhotoRect, reachableBodyViews, stepBodyView,
 } from "../../src/features/posture/posture-model.js";
 
 /* The two records for one direction are not the same shape. The capture
@@ -129,19 +130,36 @@ test("a nudge is not a decision", () => {
   assert.equal(bodyViewDragCommits(-10, 400), false);
 });
 
-test("a push across a fifth of the frame counts, either way", () => {
+test("a push across half the frame counts, either way", () => {
+  /* Half is where the next direction is already standing on screen, so
+     letting go there keeps what the eye is looking at. */
   const width = 400;
   const enough = width * BODY_VIEW_DRAG_COMMIT_RATIO;
+  assert.equal(enough, 200, "half of the frame");
   assert.equal(bodyViewDragCommits(enough, width), true);
   assert.equal(bodyViewDragCommits(-enough, width), true);
   assert.equal(bodyViewDragCommits(enough - 1, width), false, "just short is short");
 });
 
 test("a narrow frame still asks for a real push", () => {
-  /* A fifth of a small frame is a few pixels, and everything would commit. */
-  const narrow = 100;
+  /* Half of a small frame is a few pixels, and everything would commit. */
+  const narrow = 60;
   assert.equal(bodyViewDragCommits(narrow * BODY_VIEW_DRAG_COMMIT_RATIO, narrow), false);
   assert.equal(bodyViewDragCommits(BODY_VIEW_DRAG_COMMIT_MIN_PX, narrow), true);
+});
+
+test("the follow and the commit are measured with one ruler", () => {
+  /* If they disagreed, the next direction could be standing on screen and
+     still snap back when the finger lifted. */
+  for (const width of [400, 96, 60, 0]) {
+    for (const dx of [0, 10, 30, 47, 48, 49, 100, 199, 200, 201, 400]) {
+      assert.equal(
+        Math.abs(bodyViewDragProgress(dx, width)) >= BODY_VIEW_DRAG_COMMIT_RATIO,
+        bodyViewDragCommits(dx, width),
+        `${dx}px across ${width}px disagreed`,
+      );
+    }
+  }
 });
 
 test("an unmeasurable frame falls back to the floor rather than to zero", () => {
@@ -154,6 +172,94 @@ test("an unmeasurable frame falls back to the floor rather than to zero", () => 
 
 test("a distance that is not a number never commits", () => {
   for (const dx of [null, undefined, NaN, "abc"]) assert.equal(bodyViewDragCommits(dx, 400), false);
+});
+
+/* ------------------------- following the finger -------------------------- */
+
+test("the screen is exactly as far along as the finger is", () => {
+  const width = 400;
+  assert.equal(bodyViewDragProgress(0, width), 0);
+  assert.equal(bodyViewDragProgress(100, width), 0.25);
+  assert.equal(bodyViewDragProgress(200, width), 0.5, "half the frame is half way over");
+  assert.equal(bodyViewDragProgress(-200, width), -0.5, "and the other way is the other sign");
+});
+
+test("pushing past the end of the drag does not push past the end of the turn", () => {
+  for (const dx of [400, 4000]) assert.equal(bodyViewDragProgress(dx, 400), 1);
+  for (const dx of [-400, -4000]) assert.equal(bodyViewDragProgress(dx, 400), -1);
+});
+
+test("a distance that is not a number moves nothing", () => {
+  for (const dx of [null, undefined, NaN, "abc"]) assert.equal(bodyViewDragProgress(dx, 400), 0);
+});
+
+test("at the ends the finger is felt but never obeyed", () => {
+  /* Something has to move, or the screen reads as broken. It must never
+     reach the halfway point, or the end would turn into a direction. */
+  for (const dx of [50, 200, 4000]) {
+    const at = bodyViewDragProgress(dx, 400, { blocked: true });
+    assert.ok(at > 0, "the push is felt");
+    assert.ok(at <= BODY_VIEW_DRAG_EDGE_LIMIT, "and it is capped");
+    assert.ok(at < BODY_VIEW_DRAG_COMMIT_RATIO, "so it can never turn");
+    assert.equal(bodyViewDragFrame(at).showTarget, false);
+  }
+  assert.equal(bodyViewDragProgress(-4000, 400, { blocked: true }), -BODY_VIEW_DRAG_EDGE_LIMIT);
+});
+
+/* --------------------- what the turn looks like -------------------------- */
+
+test("a body at rest is where it was, at the size it was", () => {
+  const still = bodyViewDragFrame(0);
+  assert.equal(still.shift, 0);
+  assert.equal(still.squeeze, 1);
+  assert.equal(still.showTarget, false);
+});
+
+test("the body leaves towards the side it was pushed", () => {
+  assert.ok(bodyViewDragFrame(0.25).shift > 0, "pushed right, goes right");
+  assert.ok(bodyViewDragFrame(-0.25).shift < 0, "pushed left, goes left");
+  assert.equal(bodyViewDragFrame(0.25).shift, -bodyViewDragFrame(-0.25).shift, "and by the same amount");
+});
+
+test("it is furthest out and narrowest in the middle of the turn", () => {
+  const middle = bodyViewDragFrame(0.5);
+  assert.equal(middle.shift, BODY_VIEW_DRAG_TRAVEL);
+  assert.equal(middle.squeeze, 1 - BODY_VIEW_DRAG_SQUEEZE);
+  for (const at of [0.1, 0.3, 0.7, 0.9]) {
+    assert.ok(bodyViewDragFrame(at).shift < middle.shift, `${at} is not past the middle`);
+    assert.ok(bodyViewDragFrame(at).squeeze > middle.squeeze, `${at} is wider than the middle`);
+  }
+});
+
+test("a finished turn stands straight again, as the next direction", () => {
+  const done = bodyViewDragFrame(1);
+  assert.ok(Math.abs(done.shift) < 1e-12, "back in place");
+  assert.ok(Math.abs(done.squeeze - 1) < 1e-12, "back to full width");
+  assert.equal(done.showTarget, true, "and it is the next direction standing there");
+});
+
+test("the two faces swap where the body is narrowest, so only one is ever seen", () => {
+  assert.equal(bodyViewDragFrame(0.49).showTarget, false);
+  assert.equal(bodyViewDragFrame(0.5).showTarget, true);
+  assert.equal(bodyViewDragFrame(-0.5).showTarget, true, "either way round");
+});
+
+test("the body is never bent, only moved and narrowed", () => {
+  /* Whatever the progress, the squeeze stays a plain horizontal scale and
+     never inverts or collapses the body. */
+  for (let at = -1; at <= 1; at += 0.05) {
+    const frame = bodyViewDragFrame(at);
+    assert.ok(frame.squeeze >= 1 - BODY_VIEW_DRAG_SQUEEZE && frame.squeeze <= 1, `squeeze out of range at ${at}`);
+    assert.ok(Math.abs(frame.shift) <= BODY_VIEW_DRAG_TRAVEL, `shift out of range at ${at}`);
+  }
+});
+
+test("a progress that is not a number leaves the body alone", () => {
+  for (const at of [null, undefined, NaN, "abc"]) {
+    assert.equal(bodyViewDragFrame(at).shift, 0);
+    assert.equal(bodyViewDragFrame(at).squeeze, 1);
+    assert.equal(bodyViewDragFrame(at).showTarget, false);
+  }
 });
 
 

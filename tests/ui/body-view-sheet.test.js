@@ -61,9 +61,9 @@ const render = (props) => renderToStaticMarkup(React.createElement(BodyViewSheet
 
 test("all four directions are offered, in the order they are shot", () => {
   const html = render({});
-  const order = ["전면", "좌측면", "후면", "우측면"].map((label) => html.indexOf(`>${label}<`));
-  assert.ok(order.every((at) => at >= 0), "every direction has a button");
-  assert.deepEqual([...order].sort((a, b) => a - b), order, "shooting order, not alphabetical");
+  const labels = (html.match(/<button[^>]*>(?:전면|좌측면|후면|우측면)<\/button>/g) || [])
+    .map((button) => button.replace(/<[^>]*>/g, ""));
+  assert.deepEqual(labels, ["전면", "좌측면", "후면", "우측면"], "shooting order, not alphabetical");
 });
 
 test("a direction that was not shot cannot be opened, and says why", () => {
@@ -190,9 +190,12 @@ test("a device asked to reduce motion gets the direction at once", async () => {
 });
 
 test("only the direction in view is hung on the screen", async () => {
-  /* Four full-size photographs at once is what makes a cheap phone stall. */
+  /* Four full-size photographs at once is what makes a cheap phone stall.
+     Two is the ceiling, and the second exists only while a finger is
+     turning towards it. */
   const source = withoutComments(await sheetSource());
-  assert.equal((source.match(/<img/g) || []).length, 1);
+  assert.equal((source.match(/<img/g) || []).length, 2);
+  assert.ok(source.includes('{dragTarget && aimPhoto?.status === "ready" && ('), "the second face is mounted only mid-turn");
   assert.match(source, /const wanted = \[order\[at\], order\[\(at \+ 1\)/, "the neighbours are only fetched, not mounted");
 });
 
@@ -311,19 +314,57 @@ test("the markers come off the body while it is being dragged", async () => {
   assert.ok(source.includes("const markersVisible = phase === \"idle\" && !dragging && introStage >= 2 && !!shownEntry;"));
 });
 
-test("the photo is moved, never bent", async () => {
-  /* The drag shifts the picture sideways. It does not turn it, skew it, or
-     stretch it towards an angle nobody photographed. */
+test("the photo is moved and narrowed, never bent", async () => {
+  /* The drag shifts the picture sideways and squeezes it a little across
+     the middle of the turn. It does not rotate it, skew it, or stretch it
+     towards an angle nobody photographed. */
   const source = withoutComments(await sheetSource());
-  assert.ok(source.includes("transform: `translateX(${dragDx}px)"));
-  for (const forbidden of ["rotateY", "rotate3d", "skew", "perspective", "matrix3d"]) {
+  assert.ok(source.includes("const css = `translateX(${shift * width}px) scaleX(${squeeze})`;"),
+    "sideways travel and a horizontal squeeze, and nothing else");
+  for (const forbidden of ["rotateY", "rotate3d", "skew", "perspective", "matrix3d", "scaleY"]) {
     assert.ok(!source.includes(forbidden), `${forbidden} would bend the body`);
   }
 });
 
-test("a device asked to reduce motion is not dragged along in real time", async () => {
+test("the body swings out and comes back, rather than fading in place", async () => {
+  /* A fade says the picture changed. A body that leaves towards the side it
+     was pushed, narrows, and comes back says it turned. */
+  const model = withoutComments(await readFile(new URL("../../src/features/posture/posture-model.js", import.meta.url), "utf8"));
+  assert.ok(model.includes("const swing = Math.sin(Math.PI * away);"), "out and back, not a ramp");
+  assert.ok(model.includes("shift: (at < 0 ? -1 : 1) * swing * BODY_VIEW_DRAG_TRAVEL,"), "it goes the way the finger went");
+  assert.ok(model.includes("squeeze: 1 - BODY_VIEW_DRAG_SQUEEZE * swing,"), "narrowest in the middle of the turn");
+  assert.ok(model.includes("showTarget: away >= BODY_VIEW_DRAG_COMMIT_RATIO,"), "the faces swap where the body is narrowest");
+});
+
+test("where the finger is is where the screen is", async () => {
+  /* The point of the fourth pass: it follows, rather than waiting for a
+     threshold and jumping. And it follows without re-rendering -- a cheap
+     phone drops frames if the alignment is worked out again each time. */
   const source = withoutComments(await sheetSource());
-  assert.ok(source.includes("if (!reduced) setDragDx(blocked ? dx * DRAG_EDGE_RESISTANCE : dx);"));
+  assert.ok(source.includes("progress.current = bodyViewDragProgress(dx, frame.current?.clientWidth || 0, { blocked: !target });"));
+  assert.ok(source.includes("painting.current = requestAnimationFrame(paint);"), "one paint per frame at most");
+  const paint = source.slice(source.indexOf("const paint = useCallback"), source.indexOf("useAfterPaint"));
+  for (const forbidden of ["useState", "setDrag", "composeBodyViewAlignment", "bodyViewMetrics", "bodyViewMarkerFraction"]) {
+    assert.ok(!paint.includes(forbidden), `${forbidden} inside the paint would cost a frame`);
+  }
+});
+
+test("the position dots move with the body, not after it", async () => {
+  /* Otherwise the eye sees the next direction standing there while the dot
+     still says the last one, and neither can be trusted. */
+  const source = withoutComments(await sheetSource());
+  assert.ok(source.includes("const eye = turned || shownView;"), "the dots read the face on screen");
+  assert.ok(source.includes('node.style.backgroundColor = view === eye ? "var(--brand)" : "transparent";'));
+});
+
+test("a device asked to reduce motion is not dragged along in real time", async () => {
+  /* Nothing follows the finger, and letting go changes direction straight
+     away rather than gliding into place. */
+  const source = withoutComments(await sheetSource());
+  const move = source.slice(source.indexOf("const onPointerMove = useCallback"), source.indexOf("const endDrag = useCallback"));
+  assert.ok(move.includes("if (reduced) return;"), "the follow is skipped before any progress is written");
+  assert.ok(move.indexOf("if (reduced) return;") < move.indexOf("progress.current ="), "skipped, not undone afterwards");
+  assert.ok(source.includes("if (reduced || from === to) { land(); return; }"), "and the settle is immediate");
 });
 
 /* ----------------------------- the entrance ------------------------------ */
@@ -339,7 +380,9 @@ test("the entrance runs once, and only once", async () => {
 test("touching anything ends the entrance instead of waiting it out", async () => {
   const source = withoutComments(await sheetSource());
   assert.ok(source.includes("const switchTo = useCallback((view) => {\n    if (!view || view === activeView) return;\n    finishIntro();"), "a button cuts it short");
-  assert.ok(source.includes("        finishIntro();\n        setDragging(true);"), "so does a finger");
+  const move = source.slice(source.indexOf("const onPointerMove = useCallback"), source.indexOf("const endDrag = useCallback"));
+  assert.ok(move.includes("finishIntro();"), "so does a finger");
+  assert.ok(move.indexOf("finishIntro();") < move.indexOf("progress.current ="), "before it starts following, not after");
   assert.ok(source.includes("setIntroStage(3);\n    setRevealed(Number.MAX_SAFE_INTEGER);"), "and it lands on the finished state, not a half-drawn one");
 });
 
@@ -490,14 +533,27 @@ test("the diagnostics say how far the cutout got", async () => {
   assert.ok(voice.includes('"segmenter_cutout"'), 'an unregistered event is dropped in silence');
 });
 
-test("the alignment and the markers are untouched by the cutout", async () => {
-  /* Only the alpha channel of the same pixel grid changes, so the transform
-     the alignment produced and the coordinates the markers use still hold. */
+test("the alignment and the markers are untouched by the cutout or the drag", async () => {
+  /* The cutout changes only the alpha channel of the same pixel grid, and
+     the drag moves the rectangle the photo sits in rather than the photo.
+     Either way the transform the alignment produced, and the coordinates
+     the markers are placed by, are the ones from the first pass. */
   const source = withoutComments(await sheetSource());
   const img = source.slice(source.indexOf("<img"), source.indexOf("/>", source.indexOf("<img")));
-  assert.ok(img.includes("translateX(${dragDx}px)") && img.includes("shownEntry.transform.scale"), "the same transform as before");
+  assert.ok(img.includes("transform: shownEntry?.transform"), "the alignment, and nothing else, is on the photo");
+  assert.ok(img.includes("scale(${shownEntry.transform.scale})"), "at the scale the first pass worked out");
+  assert.ok(!img.includes("translateX") && !img.includes("scaleX"), "the drag is not folded into it");
   assert.ok(source.includes("placeOnFrame") === false, "markers still read bodyViewMarkerFraction");
   assert.ok(source.includes("bodyViewMarkerFraction(metric.at, shownEntry?.transform)"));
+});
+
+test("the markers ride with the photo instead of being placed again", async () => {
+  /* The rectangle carrying the drag is the same one the photo and the pins
+     are inside, so nothing has to be recomputed while a finger is moving. */
+  const source = withoutComments(await sheetSource());
+  const stage = source.indexOf("ref={stage}");
+  assert.ok(stage > 0, "the rectangle is the thing that moves");
+  assert.ok(stage < source.indexOf("photoMarkersVisible &&"), "and the markers are inside it");
 });
 
 test("the model is let go when the screen closes", async () => {

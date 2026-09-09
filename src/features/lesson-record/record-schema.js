@@ -80,12 +80,23 @@ function normalizeSuggestions(value) {
       text: cleanText(item.text, 200),
       // 종류가 없으면 내용 제안으로 본다. 용어 확인은 명시되어야 한다.
       kind: LESSON_RECORD_SUGGESTION_KINDS.includes(item.kind) ? item.kind : "content",
+      /* 이 제안이 대신할 기존 줄. 기구명을 빼고 적어 둔 문장이 여기 들어온다.
+         없으면 빈 문자열이고, 그때는 예전처럼 칸 끝에 덧붙인다. */
+      replaces: cleanText(item.replaces, 200),
     }))
     .filter((item) => LESSON_RECORD_SUGGESTION_FIELDS.includes(item.field) && item.text)
     .slice(0, LESSON_RECORD_SUGGESTION_LIMIT);
 }
 
-/* 제안을 눌렀을 때. 해당 칸 끝에 한 줄로 붙이고, 그 제안은 목록에서 뺀다.
+/* 제안을 눌렀을 때. 그 제안은 목록에서 빠지고, 칸에는 한 줄이 남는다.
+
+   기구명 확인 제안은 덧붙이면 안 된다. AI 는 확신하지 못한 기구명을 문장에서
+   빼고 적어 두므로, 그 문장은 이미 칸에 있다. 여기서 또 한 줄을 더하면 같은
+   내용이 두 번 서고 -- "운동 진행 · 리포머" -- 강사 눈에는 중복으로 보인다.
+   그래서 제안이 대신할 줄을 스스로 말하게 하고, 그 자리를 바꿔 끼운다.
+
+   replaces 가 없거나 그런 줄이 없으면 예전처럼 끝에 붙인다. 게이트웨이가
+   아직 이 값을 보내지 않아도 동작이 달라지지 않아야 한다.
 
    강사가 눌러 넣은 것이므로 출처는 instructor 다 -- AI 가 채운 것과 구분되어야
    나중에 무엇을 누가 넣었는지 남는다. */
@@ -97,7 +108,10 @@ export function applyLessonRecordSuggestion(draft, index) {
   const picked = list[index];
   if (!picked || !LESSON_RECORD_SUGGESTION_FIELDS.includes(picked.field)) return draft;
   const existing = (draft?.[picked.field] || []).map((item) => (typeof item === "string" ? item : item?.text)).filter(Boolean);
-  const next = existing.includes(picked.text) ? existing : [...existing, picked.text];
+  const supersedes = picked.replaces ? existing.indexOf(picked.replaces) : -1;
+  const next = supersedes >= 0
+    ? existing.map((text, position) => (position === supersedes ? picked.text : text)).filter((text, position, all) => all.indexOf(text) === position)
+    : existing.includes(picked.text) ? existing : [...existing, picked.text];
   return {
     ...draft,
     [picked.field]: next.map((text) => normalizeItem({ text, origin: "instructor" }, "instructor")).filter(Boolean).slice(0, 20),

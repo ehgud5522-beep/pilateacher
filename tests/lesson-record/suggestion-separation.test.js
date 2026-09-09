@@ -155,7 +155,7 @@ test("the prompt sends inference to the suggestion list only", async () => {
   // A suggestion is still not a diagnosis.
   assert.match(prompt, /여전히 금지: 의학적 진단, 통증의 원인 추정, 질환명, 치료 효과 표현/);
   assert.match(prompt, /근거가 발화에 없으면 제안도 만들지 말고 빈 배열로/);
-  assert.match(prompt, /promptVersion: "lesson_record_v7"/);
+  assert.match(prompt, /promptVersion: "lesson_record_v8"/);
 });
 
 test("the reported utterance is written into the prompt as its example", async () => {
@@ -197,7 +197,8 @@ test("a term suggestion carries its kind through the schema", () => {
     ...reportedCase,
     suggestions: [{ field: "didToday", text: "리포머", kind: "term" }],
   });
-  assert.deepEqual(output.suggestions, [{ field: "didToday", text: "리포머", kind: "term" }]);
+  assert.deepEqual(output.suggestions, [{ field: "didToday", text: "리포머", kind: "term", replaces: "" }],
+    "replaces is always present -- an absent one is an empty string, not a missing key");
 });
 
 test("a suggestion with no kind is treated as content, not as a term check", () => {

@@ -30,8 +30,11 @@ const suggestionList = () => ({
       field: { type: "string", enum: ["didToday", "observations", "responses", "nextFocus"] },
       text: stringField(),
       kind: { type: "string", enum: ["content", "term"] },
+      // 대신할 기존 줄. 해당 없으면 빈 문자열 -- 구조화 출력은 모든 속성을
+      // required 로 요구하므로 생략이 아니라 빈 값으로 받는다.
+      replaces: stringField(),
     },
-    required: ["field", "text", "kind"],
+    required: ["field", "text", "kind", "replaces"],
   },
 });
 
@@ -186,6 +189,7 @@ function cleanSuggestions(value) {
       text: cleanString(item.text, 200),
       // 종류가 없으면 내용 제안으로 본다. 용어 확인은 명시해야 한다.
       kind: LESSON_RECORD_SUGGESTION_KINDS.includes(item.kind) ? item.kind : "content",
+      replaces: typeof item.replaces === "string" ? cleanString(item.replaces, 200) : "",
     }))
     .filter((item) => LESSON_RECORD_SUGGESTION_FIELDS.includes(item.field) && item.text);
 }

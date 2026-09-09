@@ -105,6 +105,8 @@ function cleanAudioSuggestions(value) {
       field: cleanText(item.field, 40),
       text: cleanText(item.text, 200),
       kind: AUDIO_SUGGESTION_KINDS.includes(item.kind) ? item.kind : "content",
+      // 이 제안이 대신할 기존 줄. 없으면 빈 문자열이고, 그때는 칸 끝에 붙는다.
+      replaces: cleanText(item.replaces, 200),
     }))
     .filter((item) => AUDIO_SUGGESTION_FIELDS.includes(item.field) && item.text)
     .slice(0, 2);

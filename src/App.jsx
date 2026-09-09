@@ -6765,6 +6765,8 @@ function SavedPoseViewer({ rec, member, records, onUpdate, memberName, onClose, 
 // How long after returning from the photo picker to wait for its change event
 // before assuming it was dismissed and letting the camera start again.
 const ALBUM_RESUME_GRACE_MS = 1200;
+/* 앨범이 열려 있는 동안 앱이 앞에 돌아왔는지 직접 확인하는 간격. */
+const ALBUM_HOLD_POLL_MS = 400;
 
 const MOTION_FIRST_READING_TIMEOUT_MS = 2500;
 // Caps how many stall/resume pairs one run may write, so a sensor that flaps
@@ -8028,6 +8030,60 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
       document.removeEventListener("visibilitychange", onVisible);
       if (albumReleaseTimer.current) window.clearTimeout(albumReleaseTimer.current);
       albumReleaseTimer.current = null;
+    };
+  }, []);
+  /* 앨범이 열려 있는 동안 앱이 앞에 있는지 직접 본다.
+
+     돌아왔다는 사실은 지금까지 visibilitychange 하나로만 들어왔는데, 이 기기의
+     사진 픽커는 그 전환을 내보내지 않았다. 신호를 하나 더 다는 것으로는 같은
+     일이 또 나지 않는다고 말할 수 없어서, 아예 상태를 물어본다.
+
+     먼저 앱이 물러난 것을 본 뒤에만 돌아온 것으로 친다. 그 순서가 없으면
+     픽커가 뜨기도 전에 "앞에 있다"로 읽고 hold 를 풀어 버려, 이 hold 가 원래
+     막으려던 일(픽커 위에 프리뷰를 켜서 결과를 잃는 것)을 그대로 저지른다. */
+  useEffect(() => {
+    if (!albumHold) return undefined;
+    let sawAway = false;
+    const timer = window.setInterval(() => {
+      if (!albumPending.current) return;
+      const visible = document.visibilityState === "visible";
+      const focused = typeof document.hasFocus === "function" ? document.hasFocus() : true;
+      if (!visible || !focused) {
+        if (!sawAway) {
+          sawAway = true;
+          cameraPipelineLog("album_picker_away", {
+            memberId: analysisMemberId.current, assessmentId: assessmentId.current,
+            source: "system_photo_picker", state: "away", reason: visible ? "focus_lost" : "document_hidden",
+          });
+        }
+        return;
+      }
+      if (!sawAway) return;
+      releaseAlbumPending("foreground_poll");
+    }, ALBUM_HOLD_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [albumHold]);
+
+  /* 돌아왔다고 알려 주는 신호를 더 듣는다. 어느 쪽이 먼저 오든 유예를 걸고,
+     releaseAlbumPending 은 albumPending.current 가드로 한 번만 듣는다. */
+  useEffect(() => {
+    const armRelease = (reason) => {
+      if (!albumPending.current) return;
+      if (albumReleaseTimer.current) window.clearTimeout(albumReleaseTimer.current);
+      albumReleaseTimer.current = window.setTimeout(() => releaseAlbumPending(reason), ALBUM_RESUME_GRACE_MS);
+    };
+    const onFocus = () => armRelease("focus_without_change");
+    window.addEventListener("focus", onFocus);
+    let appState = null;
+    let dropped = false;
+    Promise.resolve()
+      .then(() => CapacitorApp.addListener("appStateChange", ({ isActive }) => { if (isActive) armRelease("app_active_without_change"); }))
+      .then((handle) => { if (dropped) handle?.remove?.(); else appState = handle; })
+      .catch(() => {});
+    return () => {
+      dropped = true;
+      window.removeEventListener("focus", onFocus);
+      appState?.remove?.();
     };
   }, []);
   const openCapture = (targetView) => {

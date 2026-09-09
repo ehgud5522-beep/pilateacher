@@ -13,15 +13,19 @@ function memoryStorage() {
 
 test("the camera cannot restart while the photo picker is open", async () => {
   const source = await appSource();
-  /* Opening the picker backgrounds the app, which stops the camera and leaves
-     cameraStatus "idle" -- the auto-start condition. Restarting the preview on
-     top of the picker is what dropped the first selection. */
-  assert.match(source, /if \(iosStableCaptureFallback \|\| pendingCapture \|\| cameraStatus !== "idle"\) return;\s*\r?\n\s*\/\/[^\r\n]*\r?\n\s*if \(albumPending\) return;/);
+  /* Opening the picker backgrounds the app, which stops the camera. Restarting
+     the preview on top of the picker is what dropped the first selection, so
+     the hold returns outright before anything else is weighed -- including the
+     grant that lets an album return wake a paused preview. */
+  const wake = source.indexOf('if (cameraStatus !== "idle" && !(albumReturn && cameraStatus === "paused")) return;');
+  const hold = source.indexOf("if (albumPending) return;");
+  const start = source.indexOf("void startCamera();");
+  assert.ok(wake >= 0 && hold > wake && start > hold, "the hold sits between waking and starting");
   /* The guard has to be a dependency, or the effect never re-runs when it
      lifts. capturesComplete moved below this line -- it is now weighed against
      the one-shot album return -- but the picker guard still comes first and
      still returns outright. */
-  assert.match(source, /\}, \[albumPending, albumReturn, cameraStatus, capturesComplete, iosStableCaptureFallback, onAlbumReturnUsed, pendingCapture, startCamera\]\);/);
+  assert.match(source, /\}, \[albumPending, albumReturn, busy, cameraStatus, capturesComplete, iosStableCaptureFallback, onAlbumReturnUsed, pendingCapture, startCamera\]\);/);
   assert.match(source, /albumPending=\{albumHold\}/, "the hold must reach the capture screen");
 });
 

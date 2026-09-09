@@ -7384,18 +7384,30 @@ function PostureCaptureScreen({
   }, [activeView, assessmentId, busy, captureWithSystemCamera, iosStableCaptureFallback, member?.id, nativePreviewAvailable, startMotion, stopCamera, syncPreviewBounds]);
 
   useEffect(() => {
-    if (iosStableCaptureFallback || pendingCapture || cameraStatus !== "idle") return;
+    if (iosStableCaptureFallback || pendingCapture) return;
+    /* 앨범을 열면 앱이 뒤로 물러나면서 프리뷰가 "paused" 로 선다. 돌아왔을 때
+       그 상태를 깨우지 않으면 강사가 [다시 시도]를 눌러야만 다음 방향을 찍을
+       수 있다.
+
+       깨우는 것은 앨범을 다녀온 그 한 번뿐이다. 홈으로 나갔다 돌아온 복귀는
+       멈춘 채로 두고 안내 문구도 그대로 남긴다 -- 그때는 강사가 카메라를
+       다시 열려는 것인지 알 수 없다. */
+    if (cameraStatus !== "idle" && !(albumReturn && cameraStatus === "paused")) return;
     // Restarting the preview on top of an open photo picker loses its result.
     if (albumPending) return;
-    /* 촬영을 마친 뒤에는 프리뷰를 켜 두지 않는다. 유일한 예외가 앨범을 취소하고
-       돌아온 직후이고, 그것도 한 번뿐이다. */
+    /* 고른 사진을 읽는 중에 켜도 같은 이유로 결과를 잃는다. busy 는 가져오기가
+       시작되는 그 이벤트에서 함께 서고 finally 에서 내려가므로, 내려가 있다는
+       것이 곧 가져오기가 끝났다는 뜻이다. 시간을 재서 짐작하지 않는다. */
+    if (busy) return;
+    /* 촬영을 마친 뒤에는 프리뷰를 켜 두지 않는다. 유일한 예외가 앨범을 다녀온
+       직후이고, 그것도 한 번뿐이다. */
     if (capturesComplete && !albumReturn) return;
     /* 권한은 시작을 시도하는 이 자리에서 소진한다. 시작이 실패해도 소진되므로
        재시작이 반복해서 걸릴 수 없고, 촬영이 끝나기 전에 취소하고 돌아온
        경우에도 여기서 함께 비워져 나중까지 남지 않는다. */
     if (albumReturn) onAlbumReturnUsed?.();
     void startCamera();
-  }, [albumPending, albumReturn, cameraStatus, capturesComplete, iosStableCaptureFallback, onAlbumReturnUsed, pendingCapture, startCamera]);
+  }, [albumPending, albumReturn, busy, cameraStatus, capturesComplete, iosStableCaptureFallback, onAlbumReturnUsed, pendingCapture, startCamera]);
 
   const captureBrowserFrame = async () => {
     const video = videoRef.current;
@@ -7993,7 +8005,10 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
     if (!albumPending.current) return;
     albumPending.current = false;
     setAlbumHold(false);
-    setAlbumReturn(reason !== "change_with_file");
+    /* 사진을 골랐든 그냥 나왔든, 앨범 왕복이 끝났다는 사실은 같다. 고른 경우를
+       빼 두었더니 사진은 들어왔는데 프리뷰가 멈춘 채로 남았다. 가져오기가
+       끝날 때까지 기다리는 일은 재시작하는 쪽에서 한다. */
+    setAlbumReturn(true);
     cameraPipelineLog("album_picker_released", {
       memberId: analysisMemberId.current, assessmentId: assessmentId.current,
       source: "system_photo_picker", state: "released", reason,

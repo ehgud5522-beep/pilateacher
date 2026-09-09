@@ -27,6 +27,11 @@ const SEGMENTER_MODEL = "https://storage.googleapis.com/mediapipe-models/image_s
    남는다 -- 머리카락과 손끝이 특히 상한다. */
 const SEGMENTER_OPTIONS = { runningMode: "IMAGE", outputCategoryMask: false, outputConfidenceMasks: true };
 
+/* 바디뷰가 꺼져 있으면 여기서 멈춘다. 화면이 뜨지 않으므로 불릴 일도
+   없지만, 모델을 받지 않는다는 것은 눈에 보이는 자리에 적혀 있어야 한다
+   -- 네트워크로 나가는 요청이라 조용히 사라지면 확인할 방법이 없다. */
+import { BODY_VIEW_ENABLED } from "./posture-model.js";
+
 let segmenterPromise = null;
 
 /* 화면을 닫을 때 모델을 놓아준다. 마스크는 이미 기기에 있으므로 다시 열 때
@@ -39,6 +44,7 @@ export function closeBodySegmenter() {
 
 /* 한 번만 받아 두고 계속 쓴다. 바디뷰를 열지 않으면 아무것도 받지 않는다. */
 export function loadBodySegmenter({ log = () => {} } = {}) {
+  if (!BODY_VIEW_ENABLED) return Promise.reject(new Error("body_view_disabled"));
   if (segmenterPromise) return segmenterPromise;
   segmenterPromise = (async () => {
     let dynamicImport = null;
@@ -87,6 +93,7 @@ export function loadBodySegmenter({ log = () => {} } = {}) {
 /* 마스크 하나를 회색 PNG 로 만든다. 저장하는 것은 마스크뿐이다 -- 사진을
    한 번 더 복사해 두지 않는다. 합성은 화면에서 한다. */
 export async function personMaskPng(image, { log = () => {} } = {}) {
+  if (!BODY_VIEW_ENABLED) return null;
   const width = Number(image?.naturalWidth || image?.width || 0);
   const height = Number(image?.naturalHeight || image?.height || 0);
   if (!width || !height) return null;

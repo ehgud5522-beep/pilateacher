@@ -804,6 +804,16 @@ export function bodyViewDragFrame(progress) {
   };
 }
 
+/* 360° 바디뷰: 회전 체감이 나지 않고 인물 분리 품질도 미달이어서
+   2026-09 비활성화. 재개하려면 촬영 방향 수를 늘리거나
+   인물 분리 품질을 먼저 해결해야 함.
+
+   코드는 지우지 않는다. 이 파일의 바디뷰 함수들, BodyViewSheet.jsx,
+   body-segmenter.js 는 그대로 있고 이 플래그 하나로 꺼진다. 저장된
+   maskBlobId 도 지우지 않으며, blob 정리 목록(photo-blob-fields.js)에
+   그대로 남는다 -- 쓰지 않더라도 삭제 대상에서 빠지면 기기에 남는다. */
+export const BODY_VIEW_ENABLED = false;
+
 /* ------------------------ 360도 바디뷰 -- 마커 -------------------------- */
 
 /* 마커가 앉을 자리. 측정할 때 쓴 지점을 저장하지 않기 때문에 -- 저장되는 것은

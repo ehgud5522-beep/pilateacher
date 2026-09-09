@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import nodeTest from "node:test";
 
 import {
   BODY_VIEW_DRAG_COMMIT_MIN_PX, BODY_VIEW_DRAG_COMMIT_RATIO, BODY_VIEW_DRAG_EDGE_LIMIT,
@@ -9,6 +9,15 @@ import {
   clampLabelWithin, containPhotoRect, reachableBodyViews, stepBodyView,
   BODY_VIEW_HEAD_LABEL_GAP,
 } from "../../src/features/posture/posture-model.js";
+
+/* 360° 바디뷰: 회전 체감이 나지 않고 인물 분리 품질도 미달이어서
+   2026-09 비활성화. 기능이 꺼져 있는 동안 이 파일의 검사도 함께 멈춘다.
+   지우지 않는 이유는 재개할 때 그대로 다시 켜기 위해서다 -- 아래 네 줄을
+   지우고 위의 import 를 되돌리면 그대로 다시 돈다. */
+const skipped = { skip: "360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED" };
+const test = (name, fn) => nodeTest(name, skipped, fn);
+test.before = nodeTest.before;
+test.after = nodeTest.after;
 
 /* A front pose with the joints a marker can be hung on, so the readings
    below come out of the same function the screen uses. */

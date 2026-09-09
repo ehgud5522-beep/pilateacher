@@ -61,13 +61,15 @@ import { installFocusVisibilityGuard } from "./features/ui/focus-visibility.js";
 import { scheduleMemberLayoutSnapshots } from "./features/ui/member-layout-diagnostics.js";
 import { scrollRecordSectionIntoView } from "./features/ui/record-section-scroll.js";
 import {
-  POSTURE_STORAGE_KEYS, POSTURE_VIEW_DEFS, POSTURE_VIEW_KEYS,
+  BODY_VIEW_ENABLED, POSTURE_STORAGE_KEYS, POSTURE_VIEW_DEFS, POSTURE_VIEW_KEYS,
   assessmentDisplayDate, assessmentMediaForView, commonPostureComparisonViews, compareAssessmentMetrics, completeAssessmentRecords, correctedPoseSource, countPosturePhotoRecords, normalizeAssessmentSets, normalizePostureView, postureAnalysisPlane,
   advanceManualCorrection, manualTapTarget, overlayLabelOpacity, revertManualJoint, postureAlignmentTransform, postureMetricChangeText, postureMetricDisplayValue, postureReferenceLines,
   postureMilestoneTemplate, postureViewLabel, removeAssessmentDraftRecords, selectAutomaticComparison, selectComparisonAssessmentOptions,
   selectPreviousAssessment, selectRecentAssessmentChanges,
   selectMemberBodyPhotoSurface, selectResumableAssessment,
 } from "./features/posture/posture-model.js";
+/* 360° 바디뷰는 꺼져 있다 -- posture-model.js 의 BODY_VIEW_ENABLED 참고.
+   import 는 남겨 둔다. 플래그를 되돌리면 그대로 다시 뜬다. */
 import BodyViewSheet from "./features/posture/BodyViewSheet.jsx";
 import { photoBlobIdsIn } from "./data/photo-blob-fields.js";
 import { validatePostureMeasurement, validPostureMetrics } from "./features/posture/measurement-validity.js";
@@ -10040,7 +10042,10 @@ function AssessmentWorkspace({ member, photos, settings, diagnosticAccountId = n
 
      첫 촬영이라 견줄 것이 없는 회원에게도 볼 것은 있다. 이번 회차 네 방향이
      그것이다. */
-  const canOpenBodyView = !selectedIsManualResult && selected?.status === "completed"
+  /* 문이 하나였으므로 잠그는 곳도 하나다. 이 값이 false 면 "이번 변화"
+     카드의 발치 버튼도, 카드가 없을 때 서던 "방향별로 보기" 칸도, 시트
+     자체도 함께 사라진다. 카드의 나머지는 바디뷰와 무관하므로 그대로다. */
+  const canOpenBodyView = BODY_VIEW_ENABLED && !selectedIsManualResult && selected?.status === "completed"
     && POSTURE_VIEW_KEYS.some((view) => assessmentMediaForView(selected, view));
   const bodyViewButton = canOpenBodyView ? (
     <button type="button" onClick={() => setBodyViewOpen(true)} className="mt-3 h-11 w-full text-xs font-bold" style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D }}>360° 바디뷰에서 확인하기</button>

@@ -78,7 +78,22 @@ token, nonce, credential, authorizationCode, identityToken, password, 이메일,
 - `appendLessonRecordDiagnostic(...)` — 수업기록 파이프라인 20건
 - Functions: `firebase functions:log --only aiGateway --project pilateacher`
 
-## 인물 분리(세그멘테이션)
+## 360° 바디뷰 · 인물 분리(세그멘테이션) — 2026-09 비활성화
+
+**지금 꺼져 있다.** 사진 4장으로는 회전으로 읽히지 않고, 인물 분리 품질도
+미달이라 그 위에 얹을 것이 없었다. `posture-model.js` 의 `BODY_VIEW_ENABLED`
+하나로 꺼진다. 재개하려면 촬영 방향 수를 늘리거나 인물 분리 품질을 먼저
+해결해야 한다.
+
+코드는 지우지 않았다. `BodyViewSheet.jsx`, `body-segmenter.js`,
+`composeBodyViewAlignment` 계열은 그대로 있고, 관련 테스트도 삭제가 아니라
+skip 이다. 되살릴 때 플래그와 skip 세 줄만 되돌리면 된다.
+
+이미 저장된 `maskBlobId` 는 지우지 않으며 `photo-blob-fields.js` 의 정리
+목록에 그대로 남는다 — 새로 만들지 않더라도 삭제 대상에서 빠지면 기기에
+남는다.
+
+다시 켤 때도 아래는 그대로 지킨다.
 
 인물 분리는 기기 내 MediaPipe 로만 수행한다. 사진·마스크를 외부로 업로드하지
 않는다. 받아 오는 것은 모델 파일뿐이다.

@@ -1,12 +1,21 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import test from "node:test";
+import nodeTest from "node:test";
 
 import { fileURLToPath } from "node:url";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
 import react from "@vitejs/plugin-react";
+
+/* 360° 바디뷰: 회전 체감이 나지 않고 인물 분리 품질도 미달이어서
+   2026-09 비활성화. 기능이 꺼져 있는 동안 이 파일의 검사도 함께 멈춘다.
+   지우지 않는 이유는 재개할 때 그대로 다시 켜기 위해서다 -- 아래 네 줄을
+   지우고 위의 import 를 되돌리면 그대로 다시 돈다. */
+const skipped = { skip: "360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED" };
+const test = (name, fn) => nodeTest(name, skipped, fn);
+test.before = nodeTest.before;
+test.after = nodeTest.after;
 
 const appSource = () => readFile(new URL("../../src/App.jsx", import.meta.url), "utf8");
 const sheetSource = () => readFile(new URL("../../src/features/posture/BodyViewSheet.jsx", import.meta.url), "utf8");

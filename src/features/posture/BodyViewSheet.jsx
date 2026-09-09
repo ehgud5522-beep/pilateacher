@@ -143,6 +143,10 @@ export default function BodyViewSheet({ assessment, previousAssessment = null, r
   const [frameSize, setFrameSize] = useState(null);
   /* 방향별로 사람만 남긴 그림: 만드는 중 / 됐음 / 안 됨. */
   const [cutouts, setCutouts] = useState({});
+  const cutoutRuns = useRef({});
+  /* 화면이 아직 붙어 있는가. 이 하나만 본다 -- 실행마다 플래그를 두면
+     의존성이 바뀔 때마다 정리 함수가 돌아 멀쩡한 결과를 버린다. */
+  const onScreen = useRef(true);
   const [dragDx, setDragDx] = useState(0);
   const [dragging, setDragging] = useState(false);
   const timers = useRef([]);
@@ -152,11 +156,17 @@ export default function BodyViewSheet({ assessment, previousAssessment = null, r
   const frame = useRef(null);
   const placedCount = useRef(0);
 
-  useEffect(() => () => {
-    timers.current.forEach(clearTimeout); timers.current = [];
-    introTimers.current.forEach(clearTimeout); introTimers.current = [];
-    /* 모델은 화면과 함께 놓아준다. */
-    closeBodySegmenter();
+  useEffect(() => {
+    /* 처음 값에만 기대지 않는다. StrictMode 는 같은 인스턴스를 한 번
+       떼었다 붙이므로, ref 는 살아남고 플래그만 꺼진 채로 남는다. */
+    onScreen.current = true;
+    return () => {
+      timers.current.forEach(clearTimeout); timers.current = [];
+      introTimers.current.forEach(clearTimeout); introTimers.current = [];
+      onScreen.current = false;
+      /* 모델은 화면과 함께 놓아준다. */
+      closeBodySegmenter();
+    };
   }, []);
 
   /* 틀의 크기는 기기와 회전에 따라 달라진다. 마커 자리를 그 안에서 구하므로
@@ -339,10 +349,19 @@ export default function BodyViewSheet({ assessment, previousAssessment = null, r
      원본은 이미 화면에 떠 있다. 다 되면 갈아 끼우고, 되지 않으면 그대로
      둔다. 이 기능이 실패해도 바디뷰는 계속 쓸 수 있어야 한다. */
   useEffect(() => {
-    if (!shownView || shownPhoto?.status !== "ready" || cutouts[shownView]) return undefined;
-    let alive = true;
-    const mark = (value) => { if (alive) setCutouts((previous) => ({ ...previous, [shownView]: value })); };
-    mark({ status: "working", url: null });
+    if (!shownView || shownPhoto?.status !== "ready") return undefined;
+    /* 이미 손댄 방향인지는 ref 로 기억한다. state 로 기억하면 그 state 가
+       이 효과의 의존성이라, 시작하자마자 스스로를 다시 돌리고 그 과정에서
+       방금 시작한 작업의 정리 함수가 불려 결과가 버려진다. */
+    const runKey = `${assessment?.id || "none"}:${shownView}`;
+    if (cutoutRuns.current[runKey]) return undefined;
+    cutoutRuns.current[runKey] = true;
+    const mark = (status, url = null) => {
+      if (!onScreen.current) return;
+      setCutouts((previous) => ({ ...previous, [shownView]: { status, url } }));
+      onSegmenterEvent?.("segmenter_cutout", { state: status, view: shownView });
+    };
+    mark("working");
     (async () => {
       try {
         const photo = await decodeImage(shownPhoto.url);
@@ -350,21 +369,21 @@ export default function BodyViewSheet({ assessment, previousAssessment = null, r
         let maskUrl = savedMaskId ? await resolvePhotoUrl?.(savedMaskId) : null;
         if (!maskUrl) {
           const made = await personMaskPng(photo, { log: onSegmenterEvent });
-          if (!made?.blob) { mark({ status: "none", url: null }); return; }
+          if (!made?.blob) { mark("none"); return; }
           const storedId = await onSaveMask?.(assessment?.id, shownView, made.blob);
           maskUrl = storedId ? await resolvePhotoUrl?.(storedId) : URL.createObjectURL(made.blob);
         }
-        if (!alive || !maskUrl) { mark({ status: "none", url: null }); return; }
+        if (!maskUrl) { mark("none"); return; }
         const mask = await decodeImage(maskUrl);
         const cutout = await composePersonCutout(photo, mask);
-        if (!alive || !cutout) { mark({ status: "none", url: null }); return; }
-        mark({ status: "ready", url: URL.createObjectURL(cutout) });
+        if (!cutout) { mark("none"); return; }
+        mark("ready", URL.createObjectURL(cutout));
       } catch (_error) {
-        mark({ status: "none", url: null });
+        mark("none");
       }
     })();
-    return () => { alive = false; };
-  }, [assessment, shownView, shownPhoto, cutouts, resolvePhotoUrl, onSaveMask, onSegmenterEvent]);
+    return undefined;
+  }, [assessment, shownView, shownPhoto, resolvePhotoUrl, onSaveMask, onSegmenterEvent]);
 
   if (!firstView) return null;
 

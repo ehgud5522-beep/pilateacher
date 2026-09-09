@@ -417,9 +417,38 @@ test("the door stays shut for a record with no photograph to show", async () => 
 
 test("only the direction on screen is separated", async () => {
   /* Four masks at once is what stalls a cheap phone. The work is keyed to the
-     direction being looked at. */
+     direction being looked at, and each direction is attempted once. */
   const source = withoutComments(await sheetSource());
-  assert.ok(source.includes('if (!shownView || shownPhoto?.status !== "ready" || cutouts[shownView]) return undefined;'));
+  assert.ok(source.includes('if (!shownView || shownPhoto?.status !== "ready") return undefined;'));
+  assert.ok(source.includes('if (cutoutRuns.current[runKey]) return undefined;'), 'a direction already attempted is left alone');
+  assert.ok(source.includes('cutoutRuns.current[runKey] = true;'));
+});
+
+test("what the segmenter finishes is not thrown away", async () => {
+  /* The defect this pins: the attempt was remembered in state, and that state
+     was one of the effect's own dependencies. Starting the work changed the
+     state, the dependencies changed, React ran the cleanup of the run that had
+     only just begun, and the result was discarded -- so no cutout ever
+     appeared. Nothing that reruns on a dependency change may cancel the work. */
+  const source = withoutComments(await sheetSource());
+  const start = source.indexOf('const runKey =');
+  const deps = source.indexOf('}, [assessment, shownView, shownPhoto', start);
+  assert.ok(start > 0 && deps > start, 'the cutout effect is where it is expected');
+  const effect = source.slice(start, deps);
+  assert.ok(!effect.includes('alive'), 'no per-run flag -- a dependency change would clear it');
+  assert.ok(!source.slice(deps, source.indexOf(']);', deps)).includes('cutouts'), 'the cutout state is not its own dependency');
+  assert.ok(effect.includes('if (!onScreen.current) return;'), 'only leaving the screen stops it');
+});
+
+test("leaving the screen is the one thing that stops the cutout", async () => {
+  /* And the flag is armed on the way in, not only at birth: StrictMode keeps
+     the same instance -- and so the same refs -- across its extra detach. */
+  const source = withoutComments(await sheetSource());
+  const armed = source.indexOf('onScreen.current = true;');
+  assert.ok(armed > 0, 'the flag is set when the screen appears');
+  const unmount = source.slice(armed, source.indexOf('}, []);', armed));
+  assert.ok(unmount.includes('onScreen.current = false;'), 'turned off in the unmount cleanup');
+  assert.equal((source.match(/onScreen\.current = false;/g) || []).length, 1, 'and nowhere else');
 });
 
 test("a mask already made is read, not made again", async () => {
@@ -447,9 +476,18 @@ test("a failure anywhere leaves the photograph as it was", async () => {
   /* Model missing, mask unreadable, compose failing -- every branch falls back
      to the original rather than taking the direction away. */
   const source = withoutComments(await sheetSource());
-  const block = source.slice(source.indexOf('mark({ status: "working"'), source.indexOf("return () => { alive = false; };", source.indexOf('mark({ status: "working"')));
-  assert.ok((block.match(/mark\(\{ status: "none", url: null \}\)/g) || []).length >= 4, "every dead end marks it and stops");
+  const from = source.indexOf('mark("working")');
+  const block = source.slice(from, source.indexOf("return undefined;", from));
+  assert.ok((block.match(/mark\("none"\)/g) || []).length >= 4, "every dead end marks it and stops");
   assert.ok(block.includes("catch (_error) {"), "and a thrown error does the same");
+});
+
+test("the diagnostics say how far the cutout got", async () => {
+  /* Otherwise the screen shows the plain photograph and nothing says why. */
+  const source = withoutComments(await sheetSource());
+  assert.ok(source.includes('onSegmenterEvent?.("segmenter_cutout", { state: status, view: shownView });'));
+  const voice = await readFile(new URL('../../src/features/voice/voice-session.js', import.meta.url), 'utf8');
+  assert.ok(voice.includes('"segmenter_cutout"'), 'an unregistered event is dropped in silence');
 });
 
 test("the alignment and the markers are untouched by the cutout", async () => {

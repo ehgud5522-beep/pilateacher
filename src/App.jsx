@@ -7401,13 +7401,19 @@ function PostureCaptureScreen({
        시작되는 그 이벤트에서 함께 서고 finally 에서 내려가므로, 내려가 있다는
        것이 곧 가져오기가 끝났다는 뜻이다. 시간을 재서 짐작하지 않는다. */
     if (busy) return;
-    /* 촬영을 마친 뒤에는 프리뷰를 켜 두지 않는다. 유일한 예외가 앨범을 다녀온
-       직후이고, 그것도 한 번뿐이다. */
-    if (capturesComplete && !albumReturn) return;
-    /* 권한은 시작을 시도하는 이 자리에서 소진한다. 시작이 실패해도 소진되므로
-       재시작이 반복해서 걸릴 수 없고, 촬영이 끝나기 전에 취소하고 돌아온
-       경우에도 여기서 함께 비워져 나중까지 남지 않는다. */
+    /* 권한은 여기서 소진한다. 켜든 안 켜든 앨범 왕복은 끝났고, 남겨 두면
+       한참 뒤 다른 이유로 프리뷰가 살아난다. 시작이 실패해도 소진되므로
+       재시작이 반복해서 걸릴 수도 없다. */
     if (albumReturn) onAlbumReturnUsed?.();
+    /* 촬영을 마쳤으면 프리뷰를 켜지 않는다 -- 앨범을 다녀왔더라도.
+
+       켜는 순간 captureCompleteIdle 이 꺼지고, 완료 패널과 그 안의 [다음 분석
+       단계] 버튼이 함께 사라진다. 마지막 사진을 앨범에서 고른 강사가 분석으로
+       넘어갈 길을 잃는다.
+
+       다시 찍고 싶으면 완료 화면의 [다시 촬영] 이 카메라를 직접 연다. 자동으로
+       켜 줄 이유가 없다. */
+    if (capturesComplete) return;
     void startCamera();
   }, [albumPending, albumReturn, busy, cameraStatus, capturesComplete, iosStableCaptureFallback, onAlbumReturnUsed, pendingCapture, startCamera]);
 

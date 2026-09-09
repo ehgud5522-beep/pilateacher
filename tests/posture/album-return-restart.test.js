@@ -21,8 +21,11 @@ function autoStart({
   if (cameraStatus !== "idle" && !(albumReturn && cameraStatus === "paused")) return { action: "skip", reason: "not idle" };
   if (albumPending) return { action: "skip", reason: "picker open" };
   if (busy) return { action: "skip", reason: "import running" };
-  if (capturesComplete && !albumReturn) return { action: "skip", reason: "shoot finished" };
-  return { action: "start", consumed: albumReturn };
+  /* The round trip is over either way, so the grant is spent here whether or
+     not a preview follows. */
+  const consumed = albumReturn;
+  if (capturesComplete) return { action: "skip", reason: "shoot finished", consumed };
+  return { action: "start", consumed };
 }
 
 /* The grant: raised whenever the round trip to the album ends, however it
@@ -31,16 +34,42 @@ const grantOnRelease = () => true;
 
 /* ------------- 1. cancelling brings the camera back ---------------------- */
 
-test("cancelling the picker after a finished shoot restarts the preview", () => {
-  /* Without the grant this is the case that stranded the instructor on the
-     completion screen: capturesComplete blocks the restart outright. */
-  assert.equal(autoStart({ capturesComplete: true, albumReturn: grantOnRelease("resume_without_change") }).action, "start");
+test("cancelling the picker mid-shoot brings the preview back", () => {
+  /* The instructor still has directions to shoot, and the picker took the
+     camera away. This is what the grant exists for. */
+  assert.equal(autoStart({ capturesComplete: false, albumReturn: grantOnRelease("resume_without_change") }).action, "start");
 });
 
 test("a change event that carried no file counts as a cancel", () => {
   // Some pickers fire change with an empty list instead of firing nothing.
   assert.equal(grantOnRelease("change_without_file"), true);
-  assert.equal(autoStart({ capturesComplete: true, albumReturn: true }).action, "start");
+  assert.equal(autoStart({ capturesComplete: false, albumReturn: true }).action, "start");
+});
+
+/* ------------- 1b. a finished shoot is left finished --------------------- */
+
+test("the last photo coming from the album leaves the completion screen up", () => {
+  /* This is the one that broke. The footer only offers 다음 분석 단계 while
+     the camera is off; waking it here takes the way forward off the screen
+     and the instructor cannot reach the analysis at all. */
+  const afterLastPick = autoStart({ capturesComplete: true, albumReturn: true, cameraStatus: "paused" });
+  assert.equal(afterLastPick.action, "skip");
+  assert.equal(afterLastPick.reason, "shoot finished");
+});
+
+test("cancelling after the shoot is finished also leaves it finished", () => {
+  /* Nothing changed, so the completion screen is still the right screen. It
+     carries its own [다시 촬영] button, so this is not a dead end. */
+  assert.equal(autoStart({ capturesComplete: true, albumReturn: true }).action, "skip");
+  assert.equal(autoStart({ capturesComplete: true, albumReturn: true, cameraStatus: "paused" }).reason, "shoot finished");
+});
+
+test("a finished shoot still spends the grant it did not use", () => {
+  /* Left unspent it would wake the preview later -- after a photo is deleted,
+     say -- for a round trip that ended long ago. */
+  const skipped = autoStart({ capturesComplete: true, albumReturn: true });
+  assert.equal(skipped.action, "skip");
+  assert.equal(skipped.consumed, true);
 });
 
 /* ------------- 2. choosing a photo also brings it back ------------------- */
@@ -98,10 +127,10 @@ test("no other stopped state is woken, grant or not", () => {
 /* ------------------ 4. when the grant is spent --------------------------- */
 
 test("the grant is consumed by the attempt that uses it", () => {
-  const first = autoStart({ capturesComplete: true, albumReturn: true });
+  const first = autoStart({ capturesComplete: false, albumReturn: true });
   assert.equal(first.action, "start");
   assert.equal(first.consumed, true, "spent at the moment the start is attempted");
-  assert.equal(autoStart({ capturesComplete: true, albumReturn: false }).action, "skip");
+  assert.equal(autoStart({ capturesComplete: false, albumReturn: false, cameraStatus: "paused" }).action, "skip", "and the next paused screen is not woken");
 });
 
 test("a cancel before the shoot is finished does not leave a grant behind", () => {
@@ -150,18 +179,20 @@ test("the screen's rule is the rule tested here, in this order", async () => {
   const wake = body.indexOf('if (cameraStatus !== "idle" && !(albumReturn && cameraStatus === "paused")) return;');
   const picker = body.indexOf("if (albumPending) return;");
   const importing = body.indexOf("if (busy) return;");
-  const finished = body.indexOf("if (capturesComplete && !albumReturn) return;");
   const consumeAt = body.indexOf("if (albumReturn) onAlbumReturnUsed?.();");
+  const finished = body.indexOf("if (capturesComplete) return;");
   const startAt = body.indexOf("void startCamera();");
 
   assert.ok(wake >= 0, "paused is woken only with the grant");
   assert.ok(picker > wake, "the picker guard survives, and still comes before the rest");
   assert.ok(importing > picker, "and the import guard sits with it");
-  assert.ok(finished > importing);
+  assert.ok(consumeAt > importing, "the grant is spent once the round trip is settled");
+  assert.ok(finished > consumeAt, "a finished shoot then stops short of the preview");
   /* Spending it before rather than after startCamera is what stops a camera
      that fails to open from being retried on every render for the rest of the
      session: one grant, one attempt, win or lose. */
   assert.ok(consumeAt >= 0 && consumeAt < startAt, "the grant is spent before the start, not after");
+  assert.ok(!body.includes("capturesComplete && !albumReturn"), "the album grant no longer overrides a finished shoot");
   // And the effect can actually see everything it reads change.
   assert.match(screen, /\}, \[albumPending, albumReturn, busy, cameraStatus, capturesComplete, iosStableCaptureFallback, onAlbumReturnUsed, pendingCapture, startCamera\]\);/);
 });

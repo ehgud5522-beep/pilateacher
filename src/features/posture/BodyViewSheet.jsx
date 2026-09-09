@@ -3,7 +3,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import {
   BODY_VIEW_ALIGNMENT, POSTURE_VIEW_KEYS, bodyViewDragCommits, bodyViewDragFrame,
   bodyViewDragProgress, bodyViewMetrics,
-  bodyViewMarkerFraction, bodyViewMaskId, bodyViewPhotoId, clampLabelWithin, composeBodyViewAlignment,
+  bodyViewLabelAnchor, bodyViewMarkerFraction, bodyViewMarkerShows, bodyViewMaskId, bodyViewPhotoId,
+  clampLabelWithin, composeBodyViewAlignment,
   containPhotoRect, normalizePostureView, postureMetricChangeText, postureMetricDisplayValue,
   postureViewLabel, reachableBodyViews, stepBodyView,
 } from "./posture-model.js";
@@ -393,9 +394,11 @@ export default function BodyViewSheet({ assessment, previousAssessment = null, r
     () => (shownView ? bodyViewMetrics(assessment, shownView, { previousAssessment }) : []),
     [assessment, shownView, previousAssessment],
   );
-  /* 사진 위에 앉을 수 있는 값과 그럴 수 없는 값. 뒤쪽은 목록으로만 보여 준다. */
-  const placed = metrics.filter((metric) => metric.at);
-  const unplaced = metrics.filter((metric) => !metric.at);
+  /* 사진 위에 앉는 값과 그러지 않는 값. 잰 자리를 말할 수 없거나(무릎),
+     반올림하면 0 이라 가리킬 기울기가 없는 값이 뒤쪽이다. 둘 중 하나에는
+     반드시 들어가므로 어느 값도 사라지지 않는다. */
+  const placed = metrics.filter(bodyViewMarkerShows);
+  const unplaced = metrics.filter((metric) => !bodyViewMarkerShows(metric));
   const openMetric = metrics.find((metric) => metric.id === openMetricId) || null;
   const shownPhoto = photos[shownView] || null;
   const naturalSize = natural[shownView] || null;
@@ -562,7 +565,9 @@ export default function BodyViewSheet({ assessment, previousAssessment = null, r
                 if (!fraction) return null;
                 const dot = { x: fraction.x * photoRect.width, y: fraction.y * photoRect.height };
                 const text = `${postureMetricDisplayValue(metric.value, metric.unit)}${metric.unit}`;
-                const label = clampLabelWithin(dot, photoRect, {
+                /* 머리에서 잰 값이면 먼저 얼굴 옆으로 내보내고, 그 자리를
+                   다시 틀 안으로 밀어 넣는다. 점은 어느 쪽도 따라가지 않는다. */
+                const label = clampLabelWithin(bodyViewLabelAnchor(metric.key, dot, photoRect) || dot, photoRect, {
                   width: text.length * MARKER_LABEL_CHAR_PX + MARKER_LABEL_PAD_PX,
                   height: MARKER_LABEL_HEIGHT_PX,
                 });
@@ -652,8 +657,9 @@ export default function BodyViewSheet({ assessment, previousAssessment = null, r
         <span className="text-[10px] font-bold" style={{ color: "var(--faint)" }}>{postureViewLabel(POSTURE_VIEW_KEYS[POSTURE_VIEW_KEYS.length - 1])}</span>
       </div>
 
-      {/* 잰 자리를 말할 수 없는 값은 사진 밖에 둔다. 수치는 그대로 남기고,
-          몸의 어디라고는 말하지 않는다. */}
+      {/* 사진 위에 놓지 않은 값은 여기 둔다 -- 잰 자리를 말할 수 없거나,
+          반올림하면 0 이라 가리킬 기울기가 없는 값이다. 수치는 그대로
+          남기고, 몸의 어디라고는 말하지 않는다. */}
       {markersVisible && unplaced.length > 0 && (
         <div className="mx-3 mt-2 flex flex-wrap gap-1.5">
           {unplaced.map((metric) => (

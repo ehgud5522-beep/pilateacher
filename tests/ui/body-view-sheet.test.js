@@ -158,14 +158,41 @@ test("the photo shown is the analysed one, never the untouched original", async 
 
 /* ------------------------------ the switch ------------------------------- */
 
-test("a reading with no place on the body is listed beside the photo, not on it", async () => {
-  /* The knee reading is one of these: a real number whose joint is not
-     recorded. It stays visible, and it stays off the body. */
+test("the screen sends a head label aside before it clamps it to the frame", async () => {
+  /* Order matters. Clamping first and moving second would push the pill
+     back out of the frame it was just brought into. */
   const source = withoutComments(await sheetSource());
-  assert.ok(source.includes(`const placed = metrics.filter((metric) => metric.at);`));
-  assert.ok(source.includes(`const unplaced = metrics.filter((metric) => !metric.at);`));
-  assert.ok(source.includes(`{photoMarkersVisible && (() => {`), "only the placed ones go on the photo");
+  assert.ok(source.includes("clampLabelWithin(bodyViewLabelAnchor(metric.key, dot, photoRect) || dot, photoRect, {"),
+    "past the head first, then inside the edge");
+  const pin = source.slice(source.indexOf("const pins = placed.map"), source.indexOf("return { metric, index, dot, label, text, moved };"));
+  assert.ok(pin.includes("const dot = { x: fraction.x * photoRect.width, y: fraction.y * photoRect.height };"),
+    "the dot is still the measured point, untouched");
+  assert.ok(!pin.includes("bodyViewLabelAnchor(metric.key, dot, photoRect) || dot;"), "and the dot is not reassigned");
+});
+
+test("the dot and the pill are joined whenever they come apart", async () => {
+  /* The head rule reuses the line the edge rule already draws, so a reading
+     that was moved still shows where it came from. */
+  const source = withoutComments(await sheetSource());
+  assert.ok(source.includes("const moved = Math.abs(label.x - dot.x) > 0.5 || Math.abs(label.y - dot.y) > 0.5;"));
+  assert.ok(source.includes("{pin.moved && <line x1={pin.dot.x} y1={pin.dot.y} x2={pin.label.x} y2={pin.label.y}"));
+});
+
+test("one rule decides what is drawn on the body and what is only listed", async () => {
+  /* Two separate conditions could disagree and drop a reading between them. */
+  const source = withoutComments(await sheetSource());
+  assert.ok(source.includes("const placed = metrics.filter(bodyViewMarkerShows);"));
+  assert.ok(source.includes("const unplaced = metrics.filter((metric) => !bodyViewMarkerShows(metric));"));
+});
+
+test("a reading with no place on the body is listed beside the photo, not on it", async () => {
+  /* Two kinds end up here: a knee, whose joint was never recorded, and a
+     tilt that rounds to nothing. Both stay visible, and both stay off the
+     body. */
+  const source = withoutComments(await sheetSource());
+  assert.ok(source.includes(`{photoMarkersVisible && (() => {`), "only the drawn ones go on the photo");
   assert.ok(source.includes(`markersVisible && unplaced.length > 0`), "the rest are listed");
+  assert.ok(source.includes("{metric.label} <span"), "and the list says the reading in full");
 });
 
 test("the markers are held back until a direction has finished arriving", async () => {
@@ -267,7 +294,8 @@ test("a reading at the edge of the photo keeps its point and moves only its labe
      the pill slides in, and a short line says which point it belongs to. */
   const source = withoutComments(await sheetSource());
   assert.ok(source.includes("const dot = { x: fraction.x * photoRect.width, y: fraction.y * photoRect.height };"), "the point is the measurement");
-  assert.ok(source.includes("const label = clampLabelWithin(dot, photoRect, {"), "only the label is moved");
+  assert.ok(source.includes("const label = clampLabelWithin(bodyViewLabelAnchor(metric.key, dot, photoRect) || dot, photoRect, {"),
+    "only the label is moved, and the edge has the last word over it");
   assert.ok(source.includes("<circle cx={pin.dot.x} cy={pin.dot.y}"), "the point is drawn where it was measured");
   assert.ok(source.includes("{pin.moved && <line x1={pin.dot.x} y1={pin.dot.y} x2={pin.label.x} y2={pin.label.y}"), "and joined to its label when they part");
   assert.ok(source.includes("left: pin.label.x, top: pin.label.y"), "the pill follows the clamped place");

@@ -648,6 +648,40 @@ export function clampLabelWithin(centre, box, size) {
     y: boxHeight < halfHeight * 2 ? y : Math.min(Math.max(y, halfHeight), boxHeight - halfHeight),
   };
 }
+/* 머리에서 잰 값은 얼굴 위에 떨어진다. 점은 잰 자리에 그대로 두고 알약만
+   옆으로 내보낸다 -- 가장자리에서 밀어 넣을 때와 같은 방식이고, 둘이
+   떨어지면 같은 선으로 이어져 어디서 잰 값인지 그대로 보인다.
+
+   얼굴은 그 사람이 누구인지가 드러나는 자리다. 수치를 읽으려고 얼굴을
+   가려야 한다면 둘 중 하나는 못 보게 된다. */
+export const BODY_VIEW_HEAD_METRIC_KEYS = Object.freeze(["head", "fha"]);
+/* 사진 폭 기준. 머리 하나를 확실히 비켜날 만큼. */
+export const BODY_VIEW_HEAD_LABEL_GAP = 0.17;
+
+export function bodyViewLabelAnchor(key, dot, box) {
+  const x = Number(dot?.x);
+  const y = Number(dot?.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  if (!BODY_VIEW_HEAD_METRIC_KEYS.includes(key)) return { x, y };
+  const width = Number(box?.width);
+  if (!Number.isFinite(width) || width <= 0) return { x, y };
+  /* 가까운 쪽 가장자리로 내보낸다. 반대편으로 보내면 얼굴을 가로지른다. */
+  const gap = width * BODY_VIEW_HEAD_LABEL_GAP;
+  return { x: x <= width / 2 ? x - gap : x + gap, y };
+}
+
+/* 반올림해서 0 이 되는 값은 사진 위에 놓지 않는다. 몸의 한 지점을 가리키며
+   0 이라고 적으면 그 자리에 무언가 있다는 말처럼 읽히는데, 실제로는 기운
+   정도가 없다는 뜻이다.
+
+   값을 버리는 것이 아니다. 자리를 말할 수 없는 무릎과 같은 처리로, 사진
+   아래 목록에 그대로 남고 눌러서 상세도 볼 수 있다. */
+export function bodyViewMarkerShows(metric) {
+  if (!metric?.at) return false;
+  const shown = Number(postureMetricDisplayValue(metric.value, metric.unit));
+  return Number.isFinite(shown) && shown !== 0;
+}
+
 /* 비율을 지켜 넣은 사진이 틀 안에서 실제로 차지하는 사각형.
 
    마커 좌표는 사진 안의 비율이다. 틀에 그대로 대면 위아래(또는 좌우) 여백만큼

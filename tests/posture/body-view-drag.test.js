@@ -4,9 +4,31 @@ import test from "node:test";
 import {
   BODY_VIEW_DRAG_COMMIT_MIN_PX, BODY_VIEW_DRAG_COMMIT_RATIO, BODY_VIEW_DRAG_EDGE_LIMIT,
   BODY_VIEW_DRAG_SQUEEZE, BODY_VIEW_DRAG_TRAVEL, POSTURE_VIEW_KEYS,
-  bodyViewDragCommits, bodyViewDragFrame, bodyViewDragProgress, bodyViewMarkerFraction,
-  bodyViewPhotoId, clampLabelWithin, containPhotoRect, reachableBodyViews, stepBodyView,
+  bodyViewDragCommits, bodyViewDragFrame, bodyViewDragProgress, bodyViewLabelAnchor,
+  bodyViewMarkerFraction, bodyViewMarkerShows, bodyViewMetrics, bodyViewPhotoId,
+  clampLabelWithin, containPhotoRect, reachableBodyViews, stepBodyView,
+  BODY_VIEW_HEAD_LABEL_GAP,
 } from "../../src/features/posture/posture-model.js";
+
+/* A front pose with the joints a marker can be hung on, so the readings
+   below come out of the same function the screen uses. */
+const at = (x, y) => ({ x, y, score: 1 });
+const measured = (metrics) => ({
+  id: "a1", status: "completed", scope: "full_body", date: "2026-09-01",
+  poses: [{
+    id: "p_front", view: "front", cleanBlobId: "clean_front", blobId: "raw_front", metrics,
+    pts: {
+      earL: at(0.47, 0.09), earR: at(0.53, 0.09),
+      shL: at(0.40, 0.23), shR: at(0.60, 0.23),
+      hipL: at(0.42, 0.50), hipR: at(0.58, 0.50),
+      kneeL: at(0.44, 0.70), kneeR: at(0.56, 0.70),
+    },
+  }],
+  photos: { front: { id: "p_front", cleanBlobId: "clean_front", blobId: "raw_front" } },
+});
+const degrees = (key, label, value) => ({ key, label, value, unit: "°", validity: { valid: true } });
+const readingFor = (key, value) => bodyViewMetrics(measured([degrees(key, key, value)]), "front")
+  .find((metric) => metric.key === key) || null;
 
 /* The two records for one direction are not the same shape. The capture
    bucket keeps the original the camera produced; the 760px copy without the
@@ -262,6 +284,111 @@ test("a progress that is not a number leaves the body alone", () => {
   }
 });
 
+
+/* --------------------- keeping the face uncovered ------------------------ */
+
+const box = { width: 400, height: 700 };
+
+test("a head reading leaves its dot on the ear and sends the label aside", () => {
+  /* The number has to be readable and the face has to stay visible. Only
+     the pill moves; the dot is still where the reading was taken, and the
+     line between them says so. */
+  const dot = { x: 200, y: 60 };
+  const label = bodyViewLabelAnchor("head", dot, box);
+  assert.notEqual(label.x, dot.x, "the pill is off the face");
+  assert.equal(label.y, dot.y, "at the same height, beside the head");
+  assert.equal(Math.abs(label.x - dot.x), box.width * BODY_VIEW_HEAD_LABEL_GAP);
+});
+
+test("the side view head reading is moved for the same reason", () => {
+  assert.notEqual(bodyViewLabelAnchor("fha", { x: 200, y: 80 }, box).x, 200);
+});
+
+test("the label leaves towards the nearer edge, so it never crosses the face", () => {
+  /* Sending it the other way would drag the connecting line straight over
+     the face it was moved to uncover. */
+  assert.ok(bodyViewLabelAnchor("head", { x: 150, y: 60 }, box).x < 150, "left of centre goes left");
+  assert.ok(bodyViewLabelAnchor("head", { x: 250, y: 60 }, box).x > 250, "right of centre goes right");
+});
+
+test("a reading taken anywhere else is not moved at all", () => {
+  for (const key of ["shoulder", "pelvis", "twist", "trunk", "kneeSide", "align"]) {
+    assert.deepEqual(bodyViewLabelAnchor(key, { x: 200, y: 300 }, box), { x: 200, y: 300 }, key);
+  }
+});
+
+test("the gap is a share of the photo, not a fixed number of pixels", () => {
+  /* A phone and a tablet show the same body at different sizes. A fixed gap
+     would clear the head on one and land on it on the other. */
+  const near = bodyViewLabelAnchor("head", { x: 100, y: 60 }, { width: 200, height: 350 });
+  const far = bodyViewLabelAnchor("head", { x: 400, y: 240 }, { width: 800, height: 1400 });
+  assert.equal(100 - near.x, 200 * BODY_VIEW_HEAD_LABEL_GAP);
+  assert.equal(400 - far.x, 800 * BODY_VIEW_HEAD_LABEL_GAP);
+});
+
+test("without a photograph to measure there is nowhere to send it", () => {
+  for (const bad of [null, undefined, { width: 0 }, { width: NaN }]) {
+    assert.deepEqual(bodyViewLabelAnchor("head", { x: 200, y: 60 }, bad), { x: 200, y: 60 });
+  }
+  for (const bad of [null, undefined, { x: NaN, y: 1 }, { x: 1 }]) {
+    assert.equal(bodyViewLabelAnchor("head", bad, box), null);
+  }
+});
+
+test("the moved label is still pushed inside the frame afterwards", () => {
+  /* The two rules stack: past the head first, then back inside the edge. */
+  const dot = { x: 20, y: 60 };
+  const aside = bodyViewLabelAnchor("head", dot, box);
+  assert.ok(aside.x < 0, "the head gap alone would put it outside");
+  const inside = clampLabelWithin(aside, box, { width: 60, height: 24 });
+  assert.equal(inside.x, 30, "and the edge rule brings it back");
+});
+
+/* ------------------- a reading that rounds to nothing -------------------- */
+
+test("a tilt that rounds to zero is kept, but not drawn on the body", () => {
+  /* Pointing at a shoulder and writing 0 reads as if something is there.
+     What it means is that there is no tilt to point at. */
+  const reading = readingFor("shoulder", 0.4);
+  assert.ok(reading, "the reading is still produced");
+  assert.equal(reading.value, 0.4, "and its value is untouched");
+  assert.ok(reading.at, "it even knows where it was taken");
+  assert.equal(bodyViewMarkerShows(reading), false, "it is simply not drawn there");
+});
+
+test("half a degree still rounds to a tilt, and is drawn", () => {
+  assert.equal(bodyViewMarkerShows(readingFor("shoulder", 0.5)), true);
+  assert.equal(bodyViewMarkerShows(readingFor("shoulder", -0.5)), true, "either way");
+  assert.equal(bodyViewMarkerShows(readingFor("shoulder", -0.4)), false, "and either way round to nothing");
+});
+
+test("a knee is still kept off the photo, for its own reason", () => {
+  const knee = readingFor("knee", 7.2);
+  assert.ok(knee, "the reading exists");
+  assert.equal(knee.at, null, "it has no place on the body");
+  assert.equal(bodyViewMarkerShows(knee), false);
+});
+
+test("every reading falls into one list or the other, and none is lost", () => {
+  const readings = bodyViewMetrics(measured([
+    degrees("shoulder", "어깨", 0.2),
+    degrees("pelvis", "골반", 4.1),
+    degrees("head", "머리", 0),
+    degrees("knee", "무릎", 7.2),
+  ]), "front");
+  const drawn = readings.filter(bodyViewMarkerShows);
+  const listed = readings.filter((metric) => !bodyViewMarkerShows(metric));
+  assert.equal(drawn.length + listed.length, readings.length);
+  assert.deepEqual(drawn.map((metric) => metric.key), ["pelvis"]);
+  assert.deepEqual(listed.map((metric) => metric.key).sort(), ["head", "knee", "shoulder"]);
+  assert.deepEqual(listed.map((metric) => metric.value).sort((a, b) => a - b), [0, 0.2, 7.2], "no value was thrown away");
+});
+
+test("nothing at all is nothing to draw", () => {
+  for (const bad of [null, undefined, {}, { at: null, value: 5, unit: "°" }, { at: { x: 1, y: 1 }, value: NaN, unit: "°" }]) {
+    assert.equal(bodyViewMarkerShows(bad), false);
+  }
+});
 
 /* ------------------------ where a marker is drawn ------------------------ */
 

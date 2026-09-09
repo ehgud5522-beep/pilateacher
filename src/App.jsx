@@ -69,6 +69,7 @@ import {
   selectMemberBodyPhotoSurface, selectResumableAssessment,
 } from "./features/posture/posture-model.js";
 import BodyViewSheet from "./features/posture/BodyViewSheet.jsx";
+import { photoBlobIdsIn } from "./data/photo-blob-fields.js";
 import { validatePostureMeasurement, validPostureMetrics } from "./features/posture/measurement-validity.js";
 import {
   MANUAL_ONLY_RESULT_NOTICE, POSTURE_RESULT_METRIC_KEYS, isFullyManualAfterAiMiss,
@@ -820,11 +821,7 @@ async function urlFor(blobId, { onError } = {}) {
 }
 const blobIdsOf = (ph) => {
   const out = [];
-  PHOTO_KEYS.forEach((k) => (Array.isArray(ph?.[k]) ? ph[k] : []).forEach((p) => {
-    if (p?.blobId) out.push(p.blobId);
-    if (p?.cleanBlobId) out.push(p.cleanBlobId);
-    if (p?.thumbnailBlobId) out.push(p.thumbnailBlobId);
-  }));
+  PHOTO_KEYS.forEach((k) => (Array.isArray(ph?.[k]) ? ph[k] : []).forEach((p) => out.push(...photoBlobIdsIn(p))));
   return out;
 };
 function forgetBlobs(ids) {
@@ -16163,7 +16160,7 @@ export default function App() {
       [target.id]: { ...cur, poses: (cur.poses || []).filter((pose) => pose?.id !== poseId) },
     });
     if (!stored) return false;
-    forgetBlobs(gone.flatMap((pose) => [pose.blobId, pose.cleanBlobId, pose.thumbnailBlobId]).filter(Boolean));
+    forgetBlobs(gone.flatMap(photoBlobIdsIn));
     deviceLog("assessment_pose_discarded_on_photo_change", { memberId: target.id, assessmentId, view, storage: "indexedDB", count: gone.length });
     return true;
   };
@@ -16206,7 +16203,7 @@ export default function App() {
 
     const nextPhotos = { ...currentPhotos, [target.id]: removal.memberPhotos };
     const retainedBlobIds = new Set(Object.values(nextPhotos).flatMap((memberPhotos) => blobIdsOf(memberPhotos)));
-    const discardedBlobIds = [...new Set(removal.removedRecords.flatMap((record) => [record?.blobId, record?.cleanBlobId]).filter(Boolean))]
+    const discardedBlobIds = [...new Set(removal.removedRecords.flatMap(photoBlobIdsIn))]
       .filter((blobId) => !retainedBlobIds.has(blobId));
     const blobSnapshots = new Map();
     try {
@@ -16334,10 +16331,11 @@ export default function App() {
     const keep = [out, ...(cur.poses || []).filter((pose) => pose?.id !== out.id)];
     const stored = await savePhotos({ ...currentPhotos, [target.id]: { ...cur, poses: keep } });
     if (!stored) {
-      forgetBlobs([out.blobId, out.cleanBlobId].filter(Boolean));
+      forgetBlobs(photoBlobIdsIn(out));
       return false;
     }
-    forgetBlobs([previous?.blobId, previous?.cleanBlobId].filter((blobId) => blobId && blobId !== out.blobId && blobId !== out.cleanBlobId));
+    const kept = new Set(photoBlobIdsIn(out));
+    forgetBlobs(photoBlobIdsIn(previous).filter((blobId) => !kept.has(blobId)));
     deviceLog("pose_result_saved", { memberId: target.id, assessmentId: out.assessmentId, view: out.view, storage: "indexedDB", source: out.analysisSource });
     setToast({ ok: true, msg: "저장했습니다 · 아래 '저장된 분석' 목록에서 다시 볼 수 있어요." });
     return true;
@@ -16364,7 +16362,7 @@ export default function App() {
     const cur = photos[target.id] || {};
     const gone = (cur.poses || []).find((p) => p.id === pid);
     savePhotos({ ...photos, [target.id]: { ...cur, poses: (cur.poses || []).filter((p) => p.id !== pid) } });
-    forgetBlobs([gone?.blobId, gone?.cleanBlobId].filter(Boolean));
+    forgetBlobs(photoBlobIdsIn(gone));
   };
   const adjustPhoto = (memberId, view, pid, tf, gid, gtf) => {
     const target = analysisMember(memberId);

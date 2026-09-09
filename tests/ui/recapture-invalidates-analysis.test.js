@@ -76,7 +76,7 @@ test("the pictures behind a discarded reading are released", async () => {
      them leaves files nothing points at. */
   const source = withoutComments(await appSource());
   const handler = between(source, "const discardPoseForView = async", "const deleteCaptureDraft = async");
-  assert.ok(handler.includes("forgetBlobs(gone.flatMap((pose) => [pose.blobId, pose.cleanBlobId, pose.thumbnailBlobId]).filter(Boolean));"));
+  assert.ok(handler.includes("forgetBlobs(gone.flatMap(photoBlobIdsIn));"), "through the one list every release site reads");
 });
 
 test("nothing is written when there was no reading to discard", async () => {

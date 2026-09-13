@@ -1,4 +1,5 @@
 import { COLLECTIONS } from "./constants.js";
+import { assertOrganizationId } from "./organization-id.js";
 
 /**
  * @param {unknown} value
@@ -28,7 +29,7 @@ export const paths = Object.freeze({
    * @param {string} organizationId @param {string} userId
    */
   orgMembership: (organizationId, userId) =>
-    `${COLLECTIONS.MEMBERSHIPS}/${segment(organizationId, "organizationId")}_${segment(userId, "userId")}`,
+    `${COLLECTIONS.MEMBERSHIPS}/${assertOrganizationId(organizationId)}_${segment(userId, "userId")}`,
   /** @param {string} organizationId @param {string} locationId */
   location: (organizationId, locationId) =>
     `${organizationRoot(organizationId)}/${COLLECTIONS.LOCATIONS}/${segment(locationId, "locationId")}`,

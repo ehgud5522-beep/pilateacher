@@ -72,6 +72,10 @@ import {
    import 는 남겨 둔다. 플래그를 되돌리면 그대로 다시 뜬다. */
 import BodyViewSheet from "./features/posture/BodyViewSheet.jsx";
 import { photoBlobIdsIn } from "./data/photo-blob-fields.js";
+import {
+  UNRESOLVED_ORGANIZATION_CONTEXT, createFirestoreMembershipReader,
+  readyOrganizationContext, resolveOrganizationContext,
+} from "./data/repositories/organization-context.js";
 import { validatePostureMeasurement, validPostureMetrics } from "./features/posture/measurement-validity.js";
 import {
   MANUAL_ONLY_RESULT_NOTICE, POSTURE_RESULT_METRIC_KEYS, isFullyManualAfterAiMiss,
@@ -10730,6 +10734,12 @@ const mediaRecordOK = () => typeof window !== "undefined" && !!navigator.mediaDe
 const voiceTime = (seconds) => `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
 const lessonRecordLlm = new GatewayLlmProvider({ gatewayProvider: aiProvider, maxRetries: 1 });
 const AIRecordingStatusContext = createContext({ status: AI_RECORDING_STATUS.NORMAL, updateStatus: () => {} });
+/**
+ * 로그인한 사용자의 조직 소속. ready 가 false 인 동안은 "아직 모름"이며,
+ * status 가 "unknown" 이면 조회에 실패한 것이라 센터 기능을 잠가야 한다 —
+ * legacy 개인 모드(isLegacy: true)와는 다른 상태다.
+ */
+const OrganizationContext = createContext(UNRESOLVED_ORGANIZATION_CONTEXT);
 
 function IOSMediaDiagnosticPanel({ memberId = "diagnostics", lessonId = "hidden-diagnostics" }) {
   const [microphoneTest, setMicrophoneTest] = useState({ status: "idle", steps: [] });
@@ -14517,7 +14527,13 @@ export function createAppScreenSmokeCases() {
     front: [{ id: "smoke-assessment_front", memberId: member.id, assessmentId: "smoke-assessment", view: "front", selectedViews: ["front"], analysisMethod: "draw", assessmentStatus: "completed", captureStatus: "completed", date: "2026-09-06", completedAt: "2026-09-06T09:00:00.000Z", marks: [] }],
     poses: [{ id: "smoke-assessment_front_draw", memberId: member.id, assessmentId: "smoke-assessment", view: "front", selectedViews: ["front"], analysisSource: "draw", assessmentStatus: "completed", assessmentComplete: true, completedAt: "2026-09-06T09:00:00.000Z", metrics: [] }],
   };
-  const provider = (child) => <AIRecordingStatusContext.Provider value={{ status: AI_RECORDING_STATUS.NORMAL, updateStatus: noop }}>{child}</AIRecordingStatusContext.Provider>;
+  const provider = (child) => (
+    <AIRecordingStatusContext.Provider value={{ status: AI_RECORDING_STATUS.NORMAL, updateStatus: noop }}>
+      <OrganizationContext.Provider value={readyOrganizationContext({ organizationId: "smoke-center", role: "owner", status: "active", isLegacy: false })}>
+        {child}
+      </OrganizationContext.Provider>
+    </AIRecordingStatusContext.Provider>
+  );
   const busyDb = createScheduleFixtureDb();
   return [
     { name: "일정 탭", element: provider(<ScheduleManager db={db} photos={photos} onSave={noop} onDelete={noop} onStatus={noop} onStatusAll={noop} onNoshowFee={noop} onGroupDone={noop} onNoComment={noop} onSaveNote={noop} onToast={noop} onSettings={noop} onConsumeMemberPreset={noop} onConsumeQuickAdd={noop} onOpenMember={noop} />) },
@@ -14540,6 +14556,7 @@ export default function App() {
   const onboardingCheckedAccountRef = useRef("");
   const [accounts, setAccounts] = useState([]);
   const [account, setAccount] = useState(null);
+  const [organizationContext, setOrganizationContext] = useState(UNRESOLVED_ORGANIZATION_CONTEXT);
   const [db, setDb] = useState(emptyDb("", ""));
   const lessonRecordDbRef = useRef(db);
   useEffect(() => { lessonRecordDbRef.current = db; }, [db]);
@@ -14767,6 +14784,7 @@ export default function App() {
             consentAuthId = nextConsentAuthId;
           }
           if (!u) {
+            setOrganizationContext(UNRESOLVED_ORGANIZATION_CONTEXT);
             try {
               const pendingUid = window.localStorage?.getItem(ACCOUNT_DELETION_PENDING_KEY) || "";
               if (pendingUid) {
@@ -14793,6 +14811,11 @@ export default function App() {
             const preservedSessionAccount = { ...(cached || {}), ...u, id: u.id };
             startupStage = "account_restore_after_profile_error";
             await loadAccount(preservedSessionAccount);
+            if (alive) {
+              startupStage = "organization_context";
+              const resolved = await loadOrganizationContext(u.id);
+              if (alive) setOrganizationContext(resolved);
+            }
             if (alive) finishStartup("app", isFirstCallback ? 1400 : 0);
             return;
           }
@@ -14807,6 +14830,10 @@ export default function App() {
           startupStage = "account_restore";
           await loadAccount(acc);
           if (!alive) return;
+          startupStage = "organization_context";
+          const resolvedOrganization = await loadOrganizationContext(u.id);
+          if (!alive) return;
+          setOrganizationContext(resolvedOrganization);
           const wait = isFirstCallback ? 1400 : 0;
           finishStartup("app", wait);
         });
@@ -14830,6 +14857,18 @@ export default function App() {
       if (cleanup) { try { cleanup(); } catch (e) {} }
     };
   }, []);
+
+  /**
+   * 소속은 인증이 끝난 뒤 한 번만 읽는다. 별도 useEffect 를 두면 인증 준비
+   * 게이트와 경합하고 uid 없이 조회하는 경로가 생긴다.
+   */
+  const loadOrganizationContext = async (userId) => {
+    const resolved = await resolveOrganizationContext(userId, {
+      listActiveMemberships: createFirestoreMembershipReader(),
+      warn: (code, detail) => deviceLog(code, detail),
+    });
+    return readyOrganizationContext(resolved);
+  };
 
   const loadAccount = async (acc) => {
     revokeAllUrls();
@@ -16627,6 +16666,7 @@ export default function App() {
 
   return (
     <AIRecordingStatusContext.Provider value={{ ...aiRecordingStatus, updateStatus: updateAIRecordingStatus }}>
+    <OrganizationContext.Provider value={organizationContext}>
     <LessonRecordLinkContext.Provider value={{ prepare: prepareLessonRecordContext, resolve: resolveLessonRecordLink }}>
     <div className={`${appRootClassName} flex justify-center`} style={{ minHeight: "100vh", height: "100dvh", backgroundColor: PAGE, overflow: "hidden" }}>
       {style}
@@ -16697,6 +16737,7 @@ export default function App() {
       )}
     </div>
     </LessonRecordLinkContext.Provider>
+    </OrganizationContext.Provider>
     </AIRecordingStatusContext.Provider>
   );
 }

@@ -10,35 +10,51 @@ function segment(value, label) {
   return result;
 }
 
+/**
+ * @param {string} organizationId
+ */
+function organizationRoot(organizationId) {
+  return `${COLLECTIONS.ORGANIZATIONS}/${segment(organizationId, "organizationId")}`;
+}
+
 export const paths = Object.freeze({
   /** @param {string} userId */
   user: (userId) => `${COLLECTIONS.USERS}/${segment(userId, "userId")}`,
   /** @param {string} organizationId */
-  organization: (organizationId) => `${COLLECTIONS.ORGANIZATIONS}/${segment(organizationId, "organizationId")}`,
-  /** @param {string} locationId */
-  location: (locationId) => `${COLLECTIONS.LOCATIONS}/${segment(locationId, "locationId")}`,
-  /** @param {string} membershipId */
-  membership: (membershipId) => `${COLLECTIONS.MEMBERSHIPS}/${segment(membershipId, "membershipId")}`,
-  /** @param {string} clientId */
-  client: (clientId) => `${COLLECTIONS.CLIENTS}/${segment(clientId, "clientId")}`,
-  /** @param {string} lessonId */
-  lesson: (lessonId) => `${COLLECTIONS.LESSONS}/${segment(lessonId, "lessonId")}`,
+  organization: (organizationId) => organizationRoot(organizationId),
+  /** @param {string} organizationId @param {string} locationId */
+  location: (organizationId, locationId) =>
+    `${organizationRoot(organizationId)}/${COLLECTIONS.LOCATIONS}/${segment(locationId, "locationId")}`,
   /** @param {string} organizationId @param {string} clientId */
-  organizationClient: (organizationId, clientId) =>
-    `${COLLECTIONS.ORGANIZATIONS}/${segment(organizationId, "organizationId")}/${COLLECTIONS.CLIENTS}/${segment(clientId, "clientId")}`,
+  client: (organizationId, clientId) =>
+    `${organizationRoot(organizationId)}/${COLLECTIONS.CLIENTS}/${segment(clientId, "clientId")}`,
+  /** @param {string} organizationId @param {string} membershipId */
+  membership: (organizationId, membershipId) =>
+    `${organizationRoot(organizationId)}/${COLLECTIONS.MEMBERSHIPS}/${segment(membershipId, "membershipId")}`,
+  /** @param {string} organizationId @param {string} membershipId @param {string} entryId */
+  membershipLedgerEntry: (organizationId, membershipId, entryId) =>
+    `${organizationRoot(organizationId)}/${COLLECTIONS.MEMBERSHIPS}/${segment(membershipId, "membershipId")}/${COLLECTIONS.LEDGER}/${segment(entryId, "entryId")}`,
   /** @param {string} organizationId @param {string} lessonId */
-  organizationLesson: (organizationId, lessonId) =>
-    `${COLLECTIONS.ORGANIZATIONS}/${segment(organizationId, "organizationId")}/${COLLECTIONS.LESSONS}/${segment(lessonId, "lessonId")}`,
+  lesson: (organizationId, lessonId) =>
+    `${organizationRoot(organizationId)}/${COLLECTIONS.LESSONS}/${segment(lessonId, "lessonId")}`,
   /** @param {string} organizationId @param {string} lessonId @param {string} clientId */
   lessonParticipant: (organizationId, lessonId, clientId) =>
-    `${COLLECTIONS.ORGANIZATIONS}/${segment(organizationId, "organizationId")}/${COLLECTIONS.LESSONS}/${segment(lessonId, "lessonId")}/participants/${segment(clientId, "clientId")}`,
-  /** @param {string} assessmentId */
-  assessment: (assessmentId) => `${COLLECTIONS.ASSESSMENTS}/${segment(assessmentId, "assessmentId")}`,
-  /** @param {string} recommendationId */
-  recommendation: (recommendationId) =>
-    `${COLLECTIONS.AI_RECOMMENDATIONS}/${segment(recommendationId, "recommendationId")}`,
-  /** @param {string} outcomeId */
-  outcome: (outcomeId) => `${COLLECTIONS.OUTCOMES}/${segment(outcomeId, "outcomeId")}`,
+    `${organizationRoot(organizationId)}/${COLLECTIONS.LESSONS}/${segment(lessonId, "lessonId")}/${COLLECTIONS.PARTICIPANTS}/${segment(clientId, "clientId")}`,
+  /** @param {string} organizationId @param {string} noteId */
+  lessonNote: (organizationId, noteId) =>
+    `${organizationRoot(organizationId)}/${COLLECTIONS.LESSON_NOTES}/${segment(noteId, "noteId")}`,
+  /** @param {string} organizationId @param {string} logId */
+  auditLog: (organizationId, logId) =>
+    `${organizationRoot(organizationId)}/${COLLECTIONS.AUDIT_LOGS}/${segment(logId, "logId")}`,
+  /** @param {string} organizationId @param {string} assessmentId */
+  assessment: (organizationId, assessmentId) =>
+    `${organizationRoot(organizationId)}/${COLLECTIONS.ASSESSMENTS}/${segment(assessmentId, "assessmentId")}`,
+  /** @param {string} organizationId @param {string} recommendationId */
+  recommendation: (organizationId, recommendationId) =>
+    `${organizationRoot(organizationId)}/${COLLECTIONS.AI_RECOMMENDATIONS}/${segment(recommendationId, "recommendationId")}`,
+  /** @param {string} organizationId @param {string} outcomeId */
+  outcome: (organizationId, outcomeId) =>
+    `${organizationRoot(organizationId)}/${COLLECTIONS.OUTCOMES}/${segment(outcomeId, "outcomeId")}`,
   /** @param {string} userId */
   legacyBackup: (userId) => `${COLLECTIONS.USERS}/${segment(userId, "userId")}/backup/latest`,
 });

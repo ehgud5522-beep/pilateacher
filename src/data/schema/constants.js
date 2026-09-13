@@ -79,6 +79,8 @@ export const COLLECTIONS = Object.freeze({
   MEMBERSHIPS: "memberships",
   CLIENTS: "clients",
   LESSONS: "lessons",
+  LEDGER: "ledger",
+  PARTICIPANTS: "participants",
   LESSON_PARTICIPANTS: "lessonParticipants",
   LESSON_NOTES: "lessonNotes",
   ASSESSMENTS: "assessments",

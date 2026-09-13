@@ -96,7 +96,6 @@ export const COLLECTIONS = Object.freeze({
   LESSONS: "lessons",
   LEDGER: "ledger",
   PARTICIPANTS: "participants",
-  LESSON_PARTICIPANTS: "lessonParticipants",
   LESSON_NOTES: "lessonNotes",
   ASSESSMENTS: "assessments",
   ASSESSMENT_MEDIA: "assessmentMedia",

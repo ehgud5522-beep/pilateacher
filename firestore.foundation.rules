@@ -259,14 +259,33 @@ service cloud.firestore {
           allow update, delete: if false;
         }
       }
-    }
 
-    match /locations/{locationId} {
-      allow read: if isActiveMember(resource.data.organizationId);
-      allow create: if hasRole(request.resource.data.organizationId, ["owner", "manager"]);
-      allow update: if sameOrganization()
-        && hasRole(resource.data.organizationId, ["owner", "manager"]);
-      allow delete: if false;
+      match /lessonNotes/{noteId} {
+        allow read: if isActiveMember(organizationId)
+          && resource.data.organizationId == organizationId
+          && (
+            hasRole(organizationId, ["owner", "manager", "instructor"])
+            || resource.data.userId == request.auth.uid
+          );
+        allow create: if request.resource.data.organizationId == organizationId
+          && hasRole(organizationId, ["owner", "manager", "instructor"]);
+        allow update: if resource.data.organizationId == organizationId
+          && request.resource.data.organizationId == organizationId
+          && request.auth.uid == resource.data.createdBy
+          && immutable(["clientId", "lessonId", "createdBy", "createdAt"]);
+        allow delete: if false;
+      }
+
+      match /locations/{locationId} {
+        allow read: if isActiveMember(organizationId)
+          && resource.data.organizationId == organizationId;
+        allow create: if request.resource.data.organizationId == organizationId
+          && hasRole(organizationId, ["owner", "manager"]);
+        allow update: if resource.data.organizationId == organizationId
+          && request.resource.data.organizationId == organizationId
+          && hasRole(organizationId, ["owner", "manager"]);
+        allow delete: if false;
+      }
     }
 
     match /memberships/{membershipDocumentId} {
@@ -275,52 +294,6 @@ service cloud.firestore {
         || hasRole(resource.data.organizationId, ["owner", "manager"])
       );
       allow create, update, delete: if false;
-    }
-
-    match /clients/{clientId} {
-      allow read: if isActiveMember(resource.data.organizationId)
-        && (
-          hasRole(resource.data.organizationId, ["owner", "manager", "instructor", "staff"])
-          || isOwnClientDocument(resource.data)
-        );
-      allow create: if hasRole(request.resource.data.organizationId, ["owner", "manager", "instructor", "staff"]);
-      allow update: if sameOrganization()
-        && hasRole(resource.data.organizationId, ["owner", "manager", "instructor", "staff"]);
-      allow delete: if false;
-    }
-
-    match /lessons/{lessonId} {
-      allow read: if isActiveMember(resource.data.organizationId);
-      allow create: if hasRole(request.resource.data.organizationId, ["owner", "manager", "instructor", "staff"]);
-      allow update: if sameOrganization()
-        && hasRole(resource.data.organizationId, ["owner", "manager", "instructor", "staff"]);
-      allow delete: if hasRole(resource.data.organizationId, ["owner", "manager"]);
-    }
-
-    match /lessonParticipants/{participantId} {
-      allow read: if isActiveMember(resource.data.organizationId)
-        && (
-          hasRole(resource.data.organizationId, ["owner", "manager", "instructor", "staff"])
-          || resource.data.userId == request.auth.uid
-        );
-      allow create: if hasRole(request.resource.data.organizationId, ["owner", "manager", "instructor", "staff"]);
-      allow update: if sameOrganization()
-        && immutable(["lessonId", "clientId", "userId"])
-        && hasRole(resource.data.organizationId, ["owner", "manager", "instructor", "staff"]);
-      allow delete: if false;
-    }
-
-    match /lessonNotes/{noteId} {
-      allow read: if isActiveMember(resource.data.organizationId)
-        && (
-          hasRole(resource.data.organizationId, ["owner", "manager", "instructor"])
-          || resource.data.userId == request.auth.uid
-        );
-      allow create: if hasRole(request.resource.data.organizationId, ["owner", "manager", "instructor"]);
-      allow update: if sameOrganization()
-        && request.auth.uid == resource.data.createdBy
-        && immutable(["clientId", "lessonId", "createdBy", "createdAt"]);
-      allow delete: if false;
     }
 
     match /assessments/{assessmentId} {

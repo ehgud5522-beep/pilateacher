@@ -117,12 +117,12 @@ async function seed() {
       });
       await setDoc(doc(db, "users", userId), { displayName: role });
     }
-    await setDoc(doc(db, "clients", "client-member"), {
+    await setDoc(doc(db, "organizations", ORG_A, "clients", "client-member"), {
       organizationId: ORG_A,
       userId: users.member,
       displayName: "Member",
     });
-    await setDoc(doc(db, "clients", "client-other"), {
+    await setDoc(doc(db, "organizations", ORG_A, "clients", "client-other"), {
       organizationId: ORG_A,
       userId: "another-member",
       displayName: "Other",
@@ -269,7 +269,7 @@ describe("role permissions", () => {
   });
 
   test("manager can create a location", async () => {
-    await assertSucceeds(setDoc(doc(dbFor(users.manager), "locations", "location-a"), {
+    await assertSucceeds(setDoc(doc(dbFor(users.manager), "organizations", ORG_A, "locations", "location-a"), {
       organizationId: ORG_A,
       name: "Location",
     }));
@@ -284,7 +284,7 @@ describe("role permissions", () => {
   });
 
   test("staff can create lessons but cannot create assessments", async () => {
-    await assertSucceeds(setDoc(doc(dbFor(users.staff), "lessons", "lesson-a"), {
+    await assertSucceeds(setDoc(doc(dbFor(users.staff), "organizations", ORG_A, "lessons", "lesson-a"), {
       organizationId: ORG_A,
       status: "scheduled",
     }));
@@ -320,8 +320,8 @@ describe("role permissions", () => {
   });
 
   test("member reads only the linked client document", async () => {
-    await assertSucceeds(getDoc(doc(dbFor(users.member), "clients", "client-member")));
-    await assertFails(getDoc(doc(dbFor(users.member), "clients", "client-other")));
+    await assertSucceeds(getDoc(doc(dbFor(users.member), "organizations", ORG_A, "clients", "client-member")));
+    await assertFails(getDoc(doc(dbFor(users.member), "organizations", ORG_A, "clients", "client-other")));
   });
 });
 

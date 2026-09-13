@@ -8,14 +8,19 @@ const { prepareProviderInput } = require("./privacy");
 const { fingerprintRequest, parseGatewayRequest } = require("./request-contracts");
 
 const PIPELINE_VERSION = "ai-gateway-v1";
-const DEFERRED_OPERATIONS = new Set(["recommendSequence"]);
+const DEFERRED_OPERATIONS = new Set(["recommendSequence", "analyzeBody"]);
+const DEFERRED_REPORT_TYPES = new Set(["member_body_assessment_card"]);
 const consentOperation = (operation) => (
   operation === OPERATIONS.STRUCTURE_LESSON_RECORD || operation === OPERATIONS.LESSON_RECORD_FROM_AUDIO
     ? OPERATIONS.SUMMARIZE_VOICE
     : operation
 );
 const diagnosticsEnabled = () => process.env.NODE_ENV !== "production" || process.env.AI_GATEWAY_DIAGNOSTICS === "1";
-const ALWAYS_LOG_EVENTS = new Set(["authorization_denied", "model_call_succeeded", "gateway_completed"]);
+const ALWAYS_LOG_EVENTS = new Set([
+  "authorization_denied", "model_call_succeeded", "gateway_completed",
+  "AUDIO_STT_STARTED", "AUDIO_STT_SUCCEEDED", "AUDIO_STT_FAILED",
+  "AUDIO_STRUCTURE_STARTED", "AUDIO_STRUCTURE_SUCCEEDED", "AUDIO_STRUCTURE_FAILED",
+]);
 const safeLogToken = (value, max = 120) => String(value || "")
   .replace(/[^A-Za-z0-9._:/-]/g, "_")
   .slice(0, max);
@@ -60,7 +65,10 @@ function createAIGatewayHandler({
       diagnosticLog("request_authenticated", { requestId, operation: request.operation, httpStatus: 0, auth: "success" });
       // DEFER: Sequence recommendation keeps its request/output contracts for a
       // future release, but has no active Gateway route or provider execution.
-      if (DEFERRED_OPERATIONS.has(request.operation)) throw new GatewayError("operation_deferred");
+      if (DEFERRED_OPERATIONS.has(request.operation)
+        || (request.operation === OPERATIONS.GENERATE_REPORT && DEFERRED_REPORT_TYPES.has(request.input.reportType))) {
+        throw new GatewayError("operation_deferred");
+      }
       const authorization = await policyService.authorize({
         uid,
         memberId: request.input.memberId,
@@ -79,7 +87,12 @@ function createAIGatewayHandler({
           throw new GatewayError("consent_required");
         }
         if (["backup_missing", "member_not_owned", "lesson_not_owned"].includes(authorizationReason)) {
-          throw new GatewayError("invalid_request", { status: 403 });
+          throw new GatewayError("invalid_request", { status: 403, diagnostic: {
+            stage: "authorization",
+            validationReason: authorizationReason,
+            invalidField: authorizationReason === "member_not_owned" ? "input.memberId" : authorizationReason === "lesson_not_owned" ? "input.lessonId" : "request",
+            operation: request.operation,
+          } });
         }
         throw new GatewayError("provider_unavailable");
       }
@@ -96,7 +109,7 @@ function createAIGatewayHandler({
         key: requestId,
         fingerprint,
       });
-      if (idempotencyClaim?.state === "conflict") throw new GatewayError("invalid_request");
+      if (idempotencyClaim?.state === "conflict") throw new GatewayError("invalid_request", { diagnostic: { stage: "idempotency", validationReason: "idempotency_conflict", invalidField: "requestId", operation: request.operation } });
       if (idempotencyClaim?.state === "pending") throw new GatewayError("provider_unavailable");
       if (idempotencyClaim?.state === "cached") return res.status(200).json(idempotencyClaim.response);
       if (idempotencyClaim?.state !== "new" || !idempotencyClaim.storageKey) throw new GatewayError("internal_error");
@@ -122,6 +135,11 @@ function createAIGatewayHandler({
               audioMetrics: request.input.audioMetrics,
             },
             safetyIdentifier: safetyIdentifier(uid),
+            onDiagnostic: (event, details = {}) => diagnosticLog(event, {
+              requestId,
+              operation: request.operation,
+              ...details,
+            }),
           });
         } finally {
           request.input.audio = "";
@@ -209,6 +227,17 @@ function createAIGatewayHandler({
       });
       return res.status(200).json(response);
     } catch (error) {
+      if (error?.code === "invalid_request") {
+        const candidateOperation = operation || req?.body?.operation;
+        const safeOperation = Object.values(OPERATIONS).includes(candidateOperation) ? candidateOperation : "unknown";
+        error.diagnostic = Object.freeze({
+          stage: "request_validation",
+          validationReason: "invalid_request",
+          invalidField: "request",
+          ...(error.diagnostic || {}),
+          operation: error.diagnostic?.operation || safeOperation,
+        });
+      }
       if (aiRecordingOperations?.handleFailure) {
         try { await aiRecordingOperations.handleFailure(error, { requestId, operation }); }
         catch (operationsError) {

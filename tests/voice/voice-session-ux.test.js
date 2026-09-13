@@ -18,7 +18,9 @@ import {
   shouldInterruptServerRecordingOnPause,
   shouldRestartRecognizer,
   stitchSpeechTranscript,
+  voiceDiagnosticId,
 } from "../../src/features/voice/voice-session.js";
+import { buildRemoteDiagnosticReport } from "../../src/features/diagnostics/remote-diagnostics.js";
 
 test("server audio permission preserves iOS prompt and logs start failure diagnostics", () => {
   assert.equal(nativeAudioPermissionState({ recordAudio: "prompt" }, "ios"), "prompt");
@@ -165,11 +167,93 @@ test("voice diagnostics expose timing and safety flags without transcript conten
   assert.equal(JSON.stringify(entry).includes("저장하면 안 되는 원문"), false);
 });
 
+test("real-device voice pipeline events are allowlisted and retain only diagnostic metadata", () => {
+  const values = new Map();
+  const storage = { getItem: (key) => values.get(key) || null, setItem: (key, value) => values.set(key, value) };
+  const events = [
+    "voice_start_tapped", "voice_consent_checked", "voice_permission_checked",
+    "voice_audio_session_release_started", "voice_audio_session_release_succeeded", "voice_audio_session_release_failed",
+    "voice_prepare_started", "voice_prepare_succeeded", "voice_prepare_failed",
+    "voice_record_start_called", "voice_record_start_succeeded", "voice_record_start_failed",
+    "voice_stop_called", "voice_stop_succeeded", "voice_stop_failed",
+    "voice_file_read_succeeded", "voice_blob_saved", "voice_upload_started", "voice_upload_succeeded",
+    "voice_stt_started", "voice_stt_succeeded", "voice_structure_started", "voice_structure_succeeded",
+    "voice_pipeline_failed", "voice_fallback_triggered", "prewarm_started", "prewarm_succeeded", "prewarm_failed",
+    "speech_markers", "amplitude_unavailable", "fallback",
+  ];
+  events.forEach((event, index) => {
+    const entry = appendVoiceSessionDiagnostic(event, {
+      source: "server_audio", platform: "ios", permissionState: "granted", stage: "record_start",
+      code: "diagnostic_code", message: "safe message", pluginError: "safe plugin message",
+      elapsedMs: index, bytes: 128, uriPresent: true, blobIdHash: voiceDiagnosticId("raw-blob-id", "blob"),
+      consentRequired: false, consentGranted: true,
+      audio: "BASE64_MUST_NOT_BE_STORED", transcript: "전사 원문", memberName: "회원 이름", memberId: "raw-member-id",
+    }, storage, () => new Date(1_780_000_000_000 + index));
+    assert.equal(entry?.event, event, `${event} must not be dropped by the allowlist`);
+  });
+  const serialized = values.get("pilateacher_voice_session_diagnostics_v1");
+  assert.equal(serialized.includes("BASE64_MUST_NOT_BE_STORED"), false);
+  assert.equal(serialized.includes("전사 원문"), false);
+  assert.equal(serialized.includes("회원 이름"), false);
+  assert.equal(serialized.includes("raw-member-id"), false);
+  assert.equal(serialized.includes("raw-blob-id"), false);
+  const latest = readVoiceSessionDiagnostics(storage)[0];
+  assert.equal(latest.platform, "ios");
+  assert.equal(latest.permissionState, "granted");
+  assert.equal(latest.uriPresent, true);
+  assert.match(latest.blobIdHash, /^blob_/);
+});
+
+test("remote voice diagnostics never include raw audio transcript member or blob identifiers", () => {
+  const report = buildRemoteDiagnosticReport({
+    voiceEvents: [{
+      at: "2026-09-06T00:00:00.000Z", event: "voice_pipeline_failed", source: "server_audio",
+      stage: "voice_upload", code: "network_error", message: "safe failure", pluginError: "safe plugin failure",
+      requestId: "voice-request-1", platform: "ios", permissionState: "granted", elapsedMs: 32, bytes: 128,
+      audio: "BASE64_AUDIO", transcript: "민감한 전사", memberName: "회원 이름", memberId: "raw-member-id",
+      blobId: "raw-blob-id", blobIdHash: voiceDiagnosticId("raw-blob-id", "blob"),
+    }],
+  });
+  const serialized = JSON.stringify(report);
+  assert.equal(report.logs[0].stage, "voice_upload");
+  assert.equal(report.logs[0].elapsedMs, 32);
+  assert.equal(report.logs[0].platform, "ios");
+  assert.equal(report.logs[0].permissionState, "granted");
+  assert.equal(serialized.includes("BASE64_AUDIO"), false);
+  assert.equal(serialized.includes("민감한 전사"), false);
+  assert.equal(serialized.includes("회원 이름"), false);
+  assert.equal(serialized.includes("raw-member-id"), false);
+  assert.equal(serialized.includes("raw-blob-id"), false);
+});
+
+test("server-audio instrumentation preserves consent stop and native fallback control flow", async () => {
+  const source = await readFile(new URL("../../src/App.jsx", import.meta.url), "utf8");
+  const voice = source.slice(source.indexOf("function VoiceNote("), source.indexOf("function NoteForm("));
+  assert.ok(voice.indexOf('voiceDiagnostic("voice_start_tapped"') < voice.indexOf("startServerRecording(mode)"));
+  const consentEventIndex = voice.indexOf('voiceDiagnostic("voice_consent_checked"');
+  const consentStopIndex = voice.indexOf("if (!consent.ok)", consentEventIndex);
+  const consentReturnIndex = voice.indexOf("return;", consentStopIndex);
+  const permissionIndex = voice.indexOf("CapacitorAudioRecorder.checkPermissions", consentStopIndex);
+  assert.ok(consentEventIndex >= 0 && consentEventIndex < consentStopIndex);
+  assert.ok(consentStopIndex < consentReturnIndex && consentReturnIndex < permissionIndex, "consent rejection must stop before permission and recorder work");
+  assert.match(voice, /voiceDiagnostic\("voice_permission_checked"[\s\S]*permissionState/);
+  assert.match(voice, /voiceDiagnostic\("voice_prepare_failed"/);
+  assert.match(voice, /voiceDiagnostic\("voice_record_start_succeeded"/);
+  assert.match(voice, /voiceDiagnostic\("voice_record_start_failed"/);
+  assert.match(voice, /voiceDiagnostic\("voice_stop_called"/);
+  assert.match(voice, /voiceDiagnostic\("voice_file_read_succeeded"/);
+  assert.match(voice, /voiceDiagnostic\("voice_blob_saved"/);
+  assert.match(voice, /voiceDiagnostic\("voice_fallback_triggered"[\s\S]*failedAttempts >= 2|failedAttempts >= 2[\s\S]*voiceDiagnostic\("voice_fallback_triggered"/);
+  assert.match(voice, /prewarm_started/);
+  assert.match(voice, /prewarm_succeeded/);
+  assert.match(voice, /prewarm_failed/);
+});
+
 test("VoiceNote waits for a user tap, keeps toggle controls, and exposes continuation without overlapping failure UI", async () => {
   const source = await readFile(new URL("../../src/App.jsx", import.meta.url), "utf8");
   const voice = source.slice(source.indexOf("function VoiceNote("), source.indexOf("function NoteForm("));
   assert.doesNotMatch(voice, /autoStart|autoStartHandledRef/);
-  assert.match(voice, /onClick=\{start\}/);
+  assert.match(voice, /onClick=\{\(\) => startFromUserTap\("append"\)\}/);
   assert.match(voice, /onClick=\{\(\) => stop\("manual"\)\}/);
   assert.match(voice, /듣고 있어요 · 잠시 생각하며 멈춰도 괜찮아요/);
   assert.match(voice, /이어서 말하기/);

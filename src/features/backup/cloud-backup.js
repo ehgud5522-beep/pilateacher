@@ -1,3 +1,5 @@
+import { PHOTO_BLOB_ID_FIELDS } from "../../data/photo-blob-fields.js";
+
 export const CLOUD_BACKUP_VERSION = 2;
 export const CLOUD_PHOTO_CONSENT_VERSION = "2026-08-24";
 export const PHOTO_RETENTION_DAYS = 30;
@@ -8,7 +10,7 @@ const bytesOf = (value) => new TextEncoder().encode(JSON.stringify(value ?? null
 const stripBinaryDeep = (value) => {
   if (Array.isArray(value)) return value.map(stripBinaryDeep);
   if (!value || typeof value !== "object") return typeof value === "string" && value.startsWith("data:image") ? "" : value;
-  const blocked = new Set(["src", "blob", "cleanBlob", "blobId", "cleanBlobId", "thumbnailBlobId"]);
+  const blocked = new Set(["src", "blob", "cleanBlob", ...PHOTO_BLOB_ID_FIELDS]);
   return Object.fromEntries(Object.entries(value).filter(([key, item]) => !blocked.has(key) && typeof item !== "function").map(([key, item]) => [key, stripBinaryDeep(item)]));
 };
 
@@ -61,7 +63,7 @@ export function evaluateOverwriteRisk(localData, cloudBackup, options = {}) {
 
 function stripRuntimePhotoFields(record) {
   const source = record && typeof record === "object" ? record : {};
-  const blocked = new Set(["src", "blob", "cleanBlob", "blobId", "cleanBlobId", "thumbnailBlobId"]);
+  const blocked = new Set(["src", "blob", "cleanBlob", ...PHOTO_BLOB_ID_FIELDS]);
   return Object.fromEntries(Object.entries(source).filter(([key, value]) => !blocked.has(key) && typeof value !== "function"));
 }
 

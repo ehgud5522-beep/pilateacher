@@ -26,8 +26,22 @@ const REPORT_SOURCE_FIELDS = Object.freeze({
 const FORBIDDEN_KEY = /(photo|image|blob|base64|dataurl|password|secret|token|authorization|api.?key|phone|email|name|전화|이메일|이름|성명|회원명|강사명|비밀번호|비밀)/i;
 const SECRET_VALUE = /(data:image\/|-----BEGIN [A-Z ]*PRIVATE KEY-----|\bBearer\s+[A-Za-z0-9._~+/=-]{8,}|\bsk-[A-Za-z0-9_-]{12,}|OPENAI_API_KEY)/i;
 
+function requestValidationDiagnostic(message) {
+  const text = String(message || "");
+  const first = text.match(/^(input(?:\.[A-Za-z0-9_.\[\]-]+)?|request(?: body)?|gateway envelope|idempotency key|operation)\b/i)?.[1] || "request";
+  const validationReason = /missing fields?/i.test(text) ? "missing_field"
+    : /unsupported fields?/i.test(text) ? "unsupported_field"
+      : /unsupported/i.test(text) ? "unsupported_operation"
+        : /too large|too many|excessive/i.test(text) ? "limit_exceeded"
+          : /not serializable/i.test(text) ? "serialization_failed"
+            : /forbidden/i.test(text) ? "forbidden_value"
+              : /must be/i.test(text) ? "invalid_type"
+                : "invalid_value";
+  return { stage: "request_validation", validationReason, invalidField: first.replace(/\s+/g, "_") };
+}
+
 function invalid(message) {
-  return new GatewayError("invalid_request", { internalMessage: message });
+  return new GatewayError("invalid_request", { internalMessage: message, diagnostic: requestValidationDiagnostic(message) });
 }
 
 function requireObject(value, field) {

@@ -53,11 +53,11 @@ test("direct drawing has a compact toolbar, exact preview, and single-photo comp
   const analyzerEnd = source.indexOf("function AssessmentWorkspace(", analyzerStart);
   const analyzer = source.slice(analyzerStart, analyzerEnd);
 
-  assert.match(canvas, /grid grid-cols-3 gap-1" data-posture-tool-grid/);
+  assert.match(canvas, /grid grid-cols-6 gap-1" data-posture-tool-grid/);
   assert.match(canvas, /data-posture-color-grid/);
   assert.doesNotMatch(canvas, /data-posture-tool-grid[^>]*overflow-x-auto/);
-  assert.match(canvas, /h-8 w-8 items-center justify-center rounded-full/);
-  assert.match(canvas, /min-h-11 items-center gap-1 border-t/);
+  assert.match(canvas, /h-7 w-7 items-center justify-center rounded-full/);
+  assert.match(canvas, /<details className="mt-1 border-t pt-1"/);
   assert.match(canvas, /HANDWRITING_SIZE_OPTIONS/);
   assert.match(canvas, /setHandwritingSize/);
   assert.match(canvas, /선택한 손메모 삭제/);
@@ -83,7 +83,8 @@ test("save failure keeps editor state and manual results omit AI-only cards", as
   const canvasEnd = source.indexOf("function MemberList(", canvasStart);
   const canvas = source.slice(canvasStart, canvasEnd);
   const workspaceStart = source.indexOf("function AssessmentWorkspace(");
-  const workspace = source.slice(workspaceStart);
+  const workspaceEnd = source.indexOf("function ReferenceAnalysisTab(", workspaceStart);
+  const workspace = source.slice(workspaceStart, workspaceEnd);
 
   assert.match(canvas, /if \(stored === false\) throw/);
   assert.match(canvas, /표시를 저장하지 못했습니다\. 현재 편집 내용은 유지됩니다/);
@@ -93,10 +94,10 @@ test("save failure keeps editor state and manual results omit AI-only cards", as
   assert.match(saveHandler, /catch \(error\)/);
 
   assert.match(workspace, /const selectedIsManualResult = \["draw", "manual"\]/);
-  assert.match(workspace, /selectedIsManualResult \? "사진 기록" : "분석 결과"/);
+  assert.match(workspace, /selectedIsManualResult \? "사진 기록" : "변화 기록"/);
   assert.match(workspace, /!selectedIsManualResult && selected\?\.status === "completed"/);
-  assert.match(workspace, /!selectedIsManualResult && <button type="button" onClick=\{\(\) => openReportForSet\(selected\)\}/);
-  assert.match(workspace, /Before \/ After 비교/);
+  assert.doesNotMatch(workspace, /openReportForSet|결과 리포트 카드|<ResultCardMaker/);
+  assert.match(workspace, />변화 비교<\/button>/);
   assert.match(workspace, /screen === "history"/);
 });
 

@@ -35,7 +35,7 @@ test("inactive member is hidden while records remain intact", () => {
 
 test("member detail requires exact name and exposes inactive alternative", async () => {
   const source = await readFile(new URL("../../src/App.jsx", import.meta.url), "utf8");
-  assert.match(source, /님과 수업기록·체형분석·사진이 모두 삭제됩니다\. 되돌릴 수 없어요\./);
+  assert.match(source, /님과 수업기록·변화 기록·사진이 모두 삭제됩니다\. 되돌릴 수 없어요\./);
   assert.match(source, /deleteName !== member\.name/);
   assert.match(source, />비활성으로 두기</);
   assert.match(source, /unlinkedMemberDeleted/);

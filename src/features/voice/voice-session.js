@@ -11,7 +11,29 @@ const VOICE_SESSION_EVENT_TYPES = new Set([
   "permission_state", "open_app_settings",
   "record_start", "record_end", "upload", "transcribed", "structured", "failed",
   "prepared", "trimmed", "audio_record_start_failed", "camera_preview_start_failed", "camera_fallback",
+  "camera_start_skipped", "camera_preview_start_cancelled", "photo_output_ready",
+  "album_picker_opened", "album_picker_change", "album_picker_released", "album_picker_away",
+  /* segmenter_* 는 360° 바디뷰 전용이라 그 화면과 함께 뺐다 (2026-09).
+     여기 없는 이름은 조용히 버려지므로, 되살릴 때 이 줄부터 되돌릴 것. */
+  "camera_preview_bounds_pending", "camera_preview_bounds_failed",
+  "motion_listener_started", "motion_unsupported", "motion_permission_denied",
+  "motion_listener_failed", "motion_listener_remove_failed", "motion_reading_timeout",
+  "motion_reading_invalid", "motion_reading_stalled", "motion_reading_resumed",
   "capture_start", "captured", "saved", "preview_stopped", "returned",
+  "camera_prepare_started", "camera_permission_ready", "camera_photo_output_ready",
+  "camera_preview_start_requested", "camera_preview_started", "camera_webview_opacity",
+  "assessment_id_changed", "assessment_id_generated",
+  "speech_markers", "amplitude_unavailable", "fallback",
+  "voice_start_tapped", "voice_consent_checked", "voice_permission_checked",
+  "voice_audio_session_release_started", "voice_audio_session_release_succeeded", "voice_audio_session_release_failed",
+  "voice_prepare_started", "voice_prepare_succeeded", "voice_prepare_failed",
+  "voice_record_start_called", "voice_record_start_succeeded", "voice_record_start_failed",
+  "voice_stop_called", "voice_stop_succeeded", "voice_stop_failed",
+  "voice_file_read_succeeded", "voice_blob_saved",
+  "voice_upload_started", "voice_upload_succeeded",
+  "voice_stt_started", "voice_stt_succeeded", "voice_structure_started", "voice_structure_succeeded",
+  "voice_pipeline_failed", "voice_fallback_triggered",
+  "prewarm_started", "prewarm_succeeded", "prewarm_failed",
 ]);
 
 const normalizeSpace = (value) => String(value || "").replace(/\s+/g, " ").trim();
@@ -82,6 +104,17 @@ const safeDiagnosticMessage = (value, max = 240) => String(value || "")
   .replace(/sk-[A-Za-z0-9_-]+/g, "sk_[redacted]")
   .slice(0, max);
 
+export function voiceDiagnosticId(value, prefix = "id") {
+  const text = String(value || "");
+  if (!text) return "";
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${safeDiagnosticText(prefix, 12)}_${(hash >>> 0).toString(36).padStart(7, "0")}`;
+}
+
 export function nativeAudioPermissionState(status, platform = "") {
   const value = String(status?.recordAudio || status || "prompt").trim().toLowerCase();
   if (value === "granted") return "granted";
@@ -107,10 +140,22 @@ export function appendVoiceSessionDiagnostic(event, details = {}, storage = glob
     source: safeDiagnosticText(details.source || "unknown", 40),
     ...(details.code ? { code: safeDiagnosticText(details.code) } : {}),
     ...(details.reason ? { reason: safeDiagnosticText(details.reason) } : {}),
+    ...(details.validationReason ? { validationReason: safeDiagnosticText(details.validationReason) } : {}),
+    ...(details.invalidField ? { invalidField: safeDiagnosticText(details.invalidField, 120) } : {}),
+    ...(details.operation ? { operation: safeDiagnosticText(details.operation, 80) } : {}),
     ...(details.phase ? { phase: safeDiagnosticText(details.phase) } : {}),
     ...(details.state ? { state: safeDiagnosticText(details.state) } : {}),
+    ...(details.platform ? { platform: safeDiagnosticText(details.platform, 24) } : {}),
+    ...(details.lifecycleState ? { lifecycleState: safeDiagnosticText(details.lifecycleState, 40) } : {}),
+    ...(details.stage ? { stage: safeDiagnosticText(details.stage, 80) } : {}),
+    ...(details.message ? { message: safeDiagnosticMessage(details.message) } : {}),
+    ...(typeof details.consentRequired === "boolean" ? { consentRequired: details.consentRequired } : {}),
+    ...(typeof details.consentGranted === "boolean" ? { consentGranted: details.consentGranted } : {}),
+    ...(typeof details.uriPresent === "boolean" ? { uriPresent: details.uriPresent } : {}),
+    ...(details.blobIdHash ? { blobIdHash: safeDiagnosticText(details.blobIdHash, 80) } : {}),
     ...(Number.isFinite(Number(details.attempt)) ? { attempt: Math.max(0, Number(details.attempt)) } : {}),
     ...(Number.isFinite(Number(details.delayMs)) ? { delayMs: Math.max(0, Number(details.delayMs)) } : {}),
+    ...(Number.isFinite(Number(details.elapsedMs)) ? { elapsedMs: Math.max(0, Number(details.elapsedMs)) } : {}),
     ...(Number.isFinite(Number(details.charCount)) ? { charCount: Math.max(0, Number(details.charCount)) } : {}),
     ...(Number.isFinite(Number(details.durationMs)) ? { durationMs: Math.max(0, Number(details.durationMs)) } : {}),
     ...(Number.isFinite(Number(details.seconds)) ? { seconds: Math.max(0, Number(details.seconds)) } : {}),
@@ -131,6 +176,14 @@ export function appendVoiceSessionDiagnostic(event, details = {}, storage = glob
     ...(details.causeMessage ? { causeMessage: safeDiagnosticMessage(details.causeMessage, 400) } : {}),
     ...(details.httpStatus ? { httpStatus: Math.max(0, Number(details.httpStatus) || 0) } : {}),
     ...(details.permissionState ? { permissionState: safeDiagnosticText(details.permissionState, 40) } : {}),
+    ...(details.domain ? { domain: safeDiagnosticText(details.domain, 60) } : {}),
+    ...(details.assessmentId ? { assessmentId: safeDiagnosticText(details.assessmentId, 80) } : {}),
+    ...(details.previousAssessmentId ? { previousAssessmentId: safeDiagnosticText(details.previousAssessmentId, 80) } : {}),
+    ...(typeof details.webViewOpaque === "boolean" ? { webViewOpaque: details.webViewOpaque } : {}),
+    ...(details.root ? { root: safeDiagnosticText(details.root, 40) } : {}),
+    ...(details.surface ? { surface: safeDiagnosticText(details.surface, 40) } : {}),
+    ...(Number.isFinite(Number(details.receivedEvents)) ? { receivedEvents: Math.max(0, Number(details.receivedEvents)) } : {}),
+    ...(Number.isFinite(Number(details.invalidEvents)) ? { invalidEvents: Math.max(0, Number(details.invalidEvents)) } : {}),
     ...(details.audioSessionCategory ? { audioSessionCategory: safeDiagnosticText(details.audioSessionCategory, 80) } : {}),
     ...(details.audioSessionMode ? { audioSessionMode: safeDiagnosticText(details.audioSessionMode, 80) } : {}),
     ...(Number.isFinite(Number(details.x)) ? { x: Number(details.x) } : {}),

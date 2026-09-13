@@ -35,6 +35,9 @@ export function appendLessonRecordDiagnostic(event, storage = globalThis.localSt
     // the Firestore document path is only ever stated here.
     causeMessage: event?.causeMessage ? safeText(event.causeMessage, 400) : "",
     rawCode: event?.rawCode ? safeToken(event.rawCode, 80) : "",
+    validationReason: event?.validationReason ? safeToken(event.validationReason, 80) : "",
+    invalidField: event?.invalidField ? safeToken(event.invalidField, 120) : "",
+    operation: event?.operation ? safeToken(event.operation, 80) : "",
     draftMemberId: event?.draftMemberId ? safeToken(event.draftMemberId, 120) : "",
     requestedMemberId: event?.requestedMemberId ? safeToken(event.requestedMemberId, 120) : "",
     scheduleId: event?.scheduleId ? safeToken(event.scheduleId, 120) : "",

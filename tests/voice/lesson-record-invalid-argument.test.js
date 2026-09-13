@@ -132,6 +132,11 @@ test("the rejecting layer's own wording reaches the diagnostics verbatim", () =>
   assert.match(gatewayCause.causeMessage, /AI Gateway request failed \(400\)/);
   assert.equal(gatewayCause.rawCode, "invalid_request");
 
+  const structuredGatewayError = { ...gatewayError, validationReason: "invalid_value", invalidField: "input.clipId", operation: "lesson_record_from_audio" };
+  assert.equal(failureCauseDetail(structuredGatewayError).validationReason, "invalid_value");
+  assert.equal(failureCauseDetail(structuredGatewayError).invalidField, "input.clipId");
+  assert.equal(failureCauseDetail(structuredGatewayError).operation, "lesson_record_from_audio");
+
   const redacted = failureCauseDetail({ message: "Bearer abcdefghijklmnop rejected" });
   assert.equal(redacted.causeMessage, "Bearer abcdefghijklmnop rejected", "redaction happens at the diagnostics store, not here");
 });
@@ -144,6 +149,7 @@ test("the Gateway error message and the raw code survive into the stored diagnos
   const pipeline = await readFile(new URL("../../src/features/lesson-record/pipeline-diagnostics.js", import.meta.url), "utf8");
   assert.match(pipeline, /causeMessage: event\?\.causeMessage \? safeText\(event\.causeMessage, 400\) : ""/);
   assert.match(pipeline, /rawCode: event\?\.rawCode/);
+  assert.match(pipeline, /validationReason: event\?\.validationReason/);
 
   const voiceSession = await readFile(new URL("../../src/features/voice/voice-session.js", import.meta.url), "utf8");
   assert.match(voiceSession, /causeMessage: safeDiagnosticMessage\(details\.causeMessage, 400\)/);

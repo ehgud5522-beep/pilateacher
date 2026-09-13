@@ -170,7 +170,7 @@ test("posture UI keeps tool labels in bounded grids and comparison semantics out
   const canvas = source.slice(source.indexOf("function PostureCanvas("), source.indexOf("function MemberList("));
   const comparison = source.slice(source.indexOf("function AssessmentComparisonViewer("), source.indexOf("function LegacyAssessmentWorkspace("));
   const exportCard = source.slice(source.indexOf("async function composeBeforeAfter("), source.indexOf("async function shareBeforeAfter("));
-  assert.match(canvas, /grid grid-cols-3 gap-1" data-posture-tool-grid/);
+  assert.match(canvas, /grid grid-cols-6 gap-1" data-posture-tool-grid/);
   assert.match(canvas, /flex flex-wrap items-center justify-center gap-0\.5" data-posture-color-grid/);
   assert.doesNotMatch(canvas, /data-posture-tool-grid[^>]*overflow-x-auto/);
   assert.doesNotMatch(comparison, /#356AE6|#F28C28|#4CC3FF|#2389B8/);
@@ -196,6 +196,6 @@ test("posture dates reuse the member date formatter and draft sheets stop above 
   assert.match(analysis, /const ymd = \(value\) => formatMemberLessonDate\(value\)/);
   assert.match(source, /--pt-tabbar-height: 49px/);
   assert.match(sheet, /aboveTabBar \? "calc\(var\(--pt-tabbar-height\) \+ max\(env\(safe-area-inset-bottom, 0px\), 8px\)\)" : 0/);
-  assert.match(workspace, /진행 중인 체형분석이 있습니다[^\n]*aboveTabBar/);
-  assert.match(workspace, /진행 중인 체형분석을 삭제하고 새로 시작할까요\?[^\n]*aboveTabBar/);
+  assert.match(workspace, /진행 중인 변화 기록이 있습니다[^\n]*aboveTabBar/);
+  assert.match(workspace, /진행 중인 변화 기록을 삭제하고 새로 시작할까요\?[^\n]*aboveTabBar/);
 });

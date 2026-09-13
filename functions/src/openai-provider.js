@@ -11,7 +11,7 @@ const {
 const { GatewayError } = require("./errors");
 const { OPERATIONS, OUTPUT_NAMES, OUTPUT_SCHEMAS, validateOperationOutput } = require("./operation-contracts");
 const { getPrompt } = require("./prompts");
-const { PILATES_TRANSCRIPTION_TERMS, buildTranscriptionPrompt } = require("./transcription-config");
+const { PILATES_TRANSCRIPTION_TERMS, buildTranscriptionPrompt, correctPilatesTranscription } = require("./transcription-config");
 const { filterSttHallucinations } = require("./stt-quality");
 
 const DEFAULT_MODEL = "gpt-5-mini";
@@ -19,6 +19,7 @@ const DEFAULT_TIMEOUT_MS = 25000;
 const PRIMARY_TRANSCRIPTION_MODEL = "whisper-1";
 const FALLBACK_TRANSCRIPTION_MODEL = "gpt-4o-mini-transcribe";
 const AUDIO_VAD_PROMPT_VERSION = "audio_vad_v1";
+const AUDIO_NO_ACTIVE_SIGNAL_MAX_AMPLITUDE = 0.008;
 
 const RESULT_STRING_FIELDS = Object.freeze([
   "memberCondition",
@@ -286,7 +287,8 @@ function createOpenAIProvider({
             },
           };
         }
-        const transcript = filteredTranscript.transcript;
+        const correctedTranscript = correctPilatesTranscription(filteredTranscript.transcript);
+        const transcript = correctedTranscript.transcript;
         if (transcript.length > 12000) throw new GatewayError("invalid_output");
         return {
           result: "ok",
@@ -304,6 +306,7 @@ function createOpenAIProvider({
           flags: [
             ...(assessment.tailDropped ? ["tail_dropped"] : []),
             ...(filteredTranscript.removedCount ? ["hallucination_phrase_removed"] : []),
+            ...correctedTranscript.corrections,
           ],
         };
       } catch (error) {
@@ -317,7 +320,7 @@ function createOpenAIProvider({
     throw mapProviderError(primaryError || new Error("transcription failed"));
   }
 
-  async function executeAudio({ input, safetyIdentifier = "" }) {
+  async function executeAudio({ input, safetyIdentifier = "", onDiagnostic = null }) {
     const startedAt = Date.now();
     const { buffer, metadata } = decodeAudioBase64(input?.audio);
     const energy = analyzeEnergyEnvelope(input?.audioMetrics);
@@ -331,7 +334,37 @@ function createOpenAIProvider({
       }
     };
     try {
-      const transcription = await transcribe(buffer, metadata, input?.memberName, energy);
+      const emitDiagnostic = (event, details = {}) => {
+        try {
+          if (typeof onDiagnostic === "function") onDiagnostic(event, details);
+        } catch (_error) {
+          // Diagnostics are observational and must never change provider flow.
+        }
+      };
+      const sttStartedAt = Date.now();
+      emitDiagnostic("AUDIO_STT_STARTED", { elapsedMs: 0 });
+      let transcription;
+      try {
+        transcription = energy.allSilent
+          ? {
+            result: "no_speech",
+            transcript: "",
+            model: "energy_guard",
+            latencyMs: 0,
+            usage: null,
+            confidence: energy.confidence,
+            flags: ["no_speech", "silent_energy"],
+            confidenceDiagnostic: { reason: energy.reason },
+          }
+          : await transcribe(buffer, metadata, input?.memberName, energy);
+      } catch (error) {
+        emitDiagnostic("AUDIO_STT_FAILED", { code: String(error?.code || "stt_failed").slice(0, 80), elapsedMs: Math.max(0, Date.now() - sttStartedAt) });
+        throw error;
+      }
+      emitDiagnostic("AUDIO_STT_SUCCEEDED", {
+        result: String(transcription?.result || "unknown").slice(0, 40),
+        elapsedMs: Math.max(0, Date.now() - sttStartedAt),
+      });
       disposeAudio();
       if (transcription.result === "no_speech") {
         return {
@@ -347,7 +380,7 @@ function createOpenAIProvider({
           transcriptionUsage: transcription.usage,
           speechSeconds: energy.speechSeconds,
           transcriptionConfidence: transcription.confidence,
-          transcriptionFlags: ["no_speech"],
+          transcriptionFlags: Array.isArray(transcription.flags) ? transcription.flags : ["no_speech"],
           trimmedMs: energy.trimmedMs,
           captureLatencyMs: energy.captureLatencyMs,
           confidenceDiagnostic: transcription.confidenceDiagnostic,
@@ -358,7 +391,7 @@ function createOpenAIProvider({
             summary: null,
             speechSeconds: energy.speechSeconds,
             confidence: transcription.confidence,
-            flags: ["no_speech"],
+            flags: Array.isArray(transcription.flags) ? transcription.flags : ["no_speech"],
             provenance: { stt: null, llm: null },
           },
         };
@@ -398,7 +431,9 @@ function createOpenAIProvider({
       }
       const consistency = assessTranscriptConsistency(
         transcription.transcript,
-        metadata.durationSeconds,
+        energy.reason === "quiet_audio_forwarded" && energy.maxAmplitude <= AUDIO_NO_ACTIVE_SIGNAL_MAX_AMPLITUDE
+          ? 0
+          : metadata.durationSeconds,
         PILATES_TRANSCRIPTION_TERMS,
       );
       if (!consistency.accepted) {
@@ -431,19 +466,31 @@ function createOpenAIProvider({
           },
         };
       }
-      const structured = await execute({
-        operation: OPERATIONS.STRUCTURE_LESSON_RECORD,
-        input: {
-          rawTranscript: transcription.transcript,
-          language: "ko-KR",
-          termMap: { version: 1, mapped: [], uncertain: [] },
-        },
-        safetyIdentifier,
-      });
+      const structureStartedAt = Date.now();
+      emitDiagnostic("AUDIO_STRUCTURE_STARTED", { elapsedMs: Math.max(0, structureStartedAt - startedAt) });
+      let structured;
+      try {
+        structured = await execute({
+          operation: OPERATIONS.STRUCTURE_LESSON_RECORD,
+          input: {
+            rawTranscript: transcription.transcript,
+            language: "ko-KR",
+            termMap: { version: 1, mapped: [], uncertain: [] },
+          },
+          safetyIdentifier,
+        });
+      } catch (error) {
+        emitDiagnostic("AUDIO_STRUCTURE_FAILED", { code: String(error?.code || "structure_failed").slice(0, 80), elapsedMs: Math.max(0, Date.now() - structureStartedAt) });
+        throw error;
+      }
+      emitDiagnostic("AUDIO_STRUCTURE_SUCCEEDED", { elapsedMs: Math.max(0, Date.now() - structureStartedAt) });
       const fields = Object.fromEntries(
         ["didToday", "observations", "responses", "nextFocus"]
           .map((field) => [field, structured.output[field]]),
       );
+      /* 제안은 네 칸 옆에 그대로 실어 보낸다. 여기서 잘려 나가는 바람에 모델이
+         만들어 놓고도 앱까지 닿지 못했다. */
+      const suggestions = Array.isArray(structured.output?.suggestions) ? structured.output.suggestions : [];
       const transcriptionFlags = Array.isArray(transcription.flags) ? transcription.flags : [];
       return {
         ...structured,
@@ -453,6 +500,7 @@ function createOpenAIProvider({
         transcriptionUsage: transcription.usage,
         output: {
           transcript: transcription.transcript,
+          suggestions,
           result: "ok",
           fields,
           summary: structured.output.summary,

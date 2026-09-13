@@ -175,7 +175,7 @@ const operationOutputs = Object.freeze({
     memberCondition: "불편감 없음", todayExercises: ["호흡"], pain: [], improvements: [], nextGoals: [], homework: [], precautions: [],
   },
   [OPERATIONS.STRUCTURE_LESSON_RECORD]: {
-    didToday: ["브릿지"], observations: ["오른쪽 어깨 확인"], responses: ["지난번보다 편하다고 말함"], nextFocus: [], uncertain: [], summary: "브릿지를 진행했고 오른쪽 어깨를 확인했습니다.",
+    didToday: ["브릿지"], observations: ["오른쪽 어깨 확인"], responses: ["지난번보다 편하다고 말함"], nextFocus: [], uncertain: [], suggestions: [], summary: "브릿지를 진행했고 오른쪽 어깨를 확인했습니다.",
   },
   [OPERATIONS.RECOMMEND_SEQUENCE]: {
     title: "다음 수업 초안", exercises: [{ name: "브리지", purpose: "코어 협응", dosage: "8회" }], rationale: [], precautions: [],
@@ -233,6 +233,7 @@ test("generic provider rejects extra output fields after Structured Outputs", as
 test("audio lesson provider transcribes, falls back once, preserves valid fields, and clears audio memory", async () => {
   const transcriptionModels = [];
   const lifecycle = [];
+  const diagnostics = [];
   let disposed;
   const provider = createOpenAIProvider({
     onAudioDisposed: (details) => { disposed = details; lifecycle.push("audio_disposed"); },
@@ -266,6 +267,7 @@ test("audio lesson provider transcribes, falls back once, preserves valid fields
       language: "ko",
       audioMetrics: { intervalMs: 100, amplitudes: [...Array(5).fill(0.002), ...Array(20).fill(0.25), ...Array(5).fill(0.002)] },
     },
+    onDiagnostic: (event, details) => diagnostics.push({ event, ...details }),
   });
   assert.deepEqual(transcriptionModels, ["whisper-1", "gpt-4o-mini-transcribe"]);
   assert.equal(result.transcriptionModel, "gpt-4o-mini-transcribe");
@@ -281,6 +283,13 @@ test("audio lesson provider transcribes, falls back once, preserves valid fields
   assert.deepEqual(result.output.flags, []);
   assert.deepEqual(disposed, { bytes: 96, cleared: true });
   assert.deepEqual(lifecycle, ["audio_disposed", "structure_requested"]);
+  assert.deepEqual(diagnostics.map((entry) => entry.event), [
+    "AUDIO_STT_STARTED", "AUDIO_STT_SUCCEEDED", "AUDIO_STRUCTURE_STARTED", "AUDIO_STRUCTURE_SUCCEEDED",
+  ]);
+  const diagnosticText = JSON.stringify(diagnostics);
+  assert.equal(diagnosticText.includes(result.output.transcript), false);
+  assert.equal(diagnosticText.includes("김지민"), false);
+  assert.equal(diagnosticText.includes(createM4aFixture(12).toString("base64")), false);
 });
 
 test("audio lesson provider removes only hallucinated sentences before structuring and rejects an all-hallucination transcript", async () => {
@@ -342,14 +351,13 @@ test("audio lesson provider rejects JSON parse failure or four invalid core fiel
   await assert.rejects(provider.executeAudio({ input }), (error) => error.code === "invalid_output");
 });
 
-test("audio no_speech follows an empty server transcription while glossary runs remain blocked", async () => {
+test("audio silence skips transcription while quiet noise and glossary runs remain blocked", async () => {
   let transcriptionCalls = 0;
   let structureCalls = 0;
   const provider = createOpenAIProvider({
     client: {
       audio: { transcriptions: { create: async () => {
         transcriptionCalls += 1;
-        if (transcriptionCalls === 1) return { text: "", segments: [] };
         return { text: "리포머 캐딜락 체어 바렐", segments: [
           { text: "리포머 캐딜락 체어 바렐", no_speech_prob: 0.05, avg_logprob: -0.1, compression_ratio: 1.1 },
         ] };
@@ -360,7 +368,11 @@ test("audio no_speech follows an empty server transcription while glossary runs 
   const base = { audio: createM4aFixture(5).toString("base64"), memberName: "", language: "ko" };
   const silence = await provider.executeAudio({ input: { ...base, audioMetrics: { intervalMs: 100, amplitudes: Array(50).fill(0.001) } } });
   assert.equal(silence.output.result, "no_speech");
-  assert.equal(transcriptionCalls, 1);
+  assert.equal(transcriptionCalls, 0);
+  assert.equal(structureCalls, 0);
+  assert.deepEqual(silence.output.flags, ["no_speech", "silent_energy"]);
+  const quietNoise = await provider.executeAudio({ input: { ...base, audioMetrics: { intervalMs: 100, amplitudes: Array(50).fill(0.004) } } });
+  assert.equal(quietNoise.output.result, "low_confidence");
   assert.equal(structureCalls, 0);
   const glossary = await provider.executeAudio({ input: { ...base, audioMetrics: { intervalMs: 100, amplitudes: [...Array(5).fill(0.002), ...Array(20).fill(0.2), ...Array(5).fill(0.002)] } } });
   assert.equal(glossary.output.result, "low_confidence");
@@ -368,6 +380,29 @@ test("audio no_speech follows an empty server transcription while glossary runs 
   assert.deepEqual(glossary.output.flags, ["low_confidence"]);
   assert.equal(transcriptionCalls, 2);
   assert.equal(structureCalls, 0);
+});
+
+test("audio lesson provider applies explicit exercise correction before structuring", async () => {
+  let structuredTranscript = "";
+  const provider = createOpenAIProvider({
+    client: {
+      audio: { transcriptions: { create: async () => ({
+        text: "오늘 허리 음봉 했어요",
+        segments: [{ text: "오늘 허리 음봉 했어요", no_speech_prob: 0.01, avg_logprob: -0.1, compression_ratio: 1.1 }],
+      }) } },
+      responses: { create: async (input) => {
+        structuredTranscript = JSON.parse(String(input.input).slice(String(input.input).indexOf("\n") + 1)).rawTranscript;
+        return { status: "completed", output_text: JSON.stringify(operationOutputs[OPERATIONS.STRUCTURE_LESSON_RECORD]) };
+      } },
+    },
+  });
+  const result = await provider.executeAudio({ input: {
+    audio: createM4aFixture(5).toString("base64"), memberName: "", language: "ko",
+    audioMetrics: { intervalMs: 100, amplitudes: [...Array(5).fill(0.002), ...Array(20).fill(0.2), ...Array(5).fill(0.002)] },
+  } });
+  assert.equal(structuredTranscript, "오늘 허리 운동 했어요");
+  assert.equal(result.output.transcript, "오늘 허리 운동 했어요");
+  assert.deepEqual(result.output.flags, ["stt_corrected_eumbong_to_exercise"]);
 });
 
 test("audio provider keeps the complete transcription instead of cutting a VAD-estimated tail", async () => {

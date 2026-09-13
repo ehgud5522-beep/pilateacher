@@ -2,13 +2,39 @@ export const CAPTURE_TIMER_OPTIONS = Object.freeze([0, 3, 5, 10]);
 export const DEFAULT_CAPTURE_TIMER_SECONDS = 0;
 export const CAPTURE_TIMER_STORAGE_KEY = "pilateacher.posture.captureTimerSeconds";
 
-export const LEVEL_THRESHOLD_DEG = 4;
+// Entering the green state. Widened from 4 deg: a handheld phone rarely holds
+// 4 deg, so the old window made the guide flicker between green and amber
+// while the framing was in practice fine.
+export const LEVEL_THRESHOLD_DEG = 6;
+// Leaving it again. The 2 deg band above the entry threshold is the hysteresis:
+// once green, a small excursion no longer drops the state.
+export const LEVEL_RELEASE_THRESHOLD_DEG = 8;
+/* Pitch gets its own, much wider window. Shooting a standing person from around
+   navel height means the phone is unavoidably tilted towards the body, which
+   parks pitch right on a 6 deg boundary and makes the guide flicker. Pitch also
+   costs less: it changes perspective but leaves the horizon -- and so the
+   shoulder-line angle the measurement reads -- level. */
+export const PITCH_LEVEL_THRESHOLD_DEG = 15;
+export const PITCH_RELEASE_THRESHOLD_DEG = 20;
+// How long the reading has to stay inside the entry threshold before it counts
+// as green, so a value that merely sweeps through does not trigger it.
+export const LEVEL_DWELL_MS = 400;
+// Consecutive unusable readings tolerated before the state is downgraded. A
+// single null beta/gamma no longer wipes a good reading.
+export const INVALID_READING_TOLERANCE = 3;
+// No orientation event for this long means the feed stalled, and the last
+// reading must stop being presented as current.
+export const READING_STALL_MS = 1200;
+// Weight kept on the previous reading by the smoothing filter.
+export const READING_SMOOTHING = 0.7;
+
 export const SENSOR_STATUSES = Object.freeze({
   loading: "loading",
   active: "active",
   permissionRequired: "permission_required",
   denied: "denied",
   unavailable: "unavailable",
+  stale: "stale",
   error: "error",
 });
 
@@ -17,6 +43,70 @@ export function normalizeCameraPermissionState(status) {
   if (value === "granted" || value === "limited") return "granted";
   if (value === "denied") return "denied";
   return "prompt";
+}
+
+export function resolveNativePhotoOutputReadiness({ platform = "", startResolved = false, probeState = null } = {}) {
+  const nativePlatform = String(platform || "").toLowerCase();
+  if (!startResolved) return Object.freeze({ ready: false, readinessSource: "camera_start_pending" });
+  if (nativePlatform === "android") {
+    return Object.freeze({
+      ready: true,
+      photoOutputAvailable: true,
+      sessionRunning: true,
+      readinessSource: "android_camera_start_resolved",
+    });
+  }
+  if (!probeState) {
+    return Object.freeze({ ready: true, readinessSource: "camera_start_resolved_no_probe" });
+  }
+  return Object.freeze({
+    ...probeState,
+    ready: probeState.ready === true,
+    readinessSource: "native_camera_state_probe",
+  });
+}
+
+/* Where the native preview surface stands relative to the stage it should
+   cover. A boolean could not tell "the preview stopped" from "the preview is up
+   but its bounds have not landed yet", and the two demand opposite actions:
+   the first must call nothing, the second must keep retrying. Conflating them
+   is what let a setPreviewSize get queued during a stop, to run after the
+   native view was destroyed and take the process down with it. */
+/* The frame carries how far along the correction is, so the coach line can stay
+   a single instruction. Amber means one axis is already in range -- without it
+   an instructor who fixes roll first sees no change at all and assumes the
+   guidance is wrong. */
+export const LEVEL_TONES = Object.freeze({ red: "red", amber: "amber", green: "green" });
+export const LEVEL_TONE_COLORS = Object.freeze({
+  red: "#FF6B6B",
+  amber: "#F2B84B",
+  green: "#63D7A3",
+});
+
+export function resolveLevelTone({ isLevel = false, rollLevel = false, pitchLevel = false } = {}) {
+  if (isLevel) return LEVEL_TONES.green;
+  /* Both axes in range but not green yet means the dwell timer is still
+     running. That is the last moment before green, so it stays amber rather
+     than dropping back to red for 400ms. */
+  return rollLevel || pitchLevel ? LEVEL_TONES.amber : LEVEL_TONES.red;
+}
+
+export const PREVIEW_BOUNDS_STATES = Object.freeze({
+  idle: "idle",
+  pending: "pending",
+  ready: "ready",
+});
+
+export function resolvePreviewBoundsAction({
+  previewing = false,
+  stopping = false,
+  state = PREVIEW_BOUNDS_STATES.idle,
+} = {}) {
+  // Nothing may touch the preview while it is being torn down.
+  if (stopping || !previewing) return "skip";
+  if (state === PREVIEW_BOUNDS_STATES.pending) return "retry";
+  if (state === PREVIEW_BOUNDS_STATES.ready) return "resync";
+  return "skip";
 }
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
@@ -284,12 +374,15 @@ export function evaluateDeviceLevel({
   pitch,
   status = SENSOR_STATUSES.active,
   threshold = LEVEL_THRESHOLD_DEG,
+  pitchThreshold = PITCH_LEVEL_THRESHOLD_DEG,
+  level = null,
 } = {}) {
   const statusMessages = {
     [SENSOR_STATUSES.loading]: "기울기 센서를 확인하고 있습니다.",
     [SENSOR_STATUSES.permissionRequired]: "기울기 센서 권한이 필요합니다.",
     [SENSOR_STATUSES.denied]: "기울기 센서 권한이 거부되었습니다.",
     [SENSOR_STATUSES.unavailable]: "자동 수평 감지를 사용할 수 없습니다.",
+    [SENSOR_STATUSES.stale]: "기울기 값을 받지 못하고 있습니다. 기기를 잠시 움직여 주세요.",
     [SENSOR_STATUSES.error]: "기울기 센서를 불러오지 못했습니다.",
   };
   if (status !== SENSOR_STATUSES.active) {
@@ -298,6 +391,8 @@ export function evaluateDeviceLevel({
       roll: Number.isFinite(Number(roll)) ? Number(roll) : null,
       pitch: Number.isFinite(Number(pitch)) ? Number(pitch) : null,
       isLevel: false,
+      rollLevel: false,
+      pitchLevel: false,
       code: status,
       message: statusMessages[status] || statusMessages[SENSOR_STATUSES.error],
     });
@@ -306,29 +401,51 @@ export function evaluateDeviceLevel({
   const normalizedRoll = Number(roll);
   const normalizedPitch = Number(pitch);
   if (!Number.isFinite(normalizedRoll) || !Number.isFinite(normalizedPitch)) {
-    return evaluateDeviceLevel({ status: SENSOR_STATUSES.unavailable, threshold });
+    return evaluateDeviceLevel({ status: SENSOR_STATUSES.unavailable, threshold, pitchThreshold });
   }
 
-  const limit = Math.abs(Number(threshold)) || LEVEL_THRESHOLD_DEG;
-  const isLevel = Math.abs(normalizedRoll) <= limit && Math.abs(normalizedPitch) <= limit;
+  const rollLimit = Math.abs(Number(threshold)) || LEVEL_THRESHOLD_DEG;
+  const pitchLimit = Math.abs(Number(pitchThreshold)) || PITCH_LEVEL_THRESHOLD_DEG;
+  /* Roll on its own. It is the axis that tilts the horizon, so it is what the
+     capture quality flag is judged on; pitch only shifts perspective. */
+  const rollLevel = Math.abs(normalizedRoll) <= rollLimit;
+  const pitchLevel = Math.abs(normalizedPitch) <= pitchLimit;
+  // A hysteresis gate decides level across several readings and passes its
+  // verdict in. Without one, a single reading inside the thresholds is enough.
+  const isLevel = typeof level === "boolean" ? level : rollLevel && pitchLevel;
   if (isLevel) {
     return Object.freeze({
       status,
       roll: normalizedRoll,
       pitch: normalizedPitch,
       isLevel: true,
+      rollLevel,
+      pitchLevel,
       code: "level",
       message: "현재 자세로 촬영하기에 적합합니다.",
     });
   }
 
-  if (Math.abs(normalizedRoll) >= Math.abs(normalizedPitch)) {
+  /* Pitch is coached first whenever it is out of range. It is set by how high
+     and at what angle the phone is held -- a large, deliberate adjustment --
+     while roll is a wrist tweak. Correcting roll first does nothing visible
+     while pitch is still out, which reads as the guidance being wrong. When
+     neither axis is out, the level flag came from the dwell timer, and the
+     older "furthest past its own limit" comparison decides the wording. */
+  const rollOut = !rollLevel;
+  const pitchOut = !pitchLevel;
+  const coachRoll = pitchOut
+    ? false
+    : rollOut || (Math.abs(normalizedRoll) - rollLimit) >= (Math.abs(normalizedPitch) - pitchLimit);
+  if (coachRoll) {
     const tiltsLeft = normalizedRoll < 0;
     return Object.freeze({
       status,
       roll: normalizedRoll,
       pitch: normalizedPitch,
       isLevel: false,
+      rollLevel,
+      pitchLevel,
       code: tiltsLeft ? "tilted_left" : "tilted_right",
       message: tiltsLeft
         ? "휴대폰을 오른쪽으로 조금 기울여주세요."
@@ -341,10 +458,104 @@ export function evaluateDeviceLevel({
     roll: normalizedRoll,
     pitch: normalizedPitch,
     isLevel: false,
+    rollLevel,
+    pitchLevel,
     code: normalizedPitch < 0 ? "tilted_forward" : "tilted_backward",
     message: normalizedPitch < 0
       ? "휴대폰 상단을 몸 쪽으로 조금 기울여주세요."
       : "휴대폰 상단을 회원 쪽으로 조금 기울여주세요.",
+  });
+}
+
+/* Turns a stream of orientation readings into the level state shown on screen.
+   Holds the smoothing filter, the enter/release hysteresis, the dwell timer and
+   the tolerance for unusable readings, so all of it is testable without a
+   device. Time is supplied by the caller; nothing here reads a clock of its own
+   except as a default. */
+export function createLevelGate({
+  enterThresholdDeg = LEVEL_THRESHOLD_DEG,
+  releaseThresholdDeg = LEVEL_RELEASE_THRESHOLD_DEG,
+  pitchEnterThresholdDeg = PITCH_LEVEL_THRESHOLD_DEG,
+  pitchReleaseThresholdDeg = PITCH_RELEASE_THRESHOLD_DEG,
+  dwellMs = LEVEL_DWELL_MS,
+  invalidTolerance = INVALID_READING_TOLERANCE,
+  smoothing = READING_SMOOTHING,
+} = {}) {
+  let roll = null;
+  let pitch = null;
+  let level = false;
+  let candidateSince = null;
+  let invalidStreak = 0;
+  let validReadings = 0;
+
+  const clearReading = () => {
+    roll = null;
+    pitch = null;
+    level = false;
+    candidateSince = null;
+  };
+
+  const reading = ({ roll: rawRoll, pitch: rawPitch, at = Date.now() } = {}) => {
+    const nextRoll = Number(rawRoll);
+    const nextPitch = Number(rawPitch);
+    if (!Number.isFinite(nextRoll) || !Number.isFinite(nextPitch)) return invalidReading({ at });
+
+    invalidStreak = 0;
+    validReadings += 1;
+    roll = roll == null ? round(nextRoll, 1) : round((roll * smoothing) + (nextRoll * (1 - smoothing)), 1);
+    pitch = pitch == null ? round(nextPitch, 1) : round((pitch * smoothing) + (nextPitch * (1 - smoothing)), 1);
+
+    /* Each axis is compared against its own band, so a pitch sitting at 8 deg
+       -- normal when shooting from navel height -- no longer flickers the
+       guide, while roll stays held to the tight window the measurement needs. */
+    const withinEnter = Math.abs(roll) <= enterThresholdDeg && Math.abs(pitch) <= pitchEnterThresholdDeg;
+    const withinRelease = Math.abs(roll) <= releaseThresholdDeg && Math.abs(pitch) <= pitchReleaseThresholdDeg;
+    if (level) {
+      if (!withinRelease) {
+        level = false;
+        candidateSince = null;
+      }
+    } else if (withinEnter) {
+      if (candidateSince == null) candidateSince = at;
+      if (at - candidateSince >= dwellMs) level = true;
+    } else {
+      candidateSince = null;
+    }
+
+    return evaluateDeviceLevel({ roll, pitch, status: SENSOR_STATUSES.active, threshold: enterThresholdDeg, pitchThreshold: pitchEnterThresholdDeg, level });
+  };
+
+  /* Returns null while the run of unusable readings is still inside the
+     tolerance, meaning the caller keeps whatever it is already showing. */
+  const invalidReading = ({ at: _at = Date.now() } = {}) => {
+    invalidStreak += 1;
+    if (invalidStreak < invalidTolerance) return null;
+    clearReading();
+    return evaluateDeviceLevel({ status: SENSOR_STATUSES.unavailable });
+  };
+
+  /* The feed stopped. The last reading is dropped rather than left on screen as
+     if it were current, so no stale value can read as "적합합니다". */
+  const stall = () => {
+    clearReading();
+    invalidStreak = 0;
+    return evaluateDeviceLevel({ status: SENSOR_STATUSES.stale });
+  };
+
+  const reset = () => {
+    clearReading();
+    invalidStreak = 0;
+    validReadings = 0;
+    return evaluateDeviceLevel({ status: SENSOR_STATUSES.loading });
+  };
+
+  return Object.freeze({
+    reading,
+    invalidReading,
+    stall,
+    reset,
+    hasValidReading: () => validReadings > 0,
+    getState: () => Object.freeze({ roll, pitch, level, invalidStreak, candidateSince, validReadings }),
   });
 }
 

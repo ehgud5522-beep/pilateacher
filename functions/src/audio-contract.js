@@ -10,8 +10,11 @@ const AAC_SAMPLE_RATES = Object.freeze([
   22050, 16000, 12000, 11025, 8000, 7350,
 ]);
 
-function invalidAudio(message) {
-  return new GatewayError("invalid_request", { internalMessage: message });
+function invalidAudio(validationReason, message) {
+  return new GatewayError("invalid_request", {
+    internalMessage: message,
+    diagnostic: { stage: "request_validation", validationReason, invalidField: "input.audio" },
+  });
 }
 
 function readM4aDuration(buffer) {
@@ -55,13 +58,13 @@ function readAacDuration(buffer) {
 
 function inspectAudioBuffer(buffer) {
   if (!Buffer.isBuffer(buffer) || buffer.length < 16 || buffer.length > MAX_AUDIO_BYTES) {
-    throw invalidAudio("audio size is invalid");
+    throw invalidAudio("audio_size_invalid", "audio size is invalid");
   }
   const m4aDuration = readM4aDuration(buffer);
   const aacDuration = m4aDuration == null ? readAacDuration(buffer) : null;
   const durationSeconds = m4aDuration ?? aacDuration;
   if (!Number.isFinite(durationSeconds) || durationSeconds <= 0 || durationSeconds > MAX_AUDIO_SECONDS) {
-    throw invalidAudio("audio duration is invalid");
+    throw invalidAudio("unsupported_audio_type_or_duration", "audio duration is invalid");
   }
   const format = m4aDuration == null ? "aac" : "m4a";
   return Object.freeze({
@@ -75,7 +78,7 @@ function inspectAudioBuffer(buffer) {
 
 function decodeAudioBase64(value) {
   if (typeof value !== "string" || !value || value.length > Math.ceil(MAX_AUDIO_BYTES / 3) * 4 + 4 || !BASE64_PATTERN.test(value)) {
-    throw invalidAudio("audio base64 is invalid");
+    throw invalidAudio("audio_base64_invalid", "audio base64 is invalid");
   }
   const buffer = Buffer.from(value, "base64");
   const metadata = inspectAudioBuffer(buffer);

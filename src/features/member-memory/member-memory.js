@@ -80,22 +80,53 @@ function confirmedRecordOf(note) {
   return record.confirmedRecord || null;
 }
 
-export function confirmedSessions(notes, { excludeSessionId = null } = {}) {
+const hasStructuredRecordContent = (record) => ["didToday", "observations", "responses", "nextFocus"]
+  .some((field) => recordValues(record, field).length > 0);
+
+function memoryRecordOf(note) {
+  const lessonRecord = note?.lessonRecord;
+  if (!lessonRecord) return null;
+  if (lessonRecord.stage === "confirmed_record") {
+    const record = lessonRecord.confirmedRecord || null;
+    return record && (hasStructuredRecordContent(record) || clean(record.summary) || clean(record.rawTranscript || lessonRecord.rawTranscript || note?.transcript))
+      ? { record, sourceState: "confirmed" }
+      : null;
+  }
+  if (lessonRecord.stage === "structured_draft") {
+    const record = lessonRecord.structuredDraft || null;
+    return record && hasStructuredRecordContent(record) ? { record, sourceState: "draft" } : null;
+  }
+  if (lessonRecord.stage === "raw_transcript") {
+    const rawTranscript = clean(lessonRecord.rawTranscript || note?.transcript, 12000);
+    return rawTranscript ? { record: { rawTranscript, origin: "raw" }, sourceState: "draft" } : null;
+  }
+  return null;
+}
+
+export function memorySourceSessions(notes, { excludeSessionId = null, schedule = [] } = {}) {
   return (notes || []).flatMap((note) => {
-    const record = confirmedRecordOf(note);
+    const source = memoryRecordOf(note);
     const id = sourceId(note);
-    const reviewFlags = note?.lessonRecord?.reviewFlags || record?.reviewFlags || [];
-    if (!record || !id || id === excludeSessionId || (Array.isArray(reviewFlags) && reviewFlags.length)) return [];
+    const reviewFlags = note?.lessonRecord?.reviewFlags || source?.record?.reviewFlags || [];
+    if (!source || !id || id === excludeSessionId || (Array.isArray(reviewFlags) && reviewFlags.length)) return [];
+    const lesson = (schedule || []).find((item) => String(item?.id || "") === String(note?.sid || ""));
+    const date = dateOnly(lesson?.date || note.date || note.confirmedAt || note.lessonRecord?.confirmedAt || note.recordedAt);
+    if (!date) return [];
     const provenanceSource = lessonRecordProvenanceSource(note.lessonRecord);
     return [{
       id,
-      date: dateOnly(note.date || note.confirmedAt || note.lessonRecord?.confirmedAt || note.recordedAt),
+      date,
       note,
-      record,
+      record: source.record,
+      sourceState: source.sourceState,
       provenanceSource,
-      rawOnly: !Array.isArray(record.observations) && Boolean(clean(record.rawTranscript || note.lessonRecord?.rawTranscript || note.transcript)),
+      rawOnly: !hasStructuredRecordContent(source.record) && Boolean(clean(source.record.rawTranscript || note.lessonRecord?.rawTranscript || note.transcript)),
     }];
   }).sort((a, b) => `${a.date}|${a.id}`.localeCompare(`${b.date}|${b.id}`));
+}
+
+export function confirmedSessions(notes, options = {}) {
+  return memorySourceSessions(notes, options).filter((session) => session.sourceState === "confirmed");
 }
 
 const recordValues = (record, field) => (Array.isArray(record?.[field]) ? record[field] : [])
@@ -152,7 +183,7 @@ export function memoryCandidatesFromSession(memberId, session) {
       if (inSession.has(mergeKey)) return;
       inSession.add(mergeKey);
       const normalizedKey = normalizedBodyKey(bodyKey);
-      const sourceRef = { type: "session", id: session.id, date: session.date, field, text: item.text, provenanceSource: session.provenanceSource };
+      const sourceRef = { type: "session", id: session.id, date: session.date, field, text: item.text, provenanceSource: session.provenanceSource, sourceState: session.sourceState };
       candidates.push({
         id: `memory_${hash(`${memberId}|${mergeKey}`)}`,
         memberId,
@@ -162,6 +193,7 @@ export function memoryCandidatesFromSession(memberId, session) {
         normalizedKey,
         origin: item.origin,
         provenanceSource: session.provenanceSource,
+        sourceState: session.sourceState,
         status: "active",
         sourceRefs: [sourceRef],
         firstSeenAt: session.date,
@@ -176,7 +208,9 @@ export function memoryCandidatesFromSession(memberId, session) {
 
 function mergeCandidate(current, candidate) {
   const seenSource = current.sourceRefs.some((source) => source.type === "session" && source.id === candidate.sourceRefs[0].id);
-  const sourceRefs = seenSource ? current.sourceRefs : [...current.sourceRefs, ...candidate.sourceRefs];
+  const sourceRefs = seenSource
+    ? current.sourceRefs.map((source) => source.type === "session" && source.id === candidate.sourceRefs[0].id ? candidate.sourceRefs[0] : source)
+    : [...current.sourceRefs, ...candidate.sourceRefs];
   const instructorProtected = current.origin === "instructor" && candidate.origin !== "instructor";
   return {
     ...current,
@@ -184,6 +218,7 @@ function mergeCandidate(current, candidate) {
     bodyKey: instructorProtected ? current.bodyKey : candidate.bodyKey,
     normalizedKey: instructorProtected ? current.normalizedKey : candidate.normalizedKey,
     origin: current.origin === "instructor" || candidate.origin === "instructor" ? "instructor" : candidate.origin,
+    sourceState: candidate.sourceState,
     sourceRefs,
     firstSeenAt: [current.firstSeenAt, candidate.firstSeenAt].filter(Boolean).sort()[0] || "",
     lastSeenAt: [current.lastSeenAt, candidate.lastSeenAt].filter(Boolean).sort().at(-1) || "",
@@ -200,8 +235,8 @@ function staleStatus(entry, sessions, now, config) {
   return "active";
 }
 
-export function buildMemberMemory({ memberId, notes = [], existingMemory = [], now = new Date().toISOString(), excludeSessionId = null, config = MEMBER_MEMORY_CONFIG } = {}) {
-  const sessions = confirmedSessions(notes, { excludeSessionId });
+export function buildMemberMemory({ memberId, notes = [], existingMemory = [], now = new Date().toISOString(), excludeSessionId = null, schedule = [], config = MEMBER_MEMORY_CONFIG } = {}) {
+  const sessions = memorySourceSessions(notes, { excludeSessionId, schedule });
   const sessionIds = new Set(sessions.map((session) => session.id));
   const candidates = sessions.flatMap((session) => memoryCandidatesFromSession(memberId, session));
   const rejected = (existingMemory || []).filter((entry) => entry?.status === "rejected");

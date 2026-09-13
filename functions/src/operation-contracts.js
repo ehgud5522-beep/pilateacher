@@ -19,6 +19,24 @@ const stringList = () => ({
   type: "array",
   items: stringField(),
 });
+/* 추론은 네 칸에 섞이지 않고 이 자리로 온다. 강사가 눌러야 칸에 들어가므로,
+   어느 칸을 겨냥한 제안인지 함께 온다. */
+const suggestionList = () => ({
+  type: "array",
+  items: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      field: { type: "string", enum: ["didToday", "observations", "responses", "nextFocus"] },
+      text: stringField(),
+      kind: { type: "string", enum: ["content", "term"] },
+      // 대신할 기존 줄. 해당 없으면 빈 문자열 -- 구조화 출력은 모든 속성을
+      // required 로 요구하므로 생략이 아니라 빈 값으로 받는다.
+      replaces: stringField(),
+    },
+    required: ["field", "text", "kind", "replaces"],
+  },
+});
 
 const OUTPUT_SCHEMAS = Object.freeze({
   [OPERATIONS.ANALYZE_BODY]: {
@@ -67,9 +85,10 @@ const OUTPUT_SCHEMAS = Object.freeze({
       responses: stringList(),
       nextFocus: stringList(),
       uncertain: stringList(),
+      suggestions: suggestionList(),
       summary: nullableStringField(),
     },
-    required: ["didToday", "observations", "responses", "nextFocus", "uncertain", "summary"],
+    required: ["didToday", "observations", "responses", "nextFocus", "uncertain", "suggestions", "summary"],
   },
   [OPERATIONS.LESSON_RECORD_FROM_AUDIO]: {
     type: "object",
@@ -88,6 +107,7 @@ const OUTPUT_SCHEMAS = Object.freeze({
         },
         required: ["didToday", "observations", "responses", "nextFocus"],
       },
+      suggestions: suggestionList(),
       summary: nullableStringField(),
       speechSeconds: { type: "number" },
       confidence: { type: "number" },
@@ -105,7 +125,7 @@ const OUTPUT_SCHEMAS = Object.freeze({
         required: ["stt", "llm"],
       },
     },
-    required: ["transcript", "result", "fields", "summary", "speechSeconds", "confidence", "flags", "provenance"],
+    required: ["transcript", "result", "fields", "suggestions", "summary", "speechSeconds", "confidence", "flags", "provenance"],
   },
   [OPERATIONS.RECOMMEND_SEQUENCE]: {
     type: "object",
@@ -153,6 +173,26 @@ const OUTPUT_NAMES = Object.freeze({
   [OPERATIONS.RECOMMEND_SEQUENCE]: "pilateacher_sequence_recommendation",
   [OPERATIONS.GENERATE_REPORT]: "pilateacher_report",
 });
+
+// 제안이 겨냥할 수 있는 칸. uncertain 은 강사 확인용이라 제안 대상이 아니다.
+const LESSON_RECORD_SUGGESTION_FIELDS = ["didToday", "observations", "responses", "nextFocus"];
+const LESSON_RECORD_SUGGESTION_KINDS = ["content", "term"];
+
+/* 제안 목록을 읽는 한 곳. 텍스트 경로와 음성 경로가 같은 규칙을 봐야 한쪽만
+   느슨해지지 않는다. */
+function cleanSuggestions(value) {
+  const raw = Array.isArray(value) ? value.slice(0, 2) : [];
+  return raw
+    .filter((item) => item && typeof item === "object" && !Array.isArray(item))
+    .map((item) => ({
+      field: cleanString(item.field, 40),
+      text: cleanString(item.text, 200),
+      // 종류가 없으면 내용 제안으로 본다. 용어 확인은 명시해야 한다.
+      kind: LESSON_RECORD_SUGGESTION_KINDS.includes(item.kind) ? item.kind : "content",
+      replaces: typeof item.replaces === "string" ? cleanString(item.replaces, 200) : "",
+    }))
+    .filter((item) => LESSON_RECORD_SUGGESTION_FIELDS.includes(item.field) && item.text);
+}
 
 function cleanString(value, maxLength) {
   if (typeof value !== "string" || value.length > maxLength) throw new GatewayError("invalid_output");
@@ -215,6 +255,14 @@ function validateLessonRecordFields(value) {
     }
   }
   if (failedCoreFields === 4) throw new GatewayError("invalid_output");
+  /* 제안이 잘못 와도 기록 전체를 버리지 않는다. 제안은 부가물이고, 강사가 말한
+     네 칸이 본체다. 읽을 수 없으면 제안만 비운다. */
+  output.suggestions = [];
+  try {
+    output.suggestions = cleanSuggestions(value.suggestions);
+  } catch (_error) {
+    output.suggestions = [];
+  }
   try {
     output.summary = value.summary == null ? null : cleanString(value.summary, 1200);
   } catch (_error) {
@@ -228,7 +276,13 @@ function validateLessonRecord(value) {
 }
 
 function validateAudioLessonRecord(value) {
-  const source = requireExactObject(value, OUTPUT_SCHEMAS[OPERATIONS.LESSON_RECORD_FROM_AUDIO].required);
+  /* 제안이 없다고 기록을 통째로 버리지 않는다. 강사가 말한 네 칸이 본체이고 제안은
+     부가물이라, 빠져 있으면 빈 목록으로 두고 나머지는 그대로 받는다. */
+  const withSuggestions = value && typeof value === "object" && !Array.isArray(value)
+    && !Object.prototype.hasOwnProperty.call(value, "suggestions")
+    ? { ...value, suggestions: [] }
+    : value;
+  const source = requireExactObject(withSuggestions, OUTPUT_SCHEMAS[OPERATIONS.LESSON_RECORD_FROM_AUDIO].required);
   const provenance = requireExactObject(source.provenance, ["stt", "llm"]);
   const transcript = cleanString(source.transcript, 12000);
   const result = ["ok", "no_speech", "low_confidence"].includes(source.result) ? source.result : null;
@@ -244,6 +298,7 @@ function validateAudioLessonRecord(value) {
       transcript,
       result,
       fields: Object.fromEntries(Object.keys(fields).map((field) => [field, cleanList(fields[field])])),
+      suggestions: (() => { try { return cleanSuggestions(source.suggestions); } catch (_error) { return []; } })(),
       summary: source.summary == null ? null : cleanString(source.summary, 1200),
       speechSeconds,
       confidence,
@@ -252,6 +307,7 @@ function validateAudioLessonRecord(value) {
     };
   }
   const rejectionFlag = flags.includes(result) || (result === "low_confidence" && flags.includes("hallucination_phrase"));
+  // 거부된 응답에는 제안도 없다. 정리되지 않은 것에 붙일 제안이 없기 때문이다.
   if (source.fields !== null || source.summary !== null || !rejectionFlag || provenance.llm !== null) throw new GatewayError("invalid_output");
   if (result === "no_speech" && (transcript || provenance.stt !== null)) throw new GatewayError("invalid_output");
   if (result === "low_confidence" && ((!transcript && !flags.includes("hallucination_phrase")) || provenance.stt !== "openai")) throw new GatewayError("invalid_output");
@@ -259,6 +315,7 @@ function validateAudioLessonRecord(value) {
     transcript,
     result,
     fields: null,
+    suggestions: [],
     summary: null,
     speechSeconds,
     confidence,

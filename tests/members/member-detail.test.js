@@ -16,7 +16,6 @@ const requiredIndex = (needle) => {
 
 test("member detail follows state, preparation, history, then three management cards", () => {
   const orderedAnchors = [
-    'aria-label="회원 빠른 실행"',
     'data-member-section="status"',
     'data-member-section="next-preparation"',
     'data-member-section="lesson-history"',
@@ -74,11 +73,20 @@ test("member detail has scoped edits, confirmation states, and compact empty sta
   assert.match(detail, /instructorHistory: \[\{ id: uid\(\), date: todayISO\(\), before:/);
 });
 
-test("member-only actions are moved above content and do not duplicate bottom navigation", () => {
-  assert.match(detail, /aria-label="회원 빠른 실행"/);
-  assert.match(detail, /수업 기록/);
-  assert.match(detail, /메모 추가/);
-  assert.match(detail, /연락하기/);
+test("member detail omits the large quick-action bar and keeps embedded management paths", () => {
+  assert.doesNotMatch(detail, /aria-label="회원 빠른 실행"/);
+  assert.doesNotMatch(detail, /href=\{member\.phone \? `tel:/);
+  assert.match(detail, /상담 및 중요 메모/);
+  assert.match(source, /기록하기/);
   assert.doesNotMatch(detail, /absolute bottom-0 left-0 right-0 grid grid-cols-4/);
   assert.match(source, /<Tabs tab=\{tab\} setTab=\{goTab\} \/>/);
+});
+
+test("schedule lesson summaries bound long structured values behind details", () => {
+  assert.match(source, /function LessonRecordValue\(\{ value, bounded = false \}\)/);
+  assert.match(source, /text\.length > 120/);
+  assert.match(source, /line-clamp-3/);
+  assert.match(source, />상세 보기</);
+  assert.match(source, /previousLessonSession[^\n]*bounded/);
+  assert.match(source, /currentLessonSession[^\n]*bounded/);
 });

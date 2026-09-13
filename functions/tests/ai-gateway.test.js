@@ -67,6 +67,38 @@ function sequenceGatewayRequest() {
   });
 }
 
+function postureGatewayRequest(operation = "analyzeBody") {
+  const requestId = `ai_openai_${operation}_posture1234`;
+  const input = operation === "analyzeBody" ? {
+    schemaVersion: 1,
+    memberId: "member-1",
+    goals: [],
+    precautions: [],
+    teacherNote: "",
+    views: [{
+      view: "front",
+      assessmentId: "assessment-1",
+      pose: { nose: { x: 0.5, y: 0.2, score: 0.9, source: "ai" } },
+      measurements: [{ key: "shoulder", value: 2.1, unit: "deg", direction: "" }],
+      confidence: { threshold: 0.4, lowJoints: [], missingJoints: [] },
+      analysisSource: "ai",
+      editedJoints: [],
+    }],
+  } : {
+    schemaVersion: 1,
+    reportType: "member_body_assessment_card",
+    memberId: "member-1",
+    source: {
+      bodyAnalysis: { bodyCharacteristics: ["legacy interpretation"], asymmetries: [], pelvis: "", thorax: "", scapula: "", head: "", knees: "", feet: "", recommendedExercises: [], precautions: [] },
+      teacherNote: "",
+    },
+  };
+  return createRequest({
+    headers: { authorization: "Bearer valid-token", "x-idempotency-key": requestId },
+    body: { schemaVersion: 1, requestId, provider: "openai", operation, input },
+  });
+}
+
 function audioGatewayRequest() {
   const requestId = "ai_openai_lesson_audio_12345678";
   return createRequest({
@@ -149,6 +181,10 @@ test("authorization and missing Secret both fail before provider execution or qu
   const brokenLinkResponse = await invoke(brokenLink);
   assert.equal(brokenLinkResponse.statusCode, 403);
   assert.equal(brokenLinkResponse.body.error.code, "invalid_request");
+  assert.equal(brokenLinkResponse.body.error.diagnostic.stage, "authorization");
+  assert.equal(brokenLinkResponse.body.error.diagnostic.validationReason, "lesson_not_owned");
+  assert.equal(brokenLinkResponse.body.error.diagnostic.invalidField, "input.lessonId");
+  assert.equal(brokenLinkResponse.body.error.diagnostic.operation, "summarizeVoice");
   assert.equal(getProviderCalls, 0);
 
   let rateCalls = 0;
@@ -218,6 +254,27 @@ test("deferred sequence recommendation stops before policy, quota, or provider e
   assert.equal(providerCalls, 0);
 });
 
+test("posture interpretation and result-card generation stop before policy, quota, or provider execution", async () => {
+  let policyCalls = 0;
+  let providerCalls = 0;
+  const handler = createAIGatewayHandler({
+    verifyIdToken: async () => ({ uid: "verified-user" }),
+    policyService: {
+      authorize: async () => { policyCalls += 1; return { allowed: true }; },
+      consumeRateLimit: async () => { policyCalls += 1; return { allowed: true }; },
+    },
+    idempotencyStore: createMemoryIdempotencyStore(),
+    getProvider: async () => { providerCalls += 1; return { execute: async () => ({}) }; },
+  });
+  for (const operation of ["analyzeBody", "generateReport"]) {
+    const response = await invoke(handler, postureGatewayRequest(operation));
+    assert.equal(response.statusCode, 404);
+    assert.equal(response.body.error.code, "operation_deferred");
+  }
+  assert.equal(policyCalls, 0);
+  assert.equal(providerCalls, 0);
+});
+
 test("successful request logs the actual response model with its request id", async () => {
   const logs = [];
   const originalInfo = globalThis.console.info;
@@ -277,8 +334,12 @@ test("audio operation uses the authorized member name and never logs audio or tr
         consumeRateLimit: async () => ({ allowed: true }),
       },
       idempotencyStore: createMemoryIdempotencyStore(),
-      getProvider: async () => ({ executeAudio: async ({ input }) => {
+      getProvider: async () => ({ executeAudio: async ({ input, onDiagnostic }) => {
         providerInput = input;
+        onDiagnostic("AUDIO_STT_STARTED", { elapsedMs: 0 });
+        onDiagnostic("AUDIO_STT_SUCCEEDED", { elapsedMs: 12 });
+        onDiagnostic("AUDIO_STRUCTURE_STARTED", { elapsedMs: 12 });
+        onDiagnostic("AUDIO_STRUCTURE_SUCCEEDED", { elapsedMs: 20 });
         return {
           model: "gpt-5-mini-2025-08-07",
           promptVersion: "lesson_record_v3",
@@ -306,6 +367,9 @@ test("audio operation uses the authorized member name and never logs audio or tr
     assert.equal(logText.includes("민감한 전사 원문"), false);
     assert.equal(logText.includes(providerInput.audio), false);
     assert.equal(logText.includes("김지민"), false);
+    assert.deepEqual(logs.filter((entry) => /AUDIO_(?:STT|STRUCTURE)_/.test(entry.message)).map((entry) => entry.message.split(" ").at(-1)), [
+      "AUDIO_STT_STARTED", "AUDIO_STT_SUCCEEDED", "AUDIO_STRUCTURE_STARTED", "AUDIO_STRUCTURE_SUCCEEDED",
+    ]);
   } finally {
     globalThis.console.info = originalInfo;
   }

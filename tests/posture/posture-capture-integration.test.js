@@ -58,9 +58,17 @@ test("posture capture render path uses a real rear preview with browser fallback
   assert.match(capture, /aspectRatio:\s*"3 \/ 4"/);
   assert.match(capture, /quality:\s*85, width:\s*1080, height:\s*1440/);
   assert.match(capture, /photoQualityPrioritization:\s*"balanced"/);
-  assert.match(capture, /머리 기준 · 이 선 아래/);
-  assert.match(capture, /발 기준 · 이 선 위/);
-  assert.match(capture, /bottom-\[15%\] left-1\/2 top-\[15%\] border-l/);
+  assert.doesNotMatch(capture, /머리 기준 · 이 선 아래/);
+  assert.doesNotMatch(capture, /발 기준 · 이 선 위/);
+  // A single tall dashed frame replaced the two horizontal rules, and its
+  // colour is the state readout rather than a separate indicator.
+  assert.match(capture, /aspectRatio: "2 \/ 3\.5"/);
+  assert.match(capture, /border: `2px dashed \$\{frameColor\}`/);
+  assert.match(capture, /transition: "border-color 180ms ease"/);
+  // The colour comes from the shared three-stage rule; level-coaching.test.js
+  // pins what each stage means.
+  assert.match(capture, /const frameColor = LEVEL_TONE_COLORS\[resolveLevelTone\(sensor\)\]/);
+  assert.doesNotMatch(capture, /top-\[15%\] border-t-2/, "the old horizontal guides are gone");
   assert.doesNotMatch(capture, /left-\[7%\] top-\[8%\]/);
   assert.doesNotMatch(capture, /<svg\b/i);
   assert.doesNotMatch(capture, /silhouette|body.?outline/i);
@@ -68,7 +76,10 @@ test("posture capture render path uses a real rear preview with browser fallback
   assert.match(capture, /사용하기<\/button>/);
   assert.match(capture, /member, assessmentId, roleLabel, captureViews/);
   assert.match(source, /assessmentId=\{assessmentId\.current\} roleLabel=\{roleLabel\} captureViews/);
-  assert.match(capture, /sensor\.isLevel \? "촬영 적합" : "조정 필요"/);
+  assert.doesNotMatch(capture, /촬영 가능/);
+  assert.doesNotMatch(capture, />카메라 시작</);
+  assert.match(capture, /cameraStatus !== "idle"/);
+  assert.match(capture, /void startCamera\(\)/);
   assert.doesNotMatch(capture, /sensor\.roll > 0 \? "\+"/);
   assert.match(capture, /const captureCompleteIdle = capturesComplete/);
   assert.match(capture, /촬영이 완료되었습니다/);
@@ -81,7 +92,10 @@ test("capture timer, motion lifecycle, and storage handoff are connected to the 
   assert.match(source, /readCaptureTimer\(/);
   assert.match(source, /writeCaptureTimer\(/);
   assert.match(source, /Motion\.addListener\("orientation"/);
-  assert.match(source, /threshold:\s*LEVEL_THRESHOLD_DEG/);
+  assert.match(source, /createLevelGate\(\)/);
+  assert.match(source, /gate\.reading\(\{ roll: corrected\.roll/);
+  assert.match(source, /armReadingWatchdog\(READING_STALL_MS\)/);
+  assert.match(source, /gate\.stall\(\)/);
   assert.match(source, /visibilitychange/);
   assert.match(source, /pagehide/);
   assert.match(source, /onAcceptCapture=\{\(blob, metadata\) => acceptCaptureBlob/);
@@ -90,20 +104,25 @@ test("capture timer, motion lifecycle, and storage handoff are connected to the 
   assert.match(source, /storage:\s*"indexedDB"/);
   assert.match(source, /previewStaged = true/);
   assert.match(source, /사진을 불러오지 못했습니다\. 다시 시도해 주세요/);
-  assert.match(source, /사진을 확인한 뒤/);
+  assert.match(source, /setCaptureTarget\(nextTarget\.key\)/);
+  assert.match(source, /촬영으로 이동합니다/);
+  assert.match(source, /setCaptureTarget\(captureViews\.find\(\(\{ key \}\) => !restored\[key\]\)\?\.key/);
   assert.match(source, /if \(f\) pickFile\(f\)/);
   assert.doesNotMatch(source.slice(source.indexOf("const usePending = async"), source.indexOf("const handleBack = async")), /startCamera\(\)/);
 });
 
-test("direct annotation exposes opt-in guides, ruler, handwriting, colors, re-edit, and a real report-card path", async () => {
+test("direct annotation exposes opt-in guides, ruler, handwriting, colors, and re-edit without the retired result-card route", async () => {
   const [source, annotationSource] = await Promise.all([appSource(), readFile(annotationPath, "utf8")]);
   const canvasStart = source.indexOf("function PostureCanvas(");
   const canvasEnd = source.indexOf("function MemberList(", canvasStart);
   const canvas = source.slice(canvasStart, canvasEnd);
   const workspaceStart = source.indexOf("function AssessmentWorkspace(");
-  const workspace = source.slice(workspaceStart);
+  const workspaceEnd = source.indexOf("function ReferenceAnalysisTab(", workspaceStart);
+  const workspace = source.slice(workspaceStart, workspaceEnd);
 
   assert.match(canvas, /initialTool = "pen"/);
+  assert.match(canvas, /const \[color, setColor\] = useState\("#FFFFFF"\)/);
+  assert.match(canvas, /const chooseColor = \(value\) => \{[\s\S]*setColor\(next\)/);
   assert.match(canvas, /const \[guideSheet, setGuideSheet\] = useState\(false\)/);
   assert.match(canvas, /\{ k: "ruler", l: "자", I: Move \}/);
   assert.match(canvas, /\{ k: "memo", l: "손메모", I: MessageSquare \}/);
@@ -133,15 +152,16 @@ test("direct annotation exposes opt-in guides, ruler, handwriting, colors, re-ed
   assert.match(source, /function AssessmentComparisonLayer[\s\S]*object-cover[\s\S]*transform: ptf\(photo\)[\s\S]*<AssessmentAnnotationOverlay/);
   assert.match(source, /zoomPhoto\?\.src[\s\S]*transform: ptf\(zoomPhoto\)[\s\S]*<AssessmentAnnotationOverlay/);
   assert.match(workspace, /사진 표시 다시 수정하기/);
-  assert.match(workspace, /<ResultCardMaker[\s\S]*initialOpen/);
+  assert.doesNotMatch(workspace, /<ResultCardMaker[\s\S]*initialOpen/);
+  assert.doesNotMatch(workspace, /결과 리포트 카드/);
   assert.doesNotMatch(workspace, /이미지 저장 · 연결 예정/);
-  assert.match(workspace, /먼저 Before로 사용할 분석을 누르세요/);
-  assert.match(workspace, /이제 After로 사용할 분석을 누르세요/);
-  assert.match(workspace, /아니오 · 다시 선택/);
-  assert.match(workspace, /예 · 비교하기/);
+  assert.match(workspace, /비교 사진 바꾸기/);
+  assert.match(workspace, /setSetPicker\("before"\)/);
+  assert.match(workspace, /setSetPicker\("after"\)/);
+  assert.doesNotMatch(workspace, /비교할 Before \/ After 직접 선택/);
   assert.match(source, /toggleAssessmentFavorite/);
   assert.match(source, /photo\?\.assessmentId === assessmentId \? \{ \.\.\.photo, favorite: Boolean\(favorite\) \}/);
-  assert.match(workspace, /즐겨찾기만 보기/);
+  assert.doesNotMatch(workspace, /즐겨찾기/);
   assert.doesNotMatch(source, /회원 즐겨찾기/);
 });
 
@@ -188,7 +208,7 @@ test("schedule detail uses three final statuses and native speech recognition ow
   assert.match(source, /const timeOf = \(stamp\) =>/);
   assert.doesNotMatch(voice, /autoStart|autoStartHandledRef/);
   assert.match(voice, /voiceAvailability/);
-  assert.match(voice, /onClick=\{start\}/);
+  assert.match(voice, /onClick=\{\(\) => startFromUserTap\("append"\)\}/);
   assert.match(voice, /if \(!NS\) \{[\s\S]*await prepareMedia\(\)/);
   assert.match(voice, /Android SpeechRecognizer와 MediaRecorder가 동시에 마이크를 잡으면/);
   assert.match(voice, /if \(!sttOK\(\)\)[\s\S]*fallbackToDirectEntry\(message\)/);

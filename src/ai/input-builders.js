@@ -1,4 +1,5 @@
 import { BODY_VIEWS } from "./contracts.js";
+import { applyPilatesTermDictionary } from "../features/lesson-record/pilates-terms.js";
 
 const EMAIL = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
 const PHONE = /(?<!\d)(?:\+?82[-. ]?)?0?1[016789][-. ]?\d{3,4}[-. ]?\d{4}(?!\d)/g;
@@ -67,7 +68,10 @@ export function buildVoiceSummaryInput({ transcript, memberId, lessonId }) {
   return { schemaVersion: 1, memberId: text(memberId, 160), lessonId: text(lessonId, 160), transcript: text(transcript, 12000), language: "ko-KR" };
 }
 
+/* 정리 단계로 넘어가는 전사는 모두 이 함수를 지난다. 사전 교정을 여기에 두면
+   경로가 몇 개든 빠지는 곳이 없다. */
 export function buildLessonRecordInput({ rawTranscript, termMap, memberId, lessonId }) {
+  const corrected = applyPilatesTermDictionary(rawTranscript);
   const mapped = Array.isArray(termMap?.mapped) ? termMap.mapped.slice(0, 80).map((item) => ({
     raw: text(item?.raw, 100), canonical: text(item?.canonical, 100), category: text(item?.category, 80), bodyKey: text(item?.bodyKey, 120),
   })) : [];
@@ -78,7 +82,7 @@ export function buildLessonRecordInput({ rawTranscript, termMap, memberId, lesso
     schemaVersion: 1,
     memberId: text(memberId, 160),
     lessonId: text(lessonId, 160),
-    rawTranscript: text(rawTranscript, 12000),
+    rawTranscript: text(corrected, 12000),
     language: "ko-KR",
     termMap: { version: 1, mapped, uncertain },
   };

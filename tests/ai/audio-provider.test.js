@@ -7,6 +7,8 @@ const output = {
   transcript: "브릿지를 진행했습니다.",
   result: "ok",
   fields: { didToday: ["브릿지"], observations: [], responses: [], nextFocus: [] },
+  // 제안이 없는 응답도 그대로 통과한다 -- 제안은 기록의 조건이 아니다.
+  suggestions: [],
   summary: "브릿지를 진행했습니다.",
   speechSeconds: 2.1,
   confidence: 0.91,
@@ -41,7 +43,7 @@ test("gateway client sends audio with the caller's stable idempotency key", asyn
     gatewayUrl: "https://example.test/aiGateway",
     getAccessToken: async () => "firebase-token",
     fetchImpl: async (_url, init) => {
-      requests.push(JSON.parse(init.body));
+      requests.push({ body: JSON.parse(init.body), headers: init.headers });
       return {
         ok: true,
         status: 200,
@@ -58,6 +60,35 @@ test("gateway client sends audio with the caller's stable idempotency key", asyn
   });
   await provider.lessonRecordFromAudio({ schemaVersion: 1, memberId: "m1", lessonId: "l1", audio: "AQID", memberName: "제이", language: "ko" }, { requestId: "audio-fixed-request" });
   assert.equal(requests.length, 1);
-  assert.equal(requests[0].requestId, "audio-fixed-request");
-  assert.equal(requests[0].operation, "lesson_record_from_audio");
+  assert.equal(requests[0].body.requestId, "audio-fixed-request");
+  assert.equal(requests[0].body.operation, "lesson_record_from_audio");
+  assert.equal(requests[0].headers["Content-Type"], "application/json");
+});
+
+test("gateway client preserves safe invalid-request diagnostics", async () => {
+  const provider = new OpenAIProvider({
+    enabled: true,
+    gatewayUrl: "https://example.test/aiGateway",
+    fetchImpl: async () => ({
+      ok: false,
+      status: 400,
+      json: async () => ({ error: { code: "invalid_request", message: "The request is invalid.", diagnostic: {
+        stage: "request_validation",
+        validationReason: "unsupported_audio_type_or_duration",
+        invalidField: "input.audio",
+        operation: "lesson_record_from_audio",
+      } } }),
+    }),
+  });
+  await assert.rejects(
+    async () => provider.lessonRecordFromAudio({ schemaVersion: 1, memberId: "m1", lessonId: "l1", audio: "AQID", memberName: "제이", language: "ko" }, { requestId: "audio-fixed-request" }),
+    (error) => {
+      const failure = /** @type {any} */ (error);
+      return failure.code === "invalid_request"
+        && failure.status === 400
+        && failure.validationReason === "unsupported_audio_type_or_duration"
+        && failure.invalidField === "input.audio"
+        && failure.operation === "lesson_record_from_audio";
+    },
+  );
 });

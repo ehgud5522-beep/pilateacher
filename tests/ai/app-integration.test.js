@@ -2,6 +2,16 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+test("body analysis has no call path from the app at all", async () => {
+  /* The operation is still in the contract and the provider interface, but
+     nothing on any screen reaches for it. Asking for a consent gate around
+     a call that does not exist proves nothing; asking that the call stays
+     absent is the thing that has to hold. Add one back and this fails,
+     which is the moment to put it in the list above with its gate. */
+  const source = await readFile(new URL("../../src/App.jsx", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /aiProvider\.analyzeBody/, "a new call must be added to the consent list above");
+});
+
 test("every AI action checks member consent before invoking the gateway", async () => {
   const source = await readFile(new URL("../../src/App.jsx", import.meta.url), "utf8");
   assert.match(source, /fbLoadAIConsent/);
@@ -9,7 +19,6 @@ test("every AI action checks member consent before invoking the gateway", async 
   assert.match(source, /AI_CONSENT_POLICY_VERSION/);
 
   const operations = [
-    ["analyzeBody", "aiProvider.analyzeBody"],
     ["summarizeVoice", "lessonRecordLlm.structureLessonRecord"],
     ["generateReport", "aiProvider.generateReport"],
   ];

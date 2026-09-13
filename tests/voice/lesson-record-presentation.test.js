@@ -14,7 +14,10 @@ test("presentation shows the model summary without assembling a local narrative"
     summary: "오른쪽 어깨 가동범위가 좋아졌고 흉추 회전 운동을 진행했습니다.",
   });
   assert.deepEqual(view.cards.map((item) => item.label), ["변화", "오늘 수업", "회원 반응", "다음 확인"]);
-  assert.equal(view.cards[3].value, "아직 계획 없음");
+  /* 빈 칸은 대시 하나로 둔다 -- 말하지 않은 것을 채우라고 요구하지 않는다. */
+  assert.equal(view.cards[3].value, "—");
+  assert.equal(view.cards[3].empty, true);
+  assert.equal(view.cards[0].empty, false, "내용이 있는 칸은 비지 않았다고 표시된다");
   assert.equal(view.narrative, "오른쪽 어깨 가동범위가 좋아졌고 흉추 회전 운동을 진행했습니다.");
   assert.equal(view.narrativeLabel, "수업 기록");
 });

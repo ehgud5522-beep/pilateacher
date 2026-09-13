@@ -1,3 +1,5 @@
+import { PHOTO_BLOB_ID_FIELDS } from "../../data/photo-blob-fields.js";
+
 export const ACCOUNT_DELETION_CONFIRMATION_PHRASE = "계정 삭제";
 export const DELETE_CONFIRMATION_PHRASE = ACCOUNT_DELETION_CONFIRMATION_PHRASE;
 
@@ -50,9 +52,11 @@ export function withProviderRevocationTimeout(operation, {
     .finally(() => clearTimer(timer));
 }
 
+/* 사진 쪽 이름은 공용 목록에서 가져온다. 여기에만 적어 두었더니
+   thumbnailBlobId 가 빠졌고, 계정을 지운 뒤에도 회원 신체 사진이 기기에
+   남아 있었다. */
 const DEFAULT_BLOB_ID_FIELDS = new Set([
-  "blobId",
-  "cleanBlobId",
+  ...PHOTO_BLOB_ID_FIELDS,
   "audioBlobId",
   "recordingBlobId",
 ]);

@@ -8,7 +8,7 @@ const {
   assessTranscriptConsistency,
   assessWhisperTranscription,
 } = require("../src/audio-quality");
-const { PILATES_TRANSCRIPTION_TERMS, buildTranscriptionPrompt } = require("../src/transcription-config");
+const { PILATES_TRANSCRIPTION_TERMS, buildTranscriptionPrompt, correctPilatesTranscription } = require("../src/transcription-config");
 
 const voicedEnvelope = () => ({ intervalMs: 100, amplitudes: [...Array(5).fill(0.002), ...Array(20).fill(0.22), ...Array(5).fill(0.002)] });
 
@@ -56,7 +56,33 @@ test("implausible Korean speed and four consecutive glossary terms block structu
   assert.match(prompt, /흉추·요추·경추·견갑·고관절/);
   assert.match(prompt, /지난주/);
   assert.match(prompt, /낮췄다·올렸다/);
+  assert.match(prompt, /리포머·캐딜락·체어·바렐·바디포머·스파인 코렉터/);
+  assert.match(prompt, /게릴락·캐딜라/);
+  assert.match(prompt, /문맥상 캐딜락이 명확할 때만/);
+  assert.match(prompt, /확실하지 않으면 들리는 표현을 유지/);
+  assert.ok(PILATES_TRANSCRIPTION_TERMS.includes("운동"));
+  assert.match(prompt, /음봉·응동·은근/);
+  assert.match(prompt, /문장 문맥과 조사가 운동을 명확히 뜻할 때만/);
+  assert.match(prompt, /실제 일반어일 가능성이 있으면 들리는 표현을 유지/);
+  assert.ok(PILATES_TRANSCRIPTION_TERMS.includes("바디포머"));
+  assert.ok(PILATES_TRANSCRIPTION_TERMS.includes("스파인 코렉터"));
   assert.doesNotMatch(prompt, /필라테스 용어 참고:/);
+});
+
+test("STT correction changes only explicit exercise-context mishearings", () => {
+  assert.equal(correctPilatesTranscription("음봉.").transcript, "운동.");
+  assert.equal(correctPilatesTranscription("응동").transcript, "운동");
+  assert.deepEqual(correctPilatesTranscription("오늘 허리 음봉 했어요"), {
+    transcript: "오늘 허리 운동 했어요",
+    corrections: ["stt_corrected_eumbong_to_exercise"],
+  });
+  assert.deepEqual(correctPilatesTranscription("다음 응동은 리포머로 진행해요"), {
+    transcript: "다음 운동은 리포머로 진행해요",
+    corrections: ["stt_corrected_eungdong_to_exercise"],
+  });
+  assert.equal(correctPilatesTranscription("은근 허리가 편했어요").transcript, "은근 허리가 편했어요");
+  assert.equal(correctPilatesTranscription("음봉산을 봤어요").transcript, "음봉산을 봤어요");
+  assert.equal(correctPilatesTranscription("응동이라는 말을 들었어요").transcript, "응동이라는 말을 들었어요");
 });
 
 module.exports = { voicedEnvelope };

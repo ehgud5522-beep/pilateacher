@@ -46,19 +46,44 @@ test("recording result is converted, uploaded once, and keeps the supplied idemp
   const blob = new Blob([new Uint8Array([1, 2, 3, 4])], { type: "audio/mp4" });
   const requestId = createStableAudioRequestId("member-1", "lesson-1", 0, "fixednonce");
   const calls = [];
+  const events = [];
   const provider = {
     lessonRecordFromAudio: async (input, options) => {
       calls.push({ input, options });
       return { status: "draft", requestId, output: audioOutput };
     },
   };
-  const result = await uploadAudioClip({ provider, blob, memberId: "member-1", lessonId: "lesson-1", memberName: "제이", requestId });
+  const result = await uploadAudioClip({ provider, blob, memberId: "member-1", lessonId: "lesson-1", memberName: "제이", requestId, onEvent: (event, details) => events.push({ event, ...details }) });
   assert.equal(calls.length, 1);
   assert.equal(calls[0].options.requestId, requestId);
   assert.equal(calls[0].input.language, "ko");
   assert.equal(calls[0].input.audio, await blobToBase64(blob));
   assert.equal(result.output.transcript, audioOutput.transcript);
   assert.deepEqual(structuredDraftFromAudioOutput(result.output).didToday, ["브릿지"]);
+  assert.deepEqual(events.map((entry) => entry.event), [
+    "voice_upload_started", "upload", "voice_stt_started", "voice_upload_succeeded",
+    "voice_stt_succeeded", "transcribed", "voice_structure_started", "voice_structure_succeeded", "structured",
+  ]);
+  assert.equal(events.find((entry) => entry.event === "voice_upload_succeeded")?.httpStatus, 200);
+  assert.equal(JSON.stringify(events).includes(audioOutput.transcript), false);
+});
+
+test("server audio upload failures retain a request id and failure stage without audio content", async () => {
+  const blob = new Blob([new Uint8Array([1, 2, 3])], { type: "audio/mp4" });
+  const events = [];
+  const error = Object.assign(new Error("gateway unavailable"), { code: "network_error", failureStage: "fetch_network", status: 503 });
+  await assert.rejects(uploadAudioClip({
+    provider: { lessonRecordFromAudio: async () => { throw error; } },
+    blob, memberId: "member-private", lessonId: "lesson-private", memberName: "회원 이름",
+    requestId: "voice-request-1", onEvent: (event, details) => events.push({ event, ...details }),
+  }), error);
+  const failure = events.at(-1);
+  assert.equal(failure.event, "voice_pipeline_failed");
+  assert.equal(failure.stage, "fetch_network");
+  assert.equal(failure.requestId, "voice-request-1");
+  assert.equal(failure.httpStatus, 503);
+  assert.equal(JSON.stringify(events).includes("member-private"), false);
+  assert.equal(JSON.stringify(events).includes("회원 이름"), false);
 });
 
 test("client energy VAD blocks only an entirely silent recording and keeps quiet short speech", () => {

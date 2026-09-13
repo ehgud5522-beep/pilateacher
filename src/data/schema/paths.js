@@ -22,18 +22,25 @@ export const paths = Object.freeze({
   user: (userId) => `${COLLECTIONS.USERS}/${segment(userId, "userId")}`,
   /** @param {string} organizationId */
   organization: (organizationId) => organizationRoot(organizationId),
+  /**
+   * 조직 소속. 접근 판정의 기반이므로 조직 하위가 아니라 최상위에 둔다.
+   * 문서 id는 firestore.foundation.rules의 membershipId() 헬퍼와 같은 형식이다.
+   * @param {string} organizationId @param {string} userId
+   */
+  orgMembership: (organizationId, userId) =>
+    `${COLLECTIONS.MEMBERSHIPS}/${segment(organizationId, "organizationId")}_${segment(userId, "userId")}`,
   /** @param {string} organizationId @param {string} locationId */
   location: (organizationId, locationId) =>
     `${organizationRoot(organizationId)}/${COLLECTIONS.LOCATIONS}/${segment(locationId, "locationId")}`,
   /** @param {string} organizationId @param {string} clientId */
   client: (organizationId, clientId) =>
     `${organizationRoot(organizationId)}/${COLLECTIONS.CLIENTS}/${segment(clientId, "clientId")}`,
-  /** @param {string} organizationId @param {string} membershipId */
-  membership: (organizationId, membershipId) =>
-    `${organizationRoot(organizationId)}/${COLLECTIONS.MEMBERSHIPS}/${segment(membershipId, "membershipId")}`,
-  /** @param {string} organizationId @param {string} membershipId @param {string} entryId */
-  membershipLedgerEntry: (organizationId, membershipId, entryId) =>
-    `${organizationRoot(organizationId)}/${COLLECTIONS.MEMBERSHIPS}/${segment(membershipId, "membershipId")}/${COLLECTIONS.LEDGER}/${segment(entryId, "entryId")}`,
+  /** @param {string} organizationId @param {string} passId */
+  pass: (organizationId, passId) =>
+    `${organizationRoot(organizationId)}/${COLLECTIONS.PASSES}/${segment(passId, "passId")}`,
+  /** @param {string} organizationId @param {string} passId @param {string} entryId */
+  passLedgerEntry: (organizationId, passId, entryId) =>
+    `${organizationRoot(organizationId)}/${COLLECTIONS.PASSES}/${segment(passId, "passId")}/${COLLECTIONS.LEDGER}/${segment(entryId, "entryId")}`,
   /** @param {string} organizationId @param {string} lessonId */
   lesson: (organizationId, lessonId) =>
     `${organizationRoot(organizationId)}/${COLLECTIONS.LESSONS}/${segment(lessonId, "lessonId")}`,

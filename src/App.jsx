@@ -14218,13 +14218,15 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
   /* 회원권 상품은 센터를 운영하는 대표만 본다. 개인 모드(legacy)에는 센터가
      없다. 목록에서 빼면 setView 로 들어갈 길도 함께 닫힌다.
 
-     소속을 읽지 못한 상태(unknown)는 역할도 함께 모르는 상태라 대표인지
-     가릴 수 없다. 그래도 항목은 남긴다 -- 네트워크가 흔들릴 때 어제 있던
-     메뉴가 사라지면 무엇이 잘못됐는지 알 수 없다. 열면 잠긴 화면과 재시도만
-     보이고 조직 경로는 조립하지 않는다. */
+     소속을 읽지 못한 상태(unknown)도 숨긴다. 그 상태는 역할까지 모르는
+     상태라, 보이게 두면 조회가 실패한 동안 강사에게도 대표 전용 메뉴가
+     드러난다. 데이터가 새지는 않지만 메뉴의 존재가 드러나고, 눌러도 잠긴
+     화면만 나와 고장으로 보인다. 대표가 잠깐 못 보는 쪽이 덜 나쁘다 --
+     연결되면 돌아온다. 무슨 일이 생겼는지는 아래 배너가 말한다. */
   const organizationUnknown = organization.ready && organization.status === "unknown";
-  const showProducts = organizationUnknown
-    || (organization.ready && !organization.isLegacy && organization.role === ROLES.OWNER);
+  const showProducts = organization.ready
+    && !organization.isLegacy
+    && organization.role === ROLES.OWNER;
   const [view, setView] = useState("hub");
   const [busy, setBusy] = useState(false);
   const [deleteStep, setDeleteStep] = useState("intro");
@@ -14436,6 +14438,19 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
         <h1 style={{ fontSize: TYPE.title, fontWeight: 600, color: INK }}>더보기</h1>
       </header>
       <main className="pt-scroll min-h-0 flex-1 overflow-y-auto" style={{ padding: "12px 12px 20px" }}>
+        {/* 소속을 읽지 못하면 센터 기능이 통째로 빠진다. 어느 메뉴가 왜 사라졌는지
+           항목 자리에서 말할 수 없으므로 -- 그 항목 자체가 없다 -- 한 자리에서
+           한 번만 말한다. 역할과 무관하게 같은 문구가 나간다. */}
+        {organizationUnknown && (
+          <section className="mb-4" style={{ backgroundColor: WARN_S, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+            <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>소속 정보를 불러오지 못했습니다</h2>
+            <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+              연결이 회복되면 센터 기능이 다시 나타납니다. 기기에 저장된 일정과 회원 기록은 그대로 있습니다.
+            </p>
+            <button type="button" onClick={() => onRetryOrganization?.()} className="mt-3 h-11 w-full font-bold"
+              style={{ borderRadius: 10, backgroundColor: CARD, color: INK, fontSize: TYPE.caption, border: `1px solid ${LINE}` }}>다시 시도</button>
+          </section>
+        )}
         <div className="space-y-4">
           {menuGroups.map((group) => (
             <section key={group.label}>

@@ -70,9 +70,20 @@ test("the product catalog is reachable only where it should be", async (t) => {
   assert.doesNotMatch(markupOf("더보기 탭 · 강사"), /회원권 상품/);
   assert.doesNotMatch(markupOf("더보기 탭 · 개인 모드"), /회원권 상품/);
 
-  // 소속을 읽지 못한 상태는 역할도 모르는 상태다. 메뉴가 조용히 사라지지
-  // 않도록 항목은 남기고, 열면 잠긴 화면이 나온다.
-  assert.match(markupOf("더보기 탭 · 소속 확인 실패"), /회원권 상품/);
+  // 소속을 읽지 못한 상태는 역할도 모르는 상태라, 항목을 남기면 강사에게도
+  // 대표 전용 메뉴가 드러난다. 항목은 숨기고 배너 한 자리에서만 말한다.
+  const unknown = markupOf("더보기 탭 · 소속 확인 실패");
+  assert.doesNotMatch(unknown, /회원권 상품/);
+  assert.match(unknown, /소속 정보를 불러오지 못했습니다/);
+  assert.match(unknown, /다시 시도/);
+
+  // 재시도가 성공해 대표로 확정되면 같은 화면에 항목이 돌아오고 배너는 사라진다.
+  const recovered = markupOf("더보기 탭");
+  assert.match(recovered, /회원권 상품/);
+  assert.doesNotMatch(recovered, /소속 정보를 불러오지 못했습니다/);
+
+  // 배너는 역할과 무관하다 -- 강사도 같은 안내를 받는다.
+  assert.doesNotMatch(markupOf("더보기 탭 · 강사"), /소속 정보를 불러오지 못했습니다/);
   const locked = markupOf("회원권 상품 · 소속 확인 실패");
   assert.match(locked, /소속을 확인하지 못했습니다/);
   assert.match(locked, /다시 시도/);

@@ -11,6 +11,7 @@ import {
   deleteDoc,
   doc,
   getDoc,
+  serverTimestamp,
   setDoc,
   updateDoc,
 } from "firebase/firestore";
@@ -19,6 +20,18 @@ import { deleteObject, getMetadata, ref, uploadBytes } from "firebase/storage";
 const PROJECT_ID = "pilateacher-dev";
 const ORG_A = "org-a";
 const ORG_B = "org-b";
+const PASS_A = "pass-a";
+const PASS_B = "pass-b";
+const PAY_CATEGORIES = [
+  "pt_1_1_new",
+  "pt_1_1_repurchase_event",
+  "pt_1_1_repurchase_normal",
+  "pt_2_1_new",
+  "pt_2_1_repurchase",
+  "service",
+  "letmein",
+  "etc",
+];
 const users = {
   owner: "owner-a",
   manager: "manager-a",
@@ -35,6 +48,46 @@ function dbFor(userId) {
 }
 function storageFor(userId) {
   return userId ? testEnv.authenticatedContext(userId).storage() : testEnv.unauthenticatedContext().storage();
+}
+
+function hoursAgo(hours) {
+  return Timestamp.fromMillis(Date.now() - hours * 60 * 60 * 1000);
+}
+
+function passFixture(organizationId, passId, overrides = {}) {
+  return {
+    organizationId,
+    passId,
+    clientId: "client-member",
+    locationId: "location-a",
+    productId: "product-1on1-new",
+    category: "pt_1_1_new",
+    unitPrice: 60000,
+    totalSessions: 20,
+    remainingCount: 20,
+    status: "active",
+    createdBy: users.manager,
+    createdAt: serverTimestamp(),
+    ...overrides,
+  };
+}
+
+function ledgerFixture(organizationId, passId, overrides = {}) {
+  return {
+    organizationId,
+    passId,
+    locationId: "location-a",
+    type: "deduct",
+    delta: -1,
+    category: "pt_1_1_new",
+    unitPrice: 60000,
+    lessonId: "lesson-dual",
+    instructorId: users.instructor,
+    occurredAt: hoursAgo(2),
+    createdBy: users.instructor,
+    createdAt: serverTimestamp(),
+    ...overrides,
+  };
 }
 
 async function seed() {
@@ -76,6 +129,12 @@ async function seed() {
     });
     await setDoc(doc(db, "events", "event-1"), { organizationId: ORG_A, type: "fixture" });
     await setDoc(doc(db, "auditLogs", "audit-1"), { organizationId: ORG_A, action: "fixture" });
+    await setDoc(doc(db, "organizations", ORG_A, "passes", PASS_A), passFixture(ORG_A, PASS_A));
+    await setDoc(doc(db, "organizations", ORG_B, "passes", PASS_B), passFixture(ORG_B, PASS_B));
+    await setDoc(
+      doc(db, "organizations", ORG_A, "passes", PASS_A, "ledger", "entry-issue"),
+      ledgerFixture(ORG_A, PASS_A, { type: "issue", delta: 20 }),
+    );
     await setDoc(doc(db, "runtimeConfig", "aiRecording"), { status: "normal", reasonCode: "", updatedAt: Timestamp.now() });
   });
 }
@@ -263,6 +322,270 @@ describe("role permissions", () => {
   test("member reads only the linked client document", async () => {
     await assertSucceeds(getDoc(doc(dbFor(users.member), "clients", "client-member")));
     await assertFails(getDoc(doc(dbFor(users.member), "clients", "client-other")));
+  });
+});
+
+describe("PT passes and their ledger", () => {
+  const passRef = (userId, organizationId, passId) =>
+    doc(dbFor(userId), "organizations", organizationId, "passes", passId);
+  const ledgerRef = (userId, organizationId, passId, entryId) =>
+    doc(dbFor(userId), "organizations", organizationId, "passes", passId, "ledger", entryId);
+
+  test("members read passes and outsiders do not", async () => {
+    await assertSucceeds(getDoc(passRef(users.instructor, ORG_A, PASS_A)));
+    await assertFails(getDoc(passRef(users.outsider, ORG_A, PASS_A)));
+    await assertFails(getDoc(passRef(null, ORG_A, PASS_A)));
+  });
+
+  test("only owner and manager issue a pass", async () => {
+    await assertSucceeds(setDoc(passRef(users.manager, ORG_A, "pass-by-manager"), passFixture(ORG_A, "pass-by-manager")));
+    await assertSucceeds(setDoc(passRef(users.owner, ORG_A, "pass-by-owner"), passFixture(ORG_A, "pass-by-owner")));
+    await assertFails(setDoc(passRef(users.instructor, ORG_A, "pass-by-instructor"), passFixture(ORG_A, "pass-by-instructor")));
+    await assertFails(setDoc(passRef(users.staff, ORG_A, "pass-by-staff"), passFixture(ORG_A, "pass-by-staff")));
+  });
+
+  test("a pass whose organizationId disagrees with its path is rejected", async () => {
+    await assertFails(setDoc(
+      passRef(users.manager, ORG_A, "pass-wrong-org"),
+      passFixture(ORG_B, "pass-wrong-org"),
+    ));
+  });
+
+  test("only the owner updates a pass, and never deletes one", async () => {
+    await assertSucceeds(updateDoc(passRef(users.owner, ORG_A, PASS_A), {
+      organizationId: ORG_A,
+      remainingCount: 19,
+    }));
+    await assertFails(updateDoc(passRef(users.manager, ORG_A, PASS_A), { remainingCount: 18 }));
+    await assertFails(updateDoc(passRef(users.owner, ORG_A, PASS_A), { organizationId: ORG_B }));
+    await assertFails(deleteDoc(passRef(users.owner, ORG_A, PASS_A)));
+  });
+
+  test("instructors append a deduction to the ledger", async () => {
+    await assertSucceeds(setDoc(
+      ledgerRef(users.instructor, ORG_A, PASS_A, "entry-deduct"),
+      ledgerFixture(ORG_A, PASS_A),
+    ));
+    await assertSucceeds(getDoc(ledgerRef(users.instructor, ORG_A, PASS_A, "entry-issue")));
+    await assertFails(setDoc(
+      ledgerRef(users.staff, ORG_A, PASS_A, "entry-by-staff"),
+      ledgerFixture(ORG_A, PASS_A, { instructorId: users.staff, createdBy: users.staff }),
+    ));
+  });
+
+  test("a ledger entry whose body disagrees with its path is rejected", async () => {
+    await assertFails(setDoc(
+      ledgerRef(users.instructor, ORG_A, PASS_A, "entry-wrong-pass"),
+      ledgerFixture(ORG_A, PASS_B),
+    ));
+    await assertFails(setDoc(
+      ledgerRef(users.instructor, ORG_A, PASS_A, "entry-wrong-org"),
+      ledgerFixture(ORG_B, PASS_A),
+    ));
+  });
+
+  test("nobody edits or removes a ledger entry", async () => {
+    for (const userId of [users.owner, users.manager, users.instructor]) {
+      await assertFails(updateDoc(ledgerRef(userId, ORG_A, PASS_A, "entry-issue"), { delta: 999 }));
+      await assertFails(deleteDoc(ledgerRef(userId, ORG_A, PASS_A, "entry-issue")));
+    }
+  });
+
+  test("one organization never reaches another organization passes", async () => {
+    await assertFails(getDoc(passRef(users.owner, ORG_B, PASS_B)));
+    await assertFails(setDoc(passRef(users.manager, ORG_B, "pass-crossing"), passFixture(ORG_B, "pass-crossing")));
+    await assertFails(getDoc(ledgerRef(users.instructor, ORG_B, PASS_B, "entry-issue")));
+    await assertFails(setDoc(
+      ledgerRef(users.instructor, ORG_B, PASS_B, "entry-crossing"),
+      ledgerFixture(ORG_B, PASS_B),
+    ));
+  });
+});
+
+describe("ledger and pass bodies are validated at write time", () => {
+  const ledgerRef = (userId, entryId) =>
+    doc(dbFor(userId), "organizations", ORG_A, "passes", PASS_A, "ledger", entryId);
+  const passRef = (userId, passId) => doc(dbFor(userId), "organizations", ORG_A, "passes", passId);
+
+  function withoutField(body, field) {
+    const copy = { ...body };
+    delete copy[field];
+    return copy;
+  }
+
+  test("a well formed deduction is accepted", async () => {
+    await assertSucceeds(setDoc(ledgerRef(users.instructor, "ok-deduct"), ledgerFixture(ORG_A, PASS_A)));
+  });
+
+  test("an issue entry needs no lessonId but a deduction does", async () => {
+    await assertSucceeds(setDoc(
+      ledgerRef(users.manager, "ok-issue"),
+      withoutField(ledgerFixture(ORG_A, PASS_A, {
+        type: "issue",
+        delta: 20,
+        instructorId: users.manager,
+        createdBy: users.manager,
+      }), "lessonId"),
+    ));
+    await assertFails(setDoc(
+      ledgerRef(users.instructor, "deduct-without-lesson"),
+      withoutField(ledgerFixture(ORG_A, PASS_A), "lessonId"),
+    ));
+  });
+
+  test("delta must be a non-zero int", async () => {
+    await assertFails(setDoc(ledgerRef(users.instructor, "delta-string"), ledgerFixture(ORG_A, PASS_A, { delta: "-1" })));
+    await assertFails(setDoc(ledgerRef(users.instructor, "delta-zero"), ledgerFixture(ORG_A, PASS_A, { delta: 0 })));
+  });
+
+  test("delta has to agree in sign with the entry type", async () => {
+    await assertFails(setDoc(ledgerRef(users.instructor, "deduct-positive"), ledgerFixture(ORG_A, PASS_A, { delta: 1 })));
+    await assertFails(setDoc(ledgerRef(users.manager, "issue-negative"), withoutField(ledgerFixture(ORG_A, PASS_A, {
+      type: "issue",
+      delta: -20,
+      instructorId: users.manager,
+      createdBy: users.manager,
+    }), "lessonId")));
+  });
+
+  test("type outside the allowed list is rejected", async () => {
+    await assertFails(setDoc(ledgerRef(users.instructor, "type-refund"), ledgerFixture(ORG_A, PASS_A, { type: "refund" })));
+    await assertFails(setDoc(ledgerRef(users.instructor, "type-int"), ledgerFixture(ORG_A, PASS_A, { type: 1 })));
+  });
+
+  test("unitPrice must be a non-negative int", async () => {
+    await assertFails(setDoc(ledgerRef(users.instructor, "price-string"), ledgerFixture(ORG_A, PASS_A, { unitPrice: "60000" })));
+    await assertFails(setDoc(ledgerRef(users.instructor, "price-negative"), ledgerFixture(ORG_A, PASS_A, { unitPrice: -1 })));
+  });
+
+  test("an unlisted field anywhere in the body is rejected", async () => {
+    await assertFails(setDoc(
+      ledgerRef(users.instructor, "extra-field"),
+      ledgerFixture(ORG_A, PASS_A, { memo: "손으로 적은 메모" }),
+    ));
+  });
+
+  test("every required field is required", async () => {
+    for (const field of ["locationId", "category", "unitPrice", "instructorId", "createdAt", "createdBy"]) {
+      await assertFails(setDoc(
+        ledgerRef(users.instructor, `missing-${field}`),
+        withoutField(ledgerFixture(ORG_A, PASS_A), field),
+      ));
+    }
+  });
+
+  test("occurredAt is required on both entry types", async () => {
+    await assertFails(setDoc(
+      ledgerRef(users.instructor, "deduct-no-occurred"),
+      withoutField(ledgerFixture(ORG_A, PASS_A), "occurredAt"),
+    ));
+    await assertFails(setDoc(
+      ledgerRef(users.manager, "issue-no-occurred"),
+      withoutField(withoutField(ledgerFixture(ORG_A, PASS_A, {
+        type: "issue",
+        delta: 20,
+        instructorId: users.manager,
+        createdBy: users.manager,
+      }), "lessonId"), "occurredAt"),
+    ));
+  });
+
+  test("occurredAt has to be a timestamp inside the backdating window", async () => {
+    await assertFails(setDoc(
+      ledgerRef(users.instructor, "occurred-string"),
+      ledgerFixture(ORG_A, PASS_A, { occurredAt: "2026-09-13T00:00:00Z" }),
+    ));
+    await assertFails(setDoc(
+      ledgerRef(users.instructor, "occurred-future"),
+      ledgerFixture(ORG_A, PASS_A, { occurredAt: hoursAgo(-24) }),
+    ));
+    await assertFails(setDoc(
+      ledgerRef(users.instructor, "occurred-eight-days"),
+      ledgerFixture(ORG_A, PASS_A, { occurredAt: hoursAgo(8 * 24) }),
+    ));
+  });
+
+  test("an entry recorded later than the lesson is accepted", async () => {
+    const occurredAt = hoursAgo(2 * 24);
+    await assertSucceeds(setDoc(
+      ledgerRef(users.instructor, "occurred-two-days"),
+      ledgerFixture(ORG_A, PASS_A, { occurredAt }),
+    ));
+    let written;
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const snapshot = await getDoc(
+        doc(context.firestore(), "organizations", ORG_A, "passes", PASS_A, "ledger", "occurred-two-days"),
+      );
+      written = snapshot.data();
+    });
+    assert.equal(written.occurredAt.toMillis(), occurredAt.toMillis());
+    assert.ok(written.createdAt.toMillis() > written.occurredAt.toMillis());
+  });
+
+  test("createdAt has to be the server clock, not a client timestamp", async () => {
+    const lastMonth = Timestamp.fromDate(new Date("2026-08-01T00:00:00Z"));
+    await assertFails(setDoc(
+      ledgerRef(users.instructor, "backdated"),
+      ledgerFixture(ORG_A, PASS_A, { createdAt: lastMonth }),
+    ));
+    await assertFails(setDoc(
+      ledgerRef(users.instructor, "client-now"),
+      ledgerFixture(ORG_A, PASS_A, { createdAt: Timestamp.now() }),
+    ));
+    await assertFails(setDoc(
+      passRef(users.manager, "pass-backdated"),
+      passFixture(ORG_A, "pass-backdated", { createdAt: lastMonth }),
+    ));
+  });
+
+  test("category outside the pay table is rejected", async () => {
+    for (const typo of ["pt_1_1_New", "1:1 신규", "pt_11_new", "pt_1_1_repurchase", ""]) {
+      await assertFails(setDoc(
+        ledgerRef(users.instructor, `category-${typo || "empty"}`),
+        ledgerFixture(ORG_A, PASS_A, { category: typo }),
+      ));
+    }
+  });
+
+  test("every pay table category is accepted", async () => {
+    assert.equal(PAY_CATEGORIES.length, 8);
+    for (const category of PAY_CATEGORIES) {
+      await assertSucceeds(setDoc(
+        ledgerRef(users.instructor, `category-ok-${category}`),
+        ledgerFixture(ORG_A, PASS_A, { category }),
+      ));
+    }
+  });
+
+  test("createdBy has to be the authenticated uid", async () => {
+    await assertFails(setDoc(
+      ledgerRef(users.instructor, "createdBy-forged"),
+      ledgerFixture(ORG_A, PASS_A, { createdBy: users.owner }),
+    ));
+  });
+
+  test("a pass needs its product fields and a positive session count", async () => {
+    await assertSucceeds(setDoc(passRef(users.manager, "pass-valid"), passFixture(ORG_A, "pass-valid")));
+    await assertFails(setDoc(
+      passRef(users.manager, "pass-no-product"),
+      withoutField(passFixture(ORG_A, "pass-no-product"), "productId"),
+    ));
+    await assertFails(setDoc(
+      passRef(users.manager, "pass-no-client"),
+      withoutField(passFixture(ORG_A, "pass-no-client"), "clientId"),
+    ));
+    await assertFails(setDoc(
+      passRef(users.manager, "pass-zero-sessions"),
+      passFixture(ORG_A, "pass-zero-sessions", { totalSessions: 0 }),
+    ));
+    await assertFails(setDoc(
+      passRef(users.manager, "pass-string-sessions"),
+      passFixture(ORG_A, "pass-string-sessions", { totalSessions: "20" }),
+    ));
+    await assertFails(setDoc(
+      passRef(users.manager, "pass-int-status"),
+      passFixture(ORG_A, "pass-int-status", { status: 1 }),
+    ));
   });
 });
 

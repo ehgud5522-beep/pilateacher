@@ -72,6 +72,20 @@ export const AI_RECOMMENDATION_STATUS = Object.freeze({
   FAILED: "failed",
 });
 
+// 급여 단가표의 카테고리. firestore.foundation.rules의 passes/ledger create
+// 조건에 같은 목록이 리터럴로 들어가 있다 — 규칙 파일은 import을 할 수 없다.
+// 항목을 더하거나 빼면 양쪽을 함께 고쳐야 한다.
+export const PAY_CATEGORY = Object.freeze({
+  PT_1_1_NEW: "pt_1_1_new",
+  PT_1_1_REPURCHASE_EVENT: "pt_1_1_repurchase_event",
+  PT_1_1_REPURCHASE_NORMAL: "pt_1_1_repurchase_normal",
+  PT_2_1_NEW: "pt_2_1_new",
+  PT_2_1_REPURCHASE: "pt_2_1_repurchase",
+  SERVICE: "service",
+  LETMEIN: "letmein",
+  ETC: "etc",
+});
+
 export const COLLECTIONS = Object.freeze({
   USERS: "users",
   ORGANIZATIONS: "organizations",

@@ -191,6 +191,74 @@ service cloud.firestore {
           allow delete: if false;
         }
       }
+
+      // PT passes (20-session packs and the like). Distinct from top-level
+      // memberships, which mean organization membership and gate access.
+      match /passes/{passId} {
+        allow read: if isActiveMember(organizationId);
+        // The product fields are not settled yet, so require a floor rather than
+        // closing the set with hasOnly.
+        allow create: if request.resource.data.organizationId == organizationId
+          && request.resource.data.keys().hasAll([
+            "organizationId", "clientId", "locationId", "productId",
+            "totalSessions", "status", "createdAt", "createdBy"
+          ])
+          && request.resource.data.totalSessions is int
+          && request.resource.data.totalSessions > 0
+          && request.resource.data.status is string
+          && request.resource.data.createdAt == request.time
+          && hasRole(organizationId, ["owner", "manager"]);
+        allow update: if resource.data.organizationId == organizationId
+          && request.resource.data.organizationId == organizationId
+          && hasRole(organizationId, ["owner"]);
+        allow delete: if false;
+
+        // Append-only, and these numbers feed payroll. Nothing can be corrected
+        // afterwards, so the write itself is the only place to reject a bad body.
+        match /ledger/{entryId} {
+          allow read: if isActiveMember(organizationId);
+          allow create: if request.resource.data.organizationId == organizationId
+            && request.resource.data.passId == passId
+            && request.resource.data.keys().hasOnly([
+              "organizationId", "passId", "locationId", "type", "delta",
+              "category", "unitPrice", "lessonId", "instructorId",
+              "occurredAt", "createdAt", "createdBy"
+            ])
+            && request.resource.data.keys().hasAll([
+              "organizationId", "passId", "locationId", "type", "delta",
+              "category", "unitPrice", "instructorId",
+              "occurredAt", "createdAt", "createdBy"
+            ])
+            && request.resource.data.type is string
+            && request.resource.data.type in ["issue", "deduct"]
+            && request.resource.data.delta is int
+            && request.resource.data.delta != 0
+            && request.resource.data.unitPrice is int
+            && request.resource.data.unitPrice >= 0
+            && request.resource.data.createdBy == request.auth.uid
+            // createdAt says when it was recorded and the server stamps it, so a
+            // client cannot backdate. occurredAt says when the lesson happened and
+            // the client does send it — instructors enter a whole day at night —
+            // so it is fenced to a window instead. Payroll totals by occurredAt.
+            && request.resource.data.createdAt == request.time
+            && request.resource.data.occurredAt is timestamp
+            && request.resource.data.occurredAt <= request.time
+            && request.resource.data.occurredAt > request.time - duration.value(7, "d")
+            // Keep in sync with PAY_CATEGORY in src/data/schema/constants.js.
+            // Rules files cannot import, so the list is duplicated here.
+            && request.resource.data.category in [
+              "pt_1_1_new", "pt_1_1_repurchase_event", "pt_1_1_repurchase_normal",
+              "pt_2_1_new", "pt_2_1_repurchase", "service", "letmein", "etc"
+            ]
+            && (
+              request.resource.data.type == "issue"
+                ? request.resource.data.delta > 0
+                : request.resource.data.delta < 0 && "lessonId" in request.resource.data
+            )
+            && hasRole(organizationId, ["owner", "manager", "instructor"]);
+          allow update, delete: if false;
+        }
+      }
     }
 
     match /locations/{locationId} {

@@ -76,6 +76,14 @@ import {
   UNRESOLVED_ORGANIZATION_CONTEXT, createFirestoreMembershipReader,
   readyOrganizationContext, resolveOrganizationContext,
 } from "./data/repositories/organization-context.js";
+import {
+  createProduct, listProducts, setProductStatus,
+} from "./data/repositories/product-repository.js";
+import { PRODUCT_STATUS, ROLES, SESSION_TYPE } from "./data/schema/constants.js";
+import {
+  PAY_CATEGORY_LABELS, PRODUCT_STATUS_LABELS, SESSION_TYPE_LABELS,
+  labelOf, payCategoriesFor,
+} from "./data/schema/display-names.js";
 import { validatePostureMeasurement, validPostureMetrics } from "./features/posture/measurement-validity.js";
 import {
   MANUAL_ONLY_RESULT_NOTICE, POSTURE_RESULT_METRIC_KEYS, isFullyManualAfterAiMiss,
@@ -13995,8 +14003,228 @@ function SettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings,
     </div>
   );
 }
-function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup }) {
+/* 회원권 상품. 대표만 본다.
+
+   상품은 고치지 않는다 -- 종료한 뒤 새로 추가한다. 이미 발급된 회원권이 팔린
+   조건을 가리키고 있어서, 기준 세션 수나 금액이 나중에 바뀌면 지난 발급의
+   근거가 흔들린다. 그래서 목록에 수정 버튼이 없고 삭제도 없다.
+
+   금액은 원 단위로 저장하고 입력만 만원 단위로 받는다. passes.contractPrice 와
+   ledger.unitPrice 가 원 단위라, 상품만 만원이면 급여 계산에서 100배 오차가
+   그대로 남는다. 변환은 이 파일 안 두 함수에서만 한다. */
+const WON_PER_MANWON = 10000;
+const manwonToWon = (value) => Math.round(Number(value) * WON_PER_MANWON);
+const wonToManwonLabel = (won) => {
+  const number = Number(won);
+  if (!Number.isFinite(number)) return "-";
+  const manwon = number / WON_PER_MANWON;
+  return `${Number.isInteger(manwon) ? manwon : manwon.toFixed(1)}만원`;
+};
+
+function ProductRow({ product }) {
+  const archived = product.status === PRODUCT_STATUS.ARCHIVED;
+  return (
+    <div style={{ padding: "11px 12px", borderTop: `1px solid ${LINE}`, opacity: archived ? 0.55 : 1 }}>
+      <div className="flex items-center justify-between gap-2">
+        <span className="min-w-0 truncate" style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>{product.name}</span>
+        <span className="shrink-0" style={{
+          padding: "2px 8px", borderRadius: 999, fontSize: TYPE.caption, fontWeight: 700,
+          backgroundColor: archived ? CANVAS : TINT, color: archived ? SUB : BRAND_D,
+        }}>{labelOf(PRODUCT_STATUS_LABELS, product.status)}</span>
+      </div>
+      <p className="mt-1 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+        {labelOf(SESSION_TYPE_LABELS, product.sessionType)}
+        {" · "}{labelOf(PAY_CATEGORY_LABELS, product.payCategory)}
+        {" · "}{product.defaultSessions}회
+        {" · "}{wonToManwonLabel(product.defaultPrice)}
+      </p>
+    </div>
+  );
+}
+
+function ProductCatalog({ organization, currentUserId, store, onRetryOrganization, onToast }) {
+  const [products, setProducts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [mode, setMode] = useState("list");
+  const [busyId, setBusyId] = useState("");
+  const [form, setForm] = useState({ name: "", sessionType: SESSION_TYPE.PT_1_1, payCategory: "", defaultSessions: "", defaultPriceManwon: "" });
+  const [formError, setFormError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const organizationId = organization?.organizationId || "";
+  const locked = organization?.status === "unknown";
+
+  const reload = useCallback(async () => {
+    if (!organizationId) return;
+    setLoading(true);
+    setLoadError("");
+    try {
+      setProducts(await listProducts(organizationId, { includeArchived: true, store }));
+    } catch (error) {
+      setLoadError(`상품을 불러오지 못했어요 (코드 ${error?.code || "unknown"})`);
+    } finally {
+      setLoading(false);
+    }
+  }, [organizationId, store]);
+
+  useEffect(() => { if (!locked) reload(); else setLoading(false); }, [locked, reload]);
+
+  const categories = payCategoriesFor(form.sessionType);
+  const chooseSessionType = (sessionType) => setForm((current) => ({ ...current, sessionType, payCategory: "" }));
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setFormError("");
+    const sessions = Number(form.defaultSessions);
+    const manwon = Number(form.defaultPriceManwon);
+    if (!form.name.trim()) { setFormError("이벤트명을 입력해 주세요."); return; }
+    if (!form.payCategory) { setFormError("급여 카테고리를 골라 주세요."); return; }
+    if (!Number.isInteger(sessions) || sessions < 1) { setFormError("기준 세션은 1 이상의 정수로 입력해 주세요."); return; }
+    if (!Number.isInteger(manwon) || manwon < 0) { setFormError("기준 금액은 만원 단위 정수로 입력해 주세요."); return; }
+    setSaving(true);
+    try {
+      await createProduct(organizationId, {
+        name: form.name.trim(),
+        sessionType: form.sessionType,
+        payCategory: form.payCategory,
+        defaultSessions: sessions,
+        defaultPrice: manwonToWon(manwon),
+        createdBy: currentUserId,
+      }, { store });
+      setForm({ name: "", sessionType: SESSION_TYPE.PT_1_1, payCategory: "", defaultSessions: "", defaultPriceManwon: "" });
+      setMode("list");
+      onToast?.({ ok: true, msg: "상품을 추가했습니다." });
+      await reload();
+    } catch (error) {
+      setFormError(`추가하지 못했어요 (코드 ${error?.code || error?.message || "unknown"})`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const toggleStatus = async (product) => {
+    const next = product.status === PRODUCT_STATUS.ACTIVE ? PRODUCT_STATUS.ARCHIVED : PRODUCT_STATUS.ACTIVE;
+    setBusyId(product.id);
+    try {
+      await setProductStatus(organizationId, product.id, next, { store });
+      await reload();
+    } catch (error) {
+      onToast?.({ ok: false, msg: `상태를 바꾸지 못했어요 (코드 ${error?.code || "unknown"})` });
+    } finally {
+      setBusyId("");
+    }
+  };
+
+  if (locked) return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>소속을 확인하지 못했습니다</h2>
+      <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        네트워크 문제로 소속 정보를 읽지 못했습니다. 잘못된 센터에 상품이 쌓이지 않도록 이 화면을 잠급니다.
+      </p>
+      <button type="button" onClick={() => onRetryOrganization?.()} className="mt-3 h-11 w-full font-bold"
+        style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>다시 시도</button>
+    </section>
+  );
+
+  if (mode === "add") return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>상품 추가</h2>
+      <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>추가한 뒤에는 이름과 조건을 고칠 수 없습니다.</p>
+      <form onSubmit={submit} className="mt-3 space-y-3">
+        <Field label="이벤트명">
+          <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inputCls} placeholder="예: 1:1 20회 가을 이벤트" />
+        </Field>
+        <Field label="수업형태">
+          <div className="flex gap-2">
+            {Object.values(SESSION_TYPE).map((sessionType) => (
+              <button key={sessionType} type="button" onClick={() => chooseSessionType(sessionType)}
+                className="h-11 flex-1 font-bold" style={{
+                  borderRadius: 10, fontSize: TYPE.caption,
+                  backgroundColor: form.sessionType === sessionType ? TINT : CANVAS,
+                  color: form.sessionType === sessionType ? BRAND_D : SUB,
+                }}>{labelOf(SESSION_TYPE_LABELS, sessionType)}</button>
+            ))}
+          </div>
+        </Field>
+        <Field label="급여 카테고리">
+          <div className="flex flex-wrap gap-2">
+            {categories.map((payCategory) => (
+              <button key={payCategory} type="button" onClick={() => setForm({ ...form, payCategory })}
+                className="h-9 px-3 font-bold" style={{
+                  borderRadius: 999, fontSize: TYPE.caption,
+                  backgroundColor: form.payCategory === payCategory ? TINT : CANVAS,
+                  color: form.payCategory === payCategory ? BRAND_D : SUB,
+                }}>{labelOf(PAY_CATEGORY_LABELS, payCategory)}</button>
+            ))}
+          </div>
+        </Field>
+        <Field label="기준 세션 수">
+          <input inputMode="numeric" value={form.defaultSessions} className={inputCls} placeholder="20"
+            onChange={(e) => setForm({ ...form, defaultSessions: e.target.value.replace(/\D/g, "") })} />
+        </Field>
+        <Field label="기준 금액 (만원)">
+          <input inputMode="numeric" value={form.defaultPriceManwon} className={inputCls} placeholder="120"
+            onChange={(e) => setForm({ ...form, defaultPriceManwon: e.target.value.replace(/\D/g, "") })} />
+        </Field>
+        {formError ? <p style={{ fontSize: TYPE.caption, color: BAD }}>{formError}</p> : null}
+        <div className="flex gap-2 pt-1">
+          <button type="button" onClick={() => { setMode("list"); setFormError(""); }} className="h-11 flex-1 font-bold"
+            style={{ borderRadius: 10, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>취소</button>
+          <button type="submit" disabled={saving} className="h-11 flex-1 font-bold"
+            style={{ borderRadius: 10, backgroundColor: BRAND, color: "#fff", fontSize: TYPE.caption, opacity: saving ? 0.6 : 1 }}>
+            {saving ? "추가 중" : "추가"}
+          </button>
+        </div>
+      </form>
+    </section>
+  );
+
+  return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>회원권 상품</h2>
+          <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+            조건을 바꾸려면 종료한 뒤 새 상품을 추가합니다.
+          </p>
+        </div>
+        <button type="button" onClick={() => setMode("add")} className="h-9 shrink-0 px-3 font-bold"
+          style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>추가</button>
+      </div>
+      <div className="mt-3">
+        {loading ? <p style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : null}
+        {!loading && loadError ? <p style={{ fontSize: TYPE.caption, color: BAD }}>{loadError}</p> : null}
+        {!loading && !loadError && products.length === 0
+          ? <p style={{ fontSize: TYPE.caption, color: SUB }}>등록된 상품이 없습니다. 추가를 눌러 첫 상품을 만드세요.</p>
+          : null}
+        {!loading && !loadError && products.map((product) => (
+          <div key={product.id} className="flex items-stretch gap-2">
+            <div className="min-w-0 flex-1"><ProductRow product={product} /></div>
+            <button type="button" disabled={busyId === product.id} onClick={() => toggleStatus(product)}
+              className="shrink-0 self-center px-3 font-bold" style={{
+                height: 32, borderRadius: 999, fontSize: TYPE.caption,
+                backgroundColor: CANVAS, color: SUB, opacity: busyId === product.id ? 0.5 : 1,
+              }}>{product.status === PRODUCT_STATUS.ACTIVE ? "종료" : "운영중으로"}</button>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, productStore, onRetryOrganization }) {
   const aiRecording = useContext(AIRecordingStatusContext);
+  const organization = useContext(OrganizationContext);
+  /* 회원권 상품은 센터를 운영하는 대표만 본다. 개인 모드(legacy)에는 센터가
+     없다. 목록에서 빼면 setView 로 들어갈 길도 함께 닫힌다.
+
+     소속을 읽지 못한 상태(unknown)는 역할도 함께 모르는 상태라 대표인지
+     가릴 수 없다. 그래도 항목은 남긴다 -- 네트워크가 흔들릴 때 어제 있던
+     메뉴가 사라지면 무엇이 잘못됐는지 알 수 없다. 열면 잠긴 화면과 재시도만
+     보이고 조직 경로는 조립하지 않는다. */
+  const organizationUnknown = organization.ready && organization.status === "unknown";
+  const showProducts = organizationUnknown
+    || (organization.ready && !organization.isLegacy && organization.role === ROLES.OWNER);
   const [view, setView] = useState("hub");
   const [busy, setBusy] = useState(false);
   const [deleteStep, setDeleteStep] = useState("intro");
@@ -14147,6 +14375,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
   const detailTitles = {
     report: "월간 리포트", assessment: "변화 기록 설정", center: "센터 정보", theme: "화면 설정", "schedule-colors": "일정 색상",
     data: "데이터 상태", backup: "데이터 이관 · 백업", permissions: "접근권한 안내", knowledge: "오늘의 지식", account: "계정", "account-delete": "계정 삭제", app: "앱 정보",
+    products: "회원권 상품",
   };
   const menuGroups = [
     { label: "업무", items: [
@@ -14157,6 +14386,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
     { label: "운영 · 설정", items: [
       { key: "assessment", title: "변화 기록 설정", description: "기본 방식 · AI 분석 · 직접 포인트/그리기", Icon: Activity },
       { key: "center", title: "센터 정보", description: "센터명 · 담당자 · 그룹 단가", Icon: SettingsIcon },
+      ...(showProducts ? [{ key: "products", title: "회원권 상품", description: "이벤트 상품 추가 · 종료", Icon: Ticket }] : []),
       { key: "schedule-colors", title: "일정 색상", description: "개인 · 듀엣 · 그룹 · 상담 · 휴무 카드 색", Icon: Palette },
       { key: "theme", title: "화면 설정", description: "폰 설정 · 라이트 · 다크", Icon: Smartphone },
       { key: "data", title: "데이터 상태", description: "기기 저장 · 로그인 상태", Icon: Check },
@@ -14360,6 +14590,10 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
           </div>
         )}
         {view === "backup" && <div className="space-y-3"><CloudBackupCard status={backupStatus} onEnablePhotos={onEnablePhotoBackup} onRetry={onRetryBackup} /><HandoffCard db={db} photos={photos} account={account} onImport={onImport} onToast={onToast} /></div>}
+        {view === "products" && showProducts && (
+          <ProductCatalog organization={organization} currentUserId={account?.id || ""} store={productStore}
+            onRetryOrganization={onRetryOrganization} onToast={onToast} />
+        )}
         {view === "permissions" && <section style={sectionStyle}><PermissionGuide statuses={permissionStatuses} /></section>}
         {view === "knowledge" && (
           <section style={{ overflow: "hidden", borderRadius: 12, border: `1px solid ${LINE}`, backgroundColor: CARD }}>
@@ -14527,13 +14761,26 @@ export function createAppScreenSmokeCases() {
     front: [{ id: "smoke-assessment_front", memberId: member.id, assessmentId: "smoke-assessment", view: "front", selectedViews: ["front"], analysisMethod: "draw", assessmentStatus: "completed", captureStatus: "completed", date: "2026-09-06", completedAt: "2026-09-06T09:00:00.000Z", marks: [] }],
     poses: [{ id: "smoke-assessment_front_draw", memberId: member.id, assessmentId: "smoke-assessment", view: "front", selectedViews: ["front"], analysisSource: "draw", assessmentStatus: "completed", assessmentComplete: true, completedAt: "2026-09-06T09:00:00.000Z", metrics: [] }],
   };
-  const provider = (child) => (
+  const smokeOwner = { organizationId: "smoke-center", role: "owner", status: "active", isLegacy: false };
+  const providerWith = (organization, child) => (
     <AIRecordingStatusContext.Provider value={{ status: AI_RECORDING_STATUS.NORMAL, updateStatus: noop }}>
-      <OrganizationContext.Provider value={readyOrganizationContext({ organizationId: "smoke-center", role: "owner", status: "active", isLegacy: false })}>
+      <OrganizationContext.Provider value={readyOrganizationContext(organization)}>
         {child}
       </OrganizationContext.Provider>
     </AIRecordingStatusContext.Provider>
   );
+  const provider = (child) => providerWith(smokeOwner, child);
+  /* 상품 목록은 Firestore 를 건드리지 않는다. 화면이 그리는 것만 본다. */
+  const productStore = {
+    list: async () => [
+      { id: "smoke-product-active", organizationId: "smoke-center", name: "1:1 20회 가을 이벤트", sessionType: "pt_1_1", payCategory: "pt_1_1_new", defaultSessions: 20, defaultPrice: 1200000, status: "active" },
+      { id: "smoke-product-archived", organizationId: "smoke-center", name: "2:1 10회 지난 이벤트", sessionType: "pt_2_1", payCategory: "pt_2_1_repurchase", defaultSessions: 10, defaultPrice: 700000, status: "archived" },
+    ],
+    create: async () => {},
+    update: async () => {},
+    serverTimestamp: async () => "SERVER_TIME",
+  };
+  const settingsTab = (organization, extra = {}) => providerWith(organization, <ReferenceSettingsTab db={db} photos={photos} account={{ id: "smoke-account", role: "owner" }} savedAt={null} demoMode={false} onChangeSettings={noop} onChangePhoto={noop} onLogout={noop} onDeleteAccount={noop} onToast={noop} themePref="light" onChangeTheme={noop} onImport={noop} onOpenSchedule={noop} onOpenRecords={noop} onOpenOnboarding={noop} backupStatus={{}} onEnablePhotoBackup={noop} onRetryBackup={noop} productStore={productStore} onRetryOrganization={noop} {...extra} />);
   const busyDb = createScheduleFixtureDb();
   return [
     { name: "일정 탭", element: provider(<ScheduleManager db={db} photos={photos} onSave={noop} onDelete={noop} onStatus={noop} onStatusAll={noop} onNoshowFee={noop} onGroupDone={noop} onNoComment={noop} onSaveNote={noop} onToast={noop} onSettings={noop} onConsumeMemberPreset={noop} onConsumeQuickAdd={noop} onOpenMember={noop} />) },
@@ -14543,7 +14790,12 @@ export function createAppScreenSmokeCases() {
     { name: "체형분석 목록", element: <ReferenceAnalysisTab members={db.members} photos={photos} selectedId={null} selectedPoseId={null} onSelect={noop} hub={noop} /> },
     { name: "체형분석 상세 빈 이력", element: <AssessmentWorkspace member={member} photos={photos[member.id]} settings={db.settings} onSavePose={asyncNoop} onUpdatePose={asyncNoop} onDeletePose={asyncNoop} onSaveCaptureDraft={asyncNoop} onDeleteCaptureDraft={asyncNoop} onDiscardAssessmentDraft={asyncNoop} onCompleteAssessment={asyncNoop} onSaveMarks={asyncNoop} onSaveAssessmentRole={asyncNoop} onToggleAssessmentFavorite={asyncNoop} onToast={noop} onSaved={noop} /> },
     { name: "변화 기록 상세 저장 이력", element: <AssessmentWorkspace member={member} photos={completedHistoryPhotos} settings={db.settings} initialMode="history" onSavePose={asyncNoop} onUpdatePose={asyncNoop} onDeletePose={asyncNoop} onSaveCaptureDraft={asyncNoop} onDeleteCaptureDraft={asyncNoop} onDiscardAssessmentDraft={asyncNoop} onCompleteAssessment={asyncNoop} onSaveMarks={asyncNoop} onSaveAssessmentRole={asyncNoop} onToggleAssessmentFavorite={asyncNoop} onToast={noop} onSaved={noop} /> },
-    { name: "더보기 탭", element: provider(<ReferenceSettingsTab db={db} photos={photos} account={{ id: "smoke-account", role: "owner" }} savedAt={null} demoMode={false} onChangeSettings={noop} onChangePhoto={noop} onLogout={noop} onDeleteAccount={noop} onToast={noop} themePref="light" onChangeTheme={noop} onImport={noop} onOpenSchedule={noop} onOpenRecords={noop} onOpenOnboarding={noop} backupStatus={{}} onEnablePhotoBackup={noop} onRetryBackup={noop} />) },
+    { name: "더보기 탭", element: settingsTab(smokeOwner) },
+    { name: "더보기 탭 · 강사", element: settingsTab({ ...smokeOwner, role: "instructor" }) },
+    { name: "더보기 탭 · 개인 모드", element: settingsTab({ organizationId: "legacy_smoke", role: "owner", status: "active", isLegacy: true }) },
+    { name: "더보기 탭 · 소속 확인 실패", element: settingsTab({ organizationId: "", role: "", status: "unknown", isLegacy: false }) },
+    { name: "회원권 상품", element: providerWith(smokeOwner, <ProductCatalog organization={readyOrganizationContext(smokeOwner)} currentUserId="smoke-account" store={productStore} onRetryOrganization={noop} onToast={noop} />) },
+    { name: "회원권 상품 · 소속 확인 실패", element: providerWith(smokeOwner, <ProductCatalog organization={readyOrganizationContext({ organizationId: "", role: "", status: "unknown", isLegacy: false })} currentUserId="smoke-account" store={productStore} onRetryOrganization={noop} onToast={noop} />) },
   ];
 }
 
@@ -14869,6 +15121,13 @@ export default function App() {
     });
     return readyOrganizationContext(resolved);
   };
+
+  const retryOrganizationContext = useCallback(async () => {
+    const userId = fbCurrentUserId();
+    if (!userId) return;
+    setOrganizationContext(UNRESOLVED_ORGANIZATION_CONTEXT);
+    setOrganizationContext(await loadOrganizationContext(userId));
+  }, []);
 
   const loadAccount = async (acc) => {
     revokeAllUrls();
@@ -16700,7 +16959,7 @@ export default function App() {
                   onToast={setToast} onSaved={(mode) => setAnalysisDone({ id, mode })} /></Guard>;
               }} />}
             {tab === "settings" && <ReferenceSettingsTab db={db} photos={photos} account={account} savedAt={savedAt} demoMode={demoMode} onChangeSettings={(s) => saveDb({ ...db, settings: s })} onChangePhoto={changePhoto} onToast={setToast} themePref={themePref} onChangeTheme={changeTheme} onLogout={handleLogout} onDeleteAccount={handleDeleteAccount} onImport={importHandoff}
-              onOpenSchedule={() => { setScheduleQuickAddRequest((request) => request + 1); setTab("schedule"); }} onOpenRecords={() => { setMobileView("list"); setTab("members"); }} onOpenOnboarding={openOnboardingReplay} onOpenLessonExamples={() => setLessonExamplesOpen(true)} backupStatus={cloudBackupStatus} onEnablePhotoBackup={enablePhotoBackup} onRetryBackup={retryCloudBackup} />}
+              onOpenSchedule={() => { setScheduleQuickAddRequest((request) => request + 1); setTab("schedule"); }} onOpenRecords={() => { setMobileView("list"); setTab("members"); }} onOpenOnboarding={openOnboardingReplay} onOpenLessonExamples={() => setLessonExamplesOpen(true)} backupStatus={cloudBackupStatus} onEnablePhotoBackup={enablePhotoBackup} onRetryBackup={retryCloudBackup} onRetryOrganization={retryOrganizationContext} />}
           </Guard>
         </div>
         <Tabs tab={tab} setTab={goTab} />

@@ -31,6 +31,11 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "체형분석 상세 빈 이력",
     "변화 기록 상세 저장 이력",
     "더보기 탭",
+    "더보기 탭 · 강사",
+    "더보기 탭 · 개인 모드",
+    "더보기 탭 · 소속 확인 실패",
+    "회원권 상품",
+    "회원권 상품 · 소속 확인 실패",
   ]);
   for (const item of cases) {
     await t.test(item.name, () => {
@@ -39,6 +44,39 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
       assert.ok(markup.length > 0, `${item.name} rendered empty markup`);
     });
   }
+});
+
+test("the product catalog is reachable only where it should be", async (t) => {
+  const vite = await createServer({
+    root: projectRoot,
+    configFile: false,
+    plugins: [react()],
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] },
+    server: { middlewareMode: true },
+    ssr: { noExternal: ["@capgo/camera-preview"] },
+    logLevel: "silent",
+  });
+  t.after(() => vite.close());
+  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+
+  // 대표는 들어갈 수 있다.
+  assert.match(markupOf("더보기 탭"), /회원권 상품/);
+
+  // 강사와 개인 모드 사용자에게는 진입점 자체가 없다. 항목이 없으면
+  // setView 로 들어갈 길도 함께 닫힌다.
+  assert.doesNotMatch(markupOf("더보기 탭 · 강사"), /회원권 상품/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 개인 모드"), /회원권 상품/);
+
+  // 소속을 읽지 못한 상태는 역할도 모르는 상태다. 메뉴가 조용히 사라지지
+  // 않도록 항목은 남기고, 열면 잠긴 화면이 나온다.
+  assert.match(markupOf("더보기 탭 · 소속 확인 실패"), /회원권 상품/);
+  const locked = markupOf("회원권 상품 · 소속 확인 실패");
+  assert.match(locked, /소속을 확인하지 못했습니다/);
+  assert.match(locked, /다시 시도/);
+  assert.doesNotMatch(locked, /추가/, "잠긴 상태에서는 추가 버튼이 없어야 한다");
 });
 
 test("ErrorBoundary hides diagnostics in production and records a privacy-safe diagnostic event", async () => {

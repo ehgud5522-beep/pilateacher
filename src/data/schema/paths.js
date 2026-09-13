@@ -35,6 +35,9 @@ export const paths = Object.freeze({
   /** @param {string} organizationId @param {string} clientId */
   client: (organizationId, clientId) =>
     `${organizationRoot(organizationId)}/${COLLECTIONS.CLIENTS}/${segment(clientId, "clientId")}`,
+  /** @param {string} organizationId @param {string} productId */
+  product: (organizationId, productId) =>
+    `${organizationRoot(organizationId)}/${COLLECTIONS.PRODUCTS}/${segment(productId, "productId")}`,
   /** @param {string} organizationId @param {string} passId */
   pass: (organizationId, passId) =>
     `${organizationRoot(organizationId)}/${COLLECTIONS.PASSES}/${segment(passId, "passId")}`,

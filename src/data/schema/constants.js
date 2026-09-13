@@ -72,6 +72,27 @@ export const AI_RECOMMENDATION_STATUS = Object.freeze({
   FAILED: "failed",
 });
 
+export const PRODUCT_STATUS = Object.freeze({
+  ACTIVE: "active",
+  ARCHIVED: "archived",
+});
+
+export const SESSION_TYPE = Object.freeze({
+  PT_1_1: "pt_1_1",
+  PT_2_1: "pt_2_1",
+});
+
+// 결제 수단. 급여 자동 계산에는 쓰지 않는다 — 바우처 결제는 인센을 수동으로
+// 조정하므로, 월말에 해당 건만 뽑아 보기 위한 기록이다.
+// firestore.foundation.rules의 passes create 조건에 같은 목록이 리터럴로 있다.
+export const PAYMENT_METHOD = Object.freeze({
+  CARD: "card",
+  CASH: "cash",
+  TRANSFER: "transfer",
+  ZEROPAY: "zeropay",
+  VOUCHER: "voucher",
+});
+
 // 급여 단가표의 카테고리. firestore.foundation.rules의 passes/ledger create
 // 조건에 같은 목록이 리터럴로 들어가 있다 — 규칙 파일은 import을 할 수 없다.
 // 항목을 더하거나 빼면 양쪽을 함께 고쳐야 한다.
@@ -93,6 +114,7 @@ export const COLLECTIONS = Object.freeze({
   MEMBERSHIPS: "memberships",
   PASSES: "passes",
   CLIENTS: "clients",
+  PRODUCTS: "products",
   LESSONS: "lessons",
   LEDGER: "ledger",
   PARTICIPANTS: "participants",

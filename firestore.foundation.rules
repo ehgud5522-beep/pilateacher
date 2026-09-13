@@ -25,6 +25,15 @@ service cloud.firestore {
         && membership(organizationId).data.role in roles;
     }
 
+    // Keep in sync with PAY_CATEGORY in src/data/schema/constants.js. Rules
+    // files cannot import, so products and the pass ledger share this instead.
+    function payCategories() {
+      return [
+        "pt_1_1_new", "pt_1_1_repurchase_event", "pt_1_1_repurchase_normal",
+        "pt_2_1_new", "pt_2_1_repurchase", "service", "letmein", "etc"
+      ];
+    }
+
     function sameOrganization() {
       return request.resource.data.organizationId == resource.data.organizationId;
     }
@@ -192,19 +201,97 @@ service cloud.firestore {
         }
       }
 
+      // Event products change often, so they live as data instead of in code.
+      // An existing product is never edited — it is archived and a new one added,
+      // because passes already issued point at the terms it was sold under.
+      // No unitPrice here: payroll rate comes from payCategory, and some of it
+      // follows a per-instructor value.
+      match /products/{productId} {
+        allow read: if isActiveMember(organizationId);
+        allow create: if request.resource.data.organizationId == organizationId
+          && request.resource.data.keys().hasOnly([
+            "organizationId", "name", "sessionType", "payCategory",
+            "defaultSessions", "defaultPrice", "status", "createdAt", "createdBy"
+          ])
+          && request.resource.data.keys().hasAll([
+            "organizationId", "name", "sessionType", "payCategory",
+            "defaultSessions", "defaultPrice", "status", "createdAt", "createdBy"
+          ])
+          && request.resource.data.name is string
+          && request.resource.data.name.size() > 0
+          && request.resource.data.sessionType in ["pt_1_1", "pt_2_1"]
+          && request.resource.data.payCategory in payCategories()
+          // A 2:1 lesson priced at the 1:1 rate differs by about ten thousand won
+          // per session, and one bad product spreads that to every pass issued
+          // from it. service and etc attach to either shape; letmein is 1:1 only.
+          && (
+            request.resource.data.sessionType == "pt_1_1"
+              ? request.resource.data.payCategory in [
+                "pt_1_1_new", "pt_1_1_repurchase_event", "pt_1_1_repurchase_normal",
+                "service", "letmein", "etc"
+              ]
+              : request.resource.data.payCategory in [
+                "pt_2_1_new", "pt_2_1_repurchase", "service", "etc"
+              ]
+          )
+          && request.resource.data.defaultSessions is int
+          && request.resource.data.defaultSessions > 0
+          && request.resource.data.defaultPrice is int
+          && request.resource.data.defaultPrice >= 0
+          && request.resource.data.status in ["active", "archived"]
+          && request.resource.data.createdAt == request.time
+          && request.resource.data.createdBy == request.auth.uid
+          && hasRole(organizationId, ["owner"]);
+        // Only status moves, and it moves both ways. Everything else has to come
+        // back unchanged — the set is closed, so this covers every field.
+        allow update: if resource.data.organizationId == organizationId
+          && request.resource.data.keys().hasOnly([
+            "organizationId", "name", "sessionType", "payCategory",
+            "defaultSessions", "defaultPrice", "status", "createdAt", "createdBy"
+          ])
+          && request.resource.data.keys().hasAll([
+            "organizationId", "name", "sessionType", "payCategory",
+            "defaultSessions", "defaultPrice", "status", "createdAt", "createdBy"
+          ])
+          && request.resource.data.organizationId == resource.data.organizationId
+          && request.resource.data.name == resource.data.name
+          && request.resource.data.sessionType == resource.data.sessionType
+          && request.resource.data.payCategory == resource.data.payCategory
+          && request.resource.data.defaultSessions == resource.data.defaultSessions
+          && request.resource.data.defaultPrice == resource.data.defaultPrice
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.createdBy == resource.data.createdBy
+          && request.resource.data.status in ["active", "archived"]
+          && hasRole(organizationId, ["owner"]);
+        allow delete: if false;
+      }
+
       // PT passes (20-session packs and the like). Distinct from top-level
       // memberships, which mean organization membership and gate access.
       match /passes/{passId} {
         allow read: if isActiveMember(organizationId);
         // The product fields are not settled yet, so require a floor rather than
         // closing the set with hasOnly.
+        // A product carries the standard combination; what was actually sold is
+        // recorded here, because the two are allowed to differ at issue time.
         allow create: if request.resource.data.organizationId == organizationId
           && request.resource.data.keys().hasAll([
             "organizationId", "clientId", "locationId", "productId",
-            "totalSessions", "status", "createdAt", "createdBy"
+            "totalSessions", "serviceSessions", "contractPrice",
+            "paymentMethod", "purchaseRound", "status", "createdAt", "createdBy"
           ])
           && request.resource.data.totalSessions is int
           && request.resource.data.totalSessions > 0
+          && request.resource.data.serviceSessions is int
+          && request.resource.data.serviceSessions >= 0
+          && request.resource.data.contractPrice is int
+          && request.resource.data.contractPrice >= 0
+          && request.resource.data.purchaseRound is int
+          && request.resource.data.purchaseRound >= 1
+          // Keep in sync with PAYMENT_METHOD in src/data/schema/constants.js.
+          && request.resource.data.paymentMethod in [
+            "card", "cash", "transfer", "zeropay", "voucher"
+          ]
           && request.resource.data.status is string
           && request.resource.data.createdAt == request.time
           && hasRole(organizationId, ["owner", "manager"]);
@@ -244,12 +331,7 @@ service cloud.firestore {
             && request.resource.data.occurredAt is timestamp
             && request.resource.data.occurredAt <= request.time
             && request.resource.data.occurredAt > request.time - duration.value(7, "d")
-            // Keep in sync with PAY_CATEGORY in src/data/schema/constants.js.
-            // Rules files cannot import, so the list is duplicated here.
-            && request.resource.data.category in [
-              "pt_1_1_new", "pt_1_1_repurchase_event", "pt_1_1_repurchase_normal",
-              "pt_2_1_new", "pt_2_1_repurchase", "service", "letmein", "etc"
-            ]
+            && request.resource.data.category in payCategories()
             && (
               request.resource.data.type == "issue"
                 ? request.resource.data.delta > 0

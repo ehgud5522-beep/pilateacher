@@ -22,6 +22,19 @@ const ORG_A = "org-a";
 const ORG_B = "org-b";
 const PASS_A = "pass-a";
 const PASS_B = "pass-b";
+const PRODUCT_A = "product-a";
+const PRODUCT_B = "product-b";
+const SESSION_TYPES = ["pt_1_1", "pt_2_1"];
+const PT_1_1_CATEGORIES = [
+  "pt_1_1_new",
+  "pt_1_1_repurchase_event",
+  "pt_1_1_repurchase_normal",
+  "service",
+  "letmein",
+  "etc",
+];
+const PT_2_1_CATEGORIES = ["pt_2_1_new", "pt_2_1_repurchase", "service", "etc"];
+const PAYMENT_METHODS = ["card", "cash", "transfer", "zeropay", "voucher"];
 const PAY_CATEGORIES = [
   "pt_1_1_new",
   "pt_1_1_repurchase_event",
@@ -50,6 +63,21 @@ function storageFor(userId) {
   return userId ? testEnv.authenticatedContext(userId).storage() : testEnv.unauthenticatedContext().storage();
 }
 
+function productFixture(organizationId, overrides = {}) {
+  return {
+    organizationId,
+    name: "1:1 20회 이벤트",
+    sessionType: "pt_1_1",
+    payCategory: "pt_1_1_new",
+    defaultSessions: 20,
+    defaultPrice: 1200000,
+    status: "active",
+    createdBy: users.owner,
+    createdAt: serverTimestamp(),
+    ...overrides,
+  };
+}
+
 function hoursAgo(hours) {
   return Timestamp.fromMillis(Date.now() - hours * 60 * 60 * 1000);
 }
@@ -62,8 +90,11 @@ function passFixture(organizationId, passId, overrides = {}) {
     locationId: "location-a",
     productId: "product-1on1-new",
     category: "pt_1_1_new",
-    unitPrice: 60000,
     totalSessions: 20,
+    serviceSessions: 0,
+    contractPrice: 1200000,
+    paymentMethod: "card",
+    purchaseRound: 1,
     remainingCount: 20,
     status: "active",
     createdBy: users.manager,
@@ -129,6 +160,8 @@ async function seed() {
     });
     await setDoc(doc(db, "events", "event-1"), { organizationId: ORG_A, type: "fixture" });
     await setDoc(doc(db, "auditLogs", "audit-1"), { organizationId: ORG_A, action: "fixture" });
+    await setDoc(doc(db, "organizations", ORG_A, "products", PRODUCT_A), productFixture(ORG_A));
+    await setDoc(doc(db, "organizations", ORG_B, "products", PRODUCT_B), productFixture(ORG_B));
     await setDoc(doc(db, "organizations", ORG_A, "passes", PASS_A), passFixture(ORG_A, PASS_A));
     await setDoc(doc(db, "organizations", ORG_B, "passes", PASS_B), passFixture(ORG_B, PASS_B));
     await setDoc(
@@ -402,6 +435,161 @@ describe("PT passes and their ledger", () => {
   });
 });
 
+describe("membership products are added and archived, never edited", () => {
+  const productRef = (userId, organizationId, productId) =>
+    doc(dbFor(userId), "organizations", organizationId, "products", productId);
+
+  function withoutField(body, field) {
+    const copy = { ...body };
+    delete copy[field];
+    return copy;
+  }
+
+  test("members read products and outsiders do not", async () => {
+    await assertSucceeds(getDoc(productRef(users.instructor, ORG_A, PRODUCT_A)));
+    await assertFails(getDoc(productRef(users.outsider, ORG_A, PRODUCT_A)));
+    await assertFails(getDoc(productRef(null, ORG_A, PRODUCT_A)));
+  });
+
+  test("only the owner adds a product", async () => {
+    await assertSucceeds(setDoc(productRef(users.owner, ORG_A, "product-by-owner"), productFixture(ORG_A)));
+    for (const userId of [users.manager, users.instructor, users.staff]) {
+      await assertFails(setDoc(
+        productRef(userId, ORG_A, `product-by-${userId}`),
+        productFixture(ORG_A, { createdBy: userId }),
+      ));
+    }
+  });
+
+  test("a product whose organizationId disagrees with its path is rejected", async () => {
+    await assertFails(setDoc(productRef(users.owner, ORG_A, "product-wrong-org"), productFixture(ORG_B)));
+  });
+
+  test("every field in the set is required", async () => {
+    for (const field of [
+      "organizationId", "name", "sessionType", "payCategory",
+      "defaultSessions", "defaultPrice", "status", "createdAt", "createdBy",
+    ]) {
+      await assertFails(setDoc(
+        productRef(users.owner, ORG_A, `product-missing-${field}`),
+        withoutField(productFixture(ORG_A), field),
+      ));
+    }
+  });
+
+  test("an unlisted field is rejected", async () => {
+    await assertFails(setDoc(
+      productRef(users.owner, ORG_A, "product-extra"),
+      productFixture(ORG_A, { unitPrice: 60000 }),
+    ));
+  });
+
+  test("name has to be a non-empty string", async () => {
+    await assertFails(setDoc(productRef(users.owner, ORG_A, "product-empty-name"), productFixture(ORG_A, { name: "" })));
+    await assertFails(setDoc(productRef(users.owner, ORG_A, "product-int-name"), productFixture(ORG_A, { name: 20 })));
+  });
+
+  test("sessionType and payCategory come from their allowed lists", async () => {
+    for (const sessionType of SESSION_TYPES) {
+      await assertSucceeds(setDoc(
+        productRef(users.owner, ORG_A, `product-type-${sessionType}`),
+        productFixture(ORG_A, { sessionType, payCategory: "service" }),
+      ));
+    }
+    await assertFails(setDoc(productRef(users.owner, ORG_A, "product-type-3on1"), productFixture(ORG_A, { sessionType: "pt_3_1" })));
+    await assertFails(setDoc(productRef(users.owner, ORG_A, "product-pay-typo"), productFixture(ORG_A, { payCategory: "pt_1_1_New" })));
+  });
+
+  test("every pay category that fits the session type is accepted", async () => {
+    for (const payCategory of PT_1_1_CATEGORIES) {
+      await assertSucceeds(setDoc(
+        productRef(users.owner, ORG_A, `product-1on1-${payCategory}`),
+        productFixture(ORG_A, { sessionType: "pt_1_1", payCategory }),
+      ));
+    }
+    for (const payCategory of PT_2_1_CATEGORIES) {
+      await assertSucceeds(setDoc(
+        productRef(users.owner, ORG_A, `product-2on1-${payCategory}`),
+        productFixture(ORG_A, { sessionType: "pt_2_1", payCategory }),
+      ));
+    }
+  });
+
+  test("a pay category from the other session shape is rejected", async () => {
+    for (const payCategory of ["pt_2_1_new", "pt_2_1_repurchase"]) {
+      await assertFails(setDoc(
+        productRef(users.owner, ORG_A, `product-1on1-bad-${payCategory}`),
+        productFixture(ORG_A, { sessionType: "pt_1_1", payCategory }),
+      ));
+    }
+    for (const payCategory of ["pt_1_1_new", "pt_1_1_repurchase_event", "pt_1_1_repurchase_normal"]) {
+      await assertFails(setDoc(
+        productRef(users.owner, ORG_A, `product-2on1-bad-${payCategory}`),
+        productFixture(ORG_A, { sessionType: "pt_2_1", payCategory }),
+      ));
+    }
+  });
+
+  test("letmein is 1:1 only while service and etc attach to either shape", async () => {
+    await assertSucceeds(setDoc(
+      productRef(users.owner, ORG_A, "product-letmein-1on1"),
+      productFixture(ORG_A, { sessionType: "pt_1_1", payCategory: "letmein" }),
+    ));
+    await assertFails(setDoc(
+      productRef(users.owner, ORG_A, "product-letmein-2on1"),
+      productFixture(ORG_A, { sessionType: "pt_2_1", payCategory: "letmein" }),
+    ));
+    for (const sessionType of SESSION_TYPES) {
+      for (const payCategory of ["service", "etc"]) {
+        await assertSucceeds(setDoc(
+          productRef(users.owner, ORG_A, `product-${sessionType}-${payCategory}`),
+          productFixture(ORG_A, { sessionType, payCategory }),
+        ));
+      }
+    }
+  });
+
+  test("defaultSessions must be positive and defaultPrice non-negative", async () => {
+    await assertSucceeds(setDoc(productRef(users.owner, ORG_A, "product-free"), productFixture(ORG_A, { defaultPrice: 0 })));
+    await assertFails(setDoc(productRef(users.owner, ORG_A, "product-zero-sessions"), productFixture(ORG_A, { defaultSessions: 0 })));
+    await assertFails(setDoc(productRef(users.owner, ORG_A, "product-string-sessions"), productFixture(ORG_A, { defaultSessions: "20" })));
+    await assertFails(setDoc(productRef(users.owner, ORG_A, "product-negative-price"), productFixture(ORG_A, { defaultPrice: -1 })));
+    await assertFails(setDoc(productRef(users.owner, ORG_A, "product-string-price"), productFixture(ORG_A, { defaultPrice: "1200000" })));
+  });
+
+  test("status, createdAt and createdBy are constrained at creation", async () => {
+    await assertFails(setDoc(productRef(users.owner, ORG_A, "product-bad-status"), productFixture(ORG_A, { status: "draft" })));
+    await assertFails(setDoc(productRef(users.owner, ORG_A, "product-backdated"), productFixture(ORG_A, { createdAt: hoursAgo(24) })));
+    await assertFails(setDoc(productRef(users.owner, ORG_A, "product-forged"), productFixture(ORG_A, { createdBy: users.manager })));
+  });
+
+  test("status moves both ways and nothing else moves", async () => {
+    const ownerRef = productRef(users.owner, ORG_A, PRODUCT_A);
+    await assertSucceeds(updateDoc(ownerRef, { status: "archived" }));
+    await assertSucceeds(updateDoc(ownerRef, { status: "active" }));
+    await assertFails(updateDoc(ownerRef, { status: "draft" }));
+    await assertFails(updateDoc(ownerRef, { name: "renamed" }));
+    await assertFails(updateDoc(ownerRef, { defaultPrice: 990000 }));
+    await assertFails(updateDoc(ownerRef, { defaultSessions: 10 }));
+    await assertFails(updateDoc(ownerRef, { payCategory: "etc" }));
+    await assertFails(updateDoc(ownerRef, { sessionType: "pt_2_1" }));
+    await assertFails(updateDoc(ownerRef, { createdBy: users.manager }));
+    await assertFails(updateDoc(ownerRef, { status: "archived", defaultPrice: 990000 }));
+    await assertFails(updateDoc(ownerRef, { unitPrice: 60000 }));
+  });
+
+  test("only the owner archives, and nobody deletes", async () => {
+    await assertFails(updateDoc(productRef(users.manager, ORG_A, PRODUCT_A), { status: "archived" }));
+    await assertFails(deleteDoc(productRef(users.owner, ORG_A, PRODUCT_A)));
+  });
+
+  test("one organization never reaches another organization products", async () => {
+    await assertFails(getDoc(productRef(users.owner, ORG_B, PRODUCT_B)));
+    await assertFails(setDoc(productRef(users.owner, ORG_B, "product-crossing"), productFixture(ORG_B)));
+    await assertFails(updateDoc(productRef(users.owner, ORG_B, PRODUCT_B), { status: "archived" }));
+  });
+});
+
 describe("ledger and pass bodies are validated at write time", () => {
   const ledgerRef = (userId, entryId) =>
     doc(dbFor(userId), "organizations", ORG_A, "passes", PASS_A, "ledger", entryId);
@@ -562,6 +750,85 @@ describe("ledger and pass bodies are validated at write time", () => {
       ledgerRef(users.instructor, "createdBy-forged"),
       ledgerFixture(ORG_A, PASS_A, { createdBy: users.owner }),
     ));
+  });
+
+  test("a pass records what was actually issued, not just the product", async () => {
+    await assertSucceeds(setDoc(
+      passRef(users.manager, "pass-adjusted"),
+      passFixture(ORG_A, "pass-adjusted", {
+        totalSessions: 18,
+        serviceSessions: 2,
+        contractPrice: 990000,
+        purchaseRound: 3,
+      }),
+    ));
+    for (const field of ["productId", "totalSessions", "serviceSessions", "contractPrice", "paymentMethod", "purchaseRound"]) {
+      await assertFails(setDoc(
+        passRef(users.manager, `pass-missing-${field}`),
+        withoutField(passFixture(ORG_A, `pass-missing-${field}`), field),
+      ));
+    }
+  });
+
+  test("serviceSessions may be zero but never negative or fractional", async () => {
+    await assertSucceeds(setDoc(
+      passRef(users.manager, "pass-service-zero"),
+      passFixture(ORG_A, "pass-service-zero", { serviceSessions: 0 }),
+    ));
+    await assertFails(setDoc(
+      passRef(users.manager, "pass-service-negative"),
+      passFixture(ORG_A, "pass-service-negative", { serviceSessions: -1 }),
+    ));
+    await assertFails(setDoc(
+      passRef(users.manager, "pass-service-string"),
+      passFixture(ORG_A, "pass-service-string", { serviceSessions: "2" }),
+    ));
+  });
+
+  test("contractPrice may be zero but never negative or a string", async () => {
+    await assertSucceeds(setDoc(
+      passRef(users.manager, "pass-price-zero"),
+      passFixture(ORG_A, "pass-price-zero", { contractPrice: 0 }),
+    ));
+    await assertFails(setDoc(
+      passRef(users.manager, "pass-price-negative"),
+      passFixture(ORG_A, "pass-price-negative", { contractPrice: -1 }),
+    ));
+    await assertFails(setDoc(
+      passRef(users.manager, "pass-price-string"),
+      passFixture(ORG_A, "pass-price-string", { contractPrice: "990000" }),
+    ));
+  });
+
+  test("purchaseRound starts at one", async () => {
+    await assertSucceeds(setDoc(
+      passRef(users.manager, "pass-round-four"),
+      passFixture(ORG_A, "pass-round-four", { purchaseRound: 4 }),
+    ));
+    await assertFails(setDoc(
+      passRef(users.manager, "pass-round-zero"),
+      passFixture(ORG_A, "pass-round-zero", { purchaseRound: 0 }),
+    ));
+    await assertFails(setDoc(
+      passRef(users.manager, "pass-round-string"),
+      passFixture(ORG_A, "pass-round-string", { purchaseRound: "1" }),
+    ));
+  });
+
+  test("every payment method is accepted and nothing else is", async () => {
+    assert.equal(PAYMENT_METHODS.length, 5);
+    for (const paymentMethod of PAYMENT_METHODS) {
+      await assertSucceeds(setDoc(
+        passRef(users.manager, `pass-pay-${paymentMethod}`),
+        passFixture(ORG_A, `pass-pay-${paymentMethod}`, { paymentMethod }),
+      ));
+    }
+    for (const bogus of ["Card", "credit", "", "kakao"]) {
+      await assertFails(setDoc(
+        passRef(users.manager, `pass-pay-bad-${bogus || "empty"}`),
+        passFixture(ORG_A, `pass-pay-bad-${bogus || "empty"}`, { paymentMethod: bogus }),
+      ));
+    }
   });
 
   test("a pass needs its product fields and a positive session count", async () => {

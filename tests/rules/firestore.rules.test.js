@@ -8,13 +8,18 @@ import {
 } from "@firebase/rules-unit-testing";
 import {
   Timestamp,
+  collection,
   deleteDoc,
   doc,
   getDoc,
+  getDocs,
+  query,
   serverTimestamp,
   setDoc,
   updateDoc,
+  where,
 } from "firebase/firestore";
+import { COLLECTIONS, MEMBERSHIP_STATUS } from "../../src/data/schema/constants.js";
 import { deleteObject, getMetadata, ref, uploadBytes } from "firebase/storage";
 
 const PROJECT_ID = "pilateacher-dev";
@@ -890,5 +895,56 @@ describe("protected and append-only data", () => {
 
   test("fixture sanity check has all role identities", () => {
     assert.equal(Object.keys(users).length, 6);
+  });
+
+  /* 앱이 소속을 읽을 때 실제로 하는 연산은 list 쿼리 하나뿐이다
+     (createFirestoreMembershipReader). 나머지 memberships 테스트는 전부
+     setDoc/updateDoc 이라 이 경로를 한 번도 지나지 않았다. get 이 되는 것과
+     where 로 목록을 긁는 것이 규칙에서 같은 동작이 아니므로 따로 고정한다.
+
+     컬렉션 경로와 status 값은 리더와 같은 상수에서 가져온다 -- 상수가 어긋나면
+     여기서 먼저 깨진다. */
+  const membershipQuery = (userId, forUserId) => query(
+    collection(dbFor(userId), COLLECTIONS.MEMBERSHIPS),
+    where("userId", "==", forUserId),
+    where("status", "==", MEMBERSHIP_STATUS.ACTIVE),
+  );
+
+  test("a member can list their own active membership with the reader's query", async () => {
+    const snapshot = await assertSucceeds(getDocs(membershipQuery(users.owner, users.owner)));
+    assert.equal(snapshot.size, 1, "본인 소속 문서가 정확히 한 건 나와야 한다");
+    const found = snapshot.docs[0].data();
+    assert.equal(found.userId, users.owner);
+    assert.equal(found.organizationId, ORG_A);
+    assert.equal(found.status, "active");
+    assert.equal(snapshot.docs[0].id, `${ORG_A}_${users.owner}`);
+  });
+
+  test("every role can read its own membership, so no role is silently legacy", async () => {
+    for (const [role, userId] of Object.entries(users)) {
+      const snapshot = await assertSucceeds(getDocs(membershipQuery(userId, userId)));
+      assert.equal(snapshot.size, 1, `${role} 은 자기 소속을 읽을 수 있어야 한다`);
+    }
+  });
+
+  test("listing someone else's membership is refused, not silently empty", async () => {
+    // 0건으로 돌아오면 앱은 legacy(개인 모드)로 확정해 버린다. 남의 소속을
+    // 훔쳐보지 못하는 것과, 못 읽었다는 사실이 드러나는 것은 둘 다 필요하다.
+    await assertFails(getDocs(membershipQuery(users.outsider, users.owner)));
+  });
+
+  test("listing the whole memberships collection is refused", async () => {
+    await assertFails(getDocs(collection(dbFor(users.owner), COLLECTIONS.MEMBERSHIPS)));
+  });
+
+  test("a status-only list without the userId filter is refused", async () => {
+    await assertFails(getDocs(query(
+      collection(dbFor(users.owner), COLLECTIONS.MEMBERSHIPS),
+      where("status", "==", MEMBERSHIP_STATUS.ACTIVE),
+    )));
+  });
+
+  test("an unauthenticated reader gets nothing from memberships", async () => {
+    await assertFails(getDocs(membershipQuery(null, users.owner)));
   });
 });

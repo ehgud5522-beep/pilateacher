@@ -34,6 +34,12 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 강사",
     "더보기 탭 · 개인 모드",
     "더보기 탭 · 소속 확인 실패",
+    "회원 관리",
+    "회원 관리 · 검색 결과 없음",
+    "회원 관리 · 등록",
+    "회원 관리 · 동명이인 확인",
+    "회원 관리 · 소속 확인 실패",
+    "더보기 탭 · 매니저",
     "회원권 상품",
     "회원권 상품 · 소속 확인 실패",
   ]);
@@ -133,4 +139,112 @@ test("every field the organization lookup emits survives deviceLog", async (t) =
   for (const allowed of ["uidLength", "uidPrefix", "uidSuffix"]) {
     assert.equal(isDeviceLogField(allowed), true, `${allowed} 가 버려지면 세션 uid 를 확정할 수 없다`);
   }
+});
+
+test("the member directory shows who is there and who is not", async (t) => {
+  const vite = await createServer({
+    root: projectRoot,
+    configFile: false,
+    plugins: [react()],
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] },
+    server: { middlewareMode: true },
+    ssr: { noExternal: ["@capgo/camera-preview"] },
+    logLevel: "silent",
+  });
+  t.after(() => vite.close());
+  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+
+  const list = markupOf("회원 관리");
+  assert.match(list, /김하나/);
+  assert.match(list, /이두리/);
+  assert.match(list, /반송점/, "지점 이름이 붙어야 한다");
+
+  // 연락처는 뒷 4자리만. 전체 번호가 목록에 늘어서면 곁에서 보는 누구에게나
+  // 그대로 읽힌다.
+  assert.match(list, /5678/);
+  assert.doesNotMatch(list, /01012345678/, "전체 번호가 목록에 드러나면 안 된다");
+  assert.doesNotMatch(list, /01099998888/);
+
+  // 상태는 저장값이 아니라 문구로 나온다.
+  assert.match(list, /종료/);
+  assert.doesNotMatch(list, /ended/);
+
+  // 검색이 빗나가는 것과 아무도 없는 것은 다른 화면이다.
+  const empty = markupOf("회원 관리 · 검색 결과 없음");
+  assert.match(empty, /검색 결과가 없습니다/);
+  assert.doesNotMatch(empty, /등록된 회원이 없습니다/);
+  assert.doesNotMatch(empty, /김하나/);
+});
+
+test("registration asks for three things and warns about a namesake", async (t) => {
+  const vite = await createServer({
+    root: projectRoot,
+    configFile: false,
+    plugins: [react()],
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] },
+    server: { middlewareMode: true },
+    ssr: { noExternal: ["@capgo/camera-preview"] },
+    logLevel: "silent",
+  });
+  t.after(() => vite.close());
+  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+
+  const add = markupOf("회원 관리 · 등록");
+  for (const label of ["이름", "연락처", "지점"]) assert.match(add, new RegExp(label));
+  assert.match(add, /반송점/, "지점은 고를 수 있어야 한다");
+  assert.match(add, /센텀점/, "매니저도 대표처럼 지점을 고른다");
+  /* 생년월일·주소는 받지 않는다 -- 종이 계약서에 있고, 서버에 둘수록 관리
+     부담만 는다. 문구로 확인하면 안내문에 걸려 통과해 버리므로, 입력칸 수를
+     센다. 이름과 연락처 둘뿐이고 지점은 버튼이다. */
+  assert.equal((add.match(/<input/g) || []).length, 2, "등록 화면의 입력칸은 이름·연락처 둘뿐이다");
+
+  const duplicate = markupOf("회원 관리 · 동명이인 확인");
+  assert.match(duplicate, /김하나님이 이미 있습니다/);
+  assert.match(duplicate, /연락처 뒷자리/);
+  assert.match(duplicate, /5678/);
+  assert.match(duplicate, /6666/, "같은 이름이 여럿이면 모두 보여준다");
+  // 막지 않는다 -- 거부하면 사람이 이름 뒤에 1, 2 를 붙이기 시작한다.
+  assert.match(duplicate, /그래도 등록/);
+});
+
+test("the member directory is reachable only where it should be", async (t) => {
+  const vite = await createServer({
+    root: projectRoot,
+    configFile: false,
+    plugins: [react()],
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] },
+    server: { middlewareMode: true },
+    ssr: { noExternal: ["@capgo/camera-preview"] },
+    logLevel: "silent",
+  });
+  t.after(() => vite.close());
+  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+
+  // 대표와 매니저는 들어갈 수 있다.
+  assert.match(markupOf("더보기 탭"), /회원 관리/);
+  assert.match(markupOf("더보기 탭 · 매니저"), /회원 관리/);
+
+  // 강사에게는 진입점 자체가 없다. 항목이 없으면 setView 로 들어갈 길도 닫힌다.
+  assert.doesNotMatch(markupOf("더보기 탭 · 강사"), /회원 관리/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 개인 모드"), /회원 관리/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 소속 확인 실패"), /회원 관리/);
+
+  // 매니저는 회원 관리만 본다. 상품은 대표 전용이다.
+  assert.doesNotMatch(markupOf("더보기 탭 · 매니저"), /회원권 상품/);
+
+  // 소속을 읽지 못하면 목록을 그리지 않고 잠근다 -- 잘못된 센터에 회원이
+  // 쌓이는 것이 못 보는 것보다 나쁘다.
+  const locked = markupOf("회원 관리 · 소속 확인 실패");
+  assert.match(locked, /소속을 확인하지 못했습니다/);
+  assert.match(locked, /다시 시도/);
+  assert.doesNotMatch(locked, /등록/, "잠긴 상태에서는 등록 버튼이 없어야 한다");
 });

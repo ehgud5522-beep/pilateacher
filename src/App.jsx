@@ -73,8 +73,8 @@ import {
 import BodyViewSheet from "./features/posture/BodyViewSheet.jsx";
 import { photoBlobIdsIn } from "./data/photo-blob-fields.js";
 import {
-  UNRESOLVED_ORGANIZATION_CONTEXT, createFirestoreMembershipReader,
-  readyOrganizationContext, resolveOrganizationContext,
+  ORGANIZATION_CONTEXT_FEATURE, UNRESOLVED_ORGANIZATION_CONTEXT,
+  createFirestoreMembershipReader, readyOrganizationContext, resolveOrganizationContext,
 } from "./data/repositories/organization-context.js";
 import {
   createProduct, listProducts, setProductStatus,
@@ -483,7 +483,20 @@ const DEVICE_LOG_FIELDS = new Set([
   "frame", "root", "actionBar", "scrollContainer", "firstSummary", "recentCard", "surface",
   "scrollTop", "clientHeight", "scrollHeight", "hitTagName", "hitClassName", "hitIsCard", "hitInsideCard",
   "cardAboveContainer", "cardBelowContainer", "actionBarOverlapsContainer", "ancestorHasClip", "ancestorHasTransform", "clippingAncestors",
+  // 소속 조회. feature/errorDomain/errorCode 가 빠져 있던 동안 실패 로그는
+  // stage 와 message 만 남았고, 어느 계층의 무슨 코드였는지 알 수 없었다.
+  // role 과 isLegacy 는 "왜 대표 메뉴가 안 보이는가"를 그 한 줄로 답한다.
+  "feature", "errorDomain", "errorCode", "membershipCount", "selectedOrganizationId", "role", "isLegacy",
+  // 세션이 실제로 쓴 uid 를 값 없이 지목한다 -- 길이와 양끝 4자뿐, 원본은 아니다 (§7).
+  "uidLength", "uidPrefix", "uidSuffix",
 ]);
+/** 소속 조회 진단이 쓰는 필드. 화이트리스트와 어긋나면 테스트가 잡는다. */
+export const ORGANIZATION_CONTEXT_LOG_FIELDS = Object.freeze([
+  "feature", "stage", "source", "state", "role", "isLegacy", "count", "reason",
+  "uidLength", "uidPrefix", "uidSuffix",
+  "membershipCount", "selectedOrganizationId", "errorDomain", "errorCode", "message",
+]);
+export const isDeviceLogField = (field) => DEVICE_LOG_FIELDS.has(field);
 const deviceLog = (event, details = {}) => {
   try {
     const safe = {};
@@ -15080,7 +15093,7 @@ export default function App() {
             await loadAccount(preservedSessionAccount);
             if (alive) {
               startupStage = "organization_context";
-              const resolved = await loadOrganizationContext(u.id);
+              const resolved = await loadOrganizationContext(u.id, "auth_state_profile_error");
               if (alive) setOrganizationContext(resolved);
             }
             if (alive) finishStartup("app", isFirstCallback ? 1400 : 0);
@@ -15098,7 +15111,7 @@ export default function App() {
           await loadAccount(acc);
           if (!alive) return;
           startupStage = "organization_context";
-          const resolvedOrganization = await loadOrganizationContext(u.id);
+          const resolvedOrganization = await loadOrganizationContext(u.id, "auth_state");
           if (!alive) return;
           setOrganizationContext(resolvedOrganization);
           const wait = isFirstCallback ? 1400 : 0;
@@ -15129,10 +15142,18 @@ export default function App() {
    * 소속은 인증이 끝난 뒤 한 번만 읽는다. 별도 useEffect 를 두면 인증 준비
    * 게이트와 경합하고 uid 없이 조회하는 경로가 생긴다.
    */
-  const loadOrganizationContext = async (userId) => {
+  const loadOrganizationContext = async (userId, source) => {
+    /* 어느 경로가 조회를 요청했는지부터 남긴다. resolve 안의 로그는 userId 가
+       비어 throw 하면 찍히지 않으므로, 호출 지점 도달 여부는 여기서만 알 수
+       있다. */
+    deviceLog("organization_context_requested", {
+      feature: ORGANIZATION_CONTEXT_FEATURE, stage: "requested", source,
+      state: userId ? "present" : "absent",
+    });
     const resolved = await resolveOrganizationContext(userId, {
       listActiveMemberships: createFirestoreMembershipReader(),
       warn: (code, detail) => deviceLog(code, detail),
+      log: (code, detail) => deviceLog(code, detail),
     });
     return readyOrganizationContext(resolved);
   };
@@ -15141,7 +15162,7 @@ export default function App() {
     const userId = fbCurrentUserId();
     if (!userId) return;
     setOrganizationContext(UNRESOLVED_ORGANIZATION_CONTEXT);
-    setOrganizationContext(await loadOrganizationContext(userId));
+    setOrganizationContext(await loadOrganizationContext(userId, "retry"));
   }, []);
 
   const loadAccount = async (acc) => {

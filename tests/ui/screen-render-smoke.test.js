@@ -103,3 +103,34 @@ test("ErrorBoundary hides diagnostics in production and records a privacy-safe d
   assert.match(guard, /surface === "변화 기록" \? \{ message:/);
   assert.doesNotMatch(guard, /deviceLog\([^)]*msg/);
 });
+
+/* deviceLog 는 화이트리스트에 없는 필드를 조용히 버린다. 소속 조회가 실패해도
+   errorDomain·errorCode 가 버려지면 어느 계층의 무슨 코드였는지 알 수 없다 --
+   원본 코드를 잃는 것은 CLAUDE.md §2 가 금지한 그것이다. 진단이 내보내는
+   필드와 화이트리스트가 어긋나면 여기서 실패한다. */
+test("every field the organization lookup emits survives deviceLog", async (t) => {
+  const vite = await createServer({
+    root: projectRoot,
+    configFile: false,
+    plugins: [react()],
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] },
+    server: { middlewareMode: true },
+    ssr: { noExternal: ["@capgo/camera-preview"] },
+    logLevel: "silent",
+  });
+  t.after(() => vite.close());
+  const { ORGANIZATION_CONTEXT_LOG_FIELDS, isDeviceLogField } = await vite.ssrLoadModule("/src/App.jsx");
+  const dropped = ORGANIZATION_CONTEXT_LOG_FIELDS.filter((field) => !isDeviceLogField(field));
+  assert.deepEqual(dropped, [], `deviceLog 가 버리는 필드: ${dropped.join(", ")}`);
+
+  // 개인정보는 반대로 절대 통과하면 안 된다 (§7).
+  for (const forbidden of ["userId", "email", "name", "token", "identityToken"]) {
+    assert.equal(isDeviceLogField(forbidden), false, `${forbidden} 는 진단에 남으면 안 된다`);
+  }
+
+  // uid 지문은 값이 아니라 모양이므로 통과해야 한다.
+  for (const allowed of ["uidLength", "uidPrefix", "uidSuffix"]) {
+    assert.equal(isDeviceLogField(allowed), true, `${allowed} 가 버려지면 세션 uid 를 확정할 수 없다`);
+  }
+});

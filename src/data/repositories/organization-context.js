@@ -68,50 +68,107 @@ export function createFirestoreMembershipReader() {
   };
 }
 
+/** 이 기능의 모든 진단이 공유하는 이름. 로그를 한 줄로 이어 붙이는 열쇠다. */
+export const ORGANIZATION_CONTEXT_FEATURE = "organization_context";
+
+/**
+ * 세션이 실제로 쓴 uid 를 값 없이 지목한다. 길이와 양끝 4자면 "콘솔에서 본
+ * 그 계정이 맞는가"를 가를 수 있고, 이것만으로 사람을 특정할 수는 없다 --
+ * 원본 uid 는 §7 에 따라 남기지 않는다.
+ *
+ * @param {string} userId
+ */
+export function userIdFingerprint(userId) {
+  const text = String(userId ?? "");
+  return {
+    uidLength: text.length,
+    uidPrefix: text.slice(0, 4),
+    uidSuffix: text.slice(-4),
+  };
+}
+
 /**
  * @param {string} userId
- * @param {{ listActiveMemberships?: (userId: string) => Promise<Array<MembershipDocument>>, warn?: (code: string, detail: object) => void }} [options]
+ * @param {{ listActiveMemberships?: (userId: string) => Promise<Array<MembershipDocument>>, warn?: (code: string, detail: object) => void, log?: (code: string, detail: object) => void }} [options]
  * @returns {Promise<{ organizationId: string, role: string, status: string, isLegacy: boolean }>}
  */
 export async function resolveOrganizationContext(userId, options = {}) {
   const id = required(userId, "userId");
-  const { listActiveMemberships, warn = () => {} } = options;
+  const { listActiveMemberships, warn = () => {}, log = () => {} } = options;
+
+  /* 진입과 결말을 둘 다 남긴다. 남기지 않으면 "조회했고 결과가 정상이었다"와
+     "조회 자체가 일어나지 않았다"가 콘솔에서 똑같이 무음이라, 소속이 안 잡힐
+     때 어느 쪽인지 판정할 방법이 없다. warn 은 문제 전용으로 남겨 둔다 --
+     정상 경로가 경고를 찍으면 경고가 신호이기를 그만둔다. */
+  log("organization_context_lookup_started", {
+    feature: ORGANIZATION_CONTEXT_FEATURE,
+    stage: "start",
+    source: typeof listActiveMemberships === "function" ? "reader" : "none",
+    ...userIdFingerprint(id),
+  });
+  const resolved = (result, state, detail = {}) => {
+    log("organization_context_resolved", {
+      feature: ORGANIZATION_CONTEXT_FEATURE,
+      stage: "resolved",
+      state,
+      role: result.role,
+      isLegacy: result.isLegacy,
+      ...detail,
+    });
+    return result;
+  };
 
   let memberships = [];
+  /* 서버가 몇 건을 돌려줬는지와 필터가 몇 건을 남겼는지는 다른 숫자다. 둘을
+     구분하지 않으면 "쿼리가 0건"과 "쿼리는 맞췄는데 필터가 버렸다"가 똑같이
+     legacy 로 끝나 원인을 가를 수 없다. 버려진 건은 어느 조건에서 걸렸는지만
+     남긴다 -- 값은 남기지 않는다(§7). */
+  let receivedCount = 0;
+  let dropReason = "";
   if (typeof listActiveMemberships === "function") {
     try {
       const found = await listActiveMemberships(id);
-      memberships = (Array.isArray(found) ? found : [])
+      const received = Array.isArray(found) ? found.filter(Boolean) : [];
+      receivedCount = received.length;
+      memberships = received
         .filter((entry) => entry && entry.status === MEMBERSHIP_STATUS.ACTIVE && entry.organizationId);
+      if (receivedCount > 0 && memberships.length === 0) {
+        dropReason = received.some((entry) => entry.status !== MEMBERSHIP_STATUS.ACTIVE)
+          ? "status_not_active"
+          : "organization_id_missing";
+      }
     } catch (error) {
       // 읽지 못한 것과 소속이 없는 것은 다르다. 네트워크 실패로 소속 강사를
       // 개인 모드로 보내면 자기 지점 회원이 보이지 않고, 그 상태에서 한 입력이
       // 엉뚱한 조직에 쌓인다. unknown 으로 남기고 센터 기능을 잠근다.
       warn("organization_context_lookup_failed", {
-        feature: "organization_context",
+        feature: ORGANIZATION_CONTEXT_FEATURE,
         stage: "list_memberships",
         errorDomain: "firestore",
         errorCode: error?.code || "unknown",
         message: error?.message || "",
       });
-      return unknownOrganizationContext();
+      return resolved(unknownOrganizationContext(), "unknown", {
+        errorDomain: "firestore",
+        errorCode: error?.code || "unknown",
+      });
     }
   }
 
   if (memberships.length === 0) {
-    return {
+    return resolved({
       organizationId: legacyOrganizationId(id),
       role: ROLES.OWNER,
       status: MEMBERSHIP_STATUS.ACTIVE,
       isLegacy: true,
-    };
+    }, "legacy", { count: receivedCount, membershipCount: 0, reason: dropReason || "no_match" });
   }
 
   if (memberships.length > 1) {
     // 한 사람이 여러 조직에 속하는 경우는 아직 지원 범위 밖이다. 조용히 하나를
     // 고르면 어느 조직의 화면을 보고 있는지 아무도 모르게 되므로 남긴다.
     warn("organization_context_multiple_memberships", {
-      feature: "organization_context",
+      feature: ORGANIZATION_CONTEXT_FEATURE,
       stage: "resolve",
       membershipCount: memberships.length,
       selectedOrganizationId: memberships[0].organizationId,
@@ -119,10 +176,14 @@ export async function resolveOrganizationContext(userId, options = {}) {
   }
 
   const membership = memberships[0];
-  return {
+  return resolved({
     organizationId: membership.organizationId,
     role: membership.role || ROLES.MEMBER,
     status: membership.status,
     isLegacy: false,
-  };
+  }, "membership", {
+    count: receivedCount,
+    membershipCount: memberships.length,
+    selectedOrganizationId: membership.organizationId,
+  });
 }

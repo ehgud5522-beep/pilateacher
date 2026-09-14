@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   UNRESOLVED_ORGANIZATION_CONTEXT, readyOrganizationContext, resolveOrganizationContext,
+  userIdFingerprint,
 } from "../../src/data/repositories/organization-context.js";
 
 const membership = (overrides = {}) => ({
@@ -141,4 +142,133 @@ test("a legacy context is ready and says so, which unknown never does", async ()
   assert.equal(unknown.isLegacy, false);
   assert.equal(unknown.status, "unknown");
   assert.notEqual(legacy.organizationId, unknown.organizationId);
+});
+
+/* 아래는 §1 "실패를 하나의 문구로 뭉개지 않는다"를 조회 자체에 적용한 것이다.
+   조회가 정상이었던 경우와 조회가 아예 없었던 경우가 로그에서 같아 보이면,
+   소속이 안 잡힐 때 어느 쪽인지 판정할 수 없다. */
+
+test("a lookup announces that it started, whatever the outcome", async () => {
+  for (const listActiveMemberships of [
+    async () => [membership()],
+    async () => [],
+    async () => { throw new Error("offline"); },
+  ]) {
+    const logs = [];
+    await resolveOrganizationContext("user-1", { listActiveMemberships, log: (code, detail) => logs.push({ code, detail }) });
+    assert.equal(logs[0].code, "organization_context_lookup_started");
+    assert.equal(logs[0].detail.feature, "organization_context");
+    assert.equal(logs[0].detail.source, "reader");
+  }
+});
+
+test("a lookup without a reader says so instead of looking silent", async () => {
+  const logs = [];
+  await resolveOrganizationContext("user-1", { log: (code, detail) => logs.push({ code, detail }) });
+  assert.equal(logs[0].detail.source, "none");
+});
+
+test("every outcome is announced with the state that produced it", async () => {
+  const outcomes = [
+    { read: async () => [membership({ role: "owner" })], state: "membership", expected: { role: "owner", isLegacy: false, membershipCount: 1, selectedOrganizationId: "center-a" } },
+    { read: async () => [], state: "legacy", expected: { role: "owner", isLegacy: true, membershipCount: 0 } },
+    { read: async () => { throw Object.assign(new Error("offline"), { code: "unavailable" }); }, state: "unknown", expected: { role: "", isLegacy: false, errorDomain: "firestore", errorCode: "unavailable" } },
+  ];
+  for (const { read: listActiveMemberships, state, expected } of outcomes) {
+    const logs = [];
+    await resolveOrganizationContext("user-1", { listActiveMemberships, log: (code, detail) => logs.push({ code, detail }) });
+    const done = logs.find((entry) => entry.code === "organization_context_resolved");
+    assert.ok(done, `${state} must announce its outcome`);
+    assert.equal(done.detail.state, state);
+    assert.equal(done.detail.feature, "organization_context");
+    for (const [key, value] of Object.entries(expected)) assert.equal(done.detail[key], value, `${state}.${key}`);
+  }
+});
+
+test("the happy path still leaves no warning, only a log", async () => {
+  const warnings = [];
+  const logs = [];
+  await resolveOrganizationContext("user-1", {
+    listActiveMemberships: async () => [membership()],
+    warn: (code) => warnings.push(code),
+    log: (code) => logs.push(code),
+  });
+  assert.deepEqual(warnings, []);
+  assert.deepEqual(logs, ["organization_context_lookup_started", "organization_context_resolved"]);
+});
+
+test("a refused userId is loud, not a silent absence of logs", async () => {
+  const logs = [];
+  await assert.rejects(
+    () => resolveOrganizationContext("", { log: (code) => logs.push(code) }),
+    /Missing userId/,
+  );
+  // 여기서 로그가 없는 것이 정상이다 -- 그래서 호출 지점 도달 여부는
+  // App.jsx 의 organization_context_requested 가 따로 남긴다.
+  assert.deepEqual(logs, []);
+});
+
+/* "서버가 0건을 돌려줬다"와 "서버는 맞췄는데 클라이언트 필터가 버렸다"는
+   둘 다 legacy 로 끝난다. 구분되지 않으면 쿼리를 볼지 데이터를 볼지 정할 수
+   없다 -- 같은 화면·같은 로그에 다른 원인이 뭉개지는 §1 위반이다. */
+
+test("legacy says whether the server returned nothing or the filter dropped it", async () => {
+  const cases = [
+    { read: async () => [], count: 0, reason: "no_match" },
+    { read: async () => [membership({ status: "invited" })], count: 1, reason: "status_not_active" },
+    { read: async () => [membership({ organizationId: "" })], count: 1, reason: "organization_id_missing" },
+  ];
+  for (const { read, count, reason } of cases) {
+    const logs = [];
+    const context = await resolveOrganizationContext("user-1", {
+      listActiveMemberships: read,
+      log: (code, detail) => logs.push({ code, detail }),
+    });
+    assert.equal(context.isLegacy, true);
+    const done = logs.find((entry) => entry.code === "organization_context_resolved");
+    assert.equal(done.detail.count, count, `raw count for ${reason}`);
+    assert.equal(done.detail.membershipCount, 0);
+    assert.equal(done.detail.reason, reason);
+  }
+});
+
+test("a resolved membership reports the raw count alongside the kept one", async () => {
+  const logs = [];
+  await resolveOrganizationContext("user-1", {
+    listActiveMemberships: async () => [membership(), membership({ status: "revoked" })],
+    log: (code, detail) => logs.push({ code, detail }),
+  });
+  const done = logs.find((entry) => entry.code === "organization_context_resolved");
+  assert.equal(done.detail.count, 2);
+  assert.equal(done.detail.membershipCount, 1);
+});
+
+/* uid 지문. 세션이 실제로 쓴 계정과 콘솔에서 본 계정이 같은지를 값 없이
+   가른다 -- 원본 uid 는 남기지 않는다 (§7). */
+
+test("the fingerprint pins a uid without recording it", () => {
+  const print = userIdFingerprint("CgArUW7A8OdFm0VFhyitRWyucOq2");
+  assert.deepEqual(print, { uidLength: 28, uidPrefix: "CgAr", uidSuffix: "cOq2" });
+  // 원본은 어느 필드에도 남지 않는다.
+  for (const value of Object.values(print)) {
+    assert.notEqual(value, "CgArUW7A8OdFm0VFhyitRWyucOq2");
+  }
+  assert.ok(print.uidPrefix.length + print.uidSuffix.length < print.uidLength);
+});
+
+test("the fingerprint survives an absent uid instead of throwing", () => {
+  assert.deepEqual(userIdFingerprint(""), { uidLength: 0, uidPrefix: "", uidSuffix: "" });
+  assert.deepEqual(userIdFingerprint(undefined), { uidLength: 0, uidPrefix: "", uidSuffix: "" });
+});
+
+test("the lookup carries the fingerprint so the session uid is identifiable", async () => {
+  const logs = [];
+  await resolveOrganizationContext("CgArUW7A8OdFm0VFhyitRWyucOq2", {
+    listActiveMemberships: async () => [],
+    log: (code, detail) => logs.push({ code, detail }),
+  });
+  const started = logs.find((entry) => entry.code === "organization_context_lookup_started");
+  assert.equal(started.detail.uidLength, 28);
+  assert.equal(started.detail.uidPrefix, "CgAr");
+  assert.equal(started.detail.uidSuffix, "cOq2");
 });

@@ -67,6 +67,38 @@ service cloud.firestore {
           || request.resource.data.createdBy == request.auth.uid);
     }
 
+    // ── list is evaluated against the query, not the results ──────────────
+    // A `resource.data` test inside a read rule cannot be satisfied by a
+    // collection query unless the query itself constrains that same field.
+    // Firestore does not return "false" in that case — it raises "Property X is
+    // undefined on object" and refuses the whole query, which reaches a screen
+    // as an empty list. An empty collection passes quietly, so the defect stays
+    // invisible until the first document exists.
+    //
+    // Two shapes, two fixes:
+    //
+    //   A. Documents under /organizations/{organizationId}/…
+    //      The path already pins the organization, so the field test is
+    //      redundant for a list. get keeps it; list drops it.
+    //      Done: clients, locations, lessons, lessons/participants, lessonNotes.
+    //
+    //   B. Top-level documents that carry organizationId in the body.
+    //      The rule is correct as written and needs no change — but the caller
+    //      MUST query with where("organizationId", "==", …) so the rule has
+    //      something to evaluate. memberships already works this way.
+    //      Nothing to fix here; the requirement lives in the repository.
+    //
+    // Still carrying the class-B requirement, with no list caller yet. Whoever
+    // writes the first one must filter on organizationId (and, where the rule
+    // also allows "my own document", accept that a list is role-only):
+    //   assessments, assessmentMedia, inbodyMeasurements, exercisePrograms,
+    //   exerciseHistory, aiRecommendations, aiFeedback, outcomes, memberGoals,
+    //   memberProgress, events, auditLogs, dailyStats, teacherPatterns.
+    //
+    // Already list-safe, no resource.data in their read rule: organizations,
+    // products, passes, passes/ledger, runtimeConfig, and everything under
+    // /users/{userId}.
+
     function sameOrganization() {
       return request.resource.data.organizationId == resource.data.organizationId;
     }
@@ -195,12 +227,18 @@ service cloud.firestore {
 
       // Additive dual-write v1 paths. Existing top-level paths remain unchanged.
       match /clients/{clientId} {
-        allow read: if isActiveMember(organizationId)
+        // See the locations block for why get and list are split. Here the
+        // difference also narrows who may list: the get rule lets a member read
+        // the one document linked to them, and a query cannot express "only my
+        // own" without a filter to prove it. So listing the directory is for
+        // staff, and a member still reads their own document one at a time.
+        allow get: if isActiveMember(organizationId)
           && resource.data.organizationId == organizationId
           && (
             hasRole(organizationId, ["owner", "manager", "instructor", "staff"])
             || isOwnClientDocument(resource.data)
           );
+        allow list: if hasRole(organizationId, ["owner", "manager", "instructor", "staff"]);
         // Validate what is present rather than requiring a fixed set. The
         // registration screen writes seven fields; the dual-write adapter
         // writes a wider legacy shape (clientId, membershipBalance,
@@ -219,8 +257,10 @@ service cloud.firestore {
       }
 
       match /lessons/{lessonId} {
-        allow read: if isActiveMember(organizationId)
+        // See the locations block for why get and list are split.
+        allow get: if isActiveMember(organizationId)
           && resource.data.organizationId == organizationId;
+        allow list: if isActiveMember(organizationId);
         allow create: if request.resource.data.organizationId == organizationId
           && hasRole(organizationId, ["owner", "manager", "instructor", "staff"]);
         allow update: if resource.data.organizationId == organizationId
@@ -229,8 +269,10 @@ service cloud.firestore {
         allow delete: if false;
 
         match /participants/{clientId} {
-          allow read: if isActiveMember(organizationId)
+          // See the locations block for why get and list are split.
+          allow get: if isActiveMember(organizationId)
             && resource.data.organizationId == organizationId;
+          allow list: if isActiveMember(organizationId);
           allow create: if request.resource.data.organizationId == organizationId
             && request.resource.data.lessonId == lessonId
             && request.resource.data.clientId == clientId
@@ -385,12 +427,17 @@ service cloud.firestore {
       }
 
       match /lessonNotes/{noteId} {
-        allow read: if isActiveMember(organizationId)
+        // See the locations block for why get and list are split. As with
+        // clients, a query cannot prove "only the notes about me", so listing
+        // is for the roles that teach and run the centre; a member still reads
+        // their own note one document at a time.
+        allow get: if isActiveMember(organizationId)
           && resource.data.organizationId == organizationId
           && (
             hasRole(organizationId, ["owner", "manager", "instructor"])
             || resource.data.userId == request.auth.uid
           );
+        allow list: if hasRole(organizationId, ["owner", "manager", "instructor"]);
         allow create: if request.resource.data.organizationId == organizationId
           && hasRole(organizationId, ["owner", "manager", "instructor"]);
         allow update: if resource.data.organizationId == organizationId
@@ -401,8 +448,16 @@ service cloud.firestore {
       }
 
       match /locations/{locationId} {
-        allow read: if isActiveMember(organizationId)
+        // get and list are split on purpose. A list rule is evaluated against
+        // what the query guarantees, not against the documents it returns, so a
+        // `resource.data` test the query does not constrain can never be
+        // satisfied — the whole query is refused with "Property organizationId
+        // is undefined on object", which reaches the screen as an empty picker.
+        // The path already scopes these documents to one organization, so the
+        // membership check alone is what a list can honestly enforce.
+        allow get: if isActiveMember(organizationId)
           && resource.data.organizationId == organizationId;
+        allow list: if isActiveMember(organizationId);
         allow create: if request.resource.data.organizationId == organizationId
           && hasRole(organizationId, ["owner", "manager"]);
         allow update: if resource.data.organizationId == organizationId

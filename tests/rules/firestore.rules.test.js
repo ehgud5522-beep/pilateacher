@@ -164,6 +164,16 @@ async function seed() {
       userId: "another-member",
       displayName: "Other",
     });
+    await setDoc(doc(db, "organizations", ORG_A, "locations", "location-a"), {
+      organizationId: ORG_A,
+      name: "반송점",
+      status: "active",
+    });
+    await setDoc(doc(db, "organizations", ORG_B, "locations", "location-b"), {
+      organizationId: ORG_B,
+      name: "다른 조직 지점",
+      status: "active",
+    });
     await setDoc(doc(db, "events", "event-1"), { organizationId: ORG_A, type: "fixture" });
     await setDoc(doc(db, "auditLogs", "audit-1"), { organizationId: ORG_A, action: "fixture" });
     await setDoc(doc(db, "organizations", ORG_A, "products", PRODUCT_A), productFixture(ORG_A));
@@ -174,6 +184,22 @@ async function seed() {
       doc(db, "organizations", ORG_A, "passes", PASS_A, "ledger", "entry-issue"),
       ledgerFixture(ORG_A, PASS_A, { type: "issue", delta: 20 }),
     );
+    /* 아래는 list 규칙을 위한 것이다. 컬렉션이 비어 있으면 평가할 문서가 없어
+       거부돼야 할 쿼리도 조용히 통과한다 -- locations 에서 그 구멍 때문에
+       결함을 반년 놓쳤다. */
+    await setDoc(doc(db, "organizations", ORG_A, "lessons", "lesson-seed"), {
+      organizationId: ORG_A, lessonId: "lesson-seed", status: "scheduled",
+    });
+    await setDoc(doc(db, "organizations", ORG_B, "lessons", "lesson-seed-b"), {
+      organizationId: ORG_B, lessonId: "lesson-seed-b", status: "scheduled",
+    });
+    await setDoc(doc(db, "organizations", ORG_A, "lessons", "lesson-seed", "participants", "client-member"), {
+      organizationId: ORG_A, lessonId: "lesson-seed", clientId: "client-member", attendanceStatus: "booked",
+    });
+    await setDoc(doc(db, "organizations", ORG_A, "lessonNotes", "note-seed"), {
+      organizationId: ORG_A, clientId: "client-member", lessonId: "lesson-seed",
+      userId: users.member, createdBy: users.instructor,
+    });
     await setDoc(doc(db, "runtimeConfig", "aiRecording"), { status: "normal", reasonCode: "", updatedAt: Timestamp.now() });
   });
 }
@@ -314,6 +340,50 @@ describe("role permissions", () => {
     }));
   });
 
+  /* 회원 등록 화면은 지점 목록을 list 쿼리로 읽는다 (location-repository).
+     단일 문서 get 이 되는 것과 컬렉션 list 가 되는 것은 규칙에서 같은 동작이
+     아니다 -- memberships 에서 같은 자리를 이미 겪었다. */
+  const locationsOf = (userId, organizationId) =>
+    collection(dbFor(userId), "organizations", organizationId, COLLECTIONS.LOCATIONS);
+
+  test("a member lists the locations of their own organization", async () => {
+    const snapshot = await assertSucceeds(getDocs(locationsOf(users.owner, ORG_A)));
+    assert.equal(snapshot.size, 1);
+    assert.equal(snapshot.docs[0].id, "location-a");
+    assert.equal(snapshot.docs[0].data().name, "반송점");
+  });
+
+  test("every role can list locations, so registration works for all of them", async () => {
+    for (const [role, userId] of Object.entries(users)) {
+      if (role === "outsider") continue;
+      await assertSucceeds(getDocs(locationsOf(userId, ORG_A)), `${role} 이 지점을 읽을 수 있어야 한다`);
+    }
+  });
+
+  test("another organization's locations are refused", async () => {
+    await assertFails(getDocs(locationsOf(users.owner, ORG_B)));
+  });
+
+  test("an unauthenticated reader gets nothing from locations", async () => {
+    await assertFails(getDocs(locationsOf(null, ORG_A)));
+  });
+
+  test("a malformed location no longer poisons the whole list", async () => {
+    /* 예전 read 규칙은 resource.data.organizationId 를 봤는데, list 는 쿼리가
+       보장하는 것으로 평가되므로 그 조건을 만족시킬 방법이 없었다 -- 지점이
+       멀쩡해도 목록 전체가 거부됐고 화면에는 "지점이 없다"로만 보였다.
+       list 를 분리한 뒤에는 경로가 조직을 한정하므로 한 건이 망가져도 나머지를
+       읽을 수 있다. 그 한 건을 문서로 직접 여는 것은 여전히 막힌다. */
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "organizations", ORG_A, "locations", "location-no-org"), {
+        name: "조직이 빠진 지점",
+      });
+    });
+    const snapshot = await assertSucceeds(getDocs(locationsOf(users.owner, ORG_A)));
+    assert.equal(snapshot.size, 2);
+    await assertFails(getDoc(doc(dbFor(users.owner), "organizations", ORG_A, "locations", "location-no-org")));
+  });
+
   test("instructor can create an assessment", async () => {
     await assertSucceeds(setDoc(doc(dbFor(users.instructor), "assessments", "assessment-a"), {
       organizationId: ORG_A,
@@ -436,6 +506,30 @@ describe("role permissions", () => {
     for (const status of CLIENT_STATUS_FOR_CREATE) {
       assert.ok(Object.values(CLIENT_STATUS).includes(status), `${status} 가 상수에 없다`);
     }
+  });
+
+  const clientsOf = (userId, organizationId) =>
+    collection(dbFor(userId), "organizations", organizationId, COLLECTIONS.CLIENTS);
+
+  test("the member directory lists the organization's clients", async () => {
+    // 회원 관리 화면이 하는 연산이다. 지점 목록과 같은 자리를 지난다.
+    const snapshot = await assertSucceeds(getDocs(clientsOf(users.owner, ORG_A)));
+    assert.ok(snapshot.size >= 1);
+  });
+
+  test("every staff role lists the directory, an outsider does not", async () => {
+    for (const role of ["owner", "manager", "instructor", "staff"]) {
+      await assertSucceeds(getDocs(clientsOf(users[role], ORG_A)), `${role} 은 명부를 읽을 수 있어야 한다`);
+    }
+    await assertFails(getDocs(clientsOf(users.outsider, ORG_A)));
+    await assertFails(getDocs(clientsOf(null, ORG_A)));
+  });
+
+  test("a plain member cannot list the directory, only their own document", async () => {
+    /* get 규칙은 자기와 연결된 문서 한 건을 읽게 해 주지만, 쿼리는 "내 것만"을
+       증명할 필터가 없으면 그 조건을 표현할 수 없다. 명부 열람은 직원의 일이다. */
+    await assertFails(getDocs(clientsOf(users.member, ORG_A)));
+    await assertSucceeds(getDoc(doc(dbFor(users.member), "organizations", ORG_A, "clients", "client-member")));
   });
 
   test("member reads only the linked client document", async () => {
@@ -1027,5 +1121,78 @@ describe("protected and append-only data", () => {
 
   test("an unauthenticated reader gets nothing from memberships", async () => {
     await assertFails(getDocs(membershipQuery(null, users.owner)));
+  });
+});
+
+/* list 는 쿼리 기준으로 평가된다. resource.data 조건을 allow read 에 쓰면
+   컬렉션 쿼리가 통째로 거부되는데, 빈 컬렉션은 조용히 통과하므로 첫 문서가
+   생기기 전까지 드러나지 않는다. 그래서 여기 fixture 는 전부 문서를 심는다.
+
+   앱이 곧 list 할 컬렉션을 한자리에서 고정한다 -- 고친 것과, 이미 안전해서
+   고치지 않은 것 양쪽 다. */
+describe("collection queries the app will run", () => {
+  const listOf = (userId, ...segments) => collection(dbFor(userId), ...segments);
+  const orgList = (userId, ...segments) => listOf(userId, "organizations", ORG_A, ...segments);
+
+  test("lessons list for any member of the organization", async () => {
+    const snapshot = await assertSucceeds(getDocs(orgList(users.instructor, "lessons")));
+    assert.equal(snapshot.size, 1);
+    await assertFails(getDocs(listOf(users.outsider, "organizations", ORG_A, "lessons")));
+    await assertFails(getDocs(listOf(null, "organizations", ORG_A, "lessons")));
+  });
+
+  test("lesson participants list for any member of the organization", async () => {
+    const snapshot = await assertSucceeds(getDocs(orgList(users.instructor, "lessons", "lesson-seed", "participants")));
+    assert.equal(snapshot.size, 1);
+    await assertFails(getDocs(listOf(users.outsider, "organizations", ORG_A, "lessons", "lesson-seed", "participants")));
+  });
+
+  test("lesson notes list for the roles that teach and run the centre", async () => {
+    for (const role of ["owner", "manager", "instructor"]) {
+      await assertSucceeds(getDocs(orgList(users[role], "lessonNotes")), role);
+    }
+    // staff 는 수업 기록을 읽지 않는다. 회원 본인도 목록으로는 못 읽는다 --
+    // "나에 대한 기록만"을 쿼리가 증명할 수 없기 때문이다.
+    await assertFails(getDocs(orgList(users.staff, "lessonNotes")));
+    await assertFails(getDocs(orgList(users.member, "lessonNotes")));
+    // 한 건씩은 여전히 읽는다.
+    await assertSucceeds(getDoc(doc(dbFor(users.member), "organizations", ORG_A, "lessonNotes", "note-seed")));
+  });
+
+  /* 아래 셋은 규칙을 고치지 않았다. read 조건에 resource.data 가 없어 처음부터
+     list 가 통과한다. 고치지 않았다는 사실 자체를 고정해 둔다 -- 나중에 누가
+     organizationId 조건을 "더 안전해 보여서" 덧붙이면 여기서 깨진다. */
+  test("products list without a rule change", async () => {
+    const snapshot = await assertSucceeds(getDocs(orgList(users.staff, COLLECTIONS.PRODUCTS)));
+    assert.equal(snapshot.size, 1);
+    await assertFails(getDocs(listOf(users.outsider, "organizations", ORG_A, COLLECTIONS.PRODUCTS)));
+  });
+
+  test("passes list without a rule change", async () => {
+    const snapshot = await assertSucceeds(getDocs(orgList(users.instructor, COLLECTIONS.PASSES)));
+    assert.equal(snapshot.size, 1);
+    await assertFails(getDocs(listOf(users.outsider, "organizations", ORG_A, COLLECTIONS.PASSES)));
+  });
+
+  test("the pass ledger lists without a rule change", async () => {
+    const snapshot = await assertSucceeds(getDocs(orgList(users.owner, COLLECTIONS.PASSES, PASS_A, COLLECTIONS.LEDGER)));
+    assert.equal(snapshot.size, 1);
+    await assertFails(getDocs(listOf(users.outsider, "organizations", ORG_A, COLLECTIONS.PASSES, PASS_A, COLLECTIONS.LEDGER)));
+  });
+
+  /* auditLogs 는 최상위라 조직이 경로가 아니라 문서 안에 있다. 규칙은 그대로
+     두고, 호출부가 organizationId 로 걸러야 한다 -- memberships 와 같은 방식
+     이다. 이 테스트가 그 요구를 적어 둔다. */
+  test("audit logs list only when the query names the organization", async () => {
+    await assertFails(getDocs(listOf(users.owner, COLLECTIONS.AUDIT_LOGS)));
+    await assertSucceeds(getDocs(query(
+      listOf(users.owner, COLLECTIONS.AUDIT_LOGS),
+      where("organizationId", "==", ORG_A),
+    )));
+    // 필터가 있어도 역할은 여전히 본다.
+    await assertFails(getDocs(query(
+      listOf(users.instructor, COLLECTIONS.AUDIT_LOGS),
+      where("organizationId", "==", ORG_A),
+    )));
   });
 });

@@ -38,6 +38,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "회원 관리 · 검색 결과 없음",
     "회원 관리 · 등록",
     "회원 관리 · 동명이인 확인",
+    "회원 관리 · 지점 조회 실패",
+    "회원 관리 · 지점 없음",
     "회원 관리 · 소속 확인 실패",
     "더보기 탭 · 매니저",
     "회원권 상품",
@@ -253,4 +255,33 @@ test("the member directory is reachable only where it should be", async (t) => {
   assert.match(locked, /소속을 확인하지 못했습니다/);
   assert.match(locked, /다시 시도/);
   assert.doesNotMatch(locked, /등록/, "잠긴 상태에서는 등록 버튼이 없어야 한다");
+});
+
+/* 조회 실패와 빈 결과가 같은 화면이면, 사용자는 무엇을 해야 할지 알 수 없고
+   우리는 원인을 찾을 수 없다. memberships 도 locations 도 그래서 하루씩 걸렸다. */
+test("a failed location read does not look like an empty one", async (t) => {
+  const vite = await createServer({
+    root: projectRoot,
+    configFile: false,
+    plugins: [react()],
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] },
+    server: { middlewareMode: true },
+    ssr: { noExternal: ["@capgo/camera-preview"] },
+    logLevel: "silent",
+  });
+  t.after(() => vite.close());
+  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+
+  const failed = markupOf("회원 관리 · 지점 조회 실패");
+  assert.match(failed, /지점을 불러오지 못했습니다/);
+  assert.match(failed, /permission-denied/, "추적 가능한 코드가 화면에 있어야 한다");
+  assert.doesNotMatch(failed, /등록된 지점이 없습니다/);
+
+  const empty = markupOf("회원 관리 · 지점 없음");
+  assert.match(empty, /등록된 지점이 없습니다/);
+  assert.doesNotMatch(empty, /불러오지 못했습니다/);
+  assert.doesNotMatch(empty, /코드/, "없는 것은 오류가 아니므로 코드가 붙지 않는다");
 });

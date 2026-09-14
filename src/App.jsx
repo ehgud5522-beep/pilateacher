@@ -81,7 +81,7 @@ import {
   clientMatchesSearch, createClient, findSameNameClients, listClients, normalizePhone,
 } from "./data/repositories/client-repository.js";
 import { listLocations } from "./data/repositories/location-repository.js";
-import { connectRepositoryLog } from "./data/repositories/repository-read.js";
+import { connectRepositoryLog, toleratingReadFailure } from "./data/repositories/repository-read.js";
 import {
   createProduct, listProducts, setProductStatus,
 } from "./data/repositories/product-repository.js";
@@ -14085,6 +14085,7 @@ function ClientDirectory({ organization, currentUserId, clientStore, locationSto
   const [form, setForm] = useState(initialState?.form || { name: "", phone: "", locationId: "" });
   const [formError, setFormError] = useState("");
   const [duplicates, setDuplicates] = useState(initialState?.duplicates || null);
+  const [locationError, setLocationError] = useState(initialState?.locationError || "");
   const [saving, setSaving] = useState(false);
   const organizationId = organization?.organizationId || "";
   const locked = organization?.status === "unknown";
@@ -14094,14 +14095,18 @@ function ClientDirectory({ organization, currentUserId, clientStore, locationSto
     setLoading(true);
     setLoadError("");
     try {
-      /* 지점을 못 읽어도 목록은 보여준다. 지점 이름을 못 붙이는 것과 회원을 못
-         보는 것은 다르다 -- 카드에는 locationId 가 대신 뜬다. */
-      const [foundClients, foundLocations] = await Promise.all([
+      /* 지점을 못 읽어도 회원 목록은 보여준다. 지점 이름을 못 붙이는 것과
+         회원을 못 보는 것은 다르다 -- 카드에는 locationId 가 대신 뜬다.
+         다만 견디는 것과 삼키는 것은 다르다. 실패는 이미 리포지토리가 기록했고,
+         여기서는 등록 폼이 "못 읽었다"와 "지점이 없다"를 구분할 수 있도록
+         코드를 들고 간다. */
+      const [foundClients, locationResult] = await Promise.all([
         listClients(organizationId, { store: clientStore }),
-        listLocations(organizationId, { store: locationStore }).catch(() => []),
+        toleratingReadFailure(listLocations(organizationId, { store: locationStore })),
       ]);
       setClients(foundClients);
-      setLocations(foundLocations);
+      setLocations(locationResult.items);
+      setLocationError(locationResult.failed ? locationResult.errorCode || "unknown" : "");
     } catch (error) {
       setLoadError(`회원을 불러오지 못했어요 (코드 ${error?.code || "unknown"})`);
     } finally {
@@ -14186,7 +14191,13 @@ function ClientDirectory({ organization, currentUserId, clientStore, locationSto
         </Field>
         <Field label="지점">
           {locations.length === 0
-            ? <p style={{ fontSize: TYPE.caption, color: BAD }}>지점을 불러오지 못했습니다. 목록으로 돌아가 새로 고친 뒤 다시 시도해 주세요.</p>
+            ? (
+              /* 읽지 못한 것과 지점이 없는 것은 다른 상황이고 사용자가 할 일도
+                 다르다. 하나로 뭉개면 화면을 보고 무엇을 해야 할지 알 수 없다. */
+              locationError
+                ? <p style={{ fontSize: TYPE.caption, color: BAD }}>지점을 불러오지 못했습니다 (코드 {locationError}). 목록으로 돌아가 새로 고친 뒤 다시 시도해 주세요.</p>
+                : <p style={{ fontSize: TYPE.caption, color: SUB }}>등록된 지점이 없습니다. 센터 정보에서 지점을 먼저 만들어 주세요.</p>
+            )
             : (
               <div className="flex flex-wrap gap-2">
                 {locations.map((location) => (
@@ -15104,6 +15115,12 @@ export function createAppScreenSmokeCases() {
       clients: smokeClients, locations: smokeLocations, mode: "add",
       form: { name: "김하나", phone: "01077778888", locationId: "bansong" },
       duplicates: smokeClients.filter((item) => item.name === "김하나"),
+    }) },
+    { name: "회원 관리 · 지점 조회 실패", element: clientDirectory(smokeOwner, {
+      clients: smokeClients, locations: [], mode: "add", locationError: "permission-denied",
+    }) },
+    { name: "회원 관리 · 지점 없음", element: clientDirectory(smokeOwner, {
+      clients: smokeClients, locations: [], mode: "add",
     }) },
     { name: "회원 관리 · 소속 확인 실패", element: clientDirectory({ organizationId: "", role: "", status: "unknown", isLegacy: false }, null) },
     { name: "더보기 탭 · 매니저", element: settingsTab({ ...smokeOwner, role: "manager" }) },

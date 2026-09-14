@@ -19,7 +19,8 @@ import {
   updateDoc,
   where,
 } from "firebase/firestore";
-import { COLLECTIONS, MEMBERSHIP_STATUS } from "../../src/data/schema/constants.js";
+import { CLIENT_STATUS, COLLECTIONS, MEMBERSHIP_STATUS } from "../../src/data/schema/constants.js";
+import { CLIENT_STATUS_FOR_CREATE } from "../../src/data/repositories/client-repository.js";
 import { deleteObject, getMetadata, ref, uploadBytes } from "firebase/storage";
 
 const PROJECT_ID = "pilateacher-dev";
@@ -355,6 +356,86 @@ describe("role permissions", () => {
       clientId: "client-blocked",
       status: "active",
     }));
+  });
+
+  /* 등록 화면이 쓰는 문서를 규칙이 실제로 받는지, 그리고 잘못된 문서를 실제로
+     막는지 고정한다. 규칙은 고정된 집합을 요구하지 않고 "있는 필드만" 검사한다 --
+     dual-write 어댑터가 더 넓은 레거시 모양을 쓰기 때문이다. 그래서 어댑터 모양이
+     계속 통과하는 것도 함께 확인한다. */
+
+  const registration = (overrides = {}) => ({
+    organizationId: ORG_A,
+    name: "김하나",
+    phone: "01012345678",
+    locationId: "bansong",
+    status: "active",
+    createdAt: serverTimestamp(),
+    createdBy: users.owner,
+    ...overrides,
+  });
+  const clientRef = (userId, clientId) => doc(dbFor(userId), "organizations", ORG_A, "clients", clientId);
+
+  test("the registration screen's document is accepted", async () => {
+    await assertSucceeds(setDoc(clientRef(users.owner, "client-registered"), registration()));
+  });
+
+  test("a manager registers too, an outsider does not", async () => {
+    await assertSucceeds(setDoc(clientRef(users.manager, "client-by-manager"), registration({ createdBy: users.manager })));
+    await assertFails(setDoc(
+      doc(dbFor(users.outsider), "organizations", ORG_A, "clients", "client-by-outsider"),
+      registration({ createdBy: users.outsider }),
+    ));
+  });
+
+  test("a nameless or mistyped client is refused", async () => {
+    const refused = {
+      "빈 이름": registration({ name: "" }),
+      "이름이 문자열이 아님": registration({ name: 123 }),
+      "연락처가 문자열이 아님": registration({ phone: 1012345678 }),
+      "지점이 문자열이 아님": registration({ locationId: 7 }),
+      "없는 상태": registration({ status: "made-up" }),
+    };
+    for (const [label, payload] of Object.entries(refused)) {
+      await assertFails(setDoc(clientRef(users.owner, "client-refused"), payload), label);
+    }
+  });
+
+  test("a client-made timestamp is refused even when it looks right", async () => {
+    // 시각은 호출자가 기록을 소급해 적을 수 있는 유일한 필드다.
+    await assertFails(setDoc(clientRef(users.owner, "client-backdated"), registration({
+      createdAt: Timestamp.fromDate(new Date("2020-01-01T00:00:00Z")),
+    })));
+  });
+
+  test("nobody files a registration under someone else's name", async () => {
+    await assertFails(setDoc(clientRef(users.owner, "client-forged"), registration({
+      createdBy: users.instructor,
+    })));
+  });
+
+  test("the legacy dual-write shape still passes the new validation", async () => {
+    // 규칙을 조인 뒤에도 마이그레이션 경로가 살아 있어야 한다. locationId 는
+    // 레거시 회원에게 아직 지점이 없을 때 null 로 온다.
+    await assertSucceeds(setDoc(clientRef(users.staff, "client-legacy"), {
+      organizationId: ORG_A,
+      clientId: "client-legacy",
+      locationId: null,
+      name: "이두리",
+      phone: "01099998888",
+      status: CLIENT_STATUS.INACTIVE,
+      instructorId: null,
+      membershipBalance: { regular: 10, service: 2 },
+      legacySource: { userId: users.staff, memberId: "client-legacy" },
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      createdBy: users.staff,
+    }));
+  });
+
+  test("the statuses the rules accept cover the ones registration can make", () => {
+    for (const status of CLIENT_STATUS_FOR_CREATE) {
+      assert.ok(Object.values(CLIENT_STATUS).includes(status), `${status} 가 상수에 없다`);
+    }
   });
 
   test("member reads only the linked client document", async () => {

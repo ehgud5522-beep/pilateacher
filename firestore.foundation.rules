@@ -34,6 +34,39 @@ service cloud.firestore {
       ];
     }
 
+    // Keep in sync with CLIENT_STATUS in src/data/schema/constants.js. The
+    // registration screen only ever produces the first three
+    // (CLIENT_STATUS_FOR_CREATE); deleted and inactive exist because migrated
+    // data carries them, so the rule has to keep accepting them.
+    function clientStatuses() {
+      return ["active", "hold", "ended", "deleted", "inactive"];
+    }
+
+    // Each clause passes when the field is absent. See the clients block for
+    // why this is a floor and not a fixed set.
+    function clientFieldsWellFormed() {
+      return (!("name" in request.resource.data)
+          || (request.resource.data.name is string && request.resource.data.name.size() > 0))
+        // Stored digits-only, so one number has one spelling. A number split
+        // across 010-1234-5678 and 01012345678 quietly breaks both the search
+        // and the same-name check the registration screen shows.
+        && (!("phone" in request.resource.data)
+          || request.resource.data.phone is string)
+        // The adapter writes null when a legacy member has no location yet.
+        && (!("locationId" in request.resource.data)
+          || request.resource.data.locationId == null
+          || request.resource.data.locationId is string)
+        && (!("status" in request.resource.data)
+          || request.resource.data.status in clientStatuses())
+        // A client-made timestamp is refused even when it is accurate — it is
+        // the one field a caller could use to backdate a record.
+        && (!("createdAt" in request.resource.data)
+          || request.resource.data.createdAt == request.time)
+        // Nobody files a registration under someone else's name.
+        && (!("createdBy" in request.resource.data)
+          || request.resource.data.createdBy == request.auth.uid);
+    }
+
     function sameOrganization() {
       return request.resource.data.organizationId == resource.data.organizationId;
     }
@@ -168,8 +201,17 @@ service cloud.firestore {
             hasRole(organizationId, ["owner", "manager", "instructor", "staff"])
             || isOwnClientDocument(resource.data)
           );
+        // Validate what is present rather than requiring a fixed set. The
+        // registration screen writes seven fields; the dual-write adapter
+        // writes a wider legacy shape (clientId, membershipBalance,
+        // legacySource, updatedAt...) and sometimes omits the rest. hasOnly
+        // would reject that adapter, and hasAll would reject a create that
+        // predates these fields. A floor that checks each field it actually
+        // sees stops a malformed write from either writer without closing a
+        // door the migration still needs.
         allow create: if request.resource.data.organizationId == organizationId
-          && hasRole(organizationId, ["owner", "manager", "instructor", "staff"]);
+          && hasRole(organizationId, ["owner", "manager", "instructor", "staff"])
+          && clientFieldsWellFormed();
         allow update: if resource.data.organizationId == organizationId
           && request.resource.data.organizationId == organizationId
           && hasRole(organizationId, ["owner", "manager", "instructor", "staff"]);

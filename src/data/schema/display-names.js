@@ -9,7 +9,7 @@
  * 되면 무엇이 잘못됐는지 알 수 없기 때문이다.
  */
 
-import { MEMBERSHIP_STATUS, PAY_CATEGORY, PAYMENT_METHOD, PRODUCT_STATUS, SESSION_TYPE } from "./constants.js";
+import { CLIENT_STATUS, MEMBERSHIP_STATUS, PAY_CATEGORY, PAYMENT_METHOD, PRODUCT_STATUS, SESSION_TYPE } from "./constants.js";
 
 export const SESSION_TYPE_LABELS = Object.freeze({
   [SESSION_TYPE.PT_1_1]: "1:1",
@@ -25,6 +25,16 @@ export const PAY_CATEGORY_LABELS = Object.freeze({
   [PAY_CATEGORY.SERVICE]: "서비스",
   [PAY_CATEGORY.LETMEIN]: "렛미인",
   [PAY_CATEGORY.ETC]: "기타",
+});
+
+export const CLIENT_STATUS_LABELS = Object.freeze({
+  [CLIENT_STATUS.ACTIVE]: "운영중",
+  [CLIENT_STATUS.HOLD]: "일시중지",
+  [CLIENT_STATUS.ENDED]: "종료",
+  // 옮겨온 데이터만 갖는 값이다. 등록 화면은 만들지 않지만 목록에는 나타날 수
+  // 있으므로 문구를 준다 -- 저장값이 그대로 보이면 회원 카드가 영어로 깨진다.
+  [CLIENT_STATUS.DELETED]: "삭제됨",
+  [CLIENT_STATUS.INACTIVE]: "비활성",
 });
 
 export const PRODUCT_STATUS_LABELS = Object.freeze({

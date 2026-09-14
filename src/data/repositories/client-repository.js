@@ -77,8 +77,14 @@ const byStatusThenName = (left, right) => {
 /**
  * 이름 또는 연락처 부분 일치. 검색어의 하이픈도 떼고 비교하므로 010-1234 로
  * 쳐도 01012345678 을 찾는다.
+ *
+ * 화면도 이 함수를 쓴다. 목록을 한 번 받아 두고 타이핑마다 다시 읽지는 않는데,
+ * 거르는 규칙을 화면이 따로 구현하면 "검색으로는 안 나오는데 목록에는 있는"
+ * 회원이 생긴다.
+ *
+ * @param {any} client @param {string} search
  */
-const matchesSearch = (client, search) => {
+export const clientMatchesSearch = (client, search) => {
   const text = String(search ?? "").trim();
   if (!text) return true;
   if (String(client.name || "").includes(text)) return true;
@@ -104,7 +110,7 @@ export async function listClients(organizationId, options = {}) {
     .filter(Boolean)
     .filter((client) => (locationId ? client.locationId === locationId : true))
     .filter((client) => (includeEnded ? true : client.status !== CLIENT_STATUS.ENDED))
-    .filter((client) => matchesSearch(client, search))
+    .filter((client) => clientMatchesSearch(client, search))
     .sort(byStatusThenName);
 }
 

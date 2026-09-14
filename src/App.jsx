@@ -81,6 +81,7 @@ import {
   clientMatchesSearch, createClient, findSameNameClients, listClients, normalizePhone,
 } from "./data/repositories/client-repository.js";
 import { listLocations } from "./data/repositories/location-repository.js";
+import { connectRepositoryLog } from "./data/repositories/repository-read.js";
 import {
   createProduct, listProducts, setProductStatus,
 } from "./data/repositories/product-repository.js";
@@ -541,6 +542,10 @@ const recordAuthStage = (stage, details = {}) => {
 /* The Auth initialization probe and the fetch wrapper both run before this
    module body; they buffer until this line hands them the recorder. */
 connectAuthInitLog(recordAuthStage);
+/* 리포지토리는 App.jsx 를 import 할 수 없으므로(순환) 진단 싱크를 여기서 꽂는다.
+   이 줄이 없으면 조회 실패가 조용해진다 -- 그것이 memberships·locations 에서
+   원인 확정을 매번 늦춘 그 침묵이다. */
+connectRepositoryLog(deviceLog);
 let authPreflightStarted = false;
 const runAuthConnectivityPreflight = async ({ force = false } = {}) => {
   if (authPreflightStarted && !force) return readAuthDiagnostics().filter((entry) => entry.feature === AUTH_FEATURES.CONNECTIVITY);

@@ -13,6 +13,7 @@
 import { PAY_CATEGORY, PRODUCT_STATUS, SESSION_TYPE } from "../schema/constants.js";
 import { payCategoriesFor } from "../schema/display-names.js";
 import { paths } from "../schema/paths.js";
+import { readCollection } from "./repository-read.js";
 
 /**
  * @typedef {object} ProductStore
@@ -84,8 +85,12 @@ const byStatusThenName = (left, right) => {
 export async function listProducts(organizationId, options = {}) {
   const { includeArchived = false, store = createFirestoreProductStore() } = options;
   requiredText(organizationId, "organizationId");
-  const found = await store.list(productsCollection(organizationId));
-  const products = (Array.isArray(found) ? found : []).filter(Boolean);
+  // 조회 실패는 빈 목록이 아니라 RepositoryReadError 로 나간다 -- repository-read.js 참고.
+  const products = await readCollection({
+    feature: "product_catalog",
+    path: productsCollection(organizationId),
+    read: (path) => store.list(path),
+  });
   const visible = includeArchived
     ? products
     : products.filter((product) => product.status === PRODUCT_STATUS.ACTIVE);

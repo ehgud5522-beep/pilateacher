@@ -12,6 +12,7 @@
 
 import { CLIENT_STATUS } from "../schema/constants.js";
 import { paths } from "../schema/paths.js";
+import { readCollection } from "./repository-read.js";
 
 /**
  * @typedef {object} ClientStore
@@ -105,9 +106,13 @@ export const clientMatchesSearch = (client, search) => {
 export async function listClients(organizationId, options = {}) {
   const { locationId = "", search = "", includeEnded = true, store = createFirestoreClientStore() } = options;
   const organization = requiredText(organizationId, "organizationId");
-  const found = await store.list(clientsCollection(organization));
-  return (Array.isArray(found) ? found : [])
-    .filter(Boolean)
+  // 조회 실패는 빈 목록이 아니라 RepositoryReadError 로 나간다 -- repository-read.js 참고.
+  const found = await readCollection({
+    feature: "client_directory",
+    path: clientsCollection(organization),
+    read: (path) => store.list(path),
+  });
+  return found
     .filter((client) => (locationId ? client.locationId === locationId : true))
     .filter((client) => (includeEnded ? true : client.status !== CLIENT_STATUS.ENDED))
     .filter((client) => clientMatchesSearch(client, search))

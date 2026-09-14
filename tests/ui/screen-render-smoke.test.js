@@ -139,6 +139,12 @@ test("every field the organization lookup emits survives deviceLog", async (t) =
   for (const allowed of ["uidLength", "uidPrefix", "uidSuffix"]) {
     assert.equal(isDeviceLogField(allowed), true, `${allowed} 가 버려지면 세션 uid 를 확정할 수 없다`);
   }
+
+  // 리포지토리 조회 실패가 내보내는 필드(repository-read.js). 하나라도 버려지면
+  // "무엇이 어디서 어떤 코드로 실패했는지"가 끊긴다.
+  for (const allowed of ["feature", "stage", "path", "errorDomain", "errorCode", "message"]) {
+    assert.equal(isDeviceLogField(allowed), true, `${allowed} 가 버려지면 조회 실패를 추적할 수 없다`);
+  }
 });
 
 test("the member directory shows who is there and who is not", async (t) => {

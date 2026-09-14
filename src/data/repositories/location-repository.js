@@ -12,6 +12,7 @@
  */
 
 import { paths } from "../schema/paths.js";
+import { readCollection } from "./repository-read.js";
 
 /**
  * @typedef {object} LocationStore
@@ -61,9 +62,13 @@ const byName = (left, right) =>
 export async function listLocations(organizationId, options = {}) {
   const { store = createFirestoreLocationStore() } = options;
   const organization = requiredText(organizationId, "organizationId");
-  const found = await store.list(locationsCollection(organization));
-  return (Array.isArray(found) ? found : [])
-    .filter(Boolean)
+  // 조회 실패는 빈 목록이 아니라 RepositoryReadError 로 나간다 -- repository-read.js 참고.
+  const found = await readCollection({
+    feature: "location_directory",
+    path: locationsCollection(organization),
+    read: (path) => store.list(path),
+  });
+  return found
     .map((location) => ({ ...location, id: String(location.id || location.locationId || "") }))
     .filter((location) => location.id)
     .sort(byName);

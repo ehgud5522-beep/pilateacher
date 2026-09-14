@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  createProduct, listProducts, setProductStatus,
+  createFirestoreProductStore, createProduct, listProducts, setProductStatus,
 } from "../../src/data/repositories/product-repository.js";
 
 const ORG = "center-a";
@@ -164,4 +164,34 @@ test("a missing organization id stops every call before it reaches Firestore", a
   await assert.rejects(() => createProduct("", input(), { store }), /Missing organizationId/);
   await assert.rejects(() => setProductStatus("", "product-1", "active", { store }), /Missing organizationId/);
   assert.deepEqual(store.calls, { list: [], create: [], update: [] });
+});
+
+/* store 는 테스트를 위한 주입 구멍이고, 운영에서는 아무도 넘기지 않는다 --
+   화면이 동작하는 것은 여기 기본값이 Firestore 를 집어 주기 때문이다.
+   이 기본값이 사라지면 화면은 undefined.list 로 죽지만 스모크 테스트는 자기
+   store 를 주입하므로 아무것도 눈치채지 못한다. 그래서 여기서 고정한다. */
+
+test("the Firestore store is what a caller gets when none is injected", async () => {
+  for (const call of [
+    () => listProducts(ORG),
+    () => createProduct(ORG, {
+      name: "이벤트 10회", sessionType: "pt_1_1", payCategory: "pt_1_1_new",
+      defaultSessions: 10, defaultPrice: 500000, createdBy: "owner-a",
+    }),
+    () => setProductStatus(ORG, "product-a", "archived"),
+  ]) {
+    const error = await call().then(() => null, (thrown) => thrown);
+    assert.ok(error, "주입 없이 부르면 Firestore 로 나가야 한다");
+    // 기본값이 빠지면 store 가 undefined 가 되어 TypeError 로 죽는다.
+    assert.notEqual(error.name, "TypeError", `기본 store 가 사라졌다: ${error.message}`);
+    // 실제로 Firestore 까지 갔다는 증거. 이 테스트에는 앱이 초기화돼 있지 않다.
+    assert.equal(error.code, "app/no-app", error.message);
+  }
+});
+
+test("the Firestore store answers the whole ProductStore shape", () => {
+  const store = createFirestoreProductStore();
+  for (const method of ["list", "create", "update", "serverTimestamp"]) {
+    assert.equal(typeof store[method], "function", `${method} 가 없으면 호출부가 죽는다`);
+  }
 });

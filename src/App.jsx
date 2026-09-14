@@ -75,6 +75,7 @@ import { photoBlobIdsIn } from "./data/photo-blob-fields.js";
 import {
   ORGANIZATION_CONTEXT_FEATURE, UNRESOLVED_ORGANIZATION_CONTEXT,
   createFirestoreMembershipReader, readyOrganizationContext, resolveOrganizationContext,
+  unknownOrganizationContext,
 } from "./data/repositories/organization-context.js";
 import {
   createProduct, listProducts, setProductStatus,
@@ -15150,12 +15151,23 @@ export default function App() {
       feature: ORGANIZATION_CONTEXT_FEATURE, stage: "requested", source,
       state: userId ? "present" : "absent",
     });
-    const resolved = await resolveOrganizationContext(userId, {
-      listActiveMemberships: createFirestoreMembershipReader(),
-      warn: (code, detail) => deviceLog(code, detail),
-      log: (code, detail) => deviceLog(code, detail),
-    });
-    return readyOrganizationContext(resolved);
+    try {
+      const resolved = await resolveOrganizationContext(userId, {
+        listActiveMemberships: createFirestoreMembershipReader(),
+        warn: (code, detail) => deviceLog(code, detail),
+        log: (code, detail) => deviceLog(code, detail),
+      });
+      return readyOrganizationContext(resolved);
+    } catch (error) {
+      /* 여기서 던지면 호출부가 setOrganizationContext 를 못 부르고 ready:false
+         가 그대로 남는다. 그 상태에는 배너도 재시도도 없어 앱 안에서 빠져나올
+         길이 없다. 무엇이 실패했든 unknown 으로 내보내 [다시 시도]를 준다. */
+      deviceLog("organization_context_load_failed", {
+        feature: ORGANIZATION_CONTEXT_FEATURE, stage: "load", source,
+        errorDomain: ORGANIZATION_CONTEXT_FEATURE, ...deviceError(error),
+      });
+      return readyOrganizationContext(unknownOrganizationContext());
+    }
   };
 
   const retryOrganizationContext = useCallback(async () => {

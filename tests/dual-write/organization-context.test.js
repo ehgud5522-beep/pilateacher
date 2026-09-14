@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  UNRESOLVED_ORGANIZATION_CONTEXT, readyOrganizationContext, resolveOrganizationContext,
-  userIdFingerprint,
+  ORGANIZATION_LOOKUP_TIMEOUT_MS, UNRESOLVED_ORGANIZATION_CONTEXT, readyOrganizationContext,
+  resolveOrganizationContext, userIdFingerprint,
 } from "../../src/data/repositories/organization-context.js";
 
 const membership = (overrides = {}) => ({
@@ -271,4 +271,89 @@ test("the lookup carries the fingerprint so the session uid is identifiable", as
   assert.equal(started.detail.uidLength, 28);
   assert.equal(started.detail.uidPrefix, "CgAr");
   assert.equal(started.detail.uidSuffix, "cOq2");
+});
+
+/* ready:false 에는 출구가 없다 -- 메뉴도 배너도 재시도도 그 상태에서는 안
+   보인다. 답이 오지 않는 조회를 끝없이 기다리면 사용자는 아무것도 일어나지
+   않는 화면에 갇힌다. 시간 안에 못 읽으면 unknown 으로 확정해 [다시 시도]를
+   준다 -- 못 읽은 것을 개인 모드로 확정하는 것보다 낫고, 침묵보다 낫다. */
+
+const fakeTimers = () => {
+  const pending = new Map();
+  let nextId = 1;
+  return {
+    setTimer: (fn, ms) => { const id = nextId++; pending.set(id, { fn, ms }); return id; },
+    clearTimer: (id) => { pending.delete(id); },
+    fire: () => { for (const [id, entry] of [...pending]) { pending.delete(id); entry.fn(); } },
+    get size() { return pending.size; },
+  };
+};
+
+test("a lookup that never answers becomes unknown, not a silent wait", async () => {
+  const timers = fakeTimers();
+  const warnings = [];
+  const pending = resolveOrganizationContext("user-1", {
+    listActiveMemberships: () => new Promise(() => {}),
+    warn: (code, detail) => warnings.push({ code, detail }),
+    setTimer: timers.setTimer,
+    clearTimer: timers.clearTimer,
+  });
+  timers.fire();
+  const context = await pending;
+  assert.equal(context.status, "unknown");
+  assert.equal(context.isLegacy, false, "못 읽은 것을 개인 모드로 확정하면 안 된다");
+  assert.equal(readyOrganizationContext(context).ready, true, "ready 여야 배너와 재시도가 보인다");
+  assert.equal(warnings[0].code, "organization_context_lookup_failed");
+  assert.equal(warnings[0].detail.errorCode, "lookup_timeout");
+});
+
+test("a timeout is attributed to this layer, not to Firestore", async () => {
+  const timers = fakeTimers();
+  const logs = [];
+  const pending = resolveOrganizationContext("user-1", {
+    listActiveMemberships: () => new Promise(() => {}),
+    log: (code, detail) => logs.push({ code, detail }),
+    setTimer: timers.setTimer,
+    clearTimer: timers.clearTimer,
+  });
+  timers.fire();
+  await pending;
+  const done = logs.find((entry) => entry.code === "organization_context_resolved");
+  assert.equal(done.detail.errorDomain, "organization_context");
+  assert.equal(done.detail.errorCode, "lookup_timeout");
+});
+
+test("a Firestore failure keeps its own domain and original code", async () => {
+  const logs = [];
+  await resolveOrganizationContext("user-1", {
+    listActiveMemberships: async () => { throw Object.assign(new Error("offline"), { code: "unavailable" }); },
+    log: (code, detail) => logs.push({ code, detail }),
+  });
+  const done = logs.find((entry) => entry.code === "organization_context_resolved");
+  assert.equal(done.detail.errorDomain, "firestore");
+  assert.equal(done.detail.errorCode, "unavailable", "원본 코드를 시간 초과로 덮어쓰면 안 된다");
+});
+
+test("an answer inside the deadline clears the timer and resolves normally", async () => {
+  const timers = fakeTimers();
+  const context = await resolveOrganizationContext("user-1", {
+    listActiveMemberships: async () => [membership()],
+    setTimer: timers.setTimer,
+    clearTimer: timers.clearTimer,
+  });
+  assert.equal(context.organizationId, "center-a");
+  assert.equal(timers.size, 0, "타이머를 남기면 테스트도 앱도 붙잡힌다");
+});
+
+test("a thrown reader is caught even when it throws synchronously", async () => {
+  const context = await resolveOrganizationContext("user-1", {
+    listActiveMemberships: () => { throw Object.assign(new Error("boom"), { code: "internal" }); },
+  });
+  assert.equal(context.status, "unknown");
+  assert.equal(context.isLegacy, false);
+});
+
+test("the deadline is a real number of milliseconds", () => {
+  assert.ok(Number.isFinite(ORGANIZATION_LOOKUP_TIMEOUT_MS));
+  assert.ok(ORGANIZATION_LOOKUP_TIMEOUT_MS > 0);
 });

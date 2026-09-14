@@ -88,13 +88,43 @@ export function userIdFingerprint(userId) {
 }
 
 /**
+ * 소속 조회를 기다리는 한계. 이 시간을 넘기면 unknown 으로 확정한다.
+ *
+ * 영원히 기다리는 것은 선택지가 아니다. 답이 오지 않는 동안 화면은 ready:false
+ * 인데, 그 상태에는 메뉴도 배너도 재시도 버튼도 없다 -- 사용자에게는 아무 일도
+ * 일어나지 않는 화면이고, 앱 안에서 빠져나올 방법이 없다. unknown 은 적어도
+ * "못 읽었다"고 말하고 [다시 시도]를 준다.
+ *
+ * 8초는 firebase.js 의 FIRESTORE_READ_TIMEOUT_MS 와 같은 값이다.
+ */
+export const ORGANIZATION_LOOKUP_TIMEOUT_MS = 8000;
+
+/** 시간 안에 답하지 않은 조회. catch 로 흘려보내 unknown 출구를 같이 쓴다. */
+const lookupTimeout = () => Object.assign(
+  new Error("Organization lookup did not answer in time."),
+  { code: "lookup_timeout" },
+);
+
+const withLookupTimeout = (promise, { timeoutMs, setTimer, clearTimer }) => {
+  if (!(timeoutMs > 0)) return promise;
+  let timer = null;
+  const deadline = new Promise((_resolve, reject) => {
+    timer = setTimer(() => reject(lookupTimeout()), timeoutMs);
+  });
+  return Promise.race([promise, deadline]).finally(() => clearTimer(timer));
+};
+
+/**
  * @param {string} userId
- * @param {{ listActiveMemberships?: (userId: string) => Promise<Array<MembershipDocument>>, warn?: (code: string, detail: object) => void, log?: (code: string, detail: object) => void }} [options]
+ * @param {{ listActiveMemberships?: (userId: string) => Promise<Array<MembershipDocument>>, warn?: (code: string, detail: object) => void, log?: (code: string, detail: object) => void, timeoutMs?: number, setTimer?: Function, clearTimer?: Function }} [options]
  * @returns {Promise<{ organizationId: string, role: string, status: string, isLegacy: boolean }>}
  */
 export async function resolveOrganizationContext(userId, options = {}) {
   const id = required(userId, "userId");
-  const { listActiveMemberships, warn = () => {}, log = () => {} } = options;
+  const {
+    listActiveMemberships, warn = () => {}, log = () => {},
+    timeoutMs = ORGANIZATION_LOOKUP_TIMEOUT_MS, setTimer = setTimeout, clearTimer = clearTimeout,
+  } = options;
 
   /* 진입과 결말을 둘 다 남긴다. 남기지 않으면 "조회했고 결과가 정상이었다"와
      "조회 자체가 일어나지 않았다"가 콘솔에서 똑같이 무음이라, 소속이 안 잡힐
@@ -127,7 +157,10 @@ export async function resolveOrganizationContext(userId, options = {}) {
   let dropReason = "";
   if (typeof listActiveMemberships === "function") {
     try {
-      const found = await listActiveMemberships(id);
+      const found = await withLookupTimeout(
+        Promise.resolve().then(() => listActiveMemberships(id)),
+        { timeoutMs, setTimer, clearTimer },
+      );
       const received = Array.isArray(found) ? found.filter(Boolean) : [];
       receivedCount = received.length;
       memberships = received
@@ -141,17 +174,18 @@ export async function resolveOrganizationContext(userId, options = {}) {
       // 읽지 못한 것과 소속이 없는 것은 다르다. 네트워크 실패로 소속 강사를
       // 개인 모드로 보내면 자기 지점 회원이 보이지 않고, 그 상태에서 한 입력이
       // 엉뚱한 조직에 쌓인다. unknown 으로 남기고 센터 기능을 잠근다.
+      const errorCode = error?.code || "unknown";
+      // 시간 초과는 Firestore 가 만든 코드가 아니라 이 계층이 만든 코드다.
+      // 원본 코드를 덮어쓰지 않도록 계층을 나눠 적는다.
+      const errorDomain = errorCode === "lookup_timeout" ? ORGANIZATION_CONTEXT_FEATURE : "firestore";
       warn("organization_context_lookup_failed", {
         feature: ORGANIZATION_CONTEXT_FEATURE,
         stage: "list_memberships",
-        errorDomain: "firestore",
-        errorCode: error?.code || "unknown",
+        errorDomain,
+        errorCode,
         message: error?.message || "",
       });
-      return resolved(unknownOrganizationContext(), "unknown", {
-        errorDomain: "firestore",
-        errorCode: error?.code || "unknown",
-      });
+      return resolved(unknownOrganizationContext(), "unknown", { errorDomain, errorCode });
     }
   }
 

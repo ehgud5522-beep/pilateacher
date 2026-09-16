@@ -7,6 +7,8 @@ import {
 import { listClients } from "../../src/data/repositories/client-repository.js";
 import { listLocations } from "../../src/data/repositories/location-repository.js";
 import { listProducts } from "../../src/data/repositories/product-repository.js";
+import { listPasses } from "../../src/data/repositories/pass-repository.js";
+import { listInstructors } from "../../src/data/repositories/instructor-repository.js";
 
 const ORG = "center-a";
 const denied = () => Object.assign(new Error("Missing or insufficient permissions."), { code: "permission-denied" });
@@ -97,18 +99,30 @@ test("a broken onError cannot break the screen", async () => {
   assert.equal(result.errorCode, "permission-denied");
 });
 
-/* 세 리포지토리가 모두 같은 규칙을 따르는지 본다. 새 리포지토리를 추가할 때
-   이 목록에 한 줄을 더하는 것이 관례다 -- repository-read.js 의 머리말 참고. */
+/* 컬렉션을 읽는 리포지토리가 모두 같은 규칙을 따르는지 본다. 새 리포지토리를
+   추가할 때 이 목록에 한 줄을 더하는 것이 관례다 -- repository-read.js 의
+   머리말 참고. read 는 그 리포지토리의 store 모양에 맞춰 조회 하나를 흉내낸다. */
+/** 쓰기 입구는 쓰지 않지만, store 는 제 모양을 다 갖춰야 타입이 맞는다. */
+const listOnly = (read) => ({
+  list: read,
+  create: async () => {},
+  update: async () => {},
+  commit: async () => {},
+  serverTimestamp: async () => "SERVER_TIME",
+});
+
 const repositories = [
-  { name: "listClients", feature: "client_directory", call: (store) => listClients(ORG, { store }) },
-  { name: "listLocations", feature: "location_directory", call: (store) => listLocations(ORG, { store }) },
-  { name: "listProducts", feature: "product_catalog", call: (store) => listProducts(ORG, { store }) },
+  { name: "listClients", feature: "client_directory", call: (read) => listClients(ORG, { store: listOnly(read) }) },
+  { name: "listLocations", feature: "location_directory", call: (read) => listLocations(ORG, { store: listOnly(read) }) },
+  { name: "listProducts", feature: "product_catalog", call: (read) => listProducts(ORG, { store: listOnly(read) }) },
+  { name: "listPasses", feature: "pass_directory", call: (read) => listPasses(ORG, { store: listOnly(read) }) },
+  { name: "listInstructors", feature: "instructor_directory", call: (read) => listInstructors(ORG, { store: { listByRole: read } }) },
 ];
 
 test("every list repository turns a refused read into a traceable error", async () => {
   for (const { name, feature, call } of repositories) {
     const entries = recorder();
-    const error = await call({ list: async () => { throw denied(); } }).then(() => null, (thrown) => thrown);
+    const error = await call(async () => { throw denied(); }).then(() => null, (thrown) => thrown);
     assert.ok(error instanceof RepositoryReadError, `${name} 은 실패를 던져야 한다`);
     assert.equal(error.code, "permission-denied", name);
     assert.equal(entries.length, 1, `${name} 의 실패가 기록되지 않았다`);
@@ -121,7 +135,7 @@ test("every list repository turns a refused read into a traceable error", async 
 test("every list repository returns an empty list quietly when there is nothing", async () => {
   for (const { name, call } of repositories) {
     const entries = recorder();
-    assert.deepEqual(await call({ list: async () => [] }), [], name);
+    assert.deepEqual(await call(async () => []), [], name);
     assert.deepEqual(entries, [], `${name} 이 빈 결과를 실패처럼 기록했다`);
     disconnectRepositoryLog();
   }

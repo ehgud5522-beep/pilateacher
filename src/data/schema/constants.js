@@ -107,6 +107,27 @@ export const PAY_CATEGORY = Object.freeze({
   ETC: "etc",
 });
 
+// 회원권의 생애. firestore.foundation.rules 의 passes create 는 status 가
+// 문자열이기만 요구하므로, 값을 좁히는 것은 여기와 리포지토리의 몫이다.
+export const PASS_STATUS = Object.freeze({
+  ACTIVE: "active",
+  COMPLETED: "completed",
+  EXPIRED: "expired",
+  CANCELLED: "cancelled",
+});
+
+// 회원권 원장에 남는 항목의 종류. firestore.foundation.rules 의 ledger create
+// 조건에 같은 목록이 리터럴로 있다 — 규칙 파일은 import 을 할 수 없다.
+//
+//   issue     발급. delta 는 양수(총 회차)
+//   deduct    차감. delta 는 음수이고 lessonId 를 함께 남긴다
+//   transfer  담당 강사 교체. delta 0 — 잔여 횟수는 그대로이고 주인만 바뀐다
+export const LEDGER_ENTRY_TYPE = Object.freeze({
+  ISSUE: "issue",
+  DEDUCT: "deduct",
+  TRANSFER: "transfer",
+});
+
 export const COLLECTIONS = Object.freeze({
   USERS: "users",
   ORGANIZATIONS: "organizations",

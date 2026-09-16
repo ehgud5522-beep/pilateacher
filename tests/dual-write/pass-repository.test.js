@@ -147,15 +147,14 @@ test("the unit price comes from the table and is frozen into the entry", async (
   assert.equal(entry.category, "pt_1_1_new");
 });
 
-test("a category the table cannot price must be given one", async () => {
-  // 물어보지 않고 0원으로 발급되면 그 달 급여가 조용히 비어 버린다.
-  for (const payCategory of ["pt_1_1_repurchase_normal", "etc"]) {
-    const store = fakeStore();
-    await assert.rejects(() => issuePass(ORG, issueInput({ payCategory }), { store }), /Missing unitPrice/);
-    assert.equal(store.calls.commit.length, 0);
-    const entered = await issuePass(ORG, issueInput({ payCategory, unitPrice: 31000 }), { store });
-    assert.equal(entered.entry.unitPrice, 31000);
-  }
+test("the manual category must be given a price", async () => {
+  /* 물어보지 않고 0원으로 발급되면 그 수업들이 무보수로 기록된다. 풀방금액이
+     필요한 카테고리는 아래에 따로 있다 -- 막히는 이유가 다르기 때문이다. */
+  const store = fakeStore();
+  await assert.rejects(() => issuePass(ORG, issueInput({ payCategory: "etc" }), { store }), /Missing unitPrice/);
+  assert.equal(store.calls.commit.length, 0);
+  const entered = await issuePass(ORG, issueInput({ payCategory: "etc", unitPrice: 31000 }), { store });
+  assert.equal(entered.entry.unitPrice, 31000);
 });
 
 test("the pass and the entry agree on organization, location and instructor", async () => {
@@ -306,4 +305,43 @@ test("the Firestore store answers the whole PassStore shape", () => {
   // 문서를 한 건씩 쓰는 입구는 두지 않는다. 있으면 언젠가 그리로 새 나간다.
   assert.equal(store.create, undefined);
   assert.equal(store.update, undefined);
+});
+
+/* ── 풀방금액이 필요한 카테고리 ───────────────────────────────────────── */
+
+test("a repurchase-normal pass takes the instructor's full-room rate", async () => {
+  const store = fakeStore();
+  const { entry } = await issuePass(ORG, issueInput({
+    payCategory: "pt_1_1_repurchase_normal", fullRoomRate: 45000,
+  }), { store });
+  assert.equal(entry.unitPrice, 45000);
+});
+
+test("issuing is blocked when the instructor has no full-room rate", async () => {
+  /* 0 을 받아들이면 그 강사의 재등록 수업이 통째로 무보수로 기록되고, 원장은
+     append-only 라 고칠 수 없다. 화면은 이 실패를 "담당 강사의 풀방금액이
+     설정되지 않았습니다" 로 보여준다. */
+  for (const missing of [undefined, null, "", 0, "0"]) {
+    const store = fakeStore();
+    await assert.rejects(() => issuePass(ORG, issueInput({
+      payCategory: "pt_1_1_repurchase_normal", fullRoomRate: missing,
+    }), { store }), /Missing fullRoomRate/, JSON.stringify(missing));
+    assert.equal(store.calls.commit.length, 0, "막힌 발급은 아무것도 쓰지 않는다");
+  }
+});
+
+test("a full-room rate cannot stand in for a typed unit price", async () => {
+  const store = fakeStore();
+  await assert.rejects(() => issuePass(ORG, issueInput({
+    payCategory: "etc", fullRoomRate: 45000,
+  }), { store }), /Missing unitPrice/);
+});
+
+test("a full-room rate never moves a fixed category at issue time", async () => {
+  // pay-rates 에서 고정한 규칙이 발급 경로에서도 그대로인지.
+  const store = fakeStore();
+  const { entry } = await issuePass(ORG, issueInput({
+    payCategory: "pt_1_1_repurchase_event", fullRoomRate: 45000,
+  }), { store });
+  assert.equal(entry.unitPrice, 30000, "이벤트페이는 풀방금액이 있어도 정해진 금액이다");
 });

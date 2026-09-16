@@ -136,7 +136,7 @@ export async function listPasses(organizationId, options = {}) {
  *   clientId: string, locationId: string, productId: string, payCategory: string,
  *   totalSessions: number, contractPrice: number, instructorId: string, createdBy: string,
  *   serviceSessions?: number, purchaseRound?: number, paymentMethod?: string,
- *   unitPrice?: number, passId?: string, entryId?: string,
+ *   unitPrice?: number, fullRoomRate?: number, passId?: string, entryId?: string,
  * }} input
  * @param {{ store?: PassStore, newId?: () => string }} [options]
  */
@@ -154,9 +154,13 @@ export async function issuePass(organizationId, input, options = {}) {
   const serviceSessions = requiredInt(input?.serviceSessions ?? 0, "serviceSessions", { min: 0 });
   const contractPrice = requiredInt(input?.contractPrice, "contractPrice", { min: 0 });
   const purchaseRound = requiredInt(input?.purchaseRound ?? 1, "purchaseRound", { min: 1 });
-  // 표가 정해 주지 못하는 카테고리는 여기서 거부된다 -- 물어보지 않고 0원으로
-  // 발급되면 그 달 급여가 조용히 비어 버린다.
-  const unitPrice = resolveUnitPrice(payCategory, input?.unitPrice);
+  /* 단가가 어디서 오든 -- 표, 담당 강사의 풀방금액, 직접 입력 -- 정해지지
+     않으면 여기서 거부된다. 물어보지 않고 0원으로 발급되면 그 수업들이 통째로
+     무보수로 기록되고, 원장은 고칠 수 없다. */
+  const unitPrice = resolveUnitPrice(payCategory, {
+    unitPrice: input?.unitPrice,
+    fullRoomRate: input?.fullRoomRate,
+  });
 
   const clientId = requiredText(input?.clientId, "clientId");
   const locationId = requiredText(input?.locationId, "locationId");

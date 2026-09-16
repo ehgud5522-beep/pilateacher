@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  createFirestoreInstructorStore, listInstructors,
+  createFirestoreInstructorRateStore, createFirestoreInstructorStore, fullRoomRateOf,
+  hasUsableFullRoomRate, listInstructors, setInstructorFullRoomRate,
 } from "../../src/data/repositories/instructor-repository.js";
 import { RepositoryReadError, connectRepositoryLog, disconnectRepositoryLog } from "../../src/data/repositories/repository-read.js";
 
@@ -100,4 +101,124 @@ test("the Firestore store is what a caller gets when none is injected", async ()
 
 test("the Firestore store answers the whole InstructorStore shape", () => {
   assert.equal(typeof createFirestoreInstructorStore().listByRole, "function");
+});
+
+/* ── 풀방금액 ─────────────────────────────────────────────────────────── */
+
+function fakeRateStore({ failCommit = null } = {}) {
+  const written = new Map();
+  const calls = [];
+  return {
+    written,
+    calls,
+    commit: async (writes) => {
+      calls.push(writes);
+      if (failCommit) throw failCommit;
+      for (const write of writes) written.set(write.path, write);
+    },
+    serverTimestamp: async () => "SERVER_TIME",
+  };
+}
+
+test("a rate and its history entry are written together", async () => {
+  /* 금액만 바뀌고 이력이 없으면 "언제부터 이 금액이었나"가 사라지고, 이력만
+     남고 금액이 그대로면 둘이 어긋난다. */
+  const store = fakeRateStore();
+  await setInstructorFullRoomRate(ORG, "instructor-a", {
+    newRate: 45000, changedBy: "owner-a",
+  }, { store, newId: () => "entry-1" });
+  assert.equal(store.calls.length, 1, "두 번 나눠 쓰면 하나만 저장되는 순간이 생긴다");
+  const [membershipWrite, historyWrite] = store.calls[0];
+  assert.equal(membershipWrite.path, "memberships/center-a_instructor-a");
+  // set 이면 role 도 status 도 통째로 날아가고, 그 순간 강사는 아무것도 못 읽는다.
+  assert.equal(membershipWrite.operation, "update");
+  assert.deepEqual(membershipWrite.data, { fullRoomRate: 45000 });
+  assert.equal(historyWrite.path, "memberships/center-a_instructor-a/rateHistory/entry-1");
+});
+
+test("the history entry records where the rate came from", async () => {
+  const store = fakeRateStore();
+  const { entry } = await setInstructorFullRoomRate(ORG, "instructor-a", {
+    newRate: 50000, previousRate: 45000, changedBy: "owner-a",
+  }, { store });
+  assert.equal(entry.previousRate, 45000);
+  assert.equal(entry.newRate, 50000);
+  assert.equal(entry.changedBy, "owner-a");
+  assert.equal(entry.createdAt, "SERVER_TIME", "규칙이 createdAt == request.time 을 요구한다");
+  assert.equal(entry.effectiveFrom, "SERVER_TIME");
+});
+
+test("a first rate records that there was none before", async () => {
+  const store = fakeRateStore();
+  const { entry } = await setInstructorFullRoomRate(ORG, "instructor-a", {
+    newRate: 45000, changedBy: "owner-a",
+  }, { store });
+  assert.equal(entry.previousRate, null, "0 이 아니라 null 이다 -- 없던 것과 0원은 다르다");
+});
+
+test("nothing is written when the rate commit fails", async () => {
+  const store = fakeRateStore({ failCommit: Object.assign(new Error("denied"), { code: "permission-denied" }) });
+  await assert.rejects(() => setInstructorFullRoomRate(ORG, "instructor-a", {
+    newRate: 45000, changedBy: "owner-a",
+  }, { store }), /denied/);
+  assert.equal(store.written.size, 0);
+});
+
+test("a blank rate is refused, never read as zero", async () => {
+  // Number("") 는 0 이다. 빈 칸이 통과하면 그 강사의 재등록 수업이 무보수가 된다.
+  for (const blank of ["", "   ", null, undefined]) {
+    const store = fakeRateStore();
+    await assert.rejects(() => setInstructorFullRoomRate(ORG, "instructor-a", {
+      newRate: blank, changedBy: "owner-a",
+    }, { store }), /Missing newRate/, JSON.stringify(blank));
+    assert.equal(store.calls.length, 0);
+  }
+});
+
+test("a nonsense rate is refused and says so differently", async () => {
+  for (const bad of [-1, 1.5, "abc"]) {
+    const store = fakeRateStore();
+    await assert.rejects(() => setInstructorFullRoomRate(ORG, "instructor-a", {
+      newRate: bad, changedBy: "owner-a",
+    }, { store }), /Invalid newRate/, JSON.stringify(bad));
+  }
+});
+
+test("setting the same rate again is refused", async () => {
+  // 바뀐 것이 없는데 이력만 쌓이면 이력이 읽히지 않게 된다.
+  const store = fakeRateStore();
+  await assert.rejects(() => setInstructorFullRoomRate(ORG, "instructor-a", {
+    newRate: 45000, previousRate: 45000, changedBy: "owner-a",
+  }, { store }), /Invalid newRate/);
+  assert.equal(store.calls.length, 0);
+});
+
+test("the change needs an organization, an instructor and an author", async () => {
+  const base = { newRate: 45000, changedBy: "owner-a" };
+  const store = fakeRateStore();
+  await assert.rejects(() => setInstructorFullRoomRate("", "instructor-a", base, { store }), /Missing organizationId/);
+  await assert.rejects(() => setInstructorFullRoomRate(ORG, "", base, { store }), /Missing userId/);
+  await assert.rejects(() => setInstructorFullRoomRate(ORG, "instructor-a", { ...base, changedBy: "" }, { store }), /Missing changedBy/);
+  assert.equal(store.calls.length, 0);
+});
+
+test("a rate of zero reads as not set for issuing", () => {
+  /* 저장은 0 을 허용한다 (대표가 비우는 동작). 다만 그 강사에게 재등록(정상)
+     상품을 발급하는 것은 막아야 한다 -- 0원으로 기록되면 원장은 고칠 수 없다. */
+  assert.equal(fullRoomRateOf({ fullRoomRate: 45000 }), 45000);
+  assert.equal(fullRoomRateOf({ fullRoomRate: 0 }), 0);
+  assert.equal(fullRoomRateOf({}), null);
+  assert.equal(fullRoomRateOf({ fullRoomRate: "45000" }), null, "문자열은 값이 아니다");
+  assert.equal(hasUsableFullRoomRate({ fullRoomRate: 45000 }), true);
+  assert.equal(hasUsableFullRoomRate({ fullRoomRate: 0 }), false);
+  assert.equal(hasUsableFullRoomRate({}), false);
+});
+
+test("the Firestore rate store answers the shape the caller needs", () => {
+  const store = createFirestoreInstructorRateStore();
+  for (const method of ["commit", "serverTimestamp"]) {
+    assert.equal(typeof store[method], "function", method);
+  }
+  // 문서를 한 건씩 쓰는 입구는 두지 않는다. 있으면 언젠가 그리로 새 나간다.
+  assert.equal(store.update, undefined);
 });

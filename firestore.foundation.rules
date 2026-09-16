@@ -365,8 +365,15 @@ service cloud.firestore {
             "paymentMethod", "purchaseRound", "status", "createdAt", "createdBy",
             // 발급 시점에 담당 강사가 정해진다. 없으면 차감한 회차가 누구의
             // 급여인지 알 수 없고, 교체 이력도 가리킬 대상이 없다.
-            "instructorId"
+            "instructorId",
+            // 이 회원권이 회당 얼마를 주는가. 차감은 여기서 읽는다 -- 표를 다시
+            // 보면 그 사이 바뀐 단가가 지난 회원권에 소급된다.
+            "unitPrice", "remainingCount"
           ])
+          && request.resource.data.unitPrice is int
+          && request.resource.data.unitPrice >= 0
+          && request.resource.data.remainingCount is int
+          && request.resource.data.remainingCount >= 0
           && request.resource.data.instructorId is string
           && request.resource.data.instructorId.size() > 0
           && request.resource.data.totalSessions is int
@@ -395,6 +402,17 @@ service cloud.firestore {
             || (
               hasRole(organizationId, ["manager"])
               && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["instructorId"])
+            )
+            // Attendance. Whoever teaches may spend one session and nothing
+            // else — never two, and never back upwards. A pass that could be
+            // topped up here would let anyone grant themselves lessons the
+            // member never bought, and the ledger that proves it is append-only.
+            || (
+              hasRole(organizationId, ["owner", "manager", "instructor"])
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["remainingCount"])
+              && request.resource.data.remainingCount is int
+              && request.resource.data.remainingCount == resource.data.remainingCount - 1
+              && request.resource.data.remainingCount >= 0
             )
           );
         allow delete: if false;

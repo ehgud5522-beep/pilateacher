@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  createFirestorePassStore, issuePass, listPasses, transferPassInstructor,
+  createFirestorePassStore, deductPass, isDeductablePass, issuePass, listPasses,
+  remainingCountOf, transferPassInstructor,
 } from "../../src/data/repositories/pass-repository.js";
 import { RepositoryReadError, connectRepositoryLog, disconnectRepositoryLog } from "../../src/data/repositories/repository-read.js";
 
@@ -344,4 +345,187 @@ test("a full-room rate never moves a fixed category at issue time", async () => 
     payCategory: "pt_1_1_repurchase_event", fullRoomRate: 45000,
   }), { store });
   assert.equal(entry.unitPrice, 30000, "이벤트페이는 풀방금액이 있어도 정해진 금액이다");
+});
+
+/* ── 출석 체크(차감) ──────────────────────────────────────────────────── */
+
+const activePass = (overrides = {}) => ({
+  id: "pass-a",
+  passId: "pass-a",
+  organizationId: ORG,
+  clientId: "client-a",
+  locationId: "bansong",
+  category: "pt_1_1_new",
+  unitPrice: 25000,
+  remainingCount: 20,
+  status: "active",
+  ...overrides,
+});
+
+const deductInput = (overrides = {}) => ({
+  instructorId: "instructor-a",
+  createdBy: "instructor-a",
+  occurredAt: new Date("2026-09-17T10:00:00.000Z"),
+  ...overrides,
+});
+
+const deductOptions = (store) => ({
+  store,
+  newId: () => "lesson-new",
+  now: () => new Date("2026-09-17T12:00:00.000Z"),
+});
+
+test("a deduction writes the lesson, the participant, the entry and the count at once", async () => {
+  /* 넷 중 하나만 쓰이면 잔여가 어긋나거나 급여가 어느 수업에서 나왔는지 알 수
+     없게 된다. 원장은 append-only 라 사후 보정도 불가능하다. */
+  const store = fakeStore();
+  await deductPass(ORG, activePass(), deductInput(), deductOptions(store));
+  assert.equal(store.calls.commit.length, 1);
+  assert.deepEqual(store.calls.commit[0].map((write) => write.path), [
+    "organizations/center-a/lessons/lesson-new",
+    "organizations/center-a/lessons/lesson-new/participants/client-a",
+    "organizations/center-a/passes/pass-a/ledger/lesson-new_deduct",
+    "organizations/center-a/passes/pass-a",
+  ]);
+});
+
+test("the entry points at the lesson it was taught in", async () => {
+  const store = fakeStore();
+  const { entry, lesson } = await deductPass(ORG, activePass(), deductInput(), deductOptions(store));
+  assert.equal(entry.type, "deduct");
+  assert.equal(entry.delta, -1);
+  assert.equal(entry.lessonId, "lesson-new");
+  assert.equal(entry.lessonId, lesson.lessonId, "원장이 없는 수업을 가리키면 안 된다");
+  assert.equal(entry.instructorId, "instructor-a", "차감을 누른 강사가 그 회차의 급여를 받는다");
+});
+
+test("the price comes from the pass, not from the table", async () => {
+  /* 상품이 나중에 바뀌어도, 담당 강사의 풀방금액이 나중에 올라도, 이 회원권의
+     단가는 발급 시점에 확정된 값이다. */
+  const store = fakeStore();
+  const { entry } = await deductPass(
+    ORG,
+    activePass({ category: "pt_1_1_repurchase_normal", unitPrice: 45000 }),
+    deductInput(),
+    deductOptions(store),
+  );
+  assert.equal(entry.category, "pt_1_1_repurchase_normal");
+  assert.equal(entry.unitPrice, 45000);
+});
+
+test("a pass without a frozen price is refused rather than re-priced", async () => {
+  for (const missing of [undefined, null, "25000", -1]) {
+    const store = fakeStore();
+    await assert.rejects(
+      () => deductPass(ORG, activePass({ unitPrice: missing }), deductInput(), deductOptions(store)),
+      /Missing unitPrice/,
+      JSON.stringify(missing),
+    );
+    assert.equal(store.calls.commit.length, 0);
+  }
+});
+
+test("the remaining count is spent by the server, not by a read", async () => {
+  // 두 강사가 같은 순간에 눌러도 하나가 다른 하나를 덮어쓰지 않는다.
+  const store = fakeStore();
+  await deductPass(ORG, activePass(), deductInput(), deductOptions(store));
+  const passWrite = store.calls.commit[0][3];
+  assert.equal(passWrite.operation, "decrement");
+  assert.deepEqual(passWrite.data, { remainingCount: -1 });
+});
+
+test("nothing is written when the deduction commit fails", async () => {
+  const store = fakeStore({ failCommit: Object.assign(new Error("denied"), { code: "permission-denied" }) });
+  await assert.rejects(() => deductPass(ORG, activePass(), deductInput(), deductOptions(store)), /denied/);
+  assert.equal(store.written.size, 0);
+});
+
+test("a pass with nothing left cannot be spent", async () => {
+  /* 음수 잔여가 한 번 생기면 그 회원권의 기록은 영영 앞뒤가 안 맞는다 --
+     원장을 고칠 수 없기 때문이다. */
+  const spentCases = [
+    { remainingCount: 0 },
+    { remainingCount: -1 },
+    { status: "expired" },
+    { status: "cancelled" },
+  ];
+  for (const spent of spentCases) {
+    const store = fakeStore();
+    await assert.rejects(
+      () => deductPass(ORG, activePass(spent), deductInput(), deductOptions(store)),
+      /Missing remainingCount/,
+      JSON.stringify(spent),
+    );
+    assert.equal(store.calls.commit.length, 0);
+  }
+});
+
+test("a lesson time in the future or long past is refused", async () => {
+  // 강사가 그날 밤에 몰아 누르는 것은 허용하고, 지난달 소급은 막는다.
+  const refused = [
+    { at: new Date("2026-09-17T13:00:00.000Z"), label: "미래" },
+    { at: new Date("2026-09-09T12:00:00.000Z"), label: "8일 전" },
+    { at: "그저께", label: "날짜가 아님" },
+  ];
+  for (const item of refused) {
+    const store = fakeStore();
+    await assert.rejects(
+      () => deductPass(ORG, activePass(), deductInput({ occurredAt: item.at }), deductOptions(store)),
+      /Invalid occurredAt/,
+      item.label,
+    );
+    assert.equal(store.calls.commit.length, 0);
+  }
+});
+
+test("a lesson inside the window is accepted", async () => {
+  const store = fakeStore();
+  await deductPass(
+    ORG,
+    activePass(),
+    deductInput({ occurredAt: new Date("2026-09-11T12:00:00.000Z") }),
+    deductOptions(store),
+  );
+  assert.equal(store.calls.commit.length, 1, "6일 전 수업은 아직 입력할 수 있다");
+});
+
+test("a deduction needs a pass, a client, a location, an instructor and an author", async () => {
+  const brokenPasses = [
+    { pass: activePass({ id: "", passId: "" }), expected: /Missing passId/ },
+    { pass: activePass({ clientId: "" }), expected: /Missing clientId/ },
+    { pass: activePass({ locationId: "" }), expected: /Missing locationId/ },
+  ];
+  for (const { pass, expected } of brokenPasses) {
+    const store = fakeStore();
+    await assert.rejects(() => deductPass(ORG, pass, deductInput(), deductOptions(store)), expected);
+    assert.equal(store.calls.commit.length, 0);
+  }
+  for (const field of ["instructorId", "createdBy"]) {
+    const store = fakeStore();
+    await assert.rejects(
+      () => deductPass(ORG, activePass(), deductInput({ [field]: "" }), deductOptions(store)),
+      new RegExp(`Missing ${field}`),
+    );
+    assert.equal(store.calls.commit.length, 0);
+  }
+});
+
+test("a screen can tell which passes are spendable", () => {
+  assert.equal(isDeductablePass(activePass()), true);
+  assert.equal(isDeductablePass(activePass({ remainingCount: 0 })), false);
+  assert.equal(isDeductablePass(activePass({ status: "expired" })), false);
+  assert.equal(isDeductablePass(undefined), false);
+  assert.equal(remainingCountOf(activePass({ remainingCount: 7 })), 7);
+  assert.equal(remainingCountOf(activePass({ remainingCount: "7" })), 0, "문자열은 횟수가 아니다");
+  assert.equal(remainingCountOf(undefined), 0);
+});
+
+test("an issued pass carries the price a later deduction will read", async () => {
+  const store = fakeStore();
+  const { pass } = await issuePass(ORG, issueInput(), { store });
+  assert.equal(pass.unitPrice, 25000);
+  // 발급이 만든 회원권을 그대로 차감할 수 있어야 한다.
+  const deductStore = fakeStore();
+  await deductPass(ORG, { ...pass, id: "pass-a" }, deductInput(), deductOptions(deductStore));
+  assert.equal(deductStore.calls.commit[0][2].data.unitPrice, 25000);
 });

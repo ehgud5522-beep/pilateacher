@@ -13,6 +13,7 @@ import {
   doc,
   getDoc,
   getDocs,
+  increment,
   query,
   serverTimestamp,
   setDoc,
@@ -62,6 +63,13 @@ const users = {
 
 let testEnv;
 
+// 상품 블록에도 같은 이름의 헬퍼가 있지만 그 describe 안에 갇혀 있다.
+const dropField = (body, field) => {
+  const copy = { ...body };
+  delete copy[field];
+  return copy;
+};
+
 function dbFor(userId) {
   return userId ? testEnv.authenticatedContext(userId).firestore() : testEnv.unauthenticatedContext().firestore();
 }
@@ -102,6 +110,7 @@ function passFixture(organizationId, passId, overrides = {}) {
     paymentMethod: "card",
     purchaseRound: 1,
     remainingCount: 20,
+    unitPrice: 25000,
     instructorId: users.instructor,
     status: "active",
     createdBy: users.manager,
@@ -565,12 +574,17 @@ describe("PT passes and their ledger", () => {
     ));
   });
 
-  test("only the owner updates a pass, and never deletes one", async () => {
+  test("the owner rewrites a pass, and nobody deletes one", async () => {
+    /* 출석 체크가 생기면서 잔여 한 칸을 줄이는 일은 수업하는 사람 모두에게
+       열렸다 -- 아래 "checking attendance" 블록이 그 경계를 따로 고정한다.
+       여기서 지키는 것은 나머지다: 회원권의 다른 모든 값은 대표의 것이고,
+       조직을 옮기는 것과 지우는 것은 누구에게도 열려 있지 않다. */
     await assertSucceeds(updateDoc(passRef(users.owner, ORG_A, PASS_A), {
       organizationId: ORG_A,
-      remainingCount: 19,
+      contractPrice: 990000,
     }));
-    await assertFails(updateDoc(passRef(users.manager, ORG_A, PASS_A), { remainingCount: 18 }));
+    await assertFails(updateDoc(passRef(users.manager, ORG_A, PASS_A), { contractPrice: 1 }));
+    await assertFails(updateDoc(passRef(users.instructor, ORG_A, PASS_A), { contractPrice: 1 }));
     await assertFails(updateDoc(passRef(users.owner, ORG_A, PASS_A), { organizationId: ORG_B }));
     await assertFails(deleteDoc(passRef(users.owner, ORG_A, PASS_A)));
   });
@@ -943,7 +957,7 @@ describe("ledger and pass bodies are validated at write time", () => {
         purchaseRound: 3,
       }),
     ));
-    for (const field of ["productId", "totalSessions", "serviceSessions", "contractPrice", "paymentMethod", "purchaseRound", "instructorId"]) {
+    for (const field of ["productId", "totalSessions", "serviceSessions", "contractPrice", "paymentMethod", "purchaseRound", "instructorId", "unitPrice", "remainingCount"]) {
       await assertFails(setDoc(
         passRef(users.manager, `pass-missing-${field}`),
         withoutField(passFixture(ORG_A, `pass-missing-${field}`), field),
@@ -1205,13 +1219,6 @@ describe("issuing a pass and moving its instructor", () => {
   const passDoc = (userId, passId) => doc(dbFor(userId), "organizations", ORG_A, COLLECTIONS.PASSES, passId);
   const ledgerDoc = (userId, passId, entryId) =>
     doc(dbFor(userId), "organizations", ORG_A, COLLECTIONS.PASSES, passId, COLLECTIONS.LEDGER, entryId);
-
-  // 상품 블록에도 같은 이름의 헬퍼가 있지만 그 describe 안에 갇혀 있다.
-  const dropField = (body, field) => {
-    const copy = { ...body };
-    delete copy[field];
-    return copy;
-  };
 
   const transferEntry = (overrides = {}) => ({
     organizationId: ORG_A,
@@ -1553,5 +1560,170 @@ describe("instructor full-room rate", () => {
       if (item.drop) delete entry[item.drop];
       await assertFails(setDoc(historyDoc(users.owner, "entry-broken"), entry), item.label);
     }
+  });
+});
+
+/* 출석 체크(차감). 수업을 한 사람이 한 회차를 쓴다.
+
+   차감은 원장에 항목을 쌓고 회원권의 잔여를 하나 줄인다. 원장은 append-only 라
+   잘못 쌓인 항목을 지울 수 없으므로, 규칙이 받아 주는 모양을 여기서 좁게
+   고정한다. */
+describe("checking attendance against a pass", () => {
+  const passDocOf = (userId, organizationId, passId) =>
+    doc(dbFor(userId), "organizations", organizationId, COLLECTIONS.PASSES, passId);
+  const ledgerDocOf = (userId, organizationId, passId, entryId) =>
+    doc(dbFor(userId), "organizations", organizationId, COLLECTIONS.PASSES, passId, COLLECTIONS.LEDGER, entryId);
+
+  const deductEntry = (overrides = {}) => ({
+    organizationId: ORG_A,
+    passId: PASS_A,
+    locationId: "location-a",
+    type: "deduct",
+    delta: -1,
+    category: "pt_1_1_new",
+    unitPrice: 25000,
+    lessonId: "lesson-seed",
+    instructorId: users.instructor,
+    occurredAt: hoursAgo(2),
+    createdAt: serverTimestamp(),
+    createdBy: users.instructor,
+    ...overrides,
+  });
+
+  test("an instructor appends a deduction", async () => {
+    await assertSucceeds(setDoc(ledgerDocOf(users.instructor, ORG_A, PASS_A, "entry-deduct"), deductEntry()));
+  });
+
+  test("a deduction has to point at a lesson", async () => {
+    /* 원장은 append-only 다. lessonId 없이 쌓인 항목은 나중에 채울 수 없고,
+       "이 급여가 어느 수업에서 나왔나"를 영영 답할 수 없다. */
+    const entry = deductEntry();
+    delete entry.lessonId;
+    await assertFails(setDoc(ledgerDocOf(users.instructor, ORG_A, PASS_A, "entry-no-lesson"), entry));
+  });
+
+  test("a deduction cannot add sessions", async () => {
+    for (const delta of [1, 0]) {
+      await assertFails(
+        setDoc(ledgerDocOf(users.instructor, ORG_A, PASS_A, "entry-wrong-delta"), deductEntry({ delta })),
+        String(delta),
+      );
+    }
+  });
+
+  test("a deduction carries the price it was taught at", async () => {
+    for (const missing of ["category", "unitPrice", "instructorId"]) {
+      const entry = deductEntry();
+      delete entry[missing];
+      await assertFails(setDoc(ledgerDocOf(users.instructor, ORG_A, PASS_A, "entry-bare"), entry), missing);
+    }
+  });
+
+  test("nobody deducts from another organization's pass", async () => {
+    await assertFails(setDoc(
+      ledgerDocOf(users.outsider, ORG_B, PASS_B, "entry-crossing"),
+      deductEntry({ organizationId: ORG_B, passId: PASS_B }),
+    ));
+    // 같은 사람이 남의 조직 경로로 자기 조직 본문을 밀어 넣는 것도 막힌다.
+    await assertFails(setDoc(
+      ledgerDocOf(users.instructor, ORG_B, PASS_B, "entry-smuggled"),
+      deductEntry({ passId: PASS_B }),
+    ));
+  });
+
+  test("a deduction cannot be filed under someone else's name", async () => {
+    await assertFails(setDoc(
+      ledgerDocOf(users.instructor, ORG_A, PASS_A, "entry-forged"),
+      deductEntry({ createdBy: users.owner }),
+    ));
+  });
+
+  test("a lesson older than the backdating window is refused", async () => {
+    // 강사가 그날 밤에 몰아 누르는 것은 허용하고, 지난달 소급은 막는다.
+    await assertFails(setDoc(
+      ledgerDocOf(users.instructor, ORG_A, PASS_A, "entry-old"),
+      deductEntry({ occurredAt: Timestamp.fromDate(new Date(Date.now() - 8 * 24 * 60 * 60 * 1000)) }),
+    ));
+  });
+
+  test("whoever teaches may spend one session", async () => {
+    for (const role of ["owner", "manager", "instructor"]) {
+      await assertSucceeds(
+        updateDoc(passDocOf(users[role], ORG_A, PASS_A), { remainingCount: 19 }),
+        role,
+      );
+      await testEnv.withSecurityRulesDisabled(async (context) => {
+        await updateDoc(doc(context.firestore(), "organizations", ORG_A, "passes", PASS_A), { remainingCount: 20 });
+      });
+    }
+  });
+
+  test("the remaining count never travels back upwards", async () => {
+    /* 여기서 늘릴 수 있으면 누구든 회원이 사지 않은 수업을 스스로 줄 수 있고,
+       그것을 반증할 원장은 append-only 라 고칠 수 없다. */
+    for (const bad of [21, 20, 18, -1, "19"]) {
+      await assertFails(
+        updateDoc(passDocOf(users.instructor, ORG_A, PASS_A), { remainingCount: bad }),
+        String(bad),
+      );
+    }
+  });
+
+  test("an atomic decrement is seen by the rule as one step down", async () => {
+    // increment(-1) 은 잠금 없이 줄인다. 규칙이 계산된 값을 보는지 확인한다.
+    await assertSucceeds(updateDoc(passDocOf(users.instructor, ORG_A, PASS_A), { remainingCount: increment(-1) }));
+    await assertFails(updateDoc(passDocOf(users.instructor, ORG_A, PASS_A), { remainingCount: increment(-2) }));
+    await assertFails(updateDoc(passDocOf(users.instructor, ORG_A, PASS_A), { remainingCount: increment(1) }));
+  });
+
+  test("attendance touches the remaining count and nothing else", async () => {
+    await assertFails(updateDoc(passDocOf(users.instructor, ORG_A, PASS_A), {
+      remainingCount: 19, contractPrice: 1,
+    }));
+    await assertFails(updateDoc(passDocOf(users.instructor, ORG_A, PASS_A), {
+      remainingCount: 19, instructorId: users.staff,
+    }));
+  });
+
+  test("staff and outsiders do not spend sessions", async () => {
+    // 데스크 직원은 수업을 하지 않는다.
+    await assertFails(updateDoc(passDocOf(users.staff, ORG_A, PASS_A), { remainingCount: 19 }));
+    await assertFails(updateDoc(passDocOf(users.outsider, ORG_A, PASS_A), { remainingCount: 19 }));
+  });
+
+  test("the lesson a deduction points at can be created by whoever taught it", async () => {
+    await assertSucceeds(setDoc(
+      doc(dbFor(users.instructor), "organizations", ORG_A, COLLECTIONS.LESSONS, "lesson-attendance"),
+      {
+        organizationId: ORG_A, lessonId: "lesson-attendance", clientId: "client-member",
+        locationId: "location-a", instructorId: users.instructor,
+        startsAt: hoursAgo(2), status: "completed",
+        createdAt: serverTimestamp(), createdBy: users.instructor,
+      },
+    ));
+    await assertSucceeds(setDoc(
+      doc(dbFor(users.instructor), "organizations", ORG_A, COLLECTIONS.LESSONS, "lesson-attendance", COLLECTIONS.PARTICIPANTS, "client-member"),
+      {
+        organizationId: ORG_A, lessonId: "lesson-attendance",
+        clientId: "client-member", attendanceStatus: "attended",
+      },
+    ));
+  });
+
+  test("a pass is issued with the price it will pay per session", async () => {
+    // 차감이 읽을 값이다. 없으면 차감 시점에 표를 다시 보게 되고, 그 사이 바뀐
+    // 단가가 지난 회원권에 소급된다.
+    await assertFails(setDoc(
+      passDocOf(users.manager, ORG_A, "pass-no-price"),
+      dropField(passFixture(ORG_A, "pass-no-price"), "unitPrice"),
+    ));
+    await assertFails(setDoc(
+      passDocOf(users.manager, ORG_A, "pass-string-price"),
+      passFixture(ORG_A, "pass-string-price", { unitPrice: "25000" }),
+    ));
+    await assertSucceeds(setDoc(
+      passDocOf(users.manager, ORG_A, "pass-priced"),
+      passFixture(ORG_A, "pass-priced"),
+    ));
   });
 });

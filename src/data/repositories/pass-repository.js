@@ -21,7 +21,7 @@
  */
 
 import {
-  LEDGER_ENTRY_TYPE, PASS_STATUS, PAYMENT_METHOD,
+  ATTENDANCE_STATUS, LEDGER_ENTRY_TYPE, LESSON_STATUS, PASS_STATUS, PAYMENT_METHOD,
 } from "../schema/constants.js";
 import { paths } from "../schema/paths.js";
 import { resolveUnitPrice } from "../schema/pay-rates.js";
@@ -30,7 +30,7 @@ import { readCollection } from "./repository-read.js";
 /**
  * @typedef {object} PassStore
  * @property {(collectionPath: string) => Promise<Array<any>>} list
- * @property {(writes: Array<{ path: string, data: object, operation?: "set" | "update" }>) => Promise<void>} commit
+ * @property {(writes: Array<{ path: string, data: object, operation?: "set" | "update" | "decrement" }>) => Promise<void>} commit
  * @property {() => Promise<any>} serverTimestamp
  */
 
@@ -72,7 +72,15 @@ export function createFirestorePassStore() {
       const batch = writeBatch(firestore);
       for (const write of writes) {
         const reference = doc(firestore, write.path);
-        if (write.operation === "update") batch.update(reference, write.data);
+        if (write.operation === "decrement") {
+          /* 읽어서 빼지 않는다. 두 강사가 같은 순간에 눌러도 하나가 다른 하나를
+             덮어쓰지 않도록 서버가 더한다. */
+          const { increment } = await load();
+          const deltas = Object.fromEntries(
+            Object.entries(write.data).map(([field, by]) => [field, increment(Number(by))]),
+          );
+          batch.update(reference, deltas);
+        } else if (write.operation === "update") batch.update(reference, write.data);
         else batch.set(reference, write.data);
       }
       await batch.commit();
@@ -185,6 +193,10 @@ export async function issuePass(organizationId, input, options = {}) {
     paymentMethod,
     purchaseRound,
     remainingCount: totalCount,
+    /* 이 회원권이 회당 얼마를 주는가. 차감할 때 여기서 읽는다 -- 상품이 나중에
+       바뀌어도, 담당 강사의 풀방금액이 나중에 올라도, 이 회원권의 단가는 발급
+       시점에 확정된 값이다. */
+    unitPrice,
     instructorId,
     status: PASS_STATUS.ACTIVE,
     createdAt: stampedAt,
@@ -266,4 +278,132 @@ export async function transferPassInstructor(organizationId, passId, input, opti
     { path: paths.pass(organization, id), data: { instructorId: toInstructorId }, operation: "update" },
   ]);
   return { passId: id, entryId, entry };
+}
+
+/* ── 출석 체크(차감) ───────────────────────────────────────────────────────
+   차감 한 번이 세 문서를 건드린다.
+
+     lessons/{lessonId}                        이 차감이 가리키는 수업
+     lessons/{lessonId}/participants/{client}  누가 그 수업에 왔는가
+     passes/{passId}/ledger/{entryId}          급여의 근거
+     passes/{passId}.remainingCount            잔여 횟수
+
+   규칙이 deduct 에 lessonId 를 필수로 요구한다. 아직 일정 기능과 이어지지
+   않았지만, 그 요구를 규칙에서 푸는 대신 수업 문서를 함께 만든다.
+
+     - 원장은 append-only 다. lessonId 없이 쌓인 항목은 나중에 채울 수 없고,
+       "이 급여가 어느 수업에서 나왔나"를 영영 답할 수 없게 된다.
+     - 없는 수업을 가리키는 id 를 지어 넣는 것은 더 나쁘다. 참조가 깨진 채로
+       남고, 그 사실을 아무도 모른다.
+     - 수업 문서를 만드는 데 드는 비용은 같은 배치에 쓰기 두 번뿐이고, 나중에
+       일정과 이을 때 그 데이터가 이미 자리에 있다.
+
+   단가는 회원권에 박힌 값을 그대로 쓴다. 표도 강사의 풀방금액도 다시 보지
+   않는다 -- 발급 뒤에 그것들이 바뀌어도 이 회원권의 급여는 움직이지 않는다.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/** 규칙이 occurredAt 을 이 창 안으로 제한한다. 화면도 같은 범위만 고르게 한다. */
+export const DEDUCT_BACKDATE_LIMIT_DAYS = 7;
+
+/**
+ * 잔여 횟수. 정수가 아니면 0 으로 본다 -- 규칙이 remainingCount 를 int 로만
+ * 받으므로, 문자열로 저장된 값을 화면이 숫자처럼 보여 주면 누를 수는 있는데
+ * 서버가 거부하는 회원권이 된다.
+ *
+ * @param {any} pass
+ */
+export function remainingCountOf(pass) {
+  const count = pass?.remainingCount;
+  return typeof count === "number" && Number.isInteger(count) && count >= 0 ? count : 0;
+}
+
+/** 차감할 수 있는 회원권인가. 화면이 목록에서 거르는 데 쓴다. @param {any} pass */
+export function isDeductablePass(pass) {
+  return pass?.status === PASS_STATUS.ACTIVE && remainingCountOf(pass) > 0;
+}
+
+/**
+ * 한 회차를 차감한다. 위 네 가지를 한 배치로 쓴다.
+ *
+ * @param {string} organizationId
+ * @param {any} pass 회원권 문서 (id, clientId, locationId, category, unitPrice, remainingCount)
+ * @param {{ instructorId: string, createdBy: string, occurredAt: Date, lessonId?: string, entryId?: string }} input
+ * @param {{ store?: PassStore, newId?: () => string, now?: () => Date }} [options]
+ */
+export async function deductPass(organizationId, pass, input, options = {}) {
+  const {
+    store = createFirestorePassStore(),
+    newId = () => globalThis.crypto?.randomUUID?.() || `lesson-${Date.now()}`,
+    now = () => new Date(),
+  } = options;
+  const organization = requiredText(organizationId, "organizationId");
+  const passId = requiredText(pass?.id || pass?.passId, "passId");
+  const clientId = requiredText(pass?.clientId, "clientId");
+  const locationId = requiredText(pass?.locationId, "locationId");
+  const instructorId = requiredText(input?.instructorId, "instructorId");
+  const createdBy = requiredText(input?.createdBy, "createdBy");
+
+  // 잔여가 없는 회원권은 여기서 막는다. 원장은 고칠 수 없으므로 음수 잔여가
+  // 한 번 생기면 그 회원권의 기록은 영영 앞뒤가 안 맞는다.
+  if (!isDeductablePass(pass)) throw new Error("Missing remainingCount");
+
+  const category = requiredText(pass?.category, "category");
+  const unitPrice = pass?.unitPrice;
+  /* 발급 시점에 박힌 값이 없으면 지어내지 않는다. 표에서 다시 읽으면 그 사이
+     바뀐 단가가 지난 회원권에 소급되고, 0 을 넣으면 그 수업이 무보수가 된다. */
+  if (!Number.isInteger(unitPrice) || unitPrice < 0) throw new Error("Missing unitPrice");
+
+  const occurredAt = input?.occurredAt instanceof Date ? input.occurredAt : new Date(String(input?.occurredAt ?? ""));
+  if (!Number.isFinite(occurredAt.getTime())) throw new Error("Invalid occurredAt");
+  const today = now();
+  if (occurredAt.getTime() > today.getTime()) throw new Error("Invalid occurredAt");
+  const oldest = today.getTime() - DEDUCT_BACKDATE_LIMIT_DAYS * 24 * 60 * 60 * 1000;
+  // 규칙이 같은 창으로 막는다. 여기서 먼저 막는 것은 무엇이 문제인지 말해 주기 위해서다.
+  if (occurredAt.getTime() <= oldest) throw new Error("Invalid occurredAt");
+
+  const lessonId = String(input?.lessonId || newId());
+  const entryId = String(input?.entryId || `${lessonId}_deduct`);
+  const stampedAt = await store.serverTimestamp();
+
+  const lesson = {
+    organizationId: organization,
+    lessonId,
+    clientId,
+    locationId,
+    instructorId,
+    startsAt: occurredAt,
+    status: LESSON_STATUS.COMPLETED,
+    createdAt: stampedAt,
+    createdBy,
+  };
+  const participant = {
+    organizationId: organization,
+    lessonId,
+    clientId,
+    attendanceStatus: ATTENDANCE_STATUS.ATTENDED,
+  };
+  const entry = {
+    organizationId: organization,
+    passId,
+    locationId,
+    type: LEDGER_ENTRY_TYPE.DEDUCT,
+    delta: -1,
+    category,
+    unitPrice,
+    lessonId,
+    instructorId,
+    occurredAt,
+    createdAt: stampedAt,
+    createdBy,
+  };
+
+  await store.commit([
+    { path: paths.lesson(organization, lessonId), data: lesson },
+    { path: paths.lessonParticipant(organization, lessonId, clientId), data: participant },
+    { path: paths.passLedgerEntry(organization, passId, entryId), data: entry },
+    /* 잔여는 읽어서 빼지 않고 서버가 하나 줄인다. 두 강사가 같은 순간에 눌러도
+       하나가 다른 하나를 덮어쓰지 않는다. 규칙은 계산된 값을 보고 -1 인지 따진다. */
+    { path: paths.pass(organization, passId), data: { remainingCount: -1 }, operation: "decrement" },
+  ]);
+  return { passId, lessonId, entryId, entry, lesson };
 }

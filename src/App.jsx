@@ -89,10 +89,14 @@ import { connectRepositoryLog, toleratingReadFailure } from "./data/repositories
 import {
   createProduct, listProducts, setProductStatus,
 } from "./data/repositories/product-repository.js";
-import { CLIENT_STATUS, PRODUCT_STATUS, ROLES, SESSION_TYPE } from "./data/schema/constants.js";
+import { issuePass } from "./data/repositories/pass-repository.js";
 import {
-  CLIENT_STATUS_LABELS, PAY_CATEGORY_LABELS, PRODUCT_STATUS_LABELS, SESSION_TYPE_LABELS,
-  labelOf, payCategoriesFor,
+  UNIT_PRICE_SOURCE, unitPriceSourceFor,
+} from "./data/schema/pay-rates.js";
+import { CLIENT_STATUS, PAYMENT_METHOD, PRODUCT_STATUS, ROLES, SESSION_TYPE } from "./data/schema/constants.js";
+import {
+  CLIENT_STATUS_LABELS, PAYMENT_METHOD_LABELS, PAY_CATEGORY_LABELS, PRODUCT_STATUS_LABELS,
+  SESSION_TYPE_LABELS, labelOf, payCategoriesFor,
 } from "./data/schema/display-names.js";
 import { validatePostureMeasurement, validPostureMetrics } from "./features/posture/measurement-validity.js";
 import {
@@ -14030,6 +14034,353 @@ function SettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings,
     </div>
   );
 }
+/* 회원권 발급. 대표와 매니저가 본다.
+
+   발급은 회원권과 원장 항목을 한 배치로 쓰고, 원장은 append-only 다. 누른 뒤에
+   고칠 수 있는 것이 거의 없으므로 누르기 전에 요약을 보여준다.
+
+   단가 해석은 pay-rates.js 의 UNIT_PRICE_SOURCE 를 따른다.
+     table           묻지 않는다. 표가 정한다
+     full_room_rate  담당 강사의 풀방금액. 없으면 여기서 막는다
+     manual          금액 칸을 띄운다
+
+   풀방금액이 없는 강사로 재등록(정상)을 발급하려 하면 규칙에 닿기 전에 막는다.
+   규칙 거부는 permission-denied 한 줄로만 돌아와서, 무엇을 해야 하는지 화면이
+   말해 주지 못한다.
+
+   하지 않는 것: 잔금 분할, 횟수미정 발급, 계약서 이미지. */
+
+const manwonInput = (value) => String(value).replace(/[^\d.]/g, "");
+const manwonLabelOf = (manwon) => {
+  const number = Number(manwon);
+  return Number.isFinite(number) ? `${number}만원` : "-";
+};
+
+function IssueField({ label, hint, children }) {
+  return (
+    <Field label={label}>
+      {children}
+      {hint ? <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>{hint}</p> : null}
+    </Field>
+  );
+}
+
+function PassIssue({
+  organization, currentUserId, clientStore, productStore, instructorStore, locationStore, passStore,
+  onRetryOrganization, onToast, initialState = null,
+}) {
+  const [clients, setClients] = useState(initialState?.clients || []);
+  const [products, setProducts] = useState(initialState?.products || []);
+  const [instructors, setInstructors] = useState(initialState?.instructors || []);
+  const [locations, setLocations] = useState(initialState?.locations || []);
+  const [loading, setLoading] = useState(!initialState);
+  const [loadError, setLoadError] = useState(initialState?.loadError || "");
+  const [mode, setMode] = useState(initialState?.mode || "form");
+  const [search, setSearch] = useState(initialState?.search || "");
+  const [moreOpen, setMoreOpen] = useState(initialState?.moreOpen || false);
+  const [form, setForm] = useState({
+    clientId: "", productId: "", totalSessions: "", contractPriceManwon: "",
+    serviceSessions: "0", purchaseRound: "1", paymentMethod: PAYMENT_METHOD.CARD,
+    instructorId: "", unitPriceManwon: "",
+    ...(initialState?.form || {}),
+  });
+  const [formError, setFormError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const organizationId = organization?.organizationId || "";
+  const locked = organization?.status === "unknown";
+
+  const reload = useCallback(async () => {
+    if (!organizationId) return;
+    setLoading(true);
+    setLoadError("");
+    try {
+      /* 네 가지가 다 있어야 발급할 수 있다. 하나라도 못 읽으면 화면을 열어 두는
+         것이 더 나쁘다 -- 고를 수 없는 칸을 앞에 두고 사용자가 이유를 찾게 된다.
+         지점 이름만은 없어도 되므로 그것만 견딘다. */
+      const [foundClients, foundProducts, foundInstructors, locationResult] = await Promise.all([
+        listClients(organizationId, { store: clientStore }),
+        listProducts(organizationId, { store: productStore }),
+        listInstructors(organizationId, { store: instructorStore }),
+        toleratingReadFailure(listLocations(organizationId, { store: locationStore })),
+      ]);
+      setClients(foundClients);
+      setProducts(foundProducts);
+      setInstructors(foundInstructors);
+      setLocations(locationResult.items);
+    } catch (error) {
+      setLoadError(error?.code || "unknown");
+    } finally {
+      setLoading(false);
+    }
+  }, [organizationId, clientStore, productStore, instructorStore, locationStore]);
+
+  useEffect(() => { if (!locked) reload(); else setLoading(false); }, [locked, reload]);
+
+  const locationNames = useMemo(
+    () => new Map(locations.map((location) => [location.id, location.name || ""])),
+    [locations],
+  );
+  const matchedClients = useMemo(
+    () => clients.filter((client) => clientMatchesSearch(client, search)).slice(0, 8),
+    [clients, search],
+  );
+  const client = clients.find((item) => item.id === form.clientId) || null;
+  const product = products.find((item) => item.id === form.productId) || null;
+  const instructor = instructors.find((item) => item.userId === form.instructorId) || null;
+  const priceSource = unitPriceSourceFor(product?.payCategory);
+
+  /* 풀방금액이 없는 강사로는 재등급(정상)을 발급할 수 없다. 규칙도 막지만
+     permission-denied 한 줄로는 무엇을 해야 하는지 알 수 없다. */
+  const rateBlock = priceSource === UNIT_PRICE_SOURCE.FULL_ROOM_RATE
+    && instructor && !hasUsableFullRoomRate(instructor)
+    ? `${instructor.displayName || instructor.userId}님의 풀방금액이 설정되지 않았습니다. 더보기 → 강사 단가에서 먼저 정해 주세요.`
+    : "";
+
+  const chooseProduct = (picked) => setForm((current) => ({
+    ...current,
+    productId: picked.id,
+    // 기준값으로 채운다. 아래 3·4에서 조정할 수 있고, 조정하면 기준값을 옆에 남긴다.
+    totalSessions: String(picked.defaultSessions ?? ""),
+    contractPriceManwon: String((Number(picked.defaultPrice) || 0) / WON_PER_MANWON),
+    unitPriceManwon: "",
+  }));
+
+  const sessionsChanged = product && String(product.defaultSessions ?? "") !== form.totalSessions;
+  const priceChanged = product
+    && String((Number(product.defaultPrice) || 0) / WON_PER_MANWON) !== form.contractPriceManwon;
+
+  const review = (event) => {
+    event.preventDefault();
+    setFormError("");
+    if (!client) { setFormError("회원을 골라 주세요."); return; }
+    if (!product) { setFormError("상품을 골라 주세요."); return; }
+    if (!form.instructorId) { setFormError("담당 강사를 골라 주세요."); return; }
+    if (rateBlock) { setFormError(rateBlock); return; }
+    if (!(Number(form.totalSessions) >= 1)) { setFormError("세션 수를 1 이상으로 입력해 주세요."); return; }
+    if (form.contractPriceManwon === "") { setFormError("계약 금액을 입력해 주세요."); return; }
+    if (priceSource === UNIT_PRICE_SOURCE.MANUAL && form.unitPriceManwon === "") {
+      setFormError("급여 단가를 입력해 주세요."); return;
+    }
+    setMode("confirm");
+  };
+
+  const issue = async () => {
+    setSaving(true);
+    setFormError("");
+    try {
+      await issuePass(organizationId, {
+        clientId: client.id,
+        locationId: client.locationId,
+        productId: product.id,
+        payCategory: product.payCategory,
+        totalSessions: Number(form.totalSessions),
+        serviceSessions: Number(form.serviceSessions || 0),
+        contractPrice: manwonToWon(Number(form.contractPriceManwon)),
+        purchaseRound: Number(form.purchaseRound || 1),
+        paymentMethod: form.paymentMethod,
+        instructorId: form.instructorId,
+        // 표에서 오는 카테고리는 아래 둘을 보지 않는다 -- pay-rates.js 가 가른다.
+        unitPrice: form.unitPriceManwon === "" ? undefined : manwonToWon(Number(form.unitPriceManwon)),
+        fullRoomRate: fullRoomRateOf(instructor) ?? undefined,
+        createdBy: currentUserId,
+      }, { store: passStore });
+      onToast?.({ ok: true, msg: `${client.name}님에게 회원권을 발급했습니다.` });
+      setMode("form");
+      setForm({
+        clientId: "", productId: "", totalSessions: "", contractPriceManwon: "",
+        serviceSessions: "0", purchaseRound: "1", paymentMethod: PAYMENT_METHOD.CARD,
+        instructorId: "", unitPriceManwon: "",
+      });
+      setSearch("");
+      setMoreOpen(false);
+    } catch (error) {
+      setMode("form");
+      setFormError(`발급하지 못했어요 (코드 ${error?.code || error?.message || "unknown"})`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (locked) return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>소속을 확인하지 못했습니다</h2>
+      <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        네트워크 문제로 소속 정보를 읽지 못했습니다. 잘못된 센터에 회원권이 쌓이지 않도록 이 화면을 잠급니다.
+      </p>
+      <button type="button" onClick={() => onRetryOrganization?.()} className="mt-3 h-11 w-full font-bold"
+        style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>다시 시도</button>
+    </section>
+  );
+
+  if (mode === "confirm" && client && product) {
+    const total = Number(form.totalSessions) + Number(form.serviceSessions || 0);
+    return (
+      <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+        <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>이대로 발급할까요?</h2>
+        <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+          발급한 뒤에는 대표만 취소할 수 있습니다.
+        </p>
+        <div className="mt-3 space-y-1" style={{ padding: 12, borderRadius: 10, backgroundColor: CANVAS }}>
+          <p style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>
+            {client.name}님 / {locationNames.get(client.locationId) || client.locationId || "지점 없음"}
+          </p>
+          <p style={{ fontSize: TYPE.caption, color: INK2 }}>
+            {labelOf(SESSION_TYPE_LABELS, product.sessionType)}
+            {" · "}{product.name}
+            {" · "}{labelOf(PAY_CATEGORY_LABELS, product.payCategory)}
+          </p>
+          <p className="tabular-nums" style={{ fontSize: TYPE.caption, color: INK2 }}>
+            {form.totalSessions}회
+            {Number(form.serviceSessions || 0) > 0 ? ` + 서비스 ${form.serviceSessions}회` : ""}
+            {" = 총 "}{total}회
+          </p>
+          <p className="tabular-nums" style={{ fontSize: TYPE.caption, color: INK2 }}>
+            {manwonLabelOf(form.contractPriceManwon)}
+            {" · "}{labelOf(PAYMENT_METHOD_LABELS, form.paymentMethod)}
+            {" · "}{form.purchaseRound}차
+          </p>
+          <p style={{ fontSize: TYPE.caption, color: INK2 }}>
+            담당 {instructor?.displayName || form.instructorId}
+          </p>
+        </div>
+        {formError ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: BAD }}>{formError}</p> : null}
+        <div className="mt-3 flex gap-2">
+          <button type="button" onClick={() => setMode("form")} className="h-11 flex-1 font-bold"
+            style={{ borderRadius: 10, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>고치기</button>
+          <button type="button" disabled={saving} onClick={issue} className="h-11 flex-1 font-bold"
+            style={{ borderRadius: 10, backgroundColor: BRAND, color: "#fff", fontSize: TYPE.caption, opacity: saving ? 0.6 : 1 }}>
+            {saving ? "발급 중" : "발급"}
+          </button>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>회원권 발급</h2>
+      {loading ? <p className="mt-3" style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : null}
+      {!loading && loadError
+        ? <p className="mt-3" style={{ fontSize: TYPE.caption, color: BAD }}>발급에 필요한 정보를 불러오지 못했습니다 (코드 {loadError}).</p>
+        : null}
+      {!loading && !loadError ? (
+        <form onSubmit={review} className="mt-3 space-y-3">
+          <IssueField label="회원" hint={client ? `${client.name}님 · ${locationNames.get(client.locationId) || client.locationId || "지점 없음"}` : ""}>
+            <input value={search} className={inputCls} placeholder="이름 또는 연락처"
+              onChange={(e) => { setSearch(e.target.value); setForm((c) => ({ ...c, clientId: "" })); }} />
+            {search && !form.clientId ? (
+              <div className="mt-2 flex flex-wrap gap-2">
+                {matchedClients.length === 0
+                  ? <p style={{ fontSize: TYPE.caption, color: SUB }}>찾는 회원이 없습니다.</p>
+                  : matchedClients.map((item) => (
+                    <button key={item.id} type="button" className="h-9 px-3 font-bold"
+                      onClick={() => { setForm((c) => ({ ...c, clientId: item.id })); setSearch(item.name); }}
+                      style={{ borderRadius: 999, fontSize: TYPE.caption, backgroundColor: CANVAS, color: SUB }}>
+                      {item.name}
+                    </button>
+                  ))}
+              </div>
+            ) : null}
+          </IssueField>
+
+          <IssueField label="상품">
+            {products.length === 0
+              ? <p style={{ fontSize: TYPE.caption, color: SUB }}>운영중인 상품이 없습니다. 회원권 상품에서 먼저 추가해 주세요.</p>
+              : (
+                <div className="flex flex-wrap gap-2">
+                  {products.map((item) => (
+                    <button key={item.id} type="button" onClick={() => chooseProduct(item)}
+                      className="h-9 px-3 font-bold" style={{
+                        borderRadius: 999, fontSize: TYPE.caption,
+                        backgroundColor: form.productId === item.id ? TINT : CANVAS,
+                        color: form.productId === item.id ? BRAND_D : SUB,
+                      }}>{item.name}</button>
+                  ))}
+                </div>
+              )}
+          </IssueField>
+
+          <IssueField label="세션 수" hint={sessionsChanged ? `기준 ${product.defaultSessions}회` : ""}>
+            <input inputMode="numeric" value={form.totalSessions} className={inputCls} placeholder="20"
+              onChange={(e) => setForm({ ...form, totalSessions: e.target.value.replace(/\D/g, "") })} />
+          </IssueField>
+
+          <IssueField label="계약 금액 (만원)"
+            hint={priceChanged ? `기준 ${(Number(product.defaultPrice) || 0) / WON_PER_MANWON}만` : ""}>
+            <input inputMode="decimal" value={form.contractPriceManwon} className={inputCls} placeholder="130"
+              onChange={(e) => setForm({ ...form, contractPriceManwon: manwonInput(e.target.value) })} />
+          </IssueField>
+
+          {priceSource === UNIT_PRICE_SOURCE.MANUAL && product ? (
+            <IssueField label="급여 단가 (만원)" hint="이 상품은 표에 단가가 없어 직접 넣습니다. 회당 금액입니다.">
+              <input inputMode="decimal" value={form.unitPriceManwon} className={inputCls} placeholder="2.5"
+                onChange={(e) => setForm({ ...form, unitPriceManwon: manwonInput(e.target.value) })} />
+            </IssueField>
+          ) : null}
+
+          <IssueField label="담당 강사">
+            {instructors.length === 0
+              ? <p style={{ fontSize: TYPE.caption, color: SUB }}>등록된 강사가 없습니다.</p>
+              : (
+                <div className="flex flex-wrap gap-2">
+                  {instructors.map((item) => (
+                    <button key={item.userId} type="button" onClick={() => setForm({ ...form, instructorId: item.userId })}
+                      className="h-9 px-3 font-bold" style={{
+                        borderRadius: 999, fontSize: TYPE.caption,
+                        backgroundColor: form.instructorId === item.userId ? TINT : CANVAS,
+                        color: form.instructorId === item.userId ? BRAND_D : SUB,
+                      }}>{item.displayName || item.userId}</button>
+                  ))}
+                </div>
+              )}
+          </IssueField>
+
+          {rateBlock ? (
+            <div style={{ padding: 12, borderRadius: 10, backgroundColor: WARN_S, border: `1px solid ${WARN}` }}>
+              <p style={{ fontSize: TYPE.caption, fontWeight: 700, lineHeight: 1.5, color: WARN }}>{rateBlock}</p>
+            </div>
+          ) : null}
+
+          <button type="button" onClick={() => setMoreOpen((open) => !open)} className="w-full text-left"
+            style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>
+            {moreOpen ? "· 서비스 · 차수 · 결제 수단 접기" : "· 서비스 · 차수 · 결제 수단"}
+          </button>
+          {moreOpen ? (
+            <div className="space-y-3">
+              <IssueField label="서비스 세션">
+                <input inputMode="numeric" value={form.serviceSessions} className={inputCls} placeholder="0"
+                  onChange={(e) => setForm({ ...form, serviceSessions: e.target.value.replace(/\D/g, "") })} />
+              </IssueField>
+              <IssueField label="차수">
+                <input inputMode="numeric" value={form.purchaseRound} className={inputCls} placeholder="1"
+                  onChange={(e) => setForm({ ...form, purchaseRound: e.target.value.replace(/\D/g, "") })} />
+              </IssueField>
+              <IssueField label="결제 수단">
+                <div className="flex flex-wrap gap-2">
+                  {Object.values(PAYMENT_METHOD).map((method) => (
+                    <button key={method} type="button" onClick={() => setForm({ ...form, paymentMethod: method })}
+                      className="h-9 px-3 font-bold" style={{
+                        borderRadius: 999, fontSize: TYPE.caption,
+                        backgroundColor: form.paymentMethod === method ? TINT : CANVAS,
+                        color: form.paymentMethod === method ? BRAND_D : SUB,
+                      }}>{labelOf(PAYMENT_METHOD_LABELS, method)}</button>
+                  ))}
+                </div>
+              </IssueField>
+            </div>
+          ) : null}
+
+          {formError ? <p style={{ fontSize: TYPE.caption, color: BAD }}>{formError}</p> : null}
+          <button type="submit" className="h-11 w-full font-bold"
+            style={{ borderRadius: 10, backgroundColor: BRAND, color: "#fff", fontSize: TYPE.caption }}>
+            확인
+          </button>
+        </form>
+      ) : null}
+    </section>
+  );
+}
+
 /* 강사 단가. 대표만 본다.
 
    여기서 정하는 풀방금액은 1:1 재등록(정상) 한 카테고리의 단가다. 나머지 일곱은
@@ -14631,7 +14982,7 @@ function ProductCatalog({ organization, currentUserId, store, onRetryOrganizatio
   );
 }
 
-function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, productStore, clientStore, locationStore, instructorStore, instructorRateStore, onRetryOrganization }) {
+function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, onRetryOrganization }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const organization = useContext(OrganizationContext);
   /* 회원권 상품은 센터를 운영하는 대표만 본다. 개인 모드(legacy)에는 센터가
@@ -14811,6 +15162,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
     products: "회원권 상품",
     clients: "회원 관리",
     "instructor-rates": "강사 단가",
+    "pass-issue": "회원권 발급",
   };
   const menuGroups = [
     { label: "업무", items: [
@@ -14821,6 +15173,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
     { label: "운영 · 설정", items: [
       { key: "assessment", title: "변화 기록 설정", description: "기본 방식 · AI 분석 · 직접 포인트/그리기", Icon: Activity },
       { key: "center", title: "센터 정보", description: "센터명 · 담당자 · 그룹 단가", Icon: SettingsIcon },
+      ...(showClients ? [{ key: "pass-issue", title: "회원권 발급", description: "회원에게 회원권 발급", Icon: Ticket }] : []),
       ...(showClients ? [{ key: "clients", title: "회원 관리", description: "회원 등록 · 검색", Icon: UserPlus }] : []),
       ...(showInstructorRates ? [{ key: "instructor-rates", title: "강사 단가", description: "강사별 풀방금액", Icon: Users }] : []),
       ...(showProducts ? [{ key: "products", title: "회원권 상품", description: "이벤트 상품 추가 · 종료", Icon: Ticket }] : []),
@@ -15040,6 +15393,12 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
           </div>
         )}
         {view === "backup" && <div className="space-y-3"><CloudBackupCard status={backupStatus} onEnablePhotos={onEnablePhotoBackup} onRetry={onRetryBackup} /><HandoffCard db={db} photos={photos} account={account} onImport={onImport} onToast={onToast} /></div>}
+        {view === "pass-issue" && showClients && (
+          <PassIssue organization={organization} currentUserId={account?.id || ""}
+            clientStore={clientStore} productStore={productStore} instructorStore={instructorStore}
+            locationStore={locationStore} passStore={passStore}
+            onRetryOrganization={onRetryOrganization} onToast={onToast} />
+        )}
         {view === "instructor-rates" && showInstructorRates && (
           <InstructorRates organization={organization} currentUserId={account?.id || ""}
             instructorStore={instructorStore} rateStore={instructorRateStore}
@@ -15240,6 +15599,11 @@ export function createAppScreenSmokeCases() {
   );
   const provider = (child) => providerWith(smokeOwner, child);
   /* 상품 목록은 Firestore 를 건드리지 않는다. 화면이 그리는 것만 본다. */
+  const smokeProducts = [
+    { id: "smoke-product-active", organizationId: "smoke-center", name: "1:1 20회 가을 이벤트", sessionType: "pt_1_1", payCategory: "pt_1_1_repurchase_event", defaultSessions: 20, defaultPrice: 1300000, status: "active" },
+    { id: "smoke-product-normal", organizationId: "smoke-center", name: "1:1 20회 재등록", sessionType: "pt_1_1", payCategory: "pt_1_1_repurchase_normal", defaultSessions: 20, defaultPrice: 1300000, status: "active" },
+    { id: "smoke-product-etc", organizationId: "smoke-center", name: "체험 1회", sessionType: "pt_1_1", payCategory: "etc", defaultSessions: 1, defaultPrice: 55000, status: "active" },
+  ];
   const productStore = {
     list: async () => [
       { id: "smoke-product-active", organizationId: "smoke-center", name: "1:1 20회 가을 이벤트", sessionType: "pt_1_1", payCategory: "pt_1_1_new", defaultSessions: 20, defaultPrice: 1200000, status: "active" },
@@ -15264,12 +15628,22 @@ export function createAppScreenSmokeCases() {
   ];
   const instructorStore = { listByRole: async () => smokeInstructors };
   const instructorRateStore = { commit: async () => {}, serverTimestamp: async () => "SERVER_TIME" };
+  const passStore = { list: async () => [], commit: async () => {}, serverTimestamp: async () => "SERVER_TIME" };
+  const smokeIssueBase = {
+    clients: smokeClients, products: smokeProducts, instructors: smokeInstructors, locations: smokeLocations,
+  };
+  const passIssue = (organization, initialState) => providerWith(organization, (
+    <PassIssue organization={readyOrganizationContext(organization)} currentUserId="smoke-account"
+      clientStore={clientStore} productStore={productStore} instructorStore={instructorStore}
+      locationStore={locationStore} passStore={passStore} initialState={initialState}
+      onRetryOrganization={noop} onToast={noop} />
+  ));
   const instructorRates = (organization, initialState) => providerWith(organization, (
     <InstructorRates organization={readyOrganizationContext(organization)} currentUserId="smoke-account"
       instructorStore={instructorStore} rateStore={instructorRateStore} initialState={initialState}
       onRetryOrganization={noop} onToast={noop} />
   ));
-  const settingsTab = (organization, extra = {}) => providerWith(organization, <ReferenceSettingsTab db={db} photos={photos} account={{ id: "smoke-account", role: "owner" }} savedAt={null} demoMode={false} onChangeSettings={noop} onChangePhoto={noop} onLogout={noop} onDeleteAccount={noop} onToast={noop} themePref="light" onChangeTheme={noop} onImport={noop} onOpenSchedule={noop} onOpenRecords={noop} onOpenOnboarding={noop} backupStatus={{}} onEnablePhotoBackup={noop} onRetryBackup={noop} productStore={productStore} clientStore={clientStore} locationStore={locationStore} instructorStore={instructorStore} instructorRateStore={instructorRateStore} onRetryOrganization={noop} {...extra} />);
+  const settingsTab = (organization, extra = {}) => providerWith(organization, <ReferenceSettingsTab db={db} photos={photos} account={{ id: "smoke-account", role: "owner" }} savedAt={null} demoMode={false} onChangeSettings={noop} onChangePhoto={noop} onLogout={noop} onDeleteAccount={noop} onToast={noop} themePref="light" onChangeTheme={noop} onImport={noop} onOpenSchedule={noop} onOpenRecords={noop} onOpenOnboarding={noop} backupStatus={{}} onEnablePhotoBackup={noop} onRetryBackup={noop} productStore={productStore} clientStore={clientStore} locationStore={locationStore} instructorStore={instructorStore} instructorRateStore={instructorRateStore} passStore={passStore} onRetryOrganization={noop} {...extra} />);
   const clientDirectory = (organization, initialState) => providerWith(organization, (
     <ClientDirectory organization={readyOrganizationContext(organization)} currentUserId="smoke-account"
       clientStore={clientStore} locationStore={locationStore} initialState={initialState}
@@ -15288,6 +15662,24 @@ export function createAppScreenSmokeCases() {
     { name: "더보기 탭 · 강사", element: settingsTab({ ...smokeOwner, role: "instructor" }) },
     { name: "더보기 탭 · 개인 모드", element: settingsTab({ organizationId: "legacy_smoke", role: "owner", status: "active", isLegacy: true }) },
     { name: "더보기 탭 · 소속 확인 실패", element: settingsTab({ organizationId: "", role: "", status: "unknown", isLegacy: false }) },
+    { name: "회원권 발급", element: passIssue(smokeOwner, { ...smokeIssueBase }) },
+    { name: "회원권 발급 · 기준값과 다름", element: passIssue(smokeOwner, {
+      ...smokeIssueBase,
+      form: { clientId: "smoke-client-a", productId: "smoke-product-active", totalSessions: "22", contractPriceManwon: "140", serviceSessions: "0", purchaseRound: "1", paymentMethod: "card", instructorId: "u1", unitPriceManwon: "" },
+    }) },
+    { name: "회원권 발급 · 직접 단가", element: passIssue(smokeOwner, {
+      ...smokeIssueBase,
+      form: { clientId: "smoke-client-a", productId: "smoke-product-etc", totalSessions: "1", contractPriceManwon: "5.5", serviceSessions: "0", purchaseRound: "1", paymentMethod: "card", instructorId: "u1", unitPriceManwon: "" },
+    }) },
+    { name: "회원권 발급 · 풀방금액 없음", element: passIssue(smokeOwner, {
+      ...smokeIssueBase,
+      form: { clientId: "smoke-client-a", productId: "smoke-product-normal", totalSessions: "20", contractPriceManwon: "130", serviceSessions: "0", purchaseRound: "1", paymentMethod: "card", instructorId: "u2", unitPriceManwon: "" },
+    }) },
+    { name: "회원권 발급 · 확인", element: passIssue(smokeOwner, {
+      ...smokeIssueBase, mode: "confirm",
+      form: { clientId: "smoke-client-a", productId: "smoke-product-active", totalSessions: "20", contractPriceManwon: "130", serviceSessions: "2", purchaseRound: "2", paymentMethod: "card", instructorId: "u1", unitPriceManwon: "" },
+    }) },
+    { name: "회원권 발급 · 조회 실패", element: passIssue(smokeOwner, { clients: [], products: [], instructors: [], locations: [], loadError: "permission-denied" }) },
     { name: "강사 단가", element: instructorRates(smokeOwner, { instructors: smokeInstructors }) },
     { name: "강사 단가 · 단가 입력", element: instructorRates(smokeOwner, {
       instructors: smokeInstructors, editing: smokeInstructors[0], draft: "4.5",

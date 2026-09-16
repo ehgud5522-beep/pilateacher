@@ -34,6 +34,12 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 강사",
     "더보기 탭 · 개인 모드",
     "더보기 탭 · 소속 확인 실패",
+    "회원권 발급",
+    "회원권 발급 · 기준값과 다름",
+    "회원권 발급 · 직접 단가",
+    "회원권 발급 · 풀방금액 없음",
+    "회원권 발급 · 확인",
+    "회원권 발급 · 조회 실패",
     "강사 단가",
     "강사 단가 · 단가 입력",
     "강사 단가 · 조회 실패",
@@ -382,4 +388,94 @@ test("only the owner reaches the instructor rate screen", async (t) => {
   assert.doesNotMatch(markupOf("더보기 탭 · 강사"), /강사 단가/);
   assert.doesNotMatch(markupOf("더보기 탭 · 개인 모드"), /강사 단가/);
   assert.doesNotMatch(markupOf("더보기 탭 · 소속 확인 실패"), /강사 단가/);
+});
+
+/* 회원권 발급. 누른 뒤에 고칠 수 있는 것이 거의 없는 화면이라, 무엇이 저장될지가
+   누르기 전에 보여야 한다. 단가 해석은 pay-rates 의 UNIT_PRICE_SOURCE 를 따른다. */
+const issueScreens = async (t) => {
+  const vite = await createServer({
+    root: projectRoot,
+    configFile: false,
+    plugins: [react()],
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] },
+    server: { middlewareMode: true },
+    ssr: { noExternal: ["@capgo/camera-preview"] },
+    logLevel: "silent",
+  });
+  t.after(() => vite.close());
+  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  return (name) => renderToStaticMarkup(byName.get(name));
+};
+
+test("the issue form asks only what the price source needs", async (t) => {
+  const markupOf = await issueScreens(t);
+
+  /* 표에서 단가가 오는 상품은 급여 단가를 묻지 않는다. 물으면 사람이 표와
+     다른 값을 넣을 수 있고, 그것이 그대로 원장에 박힌다. */
+  const fromTable = markupOf("회원권 발급 · 기준값과 다름");
+  assert.doesNotMatch(fromTable, /급여 단가/);
+
+  // 표 밖의 상품만 금액 칸을 띄운다.
+  const manual = markupOf("회원권 발급 · 직접 단가");
+  assert.match(manual, /급여 단가 \(만원\)/);
+  assert.match(manual, /표에 단가가 없어 직접 넣습니다/);
+});
+
+test("changing a default leaves the default in sight", async (t) => {
+  const markupOf = await issueScreens(t);
+  const changed = markupOf("회원권 발급 · 기준값과 다름");
+  // 20회 130만 상품을 22회 140만으로 고친 화면.
+  assert.match(changed, /기준 20회/);
+  assert.match(changed, /기준 130만/);
+
+  // 기준값 그대로면 군더더기를 붙이지 않는다.
+  const untouched = markupOf("회원권 발급 · 확인");
+  assert.doesNotMatch(untouched, /기준 20회/);
+});
+
+test("a missing full-room rate is refused on the screen, before the rules", async (t) => {
+  const markupOf = await issueScreens(t);
+  const blocked = markupOf("회원권 발급 · 풀방금액 없음");
+  /* 규칙도 막지만 permission-denied 한 줄로는 무엇을 해야 하는지 알 수 없다.
+     화면이 누구의 무엇이 없는지, 어디서 고치는지 말한다. */
+  assert.match(blocked, /박서연님의 풀방금액이 설정되지 않았습니다/);
+  assert.match(blocked, /더보기 → 강사 단가/);
+
+  // 표에서 오는 상품은 같은 강사여도 막히지 않는다.
+  assert.doesNotMatch(markupOf("회원권 발급 · 기준값과 다름"), /풀방금액이 설정되지 않았습니다/);
+});
+
+test("the confirmation says exactly what will be written", async (t) => {
+  const markupOf = await issueScreens(t);
+  const confirm = markupOf("회원권 발급 · 확인");
+  assert.match(confirm, /이대로 발급할까요\?/);
+  assert.match(confirm, /발급한 뒤에는 대표만 취소할 수 있습니다/);
+
+  assert.match(confirm, /김하나님 \/ 반송점/);
+  assert.match(confirm, /1:1 · 1:1 20회 가을 이벤트 · 1:1 재등록\(이벤트\)/);
+  // 서비스 회차도 차감되는 수업이라 총 회차에 들어간다.
+  assert.match(confirm, /20회 \+ 서비스 2회 = 총 22회/);
+  assert.match(confirm, /130만원 · 카드 · 2차/);
+  assert.match(confirm, /담당 정예진/);
+});
+
+test("the issue screen is reachable for owners and managers only", async (t) => {
+  const markupOf = await issueScreens(t);
+  assert.match(markupOf("더보기 탭"), /회원권 발급/);
+  assert.match(markupOf("더보기 탭 · 매니저"), /회원권 발급/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 강사"), /회원권 발급/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 개인 모드"), /회원권 발급/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 소속 확인 실패"), /회원권 발급/);
+});
+
+test("a failed read closes the form instead of showing empty pickers", async (t) => {
+  const markupOf = await issueScreens(t);
+  const failed = markupOf("회원권 발급 · 조회 실패");
+  /* 고를 수 없는 칸을 앞에 두면 사용자가 이유를 찾게 된다. 못 읽었다고 말하고
+     추적 가능한 코드를 남긴다. */
+  assert.match(failed, /발급에 필요한 정보를 불러오지 못했습니다/);
+  assert.match(failed, /permission-denied/);
+  assert.doesNotMatch(failed, /담당 강사/);
 });

@@ -89,7 +89,10 @@ import { connectRepositoryLog, toleratingReadFailure } from "./data/repositories
 import {
   createProduct, listProducts, setProductStatus,
 } from "./data/repositories/product-repository.js";
-import { issuePass } from "./data/repositories/pass-repository.js";
+import {
+  DEDUCT_BACKDATE_LIMIT_DAYS, deductPass, isDeductablePass, issuePass, listPasses,
+  remainingCountOf,
+} from "./data/repositories/pass-repository.js";
 import {
   UNIT_PRICE_SOURCE, unitPriceSourceFor,
 } from "./data/schema/pay-rates.js";
@@ -2757,7 +2760,7 @@ function SchedItem({ s, members, del, setDel, setEditing, onStatus, onNoshowFee,
   );
 }
 
-function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset, quickAddRequest, onConsumeQuickAdd, openLessonId, onConsumeOpenLesson, onOpenMember, onAddMember }) {
+function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset, quickAddRequest, onConsumeQuickAdd, openLessonId, onConsumeOpenLesson, onOpenMember, onAddMember, onOpenAttendance }) {
   const initialDisplay = useMemo(() => {
     try { return JSON.parse(localStorage.getItem(SCHEDULE_VIEW_KEY) || "null") || {}; }
     catch (e) { return {}; }
@@ -2981,6 +2984,12 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
           className="flex h-10 w-10 shrink-0 items-center justify-center" style={{ color: SUB }}>
           <ClipboardList size={18} />
         </button>
+        {onOpenAttendance ? (
+          <button type="button" aria-label="출석 체크" onClick={onOpenAttendance}
+            className="flex h-10 w-10 shrink-0 items-center justify-center" style={{ color: SUB }}>
+            <Check size={18} />
+          </button>
+        ) : null}
         <button onClick={() => setDisplaySettings(true)} aria-label="일정 표시 설정"
           className="flex h-10 w-10 shrink-0 items-center justify-center" style={{ color: SUB }}>
           <SlidersHorizontal size={18} />
@@ -4705,7 +4714,11 @@ function MemberList({ members, selectedId, onSelect, onAdd, onOpenFav, favCount,
     </div>
   );
 }
-function ReferenceMemberList({ members, schedule, settings, onSelect, onAdd, onDeleteSamples, registerRequest = 0, onConsumeRegisterRequest }) {
+/* canRegister 는 강사에게 등록 버튼을 감추기 위한 것이다. 소속 센터에서
+   회원을 등록하는 것은 FC매니저와 대표의 일이고, 강사가 같은 사람을 다시
+   등록하면 같은 회원이 둘이 되어 수업 기록이 갈라진다. 기본값을 true 로
+   두는 이유는 개인 강사(legacy)에게는 이 제한이 없기 때문이다. */
+function ReferenceMemberList({ members, schedule, settings, onSelect, onAdd, onDeleteSamples, registerRequest = 0, onConsumeRegisterRequest, canRegister = true }) {
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState("all");
   const [sort, setSort] = useState("name");
@@ -4719,6 +4732,7 @@ function ReferenceMemberList({ members, schedule, settings, onSelect, onAdd, onD
   const actualMembers = realMembers.filter((member) => member?.isSample !== true);
   useEffect(() => {
     if (!registerRequest) return;
+    if (!canRegister) return;
     setRegisterOpen(true);
     onConsumeRegisterRequest?.();
   }, [onConsumeRegisterRequest, registerRequest]);
@@ -4756,8 +4770,8 @@ function ReferenceMemberList({ members, schedule, settings, onSelect, onAdd, onD
     <div className="flex h-full min-h-0 flex-col" style={{ backgroundColor: PAGE }}>
       <header className="flex shrink-0 items-center" style={{ height: 52, padding: "0 14px", backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
         <div className="min-w-0 flex-1"><h1 style={{ fontSize: TYPE.title, fontWeight: 600, color: INK }}>회원</h1><p style={{ fontSize: TYPE.caption, color: SUB }}>전체 {realMembers.length}명</p></div>
-        <button type="button" onClick={() => setRegisterOpen(true)} className="flex items-center gap-1 text-white"
-          style={{ height: 36, padding: "0 12px", borderRadius: 8, backgroundColor: BRAND, fontSize: TYPE.caption, fontWeight: 600 }}><Plus size={15} />추가</button>
+        {canRegister ? <button type="button" onClick={() => setRegisterOpen(true)} className="flex items-center gap-1 text-white"
+          style={{ height: 36, padding: "0 12px", borderRadius: 8, backgroundColor: BRAND, fontSize: TYPE.caption, fontWeight: 600 }}><Plus size={15} />추가</button> : null}
       </header>
       <div className="shrink-0" style={{ padding: "10px 12px 8px", backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
         <div className="relative">
@@ -4781,7 +4795,7 @@ function ReferenceMemberList({ members, schedule, settings, onSelect, onAdd, onD
       </div>
       <div className="pt-scroll min-h-0 flex-1 overflow-y-auto" style={{ padding: "10px 12px 16px" }}>
         {sampleMembers.length > 0 && actualMembers.length > 0 && <div className="mb-2 flex min-w-0 items-center gap-2 rounded-xl px-3 py-2" style={{ backgroundColor: TINT, border: `1px solid ${RING}` }}><span className="min-w-0 flex-1 text-xs font-bold" style={{ color: INK2 }}>예시 회원을 지울까요?</span><button type="button" onClick={onDeleteSamples} className="h-8 shrink-0 px-2 text-xs font-extrabold" style={{ color: BRAND_D }}>지우기</button></div>}
-        {!realMembers.length && <div className="px-4 py-12 text-center"><Users size={26} className="mx-auto" style={{ color: FAINT }} /><p className="mt-3 text-sm font-extrabold" style={{ color: INK }}>아직 등록한 회원이 없습니다</p><p className="mt-2 text-xs leading-relaxed" style={{ color: SUB }}>회원을 등록하면 수업 기록 · 체형 변화 · 재등록 시점을<br />한 사람씩 모아서 볼 수 있습니다</p><button type="button" onClick={() => setRegisterOpen(true)} className="mt-5 h-11 rounded-lg px-5 text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>회원 등록</button></div>}
+        {!realMembers.length && <div className="px-4 py-12 text-center"><Users size={26} className="mx-auto" style={{ color: FAINT }} /><p className="mt-3 text-sm font-extrabold" style={{ color: INK }}>아직 등록한 회원이 없습니다</p>{canRegister ? <><p className="mt-2 text-xs leading-relaxed" style={{ color: SUB }}>회원을 등록하면 수업 기록 · 체형 변화 · 재등록 시점을<br />한 사람씩 모아서 볼 수 있습니다</p><button type="button" onClick={() => setRegisterOpen(true)} className="mt-5 h-11 rounded-lg px-5 text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>회원 등록</button></> : <p className="mt-2 text-xs leading-relaxed" style={{ color: SUB }}>회원 등록은 센터에서 합니다.<br />등록된 회원이 여기에 나타납니다</p>}</div>}
         {realMembers.length > 0 && !list.length && <div className="py-12 text-center"><Users size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-semibold" style={{ color: INK }}>{q ? "검색 결과가 없습니다" : "조건에 맞는 회원이 없습니다"}</p></div>}
         <div className="pt-member-card-grid">{list.map((m) => {
           const remaining = left(m), expiry = ddaySafe(m.contractEnd), next = nextOf(m.id);
@@ -14034,6 +14048,243 @@ function SettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings,
     </div>
   );
 }
+/* 출석 체크. 수업을 한 사람이 회원권 한 회차를 쓴다.
+
+   일정 탭에 둔다. 강사가 하루에 여러 번 여는 동작이고, 수업이 끝난 자리에서
+   누른다. 지금은 회원을 검색해 고르지만 일정과 이어지면 "오늘의 수업"에서
+   고르는 형태가 되는데, 그때 탭을 옮기지 않아도 된다.
+
+   차감은 되돌릴 수 없다 -- 원장이 append-only 라 잘못 누른 항목을 지울 수
+   없고, 잔여를 되돌리는 방향은 규칙이 막는다. 그래서 누르기 전에 한 번 묻는다.
+
+   수업 시각을 고를 수 있다. 강사가 그날 밤에 몰아 누르는 것을 허용하기로 했고,
+   7일보다 오래된 소급은 규칙이 막으므로 화면도 같은 범위만 보여준다. */
+
+const attendanceDayOptions = (now) => {
+  const days = [];
+  for (let back = 0; back < DEDUCT_BACKDATE_LIMIT_DAYS; back += 1) {
+    const day = new Date(now.getTime() - back * 24 * 60 * 60 * 1000);
+    days.push({
+      value: `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`,
+      label: back === 0 ? "오늘" : back === 1 ? "어제" : `${day.getMonth() + 1}.${day.getDate()}`,
+    });
+  }
+  return days;
+};
+
+function AttendanceCheck({
+  organization, currentUserId, clientStore, passStore, onRetryOrganization, onToast, onClose,
+  now = () => new Date(), initialState = null,
+}) {
+  const [clients, setClients] = useState(initialState?.clients || []);
+  const [passes, setPasses] = useState(initialState?.passes || []);
+  const [loading, setLoading] = useState(!initialState);
+  const [loadError, setLoadError] = useState(initialState?.loadError || "");
+  const [search, setSearch] = useState(initialState?.search || "");
+  const [clientId, setClientId] = useState(initialState?.clientId || "");
+  const [day, setDay] = useState(initialState?.day || "");
+  const [time, setTime] = useState(initialState?.time || "");
+  const [confirming, setConfirming] = useState(initialState?.confirming || null);
+  const [formError, setFormError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const organizationId = organization?.organizationId || "";
+  const locked = organization?.status === "unknown";
+  const days = useMemo(() => attendanceDayOptions(now()), [now]);
+
+  useEffect(() => {
+    if (day || days.length === 0) return;
+    setDay(days[0].value);
+    const at = now();
+    setTime(`${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`);
+  }, [day, days, now]);
+
+  const reload = useCallback(async () => {
+    if (!organizationId) return;
+    setLoading(true);
+    setLoadError("");
+    try {
+      const [foundClients, foundPasses] = await Promise.all([
+        listClients(organizationId, { store: clientStore }),
+        listPasses(organizationId, { store: passStore }),
+      ]);
+      setClients(foundClients);
+      setPasses(foundPasses);
+    } catch (error) {
+      setLoadError(error?.code || "unknown");
+    } finally {
+      setLoading(false);
+    }
+  }, [organizationId, clientStore, passStore]);
+
+  useEffect(() => { if (!locked) reload(); else setLoading(false); }, [locked, reload]);
+
+  const matched = useMemo(
+    () => clients.filter((client) => clientMatchesSearch(client, search)).slice(0, 8),
+    [clients, search],
+  );
+  const client = clients.find((item) => item.id === clientId) || null;
+  const clientPasses = useMemo(
+    () => passes.filter((pass) => pass.clientId === clientId),
+    [passes, clientId],
+  );
+  const spendable = clientPasses.filter(isDeductablePass);
+
+  const deduct = async (pass) => {
+    setSaving(true);
+    setFormError("");
+    try {
+      await deductPass(organizationId, pass, {
+        instructorId: currentUserId,
+        createdBy: currentUserId,
+        occurredAt: new Date(`${day}T${time || "00:00"}:00`),
+      }, { store: passStore });
+      onToast?.({ ok: true, msg: `${client?.name || "회원"}님 1회 차감했습니다.` });
+      setConfirming(null);
+      setClientId("");
+      setSearch("");
+      await reload();
+    } catch (error) {
+      setConfirming(null);
+      setFormError(`차감하지 못했어요 (코드 ${error?.code || error?.message || "unknown"})`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (locked) return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>소속을 확인하지 못했습니다</h2>
+      <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        네트워크 문제로 소속 정보를 읽지 못했습니다. 엉뚱한 회원권이 차감되지 않도록 이 화면을 잠급니다.
+      </p>
+      <button type="button" onClick={() => onRetryOrganization?.()} className="mt-3 h-11 w-full font-bold"
+        style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>다시 시도</button>
+    </section>
+  );
+
+  if (confirming) return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>1회 차감할까요?</h2>
+      <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        차감은 되돌릴 수 없습니다.
+      </p>
+      <div className="mt-3 space-y-1" style={{ padding: 12, borderRadius: 10, backgroundColor: CANVAS }}>
+        <p style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>{client?.name}님</p>
+        <p className="tabular-nums" style={{ fontSize: TYPE.caption, color: INK2 }}>
+          {labelOf(PAY_CATEGORY_LABELS, confirming.category)}
+          {" · 잔여 "}{remainingCountOf(confirming)}회 → {remainingCountOf(confirming) - 1}회
+        </p>
+        <p className="tabular-nums" style={{ fontSize: TYPE.caption, color: INK2 }}>{day} {time} 수업</p>
+      </div>
+      <div className="mt-3 flex gap-2">
+        <button type="button" onClick={() => setConfirming(null)} className="h-11 flex-1 font-bold"
+          style={{ borderRadius: 10, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>취소</button>
+        <button type="button" disabled={saving} onClick={() => deduct(confirming)} className="h-11 flex-1 font-bold"
+          style={{ borderRadius: 10, backgroundColor: BRAND, color: "#fff", fontSize: TYPE.caption, opacity: saving ? 0.6 : 1 }}>
+          {saving ? "차감 중" : "차감"}
+        </button>
+      </div>
+    </section>
+  );
+
+  return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>출석 체크</h2>
+          <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+            수업한 회원의 회원권에서 1회를 뺍니다.
+          </p>
+        </div>
+        {onClose ? (
+          <button type="button" onClick={onClose} aria-label="닫기" className="shrink-0"
+            style={{ width: 32, height: 32, color: SUB }}><X size={18} /></button>
+        ) : null}
+      </div>
+
+      {loading ? <p className="mt-3" style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : null}
+      {!loading && loadError
+        ? <p className="mt-3" style={{ fontSize: TYPE.caption, color: BAD }}>회원권을 불러오지 못했습니다 (코드 {loadError}).</p>
+        : null}
+
+      {!loading && !loadError ? (
+        <div className="mt-3 space-y-3">
+          <Field label="수업한 회원">
+            <input value={search} className={inputCls} placeholder="이름 또는 연락처"
+              onChange={(e) => { setSearch(e.target.value); setClientId(""); }} />
+            {search && !clientId ? (
+              <div className="mt-2 flex flex-wrap gap-2">
+                {matched.length === 0
+                  ? <p style={{ fontSize: TYPE.caption, color: SUB }}>찾는 회원이 없습니다.</p>
+                  : matched.map((item) => (
+                    <button key={item.id} type="button" className="h-9 px-3 font-bold"
+                      onClick={() => { setClientId(item.id); setSearch(item.name); }}
+                      style={{ borderRadius: 999, fontSize: TYPE.caption, backgroundColor: CANVAS, color: SUB }}>
+                      {item.name}
+                    </button>
+                  ))}
+              </div>
+            ) : null}
+          </Field>
+
+          <Field label="수업 시각">
+            <div className="flex flex-wrap gap-2">
+              {days.map((option) => (
+                <button key={option.value} type="button" onClick={() => setDay(option.value)}
+                  className="h-9 px-3 font-bold" style={{
+                    borderRadius: 999, fontSize: TYPE.caption,
+                    backgroundColor: day === option.value ? TINT : CANVAS,
+                    color: day === option.value ? BRAND_D : SUB,
+                  }}>{option.label}</button>
+              ))}
+            </div>
+            <input type="time" value={time} className={`${inputCls} mt-2`}
+              onChange={(e) => setTime(e.target.value)} />
+          </Field>
+
+          {client ? (
+            <div>
+              <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>회원권</p>
+              {clientPasses.length === 0
+                ? <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>발급된 회원권이 없습니다.</p>
+                : clientPasses.map((pass) => {
+                  const remaining = remainingCountOf(pass);
+                  const usable = isDeductablePass(pass);
+                  return (
+                    <div key={pass.id} className="flex items-center gap-2"
+                      style={{ padding: "11px 0", borderTop: `1px solid ${LINE}`, opacity: usable ? 1 : 0.55 }}>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate" style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>
+                          {labelOf(PAY_CATEGORY_LABELS, pass.category)}
+                        </p>
+                        <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.caption, color: usable ? SUB : WARN }}>
+                          {usable ? `잔여 ${remaining}회` : remaining === 0 ? "잔여 0회 — 차감할 수 없습니다" : "사용할 수 없는 회원권입니다"}
+                        </p>
+                      </div>
+                      <button type="button" disabled={!usable || saving} onClick={() => setConfirming(pass)}
+                        className="shrink-0 px-3 font-bold" style={{
+                          height: 32, borderRadius: 999, fontSize: TYPE.caption,
+                          backgroundColor: usable ? TINT : CANVAS, color: usable ? BRAND_D : SUB,
+                          opacity: usable && !saving ? 1 : 0.5,
+                        }}>차감</button>
+                    </div>
+                  );
+                })}
+              {clientPasses.length > 0 && spendable.length === 0 ? (
+                <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>
+                  차감할 수 있는 회원권이 없습니다. 회원권 발급에서 새로 발급해 주세요.
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+
+          {formError ? <p style={{ fontSize: TYPE.caption, color: BAD }}>{formError}</p> : null}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 /* 회원권 발급. 대표와 매니저가 본다.
 
    발급은 회원권과 원장 항목을 한 배치로 쓰고, 원장은 append-only 다. 누른 뒤에
@@ -15581,6 +15832,7 @@ export function createAppScreenSmokeCases() {
     poses: [{ id: "smoke-assessment_front_draw", memberId: member.id, assessmentId: "smoke-assessment", view: "front", selectedViews: ["front"], analysisSource: "draw", assessmentStatus: "completed", assessmentComplete: true, completedAt: "2026-09-06T09:00:00.000Z", metrics: [] }],
   };
   const smokeOwner = { organizationId: "smoke-center", role: "owner", status: "active", isLegacy: false };
+  const smokeInstructorOrg = { ...smokeOwner, role: "instructor" };
   const smokeLocations = [
     { id: "bansong", organizationId: "smoke-center", name: "반송점" },
     { id: "centum", organizationId: "smoke-center", name: "센텀점" },
@@ -15628,7 +15880,17 @@ export function createAppScreenSmokeCases() {
   ];
   const instructorStore = { listByRole: async () => smokeInstructors };
   const instructorRateStore = { commit: async () => {}, serverTimestamp: async () => "SERVER_TIME" };
-  const passStore = { list: async () => [], commit: async () => {}, serverTimestamp: async () => "SERVER_TIME" };
+  const smokePasses = [
+    { id: "smoke-pass-a", organizationId: "smoke-center", clientId: "smoke-client-a", locationId: "bansong", category: "pt_1_1_repurchase_event", unitPrice: 30000, remainingCount: 8, status: "active", purchaseRound: 2 },
+    { id: "smoke-pass-spent", organizationId: "smoke-center", clientId: "smoke-client-a", locationId: "bansong", category: "pt_1_1_new", unitPrice: 25000, remainingCount: 0, status: "active", purchaseRound: 1 },
+  ];
+  const passStore = { list: async () => smokePasses, commit: async () => {}, serverTimestamp: async () => "SERVER_TIME" };
+  const smokeNow = () => new Date("2026-09-17T19:30:00.000Z");
+  const attendance = (organization, initialState) => providerWith(organization, (
+    <AttendanceCheck organization={readyOrganizationContext(organization)} currentUserId="smoke-instructor"
+      clientStore={clientStore} passStore={passStore} initialState={initialState} now={smokeNow}
+      onRetryOrganization={noop} onToast={noop} onClose={noop} />
+  ));
   const smokeIssueBase = {
     clients: smokeClients, products: smokeProducts, instructors: smokeInstructors, locations: smokeLocations,
   };
@@ -15662,6 +15924,21 @@ export function createAppScreenSmokeCases() {
     { name: "더보기 탭 · 강사", element: settingsTab({ ...smokeOwner, role: "instructor" }) },
     { name: "더보기 탭 · 개인 모드", element: settingsTab({ organizationId: "legacy_smoke", role: "owner", status: "active", isLegacy: true }) },
     { name: "더보기 탭 · 소속 확인 실패", element: settingsTab({ organizationId: "", role: "", status: "unknown", isLegacy: false }) },
+    { name: "출석 체크", element: attendance(smokeInstructorOrg, {
+      clients: smokeClients, passes: smokePasses, clientId: "smoke-client-a", day: "2026-09-17", time: "19:00",
+    }) },
+    { name: "출석 체크 · 확인", element: attendance(smokeInstructorOrg, {
+      clients: smokeClients, passes: smokePasses, clientId: "smoke-client-a", day: "2026-09-17", time: "19:00",
+      confirming: smokePasses[0],
+    }) },
+    { name: "출석 체크 · 회원권 없음", element: attendance(smokeInstructorOrg, {
+      clients: smokeClients, passes: [], clientId: "smoke-client-a", day: "2026-09-17", time: "19:00",
+    }) },
+    { name: "출석 체크 · 조회 실패", element: attendance(smokeInstructorOrg, {
+      clients: [], passes: [], loadError: "permission-denied",
+    }) },
+    { name: "회원 목록 · 강사", element: <ReferenceMemberList members={db.members} schedule={db.schedule} settings={db.settings} canRegister={false} onSelect={noop} onAdd={noop} /> },
+    { name: "회원 목록 · 강사 · 비어 있음", element: <ReferenceMemberList members={[]} schedule={[]} settings={db.settings} canRegister={false} onSelect={noop} onAdd={noop} /> },
     { name: "회원권 발급", element: passIssue(smokeOwner, { ...smokeIssueBase }) },
     { name: "회원권 발급 · 기준값과 다름", element: passIssue(smokeOwner, {
       ...smokeIssueBase,
@@ -15719,7 +15996,19 @@ export default function App() {
   /* retryOrganizationContext 는 deps 가 비어 있어 최신 account 를 닫아 둘 수
      없다. 이름을 membership 에 동기화할 때 그 시점의 이름이 필요하다. */
   const accountRef = useRef(null);
+  const [attendanceOpen, setAttendanceOpen] = useState(false);
   const [organizationContext, setOrganizationContext] = useState(UNRESOLVED_ORGANIZATION_CONTEXT);
+  /* 소속 센터에서 회원 등록은 FC매니저와 대표의 일이다. 강사가 같은 사람을
+     다시 등록하면 같은 회원이 둘이 되고 수업 기록이 갈라진다. 개인 강사
+     (legacy)는 자기 회원을 자기가 등록하므로 제한하지 않는다. */
+  const canRegisterMembers = !organizationContext.ready
+    || organizationContext.isLegacy
+    || [ROLES.OWNER, ROLES.MANAGER].includes(organizationContext.role);
+  /* 출석 체크는 수업하는 사람의 것이다. 대표와 매니저도 수업을 하므로 함께
+     허용한다 -- 규칙도 같은 셋에게만 잔여를 줄이게 열려 있다. */
+  const canCheckAttendance = organizationContext.ready
+    && !organizationContext.isLegacy
+    && [ROLES.OWNER, ROLES.MANAGER, ROLES.INSTRUCTOR].includes(organizationContext.role);
   const [db, setDb] = useState(emptyDb("", ""));
   const lessonRecordDbRef = useRef(db);
   useEffect(() => { lessonRecordDbRef.current = db; }, [db]);
@@ -17874,9 +18163,9 @@ export default function App() {
       <div className="pt-app-shell safe-t flex h-full min-h-0 w-full flex-col" style={{ backgroundColor: PAGE, boxShadow: "0 0 0 1px rgba(28,36,51,.04)" }}>
         <div className="relative min-h-0 flex-1 overflow-hidden">
           <Guard key={tab}>
-            {tab === "schedule" && <ScheduleManager db={db} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={() => { setMemberRegistrationRequest((value) => value + 1); setTab("members"); }} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
+            {tab === "schedule" && <ScheduleManager db={db} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterMembers ? () => { setMemberRegistrationRequest((value) => value + 1); setTab("members"); } : undefined} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
             {tab === "members" && <div className={`h-full min-h-0 ${mobileView === "detail" && member ? "pt-member-detail-active" : ""}`}>
-              <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList members={db.members} schedule={db.schedule} settings={db.settings} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
+              <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList members={db.members} schedule={db.schedule} settings={db.settings} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterMembers} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
               {mobileView === "detail" && member && <div className="pt-member-detail-pane h-full min-h-0">
                 <ReferenceMemberDetail key={member.id} member={member} schedule={db.schedule} photos={photos[member.id]} settings={db.settings}
                   canViewSettlement={!account?.role || ["owner", "manager", "admin", "director"].includes(String(account.role).toLowerCase())} onBack={() => setMobileView("list")}
@@ -17904,6 +18193,18 @@ export default function App() {
               onOpenSchedule={() => { setScheduleQuickAddRequest((request) => request + 1); setTab("schedule"); }} onOpenRecords={() => { setMobileView("list"); setTab("members"); }} onOpenOnboarding={openOnboardingReplay} onOpenLessonExamples={() => setLessonExamplesOpen(true)} backupStatus={cloudBackupStatus} onEnablePhotoBackup={enablePhotoBackup} onRetryBackup={retryCloudBackup} onRetryOrganization={retryOrganizationContext} />}
           </Guard>
         </div>
+        {/* 출석 체크는 일정 탭 위에 시트로 뜬다. 탭 구조를 건드리지 않으면서
+            수업이 끝난 자리에서 바로 열리게 하기 위해서다. */}
+        {attendanceOpen && canCheckAttendance ? (
+          <div className="absolute inset-0 z-50 overflow-y-auto" style={{ backgroundColor: PAGE }}>
+            <div className="mx-auto w-full max-w-md p-3">
+              <AttendanceCheck organization={organizationContext} currentUserId={account?.id || ""}
+                clientStore={undefined} passStore={undefined}
+                onRetryOrganization={retryOrganizationContext} onToast={setToast}
+                onClose={() => setAttendanceOpen(false)} />
+            </div>
+          </div>
+        ) : null}
         <Tabs tab={tab} setTab={goTab} />
       </div>
       {localPhotoWarning && <ScheduleBottomSheet title="원본 사진 저장 안내" subtitle="사진 기록을 안전하게 보관해 주세요" onClose={() => setLocalPhotoWarning(false)}>

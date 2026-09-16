@@ -34,6 +34,12 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 강사",
     "더보기 탭 · 개인 모드",
     "더보기 탭 · 소속 확인 실패",
+    "출석 체크",
+    "출석 체크 · 확인",
+    "출석 체크 · 회원권 없음",
+    "출석 체크 · 조회 실패",
+    "회원 목록 · 강사",
+    "회원 목록 · 강사 · 비어 있음",
     "회원권 발급",
     "회원권 발급 · 기준값과 다름",
     "회원권 발급 · 직접 단가",
@@ -478,4 +484,63 @@ test("a failed read closes the form instead of showing empty pickers", async (t)
   assert.match(failed, /발급에 필요한 정보를 불러오지 못했습니다/);
   assert.match(failed, /permission-denied/);
   assert.doesNotMatch(failed, /담당 강사/);
+});
+
+/* 출석 체크. 차감은 되돌릴 수 없으므로 무엇이 줄어드는지가 누르기 전에
+   보여야 하고, 줄일 수 없는 회원권은 누를 수 없어야 한다. */
+test("attendance shows what is left and what cannot be spent", async (t) => {
+  const markupOf = await issueScreens(t);
+  const list = markupOf("출석 체크");
+
+  assert.match(list, /수업한 회원의 회원권에서 1회를 뺍니다/);
+  assert.match(list, /잔여 8회/);
+  assert.match(list, /1:1 재등록\(이벤트\)/);
+
+  // 잔여 0 은 왜 못 누르는지 말한다.
+  assert.match(list, /잔여 0회 — 차감할 수 없습니다/);
+  assert.match(list, /disabled/);
+
+  // 7일 창 안의 날짜만 고를 수 있다. 규칙이 그 밖을 막으므로 화면도 같은 범위다.
+  assert.match(list, /오늘/);
+  assert.match(list, /어제/);
+  assert.equal((list.match(/<button[^>]*>(오늘|어제|\d+\.\d+)<\/button>/g) || []).length, 7);
+});
+
+test("attendance asks once before spending a session", async (t) => {
+  const markupOf = await issueScreens(t);
+  const confirm = markupOf("출석 체크 · 확인");
+  assert.match(confirm, /1회 차감할까요\?/);
+  assert.match(confirm, /차감은 되돌릴 수 없습니다/);
+  // 무엇이 어떻게 줄어드는지 숫자로 보여준다.
+  assert.match(confirm, /잔여 8회 → 7회/);
+  assert.match(confirm, /2026-09-17 19:00 수업/);
+});
+
+test("no pass and a failed read are different screens", async (t) => {
+  const markupOf = await issueScreens(t);
+  const none = markupOf("출석 체크 · 회원권 없음");
+  assert.match(none, /발급된 회원권이 없습니다/);
+  assert.doesNotMatch(none, /불러오지 못했습니다/);
+
+  const failed = markupOf("출석 체크 · 조회 실패");
+  assert.match(failed, /회원권을 불러오지 못했습니다/);
+  assert.match(failed, /permission-denied/);
+  assert.doesNotMatch(failed, /발급된 회원권이 없습니다/);
+});
+
+test("an instructor is not offered a way to register a member", async (t) => {
+  /* 소속 센터에서 회원 등록은 FC매니저와 대표의 일이다. 강사가 같은 사람을
+     다시 등록하면 같은 회원이 둘이 되고 수업 기록이 갈라진다. */
+  const markupOf = await issueScreens(t);
+  const forInstructor = markupOf("회원 목록 · 강사");
+  assert.doesNotMatch(forInstructor, /추가<\/button>/);
+  assert.doesNotMatch(forInstructor, /회원 등록<\/button>/);
+
+  // 목록이 비어 있을 때도 "등록하세요"가 아니라 어디서 등록되는지를 말한다.
+  const emptyForInstructor = markupOf("회원 목록 · 강사 · 비어 있음");
+  assert.match(emptyForInstructor, /회원 등록은 센터에서 합니다/);
+  assert.doesNotMatch(emptyForInstructor, /회원 등록<\/button>/);
+
+  // 개인 강사(legacy)는 자기 회원을 자기가 등록하므로 그대로 둔다.
+  assert.match(markupOf("회원 목록"), /추가<\/button>/);
 });

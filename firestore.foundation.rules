@@ -505,12 +505,65 @@ service cloud.firestore {
       }
     }
 
+    // The rate history hangs off a membership, whose path does not carry the
+    // organization. Reading the parent gives the rule an organization without
+    // touching resource.data, so the same condition works for get and list —
+    // see the list note near the top of this file.
+    function membershipOrganizationId(membershipDocumentId) {
+      return get(/databases/$(database)/documents/memberships/$(membershipDocumentId)).data.organizationId;
+    }
+
     match /memberships/{membershipDocumentId} {
       allow read: if signedIn() && (
         resource.data.userId == request.auth.uid
         || hasRole(resource.data.organizationId, ["owner", "manager"])
       );
-      allow create, update, delete: if false;
+      allow create, delete: if false;
+      // One field, one role. The full-room rate decides what a repurchase
+      // lesson pays its instructor, so an instructor must not set their own;
+      // and nothing else about a membership — role, status, organization —
+      // may travel through this door.
+      allow update: if hasRole(resource.data.organizationId, ["owner"])
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["fullRoomRate"])
+        && request.resource.data.fullRoomRate is int
+        && request.resource.data.fullRoomRate >= 0;
+
+      // Append-only. The rate changes when an instructor passes a grading, and
+      // "since when was it this much" has to stay answerable. This is a record,
+      // never a payroll input — payroll reads the unitPrice frozen into each
+      // ledger entry, so raising a rate never moves a settled month.
+      match /rateHistory/{entryId} {
+        allow read: if hasRole(membershipOrganizationId(membershipDocumentId), ["owner"]);
+        allow create: if hasRole(membershipOrganizationId(membershipDocumentId), ["owner"])
+          && request.resource.data.organizationId == membershipOrganizationId(membershipDocumentId)
+          && request.resource.data.keys().hasOnly([
+            "organizationId", "userId", "previousRate", "newRate",
+            "effectiveFrom", "changedBy", "createdAt"
+          ])
+          && request.resource.data.keys().hasAll([
+            "organizationId", "userId", "newRate",
+            "effectiveFrom", "changedBy", "createdAt"
+          ])
+          && request.resource.data.userId is string
+          && request.resource.data.userId.size() > 0
+          && request.resource.data.newRate is int
+          && request.resource.data.newRate >= 0
+          // null means there was no rate before this one.
+          && (
+            request.resource.data.previousRate == null
+            || (request.resource.data.previousRate is int && request.resource.data.previousRate >= 0)
+          )
+          && request.resource.data.previousRate != request.resource.data.newRate
+          && request.resource.data.changedBy == request.auth.uid
+          && request.resource.data.createdAt == request.time
+          // createdAt is when it was recorded; effectiveFrom is when the raise
+          // actually took effect, which can be a few days earlier because a
+          // grading result arrives before anyone opens the app.
+          && request.resource.data.effectiveFrom is timestamp
+          && request.resource.data.effectiveFrom <= request.time
+          && request.resource.data.effectiveFrom > request.time - duration.value(7, "d");
+        allow update, delete: if false;
+      }
     }
 
     match /assessments/{assessmentId} {

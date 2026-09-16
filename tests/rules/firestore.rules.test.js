@@ -1367,3 +1367,150 @@ describe("issuing a pass and moving its instructor", () => {
     assert.equal(snapshot.size, 1);
   });
 });
+
+/* 강사 풀방금액과 그 변경 이력.
+
+   이 값은 pt_1_1_repurchase_normal 한 카테고리의 단가를 정한다. 강사가 자기
+   금액을 올릴 수 있으면 급여가 스스로 움직이므로 대표만 바꾼다. 이력은
+   기록용이고 급여 계산에는 쓰이지 않는다 -- 급여는 원장에 박힌 unitPrice 다. */
+describe("instructor full-room rate", () => {
+  const membershipDoc = (userId, ofUserId = users.instructor) =>
+    doc(dbFor(userId), COLLECTIONS.MEMBERSHIPS, `${ORG_A}_${ofUserId}`);
+  const historyDoc = (userId, entryId, ofUserId = users.instructor) =>
+    doc(dbFor(userId), COLLECTIONS.MEMBERSHIPS, `${ORG_A}_${ofUserId}`, COLLECTIONS.RATE_HISTORY, entryId);
+
+  const historyEntry = (overrides = {}) => ({
+    organizationId: ORG_A,
+    userId: users.instructor,
+    previousRate: null,
+    newRate: 45000,
+    effectiveFrom: serverTimestamp(),
+    changedBy: users.owner,
+    createdAt: serverTimestamp(),
+    ...overrides,
+  });
+
+  test("the owner sets a full-room rate", async () => {
+    await assertSucceeds(updateDoc(membershipDoc(users.owner), { fullRoomRate: 45000 }));
+    await assertSucceeds(updateDoc(membershipDoc(users.owner), { fullRoomRate: 0 }));
+  });
+
+  test("nobody else sets it, least of all the instructor themselves", async () => {
+    // 강사가 자기 금액을 올릴 수 있으면 급여가 스스로 움직인다.
+    await assertFails(updateDoc(membershipDoc(users.instructor), { fullRoomRate: 45000 }));
+    await assertFails(updateDoc(membershipDoc(users.manager), { fullRoomRate: 45000 }));
+    await assertFails(updateDoc(membershipDoc(users.staff), { fullRoomRate: 45000 }));
+    await assertFails(updateDoc(membershipDoc(users.outsider), { fullRoomRate: 45000 }));
+  });
+
+  test("a rate has to be a non-negative whole number of won", async () => {
+    for (const bad of [-1, 45000.5, "45000", null]) {
+      await assertFails(updateDoc(membershipDoc(users.owner), { fullRoomRate: bad }), JSON.stringify(bad));
+    }
+  });
+
+  test("no other field travels through this door", async () => {
+    /* 이 경로로 role 이나 status 가 바뀌면 대표가 실수 한 번으로 강사를 센터에서
+       잘라내거나 대표로 올릴 수 있다. */
+    for (const forbidden of [
+      { role: "owner" },
+      { status: "revoked" },
+      { organizationId: ORG_B },
+      { userId: users.owner },
+      { fullRoomRate: 45000, role: "owner" },
+    ]) {
+      await assertFails(updateDoc(membershipDoc(users.owner), forbidden), JSON.stringify(forbidden));
+    }
+  });
+
+  test("changing a role is still refused, as it always was", async () => {
+    // 기존 보장이 이 변경으로 느슨해지지 않았는지.
+    await assertFails(updateDoc(
+      doc(dbFor(users.owner), COLLECTIONS.MEMBERSHIPS, `${ORG_A}_${users.owner}`),
+      { role: "member" },
+    ));
+  });
+
+  test("memberships still cannot be created or deleted by a client", async () => {
+    await assertFails(setDoc(
+      doc(dbFor(users.owner), COLLECTIONS.MEMBERSHIPS, `${ORG_A}_newcomer`),
+      { organizationId: ORG_A, userId: "newcomer", role: "instructor", status: "active" },
+    ));
+    await assertFails(deleteDoc(membershipDoc(users.owner)));
+  });
+
+  test("the owner writes a history entry and can read it back", async () => {
+    await assertSucceeds(setDoc(historyDoc(users.owner, "entry-first"), historyEntry()));
+    await assertSucceeds(getDoc(historyDoc(users.owner, "entry-first")));
+    await assertSucceeds(getDocs(collection(
+      dbFor(users.owner), COLLECTIONS.MEMBERSHIPS, `${ORG_A}_${users.instructor}`, COLLECTIONS.RATE_HISTORY,
+    )));
+  });
+
+  test("a raise records what it came from", async () => {
+    await assertSucceeds(setDoc(
+      historyDoc(users.owner, "entry-raise"),
+      historyEntry({ previousRate: 45000, newRate: 50000 }),
+    ));
+  });
+
+  test("an entry that changes nothing is refused", async () => {
+    await assertFails(setDoc(
+      historyDoc(users.owner, "entry-noop"),
+      historyEntry({ previousRate: 45000, newRate: 45000 }),
+    ));
+  });
+
+  test("nobody but the owner writes or reads the history", async () => {
+    for (const role of ["instructor", "manager", "staff", "member", "outsider"]) {
+      await assertFails(setDoc(
+        historyDoc(users[role], `entry-by-${role}`),
+        historyEntry({ changedBy: users[role] }),
+      ), role);
+    }
+    await assertSucceeds(setDoc(historyDoc(users.owner, "entry-readable"), historyEntry()));
+    for (const role of ["instructor", "manager", "staff", "outsider"]) {
+      await assertFails(getDoc(historyDoc(users[role], "entry-readable")), role);
+    }
+  });
+
+  test("the history cannot be rewritten or erased", async () => {
+    // 고칠 수 있으면 "언제부터 이 금액이었나"가 이력이 아니라 주장이 된다.
+    await assertSucceeds(setDoc(historyDoc(users.owner, "entry-fixed"), historyEntry()));
+    await assertFails(updateDoc(historyDoc(users.owner, "entry-fixed"), { newRate: 99000 }));
+    await assertFails(deleteDoc(historyDoc(users.owner, "entry-fixed")));
+    await assertFails(setDoc(historyDoc(users.owner, "entry-fixed"), historyEntry({ newRate: 99000 })));
+  });
+
+  test("a history entry cannot be backdated far or filed under another name", async () => {
+    await assertFails(setDoc(
+      historyDoc(users.owner, "entry-old"),
+      historyEntry({ effectiveFrom: Timestamp.fromDate(new Date("2020-01-01T00:00:00Z")) }),
+    ));
+    await assertFails(setDoc(
+      historyDoc(users.owner, "entry-forged"),
+      historyEntry({ changedBy: users.manager }),
+    ));
+    await assertFails(setDoc(
+      historyDoc(users.owner, "entry-client-clock"),
+      historyEntry({ createdAt: Timestamp.fromDate(new Date("2020-01-01T00:00:00Z")) }),
+    ));
+  });
+
+  test("a history entry that hides which instructor it is about is refused", async () => {
+    const broken = [
+      { label: "no userId", drop: "userId" },
+      { label: "no newRate", drop: "newRate" },
+      { label: "no organization", drop: "organizationId" },
+      { label: "other organization", patch: { organizationId: ORG_B } },
+      { label: "rate as string", patch: { newRate: "45000" } },
+      { label: "negative rate", patch: { newRate: -1 } },
+      { label: "stray field", patch: { note: "승급" } },
+    ];
+    for (const item of broken) {
+      const entry = historyEntry(item.patch || {});
+      if (item.drop) delete entry[item.drop];
+      await assertFails(setDoc(historyDoc(users.owner, "entry-broken"), entry), item.label);
+    }
+  });
+});

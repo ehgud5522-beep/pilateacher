@@ -138,6 +138,7 @@ export const COLLECTIONS = Object.freeze({
   PRODUCTS: "products",
   LESSONS: "lessons",
   LEDGER: "ledger",
+  RATE_HISTORY: "rateHistory",
   PARTICIPANTS: "participants",
   LESSON_NOTES: "lessonNotes",
   ASSESSMENTS: "assessments",

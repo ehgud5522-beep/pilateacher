@@ -519,14 +519,33 @@ service cloud.firestore {
         || hasRole(resource.data.organizationId, ["owner", "manager"])
       );
       allow create, delete: if false;
-      // One field, one role. The full-room rate decides what a repurchase
-      // lesson pays its instructor, so an instructor must not set their own;
-      // and nothing else about a membership — role, status, organization —
-      // may travel through this door.
-      allow update: if hasRole(resource.data.organizationId, ["owner"])
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["fullRoomRate"])
-        && request.resource.data.fullRoomRate is int
-        && request.resource.data.fullRoomRate >= 0;
+      // Two doors, each one field wide.
+      //
+      // fullRoomRate decides what a repurchase lesson pays its instructor, so
+      // an instructor must not set their own — only the owner.
+      //
+      // displayName is the member's own name, kept here rather than read from
+      // users/{uid}. Rules cannot hide fields on a read: opening that document
+      // so an owner could see a name would hand them the phone number and the
+      // e-mail sitting beside it. A membership is already readable by the
+      // owners and managers who need the name, so the name comes to them
+      // instead — and only its subject may write it.
+      //
+      // Nothing else about a membership — role, status, organization — travels
+      // through either door.
+      allow update: if (
+          hasRole(resource.data.organizationId, ["owner"])
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["fullRoomRate"])
+          && request.resource.data.fullRoomRate is int
+          && request.resource.data.fullRoomRate >= 0
+        ) || (
+          signedIn()
+          && resource.data.userId == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["displayName"])
+          && request.resource.data.displayName is string
+          && request.resource.data.displayName.size() > 0
+          && request.resource.data.displayName.size() <= 60
+        );
 
       // Append-only. The rate changes when an instructor passes a grading, and
       // "since when was it this much" has to stay answerable. This is a record,

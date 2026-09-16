@@ -1439,6 +1439,47 @@ describe("instructor full-room rate", () => {
     await assertFails(deleteDoc(membershipDoc(users.owner)));
   });
 
+  /* 이름은 membership 에 싣는다. users/{uid} 를 여는 대신 그렇게 하는 이유는
+     규칙에서 읽기의 필드를 가릴 수 없기 때문이다 -- 이름을 얻자고 그 문서를
+     열면 전화번호와 이메일이 함께 열린다. */
+  test("a member writes their own name onto their membership", async () => {
+    await assertSucceeds(updateDoc(membershipDoc(users.instructor), { displayName: "정예진" }));
+    await assertSucceeds(updateDoc(
+      doc(dbFor(users.manager), COLLECTIONS.MEMBERSHIPS, `${ORG_A}_${users.manager}`),
+      { displayName: "박서연" },
+    ));
+  });
+
+  test("nobody writes somebody else's name, not even the owner", async () => {
+    await assertFails(updateDoc(membershipDoc(users.owner), { displayName: "남의이름" }));
+    await assertFails(updateDoc(membershipDoc(users.manager), { displayName: "남의이름" }));
+    await assertFails(updateDoc(membershipDoc(users.outsider), { displayName: "남의이름" }));
+  });
+
+  test("a name has to be a non-empty string of sane length", async () => {
+    for (const bad of ["", 1234, null, "가".repeat(61)]) {
+      await assertFails(updateDoc(membershipDoc(users.instructor), { displayName: bad }), JSON.stringify(bad));
+    }
+  });
+
+  test("the name door carries nothing else either", async () => {
+    for (const forbidden of [
+      { displayName: "정예진", role: "owner" },
+      { displayName: "정예진", fullRoomRate: 45000 },
+      { displayName: "정예진", status: "revoked" },
+    ]) {
+      await assertFails(updateDoc(membershipDoc(users.instructor), forbidden), JSON.stringify(forbidden));
+    }
+  });
+
+  test("users documents stay shut, so no phone number leaks with a name", async () => {
+    /* 이름을 읽자고 이 문서를 열면 전화번호와 이메일이 함께 열린다. 규칙은
+       읽기에서 필드를 가릴 수 없으므로 문을 닫아 두고 이름만 옮겨 왔다. */
+    await assertFails(getDoc(doc(dbFor(users.owner), COLLECTIONS.USERS, users.instructor)));
+    await assertFails(getDoc(doc(dbFor(users.manager), COLLECTIONS.USERS, users.instructor)));
+    await assertSucceeds(getDoc(doc(dbFor(users.instructor), COLLECTIONS.USERS, users.instructor)));
+  });
+
   test("the owner writes a history entry and can read it back", async () => {
     await assertSucceeds(setDoc(historyDoc(users.owner, "entry-first"), historyEntry()));
     await assertSucceeds(getDoc(historyDoc(users.owner, "entry-first")));

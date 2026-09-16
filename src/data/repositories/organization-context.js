@@ -24,6 +24,10 @@ export const UNRESOLVED_ORGANIZATION_CONTEXT = Object.freeze({
   organizationId: "",
   role: "",
   status: "",
+  /* membership 에 적힌 내 이름. users/{uid} 대신 여기 두는 이유는 규칙 파일의
+     memberships 블록 주석에 있다 -- 이름을 읽자고 그 문서를 열면 전화번호와
+     이메일이 함께 열린다. */
+  displayName: "",
   isLegacy: false,
   ready: false,
 });
@@ -44,6 +48,7 @@ export function unknownOrganizationContext() {
  * @property {string} [userId]
  * @property {string} [role]
  * @property {string} [status]
+ * @property {string} [displayName]
  */
 
 const required = (value, label) => {
@@ -117,7 +122,7 @@ const withLookupTimeout = (promise, { timeoutMs, setTimer, clearTimer }) => {
 /**
  * @param {string} userId
  * @param {{ listActiveMemberships?: (userId: string) => Promise<Array<MembershipDocument>>, warn?: (code: string, detail: object) => void, log?: (code: string, detail: object) => void, timeoutMs?: number, setTimer?: Function, clearTimer?: Function }} [options]
- * @returns {Promise<{ organizationId: string, role: string, status: string, isLegacy: boolean }>}
+ * @returns {Promise<{ organizationId: string, role: string, status: string, displayName?: string, isLegacy: boolean }>}
  */
 export async function resolveOrganizationContext(userId, options = {}) {
   const id = required(userId, "userId");
@@ -214,6 +219,7 @@ export async function resolveOrganizationContext(userId, options = {}) {
     organizationId: membership.organizationId,
     role: membership.role || ROLES.MEMBER,
     status: membership.status,
+    displayName: String(membership.displayName || ""),
     isLegacy: false,
   }, "membership", {
     count: receivedCount,

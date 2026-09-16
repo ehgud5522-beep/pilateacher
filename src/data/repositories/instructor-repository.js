@@ -198,3 +198,46 @@ export async function setInstructorFullRoomRate(organizationId, userId, input, o
   ]);
   return { userId: instructorId, entryId, newRate, previousRate, entry };
 }
+
+/**
+ * 내 membership 에 내 이름을 적는다.
+ *
+ * 대표가 강사 목록을 볼 때 uid 가 아니라 이름을 보게 하는 유일한 경로다.
+ * users/{uid} 를 읽어 오지 않는 이유는 규칙 파일의 memberships 블록 주석에
+ * 있다 -- 이름을 얻자고 그 문서를 열면 전화번호와 이메일이 함께 열리고,
+ * Firestore 규칙은 읽기에서 필드를 가릴 수 없다.
+ *
+ * 쓰는 사람은 언제나 본인이다. 이름은 본인의 것이고, 남이 고쳐 쓸 이유가 없다.
+ *
+ * 값이 같으면 쓰지 않는다 -- 앱을 열 때마다 같은 값을 다시 쓰면 규칙 평가와
+ * 쓰기 비용만 늘고 얻는 것이 없다.
+ *
+ * @param {string} organizationId
+ * @param {string} userId
+ * @param {{ displayName: string, currentDisplayName?: string }} input
+ * @param {{ store?: { update: (path: string, data: object) => Promise<void> } }} [options]
+ * @returns {Promise<{ written: boolean, displayName: string }>}
+ */
+export async function syncOwnMembershipName(organizationId, userId, input, options = {}) {
+  const { store = createFirestoreMembershipNameStore() } = options;
+  const organization = requiredText(organizationId, "organizationId");
+  const id = requiredText(userId, "userId");
+  const displayName = String(input?.displayName ?? "").trim();
+  // 빈 이름으로 덮어쓰면 목록이 uid 로 되돌아간다. 규칙도 빈 문자열을 거부한다.
+  if (!displayName) return { written: false, displayName: "" };
+  if (displayName.length > 60) return { written: false, displayName: "" };
+  if (displayName === String(input?.currentDisplayName ?? "").trim()) {
+    return { written: false, displayName };
+  }
+  await store.update(paths.orgMembership(organization, id), { displayName });
+  return { written: true, displayName };
+}
+
+export function createFirestoreMembershipNameStore() {
+  return {
+    update: async (documentPath, data) => {
+      const { doc, getFirestore, updateDoc } = await import("firebase/firestore");
+      await updateDoc(doc(getFirestore(), documentPath), data);
+    },
+  };
+}

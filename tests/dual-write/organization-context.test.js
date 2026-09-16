@@ -24,6 +24,7 @@ test("an active membership decides the organization and the role", async () => {
     organizationId: "center-a",
     role: "instructor",
     status: "active",
+    displayName: "",
     isLegacy: false,
   });
 });
@@ -356,4 +357,31 @@ test("a thrown reader is caught even when it throws synchronously", async () => 
 test("the deadline is a real number of milliseconds", () => {
   assert.ok(Number.isFinite(ORGANIZATION_LOOKUP_TIMEOUT_MS));
   assert.ok(ORGANIZATION_LOOKUP_TIMEOUT_MS > 0);
+});
+
+/* membership 에 적힌 이름을 함께 싣는다. 대표가 강사 목록에서 uid 가 아니라
+   이름을 보게 하는 경로이고, users/{uid} 를 열지 않고 그렇게 하기 위해서다. */
+
+test("the membership name rides along with the context", async () => {
+  const context = await resolveOrganizationContext("user-1", {
+    listActiveMemberships: async () => [membership({ displayName: "정예진" })],
+  });
+  assert.equal(context.displayName, "정예진");
+});
+
+test("a membership with no name says so with an empty string, not undefined", async () => {
+  // 화면이 이름 없음을 uid 로 대체하려면 값이 있어야 한다.
+  const context = await resolveOrganizationContext("user-1", {
+    listActiveMemberships: async () => [membership()],
+  });
+  assert.equal(context.displayName, "");
+});
+
+test("legacy and unknown carry no name", async () => {
+  const legacy = await resolveOrganizationContext("user-1", { listActiveMemberships: async () => [] });
+  assert.equal(readyOrganizationContext(legacy).displayName, "");
+  const unknown = await resolveOrganizationContext("user-1", {
+    listActiveMemberships: async () => { throw new Error("offline"); },
+  });
+  assert.equal(readyOrganizationContext(unknown).displayName, "");
 });

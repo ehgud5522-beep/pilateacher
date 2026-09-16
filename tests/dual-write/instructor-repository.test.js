@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createFirestoreInstructorRateStore, createFirestoreInstructorStore, fullRoomRateOf,
-  hasUsableFullRoomRate, listInstructors, setInstructorFullRoomRate,
+  hasUsableFullRoomRate, listInstructors, setInstructorFullRoomRate, syncOwnMembershipName,
 } from "../../src/data/repositories/instructor-repository.js";
 import { RepositoryReadError, connectRepositoryLog, disconnectRepositoryLog } from "../../src/data/repositories/repository-read.js";
 
@@ -221,4 +221,68 @@ test("the Firestore rate store answers the shape the caller needs", () => {
   }
   // 문서를 한 건씩 쓰는 입구는 두지 않는다. 있으면 언젠가 그리로 새 나간다.
   assert.equal(store.update, undefined);
+});
+
+/* ── 이름 동기화 ───────────────────────────────────────────────────────
+   대표가 강사 목록에서 uid 가 아니라 이름을 보게 하는 유일한 경로다.
+   users/{uid} 를 읽지 않는 이유는 규칙 파일의 memberships 주석에 있다 --
+   이름을 얻자고 그 문서를 열면 전화번호와 이메일이 함께 열린다. */
+
+function fakeNameStore() {
+  const calls = [];
+  return { calls, update: async (path, data) => { calls.push({ path, data }); } };
+}
+
+test("a name is written onto the member's own membership", async () => {
+  const store = fakeNameStore();
+  const result = await syncOwnMembershipName(ORG, "instructor-a", { displayName: "정예진" }, { store });
+  assert.equal(result.written, true);
+  assert.deepEqual(store.calls, [{
+    path: "memberships/center-a_instructor-a",
+    data: { displayName: "정예진" },
+  }]);
+});
+
+test("the same name is not written again", async () => {
+  // 앱을 열 때마다 같은 값을 다시 쓰면 비용만 늘고 얻는 것이 없다.
+  const store = fakeNameStore();
+  const result = await syncOwnMembershipName(ORG, "instructor-a", {
+    displayName: "정예진", currentDisplayName: "정예진",
+  }, { store });
+  assert.equal(result.written, false);
+  assert.equal(store.calls.length, 0);
+});
+
+test("a changed name is written", async () => {
+  const store = fakeNameStore();
+  const result = await syncOwnMembershipName(ORG, "instructor-a", {
+    displayName: "정예진", currentDisplayName: "예전이름",
+  }, { store });
+  assert.equal(result.written, true);
+  assert.equal(store.calls.length, 1);
+});
+
+test("a blank name never overwrites a real one", async () => {
+  // 빈 이름으로 덮어쓰면 목록이 uid 로 되돌아간다. 규칙도 빈 문자열을 거부한다.
+  for (const blank of ["", "   ", null, undefined]) {
+    const store = fakeNameStore();
+    const result = await syncOwnMembershipName(ORG, "instructor-a", { displayName: blank }, { store });
+    assert.equal(result.written, false, JSON.stringify(blank));
+    assert.equal(store.calls.length, 0);
+  }
+});
+
+test("an absurdly long name is refused rather than truncated", async () => {
+  // 규칙이 60자를 넘기면 거부한다. 잘라서 보내면 화면의 이름이 조용히 달라진다.
+  const store = fakeNameStore();
+  const result = await syncOwnMembershipName(ORG, "instructor-a", { displayName: "가".repeat(61) }, { store });
+  assert.equal(result.written, false);
+  assert.equal(store.calls.length, 0);
+});
+
+test("the sync needs an organization and a user", async () => {
+  const store = fakeNameStore();
+  await assert.rejects(() => syncOwnMembershipName("", "instructor-a", { displayName: "정예진" }, { store }), /Missing organizationId/);
+  await assert.rejects(() => syncOwnMembershipName(ORG, "", { displayName: "정예진" }, { store }), /Missing userId/);
+  assert.equal(store.calls.length, 0);
 });

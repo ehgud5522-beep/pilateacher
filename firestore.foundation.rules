@@ -362,8 +362,13 @@ service cloud.firestore {
           && request.resource.data.keys().hasAll([
             "organizationId", "clientId", "locationId", "productId",
             "totalSessions", "serviceSessions", "contractPrice",
-            "paymentMethod", "purchaseRound", "status", "createdAt", "createdBy"
+            "paymentMethod", "purchaseRound", "status", "createdAt", "createdBy",
+            // 발급 시점에 담당 강사가 정해진다. 없으면 차감한 회차가 누구의
+            // 급여인지 알 수 없고, 교체 이력도 가리킬 대상이 없다.
+            "instructorId"
           ])
+          && request.resource.data.instructorId is string
+          && request.resource.data.instructorId.size() > 0
           && request.resource.data.totalSessions is int
           && request.resource.data.totalSessions > 0
           && request.resource.data.serviceSessions is int
@@ -379,9 +384,19 @@ service cloud.firestore {
           && request.resource.data.status is string
           && request.resource.data.createdAt == request.time
           && hasRole(organizationId, ["owner", "manager"]);
+        // The owner's reach is unchanged. A manager may move one field and
+        // nothing else: handovers happen while the owner is not at the centre,
+        // and the transfer is safe because it rewrites no past entry — every
+        // deducted session already carries the instructor it was taught by.
         allow update: if resource.data.organizationId == organizationId
           && request.resource.data.organizationId == organizationId
-          && hasRole(organizationId, ["owner"]);
+          && (
+            hasRole(organizationId, ["owner"])
+            || (
+              hasRole(organizationId, ["manager"])
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["instructorId"])
+            )
+          );
         allow delete: if false;
 
         // Append-only, and these numbers feed payroll. Nothing can be corrected
@@ -393,19 +408,16 @@ service cloud.firestore {
             && request.resource.data.keys().hasOnly([
               "organizationId", "passId", "locationId", "type", "delta",
               "category", "unitPrice", "lessonId", "instructorId",
+              "fromInstructorId", "toInstructorId",
               "occurredAt", "createdAt", "createdBy"
             ])
             && request.resource.data.keys().hasAll([
               "organizationId", "passId", "locationId", "type", "delta",
-              "category", "unitPrice", "instructorId",
               "occurredAt", "createdAt", "createdBy"
             ])
             && request.resource.data.type is string
-            && request.resource.data.type in ["issue", "deduct"]
+            && request.resource.data.type in ["issue", "deduct", "transfer"]
             && request.resource.data.delta is int
-            && request.resource.data.delta != 0
-            && request.resource.data.unitPrice is int
-            && request.resource.data.unitPrice >= 0
             && request.resource.data.createdBy == request.auth.uid
             // createdAt says when it was recorded and the server stamps it, so a
             // client cannot backdate. occurredAt says when the lesson happened and
@@ -415,13 +427,39 @@ service cloud.firestore {
             && request.resource.data.occurredAt is timestamp
             && request.resource.data.occurredAt <= request.time
             && request.resource.data.occurredAt > request.time - duration.value(7, "d")
-            && request.resource.data.category in payCategories()
+            // A transfer moves no money, so category and unitPrice have no true
+            // value to carry. Filling them to satisfy a required-field list would
+            // put a fiction into the two fields payroll groups by; the entry says
+            // nothing about them instead. issue and deduct still must carry both.
             && (
-              request.resource.data.type == "issue"
-                ? request.resource.data.delta > 0
-                : request.resource.data.delta < 0 && "lessonId" in request.resource.data
-            )
-            && hasRole(organizationId, ["owner", "manager", "instructor"]);
+              request.resource.data.type == "transfer"
+                ? (
+                  request.resource.data.delta == 0
+                  && request.resource.data.keys().hasAll(["fromInstructorId", "toInstructorId"])
+                  && request.resource.data.fromInstructorId is string
+                  && request.resource.data.toInstructorId is string
+                  && request.resource.data.fromInstructorId != request.resource.data.toInstructorId
+                  && !("category" in request.resource.data)
+                  && !("unitPrice" in request.resource.data)
+                  && !("lessonId" in request.resource.data)
+                  // 담당 교체는 운영하는 사람의 판단이다. 강사가 자기 앞으로
+                  // 회원권을 옮길 수 있으면 급여가 스스로 움직인다.
+                  && hasRole(organizationId, ["owner", "manager"])
+                )
+                : (
+                  request.resource.data.keys().hasAll(["category", "unitPrice", "instructorId"])
+                  && request.resource.data.category in payCategories()
+                  && request.resource.data.unitPrice is int
+                  && request.resource.data.unitPrice >= 0
+                  && request.resource.data.delta != 0
+                  && (
+                    request.resource.data.type == "issue"
+                      ? request.resource.data.delta > 0
+                      : request.resource.data.delta < 0 && "lessonId" in request.resource.data
+                  )
+                  && hasRole(organizationId, ["owner", "manager", "instructor"])
+                )
+            );
           allow update, delete: if false;
         }
       }

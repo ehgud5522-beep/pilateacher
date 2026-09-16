@@ -102,6 +102,7 @@ function passFixture(organizationId, passId, overrides = {}) {
     paymentMethod: "card",
     purchaseRound: 1,
     remainingCount: 20,
+    instructorId: users.instructor,
     status: "active",
     createdBy: users.manager,
     createdAt: serverTimestamp(),
@@ -942,7 +943,7 @@ describe("ledger and pass bodies are validated at write time", () => {
         purchaseRound: 3,
       }),
     ));
-    for (const field of ["productId", "totalSessions", "serviceSessions", "contractPrice", "paymentMethod", "purchaseRound"]) {
+    for (const field of ["productId", "totalSessions", "serviceSessions", "contractPrice", "paymentMethod", "purchaseRound", "instructorId"]) {
       await assertFails(setDoc(
         passRef(users.manager, `pass-missing-${field}`),
         withoutField(passFixture(ORG_A, `pass-missing-${field}`), field),
@@ -1194,5 +1195,175 @@ describe("collection queries the app will run", () => {
       listOf(users.instructor, COLLECTIONS.AUDIT_LOGS),
       where("organizationId", "==", ORG_A),
     )));
+  });
+});
+
+/* 회원권 발급과 담당 강사 교체. 발급은 회원권과 원장 항목 두 문서를 함께
+   쓰는데 규칙은 문서마다 따로 판정하므로, 여기서는 각 문서가 통과하는지를
+   본다 -- 두 문서가 실제로 함께 쓰이는지는 리포지토리 테스트가 본다. */
+describe("issuing a pass and moving its instructor", () => {
+  const passDoc = (userId, passId) => doc(dbFor(userId), "organizations", ORG_A, COLLECTIONS.PASSES, passId);
+  const ledgerDoc = (userId, passId, entryId) =>
+    doc(dbFor(userId), "organizations", ORG_A, COLLECTIONS.PASSES, passId, COLLECTIONS.LEDGER, entryId);
+
+  // 상품 블록에도 같은 이름의 헬퍼가 있지만 그 describe 안에 갇혀 있다.
+  const dropField = (body, field) => {
+    const copy = { ...body };
+    delete copy[field];
+    return copy;
+  };
+
+  const transferEntry = (overrides = {}) => ({
+    organizationId: ORG_A,
+    passId: PASS_A,
+    locationId: "location-a",
+    type: "transfer",
+    delta: 0,
+    fromInstructorId: users.instructor,
+    toInstructorId: users.staff,
+    occurredAt: serverTimestamp(),
+    createdAt: serverTimestamp(),
+    createdBy: users.owner,
+    ...overrides,
+  });
+
+  test("the pass list is readable by every member of the organization", async () => {
+    const snapshot = await assertSucceeds(getDocs(
+      collection(dbFor(users.instructor), "organizations", ORG_A, COLLECTIONS.PASSES),
+    ));
+    assert.equal(snapshot.size, 1);
+    await assertFails(getDocs(collection(dbFor(users.outsider), "organizations", ORG_A, COLLECTIONS.PASSES)));
+    await assertFails(getDocs(collection(dbFor(null), "organizations", ORG_A, COLLECTIONS.PASSES)));
+  });
+
+  test("a pass without an instructor is refused", async () => {
+    // 담당이 없으면 차감한 회차가 누구의 급여인지 알 수 없다.
+    await assertFails(setDoc(
+      passDoc(users.manager, "pass-no-instructor"),
+      dropField(passFixture(ORG_A, "pass-no-instructor"), "instructorId"),
+    ));
+    await assertFails(setDoc(
+      passDoc(users.manager, "pass-blank-instructor"),
+      passFixture(ORG_A, "pass-blank-instructor", { instructorId: "" }),
+    ));
+  });
+
+  test("a transfer entry records who handed over to whom", async () => {
+    await assertSucceeds(setDoc(ledgerDoc(users.owner, PASS_A, "entry-transfer"), transferEntry()));
+    await assertSucceeds(setDoc(
+      ledgerDoc(users.manager, PASS_A, "entry-transfer-manager"),
+      transferEntry({ createdBy: users.manager }),
+    ));
+  });
+
+  test("an instructor cannot move a pass onto themselves", async () => {
+    // 강사가 담당을 옮길 수 있으면 급여가 스스로 움직인다.
+    await assertFails(setDoc(
+      ledgerDoc(users.instructor, PASS_A, "entry-self-transfer"),
+      transferEntry({ createdBy: users.instructor, fromInstructorId: users.staff, toInstructorId: users.instructor }),
+    ));
+  });
+
+  test("a transfer carries no category and no unit price", async () => {
+    /* 교체는 돈이 오가는 일이 아니라 두 필드에 넣을 참값이 없다. 자리를
+       채우려고 아무 값이나 넣으면 급여를 카테고리별로 묶는 계산에 섞여 든다. */
+    const extras = [{ category: "pt_1_1_new" }, { unitPrice: 25000 }, { lessonId: "lesson-seed" }];
+    for (const extra of extras) {
+      await assertFails(
+        setDoc(ledgerDoc(users.owner, PASS_A, "entry-transfer-extra"), transferEntry(extra)),
+        Object.keys(extra)[0],
+      );
+    }
+  });
+
+  test("a transfer that names the same instructor twice is refused", async () => {
+    await assertFails(setDoc(
+      ledgerDoc(users.owner, PASS_A, "entry-same"),
+      transferEntry({ toInstructorId: users.instructor }),
+    ));
+  });
+
+  test("a transfer must say both ends and must not move a count", async () => {
+    const broken = [
+      { label: "delta 1", patch: { delta: 1 } },
+      { label: "delta -1", patch: { delta: -1 } },
+      { label: "no from", drop: "fromInstructorId" },
+      { label: "no to", drop: "toInstructorId" },
+    ];
+    for (const item of broken) {
+      const entry = transferEntry(item.patch || {});
+      if (item.drop) delete entry[item.drop];
+      await assertFails(setDoc(ledgerDoc(users.owner, PASS_A, "entry-broken"), entry), item.label);
+    }
+  });
+
+  test("issue and deduct still have to carry a category and a unit price", async () => {
+    // transfer 를 열면서 나머지가 느슨해지지 않았는지 확인한다.
+    const issue = {
+      organizationId: ORG_A,
+      passId: PASS_A,
+      locationId: "location-a",
+      type: "issue",
+      delta: 20,
+      instructorId: users.instructor,
+      occurredAt: serverTimestamp(),
+      createdAt: serverTimestamp(),
+      createdBy: users.owner,
+    };
+    await assertFails(setDoc(ledgerDoc(users.owner, PASS_A, "entry-issue-bare"), issue));
+    await assertSucceeds(setDoc(ledgerDoc(users.owner, PASS_A, "entry-issue-full"), {
+      ...issue, category: "pt_1_1_new", unitPrice: 25000,
+    }));
+    await assertFails(setDoc(ledgerDoc(users.owner, PASS_A, "entry-issue-zero"), {
+      ...issue, category: "pt_1_1_new", unitPrice: 25000, delta: 0,
+    }));
+  });
+
+  test("a manager may move the instructor and nothing else", async () => {
+    await assertSucceeds(updateDoc(passDoc(users.manager, PASS_A), { instructorId: users.staff }));
+    // 계약 금액까지 손대는 것은 대표의 일이다.
+    await assertFails(updateDoc(passDoc(users.manager, PASS_A), { contractPrice: 1 }));
+    await assertFails(updateDoc(passDoc(users.manager, PASS_A), { instructorId: users.staff, contractPrice: 1 }));
+    // 대표의 권한은 그대로다.
+    await assertSucceeds(updateDoc(passDoc(users.owner, PASS_A), { contractPrice: 990000 }));
+  });
+
+  test("an instructor cannot move the instructor field", async () => {
+    await assertFails(updateDoc(passDoc(users.instructor, PASS_A), { instructorId: users.staff }));
+    await assertFails(updateDoc(passDoc(users.staff, PASS_A), { instructorId: users.staff }));
+  });
+
+  /* 발급 화면의 강사 목록. 규칙을 바꾸지 않고도 통과한다 -- 쿼리가
+     organizationId 를 걸어 read 규칙의 두 번째 가지를 증명하기 때문이다. */
+  const instructorsOf = (userId) => query(
+    collection(dbFor(userId), COLLECTIONS.MEMBERSHIPS),
+    where("organizationId", "==", ORG_A),
+    where("role", "==", "instructor"),
+    where("status", "==", "active"),
+  );
+
+  test("an owner lists the instructors of their organization", async () => {
+    const snapshot = await assertSucceeds(getDocs(instructorsOf(users.owner)));
+    assert.equal(snapshot.size, 1);
+    assert.equal(snapshot.docs[0].data().userId, users.instructor);
+  });
+
+  test("a manager lists them too, an instructor does not", async () => {
+    await assertSucceeds(getDocs(instructorsOf(users.manager)));
+    // 발급 화면이 대표·매니저 전용이므로 여기서 막히는 것이 맞는 경계다.
+    await assertFails(getDocs(instructorsOf(users.instructor)));
+    await assertFails(getDocs(instructorsOf(users.outsider)));
+    await assertFails(getDocs(instructorsOf(null)));
+  });
+
+  test("the organization context query still works alongside it", async () => {
+    // 같은 컬렉션을 다른 모양으로 읽는다. 하나를 고치다 다른 하나가 깨지면
+    // 앱이 시작하지 못한다.
+    const snapshot = await assertSucceeds(getDocs(query(
+      collection(dbFor(users.owner), COLLECTIONS.MEMBERSHIPS),
+      where("userId", "==", users.owner),
+      where("status", "==", "active"),
+    )));
+    assert.equal(snapshot.size, 1);
   });
 });

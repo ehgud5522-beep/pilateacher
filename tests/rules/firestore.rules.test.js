@@ -9,6 +9,7 @@ import {
 import {
   Timestamp,
   collection,
+  collectionGroup,
   deleteDoc,
   doc,
   getDoc,
@@ -1724,6 +1725,90 @@ describe("checking attendance against a pass", () => {
     await assertSucceeds(setDoc(
       passDocOf(users.manager, ORG_A, "pass-priced"),
       passFixture(ORG_A, "pass-priced"),
+    ));
+  });
+});
+
+/* 강사 급여 화면은 원장을 collectionGroup 으로 가로질러 읽는다. 회원권마다
+   하위 컬렉션이라 회원권을 하나씩 도는 방식은 센터 규모만큼 읽기가 늘어난다.
+
+   그룹 쿼리는 중첩 경로의 규칙에 닿지 않으므로 match /{path=**}/ledger 가
+   따로 있다. 그 문이 중첩 규칙보다 넓어지지 않았는지를 여기서 고정한다. */
+describe("reading the ledger across passes", () => {
+  const ledgerGroup = (userId) => collectionGroup(dbFor(userId), COLLECTIONS.LEDGER);
+  const myDeductions = (userId, organizationId, instructorId) => query(
+    ledgerGroup(userId),
+    where("organizationId", "==", organizationId),
+    where("instructorId", "==", instructorId),
+    where("type", "==", "deduct"),
+  );
+
+  beforeEach(async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      await setDoc(
+        doc(db, "organizations", ORG_A, "passes", PASS_A, "ledger", "entry-mine"),
+        ledgerFixture(ORG_A, PASS_A, { instructorId: users.instructor }),
+      );
+      await setDoc(
+        doc(db, "organizations", ORG_A, "passes", PASS_A, "ledger", "entry-theirs"),
+        ledgerFixture(ORG_A, PASS_A, { instructorId: users.manager }),
+      );
+    });
+  });
+
+  test("an instructor reads their own month across every pass", async () => {
+    const snapshot = await assertSucceeds(getDocs(myDeductions(users.instructor, ORG_A, users.instructor)));
+    assert.ok(snapshot.size >= 1);
+    for (const entry of snapshot.docs) {
+      assert.equal(entry.data().instructorId, users.instructor);
+    }
+  });
+
+  test("an instructor cannot read another instructor's month", async () => {
+    // 본인 것만 본다는 것을 화면이 아니라 서버가 지킨다.
+    await assertFails(getDocs(myDeductions(users.instructor, ORG_A, users.manager)));
+  });
+
+  test("an unfiltered group query is refused", async () => {
+    /* organizationId 를 걸지 않으면 규칙이 평가할 것이 없어 쿼리 전체가 거부된다 --
+       규칙 파일 머리말의 B 항목이 그 이야기다. */
+    await assertFails(getDocs(ledgerGroup(users.instructor)));
+    await assertFails(getDocs(query(ledgerGroup(users.instructor), where("type", "==", "deduct"))));
+  });
+
+  test("an owner and a manager read the whole organization", async () => {
+    // 전 지점 급여 화면이 나중에 이 문으로 들어온다.
+    for (const role of ["owner", "manager"]) {
+      const snapshot = await assertSucceeds(getDocs(query(
+        ledgerGroup(users[role]),
+        where("organizationId", "==", ORG_A),
+      )), role);
+      assert.ok(snapshot.size >= 2, role);
+    }
+  });
+
+  test("another organization's ledger stays out of reach", async () => {
+    await assertFails(getDocs(query(ledgerGroup(users.instructor), where("organizationId", "==", ORG_B))));
+    await assertFails(getDocs(query(ledgerGroup(users.outsider), where("organizationId", "==", ORG_A))));
+    await assertFails(getDocs(query(ledgerGroup(null), where("organizationId", "==", ORG_A))));
+  });
+
+  test("the group door writes nothing", async () => {
+    // 원장은 append-only 이고, 그 입구는 회원권 경로 하나뿐이다.
+    await assertFails(updateDoc(
+      doc(dbFor(users.instructor), "organizations", ORG_A, COLLECTIONS.PASSES, PASS_A, COLLECTIONS.LEDGER, "entry-mine"),
+      { unitPrice: 99000 },
+    ));
+    await assertFails(deleteDoc(
+      doc(dbFor(users.owner), "organizations", ORG_A, COLLECTIONS.PASSES, PASS_A, COLLECTIONS.LEDGER, "entry-mine"),
+    ));
+  });
+
+  test("reading one entry through its pass still works", async () => {
+    // 그룹 규칙을 더하면서 기존 경로가 좁아지지 않았는지.
+    await assertSucceeds(getDoc(
+      doc(dbFor(users.staff), "organizations", ORG_A, COLLECTIONS.PASSES, PASS_A, COLLECTIONS.LEDGER, "entry-theirs"),
     ));
   });
 });

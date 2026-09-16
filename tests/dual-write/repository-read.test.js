@@ -9,6 +9,7 @@ import { listLocations } from "../../src/data/repositories/location-repository.j
 import { listProducts } from "../../src/data/repositories/product-repository.js";
 import { listPasses } from "../../src/data/repositories/pass-repository.js";
 import { listInstructors } from "../../src/data/repositories/instructor-repository.js";
+import { loadInstructorMonthlyPay } from "../../src/data/repositories/payroll-repository.js";
 
 const ORG = "center-a";
 const denied = () => Object.assign(new Error("Missing or insufficient permissions."), { code: "permission-denied" });
@@ -117,6 +118,7 @@ const repositories = [
   { name: "listProducts", feature: "product_catalog", call: (read) => listProducts(ORG, { store: listOnly(read) }) },
   { name: "listPasses", feature: "pass_directory", call: (read) => listPasses(ORG, { store: listOnly(read) }) },
   { name: "listInstructors", feature: "instructor_directory", call: (read) => listInstructors(ORG, { store: { listByRole: read } }) },
+  { name: "loadInstructorMonthlyPay", feature: "instructor_payroll", call: (read) => loadInstructorMonthlyPay(ORG, { instructorId: "instructor-a", month: "2026-09", store: { listDeductions: read } }) },
 ];
 
 test("every list repository turns a refused read into a traceable error", async () => {
@@ -132,10 +134,12 @@ test("every list repository turns a refused read into a traceable error", async 
   }
 });
 
+const emptyResultOf = (value) => (Array.isArray(value) ? value : value.entries);
+
 test("every list repository returns an empty list quietly when there is nothing", async () => {
   for (const { name, call } of repositories) {
     const entries = recorder();
-    assert.deepEqual(await call(async () => []), [], name);
+    assert.deepEqual(emptyResultOf(await call(async () => [])), [], name);
     assert.deepEqual(entries, [], `${name} 이 빈 결과를 실패처럼 기록했다`);
     disconnectRepositoryLog();
   }

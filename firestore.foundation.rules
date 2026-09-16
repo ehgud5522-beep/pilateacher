@@ -531,6 +531,24 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/memberships/$(membershipDocumentId)).data.organizationId;
     }
 
+    // A collection-group query does not reach the nested rule above it, so the
+    // pay screen — which reads one instructor's month across every pass at once
+    // rather than opening each pass in turn — needs its own match. It grants no
+    // more than the nested rule already does: an active member of the same
+    // organization. The instructor clause is the one a group query can prove,
+    // because the query filters on instructorId; owners and managers get the
+    // organization-wide branch for the payroll screen that comes later.
+    //
+    // organizationId must be constrained by the query or the whole read is
+    // refused — see the list note near the top of this file.
+    match /{path=**}/ledger/{entryId} {
+      allow read: if isActiveMember(resource.data.organizationId)
+        && (
+          resource.data.instructorId == request.auth.uid
+          || hasRole(resource.data.organizationId, ["owner", "manager"])
+        );
+    }
+
     match /memberships/{membershipDocumentId} {
       allow read: if signedIn() && (
         resource.data.userId == request.auth.uid

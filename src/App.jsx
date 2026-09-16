@@ -93,6 +93,7 @@ import {
   DEDUCT_BACKDATE_LIMIT_DAYS, deductPass, isDeductablePass, issuePass, listPasses,
   remainingCountOf,
 } from "./data/repositories/pass-repository.js";
+import { loadInstructorMonthlyPay, toDate } from "./data/repositories/payroll-repository.js";
 import {
   UNIT_PRICE_SOURCE, unitPriceSourceFor,
 } from "./data/schema/pay-rates.js";
@@ -2760,7 +2761,7 @@ function SchedItem({ s, members, del, setDel, setEditing, onStatus, onNoshowFee,
   );
 }
 
-function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset, quickAddRequest, onConsumeQuickAdd, openLessonId, onConsumeOpenLesson, onOpenMember, onAddMember, onOpenAttendance }) {
+function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset, quickAddRequest, onConsumeQuickAdd, openLessonId, onConsumeOpenLesson, onOpenMember, onAddMember, onOpenAttendance, payCard = null }) {
   const initialDisplay = useMemo(() => {
     try { return JSON.parse(localStorage.getItem(SCHEDULE_VIEW_KEY) || "null") || {}; }
     catch (e) { return {}; }
@@ -2967,6 +2968,8 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
   }), [pendingLessonSummary, db.schedule]);
   return (
     <div className="flex h-full min-h-0 flex-col">
+      {/* 조직 소속 강사의 이달 예상 급여. 앱을 여는 이유가 이 숫자라 맨 위에 둔다. */}
+      {payCard}
       {/* ─── 상단 헤더: 주 범위 + 이동 + 오늘 + 등록 ─── */}
       <div className="shrink-0 flex items-center gap-1 px-2" style={{ height: 44, backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
         <button onClick={() => step(-1)} className="flex items-center justify-center" style={{ width: 36, height: 36, color: SUB }}>
@@ -14048,6 +14051,156 @@ function SettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings,
     </div>
   );
 }
+/* 강사 예상 급여. 본인 것만 본다.
+
+   일정 탭 맨 위에 카드로 둔다. 강사가 앱을 여는 이유가 이 숫자이고, 더보기
+   안에 있으면 열지 않는다. 출석 체크도 같은 탭에 있어 하루가 한 탭에서 끝난다.
+
+   조직 소속 강사에게만 보인다. 미소속 개인 강사에게는 원장이 없고, 기존 월간
+   리포트가 로컬 일정으로 계산한 값을 그대로 쓴다.
+
+   ── 이 숫자는 최종 급여가 아니다 ──
+   원장에 쌓인 수업료만 더한다. 인센티브도 노쇼 수수료도 그룹 수업도 여기
+   없다. 강사가 이 값을 받을 돈으로 읽으면 매달 정산 때 어긋나므로, 화면이
+   무엇까지 셌는지 먼저 말한다. */
+
+const PAY_SCOPE_NOTICE = "수업료만 자동으로 계산됩니다. 인센티브와 노쇼는 별도로 정산됩니다.";
+
+function InstructorPayCard({ pay, loading, error, onOpen }) {
+  return (
+    <button type="button" onClick={onOpen} className="flex w-full items-center gap-2 text-left"
+      style={{ padding: "10px 14px", backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
+      <div className="min-w-0 flex-1">
+        <p style={{ fontSize: TYPE.caption, color: SUB }}>이달 예상 급여</p>
+        {loading ? (
+          <p className="mt-0.5" style={{ fontSize: TYPE.body, fontWeight: 600, color: SUB }}>불러오는 중…</p>
+        ) : error ? (
+          // 0원으로 보이면 강사가 "이번 달 수업이 없었나" 하고 넘어간다.
+          <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: BAD }}>불러오지 못했습니다 (코드 {error})</p>
+        ) : (
+          <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.title, fontWeight: 700, color: INK }}>
+            ₩{won(pay?.total)}
+          </p>
+        )}
+      </div>
+      <ChevronRight size={16} style={{ color: FAINT }} />
+    </button>
+  );
+}
+
+function InstructorPayDetail({
+  organization, pay, loading, error, month, clientStore, passStore,
+  onClose, onRetry, initialState = null,
+}) {
+  const [passes, setPasses] = useState(initialState?.passes || []);
+  const [clients, setClients] = useState(initialState?.clients || []);
+  const organizationId = organization?.organizationId || "";
+
+  /* 원장 항목은 회원권만 가리킨다. 이름을 붙이려면 회원권 → 회원을 이어야
+     하는데, 그 두 번의 읽기는 카드가 아니라 이 화면을 열었을 때만 치른다.
+     이름을 못 읽어도 금액은 맞으므로 목록만 회원권 번호로 떨어진다. */
+  useEffect(() => {
+    if (!organizationId || initialState) return;
+    let alive = true;
+    Promise.all([
+      listPasses(organizationId, { store: passStore }).catch(() => []),
+      listClients(organizationId, { store: clientStore }).catch(() => []),
+    ]).then(([foundPasses, foundClients]) => {
+      if (!alive) return;
+      setPasses(foundPasses);
+      setClients(foundClients);
+    });
+    return () => { alive = false; };
+  }, [organizationId, clientStore, passStore, initialState]);
+
+  const nameOfPass = useMemo(() => {
+    const clientById = new Map(clients.map((client) => [client.id, client.name || ""]));
+    const map = new Map();
+    for (const pass of passes) map.set(pass.id, clientById.get(pass.clientId) || "");
+    return map;
+  }, [passes, clients]);
+
+  return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p style={{ fontSize: TYPE.caption, color: SUB }}>{monthLabel(`${month}-01`)}</p>
+          <div className="mt-1 flex items-end gap-2">
+            <p className="tabular-nums" style={{ fontSize: TYPE.hero, lineHeight: 1.1, fontWeight: 700, color: INK }}>
+              ₩{won(pay?.total)}
+            </p>
+            <p style={{ paddingBottom: 3, fontSize: TYPE.caption, color: SUB }}>예상 급여</p>
+          </div>
+        </div>
+        {onClose ? (
+          <button type="button" onClick={onClose} aria-label="닫기" className="shrink-0"
+            style={{ width: 32, height: 32, color: SUB }}><X size={18} /></button>
+        ) : null}
+      </div>
+      <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>{PAY_SCOPE_NOTICE}</p>
+
+      {loading ? <p className="mt-3" style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : null}
+      {!loading && error ? (
+        <div className="mt-3">
+          <p style={{ fontSize: TYPE.caption, color: BAD }}>급여를 불러오지 못했습니다 (코드 {error}).</p>
+          <button type="button" onClick={() => onRetry?.()} className="mt-2 h-11 w-full font-bold"
+            style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>다시 시도</button>
+        </div>
+      ) : null}
+
+      {!loading && !error ? (
+        <div className="mt-3">
+          {pay?.byCategory?.length ? (
+            <div>
+              <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>수업 종류</p>
+              {pay.byCategory.map((row) => (
+                <div key={row.category} className="flex items-center gap-2"
+                  style={{ padding: "10px 0", borderTop: `1px solid ${LINE}` }}>
+                  <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.body, color: INK }}>
+                    {labelOf(PAY_CATEGORY_LABELS, row.category)}
+                  </span>
+                  <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>{row.sessions}건</span>
+                  <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>
+                    ₩{won(row.amount)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p style={{ fontSize: TYPE.caption, color: SUB }}>이번 달 차감된 수업이 없습니다.</p>
+          )}
+
+          {pay?.entries?.length ? (
+            <div className="mt-4">
+              <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>최근 차감</p>
+              {pay.entries.slice(0, 20).map((item) => {
+                const at = toDate(item.occurredAt);
+                return (
+                  <div key={item.id} className="flex items-center gap-2"
+                    style={{ padding: "10px 0", borderTop: `1px solid ${LINE}` }}>
+                    <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+                      {at.getMonth() + 1}.{at.getDate()}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.body, color: INK }}>
+                      {nameOfPass.get(item.passId) || item.passId}
+                    </span>
+                    <span className="shrink-0 truncate" style={{ fontSize: TYPE.caption, color: SUB, maxWidth: 108 }}>
+                      {labelOf(PAY_CATEGORY_LABELS, item.category)}
+                    </span>
+                    <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK }}>
+                      ₩{won(Math.abs(Number(item.delta) || 0) * (Number(item.unitPrice) || 0))}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 /* 출석 체크. 수업을 한 사람이 회원권 한 회차를 쓴다.
 
    일정 탭에 둔다. 강사가 하루에 여러 번 여는 동작이고, 수업이 끝난 자리에서
@@ -15233,7 +15386,7 @@ function ProductCatalog({ organization, currentUserId, store, onRetryOrganizatio
   );
 }
 
-function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, onRetryOrganization }) {
+function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, onRetryOrganization, initialView = "hub" }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const organization = useContext(OrganizationContext);
   /* 회원권 상품은 센터를 운영하는 대표만 본다. 개인 모드(legacy)에는 센터가
@@ -15260,7 +15413,9 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
   const showInstructorRates = organization.ready
     && !organization.isLegacy
     && organization.role === ROLES.OWNER;
-  const [view, setView] = useState("hub");
+  /* initialView 는 스모크 하네스가 상세 화면 하나를 바로 여는 자리다. 앱은
+     언제나 hub 에서 시작한다. */
+  const [view, setView] = useState(initialView);
   const [busy, setBusy] = useState(false);
   const [deleteStep, setDeleteStep] = useState("intro");
   const [deletePhrase, setDeletePhrase] = useState("");
@@ -15528,7 +15683,15 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
             <section style={sectionStyle}>
               <p style={{ fontSize: TYPE.caption, color: SUB }}>{monthLabel(`${reportYm}-01`)}</p>
               <div className="mt-1 flex items-end gap-2"><p className="tabular-nums" style={{ fontSize: TYPE.hero, lineHeight: 1.1, fontWeight: 700, color: INK }}>₩{won(reportPay)}</p><p style={{ paddingBottom: 3, fontSize: TYPE.caption, color: SUB }}>예상 급여</p></div>
-              <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>완료·차감 처리된 수업과 센터/회원별 단가를 기준으로 계산합니다.</p>
+              {/* 소속 센터에서는 이 화면과 일정 탭의 예상 급여가 서로 다른 것을
+                  센다. 여기는 기기에 저장된 일정과 회원별 단가이고, 그쪽은
+                  회원권 원장이다. 같은 "예상 급여"라는 말이 두 곳에서 다른
+                  뜻이면 강사가 어느 쪽을 믿어야 할지 알 수 없다. */}
+              <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+                {organization.ready && !organization.isLegacy
+                  ? "이 화면은 기기에 저장된 일정과 회원별 단가로 계산합니다. 센터 회원권에서 차감된 수업료는 일정 탭의 예상 급여에서 봅니다."
+                  : "완료·차감 처리된 수업과 센터/회원별 단가를 기준으로 계산합니다."}
+              </p>
             </section>
             <section style={sectionStyle}>
               <div className="grid grid-cols-2 gap-2">
@@ -15886,6 +16049,23 @@ export function createAppScreenSmokeCases() {
   ];
   const passStore = { list: async () => smokePasses, commit: async () => {}, serverTimestamp: async () => "SERVER_TIME" };
   const smokeNow = () => new Date("2026-09-17T19:30:00.000Z");
+  const smokePayEntry = (id, category, unitPrice, day) => ({
+    id, organizationId: "smoke-center", passId: "smoke-pass-a", type: "deduct", delta: -1,
+    category, unitPrice, instructorId: "smoke-instructor", lessonId: `lesson-${id}`,
+    occurredAt: new Date(2026, 8, day, 10, 0, 0),
+  });
+  const smokePay = {
+    month: "2026-09", total: 105000, sessions: 3,
+    byCategory: [
+      { category: "pt_1_1_repurchase_normal", sessions: 1, amount: 45000 },
+      { category: "pt_1_1_repurchase_event", sessions: 2, amount: 60000 },
+    ],
+    entries: [
+      smokePayEntry("e3", "pt_1_1_repurchase_event", 30000, 16),
+      smokePayEntry("e2", "pt_1_1_repurchase_event", 30000, 12),
+      smokePayEntry("e1", "pt_1_1_repurchase_normal", 45000, 4),
+    ],
+  };
   const attendance = (organization, initialState) => providerWith(organization, (
     <AttendanceCheck organization={readyOrganizationContext(organization)} currentUserId="smoke-instructor"
       clientStore={clientStore} passStore={passStore} initialState={initialState} now={smokeNow}
@@ -15924,6 +16104,25 @@ export function createAppScreenSmokeCases() {
     { name: "더보기 탭 · 강사", element: settingsTab({ ...smokeOwner, role: "instructor" }) },
     { name: "더보기 탭 · 개인 모드", element: settingsTab({ organizationId: "legacy_smoke", role: "owner", status: "active", isLegacy: true }) },
     { name: "더보기 탭 · 소속 확인 실패", element: settingsTab({ organizationId: "", role: "", status: "unknown", isLegacy: false }) },
+    { name: "더보기 탭 · 월간 리포트", element: settingsTab(smokeInstructorOrg, { initialView: "report" }) },
+    { name: "더보기 탭 · 월간 리포트 · 개인 모드", element: settingsTab({ organizationId: "legacy_smoke", role: "owner", status: "active", isLegacy: true }, { initialView: "report" }) },
+    { name: "이달 예상 급여", element: providerWith(smokeInstructorOrg, (
+      <InstructorPayDetail organization={readyOrganizationContext(smokeInstructorOrg)} month="2026-09"
+        pay={smokePay} loading={false} error="" onClose={noop} onRetry={noop}
+        initialState={{ passes: smokePasses, clients: smokeClients }} />
+    )) },
+    { name: "이달 예상 급여 · 빈 달", element: providerWith(smokeInstructorOrg, (
+      <InstructorPayDetail organization={readyOrganizationContext(smokeInstructorOrg)} month="2026-09"
+        pay={{ total: 0, sessions: 0, byCategory: [], entries: [] }} loading={false} error=""
+        onClose={noop} onRetry={noop} initialState={{ passes: [], clients: [] }} />
+    )) },
+    { name: "이달 예상 급여 · 조회 실패", element: providerWith(smokeInstructorOrg, (
+      <InstructorPayDetail organization={readyOrganizationContext(smokeInstructorOrg)} month="2026-09"
+        pay={null} loading={false} error="failed-precondition" onClose={noop} onRetry={noop}
+        initialState={{ passes: [], clients: [] }} />
+    )) },
+    { name: "예상 급여 카드", element: <InstructorPayCard pay={smokePay} loading={false} error="" onOpen={noop} /> },
+    { name: "예상 급여 카드 · 조회 실패", element: <InstructorPayCard pay={null} loading={false} error="failed-precondition" onOpen={noop} /> },
     { name: "출석 체크", element: attendance(smokeInstructorOrg, {
       clients: smokeClients, passes: smokePasses, clientId: "smoke-client-a", day: "2026-09-17", time: "19:00",
     }) },
@@ -15997,6 +16196,11 @@ export default function App() {
      없다. 이름을 membership 에 동기화할 때 그 시점의 이름이 필요하다. */
   const accountRef = useRef(null);
   const [attendanceOpen, setAttendanceOpen] = useState(false);
+  const [payOpen, setPayOpen] = useState(false);
+  const [instructorPay, setInstructorPay] = useState(null);
+  const [payLoading, setPayLoading] = useState(false);
+  const [payError, setPayError] = useState("");
+  const [payRevision, setPayRevision] = useState(0);
   const [organizationContext, setOrganizationContext] = useState(UNRESOLVED_ORGANIZATION_CONTEXT);
   /* 소속 센터에서 회원 등록은 FC매니저와 대표의 일이다. 강사가 같은 사람을
      다시 등록하면 같은 회원이 둘이 되고 수업 기록이 갈라진다. 개인 강사
@@ -16009,6 +16213,13 @@ export default function App() {
   const canCheckAttendance = organizationContext.ready
     && !organizationContext.isLegacy
     && [ROLES.OWNER, ROLES.MANAGER, ROLES.INSTRUCTOR].includes(organizationContext.role);
+  /* 예상 급여 카드는 소속 강사의 것이다. 미소속 개인 강사에게는 원장이 없고,
+     기존 월간 리포트가 로컬 일정으로 계산한 값을 그대로 쓴다. 대표의 전 지점
+     급여는 계산이 달라 별도 화면으로 남겨 둔다. */
+  const canSeeOwnPay = organizationContext.ready
+    && !organizationContext.isLegacy
+    && organizationContext.role === ROLES.INSTRUCTOR;
+  const payMonth = monthKey(todayISO());
   const [db, setDb] = useState(emptyDb("", ""));
   const lessonRecordDbRef = useRef(db);
   useEffect(() => { lessonRecordDbRef.current = db; }, [db]);
@@ -16351,6 +16562,21 @@ export default function App() {
       return readyOrganizationContext(unknownOrganizationContext());
     }
   };
+
+  useEffect(() => {
+    if (!canSeeOwnPay || !account?.id) { setInstructorPay(null); setPayError(""); return undefined; }
+    let alive = true;
+    setPayLoading(true);
+    setPayError("");
+    loadInstructorMonthlyPay(organizationContext.organizationId, {
+      instructorId: account.id, month: payMonth,
+    }).then((summary) => { if (alive) setInstructorPay(summary); })
+      /* 0원과 못 읽음을 구분한다. 강사가 0원을 보고 "이번 달 수업이 없었나"
+         하고 넘어가면 그 달 정산에서야 어긋난 것을 알게 된다. */
+      .catch((error) => { if (alive) setPayError(error?.code || "unknown"); })
+      .finally(() => { if (alive) setPayLoading(false); });
+    return () => { alive = false; };
+  }, [canSeeOwnPay, account?.id, organizationContext.organizationId, payMonth, payRevision]);
 
   const retryOrganizationContext = useCallback(async () => {
     const userId = fbCurrentUserId();
@@ -18163,7 +18389,7 @@ export default function App() {
       <div className="pt-app-shell safe-t flex h-full min-h-0 w-full flex-col" style={{ backgroundColor: PAGE, boxShadow: "0 0 0 1px rgba(28,36,51,.04)" }}>
         <div className="relative min-h-0 flex-1 overflow-hidden">
           <Guard key={tab}>
-            {tab === "schedule" && <ScheduleManager db={db} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterMembers ? () => { setMemberRegistrationRequest((value) => value + 1); setTab("members"); } : undefined} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
+            {tab === "schedule" && <ScheduleManager db={db} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterMembers ? () => { setMemberRegistrationRequest((value) => value + 1); setTab("members"); } : undefined} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
             {tab === "members" && <div className={`h-full min-h-0 ${mobileView === "detail" && member ? "pt-member-detail-active" : ""}`}>
               <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList members={db.members} schedule={db.schedule} settings={db.settings} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterMembers} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
               {mobileView === "detail" && member && <div className="pt-member-detail-pane h-full min-h-0">
@@ -18195,6 +18421,17 @@ export default function App() {
         </div>
         {/* 출석 체크는 일정 탭 위에 시트로 뜬다. 탭 구조를 건드리지 않으면서
             수업이 끝난 자리에서 바로 열리게 하기 위해서다. */}
+        {payOpen && canSeeOwnPay ? (
+          <div className="absolute inset-0 z-50 overflow-y-auto" style={{ backgroundColor: PAGE }}>
+            <div className="mx-auto w-full max-w-md p-3">
+              <InstructorPayDetail organization={organizationContext} pay={instructorPay}
+                loading={payLoading} error={payError} month={payMonth}
+                clientStore={undefined} passStore={undefined}
+                onRetry={() => setPayRevision((value) => value + 1)}
+                onClose={() => setPayOpen(false)} />
+            </div>
+          </div>
+        ) : null}
         {attendanceOpen && canCheckAttendance ? (
           <div className="absolute inset-0 z-50 overflow-y-auto" style={{ backgroundColor: PAGE }}>
             <div className="mx-auto w-full max-w-md p-3">

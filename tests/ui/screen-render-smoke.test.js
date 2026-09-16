@@ -34,6 +34,13 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 강사",
     "더보기 탭 · 개인 모드",
     "더보기 탭 · 소속 확인 실패",
+    "더보기 탭 · 월간 리포트",
+    "더보기 탭 · 월간 리포트 · 개인 모드",
+    "이달 예상 급여",
+    "이달 예상 급여 · 빈 달",
+    "이달 예상 급여 · 조회 실패",
+    "예상 급여 카드",
+    "예상 급여 카드 · 조회 실패",
     "출석 체크",
     "출석 체크 · 확인",
     "출석 체크 · 회원권 없음",
@@ -543,4 +550,88 @@ test("an instructor is not offered a way to register a member", async (t) => {
 
   // 개인 강사(legacy)는 자기 회원을 자기가 등록하므로 그대로 둔다.
   assert.match(markupOf("회원 목록"), /추가<\/button>/);
+});
+
+/* 강사 예상 급여. 강사가 앱을 여는 이유가 이 숫자이므로 일정 탭 맨 위에 있고,
+   동시에 최종 급여가 아니라는 것이 같은 화면에 있어야 한다. */
+test("the pay screen says what it counted and what it did not", async (t) => {
+  const markupOf = await issueScreens(t);
+  const detail = markupOf("이달 예상 급여");
+
+  assert.match(detail, /2026년 9월/);
+  assert.match(detail, /₩105,000/);
+  assert.match(detail, /예상 급여/);
+
+  /* 이 문구가 없으면 강사가 이 숫자를 받을 돈으로 읽고, 매달 정산 때 어긋난다. */
+  assert.match(detail, /수업료만 자동으로 계산됩니다\. 인센티브와 노쇼는 별도로 정산됩니다\./);
+
+  // 카테고리별 건수와 금액.
+  assert.match(detail, /1:1 재등록\(정상\)/);
+  assert.match(detail, /1건/);
+  assert.match(detail, /₩45,000/);
+  assert.match(detail, /1:1 재등록\(이벤트\)/);
+  assert.match(detail, /2건/);
+  assert.match(detail, /₩60,000/);
+});
+
+test("the recent list names the member, the day and the amount", async (t) => {
+  const markupOf = await issueScreens(t);
+  const detail = markupOf("이달 예상 급여");
+  assert.match(detail, /최근 차감/);
+  // 원장은 회원권만 가리키므로 회원권 → 회원으로 이어 붙인다.
+  assert.match(detail, /김하나/);
+  assert.match(detail, /9\.16/);
+  assert.match(detail, /9\.4/);
+  // 한 건의 금액은 그 항목에 박힌 단가다.
+  assert.match(detail, /₩30,000/);
+});
+
+test("an empty month is not an error", async (t) => {
+  const markupOf = await issueScreens(t);
+  const empty = markupOf("이달 예상 급여 · 빈 달");
+  assert.match(empty, /₩0/);
+  assert.match(empty, /이번 달 차감된 수업이 없습니다/);
+  assert.doesNotMatch(empty, /불러오지 못했습니다/);
+  // 범위 안내는 0원일 때도 있어야 한다.
+  assert.match(empty, /수업료만 자동으로 계산됩니다/);
+});
+
+test("a failed read never shows itself as zero won", async (t) => {
+  /* 강사가 0원을 보고 "이번 달 수업이 없었나" 하고 넘어가면 그 달 정산에서야
+     어긋난 것을 알게 된다. 인덱스가 아직 빌드 중이면 failed-precondition 이
+     돌아오는데, 그것도 이 자리에 코드로 보인다. */
+  const markupOf = await issueScreens(t);
+  const failed = markupOf("이달 예상 급여 · 조회 실패");
+  assert.match(failed, /급여를 불러오지 못했습니다/);
+  assert.match(failed, /failed-precondition/);
+  assert.match(failed, /다시 시도/);
+  assert.doesNotMatch(failed, /이번 달 차감된 수업이 없습니다/);
+
+  const card = markupOf("예상 급여 카드 · 조회 실패");
+  assert.match(card, /불러오지 못했습니다/);
+  assert.match(card, /failed-precondition/);
+  assert.doesNotMatch(card, /₩0/);
+});
+
+test("the card shows the month total and nothing else", async (t) => {
+  const markupOf = await issueScreens(t);
+  const card = markupOf("예상 급여 카드");
+  assert.match(card, /이달 예상 급여/);
+  assert.match(card, /₩105,000/);
+  // 카드는 총액만 말한다. 자세한 것은 눌러서 본다.
+  assert.doesNotMatch(card, /최근 차감/);
+});
+
+test("the legacy monthly report says it counts something else in a centre", async (t) => {
+  /* 같은 "예상 급여"라는 말이 두 곳에서 다른 뜻이면 강사가 어느 쪽을 믿어야
+     할지 알 수 없다. 소속 모드에서는 이 화면이 무엇을 세는지 밝힌다. */
+  const markupOf = await issueScreens(t);
+  const inOrganization = markupOf("더보기 탭 · 월간 리포트");
+  assert.match(inOrganization, /기기에 저장된 일정과 회원별 단가로 계산합니다/);
+  assert.match(inOrganization, /일정 탭의 예상 급여/);
+
+  // 미소속 개인 강사에게는 지금 문구 그대로다.
+  const personal = markupOf("더보기 탭 · 월간 리포트 · 개인 모드");
+  assert.match(personal, /완료·차감 처리된 수업과 센터\/회원별 단가를 기준으로 계산합니다/);
+  assert.doesNotMatch(personal, /일정 탭의 예상 급여/);
 });

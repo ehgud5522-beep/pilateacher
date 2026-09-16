@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  createFirestorePassStore, deductPass, isDeductablePass, issuePass, listPasses,
-  remainingCountOf, transferPassInstructor,
+  activeRemainingTotal, createFirestorePassStore, deductPass, isDeductablePass, issuePass,
+  listPassLedger, listPasses, loadClientPassHistory, remainingCountOf, transferPassInstructor,
 } from "../../src/data/repositories/pass-repository.js";
 import { RepositoryReadError, connectRepositoryLog, disconnectRepositoryLog } from "../../src/data/repositories/repository-read.js";
 
@@ -528,4 +528,193 @@ test("an issued pass carries the price a later deduction will read", async () =>
   const deductStore = fakeStore();
   await deductPass(ORG, { ...pass, id: "pass-a" }, deductInput(), deductOptions(deductStore));
   assert.equal(deductStore.calls.commit[0][2].data.unitPrice, 25000);
+});
+
+/* ── 회원 한 명의 회원권과 이력 ────────────────────────────────────────── */
+
+const historyStore = ({ passes = [], ledgers = {}, failPassIds = [] } = {}) => {
+  const calls = [];
+  return {
+    calls,
+    list: async (path) => {
+      calls.push(path);
+      if (path.endsWith("/passes")) return passes;
+      const passId = /\/passes\/([^/]+)\/ledger$/.exec(path)?.[1] || "";
+      if (failPassIds.includes(passId)) {
+        throw Object.assign(new Error("denied"), { code: "permission-denied" });
+      }
+      return ledgers[passId] || [];
+    },
+    commit: async () => {},
+    serverTimestamp: async () => "SERVER_TIME",
+  };
+};
+
+const ledgerEntry = (overrides = {}) => ({
+  id: "entry-1",
+  organizationId: ORG,
+  passId: "pass-a",
+  type: "deduct",
+  delta: -1,
+  category: "pt_1_1_new",
+  unitPrice: 25000,
+  instructorId: "instructor-a",
+  occurredAt: new Date(2026, 8, 10, 10, 0, 0),
+  ...overrides,
+});
+
+test("a ledger is read from its own pass, not across the centre", async () => {
+  /* 원장 항목은 clientId 를 들고 있지 않다. 회원 기준 그룹 쿼리는 인덱스를
+     더해서 되는 일이 아니라 append-only 기록에 필드를 더해야 하는 일이다. */
+  const store = historyStore({ passes: [activePass({ id: "pass-a" })] });
+  await loadClientPassHistory(ORG, "client-a", { store });
+  assert.deepEqual(store.calls, [
+    "organizations/center-a/passes",
+    "organizations/center-a/passes/pass-a/ledger",
+  ]);
+});
+
+test("only this client's passes are read", async () => {
+  const store = historyStore({
+    passes: [activePass({ id: "pass-a" }), activePass({ id: "pass-b", clientId: "client-b" })],
+  });
+  const history = await loadClientPassHistory(ORG, "client-a", { store });
+  assert.deepEqual(history.passes.map((item) => item.id), ["pass-a"]);
+  assert.equal(store.calls.filter((path) => path.endsWith("/ledger")).length, 1);
+});
+
+test("the remaining total counts only passes that can still be used", async () => {
+  /* 종료된 회원권에 숫자가 남아 있어도 그것으로 수업할 수 없다. 더하면 화면이
+     실제보다 많이 남았다고 말하게 되고, 분쟁 중에 그 숫자가 근거가 된다. */
+  const store = historyStore({
+    passes: [
+      activePass({ id: "p1", remainingCount: 8 }),
+      activePass({ id: "p2", remainingCount: 3 }),
+      activePass({ id: "p3", remainingCount: 5, status: "expired" }),
+      activePass({ id: "p4", remainingCount: 9, status: "cancelled" }),
+    ],
+  });
+  const history = await loadClientPassHistory(ORG, "client-a", { store });
+  assert.equal(history.remainingTotal, 11);
+  // 종료된 회원권도 목록에는 남는다 -- 흐리게 보여줄 뿐이다.
+  assert.equal(history.passes.length, 4);
+});
+
+test("a remaining total of a broken count is zero, not NaN", () => {
+  assert.equal(activeRemainingTotal([activePass({ remainingCount: "8" })]), 0);
+  assert.equal(activeRemainingTotal([]), 0);
+  assert.equal(activeRemainingTotal(undefined), 0);
+});
+
+test("the history is newest first", async () => {
+  const store = historyStore({
+    passes: [activePass({ id: "pass-a" })],
+    ledgers: {
+      "pass-a": [
+        ledgerEntry({ id: "mid", occurredAt: new Date(2026, 8, 10, 10, 0, 0) }),
+        ledgerEntry({ id: "newest", occurredAt: new Date(2026, 8, 17, 19, 0, 0) }),
+        ledgerEntry({ id: "oldest", occurredAt: new Date(2026, 8, 1, 9, 0, 0) }),
+      ],
+    },
+  });
+  const history = await loadClientPassHistory(ORG, "client-a", { store });
+  assert.deepEqual(history.entries.map((item) => item.id), ["newest", "mid", "oldest"]);
+});
+
+test("issue, deduct and transfer all appear together", async () => {
+  const store = historyStore({
+    passes: [activePass({ id: "pass-a" })],
+    ledgers: {
+      "pass-a": [
+        ledgerEntry({ id: "issued", type: "issue", delta: 20, occurredAt: new Date(2026, 8, 1, 9, 0, 0) }),
+        ledgerEntry({ id: "spent", type: "deduct", delta: -1, occurredAt: new Date(2026, 8, 5, 9, 0, 0) }),
+        ledgerEntry({
+          id: "moved", type: "transfer", delta: 0,
+          fromInstructorId: "instructor-a", toInstructorId: "instructor-b",
+          occurredAt: new Date(2026, 8, 9, 9, 0, 0),
+        }),
+      ],
+    },
+  });
+  const history = await loadClientPassHistory(ORG, "client-a", { store });
+  assert.deepEqual(history.entries.map((item) => item.type), ["transfer", "deduct", "issue"]);
+  const moved = history.entries.find((item) => item.type === "transfer");
+  assert.equal(moved.fromInstructorId, "instructor-a");
+  assert.equal(moved.toInstructorId, "instructor-b");
+});
+
+test("entries from several passes are merged into one timeline", async () => {
+  const store = historyStore({
+    passes: [activePass({ id: "p2", purchaseRound: 2 }), activePass({ id: "p1", purchaseRound: 1 })],
+    ledgers: {
+      p1: [ledgerEntry({ id: "round1", passId: "p1", occurredAt: new Date(2026, 7, 20, 9, 0, 0) })],
+      p2: [ledgerEntry({ id: "round2", passId: "p2", occurredAt: new Date(2026, 8, 12, 9, 0, 0) })],
+    },
+  });
+  const history = await loadClientPassHistory(ORG, "client-a", { store });
+  assert.deepEqual(history.entries.map((item) => item.id), ["round2", "round1"]);
+});
+
+test("an entry carries the pass it belongs to even when the field is missing", async () => {
+  // 화면이 어느 회원권의 이력인지 말할 수 있어야 한다.
+  const store = historyStore({
+    passes: [activePass({ id: "pass-a" })],
+    ledgers: { "pass-a": [{ id: "bare", type: "deduct", delta: -1, occurredAt: new Date(2026, 8, 5) }] },
+  });
+  const history = await loadClientPassHistory(ORG, "client-a", { store });
+  assert.equal(history.entries[0].passId, "pass-a");
+});
+
+test("one unreadable ledger does not empty the whole screen", async () => {
+  /* 분쟁 중에 화면이 통째로 비는 것보다 "이 회원권의 이력을 못 읽었다"가 낫다. */
+  const store = historyStore({
+    passes: [activePass({ id: "p1" }), activePass({ id: "p2" })],
+    ledgers: { p1: [ledgerEntry({ id: "readable", passId: "p1" })] },
+    failPassIds: ["p2"],
+  });
+  const history = await loadClientPassHistory(ORG, "client-a", { store });
+  assert.deepEqual(history.entries.map((item) => item.id), ["readable"]);
+  assert.deepEqual(history.failedPassIds, ["p2"]);
+  assert.equal(history.remainingTotal, 40, "회원권 자체는 읽혔으므로 잔여는 맞다");
+});
+
+test("a failed pass list is a failure, not an empty client", async () => {
+  // 회원권 목록을 못 읽으면 "회원권이 없다"로 보이면 안 된다.
+  const store = historyStore();
+  store.list = async () => { throw Object.assign(new Error("denied"), { code: "permission-denied" }); };
+  await assert.rejects(() => loadClientPassHistory(ORG, "client-a", { store }), RepositoryReadError);
+});
+
+test("a client with nothing yet is empty, not broken", async () => {
+  const store = historyStore({ passes: [] });
+  const history = await loadClientPassHistory(ORG, "client-a", { store });
+  assert.deepEqual(history.passes, []);
+  assert.deepEqual(history.entries, []);
+  assert.deepEqual(history.failedPassIds, []);
+  assert.equal(history.remainingTotal, 0);
+});
+
+test("an organization and a client are required before anything is read", async () => {
+  const store = historyStore();
+  await assert.rejects(() => loadClientPassHistory("", "client-a", { store }), /Missing organizationId/);
+  await assert.rejects(() => loadClientPassHistory(ORG, "", { store }), /Missing clientId/);
+  assert.equal(store.calls.length, 0);
+});
+
+test("reading one pass ledger needs both ids", async () => {
+  const store = historyStore();
+  await assert.rejects(() => listPassLedger("", "pass-a", { store }), /Missing organizationId/);
+  await assert.rejects(() => listPassLedger(ORG, "", { store }), /Missing passId/);
+  assert.equal(store.calls.length, 0);
+});
+
+test("a refused ledger read is recorded with its own feature name", async () => {
+  const entries = [];
+  connectRepositoryLog((code, detail) => entries.push({ code, detail }));
+  const store = historyStore({ failPassIds: ["pass-a"] });
+  await assert.rejects(() => listPassLedger(ORG, "pass-a", { store }), RepositoryReadError);
+  assert.equal(entries[0].code, "pass_ledger_read_failed");
+  assert.equal(entries[0].detail.errorCode, "permission-denied");
+  assert.equal(entries[0].detail.path, "organizations/center-a/passes/pass-a/ledger");
+  disconnectRepositoryLog();
 });

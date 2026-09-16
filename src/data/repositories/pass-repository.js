@@ -24,6 +24,7 @@ import {
   ATTENDANCE_STATUS, LEDGER_ENTRY_TYPE, LESSON_STATUS, PASS_STATUS, PAYMENT_METHOD,
 } from "../schema/constants.js";
 import { paths } from "../schema/paths.js";
+import { toDate } from "./payroll-repository.js";
 import { resolveUnitPrice } from "../schema/pay-rates.js";
 import { readCollection } from "./repository-read.js";
 
@@ -406,4 +407,102 @@ export async function deductPass(organizationId, pass, input, options = {}) {
     { path: paths.pass(organization, passId), data: { remainingCount: -1 }, operation: "decrement" },
   ]);
   return { passId, lessonId, entryId, entry, lesson };
+}
+
+/* ── 회원 한 명의 회원권과 이력 ────────────────────────────────────────────
+   분쟁이 생겼을 때 여는 자리다. "몇 회 남았나"와 "언제 무엇이 일어났나"가
+   같은 화면에서 답해져야 한다.
+
+   ── 왜 collectionGroup 을 쓰지 않는가 ──
+   원장 항목은 clientId 를 들고 있지 않다. 가진 것은 passId 뿐이라, 회원 기준
+   그룹 쿼리는 인덱스를 추가해서 되는 일이 아니라 append-only 기록에 필드를
+   더해야 하는 일이다. 그리고 이미 쌓인 항목에는 그 필드가 영영 없다.
+
+   회원권 쪽으로 도는 편이 맞기도 하다. 한 회원의 회원권은 차수만큼이라 보통
+   한두 개, 많아야 다섯이다. 급여 집계가 그룹 쿼리를 쓰는 이유(강사 한 사람의
+   한 달이 센터 전체에 흩어져 있다)가 여기서는 성립하지 않는다.
+
+   그래서 인덱스도 규칙도 그대로다.
+   ────────────────────────────────────────────────────────────────────────── */
+
+const ledgerCollection = (organizationId, passId) => {
+  const documentPath = paths.passLedgerEntry(organizationId, passId, "placeholder");
+  return documentPath.slice(0, documentPath.lastIndexOf("/"));
+};
+
+/**
+ * 회원권 하나의 원장. 발급·차감·담당 교체가 모두 들어 있다.
+ *
+ * @param {string} organizationId
+ * @param {string} passId
+ * @param {{ store?: PassStore }} [options]
+ */
+export async function listPassLedger(organizationId, passId, options = {}) {
+  const { store = createFirestorePassStore() } = options;
+  const organization = requiredText(organizationId, "organizationId");
+  const id = requiredText(passId, "passId");
+  // 조회 실패는 빈 목록이 아니라 RepositoryReadError 로 나간다 -- repository-read.js 참고.
+  return readCollection({
+    feature: "pass_ledger",
+    path: ledgerCollection(organization, id),
+    read: (path) => store.list(path),
+  });
+}
+
+/**
+ * 지금 쓸 수 있는 회차의 합.
+ *
+ * 종료·만료·취소된 회원권은 빼고 센다. 남은 숫자가 들어 있더라도 그 회원권으로
+ * 수업할 수 없으므로, 더하면 화면이 실제보다 많이 남았다고 말하게 된다.
+ *
+ * @param {Array<any>} passes
+ */
+export function activeRemainingTotal(passes) {
+  return (Array.isArray(passes) ? passes : [])
+    .filter((pass) => pass?.status === PASS_STATUS.ACTIVE)
+    .reduce((sum, pass) => sum + remainingCountOf(pass), 0);
+}
+
+/** 최신이 위. 같은 시각이면 발급이 차감보다 먼저 일어난 것으로 본다. */
+const byOccurredAtDesc = (left, right) => {
+  const gap = toDate(right.occurredAt).getTime() - toDate(left.occurredAt).getTime();
+  if (gap !== 0 && Number.isFinite(gap)) return gap;
+  const rank = (entry) => (entry.type === LEDGER_ENTRY_TYPE.ISSUE ? 1 : 0);
+  return rank(left) - rank(right);
+};
+
+/**
+ * 회원 한 명의 회원권과 그 원장 전체.
+ *
+ * 회원권마다 원장을 읽는다. 한 회원의 회원권은 보통 한두 개라 이 편이 그룹
+ * 쿼리보다 단순하고, 무엇보다 원장이 clientId 를 들고 있지 않아 그룹 쿼리로는
+ * 애초에 회원을 지목할 수 없다.
+ *
+ * 원장 하나를 못 읽어도 나머지는 보여준다. 분쟁 중에 화면이 통째로 비는 것보다
+ * "이 회원권의 이력을 못 읽었다"가 낫다 -- 못 읽은 회원권은 failedPassIds 로
+ * 나가고 화면이 그 사실을 말한다.
+ *
+ * @param {string} organizationId
+ * @param {string} clientId
+ * @param {{ store?: PassStore }} [options]
+ */
+export async function loadClientPassHistory(organizationId, clientId, options = {}) {
+  const { store = createFirestorePassStore() } = options;
+  const organization = requiredText(organizationId, "organizationId");
+  const client = requiredText(clientId, "clientId");
+  const passes = await listPasses(organization, { clientId: client, store });
+
+  const failedPassIds = [];
+  const ledgers = await Promise.all(passes.map((pass) => (
+    listPassLedger(organization, pass.id, { store })
+      .then((entries) => entries.map((entry) => ({ ...entry, passId: entry.passId || pass.id })))
+      .catch(() => { failedPassIds.push(pass.id); return []; })
+  )));
+
+  return {
+    passes,
+    remainingTotal: activeRemainingTotal(passes),
+    entries: ledgers.flat().sort(byOccurredAtDesc),
+    failedPassIds,
+  };
 }

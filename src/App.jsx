@@ -78,6 +78,10 @@ import {
   unknownOrganizationContext,
 } from "./data/repositories/organization-context.js";
 import {
+  fullRoomRateOf, hasUsableFullRoomRate, listInstructors,
+  setInstructorFullRoomRate, syncOwnMembershipName,
+} from "./data/repositories/instructor-repository.js";
+import {
   clientMatchesSearch, createClient, findSameNameClients, listClients, normalizePhone,
 } from "./data/repositories/client-repository.js";
 import { listLocations } from "./data/repositories/location-repository.js";
@@ -14026,6 +14030,157 @@ function SettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings,
     </div>
   );
 }
+/* 강사 단가. 대표만 본다.
+
+   여기서 정하는 풀방금액은 1:1 재등록(정상) 한 카테고리의 단가다. 나머지 일곱은
+   강사가 누구든 같은 금액이고, 특히 이벤트페이는 풀방금액이 있는 강사에게도
+   정해진 금액으로 나간다 -- pay-rates.js 참고.
+
+   강사가 자기 금액을 올릴 수 있으면 급여가 스스로 움직이므로 규칙도 대표만
+   허용한다. 화면을 감추는 것과 규칙이 막는 것은 다른 일이고, 둘 다 필요하다.
+
+   이름은 membership 의 displayName 에서 온다. users/{uid} 를 읽지 않는 이유는
+   규칙 파일의 memberships 주석에 있다 -- 이름을 얻자고 그 문서를 열면
+   전화번호와 이메일이 함께 열린다. 이름이 아직 없는 강사는 uid 로 보이고,
+   그 강사가 앱을 한 번 열면 자기 이름이 채워진다. */
+
+function InstructorRateRow({ instructor, busy, onEdit }) {
+  const rate = fullRoomRateOf(instructor);
+  const usable = hasUsableFullRoomRate(instructor);
+  return (
+    <div style={{ padding: "11px 12px", borderTop: `1px solid ${LINE}` }}>
+      <div className="flex items-center justify-between gap-2">
+        <span className="min-w-0 truncate" style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>
+          {instructor.displayName || instructor.userId}
+        </span>
+        <button type="button" disabled={busy} onClick={() => onEdit(instructor)}
+          className="shrink-0 px-3 font-bold" style={{
+            height: 32, borderRadius: 999, fontSize: TYPE.caption,
+            backgroundColor: TINT, color: BRAND_D, opacity: busy ? 0.5 : 1,
+          }}>{usable ? "변경" : "설정"}</button>
+      </div>
+      <p className="mt-1 tabular-nums" style={{ fontSize: TYPE.caption, color: usable ? SUB : WARN }}>
+        {usable ? `${wonToManwonLabel(rate)} · 회당` : "풀방금액 미설정 — 1:1 재등록(정상) 발급 불가"}
+      </p>
+    </div>
+  );
+}
+
+function InstructorRates({ organization, currentUserId, instructorStore, rateStore, onRetryOrganization, onToast, initialState = null }) {
+  const [instructors, setInstructors] = useState(initialState?.instructors || []);
+  const [loading, setLoading] = useState(!initialState);
+  const [loadError, setLoadError] = useState(initialState?.loadError || "");
+  const [editing, setEditing] = useState(initialState?.editing || null);
+  const [draft, setDraft] = useState(initialState?.draft || "");
+  const [formError, setFormError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const organizationId = organization?.organizationId || "";
+  const locked = organization?.status === "unknown";
+
+  const reload = useCallback(async () => {
+    if (!organizationId) return;
+    setLoading(true);
+    setLoadError("");
+    try {
+      setInstructors(await listInstructors(organizationId, { store: instructorStore }));
+    } catch (error) {
+      // 조회 실패와 "강사가 없다"는 다른 화면이어야 한다 -- repository-read 관례.
+      setLoadError(error?.code || "unknown");
+    } finally {
+      setLoading(false);
+    }
+  }, [organizationId, instructorStore]);
+
+  useEffect(() => { if (!locked) reload(); else setLoading(false); }, [locked, reload]);
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setFormError("");
+    if (!editing) return;
+    setSaving(true);
+    try {
+      await setInstructorFullRoomRate(organizationId, editing.userId, {
+        newRate: manwonToWon(Number(draft)),
+        previousRate: fullRoomRateOf(editing),
+        changedBy: currentUserId,
+      }, { store: rateStore });
+      setEditing(null);
+      setDraft("");
+      onToast?.({ ok: true, msg: "풀방금액을 저장했습니다." });
+      await reload();
+    } catch (error) {
+      setFormError(`저장하지 못했어요 (코드 ${error?.code || error?.message || "unknown"})`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (locked) return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>소속을 확인하지 못했습니다</h2>
+      <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        네트워크 문제로 소속 정보를 읽지 못했습니다. 잘못된 센터의 단가를 건드리지 않도록 이 화면을 잠급니다.
+      </p>
+      <button type="button" onClick={() => onRetryOrganization?.()} className="mt-3 h-11 w-full font-bold"
+        style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>다시 시도</button>
+    </section>
+  );
+
+  if (editing) return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>
+        {editing.displayName || editing.userId} 풀방금액
+      </h2>
+      <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        1:1 재등록(정상) 수업의 회당 단가입니다. 다른 카테고리는 이 금액과 무관합니다.
+      </p>
+      <form onSubmit={submit} className="mt-3 space-y-3">
+        <Field label="회당 단가 (만원)">
+          <input inputMode="decimal" value={draft} className={inputCls} placeholder="4.5"
+            onChange={(e) => setDraft(e.target.value.replace(/[^\d.]/g, ""))} />
+        </Field>
+        {formError ? <p style={{ fontSize: TYPE.caption, color: BAD }}>{formError}</p> : null}
+        <div className="flex gap-2 pt-1">
+          <button type="button" onClick={() => { setEditing(null); setDraft(""); setFormError(""); }}
+            className="h-11 flex-1 font-bold"
+            style={{ borderRadius: 10, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>취소</button>
+          <button type="submit" disabled={saving} className="h-11 flex-1 font-bold"
+            style={{ borderRadius: 10, backgroundColor: BRAND, color: "#fff", fontSize: TYPE.caption, opacity: saving ? 0.6 : 1 }}>
+            {saving ? "저장 중" : "저장"}
+          </button>
+        </div>
+      </form>
+    </section>
+  );
+
+  return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>강사 단가</h2>
+      <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        단가를 바꾸면 이후 발급분부터 적용됩니다. 이미 기록된 수업의 급여는 바뀌지 않습니다.
+      </p>
+      <div className="mt-3">
+        {loading ? <p style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : null}
+        {!loading && loadError
+          ? <p style={{ fontSize: TYPE.caption, color: BAD }}>강사 목록을 불러오지 못했습니다 (코드 {loadError}).</p>
+          : null}
+        {!loading && !loadError && instructors.length === 0
+          ? <p style={{ fontSize: TYPE.caption, color: SUB }}>등록된 강사가 없습니다.</p>
+          : null}
+        {!loading && !loadError && instructors.map((instructor) => (
+          <InstructorRateRow key={instructor.userId} instructor={instructor} busy={saving}
+            onEdit={(picked) => {
+              setEditing(picked);
+              const rate = fullRoomRateOf(picked);
+              setDraft(rate ? String(rate / WON_PER_MANWON) : "");
+              setFormError("");
+            }} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
 /* 회원 관리. 대표와 매니저가 본다.
 
    연락처는 뒷 4자리만 보여준다. 목록은 사람이 많을수록 한 화면에 여러 명이
@@ -14476,7 +14631,7 @@ function ProductCatalog({ organization, currentUserId, store, onRetryOrganizatio
   );
 }
 
-function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, productStore, clientStore, locationStore, onRetryOrganization }) {
+function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, productStore, clientStore, locationStore, instructorStore, instructorRateStore, onRetryOrganization }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const organization = useContext(OrganizationContext);
   /* 회원권 상품은 센터를 운영하는 대표만 본다. 개인 모드(legacy)에는 센터가
@@ -14498,6 +14653,11 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
   const showClients = organization.ready
     && !organization.isLegacy
     && [ROLES.OWNER, ROLES.MANAGER].includes(organization.role);
+  /* 강사 단가는 대표만 본다. 규칙도 대표만 허용하므로, 매니저에게 보여 주면
+     눌러도 거부되는 화면만 나온다. */
+  const showInstructorRates = organization.ready
+    && !organization.isLegacy
+    && organization.role === ROLES.OWNER;
   const [view, setView] = useState("hub");
   const [busy, setBusy] = useState(false);
   const [deleteStep, setDeleteStep] = useState("intro");
@@ -14650,6 +14810,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
     data: "데이터 상태", backup: "데이터 이관 · 백업", permissions: "접근권한 안내", knowledge: "오늘의 지식", account: "계정", "account-delete": "계정 삭제", app: "앱 정보",
     products: "회원권 상품",
     clients: "회원 관리",
+    "instructor-rates": "강사 단가",
   };
   const menuGroups = [
     { label: "업무", items: [
@@ -14661,6 +14822,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
       { key: "assessment", title: "변화 기록 설정", description: "기본 방식 · AI 분석 · 직접 포인트/그리기", Icon: Activity },
       { key: "center", title: "센터 정보", description: "센터명 · 담당자 · 그룹 단가", Icon: SettingsIcon },
       ...(showClients ? [{ key: "clients", title: "회원 관리", description: "회원 등록 · 검색", Icon: UserPlus }] : []),
+      ...(showInstructorRates ? [{ key: "instructor-rates", title: "강사 단가", description: "강사별 풀방금액", Icon: Users }] : []),
       ...(showProducts ? [{ key: "products", title: "회원권 상품", description: "이벤트 상품 추가 · 종료", Icon: Ticket }] : []),
       { key: "schedule-colors", title: "일정 색상", description: "개인 · 듀엣 · 그룹 · 상담 · 휴무 카드 색", Icon: Palette },
       { key: "theme", title: "화면 설정", description: "폰 설정 · 라이트 · 다크", Icon: Smartphone },
@@ -14878,6 +15040,11 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
           </div>
         )}
         {view === "backup" && <div className="space-y-3"><CloudBackupCard status={backupStatus} onEnablePhotos={onEnablePhotoBackup} onRetry={onRetryBackup} /><HandoffCard db={db} photos={photos} account={account} onImport={onImport} onToast={onToast} /></div>}
+        {view === "instructor-rates" && showInstructorRates && (
+          <InstructorRates organization={organization} currentUserId={account?.id || ""}
+            instructorStore={instructorStore} rateStore={instructorRateStore}
+            onRetryOrganization={onRetryOrganization} onToast={onToast} />
+        )}
         {view === "clients" && showClients && (
           <ClientDirectory organization={organization} currentUserId={account?.id || ""}
             clientStore={clientStore} locationStore={locationStore}
@@ -15089,7 +15256,20 @@ export function createAppScreenSmokeCases() {
     serverTimestamp: async () => "SERVER_TIME",
   };
   const locationStore = { list: async () => smokeLocations };
-  const settingsTab = (organization, extra = {}) => providerWith(organization, <ReferenceSettingsTab db={db} photos={photos} account={{ id: "smoke-account", role: "owner" }} savedAt={null} demoMode={false} onChangeSettings={noop} onChangePhoto={noop} onLogout={noop} onDeleteAccount={noop} onToast={noop} themePref="light" onChangeTheme={noop} onImport={noop} onOpenSchedule={noop} onOpenRecords={noop} onOpenOnboarding={noop} backupStatus={{}} onEnablePhotoBackup={noop} onRetryBackup={noop} productStore={productStore} clientStore={clientStore} locationStore={locationStore} onRetryOrganization={noop} {...extra} />);
+  /* 강사 목록도 Firestore 를 건드리지 않는다. 화면이 그리는 것만 본다. */
+  const smokeInstructors = [
+    { id: "smoke-center_u1", organizationId: "smoke-center", userId: "u1", role: "instructor", status: "active", displayName: "정예진", fullRoomRate: 45000 },
+    { id: "smoke-center_u2", organizationId: "smoke-center", userId: "u2", role: "instructor", status: "active", displayName: "박서연" },
+    { id: "smoke-center_u3", organizationId: "smoke-center", userId: "u3", role: "instructor", status: "active", displayName: "", fullRoomRate: 0 },
+  ];
+  const instructorStore = { listByRole: async () => smokeInstructors };
+  const instructorRateStore = { commit: async () => {}, serverTimestamp: async () => "SERVER_TIME" };
+  const instructorRates = (organization, initialState) => providerWith(organization, (
+    <InstructorRates organization={readyOrganizationContext(organization)} currentUserId="smoke-account"
+      instructorStore={instructorStore} rateStore={instructorRateStore} initialState={initialState}
+      onRetryOrganization={noop} onToast={noop} />
+  ));
+  const settingsTab = (organization, extra = {}) => providerWith(organization, <ReferenceSettingsTab db={db} photos={photos} account={{ id: "smoke-account", role: "owner" }} savedAt={null} demoMode={false} onChangeSettings={noop} onChangePhoto={noop} onLogout={noop} onDeleteAccount={noop} onToast={noop} themePref="light" onChangeTheme={noop} onImport={noop} onOpenSchedule={noop} onOpenRecords={noop} onOpenOnboarding={noop} backupStatus={{}} onEnablePhotoBackup={noop} onRetryBackup={noop} productStore={productStore} clientStore={clientStore} locationStore={locationStore} instructorStore={instructorStore} instructorRateStore={instructorRateStore} onRetryOrganization={noop} {...extra} />);
   const clientDirectory = (organization, initialState) => providerWith(organization, (
     <ClientDirectory organization={readyOrganizationContext(organization)} currentUserId="smoke-account"
       clientStore={clientStore} locationStore={locationStore} initialState={initialState}
@@ -15108,6 +15288,12 @@ export function createAppScreenSmokeCases() {
     { name: "더보기 탭 · 강사", element: settingsTab({ ...smokeOwner, role: "instructor" }) },
     { name: "더보기 탭 · 개인 모드", element: settingsTab({ organizationId: "legacy_smoke", role: "owner", status: "active", isLegacy: true }) },
     { name: "더보기 탭 · 소속 확인 실패", element: settingsTab({ organizationId: "", role: "", status: "unknown", isLegacy: false }) },
+    { name: "강사 단가", element: instructorRates(smokeOwner, { instructors: smokeInstructors }) },
+    { name: "강사 단가 · 단가 입력", element: instructorRates(smokeOwner, {
+      instructors: smokeInstructors, editing: smokeInstructors[0], draft: "4.5",
+    }) },
+    { name: "강사 단가 · 조회 실패", element: instructorRates(smokeOwner, { instructors: [], loadError: "permission-denied" }) },
+    { name: "강사 단가 · 강사 없음", element: instructorRates(smokeOwner, { instructors: [] }) },
     { name: "회원 관리", element: clientDirectory(smokeOwner, { clients: smokeClients, locations: smokeLocations }) },
     { name: "회원 관리 · 검색 결과 없음", element: clientDirectory(smokeOwner, { clients: smokeClients, locations: smokeLocations, search: "없는이름" }) },
     { name: "회원 관리 · 등록", element: clientDirectory(smokeOwner, { clients: smokeClients, locations: smokeLocations, mode: "add" }) },
@@ -15138,6 +15324,9 @@ export default function App() {
   const onboardingCheckedAccountRef = useRef("");
   const [accounts, setAccounts] = useState([]);
   const [account, setAccount] = useState(null);
+  /* retryOrganizationContext 는 deps 가 비어 있어 최신 account 를 닫아 둘 수
+     없다. 이름을 membership 에 동기화할 때 그 시점의 이름이 필요하다. */
+  const accountRef = useRef(null);
   const [organizationContext, setOrganizationContext] = useState(UNRESOLVED_ORGANIZATION_CONTEXT);
   const [db, setDb] = useState(emptyDb("", ""));
   const lessonRecordDbRef = useRef(db);
@@ -15395,7 +15584,7 @@ export default function App() {
             await loadAccount(preservedSessionAccount);
             if (alive) {
               startupStage = "organization_context";
-              const resolved = await loadOrganizationContext(u.id, "auth_state_profile_error");
+              const resolved = await loadOrganizationContext(u.id, "auth_state_profile_error", preservedSessionAccount.name || "");
               if (alive) setOrganizationContext(resolved);
             }
             if (alive) finishStartup("app", isFirstCallback ? 1400 : 0);
@@ -15413,7 +15602,7 @@ export default function App() {
           await loadAccount(acc);
           if (!alive) return;
           startupStage = "organization_context";
-          const resolvedOrganization = await loadOrganizationContext(u.id, "auth_state");
+          const resolvedOrganization = await loadOrganizationContext(u.id, "auth_state", acc.name || "");
           if (!alive) return;
           setOrganizationContext(resolvedOrganization);
           const wait = isFirstCallback ? 1400 : 0;
@@ -15444,7 +15633,7 @@ export default function App() {
    * 소속은 인증이 끝난 뒤 한 번만 읽는다. 별도 useEffect 를 두면 인증 준비
    * 게이트와 경합하고 uid 없이 조회하는 경로가 생긴다.
    */
-  const loadOrganizationContext = async (userId, source) => {
+  const loadOrganizationContext = async (userId, source, displayName = "") => {
     /* 어느 경로가 조회를 요청했는지부터 남긴다. resolve 안의 로그는 userId 가
        비어 throw 하면 찍히지 않으므로, 호출 지점 도달 여부는 여기서만 알 수
        있다. */
@@ -15458,6 +15647,17 @@ export default function App() {
         warn: (code, detail) => deviceLog(code, detail),
         log: (code, detail) => deviceLog(code, detail),
       });
+      /* 내 이름을 membership 에 남겨 둔다. 대표가 강사 목록에서 uid 가 아니라
+         이름을 보게 하는 유일한 경로다 -- users/{uid} 를 열면 전화번호와 이메일이
+         함께 열리므로(규칙 파일 memberships 주석) 이름만 여기로 옮겨 온다.
+         실패해도 앱 시작을 막지 않는다. 이름이 없으면 uid 로 보일 뿐이다. */
+      if (!resolved.isLegacy && resolved.organizationId && displayName) {
+        syncOwnMembershipName(resolved.organizationId, userId, {
+          displayName, currentDisplayName: resolved.displayName,
+        }).catch((error) => deviceLog("membership_name_sync_failed", {
+          feature: ORGANIZATION_CONTEXT_FEATURE, stage: "sync_name", ...deviceError(error),
+        }));
+      }
       return readyOrganizationContext(resolved);
     } catch (error) {
       /* 여기서 던지면 호출부가 setOrganizationContext 를 못 부르고 ready:false
@@ -15475,12 +15675,13 @@ export default function App() {
     const userId = fbCurrentUserId();
     if (!userId) return;
     setOrganizationContext(UNRESOLVED_ORGANIZATION_CONTEXT);
-    setOrganizationContext(await loadOrganizationContext(userId, "retry"));
+    setOrganizationContext(await loadOrganizationContext(userId, "retry", accountRef.current?.name || ""));
   }, []);
 
   const loadAccount = async (acc) => {
     revokeAllUrls();
     setAccount(acc);
+    accountRef.current = acc;
     restoreBlockedRef.current = false;
     setRestoreOffer(null);
     let data = null, ph = {}, restored = false, reviewPhotos = null, cloudSnapshot = null, cloudManifest = [];

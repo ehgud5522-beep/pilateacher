@@ -34,6 +34,10 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 강사",
     "더보기 탭 · 개인 모드",
     "더보기 탭 · 소속 확인 실패",
+    "강사 단가",
+    "강사 단가 · 단가 입력",
+    "강사 단가 · 조회 실패",
+    "강사 단가 · 강사 없음",
     "회원 관리",
     "회원 관리 · 검색 결과 없음",
     "회원 관리 · 등록",
@@ -284,4 +288,98 @@ test("a failed location read does not look like an empty one", async (t) => {
   assert.match(empty, /등록된 지점이 없습니다/);
   assert.doesNotMatch(empty, /불러오지 못했습니다/);
   assert.doesNotMatch(empty, /코드/, "없는 것은 오류가 아니므로 코드가 붙지 않는다");
+});
+
+/* 강사 단가. 대표만 보고, 대표만 바꾼다 -- 규칙도 같은 경계를 지킨다.
+   풀방금액은 1:1 재등록(정상) 한 카테고리의 단가이므로, 화면이 "모든 단가"처럼
+   보이면 안 된다. */
+test("the instructor rate screen says what it changes and what it does not", async (t) => {
+  const vite = await createServer({
+    root: projectRoot,
+    configFile: false,
+    plugins: [react()],
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] },
+    server: { middlewareMode: true },
+    ssr: { noExternal: ["@capgo/camera-preview"] },
+    logLevel: "silent",
+  });
+  t.after(() => vite.close());
+  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+
+  const list = markupOf("강사 단가");
+  // 지난달 급여가 움직이지 않는다는 약속이 화면에 있어야 한다.
+  assert.match(list, /이후 발급분부터 적용됩니다/);
+  assert.match(list, /이미 기록된 수업의 급여는 바뀌지 않습니다/);
+
+  assert.match(list, /정예진/);
+  assert.match(list, /4\.5만원/, "저장은 원 단위, 표시는 만원 단위다");
+
+  // 미설정과 0 은 둘 다 발급을 막는 상태다. 그것이 목록에서 보여야 한다.
+  assert.match(list, /박서연/);
+  assert.equal((list.match(/풀방금액 미설정/g) || []).length, 2, "이름 없는 강사(0원)와 미설정 강사 둘 다");
+  assert.match(list, /1:1 재등록\(정상\) 발급 불가/);
+
+  // 이름이 아직 없는 강사는 uid 로 보인다 -- 안 보이는 것보다 낫다.
+  assert.match(list, /u3/);
+
+  const editing = markupOf("강사 단가 · 단가 입력");
+  assert.match(editing, /정예진 풀방금액/);
+  assert.match(editing, /다른 카테고리는 이 금액과 무관합니다/);
+  assert.match(editing, /value="4\.5"/);
+});
+
+test("a failed instructor read does not look like an empty centre", async (t) => {
+  const vite = await createServer({
+    root: projectRoot,
+    configFile: false,
+    plugins: [react()],
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] },
+    server: { middlewareMode: true },
+    ssr: { noExternal: ["@capgo/camera-preview"] },
+    logLevel: "silent",
+  });
+  t.after(() => vite.close());
+  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+
+  const failed = markupOf("강사 단가 · 조회 실패");
+  assert.match(failed, /강사 목록을 불러오지 못했습니다/);
+  assert.match(failed, /permission-denied/, "추적 가능한 코드가 화면에 있어야 한다");
+  assert.doesNotMatch(failed, /등록된 강사가 없습니다/);
+
+  const empty = markupOf("강사 단가 · 강사 없음");
+  assert.match(empty, /등록된 강사가 없습니다/);
+  assert.doesNotMatch(empty, /불러오지 못했습니다/);
+  assert.doesNotMatch(empty, /코드/, "없는 것은 오류가 아니므로 코드가 붙지 않는다");
+});
+
+test("only the owner reaches the instructor rate screen", async (t) => {
+  const vite = await createServer({
+    root: projectRoot,
+    configFile: false,
+    plugins: [react()],
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] },
+    server: { middlewareMode: true },
+    ssr: { noExternal: ["@capgo/camera-preview"] },
+    logLevel: "silent",
+  });
+  t.after(() => vite.close());
+  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+
+  assert.match(markupOf("더보기 탭"), /강사 단가/);
+  /* 매니저는 회원 관리는 보지만 강사 단가는 못 본다. 규칙이 대표만 허용하므로
+     보여 주면 눌러도 거부되는 화면만 나온다. */
+  assert.doesNotMatch(markupOf("더보기 탭 · 매니저"), /강사 단가/);
+  assert.match(markupOf("더보기 탭 · 매니저"), /회원 관리/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 강사"), /강사 단가/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 개인 모드"), /강사 단가/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 소속 확인 실패"), /강사 단가/);
 });

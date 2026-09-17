@@ -78,8 +78,8 @@ import {
   unknownOrganizationContext,
 } from "./data/repositories/organization-context.js";
 import {
-  fullRoomRateOf, hasUsableFullRoomRate, listInstructors,
-  setInstructorFullRoomRate, syncOwnMembershipName,
+  fullRoomRateOf, hasUsableFullRoomRate, isDeputyDirectorOf, listInstructors,
+  setInstructorDeputyDirector, setInstructorFullRoomRate, syncOwnMembershipName,
 } from "./data/repositories/instructor-repository.js";
 import {
   clientMatchesSearch, createClient, findSameNameClients, listClients, normalizePhone,
@@ -105,8 +105,8 @@ import {
   CLIENT_STATUS, LEDGER_ENTRY_TYPE, PAYMENT_METHOD, PRODUCT_STATUS, ROLES, SESSION_TYPE,
 } from "./data/schema/constants.js";
 import {
-  CLIENT_STATUS_LABELS, PAYMENT_METHOD_LABELS, PAY_CATEGORY_LABELS, PRODUCT_STATUS_LABELS,
-  SESSION_TYPE_LABELS, labelOf, payCategoriesFor,
+  CLIENT_STATUS_LABELS, PAYMENT_METHOD_LABELS, PAY_CATEGORY_LABELS, PRICING_RULE_LABELS,
+  PRODUCT_STATUS_LABELS, SESSION_TYPE_LABELS, labelOf, payCategoriesFor,
 } from "./data/schema/display-names.js";
 import { validatePostureMeasurement, validPostureMetrics } from "./features/posture/measurement-validity.js";
 import {
@@ -14182,20 +14182,29 @@ function InstructorPayDetail({
               {pay.entries.slice(0, 20).map((item) => {
                 const at = toDate(item.occurredAt);
                 return (
-                  <div key={item.id} className="flex items-center gap-2"
-                    style={{ padding: "10px 0", borderTop: `1px solid ${LINE}` }}>
-                    <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
-                      {at.getMonth() + 1}.{at.getDate()}
-                    </span>
-                    <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.body, color: INK }}>
-                      {nameOfPass.get(item.passId) || item.passId}
-                    </span>
-                    <span className="shrink-0 truncate" style={{ fontSize: TYPE.caption, color: SUB, maxWidth: 108 }}>
-                      {labelOf(PAY_CATEGORY_LABELS, item.category)}
-                    </span>
-                    <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK }}>
-                      ₩{won(Math.abs(Number(item.delta) || 0) * (Number(item.unitPrice) || 0))}
-                    </span>
+                  <div key={item.id} style={{ padding: "10px 0", borderTop: `1px solid ${LINE}` }}>
+                    <div className="flex items-center gap-2">
+                      <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+                        {at.getMonth() + 1}.{at.getDate()}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.body, color: INK }}>
+                        {nameOfPass.get(item.passId) || item.passId}
+                      </span>
+                      <span className="shrink-0 truncate" style={{ fontSize: TYPE.caption, color: SUB, maxWidth: 108 }}>
+                        {labelOf(PAY_CATEGORY_LABELS, item.category)}
+                      </span>
+                      <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK }}>
+                        ₩{won(Math.abs(Number(item.delta) || 0) * (Number(item.unitPrice) || 0))}
+                      </span>
+                    </div>
+                    {/* 왜 이 금액인가. 같은 회원권 안에서도 회차마다 답이 달라
+                        금액만 보면 계산이 틀린 것처럼 보인다. 이 필드가 생기기
+                        전 항목에는 없으므로 있을 때만 적는다. */}
+                    {item.rule ? (
+                      <p className="mt-0.5 truncate" style={{ fontSize: TYPE.caption, color: FAINT }}>
+                        {labelOf(PRICING_RULE_LABELS, item.rule)}
+                      </p>
+                    ) : null}
                   </div>
                 );
               })}
@@ -14296,6 +14305,9 @@ function AttendanceCheck({
         instructorId: currentUserId,
         createdBy: currentUserId,
         occurredAt: new Date(`${day}T${time || "00:00"}:00`),
+        /* 급여 판정 1 이 보는 값이다. 로그인할 때 읽은 내 membership 에서 온다 --
+           차감마다 다시 읽지 않는다 (organization-context.js 참고). */
+        isDeputyDirector: organization?.isDeputyDirector === true,
       }, { store: passStore });
       onToast?.({ ok: true, msg: `${client?.name || "회원"}님 1회 차감했습니다.` });
       setConfirming(null);
@@ -14824,6 +14836,9 @@ function PassIssue({
 function InstructorRateRow({ instructor, busy, onEdit }) {
   const rate = fullRoomRateOf(instructor);
   const usable = hasUsableFullRoomRate(instructor);
+  /* 부원장에게는 풀방금액이 쓰이지 않는다 -- 카테고리도 누적도 보지 않고 계약
+     금액의 5:5 로 간다. 숫자를 그대로 두면 그 금액이 지급되는 것으로 읽힌다. */
+  const deputy = isDeputyDirectorOf(instructor);
   return (
     <div style={{ padding: "11px 12px", borderTop: `1px solid ${LINE}` }}>
       <div className="flex items-center justify-between gap-2">
@@ -14836,8 +14851,12 @@ function InstructorRateRow({ instructor, busy, onEdit }) {
             backgroundColor: TINT, color: BRAND_D, opacity: busy ? 0.5 : 1,
           }}>{usable ? "변경" : "설정"}</button>
       </div>
-      <p className="mt-1 tabular-nums" style={{ fontSize: TYPE.caption, color: usable ? SUB : WARN }}>
-        {usable ? `${wonToManwonLabel(rate)} · 회당` : "풀방금액 미설정 — 1:1 재등록(정상) 발급 불가"}
+      <p className="mt-1 tabular-nums" style={{
+        fontSize: TYPE.caption, color: deputy ? BRAND_D : usable ? SUB : WARN,
+      }}>
+        {deputy
+          ? "부원장 (5:5)"
+          : usable ? `${wonToManwonLabel(rate)} · 회당` : "풀방금액 미설정 — 1:1 재등록(정상) 발급 불가"}
       </p>
     </div>
   );
@@ -14849,6 +14868,7 @@ function InstructorRates({ organization, currentUserId, instructorStore, rateSto
   const [loadError, setLoadError] = useState(initialState?.loadError || "");
   const [editing, setEditing] = useState(initialState?.editing || null);
   const [draft, setDraft] = useState(initialState?.draft || "");
+  const [deputyDraft, setDeputyDraft] = useState(initialState?.deputyDraft === true);
   const [formError, setFormError] = useState("");
   const [saving, setSaving] = useState(false);
   const organizationId = organization?.organizationId || "";
@@ -14870,20 +14890,45 @@ function InstructorRates({ organization, currentUserId, instructorStore, rateSto
 
   useEffect(() => { if (!locked) reload(); else setLoading(false); }, [locked, reload]);
 
+  const openEditor = (picked) => {
+    setEditing(picked);
+    const rate = fullRoomRateOf(picked);
+    setDraft(rate ? String(rate / WON_PER_MANWON) : "");
+    setDeputyDraft(isDeputyDirectorOf(picked));
+    setFormError("");
+  };
+
+  const closeEditor = () => { setEditing(null); setDraft(""); setDeputyDraft(false); setFormError(""); };
+
   const submit = async (event) => {
     event.preventDefault();
     setFormError("");
     if (!editing) return;
+    const wasDeputy = isDeputyDirectorOf(editing);
+    const previousRate = fullRoomRateOf(editing);
+    const nextRate = deputyDraft || draft === "" ? null : manwonToWon(Number(draft));
     setSaving(true);
     try {
-      await setInstructorFullRoomRate(organizationId, editing.userId, {
-        newRate: manwonToWon(Number(draft)),
-        previousRate: fullRoomRateOf(editing),
-        changedBy: currentUserId,
-      }, { store: rateStore });
-      setEditing(null);
-      setDraft("");
-      onToast?.({ ok: true, msg: "풀방금액을 저장했습니다." });
+      /* 두 값은 한 문서에 있지만 각자 한 필드짜리 문을 지난다 -- 규칙이 한 번에
+         한 필드만 통과시킨다. 그래서 쓰기도 두 번이다. 부원장부터 쓴다: 그 값이
+         금액보다 세고, 중간에 실패해도 "5:5 인데 금액이 옛날 값"이 남지
+         "금액은 새것인데 아직 부원장이 아닌" 상태가 남지 않는다. */
+      if (deputyDraft !== wasDeputy) {
+        await setInstructorDeputyDirector(organizationId, editing.userId, {
+          isDeputyDirector: deputyDraft,
+          previousDeputyDirector: editing.isDeputyDirector === undefined ? null : wasDeputy,
+          changedBy: currentUserId,
+        }, { store: rateStore });
+      }
+      if (nextRate !== null && nextRate !== previousRate) {
+        await setInstructorFullRoomRate(organizationId, editing.userId, {
+          newRate: nextRate,
+          previousRate,
+          changedBy: currentUserId,
+        }, { store: rateStore });
+      }
+      closeEditor();
+      onToast?.({ ok: true, msg: deputyDraft ? "부원장으로 저장했습니다." : "풀방금액을 저장했습니다." });
       await reload();
     } catch (error) {
       setFormError(`저장하지 못했어요 (코드 ${error?.code || error?.message || "unknown"})`);
@@ -14912,13 +14957,33 @@ function InstructorRates({ organization, currentUserId, instructorStore, rateSto
         1:1 재등록(정상) 수업의 회당 단가입니다. 다른 카테고리는 이 금액과 무관합니다.
       </p>
       <form onSubmit={submit} className="mt-3 space-y-3">
+        {/* 본인은 지정하지 못한다. 규칙도 막지만, 눌러도 거부되는 칸을 열어
+            두면 고장으로 보인다. */}
+        {editing.userId === currentUserId ? null : (
+          <label className="flex items-center gap-2.5" style={{ padding: "10px 0" }}>
+            <input type="checkbox" checked={deputyDraft} className="h-5 w-5"
+              onChange={(e) => setDeputyDraft(e.target.checked)} />
+            <span style={{ fontSize: TYPE.body, color: INK }}>부원장</span>
+          </label>
+        )}
+        {deputyDraft ? (
+          <p style={{
+            padding: "10px 11px", borderRadius: 10, backgroundColor: TINT,
+            fontSize: TYPE.caption, lineHeight: 1.5, color: BRAND_D,
+          }}>
+            부원장은 계약 금액의 50%를 회당 단가로 받습니다. 카테고리와 누적 횟수를 보지 않습니다.
+            {" "}이 강사의 앱이 소속 정보를 다시 읽는 때부터 적용됩니다.
+          </p>
+        ) : null}
         <Field label="회당 단가 (만원)">
-          <input inputMode="decimal" value={draft} className={inputCls} placeholder="4.5"
+          <input inputMode="decimal" value={deputyDraft ? "" : draft} className={inputCls} placeholder="4.5"
+            disabled={deputyDraft}
+            style={deputyDraft ? { opacity: 0.5 } : undefined}
             onChange={(e) => setDraft(e.target.value.replace(/[^\d.]/g, ""))} />
         </Field>
         {formError ? <p style={{ fontSize: TYPE.caption, color: BAD }}>{formError}</p> : null}
         <div className="flex gap-2 pt-1">
-          <button type="button" onClick={() => { setEditing(null); setDraft(""); setFormError(""); }}
+          <button type="button" onClick={closeEditor}
             className="h-11 flex-1 font-bold"
             style={{ borderRadius: 10, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>취소</button>
           <button type="submit" disabled={saving} className="h-11 flex-1 font-bold"
@@ -14946,12 +15011,7 @@ function InstructorRates({ organization, currentUserId, instructorStore, rateSto
           : null}
         {!loading && !loadError && instructors.map((instructor) => (
           <InstructorRateRow key={instructor.userId} instructor={instructor} busy={saving}
-            onEdit={(picked) => {
-              setEditing(picked);
-              const rate = fullRoomRateOf(picked);
-              setDraft(rate ? String(rate / WON_PER_MANWON) : "");
-              setFormError("");
-            }} />
+            onEdit={openEditor} />
         ))}
       </div>
     </section>
@@ -15021,6 +15081,9 @@ function LedgerRow({ entry, nameOfInstructor }) {
         ) : null}
         <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: SUB }}>
           {transfer ? "" : nameOfInstructor(entry.instructorId)}
+          {/* 분쟁이 생겼을 때 여는 화면이다. 금액 옆에 근거가 없으면
+              "왜 이 금액이냐"에 아무도 답할 수 없다. */}
+          {!transfer && entry.rule ? ` · ${labelOf(PRICING_RULE_LABELS, entry.rule)}` : ""}
         </span>
         {!transfer ? (
           <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
@@ -16573,24 +16636,27 @@ export function createAppScreenSmokeCases() {
   const smokeInstructors = [
     { id: "smoke-center_u1", organizationId: "smoke-center", userId: "u1", role: "instructor", status: "active", displayName: "정예진", fullRoomRate: 45000 },
     { id: "smoke-center_u2", organizationId: "smoke-center", userId: "u2", role: "instructor", status: "active", displayName: "박서연" },
+    { id: "smoke-center_u4", organizationId: "smoke-center", userId: "u4", role: "instructor", status: "active", displayName: "최소연", fullRoomRate: 50000, isDeputyDirector: true },
     { id: "smoke-center_u3", organizationId: "smoke-center", userId: "u3", role: "instructor", status: "active", displayName: "", fullRoomRate: 0 },
   ];
   const instructorStore = { listByRole: async () => smokeInstructors };
   const instructorRateStore = { commit: async () => {}, serverTimestamp: async () => "SERVER_TIME" };
   const smokePasses = [
-    { id: "smoke-pass-a", organizationId: "smoke-center", clientId: "smoke-client-a", locationId: "bansong", category: "pt_1_1_repurchase_event", unitPrice: 30000, remainingCount: 8, status: "active", purchaseRound: 2 },
-    { id: "smoke-pass-spent", organizationId: "smoke-center", clientId: "smoke-client-a", locationId: "bansong", category: "pt_1_1_new", unitPrice: 25000, remainingCount: 0, status: "active", purchaseRound: 1 },
+    { id: "smoke-pass-a", organizationId: "smoke-center", clientId: "smoke-client-a", locationId: "bansong", category: "pt_1_1_repurchase_event", baseUnitPrice: 30000, serviceUsed: 0, handedOver: false, contractPrice: 1300000, totalSessions: 20, remainingCount: 8, status: "active", purchaseRound: 2 },
+    { id: "smoke-pass-spent", organizationId: "smoke-center", clientId: "smoke-client-a", locationId: "bansong", category: "pt_1_1_new", baseUnitPrice: 25000, serviceUsed: 0, handedOver: false, contractPrice: 550000, totalSessions: 10, remainingCount: 0, status: "active", purchaseRound: 1 },
   ];
   const passStore = { list: async () => smokePasses, commit: async () => {}, serverTimestamp: async () => "SERVER_TIME" };
   const smokeNow = () => new Date("2026-09-17T19:30:00.000Z");
   const smokeDetailClient = { id: "smoke-client-a", name: "김하나", phone: "01012345678", locationId: "bansong", locationName: "반송점" };
   const smokeHistoryPasses = [
-    { id: "smoke-pass-a", clientId: "smoke-client-a", category: "pt_1_1_repurchase_event", totalSessions: 20, serviceSessions: 2, contractPrice: 1300000, purchaseRound: 2, paymentMethod: "card", remainingCount: 8, unitPrice: 30000, instructorId: "u1", status: "active", createdAt: new Date(2026, 7, 1), expiresAt: new Date(2027, 1, 1) },
-    { id: "smoke-pass-old", clientId: "smoke-client-a", category: "pt_1_1_new", totalSessions: 10, serviceSessions: 0, contractPrice: 550000, purchaseRound: 1, paymentMethod: "cash", remainingCount: 3, unitPrice: 25000, instructorId: "u2", status: "active", createdAt: new Date(2026, 3, 1), expiresAt: new Date(2026, 6, 1) },
+    { id: "smoke-pass-a", clientId: "smoke-client-a", category: "pt_1_1_repurchase_event", totalSessions: 20, serviceSessions: 2, contractPrice: 1300000, purchaseRound: 2, paymentMethod: "card", remainingCount: 8, baseUnitPrice: 30000, serviceUsed: 0, handedOver: false, instructorId: "u1", status: "active", createdAt: new Date(2026, 7, 1), expiresAt: new Date(2027, 1, 1) },
+    { id: "smoke-pass-old", clientId: "smoke-client-a", category: "pt_1_1_new", totalSessions: 10, serviceSessions: 0, contractPrice: 550000, purchaseRound: 1, paymentMethod: "cash", remainingCount: 3, baseUnitPrice: 25000, serviceUsed: 0, handedOver: true, instructorId: "u2", status: "active", createdAt: new Date(2026, 3, 1), expiresAt: new Date(2026, 6, 1) },
   ];
   const smokeHistoryEntries = [
     { id: "h-transfer", passId: "smoke-pass-a", clientId: "smoke-client-a", type: "transfer", delta: 0, fromInstructorId: "u1", toInstructorId: "u2", occurredAt: new Date(2026, 8, 16, 11, 0), createdAt: new Date(2026, 8, 16, 11, 0) },
-    { id: "h-deduct-late", passId: "smoke-pass-a", clientId: "smoke-client-a", type: "deduct", delta: -1, category: "pt_1_1_repurchase_event", unitPrice: 30000, instructorId: "u1", occurredAt: new Date(2026, 8, 12, 19, 0), createdAt: new Date(2026, 8, 13, 23, 40) },
+    { id: "h-deduct-late", passId: "smoke-pass-a", clientId: "smoke-client-a", type: "deduct", delta: -1, category: "pt_1_1_repurchase_event", unitPrice: 30000, rule: "base_category", instructorId: "u1", occurredAt: new Date(2026, 8, 12, 19, 0), createdAt: new Date(2026, 8, 13, 23, 40) },
+    /* 이 필드가 생기기 전 항목. 화면이 빈 줄을 내지 않는지 본다. */
+    { id: "h-deduct-old", passId: "smoke-pass-old", clientId: "smoke-client-a", type: "deduct", delta: -1, category: "pt_1_1_new", unitPrice: 25000, instructorId: "u2", occurredAt: new Date(2026, 8, 10, 9, 0), createdAt: new Date(2026, 8, 10, 9, 0) },
     { id: "h-issue", passId: "smoke-pass-a", clientId: "smoke-client-a", type: "issue", delta: 22, category: "pt_1_1_repurchase_event", unitPrice: 30000, instructorId: "u1", occurredAt: new Date(2026, 7, 1, 10, 0), createdAt: new Date(2026, 7, 1, 10, 0) },
   ];
   const smokeHistory = { passes: smokeHistoryPasses, entries: smokeHistoryEntries, remainingTotal: 8, failedPassIds: [] };
@@ -16599,21 +16665,28 @@ export function createAppScreenSmokeCases() {
       history={smokeHistory} loading={false} error="" instructors={smokeInstructors}
       now={() => new Date(2026, 8, 17)} onClose={noop} onRetry={noop} {...extra} />
   ));
-  const smokePayEntry = (id, category, unitPrice, day) => ({
+  const smokePayEntry = (id, category, unitPrice, day, rule) => ({
     id, organizationId: "smoke-center", passId: "smoke-pass-a", type: "deduct", delta: -1,
-    category, unitPrice, instructorId: "smoke-instructor", lessonId: `lesson-${id}`,
+    category, unitPrice, rule, instructorId: "smoke-instructor", lessonId: `lesson-${id}`,
     occurredAt: new Date(2026, 8, day, 10, 0, 0),
   });
+  /* 같은 카테고리인데 금액이 다른 달. 판정 사유가 없으면 강사는 계산이 틀린
+     것으로 읽는다 -- 이 화면이 답해야 하는 바로 그 상황이다. */
   const smokePay = {
-    month: "2026-09", total: 105000, sessions: 3,
+    month: "2026-09", total: 130000, sessions: 5,
     byCategory: [
       { category: "pt_1_1_repurchase_normal", sessions: 1, amount: 45000 },
-      { category: "pt_1_1_repurchase_event", sessions: 2, amount: 60000 },
+      // 같은 카테고리의 세 회차가 30,000 + 25,000 + 0 이다. 판정이 회차마다 다르다.
+      { category: "pt_1_1_repurchase_event", sessions: 3, amount: 85000 },
+      { category: "service", sessions: 1, amount: 0 },
     ],
     entries: [
-      smokePayEntry("e3", "pt_1_1_repurchase_event", 30000, 16),
+      smokePayEntry("e5", "service", 0, 17, "service_already_used"),
+      smokePayEntry("e4", "pt_1_1_repurchase_event", 25000, 16, "new_to_instructor"),
+      smokePayEntry("e3", "pt_1_1_repurchase_event", 30000, 16, "base_category"),
+      // 이 필드가 생기기 전 항목. 사유 줄 없이 그려져야 한다.
       smokePayEntry("e2", "pt_1_1_repurchase_event", 30000, 12),
-      smokePayEntry("e1", "pt_1_1_repurchase_normal", 45000, 4),
+      smokePayEntry("e1", "pt_1_1_repurchase_normal", 45000, 4, "deputy_director"),
     ],
   };
   const attendance = (organization, initialState) => providerWith(organization, (
@@ -16723,6 +16796,13 @@ export function createAppScreenSmokeCases() {
     { name: "강사 단가 · 단가 입력", element: instructorRates(smokeOwner, {
       instructors: smokeInstructors, editing: smokeInstructors[0], draft: "4.5",
     }) },
+    { name: "강사 단가 · 부원장 지정", element: instructorRates(smokeOwner, {
+      instructors: smokeInstructors, editing: smokeInstructors[0], draft: "4.5", deputyDraft: true,
+    }) },
+    { name: "강사 단가 · 본인", element: instructorRates(
+      { ...smokeOwner, role: "owner" },
+      { instructors: smokeInstructors, editing: { ...smokeInstructors[0], userId: "smoke-account" }, draft: "4.5" },
+    ) },
     { name: "강사 단가 · 조회 실패", element: instructorRates(smokeOwner, { instructors: [], loadError: "permission-denied" }) },
     { name: "강사 단가 · 강사 없음", element: instructorRates(smokeOwner, { instructors: [] }) },
     { name: "회원 관리", element: clientDirectory(smokeOwner, { clients: smokeClients, locations: smokeLocations }) },

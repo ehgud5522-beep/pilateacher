@@ -59,6 +59,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "회원권 발급 · 조회 실패",
     "강사 단가",
     "강사 단가 · 단가 입력",
+    "강사 단가 · 부원장 지정",
+    "강사 단가 · 본인",
     "강사 단가 · 조회 실패",
     "강사 단가 · 강사 없음",
     "회원 관리",
@@ -185,6 +187,72 @@ test("the october migration is the owner's alone and never writes before it has 
   assert.match(result, /같은 이름의 강사가 둘 이상입니다/);
   assert.match(result, /이미 올라간 행입니다/);
   assert.match(result, /다시 올려도 두 번 저장되지 않습니다/);
+});
+
+test("a deputy's pay basis is stated instead of an amount that is never used", async (t) => {
+  const vite = await createServer({
+    root: projectRoot,
+    configFile: false,
+    plugins: [react()],
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] },
+    server: { middlewareMode: true },
+    ssr: { noExternal: ["@capgo/camera-preview"] },
+    logLevel: "silent",
+  });
+  t.after(() => vite.close());
+  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+
+  /* 부원장은 카테고리도 누적도 보지 않고 계약 금액의 5:5 를 받는다. 목록에
+     풀방금액을 그대로 두면 그 금액이 지급되는 것으로 읽힌다. */
+  const list = markupOf("강사 단가");
+  assert.match(list, /4\.5만원 · 회당/, "부원장이 아닌 강사는 금액 그대로");
+  /* 부원장 줄만 본다 -- "4.5만원"에도 "5만원"이 들어 있어, 화면 전체에서
+     찾으면 다른 강사의 금액을 보고 통과한다. */
+  const deputyRow = list.slice(list.indexOf("최소연"), list.indexOf("최소연") + 400);
+  assert.match(deputyRow, /부원장 \(5:5\)/);
+  assert.doesNotMatch(deputyRow, /만원 · 회당/, "부원장 자리에 쓰이지 않는 금액이 남으면 안 된다");
+
+  const editing = markupOf("강사 단가 · 부원장 지정");
+  assert.match(editing, /부원장은 계약 금액의 50%를 회당 단가로 받습니다/);
+  // 체크하면 금액 칸은 잠긴다. 넣어도 쓰이지 않는 숫자를 받으면 안 된다.
+  assert.match(editing, /disabled=""[^>]*placeholder="4\.5"|placeholder="4\.5"[^>]*disabled=""/);
+  // 적용 시점을 말한다 -- 그 강사의 앱은 소속 정보를 다시 읽을 때부터 안다.
+  assert.match(editing, /소속 정보를 다시 읽는 때부터/);
+
+  // 본인은 지정하지 못한다. 눌러도 거부되는 칸을 열어 두면 고장으로 보인다.
+  assert.doesNotMatch(markupOf("강사 단가 · 본인"), /부원장/);
+});
+
+test("a deduction says why it was worth what it was worth", async (t) => {
+  const vite = await createServer({
+    root: projectRoot,
+    configFile: false,
+    plugins: [react()],
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] },
+    server: { middlewareMode: true },
+    ssr: { noExternal: ["@capgo/camera-preview"] },
+    logLevel: "silent",
+  });
+  t.after(() => vite.close());
+  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+
+  /* 같은 카테고리인데 금액이 다른 회차가 한 화면에 함께 온다. 사유가 없으면
+     강사는 계산이 틀린 것으로 읽는다. 다시 계산할 수도 없다 -- 그때의 누적
+     횟수는 계속 올라가 사라진다. */
+  const pay = markupOf("이달 예상 급여");
+  assert.match(pay, /누적 20회 미만 — 신규 단가/);
+  assert.match(pay, /서비스 2회차 — 센터 지원 소진/);
+  assert.match(pay, /부원장 5:5/);
+  assert.match(pay, /기준 단가/);
+
+  // 분쟁이 생겼을 때 여는 화면에도 같은 근거가 붙는다.
+  assert.match(markupOf("센터 회원 상세"), /기준 단가/);
 });
 
 test("ErrorBoundary hides diagnostics in production and records a privacy-safe diagnostic event", async () => {
@@ -625,7 +693,7 @@ test("the pay screen says what it counted and what it did not", async (t) => {
   const detail = markupOf("이달 예상 급여");
 
   assert.match(detail, /2026년 9월/);
-  assert.match(detail, /₩105,000/);
+  assert.match(detail, /₩130,000/);
   assert.match(detail, /예상 급여/);
 
   /* 이 문구가 없으면 강사가 이 숫자를 받을 돈으로 읽고, 매달 정산 때 어긋난다. */
@@ -636,8 +704,11 @@ test("the pay screen says what it counted and what it did not", async (t) => {
   assert.match(detail, /1건/);
   assert.match(detail, /₩45,000/);
   assert.match(detail, /1:1 재등록\(이벤트\)/);
-  assert.match(detail, /2건/);
-  assert.match(detail, /₩60,000/);
+  assert.match(detail, /3건/);
+  /* 같은 카테고리의 세 회차가 30,000 + 25,000 + 0 이다. 회차마다 판정이
+     다르면 이렇게 되고, 합계만 보면 계산이 틀린 것처럼 보인다 -- 사유 줄이
+     있어야 하는 이유가 이것이다. */
+  assert.match(detail, /₩85,000/);
 });
 
 test("the recent list names the member, the day and the amount", async (t) => {
@@ -683,7 +754,7 @@ test("the card shows the month total and nothing else", async (t) => {
   const markupOf = await issueScreens(t);
   const card = markupOf("예상 급여 카드");
   assert.match(card, /이달 예상 급여/);
-  assert.match(card, /₩105,000/);
+  assert.match(card, /₩130,000/);
   // 카드는 총액만 말한다. 자세한 것은 눌러서 본다.
   assert.doesNotMatch(card, /최근 차감/);
 });

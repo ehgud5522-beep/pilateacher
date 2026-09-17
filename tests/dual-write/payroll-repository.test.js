@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  createFirestorePayrollStore, loadInstructorMonthlyPay, monthRange,
-  summarizeInstructorPay, toDate,
+  createFirestorePayrollStore, loadInstructorMonthlyPay, loadOrganizationMonthlyPayroll,
+  monthRange, payrollCsv, previousMonth, summarizeInstructorPay, summarizeOrganizationPay, toDate,
 } from "../../src/data/repositories/payroll-repository.js";
+import { PAY_CATEGORY } from "../../src/data/schema/constants.js";
 import { PAY_RATES } from "../../src/data/schema/pay-rates.js";
 import { RepositoryReadError, connectRepositoryLog, disconnectRepositoryLog } from "../../src/data/repositories/repository-read.js";
 
@@ -225,4 +226,172 @@ test("the Firestore store is what a caller gets when none is injected", async ()
 
 test("the Firestore store answers the whole PayrollStore shape", () => {
   assert.equal(typeof createFirestorePayrollStore().listDeductions, "function");
+});
+
+/* ── 대표의 월말 정산 ────────────────────────────────────────────────────
+
+   강사 개인 화면과 같은 원장, 같은 경계, 같은 단가를 쓴다. 다른 것은 범위
+   하나뿐이다. 이 화면의 첫 용도가 옛 급여 엑셀과의 대조라, 틀리면 대표는
+   그것을 손으로 찾아내야 한다. */
+
+const OTHER = "instructor-b";
+
+function orgStore(documents = []) {
+  const calls = [];
+  return {
+    calls,
+    listOrganizationDeductions: async (query) => { calls.push(query); return documents; },
+  };
+}
+
+const orgEntry = (overrides = {}) => entry({ locationId: "bansong", ...overrides });
+
+test("the centre's month is cut by occurredAt on the centre's own clock", async () => {
+  /* 말일 밤 수업이 다음 달로 넘어가면 그 강사는 자기가 한 수업이 이달 정산에서
+     빠진 것을 보게 되고, 대표는 옛 엑셀과 한 건 차이를 손으로 찾게 된다. */
+  const store = orgStore([
+    orgEntry({ id: "in-first", occurredAt: new Date(2026, 8, 1, 0, 0, 0) }),
+    orgEntry({ id: "in-last", occurredAt: new Date(2026, 8, 30, 23, 59, 59) }),
+    orgEntry({ id: "out-before", occurredAt: new Date(2026, 7, 31, 23, 59, 59) }),
+    orgEntry({ id: "out-after", occurredAt: new Date(2026, 9, 1, 0, 0, 0) }),
+    // 기록한 시각은 다음 달이어도 수업은 이달이다.
+    orgEntry({ id: "in-late-entry", occurredAt: new Date(2026, 8, 30, 21, 0, 0), createdAt: new Date(2026, 9, 1, 2, 0, 0) }),
+  ]);
+  const summary = await loadOrganizationMonthlyPayroll(ORG, { month: "2026-09", store });
+  assert.equal(summary.sessions, 3);
+  assert.equal(summary.start.getMonth(), 8);
+  assert.equal(summary.start.getHours(), 0, "센터 시계로 자른다");
+  assert.equal(summary.end.getMonth(), 9);
+  // 쿼리도 같은 경계로 나간다 -- 서버가 거르고 나서 한 번 더 거른다.
+  assert.equal(store.calls[0].start.getTime(), summary.start.getTime());
+  assert.equal(store.calls[0].end.getTime(), summary.end.getTime());
+});
+
+test("the amount is the price frozen in the entry, never the table", async () => {
+  /* 표가 오른 뒤에 지난달을 다시 열면 그때 숫자가 바뀌어야 하는데, 원장은
+     append-only 라 되돌릴 방법이 없다. */
+  const table = PAY_RATES[PAY_CATEGORY.PT_1_1_NEW];
+  const store = orgStore([
+    orgEntry({ id: "a", category: PAY_CATEGORY.PT_1_1_NEW, unitPrice: table + 7000 }),
+  ]);
+  const summary = await loadOrganizationMonthlyPayroll(ORG, { month: "2026-09", store });
+  assert.equal(summary.total, table + 7000);
+  assert.notEqual(summary.total, table, "표를 다시 읽으면 안 된다");
+});
+
+test("mixed prices inside one pass still add up", () => {
+  /* 같은 회원권 안에서도 회차마다 판정이 다르다 -- 누적 20회를 넘는 순간 값이
+     바뀐다. 건수 × 어떤 하나의 단가로는 절대 맞지 않는다. */
+  const summary = summarizeOrganizationPay([
+    orgEntry({ id: "n1", category: PAY_CATEGORY.PT_1_1_REPURCHASE_NORMAL, unitPrice: 25000, rule: "new_to_instructor" }),
+    orgEntry({ id: "n2", category: PAY_CATEGORY.PT_1_1_REPURCHASE_NORMAL, unitPrice: 25000, rule: "new_to_instructor" }),
+    orgEntry({ id: "b1", category: PAY_CATEGORY.PT_1_1_REPURCHASE_NORMAL, unitPrice: 45000, rule: "base_category" }),
+    orgEntry({ id: "s1", category: PAY_CATEGORY.SERVICE, unitPrice: 10000, rule: "base_category" }),
+    orgEntry({ id: "s2", category: PAY_CATEGORY.SERVICE, unitPrice: 0, rule: "service_already_used" }),
+  ]);
+  assert.equal(summary.total, 25000 + 25000 + 45000 + 10000 + 0);
+  assert.equal(summary.sessions, 5);
+  const normal = summary.byInstructor[0].byCategory
+    .find((row) => row.category === PAY_CATEGORY.PT_1_1_REPURCHASE_NORMAL);
+  assert.equal(normal.sessions, 3);
+  assert.equal(normal.amount, 95000, "한 카테고리 안에서도 단가가 섞인다");
+});
+
+test("categories are laid out in the order the old payroll sheet uses", () => {
+  /* 금액순으로 세우면 달마다 줄 순서가 달라지고, 옛 엑셀과 눈으로 맞추던
+     대표가 줄을 잃는다. 확정본 단가표의 순서로 고정한다. */
+  const summary = summarizeOrganizationPay([
+    orgEntry({ id: "e1", category: PAY_CATEGORY.ETC, unitPrice: 90000 }),
+    orgEntry({ id: "s1", category: PAY_CATEGORY.SERVICE, unitPrice: 10000 }),
+    orgEntry({ id: "n1", category: PAY_CATEGORY.PT_1_1_NEW, unitPrice: 25000 }),
+    orgEntry({ id: "t1", category: PAY_CATEGORY.PT_2_1_NEW, unitPrice: 30000 }),
+  ]);
+  assert.deepEqual(summary.byInstructor[0].byCategory.map((row) => row.category), [
+    PAY_CATEGORY.PT_1_1_NEW, PAY_CATEGORY.PT_2_1_NEW, PAY_CATEGORY.SERVICE, PAY_CATEGORY.ETC,
+  ]);
+});
+
+test("an instructor who taught at two branches is counted once for pay", () => {
+  /* 지점별로만 묶으면 그 사람을 두 번 보게 되고, 급여는 한 번 준다. */
+  const summary = summarizeOrganizationPay([
+    orgEntry({ id: "a", locationId: "bansong", unitPrice: 25000 }),
+    orgEntry({ id: "b", locationId: "centum", unitPrice: 30000 }),
+    orgEntry({ id: "c", locationId: "centum", unitPrice: 30000, instructorId: OTHER }),
+  ]);
+  const me = summary.byInstructor.find((row) => row.instructorId === ME);
+  assert.equal(me.total, 55000, "지점을 가로지르는 합계가 지급할 금액이다");
+  assert.equal(summary.byLocation.length, 2);
+  const centum = summary.byLocation.find((row) => row.locationId === "centum");
+  assert.equal(centum.total, 60000);
+  assert.equal(centum.byInstructor.length, 2);
+  assert.equal(summary.total, 85000, "지점 합계를 더하면 전체와 같다");
+});
+
+test("entries that are not this month's deductions never reach the total", async () => {
+  /* 서버가 거르지만 인덱스나 쿼리를 잘못 고치면 발급 항목이나 남의 조직이
+     조용히 섞여 들어오고, 합계 한 줄에서는 알아챌 방법이 없다. */
+  const store = orgStore([
+    orgEntry({ id: "ok", unitPrice: 25000 }),
+    orgEntry({ id: "issue", type: "issue", delta: 20, unitPrice: 25000 }),
+    orgEntry({ id: "other-org", organizationId: "center-b", unitPrice: 99000 }),
+  ]);
+  const summary = await loadOrganizationMonthlyPayroll(ORG, { month: "2026-09", store });
+  assert.equal(summary.total, 25000);
+  assert.equal(summary.sessions, 1);
+});
+
+test("a failed read is never a quiet zero", async () => {
+  /* 0원짜리 정산 화면과 "읽지 못했다"가 같은 화면이면 대표는 그 달에 수업이
+     없었다고 읽는다. */
+  const entries = [];
+  connectRepositoryLog((code, detail) => entries.push({ code, detail }));
+  const store = orgStore();
+  store.listOrganizationDeductions = async () => {
+    throw Object.assign(new Error("denied"), { code: "permission-denied" });
+  };
+  await assert.rejects(
+    () => loadOrganizationMonthlyPayroll(ORG, { month: "2026-09", store }),
+    RepositoryReadError,
+  );
+  assert.equal(entries[0].code, "organization_payroll_read_failed");
+  assert.equal(entries[0].detail.errorCode, "permission-denied");
+  disconnectRepositoryLog();
+});
+
+test("the screen opens on the month that is already over", () => {
+  // 정산은 월이 끝난 뒤에 한다. 이달을 기본값으로 두면 매번 한 칸 되돌린다.
+  assert.equal(previousMonth(new Date(2026, 9, 3)), "2026-09");
+  assert.equal(previousMonth(new Date(2026, 0, 1)), "2025-12", "해가 넘어가도 맞는다");
+});
+
+test("the csv is one shape, readable by Excel, with the month on every row", () => {
+  /* 소계 줄을 섞으면 엑셀에서 정렬 한 번에 무너지고, 대표는 그것을 알아채지
+     못한 채 대조한다. */
+  const summary = summarizeOrganizationPay([
+    orgEntry({ id: "a", locationId: "bansong", category: PAY_CATEGORY.PT_1_1_NEW, unitPrice: 25000 }),
+    orgEntry({ id: "b", locationId: "bansong", category: PAY_CATEGORY.PT_1_1_NEW, unitPrice: 25000 }),
+  ]);
+  const csv = payrollCsv({ ...summary, month: "2026-09" }, {
+    nameOfInstructor: () => "정, 예진",
+    nameOfLocation: () => "반송점",
+    labelOfCategory: () => "1:1 신규",
+  });
+  assert.ok(csv.startsWith("\uFEFF"), "BOM 이 없으면 엑셀에서 한글이 깨진다");
+  const lines = csv.slice(1).split("\n");
+  assert.equal(lines[0], "월,지점,강사,카테고리,건수,수업료");
+  // 쉼표가 든 이름은 다시 감싼다. 그러지 않으면 엑셀이 열을 쪼갠다.
+  assert.equal(lines[1], '2026-09,반송점,"정, 예진",1:1 신규,2,50000');
+  assert.equal(lines.length, 2, "한 줄이 (지점, 강사, 카테고리) 하나다");
+});
+
+test("the Firestore store answers the organization-wide shape too", () => {
+  assert.equal(typeof createFirestorePayrollStore().listOrganizationDeductions, "function");
+});
+
+test("the organization payroll falls back to the Firestore store", async () => {
+  const error = await loadOrganizationMonthlyPayroll(ORG, { month: "2026-09" })
+    .then(() => null, (thrown) => thrown);
+  assert.ok(error);
+  assert.notEqual(error.name, "TypeError", `기본 store 가 사라졌다: ${error.message}`);
+  assert.equal(error.code, "app/no-app", error.message);
 });

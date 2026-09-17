@@ -22,12 +22,20 @@
  * 중첩 경로의 규칙은 그룹 쿼리에 적용되지 않기 때문이다.
  */
 
-import { COLLECTIONS, LEDGER_ENTRY_TYPE } from "../schema/constants.js";
+import { COLLECTIONS, LEDGER_ENTRY_TYPE, PAY_CATEGORY } from "../schema/constants.js";
 import { readCollection } from "./repository-read.js";
 
 /**
  * @typedef {object} PayrollStore
  * @property {(query: { organizationId: string, instructorId: string, start: Date, end: Date }) => Promise<Array<any>>} listDeductions
+ */
+
+/**
+ * 대표의 정산은 강사를 지정하지 않는다. 두 모양을 하나로 합치면 한쪽만
+ * 필요한 호출자가 쓰지도 않을 메서드를 만들어 넣게 된다.
+ *
+ * @typedef {object} OrganizationPayrollStore
+ * @property {(query: { organizationId: string, start: Date, end: Date }) => Promise<Array<any>>} listOrganizationDeductions
  */
 
 const requiredText = (value, label) => {
@@ -75,6 +83,22 @@ export function createFirestorePayrollStore() {
         collectionGroup(getFirestore(), COLLECTIONS.LEDGER),
         where("organizationId", "==", organizationId),
         where("instructorId", "==", instructorId),
+        where("type", "==", LEDGER_ENTRY_TYPE.DEDUCT),
+        where("occurredAt", ">=", start),
+        where("occurredAt", "<", end),
+      ));
+      return snapshot.docs.map((document) => ({ id: document.id, ...document.data() }));
+    },
+    /* 대표의 월말 정산. 강사를 지정하지 않으므로 위와 다른 인덱스를 탄다 --
+       (organizationId, type, occurredAt). 복합 인덱스는 앞에서부터 이어져야
+       하므로 instructorId 가 가운데 있는 인덱스로는 이 쿼리를 풀 수 없다. */
+    listOrganizationDeductions: async ({ organizationId, start, end }) => {
+      const {
+        collectionGroup, getDocs, getFirestore, query, where,
+      } = await import("firebase/firestore");
+      const snapshot = await getDocs(query(
+        collectionGroup(getFirestore(), COLLECTIONS.LEDGER),
+        where("organizationId", "==", organizationId),
         where("type", "==", LEDGER_ENTRY_TYPE.DEDUCT),
         where("occurredAt", ">=", start),
         where("occurredAt", "<", end),
@@ -153,4 +177,181 @@ export async function loadInstructorMonthlyPay(organizationId, options = {}) {
     return Number.isFinite(at) && at >= start.getTime() && at < end.getTime();
   });
   return { month: String(month), start, end, ...summarizeInstructorPay(inMonth) };
+}
+
+/* ── 대표의 월말 정산 ──────────────────────────────────────────────────────
+
+   강사 개인 화면과 같은 원장, 같은 경계, 같은 단가를 쓴다. 다른 것은 범위
+   하나뿐이다 -- 한 사람이 아니라 센터 전체를 읽는다.
+
+   ── 카테고리 순서 ──
+   금액순이 아니라 확정본 단가표의 순서로 세운다. 이 화면의 첫 용도가 옛 급여
+   엑셀과의 대조이고, 두 줄이 같은 순서로 서 있지 않으면 눈이 줄을 잃는다.
+   달마다 순서가 달라지는 것은 더 나쁘다 -- 금액순으로 세우면 그렇게 된다.
+
+   ── 지점과 사람 ──
+   한 강사가 두 지점에서 수업하는 경우가 있다. 지점별로만 묶으면 그 사람을 두
+   번 보게 되고, 급여는 한 번 준다. 그래서 두 가지를 함께 돌려준다 --
+   지점별 묶음과, 지점을 가로지르는 강사별 합계. 화면은 앞을 보여주고 뒤로
+   지급한다.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/** 확정본 단가표의 줄 순서. 옛 급여 엑셀과 눈으로 맞추기 위한 것이다. */
+const PAY_CATEGORY_ORDER = Object.values(PAY_CATEGORY);
+
+const bySpecOrder = (left, right) => {
+  const a = PAY_CATEGORY_ORDER.indexOf(left.category);
+  const b = PAY_CATEGORY_ORDER.indexOf(right.category);
+  // 표에 없는 값은 뒤로 보내되 버리지 않는다. 사라지면 합계만 안 맞는다.
+  return (a < 0 ? PAY_CATEGORY_ORDER.length : a) - (b < 0 ? PAY_CATEGORY_ORDER.length : b);
+};
+
+const emptyBucket = (key, field) => ({ [field]: key, sessions: 0, total: 0, categories: new Map() });
+
+const addToBucket = (bucket, entry) => {
+  const category = String(entry.category || "");
+  const amount = amountOf(entry);
+  const count = sessionsOf(entry);
+  bucket.sessions += count;
+  bucket.total += amount;
+  const row = bucket.categories.get(category) || { category, sessions: 0, amount: 0 };
+  row.sessions += count;
+  row.amount += amount;
+  bucket.categories.set(category, row);
+};
+
+const sealBucket = (bucket, field) => ({
+  [field]: bucket[field],
+  sessions: bucket.sessions,
+  total: bucket.total,
+  byCategory: [...bucket.categories.values()].sort(bySpecOrder),
+});
+
+/**
+ * 한 달치 차감을 강사별·지점별로 묶는다.
+ *
+ * 금액은 항목마다 박힌 unitPrice 로 계산한다. 같은 회원권 안에서도 회차마다
+ * 판정이 달라 단가가 섞이는데(deduction-pricing.js), 그래서 항목을 더하는 것
+ * 말고는 맞는 방법이 없다 -- 건수 × 어떤 하나의 단가로는 절대 맞지 않는다.
+ *
+ * @param {Array<any>} entries
+ */
+export function summarizeOrganizationPay(entries) {
+  const rows = (Array.isArray(entries) ? entries : []).filter(Boolean);
+  const instructors = new Map();
+  const locations = new Map();
+  let total = 0;
+  let sessions = 0;
+
+  for (const entry of rows) {
+    const instructorId = String(entry.instructorId || "");
+    const locationId = String(entry.locationId || "");
+    total += amountOf(entry);
+    sessions += sessionsOf(entry);
+
+    if (!instructors.has(instructorId)) instructors.set(instructorId, emptyBucket(instructorId, "instructorId"));
+    addToBucket(instructors.get(instructorId), entry);
+
+    if (!locations.has(locationId)) locations.set(locationId, { locationId, sessions: 0, total: 0, instructors: new Map() });
+    const location = locations.get(locationId);
+    location.sessions += sessionsOf(entry);
+    location.total += amountOf(entry);
+    if (!location.instructors.has(instructorId)) {
+      location.instructors.set(instructorId, emptyBucket(instructorId, "instructorId"));
+    }
+    addToBucket(location.instructors.get(instructorId), entry);
+  }
+
+  // 많이 번 사람이 앞이다. 정산할 때 큰 금액부터 확인한다.
+  const byTotalDesc = (left, right) => right.total - left.total;
+  return {
+    total,
+    sessions,
+    byInstructor: [...instructors.values()].map((bucket) => sealBucket(bucket, "instructorId")).sort(byTotalDesc),
+    byLocation: [...locations.values()].map((location) => ({
+      locationId: location.locationId,
+      sessions: location.sessions,
+      total: location.total,
+      byInstructor: [...location.instructors.values()]
+        .map((bucket) => sealBucket(bucket, "instructorId"))
+        .sort(byTotalDesc),
+    })).sort(byTotalDesc),
+  };
+}
+
+/**
+ * 센터 한 달치 수업료. 대표만 부른다.
+ *
+ * @param {string} organizationId
+ * @param {{ month?: string, store?: OrganizationPayrollStore }} [options]
+ */
+export async function loadOrganizationMonthlyPayroll(organizationId, options = {}) {
+  const { month, store = createFirestorePayrollStore() } = options;
+  const organization = requiredText(organizationId, "organizationId");
+  const { start, end } = monthRange(month);
+  // 조회 실패는 빈 목록이 아니라 RepositoryReadError 로 나간다 -- repository-read.js 참고.
+  const found = await readCollection({
+    feature: "organization_payroll",
+    path: `${COLLECTIONS.LEDGER}?organizationId=${organization}&month=${month}`,
+    read: () => store.listOrganizationDeductions({ organizationId: organization, start, end }),
+  });
+  /* 서버가 이미 걸러 주지만 한 번 더 본다. 인덱스나 쿼리를 잘못 고치면 발급
+     항목이나 남의 조직이 조용히 섞여 들어오고, 합계 한 줄에서는 그것을 알아챌
+     방법이 없다. */
+  const deductions = found.filter((entry) => (
+    entry.type === LEDGER_ENTRY_TYPE.DEDUCT && entry.organizationId === organization
+  ));
+  const inMonth = deductions.filter((entry) => {
+    const at = toDate(entry.occurredAt).getTime();
+    return Number.isFinite(at) && at >= start.getTime() && at < end.getTime();
+  });
+  return { month: String(month), start, end, ...summarizeOrganizationPay(inMonth) };
+}
+
+/** 정산이 끝난 달. 화면의 기본값이다 -- 정산은 월이 끝난 뒤에 한다. */
+export function previousMonth(today = new Date()) {
+  const at = today instanceof Date ? today : new Date(String(today));
+  const year = at.getFullYear();
+  const index = at.getMonth() - 1;
+  const month = new Date(year, index, 1);
+  return `${month.getFullYear()}-${String(month.getMonth() + 1).padStart(2, "0")}`;
+}
+
+const csvCell = (value) => {
+  const text = String(value ?? "");
+  return /[",\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+};
+
+/**
+ * 집계를 CSV 한 장으로. 한 줄이 (지점, 강사, 카테고리) 하나다.
+ *
+ * 모양을 하나로 둔다. 소계 줄을 섞으면 엑셀에서 정렬 한 번에 무너지고, 대표는
+ * 그것을 알아채지 못한 채 대조한다. 소계는 엑셀이 더 잘한다.
+ *
+ * 앞에 BOM 을 붙인다. 없으면 엑셀이 UTF-8 로 읽지 않아 강사 이름이 깨지고,
+ * 대조하려고 내려받은 파일이 대조할 수 없는 파일이 된다.
+ *
+ * @param {{ month: string, byLocation: Array<any> }} summary
+ * @param {{ nameOfInstructor?: (id: string) => string, nameOfLocation?: (id: string) => string, labelOfCategory?: (value: string) => string }} [names]
+ */
+export function payrollCsv(summary, names = {}) {
+  const nameOfInstructor = names.nameOfInstructor || ((id) => id);
+  const nameOfLocation = names.nameOfLocation || ((id) => id);
+  const labelOfCategory = names.labelOfCategory || ((value) => value);
+  const lines = [["월", "지점", "강사", "카테고리", "건수", "수업료"].join(",")];
+  for (const location of summary?.byLocation || []) {
+    for (const instructor of location.byInstructor || []) {
+      for (const row of instructor.byCategory || []) {
+        lines.push([
+          summary.month,
+          nameOfLocation(location.locationId),
+          nameOfInstructor(instructor.instructorId),
+          labelOfCategory(row.category),
+          row.sessions,
+          row.amount,
+        ].map(csvCell).join(","));
+      }
+    }
+  }
+  return `\uFEFF${lines.join("\n")}`;
 }

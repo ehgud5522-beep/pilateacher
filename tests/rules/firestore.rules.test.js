@@ -1937,6 +1937,34 @@ describe("reading the ledger across passes", () => {
     }
   });
 
+  test("the owner reads the whole centre's month without naming an instructor", async () => {
+    /* 월말 정산은 강사를 지정하지 않는다. 그룹 규칙은 "본인 항목이거나
+       대표·매니저"인데, 앞 절의 resource.data.instructorId 는 쿼리가 그 필드를
+       좁히지 않으면 평가할 것이 없다 -- 이 파일 머리말의 list 함정이다.
+
+       대표의 쿼리가 실제로 통과하는지를 여기서 고정한다. 거부되면 정산 화면이
+       빈 목록으로 보이고, 그 빈 목록은 "이달 수업이 없다"와 구별되지 않는다. */
+    const monthly = (userId) => query(
+      ledgerGroup(userId),
+      where("organizationId", "==", ORG_A),
+      where("type", "==", "deduct"),
+      where("occurredAt", ">=", hoursAgo(24 * 30)),
+      where("occurredAt", "<", hoursAgo(-1)),
+    );
+    await assertSucceeds(getDocs(monthly(users.owner)));
+    await assertSucceeds(getDocs(monthly(users.manager)));
+
+    /* 강사는 남의 급여를 보지 못한다. 자기 것을 볼 때는 instructorId 를 함께
+       좁혀야 하고, 그것이 곧 "내 것만"의 증명이다. */
+    await assertFails(getDocs(monthly(users.instructor)));
+    await assertFails(getDocs(monthly(users.staff)));
+    await assertFails(getDocs(monthly(users.outsider)));
+    await assertSucceeds(getDocs(query(
+      monthly(users.instructor),
+      where("instructorId", "==", users.instructor),
+    )));
+  });
+
   test("another organization's ledger stays out of reach", async () => {
     await assertFails(getDocs(query(ledgerGroup(users.instructor), where("organizationId", "==", ORG_B))));
     await assertFails(getDocs(query(ledgerGroup(users.outsider), where("organizationId", "==", ORG_A))));

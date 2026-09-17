@@ -90,14 +90,16 @@ import {
   createProduct, listProducts, setProductStatus,
 } from "./data/repositories/product-repository.js";
 import {
-  DEDUCT_BACKDATE_LIMIT_DAYS, deductPass, isDeductablePass, issuePass, listPasses,
-  remainingCountOf,
+  DEDUCT_BACKDATE_LIMIT_DAYS, deductPass, isDeductablePass, isExpiredPass, issuePass,
+  listPasses, loadClientPassHistory, remainingCountOf,
 } from "./data/repositories/pass-repository.js";
 import { loadInstructorMonthlyPay, toDate } from "./data/repositories/payroll-repository.js";
 import {
   UNIT_PRICE_SOURCE, unitPriceSourceFor,
 } from "./data/schema/pay-rates.js";
-import { CLIENT_STATUS, PAYMENT_METHOD, PRODUCT_STATUS, ROLES, SESSION_TYPE } from "./data/schema/constants.js";
+import {
+  CLIENT_STATUS, LEDGER_ENTRY_TYPE, PAYMENT_METHOD, PRODUCT_STATUS, ROLES, SESSION_TYPE,
+} from "./data/schema/constants.js";
 import {
   CLIENT_STATUS_LABELS, PAYMENT_METHOD_LABELS, PAY_CATEGORY_LABELS, PRODUCT_STATUS_LABELS,
   SESSION_TYPE_LABELS, labelOf, payCategoriesFor,
@@ -14226,7 +14228,7 @@ const attendanceDayOptions = (now) => {
 };
 
 function AttendanceCheck({
-  organization, currentUserId, clientStore, passStore, onRetryOrganization, onToast, onClose,
+  organization, currentUserId, clientStore, passStore, onRetryOrganization, onToast, onClose, onOpenClient,
   now = () => new Date(), initialState = null,
 }) {
   const [clients, setClients] = useState(initialState?.clients || []);
@@ -14397,7 +14399,14 @@ function AttendanceCheck({
 
           {client ? (
             <div>
-              <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>회원권</p>
+              <div className="flex items-center justify-between gap-2">
+                <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>회원권</p>
+                {/* 차감하려다 "몇 회 남았지?"가 떠오르는 자리가 여기다. */}
+                {onOpenClient ? (
+                  <button type="button" onClick={() => onOpenClient(client)}
+                    className="shrink-0" style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND_D }}>이력 ›</button>
+                ) : null}
+              </div>
               {clientPasses.length === 0
                 ? <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>발급된 회원권이 없습니다.</p>
                 : clientPasses.map((pass) => {
@@ -14485,7 +14494,7 @@ function PassIssue({
   const [form, setForm] = useState({
     clientId: "", productId: "", totalSessions: "", contractPriceManwon: "",
     serviceSessions: "0", purchaseRound: "1", paymentMethod: PAYMENT_METHOD.CARD,
-    instructorId: "", unitPriceManwon: "",
+    instructorId: "", unitPriceManwon: "", expiresAt: "",
     ...(initialState?.form || {}),
   });
   const [formError, setFormError] = useState("");
@@ -14562,6 +14571,8 @@ function PassIssue({
     if (rateBlock) { setFormError(rateBlock); return; }
     if (!(Number(form.totalSessions) >= 1)) { setFormError("세션 수를 1 이상으로 입력해 주세요."); return; }
     if (form.contractPriceManwon === "") { setFormError("계약 금액을 입력해 주세요."); return; }
+    // 계약서에 적힌 값이다. 지어내지 않고 받는다.
+    if (!form.expiresAt) { setFormError("만료일을 입력해 주세요."); return; }
     if (priceSource === UNIT_PRICE_SOURCE.MANUAL && form.unitPriceManwon === "") {
       setFormError("급여 단가를 입력해 주세요."); return;
     }
@@ -14583,6 +14594,7 @@ function PassIssue({
         purchaseRound: Number(form.purchaseRound || 1),
         paymentMethod: form.paymentMethod,
         instructorId: form.instructorId,
+        expiresAt: new Date(`${form.expiresAt}T23:59:59`),
         // 표에서 오는 카테고리는 아래 둘을 보지 않는다 -- pay-rates.js 가 가른다.
         unitPrice: form.unitPriceManwon === "" ? undefined : manwonToWon(Number(form.unitPriceManwon)),
         fullRoomRate: fullRoomRateOf(instructor) ?? undefined,
@@ -14593,7 +14605,7 @@ function PassIssue({
       setForm({
         clientId: "", productId: "", totalSessions: "", contractPriceManwon: "",
         serviceSessions: "0", purchaseRound: "1", paymentMethod: PAYMENT_METHOD.CARD,
-        instructorId: "", unitPriceManwon: "",
+        instructorId: "", unitPriceManwon: "", expiresAt: "",
       });
       setSearch("");
       setMoreOpen(false);
@@ -14646,6 +14658,7 @@ function PassIssue({
           <p style={{ fontSize: TYPE.caption, color: INK2 }}>
             담당 {instructor?.displayName || form.instructorId}
           </p>
+          <p className="tabular-nums" style={{ fontSize: TYPE.caption, color: INK2 }}>만료 {form.expiresAt}</p>
         </div>
         {formError ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: BAD }}>{formError}</p> : null}
         <div className="mt-3 flex gap-2">
@@ -14713,6 +14726,11 @@ function PassIssue({
             hint={priceChanged ? `기준 ${(Number(product.defaultPrice) || 0) / WON_PER_MANWON}만` : ""}>
             <input inputMode="decimal" value={form.contractPriceManwon} className={inputCls} placeholder="130"
               onChange={(e) => setForm({ ...form, contractPriceManwon: manwonInput(e.target.value) })} />
+          </IssueField>
+
+          <IssueField label="만료일" hint="계약서에 적힌 날짜입니다. 회원이 가장 자주 묻는 값입니다.">
+            <input type="date" value={form.expiresAt} className={inputCls}
+              onChange={(e) => setForm({ ...form, expiresAt: e.target.value })} />
           </IssueField>
 
           {priceSource === UNIT_PRICE_SOURCE.MANUAL && product ? (
@@ -14936,6 +14954,199 @@ function InstructorRates({ organization, currentUserId, instructorStore, rateSto
   );
 }
 
+/* 회원 상세. 대표·매니저·강사가 모두 본다.
+
+   강사도 자기 회원의 잔여와 이력을 봐야 수업을 할 수 있다. 그리고 이 화면은
+   분쟁이 생겼을 때 여는 자리다 -- "몇 회 남았나"와 "언제 무엇이 일어났나"가
+   같은 화면에서 답해져야 하고, 두 숫자가 어긋나면 그 자리에서 드러나야 한다.
+
+   발급 취소·차감 보정은 아직 없다. 이번에는 조회만 한다.
+
+   잔여 합계는 쓸 수 있는 회차만 센다 -- 종료·취소된 회원권도, 만료일이 지난
+   회원권도 뺀다. 목록에는 남기되 흐리게 보여준다. 목록에서 사라지면 회원이
+   "내가 산 게 어디 갔냐"고 묻게 된다. */
+
+const dayLabel = (value) => {
+  const at = toDate(value);
+  if (!Number.isFinite(at.getTime())) return "-";
+  return `${at.getFullYear()}.${at.getMonth() + 1}.${at.getDate()}`;
+};
+const dayTimeLabel = (value) => {
+  const at = toDate(value);
+  if (!Number.isFinite(at.getTime())) return "-";
+  return `${at.getMonth() + 1}.${at.getDate()} ${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+};
+const sameDay = (left, right) => {
+  const a = toDate(left);
+  const b = toDate(right);
+  if (!Number.isFinite(a.getTime()) || !Number.isFinite(b.getTime())) return true;
+  return a.toDateString() === b.toDateString();
+};
+
+/** 원장 한 줄이 무엇을 말하는가. 종류마다 읽는 법이 다르다. */
+function LedgerRow({ entry, nameOfInstructor }) {
+  const transfer = entry.type === LEDGER_ENTRY_TYPE.TRANSFER;
+  const issue = entry.type === LEDGER_ENTRY_TYPE.ISSUE;
+  const delta = Number(entry.delta) || 0;
+  const amount = Math.abs(delta) * (Number(entry.unitPrice) || 0);
+  return (
+    <div style={{ padding: "11px 0", borderTop: `1px solid ${LINE}` }}>
+      <div className="flex items-center gap-2">
+        <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+          {dayTimeLabel(entry.occurredAt)}
+        </span>
+        <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.body, color: INK }}>
+          {transfer
+            /* 교체는 숫자가 움직이지 않는다. 무엇이 바뀌었는지 문장으로 읽혀야
+               이력을 훑는 사람이 건너뛰지 않는다. */
+            ? `담당 강사 변경 ${nameOfInstructor(entry.fromInstructorId)} → ${nameOfInstructor(entry.toInstructorId)}`
+            : labelOf(PAY_CATEGORY_LABELS, entry.category)}
+        </span>
+        <span className="shrink-0 tabular-nums" style={{
+          fontSize: TYPE.body, fontWeight: 600, color: transfer ? SUB : issue ? BRAND_D : INK,
+        }}>
+          {transfer ? "±0" : `${delta > 0 ? "+" : ""}${delta}`}
+        </span>
+      </div>
+      <div className="mt-1 flex items-center gap-2">
+        {/* 수업일과 기록일이 다르면 밤에 몰아 누른 건이다. 그 사실이 보여야 한다. */}
+        {!sameDay(entry.occurredAt, entry.createdAt) ? (
+          <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: FAINT }}>
+            기록 {dayTimeLabel(entry.createdAt)}
+          </span>
+        ) : null}
+        <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: SUB }}>
+          {transfer ? "" : nameOfInstructor(entry.instructorId)}
+        </span>
+        {!transfer ? (
+          <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+            ₩{won(amount)}
+          </span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function ClientPassRow({ pass, nameOfInstructor, now }) {
+  const usable = isDeductablePass(pass, now);
+  const expired = isExpiredPass(pass, now);
+  return (
+    <div style={{ padding: "11px 0", borderTop: `1px solid ${LINE}`, opacity: usable ? 1 : 0.55 }}>
+      <div className="flex items-center gap-2">
+        <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>
+          {labelOf(PAY_CATEGORY_LABELS, pass.category)}
+        </span>
+        <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.body, fontWeight: 600, color: usable ? INK : SUB }}>
+          잔여 {remainingCountOf(pass)}회
+        </span>
+      </div>
+      <p className="mt-1 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+        {dayLabel(pass.createdAt)} 발급
+        {" · "}{pass.totalSessions}회{Number(pass.serviceSessions) > 0 ? ` + 서비스 ${pass.serviceSessions}회` : ""}
+        {" · "}{wonToManwonLabel(pass.contractPrice)}
+        {" · "}{pass.purchaseRound}차
+        {" · "}{labelOf(PAYMENT_METHOD_LABELS, pass.paymentMethod)}
+      </p>
+      <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.caption, color: expired ? WARN : SUB }}>
+        {pass.expiresAt ? `${dayLabel(pass.expiresAt)} 만료${expired ? " (지남)" : ""}` : "만료일 없음"}
+        {" · 담당 "}{nameOfInstructor(pass.instructorId)}
+      </p>
+    </div>
+  );
+}
+
+function ClientDetail({
+  organization, client, history, loading, error, instructors = [],
+  onClose, onRetry, now = () => new Date(),
+}) {
+  const at = now();
+  const nameOfInstructor = useMemo(() => {
+    const byId = new Map(instructors.map((item) => [item.userId, item.displayName || item.userId]));
+    // 이름을 못 읽어도 uid 로 보여준다. 빈 칸이면 누구였는지 영영 알 수 없다.
+    return (userId) => byId.get(userId) || userId || "-";
+  }, [instructors]);
+
+  const passes = history?.passes || [];
+  const entries = history?.entries || [];
+  const failedPassIds = history?.failedPassIds || [];
+  const nextExpiry = passes
+    .filter((pass) => isDeductablePass(pass, at) && pass.expiresAt)
+    .map((pass) => toDate(pass.expiresAt))
+    .filter((date) => Number.isFinite(date.getTime()))
+    .sort((left, right) => left.getTime() - right.getTime())[0];
+
+  return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>{client?.name || "회원"}</h2>
+          <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>
+            {client?.phone ? `···${String(client.phone).slice(-4)}` : "연락처 없음"}
+            {" · "}{client?.locationName || client?.locationId || "지점 없음"}
+          </p>
+        </div>
+        {onClose ? (
+          <button type="button" onClick={onClose} aria-label="닫기" className="shrink-0"
+            style={{ width: 32, height: 32, color: SUB }}><X size={18} /></button>
+        ) : null}
+      </div>
+
+      {loading ? <p className="mt-3" style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : null}
+      {!loading && error ? (
+        <div className="mt-3">
+          <p style={{ fontSize: TYPE.caption, color: BAD }}>회원권을 불러오지 못했습니다 (코드 {error}).</p>
+          <button type="button" onClick={() => onRetry?.()} className="mt-2 h-11 w-full font-bold"
+            style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>다시 시도</button>
+        </div>
+      ) : null}
+
+      {!loading && !error ? (
+        <div className="mt-3">
+          <div style={{ padding: 12, borderRadius: 10, backgroundColor: CANVAS }}>
+            <div className="flex items-end gap-2">
+              <p className="tabular-nums" style={{ fontSize: TYPE.hero, lineHeight: 1.1, fontWeight: 700, color: INK }}>
+                {history?.remainingTotal ?? 0}
+              </p>
+              <p style={{ paddingBottom: 3, fontSize: TYPE.caption, color: SUB }}>회 남음</p>
+            </div>
+            <p className="mt-1 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+              {nextExpiry ? `${dayLabel(nextExpiry)} 만료` : "만료일 없음"}
+              {" · 담당 "}{nameOfInstructor(passes.find((pass) => isDeductablePass(pass, at))?.instructorId)}
+            </p>
+          </div>
+
+          {/* 한 회원권을 못 읽어도 나머지는 보여준다. 다만 그 사실은 말한다 --
+              합계가 실제보다 적을 수 있기 때문이다. */}
+          {failedPassIds.length > 0 ? (
+            <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>
+              회원권 {failedPassIds.length}건의 이력을 읽지 못했습니다. 아래 목록이 전부가 아닐 수 있습니다.
+            </p>
+          ) : null}
+
+          <div className="mt-4">
+            <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>회원권</p>
+            {passes.length === 0
+              ? <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>발급된 회원권이 없습니다.</p>
+              : passes.map((pass) => (
+                <ClientPassRow key={pass.id} pass={pass} nameOfInstructor={nameOfInstructor} now={at} />
+              ))}
+          </div>
+
+          <div className="mt-4">
+            <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>이력</p>
+            {entries.length === 0
+              ? <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>아직 기록이 없습니다.</p>
+              : entries.map((entry) => (
+                <LedgerRow key={entry.id} entry={entry} nameOfInstructor={nameOfInstructor} />
+              ))}
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 /* 회원 관리. 대표와 매니저가 본다.
 
    연락처는 뒷 4자리만 보여준다. 목록은 사람이 많을수록 한 화면에 여러 명이
@@ -14985,7 +15196,7 @@ function ClientRow({ client, locationName, onOpen }) {
  * 으로만 그려진다. 앱은 이 prop 을 넘기지 않으며, 넘기지 않으면 동작은 이전과
  * 같다.
  */
-function ClientDirectory({ organization, currentUserId, clientStore, locationStore, onRetryOrganization, onToast, initialState = null }) {
+function ClientDirectory({ organization, currentUserId, clientStore, locationStore, onRetryOrganization, onToast, onOpenClient, initialState = null }) {
   const [clients, setClients] = useState(initialState?.clients || []);
   const [locations, setLocations] = useState(initialState?.locations || []);
   const [loading, setLoading] = useState(!initialState);
@@ -15169,8 +15380,8 @@ function ClientDirectory({ organization, currentUserId, clientStore, locationSto
           ? <p style={{ fontSize: TYPE.caption, color: SUB }}>검색 결과가 없습니다.</p>
           : null}
         {!loading && !loadError && visible.map((client) => (
-          // 이름을 누르면 나중에 회원 상세로 간다. 그 화면은 아직 없다.
-          <ClientRow key={client.id} client={client} locationName={locationNames.get(client.locationId)} onOpen={() => {}} />
+          <ClientRow key={client.id} client={client} locationName={locationNames.get(client.locationId)}
+            onOpen={() => onOpenClient?.({ ...client, locationName: locationNames.get(client.locationId) || "" })} />
         ))}
       </div>
     </section>
@@ -15386,7 +15597,7 @@ function ProductCatalog({ organization, currentUserId, store, onRetryOrganizatio
   );
 }
 
-function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, onRetryOrganization, initialView = "hub" }) {
+function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, onRetryOrganization, onOpenClient, initialView = "hub" }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const organization = useContext(OrganizationContext);
   /* 회원권 상품은 센터를 운영하는 대표만 본다. 개인 모드(legacy)에는 센터가
@@ -15820,7 +16031,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
         )}
         {view === "clients" && showClients && (
           <ClientDirectory organization={organization} currentUserId={account?.id || ""}
-            clientStore={clientStore} locationStore={locationStore}
+            clientStore={clientStore} locationStore={locationStore} onOpenClient={onOpenClient}
             onRetryOrganization={onRetryOrganization} onToast={onToast} />
         )}
         {view === "products" && showProducts && (
@@ -16049,6 +16260,22 @@ export function createAppScreenSmokeCases() {
   ];
   const passStore = { list: async () => smokePasses, commit: async () => {}, serverTimestamp: async () => "SERVER_TIME" };
   const smokeNow = () => new Date("2026-09-17T19:30:00.000Z");
+  const smokeDetailClient = { id: "smoke-client-a", name: "김하나", phone: "01012345678", locationId: "bansong", locationName: "반송점" };
+  const smokeHistoryPasses = [
+    { id: "smoke-pass-a", clientId: "smoke-client-a", category: "pt_1_1_repurchase_event", totalSessions: 20, serviceSessions: 2, contractPrice: 1300000, purchaseRound: 2, paymentMethod: "card", remainingCount: 8, unitPrice: 30000, instructorId: "u1", status: "active", createdAt: new Date(2026, 7, 1), expiresAt: new Date(2027, 1, 1) },
+    { id: "smoke-pass-old", clientId: "smoke-client-a", category: "pt_1_1_new", totalSessions: 10, serviceSessions: 0, contractPrice: 550000, purchaseRound: 1, paymentMethod: "cash", remainingCount: 3, unitPrice: 25000, instructorId: "u2", status: "active", createdAt: new Date(2026, 3, 1), expiresAt: new Date(2026, 6, 1) },
+  ];
+  const smokeHistoryEntries = [
+    { id: "h-transfer", passId: "smoke-pass-a", clientId: "smoke-client-a", type: "transfer", delta: 0, fromInstructorId: "u1", toInstructorId: "u2", occurredAt: new Date(2026, 8, 16, 11, 0), createdAt: new Date(2026, 8, 16, 11, 0) },
+    { id: "h-deduct-late", passId: "smoke-pass-a", clientId: "smoke-client-a", type: "deduct", delta: -1, category: "pt_1_1_repurchase_event", unitPrice: 30000, instructorId: "u1", occurredAt: new Date(2026, 8, 12, 19, 0), createdAt: new Date(2026, 8, 13, 23, 40) },
+    { id: "h-issue", passId: "smoke-pass-a", clientId: "smoke-client-a", type: "issue", delta: 22, category: "pt_1_1_repurchase_event", unitPrice: 30000, instructorId: "u1", occurredAt: new Date(2026, 7, 1, 10, 0), createdAt: new Date(2026, 7, 1, 10, 0) },
+  ];
+  const smokeHistory = { passes: smokeHistoryPasses, entries: smokeHistoryEntries, remainingTotal: 8, failedPassIds: [] };
+  const clientDetail = (extra = {}) => providerWith(smokeInstructorOrg, (
+    <ClientDetail organization={readyOrganizationContext(smokeInstructorOrg)} client={smokeDetailClient}
+      history={smokeHistory} loading={false} error="" instructors={smokeInstructors}
+      now={() => new Date(2026, 8, 17)} onClose={noop} onRetry={noop} {...extra} />
+  ));
   const smokePayEntry = (id, category, unitPrice, day) => ({
     id, organizationId: "smoke-center", passId: "smoke-pass-a", type: "deduct", delta: -1,
     category, unitPrice, instructorId: "smoke-instructor", lessonId: `lesson-${id}`,
@@ -16106,6 +16333,14 @@ export function createAppScreenSmokeCases() {
     { name: "더보기 탭 · 소속 확인 실패", element: settingsTab({ organizationId: "", role: "", status: "unknown", isLegacy: false }) },
     { name: "더보기 탭 · 월간 리포트", element: settingsTab(smokeInstructorOrg, { initialView: "report" }) },
     { name: "더보기 탭 · 월간 리포트 · 개인 모드", element: settingsTab({ organizationId: "legacy_smoke", role: "owner", status: "active", isLegacy: true }, { initialView: "report" }) },
+    { name: "센터 회원 상세", element: clientDetail() },
+    { name: "센터 회원 상세 · 일부 이력 실패", element: clientDetail({
+      history: { ...smokeHistory, failedPassIds: ["smoke-pass-old"] },
+    }) },
+    { name: "센터 회원 상세 · 조회 실패", element: clientDetail({ history: null, error: "permission-denied" }) },
+    { name: "센터 회원 상세 · 회원권 없음", element: clientDetail({
+      history: { passes: [], entries: [], remainingTotal: 0, failedPassIds: [] },
+    }) },
     { name: "이달 예상 급여", element: providerWith(smokeInstructorOrg, (
       <InstructorPayDetail organization={readyOrganizationContext(smokeInstructorOrg)} month="2026-09"
         pay={smokePay} loading={false} error="" onClose={noop} onRetry={noop}
@@ -16197,6 +16432,12 @@ export default function App() {
   const accountRef = useRef(null);
   const [attendanceOpen, setAttendanceOpen] = useState(false);
   const [payOpen, setPayOpen] = useState(false);
+  const [detailClient, setDetailClient] = useState(null);
+  const [clientHistory, setClientHistory] = useState(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState("");
+  const [historyRevision, setHistoryRevision] = useState(0);
+  const [detailInstructors, setDetailInstructors] = useState([]);
   const [instructorPay, setInstructorPay] = useState(null);
   const [payLoading, setPayLoading] = useState(false);
   const [payError, setPayError] = useState("");
@@ -16577,6 +16818,23 @@ export default function App() {
       .finally(() => { if (alive) setPayLoading(false); });
     return () => { alive = false; };
   }, [canSeeOwnPay, account?.id, organizationContext.organizationId, payMonth, payRevision]);
+
+  useEffect(() => {
+    if (!detailClient?.id || !organizationContext.organizationId) return undefined;
+    let alive = true;
+    setHistoryLoading(true);
+    setHistoryError("");
+    loadClientPassHistory(organizationContext.organizationId, detailClient.id)
+      .then((found) => { if (alive) setClientHistory(found); })
+      /* 조회 실패가 "회원권이 없다"로 보이면 분쟁 중에 없는 사실을 말하게 된다. */
+      .catch((error) => { if (alive) setHistoryError(error?.code || "unknown"); })
+      .finally(() => { if (alive) setHistoryLoading(false); });
+    /* 이름은 곁들이다. 못 읽어도 uid 로 보여주고 화면은 선다. */
+    listInstructors(organizationContext.organizationId)
+      .then((found) => { if (alive) setDetailInstructors(found); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [detailClient?.id, organizationContext.organizationId, historyRevision]);
 
   const retryOrganizationContext = useCallback(async () => {
     const userId = fbCurrentUserId();
@@ -18416,11 +18674,22 @@ export default function App() {
                   onToast={setToast} onSaved={(mode) => setAnalysisDone({ id, mode })} /></Guard>;
               }} />}
             {tab === "settings" && <ReferenceSettingsTab db={db} photos={photos} account={account} savedAt={savedAt} demoMode={demoMode} onChangeSettings={(s) => saveDb({ ...db, settings: s })} onChangePhoto={changePhoto} onToast={setToast} themePref={themePref} onChangeTheme={changeTheme} onLogout={handleLogout} onDeleteAccount={handleDeleteAccount} onImport={importHandoff}
-              onOpenSchedule={() => { setScheduleQuickAddRequest((request) => request + 1); setTab("schedule"); }} onOpenRecords={() => { setMobileView("list"); setTab("members"); }} onOpenOnboarding={openOnboardingReplay} onOpenLessonExamples={() => setLessonExamplesOpen(true)} backupStatus={cloudBackupStatus} onEnablePhotoBackup={enablePhotoBackup} onRetryBackup={retryCloudBackup} onRetryOrganization={retryOrganizationContext} />}
+              onOpenSchedule={() => { setScheduleQuickAddRequest((request) => request + 1); setTab("schedule"); }} onOpenRecords={() => { setMobileView("list"); setTab("members"); }} onOpenOnboarding={openOnboardingReplay} onOpenLessonExamples={() => setLessonExamplesOpen(true)} backupStatus={cloudBackupStatus} onEnablePhotoBackup={enablePhotoBackup} onRetryBackup={retryCloudBackup} onRetryOrganization={retryOrganizationContext} onOpenClient={(picked) => setDetailClient(picked)} />}
           </Guard>
         </div>
         {/* 출석 체크는 일정 탭 위에 시트로 뜬다. 탭 구조를 건드리지 않으면서
             수업이 끝난 자리에서 바로 열리게 하기 위해서다. */}
+        {detailClient ? (
+          <div className="absolute inset-0 z-50 overflow-y-auto" style={{ backgroundColor: PAGE }}>
+            <div className="mx-auto w-full max-w-md p-3">
+              <ClientDetail organization={organizationContext} client={detailClient}
+                history={clientHistory} loading={historyLoading} error={historyError}
+                instructors={detailInstructors}
+                onRetry={() => setHistoryRevision((value) => value + 1)}
+                onClose={() => { setDetailClient(null); setClientHistory(null); setHistoryError(""); }} />
+            </div>
+          </div>
+        ) : null}
         {payOpen && canSeeOwnPay ? (
           <div className="absolute inset-0 z-50 overflow-y-auto" style={{ backgroundColor: PAGE }}>
             <div className="mx-auto w-full max-w-md p-3">
@@ -18438,6 +18707,7 @@ export default function App() {
               <AttendanceCheck organization={organizationContext} currentUserId={account?.id || ""}
                 clientStore={undefined} passStore={undefined}
                 onRetryOrganization={retryOrganizationContext} onToast={setToast}
+                onOpenClient={(picked) => setDetailClient(picked)}
                 onClose={() => setAttendanceOpen(false)} />
             </div>
           </div>

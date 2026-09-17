@@ -36,6 +36,10 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 소속 확인 실패",
     "더보기 탭 · 월간 리포트",
     "더보기 탭 · 월간 리포트 · 개인 모드",
+    "센터 회원 상세",
+    "센터 회원 상세 · 일부 이력 실패",
+    "센터 회원 상세 · 조회 실패",
+    "센터 회원 상세 · 회원권 없음",
     "이달 예상 급여",
     "이달 예상 급여 · 빈 달",
     "이달 예상 급여 · 조회 실패",
@@ -634,4 +638,92 @@ test("the legacy monthly report says it counts something else in a centre", asyn
   const personal = markupOf("더보기 탭 · 월간 리포트 · 개인 모드");
   assert.match(personal, /완료·차감 처리된 수업과 센터\/회원별 단가를 기준으로 계산합니다/);
   assert.doesNotMatch(personal, /일정 탭의 예상 급여/);
+});
+
+/* 센터 회원 상세. 분쟁이 생겼을 때 여는 화면이라 "몇 회 남았나"와 "언제 무엇이
+   일어났나"가 같은 곳에서 답해져야 한다. */
+test("the member detail counts only sessions that can still be used", async (t) => {
+  const markupOf = await issueScreens(t);
+  const detail = markupOf("센터 회원 상세");
+
+  assert.match(detail, /김하나/);
+  assert.match(detail, /···5678/, "연락처는 뒷자리만");
+  assert.match(detail, /반송점/);
+
+  // 만료된 회원권(2026.7.1)의 3회는 합계에서 빠지고, 살아 있는 8회만 남는다.
+  assert.match(detail, /회 남음/);
+  assert.match(detail, />8</);
+  assert.doesNotMatch(detail, />11</, "만료된 회차를 더하면 안 된다");
+});
+
+test("an expired pass is still listed, only marked", async (t) => {
+  /* 목록에서 사라지면 회원이 "내가 산 게 어디 갔냐"고 묻게 된다. */
+  const markupOf = await issueScreens(t);
+  const detail = markupOf("센터 회원 상세");
+  assert.match(detail, /2026\.7\.1 만료 \(지남\)/);
+  assert.match(detail, /2027\.2\.1 만료/);
+  // 발급 정보가 한 줄로 읽힌다.
+  assert.match(detail, /20회 \+ 서비스 2회/);
+  assert.match(detail, /130만원/);
+  assert.match(detail, /2차/);
+  assert.match(detail, /카드/);
+});
+
+test("the history reads issue, deduct and transfer differently", async (t) => {
+  const markupOf = await issueScreens(t);
+  const detail = markupOf("센터 회원 상세");
+
+  // 교체는 숫자가 움직이지 않으므로 문장으로 읽혀야 건너뛰지 않는다.
+  assert.match(detail, /담당 강사 변경 정예진 → 박서연/);
+  assert.match(detail, /±0/);
+
+  // 발급과 차감은 부호가 보인다.
+  assert.match(detail, /\+22/);
+  assert.match(detail, /-1/);
+
+  // 수업일과 기록일이 다르면 기록일을 병기한다 -- 밤에 몰아 누른 건이다.
+  assert.match(detail, /기록 9\.13 23:40/);
+});
+
+test("the history is newest first", async (t) => {
+  const markupOf = await issueScreens(t);
+  /* 카테고리 문구는 위쪽 회원권 목록에도 나오므로 이력 구간만 잘라서 본다. */
+  const detail = markupOf("센터 회원 상세");
+  const history = detail.slice(detail.lastIndexOf("이력"));
+  const transferAt = history.search(/담당 강사 변경/);
+  const deductAt = history.search(/기록 9\.13 23:40/);
+  const issueAt = history.search(/\+22/);
+  assert.ok(transferAt >= 0 && deductAt >= 0 && issueAt >= 0, "세 항목이 모두 있어야 한다");
+  assert.ok(transferAt < deductAt, "9.16 교체가 9.12 차감보다 위에 있어야 한다");
+  assert.ok(deductAt < issueAt, "9.12 차감이 8.1 발급보다 위에 있어야 한다");
+});
+
+test("a partly unreadable history says the total may be short", async (t) => {
+  /* 합계가 실제보다 적을 수 있다는 사실이 분쟁 중에 드러나야 한다. */
+  const markupOf = await issueScreens(t);
+  const partial = markupOf("센터 회원 상세 · 일부 이력 실패");
+  assert.match(partial, /회원권 1건의 이력을 읽지 못했습니다/);
+  assert.match(partial, /아래 목록이 전부가 아닐 수 있습니다/);
+});
+
+test("a failed read is not an empty client", async (t) => {
+  const markupOf = await issueScreens(t);
+  const failed = markupOf("센터 회원 상세 · 조회 실패");
+  assert.match(failed, /회원권을 불러오지 못했습니다/);
+  assert.match(failed, /permission-denied/);
+  assert.match(failed, /다시 시도/);
+  assert.doesNotMatch(failed, /발급된 회원권이 없습니다/);
+
+  const none = markupOf("센터 회원 상세 · 회원권 없음");
+  assert.match(none, /발급된 회원권이 없습니다/);
+  assert.match(none, /아직 기록이 없습니다/);
+  assert.doesNotMatch(none, /불러오지 못했습니다/);
+});
+
+test("the issue form asks for the expiry from the contract", async (t) => {
+  const markupOf = await issueScreens(t);
+  const add = markupOf("회원권 발급 · 기준값과 다름");
+  assert.match(add, /만료일/);
+  assert.match(add, /계약서에 적힌 날짜입니다/);
+  assert.match(add, /type="date"/);
 });

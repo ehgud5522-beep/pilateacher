@@ -21,6 +21,7 @@
 
 import { COLLECTIONS, MEMBERSHIP_STATUS, ROLES } from "../schema/constants.js";
 import { paths } from "../schema/paths.js";
+import { AUDIT_ACTION, auditEntry, auditLogId } from "./audit-repository.js";
 import { readCollection } from "./repository-read.js";
 
 /**
@@ -162,7 +163,7 @@ export function createFirestoreInstructorRateStore() {
  *
  * @param {string} organizationId
  * @param {string} userId 강사의 uid
- * @param {{ newRate: number | string, previousRate?: number | null, changedBy: string, entryId?: string }} input
+ * @param {{ newRate: number | string, previousRate?: number | null, changedBy: string, actorRole?: string, entryId?: string }} input
  * @param {{ store?: InstructorRateStore, newId?: () => string }} [options]
  */
 export async function setInstructorFullRoomRate(organizationId, userId, input, options = {}) {
@@ -201,13 +202,30 @@ export async function setInstructorFullRoomRate(organizationId, userId, input, o
     createdAt: stampedAt,
   };
 
+  /* 감사 항목을 같은 배치에 얹는다. 따로 쓰면 기록만 실패한 변경이 생기고,
+     감사 로그에서 그것은 "일어나지 않은 일"과 구별되지 않는다.
+
+     rateHistory 에도 남지만 그쪽은 한 강사의 이력이라 센터 전체를 보려면 강사
+     수만큼 읽어야 한다. 감사 화면은 한 번에 읽는다 -- 목적이 다르다. */
+  const auditId = auditLogId(AUDIT_ACTION.FULL_ROOM_RATE_SET, instructorId, entryId);
+  const audit = auditEntry(organization, {
+    action: AUDIT_ACTION.FULL_ROOM_RATE_SET,
+    actorId: changedBy,
+    actorRole: requiredText(input?.actorRole, "actorRole"),
+    targetId: instructorId,
+    amount: newRate,
+    previousAmount: previousRate,
+    stampedAt,
+  });
+
   await store.commit([
     // set 이 아니라 update 다. set 이면 role 도 status 도 통째로 날아가고,
     // 그 순간 이 강사는 센터의 아무것도 읽지 못한다.
     { path: membershipPath, data: { fullRoomRate: newRate }, operation: "update" },
     { path: `${membershipPath}/${COLLECTIONS.RATE_HISTORY}/${entryId}`, data: entry },
+    { path: paths.auditLog(auditId), data: audit },
   ]);
-  return { userId: instructorId, entryId, newRate, previousRate, entry };
+  return { userId: instructorId, entryId, newRate, previousRate, entry, audit };
 }
 
 /**
@@ -226,7 +244,7 @@ export async function setInstructorFullRoomRate(organizationId, userId, input, o
  *
  * @param {string} organizationId
  * @param {string} userId
- * @param {{ isDeputyDirector?: boolean, previousDeputyDirector?: boolean | null, changedBy?: string, entryId?: string }} input
+ * @param {{ isDeputyDirector?: boolean, previousDeputyDirector?: boolean | null, changedBy?: string, actorRole?: string, entryId?: string }} input
  * @param {{ store?: InstructorRateStore, newId?: () => string }} [options]
  */
 export async function setInstructorDeputyDirector(organizationId, userId, input, options = {}) {
@@ -263,11 +281,22 @@ export async function setInstructorDeputyDirector(organizationId, userId, input,
     createdAt: stampedAt,
   };
 
+  const auditId = auditLogId(AUDIT_ACTION.DEPUTY_DIRECTOR_SET, instructorId, entryId);
+  const audit = auditEntry(organization, {
+    action: AUDIT_ACTION.DEPUTY_DIRECTOR_SET,
+    actorId: changedBy,
+    actorRole: requiredText(input?.actorRole, "actorRole"),
+    targetId: instructorId,
+    enabled: newDeputyDirector,
+    stampedAt,
+  });
+
   await store.commit([
     { path: membershipPath, data: { isDeputyDirector: newDeputyDirector }, operation: "update" },
     { path: `${membershipPath}/${COLLECTIONS.RATE_HISTORY}/${entryId}`, data: entry },
+    { path: paths.auditLog(auditId), data: audit },
   ]);
-  return { userId: instructorId, entryId, newDeputyDirector, previousDeputyDirector, entry };
+  return { userId: instructorId, entryId, newDeputyDirector, previousDeputyDirector, entry, audit };
 }
 
 /**

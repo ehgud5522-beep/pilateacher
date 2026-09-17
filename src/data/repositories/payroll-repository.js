@@ -89,6 +89,20 @@ export function createFirestorePayrollStore() {
       ));
       return snapshot.docs.map((document) => ({ id: document.id, ...document.data() }));
     },
+    /* 감사 화면. 발급·교체·차감을 한 번에 읽는다. 기존 인덱스는 type 이 가운데
+       있어 이 쿼리를 풀 수 없으므로 (organizationId, occurredAt) 를 탄다. */
+    listOrganizationEntries: async ({ organizationId, start, end }) => {
+      const {
+        collectionGroup, getDocs, getFirestore, query, where,
+      } = await import("firebase/firestore");
+      const snapshot = await getDocs(query(
+        collectionGroup(getFirestore(), COLLECTIONS.LEDGER),
+        where("organizationId", "==", organizationId),
+        where("occurredAt", ">=", start),
+        where("occurredAt", "<", end),
+      ));
+      return snapshot.docs.map((document) => ({ id: document.id, ...document.data() }));
+    },
     /* 대표의 월말 정산. 강사를 지정하지 않으므로 위와 다른 인덱스를 탄다 --
        (organizationId, type, occurredAt). 복합 인덱스는 앞에서부터 이어져야
        하므로 instructorId 가 가운데 있는 인덱스로는 이 쿼리를 풀 수 없다. */
@@ -354,4 +368,31 @@ export function payrollCsv(summary, names = {}) {
     }
   }
   return `\uFEFF${lines.join("\n")}`;
+}
+
+/**
+ * @typedef {object} LedgerRangeStore
+ * @property {(query: { organizationId: string, start: Date, end: Date }) => Promise<Array<any>>} listOrganizationEntries
+ */
+
+/**
+ * 한 기간의 원장 항목 전부. 종류를 가리지 않는다.
+ *
+ * 감사 화면이 쓴다 -- 발급·담당 교체·차감이 모두 여기 있고, 그것을 auditLogs 에
+ * 한 벌 더 쓰지 않는 이유는 audit-repository.js 머리말에 있다.
+ *
+ * @param {string} organizationId
+ * @param {{ start?: Date, end?: Date, store?: LedgerRangeStore }} [options]
+ */
+export async function loadOrganizationLedger(organizationId, options = {}) {
+  const { start, end, store = createFirestorePayrollStore() } = options;
+  const organization = requiredText(organizationId, "organizationId");
+  if (!(start instanceof Date) || !(end instanceof Date)) throw new Error("Invalid range");
+  // 조회 실패는 빈 목록이 아니라 RepositoryReadError 로 나간다 -- repository-read.js 참고.
+  const found = await readCollection({
+    feature: "organization_ledger",
+    path: `${COLLECTIONS.LEDGER}?organizationId=${organization}`,
+    read: () => store.listOrganizationEntries({ organizationId: organization, start, end }),
+  });
+  return found.filter((entry) => entry.organizationId === organization);
 }

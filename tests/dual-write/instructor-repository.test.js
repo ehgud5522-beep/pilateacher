@@ -126,21 +126,49 @@ test("a rate and its history entry are written together", async () => {
      남고 금액이 그대로면 둘이 어긋난다. */
   const store = fakeRateStore();
   await setInstructorFullRoomRate(ORG, "instructor-a", {
-    newRate: 45000, changedBy: "owner-a",
+    newRate: 45000, changedBy: "owner-a", actorRole: "owner",
   }, { store, newId: () => "entry-1" });
   assert.equal(store.calls.length, 1, "두 번 나눠 쓰면 하나만 저장되는 순간이 생긴다");
-  const [membershipWrite, historyWrite] = store.calls[0];
+  const [membershipWrite, historyWrite, auditWrite] = store.calls[0];
   assert.equal(membershipWrite.path, "memberships/center-a_instructor-a");
   // set 이면 role 도 status 도 통째로 날아가고, 그 순간 강사는 아무것도 못 읽는다.
   assert.equal(membershipWrite.operation, "update");
   assert.deepEqual(membershipWrite.data, { fullRoomRate: 45000 });
   assert.equal(historyWrite.path, "memberships/center-a_instructor-a/rateHistory/entry-1");
+  /* 감사 항목도 같은 배치다. 따로 쓰면 기록만 실패한 변경이 생기고, 감사
+     로그에서 그것은 "일어나지 않은 일"과 구별되지 않는다. */
+  assert.ok(auditWrite.path.startsWith("auditLogs/"), auditWrite.path);
+  assert.equal(auditWrite.data.action, "full_room_rate_set");
+  assert.equal(auditWrite.data.amount, 45000);
+  assert.equal(auditWrite.data.actorId, "owner-a");
+});
+
+test("the audit entry carries no name, only ids", async () => {
+  /* 이름은 개명과 오타 수정으로 바뀌는데 이 컬렉션은 고칠 수 없고, 삭제 요청이
+     왔을 때 지울 수도 없다. 규칙도 칸 자체를 닫아 둔다. */
+  const store = fakeRateStore();
+  const { audit } = await setInstructorFullRoomRate(ORG, "instructor-a", {
+    newRate: 45000, changedBy: "owner-a", actorRole: "owner",
+  }, { store });
+  assert.deepEqual(Object.keys(audit).sort(), [
+    "action", "actorId", "actorRole", "amount", "createdAt", "organizationId", "targetId",
+  ]);
+  assert.equal(audit.targetId, "instructor-a", "대상은 id 로 가리킨다");
+});
+
+test("a rate change cannot be filed without saying which role did it", async () => {
+  // 규칙이 이 값을 membership 과 대조한다. 비어 있으면 거부되므로 여기서 먼저 막는다.
+  const store = fakeRateStore();
+  await assert.rejects(() => setInstructorFullRoomRate(ORG, "instructor-a", {
+    newRate: 45000, changedBy: "owner-a",
+  }, { store }), /Missing actorRole/);
+  assert.equal(store.calls.length, 0);
 });
 
 test("the history entry records where the rate came from", async () => {
   const store = fakeRateStore();
   const { entry } = await setInstructorFullRoomRate(ORG, "instructor-a", {
-    newRate: 50000, previousRate: 45000, changedBy: "owner-a",
+    newRate: 50000, previousRate: 45000, changedBy: "owner-a", actorRole: "owner",
   }, { store });
   assert.equal(entry.previousRate, 45000);
   assert.equal(entry.newRate, 50000);
@@ -152,7 +180,7 @@ test("the history entry records where the rate came from", async () => {
 test("a first rate records that there was none before", async () => {
   const store = fakeRateStore();
   const { entry } = await setInstructorFullRoomRate(ORG, "instructor-a", {
-    newRate: 45000, changedBy: "owner-a",
+    newRate: 45000, changedBy: "owner-a", actorRole: "owner",
   }, { store });
   assert.equal(entry.previousRate, null, "0 이 아니라 null 이다 -- 없던 것과 0원은 다르다");
 });
@@ -171,15 +199,18 @@ test("the deputy flag and its history entry are written together", async () => {
      대개 지난달 이야기라 그 질문이 실제로 나온다. */
   const store = fakeRateStore();
   await setInstructorDeputyDirector(ORG, "instructor-a", {
-    isDeputyDirector: true, changedBy: "owner-a",
+    isDeputyDirector: true, changedBy: "owner-a", actorRole: "owner",
   }, { store, newId: () => "entry-1" });
   assert.equal(store.calls.length, 1, "두 번 나눠 쓰면 하나만 저장되는 순간이 생긴다");
-  const [membershipWrite, historyWrite] = store.calls[0];
+  const [membershipWrite, historyWrite, auditWrite] = store.calls[0];
   assert.equal(membershipWrite.path, "memberships/center-a_instructor-a");
   assert.equal(membershipWrite.operation, "update");
   assert.deepEqual(membershipWrite.data, { isDeputyDirector: true });
   // 금액 변경과 같은 컬렉션이다 -- 둘이 답하는 질문이 같고, 한 줄로 이어져야 한다.
   assert.equal(historyWrite.path, "memberships/center-a_instructor-a/rateHistory/entry-1");
+  assert.ok(auditWrite.path.startsWith("auditLogs/"), auditWrite.path);
+  assert.equal(auditWrite.data.action, "deputy_director_set");
+  assert.equal(auditWrite.data.enabled, true, "켠 것인지 끈 것인지가 남아야 한다");
 });
 
 test("the deputy entry carries one pair, never the rate pair", async () => {
@@ -187,7 +218,7 @@ test("the deputy entry carries one pair, never the rate pair", async () => {
      규칙도 둘 중 하나만 허용한다. */
   const store = fakeRateStore();
   const { entry } = await setInstructorDeputyDirector(ORG, "instructor-a", {
-    isDeputyDirector: true, previousDeputyDirector: false, changedBy: "owner-a",
+    isDeputyDirector: true, previousDeputyDirector: false, changedBy: "owner-a", actorRole: "owner",
   }, { store });
   assert.deepEqual(Object.keys(entry).sort(), [
     "changedBy", "createdAt", "effectiveFrom", "newDeputyDirector",
@@ -201,7 +232,7 @@ test("the deputy entry carries one pair, never the rate pair", async () => {
 test("a first designation records that nobody had decided before", async () => {
   const store = fakeRateStore();
   const { entry } = await setInstructorDeputyDirector(ORG, "instructor-a", {
-    isDeputyDirector: true, changedBy: "owner-a",
+    isDeputyDirector: true, changedBy: "owner-a", actorRole: "owner",
   }, { store });
   assert.equal(entry.previousDeputyDirector, null, "false 가 아니라 null 이다 -- 정해진 적 없는 것과 다르다");
 });
@@ -211,7 +242,7 @@ test("nobody makes themselves a deputy", async () => {
      수업을 스스로 그 위에 올릴 수 있으면 아무도 확인하지 않는 인상이 된다. */
   const store = fakeRateStore();
   await assert.rejects(() => setInstructorDeputyDirector(ORG, "owner-a", {
-    isDeputyDirector: true, changedBy: "owner-a",
+    isDeputyDirector: true, changedBy: "owner-a", actorRole: "owner",
   }, { store }), /Invalid userId/);
   assert.equal(store.calls.length, 0);
 });
@@ -219,7 +250,7 @@ test("nobody makes themselves a deputy", async () => {
 test("a designation that changes nothing is refused", async () => {
   const store = fakeRateStore();
   await assert.rejects(() => setInstructorDeputyDirector(ORG, "instructor-a", {
-    isDeputyDirector: true, previousDeputyDirector: true, changedBy: "owner-a",
+    isDeputyDirector: true, previousDeputyDirector: true, changedBy: "owner-a", actorRole: "owner",
   }, { store }), /Invalid isDeputyDirector/);
   assert.equal(store.calls.length, 0);
 });
@@ -228,7 +259,7 @@ test("an unanswered deputy flag is refused, never read as no", async () => {
   for (const blank of /** @type {Array<any>} */ ([undefined, null, "", "true", 1])) {
     const store = fakeRateStore();
     await assert.rejects(() => setInstructorDeputyDirector(ORG, "instructor-a", {
-      isDeputyDirector: blank, changedBy: "owner-a",
+      isDeputyDirector: blank, changedBy: "owner-a", actorRole: "owner",
     }, { store }), /Missing isDeputyDirector/, JSON.stringify(blank));
     assert.equal(store.calls.length, 0);
   }
@@ -237,7 +268,7 @@ test("an unanswered deputy flag is refused, never read as no", async () => {
 test("nothing is written when the deputy commit fails", async () => {
   const store = fakeRateStore({ failCommit: Object.assign(new Error("denied"), { code: "permission-denied" }) });
   await assert.rejects(() => setInstructorDeputyDirector(ORG, "instructor-a", {
-    isDeputyDirector: true, changedBy: "owner-a",
+    isDeputyDirector: true, changedBy: "owner-a", actorRole: "owner",
   }, { store }), /denied/);
   assert.equal(store.written.size, 0);
 });
@@ -245,7 +276,7 @@ test("nothing is written when the deputy commit fails", async () => {
 test("nothing is written when the rate commit fails", async () => {
   const store = fakeRateStore({ failCommit: Object.assign(new Error("denied"), { code: "permission-denied" }) });
   await assert.rejects(() => setInstructorFullRoomRate(ORG, "instructor-a", {
-    newRate: 45000, changedBy: "owner-a",
+    newRate: 45000, changedBy: "owner-a", actorRole: "owner",
   }, { store }), /denied/);
   assert.equal(store.written.size, 0);
 });
@@ -255,7 +286,7 @@ test("a blank rate is refused, never read as zero", async () => {
   for (const blank of ["", "   ", null, undefined]) {
     const store = fakeRateStore();
     await assert.rejects(() => setInstructorFullRoomRate(ORG, "instructor-a", {
-      newRate: blank, changedBy: "owner-a",
+      newRate: blank, changedBy: "owner-a", actorRole: "owner",
     }, { store }), /Missing newRate/, JSON.stringify(blank));
     assert.equal(store.calls.length, 0);
   }
@@ -265,7 +296,7 @@ test("a nonsense rate is refused and says so differently", async () => {
   for (const bad of [-1, 1.5, "abc"]) {
     const store = fakeRateStore();
     await assert.rejects(() => setInstructorFullRoomRate(ORG, "instructor-a", {
-      newRate: bad, changedBy: "owner-a",
+      newRate: bad, changedBy: "owner-a", actorRole: "owner",
     }, { store }), /Invalid newRate/, JSON.stringify(bad));
   }
 });
@@ -274,7 +305,7 @@ test("setting the same rate again is refused", async () => {
   // 바뀐 것이 없는데 이력만 쌓이면 이력이 읽히지 않게 된다.
   const store = fakeRateStore();
   await assert.rejects(() => setInstructorFullRoomRate(ORG, "instructor-a", {
-    newRate: 45000, previousRate: 45000, changedBy: "owner-a",
+    newRate: 45000, previousRate: 45000, changedBy: "owner-a", actorRole: "owner",
   }, { store }), /Invalid newRate/);
   assert.equal(store.calls.length, 0);
 });

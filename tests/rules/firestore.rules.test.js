@@ -1950,6 +1950,134 @@ describe("checking attendance against a pass", () => {
     }));
   });
 
+  test("only the owner undoes a deduction, and only once", async () => {
+    /* 강사와 매니저가 스스로 되돌릴 수 있으면 기록의 의미가 없다 -- 잘못 누른
+       사람이 그것을 지울 수 있다는 뜻이기 때문이다. */
+    const correctionOf = (userId, entryId) => ledgerDocOf(users[userId], ORG_A, PASS_A, `${entryId}_correction`);
+    const correction = (overrides = {}) => ({
+      organizationId: ORG_A,
+      passId: PASS_A,
+      clientId: "client-member",
+      locationId: "location-a",
+      type: "correction",
+      delta: 1,
+      category: "pt_1_1_new",
+      unitPrice: 25000,
+      correctsEntryId: "entry-issue",
+      reason: "강사가 다른 회원을 눌렀습니다",
+      instructorId: users.instructor,
+      occurredAt: hoursAgo(1),
+      createdAt: serverTimestamp(),
+      createdBy: users.owner,
+      ...overrides,
+    });
+
+    await assertSucceeds(setDoc(correctionOf("owner", "entry-issue"), correction()));
+    // 같은 자리로 두 번째가 오고, 원장의 update 금지가 막는다.
+    await assertFails(setDoc(correctionOf("owner", "entry-issue"), correction()));
+
+    for (const role of ["manager", "instructor", "staff"]) {
+      await assertFails(setDoc(correctionOf(role, `entry-by-${role}`), correction({
+        correctsEntryId: `entry-by-${role}`, createdBy: users[role],
+      })), role);
+    }
+  });
+
+  test("a correction has to point at what it undoes, and say why", async () => {
+    const correction = (overrides = {}) => ({
+      organizationId: ORG_A,
+      passId: PASS_A,
+      clientId: "client-member",
+      locationId: "location-a",
+      type: "correction",
+      delta: 1,
+      category: "pt_1_1_new",
+      unitPrice: 25000,
+      correctsEntryId: "entry-target",
+      reason: "잘못 눌렀습니다",
+      instructorId: users.instructor,
+      occurredAt: hoursAgo(1),
+      createdAt: serverTimestamp(),
+      createdBy: users.owner,
+      ...overrides,
+    });
+    const at = (entryId) => ledgerDocOf(users.owner, ORG_A, PASS_A, entryId);
+
+    // 문서 id 가 대상을 가리켜야 한다. 그 규칙이 두 번 보정을 막는 장치다.
+    await assertFails(setDoc(at("somewhere-else"), correction()));
+    // 정확히 한 회차만 되돌린다.
+    await assertFails(setDoc(at("entry-target_correction"), correction({ delta: 2 })));
+    await assertFails(setDoc(at("entry-target_correction"), correction({ delta: -1 })));
+    // 사유가 없으면 반년 뒤 되돌린 것 자체가 실수인지 알 수 없다.
+    const noReason = correction();
+    delete noReason.reason;
+    await assertFails(setDoc(at("entry-target_correction"), noReason));
+    await assertFails(setDoc(at("entry-target_correction"), correction({ reason: "" })));
+    await assertFails(setDoc(at("entry-target_correction"), correction({ reason: "가".repeat(201) })));
+    // 단가와 카테고리가 있어야 급여에서 그 회차가 정확히 상쇄된다.
+    const noPrice = correction();
+    delete noPrice.unitPrice;
+    await assertFails(setDoc(at("entry-target_correction"), noPrice));
+
+    await assertSucceeds(setDoc(at("entry-target_correction"), correction()));
+  });
+
+  test("a cancellation collects exactly what the pass had left", async () => {
+    /* 남은 회차는 회원권이 들고 있다. caller 에게 물으면 숫자를 지어낼 수 있고,
+       그러면 원장의 합과 잔여 횟수가 어긋난다 -- 그 어긋남은 고칠 수 없다. */
+    const cancel = (overrides = {}) => ({
+      organizationId: ORG_A,
+      passId: PASS_A,
+      clientId: "client-member",
+      locationId: "location-a",
+      type: "cancel",
+      delta: -20,
+      reason: "잘못 발급했습니다",
+      occurredAt: hoursAgo(1),
+      createdAt: serverTimestamp(),
+      createdBy: users.owner,
+      ...overrides,
+    });
+    const at = (userId, entryId) => ledgerDocOf(users[userId], ORG_A, PASS_A, entryId);
+
+    await assertFails(setDoc(at("owner", "c-wrong"), cancel({ delta: -19 })));
+    await assertFails(setDoc(at("owner", "c-positive"), cancel({ delta: 20 })));
+    // 취소는 돈이 오가지 않는다. 지어낸 단가가 급여에 묶여 들어가면 안 된다.
+    await assertFails(setDoc(at("owner", "c-priced"), cancel({ category: "pt_1_1_new", unitPrice: 25000 })));
+    await assertFails(setDoc(at("manager", "c-by-manager"), cancel({ createdBy: users.manager })));
+    await assertFails(setDoc(at("instructor", "c-by-instructor"), cancel({ createdBy: users.instructor })));
+
+    await assertSucceeds(setDoc(at("owner", "c-ok"), cancel()));
+  });
+
+  test("an ordinary entry has no room for a reason it does not need", async () => {
+    // 자유 문장은 열어 둔 만큼 들어온다. 되돌리는 항목에만 칸이 있다.
+    await assertFails(setDoc(
+      ledgerDocOf(users.instructor, ORG_A, PASS_A, "entry-with-reason"),
+      deductEntry({ reason: "그냥" }),
+    ));
+    await assertFails(setDoc(
+      ledgerDocOf(users.instructor, ORG_A, PASS_A, "entry-with-target"),
+      deductEntry({ correctsEntryId: "entry-issue" }),
+    ));
+  });
+
+  test("a correction is no more editable than what it corrects", async () => {
+    await assertSucceeds(setDoc(
+      ledgerDocOf(users.owner, ORG_A, PASS_A, "entry-fix_correction"),
+      {
+        organizationId: ORG_A, passId: PASS_A, clientId: "client-member", locationId: "location-a",
+        type: "correction", delta: 1, category: "pt_1_1_new", unitPrice: 25000,
+        correctsEntryId: "entry-fix", reason: "잘못 눌렀습니다", instructorId: users.instructor,
+        occurredAt: hoursAgo(1), createdAt: serverTimestamp(), createdBy: users.owner,
+      },
+    ));
+    for (const role of ["owner", "manager", "instructor"]) {
+      await assertFails(updateDoc(ledgerDocOf(users[role], ORG_A, PASS_A, "entry-fix_correction"), { delta: 9 }));
+      await assertFails(deleteDoc(ledgerDocOf(users[role], ORG_A, PASS_A, "entry-fix_correction")));
+    }
+  });
+
   test("a deduction says which rule decided its price", async () => {
     /* 나중에 다시 계산할 수 없다 -- 그때의 누적 횟수는 계속 올라가 사라지고,
        부원장 지정과 서비스 사용 수도 그 뒤로 움직인다. */

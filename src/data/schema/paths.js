@@ -61,9 +61,20 @@ export const paths = Object.freeze({
   /** @param {string} organizationId @param {string} noteId */
   lessonNote: (organizationId, noteId) =>
     `${organizationRoot(organizationId)}/${COLLECTIONS.LESSON_NOTES}/${segment(noteId, "noteId")}`,
-  /** @param {string} organizationId @param {string} logId */
-  auditLog: (organizationId, logId) =>
-    `${organizationRoot(organizationId)}/${COLLECTIONS.AUDIT_LOGS}/${segment(logId, "logId")}`,
+  /**
+   * 감사 로그. 조직 하위가 아니라 최상위다 -- 규칙의 match 도 최상위에 있다.
+   *
+   * 이 함수는 조직 하위 경로를 만들고 있었고, 규칙은 최상위만 열어 두고 있었다.
+   * 둘이 어긋난 채였지만 쓰는 코드가 없어 드러나지 않았다. 첫 호출자가 생기는
+   * 지금 규칙 쪽으로 맞춘다.
+   *
+   * 최상위라는 것은 경로가 조직을 고정해 주지 않는다는 뜻이다. 읽는 쪽은 반드시
+   * where("organizationId", "==", …) 로 좁혀야 하고, 좁히지 않은 list 는 규칙이
+   * 거부한다 -- firestore.foundation.rules 머리말의 class B.
+   *
+   * @param {string} logId
+   */
+  auditLog: (logId) => `${COLLECTIONS.AUDIT_LOGS}/${segment(logId, "logId")}`,
   /** @param {string} organizationId @param {string} assessmentId */
   assessment: (organizationId, assessmentId) =>
     `${organizationRoot(organizationId)}/${COLLECTIONS.ASSESSMENTS}/${segment(assessmentId, "assessmentId")}`,

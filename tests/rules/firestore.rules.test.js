@@ -1586,6 +1586,141 @@ describe("instructor full-room rate", () => {
    차감은 원장에 항목을 쌓고 회원권의 잔여를 하나 줄인다. 원장은 append-only 라
    잘못 쌓인 항목을 지울 수 없으므로, 규칙이 받아 주는 모양을 여기서 좁게
    고정한다. */
+/* 감사 로그. 되돌릴 수 없거나 돈에 닿는 조작만 남는다.
+
+   최상위 컬렉션이라 경로가 조직을 고정해 주지 않는다. 그래서 읽는 쪽이 반드시
+   organizationId 로 좁혀야 하고, 좁히지 않으면 규칙이 평가할 것이 없어 쿼리
+   전체가 거부된다 -- 이 파일 머리말의 class B. 이 컬렉션이 그 함정의 첫 실사용자다. */
+describe("the audit log", () => {
+  beforeEach(seedAll);
+
+  const auditRef = (userId, logId) => doc(dbFor(userId), COLLECTIONS.AUDIT_LOGS, logId);
+  const auditCollection = (userId) => collection(dbFor(userId), COLLECTIONS.AUDIT_LOGS);
+
+  const rateEntry = (overrides = {}) => ({
+    organizationId: ORG_A,
+    actorId: users.owner,
+    actorRole: "owner",
+    action: "full_room_rate_set",
+    targetId: users.instructor,
+    amount: 50000,
+    previousAmount: 45000,
+    createdAt: serverTimestamp(),
+    ...overrides,
+  });
+
+  const seedOne = async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), COLLECTIONS.AUDIT_LOGS, "audit-seed"), {
+        ...rateEntry(), createdAt: hoursAgo(1),
+      });
+      // 남의 조직 것도 하나 둔다 -- 조직을 좁히지 않은 쿼리가 무엇을 긁는지 보려면.
+      await setDoc(doc(context.firestore(), COLLECTIONS.AUDIT_LOGS, "audit-seed-b"), {
+        ...rateEntry({ organizationId: ORG_B, actorId: users.outsider }), createdAt: hoursAgo(1),
+      });
+    });
+  };
+
+  test("a list without the organization filter is refused", async () => {
+    /* 규칙이 resource.data.organizationId 를 보는데 쿼리가 그 필드를 좁히지
+       않으면, Firestore 는 false 가 아니라 "Property is undefined" 로 쿼리
+       전체를 거부한다. 그 거부는 화면에 빈 목록으로 도착하고, 빈 목록은 "이달
+       조작이 없었다"와 구별되지 않는다.
+
+       컬렉션이 비어 있으면 평가할 문서가 없어 조용히 통과하므로, 먼저 하나를
+       심어 둔다 -- locations 에서 그 구멍 때문에 결함을 반년 놓쳤다. */
+    await seedOne();
+    await assertFails(getDocs(auditCollection(users.owner)));
+    await assertSucceeds(getDocs(query(auditCollection(users.owner), where("organizationId", "==", ORG_A))));
+  });
+
+  test("only the owner reads it, and only their own centre's", async () => {
+    await seedOne();
+    const mine = (userId) => query(auditCollection(userId), where("organizationId", "==", ORG_A));
+    await assertSucceeds(getDocs(mine(users.owner)));
+    // 매니저도 못 본다. 센터 전체의 조작 이력은 한 사람의 것이 아니다.
+    await assertFails(getDocs(mine(users.manager)));
+    await assertFails(getDocs(mine(users.instructor)));
+    await assertFails(getDocs(mine(users.staff)));
+    await assertFails(getDocs(mine(users.outsider)));
+    await assertFails(getDocs(mine(null)));
+    // 조직을 좁혀도 남의 조직은 열리지 않는다.
+    await assertFails(getDocs(query(auditCollection(users.owner), where("organizationId", "==", ORG_B))));
+  });
+
+  test("the owner records what only the owner can do", async () => {
+    /* 동작마다 말이 되는 칸이 다르다. 말이 안 되는 칸은 빼고 쓴다 -- null 로
+       채우면 규칙이 거부한다. 0 이나 null 을 진짜 값으로 읽히게 두지 않으려는
+       것이고, 그것이 여기서도 그대로 확인된다. */
+    await assertSucceeds(setDoc(auditRef(users.owner, "audit-rate"), rateEntry()));
+
+    const deputy = rateEntry({ action: "deputy_director_set", enabled: true });
+    delete deputy.amount;
+    delete deputy.previousAmount;
+    await assertSucceeds(setDoc(auditRef(users.owner, "audit-deputy"), deputy));
+
+    const migration = rateEntry({
+      action: "migration_uploaded", stage: "clients", succeeded: 118, failed: 2,
+    });
+    delete migration.amount;
+    delete migration.previousAmount;
+    delete migration.targetId;
+    await assertSucceeds(setDoc(auditRef(users.owner, "audit-migration"), migration));
+
+    // null 은 "값이 없다"가 아니라 잘못된 값이다.
+    await assertFails(setDoc(auditRef(users.owner, "audit-null"), rateEntry({ amount: null })));
+  });
+
+  test("nobody else records anything", async () => {
+    for (const role of ["manager", "instructor", "staff", "outsider"]) {
+      await assertFails(setDoc(auditRef(users[role], `audit-by-${role}`), rateEntry({
+        actorId: users[role], actorRole: role,
+      })), role);
+    }
+  });
+
+  test("an entry cannot be filed under someone else's name or role", async () => {
+    /* 거짓말한 행위자나 역할이 남으면 이 기록은 없는 것보다 해롭다 -- 있는
+       그대로라고 믿고 읽게 된다. */
+    await assertFails(setDoc(auditRef(users.owner, "audit-forged-actor"), rateEntry({
+      actorId: users.manager,
+    })));
+    await assertFails(setDoc(auditRef(users.owner, "audit-forged-role"), rateEntry({
+      actorRole: "instructor",
+    })));
+  });
+
+  test("a made-up action and a backdated time are both refused", async () => {
+    await assertFails(setDoc(auditRef(users.owner, "audit-made-up"), rateEntry({
+      action: "pass_cancelled",
+    })));
+    // 발급·교체·차감은 원장에 남는다. 여기에 두 벌째를 만들지 않는다.
+    await assertFails(setDoc(auditRef(users.owner, "audit-duplicate"), rateEntry({
+      action: "pass_deducted",
+    })));
+    await assertFails(setDoc(auditRef(users.owner, "audit-backdated"), rateEntry({
+      createdAt: hoursAgo(24),
+    })));
+  });
+
+  test("there is no field a member's name could travel in", async () => {
+    /* 이름은 개명과 오타 수정으로 바뀌는데 이 컬렉션은 고칠 수 없고, 삭제
+       요청이 왔을 때 지울 수도 없다. 칸 자체를 두지 않는다. */
+    for (const extra of [{ clientName: "김하나" }, { summary: "김하나님 회원권" }, { note: "메모" }]) {
+      await assertFails(
+        setDoc(auditRef(users.owner, "audit-with-name"), rateEntry(extra)),
+        Object.keys(extra)[0],
+      );
+    }
+  });
+
+  test("an audit entry is never edited or removed", async () => {
+    await seedOne();
+    await assertFails(updateDoc(auditRef(users.owner, "audit-seed"), { amount: 1 }));
+    await assertFails(deleteDoc(auditRef(users.owner, "audit-seed")));
+  });
+});
+
 /* 부원장은 카테고리도 누적도 인수인계도 보지 않고 계약 금액의 5:5 를 받는다.
    급여 판정에서 가장 강한 플래그라, 누가 그것을 켤 수 있는가가 곧 누가 자기
    급여를 두 배로 만들 수 있는가다. */

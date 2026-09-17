@@ -93,7 +93,12 @@ service cloud.firestore {
     // also allows "my own document", accept that a list is role-only):
     //   assessments, assessmentMedia, inbodyMeasurements, exercisePrograms,
     //   exerciseHistory, aiRecommendations, aiFeedback, outcomes, memberGoals,
-    //   memberProgress, events, auditLogs, dailyStats, teacherPatterns.
+    //   memberProgress, events, dailyStats, teacherPatterns.
+    //
+    // auditLogs was on that list and is the first one with a real caller. It
+    // stays class B — the audit screen queries it with
+    // where("organizationId", "==", …) and a list without that filter is
+    // refused, which the rules tests now pin.
     //
     // Already list-safe, no resource.data in their read rule: organizations,
     // products, passes, passes/ledger, runtimeConfig, and everything under
@@ -877,9 +882,69 @@ service cloud.firestore {
       allow create, update, delete: if false;
     }
 
+    // Keep in sync with AUDIT_ACTION in src/data/repositories/audit-repository.js.
+    //
+    // Issue, handover and deduction are deliberately absent: they already live
+    // in passes/{passId}/ledger, which is append-only and carries more than an
+    // audit entry would. Writing them twice would add a write to the button
+    // pressed most often in this app and leave two records of one event that can
+    // disagree. The audit screen merges this collection with the ledger instead.
+    function auditActions() {
+      return ["deputy_director_set", "full_room_rate_set", "migration_uploaded"];
+    }
+
+    // 무엇을 했는지에 따라 남길 수 있는 사람이 다르다. 규칙은 그 조작 자체를
+    // 허용하는 규칙과 같은 역할을 요구한다 -- 할 수 없는 일의 기록을 지어낼 수는
+    // 없어야 한다. 지금은 셋 다 대표의 조작이라 셋 다 대표뿐이고, 발급·차감이
+    // 나중에 이 목록에 들어온다면 그때는 매니저·강사가 함께 열려야 한다.
+    function mayRecordAudit(organizationId, action) {
+      return (
+        action in ["deputy_director_set", "full_room_rate_set", "migration_uploaded"]
+        && hasRole(organizationId, ["owner"])
+      );
+    }
+
     match /auditLogs/{logId} {
-      allow read: if hasRole(resource.data.organizationId, ["owner", "manager"]);
-      allow create, update, delete: if false;
+      // 대표만 본다. 센터 전체의 조작 이력은 한 사람의 것이 아니다.
+      //
+      // 이 절이 resource.data.organizationId 를 보기 때문에, 조직을 좁히지 않은
+      // list 는 평가할 것이 없어 거부된다. 그것이 class B 의 강제 장치다 --
+      // 이 파일 머리말 참고.
+      allow read: if hasRole(resource.data.organizationId, ["owner"]);
+
+      // Append-only. 고칠 수 없다는 것이 이 컬렉션의 값어치 전부다.
+      allow create: if mayRecordAudit(request.resource.data.organizationId, request.resource.data.action)
+        // 남의 이름으로 기록하지 않는다.
+        && request.resource.data.actorId == request.auth.uid
+        // 역할도 대조한다. 거짓말한 역할이 남으면 기록이 없는 것보다 해롭다.
+        && request.resource.data.actorRole == membership(request.resource.data.organizationId).data.role
+        // 클라이언트가 만든 시각은 받지 않는다. 소급 기록이 가능해진다.
+        && request.resource.data.createdAt == request.time
+        // Keep in sync with AUDIT_FIELDS in audit-repository.js. 자유 문장 칸이
+        // 하나도 없다 -- 있으면 언젠가 거기에 회원 이름이 들어간다.
+        && request.resource.data.keys().hasOnly([
+          "organizationId", "actorId", "actorRole", "action", "createdAt",
+          "locationId", "targetId", "clientId",
+          "amount", "previousAmount", "succeeded", "failed", "enabled", "stage"
+        ])
+        && request.resource.data.keys().hasAll([
+          "organizationId", "actorId", "actorRole", "action", "createdAt"
+        ])
+        && request.resource.data.action in auditActions()
+        && (!("amount" in request.resource.data)
+          || (request.resource.data.amount is int && request.resource.data.amount >= 0))
+        && (!("previousAmount" in request.resource.data)
+          || (request.resource.data.previousAmount is int && request.resource.data.previousAmount >= 0))
+        && (!("succeeded" in request.resource.data)
+          || (request.resource.data.succeeded is int && request.resource.data.succeeded >= 0))
+        && (!("failed" in request.resource.data)
+          || (request.resource.data.failed is int && request.resource.data.failed >= 0))
+        && (!("enabled" in request.resource.data) || request.resource.data.enabled is bool)
+        && (!("targetId" in request.resource.data) || request.resource.data.targetId is string)
+        && (!("clientId" in request.resource.data) || request.resource.data.clientId is string)
+        && (!("locationId" in request.resource.data) || request.resource.data.locationId is string)
+        && (!("stage" in request.resource.data) || request.resource.data.stage is string);
+      allow update, delete: if false;
     }
 
     match /dailyStats/{statId} {

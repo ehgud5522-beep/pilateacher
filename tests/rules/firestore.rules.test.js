@@ -112,6 +112,7 @@ function passFixture(organizationId, passId, overrides = {}) {
     purchaseRound: 1,
     remainingCount: 20,
     unitPrice: 25000,
+    expiresAt: Timestamp.fromDate(new Date(Date.now() + 180 * 24 * 60 * 60 * 1000)),
     instructorId: users.instructor,
     status: "active",
     createdBy: users.manager,
@@ -124,6 +125,7 @@ function ledgerFixture(organizationId, passId, overrides = {}) {
   return {
     organizationId,
     passId,
+    clientId: "client-member",
     locationId: "location-a",
     type: "deduct",
     delta: -1,
@@ -958,7 +960,7 @@ describe("ledger and pass bodies are validated at write time", () => {
         purchaseRound: 3,
       }),
     ));
-    for (const field of ["productId", "totalSessions", "serviceSessions", "contractPrice", "paymentMethod", "purchaseRound", "instructorId", "unitPrice", "remainingCount"]) {
+    for (const field of ["productId", "totalSessions", "serviceSessions", "contractPrice", "paymentMethod", "purchaseRound", "instructorId", "unitPrice", "remainingCount", "expiresAt"]) {
       await assertFails(setDoc(
         passRef(users.manager, `pass-missing-${field}`),
         withoutField(passFixture(ORG_A, `pass-missing-${field}`), field),
@@ -1224,6 +1226,7 @@ describe("issuing a pass and moving its instructor", () => {
   const transferEntry = (overrides = {}) => ({
     organizationId: ORG_A,
     passId: PASS_A,
+    clientId: "client-member",
     locationId: "location-a",
     type: "transfer",
     delta: 0,
@@ -1310,6 +1313,7 @@ describe("issuing a pass and moving its instructor", () => {
     const issue = {
       organizationId: ORG_A,
       passId: PASS_A,
+      clientId: "client-member",
       locationId: "location-a",
       type: "issue",
       delta: 20,
@@ -1578,6 +1582,7 @@ describe("checking attendance against a pass", () => {
   const deductEntry = (overrides = {}) => ({
     organizationId: ORG_A,
     passId: PASS_A,
+    clientId: "client-member",
     locationId: "location-a",
     type: "deduct",
     delta: -1,
@@ -1810,5 +1815,60 @@ describe("reading the ledger across passes", () => {
     await assertSucceeds(getDoc(
       doc(dbFor(users.staff), "organizations", ORG_A, COLLECTIONS.PASSES, PASS_A, COLLECTIONS.LEDGER, "entry-theirs"),
     ));
+  });
+});
+
+/* 만료일과, 원장 항목이 누구의 것인지. 둘 다 이번에 더한 필드다. */
+describe("what a pass and its ledger must say", () => {
+  const passDocOf = (userId, passId) =>
+    doc(dbFor(userId), "organizations", ORG_A, COLLECTIONS.PASSES, passId);
+  const ledgerDocOf = (userId, passId, entryId) =>
+    doc(dbFor(userId), "organizations", ORG_A, COLLECTIONS.PASSES, passId, COLLECTIONS.LEDGER, entryId);
+
+  test("a pass has to carry the expiry from the contract", async () => {
+    // 회원이 가장 자주 묻는 값이고 회원 앱에도 들어간다.
+    await assertFails(setDoc(
+      passDocOf(users.manager, "pass-no-expiry"),
+      dropField(passFixture(ORG_A, "pass-no-expiry"), "expiresAt"),
+    ));
+    for (const bad of ["2027-03-31", 1790000000, null]) {
+      await assertFails(setDoc(
+        passDocOf(users.manager, "pass-bad-expiry"),
+        passFixture(ORG_A, "pass-bad-expiry", { expiresAt: bad }),
+      ), JSON.stringify(bad));
+    }
+    await assertSucceeds(setDoc(
+      passDocOf(users.manager, "pass-with-expiry"),
+      passFixture(ORG_A, "pass-with-expiry"),
+    ));
+  });
+
+  test("a ledger entry names the client, checked against its own pass", async () => {
+    /* 원장은 append-only 다. 여기 잘못 적힌 이름은 영영 고칠 수 없으므로
+       호출자를 믿지 않고 회원권에서 확인한다. */
+    await assertSucceeds(setDoc(
+      ledgerDocOf(users.instructor, PASS_A, "entry-named"),
+      ledgerFixture(ORG_A, PASS_A),
+    ));
+    await assertFails(setDoc(
+      ledgerDocOf(users.instructor, PASS_A, "entry-wrong-client"),
+      ledgerFixture(ORG_A, PASS_A, { clientId: "client-other" }),
+    ));
+    await assertFails(setDoc(
+      ledgerDocOf(users.instructor, PASS_A, "entry-no-client"),
+      dropField(ledgerFixture(ORG_A, PASS_A), "clientId"),
+    ));
+  });
+
+  test("an issue and a transfer name the client too", async () => {
+    await assertSucceeds(setDoc(ledgerDocOf(users.owner, PASS_A, "entry-issue-named"), {
+      ...ledgerFixture(ORG_A, PASS_A, { type: "issue", delta: 20, createdBy: users.owner }),
+    }));
+    await assertFails(setDoc(ledgerDocOf(users.owner, PASS_A, "entry-transfer-unnamed"), {
+      organizationId: ORG_A, passId: PASS_A, locationId: "location-a",
+      type: "transfer", delta: 0,
+      fromInstructorId: users.instructor, toInstructorId: users.staff,
+      occurredAt: serverTimestamp(), createdAt: serverTimestamp(), createdBy: users.owner,
+    }));
   });
 });

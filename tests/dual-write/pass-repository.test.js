@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  activeRemainingTotal, createFirestorePassStore, deductPass, isDeductablePass, issuePass,
-  listPassLedger, listPasses, loadClientPassHistory, remainingCountOf, transferPassInstructor,
+  activeRemainingTotal, createFirestorePassStore, deductPass, isDeductablePass, isExpiredPass,
+  issuePass, listPassLedger, listPasses, loadClientPassHistory, remainingCountOf,
+  transferPassInstructor,
 } from "../../src/data/repositories/pass-repository.js";
 import { RepositoryReadError, connectRepositoryLog, disconnectRepositoryLog } from "../../src/data/repositories/repository-read.js";
 
@@ -30,6 +31,7 @@ function fakeStore({ documents = [], failCommit = null } = {}) {
 
 const issueInput = (overrides = {}) => ({
   clientId: "client-a",
+  expiresAt: new Date(2027, 2, 31),
   locationId: "bansong",
   productId: "product-a",
   payCategory: "pt_1_1_new",
@@ -201,6 +203,7 @@ test("a pass starts active on round one paid by card", async () => {
 test("a transfer records the move and points the pass at the new instructor", async () => {
   const store = fakeStore();
   const { entry } = await transferPassInstructor(ORG, "pass-a", {
+    clientId: "client-a",
     fromInstructorId: "instructor-a",
     toInstructorId: "instructor-b",
     locationId: "bansong",
@@ -222,6 +225,7 @@ test("a transfer records the move and points the pass at the new instructor", as
 test("a transfer entry carries no category and no unit price", async () => {
   const store = fakeStore();
   const { entry } = await transferPassInstructor(ORG, "pass-a", {
+    clientId: "client-a",
     fromInstructorId: "instructor-a",
     toInstructorId: "instructor-b",
     locationId: "bansong",
@@ -236,6 +240,7 @@ test("a transfer entry carries no category and no unit price", async () => {
 test("nothing moves when the transfer commit fails", async () => {
   const store = fakeStore({ failCommit: Object.assign(new Error("denied"), { code: "permission-denied" }) });
   await assert.rejects(() => transferPassInstructor(ORG, "pass-a", {
+    clientId: "client-a",
     fromInstructorId: "instructor-a",
     toInstructorId: "instructor-b",
     locationId: "bansong",
@@ -247,6 +252,7 @@ test("nothing moves when the transfer commit fails", async () => {
 test("a transfer to the same instructor is refused", async () => {
   const store = fakeStore();
   await assert.rejects(() => transferPassInstructor(ORG, "pass-a", {
+    clientId: "client-a",
     fromInstructorId: "instructor-a",
     toInstructorId: "instructor-a",
     locationId: "bansong",
@@ -257,6 +263,7 @@ test("a transfer to the same instructor is refused", async () => {
 
 test("a transfer needs both ends, a location and an author", async () => {
   const base = {
+    clientId: "client-a",
     fromInstructorId: "instructor-a",
     toInstructorId: "instructor-b",
     locationId: "bansong",
@@ -287,7 +294,7 @@ test("the Firestore store is what a caller gets when none is injected", async ()
     () => listPasses(ORG),
     () => issuePass(ORG, issueInput()),
     () => transferPassInstructor(ORG, "pass-a", {
-      fromInstructorId: "a", toInstructorId: "b", locationId: "bansong", createdBy: "owner-a",
+      clientId: "client-a", fromInstructorId: "a", toInstructorId: "b", locationId: "bansong", createdBy: "owner-a",
     }),
   ];
   for (const call of calls) {
@@ -630,7 +637,8 @@ test("issue, deduct and transfer all appear together", async () => {
         ledgerEntry({ id: "spent", type: "deduct", delta: -1, occurredAt: new Date(2026, 8, 5, 9, 0, 0) }),
         ledgerEntry({
           id: "moved", type: "transfer", delta: 0,
-          fromInstructorId: "instructor-a", toInstructorId: "instructor-b",
+          clientId: "client-a",
+    fromInstructorId: "instructor-a", toInstructorId: "instructor-b",
           occurredAt: new Date(2026, 8, 9, 9, 0, 0),
         }),
       ],
@@ -717,4 +725,106 @@ test("a refused ledger read is recorded with its own feature name", async () => 
   assert.equal(entries[0].detail.errorCode, "permission-denied");
   assert.equal(entries[0].detail.path, "organizations/center-a/passes/pass-a/ledger");
   disconnectRepositoryLog();
+});
+
+/* ── 만료일 ────────────────────────────────────────────────────────────── */
+
+const MARCH = new Date(2027, 2, 1);
+const APRIL = new Date(2027, 3, 1);
+
+test("an issued pass carries the expiry from the contract", async () => {
+  const store = fakeStore();
+  const { pass } = await issuePass(ORG, issueInput(), { store });
+  assert.equal(pass.expiresAt.getTime(), new Date(2027, 2, 31).getTime());
+});
+
+test("an unreadable or missing expiry is refused at issue", async () => {
+  // 회원이 가장 자주 묻는 값이라 지어내지 않는다.
+  for (const bad of [undefined, null, "", "언젠가"]) {
+    const store = fakeStore();
+    await assert.rejects(
+      () => issuePass(ORG, issueInput({ expiresAt: bad }), { store }),
+      /Invalid expiresAt/,
+      JSON.stringify(bad),
+    );
+    assert.equal(store.calls.commit.length, 0);
+  }
+});
+
+test("an expiry in the past makes a pass unusable even while it says active", () => {
+  /* status 는 사람이나 배치가 바꿔 주기 전까지 active 로 남는다. 날짜만 지나고
+     status 가 그대로인 회원권이 반드시 생긴다. */
+  const pass = activePass({ expiresAt: new Date(2027, 2, 31), remainingCount: 8 });
+  assert.equal(isExpiredPass(pass, MARCH), false);
+  assert.equal(isExpiredPass(pass, APRIL), true);
+  assert.equal(isDeductablePass(pass, MARCH), true);
+  assert.equal(isDeductablePass(pass, APRIL), false);
+});
+
+test("a pass without an expiry never expires", () => {
+  // 이 필드가 생기기 전에 발급된 건을 하루아침에 못 쓰게 만들 수는 없다.
+  for (const missing of [undefined, null, ""]) {
+    const pass = activePass({ expiresAt: missing });
+    assert.equal(isExpiredPass(pass, APRIL), false, JSON.stringify(missing));
+    assert.equal(isDeductablePass(pass, APRIL), true, JSON.stringify(missing));
+  }
+  assert.equal(isExpiredPass(activePass({ expiresAt: "망가진 값" }), APRIL), false);
+});
+
+test("expired sessions are not counted as remaining", async () => {
+  /* 더하면 화면이 쓸 수 없는 회차를 "남았다"고 말한다 -- 분쟁 때 여는 화면이라
+     그 숫자가 곧 근거가 된다. */
+  const passes = [
+    activePass({ id: "p1", remainingCount: 8, expiresAt: new Date(2027, 2, 31) }),
+    activePass({ id: "p2", remainingCount: 5, expiresAt: new Date(2027, 2, 15) }),
+    activePass({ id: "p3", remainingCount: 3 }),
+  ];
+  assert.equal(activeRemainingTotal(passes, MARCH), 16, "3월에는 셋 다 살아 있다");
+  assert.equal(activeRemainingTotal(passes, APRIL), 3, "4월에는 만료되지 않은 것만");
+});
+
+test("an expired pass still appears in the history, only unusable", async () => {
+  // 목록에서 사라지면 회원이 "내가 산 게 어디 갔냐"고 묻게 된다.
+  const store = historyStore({
+    passes: [activePass({ id: "p1", remainingCount: 5, expiresAt: new Date(2027, 1, 28) })],
+  });
+  const history = await loadClientPassHistory(ORG, "client-a", { store, now: () => APRIL });
+  assert.equal(history.passes.length, 1);
+  assert.equal(history.remainingTotal, 0);
+});
+
+/* ── 원장 항목이 누구의 것인지 말한다 ─────────────────────────────────── */
+
+test("every ledger entry names the client it belongs to", async () => {
+  /* 원장은 append-only 다. 지금 넣지 않으면 이미 쌓인 항목에는 영영 없고,
+     회원 단위 집계가 필요해지는 날 그 구멍을 메울 방법이 없다. */
+  const issueStore = fakeStore();
+  const issued = await issuePass(ORG, issueInput(), { store: issueStore });
+  assert.equal(issued.entry.clientId, "client-a");
+
+  const deductStore = fakeStore();
+  const deducted = await deductPass(ORG, activePass(), deductInput(), deductOptions(deductStore));
+  assert.equal(deducted.entry.clientId, "client-a");
+
+  const transferStore = fakeStore();
+  const moved = await transferPassInstructor(ORG, "pass-a", {
+    clientId: "client-a",
+    fromInstructorId: "instructor-a",
+    toInstructorId: "instructor-b",
+    locationId: "bansong",
+    createdBy: "owner-a",
+  }, { store: transferStore });
+  assert.equal(moved.entry.clientId, "client-a");
+});
+
+test("a transfer needs the client it is about", async () => {
+  const store = fakeStore();
+  await assert.rejects(() => transferPassInstructor(ORG, "pass-a", {
+    clientId: "",
+    fromInstructorId: "instructor-a",
+    toInstructorId: "instructor-b",
+    locationId: "bansong",
+    createdBy: "owner-a",
+  }, { store }), /Missing clientId/);
+  assert.equal(store.calls.commit.length, 0);
 });

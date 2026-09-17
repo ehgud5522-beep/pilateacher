@@ -145,7 +145,8 @@ export async function listPasses(organizationId, options = {}) {
  *   clientId: string, locationId: string, productId: string, payCategory: string,
  *   totalSessions: number, contractPrice: number, instructorId: string, createdBy: string,
  *   serviceSessions?: number, purchaseRound?: number, paymentMethod?: string,
- *   unitPrice?: number, fullRoomRate?: number, passId?: string, entryId?: string,
+ *   unitPrice?: number, fullRoomRate?: number, expiresAt?: Date | string,
+ *   passId?: string, entryId?: string,
  * }} input
  * @param {{ store?: PassStore, newId?: () => string }} [options]
  */
@@ -172,6 +173,9 @@ export async function issuePass(organizationId, input, options = {}) {
   });
 
   const clientId = requiredText(input?.clientId, "clientId");
+  /* 계약서에 적힌 만료일. 회원이 가장 자주 묻는 값이라 지어내지 않고 받는다. */
+  const expiresAt = input?.expiresAt instanceof Date ? input.expiresAt : new Date(String(input?.expiresAt ?? ""));
+  if (!Number.isFinite(expiresAt.getTime())) throw new Error("Invalid expiresAt");
   const locationId = requiredText(input?.locationId, "locationId");
   const productId = requiredText(input?.productId, "productId");
   const instructorId = requiredText(input?.instructorId, "instructorId");
@@ -194,6 +198,7 @@ export async function issuePass(organizationId, input, options = {}) {
     paymentMethod,
     purchaseRound,
     remainingCount: totalCount,
+    expiresAt,
     /* 이 회원권이 회당 얼마를 주는가. 차감할 때 여기서 읽는다 -- 상품이 나중에
        바뀌어도, 담당 강사의 풀방금액이 나중에 올라도, 이 회원권의 단가는 발급
        시점에 확정된 값이다. */
@@ -207,6 +212,7 @@ export async function issuePass(organizationId, input, options = {}) {
   const entry = {
     organizationId: organization,
     passId,
+    clientId,
     locationId,
     type: LEDGER_ENTRY_TYPE.ISSUE,
     delta: totalCount,
@@ -238,7 +244,7 @@ export async function issuePass(organizationId, input, options = {}) {
  *
  * @param {string} organizationId
  * @param {string} passId
- * @param {{ fromInstructorId: string, toInstructorId: string, locationId: string, createdBy: string, entryId?: string }} input
+ * @param {{ clientId: string, fromInstructorId: string, toInstructorId: string, locationId: string, createdBy: string, entryId?: string }} input
  * @param {{ store?: PassStore, newId?: () => string }} [options]
  */
 export async function transferPassInstructor(organizationId, passId, input, options = {}) {
@@ -248,6 +254,7 @@ export async function transferPassInstructor(organizationId, passId, input, opti
   } = options;
   const organization = requiredText(organizationId, "organizationId");
   const id = requiredText(passId, "passId");
+  const clientId = requiredText(input?.clientId, "clientId");
   const fromInstructorId = requiredText(input?.fromInstructorId, "fromInstructorId");
   const toInstructorId = requiredText(input?.toInstructorId, "toInstructorId");
   // 같은 사람으로의 교체는 이력만 어지럽힌다. 화면이 실수로 보내는 것을 여기서 막는다.
@@ -261,6 +268,7 @@ export async function transferPassInstructor(organizationId, passId, input, opti
   const entry = {
     organizationId: organization,
     passId: id,
+    clientId,
     locationId,
     type: LEDGER_ENTRY_TYPE.TRANSFER,
     delta: 0,
@@ -318,9 +326,32 @@ export function remainingCountOf(pass) {
   return typeof count === "number" && Number.isInteger(count) && count >= 0 ? count : 0;
 }
 
-/** 차감할 수 있는 회원권인가. 화면이 목록에서 거르는 데 쓴다. @param {any} pass */
-export function isDeductablePass(pass) {
-  return pass?.status === PASS_STATUS.ACTIVE && remainingCountOf(pass) > 0;
+/**
+ * 만료일이 지났는가.
+ *
+ * status 는 사람이나 배치가 바꿔 주기 전까지 active 로 남는다. 만료일만 지나고
+ * status 가 그대로인 회원권이 반드시 생기므로, 날짜도 함께 본다 -- 그러지 않으면
+ * 화면이 쓸 수 없는 회차를 "남았다"고 말한다. 분쟁 때 여는 화면이라 그 숫자가
+ * 곧 근거가 된다.
+ *
+ * 만료일이 없는 회원권은 만료되지 않은 것으로 본다. 이 필드가 생기기 전에
+ * 발급된 건을 하루아침에 못 쓰게 만들 수는 없다.
+ *
+ * @param {any} pass @param {Date} [now]
+ */
+export function isExpiredPass(pass, now = new Date()) {
+  const at = pass?.expiresAt;
+  if (at === undefined || at === null || at === "") return false;
+  const expiry = toDate(at);
+  if (!Number.isFinite(expiry.getTime())) return false;
+  return expiry.getTime() < now.getTime();
+}
+
+/** 차감할 수 있는 회원권인가. 화면이 목록에서 거르는 데 쓴다. @param {any} pass @param {Date} [now] */
+export function isDeductablePass(pass, now = new Date()) {
+  return pass?.status === PASS_STATUS.ACTIVE
+    && remainingCountOf(pass) > 0
+    && !isExpiredPass(pass, now);
 }
 
 /**
@@ -386,6 +417,7 @@ export async function deductPass(organizationId, pass, input, options = {}) {
   const entry = {
     organizationId: organization,
     passId,
+    clientId,
     locationId,
     type: LEDGER_ENTRY_TYPE.DEDUCT,
     delta: -1,
@@ -452,14 +484,15 @@ export async function listPassLedger(organizationId, passId, options = {}) {
 /**
  * 지금 쓸 수 있는 회차의 합.
  *
- * 종료·만료·취소된 회원권은 빼고 센다. 남은 숫자가 들어 있더라도 그 회원권으로
- * 수업할 수 없으므로, 더하면 화면이 실제보다 많이 남았다고 말하게 된다.
+ * 종료·취소된 회원권도, 만료일이 지난 회원권도 빼고 센다. 남은 숫자가 들어
+ * 있더라도 그 회원권으로 수업할 수 없으므로, 더하면 화면이 실제보다 많이
+ * 남았다고 말하게 된다 -- 분쟁 때 여는 화면이라 그 숫자가 곧 근거가 된다.
  *
- * @param {Array<any>} passes
+ * @param {Array<any>} passes @param {Date} [now]
  */
-export function activeRemainingTotal(passes) {
+export function activeRemainingTotal(passes, now = new Date()) {
   return (Array.isArray(passes) ? passes : [])
-    .filter((pass) => pass?.status === PASS_STATUS.ACTIVE)
+    .filter((pass) => pass?.status === PASS_STATUS.ACTIVE && !isExpiredPass(pass, now))
     .reduce((sum, pass) => sum + remainingCountOf(pass), 0);
 }
 
@@ -484,10 +517,10 @@ const byOccurredAtDesc = (left, right) => {
  *
  * @param {string} organizationId
  * @param {string} clientId
- * @param {{ store?: PassStore }} [options]
+ * @param {{ store?: PassStore, now?: () => Date }} [options]
  */
 export async function loadClientPassHistory(organizationId, clientId, options = {}) {
-  const { store = createFirestorePassStore() } = options;
+  const { store = createFirestorePassStore(), now = () => new Date() } = options;
   const organization = requiredText(organizationId, "organizationId");
   const client = requiredText(clientId, "clientId");
   const passes = await listPasses(organization, { clientId: client, store });
@@ -501,7 +534,7 @@ export async function loadClientPassHistory(organizationId, clientId, options = 
 
   return {
     passes,
-    remainingTotal: activeRemainingTotal(passes),
+    remainingTotal: activeRemainingTotal(passes, now()),
     entries: ledgers.flat().sort(byOccurredAtDesc),
     failedPassIds,
   };

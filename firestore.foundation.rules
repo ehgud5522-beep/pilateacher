@@ -368,8 +368,11 @@ service cloud.firestore {
             "instructorId",
             // 이 회원권이 회당 얼마를 주는가. 차감은 여기서 읽는다 -- 표를 다시
             // 보면 그 사이 바뀐 단가가 지난 회원권에 소급된다.
-            "unitPrice", "remainingCount"
+            "unitPrice", "remainingCount",
+            // 계약서에 적힌 만료일. 회원이 가장 자주 묻는 값이고 회원 앱에도 들어간다.
+            "expiresAt"
           ])
+          && request.resource.data.expiresAt is timestamp
           && request.resource.data.unitPrice is int
           && request.resource.data.unitPrice >= 0
           && request.resource.data.remainingCount is int
@@ -424,15 +427,21 @@ service cloud.firestore {
           allow create: if request.resource.data.organizationId == organizationId
             && request.resource.data.passId == passId
             && request.resource.data.keys().hasOnly([
-              "organizationId", "passId", "locationId", "type", "delta",
+              "organizationId", "passId", "clientId", "locationId", "type", "delta",
               "category", "unitPrice", "lessonId", "instructorId",
               "fromInstructorId", "toInstructorId",
               "occurredAt", "createdAt", "createdBy"
             ])
             && request.resource.data.keys().hasAll([
-              "organizationId", "passId", "locationId", "type", "delta",
+              "organizationId", "passId", "clientId", "locationId", "type", "delta",
               "occurredAt", "createdAt", "createdBy"
             ])
+            // The entry says whose lesson it was. The ledger is append-only, so a
+            // wrong name here can never be corrected — it is checked against the
+            // pass the entry hangs off rather than trusted from the caller.
+            && request.resource.data.clientId == get(
+              /databases/$(database)/documents/organizations/$(organizationId)/passes/$(passId)
+            ).data.clientId
             && request.resource.data.type is string
             && request.resource.data.type in ["issue", "deduct", "transfer"]
             && request.resource.data.delta is int

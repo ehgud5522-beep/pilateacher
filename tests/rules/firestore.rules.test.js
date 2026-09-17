@@ -11,6 +11,7 @@ import {
   collection,
   collectionGroup,
   deleteDoc,
+  deleteField,
   doc,
   getDoc,
   getDocs,
@@ -112,7 +113,8 @@ function passFixture(organizationId, passId, overrides = {}) {
     paymentMethod: "card",
     purchaseRound: 1,
     remainingCount: 20,
-    unitPrice: 25000,
+    baseUnitPrice: 25000,
+    serviceUsed: 0,
     handedOver: false,
     expiresAt: Timestamp.fromDate(new Date(Date.now() + 180 * 24 * 60 * 60 * 1000)),
     instructorId: users.instructor,
@@ -964,7 +966,7 @@ describe("ledger and pass bodies are validated at write time", () => {
         purchaseRound: 3,
       }),
     ));
-    for (const field of ["productId", "totalSessions", "serviceSessions", "contractPrice", "paymentMethod", "purchaseRound", "instructorId", "unitPrice", "remainingCount", "expiresAt", "handedOver"]) {
+    for (const field of ["productId", "totalSessions", "serviceSessions", "contractPrice", "paymentMethod", "purchaseRound", "instructorId", "baseUnitPrice", "remainingCount", "expiresAt", "handedOver"]) {
       await assertFails(setDoc(
         passRef(users.manager, `pass-missing-${field}`),
         withoutField(passFixture(ORG_A, `pass-missing-${field}`), field),
@@ -1584,6 +1586,83 @@ describe("instructor full-room rate", () => {
    차감은 원장에 항목을 쌓고 회원권의 잔여를 하나 줄인다. 원장은 append-only 라
    잘못 쌓인 항목을 지울 수 없으므로, 규칙이 받아 주는 모양을 여기서 좁게
    고정한다. */
+/* 부원장은 카테고리도 누적도 인수인계도 보지 않고 계약 금액의 5:5 를 받는다.
+   급여 판정에서 가장 강한 플래그라, 누가 그것을 켤 수 있는가가 곧 누가 자기
+   급여를 두 배로 만들 수 있는가다. */
+describe("who may name a deputy director", () => {
+  beforeEach(seedAll);
+
+  const membershipDocOf = (userId, subjectId) =>
+    doc(dbFor(userId), COLLECTIONS.MEMBERSHIPS, `${ORG_A}_${subjectId}`);
+
+  test("the owner names someone else a deputy", async () => {
+    await assertSucceeds(updateDoc(membershipDocOf(users.owner, users.instructor), { isDeputyDirector: true }));
+    await assertSucceeds(updateDoc(membershipDocOf(users.owner, users.instructor), { isDeputyDirector: false }));
+  });
+
+  test("nobody names themselves a deputy, not even the owner", async () => {
+    /* 대표가 직접 수업을 하는 센터가 있다. 스스로 켤 수 있으면 아무도 확인하지
+       않는 인상이 된다. 풀방금액에는 이 조건이 없다 -- 그것은 대표가 관리하는
+       숫자이고, 이것은 승진이다. */
+    await assertFails(updateDoc(membershipDocOf(users.owner, users.owner), { isDeputyDirector: true }));
+    await assertFails(updateDoc(membershipDocOf(users.instructor, users.instructor), { isDeputyDirector: true }));
+  });
+
+  test("a manager does not name a deputy", async () => {
+    await assertFails(updateDoc(membershipDocOf(users.manager, users.instructor), { isDeputyDirector: true }));
+    await assertFails(updateDoc(membershipDocOf(users.staff, users.instructor), { isDeputyDirector: true }));
+    await assertFails(updateDoc(membershipDocOf(users.outsider, users.instructor), { isDeputyDirector: true }));
+  });
+
+  test("the flag is a yes or a no, and travels alone", async () => {
+    await assertFails(updateDoc(membershipDocOf(users.owner, users.instructor), { isDeputyDirector: "true" }));
+    // 한 문은 한 필드만 지나간다. 역할이나 소속이 같이 실려 오면 안 된다.
+    await assertFails(updateDoc(membershipDocOf(users.owner, users.instructor), {
+      isDeputyDirector: true, role: "owner",
+    }));
+    await assertFails(updateDoc(membershipDocOf(users.owner, users.instructor), {
+      isDeputyDirector: true, fullRoomRate: 90000,
+    }));
+  });
+
+  test("the change lands in the same history as a rate change", async () => {
+    /* 별도 컬렉션을 만들지 않은 이유는 규칙 파일의 rateHistory 주석에 있다 --
+       두 기록이 답하는 질문이 같고, 나누면 한쪽만 보고 "그때 단가가 안 바뀌었다"
+       고 답하게 된다. */
+    const historyDocOf = (userId, entryId) => doc(
+      dbFor(userId), COLLECTIONS.MEMBERSHIPS, `${ORG_A}_${users.instructor}`, "rateHistory", entryId,
+    );
+    const deputyEntry = (overrides = {}) => ({
+      organizationId: ORG_A,
+      userId: users.instructor,
+      previousDeputyDirector: null,
+      newDeputyDirector: true,
+      effectiveFrom: serverTimestamp(),
+      changedBy: users.owner,
+      createdAt: serverTimestamp(),
+      ...overrides,
+    });
+
+    await assertSucceeds(setDoc(historyDocOf(users.owner, "deputy-1"), deputyEntry()));
+
+    // 한 항목이 두 종류의 변경을 동시에 말하면 무엇이 바뀐 것인지 알 수 없다.
+    await assertFails(setDoc(historyDocOf(users.owner, "deputy-mixed"), deputyEntry({ newRate: 45000 })));
+    await assertFails(setDoc(historyDocOf(users.owner, "deputy-mixed-2"), deputyEntry({ previousRate: 45000 })));
+
+    // 바뀌지 않는 변경은 이력만 늘리고 "그때 무슨 일이 있었나"를 흐린다.
+    await assertFails(setDoc(historyDocOf(users.owner, "deputy-noop"), deputyEntry({
+      previousDeputyDirector: true,
+    })));
+    await assertFails(setDoc(historyDocOf(users.owner, "deputy-string"), deputyEntry({
+      newDeputyDirector: "true",
+    })));
+    // 이력도 대표만 쌓는다.
+    await assertFails(setDoc(historyDocOf(users.instructor, "deputy-self"), deputyEntry({
+      changedBy: users.instructor,
+    })));
+  });
+});
+
 describe("checking attendance against a pass", () => {
   const passDocOf = (userId, organizationId, passId) =>
     doc(dbFor(userId), "organizations", organizationId, COLLECTIONS.PASSES, passId);
@@ -1693,13 +1772,66 @@ describe("checking attendance against a pass", () => {
     await assertFails(updateDoc(passDocOf(users.instructor, ORG_A, PASS_A), { remainingCount: increment(1) }));
   });
 
-  test("attendance touches the remaining count and nothing else", async () => {
+  test("attendance touches the remaining count and the service counter, nothing else", async () => {
     await assertFails(updateDoc(passDocOf(users.instructor, ORG_A, PASS_A), {
       remainingCount: 19, contractPrice: 1,
     }));
     await assertFails(updateDoc(passDocOf(users.instructor, ORG_A, PASS_A), {
       remainingCount: 19, instructorId: users.staff,
     }));
+  });
+
+  test("a service session moves its counter in the same write as the deduction", async () => {
+    /* 센터가 급여를 주는 서비스는 회원권당 1회분뿐이고, 이 숫자가 다음 서비스
+       회차의 단가를 가른다. 차감과 갈라져 저장되면 한 번 더 급여가 나간다. */
+    await assertSucceeds(updateDoc(passDocOf(users.instructor, ORG_A, PASS_A), {
+      remainingCount: increment(-1), serviceUsed: increment(1),
+    }));
+  });
+
+  test("the service counter only ever goes up by one, and never alone", async () => {
+    const refused = [
+      { label: "두 칸", data: { remainingCount: increment(-1), serviceUsed: increment(2) } },
+      { label: "되돌리기", data: { remainingCount: increment(-1), serviceUsed: increment(-1) } },
+      { label: "문자열", data: { remainingCount: increment(-1), serviceUsed: "1" } },
+      // 차감 없이 카운터만 올리면 그 회원권의 남은 서비스 1회분이 조용히 사라진다.
+      { label: "차감 없이", data: { serviceUsed: increment(1) } },
+    ];
+    for (const item of refused) {
+      await assertFails(updateDoc(passDocOf(users.instructor, ORG_A, PASS_A), item.data), item.label);
+    }
+  });
+
+  test("a pass from before the counter existed still spends its first service session", async () => {
+    /* 이 필드가 없는 회원권이 이미 있다. 없던 자리에서 올리면 1 이어야 하고,
+       그러지 않으면 옛 회원권의 출석 체크가 통째로 거부된다. */
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const reference = doc(context.firestore(), "organizations", ORG_A, "passes", "pass-before-counter");
+      await setDoc(reference, passFixture(ORG_A, "pass-before-counter"));
+      await updateDoc(reference, { serviceUsed: deleteField() });
+    });
+    await assertSucceeds(updateDoc(passDocOf(users.instructor, ORG_A, "pass-before-counter"), {
+      remainingCount: increment(-1), serviceUsed: increment(1),
+    }));
+  });
+
+  test("a deduction says which rule decided its price", async () => {
+    /* 나중에 다시 계산할 수 없다 -- 그때의 누적 횟수는 계속 올라가 사라지고,
+       부원장 지정과 서비스 사용 수도 그 뒤로 움직인다. */
+    await assertSucceeds(setDoc(
+      ledgerDocOf(users.instructor, ORG_A, PASS_A, "entry-with-rule"),
+      deductEntry({ rule: "new_to_instructor" }),
+    ));
+    // 판정 엔진이 돌려줄 수 있는 다섯 가지 말고는 들어가지 않는다.
+    await assertFails(setDoc(
+      ledgerDocOf(users.instructor, ORG_A, PASS_A, "entry-made-up-rule"),
+      deductEntry({ rule: "because_i_said_so" }),
+    ));
+    // 이 필드가 생기기 전 항목에는 없다. 없는 것은 거부하지 않는다.
+    await assertSucceeds(setDoc(
+      ledgerDocOf(users.instructor, ORG_A, PASS_A, "entry-without-rule"),
+      deductEntry(),
+    ));
   });
 
   test("staff and outsiders do not spend sessions", async () => {
@@ -1727,16 +1859,17 @@ describe("checking attendance against a pass", () => {
     ));
   });
 
-  test("a pass is issued with the price it will pay per session", async () => {
-    // 차감이 읽을 값이다. 없으면 차감 시점에 표를 다시 보게 되고, 그 사이 바뀐
-    // 단가가 지난 회원권에 소급된다.
+  test("a pass is issued with the base its deductions will start from", async () => {
+    /* 판정 4 가 읽을 값이다. 없으면 차감 시점에 표를 다시 보게 되고, 그 사이
+       바뀐 단가가 지난 회원권에 소급된다. 실제 단가가 아니라는 것은
+       deduction-pricing.js 가 말한다 -- 앞의 세 판정이 먼저 걸리면 쓰이지 않는다. */
     await assertFails(setDoc(
       passDocOf(users.manager, ORG_A, "pass-no-price"),
-      dropField(passFixture(ORG_A, "pass-no-price"), "unitPrice"),
+      dropField(passFixture(ORG_A, "pass-no-price"), "baseUnitPrice"),
     ));
     await assertFails(setDoc(
       passDocOf(users.manager, ORG_A, "pass-string-price"),
-      passFixture(ORG_A, "pass-string-price", { unitPrice: "25000" }),
+      passFixture(ORG_A, "pass-string-price", { baseUnitPrice: "25000" }),
     ));
     await assertSucceeds(setDoc(
       passDocOf(users.manager, ORG_A, "pass-priced"),
@@ -2020,7 +2153,7 @@ describe("the october migration writes what the rules accept", () => {
     remainingCount: 8,
     serviceSessions: 2,
     category: "pt_1_1_repurchase_event",
-    unitPrice: 30000,
+    baseUnitPrice: 30000,
     createdBy: users.owner,
   });
 

@@ -416,9 +416,11 @@ service cloud.firestore {
             // 발급 시점에 담당 강사가 정해진다. 없으면 차감한 회차가 누구의
             // 급여인지 알 수 없고, 교체 이력도 가리킬 대상이 없다.
             "instructorId",
-            // 이 회원권이 회당 얼마를 주는가. 차감은 여기서 읽는다 -- 표를 다시
-            // 보면 그 사이 바뀐 단가가 지난 회원권에 소급된다.
-            "unitPrice", "remainingCount",
+            // 판정 4 가 쓰는 기준값이며, 이 회원권의 실제 단가가 아니다. 차감
+            // 한 회차가 얼마인지는 그때 판정이 정한다 (deduction-pricing.js).
+            // 그래도 발급 시점에 박아 둔다 -- 표를 다시 보면 그 사이 바뀐 단가가
+            // 지난 회원권에 소급된다.
+            "baseUnitPrice", "remainingCount",
             // 계약서에 적힌 만료일. 회원이 가장 자주 묻는 값이고 회원 앱에도 들어간다.
             "expiresAt",
             // 넘겨받은 회원권인가. 급여 판정 2 가 이것만 보고 단가를 정하므로
@@ -427,10 +429,16 @@ service cloud.firestore {
           ])
           && request.resource.data.expiresAt is timestamp
           && request.resource.data.handedOver is bool
-          && request.resource.data.unitPrice is int
-          && request.resource.data.unitPrice >= 0
+          && request.resource.data.baseUnitPrice is int
+          && request.resource.data.baseUnitPrice >= 0
           && request.resource.data.remainingCount is int
           && request.resource.data.remainingCount >= 0
+          // 이 회원권에서 이미 나간 service 차감 수. 발급 시점에는 0 이지만
+          // 옛 회원권에는 이 필드가 없으므로 있을 때만 따진다.
+          && (
+            !("serviceUsed" in request.resource.data)
+            || (request.resource.data.serviceUsed is int && request.resource.data.serviceUsed >= 0)
+          )
           && request.resource.data.instructorId is string
           && request.resource.data.instructorId.size() > 0
           && request.resource.data.totalSessions is int
@@ -468,12 +476,30 @@ service cloud.firestore {
             // else — never two, and never back upwards. A pass that could be
             // topped up here would let anyone grant themselves lessons the
             // member never bought, and the ledger that proves it is append-only.
+            //
+            // A service session moves a second counter in the same write. The
+            // centre pays for one service session per pass; every one after that
+            // is unpaid, and serviceUsed is what decides which is which. Written
+            // apart from the deduction it could lag behind and pay twice, so it
+            // travels in the same update and is checked the same way: up by one,
+            // never further, never back down.
             || (
               hasRole(organizationId, ["owner", "manager", "instructor"])
-              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["remainingCount"])
+              && request.resource.data.diff(resource.data).affectedKeys()
+                .hasOnly(["remainingCount", "serviceUsed"])
               && request.resource.data.remainingCount is int
               && request.resource.data.remainingCount == resource.data.remainingCount - 1
               && request.resource.data.remainingCount >= 0
+              && (
+                !request.resource.data.diff(resource.data).affectedKeys().hasAny(["serviceUsed"])
+                || (
+                  request.resource.data.serviceUsed is int
+                  // 옛 회원권에는 이 필드가 없다. 없던 자리에서 올리면 1 이다.
+                  && request.resource.data.serviceUsed == (
+                    "serviceUsed" in resource.data ? resource.data.serviceUsed + 1 : 1
+                  )
+                )
+              )
             )
           );
         allow delete: if false;
@@ -486,7 +512,7 @@ service cloud.firestore {
             && request.resource.data.passId == passId
             && request.resource.data.keys().hasOnly([
               "organizationId", "passId", "clientId", "locationId", "type", "delta",
-              "category", "unitPrice", "lessonId", "instructorId",
+              "category", "unitPrice", "rule", "lessonId", "instructorId",
               "fromInstructorId", "toInstructorId",
               "occurredAt", "createdAt", "createdBy"
             ])
@@ -510,6 +536,20 @@ service cloud.firestore {
             ).data.clientId
             && request.resource.data.type is string
             && request.resource.data.type in ["issue", "deduct", "transfer"]
+            // Why this amount. It cannot be worked out again later — the
+            // accumulated count only ever goes up, and the deputy flag and the
+            // service counter both move on — so the reason is written down at
+            // the moment it decided something. Entries from before this field
+            // existed do not have it, so it is optional; when it is there it has
+            // to be one of the five the engine can return.
+            // Keep in sync with PRICING_RULE in src/data/schema/deduction-pricing.js.
+            && (
+              !("rule" in request.resource.data)
+              || request.resource.data.rule in [
+                "service_already_used", "deputy_director", "handed_over",
+                "new_to_instructor", "base_category"
+              ]
+            )
             && request.resource.data.delta is int
             && request.resource.data.createdBy == request.auth.uid
             // createdAt says when it was recorded and the server stamps it, so a
@@ -630,10 +670,18 @@ service cloud.firestore {
         || hasRole(resource.data.organizationId, ["owner", "manager"])
       );
       allow create, delete: if false;
-      // Two doors, each one field wide.
+      // Three doors, each one field wide.
       //
       // fullRoomRate decides what a repurchase lesson pays its instructor, so
       // an instructor must not set their own — only the owner.
+      //
+      // isDeputyDirector decides far more: a deputy is paid half the contract
+      // price per session regardless of category, accumulated count or handover,
+      // so the flag outranks every other pay rule. Only the owner sets it, and
+      // not on themselves — an owner who also teaches would otherwise be able to
+      // put their own lessons on the 5:5 split without anyone else in the loop.
+      // fullRoomRate has no such clause because it is a number the owner is
+      // expected to maintain; this one is a promotion.
       //
       // displayName is the member's own name, kept here rather than read from
       // users/{uid}. Rules cannot hide fields on a read: opening that document
@@ -650,6 +698,11 @@ service cloud.firestore {
           && request.resource.data.fullRoomRate is int
           && request.resource.data.fullRoomRate >= 0
         ) || (
+          hasRole(resource.data.organizationId, ["owner"])
+          && resource.data.userId != request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["isDeputyDirector"])
+          && request.resource.data.isDeputyDirector is bool
+        ) || (
           signedIn()
           && resource.data.userId == request.auth.uid
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["displayName"])
@@ -662,28 +715,56 @@ service cloud.firestore {
       // "since when was it this much" has to stay answerable. This is a record,
       // never a payroll input — payroll reads the unitPrice frozen into each
       // ledger entry, so raising a rate never moves a settled month.
+      //
+      // Two kinds of change share this collection, because they answer the same
+      // question: what decided this instructor's rate, and since when. Being made
+      // a deputy is a rate change — from that moment the full-room amount is not
+      // used at all and half the contract price takes its place. Split into two
+      // collections, a dispute would have to merge them by time, and whoever
+      // forgot to merge would read one and answer that nothing changed.
+      //
+      // An entry carries one pair or the other, never both and never neither.
       match /rateHistory/{entryId} {
         allow read: if hasRole(membershipOrganizationId(membershipDocumentId), ["owner"]);
         allow create: if hasRole(membershipOrganizationId(membershipDocumentId), ["owner"])
           && request.resource.data.organizationId == membershipOrganizationId(membershipDocumentId)
           && request.resource.data.keys().hasOnly([
             "organizationId", "userId", "previousRate", "newRate",
+            "previousDeputyDirector", "newDeputyDirector",
             "effectiveFrom", "changedBy", "createdAt"
           ])
           && request.resource.data.keys().hasAll([
-            "organizationId", "userId", "newRate",
+            "organizationId", "userId",
             "effectiveFrom", "changedBy", "createdAt"
           ])
           && request.resource.data.userId is string
           && request.resource.data.userId.size() > 0
-          && request.resource.data.newRate is int
-          && request.resource.data.newRate >= 0
-          // null means there was no rate before this one.
           && (
-            request.resource.data.previousRate == null
-            || (request.resource.data.previousRate is int && request.resource.data.previousRate >= 0)
+            (
+              "newRate" in request.resource.data
+              && !("newDeputyDirector" in request.resource.data)
+              && !("previousDeputyDirector" in request.resource.data)
+              && request.resource.data.newRate is int
+              && request.resource.data.newRate >= 0
+              // null means there was no rate before this one.
+              && (
+                request.resource.data.previousRate == null
+                || (request.resource.data.previousRate is int && request.resource.data.previousRate >= 0)
+              )
+              && request.resource.data.previousRate != request.resource.data.newRate
+            ) || (
+              "newDeputyDirector" in request.resource.data
+              && !("newRate" in request.resource.data)
+              && !("previousRate" in request.resource.data)
+              && request.resource.data.newDeputyDirector is bool
+              // null means nobody had decided either way before this entry.
+              && (
+                request.resource.data.previousDeputyDirector == null
+                || request.resource.data.previousDeputyDirector is bool
+              )
+              && request.resource.data.previousDeputyDirector != request.resource.data.newDeputyDirector
+            )
           )
-          && request.resource.data.previousRate != request.resource.data.newRate
           && request.resource.data.changedBy == request.auth.uid
           && request.resource.data.createdAt == request.time
           // createdAt is when it was recorded; effectiveFrom is when the raise

@@ -9,7 +9,7 @@ import {
 const ORG = "center-a";
 const LOCATIONS = [{ id: "bansong", name: "반송점" }, { id: "centum", name: "센텀점" }];
 const INSTRUCTORS = [
-  { userId: "u1", displayName: "정예진" },
+  { userId: "u1", displayName: "정예진", fullRoomRate: 45000 },
   { userId: "u2", displayName: "박서연" },
 ];
 
@@ -28,12 +28,19 @@ const passRow = (overrides = {}) => {
   return PASS_SHEET_COLUMNS.map((column) => values[column]).join(",");
 };
 
-function fakeStore({ failPaths = [] } = {}) {
+/**
+ * @param {{ failPaths?: Array<string>, existingPaths?: Array<string> }} [options]
+ *   failPaths    규칙이 거부하는 경로
+ *   existingPaths 그중 실제로 이미 문서가 있는 경로. 나머지는 규칙이 거부한 것이다.
+ */
+function fakeStore({ failPaths = [], existingPaths = failPaths } = {}) {
   const written = new Map();
   const commits = [];
+  const probed = [];
   return {
     written,
     commits,
+    probed,
     commit: async (writes) => {
       for (const write of writes) {
         if (failPaths.includes(write.path)) {
@@ -44,6 +51,7 @@ function fakeStore({ failPaths = [] } = {}) {
       for (const write of writes) written.set(write.path, write.data);
     },
     serverTimestamp: async () => "SERVER_TIME",
+    exists: async (path) => { probed.push(path); return existingPaths.includes(path); },
   };
 }
 
@@ -244,13 +252,29 @@ test("the totals document is seeded with the count from the sheet", async () => 
 });
 
 test("a second upload of the same file adds nothing and says so", async () => {
-  /* 같은 id 로 가고, 이미 있는 문서는 create 규칙이 거부한다. 데이터는 그대로다. */
+  /* 이미 있는 문서에 대한 set 은 create 가 아니라 update 다. 대표는 자기 센터의
+     회원권을 고칠 수 있는 사람이므로 규칙은 그것을 막지 않는다 -- 막는 것은
+     쓰기 전의 확인이다. 그러지 않으면 두 번째 업로드가 그 사이 차감된 잔여
+     횟수를 9월 말 값으로 되돌린다. */
   const { writes } = planPasses(passSheet(passRow()));
-  const store = fakeStore({ failPaths: ["organizations/center-a/passes/csv_csv_01012345678_2"] });
+  const store = fakeStore({ failPaths: [], existingPaths: ["organizations/center-a/passes/csv_csv_01012345678_2"] });
   const result = await applyPassMigration(ORG, writes, { store });
   assert.equal(result.succeeded.length, 0);
   assert.equal(result.failures[0].reason, MIGRATION_ERROR.ALREADY_EXISTS);
-  assert.equal(store.written.size, 0, "거부된 행은 아무것도 남기지 않는다");
+  assert.equal(store.written.size, 0, "이미 있는 행은 아무것도 건드리지 않는다");
+  assert.equal(store.commits.length, 0, "쓰기를 시도조차 하지 않는다");
+});
+
+test("a row is not written when we cannot tell whether it is already there", async () => {
+  /* "있는지 모르겠다"에서 덮어쓰기로 넘어가면 잃는 쪽이 회원의 잔여 횟수다. */
+  const { writes } = planPasses(passSheet(passRow()));
+  const store = fakeStore();
+  store.exists = async () => { throw Object.assign(new Error("nope"), { code: "unavailable" }); };
+  const result = await applyPassMigration(ORG, writes, { store });
+  assert.equal(result.succeeded.length, 0);
+  assert.equal(store.written.size, 0);
+  assert.equal(result.failures[0].reason, MIGRATION_ERROR.WRITE_FAILED);
+  assert.match(result.failures[0].message, /코드 unavailable/, "원본 코드를 남긴다");
 });
 
 test("one refused row does not stop the others", async () => {
@@ -261,6 +285,48 @@ test("one refused row does not stop the others", async () => {
   assert.equal(result.succeeded.length, 1);
   assert.equal(result.failures.length, 1);
   assert.ok(store.written.has("organizations/center-a/passes/csv_csv_01012345678_3"));
+});
+
+test("a rules rejection is not reported as a row that was already uploaded", async () => {
+  /* 없던 문서인데 규칙이 거부했다. 이것을 "이미 올렸다"로 읽으면 대표는 한 줄도
+     저장되지 않은 업로드를 끝난 것으로 보고 넘어간다. */
+  const path = "organizations/center-a/passes/csv_csv_01012345678_2";
+  const { writes } = planPasses(passSheet(passRow()));
+  const store = fakeStore({ failPaths: [path], existingPaths: [] });
+  const result = await applyPassMigration(ORG, writes, { store });
+  assert.equal(result.failures[0].reason, MIGRATION_ERROR.WRITE_FAILED);
+  assert.match(result.failures[0].message, /코드 permission-denied/, "원본 코드를 남긴다");
+});
+
+/* ── 기준 단가 ────────────────────────────────────────────────────────── */
+
+test("the base unit price comes from the table, not from the sheet", async () => {
+  /* 대표가 백 줄에 단가를 손으로 적으면 그 오타가 곧 급여 숫자가 된다.
+     그래서 양식에 단가 칸이 없고, 카테고리가 값을 정한다. */
+  const { writes } = planPasses(passSheet(passRow({ 급여카테고리: "1:1 신규" })));
+  assert.equal(writes[0].pass.unitPrice, 25000);
+});
+
+test("a full-room category takes the rate of the instructor who teaches it", () => {
+  const { writes } = planPasses(passSheet(passRow({ 급여카테고리: "1:1 재등록(정상)" })));
+  assert.equal(writes[0].pass.unitPrice, 45000, "정예진의 풀방금액");
+});
+
+test("a full-room category without a rate fails instead of being seeded with zero", () => {
+  /* 0 으로 심으면 그 회원권의 수업이 통째로 무보수로 기록되고, 원장은 고칠 수
+     없다. 강사 단가를 먼저 채우라고 말한다. */
+  const { failures, writes } = planPasses(passSheet(passRow({
+    급여카테고리: "1:1 재등록(정상)", 담당강사: "박서연",
+  })));
+  assert.equal(writes.length, 0);
+  assert.equal(failures[0].reason, MIGRATION_ERROR.MISSING_RATE);
+  assert.match(failures[0].message, /풀방금액/);
+});
+
+test("a category the table cannot price fails with a row the owner can act on", () => {
+  const { failures } = planPasses(passSheet(passRow({ 급여카테고리: "기타" })));
+  assert.equal(failures[0].reason, MIGRATION_ERROR.MISSING_RATE);
+  assert.match(failures[0].message, /직접 발급/);
 });
 
 test("failures are grouped so the owner knows what to fix", () => {

@@ -15,8 +15,13 @@
  *   회원   csv_<연락처숫자만>
  *   회원권 csv_<clientId>_<차수>
  *   원장   <passId>_issue
- * 같은 파일을 다시 올리면 같은 id 로 가고, 이미 있는 문서는 create 규칙이
- * 거부한다 -- 데이터는 그대로이고 그 행만 "이미 있음"으로 실패 목록에 들어간다.
+ * 같은 파일을 다시 올리면 같은 id 로 간다.
+ *
+ * 그 id 로 가는 두 번째 쓰기를 규칙이 막아 주지는 않는다 -- 이미 있는 문서에
+ * 대한 set 은 create 가 아니라 update 이고, 대표는 자기 센터의 회원과 회원권을
+ * 고칠 수 있는 사람이다. 규칙에 기대면 두 번째 업로드가 그 사이 앱에서 고친
+ * 이름과 차감된 잔여 횟수를 조용히 되돌린다. 그래서 쓰기 전에 그 문서가 이미
+ * 있는지 확인하고, 있으면 건드리지 않고 "이미 있음"으로 넘긴다.
  *
  * 이름을 id 에 넣지 않는다. 이름은 개명과 오타 수정으로 바뀌고, 바뀌면 같은
  * 사람이 두 명이 된다. 연락처는 잘 바뀌지 않으며, 바뀌는 날은 사람이 개입해야
@@ -31,8 +36,12 @@ import { CLIENT_STATUS, PASS_STATUS, PAY_CATEGORY } from "../schema/constants.js
 import {
   PAYMENT_METHOD_BY_LABEL, PAY_CATEGORY_BY_LABEL, valueOfLabel,
 } from "../schema/display-names.js";
+import {
+  UNIT_PRICE_SOURCE, resolveUnitPrice, unitPriceSourceFor,
+} from "../schema/pay-rates.js";
 import { paths } from "../schema/paths.js";
 import { normalizePhone } from "./client-repository.js";
+import { fullRoomRateOf } from "./instructor-repository.js";
 
 /** 실패 사유. 화면이 사유별로 묶어 보여주고, 대표가 무엇을 고칠지 안다. */
 export const MIGRATION_ERROR = Object.freeze({
@@ -45,6 +54,7 @@ export const MIGRATION_ERROR = Object.freeze({
   LOCATION_NOT_FOUND: "location_not_found",
   INSTRUCTOR_NOT_FOUND: "instructor_not_found",
   INSTRUCTOR_AMBIGUOUS: "instructor_ambiguous",
+  MISSING_RATE: "missing_rate",
   ALREADY_EXISTS: "already_exists",
   WRITE_FAILED: "write_failed",
 });
@@ -195,6 +205,27 @@ export function planClientMigration(text, { locations = [], createdBy = "" } = {
 }
 
 /**
+ * 이 회원권이 회당 얼마를 기준으로 하는가. 실제 단가는 차감할 때 판정이
+ * 정하고(deduction-pricing.js), 이 값은 판정 4 가 쓰는 기준값이다.
+ *
+ * 표를 이관 시점에 한 번만 읽는다. 지난 회원권을 나중에 다시 계산하면 그 사이
+ * 바뀐 단가가 소급되고, 이미 정산이 끝난 달의 근거가 사라진다.
+ */
+function baseUnitPriceFor({ category, categoryLabel, instructor, instructorName, line }) {
+  const source = unitPriceSourceFor(category);
+  if (source === UNIT_PRICE_SOURCE.MANUAL) {
+    throw failure(line, MIGRATION_ERROR.MISSING_RATE,
+      `${categoryLabel} 은(는) 기준 단가를 표가 정해 주지 않습니다. 이 회원권은 앱에서 직접 발급해 주세요`);
+  }
+  const fullRoomRate = fullRoomRateOf(instructor);
+  if (source === UNIT_PRICE_SOURCE.FULL_ROOM_RATE && !fullRoomRate) {
+    throw failure(line, MIGRATION_ERROR.MISSING_RATE,
+      `${instructorName} 강사의 풀방금액이 없습니다. 강사 단가에서 먼저 입력해 주세요`);
+  }
+  return resolveUnitPrice(category, { fullRoomRate });
+}
+
+/**
  * 2차 — 회원권 시트를 문서로 바꾼다.
  *
  * @param {string} text
@@ -265,6 +296,20 @@ export function planPassMigration(text, {
       const handedOverRaw = requireText(record, "인수인계여부");
       const handedOver = /^(y|yes|예|o|true|1)$/i.test(handedOverRaw);
 
+      /* 규칙이 unitPrice 를 요구한다. 없으면 이 행은 통째로 거부된다.
+
+         값은 카테고리가 정한다 -- 양식에 단가 칸을 두지 않은 이유이기도 하다.
+         대표가 백 줄에 단가를 손으로 적으면 그 오타가 곧 급여 숫자가 된다.
+         표에 있는 여섯 카테고리는 표가, 1:1 재등록(정상)은 담당 강사의
+         풀방금액이 정한다.
+
+         남는 것은 "기타" 하나다. 그것은 표도 풀방금액도 답을 갖고 있지 않다.
+         0 으로 심으면 그 회원권의 수업이 통째로 무보수로 기록되고 원장은
+         고칠 수 없으므로, 심지 않고 그 행만 실패로 돌린다. */
+      const unitPrice = baseUnitPriceFor({
+        category, categoryLabel, instructor: matches[0], instructorName, line,
+      });
+
       /* 단가는 표를 다시 읽지 않는다. 이관 시점의 표로 지난 회원권을 계산하면
          그때 팔린 조건과 달라진다. 판정 4 가 쓸 기준값만 심고, 실제 단가는
          차감할 때 판정이 정한다. */
@@ -288,6 +333,7 @@ export function planPassMigration(text, {
           paymentMethod,
           purchaseRound,
           remainingCount,
+          unitPrice,
           instructorId,
           handedOver,
           expiresAt,
@@ -333,27 +379,83 @@ export const needsManualBaseRate = (category) => category === PAY_CATEGORY.ETC
  * @typedef {object} MigrationStore
  * @property {(writes: Array<{ path: string, data: object, operation?: string }>) => Promise<void>} commit
  * @property {() => Promise<any>} serverTimestamp
+ * @property {(path: string) => Promise<boolean>} [exists]
  */
 
-const alreadyExists = (error) => String(error?.code || "") === "permission-denied";
+/**
+ * 이관은 만들기만 한다. update 도 merge 도 없다 -- 두 번째 업로드가 기존
+ * 문서를 건드리면 안 되기 때문이다. 그 "만들기만"을 지키는 것은 규칙이 아니라
+ * exists 다 -- runRows 머리말 참고.
+ *
+ * 한 행의 문서들은 한 배치로 묶는다 -- 회원권만 남고 원장이 없으면 잔여의
+ * 근거가 사라지고, 원장은 append-only 라 나중에 채울 수 없다.
+ *
+ * @returns {MigrationStore}
+ */
+export function createFirestoreMigrationStore() {
+  const load = () => import("firebase/firestore");
+  return {
+    commit: async (writes) => {
+      const { doc, getFirestore, writeBatch } = await load();
+      const firestore = getFirestore();
+      const batch = writeBatch(firestore);
+      for (const write of writes) batch.set(doc(firestore, write.path), write.data);
+      await batch.commit();
+    },
+    serverTimestamp: async () => {
+      const { serverTimestamp } = await load();
+      return serverTimestamp();
+    },
+    // 거부된 행만 여기로 온다 -- runRows 머리말 참고.
+    exists: async (documentPath) => {
+      const { doc, getDoc, getFirestore } = await load();
+      return (await getDoc(doc(getFirestore(), documentPath))).exists();
+    },
+  };
+}
 
-const runRows = async (rows, write) => {
+const alreadyThere = (row) => failure(
+  row.line, MIGRATION_ERROR.ALREADY_EXISTS, `이미 올라간 행입니다: ${row.name || row.clientId}`,
+);
+
+/**
+ * 한 행씩 쓰고, 실패는 사유와 함께 모은다.
+ *
+ * ── 쓰기 전에 있는지 본다 ──
+ * 두 번째 업로드를 규칙이 막아 주지 않기 때문이다 -- 위 머리말 참고. 백 건이면
+ * 백 번 읽지만 1년에 한 번 하는 일이고, 그 대가로 대표가 같은 파일을 몇 번
+ * 올리든 앱에서 고친 값이 되돌아가지 않는다.
+ *
+ * 읽지 못하면 쓰지 않는다. "있는지 모르겠다"에서 덮어쓰기로 넘어가면 잃는 쪽이
+ * 회원의 잔여 횟수다.
+ */
+const runRows = async (rows, { pathOf, exists, write }) => {
   const succeeded = [];
   const failures = [];
   for (const row of rows) {
     try {
+      if (exists && await exists(pathOf(row))) { failures.push(alreadyThere(row)); continue; }
+    } catch (error) {
+      failures.push(failure(
+        row.line, MIGRATION_ERROR.WRITE_FAILED,
+        `이미 올라갔는지 확인하지 못했습니다 (코드 ${error?.code || "unknown"})`,
+      ));
+      continue;
+    }
+    try {
       await write(row);
       succeeded.push(row);
     } catch (error) {
-      /* 이미 있는 문서는 create 규칙이 거부한다. 두 번째 업로드가 여기로 오고,
-         데이터는 그대로다 -- 중복 발급이 구조적으로 불가능하다. */
-      failures.push(failure(
-        row.line,
-        alreadyExists(error) ? MIGRATION_ERROR.ALREADY_EXISTS : MIGRATION_ERROR.WRITE_FAILED,
-        alreadyExists(error)
-          ? `이미 올라간 행입니다: ${row.name || row.clientId}`
-          : `쓰지 못했습니다 (코드 ${error?.code || "unknown"})`,
-      ));
+      /* 여기까지 왔으면 방금 전에는 없던 문서다. 그래도 permission-denied 가
+         나올 수 있다 -- 두 사람이 같은 파일을 동시에 올리는 경우다. 그때만 한
+         번 더 읽어 가른다. 규칙에 막힌 쓰기를 "이미 올렸다"로 읽으면 대표는 한
+         줄도 저장되지 않은 업로드를 끝난 것으로 보고 넘어간다. */
+      const code = String(error?.code || "unknown");
+      const already = code === "permission-denied" && exists
+        ? await exists(pathOf(row)).catch(() => false)
+        : false;
+      if (already) { failures.push(alreadyThere(row)); continue; }
+      failures.push(failure(row.line, MIGRATION_ERROR.WRITE_FAILED, `쓰지 못했습니다 (코드 ${code})`));
     }
   }
   return { succeeded, failures };
@@ -365,12 +467,16 @@ const runRows = async (rows, write) => {
  * @param {Array<any>} writes planClientMigration 의 결과
  * @param {{ store?: MigrationStore }} [options]
  */
-export async function applyClientMigration(organizationId, writes, { store } = {}) {
+export async function applyClientMigration(organizationId, writes, { store = createFirestoreMigrationStore() } = {}) {
   const stampedAt = await store.serverTimestamp();
-  return runRows(writes, (row) => store.commit([{
-    path: paths.client(organizationId, row.clientId),
-    data: { ...row.data, organizationId, createdAt: stampedAt },
-  }]));
+  return runRows(writes, {
+    pathOf: (row) => paths.client(organizationId, row.clientId),
+    exists: store.exists,
+    write: (row) => store.commit([{
+      path: paths.client(organizationId, row.clientId),
+      data: { ...row.data, organizationId, createdAt: stampedAt },
+    }]),
+  });
 }
 
 /**
@@ -379,9 +485,12 @@ export async function applyClientMigration(organizationId, writes, { store } = {
  * @param {Array<any>} writes planPassMigration 의 결과
  * @param {{ store?: MigrationStore }} [options]
  */
-export async function applyPassMigration(organizationId, writes, { store } = {}) {
+export async function applyPassMigration(organizationId, writes, { store = createFirestoreMigrationStore() } = {}) {
   const stampedAt = await store.serverTimestamp();
-  return runRows(writes, (row) => {
+  return runRows(writes, {
+    pathOf: (row) => paths.pass(organizationId, row.passId),
+    exists: store.exists,
+    write: (row) => {
     const pass = row.pass;
     const passPath = paths.pass(organizationId, row.passId);
     return store.commit([
@@ -416,5 +525,6 @@ export async function applyPassMigration(organizationId, writes, { store } = {})
         },
       },
     ]);
+    },
   });
 }

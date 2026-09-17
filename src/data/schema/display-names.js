@@ -10,6 +10,9 @@
  */
 
 import { CLIENT_STATUS, MEMBERSHIP_STATUS, PAY_CATEGORY, PAYMENT_METHOD, PRODUCT_STATUS, SESSION_TYPE } from "./constants.js";
+import {
+  NEW_TO_INSTRUCTOR_THRESHOLD, PAID_SERVICE_SESSIONS_PER_PASS, PRICING_RULE,
+} from "./deduction-pricing.js";
 
 export const SESSION_TYPE_LABELS = Object.freeze({
   [SESSION_TYPE.PT_1_1]: "1:1",
@@ -25,6 +28,25 @@ export const PAY_CATEGORY_LABELS = Object.freeze({
   [PAY_CATEGORY.SERVICE]: "서비스",
   [PAY_CATEGORY.LETMEIN]: "렛미인",
   [PAY_CATEGORY.ETC]: "기타",
+});
+
+/**
+ * 왜 이 금액인가. 원장 항목의 rule 을 한 줄로 읽는다.
+ *
+ * 강사가 급여 화면에서 "이 수업은 왜 25,000 이지"를 묻지 않아도 되게 하는 것이
+ * 이 표의 목적이다. 같은 회원권 안에서도 회차마다 답이 달라서, 금액만 보면
+ * 계산이 틀린 것처럼 보인다.
+ *
+ * 숫자를 문구에 직접 적지 않는다. 기준이 바뀌면 화면만 옛말을 하게 된다.
+ *
+ * Keep in sync with PRICING_RULE in deduction-pricing.js.
+ */
+export const PRICING_RULE_LABELS = Object.freeze({
+  [PRICING_RULE.SERVICE_ALREADY_USED]: `서비스 ${PAID_SERVICE_SESSIONS_PER_PASS + 1}회차 — 센터 지원 소진`,
+  [PRICING_RULE.DEPUTY_DIRECTOR]: "부원장 5:5",
+  [PRICING_RULE.HANDED_OVER]: "인수인계 — 신규 단가",
+  [PRICING_RULE.NEW_TO_INSTRUCTOR]: `누적 ${NEW_TO_INSTRUCTOR_THRESHOLD}회 미만 — 신규 단가`,
+  [PRICING_RULE.BASE_CATEGORY]: "기준 단가",
 });
 
 export const CLIENT_STATUS_LABELS = Object.freeze({

@@ -366,7 +366,12 @@ const activePass = (overrides = {}) => ({
   clientId: "client-a",
   locationId: "bansong",
   category: "pt_1_1_new",
-  unitPrice: 25000,
+  baseUnitPrice: 25000,
+  contractPrice: 1300000,
+  totalSessions: 20,
+  serviceSessions: 0,
+  serviceUsed: 0,
+  handedOver: false,
   remainingCount: 20,
   status: "active",
   ...overrides,
@@ -376,8 +381,14 @@ const deductInput = (overrides = {}) => ({
   instructorId: "instructor-a",
   createdBy: "instructor-a",
   occurredAt: new Date("2026-09-17T10:00:00.000Z"),
+  isDeputyDirector: false,
   ...overrides,
 });
+
+/* 판정 3 을 넘긴 상태. 누적이 20회 미만이면 카테고리가 무엇이든 신규 단가라,
+   기준 단가를 확인하려면 이 강사가 이 회원을 충분히 봤어야 한다. */
+const TOTALS_PATH = "organizations/center-a/instructorClientTotals/instructor-a_client-a";
+const settledPair = (sessions = 40) => ({ [TOTALS_PATH]: { sessions } });
 
 const deductOptions = (store) => ({
   store,
@@ -411,30 +422,117 @@ test("the entry points at the lesson it was taught in", async () => {
   assert.equal(entry.instructorId, "instructor-a", "차감을 누른 강사가 그 회차의 급여를 받는다");
 });
 
-test("the price comes from the pass, not from the table", async () => {
+test("the base price comes from the pass, not from the table", async () => {
   /* 상품이 나중에 바뀌어도, 담당 강사의 풀방금액이 나중에 올라도, 이 회원권의
-     단가는 발급 시점에 확정된 값이다. */
-  const store = fakeStore();
+     기준값은 발급 시점에 확정된 값이다. 앞의 판정에 걸리지 않을 때 그 값이
+     그대로 그 회차의 단가가 된다. */
+  const store = fakeStore({ totals: settledPair() });
   const { entry } = await deductPass(
     ORG,
-    activePass({ category: "pt_1_1_repurchase_normal", unitPrice: 45000 }),
+    activePass({ category: "pt_1_1_repurchase_normal", baseUnitPrice: 45000 }),
     deductInput(),
     deductOptions(store),
   );
   assert.equal(entry.category, "pt_1_1_repurchase_normal");
   assert.equal(entry.unitPrice, 45000);
+  assert.equal(entry.rule, "base_category");
 });
 
-test("a pass without a frozen price is refused rather than re-priced", async () => {
+test("a pass without a frozen base price is refused rather than re-priced", async () => {
   for (const missing of [undefined, null, "25000", -1]) {
-    const store = fakeStore();
+    const store = fakeStore({ totals: settledPair() });
     await assert.rejects(
-      () => deductPass(ORG, activePass({ unitPrice: missing }), deductInput(), deductOptions(store)),
-      /Missing unitPrice/,
+      () => deductPass(ORG, activePass({ baseUnitPrice: missing }), deductInput(), deductOptions(store)),
+      /Missing baseUnitPrice/,
       JSON.stringify(missing),
     );
     assert.equal(store.calls.commit.length, 0);
   }
+});
+
+/* ── 차감 단가 판정 (2026-09-15 확정본) ────────────────────────────────── */
+
+test("a deduction is priced by the engine, and the entry says which rule won", async () => {
+  /* 반년 뒤 "왜 이 금액이냐"에 답할 수 있어야 한다. 그때의 누적 횟수는 계속
+     올라가 사라지고, 부원장 지정도 서비스 사용 수도 그 뒤로 움직인다 -- 다시
+     계산할 수 없으므로 그 자리에서 적는다. */
+  const cases = [
+    {
+      label: "누적 20회 미만이면 카테고리와 무관하게 신규 단가",
+      pass: { category: "pt_2_1_repurchase", baseUnitPrice: 35000 },
+      totals: { [TOTALS_PATH]: { sessions: 19 } },
+      unitPrice: 25000,
+      rule: "new_to_instructor",
+    },
+    {
+      label: "인수인계받은 회원권은 횟수와 무관하게 신규 단가",
+      pass: { handedOver: true, baseUnitPrice: 45000 },
+      totals: settledPair(),
+      unitPrice: 25000,
+      rule: "handed_over",
+    },
+    {
+      label: "부원장은 계약 금액의 5:5",
+      pass: { contractPrice: 1300000, totalSessions: 20 },
+      input: { isDeputyDirector: true },
+      totals: settledPair(),
+      unitPrice: 32500,
+      rule: "deputy_director",
+    },
+    {
+      label: "첫 서비스 회차는 센터가 낸다",
+      pass: { category: "service", serviceUsed: 0, baseUnitPrice: 10000 },
+      totals: settledPair(),
+      unitPrice: 10000,
+      rule: "base_category",
+    },
+    {
+      label: "두 번째 서비스 회차부터는 0원이다",
+      pass: { category: "service", serviceUsed: 1, baseUnitPrice: 10000 },
+      totals: settledPair(),
+      unitPrice: 0,
+      rule: "service_already_used",
+    },
+  ];
+  for (const item of cases) {
+    const store = fakeStore({ totals: item.totals });
+    const { entry } = await deductPass(
+      ORG, activePass(item.pass), deductInput(item.input || {}), deductOptions(store),
+    );
+    assert.equal(entry.unitPrice, item.unitPrice, item.label);
+    assert.equal(entry.rule, item.rule, item.label);
+  }
+});
+
+test("the accumulated count is read at the moment of the deduction, not before", async () => {
+  /* 화면이 열릴 때 읽어 두면 20회째에서 한 칸 뒤처지고, 그 한 회차만 신규
+     단가로 굳는다. 원장은 고칠 수 없다. */
+  const store = fakeStore({ totals: settledPair() });
+  await deductPass(ORG, activePass(), deductInput(), deductOptions(store));
+  assert.deepEqual(store.calls.read, [TOTALS_PATH]);
+});
+
+test("a deduction without an explicit deputy answer is refused", async () => {
+  /* 빠뜨리면 부원장의 수업이 통째로 신규 단가로 기록된다. 조용히 false 로
+     가느니 멈춘다. */
+  for (const missing of [undefined, null, "false", 0]) {
+    const store = fakeStore({ totals: settledPair() });
+    await assert.rejects(
+      () => deductPass(ORG, activePass(), deductInput({ isDeputyDirector: missing }), deductOptions(store)),
+      /Missing isDeputyDirector/,
+      JSON.stringify(missing),
+    );
+    assert.equal(store.calls.commit.length, 0);
+  }
+});
+
+test("a service session moves its counter in the very same write", async () => {
+  /* 차감과 카운터가 갈라져 저장되면 다음 서비스 회차가 한 번 더 급여를 받는다. */
+  const store = fakeStore({ totals: settledPair() });
+  await deductPass(ORG, activePass({ category: "service", baseUnitPrice: 10000 }), deductInput(), deductOptions(store));
+  const passWrite = store.calls.commit[0][3];
+  assert.equal(passWrite.operation, "decrement");
+  assert.deepEqual(passWrite.data, { remainingCount: -1, serviceUsed: 1 });
 });
 
 test("the remaining count is spent by the server, not by a read", async () => {
@@ -444,7 +542,7 @@ test("the remaining count is spent by the server, not by a read", async () => {
   const passWrite = store.calls.commit[0][3];
   assert.equal(passWrite.path, "organizations/center-a/passes/pass-a");
   assert.equal(passWrite.operation, "decrement");
-  assert.deepEqual(passWrite.data, { remainingCount: -1 });
+  assert.deepEqual(passWrite.data, { remainingCount: -1 }, "서비스가 아닌 회차는 카운터를 건드리지 않는다");
 });
 
 test("nothing is written when the deduction commit fails", async () => {
@@ -533,12 +631,13 @@ test("a screen can tell which passes are spendable", () => {
   assert.equal(remainingCountOf(undefined), 0);
 });
 
-test("an issued pass carries the price a later deduction will read", async () => {
+test("an issued pass carries the base a later deduction will read", async () => {
   const store = fakeStore();
   const { pass } = await issuePass(ORG, issueInput(), { store });
-  assert.equal(pass.unitPrice, 25000);
+  assert.equal(pass.baseUnitPrice, 25000);
+  assert.equal(pass.serviceUsed, 0, "서비스 카운터는 0 에서 시작한다");
   // 발급이 만든 회원권을 그대로 차감할 수 있어야 한다.
-  const deductStore = fakeStore();
+  const deductStore = fakeStore({ totals: settledPair() });
   await deductPass(ORG, { ...pass, id: "pass-a" }, deductInput(), deductOptions(deductStore));
   assert.equal(deductStore.calls.commit[0][2].data.unitPrice, 25000);
 });

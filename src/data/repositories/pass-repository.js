@@ -7,10 +7,14 @@
  * 가리킬 회원권이 없다. 규칙이 원장을 append-only 로 막으므로 어느 쪽도 나중에
  * 고칠 수 없다 -- 그래서 한 배치로 묶는다. 실패하면 둘 다 안 쓰인다.
  *
- * ── 단가는 이 시점에 박힌다 ──
- * 원장 항목의 unitPrice 가 급여의 유일한 근거다. pay-rates.js 의 표는 발급하는
- * 순간 한 번만 읽고, 그 뒤로 표가 바뀌어도 이미 발급된 건의 급여는 흔들리지
- * 않는다. 급여를 합산하는 코드는 표가 아니라 원장을 읽어야 한다.
+ * ── 단가는 두 번 정해진다 ──
+ * 발급할 때 pay-rates.js 의 표를 한 번 읽어 passes.baseUnitPrice 에 박는다.
+ * 차감할 때 deduction-pricing.js 의 판정이 그 회차의 실제 단가를 정하고, 그
+ * 값이 원장 항목의 unitPrice 가 된다.
+ *
+ * 둘은 자주 다르다 -- 부원장이거나, 인수인계받았거나, 이 강사에게 이 회원이
+ * 아직 20회 미만이면 기준값은 쓰이지 않는다. 급여의 유일한 근거는 원장 항목의
+ * unitPrice 다. 급여를 합산하는 코드는 표도 회원권도 아니라 원장을 읽어야 한다.
  *
  * ── 담당 강사가 바뀌어도 과거는 그대로다 ──
  * 이미 차감된 회차는 그 항목의 instructorId 가 들고 있으므로 자동으로 그 시점
@@ -21,8 +25,9 @@
  */
 
 import {
-  ATTENDANCE_STATUS, LEDGER_ENTRY_TYPE, LESSON_STATUS, PASS_STATUS, PAYMENT_METHOD,
+  ATTENDANCE_STATUS, LEDGER_ENTRY_TYPE, LESSON_STATUS, PASS_STATUS, PAY_CATEGORY, PAYMENT_METHOD,
 } from "../schema/constants.js";
+import { resolveDeductionUnitPrice } from "../schema/deduction-pricing.js";
 import { paths } from "../schema/paths.js";
 import { toDate } from "./payroll-repository.js";
 import { resolveUnitPrice } from "../schema/pay-rates.js";
@@ -217,10 +222,20 @@ export async function issuePass(organizationId, input, options = {}) {
     /* 발급 시점에는 아직 아무도 넘겨받지 않았다. 담당이 교체되면 true 가 되고,
        그 뒤로 이 회원권의 차감은 판정 2 (인수인계 25,000)를 탄다. */
     handedOver: false,
-    /* 이 회원권이 회당 얼마를 주는가. 차감할 때 여기서 읽는다 -- 상품이 나중에
-       바뀌어도, 담당 강사의 풀방금액이 나중에 올라도, 이 회원권의 단가는 발급
-       시점에 확정된 값이다. */
-    unitPrice,
+    /* 판정 4 가 쓰는 기준값이며, 이 회원권의 실제 단가가 아니다.
+       (deduction-pricing.js)
+
+       차감 한 회차가 얼마인지는 그때 판정이 정한다 -- 부원장이면 계약 금액의
+       5:5, 인수인계받았거나 이 강사에게 20회 미만이면 25,000 이고, 이 값은
+       쓰이지 않는다. 앞의 셋 중 어느 것에도 걸리지 않을 때에만 이 숫자가 그
+       회차의 단가가 된다.
+
+       그래도 발급 시점에 박아 둔다. 표가 나중에 바뀌어도, 담당 강사의 풀방금액이
+       나중에 올라도, 이 회원권이 팔린 조건은 그때의 것이어야 한다. */
+    baseUnitPrice: unitPrice,
+    /* 이 회원권에서 이미 나간 service 차감 수. 센터가 급여를 주는 서비스는
+       회원권당 1회분뿐이고, 두 번째부터는 판정 0 이 0원으로 만든다. */
+    serviceUsed: 0,
     instructorId,
     status: PASS_STATUS.ACTIVE,
     createdAt: stampedAt,
@@ -382,8 +397,9 @@ export function isDeductablePass(pass, now = new Date()) {
  * 한 회차를 차감한다. 위 네 가지를 한 배치로 쓴다.
  *
  * @param {string} organizationId
- * @param {any} pass 회원권 문서 (id, clientId, locationId, category, unitPrice, remainingCount)
- * @param {{ instructorId: string, createdBy: string, occurredAt: Date, lessonId?: string, entryId?: string }} input
+ * @param {any} pass 회원권 문서 (id, clientId, locationId, category, baseUnitPrice,
+ *   contractPrice, totalSessions, handedOver, serviceUsed, remainingCount)
+ * @param {{ instructorId: string, createdBy: string, occurredAt: Date, isDeputyDirector?: boolean, lessonId?: string, entryId?: string }} input
  * @param {{ store?: PassStore, newId?: () => string, now?: () => Date }} [options]
  */
 export async function deductPass(organizationId, pass, input, options = {}) {
@@ -404,10 +420,19 @@ export async function deductPass(organizationId, pass, input, options = {}) {
   if (!isDeductablePass(pass)) throw new Error("Missing remainingCount");
 
   const category = requiredText(pass?.category, "category");
-  const unitPrice = pass?.unitPrice;
+  const baseUnitPrice = pass?.baseUnitPrice;
   /* 발급 시점에 박힌 값이 없으면 지어내지 않는다. 표에서 다시 읽으면 그 사이
      바뀐 단가가 지난 회원권에 소급되고, 0 을 넣으면 그 수업이 무보수가 된다. */
-  if (!Number.isInteger(unitPrice) || unitPrice < 0) throw new Error("Missing unitPrice");
+  if (!Number.isInteger(baseUnitPrice) || baseUnitPrice < 0) throw new Error("Missing baseUnitPrice");
+
+  /* 부원장인가. 조직 컨텍스트가 들고 있는 값이다 -- 로그인할 때 읽은 내
+     membership 에서 온다 (organization-context.js).
+
+     기본값을 두지 않는다. 호출하는 쪽이 빠뜨리면 부원장의 수업이 통째로 신규
+     단가로 기록되고, 원장은 append-only 라 고칠 수 없다. 조용히 false 로 가느니
+     여기서 멈춘다. */
+  const isDeputyDirector = input?.isDeputyDirector;
+  if (typeof isDeputyDirector !== "boolean") throw new Error("Missing isDeputyDirector");
 
   const occurredAt = input?.occurredAt instanceof Date ? input.occurredAt : new Date(String(input?.occurredAt ?? ""));
   if (!Number.isFinite(occurredAt.getTime())) throw new Error("Invalid occurredAt");
@@ -416,6 +441,27 @@ export async function deductPass(organizationId, pass, input, options = {}) {
   const oldest = today.getTime() - DEDUCT_BACKDATE_LIMIT_DAYS * 24 * 60 * 60 * 1000;
   // 규칙이 같은 창으로 막는다. 여기서 먼저 막는 것은 무엇이 문제인지 말해 주기 위해서다.
   if (occurredAt.getTime() <= oldest) throw new Error("Invalid occurredAt");
+
+  /* 판정 3 이 보는 누적은 지금 이 순간의 값이어야 한다. 화면이 열릴 때 읽어
+     두면 20회째에서 한 칸 뒤처지고, 그 한 회차만 신규 단가로 굳는다.
+
+     두 강사가 같은 순간에 누르면 이 읽기가 서로의 증가를 못 볼 수 있다. 저장된
+     누적은 서버가 더하므로 언제나 맞고, 어긋날 수 있는 것은 그 순간의 단가
+     하나다 -- 같은 회원을 두 강사가 같은 초에 차감할 때에만 일어난다. */
+  const priorSessions = await readInstructorClientSessions(organization, instructorId, clientId, { store });
+
+  /* 여기서 이 한 회차가 얼마인지 정해진다. 확정본의 판정 순서를 그대로 옮긴
+     순수 함수이고, 어느 판정이 이겼는지(rule)를 함께 돌려준다. */
+  const { unitPrice, rule } = resolveDeductionUnitPrice({
+    category,
+    baseUnitPrice,
+    contractPrice: pass?.contractPrice,
+    totalSessions: pass?.totalSessions,
+    isDeputyDirector,
+    handedOver: pass?.handedOver === true,
+    priorSessions,
+    serviceUsedCount: pass?.serviceUsed,
+  });
 
   const lessonId = String(input?.lessonId || newId());
   const entryId = String(input?.entryId || `${lessonId}_deduct`);
@@ -447,6 +493,11 @@ export async function deductPass(organizationId, pass, input, options = {}) {
     delta: -1,
     category,
     unitPrice,
+    /* 왜 이 금액인가. 나중에 다시 계산할 수 없어서 함께 적는다 -- 그때의 누적
+       횟수는 계속 올라가 사라지고, 부원장 지정과 서비스 사용 수도 그 뒤로
+       움직인다. 이 한 글자가 없으면 반년 뒤 "왜 25,000 이냐"에 아무도 답할 수
+       없다. 급여 화면이 이 값을 한 줄로 보여준다. */
+    rule,
     lessonId,
     instructorId,
     occurredAt,
@@ -454,13 +505,23 @@ export async function deductPass(organizationId, pass, input, options = {}) {
     createdBy,
   };
 
+  /* 서비스 회차를 쓴 경우에만 카운터를 올린다. 이 숫자가 다음 서비스 차감의
+     판정 0 을 가른다 -- 회원권당 센터가 내는 것은 1회분뿐이다. */
+  const spendsService = category === PAY_CATEGORY.SERVICE;
+
   await store.commit([
     { path: paths.lesson(organization, lessonId), data: lesson },
     { path: paths.lessonParticipant(organization, lessonId, clientId), data: participant },
     { path: paths.passLedgerEntry(organization, passId, entryId), data: entry },
     /* 잔여는 읽어서 빼지 않고 서버가 하나 줄인다. 두 강사가 같은 순간에 눌러도
-       하나가 다른 하나를 덮어쓰지 않는다. 규칙은 계산된 값을 보고 -1 인지 따진다. */
-    { path: paths.pass(organization, passId), data: { remainingCount: -1 }, operation: "decrement" },
+       하나가 다른 하나를 덮어쓰지 않는다. 규칙은 계산된 값을 보고 -1 인지 따진다.
+       서비스 카운터도 같은 이유로 같은 방식이고, 같은 update 에 얹는다 -- 차감과
+       카운터가 갈라져 저장되면 다음 서비스 회차의 단가가 틀린다. */
+    {
+      path: paths.pass(organization, passId),
+      data: spendsService ? { remainingCount: -1, serviceUsed: 1 } : { remainingCount: -1 },
+      operation: "decrement",
+    },
     /* 이 강사가 이 회원에게 몇 회를 했는가. 급여 판정이 이 숫자를 보고 신규
        단가인지 기준 단가인지 가른다 (deduction-pricing.js 판정 3).
        원장으로는 셀 수 없다 -- 항목이 회원권마다 흩어져 있고, 세려면 센터

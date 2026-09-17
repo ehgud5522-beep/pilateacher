@@ -304,12 +304,12 @@ test("the base unit price comes from the table, not from the sheet", async () =>
   /* 대표가 백 줄에 단가를 손으로 적으면 그 오타가 곧 급여 숫자가 된다.
      그래서 양식에 단가 칸이 없고, 카테고리가 값을 정한다. */
   const { writes } = planPasses(passSheet(passRow({ 급여카테고리: "1:1 신규" })));
-  assert.equal(writes[0].pass.unitPrice, 25000);
+  assert.equal(writes[0].pass.baseUnitPrice, 25000);
 });
 
 test("a full-room category takes the rate of the instructor who teaches it", () => {
   const { writes } = planPasses(passSheet(passRow({ 급여카테고리: "1:1 재등록(정상)" })));
-  assert.equal(writes[0].pass.unitPrice, 45000, "정예진의 풀방금액");
+  assert.equal(writes[0].pass.baseUnitPrice, 45000, "정예진의 풀방금액");
 });
 
 test("a full-room category without a rate fails instead of being seeded with zero", () => {

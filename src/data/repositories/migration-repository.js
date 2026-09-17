@@ -296,7 +296,7 @@ export function planPassMigration(text, {
       const handedOverRaw = requireText(record, "인수인계여부");
       const handedOver = /^(y|yes|예|o|true|1)$/i.test(handedOverRaw);
 
-      /* 규칙이 unitPrice 를 요구한다. 없으면 이 행은 통째로 거부된다.
+      /* 규칙이 baseUnitPrice 를 요구한다. 없으면 이 행은 통째로 거부된다.
 
          값은 카테고리가 정한다 -- 양식에 단가 칸을 두지 않은 이유이기도 하다.
          대표가 백 줄에 단가를 손으로 적으면 그 오타가 곧 급여 숫자가 된다.
@@ -306,7 +306,7 @@ export function planPassMigration(text, {
          남는 것은 "기타" 하나다. 그것은 표도 풀방금액도 답을 갖고 있지 않다.
          0 으로 심으면 그 회원권의 수업이 통째로 무보수로 기록되고 원장은
          고칠 수 없으므로, 심지 않고 그 행만 실패로 돌린다. */
-      const unitPrice = baseUnitPriceFor({
+      const baseUnitPrice = baseUnitPriceFor({
         category, categoryLabel, instructor: matches[0], instructorName, line,
       });
 
@@ -333,7 +333,10 @@ export function planPassMigration(text, {
           paymentMethod,
           purchaseRound,
           remainingCount,
-          unitPrice,
+          baseUnitPrice,
+          /* 아직 서비스 회차를 쓰지 않은 상태로 옮긴다. 옛 엑셀은 그것을
+             기록하지 않았고, 지어내면 남은 서비스 1회분이 조용히 사라진다. */
+          serviceUsed: 0,
           instructorId,
           handedOver,
           expiresAt,

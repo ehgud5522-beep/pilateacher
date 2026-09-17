@@ -73,6 +73,11 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 매니저",
     "회원권 상품",
     "회원권 상품 · 소속 확인 실패",
+    "감사 로그",
+    "감사 로그 · 전체 이력",
+    "감사 로그 · 이상 없음",
+    "감사 로그 · 조회 실패",
+    "감사 로그 · 소속 확인 실패",
     "급여 집계",
     "급여 집계 · 강사 펼침",
     "급여 집계 · 두 지점",
@@ -342,6 +347,86 @@ test("the payroll summary is the owner's, and says out loud what it did not coun
   const locked = markupOf("급여 집계 · 소속 확인 실패");
   assert.match(locked, /소속을 확인하지 못했습니다/);
   assert.doesNotMatch(locked, /CSV 내려받기/);
+});
+
+test("the audit log shows the odd ones first, and never a name it stored itself", async (t) => {
+  const vite = await createServer({
+    root: projectRoot,
+    configFile: false,
+    plugins: [react()],
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] },
+    server: { middlewareMode: true },
+    ssr: { noExternal: ["@capgo/camera-preview"] },
+    logLevel: "silent",
+  });
+  t.after(() => vite.close());
+  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+
+  // 센터 전체의 조작 이력은 한 사람의 것이 아니다. 매니저도 못 본다.
+  assert.match(markupOf("더보기 탭"), /감사 로그/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 매니저"), /감사 로그/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 강사"), /감사 로그/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 개인 모드"), /감사 로그/);
+
+  const audit = markupOf("감사 로그");
+
+  /* 전체 이력보다 목록이 먼저다. 백 줄을 눈으로 훑는 일은 아무도 하지 않고,
+     3중 대조가 매달 늦어지는 이유가 그것이다. */
+  for (const section of [
+    "기준값 조정 발급", "바우처 결제", "장기 미차감 회원권",
+    "발급 취소 · 보정", "부원장 · 단가 변경", "이관 업로드",
+  ]) {
+    assert.match(audit, new RegExp(section.replace(/ /g, "\\s*")), section);
+  }
+  assert.ok(audit.indexOf("기준값 조정 발급") < audit.indexOf("전체 이력"), "목록이 이력보다 위다");
+
+  // 무엇이 기준과 다른지가 함께 있어야 고칠 수 있다.
+  assert.match(audit, /회차 20 → 18/);
+  assert.match(audit, /금액 130만원 → 110만원/);
+  // 기준이 없는 이관분은 지어내지 않고 센다.
+  assert.match(audit, /상품을 가리키지 않는 회원권 1건은 기준이 없어 대조하지 않았습니다/);
+  assert.match(audit, /인센 10% 를 손으로 조정하는 대상입니다/);
+  assert.match(audit, /잔여가 남았는데 30일 넘게 차감이 없는 건입니다/);
+
+  /* 기능이 없어서 비어 있는 것과 이상이 없어서 비어 있는 것은 다른 말이다.
+     적어 두지 않으면 "취소가 한 건도 없었다"로 읽힌다. */
+  assert.match(audit, /지금은 취소된 건이 없는 것이 아니라, 취소할 방법이 없습니다/);
+
+  /* 기록에는 id 만 있고 이름은 화면이 붙인다. 이름이 보인다는 것은 join 이
+     되고 있다는 뜻이고, 저장된 것이 아니라는 뜻이다. */
+  assert.match(audit, /김하나/);
+  assert.match(audit, /정예진/);
+
+  const history = markupOf("감사 로그 · 전체 이력");
+  // 감사 로그와 원장이 한 줄기로 합쳐진다.
+  assert.match(history, /풀방금액 변경/);
+  assert.match(history, /4\.5만원 → 5만원/);
+  assert.match(history, /부원장/);
+  assert.match(history, /이관 업로드/);
+  assert.match(history, /성공 118 · 실패 2/);
+  assert.match(history, /회원권 발급/);
+  assert.match(history, /담당 강사 변경/);
+  assert.match(history, /차감/);
+  assert.match(history, /누적 20회 미만 — 신규 단가/, "왜 그 금액이었는지가 이력에도 온다");
+  assert.match(history, /대표/, "누가 했는지에 역할이 붙는다");
+
+  // 빈 목록은 좋은 소식이다. 그래서 그렇게 말해야 한다.
+  const clean = markupOf("감사 로그 · 이상 없음");
+  assert.ok((clean.match(/이상 없음/g) || []).length >= 4, "비어 있는 목록마다 말한다");
+
+  /* "이상이 없다"와 "읽지 못했다"가 같은 화면이면 감사 화면은 아무것도 감사하지
+     못한다. */
+  const failed = markupOf("감사 로그 · 조회 실패");
+  assert.match(failed, /이력을 불러오지 못했습니다 \(코드 permission-denied\)/);
+  assert.match(failed, /이상이 없는 것이 아니라 읽지 못한 것입니다/);
+  assert.doesNotMatch(failed, /이상 없음/);
+
+  const locked = markupOf("감사 로그 · 소속 확인 실패");
+  assert.match(locked, /소속을 확인하지 못했습니다/);
+  assert.doesNotMatch(locked, /전체 이력/);
 });
 
 test("ErrorBoundary hides diagnostics in production and records a privacy-safe diagnostic event", async () => {

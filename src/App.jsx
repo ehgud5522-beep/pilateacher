@@ -94,8 +94,12 @@ import {
   listPasses, loadClientPassHistory, remainingCountOf,
 } from "./data/repositories/pass-repository.js";
 import {
-  loadInstructorMonthlyPay, loadOrganizationMonthlyPayroll, payrollCsv, previousMonth, toDate,
+  loadInstructorMonthlyPay, loadOrganizationLedger, loadOrganizationMonthlyPayroll,
+  monthRange, payrollCsv, previousMonth, toDate,
 } from "./data/repositories/payroll-repository.js";
+import {
+  AUDIT_ACTION, STALE_PASS_DAYS, listAuditLogs, recordMigrationUpload, reviewAudit,
+} from "./data/repositories/audit-repository.js";
 import {
   MIGRATION_ERROR, applyClientMigration, applyPassMigration, groupFailures,
   planClientMigration, planPassMigration,
@@ -15759,7 +15763,7 @@ function MigrationFailureList({ failures }) {
 }
 
 function CenterMigration({
-  organization, currentUserId, clientStore, locationStore, instructorStore, migrationStore,
+  organization, currentUserId, clientStore, locationStore, instructorStore, migrationStore, auditStore,
   onRetryOrganization, onToast, initialState = null,
 }) {
   const [stage, setStage] = useState(initialState?.stage || "clients");
@@ -15829,6 +15833,18 @@ function CenterMigration({
       /* 읽다 실패한 행과 쓰다 실패한 행을 함께 보여준다. 대표에게는 둘 다
          "고쳐서 다시 올려야 하는 행"이고, 나눠 놓으면 한쪽을 놓친다. */
       setResult({ stage, succeeded: applied.succeeded.length, failures: [...plan.failures, ...applied.failures] });
+      /* 감사 로그에 한 줄 남긴다. 다른 조작과 달리 배치에 얹지 못한다 -- 이관은
+         행마다 따로 쓰기 때문이다(audit-repository.js 참고). 그래서 기록이
+         실패해도 올린 데이터는 그대로다. 그때는 알리기만 한다. */
+      recordMigrationUpload(organizationId, {
+        stage,
+        succeeded: applied.succeeded.length,
+        failed: plan.failures.length + applied.failures.length,
+        actorId: currentUserId,
+        actorRole: organization?.role || "",
+      }, { store: auditStore }).catch((error) => {
+        onToast?.({ ok: false, msg: "업로드는 끝났지만 이력을 남기지 못했어요 (코드 " + (error?.code || "unknown") + ")" });
+      });
       setPlan(null);
       setFileName("");
       // 2차가 쓸 회원 목록은 방금 1차가 만든 것이다.
@@ -16270,7 +16286,366 @@ function PayrollSummary({
   );
 }
 
-function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, payrollStore, onRetryOrganization, onOpenClient, initialView = "hub" }) {
+/* 감사 로그. 대표만 본다.
+
+   ── 전체 이력보다 목록이 중요하다 ──
+   백 줄을 눈으로 훑는 일은 아무도 하지 않는다. 3중 대조가 매달 늦어지는 이유가
+   그것이다. 그래서 위에 "이상한 것"만 뽑아 두고, 전체 이력은 아래에 둔다.
+
+   빈 목록은 좋은 소식이다. 그래서 각 목록은 비어 있을 때 "이상 없음"이라고
+   말한다 -- 아무것도 안 그리면 못 읽은 것과 구별되지 않는다.
+
+   ── 어디서 읽는지는 항목마다 다르다 ──
+   기준값 조정 · 바우처 · 장기 미차감은 passes 와 ledger 가 더 정확하게 알고
+   있어 거기서 읽는다. 부원장 · 단가 · 이관은 다른 데 남지 않아 auditLogs 에서
+   읽는다. 근거는 audit-repository.js 머리말에 있다.
+
+   ── 없는 것은 넣지 않는다 ──
+   회원 이의제기와 강사별 미확인율은 회원 앱이 있어야 생기는 데이터다. 영영 채워
+   지지 않을 칸을 만들어 두면 "이상 없음"과 "데이터 없음"이 같은 모양이 되고, 이
+   화면의 빈 칸이 좋은 소식이라는 약속이 깨진다. 회원 앱이 생기는 날 이 자리에
+   넣는다.
+
+   발급 취소·보정은 다르다. 기능 자체가 아직 없어서 비어 있는 것이라, 그 사실을
+   적어 둔다 -- 그러지 않으면 "취소가 한 건도 없었다"로 읽힌다. */
+
+const AUDIT_ACTION_LABEL = {
+  [AUDIT_ACTION.DEPUTY_DIRECTOR_SET]: "부원장",
+  [AUDIT_ACTION.FULL_ROOM_RATE_SET]: "풀방금액 변경",
+  [AUDIT_ACTION.MIGRATION_UPLOADED]: "이관 업로드",
+  issue: "회원권 발급",
+  deduct: "차감",
+  transfer: "담당 강사 변경",
+};
+
+const MIGRATION_STAGE_LABEL_SHORT = { clients: "회원", passes: "회원권" };
+
+/** 행위자의 역할. 감사 항목에만 있다 -- 원장은 uid 만 들고 있다. */
+const AUDIT_ROLE_LABEL = {
+  [ROLES.OWNER]: "대표",
+  [ROLES.MANAGER]: "매니저",
+  [ROLES.INSTRUCTOR]: "강사",
+  [ROLES.STAFF]: "직원",
+};
+
+/** 한 줄이 무엇을 말하는가. 이름은 여기서 붙인다 -- 기록에는 id 만 있다. */
+function AuditTimelineRow({ row, nameOfClient, nameOfInstructor, nameOfLocation }) {
+  const label = AUDIT_ACTION_LABEL[row.action] || row.action;
+  let detail = "";
+  if (row.action === AUDIT_ACTION.FULL_ROOM_RATE_SET) {
+    const from = typeof row.previousAmount === "number" ? wonToManwonLabel(row.previousAmount) : "없음";
+    detail = `${nameOfInstructor(row.targetId)} · ${from} → ${wonToManwonLabel(row.amount)}`;
+  } else if (row.action === AUDIT_ACTION.DEPUTY_DIRECTOR_SET) {
+    detail = `${nameOfInstructor(row.targetId)} · ${row.enabled ? "지정" : "해제"}`;
+  } else if (row.action === AUDIT_ACTION.MIGRATION_UPLOADED) {
+    detail = `${MIGRATION_STAGE_LABEL_SHORT[row.stage] || row.stage} · 성공 ${row.succeeded ?? 0} · 실패 ${row.failed ?? 0}`;
+  } else if (row.action === "transfer") {
+    detail = `${nameOfInstructor(row.fromInstructorId)} → ${nameOfInstructor(row.toInstructorId)}`;
+  } else {
+    detail = nameOfClient(row.clientId);
+    if (row.action === "deduct" && row.rule) detail += ` · ${labelOf(PRICING_RULE_LABELS, row.rule)}`;
+  }
+  return (
+    <div style={{ padding: "10px 0", borderTop: `1px solid ${LINE}` }}>
+      <div className="flex items-center gap-2">
+        <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+          {dayTimeLabel(row.at)}
+        </span>
+        <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.body, color: INK }}>{label}</span>
+        {row.locationId ? (
+          <span className="shrink-0 truncate" style={{ fontSize: TYPE.caption, color: SUB, maxWidth: 76 }}>
+            {nameOfLocation(row.locationId)}
+          </span>
+        ) : null}
+      </div>
+      <div className="mt-0.5 flex items-center gap-2">
+        <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: INK2 }}>{detail}</span>
+        {/* 누가 했는가. 역할은 감사 항목에만 있다 -- 원장은 uid 만 들고 있다. */}
+        <span className="shrink-0 truncate" style={{ fontSize: TYPE.caption, color: FAINT, maxWidth: 110 }}>
+          {nameOfInstructor(row.actorId)}{row.actorRole ? ` · ${labelOf(AUDIT_ROLE_LABEL, row.actorRole)}` : ""}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/** 뽑아 보는 목록 하나. 비어 있으면 "이상 없음"이라고 말한다. */
+function AuditReviewSection({ title, hint, rows, empty, children }) {
+  const count = rows?.length || 0;
+  return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <div className="flex items-center gap-2">
+        <h3 className="min-w-0 flex-1" style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>{title}</h3>
+        <span className="shrink-0 tabular-nums" style={{
+          padding: "2px 9px", borderRadius: 999, fontSize: TYPE.caption, fontWeight: 700,
+          backgroundColor: count ? WARN_S : CANVAS, color: count ? WARN : SUB,
+        }}>{count}</span>
+      </div>
+      {hint ? (
+        <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>{hint}</p>
+      ) : null}
+      {count === 0 ? (
+        <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>{empty || "이상 없음"}</p>
+      ) : <div className="mt-1">{children}</div>}
+    </section>
+  );
+}
+
+function AuditLog({
+  organization, clientStore, instructorStore, locationStore, productStore, passStore,
+  auditStore, ledgerStore, onRetryOrganization, onRetry, now = () => new Date(), initialState = null,
+}) {
+  const [month, setMonth] = useState(initialState?.month || monthKey(isoOf(now())));
+  const [review, setReview] = useState(initialState?.review || null);
+  const [clients, setClients] = useState(initialState?.clients || []);
+  const [instructors, setInstructors] = useState(initialState?.instructors || []);
+  const [locations, setLocations] = useState(initialState?.locations || []);
+  const [namesFailed, setNamesFailed] = useState(initialState?.namesFailed || "");
+  const [loading, setLoading] = useState(!initialState);
+  const [loadError, setLoadError] = useState(initialState?.loadError || "");
+  const [historyOpen, setHistoryOpen] = useState(initialState?.historyOpen || false);
+  const organizationId = organization?.organizationId || "";
+  const locked = organization?.status === "unknown";
+  const thisMonth = monthKey(isoOf(now()));
+
+  const reload = useCallback(async () => {
+    if (!organizationId) return;
+    setLoading(true);
+    setLoadError("");
+    try {
+      const { start, end } = monthRange(month);
+      /* 장기 미차감은 이달 바깥까지 봐야 한다 -- 지난달에 멈춘 회원권이 이달
+         목록에 떠야 하기 때문이다. 그래서 원장은 기간을 넓혀 읽는다. */
+      const staleFrom = new Date(now().getTime() - (STALE_PASS_DAYS + 1) * 24 * 60 * 60 * 1000);
+      const ledgerStart = staleFrom < start ? staleFrom : start;
+      const nowEnd = new Date(now().getTime() + 1000);
+      const ledgerEnd = nowEnd > end ? nowEnd : end;
+      const [auditLogs, entries, passes, productResult, clientResult, instructorResult, locationResult] = await Promise.all([
+        listAuditLogs(organizationId, { start, end, store: auditStore }),
+        loadOrganizationLedger(organizationId, { start: ledgerStart, end: ledgerEnd, store: ledgerStore }),
+        listPasses(organizationId, { store: passStore }),
+        // 상품을 못 읽으면 "기준과 다른 발급"을 판정할 수 없다. 그 사실만 말한다.
+        toleratingReadFailure(listProducts(organizationId, { store: productStore })),
+        toleratingReadFailure(listClients(organizationId, { store: clientStore })),
+        toleratingReadFailure(listInstructors(organizationId, { store: instructorStore })),
+        toleratingReadFailure(listLocations(organizationId, { store: locationStore })),
+      ]);
+      setClients(clientResult.items);
+      setInstructors(instructorResult.items);
+      setLocations(locationResult.items);
+      setNamesFailed(
+        productResult.errorCode || clientResult.errorCode
+        || instructorResult.errorCode || locationResult.errorCode || "",
+      );
+      setReview(reviewAudit({
+        auditLogs, entries, passes, products: productResult.items, start, end, now: now(),
+      }));
+    } catch (error) {
+      setLoadError(error?.code || "unknown");
+      setReview(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [organizationId, month, auditStore, ledgerStore, passStore, productStore, clientStore, instructorStore, locationStore, now]);
+
+  useEffect(() => { if (!locked) reload(); else setLoading(false); }, [locked, reload]);
+
+  /* 기록에는 id 만 있다. 이름은 여기서 붙인다 -- 감사 항목에 이름을 저장하지
+     않는 이유는 audit-repository.js 머리말에 있다. */
+  const nameOfClient = useCallback((id) => (
+    clients.find((item) => item.id === id)?.name || id || "-"
+  ), [clients]);
+  const nameOfInstructor = useCallback((id) => (
+    instructors.find((item) => item.userId === id)?.displayName || id || "-"
+  ), [instructors]);
+  const nameOfLocation = useCallback((id) => (
+    locations.find((item) => item.id === id)?.name || id || "-"
+  ), [locations]);
+
+  if (locked) return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>소속을 확인하지 못했습니다</h2>
+      <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        네트워크 문제로 소속 정보를 읽지 못했습니다. 다른 센터의 이력을 보지 않도록 이 화면을 잠급니다.
+      </p>
+      <button type="button" onClick={() => onRetryOrganization?.()} className="mt-3 h-11 w-full font-bold"
+        style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>다시 시도</button>
+    </section>
+  );
+
+  const sectionStyle = { backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 };
+  const rowStyle = { padding: "9px 0", borderTop: `1px solid ${LINE}` };
+  const shift = (by) => {
+    const at = new Date(Number(month.slice(0, 4)), Number(month.slice(5, 7)) - 1 + by, 1);
+    setMonth(`${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, "0")}`);
+  };
+
+  return (
+    <div className="space-y-3">
+      <section style={sectionStyle}>
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={() => shift(-1)} aria-label="이전 달" className="shrink-0"
+            style={{ width: 36, height: 36, borderRadius: 10, backgroundColor: CANVAS, color: SUB }}>
+            <ChevronLeft size={16} className="mx-auto" />
+          </button>
+          <p className="min-w-0 flex-1 text-center tabular-nums" style={{ fontSize: TYPE.body, fontWeight: 700, color: INK }}>
+            {monthLabel(`${month}-01`)}
+          </p>
+          <button type="button" onClick={() => shift(1)} aria-label="다음 달" disabled={month >= thisMonth}
+            className="shrink-0" style={{
+              width: 36, height: 36, borderRadius: 10, backgroundColor: CANVAS, color: SUB,
+              opacity: month >= thisMonth ? 0.35 : 1,
+            }}>
+            <ChevronRight size={16} className="mx-auto" />
+          </button>
+        </div>
+        <p className="mt-2 text-center" style={{ fontSize: TYPE.caption, color: SUB }}>
+          아래 목록이 비어 있으면 이달에 들여다볼 것이 없다는 뜻입니다.
+        </p>
+      </section>
+
+      {loading ? (
+        <section style={sectionStyle}><p style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p></section>
+      ) : null}
+
+      {!loading && loadError ? (
+        <section style={sectionStyle}>
+          <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: BAD }}>
+            이력을 불러오지 못했습니다 (코드 {loadError}). 이상이 없는 것이 아니라 읽지 못한 것입니다.
+          </p>
+          <button type="button" onClick={() => { reload(); onRetry?.(); }} className="mt-2 h-10 w-full font-bold"
+            style={{ borderRadius: 10, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>다시 시도</button>
+        </section>
+      ) : null}
+
+      {!loading && !loadError && review ? (
+        <>
+          {namesFailed ? (
+            <section style={sectionStyle}>
+              <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: WARN }}>
+                일부를 불러오지 못해 이름이 코드로 보이거나 기준값 대조가 빠질 수 있습니다 (코드 {namesFailed}).
+              </p>
+            </section>
+          ) : null}
+
+          <AuditReviewSection title="기준값 조정 발급" rows={review.adjustedIssues}
+            hint={review.unmatchedProductCount > 0
+              ? `상품을 가리키지 않는 회원권 ${review.unmatchedProductCount}건은 기준이 없어 대조하지 않았습니다 (이관분).`
+              : "상품의 기본 회차·금액과 다르게 발급된 건입니다."}>
+            {review.adjustedIssues.map((row) => (
+              <div key={row.passId} style={rowStyle}>
+                <div className="flex items-center gap-2">
+                  <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.body, color: INK }}>
+                    {nameOfClient(row.clientId)}
+                  </span>
+                  <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+                    {dayLabel(row.at)}
+                  </span>
+                </div>
+                <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.caption, color: INK2 }}>
+                  {row.sessionsOff ? `회차 ${row.defaultSessions} → ${row.totalSessions}` : null}
+                  {row.sessionsOff && row.priceOff ? " · " : null}
+                  {row.priceOff ? `금액 ${wonToManwonLabel(row.defaultPrice)} → ${wonToManwonLabel(row.contractPrice)}` : null}
+                </p>
+              </div>
+            ))}
+          </AuditReviewSection>
+
+          <AuditReviewSection title="바우처 결제" rows={review.voucherPayments}
+            hint="인센 10% 를 손으로 조정하는 대상입니다.">
+            {review.voucherPayments.map((row) => (
+              <div key={row.passId} className="flex items-center gap-2" style={rowStyle}>
+                <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.body, color: INK }}>
+                  {nameOfClient(row.clientId)}
+                </span>
+                <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+                  {dayLabel(row.at)}
+                </span>
+                <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK }}>
+                  ₩{won(row.contractPrice)}
+                </span>
+              </div>
+            ))}
+          </AuditReviewSection>
+
+          <AuditReviewSection title="장기 미차감 회원권" rows={review.stalePasses}
+            hint={`잔여가 남았는데 ${review.staleDays}일 넘게 차감이 없는 건입니다.`}>
+            {review.stalePasses.map((row) => (
+              <div key={row.passId} className="flex items-center gap-2" style={rowStyle}>
+                <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.body, color: INK }}>
+                  {nameOfClient(row.clientId)}
+                </span>
+                <span className="shrink-0 truncate" style={{ fontSize: TYPE.caption, color: SUB, maxWidth: 76 }}>
+                  {nameOfInstructor(row.instructorId)}
+                </span>
+                <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: WARN }}>
+                  {row.deducted ? `${row.days}일째` : `발급 후 ${row.days}일`}
+                </span>
+                <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+                  잔여 {row.remainingCount}
+                </span>
+              </div>
+            ))}
+          </AuditReviewSection>
+
+          {/* 기능이 아직 없어서 비어 있다. 적어 두지 않으면 "취소가 한 건도
+              없었다"로 읽힌다 -- 그 둘은 전혀 다른 말이다. */}
+          <AuditReviewSection title="발급 취소 · 보정" rows={[]}
+            hint="발급을 취소하거나 차감을 되돌리는 기능이 아직 없습니다."
+            empty="기능이 생기면 여기에 쌓입니다. 지금은 취소된 건이 없는 것이 아니라, 취소할 방법이 없습니다." />
+
+          <AuditReviewSection title="부원장 · 단가 변경" rows={review.rateChanges}
+            hint="급여 단가의 근거가 바뀐 이력입니다.">
+            {review.rateChanges.map((row) => (
+              <AuditTimelineRow key={row.id} row={{ ...row, at: toDate(row.createdAt) }}
+                nameOfClient={nameOfClient} nameOfInstructor={nameOfInstructor} nameOfLocation={nameOfLocation} />
+            ))}
+          </AuditReviewSection>
+
+          <AuditReviewSection title="이관 업로드" rows={review.migrations}
+            hint="엑셀에서 올린 회원 · 회원권입니다.">
+            {review.migrations.map((row) => (
+              <AuditTimelineRow key={row.id} row={{ ...row, at: toDate(row.createdAt) }}
+                nameOfClient={nameOfClient} nameOfInstructor={nameOfInstructor} nameOfLocation={nameOfLocation} />
+            ))}
+          </AuditReviewSection>
+
+          <section style={sectionStyle}>
+            <button type="button" onClick={() => setHistoryOpen(!historyOpen)}
+              className="flex w-full items-center gap-2 text-left">
+              <ChevronRight size={14} style={{
+                color: SUB, flexShrink: 0, transform: historyOpen ? "rotate(90deg)" : "none",
+              }} />
+              <span className="min-w-0 flex-1" style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>
+                전체 이력
+              </span>
+              <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+                {review.timeline.length}건
+              </span>
+            </button>
+            {historyOpen ? (
+              <div className="mt-1">
+                {review.timeline.length === 0
+                  ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>이 달에 기록된 조작이 없습니다.</p>
+                  : review.timeline.slice(0, 200).map((row) => (
+                    <AuditTimelineRow key={`${row.source}-${row.id}`} row={row}
+                      nameOfClient={nameOfClient} nameOfInstructor={nameOfInstructor} nameOfLocation={nameOfLocation} />
+                  ))}
+                {review.timeline.length > 200 ? (
+                  <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>
+                    최근 200건까지 보여줍니다.
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+          </section>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, payrollStore, auditStore, ledgerStore, onRetryOrganization, onOpenClient, initialView = "hub" }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const organization = useContext(OrganizationContext);
   /* 회원권 상품은 센터를 운영하는 대표만 본다. 개인 모드(legacy)에는 센터가
@@ -16305,6 +16680,11 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
   /* 급여 집계도 대표만 본다. 센터 전체의 급여는 한 사람의 것이 아니다.
      매니저에게 자기 지점만 열어 주는 방안은 PayrollSummary 머리말 참고. */
   const showPayroll = organization.ready
+    && !organization.isLegacy
+    && organization.role === ROLES.OWNER;
+  /* 감사 로그도 대표만 본다. 규칙도 대표만 허용하므로, 매니저에게 보여 주면
+     눌러도 빈 화면만 나온다. */
+  const showAudit = organization.ready
     && !organization.isLegacy
     && organization.role === ROLES.OWNER;
   /* initialView 는 스모크 하네스가 상세 화면 하나를 바로 여는 자리다. 앱은
@@ -16465,6 +16845,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
     "pass-issue": "회원권 발급",
     migration: "엑셀 이관",
     payroll: "급여 집계",
+    audit: "감사 로그",
   };
   const menuGroups = [
     { label: "업무", items: [
@@ -16480,6 +16861,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
       ...(showInstructorRates ? [{ key: "instructor-rates", title: "강사 단가", description: "강사별 풀방금액", Icon: Users }] : []),
       ...(showProducts ? [{ key: "products", title: "회원권 상품", description: "이벤트 상품 추가 · 종료", Icon: Ticket }] : []),
       ...(showPayroll ? [{ key: "payroll", title: "급여 집계", description: "강사별 수업료 · 월말 정산", Icon: ArrowUpRight }] : []),
+      ...(showAudit ? [{ key: "audit", title: "감사 로그", description: "이상한 건만 모아 보기 · 전체 이력", Icon: AlertCircle }] : []),
       ...(showMigration ? [{ key: "migration", title: "엑셀 이관", description: "쓰던 엑셀의 회원 · 회원권 올리기", Icon: Upload }] : []),
       { key: "schedule-colors", title: "일정 색상", description: "개인 · 듀엣 · 그룹 · 상담 · 휴무 카드 색", Icon: Palette },
       { key: "theme", title: "화면 설정", description: "폰 설정 · 라이트 · 다크", Icon: Smartphone },
@@ -16730,10 +17112,17 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
             locationStore={locationStore} instructorStore={instructorStore} payrollStore={payrollStore}
             onRetryOrganization={onRetryOrganization} onToast={onToast} />
         )}
+        {view === "audit" && showAudit && (
+          <AuditLog organization={organization}
+            clientStore={clientStore} instructorStore={instructorStore} locationStore={locationStore}
+            productStore={productStore} passStore={passStore}
+            auditStore={auditStore} ledgerStore={ledgerStore}
+            onRetryOrganization={onRetryOrganization} />
+        )}
         {view === "migration" && showMigration && (
           <CenterMigration organization={organization} currentUserId={account?.id || ""}
             clientStore={clientStore} locationStore={locationStore} instructorStore={instructorStore}
-            migrationStore={migrationStore}
+            migrationStore={migrationStore} auditStore={auditStore}
             onRetryOrganization={onRetryOrganization} onToast={onToast} />
         )}
         {view === "permissions" && <section style={sectionStyle}><PermissionGuide statuses={permissionStatuses} /></section>}
@@ -17001,6 +17390,31 @@ export function createAppScreenSmokeCases() {
       smokePayEntry("e1", "pt_1_1_repurchase_normal", 45000, 4, "deputy_director"),
     ],
   };
+  const smokeAuditStore = { list: async () => [], commit: async () => {}, serverTimestamp: async () => "SERVER_TIME" };
+  const smokeLedgerStore = { listOrganizationEntries: async () => [] };
+  /* 감사 화면이 그리는 것만 본다. 목록은 reviewAudit 이 만든 모양 그대로다. */
+  const smokeAuditReview = reviewAudit({
+    now: new Date(2026, 9, 3, 12),
+    start: new Date(2026, 9, 1),
+    end: new Date(2026, 10, 1),
+    products: [{ id: "smoke-product-active", defaultSessions: 20, defaultPrice: 1300000 }],
+    passes: [
+      { id: "p-adjusted", clientId: "smoke-client-a", locationId: "bansong", instructorId: "u1", productId: "smoke-product-active", totalSessions: 18, contractPrice: 1100000, paymentMethod: "card", remainingCount: 18, status: "active", createdAt: new Date(2026, 9, 2), expiresAt: new Date(2027, 3, 1) },
+      { id: "p-voucher", clientId: "smoke-client-b", locationId: "centum", instructorId: "u2", productId: "smoke-product-active", totalSessions: 20, contractPrice: 1300000, paymentMethod: "voucher", remainingCount: 20, status: "active", createdAt: new Date(2026, 9, 1), expiresAt: new Date(2027, 3, 1) },
+      { id: "p-stale", clientId: "smoke-client-c", locationId: "bansong", instructorId: "u1", productId: "smoke-product-active", totalSessions: 20, contractPrice: 1300000, paymentMethod: "card", remainingCount: 11, status: "active", createdAt: new Date(2026, 6, 1), expiresAt: new Date(2027, 3, 1) },
+      { id: "csv_1", clientId: "smoke-client-a", locationId: "bansong", instructorId: "u1", productId: "1:1 20회 가을", totalSessions: 20, contractPrice: 1300000, paymentMethod: "card", remainingCount: 8, status: "active", createdAt: new Date(2026, 9, 1), expiresAt: new Date(2027, 3, 1) },
+    ],
+    entries: [
+      { id: "l-deduct", passId: "p-adjusted", clientId: "smoke-client-a", locationId: "bansong", type: "deduct", delta: -1, unitPrice: 25000, rule: "new_to_instructor", instructorId: "u1", createdBy: "u1", occurredAt: new Date(2026, 9, 2, 19, 0) },
+      { id: "l-issue", passId: "p-voucher", clientId: "smoke-client-b", locationId: "centum", type: "issue", delta: 20, unitPrice: 0, instructorId: "u2", createdBy: "smoke-account", occurredAt: new Date(2026, 9, 1, 10, 0) },
+      { id: "l-transfer", passId: "p-stale", clientId: "smoke-client-c", locationId: "bansong", type: "transfer", delta: 0, fromInstructorId: "u1", toInstructorId: "u2", createdBy: "smoke-account", occurredAt: new Date(2026, 9, 2, 11, 0) },
+    ],
+    auditLogs: [
+      { id: "a-rate", organizationId: "smoke-center", action: "full_room_rate_set", actorId: "smoke-account", actorRole: "owner", targetId: "u1", amount: 50000, previousAmount: 45000, createdAt: new Date(2026, 9, 2, 9, 0) },
+      { id: "a-deputy", organizationId: "smoke-center", action: "deputy_director_set", actorId: "smoke-account", actorRole: "owner", targetId: "u4", enabled: true, createdAt: new Date(2026, 9, 1, 9, 0) },
+      { id: "a-migration", organizationId: "smoke-center", action: "migration_uploaded", actorId: "smoke-account", actorRole: "owner", stage: "passes", succeeded: 118, failed: 2, createdAt: new Date(2026, 9, 1, 8, 0) },
+    ],
+  });
   /* 정산 화면이 그리는 것만 본다. 숫자는 집계 함수가 만든 모양 그대로다. */
   const smokePayrollStore = { listOrganizationDeductions: async () => [] };
   const payrollRow = (instructorId, rows) => ({
@@ -17051,6 +17465,13 @@ export function createAppScreenSmokeCases() {
     <ClientDirectory organization={readyOrganizationContext(organization)} currentUserId="smoke-account"
       clientStore={clientStore} locationStore={locationStore} initialState={initialState}
       onRetryOrganization={noop} onToast={noop} />
+  ));
+  const auditLog = (organization, initialState) => providerWith(organization, (
+    <AuditLog organization={readyOrganizationContext(organization)}
+      clientStore={clientStore} instructorStore={instructorStore} locationStore={locationStore}
+      productStore={productStore} passStore={passStore}
+      auditStore={smokeAuditStore} ledgerStore={smokeLedgerStore}
+      now={() => new Date(2026, 9, 3, 12)} initialState={initialState} onRetryOrganization={noop} />
   ));
   const payrollSummary = (organization, initialState) => providerWith(organization, (
     <PayrollSummary organization={readyOrganizationContext(organization)}
@@ -17167,6 +17588,19 @@ export function createAppScreenSmokeCases() {
     { name: "더보기 탭 · 매니저", element: settingsTab({ ...smokeOwner, role: "manager" }) },
     { name: "회원권 상품", element: providerWith(smokeOwner, <ProductCatalog organization={readyOrganizationContext(smokeOwner)} currentUserId="smoke-account" store={productStore} onRetryOrganization={noop} onToast={noop} />) },
     { name: "회원권 상품 · 소속 확인 실패", element: providerWith(smokeOwner, <ProductCatalog organization={readyOrganizationContext({ organizationId: "", role: "", status: "unknown", isLegacy: false })} currentUserId="smoke-account" store={productStore} onRetryOrganization={noop} onToast={noop} />) },
+    { name: "감사 로그", element: auditLog(smokeOwner, {
+      review: smokeAuditReview, clients: smokeClients, instructors: smokeInstructors, locations: smokeLocations,
+    }) },
+    { name: "감사 로그 · 전체 이력", element: auditLog(smokeOwner, {
+      review: smokeAuditReview, clients: smokeClients, instructors: smokeInstructors,
+      locations: smokeLocations, historyOpen: true,
+    }) },
+    { name: "감사 로그 · 이상 없음", element: auditLog(smokeOwner, {
+      clients: smokeClients, instructors: smokeInstructors, locations: smokeLocations,
+      review: reviewAudit({ now: new Date(2026, 9, 3, 12), start: new Date(2026, 9, 1), end: new Date(2026, 10, 1) }),
+    }) },
+    { name: "감사 로그 · 조회 실패", element: auditLog(smokeOwner, { loadError: "permission-denied" }) },
+    { name: "감사 로그 · 소속 확인 실패", element: auditLog({ organizationId: "", role: "", status: "unknown", isLegacy: false }, null) },
     { name: "급여 집계", element: payrollSummary(smokeOwner, {
       summary: smokePayroll, instructors: smokeInstructors, locations: smokeLocations,
     }) },

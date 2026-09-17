@@ -90,7 +90,8 @@ import {
   createProduct, listProducts, setProductStatus,
 } from "./data/repositories/product-repository.js";
 import {
-  DEDUCT_BACKDATE_LIMIT_DAYS, deductPass, isDeductablePass, isExpiredPass, issuePass,
+  DEDUCT_BACKDATE_LIMIT_DAYS, cancelPass, correctDeduction, deductPass, isCancellablePass,
+  isCorrectableEntry, isCorrectedEntry, isDeductablePass, isExpiredPass, issuePass,
   listPasses, loadClientPassHistory, remainingCountOf,
 } from "./data/repositories/pass-repository.js";
 import {
@@ -108,7 +109,8 @@ import {
   UNIT_PRICE_SOURCE, unitPriceSourceFor,
 } from "./data/schema/pay-rates.js";
 import {
-  CLIENT_STATUS, LEDGER_ENTRY_TYPE, PAYMENT_METHOD, PRODUCT_STATUS, ROLES, SESSION_TYPE,
+  CLIENT_STATUS, LEDGER_ENTRY_TYPE, LEDGER_REASON_MAX, PAYMENT_METHOD, PRODUCT_STATUS, ROLES,
+  SESSION_TYPE,
 } from "./data/schema/constants.js";
 import {
   CLIENT_STATUS_LABELS, PAYMENT_METHOD_LABELS, PAY_CATEGORY_LABELS, PRICING_RULE_LABELS,
@@ -15053,14 +15055,26 @@ const sameDay = (left, right) => {
   return a.toDateString() === b.toDateString();
 };
 
+const LEDGER_TYPE_LABEL = {
+  [LEDGER_ENTRY_TYPE.CORRECTION]: "차감 보정",
+  [LEDGER_ENTRY_TYPE.CANCEL]: "발급 취소",
+};
+
 /** 원장 한 줄이 무엇을 말하는가. 종류마다 읽는 법이 다르다. */
-function LedgerRow({ entry, nameOfInstructor }) {
+function LedgerRow({ entry, nameOfInstructor, corrected = false, onCorrect }) {
   const transfer = entry.type === LEDGER_ENTRY_TYPE.TRANSFER;
   const issue = entry.type === LEDGER_ENTRY_TYPE.ISSUE;
+  const undoing = entry.type === LEDGER_ENTRY_TYPE.CORRECTION || entry.type === LEDGER_ENTRY_TYPE.CANCEL;
   const delta = Number(entry.delta) || 0;
   const amount = Math.abs(delta) * (Number(entry.unitPrice) || 0);
+  /* 되돌려진 차감은 지우지 않는다. 흐리게 두고 취소선을 긋는다 -- 잘못 눌렀다는
+     사실 자체가 사라지면 그것도 기록이 아니다. */
   return (
-    <div style={{ padding: "11px 0", borderTop: `1px solid ${LINE}` }}>
+    <div style={{
+      padding: "11px 0", borderTop: `1px solid ${LINE}`,
+      opacity: corrected ? 0.5 : 1,
+      textDecoration: corrected ? "line-through" : "none",
+    }}>
       <div className="flex items-center gap-2">
         <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
           {dayTimeLabel(entry.occurredAt)}
@@ -15070,7 +15084,9 @@ function LedgerRow({ entry, nameOfInstructor }) {
             /* 교체는 숫자가 움직이지 않는다. 무엇이 바뀌었는지 문장으로 읽혀야
                이력을 훑는 사람이 건너뛰지 않는다. */
             ? `담당 강사 변경 ${nameOfInstructor(entry.fromInstructorId)} → ${nameOfInstructor(entry.toInstructorId)}`
-            : labelOf(PAY_CATEGORY_LABELS, entry.category)}
+            : undoing
+              ? LEDGER_TYPE_LABEL[entry.type]
+              : labelOf(PAY_CATEGORY_LABELS, entry.category)}
         </span>
         <span className="shrink-0 tabular-nums" style={{
           fontSize: TYPE.body, fontWeight: 600, color: transfer ? SUB : issue ? BRAND_D : INK,
@@ -15091,17 +15107,68 @@ function LedgerRow({ entry, nameOfInstructor }) {
               "왜 이 금액이냐"에 아무도 답할 수 없다. */}
           {!transfer && entry.rule ? ` · ${labelOf(PRICING_RULE_LABELS, entry.rule)}` : ""}
         </span>
-        {!transfer ? (
+        {!transfer && !undoing ? (
           <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
             ₩{won(amount)}
           </span>
         ) : null}
+        {/* 되돌리는 항목은 급여에서 그만큼을 뺀다. 부호가 보여야 읽힌다. */}
+        {entry.type === LEDGER_ENTRY_TYPE.CORRECTION ? (
+          <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: BAD }}>
+            −₩{won(amount)}
+          </span>
+        ) : null}
+        {onCorrect ? (
+          <button type="button" onClick={onCorrect} className="shrink-0 px-2.5 font-bold"
+            style={{ height: 28, borderRadius: 999, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>
+            보정
+          </button>
+        ) : null}
       </div>
+      {/* 왜 되돌렸는가. 이것이 없으면 되돌린 것 자체가 실수인지 알 수 없다. */}
+      {entry.reason ? (
+        <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK2 }}>{entry.reason}</p>
+      ) : null}
     </div>
   );
 }
 
-function ClientPassRow({ pass, nameOfInstructor, now }) {
+/**
+ * 되돌리기 확인. 사유를 받는다.
+ *
+ * 되돌리는 일은 원장에 영구히 남고 그것도 되돌릴 수 없다. 그래서 무엇을 되돌리는
+ * 것인지 문장으로 다시 보여주고, 사유를 받은 뒤에만 버튼이 열린다.
+ */
+function LedgerUndoSheet({ title, description, reason, onReason, onCancel, onConfirm, busy, error }) {
+  return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>{title}</h2>
+      <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>{description}</p>
+      <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        원래 기록은 지워지지 않습니다. 되돌린 기록이 함께 남습니다.
+      </p>
+      <div className="mt-3">
+        <Field label="사유 (필수)">
+          <input value={reason} className={inputCls} maxLength={LEDGER_REASON_MAX}
+            placeholder="예) 강사가 다른 회원을 눌렀습니다"
+            onChange={(event) => onReason(event.target.value)} />
+        </Field>
+      </div>
+      {error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: BAD }}>{error}</p> : null}
+      <div className="mt-3 flex gap-2">
+        <button type="button" onClick={onCancel} className="h-11 flex-1 font-bold"
+          style={{ borderRadius: 10, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>취소</button>
+        <button type="button" onClick={onConfirm} disabled={busy || reason.trim() === ""}
+          className="h-11 flex-1 font-bold" style={{
+            borderRadius: 10, backgroundColor: BAD, color: "#fff", fontSize: TYPE.caption,
+            opacity: busy || reason.trim() === "" ? 0.5 : 1,
+          }}>{busy ? "처리 중" : "확인"}</button>
+      </div>
+    </section>
+  );
+}
+
+function ClientPassRow({ pass, nameOfInstructor, now, onCancel, cancellable = false }) {
   const usable = isDeductablePass(pass, now);
   const expired = isExpiredPass(pass, now);
   return (
@@ -15121,19 +15188,71 @@ function ClientPassRow({ pass, nameOfInstructor, now }) {
         {" · "}{pass.purchaseRound}차
         {" · "}{labelOf(PAYMENT_METHOD_LABELS, pass.paymentMethod)}
       </p>
-      <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.caption, color: expired ? WARN : SUB }}>
-        {pass.expiresAt ? `${dayLabel(pass.expiresAt)} 만료${expired ? " (지남)" : ""}` : "만료일 없음"}
-        {" · 담당 "}{nameOfInstructor(pass.instructorId)}
-      </p>
+      <div className="mt-0.5 flex items-center gap-2">
+        <p className="min-w-0 flex-1 tabular-nums" style={{ fontSize: TYPE.caption, color: expired ? WARN : SUB }}>
+          {pass.expiresAt ? `${dayLabel(pass.expiresAt)} 만료${expired ? " (지남)" : ""}` : "만료일 없음"}
+          {" · 담당 "}{nameOfInstructor(pass.instructorId)}
+        </p>
+        {/* 이미 차감이 있으면 취소하지 않는다. 그 수업은 실제로 일어났고, 없던
+            일로 만들면 그 회차의 급여도 함께 사라진다. 차감을 전부 보정하면
+            버튼이 열린다 -- 눌러도 거부되는 버튼을 두지 않는다. */}
+        {onCancel ? (
+          <button type="button" onClick={onCancel} disabled={!cancellable}
+            className="shrink-0 px-2.5 font-bold" style={{
+              height: 28, borderRadius: 999, fontSize: TYPE.caption,
+              backgroundColor: CANVAS, color: cancellable ? BAD : SUB, opacity: cancellable ? 1 : 0.45,
+            }}>발급 취소</button>
+        ) : null}
+      </div>
+      {onCancel && !cancellable && pass.status === "active" ? (
+        <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>
+          차감된 회차가 있어 취소할 수 없습니다. 아래 이력에서 먼저 보정해 주세요.
+        </p>
+      ) : null}
     </div>
   );
 }
 
 function ClientDetail({
-  organization, client, history, loading, error, instructors = [],
-  onClose, onRetry, now = () => new Date(),
+  organization, client, history, loading, error, instructors = [], currentUserId = "",
+  passStore, onClose, onRetry, onChanged, onToast, now = () => new Date(), initialUndo = null,
 }) {
   const at = now();
+  /* 되돌리기는 대표만 한다. 강사와 매니저가 스스로 되돌릴 수 있으면 기록의
+     의미가 없다 -- 잘못 누른 사람이 그것을 지울 수 있다는 뜻이기 때문이다.
+     규칙도 같은 선을 긋는다. */
+  const canUndo = organization?.role === ROLES.OWNER && !organization?.isLegacy;
+  const [undo, setUndo] = useState(initialUndo);
+  const [reason, setReason] = useState(initialUndo?.reason || "");
+  const [undoError, setUndoError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const organizationId = organization?.organizationId || "";
+
+  const closeUndo = () => { setUndo(null); setReason(""); setUndoError(""); };
+
+  const runUndo = async () => {
+    if (!undo || busy) return;
+    setBusy(true);
+    setUndoError("");
+    try {
+      if (undo.kind === "correct") {
+        await correctDeduction(organizationId, undo.pass, undo.entry, {
+          reason, createdBy: currentUserId,
+        }, { store: passStore });
+      } else {
+        await cancelPass(organizationId, undo.pass, {
+          reason, createdBy: currentUserId, entries: history?.entries || [],
+        }, { store: passStore });
+      }
+      closeUndo();
+      onToast?.({ ok: true, msg: undo.kind === "correct" ? "차감을 보정했습니다." : "회원권을 취소했습니다." });
+      onChanged?.();
+    } catch (thrown) {
+      setUndoError(`처리하지 못했어요 (코드 ${thrown?.code || thrown?.message || "unknown"})`);
+    } finally {
+      setBusy(false);
+    }
+  };
   const nameOfInstructor = useMemo(() => {
     const byId = new Map(instructors.map((item) => [item.userId, item.displayName || item.userId]));
     // 이름을 못 읽어도 uid 로 보여준다. 빈 칸이면 누구였는지 영영 알 수 없다.
@@ -15148,6 +15267,16 @@ function ClientDetail({
     .map((pass) => toDate(pass.expiresAt))
     .filter((date) => Number.isFinite(date.getTime()))
     .sort((left, right) => left.getTime() - right.getTime())[0];
+
+  if (undo) return (
+    <LedgerUndoSheet
+      title={undo.kind === "correct" ? "이 차감을 되돌릴까요?" : "이 회원권을 취소할까요?"}
+      description={undo.kind === "correct"
+        ? `${dayTimeLabel(undo.entry.occurredAt)} ${labelOf(PAY_CATEGORY_LABELS, undo.entry.category)} 1회차를 되돌립니다. 잔여가 1회 늘고, 그 회차의 급여가 빠집니다.`
+        : `남은 ${remainingCountOf(undo.pass)}회를 거두고 이 회원권을 무효로 만듭니다.`}
+      reason={reason} onReason={setReason} onCancel={closeUndo} onConfirm={runUndo}
+      busy={busy} error={undoError} />
+  );
 
   return (
     <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
@@ -15202,7 +15331,9 @@ function ClientDetail({
             {passes.length === 0
               ? <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>발급된 회원권이 없습니다.</p>
               : passes.map((pass) => (
-                <ClientPassRow key={pass.id} pass={pass} nameOfInstructor={nameOfInstructor} now={at} />
+                <ClientPassRow key={pass.id} pass={pass} nameOfInstructor={nameOfInstructor} now={at}
+                  cancellable={canUndo && isCancellablePass(pass, entries)}
+                  onCancel={canUndo ? () => { setUndo({ kind: "cancel", pass }); setReason(""); } : undefined} />
               ))}
           </div>
 
@@ -15210,9 +15341,17 @@ function ClientDetail({
             <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>이력</p>
             {entries.length === 0
               ? <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>아직 기록이 없습니다.</p>
-              : entries.map((entry) => (
-                <LedgerRow key={entry.id} entry={entry} nameOfInstructor={nameOfInstructor} />
-              ))}
+              : entries.map((entry) => {
+                const pass = passes.find((item) => item.id === entry.passId);
+                const canCorrect = canUndo && pass && isCorrectableEntry(entry, entries);
+                return (
+                  <LedgerRow key={entry.id} entry={entry} nameOfInstructor={nameOfInstructor}
+                    corrected={isCorrectedEntry(entry, entries)}
+                    onCorrect={canCorrect
+                      ? () => { setUndo({ kind: "correct", pass, entry }); setReason(""); }
+                      : undefined} />
+                );
+              })}
           </div>
         </div>
       ) : null}
@@ -16268,6 +16407,15 @@ function PayrollSummary({
             <p className="mt-1 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
               수업 {summary.sessions}건 · 강사 {summary.byInstructor.length}명
             </p>
+            {/* 지난달 차감을 이번 달에 보정하면 이미 지급된 급여에서 빠진다.
+                말하지 않으면 대표가 이번 달 합계를 보고 계산이 틀렸다고 읽는다. */}
+            {summary.corrections?.priorMonth?.sessions ? (
+              <p className="mt-1 tabular-nums" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: WARN }}>
+                지난달 차감 {summary.corrections.priorMonth.sessions}건을 이 달에서 뺐습니다
+                {" ("}−₩{won(Math.abs(summary.corrections.priorMonth.amount))}{"). "}
+                이미 지급된 달은 고치지 않습니다.
+              </p>
+            ) : null}
             <button type="button" onClick={download} disabled={summary.byInstructor.length === 0}
               className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 font-bold"
               style={{
@@ -16588,11 +16736,39 @@ function AuditLog({
             ))}
           </AuditReviewSection>
 
-          {/* 기능이 아직 없어서 비어 있다. 적어 두지 않으면 "취소가 한 건도
-              없었다"로 읽힌다 -- 그 둘은 전혀 다른 말이다. */}
-          <AuditReviewSection title="발급 취소 · 보정" rows={[]}
-            hint="발급을 취소하거나 차감을 되돌리는 기능이 아직 없습니다."
-            empty="기능이 생기면 여기에 쌓입니다. 지금은 취소된 건이 없는 것이 아니라, 취소할 방법이 없습니다." />
+          {/* 원장에 남으므로 감사 로그에 또 쓰지 않는다. 한 사건에 기록이 두
+              벌이면 언젠가 어긋난다. */}
+          <AuditReviewSection title="발급 취소 · 보정" rows={review.corrections}
+            hint="대표가 되돌린 건입니다. 원래 기록은 지워지지 않고 함께 남아 있습니다.">
+            {review.corrections.map((row) => (
+              <div key={row.id} style={rowStyle}>
+                <div className="flex items-center gap-2">
+                  <span className="shrink-0" style={{ fontSize: TYPE.caption, fontWeight: 700, color: BAD }}>
+                    {row.type === "cancel" ? "발급 취소" : "차감 보정"}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.body, color: INK }}>
+                    {nameOfClient(row.clientId)}
+                  </span>
+                  <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+                    {dayLabel(row.at)}
+                  </span>
+                  {row.type === "correction" ? (
+                    <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: BAD }}>
+                      −₩{won(Math.abs(row.amount))}
+                    </span>
+                  ) : (
+                    <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+                      {Math.abs(row.delta)}회 회수
+                    </span>
+                  )}
+                </div>
+                {/* 왜 되돌렸는가. 이것이 없으면 되돌린 것 자체가 실수인지 알 수 없다. */}
+                <p className="mt-0.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK2 }}>
+                  {row.reason}
+                </p>
+              </div>
+            ))}
+          </AuditReviewSection>
 
           <AuditReviewSection title="부원장 · 단가 변경" rows={review.rateChanges}
             hint="급여 단가의 근거가 바뀐 이력입니다.">
@@ -17358,12 +17534,22 @@ export function createAppScreenSmokeCases() {
     { id: "h-deduct-late", passId: "smoke-pass-a", clientId: "smoke-client-a", type: "deduct", delta: -1, category: "pt_1_1_repurchase_event", unitPrice: 30000, rule: "base_category", instructorId: "u1", occurredAt: new Date(2026, 8, 12, 19, 0), createdAt: new Date(2026, 8, 13, 23, 40) },
     /* 이 필드가 생기기 전 항목. 화면이 빈 줄을 내지 않는지 본다. */
     { id: "h-deduct-old", passId: "smoke-pass-old", clientId: "smoke-client-a", type: "deduct", delta: -1, category: "pt_1_1_new", unitPrice: 25000, instructorId: "u2", occurredAt: new Date(2026, 8, 10, 9, 0), createdAt: new Date(2026, 8, 10, 9, 0) },
+    /* 되돌려진 차감과 그것을 되돌리는 항목. 원래 항목은 그대로 남고 둘 다 보인다. */
+    { id: "h-deduct-wrong", passId: "smoke-pass-a", clientId: "smoke-client-a", type: "deduct", delta: -1, category: "pt_1_1_repurchase_event", unitPrice: 30000, instructorId: "u1", occurredAt: new Date(2026, 8, 14, 10, 0), createdAt: new Date(2026, 8, 14, 10, 0) },
+    { id: "h-deduct-wrong_correction", passId: "smoke-pass-a", clientId: "smoke-client-a", type: "correction", delta: 1, category: "pt_1_1_repurchase_event", unitPrice: 30000, correctsEntryId: "h-deduct-wrong", reason: "강사가 다른 회원을 눌렀습니다", instructorId: "u1", occurredAt: new Date(2026, 8, 15, 9, 0), createdAt: new Date(2026, 8, 15, 9, 0) },
     { id: "h-issue", passId: "smoke-pass-a", clientId: "smoke-client-a", type: "issue", delta: 22, category: "pt_1_1_repurchase_event", unitPrice: 30000, instructorId: "u1", occurredAt: new Date(2026, 7, 1, 10, 0), createdAt: new Date(2026, 7, 1, 10, 0) },
   ];
   const smokeHistory = { passes: smokeHistoryPasses, entries: smokeHistoryEntries, remainingTotal: 8, failedPassIds: [] };
   const clientDetail = (extra = {}) => providerWith(smokeInstructorOrg, (
     <ClientDetail organization={readyOrganizationContext(smokeInstructorOrg)} client={smokeDetailClient}
       history={smokeHistory} loading={false} error="" instructors={smokeInstructors}
+      now={() => new Date(2026, 8, 17)} onClose={noop} onRetry={noop} {...extra} />
+  ));
+  /* 되돌리기는 대표만 본다. 같은 화면을 대표로 띄워 버튼이 생기는지 본다. */
+  const ownerClientDetail = (extra = {}) => providerWith(smokeOwner, (
+    <ClientDetail organization={readyOrganizationContext(smokeOwner)} client={smokeDetailClient}
+      history={smokeHistory} loading={false} error="" instructors={smokeInstructors}
+      currentUserId="smoke-account" passStore={passStore}
       now={() => new Date(2026, 8, 17)} onClose={noop} onRetry={noop} {...extra} />
   ));
   const smokePayEntry = (id, category, unitPrice, day, rule) => ({
@@ -17408,6 +17594,8 @@ export function createAppScreenSmokeCases() {
       { id: "l-deduct", passId: "p-adjusted", clientId: "smoke-client-a", locationId: "bansong", type: "deduct", delta: -1, unitPrice: 25000, rule: "new_to_instructor", instructorId: "u1", createdBy: "u1", occurredAt: new Date(2026, 9, 2, 19, 0) },
       { id: "l-issue", passId: "p-voucher", clientId: "smoke-client-b", locationId: "centum", type: "issue", delta: 20, unitPrice: 0, instructorId: "u2", createdBy: "smoke-account", occurredAt: new Date(2026, 9, 1, 10, 0) },
       { id: "l-transfer", passId: "p-stale", clientId: "smoke-client-c", locationId: "bansong", type: "transfer", delta: 0, fromInstructorId: "u1", toInstructorId: "u2", createdBy: "smoke-account", occurredAt: new Date(2026, 9, 2, 11, 0) },
+      { id: "l-correction", passId: "p-adjusted", clientId: "smoke-client-a", locationId: "bansong", type: "correction", delta: 1, unitPrice: 25000, category: "pt_1_1_repurchase_event", correctsEntryId: "l-deduct-wrong", reason: "강사가 다른 회원을 눌렀습니다", instructorId: "u1", createdBy: "smoke-account", occurredAt: new Date(2026, 9, 3, 9, 0) },
+      { id: "l-cancel", passId: "p-voucher", clientId: "smoke-client-b", locationId: "centum", type: "cancel", delta: -20, reason: "회원이 당일 취소를 요청했습니다", createdBy: "smoke-account", occurredAt: new Date(2026, 9, 3, 10, 0) },
     ],
     auditLogs: [
       { id: "a-rate", organizationId: "smoke-center", action: "full_room_rate_set", actorId: "smoke-account", actorRole: "owner", targetId: "u1", amount: 50000, previousAmount: 45000, createdAt: new Date(2026, 9, 2, 9, 0) },
@@ -17500,6 +17688,18 @@ export function createAppScreenSmokeCases() {
     { name: "더보기 탭 · 월간 리포트", element: settingsTab(smokeInstructorOrg, { initialView: "report" }) },
     { name: "더보기 탭 · 월간 리포트 · 개인 모드", element: settingsTab({ organizationId: "legacy_smoke", role: "owner", status: "active", isLegacy: true }, { initialView: "report" }) },
     { name: "센터 회원 상세", element: clientDetail() },
+    { name: "센터 회원 상세 · 대표", element: ownerClientDetail() },
+    { name: "센터 회원 상세 · 차감 보정 확인", element: ownerClientDetail({
+      initialUndo: {
+        kind: "correct",
+        pass: smokeHistoryPasses[0],
+        entry: { id: "h-deduct-late", passId: "smoke-pass-a", type: "deduct", delta: -1, category: "pt_1_1_repurchase_event", unitPrice: 30000, instructorId: "u1", occurredAt: new Date(2026, 8, 12, 19, 0) },
+        reason: "",
+      },
+    }) },
+    { name: "센터 회원 상세 · 발급 취소 확인", element: ownerClientDetail({
+      initialUndo: { kind: "cancel", pass: smokeHistoryPasses[0], reason: "" },
+    }) },
     { name: "센터 회원 상세 · 일부 이력 실패", element: clientDetail({
       history: { ...smokeHistory, failedPassIds: ["smoke-pass-old"] },
     }) },
@@ -19934,6 +20134,8 @@ export default function App() {
               <ClientDetail organization={organizationContext} client={detailClient}
                 history={clientHistory} loading={historyLoading} error={historyError}
                 instructors={detailInstructors}
+                currentUserId={account?.id || ""} onToast={setToast}
+                onChanged={() => setHistoryRevision((value) => value + 1)}
                 onRetry={() => setHistoryRevision((value) => value + 1)}
                 onClose={() => { setDetailClient(null); setClientHistory(null); setHistoryError(""); }} />
             </div>

@@ -37,6 +37,9 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 월간 리포트",
     "더보기 탭 · 월간 리포트 · 개인 모드",
     "센터 회원 상세",
+    "센터 회원 상세 · 대표",
+    "센터 회원 상세 · 차감 보정 확인",
+    "센터 회원 상세 · 발급 취소 확인",
     "센터 회원 상세 · 일부 이력 실패",
     "센터 회원 상세 · 조회 실패",
     "센터 회원 상세 · 회원권 없음",
@@ -391,9 +394,13 @@ test("the audit log shows the odd ones first, and never a name it stored itself"
   assert.match(audit, /인센 10% 를 손으로 조정하는 대상입니다/);
   assert.match(audit, /잔여가 남았는데 30일 넘게 차감이 없는 건입니다/);
 
-  /* 기능이 없어서 비어 있는 것과 이상이 없어서 비어 있는 것은 다른 말이다.
-     적어 두지 않으면 "취소가 한 건도 없었다"로 읽힌다. */
-  assert.match(audit, /지금은 취소된 건이 없는 것이 아니라, 취소할 방법이 없습니다/);
+  /* 되돌린 건은 원장에서 읽는다 -- 감사 로그에 한 벌 더 쓰지 않는다. 원래
+     기록이 남아 있다는 사실을 화면이 말해야, 대표가 "지웠다"로 읽지 않는다. */
+  assert.match(audit, /원래 기록은 지워지지 않고 함께 남아 있습니다/);
+  assert.match(audit, /차감 보정/);
+  assert.match(audit, /발급 취소/);
+  assert.match(audit, /강사가 다른 회원을 눌렀습니다/, "왜 되돌렸는지가 목록에 보인다");
+  assert.match(audit, /20회 회수/);
 
   /* 기록에는 id 만 있고 이름은 화면이 붙인다. 이름이 보인다는 것은 join 이
      되고 있다는 뜻이고, 저장된 것이 아니라는 뜻이다. */
@@ -427,6 +434,79 @@ test("the audit log shows the odd ones first, and never a name it stored itself"
   const locked = markupOf("감사 로그 · 소속 확인 실패");
   assert.match(locked, /소속을 확인하지 못했습니다/);
   assert.doesNotMatch(locked, /전체 이력/);
+});
+
+test("a mistake is undone by adding to the ledger, never by erasing it", async (t) => {
+  const vite = await createServer({
+    root: projectRoot,
+    configFile: false,
+    plugins: [react()],
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] },
+    server: { middlewareMode: true },
+    ssr: { noExternal: ["@capgo/camera-preview"] },
+    logLevel: "silent",
+  });
+  t.after(() => vite.close());
+  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+
+  /* 되돌리기는 대표만 한다. 강사가 스스로 되돌릴 수 있으면 기록의 의미가 없다 --
+     잘못 누른 사람이 그것을 지울 수 있다는 뜻이기 때문이다. */
+  const asInstructor = markupOf("센터 회원 상세");
+  assert.doesNotMatch(asInstructor, />보정</);
+  assert.doesNotMatch(asInstructor, /발급 취소/);
+
+  const asOwner = markupOf("센터 회원 상세 · 대표");
+  assert.match(asOwner, />보정</);
+  assert.match(asOwner, /발급 취소/);
+
+  /* 되돌려진 차감은 지우지 않는다. 취소선을 긋고 흐리게 둔다 -- 잘못 눌렀다는
+     사실 자체가 사라지면 그것도 기록이 아니다. */
+  assert.match(asOwner, /line-through/);
+  assert.match(asOwner, /차감 보정/);
+  assert.match(asOwner, /강사가 다른 회원을 눌렀습니다/, "왜 되돌렸는지가 이력에 남는다");
+  assert.match(asOwner, /−₩30,000/, "급여에서 그만큼이 빠진다");
+
+  /* 이미 차감이 있는 회원권은 취소할 수 없다. 그 수업은 실제로 일어났다.
+     눌러도 거부되는 버튼을 두지 않고, 무엇을 먼저 해야 하는지 말한다. */
+  assert.match(asOwner, /차감된 회차가 있어 취소할 수 없습니다/);
+  assert.match(asOwner, /disabled=""[^<]*>발급 취소</);
+
+  // 둘 다 사유를 받고 확인을 거친다.
+  const correcting = markupOf("센터 회원 상세 · 차감 보정 확인");
+  assert.match(correcting, /이 차감을 되돌릴까요\?/);
+  assert.match(correcting, /사유 \(필수\)/);
+  assert.match(correcting, /원래 기록은 지워지지 않습니다/);
+  // 사유가 비어 있으면 확인이 열리지 않는다.
+  assert.match(correcting, /disabled=""[^<]*>확인</);
+
+  const cancelling = markupOf("센터 회원 상세 · 발급 취소 확인");
+  assert.match(cancelling, /이 회원권을 취소할까요\?/);
+  assert.match(cancelling, /남은 8회를 거두고/);
+});
+
+test("the audit screen's cancellations and corrections come from the ledger", async (t) => {
+  const vite = await createServer({
+    root: projectRoot,
+    configFile: false,
+    plugins: [react()],
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] },
+    server: { middlewareMode: true },
+    ssr: { noExternal: ["@capgo/camera-preview"] },
+    logLevel: "silent",
+  });
+  t.after(() => vite.close());
+  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+
+  /* 기능이 생겼으니 "취소할 방법이 없습니다"는 사라져야 한다. 그 문구가 남아
+     있으면 대표가 있는 기능을 없다고 읽는다. */
+  const audit = renderToStaticMarkup(byName.get("감사 로그"));
+  assert.doesNotMatch(audit, /취소할 방법이 없습니다/);
+  assert.match(audit, /원래 기록은 지워지지 않고 함께 남아 있습니다/);
 });
 
 test("ErrorBoundary hides diagnostics in production and records a privacy-safe diagnostic event", async () => {

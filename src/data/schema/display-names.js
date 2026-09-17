@@ -94,3 +94,50 @@ export function labelOf(labels, value) {
 export function payCategoriesFor(sessionType) {
   return PAY_CATEGORIES_BY_SESSION_TYPE[String(sessionType ?? "")] ?? [];
 }
+
+/* ── 표시 문구 → 저장값 ────────────────────────────────────────────────────
+   이관 CSV 는 사람이 읽는 한글로 채워진다. 역방향 표를 따로 만들면 위의 표와
+   어긋나는 날이 오므로, 같은 표를 뒤집어 쓴다.
+
+   별칭은 여기에만 둔다. 실무에서 쓰는 축약형("계좌")이 표시 문구
+   ("계좌이체")와 다를 수 있는데, 그 차이를 파서가 알 이유는 없다.
+   ────────────────────────────────────────────────────────────────────────── */
+
+const invert = (labels) => Object.fromEntries(
+  Object.entries(labels).map(([value, label]) => [label, value]),
+);
+
+/** 공백과 괄호 앞뒤 차이를 지운다. 사람이 채운 칸은 반드시 흔들린다. */
+const normalizeLabel = (value) => String(value ?? "").replace(/\s+/g, "");
+
+const withAliases = (labels, aliases = {}) => {
+  const table = {};
+  for (const [label, value] of Object.entries(invert(labels))) table[normalizeLabel(label)] = value;
+  for (const [label, value] of Object.entries(aliases)) table[normalizeLabel(label)] = value;
+  return Object.freeze(table);
+};
+
+export const PAY_CATEGORY_BY_LABEL = withAliases(PAY_CATEGORY_LABELS, {
+  // 확정본이 쓰는 긴 이름들. 상품 이름이 아니라 카테고리를 가리킨다.
+  "1:1 재등록(고정페이 이벤트)": PAY_CATEGORY.PT_1_1_REPURCHASE_EVENT,
+  "1:1 재등록(정상단가)": PAY_CATEGORY.PT_1_1_REPURCHASE_NORMAL,
+});
+
+export const PAYMENT_METHOD_BY_LABEL = withAliases(PAYMENT_METHOD_LABELS, {
+  계좌: PAYMENT_METHOD.TRANSFER,
+  이체: PAYMENT_METHOD.TRANSFER,
+});
+
+/**
+ * 한글 라벨을 저장값으로. 목록에 없으면 null 이다 -- 추측하지 않는다.
+ * 잘못 추측한 카테고리는 그 회원권의 모든 차감 단가를 틀리게 만든다.
+ *
+ * @param {Record<string, string>} table
+ * @param {unknown} label
+ * @returns {string | null}
+ */
+export function valueOfLabel(table, label) {
+  const key = normalizeLabel(label);
+  if (!key) return null;
+  return Object.prototype.hasOwnProperty.call(table, key) ? table[key] : null;
+}

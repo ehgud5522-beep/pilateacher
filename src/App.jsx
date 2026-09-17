@@ -95,6 +95,10 @@ import {
 } from "./data/repositories/pass-repository.js";
 import { loadInstructorMonthlyPay, toDate } from "./data/repositories/payroll-repository.js";
 import {
+  MIGRATION_ERROR, applyClientMigration, applyPassMigration, groupFailures,
+  planClientMigration, planPassMigration,
+} from "./data/repositories/migration-repository.js";
+import {
   UNIT_PRICE_SOURCE, unitPriceSourceFor,
 } from "./data/schema/pay-rates.js";
 import {
@@ -15597,7 +15601,313 @@ function ProductCatalog({ organization, currentUserId, store, onRetryOrganizatio
   );
 }
 
-function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, onRetryOrganization, onOpenClient, initialView = "hub" }) {
+/* 10월 이관. 대표만 본다.
+
+   지금 회원과 회원권은 대표의 엑셀에 있다. 손으로 다시 입력하면 백 건이 넘고,
+   그 과정에서 생긴 오타는 급여 숫자로 나타난다. 그래서 그 엑셀을 그대로 받는다.
+
+   ── 두 번에 나눈다 ──
+   1차가 회원을 만들고, 2차가 그 회원에 회원권을 붙인다. 한 번에 다 넣으면
+   동명이인을 만났을 때 "이 회원권이 누구 것인가"를 파일 안에서 풀 수 없다.
+
+   ── 올리기 전에 보여준다 ──
+   쓰기 전에 몇 행이 올라가고 몇 행이 왜 안 되는지 먼저 말한다. 백 건을 쓰고
+   나서 "서른 건이 틀렸습니다"라고 하면 되돌릴 방법이 없다 -- 원장은
+   append-only 다.
+
+   ── 실패한 행만 다시 올린다 ──
+   한 행이 실패해도 나머지는 저장된다. 문서 id 가 행에서 결정되므로 같은
+   파일을 다시 올려도 회원권이 두 번 발급되지 않는다. 자세한 근거는
+   migration-repository.js 머리말에 있다. */
+
+/* 정적 파일이다. 브라우저에서 만들지 않는 이유는 tools/migration/build-template.mjs
+   머리말에 있다 -- 요약하면 드롭다운은 손으로 만든 xlsx 만 담는다. */
+const MIGRATION_TEMPLATE_URL = "pilateacher-migration-template.xlsx";
+const MIGRATION_SHEET_NAME = { clients: "1. 회원", passes: "2. 회원권" };
+const MIGRATION_STAGE_LABEL = { clients: "1차 · 회원", passes: "2차 · 회원권" };
+
+const MIGRATION_FAILURE_LABEL = {
+  [MIGRATION_ERROR.MISSING_FIELD]: "빈 칸이 있습니다",
+  [MIGRATION_ERROR.INVALID_NUMBER]: "숫자로 읽을 수 없습니다",
+  [MIGRATION_ERROR.INVALID_DATE]: "날짜로 읽을 수 없습니다",
+  [MIGRATION_ERROR.UNKNOWN_LABEL]: "목록에 없는 값입니다",
+  [MIGRATION_ERROR.DUPLICATE_PHONE]: "연락처가 겹칩니다",
+  [MIGRATION_ERROR.CLIENT_NOT_FOUND]: "1차에서 만든 회원을 찾을 수 없습니다",
+  [MIGRATION_ERROR.LOCATION_NOT_FOUND]: "지점을 찾을 수 없습니다",
+  [MIGRATION_ERROR.INSTRUCTOR_NOT_FOUND]: "강사를 찾을 수 없습니다",
+  [MIGRATION_ERROR.INSTRUCTOR_AMBIGUOUS]: "같은 이름의 강사가 둘 이상입니다",
+  [MIGRATION_ERROR.MISSING_RATE]: "기준 단가를 정할 수 없습니다",
+  [MIGRATION_ERROR.ALREADY_EXISTS]: "이미 올라간 행입니다",
+  [MIGRATION_ERROR.WRITE_FAILED]: "저장하지 못했습니다",
+};
+
+/**
+ * 올라온 파일에서 시트 하나를 CSV 문자열로 꺼낸다.
+ *
+ * 확장자가 아니라 내용으로 가른다. .csv 로 이름만 바꾼 엑셀 파일과 .xlsx 로
+ * 이름만 바꾼 CSV 가 둘 다 실제로 올라온다.
+ */
+async function readMigrationUpload(file, sheetName) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  // "PK" -- zip 서명. xlsx 는 XML 을 담은 zip 이다.
+  if (bytes[0] === 0x50 && bytes[1] === 0x4b) {
+    /* 리더와 그것이 쓰는 압축 해제 라이브러리는 이 화면을 열 때만 내려온다.
+       1년에 한 번 쓰는 화면 때문에 모든 강사가 매일 그 무게를 받을 이유가 없다. */
+    const { readWorkbook, rowsToCsv } = await import("./data/repositories/xlsx-reader.js");
+    const workbook = await readWorkbook(bytes);
+    const rows = workbook.sheets[sheetName];
+    if (!rows) {
+      throw Object.assign(new Error(`"${sheetName}" 시트를 찾을 수 없습니다. 양식을 내려받아 그 시트에 채워 주세요.`), { code: "sheet_not_found" });
+    }
+    return rowsToCsv(rows);
+  }
+  const text = new globalThis.TextDecoder("utf-8").decode(bytes);
+  /* 엑셀이 한국어 윈도우에서 CSV 로 내보내면 UTF-8 이 아니다. 그대로 읽으면
+     이름이 깨진 채로 저장되므로, 깨진 글자가 보이면 멈추고 xlsx 를 권한다.
+     "지점을 찾을 수 없습니다"로 백 줄이 나오는 것보다 낫다. */
+  if (text.includes("�")) {
+    throw Object.assign(new Error("한글이 깨진 CSV 입니다. 같은 파일을 엑셀(xlsx)로 올려 주세요."), { code: "broken_encoding" });
+  }
+  return text;
+}
+
+/** 사유별로 묶어 보여준다. 대표가 "무엇을 고쳐야 하는가"를 한눈에 본다. */
+function MigrationFailureList({ failures }) {
+  const groups = useMemo(() => groupFailures(failures), [failures]);
+  if (groups.length === 0) return null;
+  return (
+    <div className="mt-3">
+      {groups.map((group) => (
+        <div key={group.reason} className="mt-2" style={{ borderRadius: 10, backgroundColor: CANVAS, padding: "10px 11px" }}>
+          <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>
+            {MIGRATION_FAILURE_LABEL[group.reason] || group.reason} · {group.rows.length}행
+          </p>
+          {group.rows.map((row) => (
+            <p key={`${row.line}-${row.message}`} className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+              <span className="tabular-nums" style={{ fontWeight: 650, color: INK2 }}>{row.line}행</span> · {row.message}
+            </p>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function CenterMigration({
+  organization, currentUserId, clientStore, locationStore, instructorStore, migrationStore,
+  onRetryOrganization, onToast, initialState = null,
+}) {
+  const [stage, setStage] = useState(initialState?.stage || "clients");
+  const [clients, setClients] = useState(initialState?.clients || []);
+  const [locations, setLocations] = useState(initialState?.locations || []);
+  const [instructors, setInstructors] = useState(initialState?.instructors || []);
+  const [loading, setLoading] = useState(!initialState);
+  const [loadError, setLoadError] = useState(initialState?.loadError || "");
+  const [plan, setPlan] = useState(initialState?.plan || null);
+  const [fileName, setFileName] = useState(initialState?.fileName || "");
+  const [fileError, setFileError] = useState(initialState?.fileError || "");
+  const [result, setResult] = useState(initialState?.result || null);
+  const [applying, setApplying] = useState(false);
+  const fileRef = useRef(null);
+  const organizationId = organization?.organizationId || "";
+  const locked = organization?.status === "unknown";
+
+  const reload = useCallback(async () => {
+    if (!organizationId) return;
+    setLoading(true);
+    setLoadError("");
+    try {
+      /* 셋이 다 있어야 한 행을 읽을 수 있다. 하나라도 못 읽으면 화면을 열어
+         두는 쪽이 더 나쁘다 -- 지점을 못 읽은 채로 올리면 모든 행이 "지점을
+         찾을 수 없습니다"로 실패하고, 대표는 자기 파일을 의심하게 된다. */
+      const [foundLocations, foundInstructors, foundClients] = await Promise.all([
+        listLocations(organizationId, { store: locationStore }),
+        listInstructors(organizationId, { store: instructorStore }),
+        listClients(organizationId, { store: clientStore }),
+      ]);
+      setLocations(foundLocations);
+      setInstructors(foundInstructors);
+      setClients(foundClients);
+    } catch (error) {
+      setLoadError(error?.code || "unknown");
+    } finally {
+      setLoading(false);
+    }
+  }, [organizationId, locationStore, instructorStore, clientStore]);
+
+  useEffect(() => { if (!locked) reload(); else setLoading(false); }, [locked, reload]);
+
+  const clearUpload = () => { setPlan(null); setFileName(""); setFileError(""); setResult(null); };
+
+  const pickFile = async (file) => {
+    if (!file) return;
+    clearUpload();
+    setFileName(file.name || "");
+    try {
+      const text = await readMigrationUpload(file, MIGRATION_SHEET_NAME[stage]);
+      setPlan(stage === "clients"
+        ? planClientMigration(text, { locations, createdBy: currentUserId })
+        : planPassMigration(text, { clients, locations, instructors, createdBy: currentUserId }));
+    } catch (error) {
+      // 읽지 못한 것과 "올릴 행이 없다"는 다른 화면이어야 한다.
+      setFileError(error?.message || `파일을 읽지 못했습니다 (코드 ${error?.code || "unknown"})`);
+    }
+  };
+
+  const apply = async () => {
+    if (!plan || applying || plan.writes.length === 0) return;
+    setApplying(true);
+    try {
+      const applied = stage === "clients"
+        ? await applyClientMigration(organizationId, plan.writes, { store: migrationStore })
+        : await applyPassMigration(organizationId, plan.writes, { store: migrationStore });
+      /* 읽다 실패한 행과 쓰다 실패한 행을 함께 보여준다. 대표에게는 둘 다
+         "고쳐서 다시 올려야 하는 행"이고, 나눠 놓으면 한쪽을 놓친다. */
+      setResult({ stage, succeeded: applied.succeeded.length, failures: [...plan.failures, ...applied.failures] });
+      setPlan(null);
+      setFileName("");
+      // 2차가 쓸 회원 목록은 방금 1차가 만든 것이다.
+      await reload();
+      onToast?.({ ok: true, msg: `${applied.succeeded.length}행을 저장했습니다.` });
+    } catch (error) {
+      setFileError(`저장하지 못했어요 (코드 ${error?.code || error?.message || "unknown"})`);
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  if (locked) return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>소속을 확인하지 못했습니다</h2>
+      <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        네트워크 문제로 소속 정보를 읽지 못했습니다. 다른 센터에 회원을 올리지 않도록 이 화면을 잠급니다.
+      </p>
+      <button type="button" onClick={() => onRetryOrganization?.()} className="mt-3 h-11 w-full font-bold"
+        style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>다시 시도</button>
+    </section>
+  );
+
+  const missingColumns = plan?.missingColumns || [];
+  const ready = plan && missingColumns.length === 0 && plan.writes.length > 0;
+
+  return (
+    <div className="space-y-3">
+      <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+        <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>엑셀 이관</h2>
+        <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+          쓰던 엑셀의 회원과 회원권을 올립니다. 회원을 먼저 올리고, 그 다음 회원권을 올립니다.
+        </p>
+        <a href={MIGRATION_TEMPLATE_URL} download
+          className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 font-bold"
+          style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>
+          <Download size={14} />양식 내려받기 (엑셀)
+        </a>
+        <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+          급여카테고리 · 결제수단 · 인수인계여부는 칸을 눌러 목록에서 고릅니다. 2행의 예시는 지우고 올려 주세요.
+        </p>
+      </section>
+
+      <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+        <div className="flex gap-2">
+          {["clients", "passes"].map((key) => (
+            <button key={key} type="button" onClick={() => { setStage(key); clearUpload(); }}
+              className="h-10 flex-1 font-bold" style={{
+                borderRadius: 10, fontSize: TYPE.caption,
+                backgroundColor: stage === key ? BRAND : CANVAS,
+                color: stage === key ? "#fff" : SUB,
+              }}>{MIGRATION_STAGE_LABEL[key]}</button>
+          ))}
+        </div>
+        <p className="mt-2.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+          {stage === "clients"
+            ? `양식의 "1. 회원" 시트를 올립니다. 연락처가 회원을 구분하는 기준입니다.`
+            : `양식의 "2. 회원권" 시트를 올립니다. 1차에서 만든 회원에 이름과 연락처로 붙습니다.`}
+        </p>
+
+        {loading ? <p className="mt-3" style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : null}
+        {!loading && loadError ? (
+          <div className="mt-3">
+            <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: BAD }}>
+              센터 정보를 불러오지 못했습니다 (코드 {loadError}). 지점과 강사를 모르면 올린 행이 전부 실패합니다.
+            </p>
+            <button type="button" onClick={reload} className="mt-2 h-10 w-full font-bold"
+              style={{ borderRadius: 10, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>다시 시도</button>
+          </div>
+        ) : null}
+
+        {!loading && !loadError ? (
+          <>
+            {/* 이름이 정확히 같아야 붙는다. 무엇이 있는지 보여주지 않으면
+                "강사를 찾을 수 없습니다"를 받고도 무엇을 고칠지 모른다. */}
+            <p className="mt-2.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+              등록된 지점 {locations.map((item) => item.name || item.id).join(" · ") || "없음"}
+              {stage === "passes" ? ` / 강사 ${instructors.map((item) => item.displayName || item.userId).join(" · ") || "없음"}` : ""}
+            </p>
+            <input ref={fileRef} type="file" accept=".xlsx,.csv" className="hidden"
+              onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; pickFile(file); }} />
+            <button type="button" onClick={() => fileRef.current?.click()} disabled={applying}
+              className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 font-bold"
+              style={{ borderRadius: 10, backgroundColor: CANVAS, color: INK, fontSize: TYPE.caption, opacity: applying ? 0.5 : 1 }}>
+              <Upload size={14} />{fileName ? "다른 파일 고르기" : "파일 고르기 (엑셀 · CSV)"}
+            </button>
+            {fileName ? <p className="mt-2 truncate" style={{ fontSize: TYPE.caption, color: SUB }}>{fileName}</p> : null}
+            {fileError ? <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: BAD }}>{fileError}</p> : null}
+          </>
+        ) : null}
+      </section>
+
+      {plan ? (
+        <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+          <h3 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>올리기 전에 확인</h3>
+          {missingColumns.length > 0 ? (
+            /* 열 하나가 없으면 그 열을 쓰는 모든 행이 실패한다. 행마다 사유를
+               늘어놓는 대신 여기서 한 번에 말하고 올리기를 막는다. */
+            <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: BAD }}>
+              양식의 열이 없습니다: {missingColumns.join(" · ")}. 양식을 내려받아 다시 채워 주세요.
+            </p>
+          ) : (
+            <p className="mt-1.5 tabular-nums" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+              올릴 수 있는 행 <span style={{ fontWeight: 700, color: INK }}>{plan.writes.length}</span>
+              {plan.failures.length > 0
+                ? <> · 올릴 수 없는 행 <span style={{ fontWeight: 700, color: BAD }}>{plan.failures.length}</span></>
+                : null}
+            </p>
+          )}
+          <MigrationFailureList failures={plan.failures} />
+          <div className="mt-3 flex gap-2">
+            <button type="button" onClick={clearUpload} className="h-11 flex-1 font-bold"
+              style={{ borderRadius: 10, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>취소</button>
+            <button type="button" onClick={apply} disabled={!ready || applying} className="h-11 flex-1 font-bold"
+              style={{
+                borderRadius: 10, backgroundColor: BRAND, color: "#fff", fontSize: TYPE.caption,
+                opacity: !ready || applying ? 0.5 : 1,
+              }}>{applying ? "올리는 중" : `${plan.writes.length}행 올리기`}</button>
+          </div>
+        </section>
+      ) : null}
+
+      {result ? (
+        <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+          <h3 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>
+            {MIGRATION_STAGE_LABEL[result.stage]} 결과
+          </h3>
+          <p className="mt-1.5 tabular-nums" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+            성공 <span style={{ fontWeight: 700, color: GOOD }}>{result.succeeded}</span>
+            {" · "}실패 <span style={{ fontWeight: 700, color: result.failures.length ? BAD : SUB }}>{result.failures.length}</span>
+          </p>
+          {result.failures.length > 0 ? (
+            <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+              실패한 행만 고쳐서 다시 올리면 됩니다. 성공한 행은 다시 올려도 두 번 저장되지 않습니다.
+            </p>
+          ) : null}
+          <MigrationFailureList failures={result.failures} />
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
+function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, onRetryOrganization, onOpenClient, initialView = "hub" }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const organization = useContext(OrganizationContext);
   /* 회원권 상품은 센터를 운영하는 대표만 본다. 개인 모드(legacy)에는 센터가
@@ -15622,6 +15932,11 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
   /* 강사 단가는 대표만 본다. 규칙도 대표만 허용하므로, 매니저에게 보여 주면
      눌러도 거부되는 화면만 나온다. */
   const showInstructorRates = organization.ready
+    && !organization.isLegacy
+    && organization.role === ROLES.OWNER;
+  /* 엑셀 이관은 대표만 본다. 한 번 올리면 센터 전체의 회원과 회원권이
+     만들어진다 -- 매니저에게 열어 둘 종류의 버튼이 아니다. */
+  const showMigration = organization.ready
     && !organization.isLegacy
     && organization.role === ROLES.OWNER;
   /* initialView 는 스모크 하네스가 상세 화면 하나를 바로 여는 자리다. 앱은
@@ -15780,6 +16095,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
     clients: "회원 관리",
     "instructor-rates": "강사 단가",
     "pass-issue": "회원권 발급",
+    migration: "엑셀 이관",
   };
   const menuGroups = [
     { label: "업무", items: [
@@ -15794,6 +16110,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
       ...(showClients ? [{ key: "clients", title: "회원 관리", description: "회원 등록 · 검색", Icon: UserPlus }] : []),
       ...(showInstructorRates ? [{ key: "instructor-rates", title: "강사 단가", description: "강사별 풀방금액", Icon: Users }] : []),
       ...(showProducts ? [{ key: "products", title: "회원권 상품", description: "이벤트 상품 추가 · 종료", Icon: Ticket }] : []),
+      ...(showMigration ? [{ key: "migration", title: "엑셀 이관", description: "쓰던 엑셀의 회원 · 회원권 올리기", Icon: Upload }] : []),
       { key: "schedule-colors", title: "일정 색상", description: "개인 · 듀엣 · 그룹 · 상담 · 휴무 카드 색", Icon: Palette },
       { key: "theme", title: "화면 설정", description: "폰 설정 · 라이트 · 다크", Icon: Smartphone },
       { key: "data", title: "데이터 상태", description: "기기 저장 · 로그인 상태", Icon: Check },
@@ -16036,6 +16353,12 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
         )}
         {view === "products" && showProducts && (
           <ProductCatalog organization={organization} currentUserId={account?.id || ""} store={productStore}
+            onRetryOrganization={onRetryOrganization} onToast={onToast} />
+        )}
+        {view === "migration" && showMigration && (
+          <CenterMigration organization={organization} currentUserId={account?.id || ""}
+            clientStore={clientStore} locationStore={locationStore} instructorStore={instructorStore}
+            migrationStore={migrationStore}
             onRetryOrganization={onRetryOrganization} onToast={onToast} />
         )}
         {view === "permissions" && <section style={sectionStyle}><PermissionGuide statuses={permissionStatuses} /></section>}
@@ -16318,6 +16641,11 @@ export function createAppScreenSmokeCases() {
       clientStore={clientStore} locationStore={locationStore} initialState={initialState}
       onRetryOrganization={noop} onToast={noop} />
   ));
+  const centerMigration = (organization, initialState) => providerWith(organization, (
+    <CenterMigration organization={readyOrganizationContext(organization)} currentUserId="smoke-account"
+      clientStore={clientStore} locationStore={locationStore} instructorStore={instructorStore}
+      initialState={initialState} onRetryOrganization={noop} onToast={noop} />
+  ));
   const busyDb = createScheduleFixtureDb();
   return [
     { name: "일정 탭", element: provider(<ScheduleManager db={db} photos={photos} onSave={noop} onDelete={noop} onStatus={noop} onStatusAll={noop} onNoshowFee={noop} onGroupDone={noop} onNoComment={noop} onSaveNote={noop} onToast={noop} onSettings={noop} onConsumeMemberPreset={noop} onConsumeQuickAdd={noop} onOpenMember={noop} />) },
@@ -16415,6 +16743,39 @@ export function createAppScreenSmokeCases() {
     { name: "더보기 탭 · 매니저", element: settingsTab({ ...smokeOwner, role: "manager" }) },
     { name: "회원권 상품", element: providerWith(smokeOwner, <ProductCatalog organization={readyOrganizationContext(smokeOwner)} currentUserId="smoke-account" store={productStore} onRetryOrganization={noop} onToast={noop} />) },
     { name: "회원권 상품 · 소속 확인 실패", element: providerWith(smokeOwner, <ProductCatalog organization={readyOrganizationContext({ organizationId: "", role: "", status: "unknown", isLegacy: false })} currentUserId="smoke-account" store={productStore} onRetryOrganization={noop} onToast={noop} />) },
+    { name: "엑셀 이관", element: centerMigration(smokeOwner, {
+      locations: smokeLocations, instructors: smokeInstructors, clients: smokeClients,
+    }) },
+    { name: "엑셀 이관 · 올리기 전 확인", element: centerMigration(smokeOwner, {
+      locations: smokeLocations, instructors: smokeInstructors, clients: smokeClients,
+      fileName: "9월말 회원.xlsx",
+      plan: {
+        missingColumns: [],
+        writes: [{ line: 2 }, { line: 3 }, { line: 5 }],
+        failures: [
+          { line: 4, reason: MIGRATION_ERROR.LOCATION_NOT_FOUND, message: "지점을 찾을 수 없습니다: 해운대점" },
+          { line: 6, reason: MIGRATION_ERROR.MISSING_FIELD, message: "연락처가 비어 있습니다" },
+        ],
+      },
+    }) },
+    { name: "엑셀 이관 · 양식 열 없음", element: centerMigration(smokeOwner, {
+      locations: smokeLocations, instructors: smokeInstructors, clients: smokeClients,
+      fileName: "회원명단.csv",
+      plan: { missingColumns: ["연락처", "지점"], writes: [], failures: [] },
+    }) },
+    { name: "엑셀 이관 · 업로드 결과", element: centerMigration(smokeOwner, {
+      stage: "passes", locations: smokeLocations, instructors: smokeInstructors, clients: smokeClients,
+      result: {
+        stage: "passes",
+        succeeded: 118,
+        failures: [
+          { line: 12, reason: MIGRATION_ERROR.INSTRUCTOR_AMBIGUOUS, message: "같은 이름의 강사가 2명입니다: 김민서" },
+          { line: 31, reason: MIGRATION_ERROR.ALREADY_EXISTS, message: "이미 올라간 행입니다: 박서연" },
+        ],
+      },
+    }) },
+    { name: "엑셀 이관 · 센터 정보 조회 실패", element: centerMigration(smokeOwner, { loadError: "permission-denied" }) },
+    { name: "엑셀 이관 · 소속 확인 실패", element: centerMigration({ organizationId: "", role: "", status: "unknown", isLegacy: false }, null) },
   ];
 }
 

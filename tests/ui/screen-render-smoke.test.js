@@ -71,6 +71,12 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 매니저",
     "회원권 상품",
     "회원권 상품 · 소속 확인 실패",
+    "엑셀 이관",
+    "엑셀 이관 · 올리기 전 확인",
+    "엑셀 이관 · 양식 열 없음",
+    "엑셀 이관 · 업로드 결과",
+    "엑셀 이관 · 센터 정보 조회 실패",
+    "엑셀 이관 · 소속 확인 실패",
   ]);
   for (const item of cases) {
     await t.test(item.name, () => {
@@ -123,6 +129,62 @@ test("the product catalog is reachable only where it should be", async (t) => {
   assert.match(locked, /소속을 확인하지 못했습니다/);
   assert.match(locked, /다시 시도/);
   assert.doesNotMatch(locked, /추가/, "잠긴 상태에서는 추가 버튼이 없어야 한다");
+});
+
+test("the october migration is the owner's alone and never writes before it has shown what it will write", async (t) => {
+  const vite = await createServer({
+    root: projectRoot,
+    configFile: false,
+    plugins: [react()],
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] },
+    server: { middlewareMode: true },
+    ssr: { noExternal: ["@capgo/camera-preview"] },
+    logLevel: "silent",
+  });
+  t.after(() => vite.close());
+  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+
+  /* 한 번 올리면 센터 전체의 회원과 회원권이 만들어진다. 매니저·강사에게는
+     진입점이 없어야 하고, 항목이 없으면 setView 로 들어갈 길도 닫힌다. */
+  assert.match(markupOf("더보기 탭"), /엑셀 이관/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 매니저"), /엑셀 이관/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 강사"), /엑셀 이관/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 개인 모드"), /엑셀 이관/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 소속 확인 실패"), /엑셀 이관/);
+
+  // 소속을 읽지 못하면 다른 센터에 회원을 올릴 수 있다. 그 상태는 잠근다.
+  const locked = markupOf("엑셀 이관 · 소속 확인 실패");
+  assert.match(locked, /소속을 확인하지 못했습니다/);
+  assert.doesNotMatch(locked, /파일 고르기/, "잠긴 상태에서는 파일을 고를 수 없어야 한다");
+
+  /* 지점과 강사를 못 읽은 채로 올리면 모든 행이 "찾을 수 없습니다"로
+     실패하고, 대표는 자기 파일을 의심하게 된다. 그 전에 말한다. */
+  const unreadable = markupOf("엑셀 이관 · 센터 정보 조회 실패");
+  assert.match(unreadable, /센터 정보를 불러오지 못했습니다 \(코드 permission-denied\)/);
+  assert.doesNotMatch(unreadable, /파일 고르기/);
+
+  /* 쓰기 전에 몇 행이 올라가고 몇 행이 왜 안 되는지 먼저 보여준다 -- 원장은
+     append-only 라 올린 뒤에는 되돌릴 수 없다. */
+  const preview = markupOf("엑셀 이관 · 올리기 전 확인");
+  assert.match(preview, /올리기 전에 확인/);
+  assert.match(preview, /3행 올리기/);
+  assert.match(preview, /지점을 찾을 수 없습니다/);
+  assert.match(preview, /4행/, "고칠 줄 번호가 보여야 한다");
+
+  // 열 하나가 없으면 그 열을 쓰는 모든 행이 실패한다. 한 번에 말하고 막는다.
+  const missing = markupOf("엑셀 이관 · 양식 열 없음");
+  assert.match(missing, /양식의 열이 없습니다: 연락처 · 지점/);
+  assert.match(missing, /disabled=""[^<]*>0행 올리기<\/button>/, "올릴 행이 없으면 버튼이 잠겨 있어야 한다");
+
+  // 성공과 실패를 한 화면에서 센다. 실패한 행만 고쳐 다시 올리면 된다.
+  const result = markupOf("엑셀 이관 · 업로드 결과");
+  assert.match(result, /118/);
+  assert.match(result, /같은 이름의 강사가 둘 이상입니다/);
+  assert.match(result, /이미 올라간 행입니다/);
+  assert.match(result, /다시 올려도 두 번 저장되지 않습니다/);
 });
 
 test("ErrorBoundary hides diagnostics in production and records a privacy-safe diagnostic event", async () => {

@@ -26,12 +26,13 @@ import {
 import { paths } from "../schema/paths.js";
 import { toDate } from "./payroll-repository.js";
 import { resolveUnitPrice } from "../schema/pay-rates.js";
-import { readCollection } from "./repository-read.js";
+import { RepositoryReadError, readCollection } from "./repository-read.js";
 
 /**
  * @typedef {object} PassStore
  * @property {(collectionPath: string) => Promise<Array<any>>} list
- * @property {(writes: Array<{ path: string, data: object, operation?: "set" | "update" | "decrement" }>) => Promise<void>} commit
+ * @property {(writes: Array<{ path: string, data: object, operation?: "set" | "update" | "decrement" | "bump" }>) => Promise<void>} commit
+ * @property {(documentPath: string) => Promise<any | null>} read
  * @property {() => Promise<any>} serverTimestamp
  */
 
@@ -73,7 +74,16 @@ export function createFirestorePassStore() {
       const batch = writeBatch(firestore);
       for (const write of writes) {
         const reference = doc(firestore, write.path);
-        if (write.operation === "decrement") {
+        if (write.operation === "bump") {
+          /* 없으면 만들고, 있으면 더한다. 첫 수업에 update 를 쓰면 문서가 없어
+             배치 전체가 실패한다 -- 차감까지 함께 죽는다. */
+          const { increment } = await load();
+          const { delta, ...fields } = write.data;
+          const deltas = Object.fromEntries(
+            Object.entries(delta || {}).map(([field, by]) => [field, increment(Number(by))]),
+          );
+          batch.set(reference, { ...fields, ...deltas }, { merge: true });
+        } else if (write.operation === "decrement") {
           /* 읽어서 빼지 않는다. 두 강사가 같은 순간에 눌러도 하나가 다른 하나를
              덮어쓰지 않도록 서버가 더한다. */
           const { increment } = await load();
@@ -85,6 +95,11 @@ export function createFirestorePassStore() {
         else batch.set(reference, write.data);
       }
       await batch.commit();
+    },
+    read: async (documentPath) => {
+      const { doc, getDoc, getFirestore } = await load();
+      const snapshot = await getDoc(doc(getFirestore(), documentPath));
+      return snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null;
     },
     serverTimestamp: async () => {
       const { serverTimestamp } = await load();
@@ -437,6 +452,20 @@ export async function deductPass(organizationId, pass, input, options = {}) {
     /* 잔여는 읽어서 빼지 않고 서버가 하나 줄인다. 두 강사가 같은 순간에 눌러도
        하나가 다른 하나를 덮어쓰지 않는다. 규칙은 계산된 값을 보고 -1 인지 따진다. */
     { path: paths.pass(organization, passId), data: { remainingCount: -1 }, operation: "decrement" },
+    /* 이 강사가 이 회원에게 몇 회를 했는가. 급여 판정이 이 숫자를 보고 신규
+       단가인지 기준 단가인지 가른다 (deduction-pricing.js 판정 3).
+       원장으로는 셀 수 없다 -- 항목이 회원권마다 흩어져 있고, 세려면 센터
+       전체를 훑어야 한다. 차감과 같은 배치라 둘이 어긋날 수 없다. */
+    {
+      path: paths.instructorClientTotal(organization, instructorId, clientId),
+      data: {
+        organizationId: organization,
+        instructorId,
+        clientId,
+        delta: { sessions: 1 },
+      },
+      operation: "bump",
+    },
   ]);
   return { passId, lessonId, entryId, entry, lesson };
 }
@@ -538,4 +567,48 @@ export async function loadClientPassHistory(organizationId, clientId, options = 
     entries: ledgers.flat().sort(byOccurredAtDesc),
     failedPassIds,
   };
+}
+
+/* ── 강사-회원 누적 진행 횟수 ──────────────────────────────────────────────
+   급여 판정이 "이 강사에게 이 회원 누적 20회 미만이면 신규 단가"를 묻는다
+   (deduction-pricing.js 판정 3). 원장으로는 셀 수 없다 -- 항목이 회원권마다
+   흩어져 있고, 세려면 센터 전체를 훑어야 한다.
+
+   그래서 차감할 때마다 한 칸 올리는 문서를 따로 둔다. 차감과 같은 배치에
+   들어가므로 둘이 어긋날 수 없다.
+
+   기준은 강사-회원 쌍이다. 같은 회원이라도 강사가 다르면 각자 0부터 세고,
+   같은 강사에게 재등록해도 그 강사 기준으로 이어 센다.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * 이 강사가 이 회원에게 이미 진행한 횟수.
+ *
+ * 문서가 없으면 0 이다 -- 아직 한 번도 안 했다는 뜻이고, 판정 3 이 그것을
+ * 신규로 읽는다. 읽지 못한 것과는 다르다: 그때는 던진다. 조용히 0 으로 떨어지면
+ * 20회를 넘긴 강사가 신규 단가를 받고, 그 값이 원장에 박혀 고칠 수 없게 된다.
+ *
+ * @param {string} organizationId
+ * @param {string} instructorId
+ * @param {string} clientId
+ * @param {{ store?: PassStore }} [options]
+ * @returns {Promise<number>}
+ */
+export async function readInstructorClientSessions(organizationId, instructorId, clientId, options = {}) {
+  const { store = createFirestorePassStore() } = options;
+  const organization = requiredText(organizationId, "organizationId");
+  const instructor = requiredText(instructorId, "instructorId");
+  const client = requiredText(clientId, "clientId");
+  const path = paths.instructorClientTotal(organization, instructor, client);
+  let found = null;
+  try {
+    found = await store.read(path);
+  } catch (error) {
+    const code = error?.code || "unknown";
+    throw new RepositoryReadError({
+      feature: "instructor_client_totals", stage: "get", path, code, cause: error,
+    });
+  }
+  const sessions = found?.sessions;
+  return typeof sessions === "number" && Number.isInteger(sessions) && sessions >= 0 ? sessions : 0;
 }

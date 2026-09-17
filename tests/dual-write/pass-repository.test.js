@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   activeRemainingTotal, createFirestorePassStore, deductPass, isDeductablePass, isExpiredPass,
-  issuePass, listPassLedger, listPasses, loadClientPassHistory, remainingCountOf,
-  transferPassInstructor,
+  issuePass, listPassLedger, listPasses, loadClientPassHistory, readInstructorClientSessions,
+  remainingCountOf, transferPassInstructor,
 } from "../../src/data/repositories/pass-repository.js";
 import { RepositoryReadError, connectRepositoryLog, disconnectRepositoryLog } from "../../src/data/repositories/repository-read.js";
 
@@ -13,13 +13,14 @@ const ORG = "center-a";
  * 배치를 흉내 낸다. commit 이 실패하면 어떤 문서도 남지 않는다 — 실제
  * writeBatch 와 같은 성질이고, 이 테스트가 확인하려는 바로 그 성질이다.
  */
-function fakeStore({ documents = [], failCommit = null } = {}) {
+function fakeStore({ documents = [], failCommit = null, totals = {} } = {}) {
   const written = new Map();
-  const calls = { list: [], commit: [] };
+  const calls = { list: [], commit: [], read: [] };
   return {
     written,
     calls,
     list: async (path) => { calls.list.push(path); return documents; },
+    read: async (path) => { calls.read.push(path); return totals[path] || null; },
     commit: async (writes) => {
       calls.commit.push(writes);
       if (failCommit) throw failCommit;
@@ -382,9 +383,10 @@ const deductOptions = (store) => ({
   now: () => new Date("2026-09-17T12:00:00.000Z"),
 });
 
-test("a deduction writes the lesson, the participant, the entry and the count at once", async () => {
-  /* 넷 중 하나만 쓰이면 잔여가 어긋나거나 급여가 어느 수업에서 나왔는지 알 수
-     없게 된다. 원장은 append-only 라 사후 보정도 불가능하다. */
+test("a deduction writes the lesson, the participant, the entry, the count and the total at once", async () => {
+  /* 다섯 중 하나만 쓰이면 잔여가 어긋나거나, 급여가 어느 수업에서 나왔는지
+     모르거나, 누적이 실제와 달라진다. 원장은 append-only 라 사후 보정도
+     불가능하다. */
   const store = fakeStore();
   await deductPass(ORG, activePass(), deductInput(), deductOptions(store));
   assert.equal(store.calls.commit.length, 1);
@@ -393,6 +395,7 @@ test("a deduction writes the lesson, the participant, the entry and the count at
     "organizations/center-a/lessons/lesson-new/participants/client-a",
     "organizations/center-a/passes/pass-a/ledger/lesson-new_deduct",
     "organizations/center-a/passes/pass-a",
+    "organizations/center-a/instructorClientTotals/instructor-a_client-a",
   ]);
 });
 
@@ -437,6 +440,7 @@ test("the remaining count is spent by the server, not by a read", async () => {
   const store = fakeStore();
   await deductPass(ORG, activePass(), deductInput(), deductOptions(store));
   const passWrite = store.calls.commit[0][3];
+  assert.equal(passWrite.path, "organizations/center-a/passes/pass-a");
   assert.equal(passWrite.operation, "decrement");
   assert.deepEqual(passWrite.data, { remainingCount: -1 });
 });
@@ -552,6 +556,7 @@ const historyStore = ({ passes = [], ledgers = {}, failPassIds = [] } = {}) => {
       }
       return ledgers[passId] || [];
     },
+    read: async () => null,
     commit: async () => {},
     serverTimestamp: async () => "SERVER_TIME",
   };
@@ -827,4 +832,84 @@ test("a transfer needs the client it is about", async () => {
     createdBy: "owner-a",
   }, { store }), /Missing clientId/);
   assert.equal(store.calls.commit.length, 0);
+});
+
+/* ── 강사-회원 누적 ───────────────────────────────────────────────────── */
+
+const totalPath = "organizations/center-a/instructorClientTotals/instructor-a_client-a";
+
+test("a deduction bumps the pair that taught it", async () => {
+  /* 급여 판정이 이 숫자를 보고 신규 단가인지 기준 단가인지 가른다. 차감과
+     같은 배치라 둘이 어긋날 수 없다. */
+  const store = fakeStore();
+  await deductPass(ORG, activePass(), deductInput(), deductOptions(store));
+  const bump = store.calls.commit[0][4];
+  assert.equal(bump.path, totalPath);
+  assert.equal(bump.operation, "bump", "없으면 만들고 있으면 더한다");
+  assert.deepEqual(bump.data, {
+    organizationId: ORG,
+    instructorId: "instructor-a",
+    clientId: "client-a",
+    delta: { sessions: 1 },
+  });
+});
+
+test("the pair is the instructor who taught, not the one the pass belongs to", async () => {
+  // 대타로 들어간 수업은 그날 가르친 사람의 누적으로 쌓인다.
+  const store = fakeStore();
+  await deductPass(
+    ORG,
+    activePass({ instructorId: "instructor-b" }),
+    deductInput({ instructorId: "instructor-a" }),
+    deductOptions(store),
+  );
+  assert.equal(store.calls.commit[0][4].path, totalPath);
+});
+
+test("nothing is bumped when the deduction fails", async () => {
+  const store = fakeStore({ failCommit: Object.assign(new Error("denied"), { code: "permission-denied" }) });
+  await assert.rejects(() => deductPass(ORG, activePass(), deductInput(), deductOptions(store)), /denied/);
+  assert.equal(store.written.size, 0);
+});
+
+test("a pair that has never met reads as zero", async () => {
+  const store = fakeStore();
+  assert.equal(await readInstructorClientSessions(ORG, "instructor-a", "client-a", { store }), 0);
+  assert.deepEqual(store.calls.read, [totalPath]);
+});
+
+test("an existing pair reads its count", async () => {
+  const store = fakeStore({ totals: { [totalPath]: { sessions: 19 } } });
+  assert.equal(await readInstructorClientSessions(ORG, "instructor-a", "client-a", { store }), 19);
+});
+
+test("a broken count reads as zero rather than as a number it is not", async () => {
+  for (const broken of [{ sessions: "19" }, { sessions: -1 }, { sessions: 1.5 }, {}]) {
+    const store = fakeStore({ totals: { [totalPath]: broken } });
+    assert.equal(
+      await readInstructorClientSessions(ORG, "instructor-a", "client-a", { store }),
+      0,
+      JSON.stringify(broken),
+    );
+  }
+});
+
+test("a refused read throws instead of reading as a fresh pair", async () => {
+  /* 조용히 0 으로 떨어지면 20회를 넘긴 강사가 신규 단가를 받고, 그 값이
+     원장에 박혀 고칠 수 없게 된다. */
+  const store = fakeStore();
+  store.read = async () => { throw Object.assign(new Error("denied"), { code: "permission-denied" }); };
+  const error = await readInstructorClientSessions(ORG, "instructor-a", "client-a", { store })
+    .then(() => null, (thrown) => thrown);
+  assert.ok(error instanceof RepositoryReadError);
+  assert.equal(error.code, "permission-denied");
+  assert.equal(error.feature, "instructor_client_totals");
+});
+
+test("reading a pair needs all three ids", async () => {
+  const store = fakeStore();
+  await assert.rejects(() => readInstructorClientSessions("", "i", "c", { store }), /Missing organizationId/);
+  await assert.rejects(() => readInstructorClientSessions(ORG, "", "c", { store }), /Missing instructorId/);
+  await assert.rejects(() => readInstructorClientSessions(ORG, "i", "", { store }), /Missing clientId/);
+  assert.equal(store.calls.read.length, 0);
 });

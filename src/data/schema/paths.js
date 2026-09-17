@@ -36,6 +36,13 @@ export const paths = Object.freeze({
   /** @param {string} organizationId @param {string} clientId */
   client: (organizationId, clientId) =>
     `${organizationRoot(organizationId)}/${COLLECTIONS.CLIENTS}/${segment(clientId, "clientId")}`,
+  /**
+   * 강사-회원 쌍의 누적 진행 횟수. 문서 id 가 곧 그 쌍이라 한 쌍에 두 문서가
+   * 생길 수 없다 -- 규칙도 같은 형식을 요구한다.
+   * @param {string} organizationId @param {string} instructorId @param {string} clientId
+   */
+  instructorClientTotal: (organizationId, instructorId, clientId) =>
+    `${organizationRoot(organizationId)}/${COLLECTIONS.INSTRUCTOR_CLIENT_TOTALS}/${segment(instructorId, "instructorId")}_${segment(clientId, "clientId")}`,
   /** @param {string} organizationId @param {string} productId */
   product: (organizationId, productId) =>
     `${organizationRoot(organizationId)}/${COLLECTIONS.PRODUCTS}/${segment(productId, "productId")}`,

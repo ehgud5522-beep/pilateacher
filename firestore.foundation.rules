@@ -352,6 +352,56 @@ service cloud.firestore {
 
       // PT passes (20-session packs and the like). Distinct from top-level
       // memberships, which mean organization membership and gate access.
+      /* 강사-회원 쌍의 누적 진행 횟수.
+
+         급여 판정이 "이 강사에게 이 회원 누적 20회 미만이면 신규 단가"를 묻는데,
+         원장으로는 셀 수 없다 -- 항목이 회원권마다 흩어져 있고, 세려면 센터
+         전체를 훑어야 한다. 그래서 차감할 때마다 여기서 한 칸 올린다.
+
+         한 칸씩만 오른다. 여기서 임의의 값을 쓸 수 있으면 누구든 자기 단가를
+         내릴 수도 올릴 수도 있고, 그것을 반증할 원장은 append-only 라 고칠 수
+         없다. 예외는 대표뿐이다 -- 10월 이관 때 엑셀에서 옮겨 온 누적을 심어야
+         하고, 그 값을 아는 사람은 대표다.
+
+         문서 id 가 곧 강사-회원 쌍이라 한 쌍에 두 문서가 생길 수 없다. */
+      match /instructorClientTotals/{totalId} {
+        allow read: if isActiveMember(organizationId);
+        allow create: if request.resource.data.organizationId == organizationId
+          && totalId == request.resource.data.instructorId + "_" + request.resource.data.clientId
+          && request.resource.data.keys().hasOnly([
+            "organizationId", "instructorId", "clientId", "sessions"
+          ])
+          && request.resource.data.keys().hasAll([
+            "organizationId", "instructorId", "clientId", "sessions"
+          ])
+          && request.resource.data.instructorId is string
+          && request.resource.data.instructorId.size() > 0
+          && request.resource.data.clientId is string
+          && request.resource.data.clientId.size() > 0
+          && request.resource.data.sessions is int
+          && (
+            // 첫 수업.
+            (
+              hasRole(organizationId, ["owner", "manager", "instructor"])
+              && request.resource.data.sessions == 1
+            )
+            // 이관. 엑셀에서 옮겨 온 누적을 대표가 심는다.
+            || (hasRole(organizationId, ["owner"]) && request.resource.data.sessions >= 0)
+          );
+        allow update: if resource.data.organizationId == organizationId
+          && request.resource.data.organizationId == organizationId
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["sessions"])
+          && request.resource.data.sessions is int
+          && (
+            (
+              hasRole(organizationId, ["owner", "manager", "instructor"])
+              && request.resource.data.sessions == resource.data.sessions + 1
+            )
+            || (hasRole(organizationId, ["owner"]) && request.resource.data.sessions >= 0)
+          );
+        allow delete: if false;
+      }
+
       match /passes/{passId} {
         allow read: if isActiveMember(organizationId);
         // The product fields are not settled yet, so require a floor rather than

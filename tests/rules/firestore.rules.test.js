@@ -140,6 +140,8 @@ function ledgerFixture(organizationId, passId, overrides = {}) {
   };
 }
 
+const seedAll = () => seed();
+
 async function seed() {
   await testEnv.withSecurityRulesDisabled(async (context) => {
     const db = context.firestore();
@@ -1870,5 +1872,111 @@ describe("what a pass and its ledger must say", () => {
       fromInstructorId: users.instructor, toInstructorId: users.staff,
       occurredAt: serverTimestamp(), createdAt: serverTimestamp(), createdBy: users.owner,
     }));
+  });
+});
+
+/* 강사-회원 누적. 급여 판정이 "이 강사에게 이 회원 누적 20회 미만이면 신규
+   단가"를 묻는 근거이고, 원장으로는 셀 수 없어 따로 쌓는 숫자다.
+
+   여기서 임의의 값을 쓸 수 있으면 누구든 자기 단가를 내릴 수도 올릴 수도
+   있고, 그것을 반증할 원장은 append-only 라 고칠 수 없다. */
+describe("counting what an instructor has taught a client", () => {
+  const PAIR = `${users.instructor}_client-member`;
+  const totalDoc = (userId, pairId = PAIR) =>
+    doc(dbFor(userId), "organizations", ORG_A, COLLECTIONS.INSTRUCTOR_CLIENT_TOTALS, pairId);
+  const total = (overrides = {}) => ({
+    organizationId: ORG_A,
+    instructorId: users.instructor,
+    clientId: "client-member",
+    sessions: 1,
+    ...overrides,
+  });
+  const seed = async (sessions) => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(
+        doc(context.firestore(), "organizations", ORG_A, "instructorClientTotals", PAIR),
+        total({ sessions }),
+      );
+    });
+  };
+
+  test("the first lesson of a pair creates the count at one", async () => {
+    for (const role of ["owner", "manager", "instructor"]) {
+      await assertSucceeds(setDoc(totalDoc(users[role]), total()), role);
+      await testEnv.clearFirestore();
+      await seedAll();
+    }
+  });
+
+  test("a first count of anything but one is refused", async () => {
+    // 처음부터 큰 값을 넣을 수 있으면 신규 단가 구간을 건너뛸 수 있다.
+    for (const sessions of [0, 2, 19, 99]) {
+      await assertFails(setDoc(totalDoc(users.instructor), total({ sessions })), String(sessions));
+    }
+  });
+
+  test("the owner may seed any count, for the october migration", async () => {
+    // 엑셀에서 옮겨 온 누적을 심는다. 그 값을 아는 사람은 대표다.
+    await assertSucceeds(setDoc(totalDoc(users.owner), total({ sessions: 99 })));
+    await assertSucceeds(updateDoc(totalDoc(users.owner), { sessions: 7 }));
+  });
+
+  test("a count only ever climbs by one", async () => {
+    await seed(19);
+    await assertSucceeds(updateDoc(totalDoc(users.instructor), { sessions: 20 }));
+    await seed(19);
+    for (const bad of [21, 19, 18, 0, "20"]) {
+      await assertFails(updateDoc(totalDoc(users.instructor), { sessions: bad }), String(bad));
+    }
+  });
+
+  test("an atomic increment is seen by the rule as one step", async () => {
+    await seed(19);
+    await assertSucceeds(updateDoc(totalDoc(users.instructor), { sessions: increment(1) }));
+    await seed(19);
+    await assertFails(updateDoc(totalDoc(users.instructor), { sessions: increment(2) }));
+    await assertFails(updateDoc(totalDoc(users.instructor), { sessions: increment(-1) }));
+  });
+
+  test("nothing else about the pair may change", async () => {
+    await seed(5);
+    for (const forbidden of [
+      { instructorId: users.manager },
+      { clientId: "client-other" },
+      { organizationId: ORG_B },
+      { sessions: 6, instructorId: users.manager },
+    ]) {
+      await assertFails(updateDoc(totalDoc(users.instructor), forbidden), JSON.stringify(forbidden));
+    }
+  });
+
+  test("the document id has to be the pair it claims to be", async () => {
+    // 한 쌍에 두 문서가 생기면 어느 쪽이 진짜 누적인지 알 수 없다.
+    await assertFails(setDoc(totalDoc(users.instructor, "made-up-id"), total()));
+    await assertFails(setDoc(
+      totalDoc(users.instructor, `${users.manager}_client-member`),
+      total(),
+    ));
+  });
+
+  test("staff and outsiders do not touch the count", async () => {
+    await assertFails(setDoc(totalDoc(users.staff), total()));
+    await assertFails(setDoc(totalDoc(users.outsider), total()));
+    await seed(5);
+    await assertFails(updateDoc(totalDoc(users.staff), { sessions: 6 }));
+    await assertFails(updateDoc(totalDoc(users.outsider), { sessions: 6 }));
+  });
+
+  test("the count is readable by the organization and nobody else", async () => {
+    await seed(5);
+    await assertSucceeds(getDoc(totalDoc(users.instructor)));
+    await assertSucceeds(getDoc(totalDoc(users.staff)));
+    await assertFails(getDoc(totalDoc(users.outsider)));
+    await assertFails(getDoc(totalDoc(null)));
+  });
+
+  test("a count is never deleted", async () => {
+    await seed(5);
+    await assertFails(deleteDoc(totalDoc(users.owner)));
   });
 });

@@ -106,6 +106,7 @@ test("a broken onError cannot break the screen", async () => {
 /** 쓰기 입구는 쓰지 않지만, store 는 제 모양을 다 갖춰야 타입이 맞는다. */
 const listOnly = (read) => ({
   list: read,
+  read: async () => null,
   create: async () => {},
   update: async () => {},
   commit: async () => {},

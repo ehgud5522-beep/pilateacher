@@ -25,8 +25,26 @@ test("an active membership decides the organization and the role", async () => {
     role: "instructor",
     status: "active",
     displayName: "",
+    isDeputyDirector: false,
     isLegacy: false,
   });
+});
+
+test("the deputy flag travels with the context, so a deduction never has to fetch it", async () => {
+  /* 차감할 때 급여 판정 1 이 이 값을 본다. 로그인할 때 이미 읽은 문서에 들어
+     있으므로 수업이 끝난 자리에서 누르는 버튼에 왕복이 붙지 않는다. */
+  const deputy = await resolveOrganizationContext("user-1", {
+    listActiveMemberships: async () => [membership({ isDeputyDirector: true })],
+  });
+  assert.equal(deputy.isDeputyDirector, true);
+
+  // 지정받은 사람만이다. 값이 없거나 boolean 이 아니면 부원장이 아니다.
+  for (const value of [undefined, null, "true", 1]) {
+    const other = await resolveOrganizationContext("user-1", {
+      listActiveMemberships: async () => [membership({ isDeputyDirector: value })],
+    });
+    assert.equal(other.isDeputyDirector, false, JSON.stringify(value));
+  }
 });
 
 test("no membership falls back to the legacy single-instructor organization", async () => {

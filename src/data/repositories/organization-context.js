@@ -28,6 +28,16 @@ export const UNRESOLVED_ORGANIZATION_CONTEXT = Object.freeze({
      memberships 블록 주석에 있다 -- 이름을 읽자고 그 문서를 열면 전화번호와
      이메일이 함께 열린다. */
   displayName: "",
+  /* 부원장인가. 차감할 때 급여 판정 1 이 이 값을 본다
+     (deduction-pricing.js). 여기 두는 이유는 값이 필요한 그 순간에 이미
+     읽혀 있기 때문이다 -- 로그인할 때 내 membership 을 한 번 읽고, 그 문서에
+     이 필드가 들어 있다. 차감할 때마다 다시 읽으면 수업이 끝난 자리에서
+     누르는 버튼에 왕복이 하나 더 붙는다.
+
+     대가는 최신성이다. 대표가 지금 지정해도 그 강사의 앱은 다음에 컨텍스트를
+     다시 읽을 때부터 안다. 등급 승진처럼 미리 정해지고 거의 바뀌지 않는
+     값이라 그 대가를 받아들였고, 강사 단가 화면이 그 사실을 말한다. */
+  isDeputyDirector: false,
   isLegacy: false,
   ready: false,
 });
@@ -49,6 +59,7 @@ export function unknownOrganizationContext() {
  * @property {string} [role]
  * @property {string} [status]
  * @property {string} [displayName]
+ * @property {boolean} [isDeputyDirector]
  */
 
 const required = (value, label) => {
@@ -122,7 +133,7 @@ const withLookupTimeout = (promise, { timeoutMs, setTimer, clearTimer }) => {
 /**
  * @param {string} userId
  * @param {{ listActiveMemberships?: (userId: string) => Promise<Array<MembershipDocument>>, warn?: (code: string, detail: object) => void, log?: (code: string, detail: object) => void, timeoutMs?: number, setTimer?: Function, clearTimer?: Function }} [options]
- * @returns {Promise<{ organizationId: string, role: string, status: string, displayName?: string, isLegacy: boolean }>}
+ * @returns {Promise<{ organizationId: string, role: string, status: string, displayName?: string, isDeputyDirector?: boolean, isLegacy: boolean }>}
  */
 export async function resolveOrganizationContext(userId, options = {}) {
   const id = required(userId, "userId");
@@ -220,6 +231,8 @@ export async function resolveOrganizationContext(userId, options = {}) {
     role: membership.role || ROLES.MEMBER,
     status: membership.status,
     displayName: String(membership.displayName || ""),
+    // 없으면 false 다. 부원장은 지정받은 사람만이다.
+    isDeputyDirector: membership.isDeputyDirector === true,
     isLegacy: false,
   }, "membership", {
     count: receivedCount,

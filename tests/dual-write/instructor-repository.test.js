@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createFirestoreInstructorRateStore, createFirestoreInstructorStore, fullRoomRateOf,
-  hasUsableFullRoomRate, listInstructors, setInstructorFullRoomRate, syncOwnMembershipName,
+  hasUsableFullRoomRate, isDeputyDirectorOf, listInstructors, setInstructorDeputyDirector,
+  setInstructorFullRoomRate, syncOwnMembershipName,
 } from "../../src/data/repositories/instructor-repository.js";
 import { RepositoryReadError, connectRepositoryLog, disconnectRepositoryLog } from "../../src/data/repositories/repository-read.js";
 
@@ -154,6 +155,91 @@ test("a first rate records that there was none before", async () => {
     newRate: 45000, changedBy: "owner-a",
   }, { store });
   assert.equal(entry.previousRate, null, "0 이 아니라 null 이다 -- 없던 것과 0원은 다르다");
+});
+
+/* ── 부원장 ───────────────────────────────────────────────────────────── */
+
+test("a deputy is whoever was designated one, and nothing else counts as yes", () => {
+  assert.equal(isDeputyDirectorOf(membership({ isDeputyDirector: true })), true);
+  for (const value of [undefined, null, false, "true", 1]) {
+    assert.equal(isDeputyDirectorOf(membership({ isDeputyDirector: value })), false, JSON.stringify(value));
+  }
+});
+
+test("the deputy flag and its history entry are written together", async () => {
+  /* 플래그만 바뀌고 이력이 없으면 "언제부터 5:5 였나"가 사라진다. 급여 분쟁은
+     대개 지난달 이야기라 그 질문이 실제로 나온다. */
+  const store = fakeRateStore();
+  await setInstructorDeputyDirector(ORG, "instructor-a", {
+    isDeputyDirector: true, changedBy: "owner-a",
+  }, { store, newId: () => "entry-1" });
+  assert.equal(store.calls.length, 1, "두 번 나눠 쓰면 하나만 저장되는 순간이 생긴다");
+  const [membershipWrite, historyWrite] = store.calls[0];
+  assert.equal(membershipWrite.path, "memberships/center-a_instructor-a");
+  assert.equal(membershipWrite.operation, "update");
+  assert.deepEqual(membershipWrite.data, { isDeputyDirector: true });
+  // 금액 변경과 같은 컬렉션이다 -- 둘이 답하는 질문이 같고, 한 줄로 이어져야 한다.
+  assert.equal(historyWrite.path, "memberships/center-a_instructor-a/rateHistory/entry-1");
+});
+
+test("the deputy entry carries one pair, never the rate pair", async () => {
+  /* 한 항목이 두 종류의 변경을 동시에 말하면 무엇이 바뀐 것인지 알 수 없다.
+     규칙도 둘 중 하나만 허용한다. */
+  const store = fakeRateStore();
+  const { entry } = await setInstructorDeputyDirector(ORG, "instructor-a", {
+    isDeputyDirector: true, previousDeputyDirector: false, changedBy: "owner-a",
+  }, { store });
+  assert.deepEqual(Object.keys(entry).sort(), [
+    "changedBy", "createdAt", "effectiveFrom", "newDeputyDirector",
+    "organizationId", "previousDeputyDirector", "userId",
+  ]);
+  assert.equal(entry.newDeputyDirector, true);
+  assert.equal(entry.previousDeputyDirector, false);
+  assert.equal(entry.createdAt, "SERVER_TIME", "규칙이 createdAt == request.time 을 요구한다");
+});
+
+test("a first designation records that nobody had decided before", async () => {
+  const store = fakeRateStore();
+  const { entry } = await setInstructorDeputyDirector(ORG, "instructor-a", {
+    isDeputyDirector: true, changedBy: "owner-a",
+  }, { store });
+  assert.equal(entry.previousDeputyDirector, null, "false 가 아니라 null 이다 -- 정해진 적 없는 것과 다르다");
+});
+
+test("nobody makes themselves a deputy", async () => {
+  /* 부원장은 카테고리도 누적도 보지 않고 계약 금액의 5:5 를 받는다. 자기
+     수업을 스스로 그 위에 올릴 수 있으면 아무도 확인하지 않는 인상이 된다. */
+  const store = fakeRateStore();
+  await assert.rejects(() => setInstructorDeputyDirector(ORG, "owner-a", {
+    isDeputyDirector: true, changedBy: "owner-a",
+  }, { store }), /Invalid userId/);
+  assert.equal(store.calls.length, 0);
+});
+
+test("a designation that changes nothing is refused", async () => {
+  const store = fakeRateStore();
+  await assert.rejects(() => setInstructorDeputyDirector(ORG, "instructor-a", {
+    isDeputyDirector: true, previousDeputyDirector: true, changedBy: "owner-a",
+  }, { store }), /Invalid isDeputyDirector/);
+  assert.equal(store.calls.length, 0);
+});
+
+test("an unanswered deputy flag is refused, never read as no", async () => {
+  for (const blank of /** @type {Array<any>} */ ([undefined, null, "", "true", 1])) {
+    const store = fakeRateStore();
+    await assert.rejects(() => setInstructorDeputyDirector(ORG, "instructor-a", {
+      isDeputyDirector: blank, changedBy: "owner-a",
+    }, { store }), /Missing isDeputyDirector/, JSON.stringify(blank));
+    assert.equal(store.calls.length, 0);
+  }
+});
+
+test("nothing is written when the deputy commit fails", async () => {
+  const store = fakeRateStore({ failCommit: Object.assign(new Error("denied"), { code: "permission-denied" }) });
+  await assert.rejects(() => setInstructorDeputyDirector(ORG, "instructor-a", {
+    isDeputyDirector: true, changedBy: "owner-a",
+  }, { store }), /denied/);
+  assert.equal(store.written.size, 0);
 });
 
 test("nothing is written when the rate commit fails", async () => {

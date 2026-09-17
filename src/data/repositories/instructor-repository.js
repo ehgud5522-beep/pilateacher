@@ -121,6 +121,17 @@ export function hasUsableFullRoomRate(membership) {
   return rate !== null && rate > 0;
 }
 
+/**
+ * 부원장인가.
+ *
+ * 부원장은 카테고리도 누적도 보지 않고 계약 금액의 5:5 를 받는다
+ * (deduction-pricing.js 판정 1). 그래서 이 강사의 풀방금액은 의미를 잃는다 --
+ * 화면이 금액 대신 "부원장 (5:5)" 를 보여주는 이유다.
+ */
+export function isDeputyDirectorOf(membership) {
+  return membership?.isDeputyDirector === true;
+}
+
 export function createFirestoreInstructorRateStore() {
   const load = () => import("firebase/firestore");
   return {
@@ -197,6 +208,66 @@ export async function setInstructorFullRoomRate(organizationId, userId, input, o
     { path: `${membershipPath}/${COLLECTIONS.RATE_HISTORY}/${entryId}`, data: entry },
   ]);
   return { userId: instructorId, entryId, newRate, previousRate, entry };
+}
+
+/**
+ * 부원장 지정·해제.
+ *
+ * ── 이력을 rateHistory 에 함께 넣는다 ──
+ * 별도 컬렉션을 만들지 않았다. 두 기록이 답하는 질문이 같기 때문이다 -- "이
+ * 강사의 단가 근거가 언제 무엇으로 바뀌었나". 부원장 지정은 사실상 단가 변경이다:
+ * 그 순간부터 풀방금액은 쓰이지 않고 계약 금액의 5:5 가 그 자리를 대신한다.
+ *
+ * 나누면 분쟁 때 두 컬렉션을 시간순으로 합쳐야 하고, 합치는 코드가 없으면 한쪽만
+ * 보고 "그때 단가가 안 바뀌었다"고 답하게 된다. 한 줄로 이어져 있어야 한다.
+ *
+ * 항목은 둘 중 한 쌍만 갖는다 -- 금액 변경이면 previousRate·newRate, 부원장
+ * 변경이면 previousDeputyDirector·newDeputyDirector. 규칙이 그것을 강제한다.
+ *
+ * @param {string} organizationId
+ * @param {string} userId
+ * @param {{ isDeputyDirector?: boolean, previousDeputyDirector?: boolean | null, changedBy?: string, entryId?: string }} input
+ * @param {{ store?: InstructorRateStore, newId?: () => string }} [options]
+ */
+export async function setInstructorDeputyDirector(organizationId, userId, input, options = {}) {
+  const {
+    store = createFirestoreInstructorRateStore(),
+    newId = () => globalThis.crypto?.randomUUID?.() || `deputy-${Date.now()}`,
+  } = options;
+  const organization = requiredText(organizationId, "organizationId");
+  const instructorId = requiredText(userId, "userId");
+  const changedBy = requiredText(input?.changedBy, "changedBy");
+
+  /* 자기 자신은 지정하지 못한다. 규칙도 막지만 여기서 먼저 막는다 -- 거부된
+     쓰기는 "permission-denied" 로만 돌아와 무엇이 문제인지 말해 주지 않는다. */
+  if (changedBy === instructorId) throw new Error("Invalid userId");
+
+  const newDeputyDirector = input?.isDeputyDirector;
+  if (typeof newDeputyDirector !== "boolean") throw new Error("Missing isDeputyDirector");
+  const previous = input?.previousDeputyDirector;
+  const previousDeputyDirector = typeof previous === "boolean" ? previous : null;
+  // 바뀌지 않는 변경은 이력만 늘린다. 나중에 "그때 무슨 일이 있었나"를 흐린다.
+  if (previousDeputyDirector === newDeputyDirector) throw new Error("Invalid isDeputyDirector");
+
+  const membershipPath = paths.orgMembership(organization, instructorId);
+  const stampedAt = await store.serverTimestamp();
+  const entryId = String(input?.entryId || newId());
+
+  const entry = {
+    organizationId: organization,
+    userId: instructorId,
+    previousDeputyDirector,
+    newDeputyDirector,
+    effectiveFrom: stampedAt,
+    changedBy,
+    createdAt: stampedAt,
+  };
+
+  await store.commit([
+    { path: membershipPath, data: { isDeputyDirector: newDeputyDirector }, operation: "update" },
+    { path: `${membershipPath}/${COLLECTIONS.RATE_HISTORY}/${entryId}`, data: entry },
+  ]);
+  return { userId: instructorId, entryId, newDeputyDirector, previousDeputyDirector, entry };
 }
 
 /**

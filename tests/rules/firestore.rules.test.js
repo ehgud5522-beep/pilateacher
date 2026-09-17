@@ -112,6 +112,7 @@ function passFixture(organizationId, passId, overrides = {}) {
     purchaseRound: 1,
     remainingCount: 20,
     unitPrice: 25000,
+    handedOver: false,
     expiresAt: Timestamp.fromDate(new Date(Date.now() + 180 * 24 * 60 * 60 * 1000)),
     instructorId: users.instructor,
     status: "active",
@@ -962,7 +963,7 @@ describe("ledger and pass bodies are validated at write time", () => {
         purchaseRound: 3,
       }),
     ));
-    for (const field of ["productId", "totalSessions", "serviceSessions", "contractPrice", "paymentMethod", "purchaseRound", "instructorId", "unitPrice", "remainingCount", "expiresAt"]) {
+    for (const field of ["productId", "totalSessions", "serviceSessions", "contractPrice", "paymentMethod", "purchaseRound", "instructorId", "unitPrice", "remainingCount", "expiresAt", "handedOver"]) {
       await assertFails(setDoc(
         passRef(users.manager, `pass-missing-${field}`),
         withoutField(passFixture(ORG_A, `pass-missing-${field}`), field),
@@ -1334,17 +1335,24 @@ describe("issuing a pass and moving its instructor", () => {
   });
 
   test("a manager may move the instructor and nothing else", async () => {
-    await assertSucceeds(updateDoc(passDoc(users.manager, PASS_A), { instructorId: users.staff }));
+    /* 담당 교체는 handedOver 를 함께 올려야 한다 -- 둘 중 하나만 바뀌면 새 강사가
+       인수인계 단가가 아니라 기준 단가를 받는다. */
+    await assertFails(updateDoc(passDoc(users.manager, PASS_A), { instructorId: users.staff }));
+    await assertSucceeds(updateDoc(passDoc(users.manager, PASS_A), {
+      instructorId: users.staff, handedOver: true,
+    }));
     // 계약 금액까지 손대는 것은 대표의 일이다.
     await assertFails(updateDoc(passDoc(users.manager, PASS_A), { contractPrice: 1 }));
-    await assertFails(updateDoc(passDoc(users.manager, PASS_A), { instructorId: users.staff, contractPrice: 1 }));
+    await assertFails(updateDoc(passDoc(users.manager, PASS_A), { instructorId: users.staff, handedOver: true, contractPrice: 1 }));
+    // 넘겨받지 않았다고 되돌리는 것은 이 문으로 할 수 없다.
+    await assertFails(updateDoc(passDoc(users.manager, PASS_A), { instructorId: users.owner, handedOver: false }));
     // 대표의 권한은 그대로다.
     await assertSucceeds(updateDoc(passDoc(users.owner, PASS_A), { contractPrice: 990000 }));
   });
 
   test("an instructor cannot move the instructor field", async () => {
-    await assertFails(updateDoc(passDoc(users.instructor, PASS_A), { instructorId: users.staff }));
-    await assertFails(updateDoc(passDoc(users.staff, PASS_A), { instructorId: users.staff }));
+    await assertFails(updateDoc(passDoc(users.instructor, PASS_A), { instructorId: users.staff, handedOver: true }));
+    await assertFails(updateDoc(passDoc(users.staff, PASS_A), { instructorId: users.staff, handedOver: true }));
   });
 
   /* 발급 화면의 강사 목록. 규칙을 바꾸지 않고도 통과한다 -- 쿼리가

@@ -216,7 +216,9 @@ test("a transfer records the move and points the pass at the new instructor", as
   assert.equal(passWrite.path, "organizations/center-a/passes/pass-a");
   // set 이면 계약 금액도 잔여 횟수도 통째로 날아간다.
   assert.equal(passWrite.operation, "update");
-  assert.deepEqual(passWrite.data, { instructorId: "instructor-b" });
+  /* 담당만 바뀌고 handedOver 가 안 서면 새 강사가 인수인계 단가(25,000)가
+     아니라 기준 단가를 받는다. 규칙도 둘을 함께 요구한다. */
+  assert.deepEqual(passWrite.data, { instructorId: "instructor-b", handedOver: true });
   assert.equal(entry.type, "transfer");
   assert.equal(entry.delta, 0, "잔여 횟수는 그대로이고 주인만 바뀐다");
   assert.equal(entry.fromInstructorId, "instructor-a");
@@ -912,4 +914,10 @@ test("reading a pair needs all three ids", async () => {
   await assert.rejects(() => readInstructorClientSessions(ORG, "", "c", { store }), /Missing instructorId/);
   await assert.rejects(() => readInstructorClientSessions(ORG, "i", "", { store }), /Missing clientId/);
   assert.equal(store.calls.read.length, 0);
+});
+
+test("an issued pass has not been handed over yet", async () => {
+  const store = fakeStore();
+  const { pass } = await issuePass(ORG, issueInput(), { store });
+  assert.equal(pass.handedOver, false, "발급 시점에는 아직 아무도 넘겨받지 않았다");
 });

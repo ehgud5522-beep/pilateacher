@@ -214,6 +214,9 @@ export async function issuePass(organizationId, input, options = {}) {
     purchaseRound,
     remainingCount: totalCount,
     expiresAt,
+    /* 발급 시점에는 아직 아무도 넘겨받지 않았다. 담당이 교체되면 true 가 되고,
+       그 뒤로 이 회원권의 차감은 판정 2 (인수인계 25,000)를 탄다. */
+    handedOver: false,
     /* 이 회원권이 회당 얼마를 주는가. 차감할 때 여기서 읽는다 -- 상품이 나중에
        바뀌어도, 담당 강사의 풀방금액이 나중에 올라도, 이 회원권의 단가는 발급
        시점에 확정된 값이다. */
@@ -298,8 +301,14 @@ export async function transferPassInstructor(organizationId, passId, input, opti
      둘 다 틀린 상태다. 발급과 같은 이유로 한 배치에 묶는다. */
   await store.commit([
     { path: paths.passLedgerEntry(organization, id, entryId), data: entry },
-    // set 이 아니라 update 다. set 이면 계약 금액도 잔여 횟수도 통째로 날아간다.
-    { path: paths.pass(organization, id), data: { instructorId: toInstructorId }, operation: "update" },
+    /* set 이 아니라 update 다. set 이면 계약 금액도 잔여 횟수도 통째로 날아간다.
+       handedOver 를 함께 올린다 -- 담당만 바뀌고 이 플래그가 안 서면 새 강사가
+       인수인계 단가가 아니라 기준 단가를 받는다. */
+    {
+      path: paths.pass(organization, id),
+      data: { instructorId: toInstructorId, handedOver: true },
+      operation: "update",
+    },
   ]);
   return { passId: id, entryId, entry };
 }

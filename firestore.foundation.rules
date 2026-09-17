@@ -420,9 +420,13 @@ service cloud.firestore {
             // 보면 그 사이 바뀐 단가가 지난 회원권에 소급된다.
             "unitPrice", "remainingCount",
             // 계약서에 적힌 만료일. 회원이 가장 자주 묻는 값이고 회원 앱에도 들어간다.
-            "expiresAt"
+            "expiresAt",
+            // 넘겨받은 회원권인가. 급여 판정 2 가 이것만 보고 단가를 정하므로
+            // 차감할 때마다 원장을 뒤지지 않는다.
+            "handedOver"
           ])
           && request.resource.data.expiresAt is timestamp
+          && request.resource.data.handedOver is bool
           && request.resource.data.unitPrice is int
           && request.resource.data.unitPrice >= 0
           && request.resource.data.remainingCount is int
@@ -452,9 +456,13 @@ service cloud.firestore {
           && request.resource.data.organizationId == organizationId
           && (
             hasRole(organizationId, ["owner"])
+            // 담당 교체. 넘겨받았다는 사실이 함께 남아야 급여 판정이 그것을 볼
+            // 수 있다 -- 둘 중 하나만 바뀌면 단가가 조용히 틀린다.
             || (
               hasRole(organizationId, ["manager"])
-              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["instructorId"])
+              && request.resource.data.diff(resource.data).affectedKeys()
+                .hasOnly(["instructorId", "handedOver"])
+              && request.resource.data.handedOver == true
             )
             // Attendance. Whoever teaches may spend one session and nothing
             // else — never two, and never back upwards. A pass that could be

@@ -93,7 +93,9 @@ import {
   DEDUCT_BACKDATE_LIMIT_DAYS, deductPass, isDeductablePass, isExpiredPass, issuePass,
   listPasses, loadClientPassHistory, remainingCountOf,
 } from "./data/repositories/pass-repository.js";
-import { loadInstructorMonthlyPay, toDate } from "./data/repositories/payroll-repository.js";
+import {
+  loadInstructorMonthlyPay, loadOrganizationMonthlyPayroll, payrollCsv, previousMonth, toDate,
+} from "./data/repositories/payroll-repository.js";
 import {
   MIGRATION_ERROR, applyClientMigration, applyPassMigration, groupFailures,
   planClientMigration, planPassMigration,
@@ -15970,7 +15972,305 @@ function CenterMigration({
   );
 }
 
-function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, onRetryOrganization, onOpenClient, initialView = "hub" }) {
+/* 대표의 월말 정산. 대표만 본다.
+
+   ── 이 화면의 첫 용도는 대조다 ──
+   첫 달은 옛 급여 엑셀과 나란히 놓고 한 줄씩 맞춘다. 그래서 카테고리는 금액순이
+   아니라 확정본 단가표의 순서로 서고(payroll-repository.js), 집계를 CSV 로
+   내려받을 수 있다. 손으로 옮겨 적는 것은 그 자체가 오류원이다.
+
+   ── 자동 계산은 수업료까지다 ──
+   인센티브도, 노쇼도, 그룹 수업도 이 숫자에 없다. 대표가 이것을 최종 급여로
+   읽으면 매달 정산이 어긋나므로, 빠진 항목을 화면이 이름으로 나열한다. 합계
+   옆의 한 줄짜리 문구로는 읽히지 않는다.
+
+   ── 매니저는 아직 못 본다 ──
+   지점을 가진 매니저에게 자기 지점만 열어 주는 것이 자연스러워 보이지만, 지금
+   membership 에는 지점이 없다. 화면에서만 걸러 두면 규칙은 여전히 센터 전체를
+   열어 주므로 그것은 경계가 아니라 모양이다. 진짜로 막으려면 membership 에
+   지점을 넣고 규칙과 인덱스를 함께 손봐야 한다. 그때까지는 대표 전용이다. */
+
+const PAYROLL_EXCLUDED = [
+  "개인매출 인센", "OT 인센", "간부 인센", "바우처 조정", "노쇼", "그룹 수업", "FC 수업료",
+];
+
+/** 한 달 앞뒤로 움직인다. 문자열로 더하면 12월에서 13월이 나온다. */
+const shiftMonth = (month, by) => {
+  const match = /^(\d{4})-(\d{2})$/.exec(String(month || ""));
+  if (!match) return month;
+  const at = new Date(Number(match[1]), Number(match[2]) - 1 + by, 1);
+  return `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, "0")}`;
+};
+
+/** 강사 한 사람의 줄. 누르면 카테고리별 내역이 펼쳐진다. */
+function PayrollInstructorRow({ row, name, open, onToggle }) {
+  return (
+    <div style={{ borderTop: `1px solid ${LINE}` }}>
+      <button type="button" onClick={onToggle} className="flex w-full items-center gap-2 text-left"
+        style={{ padding: "12px 0" }}>
+        <ChevronRight size={14} style={{
+          color: SUB, flexShrink: 0, transform: open ? "rotate(90deg)" : "none", transition: "transform .12s",
+        }} />
+        <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>
+          {name}
+        </span>
+        <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+          {row.sessions}건
+        </span>
+        <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>
+          ₩{won(row.total)}
+        </span>
+      </button>
+      {open ? (
+        <div className="pb-2" style={{ paddingLeft: 22 }}>
+          {row.byCategory.map((item) => (
+            <div key={item.category} className="flex items-center gap-2" style={{ padding: "7px 0" }}>
+              <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: INK2 }}>
+                {labelOf(PAY_CATEGORY_LABELS, item.category)}
+              </span>
+              <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+                {item.sessions}건
+              </span>
+              <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: INK }}>
+                ₩{won(item.amount)}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function PayrollSummary({
+  organization, locationStore, instructorStore, payrollStore,
+  onRetryOrganization, onToast, now = () => new Date(), initialState = null,
+}) {
+  const [month, setMonth] = useState(initialState?.month || previousMonth(now()));
+  const [summary, setSummary] = useState(initialState?.summary || null);
+  const [instructors, setInstructors] = useState(initialState?.instructors || []);
+  const [locations, setLocations] = useState(initialState?.locations || []);
+  const [namesFailed, setNamesFailed] = useState(initialState?.namesFailed || "");
+  const [loading, setLoading] = useState(!initialState);
+  const [loadError, setLoadError] = useState(initialState?.loadError || "");
+  const [open, setOpen] = useState(initialState?.open || "");
+  const organizationId = organization?.organizationId || "";
+  const locked = organization?.status === "unknown";
+  const thisMonth = `${now().getFullYear()}-${String(now().getMonth() + 1).padStart(2, "0")}`;
+
+  const reload = useCallback(async () => {
+    if (!organizationId) return;
+    setLoading(true);
+    setLoadError("");
+    try {
+      /* 이름은 숫자를 바꾸지 않는다. 못 읽어도 집계는 보여주고 그 사실만
+         말한다 -- 이름 때문에 정산 전체를 막으면 그날 정산을 못 한다. */
+      const [found, instructorResult, locationResult] = await Promise.all([
+        loadOrganizationMonthlyPayroll(organizationId, { month, store: payrollStore }),
+        toleratingReadFailure(listInstructors(organizationId, { store: instructorStore })),
+        toleratingReadFailure(listLocations(organizationId, { store: locationStore })),
+      ]);
+      setSummary(found);
+      setInstructors(instructorResult.items);
+      setLocations(locationResult.items);
+      setNamesFailed(instructorResult.errorCode || locationResult.errorCode || "");
+    } catch (error) {
+      setLoadError(error?.code || "unknown");
+      setSummary(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [organizationId, month, payrollStore, instructorStore, locationStore]);
+
+  useEffect(() => { if (!locked) reload(); else setLoading(false); }, [locked, reload]);
+
+  const nameOfInstructor = useCallback((id) => {
+    const found = instructors.find((item) => item.userId === id);
+    // 이름을 모르면 id 를 보여준다. 빈칸이면 어느 줄이 누구인지 알 수 없다.
+    return found?.displayName || id || "(알 수 없음)";
+  }, [instructors]);
+  const nameOfLocation = useCallback((id) => {
+    const found = locations.find((item) => item.id === id);
+    return found?.name || id || "(지점 없음)";
+  }, [locations]);
+
+  const download = () => {
+    if (!summary) return;
+    const csv = payrollCsv(summary, {
+      nameOfInstructor, nameOfLocation,
+      labelOfCategory: (value) => labelOf(PAY_CATEGORY_LABELS, value),
+    });
+    try {
+      const url = globalThis.URL.createObjectURL(new globalThis.Blob([csv], { type: "text/csv;charset=utf-8" }));
+      const anchor = globalThis.document.createElement("a");
+      anchor.href = url;
+      anchor.download = `pilateacher-payroll-${summary.month}.csv`;
+      anchor.click();
+      globalThis.URL.revokeObjectURL(url);
+    } catch (error) {
+      onToast?.({ ok: false, msg: `파일을 만들지 못했어요 (코드 ${error?.name || "unknown"})` });
+    }
+  };
+
+  if (locked) return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>소속을 확인하지 못했습니다</h2>
+      <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        네트워크 문제로 소속 정보를 읽지 못했습니다. 다른 센터의 급여를 보지 않도록 이 화면을 잠급니다.
+      </p>
+      <button type="button" onClick={() => onRetryOrganization?.()} className="mt-3 h-11 w-full font-bold"
+        style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>다시 시도</button>
+    </section>
+  );
+
+  const multiLocation = (summary?.byLocation?.length || 0) > 1;
+  const sectionStyle = { backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 };
+  const toggle = (key) => setOpen(open === key ? "" : key);
+
+  return (
+    <div className="space-y-3">
+      <section style={sectionStyle}>
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={() => setMonth(shiftMonth(month, -1))} aria-label="이전 달"
+            className="shrink-0" style={{ width: 36, height: 36, borderRadius: 10, backgroundColor: CANVAS, color: SUB }}>
+            <ChevronLeft size={16} className="mx-auto" />
+          </button>
+          <p className="min-w-0 flex-1 text-center tabular-nums" style={{ fontSize: TYPE.body, fontWeight: 700, color: INK }}>
+            {monthLabel(`${month}-01`)}
+          </p>
+          {/* 아직 오지 않은 달에는 정산할 것이 없다. */}
+          <button type="button" onClick={() => setMonth(shiftMonth(month, 1))} aria-label="다음 달"
+            disabled={month >= thisMonth} className="shrink-0"
+            style={{
+              width: 36, height: 36, borderRadius: 10, backgroundColor: CANVAS, color: SUB,
+              opacity: month >= thisMonth ? 0.35 : 1,
+            }}>
+            <ChevronRight size={16} className="mx-auto" />
+          </button>
+        </div>
+        <p className="mt-2 text-center" style={{ fontSize: TYPE.caption, color: SUB }}>
+          수업이 일어난 날 기준입니다. 늦게 입력한 건도 그 수업의 달에 들어갑니다.
+        </p>
+      </section>
+
+      {/* 합계보다 먼저 둔다. 숫자를 본 뒤에 읽는 단서는 이미 늦다. */}
+      <section style={{ ...sectionStyle, backgroundColor: WARN_S, borderColor: WARN }}>
+        <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: WARN }}>
+          수업료만 자동 계산됩니다. 아래는 별도 정산입니다.
+        </p>
+        <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.6, color: INK2 }}>
+          {PAYROLL_EXCLUDED.join(" · ")}
+        </p>
+      </section>
+
+      {loading ? (
+        <section style={sectionStyle}><p style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p></section>
+      ) : null}
+
+      {!loading && loadError ? (
+        <section style={sectionStyle}>
+          <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: BAD }}>
+            급여를 불러오지 못했습니다 (코드 {loadError}). 0원이 아니라 읽지 못한 것입니다.
+          </p>
+          <button type="button" onClick={reload} className="mt-2 h-10 w-full font-bold"
+            style={{ borderRadius: 10, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>다시 시도</button>
+        </section>
+      ) : null}
+
+      {!loading && !loadError && summary ? (
+        <>
+          {namesFailed ? (
+            <section style={sectionStyle}>
+              <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: WARN }}>
+                이름을 불러오지 못해 일부가 코드로 보입니다 (코드 {namesFailed}). 금액은 그대로입니다.
+              </p>
+            </section>
+          ) : null}
+
+          {summary.byInstructor.length === 0 ? (
+            <section style={sectionStyle}>
+              <p style={{ fontSize: TYPE.caption, color: SUB }}>이 달에 차감된 수업이 없습니다.</p>
+            </section>
+          ) : null}
+
+          {multiLocation ? summary.byLocation.map((location) => (
+            <section key={location.locationId} style={sectionStyle}>
+              <div className="flex items-center gap-2">
+                <h3 className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.body, fontWeight: 700, color: INK }}>
+                  {nameOfLocation(location.locationId)}
+                </h3>
+                <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+                  {location.sessions}건
+                </span>
+                <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.body, fontWeight: 700, color: INK }}>
+                  ₩{won(location.total)}
+                </span>
+              </div>
+              <div className="mt-1">
+                {location.byInstructor.map((row) => (
+                  <PayrollInstructorRow key={row.instructorId} row={row}
+                    name={nameOfInstructor(row.instructorId)}
+                    open={open === `${location.locationId}/${row.instructorId}`}
+                    onToggle={() => toggle(`${location.locationId}/${row.instructorId}`)} />
+                ))}
+              </div>
+            </section>
+          )) : null}
+
+          {summary.byInstructor.length > 0 ? (
+            <section style={sectionStyle}>
+              <h3 style={{ fontSize: TYPE.body, fontWeight: 700, color: INK }}>
+                {multiLocation ? "강사별 합계 (전 지점)" : "강사별"}
+              </h3>
+              {multiLocation ? (
+                /* 한 강사가 두 지점에서 수업하면 위에 두 번 나온다. 급여는 한
+                   번 주므로 지급할 금액은 이 줄이다. */
+                <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+                  지점을 가로지른 합계입니다. 지급은 이 금액으로 합니다.
+                </p>
+              ) : null}
+              <div className="mt-1">
+                {summary.byInstructor.map((row) => (
+                  <PayrollInstructorRow key={row.instructorId} row={row}
+                    name={nameOfInstructor(row.instructorId)}
+                    open={open === `all/${row.instructorId}`}
+                    onToggle={() => toggle(`all/${row.instructorId}`)} />
+                ))}
+              </div>
+            </section>
+          ) : null}
+
+          <section style={sectionStyle}>
+            <div className="flex items-end gap-2">
+              <p className="min-w-0 flex-1" style={{ fontSize: TYPE.caption, color: SUB }}>
+                {monthLabel(`${summary.month}-01`)} 수업료 합계
+              </p>
+              <p className="shrink-0 tabular-nums" style={{ fontSize: TYPE.title, fontWeight: 700, color: INK }}>
+                ₩{won(summary.total)}
+              </p>
+            </div>
+            <p className="mt-1 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+              수업 {summary.sessions}건 · 강사 {summary.byInstructor.length}명
+            </p>
+            <button type="button" onClick={download} disabled={summary.byInstructor.length === 0}
+              className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 font-bold"
+              style={{
+                borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption,
+                opacity: summary.byInstructor.length === 0 ? 0.5 : 1,
+              }}>
+              <Download size={14} />CSV 내려받기
+            </button>
+            <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+              한 줄이 지점 · 강사 · 카테고리 하나입니다. 옛 급여 엑셀과 나란히 놓고 맞춰 보세요.
+            </p>
+          </section>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, payrollStore, onRetryOrganization, onOpenClient, initialView = "hub" }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const organization = useContext(OrganizationContext);
   /* 회원권 상품은 센터를 운영하는 대표만 본다. 개인 모드(legacy)에는 센터가
@@ -16000,6 +16300,11 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
   /* 엑셀 이관은 대표만 본다. 한 번 올리면 센터 전체의 회원과 회원권이
      만들어진다 -- 매니저에게 열어 둘 종류의 버튼이 아니다. */
   const showMigration = organization.ready
+    && !organization.isLegacy
+    && organization.role === ROLES.OWNER;
+  /* 급여 집계도 대표만 본다. 센터 전체의 급여는 한 사람의 것이 아니다.
+     매니저에게 자기 지점만 열어 주는 방안은 PayrollSummary 머리말 참고. */
+  const showPayroll = organization.ready
     && !organization.isLegacy
     && organization.role === ROLES.OWNER;
   /* initialView 는 스모크 하네스가 상세 화면 하나를 바로 여는 자리다. 앱은
@@ -16159,6 +16464,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
     "instructor-rates": "강사 단가",
     "pass-issue": "회원권 발급",
     migration: "엑셀 이관",
+    payroll: "급여 집계",
   };
   const menuGroups = [
     { label: "업무", items: [
@@ -16173,6 +16479,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
       ...(showClients ? [{ key: "clients", title: "회원 관리", description: "회원 등록 · 검색", Icon: UserPlus }] : []),
       ...(showInstructorRates ? [{ key: "instructor-rates", title: "강사 단가", description: "강사별 풀방금액", Icon: Users }] : []),
       ...(showProducts ? [{ key: "products", title: "회원권 상품", description: "이벤트 상품 추가 · 종료", Icon: Ticket }] : []),
+      ...(showPayroll ? [{ key: "payroll", title: "급여 집계", description: "강사별 수업료 · 월말 정산", Icon: ArrowUpRight }] : []),
       ...(showMigration ? [{ key: "migration", title: "엑셀 이관", description: "쓰던 엑셀의 회원 · 회원권 올리기", Icon: Upload }] : []),
       { key: "schedule-colors", title: "일정 색상", description: "개인 · 듀엣 · 그룹 · 상담 · 휴무 카드 색", Icon: Palette },
       { key: "theme", title: "화면 설정", description: "폰 설정 · 라이트 · 다크", Icon: Smartphone },
@@ -16416,6 +16723,11 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
         )}
         {view === "products" && showProducts && (
           <ProductCatalog organization={organization} currentUserId={account?.id || ""} store={productStore}
+            onRetryOrganization={onRetryOrganization} onToast={onToast} />
+        )}
+        {view === "payroll" && showPayroll && (
+          <PayrollSummary organization={organization}
+            locationStore={locationStore} instructorStore={instructorStore} payrollStore={payrollStore}
             onRetryOrganization={onRetryOrganization} onToast={onToast} />
         )}
         {view === "migration" && showMigration && (
@@ -16689,6 +17001,32 @@ export function createAppScreenSmokeCases() {
       smokePayEntry("e1", "pt_1_1_repurchase_normal", 45000, 4, "deputy_director"),
     ],
   };
+  /* 정산 화면이 그리는 것만 본다. 숫자는 집계 함수가 만든 모양 그대로다. */
+  const smokePayrollStore = { listOrganizationDeductions: async () => [] };
+  const payrollRow = (instructorId, rows) => ({
+    instructorId,
+    sessions: rows.reduce((sum, item) => sum + item.sessions, 0),
+    total: rows.reduce((sum, item) => sum + item.amount, 0),
+    byCategory: rows,
+  });
+  const smokePayrollInstructors = [
+    payrollRow("u1", [
+      // 같은 카테고리 안에서 단가가 섞인다 -- 20회를 넘은 회차와 그 전 회차.
+      { category: "pt_1_1_repurchase_normal", sessions: 3, amount: 95000 },
+      { category: "pt_1_1_repurchase_event", sessions: 12, amount: 360000 },
+      { category: "service", sessions: 2, amount: 10000 },
+    ]),
+    payrollRow("u2", [{ category: "pt_1_1_new", sessions: 8, amount: 200000 }]),
+  ];
+  const smokePayroll = {
+    month: "2026-09",
+    start: new Date(2026, 8, 1),
+    end: new Date(2026, 9, 1),
+    total: 665000,
+    sessions: 25,
+    byInstructor: smokePayrollInstructors,
+    byLocation: [{ locationId: "bansong", sessions: 25, total: 665000, byInstructor: smokePayrollInstructors }],
+  };
   const attendance = (organization, initialState) => providerWith(organization, (
     <AttendanceCheck organization={readyOrganizationContext(organization)} currentUserId="smoke-instructor"
       clientStore={clientStore} passStore={passStore} initialState={initialState} now={smokeNow}
@@ -16712,6 +17050,12 @@ export function createAppScreenSmokeCases() {
   const clientDirectory = (organization, initialState) => providerWith(organization, (
     <ClientDirectory organization={readyOrganizationContext(organization)} currentUserId="smoke-account"
       clientStore={clientStore} locationStore={locationStore} initialState={initialState}
+      onRetryOrganization={noop} onToast={noop} />
+  ));
+  const payrollSummary = (organization, initialState) => providerWith(organization, (
+    <PayrollSummary organization={readyOrganizationContext(organization)}
+      locationStore={locationStore} instructorStore={instructorStore} payrollStore={smokePayrollStore}
+      now={() => new Date(2026, 9, 3)} initialState={initialState}
       onRetryOrganization={noop} onToast={noop} />
   ));
   const centerMigration = (organization, initialState) => providerWith(organization, (
@@ -16823,6 +17167,36 @@ export function createAppScreenSmokeCases() {
     { name: "더보기 탭 · 매니저", element: settingsTab({ ...smokeOwner, role: "manager" }) },
     { name: "회원권 상품", element: providerWith(smokeOwner, <ProductCatalog organization={readyOrganizationContext(smokeOwner)} currentUserId="smoke-account" store={productStore} onRetryOrganization={noop} onToast={noop} />) },
     { name: "회원권 상품 · 소속 확인 실패", element: providerWith(smokeOwner, <ProductCatalog organization={readyOrganizationContext({ organizationId: "", role: "", status: "unknown", isLegacy: false })} currentUserId="smoke-account" store={productStore} onRetryOrganization={noop} onToast={noop} />) },
+    { name: "급여 집계", element: payrollSummary(smokeOwner, {
+      summary: smokePayroll, instructors: smokeInstructors, locations: smokeLocations,
+    }) },
+    { name: "급여 집계 · 강사 펼침", element: payrollSummary(smokeOwner, {
+      summary: smokePayroll, instructors: smokeInstructors, locations: smokeLocations, open: "all/u1",
+    }) },
+    { name: "급여 집계 · 두 지점", element: payrollSummary(smokeOwner, {
+      instructors: smokeInstructors,
+      locations: smokeLocations,
+      summary: {
+        ...smokePayroll,
+        byLocation: [
+          { locationId: "bansong", sessions: 17, total: 465000, byInstructor: [smokePayrollInstructors[0]] },
+          { locationId: "centum", sessions: 8, total: 200000, byInstructor: [smokePayrollInstructors[1]] },
+        ],
+      },
+    }) },
+    { name: "급여 집계 · 빈 달", element: payrollSummary(smokeOwner, {
+      instructors: smokeInstructors,
+      locations: smokeLocations,
+      summary: {
+        month: "2026-09", start: new Date(2026, 8, 1), end: new Date(2026, 9, 1),
+        total: 0, sessions: 0, byInstructor: [], byLocation: [],
+      },
+    }) },
+    { name: "급여 집계 · 조회 실패", element: payrollSummary(smokeOwner, { loadError: "permission-denied" }) },
+    { name: "급여 집계 · 이름 조회 실패", element: payrollSummary(smokeOwner, {
+      summary: smokePayroll, instructors: [], locations: [], namesFailed: "permission-denied",
+    }) },
+    { name: "급여 집계 · 소속 확인 실패", element: payrollSummary({ organizationId: "", role: "", status: "unknown", isLegacy: false }, null) },
     { name: "엑셀 이관", element: centerMigration(smokeOwner, {
       locations: smokeLocations, instructors: smokeInstructors, clients: smokeClients,
     }) },

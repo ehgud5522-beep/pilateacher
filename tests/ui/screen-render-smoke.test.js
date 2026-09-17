@@ -73,6 +73,13 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 매니저",
     "회원권 상품",
     "회원권 상품 · 소속 확인 실패",
+    "급여 집계",
+    "급여 집계 · 강사 펼침",
+    "급여 집계 · 두 지점",
+    "급여 집계 · 빈 달",
+    "급여 집계 · 조회 실패",
+    "급여 집계 · 이름 조회 실패",
+    "급여 집계 · 소속 확인 실패",
     "엑셀 이관",
     "엑셀 이관 · 올리기 전 확인",
     "엑셀 이관 · 양식 열 없음",
@@ -253,6 +260,88 @@ test("a deduction says why it was worth what it was worth", async (t) => {
 
   // 분쟁이 생겼을 때 여는 화면에도 같은 근거가 붙는다.
   assert.match(markupOf("센터 회원 상세"), /기준 단가/);
+});
+
+test("the payroll summary is the owner's, and says out loud what it did not count", async (t) => {
+  const vite = await createServer({
+    root: projectRoot,
+    configFile: false,
+    plugins: [react()],
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] },
+    server: { middlewareMode: true },
+    ssr: { noExternal: ["@capgo/camera-preview"] },
+    logLevel: "silent",
+  });
+  t.after(() => vite.close());
+  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+
+  /* 센터 전체의 급여는 한 사람의 것이 아니다. 항목이 없으면 setView 로 들어갈
+     길도 함께 닫힌다. */
+  assert.match(markupOf("더보기 탭"), /급여 집계/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 매니저"), /급여 집계/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 강사"), /급여 집계/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 개인 모드"), /급여 집계/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 소속 확인 실패"), /급여 집계/);
+
+  const summary = markupOf("급여 집계");
+
+  /* 대표가 이 숫자를 최종 급여로 읽으면 매달 정산이 어긋난다. 빠진 항목을
+     이름으로 적는다 -- "일부 항목 제외" 같은 문구로는 읽히지 않는다. */
+  assert.match(summary, /수업료만 자동 계산됩니다\. 아래는 별도 정산입니다\./);
+  for (const missing of ["개인매출 인센", "OT 인센", "간부 인센", "바우처 조정", "노쇼", "그룹 수업", "FC 수업료"]) {
+    assert.match(summary, new RegExp(missing), missing);
+  }
+  // 숫자를 본 뒤에 읽는 단서는 이미 늦다. 안내가 합계보다 앞에 있어야 한다.
+  assert.ok(
+    summary.indexOf("별도 정산입니다") < summary.indexOf("수업료 합계"),
+    "안내가 합계보다 앞에 와야 한다",
+  );
+
+  // 정산은 월이 끝난 뒤에 한다. 10월 3일에 열면 9월이 떠야 한다.
+  assert.match(summary, /2026년 9월/);
+  assert.match(summary, /₩665,000/);
+  assert.match(summary, /수업 25건 · 강사 2명/);
+  assert.match(summary, /CSV 내려받기/);
+
+  /* 카테고리는 눌러야 나온다. 그리고 확정본 단가표의 순서로 선다 -- 금액순이면
+     달마다 줄 순서가 달라지고, 옛 엑셀과 맞추던 눈이 줄을 잃는다. */
+  assert.doesNotMatch(summary, /1:1 재등록\(이벤트\)/);
+  const opened = markupOf("급여 집계 · 강사 펼침");
+  const order = ["1:1 재등록(정상)", "1:1 재등록(이벤트)", "서비스"]
+    .map((label) => opened.indexOf(label));
+  assert.ok(order.every((at) => at >= 0), "펼치면 카테고리별 내역이 나온다");
+  assert.deepEqual(order.slice().sort((a, b) => a - b), order, "단가표 순서 그대로");
+  assert.match(opened, /₩95,000/, "한 카테고리 안에서 단가가 섞여도 합계는 항목의 합이다");
+
+  /* 한 강사가 두 지점에서 수업하면 지점 묶음에 두 번 나온다. 급여는 한 번
+     주므로 지급할 금액이 어느 줄인지 화면이 말해야 한다. */
+  const branches = markupOf("급여 집계 · 두 지점");
+  assert.match(branches, /반송점/);
+  assert.match(branches, /센텀점/);
+  assert.match(branches, /강사별 합계 \(전 지점\)/);
+  assert.match(branches, /지급은 이 금액으로 합니다/);
+  assert.doesNotMatch(markupOf("급여 집계"), /강사별 합계 \(전 지점\)/, "한 지점이면 묶지 않는다");
+
+  /* 0원짜리 정산과 "읽지 못했다"가 같은 화면이면 대표는 그 달에 수업이 없었다고
+     읽는다. */
+  assert.match(markupOf("급여 집계 · 빈 달"), /이 달에 차감된 수업이 없습니다/);
+  const failed = markupOf("급여 집계 · 조회 실패");
+  assert.match(failed, /급여를 불러오지 못했습니다 \(코드 permission-denied\)/);
+  assert.match(failed, /0원이 아니라 읽지 못한 것입니다/);
+  assert.doesNotMatch(failed, /수업료 합계/);
+
+  // 이름을 못 읽어도 금액은 보여준다. 이름 때문에 그날 정산을 못 하면 안 된다.
+  const noNames = markupOf("급여 집계 · 이름 조회 실패");
+  assert.match(noNames, /이름을 불러오지 못해 일부가 코드로 보입니다/);
+  assert.match(noNames, /₩665,000/);
+
+  // 다른 센터의 급여를 볼 수 있는 상태는 잠근다.
+  const locked = markupOf("급여 집계 · 소속 확인 실패");
+  assert.match(locked, /소속을 확인하지 못했습니다/);
+  assert.doesNotMatch(locked, /CSV 내려받기/);
 });
 
 test("ErrorBoundary hides diagnostics in production and records a privacy-safe diagnostic event", async () => {

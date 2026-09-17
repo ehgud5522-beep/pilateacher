@@ -20,6 +20,7 @@ import {
   setDoc,
   updateDoc,
   where,
+  writeBatch,
 } from "firebase/firestore";
 import { CLIENT_STATUS, COLLECTIONS, MEMBERSHIP_STATUS } from "../../src/data/schema/constants.js";
 import { CLIENT_STATUS_FOR_CREATE } from "../../src/data/repositories/client-repository.js";
@@ -1986,5 +1987,104 @@ describe("counting what an instructor has taught a client", () => {
   test("a count is never deleted", async () => {
     await seed(5);
     await assertFails(deleteDoc(totalDoc(users.owner)));
+  });
+});
+
+/* 10월 이관이 실제로 쓰는 모양 그대로. 이 묶음이 통과하지 못하면 대표의 첫
+   업로드가 통째로 거부되고, 그 사실은 이관 당일에야 드러난다.
+
+   특히 회원권과 그 발급 항목은 한 배치로 나간다. 원장 규칙은 항목의 clientId 를
+   상위 회원권에서 읽어 대조하는데, 그 회원권이 같은 배치 안에서 막 만들어진다.
+   규칙의 get() 이 같은 배치의 쓰기를 보는지 아닌지는 문서가 아니라 여기가
+   답한다. */
+describe("the october migration writes what the rules accept", () => {
+  beforeEach(seedAll);
+
+  const CSV_CLIENT = "csv_01012345678";
+  const CSV_PASS = `csv_${CSV_CLIENT}_2`;
+
+  const migratedClient = () => ({
+    organizationId: ORG_A,
+    name: "김하나",
+    phone: "01012345678",
+    locationId: "location-a",
+    status: CLIENT_STATUS.ACTIVE,
+    createdBy: users.owner,
+    createdAt: serverTimestamp(),
+  });
+
+  const migratedPass = () => passFixture(ORG_A, CSV_PASS, {
+    clientId: CSV_CLIENT,
+    purchaseRound: 2,
+    // 9월 말 기준으로 남은 회차. 이미 진행한 회차는 옛 엑셀에 남는다.
+    remainingCount: 8,
+    serviceSessions: 2,
+    category: "pt_1_1_repurchase_event",
+    unitPrice: 30000,
+    createdBy: users.owner,
+  });
+
+  const migratedIssueEntry = () => ({
+    organizationId: ORG_A,
+    passId: CSV_PASS,
+    clientId: CSV_CLIENT,
+    locationId: "location-a",
+    type: "issue",
+    delta: 8,
+    category: "pt_1_1_repurchase_event",
+    // 이관 항목은 지난 급여를 만들지 않는다. 계산은 앞으로의 차감부터다.
+    unitPrice: 0,
+    instructorId: users.instructor,
+    occurredAt: serverTimestamp(),
+    createdAt: serverTimestamp(),
+    createdBy: users.owner,
+  });
+
+  const migratedTotal = () => ({
+    organizationId: ORG_A,
+    instructorId: users.instructor,
+    clientId: CSV_CLIENT,
+    sessions: 35,
+  });
+
+  test("the owner creates a client out of a spreadsheet row", async () => {
+    const db = dbFor(users.owner);
+    await assertSucceeds(setDoc(doc(db, "organizations", ORG_A, "clients", CSV_CLIENT), migratedClient()));
+  });
+
+  test("the rules do not make the second upload safe — the repository has to", async () => {
+    /* 같은 id 로 다시 쓰는 것은 create 가 아니라 update 다. 대표는 자기 센터의
+       회원을 고칠 수 있는 사람이므로 규칙은 이것을 통과시킨다. 통과한다는 사실을
+       여기에 못박아 둔다 -- migration-repository 가 쓰기 전에 있는지 확인하는
+       이유가 이것이고, 누군가 그 확인을 "규칙이 막아 준다"며 지우면 두 번째
+       업로드가 앱에서 고친 이름을 되돌린다. */
+    const db = dbFor(users.owner);
+    await assertSucceeds(setDoc(doc(db, "organizations", ORG_A, "clients", CSV_CLIENT), migratedClient()));
+    await assertSucceeds(setDoc(doc(db, "organizations", ORG_A, "clients", CSV_CLIENT), migratedClient()));
+  });
+
+  test("a pass, its issue entry and the instructor's running total go up together", async () => {
+    const db = dbFor(users.owner);
+    const batch = writeBatch(db);
+    batch.set(doc(db, "organizations", ORG_A, "passes", CSV_PASS), migratedPass());
+    batch.set(
+      doc(db, "organizations", ORG_A, "passes", CSV_PASS, "ledger", `${CSV_PASS}_issue`),
+      migratedIssueEntry(),
+    );
+    batch.set(
+      doc(db, "organizations", ORG_A, "instructorClientTotals", `${users.instructor}_${CSV_CLIENT}`),
+      migratedTotal(),
+    );
+    await assertSucceeds(batch.commit());
+  });
+
+  test("only the owner seeds a running total that did not start at one", async () => {
+    /* 누적 횟수가 급여 단가를 가른다. 매니저가 심을 수 있으면 그 숫자를
+       올려 기준 단가를 앞당길 수 있다. */
+    const totalFor = (userId) => doc(
+      dbFor(userId), "organizations", ORG_A, "instructorClientTotals", `${users.instructor}_${CSV_CLIENT}`,
+    );
+    await assertFails(setDoc(totalFor(users.manager), migratedTotal()));
+    await assertSucceeds(setDoc(totalFor(users.owner), migratedTotal()));
   });
 });

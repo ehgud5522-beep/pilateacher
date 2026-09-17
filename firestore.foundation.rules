@@ -497,7 +497,15 @@ service cloud.firestore {
             // The entry says whose lesson it was. The ledger is append-only, so a
             // wrong name here can never be corrected — it is checked against the
             // pass the entry hangs off rather than trusted from the caller.
-            && request.resource.data.clientId == get(
+            //
+            // getAfter, not get. An issue entry is written in the same batch as
+            // the pass it hangs off — that is the point of the batch, since a
+            // pass without its issue entry has no basis for its remaining count
+            // and the ledger cannot be filled in later. get() reads the database
+            // as it was before the commit, so the pass is not there yet and the
+            // whole batch dies on a null. getAfter() reads the state the commit
+            // is producing, which is the state this entry is actually about.
+            && request.resource.data.clientId == getAfter(
               /databases/$(database)/documents/organizations/$(organizationId)/passes/$(passId)
             ).data.clientId
             && request.resource.data.type is string

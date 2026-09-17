@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createFirestorePayrollStore, loadInstructorMonthlyPay, loadOrganizationMonthlyPayroll,
-  monthRange, payrollCsv, previousMonth, summarizeInstructorPay, summarizeOrganizationPay, toDate,
+  monthRange, payrollCsv, previousMonth, summarizeCorrections, summarizeInstructorPay,
+  summarizeOrganizationPay, toDate,
 } from "../../src/data/repositories/payroll-repository.js";
 import { PAY_CATEGORY } from "../../src/data/schema/constants.js";
 import { PAY_RATES } from "../../src/data/schema/pay-rates.js";
@@ -394,4 +395,74 @@ test("the organization payroll falls back to the Firestore store", async () => {
   assert.ok(error);
   assert.notEqual(error.name, "TypeError", `기본 store 가 사라졌다: ${error.message}`);
   assert.equal(error.code, "app/no-app", error.message);
+});
+
+/* ── 보정 ────────────────────────────────────────────────────────────────
+
+   잘못 차감한 건은 지울 수 없고 되돌리는 항목이 더해진다. 어느 달에서 빼는가는
+   보정 항목 자신의 occurredAt 이 정한다 -- 지난달은 이미 지급됐고, 이미 나간
+   돈을 사후에 줄일 방법은 없다. */
+
+const correction = (overrides = {}) => orgEntry({
+  id: "c1",
+  type: "correction",
+  delta: 1,
+  correctsEntryId: "d1",
+  reason: "잘못 눌렀습니다",
+  ...overrides,
+});
+
+test("a correction subtracts the very session it gives back", () => {
+  const summary = summarizeOrganizationPay([
+    orgEntry({ id: "d1", unitPrice: 25000 }),
+    orgEntry({ id: "d2", unitPrice: 25000 }),
+    correction({ unitPrice: 25000 }),
+  ]);
+  assert.equal(summary.total, 25000, "두 건 중 한 건이 상쇄된다");
+  assert.equal(summary.sessions, 1);
+  const row = summary.byInstructor[0].byCategory[0];
+  assert.equal(row.sessions, 1, "카테고리 건수도 함께 줄어든다");
+  assert.equal(row.amount, 25000);
+});
+
+test("a correction is never counted as another paid session", () => {
+  /* 절댓값을 쓰면 되돌린 회차가 한 번 더 지급된다. 부호는 delta 가 정한다. */
+  const summary = summarizeOrganizationPay([correction({ unitPrice: 30000 })]);
+  assert.equal(summary.total, -30000);
+  assert.equal(summary.sessions, -1);
+});
+
+test("last month's mistake comes out of this month, and says so", () => {
+  /* 같은 달 안의 실수는 그 달에서 그대로 상쇄된다. 지난달 실수는 이번 달 급여에서
+     빠지고, 그 음수가 이번 달의 잘못으로 보이면 안 된다. */
+  const sameMonth = summarizeCorrections([
+    orgEntry({ id: "d1", unitPrice: 25000 }),
+    correction({ correctsEntryId: "d1", unitPrice: 25000 }),
+  ]);
+  assert.equal(sameMonth.sessions, 1);
+  assert.equal(sameMonth.amount, -25000);
+  assert.equal(sameMonth.priorMonth.sessions, 0, "이 달 차감을 되돌린 것은 지난달 건이 아니다");
+
+  const priorMonth = summarizeCorrections([
+    correction({ correctsEntryId: "d-august", unitPrice: 25000 }),
+  ]);
+  assert.equal(priorMonth.priorMonth.sessions, 1, "되돌릴 대상이 이 달에 없으면 지난달 건이다");
+  assert.equal(priorMonth.priorMonth.amount, -25000);
+});
+
+test("an instructor's own screen counts corrections the same way", async () => {
+  const store = fakeStore([
+    entry({ id: "d1", unitPrice: 25000 }),
+    entry({ id: "c1", type: "correction", delta: 1, unitPrice: 25000, correctsEntryId: "d1" }),
+  ]);
+  const pay = await loadInstructorMonthlyPay(ORG, { instructorId: ME, month: "2026-09", store });
+  assert.equal(pay.total, 0, "한 건을 하고 그 건이 되돌려졌다");
+  assert.equal(pay.corrections.sessions, 1);
+});
+
+test("the query asks for corrections too, or the screen would overpay", async () => {
+  /* 차감만 읽으면 보정이 없는 것처럼 보이고, 되돌린 회차가 그대로 지급된다. */
+  const store = fakeStore();
+  await loadInstructorMonthlyPay(ORG, { instructorId: ME, month: "2026-09", store });
+  assert.ok(store.calls.length > 0);
 });

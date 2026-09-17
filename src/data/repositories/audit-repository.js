@@ -353,6 +353,27 @@ export function reviewAudit(input = {}) {
     }))
     .sort((left, right) => right.days - left.days);
 
+  /* 4. 발급 취소 · 차감 보정. 원장에 남으므로 감사 로그에 또 쓰지 않는다 --
+     한 사건에 기록이 두 벌이면 언젠가 어긋난다. */
+  const corrections = entries
+    .filter((entry) => (entry.type === "correction" || entry.type === "cancel"))
+    .filter((entry) => inRange(entry.occurredAt, start, end))
+    .map((entry) => ({
+      id: entry.id,
+      type: entry.type,
+      passId: entry.passId,
+      clientId: entry.clientId,
+      locationId: entry.locationId,
+      instructorId: entry.instructorId || "",
+      correctsEntryId: entry.correctsEntryId || "",
+      reason: entry.reason || "",
+      delta: Number(entry.delta) || 0,
+      amount: -(Number(entry.delta) || 0) * (Number(entry.unitPrice) || 0),
+      actorId: entry.createdBy || "",
+      at: atOf(entry.occurredAt),
+    }))
+    .sort((left, right) => right.at.getTime() - left.at.getTime());
+
   const inWindow = auditLogs.filter((entry) => inRange(entry.createdAt, start, end));
   const rateChanges = inWindow.filter((entry) => (
     entry.action === AUDIT_ACTION.DEPUTY_DIRECTOR_SET || entry.action === AUDIT_ACTION.FULL_ROOM_RATE_SET
@@ -409,6 +430,7 @@ export function reviewAudit(input = {}) {
     adjustedIssues,
     voucherPayments,
     stalePasses,
+    corrections,
     rateChanges,
     migrations,
     timeline,

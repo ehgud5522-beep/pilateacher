@@ -122,11 +122,25 @@ export const PASS_STATUS = Object.freeze({
 //   issue     발급. delta 는 양수(총 회차)
 //   deduct    차감. delta 는 음수이고 lessonId 를 함께 남긴다
 //   transfer  담당 강사 교체. delta 0 — 잔여 횟수는 그대로이고 주인만 바뀐다
+/**
+ * 원장 항목의 종류. 원장은 append-only 라 고치는 항목이 따로 있다.
+ *
+ * correction 과 cancel 은 "고쳤다"가 아니라 "고친 기록"이다. 원래 항목은 그대로
+ * 남고 이력에 둘 다 보인다 -- 잘못 차감한 사실 자체가 사라지면 그것도 기록이
+ * 아니다.
+ */
 export const LEDGER_ENTRY_TYPE = Object.freeze({
   ISSUE: "issue",
   DEDUCT: "deduct",
   TRANSFER: "transfer",
+  /** 잘못 차감한 한 회차를 되돌린다. delta +1. */
+  CORRECTION: "correction",
+  /** 잘못 발급한 회원권을 무효화한다. delta 는 남은 횟수의 음수. */
+  CANCEL: "cancel",
 });
+
+/** 사유 칸의 길이. 규칙도 같은 값으로 막는다. */
+export const LEDGER_REASON_MAX = 200;
 
 export const COLLECTIONS = Object.freeze({
   USERS: "users",

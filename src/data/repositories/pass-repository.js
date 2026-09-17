@@ -25,7 +25,8 @@
  */
 
 import {
-  ATTENDANCE_STATUS, LEDGER_ENTRY_TYPE, LESSON_STATUS, PASS_STATUS, PAY_CATEGORY, PAYMENT_METHOD,
+  ATTENDANCE_STATUS, LEDGER_ENTRY_TYPE, LEDGER_REASON_MAX, LESSON_STATUS, PASS_STATUS,
+  PAY_CATEGORY, PAYMENT_METHOD,
 } from "../schema/constants.js";
 import { resolveDeductionUnitPrice } from "../schema/deduction-pricing.js";
 import { paths } from "../schema/paths.js";
@@ -681,4 +682,178 @@ export async function readInstructorClientSessions(organizationId, instructorId,
   }
   const sessions = found?.sessions;
   return typeof sessions === "number" && Number.isInteger(sessions) && sessions >= 0 ? sessions : 0;
+}
+
+/* ── 고치는 항목 ────────────────────────────────────────────────────────────
+
+   원장은 append-only 다. 잘못 차감한 건을 지울 수는 없고, 되돌리는 항목을 더한다.
+   원래 항목은 그대로 남아 이력에 둘 다 보인다 -- "고쳤다"가 아니라 "고친 기록이
+   있다"가 되어야 한다. 잘못 눌렀다는 사실 자체가 사라지면 그것도 기록이 아니다.
+
+   둘 다 대표만 한다. 강사와 매니저가 스스로 되돌릴 수 있으면 기록의 의미가
+   없다 -- 잘못 누른 사람이 그것을 지울 수 있다는 뜻이기 때문이다.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/** 이 항목을 되돌리는 항목의 id. 같은 항목을 두 번 보정할 수 없게 하는 장치다. */
+export const correctionEntryId = (entryId) => `${requiredText(entryId, "entryId")}_correction`;
+
+/** 이 차감이 이미 보정됐는가. 화면이 버튼을 잠그는 데 쓴다. */
+export function isCorrectedEntry(entry, entries) {
+  const target = String(entry?.id || "");
+  if (!target) return false;
+  return (Array.isArray(entries) ? entries : []).some((item) => (
+    item?.type === LEDGER_ENTRY_TYPE.CORRECTION && item?.correctsEntryId === target
+  ));
+}
+
+/** 되돌릴 수 있는 항목인가. 차감만, 그리고 아직 보정되지 않은 것만. */
+export function isCorrectableEntry(entry, entries) {
+  return entry?.type === LEDGER_ENTRY_TYPE.DEDUCT && !isCorrectedEntry(entry, entries);
+}
+
+/** 이 회원권을 취소할 수 있는가. 실제로 일어난 수업은 없던 일이 되지 않는다. */
+export function isCancellablePass(pass, entries) {
+  if (!pass || pass.status !== PASS_STATUS.ACTIVE) return false;
+  const rows = Array.isArray(entries) ? entries : [];
+  const mine = rows.filter((entry) => entry.passId === (pass.id || pass.passId));
+  const deducts = mine.filter((entry) => entry.type === LEDGER_ENTRY_TYPE.DEDUCT);
+  // 보정된 차감은 없던 것으로 친다. 그래서 전부 보정하면 취소할 수 있다.
+  return deducts.every((entry) => isCorrectedEntry(entry, mine));
+}
+
+/**
+ * 차감 한 건을 되돌린다. 대표만.
+ *
+ * 되돌리는 항목은 원래 항목의 단가와 카테고리를 그대로 들고 간다. 급여는 원장을
+ * 더해서 나오므로, 같은 값이어야 그 회차가 정확히 상쇄된다 -- 표를 다시 읽으면
+ * 그 사이 바뀐 단가로 빼게 되고 차액이 남는다.
+ *
+ * @param {string} organizationId
+ * @param {any} pass 회원권 문서
+ * @param {any} entry 되돌릴 차감 항목
+ * @param {{ reason?: string, createdBy?: string }} input
+ * @param {{ store?: PassStore }} [options]
+ */
+export async function correctDeduction(organizationId, pass, entry, input, options = {}) {
+  const { store = createFirestorePassStore() } = options;
+  const organization = requiredText(organizationId, "organizationId");
+  const passId = requiredText(pass?.id || pass?.passId, "passId");
+  const clientId = requiredText(pass?.clientId, "clientId");
+  const locationId = requiredText(pass?.locationId, "locationId");
+  const createdBy = requiredText(input?.createdBy, "createdBy");
+  const correctsEntryId = requiredText(entry?.id, "entryId");
+
+  if (entry?.type !== LEDGER_ENTRY_TYPE.DEDUCT) throw new Error("Invalid entry");
+  if (entry?.passId && entry.passId !== passId) throw new Error("Invalid entry");
+  const instructorId = requiredText(entry?.instructorId, "instructorId");
+  const category = requiredText(entry?.category, "category");
+  const unitPrice = entry?.unitPrice;
+  if (!Number.isInteger(unitPrice) || unitPrice < 0) throw new Error("Missing unitPrice");
+
+  /* 사유는 비워 둘 수 없다. 반년 뒤 이 줄을 보는 사람에게 "왜 되돌렸나"가
+     없으면, 되돌린 것 자체가 실수인지 아닌지 알 수 없다. */
+  const reason = requiredText(input?.reason, "reason");
+  if (reason.length > LEDGER_REASON_MAX) throw new Error("Invalid reason");
+
+  const stampedAt = await store.serverTimestamp();
+  const entryId = correctionEntryId(correctsEntryId);
+
+  const correction = {
+    organizationId: organization,
+    passId,
+    clientId,
+    locationId,
+    type: LEDGER_ENTRY_TYPE.CORRECTION,
+    delta: 1,
+    category,
+    unitPrice,
+    correctsEntryId,
+    reason,
+    /* 원래 차감을 한 강사의 급여에서 빠져야 한다. 되돌린 사람(대표)이 아니다 --
+       createdBy 가 누가 눌렀는지를 따로 들고 있다. */
+    instructorId,
+    occurredAt: stampedAt,
+    createdAt: stampedAt,
+    createdBy,
+  };
+
+  /* 서비스 회차를 되돌리면 카운터도 되돌린다. 그러지 않으면 센터가 내주기로 한
+     1회분이 실수 하나로 사라지고, 회원의 다음 서비스 수업이 강사 봉사가 된다. */
+  const returnsService = category === PAY_CATEGORY.SERVICE && (Number(pass?.serviceUsed) || 0) > 0;
+
+  await store.commit([
+    { path: paths.passLedgerEntry(organization, passId, entryId), data: correction },
+    {
+      path: paths.pass(organization, passId),
+      data: returnsService ? { remainingCount: 1, serviceUsed: -1 } : { remainingCount: 1 },
+      operation: "decrement",
+    },
+    /* 누적도 되돌린다. 급여 판정 3 이 이 숫자로 신규 단가인지 기준 단가인지
+       가르므로, 있지도 않은 수업이 남아 있으면 20회째가 앞당겨진다. */
+    {
+      path: paths.instructorClientTotal(organization, instructorId, clientId),
+      data: { organizationId: organization, instructorId, clientId, delta: { sessions: -1 } },
+      operation: "bump",
+    },
+  ]);
+  return { passId, entryId, entry: correction };
+}
+
+/**
+ * 잘못 발급한 회원권을 무효화한다. 대표만.
+ *
+ * 이미 차감이 있으면 취소하지 않는다 -- 그 수업은 실제로 일어났고, 없던 일로
+ * 만들면 그 회차의 급여도 함께 사라진다. 차감을 먼저 전부 보정한 뒤에 취소한다.
+ *
+ * @param {string} organizationId
+ * @param {any} pass
+ * @param {{ reason?: string, createdBy?: string, entries?: Array<any> }} input
+ * @param {{ store?: PassStore }} [options]
+ */
+export async function cancelPass(organizationId, pass, input, options = {}) {
+  const { store = createFirestorePassStore() } = options;
+  const organization = requiredText(organizationId, "organizationId");
+  const passId = requiredText(pass?.id || pass?.passId, "passId");
+  const clientId = requiredText(pass?.clientId, "clientId");
+  const locationId = requiredText(pass?.locationId, "locationId");
+  const createdBy = requiredText(input?.createdBy, "createdBy");
+  const reason = requiredText(input?.reason, "reason");
+  if (reason.length > LEDGER_REASON_MAX) throw new Error("Invalid reason");
+
+  const remainingCount = pass?.remainingCount;
+  if (!Number.isInteger(remainingCount) || remainingCount < 0) throw new Error("Missing remainingCount");
+  if (pass?.status !== PASS_STATUS.ACTIVE) throw new Error("Invalid status");
+
+  /* 화면이 이미 막지만 여기서도 본다. 규칙은 원장을 셀 수 없어 이 조건을 강제할
+     수 없고, 이것이 마지막 문이다. */
+  if (!isCancellablePass(pass, input?.entries)) throw new Error("Invalid entries");
+
+  const stampedAt = await store.serverTimestamp();
+  const entryId = `${passId}_cancel`;
+
+  const entry = {
+    organizationId: organization,
+    passId,
+    clientId,
+    locationId,
+    type: LEDGER_ENTRY_TYPE.CANCEL,
+    // 남은 회차를 모두 거둔다. 원장의 합과 잔여 횟수가 어긋나면 안 된다.
+    delta: -remainingCount,
+    reason,
+    occurredAt: stampedAt,
+    createdAt: stampedAt,
+    createdBy,
+  };
+
+  await store.commit([
+    { path: paths.passLedgerEntry(organization, passId, entryId), data: entry },
+    /* 잔여를 0 으로 내리고 상태를 바꾼다. 상태만 바꾸면 원장의 합(발급 − 차감 −
+       취소)과 잔여 횟수가 어긋나고, 그 어긋남은 고칠 수 없다. */
+    {
+      path: paths.pass(organization, passId),
+      data: { status: PASS_STATUS.CANCELLED, remainingCount: 0 },
+      operation: "update",
+    },
+  ]);
+  return { passId, entryId, entry };
 }

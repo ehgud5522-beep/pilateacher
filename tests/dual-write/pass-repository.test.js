@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  activeRemainingTotal, createFirestorePassStore, deductPass, isDeductablePass, isExpiredPass,
-  issuePass, listPassLedger, listPasses, loadClientPassHistory, readInstructorClientSessions,
-  remainingCountOf, transferPassInstructor,
+  activeRemainingTotal, cancelPass, correctDeduction, correctionEntryId, createFirestorePassStore,
+  deductPass, isCancellablePass, isCorrectableEntry, isCorrectedEntry, isDeductablePass,
+  isExpiredPass, issuePass, listPassLedger, listPasses, loadClientPassHistory,
+  readInstructorClientSessions, remainingCountOf, transferPassInstructor,
 } from "../../src/data/repositories/pass-repository.js";
 import { RepositoryReadError, connectRepositoryLog, disconnectRepositoryLog } from "../../src/data/repositories/repository-read.js";
 
@@ -1019,4 +1020,180 @@ test("an issued pass has not been handed over yet", async () => {
   const store = fakeStore();
   const { pass } = await issuePass(ORG, issueInput(), { store });
   assert.equal(pass.handedOver, false, "발급 시점에는 아직 아무도 넘겨받지 않았다");
+});
+
+/* ── 되돌리기 ───────────────────────────────────────────────────────────
+
+   원장은 append-only 다. 지우는 대신 반대 항목을 더하고, 원래 항목은 그대로
+   남는다 -- "고쳤다"가 아니라 "고친 기록이 있다"가 되어야 한다. */
+
+const deductEntry = (overrides = {}) => ({
+  id: "lesson-old_deduct",
+  organizationId: ORG,
+  passId: "pass-a",
+  clientId: "client-a",
+  locationId: "bansong",
+  type: "deduct",
+  delta: -1,
+  category: "pt_1_1_new",
+  unitPrice: 25000,
+  lessonId: "lesson-old",
+  instructorId: "instructor-a",
+  occurredAt: new Date("2026-09-16T10:00:00.000Z"),
+  ...overrides,
+});
+
+const correctInput = (overrides = {}) => ({
+  reason: "강사가 다른 회원을 눌렀습니다",
+  createdBy: "owner-a",
+  ...overrides,
+});
+
+test("a correction is added, and the original stays where it is", async () => {
+  const store = fakeStore();
+  const { entry, entryId } = await correctDeduction(ORG, activePass(), deductEntry(), correctInput(), { store });
+  assert.equal(entryId, "lesson-old_deduct_correction");
+  assert.equal(entry.type, "correction");
+  assert.equal(entry.delta, 1);
+  assert.equal(entry.correctsEntryId, "lesson-old_deduct");
+  // 되돌리는 항목만 쓴다. 원래 항목을 건드리는 쓰기는 하나도 없다.
+  const written = store.calls.commit[0].map((write) => write.path);
+  assert.ok(!written.includes("organizations/center-a/passes/pass-a/ledger/lesson-old_deduct"));
+});
+
+test("the correction carries the price the deduction was recorded at", async () => {
+  /* 표를 다시 읽으면 그 사이 바뀐 단가로 빼게 되고 차액이 남는다. 급여는 원장을
+     더해서 나오므로 같은 값이어야 그 회차가 정확히 상쇄된다. */
+  const store = fakeStore();
+  const { entry } = await correctDeduction(
+    ORG, activePass(), deductEntry({ unitPrice: 45000, category: "pt_1_1_repurchase_normal" }),
+    correctInput(), { store },
+  );
+  assert.equal(entry.unitPrice, 45000);
+  assert.equal(entry.category, "pt_1_1_repurchase_normal");
+  // 급여에서 빠지는 쪽은 되돌린 사람이 아니라 그 수업을 한 강사다.
+  assert.equal(entry.instructorId, "instructor-a");
+  assert.equal(entry.createdBy, "owner-a");
+});
+
+test("a correction gives the session back and takes the count back down", async () => {
+  const store = fakeStore();
+  await correctDeduction(ORG, activePass(), deductEntry(), correctInput(), { store });
+  const [, passWrite, totalWrite] = store.calls.commit[0];
+  assert.equal(passWrite.operation, "decrement");
+  assert.deepEqual(passWrite.data, { remainingCount: 1 });
+  /* 누적을 되돌리지 않으면 있지도 않은 수업이 남아 20회째가 앞당겨지고, 그
+     회원의 다음 회차부터 단가가 조용히 달라진다. */
+  assert.equal(totalWrite.operation, "bump");
+  assert.deepEqual(totalWrite.data.delta, { sessions: -1 });
+  assert.equal(totalWrite.path, "organizations/center-a/instructorClientTotals/instructor-a_client-a");
+});
+
+test("correcting a service session gives the centre's one paid session back", async () => {
+  /* 되돌리지 않으면 센터가 내주기로 한 1회분이 실수 하나로 사라지고, 회원의
+     다음 서비스 수업이 강사 봉사가 된다. */
+  const store = fakeStore();
+  await correctDeduction(
+    ORG, activePass({ category: "service", serviceUsed: 1 }),
+    deductEntry({ category: "service", unitPrice: 10000 }), correctInput(), { store },
+  );
+  assert.deepEqual(store.calls.commit[0][1].data, { remainingCount: 1, serviceUsed: -1 });
+});
+
+test("the service counter never goes below zero", async () => {
+  // 이 필드가 없던 옛 회원권이 있다. 되돌릴 것이 없으면 건드리지 않는다.
+  const store = fakeStore();
+  await correctDeduction(
+    ORG, activePass({ category: "service", serviceUsed: 0 }),
+    deductEntry({ category: "service", unitPrice: 10000 }), correctInput(), { store },
+  );
+  assert.deepEqual(store.calls.commit[0][1].data, { remainingCount: 1 });
+});
+
+test("the same deduction cannot be corrected twice", () => {
+  /* 문서 id 가 <원래항목>_correction 이라 두 번째 보정은 같은 자리로 가고, 원장의
+     update 금지가 막는다. 세지 않고 구조로 막는 것이라 놓칠 수가 없다. */
+  assert.equal(correctionEntryId("lesson-old_deduct"), "lesson-old_deduct_correction");
+  const entries = [deductEntry(), { id: "x", type: "correction", correctsEntryId: "lesson-old_deduct" }];
+  assert.equal(isCorrectedEntry(deductEntry(), entries), true);
+  assert.equal(isCorrectableEntry(deductEntry(), entries), false, "화면도 버튼을 잠근다");
+  assert.equal(isCorrectableEntry(deductEntry(), [deductEntry()]), true);
+});
+
+test("only a deduction can be corrected", async () => {
+  const store = fakeStore();
+  for (const type of ["issue", "transfer", "correction", "cancel"]) {
+    await assert.rejects(
+      () => correctDeduction(ORG, activePass(), deductEntry({ type }), correctInput(), { store }),
+      /Invalid entry/,
+      type,
+    );
+  }
+  assert.equal(store.calls.commit.length, 0);
+});
+
+test("a correction without a reason is refused", async () => {
+  /* 반년 뒤 이 줄을 보는 사람에게 "왜 되돌렸나"가 없으면, 되돌린 것 자체가
+     실수인지 아닌지 알 수 없다. */
+  const store = fakeStore();
+  for (const blank of ["", "   ", null, undefined]) {
+    await assert.rejects(
+      () => correctDeduction(ORG, activePass(), deductEntry(), correctInput({ reason: blank }), { store }),
+      /Missing reason/,
+      JSON.stringify(blank),
+    );
+  }
+  await assert.rejects(
+    () => correctDeduction(ORG, activePass(), deductEntry(), correctInput({ reason: "가".repeat(201) }), { store }),
+    /Invalid reason/,
+  );
+  assert.equal(store.calls.commit.length, 0);
+});
+
+/* ── 발급 취소 ─────────────────────────────────────────────────────────── */
+
+test("a pass with no deductions is cancelled and its remaining sessions collected", async () => {
+  const store = fakeStore();
+  const { entry } = await cancelPass(ORG, activePass({ remainingCount: 20 }), {
+    reason: "회원이 당일 취소를 요청했습니다", createdBy: "owner-a", entries: [],
+  }, { store });
+  assert.equal(entry.type, "cancel");
+  assert.equal(entry.delta, -20, "원장의 합과 잔여 횟수가 어긋나면 안 된다");
+  assert.ok(!("category" in entry), "취소는 돈이 오가지 않는다");
+  assert.ok(!("unitPrice" in entry));
+  const passWrite = store.calls.commit[0][1];
+  assert.equal(passWrite.operation, "update");
+  assert.deepEqual(passWrite.data, { status: "cancelled", remainingCount: 0 });
+});
+
+test("a pass that has already been taught cannot be cancelled", async () => {
+  /* 그 수업은 실제로 일어났다. 없던 일로 만들면 그 회차의 급여도 함께 사라진다. */
+  const store = fakeStore();
+  await assert.rejects(() => cancelPass(ORG, activePass(), {
+    reason: "잘못 발급", createdBy: "owner-a", entries: [deductEntry()],
+  }, { store }), /Invalid entries/);
+  assert.equal(store.calls.commit.length, 0);
+});
+
+test("once every deduction is corrected, the pass can be cancelled", async () => {
+  const entries = [
+    deductEntry(),
+    { id: "c", type: "correction", passId: "pass-a", correctsEntryId: "lesson-old_deduct" },
+  ];
+  assert.equal(isCancellablePass(activePass(), [deductEntry()]), false);
+  assert.equal(isCancellablePass(activePass(), entries), true);
+  // 이미 취소되거나 끝난 회원권은 다시 취소하지 않는다.
+  assert.equal(isCancellablePass(activePass({ status: "cancelled" }), []), false);
+
+  const store = fakeStore();
+  await cancelPass(ORG, activePass(), { reason: "잘못 발급", createdBy: "owner-a", entries }, { store });
+  assert.equal(store.calls.commit.length, 1);
+});
+
+test("a cancellation without a reason is refused", async () => {
+  const store = fakeStore();
+  await assert.rejects(() => cancelPass(ORG, activePass(), {
+    reason: "  ", createdBy: "owner-a", entries: [],
+  }, { store }), /Missing reason/);
+  assert.equal(store.calls.commit.length, 0);
 });

@@ -7,6 +7,19 @@
  * 다시 열면 그때 숫자가 바뀌어야 하는데, 원장은 append-only 라 그 사실을
  * 되돌릴 방법이 없다. 표를 참조하는 순간 이미 정산이 끝난 달이 움직인다.
  *
+ * ── 보정은 그 달에서 빠진다 ──
+ * 잘못 차감한 건은 지울 수 없고, 되돌리는 항목(type "correction", delta +1)이
+ * 더해진다. 급여는 그 항목을 음수로 센다.
+ *
+ * 어느 달에서 빼는가는 보정 항목 자신의 occurredAt 이 정한다. 되돌리는 대상의
+ * 달이 아니다 -- 지난달은 이미 지급됐고, 이미 나간 돈을 사후에 줄일 방법은
+ * 없다. 같은 달 안의 실수는 그 달에서 그대로 상쇄되고, 지난달 실수는 이번 달
+ * 급여에서 빠진다. 실제 정산이 하는 일과 같다.
+ *
+ * 다만 그 음수가 이번 달의 잘못으로 보이면 안 되므로, 집계는 "지난달 보정"을
+ * 따로 세어 돌려준다. 되돌리는 대상이 이 달의 차감 목록에 없으면 지난달 건이다
+ * -- 항목에 날짜를 하나 더 박지 않고도 알 수 있다.
+ *
  * ── occurredAt 기준이다 ──
  * 수업이 실제로 일어난 시각으로 묶는다. createdAt(기록한 시각)으로 묶으면
  * 말일 수업을 다음날 밤에 누른 건이 다음 달로 넘어가고, 강사는 자기가 한
@@ -83,7 +96,8 @@ export function createFirestorePayrollStore() {
         collectionGroup(getFirestore(), COLLECTIONS.LEDGER),
         where("organizationId", "==", organizationId),
         where("instructorId", "==", instructorId),
-        where("type", "==", LEDGER_ENTRY_TYPE.DEDUCT),
+        // 보정도 급여를 움직인다. 인덱스는 그대로다 -- in 은 같은 자리를 쓴다.
+        where("type", "in", PAYROLL_ENTRY_TYPES),
         where("occurredAt", ">=", start),
         where("occurredAt", "<", end),
       ));
@@ -113,7 +127,7 @@ export function createFirestorePayrollStore() {
       const snapshot = await getDocs(query(
         collectionGroup(getFirestore(), COLLECTIONS.LEDGER),
         where("organizationId", "==", organizationId),
-        where("type", "==", LEDGER_ENTRY_TYPE.DEDUCT),
+        where("type", "in", PAYROLL_ENTRY_TYPES),
         where("occurredAt", ">=", start),
         where("occurredAt", "<", end),
       ));
@@ -122,9 +136,20 @@ export function createFirestorePayrollStore() {
   };
 }
 
-/** 한 항목이 급여에 더하는 금액. delta 는 차감이라 음수다. */
-const amountOf = (entry) => Math.abs(Number(entry?.delta) || 0) * (Number(entry?.unitPrice) || 0);
-const sessionsOf = (entry) => Math.abs(Number(entry?.delta) || 0);
+/** 급여를 만드는 항목. 차감이 더하고 보정이 뺀다. */
+export const PAYROLL_ENTRY_TYPES = Object.freeze([
+  LEDGER_ENTRY_TYPE.DEDUCT, LEDGER_ENTRY_TYPE.CORRECTION,
+]);
+
+/**
+ * 한 항목이 급여에 더하는 금액.
+ *
+ * 부호는 delta 가 정한다. 차감은 −1 이라 +단가, 보정은 +1 이라 −단가다. 절댓값을
+ * 쓰면 되돌린 회차가 한 번 더 지급된다 -- 같은 식으로 두 종류를 다루려면 부호를
+ * 살려야 한다.
+ */
+const amountOf = (entry) => -(Number(entry?.delta) || 0) * (Number(entry?.unitPrice) || 0);
+const sessionsOf = (entry) => -(Number(entry?.delta) || 0);
 
 const byOccurredAtDesc = (left, right) =>
   toDate(right.occurredAt).getTime() - toDate(left.occurredAt).getTime();
@@ -156,6 +181,7 @@ export function summarizeInstructorPay(entries) {
   return {
     total,
     sessions,
+    corrections: summarizeCorrections(rows),
     // 금액이 큰 카테고리가 앞이다. 강사가 먼저 보고 싶은 순서다.
     byCategory: [...buckets.values()].sort((left, right) => right.amount - left.amount),
     entries: rows.slice().sort(byOccurredAtDesc),
@@ -183,7 +209,7 @@ export async function loadInstructorMonthlyPay(organizationId, options = {}) {
      항목이 조용히 섞여 들어오고, 급여 화면에서 그것을 알아차릴 방법이 없다. */
   const mine = found.filter((entry) => (
     entry.instructorId === instructor
-    && entry.type === LEDGER_ENTRY_TYPE.DEDUCT
+    && PAYROLL_ENTRY_TYPES.includes(entry.type)
     && entry.organizationId === organization
   ));
   const inMonth = mine.filter((entry) => {
@@ -250,6 +276,30 @@ const sealBucket = (bucket, field) => ({
  *
  * @param {Array<any>} entries
  */
+/**
+ * 이 달에 들어온 보정이 무엇을 되돌린 것인가.
+ *
+ * 되돌리는 대상이 이 달의 차감 목록에 있으면 같은 달 안에서 상쇄된 것이고, 없으면
+ * 지난달 급여에서 빼는 것이다. 후자는 이미 지급된 돈이라 화면이 따로 말해야
+ * 한다 -- 그러지 않으면 대표가 이번 달 합계를 보고 계산이 틀렸다고 읽는다.
+ *
+ * @param {Array<any>} entries
+ */
+export function summarizeCorrections(entries) {
+  const rows = (Array.isArray(entries) ? entries : []).filter(Boolean);
+  const deductIds = new Set(
+    rows.filter((entry) => entry.type === LEDGER_ENTRY_TYPE.DEDUCT).map((entry) => entry.id),
+  );
+  const corrections = rows.filter((entry) => entry.type === LEDGER_ENTRY_TYPE.CORRECTION);
+  const priorMonth = corrections.filter((entry) => !deductIds.has(entry.correctsEntryId));
+  const sum = (list) => list.reduce((total, entry) => total + amountOf(entry), 0);
+  return {
+    sessions: corrections.length,
+    amount: sum(corrections),
+    priorMonth: { sessions: priorMonth.length, amount: sum(priorMonth) },
+  };
+}
+
 export function summarizeOrganizationPay(entries) {
   const rows = (Array.isArray(entries) ? entries : []).filter(Boolean);
   const instructors = new Map();
@@ -281,6 +331,7 @@ export function summarizeOrganizationPay(entries) {
   return {
     total,
     sessions,
+    corrections: summarizeCorrections(rows),
     byInstructor: [...instructors.values()].map((bucket) => sealBucket(bucket, "instructorId")).sort(byTotalDesc),
     byLocation: [...locations.values()].map((location) => ({
       locationId: location.locationId,
@@ -313,7 +364,7 @@ export async function loadOrganizationMonthlyPayroll(organizationId, options = {
      항목이나 남의 조직이 조용히 섞여 들어오고, 합계 한 줄에서는 그것을 알아챌
      방법이 없다. */
   const deductions = found.filter((entry) => (
-    entry.type === LEDGER_ENTRY_TYPE.DEDUCT && entry.organizationId === organization
+    PAYROLL_ENTRY_TYPES.includes(entry.type) && entry.organizationId === organization
   ));
   const inMonth = deductions.filter((entry) => {
     const at = toDate(entry.occurredAt).getTime();

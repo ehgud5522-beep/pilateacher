@@ -783,16 +783,16 @@ test("the member directory is reachable only where it should be", async (t) => {
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
-  // 대표와 매니저는 들어갈 수 있다.
+  // 대표만 들어갈 수 있다.
   assert.match(markupOf("더보기 탭"), /회원 관리/);
-  assert.match(markupOf("더보기 탭 · 매니저"), /회원 관리/);
 
-  // 강사에게는 진입점 자체가 없다. 항목이 없으면 setView 로 들어갈 길도 닫힌다.
+  /* 나머지에게는 진입점 자체가 없다. 항목이 없으면 setView 로 들어갈 길도
+     닫힌다. 매니저에게서도 거둔 문이고, 규칙이 같은 경계를 지킨다
+     (canRegisterClient) -- 보여 주면 눌러도 거부되는 화면만 나온다. */
+  assert.doesNotMatch(markupOf("더보기 탭 · 매니저"), /회원 관리/);
   assert.doesNotMatch(markupOf("더보기 탭 · 강사"), /회원 관리/);
   assert.doesNotMatch(markupOf("더보기 탭 · 개인 모드"), /회원 관리/);
   assert.doesNotMatch(markupOf("더보기 탭 · 소속 확인 실패"), /회원 관리/);
-
-  // 매니저는 회원 관리만 본다. 상품은 대표 전용이다.
   assert.doesNotMatch(markupOf("더보기 탭 · 매니저"), /회원권 상품/);
 
   // 소속을 읽지 못하면 목록을 그리지 않고 잠근다 -- 잘못된 센터에 회원이
@@ -917,10 +917,10 @@ test("only the owner reaches the instructor rate screen", async (t) => {
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
   assert.match(markupOf("더보기 탭"), /강사 단가/);
-  /* 매니저는 회원 관리는 보지만 강사 단가는 못 본다. 규칙이 대표만 허용하므로
-     보여 주면 눌러도 거부되는 화면만 나온다. */
+  /* 규칙이 대표만 허용하므로 보여 주면 눌러도 거부되는 화면만 나온다. 매니저의
+     운영·설정에는 이제 남는 항목이 없다 -- 회원 관리와 회원권 발급도 대표로
+     좁혔다. */
   assert.doesNotMatch(markupOf("더보기 탭 · 매니저"), /강사 단가/);
-  assert.match(markupOf("더보기 탭 · 매니저"), /회원 관리/);
   assert.doesNotMatch(markupOf("더보기 탭 · 강사"), /강사 단가/);
   assert.doesNotMatch(markupOf("더보기 탭 · 개인 모드"), /강사 단가/);
   assert.doesNotMatch(markupOf("더보기 탭 · 소속 확인 실패"), /강사 단가/);
@@ -1008,10 +1008,13 @@ test("the confirmation says exactly what will be written", async (t) => {
   assert.match(confirm, /담당 정예진/);
 });
 
-test("the issue screen is reachable for owners and managers only", async (t) => {
+test("the issue screen is reachable for the owner only", async (t) => {
+  /* 발급은 그 순간 급여의 근거를 만들고, 원장은 append-only 라 고칠 수 없다.
+     매니저에게서 거둔 문이다 -- 규칙도 같은 경계로 좁혔으므로(canIssuePass)
+     버튼을 남겨 두면 눌러도 거부된다. */
   const markupOf = await issueScreens(t);
   assert.match(markupOf("더보기 탭"), /회원권 발급/);
-  assert.match(markupOf("더보기 탭 · 매니저"), /회원권 발급/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 매니저"), /회원권 발급/);
   assert.doesNotMatch(markupOf("더보기 탭 · 강사"), /회원권 발급/);
   assert.doesNotMatch(markupOf("더보기 탭 · 개인 모드"), /회원권 발급/);
   assert.doesNotMatch(markupOf("더보기 탭 · 소속 확인 실패"), /회원권 발급/);

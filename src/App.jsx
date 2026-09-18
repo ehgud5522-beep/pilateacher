@@ -16992,13 +16992,19 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
   const showProducts = organization.ready
     && !organization.isLegacy
     && organization.role === ROLES.OWNER;
-  /* 회원 관리는 대표와 매니저가 본다. 강사는 자기 수업 회원을 기록 탭에서
-     보고, 센터 전체 명부를 여닫는 것은 운영하는 사람의 일이다. 나머지 조건은
-     회원권 상품과 같다 -- 개인 모드에는 센터가 없고, 소속을 읽지 못한 상태는
-     역할까지 모르는 상태라 감춘다. */
+  /* 회원권 발급과 회원 관리는 대표만 본다. 발급은 그 순간 급여의 근거를 만들고,
+     등록은 그 발급이 가리킬 사람을 만든다 -- 둘 다 원장에 append-only 로 남아
+     나중에 고칠 수 없다. 규칙도 같은 경계로 좁혔으므로(canIssuePass ·
+     canRegisterClient), 매니저에게 보여 주면 눌러도 거부되는 화면만 나온다.
+
+     되돌릴 때는 여기와 규칙의 두 목록을 함께 넓힌다. 한쪽만 넓히면 보이는데
+     안 되거나, 되는데 안 보인다.
+
+     나머지 조건은 회원권 상품과 같다 -- 개인 모드에는 센터가 없고, 소속을 읽지
+     못한 상태는 역할까지 모르는 상태라 감춘다. */
   const showClients = organization.ready
     && !organization.isLegacy
-    && [ROLES.OWNER, ROLES.MANAGER].includes(organization.role);
+    && organization.role === ROLES.OWNER;
   /* 강사 단가는 대표만 본다. 규칙도 대표만 허용하므로, 매니저에게 보여 주면
      눌러도 거부되는 화면만 나온다. */
   const showInstructorRates = organization.ready
@@ -18156,12 +18162,13 @@ export default function App() {
   const [payError, setPayError] = useState("");
   const [payRevision, setPayRevision] = useState(0);
   const [organizationContext, setOrganizationContext] = useState(UNRESOLVED_ORGANIZATION_CONTEXT);
-  /* 소속 센터에서 회원 등록은 FC매니저와 대표의 일이다. 강사가 같은 사람을
-     다시 등록하면 같은 회원이 둘이 되고 수업 기록이 갈라진다. 개인 강사
+  /* 소속 센터에서 회원 등록은 대표의 일이다. 강사가 같은 사람을 다시 등록하면
+     같은 회원이 둘이 되고 수업 기록이 갈라진다. 규칙도 대표만 허용하므로
+     (canRegisterClient) 매니저에게 버튼을 남겨 두면 눌러도 거부된다. 개인 강사
      (legacy)는 자기 회원을 자기가 등록하므로 제한하지 않는다. */
   const canRegisterMembers = !organizationContext.ready
     || organizationContext.isLegacy
-    || [ROLES.OWNER, ROLES.MANAGER].includes(organizationContext.role);
+    || organizationContext.role === ROLES.OWNER;
   /* 출석 체크는 수업하는 사람의 것이다. 대표와 매니저도 수업을 하므로 함께
      허용한다 -- 규칙도 같은 셋에게만 잔여를 줄이게 열려 있다. */
   const canCheckAttendance = organizationContext.ready

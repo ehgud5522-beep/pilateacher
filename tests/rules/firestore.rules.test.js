@@ -483,12 +483,16 @@ describe("role permissions", () => {
     await assertSucceeds(setDoc(clientRef(users.owner, "client-registered"), registration()));
   });
 
-  test("a manager registers too, an outsider does not", async () => {
-    await assertSucceeds(setDoc(clientRef(users.manager, "client-by-manager"), registration({ createdBy: users.manager })));
-    await assertFails(setDoc(
-      doc(dbFor(users.outsider), "organizations", ORG_A, "clients", "client-by-outsider"),
-      registration({ createdBy: users.outsider }),
-    ));
+  test("only the owner registers a member", async () => {
+    /* 강사가 같은 사람을 다시 등록하면 같은 회원이 둘이 되고 수업 기록이
+       갈라진다. 매니저에게서도 거둔 문이다 -- canRegisterClient 의 목록
+       하나로 되돌린다. 읽기와 수정은 가르치는 사람들에게 그대로 열려 있다. */
+    for (const userId of [users.manager, users.instructor, users.staff, users.outsider]) {
+      await assertFails(setDoc(
+        doc(dbFor(userId), "organizations", ORG_A, "clients", `client-by-${userId}`),
+        registration({ createdBy: userId }),
+      ), userId);
+    }
   });
 
   test("a nameless or mistyped client is refused", async () => {
@@ -518,9 +522,12 @@ describe("role permissions", () => {
   });
 
   test("the legacy dual-write shape still passes the new validation", async () => {
-    // 규칙을 조인 뒤에도 마이그레이션 경로가 살아 있어야 한다. locationId 는
-    // 레거시 회원에게 아직 지점이 없을 때 null 로 온다.
-    await assertSucceeds(setDoc(clientRef(users.staff, "client-legacy"), {
+    /* 규칙을 조인 뒤에도 이관 경로가 살아 있어야 한다. locationId 는 레거시
+       회원에게 아직 지점이 없을 때 null 로 온다.
+
+       쓰는 사람이 대표다 -- 등록을 대표로 좁힌 뒤로 이 본문도 대표만 넣을 수
+       있다. 이관은 원래 대표가 누르는 화면이라 경로는 그대로다. */
+    await assertSucceeds(setDoc(clientRef(users.owner, "client-legacy"), {
       organizationId: ORG_A,
       clientId: "client-legacy",
       locationId: null,
@@ -532,7 +539,7 @@ describe("role permissions", () => {
       legacySource: { userId: users.staff, memberId: "client-legacy" },
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-      createdBy: users.staff,
+      createdBy: users.owner,
     }));
   });
 
@@ -584,16 +591,22 @@ describe("PT passes and their ledger", () => {
     await assertFails(getDoc(passRef(null, ORG_A, PASS_A)));
   });
 
-  test("only owner and manager issue a pass", async () => {
-    await assertSucceeds(setDoc(passRef(users.manager, ORG_A, "pass-by-manager"), passFixture(ORG_A, "pass-by-manager")));
+  test("only the owner issues a pass", async () => {
+    /* 발급은 그 순간 급여의 근거를 만들고, 원장은 append-only 라 고칠 수 없다.
+       매니저에게서 거둔 문이다 -- 운영해 보고 필요하면 canIssuePass 의 목록
+       하나로 되돌린다. 담당 교체는 아래에서 매니저에게 그대로 열려 있다. */
     await assertSucceeds(setDoc(passRef(users.owner, ORG_A, "pass-by-owner"), passFixture(ORG_A, "pass-by-owner")));
-    await assertFails(setDoc(passRef(users.instructor, ORG_A, "pass-by-instructor"), passFixture(ORG_A, "pass-by-instructor")));
-    await assertFails(setDoc(passRef(users.staff, ORG_A, "pass-by-staff"), passFixture(ORG_A, "pass-by-staff")));
+    for (const userId of [users.manager, users.instructor, users.staff]) {
+      await assertFails(setDoc(
+        passRef(userId, ORG_A, `pass-by-${userId}`),
+        passFixture(ORG_A, `pass-by-${userId}`),
+      ), userId);
+    }
   });
 
   test("a pass whose organizationId disagrees with its path is rejected", async () => {
     await assertFails(setDoc(
-      passRef(users.manager, ORG_A, "pass-wrong-org"),
+      passRef(users.owner, ORG_A, "pass-wrong-org"),
       passFixture(ORG_B, "pass-wrong-org"),
     ));
   });
@@ -645,7 +658,7 @@ describe("PT passes and their ledger", () => {
 
   test("one organization never reaches another organization passes", async () => {
     await assertFails(getDoc(passRef(users.owner, ORG_B, PASS_B)));
-    await assertFails(setDoc(passRef(users.manager, ORG_B, "pass-crossing"), passFixture(ORG_B, "pass-crossing")));
+    await assertFails(setDoc(passRef(users.owner, ORG_B, "pass-crossing"), passFixture(ORG_B, "pass-crossing")));
     await assertFails(getDoc(ledgerRef(users.instructor, ORG_B, PASS_B, "entry-issue")));
     await assertFails(setDoc(
       ledgerRef(users.instructor, ORG_B, PASS_B, "entry-crossing"),
@@ -873,17 +886,36 @@ describe("ledger and pass bodies are validated at write time", () => {
 
   test("an issue entry needs no lessonId but a deduction does", async () => {
     await assertSucceeds(setDoc(
-      ledgerRef(users.manager, "ok-issue"),
+      ledgerRef(users.owner, "ok-issue"),
       withoutField(ledgerFixture(ORG_A, PASS_A, {
         type: "issue",
         delta: 20,
         instructorId: users.manager,
-        createdBy: users.manager,
+        createdBy: users.owner,
       }), "lessonId"),
     ));
     await assertFails(setDoc(
       ledgerRef(users.instructor, "deduct-without-lesson"),
       withoutField(ledgerFixture(ORG_A, PASS_A), "lessonId"),
+    ));
+  });
+
+  test("only the owner appends an issue entry", async () => {
+    /* 발급 항목은 회원권 문서와 한 배치로 쓰인다. 회원권 쪽만 좁히면 매니저가
+       이미 있는 회원권에 "20회 발급" 한 줄을 덧붙일 수 있고, 회원 이력 화면이
+       그것을 그대로 읽는다. 두 반쪽은 같은 문을 통과해야 한다. */
+    for (const userId of [users.manager, users.instructor, users.staff]) {
+      await assertFails(setDoc(
+        ledgerRef(userId, `issue-by-${userId}`),
+        withoutField(ledgerFixture(ORG_A, PASS_A, {
+          type: "issue", delta: 20, instructorId: userId, createdBy: userId,
+        }), "lessonId"),
+      ), userId);
+    }
+    // 차감은 가르치는 사람들에게 그대로 열려 있다.
+    await assertSucceeds(setDoc(
+      ledgerRef(users.instructor, "deduct-by-instructor"),
+      ledgerFixture(ORG_A, PASS_A, { instructorId: users.instructor, createdBy: users.instructor }),
     ));
   });
 
@@ -894,11 +926,11 @@ describe("ledger and pass bodies are validated at write time", () => {
 
   test("delta has to agree in sign with the entry type", async () => {
     await assertFails(setDoc(ledgerRef(users.instructor, "deduct-positive"), ledgerFixture(ORG_A, PASS_A, { delta: 1 })));
-    await assertFails(setDoc(ledgerRef(users.manager, "issue-negative"), withoutField(ledgerFixture(ORG_A, PASS_A, {
+    await assertFails(setDoc(ledgerRef(users.owner, "issue-negative"), withoutField(ledgerFixture(ORG_A, PASS_A, {
       type: "issue",
       delta: -20,
       instructorId: users.manager,
-      createdBy: users.manager,
+      createdBy: users.owner,
     }), "lessonId")));
   });
 
@@ -934,12 +966,12 @@ describe("ledger and pass bodies are validated at write time", () => {
       withoutField(ledgerFixture(ORG_A, PASS_A), "occurredAt"),
     ));
     await assertFails(setDoc(
-      ledgerRef(users.manager, "issue-no-occurred"),
+      ledgerRef(users.owner, "issue-no-occurred"),
       withoutField(withoutField(ledgerFixture(ORG_A, PASS_A, {
         type: "issue",
         delta: 20,
         instructorId: users.manager,
-        createdBy: users.manager,
+        createdBy: users.owner,
       }), "lessonId"), "occurredAt"),
     ));
   });
@@ -987,7 +1019,7 @@ describe("ledger and pass bodies are validated at write time", () => {
       ledgerFixture(ORG_A, PASS_A, { createdAt: Timestamp.now() }),
     ));
     await assertFails(setDoc(
-      passRef(users.manager, "pass-backdated"),
+      passRef(users.owner, "pass-backdated"),
       passFixture(ORG_A, "pass-backdated", { createdAt: lastMonth }),
     ));
   });
@@ -1020,7 +1052,7 @@ describe("ledger and pass bodies are validated at write time", () => {
 
   test("a pass records what was actually issued, not just the product", async () => {
     await assertSucceeds(setDoc(
-      passRef(users.manager, "pass-adjusted"),
+      passRef(users.owner, "pass-adjusted"),
       passFixture(ORG_A, "pass-adjusted", {
         totalSessions: 18,
         serviceSessions: 2,
@@ -1030,7 +1062,7 @@ describe("ledger and pass bodies are validated at write time", () => {
     ));
     for (const field of ["productId", "totalSessions", "serviceSessions", "contractPrice", "paymentMethod", "purchaseRound", "instructorId", "baseUnitPrice", "remainingCount", "expiresAt", "handedOver"]) {
       await assertFails(setDoc(
-        passRef(users.manager, `pass-missing-${field}`),
+        passRef(users.owner, `pass-missing-${field}`),
         withoutField(passFixture(ORG_A, `pass-missing-${field}`), field),
       ));
     }
@@ -1040,21 +1072,21 @@ describe("ledger and pass bodies are validated at write time", () => {
     /* 부원장의 5:5 가 이 값을 반으로 접는다. 세금이 붙어 계약보다 커질 수는
        없고, 뒤집힌 값이 들어오면 그 강사의 회당 단가가 계약보다 높아진다. */
     await assertSucceeds(setDoc(
-      passRef(users.manager, "pass-net-ok"),
+      passRef(users.owner, "pass-net-ok"),
       passFixture(ORG_A, "pass-net-ok", { contractPrice: 1100000, netContractPrice: 1000000 }),
     ));
     // 이 필드가 생기기 전의 회원권. 없으면 차감이 결제 수단으로 다시 계산한다.
     await assertSucceeds(setDoc(
-      passRef(users.manager, "pass-net-absent"),
+      passRef(users.owner, "pass-net-absent"),
       withoutField(passFixture(ORG_A, "pass-net-absent"), "netContractPrice"),
     ));
     await assertSucceeds(setDoc(
-      passRef(users.manager, "pass-net-equal"),
+      passRef(users.owner, "pass-net-equal"),
       passFixture(ORG_A, "pass-net-equal", { contractPrice: 1000000, netContractPrice: 1000000 }),
     ));
     for (const bad of [1200001, -1, "1090909", 1090909.5]) {
       await assertFails(setDoc(
-        passRef(users.manager, `pass-net-bad-${String(bad)}`),
+        passRef(users.owner, `pass-net-bad-${String(bad)}`),
         passFixture(ORG_A, `pass-net-bad-${String(bad)}`, { netContractPrice: bad }),
       ), String(bad));
     }
@@ -1062,45 +1094,45 @@ describe("ledger and pass bodies are validated at write time", () => {
 
   test("serviceSessions may be zero but never negative or fractional", async () => {
     await assertSucceeds(setDoc(
-      passRef(users.manager, "pass-service-zero"),
+      passRef(users.owner, "pass-service-zero"),
       passFixture(ORG_A, "pass-service-zero", { serviceSessions: 0 }),
     ));
     await assertFails(setDoc(
-      passRef(users.manager, "pass-service-negative"),
+      passRef(users.owner, "pass-service-negative"),
       passFixture(ORG_A, "pass-service-negative", { serviceSessions: -1 }),
     ));
     await assertFails(setDoc(
-      passRef(users.manager, "pass-service-string"),
+      passRef(users.owner, "pass-service-string"),
       passFixture(ORG_A, "pass-service-string", { serviceSessions: "2" }),
     ));
   });
 
   test("contractPrice may be zero but never negative or a string", async () => {
     await assertSucceeds(setDoc(
-      passRef(users.manager, "pass-price-zero"),
+      passRef(users.owner, "pass-price-zero"),
       passFixture(ORG_A, "pass-price-zero", { contractPrice: 0 }),
     ));
     await assertFails(setDoc(
-      passRef(users.manager, "pass-price-negative"),
+      passRef(users.owner, "pass-price-negative"),
       passFixture(ORG_A, "pass-price-negative", { contractPrice: -1 }),
     ));
     await assertFails(setDoc(
-      passRef(users.manager, "pass-price-string"),
+      passRef(users.owner, "pass-price-string"),
       passFixture(ORG_A, "pass-price-string", { contractPrice: "990000" }),
     ));
   });
 
   test("purchaseRound starts at one", async () => {
     await assertSucceeds(setDoc(
-      passRef(users.manager, "pass-round-four"),
+      passRef(users.owner, "pass-round-four"),
       passFixture(ORG_A, "pass-round-four", { purchaseRound: 4 }),
     ));
     await assertFails(setDoc(
-      passRef(users.manager, "pass-round-zero"),
+      passRef(users.owner, "pass-round-zero"),
       passFixture(ORG_A, "pass-round-zero", { purchaseRound: 0 }),
     ));
     await assertFails(setDoc(
-      passRef(users.manager, "pass-round-string"),
+      passRef(users.owner, "pass-round-string"),
       passFixture(ORG_A, "pass-round-string", { purchaseRound: "1" }),
     ));
   });
@@ -1109,38 +1141,38 @@ describe("ledger and pass bodies are validated at write time", () => {
     assert.equal(PAYMENT_METHODS.length, 5);
     for (const paymentMethod of PAYMENT_METHODS) {
       await assertSucceeds(setDoc(
-        passRef(users.manager, `pass-pay-${paymentMethod}`),
+        passRef(users.owner, `pass-pay-${paymentMethod}`),
         passFixture(ORG_A, `pass-pay-${paymentMethod}`, { paymentMethod }),
       ));
     }
     for (const bogus of ["Card", "credit", "", "kakao"]) {
       await assertFails(setDoc(
-        passRef(users.manager, `pass-pay-bad-${bogus || "empty"}`),
+        passRef(users.owner, `pass-pay-bad-${bogus || "empty"}`),
         passFixture(ORG_A, `pass-pay-bad-${bogus || "empty"}`, { paymentMethod: bogus }),
       ));
     }
   });
 
   test("a pass needs its product fields and a positive session count", async () => {
-    await assertSucceeds(setDoc(passRef(users.manager, "pass-valid"), passFixture(ORG_A, "pass-valid")));
+    await assertSucceeds(setDoc(passRef(users.owner, "pass-valid"), passFixture(ORG_A, "pass-valid")));
     await assertFails(setDoc(
-      passRef(users.manager, "pass-no-product"),
+      passRef(users.owner, "pass-no-product"),
       withoutField(passFixture(ORG_A, "pass-no-product"), "productId"),
     ));
     await assertFails(setDoc(
-      passRef(users.manager, "pass-no-client"),
+      passRef(users.owner, "pass-no-client"),
       withoutField(passFixture(ORG_A, "pass-no-client"), "clientId"),
     ));
     await assertFails(setDoc(
-      passRef(users.manager, "pass-zero-sessions"),
+      passRef(users.owner, "pass-zero-sessions"),
       passFixture(ORG_A, "pass-zero-sessions", { totalSessions: 0 }),
     ));
     await assertFails(setDoc(
-      passRef(users.manager, "pass-string-sessions"),
+      passRef(users.owner, "pass-string-sessions"),
       passFixture(ORG_A, "pass-string-sessions", { totalSessions: "20" }),
     ));
     await assertFails(setDoc(
-      passRef(users.manager, "pass-int-status"),
+      passRef(users.owner, "pass-int-status"),
       passFixture(ORG_A, "pass-int-status", { status: 1 }),
     ));
   });

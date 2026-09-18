@@ -25,6 +25,23 @@ service cloud.firestore {
         && membership(organizationId).data.role in roles;
     }
 
+    // ── 돈이 걸린 두 문 ───────────────────────────────────────────────────
+    // 회원권 발급과 회원 등록은 대표 한 사람으로 좁혔다. 발급은 그 순간 급여의
+    // 근거를 만들고, 등록은 그 발급이 가리킬 사람을 만든다 — 둘 다 원장에
+    // append-only 로 남아 나중에 고칠 수 없다.
+    //
+    // manager 역할은 스키마에도 규칙에도 그대로 있다. 담당 강사 교체처럼 이미
+    // 열려 있는 문은 건드리지 않았다. 운영해 보고 대표 혼자 감당이 안 되면
+    // 아래 두 목록에 "manager" 를 다시 넣는 것으로 끝난다 — 되돌리기 위해
+    // 이름을 붙여 한자리에 모아 두었다.
+    function canIssuePass(organizationId) {
+      return hasRole(organizationId, ["owner"]);
+    }
+
+    function canRegisterClient(organizationId) {
+      return hasRole(organizationId, ["owner"]);
+    }
+
     // Keep in sync with PAY_CATEGORY in src/data/schema/constants.js. Rules
     // files cannot import, so products and the pass ledger share this instead.
     function payCategories() {
@@ -252,8 +269,10 @@ service cloud.firestore {
         // predates these fields. A floor that checks each field it actually
         // sees stops a malformed write from either writer without closing a
         // door the migration still needs.
+        // 등록은 대표만. canRegisterClient 의 주석 참고 — 되돌릴 때는 그 목록
+        // 하나만 바꾼다. 읽기와 수정은 그대로 가르치는 사람들에게 열려 있다.
         allow create: if request.resource.data.organizationId == organizationId
-          && hasRole(organizationId, ["owner", "manager", "instructor", "staff"])
+          && canRegisterClient(organizationId)
           && clientFieldsWellFormed();
         allow update: if resource.data.organizationId == organizationId
           && request.resource.data.organizationId == organizationId
@@ -497,7 +516,9 @@ service cloud.firestore {
           ]
           && request.resource.data.status is string
           && request.resource.data.createdAt == request.time
-          && hasRole(organizationId, ["owner", "manager"]);
+          // 발급은 대표만. canIssuePass 의 주석 참고 — 되돌릴 때는 그 목록
+          // 하나만 바꾼다. 아래 담당 교체 문은 매니저에게 그대로 열려 있다.
+          && canIssuePass(organizationId);
         // The owner's reach is unchanged. A manager may move one field and
         // nothing else: handovers happen while the owner is not at the centre,
         // and the transfer is safe because it rewrites no past entry — every
@@ -671,7 +692,11 @@ service cloud.firestore {
                   && request.resource.data.delta != 0
                   && (
                     request.resource.data.type == "issue"
-                      ? request.resource.data.delta > 0
+                      // 발급 항목은 회원권 문서와 한 배치로 쓰인다. 회원권 쪽만
+                      // 좁히면 매니저가 이미 있는 회원권에 "20회 발급" 한 줄을
+                      // 덧붙일 수 있고, 회원 이력 화면이 그것을 그대로 읽는다.
+                      // 두 반쪽은 같은 문을 통과해야 한다.
+                      ? request.resource.data.delta > 0 && canIssuePass(organizationId)
                     : request.resource.data.type == "correction"
                       /* 정확히 한 회차를 되돌리고, 무엇을 되돌리는지 가리킨다.
                          단가와 카테고리는 원래 항목과 같은 값이어야 급여에서 그

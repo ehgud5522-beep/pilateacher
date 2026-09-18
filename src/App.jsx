@@ -17996,6 +17996,28 @@ export default function App() {
   /* 소속 센터에서 회원 등록은 FC매니저와 대표의 일이다. 강사가 같은 사람을
      다시 등록하면 같은 회원이 둘이 되고 수업 기록이 갈라진다. 개인 강사
      (legacy)는 자기 회원을 자기가 등록하므로 제한하지 않는다. */
+  const canRegisterMembers = !organizationContext.ready
+    || organizationContext.isLegacy
+    || [ROLES.OWNER, ROLES.MANAGER].includes(organizationContext.role);
+  /* 출석 체크는 수업하는 사람의 것이다. 대표와 매니저도 수업을 하므로 함께
+     허용한다 -- 규칙도 같은 셋에게만 잔여를 줄이게 열려 있다. */
+  const canCheckAttendance = organizationContext.ready
+    && !organizationContext.isLegacy
+    && [ROLES.OWNER, ROLES.MANAGER, ROLES.INSTRUCTOR].includes(organizationContext.role);
+  /* 예상 급여 카드는 소속 강사의 것이다. 미소속 개인 강사에게는 원장이 없고,
+     기존 월간 리포트가 로컬 일정으로 계산한 값을 그대로 쓴다. 대표의 전 지점
+     급여는 계산이 달라 별도 화면으로 남겨 둔다. */
+  const canSeeOwnPay = organizationContext.ready
+    && !organizationContext.isLegacy
+    && organizationContext.role === ROLES.INSTRUCTOR;
+  const payMonth = monthKey(todayISO());
+  const [db, setDb] = useState(emptyDb("", ""));
+  const lessonRecordDbRef = useRef(db);
+  useEffect(() => { lessonRecordDbRef.current = db; }, [db]);
+
+  /* db 선언 뒤에 둔다. 아래 useMemo 의 의존성 배열이 db.members 를 읽고, 의존성
+     배열은 선언 시점에 바로 평가된다 -- db 보다 앞에 두면 TDZ 로 App 이 통째로
+     렌더되지 못하고 화면이 하얗게 남는다. */
   /* 소속 강사의 회원 탭과 일정 등록은 조직 회원을 원본으로 읽는다. FC매니저가
      등록한 회원이 강사에게 보이지 않으면 강사는 그 회원을 다시 등록하고, 그것이
      이 작업 전체가 없애려는 이중 관리다.
@@ -18045,25 +18067,6 @@ export default function App() {
     [db, roster],
   );
   const rosterMembers = rosterDb.members;
-
-  const canRegisterMembers = !organizationContext.ready
-    || organizationContext.isLegacy
-    || [ROLES.OWNER, ROLES.MANAGER].includes(organizationContext.role);
-  /* 출석 체크는 수업하는 사람의 것이다. 대표와 매니저도 수업을 하므로 함께
-     허용한다 -- 규칙도 같은 셋에게만 잔여를 줄이게 열려 있다. */
-  const canCheckAttendance = organizationContext.ready
-    && !organizationContext.isLegacy
-    && [ROLES.OWNER, ROLES.MANAGER, ROLES.INSTRUCTOR].includes(organizationContext.role);
-  /* 예상 급여 카드는 소속 강사의 것이다. 미소속 개인 강사에게는 원장이 없고,
-     기존 월간 리포트가 로컬 일정으로 계산한 값을 그대로 쓴다. 대표의 전 지점
-     급여는 계산이 달라 별도 화면으로 남겨 둔다. */
-  const canSeeOwnPay = organizationContext.ready
-    && !organizationContext.isLegacy
-    && organizationContext.role === ROLES.INSTRUCTOR;
-  const payMonth = monthKey(todayISO());
-  const [db, setDb] = useState(emptyDb("", ""));
-  const lessonRecordDbRef = useRef(db);
-  useEffect(() => { lessonRecordDbRef.current = db; }, [db]);
   const [photos, setPhotos] = useState({});
   const photosRef = useRef({});
   const [tab, setTab] = useState("schedule");

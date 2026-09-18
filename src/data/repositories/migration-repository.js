@@ -39,6 +39,7 @@ import {
 import {
   UNIT_PRICE_SOURCE, resolveUnitPrice, unitPriceSourceFor,
 } from "../schema/pay-rates.js";
+import { netContractPriceFor } from "../schema/deduction-pricing.js";
 import { paths } from "../schema/paths.js";
 import { normalizePhone } from "./client-repository.js";
 import { fullRoomRateOf } from "./instructor-repository.js";
@@ -330,6 +331,11 @@ export function planPassMigration(text, {
           totalSessions,
           serviceSessions,
           contractPrice,
+          /* 부가세를 뺀 공급가액. 부원장의 5:5 가 이 값을 반으로 접는다.
+             이관분에도 넣는다 -- 담당 강사가 나중에 부원장이 되면 그때 이
+             회원권의 남은 회차가 5:5 로 가고, 값이 없으면 그 시점의 세율로
+             계산된다. */
+          netContractPrice: netContractPriceFor(contractPrice, paymentMethod),
           paymentMethod,
           purchaseRound,
           remainingCount,

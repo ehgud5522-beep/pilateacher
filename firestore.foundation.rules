@@ -468,6 +468,19 @@ service cloud.firestore {
             !("serviceUsed" in request.resource.data)
             || (request.resource.data.serviceUsed is int && request.resource.data.serviceUsed >= 0)
           )
+          // 부가세를 뺀 공급가액. 부원장의 5:5 가 계약 금액이 아니라 이 값을
+          // 반으로 접는다 -- 카드 110만이면 100만이다. 옛 회원권에는 없으므로
+          // 있을 때만 따지고, 없으면 차감이 결제 수단에서 다시 계산한다.
+          && (
+            !("netContractPrice" in request.resource.data)
+            || (
+              request.resource.data.netContractPrice is int
+              && request.resource.data.netContractPrice >= 0
+              // 세금이 붙어 커질 수는 없다. 뒤집힌 값이 들어오면 부원장 단가가
+              // 계약보다 높아지고, 원장은 고칠 수 없다.
+              && request.resource.data.netContractPrice <= request.resource.data.contractPrice
+            )
+          )
           && request.resource.data.instructorId is string
           && request.resource.data.instructorId.size() > 0
           && request.resource.data.totalSessions is int

@@ -8,7 +8,8 @@
  *
  * ── 판정 순서. 먼저 걸리는 것이 이긴다 ──
  *   0. 이 회원권에서 이미 service 차감이 있었다 → 0
- *   1. 담당 강사가 부원장 → (계약금액 ÷ totalSessions) ÷ 2
+ *   1. 담당 강사가 부원장 → (공급가액 ÷ totalSessions) ÷ 2
+ *      공급가액은 계약 금액에서 부가세를 뺀 값이다 -- 카드 110만은 100만.
  *   2. 인수인계받은 회원권 → 25,000
  *   3. 이 강사에게 이 회원 누적 20회 미만 → 25,000
  *   4. 그 외 → 회원권의 기준 카테고리 단가
@@ -21,7 +22,7 @@
  * 확정본의 모든 예시를 테스트로 그대로 옮길 수 있다.
  */
 
-import { PAY_CATEGORY } from "./constants.js";
+import { PAY_CATEGORY, PAYMENT_METHOD } from "./constants.js";
 
 /** 어느 판정이 이겼는가. 분쟁 때 "왜 이 금액인가"를 답하는 값이다. */
 export const PRICING_RULE = Object.freeze({
@@ -93,16 +94,100 @@ const requiredInt = (value, label, { min }) => {
 
 const countOf = (value) => (typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0);
 
+/* ── 부원장 5:5 는 현금가 기준이다 ──────────────────────────────────────────
+   계약 금액이 언제나 반으로 접을 수 있는 돈인 것은 아니다. 카드로 받으면 그
+   금액 안에 부가세가 들어 있고, 센터가 실제로 쥐는 것은 공급가액이다. 부가세는
+   센터의 매출이 아니라 나라에 낼 돈이므로, 그것까지 반으로 접으면 센터가 받지도
+   않은 돈의 절반을 지급하게 된다.
+
+     카드 110만 → 공급가액 100만 → ÷ 총세션 ÷ 2
+
+   ── 어느 결제 수단이 부가세를 포함하는가 ──
+   기준은 수단의 이름이 아니라 "센터가 그 돈에서 부가세를 떼고 받는가"다.
+   현금·계좌가 예외이고, 결제망을 타고 매출로 잡히는 나머지가 기본이다.
+
+   제로페이와 바우처를 카드와 같게 둔 것은 판단이다. 제로페이는 가맹점 수수료가
+   0% 이지만 매출 신고는 그대로 되고, 바우처(스포츠강좌이용권 등)도 센터가
+   청구해 받는 매출이다. 둘 다 부가세가 나간다 -- 수수료가 없다는 것과 세금이
+   없다는 것은 다른 이야기다.
+
+   이 표에 빈칸을 두지 않는다. 결제 수단이 하나 늘면 여기서 반드시 답해야 하고,
+   답하지 않으면 발급이 거부된다. 기본값을 두면 새 수단이 조용히 한쪽으로
+   떨어지고, 그 오차는 원장에 박혀 고칠 수 없다. (테스트가 이 표와
+   PAYMENT_METHOD 가 같은 집합인지 고정한다.)
+   ────────────────────────────────────────────────────────────────────────── */
+
+/** @type {Readonly<Record<string, boolean>>} */
+export const PAYMENT_INCLUDES_VAT = Object.freeze({
+  [PAYMENT_METHOD.CARD]: true,
+  [PAYMENT_METHOD.CASH]: false,
+  [PAYMENT_METHOD.TRANSFER]: false,
+  [PAYMENT_METHOD.ZEROPAY]: true,
+  [PAYMENT_METHOD.VOUCHER]: true,
+});
+
 /**
- * 부원장의 회당 단가. 계약 금액을 실제 진행 횟수로 나눠 반으로 접는다.
+ * 계약 금액에서 부가세를 뺀 공급가액.
+ *
+ * ── 반올림 ──
+ * 원 단위 반올림이다. 내림이면 언제나 강사가 덜 받고 올림이면 언제나 센터가 더
+ * 준다 -- 한쪽으로만 기우는 오차는 회차가 쌓일수록 커진다. 반올림은 두 방향으로
+ * 갈라져 상쇄되고, 한 계약당 최대 오차는 0.5원이다. 아래 deputyDirectorUnitPrice
+ * 도 같은 규칙을 쓴다.
+ *
+ * 1.1 로 나누지 않고 10/11 을 곱한다. 1.1 은 이진 부동소수로 정확히 표현되지
+ * 않아 110만 ÷ 1.1 이 999999.9999... 로 떨어지는데, 정수비로 계산하면 그 자리가
+ * 정확히 100만이다.
+ *
+ * @param {number} contractPrice @param {string} paymentMethod
+ * @returns {number}
+ */
+export function netContractPriceFor(contractPrice, paymentMethod) {
+  const price = requiredInt(contractPrice, "contractPrice", { min: 0 });
+  const method = String(paymentMethod ?? "");
+  if (!(method in PAYMENT_INCLUDES_VAT)) throw new Error("Invalid paymentMethod");
+  return PAYMENT_INCLUDES_VAT[method] ? Math.round((price * 10) / 11) : price;
+}
+
+/**
+ * 이 회원권의 공급가액. 발급 시점에 박힌 값이 있으면 그것이다.
+ *
+ * ── 왜 발급 때 박는가 ──
+ * 부가세율은 바뀔 수 있고, 결제 수단을 나중에 고칠 수도 있다. 둘 중 무엇이
+ * 움직여도 이미 팔린 회원권의 급여 근거는 그대로여야 한다 -- baseUnitPrice 를
+ * 박아 두는 것과 같은 이유다.
+ *
+ * ── 없으면 계산한다 ──
+ * 이 필드가 생기기 전에 발급된 회원권에는 없다. 그때는 회원권이 들고 있는
+ * 결제 수단으로 다시 계산한다 -- 세율은 법이 정한 값이라 그 회원권이 팔린
+ * 조건이 아니다. 계약 금액이나 결제 수단을 읽을 수 없으면 null 이고, 부원장
+ * 판정이 그때 멈춘다. 지어내면 부원장의 수업 전체가 틀린 금액으로 굳는다.
+ *
+ * @param {any} pass
+ * @returns {number | null}
+ */
+export function netContractPriceOf(pass) {
+  const stored = pass?.netContractPrice;
+  if (Number.isInteger(stored) && stored >= 0) return stored;
+  try {
+    return netContractPriceFor(pass?.contractPrice, pass?.paymentMethod);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 부원장의 회당 단가. 공급가액을 실제 진행 횟수로 나눠 반으로 접는다.
+ *
+ * 분자는 계약 금액이 아니라 공급가액이다 -- 위 netContractPriceFor 참고.
  *
  * 분모는 totalSessions 다. serviceSessions 를 더하지 않는다 -- 부원장에게는
  * 서비스 세션이 없다. 더하면 있지도 않은 회차로 나눠 단가가 낮아진다.
  *
- * @param {{ contractPrice: number, totalSessions: number }} pass
+ * @param {{ netContractPrice: number, totalSessions: number }} pass
  */
-export function deputyDirectorUnitPrice({ contractPrice, totalSessions }) {
-  const price = requiredInt(contractPrice, "contractPrice", { min: 0 });
+export function deputyDirectorUnitPrice({ netContractPrice, totalSessions }) {
+  const price = requiredInt(netContractPrice, "netContractPrice", { min: 0 });
   const sessions = requiredInt(totalSessions, "totalSessions", { min: 1 });
   // 원 단위로 반올림한다. 나누어떨어지지 않는 계약이 실제로 많다.
   return Math.round(price / sessions / 2);
@@ -114,7 +199,7 @@ export function deputyDirectorUnitPrice({ contractPrice, totalSessions }) {
  * @param {{
  *   category?: string,
  *   baseUnitPrice?: number,
- *   contractPrice?: number,
+ *   netContractPrice?: number,
  *   totalSessions?: number,
  *   isDeputyDirector?: boolean,
  *   handedOver?: boolean,
@@ -123,7 +208,7 @@ export function deputyDirectorUnitPrice({ contractPrice, totalSessions }) {
  * }} input
  *   category          회원권의 기준 카테고리
  *   baseUnitPrice     발급 시 박힌 기준 단가 (판정 4가 쓰는 값)
- *   contractPrice     계약 금액 (판정 1)
+ *   netContractPrice  부가세를 뺀 공급가액 (판정 1의 분자)
  *   totalSessions     서비스를 뺀 기준 회차 (판정 1의 분모)
  *   isDeputyDirector  담당 강사가 부원장인가
  *   handedOver        이 회원권을 인수인계받았는가
@@ -152,7 +237,8 @@ export function resolveDeductionUnitPrice(input = {}) {
   if (input?.isDeputyDirector === true) {
     return {
       unitPrice: deputyDirectorUnitPrice({
-        contractPrice: input?.contractPrice,
+        // 계약 금액이 아니라 공급가액이다. 카드 110만은 100만을 반으로 접는다.
+        netContractPrice: input?.netContractPrice,
         totalSessions: input?.totalSessions,
       }),
       rule: PRICING_RULE.DEPUTY_DIRECTOR,

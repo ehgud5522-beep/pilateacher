@@ -24,6 +24,7 @@ import {
   writeBatch,
 } from "firebase/firestore";
 import { CLIENT_STATUS, COLLECTIONS, MEMBERSHIP_STATUS } from "../../src/data/schema/constants.js";
+import { netContractPriceFor } from "../../src/data/schema/deduction-pricing.js";
 import { CLIENT_STATUS_FOR_CREATE } from "../../src/data/repositories/client-repository.js";
 import { deleteObject, getMetadata, ref, uploadBytes } from "firebase/storage";
 
@@ -105,7 +106,7 @@ function hoursAgo(hours) {
 }
 
 function passFixture(organizationId, passId, overrides = {}) {
-  return {
+  const body = {
     organizationId,
     passId,
     clientId: "client-member",
@@ -128,6 +129,15 @@ function passFixture(organizationId, passId, overrides = {}) {
     createdAt: serverTimestamp(),
     ...overrides,
   };
+  /* 부가세를 뺀 공급가액. 계약 금액과 결제 수단이 정하는 값이라 여기서 따라
+     움직여야 한다 -- 고정된 숫자를 박아 두면 금액을 바꾼 테스트가 규칙이 아니라
+     이 상수 때문에 거부된다. 일부러 망가뜨린 본문에서는 붙이지 않는다. */
+  if (!("netContractPrice" in overrides)) {
+    try {
+      body.netContractPrice = netContractPriceFor(body.contractPrice, body.paymentMethod);
+    } catch { /* 규칙이 거부하는지 보는 자리다. 이 필드는 선택이라 없어도 된다. */ }
+  }
+  return body;
 }
 
 function ledgerFixture(organizationId, passId, overrides = {}) {
@@ -1023,6 +1033,30 @@ describe("ledger and pass bodies are validated at write time", () => {
         passRef(users.manager, `pass-missing-${field}`),
         withoutField(passFixture(ORG_A, `pass-missing-${field}`), field),
       ));
+    }
+  });
+
+  test("the net price may be absent but never larger than the contract", async () => {
+    /* 부원장의 5:5 가 이 값을 반으로 접는다. 세금이 붙어 계약보다 커질 수는
+       없고, 뒤집힌 값이 들어오면 그 강사의 회당 단가가 계약보다 높아진다. */
+    await assertSucceeds(setDoc(
+      passRef(users.manager, "pass-net-ok"),
+      passFixture(ORG_A, "pass-net-ok", { contractPrice: 1100000, netContractPrice: 1000000 }),
+    ));
+    // 이 필드가 생기기 전의 회원권. 없으면 차감이 결제 수단으로 다시 계산한다.
+    await assertSucceeds(setDoc(
+      passRef(users.manager, "pass-net-absent"),
+      withoutField(passFixture(ORG_A, "pass-net-absent"), "netContractPrice"),
+    ));
+    await assertSucceeds(setDoc(
+      passRef(users.manager, "pass-net-equal"),
+      passFixture(ORG_A, "pass-net-equal", { contractPrice: 1000000, netContractPrice: 1000000 }),
+    ));
+    for (const bad of [1200001, -1, "1090909", 1090909.5]) {
+      await assertFails(setDoc(
+        passRef(users.manager, `pass-net-bad-${String(bad)}`),
+        passFixture(ORG_A, `pass-net-bad-${String(bad)}`, { netContractPrice: bad }),
+      ), String(bad));
     }
   });
 

@@ -71,6 +71,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "회원권 발급 · 상품 단가 · 확인",
     "회원권 발급 · 풀방금액 없음",
     "회원권 발급 · 확인",
+    "회원권 발급 · 확인 · 현금",
     "회원권 발급 · 조회 실패",
     "강사 단가",
     "강사 단가 · 단가 입력",
@@ -1258,4 +1259,19 @@ test("the issue form asks for the expiry from the contract", async (t) => {
   assert.match(add, /만료일/);
   assert.match(add, /계약서에 적힌 날짜입니다/);
   assert.match(add, /type="date"/);
+});
+
+test("the confirm card shows the net price when VAT is inside the contract", async (t) => {
+  /* 부원장의 5:5 는 계약 금액이 아니라 공급가액을 반으로 접는다. 결제 수단
+     하나로 그 강사의 회당 단가가 9% 움직이므로 누르기 전에 보여야 한다. */
+  const markupOf = await issueScreens(t);
+  const card = markupOf("회원권 발급 · 확인");
+  // 130만 카드 → 공급가액 1,181,818.
+  assert.match(card, /공급가액 1,181,818원/);
+  assert.match(card, /부원장 단가는 이 금액을 기준으로 합니다/);
+
+  /* 현금·계좌는 계약 금액이 곧 공급가액이라 줄을 붙이지 않는다. 같은 숫자를
+     두 번 쓰면 무엇이 다른지 읽는 사람이 찾게 된다. */
+  const cash = markupOf("회원권 발급 · 확인 · 현금");
+  assert.doesNotMatch(cash, /공급가액/);
 });

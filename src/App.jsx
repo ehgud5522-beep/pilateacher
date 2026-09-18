@@ -117,6 +117,7 @@ import {
 import {
   UNIT_PRICE_SOURCE, unitPriceSourceFor,
 } from "./data/schema/pay-rates.js";
+import { netContractPriceFor } from "./data/schema/deduction-pricing.js";
 import {
   CLIENT_STATUS, LEDGER_ENTRY_TYPE, LEDGER_REASON_MAX, PAY_CATEGORY, PAYMENT_METHOD, PRODUCT_STATUS,
   ROLES, SESSION_TYPE,
@@ -14754,6 +14755,11 @@ function PassIssue({
 
   if (mode === "confirm" && client && product) {
     const total = Number(form.totalSessions) + Number(form.serviceSessions || 0);
+    /* 부가세를 뺀 공급가액. 부원장의 5:5 가 계약 금액이 아니라 이 숫자를 반으로
+       접으므로, 계약 금액과 다를 때는 발급 전에 보여 준다 -- 결제 수단 하나로
+       그 강사의 회당 단가가 9% 움직이고, 원장에 박히면 고칠 수 없다. */
+    const contractWon = manwonToWon(Number(form.contractPriceManwon));
+    const netWon = netContractPriceFor(contractWon, form.paymentMethod);
     return (
       <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
         <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>이대로 발급할까요?</h2>
@@ -14779,6 +14785,11 @@ function PassIssue({
             {" · "}{labelOf(PAYMENT_METHOD_LABELS, form.paymentMethod)}
             {" · "}{form.purchaseRound}차
           </p>
+          {netWon === contractWon ? null : (
+            <p className="tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+              공급가액 {won(netWon)}원 · 부원장 단가는 이 금액을 기준으로 합니다
+            </p>
+          )}
           {/* 상품에서 온 값이라 발급 화면에서는 묻지 않았다. 원장에 박히고 나면
               고칠 수 없으므로 누르기 전에 한 번은 보여야 한다. */}
           {productUnitPrice === null ? null : (
@@ -18003,6 +18014,11 @@ export function createAppScreenSmokeCases() {
     { name: "회원권 발급 · 확인", element: passIssue(smokeOwner, {
       ...smokeIssueBase, mode: "confirm",
       form: { clientId: "smoke-client-a", productId: "smoke-product-active", totalSessions: "20", contractPriceManwon: "130", serviceSessions: "2", purchaseRound: "2", paymentMethod: "card", instructorId: "u1", unitPriceManwon: "" },
+    }) },
+    /* 현금 계약. 계약 금액이 곧 공급가액이라 그 줄이 붙지 않는다. */
+    { name: "회원권 발급 · 확인 · 현금", element: passIssue(smokeOwner, {
+      ...smokeIssueBase, mode: "confirm",
+      form: { clientId: "smoke-client-a", productId: "smoke-product-active", totalSessions: "20", contractPriceManwon: "130", serviceSessions: "2", purchaseRound: "2", paymentMethod: "cash", instructorId: "u1", unitPriceManwon: "" },
     }) },
     { name: "회원권 발급 · 조회 실패", element: passIssue(smokeOwner, { clients: [], products: [], instructors: [], locations: [], loadError: "permission-denied" }) },
     { name: "강사 단가", element: instructorRates(smokeOwner, { instructors: smokeInstructors }) },

@@ -1,16 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  NEW_TO_INSTRUCTOR_THRESHOLD, NEW_TO_INSTRUCTOR_UNIT_PRICE, PRICING_RULE,
-  deputyDirectorUnitPrice, resolveDeductionUnitPrice, spendsServiceSession,
+  NEW_TO_INSTRUCTOR_THRESHOLD, NEW_TO_INSTRUCTOR_UNIT_PRICE, PAYMENT_INCLUDES_VAT, PRICING_RULE,
+  deputyDirectorUnitPrice, netContractPriceFor, netContractPriceOf, resolveDeductionUnitPrice,
+  spendsServiceSession,
 } from "../../src/data/schema/deduction-pricing.js";
+import { PAYMENT_METHOD } from "../../src/data/schema/constants.js";
 import { PAY_RATES } from "../../src/data/schema/pay-rates.js";
 
 /** 1:1 재등록(이벤트) 회원권. 판정 4 가 걸리면 30,000 이다. */
 const pass = (overrides = {}) => ({
   category: "pt_1_1_repurchase_event",
   baseUnitPrice: 30000,
-  contractPrice: 2100000,
+  /* 현금 계약이라 계약 금액이 곧 공급가액이다. 카드였다면 1.1 로 나뉜다. */
+  netContractPrice: 2100000,
   totalSessions: 30,
   isDeputyDirector: false,
   handedOver: false,
@@ -115,8 +118,8 @@ test("the deputy's divisor excludes service sessions", () => {
 });
 
 test("an uneven contract rounds to the won", () => {
-  assert.equal(deputyDirectorUnitPrice({ contractPrice: 2100000, totalSessions: 32 }), 32813);
-  assert.equal(deputyDirectorUnitPrice({ contractPrice: 1000000, totalSessions: 3 }), 166667);
+  assert.equal(deputyDirectorUnitPrice({ netContractPrice: 2100000, totalSessions: 32 }), 32813);
+  assert.equal(deputyDirectorUnitPrice({ netContractPrice: 1000000, totalSessions: 3 }), 166667);
 });
 
 test("the deputy rate ignores the count, the hand-over and the category", () => {
@@ -135,7 +138,7 @@ test("a deputy pass without a contract or sessions is refused", () => {
   // 0 으로 나누거나 0원을 지급하는 대신 막는다.
   assert.throws(() => priceOf({ isDeputyDirector: true, totalSessions: 0 }), /Invalid totalSessions/);
   assert.throws(() => priceOf({ isDeputyDirector: true, totalSessions: undefined }), /Invalid totalSessions/);
-  assert.throws(() => priceOf({ isDeputyDirector: true, contractPrice: undefined }), /Invalid contractPrice/);
+  assert.throws(() => priceOf({ isDeputyDirector: true, netContractPrice: undefined }), /Invalid netContractPrice/);
 });
 
 /* ── 판정 0. 서비스는 회원권당 한 번만 급여가 나간다 ──────────────────── */
@@ -261,4 +264,71 @@ test("the judgement order is unchanged by which session is being spent", () => {
   }));
   assert.equal(early.unitPrice, NEW_TO_INSTRUCTOR_UNIT_PRICE);
   assert.equal(early.rule, PRICING_RULE.NEW_TO_INSTRUCTOR);
+});
+
+/* ── 부원장 5:5 는 현금가 기준이다 ──────────────────────────────────────────
+
+   카드로 받은 금액 안에는 부가세가 들어 있다. 그것은 센터의 매출이 아니라
+   나라에 낼 돈이라, 반으로 접을 대상이 아니다. */
+
+test("the same contract pays a deputy differently on card and in cash", () => {
+  // 110만 카드 → 공급가액 100만 → 20회 → 25,000. 현금 110만이면 27,500.
+  const card = netContractPriceFor(1100000, "card");
+  const cash = netContractPriceFor(1100000, "cash");
+  assert.equal(card, 1000000);
+  assert.equal(cash, 1100000);
+  assert.equal(deputyDirectorUnitPrice({ netContractPrice: card, totalSessions: 20 }), 25000);
+  assert.equal(deputyDirectorUnitPrice({ netContractPrice: cash, totalSessions: 20 }), 27500);
+});
+
+test("cash and transfer are the contract itself", () => {
+  assert.equal(netContractPriceFor(1300000, "cash"), 1300000);
+  assert.equal(netContractPriceFor(1300000, "transfer"), 1300000);
+});
+
+test("zeropay and voucher are taxed like a card", () => {
+  /* 수수료가 없다는 것과 세금이 없다는 것은 다른 이야기다. 제로페이도
+     바우처도 매출로 잡히고 부가세가 나간다. */
+  assert.equal(netContractPriceFor(1100000, "zeropay"), 1000000);
+  assert.equal(netContractPriceFor(1100000, "voucher"), 1000000);
+});
+
+test("every payment method answers whether it carries VAT", () => {
+  /* 빈칸이 있으면 새 결제 수단이 조용히 한쪽으로 떨어지고, 그 오차가 원장에
+     박힌다. 표와 열거형이 같은 집합이어야 한다. */
+  assert.deepEqual(
+    Object.keys(PAYMENT_INCLUDES_VAT).sort(),
+    Object.values(PAYMENT_METHOD).sort(),
+  );
+  for (const method of Object.values(PAYMENT_METHOD)) {
+    assert.equal(typeof PAYMENT_INCLUDES_VAT[method], "boolean", method);
+  }
+});
+
+test("an unknown payment method is refused rather than guessed", () => {
+  for (const bad of ["", "paypal", undefined, null]) {
+    assert.throws(() => netContractPriceFor(1100000, bad), /Invalid paymentMethod/, JSON.stringify(bad));
+  }
+});
+
+test("the division rounds to the won and does not drift on 1.1", () => {
+  /* 1.1 은 이진 부동소수로 정확하지 않다. 10/11 로 계산하면 110만이 정확히
+     100만으로 떨어진다. */
+  assert.equal(netContractPriceFor(1100000, "card"), 1000000);
+  // 딱 떨어지지 않는 계약. 1,000,000 ÷ 1.1 = 909,090.909…
+  assert.equal(netContractPriceFor(1000000, "card"), 909091);
+  assert.equal(netContractPriceFor(0, "card"), 0);
+});
+
+test("a pass carries its net price, and an older one is worked out again", () => {
+  // 발급 때 박힌 값이 먼저다 -- 세율이 바뀌어도 그 회원권은 움직이지 않는다.
+  assert.equal(netContractPriceOf({ netContractPrice: 999, contractPrice: 1100000, paymentMethod: "card" }), 999);
+  // 이 필드가 생기기 전의 회원권. 결제 수단으로 다시 계산한다.
+  assert.equal(netContractPriceOf({ contractPrice: 1100000, paymentMethod: "card" }), 1000000);
+  assert.equal(netContractPriceOf({ contractPrice: 1100000, paymentMethod: "cash" }), 1100000);
+  /* 읽을 수 없으면 null 이다. 지어내면 부원장의 수업 전체가 틀린 금액으로
+     굳고, 원장은 고칠 수 없다. */
+  assert.equal(netContractPriceOf({ contractPrice: 1100000 }), null);
+  assert.equal(netContractPriceOf({ paymentMethod: "card" }), null);
+  assert.equal(netContractPriceOf(null), null);
 });

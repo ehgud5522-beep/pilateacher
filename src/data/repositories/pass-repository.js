@@ -34,7 +34,9 @@ import {
   ATTENDANCE_STATUS, LEDGER_ENTRY_TYPE, LEDGER_REASON_MAX, LESSON_STATUS, PASS_STATUS,
   PAY_CATEGORY, PAYMENT_METHOD,
 } from "../schema/constants.js";
-import { resolveDeductionUnitPrice, spendsServiceSession } from "../schema/deduction-pricing.js";
+import {
+  netContractPriceFor, netContractPriceOf, resolveDeductionUnitPrice, spendsServiceSession,
+} from "../schema/deduction-pricing.js";
 import { paths } from "../schema/paths.js";
 import { toDate } from "./payroll-repository.js";
 import { defaultUnitPriceFor, resolveUnitPrice } from "../schema/pay-rates.js";
@@ -222,6 +224,14 @@ export async function issuePass(organizationId, input, options = {}) {
     totalSessions,
     serviceSessions,
     contractPrice,
+    /* 계약 금액에서 부가세를 뺀 값. 부원장의 5:5 는 이 숫자를 반으로 접는다
+       (deduction-pricing.js 판정 1) -- 카드 110만이면 100만이다.
+
+       발급 시점에 박는다. 세율이 바뀌어도, 결제 수단을 나중에 고쳐도, 이미
+       팔린 회원권의 급여 근거는 그때의 것이어야 한다. 담당 강사가 지금
+       부원장이 아니어도 넣는다 -- 부원장 지정은 나중에 일어날 수 있고, 그때
+       이 값이 없으면 발급 조건이 아니라 그 시점의 세율로 계산된다. */
+    netContractPrice: netContractPriceFor(contractPrice, paymentMethod),
     paymentMethod,
     purchaseRound,
     remainingCount: totalCount,
@@ -492,7 +502,10 @@ export async function deductPass(organizationId, pass, input, options = {}) {
   const { unitPrice, rule } = resolveDeductionUnitPrice({
     category: pricingCategory,
     baseUnitPrice: pricingBaseUnitPrice,
-    contractPrice: pass?.contractPrice,
+    /* 부원장 판정만 쓰는 값이라 여기서 읽지 못해도 던지지 않는다 -- null 로
+       두고, 정말 부원장일 때에만 판정 1 이 "Invalid netContractPrice" 로 멈춘다.
+       부원장이 아닌 회원권까지 결제 수단 때문에 차감이 막히면 안 된다. */
+    netContractPrice: netContractPriceOf(pass),
     totalSessions: pass?.totalSessions,
     isDeputyDirector,
     handedOver: pass?.handedOver === true,

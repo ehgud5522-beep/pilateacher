@@ -369,6 +369,10 @@ const activePass = (overrides = {}) => ({
   category: "pt_1_1_new",
   baseUnitPrice: 25000,
   contractPrice: 1300000,
+  /* 현금 계약이라 공급가액이 계약 금액과 같다. 부원장 판정만 이 값을 보고,
+     카드였다면 1.1 로 나뉜 금액을 반으로 접는다. */
+  paymentMethod: "cash",
+  netContractPrice: 1300000,
   totalSessions: 20,
   serviceSessions: 0,
   serviceUsed: 0,
@@ -1278,4 +1282,84 @@ test("correcting a service deduction gives the session back to the centre", asyn
     { store },
   );
   assert.deepEqual(store.calls.commit[0][1].data, { remainingCount: 1, serviceUsed: -1 });
+});
+
+/* ── 부원장 5:5 는 현금가 기준이다 ──────────────────────────────────────────
+
+   카드로 받은 금액 안에는 부가세가 들어 있다. 그것은 센터의 매출이 아니라
+   나라에 낼 돈이므로, 그것까지 반으로 접으면 센터가 받지도 않은 돈의 절반을
+   지급하게 된다. */
+
+test("the net price is frozen at issue, for every pass", async () => {
+  const store = fakeStore();
+  await issuePass(ORG, issueInput({ contractPrice: 1100000, paymentMethod: "card" }), {
+    store, newId: () => "pass-new",
+  });
+  const passWrite = store.calls.commit[0][0];
+  assert.equal(passWrite.data.contractPrice, 1100000);
+  assert.equal(passWrite.data.netContractPrice, 1000000);
+});
+
+test("cash and transfer are issued at the contract itself", async () => {
+  for (const paymentMethod of ["cash", "transfer"]) {
+    const store = fakeStore();
+    await issuePass(ORG, issueInput({ contractPrice: 1100000, paymentMethod }), {
+      store, newId: () => "pass-new",
+    });
+    assert.equal(store.calls.commit[0][0].data.netContractPrice, 1100000, paymentMethod);
+  }
+});
+
+test("the same contract pays a deputy less on a card than in cash", async () => {
+  /* 이것이 이 변경의 요점이다. 110만 20회를 카드로 받으면 회당 25,000,
+     현금으로 받으면 27,500 이다. */
+  const deputy = deductInput({ isDeputyDirector: true });
+  const rates = [];
+  for (const paymentMethod of ["card", "cash"]) {
+    const store = fakeStore({ totals: settledPair() });
+    const { entry } = await deductPass(
+      ORG,
+      activePass({
+        contractPrice: 1100000,
+        paymentMethod,
+        totalSessions: 20,
+        netContractPrice: paymentMethod === "card" ? 1000000 : 1100000,
+      }),
+      deputy,
+      deductOptions(store),
+    );
+    assert.equal(entry.rule, "deputy_director");
+    rates.push(entry.unitPrice);
+  }
+  assert.deepEqual(rates, [25000, 27500]);
+});
+
+test("a pass issued before the field falls back to its payment method", async () => {
+  /* 옛 회원권에는 공급가액이 없다. 세율은 법이 정한 값이라 그 회원권이 팔린
+     조건이 아니므로, 결제 수단으로 다시 계산해도 같은 답이 나온다. */
+  const legacy = activePass({ contractPrice: 1100000, paymentMethod: "card", totalSessions: 20 });
+  delete legacy.netContractPrice;
+  const store = fakeStore({ totals: settledPair() });
+  const { entry } = await deductPass(
+    ORG, legacy, deductInput({ isDeputyDirector: true }), deductOptions(store),
+  );
+  assert.equal(entry.unitPrice, 25000);
+});
+
+test("a deputy pass whose net price cannot be read is refused, not guessed", async () => {
+  /* 지어내면 부원장의 수업 전체가 틀린 금액으로 굳고, 원장은 append-only 라
+     고칠 수 없다. 부원장이 아닌 회원권은 이 값을 보지 않으므로 막히지 않는다. */
+  const broken = activePass({ totalSessions: 20 });
+  delete broken.netContractPrice;
+  delete broken.paymentMethod;
+  const store = fakeStore({ totals: settledPair() });
+  await assert.rejects(
+    () => deductPass(ORG, broken, deductInput({ isDeputyDirector: true }), deductOptions(store)),
+    /Invalid netContractPrice/,
+  );
+  assert.equal(store.calls.commit.length, 0);
+
+  const fine = fakeStore({ totals: settledPair() });
+  await deductPass(ORG, broken, deductInput(), deductOptions(fine));
+  assert.equal(fine.calls.commit.length, 1, "부원장이 아니면 그대로 차감된다");
 });

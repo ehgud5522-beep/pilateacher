@@ -92,8 +92,13 @@ import {
 import {
   DEDUCT_BACKDATE_LIMIT_DAYS, cancelPass, correctDeduction, deductPass, isCancellablePass,
   isCorrectableEntry, isCorrectedEntry, isDeductablePass, isExpiredPass, issuePass,
-  listPasses, loadClientPassHistory, remainingCountOf,
+  listPassLedger, listPasses, loadClientPassHistory, remainingCountOf,
 } from "./data/repositories/pass-repository.js";
+import {
+  SETTLEMENT_SKIP, SETTLEMENT_SKIP_LABEL, applySettlementToLesson, canSettleLesson,
+  clearSettlementFromLesson, isSettledLesson, needsSettlement, planLessonSettlement,
+  settledDeductionsOf,
+} from "./features/schedule/lesson-settlement.js";
 import {
   loadInstructorMonthlyPay, loadOrganizationLedger, loadOrganizationMonthlyPayroll,
   monthRange, payrollCsv, previousMonth, toDate,
@@ -2632,7 +2637,7 @@ function SalesBriefModal({ alert, onClose, onToast }) {
     </Sheet>
   );
 }
-function SchedAttendeeRow({ s, a, members, onStatus, onNoshowFee }) {
+function SchedAttendeeRow({ s, a, members, onStatus, onNoshowFee, locked = false }) {
   const m = members.find((x) => x.id === a.memberId);
   const nm = m?.name || "삭제된 회원";
   const st = stOf(a.status);
@@ -2645,6 +2650,17 @@ function SchedAttendeeRow({ s, a, members, onStatus, onNoshowFee }) {
           : <span className="rounded-full px-2 py-0.5 text-xs font-extrabold" style={{ backgroundColor: BAD_S, color: BAD }}>잔여 0</span>)}
         <span className="rounded-full px-2 py-0.5 text-xs font-extrabold" style={{ backgroundColor: st.bg, color: st.color }}>{st.label}</span>
       </div>
+      {/* 확정된 수업은 버튼을 잠근다. 상태를 바꿔도 이미 나간 차감은 따라오지
+          않고, 둘이 어긋나면 어느 것이 맞는지 알 수 없다. */}
+      {locked ? (
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+          {a.orgEntryId
+            ? <span className="rounded-full px-2 py-0.5 text-xs font-extrabold" style={{ backgroundColor: GOOD_S, color: GOOD }}>회원권 1회 차감됨</span>
+            : a.orgSkip
+            ? <span className="text-xs font-bold" style={{ color: WARN }}>{SETTLEMENT_SKIP_LABEL[a.orgSkip] || "차감하지 못했습니다."}</span>
+            : <span className="text-xs font-bold" style={{ color: SUB }}>차감 없음</span>}
+        </div>
+      ) : (
       <div className="mt-1.5 flex flex-wrap gap-1.5">
         {a.status !== "done"
           ? <button onClick={() => onStatus(s.id, "done", a.memberId)} className="rounded-full px-2.5 py-1 text-xs font-extrabold text-white" style={{ backgroundColor: GOOD }}>출석</button>
@@ -2653,7 +2669,8 @@ function SchedAttendeeRow({ s, a, members, onStatus, onNoshowFee }) {
         {a.status !== "cancel" && <button onClick={() => onStatus(s.id, "cancel", a.memberId)} className="rounded-full px-2.5 py-1 text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>수업 취소</button>}
         {a.deductFrom && <span className="self-center text-xs font-bold" style={{ color: SUB }}>{a.deductFrom} −1회</span>}
       </div>
-      {a.status === "noshow" && (
+      )}
+      {!locked && a.status === "noshow" && (
         <div className="mt-1.5 flex flex-wrap items-center gap-1.5 rounded-lg p-2" style={{ backgroundColor: BAD_S }}>
           {a.noshowFee == null ? (
             <>
@@ -2705,7 +2722,73 @@ function SchedLine({ s, members, onEdit }) {
   );
 }
 
-function SchedItem({ s, members, del, setDel, setEditing, onStatus, onNoshowFee, onGroupDone, onDelete }) {
+/**
+ * 수업 확정 블록.
+ *
+ * 출석 · 노쇼 · 취소는 화면 상태만 바꾼다. 여기를 눌러야 회원권이 차감된다 --
+ * 차감은 원장에 append-only 로 박히고 되돌리기는 대표만 할 수 있어, 누르는
+ * 문턱이 그 무게와 맞아야 한다(lesson-settlement.js 머리말).
+ */
+function SchedSettleBlock({ s, canSettle, settled, canUnsettle, onSettle, onUnsettle }) {
+  const [busy, setBusy] = useState(false);
+  const [undoing, setUndoing] = useState(false);
+  const [reason, setReason] = useState("");
+  const doneCount = attendeesOf(s).filter((a) => a.status === "done").length;
+
+  if (settled) return (
+    <div className="mt-2 rounded-xl p-2.5" style={{ backgroundColor: GOOD_S }}>
+      <div className="flex flex-wrap items-center gap-2">
+        <Check size={13} style={{ color: GOOD }} />
+        <span className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: GOOD }}>확정됨 · 회원권 차감 완료</span>
+        {/* 되돌리기는 대표만 본다. 차감 보정과 같은 선이다. */}
+        {canUnsettle && !undoing ? (
+          <button type="button" onClick={() => { setUndoing(true); setReason(""); }}
+            className="text-xs font-bold" style={{ color: SUB }}>차감 되돌리기</button>
+        ) : null}
+      </div>
+      {canUnsettle && undoing ? (
+        <div className="mt-1.5">
+          <input value={reason} onChange={(event) => setReason(event.target.value)} maxLength={LEDGER_REASON_MAX}
+            placeholder="되돌리는 사유 (필수)" className="h-10 w-full rounded-lg border-0 px-3 text-xs outline-none"
+            style={{ backgroundColor: CARD, color: INK, border: `1px solid ${LINE}` }} />
+          <div className="mt-1.5 flex gap-1.5">
+            <button type="button" onClick={() => { setUndoing(false); setReason(""); }}
+              className="h-9 flex-1 rounded-lg text-xs font-bold" style={{ backgroundColor: CARD, color: SUB }}>취소</button>
+            <button type="button" disabled={busy || reason.trim() === ""}
+              onClick={async () => { setBusy(true); try { if (await onUnsettle?.(s.id, reason.trim())) setUndoing(false); } finally { setBusy(false); } }}
+              className="h-9 flex-1 rounded-lg text-xs font-extrabold text-white disabled:opacity-40"
+              style={{ backgroundColor: BAD }}>{busy ? "처리 중" : "되돌리기"}</button>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+
+  if (!canSettle) return null;
+  return (
+    <div className="mt-2 rounded-xl p-2.5" style={{ backgroundColor: TINT, border: `1px solid ${RING}` }}>
+      <button type="button" disabled={busy}
+        onClick={async () => { setBusy(true); try { await onSettle?.(s.id); } finally { setBusy(false); } }}
+        className="h-10 w-full rounded-lg text-sm font-extrabold text-white disabled:opacity-40"
+        style={{ backgroundColor: PRIMARY }}>
+        {busy ? "확정 중" : doneCount > 0 ? `수업 확정 · ${doneCount}명 차감` : "수업 확정"}
+      </button>
+      {/* 무게를 미리 말한다. 누른 뒤에 알게 되면 늦다. */}
+      <p className="mt-1.5 text-xs leading-relaxed" style={{ color: INK2 }}>
+        확정하면 회원권이 차감되고, 되돌리려면 대표 확인이 필요합니다.
+      </p>
+    </div>
+  );
+}
+
+/* 이 카드는 지금 아무 데서도 그려지지 않는다 -- 일정 탭은 주간 그리드를 쓰고,
+   출석과 확정은 수업 시트(ScheduleForm)에서 한다. itemProps 와 SchedAttendeeRow
+   도 같이 떠 있다.
+
+   지우지 않고 소속 모드를 함께 넣어 두었다. 되살릴 때 개인 모드처럼 동작하면
+   소속 센터에서 회원권이 차감되지 않은 채 출석만 기록된다 -- 조용히 급여가
+   빠지는 쪽이다. 지울지 되살릴지는 따로 판단할 일이다. */
+function SchedItem({ s, members, del, setDel, setEditing, onStatus, onNoshowFee, onGroupDone, onDelete, organizationMode = false, onSettleLesson, onUnsettleLesson, canUnsettle = false }) {
   const nameOf = (id) => members.find((m) => m.id === id)?.name || "삭제된 회원";
   if (isPersonalEvt(s)) return (
     <div className="rounded-2xl p-3" style={{ backgroundColor: CANVAS, borderLeft: `4px solid ${MINT}` }}>
@@ -2763,9 +2846,15 @@ function SchedItem({ s, members, del, setDel, setEditing, onStatus, onNoshowFee,
         </div>
       ) : (
         <div className="mt-2 space-y-1.5">
-          {list.map((a) => <SchedAttendeeRow key={a.memberId} s={s} a={a} members={members} onStatus={onStatus} onNoshowFee={onNoshowFee} />)}
+          {list.map((a) => <SchedAttendeeRow key={a.memberId} s={s} a={a} members={members} onStatus={onStatus} onNoshowFee={onNoshowFee} locked={organizationMode && isSettledLesson(s)} />)}
         </div>
       )}
+      {/* 개인 모드에는 조직 회원권이 없다. 확정할 것이 없으므로 이 블록을 두지
+          않는다 -- 지금 동작 그대로다. 기구 그룹도 회원권과 무관하다. */}
+      {organizationMode && !eq ? (
+        <SchedSettleBlock s={s} settled={isSettledLesson(s)} canSettle={canSettleLesson(s)}
+          canUnsettle={canUnsettle} onSettle={onSettleLesson} onUnsettle={onUnsettleLesson} />
+      ) : null}
       <div className="mt-2 flex gap-1.5">
         <button onClick={() => setEditing(s)} className="ml-auto rounded-full bg-white px-2.5 py-1.5" style={{ color: SUB }}><Pencil size={12} /></button>
         <button onClick={() => setDel(s.id)} className="rounded-full bg-white px-2.5 py-1.5" style={{ color: FAINT }}><Trash2 size={12} /></button>
@@ -2782,7 +2871,7 @@ function SchedItem({ s, members, del, setDel, setEditing, onStatus, onNoshowFee,
   );
 }
 
-function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset, quickAddRequest, onConsumeQuickAdd, openLessonId, onConsumeOpenLesson, onOpenMember, onAddMember, onOpenAttendance, payCard = null }) {
+function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset, quickAddRequest, onConsumeQuickAdd, openLessonId, onConsumeOpenLesson, onOpenMember, onAddMember, onOpenAttendance, organizationMode = false, onSettleLesson, onUnsettleLesson, canUnsettle = false, payCard = null }) {
   const initialDisplay = useMemo(() => {
     try { return JSON.parse(localStorage.getItem(SCHEDULE_VIEW_KEY) || "null") || {}; }
     catch (e) { return {}; }
@@ -2886,7 +2975,10 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
   const liveEditing = editing?.id ? (db.schedule.find((s) => s.id === editing.id) || editing) : editing;
   const step = (dir) => setCursor(shift(cursor, 7 * dir));
 
-  const itemProps = { members: db.members, del, setDel, setEditing, onStatus, onNoshowFee, onGroupDone, onDelete };
+  const itemProps = {
+    members: db.members, del, setDel, setEditing, onStatus, onNoshowFee, onGroupDone, onDelete,
+    organizationMode, onSettleLesson, onUnsettleLesson, canUnsettle,
+  };
 
   const T0 = todayISO();
   const [parked, setParked] = useState({});
@@ -2972,7 +3064,29 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
     schedule: db.schedule,
     pendingDrafts: listPendingLessonRecords(),
   }), [db.schedule, db.members, recordQueueRevision]);
-  const taskQueue = useMemo(() => pendingLessonSummary.sessions.map((item) => {
+  /* 확정하지 않은 수업. 출석은 눌렸으니 화면상 처리된 것처럼 보이는데 원장에는
+     아무것도 없고, 그 회차는 아무에게도 지급되지 않는다 -- 큐에 잡히지 않으면
+     아무도 알아채지 못한다. */
+  const unsettledLessons = useMemo(() => (
+    organizationMode ? db.schedule.filter((item) => needsSettlement(item, { now: new Date() })) : []
+  ), [organizationMode, db.schedule]);
+  const pendingCount = pendingLessonSummary.count + unsettledLessons.length;
+  const taskQueue = useMemo(() => [
+    ...unsettledLessons.map((lesson) => ({
+      key: `settle|${lesson.id}`,
+      kind: "settlement",
+      lessonId: lesson.id,
+      memberId: attendeesOf(lesson)[0]?.memberId || "",
+      reasons: ["settlement"],
+      s: lesson,
+      lesson,
+      a: attendeesOf(lesson)[0] || {},
+      m: db.members.find((member) => member.id === attendeesOf(lesson)[0]?.memberId) || null,
+      session: null,
+      pendingDraft: null,
+      recordQueueLabel: "",
+    })),
+    ...pendingLessonSummary.sessions.map((item) => {
     const s = item.lesson || item.session?.lesson || db.schedule.find((lesson) => String(lesson?.id || "") === String(item.lessonId || "")) || null;
     const m = memberOf(item.memberId);
     const a = attendeesOf(s).find((attendee) => String(attendee?.memberId || "") === String(item.memberId || "")) || { memberId: item.memberId };
@@ -2986,7 +3100,8 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
       pendingDraft,
       recordQueueLabel: pendingLessonRecordLabel(pendingDraft),
     };
-  }), [pendingLessonSummary, db.schedule]);
+  }),
+  ], [pendingLessonSummary, db.schedule, db.members, unsettledLessons]);
   return (
     <div className="flex h-full min-h-0 flex-col">
       {/* 조직 소속 강사의 이달 예상 급여. 앱을 여는 이유가 이 숫자라 맨 위에 둔다. */}
@@ -3035,15 +3150,15 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
 
       {/* ─── 하단 고정 업무 요약 ─── */}
       {db.members.length > 0 && db.schedule.length > 0 && <div className="shrink-0" style={{ padding: "6px 12px 8px", backgroundColor: PAGE }}>
-        <button onClick={(e) => { if (pendingLessonSummary.count) { queueTriggerRef.current = e.currentTarget; setQueueOpen(true); } }} disabled={!pendingLessonSummary.count}
+        <button onClick={(e) => { if (pendingCount) { queueTriggerRef.current = e.currentTarget; setQueueOpen(true); } }} disabled={!pendingCount}
           className="flex h-14 w-full items-center gap-3 rounded-xl px-3 text-left disabled:opacity-80"
-          style={{ backgroundColor: pendingLessonSummary.count ? TINT : CARD, border: `1px solid ${pendingLessonSummary.count ? RING : LINE}`, boxShadow: "0 1px 4px rgba(28,36,51,.06)" }}>
+          style={{ backgroundColor: pendingCount ? TINT : CARD, border: `1px solid ${pendingCount ? RING : LINE}`, boxShadow: "0 1px 4px rgba(28,36,51,.06)" }}>
           <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: pendingLessonSummary.count ? TINT : GOOD_S }}>
             {pendingLessonSummary.count ? <Pencil size={14} style={{ color: PRIMARY }} /> : <Check size={14} style={{ color: GOOD }} />}
           </span>
           <span className="min-w-0 flex-1">
-            <span className="block text-sm font-extrabold" style={{ color: INK }}>{pendingLessonSummary.count ? `확인할 수업 ${pendingLessonSummary.count}건` : "오늘 할 일 없음"}</span>
-            <span className="block text-xs" style={{ color: SUB }}>{pendingLessonSummary.count ? "미기록 수업과 확인 전 기록" : "확인할 수업이 없습니다"}</span>
+            <span className="block text-sm font-extrabold" style={{ color: INK }}>{pendingCount ? `확인할 수업 ${pendingCount}건` : "오늘 할 일 없음"}</span>
+            <span className="block text-xs" style={{ color: SUB }}>{pendingCount ? (unsettledLessons.length ? `미확정 ${unsettledLessons.length}건 · 미기록 수업과 확인 전 기록` : "미기록 수업과 확인 전 기록") : "확인할 수업이 없습니다"}</span>
           </span>
           {pendingLessonSummary.count > 0 && <span className="shrink-0 text-xs font-extrabold" style={{ color: PRIMARY }}>지금 처리</span>}
         </button>
@@ -3052,6 +3167,7 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
       {editing && <ScheduleForm draft={liveEditing} members={db.members} schedule={db.schedule} briefingOf={briefingOf} scheduleColors={scheduleColors} returnFocusRef={scheduleTriggerRef} onClose={() => setEditing(null)}
         onSubmit={(v) => { onSave(v); setEditing(null); }} onDelete={(id) => { onDelete(id); setEditing(null); }}
         onStatus={onStatus} onStatusAll={onStatusAll} onNoshowFee={onNoshowFee} onGroupDone={onGroupDone}
+        organizationMode={organizationMode} onSettleLesson={onSettleLesson} onUnsettleLesson={onUnsettleLesson} canUnsettle={canUnsettle}
         onNoComment={onNoComment} onSaveNote={onSaveNote} onOpenMember={onOpenMember} onFocusMemberWeek={(memberId) => { setFocusedMemberId(memberId); setEditing(null); }} />}
       {queueOpen && (
         <ScheduleQueueSheet tasks={taskQueue} members={db.members} returnFocusRef={queueTriggerRef} onClose={() => setQueueOpen(false)}
@@ -3438,7 +3554,10 @@ function confirmedLessonNoteArgs(note, reviewedDraft = null) {
   };
 }
 
-function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, onClose, onSubmit, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onOpenMember, onFocusMemberWeek, scheduleColors = null }) {
+function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, onClose, onSubmit, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onOpenMember, onFocusMemberWeek, scheduleColors = null, organizationMode = false, onSettleLesson, onUnsettleLesson, canUnsettle = false }) {
+  /* 확정된 수업은 출석을 바꿀 수 없다. 상태를 바꿔도 이미 나간 차감은 따라오지
+     않고, 둘이 어긋나면 어느 것이 맞는지 알 수 없다. */
+  const settledLesson = organizationMode && isSettledLesson(draft);
   const aiRecording = useContext(AIRecordingStatusContext);
   const currentIds = draft.memberIds || attendeesOf(draft).map((a) => a.memberId).filter(Boolean);
   const initialKind = draft.personal
@@ -3686,13 +3805,25 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
                   <p className="mb-1.5 text-xs font-extrabold" style={{ color: INK }}>출석 · 차감</p>
                   <div className="grid grid-cols-3 gap-2">
                     {[{ k: "done", l: "출석" }, { k: "noshow", l: "노쇼" }, { k: "cancel", l: "취소" }].map((o) => (
-                      <button key={o.k} onClick={() => onStatus?.(draft.id, o.k, activeMemberId)} className="h-9 rounded-lg text-xs font-bold"
+                      <button key={o.k} disabled={settledLesson} onClick={() => onStatus?.(draft.id, o.k, activeMemberId)} className="h-9 rounded-lg text-xs font-bold disabled:opacity-40"
                         style={activeAttendee.status === o.k ? { backgroundColor: stOf(o.k).color, color: "#fff" } : { backgroundColor: CANVAS, color: SUB }}>{o.l}</button>
                     ))}
                   </div>
-                  {activeAttendee.status !== "booked" && <button type="button" onClick={() => onStatus?.(draft.id, "booked", activeMemberId)} className="mt-2 h-9 w-full rounded-lg text-xs font-bold" style={{ backgroundColor: CARD, color: BRAND_D, border: `1px solid ${LINE}` }}>처리 되돌리기</button>}
-                  {activeAttendee.status === "done" && <p className="mt-1.5 text-xs font-bold" style={{ color: activeAttendee.deductFrom ? GOOD : SUB }}>{activeAttendee.deductFrom ? `${activeAttendee.deductFrom} 1회 차감 완료` : "차감 없이 출석 기록"}</p>}
-                  {activeAttendee.status === "noshow" && (
+                  {!settledLesson && activeAttendee.status !== "booked" && <button type="button" onClick={() => onStatus?.(draft.id, "booked", activeMemberId)} className="mt-2 h-9 w-full rounded-lg text-xs font-bold" style={{ backgroundColor: CARD, color: BRAND_D, border: `1px solid ${LINE}` }}>처리 되돌리기</button>}
+                  {/* 소속 모드에서는 확정이 차감한다. 레거시 잔여를 줄이던 문구를
+                      그대로 두면 차감되지 않은 회차가 차감된 것으로 읽힌다. */}
+                  {organizationMode
+                    ? settledLesson && (
+                      <p className="mt-1.5 text-xs font-bold" style={{ color: activeAttendee.orgEntryId ? GOOD : WARN }}>
+                        {activeAttendee.orgEntryId
+                          ? "회원권 1회 차감됨"
+                          : activeAttendee.orgSkip
+                          ? SETTLEMENT_SKIP_LABEL[activeAttendee.orgSkip] || "차감하지 못했습니다."
+                          : "차감 없음"}
+                      </p>
+                    )
+                    : activeAttendee.status === "done" && <p className="mt-1.5 text-xs font-bold" style={{ color: activeAttendee.deductFrom ? GOOD : SUB }}>{activeAttendee.deductFrom ? `${activeAttendee.deductFrom} 1회 차감 완료` : "차감 없이 출석 기록"}</p>}
+                  {!settledLesson && activeAttendee.status === "noshow" && (
                     <div className="mt-2 grid grid-cols-2 gap-2">
                       <button onClick={() => onNoshowFee?.(draft.id, true, activeMemberId)} className="h-9 rounded-lg text-xs font-extrabold" style={activeAttendee.noshowFee === true ? { backgroundColor: BAD, color: "#fff" } : { backgroundColor: BAD_S, color: BAD }}>차감</button>
                       <button onClick={() => onNoshowFee?.(draft.id, false, activeMemberId)} className="h-9 rounded-lg text-xs font-extrabold" style={activeAttendee.noshowFee === false ? { backgroundColor: BRAND, color: "#fff" } : { backgroundColor: CANVAS, color: SUB }}>비차감</button>
@@ -3720,13 +3851,25 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
               </>
             )}
 
-            {attendeesOf(draft).length > 1 && (
+            {!settledLesson && attendeesOf(draft).length > 1 && (
               <div className="grid grid-cols-3 gap-1">
                 {[{ k: "done", l: "전체 출석" }, { k: "noshow", l: "전체 노쇼" }, { k: "cancel", l: "전체 취소" }].map((o) => (
                   <button key={o.k} onClick={() => onStatusAll?.(draft.id, o.k)} className="h-9 rounded-lg text-xs font-bold" style={{ backgroundColor: TINT, color: PRIMARY }}>{o.l}</button>
                 ))}
               </div>
             )}
+
+            {/* 여러 명인 수업은 전원을 정한 뒤 한 번에 확정한다 -- 누르는 횟수가
+                오히려 줄어든다. 개인 모드에는 조직 회원권이 없어 이 블록이 없다. */}
+            {organizationMode ? (
+              <SchedSettleBlock s={draft} settled={settledLesson} canSettle={canSettleLesson(draft)}
+                canUnsettle={canUnsettle} onSettle={onSettleLesson}
+                onUnsettle={async (...args) => {
+                  const done = await onUnsettleLesson?.(...args);
+                  if (done) onClose?.();
+                  return done;
+                }} />
+            ) : null}
           </div>
         )}
         {draft.id && isGroup && (
@@ -3795,6 +3938,17 @@ function ScheduleQueueSheet({ tasks, members, returnFocusRef, onClose, onNoComme
           </div>
 
           {task.kind === "attendance" && <button type="button" onClick={() => onOpenLesson?.(task.s || task.lesson)} className="h-12 w-full rounded-lg text-sm font-extrabold text-white" style={{ backgroundColor: PRIMARY }}>출석 처리</button>}
+
+          {/* 확정은 참석자 목록이 있는 카드에서 한다. 여기서 바로 차감하면 누구를
+              차감하는지 보지 않고 누르게 된다. */}
+          {task.kind === "settlement" && (
+            <div className="space-y-2">
+              <p className="rounded-lg px-3 py-2 text-xs font-bold leading-relaxed" style={{ backgroundColor: WARN_S, color: WARN }}>
+                출석은 기록됐지만 회원권이 아직 차감되지 않았습니다. 확정해야 급여에 들어갑니다.
+              </p>
+              <button type="button" onClick={() => onOpenLesson?.(task.s || task.lesson)} className="h-12 w-full rounded-lg text-sm font-extrabold text-white" style={{ backgroundColor: PRIMARY }}>수업 확정하기</button>
+            </div>
+          )}
 
           {task.kind === "confirmation" && (
             <div className="space-y-3">
@@ -17768,10 +17922,53 @@ export function createAppScreenSmokeCases() {
     ],
     now: new Date(2026, 8, 18),
   }).roster;
+  /* 소속 강사의 일정 탭. 확정 전 · 확정됨 · 차감 건너뜀을 한 자리에서 본다.
+     시간은 06:00 으로 둔다 -- 확정 버튼은 시각을 보지 않지만, 카드가 지난
+     수업으로 보이는 편이 읽기 쉽다. */
+  const settleAttendee = (memberId, extra = {}) => ({
+    memberId, status: "done", deductFrom: null, noshowFee: null, ...extra,
+  });
+  const settleLessonOf = (overrides = {}) => ({
+    id: "settle-1",
+    date: todayISO(),
+    start: "06:00",
+    end: "06:50",
+    type: "듀엣",
+    instructor: "정예진",
+    room: "1번룸",
+    memo: "",
+    attendees: [settleAttendee("m-local-1"), settleAttendee("smoke-client-b")],
+    ...overrides,
+  });
+
+  const scheduleWithSettlement = (lesson, extra = {}) => provider(
+    <ScheduleForm draft={lesson} members={smokeRoster} schedule={[lesson]} briefingOf={() => null}
+      onClose={noop} onSubmit={noop} onDelete={noop} onStatus={noop} onStatusAll={noop}
+      onNoshowFee={noop} onGroupDone={noop} onNoComment={noop} onSaveNote={noop} onOpenMember={noop}
+      organizationMode onSettleLesson={noop} onUnsettleLesson={noop} {...extra} />,
+  );
   const busyDb = createScheduleFixtureDb();
   return [
     { name: "일정 탭", element: provider(<ScheduleManager db={db} photos={photos} onSave={noop} onDelete={noop} onStatus={noop} onStatusAll={noop} onNoshowFee={noop} onGroupDone={noop} onNoComment={noop} onSaveNote={noop} onToast={noop} onSettings={noop} onConsumeMemberPreset={noop} onConsumeQuickAdd={noop} onOpenMember={noop} />) },
     { name: "일정 탭 · 하루 11건 혼합", element: provider(<ScheduleManager db={busyDb} photos={{}} onSave={noop} onDelete={noop} onStatus={noop} onStatusAll={noop} onNoshowFee={noop} onGroupDone={noop} onNoComment={noop} onSaveNote={noop} onToast={noop} onSettings={noop} onConsumeMemberPreset={noop} onConsumeQuickAdd={noop} onOpenMember={noop} />) },
+    { name: "일정 탭 · 소속 · 확정 전", element: scheduleWithSettlement(settleLessonOf()) },
+    { name: "일정 탭 · 소속 · 확정됨", element: scheduleWithSettlement(settleLessonOf({
+      orgSettledAt: "2026-09-19T07:00:00.000Z",
+      attendees: [
+        settleAttendee("m-local-1", { orgPassId: "p1", orgEntryId: "settle-1_deduct" }),
+        settleAttendee("smoke-client-b", { orgSkip: "no_pass" }),
+      ],
+    })) },
+    { name: "일정 탭 · 소속 · 확정됨 · 대표", element: scheduleWithSettlement(settleLessonOf({
+      orgSettledAt: "2026-09-19T07:00:00.000Z",
+      attendees: [settleAttendee("m-local-1", { orgPassId: "p1", orgEntryId: "settle-1_deduct" })],
+    }), { canUnsettle: true }) },
+    { name: "일정 탭 · 개인 모드 · 확정 없음", element: provider(
+      <ScheduleForm draft={settleLessonOf()} members={smokeRoster} schedule={[settleLessonOf()]}
+        briefingOf={() => null} onClose={noop} onSubmit={noop} onDelete={noop} onStatus={noop}
+        onStatusAll={noop} onNoshowFee={noop} onGroupDone={noop} onNoComment={noop} onSaveNote={noop}
+        onOpenMember={noop} />,
+    ) },
     { name: "회원 목록", element: <ReferenceMemberList members={db.members} schedule={db.schedule} settings={db.settings} onSelect={noop} onAdd={noop} /> },
     { name: "회원 상세", element: <ReferenceMemberDetail member={member} schedule={db.schedule} photos={photos[member.id]} settings={db.settings} onBack={noop} onPatch={asyncNoop} onSaveNote={asyncNoop} onSchedule={noop} onAssess={noop} onToast={noop} /> },
     { name: "체형분석 목록", element: <ReferenceAnalysisTab members={db.members} photos={photos} selectedId={null} selectedPoseId={null} onSelect={noop} hub={noop} /> },
@@ -19415,6 +19612,102 @@ export default function App() {
     if (!saveAttendanceOnce(id, { ...db, members, schedule: db.schedule.map((x) => (x.id === id ? { ...x, attendees } : x)) })) return;
     setToast({ ok: true, msg });
   };
+  /* 수업 확정. 출석으로 정해진 사람마다 조직 회원권을 한 회차 차감한다.
+     deductPass 를 그대로 쓴다 -- 판정 엔진과 원장 기록이 전부 그 경로에 있다.
+
+     두 번 눌리는 것을 막는다. 같은 수업을 두 번 확정하면 같은 회차가 두 번
+     차감되고, 원장은 append-only 라 고칠 수 없다. */
+  const settlingRef = useRef(new Set());
+  const settleLesson = async (lessonId) => {
+    const lesson = db.schedule.find((item) => item.id === lessonId);
+    if (!lesson || !organizationRoster || isSettledLesson(lesson)) return;
+    if (settlingRef.current.has(lessonId)) return;
+    settlingRef.current.add(lessonId);
+    try {
+      const plan = planLessonSettlement({
+        lesson, members: rosterMembers, passes: rosterPasses, now: new Date(),
+      });
+      /* 수업이 일어난 시각으로 차감한다. 누른 시각으로 하면 밤에 몰아 확정한
+         수업이 그날로 기록되고, 급여가 다른 달로 넘어갈 수 있다. */
+      const occurredAt = new Date(`${lesson.date}T${lesson.start || "00:00"}:00`);
+      const results = [];
+      const skips = [...plan.skips];
+      for (const item of plan.deductions) {
+        try {
+          const deducted = await deductPass(organizationContext.organizationId, item.pass, {
+            instructorId: account?.id || "",
+            createdBy: account?.id || "",
+            occurredAt,
+            isDeputyDirector: organizationContext.isDeputyDirector === true,
+            // 조직 수업 문서도 이 일정과 같은 id 를 쓴다. 원장의 lessonId 가
+            // 일정을 가리켜야 "이 수업의 차감"을 되짚을 수 있다.
+            lessonId: lesson.id,
+          });
+          results.push({ memberId: item.memberId, passId: item.pass.id, entryId: deducted.entryId });
+        } catch (error) {
+          /* 성공한 차감은 이미 원장에 박혔다. 이 수업을 열어 두고 다시 확정하게
+             하면 그 회차가 한 번 더 나간다 -- 닫고 못 나간 것만 알린다. */
+          skips.push({
+            memberId: item.memberId,
+            clientId: item.clientId,
+            reason: SETTLEMENT_SKIP.WRITE_FAILED,
+            code: error?.code || error?.message || "unknown",
+          });
+        }
+      }
+      const settled = applySettlementToLesson(lesson, { results, skips });
+      if (!saveAttendanceOnce(lessonId, {
+        ...db,
+        schedule: db.schedule.map((item) => (item.id === lessonId ? settled : item)),
+      })) return;
+      // 잔여가 줄었다. 명부를 다시 읽지 않으면 화면이 옛 숫자를 보여준다.
+      setRosterRevision((value) => value + 1);
+      const skipped = skips.length;
+      setToast({
+        ok: skipped === 0,
+        msg: skipped === 0
+          ? `수업을 확정했습니다. ${results.length}명 회원권 1회 차감.`
+          : `${results.length}명 차감했습니다. ${skipped}명은 차감하지 못했습니다 -- 카드에서 이유를 확인해 주세요.`,
+      });
+    } finally {
+      settlingRef.current.delete(lessonId);
+    }
+  };
+
+  /* 확정 되돌리기. 대표만 한다 -- 차감 보정과 같은 선이다.
+
+     지우지 않고 반대 항목을 더한다. 원장은 append-only 이고, 그것이 이 기록의
+     값어치 전부다(pass-repository 의 correctDeduction). */
+  const unsettleLesson = async (lessonId, reason) => {
+    const lesson = db.schedule.find((item) => item.id === lessonId);
+    if (!lesson || !organizationRoster || !isSettledLesson(lesson)) return false;
+    const organizationId = organizationContext.organizationId;
+    const failures = [];
+    for (const item of settledDeductionsOf(lesson)) {
+      try {
+        const pass = rosterPasses.find((candidate) => candidate.id === item.passId);
+        if (!pass) throw Object.assign(new Error("pass not found"), { code: "pass_missing" });
+        const entries = await listPassLedger(organizationId, item.passId);
+        const entry = entries.find((candidate) => candidate.id === item.entryId);
+        if (!entry) throw Object.assign(new Error("entry not found"), { code: "entry_missing" });
+        await correctDeduction(organizationId, pass, entry, { reason, createdBy: account?.id || "" });
+      } catch (error) {
+        failures.push({ memberId: item.memberId, code: error?.code || error?.message || "unknown" });
+      }
+    }
+    if (failures.length > 0) {
+      setToast({ ok: false, msg: `되돌리지 못했어요 (코드 ${failures[0].code}).` });
+      return false;
+    }
+    saveDb({
+      ...db,
+      schedule: db.schedule.map((item) => (item.id === lessonId ? clearSettlementFromLesson(item) : item)),
+    });
+    setRosterRevision((value) => value + 1);
+    setToast({ ok: true, msg: "처리를 되돌렸습니다. 원장에 보정 기록이 남았습니다." });
+    return true;
+  };
+
   const setGroupDone = (id, nextState) => {
     const cancelled = nextState === "cancelled";
     const done = nextState === true || nextState === "completed";
@@ -20276,7 +20569,7 @@ export default function App() {
       <div className="pt-app-shell safe-t flex h-full min-h-0 w-full flex-col" style={{ backgroundColor: PAGE, boxShadow: "0 0 0 1px rgba(28,36,51,.04)" }}>
         <div className="relative min-h-0 flex-1 overflow-hidden">
           <Guard key={tab}>
-            {tab === "schedule" && <ScheduleManager db={rosterDb} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterMembers ? () => { setMemberRegistrationRequest((value) => value + 1); setTab("members"); } : undefined} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
+            {tab === "schedule" && <ScheduleManager db={rosterDb} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterMembers ? () => { setMemberRegistrationRequest((value) => value + 1); setTab("members"); } : undefined} organizationMode={organizationRoster} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} canUnsettle={organizationRoster && organizationContext.role === ROLES.OWNER} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
             {tab === "members" && <div className={`h-full min-h-0 ${mobileView === "detail" && member ? "pt-member-detail-active" : ""}`}>
               <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList members={rosterMembers} schedule={db.schedule} settings={db.settings} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterMembers} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
               {mobileView === "detail" && member && <div className="pt-member-detail-pane h-full min-h-0">

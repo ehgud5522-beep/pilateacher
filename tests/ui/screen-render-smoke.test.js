@@ -25,6 +25,10 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
   assert.deepEqual(cases.map((item) => item.name), [
     "일정 탭",
     "일정 탭 · 하루 11건 혼합",
+    "일정 탭 · 소속 · 확정 전",
+    "일정 탭 · 소속 · 확정됨",
+    "일정 탭 · 소속 · 확정됨 · 대표",
+    "일정 탭 · 개인 모드 · 확정 없음",
     "회원 목록",
     "회원 상세",
     "체형분석 목록",
@@ -558,6 +562,53 @@ test("an instructor sees the centre's members, so there is nothing to re-registe
   assert.match(failed, /센터 회원을 불러오지 못했습니다 \(코드 permission-denied\)/);
   assert.match(failed, /아래는 이 기기에 저장된 목록입니다/);
   assert.match(failed, /다시 시도/);
+});
+
+test("the schedule settles the lesson, and says what that will cost before it does", async (t) => {
+  const vite = await createServer({
+    root: projectRoot,
+    configFile: false,
+    plugins: [react()],
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] },
+    server: { middlewareMode: true },
+    ssr: { noExternal: ["@capgo/camera-preview"] },
+    logLevel: "silent",
+  });
+  t.after(() => vite.close());
+  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+
+  /* 출석 · 노쇼 · 취소는 화면 상태만 바꾼다. 확정을 눌러야 차감이 나가고, 그
+     무게를 누르기 전에 말해야 한다. */
+  const before = markupOf("일정 탭 · 소속 · 확정 전");
+  assert.match(before, /수업 확정 · 2명 차감/);
+  assert.match(before, /확정하면 회원권이 차감되고, 되돌리려면 대표 확인이 필요합니다/);
+  // 확정 전에는 출석 · 노쇼 · 취소를 자유롭게 바꿀 수 있다.
+  assert.doesNotMatch(before, /disabled=""[^<]*>출석</, "확정 전에는 잠기지 않는다");
+  assert.match(before, /전체 출석/, "여러 명은 전원을 정한 뒤 한 번에 확정한다");
+
+  /* 확정 후에는 버튼이 잠긴다. 상태를 바꿔도 이미 나간 차감은 따라오지 않고,
+     둘이 어긋나면 어느 것이 맞는지 알 수 없다. */
+  const after = markupOf("일정 탭 · 소속 · 확정됨");
+  assert.match(after, /확정됨 · 회원권 차감 완료/);
+  assert.match(after, /회원권 1회 차감됨/);
+  assert.doesNotMatch(after, /수업 확정/);
+  assert.match(after, /disabled=""[^<]*>출석</, "확정 후에는 출석을 바꿀 수 없다");
+  assert.doesNotMatch(after, /전체 출석/);
+
+  /* 되돌리기는 대표만 본다. 강사가 방금 누른 것을 스스로 지울 수 있으면
+     확정이라는 문턱이 의미를 잃는다. 이름도 출석 상태를 되돌리는 버튼과
+     구분한다 -- 무게가 다르다. */
+  assert.doesNotMatch(after, /차감 되돌리기/);
+  assert.match(markupOf("일정 탭 · 소속 · 확정됨 · 대표"), /차감 되돌리기/);
+
+  // 개인 모드에는 조직 회원권이 없다. 확정할 것이 없으므로 블록도 없다.
+  const personal = markupOf("일정 탭 · 개인 모드 · 확정 없음");
+  assert.doesNotMatch(personal, /수업 확정/);
+  assert.doesNotMatch(personal, /대표 확인이 필요합니다/);
+  assert.match(personal, /처리 되돌리기/, "개인 모드는 지금 동작 그대로다");
 });
 
 test("ErrorBoundary hides diagnostics in production and records a privacy-safe diagnostic event", async () => {

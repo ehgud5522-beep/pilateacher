@@ -447,12 +447,17 @@ const STATUS = {
   noshow: { label: "노쇼", get color() { return BAD; }, get bg() { return BAD_S; } },
 };
 const stOf = (k) => STATUS[k] || STATUS.booked;
+/* 실제로 로그인이 되는 방식만 둔다. Firebase 에 붙어 있는 것은 Google 과 Apple
+   둘뿐이고, 이메일은 아래 별도 경로다. 카카오·네이버는 버튼만 있고 누르면
+   거부되던 것이라 지웠다 -- 열리지 않는 문을 앞에 두면 사용자는 자기 잘못을
+   찾는다. */
 const PROVIDERS = [
-  { key: "kakao", label: "카카오로 시작하기", bg: "#FEE500", fg: "#191600" },
-  { key: "naver", label: "네이버로 시작하기", bg: "#03C75A", fg: "#FFFFFF" },
   { key: "google", label: "Google로 시작하기", get bg() { return CARD; }, get fg() { return INK; }, get border() { return LINE; } },
   { key: "apple", label: "Apple로 시작하기", bg: "#000000", fg: "#FFFFFF" },
 ];
+/* 라벨에는 카카오·네이버가 남는다. Firebase 를 설정하지 않은 기기의 '최근
+   로그인' 목록이 이 표로 옛 로컬 계정의 제공자 이름을 그린다 -- 지우면 그
+   자리가 빈칸이 된다. 새로 만들어지는 계정에는 두 값이 들어가지 않는다. */
 const PROVIDER_LABEL = { kakao: "카카오", naver: "네이버", google: "Google", apple: "Apple", email: "이메일" };
 const DEFAULT_PERF = [
   { name: "코어 안정성", now: 50, prev: 50 }, { name: "척추 분절 가동성", now: 50, prev: 50 },

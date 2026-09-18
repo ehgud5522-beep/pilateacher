@@ -335,7 +335,15 @@ export function planPassMigration(text, {
           remainingCount,
           baseUnitPrice,
           /* 아직 서비스 회차를 쓰지 않은 상태로 옮긴다. 옛 엑셀은 그것을
-             기록하지 않았고, 지어내면 남은 서비스 1회분이 조용히 사라진다. */
+             기록하지 않았고, 지어내면 남은 서비스 1회분이 조용히 사라진다.
+
+             차감은 서비스를 먼저 쓰므로(deduction-pricing.js 의
+             spendsServiceSession) 이 선택에 값이 붙는다: 옛 시스템에서 이미
+             서비스를 쓴 회원권이라면 다음 한 회차가 기준 단가 대신 10,000 으로
+             기록된다. 반대로 잘못 짐작하면 회원이 서비스 1회를 잃는다.
+             한쪽은 강사의 한 회차 차액이고 다른 쪽은 회원이 산 것의 일부라,
+             회원 쪽으로 기운 이 선택을 그대로 둔다. 급여 집계에서 category 가
+             service 로 보이므로 대표가 알아볼 수는 있다. */
           serviceUsed: 0,
           instructorId,
           handedOver,

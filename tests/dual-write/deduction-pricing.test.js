@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   NEW_TO_INSTRUCTOR_THRESHOLD, NEW_TO_INSTRUCTOR_UNIT_PRICE, PRICING_RULE,
-  deputyDirectorUnitPrice, resolveDeductionUnitPrice,
+  deputyDirectorUnitPrice, resolveDeductionUnitPrice, spendsServiceSession,
 } from "../../src/data/schema/deduction-pricing.js";
 import { PAY_RATES } from "../../src/data/schema/pay-rates.js";
 
@@ -224,4 +224,41 @@ test("a flag has to be true, not merely truthy", () => {
     assert.equal(priceOf({ isDeputyDirector: notTrue }).rule, PRICING_RULE.BASE_CATEGORY, JSON.stringify(notTrue));
     assert.equal(priceOf({ handedOver: notTrue }).rule, PRICING_RULE.BASE_CATEGORY, JSON.stringify(notTrue));
   }
+});
+
+/* ── 서비스를 먼저 쓴다 ─────────────────────────────────────────────────────
+
+   잔여는 결제 회차와 서비스 회차를 합친 숫자 하나라, 어느 쪽을 쓰는지는 순서가
+   정한다. 서비스가 먼저다 -- 강사가 중도 퇴사하면 남은 서비스는 쓰이지 못하고
+   사라지고, 그 손해는 회원이 본다. */
+
+test("a pass that still has a service session spends it before the paid ones", () => {
+  assert.equal(spendsServiceSession({ category: "pt_1_1_new", serviceSessions: 1, serviceUsed: 0 }), true);
+});
+
+test("once the service sessions are used up the paid ones take over", () => {
+  assert.equal(spendsServiceSession({ category: "pt_1_1_new", serviceSessions: 1, serviceUsed: 1 }), false);
+  assert.equal(spendsServiceSession({ category: "pt_1_1_new", serviceSessions: 2, serviceUsed: 1 }), true);
+});
+
+test("a pass with no service sessions never reports one", () => {
+  assert.equal(spendsServiceSession({ category: "pt_1_1_new", serviceSessions: 0, serviceUsed: 0 }), false);
+  // 옛 회원권에는 두 필드가 아예 없다. 없는 것을 있다고 읽으면 안 된다.
+  assert.equal(spendsServiceSession({ category: "pt_1_1_new" }), false);
+});
+
+test("a pass that is entirely service says so without counting", () => {
+  // 통째로 서비스인 회원권. 두 번째부터는 판정 0 이 0원으로 만든다.
+  assert.equal(spendsServiceSession({ category: "service" }), true);
+  assert.equal(spendsServiceSession({ category: "service", serviceSessions: 0, serviceUsed: 9 }), true);
+});
+
+test("the judgement order is unchanged by which session is being spent", () => {
+  /* 서비스 회차라도 판정 순서는 그대로다. 판정 3 이 카테고리를 가리지 않으므로,
+     이 강사에게 이 회원이 아직 20회 미만이면 서비스라도 25,000 이다. */
+  const early = resolveDeductionUnitPrice(pass({
+    category: "service", baseUnitPrice: PAY_RATES.service, priorSessions: 3,
+  }));
+  assert.equal(early.unitPrice, NEW_TO_INSTRUCTOR_UNIT_PRICE);
+  assert.equal(early.rule, PRICING_RULE.NEW_TO_INSTRUCTOR);
 });

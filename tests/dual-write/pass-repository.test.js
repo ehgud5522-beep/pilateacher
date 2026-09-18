@@ -1197,3 +1197,85 @@ test("a cancellation without a reason is refused", async () => {
   }, { store }), /Missing reason/);
   assert.equal(store.calls.commit.length, 0);
 });
+
+/* ── 서비스 회차를 먼저 쓴다 ────────────────────────────────────────────────
+
+   회원권 하나가 결제 회차와 서비스 회차를 함께 들고 있고 잔여는 둘을 합친 숫자
+   하나다. 어느 쪽을 먼저 쓸지는 순서로만 정해지고, 서비스가 먼저다 -- 강사가
+   중도 퇴사하면 남은 서비스는 쓰이지 못하고 사라지기 때문이다. */
+
+const withService = (overrides = {}) => activePass({
+  category: "pt_1_1_repurchase_event",
+  baseUnitPrice: 30000,
+  serviceSessions: 1,
+  serviceUsed: 0,
+  ...overrides,
+});
+
+test("a pass with a service session spends that one first", async () => {
+  const store = fakeStore({ totals: settledPair() });
+  const { entry } = await deductPass(ORG, withService(), deductInput(), deductOptions(store));
+  /* 회원권은 pt_1_1_repurchase_event 인데 이 회차는 서비스다. 급여가 카테고리별로
+     묶이므로, 결제 카테고리로 적으면 10,000 이 1:1 매출로 세어진다. */
+  assert.equal(entry.category, "service");
+  assert.equal(entry.unitPrice, 10000, "회원권의 30,000 이 아니라 서비스 금액이다");
+  const passWrite = store.calls.commit[0][3];
+  assert.deepEqual(passWrite.data, { remainingCount: -1, serviceUsed: 1 });
+});
+
+test("once the service session is gone the pass is priced as what it was sold as", async () => {
+  const store = fakeStore({ totals: settledPair() });
+  const { entry } = await deductPass(
+    ORG, withService({ serviceUsed: 1 }), deductInput(), deductOptions(store),
+  );
+  assert.equal(entry.category, "pt_1_1_repurchase_event");
+  assert.equal(entry.unitPrice, 30000);
+  assert.equal(entry.rule, "base_category");
+  const passWrite = store.calls.commit[0][3];
+  assert.deepEqual(passWrite.data, { remainingCount: -1 }, "서비스 카운터는 움직이지 않는다");
+});
+
+test("the second service session of a pass is the instructor's own", async () => {
+  /* 센터가 내는 것은 회원권당 1회분뿐이다. 두 번째부터는 잔여만 줄고 급여는 0 이다. */
+  const store = fakeStore({ totals: settledPair() });
+  const { entry } = await deductPass(
+    ORG, withService({ serviceSessions: 2, serviceUsed: 1 }), deductInput(), deductOptions(store),
+  );
+  assert.equal(entry.category, "service");
+  assert.equal(entry.unitPrice, 0);
+  assert.equal(entry.rule, "service_already_used");
+});
+
+test("a service session does not escape the judgements that come before the table", async () => {
+  /* 확정본의 판정 순서는 그대로다. 이 강사에게 이 회원이 아직 20회 미만이면
+     서비스 회차라도 25,000 이다 -- 판정 3 이 카테고리를 가리지 않는다. */
+  const store = fakeStore({ totals: settledPair(3) });
+  const { entry } = await deductPass(ORG, withService(), deductInput(), deductOptions(store));
+  assert.equal(entry.category, "service");
+  assert.equal(entry.unitPrice, 25000);
+  assert.equal(entry.rule, "new_to_instructor");
+});
+
+test("a pass with no service sessions is untouched by any of this", async () => {
+  const store = fakeStore({ totals: settledPair() });
+  const { entry } = await deductPass(ORG, activePass(), deductInput(), deductOptions(store));
+  assert.equal(entry.category, "pt_1_1_new");
+  assert.deepEqual(store.calls.commit[0][3].data, { remainingCount: -1 });
+});
+
+test("correcting a service deduction gives the session back to the centre", async () => {
+  /* 원장에 service 로 적혀 있으므로 되돌리기가 그것을 보고 카운터를 되돌린다.
+     되돌리지 않으면 센터가 내주기로 한 1회분이 실수 하나로 사라진다. */
+  const store = fakeStore();
+  await correctDeduction(
+    ORG,
+    withService({ serviceUsed: 1 }),
+    {
+      id: "lesson-1_deduct", type: "deduct", passId: "pass-a",
+      category: "service", unitPrice: 10000, instructorId: "instructor-a",
+    },
+    { reason: "잘못 눌렀습니다", createdBy: "owner-a" },
+    { store },
+  );
+  assert.deepEqual(store.calls.commit[0][1].data, { remainingCount: 1, serviceUsed: -1 });
+});

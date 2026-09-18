@@ -52,6 +52,38 @@ export const NEW_TO_INSTRUCTOR_THRESHOLD = 20;
  */
 export const PAID_SERVICE_SESSIONS_PER_PASS = 1;
 
+/**
+ * 이 차감이 서비스 회차를 쓰는가.
+ *
+ * ── 서비스를 먼저 쓴다 ──
+ * 한 회원권 안에 결제 회차와 서비스 회차가 섞여 있고, 잔여는 둘을 합친 숫자
+ * 하나다. 그래서 "몇 번째 차감인가"가 곧 "어느 쪽을 쓰는가"이고, 그 순서는
+ * 데이터가 정해 주지 않으므로 우리가 정한다.
+ *
+ * 서비스가 먼저다. 강사가 중도 퇴사하면 남은 서비스는 쓰이지 못하고 사라진다 --
+ * 결제 회차는 다른 강사가 이어받아도 회원이 산 것이지만, 서비스는 그 강사가
+ * 얹어 준 것이라 함께 사라진다. 결제 회차를 먼저 쓰면 사라질 쪽을 뒤에 두는
+ * 셈이고, 그 손해는 회원이 본다.
+ *
+ * ── 어느 회원권을 먼저 쓰는가와는 다른 층위다 ──
+ * 회원권이 여럿이면 만료가 이른 것부터 쓴다 (lesson-settlement.js 의
+ * pickPassForClient). 그 판단이 먼저이고, 이 판단은 그렇게 고른 회원권 *안에서*
+ * 일어난다. 앞의 것이 "어느 회원권", 뒤의 것이 "그 회원권의 어느 회차"를 답하므로
+ * 둘은 부딪치지 않는다.
+ *
+ * 순서를 뒤집지 않는 이유: 만료는 회원이 돈을 낸 회차를 없앤다. 서비스는 받은
+ * 것이라 잃어도 낸 돈이 사라지지는 않는다. 서비스가 남은 회원권을 만료가 이른
+ * 회원권보다 앞세우면 더 큰 손해를 두고 작은 손해를 먼저 막게 된다.
+ *
+ * @param {{ category?: string, serviceSessions?: number, serviceUsed?: number }} input
+ */
+export function spendsServiceSession(input = {}) {
+  /* 통째로 서비스인 회원권. 회차를 셀 것 없이 모든 차감이 서비스이고, 두 번째
+     부터는 판정 0 이 0원으로 만든다. */
+  if (String(input?.category ?? "") === PAY_CATEGORY.SERVICE) return true;
+  return countOf(input?.serviceUsed) < countOf(input?.serviceSessions);
+}
+
 const requiredInt = (value, label, { min }) => {
   if (typeof value !== "number" || !Number.isInteger(value) || value < min) {
     throw new Error(`Invalid ${label}`);
@@ -105,6 +137,9 @@ export function resolveDeductionUnitPrice(input = {}) {
   const serviceUsedCount = countOf(input?.serviceUsedCount);
 
   /* 판정 0. service 카테고리일 때만 본다.
+     여기의 category 는 *이 차감의* 성격이지 회원권의 카테고리가 아니다. 결제
+     회차가 남아 있어도 서비스 회차를 먼저 쓰면 그 회차는 service 다
+     (spendsServiceSession).
      "이미 service 차감이 있었는가"는 service 차감에 대한 이야기다. 카테고리를
      보지 않고 앞에 세우면, 서비스를 한 번 쓴 회원권의 1:1 수업까지 0원이 된다.
      부원장에게는 서비스 세션이 없어 판정 1과 부딪칠 일은 없지만, 언젠가

@@ -106,6 +106,11 @@ const attendeesOf = (lesson) => {
  * 못한 채 만료되고, 회원은 돈을 낸 회차를 잃는다. 만료일이 같으면 먼저 발급된
  * 것을 쓴다 -- 먼저 팔린 것이 먼저 소진되는 것이 계약의 순서다.
  *
+ * 고른 회원권 *안에서* 결제 회차와 서비스 회차 중 어느 쪽을 쓰는지는 다른 층위의
+ * 판단이고, deduction-pricing.js 의 spendsServiceSession 이 답한다(서비스가
+ * 먼저다). 이 판단이 먼저다 -- 만료는 회원이 돈을 낸 회차를 없애므로, 서비스가
+ * 남은 회원권을 만료가 이른 회원권보다 앞세우지 않는다.
+ *
  * @param {Array<any>} passes
  * @param {string} clientId
  * @param {Date} [now]

@@ -16,6 +16,12 @@
  * 아직 20회 미만이면 기준값은 쓰이지 않는다. 급여의 유일한 근거는 원장 항목의
  * unitPrice 다. 급여를 합산하는 코드는 표도 회원권도 아니라 원장을 읽어야 한다.
  *
+ * ── 서비스 회차를 먼저 쓴다 ──
+ * 회원권 하나가 결제 회차와 서비스 회차를 함께 들고 있고 잔여는 둘을 합친 숫자
+ * 하나라, 어느 쪽을 먼저 쓸지는 순서로만 정해진다. 서비스가 먼저다 -- 강사가
+ * 중도 퇴사하면 남은 서비스는 쓰이지 못하고 사라지기 때문이다. 근거는
+ * deduction-pricing.js 의 spendsServiceSession 에 적어 두었다.
+ *
  * ── 담당 강사가 바뀌어도 과거는 그대로다 ──
  * 이미 차감된 회차는 그 항목의 instructorId 가 들고 있으므로 자동으로 그 시점
  * 강사의 급여로 남는다. 남은 회차는 새 강사가 차감하면서 새 강사의 급여가
@@ -28,10 +34,10 @@ import {
   ATTENDANCE_STATUS, LEDGER_ENTRY_TYPE, LEDGER_REASON_MAX, LESSON_STATUS, PASS_STATUS,
   PAY_CATEGORY, PAYMENT_METHOD,
 } from "../schema/constants.js";
-import { resolveDeductionUnitPrice } from "../schema/deduction-pricing.js";
+import { resolveDeductionUnitPrice, spendsServiceSession } from "../schema/deduction-pricing.js";
 import { paths } from "../schema/paths.js";
 import { toDate } from "./payroll-repository.js";
-import { resolveUnitPrice } from "../schema/pay-rates.js";
+import { defaultUnitPriceFor, resolveUnitPrice } from "../schema/pay-rates.js";
 import { RepositoryReadError, readCollection } from "./repository-read.js";
 
 /**
@@ -399,7 +405,8 @@ export function isDeductablePass(pass, now = new Date()) {
  *
  * @param {string} organizationId
  * @param {any} pass 회원권 문서 (id, clientId, locationId, category, baseUnitPrice,
- *   contractPrice, totalSessions, handedOver, serviceUsed, remainingCount)
+ *   contractPrice, totalSessions, serviceSessions, handedOver, serviceUsed,
+ *   remainingCount)
  * @param {{ instructorId: string, createdBy: string, occurredAt: Date, isDeputyDirector?: boolean, lessonId?: string, entryId?: string }} input
  * @param {{ store?: PassStore, newId?: () => string, now?: () => Date }} [options]
  */
@@ -458,11 +465,33 @@ export async function deductPass(organizationId, pass, input, options = {}) {
      하나다 -- 같은 회원을 두 강사가 같은 초에 차감할 때에만 일어난다. */
   const priorSessions = await readInstructorClientSessions(organization, instructorId, clientId, { store });
 
+  /* 서비스 회차를 먼저 쓴다 (deduction-pricing.js 의 spendsServiceSession).
+     그래서 이 한 회차의 성격은 회원권의 카테고리가 아니라 "몇 번째 차감인가"가
+     정한다 -- 결제 회차가 남아 있어도 서비스가 남아 있으면 서비스부터다. */
+  const spendsService = spendsServiceSession({
+    category,
+    serviceSessions: pass?.serviceSessions,
+    serviceUsed: pass?.serviceUsed,
+  });
+  const pricingCategory = spendsService ? PAY_CATEGORY.SERVICE : category;
+  /* 서비스 회차의 기준 단가는 회원권에 박혀 있지 않다. 회원권이 들고 있는 것은
+     그 회원권이 팔린 카테고리의 기준값이고, 서비스는 팔린 것이 아니다.
+
+     그래서 차감 시점에 표를 읽는다. 발급 시점을 고정하지 않는 것이 여기서는
+     맞다 -- 이 값은 계약 조건이 아니라 센터가 정한 금액이고, 판정 2·3 의
+     25,000(NEW_TO_INSTRUCTOR_UNIT_PRICE)과 같은 층위다. 그 둘도 차감 시점에
+     읽는다. 서비스를 먼저 쓰므로 발급과 차감 사이가 가장 짧기도 하다.
+
+     회원권 자체가 service 카테고리이면 박힌 값이 이미 그 금액이라 그대로 쓴다. */
+  const pricingBaseUnitPrice = pricingCategory === category
+    ? baseUnitPrice
+    : defaultUnitPriceFor(PAY_CATEGORY.SERVICE);
+
   /* 여기서 이 한 회차가 얼마인지 정해진다. 확정본의 판정 순서를 그대로 옮긴
      순수 함수이고, 어느 판정이 이겼는지(rule)를 함께 돌려준다. */
   const { unitPrice, rule } = resolveDeductionUnitPrice({
-    category,
-    baseUnitPrice,
+    category: pricingCategory,
+    baseUnitPrice: pricingBaseUnitPrice,
     contractPrice: pass?.contractPrice,
     totalSessions: pass?.totalSessions,
     isDeputyDirector,
@@ -499,7 +528,11 @@ export async function deductPass(organizationId, pass, input, options = {}) {
     locationId,
     type: LEDGER_ENTRY_TYPE.DEDUCT,
     delta: -1,
-    category,
+    /* 회원권의 카테고리가 아니라 이 회차의 카테고리다. 급여가 카테고리별로
+       묶이므로, 서비스 회차를 결제 카테고리로 적으면 그 금액이 1:1 매출로
+       집계되고 원장은 고칠 수 없다. 되돌리기도 이 값을 보고 서비스 카운터를
+       되돌린다 (correctDeduction). */
+    category: pricingCategory,
     unitPrice,
     /* 왜 이 금액인가. 나중에 다시 계산할 수 없어서 함께 적는다 -- 그때의 누적
        횟수는 계속 올라가 사라지고, 부원장 지정과 서비스 사용 수도 그 뒤로
@@ -513,10 +546,6 @@ export async function deductPass(organizationId, pass, input, options = {}) {
     createdBy,
   };
 
-  /* 서비스 회차를 쓴 경우에만 카운터를 올린다. 이 숫자가 다음 서비스 차감의
-     판정 0 을 가른다 -- 회원권당 센터가 내는 것은 1회분뿐이다. */
-  const spendsService = category === PAY_CATEGORY.SERVICE;
-
   await store.commit([
     { path: paths.lesson(organization, lessonId), data: lesson },
     { path: paths.lessonParticipant(organization, lessonId, clientId), data: participant },
@@ -524,7 +553,9 @@ export async function deductPass(organizationId, pass, input, options = {}) {
     /* 잔여는 읽어서 빼지 않고 서버가 하나 줄인다. 두 강사가 같은 순간에 눌러도
        하나가 다른 하나를 덮어쓰지 않는다. 규칙은 계산된 값을 보고 -1 인지 따진다.
        서비스 카운터도 같은 이유로 같은 방식이고, 같은 update 에 얹는다 -- 차감과
-       카운터가 갈라져 저장되면 다음 서비스 회차의 단가가 틀린다. */
+       카운터가 갈라져 저장되면 다음 회차가 서비스인지 아닌지부터 틀린다.
+       serviceUsed 는 두 가지를 가른다: 다음 차감이 서비스인가
+       (spendsServiceSession), 그리고 그 서비스가 급여를 받는가 (판정 0). */
     {
       path: paths.pass(organization, passId),
       data: spendsService ? { remainingCount: -1, serviceUsed: 1 } : { remainingCount: -1 },

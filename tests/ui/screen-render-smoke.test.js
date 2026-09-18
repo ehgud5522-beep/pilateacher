@@ -53,6 +53,9 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "출석 체크 · 회원권 없음",
     "출석 체크 · 조회 실패",
     "회원 목록 · 강사",
+    "회원 목록 · 소속 강사",
+    "회원 목록 · 소속 강사 · 전체",
+    "회원 목록 · 소속 강사 · 명부 조회 실패",
     "회원 목록 · 강사 · 비어 있음",
     "회원권 발급",
     "회원권 발급 · 기준값과 다름",
@@ -507,6 +510,54 @@ test("the audit screen's cancellations and corrections come from the ledger", as
   const audit = renderToStaticMarkup(byName.get("감사 로그"));
   assert.doesNotMatch(audit, /취소할 방법이 없습니다/);
   assert.match(audit, /원래 기록은 지워지지 않고 함께 남아 있습니다/);
+});
+
+test("an instructor sees the centre's members, so there is nothing to re-register", async (t) => {
+  const vite = await createServer({
+    root: projectRoot,
+    configFile: false,
+    plugins: [react()],
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] },
+    server: { middlewareMode: true },
+    ssr: { noExternal: ["@capgo/camera-preview"] },
+    logLevel: "silent",
+  });
+  t.after(() => vite.close());
+  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+
+  const mine = markupOf("회원 목록 · 소속 강사");
+
+  /* 기본값은 "내 회원"이다. 120명에서 자기 8명을 찾게 만들면 그 화면은 쓰이지
+     않고, 강사는 자기 명단을 따로 만들기 시작한다. */
+  assert.match(mine, /내 회원 1명 · 전체 3명/);
+  assert.match(mine, /김하나/, "내 회원은 보인다");
+  assert.doesNotMatch(mine, /박서연/, "다른 강사의 회원은 기본값에서 빠진다");
+
+  /* 잔여는 조직 회원권에서만 온다. 기기에 있던 9회(정규 7 + 서비스 2)가 아니라
+     회원권의 8회여야 한다 -- 두 숫자가 함께 보이면 어느 것이 맞는지 아무도
+     모른다. */
+  assert.match(mine, /8/);
+  assert.doesNotMatch(mine, /잔여 9/);
+
+  /* 이관 직후에는 연락처가 달라 못 맞춘 같은 사람이 섞인다. 강사가 대표에게
+     말할 수 있어야 하므로 수를 먼저 말한다. */
+  assert.match(mine, /센터에 등록되지 않은 회원 1명/);
+  assert.match(mine, /연락처가 다르게 적혀 못 맞춘 것입니다/);
+  assert.match(mine, /기록과 사진은 그대로 남아 있습니다/);
+
+  // 전체로 바꾸면 센터의 모든 회원이 보인다. 경계가 아니라 편의다.
+  const all = markupOf("회원 목록 · 소속 강사 · 전체");
+  assert.match(all, /내 회원 0명 · 전체 3명/);
+
+  /* 못 읽었으면 빈 목록을 보여주지 않는다. 빈 목록은 "센터에 회원이 없다"로
+     읽히고, 그 다음 행동이 바로 다시 등록이다. */
+  const failed = markupOf("회원 목록 · 소속 강사 · 명부 조회 실패");
+  assert.match(failed, /센터 회원을 불러오지 못했습니다 \(코드 permission-denied\)/);
+  assert.match(failed, /아래는 이 기기에 저장된 목록입니다/);
+  assert.match(failed, /다시 시도/);
 });
 
 test("ErrorBoundary hides diagnostics in production and records a privacy-safe diagnostic event", async () => {

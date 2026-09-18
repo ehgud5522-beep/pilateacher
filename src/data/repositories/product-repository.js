@@ -8,6 +8,12 @@
  * 같은 제약을 firestore.foundation.rules 의 products 블록이 강제한다. 여기서
  * 먼저 막는 것은 규칙에 도달하기 전에 무엇이 잘못됐는지 알려주기 위해서다 —
  * 규칙 거부는 permission-denied 한 줄로만 돌아온다.
+ *
+ * ── 단가는 기타에만 있다 ──
+ * 급여 단가는 payCategory 가 정하고 일부는 강사의 풀방금액을 따른다. 표가
+ * 정해 주지 않는 것은 기타 하나뿐이라, 그 카테고리만 baseUnitPrice 를 들고
+ * 간다. 다른 카테고리에 이 필드가 있으면 표와 어긋날 자리가 생기고, 그 상품으로
+ * 발급된 회원권은 나중에 고칠 수 없다.
  */
 
 import { PAY_CATEGORY, PRODUCT_STATUS, SESSION_TYPE } from "../schema/constants.js";
@@ -36,6 +42,12 @@ const requiredInt = (value, label, { min }) => {
   if (!Number.isInteger(number)) throw new Error(`Invalid ${label}`);
   if (number < min) throw new Error(`Invalid ${label}`);
   return number;
+};
+
+/** 0 이상의 정수만. 문자열도 빈 칸도 받지 않는다 — 규칙의 `is int` 와 같은 문이다. */
+const exactInt = (value, label) => {
+  if (!Number.isInteger(value) || value < 0) throw new Error(`Invalid ${label}`);
+  return value;
 };
 
 /**
@@ -102,7 +114,7 @@ export async function listProducts(organizationId, options = {}) {
  * 만든 시각은 그것이 정확하더라도 거부된다.
  *
  * @param {string} organizationId
- * @param {{ name: string, sessionType: string, payCategory: string, defaultSessions: number, defaultPrice: number, createdBy: string, productId?: string }} input
+ * @param {{ name: string, sessionType: string, payCategory: string, defaultSessions: number, defaultPrice: number, createdBy: string, baseUnitPrice?: number, productId?: string }} input
  * @param {{ store?: ProductStore, newId?: () => string }} [options]
  */
 export async function createProduct(organizationId, input, options = {}) {
@@ -121,6 +133,18 @@ export async function createProduct(organizationId, input, options = {}) {
     throw new Error("Invalid payCategory for sessionType");
   }
 
+  /* 기타만 회당 단가를 들고 간다. 표에 단가가 없는 카테고리라 발급할 때마다
+     손으로 넣던 값이고, 상품에 적어 두면 발급이 그것을 읽는다.
+
+     나머지 카테고리에는 넣지 않는다. 단가를 적을 자리가 둘이면 답도 둘이 되고,
+     표와 어긋난 상품으로 발급된 회원권은 원장이 append-only 라 고칠 수 없다.
+     규칙도 같은 조건으로 막는다 -- 여기서 먼저 막는 것은 무엇이 잘못됐는지
+     말해 주기 위해서다. */
+  const wantsBaseUnitPrice = payCategory === PAY_CATEGORY.ETC;
+  if (!wantsBaseUnitPrice && input?.baseUnitPrice !== undefined) {
+    throw new Error("Invalid baseUnitPrice");
+  }
+
   const document = {
     organizationId: organization,
     name: requiredText(input?.name, "name"),
@@ -128,6 +152,10 @@ export async function createProduct(organizationId, input, options = {}) {
     payCategory,
     defaultSessions: requiredInt(input?.defaultSessions, "defaultSessions", { min: 1 }),
     defaultPrice: requiredInt(input?.defaultPrice, "defaultPrice", { min: 0 }),
+    /* requiredInt 를 쓰지 않는다. Number("") 는 0 이라 빈 칸이 무료가 되고, 그
+       상품으로 발급된 회원권은 모든 수업이 무보수로 기록된다. 규칙과 같게
+       정수만 받는다. */
+    ...(wantsBaseUnitPrice ? { baseUnitPrice: exactInt(input?.baseUnitPrice, "baseUnitPrice") } : {}),
     status: PRODUCT_STATUS.ACTIVE,
     createdAt: await store.serverTimestamp(),
     createdBy: requiredText(input?.createdBy, "createdBy"),
@@ -136,6 +164,21 @@ export async function createProduct(organizationId, input, options = {}) {
   const productId = String(input?.productId || newId());
   await store.create(paths.product(organization, productId), document);
   return { productId, ...document };
+}
+
+/**
+ * 이 상품이 들고 있는 회당 단가. 없으면 null 이다.
+ *
+ * 이 필드가 생기기 전에 만들어진 기타 상품에는 값이 없다. 그때는 발급 화면이
+ * 예전처럼 직접 물어야 하므로, 0 이 아니라 null 로 갈라 준다 -- 0 을 돌려주면
+ * "무료"와 "적혀 있지 않다"가 같은 값이 되어 그 수업들이 무보수로 기록된다.
+ *
+ * @param {any} product
+ * @returns {number | null}
+ */
+export function productBaseUnitPrice(product) {
+  const price = product?.baseUnitPrice;
+  return Number.isInteger(price) && price >= 0 ? price : null;
 }
 
 /**

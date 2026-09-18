@@ -81,7 +81,7 @@ function storageFor(userId) {
 }
 
 function productFixture(organizationId, overrides = {}) {
-  return {
+  const body = {
     organizationId,
     name: "1:1 20회 이벤트",
     sessionType: "pt_1_1",
@@ -93,6 +93,11 @@ function productFixture(organizationId, overrides = {}) {
     createdAt: serverTimestamp(),
     ...overrides,
   };
+  /* 기타는 표에 단가가 없어 상품이 회당 단가를 들고 간다. 나머지 카테고리에서는
+     이 필드가 있으면 거부된다. 테스트가 직접 넣은 값은 건드리지 않는다 --
+     빠뜨렸을 때 거부되는지도 확인해야 하기 때문이다. */
+  if (body.payCategory === "etc" && !("baseUnitPrice" in overrides)) body.baseUnitPrice = 25000;
+  return body;
 }
 
 function hoursAgo(hours) {
@@ -780,6 +785,53 @@ describe("membership products are added and archived, never edited", () => {
     await assertFails(updateDoc(ownerRef, { createdBy: users.manager }));
     await assertFails(updateDoc(ownerRef, { status: "archived", defaultPrice: 990000 }));
     await assertFails(updateDoc(ownerRef, { unitPrice: 60000 }));
+  });
+
+  /* 기타만 회당 단가를 들고 간다. 표가 단가를 정해 주지 않는 카테고리가 그
+     하나이고, 다른 카테고리에도 자리를 열어 두면 단가의 답이 둘이 된다 -- 표와
+     어긋난 상품으로 발급된 회원권은 원장이 append-only 라 고칠 수 없다. */
+  test("an etc product must carry the rate it will be issued at", async () => {
+    await assertSucceeds(setDoc(
+      productRef(users.owner, ORG_A, "product-etc-priced"),
+      productFixture(ORG_A, { payCategory: "etc", baseUnitPrice: 28000 }),
+    ));
+    // 만원으로 떨어지지 않는 값이 실제로 쓰인다. 0원 상품도 있을 수 있다.
+    await assertSucceeds(setDoc(
+      productRef(users.owner, ORG_A, "product-etc-free"),
+      productFixture(ORG_A, { payCategory: "etc", baseUnitPrice: 0 }),
+    ));
+    await assertFails(setDoc(
+      productRef(users.owner, ORG_A, "product-etc-unpriced"),
+      withoutField(productFixture(ORG_A, { payCategory: "etc" }), "baseUnitPrice"),
+    ));
+    for (const bad of [-1, "25000", 25000.5, null]) {
+      await assertFails(setDoc(
+        productRef(users.owner, ORG_A, `product-etc-bad-${String(bad)}`),
+        productFixture(ORG_A, { payCategory: "etc", baseUnitPrice: bad }),
+      ), JSON.stringify(bad));
+    }
+  });
+
+  test("every other category is refused a rate of its own", async () => {
+    for (const payCategory of ["pt_1_1_new", "pt_1_1_repurchase_normal", "service", "letmein"]) {
+      await assertFails(setDoc(
+        productRef(users.owner, ORG_A, `product-priced-${payCategory}`),
+        productFixture(ORG_A, { payCategory, baseUnitPrice: 25000 }),
+      ), payCategory);
+    }
+  });
+
+  test("the rate cannot be added, changed or dropped after the fact", async () => {
+    /* 상품은 고치지 않고 종료한 뒤 새로 추가한다. 단가만 예외로 두면 이미
+       발급된 회원권이 팔린 조건과 다른 숫자를 가리키게 된다. */
+    const etcRef = productRef(users.owner, ORG_A, "product-etc-locked");
+    await assertSucceeds(setDoc(etcRef, productFixture(ORG_A, { payCategory: "etc", baseUnitPrice: 25000 })));
+    await assertSucceeds(updateDoc(etcRef, { status: "archived" }));
+    await assertFails(updateDoc(etcRef, { baseUnitPrice: 30000 }));
+    await assertFails(updateDoc(etcRef, { status: "active", baseUnitPrice: 30000 }));
+    await assertFails(updateDoc(etcRef, { baseUnitPrice: deleteField() }));
+    // 없던 상품에 나중에 붙이는 것도 막는다.
+    await assertFails(updateDoc(productRef(users.owner, ORG_A, PRODUCT_A), { baseUnitPrice: 25000 }));
   });
 
   test("only the owner archives, and nobody deletes", async () => {

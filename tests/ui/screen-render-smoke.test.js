@@ -67,6 +67,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "회원권 발급",
     "회원권 발급 · 기준값과 다름",
     "회원권 발급 · 직접 단가",
+    "회원권 발급 · 상품 단가",
+    "회원권 발급 · 상품 단가 · 확인",
     "회원권 발급 · 풀방금액 없음",
     "회원권 발급 · 확인",
     "회원권 발급 · 조회 실패",
@@ -950,10 +952,21 @@ test("the issue form asks only what the price source needs", async (t) => {
   const fromTable = markupOf("회원권 발급 · 기준값과 다름");
   assert.doesNotMatch(fromTable, /급여 단가/);
 
-  // 표 밖의 상품만 금액 칸을 띄운다.
+  /* 표 밖의 상품 중에서도, 회당 단가가 붙기 전에 만들어진 것만 금액 칸을 띄운다.
+     빈 값을 0 으로 흘려보내면 그 수업들이 통째로 무보수가 된다. */
   const manual = markupOf("회원권 발급 · 직접 단가");
   assert.match(manual, /급여 단가 \(만원\)/);
   assert.match(manual, /표에 단가가 없어 직접 넣습니다/);
+
+  /* 상품이 회당 단가를 들고 있으면 묻지 않는다. 물으면 같은 상품이 사람마다
+     다른 단가로 나가고, 원장은 append-only 라 고칠 수 없다. */
+  const priced = markupOf("회원권 발급 · 상품 단가");
+  assert.doesNotMatch(priced, /급여 단가/);
+
+  /* 묻지 않은 값이라 발급 직전에 한 번은 보여야 한다. 원장에 박히고 나면 고칠 수
+     없는 숫자를 확인 없이 지나가게 두지 않는다. */
+  const confirm = markupOf("회원권 발급 · 상품 단가 · 확인");
+  assert.match(confirm, /급여 단가 회당 28,000원/);
 });
 
 test("changing a default leaves the default in sight", async (t) => {

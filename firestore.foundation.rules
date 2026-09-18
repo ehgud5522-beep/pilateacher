@@ -295,12 +295,20 @@ service cloud.firestore {
       // because passes already issued point at the terms it was sold under.
       // No unitPrice here: payroll rate comes from payCategory, and some of it
       // follows a per-instructor value.
+      //
+      // The one exception is etc, which is what a product is filed under when
+      // the table has no rate for it — a trial session, a make-up pack. Those
+      // were priced by hand at every single issue, so the rate lives on the
+      // product instead. It is refused on every other category: a second place
+      // to write a rate is a second answer, and passes issued from a product
+      // whose number disagrees with the table cannot be corrected afterwards.
       match /products/{productId} {
         allow read: if isActiveMember(organizationId);
         allow create: if request.resource.data.organizationId == organizationId
           && request.resource.data.keys().hasOnly([
             "organizationId", "name", "sessionType", "payCategory",
-            "defaultSessions", "defaultPrice", "status", "createdAt", "createdBy"
+            "defaultSessions", "defaultPrice", "status", "createdAt", "createdBy",
+            "baseUnitPrice"
           ])
           && request.resource.data.keys().hasAll([
             "organizationId", "name", "sessionType", "payCategory",
@@ -327,6 +335,17 @@ service cloud.firestore {
           && request.resource.data.defaultSessions > 0
           && request.resource.data.defaultPrice is int
           && request.resource.data.defaultPrice >= 0
+          // Required on etc, refused everywhere else. Not optional on etc: a
+          // product without it sends the issuer back to typing the rate by
+          // hand, which is the thing this field exists to stop.
+          && (
+            request.resource.data.payCategory == "etc"
+              ? (
+                request.resource.data.baseUnitPrice is int
+                && request.resource.data.baseUnitPrice >= 0
+              )
+              : !("baseUnitPrice" in request.resource.data)
+          )
           && request.resource.data.status in ["active", "archived"]
           && request.resource.data.createdAt == request.time
           && request.resource.data.createdBy == request.auth.uid
@@ -336,12 +355,17 @@ service cloud.firestore {
         allow update: if resource.data.organizationId == organizationId
           && request.resource.data.keys().hasOnly([
             "organizationId", "name", "sessionType", "payCategory",
-            "defaultSessions", "defaultPrice", "status", "createdAt", "createdBy"
+            "defaultSessions", "defaultPrice", "status", "createdAt", "createdBy",
+            "baseUnitPrice"
           ])
           && request.resource.data.keys().hasAll([
             "organizationId", "name", "sessionType", "payCategory",
             "defaultSessions", "defaultPrice", "status", "createdAt", "createdBy"
           ])
+          // baseUnitPrice is not in the list above because products from before
+          // it existed do not carry it. This says it cannot appear, vanish or
+          // move — covering it without demanding it be there.
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["status"])
           && request.resource.data.organizationId == resource.data.organizationId
           && request.resource.data.name == resource.data.name
           && request.resource.data.sessionType == resource.data.sessionType

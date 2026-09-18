@@ -87,7 +87,7 @@ import {
 import { listLocations } from "./data/repositories/location-repository.js";
 import { connectRepositoryLog, toleratingReadFailure } from "./data/repositories/repository-read.js";
 import {
-  createProduct, listProducts, setProductStatus,
+  createProduct, listProducts, productBaseUnitPrice, setProductStatus,
 } from "./data/repositories/product-repository.js";
 import {
   DEDUCT_BACKDATE_LIMIT_DAYS, cancelPass, correctDeduction, deductPass, isCancellablePass,
@@ -118,8 +118,8 @@ import {
   UNIT_PRICE_SOURCE, unitPriceSourceFor,
 } from "./data/schema/pay-rates.js";
 import {
-  CLIENT_STATUS, LEDGER_ENTRY_TYPE, LEDGER_REASON_MAX, PAYMENT_METHOD, PRODUCT_STATUS, ROLES,
-  SESSION_TYPE,
+  CLIENT_STATUS, LEDGER_ENTRY_TYPE, LEDGER_REASON_MAX, PAY_CATEGORY, PAYMENT_METHOD, PRODUCT_STATUS,
+  ROLES, SESSION_TYPE,
 } from "./data/schema/constants.js";
 import {
   CLIENT_STATUS_LABELS, PAYMENT_METHOD_LABELS, PAY_CATEGORY_LABELS, PRICING_RULE_LABELS,
@@ -14652,6 +14652,15 @@ function PassIssue({
   const product = products.find((item) => item.id === form.productId) || null;
   const instructor = instructors.find((item) => item.userId === form.instructorId) || null;
   const priceSource = unitPriceSourceFor(product?.payCategory);
+  /* 기타 상품은 회당 단가를 들고 있다. 있으면 묻지 않는다 -- 발급할 때마다 손으로
+     넣게 두면 같은 상품이 사람마다 다른 단가로 나가고, 원장은 고칠 수 없다.
+
+     이 필드가 생기기 전에 만들어진 상품에는 값이 없다. 그때만 예전처럼 묻는다.
+     빈 값을 0 으로 흘려보내면 그 수업들이 통째로 무보수가 된다. */
+  const productUnitPrice = priceSource === UNIT_PRICE_SOURCE.MANUAL
+    ? productBaseUnitPrice(product)
+    : null;
+  const asksUnitPrice = priceSource === UNIT_PRICE_SOURCE.MANUAL && productUnitPrice === null;
 
   /* 풀방금액이 없는 강사로는 재등급(정상)을 발급할 수 없다. 규칙도 막지만
      permission-denied 한 줄로는 무엇을 해야 하는지 알 수 없다. */
@@ -14684,7 +14693,7 @@ function PassIssue({
     if (form.contractPriceManwon === "") { setFormError("계약 금액을 입력해 주세요."); return; }
     // 계약서에 적힌 값이다. 지어내지 않고 받는다.
     if (!form.expiresAt) { setFormError("만료일을 입력해 주세요."); return; }
-    if (priceSource === UNIT_PRICE_SOURCE.MANUAL && form.unitPriceManwon === "") {
+    if (asksUnitPrice && form.unitPriceManwon === "") {
       setFormError("급여 단가를 입력해 주세요."); return;
     }
     setMode("confirm");
@@ -14706,8 +14715,12 @@ function PassIssue({
         paymentMethod: form.paymentMethod,
         instructorId: form.instructorId,
         expiresAt: new Date(`${form.expiresAt}T23:59:59`),
-        // 표에서 오는 카테고리는 아래 둘을 보지 않는다 -- pay-rates.js 가 가른다.
-        unitPrice: form.unitPriceManwon === "" ? undefined : manwonToWon(Number(form.unitPriceManwon)),
+        /* 표에서 오는 카테고리는 아래 둘을 보지 않는다 -- pay-rates.js 가 가른다.
+           상품이 회당 단가를 들고 있으면 그것이 먼저다. 사람이 넣는 값은 그 필드가
+           없는 옛 기타 상품에만 남아 있다. */
+        unitPrice: productUnitPrice !== null
+          ? productUnitPrice
+          : form.unitPriceManwon === "" ? undefined : manwonToWon(Number(form.unitPriceManwon)),
         fullRoomRate: fullRoomRateOf(instructor) ?? undefined,
         createdBy: currentUserId,
       }, { store: passStore });
@@ -14766,6 +14779,13 @@ function PassIssue({
             {" · "}{labelOf(PAYMENT_METHOD_LABELS, form.paymentMethod)}
             {" · "}{form.purchaseRound}차
           </p>
+          {/* 상품에서 온 값이라 발급 화면에서는 묻지 않았다. 원장에 박히고 나면
+              고칠 수 없으므로 누르기 전에 한 번은 보여야 한다. */}
+          {productUnitPrice === null ? null : (
+            <p className="tabular-nums" style={{ fontSize: TYPE.caption, color: INK2 }}>
+              급여 단가 회당 {won(productUnitPrice)}원 · 상품에 정해진 금액
+            </p>
+          )}
           <p style={{ fontSize: TYPE.caption, color: INK2 }}>
             담당 {instructor?.displayName || form.instructorId}
           </p>
@@ -14844,7 +14864,7 @@ function PassIssue({
               onChange={(e) => setForm({ ...form, expiresAt: e.target.value })} />
           </IssueField>
 
-          {priceSource === UNIT_PRICE_SOURCE.MANUAL && product ? (
+          {asksUnitPrice && product ? (
             <IssueField label="급여 단가 (만원)" hint="이 상품은 표에 단가가 없어 직접 넣습니다. 회당 금액입니다.">
               <input inputMode="decimal" value={form.unitPriceManwon} className={inputCls} placeholder="2.5"
                 onChange={(e) => setForm({ ...form, unitPriceManwon: manwonInput(e.target.value) })} />
@@ -15721,6 +15741,9 @@ function ProductRow({ product }) {
         {" · "}{labelOf(PAY_CATEGORY_LABELS, product.payCategory)}
         {" · "}{product.defaultSessions}회
         {" · "}{wonToManwonLabel(product.defaultPrice)}
+        {/* 기타 상품만 들고 있는 값이다. 발급이 이 숫자를 그대로 쓰므로 목록에서
+            보여야 한다 -- 안 보이면 잘못 적힌 것을 종료하기 전까지 알 수 없다. */}
+        {productBaseUnitPrice(product) === null ? null : ` · 회당 ${won(productBaseUnitPrice(product))}원`}
       </p>
     </div>
   );
@@ -15732,7 +15755,7 @@ function ProductCatalog({ organization, currentUserId, store, onRetryOrganizatio
   const [loadError, setLoadError] = useState("");
   const [mode, setMode] = useState("list");
   const [busyId, setBusyId] = useState("");
-  const [form, setForm] = useState({ name: "", sessionType: SESSION_TYPE.PT_1_1, payCategory: "", defaultSessions: "", defaultPriceManwon: "" });
+  const [form, setForm] = useState({ name: "", sessionType: SESSION_TYPE.PT_1_1, payCategory: "", defaultSessions: "", defaultPriceManwon: "", baseUnitPriceWon: "" });
   const [formError, setFormError] = useState("");
   const [saving, setSaving] = useState(false);
   const organizationId = organization?.organizationId || "";
@@ -15754,17 +15777,26 @@ function ProductCatalog({ organization, currentUserId, store, onRetryOrganizatio
   useEffect(() => { if (!locked) reload(); else setLoading(false); }, [locked, reload]);
 
   const categories = payCategoriesFor(form.sessionType);
-  const chooseSessionType = (sessionType) => setForm((current) => ({ ...current, sessionType, payCategory: "" }));
+  const chooseSessionType = (sessionType) => setForm((current) => ({ ...current, sessionType, payCategory: "", baseUnitPriceWon: "" }));
+  /* 표가 단가를 정해 주지 않는 카테고리는 기타 하나뿐이다. 여기서 한 번 정해
+     두면 발급할 때마다 손으로 넣지 않아도 된다. */
+  const wantsUnitPrice = form.payCategory === PAY_CATEGORY.ETC;
 
   const submit = async (event) => {
     event.preventDefault();
     setFormError("");
     const sessions = Number(form.defaultSessions);
     const manwon = Number(form.defaultPriceManwon);
+    /* 원 단위다. 기타는 25,000 이나 28,000 처럼 만원으로 떨어지지 않는 값이
+       나오고, 만원 칸으로 받으면 그 숫자를 넣을 방법이 없다. */
+    const unitPrice = Number(form.baseUnitPriceWon);
     if (!form.name.trim()) { setFormError("이벤트명을 입력해 주세요."); return; }
     if (!form.payCategory) { setFormError("급여 카테고리를 골라 주세요."); return; }
     if (!Number.isInteger(sessions) || sessions < 1) { setFormError("기준 세션은 1 이상의 정수로 입력해 주세요."); return; }
     if (!Number.isInteger(manwon) || manwon < 0) { setFormError("기준 금액은 만원 단위 정수로 입력해 주세요."); return; }
+    if (wantsUnitPrice && (form.baseUnitPriceWon === "" || !Number.isInteger(unitPrice) || unitPrice < 0)) {
+      setFormError("회당 단가를 원 단위 정수로 입력해 주세요."); return;
+    }
     setSaving(true);
     try {
       await createProduct(organizationId, {
@@ -15773,9 +15805,11 @@ function ProductCatalog({ organization, currentUserId, store, onRetryOrganizatio
         payCategory: form.payCategory,
         defaultSessions: sessions,
         defaultPrice: manwonToWon(manwon),
+        // 기타가 아니면 아예 보내지 않는다. 규칙이 다른 카테고리에서는 이 필드를 거부한다.
+        ...(wantsUnitPrice ? { baseUnitPrice: unitPrice } : {}),
         createdBy: currentUserId,
       }, { store });
-      setForm({ name: "", sessionType: SESSION_TYPE.PT_1_1, payCategory: "", defaultSessions: "", defaultPriceManwon: "" });
+      setForm({ name: "", sessionType: SESSION_TYPE.PT_1_1, payCategory: "", defaultSessions: "", defaultPriceManwon: "", baseUnitPriceWon: "" });
       setMode("list");
       onToast?.({ ok: true, msg: "상품을 추가했습니다." });
       await reload();
@@ -15850,6 +15884,15 @@ function ProductCatalog({ organization, currentUserId, store, onRetryOrganizatio
           <input inputMode="numeric" value={form.defaultPriceManwon} className={inputCls} placeholder="120"
             onChange={(e) => setForm({ ...form, defaultPriceManwon: e.target.value.replace(/\D/g, "") })} />
         </Field>
+        {wantsUnitPrice ? (
+          <Field label="회당 단가 (원)">
+            <input inputMode="numeric" value={form.baseUnitPriceWon} className={inputCls} placeholder="25000"
+              onChange={(e) => setForm({ ...form, baseUnitPriceWon: e.target.value.replace(/\D/g, "") })} />
+            <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+              기타는 표에 단가가 없어 여기서 정합니다. 이 상품으로 발급하면 이 금액이 그대로 쓰입니다.
+            </p>
+          </Field>
+        ) : null}
         {formError ? <p style={{ fontSize: TYPE.caption, color: BAD }}>{formError}</p> : null}
         <div className="flex gap-2 pt-1">
           <button type="button" onClick={() => { setMode("list"); setFormError(""); }} className="h-11 flex-1 font-bold"
@@ -17593,7 +17636,9 @@ export function createAppScreenSmokeCases() {
   const smokeProducts = [
     { id: "smoke-product-active", organizationId: "smoke-center", name: "1:1 20회 가을 이벤트", sessionType: "pt_1_1", payCategory: "pt_1_1_repurchase_event", defaultSessions: 20, defaultPrice: 1300000, status: "active" },
     { id: "smoke-product-normal", organizationId: "smoke-center", name: "1:1 20회 재등록", sessionType: "pt_1_1", payCategory: "pt_1_1_repurchase_normal", defaultSessions: 20, defaultPrice: 1300000, status: "active" },
+    /* 회당 단가가 붙기 전에 만들어진 기타 상품. 발급 화면이 예전처럼 물어야 한다. */
     { id: "smoke-product-etc", organizationId: "smoke-center", name: "체험 1회", sessionType: "pt_1_1", payCategory: "etc", defaultSessions: 1, defaultPrice: 55000, status: "active" },
+    { id: "smoke-product-etc-priced", organizationId: "smoke-center", name: "보강 5회", sessionType: "pt_1_1", payCategory: "etc", defaultSessions: 5, defaultPrice: 250000, baseUnitPrice: 28000, status: "active" },
   ];
   const productStore = {
     list: async () => [
@@ -17940,6 +17985,16 @@ export function createAppScreenSmokeCases() {
     { name: "회원권 발급 · 직접 단가", element: passIssue(smokeOwner, {
       ...smokeIssueBase,
       form: { clientId: "smoke-client-a", productId: "smoke-product-etc", totalSessions: "1", contractPriceManwon: "5.5", serviceSessions: "0", purchaseRound: "1", paymentMethod: "card", instructorId: "u1", unitPriceManwon: "" },
+    }) },
+    /* 상품에 회당 단가가 적혀 있으면 묻지 않는다. 물으면 같은 상품이 사람마다
+       다른 단가로 나가고, 원장은 고칠 수 없다. */
+    { name: "회원권 발급 · 상품 단가", element: passIssue(smokeOwner, {
+      ...smokeIssueBase,
+      form: { clientId: "smoke-client-a", productId: "smoke-product-etc-priced", totalSessions: "5", contractPriceManwon: "25", serviceSessions: "0", purchaseRound: "1", paymentMethod: "card", instructorId: "u1", unitPriceManwon: "" },
+    }) },
+    { name: "회원권 발급 · 상품 단가 · 확인", element: passIssue(smokeOwner, {
+      ...smokeIssueBase, mode: "confirm",
+      form: { clientId: "smoke-client-a", productId: "smoke-product-etc-priced", totalSessions: "5", contractPriceManwon: "25", serviceSessions: "0", purchaseRound: "1", paymentMethod: "card", instructorId: "u1", unitPriceManwon: "", expiresAt: "2027-03-31" },
     }) },
     { name: "회원권 발급 · 풀방금액 없음", element: passIssue(smokeOwner, {
       ...smokeIssueBase,

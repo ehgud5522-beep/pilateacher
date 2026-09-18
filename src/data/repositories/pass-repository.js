@@ -421,9 +421,16 @@ export async function deductPass(organizationId, pass, input, options = {}) {
   if (!isDeductablePass(pass)) throw new Error("Missing remainingCount");
 
   const category = requiredText(pass?.category, "category");
-  const baseUnitPrice = pass?.baseUnitPrice;
-  /* 발급 시점에 박힌 값이 없으면 지어내지 않는다. 표에서 다시 읽으면 그 사이
-     바뀐 단가가 지난 회원권에 소급되고, 0 을 넣으면 그 수업이 무보수가 된다. */
+  /* 개명 전에 발급된 회원권은 이 값을 unitPrice 라는 이름으로 들고 있다. 이름만
+     바뀌었고 값의 뜻은 같으므로 옛 이름도 읽는다 -- 읽지 않으면 이미 팔린
+     회원권이 차감되지 않고, 그 회원권을 다시 발급할 방법은 없다.
+
+     규칙은 create 에서 baseUnitPrice 를 요구하므로 새로 발급되는 것은 모두 새
+     이름이다. 이 한 줄은 옛 데이터를 위한 것이고, 그 데이터가 다 소진되면
+     지워도 된다. */
+  const baseUnitPrice = Number.isInteger(pass?.baseUnitPrice) ? pass.baseUnitPrice : pass?.unitPrice;
+  /* 그래도 없으면 지어내지 않는다. 표에서 다시 읽으면 그 사이 바뀐 단가가 지난
+     회원권에 소급되고, 0 을 넣으면 그 수업이 무보수가 된다. */
   if (!Number.isInteger(baseUnitPrice) || baseUnitPrice < 0) throw new Error("Missing baseUnitPrice");
 
   /* 부원장인가. 조직 컨텍스트가 들고 있는 값이다 -- 로그인할 때 읽은 내

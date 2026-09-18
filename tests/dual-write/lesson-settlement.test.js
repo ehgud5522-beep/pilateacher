@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   SETTLEMENT_SKIP, applySettlementToLesson, canSettleLesson, clearSettlementFromLesson,
-  isSettledLesson, needsSettlement, pickPassForClient, planLessonSettlement, settledDeductionsOf,
+  SETTLEMENT_OUTCOME, closesSettlement, isSettledLesson, needsSettlement, pickPassForClient,
+  planLessonSettlement, recordSettlementAttempt, settledDeductionsOf, settlementOutcome,
+  settlementSkipsOf,
 } from "../../src/features/schedule/lesson-settlement.js";
 import { deductPass } from "../../src/data/repositories/pass-repository.js";
 
@@ -367,4 +369,96 @@ test("the deputy answer and the accumulated count reach the engine through this 
   const entry = store.commits[0][2].data;
   assert.equal(entry.unitPrice, 25000, "누적 20회 미만이면 신규 단가다");
   assert.equal(entry.rule, "new_to_instructor");
+});
+
+/* ── 전원 성공 / 일부 성공 / 전원 실패 ──────────────────────────────────
+
+   "차감 완료"와 "한 건도 못 했다"가 같은 문구로 나오면 강사는 끝난 줄 알고
+   넘어가고, 그 회차는 아무에게도 지급되지 않는다. */
+
+test("the four ways a settlement can end are told apart", () => {
+  assert.equal(settlementOutcome({ attempted: 2, written: 2, skipped: 0 }), SETTLEMENT_OUTCOME.COMPLETE);
+  assert.equal(settlementOutcome({ attempted: 2, written: 1, skipped: 1 }), SETTLEMENT_OUTCOME.PARTIAL);
+  assert.equal(settlementOutcome({ attempted: 1, written: 0, skipped: 1 }), SETTLEMENT_OUTCOME.FAILED);
+  // 전원 노쇼·취소. 차감할 회차가 애초에 없었다.
+  assert.equal(settlementOutcome({ attempted: 0, written: 0, skipped: 0 }), SETTLEMENT_OUTCOME.NOTHING);
+});
+
+test("a settlement that wrote nothing does not close the lesson", () => {
+  /* "쓰다 실패하면 닫는다"는 일부라도 나갔을 때의 이야기다. 나간 차감은 되돌릴
+     수 없으니 다시 확정하면 두 번 나간다 -- 그래서 닫는다.
+
+     한 건도 나가지 않았으면 그 이유가 사라진다. 닫으면 대가만 남는다: 카드가
+     잠기고, 큐가 조용해지고, 강사는 처리된 줄 안다. 원장은 비어 있는데. */
+  assert.equal(closesSettlement(SETTLEMENT_OUTCOME.COMPLETE), true);
+  assert.equal(closesSettlement(SETTLEMENT_OUTCOME.PARTIAL), true);
+  assert.equal(closesSettlement(SETTLEMENT_OUTCOME.NOTHING), true);
+  assert.equal(closesSettlement(SETTLEMENT_OUTCOME.FAILED), false);
+});
+
+test("a failed attempt stays open but keeps the reason it failed", () => {
+  const attempt = recordSettlementAttempt(lesson(), {
+    results: [],
+    skips: [{ memberId: "m-1", reason: SETTLEMENT_SKIP.WRITE_FAILED, code: "Missing baseUnitPrice" }],
+    outcome: SETTLEMENT_OUTCOME.FAILED,
+  });
+  assert.equal(isSettledLesson(attempt), false, "잠기지 않는다 -- 다시 시도할 수 있어야 한다");
+  assert.equal("orgSettledOutcome" in attempt, false);
+  /* 사유는 남는다. 다시 확정하기 전에 무엇을 고쳐야 하는지 화면이 말해야 한다.
+     원본 코드를 버리면 "저장되지 않았습니다"만 남고 원인 확정이 불가능하다. */
+  assert.deepEqual(settlementSkipsOf(attempt), [
+    { memberId: "m-1", reason: SETTLEMENT_SKIP.WRITE_FAILED, code: "Missing baseUnitPrice" },
+  ]);
+});
+
+test("a partial attempt closes, and says it was partial", () => {
+  const attempt = recordSettlementAttempt(
+    lesson({ attendees: [{ memberId: "m-1", status: "done" }, { memberId: "m-2", status: "done" }] }),
+    {
+      results: [{ memberId: "m-1", passId: "pass-a", entryId: "e1" }],
+      skips: [{ memberId: "m-2", reason: SETTLEMENT_SKIP.NO_PASS }],
+      outcome: SETTLEMENT_OUTCOME.PARTIAL,
+    },
+  );
+  assert.equal(isSettledLesson(attempt), true, "나간 차감은 되돌릴 수 없어 닫는다");
+  assert.equal(attempt.orgSettledOutcome, SETTLEMENT_OUTCOME.PARTIAL);
+  assert.equal(settlementSkipsOf(attempt).length, 1);
+});
+
+test("a lesson with nothing to deduct closes quietly", () => {
+  // 열어 두면 큐에 남아 강사가 매일 같은 줄을 보고, 그 줄에는 할 일이 없다.
+  const attempt = recordSettlementAttempt(
+    lesson({ attendees: [{ memberId: "m-1", status: "noshow" }] }),
+    { results: [], skips: [], outcome: SETTLEMENT_OUTCOME.NOTHING },
+  );
+  assert.equal(isSettledLesson(attempt), true);
+  assert.equal(attempt.orgSettledOutcome, SETTLEMENT_OUTCOME.NOTHING);
+});
+
+test("a pass issued before the rename is still deductable", async () => {
+  /* 개명 전에 발급된 회원권은 기준값을 unitPrice 라는 이름으로 들고 있다. 읽지
+     않으면 이미 팔린 회원권이 차감되지 않고, 그 회원권을 다시 발급할 방법은 없다. */
+  const store = fakeStore({
+    "organizations/center-a/instructorClientTotals/u1_client-a": { sessions: 40 },
+  });
+  const legacyPass = /** @type {Record<string, any>} */ (pass());
+  delete legacyPass.baseUnitPrice;
+  legacyPass.unitPrice = 30000;
+  const one = lesson();
+  const plan = planLessonSettlement({ lesson: one, members: [member()], passes: [legacyPass], now: NOW });
+  await settleWith(plan, one, store);
+  assert.equal(store.commits.length, 1, "차감이 나가야 한다");
+  assert.equal(store.commits[0][2].data.unitPrice, 30000, "옛 이름의 값이 그대로 쓰인다");
+});
+
+test("a pass with neither name is refused rather than priced at zero", async () => {
+  const store = fakeStore({
+    "organizations/center-a/instructorClientTotals/u1_client-a": { sessions: 40 },
+  });
+  const broken = pass();
+  delete broken.baseUnitPrice;
+  const one = lesson();
+  const plan = planLessonSettlement({ lesson: one, members: [member()], passes: [broken], now: NOW });
+  await assert.rejects(() => settleWith(plan, one, store), /Missing baseUnitPrice/);
+  assert.equal(store.commits.length, 0);
 });

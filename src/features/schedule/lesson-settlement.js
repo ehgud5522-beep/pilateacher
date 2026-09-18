@@ -35,6 +35,52 @@ export const SETTLEMENT_SKIP = Object.freeze({
   WRITE_FAILED: "write_failed",
 });
 
+/**
+ * 확정이 무엇으로 끝났는가.
+ *
+ * "차감 완료"와 "한 건도 못 했다"가 같은 문구로 나오면 강사는 끝난 줄 알고
+ * 넘어가고, 그 회차는 아무에게도 지급되지 않는다.
+ */
+export const SETTLEMENT_OUTCOME = Object.freeze({
+  /** 차감할 사람 전원이 차감됐다. */
+  COMPLETE: "complete",
+  /** 일부만 나갔다. 나간 것은 되돌릴 수 없으니 닫고, 못 나간 것을 말한다. */
+  PARTIAL: "partial",
+  /** 차감할 회차가 애초에 없었다 -- 전원 노쇼·취소. */
+  NOTHING: "nothing",
+  /** 한 건도 나가지 않았다. 닫지 않는다 -- 아래 closesSettlement 참고. */
+  FAILED: "failed",
+});
+
+/**
+ * @param {{ attempted?: number, written?: number, skipped?: number }} counts
+ * @returns {string} SETTLEMENT_OUTCOME 중 하나
+ */
+export function settlementOutcome(counts = {}) {
+  const attempted = Number(counts.attempted) || 0;
+  const written = Number(counts.written) || 0;
+  const skipped = Number(counts.skipped) || 0;
+  if (written > 0) return (skipped === 0 && written === attempted)
+    ? SETTLEMENT_OUTCOME.COMPLETE
+    : SETTLEMENT_OUTCOME.PARTIAL;
+  return attempted === 0 && skipped === 0 ? SETTLEMENT_OUTCOME.NOTHING : SETTLEMENT_OUTCOME.FAILED;
+}
+
+/**
+ * 이 결과로 수업을 닫아도 되는가.
+ *
+ * "쓰다 실패하면 닫는다"는 일부라도 나갔을 때의 이야기다. 나간 차감은 되돌릴 수
+ * 없으므로 다시 확정하게 하면 그 회차가 두 번 나간다 -- 그래서 닫는다.
+ *
+ * 한 건도 나가지 않았으면 그 이유가 사라진다. 두 번 차감할 것이 없고, 닫으면
+ * 대가만 남는다: 카드가 잠기고, 큐가 더 이상 알리지 않고, 강사는 처리된 줄 안다.
+ * 원장은 비어 있는데. 그래서 열어 두고 다시 시도할 수 있게 한다.
+ *
+ * 차감할 회차가 애초에 없었던 수업(전원 노쇼·취소)은 닫는다. 열어 두면 큐에 남아
+ * 강사가 매일 같은 줄을 보고, 그 줄에는 할 일이 없다.
+ */
+export const closesSettlement = (outcome) => outcome !== SETTLEMENT_OUTCOME.FAILED;
+
 /** 건너뛴 이유를 화면 문구로. 고칠 방법이 서로 다르므로 뭉개지 않는다. */
 export const SETTLEMENT_SKIP_LABEL = Object.freeze({
   ["no_client"]: "센터 명부에 없는 회원입니다. 대표에게 등록을 요청해 주세요.",
@@ -174,7 +220,7 @@ export function lessonHasEnded(lesson, now = new Date()) {
  * 항목을 보정해야 하는지 이것으로 찾고, 없으면 회원권마다 원장을 훑어야 한다.
  *
  * @param {any} lesson
- * @param {{ at?: string, results?: Array<any>, skips?: Array<any> }} outcome
+ * @param {{ at?: string, outcome?: string, results?: Array<any>, skips?: Array<any> }} outcome
  */
 export function applySettlementToLesson(lesson, outcome = {}) {
   const results = new Map((outcome.results || []).map((item) => [text(item.memberId), item]));
@@ -182,27 +228,83 @@ export function applySettlementToLesson(lesson, outcome = {}) {
   return {
     ...lesson,
     orgSettledAt: text(outcome.at) || new Date().toISOString(),
+    /* 전원 성공과 일부 성공을 화면이 구분해야 한다. 세지 않고 문구를 정하면
+       "0명 차감"에도 "차감 완료"가 나온다. */
+    orgSettledOutcome: text(outcome.outcome) || settlementOutcome({
+      attempted: (outcome.results || []).length + (outcome.skips || []).length,
+      written: (outcome.results || []).length,
+      skipped: (outcome.skips || []).length,
+    }),
     attendees: attendeesOf(lesson).map((attendee) => {
       const memberId = text(attendee.memberId);
       const result = results.get(memberId);
       const skip = skips.get(memberId);
       if (result) {
-        return { ...attendee, orgPassId: result.passId, orgEntryId: result.entryId, orgSkip: "" };
+        return {
+          ...attendee,
+          orgPassId: result.passId,
+          orgEntryId: result.entryId,
+          orgSkip: "",
+          orgSkipCode: "",
+        };
       }
-      if (skip) return { ...attendee, orgPassId: "", orgEntryId: "", orgSkip: skip.reason };
-      return { ...attendee, orgPassId: "", orgEntryId: "", orgSkip: "" };
+      /* 사유 코드를 버리지 않는다. "차감이 저장되지 않았습니다"만으로는 무엇을
+         고쳐야 하는지 알 수 없다 -- 원본 코드가 있어야 원인이 확정된다. */
+      if (skip) {
+        return {
+          ...attendee,
+          orgPassId: "",
+          orgEntryId: "",
+          orgSkip: skip.reason,
+          orgSkipCode: String(skip.code || ""),
+        };
+      }
+      return { ...attendee, orgPassId: "", orgEntryId: "", orgSkip: "", orgSkipCode: "" };
     }),
   };
+}
+
+/**
+ * 확정을 시도한 뒤의 일정.
+ *
+ * 한 건이라도 나갔으면 확정으로 닫는다. 한 건도 나가지 않았으면 사유만 적고
+ * 열어 둔다 -- 카드가 그 사유를 보여주고 다시 확정할 수 있어야 한다. 두 번
+ * 차감할 것이 없으므로 다시 시도해도 안전하다.
+ *
+ * @param {any} lesson
+ * @param {{ at?: string, outcome?: string, results?: Array<any>, skips?: Array<any> }} outcome
+ */
+export function recordSettlementAttempt(lesson, outcome = {}) {
+  const applied = applySettlementToLesson(lesson, outcome);
+  if (closesSettlement(applied.orgSettledOutcome)) return applied;
+  const open = { ...applied };
+  delete open.orgSettledAt;
+  delete open.orgSettledOutcome;
+  return open;
 }
 
 /** 확정을 되돌린 뒤의 일정. 차감 흔적만 지우고 출석 상태는 그대로 둔다. */
 export function clearSettlementFromLesson(lesson) {
   const next = { ...lesson, attendees: attendeesOf(lesson).map((attendee) => ({
-    ...attendee, orgPassId: "", orgEntryId: "", orgSkip: "",
+    ...attendee, orgPassId: "", orgEntryId: "", orgSkip: "", orgSkipCode: "",
   })) };
   delete next.orgSettledAt;
   return next;
 }
+
+/**
+ * 차감하지 못한 사람들. 확정 블록이 이 목록을 그대로 보여준다.
+ *
+ * 토스트가 "카드에서 이유를 확인해 주세요"라고 말하는데 카드에 없으면, 그 안내는
+ * 강사를 빈 화면으로 보내는 것이다.
+ */
+export const settlementSkipsOf = (lesson) => attendeesOf(lesson)
+  .filter((attendee) => text(attendee.orgSkip))
+  .map((attendee) => ({
+    memberId: text(attendee.memberId),
+    reason: text(attendee.orgSkip),
+    code: text(attendee.orgSkipCode),
+  }));
 
 /** 이 수업이 차감한 것들. 대표의 되돌리기가 이 목록을 보정한다. */
 export const settledDeductionsOf = (lesson) => attendeesOf(lesson)

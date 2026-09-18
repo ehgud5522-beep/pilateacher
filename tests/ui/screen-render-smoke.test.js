@@ -27,6 +27,9 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "일정 탭 · 하루 11건 혼합",
     "일정 탭 · 소속 · 확정 전",
     "일정 탭 · 소속 · 확정됨",
+    "일정 탭 · 소속 · 일부만 차감",
+    "일정 탭 · 소속 · 차감할 회차 없음",
+    "일정 탭 · 소속 · 차감 전원 실패",
     "일정 탭 · 소속 · 확정됨 · 대표",
     "일정 탭 · 개인 모드 · 확정 없음",
     "회원 목록",
@@ -603,6 +606,33 @@ test("the schedule settles the lesson, and says what that will cost before it do
      구분한다 -- 무게가 다르다. */
   assert.doesNotMatch(after, /차감 되돌리기/);
   assert.match(markupOf("일정 탭 · 소속 · 확정됨 · 대표"), /차감 되돌리기/);
+
+  /* 전원 성공 · 일부 성공 · 차감할 것 없음이 서로 다른 문구여야 한다. "0명
+     차감"에도 "차감 완료"가 나오면 강사는 끝난 줄 알고 넘어가고, 그 회차는
+     아무에게도 지급되지 않는다. */
+  const partial = markupOf("일정 탭 · 소속 · 일부만 차감");
+  assert.match(partial, /확정됨 · 일부만 차감됨/);
+  assert.doesNotMatch(partial, /회원권 차감 완료/);
+  /* 토스트가 "아래에서 이유를 확인해 주세요"라고 말하는 그 자리다. 카드에 없으면
+     그 안내는 강사를 빈 화면으로 보내는 것이다. */
+  assert.match(partial, /박서연/);
+  assert.match(partial, /회원권이 없습니다\. 발급 후 출석 체크에서 차감해 주세요/);
+
+  const nothing = markupOf("일정 탭 · 소속 · 차감할 회차 없음");
+  assert.match(nothing, /확정됨 · 차감할 회차 없음/);
+  assert.doesNotMatch(nothing, /회원권 차감 완료/);
+
+  /* 한 건도 나가지 않았으면 잠그지 않는다. 두 번 차감할 것이 없으므로 다시
+     시도해도 안전하고, 잠그면 카드가 굳고 큐가 조용해지는 대가만 남는다. */
+  const failed = markupOf("일정 탭 · 소속 · 차감 전원 실패");
+  assert.doesNotMatch(failed, /확정됨/);
+  assert.match(failed, /차감이 한 건도 나가지 않았습니다/);
+  assert.match(failed, /다시 확정/);
+  // 원본 코드를 버리지 않는다. 없으면 무엇을 고쳐야 하는지 알 수 없다.
+  assert.match(failed, /Missing baseUnitPrice/);
+  assert.match(failed, /이 수업은 급여에 들어가지 않습니다/);
+  // 잠기지 않았으니 출석도 그대로 바꿀 수 있어야 한다.
+  assert.doesNotMatch(failed, /disabled=""[^<]*>출석</);
 
   // 개인 모드에는 조직 회원권이 없다. 확정할 것이 없으므로 블록도 없다.
   const personal = markupOf("일정 탭 · 개인 모드 · 확정 없음");

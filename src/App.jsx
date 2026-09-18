@@ -95,9 +95,10 @@ import {
   listPassLedger, listPasses, loadClientPassHistory, remainingCountOf,
 } from "./data/repositories/pass-repository.js";
 import {
-  SETTLEMENT_SKIP, SETTLEMENT_SKIP_LABEL, applySettlementToLesson, canSettleLesson,
-  clearSettlementFromLesson, isSettledLesson, needsSettlement, planLessonSettlement,
-  settledDeductionsOf,
+  SETTLEMENT_OUTCOME, SETTLEMENT_SKIP, SETTLEMENT_SKIP_LABEL, applySettlementToLesson,
+  canSettleLesson, clearSettlementFromLesson, closesSettlement, isSettledLesson, needsSettlement,
+  planLessonSettlement, recordSettlementAttempt, settledDeductionsOf, settlementOutcome,
+  settlementSkipsOf,
 } from "./features/schedule/lesson-settlement.js";
 import {
   loadInstructorMonthlyPay, loadOrganizationLedger, loadOrganizationMonthlyPayroll,
@@ -2637,91 +2638,6 @@ function SalesBriefModal({ alert, onClose, onToast }) {
     </Sheet>
   );
 }
-function SchedAttendeeRow({ s, a, members, onStatus, onNoshowFee, locked = false }) {
-  const m = members.find((x) => x.id === a.memberId);
-  const nm = m?.name || "삭제된 회원";
-  const st = stOf(a.status);
-  return (
-    <div className="rounded-xl bg-white p-2.5">
-      <div className="flex items-center gap-2">
-        <span className="min-w-0 flex-1 truncate text-sm font-extrabold" style={{ color: INK }}>{nm}</span>
-        {m && (left(m) > 0
-          ? <Sub>잔여 {left(m)}회</Sub>
-          : <span className="rounded-full px-2 py-0.5 text-xs font-extrabold" style={{ backgroundColor: BAD_S, color: BAD }}>잔여 0</span>)}
-        <span className="rounded-full px-2 py-0.5 text-xs font-extrabold" style={{ backgroundColor: st.bg, color: st.color }}>{st.label}</span>
-      </div>
-      {/* 확정된 수업은 버튼을 잠근다. 상태를 바꿔도 이미 나간 차감은 따라오지
-          않고, 둘이 어긋나면 어느 것이 맞는지 알 수 없다. */}
-      {locked ? (
-        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-          {a.orgEntryId
-            ? <span className="rounded-full px-2 py-0.5 text-xs font-extrabold" style={{ backgroundColor: GOOD_S, color: GOOD }}>회원권 1회 차감됨</span>
-            : a.orgSkip
-            ? <span className="text-xs font-bold" style={{ color: WARN }}>{SETTLEMENT_SKIP_LABEL[a.orgSkip] || "차감하지 못했습니다."}</span>
-            : <span className="text-xs font-bold" style={{ color: SUB }}>차감 없음</span>}
-        </div>
-      ) : (
-      <div className="mt-1.5 flex flex-wrap gap-1.5">
-        {a.status !== "done"
-          ? <button onClick={() => onStatus(s.id, "done", a.memberId)} className="rounded-full px-2.5 py-1 text-xs font-extrabold text-white" style={{ backgroundColor: GOOD }}>출석</button>
-          : <button onClick={() => onStatus(s.id, "booked", a.memberId)} className="rounded-full px-2.5 py-1 text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>출석 취소</button>}
-        {a.status !== "noshow" && <button onClick={() => onStatus(s.id, "noshow", a.memberId)} className="rounded-full px-2.5 py-1 text-xs font-bold" style={{ backgroundColor: CANVAS, color: BAD }}>노쇼</button>}
-        {a.status !== "cancel" && <button onClick={() => onStatus(s.id, "cancel", a.memberId)} className="rounded-full px-2.5 py-1 text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>수업 취소</button>}
-        {a.deductFrom && <span className="self-center text-xs font-bold" style={{ color: SUB }}>{a.deductFrom} −1회</span>}
-      </div>
-      )}
-      {!locked && a.status === "noshow" && (
-        <div className="mt-1.5 flex flex-wrap items-center gap-1.5 rounded-lg p-2" style={{ backgroundColor: BAD_S }}>
-          {a.noshowFee == null ? (
-            <>
-              <span className="text-xs font-bold" style={{ color: INK }}>노쇼 차감할까요?</span>
-              <button onClick={() => onNoshowFee(s.id, true, a.memberId)} className="rounded-full px-2.5 py-1 text-xs font-extrabold text-white" style={{ backgroundColor: BAD }}>1회 차감</button>
-              <button onClick={() => onNoshowFee(s.id, false, a.memberId)} className="rounded-full bg-white px-2.5 py-1 text-xs font-bold" style={{ color: SUB }}>다음으로</button>
-            </>
-          ) : a.noshowFee ? (
-            <>
-              <span className="rounded-full px-2 py-0.5 text-xs font-extrabold" style={{ backgroundColor: CARD, color: BAD }}>{a.deductFrom || "정규"} 1회 차감됨</span>
-              <button onClick={() => onNoshowFee(s.id, false, a.memberId)} className="text-xs font-bold" style={{ color: SUB }}>차감 취소</button>
-            </>
-          ) : (
-            <>
-              <span className="text-xs font-bold" style={{ color: SUB }}>차감 없이 기록</span>
-              <button onClick={() => onNoshowFee(s.id, true, a.memberId)} className="text-xs font-extrabold" style={{ color: BAD }}>1회 차감하기</button>
-            </>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* 일간·주간·월간 목록용 한 줄 요약 — 출석 처리는 '오늘 수업' 에서만 한다 */
-function SchedLine({ s, members, onEdit }) {
-  const nameOf = (id) => members.find((m) => m.id === id)?.name || "삭제된 회원";
-  const pv = isPersonalEvt(s);
-  const list = attendeesOf(s);
-  const eq = isEquipGroup(s);
-  const settled = pv ? true : eq ? !!s.groupDone || !!s.groupCancelled : list.length > 0 && list.every((a) => a.status !== "booked");
-  const st = pv ? { label: "내 일정", color: MINT, bg: CANVAS }
-    : eq ? (s.groupCancelled ? { label: "취소", color: BAD, bg: BAD_S } : s.groupDone ? { label: "완료", color: GOOD, bg: GOOD_S } : { label: "예정", color: PRIMARY, bg: TINT })
-    : list.length > 1 ? { label: `${list.filter((a) => a.status === "done").length}/${list.length} 출석`, color: settled ? GOOD : PRIMARY, bg: settled ? GOOD_S : TINT }
-    : stOf(list[0]?.status);
-  const edge = pv ? MINT : s.groupCancelled ? BAD : settled ? GOOD : PRIMARY;
-  const title = pv ? (s.title || "내 일정") : eq
-    ? `${s.equip || "기구"} 그룹 · ${num(s.groupCount) > 0 ? `예정 ${num(s.groupCount)}명` : "인원 미입력"}`
-    : list.map((a) => nameOf(a.memberId)).join(", ") || "회원 없음";
-  return (
-    <button onClick={() => onEdit(s)} className="flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left"
-      style={{ backgroundColor: settled ? CANVAS : CARD, borderLeft: `4px solid ${edge}`, border: `1px solid ${settled ? "transparent" : LINE}`, borderLeftWidth: 4, borderLeftColor: edge, opacity: settled ? 0.72 : 1 }}>
-      <span className="w-11 shrink-0 text-xs font-extrabold tabular-nums" style={{ color: settled ? SUB : edge }}>{s.start}</span>
-      <span className="min-w-0 flex-1 truncate text-sm font-extrabold" style={{ color: INK, textDecoration: st.label === "취소" ? "line-through" : "none" }}>{title}</span>
-      <span className="hidden shrink-0 text-xs sm:inline" style={{ color: SUB }}>{pv ? "" : eq ? "그룹" : s.type}</span>
-      <span className="shrink-0 rounded-full px-2 py-0.5 text-xs font-extrabold" style={{ backgroundColor: st.bg, color: st.color }}>{st.label}</span>
-      <Pencil size={12} className="shrink-0" style={{ color: FAINT }} />
-    </button>
-  );
-}
-
 /**
  * 수업 확정 블록.
  *
@@ -2729,17 +2645,44 @@ function SchedLine({ s, members, onEdit }) {
  * 차감은 원장에 append-only 로 박히고 되돌리기는 대표만 할 수 있어, 누르는
  * 문턱이 그 무게와 맞아야 한다(lesson-settlement.js 머리말).
  */
-function SchedSettleBlock({ s, canSettle, settled, canUnsettle, onSettle, onUnsettle }) {
+/** 확정 결과 한 줄. "0명 차감"과 "차감 완료"가 같은 문구로 나오면 안 된다. */
+const SETTLEMENT_OUTCOME_LINE = {
+  [SETTLEMENT_OUTCOME.COMPLETE]: { label: "확정됨 · 회원권 차감 완료", tone: GOOD, bg: GOOD_S },
+  [SETTLEMENT_OUTCOME.PARTIAL]: { label: "확정됨 · 일부만 차감됨", tone: WARN, bg: WARN_S },
+  [SETTLEMENT_OUTCOME.NOTHING]: { label: "확정됨 · 차감할 회차 없음", tone: SUB, bg: CANVAS },
+};
+
+/** 건너뛴 사람 목록. 토스트가 "카드에서 확인"이라고 말하는 그 자리다. */
+function SchedSettleSkips({ s, members }) {
+  const skips = settlementSkipsOf(s);
+  if (skips.length === 0) return null;
+  const nameOf = (id) => members?.find((member) => member.id === id)?.name || id || "회원";
+  return (
+    <div className="mt-1.5 space-y-1">
+      {skips.map((skip) => (
+        <p key={skip.memberId} className="text-xs leading-relaxed" style={{ color: INK2 }}>
+          <span style={{ fontWeight: 700 }}>{nameOf(skip.memberId)}</span>
+          {" · "}{SETTLEMENT_SKIP_LABEL[skip.reason] || "차감하지 못했습니다."}
+          {/* 원본 코드를 버리지 않는다. 없으면 무엇을 고쳐야 하는지 알 수 없다. */}
+          {skip.code ? <span style={{ color: SUB }}>{" (" + skip.code + ")"}</span> : null}
+        </p>
+      ))}
+    </div>
+  );
+}
+
+function SchedSettleBlock({ s, members, canSettle, settled, canUnsettle, onSettle, onUnsettle }) {
   const [busy, setBusy] = useState(false);
   const [undoing, setUndoing] = useState(false);
   const [reason, setReason] = useState("");
   const doneCount = attendeesOf(s).filter((a) => a.status === "done").length;
+  const line = SETTLEMENT_OUTCOME_LINE[s?.orgSettledOutcome] || SETTLEMENT_OUTCOME_LINE[SETTLEMENT_OUTCOME.COMPLETE];
 
   if (settled) return (
-    <div className="mt-2 rounded-xl p-2.5" style={{ backgroundColor: GOOD_S }}>
+    <div className="mt-2 rounded-xl p-2.5" style={{ backgroundColor: line.bg }}>
       <div className="flex flex-wrap items-center gap-2">
-        <Check size={13} style={{ color: GOOD }} />
-        <span className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: GOOD }}>확정됨 · 회원권 차감 완료</span>
+        <Check size={13} style={{ color: line.tone }} />
+        <span className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: line.tone }}>{line.label}</span>
         {/* 되돌리기는 대표만 본다. 차감 보정과 같은 선이다. */}
         {canUnsettle && !undoing ? (
           <button type="button" onClick={() => { setUndoing(true); setReason(""); }}
@@ -2761,112 +2704,38 @@ function SchedSettleBlock({ s, canSettle, settled, canUnsettle, onSettle, onUnse
           </div>
         </div>
       ) : null}
+      <SchedSettleSkips s={s} members={members} />
     </div>
   );
 
   if (!canSettle) return null;
+  /* 한 건도 나가지 않아 열려 있는 수업. 무엇이 막았는지 여기서 말하고, 다시
+     시도할 수 있게 둔다 -- 두 번 차감할 것이 없으므로 안전하다. */
+  const failedBefore = settlementSkipsOf(s).length > 0;
   return (
-    <div className="mt-2 rounded-xl p-2.5" style={{ backgroundColor: TINT, border: `1px solid ${RING}` }}>
+    <div className="mt-2 rounded-xl p-2.5" style={{
+      backgroundColor: failedBefore ? BAD_S : TINT,
+      border: `1px solid ${failedBefore ? BAD : RING}`,
+    }}>
+      {failedBefore ? (
+        <>
+          <p className="text-xs font-extrabold" style={{ color: BAD }}>차감이 한 건도 나가지 않았습니다</p>
+          <SchedSettleSkips s={s} members={members} />
+          <p className="mt-1.5 text-xs leading-relaxed" style={{ color: INK2 }}>
+            회원권이 아직 차감되지 않아 이 수업은 급여에 들어가지 않습니다. 원인을 고친 뒤 다시 확정해 주세요.
+          </p>
+        </>
+      ) : null}
       <button type="button" disabled={busy}
         onClick={async () => { setBusy(true); try { await onSettle?.(s.id); } finally { setBusy(false); } }}
-        className="h-10 w-full rounded-lg text-sm font-extrabold text-white disabled:opacity-40"
-        style={{ backgroundColor: PRIMARY }}>
-        {busy ? "확정 중" : doneCount > 0 ? `수업 확정 · ${doneCount}명 차감` : "수업 확정"}
+        className={`h-10 w-full rounded-lg text-sm font-extrabold text-white disabled:opacity-40${failedBefore ? " mt-2" : ""}`}
+        style={{ backgroundColor: failedBefore ? BAD : PRIMARY }}>
+        {busy ? "확정 중" : failedBefore ? "다시 확정" : doneCount > 0 ? `수업 확정 · ${doneCount}명 차감` : "수업 확정"}
       </button>
       {/* 무게를 미리 말한다. 누른 뒤에 알게 되면 늦다. */}
       <p className="mt-1.5 text-xs leading-relaxed" style={{ color: INK2 }}>
         확정하면 회원권이 차감되고, 되돌리려면 대표 확인이 필요합니다.
       </p>
-    </div>
-  );
-}
-
-/* 이 카드는 지금 아무 데서도 그려지지 않는다 -- 일정 탭은 주간 그리드를 쓰고,
-   출석과 확정은 수업 시트(ScheduleForm)에서 한다. itemProps 와 SchedAttendeeRow
-   도 같이 떠 있다.
-
-   지우지 않고 소속 모드를 함께 넣어 두었다. 되살릴 때 개인 모드처럼 동작하면
-   소속 센터에서 회원권이 차감되지 않은 채 출석만 기록된다 -- 조용히 급여가
-   빠지는 쪽이다. 지울지 되살릴지는 따로 판단할 일이다. */
-function SchedItem({ s, members, del, setDel, setEditing, onStatus, onNoshowFee, onGroupDone, onDelete, organizationMode = false, onSettleLesson, onUnsettleLesson, canUnsettle = false }) {
-  const nameOf = (id) => members.find((m) => m.id === id)?.name || "삭제된 회원";
-  if (isPersonalEvt(s)) return (
-    <div className="rounded-2xl p-3" style={{ backgroundColor: CANVAS, borderLeft: `4px solid ${MINT}` }}>
-      <div className="flex items-center gap-2">
-        <div className="w-14 shrink-0">
-          <p className="text-sm font-extrabold tabular-nums" style={{ color: MINT }}>{s.start}</p>
-          <Sub>{s.end}</Sub>
-        </div>
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-extrabold" style={{ color: INK }}>{s.title || "내 일정"}</p>
-          <Sub className="truncate">{s.memo || "개인 일정"}</Sub>
-        </div>
-        <button onClick={() => setEditing(s)} className="rounded-full bg-white px-2.5 py-1.5" style={{ color: SUB }}><Pencil size={12} /></button>
-        <button onClick={() => onDelete(s.id)} className="rounded-full bg-white px-2.5 py-1.5" style={{ color: FAINT }}><Trash2 size={12} /></button>
-      </div>
-    </div>
-  );
-  const list = attendeesOf(s);
-  const eq = isEquipGroup(s);
-  const group = list.length > 1 || s.type === "그룹";
-  const doneN = list.filter((a) => a.status === "done").length;
-  return (
-    <div className="rounded-2xl p-3" style={{ backgroundColor: CANVAS }}>
-      <div className="flex items-center gap-2">
-        <div className="w-14 shrink-0">
-          <p className="text-sm font-extrabold tabular-nums" style={{ color: INK }}>{s.start}</p>
-          <Sub>{s.end}</Sub>
-        </div>
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-extrabold" style={{ color: INK }}>
-            {eq ? `그룹 · ${s.equip || "기구 미선택"}` : group ? `${s.type} · ${list.length}명` : nameOf(list[0]?.memberId)}
-          </p>
-          <Sub className="truncate">
-            {eq ? [s.instructor, s.room].filter(Boolean).join(" · ") : group ? list.map((a) => nameOf(a.memberId)).join(", ") : [s.type, s.instructor, s.room].filter(Boolean).join(" · ")}
-          </Sub>
-        </div>
-        {eq
-          ? <span className="rounded-full px-2.5 py-1 text-xs font-extrabold" style={{ backgroundColor: s.groupDone ? GOOD_S : TINT, color: s.groupDone ? GOOD : PRIMARY }}>{s.groupDone ? "완료" : "예정"}</span>
-          : group
-          ? <span className="rounded-full px-2.5 py-1 text-xs font-extrabold" style={{ backgroundColor: doneN ? GOOD_S : TINT, color: doneN ? GOOD : PRIMARY }}>출석 {doneN}/{list.length}</span>
-          : <span className="rounded-full px-2.5 py-1 text-xs font-extrabold" style={{ backgroundColor: stOf(list[0]?.status).bg, color: stOf(list[0]?.status).color }}>{stOf(list[0]?.status).label}</span>}
-      </div>
-      {s.memo && <p className="mt-1.5 text-xs" style={{ color: INK2 }}>{s.memo}</p>}
-      {eq ? (
-        <div className="mt-2 flex flex-wrap items-center gap-2 rounded-xl bg-white p-2.5">
-          <span className="text-sm font-extrabold" style={{ color: INK }}>{s.equip || "기구 미선택"} 그룹 수업</span>
-          {s.groupDone ? (
-            <>
-              <span className="rounded-full px-2 py-0.5 text-xs font-extrabold" style={{ backgroundColor: GOOD_S, color: GOOD }}>진행 완료 · 이달 누적 +1</span>
-              <button onClick={() => onGroupDone && onGroupDone(s.id, false)} className="ml-auto text-xs font-bold" style={{ color: SUB }}>완료 취소</button>
-            </>
-          ) : (
-            <button onClick={() => onGroupDone && onGroupDone(s.id, true)} className="ml-auto rounded-full px-3 py-1.5 text-xs font-extrabold text-white" style={{ backgroundColor: GOOD }}>진행 완료</button>
-          )}
-        </div>
-      ) : (
-        <div className="mt-2 space-y-1.5">
-          {list.map((a) => <SchedAttendeeRow key={a.memberId} s={s} a={a} members={members} onStatus={onStatus} onNoshowFee={onNoshowFee} locked={organizationMode && isSettledLesson(s)} />)}
-        </div>
-      )}
-      {/* 개인 모드에는 조직 회원권이 없다. 확정할 것이 없으므로 이 블록을 두지
-          않는다 -- 지금 동작 그대로다. 기구 그룹도 회원권과 무관하다. */}
-      {organizationMode && !eq ? (
-        <SchedSettleBlock s={s} settled={isSettledLesson(s)} canSettle={canSettleLesson(s)}
-          canUnsettle={canUnsettle} onSettle={onSettleLesson} onUnsettle={onUnsettleLesson} />
-      ) : null}
-      <div className="mt-2 flex gap-1.5">
-        <button onClick={() => setEditing(s)} className="ml-auto rounded-full bg-white px-2.5 py-1.5" style={{ color: SUB }}><Pencil size={12} /></button>
-        <button onClick={() => setDel(s.id)} className="rounded-full bg-white px-2.5 py-1.5" style={{ color: FAINT }}><Trash2 size={12} /></button>
-      </div>
-      {del === s.id && (
-        <div className="mt-2 flex flex-wrap items-center gap-2 rounded-xl p-2.5" style={{ backgroundColor: BAD_S }}>
-          <AlertTriangle size={13} style={{ color: BAD }} />
-          <span className="text-xs font-bold" style={{ color: INK }}>{s.start} 수업을 삭제할까요?</span>
-          <button onClick={() => { onDelete(s.id); setDel(null); }} className="rounded-full px-3 py-1.5 text-xs font-extrabold text-white" style={{ backgroundColor: BAD }}>삭제</button>
-          <button onClick={() => setDel(null)} className="rounded-full bg-white px-3 py-1.5 text-xs font-bold" style={{ color: SUB }}>취소</button>
-        </div>
-      )}
     </div>
   );
 }
@@ -2974,11 +2843,6 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
   }, [briefingRenderKey, briefingOf]);
   const liveEditing = editing?.id ? (db.schedule.find((s) => s.id === editing.id) || editing) : editing;
   const step = (dir) => setCursor(shift(cursor, 7 * dir));
-
-  const itemProps = {
-    members: db.members, del, setDel, setEditing, onStatus, onNoshowFee, onGroupDone, onDelete,
-    organizationMode, onSettleLesson, onUnsettleLesson, canUnsettle,
-  };
 
   const T0 = todayISO();
   const [parked, setParked] = useState({});
@@ -3862,7 +3726,7 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
             {/* 여러 명인 수업은 전원을 정한 뒤 한 번에 확정한다 -- 누르는 횟수가
                 오히려 줄어든다. 개인 모드에는 조직 회원권이 없어 이 블록이 없다. */}
             {organizationMode ? (
-              <SchedSettleBlock s={draft} settled={settledLesson} canSettle={canSettleLesson(draft)}
+              <SchedSettleBlock s={draft} members={members} settled={settledLesson} canSettle={canSettleLesson(draft)}
                 canUnsettle={canUnsettle} onSettle={onSettleLesson}
                 onUnsettle={async (...args) => {
                   const done = await onUnsettleLesson?.(...args);
@@ -17954,9 +17818,35 @@ export function createAppScreenSmokeCases() {
     { name: "일정 탭 · 소속 · 확정 전", element: scheduleWithSettlement(settleLessonOf()) },
     { name: "일정 탭 · 소속 · 확정됨", element: scheduleWithSettlement(settleLessonOf({
       orgSettledAt: "2026-09-19T07:00:00.000Z",
+      orgSettledOutcome: "complete",
+      attendees: [
+        settleAttendee("m-local-1", { orgPassId: "p1", orgEntryId: "settle-1_deduct" }),
+        settleAttendee("smoke-client-b", { orgPassId: "p2", orgEntryId: "settle-1_deduct" }),
+      ],
+    })) },
+    /* 일부만 나갔다. 나간 것은 되돌릴 수 없어 닫히지만, 못 나간 것이 보여야 한다. */
+    { name: "일정 탭 · 소속 · 일부만 차감", element: scheduleWithSettlement(settleLessonOf({
+      orgSettledAt: "2026-09-19T07:00:00.000Z",
+      orgSettledOutcome: "partial",
       attendees: [
         settleAttendee("m-local-1", { orgPassId: "p1", orgEntryId: "settle-1_deduct" }),
         settleAttendee("smoke-client-b", { orgSkip: "no_pass" }),
+      ],
+    })) },
+    /* 전원 노쇼. 차감할 회차가 애초에 없었다 -- "차감 완료"로 말하면 거짓이다. */
+    { name: "일정 탭 · 소속 · 차감할 회차 없음", element: scheduleWithSettlement(settleLessonOf({
+      orgSettledAt: "2026-09-19T07:00:00.000Z",
+      orgSettledOutcome: "nothing",
+      attendees: [
+        settleAttendee("m-local-1", { status: "noshow" }),
+        settleAttendee("smoke-client-b", { status: "noshow" }),
+      ],
+    })) },
+    /* 한 건도 나가지 않았다. 잠그지 않고 사유와 함께 다시 시도하게 둔다.
+       개명 전에 발급된 회원권이 실제로 이렇게 걸렸다. */
+    { name: "일정 탭 · 소속 · 차감 전원 실패", element: scheduleWithSettlement(settleLessonOf({
+      attendees: [
+        settleAttendee("m-local-1", { orgSkip: "write_failed", orgSkipCode: "Missing baseUnitPrice" }),
       ],
     })) },
     { name: "일정 탭 · 소속 · 확정됨 · 대표", element: scheduleWithSettlement(settleLessonOf({
@@ -19655,20 +19545,32 @@ export default function App() {
           });
         }
       }
-      const settled = applySettlementToLesson(lesson, { results, skips });
+      /* 한 건도 나가지 않았으면 닫지 않는다. "쓰다 실패하면 닫는다"는 일부라도
+         나갔을 때의 이야기다 -- 두 번 차감할 것이 없으면 닫을 이유도 없고, 닫으면
+         카드가 잠기고 큐가 조용해지는 대가만 남는다. closesSettlement 참고. */
+      const outcome = settlementOutcome({
+        attempted: plan.deductions.length, written: results.length, skipped: skips.length,
+      });
+      const attempted = recordSettlementAttempt(lesson, { results, skips, outcome });
       if (!saveAttendanceOnce(lessonId, {
         ...db,
-        schedule: db.schedule.map((item) => (item.id === lessonId ? settled : item)),
+        schedule: db.schedule.map((item) => (item.id === lessonId ? attempted : item)),
       })) return;
       // 잔여가 줄었다. 명부를 다시 읽지 않으면 화면이 옛 숫자를 보여준다.
       setRosterRevision((value) => value + 1);
-      const skipped = skips.length;
-      setToast({
-        ok: skipped === 0,
-        msg: skipped === 0
-          ? `수업을 확정했습니다. ${results.length}명 회원권 1회 차감.`
-          : `${results.length}명 차감했습니다. ${skipped}명은 차감하지 못했습니다 -- 카드에서 이유를 확인해 주세요.`,
-      });
+      const toastByOutcome = {
+        [SETTLEMENT_OUTCOME.COMPLETE]: { ok: true, msg: `수업을 확정했습니다. ${results.length}명 회원권 1회 차감.` },
+        [SETTLEMENT_OUTCOME.NOTHING]: { ok: true, msg: "수업을 확정했습니다. 차감할 회차는 없습니다." },
+        [SETTLEMENT_OUTCOME.PARTIAL]: {
+          ok: false,
+          msg: `${results.length}명 차감했습니다. ${skips.length}명은 차감하지 못했습니다 -- 아래에서 이유를 확인해 주세요.`,
+        },
+        [SETTLEMENT_OUTCOME.FAILED]: {
+          ok: false,
+          msg: "차감이 한 건도 나가지 않았습니다. 확정하지 않고 두었습니다 -- 아래 이유를 보고 다시 시도해 주세요.",
+        },
+      };
+      setToast(toastByOutcome[outcome]);
     } finally {
       settlingRef.current.delete(lessonId);
     }

@@ -32,6 +32,7 @@ import {
   fbDeleteAIConsent,
   fbLoadAIRecordingStatus, fbSendDiagnosticReport, fbWritePilotMetricAttempt,
   fbListPhotoBackups, fbUploadPhotoBackup, fbDownloadPhotoBackup, fbSoftDeletePhotoBackup, fbPurgeExpiredPhotoBackups,
+  fbLookupCentreMemberByEmail,
   AI_CONSENT_POLICY_VERSION, AI_CONSENT_SCOPES,
 } from "./lib/firebase";
 import { runAppDualWrite } from "./data/dual-write/app-runtime";
@@ -78,8 +79,9 @@ import {
   unknownOrganizationContext,
 } from "./data/repositories/organization-context.js";
 import {
-  fullRoomRateOf, hasUsableFullRoomRate, isDeputyDirectorOf, listInstructors,
-  setInstructorDeputyDirector, setInstructorFullRoomRate, syncOwnMembershipName,
+  addMembership, fullRoomRateOf, hasUsableFullRoomRate, isActiveMembership, isDeputyDirectorOf,
+  listInstructors, listMemberships, setInstructorDeputyDirector, setInstructorFullRoomRate,
+  setMembershipProfile, setMembershipStatus, syncOwnMembershipName,
 } from "./data/repositories/instructor-repository.js";
 import {
   clientMatchesSearch, createClient, findSameNameClients, listClients, normalizePhone,
@@ -119,12 +121,13 @@ import {
 } from "./data/schema/pay-rates.js";
 import { netContractPriceFor } from "./data/schema/deduction-pricing.js";
 import {
-  CLIENT_STATUS, LEDGER_ENTRY_TYPE, LEDGER_REASON_MAX, PAY_CATEGORY, PAYMENT_METHOD, PRODUCT_STATUS,
-  ROLES, SESSION_TYPE,
+  CLIENT_STATUS, LEDGER_ENTRY_TYPE, LEDGER_REASON_MAX, MEMBERSHIP_STATUS, MEMBERSHIP_TITLE,
+  PAY_CATEGORY, PAYMENT_METHOD, PRODUCT_STATUS, ROLES, SESSION_TYPE,
 } from "./data/schema/constants.js";
 import {
-  CLIENT_STATUS_LABELS, PAYMENT_METHOD_LABELS, PAY_CATEGORY_LABELS, PRICING_RULE_LABELS,
-  PRODUCT_STATUS_LABELS, SESSION_TYPE_LABELS, labelOf, payCategoriesFor,
+  CLIENT_STATUS_LABELS, DEPUTY_DIRECTOR_LABEL, MEMBERSHIP_STATUS_LABELS, MEMBERSHIP_TITLE_LABELS,
+  PAYMENT_METHOD_LABELS, PAY_CATEGORY_LABELS, PRICING_RULE_LABELS, PRODUCT_STATUS_LABELS,
+  SESSION_TYPE_LABELS, labelOf, membershipTitleLabel, payCategoriesFor,
 } from "./data/schema/display-names.js";
 import { validatePostureMeasurement, validPostureMetrics } from "./features/posture/measurement-validity.js";
 import {
@@ -14667,7 +14670,7 @@ function PassIssue({
      permission-denied 한 줄로는 무엇을 해야 하는지 알 수 없다. */
   const rateBlock = priceSource === UNIT_PRICE_SOURCE.FULL_ROOM_RATE
     && instructor && !hasUsableFullRoomRate(instructor)
-    ? `${instructor.displayName || instructor.userId}님의 풀방금액이 설정되지 않았습니다. 더보기 → 강사 단가에서 먼저 정해 주세요.`
+    ? `${instructor.displayName || instructor.userId}님의 풀방금액이 설정되지 않았습니다. 더보기 → 강사 관리에서 먼저 정해 주세요.`
     : "";
 
   const chooseProduct = (picked) => setForm((current) => ({
@@ -14945,57 +14948,130 @@ function PassIssue({
   );
 }
 
-/* 강사 단가. 대표만 본다.
+/* 강사 관리. 대표만 본다.
 
-   여기서 정하는 풀방금액은 1:1 재등록(정상) 한 카테고리의 단가다. 나머지 일곱은
-   강사가 누구든 같은 금액이고, 특히 이벤트페이는 풀방금액이 있는 강사에게도
-   정해진 금액으로 나간다 -- pay-rates.js 참고.
+   ── 흐름 ──
+   강사가 앱에 로그인하고, 대표에게 가입한 이메일을 알려주고, 대표가 그 이메일로
+   이 화면에서 찾아 지점과 이름을 정한다. 그 순간부터 그 강사에게 센터 회원이
+   보인다.
 
-   강사가 자기 금액을 올릴 수 있으면 급여가 스스로 움직이므로 규칙도 대표만
-   허용한다. 화면을 감추는 것과 규칙이 막는 것은 다른 일이고, 둘 다 필요하다.
+   uid 를 주고받게 하지 않는다. 28자를 옮겨 적으면 오타가 나고, 틀리면 조용히
+   매칭되지 않는다 -- 아무 일도 안 일어난 화면과 잘못 붙은 화면이 똑같이 생겼다.
+   이메일은 이미 서로 아는 값이고, 틀리면 크게 실패한다. 조회는 Functions 가
+   한다 (functions/src/member-lookup.js) -- Auth 는 클라이언트에서 이메일로
+   사용자를 찾을 수 없고, users/{uid} 는 전화번호가 함께 들어 있어 대표에게 열
+   수 없다.
 
-   이름은 membership 의 displayName 에서 온다. users/{uid} 를 읽지 않는 이유는
-   규칙 파일의 memberships 주석에 있다 -- 이름을 얻자고 그 문서를 열면
-   전화번호와 이메일이 함께 열린다. 이름이 아직 없는 강사는 uid 로 보이고,
-   그 강사가 앱을 한 번 열면 자기 이름이 채워진다. */
+   ── 강사 단가 화면을 흡수했다 ──
+   같은 목록을 두 화면이 그리면 "강사 뭐 고치려면 어디 가지"가 매번 생긴다.
+   풀방금액과 부원장 지정은 이 화면의 수정 시트 안으로 들어왔다.
 
-function InstructorRateRow({ instructor, busy, onEdit }) {
-  const rate = fullRoomRateOf(instructor);
-  const usable = hasUsableFullRoomRate(instructor);
-  /* 부원장에게는 풀방금액이 쓰이지 않는다 -- 카테고리도 누적도 보지 않고 계약
-     금액의 5:5 로 간다. 숫자를 그대로 두면 그 금액이 지급되는 것으로 읽힌다. */
-  const deputy = isDeputyDirectorOf(instructor);
+   다만 저장은 한 번이 아니다. 규칙이 필드마다 다른 문을 두고 있어 -- 이름·직함·
+   지점은 한 문, 풀방금액과 부원장은 각자의 문 -- 바뀐 것마다 쓰기가 나뉜다.
+   금액과 부원장은 rateHistory 와 감사 항목을 같은 배치에 요구하므로 그 문을
+   그대로 지나야 한다.
+
+   ── 직함은 넷, 역할은 하나 ──
+   강사 · 팀장 · 점장 · 부원장 넷 다 수업료를 받는 강사다. role 은 전부
+   instructor 이고, 그래야 규칙의 hasRole 목록을 건드리지 않는다. 앞의 셋은
+   title 에 저장되고, 부원장만 isDeputyDirector 플래그다 -- 그것은 직함이면서
+   급여 판정 1 그 자체라(deduction-pricing.js), 같은 사실을 두 곳에 적으면
+   화면은 부원장인데 급여는 아닌 상태가 생긴다.
+
+   ── 퇴사는 지우는 것이 아니다 ──
+   status 를 revoked 로 내릴 뿐이다. 원장은 append-only 이고 각 항목이 그때의
+   instructorId 를 들고 있어 그 사람이 한 수업과 받은 급여는 그대로 남는다.
+   문서를 지우면 급여 화면이 그 이름을 붙일 곳을 잃는다. */
+
+/** 직함 고르기. 부원장만 다른 필드로 간다 -- 위 머리말 참고. */
+const TITLE_CHOICES = [
+  { key: MEMBERSHIP_TITLE.INSTRUCTOR, label: "강사", deputy: false },
+  { key: MEMBERSHIP_TITLE.TEAM_LEAD, label: "팀장", deputy: false },
+  { key: MEMBERSHIP_TITLE.BRANCH_MANAGER, label: "점장", deputy: false },
+  { key: "deputy", label: DEPUTY_DIRECTOR_LABEL, deputy: true },
+];
+
+function TitlePicker({ title, deputy, allowDeputy = true, onPick }) {
+  const selected = deputy ? "deputy" : title;
   return (
-    <div style={{ padding: "11px 12px", borderTop: `1px solid ${LINE}` }}>
+    <div className="flex flex-wrap gap-2">
+      {TITLE_CHOICES.filter((choice) => allowDeputy || !choice.deputy).map((choice) => (
+        <button key={choice.key} type="button" onClick={() => onPick(choice)}
+          className="h-9 px-3 font-bold" style={{
+            borderRadius: 999, fontSize: TYPE.caption,
+            backgroundColor: selected === choice.key ? TINT : CANVAS,
+            color: selected === choice.key ? BRAND_D : SUB,
+          }}>{choice.label}</button>
+      ))}
+    </div>
+  );
+}
+
+function MembershipRow({ membership, locationName, busy, onEdit }) {
+  const rate = fullRoomRateOf(membership);
+  const usable = hasUsableFullRoomRate(membership);
+  const deputy = isDeputyDirectorOf(membership);
+  const active = isActiveMembership(membership);
+  return (
+    <div style={{ padding: "11px 12px", borderTop: `1px solid ${LINE}`, opacity: active ? 1 : 0.55 }}>
       <div className="flex items-center justify-between gap-2">
         <span className="min-w-0 truncate" style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>
-          {instructor.displayName || instructor.userId}
+          {membership.displayName || membership.userId}
         </span>
-        <button type="button" disabled={busy} onClick={() => onEdit(instructor)}
+        <button type="button" disabled={busy} onClick={() => onEdit(membership)}
           className="shrink-0 px-3 font-bold" style={{
             height: 32, borderRadius: 999, fontSize: TYPE.caption,
             backgroundColor: TINT, color: BRAND_D, opacity: busy ? 0.5 : 1,
-          }}>{usable ? "변경" : "설정"}</button>
+          }}>수정</button>
       </div>
-      <p className="mt-1 tabular-nums" style={{
+      <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>
+        {membershipTitleLabel(membership)}
+        {" · "}{locationName || "지점 없음"}
+        {" · "}{labelOf(MEMBERSHIP_STATUS_LABELS, membership.status)}
+      </p>
+      {/* 부원장에게는 풀방금액이 쓰이지 않는다 -- 카테고리도 누적도 보지 않고
+          계약 금액의 5:5 로 간다. 숫자를 그대로 두면 그 금액이 지급되는 것으로
+          읽힌다. */}
+      <p className="mt-0.5 tabular-nums" style={{
         fontSize: TYPE.caption, color: deputy ? BRAND_D : usable ? SUB : WARN,
       }}>
         {deputy
-          ? "부원장 (5:5)"
-          : usable ? `${wonToManwonLabel(rate)} · 회당` : "풀방금액 미설정 — 1:1 재등록(정상) 발급 불가"}
+          ? "계약 금액의 5:5 (공급가액 기준)"
+          : usable ? `풀방금액 ${wonToManwonLabel(rate)} · 회당` : "풀방금액 미설정 — 1:1 재등록(정상) 발급 불가"}
       </p>
     </div>
   );
 }
 
-function InstructorRates({ organization, currentUserId, instructorStore, rateStore, onRetryOrganization, onToast, initialState = null }) {
-  const [instructors, setInstructors] = useState(initialState?.instructors || []);
+/** 조회 실패를 종류별로 가른다. 대표에게 서로 다른 할 일이기 때문이다. */
+function lookupMessage(error) {
+  const code = String(error?.code || "").replace(/^functions\//, "");
+  if (code === "not-found") {
+    return "그 이메일로 가입한 계정이 없습니다. 강사가 앱에 먼저 로그인해야 합니다.";
+  }
+  if (code === "permission-denied") return "이 센터의 대표만 강사를 찾을 수 있습니다.";
+  if (code === "invalid-argument") return "이메일 주소를 다시 확인해 주세요.";
+  if (code === "unauthenticated") return "로그인이 만료되었습니다. 다시 로그인해 주세요.";
+  // 분류하지 못한 실패도 추적할 수 있어야 한다 -- 코드 없는 "오류"는 남기지 않는다.
+  return `찾지 못했습니다 (코드 ${code || "unknown"}).`;
+}
+
+function InstructorAdmin({
+  organization, currentUserId, instructorStore, rateStore, locationStore,
+  lookupByEmail = fbLookupCentreMemberByEmail,
+  onRetryOrganization, onToast, initialState = null,
+}) {
+  const [members, setMembers] = useState(initialState?.members || []);
+  const [locations, setLocations] = useState(initialState?.locations || []);
   const [loading, setLoading] = useState(!initialState);
   const [loadError, setLoadError] = useState(initialState?.loadError || "");
+  const [mode, setMode] = useState(initialState?.mode || "list");
   const [editing, setEditing] = useState(initialState?.editing || null);
-  const [draft, setDraft] = useState(initialState?.draft || "");
-  const [deputyDraft, setDeputyDraft] = useState(initialState?.deputyDraft === true);
-  const [formError, setFormError] = useState("");
+  const [draft, setDraft] = useState(initialState?.draft || {
+    displayName: "", title: MEMBERSHIP_TITLE.INSTRUCTOR, locationId: "", rateManwon: "", deputy: false,
+  });
+  const [lookup, setLookup] = useState(initialState?.lookup || { email: "", found: null, error: "", busy: false });
+  const [formError, setFormError] = useState(initialState?.formError || "");
   const [saving, setSaving] = useState(false);
   const organizationId = organization?.organizationId || "";
   const locked = organization?.status === "unknown";
@@ -15005,45 +15081,119 @@ function InstructorRates({ organization, currentUserId, instructorStore, rateSto
     setLoading(true);
     setLoadError("");
     try {
-      setInstructors(await listInstructors(organizationId, { store: instructorStore }));
+      /* 지점 이름은 숫자를 바꾸지 않는다. 못 읽어도 목록은 보여준다 -- 이름
+         때문에 강사를 못 붙이면 그날 아무도 수업을 배정받지 못한다. */
+      const [found, locationResult] = await Promise.all([
+        listMemberships(organizationId, { store: instructorStore }),
+        toleratingReadFailure(listLocations(organizationId, { store: locationStore })),
+      ]);
+      setMembers(found);
+      setLocations(locationResult.items);
     } catch (error) {
       // 조회 실패와 "강사가 없다"는 다른 화면이어야 한다 -- repository-read 관례.
       setLoadError(error?.code || "unknown");
     } finally {
       setLoading(false);
     }
-  }, [organizationId, instructorStore]);
+  }, [organizationId, instructorStore, locationStore]);
 
   useEffect(() => { if (!locked) reload(); else setLoading(false); }, [locked, reload]);
 
-  const openEditor = (picked) => {
-    setEditing(picked);
-    const rate = fullRoomRateOf(picked);
-    setDraft(rate ? String(rate / WON_PER_MANWON) : "");
-    setDeputyDraft(isDeputyDirectorOf(picked));
+  const locationNames = useMemo(
+    () => new Map(locations.map((location) => [location.id, location.name || ""])),
+    [locations],
+  );
+  const working = members.filter(isActiveMembership);
+  const retired = members.filter((membership) => !isActiveMembership(membership));
+
+  const close = () => {
+    setMode("list");
+    setEditing(null);
+    setLookup({ email: "", found: null, error: "", busy: false });
+    setDraft({ displayName: "", title: MEMBERSHIP_TITLE.INSTRUCTOR, locationId: "", rateManwon: "", deputy: false });
     setFormError("");
   };
 
-  const closeEditor = () => { setEditing(null); setDraft(""); setDeputyDraft(false); setFormError(""); };
+  const openEditor = (picked) => {
+    const rate = fullRoomRateOf(picked);
+    setEditing(picked);
+    setDraft({
+      displayName: picked.displayName || "",
+      title: TITLE_CHOICES.some((choice) => choice.key === picked.title)
+        ? picked.title
+        : MEMBERSHIP_TITLE.INSTRUCTOR,
+      locationId: picked.locationId || "",
+      rateManwon: rate ? String(rate / WON_PER_MANWON) : "",
+      deputy: isDeputyDirectorOf(picked),
+    });
+    setFormError("");
+    setMode("edit");
+  };
 
-  const submit = async (event) => {
+  const pickTitle = (choice) => setDraft((current) => (choice.deputy
+    ? { ...current, deputy: true }
+    : { ...current, deputy: false, title: choice.key }));
+
+  const find = async (event) => {
+    event.preventDefault();
+    setLookup((current) => ({ ...current, busy: true, error: "", found: null }));
+    try {
+      const found = await lookupByEmail({ organizationId, email: lookup.email });
+      setLookup((current) => ({ ...current, busy: false, found }));
+      // Auth 가 이름을 아는 계정이면 채워 준다. 대표가 고쳐 쓸 수 있다.
+      setDraft((current) => ({ ...current, displayName: current.displayName || found?.displayName || "" }));
+    } catch (error) {
+      setLookup((current) => ({ ...current, busy: false, error: lookupMessage(error) }));
+    }
+  };
+
+  const add = async (event) => {
+    event.preventDefault();
+    setFormError("");
+    const userId = String(lookup.found?.userId || "");
+    if (!userId) { setFormError("먼저 이메일로 강사를 찾아 주세요."); return; }
+    if (!draft.displayName.trim()) { setFormError("이름을 입력해 주세요."); return; }
+    setSaving(true);
+    try {
+      await addMembership(organizationId, {
+        userId,
+        displayName: draft.displayName.trim(),
+        title: draft.title,
+        locationId: draft.locationId,
+        createdBy: currentUserId,
+        actorRole: organization?.role || "",
+      }, { store: rateStore });
+      onToast?.({ ok: true, msg: `${draft.displayName.trim()}님을 센터에 추가했습니다.` });
+      close();
+      await reload();
+    } catch (error) {
+      setFormError(`추가하지 못했어요 (코드 ${error?.code || error?.message || "unknown"})`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const save = async (event) => {
     event.preventDefault();
     setFormError("");
     if (!editing) return;
+    if (!draft.displayName.trim()) { setFormError("이름을 입력해 주세요."); return; }
     const wasDeputy = isDeputyDirectorOf(editing);
     const previousRate = fullRoomRateOf(editing);
-    const nextRate = deputyDraft || draft === "" ? null : manwonToWon(Number(draft));
+    const nextRate = draft.deputy || draft.rateManwon === "" ? null : manwonToWon(Number(draft.rateManwon));
+    const actorRole = organization?.role || "";
     setSaving(true);
     try {
-      /* 두 값은 한 문서에 있지만 각자 한 필드짜리 문을 지난다 -- 규칙이 한 번에
-         한 필드만 통과시킨다. 그래서 쓰기도 두 번이다. 부원장부터 쓴다: 그 값이
-         금액보다 세고, 중간에 실패해도 "5:5 인데 금액이 옛날 값"이 남지
-         "금액은 새것인데 아직 부원장이 아닌" 상태가 남지 않는다. */
-      if (deputyDraft !== wasDeputy) {
+      /* 세 번의 쓰기가 될 수 있다. 규칙이 필드마다 다른 문을 두고 있어서다.
+         순서가 중요하다: 부원장이 금액보다 세므로 먼저 쓴다. 중간에 실패해도
+         "5:5 인데 금액이 옛날 값"이 남지, "금액은 새것인데 아직 부원장이 아닌"
+         상태가 남지 않는다. */
+      if (draft.deputy !== wasDeputy) {
         await setInstructorDeputyDirector(organizationId, editing.userId, {
-          isDeputyDirector: deputyDraft,
+          isDeputyDirector: draft.deputy,
           previousDeputyDirector: editing.isDeputyDirector === undefined ? null : wasDeputy,
           changedBy: currentUserId,
+          actorRole,
         }, { store: rateStore });
       }
       if (nextRate !== null && nextRate !== previousRate) {
@@ -15051,13 +15201,44 @@ function InstructorRates({ organization, currentUserId, instructorStore, rateSto
           newRate: nextRate,
           previousRate,
           changedBy: currentUserId,
+          actorRole,
         }, { store: rateStore });
       }
-      closeEditor();
-      onToast?.({ ok: true, msg: deputyDraft ? "부원장으로 저장했습니다." : "풀방금액을 저장했습니다." });
+      await setMembershipProfile(organizationId, editing.userId, {
+        displayName: draft.displayName.trim(),
+        title: draft.title,
+        locationId: draft.locationId,
+        changedBy: currentUserId,
+        actorRole,
+      }, { store: rateStore });
+      onToast?.({ ok: true, msg: "저장했습니다." });
+      close();
       await reload();
     } catch (error) {
       setFormError(`저장하지 못했어요 (코드 ${error?.code || error?.message || "unknown"})`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const changeStatus = async (status) => {
+    if (!editing) return;
+    setFormError("");
+    setSaving(true);
+    try {
+      await setMembershipStatus(organizationId, editing.userId, {
+        status,
+        changedBy: currentUserId,
+        actorRole: organization?.role || "",
+      }, { store: rateStore });
+      onToast?.({
+        ok: true,
+        msg: status === MEMBERSHIP_STATUS.REVOKED ? "퇴사 처리했습니다." : "복직 처리했습니다.",
+      });
+      close();
+      await reload();
+    } catch (error) {
+      setFormError(`바꾸지 못했어요 (코드 ${error?.code || error?.message || "unknown"})`);
     } finally {
       setSaving(false);
     }
@@ -15067,79 +15248,204 @@ function InstructorRates({ organization, currentUserId, instructorStore, rateSto
     <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
       <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>소속을 확인하지 못했습니다</h2>
       <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
-        네트워크 문제로 소속 정보를 읽지 못했습니다. 잘못된 센터의 단가를 건드리지 않도록 이 화면을 잠급니다.
+        네트워크 문제로 소속 정보를 읽지 못했습니다. 잘못된 센터의 강사를 건드리지 않도록 이 화면을 잠급니다.
       </p>
       <button type="button" onClick={() => onRetryOrganization?.()} className="mt-3 h-11 w-full font-bold"
         style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>다시 시도</button>
     </section>
   );
 
-  if (editing) return (
+  const locationPicker = (
+    <Field label="지점" hint={locations.length === 0 ? "등록된 지점이 없습니다" : "선택"}>
+      <div className="flex flex-wrap gap-2">
+        {locations.map((location) => (
+          <button key={location.id} type="button"
+            onClick={() => setDraft((current) => ({
+              ...current,
+              locationId: current.locationId === location.id ? "" : location.id,
+            }))}
+            className="h-9 px-3 font-bold" style={{
+              borderRadius: 999, fontSize: TYPE.caption,
+              backgroundColor: draft.locationId === location.id ? TINT : CANVAS,
+              color: draft.locationId === location.id ? BRAND_D : SUB,
+            }}>{location.name || location.id}</button>
+        ))}
+      </div>
+    </Field>
+  );
+
+  if (mode === "add") return (
     <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
-      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>
-        {editing.displayName || editing.userId} 풀방금액
-      </h2>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>강사 추가</h2>
       <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
-        1:1 재등록(정상) 수업의 회당 단가입니다. 다른 카테고리는 이 금액과 무관합니다.
+        강사가 앱에 먼저 로그인한 뒤, 그때 쓴 이메일로 찾습니다.
       </p>
-      <form onSubmit={submit} className="mt-3 space-y-3">
-        {/* 본인은 지정하지 못한다. 규칙도 막지만, 눌러도 거부되는 칸을 열어
-            두면 고장으로 보인다. */}
-        {editing.userId === currentUserId ? null : (
-          <label className="flex items-center gap-2.5" style={{ padding: "10px 0" }}>
-            <input type="checkbox" checked={deputyDraft} className="h-5 w-5"
-              onChange={(e) => setDeputyDraft(e.target.checked)} />
-            <span style={{ fontSize: TYPE.body, color: INK }}>부원장</span>
-          </label>
-        )}
-        {deputyDraft ? (
-          <p style={{
-            padding: "10px 11px", borderRadius: 10, backgroundColor: TINT,
-            fontSize: TYPE.caption, lineHeight: 1.5, color: BRAND_D,
-          }}>
-            부원장은 계약 금액의 50%를 회당 단가로 받습니다. 카테고리와 누적 횟수를 보지 않습니다.
-            {" "}이 강사의 앱이 소속 정보를 다시 읽는 때부터 적용됩니다.
-          </p>
-        ) : null}
-        <Field label="회당 단가 (만원)">
-          <input inputMode="decimal" value={deputyDraft ? "" : draft} className={inputCls} placeholder="4.5"
-            disabled={deputyDraft}
-            style={deputyDraft ? { opacity: 0.5 } : undefined}
-            onChange={(e) => setDraft(e.target.value.replace(/[^\d.]/g, ""))} />
+      <form onSubmit={find} className="mt-3 space-y-3">
+        <Field label="가입한 이메일">
+          <input type="email" value={lookup.email} className={inputCls} placeholder="teacher@studio.com"
+            onChange={(e) => setLookup((current) => ({ ...current, email: e.target.value, error: "", found: null }))} />
         </Field>
-        {formError ? <p style={{ fontSize: TYPE.caption, color: BAD }}>{formError}</p> : null}
-        <div className="flex gap-2 pt-1">
-          <button type="button" onClick={closeEditor}
-            className="h-11 flex-1 font-bold"
-            style={{ borderRadius: 10, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>취소</button>
-          <button type="submit" disabled={saving} className="h-11 flex-1 font-bold"
-            style={{ borderRadius: 10, backgroundColor: BRAND, color: "#fff", fontSize: TYPE.caption, opacity: saving ? 0.6 : 1 }}>
-            {saving ? "저장 중" : "저장"}
-          </button>
-        </div>
+        <button type="submit" disabled={lookup.busy || !lookup.email.trim()} className="h-11 w-full font-bold"
+          style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption, opacity: lookup.busy ? 0.6 : 1 }}>
+          {lookup.busy ? "찾는 중" : "찾기"}
+        </button>
+        {lookup.error ? <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: BAD }}>{lookup.error}</p> : null}
       </form>
+
+      {lookup.found ? (
+        <div className="mt-3" style={{ padding: 12, borderRadius: 10, backgroundColor: CANVAS }}>
+          <p style={{ fontSize: TYPE.caption, color: INK2 }}>
+            계정을 찾았습니다{lookup.found.displayName ? ` · ${lookup.found.displayName}` : ""}
+          </p>
+          {/* 이미 있는 사람을 다시 추가하려 하면 규칙이 거부한다. 왜인지 여기서
+              먼저 말한다 -- permission-denied 한 줄로는 알 수 없다. */}
+          {lookup.found.membership ? (
+            <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: WARN }}>
+              이미 이 센터에 있는 계정입니다
+              {` (${labelOf(MEMBERSHIP_STATUS_LABELS, lookup.found.membership.status)})`}.
+              {" "}목록에서 수정해 주세요.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {lookup.found && !lookup.found.membership ? (
+        <form onSubmit={add} className="mt-3 space-y-3">
+          <Field label="이름" hint="목록과 급여 화면에 이 이름이 나옵니다">
+            <input value={draft.displayName} className={inputCls} placeholder="예) 박서연"
+              onChange={(e) => setDraft((current) => ({ ...current, displayName: e.target.value }))} />
+          </Field>
+          <Field label="직함">
+            {/* 부원장은 여기서 고르지 않는다. 그 지정은 급여 판정을 바꾸는 일이라
+                이력이 함께 남아야 하고, 그 문은 추가가 아니라 수정 쪽에 있다. */}
+            <TitlePicker title={draft.title} deputy={false} allowDeputy={false} onPick={pickTitle} />
+            <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+              부원장 지정과 풀방금액은 추가한 뒤 수정에서 정합니다 — 변경 이력이 함께 남습니다.
+            </p>
+          </Field>
+          {locationPicker}
+          {formError ? <p style={{ fontSize: TYPE.caption, color: BAD }}>{formError}</p> : null}
+          <div className="flex gap-2 pt-1">
+            <button type="button" onClick={close} className="h-11 flex-1 font-bold"
+              style={{ borderRadius: 10, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>취소</button>
+            <button type="submit" disabled={saving} className="h-11 flex-1 font-bold"
+              style={{ borderRadius: 10, backgroundColor: BRAND, color: "#fff", fontSize: TYPE.caption, opacity: saving ? 0.6 : 1 }}>
+              {saving ? "추가 중" : "추가"}
+            </button>
+          </div>
+        </form>
+      ) : (
+        <button type="button" onClick={close} className="mt-3 h-11 w-full font-bold"
+          style={{ borderRadius: 10, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>닫기</button>
+      )}
     </section>
   );
 
+  if (mode === "edit" && editing) {
+    const self = editing.userId === currentUserId;
+    const active = isActiveMembership(editing);
+    return (
+      <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+        <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>
+          {editing.displayName || editing.userId}
+        </h2>
+        <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+          단가를 바꾸면 이후 차감분부터 적용됩니다. 이미 기록된 수업의 급여는 바뀌지 않습니다.
+        </p>
+        <form onSubmit={save} className="mt-3 space-y-3">
+          <Field label="이름">
+            <input value={draft.displayName} className={inputCls} placeholder="예) 박서연"
+              onChange={(e) => setDraft((current) => ({ ...current, displayName: e.target.value }))} />
+          </Field>
+          <Field label="직함">
+            {/* 본인은 부원장으로 지정하지 못한다. 규칙도 막지만, 눌러도 거부되는
+                버튼을 열어 두면 고장으로 보인다. */}
+            <TitlePicker title={draft.title} deputy={draft.deputy} allowDeputy={!self} onPick={pickTitle} />
+          </Field>
+          {locationPicker}
+          {draft.deputy ? (
+            <p style={{
+              padding: "10px 11px", borderRadius: 10, backgroundColor: TINT,
+              fontSize: TYPE.caption, lineHeight: 1.5, color: BRAND_D,
+            }}>
+              부원장은 계약 금액의 50%를 회당 단가로 받습니다. 카드 결제는 부가세를 뺀 공급가액이 기준입니다.
+              {" "}카테고리와 누적 횟수를 보지 않습니다. 이 강사의 앱이 소속 정보를 다시 읽는 때부터 적용됩니다.
+            </p>
+          ) : null}
+          <Field label="풀방금액 (만원)" hint="1:1 재등록(정상) 회당 단가">
+            <input inputMode="decimal" value={draft.deputy ? "" : draft.rateManwon} className={inputCls}
+              placeholder="4.5" disabled={draft.deputy}
+              style={draft.deputy ? { opacity: 0.5 } : undefined}
+              onChange={(e) => setDraft((current) => ({ ...current, rateManwon: e.target.value.replace(/[^\d.]/g, "") }))} />
+          </Field>
+          {formError ? <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: BAD }}>{formError}</p> : null}
+          <div className="flex gap-2 pt-1">
+            <button type="button" onClick={close} className="h-11 flex-1 font-bold"
+              style={{ borderRadius: 10, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>취소</button>
+            <button type="submit" disabled={saving} className="h-11 flex-1 font-bold"
+              style={{ borderRadius: 10, backgroundColor: BRAND, color: "#fff", fontSize: TYPE.caption, opacity: saving ? 0.6 : 1 }}>
+              {saving ? "저장 중" : "저장"}
+            </button>
+          </div>
+        </form>
+
+        {/* 자기 자신은 퇴사시키지 못한다. 대표가 자기 소속을 회수하면 그 센터에
+            대표가 없어지고, 되돌릴 문이 아무 데도 없다. */}
+        {self ? null : (
+          <div className="mt-4" style={{ borderTop: `1px solid ${LINE}`, paddingTop: 12 }}>
+            <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+              퇴사해도 이 강사가 한 수업과 급여 기록은 그대로 남습니다. 새 회원권을 맡길 수 없게 될 뿐입니다.
+            </p>
+            <button type="button" disabled={saving}
+              onClick={() => changeStatus(active ? MEMBERSHIP_STATUS.REVOKED : MEMBERSHIP_STATUS.ACTIVE)}
+              className="mt-2 h-11 w-full font-bold" style={{
+                borderRadius: 10, fontSize: TYPE.caption,
+                backgroundColor: active ? BAD_S : CANVAS,
+                color: active ? BAD : BRAND_D,
+                opacity: saving ? 0.6 : 1,
+              }}>{active ? "퇴사 처리" : "복직 처리"}</button>
+          </div>
+        )}
+      </section>
+    );
+  }
+
   return (
     <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
-      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>강사 단가</h2>
+      <div className="flex items-center justify-between gap-2">
+        <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>강사 관리</h2>
+        <button type="button" onClick={() => { close(); setMode("add"); }}
+          className="shrink-0 px-3 font-bold" style={{
+            height: 32, borderRadius: 999, fontSize: TYPE.caption, backgroundColor: TINT, color: BRAND_D,
+          }}>추가</button>
+      </div>
       <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
-        단가를 바꾸면 이후 발급분부터 적용됩니다. 이미 기록된 수업의 급여는 바뀌지 않습니다.
+        지점과 이름을 정하면 그 강사에게 센터 회원이 보입니다.
       </p>
       <div className="mt-3">
         {loading ? <p style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : null}
         {!loading && loadError
           ? <p style={{ fontSize: TYPE.caption, color: BAD }}>강사 목록을 불러오지 못했습니다 (코드 {loadError}).</p>
           : null}
-        {!loading && !loadError && instructors.length === 0
-          ? <p style={{ fontSize: TYPE.caption, color: SUB }}>등록된 강사가 없습니다.</p>
+        {!loading && !loadError && members.length === 0
+          ? <p style={{ fontSize: TYPE.caption, color: SUB }}>등록된 강사가 없습니다. 추가를 눌러 첫 강사를 붙이세요.</p>
           : null}
-        {!loading && !loadError && instructors.map((instructor) => (
-          <InstructorRateRow key={instructor.userId} instructor={instructor} busy={saving}
-            onEdit={openEditor} />
+        {!loading && !loadError && working.map((membership) => (
+          <MembershipRow key={membership.userId} membership={membership} busy={saving}
+            locationName={locationNames.get(membership.locationId)} onEdit={openEditor} />
         ))}
       </div>
+      {/* 퇴사자는 아래에 흐리게. 목록에서 빼면 복직시킬 길이 사라지고, 급여
+          화면에서 본 이름을 여기서 찾을 수 없다. */}
+      {!loading && !loadError && retired.length > 0 ? (
+        <div className="mt-4">
+          <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>퇴사</p>
+          {retired.map((membership) => (
+            <MembershipRow key={membership.userId} membership={membership} busy={saving}
+              locationName={locationNames.get(membership.locationId)} onEdit={openEditor} />
+          ))}
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -16360,10 +16666,14 @@ function PayrollSummary({
     setLoadError("");
     try {
       /* 이름은 숫자를 바꾸지 않는다. 못 읽어도 집계는 보여주고 그 사실만
-         말한다 -- 이름 때문에 정산 전체를 막으면 그날 정산을 못 한다. */
+         말한다 -- 이름 때문에 정산 전체를 막으면 그날 정산을 못 한다.
+
+         퇴사자까지 읽는다(listMemberships). 활성만 읽으면 이번 달에 나간 강사의
+         줄이 uid 로 떨어지고, 그 급여를 누구에게 줘야 하는지 화면이 말하지
+         못한다 -- 원장은 그 사람의 수업을 그대로 들고 있는데. */
       const [found, instructorResult, locationResult] = await Promise.all([
         loadOrganizationMonthlyPayroll(organizationId, { month, store: payrollStore }),
-        toleratingReadFailure(listInstructors(organizationId, { store: instructorStore })),
+        toleratingReadFailure(listMemberships(organizationId, { store: instructorStore })),
         toleratingReadFailure(listLocations(organizationId, { store: locationStore })),
       ]);
       setSummary(found);
@@ -16617,6 +16927,9 @@ const AUDIT_ACTION_LABEL = {
   [AUDIT_ACTION.DEPUTY_DIRECTOR_SET]: "부원장",
   [AUDIT_ACTION.FULL_ROOM_RATE_SET]: "풀방금액 변경",
   [AUDIT_ACTION.MIGRATION_UPLOADED]: "이관 업로드",
+  [AUDIT_ACTION.MEMBER_ADDED]: "강사 추가",
+  [AUDIT_ACTION.MEMBER_PROFILE_CHANGED]: "강사 정보 변경",
+  [AUDIT_ACTION.MEMBER_REVOKED]: "퇴사 · 복직",
   issue: "회원권 발급",
   deduct: "차감",
   transfer: "담당 강사 변경",
@@ -16643,6 +16956,11 @@ function AuditTimelineRow({ row, nameOfClient, nameOfInstructor, nameOfLocation 
     detail = `${nameOfInstructor(row.targetId)} · ${row.enabled ? "지정" : "해제"}`;
   } else if (row.action === AUDIT_ACTION.MIGRATION_UPLOADED) {
     detail = `${MIGRATION_STAGE_LABEL_SHORT[row.stage] || row.stage} · 성공 ${row.succeeded ?? 0} · 실패 ${row.failed ?? 0}`;
+  } else if (row.action === AUDIT_ACTION.MEMBER_REVOKED) {
+    // 한 동작에 두 방향이 있다. 어느 쪽이었는지가 없으면 줄을 읽을 수 없다.
+    detail = `${nameOfInstructor(row.targetId)} · ${row.enabled ? "퇴사" : "복직"}`;
+  } else if (row.action === AUDIT_ACTION.MEMBER_ADDED || row.action === AUDIT_ACTION.MEMBER_PROFILE_CHANGED) {
+    detail = `${nameOfInstructor(row.targetId)} · ${labelOf(MEMBERSHIP_TITLE_LABELS, row.title)}`;
   } else if (row.action === "transfer") {
     detail = `${nameOfInstructor(row.fromInstructorId)} → ${nameOfInstructor(row.toInstructorId)}`;
   } else {
@@ -16731,7 +17049,9 @@ function AuditLog({
         // 상품을 못 읽으면 "기준과 다른 발급"을 판정할 수 없다. 그 사실만 말한다.
         toleratingReadFailure(listProducts(organizationId, { store: productStore })),
         toleratingReadFailure(listClients(organizationId, { store: clientStore })),
-        toleratingReadFailure(listInstructors(organizationId, { store: instructorStore })),
+        // 감사 화면도 퇴사자의 이름을 붙일 수 있어야 한다. 지난 기록이 uid 로
+        // 떨어지면 "누가 무엇을 했나"의 절반이 사라진다.
+        toleratingReadFailure(listMemberships(organizationId, { store: instructorStore })),
         toleratingReadFailure(listLocations(organizationId, { store: locationStore })),
       ]);
       setClients(clientResult.items);
@@ -17005,9 +17325,12 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
   const showClients = organization.ready
     && !organization.isLegacy
     && organization.role === ROLES.OWNER;
-  /* 강사 단가는 대표만 본다. 규칙도 대표만 허용하므로, 매니저에게 보여 주면
-     눌러도 거부되는 화면만 나온다. */
-  const showInstructorRates = organization.ready
+  /* 강사 관리는 대표만 본다. 규칙도 대표만 허용하므로(memberships create 와
+     세 update 문), 매니저에게 보여 주면 눌러도 거부되는 화면만 나온다.
+
+     옛 "강사 단가" 화면이 여기로 들어왔다 -- 같은 목록을 두 화면이 그리면
+     "강사 뭐 고치려면 어디 가지"가 매번 생긴다. */
+  const showInstructorAdmin = organization.ready
     && !organization.isLegacy
     && organization.role === ROLES.OWNER;
   /* 엑셀 이관은 대표만 본다. 한 번 올리면 센터 전체의 회원과 회원권이
@@ -17179,7 +17502,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
     data: "데이터 상태", backup: "데이터 이관 · 백업", permissions: "접근권한 안내", knowledge: "오늘의 지식", account: "계정", "account-delete": "계정 삭제", app: "앱 정보",
     products: "회원권 상품",
     clients: "회원 관리",
-    "instructor-rates": "강사 단가",
+    "instructor-admin": "강사 관리",
     "pass-issue": "회원권 발급",
     migration: "엑셀 이관",
     payroll: "급여 집계",
@@ -17196,7 +17519,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
       { key: "center", title: "센터 정보", description: "센터명 · 담당자 · 그룹 단가", Icon: SettingsIcon },
       ...(showClients ? [{ key: "pass-issue", title: "회원권 발급", description: "회원에게 회원권 발급", Icon: Ticket }] : []),
       ...(showClients ? [{ key: "clients", title: "회원 관리", description: "회원 등록 · 검색", Icon: UserPlus }] : []),
-      ...(showInstructorRates ? [{ key: "instructor-rates", title: "강사 단가", description: "강사별 풀방금액", Icon: Users }] : []),
+      ...(showInstructorAdmin ? [{ key: "instructor-admin", title: "강사 관리", description: "강사 추가 · 지점 · 직함 · 풀방금액", Icon: Users }] : []),
       ...(showProducts ? [{ key: "products", title: "회원권 상품", description: "이벤트 상품 추가 · 종료", Icon: Ticket }] : []),
       ...(showPayroll ? [{ key: "payroll", title: "급여 집계", description: "강사별 수업료 · 월말 정산", Icon: ArrowUpRight }] : []),
       ...(showAudit ? [{ key: "audit", title: "감사 로그", description: "이상한 건만 모아 보기 · 전체 이력", Icon: AlertCircle }] : []),
@@ -17431,9 +17754,10 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
             locationStore={locationStore} passStore={passStore}
             onRetryOrganization={onRetryOrganization} onToast={onToast} />
         )}
-        {view === "instructor-rates" && showInstructorRates && (
-          <InstructorRates organization={organization} currentUserId={account?.id || ""}
+        {view === "instructor-admin" && showInstructorAdmin && (
+          <InstructorAdmin organization={organization} currentUserId={account?.id || ""}
             instructorStore={instructorStore} rateStore={instructorRateStore}
+            locationStore={locationStore}
             onRetryOrganization={onRetryOrganization} onToast={onToast} />
         )}
         {view === "clients" && showClients && (
@@ -17675,12 +17999,17 @@ export function createAppScreenSmokeCases() {
   const locationStore = { list: async () => smokeLocations };
   /* 강사 목록도 Firestore 를 건드리지 않는다. 화면이 그리는 것만 본다. */
   const smokeInstructors = [
-    { id: "smoke-center_u1", organizationId: "smoke-center", userId: "u1", role: "instructor", status: "active", displayName: "정예진", fullRoomRate: 45000 },
+    { id: "smoke-center_u1", organizationId: "smoke-center", userId: "u1", role: "instructor", status: "active", displayName: "정예진", title: "team_lead", locationId: "bansong", fullRoomRate: 45000 },
     { id: "smoke-center_u2", organizationId: "smoke-center", userId: "u2", role: "instructor", status: "active", displayName: "박서연" },
-    { id: "smoke-center_u4", organizationId: "smoke-center", userId: "u4", role: "instructor", status: "active", displayName: "최소연", fullRoomRate: 50000, isDeputyDirector: true },
+    { id: "smoke-center_u4", organizationId: "smoke-center", userId: "u4", role: "instructor", status: "active", displayName: "최소연", title: "branch_manager", fullRoomRate: 50000, isDeputyDirector: true },
     { id: "smoke-center_u3", organizationId: "smoke-center", userId: "u3", role: "instructor", status: "active", displayName: "", fullRoomRate: 0 },
   ];
-  const instructorStore = { listByRole: async () => smokeInstructors };
+  /* 퇴사자. 목록 아래에 흐리게 서고, 급여 화면이 지난달 줄에 이 이름을 붙인다. */
+  const smokeRetired = { id: "smoke-center_u5", organizationId: "smoke-center", userId: "u5", role: "instructor", status: "revoked", displayName: "김하나", title: "instructor", locationId: "bansong" };
+  const instructorStore = {
+    listByRole: async () => smokeInstructors,
+    listByOrganization: async () => [...smokeInstructors, smokeRetired],
+  };
   const instructorRateStore = { commit: async () => {}, serverTimestamp: async () => "SERVER_TIME" };
   const smokePasses = [
     { id: "smoke-pass-a", organizationId: "smoke-center", clientId: "smoke-client-a", locationId: "bansong", category: "pt_1_1_repurchase_event", baseUnitPrice: 30000, serviceUsed: 0, handedOver: false, contractPrice: 1300000, totalSessions: 20, remainingCount: 8, status: "active", purchaseRound: 2 },
@@ -17807,10 +18136,11 @@ export function createAppScreenSmokeCases() {
       locationStore={locationStore} passStore={passStore} initialState={initialState}
       onRetryOrganization={noop} onToast={noop} />
   ));
-  const instructorRates = (organization, initialState) => providerWith(organization, (
-    <InstructorRates organization={readyOrganizationContext(organization)} currentUserId="smoke-account"
-      instructorStore={instructorStore} rateStore={instructorRateStore} initialState={initialState}
-      onRetryOrganization={noop} onToast={noop} />
+  const instructorAdmin = (organization, initialState) => providerWith(organization, (
+    <InstructorAdmin organization={readyOrganizationContext(organization)} currentUserId="smoke-account"
+      instructorStore={instructorStore} rateStore={instructorRateStore} locationStore={locationStore}
+      lookupByEmail={async () => ({ userId: "u-new", displayName: "정예진", membership: null })}
+      initialState={initialState} onRetryOrganization={noop} onToast={noop} />
   ));
   const settingsTab = (organization, extra = {}) => providerWith(organization, <ReferenceSettingsTab db={db} photos={photos} account={{ id: "smoke-account", role: "owner" }} savedAt={null} demoMode={false} onChangeSettings={noop} onChangePhoto={noop} onLogout={noop} onDeleteAccount={noop} onToast={noop} themePref="light" onChangeTheme={noop} onImport={noop} onOpenSchedule={noop} onOpenRecords={noop} onOpenOnboarding={noop} backupStatus={{}} onEnablePhotoBackup={noop} onRetryBackup={noop} productStore={productStore} clientStore={clientStore} locationStore={locationStore} instructorStore={instructorStore} instructorRateStore={instructorRateStore} passStore={passStore} onRetryOrganization={noop} {...extra} />);
   const clientDirectory = (organization, initialState) => providerWith(organization, (
@@ -18027,19 +18357,42 @@ export function createAppScreenSmokeCases() {
       form: { clientId: "smoke-client-a", productId: "smoke-product-active", totalSessions: "20", contractPriceManwon: "130", serviceSessions: "2", purchaseRound: "2", paymentMethod: "cash", instructorId: "u1", unitPriceManwon: "" },
     }) },
     { name: "회원권 발급 · 조회 실패", element: passIssue(smokeOwner, { clients: [], products: [], instructors: [], locations: [], loadError: "permission-denied" }) },
-    { name: "강사 단가", element: instructorRates(smokeOwner, { instructors: smokeInstructors }) },
-    { name: "강사 단가 · 단가 입력", element: instructorRates(smokeOwner, {
-      instructors: smokeInstructors, editing: smokeInstructors[0], draft: "4.5",
+    { name: "강사 관리", element: instructorAdmin(smokeOwner, { members: [...smokeInstructors, smokeRetired], locations: smokeLocations }) },
+    { name: "강사 관리 · 수정", element: instructorAdmin(smokeOwner, {
+      members: smokeInstructors, locations: smokeLocations, mode: "edit", editing: smokeInstructors[0],
+      draft: { displayName: "정예진", title: "team_lead", locationId: "bansong", rateManwon: "4.5", deputy: false },
     }) },
-    { name: "강사 단가 · 부원장 지정", element: instructorRates(smokeOwner, {
-      instructors: smokeInstructors, editing: smokeInstructors[0], draft: "4.5", deputyDraft: true,
+    { name: "강사 관리 · 부원장 지정", element: instructorAdmin(smokeOwner, {
+      members: smokeInstructors, locations: smokeLocations, mode: "edit", editing: smokeInstructors[0],
+      draft: { displayName: "정예진", title: "team_lead", locationId: "bansong", rateManwon: "4.5", deputy: true },
     }) },
-    { name: "강사 단가 · 본인", element: instructorRates(
-      { ...smokeOwner, role: "owner" },
-      { instructors: smokeInstructors, editing: { ...smokeInstructors[0], userId: "smoke-account" }, draft: "4.5" },
-    ) },
-    { name: "강사 단가 · 조회 실패", element: instructorRates(smokeOwner, { instructors: [], loadError: "permission-denied" }) },
-    { name: "강사 단가 · 강사 없음", element: instructorRates(smokeOwner, { instructors: [] }) },
+    /* 본인. 부원장 버튼도 퇴사 버튼도 없다 -- 대표가 자기 소속을 회수하면
+       그 센터에 대표가 없어지고 되돌릴 문이 없다. */
+    { name: "강사 관리 · 본인", element: instructorAdmin(smokeOwner, {
+      members: smokeInstructors, locations: smokeLocations, mode: "edit",
+      editing: { ...smokeInstructors[0], userId: "smoke-account" },
+      draft: { displayName: "정예진", title: "instructor", locationId: "", rateManwon: "4.5", deputy: false },
+    }) },
+    { name: "강사 관리 · 퇴사자", element: instructorAdmin(smokeOwner, {
+      members: [...smokeInstructors, smokeRetired], locations: smokeLocations, mode: "edit", editing: smokeRetired,
+      draft: { displayName: "김하나", title: "instructor", locationId: "bansong", rateManwon: "", deputy: false },
+    }) },
+    { name: "강사 관리 · 추가", element: instructorAdmin(smokeOwner, { members: smokeInstructors, locations: smokeLocations, mode: "add" }) },
+    { name: "강사 관리 · 추가 · 계정 찾음", element: instructorAdmin(smokeOwner, {
+      members: smokeInstructors, locations: smokeLocations, mode: "add",
+      lookup: { email: "teacher@studio.com", busy: false, error: "", found: { userId: "u-new", displayName: "한지우", membership: null } },
+      draft: { displayName: "한지우", title: "instructor", locationId: "", rateManwon: "", deputy: false },
+    }) },
+    { name: "강사 관리 · 추가 · 이미 소속", element: instructorAdmin(smokeOwner, {
+      members: smokeInstructors, locations: smokeLocations, mode: "add",
+      lookup: { email: "teacher@studio.com", busy: false, error: "", found: { userId: "u1", displayName: "정예진", membership: { role: "instructor", status: "active", title: "team_lead" } } },
+    }) },
+    { name: "강사 관리 · 추가 · 계정 없음", element: instructorAdmin(smokeOwner, {
+      members: smokeInstructors, locations: smokeLocations, mode: "add",
+      lookup: { email: "typo@studio.com", busy: false, error: "그 이메일로 가입한 계정이 없습니다. 강사가 앱에 먼저 로그인해야 합니다.", found: null },
+    }) },
+    { name: "강사 관리 · 조회 실패", element: instructorAdmin(smokeOwner, { members: [], locations: [], loadError: "permission-denied" }) },
+    { name: "강사 관리 · 강사 없음", element: instructorAdmin(smokeOwner, { members: [], locations: smokeLocations }) },
     { name: "회원 관리", element: clientDirectory(smokeOwner, { clients: smokeClients, locations: smokeLocations }) },
     { name: "회원 관리 · 검색 결과 없음", element: clientDirectory(smokeOwner, { clients: smokeClients, locations: smokeLocations, search: "없는이름" }) },
     { name: "회원 관리 · 등록", element: clientDirectory(smokeOwner, { clients: smokeClients, locations: smokeLocations, mode: "add" }) },

@@ -613,6 +613,25 @@ export async function fbSoftDeletePhotoBackup(uid, photoId) {
   );
 }
 
+/**
+ * 이메일로 강사의 uid 를 찾는다. 대표가 강사를 센터에 붙이기 전 한 걸음이다.
+ *
+ * Auth 는 클라이언트에서 이메일로 사용자를 조회할 수 없고, users/{uid} 는
+ * 본인만 읽을 수 있다(전화번호가 함께 들어 있다). 그래서 서버가 한다 --
+ * functions/src/member-lookup.js 에 왜인지가 적혀 있다.
+ *
+ * 실패는 코드를 그대로 올려 보낸다. 대표에게 "오타인가 · 아직 가입을 안 했나 ·
+ * 내가 이 센터의 대표가 아닌가"는 서로 다른 할 일이다.
+ */
+export async function fbLookupCentreMemberByEmail({ organizationId, email }) {
+  if (!functions || !auth?.currentUser) {
+    throw Object.assign(new Error("Authentication is required."), { code: "unauthenticated" });
+  }
+  const call = httpsCallable(functions, "lookupCentreMemberByEmail");
+  const response = await call({ organizationId, email });
+  return response?.data || null;
+}
+
 export async function fbPurgeExpiredPhotoBackups() {
   if (!functions || !auth?.currentUser) return { purged: 0 };
   const call = httpsCallable(functions, "purgeExpiredPhotoBackups");

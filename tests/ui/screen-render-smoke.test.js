@@ -73,12 +73,17 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "회원권 발급 · 확인",
     "회원권 발급 · 확인 · 현금",
     "회원권 발급 · 조회 실패",
-    "강사 단가",
-    "강사 단가 · 단가 입력",
-    "강사 단가 · 부원장 지정",
-    "강사 단가 · 본인",
-    "강사 단가 · 조회 실패",
-    "강사 단가 · 강사 없음",
+    "강사 관리",
+    "강사 관리 · 수정",
+    "강사 관리 · 부원장 지정",
+    "강사 관리 · 본인",
+    "강사 관리 · 퇴사자",
+    "강사 관리 · 추가",
+    "강사 관리 · 추가 · 계정 찾음",
+    "강사 관리 · 추가 · 이미 소속",
+    "강사 관리 · 추가 · 계정 없음",
+    "강사 관리 · 조회 실패",
+    "강사 관리 · 강사 없음",
     "회원 관리",
     "회원 관리 · 검색 결과 없음",
     "회원 관리 · 등록",
@@ -235,23 +240,30 @@ test("a deputy's pay basis is stated instead of an amount that is never used", a
 
   /* 부원장은 카테고리도 누적도 보지 않고 계약 금액의 5:5 를 받는다. 목록에
      풀방금액을 그대로 두면 그 금액이 지급되는 것으로 읽힌다. */
-  const list = markupOf("강사 단가");
-  assert.match(list, /4\.5만원 · 회당/, "부원장이 아닌 강사는 금액 그대로");
+  const list = markupOf("강사 관리");
+  assert.match(list, /풀방금액 4\.5만원 · 회당/, "부원장이 아닌 강사는 금액 그대로");
   /* 부원장 줄만 본다 -- "4.5만원"에도 "5만원"이 들어 있어, 화면 전체에서
      찾으면 다른 강사의 금액을 보고 통과한다. */
   const deputyRow = list.slice(list.indexOf("최소연"), list.indexOf("최소연") + 400);
-  assert.match(deputyRow, /부원장 \(5:5\)/);
+  assert.match(deputyRow, /계약 금액의 5:5 \(공급가액 기준\)/);
   assert.doesNotMatch(deputyRow, /만원 · 회당/, "부원장 자리에 쓰이지 않는 금액이 남으면 안 된다");
 
-  const editing = markupOf("강사 단가 · 부원장 지정");
+  const editing = markupOf("강사 관리 · 부원장 지정");
   assert.match(editing, /부원장은 계약 금액의 50%를 회당 단가로 받습니다/);
+  /* 카드 결제는 부가세를 뺀 공급가액이 기준이다. 결제 수단 하나로 회당 단가가
+     9% 움직이므로, 지정하는 자리에서 그 사실이 보여야 한다. */
+  assert.match(editing, /카드 결제는 부가세를 뺀 공급가액이 기준입니다/);
   // 체크하면 금액 칸은 잠긴다. 넣어도 쓰이지 않는 숫자를 받으면 안 된다.
   assert.match(editing, /disabled=""[^>]*placeholder="4\.5"|placeholder="4\.5"[^>]*disabled=""/);
   // 적용 시점을 말한다 -- 그 강사의 앱은 소속 정보를 다시 읽을 때부터 안다.
   assert.match(editing, /소속 정보를 다시 읽는 때부터/);
 
-  // 본인은 지정하지 못한다. 눌러도 거부되는 칸을 열어 두면 고장으로 보인다.
-  assert.doesNotMatch(markupOf("강사 단가 · 본인"), /부원장/);
+  /* 본인은 지정하지 못한다. 눌러도 거부되는 칸을 열어 두면 고장으로 보인다.
+     퇴사 버튼도 없다 -- 대표가 자기 소속을 회수하면 그 센터에 대표가 없어지고
+     되돌릴 문이 아무 데도 없다. */
+  const self = markupOf("강사 관리 · 본인");
+  assert.doesNotMatch(self, /부원장/);
+  assert.doesNotMatch(self, /퇴사 처리/);
 });
 
 test("a deduction says why it was worth what it was worth", async (t) => {
@@ -832,10 +844,10 @@ test("a failed location read does not look like an empty one", async (t) => {
   assert.doesNotMatch(empty, /코드/, "없는 것은 오류가 아니므로 코드가 붙지 않는다");
 });
 
-/* 강사 단가. 대표만 보고, 대표만 바꾼다 -- 규칙도 같은 경계를 지킨다.
+/* 강사 관리. 대표만 보고, 대표만 바꾼다 -- 규칙도 같은 경계를 지킨다.
    풀방금액은 1:1 재등록(정상) 한 카테고리의 단가이므로, 화면이 "모든 단가"처럼
    보이면 안 된다. */
-test("the instructor rate screen says what it changes and what it does not", async (t) => {
+test("the instructor screen says what it changes and what it does not", async (t) => {
   const vite = await createServer({
     root: projectRoot,
     configFile: false,
@@ -851,26 +863,106 @@ test("the instructor rate screen says what it changes and what it does not", asy
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
-  const list = markupOf("강사 단가");
+  const list = markupOf("강사 관리");
+  const editing = markupOf("강사 관리 · 수정");
   // 지난달 급여가 움직이지 않는다는 약속이 화면에 있어야 한다.
-  assert.match(list, /이후 발급분부터 적용됩니다/);
-  assert.match(list, /이미 기록된 수업의 급여는 바뀌지 않습니다/);
+  assert.match(editing, /이후 차감분부터 적용됩니다/);
+  assert.match(editing, /이미 기록된 수업의 급여는 바뀌지 않습니다/);
 
   assert.match(list, /정예진/);
   assert.match(list, /4\.5만원/, "저장은 원 단위, 표시는 만원 단위다");
+  // 직함과 지점과 상태가 한 줄에 선다 -- 대표가 목록에서 판단할 수 있어야 한다.
+  assert.match(list, /팀장 · 반송점 · 재직/);
 
-  // 미설정과 0 은 둘 다 발급을 막는 상태다. 그것이 목록에서 보여야 한다.
   assert.match(list, /박서연/);
-  assert.equal((list.match(/풀방금액 미설정/g) || []).length, 2, "이름 없는 강사(0원)와 미설정 강사 둘 다");
+  /* 미설정과 0 은 둘 다 발급을 막는 상태다. 셋인 것은 퇴사자 한 줄이 아래에
+     함께 서기 때문이다 -- 목록에서 빼면 복직시킬 길이 사라진다. */
+  assert.equal((list.match(/풀방금액 미설정/g) || []).length, 3, "미설정 · 0원 · 퇴사자");
   assert.match(list, /1:1 재등록\(정상\) 발급 불가/);
 
   // 이름이 아직 없는 강사는 uid 로 보인다 -- 안 보이는 것보다 낫다.
   assert.match(list, /u3/);
 
-  const editing = markupOf("강사 단가 · 단가 입력");
-  assert.match(editing, /정예진 풀방금액/);
-  assert.match(editing, /다른 카테고리는 이 금액과 무관합니다/);
+  assert.match(editing, /풀방금액 \(만원\)/);
+  assert.match(editing, /1:1 재등록\(정상\) 회당 단가/);
   assert.match(editing, /value="4\.5"/);
+
+  // 퇴사자는 아래에 따로 선다. 섞이면 지금 일하는 사람을 찾는 데 목록을 훑는다.
+  assert.match(list, /김하나/);
+  assert.ok(list.indexOf("김하나") > list.indexOf("정예진"), "퇴사자가 아래");
+});
+
+/* 강사를 붙이는 자리. uid 를 옮겨 적게 하지 않는 것이 요점이다 -- 28자를 카톡으로
+   옮기면 오타가 나고, 틀리면 조용히 매칭되지 않는다. */
+test("adding an instructor asks for the e-mail, never a uid", async (t) => {
+  const vite = await createServer({
+    root: projectRoot,
+    configFile: false,
+    plugins: [react()],
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] },
+    server: { middlewareMode: true },
+    ssr: { noExternal: ["@capgo/camera-preview"] },
+    logLevel: "silent",
+  });
+  t.after(() => vite.close());
+  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+
+  const adding = markupOf("강사 관리 · 추가");
+  assert.match(adding, /가입한 이메일/);
+  assert.match(adding, /강사가 앱에 먼저 로그인한 뒤/);
+  // 찾기 전에는 이름·직함 칸이 없다. 붙일 대상이 없는데 채우게 하면 안 된다.
+  assert.doesNotMatch(adding, /직함/);
+
+  const found = markupOf("강사 관리 · 추가 · 계정 찾음");
+  assert.match(found, /계정을 찾았습니다 · 한지우/);
+  assert.match(found, /직함/);
+  /* 부원장은 추가할 때 고르지 못한다. 급여 판정을 바꾸는 일이라 이력이 함께
+     남아야 하고, 그 문은 수정 쪽에 있다. */
+  assert.doesNotMatch(found, /부원장<\/button>/);
+  assert.match(found, /부원장 지정과 풀방금액은 추가한 뒤 수정에서 정합니다/);
+
+  /* 이미 있는 사람은 규칙이 거부한다. 왜인지 화면이 먼저 말한다 --
+     permission-denied 한 줄로는 알 수 없다. */
+  const already = markupOf("강사 관리 · 추가 · 이미 소속");
+  assert.match(already, /이미 이 센터에 있는 계정입니다 \(재직\)/);
+  assert.doesNotMatch(already, /추가<\/button>/);
+
+  /* 오타와 미가입은 서로 다른 할 일이다. 한 문구로 뭉개면 대표가 무엇을 해야
+     하는지 알 수 없다. */
+  const missing = markupOf("강사 관리 · 추가 · 계정 없음");
+  assert.match(missing, /그 이메일로 가입한 계정이 없습니다/);
+  assert.match(missing, /강사가 앱에 먼저 로그인해야 합니다/);
+});
+
+test("retiring says what it keeps, and the retired can come back", async (t) => {
+  const vite = await createServer({
+    root: projectRoot,
+    configFile: false,
+    plugins: [react()],
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] },
+    server: { middlewareMode: true },
+    ssr: { noExternal: ["@capgo/camera-preview"] },
+    logLevel: "silent",
+  });
+  t.after(() => vite.close());
+  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+
+  /* 퇴사가 기록을 지우는 것으로 읽히면 대표가 누르지 못한다. 원장은 append-only
+     이고 각 항목이 그때의 instructorId 를 들고 있어 그대로 남는다. */
+  const working = markupOf("강사 관리 · 수정");
+  assert.match(working, /퇴사 처리/);
+  assert.match(working, /퇴사해도 이 강사가 한 수업과 급여 기록은 그대로 남습니다/);
+
+  // 되돌릴 수 있어야 한다. 잘못 눌렀을 때 콘솔을 열게 하면 안 된다.
+  const retired = markupOf("강사 관리 · 퇴사자");
+  assert.match(retired, /복직 처리/);
+  assert.doesNotMatch(retired, /퇴사 처리/);
 });
 
 test("a failed instructor read does not look like an empty centre", async (t) => {
@@ -889,18 +981,18 @@ test("a failed instructor read does not look like an empty centre", async (t) =>
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
-  const failed = markupOf("강사 단가 · 조회 실패");
+  const failed = markupOf("강사 관리 · 조회 실패");
   assert.match(failed, /강사 목록을 불러오지 못했습니다/);
   assert.match(failed, /permission-denied/, "추적 가능한 코드가 화면에 있어야 한다");
   assert.doesNotMatch(failed, /등록된 강사가 없습니다/);
 
-  const empty = markupOf("강사 단가 · 강사 없음");
+  const empty = markupOf("강사 관리 · 강사 없음");
   assert.match(empty, /등록된 강사가 없습니다/);
   assert.doesNotMatch(empty, /불러오지 못했습니다/);
   assert.doesNotMatch(empty, /코드/, "없는 것은 오류가 아니므로 코드가 붙지 않는다");
 });
 
-test("only the owner reaches the instructor rate screen", async (t) => {
+test("only the owner reaches the instructor admin screen", async (t) => {
   const vite = await createServer({
     root: projectRoot,
     configFile: false,
@@ -916,14 +1008,14 @@ test("only the owner reaches the instructor rate screen", async (t) => {
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
-  assert.match(markupOf("더보기 탭"), /강사 단가/);
+  assert.match(markupOf("더보기 탭"), /강사 관리/);
   /* 규칙이 대표만 허용하므로 보여 주면 눌러도 거부되는 화면만 나온다. 매니저의
      운영·설정에는 이제 남는 항목이 없다 -- 회원 관리와 회원권 발급도 대표로
      좁혔다. */
-  assert.doesNotMatch(markupOf("더보기 탭 · 매니저"), /강사 단가/);
-  assert.doesNotMatch(markupOf("더보기 탭 · 강사"), /강사 단가/);
-  assert.doesNotMatch(markupOf("더보기 탭 · 개인 모드"), /강사 단가/);
-  assert.doesNotMatch(markupOf("더보기 탭 · 소속 확인 실패"), /강사 단가/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 매니저"), /강사 관리/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 강사"), /강사 관리/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 개인 모드"), /강사 관리/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 소속 확인 실패"), /강사 관리/);
 });
 
 /* 회원권 발급. 누른 뒤에 고칠 수 있는 것이 거의 없는 화면이라, 무엇이 저장될지가
@@ -988,7 +1080,7 @@ test("a missing full-room rate is refused on the screen, before the rules", asyn
   /* 규칙도 막지만 permission-denied 한 줄로는 무엇을 해야 하는지 알 수 없다.
      화면이 누구의 무엇이 없는지, 어디서 고치는지 말한다. */
   assert.match(blocked, /박서연님의 풀방금액이 설정되지 않았습니다/);
-  assert.match(blocked, /더보기 → 강사 단가/);
+  assert.match(blocked, /더보기 → 강사 관리/);
 
   // 표에서 오는 상품은 같은 강사여도 막히지 않는다.
   assert.doesNotMatch(markupOf("회원권 발급 · 기준값과 다름"), /풀방금액이 설정되지 않았습니다/);

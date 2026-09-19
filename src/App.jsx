@@ -17348,6 +17348,11 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
   const showAudit = organization.ready
     && !organization.isLegacy
     && organization.role === ROLES.OWNER;
+  /* 소속 센터에 있는가. 역할과 무관하다 -- 여기에 걸린 것은 권한이 아니라 문구다.
+     같은 화면이 개인 모드에서는 유일한 답이고 소속 모드에서는 둘 중 하나라,
+     무엇을 세는 값인지 그때만 밝혀야 한다. 못 읽은 상태(unknown)는 개인 모드로
+     읽는다 -- 있지도 않은 센터를 가리키는 문구보다 원래 문구가 낫다. */
+  const inOrganization = organization.ready && !organization.isLegacy;
   /* initialView 는 스모크 하네스가 상세 화면 하나를 바로 여는 자리다. 앱은
      언제나 hub 에서 시작한다. */
   const [view, setView] = useState(initialView);
@@ -17508,22 +17513,40 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
     payroll: "급여 집계",
     audit: "감사 로그",
   };
+  /* 센터를 운영하는 일과 이 기기를 쓰는 일은 다른 묶음이다. 한 그룹에 섞여
+     있으면 목록이 길어지고, 강사에게는 그 목록의 절반이 보이지 않아 어디가 빈
+     자리인지도 알 수 없다.
+
+     센터 운영은 통째로 대표의 것이다 -- 아래 항목이 모두 같은 조건으로 걸려
+     있어, 대표가 아니면 이 그룹은 아예 서지 않는다. 빈 그룹 머리글만 남기면
+     "여기 뭔가 있어야 하는데 안 보인다"가 된다. */
+  const centreItems = [
+    ...(showClients ? [{ key: "pass-issue", title: "회원권 발급", description: "회원에게 회원권 발급", Icon: Ticket }] : []),
+    ...(showClients ? [{ key: "clients", title: "회원 관리", description: "회원 등록 · 검색", Icon: UserPlus }] : []),
+    ...(showInstructorAdmin ? [{ key: "instructor-admin", title: "강사 관리", description: "강사 추가 · 지점 · 직함 · 풀방금액", Icon: Users }] : []),
+    ...(showProducts ? [{ key: "products", title: "회원권 상품", description: "이벤트 상품 추가 · 종료", Icon: Ticket }] : []),
+    /* "월말 정산"만으로는 위의 월간 리포트와 구별되지 않는다. 무엇을 세는지가
+       둘의 차이다 -- 이쪽은 회원권 원장, 그쪽은 기기에 저장된 일정이다. */
+    ...(showPayroll ? [{ key: "payroll", title: "급여 집계", description: "강사별 수업료 · 원장 기준 월말 정산", Icon: ArrowUpRight }] : []),
+    ...(showAudit ? [{ key: "audit", title: "감사 로그", description: "이상한 건만 모아 보기 · 전체 이력", Icon: AlertCircle }] : []),
+    ...(showMigration ? [{ key: "migration", title: "엑셀 이관", description: "쓰던 엑셀의 회원 · 회원권 올리기", Icon: Upload }] : []),
+  ];
   const menuGroups = [
     { label: "업무", items: [
       { key: "schedule", title: "일정 등록", description: "새 수업 · 상담 · 휴무 추가", Icon: Plus, action: onOpenSchedule },
       { key: "records", title: "기록", description: "회원별 수업 · 변화 기록", Icon: ClipboardList, action: onOpenRecords },
-      { key: "report", title: "월간 리포트", description: "이달 수업 · 성과 · 예상 급여", Icon: ArrowUpRight },
+      /* 소속 센터에서는 이 화면과 급여 집계가 서로 다른 것을 센다. 이름이 비슷해
+         헷갈리므로 무엇을 세는지로 가른다 -- 화면 안에도 같은 설명이 있다. */
+      { key: "report", title: "월간 리포트", description: inOrganization ? "이달 수업 · 성과 · 기기 기준 추정" : "이달 수업 · 성과 · 예상 급여", Icon: ArrowUpRight },
     ] },
-    { label: "운영 · 설정", items: [
+    ...(centreItems.length ? [{ label: "센터 운영", items: centreItems }] : []),
+    { label: "내 설정", items: [
       { key: "assessment", title: "변화 기록 설정", description: "기본 방식 · AI 분석 · 직접 포인트/그리기", Icon: Activity },
-      { key: "center", title: "센터 정보", description: "센터명 · 담당자 · 그룹 단가", Icon: SettingsIcon },
-      ...(showClients ? [{ key: "pass-issue", title: "회원권 발급", description: "회원에게 회원권 발급", Icon: Ticket }] : []),
-      ...(showClients ? [{ key: "clients", title: "회원 관리", description: "회원 등록 · 검색", Icon: UserPlus }] : []),
-      ...(showInstructorAdmin ? [{ key: "instructor-admin", title: "강사 관리", description: "강사 추가 · 지점 · 직함 · 풀방금액", Icon: Users }] : []),
-      ...(showProducts ? [{ key: "products", title: "회원권 상품", description: "이벤트 상품 추가 · 종료", Icon: Ticket }] : []),
-      ...(showPayroll ? [{ key: "payroll", title: "급여 집계", description: "강사별 수업료 · 월말 정산", Icon: ArrowUpRight }] : []),
-      ...(showAudit ? [{ key: "audit", title: "감사 로그", description: "이상한 건만 모아 보기 · 전체 이력", Icon: AlertCircle }] : []),
-      ...(showMigration ? [{ key: "migration", title: "엑셀 이관", description: "쓰던 엑셀의 회원 · 회원권 올리기", Icon: Upload }] : []),
+      /* 이름은 "센터"지만 센터의 설정이 아니다. 이 세 값은 기기에 저장되고 이
+         기기의 일정과 레거시 급여 추정에만 쓰인다 -- 소속 센터의 이름도 단가도
+         여기서 오지 않는다. 그래서 운영이 아니라 내 설정 쪽이고, 소속 모드에서는
+         설명이 그 사실을 말한다. */
+      { key: "center", title: "센터 정보", description: inOrganization ? "이 기기의 센터명 · 담당자 · 그룹 단가" : "센터명 · 담당자 · 그룹 단가", Icon: SettingsIcon },
       { key: "schedule-colors", title: "일정 색상", description: "개인 · 듀엣 · 그룹 · 상담 · 휴무 카드 색", Icon: Palette },
       { key: "theme", title: "화면 설정", description: "폰 설정 · 라이트 · 다크", Icon: Smartphone },
       { key: "data", title: "데이터 상태", description: "기기 저장 · 로그인 상태", Icon: Check },
@@ -17657,7 +17680,11 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
         )}
         {view === "center" && (
           <section style={sectionStyle}>
-            <div className="mb-3"><h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>센터 기본 정보</h2><p style={{ marginTop: 3, fontSize: TYPE.caption, color: SUB }}>일정과 회원 관리에 사용하는 기존 저장값입니다.</p></div>
+            {/* 소속 센터에서는 이 세 값이 센터의 것이 아니다. 기기에 저장되고
+                이 기기의 일정과 레거시 급여 추정에만 쓰인다 -- 센터의 이름도
+                단가도 여기서 오지 않는다. 그 사실을 말하지 않으면 대표가 여기서
+                그룹 단가를 고치고 급여가 바뀌기를 기다리게 된다. */}
+            <div className="mb-3"><h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>센터 기본 정보</h2><p style={{ marginTop: 3, fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>{inOrganization ? "이 기기에만 저장되는 값입니다. 센터 회원권의 단가는 여기가 아니라 회원권 상품과 강사 관리에서 정해집니다." : "일정과 회원 관리에 사용하는 기존 저장값입니다."}</p></div>
             <div className="space-y-3"><Field label="센터명"><input value={db.settings.center} onChange={(e) => onChangeSettings({ ...db.settings, center: e.target.value })} className={inputCls} /></Field><Field label="기본 담당자"><input value={db.settings.staff} onChange={(e) => onChangeSettings({ ...db.settings, staff: e.target.value })} className={inputCls} /></Field><Field label="그룹 1회당 원"><input inputMode="numeric" value={db.settings.groupRate ?? DEF_GROUP_RATE} onChange={(e) => onChangeSettings({ ...db.settings, groupRate: num(e.target.value.replace(/\D/g, "")) })} className={inputCls} /></Field></div>
           </section>
         )}
@@ -18267,6 +18294,10 @@ export function createAppScreenSmokeCases() {
     { name: "더보기 탭 · 소속 확인 실패", element: settingsTab({ organizationId: "", role: "", status: "unknown", isLegacy: false }) },
     { name: "더보기 탭 · 월간 리포트", element: settingsTab(smokeInstructorOrg, { initialView: "report" }) },
     { name: "더보기 탭 · 월간 리포트 · 개인 모드", element: settingsTab({ organizationId: "legacy_smoke", role: "owner", status: "active", isLegacy: true }, { initialView: "report" }) },
+    /* 센터 정보. 이름은 "센터"지만 세 값 모두 기기에 저장된다 -- 소속 모드에서
+       그 사실을 말하지 않으면 대표가 여기서 단가를 고치고 기다리게 된다. */
+    { name: "더보기 탭 · 센터 정보", element: settingsTab(smokeOwner, { initialView: "center" }) },
+    { name: "더보기 탭 · 센터 정보 · 개인 모드", element: settingsTab({ organizationId: "legacy_smoke", role: "owner", status: "active", isLegacy: true }, { initialView: "center" }) },
     { name: "센터 회원 상세", element: clientDetail() },
     { name: "센터 회원 상세 · 대표", element: ownerClientDetail() },
     { name: "센터 회원 상세 · 차감 보정 확인", element: ownerClientDetail({

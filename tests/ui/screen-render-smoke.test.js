@@ -43,6 +43,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 소속 확인 실패",
     "더보기 탭 · 월간 리포트",
     "더보기 탭 · 월간 리포트 · 개인 모드",
+    "더보기 탭 · 센터 정보",
+    "더보기 탭 · 센터 정보 · 개인 모드",
     "센터 회원 상세",
     "센터 회원 상세 · 대표",
     "센터 회원 상세 · 차감 보정 확인",
@@ -1016,6 +1018,87 @@ test("only the owner reaches the instructor admin screen", async (t) => {
   assert.doesNotMatch(markupOf("더보기 탭 · 강사"), /강사 관리/);
   assert.doesNotMatch(markupOf("더보기 탭 · 개인 모드"), /강사 관리/);
   assert.doesNotMatch(markupOf("더보기 탭 · 소속 확인 실패"), /강사 관리/);
+});
+
+/* 센터를 운영하는 일과 이 기기를 쓰는 일이 한 그룹에 섞여 목록이 길었다.
+   나누되, 강사에게 빈 머리글만 남기지 않는 것이 요점이다. */
+test("the centre group stands only where there is something in it", async (t) => {
+  const vite = await createServer({
+    root: projectRoot,
+    configFile: false,
+    plugins: [react()],
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] },
+    server: { middlewareMode: true },
+    ssr: { noExternal: ["@capgo/camera-preview"] },
+    logLevel: "silent",
+  });
+  t.after(() => vite.close());
+  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+
+  const owner = markupOf("더보기 탭");
+  assert.match(owner, /센터 운영/);
+  assert.match(owner, /내 설정/);
+  // 센터 운영은 통째로 대표의 것이다. 업무와 기타는 그대로 남는다.
+  assert.ok(owner.indexOf("센터 운영") < owner.indexOf("내 설정"), "운영이 위");
+
+  /* 대표가 아니면 그 그룹에 들어갈 항목이 하나도 없다. 머리글만 남기면
+     "여기 뭔가 있어야 하는데 안 보인다"가 된다. */
+  for (const name of ["더보기 탭 · 매니저", "더보기 탭 · 강사", "더보기 탭 · 개인 모드", "더보기 탭 · 소속 확인 실패"]) {
+    const markup = markupOf(name);
+    assert.doesNotMatch(markup, /센터 운영/, name);
+    assert.match(markup, /내 설정/, `${name} — 내 설정은 모두에게`);
+    assert.match(markup, /화면 설정/, name);
+  }
+
+  /* 센터 정보는 내 설정 쪽이다. 이름은 "센터"지만 세 값 모두 기기에 저장되고
+     이 기기의 일정과 레거시 급여 추정에만 쓰인다. */
+  assert.match(markupOf("더보기 탭 · 강사"), /센터 정보/);
+  assert.match(owner, /이 기기의 센터명 · 담당자 · 그룹 단가/);
+  const legacyHub = markupOf("더보기 탭 · 개인 모드");
+  assert.match(legacyHub, /센터명 · 담당자 · 그룹 단가/);
+  // 미소속 강사에게는 다른 센터 설정이 없다. "이 기기의"는 그때만 붙는 구별이다.
+  assert.doesNotMatch(legacyHub, /이 기기의 센터명/);
+
+  const centre = markupOf("더보기 탭 · 센터 정보");
+  assert.match(centre, /이 기기에만 저장되는 값입니다/);
+  assert.match(centre, /회원권 상품과 강사 관리에서 정해집니다/);
+  // 미소속 개인 강사에게는 지금 문구 그대로다. 그쪽에는 다른 자리가 없다.
+  const personal = markupOf("더보기 탭 · 센터 정보 · 개인 모드");
+  assert.match(personal, /일정과 회원 관리에 사용하는 기존 저장값입니다/);
+  assert.doesNotMatch(personal, /이 기기에만 저장되는 값입니다/);
+});
+
+test("the monthly report and the payroll roll-up do not read alike", async (t) => {
+  /* 둘 다 "급여"라는 말을 쓰는데 세는 것이 다르다. 월간 리포트는 기기에 저장된
+     일정이고, 급여 집계는 회원권 원장이다. 메뉴에서 구별되지 않으면 강사와
+     대표가 서로 다른 숫자를 같은 것으로 읽는다. */
+  const vite = await createServer({
+    root: projectRoot,
+    configFile: false,
+    plugins: [react()],
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] },
+    server: { middlewareMode: true },
+    ssr: { noExternal: ["@capgo/camera-preview"] },
+    logLevel: "silent",
+  });
+  t.after(() => vite.close());
+  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+
+  const owner = markupOf("더보기 탭");
+  assert.match(owner, /이달 수업 · 성과 · 기기 기준 추정/);
+  assert.match(owner, /강사별 수업료 · 원장 기준 월말 정산/);
+  assert.doesNotMatch(owner, /이달 수업 · 성과 · 예상 급여/);
+
+  // 미소속 개인 강사에게는 급여 집계가 없다. 헷갈릴 짝이 없으니 문구도 그대로다.
+  const personal = markupOf("더보기 탭 · 개인 모드");
+  assert.match(personal, /이달 수업 · 성과 · 예상 급여/);
+  assert.doesNotMatch(personal, /급여 집계/);
 });
 
 /* 회원권 발급. 누른 뒤에 고칠 수 있는 것이 거의 없는 화면이라, 무엇이 저장될지가

@@ -34,6 +34,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "일정 탭 · 개인 모드 · 확정 없음",
     "회원 목록",
     "회원 상세",
+    "회원 상세 · 소속",
     "체형분석 목록",
     "체형분석 상세 빈 이력",
     "변화 기록 상세 저장 이력",
@@ -1472,4 +1473,60 @@ test("the confirm card shows the net price when VAT is inside the contract", asy
      두 번 쓰면 무엇이 다른지 읽는 사람이 찾게 된다. */
   const cash = markupOf("회원권 발급 · 확인 · 현금");
   assert.doesNotMatch(cash, /공급가액/);
+});
+
+/* 소속 센터의 회원 상세. 강사가 못 하는 일이 화면에서 사라지고, 이용권 카드가
+   조직 회원권에서 채워진다. */
+test("an instructor cannot delete, hold or reprice a centre member", async (t) => {
+  const vite = await createServer({
+    root: projectRoot,
+    configFile: false,
+    plugins: [react()],
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] },
+    server: { middlewareMode: true },
+    ssr: { noExternal: ["@capgo/camera-preview"] },
+    logLevel: "silent",
+  });
+  t.after(() => vite.close());
+  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+
+  const org = markupOf("회원 상세 · 소속");
+
+  /* 삭제하면 그 회원의 수업 기록과 사진이 함께 사라지는데, 그 데이터는 센터가
+     아니라 이 기기에만 있다. 숨김은 데이터를 남긴다. */
+  assert.doesNotMatch(org, /회원 삭제/);
+  assert.match(org, /내 목록에서 숨기기/);
+  assert.match(org, /센터 회원은 삭제할 수 없습니다/);
+  assert.match(org, /수업 기록과 사진은 그대로 남습니다/);
+  // 되돌리는 길을 말한다. 되돌릴 수 없는 숨김은 삭제와 다를 바가 없다.
+  assert.match(org, /숨긴 회원 다시 보기/);
+
+  // 홀딩은 센터가 정한다. 강사가 임의로 걸면 회원권 유효기간과 어긋난다.
+  assert.doesNotMatch(org, /홀딩 설정/);
+
+  /* 단가는 대표만 정한다. 게다가 이 값은 소속 모드에서 급여에 닿지 않는다 --
+     급여는 회원권 기록에서 나온다. 고쳐도 아무 일이 없는 칸이었다. */
+  assert.doesNotMatch(org, /단가 수정/);
+  assert.doesNotMatch(org, /강사 정산 단가/);
+
+  /* 이용권 카드의 세 칸. 회원권에 다 있는데 명부가 옮겨 오지 않아 비어 있었다 --
+     잔여만 적혀 있는 옆에서. */
+  /* "미등록" 으로는 보지 않는다 -- 연락처가 없는 회원에게도 나오는 말이라
+     이 카드가 채워졌는지를 가리지 못한다. 채워진 값 자체를 본다. */
+  assert.doesNotMatch(org, /결제 내역 없음/);
+  assert.match(org, /22회/, "누적 등록 = 정규 20 + 서비스 2");
+  assert.match(org, /2027\. 02\. 01/, "만료일");
+  assert.match(org, /₩65,000/, "회당 = 130만 ÷ 정규 20회");
+  assert.doesNotMatch(org, /이용권 없음/);
+
+  /* 개인 모드에는 셋 다 그대로다. 그쪽에서는 payRate 가 실제로 월간 리포트
+     계산에 쓰이고, 회원도 홀딩도 강사 자신의 것이다. */
+  const personal = markupOf("회원 상세");
+  assert.match(personal, /회원 삭제/);
+  assert.match(personal, /홀딩 설정/);
+  assert.match(personal, /단가 수정/);
+  assert.doesNotMatch(personal, /내 목록에서 숨기기/);
 });

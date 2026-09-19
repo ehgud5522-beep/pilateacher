@@ -110,7 +110,7 @@ import {
   AUDIT_ACTION, STALE_PASS_DAYS, listAuditLogs, recordMigrationUpload, reviewAudit,
 } from "./data/repositories/audit-repository.js";
 import {
-  isMyRosterMember, isRosterMember, isUnlinkedLocalMember, mergeRoster,
+  isMyRosterMember, isRosterMember, isUnlinkedLocalMember, mergeRoster, rosterHideKey,
 } from "./features/roster/roster-bridge.js";
 import {
   MIGRATION_ERROR, applyClientMigration, applyPassMigration, groupFailures,
@@ -1342,7 +1342,7 @@ const sampleDb = (center, staff) => ({
 function normalizeDb(data, staff) {
   const d = data && typeof data === "object" ? data : {};
   return {
-    settings: { center: d.settings?.center ?? "", staff: d.settings?.staff ?? (staff || ""), payRate: Number(d.settings?.payRate) || DEF_RATE, groupRate: Number(d.settings?.groupRate) || DEF_GROUP_RATE, templates: Array.isArray(d.settings?.templates) ? d.settings.templates : [], scheduleColors: normalizeScheduleColors(d.settings?.scheduleColors) },
+    settings: { center: d.settings?.center ?? "", staff: d.settings?.staff ?? (staff || ""), payRate: Number(d.settings?.payRate) || DEF_RATE, groupRate: Number(d.settings?.groupRate) || DEF_GROUP_RATE, templates: Array.isArray(d.settings?.templates) ? d.settings.templates : [], scheduleColors: normalizeScheduleColors(d.settings?.scheduleColors), hiddenClientIds: Array.isArray(d.settings?.hiddenClientIds) ? d.settings.hiddenClientIds.filter((value) => typeof value === "string" && value) : [] },
     members: Array.isArray(d.members) ? d.members.filter(Boolean).map((m) => ({
       ...blankMember(staff), ...m,
       id: m.id || uid(),
@@ -4774,7 +4774,7 @@ function MemberList({ members, selectedId, onSelect, onAdd, onOpenFav, favCount,
 function ReferenceMemberList({
   members, schedule, settings, onSelect, onAdd, onDeleteSamples, registerRequest = 0,
   onConsumeRegisterRequest, canRegister = true, currentUserId = "", myMembersDefault = false,
-  rosterError = "", onRetryRoster,
+  rosterError = "", onRetryRoster, hiddenCount = 0, onShowHidden,
 }) {
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState("all");
@@ -4900,6 +4900,14 @@ function ReferenceMemberList({
             </p>
           </div>
         ) : null}
+        {/* 되돌릴 수 없는 숨김은 삭제와 다를 바가 없다. 몇 명을 숨겼는지와
+            되돌리는 버튼이 목록 안에 있어야 한다. */}
+        {hiddenCount > 0 ? (
+          <div className="mb-2 flex min-w-0 items-center gap-2 rounded-xl px-3 py-2" style={{ backgroundColor: CANVAS }}>
+            <span className="min-w-0 flex-1 text-xs font-bold" style={{ color: INK2 }}>내 목록에서 숨긴 회원 {hiddenCount}명</span>
+            <button type="button" onClick={onShowHidden} className="h-8 shrink-0 px-2 text-xs font-extrabold" style={{ color: BRAND_D }}>다시 보기</button>
+          </div>
+        ) : null}
         {sampleMembers.length > 0 && actualMembers.length > 0 && <div className="mb-2 flex min-w-0 items-center gap-2 rounded-xl px-3 py-2" style={{ backgroundColor: TINT, border: `1px solid ${RING}` }}><span className="min-w-0 flex-1 text-xs font-bold" style={{ color: INK2 }}>예시 회원을 지울까요?</span><button type="button" onClick={onDeleteSamples} className="h-8 shrink-0 px-2 text-xs font-extrabold" style={{ color: BRAND_D }}>지우기</button></div>}
         {!realMembers.length && <div className="px-4 py-12 text-center"><Users size={26} className="mx-auto" style={{ color: FAINT }} /><p className="mt-3 text-sm font-extrabold" style={{ color: INK }}>아직 등록한 회원이 없습니다</p>{canRegister ? <><p className="mt-2 text-xs leading-relaxed" style={{ color: SUB }}>회원을 등록하면 수업 기록 · 체형 변화 · 재등록 시점을<br />한 사람씩 모아서 볼 수 있습니다</p><button type="button" onClick={() => setRegisterOpen(true)} className="mt-5 h-11 rounded-lg px-5 text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>회원 등록</button></> : <p className="mt-2 text-xs leading-relaxed" style={{ color: SUB }}>회원 등록은 센터에서 합니다.<br />등록된 회원이 여기에 나타납니다</p>}</div>}
         {realMembers.length > 0 && !list.length && <div className="py-12 text-center"><Users size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-semibold" style={{ color: INK }}>{q ? "검색 결과가 없습니다" : "조건에 맞는 회원이 없습니다"}</p></div>}
@@ -4983,7 +4991,20 @@ function MemberRegisterSheet({ members, onOpenExisting, onClose, onCreate }) {
   );
 }
 
-function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSettlement = true, onBack, onPatch, onSaveNote, onSchedule, onOpenLesson, onAssess, onToast, onDelete, onDeactivate, onReactivate }) {
+/* organizationMode 는 "이 회원이 센터의 것인가" 이다. 소속 센터에서 강사가
+   못 하는 일 셋을 이 값 하나가 가린다.
+
+   삭제   조직 회원은 강사가 지울 대상이 아니다. 지우면 그 회원의 수업 기록과
+          사진이 함께 사라지고, 그 데이터는 센터가 아니라 이 기기에만 있다.
+          대신 이 기기 화면에서만 숨긴다.
+   홀딩   센터가 정하는 일이다. 강사가 임의로 걸면 회원권의 유효기간과 어긋난다.
+   단가   강사가 자기 단가를 고칠 수 있으면 급여가 스스로 움직인다. 게다가 이
+          값(member.payRate)은 소속 모드에서 급여에 닿지도 않는다 -- 급여는
+          회원권 기록에서 나온다. 고쳐도 아무 일이 일어나지 않는 칸이었다.
+
+   개인 모드(레거시)에는 셋 다 그대로 남는다. 그쪽에서는 payRate 가 실제로 월간
+   리포트 계산에 쓰이고, 회원도 홀딩도 강사 자신의 것이다. */
+function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSettlement = true, organizationMode = false, onBack, onPatch, onSaveNote, onSchedule, onOpenLesson, onAssess, onToast, onDelete, onDeactivate, onReactivate, onHide }) {
   const [sheet, setSheet] = useState(null);
   const [edit, setEdit] = useState({});
   const [memo, setMemo] = useState("");
@@ -5067,7 +5088,10 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
   useEffect(() => { setHistoryExpanded(false); }, [member.id]);
   const next = lessons.filter((s) => attOf(s, member.id)?.status === "booked" && new Date(`${s.date}T${s.start || "00:00"}:00`).getTime() >= Date.now()).sort((a, b) => `${a.date} ${a.start}`.localeCompare(`${b.date} ${b.start}`))[0] || null;
   const recentLesson = lessons.find((lesson) => lesson.date <= todayISO() && attOf(lesson, member.id)?.status === "done") || null;
-  const memberUnit = paidAvg(member);
+  /* 소속 모드에서는 결제 내역이 기기에 없다 -- 조직 회원권이 들고 있고,
+     명부가 그 값을 orgUnitPrice 로 실어 온다 (roster-bridge.js). 이것 없이는
+     "결제 내역 없음" 이 잔여 29회 옆에 선다. */
+  const memberUnit = num(member?.orgUnitPrice) || paidAvg(member);
   const settlementUnit = rateFor(member, member.lessonType === "group" ? "그룹" : "개인레슨", settings);
   const singleInstructorMode = !Array.isArray(settings?.staffMembers) || settings.staffMembers.length <= 1;
   const membership = membershipDisplay(member);
@@ -5195,7 +5219,7 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
             <div className="flex items-start gap-3"><div className="min-w-0 flex-1"><p style={{ fontSize: TYPE.caption, color: SUB }}>현재 이용권</p><p className="mt-0.5 truncate" style={{ fontSize: TYPE.body, fontWeight: 700, color: INK }}>{member.passName || "이용권 없음"}</p></div><div className="text-right"><p className="tabular-nums" style={{ fontSize: TYPE.display, lineHeight: 1, fontWeight: 750, color: left(member) <= 3 ? BAD : BRAND }}>{left(member)}<span style={{ fontSize: TYPE.caption }}>회 남음</span></p><p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>정규 {num(member.regular)} · 서비스 {num(member.service)}</p></div></div>
             <div className="mt-3 grid grid-cols-2 gap-2">{[["누적 등록 횟수", membership.registeredTotal ? `${membership.registeredTotal}회` : "미등록"], ["이용권 만료일", member.contractEnd ? ymd(member.contractEnd) : "미설정"], ["회원 회당 금액", memberUnit ? `₩${won(memberUnit)}` : "결제 내역 없음"], ["최근 수업일", recentLesson ? `${md(recentLesson.date)} ${recentLesson.start}` : "수업 이력 없음"], ["다음 예약일", next ? `${md(next.date)} ${next.start}` : "예약 없음"]].map(([k,v]) => <div key={k} style={{ padding: "8px 9px", borderRadius: 8, backgroundColor: CARD }}><p style={{ fontSize: TYPE.caption, color: SUB }}>{k}</p><p className="mt-0.5 truncate tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>{v}</p></div>)}</div>
             {membership.needsLegacyReview && <p className="mt-2" style={{ padding: "8px 9px", borderRadius: 8, backgroundColor: WARN_S, color: WARN, fontSize: TYPE.caption, lineHeight: 1.45 }}>잔여 합계가 누적 등록 횟수보다 큽니다. 기존 데이터 확인이 필요하며 자동으로 수정하지 않았습니다.</p>}
-            {canViewSettlement && <div className="mt-2 flex items-center gap-2" style={{ padding: "8px 9px", borderRadius: 8, backgroundColor: CARD }}><span className="min-w-0 flex-1"><span className="block" style={{ fontSize: TYPE.caption, color: SUB }}>강사 정산 단가</span><span className="block text-xs font-bold tabular-nums" style={{ color: INK }}>₩{won(settlementUnit)}{Number(member.payRate) > 0 ? "" : " · 센터 기본"}</span></span><button type="button" onClick={openRate} style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND }}>단가 수정</button></div>}
+            {canViewSettlement && !organizationMode && <div className="mt-2 flex items-center gap-2" style={{ padding: "8px 9px", borderRadius: 8, backgroundColor: CARD }}><span className="min-w-0 flex-1"><span className="block" style={{ fontSize: TYPE.caption, color: SUB }}>강사 정산 단가</span><span className="block text-xs font-bold tabular-nums" style={{ color: INK }}>₩{won(settlementUnit)}{Number(member.payRate) > 0 ? "" : " · 센터 기본"}</span></span><button type="button" onClick={openRate} style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND }}>단가 수정</button></div>}
             <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.45, color: SUB }}>회원 회당 금액은 총 결제액을 정규 유료 횟수로 나눕니다. 할인은 결제액에 반영하고 서비스 횟수는 제외합니다.</p>
             <button type="button" onClick={openMembership} className="mt-2 h-10 w-full text-xs font-bold" style={{ borderRadius: 8, backgroundColor: BRAND, color: "#fff" }}>이용권 수정</button>
           </section>
@@ -5205,7 +5229,7 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
             {(member.instructorHistory || []).slice(0, 3).map((entry) => <div key={entry.id || entry.date} className="flex gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}` }}><span style={{ fontSize: TYPE.caption, color: SUB }}>담당 변경</span><span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: INK2 }}>{ymd(entry.date)} · {entry.before || "미지정"} → {entry.after || "미지정"}</span></div>)}
             {isHold(member) && <div className="mt-2 flex items-start gap-2" style={{ padding: "9px 10px", borderRadius: 8, backgroundColor: CANVAS }}><AlertCircle size={14} className="mt-0.5 shrink-0" style={{ color: SUB }} /><p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK2 }}>{ymd(member.holdFrom)} ~ {ymd(member.holdUntil)}{member.holdReason ? ` · ${member.holdReason}` : ""}</p></div>}
             {isInactive(member) && <button type="button" onClick={async () => { const saved = await onReactivate?.(member.id); if (saved !== false) onBack?.(); }} className="mt-2 h-11 w-full rounded-lg text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>활성으로 되돌리기</button>}
-            <div className="mt-2 flex gap-2"><button type="button" onClick={openEdit} style={{ flex: 1, height: 42, borderRadius: 8, border: `1px solid ${LINE}`, color: INK2, fontSize: TYPE.caption, fontWeight: 600 }}>정보 수정</button>{isHold(member) ? <button type="button" onClick={() => { if (!releaseArmed) { setReleaseArmed(true); return; } const releasedAt = todayISO(); onPatch({ status: "active", holdFrom: "", holdUntil: "", holdReason: "", holdHistory: [{ id: uid(), startDate: member.holdFrom, endDate: member.holdUntil, releasedAt, reason: member.holdReason, extendDays: num(member.holdExtendDays), createdAt: releasedAt }, ...holdHistory] }); setReleaseArmed(false); }} style={{ flex: 1.35, height: 42, borderRadius: 8, border: `1px solid ${releaseArmed ? BRAND : LINE}`, backgroundColor: releaseArmed ? TINT : CARD, color: BRAND_D, fontSize: TYPE.caption, fontWeight: 600 }}>{releaseArmed ? "한 번 더 눌러 홀딩 해제" : "홀딩 해제"}</button> : <button type="button" onClick={() => { setHold({ start: todayISO(), end: shift(todayISO(), 14), reason: "", extend: true }); setSheet("hold"); }} style={{ flex: 1, height: 42, borderRadius: 8, border: `1px solid ${LINE}`, color: BRAND_D, fontSize: TYPE.caption, fontWeight: 600 }}>홀딩 설정</button>}</div>
+            <div className="mt-2 flex gap-2"><button type="button" onClick={openEdit} style={{ flex: 1, height: 42, borderRadius: 8, border: `1px solid ${LINE}`, color: INK2, fontSize: TYPE.caption, fontWeight: 600 }}>정보 수정</button>{organizationMode ? null : isHold(member) ? <button type="button" onClick={() => { if (!releaseArmed) { setReleaseArmed(true); return; } const releasedAt = todayISO(); onPatch({ status: "active", holdFrom: "", holdUntil: "", holdReason: "", holdHistory: [{ id: uid(), startDate: member.holdFrom, endDate: member.holdUntil, releasedAt, reason: member.holdReason, extendDays: num(member.holdExtendDays), createdAt: releasedAt }, ...holdHistory] }); setReleaseArmed(false); }} style={{ flex: 1.35, height: 42, borderRadius: 8, border: `1px solid ${releaseArmed ? BRAND : LINE}`, backgroundColor: releaseArmed ? TINT : CARD, color: BRAND_D, fontSize: TYPE.caption, fontWeight: 600 }}>{releaseArmed ? "한 번 더 눌러 홀딩 해제" : "홀딩 해제"}</button> : <button type="button" onClick={() => { setHold({ start: todayISO(), end: shift(todayISO(), 14), reason: "", extend: true }); setSheet("hold"); }} style={{ flex: 1, height: 42, borderRadius: 8, border: `1px solid ${LINE}`, color: BRAND_D, fontSize: TYPE.caption, fontWeight: 600 }}>홀딩 설정</button>}</div>
           </Section>
             </div>
           </details>
@@ -5225,8 +5249,35 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
           </details>
           <section className="mt-3 rounded-xl p-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
             <p className="text-xs font-extrabold" style={{ color: INK }}>회원 관리</p>
-            <p className="mt-1 text-caption leading-relaxed" style={{ color: SUB }}>삭제 전에 기록을 보존하는 비활성 처리를 선택할 수 있습니다.</p>
-            <button type="button" onClick={() => { setDeleteName(""); setSaveError(""); setSheet("delete-member"); }} className="mt-2 h-11 w-full rounded-lg text-xs font-extrabold" style={{ backgroundColor: BAD_S, color: BAD }}>회원 삭제</button>
+            {organizationMode ? (
+              <>
+                <p className="mt-1 text-caption leading-relaxed" style={{ color: SUB }}>
+                  센터 회원은 삭제할 수 없습니다. 내 목록에서만 감추며, 수업 기록과 사진은 그대로 남습니다.
+                  {" "}회원 탭 아래 <b>숨긴 회원 다시 보기</b>로 되돌립니다.
+                </p>
+                <button type="button" disabled={deleteBusy}
+                  onClick={async () => {
+                    setDeleteBusy(true);
+                    setSaveError("");
+                    try {
+                      const saved = await onHide?.(member);
+                      if (saved !== false) onBack?.();
+                    } catch (error) {
+                      setSaveError(`숨기지 못했습니다 (코드 ${error?.code || error?.message || "unknown"})`);
+                    } finally { setDeleteBusy(false); }
+                  }}
+                  className="mt-2 h-11 w-full rounded-lg text-xs font-extrabold disabled:opacity-40"
+                  style={{ backgroundColor: CANVAS, color: INK2 }}>
+                  {deleteBusy ? "숨기는 중…" : "내 목록에서 숨기기"}
+                </button>
+                {saveError && <p role="alert" className="mt-2 text-caption font-bold" style={{ color: BAD }}>{saveError}</p>}
+              </>
+            ) : (
+              <>
+                <p className="mt-1 text-caption leading-relaxed" style={{ color: SUB }}>삭제 전에 기록을 보존하는 비활성 처리를 선택할 수 있습니다.</p>
+                <button type="button" onClick={() => { setDeleteName(""); setSaveError(""); setSheet("delete-member"); }} className="mt-2 h-11 w-full rounded-lg text-xs font-extrabold" style={{ backgroundColor: BAD_S, color: BAD }}>회원 삭제</button>
+              </>
+            )}
           </section>
         </div>
       </main>
@@ -5254,7 +5305,7 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
       {sheet === "memos-all" && <Sheet title="상담 메모 전체 보기" onClose={() => setSheet(null)}><div className="space-y-2">{consultationNotes.length ? consultationNotes.map((note) => <div key={note.id} style={{ padding: 10, borderRadius: 8, backgroundColor: note.important ? WARN_S : CANVAS }}><p style={{ fontSize: TYPE.caption, color: SUB }}>{ymd(note.date)}{note.important ? " · 중요 메모" : ""}</p><p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK2 }}>{note.body}</p></div>) : <p style={{ fontSize: TYPE.caption, color: SUB }}>등록된 상담 메모가 없습니다</p>}<button type="button" onClick={openMemo} className="h-11 w-full text-xs font-bold" style={{ borderRadius: 8, backgroundColor: TINT, color: BRAND_D }}>메모 추가</button></div></Sheet>}
       {sheet === "records-all" && <Sheet title="수업 기록 전체 보기" onClose={() => setSheet(null)}><div className="min-w-0 space-y-2">{lessonSessions.length ? lessonSessions.map((session) => <div key={session.key} className="min-w-0" style={{ padding: 10, borderRadius: 8, backgroundColor: CANVAS }}><p className="mb-2 text-caption tabular-nums" style={{ color: SUB }}>{formatMemberLessonDate(session.date, { weekday: true })} · {session.type}</p><LessonRecordFieldRows session={session} />{session.warning && <p className="mt-2 text-caption" style={{ color: SUB }}>{session.warning}</p>}</div>) : <p style={{ fontSize: TYPE.caption, color: SUB }}>아직 작성된 수업 기록이 없습니다</p>}</div></Sheet>}
       {sheet === "membership" && <Sheet title="현재 이용권 수정" onClose={() => setSheet(null)}><div className="space-y-3">{!passConfirm ? <><Field label="이용권 이름"><input value={pass.name} onChange={(e) => setPass({ ...pass, name: e.target.value })} className={inputCls} /></Field><div className="grid grid-cols-3 gap-2"><Field label="정규 잔여"><input inputMode="numeric" value={pass.regular} onChange={(e) => setPass({ ...pass, regular: e.target.value.replace(/\D/g, "") })} className={inputCls} /></Field><Field label="서비스 잔여"><input inputMode="numeric" value={pass.service} onChange={(e) => setPass({ ...pass, service: e.target.value.replace(/\D/g, "") })} className={inputCls} /></Field><Field label="누적 등록"><input inputMode="numeric" value={pass.total} onChange={(e) => setPass({ ...pass, total: e.target.value.replace(/\D/g, "") })} className={inputCls} /></Field></div><Field label="만료일"><input type="date" value={pass.end} onChange={(e) => setPass({ ...pass, end: e.target.value })} className={inputCls} /></Field><button type="button" onClick={() => setPassConfirm(true)} className="h-12 w-full text-sm font-bold text-white" style={{ borderRadius: 8, backgroundColor: BRAND }}>변경 내용 확인</button></> : <><div style={{ padding: 12, borderRadius: 10, backgroundColor: CANVAS }}><p className="mb-2 text-xs font-bold" style={{ color: INK }}>변경 전후를 확인해 주세요</p>{[["총 잔여", `${left(member)}회`, `${num(pass.regular) + num(pass.service)}회`], ["누적 등록", `${num(member.total)}회`, `${num(pass.total)}회`], ["만료일", member.contractEnd ? ymd(member.contractEnd) : "미설정", pass.end ? ymd(pass.end) : "미설정"]].map(([label,before,after]) => <div key={label} className="flex items-center gap-2 py-1"><span className="w-16 text-caption" style={{ color: SUB }}>{label}</span><span className="min-w-0 flex-1 text-right text-xs line-through" style={{ color: SUB }}>{before}</span><ChevronRight size={12} style={{ color: FAINT }} /><span className="min-w-0 flex-1 text-xs font-bold" style={{ color: BRAND_D }}>{after}</span></div>)}</div>{saveError && <p role="alert" style={{ fontSize: TYPE.caption, color: BAD }}>{saveError}</p>}<div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => setPassConfirm(false)} className="h-12 text-sm font-bold" style={{ borderRadius: 8, backgroundColor: CANVAS, color: INK2 }}>다시 수정</button><button type="button" disabled={saving === "membership"} onClick={() => { const regular = num(pass.regular), service = num(pass.service), total = num(pass.total); commitPatch("membership", { passName: pass.name.trim(), regular, service, total, contractEnd: pass.end, payments: [{ id: uid(), date: todayISO(), kind: "adjustment", name: "이용권 수정", before: { remaining: left(member), total: num(member.total), end: member.contractEnd || "" }, after: { remaining: regular + service, total, end: pass.end } }, ...(member.payments || [])] }); }} className="h-12 text-sm font-bold text-white disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND }}>{saving === "membership" ? "저장 중…" : "확인 후 저장"}</button></div></>}</div></Sheet>}
-      {sheet === "rate" && canViewSettlement && <Sheet title="강사 정산 단가 수정" onClose={() => setSheet(null)}><div className="space-y-3">{!rateConfirm ? <><Field label="강사 정산 단가"><input inputMode="numeric" value={rateEdit} onChange={(e) => setRateEdit(e.target.value.replace(/\D/g, ""))} className={inputCls} /></Field><p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>회원 회당 결제금액과 별도이며 급여 예상 계산에 사용됩니다.</p><button type="button" disabled={!num(rateEdit)} onClick={() => setRateConfirm(true)} className="h-12 w-full text-sm font-bold text-white disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND }}>변경 내용 확인</button></> : <><div className="flex items-center gap-3" style={{ padding: 12, borderRadius: 10, backgroundColor: CANVAS }}><span className="min-w-0 flex-1 text-right text-sm line-through" style={{ color: SUB }}>₩{won(settlementUnit)}</span><ChevronRight size={14} style={{ color: FAINT }} /><span className="min-w-0 flex-1 text-sm font-bold" style={{ color: BRAND_D }}>₩{won(rateEdit)}</span></div>{saveError && <p role="alert" style={{ fontSize: TYPE.caption, color: BAD }}>{saveError}</p>}<div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => setRateConfirm(false)} className="h-12 text-sm font-bold" style={{ borderRadius: 8, backgroundColor: CANVAS, color: INK2 }}>다시 수정</button><button type="button" disabled={saving === "rate"} onClick={() => commitPatch("rate", { payRate: num(rateEdit) })} className="h-12 text-sm font-bold text-white disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND }}>{saving === "rate" ? "저장 중…" : "확인 후 저장"}</button></div></>}</div></Sheet>}
+      {sheet === "rate" && canViewSettlement && !organizationMode && <Sheet title="강사 정산 단가 수정" onClose={() => setSheet(null)}><div className="space-y-3">{!rateConfirm ? <><Field label="강사 정산 단가"><input inputMode="numeric" value={rateEdit} onChange={(e) => setRateEdit(e.target.value.replace(/\D/g, ""))} className={inputCls} /></Field><p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>회원 회당 결제금액과 별도이며 급여 예상 계산에 사용됩니다.</p><button type="button" disabled={!num(rateEdit)} onClick={() => setRateConfirm(true)} className="h-12 w-full text-sm font-bold text-white disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND }}>변경 내용 확인</button></> : <><div className="flex items-center gap-3" style={{ padding: 12, borderRadius: 10, backgroundColor: CANVAS }}><span className="min-w-0 flex-1 text-right text-sm line-through" style={{ color: SUB }}>₩{won(settlementUnit)}</span><ChevronRight size={14} style={{ color: FAINT }} /><span className="min-w-0 flex-1 text-sm font-bold" style={{ color: BRAND_D }}>₩{won(rateEdit)}</span></div>{saveError && <p role="alert" style={{ fontSize: TYPE.caption, color: BAD }}>{saveError}</p>}<div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => setRateConfirm(false)} className="h-12 text-sm font-bold" style={{ borderRadius: 8, backgroundColor: CANVAS, color: INK2 }}>다시 수정</button><button type="button" disabled={saving === "rate"} onClick={() => commitPatch("rate", { payRate: num(rateEdit) })} className="h-12 text-sm font-bold text-white disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND }}>{saving === "rate" ? "저장 중…" : "확인 후 저장"}</button></div></>}</div></Sheet>}
     </div>
   );
 }
@@ -18250,8 +18301,8 @@ export function createAppScreenSmokeCases() {
       { id: "m-orphan", name: "이두리", phone: "01099998888", regular: 4, service: 0, total: 10, status: "active", notes: [] },
     ],
     passes: [
-      { id: "p1", clientId: "smoke-client-a", instructorId: "u1", remainingCount: 8, status: "active", expiresAt: new Date(2027, 1, 1) },
-      { id: "p2", clientId: "smoke-client-b", instructorId: "u2", remainingCount: 12, status: "active", expiresAt: new Date(2027, 1, 1) },
+      { id: "p1", clientId: "smoke-client-a", instructorId: "u1", remainingCount: 8, status: "active", expiresAt: new Date(2027, 1, 1), category: "pt_1_1_repurchase_event", totalSessions: 20, serviceSessions: 2, contractPrice: 1300000 },
+      { id: "p2", clientId: "smoke-client-b", instructorId: "u2", remainingCount: 12, status: "active", expiresAt: new Date(2027, 1, 1), category: "pt_1_1_new", totalSessions: 20, serviceSessions: 0, contractPrice: 1000000 },
     ],
     now: new Date(2026, 8, 18),
   }).roster;
@@ -18330,6 +18381,9 @@ export function createAppScreenSmokeCases() {
     ) },
     { name: "회원 목록", element: <ReferenceMemberList members={db.members} schedule={db.schedule} settings={db.settings} onSelect={noop} onAdd={noop} /> },
     { name: "회원 상세", element: <ReferenceMemberDetail member={member} schedule={db.schedule} photos={photos[member.id]} settings={db.settings} onBack={noop} onPatch={asyncNoop} onSaveNote={asyncNoop} onSchedule={noop} onAssess={noop} onToast={noop} /> },
+    /* 소속 센터의 회원. 강사가 못 하는 셋 -- 삭제 · 홀딩 · 단가 -- 이 사라지고,
+       이용권 카드의 세 칸이 조직 회원권에서 채워진다. */
+    { name: "회원 상세 · 소속", element: <ReferenceMemberDetail member={smokeRoster[0]} schedule={db.schedule} photos={photos[member.id]} settings={db.settings} organizationMode onBack={noop} onPatch={asyncNoop} onSaveNote={asyncNoop} onSchedule={noop} onAssess={noop} onToast={noop} onHide={asyncNoop} /> },
     { name: "체형분석 목록", element: <ReferenceAnalysisTab members={db.members} photos={photos} selectedId={null} selectedPoseId={null} onSelect={noop} hub={noop} /> },
     { name: "체형분석 상세 빈 이력", element: <AssessmentWorkspace member={member} photos={photos[member.id]} settings={db.settings} onSavePose={asyncNoop} onUpdatePose={asyncNoop} onDeletePose={asyncNoop} onSaveCaptureDraft={asyncNoop} onDeleteCaptureDraft={asyncNoop} onDiscardAssessmentDraft={asyncNoop} onCompleteAssessment={asyncNoop} onSaveMarks={asyncNoop} onSaveAssessmentRole={asyncNoop} onToggleAssessmentFavorite={asyncNoop} onToast={noop} onSaved={noop} /> },
     { name: "변화 기록 상세 저장 이력", element: <AssessmentWorkspace member={member} photos={completedHistoryPhotos} settings={db.settings} initialMode="history" onSavePose={asyncNoop} onUpdatePose={asyncNoop} onDeletePose={asyncNoop} onSaveCaptureDraft={asyncNoop} onDeleteCaptureDraft={asyncNoop} onDiscardAssessmentDraft={asyncNoop} onCompleteAssessment={asyncNoop} onSaveMarks={asyncNoop} onSaveAssessmentRole={asyncNoop} onToggleAssessmentFavorite={asyncNoop} onToast={noop} onSaved={noop} /> },
@@ -18673,8 +18727,36 @@ export default function App() {
 
   const roster = useMemo(() => {
     if (!organizationRoster || rosterError) return null;
-    return mergeRoster({ clients: rosterClients, members: db.members, passes: rosterPasses });
-  }, [organizationRoster, rosterError, rosterClients, rosterPasses, db.members]);
+    return mergeRoster({
+      clients: rosterClients,
+      members: db.members,
+      passes: rosterPasses,
+      hiddenClientIds: db.settings?.hiddenClientIds,
+    });
+  }, [organizationRoster, rosterError, rosterClients, rosterPasses, db.members, db.settings?.hiddenClientIds]);
+
+  /* 조직 회원은 강사가 지울 대상이 아니다. 지우면 그 회원의 수업 기록과 사진이
+     함께 사라지고, 그 데이터는 센터가 아니라 강사 기기에만 있다.
+
+     대신 이 기기 화면에서만 감춘다. 조직 문서는 건드리지 않으므로 다른 강사도
+     대표도 영향을 받지 않고, 아래 되돌리기로 언제든 다시 보인다 -- 되돌릴 수
+     없는 숨김은 삭제와 다를 바가 없다. */
+  const hideRosterMember = async (member) => {
+    const key = rosterHideKey(member);
+    if (!key) return false;
+    const current = Array.isArray(db.settings?.hiddenClientIds) ? db.settings.hiddenClientIds : [];
+    if (current.includes(key)) return true;
+    const stored = await saveDb({ ...db, settings: { ...db.settings, hiddenClientIds: [...current, key] } });
+    if (stored === false) return false;
+    setSelectedId(null);
+    setToast({ ok: true, msg: `${member?.name || "회원"}님을 내 목록에서 숨겼습니다. 기록은 그대로 있습니다.` });
+    return true;
+  };
+  const showAllRosterMembers = async () => {
+    const stored = await saveDb({ ...db, settings: { ...db.settings, hiddenClientIds: [] } });
+    if (stored === false) return;
+    setToast({ ok: true, msg: "숨긴 회원을 다시 보여 줍니다." });
+  };
 
   /* 화면에만 쓰는 db 다. saveDb 는 언제나 진짜 db 를 쓴다 -- 여기의 members 를
      저장하면 조직 회원이 기기 저장에 복사되고, 그것이 두 번째 명부가 된다. */
@@ -21002,12 +21084,13 @@ export default function App() {
           <Guard key={tab}>
             {tab === "schedule" && <ScheduleManager db={rosterDb} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterMembers ? () => { setMemberRegistrationRequest((value) => value + 1); setTab("members"); } : undefined} organizationMode={organizationRoster} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} canUnsettle={organizationRoster && organizationContext.role === ROLES.OWNER} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
             {tab === "members" && <div className={`h-full min-h-0 ${mobileView === "detail" && member ? "pt-member-detail-active" : ""}`}>
-              <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList members={rosterMembers} schedule={db.schedule} settings={db.settings} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterMembers} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
+              <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList members={rosterMembers} schedule={db.schedule} settings={db.settings} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterMembers} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
               {mobileView === "detail" && member && <div className="pt-member-detail-pane h-full min-h-0">
                 <ReferenceMemberDetail key={member.id} member={member} schedule={db.schedule} photos={photos[member.id]} settings={db.settings}
                   canViewSettlement={!account?.role || ["owner", "manager", "admin", "director"].includes(String(account.role).toLowerCase())} onBack={() => setMobileView("list")}
                   onPatch={(change) => patch(member.id, change)} onSaveNote={(type, body, voiceMeta, noteOptions) => saveScheduleComment(member.id, type, null, body, voiceMeta, noteOptions)}
-                  onSchedule={() => { setScheduleMemberId(member.id); setTab("schedule"); }} onOpenLesson={(lessonId) => { setScheduleOpenLessonId(lessonId); setTab("schedule"); }} onAssess={(entry = {}) => { setAnalysisRecordId(entry.poseId || null); setAnalysisAssessmentId(entry.assessmentId || null); setAnalysisEntryMode(entry.mode || "home"); setAnalysisComparisonEntry(entry.beforeAssessmentId && entry.afterAssessmentId ? { beforeAssessmentId: entry.beforeAssessmentId, afterAssessmentId: entry.afterAssessmentId, compareView: entry.compareView || "front" } : null); setAnalysisMemberId(member.id); setTab("analysis"); }} onToast={setToast} onDelete={removeMember} onDeactivate={deactivateMember} onReactivate={reactivateMember} />
+                  onSchedule={() => { setScheduleMemberId(member.id); setTab("schedule"); }} onOpenLesson={(lessonId) => { setScheduleOpenLessonId(lessonId); setTab("schedule"); }} onAssess={(entry = {}) => { setAnalysisRecordId(entry.poseId || null); setAnalysisAssessmentId(entry.assessmentId || null); setAnalysisEntryMode(entry.mode || "home"); setAnalysisComparisonEntry(entry.beforeAssessmentId && entry.afterAssessmentId ? { beforeAssessmentId: entry.beforeAssessmentId, afterAssessmentId: entry.afterAssessmentId, compareView: entry.compareView || "front" } : null); setAnalysisMemberId(member.id); setTab("analysis"); }} onToast={setToast} onDelete={removeMember} onDeactivate={deactivateMember} onReactivate={reactivateMember}
+                  organizationMode={organizationRoster && isRosterMember(member)} onHide={hideRosterMember} />
               </div>}
             </div>}
             {tab === "analysis" && <ReferenceAnalysisTab members={rosterMembers} photos={photos} selectedId={analysisMemberId} selectedPoseId={analysisRecordId}

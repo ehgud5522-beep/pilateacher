@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   ROSTER_SOURCE, isMyRosterMember, isRosterMember, isUnlinkedLocalMember, mergeRoster,
+  rosterHideKey,
 } from "../../src/features/roster/roster-bridge.js";
 import { transitionAttendance } from "../../src/features/schedule/attendance-transitions.js";
 
@@ -303,4 +304,142 @@ test("rolling an attendance back still restores what it took, in both modes", ()
     assert.equal(result.members[0].regular, 7, String(organizationMode));
     assert.equal(result.blocked, false);
   }
+});
+
+/* ── 이용권 카드가 묻는 것들 ───────────────────────────────────────────────
+
+   누적 등록 횟수 · 이용권 만료일 · 회원 회당 금액. 회원권에 다 있는데 아무도
+   옮겨 오지 않아 "미등록 · 미설정 · 결제 내역 없음" 으로 비어 있었다 -- 잔여만
+   29회라고 적혀 있는 옆에서. 값이 없는 것이 아니라 명부에서 끊겨 있었다. */
+
+test("the pass card's three fields come from the centre's passes", () => {
+  const { roster } = mergeRoster({
+    clients: [client()],
+    members: [],
+    passes: [pass({
+      category: "pt_1_1_repurchase_event",
+      totalSessions: 20, serviceSessions: 2, contractPrice: 1300000,
+      remainingCount: 8, expiresAt: new Date(2027, 0, 31),
+    })],
+    now: NOW,
+  });
+  const [row] = roster;
+  assert.equal(row.total, 22, "누적 등록은 서비스까지 센다");
+  assert.equal(row.contractEnd, "2027-01-31");
+  // 총 결제액 ÷ 정규 유료 횟수. 서비스는 분모에서 뺀다 -- 레거시 paidAvg 와 같다.
+  assert.equal(row.orgUnitPrice, 65000);
+  // 잔여 29회 옆에 "이용권 없음" 이 서지 않게 한다.
+  assert.equal(row.passName, "1:1 재등록(이벤트)");
+});
+
+test("the expiry shown is the one that will run out first", () => {
+  /* 만료가 이른 것부터 쓰므로(pickPassForClient) 회원이 물어볼 날짜도 그것이다. */
+  const { roster } = mergeRoster({
+    clients: [client()],
+    members: [],
+    passes: [
+      pass({ id: "later", expiresAt: new Date(2027, 5, 1), totalSessions: 10, contractPrice: 500000 }),
+      pass({ id: "sooner", expiresAt: new Date(2026, 11, 1), totalSessions: 10, contractPrice: 500000 }),
+    ],
+    now: NOW,
+  });
+  assert.equal(roster[0].contractEnd, "2026-12-01");
+});
+
+test("a member with nothing usable still sees the date that passed", () => {
+  /* "미설정" 은 날짜를 정하지 않았다는 뜻인데 실제로는 지난 것이다. 누적과
+     회당 금액은 소진·만료분도 센다 -- "누적" 이 그런 뜻이다. */
+  const { roster } = mergeRoster({
+    clients: [client()],
+    members: [],
+    passes: [pass({ remainingCount: 0, totalSessions: 10, contractPrice: 400000, expiresAt: new Date(2026, 6, 1) })],
+    now: NOW,
+  });
+  assert.equal(roster[0].orgRemaining, 0);
+  assert.equal(roster[0].contractEnd, "2026-07-01");
+  assert.equal(roster[0].total, 10);
+  assert.equal(roster[0].orgUnitPrice, 40000);
+});
+
+test("a centre member with no pass at all says nothing rather than zero", () => {
+  const { roster } = mergeRoster({ clients: [client()], members: [], passes: [], now: NOW });
+  assert.equal(roster[0].total, 0);
+  assert.equal(roster[0].contractEnd, "", "없는 날짜를 지어내지 않는다");
+  assert.equal(roster[0].orgUnitPrice, 0);
+  assert.equal(roster[0].passName, "");
+});
+
+test("a matched member's device pass fields are replaced, not mixed", () => {
+  /* 한 카드 안에서 잔여는 조직 값인데 만료일은 기기 값이면 두 출처가 섞인다. */
+  const { roster } = mergeRoster({
+    clients: [client()],
+    members: [member({ total: 99, contractEnd: "2020-01-01", passName: "옛 이용권" })],
+    passes: [pass({ totalSessions: 20, serviceSessions: 0, contractPrice: 1000000, category: "pt_1_1_new" })],
+    now: NOW,
+  });
+  assert.equal(roster[0].total, 20);
+  assert.equal(roster[0].contractEnd, "2027-01-01");
+  assert.equal(roster[0].passName, "1:1 신규");
+});
+
+/* ── 숨김 ─────────────────────────────────────────────────────────────────
+
+   조직 회원은 강사가 지울 대상이 아니다. 지우면 그 회원의 수업 기록과 사진이
+   함께 사라지고, 그 데이터는 센터가 아니라 강사 기기에만 있다. */
+
+test("a hidden centre member leaves the list but stays counted", () => {
+  const { roster, hiddenCount } = mergeRoster({
+    clients: [client(), client({ id: "client-b", name: "박서연", phone: "01055556666" })],
+    members: [],
+    passes: [],
+    hiddenClientIds: ["client-a"],
+    now: NOW,
+  });
+  assert.deepEqual(roster.map((row) => row.id), ["client-b"]);
+  // 몇 명을 숨겼는지 모르면 되돌릴 길이 없고, 되돌릴 수 없는 숨김은 삭제다.
+  assert.equal(hiddenCount, 1);
+});
+
+test("hiding a matched member uses the centre id, not the device id", () => {
+  /* 기기 id 로 숨기면 다음 병합에서 같은 조직 회원이 새 줄로 돌아온다. */
+  const { roster, hiddenCount } = mergeRoster({
+    clients: [client()],
+    members: [member()],
+    passes: [],
+    hiddenClientIds: ["client-a"],
+    now: NOW,
+  });
+  assert.deepEqual(roster, []);
+  assert.equal(hiddenCount, 1);
+});
+
+test("a device-only member can be hidden by its own id", () => {
+  const { roster, unlinkedLocal, hiddenCount } = mergeRoster({
+    clients: [],
+    members: [member({ id: "m-local-1" })],
+    passes: [],
+    hiddenClientIds: ["m-local-1"],
+    now: NOW,
+  });
+  assert.deepEqual(roster, []);
+  assert.deepEqual(unlinkedLocal, [], "숨긴 회원은 '센터에 등록되지 않음' 수에서도 빠진다");
+  assert.equal(hiddenCount, 1);
+});
+
+test("nothing hidden means nothing is filtered, and the count is zero", () => {
+  const { roster, hiddenCount } = mergeRoster({
+    clients: [client()], members: [], passes: [], now: NOW,
+  });
+  assert.equal(roster.length, 1);
+  assert.equal(hiddenCount, 0);
+  // 목록에 없는 id 를 숨겨도 아무 일이 없어야 한다.
+  assert.equal(mergeRoster({
+    clients: [client()], members: [], passes: [], hiddenClientIds: ["없는아이디"], now: NOW,
+  }).hiddenCount, 0);
+});
+
+test("the hide key prefers the centre id", () => {
+  assert.equal(rosterHideKey({ orgClientId: "client-a", id: "m-local-1" }), "client-a");
+  assert.equal(rosterHideKey({ id: "m-local-1" }), "m-local-1");
+  assert.equal(rosterHideKey(null), "");
 });

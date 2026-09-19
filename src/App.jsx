@@ -18765,6 +18765,23 @@ export default function App() {
     [db, roster],
   );
   const rosterMembers = rosterDb.members;
+  /* 화면이 건네는 id 로 회원을 찾는다.
+
+     db.members 에서 찾으면 안 된다. 조직에만 있는 회원은 id 가 조직 clientId 이고
+     기기 목록에는 그 행이 없다 -- 명부는 표시할 때만 이어 붙이고 저장소를 옮기지
+     않기 때문이다 (roster-bridge.js). db.members 로 찾는 코드는 그 회원을 "없는
+     사람" 으로 읽고, 그것이 실기기에서 음성 기록·체형 분석·사진 촬영이 한꺼번에
+     깨진 이유다. 셋 다 같은 한 줄이었다.
+
+     개인 모드에서는 rosterDb 가 db 이므로 이 함수가 곧 db.members 조회다. */
+  const findRosterMember = useCallback(
+    (memberId) => {
+      const target = String(memberId || "");
+      if (!target) return null;
+      return rosterMembers.find((item) => String(item?.id || "") === target) || null;
+    },
+    [rosterMembers],
+  );
   const [photos, setPhotos] = useState({});
   const photosRef = useRef({});
   const [tab, setTab] = useState("schedule");
@@ -19442,7 +19459,15 @@ export default function App() {
 
   const prepareLessonRecordContext = useCallback(async ({ memberId, lessonId, data = db, stage = "gateway_preflight" } = {}) => {
     const accountId = String(account?.id || "").trim();
-    const link = evaluateLessonRecordLink({ members: data?.members, schedule: data?.schedule, memberId, lessonId });
+    /* 회원은 명부에서, 일정은 건네받은 db 에서 찾는다. 조직에만 있는 회원은
+       기기 목록에 없어서 member_missing 으로 끝났고, 녹음이 끝까지 성공한 뒤
+       마지막 연결 단계에서만 실패했다 -- record_end · voice_blob_saved 까지
+       정상인데 member_session_unresolved 가 나오던 것이 이것이다.
+
+       백업은 아래에서 data(진짜 db)를 그대로 쓴다. 명부를 백업에 넣으면 조직
+       회원이 기기 저장에 복사되고, 그것이 두 번째 명부가 된다. */
+    const linkMembers = data === db ? rosterMembers : data?.members;
+    const link = evaluateLessonRecordLink({ members: linkMembers, schedule: data?.schedule, memberId, lessonId });
     const diagnostic = {
       code: link.state === "link_review_required" ? "member_session_unresolved" : "link_confirmed",
       stage, category: link.state === "link_review_required" ? LESSON_RECORD_FAILURE_CATEGORY.SERVICE : "SUCCESS",
@@ -19716,7 +19741,21 @@ export default function App() {
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 2600); return () => clearTimeout(t); }, [toast]);
 
   const patch = async (id, p, duet) => {
-    let members = db.members.map((m) => (m.id === id ? { ...m, ...p } : m));
+    /* 조직에만 있는 회원은 기기에 행이 없다. 그대로 map 하면 아무 일도 일어나지
+       않고 화면만 저장된 척한다 -- 없는 행에 쓰는 것은 실패가 아니라 침묵이다.
+       그 자리에서 행을 만든다 (saveScheduleComment 의 같은 주석 참고). */
+    const known = db.members.some((m) => m.id === id);
+    const source = known ? null : findRosterMember(id);
+    const base = known || !source
+      ? db.members
+      : [...db.members, {
+        ...blankMember(db.settings?.staff || ""),
+        id,
+        name: source.name || "",
+        phone: source.phone || "",
+        status: "active",
+      }];
+    let members = base.map((m) => (m.id === id ? { ...m, ...p } : m));
     if (duet) {
       const { duetPrev, duetNext } = duet;
       /* 짝을 바꾸면 옛 짝의 연결을 끊고 새 짝에 나를 걸어 준다 */
@@ -19774,9 +19813,28 @@ export default function App() {
     const text = String(body || "").trim();
     if (!text) return false;
     setNoteBack(false);
-    const currentDb = lessonRecordDbRef.current;
-    const target = currentDb.members.find((m) => m.id === id);
-    if (!target) { setToast({ ok: false, msg: "회원을 찾을 수 없습니다." }); return false; }
+    let currentDb = lessonRecordDbRef.current;
+    /* 기록은 회원 행 안(member.notes)에 쌓인다. 조직에만 있는 회원은 그 행이
+       없으므로 여기서 만든다 -- 명부는 표시할 때만 이어 붙이고 저장소를 옮기지
+       않기 때문이다 (roster-bridge.js).
+
+       id 는 조직 clientId 그대로 쓴다. 다음 병합에서 연락처로 자기 자신과 맞물려
+       org_linked 가 되고 그때도 같은 id 라, notes 와 photos[id] 가 가리킬 곳을
+       잃지 않는다.
+
+       조직이 주인인 값(잔여·만료일·회당 금액)은 넣지 않는다. 병합이 그 자리를
+       다시 채우므로, 복사해 두면 두 벌이 생겨 언젠가 어긋난다. */
+    const known = currentDb.members.find((m) => m.id === id);
+    const fromRoster = known ? null : findRosterMember(id);
+    if (!known && !fromRoster) { setToast({ ok: false, msg: "회원을 찾을 수 없습니다." }); return false; }
+    const target = known || {
+      ...blankMember(currentDb.settings?.staff || ""),
+      id,
+      name: fromRoster.name || "",
+      phone: fromRoster.phone || "",
+      status: "active",
+    };
+    if (!known) currentDb = { ...currentDb, members: [...currentDb.members, target] };
     const linkedLesson = sid ? currentDb.schedule.find((lesson) => lesson?.id === sid) : null;
     const lessonLinkedToMember = !sid || linkedLesson?.memberId === id || linkedLesson?.memberIds?.includes?.(id) || linkedLesson?.attendees?.some?.((item) => item?.memberId === id);
     const reconcileStatus = lessonLinkedToMember ? (sid ? "linked" : "member_only") : "link_review_required";
@@ -19934,7 +19992,7 @@ export default function App() {
       const lessonId = event?.detail?.lessonId;
       const pending = loadPendingLessonRecord(memberId, lessonId);
       if (!pending?.structuredDraft || hasLessonRecordReviewFlag(pending)) return;
-      const target = db.members.find((item) => String(item.id) === String(memberId));
+      const target = findRosterMember(memberId);
       if (!target) return;
       const existing = (target.notes || []).find((note) => String(note.sid || "") === String(lessonId || ""));
       const body = structuredRecordBody(pending.structuredDraft, pending.rawTranscript || "");
@@ -20341,17 +20399,20 @@ export default function App() {
     return true;
   };
   const saveInbody = (id, rec) => {
-    const t = db.members.find((m) => m.id === id);
+    const t = findRosterMember(id);
+    if (!t) return;
     patch(id, { inbody: [...t.inbody, { id: uid(), ...rec }].sort((a, b) => (a.date > b.date ? 1 : -1)) });
     setToast({ ok: true, msg: "측정값을 저장했습니다." });
   };
   const deleteInbody = (id, recId) => {
-    const t = db.members.find((m) => m.id === id);
+    const t = findRosterMember(id);
+    if (!t) return;
     patch(id, { inbody: t.inbody.filter((r) => (r.id || r.date) !== recId) });
     setToast({ ok: true, msg: "측정 기록을 삭제했습니다." });
   };
   const saveNote = async (id, note) => {
-    const t = db.members.find((m) => m.id === id);
+    const t = findRosterMember(id);
+    if (!t) return false;
     /* 아래에서 stage 를 confirmed_record 로 덮어쓴다. 덮어쓴 뒤에 읽으면 언제나
        확정 상태라, 재수정과 첫 확정을 구분할 수 없게 된다. */
     const stageBeforeSave = String(note.lessonRecord?.stage || "");
@@ -20417,7 +20478,8 @@ export default function App() {
     if (gone?.audioBlobId) forgetBlobs([gone.audioBlobId]);
   };
   const analysisMember = (memberId) => {
-    const target = db.members.find((m) => m.id === memberId);
+    // 사진은 photos[id] 에 저장되므로 기기 회원 행이 없어도 된다 -- 찾기만 하면 된다.
+    const target = findRosterMember(memberId);
     if (!memberId || !target) {
       setToast({ ok: false, msg: "분석할 회원을 먼저 선택해 주세요." });
       return null;
@@ -21096,7 +21158,9 @@ export default function App() {
             {tab === "analysis" && <ReferenceAnalysisTab members={rosterMembers} photos={photos} selectedId={analysisMemberId} selectedPoseId={analysisRecordId}
               onSelect={(id, poseId = null) => { setAnalysisMemberId(id); setAnalysisRecordId(poseId); setAnalysisAssessmentId(null); setAnalysisEntryMode(poseId ? "result" : "home"); setAnalysisComparisonEntry(null); }}
               hub={(id, initialSavedId) => {
-                const m = db.members.find((x) => x.id === id);
+                /* 조직에만 있는 회원은 기기 목록에 없다. 여기서 null 을 돌려주면
+                   변화 기록 화면이 통째로 빈 화면이 된다 -- 강사에게 그렇게 보였다. */
+                const m = findRosterMember(id);
                 if (!m) return null;
                 return <Guard label="변화 기록"><AssessmentWorkspace key={`${id}_${analysisEntryMode}_${initialSavedId || "none"}_${analysisAssessmentId || "none"}_${analysisComparisonEntry?.beforeAssessmentId || "none"}_${analysisComparisonEntry?.afterAssessmentId || "none"}`} member={m} photos={photos[id]} settings={db.settings} diagnosticAccountId={account?.id || null} diagnosticPhotosBucketExists={Object.prototype.hasOwnProperty.call(photos || {}, id)} initialSavedId={initialSavedId} initialAssessmentId={analysisAssessmentId} initialMode={analysisEntryMode} initialBeforeAssessmentId={analysisComparisonEntry?.beforeAssessmentId || null} initialAfterAssessmentId={analysisComparisonEntry?.afterAssessmentId || null} initialCompareView={analysisComparisonEntry?.compareView || "front"}
                   onSavePose={(rec) => savePose(id, { ...rec, memberId: id })} onUpdatePose={(pid, posePatch) => updatePose(id, pid, posePatch)} onDeletePose={(pid) => deletePose(id, pid)}

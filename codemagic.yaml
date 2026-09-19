@@ -211,6 +211,11 @@ workflows:
           print(f"Provisioning profile expiration: {expiration_date.isoformat()}")
           PY
 
+      # 스토어의 빌드 번호는 여기서 정해진다. 저장소의 CURRENT_PROJECT_VERSION 은
+      # 이 줄이 덮어쓰므로 올려도 효과가 없고, 올려 두면 저장소(2)와 스토어(118대)가
+      # 어긋나 보여 다음 사람이 어느 쪽을 믿어야 할지 알 수 없다. 그래서 저장소
+      # 값은 자리표시자로 두고 건드리지 않는다.
+      # 올리는 것은 MARKETING_VERSION 하나뿐이다 (ios/App/App.xcodeproj).
       - name: Set build number
         script: |
           cd $CM_BUILD_DIR/ios/App

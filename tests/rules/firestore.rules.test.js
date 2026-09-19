@@ -1178,6 +1178,167 @@ describe("ledger and pass bodies are validated at write time", () => {
   });
 });
 
+/* 강사를 센터에 붙이는 문. 여기까지는 소속 문서가 콘솔이나 이관 도구로만 생겼다.
+
+   대표가 앱에서 붙일 수 있게 열되, 그 문으로 대표를 세우거나 자기 자신을 붙일 수
+   없어야 한다 -- 둘 다 되돌릴 문이 없다. */
+describe("the owner attaches instructors to the centre", () => {
+  const membershipRef = (userId, documentId) => doc(dbFor(userId), "memberships", documentId);
+  const NEW_USER = "uid-newcomer";
+  const newMembership = (overrides = {}) => ({
+    organizationId: ORG_A,
+    userId: NEW_USER,
+    role: "instructor",
+    status: "active",
+    displayName: "박서연",
+    title: "team_lead",
+    locationId: "location-a",
+    createdAt: serverTimestamp(),
+    createdBy: users.owner,
+    ...overrides,
+  });
+
+  test("only the owner may attach someone", async () => {
+    await assertSucceeds(setDoc(membershipRef(users.owner, `${ORG_A}_${NEW_USER}`), newMembership()));
+    for (const userId of [users.manager, users.instructor, users.staff, users.outsider]) {
+      await assertFails(setDoc(
+        membershipRef(userId, `${ORG_A}_uid-by-${userId}`),
+        newMembership({ userId: `uid-by-${userId}`, createdBy: userId }),
+      ), userId);
+    }
+  });
+
+  test("the document id has to be the organization-user pair", async () => {
+    /* 규칙의 membershipId() 와 형식이 다르면 isActiveMember 가 영영 찾지 못하는
+       소속이 만들어진다 -- 붙였는데 아무것도 안 보이는 상태다. */
+    for (const documentId of [NEW_USER, `${ORG_B}_${NEW_USER}`, `${ORG_A}-${NEW_USER}`, `${ORG_A}_other`]) {
+      await assertFails(setDoc(membershipRef(users.owner, documentId), newMembership()), documentId);
+    }
+  });
+
+  test("nobody attaches themselves, and no owner is minted here", async () => {
+    /* 자기 소속을 자기가 만들 수 있으면 아무나 아무 센터의 대표가 된다. 그리고
+       이 문으로 owner 를 만들 수 있으면 대표 한 사람이 아무 계정이나 자기와 같은
+       자리에 올릴 수 있고, 그것을 되돌리는 문은 없다. */
+    await assertFails(setDoc(
+      membershipRef(users.owner, `${ORG_A}_${users.owner}`),
+      newMembership({ userId: users.owner }),
+    ), "자기 자신");
+    await assertFails(setDoc(
+      membershipRef(users.owner, `${ORG_A}_${NEW_USER}`),
+      newMembership({ role: "owner" }),
+    ), "대표를 앱에서 세우지 않는다");
+  });
+
+  test("an attached membership starts active, named, and with a listed title", async () => {
+    for (const overrides of [
+      { status: "invited" },
+      { status: "revoked" },
+      { displayName: "" },
+      { displayName: 7 },
+      { title: "deputy_director" },
+      { title: "owner" },
+      { locationId: "" },
+      { role: "member" },
+    ]) {
+      await assertFails(setDoc(
+        membershipRef(users.owner, `${ORG_A}_${NEW_USER}`),
+        newMembership(overrides),
+      ), JSON.stringify(overrides));
+    }
+  });
+
+  test("the two pay fields never come in through the attach door", async () => {
+    /* 풀방금액과 부원장은 각자의 문으로만 들어온다. 그 문들은 rateHistory 와
+       감사 항목을 같은 배치에 요구한다 -- 여기서 함께 받으면 이력 없이 단가가
+       정해지는 길이 하나 생긴다. */
+    await assertFails(setDoc(
+      membershipRef(users.owner, `${ORG_A}_${NEW_USER}`),
+      newMembership({ fullRoomRate: 45000 }),
+    ));
+    await assertFails(setDoc(
+      membershipRef(users.owner, `${ORG_A}_${NEW_USER}`),
+      newMembership({ isDeputyDirector: true }),
+    ));
+  });
+
+  test("a client-made timestamp or a forged author is refused", async () => {
+    await assertFails(setDoc(
+      membershipRef(users.owner, `${ORG_A}_${NEW_USER}`),
+      newMembership({ createdAt: hoursAgo(24) }),
+    ));
+    await assertFails(setDoc(
+      membershipRef(users.owner, `${ORG_A}_${NEW_USER}`),
+      newMembership({ createdBy: users.manager }),
+    ));
+  });
+
+  test("the owner edits name, title and location together and nothing else", async () => {
+    const ref = membershipRef(users.owner, `${ORG_A}_${users.instructor}`);
+    await assertSucceeds(updateDoc(ref, {
+      displayName: "정예진", title: "branch_manager", locationId: "location-b",
+    }));
+    await assertSucceeds(updateDoc(ref, { displayName: "정예진2" }));
+    await assertFails(updateDoc(ref, { title: "deputy_director" }));
+    await assertFails(updateDoc(ref, { locationId: "" }));
+    await assertFails(updateDoc(ref, { displayName: "" }));
+    // role 과 organizationId 는 어느 문으로도 움직이지 않는다.
+    await assertFails(updateDoc(ref, { displayName: "정예진", role: "manager" }));
+    await assertFails(updateDoc(ref, { displayName: "정예진", organizationId: ORG_B }));
+    // 대표 말고는 남의 이름을 못 쓴다. 본인 문은 displayName 하나뿐이다.
+    await assertFails(updateDoc(
+      membershipRef(users.manager, `${ORG_A}_${users.instructor}`),
+      { displayName: "남이 고침" },
+    ));
+    await assertFails(updateDoc(
+      membershipRef(users.instructor, `${ORG_A}_${users.instructor}`),
+      { displayName: "내 이름", title: "team_lead" },
+    ), "본인 문은 이름 하나만 연다");
+  });
+
+  test("retiring moves the status and only between the two values", async () => {
+    const ref = membershipRef(users.owner, `${ORG_A}_${users.staff}`);
+    await assertSucceeds(updateDoc(ref, { status: "revoked" }));
+    await assertSucceeds(updateDoc(ref, { status: "active" }));
+    for (const status of ["invited", "suspended", "deleted", 1]) {
+      await assertFails(updateDoc(ref, { status }), String(status));
+    }
+    await assertFails(updateDoc(ref, { status: "revoked", role: "member" }));
+  });
+
+  test("an owner cannot retire themselves, and nobody else can retire anyone", async () => {
+    /* 대표가 자기 소속을 회수하면 그 센터에 owner 가 없어지고, 되돌릴 문이 아무
+       데도 없다. */
+    await assertFails(updateDoc(
+      membershipRef(users.owner, `${ORG_A}_${users.owner}`),
+      { status: "revoked" },
+    ));
+    for (const userId of [users.manager, users.instructor, users.staff]) {
+      await assertFails(updateDoc(
+        membershipRef(userId, `${ORG_A}_${users.staff}`),
+        { status: "revoked" },
+      ), userId);
+    }
+  });
+
+  test("an owner of another centre reaches none of these doors", async () => {
+    await assertFails(setDoc(
+      membershipRef(users.outsider, `${ORG_A}_uid-crossing`),
+      newMembership({ userId: "uid-crossing", createdBy: users.outsider }),
+    ));
+    await assertFails(updateDoc(
+      membershipRef(users.outsider, `${ORG_A}_${users.instructor}`),
+      { status: "revoked" },
+    ));
+  });
+
+  test("a membership is never deleted, only retired", async () => {
+    /* 지우면 급여 화면이 그 이름을 붙일 곳을 잃는다. 원장은 그 사람의 수업을
+       그대로 들고 있는데. */
+    await assertFails(deleteDoc(membershipRef(users.owner, `${ORG_A}_${users.instructor}`)));
+  });
+});
+
 describe("protected and append-only data", () => {
   test("signed-in clients can read but never write the server-owned AI recording status", async () => {
     await assertSucceeds(getDoc(doc(dbFor(users.instructor), "runtimeConfig", "aiRecording")));

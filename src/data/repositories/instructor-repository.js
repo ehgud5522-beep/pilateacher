@@ -19,7 +19,7 @@
  * firestore.foundation.rules 머리말의 B 항목이 그 이야기다.
  */
 
-import { COLLECTIONS, MEMBERSHIP_STATUS, ROLES } from "../schema/constants.js";
+import { COLLECTIONS, MEMBERSHIP_STATUS, MEMBERSHIP_TITLE, ROLES } from "../schema/constants.js";
 import { paths } from "../schema/paths.js";
 import { AUDIT_ACTION, auditEntry, auditLogId } from "./audit-repository.js";
 import { readCollection } from "./repository-read.js";
@@ -27,6 +27,15 @@ import { readCollection } from "./repository-read.js";
 /**
  * @typedef {object} InstructorStore
  * @property {(organizationId: string, role: string) => Promise<Array<any>>} listByRole
+ */
+
+/**
+ * 같은 Firestore 구현이 둘 다 들고 있지만 타입은 나눠 둔다. 읽는 목적이 다르고
+ * (맡길 수 있는 강사 / 이 센터에 있었던 사람들), 가짜 저장소를 쓰는 테스트가
+ * 쓰지도 않는 쪽까지 채우게 할 이유가 없다.
+ *
+ * @typedef {object} MembershipDirectoryStore
+ * @property {(organizationId: string) => Promise<Array<any>>} listByOrganization
  */
 
 const requiredText = (value, label) => {
@@ -49,6 +58,21 @@ export function createFirestoreInstructorStore() {
         where("organizationId", "==", organizationId),
         where("role", "==", role),
         where("status", "==", MEMBERSHIP_STATUS.ACTIVE),
+      ));
+      return snapshot.docs.map((document) => ({ id: document.id, ...document.data() }));
+    },
+    /* 역할도 상태도 걸지 않는다. 강사 관리 화면은 퇴사자까지 봐야 하고, 급여
+       화면은 퇴사한 강사의 이름도 붙일 수 있어야 한다 -- 지난달 급여 줄이 uid
+       로 떨어지면 누구 것인지 화면이 말하지 못한다.
+
+       organizationId 하나만 건다. 규칙의 read 가 resource.data.organizationId 를
+       보므로 이 필터가 없으면 쿼리 전체가 거부된다 -- 머리말의 class B. 동등
+       하나뿐이라 복합 인덱스도 필요 없다. */
+    listByOrganization: async (organizationId) => {
+      const { collection, getDocs, getFirestore, query, where } = await import("firebase/firestore");
+      const snapshot = await getDocs(query(
+        collection(getFirestore(), COLLECTIONS.MEMBERSHIPS),
+        where("organizationId", "==", organizationId),
       ));
       return snapshot.docs.map((document) => ({ id: document.id, ...document.data() }));
     },
@@ -87,6 +111,254 @@ export async function listInstructors(organizationId, options = {}) {
     }))
     .filter((membership) => membership.userId)
     .sort(byName);
+}
+
+/**
+ * 이 센터의 사람 전부. 퇴사자도 포함한다.
+ *
+ * listInstructors 와 목적이 다르다. 그쪽은 "지금 회원권을 맡길 수 있는 강사"라
+ * 활성 강사만 돌려주고, 이쪽은 "이 센터에 있었던 사람들"이라 아무것도 거르지
+ * 않는다. 강사 관리 화면이 퇴사자를 아래에 흐리게 보여주고, 급여 화면이 퇴사한
+ * 강사의 이름을 붙이는 데 쓴다.
+ *
+ * 정렬은 재직이 먼저, 그 안에서 이름순이다. 퇴사자가 이름순으로 섞이면 대표가
+ * 지금 일하는 사람을 찾는 데 목록을 훑어야 한다.
+ *
+ * @param {string} organizationId
+ * @param {{ store?: MembershipDirectoryStore }} [options]
+ */
+export async function listMemberships(organizationId, options = {}) {
+  const { store = createFirestoreInstructorStore() } = options;
+  const organization = requiredText(organizationId, "organizationId");
+  // 조회 실패는 빈 목록이 아니라 RepositoryReadError 로 나간다 -- repository-read.js 참고.
+  const found = await readCollection({
+    feature: "membership_directory",
+    path: `${COLLECTIONS.MEMBERSHIPS}?organizationId=${organization}`,
+    read: () => store.listByOrganization(organization),
+  });
+  return found
+    .map((membership) => ({
+      ...membership,
+      userId: String(membership.userId || ""),
+      displayName: String(membership.displayName || ""),
+    }))
+    .filter((membership) => membership.userId)
+    .sort((left, right) => {
+      const rank = (item) => (item.status === MEMBERSHIP_STATUS.ACTIVE ? 0 : 1);
+      if (rank(left) !== rank(right)) return rank(left) - rank(right);
+      return byName(left, right);
+    });
+}
+
+/** 지금 이 센터에서 일하는 사람인가. 화면이 목록을 두 덩이로 가르는 데 쓴다. */
+export const isActiveMembership = (membership) => membership?.status === MEMBERSHIP_STATUS.ACTIVE;
+
+/* ── 강사를 붙이고 · 고치고 · 내보낸다 ─────────────────────────────────────
+
+   흐름은 이렇다. 강사가 앱에 로그인하고, 대표에게 가입한 이메일을 알려주고,
+   대표가 그 이메일로 uid 를 찾아 소속을 만든다.
+
+   uid 를 주고받게 하지 않는다. 28자를 옮겨 적으면 오타가 나고, 틀리면 조용히
+   매칭되지 않는다 -- 아무 일도 안 일어난 화면과 잘못 붙은 화면이 똑같이 생겼다.
+   이메일은 이미 서로 아는 값이고, 틀리면 "그 이메일로 가입한 계정이 없습니다"로
+   크게 실패한다. 조회는 Functions 가 한다 (functions/src/member-lookup.js) --
+   Auth 는 클라이언트에서 이메일로 사용자를 찾을 수 없다.
+
+   ── 급여를 움직이는 두 필드는 여기 없다 ──
+   fullRoomRate 와 isDeputyDirector 는 아래 각자의 문으로만 들어온다. 그 문들은
+   rateHistory 와 감사 항목을 같은 배치에 요구한다. 추가할 때 함께 받으면 이력
+   없이 단가가 정해지는 길이 하나 생기고, 그 길로 들어온 금액은 "언제부터 이
+   금액이었나"를 답하지 못한다.
+
+   ── 퇴사해도 기록은 남는다 ──
+   status 를 revoked 로 내릴 뿐 문서를 지우지 않는다. 원장은 append-only 이고 각
+   항목이 그때의 instructorId 를 들고 있어, 그 사람이 한 수업과 받은 급여는 그대로
+   남는다. 소속 문서가 사라지면 그 이름을 붙일 곳이 없어질 뿐이다.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/** 화면이 고르게 할 직함. 규칙의 membershipProfileWellFormed() 와 같아야 한다. */
+const TITLES = new Set(/** @type {Array<string>} */ (Object.values(MEMBERSHIP_TITLE)));
+
+const requiredTitle = (value) => {
+  const title = String(value ?? "").trim();
+  if (!TITLES.has(title)) throw new Error("Invalid title");
+  return title;
+};
+
+/** 이름은 목록에서 이 사람을 고르는 유일한 단서다. 비우면 uid 로 되돌아간다. */
+const requiredDisplayName = (value) => {
+  const name = requiredText(value, "displayName");
+  if (name.length > 60) throw new Error("Invalid displayName");
+  return name;
+};
+
+/**
+ * 강사를 센터에 붙인다. 대표만.
+ *
+ * 소속 문서와 감사 항목을 한 배치로 쓴다. 따로 쓰면 기록 없이 붙은 사람이
+ * 생기고, 감사 로그에서 그것은 "붙지 않은 사람"과 구별되지 않는다.
+ *
+ * 문서 id 는 조직-사용자 쌍이라 같은 사람을 두 번 붙일 수 없다. 두 번째는 create
+ * 가 아니라 update 가 되고, 규칙의 update 문 어느 것도 role 과 status 를 함께
+ * 받지 않으므로 거부된다 -- 세지 않고 구조로 막는 것이라 놓칠 수가 없다.
+ *
+ * @param {string} organizationId
+ * @param {{
+ *   userId: string, displayName: string, title?: string, locationId?: string,
+ *   role?: string, createdBy: string, actorRole: string,
+ * }} input
+ * @param {{ store?: InstructorRateStore }} [options]
+ */
+export async function addMembership(organizationId, input, options = {}) {
+  const { store = createFirestoreInstructorRateStore() } = options;
+  const organization = requiredText(organizationId, "organizationId");
+  const userId = requiredText(input?.userId, "userId");
+  const createdBy = requiredText(input?.createdBy, "createdBy");
+  /* 자기 자신을 붙이지 못한다. 규칙도 막지만 permission-denied 한 줄로는 무엇이
+     문제인지 알 수 없다 -- isDeputyDirector 문과 같은 이유다. */
+  if (userId === createdBy) throw new Error("Invalid userId");
+
+  const displayName = requiredDisplayName(input?.displayName);
+  const title = requiredTitle(input?.title ?? MEMBERSHIP_TITLE.INSTRUCTOR);
+  /* 역할은 언제나 instructor 다. 팀장도 점장도 부원장도 수업료를 받는 강사이고,
+     그들을 다른 role 로 두면 규칙의 모든 hasRole 목록을 손봐야 한다 -- 하나라도
+     빠뜨리면 그 사람이 조용히 아무것도 읽지 못한다. 직함은 title 이 들고 간다. */
+  const role = String(input?.role ?? ROLES.INSTRUCTOR).trim() || ROLES.INSTRUCTOR;
+  if (role === ROLES.OWNER) throw new Error("Invalid role");
+
+  const membershipPath = paths.orgMembership(organization, userId);
+  const stampedAt = await store.serverTimestamp();
+
+  const membership = {
+    organizationId: organization,
+    userId,
+    role,
+    status: MEMBERSHIP_STATUS.ACTIVE,
+    displayName,
+    title,
+    createdAt: stampedAt,
+    createdBy,
+  };
+  // 지점은 선택이다. 아직 지점을 나누지 않은 센터가 있고, 빈 문자열을 넣으면
+  // 규칙이 거부한다 -- 없는 것은 없다고 둔다.
+  const locationId = String(input?.locationId ?? "").trim();
+  if (locationId) membership.locationId = locationId;
+
+  const audit = auditEntry(organization, {
+    action: AUDIT_ACTION.MEMBER_ADDED,
+    actorId: createdBy,
+    actorRole: requiredText(input?.actorRole, "actorRole"),
+    targetId: userId,
+    title,
+    locationId,
+    stampedAt,
+  });
+
+  await store.commit([
+    { path: membershipPath, data: membership },
+    { path: paths.auditLog(auditLogId(AUDIT_ACTION.MEMBER_ADDED, userId, "")), data: audit },
+  ]);
+  return { userId, membership, audit };
+}
+
+/**
+ * 이름 · 직함 · 지점을 고친다. 대표만.
+ *
+ * 셋을 한 쓰기로 보낸다. 규칙의 문도 이 셋을 함께 받는다 -- 나눠 보내면 중간에
+ * 실패했을 때 화면이 보여 준 것과 저장된 것이 달라진다.
+ *
+ * @param {string} organizationId
+ * @param {string} userId
+ * @param {{
+ *   displayName: string, title: string, locationId?: string,
+ *   changedBy: string, actorRole: string,
+ * }} input
+ * @param {{ store?: InstructorRateStore }} [options]
+ */
+export async function setMembershipProfile(organizationId, userId, input, options = {}) {
+  const { store = createFirestoreInstructorRateStore() } = options;
+  const organization = requiredText(organizationId, "organizationId");
+  const target = requiredText(userId, "userId");
+  const changedBy = requiredText(input?.changedBy, "changedBy");
+  const displayName = requiredDisplayName(input?.displayName);
+  const title = requiredTitle(input?.title);
+  const locationId = String(input?.locationId ?? "").trim();
+
+  const stampedAt = await store.serverTimestamp();
+  /* 지점을 비우는 일은 이 화면이 하지 않는다. 규칙이 빈 문자열을 거부하므로
+     보내면 통째로 실패하고, 화면에는 "저장하지 못했다"만 남는다. */
+  const profile = locationId
+    ? { displayName, title, locationId }
+    : { displayName, title };
+
+  const audit = auditEntry(organization, {
+    action: AUDIT_ACTION.MEMBER_PROFILE_CHANGED,
+    actorId: changedBy,
+    actorRole: requiredText(input?.actorRole, "actorRole"),
+    targetId: target,
+    title,
+    locationId,
+    stampedAt,
+  });
+
+  await store.commit([
+    // set 이 아니라 update 다. set 이면 role 도 status 도 통째로 날아가고,
+    // 그 순간 이 강사는 센터의 아무것도 읽지 못한다.
+    { path: paths.orgMembership(organization, target), data: profile, operation: "update" },
+    {
+      path: paths.auditLog(auditLogId(AUDIT_ACTION.MEMBER_PROFILE_CHANGED, target, String(Date.now()))),
+      data: audit,
+    },
+  ]);
+  return { userId: target, profile, audit };
+}
+
+/**
+ * 퇴사 · 복직. 대표만, 그리고 자기 자신에게는 쓸 수 없다.
+ *
+ * 대표가 자기 소속을 회수하면 그 센터에 owner 가 없어지고 되돌릴 문이 없다.
+ * 규칙도 막지만 여기서 먼저 막는다 -- 거부된 쓰기는 permission-denied 한 줄로만
+ * 돌아온다.
+ *
+ * @param {string} organizationId
+ * @param {string} userId
+ * @param {{ status: string, changedBy: string, actorRole: string }} input
+ * @param {{ store?: InstructorRateStore }} [options]
+ */
+export async function setMembershipStatus(organizationId, userId, input, options = {}) {
+  const { store = createFirestoreInstructorRateStore() } = options;
+  const organization = requiredText(organizationId, "organizationId");
+  const target = requiredText(userId, "userId");
+  const changedBy = requiredText(input?.changedBy, "changedBy");
+  if (target === changedBy) throw new Error("Invalid userId");
+
+  const status = requiredText(input?.status, "status");
+  /* 이 화면이 오가는 것은 재직과 퇴사 둘뿐이다. invited·suspended 는 만들지
+     않으므로 규칙도 열지 않았다 -- 화면이 보낼 수 있는 값과 규칙이 받는 값이
+     어긋나면 "저장했는데 안 됐다"가 된다. */
+  if (status !== MEMBERSHIP_STATUS.ACTIVE && status !== MEMBERSHIP_STATUS.REVOKED) {
+    throw new Error("Invalid status");
+  }
+
+  const stampedAt = await store.serverTimestamp();
+  const audit = auditEntry(organization, {
+    action: AUDIT_ACTION.MEMBER_REVOKED,
+    actorId: changedBy,
+    actorRole: requiredText(input?.actorRole, "actorRole"),
+    targetId: target,
+    // 퇴사인가 복직인가. 한 동작에 두 방향이 있어 이 칸이 없으면 읽을 수 없다.
+    enabled: status === MEMBERSHIP_STATUS.REVOKED,
+    stampedAt,
+  });
+
+  await store.commit([
+    { path: paths.orgMembership(organization, target), data: { status }, operation: "update" },
+    {
+      path: paths.auditLog(auditLogId(AUDIT_ACTION.MEMBER_REVOKED, target, String(Date.now()))),
+      data: audit,
+    },
+  ]);
+  return { userId: target, status, audit };
 }
 
 /* ── 풀방금액 ──────────────────────────────────────────────────────────────

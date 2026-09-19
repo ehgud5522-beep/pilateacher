@@ -9,7 +9,10 @@
  * 되면 무엇이 잘못됐는지 알 수 없기 때문이다.
  */
 
-import { CLIENT_STATUS, MEMBERSHIP_STATUS, PAY_CATEGORY, PAYMENT_METHOD, PRODUCT_STATUS, SESSION_TYPE } from "./constants.js";
+import {
+  CLIENT_STATUS, MEMBERSHIP_STATUS, MEMBERSHIP_TITLE, PAY_CATEGORY, PAYMENT_METHOD, PRODUCT_STATUS,
+  SESSION_TYPE,
+} from "./constants.js";
 import {
   NEW_TO_INSTRUCTOR_THRESHOLD, PAID_SERVICE_SESSIONS_PER_PASS, PRICING_RULE,
 } from "./deduction-pricing.js";
@@ -73,11 +76,36 @@ export const PAYMENT_METHOD_LABELS = Object.freeze({
 });
 
 export const MEMBERSHIP_STATUS_LABELS = Object.freeze({
-  [MEMBERSHIP_STATUS.ACTIVE]: "활성",
+  [MEMBERSHIP_STATUS.ACTIVE]: "재직",
   [MEMBERSHIP_STATUS.INVITED]: "초대됨",
   [MEMBERSHIP_STATUS.SUSPENDED]: "정지",
-  [MEMBERSHIP_STATUS.REVOKED]: "해지",
+  [MEMBERSHIP_STATUS.REVOKED]: "퇴사",
 });
+
+export const MEMBERSHIP_TITLE_LABELS = Object.freeze({
+  [MEMBERSHIP_TITLE.INSTRUCTOR]: "강사",
+  [MEMBERSHIP_TITLE.TEAM_LEAD]: "팀장",
+  [MEMBERSHIP_TITLE.BRANCH_MANAGER]: "점장",
+});
+
+/** 부원장은 직함이 아니라 플래그다. 왜인지는 constants.js 의 MEMBERSHIP_TITLE 참고. */
+export const DEPUTY_DIRECTOR_LABEL = "부원장";
+
+/**
+ * 이 사람을 뭐라고 부르는가.
+ *
+ * 부원장이 직함을 이긴다. 그것이 급여 판정 1 이라 화면에서 가장 큰 사실이고,
+ * 팀장이면서 부원장인 사람에게 "팀장"만 보이면 그 회차가 왜 5:5 인지 화면 어디서도
+ * 알 수 없다. 직함이 아직 없는 소속은 "강사"로 읽는다 -- 이 필드가 생기기 전에
+ * 만들어진 소속이 빈칸으로 보이면 안 된다.
+ *
+ * @param {{ title?: string, isDeputyDirector?: boolean }} membership
+ */
+export function membershipTitleLabel(membership) {
+  if (membership?.isDeputyDirector === true) return DEPUTY_DIRECTOR_LABEL;
+  const title = String(membership?.title ?? "");
+  return MEMBERSHIP_TITLE_LABELS[title] || MEMBERSHIP_TITLE_LABELS[MEMBERSHIP_TITLE.INSTRUCTOR];
+}
 
 /**
  * 수업 형태별로 고를 수 있는 급여 카테고리. firestore.foundation.rules 의

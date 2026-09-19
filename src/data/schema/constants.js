@@ -28,6 +28,28 @@ export const MEMBERSHIP_STATUS = Object.freeze({
   REVOKED: "revoked",
 });
 
+/**
+ * 센터 안에서 부르는 직함. 권한이 아니라 표시다.
+ *
+ * ── role 과 왜 나누는가 ──
+ * role 은 규칙 전체가 읽는 접근 권한 값이다. 여기에 팀장·점장을 더하면 rules 의
+ * 모든 hasRole 목록을 손봐야 하고, 하나라도 빠뜨리면 그 사람이 조용히 아무것도
+ * 읽지 못한다. 직함은 부르는 이름일 뿐이라 그 위험을 질 이유가 없다 -- 넷 다
+ * 수업료를 받는 강사이고, role 은 전부 instructor 다.
+ *
+ * ── 부원장이 여기 없는 이유 ──
+ * 부원장은 직함이면서 급여 판정 1 그 자체다 (deduction-pricing.js). 그 판정이
+ * 읽는 것은 memberships.isDeputyDirector 이고, 같은 사실을 여기에 한 번 더
+ * 적으면 둘이 어긋나는 날이 온다 -- 화면은 부원장이라는데 급여는 아닌 상태다.
+ * 그래서 부원장은 플래그 하나로만 두고, 화면이 그 플래그를 직함처럼 그린다
+ * (membershipTitleLabel).
+ */
+export const MEMBERSHIP_TITLE = Object.freeze({
+  INSTRUCTOR: "instructor",
+  TEAM_LEAD: "team_lead",
+  BRANCH_MANAGER: "branch_manager",
+});
+
 export const CLIENT_STATUS = Object.freeze({
   ACTIVE: "active",
   HOLD: "hold",

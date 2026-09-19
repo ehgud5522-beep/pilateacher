@@ -133,6 +133,21 @@ service cloud.firestore {
       return signedIn() && data.userId == request.auth.uid;
     }
 
+    // 소속 문서의 표시용 두 칸. 있으면 형태를 따지고, 없어도 된다 — 이 필드들이
+    // 생기기 전에 만들어진 소속에는 둘 다 없다.
+    //
+    // title 은 센터에서 부르는 이름이지 권한이 아니다. 부원장은 여기 없다:
+    // 그것은 급여 판정 1 그 자체라 isDeputyDirector 하나로만 두고, 같은 사실을
+    // 두 곳에 적어 어긋나게 두지 않는다.
+    // Keep in sync with MEMBERSHIP_TITLE in src/data/schema/constants.js.
+    function membershipProfileWellFormed() {
+      return (!("title" in request.resource.data)
+          || request.resource.data.title in ["instructor", "team_lead", "branch_manager"])
+        && (!("locationId" in request.resource.data)
+          || (request.resource.data.locationId is string
+            && request.resource.data.locationId.size() > 0));
+    }
+
     match /users/{userId} {
       allow create, read: if signedIn() && request.auth.uid == userId;
       allow update: if signedIn()
@@ -794,7 +809,50 @@ service cloud.firestore {
         resource.data.userId == request.auth.uid
         || hasRole(resource.data.organizationId, ["owner", "manager"])
       );
-      allow create, delete: if false;
+      /* ── 강사를 붙이는 문 ────────────────────────────────────────────────
+         지금까지 소속 문서는 콘솔이나 이관 도구(Admin SDK)로만 생겼다. 대표가
+         앱에서 강사를 붙이려면 이 문이 있어야 한다.
+
+         대표만 연다. 그리고 만드는 것은 언제나 남의 소속이다 -- 자기 소속을
+         자기가 만들 수 있으면 아무나 아무 센터의 대표가 된다.
+
+         role 은 owner 를 뺀 목록이다. 대표를 앱에서 세우지 않는다: 이 문으로
+         owner 를 만들 수 있으면 대표 한 사람이 아무 계정이나 자기와 같은 자리에
+         올릴 수 있고, 그것을 되돌리는 문은 없다. 대표 교체는 콘솔의 일로 남긴다.
+
+         급여를 움직이는 두 필드(fullRoomRate · isDeputyDirector)는 여기서 받지
+         않는다. 아래 각자의 문으로만 들어오고, 그 문들은 rateHistory 와 감사
+         항목을 같은 배치에 요구한다 -- 여기서 함께 받으면 이력 없이 단가가
+         정해지는 길이 하나 생긴다. 추가 화면은 소속을 먼저 만들고 단가를 그
+         다음에 넣는다.
+         ────────────────────────────────────────────────────────────────── */
+      allow create: if hasRole(request.resource.data.organizationId, ["owner"])
+        // 문서 id 가 곧 조직-사용자 쌍이다. 규칙의 membershipId() 와 같은 형식이
+        // 아니면 isActiveMember 가 영영 찾지 못하는 소속이 만들어진다.
+        && membershipDocumentId == request.resource.data.organizationId + "_" + request.resource.data.userId
+        && request.resource.data.keys().hasOnly([
+          "organizationId", "userId", "role", "status",
+          "displayName", "title", "locationId",
+          "createdAt", "createdBy"
+        ])
+        && request.resource.data.keys().hasAll([
+          "organizationId", "userId", "role", "status",
+          "displayName", "createdAt", "createdBy"
+        ])
+        && request.resource.data.userId is string
+        && request.resource.data.userId.size() > 0
+        && request.resource.data.userId != request.auth.uid
+        // Keep in sync with ROLES in src/data/schema/constants.js.
+        && request.resource.data.role in ["instructor", "manager", "staff"]
+        && request.resource.data.status == "active"
+        // 이름이 없으면 목록이 uid 로 되돌아간다. 대표가 보고 고를 수 있어야 한다.
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() > 0
+        && request.resource.data.displayName.size() <= 60
+        && membershipProfileWellFormed()
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.createdBy == request.auth.uid;
+      allow delete: if false;
       // Three doors, each one field wide.
       //
       // fullRoomRate decides what a repurchase lesson pays its instructor, so
@@ -834,6 +892,36 @@ service cloud.firestore {
           && request.resource.data.displayName is string
           && request.resource.data.displayName.size() > 0
           && request.resource.data.displayName.size() <= 60
+        ) || (
+          /* 대표가 고치는 세 칸: 이름·직함·지점. 함께 움직여도 되는 것들이라
+             한 문으로 묶었다 -- 강사 관리 화면의 수정 시트가 이 셋을 한 번에
+             저장한다. 급여를 움직이는 두 필드는 여기 없다. 그것들은 각자의
+             문으로 가고, 그 문은 rateHistory 와 감사 항목을 함께 요구한다.
+
+             이름을 대표도 쓸 수 있는 것은 위 본인 문과 겹치지만 부딪치지
+             않는다: 강사가 앱을 한 번도 안 열었으면 이름을 채울 사람이 대표뿐이고,
+             열었으면 본인이 쓴 이름이 그대로 남는다. */
+          hasRole(resource.data.organizationId, ["owner"])
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(["displayName", "title", "locationId"])
+          && request.resource.data.displayName is string
+          && request.resource.data.displayName.size() > 0
+          && request.resource.data.displayName.size() <= 60
+          && membershipProfileWellFormed()
+        ) || (
+          /* 퇴사. active 와 revoked 사이만 오간다.
+             다른 상태(invited·suspended)는 이 화면이 만들지 않으므로 열지 않는다.
+
+             자기 자신에게는 쓸 수 없다. 대표가 자기 소속을 회수하면 그 센터에
+             owner 가 없어지고, 되돌릴 문은 아무 데도 없다 -- isDeputyDirector
+             문이 자기 자신을 막는 것과 같은 이유이고, 여기서는 더 되돌릴 수 없다.
+
+             회수해도 그 사람이 남긴 원장과 급여는 그대로다. 원장은 append-only
+             이고 각 항목이 그때의 instructorId 를 들고 있다. */
+          hasRole(resource.data.organizationId, ["owner"])
+          && resource.data.userId != request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["status"])
+          && request.resource.data.status in ["active", "revoked"]
         );
 
       // Append-only. The rate changes when an instructor passes a grading, and
@@ -1010,7 +1098,12 @@ service cloud.firestore {
     // pressed most often in this app and leave two records of one event that can
     // disagree. The audit screen merges this collection with the ledger instead.
     function auditActions() {
-      return ["deputy_director_set", "full_room_rate_set", "migration_uploaded"];
+      return [
+        "deputy_director_set", "full_room_rate_set", "migration_uploaded",
+        // 강사 관리. 누가 센터에 붙고, 무엇으로 불리고, 언제 나갔는가. 소속
+        // 문서는 현재 상태만 들고 있어 그 이력을 답할 수 없다.
+        "member_added", "member_profile_changed", "member_revoked"
+      ];
     }
 
     // 무엇을 했는지에 따라 남길 수 있는 사람이 다르다. 규칙은 그 조작 자체를
@@ -1018,10 +1111,7 @@ service cloud.firestore {
     // 없어야 한다. 지금은 셋 다 대표의 조작이라 셋 다 대표뿐이고, 발급·차감이
     // 나중에 이 목록에 들어온다면 그때는 매니저·강사가 함께 열려야 한다.
     function mayRecordAudit(organizationId, action) {
-      return (
-        action in ["deputy_director_set", "full_room_rate_set", "migration_uploaded"]
-        && hasRole(organizationId, ["owner"])
-      );
+      return action in auditActions() && hasRole(organizationId, ["owner"]);
     }
 
     match /auditLogs/{logId} {
@@ -1045,7 +1135,10 @@ service cloud.firestore {
         && request.resource.data.keys().hasOnly([
           "organizationId", "actorId", "actorRole", "action", "createdAt",
           "locationId", "targetId", "clientId",
-          "amount", "previousAmount", "succeeded", "failed", "enabled", "stage"
+          "amount", "previousAmount", "succeeded", "failed", "enabled", "stage",
+          // 직함. 열거값이라 자유 문장이 아니다 — 이 집합에 문장 칸을 하나
+          // 열면 언젠가 거기에 회원 이름이 들어간다.
+          "title"
         ])
         && request.resource.data.keys().hasAll([
           "organizationId", "actorId", "actorRole", "action", "createdAt"
@@ -1060,6 +1153,9 @@ service cloud.firestore {
         && (!("failed" in request.resource.data)
           || (request.resource.data.failed is int && request.resource.data.failed >= 0))
         && (!("enabled" in request.resource.data) || request.resource.data.enabled is bool)
+        // Keep in sync with MEMBERSHIP_TITLE in src/data/schema/constants.js.
+        && (!("title" in request.resource.data)
+          || request.resource.data.title in ["instructor", "team_lead", "branch_manager"])
         && (!("targetId" in request.resource.data) || request.resource.data.targetId is string)
         && (!("clientId" in request.resource.data) || request.resource.data.clientId is string)
         && (!("locationId" in request.resource.data) || request.resource.data.locationId is string)

@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  createFirestoreInstructorRateStore, createFirestoreInstructorStore, fullRoomRateOf,
-  hasUsableFullRoomRate, isDeputyDirectorOf, listInstructors, setInstructorDeputyDirector,
-  setInstructorFullRoomRate, syncOwnMembershipName,
+  addMembership, createFirestoreInstructorRateStore, createFirestoreInstructorStore, fullRoomRateOf,
+  hasUsableFullRoomRate, isActiveMembership, isDeputyDirectorOf, listInstructors, listMemberships,
+  setInstructorDeputyDirector, setInstructorFullRoomRate, setMembershipProfile,
+  setMembershipStatus, syncOwnMembershipName,
 } from "../../src/data/repositories/instructor-repository.js";
 import { RepositoryReadError, connectRepositoryLog, disconnectRepositoryLog } from "../../src/data/repositories/repository-read.js";
 
@@ -402,4 +403,209 @@ test("the sync needs an organization and a user", async () => {
   await assert.rejects(() => syncOwnMembershipName("", "instructor-a", { displayName: "정예진" }, { store }), /Missing organizationId/);
   await assert.rejects(() => syncOwnMembershipName(ORG, "", { displayName: "정예진" }, { store }), /Missing userId/);
   assert.equal(store.calls.length, 0);
+});
+
+/* ── 강사 관리 ──────────────────────────────────────────────────────────────
+
+   대표가 강사를 센터에 붙이고, 직함을 고치고, 퇴사시킨다. uid 를 옮겨 적게
+   하지 않는다 -- 이메일로 찾은 uid 가 여기로 들어온다. */
+
+function fakeDirectory(documents = []) {
+  const calls = [];
+  return {
+    calls,
+    listByOrganization: async (organizationId) => { calls.push(organizationId); return documents; },
+  };
+}
+
+test("the directory holds everyone the centre has had, retired included", async () => {
+  /* 급여 화면이 지난달 줄에 이름을 붙이려면 퇴사자도 읽어야 한다. 거르면 그
+     줄이 uid 로 떨어지고, 누구 것인지 화면이 말하지 못한다. */
+  const store = fakeDirectory([
+    membership({ userId: "u1", displayName: "정예진", status: "revoked" }),
+    membership({ userId: "u2", displayName: "박서연" }),
+  ]);
+  const found = await listMemberships(ORG, { store });
+  assert.deepEqual(found.map((item) => item.userId), ["u2", "u1"], "재직이 먼저");
+  assert.deepEqual(store.calls, [ORG], "조직 하나만 건다 -- 규칙이 그것 없이는 거부한다");
+});
+
+test("the retired sink below, and each half is sorted by name", async () => {
+  const store = fakeDirectory([
+    membership({ userId: "u1", displayName: "정예진" }),
+    membership({ userId: "u2", displayName: "박서연", status: "revoked" }),
+    membership({ userId: "u3", displayName: "강민아" }),
+    membership({ userId: "u4", displayName: "김하나", status: "revoked" }),
+  ]);
+  const found = await listMemberships(ORG, { store });
+  assert.deepEqual(found.map((item) => item.displayName), ["강민아", "정예진", "김하나", "박서연"]);
+});
+
+test("adding an instructor writes the membership and its audit entry at once", async () => {
+  /* 따로 쓰면 기록 없이 붙은 사람이 생기고, 감사 로그에서 그것은 "붙지 않은
+     사람"과 구별되지 않는다. */
+  const store = fakeRateStore();
+  await addMembership(ORG, {
+    userId: "u-new", displayName: "박서연", title: "team_lead", locationId: "bansong",
+    createdBy: "owner-a", actorRole: "owner",
+  }, { store });
+  assert.equal(store.calls.length, 1);
+  const [membershipWrite, auditWrite] = store.calls[0];
+  assert.equal(membershipWrite.path, "memberships/center-a_u-new");
+  assert.deepEqual(membershipWrite.data, {
+    organizationId: ORG,
+    userId: "u-new",
+    role: "instructor",
+    status: "active",
+    displayName: "박서연",
+    title: "team_lead",
+    locationId: "bansong",
+    createdAt: "SERVER_TIME",
+    createdBy: "owner-a",
+  });
+  assert.equal(auditWrite.data.action, "member_added");
+  assert.equal(auditWrite.data.targetId, "u-new");
+  assert.equal(auditWrite.data.title, "team_lead");
+});
+
+test("every title still teaches, so the role never moves", async () => {
+  /* 팀장도 점장도 부원장도 수업료를 받는 강사다. 다른 role 로 두면 규칙의 모든
+     hasRole 목록을 손봐야 하고, 하나라도 빠뜨리면 그 사람이 조용히 아무것도
+     읽지 못한다. */
+  for (const title of ["instructor", "team_lead", "branch_manager"]) {
+    const store = fakeRateStore();
+    await addMembership(ORG, {
+      userId: `u-${title}`, displayName: "박서연", title, createdBy: "owner-a", actorRole: "owner",
+    }, { store });
+    assert.equal(store.calls[0][0].data.role, "instructor", title);
+  }
+});
+
+test("a title outside the three is refused rather than stored", async () => {
+  // 부원장은 직함이 아니라 플래그다 -- 같은 사실을 두 곳에 적으면 어긋난다.
+  for (const title of ["deputy_director", "owner", "", "  ", "3"]) {
+    const store = fakeRateStore();
+    await assert.rejects(
+      () => addMembership(ORG, {
+        userId: "u-new", displayName: "박서연", title, createdBy: "owner-a", actorRole: "owner",
+      }, { store }),
+      /Invalid title/,
+      JSON.stringify(title),
+    );
+    assert.equal(store.calls.length, 0);
+  }
+});
+
+test("a location nobody set is left off, not written empty", async () => {
+  // 규칙이 빈 문자열을 거부한다. 없는 것은 없다고 둔다.
+  const store = fakeRateStore();
+  await addMembership(ORG, {
+    userId: "u-new", displayName: "박서연", createdBy: "owner-a", actorRole: "owner",
+  }, { store });
+  assert.equal("locationId" in store.calls[0][0].data, false);
+  assert.equal(store.calls[0][0].data.title, "instructor", "직함을 안 고르면 강사다");
+});
+
+test("an owner cannot add themselves, and cannot mint another owner", async () => {
+  /* 자기 소속을 자기가 만들 수 있으면 아무나 아무 센터의 대표가 된다. 대표를
+     앱에서 세우지도 않는다 -- 되돌리는 문이 없다. */
+  const store = fakeRateStore();
+  await assert.rejects(
+    () => addMembership(ORG, {
+      userId: "owner-a", displayName: "나", createdBy: "owner-a", actorRole: "owner",
+    }, { store }),
+    /Invalid userId/,
+  );
+  await assert.rejects(
+    () => addMembership(ORG, {
+      userId: "u-new", displayName: "박서연", role: "owner", createdBy: "owner-a", actorRole: "owner",
+    }, { store }),
+    /Invalid role/,
+  );
+  assert.equal(store.calls.length, 0);
+});
+
+test("a nameless membership is refused -- the list would fall back to a uid", async () => {
+  const store = fakeRateStore();
+  for (const displayName of ["", "   ", undefined, "가".repeat(61)]) {
+    await assert.rejects(
+      () => addMembership(ORG, {
+        userId: "u-new", displayName, createdBy: "owner-a", actorRole: "owner",
+      }, { store }),
+      /displayName/,
+      JSON.stringify(displayName),
+    );
+  }
+});
+
+test("the profile moves its three fields together, with a record", async () => {
+  const store = fakeRateStore();
+  await setMembershipProfile(ORG, "u-1", {
+    displayName: "박서연", title: "branch_manager", locationId: "haeundae",
+    changedBy: "owner-a", actorRole: "owner",
+  }, { store });
+  const [profileWrite, auditWrite] = store.calls[0];
+  assert.equal(profileWrite.operation, "update", "set 이면 role 도 status 도 날아간다");
+  assert.deepEqual(profileWrite.data, {
+    displayName: "박서연", title: "branch_manager", locationId: "haeundae",
+  });
+  assert.equal(auditWrite.data.action, "member_profile_changed");
+  assert.equal(auditWrite.data.targetId, "u-1");
+});
+
+test("retiring someone flips the status and nothing else", async () => {
+  const store = fakeRateStore();
+  await setMembershipStatus(ORG, "u-1", {
+    status: "revoked", changedBy: "owner-a", actorRole: "owner",
+  }, { store });
+  const [statusWrite, auditWrite] = store.calls[0];
+  assert.equal(statusWrite.operation, "update");
+  assert.deepEqual(statusWrite.data, { status: "revoked" });
+  assert.equal(auditWrite.data.action, "member_revoked");
+  // 퇴사와 복직이 한 동작이라, 어느 방향이었는지가 남아야 읽을 수 있다.
+  assert.equal(auditWrite.data.enabled, true);
+});
+
+test("coming back is the same door, the other way", async () => {
+  const store = fakeRateStore();
+  await setMembershipStatus(ORG, "u-1", {
+    status: "active", changedBy: "owner-a", actorRole: "owner",
+  }, { store });
+  assert.deepEqual(store.calls[0][0].data, { status: "active" });
+  assert.equal(store.calls[0][1].data.enabled, false);
+});
+
+test("an owner cannot retire themselves", async () => {
+  /* 대표가 자기 소속을 회수하면 그 센터에 owner 가 없어지고, 되돌릴 문이 아무
+     데도 없다. */
+  const store = fakeRateStore();
+  await assert.rejects(
+    () => setMembershipStatus(ORG, "owner-a", {
+      status: "revoked", changedBy: "owner-a", actorRole: "owner",
+    }, { store }),
+    /Invalid userId/,
+  );
+  assert.equal(store.calls.length, 0);
+});
+
+test("only the two statuses this screen makes are accepted", async () => {
+  /* 화면이 보낼 수 있는 값과 규칙이 받는 값이 어긋나면 "저장했는데 안 됐다"가
+     된다. 규칙도 이 둘만 연다. */
+  const store = fakeRateStore();
+  for (const status of ["invited", "suspended", "deleted", ""]) {
+    await assert.rejects(
+      () => setMembershipStatus(ORG, "u-1", {
+        status, changedBy: "owner-a", actorRole: "owner",
+      }, { store }),
+      /status/,
+      JSON.stringify(status),
+    );
+  }
+  assert.equal(store.calls.length, 0);
+});
+
+test("the screen can tell who is still working here", () => {
+  assert.equal(isActiveMembership(membership()), true);
+  assert.equal(isActiveMembership(membership({ status: "revoked" })), false);
+  assert.equal(isActiveMembership(null), false);
 });

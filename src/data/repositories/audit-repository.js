@@ -13,9 +13,12 @@
  * 아무도 모른다.
  *
  * 그래서 이 컬렉션은 다른 데 남지 않는 것만 담는다:
- *   deputy_director_set   부원장 지정 · 해제
- *   full_room_rate_set    풀방금액 변경
- *   migration_uploaded    이관 업로드 (건수와 실패 수)
+ *   deputy_director_set      부원장 지정 · 해제
+ *   full_room_rate_set       풀방금액 변경
+ *   migration_uploaded       이관 업로드 (건수와 실패 수)
+ *   member_added             강사를 센터에 붙임
+ *   member_profile_changed   이름 · 직함 · 지점 변경
+ *   member_revoked           퇴사 · 복직
  *
  * 감사 화면은 이 컬렉션과 원장을 시간순으로 합쳐 하나의 이력으로 보여준다.
  * 보는 사람에게는 한 줄기이고, 저장은 한 벌이다.
@@ -50,6 +53,15 @@ export const AUDIT_ACTION = Object.freeze({
   DEPUTY_DIRECTOR_SET: "deputy_director_set",
   FULL_ROOM_RATE_SET: "full_room_rate_set",
   MIGRATION_UPLOADED: "migration_uploaded",
+  /* 강사 관리. 소속 문서는 현재 상태만 들고 있어 "언제 붙었고, 언제 직함이
+     바뀌었고, 언제 나갔나"를 답할 수 없다 -- 그 이력이 여기 남는다.
+
+     이메일 조회는 여기 없다. 대표가 성공한 조회만 이 컬렉션에 적으면 거부된
+     조회가 빠져 오히려 덜 완전한 기록이 된다. 조회는 Functions 로그가 센터와
+     성공 여부로 남긴다 (functions/src/index.js). */
+  MEMBER_ADDED: "member_added",
+  MEMBER_PROFILE_CHANGED: "member_profile_changed",
+  MEMBER_REVOKED: "member_revoked",
 });
 
 /**
@@ -62,6 +74,8 @@ export const AUDIT_FIELDS = Object.freeze([
   "organizationId", "actorId", "actorRole", "action", "createdAt",
   "locationId", "targetId", "clientId",
   "amount", "previousAmount", "succeeded", "failed", "enabled", "stage",
+  // 직함. 열거값이라 자유 문장이 아니고, "무엇으로 불리게 됐나"를 남긴다.
+  "title",
 ]);
 
 const requiredText = (value, label) => {
@@ -88,7 +102,7 @@ const requiredInt = (value, label) => {
  *   action?: string, actorId?: string, actorRole?: string, stampedAt?: any,
  *   locationId?: string, targetId?: string, clientId?: string,
  *   amount?: number | null, previousAmount?: number | null,
- *   succeeded?: number, failed?: number, enabled?: boolean, stage?: string,
+ *   succeeded?: number, failed?: number, enabled?: boolean, stage?: string, title?: string,
  * }} input
  */
 export function auditEntry(organizationId, input = {}) {
@@ -118,6 +132,7 @@ export function auditEntry(organizationId, input = {}) {
   optionalText("targetId");
   optionalText("clientId");
   optionalText("stage");
+  optionalText("title");
 
   for (const field of ["amount", "previousAmount", "succeeded", "failed"]) {
     const value = input?.[field];

@@ -191,7 +191,11 @@ test("a field added later has to be written in one of the approved forms", async
     /^\d+$/,
     /^logs\.length$/,
   ];
-  const fields = source.split("\n")
+  /* 줄 끝을 \n 으로만 쪼개면 CRLF 체크아웃에서 모든 줄이 \r 로 끝나 ",$" 가
+     한 줄도 잡지 못한다. 그러면 검사할 필드가 0개가 되고, 이 테스트는 "자유
+     문장이 새어 나가지 않는다"를 확인하지 못한 채 통과하려 든다 -- 아래 개수
+     단언이 그 통과를 막지만, 애초에 쪼개는 쪽을 고쳐야 한다. */
+  const fields = source.split(/\r?\n/)
     .map((line) => /^\s{2,}([A-Za-z][A-Za-z0-9]*): (.+),$/.exec(line.trim().startsWith("//") ? "" : line))
     .filter(Boolean);
   assert.ok(fields.length > 90, `expected to inspect the whole builder, saw ${fields.length}`);

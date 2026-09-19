@@ -27,7 +27,21 @@ function deductOne(members, memberId) {
   return { members, deductFrom: null };
 }
 
-export function transitionAttendance({ members, attendees, memberIds, status }) {
+/**
+ * 소속 모드에서는 기기 저장 잔여를 줄이지 않는다.
+ *
+ * 잔여의 원본이 조직 회원권으로 옮겨졌고, 그 숫자는 원장과 함께만 움직인다
+ * (pass-repository 의 deductPass). 여기서 기기 쪽 숫자를 줄이면 두 숫자가 갈라
+ * 지고, 갈라진 뒤에는 어느 것이 맞는지 아무도 모른다 -- 급여가 원장에서 나오므로
+ * 기기 쪽을 줄인 회차는 아무에게도 지급되지 않는다.
+ *
+ * 그래서 출석은 상태만 바꾸고, 차감은 출석 체크 화면이 한다. blocked 로
+ * 돌려주면 화면이 그쪽으로 안내한다 -- 조용히 0회 차감으로 넘어가면 강사는
+ * 차감된 줄로 안다.
+ *
+ * @param {{ members?: Array<any>, attendees?: Array<any>, memberIds?: Array<string>, status?: string, organizationMode?: boolean }} input
+ */
+export function transitionAttendance({ members, attendees, memberIds, status, organizationMode = false }) {
   const targets = new Set((memberIds || []).filter(Boolean));
   const selected = (attendees || []).filter((attendee) => targets.has(attendee.memberId));
   if (!selected.length || selected.every((attendee) => attendee.status === status)) {
@@ -43,7 +57,7 @@ export function transitionAttendance({ members, attendees, memberIds, status }) 
       nextMembers = restoreDeduction(nextMembers, attendee.memberId, attendee.deductFrom);
     }
     let deductFrom = null;
-    if (status === "done") {
+    if (status === "done" && !organizationMode) {
       const deduction = deductOne(nextMembers, attendee.memberId);
       nextMembers = deduction.members;
       deductFrom = deduction.deductFrom;
@@ -58,5 +72,12 @@ export function transitionAttendance({ members, attendees, memberIds, status }) 
     return { ...attendee, status, deductFrom, noshowFee: null };
   });
 
-  return { changed: true, members: nextMembers, attendees: nextAttendees, changes };
+  return {
+    changed: true,
+    members: nextMembers,
+    attendees: nextAttendees,
+    changes,
+    // 상태는 바뀌었고 차감은 일어나지 않았다. 화면이 그 사실을 말해야 한다.
+    blocked: organizationMode && status === "done",
+  };
 }

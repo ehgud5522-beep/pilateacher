@@ -25,6 +25,102 @@ service cloud.firestore {
         && membership(organizationId).data.role in roles;
     }
 
+    // ── 돈이 걸린 두 문 ───────────────────────────────────────────────────
+    // 회원권 발급과 회원 등록은 대표 한 사람으로 좁혔다. 발급은 그 순간 급여의
+    // 근거를 만들고, 등록은 그 발급이 가리킬 사람을 만든다 — 둘 다 원장에
+    // append-only 로 남아 나중에 고칠 수 없다.
+    //
+    // manager 역할은 스키마에도 규칙에도 그대로 있다. 담당 강사 교체처럼 이미
+    // 열려 있는 문은 건드리지 않았다. 운영해 보고 대표 혼자 감당이 안 되면
+    // 아래 두 목록에 "manager" 를 다시 넣는 것으로 끝난다 — 되돌리기 위해
+    // 이름을 붙여 한자리에 모아 두었다.
+    function canIssuePass(organizationId) {
+      return hasRole(organizationId, ["owner"]);
+    }
+
+    function canRegisterClient(organizationId) {
+      return hasRole(organizationId, ["owner"]);
+    }
+
+    // Keep in sync with PAY_CATEGORY in src/data/schema/constants.js. Rules
+    // files cannot import, so products and the pass ledger share this instead.
+    function payCategories() {
+      return [
+        "pt_1_1_new", "pt_1_1_repurchase_event", "pt_1_1_repurchase_normal",
+        "pt_2_1_new", "pt_2_1_repurchase", "service", "letmein", "etc"
+      ];
+    }
+
+    // Keep in sync with CLIENT_STATUS in src/data/schema/constants.js. The
+    // registration screen only ever produces the first three
+    // (CLIENT_STATUS_FOR_CREATE); deleted and inactive exist because migrated
+    // data carries them, so the rule has to keep accepting them.
+    function clientStatuses() {
+      return ["active", "hold", "ended", "deleted", "inactive"];
+    }
+
+    // Each clause passes when the field is absent. See the clients block for
+    // why this is a floor and not a fixed set.
+    function clientFieldsWellFormed() {
+      return (!("name" in request.resource.data)
+          || (request.resource.data.name is string && request.resource.data.name.size() > 0))
+        // Stored digits-only, so one number has one spelling. A number split
+        // across 010-1234-5678 and 01012345678 quietly breaks both the search
+        // and the same-name check the registration screen shows.
+        && (!("phone" in request.resource.data)
+          || request.resource.data.phone is string)
+        // The adapter writes null when a legacy member has no location yet.
+        && (!("locationId" in request.resource.data)
+          || request.resource.data.locationId == null
+          || request.resource.data.locationId is string)
+        && (!("status" in request.resource.data)
+          || request.resource.data.status in clientStatuses())
+        // A client-made timestamp is refused even when it is accurate — it is
+        // the one field a caller could use to backdate a record.
+        && (!("createdAt" in request.resource.data)
+          || request.resource.data.createdAt == request.time)
+        // Nobody files a registration under someone else's name.
+        && (!("createdBy" in request.resource.data)
+          || request.resource.data.createdBy == request.auth.uid);
+    }
+
+    // ── list is evaluated against the query, not the results ──────────────
+    // A `resource.data` test inside a read rule cannot be satisfied by a
+    // collection query unless the query itself constrains that same field.
+    // Firestore does not return "false" in that case — it raises "Property X is
+    // undefined on object" and refuses the whole query, which reaches a screen
+    // as an empty list. An empty collection passes quietly, so the defect stays
+    // invisible until the first document exists.
+    //
+    // Two shapes, two fixes:
+    //
+    //   A. Documents under /organizations/{organizationId}/…
+    //      The path already pins the organization, so the field test is
+    //      redundant for a list. get keeps it; list drops it.
+    //      Done: clients, locations, lessons, lessons/participants, lessonNotes.
+    //
+    //   B. Top-level documents that carry organizationId in the body.
+    //      The rule is correct as written and needs no change — but the caller
+    //      MUST query with where("organizationId", "==", …) so the rule has
+    //      something to evaluate. memberships already works this way.
+    //      Nothing to fix here; the requirement lives in the repository.
+    //
+    // Still carrying the class-B requirement, with no list caller yet. Whoever
+    // writes the first one must filter on organizationId (and, where the rule
+    // also allows "my own document", accept that a list is role-only):
+    //   assessments, assessmentMedia, inbodyMeasurements, exercisePrograms,
+    //   exerciseHistory, aiRecommendations, aiFeedback, outcomes, memberGoals,
+    //   memberProgress, events, dailyStats, teacherPatterns.
+    //
+    // auditLogs was on that list and is the first one with a real caller. It
+    // stays class B — the audit screen queries it with
+    // where("organizationId", "==", …) and a list without that filter is
+    // refused, which the rules tests now pin.
+    //
+    // Already list-safe, no resource.data in their read rule: organizations,
+    // products, passes, passes/ledger, runtimeConfig, and everything under
+    // /users/{userId}.
+
     function sameOrganization() {
       return request.resource.data.organizationId == resource.data.organizationId;
     }
@@ -35,6 +131,21 @@ service cloud.firestore {
 
     function isOwnClientDocument(data) {
       return signedIn() && data.userId == request.auth.uid;
+    }
+
+    // 소속 문서의 표시용 두 칸. 있으면 형태를 따지고, 없어도 된다 — 이 필드들이
+    // 생기기 전에 만들어진 소속에는 둘 다 없다.
+    //
+    // title 은 센터에서 부르는 이름이지 권한이 아니다. 부원장은 여기 없다:
+    // 그것은 급여 판정 1 그 자체라 isDeputyDirector 하나로만 두고, 같은 사실을
+    // 두 곳에 적어 어긋나게 두지 않는다.
+    // Keep in sync with MEMBERSHIP_TITLE in src/data/schema/constants.js.
+    function membershipProfileWellFormed() {
+      return (!("title" in request.resource.data)
+          || request.resource.data.title in ["instructor", "team_lead", "branch_manager"])
+        && (!("locationId" in request.resource.data)
+          || (request.resource.data.locationId is string
+            && request.resource.data.locationId.size() > 0));
     }
 
     match /users/{userId} {
@@ -153,14 +264,31 @@ service cloud.firestore {
 
       // Additive dual-write v1 paths. Existing top-level paths remain unchanged.
       match /clients/{clientId} {
-        allow read: if isActiveMember(organizationId)
+        // See the locations block for why get and list are split. Here the
+        // difference also narrows who may list: the get rule lets a member read
+        // the one document linked to them, and a query cannot express "only my
+        // own" without a filter to prove it. So listing the directory is for
+        // staff, and a member still reads their own document one at a time.
+        allow get: if isActiveMember(organizationId)
           && resource.data.organizationId == organizationId
           && (
             hasRole(organizationId, ["owner", "manager", "instructor", "staff"])
             || isOwnClientDocument(resource.data)
           );
+        allow list: if hasRole(organizationId, ["owner", "manager", "instructor", "staff"]);
+        // Validate what is present rather than requiring a fixed set. The
+        // registration screen writes seven fields; the dual-write adapter
+        // writes a wider legacy shape (clientId, membershipBalance,
+        // legacySource, updatedAt...) and sometimes omits the rest. hasOnly
+        // would reject that adapter, and hasAll would reject a create that
+        // predates these fields. A floor that checks each field it actually
+        // sees stops a malformed write from either writer without closing a
+        // door the migration still needs.
+        // 등록은 대표만. canRegisterClient 의 주석 참고 — 되돌릴 때는 그 목록
+        // 하나만 바꾼다. 읽기와 수정은 그대로 가르치는 사람들에게 열려 있다.
         allow create: if request.resource.data.organizationId == organizationId
-          && hasRole(organizationId, ["owner", "manager", "instructor", "staff"]);
+          && canRegisterClient(organizationId)
+          && clientFieldsWellFormed();
         allow update: if resource.data.organizationId == organizationId
           && request.resource.data.organizationId == organizationId
           && hasRole(organizationId, ["owner", "manager", "instructor", "staff"]);
@@ -168,8 +296,10 @@ service cloud.firestore {
       }
 
       match /lessons/{lessonId} {
-        allow read: if isActiveMember(organizationId)
+        // See the locations block for why get and list are split.
+        allow get: if isActiveMember(organizationId)
           && resource.data.organizationId == organizationId;
+        allow list: if isActiveMember(organizationId);
         allow create: if request.resource.data.organizationId == organizationId
           && hasRole(organizationId, ["owner", "manager", "instructor", "staff"]);
         allow update: if resource.data.organizationId == organizationId
@@ -178,8 +308,10 @@ service cloud.firestore {
         allow delete: if false;
 
         match /participants/{clientId} {
-          allow read: if isActiveMember(organizationId)
+          // See the locations block for why get and list are split.
+          allow get: if isActiveMember(organizationId)
             && resource.data.organizationId == organizationId;
+          allow list: if isActiveMember(organizationId);
           allow create: if request.resource.data.organizationId == organizationId
             && request.resource.data.lessonId == lessonId
             && request.resource.data.clientId == clientId
@@ -191,14 +323,485 @@ service cloud.firestore {
           allow delete: if false;
         }
       }
+
+      // Event products change often, so they live as data instead of in code.
+      // An existing product is never edited — it is archived and a new one added,
+      // because passes already issued point at the terms it was sold under.
+      // No unitPrice here: payroll rate comes from payCategory, and some of it
+      // follows a per-instructor value.
+      //
+      // The one exception is etc, which is what a product is filed under when
+      // the table has no rate for it — a trial session, a make-up pack. Those
+      // were priced by hand at every single issue, so the rate lives on the
+      // product instead. It is refused on every other category: a second place
+      // to write a rate is a second answer, and passes issued from a product
+      // whose number disagrees with the table cannot be corrected afterwards.
+      match /products/{productId} {
+        allow read: if isActiveMember(organizationId);
+        allow create: if request.resource.data.organizationId == organizationId
+          && request.resource.data.keys().hasOnly([
+            "organizationId", "name", "sessionType", "payCategory",
+            "defaultSessions", "defaultPrice", "status", "createdAt", "createdBy",
+            "baseUnitPrice"
+          ])
+          && request.resource.data.keys().hasAll([
+            "organizationId", "name", "sessionType", "payCategory",
+            "defaultSessions", "defaultPrice", "status", "createdAt", "createdBy"
+          ])
+          && request.resource.data.name is string
+          && request.resource.data.name.size() > 0
+          && request.resource.data.sessionType in ["pt_1_1", "pt_2_1"]
+          && request.resource.data.payCategory in payCategories()
+          // A 2:1 lesson priced at the 1:1 rate differs by about ten thousand won
+          // per session, and one bad product spreads that to every pass issued
+          // from it. service and etc attach to either shape; letmein is 1:1 only.
+          && (
+            request.resource.data.sessionType == "pt_1_1"
+              ? request.resource.data.payCategory in [
+                "pt_1_1_new", "pt_1_1_repurchase_event", "pt_1_1_repurchase_normal",
+                "service", "letmein", "etc"
+              ]
+              : request.resource.data.payCategory in [
+                "pt_2_1_new", "pt_2_1_repurchase", "service", "etc"
+              ]
+          )
+          && request.resource.data.defaultSessions is int
+          && request.resource.data.defaultSessions > 0
+          && request.resource.data.defaultPrice is int
+          && request.resource.data.defaultPrice >= 0
+          // Required on etc, refused everywhere else. Not optional on etc: a
+          // product without it sends the issuer back to typing the rate by
+          // hand, which is the thing this field exists to stop.
+          && (
+            request.resource.data.payCategory == "etc"
+              ? (
+                request.resource.data.baseUnitPrice is int
+                && request.resource.data.baseUnitPrice >= 0
+              )
+              : !("baseUnitPrice" in request.resource.data)
+          )
+          && request.resource.data.status in ["active", "archived"]
+          && request.resource.data.createdAt == request.time
+          && request.resource.data.createdBy == request.auth.uid
+          && hasRole(organizationId, ["owner"]);
+        // Only status moves, and it moves both ways. Everything else has to come
+        // back unchanged — the set is closed, so this covers every field.
+        allow update: if resource.data.organizationId == organizationId
+          && request.resource.data.keys().hasOnly([
+            "organizationId", "name", "sessionType", "payCategory",
+            "defaultSessions", "defaultPrice", "status", "createdAt", "createdBy",
+            "baseUnitPrice"
+          ])
+          && request.resource.data.keys().hasAll([
+            "organizationId", "name", "sessionType", "payCategory",
+            "defaultSessions", "defaultPrice", "status", "createdAt", "createdBy"
+          ])
+          // baseUnitPrice is not in the list above because products from before
+          // it existed do not carry it. This says it cannot appear, vanish or
+          // move — covering it without demanding it be there.
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["status"])
+          && request.resource.data.organizationId == resource.data.organizationId
+          && request.resource.data.name == resource.data.name
+          && request.resource.data.sessionType == resource.data.sessionType
+          && request.resource.data.payCategory == resource.data.payCategory
+          && request.resource.data.defaultSessions == resource.data.defaultSessions
+          && request.resource.data.defaultPrice == resource.data.defaultPrice
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.createdBy == resource.data.createdBy
+          && request.resource.data.status in ["active", "archived"]
+          && hasRole(organizationId, ["owner"]);
+        allow delete: if false;
+      }
+
+      // PT passes (20-session packs and the like). Distinct from top-level
+      // memberships, which mean organization membership and gate access.
+      /* 강사-회원 쌍의 누적 진행 횟수.
+
+         급여 판정이 "이 강사에게 이 회원 누적 20회 미만이면 신규 단가"를 묻는데,
+         원장으로는 셀 수 없다 -- 항목이 회원권마다 흩어져 있고, 세려면 센터
+         전체를 훑어야 한다. 그래서 차감할 때마다 여기서 한 칸 올린다.
+
+         한 칸씩만 오른다. 여기서 임의의 값을 쓸 수 있으면 누구든 자기 단가를
+         내릴 수도 올릴 수도 있고, 그것을 반증할 원장은 append-only 라 고칠 수
+         없다. 예외는 대표뿐이다 -- 10월 이관 때 엑셀에서 옮겨 온 누적을 심어야
+         하고, 그 값을 아는 사람은 대표다.
+
+         문서 id 가 곧 강사-회원 쌍이라 한 쌍에 두 문서가 생길 수 없다. */
+      match /instructorClientTotals/{totalId} {
+        allow read: if isActiveMember(organizationId);
+        allow create: if request.resource.data.organizationId == organizationId
+          && totalId == request.resource.data.instructorId + "_" + request.resource.data.clientId
+          && request.resource.data.keys().hasOnly([
+            "organizationId", "instructorId", "clientId", "sessions"
+          ])
+          && request.resource.data.keys().hasAll([
+            "organizationId", "instructorId", "clientId", "sessions"
+          ])
+          && request.resource.data.instructorId is string
+          && request.resource.data.instructorId.size() > 0
+          && request.resource.data.clientId is string
+          && request.resource.data.clientId.size() > 0
+          && request.resource.data.sessions is int
+          && (
+            // 첫 수업.
+            (
+              hasRole(organizationId, ["owner", "manager", "instructor"])
+              && request.resource.data.sessions == 1
+            )
+            // 이관. 엑셀에서 옮겨 온 누적을 대표가 심는다.
+            || (hasRole(organizationId, ["owner"]) && request.resource.data.sessions >= 0)
+          );
+        allow update: if resource.data.organizationId == organizationId
+          && request.resource.data.organizationId == organizationId
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["sessions"])
+          && request.resource.data.sessions is int
+          && (
+            (
+              hasRole(organizationId, ["owner", "manager", "instructor"])
+              && request.resource.data.sessions == resource.data.sessions + 1
+            )
+            || (hasRole(organizationId, ["owner"]) && request.resource.data.sessions >= 0)
+          );
+        allow delete: if false;
+      }
+
+      match /passes/{passId} {
+        allow read: if isActiveMember(organizationId);
+        // The product fields are not settled yet, so require a floor rather than
+        // closing the set with hasOnly.
+        // A product carries the standard combination; what was actually sold is
+        // recorded here, because the two are allowed to differ at issue time.
+        allow create: if request.resource.data.organizationId == organizationId
+          && request.resource.data.keys().hasAll([
+            "organizationId", "clientId", "locationId", "productId",
+            "totalSessions", "serviceSessions", "contractPrice",
+            "paymentMethod", "purchaseRound", "status", "createdAt", "createdBy",
+            // 발급 시점에 담당 강사가 정해진다. 없으면 차감한 회차가 누구의
+            // 급여인지 알 수 없고, 교체 이력도 가리킬 대상이 없다.
+            "instructorId",
+            // 판정 4 가 쓰는 기준값이며, 이 회원권의 실제 단가가 아니다. 차감
+            // 한 회차가 얼마인지는 그때 판정이 정한다 (deduction-pricing.js).
+            // 그래도 발급 시점에 박아 둔다 -- 표를 다시 보면 그 사이 바뀐 단가가
+            // 지난 회원권에 소급된다.
+            "baseUnitPrice", "remainingCount",
+            // 계약서에 적힌 만료일. 회원이 가장 자주 묻는 값이고 회원 앱에도 들어간다.
+            "expiresAt",
+            // 넘겨받은 회원권인가. 급여 판정 2 가 이것만 보고 단가를 정하므로
+            // 차감할 때마다 원장을 뒤지지 않는다.
+            "handedOver"
+          ])
+          && request.resource.data.expiresAt is timestamp
+          && request.resource.data.handedOver is bool
+          && request.resource.data.baseUnitPrice is int
+          && request.resource.data.baseUnitPrice >= 0
+          && request.resource.data.remainingCount is int
+          && request.resource.data.remainingCount >= 0
+          // 이 회원권에서 이미 나간 service 차감 수. 발급 시점에는 0 이지만
+          // 옛 회원권에는 이 필드가 없으므로 있을 때만 따진다.
+          && (
+            !("serviceUsed" in request.resource.data)
+            || (request.resource.data.serviceUsed is int && request.resource.data.serviceUsed >= 0)
+          )
+          // 부가세를 뺀 공급가액. 부원장의 5:5 가 계약 금액이 아니라 이 값을
+          // 반으로 접는다 -- 카드 110만이면 100만이다. 옛 회원권에는 없으므로
+          // 있을 때만 따지고, 없으면 차감이 결제 수단에서 다시 계산한다.
+          && (
+            !("netContractPrice" in request.resource.data)
+            || (
+              request.resource.data.netContractPrice is int
+              && request.resource.data.netContractPrice >= 0
+              // 세금이 붙어 커질 수는 없다. 뒤집힌 값이 들어오면 부원장 단가가
+              // 계약보다 높아지고, 원장은 고칠 수 없다.
+              && request.resource.data.netContractPrice <= request.resource.data.contractPrice
+            )
+          )
+          && request.resource.data.instructorId is string
+          && request.resource.data.instructorId.size() > 0
+          && request.resource.data.totalSessions is int
+          && request.resource.data.totalSessions > 0
+          && request.resource.data.serviceSessions is int
+          && request.resource.data.serviceSessions >= 0
+          && request.resource.data.contractPrice is int
+          && request.resource.data.contractPrice >= 0
+          && request.resource.data.purchaseRound is int
+          && request.resource.data.purchaseRound >= 1
+          // Keep in sync with PAYMENT_METHOD in src/data/schema/constants.js.
+          && request.resource.data.paymentMethod in [
+            "card", "cash", "transfer", "zeropay", "voucher"
+          ]
+          && request.resource.data.status is string
+          && request.resource.data.createdAt == request.time
+          // 발급은 대표만. canIssuePass 의 주석 참고 — 되돌릴 때는 그 목록
+          // 하나만 바꾼다. 아래 담당 교체 문은 매니저에게 그대로 열려 있다.
+          && canIssuePass(organizationId);
+        // The owner's reach is unchanged. A manager may move one field and
+        // nothing else: handovers happen while the owner is not at the centre,
+        // and the transfer is safe because it rewrites no past entry — every
+        // deducted session already carries the instructor it was taught by.
+        allow update: if resource.data.organizationId == organizationId
+          && request.resource.data.organizationId == organizationId
+          && (
+            hasRole(organizationId, ["owner"])
+            // 담당 교체. 넘겨받았다는 사실이 함께 남아야 급여 판정이 그것을 볼
+            // 수 있다 -- 둘 중 하나만 바뀌면 단가가 조용히 틀린다.
+            || (
+              hasRole(organizationId, ["manager"])
+              && request.resource.data.diff(resource.data).affectedKeys()
+                .hasOnly(["instructorId", "handedOver"])
+              && request.resource.data.handedOver == true
+            )
+            // Attendance. Whoever teaches may spend one session and nothing
+            // else — never two, and never back upwards. A pass that could be
+            // topped up here would let anyone grant themselves lessons the
+            // member never bought, and the ledger that proves it is append-only.
+            //
+            // A service session moves a second counter in the same write. The
+            // centre pays for one service session per pass; every one after that
+            // is unpaid, and serviceUsed is what decides which is which. Written
+            // apart from the deduction it could lag behind and pay twice, so it
+            // travels in the same update and is checked the same way: up by one,
+            // never further, never back down.
+            || (
+              hasRole(organizationId, ["owner", "manager", "instructor"])
+              && request.resource.data.diff(resource.data).affectedKeys()
+                .hasOnly(["remainingCount", "serviceUsed"])
+              && request.resource.data.remainingCount is int
+              && request.resource.data.remainingCount == resource.data.remainingCount - 1
+              && request.resource.data.remainingCount >= 0
+              && (
+                !request.resource.data.diff(resource.data).affectedKeys().hasAny(["serviceUsed"])
+                || (
+                  request.resource.data.serviceUsed is int
+                  // 옛 회원권에는 이 필드가 없다. 없던 자리에서 올리면 1 이다.
+                  && request.resource.data.serviceUsed == (
+                    "serviceUsed" in resource.data ? resource.data.serviceUsed + 1 : 1
+                  )
+                )
+              )
+            )
+          );
+        allow delete: if false;
+
+        // Append-only, and these numbers feed payroll. Nothing can be corrected
+        // afterwards, so the write itself is the only place to reject a bad body.
+        match /ledger/{entryId} {
+          allow read: if isActiveMember(organizationId);
+          allow create: if request.resource.data.organizationId == organizationId
+            && request.resource.data.passId == passId
+            && request.resource.data.keys().hasOnly([
+              "organizationId", "passId", "clientId", "locationId", "type", "delta",
+              "category", "unitPrice", "rule", "lessonId", "instructorId",
+              "fromInstructorId", "toInstructorId",
+              // 고치는 항목이 들고 가는 둘. 무엇을 되돌리는지와 왜 되돌리는지.
+              "correctsEntryId", "reason",
+              "occurredAt", "createdAt", "createdBy"
+            ])
+            && request.resource.data.keys().hasAll([
+              "organizationId", "passId", "clientId", "locationId", "type", "delta",
+              "occurredAt", "createdAt", "createdBy"
+            ])
+            // The entry says whose lesson it was. The ledger is append-only, so a
+            // wrong name here can never be corrected — it is checked against the
+            // pass the entry hangs off rather than trusted from the caller.
+            //
+            // getAfter, not get. An issue entry is written in the same batch as
+            // the pass it hangs off — that is the point of the batch, since a
+            // pass without its issue entry has no basis for its remaining count
+            // and the ledger cannot be filled in later. get() reads the database
+            // as it was before the commit, so the pass is not there yet and the
+            // whole batch dies on a null. getAfter() reads the state the commit
+            // is producing, which is the state this entry is actually about.
+            && request.resource.data.clientId == getAfter(
+              /databases/$(database)/documents/organizations/$(organizationId)/passes/$(passId)
+            ).data.clientId
+            && request.resource.data.type is string
+            // Keep in sync with LEDGER_ENTRY_TYPE in src/data/schema/constants.js.
+            && request.resource.data.type in ["issue", "deduct", "transfer", "correction", "cancel"]
+            /* 되돌리는 항목은 대표만 쓴다. 강사와 매니저가 스스로 되돌릴 수
+               있으면 기록의 의미가 없다 -- 잘못 누른 사람이 그것을 지울 수
+               있다는 뜻이기 때문이다.
+
+               원래 항목은 그대로 남는다. 이것은 "고쳤다"가 아니라 "고친 기록"이고,
+               update 와 delete 는 여전히 아무에게도 열려 있지 않다.
+
+               사유는 비워 둘 수 없다. 반년 뒤 이 줄을 보는 사람에게 "왜
+               되돌렸나"가 없으면, 되돌린 것 자체가 실수인지 알 수 없다.
+               나머지 종류에는 사유 칸이 없다 -- 자유 문장은 열어 둔 만큼 들어온다. */
+            && (
+              request.resource.data.type in ["correction", "cancel"]
+                ? (
+                  hasRole(organizationId, ["owner"])
+                  && request.resource.data.reason is string
+                  && request.resource.data.reason.size() > 0
+                  // Keep in sync with LEDGER_REASON_MAX in constants.js.
+                  && request.resource.data.reason.size() <= 200
+                )
+                : !("reason" in request.resource.data)
+                  && !("correctsEntryId" in request.resource.data)
+            )
+            // Why this amount. It cannot be worked out again later — the
+            // accumulated count only ever goes up, and the deputy flag and the
+            // service counter both move on — so the reason is written down at
+            // the moment it decided something. Entries from before this field
+            // existed do not have it, so it is optional; when it is there it has
+            // to be one of the five the engine can return.
+            // Keep in sync with PRICING_RULE in src/data/schema/deduction-pricing.js.
+            && (
+              !("rule" in request.resource.data)
+              || request.resource.data.rule in [
+                "service_already_used", "deputy_director", "handed_over",
+                "new_to_instructor", "base_category"
+              ]
+            )
+            && request.resource.data.delta is int
+            && request.resource.data.createdBy == request.auth.uid
+            // createdAt says when it was recorded and the server stamps it, so a
+            // client cannot backdate. occurredAt says when the lesson happened and
+            // the client does send it — instructors enter a whole day at night —
+            // so it is fenced to a window instead. Payroll totals by occurredAt.
+            && request.resource.data.createdAt == request.time
+            && request.resource.data.occurredAt is timestamp
+            && request.resource.data.occurredAt <= request.time
+            && request.resource.data.occurredAt > request.time - duration.value(7, "d")
+            /* 종류마다 들고 가야 하는 것이 다르다. 교체와 취소는 돈이 오가지
+               않아 category 와 unitPrice 에 넣을 참값이 없다. 필수 목록을 채우자고
+               지어내면 급여가 그 허구를 카테고리별로 묶어 센다. */
+            && (
+              request.resource.data.type == "transfer"
+                ? (
+                  request.resource.data.delta == 0
+                  && request.resource.data.keys().hasAll(["fromInstructorId", "toInstructorId"])
+                  && request.resource.data.fromInstructorId is string
+                  && request.resource.data.toInstructorId is string
+                  && request.resource.data.fromInstructorId != request.resource.data.toInstructorId
+                  && !("category" in request.resource.data)
+                  && !("unitPrice" in request.resource.data)
+                  && !("lessonId" in request.resource.data)
+                  // 담당 교체는 운영하는 사람의 판단이다. 강사가 자기 앞으로
+                  // 회원권을 옮길 수 있으면 급여가 스스로 움직인다.
+                  && hasRole(organizationId, ["owner", "manager"])
+                )
+              : request.resource.data.type == "cancel"
+                ? (
+                  /* 남은 회차를 전부 거둔다. 그 숫자는 회원권이 들고 있으므로
+                     caller 에게 묻지 않는다 -- get() 은 커밋 전의 값을 읽고,
+                     그것이 바로 "취소 직전에 남아 있던 회차"다. 회원권을 0 으로
+                     내리는 쓰기는 같은 배치에 있다.
+
+                     이미 차감된 회차가 있는지는 규칙이 셀 수 없다. 원장을 세는
+                     일이라 여기서는 막지 못하고, 저장소가 마지막 문이다
+                     (pass-repository.js 의 isCancellablePass). */
+                  request.resource.data.delta == -get(
+                    /databases/$(database)/documents/organizations/$(organizationId)/passes/$(passId)
+                  ).data.remainingCount
+                  && !("category" in request.resource.data)
+                  && !("unitPrice" in request.resource.data)
+                  && !("lessonId" in request.resource.data)
+                  && !("correctsEntryId" in request.resource.data)
+                )
+              : (
+                  request.resource.data.keys().hasAll(["category", "unitPrice", "instructorId"])
+                  && request.resource.data.category in payCategories()
+                  && request.resource.data.unitPrice is int
+                  && request.resource.data.unitPrice >= 0
+                  && request.resource.data.delta != 0
+                  && (
+                    request.resource.data.type == "issue"
+                      // 발급 항목은 회원권 문서와 한 배치로 쓰인다. 회원권 쪽만
+                      // 좁히면 매니저가 이미 있는 회원권에 "20회 발급" 한 줄을
+                      // 덧붙일 수 있고, 회원 이력 화면이 그것을 그대로 읽는다.
+                      // 두 반쪽은 같은 문을 통과해야 한다.
+                      ? request.resource.data.delta > 0 && canIssuePass(organizationId)
+                    : request.resource.data.type == "correction"
+                      /* 정확히 한 회차를 되돌리고, 무엇을 되돌리는지 가리킨다.
+                         단가와 카테고리는 원래 항목과 같은 값이어야 급여에서 그
+                         회차가 정확히 상쇄된다 -- 표를 다시 읽으면 그 사이 바뀐
+                         단가로 빼게 되고 차액이 남는다.
+
+                         문서 id 가 <원래항목>_correction 이라 같은 항목을 두 번
+                         보정하면 같은 자리로 가고, update 가 막는다. 세지 않고
+                         구조로 막는 것이라 놓칠 수가 없다. */
+                      ? (
+                        request.resource.data.delta == 1
+                        && request.resource.data.correctsEntryId is string
+                        && request.resource.data.correctsEntryId.size() > 0
+                        && entryId == request.resource.data.correctsEntryId + "_correction"
+                        && !("lessonId" in request.resource.data)
+                      )
+                      : request.resource.data.delta < 0 && "lessonId" in request.resource.data
+                  )
+                  && hasRole(organizationId, ["owner", "manager", "instructor"])
+                )
+            );
+          allow update, delete: if false;
+        }
+      }
+
+      match /lessonNotes/{noteId} {
+        // See the locations block for why get and list are split. As with
+        // clients, a query cannot prove "only the notes about me", so listing
+        // is for the roles that teach and run the centre; a member still reads
+        // their own note one document at a time.
+        allow get: if isActiveMember(organizationId)
+          && resource.data.organizationId == organizationId
+          && (
+            hasRole(organizationId, ["owner", "manager", "instructor"])
+            || resource.data.userId == request.auth.uid
+          );
+        allow list: if hasRole(organizationId, ["owner", "manager", "instructor"]);
+        allow create: if request.resource.data.organizationId == organizationId
+          && hasRole(organizationId, ["owner", "manager", "instructor"]);
+        allow update: if resource.data.organizationId == organizationId
+          && request.resource.data.organizationId == organizationId
+          && request.auth.uid == resource.data.createdBy
+          && immutable(["clientId", "lessonId", "createdBy", "createdAt"]);
+        allow delete: if false;
+      }
+
+      match /locations/{locationId} {
+        // get and list are split on purpose. A list rule is evaluated against
+        // what the query guarantees, not against the documents it returns, so a
+        // `resource.data` test the query does not constrain can never be
+        // satisfied — the whole query is refused with "Property organizationId
+        // is undefined on object", which reaches the screen as an empty picker.
+        // The path already scopes these documents to one organization, so the
+        // membership check alone is what a list can honestly enforce.
+        allow get: if isActiveMember(organizationId)
+          && resource.data.organizationId == organizationId;
+        allow list: if isActiveMember(organizationId);
+        allow create: if request.resource.data.organizationId == organizationId
+          && hasRole(organizationId, ["owner", "manager"]);
+        allow update: if resource.data.organizationId == organizationId
+          && request.resource.data.organizationId == organizationId
+          && hasRole(organizationId, ["owner", "manager"]);
+        allow delete: if false;
+      }
     }
 
-    match /locations/{locationId} {
-      allow read: if isActiveMember(resource.data.organizationId);
-      allow create: if hasRole(request.resource.data.organizationId, ["owner", "manager"]);
-      allow update: if sameOrganization()
-        && hasRole(resource.data.organizationId, ["owner", "manager"]);
-      allow delete: if false;
+    // The rate history hangs off a membership, whose path does not carry the
+    // organization. Reading the parent gives the rule an organization without
+    // touching resource.data, so the same condition works for get and list —
+    // see the list note near the top of this file.
+    function membershipOrganizationId(membershipDocumentId) {
+      return get(/databases/$(database)/documents/memberships/$(membershipDocumentId)).data.organizationId;
+    }
+
+    // A collection-group query does not reach the nested rule above it, so the
+    // pay screen — which reads one instructor's month across every pass at once
+    // rather than opening each pass in turn — needs its own match. It grants no
+    // more than the nested rule already does: an active member of the same
+    // organization. The instructor clause is the one a group query can prove,
+    // because the query filters on instructorId; owners and managers get the
+    // organization-wide branch for the payroll screen that comes later.
+    //
+    // organizationId must be constrained by the query or the whole read is
+    // refused — see the list note near the top of this file.
+    match /{path=**}/ledger/{entryId} {
+      allow read: if isActiveMember(resource.data.organizationId)
+        && (
+          resource.data.instructorId == request.auth.uid
+          || hasRole(resource.data.organizationId, ["owner", "manager"])
+        );
     }
 
     match /memberships/{membershipDocumentId} {
@@ -206,53 +809,185 @@ service cloud.firestore {
         resource.data.userId == request.auth.uid
         || hasRole(resource.data.organizationId, ["owner", "manager"])
       );
-      allow create, update, delete: if false;
-    }
+      /* ── 강사를 붙이는 문 ────────────────────────────────────────────────
+         지금까지 소속 문서는 콘솔이나 이관 도구(Admin SDK)로만 생겼다. 대표가
+         앱에서 강사를 붙이려면 이 문이 있어야 한다.
 
-    match /clients/{clientId} {
-      allow read: if isActiveMember(resource.data.organizationId)
-        && (
-          hasRole(resource.data.organizationId, ["owner", "manager", "instructor", "staff"])
-          || isOwnClientDocument(resource.data)
-        );
-      allow create: if hasRole(request.resource.data.organizationId, ["owner", "manager", "instructor", "staff"]);
-      allow update: if sameOrganization()
-        && hasRole(resource.data.organizationId, ["owner", "manager", "instructor", "staff"]);
+         대표만 연다. 그리고 만드는 것은 언제나 남의 소속이다 -- 자기 소속을
+         자기가 만들 수 있으면 아무나 아무 센터의 대표가 된다.
+
+         role 은 owner 를 뺀 목록이다. 대표를 앱에서 세우지 않는다: 이 문으로
+         owner 를 만들 수 있으면 대표 한 사람이 아무 계정이나 자기와 같은 자리에
+         올릴 수 있고, 그것을 되돌리는 문은 없다. 대표 교체는 콘솔의 일로 남긴다.
+
+         급여를 움직이는 두 필드(fullRoomRate · isDeputyDirector)는 여기서 받지
+         않는다. 아래 각자의 문으로만 들어오고, 그 문들은 rateHistory 와 감사
+         항목을 같은 배치에 요구한다 -- 여기서 함께 받으면 이력 없이 단가가
+         정해지는 길이 하나 생긴다. 추가 화면은 소속을 먼저 만들고 단가를 그
+         다음에 넣는다.
+         ────────────────────────────────────────────────────────────────── */
+      allow create: if hasRole(request.resource.data.organizationId, ["owner"])
+        // 문서 id 가 곧 조직-사용자 쌍이다. 규칙의 membershipId() 와 같은 형식이
+        // 아니면 isActiveMember 가 영영 찾지 못하는 소속이 만들어진다.
+        && membershipDocumentId == request.resource.data.organizationId + "_" + request.resource.data.userId
+        && request.resource.data.keys().hasOnly([
+          "organizationId", "userId", "role", "status",
+          "displayName", "title", "locationId",
+          "createdAt", "createdBy"
+        ])
+        && request.resource.data.keys().hasAll([
+          "organizationId", "userId", "role", "status",
+          "displayName", "createdAt", "createdBy"
+        ])
+        && request.resource.data.userId is string
+        && request.resource.data.userId.size() > 0
+        && request.resource.data.userId != request.auth.uid
+        // Keep in sync with ROLES in src/data/schema/constants.js.
+        && request.resource.data.role in ["instructor", "manager", "staff"]
+        && request.resource.data.status == "active"
+        // 이름이 없으면 목록이 uid 로 되돌아간다. 대표가 보고 고를 수 있어야 한다.
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() > 0
+        && request.resource.data.displayName.size() <= 60
+        && membershipProfileWellFormed()
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.createdBy == request.auth.uid;
       allow delete: if false;
-    }
+      // Three doors, each one field wide.
+      //
+      // fullRoomRate decides what a repurchase lesson pays its instructor, so
+      // an instructor must not set their own — only the owner.
+      //
+      // isDeputyDirector decides far more: a deputy is paid half the contract
+      // price per session regardless of category, accumulated count or handover,
+      // so the flag outranks every other pay rule. Only the owner sets it, and
+      // not on themselves — an owner who also teaches would otherwise be able to
+      // put their own lessons on the 5:5 split without anyone else in the loop.
+      // fullRoomRate has no such clause because it is a number the owner is
+      // expected to maintain; this one is a promotion.
+      //
+      // displayName is the member's own name, kept here rather than read from
+      // users/{uid}. Rules cannot hide fields on a read: opening that document
+      // so an owner could see a name would hand them the phone number and the
+      // e-mail sitting beside it. A membership is already readable by the
+      // owners and managers who need the name, so the name comes to them
+      // instead — and only its subject may write it.
+      //
+      // Nothing else about a membership — role, status, organization — travels
+      // through either door.
+      allow update: if (
+          hasRole(resource.data.organizationId, ["owner"])
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["fullRoomRate"])
+          && request.resource.data.fullRoomRate is int
+          && request.resource.data.fullRoomRate >= 0
+        ) || (
+          hasRole(resource.data.organizationId, ["owner"])
+          && resource.data.userId != request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["isDeputyDirector"])
+          && request.resource.data.isDeputyDirector is bool
+        ) || (
+          signedIn()
+          && resource.data.userId == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["displayName"])
+          && request.resource.data.displayName is string
+          && request.resource.data.displayName.size() > 0
+          && request.resource.data.displayName.size() <= 60
+        ) || (
+          /* 대표가 고치는 세 칸: 이름·직함·지점. 함께 움직여도 되는 것들이라
+             한 문으로 묶었다 -- 강사 관리 화면의 수정 시트가 이 셋을 한 번에
+             저장한다. 급여를 움직이는 두 필드는 여기 없다. 그것들은 각자의
+             문으로 가고, 그 문은 rateHistory 와 감사 항목을 함께 요구한다.
 
-    match /lessons/{lessonId} {
-      allow read: if isActiveMember(resource.data.organizationId);
-      allow create: if hasRole(request.resource.data.organizationId, ["owner", "manager", "instructor", "staff"]);
-      allow update: if sameOrganization()
-        && hasRole(resource.data.organizationId, ["owner", "manager", "instructor", "staff"]);
-      allow delete: if hasRole(resource.data.organizationId, ["owner", "manager"]);
-    }
+             이름을 대표도 쓸 수 있는 것은 위 본인 문과 겹치지만 부딪치지
+             않는다: 강사가 앱을 한 번도 안 열었으면 이름을 채울 사람이 대표뿐이고,
+             열었으면 본인이 쓴 이름이 그대로 남는다. */
+          hasRole(resource.data.organizationId, ["owner"])
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(["displayName", "title", "locationId"])
+          && request.resource.data.displayName is string
+          && request.resource.data.displayName.size() > 0
+          && request.resource.data.displayName.size() <= 60
+          && membershipProfileWellFormed()
+        ) || (
+          /* 퇴사. active 와 revoked 사이만 오간다.
+             다른 상태(invited·suspended)는 이 화면이 만들지 않으므로 열지 않는다.
 
-    match /lessonParticipants/{participantId} {
-      allow read: if isActiveMember(resource.data.organizationId)
-        && (
-          hasRole(resource.data.organizationId, ["owner", "manager", "instructor", "staff"])
-          || resource.data.userId == request.auth.uid
+             자기 자신에게는 쓸 수 없다. 대표가 자기 소속을 회수하면 그 센터에
+             owner 가 없어지고, 되돌릴 문은 아무 데도 없다 -- isDeputyDirector
+             문이 자기 자신을 막는 것과 같은 이유이고, 여기서는 더 되돌릴 수 없다.
+
+             회수해도 그 사람이 남긴 원장과 급여는 그대로다. 원장은 append-only
+             이고 각 항목이 그때의 instructorId 를 들고 있다. */
+          hasRole(resource.data.organizationId, ["owner"])
+          && resource.data.userId != request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["status"])
+          && request.resource.data.status in ["active", "revoked"]
         );
-      allow create: if hasRole(request.resource.data.organizationId, ["owner", "manager", "instructor", "staff"]);
-      allow update: if sameOrganization()
-        && immutable(["lessonId", "clientId", "userId"])
-        && hasRole(resource.data.organizationId, ["owner", "manager", "instructor", "staff"]);
-      allow delete: if false;
-    }
 
-    match /lessonNotes/{noteId} {
-      allow read: if isActiveMember(resource.data.organizationId)
-        && (
-          hasRole(resource.data.organizationId, ["owner", "manager", "instructor"])
-          || resource.data.userId == request.auth.uid
-        );
-      allow create: if hasRole(request.resource.data.organizationId, ["owner", "manager", "instructor"]);
-      allow update: if sameOrganization()
-        && request.auth.uid == resource.data.createdBy
-        && immutable(["clientId", "lessonId", "createdBy", "createdAt"]);
-      allow delete: if false;
+      // Append-only. The rate changes when an instructor passes a grading, and
+      // "since when was it this much" has to stay answerable. This is a record,
+      // never a payroll input — payroll reads the unitPrice frozen into each
+      // ledger entry, so raising a rate never moves a settled month.
+      //
+      // Two kinds of change share this collection, because they answer the same
+      // question: what decided this instructor's rate, and since when. Being made
+      // a deputy is a rate change — from that moment the full-room amount is not
+      // used at all and half the contract price takes its place. Split into two
+      // collections, a dispute would have to merge them by time, and whoever
+      // forgot to merge would read one and answer that nothing changed.
+      //
+      // An entry carries one pair or the other, never both and never neither.
+      match /rateHistory/{entryId} {
+        allow read: if hasRole(membershipOrganizationId(membershipDocumentId), ["owner"]);
+        allow create: if hasRole(membershipOrganizationId(membershipDocumentId), ["owner"])
+          && request.resource.data.organizationId == membershipOrganizationId(membershipDocumentId)
+          && request.resource.data.keys().hasOnly([
+            "organizationId", "userId", "previousRate", "newRate",
+            "previousDeputyDirector", "newDeputyDirector",
+            "effectiveFrom", "changedBy", "createdAt"
+          ])
+          && request.resource.data.keys().hasAll([
+            "organizationId", "userId",
+            "effectiveFrom", "changedBy", "createdAt"
+          ])
+          && request.resource.data.userId is string
+          && request.resource.data.userId.size() > 0
+          && (
+            (
+              "newRate" in request.resource.data
+              && !("newDeputyDirector" in request.resource.data)
+              && !("previousDeputyDirector" in request.resource.data)
+              && request.resource.data.newRate is int
+              && request.resource.data.newRate >= 0
+              // null means there was no rate before this one.
+              && (
+                request.resource.data.previousRate == null
+                || (request.resource.data.previousRate is int && request.resource.data.previousRate >= 0)
+              )
+              && request.resource.data.previousRate != request.resource.data.newRate
+            ) || (
+              "newDeputyDirector" in request.resource.data
+              && !("newRate" in request.resource.data)
+              && !("previousRate" in request.resource.data)
+              && request.resource.data.newDeputyDirector is bool
+              // null means nobody had decided either way before this entry.
+              && (
+                request.resource.data.previousDeputyDirector == null
+                || request.resource.data.previousDeputyDirector is bool
+              )
+              && request.resource.data.previousDeputyDirector != request.resource.data.newDeputyDirector
+            )
+          )
+          && request.resource.data.changedBy == request.auth.uid
+          && request.resource.data.createdAt == request.time
+          // createdAt is when it was recorded; effectiveFrom is when the raise
+          // actually took effect, which can be a few days earlier because a
+          // grading result arrives before anyone opens the app.
+          && request.resource.data.effectiveFrom is timestamp
+          && request.resource.data.effectiveFrom <= request.time
+          && request.resource.data.effectiveFrom > request.time - duration.value(7, "d");
+        allow update, delete: if false;
+      }
     }
 
     match /assessments/{assessmentId} {
@@ -355,9 +1090,77 @@ service cloud.firestore {
       allow create, update, delete: if false;
     }
 
+    // Keep in sync with AUDIT_ACTION in src/data/repositories/audit-repository.js.
+    //
+    // Issue, handover and deduction are deliberately absent: they already live
+    // in passes/{passId}/ledger, which is append-only and carries more than an
+    // audit entry would. Writing them twice would add a write to the button
+    // pressed most often in this app and leave two records of one event that can
+    // disagree. The audit screen merges this collection with the ledger instead.
+    function auditActions() {
+      return [
+        "deputy_director_set", "full_room_rate_set", "migration_uploaded",
+        // 강사 관리. 누가 센터에 붙고, 무엇으로 불리고, 언제 나갔는가. 소속
+        // 문서는 현재 상태만 들고 있어 그 이력을 답할 수 없다.
+        "member_added", "member_profile_changed", "member_revoked"
+      ];
+    }
+
+    // 무엇을 했는지에 따라 남길 수 있는 사람이 다르다. 규칙은 그 조작 자체를
+    // 허용하는 규칙과 같은 역할을 요구한다 -- 할 수 없는 일의 기록을 지어낼 수는
+    // 없어야 한다. 지금은 셋 다 대표의 조작이라 셋 다 대표뿐이고, 발급·차감이
+    // 나중에 이 목록에 들어온다면 그때는 매니저·강사가 함께 열려야 한다.
+    function mayRecordAudit(organizationId, action) {
+      return action in auditActions() && hasRole(organizationId, ["owner"]);
+    }
+
     match /auditLogs/{logId} {
-      allow read: if hasRole(resource.data.organizationId, ["owner", "manager"]);
-      allow create, update, delete: if false;
+      // 대표만 본다. 센터 전체의 조작 이력은 한 사람의 것이 아니다.
+      //
+      // 이 절이 resource.data.organizationId 를 보기 때문에, 조직을 좁히지 않은
+      // list 는 평가할 것이 없어 거부된다. 그것이 class B 의 강제 장치다 --
+      // 이 파일 머리말 참고.
+      allow read: if hasRole(resource.data.organizationId, ["owner"]);
+
+      // Append-only. 고칠 수 없다는 것이 이 컬렉션의 값어치 전부다.
+      allow create: if mayRecordAudit(request.resource.data.organizationId, request.resource.data.action)
+        // 남의 이름으로 기록하지 않는다.
+        && request.resource.data.actorId == request.auth.uid
+        // 역할도 대조한다. 거짓말한 역할이 남으면 기록이 없는 것보다 해롭다.
+        && request.resource.data.actorRole == membership(request.resource.data.organizationId).data.role
+        // 클라이언트가 만든 시각은 받지 않는다. 소급 기록이 가능해진다.
+        && request.resource.data.createdAt == request.time
+        // Keep in sync with AUDIT_FIELDS in audit-repository.js. 자유 문장 칸이
+        // 하나도 없다 -- 있으면 언젠가 거기에 회원 이름이 들어간다.
+        && request.resource.data.keys().hasOnly([
+          "organizationId", "actorId", "actorRole", "action", "createdAt",
+          "locationId", "targetId", "clientId",
+          "amount", "previousAmount", "succeeded", "failed", "enabled", "stage",
+          // 직함. 열거값이라 자유 문장이 아니다 — 이 집합에 문장 칸을 하나
+          // 열면 언젠가 거기에 회원 이름이 들어간다.
+          "title"
+        ])
+        && request.resource.data.keys().hasAll([
+          "organizationId", "actorId", "actorRole", "action", "createdAt"
+        ])
+        && request.resource.data.action in auditActions()
+        && (!("amount" in request.resource.data)
+          || (request.resource.data.amount is int && request.resource.data.amount >= 0))
+        && (!("previousAmount" in request.resource.data)
+          || (request.resource.data.previousAmount is int && request.resource.data.previousAmount >= 0))
+        && (!("succeeded" in request.resource.data)
+          || (request.resource.data.succeeded is int && request.resource.data.succeeded >= 0))
+        && (!("failed" in request.resource.data)
+          || (request.resource.data.failed is int && request.resource.data.failed >= 0))
+        && (!("enabled" in request.resource.data) || request.resource.data.enabled is bool)
+        // Keep in sync with MEMBERSHIP_TITLE in src/data/schema/constants.js.
+        && (!("title" in request.resource.data)
+          || request.resource.data.title in ["instructor", "team_lead", "branch_manager"])
+        && (!("targetId" in request.resource.data) || request.resource.data.targetId is string)
+        && (!("clientId" in request.resource.data) || request.resource.data.clientId is string)
+        && (!("locationId" in request.resource.data) || request.resource.data.locationId is string)
+        && (!("stage" in request.resource.data) || request.resource.data.stage is string);
+      allow update, delete: if false;
     }
 
     match /dailyStats/{statId} {

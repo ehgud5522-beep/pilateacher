@@ -14,6 +14,7 @@ const { createAIRecordingOperations } = require("./ai-recording-operations");
 const { applyCors, parseAllowedOrigins } = require("./cors");
 const { sendError, GatewayError } = require("./errors");
 const { createFirestoreIdempotencyStore } = require("./idempotency");
+const { createMemberLookupService } = require("./member-lookup");
 const { DEFAULT_MODEL, createOpenAIProvider } = require("./openai-provider");
 const { createFirestorePolicyService } = require("./policy");
 const { createPhotoBackupCleanupService } = require("./photo-backup-cleanup");
@@ -65,6 +66,14 @@ const accountDeletionService = createAccountDeletionService({
   },
   deleteAuthUser(uid) {
     return getAuth().deleteUser(uid);
+  },
+});
+
+const memberLookupService = createMemberLookupService({
+  findUserByEmail: (email) => getAuth().getUserByEmail(email),
+  async readMembership(membershipDocumentId) {
+    const snapshot = await getFirestore().collection("memberships").doc(membershipDocumentId).get();
+    return snapshot.exists ? snapshot.data() : null;
   },
 });
 
@@ -160,6 +169,47 @@ exports.purgeExpiredPhotoBackups = onCall({
   }
 });
 
+/**
+ * 조회 실패를 종류별로 가른다. 대표에게는 "오타인가, 아직 가입을 안 했나,
+ * 내가 이 센터의 대표가 아닌가"가 서로 다른 할 일이다.
+ */
+function memberLookupHttpsError(error) {
+  const code = String(error?.code || "lookup_unavailable");
+  const details = { code, stage: String(error?.stage || "unknown") };
+  if (code === "unauthenticated") return new HttpsError("unauthenticated", "Please sign in again.", details);
+  if (code === "not_owner") return new HttpsError("permission-denied", "Only the centre owner may look up a member.", details);
+  if (code === "user_not_found") return new HttpsError("not-found", "No account uses that e-mail yet.", details);
+  if (code === "invalid_email" || code === "invalid_request") {
+    return new HttpsError("invalid-argument", "The lookup request is invalid.", details);
+  }
+  return new HttpsError("unavailable", "The lookup did not finish. Please retry.", details);
+}
+
+exports.lookupCentreMemberByEmail = onCall({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  timeoutSeconds: 30,
+  memory: "256MiB",
+  invoker: "public",
+}, async (request) => {
+  try {
+    const result = await memberLookupService.lookupByEmail(request);
+    /* 조회 자체를 남긴다. 이메일도 uid 도 적지 않는다 (§7) -- 어느 센터에서
+       몇 번 조회했는지만으로 이 통로가 캐는 데 쓰이는지 알 수 있다. */
+    logger.info("member_lookup_succeeded", {
+      organizationId: String(request?.data?.organizationId || ""),
+      alreadyMember: result.membership !== null,
+    });
+    return result;
+  } catch (error) {
+    logger.warn("member_lookup_failed", {
+      organizationId: String(request?.data?.organizationId || ""),
+      code: String(error?.code || "unknown"),
+      stage: String(error?.stage || "unknown"),
+    });
+    throw memberLookupHttpsError(error);
+  }
+});
+
 exports.cleanupExpiredPhotoBackups = onSchedule({
   region: process.env.FUNCTIONS_REGION || "asia-northeast3",
   schedule: "every day 03:00",
@@ -174,5 +224,6 @@ exports.cleanupExpiredPhotoBackups = onSchedule({
 exports._test = {
   AI_EXECUTE_ROUTE,
   accountDeletionHttpsError,
+  memberLookupHttpsError,
   requestPath,
 };

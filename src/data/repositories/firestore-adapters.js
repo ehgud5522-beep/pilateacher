@@ -69,20 +69,20 @@ export class FirestoreClientRepository extends ClientRepository {
   }
   createClient(context, client) {
     const document = mapClientDocument(context, client, true);
-    return this.writer.merge(paths.organizationClient(context.organizationId, document.clientId), document);
+    return this.writer.merge(paths.client(context.organizationId, document.clientId), document);
   }
   updateClient(context, client) { return this.saveClientSnapshot(context, client); }
   archiveClient(context, client) {
     return this.saveClientSnapshot(context, { ...client, status: CLIENT_STATUS.ENDED });
   }
   deleteClient(context, clientId) {
-    return this.writer.remove(paths.organizationClient(context.organizationId, required(clientId, "clientId")));
+    return this.writer.remove(paths.client(context.organizationId, required(clientId, "clientId")));
   }
   getClientById() { throw new Error("New Firestore reads are disabled in dual-write v1"); }
   listClients() { throw new Error("New Firestore reads are disabled in dual-write v1"); }
   saveClientSnapshot(context, client) {
     const document = mapClientDocument(context, client, false);
-    return this.writer.merge(paths.organizationClient(context.organizationId, document.clientId), document);
+    return this.writer.merge(paths.client(context.organizationId, document.clientId), document);
   }
 }
 
@@ -93,14 +93,14 @@ export class FirestoreLessonRepository extends LessonRepository {
   }
   createLesson(context, lesson) {
     const document = mapLessonDocument(context, lesson, true);
-    return this.writer.merge(paths.organizationLesson(context.organizationId, document.lessonId), document);
+    return this.writer.merge(paths.lesson(context.organizationId, document.lessonId), document);
   }
   updateLesson(context, lesson) {
     const document = mapLessonDocument(context, lesson, false);
-    return this.writer.merge(paths.organizationLesson(context.organizationId, document.lessonId), document);
+    return this.writer.merge(paths.lesson(context.organizationId, document.lessonId), document);
   }
   changeLessonStatus(context, lessonId, status) {
-    return this.writer.merge(paths.organizationLesson(context.organizationId, lessonId), {
+    return this.writer.merge(paths.lesson(context.organizationId, lessonId), {
       status: assertEnum(status, LESSON_STATUS, "lesson status"),
       updatedAt: context.serverTimestamp(),
     });
@@ -119,7 +119,7 @@ export class FirestoreLessonRepository extends LessonRepository {
     });
   }
   saveRecordStatus(context, lessonId, status) {
-    return this.writer.merge(paths.organizationLesson(context.organizationId, lessonId), {
+    return this.writer.merge(paths.lesson(context.organizationId, lessonId), {
       recordStatus: assertEnum(status, RECORD_STATUS, "record status"),
       updatedAt: context.serverTimestamp(),
     });

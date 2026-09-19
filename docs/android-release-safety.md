@@ -22,6 +22,25 @@
 npm run android:release:build
 ```
 
+> **Android Studio 로 만들지 마세요.** 워크트리가 스무 개가 넘고 창이 여러 개
+> 열려 있으면 어느 창에서 빌드했는지 매번 헷갈립니다. 그리고 그 창의 Build
+> Variant 가 `debug` 로 남아 있으면 "Generate Signed App Bundle" 도 **debug
+> 번들**을 만드는데, 알림은 성공이라고만 말합니다 — `bundle/release` 의 옛
+> 파일을 보고 새 빌드로 착각하게 됩니다. 실제로 2026-09-19 에 그렇게 나갔습니다.
+>
+> Play 업로드가 아닌 확인용 AAB 는 아래 한 줄이면 됩니다. 어디서 만들었는지와
+> 버전·서명 지문을 끝에 찍어 줍니다.
+>
+> ```bash
+> npm run android:aab
+> ```
+>
+> 이 한 줄은 `npm run build`(타입 검사·테스트 포함) → `npx cap sync android` →
+> `gradlew bundleRelease` 를 순서대로 돌리므로 "옛 화면이 담긴 최신 버전 코드"가
+> 나올 수 없습니다. 다만 브랜치·승인 UI 기준 커밋·정책의
+> `lastPublishedVersionCode` 는 보지 않습니다 — **Play 에 올릴 것은 위의
+> `android:release:build` 로 만드세요.**
+
 이 명령은 다음 조건 중 하나라도 맞지 않으면 AAB 생성을 중단합니다.
 
 - 작업 폴더에 커밋하지 않은 변경이 있음

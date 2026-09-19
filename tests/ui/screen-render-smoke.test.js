@@ -104,6 +104,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "급여 집계",
     "급여 집계 · 강사 펼침",
     "급여 집계 · 두 지점",
+    "급여 집계 · 이관 전",
     "급여 집계 · 빈 달",
     "급여 집계 · 조회 실패",
     "급여 집계 · 이름 조회 실패",
@@ -350,6 +351,25 @@ test("the payroll summary is the owner's, and says out loud what it did not coun
   assert.ok(order.every((at) => at >= 0), "펼치면 카테고리별 내역이 나온다");
   assert.deepEqual(order.slice().sort((a, b) => a - b), order, "단가표 순서 그대로");
   assert.match(opened, /₩95,000/, "한 카테고리 안에서 단가가 섞여도 합계는 항목의 합이다");
+
+  /* 카테고리만 보면 "이벤트페이 12건 36만원" 이고, 그 상품의 기준 단가는 30,000
+     이라 계산이 틀린 것처럼 읽힌다. 왜 섞였는지는 판정이 답한다. */
+  assert.match(opened, /적용된 단가 판정/);
+  assert.match(opened, /누적 20회 미만 — 신규 단가/);
+  assert.match(opened, /기준 단가/);
+
+  /* 이관 전에는 모든 강사-회원 쌍이 0 에서 시작해 판정 3 이 먼저 걸린다. 그래서
+     이벤트페이도 2:1 재등록도 전부 25,000 이 되는데, 화면이 말하지 않으면 대표는
+     계산이 고장 났다고 읽는다. 실제로 그렇게 읽혔다. */
+  const beforeMigration = markupOf("급여 집계 · 이관 전");
+  assert.match(beforeMigration, /이 달은 모든 수업이 신규 단가\(25,000원\)입니다/);
+  assert.match(beforeMigration, /누적 20회 미만이면 상품과 무관하게 신규 단가/);
+  // 무엇을 하면 풀리는지까지 말한다. 이유만 알려 주고 끝내면 기다리게 된다.
+  assert.match(beforeMigration, /강사누적진행/);
+
+  /* 단가가 이미 갈리고 있는 달에는 붙이지 않는다 -- 붙이면 틀린 말이 된다. */
+  assert.doesNotMatch(opened, /이 달은 모든 수업이 신규 단가/);
+  assert.doesNotMatch(markupOf("급여 집계 · 빈 달"), /이 달은 모든 수업이 신규 단가/);
 
   /* 한 강사가 두 지점에서 수업하면 지점 묶음에 두 번 나온다. 급여는 한 번
      주므로 지급할 금액이 어느 줄인지 화면이 말해야 한다. */

@@ -104,7 +104,7 @@ import {
 } from "./features/schedule/lesson-settlement.js";
 import {
   loadInstructorMonthlyPay, loadOrganizationLedger, loadOrganizationMonthlyPayroll,
-  monthRange, payrollCsv, previousMonth, toDate,
+  monthRange, onlyNewInstructorRate, payrollCsv, previousMonth, toDate,
 } from "./data/repositories/payroll-repository.js";
 import {
   AUDIT_ACTION, STALE_PASS_DAYS, listAuditLogs, recordMigrationUpload, reviewAudit,
@@ -119,7 +119,9 @@ import {
 import {
   UNIT_PRICE_SOURCE, unitPriceSourceFor,
 } from "./data/schema/pay-rates.js";
-import { netContractPriceFor } from "./data/schema/deduction-pricing.js";
+import {
+  NEW_TO_INSTRUCTOR_THRESHOLD, NEW_TO_INSTRUCTOR_UNIT_PRICE, netContractPriceFor,
+} from "./data/schema/deduction-pricing.js";
 import {
   CLIENT_STATUS, LEDGER_ENTRY_TYPE, LEDGER_REASON_MAX, MEMBERSHIP_STATUS, MEMBERSHIP_TITLE,
   PAY_CATEGORY, PAYMENT_METHOD, PRODUCT_STATUS, ROLES, SESSION_TYPE,
@@ -16638,6 +16640,28 @@ function PayrollInstructorRow({ row, name, open, onToggle }) {
               </span>
             </div>
           ))}
+          {/* 카테고리만 보면 "이벤트페이 10건 25만원" 이고, 그 상품의 기준 단가는
+              30,000 이라 계산이 틀린 것처럼 읽힌다. 실제로는 그 열 건이 다른
+              판정에 걸린 것이다 -- 같은 회원권 안에서도 19회째와 21회째가 다르다.
+              그래서 판정별로도 센다. */}
+          {(row.byRule || []).length > 0 ? (
+            <div className="mt-1" style={{ borderTop: `1px solid ${LINE}`, paddingTop: 6 }}>
+              <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>적용된 단가 판정</p>
+              {row.byRule.map((item) => (
+                <div key={item.rule} className="flex items-center gap-2" style={{ padding: "6px 0" }}>
+                  <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: INK2 }}>
+                    {labelOf(PRICING_RULE_LABELS, item.rule)}
+                  </span>
+                  <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+                    {item.sessions}건
+                  </span>
+                  <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: INK }}>
+                    ₩{won(item.amount)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -16768,6 +16792,22 @@ function PayrollSummary({
           {PAYROLL_EXCLUDED.join(" · ")}
         </p>
       </section>
+
+      {/* 이 달의 차감이 전부 판정 3 이면 카테고리와 무관하게 금액이 같다. 그것은
+          규칙대로이지만, 말하지 않으면 계산이 고장 난 것으로 읽힌다 -- 실제로
+          그렇게 읽혔다. 합계를 보기 전에 이유가 먼저 있어야 한다. */}
+      {!loading && !loadError && onlyNewInstructorRate(summary) ? (
+        <section style={{ ...sectionStyle, backgroundColor: TINT, borderColor: RING }}>
+          <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND_D }}>
+            이 달은 모든 수업이 신규 단가({won(NEW_TO_INSTRUCTOR_UNIT_PRICE)}원)입니다.
+          </p>
+          <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.6, color: INK2 }}>
+            강사에게 이 회원이 누적 {NEW_TO_INSTRUCTOR_THRESHOLD}회 미만이면 상품과 무관하게 신규 단가입니다.
+            {" "}지난 진행 횟수를 아직 올리지 않았다면 모든 회원이 0회부터 시작하므로, 이벤트페이도 재등록도
+            {" "}같은 금액으로 나옵니다. 엑셀 이관의 <b>강사누적진행</b> 열을 채워 올리면 그때부터 상품 단가가 적용됩니다.
+          </p>
+        </section>
+      ) : null}
 
       {loading ? (
         <section style={sectionStyle}><p style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p></section>
@@ -18125,11 +18165,12 @@ export function createAppScreenSmokeCases() {
   });
   /* 정산 화면이 그리는 것만 본다. 숫자는 집계 함수가 만든 모양 그대로다. */
   const smokePayrollStore = { listOrganizationDeductions: async () => [] };
-  const payrollRow = (instructorId, rows) => ({
+  const payrollRow = (instructorId, rows, ruleRows = []) => ({
     instructorId,
     sessions: rows.reduce((sum, item) => sum + item.sessions, 0),
     total: rows.reduce((sum, item) => sum + item.amount, 0),
     byCategory: rows,
+    byRule: ruleRows,
   });
   const smokePayrollInstructors = [
     payrollRow("u1", [
@@ -18137,6 +18178,10 @@ export function createAppScreenSmokeCases() {
       { category: "pt_1_1_repurchase_normal", sessions: 3, amount: 95000 },
       { category: "pt_1_1_repurchase_event", sessions: 12, amount: 360000 },
       { category: "service", sessions: 2, amount: 10000 },
+    ], [
+      /* 카테고리만 보면 왜 단가가 섞였는지 알 수 없다. 그 답이 이 목록이다. */
+      { rule: "new_to_instructor", sessions: 9, amount: 225000 },
+      { rule: "base_category", sessions: 8, amount: 240000 },
     ]),
     payrollRow("u2", [{ category: "pt_1_1_new", sessions: 8, amount: 200000 }]),
   ];
@@ -18471,6 +18516,23 @@ export function createAppScreenSmokeCases() {
           { locationId: "centum", sessions: 8, total: 200000, byInstructor: [smokePayrollInstructors[1]] },
         ],
       },
+    }) },
+    /* 이관 전. 모든 강사-회원 쌍이 0 에서 시작해 판정 3 이 먼저 걸리므로
+       카테고리와 무관하게 전부 25,000 이다. 화면이 그 이유를 합계보다 먼저
+       말해야 한다 -- 말하지 않으면 계산이 고장 난 것으로 읽힌다. */
+    { name: "급여 집계 · 이관 전", element: payrollSummary(smokeOwner, {
+      instructors: smokeInstructors,
+      locations: smokeLocations,
+      summary: {
+        month: "2026-09", start: new Date(2026, 8, 1), end: new Date(2026, 9, 1),
+        total: 500000, sessions: 20,
+        byInstructor: [payrollRow("u1", [
+          { category: "pt_1_1_repurchase_event", sessions: 12, amount: 300000 },
+          { category: "pt_2_1_repurchase", sessions: 8, amount: 200000 },
+        ], [{ rule: "new_to_instructor", sessions: 20, amount: 500000 }])],
+        byLocation: [],
+      },
+      open: "all/u1",
     }) },
     { name: "급여 집계 · 빈 달", element: payrollSummary(smokeOwner, {
       instructors: smokeInstructors,

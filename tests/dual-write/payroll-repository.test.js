@@ -3,7 +3,7 @@ import test from "node:test";
 import {
   createFirestorePayrollStore, loadInstructorMonthlyPay, loadOrganizationMonthlyPayroll,
   monthRange, payrollCsv, previousMonth, summarizeCorrections, summarizeInstructorPay,
-  summarizeOrganizationPay, toDate,
+  onlyNewInstructorRate, summarizeOrganizationPay, toDate,
 } from "../../src/data/repositories/payroll-repository.js";
 import { PAY_CATEGORY } from "../../src/data/schema/constants.js";
 import { PAY_RATES } from "../../src/data/schema/pay-rates.js";
@@ -465,4 +465,88 @@ test("the query asks for corrections too, or the screen would overpay", async ()
   const store = fakeStore();
   await loadInstructorMonthlyPay(ORG, { instructorId: ME, month: "2026-09", store });
   assert.ok(store.calls.length > 0);
+});
+
+/* ── 왜 그 금액인가를 집계도 말해야 한다 ──────────────────────────────────
+
+   카테고리만 보면 "이벤트페이 10건 25만원" 이고, 그 상품의 기준 단가는 30,000 이라
+   대표는 계산이 틀렸다고 읽는다. 실제로는 그 열 건이 판정 3 에 걸린 것이고 그건
+   규칙대로다. 실제로 그렇게 읽혔다. */
+
+test("each instructor's sessions are counted by which rule decided them", () => {
+  const summary = summarizeOrganizationPay([
+    entry({ id: "a", category: "pt_1_1_repurchase_event", unitPrice: 25000, rule: "new_to_instructor" }),
+    entry({ id: "b", category: "pt_1_1_repurchase_event", unitPrice: 25000, rule: "new_to_instructor" }),
+    entry({ id: "c", category: "pt_1_1_repurchase_event", unitPrice: 30000, rule: "base_category" }),
+  ]);
+  const [row] = summary.byInstructor;
+  // 카테고리는 하나인데 단가가 둘이다. 그 이유가 이 목록에 있다.
+  assert.deepEqual(row.byCategory, [
+    { category: "pt_1_1_repurchase_event", sessions: 3, amount: 80000 },
+  ]);
+  assert.deepEqual(row.byRule, [
+    { rule: "new_to_instructor", sessions: 2, amount: 50000 },
+    { rule: "base_category", sessions: 1, amount: 30000 },
+  ]);
+});
+
+test("the rule rows follow the order the judgements are applied in", () => {
+  // 화면이 확정본 순서대로 읽히게 한다. 금액순이면 달마다 줄이 움직인다.
+  const summary = summarizeOrganizationPay([
+    entry({ id: "a", unitPrice: 30000, rule: "base_category" }),
+    entry({ id: "b", unitPrice: 25000, rule: "handed_over" }),
+    entry({ id: "c", unitPrice: 25000, rule: "new_to_instructor" }),
+  ]);
+  assert.deepEqual(
+    summary.byInstructor[0].byRule.map((row) => row.rule),
+    ["handed_over", "new_to_instructor", "base_category"],
+  );
+});
+
+test("entries from before the rule field are left out of the rule rows, not faked", () => {
+  /* 빈 값으로 한 칸을 만들면 화면이 "판정 없음" 이라는 없는 종류를 보여준다.
+     건수 합이 위의 sessions 보다 적을 수 있고 그것이 맞다. */
+  const summary = summarizeOrganizationPay([
+    entry({ id: "a", unitPrice: 25000, rule: "new_to_instructor" }),
+    entry({ id: "b", unitPrice: 25000 }),
+  ]);
+  const [row] = summary.byInstructor;
+  assert.equal(row.sessions, 2);
+  assert.deepEqual(row.byRule, [{ rule: "new_to_instructor", sessions: 1, amount: 25000 }]);
+});
+
+test("a month where every session was the new rate says so", () => {
+  /* 이관 전에는 모든 강사-회원 쌍이 0 에서 시작해 판정 3 이 먼저 걸린다. 화면이
+     말하지 않으면 대표는 계산이 고장 났다고 읽는다. */
+  const allNew = summarizeOrganizationPay([
+    entry({ id: "a", category: "pt_1_1_repurchase_event", unitPrice: 25000, rule: "new_to_instructor" }),
+    entry({ id: "b", category: "pt_2_1_repurchase", unitPrice: 25000, rule: "new_to_instructor" }),
+  ]);
+  assert.equal(onlyNewInstructorRate(allNew), true);
+});
+
+test("one session on another rule is enough to take the notice down", () => {
+  /* "거의 전부" 에 붙이면 그 설명이 틀린 말이 된다 -- 단가가 이미 갈리고 있는데
+     전부 같다고 말하는 셈이다. */
+  const mixed = summarizeOrganizationPay([
+    entry({ id: "a", unitPrice: 25000, rule: "new_to_instructor" }),
+    entry({ id: "b", unitPrice: 30000, rule: "base_category" }),
+  ]);
+  assert.equal(onlyNewInstructorRate(mixed), false);
+
+  // 차감이 없는 달에는 설명할 것도 없다.
+  assert.equal(onlyNewInstructorRate(summarizeOrganizationPay([])), false);
+  assert.equal(onlyNewInstructorRate(null), false);
+  // rule 이 없던 시절의 항목만 있으면 판정을 말할 수 없다.
+  assert.equal(onlyNewInstructorRate(summarizeOrganizationPay([entry({ id: "a" })])), false);
+});
+
+test("the rule breakdown reaches the per-location buckets too", () => {
+  // 지점별 묶음과 전 지점 합계가 같은 설명을 들고 있어야 한다.
+  const summary = summarizeOrganizationPay([
+    entry({ id: "a", locationId: "bansong", unitPrice: 25000, rule: "new_to_instructor" }),
+  ]);
+  assert.deepEqual(summary.byLocation[0].byInstructor[0].byRule, [
+    { rule: "new_to_instructor", sessions: 1, amount: 25000 },
+  ]);
 });

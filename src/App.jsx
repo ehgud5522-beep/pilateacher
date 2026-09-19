@@ -94,7 +94,7 @@ import {
 import {
   DEDUCT_BACKDATE_LIMIT_DAYS, cancelPass, correctDeduction, deductPass, isCancellablePass,
   isCorrectableEntry, isCorrectedEntry, isDeductablePass, isExpiredPass, issuePass,
-  listPassLedger, listPasses, loadClientPassHistory, remainingCountOf,
+  listInstructorClientTotals, listPassLedger, listPasses, loadClientPassHistory, remainingCountOf,
 } from "./data/repositories/pass-repository.js";
 import {
   SETTLEMENT_OUTCOME, SETTLEMENT_SKIP, SETTLEMENT_SKIP_LABEL, applySettlementToLesson,
@@ -112,6 +112,8 @@ import {
 import {
   isMyRosterMember, isRosterMember, isUnlinkedLocalMember, mergeRoster, rosterHideKey,
 } from "./features/roster/roster-bridge.js";
+import { JOURNEY_PRIOR_NOTE, buildPassJourney, hasJourney } from "./features/members/pass-journey.js";
+import { previewLessonRates } from "./features/schedule/lesson-rate-preview.js";
 import {
   MIGRATION_ERROR, applyClientMigration, applyPassMigration, groupFailures,
   planClientMigration, planPassMigration,
@@ -2682,6 +2684,35 @@ function SchedSettleSkips({ s, members }) {
   );
 }
 
+/* 확정을 누르면 이 회차가 얼마가 되는지. 이름이 주인공이고 단가는 부가 정보라,
+   글씨는 caption 이고 색은 보조색이다 -- 강사가 수업 전에 보는 화면에서 금액이
+   먼저 눈에 들어오면 부담이 된다.
+
+   사유를 함께 쓴다. 같은 회원권 안에서도 19회째와 21회째가 다르므로, 금액만
+   보면 계산이 틀린 것처럼 읽힌다. 나중에 "왜 이 금액이지" 를 묻지 않게 하는 것이
+   이 한 줄의 목적이다. */
+const RATE_SKIP_LINE = {
+  no_client: "센터에 등록되지 않은 회원 · 차감 없음",
+  no_pass: "회원권 없음 · 발급이 필요합니다",
+  spent: "잔여 없음 · 재등록이 필요합니다",
+};
+
+function SchedRateLine({ preview }) {
+  if (!preview) return null;
+  if (preview.skip) {
+    const line = RATE_SKIP_LINE[preview.skip]
+      || `확정 시 차감되지 않습니다${preview.code ? ` (${preview.code})` : ""}`;
+    return (
+      <span className="mt-0.5 block truncate" style={{ fontSize: TYPE.caption, color: WARN }}>{line}</span>
+    );
+  }
+  return (
+    <span className="mt-0.5 block truncate tabular-nums" style={{ fontSize: TYPE.caption, color: FAINT }}>
+      {won(preview.unitPrice)}원 · {labelOf(PRICING_RULE_LABELS, preview.rule)}
+    </span>
+  );
+}
+
 function SchedSettleBlock({ s, members, canSettle, settled, canUnsettle, onSettle, onUnsettle }) {
   const [busy, setBusy] = useState(false);
   const [undoing, setUndoing] = useState(false);
@@ -2751,7 +2782,7 @@ function SchedSettleBlock({ s, members, canSettle, settled, canUnsettle, onSettl
   );
 }
 
-function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset, quickAddRequest, onConsumeQuickAdd, openLessonId, onConsumeOpenLesson, onOpenMember, onAddMember, onOpenAttendance, organizationMode = false, onSettleLesson, onUnsettleLesson, canUnsettle = false, payCard = null }) {
+function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset, quickAddRequest, onConsumeQuickAdd, openLessonId, onConsumeOpenLesson, onOpenMember, onAddMember, onOpenAttendance, organizationMode = false, rateOf, onSettleLesson, onUnsettleLesson, canUnsettle = false, payCard = null }) {
   const initialDisplay = useMemo(() => {
     try { return JSON.parse(localStorage.getItem(SCHEDULE_VIEW_KEY) || "null") || {}; }
     catch (e) { return {}; }
@@ -3042,7 +3073,7 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
       {editing && <ScheduleForm draft={liveEditing} members={db.members} schedule={db.schedule} briefingOf={briefingOf} scheduleColors={scheduleColors} returnFocusRef={scheduleTriggerRef} onClose={() => setEditing(null)}
         onSubmit={(v) => { onSave(v); setEditing(null); }} onDelete={(id) => { onDelete(id); setEditing(null); }}
         onStatus={onStatus} onStatusAll={onStatusAll} onNoshowFee={onNoshowFee} onGroupDone={onGroupDone}
-        organizationMode={organizationMode} onSettleLesson={onSettleLesson} onUnsettleLesson={onUnsettleLesson} canUnsettle={canUnsettle}
+        organizationMode={organizationMode} rateOf={rateOf} onSettleLesson={onSettleLesson} onUnsettleLesson={onUnsettleLesson} canUnsettle={canUnsettle}
         onNoComment={onNoComment} onSaveNote={onSaveNote} onOpenMember={onOpenMember} onFocusMemberWeek={(memberId) => { setFocusedMemberId(memberId); setEditing(null); }} />}
       {queueOpen && (
         <ScheduleQueueSheet tasks={taskQueue} members={db.members} returnFocusRef={queueTriggerRef} onClose={() => setQueueOpen(false)}
@@ -3429,10 +3460,16 @@ function confirmedLessonNoteArgs(note, reviewedDraft = null) {
   };
 }
 
-function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, onClose, onSubmit, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onOpenMember, onFocusMemberWeek, scheduleColors = null, organizationMode = false, onSettleLesson, onUnsettleLesson, canUnsettle = false }) {
+function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, onClose, onSubmit, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onOpenMember, onFocusMemberWeek, scheduleColors = null, organizationMode = false, rateOf, onSettleLesson, onUnsettleLesson, canUnsettle = false }) {
   /* 확정된 수업은 출석을 바꿀 수 없다. 상태를 바꿔도 이미 나간 차감은 따라오지
      않고, 둘이 어긋나면 어느 것이 맞는지 알 수 없다. */
   const settledLesson = organizationMode && isSettledLesson(draft);
+  /* 확정 뒤에는 예상이 아니라 결과가 있다. 이미 박힌 금액 옆에 "예상" 을 또
+     쓰면 둘 중 어느 것이 실제인지 알 수 없다. */
+  const rates = useMemo(
+    () => (organizationMode && !settledLesson && rateOf ? rateOf(draft) : new Map()),
+    [organizationMode, settledLesson, rateOf, draft],
+  );
   const aiRecording = useContext(AIRecordingStatusContext);
   const currentIds = draft.memberIds || attendeesOf(draft).map((a) => a.memberId).filter(Boolean);
   const initialKind = draft.personal
@@ -3646,6 +3683,10 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
                     <button type="button" onClick={() => { setActiveMemberId(a.memberId); setRecordMode(null); setRecordBody(""); }} className="w-full min-w-0 text-left">
                       <span className="flex min-w-0 items-center gap-2"><span className="min-w-0 flex-1 truncate text-sm font-extrabold" style={{ color: active ? PRIMARY : INK }}>{m?.name || "삭제된 회원"}</span><span className="shrink-0 rounded-full px-2 py-0.5 text-caption font-extrabold" style={{ backgroundColor: stOf(a.status).bg, color: stOf(a.status).color }}>{stOf(a.status).label}</span></span>
                       <span className="mt-0.5 block text-xs" style={{ color: SUB }}>잔여 {left(m)}회{m?.contractEnd ? ` · ${m.contractEnd.slice(5).replace("-", ".")}까지` : ""}</span>
+                      {/* 확정하면 얼마가 되는지. 눌러 본 뒤에 아는 것과 누르기 전에
+                          아는 것은 다르다 -- 원장은 append-only 라 누른 뒤에는
+                          고칠 수 없다. */}
+                      <SchedRateLine preview={rates.get(a.memberId)} />
                     </button>
                     {m?.goal ? <p className="mt-1 line-clamp-2 text-xs" style={{ color: INK2 }}>목표 · {m.goal}</p> : <button type="button" onClick={() => onOpenMember?.(a.memberId)} className="mt-1 text-xs font-extrabold" style={{ color: BRAND_D }}>+ 목표 추가</button>}
                   </div>
@@ -4774,7 +4815,7 @@ function MemberList({ members, selectedId, onSelect, onAdd, onOpenFav, favCount,
 function ReferenceMemberList({
   members, schedule, settings, onSelect, onAdd, onDeleteSamples, registerRequest = 0,
   onConsumeRegisterRequest, canRegister = true, currentUserId = "", myMembersDefault = false,
-  rosterError = "", onRetryRoster, hiddenCount = 0, onShowHidden,
+  rosterError = "", onRetryRoster, hiddenCount = 0, onShowHidden, journeyOf,
 }) {
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState("all");
@@ -4938,6 +4979,15 @@ function ReferenceMemberList({
                 <span className="truncate" style={{ fontSize: TYPE.caption, color: SUB }}>만료 {m.contractEnd ? ymd(m.contractEnd) : "미설정"}</span><span style={{ color: LINE }}>·</span>
                 <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: next ? INK2 : SUB }}>다음 예약 {next ? `${md(next.date)} ${next.start}` : "없음"}</span>
               </div>
+              {/* 강사가 "이 회원 얼마나 왔지" 를 숫자로 세지 않아도 되게. 카드에서는
+                  줄과 한 줄만, 기준 문구는 상세에만 둔다 -- 카드가 문장으로 차면
+                  목록이 아니라 글이 된다. */}
+              {journeyOf ? (() => {
+                const journey = journeyOf(m.id);
+                return hasJourney(journey)
+                  ? <div className="mt-2"><PassJourneyBar journey={journey} size="sm" /></div>
+                  : null;
+              })() : null}
             </button></div>
           );
         })}</div>
@@ -4991,6 +5041,72 @@ function MemberRegisterSheet({ members, onOpenExisting, onClose, onCreate }) {
   );
 }
 
+/* 회원의 여정 줄. 회원권 하나가 아니라 지금까지 온 전부를 한 줄로 잇는다.
+
+   줄이 주인공이고 숫자는 보조다. 큰 막대가 아니라 가는 선이고, 회원권 경계에만
+   옅은 구분선을 둔다 -- 몇 차인지는 알아야 하지만 그것이 줄을 조각내면 여정으로
+   읽히지 않는다.
+
+   서비스 회차는 다른 색이다. 급여가 다르고 회원이 받은 성격도 다르다.
+
+   size="sm" 은 회원 카드와 출석 체크에 들어가는 줄이다. 거기서는 숫자도 줄이지
+   않는다 -- 강사가 "이 회원 얼마나 왔지" 를 세지 않아도 되게 하는 것이 목적이라
+   숫자 한 줄은 남는다. */
+function PassJourneyBar({ journey, size = "md" }) {
+  if (!hasJourney(journey)) return null;
+  const small = size === "sm";
+  const height = small ? 4 : 6;
+  const total = journey.grandTotal;
+  const done = journey.usedTotal;
+  return (
+    <div className="min-w-0">
+      <div
+        aria-label={`누적 ${done}회 / 총 ${total}회`}
+        className="flex w-full overflow-hidden"
+        style={{ height, borderRadius: height, backgroundColor: CANVAS }}>
+        {journey.segments.map((segment, index) => {
+          /* 구간 폭은 회차 수에 비례한다. 1회짜리 회원권도 선에 남아야 하므로
+             최소 폭을 준다 -- 0px 이면 경계선만 보이고 구간은 사라진다. */
+          const width = `${Math.max(2, (segment.total / total) * 100)}%`;
+          const filled = segment.total > 0 ? (segment.used / segment.total) * 100 : 0;
+          /* 서비스는 구간의 오른쪽 끝에 있다. 서비스를 먼저 쓰지만 줄에서는
+             결제분과 섞지 않고 한쪽으로 모아야 경계가 읽힌다. */
+          const servicePart = segment.total > 0 ? (segment.service / segment.total) * 100 : 0;
+          return (
+            <div key={`${segment.kind}-${segment.passId || index}`} className="relative h-full"
+              style={{
+                width,
+                borderLeft: index === 0 ? "none" : `1px solid ${CARD}`,
+                backgroundColor: segment.kind === "prior" ? "#C9CEDA" : CANVAS,
+              }}>
+              {segment.kind === "prior" ? null : (
+                <>
+                  <span className="absolute inset-y-0 left-0" style={{ width: `${filled}%`, backgroundColor: BRAND }} />
+                  {servicePart > 0 ? (
+                    <span className="absolute inset-y-0 right-0"
+                      style={{ width: `${servicePart}%`, backgroundColor: segment.used >= segment.paid ? GOOD : "transparent", opacity: 0.85 }} />
+                  ) : null}
+                  {/* 만료·종료된 회원권에 남은 회차. 채우면 한 것처럼 보이고 그냥
+                      비우면 "왜 중간이 비었나" 를 묻게 된다. */}
+                  {segment.lapsed > 0 ? (
+                    <span className="absolute inset-y-0 right-0"
+                      style={{ width: `${(segment.lapsed / segment.total) * 100}%`, backgroundColor: "#E2E5EC" }} />
+                  ) : null}
+                </>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <p className="mt-1 truncate tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+        누적 {done} / {total}회
+        {journey.currentRound > 0 ? ` · ${journey.currentRound}차 진행중` : ""}
+        {journey.hasPrior && !small ? ` · ${JOURNEY_PRIOR_NOTE} ${journey.prior}회` : ""}
+      </p>
+    </div>
+  );
+}
+
 /* organizationMode 는 "이 회원이 센터의 것인가" 이다. 소속 센터에서 강사가
    못 하는 일 셋을 이 값 하나가 가린다.
 
@@ -5004,7 +5120,7 @@ function MemberRegisterSheet({ members, onOpenExisting, onClose, onCreate }) {
 
    개인 모드(레거시)에는 셋 다 그대로 남는다. 그쪽에서는 payRate 가 실제로 월간
    리포트 계산에 쓰이고, 회원도 홀딩도 강사 자신의 것이다. */
-function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSettlement = true, organizationMode = false, onBack, onPatch, onSaveNote, onSchedule, onOpenLesson, onAssess, onToast, onDelete, onDeactivate, onReactivate, onHide }) {
+function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSettlement = true, organizationMode = false, journey = null, onBack, onPatch, onSaveNote, onSchedule, onOpenLesson, onAssess, onToast, onDelete, onDeactivate, onReactivate, onHide }) {
   const [sheet, setSheet] = useState(null);
   const [edit, setEdit] = useState({});
   const [memo, setMemo] = useState("");
@@ -5182,6 +5298,13 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
             <div className="flex min-w-0 items-center gap-3"><span className="min-w-0 flex-1 break-words text-xs font-extrabold tabular-nums" style={{ color: statusInk }}>잔여 {detailStatus.remaining}회 · 다음 예약 {detailStatus.nextLesson ? formatMemberLessonDate(detailStatus.nextLesson.date) : "없음"} · {detailStatus.expiry ? `${formatMemberLessonDate(detailStatus.expiry)} 만료` : "만료일 없음"}</span>{pendingSessionCount > 0 && <span className="shrink-0 rounded-full px-2 py-1 text-caption font-extrabold" style={{ backgroundColor: CARD, color: WARN }}>확인 {pendingSessionCount}</span>}</div>
             {detailStatus.risk !== "normal" && bodyPhotoSurface.latest && bodyPhotoSurface.daysSinceLatest !== null && <p className="mt-1.5 text-caption font-medium tabular-nums" style={{ color: INK2, opacity: 0.78 }}>최근 체형사진 · {bodyPhotoSurface.daysSinceLatest}일 전</p>}
           </section>
+          {/* 이 회원이 우리와 얼마나 왔는가. 이번 회원권만으로는 답할 수 없는
+              질문이고, 재등록 상담에서 필요한 것은 그쪽이다. */}
+          {hasJourney(journey) ? (
+            <section data-member-section="journey" style={sectionStyle}>
+              <PassJourneyBar journey={journey} />
+            </section>
+          ) : null}
           <section ref={recentCardRef} data-member-section="next-preparation" aria-label="다음 수업 준비" style={sectionStyle}>
             <div className="mb-2 flex min-w-0 items-center gap-2"><Sparkles size={14} className="shrink-0" style={{ color: BRAND_D }} /><h2 className="min-w-0 flex-1 truncate text-sm font-extrabold" style={{ color: INK }}>다음 수업 준비</h2>{latestLessonSession?.source === "ai" && <span className="shrink-0 text-caption font-bold" style={{ color: BRAND_D }}>AI 요약 · {formatMemberLessonDate(latestLessonSession.date)}{latestLessonSession.confirmationState !== "confirmed" ? " · 확인 필요" : ""}</span>}</div>
             <div className="grid min-w-0 grid-cols-[72px_minmax(0,1fr)] gap-x-2 gap-y-2"><span className="text-caption font-bold" style={{ color: SUB }}>지난 수업</span><span className="min-w-0 break-words text-xs font-bold" style={{ color: INK2 }}>{latestLessonSession ? `${formatMemberLessonDate(latestLessonSession.date)} · ${latestLessonRepresentative.display}` : "기록 없음"}</span><span className="text-caption font-bold" style={{ color: SUB }}>다음 확인</span><span className="min-w-0 break-words text-xs font-bold" style={{ color: BRAND_D }}>{preparation.next}</span></div>
@@ -18336,6 +18459,20 @@ export function createAppScreenSmokeCases() {
     { name: "일정 탭", element: provider(<ScheduleManager db={db} photos={photos} onSave={noop} onDelete={noop} onStatus={noop} onStatusAll={noop} onNoshowFee={noop} onGroupDone={noop} onNoComment={noop} onSaveNote={noop} onToast={noop} onSettings={noop} onConsumeMemberPreset={noop} onConsumeQuickAdd={noop} onOpenMember={noop} />) },
     { name: "일정 탭 · 하루 11건 혼합", element: provider(<ScheduleManager db={busyDb} photos={{}} onSave={noop} onDelete={noop} onStatus={noop} onStatusAll={noop} onNoshowFee={noop} onGroupDone={noop} onNoComment={noop} onSaveNote={noop} onToast={noop} onSettings={noop} onConsumeMemberPreset={noop} onConsumeQuickAdd={noop} onOpenMember={noop} />) },
     { name: "일정 탭 · 소속 · 확정 전", element: scheduleWithSettlement(settleLessonOf()) },
+    /* 확정 전 예상 단가. 한 회원은 기준 단가, 한 회원은 회원권이 없다 --
+       금액과 "왜 그 금액인지" 와 "왜 못 하는지" 가 한 화면에 함께 선다. */
+    { name: "일정 탭 · 소속 · 예상 단가", element: scheduleWithSettlement(settleLessonOf(), {
+      rateOf: () => new Map([
+        ["m-local-1", { unitPrice: 30000, rule: "base_category", passId: "p1", remaining: 8 }],
+        ["smoke-client-b", { skip: "no_pass" }],
+      ]),
+    }) },
+    { name: "일정 탭 · 소속 · 예상 단가 · 서비스", element: scheduleWithSettlement(settleLessonOf(), {
+      rateOf: () => new Map([
+        ["m-local-1", { unitPrice: 10000, rule: "base_category", passId: "p1", remaining: 8 }],
+        ["smoke-client-b", { unitPrice: 0, rule: "service_already_used", passId: "p2", remaining: 3 }],
+      ]),
+    }) },
     { name: "일정 탭 · 소속 · 확정됨", element: scheduleWithSettlement(settleLessonOf({
       orgSettledAt: "2026-09-19T07:00:00.000Z",
       orgSettledOutcome: "complete",
@@ -18384,6 +18521,16 @@ export function createAppScreenSmokeCases() {
     /* 소속 센터의 회원. 강사가 못 하는 셋 -- 삭제 · 홀딩 · 단가 -- 이 사라지고,
        이용권 카드의 세 칸이 조직 회원권에서 채워진다. */
     { name: "회원 상세 · 소속", element: <ReferenceMemberDetail member={smokeRoster[0]} schedule={db.schedule} photos={photos[member.id]} settings={db.settings} organizationMode onBack={noop} onPatch={asyncNoop} onSaveNote={asyncNoop} onSchedule={noop} onAssess={noop} onToast={noop} onHide={asyncNoop} /> },
+    /* 여정 줄. 끝난 회원권 둘과 진행 중 하나, 그리고 앱 이전 기록까지. */
+    { name: "회원 상세 · 여정", element: <ReferenceMemberDetail member={smokeRoster[0]} schedule={db.schedule} photos={photos[member.id]} settings={db.settings} organizationMode onBack={noop} onPatch={asyncNoop} onSaveNote={asyncNoop} onSchedule={noop} onAssess={noop} onToast={noop} onHide={asyncNoop}
+      journey={buildPassJourney({
+        passes: [
+          { id: "j1", purchaseRound: 1, totalSessions: 20, serviceSessions: 0, remainingCount: 0, status: "completed", createdAt: new Date(2026, 0, 1) },
+          { id: "j2", purchaseRound: 2, totalSessions: 30, serviceSessions: 0, remainingCount: 0, status: "completed", createdAt: new Date(2026, 3, 1) },
+          { id: "j3", purchaseRound: 3, totalSessions: 30, serviceSessions: 2, remainingCount: 18, status: "active", createdAt: new Date(2026, 7, 1) },
+        ],
+        instructorSessions: 74,
+      })} /> },
     { name: "체형분석 목록", element: <ReferenceAnalysisTab members={db.members} photos={photos} selectedId={null} selectedPoseId={null} onSelect={noop} hub={noop} /> },
     { name: "체형분석 상세 빈 이력", element: <AssessmentWorkspace member={member} photos={photos[member.id]} settings={db.settings} onSavePose={asyncNoop} onUpdatePose={asyncNoop} onDeletePose={asyncNoop} onSaveCaptureDraft={asyncNoop} onDeleteCaptureDraft={asyncNoop} onDiscardAssessmentDraft={asyncNoop} onCompleteAssessment={asyncNoop} onSaveMarks={asyncNoop} onSaveAssessmentRole={asyncNoop} onToggleAssessmentFavorite={asyncNoop} onToast={noop} onSaved={noop} /> },
     { name: "변화 기록 상세 저장 이력", element: <AssessmentWorkspace member={member} photos={completedHistoryPhotos} settings={db.settings} initialMode="history" onSavePose={asyncNoop} onUpdatePose={asyncNoop} onDeletePose={asyncNoop} onSaveCaptureDraft={asyncNoop} onDeleteCaptureDraft={asyncNoop} onDiscardAssessmentDraft={asyncNoop} onCompleteAssessment={asyncNoop} onSaveMarks={asyncNoop} onSaveAssessmentRole={asyncNoop} onToggleAssessmentFavorite={asyncNoop} onToast={noop} onSaved={noop} /> },
@@ -18700,20 +18847,28 @@ export default function App() {
   const [rosterClients, setRosterClients] = useState([]);
   const [rosterPasses, setRosterPasses] = useState([]);
   const [rosterError, setRosterError] = useState("");
+  const [rosterTotals, setRosterTotals] = useState([]);
   const [rosterRevision, setRosterRevision] = useState(0);
 
   useEffect(() => {
-    if (!organizationRoster) { setRosterClients([]); setRosterPasses([]); setRosterError(""); return undefined; }
+    if (!organizationRoster) { setRosterClients([]); setRosterPasses([]); setRosterTotals([]); setRosterError(""); return undefined; }
     let alive = true;
     /* 회원권도 함께 읽는다. 잔여와 담당 강사가 거기서 오고, 둘 다 없으면 목록이
-       "잔여 0회"와 "담당 없음"으로 가득 찬다 -- 강사는 그것을 고장으로 읽는다. */
+       "잔여 0회"와 "담당 없음"으로 가득 찬다 -- 강사는 그것을 고장으로 읽는다.
+
+       누적도 함께 읽는다. 여정 줄의 "앱 이전" 구간과 일정 카드의 예상 단가가
+       그 값을 본다 -- 판정 3 이 그것으로 갈리기 때문이다. 못 읽어도 화면은
+       열린다: 누적이 없으면 이전 구간이 없고 예상 단가는 신규 단가로 보이는데,
+       그것은 "아직 모른다" 와 같은 방향이라 거짓을 보여주지 않는다. */
     Promise.all([
       listClients(organizationContext.organizationId),
       listPasses(organizationContext.organizationId),
-    ]).then(([clients, passes]) => {
+      toleratingReadFailure(listInstructorClientTotals(organizationContext.organizationId)),
+    ]).then(([clients, passes, totalsResult]) => {
       if (!alive) return;
       setRosterClients(clients);
       setRosterPasses(passes);
+      setRosterTotals(totalsResult.items);
       setRosterError("");
     }).catch((error) => {
       if (!alive) return;
@@ -18774,6 +18929,40 @@ export default function App() {
      깨진 이유다. 셋 다 같은 한 줄이었다.
 
      개인 모드에서는 rosterDb 가 db 이므로 이 함수가 곧 db.members 조회다. */
+  /* 이 회원의 여정. 회원권 목록과 강사-회원 누적에서 나온다.
+
+     누적은 담당 강사 기준이라, 그 회원권을 맡은 강사를 기준으로 읽는다 --
+     회원의 여정이지 보는 사람의 여정이 아니다. 대표가 봐도 같은 줄이 나온다. */
+  const journeyFor = useCallback((memberId) => {
+    const target = String(memberId || "");
+    if (!target || !organizationRoster) return null;
+    const clientId = String(rosterMembers.find((item) => String(item?.id || "") === target)?.orgClientId || "");
+    if (!clientId) return null;
+    const mine = rosterPasses.filter((item) => item?.clientId === clientId);
+    const instructorId = String(mine.find((item) => item?.instructorId)?.instructorId || "");
+    const pairId = instructorId + "_" + clientId;
+    const total = rosterTotals.find((item) => String(item?.id || "") === pairId);
+    return buildPassJourney({ passes: mine, instructorSessions: total?.sessions });
+  }, [organizationRoster, rosterMembers, rosterPasses, rosterTotals]);
+
+  /* 이 수업을 확정하면 회원마다 얼마가 되는가.
+
+     차감이 쓰는 그 엔진을 그대로 부른다 (lesson-rate-preview.js). 계산을 여기서
+     다시 쓰면 미리 본 값과 실제 값이 갈라지고, 그날 강사는 화면을 믿지 않게 된다.
+
+     누적은 화면이 이미 읽어 둔 목록에서 본다. 차감은 그 순간 서버에서 다시 읽으
+     므로 20회째 근처에서 한 칸 어긋날 수 있다 -- 같은 회원을 다른 강사가 방금
+     차감했을 때다. 그 경우가 아니면 두 값은 같다. */
+  const previewRatesFor = useCallback((lesson) => previewLessonRates({
+    lesson,
+    members: rosterMembers,
+    passes: rosterPasses,
+    totals: rosterTotals,
+    instructorId: account?.id || "",
+    isDeputyDirector: organizationContext.isDeputyDirector === true,
+    now: new Date(),
+  }), [rosterMembers, rosterPasses, rosterTotals, account?.id, organizationContext.isDeputyDirector]);
+
   const findRosterMember = useCallback(
     (memberId) => {
       const target = String(memberId || "");
@@ -21144,15 +21333,16 @@ export default function App() {
       <div className="pt-app-shell safe-t flex h-full min-h-0 w-full flex-col" style={{ backgroundColor: PAGE, boxShadow: "0 0 0 1px rgba(28,36,51,.04)" }}>
         <div className="relative min-h-0 flex-1 overflow-hidden">
           <Guard key={tab}>
-            {tab === "schedule" && <ScheduleManager db={rosterDb} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterMembers ? () => { setMemberRegistrationRequest((value) => value + 1); setTab("members"); } : undefined} organizationMode={organizationRoster} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} canUnsettle={organizationRoster && organizationContext.role === ROLES.OWNER} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
+            {tab === "schedule" && <ScheduleManager db={rosterDb} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterMembers ? () => { setMemberRegistrationRequest((value) => value + 1); setTab("members"); } : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} canUnsettle={organizationRoster && organizationContext.role === ROLES.OWNER} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
             {tab === "members" && <div className={`h-full min-h-0 ${mobileView === "detail" && member ? "pt-member-detail-active" : ""}`}>
-              <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList members={rosterMembers} schedule={db.schedule} settings={db.settings} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterMembers} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
+              <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList members={rosterMembers} schedule={db.schedule} settings={db.settings} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterMembers} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} journeyOf={organizationRoster ? journeyFor : undefined} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
               {mobileView === "detail" && member && <div className="pt-member-detail-pane h-full min-h-0">
                 <ReferenceMemberDetail key={member.id} member={member} schedule={db.schedule} photos={photos[member.id]} settings={db.settings}
                   canViewSettlement={!account?.role || ["owner", "manager", "admin", "director"].includes(String(account.role).toLowerCase())} onBack={() => setMobileView("list")}
                   onPatch={(change) => patch(member.id, change)} onSaveNote={(type, body, voiceMeta, noteOptions) => saveScheduleComment(member.id, type, null, body, voiceMeta, noteOptions)}
                   onSchedule={() => { setScheduleMemberId(member.id); setTab("schedule"); }} onOpenLesson={(lessonId) => { setScheduleOpenLessonId(lessonId); setTab("schedule"); }} onAssess={(entry = {}) => { setAnalysisRecordId(entry.poseId || null); setAnalysisAssessmentId(entry.assessmentId || null); setAnalysisEntryMode(entry.mode || "home"); setAnalysisComparisonEntry(entry.beforeAssessmentId && entry.afterAssessmentId ? { beforeAssessmentId: entry.beforeAssessmentId, afterAssessmentId: entry.afterAssessmentId, compareView: entry.compareView || "front" } : null); setAnalysisMemberId(member.id); setTab("analysis"); }} onToast={setToast} onDelete={removeMember} onDeactivate={deactivateMember} onReactivate={reactivateMember}
-                  organizationMode={organizationRoster && isRosterMember(member)} onHide={hideRosterMember} />
+                  organizationMode={organizationRoster && isRosterMember(member)} onHide={hideRosterMember}
+                  journey={journeyFor(member.id)} />
               </div>}
             </div>}
             {tab === "analysis" && <ReferenceAnalysisTab members={rosterMembers} photos={photos} selectedId={analysisMemberId} selectedPoseId={analysisRecordId}

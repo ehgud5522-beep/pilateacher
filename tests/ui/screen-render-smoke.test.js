@@ -26,6 +26,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "일정 탭",
     "일정 탭 · 하루 11건 혼합",
     "일정 탭 · 소속 · 확정 전",
+    "일정 탭 · 소속 · 예상 단가",
+    "일정 탭 · 소속 · 예상 단가 · 서비스",
     "일정 탭 · 소속 · 확정됨",
     "일정 탭 · 소속 · 일부만 차감",
     "일정 탭 · 소속 · 차감할 회차 없음",
@@ -35,6 +37,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "회원 목록",
     "회원 상세",
     "회원 상세 · 소속",
+    "회원 상세 · 여정",
     "체형분석 목록",
     "체형분석 상세 빈 이력",
     "변화 기록 상세 저장 이력",
@@ -1529,4 +1532,66 @@ test("an instructor cannot delete, hold or reprice a centre member", async (t) =
   assert.match(personal, /홀딩 설정/);
   assert.match(personal, /단가 수정/);
   assert.doesNotMatch(personal, /내 목록에서 숨기기/);
+});
+
+/* 회원의 여정 줄과 수업의 예상 단가. 둘 다 "나중에 묻지 않게" 하는 화면이다. */
+test("the journey line shows the whole road, not just this pass", async (t) => {
+  const vite = await createServer({
+    root: projectRoot,
+    configFile: false,
+    plugins: [react()],
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] },
+    server: { middlewareMode: true },
+    ssr: { noExternal: ["@capgo/camera-preview"] },
+    logLevel: "silent",
+  });
+  t.after(() => vite.close());
+  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+
+  const journey = markupOf("회원 상세 · 여정");
+  /* 20 + 30 + 32 = 82, 그중 쓴 것 64. 이관 기록은 74 − 64 = 10 회.
+     숫자는 보조지만 줄만으로는 "얼마나" 를 읽을 수 없어 한 줄은 남긴다. */
+  assert.match(journey, /누적 74 \/ 92회/);
+  assert.match(journey, /3차 진행중/);
+  // 담당이 바뀐 회원은 이 구간이 실제보다 짧다. 기준을 밝혀야 오해가 없다.
+  assert.match(journey, /앱 이전 기록 \(담당 강사 기준\) 10회/);
+
+  // 회원권이 하나도 없으면 빈 줄을 그리지 않는다.
+  assert.doesNotMatch(markupOf("회원 상세"), /누적 \d+ \/ \d+회/);
+});
+
+test("a lesson says what it will be worth before it is settled", async (t) => {
+  const vite = await createServer({
+    root: projectRoot,
+    configFile: false,
+    plugins: [react()],
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] },
+    server: { middlewareMode: true },
+    ssr: { noExternal: ["@capgo/camera-preview"] },
+    logLevel: "silent",
+  });
+  t.after(() => vite.close());
+  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+
+  /* 눌러 본 뒤에 아는 것과 누르기 전에 아는 것은 다르다 -- 원장은 append-only 라
+     누른 뒤에는 고칠 수 없다. */
+  const preview = markupOf("일정 탭 · 소속 · 예상 단가");
+  assert.match(preview, /30,000원 · 기준 단가/);
+  /* 회원권이 없는 것과 다 쓴 것은 고칠 방법이 다르다. 같은 자리에 그 사실을 쓴다. */
+  assert.match(preview, /회원권 없음 · 발급이 필요합니다/);
+
+  const service = markupOf("일정 탭 · 소속 · 예상 단가 · 서비스");
+  assert.match(service, /10,000원/);
+  // 0원도 금액이다. 빈칸으로 두면 "계산이 안 됐나" 로 읽힌다.
+  assert.match(service, /0원 · 서비스 2회차 — 센터 지원 소진/);
+
+  /* 확정 뒤에는 예상이 아니라 결과가 있다. 이미 박힌 금액 옆에 "예상" 을 또 쓰면
+     둘 중 어느 것이 실제인지 알 수 없다. */
+  assert.doesNotMatch(markupOf("일정 탭 · 소속 · 확정됨"), /원 · 기준 단가/);
 });

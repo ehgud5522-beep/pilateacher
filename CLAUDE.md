@@ -71,6 +71,22 @@ token, nonce, credential, authorizationCode, identityToken, password, 이메일,
 화면이 "네트워크"라고 말하는데 진단 코드가 `invalid-argument`라면 그것은 버그다.
 분류 규칙은 단위 테스트로 고정한다 — 코드 → 종류 → 문구가 한 줄로 이어지는지 검증한다.
 
+## 규칙 테스트를 돌리는 법
+
+`npm run test:rules` 는 Firestore 에뮬레이터를 띄우고, 에뮬레이터는 Java 를 쓴다.
+이 기기의 Java 는 PATH 에 없고 Android Studio 안에 있다 — 프로세스 한정으로 얹는다.
+
+```bash
+JAVA_HOME="C:\Program Files\Android\Android Studio\jbr" \
+  PATH="/c/Program Files/Android/Android Studio/jbr/bin:$PATH" npm run test:rules
+```
+
+`tools/test-rules.sh` 가 같은 일을 한다.
+
+**규칙을 고쳤으면 배포 전에 이것을 돌린다.** 배포는 문법만 본다 — 문이 실제로
+열리고 닫히는지는 여기서만 드러나고, 규칙은 한 번 나가면 그 사이의 모든 쓰기에
+적용된다.
+
 ## 진단 로그가 남는 곳
 
 - `deviceLog(...)` — 기기 진단 (`더보기 → 진단`)

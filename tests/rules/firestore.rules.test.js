@@ -439,7 +439,15 @@ describe("role permissions", () => {
 
   test("dual-write client and lesson paths allow same-organization staff only", async () => {
     const staffDb = dbFor(users.staff);
-    await assertSucceeds(setDoc(doc(staffDb, "organizations", ORG_A, "clients", "client-dual"), {
+    /* 회원 등록만 대표의 일이 됐다 -- canRegisterClient. 나머지 dual-write 경로
+       (수업 · 참석자)는 가르치는 사람들에게 그대로 열려 있고, 그것이 여기서
+       확인하려는 것이다. */
+    await assertFails(setDoc(doc(staffDb, "organizations", ORG_A, "clients", "client-dual"), {
+      organizationId: ORG_A,
+      clientId: "client-dual",
+      status: "active",
+    }));
+    await assertSucceeds(setDoc(doc(dbFor(users.owner), "organizations", ORG_A, "clients", "client-dual"), {
       organizationId: ORG_A,
       clientId: "client-dual",
       status: "active",
@@ -1714,14 +1722,15 @@ describe("instructor full-room rate", () => {
   });
 
   test("no other field travels through this door", async () => {
-    /* 이 경로로 role 이나 status 가 바뀌면 대표가 실수 한 번으로 강사를 센터에서
-       잘라내거나 대표로 올릴 수 있다. */
+    /* 이 경로로 role 이 바뀌면 대표가 실수 한 번으로 강사를 대표로 올릴 수 있다.
+       status 는 자기 문이 따로 있다 (퇴사) -- 그쪽은 active ↔ revoked 만 오가고
+       자기 자신에게는 쓸 수 없다. 여기서는 금액과 함께 실려 나가지 못한다. */
     for (const forbidden of [
       { role: "owner" },
-      { status: "revoked" },
       { organizationId: ORG_B },
       { userId: users.owner },
       { fullRoomRate: 45000, role: "owner" },
+      { fullRoomRate: 45000, status: "revoked" },
     ]) {
       await assertFails(updateDoc(membershipDoc(users.owner), forbidden), JSON.stringify(forbidden));
     }
@@ -1735,11 +1744,15 @@ describe("instructor full-room rate", () => {
     ));
   });
 
-  test("memberships still cannot be created or deleted by a client", async () => {
+  test("a half-filled membership is still refused, and none is ever deleted", async () => {
+    /* 대표가 강사를 붙이는 문은 열렸지만(아래 describe 참고) 본문은 닫힌 집합이다.
+       이름도 작성자도 없는 문서는 그 문으로도 들어오지 못한다 -- 이름이 없으면
+       목록이 uid 로 되돌아간다. */
     await assertFails(setDoc(
       doc(dbFor(users.owner), COLLECTIONS.MEMBERSHIPS, `${ORG_A}_newcomer`),
       { organizationId: ORG_A, userId: "newcomer", role: "instructor", status: "active" },
     ));
+    // 지우면 급여 화면이 그 이름을 붙일 곳을 잃는다. 퇴사는 status 로만 한다.
     await assertFails(deleteDoc(membershipDoc(users.owner)));
   });
 
@@ -1754,9 +1767,13 @@ describe("instructor full-room rate", () => {
     ));
   });
 
-  test("nobody writes somebody else's name, not even the owner", async () => {
-    await assertFails(updateDoc(membershipDoc(users.owner), { displayName: "남의이름" }));
+  test("the owner writes a name, and nobody else writes another's", async () => {
+    /* 강사 관리 화면이 이름을 정한다 -- 강사가 앱을 한 번도 안 열었으면 이름을
+       채울 사람이 대표뿐이고, 그때까지 목록은 uid 로 서 있다. 열었으면 본인이
+       쓴 이름이 그대로 남는다. */
+    await assertSucceeds(updateDoc(membershipDoc(users.owner), { displayName: "정예진" }));
     await assertFails(updateDoc(membershipDoc(users.manager), { displayName: "남의이름" }));
+    await assertFails(updateDoc(membershipDoc(users.staff), { displayName: "남의이름" }));
     await assertFails(updateDoc(membershipDoc(users.outsider), { displayName: "남의이름" }));
   });
 
@@ -2406,15 +2423,15 @@ describe("checking attendance against a pass", () => {
        바뀐 단가가 지난 회원권에 소급된다. 실제 단가가 아니라는 것은
        deduction-pricing.js 가 말한다 -- 앞의 세 판정이 먼저 걸리면 쓰이지 않는다. */
     await assertFails(setDoc(
-      passDocOf(users.manager, ORG_A, "pass-no-price"),
+      passDocOf(users.owner, ORG_A, "pass-no-price"),
       dropField(passFixture(ORG_A, "pass-no-price"), "baseUnitPrice"),
     ));
     await assertFails(setDoc(
-      passDocOf(users.manager, ORG_A, "pass-string-price"),
+      passDocOf(users.owner, ORG_A, "pass-string-price"),
       passFixture(ORG_A, "pass-string-price", { baseUnitPrice: "25000" }),
     ));
     await assertSucceeds(setDoc(
-      passDocOf(users.manager, ORG_A, "pass-priced"),
+      passDocOf(users.owner, ORG_A, "pass-priced"),
       passFixture(ORG_A, "pass-priced"),
     ));
   });
@@ -2542,17 +2559,17 @@ describe("what a pass and its ledger must say", () => {
   test("a pass has to carry the expiry from the contract", async () => {
     // 회원이 가장 자주 묻는 값이고 회원 앱에도 들어간다.
     await assertFails(setDoc(
-      passDocOf(users.manager, "pass-no-expiry"),
+      passDocOf(users.owner, "pass-no-expiry"),
       dropField(passFixture(ORG_A, "pass-no-expiry"), "expiresAt"),
     ));
     for (const bad of ["2027-03-31", 1790000000, null]) {
       await assertFails(setDoc(
-        passDocOf(users.manager, "pass-bad-expiry"),
+        passDocOf(users.owner, "pass-bad-expiry"),
         passFixture(ORG_A, "pass-bad-expiry", { expiresAt: bad }),
       ), JSON.stringify(bad));
     }
     await assertSucceeds(setDoc(
-      passDocOf(users.manager, "pass-with-expiry"),
+      passDocOf(users.owner, "pass-with-expiry"),
       passFixture(ORG_A, "pass-with-expiry"),
     ));
   });

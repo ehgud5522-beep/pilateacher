@@ -704,6 +704,32 @@ export async function loadClientPassHistory(organizationId, clientId, options = 
    ────────────────────────────────────────────────────────────────────────── */
 
 /**
+ * 이 센터의 강사-회원 누적 전부.
+ *
+ * 한 쌍씩 읽는 readInstructorClientSessions 와 목적이 다르다. 그쪽은 차감 직전에
+ * "지금 이 순간의 값" 을 확인하는 것이고, 이쪽은 화면이 여러 회원의 누적을 한
+ * 번에 그리기 위한 것이다 -- 주간 그리드 한 화면에 열 명이 서면 한 쌍씩 읽어서는
+ * 왕복이 열 번이다.
+ *
+ * 경로가 조직을 고정하므로 필터도 인덱스도 필요 없다. 규칙의 read 가
+ * resource.data 를 보지 않아 목록 조회가 그대로 통과한다 -- 머리말의 class A.
+ *
+ * @param {string} organizationId
+ * @param {{ store?: PassStore }} [options]
+ */
+export async function listInstructorClientTotals(organizationId, options = {}) {
+  const { store = createFirestorePassStore() } = options;
+  const organization = requiredText(organizationId, "organizationId");
+  const path = paths.instructorClientTotal(organization, "placeholder", "placeholder");
+  // 조회 실패는 빈 목록이 아니라 RepositoryReadError 로 나간다 -- repository-read.js 참고.
+  return readCollection({
+    feature: "instructor_client_totals",
+    path: path.slice(0, path.lastIndexOf("/")),
+    read: (collectionPath) => store.list(collectionPath),
+  });
+}
+
+/**
  * 이 강사가 이 회원에게 이미 진행한 횟수.
  *
  * 문서가 없으면 0 이다 -- 아직 한 번도 안 했다는 뜻이고, 판정 3 이 그것을

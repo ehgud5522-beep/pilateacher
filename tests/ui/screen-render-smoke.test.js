@@ -1559,6 +1559,14 @@ test("the journey line shows the whole road, not just this pass", async (t) => {
   // 담당이 바뀐 회원은 이 구간이 실제보다 짧다. 기준을 밝혀야 오해가 없다.
   assert.match(journey, /앱 이전 기록 \(담당 강사 기준\) 10회/);
 
+  /* 현재 위치를 나타내는 점. 차감할 때마다 한 칸 오른쪽으로 기어간다 -- 회원이
+     지금 어디쯤 와 있는지가 줄에서 읽혀야 하고, 그것이 이 줄의 요점이다. */
+  assert.match(journey, /aria-label="누적 74회 \/ 총 92회 · 3차 진행중"/);
+  assert.match(journey, /left:80\.4\d*%/, "74 / 92 = 80.4%");
+  /* 서비스 구간은 색을 덮는 대신 빗금을 얹는다 -- 아직 쓰지 않은 서비스도
+     "여기는 서비스" 로 읽혀야 한다. 급여도 성격도 다른 회차다. */
+  assert.match(journey, /repeating-linear-gradient/);
+
   // 회원권이 하나도 없으면 빈 줄을 그리지 않는다.
   assert.doesNotMatch(markupOf("회원 상세"), /누적 \d+ \/ \d+회/);
 });

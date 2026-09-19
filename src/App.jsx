@@ -5058,45 +5058,60 @@ function PassJourneyBar({ journey, size = "md" }) {
   const height = small ? 4 : 6;
   const total = journey.grandTotal;
   const done = journey.usedTotal;
+  /* 현재 위치. 차감할 때마다 한 칸 오른쪽으로 기어간다 -- 회원이 지금 어디쯤
+     와 있는지가 줄에서 읽혀야 하고, 그것이 이 줄의 요점이다. */
+  const at = total > 0 ? Math.min(100, (done / total) * 100) : 0;
+  const dot = small ? 7 : 9;
   return (
     <div className="min-w-0">
-      <div
-        aria-label={`누적 ${done}회 / 총 ${total}회`}
-        className="flex w-full overflow-hidden"
-        style={{ height, borderRadius: height, backgroundColor: CANVAS }}>
-        {journey.segments.map((segment, index) => {
-          /* 구간 폭은 회차 수에 비례한다. 1회짜리 회원권도 선에 남아야 하므로
-             최소 폭을 준다 -- 0px 이면 경계선만 보이고 구간은 사라진다. */
-          const width = `${Math.max(2, (segment.total / total) * 100)}%`;
-          const filled = segment.total > 0 ? (segment.used / segment.total) * 100 : 0;
-          /* 서비스는 구간의 오른쪽 끝에 있다. 서비스를 먼저 쓰지만 줄에서는
-             결제분과 섞지 않고 한쪽으로 모아야 경계가 읽힌다. */
-          const servicePart = segment.total > 0 ? (segment.service / segment.total) * 100 : 0;
-          return (
-            <div key={`${segment.kind}-${segment.passId || index}`} className="relative h-full"
-              style={{
-                width,
-                borderLeft: index === 0 ? "none" : `1px solid ${CARD}`,
-                backgroundColor: segment.kind === "prior" ? "#C9CEDA" : CANVAS,
-              }}>
-              {segment.kind === "prior" ? null : (
-                <>
-                  <span className="absolute inset-y-0 left-0" style={{ width: `${filled}%`, backgroundColor: BRAND }} />
-                  {servicePart > 0 ? (
-                    <span className="absolute inset-y-0 right-0"
-                      style={{ width: `${servicePart}%`, backgroundColor: segment.used >= segment.paid ? GOOD : "transparent", opacity: 0.85 }} />
-                  ) : null}
-                  {/* 만료·종료된 회원권에 남은 회차. 채우면 한 것처럼 보이고 그냥
-                      비우면 "왜 중간이 비었나" 를 묻게 된다. */}
-                  {segment.lapsed > 0 ? (
-                    <span className="absolute inset-y-0 right-0"
-                      style={{ width: `${(segment.lapsed / segment.total) * 100}%`, backgroundColor: "#E2E5EC" }} />
-                  ) : null}
-                </>
-              )}
-            </div>
-          );
-        })}
+      <div className="relative" style={{ paddingTop: (dot - height) / 2, paddingBottom: (dot - height) / 2 }}>
+        <div
+          role="img"
+          aria-label={`누적 ${done}회 / 총 ${total}회${journey.currentRound > 0 ? ` · ${journey.currentRound}차 진행중` : ""}`}
+          className="flex w-full overflow-hidden"
+          style={{ height, borderRadius: height, backgroundColor: CANVAS }}>
+          {journey.segments.map((segment, index) => {
+            /* 구간 폭은 회차 수에 비례한다. 1회짜리 회원권도 선에 남아야 하므로
+               최소 폭을 준다 -- 0 이면 경계선만 보이고 구간은 사라진다. */
+            const width = `${Math.max(2, (segment.total / total) * 100)}%`;
+            const filled = segment.total > 0 ? (segment.used / segment.total) * 100 : 0;
+            /* 서비스 구간은 왼쪽 끝이다. 서비스를 먼저 쓰므로(deduction-pricing.js)
+               왼쪽부터 차는 채움과 소진 순서가 맞아떨어진다. 색을 덮는 대신 빗금을
+               얹는다 -- 아직 안 쓴 서비스도 "여기는 서비스" 로 읽혀야 한다. */
+            const servicePart = segment.total > 0 ? (segment.service / segment.total) * 100 : 0;
+            return (
+              <div key={`${segment.kind}-${segment.passId || index}`} className="relative h-full"
+                style={{
+                  width,
+                  /* 회원권 경계. 카드 색으로 얇게 그어 몇 차인지만 보이게 한다.
+                     앱 이전 구간은 회원권이 아니라 통으로 두므로 경계가 없다. */
+                  borderLeft: index === 0 ? "none" : `1px solid ${CARD}`,
+                  backgroundColor: segment.kind === "prior" ? "#C9CEDA" : CANVAS,
+                }}>
+                {segment.kind === "prior" ? null : (
+                  <>
+                    <span className="absolute inset-y-0 left-0" style={{ width: `${filled}%`, backgroundColor: BRAND }} />
+                    {segment.lapsed > 0 ? (
+                      <span className="absolute inset-y-0 right-0"
+                        style={{ width: `${(segment.lapsed / segment.total) * 100}%`, backgroundColor: "#E2E5EC" }} />
+                    ) : null}
+                    {servicePart > 0 ? (
+                      <span className="absolute inset-y-0 left-0" style={{
+                        width: `${servicePart}%`,
+                        backgroundImage: `repeating-linear-gradient(135deg, ${GOOD} 0 2px, transparent 2px 4px)`,
+                        opacity: 0.9,
+                      }} />
+                    ) : null}
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        <span aria-hidden="true" className="absolute" style={{
+          top: 0, left: `${at}%`, width: dot, height: dot, marginLeft: -(dot / 2),
+          borderRadius: dot, backgroundColor: BRAND, border: `2px solid ${CARD}`, boxSizing: "border-box",
+        }} />
       </div>
       <p className="mt-1 truncate tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
         누적 {done} / {total}회
@@ -14517,7 +14532,7 @@ const attendanceDayOptions = (now) => {
 
 function AttendanceCheck({
   organization, currentUserId, clientStore, passStore, onRetryOrganization, onToast, onClose, onOpenClient,
-  now = () => new Date(), initialState = null,
+  journeyOfClient, now = () => new Date(), initialState = null,
 }) {
   const [clients, setClients] = useState(initialState?.clients || []);
   const [passes, setPasses] = useState(initialState?.passes || []);
@@ -14569,6 +14584,12 @@ function AttendanceCheck({
   const clientPasses = useMemo(
     () => passes.filter((pass) => pass.clientId === clientId),
     [passes, clientId],
+  );
+  /* 여정은 App 이 만든다. 여기서는 이 화면이 읽은 목록이 아니라 명부와 누적이
+     필요하고, 그 둘은 App 이 이미 들고 있다. */
+  const journey = useMemo(
+    () => (clientId && journeyOfClient ? journeyOfClient(clientId) : null),
+    [clientId, journeyOfClient],
   );
   const spendable = clientPasses.filter(isDeductablePass);
 
@@ -14698,6 +14719,9 @@ function AttendanceCheck({
                     className="shrink-0" style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND_D }}>이력 ›</button>
                 ) : null}
               </div>
+              {/* 강사가 "이 회원 얼마나 왔지" 를 숫자로 세지 않아도 되게. 차감
+                  직전이 그 질문이 가장 자주 떠오르는 자리다. */}
+              {hasJourney(journey) ? <div className="mt-1.5"><PassJourneyBar journey={journey} size="sm" /></div> : null}
               {clientPasses.length === 0
                 ? <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>발급된 회원권이 없습니다.</p>
                 : clientPasses.map((pass) => {
@@ -18933,26 +18957,25 @@ export default function App() {
 
      누적은 담당 강사 기준이라, 그 회원권을 맡은 강사를 기준으로 읽는다 --
      회원의 여정이지 보는 사람의 여정이 아니다. 대표가 봐도 같은 줄이 나온다. */
-  const journeyFor = useCallback((memberId) => {
-    const target = String(memberId || "");
+  const journeyForClient = useCallback((clientId) => {
+    const target = String(clientId || "");
     if (!target || !organizationRoster) return null;
-    const clientId = String(rosterMembers.find((item) => String(item?.id || "") === target)?.orgClientId || "");
-    if (!clientId) return null;
-    const mine = rosterPasses.filter((item) => item?.clientId === clientId);
+    const mine = rosterPasses.filter((item) => item?.clientId === target);
     const instructorId = String(mine.find((item) => item?.instructorId)?.instructorId || "");
-    const pairId = instructorId + "_" + clientId;
+    const pairId = instructorId + "_" + target;
     const total = rosterTotals.find((item) => String(item?.id || "") === pairId);
     return buildPassJourney({ passes: mine, instructorSessions: total?.sessions });
-  }, [organizationRoster, rosterMembers, rosterPasses, rosterTotals]);
+  }, [organizationRoster, rosterPasses, rosterTotals]);
 
-  /* 이 수업을 확정하면 회원마다 얼마가 되는가.
+  /* 화면은 회원 id 로 부르고, 회원권은 조직 clientId 로 붙어 있다. 맞물린 회원은
+     둘이 다르므로(roster-bridge) 여기서 바꿔 읽지 않으면 모든 줄이 빈다. */
+  const journeyFor = useCallback(
+    (memberId) => journeyForClient(
+      rosterMembers.find((item) => String(item?.id || "") === String(memberId || ""))?.orgClientId,
+    ),
+    [journeyForClient, rosterMembers],
+  );
 
-     차감이 쓰는 그 엔진을 그대로 부른다 (lesson-rate-preview.js). 계산을 여기서
-     다시 쓰면 미리 본 값과 실제 값이 갈라지고, 그날 강사는 화면을 믿지 않게 된다.
-
-     누적은 화면이 이미 읽어 둔 목록에서 본다. 차감은 그 순간 서버에서 다시 읽으
-     므로 20회째 근처에서 한 칸 어긋날 수 있다 -- 같은 회원을 다른 강사가 방금
-     차감했을 때다. 그 경우가 아니면 두 값은 같다. */
   const previewRatesFor = useCallback((lesson) => previewLessonRates({
     lesson,
     members: rosterMembers,
@@ -21400,6 +21423,7 @@ export default function App() {
                 clientStore={undefined} passStore={undefined}
                 onRetryOrganization={retryOrganizationContext} onToast={setToast}
                 onOpenClient={(picked) => setDetailClient(picked)}
+                journeyOfClient={journeyForClient}
                 onClose={() => setAttendanceOpen(false)} />
             </div>
           </div>

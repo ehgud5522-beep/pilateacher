@@ -26,6 +26,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "일정 탭",
     "일정 탭 · 하루 11건 혼합",
     "일정 탭 · 소속 · 확정 전",
+    "일정 탭 · 소속 · 예상 단가",
+    "일정 탭 · 소속 · 예상 단가 · 서비스",
     "일정 탭 · 소속 · 확정됨",
     "일정 탭 · 소속 · 일부만 차감",
     "일정 탭 · 소속 · 차감할 회차 없음",
@@ -34,6 +36,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "일정 탭 · 개인 모드 · 확정 없음",
     "회원 목록",
     "회원 상세",
+    "회원 상세 · 소속",
+    "회원 상세 · 여정",
     "체형분석 목록",
     "체형분석 상세 빈 이력",
     "변화 기록 상세 저장 이력",
@@ -104,6 +108,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "급여 집계",
     "급여 집계 · 강사 펼침",
     "급여 집계 · 두 지점",
+    "급여 집계 · 이관 전",
     "급여 집계 · 빈 달",
     "급여 집계 · 조회 실패",
     "급여 집계 · 이름 조회 실패",
@@ -350,6 +355,25 @@ test("the payroll summary is the owner's, and says out loud what it did not coun
   assert.ok(order.every((at) => at >= 0), "펼치면 카테고리별 내역이 나온다");
   assert.deepEqual(order.slice().sort((a, b) => a - b), order, "단가표 순서 그대로");
   assert.match(opened, /₩95,000/, "한 카테고리 안에서 단가가 섞여도 합계는 항목의 합이다");
+
+  /* 카테고리만 보면 "이벤트페이 12건 36만원" 이고, 그 상품의 기준 단가는 30,000
+     이라 계산이 틀린 것처럼 읽힌다. 왜 섞였는지는 판정이 답한다. */
+  assert.match(opened, /적용된 단가 판정/);
+  assert.match(opened, /누적 20회 미만 — 신규 단가/);
+  assert.match(opened, /기준 단가/);
+
+  /* 이관 전에는 모든 강사-회원 쌍이 0 에서 시작해 판정 3 이 먼저 걸린다. 그래서
+     이벤트페이도 2:1 재등록도 전부 25,000 이 되는데, 화면이 말하지 않으면 대표는
+     계산이 고장 났다고 읽는다. 실제로 그렇게 읽혔다. */
+  const beforeMigration = markupOf("급여 집계 · 이관 전");
+  assert.match(beforeMigration, /이 달은 모든 수업이 신규 단가\(25,000원\)입니다/);
+  assert.match(beforeMigration, /누적 20회 미만이면 상품과 무관하게 신규 단가/);
+  // 무엇을 하면 풀리는지까지 말한다. 이유만 알려 주고 끝내면 기다리게 된다.
+  assert.match(beforeMigration, /강사누적진행/);
+
+  /* 단가가 이미 갈리고 있는 달에는 붙이지 않는다 -- 붙이면 틀린 말이 된다. */
+  assert.doesNotMatch(opened, /이 달은 모든 수업이 신규 단가/);
+  assert.doesNotMatch(markupOf("급여 집계 · 빈 달"), /이 달은 모든 수업이 신규 단가/);
 
   /* 한 강사가 두 지점에서 수업하면 지점 묶음에 두 번 나온다. 급여는 한 번
      주므로 지급할 금액이 어느 줄인지 화면이 말해야 한다. */
@@ -1452,4 +1476,130 @@ test("the confirm card shows the net price when VAT is inside the contract", asy
      두 번 쓰면 무엇이 다른지 읽는 사람이 찾게 된다. */
   const cash = markupOf("회원권 발급 · 확인 · 현금");
   assert.doesNotMatch(cash, /공급가액/);
+});
+
+/* 소속 센터의 회원 상세. 강사가 못 하는 일이 화면에서 사라지고, 이용권 카드가
+   조직 회원권에서 채워진다. */
+test("an instructor cannot delete, hold or reprice a centre member", async (t) => {
+  const vite = await createServer({
+    root: projectRoot,
+    configFile: false,
+    plugins: [react()],
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] },
+    server: { middlewareMode: true },
+    ssr: { noExternal: ["@capgo/camera-preview"] },
+    logLevel: "silent",
+  });
+  t.after(() => vite.close());
+  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+
+  const org = markupOf("회원 상세 · 소속");
+
+  /* 삭제하면 그 회원의 수업 기록과 사진이 함께 사라지는데, 그 데이터는 센터가
+     아니라 이 기기에만 있다. 숨김은 데이터를 남긴다. */
+  assert.doesNotMatch(org, /회원 삭제/);
+  assert.match(org, /내 목록에서 숨기기/);
+  assert.match(org, /센터 회원은 삭제할 수 없습니다/);
+  assert.match(org, /수업 기록과 사진은 그대로 남습니다/);
+  // 되돌리는 길을 말한다. 되돌릴 수 없는 숨김은 삭제와 다를 바가 없다.
+  assert.match(org, /숨긴 회원 다시 보기/);
+
+  // 홀딩은 센터가 정한다. 강사가 임의로 걸면 회원권 유효기간과 어긋난다.
+  assert.doesNotMatch(org, /홀딩 설정/);
+
+  /* 단가는 대표만 정한다. 게다가 이 값은 소속 모드에서 급여에 닿지 않는다 --
+     급여는 회원권 기록에서 나온다. 고쳐도 아무 일이 없는 칸이었다. */
+  assert.doesNotMatch(org, /단가 수정/);
+  assert.doesNotMatch(org, /강사 정산 단가/);
+
+  /* 이용권 카드의 세 칸. 회원권에 다 있는데 명부가 옮겨 오지 않아 비어 있었다 --
+     잔여만 적혀 있는 옆에서. */
+  /* "미등록" 으로는 보지 않는다 -- 연락처가 없는 회원에게도 나오는 말이라
+     이 카드가 채워졌는지를 가리지 못한다. 채워진 값 자체를 본다. */
+  assert.doesNotMatch(org, /결제 내역 없음/);
+  assert.match(org, /22회/, "누적 등록 = 정규 20 + 서비스 2");
+  assert.match(org, /2027\. 02\. 01/, "만료일");
+  assert.match(org, /₩65,000/, "회당 = 130만 ÷ 정규 20회");
+  assert.doesNotMatch(org, /이용권 없음/);
+
+  /* 개인 모드에는 셋 다 그대로다. 그쪽에서는 payRate 가 실제로 월간 리포트
+     계산에 쓰이고, 회원도 홀딩도 강사 자신의 것이다. */
+  const personal = markupOf("회원 상세");
+  assert.match(personal, /회원 삭제/);
+  assert.match(personal, /홀딩 설정/);
+  assert.match(personal, /단가 수정/);
+  assert.doesNotMatch(personal, /내 목록에서 숨기기/);
+});
+
+/* 회원의 여정 줄과 수업의 예상 단가. 둘 다 "나중에 묻지 않게" 하는 화면이다. */
+test("the journey line shows the whole road, not just this pass", async (t) => {
+  const vite = await createServer({
+    root: projectRoot,
+    configFile: false,
+    plugins: [react()],
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] },
+    server: { middlewareMode: true },
+    ssr: { noExternal: ["@capgo/camera-preview"] },
+    logLevel: "silent",
+  });
+  t.after(() => vite.close());
+  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+
+  const journey = markupOf("회원 상세 · 여정");
+  /* 20 + 30 + 32 = 82, 그중 쓴 것 64. 이관 기록은 74 − 64 = 10 회.
+     숫자는 보조지만 줄만으로는 "얼마나" 를 읽을 수 없어 한 줄은 남긴다. */
+  assert.match(journey, /누적 74 \/ 92회/);
+  assert.match(journey, /3차 진행중/);
+  // 담당이 바뀐 회원은 이 구간이 실제보다 짧다. 기준을 밝혀야 오해가 없다.
+  assert.match(journey, /앱 이전 기록 \(담당 강사 기준\) 10회/);
+
+  /* 현재 위치를 나타내는 점. 차감할 때마다 한 칸 오른쪽으로 기어간다 -- 회원이
+     지금 어디쯤 와 있는지가 줄에서 읽혀야 하고, 그것이 이 줄의 요점이다. */
+  assert.match(journey, /aria-label="누적 74회 \/ 총 92회 · 3차 진행중"/);
+  assert.match(journey, /left:80\.4\d*%/, "74 / 92 = 80.4%");
+  /* 서비스 구간은 색을 덮는 대신 빗금을 얹는다 -- 아직 쓰지 않은 서비스도
+     "여기는 서비스" 로 읽혀야 한다. 급여도 성격도 다른 회차다. */
+  assert.match(journey, /repeating-linear-gradient/);
+
+  // 회원권이 하나도 없으면 빈 줄을 그리지 않는다.
+  assert.doesNotMatch(markupOf("회원 상세"), /누적 \d+ \/ \d+회/);
+});
+
+test("a lesson says what it will be worth before it is settled", async (t) => {
+  const vite = await createServer({
+    root: projectRoot,
+    configFile: false,
+    plugins: [react()],
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] },
+    server: { middlewareMode: true },
+    ssr: { noExternal: ["@capgo/camera-preview"] },
+    logLevel: "silent",
+  });
+  t.after(() => vite.close());
+  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+
+  /* 눌러 본 뒤에 아는 것과 누르기 전에 아는 것은 다르다 -- 원장은 append-only 라
+     누른 뒤에는 고칠 수 없다. */
+  const preview = markupOf("일정 탭 · 소속 · 예상 단가");
+  assert.match(preview, /30,000원 · 기준 단가/);
+  /* 회원권이 없는 것과 다 쓴 것은 고칠 방법이 다르다. 같은 자리에 그 사실을 쓴다. */
+  assert.match(preview, /회원권 없음 · 발급이 필요합니다/);
+
+  const service = markupOf("일정 탭 · 소속 · 예상 단가 · 서비스");
+  assert.match(service, /10,000원/);
+  // 0원도 금액이다. 빈칸으로 두면 "계산이 안 됐나" 로 읽힌다.
+  assert.match(service, /0원 · 서비스 2회차 — 센터 지원 소진/);
+
+  /* 확정 뒤에는 예상이 아니라 결과가 있다. 이미 박힌 금액 옆에 "예상" 을 또 쓰면
+     둘 중 어느 것이 실제인지 알 수 없다. */
+  assert.doesNotMatch(markupOf("일정 탭 · 소속 · 확정됨"), /원 · 기준 단가/);
 });

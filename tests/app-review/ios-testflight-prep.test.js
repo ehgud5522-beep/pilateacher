@@ -8,6 +8,13 @@ test("iOS release metadata and privacy usage descriptions are review-ready", asy
   const [plist, project] = await Promise.all([read("../../ios/App/App/Info.plist"), read("../../ios/App/App.xcodeproj/project.pbxproj")]);
   assert.match(plist, /NSMicrophoneUsageDescription[\s\S]*수업 직후 음성으로 기록을 남기기 위해 마이크를 사용합니다/);
   ["NSCameraUsageDescription", "NSPhotoLibraryUsageDescription", "NSPhotoLibraryAddUsageDescription", "ITSAppUsesNonExemptEncryption"].forEach((key) => assert.match(plist, new RegExp(key)));
+
+  /* 앱이 한국어 앱이라고 선언해야 날짜 입력기가 한글로 뜬다. WKWebView 안의
+     <input type="date"> 는 웹의 lang 이 아니라 *앱의* 지역화를 따르는데, 이
+     값이 en 이면 iOS 는 영어 앱으로 보고 요일·월을 영어로 그린다. 폰 언어가
+     한국어여도 그렇다 -- 실제로 그렇게 나왔다. */
+  assert.match(plist, /<key>CFBundleDevelopmentRegion<\/key>\s*<string>ko<\/string>/);
+  assert.match(plist, /<key>CFBundleLocalizations<\/key>\s*<array>\s*<string>ko<\/string>/);
   /* 숫자를 못박지 않는다. 버전을 올릴 때마다 이 줄 때문에 테스트가 깨지는데,
      그것은 버그를 잡는 것이 아니라 손이 하나 더 가는 것이다 (versionCode 쪽에서
      같은 이유로 못을 뺐다).

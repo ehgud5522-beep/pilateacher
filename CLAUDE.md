@@ -3,7 +3,8 @@
 필라테스 강사용 앱. React + Vite 웹 앱을 Capacitor로 iOS·Android에 담고, AI 수업기록은
 Firebase Functions(`aiGateway`)를 거쳐 OpenAI로 간다. 상세 릴리스 절차는
 [docs/android-release-safety.md](docs/android-release-safety.md), 게이트웨이 배포 이력은
-[docs/ai-gateway-deploy-log.md](docs/ai-gateway-deploy-log.md)에 있다.
+[docs/ai-gateway-deploy-log.md](docs/ai-gateway-deploy-log.md), 심사용 계정 준비는
+[docs/app-review-account.md](docs/app-review-account.md)에 있다.
 
 ## 실패 진단 원칙
 

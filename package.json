@@ -24,6 +24,7 @@
     "test:voice": "node --test tests/voice/*.test.js",
     "test:screen-smoke": "node --test tests/ui/screen-render-smoke.test.js",
     "android:release:guard": "node tools/android/release-guard.mjs --stage preflight",
+    "android:aab": "bash tools/android/build-aab.sh",
     "android:release:build": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/android/build-release.ps1",
     "android:release:verify": "node tools/android/release-guard.mjs --stage artifact --aab",
     "test:rules": "firebase emulators:exec --only firestore,storage --project pilateacher-dev --config firebase.foundation.json \"node --test tests/rules/*.test.js\"",

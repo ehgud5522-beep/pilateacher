@@ -581,6 +581,61 @@ describe("role permissions", () => {
     await assertSucceeds(getDoc(doc(dbFor(users.member), "organizations", ORG_A, "clients", "client-member")));
   });
 
+  /* ── 이관이 쓰기 전에 하는 읽기 ─────────────────────────────────────────
+     이관은 멱등해야 한다 -- 대표가 같은 파일을 두 번 올려도 앱에서 고친 값이
+     되돌아가면 안 된다. 그래서 행마다 쓰기 전에 그 문서가 이미 있는지 읽는다.
+
+     그 읽기는 대부분 "없는 문서" 를 향한다. 1차 업로드의 22행이 전부 새 회원이면
+     22번 다 없는 문서다. 없는 문서의 get 에서 resource 는 null 이고,
+     resource.data.organizationId 를 보는 조건은 그 자리에서 거부된다 --
+     데이터가 아니라 규칙이 막은 것이고, 화면에는 permission-denied 한 줄로만
+     돌아온다.
+
+     이관은 1년에 한 번 누르는 기능이라 아무도 다시 눌러 보지 않는다. 여기에
+     못을 박아 둔다. */
+
+  test("staff may ask whether a client document exists, and get no for a missing one", async () => {
+    const missing = (userId) => getDoc(doc(dbFor(userId), "organizations", ORG_A, "clients", "csv_01000000000"));
+    for (const role of ["owner", "manager", "instructor", "staff"]) {
+      const snapshot = await assertSucceeds(missing(users[role]), `${role} 이 없는 문서를 확인하지 못한다`);
+      assert.equal(snapshot.exists(), false);
+    }
+  });
+
+  test("asking about a document that is not there tells an outsider nothing", async () => {
+    /* 명부를 훑을 수 없는 사람에게 존재 여부를 열어 주면 clientId 가 csv_{연락처}
+       라서 "이 번호가 이 센터에 있는가" 를 물어보는 통로가 된다. */
+    await assertFails(getDoc(doc(dbFor(users.member), "organizations", ORG_A, "clients", "csv_01000000000")));
+    await assertFails(getDoc(doc(dbFor(users.outsider), "organizations", ORG_A, "clients", "csv_01000000000")));
+    await assertFails(getDoc(doc(dbFor(null), "organizations", ORG_A, "clients", "csv_01000000000")));
+  });
+
+  test("the migration's own sequence runs: ask, write, ask again", async () => {
+    /* 이관 한 행이 실제로 지나는 길이다. 앞의 두 테스트는 조각을 보지만, 조각이
+       다 서 있어도 순서가 막히면 업로드는 실패한다 -- 22행이 그렇게 실패했다.
+
+       두 번째 물음이 "있다" 로 돌아오는 것이 멱등성의 전부다. 여기가 막히면
+       두 번째 업로드가 앱에서 고친 값을 덮어쓴다. */
+    const clientId = "csv_01044445555";
+    const ref = () => doc(dbFor(users.owner), "organizations", ORG_A, "clients", clientId);
+
+    const before = await assertSucceeds(getDoc(ref()));
+    assert.equal(before.exists(), false, "쓰기 전에는 없다고 답해야 한다");
+
+    await assertSucceeds(setDoc(ref(), {
+      organizationId: ORG_A,
+      name: "박세명",
+      phone: "01044445555",
+      locationId: "location-a",
+      status: "active",
+      createdAt: serverTimestamp(),
+      createdBy: users.owner,
+    }));
+
+    const after = await assertSucceeds(getDoc(ref()));
+    assert.equal(after.exists(), true, "두 번째 업로드가 이 답으로 덮어쓰기를 멈춘다");
+  });
+
   test("member reads only the linked client document", async () => {
     await assertSucceeds(getDoc(doc(dbFor(users.member), "organizations", ORG_A, "clients", "client-member")));
     await assertFails(getDoc(doc(dbFor(users.member), "organizations", ORG_A, "clients", "client-other")));

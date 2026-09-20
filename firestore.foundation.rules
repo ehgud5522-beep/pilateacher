@@ -269,11 +269,34 @@ service cloud.firestore {
         // the one document linked to them, and a query cannot express "only my
         // own" without a filter to prove it. So listing the directory is for
         // staff, and a member still reads their own document one at a time.
+        /* ── 없는 문서를 묻는 읽기 ────────────────────────────────────────
+           엑셀 이관은 멱등해야 한다 -- 대표가 같은 파일을 두 번 올려도 앱에서
+           고친 값이 되돌아가면 안 된다. 그래서 행마다 쓰기 전에 그 문서가 이미
+           있는지 읽는다(migration-repository.js 의 runRows).
+
+           그 읽기는 대부분 없는 문서를 향한다. 1차 업로드의 22행이 전부 새
+           회원이면 22번 다 없는 문서다. 없는 문서에서 resource 는 null 이라
+           resource.data.organizationId 를 보는 조건이 그 자리에서 거부되고,
+           화면에는 permission-denied 한 줄로만 돌아온다. 실제로 22행 전부가
+           그렇게 막혔다.
+
+           그래서 직원에게는 null 을 허용한다. 이미 list 로 명부 전체를 볼 수
+           있으므로 존재 여부가 새로 드러나는 정보가 아니다.
+
+           회원 본인에게는 허용하지 않는다. clientId 가 csv_{연락처} 라서,
+           없는 문서를 물을 수 있으면 "이 번호가 이 센터에 있는가" 를 캐는
+           통로가 된다. 본인 문서는 있을 때만 읽힌다. */
         allow get: if isActiveMember(organizationId)
-          && resource.data.organizationId == organizationId
           && (
-            hasRole(organizationId, ["owner", "manager", "instructor", "staff"])
-            || isOwnClientDocument(resource.data)
+            (
+              hasRole(organizationId, ["owner", "manager", "instructor", "staff"])
+              && (resource == null || resource.data.organizationId == organizationId)
+            )
+            || (
+              resource != null
+              && resource.data.organizationId == organizationId
+              && isOwnClientDocument(resource.data)
+            )
           );
         allow list: if hasRole(organizationId, ["owner", "manager", "instructor", "staff"]);
         // Validate what is present rather than requiring a fixed set. The

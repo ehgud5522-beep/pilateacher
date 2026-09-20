@@ -36,6 +36,7 @@
 import { normalizePhone } from "../../data/repositories/client-repository.js";
 import { isDeductablePass, remainingCountOf } from "../../data/repositories/pass-repository.js";
 import { PAY_CATEGORY_LABELS } from "../../data/schema/display-names.js";
+import { partnerClientId, passBelongsTo } from "../../data/schema/pass-clients.js";
 
 /** 이 줄이 어디서 왔는가. 화면이 이 값으로 무엇을 말할지 정한다. */
 export const ROSTER_SOURCE = Object.freeze({
@@ -74,7 +75,10 @@ function passFactsFor(clientId, passes, now) {
   let lastPass = null;
   const instructorIds = new Set();
   for (const pass of passes) {
-    if (pass?.clientId !== clientId) continue;
+    /* 듀엣은 짝의 카드에서도 같은 회원권이 읽혀야 한다. 대표만 보면 짝에게만
+       잔여도 만료일도 회당 금액도 0 이 된다 -- 한 회원권을 둘이 쓰는데 한
+       사람에게만 보이는 상태다. */
+    if (!passBelongsTo(pass, clientId)) continue;
     /* 담당 강사는 만료된 회원권에서도 읽는다. 지난주에 만료됐다고 그 회원이
        내 회원이 아니게 되는 것은 아니고, "내 회원" 필터가 그 사람을 잃으면
        강사는 목록을 다시 만들기 시작한다. */
@@ -104,6 +108,9 @@ function passFactsFor(clientId, passes, now) {
     unitPrice: paidSessions > 0 ? Math.round(paidAmount / paidSessions) : 0,
     expiresAt: expiryPass ? expiryPass.expiresAt : null,
     category: expiryPass ? text(expiryPass.category) : "",
+    /* 지금 쓰이는 회원권의 짝. 만료일·카테고리와 같은 회원권에서 읽는다 --
+       화면이 한 카드 안에서 서로 다른 회원권을 말하지 않게. */
+    partnerClientId: expiryPass ? partnerClientId(expiryPass, clientId) : "",
     instructorIds: [...instructorIds],
   };
 }
@@ -193,6 +200,9 @@ export function mergeRoster(input = {}) {
       name: text(client.name) || text(match?.name),
       phone: text(client.phone) || text(match?.phone),
       status: STATUS_BY_CLIENT_STATUS[text(client.status)] || "active",
+      /* 짝의 clientId. 화면이 쓰는 duetWith 는 회원 id 라, 목록이 다 만들어진
+         뒤에 한 번 더 돌면서 옮긴다 -- 맞물린 회원은 둘이 다르다. */
+      orgPartnerClientId: facts.partnerClientId,
     };
     if (match) {
       linked.add(match.id);
@@ -236,7 +246,28 @@ export function mergeRoster(input = {}) {
       rosterSource: ROSTER_SOURCE.LOCAL_ONLY,
     }));
 
-  const all = [...roster, ...leftovers];
+  /* ── duetWith 를 회원권에서 유도한다 ──────────────────────────────────
+     레거시의 duetWith 는 대표가 손으로 고르던 값이고 회차·급여에는 닿지 않는
+     표시용 포인터였다 -- 목록에서 짝을 붙여 보이고, 뱃지를 달고, 개인/듀엣
+     필터를 가른다.
+
+     이제 그 값이 회원권에서 나온다. 손으로 고르던 것을 그대로 두면 회원권은
+     듀엣인데 화면은 개인이라고 말하는 회원이 생긴다 -- 둘이 어긋날 수 있는
+     한, 어긋난 쪽을 믿는 사람이 반드시 나온다.
+
+     덕분에 화면 코드는 한 줄도 바뀌지 않는다. pairUp 도 뱃지도 필터도 이
+     필드 하나만 본다. */
+  const memberIdByClientId = new Map(
+    roster.map((member) => [text(member.orgClientId), text(member.id)]),
+  );
+  const paired = roster.map((member) => {
+    const partner = memberIdByClientId.get(text(member.orgPartnerClientId)) || "";
+    /* 짝을 목록에서 못 찾으면(숨겨졌거나 아직 안 올라왔거나) 레거시 값을
+       그대로 둔다. 빈 값으로 덮으면 뱃지가 이유 없이 사라진다. */
+    return partner ? { ...member, duetWith: partner } : member;
+  });
+
+  const all = [...paired, ...leftovers];
   /* 숨긴 회원은 목록에서 빼되 세어서 돌려준다. 몇 명을 숨겼는지 모르면 되돌릴
      길이 없고, 되돌릴 수 없는 숨김은 삭제와 다를 바가 없다. */
   const visible = hidden.size === 0

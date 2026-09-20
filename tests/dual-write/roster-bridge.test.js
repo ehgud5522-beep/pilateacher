@@ -443,3 +443,83 @@ test("the hide key prefers the centre id", () => {
   assert.equal(rosterHideKey({ id: "m-local-1" }), "m-local-1");
   assert.equal(rosterHideKey(null), "");
 });
+
+/* ── 듀엣: 회원권 하나를 둘이 쓴다 ────────────────────────────────────────
+
+   짝의 카드에서도 같은 회원권이 읽혀야 한다. 대표만 보면 한 회원권을 둘이
+   쓰는데 한 사람에게만 보이는 상태가 된다. */
+
+const duetPass = (overrides = {}) => pass({
+  clientId: "client-a",
+  clientIds: ["client-a", "client-b"],
+  totalSessions: 30,
+  serviceSessions: 0,
+  contractPrice: 1800000,
+  category: "pt_2_1_new",
+  remainingCount: 29,
+  ...overrides,
+});
+
+const duetInput = (overrides = {}) => ({
+  clients: [client(), client({ id: "client-b", name: "박두리", phone: "01099998888" })],
+  members: [],
+  passes: [duetPass()],
+  now: NOW,
+  ...overrides,
+});
+
+test("both halves of a duet see the same remaining count", () => {
+  const { roster } = mergeRoster(duetInput());
+  const [anchor, partner] = roster;
+  assert.equal(anchor.orgRemaining, 29);
+  assert.equal(partner.orgRemaining, 29, "짝에게만 0 이면 한 회원권이 한 사람에게만 보인다");
+});
+
+test("the expiry, the total and the per-session price reach the partner too", () => {
+  /* 잔여만 옮기고 나머지를 두면 짝의 카드가 "29회 남음 · 미설정 · 결제 내역 없음"
+     이 된다 -- 값이 없는 것이 아니라 거기서 끊긴 것이다. */
+  const { roster } = mergeRoster(duetInput());
+  const [anchor, partner] = roster;
+  assert.equal(partner.contractEnd, anchor.contractEnd);
+  assert.equal(partner.total, 30);
+  assert.equal(partner.orgUnitPrice, 60000);
+  assert.equal(partner.passName, "2:1 신규");
+});
+
+test("the duet pairing is read off the pass, not chosen by hand", () => {
+  /* 레거시의 duetWith 는 대표가 손으로 고르던 표시용 값이었다. 손으로 고르는
+     것을 그대로 두면 회원권은 듀엣인데 화면은 개인이라고 말하는 회원이 생기고,
+     어긋난 쪽을 믿는 사람이 반드시 나온다. */
+  const { roster } = mergeRoster(duetInput());
+  const [anchor, partner] = roster;
+  assert.equal(anchor.duetWith, partner.id);
+  assert.equal(partner.duetWith, anchor.id);
+});
+
+test("the pairing points at the member id, which is not the client id when matched", () => {
+  /* 맞물린 회원은 레거시 id 를 그대로 들고 있다. clientId 를 그대로 적으면
+     화면의 pairUp 이 짝을 찾지 못하고 뱃지도 서지 않는다. */
+  const { roster } = mergeRoster(duetInput({
+    members: [member({ id: "m-local-1", name: "김하나", phone: "010-1234-5678" })],
+  }));
+  const anchor = roster.find((item) => item.orgClientId === "client-a");
+  const partner = roster.find((item) => item.orgClientId === "client-b");
+  assert.equal(anchor.id, "m-local-1", "레거시 id 를 지킨다");
+  assert.equal(partner.duetWith, "m-local-1");
+  assert.equal(anchor.duetWith, partner.id);
+});
+
+test("a 1:1 member is not paired with anyone", () => {
+  const { roster } = mergeRoster(duetInput({ passes: [pass()] }));
+  assert.equal(roster[0].duetWith, "");
+  assert.equal(roster[1].duetWith, "");
+});
+
+test("a partner who is not on the list leaves the old badge alone", () => {
+  /* 숨겼거나 아직 안 올라온 짝이다. 빈 값으로 덮으면 뱃지가 이유 없이 사라진다. */
+  const { roster } = mergeRoster(duetInput({
+    clients: [client()],
+    members: [member({ id: "m-local-1", duetWith: "m-someone" })],
+  }));
+  assert.equal(roster[0].duetWith, "m-someone");
+});

@@ -58,6 +58,12 @@ export const MIGRATION_ERROR = Object.freeze({
   MISSING_RATE: "missing_rate",
   ALREADY_EXISTS: "already_exists",
   WRITE_FAILED: "write_failed",
+  /* 듀엣 세 가지를 따로 둔다. 고칠 것이 서로 다르기 때문이다 -- 하나는 연락처를
+     받아 오는 일, 하나는 1차 시트에 줄을 더하는 일, 하나는 강사에게 누적 횟수를
+     물어보는 일이다. 한 사유로 뭉치면 대표가 무엇을 해야 하는지 알 수 없다. */
+  DUET_PARTNER_PHONE_MISSING: "duet_partner_phone_missing",
+  DUET_PARTNER_NOT_FOUND: "duet_partner_not_found",
+  DUET_PARTNER_SESSIONS_MISSING: "duet_partner_sessions_missing",
 });
 
 export const CLIENT_SHEET_COLUMNS = Object.freeze(["회원명", "연락처", "지점"]);
@@ -66,6 +72,26 @@ export const PASS_SHEET_COLUMNS = Object.freeze([
   "총세션", "서비스세션", "남은횟수", "강사누적진행", "인수인계여부",
   "계약금액", "차수", "결제수단", "계약일", "만료일",
 ]);
+
+/**
+ * 듀엣을 적는 칸. 선택이다 -- 머리말에 없어도 되고, 있어도 비워 두면 1:1 이다.
+ *
+ * ── 왜 한 줄인가 ──
+ * 두 줄로 적고 묶는 방식은 택하지 않았다. 회원권 문서 id 가
+ * passIdFor(clientId, 차수) 로 정해지므로 두 줄이면 회원권이 둘 만들어지고,
+ * 그것을 도로 하나로 합칠 키를 새로 발명해야 한다. 그 키가 틀리면 30회짜리가
+ * 두 개 생기고 이관은 되돌릴 수 없다. 한 줄이면 애초에 하나만 만들어진다.
+ *
+ * 짝은 1차 시트에 자기 줄이 이미 있다 -- 독립된 회원이기 때문이고, 그 사실이
+ * 이 설계의 근거이기도 하다. 여기서는 그 사람을 연락처로 가리키기만 한다.
+ *
+ * ── 강사누적진행2 가 왜 필요한가 ──
+ * 듀엣 단가는 두 사람의 누적 중 적은 쪽으로 정해진다 (pass-clients.js).
+ * 짝의 누적을 심지 않으면 0 에서 시작하고, 그러면 그 회원권의 처음 스무
+ * 회차가 전부 신규 단가 25,000 으로 기록된다 -- 급여가 통째로 틀리는 그
+ * 증상이다. 짐작해서 대표의 값을 복사하지 않는다. 강사에게 물어 적는다.
+ */
+export const PASS_SHEET_DUET_COLUMNS = Object.freeze(["회원명2", "연락처2", "강사누적진행2"]);
 
 /** 회원 문서 id. 연락처 하나로 정해진다 -- 위 머리말 참고. */
 export const clientIdForPhone = (phone) => {
@@ -315,16 +341,62 @@ export function planPassMigration(text, {
          그때 팔린 조건과 달라진다. 판정 4 가 쓸 기준값만 심고, 실제 단가는
          차감할 때 판정이 정한다. */
       const clientId = client.id;
+
+      /* ── 듀엣 ─────────────────────────────────────────────────────────
+         짝이 적혀 있으면 이 회원권은 두 사람이 함께 쓴다. 어느 한 칸이라도
+         비면 그 행만 실패로 돌린다 -- 업로드를 멈추지 않고, 대표가 그 행만
+         고쳐 다시 올린다.
+
+         임시 번호를 만들어 심지 않는다. 한 번 심으면 그 번호가 그 회원의
+         정체가 되어 그대로 남고, 나중에 진짜 번호가 오면 같은 사람이 둘이
+         된다. */
+      const partnerName = requireText(record, "회원명2");
+      const partnerPhoneRaw = requireText(record, "연락처2");
+      let clientIds;
+      let partner = null;
+      let partnerPriorSessions = 0;
+      if (partnerName || partnerPhoneRaw) {
+        const partnerPhone = normalizePhone(partnerPhoneRaw);
+        if (!partnerPhone) {
+          throw failure(line, MIGRATION_ERROR.DUET_PARTNER_PHONE_MISSING,
+            `듀엣 상대의 연락처가 필요합니다: ${partnerName || "이름 없음"}`);
+        }
+        if (partnerPhone === phone) {
+          /* 회차는 하나인데 누적이 둘 올라간다. 20회 판정이 실제의 두 배 속도로
+             지나가고, 그 시점부터 단가가 조용히 틀린다. */
+          throw failure(line, MIGRATION_ERROR.DUET_PARTNER_NOT_FOUND,
+            `듀엣 상대가 본인과 같은 연락처입니다: ${name}`);
+        }
+        partner = clientByPhone.get(partnerPhone);
+        if (!partner) {
+          throw failure(line, MIGRATION_ERROR.DUET_PARTNER_NOT_FOUND,
+            `듀엣 상대를 1차 회원 목록에서 찾을 수 없습니다: ${partnerName || partnerPhoneRaw}`);
+        }
+        const partnerSessions = readInt(record, "강사누적진행2", { min: 0, optional: true });
+        if (partnerSessions === null) {
+          throw failure(line, MIGRATION_ERROR.DUET_PARTNER_SESSIONS_MISSING,
+            `듀엣 상대의 강사누적진행이 필요합니다: ${partnerName || partnerPhoneRaw}`);
+        }
+        partnerPriorSessions = partnerSessions;
+        clientIds = [clientId, partner.id];
+      }
+
       const passId = passIdFor(clientId, purchaseRound);
       writes.push({
         line,
         name,
         clientId,
+        /* 짝이 없으면 undefined 로 둔다. 길이 1 짜리 배열을 심어도 뜻은 같지만,
+           이관분에 없던 필드가 생기면 "이 회원권은 언제 만들어졌나"를 필드로
+           가려내던 자리가 흐려진다. */
+        partnerClientId: partner ? partner.id : "",
+        partnerPriorSessions,
         passId,
         instructorId,
         priorSessions,
         pass: {
           clientId,
+          ...(clientIds ? { clientIds } : {}),
           locationId,
           productId: requireText(record, "상품명") || "csv",
           category,
@@ -541,6 +613,18 @@ export async function applyPassMigration(organizationId, writes, { store = creat
           sessions: row.priorSessions,
         },
       },
+      /* 듀엣이면 짝의 누적도 함께 심는다. 심지 않으면 0 에서 시작하고, 단가가
+         두 사람 중 적은 쪽을 보므로 그 회원권의 처음 스무 회차가 전부 신규
+         단가로 기록된다 -- 급여가 통째로 틀리는 그 증상이다. */
+      ...(row.partnerClientId ? [{
+        path: paths.instructorClientTotal(organizationId, row.instructorId, row.partnerClientId),
+        data: {
+          organizationId,
+          instructorId: row.instructorId,
+          clientId: row.partnerClientId,
+          sessions: row.partnerPriorSessions,
+        },
+      }] : []),
     ]);
     },
   });

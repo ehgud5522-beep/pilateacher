@@ -3,7 +3,7 @@ import test from "node:test";
 import {
   CLIENT_SHEET_COLUMNS, MIGRATION_ERROR, PASS_SHEET_COLUMNS, applyClientMigration,
   applyPassMigration, clientIdForPhone, groupFailures, parseCsv, passIdFor,
-  planClientMigration, planPassMigration, readSheet,
+  PASS_SHEET_DUET_COLUMNS, planClientMigration, planPassMigration, readSheet,
 } from "../../src/data/repositories/migration-repository.js";
 
 const ORG = "center-a";
@@ -343,4 +343,109 @@ test("failures are grouped so the owner knows what to fix", () => {
 test("a phone with no digits gets no id at all", () => {
   assert.equal(clientIdForPhone("---"), "");
   assert.equal(clientIdForPhone(undefined), "");
+});
+
+/* ── 듀엣 이관 ────────────────────────────────────────────────────────────
+
+   듀엣은 계약서가 하나이고 회원권도 하나다. 그래서 한 줄에 회원 둘을 적는다 --
+   두 줄로 적으면 회원권 문서 id 가 passIdFor(clientId, 차수) 라 두 개가
+   만들어지고, 그것을 합칠 키가 틀리면 30회짜리가 두 개 생긴다. 이관은
+   되돌릴 수 없다. */
+
+const DUET_COLUMNS = [...PASS_SHEET_COLUMNS, ...PASS_SHEET_DUET_COLUMNS];
+const duetSheet = (...rows) => [DUET_COLUMNS.join(","), ...rows].join("\n");
+const duetRow = (overrides = {}) => {
+  const values = {
+    회원명: "김하나", 연락처: "010-1234-5678", 지점: "반송점", 담당강사: "정예진",
+    상품명: "2:1 30회", 급여카테고리: "2:1 신규",
+    총세션: "30", 서비스세션: "0", 남은횟수: "30", 강사누적진행: "35",
+    인수인계여부: "N", 계약금액: "1800000", 차수: "1", 결제수단: "카드",
+    계약일: "2026-08-01", 만료일: "2027-02-01",
+    회원명2: "박두리", 연락처2: "010-9999-8888", 강사누적진행2: "35",
+    ...overrides,
+  };
+  return DUET_COLUMNS.map((column) => values[column]).join(",");
+};
+const duetClients = [
+  ...clients,
+  { id: "csv_01099998888", name: "박두리", phone: "01099998888", locationId: "bansong" },
+];
+const planDuet = (sheet, extra = {}) => planPassMigration(sheet, {
+  clients: duetClients, locations: LOCATIONS, instructors: INSTRUCTORS, createdBy: "owner-a", ...extra,
+});
+
+test("one row with two members makes one pass", () => {
+  const { writes, failures } = planDuet(duetSheet(duetRow()));
+  assert.deepEqual(failures, []);
+  assert.equal(writes.length, 1);
+  assert.deepEqual(writes[0].pass.clientIds, ["csv_01012345678", "csv_01099998888"]);
+  // 30회 계약이면 30회다. 두 명이라고 60회가 되지 않는다.
+  assert.equal(writes[0].pass.remainingCount, 30);
+});
+
+test("the duet columns are optional, so a file without them still uploads", () => {
+  /* 1:1 이 센터의 대부분이고, 이 열들이 없는 파일이 그대로 올라가야 한다.
+     그때 회원권에는 clientIds 가 아예 붙지 않는다 -- 읽는 쪽이 대표 한 명으로 읽는다. */
+  const { writes, failures } = planPasses(passSheet(passRow()));
+  assert.deepEqual(failures, []);
+  assert.equal("clientIds" in writes[0].pass, false);
+  // 열이 있어도 비어 있으면 1:1 이다.
+  const blank = planDuet(duetSheet(duetRow({ 회원명2: "", 연락처2: "", 강사누적진행2: "" })));
+  assert.deepEqual(blank.failures, []);
+  assert.equal("clientIds" in blank.writes[0].pass, false);
+});
+
+test("a duet without the partner's phone fails that row and says what to get", () => {
+  /* 대표 한 명만 적어 두는 경우가 많다. 업로드를 멈추지 않고 그 행만 돌려준다 --
+     대표가 강사에게 번호를 받아 그 행만 고쳐 다시 올린다. */
+  const { writes, failures } = planDuet(duetSheet(
+    duetRow(),
+    duetRow({ 회원명: "이세리", 연락처: "010-1234-5678", 차수: "2", 회원명2: "최네리", 연락처2: "" }),
+  ));
+  assert.equal(writes.length, 1, "좋은 행은 그대로 올라간다");
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].reason, MIGRATION_ERROR.DUET_PARTNER_PHONE_MISSING);
+  assert.match(failures[0].message, /듀엣 상대의 연락처가 필요합니다/);
+  assert.equal(failures[0].line, 3, "엑셀에서 찾는 행 번호와 맞는다");
+});
+
+test("no temporary phone number is invented for a missing partner", () => {
+  /* 한 번 심으면 그 번호가 그 회원의 정체가 되어 그대로 남고, 나중에 진짜
+     번호가 오면 같은 사람이 둘이 된다. */
+  const { writes } = planDuet(duetSheet(duetRow({ 연락처2: "" })));
+  assert.equal(writes.length, 0);
+});
+
+test("a partner who is not in the client sheet is a different problem", () => {
+  // 고칠 것이 다르다 -- 번호를 받아 오는 일이 아니라 1차 시트에 줄을 더하는 일이다.
+  const { failures } = planDuet(duetSheet(duetRow({ 연락처2: "010-0000-0000" })));
+  assert.equal(failures[0].reason, MIGRATION_ERROR.DUET_PARTNER_NOT_FOUND);
+});
+
+test("the same person cannot be both halves of a duet", () => {
+  // 회차는 하나인데 누적이 둘 오르고, 20회 판정이 두 배 속도로 지나간다.
+  const { failures } = planDuet(duetSheet(duetRow({ 연락처2: "010-1234-5678" })));
+  assert.equal(failures[0].reason, MIGRATION_ERROR.DUET_PARTNER_NOT_FOUND);
+  assert.match(failures[0].message, /본인과 같은 연락처/);
+});
+
+test("the partner's cumulative count is asked for, never copied from the anchor", () => {
+  /* 짐작하면 급여가 틀린다. 심지 않으면 0 에서 시작해 처음 스무 회차가 전부
+     신규 단가 25,000 으로 기록되고, 대표의 값을 복사하면 그것대로 거짓이다. */
+  const { failures } = planDuet(duetSheet(duetRow({ 강사누적진행2: "" })));
+  assert.equal(failures[0].reason, MIGRATION_ERROR.DUET_PARTNER_SESSIONS_MISSING);
+  assert.match(failures[0].message, /강사누적진행이 필요합니다/);
+});
+
+test("both members get their own running total seeded", async () => {
+  const { writes } = planDuet(duetSheet(duetRow({ 강사누적진행: "35", 강사누적진행2: "12" })));
+  const store = fakeStore();
+  await applyPassMigration("center-a", writes, { store });
+  const totals = [...store.written.keys()].filter((path) => path.includes("instructorClientTotals"));
+  assert.deepEqual(totals, [
+    "organizations/center-a/instructorClientTotals/u1_csv_01012345678",
+    "organizations/center-a/instructorClientTotals/u1_csv_01099998888",
+  ]);
+  assert.equal(store.written.get(totals[0]).sessions, 35);
+  assert.equal(store.written.get(totals[1]).sessions, 12);
 });

@@ -74,15 +74,19 @@ token, nonce, credential, authorizationCode, identityToken, password, 이메일,
 
 ## 규칙 테스트를 돌리는 법
 
-`npm run test:rules` 는 Firestore 에뮬레이터를 띄우고, 에뮬레이터는 Java 를 쓴다.
-이 기기의 Java 는 PATH 에 없고 Android Studio 안에 있다 — 프로세스 한정으로 얹는다.
-
 ```bash
-JAVA_HOME="C:\Program Files\Android\Android Studio\jbr" \
-  PATH="/c/Program Files/Android/Android Studio/jbr/bin:$PATH" npm run test:rules
+npm run test:rules
 ```
 
-`tools/test-rules.sh` 가 같은 일을 한다.
+이 한 줄이면 된다. PowerShell·Git Bash·CI 어디서든 같다.
+
+에뮬레이터는 Java 를 쓰는데 이 기기의 Java 는 PATH 에 없고 Android Studio 안에
+있다. `tools/java-home.mjs` 가 JAVA_HOME → PATH → Android Studio 순으로 찾아
+**이 프로세스에만** 얹는다 — 경로를 외우거나 셸을 바꿀 일이 없다. 못 찾으면 어디를
+봤는지 전부 적어서 말한다.
+
+JDK 가 다른 곳에 있으면 JAVA_HOME 을 정해 두면 그것이 이긴다. Java 가 이미 PATH 에
+있는 환경이면 `npm run test:rules:emulator` 로 에뮬레이터를 직접 불러도 된다.
 
 **규칙을 고쳤으면 배포 전에 이것을 돌린다.** 배포는 문법만 본다 — 문이 실제로
 열리고 닫히는지는 여기서만 드러나고, 규칙은 한 번 나가면 그 사이의 모든 쓰기에

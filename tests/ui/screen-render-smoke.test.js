@@ -53,6 +53,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "센터 회원 상세 · 대표",
     "센터 회원 상세 · 차감 보정 확인",
     "센터 회원 상세 · 발급 취소 확인",
+    "센터 회원 상세 · 듀엣",
     "센터 회원 상세 · 일부 이력 실패",
     "센터 회원 상세 · 조회 실패",
     "센터 회원 상세 · 회원권 없음",
@@ -1602,4 +1603,33 @@ test("a lesson says what it will be worth before it is settled", async (t) => {
   /* 확정 뒤에는 예상이 아니라 결과가 있다. 이미 박힌 금액 옆에 "예상" 을 또 쓰면
      둘 중 어느 것이 실제인지 알 수 없다. */
   assert.doesNotMatch(markupOf("일정 탭 · 소속 · 확정됨"), /원 · 기준 단가/);
+});
+
+/* ── 듀엣 ─────────────────────────────────────────────────────────────────
+   회원권 하나를 둘이 쓴다. 그 사실이 화면에 없으면 대표는 잔여 29회를 한 사람
+   몫으로 읽고 재등록 시점을 잘못 센다. */
+
+test("a shared pass says it is shared, and with whom", async (t) => {
+  const markupOf = await issueScreens(t);
+  const duet = markupOf("센터 회원 상세 · 듀엣");
+  assert.match(duet, /듀엣/);
+  assert.match(duet, /박두리 님과 함께 씁니다/);
+  assert.match(duet, /수업 한 번에 1회 차감/);
+});
+
+test("the screen names the way out, because the door for it does not exist yet", async (t) => {
+  /* 회원권에서 한 사람만 떼어내는 문은 아직 없다 -- 환불·정산 규칙이 먼저
+     정해져야 한다. 화면이 그 길을 말해 두지 않으면 대표는 방법이 없다고 여기고
+     엉뚱한 곳을 고친다. */
+  const markupOf = await issueScreens(t);
+  const duet = markupOf("센터 회원 상세 · 듀엣");
+  assert.match(duet, /취소하고 각자에게 다시 발급/);
+});
+
+test("a 1:1 pass says nothing about duets", async (t) => {
+  // 1:1 이 센터의 대부분이다. 그 줄에 듀엣 이야기가 서면 안 된다.
+  const markupOf = await issueScreens(t);
+  const solo = markupOf("센터 회원 상세 · 대표");
+  assert.doesNotMatch(solo, /함께 씁니다/);
+  assert.doesNotMatch(solo, /각자에게 다시 발급/);
 });

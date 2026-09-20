@@ -112,6 +112,7 @@ import {
 import {
   isMyRosterMember, isRosterMember, isUnlinkedLocalMember, mergeRoster, rosterHideKey,
 } from "./features/roster/roster-bridge.js";
+import { partnerClientId } from "./data/schema/pass-clients.js";
 import { JOURNEY_PRIOR_NOTE, buildPassJourney, hasJourney } from "./features/members/pass-journey.js";
 import { previewLessonRates } from "./features/schedule/lesson-rate-preview.js";
 import {
@@ -151,6 +152,7 @@ import {
   NATIVE_SPEECH_RESULT_TIMEOUT_MS, SPEECH_NO_RESULT_MESSAGE, SPEECH_RESULT_TIMEOUT_MESSAGE,
   SPEECH_PERMISSION_STATE, describeSpeechError, speechPermissionAvailability, speechPermissionState,
 } from "./features/voice/speech-session.js";
+import { consentTargetsFor, ensureEveryConsent } from "./features/voice/duet-consent.js";
 import {
   BACKGROUND_RECORDING_INTERRUPTED_MESSAGE, RECOGNIZER_BUSY_RETRY_MS, VOICE_ORGANIZING_TIMEOUT_MS, VOICE_SILENCE_LIMIT_MS, appendVoiceSessionDiagnostic, createSilenceGuard,
   isRecognizerBusyError, nativeAudioPermissionState, readVoiceSessionDiagnostics, resolveVoicePhase, runVoicePermissionAction,
@@ -362,6 +364,13 @@ async function grantMemberAIConsent(memberId, scopes = AI_CONSENT_SCOPES, expect
   cacheMemberAIConsent(memberId, granted, expectedAccountId);
   return granted;
 }
+
+/* 듀엣 수업기록에는 두 사람 이야기가 같이 들어간다. 한 명만 동의했는데 올리면
+   다른 사람의 수업 내용이 동의 없이 서버로 간다 -- 그래서 짝도 함께 묻는다.
+   짝과 그 이름은 명부가 회원권에서 유도해 회원 객체에 실어 준다. */
+const duetPartnerOf = (member) => (member?.duetWith
+  ? { id: String(member.duetWith), name: String(member.duetWithName || "듀엣 상대") }
+  : null);
 
 async function ensureMemberAIConsent(memberId, operation, { prompt = true, forceRemote = false } = {}) {
   if (!memberId) return { ok: false, message: "AI 처리를 적용할 회원을 먼저 선택해 주세요." };
@@ -3759,7 +3768,7 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
                 {recordMode && (
                   <div ref={recordSectionRef} data-lesson-record-entry className="space-y-2 rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
                     {recordFallback && <p role="status" className="rounded-lg px-3 py-2 text-xs font-bold" style={{ backgroundColor: WARN_S, color: WARN }}>{recordFallback}</p>}
-                    {recordMode === "voice" && <VoiceNote key={lessonRecordSessionKey(activeMemberId, draft.id)} memberId={activeMemberId} memberName={activeMember?.name || "회원"} lessonId={draft.id} onLater={() => setRecordMode(null)} onClose={onClose} onDeferred={onClose} onDirectEntry={(message) => { setRecordFallback(message || "음성 인식을 사용할 수 없어 직접 입력으로 전환했습니다."); setRecordMode("write"); }} onDraftChange={(text, meta, options) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, options)} onApply={(text, meta) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, { confirmed: true, upsert: true })} />}
+                    {recordMode === "voice" && <VoiceNote key={lessonRecordSessionKey(activeMemberId, draft.id)} memberId={activeMemberId} memberName={activeMember?.name || "회원"} duetPartner={duetPartnerOf(activeMember)} lessonId={draft.id} onLater={() => setRecordMode(null)} onClose={onClose} onDeferred={onClose} onDirectEntry={(message) => { setRecordFallback(message || "음성 인식을 사용할 수 없어 직접 입력으로 전환했습니다."); setRecordMode("write"); }} onDraftChange={(text, meta, options) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, options)} onApply={(text, meta) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, { confirmed: true, upsert: true })} />}
                     {recordMode === "write" && <><textarea rows={4} value={recordBody} onChange={(e) => setRecordBody(e.target.value)} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} /><button disabled={!recordBody.trim()} onClick={async () => { const stored = await onSaveNote?.(activeMemberId, draft.type, draft.id, recordBody.trim(), null); if (stored !== false) onClose(); }} className="h-11 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35" style={{ backgroundColor: PRIMARY }}>저장</button></>}
                   </div>
                 )}
@@ -3885,7 +3894,7 @@ function ScheduleQueueSheet({ tasks, members, returnFocusRef, onClose, onNoComme
               </div>
               {recordMode && (
                 <div ref={recordSectionRef} data-lesson-record-entry className="mt-3 space-y-2 rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
-                  {recordMode === "voice" && <VoiceNote key={lessonRecordSessionKey(task.a.memberId, task.s.id)} memberId={task.a.memberId} memberName={memberName} lessonId={task.s.id} onLater={() => setRecordMode(null)} onClose={onClose} onDeferred={onClose} onDirectEntry={() => setRecordMode("write")} onDraftChange={(text, meta, options) => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, text, meta, options)} onApply={(text, meta) => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, text, meta, { confirmed: true, upsert: true })} />}
+                  {recordMode === "voice" && <VoiceNote key={lessonRecordSessionKey(task.a.memberId, task.s.id)} memberId={task.a.memberId} memberName={memberName} duetPartner={duetPartnerOf(task?.m)} lessonId={task.s.id} onLater={() => setRecordMode(null)} onClose={onClose} onDeferred={onClose} onDirectEntry={() => setRecordMode("write")} onDraftChange={(text, meta, options) => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, text, meta, options)} onApply={(text, meta) => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, text, meta, { confirmed: true, upsert: true })} />}
                   {recordMode === "write" && <><textarea rows={4} value={recordBody} onChange={(e) => setRecordBody(e.target.value)} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} /><button disabled={!recordBody.trim()} onClick={() => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, recordBody.trim(), null)} className="h-11 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35" style={{ backgroundColor: PRIMARY }}>저장 · 다음</button></>}
                 </div>
               )}
@@ -5438,7 +5447,7 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
         <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>홀딩은 예정된 수업을 자동 취소하지 않습니다. 일정 탭에서 직접 확인해 주세요.</p>
         <button type="button" disabled={!hold.start || !hold.end || hold.end < hold.start} onClick={() => { const days = Math.max(0, Math.round((new Date(`${hold.end}T00:00:00`).getTime() - new Date(`${hold.start}T00:00:00`).getTime()) / 86400000)); onPatch({ status: "hold", holdFrom: hold.start, holdUntil: hold.end, holdReason: hold.reason.trim(), holdExtendDays: hold.extend ? days : 0, contractEnd: hold.extend && member.contractEnd ? shift(member.contractEnd, days) : member.contractEnd }); setSheet(null); }} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>홀딩 시작</button>
       </div></Sheet>}
-      {(sheet === "memo" || sheet === "record") && <Sheet title={sheet === "memo" ? "상담 메모 추가" : "수업 기록"} onClose={() => setSheet(null)}><div className="space-y-2">{sheet === "record" && <VoiceNote key={lessonRecordSessionKey(member.id, null)} memberId={member.id} memberName={member.name || "회원"} onClose={() => setSheet(null)} onDeferred={() => setSheet(null)} onDraftChange={(text, meta, options) => onSaveNote("개인레슨", text, meta, options)} onApply={(text, meta) => onSaveNote("개인레슨", text, meta, { confirmed: true, upsert: true })} />}{sheet === "memo" && <><button type="button" aria-pressed={memoImportant} onClick={() => setMemoImportant((value) => !value)} className="flex h-10 w-full items-center gap-2 px-3" style={{ borderRadius: 8, backgroundColor: memoImportant ? WARN_S : CANVAS, color: memoImportant ? WARN : SUB, fontSize: TYPE.caption, fontWeight: 700 }}><Star size={14} fill={memoImportant ? "currentColor" : "none"} />중요 메모로 상단 고정</button><textarea autoFocus rows={5} value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="내용을 입력하세요" className={`${inputCls} h-auto resize-none py-3`} />{saveError && <p role="alert" style={{ fontSize: TYPE.caption, color: BAD }}>{saveError}</p>}<button type="button" aria-busy={saving === sheet} disabled={!memo.trim() || saving === sheet} onClick={commitNote} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>{saving === sheet ? "저장 중…" : "저장"}</button></>}</div></Sheet>}
+      {(sheet === "memo" || sheet === "record") && <Sheet title={sheet === "memo" ? "상담 메모 추가" : "수업 기록"} onClose={() => setSheet(null)}><div className="space-y-2">{sheet === "record" && <VoiceNote key={lessonRecordSessionKey(member.id, null)} memberId={member.id} memberName={member.name || "회원"} duetPartner={duetPartnerOf(member)} onClose={() => setSheet(null)} onDeferred={() => setSheet(null)} onDraftChange={(text, meta, options) => onSaveNote("개인레슨", text, meta, options)} onApply={(text, meta) => onSaveNote("개인레슨", text, meta, { confirmed: true, upsert: true })} />}{sheet === "memo" && <><button type="button" aria-pressed={memoImportant} onClick={() => setMemoImportant((value) => !value)} className="flex h-10 w-full items-center gap-2 px-3" style={{ borderRadius: 8, backgroundColor: memoImportant ? WARN_S : CANVAS, color: memoImportant ? WARN : SUB, fontSize: TYPE.caption, fontWeight: 700 }}><Star size={14} fill={memoImportant ? "currentColor" : "none"} />중요 메모로 상단 고정</button><textarea autoFocus rows={5} value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="내용을 입력하세요" className={`${inputCls} h-auto resize-none py-3`} />{saveError && <p role="alert" style={{ fontSize: TYPE.caption, color: BAD }}>{saveError}</p>}<button type="button" aria-busy={saving === sheet} disabled={!memo.trim() || saving === sheet} onClick={commitNote} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>{saving === sheet ? "저장 중…" : "저장"}</button></>}</div></Sheet>}
       {sheet === "record-review" && reviewDraft && <Sheet title="AI 수업기록 확인" sub="확인은 선택입니다. 정리된 기록은 이미 저장되어 있어요." onClose={() => setSheet(null)}><div className="space-y-3"><div className="grid grid-cols-2 gap-2">{[{ k: "didToday", l: "오늘 수업" }, { k: "observations", l: "변화" }, { k: "responses", l: "회원 반응" }, { k: "nextFocus", l: "다음 확인" }].map((field) => <div key={field.k} className="rounded-xl p-3" style={{ backgroundColor: CANVAS }}><p className="text-caption font-extrabold" style={{ color: SUB }}>{field.l}</p>{reviewEditing ? <textarea rows={2} aria-label={`${field.l} 수정`} value={structuredFieldText(reviewDraft, field.k)} onChange={(event) => setReviewDraft((current) => editStructuredField(current, field.k, event.target.value))} className={`${inputCls} mt-1 h-auto resize-none py-2 text-xs`} /> : <p className="mt-1 text-xs font-bold leading-relaxed" style={{ color: INK2 }}>{prepText(reviewDraft[field.k], "기록 없음")}</p>}</div>)}</div><div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => setReviewEditing((value) => !value)} className="h-12 rounded-xl text-sm font-extrabold" style={{ backgroundColor: CANVAS, color: BRAND_D }}>{reviewEditing ? "수정 닫기" : "수정"}</button><button type="button" onClick={confirmRecordReview} className="h-12 rounded-xl text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>확인</button></div></div></Sheet>}
       {sheet === "memos-all" && <Sheet title="상담 메모 전체 보기" onClose={() => setSheet(null)}><div className="space-y-2">{consultationNotes.length ? consultationNotes.map((note) => <div key={note.id} style={{ padding: 10, borderRadius: 8, backgroundColor: note.important ? WARN_S : CANVAS }}><p style={{ fontSize: TYPE.caption, color: SUB }}>{ymd(note.date)}{note.important ? " · 중요 메모" : ""}</p><p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK2 }}>{note.body}</p></div>) : <p style={{ fontSize: TYPE.caption, color: SUB }}>등록된 상담 메모가 없습니다</p>}<button type="button" onClick={openMemo} className="h-11 w-full text-xs font-bold" style={{ borderRadius: 8, backgroundColor: TINT, color: BRAND_D }}>메모 추가</button></div></Sheet>}
       {sheet === "records-all" && <Sheet title="수업 기록 전체 보기" onClose={() => setSheet(null)}><div className="min-w-0 space-y-2">{lessonSessions.length ? lessonSessions.map((session) => <div key={session.key} className="min-w-0" style={{ padding: 10, borderRadius: 8, backgroundColor: CANVAS }}><p className="mb-2 text-caption tabular-nums" style={{ color: SUB }}>{formatMemberLessonDate(session.date, { weekday: true })} · {session.type}</p><LessonRecordFieldRows session={session} />{session.warning && <p className="mt-2 text-caption" style={{ color: SUB }}>{session.warning}</p>}</div>) : <p style={{ fontSize: TYPE.caption, color: SUB }}>아직 작성된 수업 기록이 없습니다</p>}</div></Sheet>}
@@ -11177,9 +11186,20 @@ function IOSMediaDiagnosticPanel({ memberId = "diagnostics", lessonId = "hidden-
   return <div className="mt-3 rounded-lg p-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}><p style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>iOS 미디어 진단</p><div className="mt-2 grid grid-cols-2 gap-1.5"><button type="button" onClick={runMicrophoneTest} disabled={microphoneTest.status === "running" || cameraTest.status === "running"} className="min-h-11 rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: TINT, color: BRAND_D }}>{microphoneTest.status === "running" ? "마이크 테스트 중…" : "마이크 테스트"}</button><button type="button" onClick={runCameraTest} disabled={cameraTest.status === "running" || microphoneTest.status === "running"} className="min-h-11 rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: TINT, color: BRAND_D }}>{cameraTest.status === "running" ? "카메라 테스트 중…" : "카메라 테스트"}</button></div><StepList title="마이크" steps={microphoneTest.steps} /><StepList title="카메라" steps={cameraTest.steps} /></div>;
 }
 
-function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId = null, memberName = "회원", lessonId = null, onDirectEntry = null, onLater = null, onClose = null, onDeferred = null }) {
+function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId = null, memberName = "회원", duetPartner = null, lessonId = null, onDirectEntry = null, onLater = null, onClose = null, onDeferred = null }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const lessonLink = useContext(LessonRecordLinkContext);
+  /* 이 수업기록이 동의를 받아야 할 사람 전부. 듀엣이면 둘이다 -- 수업기록에
+     두 사람 이야기가 같이 들어가므로, 한 명만 동의한 상태로 올리면 다른 사람의
+     기록이 동의 없이 처리된다.
+
+     세 개의 동의 문(녹음 시작 · 서버 녹음 · 재확인)이 모두 이 하나를 부른다.
+     따로 두면 그중 하나가 짝을 빠뜨리는 날이 오고, 그 길로 들어온 녹음은
+     이미 올라간 뒤다. */
+  const ensureLessonConsent = async (options = {}) => ensureEveryConsent(
+    consentTargetsFor({ memberId, memberName, duetPartner }),
+    (id) => ensureMemberAIConsent(id, "summarizeVoice", options),
+  );
   const [on, setOn] = useState(false);
   const [starting, setStarting] = useState(false);
   const [manualEntry, setManualEntry] = useState(false);
@@ -12217,7 +12237,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     setErr(descriptor.title);
     if (descriptor.internalCode !== "consent_missing") return descriptor;
     invalidateMemberAIConsent(memberId);
-    const remoteConsent = await ensureMemberAIConsent(memberId, "summarizeVoice", { prompt: false, forceRemote: true });
+    const remoteConsent = await ensureLessonConsent({ prompt: false, forceRemote: true });
     if (remoteConsent.ok) {
       const link = await lessonLink.prepare?.({ memberId, lessonId, stage: "consent_recovery_preflight" });
       if (link?.state === "link_review_required") {
@@ -12423,7 +12443,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       const consentStartedAt = Date.now();
       let consent;
       try {
-        consent = await ensureMemberAIConsent(memberId, "summarizeVoice", { prompt: false });
+        consent = await ensureLessonConsent({ prompt: false });
       } catch (error) {
         voiceDiagnostic("voice_pipeline_failed", {
           source: "server_audio", stage: "consent", code: error?.code || "consent_check_failed",
@@ -12631,7 +12651,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       return;
     }
     if (!skipConsent) {
-      const consent = await ensureMemberAIConsent(memberId, "summarizeVoice", { prompt: false });
+      const consent = await ensureLessonConsent({ prompt: false });
       if (!consent.ok) {
         const failure = describeLessonRecordFailure({ code: "consent_missing" });
         appendLessonRecordDiagnostic({ code: failure.internalCode, stage: "consent_gate", category: failure.category });
@@ -13421,7 +13441,7 @@ function NoteForm({ member, schedule, onSave, settings, onSettings, backHint, vo
             {chips.length === 0 && <Sub>'내 문구' 버튼으로 자주 쓰는 표현을 저장해 두세요.</Sub>}
           </div>
         </div>
-        <VoiceNote key={lessonRecordSessionKey(member.id, null)} memberId={member.id} memberName={member.name || "회원"} highlight={voiceHint} onSeen={onVoiceSeen} onApply={(t, meta) => { setN((x) => ({ ...x, body: x.body.trim() ? `${x.body.trim()}\n${t}` : t })); setVoiceMeta(meta); }} />
+        <VoiceNote key={lessonRecordSessionKey(member.id, null)} memberId={member.id} memberName={member.name || "회원"} duetPartner={duetPartnerOf(member)} highlight={voiceHint} onSeen={onVoiceSeen} onApply={(t, meta) => { setN((x) => ({ ...x, body: x.body.trim() ? `${x.body.trim()}\n${t}` : t })); setVoiceMeta(meta); }} />
         <Field label="피드백 내용" hint={`${n.body.length}자`}>
           <textarea rows={5} value={n.body} onChange={(e) => { const value = e.target.value; setN({ ...n, body: value }); setVoiceMeta((meta) => meta?.lessonRecord ? { ...meta, lessonRecord: { ...meta.lessonRecord, instructorBodyOverride: value, instructorBodyOrigin: "instructor" } } : meta); }}
             placeholder="위 문구를 눌러 채우거나 직접 입력하세요" className={`${inputCls} resize-none leading-relaxed`} />
@@ -15792,8 +15812,11 @@ function LedgerUndoSheet({ title, description, reason, onReason, onCancel, onCon
   );
 }
 
-function ClientPassRow({ pass, nameOfInstructor, now, onCancel, cancellable = false }) {
+function ClientPassRow({ pass, nameOfInstructor, nameOfClient = () => "", clientId = "", now, onCancel, cancellable = false }) {
   const usable = isDeductablePass(pass, now);
+  /* 듀엣이면 이 회원권을 둘이 함께 쓴다. 잔여 29회가 두 사람의 29회라는
+     사실이 화면에 없으면, 대표는 한 사람 몫으로 읽고 재등록 시점을 잘못 센다. */
+  const partner = partnerClientId(pass, clientId);
   const expired = isExpiredPass(pass, now);
   return (
     <div style={{ padding: "11px 0", borderTop: `1px solid ${LINE}`, opacity: usable ? 1 : 0.55 }}>
@@ -15828,6 +15851,22 @@ function ClientPassRow({ pass, nameOfInstructor, now, onCancel, cancellable = fa
             }}>발급 취소</button>
         ) : null}
       </div>
+      {partner ? (
+        <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>
+          <span style={{ color: BRAND, fontWeight: 650 }}>듀엣</span>
+          {" · "}{nameOfClient(partner) || "상대 회원"} 님과 함께 씁니다
+          {" · 수업 한 번에 1회 차감"}
+        </p>
+      ) : null}
+      {/* 듀엣이 깨졌을 때의 길. 회원권에서 한 사람만 떼어내는 문은 아직 없다 --
+          환불·정산 규칙이 먼저 정해져야 한다. 그때까지는 취소하고 다시 발급하는
+          것이 유일한 길이고, 이력이 남으므로 안전하다. 화면이 그 길을 말해 두지
+          않으면 대표는 방법이 없다고 여기고 엉뚱한 곳을 고친다. */}
+      {partner && onCancel && pass.status === "active" ? (
+        <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>
+          듀엣을 나누려면 이 회원권을 취소하고 각자에게 다시 발급해 주세요.
+        </p>
+      ) : null}
       {onCancel && !cancellable && pass.status === "active" ? (
         <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>
           차감된 회차가 있어 취소할 수 없습니다. 아래 이력에서 먼저 보정해 주세요.
@@ -15838,7 +15877,7 @@ function ClientPassRow({ pass, nameOfInstructor, now, onCancel, cancellable = fa
 }
 
 function ClientDetail({
-  organization, client, history, loading, error, instructors = [], currentUserId = "",
+  organization, client, history, loading, error, instructors = [], currentUserId = "", nameOfClient = () => "",
   passStore, onClose, onRetry, onChanged, onToast, now = () => new Date(), initialUndo = null,
 }) {
   const at = now();
@@ -15955,7 +15994,8 @@ function ClientDetail({
             {passes.length === 0
               ? <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>발급된 회원권이 없습니다.</p>
               : passes.map((pass) => (
-                <ClientPassRow key={pass.id} pass={pass} nameOfInstructor={nameOfInstructor} now={at}
+                <ClientPassRow key={pass.id} pass={pass} nameOfInstructor={nameOfInstructor}
+                  nameOfClient={nameOfClient} clientId={client?.id || ""} now={at}
                   cancellable={canUndo && isCancellablePass(pass, entries)}
                   onCancel={canUndo ? () => { setUndo({ kind: "cancel", pass }); setReason(""); } : undefined} />
               ))}
@@ -18580,6 +18620,24 @@ export function createAppScreenSmokeCases() {
     }) },
     { name: "센터 회원 상세 · 발급 취소 확인", element: ownerClientDetail({
       initialUndo: { kind: "cancel", pass: smokeHistoryPasses[0], reason: "" },
+    }) },
+    /* 듀엣. 회원권 하나를 둘이 쓰는 줄이 서는지, 그리고 갈라설 때의 길이
+       화면에 있는지 본다 -- 그 문은 아직 없고, 없다는 사실을 화면이 말해야
+       대표가 방법이 없다고 여기고 엉뚱한 곳을 고치지 않는다. */
+    { name: "센터 회원 상세 · 듀엣", element: ownerClientDetail({
+      nameOfClient: (id) => (id === "smoke-client-b" ? "박두리" : ""),
+      history: {
+        ...smokeHistory,
+        passes: [{
+          ...smokeHistoryPasses[0],
+          id: "smoke-pass-duet",
+          clientIds: ["smoke-client-a", "smoke-client-b"],
+          category: "pt_2_1_new",
+          totalSessions: 30,
+          remainingCount: 29,
+        }],
+        entries: [],
+      },
     }) },
     { name: "센터 회원 상세 · 일부 이력 실패", element: clientDetail({
       history: { ...smokeHistory, failedPassIds: ["smoke-pass-old"] },
@@ -21397,6 +21455,7 @@ export default function App() {
             <div className="mx-auto w-full max-w-md p-3">
               <ClientDetail organization={organizationContext} client={detailClient}
                 history={clientHistory} loading={historyLoading} error={historyError}
+                nameOfClient={(id) => (roster?.roster || []).find((item) => item.orgClientId === id)?.name || ""}
                 instructors={detailInstructors}
                 currentUserId={account?.id || ""} onToast={setToast}
                 onChanged={() => setHistoryRevision((value) => value + 1)}

@@ -257,14 +257,16 @@ export function mergeRoster(input = {}) {
 
      덕분에 화면 코드는 한 줄도 바뀌지 않는다. pairUp 도 뱃지도 필터도 이
      필드 하나만 본다. */
-  const memberIdByClientId = new Map(
-    roster.map((member) => [text(member.orgClientId), text(member.id)]),
-  );
+  const byClientId = new Map(roster.map((member) => [text(member.orgClientId), member]));
   const paired = roster.map((member) => {
-    const partner = memberIdByClientId.get(text(member.orgPartnerClientId)) || "";
+    const partner = byClientId.get(text(member.orgPartnerClientId));
     /* 짝을 목록에서 못 찾으면(숨겨졌거나 아직 안 올라왔거나) 레거시 값을
        그대로 둔다. 빈 값으로 덮으면 뱃지가 이유 없이 사라진다. */
-    return partner ? { ...member, duetWith: partner } : member;
+    if (!partner) return member;
+    /* 이름도 함께 싣는다. 동의 화면이 "누가 동의하지 않았는지" 를 말해야 하는데
+       (듀엣은 두 사람 모두 동의해야 한다), 그 화면은 회원 하나만 들고 있어서
+       id 만으로는 이름을 찾을 수 없다. */
+    return { ...member, duetWith: text(partner.id), duetWithName: text(partner.name) };
   });
 
   const all = [...paired, ...leftovers];

@@ -53,6 +53,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "센터 회원 상세 · 대표",
     "센터 회원 상세 · 차감 보정 확인",
     "센터 회원 상세 · 발급 취소 확인",
+    "센터 회원 상세 · 듀엣",
     "센터 회원 상세 · 일부 이력 실패",
     "센터 회원 상세 · 조회 실패",
     "센터 회원 상세 · 회원권 없음",
@@ -71,6 +72,13 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "회원 목록 · 소속 강사 · 명부 조회 실패",
     "회원 목록 · 강사 · 비어 있음",
     "회원권 발급",
+    "회원권 발급 · 듀엣 꺼짐",
+    "회원권 발급 · 듀엣",
+    "회원권 발급 · 듀엣 · 상대 없음",
+    "회원권 발급 · 듀엣 · 확인",
+    "회원권 발급 · 듀엣 · 카테고리 어긋남",
+    "회원권 발급 · 2:1 인데 듀엣 아님",
+    "회원권 발급 · 듀엣 · 이미 회원권 있음",
     "회원권 발급 · 기준값과 다름",
     "회원권 발급 · 직접 단가",
     "회원권 발급 · 상품 단가",
@@ -1602,4 +1610,109 @@ test("a lesson says what it will be worth before it is settled", async (t) => {
   /* 확정 뒤에는 예상이 아니라 결과가 있다. 이미 박힌 금액 옆에 "예상" 을 또 쓰면
      둘 중 어느 것이 실제인지 알 수 없다. */
   assert.doesNotMatch(markupOf("일정 탭 · 소속 · 확정됨"), /원 · 기준 단가/);
+});
+
+/* ── 듀엣 ─────────────────────────────────────────────────────────────────
+   회원권 하나를 둘이 쓴다. 그 사실이 화면에 없으면 대표는 잔여 29회를 한 사람
+   몫으로 읽고 재등록 시점을 잘못 센다. */
+
+test("a shared pass says it is shared, and with whom", async (t) => {
+  const markupOf = await issueScreens(t);
+  const duet = markupOf("센터 회원 상세 · 듀엣");
+  assert.match(duet, /듀엣/);
+  assert.match(duet, /박두리 님과 함께 씁니다/);
+  assert.match(duet, /수업 한 번에 1회 차감/);
+});
+
+test("the screen names the way out, because the door for it does not exist yet", async (t) => {
+  /* 회원권에서 한 사람만 떼어내는 문은 아직 없다 -- 환불·정산 규칙이 먼저
+     정해져야 한다. 화면이 그 길을 말해 두지 않으면 대표는 방법이 없다고 여기고
+     엉뚱한 곳을 고친다. */
+  const markupOf = await issueScreens(t);
+  const duet = markupOf("센터 회원 상세 · 듀엣");
+  assert.match(duet, /취소하고 각자에게 다시 발급/);
+});
+
+test("a 1:1 pass says nothing about duets", async (t) => {
+  // 1:1 이 센터의 대부분이다. 그 줄에 듀엣 이야기가 서면 안 된다.
+  const markupOf = await issueScreens(t);
+  const solo = markupOf("센터 회원 상세 · 대표");
+  assert.doesNotMatch(solo, /함께 씁니다/);
+  assert.doesNotMatch(solo, /각자에게 다시 발급/);
+});
+
+/* ── 듀엣 발급 ────────────────────────────────────────────────────────────
+
+   이관으로만 듀엣을 만들 수 있으면 새 계약은 앱에서 팔 수 없고, 듀엣만 다시
+   종이로 돌아간다. */
+
+test("the duet switch is off until a member is chosen, and off by default", async (t) => {
+  const markupOf = await issueScreens(t);
+  /* 1:1 이 대부분이라 켜져 있으면 발급할 때마다 끄는 손이 하나 더 든다. 그리고
+     회원을 고르기 전에 보이면 무엇에 대한 듀엣인지 알 수 없다. */
+  const fresh = markupOf("회원권 발급");
+  assert.doesNotMatch(fresh, /듀엣으로 발급/);
+
+  const chosen = markupOf("회원권 발급 · 듀엣 꺼짐");
+  assert.match(chosen, /듀엣으로 발급/);
+  assert.match(chosen, /회원 두 명이 한 회원권을 함께 씁니다/);
+  // 꺼져 있으면 상대 칸이 없다.
+  assert.doesNotMatch(chosen, /듀엣 상대/);
+});
+
+test("turning it on asks for a second member, chosen from those already registered", async (t) => {
+  const markupOf = await issueScreens(t);
+  const on = markupOf("회원권 발급 · 듀엣");
+  assert.match(on, /듀엣 상대/);
+  assert.match(on, /이두리님/, "고른 상대가 확인되어야 한다");
+});
+
+test("a partner the centre does not have sends the owner to register them first", async (t) => {
+  /* 여기서 새로 만들면 연락처 없이 회원이 생기고, 그 회원은 동명이인과
+     구분되지 않는다. */
+  const markupOf = await issueScreens(t);
+  const missing = markupOf("회원권 발급 · 듀엣 · 상대 없음");
+  assert.match(missing, /찾는 회원이 없습니다/);
+  assert.match(missing, /회원 관리에서 먼저 등록해 주세요/);
+});
+
+test("the confirmation says the sessions are shared, not doubled", async (t) => {
+  // 대표가 각자 30회로 오해하면 계약 자체가 틀어진다.
+  const markupOf = await issueScreens(t);
+  const confirm = markupOf("회원권 발급 · 듀엣 · 확인");
+  assert.match(confirm, /김하나님 · 이두리님/, "두 사람 이름이 요약에 있어야 한다");
+  assert.match(confirm, /듀엣/);
+  assert.match(confirm, /30회를 두 분이 함께 씁니다/);
+  assert.match(confirm, /수업 한 번에 1회 차감/);
+});
+
+test("a 1:1 confirmation says nothing about sharing", async (t) => {
+  const markupOf = await issueScreens(t);
+  assert.doesNotMatch(markupOf("회원권 발급 · 확인"), /두 분이 함께 씁니다/);
+});
+
+test("a product and a duet that disagree are shown, in both directions", async (t) => {
+  /* 둘이 어긋나면 급여가 틀린다. 막지는 않는다 -- 2:1 상품을 혼자 쓰는 계약도,
+     1:1 상품을 둘이 쓰기로 한 계약도 실제로 있다. */
+  const markupOf = await issueScreens(t);
+  const duetOnSolo = markupOf("회원권 발급 · 듀엣 · 카테고리 어긋남");
+  assert.match(duetOnSolo, /2:1 상품이 아닙니다/);
+  assert.match(duetOnSolo, /급여가 이 상품의 카테고리로 계산됩니다/);
+  // 그래도 발급 버튼은 살아 있다.
+  assert.match(duetOnSolo, /발급<\/button>/);
+
+  const soloOnDuet = markupOf("회원권 발급 · 2:1 인데 듀엣 아님");
+  assert.match(soloOnDuet, /2:1 상품인데 듀엣으로 발급하지 않습니다/);
+  assert.match(soloOnDuet, /회원 한 명의 회원권이 됩니다/);
+  assert.match(soloOnDuet, /발급<\/button>/);
+});
+
+test("an existing usable pass is said before the button, and does not disable it", async (t) => {
+  /* 재등록은 만료 전에 미리 하는 일이 잦다. 막으면 그 정당한 계약을 팔 수 없고,
+     회원을 잘못 골랐으면 여기서 드러난다. */
+  const markupOf = await issueScreens(t);
+  const held = markupOf("회원권 발급 · 듀엣 · 이미 회원권 있음");
+  assert.match(held, /이두리님에게 이미 쓸 수 있는 회원권이 있습니다/);
+  assert.match(held, /잔여 4회/);
+  assert.match(held, /발급<\/button>/);
 });

@@ -3,6 +3,9 @@
 const { createHash } = require("node:crypto");
 
 const POLICY_MODE = "legacy_owner_backup";
+/* 한 사람이 여러 센터에 속할 수 있다. 상한을 두는 것은 하나의 요청이 센터 수만큼
+   읽기를 만드는 것을 막기 위해서다 -- 지금은 전부 한 곳이다. */
+const MAX_MEMBERSHIPS_PER_USER = 5;
 const CONSENT_POLICY_VERSION = "2026-08-23";
 
 /*
@@ -76,26 +79,97 @@ function createFirestorePolicyService({
   const perMinute = Math.max(1, Math.min(60, Number(minuteLimit) || 8));
   const perDay = Math.max(perMinute, Math.min(1000, Number(dailyLimit) || 80));
 
+  /**
+   * 이 uid 가 활성 구성원인 조직들. 규칙의 isActiveMember() 와 같은 문서를 본다.
+   *
+   * 요청에 실려 온 organizationId 는 쓰지 않는다. 그 값을 권한의 근거로 삼으면
+   * 아무 uid 나 남의 센터 번호를 적어 보내는 것으로 그 센터의 회원이 된다.
+   * uid 는 Firebase 가 검증한 값이고, 소속은 서버가 그 uid 로 찾는다.
+   *
+   * 조직 번호를 요청에 실어 "확인만" 하는 길도 있었다. 판정은 같아지지만 앱을
+   * 새로 내보내야 하고, 그 전 버전은 그대로 막힌 채로 남는다. 여기서 찾으면
+   * 이미 설치된 앱도 배포 즉시 풀린다.
+   *
+   * userId 하나로만 거른다 -- 동등 조건 하나는 자동 인덱스로 처리되므로 새
+   * 색인이 필요 없다. status 는 받아서 코드에서 본다.
+   */
+  async function activeOrganizationIds(uid) {
+    const snapshot = await firestore.collection("memberships")
+      .where("userId", "==", String(uid || ""))
+      .limit(MAX_MEMBERSHIPS_PER_USER)
+      .get();
+    const documents = Array.isArray(snapshot?.docs) ? snapshot.docs : [];
+    return documents
+      .map((item) => dataOf(item))
+      .filter((membership) => membership
+        && membership.status === "active"
+        && typeof membership.organizationId === "string"
+        && membership.organizationId)
+      .map((membership) => membership.organizationId);
+  }
+
   async function authorize({ uid, memberId, lessonId = "", operation }) {
     if (!enabled) return { allowed: false, reason: "policy_mode_disabled" };
     try {
       const backupRef = firestore.doc(`users/${uid}/backup/latest`);
       const consentRef = firestore.doc(`users/${uid}/aiConsents/${memberId}`);
       const [backupSnapshot, consentSnapshot] = await Promise.all([backupRef.get(), consentRef.get()]);
-      if (!exists(backupSnapshot)) return { allowed: false, reason: "backup_missing" };
-      if (!exists(consentSnapshot)) return { allowed: false, reason: "consent_missing" };
-      const backup = dataOf(backupSnapshot) || {};
-      const database = backup.data && typeof backup.data === "object" ? backup.data : {};
+      const backup = exists(backupSnapshot) ? dataOf(backupSnapshot) || {} : null;
+      const database = backup && backup.data && typeof backup.data === "object" ? backup.data : {};
       const member = Array.isArray(database.members) ? database.members.find((item) => item?.id === memberId) : null;
-      if (!member) return { allowed: false, reason: "member_not_owned" };
+
+      /* 소속은 한 번만 찾아 둔다. 기기 쪽으로 증명되면 아예 찾지 않는다 --
+         지금까지처럼 도는 요청에 읽기를 하나 더 붙이지 않기 위해서다. */
+      let organizations = null;
+      const organizationsOf = async () => {
+        if (organizations === null) organizations = await activeOrganizationIds(uid);
+        return organizations;
+      };
+
+      /* 센터가 등록한 회원은 기기 백업에 없다. 기기에 없는 회원은 없는 회원이
+         아니라 "이 강사의 기기가 만들지 않은 회원" 이고, 규칙은 이미 같은 회원을
+         같은 강사에게 열어 준다 -- 서버만 그 개념을 몰랐다. */
+      let organizationId = "";
+      let organizationClient = null;
+      if (!member) {
+        for (const candidate of await organizationsOf()) {
+          const clientSnapshot = await firestore.doc(`organizations/${candidate}/clients/${memberId}`).get();
+          if (exists(clientSnapshot)) {
+            organizationId = candidate;
+            organizationClient = dataOf(clientSnapshot) || {};
+            break;
+          }
+        }
+      }
+
+      /* 백업이 없는 것과 회원이 없는 것은 다른 실패다. 둘 다 아니라고 뭉치면
+         강사는 무엇을 해야 하는지 알 수 없다 (백업을 켜라 vs 회원을 확인하라). */
+      if (!backup && !organizationClient) return { allowed: false, reason: "backup_missing" };
+      if (!exists(consentSnapshot)) return { allowed: false, reason: "consent_missing" };
+      if (!member && !organizationClient) return { allowed: false, reason: "member_not_owned" };
+
       if (lessonId) {
         const lesson = Array.isArray(database.schedule) ? database.schedule.find((item) => item?.id === lessonId) : null;
-        if (!lesson || !lessonHasMember(lesson, memberId)) return { allowed: false, reason: "lesson_not_owned" };
+        let lessonProved = Boolean(lesson && lessonHasMember(lesson, memberId));
+        /* 정산한 수업은 조직에도 남는다(passes 차감이 lessons/participants 를 함께
+           쓴다). 기기 쪽으로 증명되지 않을 때만 그쪽을 본다 -- 정산 전 수업은
+           아직 조직에 없으므로 이것만으로는 부족하고, 둘 중 하나면 된다. */
+        if (!lessonProved) {
+          for (const candidate of organizationId ? [organizationId] : await organizationsOf()) {
+            const participant = await firestore
+              .doc(`organizations/${candidate}/lessons/${lessonId}/participants/${memberId}`)
+              .get();
+            if (exists(participant)) { lessonProved = true; break; }
+          }
+        }
+        if (!lessonProved) return { allowed: false, reason: "lesson_not_owned" };
       }
+
       if (!consentAllows(dataOf(consentSnapshot), operation, consentPolicyVersion)) {
         return { allowed: false, reason: "consent_not_granted" };
       }
-      return { allowed: true, memberName: String(member.name || "").trim().slice(0, 160) };
+      const name = member ? member.name : organizationClient?.name;
+      return { allowed: true, memberName: String(name || "").trim().slice(0, 160) };
     } catch (_error) {
       return { allowed: false, reason: "policy_check_failed" };
     }

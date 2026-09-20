@@ -112,6 +112,10 @@ import {
 import {
   isMyRosterMember, isRosterMember, isUnlinkedLocalMember, mergeRoster, rosterHideKey,
 } from "./features/roster/roster-bridge.js";
+import { partnerClientId } from "./data/schema/pass-clients.js";
+import {
+  blockingNotice, duetIssueNotices, duetSummaryLine, reviewNotices,
+} from "./features/passes/duet-issue.js";
 import { JOURNEY_PRIOR_NOTE, buildPassJourney, hasJourney } from "./features/members/pass-journey.js";
 import { previewLessonRates } from "./features/schedule/lesson-rate-preview.js";
 import {
@@ -151,6 +155,7 @@ import {
   NATIVE_SPEECH_RESULT_TIMEOUT_MS, SPEECH_NO_RESULT_MESSAGE, SPEECH_RESULT_TIMEOUT_MESSAGE,
   SPEECH_PERMISSION_STATE, describeSpeechError, speechPermissionAvailability, speechPermissionState,
 } from "./features/voice/speech-session.js";
+import { consentTargetsFor, ensureEveryConsent } from "./features/voice/duet-consent.js";
 import {
   BACKGROUND_RECORDING_INTERRUPTED_MESSAGE, RECOGNIZER_BUSY_RETRY_MS, VOICE_ORGANIZING_TIMEOUT_MS, VOICE_SILENCE_LIMIT_MS, appendVoiceSessionDiagnostic, createSilenceGuard,
   isRecognizerBusyError, nativeAudioPermissionState, readVoiceSessionDiagnostics, resolveVoicePhase, runVoicePermissionAction,
@@ -362,6 +367,13 @@ async function grantMemberAIConsent(memberId, scopes = AI_CONSENT_SCOPES, expect
   cacheMemberAIConsent(memberId, granted, expectedAccountId);
   return granted;
 }
+
+/* 듀엣 수업기록에는 두 사람 이야기가 같이 들어간다. 한 명만 동의했는데 올리면
+   다른 사람의 수업 내용이 동의 없이 서버로 간다 -- 그래서 짝도 함께 묻는다.
+   짝과 그 이름은 명부가 회원권에서 유도해 회원 객체에 실어 준다. */
+const duetPartnerOf = (member) => (member?.duetWith
+  ? { id: String(member.duetWith), name: String(member.duetWithName || "듀엣 상대") }
+  : null);
 
 async function ensureMemberAIConsent(memberId, operation, { prompt = true, forceRemote = false } = {}) {
   if (!memberId) return { ok: false, message: "AI 처리를 적용할 회원을 먼저 선택해 주세요." };
@@ -3759,7 +3771,7 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
                 {recordMode && (
                   <div ref={recordSectionRef} data-lesson-record-entry className="space-y-2 rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
                     {recordFallback && <p role="status" className="rounded-lg px-3 py-2 text-xs font-bold" style={{ backgroundColor: WARN_S, color: WARN }}>{recordFallback}</p>}
-                    {recordMode === "voice" && <VoiceNote key={lessonRecordSessionKey(activeMemberId, draft.id)} memberId={activeMemberId} memberName={activeMember?.name || "회원"} lessonId={draft.id} onLater={() => setRecordMode(null)} onClose={onClose} onDeferred={onClose} onDirectEntry={(message) => { setRecordFallback(message || "음성 인식을 사용할 수 없어 직접 입력으로 전환했습니다."); setRecordMode("write"); }} onDraftChange={(text, meta, options) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, options)} onApply={(text, meta) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, { confirmed: true, upsert: true })} />}
+                    {recordMode === "voice" && <VoiceNote key={lessonRecordSessionKey(activeMemberId, draft.id)} memberId={activeMemberId} memberName={activeMember?.name || "회원"} duetPartner={duetPartnerOf(activeMember)} lessonId={draft.id} onLater={() => setRecordMode(null)} onClose={onClose} onDeferred={onClose} onDirectEntry={(message) => { setRecordFallback(message || "음성 인식을 사용할 수 없어 직접 입력으로 전환했습니다."); setRecordMode("write"); }} onDraftChange={(text, meta, options) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, options)} onApply={(text, meta) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, { confirmed: true, upsert: true })} />}
                     {recordMode === "write" && <><textarea rows={4} value={recordBody} onChange={(e) => setRecordBody(e.target.value)} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} /><button disabled={!recordBody.trim()} onClick={async () => { const stored = await onSaveNote?.(activeMemberId, draft.type, draft.id, recordBody.trim(), null); if (stored !== false) onClose(); }} className="h-11 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35" style={{ backgroundColor: PRIMARY }}>저장</button></>}
                   </div>
                 )}
@@ -3885,7 +3897,7 @@ function ScheduleQueueSheet({ tasks, members, returnFocusRef, onClose, onNoComme
               </div>
               {recordMode && (
                 <div ref={recordSectionRef} data-lesson-record-entry className="mt-3 space-y-2 rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
-                  {recordMode === "voice" && <VoiceNote key={lessonRecordSessionKey(task.a.memberId, task.s.id)} memberId={task.a.memberId} memberName={memberName} lessonId={task.s.id} onLater={() => setRecordMode(null)} onClose={onClose} onDeferred={onClose} onDirectEntry={() => setRecordMode("write")} onDraftChange={(text, meta, options) => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, text, meta, options)} onApply={(text, meta) => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, text, meta, { confirmed: true, upsert: true })} />}
+                  {recordMode === "voice" && <VoiceNote key={lessonRecordSessionKey(task.a.memberId, task.s.id)} memberId={task.a.memberId} memberName={memberName} duetPartner={duetPartnerOf(task?.m)} lessonId={task.s.id} onLater={() => setRecordMode(null)} onClose={onClose} onDeferred={onClose} onDirectEntry={() => setRecordMode("write")} onDraftChange={(text, meta, options) => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, text, meta, options)} onApply={(text, meta) => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, text, meta, { confirmed: true, upsert: true })} />}
                   {recordMode === "write" && <><textarea rows={4} value={recordBody} onChange={(e) => setRecordBody(e.target.value)} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} /><button disabled={!recordBody.trim()} onClick={() => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, recordBody.trim(), null)} className="h-11 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35" style={{ backgroundColor: PRIMARY }}>저장 · 다음</button></>}
                 </div>
               )}
@@ -5438,7 +5450,7 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
         <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>홀딩은 예정된 수업을 자동 취소하지 않습니다. 일정 탭에서 직접 확인해 주세요.</p>
         <button type="button" disabled={!hold.start || !hold.end || hold.end < hold.start} onClick={() => { const days = Math.max(0, Math.round((new Date(`${hold.end}T00:00:00`).getTime() - new Date(`${hold.start}T00:00:00`).getTime()) / 86400000)); onPatch({ status: "hold", holdFrom: hold.start, holdUntil: hold.end, holdReason: hold.reason.trim(), holdExtendDays: hold.extend ? days : 0, contractEnd: hold.extend && member.contractEnd ? shift(member.contractEnd, days) : member.contractEnd }); setSheet(null); }} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>홀딩 시작</button>
       </div></Sheet>}
-      {(sheet === "memo" || sheet === "record") && <Sheet title={sheet === "memo" ? "상담 메모 추가" : "수업 기록"} onClose={() => setSheet(null)}><div className="space-y-2">{sheet === "record" && <VoiceNote key={lessonRecordSessionKey(member.id, null)} memberId={member.id} memberName={member.name || "회원"} onClose={() => setSheet(null)} onDeferred={() => setSheet(null)} onDraftChange={(text, meta, options) => onSaveNote("개인레슨", text, meta, options)} onApply={(text, meta) => onSaveNote("개인레슨", text, meta, { confirmed: true, upsert: true })} />}{sheet === "memo" && <><button type="button" aria-pressed={memoImportant} onClick={() => setMemoImportant((value) => !value)} className="flex h-10 w-full items-center gap-2 px-3" style={{ borderRadius: 8, backgroundColor: memoImportant ? WARN_S : CANVAS, color: memoImportant ? WARN : SUB, fontSize: TYPE.caption, fontWeight: 700 }}><Star size={14} fill={memoImportant ? "currentColor" : "none"} />중요 메모로 상단 고정</button><textarea autoFocus rows={5} value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="내용을 입력하세요" className={`${inputCls} h-auto resize-none py-3`} />{saveError && <p role="alert" style={{ fontSize: TYPE.caption, color: BAD }}>{saveError}</p>}<button type="button" aria-busy={saving === sheet} disabled={!memo.trim() || saving === sheet} onClick={commitNote} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>{saving === sheet ? "저장 중…" : "저장"}</button></>}</div></Sheet>}
+      {(sheet === "memo" || sheet === "record") && <Sheet title={sheet === "memo" ? "상담 메모 추가" : "수업 기록"} onClose={() => setSheet(null)}><div className="space-y-2">{sheet === "record" && <VoiceNote key={lessonRecordSessionKey(member.id, null)} memberId={member.id} memberName={member.name || "회원"} duetPartner={duetPartnerOf(member)} onClose={() => setSheet(null)} onDeferred={() => setSheet(null)} onDraftChange={(text, meta, options) => onSaveNote("개인레슨", text, meta, options)} onApply={(text, meta) => onSaveNote("개인레슨", text, meta, { confirmed: true, upsert: true })} />}{sheet === "memo" && <><button type="button" aria-pressed={memoImportant} onClick={() => setMemoImportant((value) => !value)} className="flex h-10 w-full items-center gap-2 px-3" style={{ borderRadius: 8, backgroundColor: memoImportant ? WARN_S : CANVAS, color: memoImportant ? WARN : SUB, fontSize: TYPE.caption, fontWeight: 700 }}><Star size={14} fill={memoImportant ? "currentColor" : "none"} />중요 메모로 상단 고정</button><textarea autoFocus rows={5} value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="내용을 입력하세요" className={`${inputCls} h-auto resize-none py-3`} />{saveError && <p role="alert" style={{ fontSize: TYPE.caption, color: BAD }}>{saveError}</p>}<button type="button" aria-busy={saving === sheet} disabled={!memo.trim() || saving === sheet} onClick={commitNote} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>{saving === sheet ? "저장 중…" : "저장"}</button></>}</div></Sheet>}
       {sheet === "record-review" && reviewDraft && <Sheet title="AI 수업기록 확인" sub="확인은 선택입니다. 정리된 기록은 이미 저장되어 있어요." onClose={() => setSheet(null)}><div className="space-y-3"><div className="grid grid-cols-2 gap-2">{[{ k: "didToday", l: "오늘 수업" }, { k: "observations", l: "변화" }, { k: "responses", l: "회원 반응" }, { k: "nextFocus", l: "다음 확인" }].map((field) => <div key={field.k} className="rounded-xl p-3" style={{ backgroundColor: CANVAS }}><p className="text-caption font-extrabold" style={{ color: SUB }}>{field.l}</p>{reviewEditing ? <textarea rows={2} aria-label={`${field.l} 수정`} value={structuredFieldText(reviewDraft, field.k)} onChange={(event) => setReviewDraft((current) => editStructuredField(current, field.k, event.target.value))} className={`${inputCls} mt-1 h-auto resize-none py-2 text-xs`} /> : <p className="mt-1 text-xs font-bold leading-relaxed" style={{ color: INK2 }}>{prepText(reviewDraft[field.k], "기록 없음")}</p>}</div>)}</div><div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => setReviewEditing((value) => !value)} className="h-12 rounded-xl text-sm font-extrabold" style={{ backgroundColor: CANVAS, color: BRAND_D }}>{reviewEditing ? "수정 닫기" : "수정"}</button><button type="button" onClick={confirmRecordReview} className="h-12 rounded-xl text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>확인</button></div></div></Sheet>}
       {sheet === "memos-all" && <Sheet title="상담 메모 전체 보기" onClose={() => setSheet(null)}><div className="space-y-2">{consultationNotes.length ? consultationNotes.map((note) => <div key={note.id} style={{ padding: 10, borderRadius: 8, backgroundColor: note.important ? WARN_S : CANVAS }}><p style={{ fontSize: TYPE.caption, color: SUB }}>{ymd(note.date)}{note.important ? " · 중요 메모" : ""}</p><p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK2 }}>{note.body}</p></div>) : <p style={{ fontSize: TYPE.caption, color: SUB }}>등록된 상담 메모가 없습니다</p>}<button type="button" onClick={openMemo} className="h-11 w-full text-xs font-bold" style={{ borderRadius: 8, backgroundColor: TINT, color: BRAND_D }}>메모 추가</button></div></Sheet>}
       {sheet === "records-all" && <Sheet title="수업 기록 전체 보기" onClose={() => setSheet(null)}><div className="min-w-0 space-y-2">{lessonSessions.length ? lessonSessions.map((session) => <div key={session.key} className="min-w-0" style={{ padding: 10, borderRadius: 8, backgroundColor: CANVAS }}><p className="mb-2 text-caption tabular-nums" style={{ color: SUB }}>{formatMemberLessonDate(session.date, { weekday: true })} · {session.type}</p><LessonRecordFieldRows session={session} />{session.warning && <p className="mt-2 text-caption" style={{ color: SUB }}>{session.warning}</p>}</div>) : <p style={{ fontSize: TYPE.caption, color: SUB }}>아직 작성된 수업 기록이 없습니다</p>}</div></Sheet>}
@@ -11177,9 +11189,20 @@ function IOSMediaDiagnosticPanel({ memberId = "diagnostics", lessonId = "hidden-
   return <div className="mt-3 rounded-lg p-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}><p style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>iOS 미디어 진단</p><div className="mt-2 grid grid-cols-2 gap-1.5"><button type="button" onClick={runMicrophoneTest} disabled={microphoneTest.status === "running" || cameraTest.status === "running"} className="min-h-11 rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: TINT, color: BRAND_D }}>{microphoneTest.status === "running" ? "마이크 테스트 중…" : "마이크 테스트"}</button><button type="button" onClick={runCameraTest} disabled={cameraTest.status === "running" || microphoneTest.status === "running"} className="min-h-11 rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: TINT, color: BRAND_D }}>{cameraTest.status === "running" ? "카메라 테스트 중…" : "카메라 테스트"}</button></div><StepList title="마이크" steps={microphoneTest.steps} /><StepList title="카메라" steps={cameraTest.steps} /></div>;
 }
 
-function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId = null, memberName = "회원", lessonId = null, onDirectEntry = null, onLater = null, onClose = null, onDeferred = null }) {
+function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId = null, memberName = "회원", duetPartner = null, lessonId = null, onDirectEntry = null, onLater = null, onClose = null, onDeferred = null }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const lessonLink = useContext(LessonRecordLinkContext);
+  /* 이 수업기록이 동의를 받아야 할 사람 전부. 듀엣이면 둘이다 -- 수업기록에
+     두 사람 이야기가 같이 들어가므로, 한 명만 동의한 상태로 올리면 다른 사람의
+     기록이 동의 없이 처리된다.
+
+     세 개의 동의 문(녹음 시작 · 서버 녹음 · 재확인)이 모두 이 하나를 부른다.
+     따로 두면 그중 하나가 짝을 빠뜨리는 날이 오고, 그 길로 들어온 녹음은
+     이미 올라간 뒤다. */
+  const ensureLessonConsent = async (options = {}) => ensureEveryConsent(
+    consentTargetsFor({ memberId, memberName, duetPartner }),
+    (id) => ensureMemberAIConsent(id, "summarizeVoice", options),
+  );
   const [on, setOn] = useState(false);
   const [starting, setStarting] = useState(false);
   const [manualEntry, setManualEntry] = useState(false);
@@ -12217,7 +12240,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     setErr(descriptor.title);
     if (descriptor.internalCode !== "consent_missing") return descriptor;
     invalidateMemberAIConsent(memberId);
-    const remoteConsent = await ensureMemberAIConsent(memberId, "summarizeVoice", { prompt: false, forceRemote: true });
+    const remoteConsent = await ensureLessonConsent({ prompt: false, forceRemote: true });
     if (remoteConsent.ok) {
       const link = await lessonLink.prepare?.({ memberId, lessonId, stage: "consent_recovery_preflight" });
       if (link?.state === "link_review_required") {
@@ -12423,7 +12446,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       const consentStartedAt = Date.now();
       let consent;
       try {
-        consent = await ensureMemberAIConsent(memberId, "summarizeVoice", { prompt: false });
+        consent = await ensureLessonConsent({ prompt: false });
       } catch (error) {
         voiceDiagnostic("voice_pipeline_failed", {
           source: "server_audio", stage: "consent", code: error?.code || "consent_check_failed",
@@ -12631,7 +12654,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       return;
     }
     if (!skipConsent) {
-      const consent = await ensureMemberAIConsent(memberId, "summarizeVoice", { prompt: false });
+      const consent = await ensureLessonConsent({ prompt: false });
       if (!consent.ok) {
         const failure = describeLessonRecordFailure({ code: "consent_missing" });
         appendLessonRecordDiagnostic({ code: failure.internalCode, stage: "consent_gate", category: failure.category });
@@ -13421,7 +13444,7 @@ function NoteForm({ member, schedule, onSave, settings, onSettings, backHint, vo
             {chips.length === 0 && <Sub>'내 문구' 버튼으로 자주 쓰는 표현을 저장해 두세요.</Sub>}
           </div>
         </div>
-        <VoiceNote key={lessonRecordSessionKey(member.id, null)} memberId={member.id} memberName={member.name || "회원"} highlight={voiceHint} onSeen={onVoiceSeen} onApply={(t, meta) => { setN((x) => ({ ...x, body: x.body.trim() ? `${x.body.trim()}\n${t}` : t })); setVoiceMeta(meta); }} />
+        <VoiceNote key={lessonRecordSessionKey(member.id, null)} memberId={member.id} memberName={member.name || "회원"} duetPartner={duetPartnerOf(member)} highlight={voiceHint} onSeen={onVoiceSeen} onApply={(t, meta) => { setN((x) => ({ ...x, body: x.body.trim() ? `${x.body.trim()}\n${t}` : t })); setVoiceMeta(meta); }} />
         <Field label="피드백 내용" hint={`${n.body.length}자`}>
           <textarea rows={5} value={n.body} onChange={(e) => { const value = e.target.value; setN({ ...n, body: value }); setVoiceMeta((meta) => meta?.lessonRecord ? { ...meta, lessonRecord: { ...meta.lessonRecord, instructorBodyOverride: value, instructorBodyOrigin: "instructor" } } : meta); }}
             placeholder="위 문구를 눌러 채우거나 직접 입력하세요" className={`${inputCls} resize-none leading-relaxed`} />
@@ -14806,10 +14829,15 @@ function PassIssue({
   const [mode, setMode] = useState(initialState?.mode || "form");
   const [search, setSearch] = useState(initialState?.search || "");
   const [moreOpen, setMoreOpen] = useState(initialState?.moreOpen || false);
+  const [issuedPasses, setIssuedPasses] = useState(initialState?.passes || []);
+  /* 듀엣 상대를 고르는 칸. 기본은 꺼짐이다 -- 1:1 이 대부분이라, 켜져 있으면
+     발급할 때마다 끄는 손이 하나 더 든다. */
+  const [partnerSearch, setPartnerSearch] = useState(initialState?.partnerSearch || "");
   const [form, setForm] = useState({
     clientId: "", productId: "", totalSessions: "", contractPriceManwon: "",
     serviceSessions: "0", purchaseRound: "1", paymentMethod: PAYMENT_METHOD.CARD,
     instructorId: "", unitPriceManwon: "", expiresAt: "",
+    duet: false, partnerClientId: "",
     ...(initialState?.form || {}),
   });
   const [formError, setFormError] = useState("");
@@ -14825,22 +14853,26 @@ function PassIssue({
       /* 네 가지가 다 있어야 발급할 수 있다. 하나라도 못 읽으면 화면을 열어 두는
          것이 더 나쁘다 -- 고를 수 없는 칸을 앞에 두고 사용자가 이유를 찾게 된다.
          지점 이름만은 없어도 되므로 그것만 견딘다. */
-      const [foundClients, foundProducts, foundInstructors, locationResult] = await Promise.all([
+      /* 회원권은 "이미 있는 회원권" 경고에만 쓴다. 못 읽었다고 발급을 막지
+         않는다 -- 경고 하나 때문에 정당한 계약을 팔 수 없게 되면 안 된다. */
+      const [foundClients, foundProducts, foundInstructors, locationResult, passResult] = await Promise.all([
         listClients(organizationId, { store: clientStore }),
         listProducts(organizationId, { store: productStore }),
         listInstructors(organizationId, { store: instructorStore }),
         toleratingReadFailure(listLocations(organizationId, { store: locationStore })),
+        toleratingReadFailure(listPasses(organizationId, { store: passStore })),
       ]);
       setClients(foundClients);
       setProducts(foundProducts);
       setInstructors(foundInstructors);
       setLocations(locationResult.items);
+      setIssuedPasses(passResult.items);
     } catch (error) {
       setLoadError(error?.code || "unknown");
     } finally {
       setLoading(false);
     }
-  }, [organizationId, clientStore, productStore, instructorStore, locationStore]);
+  }, [organizationId, clientStore, productStore, instructorStore, locationStore, passStore]);
 
   useEffect(() => { if (!locked) reload(); else setLoading(false); }, [locked, reload]);
 
@@ -14853,6 +14885,7 @@ function PassIssue({
     [clients, search],
   );
   const client = clients.find((item) => item.id === form.clientId) || null;
+  const partner = form.duet ? clients.find((item) => item.id === form.partnerClientId) || null : null;
   const product = products.find((item) => item.id === form.productId) || null;
   const instructor = instructors.find((item) => item.userId === form.instructorId) || null;
   const priceSource = unitPriceSourceFor(product?.payCategory);
@@ -14882,6 +14915,23 @@ function PassIssue({
     unitPriceManwon: "",
   }));
 
+  /* 듀엣 판정은 전부 features/passes/duet-issue.js 에 있다. 화면은 그리기만
+     한다 -- 막는 것과 알리는 것을 화면 안에서 섞기 시작하면 어느 것이 어느
+     무게인지 다음 사람이 알 수 없다. */
+  const duetNotices = useMemo(() => duetIssueNotices({
+    duet: form.duet, client, partner, product, passes: issuedPasses,
+  }), [form.duet, client, partner, product, issuedPasses]);
+  const duetBlock = blockingNotice(duetNotices);
+
+  /* 이미 고른 회원은 짝 후보에서 뺀다. 같은 사람을 고르면 판정이 막지만,
+     고를 수 없게 해 두면 그 실수 자체가 일어나지 않는다. */
+  const matchedPartners = useMemo(
+    () => clients
+      .filter((item) => item.id !== form.clientId && clientMatchesSearch(item, partnerSearch))
+      .slice(0, 8),
+    [clients, form.clientId, partnerSearch],
+  );
+
   const sessionsChanged = product && String(product.defaultSessions ?? "") !== form.totalSessions;
   const priceChanged = product
     && String((Number(product.defaultPrice) || 0) / WON_PER_MANWON) !== form.contractPriceManwon;
@@ -14893,6 +14943,7 @@ function PassIssue({
     if (!product) { setFormError("상품을 골라 주세요."); return; }
     if (!form.instructorId) { setFormError("담당 강사를 골라 주세요."); return; }
     if (rateBlock) { setFormError(rateBlock); return; }
+    if (duetBlock) { setFormError(duetBlock.message); return; }
     if (!(Number(form.totalSessions) >= 1)) { setFormError("세션 수를 1 이상으로 입력해 주세요."); return; }
     if (form.contractPriceManwon === "") { setFormError("계약 금액을 입력해 주세요."); return; }
     // 계약서에 적힌 값이다. 지어내지 않고 받는다.
@@ -14909,6 +14960,9 @@ function PassIssue({
     try {
       await issuePass(organizationId, {
         clientId: client.id,
+        /* 듀엣이면 둘. 대표가 첫 번째여야 한다 -- 규칙과 원장이 그 순서에
+           걸려 있다 (pass-clients.js). */
+        ...(form.duet && partner ? { clientIds: [client.id, partner.id] } : {}),
         locationId: client.locationId,
         productId: product.id,
         payCategory: product.payCategory,
@@ -14928,14 +14982,18 @@ function PassIssue({
         fullRoomRate: fullRoomRateOf(instructor) ?? undefined,
         createdBy: currentUserId,
       }, { store: passStore });
-      onToast?.({ ok: true, msg: `${client.name}님에게 회원권을 발급했습니다.` });
+      onToast?.({ ok: true, msg: form.duet && partner
+        ? `${client.name}님과 ${partner.name}님에게 듀엣 회원권을 발급했습니다.`
+        : `${client.name}님에게 회원권을 발급했습니다.` });
       setMode("form");
       setForm({
         clientId: "", productId: "", totalSessions: "", contractPriceManwon: "",
         serviceSessions: "0", purchaseRound: "1", paymentMethod: PAYMENT_METHOD.CARD,
         instructorId: "", unitPriceManwon: "", expiresAt: "",
+        duet: false, partnerClientId: "",
       });
       setSearch("");
+      setPartnerSearch("");
       setMoreOpen(false);
     } catch (error) {
       setMode("form");
@@ -14971,7 +15029,8 @@ function PassIssue({
         </p>
         <div className="mt-3 space-y-1" style={{ padding: 12, borderRadius: 10, backgroundColor: CANVAS }}>
           <p style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>
-            {client.name}님 / {locationNames.get(client.locationId) || client.locationId || "지점 없음"}
+            {form.duet && partner ? `${client.name}님 · ${partner.name}님` : `${client.name}님`}
+            {" / "}{locationNames.get(client.locationId) || client.locationId || "지점 없음"}
           </p>
           <p style={{ fontSize: TYPE.caption, color: INK2 }}>
             {labelOf(SESSION_TYPE_LABELS, product.sessionType)}
@@ -14983,6 +15042,13 @@ function PassIssue({
             {Number(form.serviceSessions || 0) > 0 ? ` + 서비스 ${form.serviceSessions}회` : ""}
             {" = 총 "}{total}회
           </p>
+          {/* 대표가 각자 30회로 오해하면 계약 자체가 틀어진다. 회차 바로 아래에
+              둔다 -- 숫자와 떨어뜨리면 숫자만 읽고 넘어간다. */}
+          {form.duet && partner ? (
+            <p style={{ fontSize: TYPE.caption, fontWeight: 650, color: BRAND_D }}>
+              듀엣 · {duetSummaryLine(total)}
+            </p>
+          ) : null}
           <p className="tabular-nums" style={{ fontSize: TYPE.caption, color: INK2 }}>
             {manwonLabelOf(form.contractPriceManwon)}
             {" · "}{labelOf(PAYMENT_METHOD_LABELS, form.paymentMethod)}
@@ -15005,6 +15071,19 @@ function PassIssue({
           </p>
           <p className="tabular-nums" style={{ fontSize: TYPE.caption, color: INK2 }}>만료 {form.expiresAt}</p>
         </div>
+        {/* 막지는 않는다. 다만 대표가 보고 넘어가야 한다 -- 발급한 뒤에는
+            원장이 append-only 라 고칠 수 없다. */}
+        {reviewNotices(duetNotices).map((notice) => (
+          <div key={notice.code + notice.message} className="mt-2" style={{
+            padding: 10, borderRadius: 10,
+            backgroundColor: notice.level === "confirm" ? WARN_S : CANVAS,
+            border: notice.level === "confirm" ? `1px solid ${WARN}` : `1px solid ${LINE}`,
+          }}>
+            <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, fontWeight: notice.level === "confirm" ? 700 : 600, color: notice.level === "confirm" ? WARN : SUB }}>
+              {notice.message}
+            </p>
+          </div>
+        ))}
         {formError ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: BAD }}>{formError}</p> : null}
         <div className="mt-3 flex gap-2">
           <button type="button" onClick={() => setMode("form")} className="h-11 flex-1 font-bold"
@@ -15044,6 +15123,52 @@ function PassIssue({
               </div>
             ) : null}
           </IssueField>
+
+          {/* 듀엣. 기본은 꺼짐이다 -- 1:1 이 대부분이라 켜져 있으면 발급할
+              때마다 끄는 손이 하나 더 든다. 회원을 고른 뒤에 뜬다: 고르기 전에
+              보이면 무엇에 대한 듀엣인지 알 수 없다. */}
+          {client ? (
+            <div style={{ padding: 12, borderRadius: 10, backgroundColor: CANVAS }}>
+              <label className="flex items-center gap-2" style={{ fontSize: TYPE.caption, fontWeight: 650, color: INK }}>
+                <input type="checkbox" checked={form.duet}
+                  onChange={(e) => {
+                    const on = e.target.checked;
+                    setForm((c) => ({ ...c, duet: on, partnerClientId: on ? c.partnerClientId : "" }));
+                    if (!on) setPartnerSearch("");
+                  }} />
+                듀엣으로 발급 (회원 두 명이 한 회원권을 함께 씁니다)
+              </label>
+              {form.duet ? (
+                <div className="mt-2">
+                  <IssueField label="듀엣 상대"
+                    hint={partner ? `${partner.name}님 · ${locationNames.get(partner.locationId) || partner.locationId || "지점 없음"}` : ""}>
+                    <input value={partnerSearch} className={inputCls} placeholder="이름 또는 연락처"
+                      onChange={(e) => { setPartnerSearch(e.target.value); setForm((c) => ({ ...c, partnerClientId: "" })); }} />
+                    {partnerSearch && !form.partnerClientId ? (
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {matchedPartners.length === 0
+                          ? (
+                            /* 짝도 이미 등록된 회원이어야 한다. 여기서 새로 만들면
+                               연락처 없이 회원이 생기고, 그 회원은 동명이인과
+                               구분되지 않는다. */
+                            <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+                              찾는 회원이 없습니다. 더보기 → 회원 관리에서 먼저 등록해 주세요.
+                            </p>
+                          )
+                          : matchedPartners.map((item) => (
+                            <button key={item.id} type="button" className="h-9 px-3 font-bold"
+                              onClick={() => { setForm((c) => ({ ...c, partnerClientId: item.id })); setPartnerSearch(item.name); }}
+                              style={{ borderRadius: 999, fontSize: TYPE.caption, backgroundColor: CARD, color: SUB }}>
+                              {item.name}
+                            </button>
+                          ))}
+                      </div>
+                    ) : null}
+                  </IssueField>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
 
           <IssueField label="상품">
             {products.length === 0
@@ -15792,8 +15917,11 @@ function LedgerUndoSheet({ title, description, reason, onReason, onCancel, onCon
   );
 }
 
-function ClientPassRow({ pass, nameOfInstructor, now, onCancel, cancellable = false }) {
+function ClientPassRow({ pass, nameOfInstructor, nameOfClient = () => "", clientId = "", now, onCancel, cancellable = false }) {
   const usable = isDeductablePass(pass, now);
+  /* 듀엣이면 이 회원권을 둘이 함께 쓴다. 잔여 29회가 두 사람의 29회라는
+     사실이 화면에 없으면, 대표는 한 사람 몫으로 읽고 재등록 시점을 잘못 센다. */
+  const partner = partnerClientId(pass, clientId);
   const expired = isExpiredPass(pass, now);
   return (
     <div style={{ padding: "11px 0", borderTop: `1px solid ${LINE}`, opacity: usable ? 1 : 0.55 }}>
@@ -15828,6 +15956,22 @@ function ClientPassRow({ pass, nameOfInstructor, now, onCancel, cancellable = fa
             }}>발급 취소</button>
         ) : null}
       </div>
+      {partner ? (
+        <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>
+          <span style={{ color: BRAND, fontWeight: 650 }}>듀엣</span>
+          {" · "}{nameOfClient(partner) || "상대 회원"} 님과 함께 씁니다
+          {" · 수업 한 번에 1회 차감"}
+        </p>
+      ) : null}
+      {/* 듀엣이 깨졌을 때의 길. 회원권에서 한 사람만 떼어내는 문은 아직 없다 --
+          환불·정산 규칙이 먼저 정해져야 한다. 그때까지는 취소하고 다시 발급하는
+          것이 유일한 길이고, 이력이 남으므로 안전하다. 화면이 그 길을 말해 두지
+          않으면 대표는 방법이 없다고 여기고 엉뚱한 곳을 고친다. */}
+      {partner && onCancel && pass.status === "active" ? (
+        <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>
+          듀엣을 나누려면 이 회원권을 취소하고 각자에게 다시 발급해 주세요.
+        </p>
+      ) : null}
       {onCancel && !cancellable && pass.status === "active" ? (
         <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>
           차감된 회차가 있어 취소할 수 없습니다. 아래 이력에서 먼저 보정해 주세요.
@@ -15838,7 +15982,7 @@ function ClientPassRow({ pass, nameOfInstructor, now, onCancel, cancellable = fa
 }
 
 function ClientDetail({
-  organization, client, history, loading, error, instructors = [], currentUserId = "",
+  organization, client, history, loading, error, instructors = [], currentUserId = "", nameOfClient = () => "",
   passStore, onClose, onRetry, onChanged, onToast, now = () => new Date(), initialUndo = null,
 }) {
   const at = now();
@@ -15955,7 +16099,8 @@ function ClientDetail({
             {passes.length === 0
               ? <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>발급된 회원권이 없습니다.</p>
               : passes.map((pass) => (
-                <ClientPassRow key={pass.id} pass={pass} nameOfInstructor={nameOfInstructor} now={at}
+                <ClientPassRow key={pass.id} pass={pass} nameOfInstructor={nameOfInstructor}
+                  nameOfClient={nameOfClient} clientId={client?.id || ""} now={at}
                   cancellable={canUndo && isCancellablePass(pass, entries)}
                   onCancel={canUndo ? () => { setUndo({ kind: "cancel", pass }); setReason(""); } : undefined} />
               ))}
@@ -18245,6 +18390,7 @@ export function createAppScreenSmokeCases() {
     /* 회당 단가가 붙기 전에 만들어진 기타 상품. 발급 화면이 예전처럼 물어야 한다. */
     { id: "smoke-product-etc", organizationId: "smoke-center", name: "체험 1회", sessionType: "pt_1_1", payCategory: "etc", defaultSessions: 1, defaultPrice: 55000, status: "active" },
     { id: "smoke-product-etc-priced", organizationId: "smoke-center", name: "보강 5회", sessionType: "pt_1_1", payCategory: "etc", defaultSessions: 5, defaultPrice: 250000, baseUnitPrice: 28000, status: "active" },
+    { id: "smoke-product-duet", organizationId: "smoke-center", name: "2:1 30회", sessionType: "pt_2_1", payCategory: "pt_2_1_new", defaultSessions: 30, defaultPrice: 1800000, status: "active" },
   ];
   const productStore = {
     list: async () => [
@@ -18581,6 +18727,24 @@ export function createAppScreenSmokeCases() {
     { name: "센터 회원 상세 · 발급 취소 확인", element: ownerClientDetail({
       initialUndo: { kind: "cancel", pass: smokeHistoryPasses[0], reason: "" },
     }) },
+    /* 듀엣. 회원권 하나를 둘이 쓰는 줄이 서는지, 그리고 갈라설 때의 길이
+       화면에 있는지 본다 -- 그 문은 아직 없고, 없다는 사실을 화면이 말해야
+       대표가 방법이 없다고 여기고 엉뚱한 곳을 고치지 않는다. */
+    { name: "센터 회원 상세 · 듀엣", element: ownerClientDetail({
+      nameOfClient: (id) => (id === "smoke-client-b" ? "박두리" : ""),
+      history: {
+        ...smokeHistory,
+        passes: [{
+          ...smokeHistoryPasses[0],
+          id: "smoke-pass-duet",
+          clientIds: ["smoke-client-a", "smoke-client-b"],
+          category: "pt_2_1_new",
+          totalSessions: 30,
+          remainingCount: 29,
+        }],
+        entries: [],
+      },
+    }) },
     { name: "센터 회원 상세 · 일부 이력 실패", element: clientDetail({
       history: { ...smokeHistory, failedPassIds: ["smoke-pass-old"] },
     }) },
@@ -18626,6 +18790,39 @@ export function createAppScreenSmokeCases() {
     { name: "회원 목록 · 소속 강사 · 명부 조회 실패", element: <ReferenceMemberList members={db.members} schedule={db.schedule} settings={db.settings} canRegister={false} currentUserId="u1" myMembersDefault rosterError="permission-denied" onRetryRoster={noop} onSelect={noop} onAdd={noop} /> },
     { name: "회원 목록 · 강사 · 비어 있음", element: <ReferenceMemberList members={[]} schedule={[]} settings={db.settings} canRegister={false} onSelect={noop} onAdd={noop} /> },
     { name: "회원권 발급", element: passIssue(smokeOwner, { ...smokeIssueBase }) },
+    /* 듀엣. 회원을 고른 뒤에 토글이 뜨고, 켜면 짝 칸이 생긴다. */
+    { name: "회원권 발급 · 듀엣 꺼짐", element: passIssue(smokeOwner, {
+      ...smokeIssueBase, search: "김하나",
+      form: { clientId: "smoke-client-a", productId: "smoke-product-duet", totalSessions: "30", contractPriceManwon: "180", instructorId: "u1", expiresAt: "2027-04-30" },
+    }) },
+    { name: "회원권 발급 · 듀엣", element: passIssue(smokeOwner, {
+      ...smokeIssueBase, search: "김하나", partnerSearch: "이두리",
+      form: { clientId: "smoke-client-a", partnerClientId: "smoke-client-c", duet: true, productId: "smoke-product-duet", totalSessions: "30", contractPriceManwon: "180", instructorId: "u1", expiresAt: "2027-04-30" },
+    }) },
+    { name: "회원권 발급 · 듀엣 · 상대 없음", element: passIssue(smokeOwner, {
+      ...smokeIssueBase, search: "김하나", partnerSearch: "없는사람",
+      form: { clientId: "smoke-client-a", duet: true, productId: "smoke-product-duet", totalSessions: "30", contractPriceManwon: "180", instructorId: "u1", expiresAt: "2027-04-30" },
+    }) },
+    { name: "회원권 발급 · 듀엣 · 확인", element: passIssue(smokeOwner, {
+      ...smokeIssueBase, mode: "confirm", search: "김하나", partnerSearch: "이두리",
+      form: { clientId: "smoke-client-a", partnerClientId: "smoke-client-c", duet: true, productId: "smoke-product-duet", totalSessions: "30", serviceSessions: "0", contractPriceManwon: "180", purchaseRound: "1", paymentMethod: "cash", instructorId: "u1", expiresAt: "2027-04-30" },
+    }) },
+    /* 상품과 듀엣 여부가 어긋난 둘. 막지 않고 확인을 띄운다. */
+    { name: "회원권 발급 · 듀엣 · 카테고리 어긋남", element: passIssue(smokeOwner, {
+      ...smokeIssueBase, mode: "confirm", search: "김하나", partnerSearch: "이두리",
+      form: { clientId: "smoke-client-a", partnerClientId: "smoke-client-c", duet: true, productId: "smoke-product-active", totalSessions: "20", serviceSessions: "0", contractPriceManwon: "130", purchaseRound: "1", paymentMethod: "card", instructorId: "u1", expiresAt: "2027-04-30" },
+    }) },
+    { name: "회원권 발급 · 2:1 인데 듀엣 아님", element: passIssue(smokeOwner, {
+      ...smokeIssueBase, mode: "confirm", search: "김하나",
+      form: { clientId: "smoke-client-a", productId: "smoke-product-duet", totalSessions: "30", serviceSessions: "0", contractPriceManwon: "180", purchaseRound: "1", paymentMethod: "cash", instructorId: "u1", expiresAt: "2027-04-30" },
+    }) },
+    /* 이미 쓸 수 있는 회원권이 있는 회원. 막지 않는다 -- 재등록은 만료 전에
+       미리 하는 일이 잦다. */
+    { name: "회원권 발급 · 듀엣 · 이미 회원권 있음", element: passIssue(smokeOwner, {
+      ...smokeIssueBase, mode: "confirm", search: "김하나", partnerSearch: "이두리",
+      passes: [{ id: "held", clientId: "smoke-client-c", status: "active", remainingCount: 4, expiresAt: new Date(2027, 5, 1) }],
+      form: { clientId: "smoke-client-a", partnerClientId: "smoke-client-c", duet: true, productId: "smoke-product-duet", totalSessions: "30", serviceSessions: "0", contractPriceManwon: "180", purchaseRound: "1", paymentMethod: "cash", instructorId: "u1", expiresAt: "2027-04-30" },
+    }) },
     { name: "회원권 발급 · 기준값과 다름", element: passIssue(smokeOwner, {
       ...smokeIssueBase,
       form: { clientId: "smoke-client-a", productId: "smoke-product-active", totalSessions: "22", contractPriceManwon: "140", serviceSessions: "0", purchaseRound: "1", paymentMethod: "card", instructorId: "u1", unitPriceManwon: "" },
@@ -21397,6 +21594,7 @@ export default function App() {
             <div className="mx-auto w-full max-w-md p-3">
               <ClientDetail organization={organizationContext} client={detailClient}
                 history={clientHistory} loading={historyLoading} error={historyError}
+                nameOfClient={(id) => (roster?.roster || []).find((item) => item.orgClientId === id)?.name || ""}
                 instructors={detailInstructors}
                 currentUserId={account?.id || ""} onToast={setToast}
                 onChanged={() => setHistoryRevision((value) => value + 1)}

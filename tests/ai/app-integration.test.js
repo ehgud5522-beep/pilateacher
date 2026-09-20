@@ -27,7 +27,17 @@ test("every AI action checks member consent before invoking the gateway", async 
     const alternateIndex = source.indexOf(`ensureMemberAIConsent(member.id, \"${consentOperation}\"`);
     const activeMemberIndex = source.indexOf(`ensureMemberAIConsent(activeMember.id, \"${consentOperation}\"`);
     const voiceIndex = source.indexOf(`ensureMemberAIConsent(memberId, \"${consentOperation}\"`);
-    const firstConsent = Math.max(consentIndex, alternateIndex, activeMemberIndex, voiceIndex);
+    /* 수업기록의 문은 공용 판정을 거친다. 듀엣이면 두 사람 모두의 동의를 받아야
+       하는데(수업기록에 두 사람 이야기가 같이 들어간다) 회원 하나만 보는 호출로는
+       그 판정을 할 수 없어 ensureLessonConsent 로 모았다. 그 함수가 회원마다
+       ensureMemberAIConsent 를 부르므로 문이 사라진 것이 아니다 -- 아래 두 줄이
+       그 사실을 확인한다. 확인 없이 이름만 받아 주면 빈 함수도 통과한다. */
+    const sharedIndex = consentOperation === "summarizeVoice" ? source.indexOf("await ensureLessonConsent(") : -1;
+    if (sharedIndex >= 0) {
+      assert.match(source, /const ensureLessonConsent = async[\s\S]{0,200}ensureEveryConsent\(/, "공용 판정이 동의를 건너뛴다");
+      assert.match(source, /ensureMemberAIConsent\(id, "summarizeVoice"/, "공용 판정이 회원 동의를 부르지 않는다");
+    }
+    const firstConsent = Math.max(consentIndex, alternateIndex, activeMemberIndex, voiceIndex, sharedIndex);
     const providerIndex = source.indexOf(providerCall);
     assert.ok(firstConsent >= 0, `${consentOperation} consent guard is missing`);
     assert.ok(providerIndex > firstConsent || source.indexOf(providerCall, firstConsent) > firstConsent, `${providerCall} must run after consent`);

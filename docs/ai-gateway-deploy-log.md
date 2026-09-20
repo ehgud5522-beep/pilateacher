@@ -15,6 +15,7 @@ npx firebase deploy --only functions:aiGateway --project pilateacher --config fi
 | --- | --- | --- | --- | --- |
 | `aigateway-00013-nal` | 2026-08-26 10:27:55 | `11b9afa` | `2490ec03…` | 전사 경계 보강 D5 |
 | `aigateway-00014-noz` | 2026-08-27 19:04:24 | `403862a` | `0a52337a…` | 인가 거부 사유 분리 + `authorization_denied` 상시 로깅 (H-13) |
+| (확인 필요) | 2026-09-20 13:0x | `9f8677f` | — | 소유권 판정에 조직 회원 추가 — memberships + organizations/{org}/clients |
 
 Cloud Run 서비스 URL 은 두 revision 모두 `https://aigateway-exny2pgf7a-du.a.run.app`,
 공개 엔드포인트는 `https://asia-northeast3-pilateacher.cloudfunctions.net/aiGateway/v1/ai/execute` 이다.
@@ -54,3 +55,18 @@ curl -s -w "\nHTTP %{http_code}\n" -X POST "https://asia-northeast3-pilateacher.
 - `authorization_denied … reason: member_not_owned | lesson_not_owned | backup_missing` — 서버 백업이 낡았다는 뜻이다. HTTP 403 `invalid_request` 로 나가고 앱은 회원·수업 연결 화면을 띄운다.
 - `authorization_denied … reason: consent_missing | consent_not_granted` — 실제 동의 문제. HTTP 403 `consent_required`.
 - `gateway_failed … code: invalid_request` + HTTP 400 — 요청 스키마 거부. 필드명은 `internalMessage` 에만 있고 응답에는 실리지 않으므로, 필요하면 `AI_GATEWAY_DIAGNOSTICS=1` 로 서버 로그를 켠다.
+
+### 2026-09-20 배포 메모
+
+`firebase deploy` 는 `Successful update operation` 으로 끝났고 Function URL 은
+그대로 `https://aigateway-exny2pgf7a-du.a.run.app` 이다. **revision 이름은 아직
+적지 못했다** -- 이 기기에 `gcloud` 가 없고 `functions:log` 가 로그를 가져오지
+못했다. 다음에 접근 가능한 곳에서 아래로 확인해 위 표의 "(확인 필요)" 를 채운다.
+
+```bash
+npx firebase functions:log --only aiGateway --project pilateacher -n 6
+```
+
+롤백 지점은 `aigateway-00014-noz` (소스 `403862a`) 다. 이번 배포가 문제가 되면
+그쪽으로 트래픽을 되돌린다 -- 다만 되돌리는 순간 센터가 등록한 회원의 음성
+수업기록은 다시 막힌다.

@@ -1363,3 +1363,181 @@ test("a deputy pass whose net price cannot be read is refused, not guessed", asy
   await deductPass(ORG, broken, deductInput(), deductOptions(fine));
   assert.equal(fine.calls.commit.length, 1, "부원장이 아니면 그대로 차감된다");
 });
+
+/* ── 듀엣: 회원권 하나에 회원 둘 ──────────────────────────────────────────
+
+   계약서가 하나이고 회원권도 하나다. 30회 계약이면 두 명이 함께 쓰는 30회고,
+   수업 한 번에 1회 차감되고 잔여가 29가 된다. 두 명을 한 단위로 본다. */
+
+const duetPass = (overrides = {}) => passDoc({
+  clientId: "client-a",
+  clientIds: ["client-a", "client-b"],
+  locationId: "bansong",
+  category: "pt_2_1_new",
+  baseUnitPrice: 30000,
+  totalSessions: 30,
+  serviceSessions: 0,
+  serviceUsed: 0,
+  handedOver: false,
+  remainingCount: 30,
+  ...overrides,
+});
+
+test("a duet pass is issued once, and names both members", async () => {
+  const store = fakeStore();
+  const { pass } = await issuePass(ORG, issueInput({
+    clientId: "client-a", clientIds: ["client-a", "client-b"],
+    payCategory: "pt_2_1_new", totalSessions: 30,
+  }), { store, newId: () => "pass-duet" });
+  assert.deepEqual(pass.clientIds, ["client-a", "client-b"]);
+  // 30회 계약이면 30회다. 두 명이라고 60회가 되지 않는다.
+  assert.equal(pass.remainingCount, 30);
+});
+
+test("a 1:1 pass still names exactly one, so readers need no second branch", async () => {
+  const store = fakeStore();
+  const { pass } = await issuePass(ORG, issueInput(), { store, newId: () => "pass-solo" });
+  assert.deepEqual(pass.clientIds, ["client-a"]);
+});
+
+test("the partner sees the same pass the anchor does", async () => {
+  /* 대표만 보면 짝의 화면에서 잔여도 여정도 단가도 사라진다 -- 명부 id 공간
+     때문에 겪었던 것과 같은 실패다. */
+  const store = fakeStore({ documents: [duetPass()] });
+  assert.equal((await listPasses(ORG, { clientId: "client-b", store })).length, 1);
+  assert.equal((await listPasses(ORG, { clientId: "client-a", store })).length, 1);
+  assert.equal((await listPasses(ORG, { clientId: "client-c", store })).length, 0);
+});
+
+test("one duet lesson takes one session and pays once", async () => {
+  const store = fakeStore({ totals: {
+    [`organizations/${ORG}/instructorClientTotals/instructor-a_client-a`]: { sessions: 40 },
+    [`organizations/${ORG}/instructorClientTotals/instructor-a_client-b`]: { sessions: 40 },
+  } });
+  const { entry } = await deductPass(ORG, duetPass(), deductInput(), { store });
+  assert.equal(entry.delta, -1, "한 번 수업에 한 회차");
+  assert.equal(entry.unitPrice, 30000, "2:1 신규 — 수업 한 번 기준");
+  const decrements = store.calls.commit[0].filter((write) => write.operation === "decrement");
+  assert.equal(decrements.length, 1);
+  assert.equal(decrements[0].data.remainingCount, -1);
+});
+
+test("both members get a participant row, and a no-show still deducts", async () => {
+  /* 한 명이 노쇼여도 차감도 급여도 그대로다. 다만 누가 왔고 누가 안 왔는지는
+     남아야 한다 -- 없으면 두 달 뒤 "그날 나는 안 갔는데" 에 답할 것이 없다. */
+  const store = fakeStore();
+  const { entry } = await deductPass(ORG, duetPass(), deductInput({
+    lessonId: "lesson-1", attendanceByClientId: { "client-b": "noshow" },
+  }), { store });
+  assert.equal(entry.delta, -1);
+  const rows = store.calls.commit[0].filter((write) => write.path.includes("/participants/"));
+  assert.deepEqual(rows.map((write) => write.data.clientId), ["client-a", "client-b"]);
+  assert.deepEqual(rows.map((write) => write.data.attendanceStatus), ["attended", "noshow"]);
+});
+
+test("the instructor's running total goes up for both members", async () => {
+  // 강사는 그 시간에 두 사람을 각각 가르쳤다.
+  const store = fakeStore();
+  await deductPass(ORG, duetPass(), deductInput(), { store });
+  const bumps = store.calls.commit[0].filter((write) => write.operation === "bump");
+  assert.deepEqual(bumps.map((write) => write.data.clientId), ["client-a", "client-b"]);
+  assert.ok(bumps.every((write) => write.data.delta.sessions === 1));
+});
+
+test("the pair is priced by whoever the instructor knows least", async () => {
+  /* 대표는 40회지만 짝은 3회다. 강사에게 아직 새 사람이 섞여 있으므로 그 수업은
+     신규 단가다 (판정 3, 25,000). 대표만 봤다면 30,000 이 되었을 것이다. */
+  const store = fakeStore({ totals: {
+    [`organizations/${ORG}/instructorClientTotals/instructor-a_client-a`]: { sessions: 40 },
+    [`organizations/${ORG}/instructorClientTotals/instructor-a_client-b`]: { sessions: 3 },
+  } });
+  const { entry } = await deductPass(ORG, duetPass(), deductInput(), { store });
+  assert.equal(entry.unitPrice, 25000);
+  assert.equal(entry.rule, "new_to_instructor");
+});
+
+test("both totals are read, not just the anchor's", async () => {
+  const store = fakeStore();
+  await deductPass(ORG, duetPass(), deductInput(), { store });
+  assert.deepEqual(store.calls.read, [
+    `organizations/${ORG}/instructorClientTotals/instructor-a_client-a`,
+    `organizations/${ORG}/instructorClientTotals/instructor-a_client-b`,
+  ]);
+});
+
+test("undoing a duet deduction puts both totals back", async () => {
+  /* 한쪽만 되돌리면 두 사람의 누적이 영영 1 만큼 어긋나고, 20회째 단가가 서로
+     다른 날에 온다. 원장은 append-only 라 그 어긋남은 고칠 수 없다. */
+  const store = fakeStore();
+  await correctDeduction(ORG, duetPass({ remainingCount: 29 }), {
+    id: "lesson-1_deduct", type: "deduct", instructorId: "instructor-a",
+    category: "pt_2_1_new", unitPrice: 30000, passId: "pass-a",
+  }, { reason: "잘못 눌렀습니다", createdBy: "owner-a" }, { store });
+  const bumps = store.calls.commit[0].filter((write) => write.operation === "bump");
+  assert.deepEqual(bumps.map((write) => write.data.clientId), ["client-a", "client-b"]);
+  assert.ok(bumps.every((write) => write.data.delta.sessions === -1));
+});
+
+test("a 1:1 deduction is unchanged — one participant, one total", async () => {
+  // 듀엣을 넣으면서 1:1 이 달라지면 안 된다. 센터의 대부분이 1:1 이다.
+  const store = fakeStore();
+  await deductPass(ORG, duetPass({ clientIds: undefined, category: "pt_1_1_new", baseUnitPrice: 25000 }), deductInput(), { store });
+  const rows = store.calls.commit[0].filter((write) => write.path.includes("/participants/"));
+  const bumps = store.calls.commit[0].filter((write) => write.operation === "bump");
+  assert.equal(rows.length, 1);
+  assert.equal(bumps.length, 1);
+  assert.equal(bumps[0].data.clientId, "client-a");
+});
+
+/* ── 부원장이 듀엣을 맡으면 ───────────────────────────────────────────────
+
+   계약이 하나이므로 분모도 하나다. 특별히 할 것이 없어야 하는데, 없어야 한다는
+   말은 검사하지 않으면 확인되지 않는다 -- 두 사람이니 2로 한 번 더 나누거나
+   한 사람 몫만 지급하는 코드가 나중에 들어올 자리다. */
+
+test("a deputy's 5:5 splits the one contract, not one member's share of it", async () => {
+  /* 현금 180만 · 30회 → 공급가액 180만(현금은 부가세 없음) ÷ 30 ÷ 2 = 30,000.
+     두 사람이라고 60회로 나누거나 다시 반으로 접지 않는다. */
+  const store = fakeStore();
+  const { entry } = await deductPass(ORG, duetPass({
+    contractPrice: 1800000, netContractPrice: 1800000, paymentMethod: "cash", totalSessions: 30,
+  }), deductInput({ isDeputyDirector: true }), { store });
+  assert.equal(entry.unitPrice, 30000);
+  assert.equal(entry.rule, "deputy_director");
+});
+
+test("the deputy rate is the same whether the pass is a duet or not", async () => {
+  // 회원 수는 이 판정에 들어가지 않는다. 들어가기 시작하면 계약이 둘이 된다.
+  const of = async (overrides) => {
+    const store = fakeStore();
+    const { entry } = await deductPass(ORG, duetPass({
+      contractPrice: 1800000, netContractPrice: 1800000, paymentMethod: "cash",
+      totalSessions: 30, ...overrides,
+    }), deductInput({ isDeputyDirector: true }), { store });
+    return entry.unitPrice;
+  };
+  assert.equal(await of({ clientIds: ["client-a", "client-b"] }), await of({ clientIds: undefined }));
+});
+
+test("the deputy rule still beats the partner being new to the instructor", async () => {
+  /* 판정 순서가 그대로여야 한다. 짝이 신규라고 25,000 으로 내려가면 부원장
+     계약의 5:5 가 사라진다. */
+  const store = fakeStore({ totals: {
+    [`organizations/${ORG}/instructorClientTotals/instructor-a_client-a`]: { sessions: 40 },
+    [`organizations/${ORG}/instructorClientTotals/instructor-a_client-b`]: { sessions: 0 },
+  } });
+  const { entry } = await deductPass(ORG, duetPass({
+    contractPrice: 1800000, netContractPrice: 1800000, paymentMethod: "cash", totalSessions: 30,
+  }), deductInput({ isDeputyDirector: true }), { store });
+  assert.equal(entry.rule, "deputy_director");
+  assert.equal(entry.unitPrice, 30000);
+});
+
+test("a card duet still takes VAT out of the one contract before halving", async () => {
+  // 카드 198만 → 공급가액 1,800,000 → ÷30 ÷2 = 30,000.
+  const store = fakeStore();
+  const { entry } = await deductPass(ORG, duetPass({
+    contractPrice: 1980000, netContractPrice: 1800000, paymentMethod: "card", totalSessions: 30,
+  }), deductInput({ isDeputyDirector: true }), { store });
+  assert.equal(entry.unitPrice, 30000);
+});

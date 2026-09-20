@@ -1488,3 +1488,56 @@ test("a 1:1 deduction is unchanged — one participant, one total", async () => 
   assert.equal(bumps.length, 1);
   assert.equal(bumps[0].data.clientId, "client-a");
 });
+
+/* ── 부원장이 듀엣을 맡으면 ───────────────────────────────────────────────
+
+   계약이 하나이므로 분모도 하나다. 특별히 할 것이 없어야 하는데, 없어야 한다는
+   말은 검사하지 않으면 확인되지 않는다 -- 두 사람이니 2로 한 번 더 나누거나
+   한 사람 몫만 지급하는 코드가 나중에 들어올 자리다. */
+
+test("a deputy's 5:5 splits the one contract, not one member's share of it", async () => {
+  /* 현금 180만 · 30회 → 공급가액 180만(현금은 부가세 없음) ÷ 30 ÷ 2 = 30,000.
+     두 사람이라고 60회로 나누거나 다시 반으로 접지 않는다. */
+  const store = fakeStore();
+  const { entry } = await deductPass(ORG, duetPass({
+    contractPrice: 1800000, netContractPrice: 1800000, paymentMethod: "cash", totalSessions: 30,
+  }), deductInput({ isDeputyDirector: true }), { store });
+  assert.equal(entry.unitPrice, 30000);
+  assert.equal(entry.rule, "deputy_director");
+});
+
+test("the deputy rate is the same whether the pass is a duet or not", async () => {
+  // 회원 수는 이 판정에 들어가지 않는다. 들어가기 시작하면 계약이 둘이 된다.
+  const of = async (overrides) => {
+    const store = fakeStore();
+    const { entry } = await deductPass(ORG, duetPass({
+      contractPrice: 1800000, netContractPrice: 1800000, paymentMethod: "cash",
+      totalSessions: 30, ...overrides,
+    }), deductInput({ isDeputyDirector: true }), { store });
+    return entry.unitPrice;
+  };
+  assert.equal(await of({ clientIds: ["client-a", "client-b"] }), await of({ clientIds: undefined }));
+});
+
+test("the deputy rule still beats the partner being new to the instructor", async () => {
+  /* 판정 순서가 그대로여야 한다. 짝이 신규라고 25,000 으로 내려가면 부원장
+     계약의 5:5 가 사라진다. */
+  const store = fakeStore({ totals: {
+    [`organizations/${ORG}/instructorClientTotals/instructor-a_client-a`]: { sessions: 40 },
+    [`organizations/${ORG}/instructorClientTotals/instructor-a_client-b`]: { sessions: 0 },
+  } });
+  const { entry } = await deductPass(ORG, duetPass({
+    contractPrice: 1800000, netContractPrice: 1800000, paymentMethod: "cash", totalSessions: 30,
+  }), deductInput({ isDeputyDirector: true }), { store });
+  assert.equal(entry.rule, "deputy_director");
+  assert.equal(entry.unitPrice, 30000);
+});
+
+test("a card duet still takes VAT out of the one contract before halving", async () => {
+  // 카드 198만 → 공급가액 1,800,000 → ÷30 ÷2 = 30,000.
+  const store = fakeStore();
+  const { entry } = await deductPass(ORG, duetPass({
+    contractPrice: 1980000, netContractPrice: 1800000, paymentMethod: "card", totalSessions: 30,
+  }), deductInput({ isDeputyDirector: true }), { store });
+  assert.equal(entry.unitPrice, 30000);
+});

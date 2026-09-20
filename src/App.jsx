@@ -113,6 +113,9 @@ import {
   isMyRosterMember, isRosterMember, isUnlinkedLocalMember, mergeRoster, rosterHideKey,
 } from "./features/roster/roster-bridge.js";
 import { partnerClientId } from "./data/schema/pass-clients.js";
+import {
+  blockingNotice, duetIssueNotices, duetSummaryLine, reviewNotices,
+} from "./features/passes/duet-issue.js";
 import { JOURNEY_PRIOR_NOTE, buildPassJourney, hasJourney } from "./features/members/pass-journey.js";
 import { previewLessonRates } from "./features/schedule/lesson-rate-preview.js";
 import {
@@ -14826,10 +14829,15 @@ function PassIssue({
   const [mode, setMode] = useState(initialState?.mode || "form");
   const [search, setSearch] = useState(initialState?.search || "");
   const [moreOpen, setMoreOpen] = useState(initialState?.moreOpen || false);
+  const [issuedPasses, setIssuedPasses] = useState(initialState?.passes || []);
+  /* 듀엣 상대를 고르는 칸. 기본은 꺼짐이다 -- 1:1 이 대부분이라, 켜져 있으면
+     발급할 때마다 끄는 손이 하나 더 든다. */
+  const [partnerSearch, setPartnerSearch] = useState(initialState?.partnerSearch || "");
   const [form, setForm] = useState({
     clientId: "", productId: "", totalSessions: "", contractPriceManwon: "",
     serviceSessions: "0", purchaseRound: "1", paymentMethod: PAYMENT_METHOD.CARD,
     instructorId: "", unitPriceManwon: "", expiresAt: "",
+    duet: false, partnerClientId: "",
     ...(initialState?.form || {}),
   });
   const [formError, setFormError] = useState("");
@@ -14845,22 +14853,26 @@ function PassIssue({
       /* 네 가지가 다 있어야 발급할 수 있다. 하나라도 못 읽으면 화면을 열어 두는
          것이 더 나쁘다 -- 고를 수 없는 칸을 앞에 두고 사용자가 이유를 찾게 된다.
          지점 이름만은 없어도 되므로 그것만 견딘다. */
-      const [foundClients, foundProducts, foundInstructors, locationResult] = await Promise.all([
+      /* 회원권은 "이미 있는 회원권" 경고에만 쓴다. 못 읽었다고 발급을 막지
+         않는다 -- 경고 하나 때문에 정당한 계약을 팔 수 없게 되면 안 된다. */
+      const [foundClients, foundProducts, foundInstructors, locationResult, passResult] = await Promise.all([
         listClients(organizationId, { store: clientStore }),
         listProducts(organizationId, { store: productStore }),
         listInstructors(organizationId, { store: instructorStore }),
         toleratingReadFailure(listLocations(organizationId, { store: locationStore })),
+        toleratingReadFailure(listPasses(organizationId, { store: passStore })),
       ]);
       setClients(foundClients);
       setProducts(foundProducts);
       setInstructors(foundInstructors);
       setLocations(locationResult.items);
+      setIssuedPasses(passResult.items);
     } catch (error) {
       setLoadError(error?.code || "unknown");
     } finally {
       setLoading(false);
     }
-  }, [organizationId, clientStore, productStore, instructorStore, locationStore]);
+  }, [organizationId, clientStore, productStore, instructorStore, locationStore, passStore]);
 
   useEffect(() => { if (!locked) reload(); else setLoading(false); }, [locked, reload]);
 
@@ -14873,6 +14885,7 @@ function PassIssue({
     [clients, search],
   );
   const client = clients.find((item) => item.id === form.clientId) || null;
+  const partner = form.duet ? clients.find((item) => item.id === form.partnerClientId) || null : null;
   const product = products.find((item) => item.id === form.productId) || null;
   const instructor = instructors.find((item) => item.userId === form.instructorId) || null;
   const priceSource = unitPriceSourceFor(product?.payCategory);
@@ -14902,6 +14915,23 @@ function PassIssue({
     unitPriceManwon: "",
   }));
 
+  /* 듀엣 판정은 전부 features/passes/duet-issue.js 에 있다. 화면은 그리기만
+     한다 -- 막는 것과 알리는 것을 화면 안에서 섞기 시작하면 어느 것이 어느
+     무게인지 다음 사람이 알 수 없다. */
+  const duetNotices = useMemo(() => duetIssueNotices({
+    duet: form.duet, client, partner, product, passes: issuedPasses,
+  }), [form.duet, client, partner, product, issuedPasses]);
+  const duetBlock = blockingNotice(duetNotices);
+
+  /* 이미 고른 회원은 짝 후보에서 뺀다. 같은 사람을 고르면 판정이 막지만,
+     고를 수 없게 해 두면 그 실수 자체가 일어나지 않는다. */
+  const matchedPartners = useMemo(
+    () => clients
+      .filter((item) => item.id !== form.clientId && clientMatchesSearch(item, partnerSearch))
+      .slice(0, 8),
+    [clients, form.clientId, partnerSearch],
+  );
+
   const sessionsChanged = product && String(product.defaultSessions ?? "") !== form.totalSessions;
   const priceChanged = product
     && String((Number(product.defaultPrice) || 0) / WON_PER_MANWON) !== form.contractPriceManwon;
@@ -14913,6 +14943,7 @@ function PassIssue({
     if (!product) { setFormError("상품을 골라 주세요."); return; }
     if (!form.instructorId) { setFormError("담당 강사를 골라 주세요."); return; }
     if (rateBlock) { setFormError(rateBlock); return; }
+    if (duetBlock) { setFormError(duetBlock.message); return; }
     if (!(Number(form.totalSessions) >= 1)) { setFormError("세션 수를 1 이상으로 입력해 주세요."); return; }
     if (form.contractPriceManwon === "") { setFormError("계약 금액을 입력해 주세요."); return; }
     // 계약서에 적힌 값이다. 지어내지 않고 받는다.
@@ -14929,6 +14960,9 @@ function PassIssue({
     try {
       await issuePass(organizationId, {
         clientId: client.id,
+        /* 듀엣이면 둘. 대표가 첫 번째여야 한다 -- 규칙과 원장이 그 순서에
+           걸려 있다 (pass-clients.js). */
+        ...(form.duet && partner ? { clientIds: [client.id, partner.id] } : {}),
         locationId: client.locationId,
         productId: product.id,
         payCategory: product.payCategory,
@@ -14948,14 +14982,18 @@ function PassIssue({
         fullRoomRate: fullRoomRateOf(instructor) ?? undefined,
         createdBy: currentUserId,
       }, { store: passStore });
-      onToast?.({ ok: true, msg: `${client.name}님에게 회원권을 발급했습니다.` });
+      onToast?.({ ok: true, msg: form.duet && partner
+        ? `${client.name}님과 ${partner.name}님에게 듀엣 회원권을 발급했습니다.`
+        : `${client.name}님에게 회원권을 발급했습니다.` });
       setMode("form");
       setForm({
         clientId: "", productId: "", totalSessions: "", contractPriceManwon: "",
         serviceSessions: "0", purchaseRound: "1", paymentMethod: PAYMENT_METHOD.CARD,
         instructorId: "", unitPriceManwon: "", expiresAt: "",
+        duet: false, partnerClientId: "",
       });
       setSearch("");
+      setPartnerSearch("");
       setMoreOpen(false);
     } catch (error) {
       setMode("form");
@@ -14991,7 +15029,8 @@ function PassIssue({
         </p>
         <div className="mt-3 space-y-1" style={{ padding: 12, borderRadius: 10, backgroundColor: CANVAS }}>
           <p style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>
-            {client.name}님 / {locationNames.get(client.locationId) || client.locationId || "지점 없음"}
+            {form.duet && partner ? `${client.name}님 · ${partner.name}님` : `${client.name}님`}
+            {" / "}{locationNames.get(client.locationId) || client.locationId || "지점 없음"}
           </p>
           <p style={{ fontSize: TYPE.caption, color: INK2 }}>
             {labelOf(SESSION_TYPE_LABELS, product.sessionType)}
@@ -15003,6 +15042,13 @@ function PassIssue({
             {Number(form.serviceSessions || 0) > 0 ? ` + 서비스 ${form.serviceSessions}회` : ""}
             {" = 총 "}{total}회
           </p>
+          {/* 대표가 각자 30회로 오해하면 계약 자체가 틀어진다. 회차 바로 아래에
+              둔다 -- 숫자와 떨어뜨리면 숫자만 읽고 넘어간다. */}
+          {form.duet && partner ? (
+            <p style={{ fontSize: TYPE.caption, fontWeight: 650, color: BRAND_D }}>
+              듀엣 · {duetSummaryLine(total)}
+            </p>
+          ) : null}
           <p className="tabular-nums" style={{ fontSize: TYPE.caption, color: INK2 }}>
             {manwonLabelOf(form.contractPriceManwon)}
             {" · "}{labelOf(PAYMENT_METHOD_LABELS, form.paymentMethod)}
@@ -15025,6 +15071,19 @@ function PassIssue({
           </p>
           <p className="tabular-nums" style={{ fontSize: TYPE.caption, color: INK2 }}>만료 {form.expiresAt}</p>
         </div>
+        {/* 막지는 않는다. 다만 대표가 보고 넘어가야 한다 -- 발급한 뒤에는
+            원장이 append-only 라 고칠 수 없다. */}
+        {reviewNotices(duetNotices).map((notice) => (
+          <div key={notice.code + notice.message} className="mt-2" style={{
+            padding: 10, borderRadius: 10,
+            backgroundColor: notice.level === "confirm" ? WARN_S : CANVAS,
+            border: notice.level === "confirm" ? `1px solid ${WARN}` : `1px solid ${LINE}`,
+          }}>
+            <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, fontWeight: notice.level === "confirm" ? 700 : 600, color: notice.level === "confirm" ? WARN : SUB }}>
+              {notice.message}
+            </p>
+          </div>
+        ))}
         {formError ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: BAD }}>{formError}</p> : null}
         <div className="mt-3 flex gap-2">
           <button type="button" onClick={() => setMode("form")} className="h-11 flex-1 font-bold"
@@ -15064,6 +15123,52 @@ function PassIssue({
               </div>
             ) : null}
           </IssueField>
+
+          {/* 듀엣. 기본은 꺼짐이다 -- 1:1 이 대부분이라 켜져 있으면 발급할
+              때마다 끄는 손이 하나 더 든다. 회원을 고른 뒤에 뜬다: 고르기 전에
+              보이면 무엇에 대한 듀엣인지 알 수 없다. */}
+          {client ? (
+            <div style={{ padding: 12, borderRadius: 10, backgroundColor: CANVAS }}>
+              <label className="flex items-center gap-2" style={{ fontSize: TYPE.caption, fontWeight: 650, color: INK }}>
+                <input type="checkbox" checked={form.duet}
+                  onChange={(e) => {
+                    const on = e.target.checked;
+                    setForm((c) => ({ ...c, duet: on, partnerClientId: on ? c.partnerClientId : "" }));
+                    if (!on) setPartnerSearch("");
+                  }} />
+                듀엣으로 발급 (회원 두 명이 한 회원권을 함께 씁니다)
+              </label>
+              {form.duet ? (
+                <div className="mt-2">
+                  <IssueField label="듀엣 상대"
+                    hint={partner ? `${partner.name}님 · ${locationNames.get(partner.locationId) || partner.locationId || "지점 없음"}` : ""}>
+                    <input value={partnerSearch} className={inputCls} placeholder="이름 또는 연락처"
+                      onChange={(e) => { setPartnerSearch(e.target.value); setForm((c) => ({ ...c, partnerClientId: "" })); }} />
+                    {partnerSearch && !form.partnerClientId ? (
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {matchedPartners.length === 0
+                          ? (
+                            /* 짝도 이미 등록된 회원이어야 한다. 여기서 새로 만들면
+                               연락처 없이 회원이 생기고, 그 회원은 동명이인과
+                               구분되지 않는다. */
+                            <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+                              찾는 회원이 없습니다. 더보기 → 회원 관리에서 먼저 등록해 주세요.
+                            </p>
+                          )
+                          : matchedPartners.map((item) => (
+                            <button key={item.id} type="button" className="h-9 px-3 font-bold"
+                              onClick={() => { setForm((c) => ({ ...c, partnerClientId: item.id })); setPartnerSearch(item.name); }}
+                              style={{ borderRadius: 999, fontSize: TYPE.caption, backgroundColor: CARD, color: SUB }}>
+                              {item.name}
+                            </button>
+                          ))}
+                      </div>
+                    ) : null}
+                  </IssueField>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
 
           <IssueField label="상품">
             {products.length === 0
@@ -18285,6 +18390,7 @@ export function createAppScreenSmokeCases() {
     /* 회당 단가가 붙기 전에 만들어진 기타 상품. 발급 화면이 예전처럼 물어야 한다. */
     { id: "smoke-product-etc", organizationId: "smoke-center", name: "체험 1회", sessionType: "pt_1_1", payCategory: "etc", defaultSessions: 1, defaultPrice: 55000, status: "active" },
     { id: "smoke-product-etc-priced", organizationId: "smoke-center", name: "보강 5회", sessionType: "pt_1_1", payCategory: "etc", defaultSessions: 5, defaultPrice: 250000, baseUnitPrice: 28000, status: "active" },
+    { id: "smoke-product-duet", organizationId: "smoke-center", name: "2:1 30회", sessionType: "pt_2_1", payCategory: "pt_2_1_new", defaultSessions: 30, defaultPrice: 1800000, status: "active" },
   ];
   const productStore = {
     list: async () => [
@@ -18684,6 +18790,39 @@ export function createAppScreenSmokeCases() {
     { name: "회원 목록 · 소속 강사 · 명부 조회 실패", element: <ReferenceMemberList members={db.members} schedule={db.schedule} settings={db.settings} canRegister={false} currentUserId="u1" myMembersDefault rosterError="permission-denied" onRetryRoster={noop} onSelect={noop} onAdd={noop} /> },
     { name: "회원 목록 · 강사 · 비어 있음", element: <ReferenceMemberList members={[]} schedule={[]} settings={db.settings} canRegister={false} onSelect={noop} onAdd={noop} /> },
     { name: "회원권 발급", element: passIssue(smokeOwner, { ...smokeIssueBase }) },
+    /* 듀엣. 회원을 고른 뒤에 토글이 뜨고, 켜면 짝 칸이 생긴다. */
+    { name: "회원권 발급 · 듀엣 꺼짐", element: passIssue(smokeOwner, {
+      ...smokeIssueBase, search: "김하나",
+      form: { clientId: "smoke-client-a", productId: "smoke-product-duet", totalSessions: "30", contractPriceManwon: "180", instructorId: "u1", expiresAt: "2027-04-30" },
+    }) },
+    { name: "회원권 발급 · 듀엣", element: passIssue(smokeOwner, {
+      ...smokeIssueBase, search: "김하나", partnerSearch: "이두리",
+      form: { clientId: "smoke-client-a", partnerClientId: "smoke-client-c", duet: true, productId: "smoke-product-duet", totalSessions: "30", contractPriceManwon: "180", instructorId: "u1", expiresAt: "2027-04-30" },
+    }) },
+    { name: "회원권 발급 · 듀엣 · 상대 없음", element: passIssue(smokeOwner, {
+      ...smokeIssueBase, search: "김하나", partnerSearch: "없는사람",
+      form: { clientId: "smoke-client-a", duet: true, productId: "smoke-product-duet", totalSessions: "30", contractPriceManwon: "180", instructorId: "u1", expiresAt: "2027-04-30" },
+    }) },
+    { name: "회원권 발급 · 듀엣 · 확인", element: passIssue(smokeOwner, {
+      ...smokeIssueBase, mode: "confirm", search: "김하나", partnerSearch: "이두리",
+      form: { clientId: "smoke-client-a", partnerClientId: "smoke-client-c", duet: true, productId: "smoke-product-duet", totalSessions: "30", serviceSessions: "0", contractPriceManwon: "180", purchaseRound: "1", paymentMethod: "cash", instructorId: "u1", expiresAt: "2027-04-30" },
+    }) },
+    /* 상품과 듀엣 여부가 어긋난 둘. 막지 않고 확인을 띄운다. */
+    { name: "회원권 발급 · 듀엣 · 카테고리 어긋남", element: passIssue(smokeOwner, {
+      ...smokeIssueBase, mode: "confirm", search: "김하나", partnerSearch: "이두리",
+      form: { clientId: "smoke-client-a", partnerClientId: "smoke-client-c", duet: true, productId: "smoke-product-active", totalSessions: "20", serviceSessions: "0", contractPriceManwon: "130", purchaseRound: "1", paymentMethod: "card", instructorId: "u1", expiresAt: "2027-04-30" },
+    }) },
+    { name: "회원권 발급 · 2:1 인데 듀엣 아님", element: passIssue(smokeOwner, {
+      ...smokeIssueBase, mode: "confirm", search: "김하나",
+      form: { clientId: "smoke-client-a", productId: "smoke-product-duet", totalSessions: "30", serviceSessions: "0", contractPriceManwon: "180", purchaseRound: "1", paymentMethod: "cash", instructorId: "u1", expiresAt: "2027-04-30" },
+    }) },
+    /* 이미 쓸 수 있는 회원권이 있는 회원. 막지 않는다 -- 재등록은 만료 전에
+       미리 하는 일이 잦다. */
+    { name: "회원권 발급 · 듀엣 · 이미 회원권 있음", element: passIssue(smokeOwner, {
+      ...smokeIssueBase, mode: "confirm", search: "김하나", partnerSearch: "이두리",
+      passes: [{ id: "held", clientId: "smoke-client-c", status: "active", remainingCount: 4, expiresAt: new Date(2027, 5, 1) }],
+      form: { clientId: "smoke-client-a", partnerClientId: "smoke-client-c", duet: true, productId: "smoke-product-duet", totalSessions: "30", serviceSessions: "0", contractPriceManwon: "180", purchaseRound: "1", paymentMethod: "cash", instructorId: "u1", expiresAt: "2027-04-30" },
+    }) },
     { name: "회원권 발급 · 기준값과 다름", element: passIssue(smokeOwner, {
       ...smokeIssueBase,
       form: { clientId: "smoke-client-a", productId: "smoke-product-active", totalSessions: "22", contractPriceManwon: "140", serviceSessions: "0", purchaseRound: "1", paymentMethod: "card", instructorId: "u1", unitPriceManwon: "" },

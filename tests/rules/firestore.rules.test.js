@@ -1552,6 +1552,53 @@ describe("issuing a pass and moving its instructor", () => {
     ));
   });
 
+  /* ── 듀엣: 회원권 하나에 회원 둘 ───────────────────────────────────────
+     계약서가 하나이고 회원권도 하나다. clientId 는 그대로 두고 clientIds 를
+     더하며, 불변식은 clientIds[0] == clientId 다 -- 아래 원장 문이 항목을
+     pass.clientId 에 못 박고 있어서, 대표가 흔들리면 규칙이 가리키는 사람과
+     원장이 가리키는 사람이 달라진다. */
+
+  test("a pass may name a second member, and the anchor must come first", async () => {
+    await assertSucceeds(setDoc(
+      passDoc(users.owner, "pass-duet"),
+      passFixture(ORG_A, "pass-duet", {
+        clientId: "client-member", clientIds: ["client-member", "client-partner"],
+        category: "pt_2_1_new", baseUnitPrice: 30000,
+      }),
+    ));
+    // 1:1 도 같은 모양을 쓸 수 있다. 읽는 쪽이 갈래를 만들지 않게.
+    await assertSucceeds(setDoc(
+      passDoc(users.owner, "pass-solo-list"),
+      passFixture(ORG_A, "pass-solo-list", { clientIds: ["client-member"] }),
+    ));
+    // 없어도 된다. 이관된 회원권과 이 기능 전에 발급된 것이 전부 그렇다.
+    await assertSucceeds(setDoc(passDoc(users.owner, "pass-no-list"), passFixture(ORG_A, "pass-no-list")));
+  });
+
+  test("a pass refuses a list that would make the ledger point elsewhere", async () => {
+    const bad = (id, overrides) => setDoc(passDoc(users.owner, id), passFixture(ORG_A, id, overrides));
+    // 대표가 첫 번째가 아니다.
+    await assertFails(bad("pass-wrong-anchor", { clientIds: ["client-partner", "client-member"] }));
+    await assertFails(bad("pass-missing-anchor", { clientIds: ["client-partner"] }));
+    // 셋은 아직 없다.
+    await assertFails(bad("pass-trio", { clientIds: ["client-member", "b", "c"] }));
+    await assertFails(bad("pass-empty-list", { clientIds: [] }));
+    await assertFails(bad("pass-not-a-list", { clientIds: "client-member" }));
+    /* 같은 사람을 두 번. 회차는 하나인데 누적이 둘 올라가서 20회 판정이 실제의
+       두 배 속도로 지나간다. */
+    await assertFails(bad("pass-same-twice", { clientIds: ["client-member", "client-member"] }));
+  });
+
+  test("who shares a pass is settled at issue and never edited afterwards", async () => {
+    /* 나중에 바꾸면 이미 차감된 회차가 누구의 것이었는지 소급해서 달라지고,
+       원장은 append-only 라 고칠 수 없다. 대표라도 막는다 -- 듀엣이 깨지면
+       취소하고 다시 발급한다. */
+    await assertFails(updateDoc(passDoc(users.owner, PASS_A), { clientIds: ["client-member", "client-partner"] }));
+    await assertFails(updateDoc(passDoc(users.owner, PASS_A), { clientId: "client-partner" }));
+    // 나머지 문은 그대로 열려 있다.
+    await assertSucceeds(updateDoc(passDoc(users.owner, PASS_A), { contractPrice: 1100000 }));
+  });
+
   test("a transfer entry records who handed over to whom", async () => {
     await assertSucceeds(setDoc(ledgerDoc(users.owner, PASS_A, "entry-transfer"), transferEntry()));
     await assertSucceeds(setDoc(

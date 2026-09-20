@@ -38,6 +38,9 @@ import {
   netContractPriceFor, netContractPriceOf, resolveDeductionUnitPrice, spendsServiceSession,
 } from "../schema/deduction-pricing.js";
 import { paths } from "../schema/paths.js";
+import {
+  normalizePassClientIds, passBelongsTo, passClientIds, pricingPriorSessions,
+} from "../schema/pass-clients.js";
 import { toDate } from "./payroll-repository.js";
 import { defaultUnitPriceFor, resolveUnitPrice } from "../schema/pay-rates.js";
 import { RepositoryReadError, readCollection } from "./repository-read.js";
@@ -154,7 +157,9 @@ export async function listPasses(organizationId, options = {}) {
     read: (path) => store.list(path),
   });
   return found
-    .filter((pass) => (clientId ? pass.clientId === clientId : true))
+    /* 듀엣은 짝의 화면에서도 같은 회원권이 보여야 한다. 대표만 보면 짝에게는
+       "회원권 없음" 이 되고, 잔여도 여정도 단가도 그 사람에게만 사라진다. */
+    .filter((pass) => (clientId ? passBelongsTo(pass, clientId) : true))
     .filter((pass) => (includeExpired ? true : pass.status === PASS_STATUS.ACTIVE))
     .sort(byIssuedAtDesc);
 }
@@ -175,7 +180,7 @@ export async function listPasses(organizationId, options = {}) {
  *   totalSessions: number, contractPrice: number, instructorId: string, createdBy: string,
  *   serviceSessions?: number, purchaseRound?: number, paymentMethod?: string,
  *   unitPrice?: number, fullRoomRate?: number, expiresAt?: Date | string,
- *   passId?: string, entryId?: string,
+ *   passId?: string, entryId?: string, clientIds?: Array<string>,
  * }} input
  * @param {{ store?: PassStore, newId?: () => string }} [options]
  */
@@ -202,6 +207,9 @@ export async function issuePass(organizationId, input, options = {}) {
   });
 
   const clientId = requiredText(input?.clientId, "clientId");
+  /* 듀엣이면 둘. 없으면 대표 한 명짜리 배열이 된다 -- 1:1 회원권도 같은 모양을
+     들고 있어야 읽는 쪽이 갈래를 만들지 않는다. */
+  const clientIds = normalizePassClientIds(clientId, input?.clientIds);
   /* 계약서에 적힌 만료일. 회원이 가장 자주 묻는 값이라 지어내지 않고 받는다. */
   const expiresAt = input?.expiresAt instanceof Date ? input.expiresAt : new Date(String(input?.expiresAt ?? ""));
   if (!Number.isFinite(expiresAt.getTime())) throw new Error("Invalid expiresAt");
@@ -218,6 +226,9 @@ export async function issuePass(organizationId, input, options = {}) {
   const pass = {
     organizationId: organization,
     clientId,
+    /* 대표를 포함한 전부. 1:1 이면 길이 1 이다 -- 옛 회원권에는 이 필드가 없고,
+       읽는 쪽(passClientIds)이 그때 대표 한 명으로 읽는다. */
+    clientIds,
     locationId,
     productId,
     category: payCategory,
@@ -417,7 +428,11 @@ export function isDeductablePass(pass, now = new Date()) {
  * @param {any} pass 회원권 문서 (id, clientId, locationId, category, baseUnitPrice,
  *   contractPrice, totalSessions, serviceSessions, handedOver, serviceUsed,
  *   remainingCount)
- * @param {{ instructorId: string, createdBy: string, occurredAt: Date, isDeputyDirector?: boolean, lessonId?: string, entryId?: string }} input
+ * @param {{
+ *   instructorId: string, createdBy: string, occurredAt: Date, isDeputyDirector?: boolean,
+ *   lessonId?: string, entryId?: string,
+ *   attendanceByClientId?: Record<string, string>,
+ * }} input
  * @param {{ store?: PassStore, newId?: () => string, now?: () => Date }} [options]
  */
 export async function deductPass(organizationId, pass, input, options = {}) {
@@ -473,7 +488,14 @@ export async function deductPass(organizationId, pass, input, options = {}) {
      두 강사가 같은 순간에 누르면 이 읽기가 서로의 증가를 못 볼 수 있다. 저장된
      누적은 서버가 더하므로 언제나 맞고, 어긋날 수 있는 것은 그 순간의 단가
      하나다 -- 같은 회원을 두 강사가 같은 초에 차감할 때에만 일어난다. */
-  const priorSessions = await readInstructorClientSessions(organization, instructorId, clientId, { store });
+  /* 듀엣이면 두 사람의 누적을 모두 읽고 적은 쪽을 쓴다. 판정 3 의 뜻이 "이
+     강사가 이 회원을 아직 모른다" 이고, 한 명이 새 사람이면 그 수업은 강사에게
+     아직 새 수업이다 (pass-clients.js pricingPriorSessions). */
+  const clientIds = passClientIds(pass);
+  const sessionsPerClient = await Promise.all(clientIds.map((id) => (
+    readInstructorClientSessions(organization, instructorId, id, { store })
+  )));
+  const priorSessions = pricingPriorSessions(sessionsPerClient);
 
   /* 서비스 회차를 먼저 쓴다 (deduction-pricing.js 의 spendsServiceSession).
      그래서 이 한 회차의 성격은 회원권의 카테고리가 아니라 "몇 번째 차감인가"가
@@ -521,6 +543,7 @@ export async function deductPass(organizationId, pass, input, options = {}) {
     organizationId: organization,
     lessonId,
     clientId,
+    clientIds,
     locationId,
     instructorId,
     startsAt: occurredAt,
@@ -528,12 +551,22 @@ export async function deductPass(organizationId, pass, input, options = {}) {
     createdAt: stampedAt,
     createdBy,
   };
-  const participant = {
-    organizationId: organization,
-    lessonId,
-    clientId,
-    attendanceStatus: ATTENDANCE_STATUS.ATTENDED,
+  /* 듀엣이면 참가자 문서가 둘이다. 한 명이 노쇼여도 차감도 급여도 그대로지만,
+     누가 왔고 누가 안 왔는지는 기록이 남아야 한다 -- 없으면 두 달 뒤 "그날 나는
+     안 갔는데" 에 답할 것이 없다. */
+  const attendanceOf = (id) => {
+    const given = input?.attendanceByClientId?.[id];
+    return values(ATTENDANCE_STATUS).has(String(given)) ? String(given) : ATTENDANCE_STATUS.ATTENDED;
   };
+  const participants = clientIds.map((id) => ({
+    path: paths.lessonParticipant(organization, lessonId, id),
+    data: {
+      organizationId: organization,
+      lessonId,
+      clientId: id,
+      attendanceStatus: attendanceOf(id),
+    },
+  }));
   const entry = {
     organizationId: organization,
     passId,
@@ -561,7 +594,7 @@ export async function deductPass(organizationId, pass, input, options = {}) {
 
   await store.commit([
     { path: paths.lesson(organization, lessonId), data: lesson },
-    { path: paths.lessonParticipant(organization, lessonId, clientId), data: participant },
+    ...participants,
     { path: paths.passLedgerEntry(organization, passId, entryId), data: entry },
     /* 잔여는 읽어서 빼지 않고 서버가 하나 줄인다. 두 강사가 같은 순간에 눌러도
        하나가 다른 하나를 덮어쓰지 않는다. 규칙은 계산된 값을 보고 -1 인지 따진다.
@@ -578,16 +611,19 @@ export async function deductPass(organizationId, pass, input, options = {}) {
        단가인지 기준 단가인지 가른다 (deduction-pricing.js 판정 3).
        원장으로는 셀 수 없다 -- 항목이 회원권마다 흩어져 있고, 세려면 센터
        전체를 훑어야 한다. 차감과 같은 배치라 둘이 어긋날 수 없다. */
-    {
-      path: paths.instructorClientTotal(organization, instructorId, clientId),
+    /* 듀엣이면 두 사람 모두 올린다. 강사는 그 시간에 두 사람을 각각 가르쳤고,
+       한 명만 올리면 짝은 스무 번을 같이 하고도 영영 "처음 보는 회원" 으로
+       남는다. 단가를 정할 때 둘 중 적은 쪽을 보는 것은 위에서 따로 한다. */
+    ...clientIds.map((id) => ({
+      path: paths.instructorClientTotal(organization, instructorId, id),
       data: {
         organizationId: organization,
         instructorId,
-        clientId,
+        clientId: id,
         delta: { sessions: 1 },
       },
-      operation: "bump",
-    },
+      operation: /** @type {"bump"} */ ("bump"),
+    })),
   ]);
   return { passId, lessonId, entryId, entry, lesson };
 }
@@ -866,12 +902,16 @@ export async function correctDeduction(organizationId, pass, entry, input, optio
       operation: "decrement",
     },
     /* 누적도 되돌린다. 급여 판정 3 이 이 숫자로 신규 단가인지 기준 단가인지
-       가르므로, 있지도 않은 수업이 남아 있으면 20회째가 앞당겨진다. */
-    {
-      path: paths.instructorClientTotal(organization, instructorId, clientId),
-      data: { organizationId: organization, instructorId, clientId, delta: { sessions: -1 } },
-      operation: "bump",
-    },
+       가르므로, 있지도 않은 수업이 남아 있으면 20회째가 앞당겨진다.
+
+       차감이 둘 다 올렸으면 되돌리는 것도 둘 다다. 한쪽만 되돌리면 두 사람의
+       누적이 영영 1 만큼 어긋난 채로 남고, 그 차이는 20회째 단가를 서로 다른
+       날에 오게 만든다 -- 원장으로는 고칠 수 없는 종류의 어긋남이다. */
+    ...passClientIds(pass).map((id) => ({
+      path: paths.instructorClientTotal(organization, instructorId, id),
+      data: { organizationId: organization, instructorId, clientId: id, delta: { sessions: -1 } },
+      operation: /** @type {"bump"} */ ("bump"),
+    })),
   ]);
   return { passId, entryId, entry: correction };
 }

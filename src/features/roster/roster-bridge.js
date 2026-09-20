@@ -35,6 +35,7 @@
 
 import { normalizePhone } from "../../data/repositories/client-repository.js";
 import { isDeductablePass, remainingCountOf } from "../../data/repositories/pass-repository.js";
+import { PAY_CATEGORY_LABELS } from "../../data/schema/display-names.js";
 
 /** 이 줄이 어디서 왔는가. 화면이 이 값으로 무엇을 말할지 정한다. */
 export const ROSTER_SOURCE = Object.freeze({
@@ -58,9 +59,19 @@ const keysOf = (item) => {
   return { phone: phone || "", name: name || "" };
 };
 
+const count = (value) => (Number.isFinite(Number(value)) ? Number(value) : 0);
+
 /** 조직 회원권에서 오는 값. 쓸 수 있는 회차만 센다 -- 만료·취소분은 빼고. */
 function passFactsFor(clientId, passes, now) {
   let remaining = 0;
+  /* 이용권 카드가 묻는 세 가지. 회원권에 다 있는데 아무도 옮겨 오지 않아
+     "미등록 · 미설정 · 결제 내역 없음" 으로 비어 있었다 -- 잔여만 29회라고
+     적혀 있는 옆에서. 값이 없는 것이 아니라 여기서 끊겨 있었다. */
+  let registeredTotal = 0;
+  let paidSessions = 0;
+  let paidAmount = 0;
+  let nextPass = null;
+  let lastPass = null;
   const instructorIds = new Set();
   for (const pass of passes) {
     if (pass?.clientId !== clientId) continue;
@@ -68,10 +79,48 @@ function passFactsFor(clientId, passes, now) {
        내 회원이 아니게 되는 것은 아니고, "내 회원" 필터가 그 사람을 잃으면
        강사는 목록을 다시 만들기 시작한다. */
     if (pass.instructorId) instructorIds.add(pass.instructorId);
+
+    /* 누적 등록과 회당 금액은 만료·소진된 회원권도 센다. "누적" 이 그런 뜻이고,
+       회당 금액은 레거시 paidAvg 와 같은 계산이다 -- 총 결제액 ÷ 정규 유료 횟수.
+       서비스 회차는 분모에서 뺀다. 공짜로 받은 회차까지 나누면 회원이 실제로
+       낸 단가보다 낮게 나온다. */
+    registeredTotal += count(pass.totalSessions) + count(pass.serviceSessions);
+    paidSessions += count(pass.totalSessions);
+    paidAmount += count(pass.contractPrice);
+    if (!lastPass || toDate(pass.expiresAt) > toDate(lastPass.expiresAt)) lastPass = pass;
+
     if (!isDeductablePass(pass, now)) continue;
     remaining += remainingCountOf(pass);
+    /* 만료일은 다음에 쓰일 회원권의 것이다 -- 만료가 이른 것부터 쓰므로
+       (lesson-settlement.js 의 pickPassForClient) 회원이 물어볼 날짜도 그것이다. */
+    if (!nextPass || toDate(pass.expiresAt) < toDate(nextPass.expiresAt)) nextPass = pass;
   }
-  return { remaining, instructorIds: [...instructorIds] };
+  /* 쓸 수 있는 것이 하나도 없으면 마지막 만료일을 보여준다. "미설정" 은 날짜를
+     정하지 않았다는 뜻인데, 실제로는 지난 것이다. */
+  const expiryPass = nextPass || lastPass;
+  return {
+    remaining,
+    registeredTotal,
+    unitPrice: paidSessions > 0 ? Math.round(paidAmount / paidSessions) : 0,
+    expiresAt: expiryPass ? expiryPass.expiresAt : null,
+    category: expiryPass ? text(expiryPass.category) : "",
+    instructorIds: [...instructorIds],
+  };
+}
+
+/** Firestore Timestamp 도 Date 도 문자열도 온다. 못 읽으면 맨 뒤로 보낸다. */
+function toDate(value) {
+  if (value && typeof value.toDate === "function") return value.toDate();
+  const at = value instanceof Date ? value : new Date(String(value ?? ""));
+  return Number.isFinite(at.getTime()) ? at : new Date(8640000000000000);
+}
+
+/** 화면이 쓰는 날짜 형식(YYYY-MM-DD). 읽지 못하면 빈 문자열이다. */
+function isoDay(value) {
+  if (value === null || value === undefined || value === "") return "";
+  const at = toDate(value);
+  if (at.getTime() === 8640000000000000) return "";
+  return `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, "0")}-${String(at.getDate()).padStart(2, "0")}`;
 }
 
 /* 조직 회원의 상태를 레거시 화면이 읽는 값으로 옮긴다. 레거시는 active/hold/
@@ -83,16 +132,26 @@ const STATUS_BY_CLIENT_STATUS = { active: "active", hold: "hold", ended: "ended"
  *
  * @param {{
  *   clients?: Array<any>, members?: Array<any>, passes?: Array<any>, now?: Date,
+ *   hiddenClientIds?: Array<string>,
  * }} input
  *   clients 조직 회원 (organizations/{org}/clients)
  *   members 기기에 저장된 레거시 회원 (db.members)
  *   passes  조직 회원권. 잔여와 담당 강사가 여기서 온다
+ *   hiddenClientIds 이 기기에서만 숨긴 조직 회원
  */
 export function mergeRoster(input = {}) {
   const clients = Array.isArray(input.clients) ? input.clients : [];
   const members = Array.isArray(input.members) ? input.members : [];
   const passes = Array.isArray(input.passes) ? input.passes : [];
   const now = input.now instanceof Date ? input.now : new Date();
+  /* 숨김은 이 기기의 화면 설정이다. 조직 회원은 강사가 지울 대상이 아니고 --
+     지우면 그 회원의 기록과 사진이 함께 사라진다 -- 목록이 길다는 문제는
+     안 보이게 하는 것으로 풀린다. 데이터는 그대로 남고, 다른 강사에게도
+     대표에게도 영향이 없다.
+
+     status 로 숨기지 않는 이유: 아래 merge 가 조직 회원의 status 를 client
+     문서에서 다시 읽어 덮어쓴다. 기기에 적어 둔 상태는 다음 병합에서 사라진다. */
+  const hidden = new Set((Array.isArray(input.hiddenClientIds) ? input.hiddenClientIds : []).map(text).filter(Boolean));
 
   const byPhone = new Map();
   const byName = new Map();
@@ -122,7 +181,15 @@ export function mergeRoster(input = {}) {
          표시는 조직 값 하나로 정해지고, 옛 차감 경로는 줄일 것을 잃는다. */
       regular: 0,
       service: 0,
-      total: 0,
+      /* 누적 등록·만료일·회당 금액은 조직 회원권에서 온다. 레거시 값을 그대로
+         두면 이 세 칸이 기기에 남은 옛 숫자를 보여주고, 잔여만 조직 값이라
+         한 카드 안에서 두 출처가 섞인다. */
+      total: facts.registeredTotal,
+      contractEnd: isoDay(facts.expiresAt),
+      orgUnitPrice: facts.unitPrice,
+      /* 상품 이름은 회원권에 없다(productId 뿐이다). 카테고리라도 적어 두지
+         않으면 잔여 29회 옆에 "이용권 없음" 이 선다. */
+      passName: facts.category ? PAY_CATEGORY_LABELS[facts.category] || facts.category : "",
       name: text(client.name) || text(match?.name),
       phone: text(client.phone) || text(match?.phone),
       status: STATUS_BY_CLIENT_STATUS[text(client.status)] || "active",
@@ -169,11 +236,21 @@ export function mergeRoster(input = {}) {
       rosterSource: ROSTER_SOURCE.LOCAL_ONLY,
     }));
 
+  const all = [...roster, ...leftovers];
+  /* 숨긴 회원은 목록에서 빼되 세어서 돌려준다. 몇 명을 숨겼는지 모르면 되돌릴
+     길이 없고, 되돌릴 수 없는 숨김은 삭제와 다를 바가 없다. */
+  const visible = hidden.size === 0
+    ? all
+    : all.filter((member) => !hidden.has(text(member.orgClientId)) && !hidden.has(text(member.id)));
   return {
-    roster: [...roster, ...leftovers],
-    unlinkedLocal: leftovers,
+    roster: visible,
+    unlinkedLocal: leftovers.filter((member) => !hidden.has(text(member.id))),
+    hiddenCount: all.length - visible.length,
   };
 }
+
+/** 숨김 목록에 쓸 값. 조직 회원은 clientId 로, 기기 회원은 그 id 로 숨긴다. */
+export const rosterHideKey = (member) => text(member?.orgClientId) || text(member?.id);
 
 /** 이 줄이 조직 목록을 거쳐 왔는가. 옛 차감 경로를 막는 판정이다. */
 export const isRosterMember = (member) => Boolean(member?.rosterSource);

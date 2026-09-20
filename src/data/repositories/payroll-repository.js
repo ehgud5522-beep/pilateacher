@@ -36,6 +36,7 @@
  */
 
 import { COLLECTIONS, LEDGER_ENTRY_TYPE, PAY_CATEGORY } from "../schema/constants.js";
+import { PRICING_RULE } from "../schema/deduction-pricing.js";
 import { readCollection } from "./repository-read.js";
 
 /**
@@ -246,7 +247,26 @@ const bySpecOrder = (left, right) => {
   return (a < 0 ? PAY_CATEGORY_ORDER.length : a) - (b < 0 ? PAY_CATEGORY_ORDER.length : b);
 };
 
-const emptyBucket = (key, field) => ({ [field]: key, sessions: 0, total: 0, categories: new Map() });
+/* 어느 판정이 이겼는가를 카테고리와 나란히 센다.
+
+   카테고리만 보면 "이벤트페이 10건 25만원" 인데, 이벤트페이의 기준 단가는
+   30,000 이라 대표는 계산이 틀렸다고 읽는다. 실제로는 그 열 건이 전부 판정 3
+   (이 강사에게 이 회원 누적 20회 미만)에 걸린 것이고, 그건 규칙대로다.
+
+   한 강사 안에서도 회차마다 판정이 갈리므로 -- 같은 회원권의 19회째와 21회째가
+   다르다 -- 건수와 금액을 판정별로 따로 세는 것 말고는 보여 줄 방법이 없다. */
+const RULE_ORDER = Object.values(PRICING_RULE);
+
+const byRuleOrder = (left, right) => {
+  const a = RULE_ORDER.indexOf(left.rule);
+  const b = RULE_ORDER.indexOf(right.rule);
+  // 모르는 값은 뒤로 보내되 버리지 않는다. 사라지면 합계만 안 맞는다.
+  return (a < 0 ? RULE_ORDER.length : a) - (b < 0 ? RULE_ORDER.length : b);
+};
+
+const emptyBucket = (key, field) => ({
+  [field]: key, sessions: 0, total: 0, categories: new Map(), rules: new Map(),
+});
 
 const addToBucket = (bucket, entry) => {
   const category = String(entry.category || "");
@@ -258,6 +278,16 @@ const addToBucket = (bucket, entry) => {
   row.sessions += count;
   row.amount += amount;
   bucket.categories.set(category, row);
+
+  /* 이 필드가 생기기 전 항목에는 rule 이 없다. 빈 값으로 한 칸을 만들면 화면이
+     "판정 없음" 이라는 없는 종류를 보여주게 되므로, 없으면 세지 않는다 --
+     건수 합이 위의 sessions 보다 적을 수 있고 그것이 맞다. */
+  const rule = String(entry.rule || "");
+  if (!rule) return;
+  const ruleRow = bucket.rules.get(rule) || { rule, sessions: 0, amount: 0 };
+  ruleRow.sessions += count;
+  ruleRow.amount += amount;
+  bucket.rules.set(rule, ruleRow);
 };
 
 const sealBucket = (bucket, field) => ({
@@ -265,6 +295,7 @@ const sealBucket = (bucket, field) => ({
   sessions: bucket.sessions,
   total: bucket.total,
   byCategory: [...bucket.categories.values()].sort(bySpecOrder),
+  byRule: [...bucket.rules.values()].sort(byRuleOrder),
 });
 
 /**
@@ -298,6 +329,29 @@ export function summarizeCorrections(entries) {
     amount: sum(corrections),
     priorMonth: { sessions: priorMonth.length, amount: sum(priorMonth) },
   };
+}
+
+/**
+ * 이 달의 차감이 전부 "누적 20회 미만 — 신규 단가" 였는가.
+ *
+ * ── 왜 화면이 이것을 먼저 말해야 하는가 ──
+ * 강사-회원 누적은 instructorClientTotals 에 쌓이고, 그 문서는 이관이나 차감으로만
+ * 생긴다. 이관 전에는 모든 쌍이 0 에서 시작하므로 판정 3 이 먼저 걸려 카테고리와
+ * 무관하게 전부 25,000 이 된다 -- 이벤트페이도 2:1 재등록도 같은 금액이다.
+ *
+ * 그것은 규칙대로이지만, 화면이 말하지 않으면 대표는 계산이 고장 났다고 읽는다.
+ * 실제로 그렇게 읽혔다. 합계를 보기 전에 이유가 먼저 있어야 한다.
+ *
+ * "거의 전부" 가 아니라 "전부" 일 때만 참이다. 한 건이라도 다른 판정이 섞여
+ * 있으면 단가가 갈리고 있다는 뜻이고, 그때는 이 설명이 오히려 틀린 말이 된다.
+ *
+ * @param {{ byInstructor?: Array<{ byRule?: Array<{ rule: string, sessions: number }> }> }} summary
+ */
+export function onlyNewInstructorRate(summary) {
+  const rows = (summary?.byInstructor || []).flatMap((bucket) => bucket.byRule || []);
+  const counted = rows.filter((row) => Number(row.sessions) > 0);
+  if (counted.length === 0) return false;
+  return counted.every((row) => row.rule === PRICING_RULE.NEW_TO_INSTRUCTOR);
 }
 
 export function summarizeOrganizationPay(entries) {

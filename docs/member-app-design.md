@@ -51,10 +51,24 @@ Firestore 규칙은 **문서 단위**로만 열고 닫는다. 필드를 골라 �
 의 `onWrite` 에서 그 회원의 `memberViews/{clientId}` 를 통째로 다시 쓴다.
 
 ```
-onWrite(passes/{passId})   → clientIds 전부에 대해 재작성
-onWrite(ledger/{entryId})  → 그 pass 의 clientIds 전부에 대해 재작성
-onWrite(clients/{clientId})→ 그 회원만 재작성
+onWrite(passes/{passId})    → before·after 의 clientIds 전부에 대해 재작성
+onWrite(clients/{clientId}) → 그 회원만 재작성
 ```
+
+**ledger 에는 달지 않는다 (2026-09-23).** 원장에 쓰는 다섯 함수가 전부 같은
+배치에서 `passes` 문서도 쓴다 — `issuePass` · `deductPass` ·
+`correctDeduction` · `cancelPass` · `transferPassInstructor`. 그래서 passes
+트리거 하나가 원장 변화까지 잡고, 둘 다 달면 같은 일을 두 번 하며 비용이 두
+배가 된다.
+
+**순서 보호**: 투영에 `sourceEventAt` 을 두고 트랜잭션 안에서 견준다. 자기
+`event.time` 이 이미 있는 값보다 오래됐으면 쓰지 않는다 — 늦게 도착한 호출이
+옛 값으로 덮는 것을 막는 유일한 장치다.
+
+**비용**: 차감 1건당 트리거 1회. 재작성 하나가 읽기 ~60 · 쓰기 1 이고, 듀엣이면
+회원 둘이라 두 배다. 원장 읽기가 대부분이라 회원권마다 `limit(60)` 으로 상한을
+뒀다. 새 색인은 필요 없다 — `array-contains` 단독과 단일 동등 조건은 자동
+인덱스로 처리되고, 원장은 하위 컬렉션 목록이라 그룹 질의를 쓰지 않는다.
 
 부분 수정이 아니라 **매번 통째로 다시 쓴다.** 증분으로 고치면 한 번 어긋난 값이
 영영 남는다. 재작성은 그 회원의 `passes` 를 다시 읽어 만드므로 언제 돌려도 같은
@@ -195,11 +209,23 @@ onWrite(clients/{clientId})→ 그 회원만 재작성
 로 넣어 모양까지 확인한다 — 배포에 어떻게 넣을지는 트리거를 만들 때(10장 5번)
 한 번 정한다. 길은 셋이다.
 
-| | |
+**정했다 (2026-09-23): functions 가 원본이다.** 공통 순수 모듈은
+`functions/shared/*.mjs` 에 살고 앱이 그것을 가져다 쓴다. 복사는 쓰지 않았다 --
+두 벌이 되면 언젠가 한쪽만 고쳐지고, 그때 어긋나는 것이 하필 `PAY_CATEGORY` 나
+`PASS_STATUS` 면 급여와 회차가 조용히 틀린다.
+
+`.mjs` 인 것이 ESM/CJS 를 가른다. `functions/` 는 CommonJS 인데 확장자가
+`.mjs` 면 그 파일만 항상 ESM 이다.
+
+| 쪽 | 어떻게 읽나 |
 | --- | --- |
-| predeploy 로 복사 | `firebase.json` 의 predeploy 훅이 빌드 전에 `functions/` 안으로 넣는다. 원본은 하나로 남는다 |
-| 작은 패키지로 뺀다 | `pass-journey` 를 npm 워크스페이스 패키지로. 가장 깔끔하지만 손이 가장 많이 간다 |
-| functions 안에 옮긴다 | 앱이 `functions/` 를 import 하게 뒤집는다. 앱 빌드에 Functions 디렉터리가 끼어든다 |
+| 앱 (ESM) | `import ... from ".../functions/shared/pass-journey.mjs"` — 네이티브 |
+| Functions (CJS) | 트리거가 async 라 `await import()`. Node 가 인스턴스당 한 번 캐시 |
+| 배포 | `functions/shared/` 는 ignore 목록에 없어 그대로 올라간다 |
+
+옮긴 것은 둘이다. `constants.mjs` 는 가져다 쓰는 곳이 스물두 군데라
+`src/data/schema/constants.js` 에 재수출 한 줄을 남겼다 — 부르는 쪽은 아무것도
+모른다. `pass-journey.mjs` 는 두 곳뿐이라 그냥 고쳤다.
 
 주입하지 않으면 `journey` 는 `null` 이고 화면은 그 줄을 그리지 않는다 — 지어낸
 값을 넣는 것보다 없는 편이 낫다.
@@ -443,7 +469,7 @@ handoff 의 "매니저 지점 고정" 항목과 같은 일이다. 한 번에 한
 | 2 | 그 함수의 테스트 | `functions/tests/member-view.test.js` **끝남 · 28개** | 금지 필드가 결과에 없는지. 여기가 개인정보의 유일한 관문이다 |
 | 3 | 규칙 | `firestore.foundation.rules` | `memberViews` · `memberLinks` 두 블록 추가. 기존 문은 손대지 않는다 |
 | 4 | 규칙 테스트 13개 | `tests/rules/firestore.rules.test.js` | 5장 목록. 배포 전에 `npm run test:rules` |
-| 5 | 트리거 | `functions/src/member-view-triggers.js` **[신규]** | `passes` · `ledger` · `clients` 의 onWrite. **여기서 pass-journey 배포 방식을 정한다** (3장) |
+| 5 | 트리거 | `functions/src/member-view-triggers.js` **끝남 · 에뮬레이터 14개** | `passes` · `clients` 의 onWrite. 패키징도 여기서 정했다 (3장) |
 | 6 | 연결 함수 | `functions/src/member-link.js` **[신규]** | `linkMemberAccount` · 대표가 잇는 문 · 끊는 문 |
 | 7 | 그 함수의 테스트 | `functions/tests/member-link.test.js` **[신규]** | 경우 다섯 (0건·활성·종료·같은 지점 중복·여러 지점) |
 | 8 | 백필 | `tools/backfill-member-views.mjs` **[신규]** | 11장 |

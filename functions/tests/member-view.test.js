@@ -235,7 +235,7 @@ test("the journey comes from the injected calculation, not a copy of it", async 
   /* 앱의 pass-journey 를 그대로 넣어 모양이 맞는지 본다. Functions 는
      functions/ 만 배포되므로 여기서 require 할 수 없고, 주입으로 받는다 --
      배포에 어떻게 넣을지는 트리거를 만들 때 정한다 (설계 10장 5번). */
-  const { buildPassJourney } = await import("../../src/features/members/pass-journey.js");
+  const { buildPassJourney } = await import("../shared/pass-journey.mjs");
   const view = build({ buildJourney: buildPassJourney, instructorSessions: 40 });
   assert.ok(view.journey);
   assert.equal(view.journey.grandTotal, 22 + view.journey.prior);

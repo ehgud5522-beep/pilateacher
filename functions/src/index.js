@@ -8,6 +8,10 @@ const { logger } = require("firebase-functions/logger");
 const { defineSecret } = require("firebase-functions/params");
 const { HttpsError, onCall, onRequest } = require("firebase-functions/v2/https");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
+const { onDocumentWritten } = require("firebase-functions/v2/firestore");
+const {
+  clientIdsFromPassChange, rebuildMemberViews,
+} = require("./member-view-triggers");
 const { createAccountDeletionService } = require("./account-deletion");
 const { createAIGatewayHandler } = require("./ai-gateway");
 const { createAIRecordingOperations } = require("./ai-recording-operations");
@@ -219,6 +223,74 @@ exports.cleanupExpiredPhotoBackups = onSchedule({
 }, async () => {
   const result = await photoBackupCleanupService.purgeExpiredGlobal();
   logger.info("photo_backup_cleanup_completed", { purged: result.purged, remaining: result.remaining });
+});
+
+/* ── 회원용 투영 트리거 ────────────────────────────────────────────────────
+   설계 10장 5번. 자세한 근거는 member-view-triggers.js 머리말에 있다.
+
+   passes 와 clients 둘만 단다. 원장에 쓰는 다섯 함수가 전부 같은 배치에서
+   passes 문서도 쓰므로, passes 트리거 하나가 원장 변화까지 잡는다.
+
+   retry 는 끄고 간다. 망가진 문서 하나가 무한히 재시도되면 비용만 쌓이고,
+   놓친 투영은 다음 쓰기나 백필이 채운다. */
+
+/* 여정 계산은 functions/shared 에 ESM 으로 있다. 이 파일은 CommonJS 라
+   require 할 수 없어 동적 import 로 읽는다 -- Node 가 모듈을 캐시하므로
+   인스턴스당 한 번이다. 복사본을 두지 않는 이유는 그 사본이 언젠가 원본과
+   어긋나기 때문이다. */
+let journeyModule = null;
+async function loadBuildJourney() {
+  if (!journeyModule) journeyModule = await import("../shared/pass-journey.mjs");
+  return journeyModule.buildPassJourney;
+}
+
+const MEMBER_VIEW_TRIGGER_OPTIONS = {
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  memory: "256MiB",
+  timeoutSeconds: 120,
+  retry: false,
+};
+
+exports.rebuildMemberViewOnPassWrite = onDocumentWritten({
+  ...MEMBER_VIEW_TRIGGER_OPTIONS,
+  document: "organizations/{organizationId}/passes/{passId}",
+}, async (event) => {
+  const clientIds = clientIdsFromPassChange(
+    event.data?.before?.data() || null,
+    event.data?.after?.data() || null,
+  );
+  if (!clientIds.length) return;
+  const results = await rebuildMemberViews(firestore, {
+    organizationId: event.params.organizationId,
+    clientIds,
+    eventAt: new Date(event.time),
+    buildJourney: await loadBuildJourney(),
+    log: logger,
+  });
+  logger.info("member_view_rebuilt", {
+    feature: "member_view", stage: "pass_write",
+    organizationId: event.params.organizationId,
+    // 회원 id 는 남기지 않는다. 몇 건이 어떻게 끝났는지만 센다.
+    counts: results.reduce((tally, item) => ({ ...tally, [item.outcome]: (tally[item.outcome] || 0) + 1 }), {}),
+  });
+});
+
+exports.rebuildMemberViewOnClientWrite = onDocumentWritten({
+  ...MEMBER_VIEW_TRIGGER_OPTIONS,
+  document: "organizations/{organizationId}/clients/{clientId}",
+}, async (event) => {
+  const results = await rebuildMemberViews(firestore, {
+    organizationId: event.params.organizationId,
+    clientIds: [event.params.clientId],
+    eventAt: new Date(event.time),
+    buildJourney: await loadBuildJourney(),
+    log: logger,
+  });
+  logger.info("member_view_rebuilt", {
+    feature: "member_view", stage: "client_write",
+    organizationId: event.params.organizationId,
+    counts: results.reduce((tally, item) => ({ ...tally, [item.outcome]: (tally[item.outcome] || 0) + 1 }), {}),
+  });
 });
 
 exports._test = {

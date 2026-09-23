@@ -28,7 +28,7 @@
  * 강사 기준값 대신 쓰인다 -- 이관 양식에 열 하나가 늘어날 자리다.
  */
 
-import { PASS_STATUS } from "../../data/schema/constants.js";
+import { PASS_STATUS } from "./constants.mjs";
 
 /** 이전 구간이 무엇을 세는지. 화면이 이 문구를 그대로 쓴다. */
 export const JOURNEY_PRIOR_NOTE = "앱 이전 기록 (담당 강사 기준)";

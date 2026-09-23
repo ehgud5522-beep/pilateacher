@@ -64,6 +64,21 @@ Claude Code · Codex 가 새 세션을 열면 이 파일부터 읽는다. 작업
 - `pass-journey` 는 Functions 에서 require 할 수 없다(배포에 functions/ 만 올라감).
   투영 함수가 주입으로 받게 해 뒀고, 배포 방식은 5번에서 정한다.
 
+### 0-3. 회원 앱 5번 트리거 — **미배포**
+- `functions/src/member-view-triggers.js` + 에뮬레이터 테스트 14개
+  (`npm run test:member-view` — Firestore 에뮬레이터를 띄워 Admin SDK 로 진짜 읽고 쓴다).
+- **공통 순수 모듈은 `functions/shared/*.mjs` 가 원본이다.** 복사하지 않는다.
+  `constants.mjs` · `pass-journey.mjs` 를 옮겼고, `src/data/schema/constants.js` 는
+  재수출 한 줄만 남아 스물두 군데가 그대로 돈다. 앱은 네이티브 ESM 으로,
+  Functions(CJS)는 async 핸들러에서 `await import()` 로 읽는다.
+- 트리거는 `passes` · `clients` **둘만**. 원장에 쓰는 다섯 함수가 전부 같은 배치에서
+  passes 도 쓰므로 ledger 트리거는 같은 일을 두 번 한다.
+- 순서 보호: 투영의 `sourceEventAt` 을 트랜잭션에서 견준다. 늦게 온 호출은 건너뛴다.
+- 실패해도 차감·발급은 안 막힌다 (사후 처리). `retry: false`, 회원별로 따로 잡아
+  한쪽 실패가 다른 쪽을 막지 않는다.
+- 비용: 차감 1건당 트리거 1회, 재작성마다 읽기 ~60 · 쓰기 1 (듀엣이면 두 배).
+  원장은 회원권마다 `limit(60)`. **새 색인 없음.**
+
 ### 1. 지점별 회원 · 강사 목록 — 커밋 b655680, effc90a · 웹 배포됨
 - 회원 관리 · 강사 관리 목록 위에 `전체 · 반송점 · 율하점 …` 칩(인원 수 포함).
   지점이 비었거나 목록에 없는 지점을 가리키는 사람은 "지점 없음" 칩으로 모인다.
@@ -93,7 +108,7 @@ Claude Code · Codex 가 새 세션을 열면 이 파일부터 읽는다. 작업
       두 블록은 쓰기가 전부 닫혀 있고 그 경로에 문서가 아직 없어서, 먼저 나가도
       아무에게도 아무 일도 하지 않는다.
       **트리거(5번)·백필(8번)은 나중이다** — 그 둘이 끝나야 회원 화면이 채워진다.
-      다음은 5번 트리거.
+      **5번 트리거도 끝났다** (0-3). 다음은 6번 연결 함수, 그다음 8번 백필.
       막힌 것 하나: Functions 는 functions/ 만 배포돼서 pass-journey(ESM, src/)를
       require 할 수 없다. 투영 함수는 주입으로 피해 뒀고, 트리거(5번) 만들 때
       셋 중 하나를 정해야 한다 — predeploy 복사 · 워크스페이스 패키지 · functions 로 이동.

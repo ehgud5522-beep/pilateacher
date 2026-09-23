@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { JOURNEY_PRIOR_NOTE, buildPassJourney, hasJourney } from "../../src/features/members/pass-journey.js";
+import { JOURNEY_PRIOR_NOTE, buildPassJourney, hasJourney } from "../../functions/shared/pass-journey.mjs";
 
 const pass = (overrides = {}) => ({
   id: "pass-1",

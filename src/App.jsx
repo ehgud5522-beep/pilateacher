@@ -118,7 +118,7 @@ import { partnerClientId } from "./data/schema/pass-clients.js";
 import {
   blockingNotice, duetIssueNotices, duetSummaryLine, reviewNotices,
 } from "./features/passes/duet-issue.js";
-import { JOURNEY_PRIOR_NOTE, buildPassJourney, hasJourney } from "./features/members/pass-journey.js";
+import { JOURNEY_PRIOR_NOTE, buildPassJourney, hasJourney } from "../functions/shared/pass-journey.mjs";
 import { previewLessonRates } from "./features/schedule/lesson-rate-preview.js";
 import {
   issueReportCsv, loadOrganizationMonthlyIssues,

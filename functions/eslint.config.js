@@ -10,6 +10,8 @@ module.exports = [
       globals: {
         AbortController: "readonly",
         Buffer: "readonly",
+        // CommonJS 모듈이라 파일 경로를 잡는 데 쓴다.
+        __dirname: "readonly",
         clearTimeout: "readonly",
         process: "readonly",
         setTimeout: "readonly",

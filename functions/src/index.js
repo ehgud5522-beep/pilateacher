@@ -2,7 +2,7 @@
 
 const { initializeApp, getApps } = require("firebase-admin/app");
 const { getAuth } = require("firebase-admin/auth");
-const { getFirestore } = require("firebase-admin/firestore");
+const { FieldValue, getFirestore } = require("firebase-admin/firestore");
 const { getStorage } = require("firebase-admin/storage");
 const { logger } = require("firebase-functions/logger");
 const { defineSecret } = require("firebase-functions/params");
@@ -18,6 +18,8 @@ const { createAIRecordingOperations } = require("./ai-recording-operations");
 const { applyCors, parseAllowedOrigins } = require("./cors");
 const { sendError, GatewayError } = require("./errors");
 const { createFirestoreIdempotencyStore } = require("./idempotency");
+const { createMemberLinkService } = require("./member-link");
+const { createFirestoreMemberLinkPorts } = require("./member-link-store");
 const { createMemberLookupService } = require("./member-lookup");
 const { DEFAULT_MODEL, createOpenAIProvider } = require("./openai-provider");
 const { createFirestorePolicyService } = require("./policy");
@@ -80,6 +82,10 @@ const memberLookupService = createMemberLookupService({
     return snapshot.exists ? snapshot.data() : null;
   },
 });
+
+const memberLinkService = createMemberLinkService(
+  createFirestoreMemberLinkPorts({ firestore, FieldValue }),
+);
 
 const handler = createAIGatewayHandler({
   verifyIdToken: (token) => getAuth().verifyIdToken(token, true),
@@ -214,6 +220,74 @@ exports.lookupCentreMemberByEmail = onCall({
   }
 });
 
+/* ── 계정 ↔ 회원 연결 ─────────────────────────────────────────────────────
+   설계 10장 6번. 근거는 member-link.js 머리말에 있다. */
+
+function memberLinkHttpsError(error) {
+  const code = String(error?.code || "link_unavailable");
+  const details = { code, stage: String(error?.stage || "unknown") };
+  if (code === "unauthenticated") return new HttpsError("unauthenticated", "Please sign in again.", details);
+  if (code === "phone_not_verified") {
+    return new HttpsError("failed-precondition", "Verify your phone number first.", details);
+  }
+  if (code === "not_owner") return new HttpsError("permission-denied", "Only the centre owner may link a member.", details);
+  if (code === "client_not_found") return new HttpsError("not-found", "That member is not on the roster.", details);
+  if (code === "already_linked") return new HttpsError("already-exists", "That member is linked to another account.", details);
+  if (code === "invalid_request") return new HttpsError("invalid-argument", "The link request is invalid.", details);
+  return new HttpsError("unavailable", "The link did not finish. Please retry.", details);
+}
+
+const MEMBER_LINK_OPTIONS = {
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  timeoutSeconds: 60,
+  memory: "256MiB",
+  invoker: "public",
+};
+
+/** 연결 통로 하나를 감싼다. 로그에 uid·번호는 적지 않는다 (§7). */
+function memberLinkCallable(stage, run) {
+  return async (request) => {
+    try {
+      const result = await run(request);
+      logger.info("member_link_succeeded", {
+        feature: "member_link", stage,
+        organizationId: String(request?.data?.organizationId || ""),
+        status: String(result?.status || ""),
+      });
+      return result;
+    } catch (error) {
+      logger.warn("member_link_failed", {
+        feature: "member_link", stage,
+        organizationId: String(request?.data?.organizationId || ""),
+        errorDomain: "member_link",
+        errorCode: String(error?.code || "unknown"),
+        failedStage: String(error?.stage || "unknown"),
+      });
+      throw memberLinkHttpsError(error);
+    }
+  };
+}
+
+exports.linkMemberAccount = onCall(
+  MEMBER_LINK_OPTIONS,
+  memberLinkCallable("self", (request) => memberLinkService.linkForCaller(request)),
+);
+
+exports.linkMemberAccountByOwner = onCall(
+  MEMBER_LINK_OPTIONS,
+  memberLinkCallable("owner", (request) => memberLinkService.linkByOwner(request)),
+);
+
+exports.unlinkMemberAccount = onCall(
+  MEMBER_LINK_OPTIONS,
+  memberLinkCallable("unlink", (request) => memberLinkService.unlink(request)),
+);
+
+exports.listPendingMemberLinks = onCall(
+  MEMBER_LINK_OPTIONS,
+  memberLinkCallable("pending", (request) => memberLinkService.listPending(request)),
+);
+
 exports.cleanupExpiredPhotoBackups = onSchedule({
   region: process.env.FUNCTIONS_REGION || "asia-northeast3",
   schedule: "every day 03:00",
@@ -296,6 +370,7 @@ exports.rebuildMemberViewOnClientWrite = onDocumentWritten({
 exports._test = {
   AI_EXECUTE_ROUTE,
   accountDeletionHttpsError,
+  memberLinkHttpsError,
   memberLookupHttpsError,
   requestPath,
 };

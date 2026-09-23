@@ -262,14 +262,29 @@ onWrite(clients/{clientId}) → 그 회원만 재작성
 
 ```
 1. uid 와 인증된 전화번호를 꺼낸다. 없으면 unauthenticated
-2. normalizePhone 으로 숫자만 남긴다 (clients.phone 과 같은 형식) [있음]
-3. collectionGroup("clients").where("phone","==",번호) 로 찾는다
+2. phoneFromVerifiedToken 으로 명부의 철자로 옮긴다 (+8210… → 010…)
+3. 센터를 훑으며 센터마다 clients.where("phone","==",번호) 로 찾는다
 4. 결과 수에 따라 갈린다 (아래 표)
 5. 성공이면 한 배치로 두 문서를 쓴다
      clients/{clientId}   userId 를 채운다 (투영 트리거가 이 값을 읽는다)
-     memberLinks/{uid}    status "linked" · organizationId · clientId
+     memberLinks/{uid}    status "linked" · links[]
 6. 실패면 memberLinks/{uid} 에 사유만 남긴다
 ```
+
+**2번이 단순한 숫자 남기기가 아니다** (구현 중 확인, 2026-09-23). Firebase Auth 의
+`phone_number` 는 언제나 E.164 라 `+821012345678` 로 온다. 명부는 대표가 입력한
+대로 `01012345678` 이다. 숫자만 남기면 두 값은 **영영 만나지 않고**, 그 결과는
+정상적으로 등록된 회원 전원이 "등록된 번호를 찾지 못했습니다" 로 끝나는 것이다.
+에뮬레이터 테스트에서 실제로 이렇게 실패했고, 그래서 변환을
+`functions/shared/phone.mjs` 에 이름 있는 함수로 두었다.
+
+**3번은 `collectionGroup` 이 아니다** (구현 중 변경). 그룹 질의는
+COLLECTION_GROUP 범위의 단일 필드 색인을 따로 선언해야 하는데, `fieldOverrides`
+는 그 필드의 자동 색인을 통째로 대체한다 — `clients.phone` 의 나머지 색인을 손으로
+다시 적어야 하고 하나를 빠뜨리면 이미 있는 질의가 조용히 깨진다. 게다가
+에뮬레이터는 색인 없이 그룹 질의를 받아 주어 **테스트가 통과해도 프로덕션에서만
+실패한다.** 센터별 동등 조건 질의는 자동 색인으로 끝나고, 연결은 회원 한 명이
+가입할 때 한 번 부르는 통로다.
 
 **회원에게 `memberships` 문서는 만들지 않는다.** 회원이 읽는 것은 투영과 자기
 링크뿐이고, 그 둘은 `userId` 로 판정된다 — 소속 문서가 필요 없다.
@@ -292,11 +307,17 @@ owner·manager·instructor·staff 넷만 통과시킨다. **role `member` 는 �
 | 필드 | 값 |
 | --- | --- |
 | `userId` | 문서 id 와 같다 |
-| `phone` | 인증된 번호, 숫자만 |
-| `organizationId` · `clientId` | `linked` 일 때만 |
-| `status` | `linked` · `not_found` · `ambiguous` · `ended` · `multi_location` |
+| `phone` | 인증된 번호, 명부의 철자로 |
+| `links` | `[{ organizationId, clientId, locationId }]`. 이어진 것 전부 |
+| `candidates` | `ambiguous` 일 때의 후보. 대표가 고를 목록이다 |
+| `status` | `linked` · `ended` · `multi_location` · `ambiguous` · `not_found` · `taken` · `rejected` |
 | `candidateCount` | 찾은 회원 수. 대표 화면이 쓴다 |
 | `linkedAt` · `linkedBy` | 대표가 손으로 이었으면 그 uid |
+| `unlinkedAt` · `unlinkedBy` | 해제했으면 |
+
+`organizationId` · `clientId` 를 따로 두지 않고 `links` 배열 하나로 간다 — 확정
+7번이 여러 지점을 **전부** 잇기로 했으므로 단수 칸은 어차피 참이 아니고, 둘을
+함께 두면 언젠가 한쪽만 갱신된다.
 
 규칙: 본인 `get` 만. **쓰기는 전부 `false`** — 서버만 쓴다.
 
@@ -309,6 +330,11 @@ owner·manager·instructor·staff 넷만 통과시킨다. **role `member` 는 �
 | 1건, `status` ended·deleted | `ended` | **연결은 한다.** 읽기 전용 | "이용이 종료된 회원권입니다." 지난 이력은 보여준다 |
 | 2건 이상, **같은 지점** | `ambiguous` | **연결하지 않는다.** 대기 목록에 올린다 | "확인이 필요합니다. 센터에서 연결해 드립니다." |
 | 2건 이상, **다른 지점** | `multi_location` | **전부 연결한다** (확정 7번) | 홈 상단에 지점 선택 칩. 잔여는 지점별로 따로 |
+| 후보가 **이미 다른 계정의 것** | `taken` | **덮어쓰지 않는다** | "이미 다른 계정에 연결된 번호입니다. 센터에 문의해 주세요." |
+
+마지막 줄은 구현하면서 늘었다 (2026-09-23). 가족 공용 번호에서 실제로 일어나는
+경우인데, 덮어쓰면 **먼저 연결한 사람이 조용히 남의 회원권을 보게 된다.** 후보 중
+일부만 남의 것이면 그것만 빼고 나머지로 판정한다.
 
 `ambiguous` 를 자동으로 잇지 않는 것이 이 설계의 핵심이다. 동명이인과 가족 공용
 번호가 실제로 있다. 한 번 잘못 이으면 남의 회원권을 보게 되고, **그 사실은 아무도
@@ -320,13 +346,33 @@ owner·manager·instructor·staff 넷만 통과시킨다. **role `member` 는 �
 owner 인지 보고, `linkedBy` 에 그 uid 를 남긴다. 누가 누구를 이었는지가 남아야
 나중에 "왜 이 사람이 저 회원권을 봤나" 에 답할 수 있다.
 
+**대기 목록을 보는 문이 하나 더 필요하다** (`listPendingMemberLinks`, 구현 중 추가).
+규칙상 `memberLinks` 는 본인만 읽으므로 대표는 그 컬렉션을 볼 수 없다 — 대표가
+누구를 고를지 알 방법이 없으면 위의 문은 부를 수 없는 문이다. 이 목록은
+`ambiguous` 만 돌려주고, **후보 중 하나라도 그 대표의 센터에 있는 줄만** 보인다.
+
+`not_found` 는 이 목록에 넣지 않는다. 그 사람은 어느 센터의 명부에도 없어서 누구에게
+보여야 할지 정할 수 없고, 넣으면 한 대표가 다른 센터에 전화한 사람의 번호를 보게
+된다. 그 경우의 답은 대표가 명부에 등록하는 것이고, 그러면 회원이 다시 부를 때
+이어진다.
+
 ### 연결을 끊는 문 **[신규]**
 
 잘못 이었을 때 되돌릴 길이 있어야 한다. 대표만, `clients.userId` 를 지우고
 `memberLinks` 를 `rejected` 로. 투영 문서도 그 자리에서 지운다 — `userId` 만
 지우면 이미 깔린 투영을 그 사람이 계속 읽는다.
 
-감사 항목을 함께 남긴다 — 연결과 해제는 남의 개인정보를 여닫는 일이다.
+여러 지점에 이어진 회원은 나머지 연결을 남긴다 — 한 지점을 잘못 이었다고 다른
+지점까지 끊으면 그 회원은 이유를 모른 채 전부를 잃는다.
+
+**투영 트리거도 함께 고쳤다.** 해제가 투영을 지워도 `userId` 를 비운 그 쓰기가
+트리거를 불러 투영을 다시 만들면 해제가 되돌려진다. 그래서 트리거는 `userId` 가
+없는 회원의 투영을 **만들지 않고, 있으면 지운다** — 읽을 사람이 없는 문서다.
+
+감사 항목을 함께 남긴다 (`member_link_created` · `member_link_removed`) — 연결과
+해제는 남의 개인정보를 여닫는 일이다. 이 둘은 규칙의 `auditActions()` 에 넣지
+않았다: 서버(Admin SDK)만 쓰고 그쪽은 규칙을 지나지 않으므로, 열어 두면 클라이언트가
+지어낼 수 있는 기록이 하나 느는 것뿐이다.
 
 ---
 

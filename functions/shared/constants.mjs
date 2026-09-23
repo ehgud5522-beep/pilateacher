@@ -190,6 +190,10 @@ export const COLLECTIONS = Object.freeze({
   MEMBER_PROGRESS: "memberProgress",
   EVENTS: "events",
   AUDIT_LOGS: "auditLogs",
+  /* 회원용 투영과 연결 문서. 둘 다 서버만 쓰고 회원 본인만 읽는다 --
+     설계 문서 3·4장. */
+  MEMBER_VIEWS: "memberViews",
+  MEMBER_LINKS: "memberLinks",
   DAILY_STATS: "dailyStats",
   TEACHER_PATTERNS: "teacherPatterns",
 });

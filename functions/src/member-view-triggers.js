@@ -75,6 +75,12 @@ async function collectMemberViewInput(db, organizationId, clientId) {
   if (!clientSnapshot.exists) return null;
   const client = { id: clientSnapshot.id, ...clientSnapshot.data() };
 
+  /* 아직 계정에 연결되지 않은 회원은 투영을 두지 않는다. 읽을 사람이 없는
+     문서이고, 무엇보다 **연결을 끊는 일이 여기서 끝나야 한다** --
+     linkMemberAccount 의 해제가 userId 를 지우고 투영도 지우는데, 그 직후
+     이 트리거가 불려 다시 만들면 해제가 되돌려진다. */
+  if (!text(client.userId)) return { unlinked: true };
+
   /* 회원권은 두 번 묻는다. 옛 회원권에는 clientIds 가 없고 clientId 하나뿐이라,
      array-contains 만으로는 이관분과 듀엣 이전 발급분이 통째로 빠진다.
      둘 다 단일 조건이라 자동 인덱스로 처리된다 -- 새 색인이 필요 없다. */
@@ -158,7 +164,7 @@ async function collectMemberViewInput(db, organizationId, clientId) {
  *
  * @param {any} db
  * @param {{ organizationId: string, clientId: string, eventAt: Date, buildJourney?: any, now?: () => Date }} input
- * @returns {Promise<"written" | "skipped" | "no_client">}
+ * @returns {Promise<"written" | "skipped" | "deleted" | "absent" | "no_client">}
  */
 async function rebuildMemberView(db, input) {
   const organizationId = text(input?.organizationId);
@@ -170,6 +176,24 @@ async function rebuildMemberView(db, input) {
      회원 삭제는 지금 어느 화면에도 없다. */
   if (!collected) return "no_client";
 
+  const eventAt = input?.eventAt instanceof Date ? input.eventAt : new Date();
+  const ref = db.collection("organizations").doc(organizationId)
+    .collection("memberViews").doc(clientId);
+
+  /* 연결이 없으면 투영도 없다. 같은 순서 장치를 쓴다 -- 늦게 도착한 해제가
+     새로 만들어진 투영을 지우면 안 된다. */
+  if (collected.unlinked) {
+    return db.runTransaction(async (transaction) => {
+      const current = await transaction.get(ref);
+      if (!current.exists) return "absent";
+      const seen = current.data()?.sourceEventAt;
+      const seenAt = seen?.toDate ? seen.toDate() : seen instanceof Date ? seen : null;
+      if (seenAt && seenAt.getTime() > eventAt.getTime()) return "skipped";
+      transaction.delete(ref);
+      return "deleted";
+    });
+  }
+
   const view = buildMemberView({
     ...collected,
     buildJourney: input?.buildJourney || null,
@@ -179,10 +203,6 @@ async function rebuildMemberView(db, input) {
   if (Array.isArray(view.history) && view.history.length > HISTORY_LIMIT) {
     view.history = view.history.slice(0, HISTORY_LIMIT);
   }
-
-  const eventAt = input?.eventAt instanceof Date ? input.eventAt : new Date();
-  const ref = db.collection("organizations").doc(organizationId)
-    .collection("memberViews").doc(clientId);
 
   return db.runTransaction(async (transaction) => {
     const current = await transaction.get(ref);

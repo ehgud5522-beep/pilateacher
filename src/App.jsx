@@ -17723,6 +17723,8 @@ const AUDIT_ACTION_LABEL = {
   [AUDIT_ACTION.MEMBER_ADDED]: "강사 추가",
   [AUDIT_ACTION.MEMBER_PROFILE_CHANGED]: "강사 정보 변경",
   [AUDIT_ACTION.MEMBER_REVOKED]: "퇴사 · 복직",
+  [AUDIT_ACTION.MEMBER_LINK_CREATED]: "회원 계정 연결",
+  [AUDIT_ACTION.MEMBER_LINK_REMOVED]: "회원 계정 연결 해제",
   issue: "회원권 발급",
   deduct: "차감",
   transfer: "담당 강사 변경",

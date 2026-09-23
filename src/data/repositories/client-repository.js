@@ -36,8 +36,13 @@ const requiredText = (value, label) => {
   return text;
 };
 
-/** 하이픈·공백·괄호를 떼고 숫자만 남긴다. */
-export const normalizePhone = (value) => String(value ?? "").replace(/\D/g, "");
+/* 하이픈·공백·괄호를 떼고 숫자만 남긴다. **원본은 functions/shared/phone.mjs**
+   에 있다 -- 회원 앱의 연결 함수가 인증된 전화번호로 같은 회원을 찾아야 하고,
+   Functions 는 functions/ 만 배포되기 때문이다. 두 벌이 되면 같은 사람이 서로
+   다른 회원이 된다. 부르는 쪽은 바뀔 것이 없다. */
+import { normalizePhone } from "../../../functions/shared/phone.mjs";
+
+export { normalizePhone };
 
 /**
  * Firestore 를 읽고 쓰는 기본 구현. firebase 모듈은 호출 시점에만 불러온다 —

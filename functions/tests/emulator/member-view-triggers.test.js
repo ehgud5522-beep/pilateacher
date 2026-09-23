@@ -35,7 +35,8 @@ const wipe = async () => {
       await snapshot.ref.delete();
     }));
   }
-  const memberships = await db.collection("memberships").get();
+  /* 이 센터의 소속만 지운다. 에뮬레이터를 다른 테스트 파일과 나눠 쓴다. */
+  const memberships = await db.collection("memberships").where("organizationId", "==", ORG).get();
   await Promise.all(memberships.docs.map((snapshot) => snapshot.ref.delete()));
 };
 
@@ -199,6 +200,33 @@ test("filling clients.userId makes the projection readable by that account", asy
   await org.collection("clients").doc("client-a").update({ userId: "uid-changed" });
   await rebuildMemberView(db, { organizationId: ORG, clientId: "client-a", eventAt: new Date(2026, 8, 21) });
   assert.equal((await viewOf("client-a")).userId, "uid-changed");
+});
+
+test("a member with no account gets no projection at all", async () => {
+  /* 읽을 사람이 없는 문서다. 만들지 않는 것이 값도 아끼고, 무엇보다 연결
+     해제가 여기서 끝나게 한다. */
+  await seed();
+  await org.collection("clients").doc("client-a").update({ userId: "" });
+  const outcome = await rebuildMemberView(db, {
+    organizationId: ORG, clientId: "client-a", eventAt: new Date(2026, 8, 21),
+  });
+  assert.equal(outcome, "absent");
+  assert.equal(await viewOf("client-a"), undefined);
+});
+
+test("unlinking removes the projection the trigger had already written", async () => {
+  /* 해제가 userId 를 지우면 트리거가 뒤따라 불린다. 그때 투영을 다시 만들면
+     해제가 되돌려지고, 그 사람은 계속 남의 잔여를 본다. */
+  await seed();
+  await rebuildMemberView(db, { organizationId: ORG, clientId: "client-a", eventAt: new Date(2026, 8, 21) });
+  assert.ok(await viewOf("client-a"));
+
+  await org.collection("clients").doc("client-a").update({ userId: "" });
+  const outcome = await rebuildMemberView(db, {
+    organizationId: ORG, clientId: "client-a", eventAt: new Date(2026, 8, 22),
+  });
+  assert.equal(outcome, "deleted");
+  assert.equal(await viewOf("client-a"), undefined);
 });
 
 /* ── 순서 ─────────────────────────────────────────────────────────────── */

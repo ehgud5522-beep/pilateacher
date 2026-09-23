@@ -32,6 +32,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "일정 탭 · 소속 · 일부만 차감",
     "일정 탭 · 소속 · 차감할 회차 없음",
     "일정 탭 · 소속 · 차감 전원 실패",
+    "일정 탭 · 소속 · 시작 전",
+    "일정 탭 · 소속 · 시작 전 · 실패 기록",
     "일정 탭 · 소속 · 확정됨 · 대표",
     "일정 탭 · 개인 모드 · 확정 없음",
     "회원 목록",
@@ -1918,4 +1920,35 @@ test("the instructor's list has no way to browse the whole centre", async (t) =>
   const owner = markupOf("회원 목록 · 대표");
   assert.match(owner, /내 회원 \d+/);
   assert.match(owner, /전체 \d+/);
+});
+
+/* ── 아직 시작하지 않은 수업 ──────────────────────────────────────────────
+
+   시각으로 확정 카드를 통째로 감췄다가 되돌렸다. 감췄더니 **이미 실패한
+   수업의 사유와 [다시 확정]까지 사라졌고**, 토스트는 "아래 이유를 보고 다시
+   시도해 주세요" 라고 말하는데 아래에 아무것도 없었다.
+
+   카드를 세우는 판정과 버튼을 잠그는 판정은 다른 일이다. 잠긴 버튼은 이유를
+   말할 수 있지만 없는 버튼은 아무 말도 못 한다. */
+
+test("a lesson that has not started keeps its card and locks the button", async (t) => {
+  const markupOf = await issueScreens(t);
+  const before = markupOf("일정 탭 · 소속 · 시작 전");
+
+  assert.match(before, /수업 확정/, "카드가 통째로 사라졌다");
+  assert.match(before, /아직 시작하지 않은 수업입니다/);
+  assert.match(before, /disabled=""/, "버튼이 잠기지 않았다");
+});
+
+test("a failed lesson keeps its reason and its retry even before it starts", async (t) => {
+  /* 여기가 감췄을 때 가장 크게 잃던 자리다 -- 강사는 무엇이 막았는지도,
+     다시 누를 곳도 잃었다. */
+  const markupOf = await issueScreens(t);
+  const failed = markupOf("일정 탭 · 소속 · 시작 전 · 실패 기록");
+
+  assert.match(failed, /차감이 한 건도 나가지 않았습니다/);
+  assert.match(failed, /다시 확정/);
+  // 코드가 사람 말로 바뀌어 있다.
+  assert.match(failed, /아직 시작하지 않은 수업입니다/);
+  assert.match(failed, /occurred_at_future/, "원본 코드가 사라졌다");
 });

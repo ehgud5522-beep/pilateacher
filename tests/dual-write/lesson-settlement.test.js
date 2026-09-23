@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  DEDUCTION_CODE_LABEL,
+  DEDUCTION_CODE_LABEL, lessonHasStarted,
   SETTLEMENT_SKIP, applySettlementToLesson, canSettleLesson, clearSettlementFromLesson,
   SETTLEMENT_OUTCOME, closesSettlement, isSettledLesson, needsSettlement, pickSoloPass,
   planLessonSettlement, recordSettlementAttempt, settledDeductionsOf, settlementOutcome,
@@ -626,18 +626,26 @@ test("a pass with neither name is refused rather than priced at zero", async () 
    "차감이 저장되지 않았습니다 (Invalid occurredAt)" 라고만 말했다. 누르면
    반드시 실패하는 버튼이었고, 실패한 이유는 코드에도 적혀 있지 않았다. */
 
-test("시작하지 않은 수업은 확정할 수 없다", () => {
-  const future = lesson({ date: "2026-09-24", start: "10:00", end: "10:50" });
-  const dawn = new Date(2026, 8, 24, 2, 30);
-  assert.equal(canSettleLesson(future, { now: dawn }), false);
+test("확정 카드는 시각을 보지 않는다 — 감추면 실패 사유까지 사라진다", () => {
+  /* 한 번 시각으로 카드를 감췄다가 되돌렸다. 시작 전이라고 블록을 숨겼더니
+     **이미 실패한 수업의 사유와 [다시 확정]까지 사라졌고**, 토스트는 "아래
+     이유를 보고 다시 시도해 주세요" 라고 말하는데 아래에 아무것도 없었다.
 
+     카드를 세우는 판정과 버튼을 잠그는 판정은 다른 일이다. */
+  const future = lesson({ date: "2026-09-24", start: "10:00", end: "10:50" });
+  assert.equal(canSettleLesson(future), true);
+});
+
+test("시작 여부는 따로 답한다 — 버튼을 잠그는 쪽이 이것을 쓴다", () => {
+  const future = lesson({ date: "2026-09-24", start: "10:00", end: "10:50" });
+  assert.equal(lessonHasStarted(future, new Date(2026, 8, 24, 2, 30)), false);
   // 시작 시각이 지나면 열린다. 끝나기를 기다리지는 않는다.
-  assert.equal(canSettleLesson(future, { now: new Date(2026, 8, 24, 10, 5) }), true);
+  assert.equal(lessonHasStarted(future, new Date(2026, 8, 24, 10, 5)), true);
 });
 
 test("시각을 읽을 수 없으면 막지 않는다 — 서버가 마지막 문이다", () => {
-  assert.equal(canSettleLesson(lesson({ date: "", start: "" }), { now: NOW }), true);
-  assert.equal(canSettleLesson(lesson({ date: "나중에", start: "언젠가" }), { now: NOW }), true);
+  assert.equal(lessonHasStarted(lesson({ date: "", start: "" }), NOW), true);
+  assert.equal(lessonHasStarted(lesson({ date: "나중에", start: "언젠가" }), NOW), true);
 });
 
 test("차감 창을 벗어나는 세 이유가 서로 다른 코드다", async () => {

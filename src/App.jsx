@@ -104,7 +104,7 @@ import {
 } from "./data/repositories/pass-repository.js";
 import {
   SETTLEMENT_OUTCOME, SETTLEMENT_SKIP, SETTLEMENT_SKIP_LABEL, applySettlementToLesson,
-  DEDUCTION_CODE_LABEL,
+  DEDUCTION_CODE_LABEL, NOT_STARTED_NOTICE, lessonHasStarted,
   canSettleLesson, clearSettlementFromLesson, closesSettlement, isSettledLesson, needsSettlement,
   planLessonSettlement, recordSettlementAttempt, settledDeductionsOf, settlementOutcome,
   settlementSkipsOf,
@@ -2752,7 +2752,7 @@ function SchedRateLine({ preview }) {
   );
 }
 
-function SchedSettleBlock({ s, members, canSettle, settled, canUnsettle, onSettle, onUnsettle }) {
+function SchedSettleBlock({ s, members, canSettle, settled, canUnsettle, notStarted = false, onSettle, onUnsettle }) {
   const [busy, setBusy] = useState(false);
   const [undoing, setUndoing] = useState(false);
   const [reason, setReason] = useState("");
@@ -2807,9 +2807,18 @@ function SchedSettleBlock({ s, members, canSettle, settled, canUnsettle, onSettl
           </p>
         </>
       ) : null}
-      <button type="button" disabled={busy}
+      {/* 아직 시작하지 않은 수업은 서버가 받지 않는다 -- occurredAt 이 미래가
+          되어 규칙과 리포지토리가 둘 다 거부한다. 버튼을 없애지 않고 잠근다:
+          없는 버튼은 이유를 말하지 못하고, 이미 실패한 수업의 사유와
+          [다시 확정]까지 함께 사라진다. */}
+      {notStarted ? (
+        <p className={`text-xs leading-relaxed${failedBefore ? " mt-2" : ""}`} style={{ color: INK2 }}>
+          {NOT_STARTED_NOTICE}
+        </p>
+      ) : null}
+      <button type="button" disabled={busy || notStarted}
         onClick={async () => { setBusy(true); try { await onSettle?.(s.id); } finally { setBusy(false); } }}
-        className={`h-10 w-full rounded-lg text-sm font-extrabold text-white disabled:opacity-40${failedBefore ? " mt-2" : ""}`}
+        className={`h-10 w-full rounded-lg text-sm font-extrabold text-white disabled:opacity-40${failedBefore || notStarted ? " mt-2" : ""}`}
         style={{ backgroundColor: failedBefore ? BAD : PRIMARY }}>
         {busy ? "확정 중" : failedBefore ? "다시 확정" : doneCount > 0 ? `수업 확정 · ${doneCount}명 차감` : "수업 확정"}
       </button>
@@ -3817,7 +3826,7 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
             {/* 여러 명인 수업은 전원을 정한 뒤 한 번에 확정한다 -- 누르는 횟수가
                 오히려 줄어든다. 개인 모드에는 조직 회원권이 없어 이 블록이 없다. */}
             {organizationMode ? (
-              <SchedSettleBlock s={draft} members={members} settled={settledLesson} canSettle={canSettleLesson(draft)}
+              <SchedSettleBlock s={draft} members={members} settled={settledLesson} canSettle={canSettleLesson(draft)} notStarted={!lessonHasStarted(draft)}
                 canUnsettle={canUnsettle} onSettle={onSettleLesson}
                 onUnsettle={async (...args) => {
                   const done = await onUnsettleLesson?.(...args);
@@ -19436,7 +19445,7 @@ export function createAppScreenSmokeCases() {
   });
   const settleLessonOf = (overrides = {}) => ({
     id: "settle-1",
-    date: new Date(Date.now() - 86400000).toISOString().slice(0, 10),
+    date: shift(todayISO(), -1),
     start: "06:00",
     end: "06:50",
     type: "듀엣",
@@ -19503,6 +19512,18 @@ export function createAppScreenSmokeCases() {
     { name: "일정 탭 · 소속 · 차감 전원 실패", element: scheduleWithSettlement(settleLessonOf({
       attendees: [
         settleAttendee("m-local-1", { orgSkip: "write_failed", orgSkipCode: "Missing baseUnitPrice" }),
+      ],
+    })) },
+    /* 아직 시작하지 않은 수업. 버튼은 잠기되 **카드는 선다** -- 한 번 감췄다가
+       이미 실패한 수업의 사유와 [다시 확정]까지 사라진 적이 있다.
+       날짜를 내일로 두어 언제 돌려도 시작 전이다. */
+    { name: "일정 탭 · 소속 · 시작 전", element: scheduleWithSettlement(settleLessonOf({
+      date: shift(todayISO(), 1),
+    })) },
+    { name: "일정 탭 · 소속 · 시작 전 · 실패 기록", element: scheduleWithSettlement(settleLessonOf({
+      date: shift(todayISO(), 1),
+      attendees: [
+        settleAttendee("m-local-1", { orgSkip: "write_failed", orgSkipCode: "occurred_at_future" }),
       ],
     })) },
     { name: "일정 탭 · 소속 · 확정됨 · 대표", element: scheduleWithSettlement(settleLessonOf({

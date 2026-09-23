@@ -101,6 +101,13 @@ export const SETTLEMENT_SKIP_LABEL = Object.freeze({
 const text = (value) => String(value ?? "").trim();
 
 /**
+ * 아직 시작하지 않은 수업. **버튼을 없애지 않고 잠근다.**
+ *
+ * 잠긴 버튼은 이유를 말할 수 있지만 없는 버튼은 아무 말도 못 한다.
+ */
+export const NOT_STARTED_NOTICE = "아직 시작하지 않은 수업입니다. 시작 시각이 지나면 확정할 수 있어요.";
+
+/**
  * 차감이 거부된 이유를 사람 말로. 코드는 화면에 함께 남는다.
  *
  * Keep in sync with DEDUCT_WINDOW in pass-repository.js. 코드만 보여 주면
@@ -534,17 +541,21 @@ export const canSettleLesson = (lesson, options = {}) => {
   if (!lesson || lesson.personal || lesson.isSample || lesson.groupCancelled) return false;
   const list = attendeesOf(lesson);
   if (list.length === 0) return false;
-  if (!list.some((attendee) => ["done", "noshow", "cancel"].includes(attendee.status))) return false;
-  /* 시작하지도 않은 수업은 서버가 받지 않는다 -- 차감의 occurredAt 이 미래가
-     되고, 규칙과 리포지토리가 둘 다 거부한다. 누르면 반드시 실패하는 버튼을
-     띄우는 것은 강사를 실패로 보내는 일이다.
-
-     끝나기를 기다리지는 않는다. 강사는 수업이 끝나는 그 자리에서 누르고,
-     시작 시각만 지났으면 occurredAt 은 이미 과거다. */
-  return lessonHasStarted(lesson, options.now instanceof Date ? options.now : new Date());
+  return list.some((attendee) => ["done", "noshow", "cancel"].includes(attendee.status));
 };
 
-/** 수업이 시작했는가. 차감의 occurredAt 이 이 시각이다. */
+/**
+ * 수업이 시작했는가. 차감의 occurredAt 이 이 시각이다.
+ *
+ * ── 이것으로 카드를 감추지 않는다 ──
+ * 한 번 그렇게 만들었다가 되돌렸다. 시작 전이라고 확정 블록을 통째로 숨겼더니
+ * **이미 실패한 수업의 사유와 [다시 확정]까지 사라졌다.** 토스트는 "아래 이유를
+ * 보고 다시 시도해 주세요" 라고 말하는데 아래에 아무것도 없었다.
+ *
+ * 그래서 판정은 둘로 나눈다: 확정할 수 있는 수업인가(canSettleLesson)와,
+ * 지금 눌러도 서버가 받는가(여기). 앞은 카드를 세우고 뒤는 버튼을 잠근다 --
+ * 잠긴 버튼은 이유를 말할 수 있지만 없는 버튼은 아무 말도 못 한다.
+ */
 export function lessonHasStarted(lesson, now = new Date()) {
   const date = text(lesson?.date);
   const start = text(lesson?.start);

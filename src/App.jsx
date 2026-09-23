@@ -86,7 +86,9 @@ import {
 import {
   clientMatchesSearch, createClient, findSameNameClients, listClients, normalizePhone,
 } from "./data/repositories/client-repository.js";
-import { listLocations } from "./data/repositories/location-repository.js";
+import {
+  ALL_LOCATIONS, NO_LOCATION, countByLocation, createLocation, filterByLocation, listLocations,
+} from "./data/repositories/location-repository.js";
 import { connectRepositoryLog, toleratingReadFailure } from "./data/repositories/repository-read.js";
 import {
   createProduct, listProducts, productBaseUnitPrice, setProductStatus,
@@ -15352,6 +15354,44 @@ function TitlePicker({ title, deputy, allowDeputy = true, onPick }) {
   );
 }
 
+/* 지점별로 목록을 나눠 보는 칩 줄. 회원 관리와 강사 관리가 같이 쓴다.
+
+   지점이 하나뿐이면 그리지 않는다 -- 고를 것이 없는 칩은 자리만 차지한다.
+   "지점 없음"은 해당하는 사람이 있을 때만 나온다. 지점을 비워 둔 강사나,
+   목록에 없는 지점을 가리키는 회원이 어느 칸에도 안 보이면 찾을 길이 없다. */
+function LocationFilter({ locations, counts, value, onChange }) {
+  if (locations.length < 2 && !(counts[NO_LOCATION] > 0 && locations.length > 0)) return null;
+  const chips = [
+    { id: ALL_LOCATIONS, label: "전체" },
+    ...locations.map((location) => ({ id: location.id, label: location.name || location.id })),
+    ...(counts[NO_LOCATION] > 0 ? [{ id: NO_LOCATION, label: "지점 없음" }] : []),
+  ];
+  return (
+    <div className="mt-3 flex flex-wrap gap-2">
+      {chips.map((chip) => {
+        const selected = value === chip.id;
+        return (
+          <button key={chip.id} type="button" onClick={() => onChange(chip.id)}
+            className="h-8 px-3 font-bold tabular-nums" style={{
+              borderRadius: 999, fontSize: TYPE.caption,
+              backgroundColor: selected ? TINT : CANVAS,
+              color: selected ? BRAND_D : SUB,
+            }}>{chip.label} {counts[chip.id] ?? 0}</button>
+        );
+      })}
+    </div>
+  );
+}
+
+/* 고른 지점이 사라졌거나(다시 읽은 목록에 없음) "지점 없음" 칸이 비면 전체로
+   돌아간다. 빈 목록만 남으면 사람이 없는 것처럼 보인다. */
+function useLocationFilter(locations, counts) {
+  const [value, setValue] = useState(ALL_LOCATIONS);
+  const valid = value === ALL_LOCATIONS
+    || (value === NO_LOCATION ? counts[NO_LOCATION] > 0 : locations.some((location) => location.id === value));
+  return [valid ? value : ALL_LOCATIONS, setValue];
+}
+
 function MembershipRow({ membership, locationName, busy, onEdit }) {
   const rate = fullRoomRateOf(membership);
   const usable = hasUsableFullRoomRate(membership);
@@ -15417,6 +15457,7 @@ function InstructorAdmin({
   });
   const [lookup, setLookup] = useState(initialState?.lookup || { email: "", found: null, error: "", busy: false });
   const [formError, setFormError] = useState(initialState?.formError || "");
+  const [locationDraft, setLocationDraft] = useState(initialState?.locationDraft || null);
   const [saving, setSaving] = useState(false);
   const organizationId = organization?.organizationId || "";
   const locked = organization?.status === "unknown";
@@ -15448,8 +15489,37 @@ function InstructorAdmin({
     () => new Map(locations.map((location) => [location.id, location.name || ""])),
     [locations],
   );
-  const working = members.filter(isActiveMembership);
-  const retired = members.filter((membership) => !isActiveMembership(membership));
+  const locationCounts = useMemo(
+    () => countByLocation(members.filter(isActiveMembership), locations),
+    [members, locations],
+  );
+  const [locationFilter, setLocationFilter] = useLocationFilter(locations, locationCounts);
+  const inLocation = filterByLocation(members, locationFilter, locations);
+  const working = inLocation.filter(isActiveMembership);
+  const retired = inLocation.filter((membership) => !isActiveMembership(membership));
+
+  /* 지점 추가. 이름 변경·삭제는 두지 않는다 -- location-repository 머리말. */
+  const addLocation = async (event) => {
+    event.preventDefault();
+    const name = String(locationDraft?.name || "").trim();
+    if (!name) { setLocationDraft((current) => ({ ...current, error: "지점 이름을 입력해 주세요." })); return; }
+    setLocationDraft((current) => ({ ...current, busy: true, error: "" }));
+    try {
+      const created = await createLocation(organizationId, { name, createdBy: currentUserId },
+        { store: locationStore, existing: locations });
+      setLocationDraft(null);
+      onToast?.({ ok: true, msg: `${created.name}을 추가했습니다.` });
+      await reload();
+      setLocationFilter(created.id);
+    } catch (error) {
+      const message = error?.code === "already-exists"
+        ? "같은 이름의 지점이 이미 있습니다."
+        : error?.code === "permission-denied"
+          ? "대표·매니저만 지점을 추가할 수 있습니다."
+          : `지점을 추가하지 못했어요 (코드 ${error?.code || error?.message || "unknown"})`;
+      setLocationDraft((current) => ({ ...current, busy: false, error: message }));
+    }
+  };
 
   const close = () => {
     setMode("list");
@@ -15759,14 +15829,38 @@ function InstructorAdmin({
     <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
       <div className="flex items-center justify-between gap-2">
         <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>강사 관리</h2>
-        <button type="button" onClick={() => { close(); setMode("add"); }}
-          className="shrink-0 px-3 font-bold" style={{
-            height: 32, borderRadius: 999, fontSize: TYPE.caption, backgroundColor: TINT, color: BRAND_D,
-          }}>추가</button>
+        <div className="flex shrink-0 gap-2">
+          <button type="button" onClick={() => setLocationDraft(locationDraft ? null : { name: "", error: "", busy: false })}
+            className="px-3 font-bold" style={{
+              height: 32, borderRadius: 999, fontSize: TYPE.caption, backgroundColor: CANVAS, color: SUB,
+            }}>지점 추가</button>
+          <button type="button" onClick={() => {
+            close();
+            /* 지점 칩을 고른 채로 추가하면 그 지점을 미리 골라 둔다. */
+            const preset = locationFilter !== ALL_LOCATIONS && locationFilter !== NO_LOCATION ? locationFilter : "";
+            setDraft((current) => ({ ...current, locationId: preset }));
+            setMode("add");
+          }}
+            className="px-3 font-bold" style={{
+              height: 32, borderRadius: 999, fontSize: TYPE.caption, backgroundColor: TINT, color: BRAND_D,
+            }}>추가</button>
+        </div>
       </div>
       <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
         지점과 이름을 정하면 그 강사에게 센터 회원이 보입니다.
       </p>
+      {locationDraft ? (
+        <form onSubmit={addLocation} className="mt-3 flex gap-2">
+          <input value={locationDraft.name} className={inputCls} placeholder="예) 율하점" autoFocus
+            onChange={(e) => setLocationDraft((current) => ({ ...current, name: e.target.value, error: "" }))} />
+          <button type="submit" disabled={locationDraft.busy} className="h-11 shrink-0 px-4 font-bold"
+            style={{ borderRadius: 10, backgroundColor: BRAND, color: "#fff", fontSize: TYPE.caption, opacity: locationDraft.busy ? 0.6 : 1 }}>
+            {locationDraft.busy ? "추가 중" : "추가"}
+          </button>
+        </form>
+      ) : null}
+      {locationDraft?.error ? <p className="mt-1.5" style={{ fontSize: TYPE.caption, color: BAD }}>{locationDraft.error}</p> : null}
+      <LocationFilter locations={locations} counts={locationCounts} value={locationFilter} onChange={setLocationFilter} />
       <div className="mt-3">
         {loading ? <p style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : null}
         {!loading && loadError
@@ -15774,6 +15868,9 @@ function InstructorAdmin({
           : null}
         {!loading && !loadError && members.length === 0
           ? <p style={{ fontSize: TYPE.caption, color: SUB }}>등록된 강사가 없습니다. 추가를 눌러 첫 강사를 붙이세요.</p>
+          : null}
+        {!loading && !loadError && members.length > 0 && working.length === 0
+          ? <p style={{ fontSize: TYPE.caption, color: SUB }}>이 지점에 근무 중인 강사가 없습니다. 추가를 눌러 강사를 붙이세요.</p>
           : null}
         {!loading && !loadError && working.map((membership) => (
           <MembershipRow key={membership.userId} membership={membership} busy={saving}
@@ -16242,9 +16339,11 @@ function ClientDirectory({ organization, currentUserId, clientStore, locationSto
     () => new Map(locations.map((location) => [location.id, location.name || ""])),
     [locations],
   );
+  const locationCounts = useMemo(() => countByLocation(clients, locations), [clients, locations]);
+  const [locationFilter, setLocationFilter] = useLocationFilter(locations, locationCounts);
   const visible = useMemo(
-    () => clients.filter((client) => clientMatchesSearch(client, search)),
-    [clients, search],
+    () => filterByLocation(clients, locationFilter, locations).filter((client) => clientMatchesSearch(client, search)),
+    [clients, locations, locationFilter, search],
   );
 
   const resetForm = () => {
@@ -16365,12 +16464,20 @@ function ClientDirectory({ organization, currentUserId, clientStore, locationSto
             이름 또는 연락처로 찾습니다.
           </p>
         </div>
-        <button type="button" onClick={() => { setMode("add"); resetForm(); }} className="h-9 shrink-0 px-3 font-bold"
+        <button type="button" onClick={() => {
+          setMode("add");
+          resetForm();
+          /* 지점 칩을 고른 채로 등록하면 그 지점을 미리 골라 둔다. */
+          if (locationFilter !== ALL_LOCATIONS && locationFilter !== NO_LOCATION) {
+            setForm({ name: "", phone: "", locationId: locationFilter });
+          }
+        }} className="h-9 shrink-0 px-3 font-bold"
           style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>등록</button>
       </div>
       <div className="mt-3">
         <input value={search} onChange={(e) => setSearch(e.target.value)} className={inputCls} placeholder="이름 또는 연락처" />
       </div>
+      <LocationFilter locations={locations} counts={locationCounts} value={locationFilter} onChange={setLocationFilter} />
       <div className="mt-3">
         {loading ? <p style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : null}
         {!loading && loadError ? <p style={{ fontSize: TYPE.caption, color: BAD }}>{loadError}</p> : null}
@@ -16378,7 +16485,7 @@ function ClientDirectory({ organization, currentUserId, clientStore, locationSto
           ? <p style={{ fontSize: TYPE.caption, color: SUB }}>등록된 회원이 없습니다. 등록을 눌러 첫 회원을 추가하세요.</p>
           : null}
         {!loading && !loadError && clients.length > 0 && visible.length === 0
-          ? <p style={{ fontSize: TYPE.caption, color: SUB }}>검색 결과가 없습니다.</p>
+          ? <p style={{ fontSize: TYPE.caption, color: SUB }}>{search.trim() ? "검색 결과가 없습니다." : "이 지점에 등록된 회원이 없습니다."}</p>
           : null}
         {!loading && !loadError && visible.map((client) => (
           <ClientRow key={client.id} client={client} locationName={locationNames.get(client.locationId)}

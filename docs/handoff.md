@@ -40,7 +40,8 @@ Claude Code · Codex 가 새 세션을 열면 이 파일부터 읽는다. 작업
 - 코드: `src/data/repositories/issue-report-repository.js` · App.jsx 의 `IssueReport`.
   테스트 19(단위) + 6(스모크).
 
-### 0-2. 회원 앱 1단계 — 투영 함수 · 규칙 · 규칙 테스트 · **미배포**
+### 0-2. 회원 앱 1단계 — 투영 함수 · 규칙 · 규칙 테스트
+**규칙은 2026-09-23 먼저 배포했다. 트리거·백필은 나중.**
 - `functions/src/member-view.js` (허용 목록으로 고르는 순수 함수) + 테스트 28개.
 - 규칙에 블록 **둘만 추가** (43줄 추가, 0줄 삭제 — 기존 문은 손대지 않았다):
   `organizations/{org}/memberViews/{clientId}` — 본인 get 만. list·쓰기 전부 금지.
@@ -58,8 +59,8 @@ Claude Code · Codex 가 새 세션을 열면 이 파일부터 읽는다. 작업
   `lessons` · `lessons/participants` · `instructorClientTotals` · `locations` · `events`.
   네 역할을 그대로 나열하므로 **기존 사용자의 읽기는 하나도 바뀌지 않는다.**
   회원이 읽는 곳은 셋뿐: `memberViews` · `memberLinks` · 자기 `clients` 문서.
-- 이 좁힘은 회원 앱과 **별개로 먼저 배포해도 된다** — 지금 쓰는 역할에 영향이 없다.
-  대표 판단 대기.
+- 이 좁힘은 **2026-09-23 배포 완료**. 지금 쓰는 역할(owner·manager·instructor·staff)의
+  읽기는 하나도 바뀌지 않았다 — 네 역할을 그대로 나열했다.
 - `pass-journey` 는 Functions 에서 require 할 수 없다(배포에 functions/ 만 올라감).
   투영 함수가 주입으로 받게 해 뒀고, 배포 방식은 5번에서 정한다.
 
@@ -88,9 +89,10 @@ Claude Code · Codex 가 새 세션을 열면 이 파일부터 읽는다. 작업
 
 - [ ] FC매니저 실제 계정으로 발급 1건 확인
 - [ ] 회원 앱 1단계 구현 — 10장 **1·2·3·4번 끝남** (2026-09-23).
-      **규칙은 코드에만 있고 배포하지 않았다.** 트리거(5번)·백필(8번)과 한 번에
-      배포한다 — 규칙만 먼저 나가면 회원이 읽을 투영이 아직 없어서, 연결된
-      회원에게 빈 화면이 뜬다. 셋이 함께 나가야 첫 화면이 채워진다.
+      **규칙은 2026-09-23 배포했다** (좁힘 + memberViews·memberLinks 두 블록).
+      두 블록은 쓰기가 전부 닫혀 있고 그 경로에 문서가 아직 없어서, 먼저 나가도
+      아무에게도 아무 일도 하지 않는다.
+      **트리거(5번)·백필(8번)은 나중이다** — 그 둘이 끝나야 회원 화면이 채워진다.
       다음은 5번 트리거.
       막힌 것 하나: Functions 는 functions/ 만 배포돼서 pass-journey(ESM, src/)를
       require 할 수 없다. 투영 함수는 주입으로 피해 뒀고, 트리거(5번) 만들 때

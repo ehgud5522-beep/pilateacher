@@ -57,6 +57,9 @@ import {
 import { appendMemberWithoutScheduleMutation, dedupeScheduleByLessonId } from "./features/schedule/schedule-integrity.js";
 import { maskedBirth, maskedPhone, membershipDisplay } from "./features/members/member-display.js";
 import {
+  canBrowseAllClients, phoneForViewer, visibleClients,
+} from "./features/members/roster-visibility.js";
+import {
   sheetDragOffset, shouldDismissSheet, shouldStartContentDismiss,
 } from "./features/ui/bottom-sheet-gesture.js";
 import { installFocusVisibilityGuard } from "./features/ui/focus-visibility.js";
@@ -4852,6 +4855,10 @@ function ReferenceMemberList({
   members, schedule, settings, onSelect, onAdd, onDeleteSamples, registerRequest = 0,
   onConsumeRegisterRequest, canRegister = true, currentUserId = "", myMembersDefault = false,
   rosterError = "", onRetryRoster, hiddenCount = 0, onShowHidden, journeyOf,
+  /* 강사에게는 "전체 보기" 를 주지 않는다. 경계가 아니라 -- 규칙은 지금도
+     열려 있다 -- 120명을 일상적으로 스크롤할 이유가 없어서다.
+     기본값 true 는 개인 강사(legacy)를 위한 것이다. */
+  canBrowseAll = true, viewerRole = "",
 }) {
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState("all");
@@ -4891,8 +4898,14 @@ function ReferenceMemberList({
   const list = realMembers.filter(matchFilter)
     /* 검색은 필터를 넘어선다. 이름을 쳤는데 "내 회원"이 아니라서 안 나오면
        강사는 그 회원이 센터에 없다고 읽고 다시 등록한다. */
-    .filter((m) => (mineOnly && !q.trim() ? isMyRosterMember(m, currentUserId) : true))
-    .filter((m) => !q.trim() || (m.name || "").includes(q.trim()) || (m.phone || "").includes(q.trim()))
+    /* 전체를 볼 수 없는 역할(강사)은 검색도 좁다. 내 회원은 부분 일치로
+       찾고, 남의 회원은 이름을 전부 쳐야 나온다 -- 한 글자에 스무 명이
+       나오면 그것은 명부를 여는 것과 같다. 대타 경로는 막지 않는다. */
+    .filter((m) => (canBrowseAll
+      ? (mineOnly && !q.trim() ? isMyRosterMember(m, currentUserId) : true)
+      : isMyRosterMember(m, currentUserId) || String(m.name || "").trim() === q.trim()))
+    .filter((m) => !q.trim() || (m.name || "").includes(q.trim())
+      || (canBrowseAll && (m.phone || "").includes(q.trim())))
     .sort((a, b) => {
       if (sort === "remaining") return left(a) - left(b);
       if (sort === "expiry") return String(a.contractEnd || "9999").localeCompare(String(b.contractEnd || "9999"));
@@ -4940,7 +4953,7 @@ function ReferenceMemberList({
           </label>
         </div>
       </div>
-      {myMembersDefault ? (
+      {myMembersDefault && canBrowseAll ? (
         <div className="shrink-0 flex items-center gap-2" style={{ padding: "8px 12px", backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
           {[{ k: true, l: `내 회원 ${mineCount}` }, { k: false, l: `전체 ${realMembers.length}` }].map((option) => (
             <button type="button" key={String(option.k)} onClick={() => setMineOnly(option.k)} className="shrink-0"
@@ -5171,7 +5184,10 @@ function PassJourneyBar({ journey, size = "md" }) {
 
    개인 모드(레거시)에는 셋 다 그대로 남는다. 그쪽에서는 payRate 가 실제로 월간
    리포트 계산에 쓰이고, 회원도 홀딩도 강사 자신의 것이다. */
-function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSettlement = true, organizationMode = false, journey = null, onBack, onPatch, onSaveNote, onSchedule, onOpenLesson, onAssess, onToast, onDelete, onDeactivate, onReactivate, onHide }) {
+function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSettlement = true, organizationMode = false, journey = null, viewerRole = "", onBack, onPatch, onSaveNote, onSchedule, onOpenLesson, onAssess, onToast, onDelete, onDeactivate, onReactivate, onHide }) {
+  /* 강사에게는 뒤 4자리만. 동명이인을 가르는 데는 그것으로 충분하고, 전화를
+     거는 일은 센터가 한다 (roster-visibility.js). */
+  const phoneShown = (value) => phoneForViewer(value, viewerRole, { full: () => maskedPhone(value) });
   const [sheet, setSheet] = useState(null);
   const [edit, setEdit] = useState({});
   const [memo, setMemo] = useState("");
@@ -5408,13 +5424,13 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
             </div>
           </details>
           <details data-member-management-card="basic-and-memos" style={{ ...sectionStyle, padding: 0, overflow: "hidden" }}>
-            <summary aria-label="기본정보·상담메모 관리 카드 열기" className="flex min-h-14 cursor-pointer list-none items-center gap-3 px-3.5 py-3"><span className="min-w-0 flex-1"><span className="block truncate text-sm font-extrabold" style={{ color: INK }}>기본정보·상담메모</span><span className="mt-0.5 block truncate text-caption" style={{ color: SUB }}>{maskedPhone(member.phone)} · {consultationNotes.length ? `상담메모 ${consultationNotes.length}건` : "상담메모 없음"}</span></span><ChevronDown size={16} style={{ color: SUB }} /></summary>
+            <summary aria-label="기본정보·상담메모 관리 카드 열기" className="flex min-h-14 cursor-pointer list-none items-center gap-3 px-3.5 py-3"><span className="min-w-0 flex-1"><span className="block truncate text-sm font-extrabold" style={{ color: INK }}>기본정보·상담메모</span><span className="mt-0.5 block truncate text-caption" style={{ color: SUB }}>{phoneShown(member.phone)} · {consultationNotes.length ? `상담메모 ${consultationNotes.length}건` : "상담메모 없음"}</span></span><ChevronDown size={16} style={{ color: SUB }} /></summary>
             <div data-member-management-content="basic-and-memos" className="space-y-2" style={{ padding: "0 12px 12px" }}>
           <Section title="목표·주의사항" action={<button type="button" onClick={openPreparation} style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND }}>수정</button>}>
             <div className="space-y-2"><div><p style={{ fontSize: TYPE.caption, color: SUB }}>운동 목표</p>{member.goal ? <p className="mt-0.5" style={{ fontSize: TYPE.caption, lineHeight: 1.45, color: INK2 }}>{member.goal}</p> : <button type="button" onClick={openPreparation} className="mt-0.5 text-xs font-bold" style={{ color: BRAND }}>+ 목표 추가</button>}</div><div style={{ padding: "9px 10px", borderRadius: 8, backgroundColor: WARN_S }}><p style={{ fontSize: TYPE.caption, fontWeight: 700, color: WARN }}>통증 및 주의사항</p><p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.45, color: INK2 }}>{(member.focus || []).length ? member.focus.join(" · ") : "등록된 주의사항이 없습니다"}</p></div></div>
           </Section>
           <Section title="회원 기본정보" action={<button type="button" onClick={openEdit} style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND }}><Pencil size={12} className="inline" /> 정보 수정</button>}>
-            <div className="grid grid-cols-2 gap-x-3 gap-y-2">{[["이름", member.name || "-"], ["회원 상태", isHold(member) ? "홀딩" : isEnded(member) ? "종료" : "활성"], ...(!singleInstructorMode ? [["담당 강사", member.instructor || "미지정"]] : []), ["연락처", member.phone ? maskedPhone(member.phone) : "번호 추가"], ["수업 유형", member.lessonType === "duet" ? "듀엣" : member.lessonType === "group" ? "그룹" : "개인"], ["기본 수업시간", `${lessonDurationOf(member)}분`], ["생년월일 · 나이", maskedBirth(member.birth, ageOf(member))]].map(([k,v]) => <div key={k} className={k === "생년월일 · 나이" ? "col-span-2" : ""}><p style={{ fontSize: TYPE.caption, color: SUB }}>{k}</p><p className="mt-0.5 truncate" style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK }}>{v}</p></div>)}</div>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-2">{[["이름", member.name || "-"], ["회원 상태", isHold(member) ? "홀딩" : isEnded(member) ? "종료" : "활성"], ...(!singleInstructorMode ? [["담당 강사", member.instructor || "미지정"]] : []), ["연락처", member.phone ? phoneShown(member.phone) : "번호 추가"], ["수업 유형", member.lessonType === "duet" ? "듀엣" : member.lessonType === "group" ? "그룹" : "개인"], ["기본 수업시간", `${lessonDurationOf(member)}분`], ["생년월일 · 나이", maskedBirth(member.birth, ageOf(member))]].map(([k,v]) => <div key={k} className={k === "생년월일 · 나이" ? "col-span-2" : ""}><p style={{ fontSize: TYPE.caption, color: SUB }}>{k}</p><p className="mt-0.5 truncate" style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK }}>{v}</p></div>)}</div>
           </Section>
           <Section title="상담 및 중요 메모" action={<div className="flex gap-3"><button type="button" onClick={() => setSheet("memos-all")} style={{ fontSize: TYPE.caption, fontWeight: 600, color: SUB }}>전체 보기</button><button type="button" onClick={openMemo} style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND }}>메모 추가</button></div>}>
             {consultationNotes.length ? consultationNotes.slice(0, 3).map((note) => <div key={note.id} className="flex items-start gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}` }}><button type="button" aria-label={note.important ? "중요 메모 고정 해제" : "중요 메모로 고정"} onClick={() => commitPatch("pin", { notes: (member.notes || []).map((item) => item.id === note.id ? { ...item, important: !item.important } : item) }, false)} className="mt-0.5 shrink-0" style={{ color: note.important ? WARN : FAINT }}><Star size={14} fill={note.important ? "currentColor" : "none"} /></button><span className="min-w-0 flex-1"><span className="block" style={{ fontSize: TYPE.caption, color: SUB }}>{ymd(note.date)}{note.important ? " · 중요" : ""}</span><span className="mt-0.5 block line-clamp-2" style={{ fontSize: TYPE.caption, lineHeight: 1.45, color: INK2 }}>{note.body}</span></span></div>) : <button type="button" onClick={openMemo} className="flex h-9 w-full items-center justify-between px-2 text-left" style={{ borderRadius: 8, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>등록된 상담 메모가 없습니다<span style={{ color: BRAND }}>추가하기</span></button>}
@@ -10919,7 +10935,7 @@ function Dashboard({ member, photos, schedule, onBack, briefing, onSavePhoto, on
     </div>
   );
 }
-function RecordTab({ db, selectedId, setSelectedId, section, setSection, onSaveInbody, onDeleteInbody, onSaveNote, onPatch, onDelete, onToast, onSettings, onLeaveNote, backHint, locked, voiceHint, onVoiceSeen }) {
+function RecordTab({ db, selectedId, setSelectedId, section, setSection, onSaveInbody, onDeleteInbody, onSaveNote, onPatch, onDelete, onToast, onSettings, onLeaveNote, backHint, locked, voiceHint, onVoiceSeen, viewerRole = "" }) {
   const [openInfo, setOpenInfo] = useState(false);
   const members = db.members;
   const member = members.find((m) => m.id === selectedId) || members[0];
@@ -10960,7 +10976,8 @@ function RecordTab({ db, selectedId, setSelectedId, section, setSection, onSaveI
               {[
                 { l: "상태", v: isEnded(member) ? "종료" : isHold(member) ? "홀딩" : "진행중" },
                 { l: "담당 강사", v: member.instructor || "-" },
-                { l: "연락처", v: member.phone || "-" },
+                // 강사에게는 뒤 4자리만 (roster-visibility.js).
+                { l: "연락처", v: phoneForViewer(member.phone, viewerRole) || "-" },
                 { l: "나이", v: ageOf(member) !== null ? `${ageOf(member)}세${member.birth ? ` (${ymd(member.birth)})` : ""}` : "-" },
                 { l: "수강권", v: member.passName || "-" },
                 { l: "잔여 내역", v: `정규 ${num(member.regular)} · 서비스 ${num(member.service)}` },
@@ -14640,9 +14657,19 @@ function AttendanceCheck({
 
   useEffect(() => { if (!locked) reload(); else setLoading(false); }, [locked, reload]);
 
+  /* 강사는 자기 회원 안에서 찾는다. 대타로 남의 회원을 처리해야 하는 일이
+     실제로 있으므로 길을 닫지는 않는다 -- 다만 **이름을 전부 쳐야** 나온다.
+     한 글자에 스무 명이 나오면 그것은 명부를 여는 것과 같다.
+
+     담당은 회원권에서 온다. 회원 문서에는 담당 강사가 없다
+     (roster-visibility.js 머리말). */
+  const browseAll = canBrowseAllClients(organization?.role);
   const matched = useMemo(
-    () => clients.filter((client) => clientMatchesSearch(client, search)).slice(0, 8),
-    [clients, search],
+    () => visibleClients({
+      clients, passes, instructorId: currentUserId, query: search, browseAll,
+      matches: (item, query) => clientMatchesSearch(item, query),
+    }).slice(0, 8),
+    [clients, passes, currentUserId, search, browseAll],
   );
   const client = clients.find((item) => item.id === clientId) || null;
   const clientPasses = useMemo(
@@ -14741,12 +14768,19 @@ function AttendanceCheck({
       {!loading && !loadError ? (
         <div className="mt-3 space-y-3">
           <Field label="수업한 회원">
-            <input value={search} className={inputCls} placeholder="이름 또는 연락처"
+            <input value={search} className={inputCls}
+              placeholder={browseAll ? "이름 또는 연락처" : "내 회원 이름"}
               onChange={(e) => { setSearch(e.target.value); setClientId(""); }} />
             {search && !clientId ? (
               <div className="mt-2 flex flex-wrap gap-2">
                 {matched.length === 0
-                  ? <p style={{ fontSize: TYPE.caption, color: SUB }}>찾는 회원이 없습니다.</p>
+                  ? (
+                    <p style={{ fontSize: TYPE.caption, color: SUB }}>
+                      {browseAll
+                        ? "찾는 회원이 없습니다."
+                        : "내 회원 중에는 없습니다. 대타 수업이면 회원 이름을 전부 입력해 주세요."}
+                    </p>
+                  )
                   : matched.map((item) => (
                     <button key={item.id} type="button" className="h-9 px-3 font-bold"
                       onClick={() => { setClientId(item.id); setSearch(item.name); }}
@@ -19486,6 +19520,22 @@ export function createAppScreenSmokeCases() {
     /* 소속 센터의 회원. 강사가 못 하는 셋 -- 삭제 · 홀딩 · 단가 -- 이 사라지고,
        이용권 카드의 세 칸이 조직 회원권에서 채워진다. */
     { name: "회원 상세 · 소속", element: <ReferenceMemberDetail member={smokeRoster[0]} schedule={db.schedule} photos={photos[member.id]} settings={db.settings} organizationMode onBack={noop} onPatch={asyncNoop} onSaveNote={asyncNoop} onSchedule={noop} onAssess={noop} onToast={noop} onHide={asyncNoop} /> },
+    /* 강사에게는 연락처 뒤 4자리만 보인다. 경계가 아니라 -- 규칙은 지금도
+       열려 있다 -- 일상적으로 120명의 번호를 스쳐 갈 이유가 없어서다. */
+    { name: "회원 상세 · 강사", element: <ReferenceMemberDetail member={smokeRoster[0]} schedule={db.schedule} photos={photos[member.id]} settings={db.settings} organizationMode viewerRole="instructor" onBack={noop} onPatch={asyncNoop} onSaveNote={asyncNoop} onSchedule={noop} onAssess={noop} onToast={noop} onHide={asyncNoop} /> },
+    { name: "회원 상세 · 대표", element: <ReferenceMemberDetail member={smokeRoster[0]} schedule={db.schedule} photos={photos[member.id]} settings={db.settings} organizationMode viewerRole="owner" onBack={noop} onPatch={asyncNoop} onSaveNote={asyncNoop} onSchedule={noop} onAssess={noop} onToast={noop} onHide={asyncNoop} /> },
+    { name: "회원 목록 · 강사", element: (
+      <ReferenceMemberList members={smokeRoster} schedule={db.schedule} settings={db.settings}
+        currentUserId="u1" myMembersDefault canBrowseAll={false} viewerRole="instructor"
+        canRegister={false} onSelect={noop} onAdd={noop} onDeleteSamples={noop}
+        onConsumeRegisterRequest={noop} onRetryRoster={noop} onShowHidden={noop} />
+    ) },
+    { name: "회원 목록 · 대표", element: (
+      <ReferenceMemberList members={smokeRoster} schedule={db.schedule} settings={db.settings}
+        currentUserId="u1" myMembersDefault canBrowseAll viewerRole="owner"
+        onSelect={noop} onAdd={noop} onDeleteSamples={noop}
+        onConsumeRegisterRequest={noop} onRetryRoster={noop} onShowHidden={noop} />
+    ) },
     /* 여정 줄. 끝난 회원권 둘과 진행 중 하나, 그리고 앱 이전 기록까지. */
     { name: "회원 상세 · 여정", element: <ReferenceMemberDetail member={smokeRoster[0]} schedule={db.schedule} photos={photos[member.id]} settings={db.settings} organizationMode onBack={noop} onPatch={asyncNoop} onSaveNote={asyncNoop} onSchedule={noop} onAssess={noop} onToast={noop} onHide={asyncNoop}
       journey={buildPassJourney({
@@ -22413,9 +22463,9 @@ export default function App() {
           <Guard key={tab}>
             {tab === "schedule" && <ScheduleManager db={rosterDb} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterMembers ? () => { setMemberRegistrationRequest((value) => value + 1); setTab("members"); } : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} canUnsettle={organizationRoster && organizationContext.role === ROLES.OWNER} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
             {tab === "members" && <div className={`h-full min-h-0 ${mobileView === "detail" && member ? "pt-member-detail-active" : ""}`}>
-              <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList members={rosterMembers} schedule={db.schedule} settings={db.settings} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterMembers} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} journeyOf={organizationRoster ? journeyFor : undefined} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
+              <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList members={rosterMembers} schedule={db.schedule} settings={db.settings} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} canBrowseAll={!organizationRoster || canBrowseAllClients(organizationContext.role)} viewerRole={organizationContext.role} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterMembers} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} journeyOf={organizationRoster ? journeyFor : undefined} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
               {mobileView === "detail" && member && <div className="pt-member-detail-pane h-full min-h-0">
-                <ReferenceMemberDetail key={member.id} member={member} schedule={db.schedule} photos={photos[member.id]} settings={db.settings}
+                <ReferenceMemberDetail key={member.id} member={member} schedule={db.schedule} photos={photos[member.id]} settings={db.settings} viewerRole={organizationRoster ? organizationContext.role : ""}
                   canViewSettlement={!account?.role || ["owner", "manager", "admin", "director"].includes(String(account.role).toLowerCase())} onBack={() => setMobileView("list")}
                   onPatch={(change) => patch(member.id, change)} onSaveNote={(type, body, voiceMeta, noteOptions) => saveScheduleComment(member.id, type, null, body, voiceMeta, noteOptions)}
                   onSchedule={() => { setScheduleMemberId(member.id); setTab("schedule"); }} onOpenLesson={(lessonId) => { setScheduleOpenLessonId(lessonId); setTab("schedule"); }} onAssess={(entry = {}) => { setAnalysisRecordId(entry.poseId || null); setAnalysisAssessmentId(entry.assessmentId || null); setAnalysisEntryMode(entry.mode || "home"); setAnalysisComparisonEntry(entry.beforeAssessmentId && entry.afterAssessmentId ? { beforeAssessmentId: entry.beforeAssessmentId, afterAssessmentId: entry.afterAssessmentId, compareView: entry.compareView || "front" } : null); setAnalysisMemberId(member.id); setTab("analysis"); }} onToast={setToast} onDelete={removeMember} onDeactivate={deactivateMember} onReactivate={reactivateMember}

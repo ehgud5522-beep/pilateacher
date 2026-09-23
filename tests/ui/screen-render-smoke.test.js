@@ -37,6 +37,10 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "회원 목록",
     "회원 상세",
     "회원 상세 · 소속",
+    "회원 상세 · 강사",
+    "회원 상세 · 대표",
+    "회원 목록 · 강사",
+    "회원 목록 · 대표",
     "회원 상세 · 여정",
     "체형분석 목록",
     "체형분석 상세 빈 이력",
@@ -1874,4 +1878,44 @@ test("the member-app screen never shows a price", async (t) => {
       assert.doesNotMatch(screen, new RegExp(forbidden), `${forbidden} 가 ${name} 에 있다`);
     }
   }
+});
+
+/* ── 강사가 명부에서 무엇을 보는가 ────────────────────────────────────────
+
+   **경계가 아니다.** 규칙은 지금도 강사에게 센터 전체 명부를 열어 준다
+   (`clients` list 가 owner·manager·instructor·staff). 여기서 고정하는 것은
+   화면이 먼저 보여 주지 않는다는 것이고, 규칙 차단은 대타 경로를 설계한
+   뒤다 (docs/handoff.md).
+
+   그래도 이 줄들이 값어치가 있는 이유: 노출의 대부분은 악의가 아니라 그냥
+   거기 있어서 일어난다. */
+
+test("an instructor sees only the last four digits, an owner sees the number", async (t) => {
+  const markupOf = await issueScreens(t);
+
+  const instructor = markupOf("회원 상세 · 강사");
+  assert.match(instructor, /···5678/, "뒤 4자리가 없다");
+  // 앞자리가 붙은 어떤 모양도 나오면 안 된다.
+  assert.doesNotMatch(instructor, /010-\*\*\*\*-5678/, "강사 화면에 앞자리가 있다");
+  assert.doesNotMatch(instructor, /01012345678/, "강사 화면에 전체 번호가 있다");
+  assert.doesNotMatch(instructor, /010-1234-5678/, "강사 화면에 전체 번호가 있다");
+
+  /* 대표와 FC매니저는 지금과 같다. 등록·연락·정산을 하는 사람들이다. */
+  const owner = markupOf("회원 상세 · 대표");
+  assert.match(owner, /010-\*\*\*\*-5678/, "대표 화면이 바뀌었다");
+});
+
+test("the instructor's list has no way to browse the whole centre", async (t) => {
+  const markupOf = await issueScreens(t);
+
+  const instructor = markupOf("회원 목록 · 강사");
+  /* "전체 N" 칩이 없다. 있으면 한 번 눌러 120명을 스크롤하게 된다. */
+  assert.doesNotMatch(instructor, /전체 \d+<\/button>/, "강사에게 전체 보기 칩이 있다");
+  assert.doesNotMatch(instructor, /01012345678/);
+  assert.doesNotMatch(instructor, /01055556666/);
+
+  // 대표에게는 그대로 있다.
+  const owner = markupOf("회원 목록 · 대표");
+  assert.match(owner, /내 회원 \d+/);
+  assert.match(owner, /전체 \d+/);
 });

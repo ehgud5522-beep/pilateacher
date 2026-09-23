@@ -576,18 +576,21 @@ test("a pass with nothing left cannot be spent", async () => {
   }
 });
 
-test("a lesson time in the future or long past is refused", async () => {
-  // 강사가 그날 밤에 몰아 누르는 것은 허용하고, 지난달 소급은 막는다.
+test("a lesson time in the future or long past is refused, each with its own code", async () => {
+  /* 강사가 그날 밤에 몰아 누르는 것은 허용하고, 지난달 소급은 막는다.
+
+     셋이 서로 다른 코드다. 한 문구로 뭉개면 화면이 "Invalid occurredAt" 만
+     보여 주고 대표는 무엇을 고쳐야 하는지 알 수 없다 -- 실제로 그렇게 끝났다. */
   const refused = [
-    { at: new Date("2026-09-17T13:00:00.000Z"), label: "미래" },
-    { at: new Date("2026-09-09T12:00:00.000Z"), label: "8일 전" },
-    { at: "그저께", label: "날짜가 아님" },
+    { at: new Date("2026-09-17T13:00:00.000Z"), code: "occurred_at_future", label: "미래" },
+    { at: new Date("2026-09-09T12:00:00.000Z"), code: "occurred_at_too_old", label: "8일 전" },
+    { at: "그저께", code: "occurred_at_invalid", label: "날짜가 아님" },
   ];
   for (const item of refused) {
     const store = fakeStore();
     await assert.rejects(
       () => deductPass(ORG, activePass(), deductInput({ occurredAt: item.at }), deductOptions(store)),
-      /Invalid occurredAt/,
+      (error) => /** @type {any} */ (error).code === item.code,
       item.label,
     );
     assert.equal(store.calls.commit.length, 0);

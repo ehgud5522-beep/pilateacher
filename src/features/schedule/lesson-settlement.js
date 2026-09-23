@@ -100,6 +100,18 @@ export const SETTLEMENT_SKIP_LABEL = Object.freeze({
 
 const text = (value) => String(value ?? "").trim();
 
+/**
+ * 차감이 거부된 이유를 사람 말로. 코드는 화면에 함께 남는다.
+ *
+ * Keep in sync with DEDUCT_WINDOW in pass-repository.js. 코드만 보여 주면
+ * 대표는 날짜가 미래인지 너무 오래됐는지 알 수 없다.
+ */
+export const DEDUCTION_CODE_LABEL = Object.freeze({
+  ["occurred_at_future"]: "아직 시작하지 않은 수업입니다. 수업이 시작한 뒤에 확정해 주세요.",
+  ["occurred_at_too_old"]: "7일이 지난 수업은 이 화면에서 차감할 수 없습니다. 대표에게 문의해 주세요.",
+  ["occurred_at_invalid"]: "수업 시각을 읽지 못했습니다. 일정의 날짜와 시간을 확인해 주세요.",
+});
+
 const attendeesOf = (lesson) => {
   if (!lesson || typeof lesson !== "object") return [];
   if (Array.isArray(lesson.attendees) && lesson.attendees.length) {
@@ -517,13 +529,31 @@ export const settledDeductionsOf = (lesson) => {
  * 쓸 수 있는 회원권이 하나도 없어도 확정은 된다 -- 건너뛴 이유를 적고 닫는다.
  * 닫지 못하면 큐에 남아 강사가 매일 같은 줄을 본다.
  */
-export const canSettleLesson = (lesson) => {
+export const canSettleLesson = (lesson, options = {}) => {
   if (isSettledLesson(lesson)) return false;
   if (!lesson || lesson.personal || lesson.isSample || lesson.groupCancelled) return false;
   const list = attendeesOf(lesson);
   if (list.length === 0) return false;
-  return list.some((attendee) => ["done", "noshow", "cancel"].includes(attendee.status));
+  if (!list.some((attendee) => ["done", "noshow", "cancel"].includes(attendee.status))) return false;
+  /* 시작하지도 않은 수업은 서버가 받지 않는다 -- 차감의 occurredAt 이 미래가
+     되고, 규칙과 리포지토리가 둘 다 거부한다. 누르면 반드시 실패하는 버튼을
+     띄우는 것은 강사를 실패로 보내는 일이다.
+
+     끝나기를 기다리지는 않는다. 강사는 수업이 끝나는 그 자리에서 누르고,
+     시작 시각만 지났으면 occurredAt 은 이미 과거다. */
+  return lessonHasStarted(lesson, options.now instanceof Date ? options.now : new Date());
 };
+
+/** 수업이 시작했는가. 차감의 occurredAt 이 이 시각이다. */
+export function lessonHasStarted(lesson, now = new Date()) {
+  const date = text(lesson?.date);
+  const start = text(lesson?.start);
+  if (!date || !start) return true;
+  const at = new Date(`${date}T${start}:00`);
+  // 읽을 수 없는 시각이면 막지 않는다 -- 서버가 마지막 문이다.
+  if (!Number.isFinite(at.getTime())) return true;
+  return at.getTime() <= now.getTime();
+}
 
 /** 이 회원권을 차감하면 잔여가 몇 회가 되는가. 확정 전에 보여줄 값이다. */
 export const remainingAfter = (pass) => Math.max(0, remainingCountOf(pass) - 1);

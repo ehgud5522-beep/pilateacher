@@ -101,6 +101,7 @@ import {
 } from "./data/repositories/pass-repository.js";
 import {
   SETTLEMENT_OUTCOME, SETTLEMENT_SKIP, SETTLEMENT_SKIP_LABEL, applySettlementToLesson,
+  DEDUCTION_CODE_LABEL,
   canSettleLesson, clearSettlementFromLesson, closesSettlement, isSettledLesson, needsSettlement,
   planLessonSettlement, recordSettlementAttempt, settledDeductionsOf, settlementOutcome,
   settlementSkipsOf,
@@ -2696,7 +2697,10 @@ function SchedSettleSkips({ s, members }) {
       {skips.map((skip) => (
         <p key={skip.memberId} className="text-xs leading-relaxed" style={{ color: INK2 }}>
           <span style={{ fontWeight: 700 }}>{nameOf(skip.memberId)}</span>
-          {" · "}{SETTLEMENT_SKIP_LABEL[skip.reason] || "차감하지 못했습니다."}
+          {/* 서버가 거부한 이유가 코드로 오면 그 코드의 문구를 쓴다 --
+              "저장되지 않았습니다" 는 무엇을 고쳐야 하는지 말해 주지 않는다. */}
+          {" · "}{DEDUCTION_CODE_LABEL[skip.code]
+            || SETTLEMENT_SKIP_LABEL[skip.reason] || "차감하지 못했습니다."}
           {/* 원본 코드를 버리지 않는다. 없으면 무엇을 고쳐야 하는지 알 수 없다. */}
           {skip.code ? <span style={{ color: SUB }}>{" (" + skip.code + ")"}</span> : null}
         </p>
@@ -19388,14 +19392,17 @@ export function createAppScreenSmokeCases() {
     now: new Date(2026, 8, 18),
   }).roster;
   /* 소속 강사의 일정 탭. 확정 전 · 확정됨 · 차감 건너뜀을 한 자리에서 본다.
-     시간은 06:00 으로 둔다 -- 확정 버튼은 시각을 보지 않지만, 카드가 지난
-     수업으로 보이는 편이 읽기 쉽다. */
+
+     날짜는 **어제**다. 확정 버튼은 수업이 시작해야 열리므로(canSettleLesson),
+     오늘 06:00 으로 두면 새벽에 돌린 테스트에서는 버튼이 없고 낮에 돌리면
+     있다 -- 시계에 따라 답이 달라지는 픽스처가 된다. 어제는 언제 돌려도
+     시작했고, 7일 창 안이라 차감도 받는다. */
   const settleAttendee = (memberId, extra = {}) => ({
     memberId, status: "done", deductFrom: null, noshowFee: null, ...extra,
   });
   const settleLessonOf = (overrides = {}) => ({
     id: "settle-1",
-    date: todayISO(),
+    date: new Date(Date.now() - 86400000).toISOString().slice(0, 10),
     start: "06:00",
     end: "06:50",
     type: "듀엣",

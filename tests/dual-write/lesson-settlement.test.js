@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  DEDUCTION_CODE_LABEL,
   SETTLEMENT_SKIP, applySettlementToLesson, canSettleLesson, clearSettlementFromLesson,
   SETTLEMENT_OUTCOME, closesSettlement, isSettledLesson, needsSettlement, pickSoloPass,
   planLessonSettlement, recordSettlementAttempt, settledDeductionsOf, settlementOutcome,
@@ -617,4 +618,34 @@ test("a pass with neither name is refused rather than priced at zero", async () 
   const plan = planLessonSettlement({ lesson: one, members: [member()], passes: [broken], now: NOW });
   await assert.rejects(() => settleWith(plan, one, store), /Missing baseUnitPrice/);
   assert.equal(store.commits.length, 0);
+});
+
+/* ── 아직 일어나지 않은 수업 ─────────────────────────────────────────────
+
+   실제로 이렇게 끝났다. 새벽 2시에 그날 오전 10시 수업을 확정했더니 화면이
+   "차감이 저장되지 않았습니다 (Invalid occurredAt)" 라고만 말했다. 누르면
+   반드시 실패하는 버튼이었고, 실패한 이유는 코드에도 적혀 있지 않았다. */
+
+test("시작하지 않은 수업은 확정할 수 없다", () => {
+  const future = lesson({ date: "2026-09-24", start: "10:00", end: "10:50" });
+  const dawn = new Date(2026, 8, 24, 2, 30);
+  assert.equal(canSettleLesson(future, { now: dawn }), false);
+
+  // 시작 시각이 지나면 열린다. 끝나기를 기다리지는 않는다.
+  assert.equal(canSettleLesson(future, { now: new Date(2026, 8, 24, 10, 5) }), true);
+});
+
+test("시각을 읽을 수 없으면 막지 않는다 — 서버가 마지막 문이다", () => {
+  assert.equal(canSettleLesson(lesson({ date: "", start: "" }), { now: NOW }), true);
+  assert.equal(canSettleLesson(lesson({ date: "나중에", start: "언젠가" }), { now: NOW }), true);
+});
+
+test("차감 창을 벗어나는 세 이유가 서로 다른 코드다", async () => {
+  /* 한 문구로 뭉개면 대표는 날짜가 미래인지 너무 오래됐는지 알 수 없다. */
+  const { DEDUCT_WINDOW } = await import("../../src/data/repositories/pass-repository.js");
+  const codes = new Set(Object.values(DEDUCT_WINDOW));
+  assert.equal(codes.size, 3, "세 이유가 같은 코드를 쓴다");
+  for (const code of codes) {
+    assert.ok(DEDUCTION_CODE_LABEL[code], `${code} 에 사람이 읽을 문구가 없다`);
+  }
 });

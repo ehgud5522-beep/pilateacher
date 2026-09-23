@@ -14,6 +14,34 @@ Claude Code · Codex 가 새 세션을 열면 이 파일부터 읽는다. 작업
 
 ## 최근 변경 (2026-09-23, Cowork 세션)
 
+### 0-6. 릴리스 1.1.28 (56) — AAB 나옴 · iOS 는 main 병합 대기
+
+| 항목 | 값 |
+| --- | --- |
+| Android | `versionCode 56` · `versionName 1.1.28` |
+| iOS | `MARKETING_VERSION 1.1.28` · `CURRENT_PROJECT_VERSION` **건드리지 않음** |
+| APP_VER | `1.1.28 (56) · 2026-09-23` (여덟 릴리스 뒤처져 있었다) |
+| 정책 파일 | `lastPublishedVersionCode 55` / `1.1.27` (대표가 Play 콘솔에서 확인) |
+| package.json | `1.0.0` → `1.1.28` |
+| 커밋 | `986d852` |
+
+- **AAB**: `android/app/build/outputs/bundle/release/app-release.aab`
+  11,779,874 bytes · `versionCode="56" versionName="1.1.28"` ·
+  서명 SHA-1 `17:07:22:E5:F1:FD:F0:87:CB:D9:33:26:8B:6D:FF:4B:79:81:7A:09`
+  (정책의 `requiredAndroidOAuthSha1` 에 있는 업로드 키와 같다) ·
+  매니페스트에 `android:debuggable` **없음**.
+- `npm run android:aab` 로 만들었다. **정책을 보는 경로(`android:release:build`)는 이
+  브랜치를 거부한다** — `allowedBranchPatterns` 가 `^codex/android-` · `^release/android-`
+  뿐이고 지금은 `docs/app-review-account` 다. 올릴 AAB 자체는 같은 Gradle 태스크의
+  산출물이고 서명·버전·debuggable 을 위에서 확인했다.
+- **iOS**: `codemagic.yaml` 의 트리거는 `branch_patterns: main` 하나뿐이다. 이 브랜치를
+  푸시해도 빌드가 돌지 않는다 — **`docs/app-review-account` → `main` 병합(PR)이 있어야
+  TestFlight 빌드가 나간다.**
+- iOS 빌드 번호는 Codemagic 의 `$BUILD_NUMBER` 가 정한다(codemagic.yaml:219). 저장소의
+  `CURRENT_PROJECT_VERSION` 은 자리표시자이고, 올리면 스토어와 어긋나 보인다.
+- 이 빌드에 들어가는 것: 차감 규칙(0-5) · 연결 함수와 트리거(0-4·0-3, 서버 미배포라
+  앱에서는 아직 안 쓰인다) · 발급 내역(0-1).
+
 ### 0. 배포 안전장치 추가(961ef6d), 쓰레기 파일 삭제 — `tools/deploy-guard.mjs`
 - 루트에 있던 `ersehgud…` 파일을 지웠다 (2026-09-04 `git branch` 출력이 잘못된
   리다이렉트로 저장된 것, 1573 bytes). 추적되지 않은 파일이라 배포 가드에 걸려

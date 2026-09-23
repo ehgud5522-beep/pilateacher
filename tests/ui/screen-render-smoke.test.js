@@ -113,6 +113,11 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "감사 로그 · 이상 없음",
     "감사 로그 · 조회 실패",
     "감사 로그 · 소속 확인 실패",
+    "발급 내역",
+    "발급 내역 · 취소 · 이관 제외",
+    "발급 내역 · 빈 달",
+    "발급 내역 · 조회 실패",
+    "발급 내역 · 이름 조회 실패",
     "급여 집계",
     "급여 집계 · 강사 펼침",
     "급여 집계 · 두 지점",
@@ -1719,4 +1724,80 @@ test("an existing usable pass is said before the button, and does not disable it
   assert.match(held, /이두리님에게 이미 쓸 수 있는 회원권이 있습니다/);
   assert.match(held, /잔여 4회/);
   assert.match(held, /발급<\/button>/);
+});
+
+/* ── 발급 내역 ────────────────────────────────────────────────────────────
+
+   급여 집계와 같은 원장을 읽지만 묻는 것이 다르다 -- "무엇이 팔렸는가" 다.
+   한 화면에 매출과 급여가 같이 있으면 둘 중 하나를 다른 하나로 읽는 사람이
+   반드시 나온다. */
+
+test("the issue report is the owner's, exactly like payroll", async (t) => {
+  const markupOf = await issueScreens(t);
+  assert.match(markupOf("더보기 탭"), /발급 내역/);
+  /* FC매니저는 발급을 하지만 센터 전체의 매출은 한 사람의 것이 아니다. 자기
+     실적만 보는 화면은 따로 필요하고, 아직 없다. */
+  assert.doesNotMatch(markupOf("더보기 탭 · 매니저"), /발급 내역/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 강사"), /발급 내역/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 개인 모드"), /발급 내역/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 소속 확인 실패"), /발급 내역/);
+});
+
+test("the report shows what was sold, and never what it pays", async (t) => {
+  const markupOf = await issueScreens(t);
+  const report = markupOf("발급 내역");
+  assert.match(report, /김하나/);
+  assert.match(report, /1:1 20회 가을 이벤트/);
+  assert.match(report, /20회/);
+  assert.match(report, /₩1,300,000/);
+  assert.match(report, /카드/);
+  assert.match(report, /신규/);
+  /* 단가와 급여 판정은 이 화면에 오지 않는다. "급여" 라는 낱말 자체는 화면에
+     있다 -- "급여가 아니라 무엇이 팔렸는지를 봅니다" 라고 먼저 말하기 때문이다.
+     그래서 낱말이 아니라 실제로 새면 안 되는 것을 본다. */
+  assert.match(report, /급여가 아니라 무엇이 팔렸는지를 봅니다/);
+  for (const forbidden of ["단가", "풀방", "25,000", "1,181,818", "누적 20회 미만", "부원장"]) {
+    assert.doesNotMatch(report, new RegExp(forbidden), forbidden + " 가 발급 내역에 있다");
+  }
+});
+
+test("the totals separate new contracts, which is what FC is measured by", async (t) => {
+  const markupOf = await issueScreens(t);
+  const report = markupOf("발급 내역");
+  assert.match(report, /2건 · ₩2,200,000/);
+  assert.match(report, /그중 신규 1건 · ₩1,300,000/);
+});
+
+test("a cancelled issue is struck through, dated, and out of the totals", async (t) => {
+  const markupOf = await issueScreens(t);
+  const report = markupOf("발급 내역 · 취소 · 이관 제외");
+  assert.match(report, /line-through/);
+  assert.match(report, /10\/5 취소/);
+  assert.match(report, /취소 1건 \(합계에서 제외\)/);
+  // 이관은 엑셀에서 옮겨 온 것이라 이 달의 매출이 아니다.
+  assert.match(report, /이관 3건 제외/);
+  assert.match(report, /이전 달 발급 취소 1건/);
+});
+
+test("an empty month says so, and a failed read says its code", async (t) => {
+  /* 빈 달과 못 읽은 달은 대표가 할 일이 다르다. 한 문구로 뭉개면 안 된다. */
+  const markupOf = await issueScreens(t);
+  const empty = markupOf("발급 내역 · 빈 달");
+  assert.match(empty, /이번 달 발급이 없습니다/);
+  assert.doesNotMatch(empty, /불러오지 못했습니다/);
+
+  const failed = markupOf("발급 내역 · 조회 실패");
+  assert.match(failed, /발급 내역을 불러오지 못했습니다/);
+  assert.match(failed, /permission-denied/);
+  assert.match(failed, /다시 시도/);
+  assert.doesNotMatch(failed, /이번 달 발급이 없습니다/);
+});
+
+test("names failing does not hide the numbers", async (t) => {
+  // 이름 때문에 화면 전체를 막으면 그날 매출을 못 본다.
+  const markupOf = await issueScreens(t);
+  const report = markupOf("발급 내역 · 이름 조회 실패");
+  assert.match(report, /이름을 불러오지 못했습니다/);
+  assert.match(report, /unavailable/);
+  assert.match(report, /₩1,300,000/, "숫자는 그대로 선다");
 });

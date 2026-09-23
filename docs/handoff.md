@@ -26,6 +26,20 @@ Claude Code · Codex 가 새 세션을 열면 이 파일부터 읽는다. 작업
   한 칸 밀렸고, 그래서 `package-lock.json` 이 제외되지 않았다. 원인(부르는 쪽)과
   파서 양쪽을 고쳤고 둘 다 테스트로 고정했다.
 
+### 0-1. 발급 내역 화면 — 대표 전용 · **미배포**
+- 더보기 → 발급 내역. 조건은 `showPayroll` 과 같다 (`showIssues = showPayroll`).
+  기본 이번 달, 지점 → 발급자로 묶고 CSV 한 줄 = 한 건.
+- **규칙·인덱스 변경 없음.** 대표는 이미 원장 그룹 읽기가 되고, 인덱스
+  `ledger organizationId > type > occurredAt` 를 급여 집계와 함께 쓴다.
+- 합계에서 빼는 셋: 취소(`passes.status` 기준, 줄은 긋고 남긴다) · 이관 · 다른 달.
+  지난달 발급을 이번 달에서 깎지 않고 "이전 달 발급 취소 N건" 으로만 알린다.
+- 이관 판정은 `passes.contractedAt` 또는 `passId` 의 `csv_` 접두사 — 둘 다 이관만
+  만든다. `unitPrice: 0` 은 쓰지 않았다 (0원 기타 상품이 정상 발급될 수 있다).
+- 발급자는 `createdBy` 다. `instructorId` 로 묶으면 FC 실적이 강사에게 붙는다.
+- 단가·`rule`·`baseUnitPrice` 는 화면에 없다. 발급 내역이지 급여가 아니다.
+- 코드: `src/data/repositories/issue-report-repository.js` · App.jsx 의 `IssueReport`.
+  테스트 19(단위) + 6(스모크).
+
 ### 1. 지점별 회원 · 강사 목록 — 커밋 b655680, effc90a · 웹 배포됨
 - 회원 관리 · 강사 관리 목록 위에 `전체 · 반송점 · 율하점 …` 칩(인원 수 포함).
   지점이 비었거나 목록에 없는 지점을 가리키는 사람은 "지점 없음" 칩으로 모인다.

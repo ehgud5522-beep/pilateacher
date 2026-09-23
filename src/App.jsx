@@ -121,6 +121,9 @@ import {
 import { JOURNEY_PRIOR_NOTE, buildPassJourney, hasJourney } from "./features/members/pass-journey.js";
 import { previewLessonRates } from "./features/schedule/lesson-rate-preview.js";
 import {
+  issueReportCsv, loadOrganizationMonthlyIssues,
+} from "./data/repositories/issue-report-repository.js";
+import {
   MIGRATION_ERROR, applyClientMigration, applyPassMigration, groupFailures,
   planClientMigration, planPassMigration,
 } from "./data/repositories/migration-repository.js";
@@ -17165,6 +17168,259 @@ function PayrollInstructorRow({ row, name, open, onToggle }) {
   );
 }
 
+/* 발급 내역. 대표만 본다.
+ *
+ * 급여 집계와 같은 원장을 읽지만 묻는 것이 다르다 -- "무엇이 팔렸는가" 다.
+ * 그래서 단가도 급여 판정도 이 화면에 없다 (issue-report-repository.js 머리말).
+ *
+ * 묶는 순서는 지점 → 발급자다. 대표가 묻는 것이 "이번 달 반송점에서 누가
+ * 얼마나 팔았나" 이고, 그 순서가 곧 화면의 순서여야 한다.
+ */
+function IssueReport({
+  organization, issueStore, instructorStore, locationStore, clientStore, productStore,
+  onRetryOrganization, onToast, now = () => new Date(), initialState = null,
+}) {
+  const [month, setMonth] = useState(initialState?.month || currentMonth(now()));
+  const [summary, setSummary] = useState(initialState?.summary || null);
+  const [issuers, setIssuers] = useState(initialState?.issuers || []);
+  const [locations, setLocations] = useState(initialState?.locations || []);
+  const [clients, setClients] = useState(initialState?.clients || []);
+  const [products, setProducts] = useState(initialState?.products || []);
+  const [namesFailed, setNamesFailed] = useState(initialState?.namesFailed || "");
+  const [loading, setLoading] = useState(!initialState);
+  const [loadError, setLoadError] = useState(initialState?.loadError || "");
+  const organizationId = organization?.organizationId || "";
+  const locked = organization?.status === "unknown";
+  const thisMonth = `${now().getFullYear()}-${String(now().getMonth() + 1).padStart(2, "0")}`;
+
+  const reload = useCallback(async () => {
+    if (!organizationId) return;
+    setLoading(true);
+    setLoadError("");
+    try {
+      /* 이름은 숫자를 바꾸지 않는다. 못 읽어도 집계는 보여주고 그 사실만 말한다.
+         발급자 목록은 퇴사자까지 읽는다(listMemberships) -- 이번 달에 나간
+         FC매니저의 줄이 uid 로 떨어지면 누가 판 것인지 알 수 없다. */
+      const [found, issuerResult, locationResult, clientResult, productResult] = await Promise.all([
+        loadOrganizationMonthlyIssues(organizationId, { month, store: issueStore }),
+        toleratingReadFailure(listMemberships(organizationId, { store: instructorStore })),
+        toleratingReadFailure(listLocations(organizationId, { store: locationStore })),
+        toleratingReadFailure(listClients(organizationId, { store: clientStore })),
+        toleratingReadFailure(listProducts(organizationId, { store: productStore })),
+      ]);
+      setSummary(found);
+      setIssuers(issuerResult.items);
+      setLocations(locationResult.items);
+      setClients(clientResult.items);
+      setProducts(productResult.items);
+      setNamesFailed(issuerResult.errorCode || locationResult.errorCode
+        || clientResult.errorCode || productResult.errorCode || "");
+    } catch (error) {
+      setLoadError(error?.code || "unknown");
+      setSummary(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [organizationId, month, issueStore, instructorStore, locationStore, clientStore, productStore]);
+
+  useEffect(() => { if (!locked) reload(); else setLoading(false); }, [locked, reload]);
+
+  const nameOfIssuer = useCallback((id) => (
+    issuers.find((item) => item.userId === id)?.displayName || id || "(알 수 없음)"
+  ), [issuers]);
+  const nameOfLocation = useCallback((id) => (
+    locations.find((item) => item.id === id)?.name || id || "(지점 없음)"
+  ), [locations]);
+  const nameOfClient = useCallback((id) => (
+    clients.find((item) => item.id === id)?.name || id || "(알 수 없음)"
+  ), [clients]);
+  const nameOfProduct = useCallback((id) => (
+    products.find((item) => item.id === id)?.name || id || "(상품 없음)"
+  ), [products]);
+
+  const download = () => {
+    if (!summary) return;
+    const csv = issueReportCsv(summary, {
+      nameOfLocation,
+      nameOfIssuer,
+      nameOfClient,
+      nameOfProduct,
+      labelOfCategory: (value) => labelOf(PAY_CATEGORY_LABELS, value),
+      labelOfPayment: (value) => labelOf(PAYMENT_METHOD_LABELS, value),
+      dayLabel: (value) => dayLabel(value),
+    });
+    try {
+      const url = globalThis.URL.createObjectURL(new globalThis.Blob([csv], { type: "text/csv;charset=utf-8" }));
+      const anchor = globalThis.document.createElement("a");
+      anchor.href = url;
+      anchor.download = `pilateacher-issues-${summary.month}.csv`;
+      anchor.click();
+      globalThis.URL.revokeObjectURL(url);
+    } catch (error) {
+      onToast?.({ ok: false, msg: `파일을 만들지 못했어요 (코드 ${error?.name || "unknown"})` });
+    }
+  };
+
+  if (locked) return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>소속을 확인하지 못했습니다</h2>
+      <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        네트워크 문제로 소속 정보를 읽지 못했습니다. 다른 센터의 발급을 보지 않도록 이 화면을 잠급니다.
+      </p>
+      <button type="button" onClick={() => onRetryOrganization?.()} className="mt-3 h-11 w-full font-bold"
+        style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>다시 시도</button>
+    </section>
+  );
+
+  const sectionStyle = { backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 };
+  const totals = summary?.totals;
+  const notices = [];
+  if (totals?.migratedCount) notices.push(`이관 ${totals.migratedCount}건 제외`);
+  if (totals?.priorMonthCancelCount) notices.push(`이전 달 발급 취소 ${totals.priorMonthCancelCount}건`);
+
+  return (
+    <div className="space-y-3">
+      <section style={sectionStyle}>
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={() => setMonth(shiftMonth(month, -1))} aria-label="이전 달"
+            className="shrink-0" style={{ width: 36, height: 36, borderRadius: 10, backgroundColor: CANVAS, color: SUB }}>
+            <ChevronLeft size={16} className="mx-auto" />
+          </button>
+          <p className="min-w-0 flex-1 text-center tabular-nums" style={{ fontSize: TYPE.body, fontWeight: 700, color: INK }}>
+            {monthLabel(`${month}-01`)}
+          </p>
+          <button type="button" onClick={() => setMonth(shiftMonth(month, 1))} aria-label="다음 달"
+            disabled={month >= thisMonth} className="shrink-0"
+            style={{
+              width: 36, height: 36, borderRadius: 10, backgroundColor: CANVAS, color: SUB,
+              opacity: month >= thisMonth ? 0.35 : 1,
+            }}>
+            <ChevronRight size={16} className="mx-auto" />
+          </button>
+        </div>
+        <p className="mt-2 text-center" style={{ fontSize: TYPE.caption, color: SUB }}>
+          발급한 날 기준입니다. 급여가 아니라 무엇이 팔렸는지를 봅니다.
+        </p>
+      </section>
+
+      {loading ? (
+        <section style={sectionStyle}><p style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p></section>
+      ) : null}
+
+      {!loading && loadError ? (
+        <section style={sectionStyle}>
+          <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: BAD }}>
+            발급 내역을 불러오지 못했습니다 (코드 {loadError}).
+          </p>
+          <button type="button" onClick={reload} className="mt-3 h-11 w-full font-bold"
+            style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>다시 시도</button>
+        </section>
+      ) : null}
+
+      {/* 이름만 못 읽은 것은 숫자를 바꾸지 않는다. 집계는 그대로 보여주고 그
+          사실만 말한다 -- 이름 때문에 화면 전체를 막지 않는다. */}
+      {!loading && !loadError && namesFailed ? (
+        <section style={{ ...sectionStyle, backgroundColor: WARN_S, borderColor: WARN }}>
+          <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: WARN }}>
+            이름을 불러오지 못했습니다 (코드 {namesFailed}). 숫자는 정확하고, 일부가 id 로 보입니다.
+          </p>
+        </section>
+      ) : null}
+
+      {!loading && !loadError && summary ? (
+        <>
+          <section style={sectionStyle}>
+            <div className="flex items-baseline justify-between">
+              <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>합계</p>
+              <p className="tabular-nums" style={{ fontSize: TYPE.title, fontWeight: 700, color: INK }}>
+                {totals.count}건 · ₩{won(totals.amount)}
+              </p>
+            </div>
+            {/* FC 매출 기준은 "새 회원을 데려왔나" 다. 재등록과 섞으면 그 질문에
+                답할 수 없다. */}
+            <p className="mt-1 text-right tabular-nums" style={{ fontSize: TYPE.caption, color: BRAND_D, fontWeight: 650 }}>
+              그중 신규 {totals.newCount}건 · ₩{won(totals.newAmount)}
+            </p>
+            {totals.cancelledCount ? (
+              <p className="mt-1 text-right tabular-nums" style={{ fontSize: TYPE.caption, color: BAD }}>
+                취소 {totals.cancelledCount}건 (합계에서 제외)
+              </p>
+            ) : null}
+            {notices.length ? (
+              <p className="mt-1 text-right" style={{ fontSize: TYPE.caption, color: SUB }}>{notices.join(" · ")}</p>
+            ) : null}
+            {/* 회원권을 못 읽으면 금액이 빠진다. 합계가 실제보다 낮다는 것을
+                말하지 않으면 대표가 그 숫자를 그대로 믿는다. */}
+            {totals.missingPassCount ? (
+              <p className="mt-1 text-right" style={{ fontSize: TYPE.caption, color: WARN }}>
+                회원권 {totals.missingPassCount}건을 읽지 못해 금액이 빠졌습니다. 합계가 실제보다 낮습니다.
+              </p>
+            ) : null}
+            <button type="button" onClick={download} disabled={!summary.rows.length}
+              className="mt-3 h-11 w-full font-bold"
+              style={{
+                borderRadius: 10, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption,
+                opacity: summary.rows.length ? 1 : 0.4,
+              }}>CSV 내려받기</button>
+          </section>
+
+          {summary.byLocation.length === 0 ? (
+            <section style={sectionStyle}>
+              <p style={{ fontSize: TYPE.caption, color: SUB }}>이번 달 발급이 없습니다.</p>
+            </section>
+          ) : summary.byLocation.map((location) => (
+            <section key={location.locationId || "none"} style={sectionStyle}>
+              <p style={{ fontSize: TYPE.body, fontWeight: 700, color: INK }}>{nameOfLocation(location.locationId)}</p>
+              {location.byIssuer.map((issuer) => (
+                <div key={issuer.issuedBy || "none"} className="mt-3">
+                  <div className="flex items-baseline justify-between">
+                    <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK2 }}>{nameOfIssuer(issuer.issuedBy)}</p>
+                    <p className="tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+                      {issuer.count}건 · ₩{won(issuer.amount)}
+                      {issuer.newCount ? ` · 신규 ${issuer.newCount}건` : ""}
+                    </p>
+                  </div>
+                  {issuer.rows.map((row) => (
+                    <div key={row.entryId} style={{
+                      padding: "9px 0", borderTop: `1px solid ${LINE}`, opacity: row.cancelled ? 0.5 : 1,
+                    }}>
+                      <p className="flex items-center gap-1.5" style={{
+                        fontSize: TYPE.caption, color: INK,
+                        textDecoration: row.cancelled ? "line-through" : "none",
+                      }}>
+                        <span className="tabular-nums" style={{ color: SUB }}>{dayLabel(row.occurredAt)}</span>
+                        <span style={{ fontWeight: 650 }}>{nameOfClient(row.clientId)}</span>
+                        {row.isNew ? (
+                          <span style={{
+                            padding: "1px 5px", borderRadius: 5, backgroundColor: TINT,
+                            color: BRAND_D, fontSize: TYPE.caption, fontWeight: 700,
+                          }}>신규</span>
+                        ) : null}
+                      </p>
+                      <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+                        {nameOfProduct(row.productId)}
+                        {" · "}{row.totalCount}회
+                        {" · "}{row.contractPrice === null ? "금액 확인 불가" : `₩${won(row.contractPrice)}`}
+                        {row.paymentMethod ? ` · ${labelOf(PAYMENT_METHOD_LABELS, row.paymentMethod)}` : ""}
+                        {" · "}{labelOf(PAY_CATEGORY_LABELS, row.category)}
+                      </p>
+                      {row.cancelled ? (
+                        <p className="mt-0.5" style={{ fontSize: TYPE.caption, fontWeight: 700, color: BAD }}>
+                          {row.cancelledAtLabel ? `${row.cancelledAtLabel} 취소` : "취소됨"}
+                        </p>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </section>
+          ))}
+        </>
+      ) : null}
+    </div>
+  );
+}
+
 function PayrollSummary({
   organization, locationStore, instructorStore, payrollStore,
   onRetryOrganization, onToast, now = () => new Date(), initialState = null,
@@ -17838,7 +18094,7 @@ function AuditLog({
   );
 }
 
-function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, payrollStore, auditStore, ledgerStore, onRetryOrganization, onOpenClient, initialView = "hub" }) {
+function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, payrollStore, issueStore, auditStore, ledgerStore, onRetryOrganization, onOpenClient, initialView = "hub" }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const organization = useContext(OrganizationContext);
   /* 회원권 상품은 센터를 운영하는 대표만 본다. 개인 모드(legacy)에는 센터가
@@ -17885,6 +18141,10 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
   const showPayroll = organization.ready
     && !organization.isLegacy
     && organization.role === ROLES.OWNER;
+  /* 발급 내역도 대표만 본다. 급여 집계와 같은 조건을 쓴다 -- 둘 다 센터 전체를
+     보는 화면이라 경계가 같아야 하고, 한쪽만 바꾸면 다음 사람이 왜 다른지
+     알 수 없다. */
+  const showIssues = showPayroll;
   /* 감사 로그도 대표만 본다. 규칙도 대표만 허용하므로, 매니저에게 보여 주면
      눌러도 빈 화면만 나온다. */
   const showAudit = organization.ready
@@ -18053,6 +18313,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
     "pass-issue": "회원권 발급",
     migration: "엑셀 이관",
     payroll: "급여 집계",
+    issues: "발급 내역",
     audit: "감사 로그",
   };
   /* 센터를 운영하는 일과 이 기기를 쓰는 일은 다른 묶음이다. 한 그룹에 섞여
@@ -18070,6 +18331,10 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
     /* "월말 정산"만으로는 위의 월간 리포트와 구별되지 않는다. 무엇을 세는지가
        둘의 차이다 -- 이쪽은 회원권 원장, 그쪽은 기기에 저장된 일정이다. */
     ...(showPayroll ? [{ key: "payroll", title: "급여 집계", description: "강사별 수업료 · 원장 기준 월말 정산", Icon: ArrowUpRight }] : []),
+    /* 발급 내역도 대표만 본다. 급여와 같은 조건이다 -- 센터 전체의 매출은
+       한 사람의 것이 아니고, FC매니저에게는 자기 실적만 보이는 화면이 따로
+       필요하다 (아직 없다). */
+    ...(showIssues ? [{ key: "issues", title: "발급 내역", description: "이달 판매 · 지점별 · 발급자별", Icon: Ticket }] : []),
     ...(showAudit ? [{ key: "audit", title: "감사 로그", description: "이상한 건만 모아 보기 · 전체 이력", Icon: AlertCircle }] : []),
     ...(showMigration ? [{ key: "migration", title: "엑셀 이관", description: "쓰던 엑셀의 회원 · 회원권 올리기", Icon: Upload }] : []),
   ];
@@ -18341,6 +18606,12 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
         {view === "payroll" && showPayroll && (
           <PayrollSummary organization={organization}
             locationStore={locationStore} instructorStore={instructorStore} payrollStore={payrollStore}
+            onRetryOrganization={onRetryOrganization} onToast={onToast} />
+        )}
+        {view === "issues" && showIssues && (
+          <IssueReport organization={organization}
+            issueStore={issueStore} instructorStore={instructorStore} locationStore={locationStore}
+            clientStore={clientStore} productStore={productStore}
             onRetryOrganization={onRetryOrganization} onToast={onToast} />
         )}
         {view === "audit" && showAudit && (
@@ -18668,6 +18939,42 @@ export function createAppScreenSmokeCases() {
   });
   /* 정산 화면이 그리는 것만 본다. 숫자는 집계 함수가 만든 모양 그대로다. */
   const smokePayrollStore = { listOrganizationDeductions: async () => [] };
+  const smokeIssueStore = { listOrganizationIssues: async () => [], readCancelEntry: async () => null };
+  const issueReport = (organization, initialState) => providerWith(organization, (
+    <IssueReport organization={readyOrganizationContext(organization)}
+      issueStore={smokeIssueStore} instructorStore={instructorStore} locationStore={locationStore}
+      clientStore={clientStore} productStore={productStore}
+      now={() => new Date(2026, 9, 3)} initialState={initialState}
+      onRetryOrganization={noop} onToast={noop} />
+  ));
+  const smokeIssueRow = (overrides = {}) => ({
+    entryId: "e-1", passId: "pass-1", occurredAt: new Date(2026, 9, 2, 14, 0),
+    locationId: "bansong", issuedBy: "u1", clientId: "smoke-client-a", productId: "smoke-product-active",
+    category: "pt_1_1_new", totalCount: 20, contractPrice: 1300000, paymentMethod: "card",
+    passMissing: false, cancelled: false, cancelledAtLabel: "", isNew: true, ...overrides,
+  });
+  const smokeIssueSummary = (rows, totals = {}) => ({
+    month: "2026-10",
+    rows,
+    byLocation: rows.length ? [{
+      locationId: "bansong",
+      byIssuer: [{
+        issuedBy: "u1", rows,
+        count: rows.filter((row) => !row.cancelled).length,
+        amount: rows.filter((row) => !row.cancelled).reduce((sum, row) => sum + (row.contractPrice || 0), 0),
+        newCount: rows.filter((row) => !row.cancelled && row.isNew).length,
+        newAmount: rows.filter((row) => !row.cancelled && row.isNew).reduce((sum, row) => sum + (row.contractPrice || 0), 0),
+      }],
+    }] : [],
+    totals: {
+      count: rows.filter((row) => !row.cancelled).length,
+      amount: rows.filter((row) => !row.cancelled).reduce((sum, row) => sum + (row.contractPrice || 0), 0),
+      newCount: rows.filter((row) => !row.cancelled && row.isNew).length,
+      newAmount: rows.filter((row) => !row.cancelled && row.isNew).reduce((sum, row) => sum + (row.contractPrice || 0), 0),
+      cancelledCount: rows.filter((row) => row.cancelled).length,
+      migratedCount: 0, priorMonthCancelCount: 0, missingPassCount: 0, ...totals,
+    },
+  });
   const payrollRow = (instructorId, rows, ruleRows = []) => ({
     instructorId,
     sessions: rows.reduce((sum, item) => sum + item.sessions, 0),
@@ -19081,6 +19388,32 @@ export function createAppScreenSmokeCases() {
     }) },
     { name: "감사 로그 · 조회 실패", element: auditLog(smokeOwner, { loadError: "permission-denied" }) },
     { name: "감사 로그 · 소속 확인 실패", element: auditLog({ organizationId: "", role: "", status: "unknown", isLegacy: false }, null) },
+    { name: "발급 내역", element: issueReport(smokeOwner, {
+      summary: smokeIssueSummary([smokeIssueRow(), smokeIssueRow({
+        entryId: "e-2", passId: "pass-2", clientId: "smoke-client-c",
+        category: "pt_1_1_repurchase_event", contractPrice: 900000, isNew: false,
+      })]),
+      issuers: smokeInstructors, locations: smokeLocations, clients: smokeClients, products: smokeProducts,
+    }) },
+    /* 취소는 줄을 긋고 합계에서 뺀다. 지우지 않는 이유는 대표가 "분명 팔았는데"
+       를 찾게 되기 때문이다. */
+    { name: "발급 내역 · 취소 · 이관 제외", element: issueReport(smokeOwner, {
+      summary: smokeIssueSummary(
+        [smokeIssueRow(), smokeIssueRow({ entryId: "e-3", passId: "pass-3", cancelled: true, cancelledAtLabel: "10/5" })],
+        { migratedCount: 3, priorMonthCancelCount: 1 },
+      ),
+      issuers: smokeInstructors, locations: smokeLocations, clients: smokeClients, products: smokeProducts,
+    }) },
+    { name: "발급 내역 · 빈 달", element: issueReport(smokeOwner, {
+      summary: smokeIssueSummary([]),
+      issuers: smokeInstructors, locations: smokeLocations, clients: smokeClients, products: smokeProducts,
+    }) },
+    { name: "발급 내역 · 조회 실패", element: issueReport(smokeOwner, { summary: null, loadError: "permission-denied" }) },
+    /* 이름만 못 읽은 것은 숫자를 바꾸지 않는다. */
+    { name: "발급 내역 · 이름 조회 실패", element: issueReport(smokeOwner, {
+      summary: smokeIssueSummary([smokeIssueRow()]),
+      issuers: [], locations: [], clients: [], products: [], namesFailed: "unavailable",
+    }) },
     { name: "급여 집계", element: payrollSummary(smokeOwner, {
       summary: smokePayroll, instructors: smokeInstructors, locations: smokeLocations,
     }) },

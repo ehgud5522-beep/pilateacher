@@ -39,18 +39,89 @@ Firestore 규칙은 **문서 단위**로만 열고 닫는다. 필드를 골라 �
 `netContractPrice`(급여 근거)가 같이 들어 있다. **회원에게 이 문서를 열면 단가가
 함께 나간다.** 원장(`ledger`)은 더 심하다 — `unitPrice` 와 `rule` 이 항목마다 있다.
 
-| 길 | 내용 | 평가 |
+그래서 회원은 원본을 읽지 않는다. **회원용 투영 문서만 읽는다.**
+
+### 투영을 누가 쓰는가
+
+**1안 — Cloud Functions 트리거 (권장)** **[신규]**
+
+`organizations/{org}/passes/{passId}` · `.../ledger/{entryId}` · `.../clients/{clientId}`
+의 `onWrite` 에서 그 회원의 `memberViews/{clientId}` 를 통째로 다시 쓴다.
+
+```
+onWrite(passes/{passId})   → clientIds 전부에 대해 재작성
+onWrite(ledger/{entryId})  → 그 pass 의 clientIds 전부에 대해 재작성
+onWrite(clients/{clientId})→ 그 회원만 재작성
+```
+
+부분 수정이 아니라 **매번 통째로 다시 쓴다.** 증분으로 고치면 한 번 어긋난 값이
+영영 남는다. 재작성은 그 회원의 `passes` 를 다시 읽어 만드므로 언제 돌려도 같은
+답이 나온다.
+
+**2안 — 강사 앱이 배치 안에서 함께 쓴다**
+
+`issuePass` · `deductPass` · `correctDeduction` · `cancelPass` 가 이미 여러 문서를
+한 배치로 쓴다. 거기에 투영 쓰기를 한 줄 더한다.
+
+| | 1안 · Functions 트리거 | 2안 · 앱 배치 |
 | --- | --- | --- |
-| A. 원본을 직접 읽힌다 | `passes` · `ledger` 에 회원 read 를 연다 | **불가.** 단가가 그대로 나간다 |
-| B. 투영 문서를 만든다 **[신규]** | 쓰기 시점에 회원용 문서를 함께 쓴다 | 권장 |
-| C. Functions 로 그때그때 만든다 | 호출마다 서버가 추려서 돌려준다 | 비용·지연. 조회가 잦아 맞지 않음 |
+| **신뢰 경계** | 서버가 쓴다. 규칙에서 투영 쓰기를 **전부 닫을 수 있다** | 앱이 쓴다. 강사 계정에 투영 쓰기 권한을 열어야 한다 |
+| **앱 수정 범위** | 없음. 강사 앱을 건드리지 않는다 | 네 함수 + 규칙 + 리포지토리 테스트 |
+| **비용** | 쓰기마다 함수 호출 1회 + 읽기 몇 건. 차감이 하루 수십 건이라 미미 | 추가 비용 없음 (같은 배치) |
+| **실패 시 상태** | 원본은 남고 투영만 뒤처진다. **재시도·재생성이 가능** | 배치가 통째로 실패한다 — 차감 자체가 안 된다 |
+| **어긋남 복구** | 트리거를 다시 돌리면 그 회원만 복구된다 | 원본을 다시 저장하는 수밖에 없다 |
+| **이관분** | 이미 있는 회원권도 한 번 돌려 채운다 | 별도 백필 코드가 필요하다 |
 
-**B 를 권한다.** `issuePass` · `deductPass` · `correctDeduction` · `cancelPass` 가
-이미 한 배치로 여러 문서를 쓴다 — 거기에 한 줄을 더하는 모양이다. 원본이 바뀌는
-길이 그 넷뿐이라 투영이 뒤처질 자리가 없다.
+**1안을 권한다.** 결정적인 것은 두 줄이다. **투영 쓰기를 규칙에서 완전히 닫을 수
+있고**(앱이 쓰면 그 권한을 열어야 한다), **실패해도 차감이 막히지 않는다**(2안은
+투영 쓰기가 실패하면 회원의 회차가 줄지 않는다 — 수업은 이미 한 뒤다).
 
-투영을 어디에 둘지는 **[결정]** 이다. 안은 `organizations/{org}/clients/{clientId}/memberView/{docId}` —
-회원 문서 아래라 규칙 한 줄로 "내 것만" 이 표현된다.
+투영이 잠깐 뒤처지는 것은 받아들인다. 회원 화면은 초 단위로 맞을 필요가 없고,
+어긋나면 트리거를 다시 돌리면 된다.
+
+### 투영 문서
+
+경로: `organizations/{organizationId}/memberViews/{clientId}` **[신규]**
+
+| 필드 | 출처 | 비고 |
+| --- | --- | --- |
+| `organizationId` · `clientId` | 그대로 | 규칙이 본다 |
+| `userId` | `clients.userId` | 이 문서를 읽을 사람 |
+| `name` | `clients.name` | |
+| `locationName` | `locations.name` | id 가 아니라 이름 |
+| `clientStatus` | `clients.status` | 종료 회원 안내에 쓴다 |
+| `remainingTotal` | `passes` 합 | 쓸 수 있는 것만 |
+| `nextExpiresAt` | `passes.expiresAt` 최솟값 | |
+| `passes[]` | 아래 | 회원권 목록 |
+| `history[]` | 아래 | 수업 이력 |
+| `journey` | `buildPassJourney` 결과 | 계산을 두 번 쓰지 않는다 |
+| `updatedAt` | 서버 시각 | 뒤처짐을 눈으로 본다 |
+
+`passes[]` 한 건: `passId` · `purchaseRound` · `totalSessions` · `serviceSessions` ·
+`remainingCount` · `expiresAt` · `status` · `isDuet` · `partnerName`(**[결정] 2번**) ·
+`contractPrice`(**[결정] 3번**)
+
+`history[]` 한 건: `occurredAt` · `type`(`deduct`·`correction`·`transfer`) ·
+`instructorName`(**[결정] 4번**)
+
+### 투영에 절대 넣지 않는 것
+
+| 필드 | 있는 곳 | 이유 |
+| --- | --- | --- |
+| `baseUnitPrice` | `passes` | 급여 기준값 |
+| `netContractPrice` | `passes` | 부원장 5:5 의 분모 |
+| `unitPrice` | `ledger` | 그 회차의 급여 |
+| `rule` | `ledger` | 어느 급여 판정이 이겼는가 |
+| `category` | `passes` · `ledger` | 급여 카테고리. 회원에게 뜻이 없다 |
+| `handedOver` · `serviceUsed` | `passes` | 급여 판정 입력 |
+| `instructorId` · `createdBy` | 양쪽 | uid. 이름만 내보낸다 |
+| `reason` | `ledger` (취소·보정) | 대표가 쓴 자유 문장 200자. 내부 사정이 들어간다 |
+| `paymentMethod` | `passes` | 부가세 계산용. 회원에게 뜻이 없다 |
+| `fullRoomRate` · `isDeputyDirector` | `memberships` | 강사 급여 |
+
+**이 목록은 코드로 고정한다.** 투영을 만드는 함수가 허용 목록(allowlist)으로
+필드를 고르고, 금지 목록이 결과에 없는지 테스트가 확인한다. 부정 목록만 두면
+새 필드가 생길 때마다 조용히 새어 나간다.
 
 ---
 
@@ -61,8 +132,8 @@ Firestore 규칙은 **문서 단위**로만 열고 닫는다. 필드를 골라 �
 | | |
 | --- | --- |
 | 보여줄 것 | 이름 · 남은 횟수 합 · 가장 이른 만료일 · 다음 수업(있으면) |
-| 읽는 곳 | `clients/{clientId}` → `name` **[있음]** / 투영 요약 문서 **[신규]** |
-| 원본 | `passes` 의 `remainingCount` · `expiresAt` · `status` **[있음]** |
+| 읽는 곳 | `memberViews/{clientId}` 의 `name` · `remainingTotal` · `nextExpiresAt` **[신규]** |
+| 원본 | `clients.name` · `passes` 의 `remainingCount` · `expiresAt` · `status` **[있음]** |
 
 만료 임박(잔여 3회 이하 또는 14일 이내)이면 문구를 바꾼다. 재등록을 권하는 말은
 쓰지 않는다 — 판매는 센터가 한다.
@@ -72,16 +143,16 @@ Firestore 규칙은 **문서 단위**로만 열고 닫는다. 필드를 골라 �
 | | |
 | --- | --- |
 | 보여줄 것 | 차수 · 총 회차(`totalSessions` + `serviceSessions`) · 잔여 · 만료일 · 상태 |
-| 읽는 곳 | 투영 **[신규]** ← `passes` **[있음]** |
+| 읽는 곳 | `memberViews.passes[]` **[신규]** ← `passes` **[있음]** |
 | 가리는 것 | `baseUnitPrice` · `netContractPrice` · `instructorId` 외 급여 필드 |
 
-`contractPrice` 는 회원이 낸 금액이라 보여도 된다 — 다만 **[결정]** 이다.
-계약서와 다르게 보이면 문의가 늘 수 있다.
+`contractPrice` 를 보여줄지는 **[결정] 3번**. 회원이 낸 금액이지만 할인·양도가
+섞이면 계약서와 달라 보인다.
 
 **듀엣 표시** — `passes.clientIds` 가 둘이면 듀엣이다 **[있음]**.
 "30회를 두 분이 함께 씁니다 · 수업 한 번에 1회 차감" 은 반드시 적는다. 각자 30회로
 오해하면 계약 자체가 틀어진다.
-**상대 이름을 보여줄지는 [결정].** 부부·모녀면 당연하고, 지인 소개로 묶인
+**상대 이름을 보여줄지는 [결정] 2번.** 부부·모녀면 당연하고, 지인 소개로 묶인
 사이면 개인정보다.
 
 ### 수업 이력
@@ -89,7 +160,7 @@ Firestore 규칙은 **문서 단위**로만 열고 닫는다. 필드를 골라 �
 | | |
 | --- | --- |
 | 보여줄 것 | 날짜 · 담당 강사 이름 · 차감 1회 |
-| 읽는 곳 | 투영 **[신규]** ← `ledger` 의 `type == "deduct"` · `occurredAt` · `instructorId` **[있음]** |
+| 읽는 곳 | `memberViews.history[]` **[신규]** ← `ledger` 의 `type` · `occurredAt` · `instructorId` **[있음]** |
 | 가리는 것 | `unitPrice` · `rule` · `category` |
 
 `correction` 항목은 **보여준다** — 잘못 차감했다 되돌린 사실은 회원의 것이다.
@@ -104,7 +175,7 @@ Firestore 규칙은 **문서 단위**로만 열고 닫는다. 필드를 골라 �
 | | |
 | --- | --- |
 | 보여줄 것 | 누적 진행을 한 줄로 · "앱 이전 기록" 구간 |
-| 읽는 곳 | 투영 **[신규]** ← `buildPassJourney` 와 같은 계산 **[있음]** |
+| 읽는 곳 | `memberViews.journey` **[신규]** ← `buildPassJourney` **[있음]** |
 
 강사 앱의 `src/features/members/pass-journey.js` 가 이미 같은 값을 만든다. 계산을
 두 번 쓰지 않는다 — 그 모듈을 그대로 부르고 결과만 투영한다.
@@ -117,42 +188,86 @@ Firestore 규칙은 **문서 단위**로만 열고 닫는다. 필드를 골라 �
 
 | | |
 | --- | --- |
-| `ROLES.MEMBER = "member"` | `constants.js` 에 있다 **[있음]** |
+| `ROLES.MEMBER = "member"` | `constants.js` **[있음]** |
 | `isOwnClientDocument(data)` | 규칙 함수. `data.userId == request.auth.uid` **[있음]** |
 | `clients` get 의 회원 분기 | 자기 문서 한 건을 읽는 문이 이미 있다 **[있음]** |
 
-**그런데 `createClient` 는 `userId` 를 쓰지 않는다** **[있음, 미사용]**. 규칙은
-그 필드를 기다리고 있는데 아무도 채우지 않는다. 연결은 이 칸을 채우는 일이다.
+**그런데 `createClient` 는 `userId` 를 쓰지 않는다** **[있음, 미사용]**. 규칙은 그
+필드를 기다리는데 아무도 채우지 않는다. **이미 등록된 회원 전부가 `userId` 가 비어
+있다.** 연결이란 이 칸을 채우는 일이다.
 
-### 연결 문서 **[신규]**
+### 회원 본인은 이 칸을 못 쓴다
 
-`clients.userId` 를 직접 쓰는 대신 **연결 요청 문서**를 따로 둔다. 매칭이
-실패하는 경우가 많고, 실패를 기록할 자리가 필요하다.
+`clients` 의 update 는 지금 `hasRole(["owner","manager","instructor","staff"])`
+**[있음]** 이다. 회원에게 열면 자기 이름·연락처·상태까지 고칠 수 있고, 무엇보다
+**`userId` 를 남의 문서에 써서 그 회원권을 볼 수 있다.** 열지 않는다.
 
-| 컬렉션 | `memberLinks/{uid}` (최상위) |
+그래서 서버 함수가 쓴다.
+
+### `linkMemberAccount` — Callable Function **[신규]**
+
+전화번호 인증을 마친 회원이 부른다. 인증 토큰은 Firebase Auth 가 검증하므로
+**함수는 `request.auth.token.phone_number` 만 믿는다.** 클라이언트가 보낸 번호는
+쓰지 않는다 — 보냈다면 그것은 남의 번호일 수 있다.
+
+```
+1. uid 와 인증된 전화번호를 꺼낸다. 없으면 unauthenticated
+2. normalizePhone 으로 숫자만 남긴다 (clients.phone 과 같은 형식) [있음]
+3. collectionGroup("clients").where("phone","==",번호) 로 찾는다
+4. 결과 수에 따라 갈린다 (아래 표)
+5. 성공이면 한 배치로 두 문서를 쓴다
+     clients/{clientId}   userId 를 채운다 (투영 트리거가 이 값을 읽는다)
+     memberLinks/{uid}    status "linked" · organizationId · clientId
+6. 실패면 memberLinks/{uid} 에 사유만 남긴다
+```
+
+**회원에게 `memberships` 문서는 만들지 않는다.** 회원이 읽는 것은 투영과 자기
+링크뿐이고, 그 둘은 `userId` 로 판정된다 — 소속 문서가 필요 없다. 만들지 않으면
+role `member` 가 센터의 어느 문에도 닿지 않는다 (5장 참고).
+
+`clients.userId` 를 채우는 것은 회원이 그 문서를 읽기 위해서가 아니라 **투영
+트리거가 "이 투영을 누가 읽는가" 를 알기 위해서다.**
+
+### `memberLinks/{uid}` **[신규]**
+
+| 필드 | 값 |
 | --- | --- |
-| `userId` | Firebase Auth uid. 문서 id 와 같다 |
-| `phone` | 인증된 번호, 숫자만 (`normalizePhone` 과 같은 형식) **[있음]** |
-| `organizationId` · `clientId` | 매칭 성공 시에만 채워진다 |
-| `status` | `pending` · `linked` · `ambiguous` · `not_found` · `rejected` |
+| `userId` | 문서 id 와 같다 |
+| `phone` | 인증된 번호, 숫자만 |
+| `organizationId` · `clientId` | `linked` 일 때만 |
+| `status` | `linked` · `not_found` · `ambiguous` · `ended` · `multi_location` |
+| `candidateCount` | 찾은 회원 수. 대표 화면이 쓴다 |
 | `linkedAt` · `linkedBy` | 대표가 손으로 이었으면 그 uid |
 
-**누가 만드나** — Functions 가 만든다 **[신규]**. 클라이언트가 만들면 아무 번호나
-적어 남의 회원권에 붙을 수 있다. 전화번호 인증 토큰을 검증한 서버만 쓴다.
+규칙: 본인 `get` 만. **쓰기는 전부 `false`** — 서버만 쓴다.
 
-규칙: `memberLinks` 는 본인 `get` 만 열고 **쓰기는 전부 닫는다**.
+### 경우별 결과
 
-### 매칭 실패
+| 찾은 수 | 상태 | 서버가 하는 일 | 회원이 보는 것 |
+| --- | --- | --- | --- |
+| 0건 | `not_found` | 링크 문서에 사유만 | "등록된 번호를 찾지 못했습니다. 센터에 문의해 주세요." 재시도 버튼 없음 |
+| 1건, `status` active·hold | `linked` | 세 문서 배치 쓰기 | 홈으로 |
+| 1건, `status` ended·deleted | `ended` | **연결은 한다.** 읽기 전용 | "이용이 종료된 회원권입니다." 지난 이력은 보여준다 |
+| 2건 이상, **같은 지점** | `ambiguous` | **연결하지 않는다.** 대기 목록에 올린다 | "확인이 필요합니다. 센터에서 연결해 드립니다." |
+| 2건 이상, **다른 지점** | `multi_location` | **[결정] 7번** | 전부 연결하면 지점 선택 칩. 막으면 대기 목록 |
 
-| 경우 | 처리 | 회원이 보는 것 |
-| --- | --- | --- |
-| 번호 없음 | `not_found` | "등록된 번호를 찾지 못했습니다. 센터에 문의해 주세요." 재시도 버튼 없음 |
-| 번호 중복 (동명이인·가족 공용) | `ambiguous` · **자동 연결 금지** | "확인이 필요합니다. 센터에서 연결해 드립니다." 대표 화면에 대기 목록 **[신규]** |
-| 회원 종료 (`status` `ended`·`deleted`) | 연결은 하되 읽기 전용 안내 | "이용이 종료된 회원권입니다." 지난 이력은 보여준다 |
-| 여러 지점 등록 | 전부 연결 · 지점 선택 칩 | 홈 상단에 지점 이름. 잔여는 지점별로 따로 |
+`ambiguous` 를 자동으로 잇지 않는 것이 이 설계의 핵심이다. 동명이인과 가족 공용
+번호가 실제로 있다. 한 번 잘못 이으면 남의 회원권을 보게 되고, **그 사실은 아무도
+모른다.**
 
-`ambiguous` 를 자동으로 잇지 않는 것이 이 설계의 핵심이다. 한 번 잘못 이으면
-남의 회원권을 보게 되고, 그 사실은 아무도 모른다.
+### 대표가 손으로 잇는 문 **[신규]**
+
+`ambiguous` 대기 목록에서 대표가 후보 중 하나를 고른다. 같은 함수가 쓰되 호출자가
+owner 인지 보고, `linkedBy` 에 그 uid 를 남긴다. 누가 누구를 이었는지가 남아야
+나중에 "왜 이 사람이 저 회원권을 봤나" 에 답할 수 있다.
+
+### 연결을 끊는 문 **[신규]**
+
+잘못 이었을 때 되돌릴 길이 있어야 한다. 대표만, `clients.userId` 를 지우고
+`memberLinks` 를 `rejected` 로. 투영 문서도 그 자리에서 지운다 — `userId` 만
+지우면 이미 깔린 투영을 그 사람이 계속 읽는다.
+
+감사 항목을 함께 남긴다 — 연결과 해제는 남의 개인정보를 여닫는 일이다.
 
 ---
 
@@ -164,34 +279,44 @@ Firestore 규칙은 **문서 단위**로만 열고 닫는다. 필드를 골라 �
 | 대상 | 변경 | 비고 |
 | --- | --- | --- |
 | `memberLinks/{uid}` **[신규]** | `allow get: if request.auth.uid == uid` · 쓰기 전부 `false` | Functions 만 쓴다 |
-| `clients/{clientId}` | 지금 get 규칙 유지 **[있음]** | `isOwnClientDocument` 가 이미 있다 |
-| `clients/{clientId}/memberView/{docId}` **[신규]** | `allow get, list: if` 부모 client 의 `userId == request.auth.uid` · 쓰기 `false` | 투영. 회원이 읽는 유일한 곳 |
+| `memberViews/{clientId}` **[신규]** | `allow get: if resource.data.userId == request.auth.uid` · list·쓰기 전부 `false` | 회원이 읽는 **유일한** 곳 |
+| `clients` | **변경 없음** **[있음]** | 회원은 읽지 않는다 (아래) |
 | `passes` · `ledger` | **변경 없음** | 회원에게 열지 않는다 (단가가 함께 나간다) |
 | `lessonNotes` | **변경 없음** | 강사 원문. 2단계에서 별도 필드로 |
 
-`clients` get 이 `isActiveMember(organizationId)` 를 요구한다 **[있음]**. 회원에게도
-`memberships` 문서가 필요하다는 뜻이다 — role `member`, status `active`. 그 문서도
-Functions 가 만든다 **[신규]**. 앱의 `addMembership` 은 instructor·manager 만
-받으므로 그쪽은 손대지 않는다 **[있음]**.
+투영 문서가 `userId` 를 직접 들고 있어 규칙이 `get()` 을 부르지 않는다. 읽기 한
+번에 판정이 끝난다.
+
+`list` 는 닫는다. 회원은 자기 `clientId` 를 `memberLinks` 에서 알고 그 문서
+하나만 읽는다 — 목록이 필요 없고, 열면 "내 것만" 을 증명할 필터를 요구하게 된다.
+
+**회원에게 `memberships` 문서는 필요 없다.** `clients` get 이
+`isActiveMember` 를 요구하지만 **회원은 `clients` 를 읽지 않는다** — 이름도
+지점도 투영에 들어 있다. 소속 문서를 만들지 않으면 role `member` 가 센터 어느
+문에도 닿지 않는다. 앱의 `addMembership` 도 그대로 둔다 **[있음]**.
+
+규칙 함수 `isOwnClientDocument` 는 계속 쓰이지 않는다 **[있음, 미사용]**. 지우지는
+않는다 — 2단계에서 회원이 자기 문서를 읽을 일이 생기면 그때 쓴다.
 
 ### 규칙 테스트로 고정할 것 **[신규]**
 
 | # | 항목 |
 | --- | --- |
-| 1 | 회원이 자기 `clients` 문서를 읽는다 |
-| 2 | 회원이 남의 `clients` 문서를 읽지 못한다 |
-| 3 | 회원이 자기 `memberView` 를 읽는다 (get · list 둘 다) |
-| 4 | 회원이 남의 `memberView` 를 읽지 못한다 |
+| 1 | 회원이 자기 `memberViews` 문서를 읽는다 |
+| 2 | 회원이 남의 `memberViews` 문서를 읽지 못한다 |
+| 3 | 회원이 `memberViews` 를 목록으로 훑지 못한다 (list 닫힘) |
+| 4 | 회원이 자기 `memberLinks` 를 읽고, 남의 것은 못 읽는다 |
 | 5 | 회원이 `passes` 를 읽지 못한다 — 단가가 들어 있다 |
 | 6 | 회원이 `ledger` 를 읽지 못한다 — 단가와 사유가 들어 있다 |
-| 7 | 회원이 `lessonNotes` 를 읽지 못한다 |
-| 8 | 회원이 `memberView` 에 쓰지 못한다 (create · update · delete) |
-| 9 | 회원이 `clients` · `memberLinks` 에 쓰지 못한다 |
-| 10 | 회원이 `auditLogs` · `memberships` 목록을 읽지 못한다 |
-| 11 | 로그인하지 않은 사람은 위 전부 실패 |
-| 12 | 강사·대표의 기존 문이 그대로 열린다 (회귀) |
+| 7 | 회원이 `lessonNotes` 를 읽지 못한다 — 강사 원문 |
+| 8 | 회원이 `clients` 를 읽지 못한다 (연락처가 들어 있다) |
+| 9 | 회원이 `memberViews` · `memberLinks` 에 쓰지 못한다 (create · update · delete) |
+| 10 | 회원이 `clients` · `passes` · `ledger` 에 쓰지 못한다 |
+| 11 | 회원이 `auditLogs` · `memberships` · `instructorClientTotals` 를 읽지 못한다 |
+| 12 | 로그인하지 않은 사람은 위 전부 실패 |
+| 13 | **강사·대표의 기존 문이 그대로 열린다 (회귀)** |
 
-12번을 빠뜨리면 회원 문을 내다가 강사 문을 막아도 아무도 모른다.
+13번을 빠뜨리면 회원 문을 내다가 강사 문을 막아도 아무도 모른다.
 
 ---
 
@@ -235,17 +360,38 @@ Functions 가 만든다 **[신규]**. 앱의 `addMembership` 은 instructor·man
 
 ---
 
-## 9. 대표 결정 필요 — 체크리스트
+## 9. 대표 결정 필요 — 8건
 
-| # | 항목 | 왜 지금 |
-| --- | --- | --- |
-| 1 | 투영 문서를 `clients/{id}/memberView` 아래에 둘 것인가 | 규칙 모양이 여기서 갈린다 |
-| 2 | 듀엣 상대 이름을 보여줄 것인가 | 부부면 당연하고 지인이면 개인정보다 |
-| 3 | 계약 금액(`contractPrice`)을 보여줄 것인가 | 계약서와 다르면 문의가 는다 |
-| 4 | 담당 강사 이름을 보여줄 것인가 | 교체가 잦으면 회원이 흔들린다 |
-| 5 | 재인증 주기 (30일 / 90일 / 무기한) | SMS 비용과 직결 |
-| 6 | `ambiguous` 대기 목록을 대표가 볼 것인가, FC매니저도 볼 것인가 | 연결은 사람을 잇는 일이라 권한이 세다 |
-| 7 | 이관 안 된 지점 회원에게 로그인을 열 것인가 막을 것인가 | 열면 빈 화면, 막으면 "왜 안 되냐" |
-| 8 | 1단계 대상 지점 (반송점만 / 전체) | 범위가 일정과 직결 |
+추천은 내 의견이고, 바꾸셔도 설계는 그대로 선다.
 
-**8개.**
+**1. 투영을 Cloud Functions 트리거로 만들 것인가, 강사 앱 배치로 만들 것인가**
+→ **추천: 트리거(1안).** 투영 쓰기를 규칙에서 완전히 닫을 수 있고, 실패해도 차감이
+막히지 않는다 — 배치 방식은 투영 쓰기가 실패하면 이미 한 수업의 회차가 안 줄어든다.
+
+**2. 듀엣 상대 이름을 보여줄 것인가**
+→ **추천: 보여준다.** 회원권을 함께 쓰는 사람이 누구인지는 그 회원의 계약 내용이다.
+다만 지인 소개로 묶인 사이가 있으면 발급할 때 끄는 칸이 필요하다.
+
+**3. 계약 금액(`contractPrice`)을 보여줄 것인가**
+→ **추천: 보여주지 않는다.** 회원이 낸 금액은 계약서에 있고, 할인·양도가 섞이면
+화면 숫자와 달라져 문의만 는다. 회당 금액도 같은 이유로 뺀다.
+
+**4. 담당 강사 이름을 보여줄 것인가**
+→ **추천: 보여준다.** "누구에게 배웠나" 는 회원의 기록이다. 교체가 잦다는 걱정은
+있지만, 이름이 없으면 이력이 날짜 나열이 된다.
+
+**5. 재인증 주기 (30일 / 90일 / 무기한)**
+→ **추천: 90일.** SMS 는 건당 과금이고 회원 200명이면 주기가 곧 비용이다. 무기한은
+기기를 잃었을 때 남이 계속 본다.
+
+**6. `ambiguous` 대기 목록을 누가 보는가 (대표만 / FC매니저도)**
+→ **추천: 대표만.** 연결은 남의 개인정보를 여는 일이고, 잘못 이어도 티가 안 난다.
+FC매니저에게 연 발급·등록과는 무게가 다르다.
+
+**7. 여러 지점에 등록된 회원을 전부 연결할 것인가**
+→ **추천: 전부 연결하고 지점 선택 칩.** 실제로 두 지점을 다니는 회원이 있고, 한쪽만
+보여주면 나머지 회차가 사라진 것으로 읽힌다.
+
+**8. 1단계 대상 (반송점만 / 전체 지점)**
+→ **추천: 반송점만.** 이관된 곳이 거기뿐이라 나머지는 열어도 빈 화면이다. 다른 지점
+회원에게는 로그인 단계에서 "준비 중" 으로 세운다.

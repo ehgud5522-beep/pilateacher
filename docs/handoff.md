@@ -18,22 +18,22 @@ Claude Code · Codex 가 새 세션을 열면 이 파일부터 읽는다. 작업
 - 코드: `location-repository.js` 의 `createLocation · filterByLocation · countByLocation`,
   App.jsx 의 `LocationFilter · useLocationFilter`.
 
-### 2. FC매니저 권한 — 이 커밋 · **규칙 배포 필요**
+### 2. FC매니저 권한 — **2026-09-23 규칙·웹 배포 완료**
 - 대표 결정: FC매니저(role `manager`)가 **회원권 상품 추가·종료 · 회원권 발급 · 회원 등록**을 한다.
   급여 집계 · 감사 로그 · 강사 관리 · 엑셀 이관 · 발급 취소/보정은 여전히 대표만.
 - 규칙: `canIssuePass · canRegisterClient · canManageProducts` 에 manager 추가.
   앱: `FC_ROLES` 상수 하나로 메뉴를 연다. 두 쪽을 함께 바꿔야 한다.
 - 강사 관리 → 추가 화면에 **권한: 강사 / FC매니저** 선택. FC매니저는 role manager 로
   들어가서 담당 강사 목록 · 급여에 섞이지 않는다 (`listInstructors` 가 instructor 만 읽음).
-- 규칙 테스트(`tests/rules`)도 같이 고쳤지만 **클라우드에서는 에뮬레이터를 못 받아
-  돌려보지 못했다.** PC 에서 `npm run test:rules` 먼저.
+- 2026-09-23 규칙·웹 배포 완료. 에뮬레이터 규칙 테스트 205개 통과, 번들
+  `index-CZhj55mB.js` 확인.
 
 ### 3. 급여 집계 기본 달 — 이 커밋
 - 대표 결정: 처음 열면 **이번 달**. 정산 때 ‹ 로 지난달. `payroll-repository.js` 의 `currentMonth`.
 
 ## 남은 일
 
-- [ ] `npm run test:rules` → 통과하면 위 명령으로 규칙 배포 → `npm run deploy:web`
+- [ ] FC매니저 실제 계정으로 발급 1건 확인
 - [ ] 이미 강사로 들어간 사람을 FC매니저로 바꾸는 문은 없다 (규칙이 role 변경을 안 받음).
       필요하면 memberships update 에 role 문을 새로 내야 한다.
 - [ ] 매니저 지점 고정: 지금 매니저는 모든 지점 회원을 본다 (2026-09-14 에 미룬 결정).

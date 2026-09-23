@@ -112,10 +112,10 @@ export async function createLocation(organizationId, input, options = {}) {
   const key = locationNameKey(name);
   const duplicate = existing.find((location) => locationNameKey(location?.name) === key);
   if (duplicate) {
-    const error = new Error(`Location already exists: ${duplicate.id}`);
-    error.code = "already-exists";
-    error.locationId = duplicate.id;
-    throw error;
+    throw Object.assign(new Error(`Location already exists: ${duplicate.id}`), {
+      code: "already-exists",
+      locationId: duplicate.id,
+    });
   }
   const document = {
     organizationId: organization,
@@ -137,9 +137,11 @@ export const ALL_LOCATIONS = "all";
 export const NO_LOCATION = "__none__";
 
 /**
- * @param {Array<{ locationId?: string }>} items
+ * @template {{ locationId?: string }} T
+ * @param {Array<T>} items
  * @param {string} filter
  * @param {Array<{ id: string }>} locations
+ * @returns {Array<T>}
  */
 export function filterByLocation(items, filter, locations = []) {
   if (!filter || filter === ALL_LOCATIONS) return items;
@@ -150,7 +152,13 @@ export function filterByLocation(items, filter, locations = []) {
   return items.filter((item) => item?.locationId === filter);
 }
 
-/** 필터 칩에 붙일 인원 수. 칩 순서는 locations 순서(이름순)를 따른다. */
+/**
+ * 필터 칩에 붙일 인원 수. 칩 순서는 locations 순서(이름순)를 따른다.
+ *
+ * @param {Array<{ locationId?: string }>} items
+ * @param {Array<{ id: string }>} locations
+ * @returns {Record<string, number>}
+ */
 export function countByLocation(items, locations = []) {
   const known = new Set(locations.map((location) => location.id));
   const counts = { [ALL_LOCATIONS]: items.length, [NO_LOCATION]: 0 };

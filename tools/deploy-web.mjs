@@ -19,6 +19,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { deployBlockers } from "./deploy-guard.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const isWindows = process.platform === "win32";
@@ -51,6 +52,24 @@ const capture = (command, args) => {
 };
 
 /* ── 시작하기 전에 ──────────────────────────────────────────────────── */
+
+/* 무엇이 나가는지 알 수 있는 상태인가. 웹은 스토어 심사 같은 관문이 없어서
+   누르는 즉시 전부에게 가고, 되돌리려면 다시 배포하는 수밖에 없다.
+
+   판정은 tools/deploy-guard.mjs 에 있다 -- git 상태를 만들어 가며 시험할 수는
+   없으므로 떼어 두었다. */
+const branch = capture("git", ["rev-parse", "--abbrev-ref", "HEAD"]);
+/* porcelain 은 trim 하지 않는다. ` M path` 의 첫 칸이 공백이라, 출력 전체를
+   trim 하면 첫 줄만 한 칸 밀려 경로가 한 글자 깎인다 -- package-lock.json 이
+   제외 목록에 걸리지 않는 채로 배포가 막혔다. */
+const statusResult = spawnSync("git", ["status", "--porcelain"], { cwd: root, encoding: "utf8" });
+const status = statusResult.status === 0 ? String(statusResult.stdout ?? "") : "";
+const blockers = deployBlockers({ branch, status });
+if (blockers.length) {
+  console.error("\n배포를 멈춥니다.\n");
+  for (const blocker of blockers) console.error(`  [${blocker.code}] ${blocker.message}\n`);
+  process.exit(1);
+}
 
 if (!existsSync(path.join(root, CONFIG))) fail("CONFIG_MISSING", `${CONFIG} 이 없습니다.`);
 const config = JSON.parse(readFileSync(path.join(root, CONFIG), "utf8"));

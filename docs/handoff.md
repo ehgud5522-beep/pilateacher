@@ -5,10 +5,23 @@ Claude Code · Codex 가 새 세션을 열면 이 파일부터 읽는다. 작업
 
 - 작업 위치: `.codex-worktrees/h5-ios-audio-camera` · 브랜치 `docs/app-review-account` (PR #12)
 - 웹: https://pilateacher.web.app — 배포는 `npm run deploy:web` (호스팅만 나간다)
+  배포 전에 멈추는 조건이 둘 있다 (`tools/deploy-guard.mjs`): 브랜치가
+  `main` · `docs/app-review-account` 가 아니거나, 커밋되지 않은 변경이 있으면
+  (package-lock.json 만 예외) 빌드 전에 이유를 적고 멈춘다. 늘리려면 그 파일의
+  `DEPLOYABLE_BRANCHES` 하나만 고친다.
 - 규칙 배포는 따로다: `npm run test:rules` 통과 후
   `npx firebase deploy --only firestore:rules --project pilateacher --config firebase.foundation.json`
 
 ## 최근 변경 (2026-09-23, Cowork 세션)
+
+### 0. 배포 안전장치 — `tools/deploy-guard.mjs`
+- 허용 브랜치가 아니거나 커밋되지 않은 변경이 있으면 **빌드 전에** 멈추고 이유를 적는다.
+  배포된 화면이 어느 커밋인지 알 수 없게 되는 것을 막는 장치다 — 웹은 스토어 심사 같은
+  관문이 없어서 누르는 즉시 전부에게 간다.
+- 판정은 순수 함수로 떼어 두었다 (`tests/meta/deploy-guard.test.js` 16개).
+- 만들면서 버그를 하나 잡았다: `capture()` 가 stdout 을 trim 해서 porcelain 첫 줄만
+  한 칸 밀렸고, 그래서 `package-lock.json` 이 제외되지 않았다. 원인(부르는 쪽)과
+  파서 양쪽을 고쳤고 둘 다 테스트로 고정했다.
 
 ### 1. 지점별 회원 · 강사 목록 — 커밋 b655680, effc90a · 웹 배포됨
 - 회원 관리 · 강사 관리 목록 위에 `전체 · 반송점 · 율하점 …` 칩(인원 수 포함).

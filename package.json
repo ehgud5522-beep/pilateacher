@@ -1,7 +1,7 @@
 {
   "name": "pilateacher",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.28",
   "type": "module",
   "scripts": {
     "postinstall": "node tools/patch-camera-preview-ios-no-location.mjs && node tools/patch-camera-preview-ios-session-safety.mjs && node tools/patch-camera-preview-ios-h6.mjs && node tools/patch-firebase-auth-ios-first-login-profile.mjs && node tools/patch-firebase-auth-ios-h14-apple-diagnostics.mjs && node tools/patch-speech-recognition-capacitor8.mjs && node tools/patch-audio-recorder-edge.mjs && node tools/patch-audio-recorder-h4.mjs && node tools/patch-audio-recorder-h5.mjs && node tools/patch-audio-recorder-h6.mjs",

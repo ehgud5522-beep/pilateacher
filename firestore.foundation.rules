@@ -25,6 +25,24 @@ service cloud.firestore {
         && membership(organizationId).data.role in roles;
     }
 
+    /* ── 센터 데이터를 읽는 사람들 ────────────────────────────────────────
+       isActiveMember 는 소속만 보고 역할을 보지 않는다. 그래서 role "member"
+       라도 소속 문서 하나만 있으면 센터의 회원권·원장·상품을 전부 읽었다 --
+       baseUnitPrice · netContractPrice · unitPrice · rule 까지.
+
+       회원용 조회 앱(docs/member-app-design.md)은 "회원에게 memberships 를
+       만들지 않는다" 로 그것을 피하고 있었는데, 그것은 규칙이 아니라 약속이다.
+       약속은 다음 사람이 모르고, 손으로 소속 문서 하나를 만드는 순간 깨진다.
+
+       그래서 규칙으로 옮긴다. 네 역할을 그대로 나열하므로 지금 쓰는 사람의
+       읽기는 하나도 바뀌지 않는다 -- 달라지는 것은 member(와 앞으로 생길 목록
+       밖 역할)뿐이다.
+
+       회원이 읽는 곳은 셋뿐이다: memberViews · memberLinks · 자기 clients 문서. */
+    function isCentreStaff(organizationId) {
+      return hasRole(organizationId, ["owner", "manager", "instructor", "staff"]);
+    }
+
     // ── 돈이 걸린 두 문 ───────────────────────────────────────────────────
     // 회원권 발급과 회원 등록. 발급은 그 순간 급여의 근거를 만들고, 등록은 그
     // 발급이 가리킬 사람을 만든다 — 둘 다 원장에 append-only 로 남아 나중에
@@ -262,7 +280,7 @@ service cloud.firestore {
     }
 
     match /organizations/{organizationId} {
-      allow read: if isActiveMember(organizationId);
+      allow read: if isCentreStaff(organizationId);
       allow create, delete: if false;
       allow update: if hasRole(organizationId, ["owner"])
         && immutable(["plan", "subscriptionStatus", "aiUsageCount"]);
@@ -351,9 +369,9 @@ service cloud.firestore {
 
       match /lessons/{lessonId} {
         // See the locations block for why get and list are split.
-        allow get: if isActiveMember(organizationId)
+        allow get: if isCentreStaff(organizationId)
           && resource.data.organizationId == organizationId;
-        allow list: if isActiveMember(organizationId);
+        allow list: if isCentreStaff(organizationId);
         allow create: if request.resource.data.organizationId == organizationId
           && hasRole(organizationId, ["owner", "manager", "instructor", "staff"]);
         allow update: if resource.data.organizationId == organizationId
@@ -363,9 +381,9 @@ service cloud.firestore {
 
         match /participants/{clientId} {
           // See the locations block for why get and list are split.
-          allow get: if isActiveMember(organizationId)
+          allow get: if isCentreStaff(organizationId)
             && resource.data.organizationId == organizationId;
-          allow list: if isActiveMember(organizationId);
+          allow list: if isCentreStaff(organizationId);
           allow create: if request.resource.data.organizationId == organizationId
             && request.resource.data.lessonId == lessonId
             && request.resource.data.clientId == clientId
@@ -391,7 +409,7 @@ service cloud.firestore {
       // to write a rate is a second answer, and passes issued from a product
       // whose number disagrees with the table cannot be corrected afterwards.
       match /products/{productId} {
-        allow read: if isActiveMember(organizationId);
+        allow read: if isCentreStaff(organizationId);
         allow create: if request.resource.data.organizationId == organizationId
           && request.resource.data.keys().hasOnly([
             "organizationId", "name", "sessionType", "payCategory",
@@ -482,7 +500,7 @@ service cloud.firestore {
 
          문서 id 가 곧 강사-회원 쌍이라 한 쌍에 두 문서가 생길 수 없다. */
       match /instructorClientTotals/{totalId} {
-        allow read: if isActiveMember(organizationId);
+        allow read: if isCentreStaff(organizationId);
         allow create: if request.resource.data.organizationId == organizationId
           && totalId == request.resource.data.instructorId + "_" + request.resource.data.clientId
           && request.resource.data.keys().hasOnly([
@@ -520,7 +538,7 @@ service cloud.firestore {
       }
 
       match /passes/{passId} {
-        allow read: if isActiveMember(organizationId);
+        allow read: if isCentreStaff(organizationId);
         // The product fields are not settled yet, so require a floor rather than
         // closing the set with hasOnly.
         // A product carries the standard combination; what was actually sold is
@@ -674,7 +692,7 @@ service cloud.firestore {
         // Append-only, and these numbers feed payroll. Nothing can be corrected
         // afterwards, so the write itself is the only place to reject a bad body.
         match /ledger/{entryId} {
-          allow read: if isActiveMember(organizationId);
+          allow read: if isCentreStaff(organizationId);
           allow create: if request.resource.data.organizationId == organizationId
             && request.resource.data.passId == passId
             && request.resource.data.keys().hasOnly([
@@ -855,9 +873,9 @@ service cloud.firestore {
         // is undefined on object", which reaches the screen as an empty picker.
         // The path already scopes these documents to one organization, so the
         // membership check alone is what a list can honestly enforce.
-        allow get: if isActiveMember(organizationId)
+        allow get: if isCentreStaff(organizationId)
           && resource.data.organizationId == organizationId;
-        allow list: if isActiveMember(organizationId);
+        allow list: if isCentreStaff(organizationId);
         allow create: if request.resource.data.organizationId == organizationId
           && hasRole(organizationId, ["owner", "manager"]);
         allow update: if resource.data.organizationId == organizationId
@@ -1192,7 +1210,7 @@ service cloud.firestore {
     }
 
     match /events/{eventId} {
-      allow read: if isActiveMember(resource.data.organizationId);
+      allow read: if isCentreStaff(resource.data.organizationId);
       allow create, update, delete: if false;
     }
 

@@ -47,11 +47,19 @@ Claude Code · Codex 가 새 세션을 열면 이 파일부터 읽는다. 작업
   `memberLinks/{uid}` — 본인 get 만. 쓰기 전부 금지.
   대표도 쓰기 불가다 — 쓰는 것은 서버(Admin SDK)뿐이고 규칙을 지나지 않는다.
 - 규칙 테스트 15개 추가 (에뮬레이터 **220 pass**).
-- **알아 둘 것: 소속 문서 하나가 원장을 연다.** `passes`·`ledger` 의 read 는
-  `isActiveMember` 만 보고 역할을 보지 않는다. role `member` 라도 memberships
-  문서가 있으면 센터의 모든 회원권·원장을 읽는다(단가 포함). 그래서
-  `linkMemberAccount`(6번)는 memberships 를 **만들지 않는다** — 투영 설계 전체가
-  그 한 줄에 기댄다. 규칙 테스트 15번이 이 사실을 적어 두고 있다.
+- **member 역할은 규칙상 센터 데이터를 못 읽는다** (2026-09-23에 규칙으로 막음).
+  전에는 `passes`·`ledger`·`products` 의 read 가 `isActiveMember` 만 보고 역할을
+  보지 않아서, role `member` 라도 소속 문서 하나면 센터의 회원권·원장을 전부
+  읽었다 — `baseUnitPrice`·`netContractPrice`·`unitPrice`·`rule` 까지.
+  투영 설계가 "회원에게 memberships 를 만들지 않는다" 는 **약속**에 기대고 있었고,
+  약속은 다음 사람이 모른다. 그래서 규칙으로 옮겼다.
+- 새 헬퍼 `isCentreStaff(organizationId)` = `hasRole([owner, manager, instructor, staff])`.
+  아홉 곳을 이것으로 좁혔다: `organizations` · `products` · `passes` · `ledger` ·
+  `lessons` · `lessons/participants` · `instructorClientTotals` · `locations` · `events`.
+  네 역할을 그대로 나열하므로 **기존 사용자의 읽기는 하나도 바뀌지 않는다.**
+  회원이 읽는 곳은 셋뿐: `memberViews` · `memberLinks` · 자기 `clients` 문서.
+- 이 좁힘은 회원 앱과 **별개로 먼저 배포해도 된다** — 지금 쓰는 역할에 영향이 없다.
+  대표 판단 대기.
 - `pass-journey` 는 Functions 에서 require 할 수 없다(배포에 functions/ 만 올라감).
   투영 함수가 주입으로 받게 해 뒀고, 배포 방식은 5번에서 정한다.
 

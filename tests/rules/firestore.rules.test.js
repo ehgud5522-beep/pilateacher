@@ -387,11 +387,17 @@ describe("role permissions", () => {
     assert.equal(snapshot.docs[0].data().name, "반송점");
   });
 
-  test("every role can list locations, so registration works for all of them", async () => {
-    for (const [role, userId] of Object.entries(users)) {
-      if (role === "outsider") continue;
-      await assertSucceeds(getDocs(locationsOf(userId, ORG_A)), `${role} 이 지점을 읽을 수 있어야 한다`);
+  test("every centre role lists locations, and the member role does not", async () => {
+    /* 지점 목록은 회원 등록·발급 화면이 쓴다. 가르치고 운영하는 네 역할은
+       그대로 읽는다.
+
+       role "member" 는 2026-09-23 에 닫혔다 (isCentreStaff). 회원 앱은 지점
+       이름을 투영에서 받으므로 이 목록이 필요 없고, 열어 두면 소속 문서 하나로
+       센터 구조가 드러난다. */
+    for (const role of ["owner", "manager", "instructor", "staff"]) {
+      await assertSucceeds(getDocs(locationsOf(users[role], ORG_A)), `${role} 이 지점을 읽을 수 있어야 한다`);
     }
+    await assertFails(getDocs(locationsOf(users.member, ORG_A)));
   });
 
   test("another organization's locations are refused", async () => {
@@ -3118,21 +3124,35 @@ describe("what the member app may read", () => {
     await assertSucceeds(getDoc(doc(dbFor(users.member), "organizations", ORG_A, "clients", "client-member")));
   });
 
-  /* 15 — 이 설계가 기대고 있는 것 */
-  test("one membership document opens the whole ledger, whatever the role says", async () => {
-    /* 여기가 이 설계의 약한 고리다. passes 와 ledger 의 read 는 isActiveMember
-       하나만 본다 -- 역할을 보지 않는다. 그래서 role "member" 라도 소속 문서가
-       있으면 센터의 모든 회원권과 원장을 읽는다. 단가도 급여 판정도 함께.
+  /* 15 — 약속이 아니라 규칙이다 */
+  test("the member role reads no centre data, membership document or not", () => {
+    /* 전에는 이것이 뚫려 있었다. passes·ledger·products 의 read 가
+       isActiveMember 만 보고 역할을 보지 않아서, role "member" 라도 소속 문서
+       하나만 있으면 센터의 회원권과 원장을 전부 읽었다 -- 단가와 급여 판정까지.
 
-       위쪽 fixture 의 users.member 가 바로 그 상태라 이것이 성공한다. 실패하게
-       만드는 것이 아니라 사실을 적어 둔다 -- 이 줄이 빨개지는 날은 규칙이 더
-       좁아진 날이고, 그때 이 테스트를 지우면 된다.
+       투영 설계는 "회원에게 memberships 를 만들지 않는다" 로 그것을 피하고
+       있었는데, 그것은 규칙이 아니라 약속이었다. 이제 isCentreStaff 가 규칙으로
+       막는다.
 
-       그래서 linkMemberAccount(설계 10장 6번)는 memberships 문서를 만들지
-       않는다. 투영 전체가 그 한 줄에 기대고 있다. */
-    await assertSucceeds(getDoc(doc(dbFor(users.member), "organizations", ORG_A, "passes", PASS_A)));
+       users.member 는 role "member" 로 활성 소속 문서를 갖고 있다. 그래도 아무
+       것도 읽지 못해야 한다. */
+    const centreReads = [
+      ["passes", () => getDoc(doc(dbFor(users.member), "organizations", ORG_A, "passes", PASS_A))],
+      ["ledger", () => getDoc(doc(dbFor(users.member), "organizations", ORG_A, "passes", PASS_A, "ledger", "entry-issue"))],
+      ["products", () => getDoc(doc(dbFor(users.member), "organizations", ORG_A, "products", PRODUCT_A))],
+      ["organizations", () => getDoc(doc(dbFor(users.member), "organizations", ORG_A))],
+      ["locations", () => getDocs(collection(dbFor(users.member), "organizations", ORG_A, "locations"))],
+      ["lessons", () => getDocs(collection(dbFor(users.member), "organizations", ORG_A, "lessons"))],
+      ["instructorClientTotals", () => getDocs(collection(dbFor(users.member), "organizations", ORG_A, "instructorClientTotals"))],
+      ["clients 목록", () => getDocs(collection(dbFor(users.member), "organizations", ORG_A, "clients"))],
+    ];
+    return Promise.all(centreReads.map(([label, read]) => assertFails(read(), label)));
+  });
 
-    // 소속이 없는 진짜 회원 앱 사용자는 같은 문서를 읽지 못한다.
-    await assertFails(getDoc(doc(dbFor(APP_MEMBER), "organizations", ORG_A, "passes", PASS_A)));
+  /* 16 */
+  test("the member still reads the one client document that is theirs", () => {
+    /* 좁히면서 이 문까지 닫으면 안 된다. clients get 의 본인 분기는 그대로
+       열려 있어야 한다 -- 규칙 함수 isOwnClientDocument 가 기다리는 자리다. */
+    return assertSucceeds(getDoc(doc(dbFor(users.member), "organizations", ORG_A, "clients", "client-member")));
   });
 });

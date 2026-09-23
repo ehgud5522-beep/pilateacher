@@ -59,13 +59,16 @@ export function daysUntil(value, now = new Date()) {
 /**
  * 회원권 한 장을 뭐라고 부를 것인가.
  *
- * **투영에 상품명이 없다.** `PASS_FIELDS` 에 담기는 것은 회차·만료·상태·듀엣
- * 여부뿐이고, 카테고리는 급여 정보라 금지 목록에 있다. 그래서 회원이 아는
- * 말로 다시 짓는다 -- 회차 수와 듀엣 여부는 회원이 계약할 때 들은 그대로다.
+ * 계약할 때 들은 이름이 먼저다 (`displayName`). 투영이 상품 문서에서 가져오고,
+ * 이관분은 productId 자체가 이름이다 -- 그 판단은 서버가 한다
+ * (functions/src/member-view.js 의 passDisplayName).
  *
- * 실제 상품명("가을 이벤트 20회")을 쓰려면 투영에 필드를 하나 더해야 한다.
+ * 이름이 없으면 회차와 듀엣 여부로 부른다. 상품 문서가 지워졌거나 아주 옛
+ * 회원권이 그렇고, 그때 빈 칸을 두면 회원은 무슨 회원권인지 알 수 없다.
  */
 export function passName(pass) {
+  const given = text(pass?.displayName);
+  if (given) return given;
   const total = count(pass?.totalSessions) + count(pass?.serviceSessions);
   const kind = pass?.isDuet ? "듀엣 회원권" : "회원권";
   return total ? `${total}회 ${kind}` : kind;

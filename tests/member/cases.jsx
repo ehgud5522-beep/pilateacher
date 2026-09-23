@@ -21,7 +21,7 @@ export const view = (overrides = {}) => ({
   name: "김하나", locationName: "반송점", clientStatus: "active",
   remainingTotal: 8, nextExpiresAt: new Date(2027, 0, 31),
   passes: [{
-    passId: "pass-1", purchaseRound: 2, totalSessions: 20, serviceSessions: 2,
+    passId: "pass-1", displayName: "1:1 퍼스널 20회", purchaseRound: 2, totalSessions: 20, serviceSessions: 2,
     remainingCount: 8, expiresAt: new Date(2027, 0, 31), status: "active",
     isDuet: false, partnerName: "",
   }],

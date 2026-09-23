@@ -121,6 +121,21 @@ async function collectMemberViewInput(db, organizationId, clientId) {
     if (text(data.userId)) instructorNames[text(data.userId)] = text(data.displayName);
   }
 
+  /* 회원권의 상품 이름. 이 회원의 회원권이 가리키는 상품만 읽는다 -- 보통
+     한둘이라 목록 전체를 읽는 것보다 싸다.
+
+     없는 문서를 물어도 읽기 한 번이고, 그 경우는 이관분이다(상품 문서 없이
+     productId 에 상품명이 그대로 들어 있다). 이름을 고르는 판단은
+     member-view.js 의 passDisplayName 이 한다. */
+  const productIds = [...new Set(passes.map((pass) => text(pass.productId)).filter(Boolean))];
+  const productSnapshots = await Promise.all(
+    productIds.map((id) => org.collection("products").doc(id).get()),
+  );
+  const productNames = {};
+  for (const snapshot of productSnapshots) {
+    if (snapshot.exists) productNames[snapshot.id] = text(snapshot.data()?.name);
+  }
+
   /* 듀엣 상대의 이름. 이 회원의 회원권에 함께 적힌 사람만 읽는다 -- 명부 전체를
      읽을 이유가 없다. */
   const partnerIds = new Set();
@@ -153,6 +168,7 @@ async function collectMemberViewInput(db, organizationId, clientId) {
     passes,
     ledger,
     locationName: text(locationSnapshot?.data()?.name),
+    productNames,
     instructorNames,
     clientNames,
     instructorSessions,

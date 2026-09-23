@@ -36,7 +36,33 @@
 const PASS_FIELDS = Object.freeze([
   "passId", "purchaseRound", "totalSessions", "serviceSessions",
   "remainingCount", "expiresAt", "status", "isDuet", "partnerName",
+  /* 회원이 계약할 때 들은 이름. 금액도 카테고리도 아니다 -- 이름 하나다.
+     없으면 빈 문자열이고 화면이 "22회 회원권" 으로 부른다. */
+  "displayName",
 ]);
+
+/**
+ * 이 회원권을 뭐라고 부르는가.
+ *
+ * 상품 문서의 이름이 먼저다. 없으면 productId 자체가 이름인 경우를 본다 --
+ * 엑셀 이관이 상품명을 그대로 id 로 썼다(migration-repository.js 의
+ * `productId: requireText(record, "상품명")`). 그 회원권들이 반송점 명부의
+ * 대부분이고, 이름을 못 찾으면 회원 화면에서 전부 "N회 회원권" 이 된다.
+ *
+ * 만들어진 id 와 사람이 적은 이름은 글자로 갈린다: 생성된 id 는 영숫자와
+ * 하이픈뿐이고, 이관이 넣은 이름에는 한글·공백·콜론이 섞인다.
+ */
+function passDisplayName(productId, productNames) {
+  const id = text(productId);
+  if (!id) return "";
+  const found = productNames && typeof productNames.get === "function"
+    ? text(productNames.get(id))
+    : text(productNames?.[id]);
+  if (found) return found;
+  // 이관이 붙이는 자리표시자. 이름이 아니다.
+  if (id === "csv") return "";
+  return /^[A-Za-z0-9_-]+$/.test(id) ? "" : id;
+}
 
 /** 수업 이력 한 건에서 내보낼 것. */
 const HISTORY_FIELDS = Object.freeze(["occurredAt", "type", "instructorName"]);
@@ -159,6 +185,7 @@ function buildMemberView(input) {
       remainingCount: count(pass.remainingCount),
       expiresAt: toDate(pass.expiresAt),
       status: text(pass.status),
+      displayName: passDisplayName(pass.productId, input?.productNames),
       isDuet: others.length > 0,
       /* 듀엣 상대의 이름은 언제나 보여준다 (확정 2번). 이름을 모르면 빈
          문자열이고, 화면은 "함께 쓰는 분" 으로 적는다 -- uid 나 clientId 를

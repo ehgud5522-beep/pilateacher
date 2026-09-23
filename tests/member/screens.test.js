@@ -84,8 +84,17 @@ test("회원권은 서비스 회차를 합쳐 총 회차로 보여준다", async
   const markupOf = await memberScreens(t);
   const passes = markupOf("회원권");
   // 20 + 서비스 2 = 22회. 서비스도 회원이 쓰는 회차다.
-  assert.match(passes, /22회 회원권/);
   assert.match(passes, /22회 중 <b>8회<\/b> 남았어요/);
+  // 계약할 때 들은 이름이 먼저다.
+  assert.match(passes, /1:1 퍼스널 20회/);
+});
+
+test("이름이 없는 회원권은 회차로 부른다", async (t) => {
+  /* 상품 문서가 지워졌거나 아주 옛 회원권이다. 빈 칸을 두면 회원은 무슨
+     회원권인지 알 수 없다. */
+  const markupOf = await memberScreens(t);
+  const duet = markupOf("회원권 · 듀엣");
+  assert.match(duet, /30회 듀엣 회원권/);
 });
 
 test("내부 표현을 화면에 쓰지 않는다", async (t) => {

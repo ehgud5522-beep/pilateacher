@@ -294,3 +294,62 @@ test("an empty member projects an empty record, not a broken one", () => {
   assert.deepEqual(view.history, []);
   assert.deepEqual(view.updatedAt, NOW);
 });
+
+/* ── 상품 이름 ────────────────────────────────────────────────────────────
+
+   회원이 계약할 때 들은 이름이다. 금액도 카테고리도 아니고 이름 하나다 --
+   그것 없이는 화면이 모든 회원권을 "N회 회원권" 으로 부른다. */
+
+test("상품 문서의 이름을 쓴다", () => {
+  const view = buildMemberView({
+    client: { id: "client-a", organizationId: "center-a", userId: "uid-1", name: "김하나" },
+    passes: [{ id: "pass-1", clientId: "client-a", productId: "product-1", totalSessions: 20, remainingCount: 8, status: "active" }],
+    productNames: { "product-1": "1:1 퍼스널 20회" },
+  });
+  assert.equal(view.passes[0].displayName, "1:1 퍼스널 20회");
+});
+
+test("이관분은 productId 자체가 이름이다", () => {
+  /* 엑셀 이관이 상품명을 그대로 id 로 썼다 (migration-repository.js).
+     그 회원권들이 반송점 명부의 대부분이고, 못 읽으면 전부 "N회 회원권" 이 된다. */
+  const view = buildMemberView({
+    client: { id: "client-a", organizationId: "center-a", userId: "uid-1", name: "김하나" },
+    passes: [{ id: "csv_1", clientId: "client-a", productId: "1:1 20회 가을 이벤트", totalSessions: 20, remainingCount: 8, status: "active" }],
+    productNames: {},
+  });
+  assert.equal(view.passes[0].displayName, "1:1 20회 가을 이벤트");
+});
+
+test("만들어진 id 는 이름이 아니다", () => {
+  /* 상품 문서를 못 읽었을 때 uuid 를 화면에 띄우면, 회원은 그것을 자기
+     회원권 이름으로 읽는다. 차라리 비운다. */
+  for (const productId of ["product-1758000000000", "9f2c4a1b-3d5e", "csv", ""]) {
+    const view = buildMemberView({
+      client: { id: "client-a", organizationId: "center-a", userId: "uid-1", name: "김하나" },
+      passes: [{ id: "pass-1", clientId: "client-a", productId, totalSessions: 20, remainingCount: 8, status: "active" }],
+      productNames: {},
+    });
+    assert.equal(view.passes[0].displayName, "", productId || "(빈 값)");
+  }
+});
+
+test("이름이 늘어도 금지 목록은 그대로다", () => {
+  /* 이름 하나를 더하면서 단가가 따라 들어오는 것이 이 변경의 유일한 위험이다. */
+  const view = buildMemberView({
+    client: { id: "client-a", organizationId: "center-a", userId: "uid-1", name: "김하나" },
+    passes: [{
+      id: "pass-1", clientId: "client-a", productId: "product-1",
+      totalSessions: 20, remainingCount: 8, status: "active",
+      baseUnitPrice: 30000, netContractPrice: 1181818, contractPrice: 1300000,
+      category: "pt_1_1_new", paymentMethod: "card",
+    }],
+    productNames: { "product-1": "1:1 퍼스널 20회" },
+  });
+  const json = JSON.stringify(view);
+  for (const forbidden of FORBIDDEN_FIELDS) {
+    assert.doesNotMatch(json, new RegExp(`"${forbidden}"`), `${forbidden} 가 투영에 있다`);
+  }
+  for (const leak of ["30000", "1181818", "1300000", "pt_1_1_new", "card"]) {
+    assert.doesNotMatch(json, new RegExp(leak), `${leak} 가 투영에 있다`);
+  }
+});

@@ -1,0 +1,45 @@
+# 이어서 작업하기 — 최근 변경과 남은 일
+
+Claude Code · Codex 가 새 세션을 열면 이 파일부터 읽는다. 작업을 끝낼 때마다
+맨 위 "최근 변경"을 갱신하고, 끝난 "남은 일"은 지운다.
+
+- 작업 위치: `.codex-worktrees/h5-ios-audio-camera` · 브랜치 `docs/app-review-account` (PR #12)
+- 웹: https://pilateacher.web.app — 배포는 `npm run deploy:web` (호스팅만 나간다)
+- 규칙 배포는 따로다: `npm run test:rules` 통과 후
+  `npx firebase deploy --only firestore:rules --project pilateacher --config firebase.foundation.json`
+
+## 최근 변경 (2026-09-23, Cowork 세션)
+
+### 1. 지점별 회원 · 강사 목록 — 커밋 b655680, effc90a · 웹 배포됨
+- 회원 관리 · 강사 관리 목록 위에 `전체 · 반송점 · 율하점 …` 칩(인원 수 포함).
+  지점이 비었거나 목록에 없는 지점을 가리키는 사람은 "지점 없음" 칩으로 모인다.
+- 강사 관리에 **지점 추가** (이름 중복 방지, 공백 무시). 이름 변경 · 삭제는 일부러 없다
+  — 모든 기록이 locationId 로 지점을 가리킨다.
+- 코드: `location-repository.js` 의 `createLocation · filterByLocation · countByLocation`,
+  App.jsx 의 `LocationFilter · useLocationFilter`.
+
+### 2. FC매니저 권한 — 이 커밋 · **규칙 배포 필요**
+- 대표 결정: FC매니저(role `manager`)가 **회원권 상품 추가·종료 · 회원권 발급 · 회원 등록**을 한다.
+  급여 집계 · 감사 로그 · 강사 관리 · 엑셀 이관 · 발급 취소/보정은 여전히 대표만.
+- 규칙: `canIssuePass · canRegisterClient · canManageProducts` 에 manager 추가.
+  앱: `FC_ROLES` 상수 하나로 메뉴를 연다. 두 쪽을 함께 바꿔야 한다.
+- 강사 관리 → 추가 화면에 **권한: 강사 / FC매니저** 선택. FC매니저는 role manager 로
+  들어가서 담당 강사 목록 · 급여에 섞이지 않는다 (`listInstructors` 가 instructor 만 읽음).
+- 규칙 테스트(`tests/rules`)도 같이 고쳤지만 **클라우드에서는 에뮬레이터를 못 받아
+  돌려보지 못했다.** PC 에서 `npm run test:rules` 먼저.
+
+### 3. 급여 집계 기본 달 — 이 커밋
+- 대표 결정: 처음 열면 **이번 달**. 정산 때 ‹ 로 지난달. `payroll-repository.js` 의 `currentMonth`.
+
+## 남은 일
+
+- [ ] `npm run test:rules` → 통과하면 위 명령으로 규칙 배포 → `npm run deploy:web`
+- [ ] 이미 강사로 들어간 사람을 FC매니저로 바꾸는 문은 없다 (규칙이 role 변경을 안 받음).
+      필요하면 memberships update 에 role 문을 새로 내야 한다.
+- [ ] 매니저 지점 고정: 지금 매니저는 모든 지점 회원을 본다 (2026-09-14 에 미룬 결정).
+      율하점 매니저가 생기면 memberships.locationIds + 조회 · 규칙 · 화면을 한 번에.
+- [ ] 출석 차감 순서 확인: 같은 회원이 수강권 2개일 때 만료 빠른 것부터 빠지는지
+      (`pass-repository.test.js` "the pass that expires soonest is spent first" 가 이미 고정) —
+      실제 데이터(반송점 김수현, 100회권 날짜 2026-11-28 오입력 의심)로 한 번 확인.
+- [ ] APP_VER 는 안 올렸다 (스토어 빌드 번호와 묶여 있음).
+- [ ] pilateacher.com 도메인 연결은 선택 — `docs/web-hosting.md`. MX · SPF 레코드는 건드리지 말 것 (메일).

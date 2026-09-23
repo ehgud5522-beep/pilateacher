@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createFirestorePayrollStore, loadInstructorMonthlyPay, loadOrganizationMonthlyPayroll,
-  monthRange, payrollCsv, previousMonth, summarizeCorrections, summarizeInstructorPay,
+  monthRange, payrollCsv, currentMonth, previousMonth, summarizeCorrections, summarizeInstructorPay,
   onlyNewInstructorRate, summarizeOrganizationPay, toDate,
 } from "../../src/data/repositories/payroll-repository.js";
 import { PAY_CATEGORY } from "../../src/data/schema/constants.js";
@@ -359,10 +359,16 @@ test("a failed read is never a quiet zero", async () => {
   disconnectRepositoryLog();
 });
 
-test("the screen opens on the month that is already over", () => {
-  // 정산은 월이 끝난 뒤에 한다. 이달을 기본값으로 두면 매번 한 칸 되돌린다.
+test("the month that is already over is one step back", () => {
   assert.equal(previousMonth(new Date(2026, 9, 3)), "2026-09");
   assert.equal(previousMonth(new Date(2026, 0, 1)), "2025-12", "해가 넘어가도 맞는다");
+});
+
+test("the screen opens on the month in progress", () => {
+  // 2026-09-23 대표 결정 -- 진행 중인 달을 먼저 보고, 정산 때 한 칸 되돌린다.
+  assert.equal(currentMonth(new Date(2026, 8, 23)), "2026-09");
+  assert.equal(currentMonth(new Date(2026, 0, 1)), "2026-01");
+  assert.equal(currentMonth(new Date(2026, 11, 31, 23, 59)), "2026-12");
 });
 
 test("the csv is one shape, readable by Excel, with the month on every row", () => {

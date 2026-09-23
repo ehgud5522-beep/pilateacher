@@ -1,5 +1,8 @@
 # PilaTeacher — 작업 규칙
 
+**새 세션은 [docs/handoff.md](docs/handoff.md) 부터 읽는다** — 최근 변경, 대표 결정, 남은 일이 있다.
+작업을 끝내면 그 파일을 갱신한다.
+
 필라테스 강사용 앱. React + Vite 웹 앱을 Capacitor로 iOS·Android에 담고, AI 수업기록은
 Firebase Functions(`aiGateway`)를 거쳐 OpenAI로 간다. 상세 릴리스 절차는
 [docs/android-release-safety.md](docs/android-release-safety.md), 게이트웨이 배포 이력은

@@ -26,20 +26,25 @@ service cloud.firestore {
     }
 
     // ── 돈이 걸린 두 문 ───────────────────────────────────────────────────
-    // 회원권 발급과 회원 등록은 대표 한 사람으로 좁혔다. 발급은 그 순간 급여의
-    // 근거를 만들고, 등록은 그 발급이 가리킬 사람을 만든다 — 둘 다 원장에
-    // append-only 로 남아 나중에 고칠 수 없다.
+    // 회원권 발급과 회원 등록. 발급은 그 순간 급여의 근거를 만들고, 등록은 그
+    // 발급이 가리킬 사람을 만든다 — 둘 다 원장에 append-only 로 남아 나중에
+    // 고칠 수 없다.
     //
-    // manager 역할은 스키마에도 규칙에도 그대로 있다. 담당 강사 교체처럼 이미
-    // 열려 있는 문은 건드리지 않았다. 운영해 보고 대표 혼자 감당이 안 되면
-    // 아래 두 목록에 "manager" 를 다시 넣는 것으로 끝난다 — 되돌리기 위해
-    // 이름을 붙여 한자리에 모아 두었다.
+    // 2026-09-23: FC매니저(role manager)에게 다시 열었다. 상담·계약을 FC 가
+    // 받고, 대표가 센터에 없는 동안 발급이 밀렸다. 회원권 상품 추가·종료도 같은
+    // 날 함께 열었다 (products 블록). 취소·보정·급여·감사 로그·강사 관리는
+    // 여전히 대표만이다. 다시 좁힐 때는 아래 두 목록과 canManageProducts 에서
+    // "manager" 를 빼면 된다.
     function canIssuePass(organizationId) {
-      return hasRole(organizationId, ["owner"]);
+      return hasRole(organizationId, ["owner", "manager"]);
     }
 
     function canRegisterClient(organizationId) {
-      return hasRole(organizationId, ["owner"]);
+      return hasRole(organizationId, ["owner", "manager"]);
+    }
+
+    function canManageProducts(organizationId) {
+      return hasRole(organizationId, ["owner", "manager"]);
     }
 
     // Keep in sync with PAY_CATEGORY in src/data/schema/constants.js. Rules
@@ -307,7 +312,7 @@ service cloud.firestore {
         // predates these fields. A floor that checks each field it actually
         // sees stops a malformed write from either writer without closing a
         // door the migration still needs.
-        // 등록은 대표만. canRegisterClient 의 주석 참고 — 되돌릴 때는 그 목록
+        // 등록은 대표·FC매니저. canRegisterClient 의 주석 참고 — 되돌릴 때는 그 목록
         // 하나만 바꾼다. 읽기와 수정은 그대로 가르치는 사람들에게 열려 있다.
         allow create: if request.resource.data.organizationId == organizationId
           && canRegisterClient(organizationId)
@@ -406,7 +411,7 @@ service cloud.firestore {
           && request.resource.data.status in ["active", "archived"]
           && request.resource.data.createdAt == request.time
           && request.resource.data.createdBy == request.auth.uid
-          && hasRole(organizationId, ["owner"]);
+          && canManageProducts(organizationId);
         // Only status moves, and it moves both ways. Everything else has to come
         // back unchanged — the set is closed, so this covers every field.
         allow update: if resource.data.organizationId == organizationId
@@ -432,7 +437,7 @@ service cloud.firestore {
           && request.resource.data.createdAt == resource.data.createdAt
           && request.resource.data.createdBy == resource.data.createdBy
           && request.resource.data.status in ["active", "archived"]
-          && hasRole(organizationId, ["owner"]);
+          && canManageProducts(organizationId);
         allow delete: if false;
       }
 
@@ -581,8 +586,8 @@ service cloud.firestore {
           ]
           && request.resource.data.status is string
           && request.resource.data.createdAt == request.time
-          // 발급은 대표만. canIssuePass 의 주석 참고 — 되돌릴 때는 그 목록
-          // 하나만 바꾼다. 아래 담당 교체 문은 매니저에게 그대로 열려 있다.
+          // 발급은 대표·FC매니저. canIssuePass 의 주석 참고 — 바꿀 때는 그 목록
+          // 하나만 바꾼다.
           && canIssuePass(organizationId);
         // The owner's reach is unchanged. A manager may move one field and
         // nothing else: handovers happen while the owner is not at the centre,

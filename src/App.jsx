@@ -106,7 +106,7 @@ import {
 } from "./features/schedule/lesson-settlement.js";
 import {
   loadInstructorMonthlyPay, loadOrganizationLedger, loadOrganizationMonthlyPayroll,
-  monthRange, onlyNewInstructorRate, payrollCsv, previousMonth, toDate,
+  monthRange, onlyNewInstructorRate, payrollCsv, currentMonth, toDate,
 } from "./data/repositories/payroll-repository.js";
 import {
   AUDIT_ACTION, STALE_PASS_DAYS, listAuditLogs, recordMigrationUpload, reviewAudit,
@@ -15410,13 +15410,14 @@ function MembershipRow({ membership, locationName, busy, onEdit }) {
           }}>수정</button>
       </div>
       <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>
-        {membershipTitleLabel(membership)}
+        {membership.role === ROLES.MANAGER ? "FC매니저" : membershipTitleLabel(membership)}
         {" · "}{locationName || "지점 없음"}
         {" · "}{labelOf(MEMBERSHIP_STATUS_LABELS, membership.status)}
       </p>
       {/* 부원장에게는 풀방금액이 쓰이지 않는다 -- 카테고리도 누적도 보지 않고
           계약 금액의 5:5 로 간다. 숫자를 그대로 두면 그 금액이 지급되는 것으로
           읽힌다. */}
+      {membership.role === ROLES.MANAGER ? null : (
       <p className="mt-0.5 tabular-nums" style={{
         fontSize: TYPE.caption, color: deputy ? BRAND_D : usable ? SUB : WARN,
       }}>
@@ -15424,6 +15425,7 @@ function MembershipRow({ membership, locationName, busy, onEdit }) {
           ? "계약 금액의 5:5 (공급가액 기준)"
           : usable ? `풀방금액 ${wonToManwonLabel(rate)} · 회당` : "풀방금액 미설정 — 1:1 재등록(정상) 발급 불가"}
       </p>
+      )}
     </div>
   );
 }
@@ -15454,6 +15456,7 @@ function InstructorAdmin({
   const [editing, setEditing] = useState(initialState?.editing || null);
   const [draft, setDraft] = useState(initialState?.draft || {
     displayName: "", title: MEMBERSHIP_TITLE.INSTRUCTOR, locationId: "", rateManwon: "", deputy: false,
+    role: ROLES.INSTRUCTOR,
   });
   const [lookup, setLookup] = useState(initialState?.lookup || { email: "", found: null, error: "", busy: false });
   const [formError, setFormError] = useState(initialState?.formError || "");
@@ -15525,7 +15528,7 @@ function InstructorAdmin({
     setMode("list");
     setEditing(null);
     setLookup({ email: "", found: null, error: "", busy: false });
-    setDraft({ displayName: "", title: MEMBERSHIP_TITLE.INSTRUCTOR, locationId: "", rateManwon: "", deputy: false });
+    setDraft({ displayName: "", title: MEMBERSHIP_TITLE.INSTRUCTOR, locationId: "", rateManwon: "", deputy: false, role: ROLES.INSTRUCTOR });
     setFormError("");
   };
 
@@ -15573,7 +15576,8 @@ function InstructorAdmin({
       await addMembership(organizationId, {
         userId,
         displayName: draft.displayName.trim(),
-        title: draft.title,
+        title: draft.role === ROLES.MANAGER ? MEMBERSHIP_TITLE.INSTRUCTOR : draft.title,
+        role: draft.role === ROLES.MANAGER ? ROLES.MANAGER : ROLES.INSTRUCTOR,
         locationId: draft.locationId,
         createdBy: currentUserId,
         actorRole: organization?.role || "",
@@ -15730,14 +15734,37 @@ function InstructorAdmin({
             <input value={draft.displayName} className={inputCls} placeholder="예) 박서연"
               onChange={(e) => setDraft((current) => ({ ...current, displayName: e.target.value }))} />
           </Field>
-          <Field label="직함">
-            {/* 부원장은 여기서 고르지 않는다. 그 지정은 급여 판정을 바꾸는 일이라
-                이력이 함께 남아야 하고, 그 문은 추가가 아니라 수정 쪽에 있다. */}
-            <TitlePicker title={draft.title} deputy={false} allowDeputy={false} onPick={pickTitle} />
-            <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
-              부원장 지정과 풀방금액은 추가한 뒤 수정에서 정합니다 — 변경 이력이 함께 남습니다.
-            </p>
+          <Field label="권한">
+            {/* FC매니저는 수업하지 않고 상담·계약을 받는다. 회원권 상품 · 발급 ·
+                회원 등록이 열리고, 강사 목록(담당 강사 · 급여)에는 나오지 않는다.
+                급여 · 감사 로그 · 강사 관리 · 엑셀 이관은 여전히 대표만이다. */}
+            <div className="flex flex-wrap gap-2">
+              {[[ROLES.INSTRUCTOR, "강사"], [ROLES.MANAGER, "FC매니저"]].map(([value, label]) => (
+                <button key={value} type="button"
+                  onClick={() => setDraft((current) => ({ ...current, role: value }))}
+                  className="h-9 px-3 font-bold" style={{
+                    borderRadius: 999, fontSize: TYPE.caption,
+                    backgroundColor: draft.role === value ? TINT : CANVAS,
+                    color: draft.role === value ? BRAND_D : SUB,
+                  }}>{label}</button>
+              ))}
+            </div>
+            {draft.role === ROLES.MANAGER ? (
+              <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+                회원권 상품 만들기 · 회원권 발급 · 회원 등록을 할 수 있습니다. 급여 집계와 강사 관리는 보이지 않습니다.
+              </p>
+            ) : null}
           </Field>
+          {draft.role === ROLES.MANAGER ? null : (
+            <Field label="직함">
+              {/* 부원장은 여기서 고르지 않는다. 그 지정은 급여 판정을 바꾸는 일이라
+                  이력이 함께 남아야 하고, 그 문은 추가가 아니라 수정 쪽에 있다. */}
+              <TitlePicker title={draft.title} deputy={false} allowDeputy={false} onPick={pickTitle} />
+              <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+                부원장 지정과 풀방금액은 추가한 뒤 수정에서 정합니다 — 변경 이력이 함께 남습니다.
+              </p>
+            </Field>
+          )}
           {locationPicker}
           {formError ? <p style={{ fontSize: TYPE.caption, color: BAD }}>{formError}</p> : null}
           <div className="flex gap-2 pt-1">
@@ -17142,7 +17169,7 @@ function PayrollSummary({
   organization, locationStore, instructorStore, payrollStore,
   onRetryOrganization, onToast, now = () => new Date(), initialState = null,
 }) {
-  const [month, setMonth] = useState(initialState?.month || previousMonth(now()));
+  const [month, setMonth] = useState(initialState?.month || currentMonth(now()));
   const [summary, setSummary] = useState(initialState?.summary || null);
   const [instructors, setInstructors] = useState(initialState?.instructors || []);
   const [locations, setLocations] = useState(initialState?.locations || []);
@@ -17446,6 +17473,10 @@ const AUDIT_ACTION_LABEL = {
 };
 
 const MIGRATION_STAGE_LABEL_SHORT = { clients: "회원", passes: "회원권" };
+
+/** 회원권 상품 · 발급 · 회원 등록을 하는 역할. 규칙의 canIssuePass ·
+ *  canRegisterClient · canManageProducts 와 같은 목록이다. */
+const FC_ROLES = [ROLES.OWNER, ROLES.MANAGER];
 
 /** 행위자의 역할. 감사 항목에만 있다 -- 원장은 uid 만 들고 있다. */
 const AUDIT_ROLE_LABEL = {
@@ -17821,20 +17852,21 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
   const organizationUnknown = organization.ready && organization.status === "unknown";
   const showProducts = organization.ready
     && !organization.isLegacy
-    && organization.role === ROLES.OWNER;
-  /* 회원권 발급과 회원 관리는 대표만 본다. 발급은 그 순간 급여의 근거를 만들고,
-     등록은 그 발급이 가리킬 사람을 만든다 -- 둘 다 원장에 append-only 로 남아
-     나중에 고칠 수 없다. 규칙도 같은 경계로 좁혔으므로(canIssuePass ·
-     canRegisterClient), 매니저에게 보여 주면 눌러도 거부되는 화면만 나온다.
+    && FC_ROLES.includes(organization.role);
+  /* 회원권 상품 · 회원권 발급 · 회원 관리는 대표와 FC매니저가 본다 (2026-09-23).
+     발급은 그 순간 급여의 근거를 만들고, 등록은 그 발급이 가리킬 사람을 만든다
+     -- 둘 다 원장에 append-only 로 남아 나중에 고칠 수 없다. 그래서 강사에게는
+     닫혀 있고, 상담·계약을 받는 FC매니저에게만 열었다. 규칙도 같은 경계다
+     (canIssuePass · canRegisterClient · canManageProducts).
 
-     되돌릴 때는 여기와 규칙의 두 목록을 함께 넓힌다. 한쪽만 넓히면 보이는데
+     바꿀 때는 FC_ROLES 와 규칙의 세 목록을 함께 바꾼다. 한쪽만 바꾸면 보이는데
      안 되거나, 되는데 안 보인다.
 
      나머지 조건은 회원권 상품과 같다 -- 개인 모드에는 센터가 없고, 소속을 읽지
      못한 상태는 역할까지 모르는 상태라 감춘다. */
   const showClients = organization.ready
     && !organization.isLegacy
-    && organization.role === ROLES.OWNER;
+    && FC_ROLES.includes(organization.role);
   /* 강사 관리는 대표만 본다. 규칙도 대표만 허용하므로(memberships create 와
      세 update 문), 매니저에게 보여 주면 눌러도 거부되는 화면만 나온다.
 
@@ -19157,13 +19189,13 @@ export default function App() {
   const [payError, setPayError] = useState("");
   const [payRevision, setPayRevision] = useState(0);
   const [organizationContext, setOrganizationContext] = useState(UNRESOLVED_ORGANIZATION_CONTEXT);
-  /* 소속 센터에서 회원 등록은 대표의 일이다. 강사가 같은 사람을 다시 등록하면
-     같은 회원이 둘이 되고 수업 기록이 갈라진다. 규칙도 대표만 허용하므로
-     (canRegisterClient) 매니저에게 버튼을 남겨 두면 눌러도 거부된다. 개인 강사
+  /* 소속 센터에서 회원 등록은 대표와 FC매니저의 일이다. 강사가 같은 사람을 다시
+     등록하면 같은 회원이 둘이 되고 수업 기록이 갈라진다. 규칙도 같은 둘에게만
+     열려 있다 (canRegisterClient). 개인 강사
      (legacy)는 자기 회원을 자기가 등록하므로 제한하지 않는다. */
   const canRegisterMembers = !organizationContext.ready
     || organizationContext.isLegacy
-    || organizationContext.role === ROLES.OWNER;
+    || FC_ROLES.includes(organizationContext.role);
   /* 출석 체크는 수업하는 사람의 것이다. 대표와 매니저도 수업을 하므로 함께
      허용한다 -- 규칙도 같은 셋에게만 잔여를 줄이게 열려 있다. */
   const canCheckAttendance = organizationContext.ready

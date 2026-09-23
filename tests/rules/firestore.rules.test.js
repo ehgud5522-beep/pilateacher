@@ -491,11 +491,15 @@ describe("role permissions", () => {
     await assertSucceeds(setDoc(clientRef(users.owner, "client-registered"), registration()));
   });
 
-  test("only the owner registers a member", async () => {
+  test("only the owner and the FC manager register a member", async () => {
     /* 강사가 같은 사람을 다시 등록하면 같은 회원이 둘이 되고 수업 기록이
-       갈라진다. 매니저에게서도 거둔 문이다 -- canRegisterClient 의 목록
-       하나로 되돌린다. 읽기와 수정은 가르치는 사람들에게 그대로 열려 있다. */
-    for (const userId of [users.manager, users.instructor, users.staff, users.outsider]) {
+       갈라진다. FC매니저는 상담·계약을 받는 사람이라 2026-09-23 에 다시 열었다
+       -- canRegisterClient. 읽기와 수정은 가르치는 사람들에게 그대로 열려 있다. */
+    await assertSucceeds(setDoc(
+      doc(dbFor(users.manager), "organizations", ORG_A, "clients", "client-by-manager"),
+      registration({ createdBy: users.manager }),
+    ));
+    for (const userId of [users.instructor, users.staff, users.outsider]) {
       await assertFails(setDoc(
         doc(dbFor(userId), "organizations", ORG_A, "clients", `client-by-${userId}`),
         registration({ createdBy: userId }),
@@ -654,12 +658,13 @@ describe("PT passes and their ledger", () => {
     await assertFails(getDoc(passRef(null, ORG_A, PASS_A)));
   });
 
-  test("only the owner issues a pass", async () => {
+  test("only the owner and the FC manager issue a pass", async () => {
     /* 발급은 그 순간 급여의 근거를 만들고, 원장은 append-only 라 고칠 수 없다.
-       매니저에게서 거둔 문이다 -- 운영해 보고 필요하면 canIssuePass 의 목록
-       하나로 되돌린다. 담당 교체는 아래에서 매니저에게 그대로 열려 있다. */
+       FC매니저에게는 2026-09-23 에 다시 열었다 -- canIssuePass. 강사는 여전히
+       자기 앞으로 회원권을 만들 수 없다. */
     await assertSucceeds(setDoc(passRef(users.owner, ORG_A, "pass-by-owner"), passFixture(ORG_A, "pass-by-owner")));
-    for (const userId of [users.manager, users.instructor, users.staff]) {
+    await assertSucceeds(setDoc(passRef(users.manager, ORG_A, "pass-by-manager"), passFixture(ORG_A, "pass-by-manager")));
+    for (const userId of [users.instructor, users.staff]) {
       await assertFails(setDoc(
         passRef(userId, ORG_A, `pass-by-${userId}`),
         passFixture(ORG_A, `pass-by-${userId}`),
@@ -746,9 +751,13 @@ describe("membership products are added and archived, never edited", () => {
     await assertFails(getDoc(productRef(null, ORG_A, PRODUCT_A)));
   });
 
-  test("only the owner adds a product", async () => {
+  test("only the owner and the FC manager add a product", async () => {
     await assertSucceeds(setDoc(productRef(users.owner, ORG_A, "product-by-owner"), productFixture(ORG_A)));
-    for (const userId of [users.manager, users.instructor, users.staff]) {
+    await assertSucceeds(setDoc(
+      productRef(users.manager, ORG_A, "product-by-manager"),
+      productFixture(ORG_A, { createdBy: users.manager }),
+    ));
+    for (const userId of [users.instructor, users.staff]) {
       await assertFails(setDoc(
         productRef(userId, ORG_A, `product-by-${userId}`),
         productFixture(ORG_A, { createdBy: userId }),
@@ -920,8 +929,9 @@ describe("membership products are added and archived, never edited", () => {
     await assertFails(updateDoc(productRef(users.owner, ORG_A, PRODUCT_A), { baseUnitPrice: 25000 }));
   });
 
-  test("only the owner archives, and nobody deletes", async () => {
-    await assertFails(updateDoc(productRef(users.manager, ORG_A, PRODUCT_A), { status: "archived" }));
+  test("only the owner and the FC manager archive, and nobody deletes", async () => {
+    await assertFails(updateDoc(productRef(users.instructor, ORG_A, PRODUCT_A), { status: "archived" }));
+    await assertSucceeds(updateDoc(productRef(users.manager, ORG_A, PRODUCT_A), { status: "archived" }));
     await assertFails(deleteDoc(productRef(users.owner, ORG_A, PRODUCT_A)));
   });
 
@@ -963,11 +973,17 @@ describe("ledger and pass bodies are validated at write time", () => {
     ));
   });
 
-  test("only the owner appends an issue entry", async () => {
-    /* 발급 항목은 회원권 문서와 한 배치로 쓰인다. 회원권 쪽만 좁히면 매니저가
+  test("only the owner and the FC manager append an issue entry", async () => {
+    /* 발급 항목은 회원권 문서와 한 배치로 쓰인다. 회원권 쪽만 좁히면 강사가
        이미 있는 회원권에 "20회 발급" 한 줄을 덧붙일 수 있고, 회원 이력 화면이
-       그것을 그대로 읽는다. 두 반쪽은 같은 문을 통과해야 한다. */
-    for (const userId of [users.manager, users.instructor, users.staff]) {
+       그것을 그대로 읽는다. 두 반쪽은 같은 문(canIssuePass)을 통과해야 한다. */
+    await assertSucceeds(setDoc(
+      ledgerRef(users.manager, "issue-by-manager"),
+      withoutField(ledgerFixture(ORG_A, PASS_A, {
+        type: "issue", delta: 20, instructorId: users.instructor, createdBy: users.manager,
+      }), "lessonId"),
+    ));
+    for (const userId of [users.instructor, users.staff]) {
       await assertFails(setDoc(
         ledgerRef(userId, `issue-by-${userId}`),
         withoutField(ledgerFixture(ORG_A, PASS_A, {

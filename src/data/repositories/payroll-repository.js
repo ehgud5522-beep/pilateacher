@@ -427,7 +427,16 @@ export async function loadOrganizationMonthlyPayroll(organizationId, options = {
   return { month: String(month), start, end, ...summarizeOrganizationPay(inMonth) };
 }
 
-/** 정산이 끝난 달. 화면의 기본값이다 -- 정산은 월이 끝난 뒤에 한다. */
+/**
+ * 이번 달. 급여 집계 화면의 기본값이다 (2026-09-23 대표 결정) -- 진행 중인 달을
+ * 먼저 보고, 월말 정산 때는 ‹ 한 번으로 지난달로 간다.
+ */
+export function currentMonth(today = new Date()) {
+  const at = today instanceof Date ? today : new Date(String(today));
+  return `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, "0")}`;
+}
+
+/** 정산이 끝난 달. 월말 정산 때 보는 달이다. */
 export function previousMonth(today = new Date()) {
   const at = today instanceof Date ? today : new Date(String(today));
   const year = at.getFullYear();

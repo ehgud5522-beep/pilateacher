@@ -2715,6 +2715,8 @@ const RATE_SKIP_LINE = {
   no_client: "센터에 등록되지 않은 회원 · 차감 없음",
   no_pass: "회원권 없음 · 발급이 필요합니다",
   spent: "잔여 없음 · 재등록이 필요합니다",
+  solo_pass_missing: "1:1 회원권 없음 · 듀엣 회원권은 두 분이 함께 올 때만 차감됩니다",
+  duet_pass_spent: "함께 쓰는 회원권 잔여 없음 · 재등록이 필요합니다",
 };
 
 function SchedRateLine({ preview }) {
@@ -2724,6 +2726,15 @@ function SchedRateLine({ preview }) {
       || `확정 시 차감되지 않습니다${preview.code ? ` (${preview.code})` : ""}`;
     return (
       <span className="mt-0.5 block truncate" style={{ fontSize: TYPE.caption, color: WARN }}>{line}</span>
+    );
+  }
+  /* 함께 쓰는 회원권은 두 줄에 같은 금액이 선다. 실제로 나가는 것은 한 번이라,
+     그 말을 하지 않으면 강사가 두 배로 읽는다. */
+  if (preview.shared) {
+    return (
+      <span className="mt-0.5 block truncate tabular-nums" style={{ fontSize: TYPE.caption, color: FAINT }}>
+        {won(preview.unitPrice)}원 · {labelOf(PRICING_RULE_LABELS, preview.rule)} · 함께 쓰는 회원권에서 1회
+      </span>
     );
   }
   return (
@@ -21104,17 +21115,30 @@ export default function App() {
             // 조직 수업 문서도 이 일정과 같은 id 를 쓴다. 원장의 lessonId 가
             // 일정을 가리켜야 "이 수업의 차감"을 되짚을 수 있다.
             lessonId: lesson.id,
+            /* 누가 왔고 누가 안 왔는지. 듀엣은 한 명이 노쇼여도 차감되므로,
+               이것이 없으면 두 달 뒤 "그날 나는 안 갔는데"에 답할 것이 없다. */
+            attendanceByClientId: item.attendanceByClientId,
           });
-          results.push({ memberId: item.memberId, passId: item.pass.id, entryId: deducted.entryId });
+          results.push({
+            memberId: item.memberId,
+            // 공유 회원권에서 나간 한 건은 두 사람의 줄에 모두 적힌다.
+            memberIds: item.memberIds,
+            passId: item.pass.id,
+            entryId: deducted.entryId,
+          });
         } catch (error) {
           /* 성공한 차감은 이미 원장에 박혔다. 이 수업을 열어 두고 다시 확정하게
              하면 그 회차가 한 번 더 나간다 -- 닫고 못 나간 것만 알린다. */
-          skips.push({
-            memberId: item.memberId,
-            clientId: item.clientId,
-            reason: SETTLEMENT_SKIP.WRITE_FAILED,
-            code: error?.code || error?.message || "unknown",
-          });
+          /* 공유 회원권이면 두 사람 모두 못 나간 것이다. 한 줄만 적으면 짝의
+             화면에는 아무 일도 없었던 것처럼 보인다. */
+          for (const memberId of item.memberIds || [item.memberId]) {
+            skips.push({
+              memberId,
+              clientId: item.clientId,
+              reason: SETTLEMENT_SKIP.WRITE_FAILED,
+              code: error?.code || error?.message || "unknown",
+            });
+          }
         }
       }
       /* 한 건도 나가지 않았으면 닫지 않는다. "쓰다 실패하면 닫는다"는 일부라도

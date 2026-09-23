@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   instructorClientSessionsOf, previewLessonRates, previewMemberRate,
 } from "../../src/features/schedule/lesson-rate-preview.js";
+import { planLessonSettlement } from "../../src/features/schedule/lesson-settlement.js";
 import { deductPass } from "../../src/data/repositories/pass-repository.js";
 
 const NOW = new Date(2026, 8, 20, 12, 0, 0);
@@ -171,4 +172,125 @@ test("an attendee the roster does not have is skipped, not guessed at", () => {
     members: [member()], passes: [pass()], totals: totals(40), instructorId: "u1", now: NOW,
   });
   assert.equal(rates.size, 0);
+});
+
+/* ── 차감 규칙 일곱 가지에서 미리보기와 확정이 같은 회원권을 고르는가 ───────
+
+   갈라지면 강사는 화면에서 본 금액과 다른 금액이 원장에 박히는 것을 보게
+   되고, 원장은 append-only 라 그때는 되돌릴 수도 없다. 두 화면이 같은 함수를
+   부른다는 것만으로는 부족하다 -- 규칙마다 실제로 같은 passId 가 나오는지를
+   여기서 견준다. */
+
+const A = "client-a";
+const B = "client-b";
+
+const solo = (id, overrides = {}) => pass({
+  id, clientId: A, clientIds: [A], category: "pt_1_1_repurchase_event", ...overrides,
+});
+const duet = (id, overrides = {}) => pass({
+  id, clientId: A, clientIds: [A, B], category: "pt_2_1_new", baseUnitPrice: 35000, ...overrides,
+});
+
+/** A 의 1:1 2장 + A·B 공유 2장. 공유 쪽이 먼저 만료된다. */
+const FOUR = [
+  solo("solo-late", { expiresAt: new Date(2027, 6, 1) }),
+  solo("solo-soon", { expiresAt: new Date(2027, 5, 1) }),
+  duet("duet-late", { expiresAt: new Date(2026, 11, 1) }),
+  duet("duet-soon", { expiresAt: new Date(2026, 10, 1) }),
+];
+
+const PEOPLE = [
+  member({ id: "m-a", name: "성승현", orgClientId: A }),
+  member({ id: "m-b", name: "김민정", orgClientId: B }),
+];
+const SESSIONS = [
+  { id: "u1_client-a", instructorId: "u1", clientId: A, sessions: 40 },
+  { id: "u1_client-b", instructorId: "u1", clientId: B, sessions: 40 },
+];
+
+test("미리보기와 확정이 일곱 가지 모두 같은 회원권을 고른다", () => {
+  const cases = [
+    { label: "1 A 혼자 출석", attendees: [["m-a", "done"]], expect: { "m-a": "solo-soon" } },
+    {
+      label: "2 둘 다 출석",
+      attendees: [["m-a", "done"], ["m-b", "done"]],
+      expect: { "m-a": "duet-soon", "m-b": "duet-soon" },
+    },
+    {
+      label: "3 한 명 노쇼",
+      attendees: [["m-a", "done"], ["m-b", "noshow"]],
+      expect: { "m-a": "duet-soon", "m-b": "duet-soon" },
+    },
+    {
+      /* 둘 다 노쇼면 확정은 차감하지 않는다. 미리보기는 "확정하면 얼마인가"를
+         보여주는 쪽이라 공유 회원권을 그대로 가리킨다 -- 고르는 회원권은 같다. */
+      label: "4 둘 다 노쇼",
+      attendees: [["m-a", "noshow"], ["m-b", "noshow"]],
+      expect: { "m-a": "duet-soon", "m-b": "duet-soon" },
+      settles: false,
+    },
+    {
+      label: "5 B 미리 취소",
+      attendees: [["m-a", "done"], ["m-b", "cancel"]],
+      expect: { "m-a": "solo-soon" },
+    },
+    {
+      label: "6 1:1 잔여 0",
+      attendees: [["m-a", "done"]],
+      passes: [
+        solo("solo-soon", { expiresAt: new Date(2027, 5, 1), remainingCount: 0 }),
+        duet("duet-soon", { expiresAt: new Date(2026, 10, 1) }),
+      ],
+      skip: { "m-a": "solo_pass_missing" },
+    },
+    {
+      label: "7 각자 1:1",
+      attendees: [["m-a", "done"], ["m-b", "done"]],
+      passes: [
+        solo("solo-a", { expiresAt: new Date(2027, 5, 1) }),
+        pass({ id: "solo-b", clientId: B, clientIds: [B], expiresAt: new Date(2027, 5, 1) }),
+      ],
+      expect: { "m-a": "solo-a", "m-b": "solo-b" },
+    },
+  ];
+
+  for (const item of cases) {
+    const lesson = {
+      id: "lesson-1", date: "2026-09-20", start: "19:00", end: "19:50",
+      attendees: item.attendees.map(([memberId, status]) => ({ memberId, status })),
+    };
+    const passes = item.passes || FOUR;
+    const shared = { lesson, members: PEOPLE, passes, now: NOW };
+
+    const rates = previewLessonRates({ ...shared, totals: SESSIONS, instructorId: "u1" });
+    for (const [memberId, passId] of Object.entries(item.expect || {})) {
+      assert.equal(rates.get(memberId)?.passId, passId, `${item.label} 미리보기 ${memberId}`);
+    }
+    for (const [memberId, reason] of Object.entries(item.skip || {})) {
+      assert.equal(rates.get(memberId)?.skip, reason, `${item.label} 미리보기 사유 ${memberId}`);
+    }
+
+    const plan = planLessonSettlement(shared);
+    const picked = new Map();
+    for (const deduction of plan.deductions) {
+      for (const memberId of deduction.memberIds) picked.set(memberId, deduction.pass.id);
+    }
+    if (item.settles === false) {
+      assert.deepEqual(plan.deductions, [], `${item.label} 확정은 차감하지 않는다`);
+      continue;
+    }
+    for (const [memberId, passId] of Object.entries(item.expect || {})) {
+      assert.equal(picked.get(memberId), passId, `${item.label} 확정 ${memberId}`);
+    }
+    for (const [memberId, reason] of Object.entries(item.skip || {})) {
+      const skip = plan.skips.find((row) => row.memberId === memberId);
+      assert.equal(skip?.reason, reason, `${item.label} 확정 사유 ${memberId}`);
+    }
+    // 공유 회원권은 두 줄에 같은 금액이 서지만 나가는 것은 한 번이다.
+    const sharedRows = [...(item.expect ? Object.keys(item.expect) : [])]
+      .map((memberId) => rates.get(memberId)).filter(Boolean);
+    if (sharedRows.some((row) => row.shared)) {
+      assert.equal(sharedRows.filter((row) => row.deducts).length, 1, `${item.label} 1회만`);
+    }
+  }
 });

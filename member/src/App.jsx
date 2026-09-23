@@ -10,6 +10,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { TYPE } from "../../src/features/ui/type-scale.js";
+import { CENTRE_NAME } from "./brand.js";
 import { linkMemberAccount, sendCode, watchAuth, db } from "./firebase.js";
 import { LINK_RESULT, linkResultScreen } from "./link-result.js";
 import { readMemberLink, readMemberViews } from "./member-data.js";
@@ -46,7 +47,7 @@ function Shell({ children, footer }) {
   return (
     <div className="shell">
       <header className="head">
-        <p style={{ fontSize: TYPE.title, fontWeight: 700 }}>필라티쳐</p>
+        <p style={{ fontSize: TYPE.title, fontWeight: 700 }}>{CENTRE_NAME}</p>
       </header>
       <main className="main">{children}</main>
       {footer}

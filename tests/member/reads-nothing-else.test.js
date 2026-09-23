@@ -112,3 +112,21 @@ test("경로 문자열에 금지된 컬렉션이 없다", async () => {
     }
   }
 });
+
+/* ── 회원에게 이 앱은 센터의 앱이다 ─────────────────────────────────────── */
+
+test("회원 앱은 강사 제품의 이름을 말하지 않는다", async () => {
+  /* "필라티쳐" 는 강사가 쓰는 제품의 이름이다. 회원은 그 이름을 모르고, 자기가
+     다니는 센터의 앱이라고 생각한다 -- 다른 이름이 뜨면 잘못 들어온 줄 안다. */
+  const { CENTRE_NAME } = await import("../../member/src/brand.js");
+  assert.ok(CENTRE_NAME.length > 0, "센터 이름이 비어 있다");
+
+  const html = await readFile(new URL("../../member/index.html", import.meta.url), "utf8");
+  assert.doesNotMatch(html, /필라티쳐/, "index.html 에 필라티쳐가 있다");
+  assert.match(html, new RegExp(CENTRE_NAME), "index.html 에 센터 이름이 없다");
+
+  for (const file of await memberSources()) {
+    if (file.name === "brand.js") continue;
+    assert.doesNotMatch(codeOf(file.text), /필라티쳐/, `${file.name} 에 필라티쳐가 있다`);
+  }
+});

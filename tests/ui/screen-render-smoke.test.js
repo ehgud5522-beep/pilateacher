@@ -113,6 +113,11 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "감사 로그 · 이상 없음",
     "감사 로그 · 조회 실패",
     "감사 로그 · 소속 확인 실패",
+    "회원 앱",
+    "회원 앱 · 대기 없음",
+    "회원 앱 · 권한 없음",
+    "회원 앱 · 조회 실패",
+    "회원 앱 · 점검 어긋남",
     "발급 내역",
     "발급 내역 · 취소 · 이관 제외",
     "발급 내역 · 빈 달",
@@ -1800,4 +1805,73 @@ test("names failing does not hide the numbers", async (t) => {
   assert.match(report, /이름을 불러오지 못했습니다/);
   assert.match(report, /unavailable/);
   assert.match(report, /₩1,300,000/, "숫자는 그대로 선다");
+});
+
+/* ── 회원 앱 연결 ──────────────────────────────────────────────────────────
+
+   회원과 계정을 잇고 끊는 화면이다. 규칙이 memberLinks 를 본인에게만 열어 두므로
+   대표는 서버 함수로만 대기 목록을 볼 수 있고, 그래서 이 화면이 없으면 손으로
+   잇는 문은 부를 수 없는 문이 된다. */
+
+test("the member-app screen is the owner's, exactly like payroll", async (t) => {
+  const markupOf = await issueScreens(t);
+  assert.match(markupOf("더보기 탭"), /회원 앱/);
+  /* 남의 계정과 회원을 잇고 끊는 일이다. 급여보다 좁으면 좁았지 넓지 않다. */
+  assert.doesNotMatch(markupOf("더보기 탭 · 매니저"), /회원 앱/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 강사"), /회원 앱/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 개인 모드"), /회원 앱/);
+});
+
+test("a waiting link shows both candidates by name, never auto-joined", async (t) => {
+  const markupOf = await issueScreens(t);
+  const screen = markupOf("회원 앱");
+  assert.match(screen, /연결 대기/);
+  assert.match(screen, /후보 2명/);
+  // 이름이 보여야 대표가 고를 수 있다. id 만으로는 누구인지 모른다.
+  assert.match(screen, /김하나/);
+  assert.match(screen, /이 회원으로 잇기/);
+  // 자동으로 이었다고 말하지 않는다 -- 잇지 않았다.
+  assert.doesNotMatch(screen, /연결했습니다/);
+});
+
+test("no waiting links reads differently from a failed read", async (t) => {
+  /* 할 일이 없는 것과 못 읽은 것은 대표가 할 일이 다르다. 한 문구로 뭉개면
+     대표는 조용한 고장을 정상으로 읽는다. */
+  const markupOf = await issueScreens(t);
+  const empty = markupOf("회원 앱 · 대기 없음");
+  assert.match(empty, /확인이 필요한 연결이 없습니다/);
+  assert.doesNotMatch(empty, /불러오지 못했습니다/);
+
+  const denied = markupOf("회원 앱 · 권한 없음");
+  assert.match(denied, /대표만 볼 수 있습니다/);
+  assert.match(denied, /permission-denied/);
+  assert.doesNotMatch(denied, /확인이 필요한 연결이 없습니다/);
+
+  const failed = markupOf("회원 앱 · 조회 실패");
+  assert.match(failed, /연결 대기 목록을 불러오지 못했습니다/);
+  assert.match(failed, /unavailable/);
+  assert.match(failed, /다시 시도/);
+  assert.doesNotMatch(failed, /대표만 볼 수 있습니다/);
+});
+
+test("the check says where it stopped and what was wrong, in words", async (t) => {
+  const markupOf = await issueScreens(t);
+  const screen = markupOf("회원 앱 · 점검 어긋남");
+  assert.match(screen, /읽기만 하고/, "점검이 고치지 않는다는 것을 먼저 말한다");
+  assert.match(screen, /5명 확인/);
+  // 코드만 보여주면 대표가 할 일을 알 수 없다.
+  assert.match(screen, /잔여 횟수가 회원권과 다릅니다/);
+  assert.match(screen, /8 != 3/);
+  assert.match(screen, /에서 멈췄습니다/);
+});
+
+test("the member-app screen never shows a price", async (t) => {
+  /* 회원 화면의 값을 다루는 자리다. 여기에 단가가 서면 그 다음은 회원 화면이다. */
+  const markupOf = await issueScreens(t);
+  for (const name of ["회원 앱", "회원 앱 · 점검 어긋남"]) {
+    const screen = markupOf(name);
+    for (const forbidden of ["단가", "₩", "부원장", "급여"]) {
+      assert.doesNotMatch(screen, new RegExp(forbidden), `${forbidden} 가 ${name} 에 있다`);
+    }
+  }
 });

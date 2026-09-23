@@ -20,6 +20,9 @@ const { sendError, GatewayError } = require("./errors");
 const { createFirestoreIdempotencyStore } = require("./idempotency");
 const { createMemberLinkService } = require("./member-link");
 const { createFirestoreMemberLinkPorts } = require("./member-link-store");
+const {
+  createFirestoreMemberViewAdminPorts, createMemberViewAdminService,
+} = require("./member-view-admin");
 const { createMemberLookupService } = require("./member-lookup");
 const { DEFAULT_MODEL, createOpenAIProvider } = require("./openai-provider");
 const { createFirestorePolicyService } = require("./policy");
@@ -85,6 +88,12 @@ const memberLookupService = createMemberLookupService({
 
 const memberLinkService = createMemberLinkService(
   createFirestoreMemberLinkPorts({ firestore, FieldValue }),
+);
+
+/* 투영 점검·재작성. loadBuildJourney 는 아래에 선언돼 있지만 함수 선언이라
+   끌어올려지고, 실제로 불리는 것은 요청이 왔을 때다. */
+const memberViewAdminService = createMemberViewAdminService(
+  createFirestoreMemberViewAdminPorts({ firestore, loadBuildJourney }),
 );
 
 const handler = createAIGatewayHandler({
@@ -288,6 +297,62 @@ exports.listPendingMemberLinks = onCall(
   memberLinkCallable("pending", (request) => memberLinkService.listPending(request)),
 );
 
+/* ── 투영 점검 · 재작성 ───────────────────────────────────────────────────
+   설계 11장. 대표만 부른다. 근거는 member-view-admin.js 머리말에 있다. */
+
+function memberViewAdminHttpsError(error) {
+  const code = String(error?.code || "admin_unavailable");
+  const details = { code, stage: String(error?.stage || "unknown") };
+  if (code === "unauthenticated") return new HttpsError("unauthenticated", "Please sign in again.", details);
+  if (code === "not_owner") return new HttpsError("permission-denied", "Only the centre owner may run this.", details);
+  if (code === "invalid_request") return new HttpsError("invalid-argument", "A location or a member is required.", details);
+  return new HttpsError("unavailable", "The check did not finish. Please retry.", details);
+}
+
+const MEMBER_VIEW_ADMIN_OPTIONS = {
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  /* 회원을 200명까지 훑는다. 함수 안의 시간 예산(45초)이 먼저 걸려 커서를
+     돌려주므로, 이 값은 그 위의 여유다. */
+  timeoutSeconds: 120,
+  memory: "512MiB",
+  invoker: "public",
+};
+
+function memberViewAdminCallable(stage, run) {
+  return async (request) => {
+    try {
+      const result = await run(request);
+      logger.info("member_view_admin_finished", {
+        feature: "member_view", stage,
+        organizationId: String(request?.data?.organizationId || ""),
+        checked: Number(result?.checked) || 0,
+        ok: result?.ok === true,
+        dryRun: result?.dryRun,
+      });
+      return result;
+    } catch (error) {
+      logger.warn("member_view_admin_failed", {
+        feature: "member_view", stage,
+        organizationId: String(request?.data?.organizationId || ""),
+        errorDomain: "member_view_admin",
+        errorCode: String(error?.code || "unknown"),
+        failedStage: String(error?.stage || "unknown"),
+      });
+      throw memberViewAdminHttpsError(error);
+    }
+  };
+}
+
+exports.verifyMemberViews = onCall(
+  MEMBER_VIEW_ADMIN_OPTIONS,
+  memberViewAdminCallable("verify", (request) => memberViewAdminService.verify(request)),
+);
+
+exports.rebuildMemberViews = onCall(
+  MEMBER_VIEW_ADMIN_OPTIONS,
+  memberViewAdminCallable("rebuild", (request) => memberViewAdminService.rebuild(request)),
+);
+
 exports.cleanupExpiredPhotoBackups = onSchedule({
   region: process.env.FUNCTIONS_REGION || "asia-northeast3",
   schedule: "every day 03:00",
@@ -372,5 +437,6 @@ exports._test = {
   accountDeletionHttpsError,
   memberLinkHttpsError,
   memberLookupHttpsError,
+  memberViewAdminHttpsError,
   requestPath,
 };

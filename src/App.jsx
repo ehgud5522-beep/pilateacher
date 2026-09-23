@@ -33,6 +33,7 @@ import {
   fbLoadAIRecordingStatus, fbSendDiagnosticReport, fbWritePilotMetricAttempt,
   fbListPhotoBackups, fbUploadPhotoBackup, fbDownloadPhotoBackup, fbSoftDeletePhotoBackup, fbPurgeExpiredPhotoBackups,
   fbLookupCentreMemberByEmail,
+  fbListPendingMemberLinks, fbLinkMemberAccountByOwner, fbUnlinkMemberAccount, fbVerifyMemberViews,
   AI_CONSENT_POLICY_VERSION, AI_CONSENT_SCOPES,
 } from "./lib/firebase";
 import { runAppDualWrite } from "./data/dual-write/app-runtime";
@@ -17432,6 +17433,292 @@ function IssueReport({
   );
 }
 
+/* 회원 앱 — 연결과 점검. 대표만 본다.
+
+   회원이 자기 번호로 로그인하면 서버가 명부에서 그 사람을 찾아 잇는다. 같은
+   지점에 같은 번호가 둘이면 잇지 않고 여기로 넘어온다 -- 동명이인과 가족 공용
+   번호가 실제로 있고, 한 번 잘못 이으면 남의 회원권을 보게 되며 그 사실은
+   아무도 모른다.
+
+   규칙이 memberLinks 를 본인에게만 열어 두므로 대표는 이 화면(서버 함수)으로만
+   대기 목록을 볼 수 있다. 화면이 없으면 그 문은 부를 수 없는 문이다. */
+/* 서버 함수 넷. 기본은 진짜 통로이고, 스모크는 가짜를 넣는다 -- 화면을
+   그리는 것만으로 네트워크를 타면 그 테스트는 돌지 않는다. */
+const MEMBER_APP_LINKS = {
+  listPending: fbListPendingMemberLinks,
+  linkByOwner: fbLinkMemberAccountByOwner,
+  unlink: fbUnlinkMemberAccount,
+  verify: fbVerifyMemberViews,
+};
+
+function MemberAppAdmin({
+  organization, clientStore, locationStore, links = MEMBER_APP_LINKS,
+  onToast, initialState = null,
+}) {
+  const [pending, setPending] = useState(initialState?.pending || []);
+  const [clients, setClients] = useState(initialState?.clients || []);
+  const [locations, setLocations] = useState(initialState?.locations || []);
+  const [loading, setLoading] = useState(!initialState);
+  const [loadError, setLoadError] = useState(initialState?.loadError || "");
+  const [busyKey, setBusyKey] = useState("");
+  const [checking, setChecking] = useState(false);
+  const [checkResult, setCheckResult] = useState(initialState?.checkResult || null);
+  const [checkError, setCheckError] = useState(initialState?.checkError || "");
+  const organizationId = organization?.organizationId || "";
+  const locked = organization?.status === "unknown";
+  // 다른 관리 화면들과 같은 카드 모양이다.
+  const sectionStyle = { backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 };
+
+  const reload = useCallback(async () => {
+    if (!organizationId) return;
+    setLoading(true);
+    setLoadError("");
+    try {
+      /* 대기 목록이 먼저다. 이름은 명부에서 붙이는데, 명부를 못 읽어도 목록은
+         보여준다 -- id 로라도 보이는 것이 아무것도 안 보이는 것보다 낫다. */
+      const found = await links.listPending({ organizationId });
+      const [clientResult, locationResult] = await Promise.all([
+        toleratingReadFailure(listClients(organizationId, { store: clientStore })),
+        toleratingReadFailure(listLocations(organizationId, { store: locationStore })),
+      ]);
+      setPending(Array.isArray(found) ? found : []);
+      setClients(clientResult.items);
+      setLocations(locationResult.items);
+    } catch (error) {
+      setLoadError(error?.code || error?.message || "unknown");
+      setPending([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [organizationId, clientStore, locationStore, links]);
+
+  useEffect(() => { if (!locked) reload(); else setLoading(false); }, [locked, reload]);
+
+  const nameOfClient = useCallback((id) => (
+    clients.find((item) => item.id === id)?.name || id || "(알 수 없음)"
+  ), [clients]);
+  const nameOfLocation = useCallback((id) => (
+    locations.find((item) => item.id === id)?.name || id || "(지점 없음)"
+  ), [locations]);
+
+  /** 이미 이어진 회원들. 끊는 문이 여기서 나간다. */
+  const linkedClients = useMemo(
+    () => clients.filter((item) => String(item?.userId || "").trim()),
+    [clients],
+  );
+
+  const act = async (key, run, done) => {
+    if (busyKey) return;
+    setBusyKey(key);
+    try {
+      await run();
+      onToast?.({ ok: true, msg: done });
+      await reload();
+    } catch (error) {
+      onToast?.({ ok: false, msg: `처리하지 못했어요 (코드 ${error?.code || "unknown"}).` });
+    } finally {
+      setBusyKey("");
+    }
+  };
+
+  const check = async () => {
+    setChecking(true);
+    setCheckError("");
+    setCheckResult(null);
+    try {
+      /* 읽기 전용이다. 이 버튼은 아무것도 고치지 않는다 -- 고치는 것은
+         rebuildMemberViews 이고 그쪽은 dryRun 을 꺼야 쓴다. */
+      const result = await links.verify({ organizationId, locationId: organization?.locationId || "" });
+      setCheckResult(result || null);
+    } catch (error) {
+      setCheckError(error?.code || error?.message || "unknown");
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  if (locked) {
+    return (
+      <section style={sectionStyle}>
+        <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: BAD }}>소속을 확인하지 못했습니다.</p>
+      </section>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <section style={sectionStyle}>
+        <p style={{ fontSize: TYPE.body, fontWeight: 700, color: INK }}>회원 앱</p>
+        <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB, lineHeight: 1.6 }}>
+          회원이 자기 번호로 로그인하면 자동으로 이어집니다. 같은 지점에 같은 번호가
+          둘이면 자동으로 잇지 않고 여기로 옵니다 — 대표가 직접 고릅니다.
+        </p>
+      </section>
+
+      {loading ? (
+        <section style={sectionStyle}><p style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p></section>
+      ) : null}
+
+      {!loading && loadError ? (
+        <section style={sectionStyle}>
+          <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: BAD }}>
+            {loadError === "permission-denied"
+              ? "이 화면은 대표만 볼 수 있습니다 (코드 permission-denied)."
+              : `연결 대기 목록을 불러오지 못했습니다 (코드 ${loadError}).`}
+          </p>
+          <button type="button" onClick={reload} className="mt-3 h-11 w-full font-bold"
+            style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>다시 시도</button>
+        </section>
+      ) : null}
+
+      {!loading && !loadError ? (
+        <section style={sectionStyle}>
+          <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>연결 대기</p>
+          {pending.length === 0 ? (
+            /* 비어 있는 것은 정상이다. 실패와 다른 문구여야 대표가 할 일이 없다는
+               것을 안다. */
+            <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>
+              확인이 필요한 연결이 없습니다.
+            </p>
+          ) : (
+            <ul className="mt-2 space-y-3">
+              {pending.map((row) => (
+                <li key={row.userId} style={{ borderTop: `1px solid ${LINE}`, paddingTop: 10 }}>
+                  <p className="tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>
+                    {row.phone || "(번호 없음)"}
+                  </p>
+                  <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>
+                    후보 {row.candidates.length}명 — 한 분을 고르면 그 회원의 잔여가 이 계정에 보입니다.
+                  </p>
+                  <div className="mt-2 space-y-2">
+                    {row.candidates.map((candidate) => (
+                      <button key={candidate.clientId} type="button"
+                        disabled={Boolean(busyKey)}
+                        onClick={() => act(
+                          `link/${row.userId}/${candidate.clientId}`,
+                          () => links.linkByOwner({
+                            organizationId, userId: row.userId, clientId: candidate.clientId,
+                          }),
+                          "연결했습니다. 감사에 기록이 남았습니다.",
+                        )}
+                        className="flex h-11 w-full items-center justify-between px-3 font-bold"
+                        style={{
+                          borderRadius: 10, backgroundColor: TINT, color: BRAND_D,
+                          fontSize: TYPE.caption, opacity: busyKey ? 0.5 : 1,
+                        }}>
+                        <span>{nameOfClient(candidate.clientId)} · {nameOfLocation(candidate.locationId)}</span>
+                        <span>이 회원으로 잇기</span>
+                      </button>
+                    ))}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      ) : null}
+
+      {!loading && !loadError ? (
+        <section style={sectionStyle}>
+          <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>연결된 회원</p>
+          {linkedClients.length === 0 ? (
+            <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>아직 연결한 회원이 없습니다.</p>
+          ) : (
+            <ul className="mt-2 space-y-2">
+              {linkedClients.map((item) => (
+                <li key={item.id} className="flex items-center justify-between gap-2">
+                  <span style={{ fontSize: TYPE.caption, color: INK }}>
+                    {item.name} · {nameOfLocation(item.locationId)}
+                  </span>
+                  {/* 끊으면 투영도 그 자리에서 지워진다. userId 만 지우면 이미
+                      깔린 문서를 그 사람이 계속 읽는다. */}
+                  <button type="button" disabled={Boolean(busyKey)}
+                    onClick={() => act(
+                      `unlink/${item.id}`,
+                      () => links.unlink({ organizationId, userId: item.userId, clientId: item.id }),
+                      "연결을 끊었습니다. 회원 화면에서 더 이상 보이지 않습니다.",
+                    )}
+                    className="h-9 shrink-0 px-3 font-bold"
+                    style={{
+                      borderRadius: 10, backgroundColor: CANVAS, color: BAD,
+                      fontSize: TYPE.caption, opacity: busyKey ? 0.5 : 1,
+                    }}>끊기</button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      ) : null}
+
+      {!loading && !loadError ? (
+        <section style={sectionStyle}>
+          <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>점검</p>
+          <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB, lineHeight: 1.6 }}>
+            회원 화면에 보이는 숫자가 회원권과 맞는지 전수로 대조합니다. 읽기만 하고
+            아무것도 고치지 않습니다.
+          </p>
+          <button type="button" onClick={check} disabled={checking}
+            className="mt-3 h-11 w-full font-bold"
+            style={{
+              borderRadius: 10, backgroundColor: TINT, color: BRAND_D,
+              fontSize: TYPE.caption, opacity: checking ? 0.5 : 1,
+            }}>{checking ? "점검하는 중…" : "점검하기"}</button>
+
+          {checkError ? (
+            <p className="mt-3" style={{ fontSize: TYPE.caption, fontWeight: 700, color: BAD }}>
+              {checkError === "permission-denied"
+                ? "점검은 대표만 할 수 있습니다 (코드 permission-denied)."
+                : `점검하지 못했습니다 (코드 ${checkError}).`}
+            </p>
+          ) : null}
+
+          {checkResult ? (
+            <div className="mt-3" style={{ borderTop: `1px solid ${LINE}`, paddingTop: 10 }}>
+              <p className="tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+                {checkResult.checked}명 확인 · 연결 {checkResult.linked}명
+                {checkResult.partial ? " · 아직 남았습니다" : ""}
+              </p>
+              {checkResult.ok ? (
+                <p className="mt-1" style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND_D }}>
+                  어긋난 회원이 없습니다.
+                </p>
+              ) : (
+                /* 어디서부터 어긋났는지가 이 화면의 값어치다. 몇 명이 틀렸는지는
+                   그다음이다. */
+                <>
+                  <p className="mt-1" style={{ fontSize: TYPE.caption, fontWeight: 700, color: BAD }}>
+                    {nameOfClient(checkResult.stoppedAt)} 에서 멈췄습니다.
+                  </p>
+                  <ul className="mt-1 space-y-0.5">
+                    {(checkResult.mismatches || []).map((item, index) => (
+                      <li key={`${item.code}-${index}`} style={{ fontSize: TYPE.caption, color: SUB }}>
+                        {MEMBER_VIEW_MISMATCH_LABEL[item.code] || item.code}
+                        {item.detail ? ` (${item.detail})` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
+/* 무엇이 어긋났는가. functions/src/member-view-admin.js 의 MISMATCH 와 같은
+   목록이다 -- 코드만 보여주면 대표가 할 일을 알 수 없다. */
+const MEMBER_VIEW_MISMATCH_LABEL = {
+  missing: "회원 화면에 보여줄 문서가 없습니다",
+  orphan: "연결을 끊었는데 문서가 남아 있습니다",
+  remaining_total: "잔여 횟수가 회원권과 다릅니다",
+  pass_count: "회원권 건수가 다릅니다",
+  history_count: "수업 이력 건수가 다릅니다",
+  stale_field: "이름·지점이 옛 값입니다",
+  forbidden_field: "보이면 안 되는 항목이 들어 있습니다",
+};
+
 function PayrollSummary({
   organization, locationStore, instructorStore, payrollStore,
   onRetryOrganization, onToast, now = () => new Date(), initialState = null,
@@ -18158,6 +18445,9 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
      보는 화면이라 경계가 같아야 하고, 한쪽만 바꾸면 다음 사람이 왜 다른지
      알 수 없다. */
   const showIssues = showPayroll;
+  /* 회원 앱 연결도 대표만이다. 남의 계정과 회원을 잇고 끊는 일이라 급여보다
+     좁으면 좁았지 넓지 않다. */
+  const showMemberApp = showPayroll;
   /* 감사 로그도 대표만 본다. 규칙도 대표만 허용하므로, 매니저에게 보여 주면
      눌러도 빈 화면만 나온다. */
   const showAudit = organization.ready
@@ -18327,6 +18617,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
     migration: "엑셀 이관",
     payroll: "급여 집계",
     issues: "발급 내역",
+    "member-app": "회원 앱",
     audit: "감사 로그",
   };
   /* 센터를 운영하는 일과 이 기기를 쓰는 일은 다른 묶음이다. 한 그룹에 섞여
@@ -18348,6 +18639,9 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
        한 사람의 것이 아니고, FC매니저에게는 자기 실적만 보이는 화면이 따로
        필요하다 (아직 없다). */
     ...(showIssues ? [{ key: "issues", title: "발급 내역", description: "이달 판매 · 지점별 · 발급자별", Icon: Ticket }] : []),
+    /* 회원이 자기 잔여를 보는 앱. 여기서는 연결만 다룬다 -- 자동으로 잇지 못한
+       것과, 잘못 이은 것과, 화면의 숫자가 맞는지. */
+    ...(showMemberApp ? [{ key: "member-app", title: "회원 앱", description: "연결 대기 · 끊기 · 점검", Icon: Users }] : []),
     ...(showAudit ? [{ key: "audit", title: "감사 로그", description: "이상한 건만 모아 보기 · 전체 이력", Icon: AlertCircle }] : []),
     ...(showMigration ? [{ key: "migration", title: "엑셀 이관", description: "쓰던 엑셀의 회원 · 회원권 올리기", Icon: Upload }] : []),
   ];
@@ -18620,6 +18914,10 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
           <PayrollSummary organization={organization}
             locationStore={locationStore} instructorStore={instructorStore} payrollStore={payrollStore}
             onRetryOrganization={onRetryOrganization} onToast={onToast} />
+        )}
+        {view === "member-app" && showMemberApp && (
+          <MemberAppAdmin organization={organization}
+            clientStore={clientStore} locationStore={locationStore} onToast={onToast} />
         )}
         {view === "issues" && showIssues && (
           <IssueReport organization={organization}
@@ -18953,6 +19251,17 @@ export function createAppScreenSmokeCases() {
   /* 정산 화면이 그리는 것만 본다. 숫자는 집계 함수가 만든 모양 그대로다. */
   const smokePayrollStore = { listOrganizationDeductions: async () => [] };
   const smokeIssueStore = { listOrganizationIssues: async () => [], readCancelEntry: async () => null };
+  const smokeMemberAppLinks = {
+    listPending: async () => [],
+    linkByOwner: async () => ({ status: "linked" }),
+    unlink: async () => ({ status: "rejected" }),
+    verify: async () => ({ checked: 0, linked: 0, ok: true, partial: false, mismatches: [] }),
+  };
+  const memberApp = (organization, initialState) => providerWith(organization, (
+    <MemberAppAdmin organization={readyOrganizationContext(organization)}
+      clientStore={clientStore} locationStore={locationStore}
+      links={smokeMemberAppLinks} onToast={noop} initialState={initialState} />
+  ));
   const issueReport = (organization, initialState) => providerWith(organization, (
     <IssueReport organization={readyOrganizationContext(organization)}
       issueStore={smokeIssueStore} instructorStore={instructorStore} locationStore={locationStore}
@@ -19401,6 +19710,30 @@ export function createAppScreenSmokeCases() {
     }) },
     { name: "감사 로그 · 조회 실패", element: auditLog(smokeOwner, { loadError: "permission-denied" }) },
     { name: "감사 로그 · 소속 확인 실패", element: auditLog({ organizationId: "", role: "", status: "unknown", isLegacy: false }, null) },
+    /* 회원 앱 연결. 대기 목록이 비어 있는 것과 못 읽은 것은 대표가 할 일이
+       다르다 -- 한 문구로 뭉개지 않는다. */
+    { name: "회원 앱", element: memberApp(smokeOwner, {
+      pending: [{
+        userId: "uid-member", phone: "01012345678",
+        candidates: [
+          { organizationId: "smoke-org", clientId: "smoke-client-a", locationId: "bansong" },
+          { organizationId: "smoke-org", clientId: "smoke-client-c", locationId: "bansong" },
+        ],
+      }],
+      clients: smokeClients, locations: smokeLocations,
+    }) },
+    { name: "회원 앱 · 대기 없음", element: memberApp(smokeOwner, {
+      pending: [], clients: smokeClients, locations: smokeLocations,
+    }) },
+    { name: "회원 앱 · 권한 없음", element: memberApp(smokeOwner, { loadError: "permission-denied" }) },
+    { name: "회원 앱 · 조회 실패", element: memberApp(smokeOwner, { loadError: "unavailable" }) },
+    { name: "회원 앱 · 점검 어긋남", element: memberApp(smokeOwner, {
+      pending: [], clients: smokeClients, locations: smokeLocations,
+      checkResult: {
+        checked: 5, linked: 3, ok: false, partial: false, stoppedAt: "smoke-client-a",
+        mismatches: [{ code: "remaining_total", detail: "8 != 3" }],
+      },
+    }) },
     { name: "발급 내역", element: issueReport(smokeOwner, {
       summary: smokeIssueSummary([smokeIssueRow(), smokeIssueRow({
         entryId: "e-2", passId: "pass-2", clientId: "smoke-client-c",

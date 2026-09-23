@@ -86,6 +86,16 @@ const text = (value) => String(value ?? "").trim();
    보는 소속이 서로 다른 문서가 된다. */
 const membershipId = (organizationId, userId) => `${organizationId}_${userId}`;
 
+/**
+ * 이 소속 문서가 지금 일하는 대표의 것인가. 규칙의 `hasRole(["owner"])` 과 같다.
+ *
+ * 한 곳에 둔다 -- 투영 점검 문(member-view-admin.js)도 같은 판정을 쓰는데, 두
+ * 벌이 되면 한쪽만 "퇴사한 대표"를 통과시키는 날이 온다.
+ */
+const isActiveOwner = (membership) => (
+  Boolean(membership) && membership.status === "active" && membership.role === "owner"
+);
+
 /** 후보 하나를 판정에 필요한 만큼만 남긴다. 이름·연락처는 담지 않는다. */
 function normalizeCandidate(candidate) {
   return {
@@ -186,7 +196,7 @@ function createMemberLinkService(dependencies) {
     } catch (error) {
       throw new MemberLinkError("link_unavailable", { stage: STAGES.VERIFY_OWNER, cause: error });
     }
-    if (!membership || membership.status !== "active" || membership.role !== "owner") {
+    if (!isActiveOwner(membership)) {
       throw new MemberLinkError("not_owner", { stage: STAGES.VERIFY_OWNER });
     }
     return membership;
@@ -385,6 +395,7 @@ module.exports = {
   USABLE_CLIENT_STATUS,
   createMemberLinkService,
   decideLink,
+  isActiveOwner,
   membershipId,
   normalizeCandidate,
 };

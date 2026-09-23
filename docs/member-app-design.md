@@ -183,7 +183,26 @@ onWrite(clients/{clientId})→ 그 회원만 재작성
 | 읽는 곳 | `memberViews.journey` **[신규]** ← `buildPassJourney` **[있음]** |
 
 강사 앱의 `src/features/members/pass-journey.js` 가 이미 같은 값을 만든다. 계산을
-두 번 쓰지 않는다 — 그 모듈을 그대로 부르고 결과만 투영한다.
+두 번 쓰지 않는다.
+
+**다만 그 모듈을 Functions 에서 그대로 부를 수 없다** (2026-09-23 확인).
+`firebase.ai-gateway.json` 의 `"source": "functions"` 때문에 배포에는
+`functions/` 만 올라가고, `require("../../src/...")` 는 클라우드에서 모듈을 찾지
+못한다. 게다가 `pass-journey.js` 는 ESM 이고 `functions/` 는 CommonJS 다.
+
+그래서 `buildMemberView` 는 계산을 **주입받는다** (`buildJourney`). 투영 함수는
+순수한 채로 테스트되고 — 테스트는 저장소 안에서 도니 진짜 모듈을 `await import`
+로 넣어 모양까지 확인한다 — 배포에 어떻게 넣을지는 트리거를 만들 때(10장 5번)
+한 번 정한다. 길은 셋이다.
+
+| | |
+| --- | --- |
+| predeploy 로 복사 | `firebase.json` 의 predeploy 훅이 빌드 전에 `functions/` 안으로 넣는다. 원본은 하나로 남는다 |
+| 작은 패키지로 뺀다 | `pass-journey` 를 npm 워크스페이스 패키지로. 가장 깔끔하지만 손이 가장 많이 간다 |
+| functions 안에 옮긴다 | 앱이 `functions/` 를 import 하게 뒤집는다. 앱 빌드에 Functions 디렉터리가 끼어든다 |
+
+주입하지 않으면 `journey` 는 `null` 이고 화면은 그 줄을 그리지 않는다 — 지어낸
+값을 넣는 것보다 없는 편이 낫다.
 
 ---
 
@@ -411,11 +430,11 @@ handoff 의 "매니저 지점 고정" 항목과 같은 일이다. 한 번에 한
 
 | 순서 | 무엇 | 파일 | 왜 이 순서 |
 | --- | --- | --- | --- |
-| 1 | 투영 만드는 순수 함수 | `functions/src/member-view.js` **[신규]** | 허용 목록으로 필드를 고른다. 트리거 없이 테스트할 수 있다 |
-| 2 | 그 함수의 테스트 | `functions/tests/member-view.test.js` **[신규]** | 금지 필드가 결과에 없는지. 여기가 개인정보의 유일한 관문이다 |
+| 1 | 투영 만드는 순수 함수 | `functions/src/member-view.js` **끝남 (2026-09-23)** | 허용 목록으로 필드를 고른다. 트리거 없이 테스트할 수 있다 |
+| 2 | 그 함수의 테스트 | `functions/tests/member-view.test.js` **끝남 · 28개** | 금지 필드가 결과에 없는지. 여기가 개인정보의 유일한 관문이다 |
 | 3 | 규칙 | `firestore.foundation.rules` | `memberViews` · `memberLinks` 두 블록 추가. 기존 문은 손대지 않는다 |
 | 4 | 규칙 테스트 13개 | `tests/rules/firestore.rules.test.js` | 5장 목록. 배포 전에 `npm run test:rules` |
-| 5 | 트리거 | `functions/src/member-view-triggers.js` **[신규]** | `passes` · `ledger` · `clients` 의 onWrite |
+| 5 | 트리거 | `functions/src/member-view-triggers.js` **[신규]** | `passes` · `ledger` · `clients` 의 onWrite. **여기서 pass-journey 배포 방식을 정한다** (3장) |
 | 6 | 연결 함수 | `functions/src/member-link.js` **[신규]** | `linkMemberAccount` · 대표가 잇는 문 · 끊는 문 |
 | 7 | 그 함수의 테스트 | `functions/tests/member-link.test.js` **[신규]** | 경우 다섯 (0건·활성·종료·같은 지점 중복·여러 지점) |
 | 8 | 백필 | `tools/backfill-member-views.mjs` **[신규]** | 11장 |

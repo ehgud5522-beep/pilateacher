@@ -2926,3 +2926,213 @@ describe("the october migration writes what the rules accept", () => {
     await assertSucceeds(setDoc(totalFor(users.owner), migratedTotal()));
   });
 });
+
+/* ── 회원용 조회 앱이 읽는 두 곳 ──────────────────────────────────────────
+
+   회원은 원본을 읽지 않는다. 투영(memberViews)과 자기 링크(memberLinks) 둘만
+   읽는다 -- docs/member-app-design.md 5장.
+
+   쓰기는 어느 쪽도 열지 않는다. 그 둘을 쓰는 것은 서버(Admin SDK)뿐이고,
+   Admin SDK 는 규칙을 지나지 않는다.
+
+   ── 이 describe 가 쓰는 회원은 소속 문서가 없다 ──
+   위쪽 fixture 의 users.member 는 role "member" 로 memberships 문서를 갖고
+   있다. 실제 회원 앱 사용자는 그것을 갖지 않는다 (설계 4장) -- 그 차이가
+   결정적이라 여기서는 소속 없는 사용자를 따로 만든다. 왜 결정적인지는 아래
+   "소속 문서 하나가 원장을 연다" 가 보여준다. */
+
+const APP_MEMBER = "app-member-a";
+const APP_MEMBER_CLIENT = "client-app-member";
+
+describe("what the member app may read", () => {
+  const viewRef = (userId, clientId = APP_MEMBER_CLIENT) =>
+    doc(dbFor(userId), "organizations", ORG_A, "memberViews", clientId);
+  const viewsOf = (userId) =>
+    collection(dbFor(userId), "organizations", ORG_A, "memberViews");
+  const linkRef = (userId, documentId = userId) =>
+    doc(dbFor(userId), "memberLinks", documentId);
+
+  const projection = (overrides = {}) => ({
+    organizationId: ORG_A,
+    clientId: APP_MEMBER_CLIENT,
+    userId: APP_MEMBER,
+    name: "회원",
+    locationName: "반송점",
+    clientStatus: "active",
+    remainingTotal: 8,
+    nextExpiresAt: Timestamp.fromDate(new Date(2027, 0, 31)),
+    passes: [],
+    history: [],
+    journey: null,
+    updatedAt: serverTimestamp(),
+    ...overrides,
+  });
+
+  const link = (overrides = {}) => ({
+    userId: APP_MEMBER,
+    phone: "01012345678",
+    organizationId: ORG_A,
+    clientId: APP_MEMBER_CLIENT,
+    status: "linked",
+    ...overrides,
+  });
+
+  beforeEach(async () => {
+    /* 규칙을 지나지 않는 쓰기로 심는다 -- 실제로도 Admin SDK 가 쓴다.
+       이 사용자에게 memberships 문서를 만들지 않는 것이 핵심이다. */
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      await setDoc(doc(db, "organizations", ORG_A, "clients", APP_MEMBER_CLIENT), {
+        organizationId: ORG_A, userId: APP_MEMBER, name: "회원", phone: "01012345678", status: "active",
+      });
+      await setDoc(doc(db, "organizations", ORG_A, "memberViews", APP_MEMBER_CLIENT), projection());
+      await setDoc(doc(db, "organizations", ORG_A, "memberViews", "client-other"), projection({
+        clientId: "client-other", userId: "another-member",
+      }));
+      await setDoc(doc(db, "memberLinks", APP_MEMBER), link());
+      await setDoc(doc(db, "memberLinks", "another-member"), link({ userId: "another-member" }));
+    });
+  });
+
+  /* 1 */
+  test("a member reads their own projection", async () => {
+    const snapshot = await assertSucceeds(getDoc(viewRef(APP_MEMBER)));
+    assert.equal(snapshot.data().remainingTotal, 8);
+  });
+
+  /* 2 */
+  test("a member cannot read somebody else's projection", async () => {
+    await assertFails(getDoc(viewRef(APP_MEMBER, "client-other")));
+  });
+
+  /* 3 */
+  test("nobody lists the projections, not even the owner", async () => {
+    /* 회원은 자기 clientId 를 memberLinks 에서 알고 그 문서 하나만 읽는다.
+       목록을 열면 "내 것만" 을 증명할 필터를 요구하게 되고, 그 필터를 빼먹은
+       질의 하나가 센터 전체를 넘긴다. */
+    for (const userId of [APP_MEMBER, users.owner, users.manager, users.instructor, users.staff]) {
+      await assertFails(getDocs(viewsOf(userId)), `${userId} 가 투영 목록을 훑는다`);
+    }
+  });
+
+  /* 4 */
+  test("a member reads their own link and nobody else's", async () => {
+    const snapshot = await assertSucceeds(getDoc(linkRef(APP_MEMBER)));
+    assert.equal(snapshot.data().clientId, APP_MEMBER_CLIENT);
+    await assertFails(getDoc(linkRef(APP_MEMBER, "another-member")));
+  });
+
+  /* 5 */
+  test("a member cannot read passes — the unit prices live there", async () => {
+    await assertFails(getDoc(doc(dbFor(APP_MEMBER), "organizations", ORG_A, "passes", PASS_A)));
+    await assertFails(getDocs(collection(dbFor(APP_MEMBER), "organizations", ORG_A, "passes")));
+  });
+
+  /* 6 */
+  test("a member cannot read the ledger — every entry carries a price and a rule", async () => {
+    await assertFails(getDoc(doc(
+      dbFor(APP_MEMBER), "organizations", ORG_A, "passes", PASS_A, "ledger", "entry-issue",
+    )));
+    await assertFails(getDocs(collection(
+      dbFor(APP_MEMBER), "organizations", ORG_A, "passes", PASS_A, "ledger",
+    )));
+  });
+
+  /* 7 */
+  test("a member cannot read the instructor's lesson notes", async () => {
+    await assertFails(getDocs(collection(dbFor(APP_MEMBER), "organizations", ORG_A, "lessonNotes")));
+  });
+
+  /* 8 */
+  test("a member cannot list the client directory", async () => {
+    // 연락처가 들어 있다. 투영에는 이름만 실린다.
+    await assertFails(getDocs(collection(dbFor(APP_MEMBER), "organizations", ORG_A, "clients")));
+  });
+
+  /* 9 */
+  test("nobody writes a projection — not the owner, not anyone", async () => {
+    /* 이 문서를 쓰는 것은 서버 트리거(Admin SDK)뿐이다. 앱 쪽에 쓰기를 한 칸이라도
+       열면 그 경로로 들어온 값이 허용 목록을 거치지 않고, 그러면 이 문서가
+       개인정보의 관문이라는 말이 거짓이 된다. */
+    for (const userId of [users.owner, users.manager, users.instructor, users.staff, APP_MEMBER]) {
+      await assertFails(setDoc(
+        doc(dbFor(userId), "organizations", ORG_A, "memberViews", `view-by-${userId}`),
+        projection({ clientId: `client-${userId}` }),
+      ), `${userId} 가 투영을 만든다`);
+      await assertFails(updateDoc(viewRef(userId), { remainingTotal: 999 }), `${userId} 가 투영을 고친다`);
+      await assertFails(deleteDoc(viewRef(userId)), `${userId} 가 투영을 지운다`);
+    }
+  });
+
+  /* 10 */
+  test("nobody writes a link either — connecting is the server's job", async () => {
+    for (const userId of [users.owner, users.manager, APP_MEMBER]) {
+      await assertFails(setDoc(linkRef(userId, `link-by-${userId}`), link({ userId })), `${userId} 가 링크를 만든다`);
+      await assertFails(updateDoc(linkRef(userId, APP_MEMBER), { clientId: "client-other" }), `${userId} 가 링크를 고친다`);
+      await assertFails(deleteDoc(linkRef(userId, APP_MEMBER)), `${userId} 가 링크를 지운다`);
+    }
+  });
+
+  /* 11 */
+  test("a member cannot write to the sources the projection is built from", async () => {
+    await assertFails(updateDoc(
+      doc(dbFor(APP_MEMBER), "organizations", ORG_A, "clients", APP_MEMBER_CLIENT),
+      { userId: "another-member" },
+    ));
+    await assertFails(updateDoc(
+      doc(dbFor(APP_MEMBER), "organizations", ORG_A, "passes", PASS_A),
+      { remainingCount: 99 },
+    ));
+  });
+
+  /* 12 */
+  test("a member cannot reach the centre's own records", async () => {
+    await assertFails(getDocs(query(
+      collection(dbFor(APP_MEMBER), "auditLogs"), where("organizationId", "==", ORG_A),
+    )));
+    await assertFails(getDocs(query(
+      collection(dbFor(APP_MEMBER), "memberships"), where("organizationId", "==", ORG_A),
+    )));
+    await assertFails(getDocs(collection(
+      dbFor(APP_MEMBER), "organizations", ORG_A, "instructorClientTotals",
+    )));
+  });
+
+  /* 13 */
+  test("signed out, all of it is closed", async () => {
+    await assertFails(getDoc(viewRef(null)));
+    await assertFails(getDoc(linkRef(null, APP_MEMBER)));
+    await assertFails(getDocs(viewsOf(null)));
+    await assertFails(setDoc(
+      doc(dbFor(null), "organizations", ORG_A, "memberViews", "view-by-nobody"),
+      projection(),
+    ));
+  });
+
+  /* 14 — 회귀 */
+  test("the existing doors are untouched", async () => {
+    /* 회원 문을 내다가 강사 문을 막아도 아무도 모른다. 새 블록만 더했다는 것을
+       여기서 한 번 더 확인한다. */
+    await assertSucceeds(getDoc(doc(dbFor(users.instructor), "organizations", ORG_A, "passes", PASS_A)));
+    await assertSucceeds(getDocs(collection(dbFor(users.owner), "organizations", ORG_A, "clients")));
+    await assertSucceeds(getDoc(doc(dbFor(users.member), "organizations", ORG_A, "clients", "client-member")));
+  });
+
+  /* 15 — 이 설계가 기대고 있는 것 */
+  test("one membership document opens the whole ledger, whatever the role says", async () => {
+    /* 여기가 이 설계의 약한 고리다. passes 와 ledger 의 read 는 isActiveMember
+       하나만 본다 -- 역할을 보지 않는다. 그래서 role "member" 라도 소속 문서가
+       있으면 센터의 모든 회원권과 원장을 읽는다. 단가도 급여 판정도 함께.
+
+       위쪽 fixture 의 users.member 가 바로 그 상태라 이것이 성공한다. 실패하게
+       만드는 것이 아니라 사실을 적어 둔다 -- 이 줄이 빨개지는 날은 규칙이 더
+       좁아진 날이고, 그때 이 테스트를 지우면 된다.
+
+       그래서 linkMemberAccount(설계 10장 6번)는 memberships 문서를 만들지
+       않는다. 투영 전체가 그 한 줄에 기대고 있다. */
+    await assertSucceeds(getDoc(doc(dbFor(users.member), "organizations", ORG_A, "passes", PASS_A)));
+
+    // 소속이 없는 진짜 회원 앱 사용자는 같은 문서를 읽지 못한다.
+    await assertFails(getDoc(doc(dbFor(APP_MEMBER), "organizations", ORG_A, "passes", PASS_A)));
+  });
+});

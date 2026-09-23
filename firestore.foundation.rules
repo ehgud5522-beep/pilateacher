@@ -323,6 +323,32 @@ service cloud.firestore {
         allow delete: if false;
       }
 
+      /* ── 회원이 읽는 유일한 곳 ────────────────────────────────────────
+         회원용 조회 앱이 이 문서 하나만 읽는다 (docs/member-app-design.md).
+
+         왜 원본이 아니라 투영인가: 규칙은 문서 단위로만 열고 닫는다. passes 한
+         문서에 remainingCount 와 baseUnitPrice·netContractPrice 가 같이 있어서,
+         회원에게 그 문서를 열면 단가가 함께 나간다. 원장은 항목마다 unitPrice 와
+         rule 을 들고 있어 더 심하다.
+
+         그래서 functions/src/member-view.js 가 허용 목록으로 골라 만든 문서를
+         여기에 두고, 회원은 그것만 읽는다.
+
+         쓰기는 어느 역할에도 열지 않는다 -- 대표도 아니다. 이 문서를 쓰는 것은
+         서버 트리거(Admin SDK)뿐이고, Admin SDK 는 규칙을 지나지 않는다. 앱
+         쪽에 쓰기를 한 칸이라도 열면 그 경로로 들어온 값이 허용 목록을 거치지
+         않고, 그러면 이 문서가 개인정보의 관문이라는 말이 거짓이 된다.
+
+         list 도 닫는다. 회원은 자기 clientId 를 memberLinks 에서 알고 그 문서
+         하나만 읽는다 -- 목록이 필요 없고, 열면 "내 것만" 을 증명할 필터를
+         요구하게 된다. */
+      match /memberViews/{clientId} {
+        allow get: if signedIn()
+          && resource.data.userId == request.auth.uid;
+        allow list: if false;
+        allow create, update, delete: if false;
+      }
+
       match /lessons/{lessonId} {
         // See the locations block for why get and list are split.
         allow get: if isActiveMember(organizationId)
@@ -865,6 +891,23 @@ service cloud.firestore {
           resource.data.instructorId == request.auth.uid
           || hasRole(resource.data.organizationId, ["owner", "manager"])
         );
+    }
+
+    /* ── 계정과 회원을 잇는 기록 ──────────────────────────────────────────
+       전화번호 인증을 마친 회원이 어느 clientId 에 이어졌는가, 또는 왜 이어지지
+       못했는가 (docs/member-app-design.md 4장).
+
+       본인만 읽는다. 문서 id 가 곧 uid 라 resource 를 보지 않고 경로로 판정할
+       수 있다 -- 없는 문서를 물어도 같은 답이 나오고, 남의 링크는 애초에 가리킬
+       수 없다.
+
+       쓰기는 전부 닫는다. 이 문서를 쓰는 것은 linkMemberAccount(Admin SDK)
+       뿐이다. 클라이언트에게 한 칸이라도 열면 아무 번호나 적어 남의 회원권에
+       붙을 수 있다 -- 그 함수가 인증 토큰의 전화번호만 믿는 이유와 같다. */
+    match /memberLinks/{userId} {
+      allow get: if signedIn() && request.auth.uid == userId;
+      allow list: if false;
+      allow create, update, delete: if false;
     }
 
     match /memberships/{membershipDocumentId} {

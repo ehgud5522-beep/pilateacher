@@ -19,11 +19,13 @@ import {
   History, Home, Journey, LinkNotice, LoadFailed, Loading, NotMigrated, Passes, Preparing,
 } from "./screens.jsx";
 
+/* 아이콘은 인라인 SVG 다. 아이콘 묶음을 하나 들이면 번들이 늘고, 이 앱이
+   쓰는 것은 넷뿐이다. */
 const TABS = [
-  { key: "home", label: "홈" },
-  { key: "passes", label: "회원권" },
-  { key: "history", label: "수업" },
-  { key: "journey", label: "여정" },
+  { key: "home", label: "홈", path: "M3 10.5 12 3l9 7.5M5.5 9.5V20h13V9.5" },
+  { key: "passes", label: "회원권", path: "M3 9a3 3 0 0 1 3-3h12a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3zM3 11h18" },
+  { key: "history", label: "수업", path: "M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0M12 7v5l3 2" },
+  { key: "journey", label: "여정", path: "M4 19c4-1 5-6 8-6s4 5 8 4" },
 ];
 
 const text = (value) => String(value ?? "").trim();
@@ -46,9 +48,8 @@ export default function App() {
 function Shell({ children, footer }) {
   return (
     <div className="shell">
-      <header className="head">
-        <p style={{ fontSize: TYPE.title, fontWeight: 700 }}>{CENTRE_NAME}</p>
-      </header>
+      {/* 센터 이름은 작고 얇게 위에만. 화면의 주인공은 남은 횟수다. */}
+      <header className="head">{CENTRE_NAME}</header>
       <main className="main">{children}</main>
       {footer}
       <div id="recaptcha" />
@@ -97,8 +98,10 @@ function SignIn({ signedIn }) {
   return (
     <Shell>
       <section className="card">
-        <p style={{ fontSize: TYPE.body, fontWeight: 700 }}>
-          {signedIn ? "오랜만이에요. 번호를 한 번 더 확인할게요." : "휴대폰 번호로 시작해요"}
+        <p className="serif" style={{ fontSize: TYPE.heading, lineHeight: 1.5 }}>
+          {signedIn
+            ? <>오랜만이에요.<br />번호를 한 번 더 확인할게요.</>
+            : <>휴대폰 번호로<br />시작해요</>}
         </p>
         <p className="muted mt" style={{ fontSize: TYPE.caption }}>
           센터에 등록된 번호를 입력해 주세요.
@@ -215,8 +218,12 @@ function Tabs({ tab, onPick }) {
         <button key={item.key} type="button"
           className={`tab${tab === item.key ? " on" : ""}`}
           aria-current={tab === item.key ? "page" : undefined}
-          onClick={() => onPick(item.key)} style={{ fontSize: TYPE.caption }}>
-          {item.label}
+          onClick={() => onPick(item.key)}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"
+            strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d={item.path} />
+          </svg>
+          <span>{item.label}</span>
         </button>
       ))}
     </nav>

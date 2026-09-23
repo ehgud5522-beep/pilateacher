@@ -82,9 +82,20 @@ test("잔여 0 과 종료 회원은 서로 다른 말을 한다", async (t) => {
 
 test("회원권은 서비스 회차를 합쳐 총 회차로 보여준다", async (t) => {
   const markupOf = await memberScreens(t);
-  // 20 + 서비스 2 = 22회권. 서비스도 회원이 쓰는 회차다.
-  assert.match(markupOf("회원권"), /2차 22회권/);
-  assert.match(markupOf("회원권"), /8회/);
+  const passes = markupOf("회원권");
+  // 20 + 서비스 2 = 22회. 서비스도 회원이 쓰는 회차다.
+  assert.match(passes, /22회 회원권/);
+  assert.match(passes, /22회 중 <b>8회<\/b> 남았어요/);
+});
+
+test("내부 표현을 화면에 쓰지 않는다", async (t) => {
+  /* "2차" 는 우리가 세는 방식이고 회원은 그렇게 세지 않는다. 분수도 쓰지
+     않는다 -- "8/22회" 는 읽는 사람에게 남은 것을 말해 주지 않는다. */
+  const markupOf = await memberScreens(t);
+  const passes = markupOf("회원권");
+  assert.match(passes, /2번째 회원권/);
+  assert.doesNotMatch(passes, /2차/);
+  assert.doesNotMatch(passes, /\d+\/\d+회/);
 });
 
 test("듀엣은 함께 쓴다는 것을 반드시 적는다", async (t) => {
@@ -108,8 +119,10 @@ test("회원권이 없으면 빈 상태를 그대로 보여준다", async (t) =>
 test("이력은 날짜와 강사 이름만 보여준다", async (t) => {
   const markupOf = await memberScreens(t);
   const history = markupOf("수업 이력");
-  assert.match(history, /수업 · 정예진/);
-  assert.match(history, /9\/18/);
+  assert.match(history, /9월 18일/);
+  // 2026-09-18 은 금요일이다. 요일을 날짜에서 계산하는지까지 본다.
+  assert.match(history, /금/);
+  assert.match(history, /정예진/);
 });
 
 test("되돌린 차감은 숨기지 않는다", async (t) => {
@@ -121,7 +134,11 @@ test("되돌린 차감은 숨기지 않는다", async (t) => {
 
 test("아직 수업이 없으면 기다린다고 말한다", async (t) => {
   const markupOf = await memberScreens(t);
-  assert.match(markupOf("수업 이력 · 없음"), /첫 수업을 기다리고 있어요/);
+  const empty = markupOf("수업 이력 · 없음");
+  assert.match(empty, /첫 수업을/);
+  assert.match(empty, /기다리고 있어요/);
+  // 빈 상태에 일러스트나 예시를 그리지 않는다. 여백이 문구를 받친다.
+  assert.doesNotMatch(empty, /<img/);
 });
 
 /* ── 여정 ────────────────────────────────────────────────────────────── */
@@ -129,15 +146,27 @@ test("아직 수업이 없으면 기다린다고 말한다", async (t) => {
 test("여정은 앱 이전 기록도 함께 센다", async (t) => {
   const markupOf = await memberScreens(t);
   const journey = markupOf("여정");
-  assert.match(journey, /26회/);
+  assert.match(journey, /26/);
   assert.match(journey, /앱 이전 기록/);
-  assert.match(journey, /12\/12회/);
-  assert.match(journey, /2차/);
+  assert.match(journey, /12회 중 12회/);
+  assert.match(journey, /2번째 회원권/);
+});
+
+test("여정은 다음 이정표까지 몇 번 남았는지 말한다", async (t) => {
+  const markupOf = await memberScreens(t);
+  const journey = markupOf("여정");
+  // 26번이면 30회가 다음이다. 함께한 횟수를 세는 것이지 재등록을 권하는 것이 아니다.
+  assert.match(journey, /30회까지 4번 남았어요/);
+  for (const forbidden of ["재등록", "연장", "구매", "결제"]) {
+    assert.doesNotMatch(journey, new RegExp(forbidden), `${forbidden} 가 여정에 있다`);
+  }
 });
 
 test("여정이 없으면 빈 줄을 그리지 않는다", async (t) => {
   const markupOf = await memberScreens(t);
-  assert.match(markupOf("여정 · 없음"), /수업이 쌓이면/);
+  const empty = markupOf("여정 · 없음");
+  assert.match(empty, /쌓이면 보여 드릴게요/);
+  assert.doesNotMatch(empty, /번 함께했어요/);
 });
 
 /* ── 상태 넷 ─────────────────────────────────────────────────────────── */
@@ -187,7 +216,12 @@ test("회원 화면 어디에도 금액이 없다", async (t) => {
      문의만 는다. 투영에 애초에 담기지 않지만 화면도 다시 확인한다. */
   const markupOf = await memberScreens(t);
   const all = markupOf("전부");
-  for (const forbidden of ["₩", "원", "단가", "부원장", "급여"]) {
+  /* 낱말 "원" 하나로 세지 않는다 -- "회원권" 에 들어 있다. 돈으로 읽히는
+     모양만 본다: ₩ · 숫자 뒤의 원 · 천 단위 쉼표. */
+  assert.doesNotMatch(all, /₩/, "₩ 가 회원 화면에 있다");
+  assert.doesNotMatch(all, /\d\s*원/, "금액이 회원 화면에 있다");
+  assert.doesNotMatch(all, /\d,\d{3}/, "천 단위 금액이 회원 화면에 있다");
+  for (const forbidden of ["단가", "부원장", "급여", "결제", "카드", "현금"]) {
     assert.doesNotMatch(all, new RegExp(forbidden), `${forbidden} 가 회원 화면에 있다`);
   }
 });

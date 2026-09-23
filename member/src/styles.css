@@ -1,9 +1,15 @@
-/* 회원 앱의 전부. Tailwind 를 쓰지 않는다 -- 화면 넷이라 빌드를 하나 더
-   들일 이유가 없고, 번들이 작을수록 지하 스튜디오에서 빨리 뜬다.
+/* 보니따 멤버십.
+   ─────────────────────────────────────────────────────────────────────────
+   시안 A(아이보리)가 라이트, 시안 B(딥 톤)가 다크다. 두 벌 중 하나를 고른
+   것이 아니라 **같은 디자인의 두 모드**이고, 기기 설정을 따라간다.
+
+   Tailwind 를 쓰지 않는다 -- 화면 넷이라 빌드를 하나 더 들일 이유가 없고,
+   번들이 작을수록 지하 스튜디오에서 빨리 뜬다.
 
    글자 크기는 강사 앱과 같은 여섯 단계다 (src/features/ui/type-scale.js 가
    이 변수를 가리킨다). 값을 여기 다시 적는 것은 두 앱이 다른 CSS 를 쓰기
    때문이고, 단계 자체는 그 파일이 정한다. */
+
 :root {
   --t-caption: 13px;
   --t-body: 15px;
@@ -12,28 +18,69 @@
   --t-display: 24px;
   --t-hero: 32px;
 
-  --page: #F2F2F7;
+  /* 라이트 — 따뜻한 아이보리 바탕, 짙은 차콜 글자. */
+  --page: #FAF7F4;
   --card: #FFFFFF;
-  --line: #EBEBF2;
-  --ink: #17171F;
-  --sub: #6B6B7B;
-  --brand: #5B4CDB;
-  --warn: #B4531A;
-  --warn-bg: #FFF6EF;
+  --card-tone: #FFFDFB;
+  --ink: #2B2426;
+  --sub: #8A7C7F;
+  --faint: #B3A6A8;
+  --line: rgba(43, 36, 38, .07);
+  --shadow: 0 1px 2px rgba(43, 36, 38, .03), 0 8px 24px rgba(43, 36, 38, .05);
+  /* 로즈. 보니따 핫핑크를 한 톤 낮춘 값이고, 쓰는 자리는 넷뿐이다 --
+     활성 탭 · 상품명 밑줄 · 잔여 숫자 · 마일스톤 점. */
+  --rose: #C25B78;
+  --blush: linear-gradient(152deg, #F7E6EA 0%, #FAF0EC 52%, #F6EDE6 100%);
+  --ring: rgba(194, 91, 120, .16);
+  --tab-bg: rgba(255, 255, 255, .92);
+  --mile-off: #EDE4E2;
+  --on-rose: #FFFFFF;
+}
+
+/* 다크 — 기기 설정을 따른다. 저녁 수업 뒤 어두운 데서 여는 화면이다. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --page: #221C1E;
+    --card: #2B2325;
+    --card-tone: #2F2629;
+    --ink: #F4EEEA;
+    --sub: #A2938F;
+    --faint: #7A6C69;
+    --line: rgba(244, 238, 234, .07);
+    --shadow: 0 1px 2px rgba(0, 0, 0, .20), 0 10px 30px rgba(0, 0, 0, .28);
+    /* 어두운 바탕에서 같은 로즈는 읽히지 않는다. 한 단계 밝게. */
+    --rose: #DE8CA3;
+    --blush: linear-gradient(152deg, #4A3038 0%, #37272C 55%, #2C2326 100%);
+    --ring: rgba(222, 140, 163, .20);
+    --tab-bg: rgba(43, 35, 37, .92);
+    --mile-off: #3A2F31;
+    --on-rose: #221C1E;
+  }
 }
 
 * { box-sizing: border-box; }
+p, h1, h2, ul, ol, li, figure { margin: 0; padding: 0; }
+ul, ol { list-style: none; }
 
 body {
   margin: 0;
   background: var(--page);
   color: var(--ink);
-  font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Pretendard",
-    "Malgun Gothic", system-ui, sans-serif;
+  /* 웹폰트가 늦거나 막혀도 화면은 바로 선다. 잔여 횟수를 보러 온 사람을
+     글꼴 때문에 기다리게 하지 않는다. */
+  font-family: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont,
+    "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
   -webkit-text-size-adjust: 100%;
 }
 
-/* 세로 폰이 기준이다. 회원은 폰으로 본다. */
+/* 큰 숫자와 제목만 세리프다. 이 디자인의 인상이 거기서 나온다. */
+.serif {
+  font-family: "Gowun Batang", "Nanum Myeongjo", "Apple SD Gothic Neo", serif;
+  font-weight: 400;
+  letter-spacing: -.01em;
+}
+
+/* 세로 폰이 기준이다. 8pt 그리드 -- 좌우 24, 카드 사이 16. */
 .shell {
   display: flex;
   flex-direction: column;
@@ -41,87 +88,212 @@ body {
   max-width: 480px;
   margin: 0 auto;
 }
-
-.head { padding: 16px 16px 8px; }
-.main { flex: 1; padding: 8px 16px 24px; }
-.stack > * + * { margin-top: 12px; }
+.head {
+  padding: 18px 24px 6px;
+  font-size: 11px;
+  letter-spacing: .18em;
+  color: var(--faint);
+}
+.main { flex: 1; padding: 8px 24px 112px; }
+.stack > * + * { margin-top: 16px; }
 
 .card {
   background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 16px;
+  border-radius: 20px;
+  padding: 20px;
+  box-shadow: var(--shadow);
 }
-.card-warn { background: var(--warn-bg); border-color: var(--warn); }
+/* 테두리 대신 톤 차이. 지난 회원권처럼 물러나야 하는 것에 쓴다. */
+.card.quietcard { background: var(--card-tone); box-shadow: none; }
+.card.warn { background: var(--card-tone); }
 
 .muted { color: var(--sub); }
-.note { color: var(--warn); }
 .mt { margin-top: 8px; }
-p { margin: 0; }
-
-.hero { margin-top: 4px; font-weight: 700; line-height: 1.1; }
 .num { font-variant-numeric: tabular-nums; }
 
-.row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-.list { margin: 0; padding: 0; list-style: none; }
-.list > li + li { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 10px; }
+/* ── 홈 ────────────────────────────────────────────────────────────── */
+
+.greet { padding: 10px 0 22px; }
+.greet .hello { font-size: var(--t-heading); line-height: 1.45; }
+.greet .place { margin-top: 6px; font-size: var(--t-caption); color: var(--sub); letter-spacing: .02em; }
+
+.membership {
+  position: relative;
+  background: var(--blush);
+  border-radius: 24px;
+  padding: 32px 28px 28px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.membership .cap { font-size: var(--t-caption); color: var(--sub); letter-spacing: .06em; }
+.membership .big { font-size: 76px; line-height: 1.05; margin-top: 2px; letter-spacing: -.03em; }
+.membership .big span { font-size: var(--t-title); margin-left: 6px; letter-spacing: 0; }
+.membership .name {
+  display: inline-block;
+  margin-top: 14px;
+  font-size: var(--t-body);
+  font-weight: 600;
+  border-bottom: 1.5px solid var(--rose);
+  padding-bottom: 2px;
+}
+.membership .until { margin-top: 10px; font-size: var(--t-caption); color: var(--sub); }
+.ring { position: absolute; right: 24px; top: 30px; width: 116px; height: 116px; }
+
+.rowcard { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.together .big { margin-top: 6px; font-size: var(--t-display); }
+.together .big em { font-style: normal; color: var(--rose); }
+
+/* ── 회원권 ────────────────────────────────────────────────────────── */
+
+.title { padding: 10px 0 18px; font-size: var(--t-heading); }
+.group { margin: 4px 0 10px; font-size: var(--t-caption); color: var(--sub); letter-spacing: .08em; }
+.stack .group:not(:first-child) { margin-top: 24px; }
+.pass .name { font-size: var(--t-body); font-weight: 600; letter-spacing: -.01em; }
+.pass .rem { font-size: var(--t-display); color: var(--rose); letter-spacing: -.02em; }
+.pass .rem span { font-size: var(--t-caption); margin-left: 2px; }
+.pass .meta { margin-top: 6px; font-size: var(--t-caption); color: var(--sub); line-height: 1.6; }
+.pass .meta b { color: var(--ink); font-weight: 600; }
+.pass .duet {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  font-size: var(--t-caption);
+  color: var(--sub);
+  line-height: 1.7;
+}
+.pass .duet em { color: var(--rose); font-style: normal; font-weight: 600; }
+
+/* ── 수업 ──────────────────────────────────────────────────────────── */
+
+.count { font-size: var(--t-caption); color: var(--sub); margin-bottom: 16px; }
+.timeline > li { position: relative; display: flex; align-items: flex-start; gap: 14px; padding-bottom: 22px; }
+.timeline > li::before {
+  content: "";
+  position: absolute;
+  left: 4.5px; top: 16px; bottom: 0;
+  width: 1px;
+  background: var(--line);
+}
+.timeline > li:last-child { padding-bottom: 0; }
+.timeline > li:last-child::before { display: none; }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--rose); margin-top: 6px; flex-shrink: 0; opacity: .85; }
+.timeline .body { flex: 1; }
+.timeline .when { font-size: var(--t-title); }
+.timeline .when em { font-style: normal; font-size: var(--t-caption); color: var(--faint); margin-left: 6px; }
+.timeline .who { margin-top: 4px; font-size: var(--t-caption); color: var(--sub); }
+.timeline .one { font-size: var(--t-caption); color: var(--faint); margin-top: 6px; }
+.more { font-size: var(--t-caption); color: var(--faint); text-align: center; padding-top: 18px; }
+
+/* 빈 상태도 일러스트 없이. 여백이 문구를 받쳐 준다. */
+.empty { padding: 96px 0 0; text-align: center; }
+.empty .big { font-size: var(--t-display); line-height: 1.7; }
+.empty .sub { margin-top: 20px; font-size: var(--t-caption); color: var(--sub); line-height: 1.9; }
+
+/* ── 여정 ──────────────────────────────────────────────────────────── */
+
+.sum { text-align: center; padding: 28px 0 30px; }
+.sum .cap { font-size: var(--t-caption); color: var(--sub); letter-spacing: .08em; }
+.sum .big { font-size: 72px; line-height: 1.1; margin: 6px 0; letter-spacing: -.03em; }
+.sum .big span { font-size: var(--t-heading); margin-left: 4px; }
+.marks { position: relative; display: flex; justify-content: space-between; padding: 0 6px; }
+.marks::before {
+  content: "";
+  position: absolute;
+  left: 14px; right: 14px; top: 7px;
+  height: 1px;
+  background: var(--line);
+}
+.mark { position: relative; text-align: center; }
+.bead { display: block; width: 15px; height: 15px; border-radius: 50%; background: var(--mile-off); margin: 0 auto; }
+.mark.done .bead { background: var(--rose); }
+.mark p { margin-top: 10px; font-size: var(--t-caption); color: var(--faint); }
+.mark.done p { color: var(--ink); }
+.next { margin-top: 22px; text-align: center; font-size: var(--t-body); color: var(--sub); }
+.know .cap { font-size: var(--t-caption); color: var(--rose); letter-spacing: .06em; }
+.know p + p { margin-top: 10px; font-size: var(--t-body); line-height: 1.75; color: var(--sub); }
+
+/* ── 입력과 버튼 ───────────────────────────────────────────────────── */
 
 /* 손가락이 닿는 것은 전부 44px 이상이다. */
 .btn {
   display: block;
   width: 100%;
-  min-height: 44px;
+  min-height: 48px;
   border: 0;
-  border-radius: 10px;
-  background: var(--page);
-  color: var(--brand);
+  border-radius: 14px;
+  background: var(--card-tone);
+  color: var(--rose);
   font-size: var(--t-body);
   font-weight: 700;
+  font-family: inherit;
 }
-.btn.primary { background: var(--brand); color: #FFFFFF; }
-.btn:disabled { opacity: 0.45; }
+.btn.primary { background: var(--rose); color: var(--on-rose); }
+.btn:disabled { opacity: .45; }
 
 .field {
   display: block;
   width: 100%;
-  min-height: 48px;
-  padding: 0 14px;
+  min-height: 52px;
+  padding: 0 16px;
   border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--card);
+  border-radius: 14px;
+  background: var(--page);
   color: var(--ink);
+  font-family: inherit;
   /* 16px 아래면 iOS 가 입력할 때 화면을 확대한다. */
   font-size: 16px;
 }
+.field::placeholder { color: var(--faint); }
 
-.chips { display: flex; gap: 8px; margin-bottom: 12px; overflow-x: auto; }
+.note { color: var(--rose); line-height: 1.7; }
+
+.chips { display: flex; gap: 8px; margin-bottom: 16px; overflow-x: auto; }
 .chip {
-  min-height: 36px;
-  padding: 0 14px;
+  min-height: 38px;
+  padding: 0 16px;
   border: 1px solid var(--line);
   border-radius: 999px;
   background: var(--card);
   color: var(--sub);
+  font-family: inherit;
   font-size: var(--t-caption);
   font-weight: 700;
   white-space: nowrap;
 }
-.chip.on { background: var(--brand); border-color: var(--brand); color: #FFFFFF; }
+.chip.on { background: var(--rose); border-color: var(--rose); color: var(--on-rose); }
+
+/* ── 떠 있는 탭 ────────────────────────────────────────────────────── */
 
 .tabs {
-  position: sticky;
-  bottom: 0;
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(440px, calc(100% - 40px));
+  /* 아이폰 하단 안전 영역 위로 띄운다. */
+  bottom: calc(18px + env(safe-area-inset-bottom, 0px));
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  border-top: 1px solid var(--line);
-  background: var(--card);
-  padding-bottom: env(safe-area-inset-bottom);
+  align-items: center;
+  height: 64px;
+  border-radius: 22px;
+  background: var(--tab-bg);
+  backdrop-filter: blur(14px);
+  box-shadow: var(--shadow);
 }
 .tab {
-  min-height: 52px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  min-height: 56px;
+  justify-content: center;
   border: 0;
   background: transparent;
-  color: var(--sub);
-  font-weight: 700;
+  color: var(--faint);
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: .02em;
 }
-.tab.on { color: var(--brand); }
+.tab svg { width: 21px; height: 21px; }
+.tab.on { color: var(--rose); }
+.tab.on span { font-weight: 700; }

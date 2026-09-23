@@ -3,7 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#5B4CDB" />
+    <!-- 두 모드 각각의 주소창 색. 한 값만 두면 다크에서 흰 띠가 남는다. -->
+    <meta name="theme-color" content="#FAF7F4" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#221C1E" media="(prefers-color-scheme: dark)" />
+    <!-- 큰 숫자와 제목만 세리프다. 구글 폰트는 한글을 유니코드 구간으로 잘라
+         내보내므로 브라우저가 쓰는 조각만 받는다. display=swap 이라 글꼴이
+         늦거나 막혀도 화면은 시스템 글꼴로 바로 선다. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Gowun+Batang:wght@400;700&display=swap" />
+    <link rel="stylesheet"
+      href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" />
     <meta name="description" content="보니따필라테스 회원권 잔여와 수업 기록" />
     <title>보니따필라테스 — 내 회원권</title>
   </head>

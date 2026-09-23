@@ -6,6 +6,22 @@ Firebase Functions(`aiGateway`)를 거쳐 OpenAI로 간다. 상세 릴리스 절
 [docs/ai-gateway-deploy-log.md](docs/ai-gateway-deploy-log.md), 심사용 계정 준비는
 [docs/app-review-account.md](docs/app-review-account.md)에 있다.
 
+같은 웹 앱이 Firebase Hosting 으로도 나가 있다 — 대표가 PC 에서 이관·발급·급여
+집계를 하는 자리다. 배포와 도메인은 [docs/web-hosting.md](docs/web-hosting.md)에
+있고, 배포는 `npm run deploy:web` 한 줄이다.
+
+## 웹에서 안 되는 것
+
+음성 수업기록은 폰 앱에서만 된다 — 서버 녹음 엔진의 플러그인에 웹 구현이 없다.
+화면이 그 사실을 말하고, 판정은 `src/features/voice/web-support.js` 에 있다.
+
+새 네이티브 기능을 붙일 때는 웹에서 어떻게 끝나는지 함께 정한다. "not implemented"
+가 권한 거부처럼 보이는 것이 이 앱에서 실제로 일어난 일이다 — 브라우저에서 "마이크
+권한을 허용해 주세요" 가 뜨고, 허용해도 아무 일이 일어나지 않았다.
+
+서비스 워커는 프로덕션 웹에서만 등록한다. 개발 서버와 네이티브 앱에서는 등록하지
+않고 이미 있는 것을 걷어낸다 (`src/features/ui/service-worker.js`).
+
 ## 실패 진단 원칙
 
 실패를 추적할 수 없으면 고칠 수 없다. 아래는 모든 작업에 적용한다.

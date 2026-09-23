@@ -155,6 +155,9 @@ import {
   NATIVE_SPEECH_RESULT_TIMEOUT_MS, SPEECH_NO_RESULT_MESSAGE, SPEECH_RESULT_TIMEOUT_MESSAGE,
   SPEECH_PERMISSION_STATE, describeSpeechError, speechPermissionAvailability, speechPermissionState,
 } from "./features/voice/speech-session.js";
+import {
+  VOICE_SUPPORT, WEB_VOICE_CODE, WEB_VOICE_MESSAGE, serverVoiceSupport,
+} from "./features/voice/web-support.js";
 import { consentTargetsFor, ensureEveryConsent } from "./features/voice/duet-consent.js";
 import {
   BACKGROUND_RECORDING_INTERRUPTED_MESSAGE, RECOGNIZER_BUSY_RETRY_MS, VOICE_ORGANIZING_TIMEOUT_MS, VOICE_SILENCE_LIMIT_MS, appendVoiceSessionDiagnostic, createSilenceGuard,
@@ -11444,6 +11447,16 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     let active = true;
     const inspect = async () => {
       setVoiceAvailability("checking");
+      /* 브라우저에는 이 플러그인의 구현이 없다. 권한을 물어보면 "not implemented"
+         로 던지고, 그것을 잡아 null 로 만들면 화면이 "권한을 허용해 주세요" 라고
+         말하게 된다 -- 허용해도 아무 일이 일어나지 않는 안내다. 물어보기 전에
+         가른다. */
+      if (serverVoiceSupport({ engineMode: VOICE_ENGINE_MODE, isNative: Capacitor.isNativePlatform() }) === VOICE_SUPPORT.WEB_UNSUPPORTED) {
+        setVoiceAvailability("web_unsupported");
+        setManualEntry(true);
+        voiceDiagnostic("permission_state", { source: "server_audio", state: WEB_VOICE_CODE, platform: Capacitor.getPlatform() });
+        return;
+      }
       if (VOICE_ENGINE_MODE === "server") {
         let permissionError = null;
         const permission = await CapacitorAudioRecorder.checkPermissions().catch((error) => { permissionError = error; return null; });
@@ -13259,7 +13272,11 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     if (recorder && recorder.state !== "inactive") { try { recorder.stop(); } catch (e) {} }
     streamRef.current?.getTracks?.().forEach((track) => track.stop());
   }, []);
-  const supported = voiceAvailability !== "unsupported";
+  /* 말하기를 쓸 수 없는 두 가지. 버튼을 막는 조건은 같고 문구만 다르다 --
+     하나는 이 기기가 음성 인식을 못 하는 것이고, 하나는 브라우저라 녹음
+     플러그인이 아예 없는 것이다. 강사가 할 일이 다르다. */
+  const voiceUnavailable = voiceAvailability === "unsupported" || voiceAvailability === "web_unsupported";
+  const supported = !voiceUnavailable;
   const voicePhase = summaryDraft ? "result" : consentGate ? "failed" : resolveVoicePhase({
     availability: voiceAvailability,
     starting,
@@ -13297,7 +13314,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
           <span className="flex min-h-11 shrink-0 items-center rounded-full px-3 text-xs font-extrabold" style={{ backgroundColor: consentGate ? TINT : BAD_S, color: consentGate ? BRAND_D : BAD }}>{consentGate ? "동의 필요" : "실패"}</span>
         ) : voicePhase === "permission_required" ? (
           <button type="button" onClick={requestVoicePermission} className="min-h-11 shrink-0 rounded-full px-3 text-xs font-extrabold" style={{ backgroundColor: TINT, color: BRAND_D }}>권한 설정</button>
-        ) : voiceAvailability === "unsupported" ? null : text && VOICE_ENGINE_MODE === "server" ? (
+        ) : voiceUnavailable ? null : text && VOICE_ENGINE_MODE === "server" ? (
           <div className="flex shrink-0 gap-1">
             <button type="button" onClick={() => startFromUserTap("append")} disabled={!supported || audioState === "saving"} aria-label="음성으로 이어서 말하기" className="min-h-11 rounded-full px-2.5 text-caption font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: BRAND }}>이어서 말하기</button>
             <button type="button" onClick={() => startFromUserTap("replace")} disabled={!supported || audioState === "saving"} aria-label="음성 다시 말하기" className="min-h-11 rounded-full px-2.5 text-caption font-extrabold disabled:opacity-40" style={{ backgroundColor: CARD, color: BRAND_D, border: `1px solid ${LINE}` }}>다시 말하기</button>
@@ -13312,6 +13329,9 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       {replacementUndoVisible && <button type="button" onClick={restorePreviousRecording} className="mt-2 min-h-11 w-full rounded-xl text-xs font-extrabold" style={{ backgroundColor: WARN_S, color: WARN }}>이전 녹음 복원</button>}
       {voicePhase === "permission_required" && <Sub className="mt-1.5 block leading-relaxed">{voiceAvailability === "permission_permanently_denied" ? "설정에서 마이크 권한을 켜주세요" : "말하기를 사용하려면 마이크 권한을 허용해 주세요."}</Sub>}
       {voiceAvailability === "unsupported" && <Sub className="mt-1.5 block leading-relaxed">이 기기에서는 말하기를 지원하지 않아 직접 입력으로 기록할 수 있어요.</Sub>}
+      {/* 권한 문제가 아니다. 허용해도 달라지지 않으므로 "권한을 켜 주세요" 라고
+          말하면 강사가 브라우저 설정을 뒤지게 된다. */}
+      {voiceAvailability === "web_unsupported" && <Sub className="mt-1.5 block leading-relaxed">{WEB_VOICE_MESSAGE}</Sub>}
       {voicePhase === "listening" && <Sub className="mt-1.5 block font-bold leading-relaxed" style={{ color: BRAND_D }}>듣고 있어요 · 잠시 생각하며 멈춰도 괜찮아요.</Sub>}
       {voicePhase === "listening" && VOICE_ENGINE_MODE === "server" && <div aria-label="마이크 음량" className="mt-2 flex h-8 items-center justify-center gap-1 overflow-hidden rounded-lg px-2" style={{ backgroundColor: CARD }}>{Array.from({ length: 18 }, (_, index) => { const wave = Math.max(0.12, amplitude * (0.45 + ((index * 7) % 10) / 10)); return <span key={index} className="w-1 rounded-full" style={{ height: `${Math.round(6 + wave * 20)}px`, backgroundColor: index % 3 === 0 ? BRAND : LAVENDER, transition: "height 100ms linear" }} />; })}</div>}
       {voicePhase === "listening" && lowVolumeNotice && <p role="status" className="mt-1.5 text-caption font-bold" style={{ color: WARN }}>{lowVolumeNotice}</p>}

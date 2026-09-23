@@ -9,6 +9,7 @@
     "prebuild": "npm run typecheck && npm run lint:runtime && npm run test:node",
     "build": "vite build",
     "preview": "vite preview",
+    "deploy:web": "node tools/deploy-web.mjs",
     "typecheck": "tsc -p jsconfig.foundation.json",
     "lint": "eslint src/ai src/data src/features/auth src/features/account src/features/voice tools tests",
     "lint:runtime": "eslint src",

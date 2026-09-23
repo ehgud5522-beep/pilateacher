@@ -36,7 +36,11 @@ Eventarc 서비스 에이전트가 방금 만들어졌고, 권한 전파에 시�
 
 Firestore 위치와 트리거 리전은 둘 다 `asia-northeast3` 로 처음부터 맞았다.
 
-### 0-8. 회원 앱 9번 — 별도 Vite 앱 · **미배포**
+### 0-8. 회원 앱 9번 — 별도 Vite 앱 · **배포됨 (2026-09-24)**
+
+**https://pilateacher-member.web.app** · 번들 `index-40KNFPMs.js` (419KB)
+배포 뒤 확인: 라이브가 방금 만든 번들과 같은 파일명 · 없는 경로가 200(SPA fallback)
+· 강사 앱 번들은 그대로(`--only hosting:pilateacher-member` 라 건드리지 않았다).
 
 - `member/` · 빌드 `dist-member/` · 사이트 **pilateacher-member.web.app**
   (`npm run build:member` · `npm run deploy:member`).
@@ -57,10 +61,8 @@ Firestore 위치와 트리거 리전은 둘 다 `asia-northeast3` 로 처음부�
   말하는 것이다.
 - 테스트 32 (단위 13 + 정적 4 + 화면 스모크 15). `tests/member` 를 `test:node`
   에 넣었다 — 공통 모듈을 함께 쓰므로 강사 앱 빌드가 회원 앱을 깨뜨릴 수 있다.
-- **배포 전에 대표가 할 일**: Firebase 콘솔에서 Hosting 사이트
-  `pilateacher-member` 를 만들고, Authentication 승인 도메인에
-  `pilateacher-member.web.app` 을 추가한다. 반송점에 대표 번호로 된 테스트 회원
-  1명도 필요하다 (설계 12장 절차).
+- 배포 전 콘솔 준비(사이트 생성 · 승인 도메인 · 테스트 회원)는 2026-09-24 완료.
+  **남은 것은 실제 번호로 처음부터 끝까지 한 번 해 보는 것**이다 (설계 12장 절차).
 
 ### 0-7. 회원 앱 8번 — 점검·재작성 문 둘 + 대표 화면 · **배포됨(2026-09-24)**
 

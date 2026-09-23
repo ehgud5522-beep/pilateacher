@@ -112,8 +112,11 @@ test("the deploy script asks before it builds anything", async () => {
      먼저여야 한다 -- 몇 분 기다린 끝에 듣는 것과 시작하자마자 듣는 것은 다르다. */
   const source = await readFile(new URL("../../tools/deploy-web.mjs", import.meta.url), "utf8");
   const guard = source.indexOf("deployBlockers({ branch, status })");
-  const build = source.indexOf('run("npm", ["run", "build"])');
+  /* 사이트마다 빌드 명령이 다르다(강사 앱 build · 회원 앱 build:member).
+     명령 이름이 아니라 "빌드를 부르는 자리" 를 찾는다. */
+  const build = source.indexOf('run("npm", ["run", target.build])');
   assert.ok(guard > 0, "배포 스크립트가 판정을 부르지 않는다");
+  assert.ok(build > 0, "배포 스크립트가 빌드를 부르지 않는다");
   assert.ok(build > guard, "빌드가 판정보다 먼저 일어난다");
   assert.match(source, /process\.exit\(1\)/, "막아야 할 때 멈추지 않는다");
 });

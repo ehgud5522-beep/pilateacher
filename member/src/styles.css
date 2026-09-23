@@ -1,0 +1,127 @@
+/* 회원 앱의 전부. Tailwind 를 쓰지 않는다 -- 화면 넷이라 빌드를 하나 더
+   들일 이유가 없고, 번들이 작을수록 지하 스튜디오에서 빨리 뜬다.
+
+   글자 크기는 강사 앱과 같은 여섯 단계다 (src/features/ui/type-scale.js 가
+   이 변수를 가리킨다). 값을 여기 다시 적는 것은 두 앱이 다른 CSS 를 쓰기
+   때문이고, 단계 자체는 그 파일이 정한다. */
+:root {
+  --t-caption: 13px;
+  --t-body: 15px;
+  --t-title: 17px;
+  --t-heading: 20px;
+  --t-display: 24px;
+  --t-hero: 32px;
+
+  --page: #F2F2F7;
+  --card: #FFFFFF;
+  --line: #EBEBF2;
+  --ink: #17171F;
+  --sub: #6B6B7B;
+  --brand: #5B4CDB;
+  --warn: #B4531A;
+  --warn-bg: #FFF6EF;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Pretendard",
+    "Malgun Gothic", system-ui, sans-serif;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* 세로 폰이 기준이다. 회원은 폰으로 본다. */
+.shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+  max-width: 480px;
+  margin: 0 auto;
+}
+
+.head { padding: 16px 16px 8px; }
+.main { flex: 1; padding: 8px 16px 24px; }
+.stack > * + * { margin-top: 12px; }
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 16px;
+}
+.card-warn { background: var(--warn-bg); border-color: var(--warn); }
+
+.muted { color: var(--sub); }
+.note { color: var(--warn); }
+.mt { margin-top: 8px; }
+p { margin: 0; }
+
+.hero { margin-top: 4px; font-weight: 700; line-height: 1.1; }
+.num { font-variant-numeric: tabular-nums; }
+
+.row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.list { margin: 0; padding: 0; list-style: none; }
+.list > li + li { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 10px; }
+
+/* 손가락이 닿는 것은 전부 44px 이상이다. */
+.btn {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--page);
+  color: var(--brand);
+  font-size: var(--t-body);
+  font-weight: 700;
+}
+.btn.primary { background: var(--brand); color: #FFFFFF; }
+.btn:disabled { opacity: 0.45; }
+
+.field {
+  display: block;
+  width: 100%;
+  min-height: 48px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card);
+  color: var(--ink);
+  /* 16px 아래면 iOS 가 입력할 때 화면을 확대한다. */
+  font-size: 16px;
+}
+
+.chips { display: flex; gap: 8px; margin-bottom: 12px; overflow-x: auto; }
+.chip {
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--sub);
+  font-size: var(--t-caption);
+  font-weight: 700;
+  white-space: nowrap;
+}
+.chip.on { background: var(--brand); border-color: var(--brand); color: #FFFFFF; }
+
+.tabs {
+  position: sticky;
+  bottom: 0;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  border-top: 1px solid var(--line);
+  background: var(--card);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.tab {
+  min-height: 52px;
+  border: 0;
+  background: transparent;
+  color: var(--sub);
+  font-weight: 700;
+}
+.tab.on { color: var(--brand); }

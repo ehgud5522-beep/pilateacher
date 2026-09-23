@@ -35,6 +35,29 @@ export default [
     },
   },
   {
+    /* 회원 앱. 화면 넷이라 쓰는 전역도 적다 -- 강사 앱의 목록을 그대로
+       가져오면 실제로 쓰지 않는 것까지 열어 두게 된다. */
+    files: ["member/**/*.{js,jsx}", "tests/member/**/*.jsx"],
+    languageOptions: {
+      ecmaVersion: "latest",
+      sourceType: "module",
+      parserOptions: { ecmaFeatures: { jsx: true } },
+      globals: {
+        __dirname: "readonly",
+        console: "readonly",
+        document: "readonly",
+        localStorage: "readonly",
+        window: "readonly",
+      },
+    },
+    rules: {
+      "no-unused-vars": ["error", { argsIgnorePattern: "^_", caughtErrorsIgnorePattern: "^_" }],
+      "no-undef": "error",
+      eqeqeq: ["error", "always"],
+      "prefer-const": "error",
+    },
+  },
+  {
     files: ["src/**/*.{js,jsx}"],
     languageOptions: {
       ecmaVersion: "latest",

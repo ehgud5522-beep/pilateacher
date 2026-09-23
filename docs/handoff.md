@@ -14,7 +14,55 @@ Claude Code · Codex 가 새 세션을 열면 이 파일부터 읽는다. 작업
 
 ## 최근 변경 (2026-09-23, Cowork 세션)
 
-### 0-7. 회원 앱 8번 — 점검·재작성 문 둘 + 대표 화면 · **미배포**
+### 0-9. 서버 배포 완료 (2026-09-24) — 함수 여덟
+
+| 함수 | 종류 |
+| --- | --- |
+| `linkMemberAccount` · `linkMemberAccountByOwner` · `unlinkMemberAccount` · `listPendingMemberLinks` | callable |
+| `verifyMemberViews` · `rebuildMemberViews` | callable (대표 전용) |
+| `rebuildMemberViewOnPassWrite` · `rebuildMemberViewOnClientWrite` | Firestore 트리거 |
+
+이름으로 지정해 올렸다 — `aiGateway` 외 기존 다섯은 건드리지 않았다.
+
+**트리거 둘이 세 번 실패했다.** 이 프로젝트의 첫 2세대 Firestore 트리거라
+Eventarc 서비스 에이전트가 방금 만들어졌고, 권한 전파에 시간이 걸린다.
+`Permission denied while using the Eventarc Service Agent` — Firebase 가 직접
+"몇 분 뒤 재시도하라"고 안내한다. **20분 뒤 한 번에 성공했다.**
+
+재시도 스크립트에서 버그를 하나 만들었다: `if npx … | tail` 은 **파이프 끝
+명령(tail)의 종료 코드**를 본다. 실패한 배포가 성공으로 읽혀 "됐다"고 보고했다.
+파이프를 없애고 `$?` 를 직접 봤다. 같은 실수를 다시 하지 않으려면 배포·빌드의
+성패를 파이프 뒤에서 읽지 않는다.
+
+Firestore 위치와 트리거 리전은 둘 다 `asia-northeast3` 로 처음부터 맞았다.
+
+### 0-8. 회원 앱 9번 — 별도 Vite 앱 · **미배포**
+
+- `member/` · 빌드 `dist-member/` · 사이트 **pilateacher-member.web.app**
+  (`npm run build:member` · `npm run deploy:member`).
+- `firebase.foundation.json` 의 hosting 을 배열로 바꾸고 `site` 둘을 달았다.
+  배포는 `--only hosting:<site>` 로 사이트를 지정한다 — `--only hosting` 만 주면
+  회원 앱을 고치려다 강사 앱까지 나간다.
+- **번들 419KB (gzip 107KB).** 처음엔 845KB 였는데 Firestore 를 lite 빌드로
+  바꿔 반이 됐다 — 한 번 읽고 끝이라 실시간 구독이 필요 없다.
+- 읽는 것은 문서 **둘**이다: `memberLinks/{uid}` 로 자기 clientId 를 알고,
+  `memberViews/{clientId}` 를 연다. 설계에는 "하나" 로 적혀 있었는데 규칙이
+  `list` 를 닫아 뒀으므로 링크 문서가 먼저다.
+- `tests/member/reads-nothing-else.test.js` 가 **다른 컬렉션을 읽지 않는다**는
+  것을 소스로 지킨다. 질의 API 금지 · `doc()` 이 여는 컬렉션 둘 · 경로 문자열.
+- 90일 재인증은 기기에 마지막 확인 시각을 둔다. **보안 경계가 아니다** —
+  규칙은 90일을 모른다.
+- 설계에 없던 상태 하나를 더했다: **"회원권 정보를 준비하고 있어요"**. 연결 직후
+  트리거가 도는 몇 초 동안 투영이 없고, 그때 "조회 실패" 는 정상 상태를 고장으로
+  말하는 것이다.
+- 테스트 32 (단위 13 + 정적 4 + 화면 스모크 15). `tests/member` 를 `test:node`
+  에 넣었다 — 공통 모듈을 함께 쓰므로 강사 앱 빌드가 회원 앱을 깨뜨릴 수 있다.
+- **배포 전에 대표가 할 일**: Firebase 콘솔에서 Hosting 사이트
+  `pilateacher-member` 를 만들고, Authentication 승인 도메인에
+  `pilateacher-member.web.app` 을 추가한다. 반송점에 대표 번호로 된 테스트 회원
+  1명도 필요하다 (설계 12장 절차).
+
+### 0-7. 회원 앱 8번 — 점검·재작성 문 둘 + 대표 화면 · **배포됨(2026-09-24)**
 
 **백필의 역할이 바뀌었다.** 트리거가 `clients.userId` 있는 회원만 투영을 만들도록
 바뀌면서, 연결이 곧 트리거를 부르고 그 트리거가 전체를 다시 읽는다 — 셋이 함께

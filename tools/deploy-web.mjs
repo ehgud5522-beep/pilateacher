@@ -73,43 +73,75 @@ if (blockers.length) {
 
 if (!existsSync(path.join(root, CONFIG))) fail("CONFIG_MISSING", `${CONFIG} 이 없습니다.`);
 const config = JSON.parse(readFileSync(path.join(root, CONFIG), "utf8"));
-if (!config.hosting?.public) fail("HOSTING_NOT_CONFIGURED", `${CONFIG} 에 hosting 설정이 없습니다.`);
+
+/* 사이트가 둘이다. 강사 앱과 회원 앱은 번들도 크기도 다르고, 한 사이트에
+   두면 SPA fallback(** → /index.html) 이 둘을 가르지 못한다 -- 그 한 줄이
+   틀리면 회원이 강사 앱 2.1MB 를 받는다. */
+const SITES = {
+  app: {
+    site: "pilateacher", build: "build", url: "https://pilateacher.web.app",
+    /* 서비스 워커가 빠지면 이미 설치한 브라우저가 404 를 받고 오프라인 셸을
+       잃는다. 빌드가 조용히 빠뜨릴 수 있는 파일이라 여기서 본다. */
+    requiresServiceWorker: true,
+  },
+  member: {
+    site: "pilateacher-member", build: "build:member", url: "https://pilateacher-member.web.app",
+    /* 회원 앱에는 서비스 워커를 두지 않는다. 이 화면의 값어치 전부가 "지금
+       몇 회 남았나" 인데 캐시가 어제 숫자를 보여주면 그것은 틀린 답이다. */
+    requiresServiceWorker: false,
+  },
+};
+
+const siteArgument = process.argv.includes("--site")
+  ? String(process.argv[process.argv.indexOf("--site") + 1] || "").trim()
+  : "app";
+const target = SITES[siteArgument];
+if (!target) fail("UNKNOWN_SITE", `--site 는 ${Object.keys(SITES).join(" · ")} 중 하나입니다: ${siteArgument}`);
+
+const hostingList = Array.isArray(config.hosting) ? config.hosting : [config.hosting];
+const hosting = hostingList.find((entry) => entry?.site === target.site) || null;
+if (!hosting?.public) {
+  fail("HOSTING_NOT_CONFIGURED", `${CONFIG} 에 site "${target.site}" 의 hosting 설정이 없습니다.`);
+}
 
 /* SPA 는 모든 경로가 index.html 로 가야 한다. 이 규칙이 빠지면 새로고침이나
    주소 직접 입력이 404 가 되고, 그 증상은 배포한 사람이 아니라 대표가 만난다. */
-const fallback = (config.hosting.rewrites || []).some(
+const fallback = (hosting.rewrites || []).some(
   (rule) => rule?.source === "**" && rule?.destination === "/index.html",
 );
-if (!fallback) fail("SPA_FALLBACK_MISSING", `${CONFIG} 의 hosting.rewrites 에 ** → /index.html 이 없습니다.`);
+if (!fallback) fail("SPA_FALLBACK_MISSING", `${CONFIG} 의 ${target.site} rewrites 에 ** → /index.html 이 없습니다.`);
 
 console.log("== 어디서 무엇을 내보내는지 먼저 밝힌다 ==");
 console.log(`  워크트리: ${root}`);
 console.log(`  브랜치  : ${capture("git", ["rev-parse", "--abbrev-ref", "HEAD"])} (${capture("git", ["rev-parse", "--short", "HEAD"])})`);
-console.log(`  대상    : ${config.hosting.public}/ → Firebase Hosting (pilateacher)`);
+console.log(`  대상    : ${hosting.public}/ → Firebase Hosting (${target.site})`);
 console.log();
 
 console.log("== 1/2 웹 빌드 (타입 검사 · 린트 · 테스트 포함) ==");
-run("npm", ["run", "build"]);
+run("npm", ["run", target.build]);
 
-const publicDir = path.join(root, config.hosting.public);
+const publicDir = path.join(root, hosting.public);
 if (!existsSync(path.join(publicDir, "index.html"))) {
-  fail("BUILD_OUTPUT_MISSING", `${config.hosting.public}/index.html 이 없습니다. 빌드가 만들지 못했습니다.`);
+  fail("BUILD_OUTPUT_MISSING", `${hosting.public}/index.html 이 없습니다. 빌드가 만들지 못했습니다.`);
 }
-/* 서비스 워커가 빠지면 이미 설치한 브라우저가 404 를 받고 오프라인 셸을 잃는다.
-   빌드가 조용히 빠뜨릴 수 있는 파일이라 여기서 본다. */
-if (!existsSync(path.join(publicDir, "sw.js"))) {
-  fail("SERVICE_WORKER_MISSING", `${config.hosting.public}/sw.js 가 없습니다. public/sw.js 가 복사되지 않았습니다.`);
+if (target.requiresServiceWorker && !existsSync(path.join(publicDir, "sw.js"))) {
+  fail("SERVICE_WORKER_MISSING", `${hosting.public}/sw.js 가 없습니다. public/sw.js 가 복사되지 않았습니다.`);
 }
 
 const bytesIn = (dir) => readdirSync(dir, { withFileTypes: true }).reduce((sum, item) => {
   const full = path.join(dir, item.name);
   return sum + (item.isDirectory() ? bytesIn(full) : statSync(full).size);
 }, 0);
-console.log(`\n  ${config.hosting.public}/ ${bytesIn(publicDir).toLocaleString()} bytes\n`);
+console.log(`\n  ${hosting.public}/ ${bytesIn(publicDir).toLocaleString()} bytes\n`);
 
 console.log("== 2/2 배포 ==");
-run("npx", ["firebase", "deploy", "--only", "hosting", "--project", "pilateacher", "--config", CONFIG]);
+/* 사이트를 이름으로 지정한다. --only hosting 만 주면 두 사이트가 함께 나가고,
+   회원 앱을 고치려다 강사 앱까지 내보내게 된다. */
+run("npx", [
+  "firebase", "deploy", "--only", `hosting:${target.site}`,
+  "--project", "pilateacher", "--config", CONFIG,
+]);
 
 console.log();
-console.log("주소: https://pilateacher.web.app");
+console.log(`주소: ${target.url}`);
 console.log("사용자 지정 도메인은 docs/web-hosting.md 를 보세요.");

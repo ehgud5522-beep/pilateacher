@@ -481,6 +481,25 @@ test("every title still teaches, so the role never moves", async () => {
   }
 });
 
+test("an FC manager is added as a manager, and only those two roles are accepted", async () => {
+  /* FC매니저는 수업하지 않는다. instructor 로 두면 담당 강사 목록과 급여에
+     섞인다 (2026-09-23). */
+  const store = fakeRateStore();
+  await addMembership(ORG, {
+    userId: "u-fc", displayName: "김상담", role: "manager", createdBy: "owner-a", actorRole: "owner",
+  }, { store });
+  assert.equal(store.calls[0][0].data.role, "manager");
+  for (const role of ["staff", "member", "admin"]) {
+    await assert.rejects(
+      () => addMembership(ORG, {
+        userId: "u-x", displayName: "김상담", role, createdBy: "owner-a", actorRole: "owner",
+      }, { store: fakeRateStore() }),
+      /Invalid role/,
+      role,
+    );
+  }
+});
+
 test("a title outside the three is refused rather than stored", async () => {
   // 부원장은 직함이 아니라 플래그다 -- 같은 사실을 두 곳에 적으면 어긋난다.
   for (const title of ["deputy_director", "owner", "", "  ", "3"]) {

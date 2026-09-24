@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  DEDUCTION_CODE_LABEL, lessonHasStarted,
   SETTLEMENT_SKIP, applySettlementToLesson, canSettleLesson, clearSettlementFromLesson,
-  SETTLEMENT_OUTCOME, closesSettlement, isSettledLesson, needsSettlement, pickPassForClient,
+  SETTLEMENT_OUTCOME, closesSettlement, isSettledLesson, needsSettlement, pickSoloPass,
   planLessonSettlement, recordSettlementAttempt, settledDeductionsOf, settlementOutcome,
   settlementSkipsOf,
 } from "../../src/features/schedule/lesson-settlement.js";
@@ -47,7 +48,7 @@ const lesson = (overrides = {}) => ({
 test("the pass that expires soonest is spent first", () => {
   /* 늦게 만료되는 것을 먼저 쓰면 이른 쪽이 쓰이지 못한 채 만료되고, 회원은
      돈을 낸 회차를 잃는다. */
-  const picked = pickPassForClient([
+  const picked = pickSoloPass([
     pass({ id: "later", expiresAt: new Date(2027, 5, 1) }),
     pass({ id: "sooner", expiresAt: new Date(2026, 10, 1) }),
   ], "client-a", NOW);
@@ -56,7 +57,7 @@ test("the pass that expires soonest is spent first", () => {
 
 test("passes that expire on the same day go oldest first", () => {
   // 먼저 팔린 것이 먼저 소진되는 것이 계약의 순서다.
-  const picked = pickPassForClient([
+  const picked = pickSoloPass([
     pass({ id: "new", createdAt: new Date(2026, 7, 1) }),
     pass({ id: "old", createdAt: new Date(2026, 3, 1) }),
   ], "client-a", NOW);
@@ -64,7 +65,7 @@ test("passes that expire on the same day go oldest first", () => {
 });
 
 test("a pass with no expiry waits until the dated ones are used", () => {
-  const picked = pickPassForClient([
+  const picked = pickSoloPass([
     pass({ id: "no-expiry", expiresAt: null }),
     pass({ id: "dated", expiresAt: new Date(2027, 0, 1) }),
   ], "client-a", NOW);
@@ -72,12 +73,168 @@ test("a pass with no expiry waits until the dated ones are used", () => {
 });
 
 test("nothing usable comes back as nothing, never as a spent pass", () => {
-  assert.equal(pickPassForClient([pass({ remainingCount: 0 })], "client-a", NOW), null);
-  assert.equal(pickPassForClient([pass({ status: "cancelled" })], "client-a", NOW), null);
-  assert.equal(pickPassForClient([pass({ expiresAt: new Date(2026, 7, 1) })], "client-a", NOW), null);
-  assert.equal(pickPassForClient([pass({ clientId: "someone-else" })], "client-a", NOW), null);
-  assert.equal(pickPassForClient([], "client-a", NOW), null);
-  assert.equal(pickPassForClient([pass()], "", NOW), null);
+  assert.equal(pickSoloPass([pass({ remainingCount: 0 })], "client-a", NOW), null);
+  assert.equal(pickSoloPass([pass({ status: "cancelled" })], "client-a", NOW), null);
+  assert.equal(pickSoloPass([pass({ expiresAt: new Date(2026, 7, 1) })], "client-a", NOW), null);
+  assert.equal(pickSoloPass([pass({ clientId: "someone-else" })], "client-a", NOW), null);
+  assert.equal(pickSoloPass([], "client-a", NOW), null);
+  assert.equal(pickSoloPass([pass()], "", NOW), null);
+});
+
+/* ── 차감 규칙 (2026-09-23 대표 확정) ───────────────────────────────────────
+
+   회원 A(성승현)와 B(김민정). A 는 1:1 회원권 2장, 그리고 B 와 함께 쓰는
+   2:1 회원권 2장을 동시에 갖고 있다. **공유 회원권의 만료가 더 이르다** --
+   만료 순서만 보면 1:1 수업이 짝의 회차를 가져가는 배치다.
+
+   여섯 줄 하나하나가 실제로 일어나는 경우이고, 틀리면 원장은 append-only 라
+   되돌리는 것도 대표만 할 수 있다. */
+
+const A = "client-a";
+const B = "client-b";
+
+const soloPass = (id, overrides = {}) => pass({
+  id, clientId: A, clientIds: [A], category: "pt_1_1_repurchase_event", ...overrides,
+});
+const duetPass = (id, overrides = {}) => pass({
+  id, clientId: A, clientIds: [A, B], category: "pt_2_1_new", baseUnitPrice: 35000, ...overrides,
+});
+
+/** A 의 1:1 2장 + A·B 공유 2장. 공유 쪽이 먼저 만료된다. */
+const bothKinds = (overrides = {}) => [
+  soloPass("solo-late", { expiresAt: new Date(2027, 6, 1) }),
+  soloPass("solo-soon", { expiresAt: new Date(2027, 5, 1), ...(overrides.solo || {}) }),
+  duetPass("duet-late", { expiresAt: new Date(2026, 11, 1) }),
+  duetPass("duet-soon", { expiresAt: new Date(2026, 10, 1), ...(overrides.duet || {}) }),
+];
+
+const memberA = () => member({ id: "m-a", name: "성승현", orgClientId: A });
+const memberB = () => member({ id: "m-b", name: "김민정", orgClientId: B });
+
+const planWith = (attendees, passes = bothKinds()) => planLessonSettlement({
+  lesson: lesson({ attendees }),
+  members: [memberA(), memberB()],
+  passes,
+  now: NOW,
+});
+
+test("규칙 1 — A 혼자 출석하면 1:1 만, 만료 빠른 것부터", () => {
+  /* 공유 회원권이 더 먼저 만료되지만 쓰지 않는다. 혼자 온 수업에 그것을 쓰면
+     둘이 나눠 쓰기로 한 회차가 한 사람의 1:1 로 사라지고, 짝은 자기 잔여가 왜
+     줄었는지 알 길이 없다. */
+  const plan = planWith([{ memberId: "m-a", status: "done" }]);
+  assert.deepEqual(plan.deductions.map((item) => item.pass.id), ["solo-soon"]);
+  assert.deepEqual(plan.skips, []);
+});
+
+test("규칙 2 — A·B 둘 다 출석하면 공유 2:1 에서 1회만, 만료 빠른 것부터", () => {
+  const plan = planWith([
+    { memberId: "m-a", status: "done" },
+    { memberId: "m-b", status: "done" },
+  ]);
+  assert.equal(plan.deductions.length, 1, "수업 한 번에 1회 차감");
+  assert.equal(plan.deductions[0].pass.id, "duet-soon");
+  assert.deepEqual(plan.deductions[0].clientIds, [A, B]);
+  assert.deepEqual(plan.deductions[0].attendanceByClientId, {
+    [A]: "attended", [B]: "attended",
+  });
+  assert.deepEqual(plan.skips, []);
+});
+
+test("규칙 3 — 한 명이 노쇼여도 공유 2:1 에서 1회 차감", () => {
+  // 수업은 일어났다. 노쇼 여부는 참가자 문서에만 남는다.
+  const plan = planWith([
+    { memberId: "m-a", status: "done" },
+    { memberId: "m-b", status: "noshow" },
+  ]);
+  assert.equal(plan.deductions.length, 1);
+  assert.equal(plan.deductions[0].pass.id, "duet-soon");
+  assert.deepEqual(plan.deductions[0].attendanceByClientId, {
+    [A]: "attended", [B]: "noshow",
+  });
+  // 노쇼인 사람을 "차감하지 못했다"로 적지 않는다 -- 차감은 일어났다.
+  assert.deepEqual(plan.skips, []);
+});
+
+test("규칙 4 — 둘 다 노쇼거나 취소면 차감이 없다", () => {
+  for (const statuses of [["noshow", "noshow"], ["cancel", "cancel"], ["noshow", "cancel"]]) {
+    const plan = planWith([
+      { memberId: "m-a", status: statuses[0] },
+      { memberId: "m-b", status: statuses[1] },
+    ]);
+    assert.deepEqual(plan.deductions, [], statuses.join("·"));
+    // 오지 않은 것은 실패가 아니다. 사유 줄을 띄우지 않는다.
+    assert.deepEqual(plan.skips, [], statuses.join("·"));
+  }
+});
+
+test("규칙 5 — 명단에 A 만 있으면(B 미리 취소) 1:1 수업으로 본다", () => {
+  const onlyA = planWith([{ memberId: "m-a", status: "done" }]);
+  assert.deepEqual(onlyA.deductions.map((item) => item.pass.id), ["solo-soon"]);
+
+  // B 가 명단에 남아 취소로 표시돼 있어도 같다 -- 그 수업에 오지 않았다.
+  const cancelledB = planWith([
+    { memberId: "m-a", status: "done" },
+    { memberId: "m-b", status: "cancel" },
+  ]);
+  assert.deepEqual(cancelledB.deductions.map((item) => item.pass.id), ["solo-soon"]);
+  assert.equal(cancelledB.deductions[0].shared, false);
+});
+
+test("규칙 6 — A 혼자이고 1:1 잔여 0 이면 차감 없이 solo_pass_missing", () => {
+  /* 2:1 에서 절대 빼지 않는다. 여기서 한 번 빼면 짝의 회차가 사라지고, 그
+     사실은 아무도 모른다. */
+  const plan = planWith([{ memberId: "m-a", status: "done" }], [
+    soloPass("solo-late", { expiresAt: new Date(2027, 6, 1), remainingCount: 0 }),
+    soloPass("solo-soon", { expiresAt: new Date(2027, 5, 1), remainingCount: 0 }),
+    duetPass("duet-soon", { expiresAt: new Date(2026, 10, 1) }),
+  ]);
+  assert.deepEqual(plan.deductions, []);
+  assert.deepEqual(plan.skips, [
+    { memberId: "m-a", clientId: A, reason: SETTLEMENT_SKIP.SOLO_PASS_MISSING },
+  ]);
+});
+
+test("추가 — 각자 1:1 만 가진 두 사람이 한 타임이면 각자 1:1 에서 2회", () => {
+  /* 화면에는 듀엣으로 보이지만 계약이 둘이다. 함께 적힌 회원권이 없다는 것이
+     가르는 기준이고, 수업 유형 글자는 보지 않는다. */
+  const plan = planWith([
+    { memberId: "m-a", status: "done" },
+    { memberId: "m-b", status: "done" },
+  ], [
+    soloPass("solo-a", { expiresAt: new Date(2027, 5, 1) }),
+    pass({ id: "solo-b", clientId: B, clientIds: [B], expiresAt: new Date(2027, 5, 1) }),
+  ]);
+  assert.deepEqual(plan.deductions.map((item) => [item.memberId, item.pass.id]), [
+    ["m-a", "solo-a"], ["m-b", "solo-b"],
+  ]);
+});
+
+test("공유 회원권의 잔여가 없으면 각자 1:1 로 새지 않는다", () => {
+  /* 한 수업에 두 회차가 나가는 것을 막는다. 둘은 듀엣이라는 사실이 먼저이고,
+     잔여가 없다는 것은 재등록으로 풀 일이다. */
+  const plan = planWith([
+    { memberId: "m-a", status: "done" },
+    { memberId: "m-b", status: "done" },
+  ], [
+    soloPass("solo-a", { expiresAt: new Date(2027, 5, 1) }),
+    pass({ id: "solo-b", clientId: B, clientIds: [B], expiresAt: new Date(2027, 5, 1) }),
+    duetPass("duet-spent", { expiresAt: new Date(2026, 10, 1), remainingCount: 0 }),
+  ]);
+  assert.deepEqual(plan.deductions, []);
+  assert.deepEqual(plan.skips.map((item) => [item.memberId, item.reason]), [
+    ["m-a", SETTLEMENT_SKIP.DUET_PASS_SPENT], ["m-b", SETTLEMENT_SKIP.DUET_PASS_SPENT],
+  ]);
+});
+
+test("짝이 혼자 와도 공유 회원권에서 빠지지 않는다", () => {
+  /* B 는 1:1 회원권이 없고 공유 회원권만 있다. 전에는 "회원권이 없습니다"로
+     끝났는데, 그 문구는 발급을 하라는 말이라 대표를 헛걸음시킨다. */
+  const plan = planWith([{ memberId: "m-b", status: "done" }]);
+  assert.deepEqual(plan.deductions, []);
+  assert.deepEqual(plan.skips, [
+    { memberId: "m-b", clientId: B, reason: SETTLEMENT_SKIP.SOLO_PASS_MISSING },
+  ]);
 });
 
 /* ── 확정하면 무엇이 일어나는가 ─────────────────────────────────────────── */
@@ -461,4 +618,42 @@ test("a pass with neither name is refused rather than priced at zero", async () 
   const plan = planLessonSettlement({ lesson: one, members: [member()], passes: [broken], now: NOW });
   await assert.rejects(() => settleWith(plan, one, store), /Missing baseUnitPrice/);
   assert.equal(store.commits.length, 0);
+});
+
+/* ── 아직 일어나지 않은 수업 ─────────────────────────────────────────────
+
+   실제로 이렇게 끝났다. 새벽 2시에 그날 오전 10시 수업을 확정했더니 화면이
+   "차감이 저장되지 않았습니다 (Invalid occurredAt)" 라고만 말했다. 누르면
+   반드시 실패하는 버튼이었고, 실패한 이유는 코드에도 적혀 있지 않았다. */
+
+test("확정 카드는 시각을 보지 않는다 — 감추면 실패 사유까지 사라진다", () => {
+  /* 한 번 시각으로 카드를 감췄다가 되돌렸다. 시작 전이라고 블록을 숨겼더니
+     **이미 실패한 수업의 사유와 [다시 확정]까지 사라졌고**, 토스트는 "아래
+     이유를 보고 다시 시도해 주세요" 라고 말하는데 아래에 아무것도 없었다.
+
+     카드를 세우는 판정과 버튼을 잠그는 판정은 다른 일이다. */
+  const future = lesson({ date: "2026-09-24", start: "10:00", end: "10:50" });
+  assert.equal(canSettleLesson(future), true);
+});
+
+test("시작 여부는 따로 답한다 — 버튼을 잠그는 쪽이 이것을 쓴다", () => {
+  const future = lesson({ date: "2026-09-24", start: "10:00", end: "10:50" });
+  assert.equal(lessonHasStarted(future, new Date(2026, 8, 24, 2, 30)), false);
+  // 시작 시각이 지나면 열린다. 끝나기를 기다리지는 않는다.
+  assert.equal(lessonHasStarted(future, new Date(2026, 8, 24, 10, 5)), true);
+});
+
+test("시각을 읽을 수 없으면 막지 않는다 — 서버가 마지막 문이다", () => {
+  assert.equal(lessonHasStarted(lesson({ date: "", start: "" }), NOW), true);
+  assert.equal(lessonHasStarted(lesson({ date: "나중에", start: "언젠가" }), NOW), true);
+});
+
+test("차감 창을 벗어나는 세 이유가 서로 다른 코드다", async () => {
+  /* 한 문구로 뭉개면 대표는 날짜가 미래인지 너무 오래됐는지 알 수 없다. */
+  const { DEDUCT_WINDOW } = await import("../../src/data/repositories/pass-repository.js");
+  const codes = new Set(Object.values(DEDUCT_WINDOW));
+  assert.equal(codes.size, 3, "세 이유가 같은 코드를 쓴다");
+  for (const code of codes) {
+    assert.ok(DEDUCTION_CODE_LABEL[code], `${code} 에 사람이 읽을 문구가 없다`);
+  }
 });

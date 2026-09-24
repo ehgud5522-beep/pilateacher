@@ -25,7 +25,8 @@ import {
 } from "../../data/schema/deduction-pricing.js";
 import { defaultUnitPriceFor } from "../../data/schema/pay-rates.js";
 import { remainingCountOf } from "../../data/repositories/pass-repository.js";
-import { SETTLEMENT_SKIP, pickPassForClient } from "./lesson-settlement.js";
+import { isDuetPass } from "../../data/schema/pass-clients.js";
+import { SETTLEMENT_SKIP, pickSoloPass, planPassSelection } from "./lesson-settlement.js";
 
 const text = (value) => String(value ?? "").trim();
 
@@ -48,21 +49,28 @@ export function instructorClientSessionsOf(totals, instructorId, clientId) {
  * @param {{
  *   member?: any, passes?: Array<any>, totals?: Array<any>,
  *   instructorId?: string, isDeputyDirector?: boolean, now?: Date,
+ *   chosen?: any, skip?: string, shared?: boolean, deducts?: boolean,
  * }} input
+ *   chosen 수업 단위로 이미 고른 회원권 (planPassSelection). 없으면 혼자 온
+ *          것으로 보고 1:1 회원권에서 고른다.
  * @returns {{ unitPrice: number, rule: string } | { skip: string }}
  */
 export function previewMemberRate(input = {}) {
   const clientId = text(input?.member?.orgClientId);
   // 센터에 없는 회원은 차감할 회원권이 없다. 금액을 지어내지 않는다.
   if (!clientId) return { skip: SETTLEMENT_SKIP.NO_CLIENT };
+  if (input.skip) return { skip: input.skip };
 
   const passes = Array.isArray(input.passes) ? input.passes : [];
-  const pass = pickPassForClient(passes, clientId, input.now instanceof Date ? input.now : new Date());
+  const pass = input.chosen
+    || pickSoloPass(passes, clientId, input.now instanceof Date ? input.now : new Date());
   if (!pass) {
     /* 회원권이 아예 없는 것과 다 쓴 것은 고칠 방법이 다르다 -- 앞은 발급이고
-       뒤는 재등록이다. 한 문구로 뭉개지 않는다. */
+       뒤는 재등록이다. 한 문구로 뭉개지 않는다. 듀엣 회원권만 있는 것은 또
+       달라서, 짝과 함께 오면 풀린다. */
     const mine = passes.filter((item) => item?.clientId === clientId);
-    return { skip: mine.length === 0 ? SETTLEMENT_SKIP.NO_PASS : SETTLEMENT_SKIP.SPENT };
+    if (mine.length === 0) return { skip: SETTLEMENT_SKIP.NO_PASS };
+    return { skip: mine.every((item) => isDuetPass(item)) ? SETTLEMENT_SKIP.SOLO_PASS_MISSING : SETTLEMENT_SKIP.SPENT };
   }
 
   const category = text(pass.category);
@@ -88,7 +96,13 @@ export function previewMemberRate(input = {}) {
       priorSessions: instructorClientSessionsOf(input.totals, input.instructorId, clientId),
       serviceUsedCount: pass.serviceUsed,
     });
-    return { unitPrice, rule, passId: text(pass.id), remaining: remainingCountOf(pass) };
+    return {
+      unitPrice, rule, passId: text(pass.id), remaining: remainingCountOf(pass),
+      /* 함께 쓰는 회원권이면 두 줄에 같은 금액이 서는데, 실제로 나가는 것은
+         한 번이다. 화면이 그 말을 할 수 있어야 강사가 2회로 읽지 않는다. */
+      shared: input.shared === true,
+      deducts: input.deducts !== false,
+    };
   } catch (error) {
     /* 판정이 멈추는 경우가 있다 -- 부원장인데 공급가액을 읽을 수 없거나, 기준값이
        없는 옛 회원권이다. 지어낸 숫자를 보여주느니 확정이 실패할 것이라고 미리
@@ -117,12 +131,26 @@ export function previewLessonRates(input = {}) {
     ? attendees.map((attendee) => text(attendee?.memberId))
     : [text(input?.lesson?.memberId)];
 
+  /* 확정이 쓰는 그 선택을 그대로 쓴다. 여기서 한 줄이라도 다시 고르면 두
+     화면이 갈라지는 날이 오고, 그날 강사는 화면을 믿지 않게 된다.
+     출석 상태는 보지 않는다 -- 아직 아무도 누르지 않은 수업에서도 서야 한다. */
+  const plan = planPassSelection({ ...input, requireAttendance: false });
+  const chosen = new Map();
+  for (const item of plan.deductions) {
+    item.memberIds.forEach((memberId, index) => chosen.set(text(memberId), {
+      chosen: item.pass, shared: item.shared === true, deducts: index === 0,
+    }));
+  }
+  const skipped = new Map(plan.skips.map((item) => [text(item.memberId), item.reason]));
+
   const out = new Map();
   for (const memberId of ids) {
     if (!memberId || out.has(memberId)) continue;
     const member = byId.get(memberId);
     if (!member) continue;
-    out.set(memberId, previewMemberRate({ ...input, member }));
+    out.set(memberId, previewMemberRate({
+      ...input, member, skip: skipped.get(memberId) || "", ...(chosen.get(memberId) || {}),
+    }));
   }
   return out;
 }

@@ -33,6 +33,7 @@ import {
   fbLoadAIRecordingStatus, fbSendDiagnosticReport, fbWritePilotMetricAttempt,
   fbListPhotoBackups, fbUploadPhotoBackup, fbDownloadPhotoBackup, fbSoftDeletePhotoBackup, fbPurgeExpiredPhotoBackups,
   fbLookupCentreMemberByEmail,
+  fbListPendingMemberLinks, fbLinkMemberAccountByOwner, fbUnlinkMemberAccount, fbVerifyMemberViews,
   AI_CONSENT_POLICY_VERSION, AI_CONSENT_SCOPES,
 } from "./lib/firebase";
 import { runAppDualWrite } from "./data/dual-write/app-runtime";
@@ -55,6 +56,9 @@ import {
 } from "./features/schedule/schedule-colors.js";
 import { appendMemberWithoutScheduleMutation, dedupeScheduleByLessonId } from "./features/schedule/schedule-integrity.js";
 import { maskedBirth, maskedPhone, membershipDisplay } from "./features/members/member-display.js";
+import {
+  canBrowseAllClients, phoneForViewer, visibleClients,
+} from "./features/members/roster-visibility.js";
 import {
   sheetDragOffset, shouldDismissSheet, shouldStartContentDismiss,
 } from "./features/ui/bottom-sheet-gesture.js";
@@ -86,8 +90,13 @@ import {
 import {
   clientMatchesSearch, createClient, findSameNameClients, listClients, normalizePhone,
 } from "./data/repositories/client-repository.js";
-import { listLocations } from "./data/repositories/location-repository.js";
+import {
+  ALL_LOCATIONS, NO_LOCATION, countByLocation, createLocation, filterByLocation, listLocations,
+} from "./data/repositories/location-repository.js";
 import { connectRepositoryLog, toleratingReadFailure } from "./data/repositories/repository-read.js";
+import {
+  MEMBER_NOTE_MAX, memberNoteSaveFailure, readMemberNote, saveMemberNote,
+} from "./data/repositories/member-note-repository.js";
 import {
   createProduct, listProducts, productBaseUnitPrice, setProductStatus,
 } from "./data/repositories/product-repository.js";
@@ -98,13 +107,14 @@ import {
 } from "./data/repositories/pass-repository.js";
 import {
   SETTLEMENT_OUTCOME, SETTLEMENT_SKIP, SETTLEMENT_SKIP_LABEL, applySettlementToLesson,
+  DEDUCTION_CODE_LABEL, NOT_STARTED_NOTICE, lessonHasStarted,
   canSettleLesson, clearSettlementFromLesson, closesSettlement, isSettledLesson, needsSettlement,
   planLessonSettlement, recordSettlementAttempt, settledDeductionsOf, settlementOutcome,
   settlementSkipsOf,
 } from "./features/schedule/lesson-settlement.js";
 import {
   loadInstructorMonthlyPay, loadOrganizationLedger, loadOrganizationMonthlyPayroll,
-  monthRange, onlyNewInstructorRate, payrollCsv, previousMonth, toDate,
+  monthRange, onlyNewInstructorRate, payrollCsv, currentMonth, toDate,
 } from "./data/repositories/payroll-repository.js";
 import {
   AUDIT_ACTION, STALE_PASS_DAYS, listAuditLogs, recordMigrationUpload, reviewAudit,
@@ -116,8 +126,11 @@ import { partnerClientId } from "./data/schema/pass-clients.js";
 import {
   blockingNotice, duetIssueNotices, duetSummaryLine, reviewNotices,
 } from "./features/passes/duet-issue.js";
-import { JOURNEY_PRIOR_NOTE, buildPassJourney, hasJourney } from "./features/members/pass-journey.js";
+import { JOURNEY_PRIOR_NOTE, buildPassJourney, hasJourney } from "../functions/shared/pass-journey.mjs";
 import { previewLessonRates } from "./features/schedule/lesson-rate-preview.js";
+import {
+  issueReportCsv, loadOrganizationMonthlyIssues,
+} from "./data/repositories/issue-report-repository.js";
 import {
   MIGRATION_ERROR, applyClientMigration, applyPassMigration, groupFailures,
   planClientMigration, planPassMigration,
@@ -155,6 +168,9 @@ import {
   NATIVE_SPEECH_RESULT_TIMEOUT_MS, SPEECH_NO_RESULT_MESSAGE, SPEECH_RESULT_TIMEOUT_MESSAGE,
   SPEECH_PERMISSION_STATE, describeSpeechError, speechPermissionAvailability, speechPermissionState,
 } from "./features/voice/speech-session.js";
+import {
+  VOICE_SUPPORT, WEB_VOICE_CODE, WEB_VOICE_MESSAGE, serverVoiceSupport,
+} from "./features/voice/web-support.js";
 import { consentTargetsFor, ensureEveryConsent } from "./features/voice/duet-consent.js";
 import {
   BACKGROUND_RECORDING_INTERRUPTED_MESSAGE, RECOGNIZER_BUSY_RETRY_MS, VOICE_ORGANIZING_TIMEOUT_MS, VOICE_SILENCE_LIMIT_MS, appendVoiceSessionDiagnostic, createSilenceGuard,
@@ -276,7 +292,7 @@ const sysDarkNow = () => {
 };
 
 /* 파일이 실제로 교체됐는지 1초 만에 확인하는 표시 — 설정 탭 맨 아래에 뜬다 */
-const APP_VER = "1.1.19 (23) · 2026-08-24";
+const APP_VER = "1.1.28 (57) · 2026-09-24";
 const RELEASE_VERSION = String(import.meta.env.VITE_APP_VERSION || "").trim();
 const RELEASE_BUILD_NUMBER = String(import.meta.env.VITE_BUILD_NUMBER || "").trim();
 const RELEASE_COMMIT_SHORT = String(import.meta.env.VITE_BUILD_COMMIT || "").trim().slice(0, 7);
@@ -2687,7 +2703,10 @@ function SchedSettleSkips({ s, members }) {
       {skips.map((skip) => (
         <p key={skip.memberId} className="text-xs leading-relaxed" style={{ color: INK2 }}>
           <span style={{ fontWeight: 700 }}>{nameOf(skip.memberId)}</span>
-          {" · "}{SETTLEMENT_SKIP_LABEL[skip.reason] || "차감하지 못했습니다."}
+          {/* 서버가 거부한 이유가 코드로 오면 그 코드의 문구를 쓴다 --
+              "저장되지 않았습니다" 는 무엇을 고쳐야 하는지 말해 주지 않는다. */}
+          {" · "}{DEDUCTION_CODE_LABEL[skip.code]
+            || SETTLEMENT_SKIP_LABEL[skip.reason] || "차감하지 못했습니다."}
           {/* 원본 코드를 버리지 않는다. 없으면 무엇을 고쳐야 하는지 알 수 없다. */}
           {skip.code ? <span style={{ color: SUB }}>{" (" + skip.code + ")"}</span> : null}
         </p>
@@ -2707,6 +2726,8 @@ const RATE_SKIP_LINE = {
   no_client: "센터에 등록되지 않은 회원 · 차감 없음",
   no_pass: "회원권 없음 · 발급이 필요합니다",
   spent: "잔여 없음 · 재등록이 필요합니다",
+  solo_pass_missing: "1:1 회원권 없음 · 듀엣 회원권은 두 분이 함께 올 때만 차감됩니다",
+  duet_pass_spent: "함께 쓰는 회원권 잔여 없음 · 재등록이 필요합니다",
 };
 
 function SchedRateLine({ preview }) {
@@ -2718,6 +2739,15 @@ function SchedRateLine({ preview }) {
       <span className="mt-0.5 block truncate" style={{ fontSize: TYPE.caption, color: WARN }}>{line}</span>
     );
   }
+  /* 함께 쓰는 회원권은 두 줄에 같은 금액이 선다. 실제로 나가는 것은 한 번이라,
+     그 말을 하지 않으면 강사가 두 배로 읽는다. */
+  if (preview.shared) {
+    return (
+      <span className="mt-0.5 block truncate tabular-nums" style={{ fontSize: TYPE.caption, color: FAINT }}>
+        {won(preview.unitPrice)}원 · {labelOf(PRICING_RULE_LABELS, preview.rule)} · 함께 쓰는 회원권에서 1회
+      </span>
+    );
+  }
   return (
     <span className="mt-0.5 block truncate tabular-nums" style={{ fontSize: TYPE.caption, color: FAINT }}>
       {won(preview.unitPrice)}원 · {labelOf(PRICING_RULE_LABELS, preview.rule)}
@@ -2725,7 +2755,7 @@ function SchedRateLine({ preview }) {
   );
 }
 
-function SchedSettleBlock({ s, members, canSettle, settled, canUnsettle, onSettle, onUnsettle }) {
+function SchedSettleBlock({ s, members, canSettle, settled, canUnsettle, notStarted = false, onSettle, onUnsettle }) {
   const [busy, setBusy] = useState(false);
   const [undoing, setUndoing] = useState(false);
   const [reason, setReason] = useState("");
@@ -2780,9 +2810,18 @@ function SchedSettleBlock({ s, members, canSettle, settled, canUnsettle, onSettl
           </p>
         </>
       ) : null}
-      <button type="button" disabled={busy}
+      {/* 아직 시작하지 않은 수업은 서버가 받지 않는다 -- occurredAt 이 미래가
+          되어 규칙과 리포지토리가 둘 다 거부한다. 버튼을 없애지 않고 잠근다:
+          없는 버튼은 이유를 말하지 못하고, 이미 실패한 수업의 사유와
+          [다시 확정]까지 함께 사라진다. */}
+      {notStarted ? (
+        <p className={`text-xs leading-relaxed${failedBefore ? " mt-2" : ""}`} style={{ color: INK2 }}>
+          {NOT_STARTED_NOTICE}
+        </p>
+      ) : null}
+      <button type="button" disabled={busy || notStarted}
         onClick={async () => { setBusy(true); try { await onSettle?.(s.id); } finally { setBusy(false); } }}
-        className={`h-10 w-full rounded-lg text-sm font-extrabold text-white disabled:opacity-40${failedBefore ? " mt-2" : ""}`}
+        className={`h-10 w-full rounded-lg text-sm font-extrabold text-white disabled:opacity-40${failedBefore || notStarted ? " mt-2" : ""}`}
         style={{ backgroundColor: failedBefore ? BAD : PRIMARY }}>
         {busy ? "확정 중" : failedBefore ? "다시 확정" : doneCount > 0 ? `수업 확정 · ${doneCount}명 차감` : "수업 확정"}
       </button>
@@ -2794,7 +2833,97 @@ function SchedSettleBlock({ s, members, canSettle, settled, canUnsettle, onSettl
   );
 }
 
-function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset, quickAddRequest, onConsumeQuickAdd, openLessonId, onConsumeOpenLesson, onOpenMember, onAddMember, onOpenAttendance, organizationMode = false, rateOf, onSettleLesson, onUnsettleLesson, canUnsettle = false, payCard = null }) {
+/* 회원 앱에 보낼 한 줄이 없을 때 여기가 무엇을 하는 자리인지 말한다. */
+const MEMBER_NOTE_PLACEHOLDER = "오늘 좋았던 점, 다음까지 해 보면 좋을 것 (회원이 읽습니다)";
+
+/**
+ * 강사가 회원에게 보낼 말.
+ *
+ * ── 왜 수업기록 칸과 따로 있는가 ──
+ * 수업기록은 강사가 다음 수업을 준비하려고 쓰는 글이다. "코어근육이 많이
+ * 약해짐" 은 강사끼리 쓰는 말이고, 같은 문장을 회원이 읽으면 뜻이 달라진다.
+ * 그래서 회원에게 가는 것은 이 칸에 적은 것뿐이고, 기록 원문은 기기에 남는다.
+ *
+ * ── 확정 전에는 회원에게 보이지 않는다 ──
+ * 회원 앱의 수업 탭은 원장의 차감으로 만들어진다. 차감이 없으면 그 수업은
+ * 회원의 이력에 아예 없고, 없는 줄에 말만 띄울 자리가 없다. 저장은 지금
+ * 되지만 보이는 것은 확정 뒤라는 것을 화면이 먼저 말한다 -- 말하지 않으면
+ * 강사는 저장하고 나서 안 보인다고 하게 된다.
+ */
+function SchedMemberNote({ lessonId, clientId, settled, onRead, onSave, onToast }) {
+  const [body, setBody] = useState("");
+  const [loaded, setLoaded] = useState(false);
+  const [readError, setReadError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [savedBody, setSavedBody] = useState("");
+
+  /* 회원을 바꾸면 그 회원의 말을 다시 읽는다. 안 읽으면 앞 회원에게 쓰던
+     문장이 다음 회원 칸에 그대로 남는다 -- 그대로 저장되면 남의 말이 간다. */
+  useEffect(() => {
+    let alive = true;
+    setLoaded(false);
+    setReadError("");
+    setBody("");
+    setSavedBody("");
+    if (!lessonId || !clientId || typeof onRead !== "function") { setLoaded(true); return undefined; }
+    (async () => {
+      try {
+        const found = await onRead(lessonId, clientId);
+        if (!alive) return;
+        setBody(String(found || ""));
+        setSavedBody(String(found || ""));
+      } catch (error) {
+        /* 못 읽은 것과 안 쓴 것은 다르다. 빈 칸으로 그려 두면 강사는 지웠다고
+           읽고 그 위에 덮어쓴다. */
+        if (alive) setReadError(`이전에 보낸 말을 불러오지 못했어요 (코드 ${String(error?.code || "unknown")})`);
+      } finally {
+        if (alive) setLoaded(true);
+      }
+    })();
+    return () => { alive = false; };
+  }, [lessonId, clientId, onRead]);
+
+  if (typeof onSave !== "function") return null;
+  const trimmed = body.trim().slice(0, MEMBER_NOTE_MAX);
+  const dirty = trimmed !== savedBody.trim();
+
+  return (
+    <div data-member-note className="space-y-1.5 rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
+      <div className="flex items-center gap-2">
+        <p className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: INK }}>회원에게 보낼 말 <span style={{ fontWeight: 600, color: FAINT }}>(선택)</span></p>
+        <span className="shrink-0 text-caption tabular-nums" style={{ color: FAINT }}>{trimmed.length}/{MEMBER_NOTE_MAX}</span>
+      </div>
+      {readError ? <p role="alert" className="text-xs font-bold" style={{ color: BAD }}>{readError}</p> : null}
+      <textarea rows={2} value={body} disabled={!loaded} maxLength={MEMBER_NOTE_MAX}
+        onChange={(event) => setBody(event.target.value)}
+        placeholder={loaded ? MEMBER_NOTE_PLACEHOLDER : "불러오는 중…"}
+        className={`${inputCls} h-auto resize-none py-2.5 leading-relaxed disabled:opacity-60`} />
+      <p className="text-xs leading-relaxed" style={{ color: INK2 }}>
+        {settled
+          ? "회원 앱의 수업 탭에 이 수업과 함께 보입니다."
+          : "수업을 확정해 회원권이 차감되면 회원 앱에 보입니다. 지금 저장해 두어도 됩니다."}
+      </p>
+      <button type="button" disabled={!loaded || saving || !dirty}
+        onClick={async () => {
+          setSaving(true);
+          try {
+            const saved = await onSave(lessonId, clientId, trimmed);
+            if (saved === false) return;
+            setSavedBody(trimmed);
+            onToast?.({ ok: true, msg: trimmed ? "회원에게 보낼 말을 저장했습니다." : "회원에게 보낼 말을 지웠습니다." });
+          } finally {
+            setSaving(false);
+          }
+        }}
+        className="h-10 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35"
+        style={{ backgroundColor: PRIMARY }}>
+        {saving ? "저장 중" : dirty ? "저장" : "저장됨"}
+      </button>
+    </div>
+  );
+}
+
+function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset, quickAddRequest, onConsumeQuickAdd, openLessonId, onConsumeOpenLesson, onOpenMember, onAddMember, onOpenAttendance, organizationMode = false, rateOf, onSettleLesson, onUnsettleLesson, onReadMemberNote, onSaveMemberNote, canUnsettle = false, payCard = null }) {
   const initialDisplay = useMemo(() => {
     try { return JSON.parse(localStorage.getItem(SCHEDULE_VIEW_KEY) || "null") || {}; }
     catch (e) { return {}; }
@@ -3085,7 +3214,7 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
       {editing && <ScheduleForm draft={liveEditing} members={db.members} schedule={db.schedule} briefingOf={briefingOf} scheduleColors={scheduleColors} returnFocusRef={scheduleTriggerRef} onClose={() => setEditing(null)}
         onSubmit={(v) => { onSave(v); setEditing(null); }} onDelete={(id) => { onDelete(id); setEditing(null); }}
         onStatus={onStatus} onStatusAll={onStatusAll} onNoshowFee={onNoshowFee} onGroupDone={onGroupDone}
-        organizationMode={organizationMode} rateOf={rateOf} onSettleLesson={onSettleLesson} onUnsettleLesson={onUnsettleLesson} canUnsettle={canUnsettle}
+        organizationMode={organizationMode} rateOf={rateOf} onSettleLesson={onSettleLesson} onUnsettleLesson={onUnsettleLesson} onReadMemberNote={onReadMemberNote} onSaveMemberNote={onSaveMemberNote} onToast={onToast} canUnsettle={canUnsettle}
         onNoComment={onNoComment} onSaveNote={onSaveNote} onOpenMember={onOpenMember} onFocusMemberWeek={(memberId) => { setFocusedMemberId(memberId); setEditing(null); }} />}
       {queueOpen && (
         <ScheduleQueueSheet tasks={taskQueue} members={db.members} returnFocusRef={queueTriggerRef} onClose={() => setQueueOpen(false)}
@@ -3472,7 +3601,7 @@ function confirmedLessonNoteArgs(note, reviewedDraft = null) {
   };
 }
 
-function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, onClose, onSubmit, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onOpenMember, onFocusMemberWeek, scheduleColors = null, organizationMode = false, rateOf, onSettleLesson, onUnsettleLesson, canUnsettle = false }) {
+function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, onClose, onSubmit, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onOpenMember, onFocusMemberWeek, scheduleColors = null, organizationMode = false, rateOf, onSettleLesson, onUnsettleLesson, onReadMemberNote, onSaveMemberNote, onToast, canUnsettle = false }) {
   /* 확정된 수업은 출석을 바꿀 수 없다. 상태를 바꿔도 이미 나간 차감은 따라오지
      않고, 둘이 어긋나면 어느 것이 맞는지 알 수 없다. */
   const settledLesson = organizationMode && isSettledLesson(draft);
@@ -3775,6 +3904,13 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
                     {recordMode === "write" && <><textarea rows={4} value={recordBody} onChange={(e) => setRecordBody(e.target.value)} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} /><button disabled={!recordBody.trim()} onClick={async () => { const stored = await onSaveNote?.(activeMemberId, draft.type, draft.id, recordBody.trim(), null); if (stored !== false) onClose(); }} className="h-11 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35" style={{ backgroundColor: PRIMARY }}>저장</button></>}
                   </div>
                 )}
+
+                {/* 위 기록은 강사의 것이고, 이 칸은 회원의 것이다. 나란히 두되
+                    섞이지 않게 둔다 -- 한 칸이면 강사는 둘 중 하나를 포기한다. */}
+                {organizationMode && (
+                  <SchedMemberNote key={`${draft.id}-${activeMemberId}`} lessonId={draft.id} clientId={activeMemberId}
+                    settled={settledLesson} onRead={onReadMemberNote} onSave={onSaveMemberNote} onToast={onToast} />
+                )}
                 </>}
               </>
             )}
@@ -3790,7 +3926,7 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
             {/* 여러 명인 수업은 전원을 정한 뒤 한 번에 확정한다 -- 누르는 횟수가
                 오히려 줄어든다. 개인 모드에는 조직 회원권이 없어 이 블록이 없다. */}
             {organizationMode ? (
-              <SchedSettleBlock s={draft} members={members} settled={settledLesson} canSettle={canSettleLesson(draft)}
+              <SchedSettleBlock s={draft} members={members} settled={settledLesson} canSettle={canSettleLesson(draft)} notStarted={!lessonHasStarted(draft)}
                 canUnsettle={canUnsettle} onSettle={onSettleLesson}
                 onUnsettle={async (...args) => {
                   const done = await onUnsettleLesson?.(...args);
@@ -4828,6 +4964,10 @@ function ReferenceMemberList({
   members, schedule, settings, onSelect, onAdd, onDeleteSamples, registerRequest = 0,
   onConsumeRegisterRequest, canRegister = true, currentUserId = "", myMembersDefault = false,
   rosterError = "", onRetryRoster, hiddenCount = 0, onShowHidden, journeyOf,
+  /* 강사에게는 "전체 보기" 를 주지 않는다. 경계가 아니라 -- 규칙은 지금도
+     열려 있다 -- 120명을 일상적으로 스크롤할 이유가 없어서다.
+     기본값 true 는 개인 강사(legacy)를 위한 것이다. */
+  canBrowseAll = true, viewerRole = "",
 }) {
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState("all");
@@ -4867,8 +5007,14 @@ function ReferenceMemberList({
   const list = realMembers.filter(matchFilter)
     /* 검색은 필터를 넘어선다. 이름을 쳤는데 "내 회원"이 아니라서 안 나오면
        강사는 그 회원이 센터에 없다고 읽고 다시 등록한다. */
-    .filter((m) => (mineOnly && !q.trim() ? isMyRosterMember(m, currentUserId) : true))
-    .filter((m) => !q.trim() || (m.name || "").includes(q.trim()) || (m.phone || "").includes(q.trim()))
+    /* 전체를 볼 수 없는 역할(강사)은 검색도 좁다. 내 회원은 부분 일치로
+       찾고, 남의 회원은 이름을 전부 쳐야 나온다 -- 한 글자에 스무 명이
+       나오면 그것은 명부를 여는 것과 같다. 대타 경로는 막지 않는다. */
+    .filter((m) => (canBrowseAll
+      ? (mineOnly && !q.trim() ? isMyRosterMember(m, currentUserId) : true)
+      : isMyRosterMember(m, currentUserId) || String(m.name || "").trim() === q.trim()))
+    .filter((m) => !q.trim() || (m.name || "").includes(q.trim())
+      || (canBrowseAll && (m.phone || "").includes(q.trim())))
     .sort((a, b) => {
       if (sort === "remaining") return left(a) - left(b);
       if (sort === "expiry") return String(a.contractEnd || "9999").localeCompare(String(b.contractEnd || "9999"));
@@ -4916,7 +5062,7 @@ function ReferenceMemberList({
           </label>
         </div>
       </div>
-      {myMembersDefault ? (
+      {myMembersDefault && canBrowseAll ? (
         <div className="shrink-0 flex items-center gap-2" style={{ padding: "8px 12px", backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
           {[{ k: true, l: `내 회원 ${mineCount}` }, { k: false, l: `전체 ${realMembers.length}` }].map((option) => (
             <button type="button" key={String(option.k)} onClick={() => setMineOnly(option.k)} className="shrink-0"
@@ -5147,7 +5293,10 @@ function PassJourneyBar({ journey, size = "md" }) {
 
    개인 모드(레거시)에는 셋 다 그대로 남는다. 그쪽에서는 payRate 가 실제로 월간
    리포트 계산에 쓰이고, 회원도 홀딩도 강사 자신의 것이다. */
-function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSettlement = true, organizationMode = false, journey = null, onBack, onPatch, onSaveNote, onSchedule, onOpenLesson, onAssess, onToast, onDelete, onDeactivate, onReactivate, onHide }) {
+function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSettlement = true, organizationMode = false, journey = null, viewerRole = "", onBack, onPatch, onSaveNote, onSchedule, onOpenLesson, onAssess, onToast, onDelete, onDeactivate, onReactivate, onHide }) {
+  /* 강사에게는 뒤 4자리만. 동명이인을 가르는 데는 그것으로 충분하고, 전화를
+     거는 일은 센터가 한다 (roster-visibility.js). */
+  const phoneShown = (value) => phoneForViewer(value, viewerRole, { full: () => maskedPhone(value) });
   const [sheet, setSheet] = useState(null);
   const [edit, setEdit] = useState({});
   const [memo, setMemo] = useState("");
@@ -5384,13 +5533,13 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
             </div>
           </details>
           <details data-member-management-card="basic-and-memos" style={{ ...sectionStyle, padding: 0, overflow: "hidden" }}>
-            <summary aria-label="기본정보·상담메모 관리 카드 열기" className="flex min-h-14 cursor-pointer list-none items-center gap-3 px-3.5 py-3"><span className="min-w-0 flex-1"><span className="block truncate text-sm font-extrabold" style={{ color: INK }}>기본정보·상담메모</span><span className="mt-0.5 block truncate text-caption" style={{ color: SUB }}>{maskedPhone(member.phone)} · {consultationNotes.length ? `상담메모 ${consultationNotes.length}건` : "상담메모 없음"}</span></span><ChevronDown size={16} style={{ color: SUB }} /></summary>
+            <summary aria-label="기본정보·상담메모 관리 카드 열기" className="flex min-h-14 cursor-pointer list-none items-center gap-3 px-3.5 py-3"><span className="min-w-0 flex-1"><span className="block truncate text-sm font-extrabold" style={{ color: INK }}>기본정보·상담메모</span><span className="mt-0.5 block truncate text-caption" style={{ color: SUB }}>{phoneShown(member.phone)} · {consultationNotes.length ? `상담메모 ${consultationNotes.length}건` : "상담메모 없음"}</span></span><ChevronDown size={16} style={{ color: SUB }} /></summary>
             <div data-member-management-content="basic-and-memos" className="space-y-2" style={{ padding: "0 12px 12px" }}>
           <Section title="목표·주의사항" action={<button type="button" onClick={openPreparation} style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND }}>수정</button>}>
             <div className="space-y-2"><div><p style={{ fontSize: TYPE.caption, color: SUB }}>운동 목표</p>{member.goal ? <p className="mt-0.5" style={{ fontSize: TYPE.caption, lineHeight: 1.45, color: INK2 }}>{member.goal}</p> : <button type="button" onClick={openPreparation} className="mt-0.5 text-xs font-bold" style={{ color: BRAND }}>+ 목표 추가</button>}</div><div style={{ padding: "9px 10px", borderRadius: 8, backgroundColor: WARN_S }}><p style={{ fontSize: TYPE.caption, fontWeight: 700, color: WARN }}>통증 및 주의사항</p><p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.45, color: INK2 }}>{(member.focus || []).length ? member.focus.join(" · ") : "등록된 주의사항이 없습니다"}</p></div></div>
           </Section>
           <Section title="회원 기본정보" action={<button type="button" onClick={openEdit} style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND }}><Pencil size={12} className="inline" /> 정보 수정</button>}>
-            <div className="grid grid-cols-2 gap-x-3 gap-y-2">{[["이름", member.name || "-"], ["회원 상태", isHold(member) ? "홀딩" : isEnded(member) ? "종료" : "활성"], ...(!singleInstructorMode ? [["담당 강사", member.instructor || "미지정"]] : []), ["연락처", member.phone ? maskedPhone(member.phone) : "번호 추가"], ["수업 유형", member.lessonType === "duet" ? "듀엣" : member.lessonType === "group" ? "그룹" : "개인"], ["기본 수업시간", `${lessonDurationOf(member)}분`], ["생년월일 · 나이", maskedBirth(member.birth, ageOf(member))]].map(([k,v]) => <div key={k} className={k === "생년월일 · 나이" ? "col-span-2" : ""}><p style={{ fontSize: TYPE.caption, color: SUB }}>{k}</p><p className="mt-0.5 truncate" style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK }}>{v}</p></div>)}</div>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-2">{[["이름", member.name || "-"], ["회원 상태", isHold(member) ? "홀딩" : isEnded(member) ? "종료" : "활성"], ...(!singleInstructorMode ? [["담당 강사", member.instructor || "미지정"]] : []), ["연락처", member.phone ? phoneShown(member.phone) : "번호 추가"], ["수업 유형", member.lessonType === "duet" ? "듀엣" : member.lessonType === "group" ? "그룹" : "개인"], ["기본 수업시간", `${lessonDurationOf(member)}분`], ["생년월일 · 나이", maskedBirth(member.birth, ageOf(member))]].map(([k,v]) => <div key={k} className={k === "생년월일 · 나이" ? "col-span-2" : ""}><p style={{ fontSize: TYPE.caption, color: SUB }}>{k}</p><p className="mt-0.5 truncate" style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK }}>{v}</p></div>)}</div>
           </Section>
           <Section title="상담 및 중요 메모" action={<div className="flex gap-3"><button type="button" onClick={() => setSheet("memos-all")} style={{ fontSize: TYPE.caption, fontWeight: 600, color: SUB }}>전체 보기</button><button type="button" onClick={openMemo} style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND }}>메모 추가</button></div>}>
             {consultationNotes.length ? consultationNotes.slice(0, 3).map((note) => <div key={note.id} className="flex items-start gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}` }}><button type="button" aria-label={note.important ? "중요 메모 고정 해제" : "중요 메모로 고정"} onClick={() => commitPatch("pin", { notes: (member.notes || []).map((item) => item.id === note.id ? { ...item, important: !item.important } : item) }, false)} className="mt-0.5 shrink-0" style={{ color: note.important ? WARN : FAINT }}><Star size={14} fill={note.important ? "currentColor" : "none"} /></button><span className="min-w-0 flex-1"><span className="block" style={{ fontSize: TYPE.caption, color: SUB }}>{ymd(note.date)}{note.important ? " · 중요" : ""}</span><span className="mt-0.5 block line-clamp-2" style={{ fontSize: TYPE.caption, lineHeight: 1.45, color: INK2 }}>{note.body}</span></span></div>) : <button type="button" onClick={openMemo} className="flex h-9 w-full items-center justify-between px-2 text-left" style={{ borderRadius: 8, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>등록된 상담 메모가 없습니다<span style={{ color: BRAND }}>추가하기</span></button>}
@@ -10895,7 +11044,7 @@ function Dashboard({ member, photos, schedule, onBack, briefing, onSavePhoto, on
     </div>
   );
 }
-function RecordTab({ db, selectedId, setSelectedId, section, setSection, onSaveInbody, onDeleteInbody, onSaveNote, onPatch, onDelete, onToast, onSettings, onLeaveNote, backHint, locked, voiceHint, onVoiceSeen }) {
+function RecordTab({ db, selectedId, setSelectedId, section, setSection, onSaveInbody, onDeleteInbody, onSaveNote, onPatch, onDelete, onToast, onSettings, onLeaveNote, backHint, locked, voiceHint, onVoiceSeen, viewerRole = "" }) {
   const [openInfo, setOpenInfo] = useState(false);
   const members = db.members;
   const member = members.find((m) => m.id === selectedId) || members[0];
@@ -10936,7 +11085,8 @@ function RecordTab({ db, selectedId, setSelectedId, section, setSection, onSaveI
               {[
                 { l: "상태", v: isEnded(member) ? "종료" : isHold(member) ? "홀딩" : "진행중" },
                 { l: "담당 강사", v: member.instructor || "-" },
-                { l: "연락처", v: member.phone || "-" },
+                // 강사에게는 뒤 4자리만 (roster-visibility.js).
+                { l: "연락처", v: phoneForViewer(member.phone, viewerRole) || "-" },
                 { l: "나이", v: ageOf(member) !== null ? `${ageOf(member)}세${member.birth ? ` (${ymd(member.birth)})` : ""}` : "-" },
                 { l: "수강권", v: member.passName || "-" },
                 { l: "잔여 내역", v: `정규 ${num(member.regular)} · 서비스 ${num(member.service)}` },
@@ -11444,6 +11594,16 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     let active = true;
     const inspect = async () => {
       setVoiceAvailability("checking");
+      /* 브라우저에는 이 플러그인의 구현이 없다. 권한을 물어보면 "not implemented"
+         로 던지고, 그것을 잡아 null 로 만들면 화면이 "권한을 허용해 주세요" 라고
+         말하게 된다 -- 허용해도 아무 일이 일어나지 않는 안내다. 물어보기 전에
+         가른다. */
+      if (serverVoiceSupport({ engineMode: VOICE_ENGINE_MODE, isNative: Capacitor.isNativePlatform() }) === VOICE_SUPPORT.WEB_UNSUPPORTED) {
+        setVoiceAvailability("web_unsupported");
+        setManualEntry(true);
+        voiceDiagnostic("permission_state", { source: "server_audio", state: WEB_VOICE_CODE, platform: Capacitor.getPlatform() });
+        return;
+      }
       if (VOICE_ENGINE_MODE === "server") {
         let permissionError = null;
         const permission = await CapacitorAudioRecorder.checkPermissions().catch((error) => { permissionError = error; return null; });
@@ -13259,7 +13419,11 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
     if (recorder && recorder.state !== "inactive") { try { recorder.stop(); } catch (e) {} }
     streamRef.current?.getTracks?.().forEach((track) => track.stop());
   }, []);
-  const supported = voiceAvailability !== "unsupported";
+  /* 말하기를 쓸 수 없는 두 가지. 버튼을 막는 조건은 같고 문구만 다르다 --
+     하나는 이 기기가 음성 인식을 못 하는 것이고, 하나는 브라우저라 녹음
+     플러그인이 아예 없는 것이다. 강사가 할 일이 다르다. */
+  const voiceUnavailable = voiceAvailability === "unsupported" || voiceAvailability === "web_unsupported";
+  const supported = !voiceUnavailable;
   const voicePhase = summaryDraft ? "result" : consentGate ? "failed" : resolveVoicePhase({
     availability: voiceAvailability,
     starting,
@@ -13297,7 +13461,7 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
           <span className="flex min-h-11 shrink-0 items-center rounded-full px-3 text-xs font-extrabold" style={{ backgroundColor: consentGate ? TINT : BAD_S, color: consentGate ? BRAND_D : BAD }}>{consentGate ? "동의 필요" : "실패"}</span>
         ) : voicePhase === "permission_required" ? (
           <button type="button" onClick={requestVoicePermission} className="min-h-11 shrink-0 rounded-full px-3 text-xs font-extrabold" style={{ backgroundColor: TINT, color: BRAND_D }}>권한 설정</button>
-        ) : voiceAvailability === "unsupported" ? null : text && VOICE_ENGINE_MODE === "server" ? (
+        ) : voiceUnavailable ? null : text && VOICE_ENGINE_MODE === "server" ? (
           <div className="flex shrink-0 gap-1">
             <button type="button" onClick={() => startFromUserTap("append")} disabled={!supported || audioState === "saving"} aria-label="음성으로 이어서 말하기" className="min-h-11 rounded-full px-2.5 text-caption font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: BRAND }}>이어서 말하기</button>
             <button type="button" onClick={() => startFromUserTap("replace")} disabled={!supported || audioState === "saving"} aria-label="음성 다시 말하기" className="min-h-11 rounded-full px-2.5 text-caption font-extrabold disabled:opacity-40" style={{ backgroundColor: CARD, color: BRAND_D, border: `1px solid ${LINE}` }}>다시 말하기</button>
@@ -13312,6 +13476,9 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       {replacementUndoVisible && <button type="button" onClick={restorePreviousRecording} className="mt-2 min-h-11 w-full rounded-xl text-xs font-extrabold" style={{ backgroundColor: WARN_S, color: WARN }}>이전 녹음 복원</button>}
       {voicePhase === "permission_required" && <Sub className="mt-1.5 block leading-relaxed">{voiceAvailability === "permission_permanently_denied" ? "설정에서 마이크 권한을 켜주세요" : "말하기를 사용하려면 마이크 권한을 허용해 주세요."}</Sub>}
       {voiceAvailability === "unsupported" && <Sub className="mt-1.5 block leading-relaxed">이 기기에서는 말하기를 지원하지 않아 직접 입력으로 기록할 수 있어요.</Sub>}
+      {/* 권한 문제가 아니다. 허용해도 달라지지 않으므로 "권한을 켜 주세요" 라고
+          말하면 강사가 브라우저 설정을 뒤지게 된다. */}
+      {voiceAvailability === "web_unsupported" && <Sub className="mt-1.5 block leading-relaxed">{WEB_VOICE_MESSAGE}</Sub>}
       {voicePhase === "listening" && <Sub className="mt-1.5 block font-bold leading-relaxed" style={{ color: BRAND_D }}>듣고 있어요 · 잠시 생각하며 멈춰도 괜찮아요.</Sub>}
       {voicePhase === "listening" && VOICE_ENGINE_MODE === "server" && <div aria-label="마이크 음량" className="mt-2 flex h-8 items-center justify-center gap-1 overflow-hidden rounded-lg px-2" style={{ backgroundColor: CARD }}>{Array.from({ length: 18 }, (_, index) => { const wave = Math.max(0.12, amplitude * (0.45 + ((index * 7) % 10) / 10)); return <span key={index} className="w-1 rounded-full" style={{ height: `${Math.round(6 + wave * 20)}px`, backgroundColor: index % 3 === 0 ? BRAND : LAVENDER, transition: "height 100ms linear" }} />; })}</div>}
       {voicePhase === "listening" && lowVolumeNotice && <p role="status" className="mt-1.5 text-caption font-bold" style={{ color: WARN }}>{lowVolumeNotice}</p>}
@@ -14599,9 +14766,19 @@ function AttendanceCheck({
 
   useEffect(() => { if (!locked) reload(); else setLoading(false); }, [locked, reload]);
 
+  /* 강사는 자기 회원 안에서 찾는다. 대타로 남의 회원을 처리해야 하는 일이
+     실제로 있으므로 길을 닫지는 않는다 -- 다만 **이름을 전부 쳐야** 나온다.
+     한 글자에 스무 명이 나오면 그것은 명부를 여는 것과 같다.
+
+     담당은 회원권에서 온다. 회원 문서에는 담당 강사가 없다
+     (roster-visibility.js 머리말). */
+  const browseAll = canBrowseAllClients(organization?.role);
   const matched = useMemo(
-    () => clients.filter((client) => clientMatchesSearch(client, search)).slice(0, 8),
-    [clients, search],
+    () => visibleClients({
+      clients, passes, instructorId: currentUserId, query: search, browseAll,
+      matches: (item, query) => clientMatchesSearch(item, query),
+    }).slice(0, 8),
+    [clients, passes, currentUserId, search, browseAll],
   );
   const client = clients.find((item) => item.id === clientId) || null;
   const clientPasses = useMemo(
@@ -14700,12 +14877,19 @@ function AttendanceCheck({
       {!loading && !loadError ? (
         <div className="mt-3 space-y-3">
           <Field label="수업한 회원">
-            <input value={search} className={inputCls} placeholder="이름 또는 연락처"
+            <input value={search} className={inputCls}
+              placeholder={browseAll ? "이름 또는 연락처" : "내 회원 이름"}
               onChange={(e) => { setSearch(e.target.value); setClientId(""); }} />
             {search && !clientId ? (
               <div className="mt-2 flex flex-wrap gap-2">
                 {matched.length === 0
-                  ? <p style={{ fontSize: TYPE.caption, color: SUB }}>찾는 회원이 없습니다.</p>
+                  ? (
+                    <p style={{ fontSize: TYPE.caption, color: SUB }}>
+                      {browseAll
+                        ? "찾는 회원이 없습니다."
+                        : "내 회원 중에는 없습니다. 대타 수업이면 회원 이름을 전부 입력해 주세요."}
+                    </p>
+                  )
                   : matched.map((item) => (
                     <button key={item.id} type="button" className="h-9 px-3 font-bold"
                       onClick={() => { setClientId(item.id); setSearch(item.name); }}
@@ -15332,6 +15516,44 @@ function TitlePicker({ title, deputy, allowDeputy = true, onPick }) {
   );
 }
 
+/* 지점별로 목록을 나눠 보는 칩 줄. 회원 관리와 강사 관리가 같이 쓴다.
+
+   지점이 하나뿐이면 그리지 않는다 -- 고를 것이 없는 칩은 자리만 차지한다.
+   "지점 없음"은 해당하는 사람이 있을 때만 나온다. 지점을 비워 둔 강사나,
+   목록에 없는 지점을 가리키는 회원이 어느 칸에도 안 보이면 찾을 길이 없다. */
+function LocationFilter({ locations, counts, value, onChange }) {
+  if (locations.length < 2 && !(counts[NO_LOCATION] > 0 && locations.length > 0)) return null;
+  const chips = [
+    { id: ALL_LOCATIONS, label: "전체" },
+    ...locations.map((location) => ({ id: location.id, label: location.name || location.id })),
+    ...(counts[NO_LOCATION] > 0 ? [{ id: NO_LOCATION, label: "지점 없음" }] : []),
+  ];
+  return (
+    <div className="mt-3 flex flex-wrap gap-2">
+      {chips.map((chip) => {
+        const selected = value === chip.id;
+        return (
+          <button key={chip.id} type="button" onClick={() => onChange(chip.id)}
+            className="h-8 px-3 font-bold tabular-nums" style={{
+              borderRadius: 999, fontSize: TYPE.caption,
+              backgroundColor: selected ? TINT : CANVAS,
+              color: selected ? BRAND_D : SUB,
+            }}>{chip.label} {counts[chip.id] ?? 0}</button>
+        );
+      })}
+    </div>
+  );
+}
+
+/* 고른 지점이 사라졌거나(다시 읽은 목록에 없음) "지점 없음" 칸이 비면 전체로
+   돌아간다. 빈 목록만 남으면 사람이 없는 것처럼 보인다. */
+function useLocationFilter(locations, counts) {
+  const [value, setValue] = useState(ALL_LOCATIONS);
+  const valid = value === ALL_LOCATIONS
+    || (value === NO_LOCATION ? counts[NO_LOCATION] > 0 : locations.some((location) => location.id === value));
+  return [valid ? value : ALL_LOCATIONS, setValue];
+}
+
 function MembershipRow({ membership, locationName, busy, onEdit }) {
   const rate = fullRoomRateOf(membership);
   const usable = hasUsableFullRoomRate(membership);
@@ -15350,13 +15572,14 @@ function MembershipRow({ membership, locationName, busy, onEdit }) {
           }}>수정</button>
       </div>
       <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>
-        {membershipTitleLabel(membership)}
+        {membership.role === ROLES.MANAGER ? "FC매니저" : membershipTitleLabel(membership)}
         {" · "}{locationName || "지점 없음"}
         {" · "}{labelOf(MEMBERSHIP_STATUS_LABELS, membership.status)}
       </p>
       {/* 부원장에게는 풀방금액이 쓰이지 않는다 -- 카테고리도 누적도 보지 않고
           계약 금액의 5:5 로 간다. 숫자를 그대로 두면 그 금액이 지급되는 것으로
           읽힌다. */}
+      {membership.role === ROLES.MANAGER ? null : (
       <p className="mt-0.5 tabular-nums" style={{
         fontSize: TYPE.caption, color: deputy ? BRAND_D : usable ? SUB : WARN,
       }}>
@@ -15364,6 +15587,7 @@ function MembershipRow({ membership, locationName, busy, onEdit }) {
           ? "계약 금액의 5:5 (공급가액 기준)"
           : usable ? `풀방금액 ${wonToManwonLabel(rate)} · 회당` : "풀방금액 미설정 — 1:1 재등록(정상) 발급 불가"}
       </p>
+      )}
     </div>
   );
 }
@@ -15394,9 +15618,11 @@ function InstructorAdmin({
   const [editing, setEditing] = useState(initialState?.editing || null);
   const [draft, setDraft] = useState(initialState?.draft || {
     displayName: "", title: MEMBERSHIP_TITLE.INSTRUCTOR, locationId: "", rateManwon: "", deputy: false,
+    role: ROLES.INSTRUCTOR,
   });
   const [lookup, setLookup] = useState(initialState?.lookup || { email: "", found: null, error: "", busy: false });
   const [formError, setFormError] = useState(initialState?.formError || "");
+  const [locationDraft, setLocationDraft] = useState(initialState?.locationDraft || null);
   const [saving, setSaving] = useState(false);
   const organizationId = organization?.organizationId || "";
   const locked = organization?.status === "unknown";
@@ -15428,14 +15654,43 @@ function InstructorAdmin({
     () => new Map(locations.map((location) => [location.id, location.name || ""])),
     [locations],
   );
-  const working = members.filter(isActiveMembership);
-  const retired = members.filter((membership) => !isActiveMembership(membership));
+  const locationCounts = useMemo(
+    () => countByLocation(members.filter(isActiveMembership), locations),
+    [members, locations],
+  );
+  const [locationFilter, setLocationFilter] = useLocationFilter(locations, locationCounts);
+  const inLocation = filterByLocation(members, locationFilter, locations);
+  const working = inLocation.filter(isActiveMembership);
+  const retired = inLocation.filter((membership) => !isActiveMembership(membership));
+
+  /* 지점 추가. 이름 변경·삭제는 두지 않는다 -- location-repository 머리말. */
+  const addLocation = async (event) => {
+    event.preventDefault();
+    const name = String(locationDraft?.name || "").trim();
+    if (!name) { setLocationDraft((current) => ({ ...current, error: "지점 이름을 입력해 주세요." })); return; }
+    setLocationDraft((current) => ({ ...current, busy: true, error: "" }));
+    try {
+      const created = await createLocation(organizationId, { name, createdBy: currentUserId },
+        { store: locationStore, existing: locations });
+      setLocationDraft(null);
+      onToast?.({ ok: true, msg: `${created.name}을 추가했습니다.` });
+      await reload();
+      setLocationFilter(created.id);
+    } catch (error) {
+      const message = error?.code === "already-exists"
+        ? "같은 이름의 지점이 이미 있습니다."
+        : error?.code === "permission-denied"
+          ? "대표·매니저만 지점을 추가할 수 있습니다."
+          : `지점을 추가하지 못했어요 (코드 ${error?.code || error?.message || "unknown"})`;
+      setLocationDraft((current) => ({ ...current, busy: false, error: message }));
+    }
+  };
 
   const close = () => {
     setMode("list");
     setEditing(null);
     setLookup({ email: "", found: null, error: "", busy: false });
-    setDraft({ displayName: "", title: MEMBERSHIP_TITLE.INSTRUCTOR, locationId: "", rateManwon: "", deputy: false });
+    setDraft({ displayName: "", title: MEMBERSHIP_TITLE.INSTRUCTOR, locationId: "", rateManwon: "", deputy: false, role: ROLES.INSTRUCTOR });
     setFormError("");
   };
 
@@ -15483,7 +15738,8 @@ function InstructorAdmin({
       await addMembership(organizationId, {
         userId,
         displayName: draft.displayName.trim(),
-        title: draft.title,
+        title: draft.role === ROLES.MANAGER ? MEMBERSHIP_TITLE.INSTRUCTOR : draft.title,
+        role: draft.role === ROLES.MANAGER ? ROLES.MANAGER : ROLES.INSTRUCTOR,
         locationId: draft.locationId,
         createdBy: currentUserId,
         actorRole: organization?.role || "",
@@ -15640,14 +15896,37 @@ function InstructorAdmin({
             <input value={draft.displayName} className={inputCls} placeholder="예) 박서연"
               onChange={(e) => setDraft((current) => ({ ...current, displayName: e.target.value }))} />
           </Field>
-          <Field label="직함">
-            {/* 부원장은 여기서 고르지 않는다. 그 지정은 급여 판정을 바꾸는 일이라
-                이력이 함께 남아야 하고, 그 문은 추가가 아니라 수정 쪽에 있다. */}
-            <TitlePicker title={draft.title} deputy={false} allowDeputy={false} onPick={pickTitle} />
-            <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
-              부원장 지정과 풀방금액은 추가한 뒤 수정에서 정합니다 — 변경 이력이 함께 남습니다.
-            </p>
+          <Field label="권한">
+            {/* FC매니저는 수업하지 않고 상담·계약을 받는다. 회원권 상품 · 발급 ·
+                회원 등록이 열리고, 강사 목록(담당 강사 · 급여)에는 나오지 않는다.
+                급여 · 감사 로그 · 강사 관리 · 엑셀 이관은 여전히 대표만이다. */}
+            <div className="flex flex-wrap gap-2">
+              {[[ROLES.INSTRUCTOR, "강사"], [ROLES.MANAGER, "FC매니저"]].map(([value, label]) => (
+                <button key={value} type="button"
+                  onClick={() => setDraft((current) => ({ ...current, role: value }))}
+                  className="h-9 px-3 font-bold" style={{
+                    borderRadius: 999, fontSize: TYPE.caption,
+                    backgroundColor: draft.role === value ? TINT : CANVAS,
+                    color: draft.role === value ? BRAND_D : SUB,
+                  }}>{label}</button>
+              ))}
+            </div>
+            {draft.role === ROLES.MANAGER ? (
+              <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+                회원권 상품 만들기 · 회원권 발급 · 회원 등록을 할 수 있습니다. 급여 집계와 강사 관리는 보이지 않습니다.
+              </p>
+            ) : null}
           </Field>
+          {draft.role === ROLES.MANAGER ? null : (
+            <Field label="직함">
+              {/* 부원장은 여기서 고르지 않는다. 그 지정은 급여 판정을 바꾸는 일이라
+                  이력이 함께 남아야 하고, 그 문은 추가가 아니라 수정 쪽에 있다. */}
+              <TitlePicker title={draft.title} deputy={false} allowDeputy={false} onPick={pickTitle} />
+              <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+                부원장 지정과 풀방금액은 추가한 뒤 수정에서 정합니다 — 변경 이력이 함께 남습니다.
+              </p>
+            </Field>
+          )}
           {locationPicker}
           {formError ? <p style={{ fontSize: TYPE.caption, color: BAD }}>{formError}</p> : null}
           <div className="flex gap-2 pt-1">
@@ -15739,14 +16018,38 @@ function InstructorAdmin({
     <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
       <div className="flex items-center justify-between gap-2">
         <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>강사 관리</h2>
-        <button type="button" onClick={() => { close(); setMode("add"); }}
-          className="shrink-0 px-3 font-bold" style={{
-            height: 32, borderRadius: 999, fontSize: TYPE.caption, backgroundColor: TINT, color: BRAND_D,
-          }}>추가</button>
+        <div className="flex shrink-0 gap-2">
+          <button type="button" onClick={() => setLocationDraft(locationDraft ? null : { name: "", error: "", busy: false })}
+            className="px-3 font-bold" style={{
+              height: 32, borderRadius: 999, fontSize: TYPE.caption, backgroundColor: CANVAS, color: SUB,
+            }}>지점 추가</button>
+          <button type="button" onClick={() => {
+            close();
+            /* 지점 칩을 고른 채로 추가하면 그 지점을 미리 골라 둔다. */
+            const preset = locationFilter !== ALL_LOCATIONS && locationFilter !== NO_LOCATION ? locationFilter : "";
+            setDraft((current) => ({ ...current, locationId: preset }));
+            setMode("add");
+          }}
+            className="px-3 font-bold" style={{
+              height: 32, borderRadius: 999, fontSize: TYPE.caption, backgroundColor: TINT, color: BRAND_D,
+            }}>추가</button>
+        </div>
       </div>
       <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
         지점과 이름을 정하면 그 강사에게 센터 회원이 보입니다.
       </p>
+      {locationDraft ? (
+        <form onSubmit={addLocation} className="mt-3 flex gap-2">
+          <input value={locationDraft.name} className={inputCls} placeholder="예) 율하점" autoFocus
+            onChange={(e) => setLocationDraft((current) => ({ ...current, name: e.target.value, error: "" }))} />
+          <button type="submit" disabled={locationDraft.busy} className="h-11 shrink-0 px-4 font-bold"
+            style={{ borderRadius: 10, backgroundColor: BRAND, color: "#fff", fontSize: TYPE.caption, opacity: locationDraft.busy ? 0.6 : 1 }}>
+            {locationDraft.busy ? "추가 중" : "추가"}
+          </button>
+        </form>
+      ) : null}
+      {locationDraft?.error ? <p className="mt-1.5" style={{ fontSize: TYPE.caption, color: BAD }}>{locationDraft.error}</p> : null}
+      <LocationFilter locations={locations} counts={locationCounts} value={locationFilter} onChange={setLocationFilter} />
       <div className="mt-3">
         {loading ? <p style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : null}
         {!loading && loadError
@@ -15754,6 +16057,9 @@ function InstructorAdmin({
           : null}
         {!loading && !loadError && members.length === 0
           ? <p style={{ fontSize: TYPE.caption, color: SUB }}>등록된 강사가 없습니다. 추가를 눌러 첫 강사를 붙이세요.</p>
+          : null}
+        {!loading && !loadError && members.length > 0 && working.length === 0
+          ? <p style={{ fontSize: TYPE.caption, color: SUB }}>이 지점에 근무 중인 강사가 없습니다. 추가를 눌러 강사를 붙이세요.</p>
           : null}
         {!loading && !loadError && working.map((membership) => (
           <MembershipRow key={membership.userId} membership={membership} busy={saving}
@@ -16222,9 +16528,11 @@ function ClientDirectory({ organization, currentUserId, clientStore, locationSto
     () => new Map(locations.map((location) => [location.id, location.name || ""])),
     [locations],
   );
+  const locationCounts = useMemo(() => countByLocation(clients, locations), [clients, locations]);
+  const [locationFilter, setLocationFilter] = useLocationFilter(locations, locationCounts);
   const visible = useMemo(
-    () => clients.filter((client) => clientMatchesSearch(client, search)),
-    [clients, search],
+    () => filterByLocation(clients, locationFilter, locations).filter((client) => clientMatchesSearch(client, search)),
+    [clients, locations, locationFilter, search],
   );
 
   const resetForm = () => {
@@ -16345,12 +16653,20 @@ function ClientDirectory({ organization, currentUserId, clientStore, locationSto
             이름 또는 연락처로 찾습니다.
           </p>
         </div>
-        <button type="button" onClick={() => { setMode("add"); resetForm(); }} className="h-9 shrink-0 px-3 font-bold"
+        <button type="button" onClick={() => {
+          setMode("add");
+          resetForm();
+          /* 지점 칩을 고른 채로 등록하면 그 지점을 미리 골라 둔다. */
+          if (locationFilter !== ALL_LOCATIONS && locationFilter !== NO_LOCATION) {
+            setForm({ name: "", phone: "", locationId: locationFilter });
+          }
+        }} className="h-9 shrink-0 px-3 font-bold"
           style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>등록</button>
       </div>
       <div className="mt-3">
         <input value={search} onChange={(e) => setSearch(e.target.value)} className={inputCls} placeholder="이름 또는 연락처" />
       </div>
+      <LocationFilter locations={locations} counts={locationCounts} value={locationFilter} onChange={setLocationFilter} />
       <div className="mt-3">
         {loading ? <p style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : null}
         {!loading && loadError ? <p style={{ fontSize: TYPE.caption, color: BAD }}>{loadError}</p> : null}
@@ -16358,7 +16674,7 @@ function ClientDirectory({ organization, currentUserId, clientStore, locationSto
           ? <p style={{ fontSize: TYPE.caption, color: SUB }}>등록된 회원이 없습니다. 등록을 눌러 첫 회원을 추가하세요.</p>
           : null}
         {!loading && !loadError && clients.length > 0 && visible.length === 0
-          ? <p style={{ fontSize: TYPE.caption, color: SUB }}>검색 결과가 없습니다.</p>
+          ? <p style={{ fontSize: TYPE.caption, color: SUB }}>{search.trim() ? "검색 결과가 없습니다." : "이 지점에 등록된 회원이 없습니다."}</p>
           : null}
         {!loading && !loadError && visible.map((client) => (
           <ClientRow key={client.id} client={client} locationName={locationNames.get(client.locationId)}
@@ -17011,11 +17327,550 @@ function PayrollInstructorRow({ row, name, open, onToggle }) {
   );
 }
 
+/* 발급 내역. 대표만 본다.
+ *
+ * 급여 집계와 같은 원장을 읽지만 묻는 것이 다르다 -- "무엇이 팔렸는가" 다.
+ * 그래서 단가도 급여 판정도 이 화면에 없다 (issue-report-repository.js 머리말).
+ *
+ * 묶는 순서는 지점 → 발급자다. 대표가 묻는 것이 "이번 달 반송점에서 누가
+ * 얼마나 팔았나" 이고, 그 순서가 곧 화면의 순서여야 한다.
+ */
+function IssueReport({
+  organization, issueStore, instructorStore, locationStore, clientStore, productStore,
+  onRetryOrganization, onToast, now = () => new Date(), initialState = null,
+}) {
+  const [month, setMonth] = useState(initialState?.month || currentMonth(now()));
+  const [summary, setSummary] = useState(initialState?.summary || null);
+  const [issuers, setIssuers] = useState(initialState?.issuers || []);
+  const [locations, setLocations] = useState(initialState?.locations || []);
+  const [clients, setClients] = useState(initialState?.clients || []);
+  const [products, setProducts] = useState(initialState?.products || []);
+  const [namesFailed, setNamesFailed] = useState(initialState?.namesFailed || "");
+  const [loading, setLoading] = useState(!initialState);
+  const [loadError, setLoadError] = useState(initialState?.loadError || "");
+  const organizationId = organization?.organizationId || "";
+  const locked = organization?.status === "unknown";
+  const thisMonth = `${now().getFullYear()}-${String(now().getMonth() + 1).padStart(2, "0")}`;
+
+  const reload = useCallback(async () => {
+    if (!organizationId) return;
+    setLoading(true);
+    setLoadError("");
+    try {
+      /* 이름은 숫자를 바꾸지 않는다. 못 읽어도 집계는 보여주고 그 사실만 말한다.
+         발급자 목록은 퇴사자까지 읽는다(listMemberships) -- 이번 달에 나간
+         FC매니저의 줄이 uid 로 떨어지면 누가 판 것인지 알 수 없다. */
+      const [found, issuerResult, locationResult, clientResult, productResult] = await Promise.all([
+        loadOrganizationMonthlyIssues(organizationId, { month, store: issueStore }),
+        toleratingReadFailure(listMemberships(organizationId, { store: instructorStore })),
+        toleratingReadFailure(listLocations(organizationId, { store: locationStore })),
+        toleratingReadFailure(listClients(organizationId, { store: clientStore })),
+        toleratingReadFailure(listProducts(organizationId, { store: productStore })),
+      ]);
+      setSummary(found);
+      setIssuers(issuerResult.items);
+      setLocations(locationResult.items);
+      setClients(clientResult.items);
+      setProducts(productResult.items);
+      setNamesFailed(issuerResult.errorCode || locationResult.errorCode
+        || clientResult.errorCode || productResult.errorCode || "");
+    } catch (error) {
+      setLoadError(error?.code || "unknown");
+      setSummary(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [organizationId, month, issueStore, instructorStore, locationStore, clientStore, productStore]);
+
+  useEffect(() => { if (!locked) reload(); else setLoading(false); }, [locked, reload]);
+
+  const nameOfIssuer = useCallback((id) => (
+    issuers.find((item) => item.userId === id)?.displayName || id || "(알 수 없음)"
+  ), [issuers]);
+  const nameOfLocation = useCallback((id) => (
+    locations.find((item) => item.id === id)?.name || id || "(지점 없음)"
+  ), [locations]);
+  const nameOfClient = useCallback((id) => (
+    clients.find((item) => item.id === id)?.name || id || "(알 수 없음)"
+  ), [clients]);
+  const nameOfProduct = useCallback((id) => (
+    products.find((item) => item.id === id)?.name || id || "(상품 없음)"
+  ), [products]);
+
+  const download = () => {
+    if (!summary) return;
+    const csv = issueReportCsv(summary, {
+      nameOfLocation,
+      nameOfIssuer,
+      nameOfClient,
+      nameOfProduct,
+      labelOfCategory: (value) => labelOf(PAY_CATEGORY_LABELS, value),
+      labelOfPayment: (value) => labelOf(PAYMENT_METHOD_LABELS, value),
+      dayLabel: (value) => dayLabel(value),
+    });
+    try {
+      const url = globalThis.URL.createObjectURL(new globalThis.Blob([csv], { type: "text/csv;charset=utf-8" }));
+      const anchor = globalThis.document.createElement("a");
+      anchor.href = url;
+      anchor.download = `pilateacher-issues-${summary.month}.csv`;
+      anchor.click();
+      globalThis.URL.revokeObjectURL(url);
+    } catch (error) {
+      onToast?.({ ok: false, msg: `파일을 만들지 못했어요 (코드 ${error?.name || "unknown"})` });
+    }
+  };
+
+  if (locked) return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>소속을 확인하지 못했습니다</h2>
+      <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        네트워크 문제로 소속 정보를 읽지 못했습니다. 다른 센터의 발급을 보지 않도록 이 화면을 잠급니다.
+      </p>
+      <button type="button" onClick={() => onRetryOrganization?.()} className="mt-3 h-11 w-full font-bold"
+        style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>다시 시도</button>
+    </section>
+  );
+
+  const sectionStyle = { backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 };
+  const totals = summary?.totals;
+  const notices = [];
+  if (totals?.migratedCount) notices.push(`이관 ${totals.migratedCount}건 제외`);
+  if (totals?.priorMonthCancelCount) notices.push(`이전 달 발급 취소 ${totals.priorMonthCancelCount}건`);
+
+  return (
+    <div className="space-y-3">
+      <section style={sectionStyle}>
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={() => setMonth(shiftMonth(month, -1))} aria-label="이전 달"
+            className="shrink-0" style={{ width: 36, height: 36, borderRadius: 10, backgroundColor: CANVAS, color: SUB }}>
+            <ChevronLeft size={16} className="mx-auto" />
+          </button>
+          <p className="min-w-0 flex-1 text-center tabular-nums" style={{ fontSize: TYPE.body, fontWeight: 700, color: INK }}>
+            {monthLabel(`${month}-01`)}
+          </p>
+          <button type="button" onClick={() => setMonth(shiftMonth(month, 1))} aria-label="다음 달"
+            disabled={month >= thisMonth} className="shrink-0"
+            style={{
+              width: 36, height: 36, borderRadius: 10, backgroundColor: CANVAS, color: SUB,
+              opacity: month >= thisMonth ? 0.35 : 1,
+            }}>
+            <ChevronRight size={16} className="mx-auto" />
+          </button>
+        </div>
+        <p className="mt-2 text-center" style={{ fontSize: TYPE.caption, color: SUB }}>
+          발급한 날 기준입니다. 급여가 아니라 무엇이 팔렸는지를 봅니다.
+        </p>
+      </section>
+
+      {loading ? (
+        <section style={sectionStyle}><p style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p></section>
+      ) : null}
+
+      {!loading && loadError ? (
+        <section style={sectionStyle}>
+          <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: BAD }}>
+            발급 내역을 불러오지 못했습니다 (코드 {loadError}).
+          </p>
+          <button type="button" onClick={reload} className="mt-3 h-11 w-full font-bold"
+            style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>다시 시도</button>
+        </section>
+      ) : null}
+
+      {/* 이름만 못 읽은 것은 숫자를 바꾸지 않는다. 집계는 그대로 보여주고 그
+          사실만 말한다 -- 이름 때문에 화면 전체를 막지 않는다. */}
+      {!loading && !loadError && namesFailed ? (
+        <section style={{ ...sectionStyle, backgroundColor: WARN_S, borderColor: WARN }}>
+          <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: WARN }}>
+            이름을 불러오지 못했습니다 (코드 {namesFailed}). 숫자는 정확하고, 일부가 id 로 보입니다.
+          </p>
+        </section>
+      ) : null}
+
+      {!loading && !loadError && summary ? (
+        <>
+          <section style={sectionStyle}>
+            <div className="flex items-baseline justify-between">
+              <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>합계</p>
+              <p className="tabular-nums" style={{ fontSize: TYPE.title, fontWeight: 700, color: INK }}>
+                {totals.count}건 · ₩{won(totals.amount)}
+              </p>
+            </div>
+            {/* FC 매출 기준은 "새 회원을 데려왔나" 다. 재등록과 섞으면 그 질문에
+                답할 수 없다. */}
+            <p className="mt-1 text-right tabular-nums" style={{ fontSize: TYPE.caption, color: BRAND_D, fontWeight: 650 }}>
+              그중 신규 {totals.newCount}건 · ₩{won(totals.newAmount)}
+            </p>
+            {totals.cancelledCount ? (
+              <p className="mt-1 text-right tabular-nums" style={{ fontSize: TYPE.caption, color: BAD }}>
+                취소 {totals.cancelledCount}건 (합계에서 제외)
+              </p>
+            ) : null}
+            {notices.length ? (
+              <p className="mt-1 text-right" style={{ fontSize: TYPE.caption, color: SUB }}>{notices.join(" · ")}</p>
+            ) : null}
+            {/* 회원권을 못 읽으면 금액이 빠진다. 합계가 실제보다 낮다는 것을
+                말하지 않으면 대표가 그 숫자를 그대로 믿는다. */}
+            {totals.missingPassCount ? (
+              <p className="mt-1 text-right" style={{ fontSize: TYPE.caption, color: WARN }}>
+                회원권 {totals.missingPassCount}건을 읽지 못해 금액이 빠졌습니다. 합계가 실제보다 낮습니다.
+              </p>
+            ) : null}
+            <button type="button" onClick={download} disabled={!summary.rows.length}
+              className="mt-3 h-11 w-full font-bold"
+              style={{
+                borderRadius: 10, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption,
+                opacity: summary.rows.length ? 1 : 0.4,
+              }}>CSV 내려받기</button>
+          </section>
+
+          {summary.byLocation.length === 0 ? (
+            <section style={sectionStyle}>
+              <p style={{ fontSize: TYPE.caption, color: SUB }}>이번 달 발급이 없습니다.</p>
+            </section>
+          ) : summary.byLocation.map((location) => (
+            <section key={location.locationId || "none"} style={sectionStyle}>
+              <p style={{ fontSize: TYPE.body, fontWeight: 700, color: INK }}>{nameOfLocation(location.locationId)}</p>
+              {location.byIssuer.map((issuer) => (
+                <div key={issuer.issuedBy || "none"} className="mt-3">
+                  <div className="flex items-baseline justify-between">
+                    <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK2 }}>{nameOfIssuer(issuer.issuedBy)}</p>
+                    <p className="tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+                      {issuer.count}건 · ₩{won(issuer.amount)}
+                      {issuer.newCount ? ` · 신규 ${issuer.newCount}건` : ""}
+                    </p>
+                  </div>
+                  {issuer.rows.map((row) => (
+                    <div key={row.entryId} style={{
+                      padding: "9px 0", borderTop: `1px solid ${LINE}`, opacity: row.cancelled ? 0.5 : 1,
+                    }}>
+                      <p className="flex items-center gap-1.5" style={{
+                        fontSize: TYPE.caption, color: INK,
+                        textDecoration: row.cancelled ? "line-through" : "none",
+                      }}>
+                        <span className="tabular-nums" style={{ color: SUB }}>{dayLabel(row.occurredAt)}</span>
+                        <span style={{ fontWeight: 650 }}>{nameOfClient(row.clientId)}</span>
+                        {row.isNew ? (
+                          <span style={{
+                            padding: "1px 5px", borderRadius: 5, backgroundColor: TINT,
+                            color: BRAND_D, fontSize: TYPE.caption, fontWeight: 700,
+                          }}>신규</span>
+                        ) : null}
+                      </p>
+                      <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+                        {nameOfProduct(row.productId)}
+                        {" · "}{row.totalCount}회
+                        {" · "}{row.contractPrice === null ? "금액 확인 불가" : `₩${won(row.contractPrice)}`}
+                        {row.paymentMethod ? ` · ${labelOf(PAYMENT_METHOD_LABELS, row.paymentMethod)}` : ""}
+                        {" · "}{labelOf(PAY_CATEGORY_LABELS, row.category)}
+                      </p>
+                      {row.cancelled ? (
+                        <p className="mt-0.5" style={{ fontSize: TYPE.caption, fontWeight: 700, color: BAD }}>
+                          {row.cancelledAtLabel ? `${row.cancelledAtLabel} 취소` : "취소됨"}
+                        </p>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </section>
+          ))}
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+/* 회원 앱 — 연결과 점검. 대표만 본다.
+
+   회원이 자기 번호로 로그인하면 서버가 명부에서 그 사람을 찾아 잇는다. 같은
+   지점에 같은 번호가 둘이면 잇지 않고 여기로 넘어온다 -- 동명이인과 가족 공용
+   번호가 실제로 있고, 한 번 잘못 이으면 남의 회원권을 보게 되며 그 사실은
+   아무도 모른다.
+
+   규칙이 memberLinks 를 본인에게만 열어 두므로 대표는 이 화면(서버 함수)으로만
+   대기 목록을 볼 수 있다. 화면이 없으면 그 문은 부를 수 없는 문이다. */
+/* 서버 함수 넷. 기본은 진짜 통로이고, 스모크는 가짜를 넣는다 -- 화면을
+   그리는 것만으로 네트워크를 타면 그 테스트는 돌지 않는다. */
+const MEMBER_APP_LINKS = {
+  listPending: fbListPendingMemberLinks,
+  linkByOwner: fbLinkMemberAccountByOwner,
+  unlink: fbUnlinkMemberAccount,
+  verify: fbVerifyMemberViews,
+};
+
+function MemberAppAdmin({
+  organization, clientStore, locationStore, links = MEMBER_APP_LINKS,
+  onToast, initialState = null,
+}) {
+  const [pending, setPending] = useState(initialState?.pending || []);
+  const [clients, setClients] = useState(initialState?.clients || []);
+  const [locations, setLocations] = useState(initialState?.locations || []);
+  const [loading, setLoading] = useState(!initialState);
+  const [loadError, setLoadError] = useState(initialState?.loadError || "");
+  const [busyKey, setBusyKey] = useState("");
+  const [checking, setChecking] = useState(false);
+  const [checkResult, setCheckResult] = useState(initialState?.checkResult || null);
+  const [checkError, setCheckError] = useState(initialState?.checkError || "");
+  const organizationId = organization?.organizationId || "";
+  const locked = organization?.status === "unknown";
+  // 다른 관리 화면들과 같은 카드 모양이다.
+  const sectionStyle = { backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 };
+
+  const reload = useCallback(async () => {
+    if (!organizationId) return;
+    setLoading(true);
+    setLoadError("");
+    try {
+      /* 대기 목록이 먼저다. 이름은 명부에서 붙이는데, 명부를 못 읽어도 목록은
+         보여준다 -- id 로라도 보이는 것이 아무것도 안 보이는 것보다 낫다. */
+      const found = await links.listPending({ organizationId });
+      const [clientResult, locationResult] = await Promise.all([
+        toleratingReadFailure(listClients(organizationId, { store: clientStore })),
+        toleratingReadFailure(listLocations(organizationId, { store: locationStore })),
+      ]);
+      setPending(Array.isArray(found) ? found : []);
+      setClients(clientResult.items);
+      setLocations(locationResult.items);
+    } catch (error) {
+      setLoadError(error?.code || error?.message || "unknown");
+      setPending([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [organizationId, clientStore, locationStore, links]);
+
+  useEffect(() => { if (!locked) reload(); else setLoading(false); }, [locked, reload]);
+
+  const nameOfClient = useCallback((id) => (
+    clients.find((item) => item.id === id)?.name || id || "(알 수 없음)"
+  ), [clients]);
+  const nameOfLocation = useCallback((id) => (
+    locations.find((item) => item.id === id)?.name || id || "(지점 없음)"
+  ), [locations]);
+
+  /** 이미 이어진 회원들. 끊는 문이 여기서 나간다. */
+  const linkedClients = useMemo(
+    () => clients.filter((item) => String(item?.userId || "").trim()),
+    [clients],
+  );
+
+  const act = async (key, run, done) => {
+    if (busyKey) return;
+    setBusyKey(key);
+    try {
+      await run();
+      onToast?.({ ok: true, msg: done });
+      await reload();
+    } catch (error) {
+      onToast?.({ ok: false, msg: `처리하지 못했어요 (코드 ${error?.code || "unknown"}).` });
+    } finally {
+      setBusyKey("");
+    }
+  };
+
+  const check = async () => {
+    setChecking(true);
+    setCheckError("");
+    setCheckResult(null);
+    try {
+      /* 읽기 전용이다. 이 버튼은 아무것도 고치지 않는다 -- 고치는 것은
+         rebuildMemberViews 이고 그쪽은 dryRun 을 꺼야 쓴다. */
+      const result = await links.verify({ organizationId, locationId: organization?.locationId || "" });
+      setCheckResult(result || null);
+    } catch (error) {
+      setCheckError(error?.code || error?.message || "unknown");
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  if (locked) {
+    return (
+      <section style={sectionStyle}>
+        <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: BAD }}>소속을 확인하지 못했습니다.</p>
+      </section>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <section style={sectionStyle}>
+        <p style={{ fontSize: TYPE.body, fontWeight: 700, color: INK }}>회원 앱</p>
+        <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB, lineHeight: 1.6 }}>
+          회원이 자기 번호로 로그인하면 자동으로 이어집니다. 같은 지점에 같은 번호가
+          둘이면 자동으로 잇지 않고 여기로 옵니다 — 대표가 직접 고릅니다.
+        </p>
+      </section>
+
+      {loading ? (
+        <section style={sectionStyle}><p style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p></section>
+      ) : null}
+
+      {!loading && loadError ? (
+        <section style={sectionStyle}>
+          <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: BAD }}>
+            {loadError === "permission-denied"
+              ? "이 화면은 대표만 볼 수 있습니다 (코드 permission-denied)."
+              : `연결 대기 목록을 불러오지 못했습니다 (코드 ${loadError}).`}
+          </p>
+          <button type="button" onClick={reload} className="mt-3 h-11 w-full font-bold"
+            style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>다시 시도</button>
+        </section>
+      ) : null}
+
+      {!loading && !loadError ? (
+        <section style={sectionStyle}>
+          <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>연결 대기</p>
+          {pending.length === 0 ? (
+            /* 비어 있는 것은 정상이다. 실패와 다른 문구여야 대표가 할 일이 없다는
+               것을 안다. */
+            <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>
+              확인이 필요한 연결이 없습니다.
+            </p>
+          ) : (
+            <ul className="mt-2 space-y-3">
+              {pending.map((row) => (
+                <li key={row.userId} style={{ borderTop: `1px solid ${LINE}`, paddingTop: 10 }}>
+                  <p className="tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>
+                    {row.phone || "(번호 없음)"}
+                  </p>
+                  <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>
+                    후보 {row.candidates.length}명 — 한 분을 고르면 그 회원의 잔여가 이 계정에 보입니다.
+                  </p>
+                  <div className="mt-2 space-y-2">
+                    {row.candidates.map((candidate) => (
+                      <button key={candidate.clientId} type="button"
+                        disabled={Boolean(busyKey)}
+                        onClick={() => act(
+                          `link/${row.userId}/${candidate.clientId}`,
+                          () => links.linkByOwner({
+                            organizationId, userId: row.userId, clientId: candidate.clientId,
+                          }),
+                          "연결했습니다. 감사에 기록이 남았습니다.",
+                        )}
+                        className="flex h-11 w-full items-center justify-between px-3 font-bold"
+                        style={{
+                          borderRadius: 10, backgroundColor: TINT, color: BRAND_D,
+                          fontSize: TYPE.caption, opacity: busyKey ? 0.5 : 1,
+                        }}>
+                        <span>{nameOfClient(candidate.clientId)} · {nameOfLocation(candidate.locationId)}</span>
+                        <span>이 회원으로 잇기</span>
+                      </button>
+                    ))}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      ) : null}
+
+      {!loading && !loadError ? (
+        <section style={sectionStyle}>
+          <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>연결된 회원</p>
+          {linkedClients.length === 0 ? (
+            <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>아직 연결한 회원이 없습니다.</p>
+          ) : (
+            <ul className="mt-2 space-y-2">
+              {linkedClients.map((item) => (
+                <li key={item.id} className="flex items-center justify-between gap-2">
+                  <span style={{ fontSize: TYPE.caption, color: INK }}>
+                    {item.name} · {nameOfLocation(item.locationId)}
+                  </span>
+                  {/* 끊으면 투영도 그 자리에서 지워진다. userId 만 지우면 이미
+                      깔린 문서를 그 사람이 계속 읽는다. */}
+                  <button type="button" disabled={Boolean(busyKey)}
+                    onClick={() => act(
+                      `unlink/${item.id}`,
+                      () => links.unlink({ organizationId, userId: item.userId, clientId: item.id }),
+                      "연결을 끊었습니다. 회원 화면에서 더 이상 보이지 않습니다.",
+                    )}
+                    className="h-9 shrink-0 px-3 font-bold"
+                    style={{
+                      borderRadius: 10, backgroundColor: CANVAS, color: BAD,
+                      fontSize: TYPE.caption, opacity: busyKey ? 0.5 : 1,
+                    }}>끊기</button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      ) : null}
+
+      {!loading && !loadError ? (
+        <section style={sectionStyle}>
+          <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>점검</p>
+          <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB, lineHeight: 1.6 }}>
+            회원 화면에 보이는 숫자가 회원권과 맞는지 전수로 대조합니다. 읽기만 하고
+            아무것도 고치지 않습니다.
+          </p>
+          <button type="button" onClick={check} disabled={checking}
+            className="mt-3 h-11 w-full font-bold"
+            style={{
+              borderRadius: 10, backgroundColor: TINT, color: BRAND_D,
+              fontSize: TYPE.caption, opacity: checking ? 0.5 : 1,
+            }}>{checking ? "점검하는 중…" : "점검하기"}</button>
+
+          {checkError ? (
+            <p className="mt-3" style={{ fontSize: TYPE.caption, fontWeight: 700, color: BAD }}>
+              {checkError === "permission-denied"
+                ? "점검은 대표만 할 수 있습니다 (코드 permission-denied)."
+                : `점검하지 못했습니다 (코드 ${checkError}).`}
+            </p>
+          ) : null}
+
+          {checkResult ? (
+            <div className="mt-3" style={{ borderTop: `1px solid ${LINE}`, paddingTop: 10 }}>
+              <p className="tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+                {checkResult.checked}명 확인 · 연결 {checkResult.linked}명
+                {checkResult.partial ? " · 아직 남았습니다" : ""}
+              </p>
+              {checkResult.ok ? (
+                <p className="mt-1" style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND_D }}>
+                  어긋난 회원이 없습니다.
+                </p>
+              ) : (
+                /* 어디서부터 어긋났는지가 이 화면의 값어치다. 몇 명이 틀렸는지는
+                   그다음이다. */
+                <>
+                  <p className="mt-1" style={{ fontSize: TYPE.caption, fontWeight: 700, color: BAD }}>
+                    {nameOfClient(checkResult.stoppedAt)} 에서 멈췄습니다.
+                  </p>
+                  <ul className="mt-1 space-y-0.5">
+                    {(checkResult.mismatches || []).map((item, index) => (
+                      <li key={`${item.code}-${index}`} style={{ fontSize: TYPE.caption, color: SUB }}>
+                        {MEMBER_VIEW_MISMATCH_LABEL[item.code] || item.code}
+                        {item.detail ? ` (${item.detail})` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
+/* 무엇이 어긋났는가. functions/src/member-view-admin.js 의 MISMATCH 와 같은
+   목록이다 -- 코드만 보여주면 대표가 할 일을 알 수 없다. */
+const MEMBER_VIEW_MISMATCH_LABEL = {
+  missing: "회원 화면에 보여줄 문서가 없습니다",
+  orphan: "연결을 끊었는데 문서가 남아 있습니다",
+  remaining_total: "잔여 횟수가 회원권과 다릅니다",
+  pass_count: "회원권 건수가 다릅니다",
+  history_count: "수업 이력 건수가 다릅니다",
+  stale_field: "이름·지점이 옛 값입니다",
+  forbidden_field: "보이면 안 되는 항목이 들어 있습니다",
+};
+
 function PayrollSummary({
   organization, locationStore, instructorStore, payrollStore,
   onRetryOrganization, onToast, now = () => new Date(), initialState = null,
 }) {
-  const [month, setMonth] = useState(initialState?.month || previousMonth(now()));
+  const [month, setMonth] = useState(initialState?.month || currentMonth(now()));
   const [summary, setSummary] = useState(initialState?.summary || null);
   const [instructors, setInstructors] = useState(initialState?.instructors || []);
   const [locations, setLocations] = useState(initialState?.locations || []);
@@ -17313,12 +18168,18 @@ const AUDIT_ACTION_LABEL = {
   [AUDIT_ACTION.MEMBER_ADDED]: "강사 추가",
   [AUDIT_ACTION.MEMBER_PROFILE_CHANGED]: "강사 정보 변경",
   [AUDIT_ACTION.MEMBER_REVOKED]: "퇴사 · 복직",
+  [AUDIT_ACTION.MEMBER_LINK_CREATED]: "회원 계정 연결",
+  [AUDIT_ACTION.MEMBER_LINK_REMOVED]: "회원 계정 연결 해제",
   issue: "회원권 발급",
   deduct: "차감",
   transfer: "담당 강사 변경",
 };
 
 const MIGRATION_STAGE_LABEL_SHORT = { clients: "회원", passes: "회원권" };
+
+/** 회원권 상품 · 발급 · 회원 등록을 하는 역할. 규칙의 canIssuePass ·
+ *  canRegisterClient · canManageProducts 와 같은 목록이다. */
+const FC_ROLES = [ROLES.OWNER, ROLES.MANAGER];
 
 /** 행위자의 역할. 감사 항목에만 있다 -- 원장은 uid 만 들고 있다. */
 const AUDIT_ROLE_LABEL = {
@@ -17680,7 +18541,7 @@ function AuditLog({
   );
 }
 
-function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, payrollStore, auditStore, ledgerStore, onRetryOrganization, onOpenClient, initialView = "hub" }) {
+function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, payrollStore, issueStore, auditStore, ledgerStore, onRetryOrganization, onOpenClient, initialView = "hub" }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const organization = useContext(OrganizationContext);
   /* 회원권 상품은 센터를 운영하는 대표만 본다. 개인 모드(legacy)에는 센터가
@@ -17694,20 +18555,21 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
   const organizationUnknown = organization.ready && organization.status === "unknown";
   const showProducts = organization.ready
     && !organization.isLegacy
-    && organization.role === ROLES.OWNER;
-  /* 회원권 발급과 회원 관리는 대표만 본다. 발급은 그 순간 급여의 근거를 만들고,
-     등록은 그 발급이 가리킬 사람을 만든다 -- 둘 다 원장에 append-only 로 남아
-     나중에 고칠 수 없다. 규칙도 같은 경계로 좁혔으므로(canIssuePass ·
-     canRegisterClient), 매니저에게 보여 주면 눌러도 거부되는 화면만 나온다.
+    && FC_ROLES.includes(organization.role);
+  /* 회원권 상품 · 회원권 발급 · 회원 관리는 대표와 FC매니저가 본다 (2026-09-23).
+     발급은 그 순간 급여의 근거를 만들고, 등록은 그 발급이 가리킬 사람을 만든다
+     -- 둘 다 원장에 append-only 로 남아 나중에 고칠 수 없다. 그래서 강사에게는
+     닫혀 있고, 상담·계약을 받는 FC매니저에게만 열었다. 규칙도 같은 경계다
+     (canIssuePass · canRegisterClient · canManageProducts).
 
-     되돌릴 때는 여기와 규칙의 두 목록을 함께 넓힌다. 한쪽만 넓히면 보이는데
+     바꿀 때는 FC_ROLES 와 규칙의 세 목록을 함께 바꾼다. 한쪽만 바꾸면 보이는데
      안 되거나, 되는데 안 보인다.
 
      나머지 조건은 회원권 상품과 같다 -- 개인 모드에는 센터가 없고, 소속을 읽지
      못한 상태는 역할까지 모르는 상태라 감춘다. */
   const showClients = organization.ready
     && !organization.isLegacy
-    && organization.role === ROLES.OWNER;
+    && FC_ROLES.includes(organization.role);
   /* 강사 관리는 대표만 본다. 규칙도 대표만 허용하므로(memberships create 와
      세 update 문), 매니저에게 보여 주면 눌러도 거부되는 화면만 나온다.
 
@@ -17726,6 +18588,13 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
   const showPayroll = organization.ready
     && !organization.isLegacy
     && organization.role === ROLES.OWNER;
+  /* 발급 내역도 대표만 본다. 급여 집계와 같은 조건을 쓴다 -- 둘 다 센터 전체를
+     보는 화면이라 경계가 같아야 하고, 한쪽만 바꾸면 다음 사람이 왜 다른지
+     알 수 없다. */
+  const showIssues = showPayroll;
+  /* 회원 앱 연결도 대표만이다. 남의 계정과 회원을 잇고 끊는 일이라 급여보다
+     좁으면 좁았지 넓지 않다. */
+  const showMemberApp = showPayroll;
   /* 감사 로그도 대표만 본다. 규칙도 대표만 허용하므로, 매니저에게 보여 주면
      눌러도 빈 화면만 나온다. */
   const showAudit = organization.ready
@@ -17894,6 +18763,8 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
     "pass-issue": "회원권 발급",
     migration: "엑셀 이관",
     payroll: "급여 집계",
+    issues: "발급 내역",
+    "member-app": "회원 앱",
     audit: "감사 로그",
   };
   /* 센터를 운영하는 일과 이 기기를 쓰는 일은 다른 묶음이다. 한 그룹에 섞여
@@ -17911,6 +18782,13 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
     /* "월말 정산"만으로는 위의 월간 리포트와 구별되지 않는다. 무엇을 세는지가
        둘의 차이다 -- 이쪽은 회원권 원장, 그쪽은 기기에 저장된 일정이다. */
     ...(showPayroll ? [{ key: "payroll", title: "급여 집계", description: "강사별 수업료 · 원장 기준 월말 정산", Icon: ArrowUpRight }] : []),
+    /* 발급 내역도 대표만 본다. 급여와 같은 조건이다 -- 센터 전체의 매출은
+       한 사람의 것이 아니고, FC매니저에게는 자기 실적만 보이는 화면이 따로
+       필요하다 (아직 없다). */
+    ...(showIssues ? [{ key: "issues", title: "발급 내역", description: "이달 판매 · 지점별 · 발급자별", Icon: Ticket }] : []),
+    /* 회원이 자기 잔여를 보는 앱. 여기서는 연결만 다룬다 -- 자동으로 잇지 못한
+       것과, 잘못 이은 것과, 화면의 숫자가 맞는지. */
+    ...(showMemberApp ? [{ key: "member-app", title: "회원 앱", description: "연결 대기 · 끊기 · 점검", Icon: Users }] : []),
     ...(showAudit ? [{ key: "audit", title: "감사 로그", description: "이상한 건만 모아 보기 · 전체 이력", Icon: AlertCircle }] : []),
     ...(showMigration ? [{ key: "migration", title: "엑셀 이관", description: "쓰던 엑셀의 회원 · 회원권 올리기", Icon: Upload }] : []),
   ];
@@ -18182,6 +19060,16 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
         {view === "payroll" && showPayroll && (
           <PayrollSummary organization={organization}
             locationStore={locationStore} instructorStore={instructorStore} payrollStore={payrollStore}
+            onRetryOrganization={onRetryOrganization} onToast={onToast} />
+        )}
+        {view === "member-app" && showMemberApp && (
+          <MemberAppAdmin organization={organization}
+            clientStore={clientStore} locationStore={locationStore} onToast={onToast} />
+        )}
+        {view === "issues" && showIssues && (
+          <IssueReport organization={organization}
+            issueStore={issueStore} instructorStore={instructorStore} locationStore={locationStore}
+            clientStore={clientStore} productStore={productStore}
             onRetryOrganization={onRetryOrganization} onToast={onToast} />
         )}
         {view === "audit" && showAudit && (
@@ -18509,6 +19397,53 @@ export function createAppScreenSmokeCases() {
   });
   /* 정산 화면이 그리는 것만 본다. 숫자는 집계 함수가 만든 모양 그대로다. */
   const smokePayrollStore = { listOrganizationDeductions: async () => [] };
+  const smokeIssueStore = { listOrganizationIssues: async () => [], readCancelEntry: async () => null };
+  const smokeMemberAppLinks = {
+    listPending: async () => [],
+    linkByOwner: async () => ({ status: "linked" }),
+    unlink: async () => ({ status: "rejected" }),
+    verify: async () => ({ checked: 0, linked: 0, ok: true, partial: false, mismatches: [] }),
+  };
+  const memberApp = (organization, initialState) => providerWith(organization, (
+    <MemberAppAdmin organization={readyOrganizationContext(organization)}
+      clientStore={clientStore} locationStore={locationStore}
+      links={smokeMemberAppLinks} onToast={noop} initialState={initialState} />
+  ));
+  const issueReport = (organization, initialState) => providerWith(organization, (
+    <IssueReport organization={readyOrganizationContext(organization)}
+      issueStore={smokeIssueStore} instructorStore={instructorStore} locationStore={locationStore}
+      clientStore={clientStore} productStore={productStore}
+      now={() => new Date(2026, 9, 3)} initialState={initialState}
+      onRetryOrganization={noop} onToast={noop} />
+  ));
+  const smokeIssueRow = (overrides = {}) => ({
+    entryId: "e-1", passId: "pass-1", occurredAt: new Date(2026, 9, 2, 14, 0),
+    locationId: "bansong", issuedBy: "u1", clientId: "smoke-client-a", productId: "smoke-product-active",
+    category: "pt_1_1_new", totalCount: 20, contractPrice: 1300000, paymentMethod: "card",
+    passMissing: false, cancelled: false, cancelledAtLabel: "", isNew: true, ...overrides,
+  });
+  const smokeIssueSummary = (rows, totals = {}) => ({
+    month: "2026-10",
+    rows,
+    byLocation: rows.length ? [{
+      locationId: "bansong",
+      byIssuer: [{
+        issuedBy: "u1", rows,
+        count: rows.filter((row) => !row.cancelled).length,
+        amount: rows.filter((row) => !row.cancelled).reduce((sum, row) => sum + (row.contractPrice || 0), 0),
+        newCount: rows.filter((row) => !row.cancelled && row.isNew).length,
+        newAmount: rows.filter((row) => !row.cancelled && row.isNew).reduce((sum, row) => sum + (row.contractPrice || 0), 0),
+      }],
+    }] : [],
+    totals: {
+      count: rows.filter((row) => !row.cancelled).length,
+      amount: rows.filter((row) => !row.cancelled).reduce((sum, row) => sum + (row.contractPrice || 0), 0),
+      newCount: rows.filter((row) => !row.cancelled && row.isNew).length,
+      newAmount: rows.filter((row) => !row.cancelled && row.isNew).reduce((sum, row) => sum + (row.contractPrice || 0), 0),
+      cancelledCount: rows.filter((row) => row.cancelled).length,
+      migratedCount: 0, priorMonthCancelCount: 0, missingPassCount: 0, ...totals,
+    },
+  });
   const payrollRow = (instructorId, rows, ruleRows = []) => ({
     instructorId,
     sessions: rows.reduce((sum, item) => sum + item.sessions, 0),
@@ -18600,14 +19535,17 @@ export function createAppScreenSmokeCases() {
     now: new Date(2026, 8, 18),
   }).roster;
   /* 소속 강사의 일정 탭. 확정 전 · 확정됨 · 차감 건너뜀을 한 자리에서 본다.
-     시간은 06:00 으로 둔다 -- 확정 버튼은 시각을 보지 않지만, 카드가 지난
-     수업으로 보이는 편이 읽기 쉽다. */
+
+     날짜는 **어제**다. 확정 버튼은 수업이 시작해야 열리므로(canSettleLesson),
+     오늘 06:00 으로 두면 새벽에 돌린 테스트에서는 버튼이 없고 낮에 돌리면
+     있다 -- 시계에 따라 답이 달라지는 픽스처가 된다. 어제는 언제 돌려도
+     시작했고, 7일 창 안이라 차감도 받는다. */
   const settleAttendee = (memberId, extra = {}) => ({
     memberId, status: "done", deductFrom: null, noshowFee: null, ...extra,
   });
   const settleLessonOf = (overrides = {}) => ({
     id: "settle-1",
-    date: todayISO(),
+    date: shift(todayISO(), -1),
     start: "06:00",
     end: "06:50",
     type: "듀엣",
@@ -18676,6 +19614,29 @@ export function createAppScreenSmokeCases() {
         settleAttendee("m-local-1", { orgSkip: "write_failed", orgSkipCode: "Missing baseUnitPrice" }),
       ],
     })) },
+    /* 아직 시작하지 않은 수업. 버튼은 잠기되 **카드는 선다** -- 한 번 감췄다가
+       이미 실패한 수업의 사유와 [다시 확정]까지 사라진 적이 있다.
+       날짜를 내일로 두어 언제 돌려도 시작 전이다. */
+    { name: "일정 탭 · 소속 · 시작 전", element: scheduleWithSettlement(settleLessonOf({
+      date: shift(todayISO(), 1),
+    })) },
+    { name: "일정 탭 · 소속 · 시작 전 · 실패 기록", element: scheduleWithSettlement(settleLessonOf({
+      date: shift(todayISO(), 1),
+      attendees: [
+        settleAttendee("m-local-1", { orgSkip: "write_failed", orgSkipCode: "occurred_at_future" }),
+      ],
+    })) },
+    /* 회원에게 보낼 말. 수업기록 칸과 나란히 있되 섞이지 않는다.
+       첫 그림에는 아직 읽어 온 것이 없다 -- 빈 칸으로 보이면 강사가 그 위에
+       덮어써서 먼젓번에 보낸 말이 사라진다. 그래서 잠가 두고 그렇게 말한다. */
+    { name: "일정 탭 · 소속 · 회원에게 보낼 말", element: scheduleWithSettlement(settleLessonOf(), {
+      onReadMemberNote: asyncNoop, onSaveMemberNote: asyncNoop, onToast: noop,
+    }) },
+    { name: "일정 탭 · 소속 · 회원에게 보낼 말 · 확정됨", element: scheduleWithSettlement(settleLessonOf({
+      orgSettledAt: "2026-09-19T07:00:00.000Z",
+      orgSettledOutcome: "complete",
+      attendees: [settleAttendee("m-local-1", { orgPassId: "p1", orgEntryId: "settle-1_deduct" })],
+    }), { onReadMemberNote: asyncNoop, onSaveMemberNote: asyncNoop, onToast: noop }) },
     { name: "일정 탭 · 소속 · 확정됨 · 대표", element: scheduleWithSettlement(settleLessonOf({
       orgSettledAt: "2026-09-19T07:00:00.000Z",
       attendees: [settleAttendee("m-local-1", { orgPassId: "p1", orgEntryId: "settle-1_deduct" })],
@@ -18691,6 +19652,22 @@ export function createAppScreenSmokeCases() {
     /* 소속 센터의 회원. 강사가 못 하는 셋 -- 삭제 · 홀딩 · 단가 -- 이 사라지고,
        이용권 카드의 세 칸이 조직 회원권에서 채워진다. */
     { name: "회원 상세 · 소속", element: <ReferenceMemberDetail member={smokeRoster[0]} schedule={db.schedule} photos={photos[member.id]} settings={db.settings} organizationMode onBack={noop} onPatch={asyncNoop} onSaveNote={asyncNoop} onSchedule={noop} onAssess={noop} onToast={noop} onHide={asyncNoop} /> },
+    /* 강사에게는 연락처 뒤 4자리만 보인다. 경계가 아니라 -- 규칙은 지금도
+       열려 있다 -- 일상적으로 120명의 번호를 스쳐 갈 이유가 없어서다. */
+    { name: "회원 상세 · 강사", element: <ReferenceMemberDetail member={smokeRoster[0]} schedule={db.schedule} photos={photos[member.id]} settings={db.settings} organizationMode viewerRole="instructor" onBack={noop} onPatch={asyncNoop} onSaveNote={asyncNoop} onSchedule={noop} onAssess={noop} onToast={noop} onHide={asyncNoop} /> },
+    { name: "회원 상세 · 대표", element: <ReferenceMemberDetail member={smokeRoster[0]} schedule={db.schedule} photos={photos[member.id]} settings={db.settings} organizationMode viewerRole="owner" onBack={noop} onPatch={asyncNoop} onSaveNote={asyncNoop} onSchedule={noop} onAssess={noop} onToast={noop} onHide={asyncNoop} /> },
+    { name: "회원 목록 · 강사", element: (
+      <ReferenceMemberList members={smokeRoster} schedule={db.schedule} settings={db.settings}
+        currentUserId="u1" myMembersDefault canBrowseAll={false} viewerRole="instructor"
+        canRegister={false} onSelect={noop} onAdd={noop} onDeleteSamples={noop}
+        onConsumeRegisterRequest={noop} onRetryRoster={noop} onShowHidden={noop} />
+    ) },
+    { name: "회원 목록 · 대표", element: (
+      <ReferenceMemberList members={smokeRoster} schedule={db.schedule} settings={db.settings}
+        currentUserId="u1" myMembersDefault canBrowseAll viewerRole="owner"
+        onSelect={noop} onAdd={noop} onDeleteSamples={noop}
+        onConsumeRegisterRequest={noop} onRetryRoster={noop} onShowHidden={noop} />
+    ) },
     /* 여정 줄. 끝난 회원권 둘과 진행 중 하나, 그리고 앱 이전 기록까지. */
     { name: "회원 상세 · 여정", element: <ReferenceMemberDetail member={smokeRoster[0]} schedule={db.schedule} photos={photos[member.id]} settings={db.settings} organizationMode onBack={noop} onPatch={asyncNoop} onSaveNote={asyncNoop} onSchedule={noop} onAssess={noop} onToast={noop} onHide={asyncNoop}
       journey={buildPassJourney({
@@ -18922,6 +19899,56 @@ export function createAppScreenSmokeCases() {
     }) },
     { name: "감사 로그 · 조회 실패", element: auditLog(smokeOwner, { loadError: "permission-denied" }) },
     { name: "감사 로그 · 소속 확인 실패", element: auditLog({ organizationId: "", role: "", status: "unknown", isLegacy: false }, null) },
+    /* 회원 앱 연결. 대기 목록이 비어 있는 것과 못 읽은 것은 대표가 할 일이
+       다르다 -- 한 문구로 뭉개지 않는다. */
+    { name: "회원 앱", element: memberApp(smokeOwner, {
+      pending: [{
+        userId: "uid-member", phone: "01012345678",
+        candidates: [
+          { organizationId: "smoke-org", clientId: "smoke-client-a", locationId: "bansong" },
+          { organizationId: "smoke-org", clientId: "smoke-client-c", locationId: "bansong" },
+        ],
+      }],
+      clients: smokeClients, locations: smokeLocations,
+    }) },
+    { name: "회원 앱 · 대기 없음", element: memberApp(smokeOwner, {
+      pending: [], clients: smokeClients, locations: smokeLocations,
+    }) },
+    { name: "회원 앱 · 권한 없음", element: memberApp(smokeOwner, { loadError: "permission-denied" }) },
+    { name: "회원 앱 · 조회 실패", element: memberApp(smokeOwner, { loadError: "unavailable" }) },
+    { name: "회원 앱 · 점검 어긋남", element: memberApp(smokeOwner, {
+      pending: [], clients: smokeClients, locations: smokeLocations,
+      checkResult: {
+        checked: 5, linked: 3, ok: false, partial: false, stoppedAt: "smoke-client-a",
+        mismatches: [{ code: "remaining_total", detail: "8 != 3" }],
+      },
+    }) },
+    { name: "발급 내역", element: issueReport(smokeOwner, {
+      summary: smokeIssueSummary([smokeIssueRow(), smokeIssueRow({
+        entryId: "e-2", passId: "pass-2", clientId: "smoke-client-c",
+        category: "pt_1_1_repurchase_event", contractPrice: 900000, isNew: false,
+      })]),
+      issuers: smokeInstructors, locations: smokeLocations, clients: smokeClients, products: smokeProducts,
+    }) },
+    /* 취소는 줄을 긋고 합계에서 뺀다. 지우지 않는 이유는 대표가 "분명 팔았는데"
+       를 찾게 되기 때문이다. */
+    { name: "발급 내역 · 취소 · 이관 제외", element: issueReport(smokeOwner, {
+      summary: smokeIssueSummary(
+        [smokeIssueRow(), smokeIssueRow({ entryId: "e-3", passId: "pass-3", cancelled: true, cancelledAtLabel: "10/5" })],
+        { migratedCount: 3, priorMonthCancelCount: 1 },
+      ),
+      issuers: smokeInstructors, locations: smokeLocations, clients: smokeClients, products: smokeProducts,
+    }) },
+    { name: "발급 내역 · 빈 달", element: issueReport(smokeOwner, {
+      summary: smokeIssueSummary([]),
+      issuers: smokeInstructors, locations: smokeLocations, clients: smokeClients, products: smokeProducts,
+    }) },
+    { name: "발급 내역 · 조회 실패", element: issueReport(smokeOwner, { summary: null, loadError: "permission-denied" }) },
+    /* 이름만 못 읽은 것은 숫자를 바꾸지 않는다. */
+    { name: "발급 내역 · 이름 조회 실패", element: issueReport(smokeOwner, {
+      summary: smokeIssueSummary([smokeIssueRow()]),
+      issuers: [], locations: [], clients: [], products: [], namesFailed: "unavailable",
+    }) },
     { name: "급여 집계", element: payrollSummary(smokeOwner, {
       summary: smokePayroll, instructors: smokeInstructors, locations: smokeLocations,
     }) },
@@ -19030,13 +20057,13 @@ export default function App() {
   const [payError, setPayError] = useState("");
   const [payRevision, setPayRevision] = useState(0);
   const [organizationContext, setOrganizationContext] = useState(UNRESOLVED_ORGANIZATION_CONTEXT);
-  /* 소속 센터에서 회원 등록은 대표의 일이다. 강사가 같은 사람을 다시 등록하면
-     같은 회원이 둘이 되고 수업 기록이 갈라진다. 규칙도 대표만 허용하므로
-     (canRegisterClient) 매니저에게 버튼을 남겨 두면 눌러도 거부된다. 개인 강사
+  /* 소속 센터에서 회원 등록은 대표와 FC매니저의 일이다. 강사가 같은 사람을 다시
+     등록하면 같은 회원이 둘이 되고 수업 기록이 갈라진다. 규칙도 같은 둘에게만
+     열려 있다 (canRegisterClient). 개인 강사
      (legacy)는 자기 회원을 자기가 등록하므로 제한하지 않는다. */
   const canRegisterMembers = !organizationContext.ready
     || organizationContext.isLegacy
-    || organizationContext.role === ROLES.OWNER;
+    || FC_ROLES.includes(organizationContext.role);
   /* 출석 체크는 수업하는 사람의 것이다. 대표와 매니저도 수업을 하므로 함께
      허용한다 -- 규칙도 같은 셋에게만 잔여를 줄이게 열려 있다. */
   const canCheckAttendance = organizationContext.ready
@@ -20586,6 +21613,36 @@ export default function App() {
      두 번 눌리는 것을 막는다. 같은 수업을 두 번 확정하면 같은 회차가 두 번
      차감되고, 원장은 append-only 라 고칠 수 없다. */
   const settlingRef = useRef(new Set());
+  /* 강사가 회원에게 보낼 말. 읽기와 쓰기 둘 다 여기 있는 이유는 조직 id 와
+     내 uid 가 여기서만 확실하기 때문이다 -- 일정 시트까지 그 둘을 들고 내려가면
+     전달만 하는 자리가 늘고, 어느 화면에서 빠졌는지 추적이 어려워진다. */
+  const readMemberNoteFor = useCallback(async (lessonId, clientId) => {
+    if (!organizationRoster || !organizationContext.organizationId) return "";
+    return readMemberNote(organizationContext.organizationId, { lessonId, clientId });
+  }, [organizationRoster, organizationContext.organizationId]);
+
+  const saveMemberNoteFor = useCallback(async (lessonId, clientId, memberNote) => {
+    if (!organizationRoster || !organizationContext.organizationId) return false;
+    try {
+      await saveMemberNote(organizationContext.organizationId, {
+        lessonId, clientId, memberNote,
+        instructorId: account?.id || "",
+        userId: account?.id || "",
+      });
+      return true;
+    } catch (error) {
+      /* 종류마다 할 일이 다르다. 코드는 언제나 함께 보여준다 -- 코드 없는
+         "오류가 발생했습니다" 는 강사도 대표도 아무것도 할 수 없게 만든다. */
+      const failure = memberNoteSaveFailure(error);
+      deviceLog("member_note_save_failed", {
+        feature: "member_note", stage: "save", errorDomain: "firestore",
+        errorCode: failure.errorCode, kind: failure.kind, lessonId,
+      });
+      setToast({ ok: false, msg: failure.message });
+      return false;
+    }
+  }, [organizationRoster, organizationContext.organizationId, account?.id]);
+
   const settleLesson = async (lessonId) => {
     const lesson = db.schedule.find((item) => item.id === lessonId);
     if (!lesson || !organizationRoster || isSettledLesson(lesson)) return;
@@ -20610,17 +21667,30 @@ export default function App() {
             // 조직 수업 문서도 이 일정과 같은 id 를 쓴다. 원장의 lessonId 가
             // 일정을 가리켜야 "이 수업의 차감"을 되짚을 수 있다.
             lessonId: lesson.id,
+            /* 누가 왔고 누가 안 왔는지. 듀엣은 한 명이 노쇼여도 차감되므로,
+               이것이 없으면 두 달 뒤 "그날 나는 안 갔는데"에 답할 것이 없다. */
+            attendanceByClientId: item.attendanceByClientId,
           });
-          results.push({ memberId: item.memberId, passId: item.pass.id, entryId: deducted.entryId });
+          results.push({
+            memberId: item.memberId,
+            // 공유 회원권에서 나간 한 건은 두 사람의 줄에 모두 적힌다.
+            memberIds: item.memberIds,
+            passId: item.pass.id,
+            entryId: deducted.entryId,
+          });
         } catch (error) {
           /* 성공한 차감은 이미 원장에 박혔다. 이 수업을 열어 두고 다시 확정하게
              하면 그 회차가 한 번 더 나간다 -- 닫고 못 나간 것만 알린다. */
-          skips.push({
-            memberId: item.memberId,
-            clientId: item.clientId,
-            reason: SETTLEMENT_SKIP.WRITE_FAILED,
-            code: error?.code || error?.message || "unknown",
-          });
+          /* 공유 회원권이면 두 사람 모두 못 나간 것이다. 한 줄만 적으면 짝의
+             화면에는 아무 일도 없었던 것처럼 보인다. */
+          for (const memberId of item.memberIds || [item.memberId]) {
+            skips.push({
+              memberId,
+              clientId: item.clientId,
+              reason: SETTLEMENT_SKIP.WRITE_FAILED,
+              code: error?.code || error?.message || "unknown",
+            });
+          }
         }
       }
       /* 한 건도 나가지 않았으면 닫지 않는다. "쓰다 실패하면 닫는다"는 일부라도
@@ -21553,11 +22623,11 @@ export default function App() {
       <div className="pt-app-shell safe-t flex h-full min-h-0 w-full flex-col" style={{ backgroundColor: PAGE, boxShadow: "0 0 0 1px rgba(28,36,51,.04)" }}>
         <div className="relative min-h-0 flex-1 overflow-hidden">
           <Guard key={tab}>
-            {tab === "schedule" && <ScheduleManager db={rosterDb} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterMembers ? () => { setMemberRegistrationRequest((value) => value + 1); setTab("members"); } : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} canUnsettle={organizationRoster && organizationContext.role === ROLES.OWNER} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
+            {tab === "schedule" && <ScheduleManager db={rosterDb} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterMembers ? () => { setMemberRegistrationRequest((value) => value + 1); setTab("members"); } : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && organizationContext.role === ROLES.OWNER} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
             {tab === "members" && <div className={`h-full min-h-0 ${mobileView === "detail" && member ? "pt-member-detail-active" : ""}`}>
-              <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList members={rosterMembers} schedule={db.schedule} settings={db.settings} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterMembers} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} journeyOf={organizationRoster ? journeyFor : undefined} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
+              <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList members={rosterMembers} schedule={db.schedule} settings={db.settings} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} canBrowseAll={!organizationRoster || canBrowseAllClients(organizationContext.role)} viewerRole={organizationContext.role} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterMembers} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} journeyOf={organizationRoster ? journeyFor : undefined} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
               {mobileView === "detail" && member && <div className="pt-member-detail-pane h-full min-h-0">
-                <ReferenceMemberDetail key={member.id} member={member} schedule={db.schedule} photos={photos[member.id]} settings={db.settings}
+                <ReferenceMemberDetail key={member.id} member={member} schedule={db.schedule} photos={photos[member.id]} settings={db.settings} viewerRole={organizationRoster ? organizationContext.role : ""}
                   canViewSettlement={!account?.role || ["owner", "manager", "admin", "director"].includes(String(account.role).toLowerCase())} onBack={() => setMobileView("list")}
                   onPatch={(change) => patch(member.id, change)} onSaveNote={(type, body, voiceMeta, noteOptions) => saveScheduleComment(member.id, type, null, body, voiceMeta, noteOptions)}
                   onSchedule={() => { setScheduleMemberId(member.id); setTab("schedule"); }} onOpenLesson={(lessonId) => { setScheduleOpenLessonId(lessonId); setTab("schedule"); }} onAssess={(entry = {}) => { setAnalysisRecordId(entry.poseId || null); setAnalysisAssessmentId(entry.assessmentId || null); setAnalysisEntryMode(entry.mode || "home"); setAnalysisComparisonEntry(entry.beforeAssessmentId && entry.afterAssessmentId ? { beforeAssessmentId: entry.beforeAssessmentId, afterAssessmentId: entry.afterAssessmentId, compareView: entry.compareView || "front" } : null); setAnalysisMemberId(member.id); setTab("analysis"); }} onToast={setToast} onDelete={removeMember} onDeactivate={deactivateMember} onReactivate={reactivateMember}

@@ -11,7 +11,8 @@
     "lint": "eslint src scripts tests",
     "test": "node --test tests/*.test.js",
     "seed:app-review": "node scripts/seed-app-review.js",
-    "pilot:metrics": "node scripts/pilot-daily-metrics.js"
+    "pilot:metrics": "node scripts/pilot-daily-metrics.js",
+    "test:emulator": "node -e \"console.error(String.raw`에뮬레이터가 필요합니다. 저장소 루트에서: npm run test:member-view`);process.exit(1)\""
   },
   "dependencies": {
     "@firebase/app": "0.15.1",

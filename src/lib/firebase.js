@@ -632,6 +632,35 @@ export async function fbLookupCentreMemberByEmail({ organizationId, email }) {
   return response?.data || null;
 }
 
+/* ---------------- 회원 앱 — 연결과 투영 (대표 전용) ----------------
+   전부 서버가 판정한다. 규칙은 memberLinks 를 본인에게만 열어 두므로 대표는
+   이 통로로만 대기 목록을 볼 수 있고, clients.userId 는 서버만 쓴다.
+   왜인지는 functions/src/member-link.js 와 member-view-admin.js 에 있다. */
+
+const callableAsOwner = (name) => async (payload) => {
+  if (!functions || !auth?.currentUser) {
+    throw Object.assign(new Error("Authentication is required."), { code: "unauthenticated" });
+  }
+  const call = httpsCallable(functions, name);
+  const response = await call(payload || {});
+  return response?.data ?? null;
+};
+
+/** `ambiguous` 로 멈춘 연결 요청들. 자기 센터에 후보가 있는 줄만 돌아온다. */
+export const fbListPendingMemberLinks = callableAsOwner("listPendingMemberLinks");
+
+/** 대표가 후보 하나를 골라 잇는다. 누가 이었는지가 감사에 남는다. */
+export const fbLinkMemberAccountByOwner = callableAsOwner("linkMemberAccountByOwner");
+
+/** 잘못 이은 것을 끊는다. 투영도 그 자리에서 지워진다. */
+export const fbUnlinkMemberAccount = callableAsOwner("unlinkMemberAccount");
+
+/** 읽기 전용 점검. 어긋난 회원을 만나면 거기서 멈추고 무엇이 다른지 돌려준다. */
+export const fbVerifyMemberViews = callableAsOwner("verifyMemberViews");
+
+/** 투영을 다시 만든다. **`dryRun: false` 를 명시해야 실제로 쓴다.** */
+export const fbRebuildMemberViews = callableAsOwner("rebuildMemberViews");
+
 export async function fbPurgeExpiredPhotoBackups() {
   if (!functions || !auth?.currentUser) return { purged: 0 };
   const call = httpsCallable(functions, "purgeExpiredPhotoBackups");

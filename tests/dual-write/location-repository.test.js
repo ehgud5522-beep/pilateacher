@@ -73,3 +73,66 @@ test("the Firestore store is what a caller gets when none is injected", async ()
 test("the Firestore store answers the whole LocationStore shape", () => {
   assert.equal(typeof createFirestoreLocationStore().list, "function");
 });
+
+// ── 지점 추가 · 지점별 목록 (2026-09-23, 율하점 개설) ──
+import {
+  ALL_LOCATIONS, NO_LOCATION, countByLocation, createLocation, filterByLocation,
+} from "../../src/data/repositories/location-repository.js";
+
+function writableStore() {
+  const calls = { create: [] };
+  return {
+    calls,
+    list: async () => [],
+    create: async (path, data) => { calls.create.push({ path, data }); },
+    serverTimestamp: async () => "SERVER_TIME",
+  };
+}
+
+test("a new location is written under the organization with its name and author", async () => {
+  const store = writableStore();
+  const created = await createLocation(ORG, { name: " 율하점 ", createdBy: "owner-1" },
+    { store, newId: () => "yulha" });
+  assert.deepEqual(store.calls.create, [{
+    path: "organizations/center-a/locations/yulha",
+    data: { organizationId: ORG, name: "율하점", createdAt: "SERVER_TIME", createdBy: "owner-1" },
+  }]);
+  assert.equal(created.id, "yulha");
+});
+
+test("a location with the same name is not created twice", async () => {
+  const store = writableStore();
+  const error = await createLocation(ORG, { name: "율하 점", createdBy: "owner-1" },
+    { store, existing: [location({ id: "yulha", name: "율하점" })] }).then(() => null, (thrown) => thrown);
+  assert.equal(error?.code, "already-exists");
+  assert.equal(error.locationId, "yulha");
+  assert.equal(store.calls.create.length, 0);
+});
+
+test("a location needs a name and an author", async () => {
+  const store = writableStore();
+  await assert.rejects(() => createLocation(ORG, { name: "  ", createdBy: "u" }, { store }), /Missing name/);
+  await assert.rejects(() => createLocation(ORG, { name: "율하점", createdBy: "" }, { store }), /Missing createdBy/);
+  assert.equal(store.calls.create.length, 0);
+});
+
+test("lists split by location, and people without a known location stay findable", () => {
+  const locations = [{ id: "bansong" }, { id: "yulha" }];
+  const people = [
+    { id: "a", locationId: "bansong" },
+    { id: "b", locationId: "yulha" },
+    { id: "c", locationId: "" },
+    { id: "d", locationId: "closed" },
+  ];
+  assert.deepEqual(filterByLocation(people, ALL_LOCATIONS, locations).map((p) => p.id), ["a", "b", "c", "d"]);
+  assert.deepEqual(filterByLocation(people, "yulha", locations).map((p) => p.id), ["b"]);
+  assert.deepEqual(filterByLocation(people, NO_LOCATION, locations).map((p) => p.id), ["c", "d"]);
+  assert.deepEqual(countByLocation(people, locations),
+    { [ALL_LOCATIONS]: 4, [NO_LOCATION]: 2, bansong: 1, yulha: 1 });
+});
+
+test("the Firestore store can also write", () => {
+  const store = createFirestoreLocationStore();
+  assert.equal(typeof store.create, "function");
+  assert.equal(typeof store.serverTimestamp, "function");
+});

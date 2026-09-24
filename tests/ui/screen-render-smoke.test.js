@@ -32,11 +32,19 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "일정 탭 · 소속 · 일부만 차감",
     "일정 탭 · 소속 · 차감할 회차 없음",
     "일정 탭 · 소속 · 차감 전원 실패",
+    "일정 탭 · 소속 · 시작 전",
+    "일정 탭 · 소속 · 시작 전 · 실패 기록",
+    "일정 탭 · 소속 · 회원에게 보낼 말",
+    "일정 탭 · 소속 · 회원에게 보낼 말 · 확정됨",
     "일정 탭 · 소속 · 확정됨 · 대표",
     "일정 탭 · 개인 모드 · 확정 없음",
     "회원 목록",
     "회원 상세",
     "회원 상세 · 소속",
+    "회원 상세 · 강사",
+    "회원 상세 · 대표",
+    "회원 목록 · 강사",
+    "회원 목록 · 대표",
     "회원 상세 · 여정",
     "체형분석 목록",
     "체형분석 상세 빈 이력",
@@ -113,6 +121,16 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "감사 로그 · 이상 없음",
     "감사 로그 · 조회 실패",
     "감사 로그 · 소속 확인 실패",
+    "회원 앱",
+    "회원 앱 · 대기 없음",
+    "회원 앱 · 권한 없음",
+    "회원 앱 · 조회 실패",
+    "회원 앱 · 점검 어긋남",
+    "발급 내역",
+    "발급 내역 · 취소 · 이관 제외",
+    "발급 내역 · 빈 달",
+    "발급 내역 · 조회 실패",
+    "발급 내역 · 이름 조회 실패",
     "급여 집계",
     "급여 집계 · 강사 펼침",
     "급여 집계 · 두 지점",
@@ -829,17 +847,20 @@ test("the member directory is reachable only where it should be", async (t) => {
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
-  // 대표만 들어갈 수 있다.
+  // 대표와 FC매니저가 들어갈 수 있다 (2026-09-23).
   assert.match(markupOf("더보기 탭"), /회원 관리/);
+  assert.match(markupOf("더보기 탭 · 매니저"), /회원 관리/);
+  assert.match(markupOf("더보기 탭 · 매니저"), /회원권 상품/);
 
   /* 나머지에게는 진입점 자체가 없다. 항목이 없으면 setView 로 들어갈 길도
-     닫힌다. 매니저에게서도 거둔 문이고, 규칙이 같은 경계를 지킨다
-     (canRegisterClient) -- 보여 주면 눌러도 거부되는 화면만 나온다. */
-  assert.doesNotMatch(markupOf("더보기 탭 · 매니저"), /회원 관리/);
+     닫힌다. 규칙이 같은 경계를 지킨다 (canRegisterClient) -- 보여 주면 눌러도
+     거부되는 화면만 나온다. */
   assert.doesNotMatch(markupOf("더보기 탭 · 강사"), /회원 관리/);
   assert.doesNotMatch(markupOf("더보기 탭 · 개인 모드"), /회원 관리/);
   assert.doesNotMatch(markupOf("더보기 탭 · 소속 확인 실패"), /회원 관리/);
-  assert.doesNotMatch(markupOf("더보기 탭 · 매니저"), /회원권 상품/);
+  // 급여와 강사 관리는 여전히 대표만이다.
+  assert.doesNotMatch(markupOf("더보기 탭 · 매니저"), /급여 집계/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 매니저"), /강사 관리/);
 
   // 소속을 읽지 못하면 목록을 그리지 않고 잠근다 -- 잘못된 센터에 회원이
   // 쌓이는 것이 못 보는 것보다 나쁘다.
@@ -1078,7 +1099,9 @@ test("the centre group stands only where there is something in it", async (t) =>
 
   /* 대표가 아니면 그 그룹에 들어갈 항목이 하나도 없다. 머리글만 남기면
      "여기 뭔가 있어야 하는데 안 보인다"가 된다. */
-  for (const name of ["더보기 탭 · 매니저", "더보기 탭 · 강사", "더보기 탭 · 개인 모드", "더보기 탭 · 소속 확인 실패"]) {
+  // FC매니저에게는 센터 운영 묶음이 선다 -- 회원권 발급 · 회원 관리 · 상품 (2026-09-23).
+  assert.match(markupOf("더보기 탭 · 매니저"), /센터 운영/);
+  for (const name of ["더보기 탭 · 강사", "더보기 탭 · 개인 모드", "더보기 탭 · 소속 확인 실패"]) {
     const markup = markupOf(name);
     assert.doesNotMatch(markup, /센터 운영/, name);
     assert.match(markup, /내 설정/, `${name} — 내 설정은 모두에게`);
@@ -1215,13 +1238,12 @@ test("the confirmation says exactly what will be written", async (t) => {
   assert.match(confirm, /담당 정예진/);
 });
 
-test("the issue screen is reachable for the owner only", async (t) => {
+test("the issue screen is reachable for the owner and the FC manager only", async (t) => {
   /* 발급은 그 순간 급여의 근거를 만들고, 원장은 append-only 라 고칠 수 없다.
-     매니저에게서 거둔 문이다 -- 규칙도 같은 경계로 좁혔으므로(canIssuePass)
-     버튼을 남겨 두면 눌러도 거부된다. */
+     FC매니저에게는 2026-09-23 에 다시 열었다 -- 규칙도 같은 경계다(canIssuePass). */
   const markupOf = await issueScreens(t);
   assert.match(markupOf("더보기 탭"), /회원권 발급/);
-  assert.doesNotMatch(markupOf("더보기 탭 · 매니저"), /회원권 발급/);
+  assert.match(markupOf("더보기 탭 · 매니저"), /회원권 발급/);
   assert.doesNotMatch(markupOf("더보기 탭 · 강사"), /회원권 발급/);
   assert.doesNotMatch(markupOf("더보기 탭 · 개인 모드"), /회원권 발급/);
   assert.doesNotMatch(markupOf("더보기 탭 · 소속 확인 실패"), /회원권 발급/);
@@ -1715,4 +1737,269 @@ test("an existing usable pass is said before the button, and does not disable it
   assert.match(held, /이두리님에게 이미 쓸 수 있는 회원권이 있습니다/);
   assert.match(held, /잔여 4회/);
   assert.match(held, /발급<\/button>/);
+});
+
+/* ── 발급 내역 ────────────────────────────────────────────────────────────
+
+   급여 집계와 같은 원장을 읽지만 묻는 것이 다르다 -- "무엇이 팔렸는가" 다.
+   한 화면에 매출과 급여가 같이 있으면 둘 중 하나를 다른 하나로 읽는 사람이
+   반드시 나온다. */
+
+test("the issue report is the owner's, exactly like payroll", async (t) => {
+  const markupOf = await issueScreens(t);
+  assert.match(markupOf("더보기 탭"), /발급 내역/);
+  /* FC매니저는 발급을 하지만 센터 전체의 매출은 한 사람의 것이 아니다. 자기
+     실적만 보는 화면은 따로 필요하고, 아직 없다. */
+  assert.doesNotMatch(markupOf("더보기 탭 · 매니저"), /발급 내역/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 강사"), /발급 내역/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 개인 모드"), /발급 내역/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 소속 확인 실패"), /발급 내역/);
+});
+
+test("the report shows what was sold, and never what it pays", async (t) => {
+  const markupOf = await issueScreens(t);
+  const report = markupOf("발급 내역");
+  assert.match(report, /김하나/);
+  assert.match(report, /1:1 20회 가을 이벤트/);
+  assert.match(report, /20회/);
+  assert.match(report, /₩1,300,000/);
+  assert.match(report, /카드/);
+  assert.match(report, /신규/);
+  /* 단가와 급여 판정은 이 화면에 오지 않는다. "급여" 라는 낱말 자체는 화면에
+     있다 -- "급여가 아니라 무엇이 팔렸는지를 봅니다" 라고 먼저 말하기 때문이다.
+     그래서 낱말이 아니라 실제로 새면 안 되는 것을 본다. */
+  assert.match(report, /급여가 아니라 무엇이 팔렸는지를 봅니다/);
+  for (const forbidden of ["단가", "풀방", "25,000", "1,181,818", "누적 20회 미만", "부원장"]) {
+    assert.doesNotMatch(report, new RegExp(forbidden), forbidden + " 가 발급 내역에 있다");
+  }
+});
+
+test("the totals separate new contracts, which is what FC is measured by", async (t) => {
+  const markupOf = await issueScreens(t);
+  const report = markupOf("발급 내역");
+  assert.match(report, /2건 · ₩2,200,000/);
+  assert.match(report, /그중 신규 1건 · ₩1,300,000/);
+});
+
+test("a cancelled issue is struck through, dated, and out of the totals", async (t) => {
+  const markupOf = await issueScreens(t);
+  const report = markupOf("발급 내역 · 취소 · 이관 제외");
+  assert.match(report, /line-through/);
+  assert.match(report, /10\/5 취소/);
+  assert.match(report, /취소 1건 \(합계에서 제외\)/);
+  // 이관은 엑셀에서 옮겨 온 것이라 이 달의 매출이 아니다.
+  assert.match(report, /이관 3건 제외/);
+  assert.match(report, /이전 달 발급 취소 1건/);
+});
+
+test("an empty month says so, and a failed read says its code", async (t) => {
+  /* 빈 달과 못 읽은 달은 대표가 할 일이 다르다. 한 문구로 뭉개면 안 된다. */
+  const markupOf = await issueScreens(t);
+  const empty = markupOf("발급 내역 · 빈 달");
+  assert.match(empty, /이번 달 발급이 없습니다/);
+  assert.doesNotMatch(empty, /불러오지 못했습니다/);
+
+  const failed = markupOf("발급 내역 · 조회 실패");
+  assert.match(failed, /발급 내역을 불러오지 못했습니다/);
+  assert.match(failed, /permission-denied/);
+  assert.match(failed, /다시 시도/);
+  assert.doesNotMatch(failed, /이번 달 발급이 없습니다/);
+});
+
+test("names failing does not hide the numbers", async (t) => {
+  // 이름 때문에 화면 전체를 막으면 그날 매출을 못 본다.
+  const markupOf = await issueScreens(t);
+  const report = markupOf("발급 내역 · 이름 조회 실패");
+  assert.match(report, /이름을 불러오지 못했습니다/);
+  assert.match(report, /unavailable/);
+  assert.match(report, /₩1,300,000/, "숫자는 그대로 선다");
+});
+
+/* ── 회원 앱 연결 ──────────────────────────────────────────────────────────
+
+   회원과 계정을 잇고 끊는 화면이다. 규칙이 memberLinks 를 본인에게만 열어 두므로
+   대표는 서버 함수로만 대기 목록을 볼 수 있고, 그래서 이 화면이 없으면 손으로
+   잇는 문은 부를 수 없는 문이 된다. */
+
+test("the member-app screen is the owner's, exactly like payroll", async (t) => {
+  const markupOf = await issueScreens(t);
+  assert.match(markupOf("더보기 탭"), /회원 앱/);
+  /* 남의 계정과 회원을 잇고 끊는 일이다. 급여보다 좁으면 좁았지 넓지 않다. */
+  assert.doesNotMatch(markupOf("더보기 탭 · 매니저"), /회원 앱/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 강사"), /회원 앱/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 개인 모드"), /회원 앱/);
+});
+
+test("a waiting link shows both candidates by name, never auto-joined", async (t) => {
+  const markupOf = await issueScreens(t);
+  const screen = markupOf("회원 앱");
+  assert.match(screen, /연결 대기/);
+  assert.match(screen, /후보 2명/);
+  // 이름이 보여야 대표가 고를 수 있다. id 만으로는 누구인지 모른다.
+  assert.match(screen, /김하나/);
+  assert.match(screen, /이 회원으로 잇기/);
+  // 자동으로 이었다고 말하지 않는다 -- 잇지 않았다.
+  assert.doesNotMatch(screen, /연결했습니다/);
+});
+
+test("no waiting links reads differently from a failed read", async (t) => {
+  /* 할 일이 없는 것과 못 읽은 것은 대표가 할 일이 다르다. 한 문구로 뭉개면
+     대표는 조용한 고장을 정상으로 읽는다. */
+  const markupOf = await issueScreens(t);
+  const empty = markupOf("회원 앱 · 대기 없음");
+  assert.match(empty, /확인이 필요한 연결이 없습니다/);
+  assert.doesNotMatch(empty, /불러오지 못했습니다/);
+
+  const denied = markupOf("회원 앱 · 권한 없음");
+  assert.match(denied, /대표만 볼 수 있습니다/);
+  assert.match(denied, /permission-denied/);
+  assert.doesNotMatch(denied, /확인이 필요한 연결이 없습니다/);
+
+  const failed = markupOf("회원 앱 · 조회 실패");
+  assert.match(failed, /연결 대기 목록을 불러오지 못했습니다/);
+  assert.match(failed, /unavailable/);
+  assert.match(failed, /다시 시도/);
+  assert.doesNotMatch(failed, /대표만 볼 수 있습니다/);
+});
+
+test("the check says where it stopped and what was wrong, in words", async (t) => {
+  const markupOf = await issueScreens(t);
+  const screen = markupOf("회원 앱 · 점검 어긋남");
+  assert.match(screen, /읽기만 하고/, "점검이 고치지 않는다는 것을 먼저 말한다");
+  assert.match(screen, /5명 확인/);
+  // 코드만 보여주면 대표가 할 일을 알 수 없다.
+  assert.match(screen, /잔여 횟수가 회원권과 다릅니다/);
+  assert.match(screen, /8 != 3/);
+  assert.match(screen, /에서 멈췄습니다/);
+});
+
+test("the member-app screen never shows a price", async (t) => {
+  /* 회원 화면의 값을 다루는 자리다. 여기에 단가가 서면 그 다음은 회원 화면이다. */
+  const markupOf = await issueScreens(t);
+  for (const name of ["회원 앱", "회원 앱 · 점검 어긋남"]) {
+    const screen = markupOf(name);
+    for (const forbidden of ["단가", "₩", "부원장", "급여"]) {
+      assert.doesNotMatch(screen, new RegExp(forbidden), `${forbidden} 가 ${name} 에 있다`);
+    }
+  }
+});
+
+/* ── 강사가 명부에서 무엇을 보는가 ────────────────────────────────────────
+
+   **경계가 아니다.** 규칙은 지금도 강사에게 센터 전체 명부를 열어 준다
+   (`clients` list 가 owner·manager·instructor·staff). 여기서 고정하는 것은
+   화면이 먼저 보여 주지 않는다는 것이고, 규칙 차단은 대타 경로를 설계한
+   뒤다 (docs/handoff.md).
+
+   그래도 이 줄들이 값어치가 있는 이유: 노출의 대부분은 악의가 아니라 그냥
+   거기 있어서 일어난다. */
+
+test("an instructor sees only the last four digits, an owner sees the number", async (t) => {
+  const markupOf = await issueScreens(t);
+
+  const instructor = markupOf("회원 상세 · 강사");
+  assert.match(instructor, /···5678/, "뒤 4자리가 없다");
+  // 앞자리가 붙은 어떤 모양도 나오면 안 된다.
+  assert.doesNotMatch(instructor, /010-\*\*\*\*-5678/, "강사 화면에 앞자리가 있다");
+  assert.doesNotMatch(instructor, /01012345678/, "강사 화면에 전체 번호가 있다");
+  assert.doesNotMatch(instructor, /010-1234-5678/, "강사 화면에 전체 번호가 있다");
+
+  /* 대표와 FC매니저는 지금과 같다. 등록·연락·정산을 하는 사람들이다. */
+  const owner = markupOf("회원 상세 · 대표");
+  assert.match(owner, /010-\*\*\*\*-5678/, "대표 화면이 바뀌었다");
+});
+
+test("the instructor's list has no way to browse the whole centre", async (t) => {
+  const markupOf = await issueScreens(t);
+
+  const instructor = markupOf("회원 목록 · 강사");
+  /* "전체 N" 칩이 없다. 있으면 한 번 눌러 120명을 스크롤하게 된다. */
+  assert.doesNotMatch(instructor, /전체 \d+<\/button>/, "강사에게 전체 보기 칩이 있다");
+  assert.doesNotMatch(instructor, /01012345678/);
+  assert.doesNotMatch(instructor, /01055556666/);
+
+  // 대표에게는 그대로 있다.
+  const owner = markupOf("회원 목록 · 대표");
+  assert.match(owner, /내 회원 \d+/);
+  assert.match(owner, /전체 \d+/);
+});
+
+/* ── 아직 시작하지 않은 수업 ──────────────────────────────────────────────
+
+   시각으로 확정 카드를 통째로 감췄다가 되돌렸다. 감췄더니 **이미 실패한
+   수업의 사유와 [다시 확정]까지 사라졌고**, 토스트는 "아래 이유를 보고 다시
+   시도해 주세요" 라고 말하는데 아래에 아무것도 없었다.
+
+   카드를 세우는 판정과 버튼을 잠그는 판정은 다른 일이다. 잠긴 버튼은 이유를
+   말할 수 있지만 없는 버튼은 아무 말도 못 한다. */
+
+test("a lesson that has not started keeps its card and locks the button", async (t) => {
+  const markupOf = await issueScreens(t);
+  const before = markupOf("일정 탭 · 소속 · 시작 전");
+
+  assert.match(before, /수업 확정/, "카드가 통째로 사라졌다");
+  assert.match(before, /아직 시작하지 않은 수업입니다/);
+  assert.match(before, /disabled=""/, "버튼이 잠기지 않았다");
+});
+
+test("a failed lesson keeps its reason and its retry even before it starts", async (t) => {
+  /* 여기가 감췄을 때 가장 크게 잃던 자리다 -- 강사는 무엇이 막았는지도,
+     다시 누를 곳도 잃었다. */
+  const markupOf = await issueScreens(t);
+  const failed = markupOf("일정 탭 · 소속 · 시작 전 · 실패 기록");
+
+  assert.match(failed, /차감이 한 건도 나가지 않았습니다/);
+  assert.match(failed, /다시 확정/);
+  // 코드가 사람 말로 바뀌어 있다.
+  assert.match(failed, /아직 시작하지 않은 수업입니다/);
+  assert.match(failed, /occurred_at_future/, "원본 코드가 사라졌다");
+});
+
+/* ── 회원에게 보낼 말 ────────────────────────────────────────────────────
+
+   수업기록은 강사가 다음 수업을 준비하려고 쓰는 글이고, 이 칸은 회원을 향해
+   따로 적는 한 줄이다. 두 칸이 나뉘어 있다는 것이 이 기능의 전부다. */
+
+test("the member-facing note sits beside the lesson record, not inside it", async (t) => {
+  const markupOf = await issueScreens(t);
+  const sheet = markupOf("일정 탭 · 소속 · 회원에게 보낼 말");
+
+  assert.match(sheet, /회원에게 보낼 말/);
+  // 강사가 자기를 위해 쓰는 기록도 그 자리에 그대로 있다 -- 한쪽이 다른 쪽을
+  // 밀어내면 강사는 둘 중 하나를 포기한다.
+  assert.match(sheet, /기록하기/);
+  assert.match(sheet, /직접입력/);
+  // 회원에게 가는 칸이라는 것을 칸 자체가 말한다.
+  assert.match(sheet, /data-member-note/);
+});
+
+test("before the note is loaded the box says so instead of looking empty", async (t) => {
+  /* 빈 칸으로 보이면 강사는 아직 안 썼다고 읽고 그 위에 덮어쓴다 -- 먼젓번에
+     보낸 말이 소리 없이 사라진다. */
+  const markupOf = await issueScreens(t);
+  const sheet = markupOf("일정 탭 · 소속 · 회원에게 보낼 말");
+
+  assert.match(sheet, /불러오는 중…/);
+  assert.match(sheet, /disabled=""/, "읽어 오기 전인데 입력이 열려 있다");
+});
+
+test("the note says when the member will actually see it", async (t) => {
+  /* 확정 전에 저장하면 회원 앱에는 아직 없다 -- 회원의 수업 이력은 차감으로
+     만들어지기 때문이다. 말하지 않으면 강사는 저장하고 나서 안 보인다고 한다.
+     실제로 그 일이 있었고, 그래서 이 기능이 생겼다. */
+  const markupOf = await issueScreens(t);
+
+  const before = markupOf("일정 탭 · 소속 · 회원에게 보낼 말");
+  assert.match(before, /수업을 확정해 회원권이 차감되면 회원 앱에 보입니다/);
+
+  const after = markupOf("일정 탭 · 소속 · 회원에게 보낼 말 · 확정됨");
+  assert.match(after, /회원 앱의 수업 탭에 이 수업과 함께 보입니다/);
+  assert.doesNotMatch(after, /확정해 회원권이 차감되면/);
+});
+
+test("the note is not offered where there is no member app", async (t) => {
+  /* 개인 모드에는 조직 회원이 없다. 보낼 곳이 없는 칸을 그려 두면 강사는
+     쓰고 나서 아무 데도 가지 않은 것을 나중에 안다. */
+  const markupOf = await issueScreens(t);
+  assert.doesNotMatch(markupOf("일정 탭 · 개인 모드 · 확정 없음"), /회원에게 보낼 말/);
 });

@@ -14,6 +14,8 @@ tools/ai/live-*.mjs
 tools/backup/live-*.mjs
 cert_key.pem
 dist/
+/* 회원 앱 빌드 결과. dist 와 같은 이유로 저장소에 두지 않는다. */
+dist-member
 .firebase/
 firebase-debug.log
 firestore-debug.log

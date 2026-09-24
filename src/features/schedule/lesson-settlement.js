@@ -15,7 +15,8 @@
  * 판정 엔진과 원장 기록이 전부 그 경로에 있어 우회로를 만들지 않는다.
  */
 
-import { PASS_STATUS } from "../../data/schema/constants.js";
+import { ATTENDANCE_STATUS, PASS_STATUS } from "../../data/schema/constants.js";
+import { isDuetPass, passBelongsTo } from "../../data/schema/pass-clients.js";
 import { isDeductablePass, remainingCountOf } from "../../data/repositories/pass-repository.js";
 
 /** 왜 차감하지 않았는가. 화면이 이 값으로 무엇을 말할지 정한다. */
@@ -26,6 +27,12 @@ export const SETTLEMENT_SKIP = Object.freeze({
   NO_PASS: "no_pass",
   /** 회원권은 있지만 쓸 수 있는 것이 없다 -- 잔여 0이거나 만료. */
   SPENT: "spent",
+  /* 1:1 수업인데 1:1 회원권이 없다. 듀엣 회원권이 남아 있어도 쓰지 않는다 --
+     그것은 짝과 함께 쓰는 회차이고, 혼자 온 수업에 빼면 짝의 몫이 사라진다.
+     그 사실은 짝에게 아무도 알리지 않는다. */
+  SOLO_PASS_MISSING: "solo_pass_missing",
+  /** 둘이 함께 왔는데 공유 회원권에 남은 회차가 없다 (또는 만료). */
+  DUET_PASS_SPENT: "duet_pass_spent",
   /* 차감을 시도했고 서버가 받지 않았다.
 
      성공한 차감이 이미 원장에 박혔으므로 이 수업은 확정된 것으로 닫는다. 열어
@@ -86,10 +93,31 @@ export const SETTLEMENT_SKIP_LABEL = Object.freeze({
   ["no_client"]: "센터 명부에 없는 회원입니다. 대표에게 등록을 요청해 주세요.",
   ["no_pass"]: "회원권이 없습니다. 발급 후 출석 체크에서 차감해 주세요.",
   ["spent"]: "쓸 수 있는 회원권이 없습니다 (잔여 0 또는 만료).",
+  ["solo_pass_missing"]: "1:1 수업에 쓸 회원권이 없습니다. 듀엣 회원권은 두 분이 함께 수업할 때만 차감됩니다.",
+  ["duet_pass_spent"]: "함께 쓰는 회원권에 남은 회차가 없습니다 (잔여 0 또는 만료).",
   ["write_failed"]: "차감이 저장되지 않았습니다. 출석 체크에서 다시 시도해 주세요.",
 });
 
 const text = (value) => String(value ?? "").trim();
+
+/**
+ * 아직 시작하지 않은 수업. **버튼을 없애지 않고 잠근다.**
+ *
+ * 잠긴 버튼은 이유를 말할 수 있지만 없는 버튼은 아무 말도 못 한다.
+ */
+export const NOT_STARTED_NOTICE = "아직 시작하지 않은 수업입니다. 시작 시각이 지나면 확정할 수 있어요.";
+
+/**
+ * 차감이 거부된 이유를 사람 말로. 코드는 화면에 함께 남는다.
+ *
+ * Keep in sync with DEDUCT_WINDOW in pass-repository.js. 코드만 보여 주면
+ * 대표는 날짜가 미래인지 너무 오래됐는지 알 수 없다.
+ */
+export const DEDUCTION_CODE_LABEL = Object.freeze({
+  ["occurred_at_future"]: "아직 시작하지 않은 수업입니다. 수업이 시작한 뒤에 확정해 주세요.",
+  ["occurred_at_too_old"]: "7일이 지난 수업은 이 화면에서 차감할 수 없습니다. 대표에게 문의해 주세요.",
+  ["occurred_at_invalid"]: "수업 시각을 읽지 못했습니다. 일정의 날짜와 시간을 확인해 주세요.",
+});
 
 const attendeesOf = (lesson) => {
   if (!lesson || typeof lesson !== "object") return [];
@@ -100,7 +128,7 @@ const attendeesOf = (lesson) => {
 };
 
 /**
- * 이 회원의 어느 회원권을 차감할 것인가.
+ * 여럿 중 하나를 고르는 순서. **차감 규칙 전체에서 이 정렬 하나만 쓴다.**
  *
  * 만료가 이른 것을 먼저 쓴다. 늦게 만료되는 것을 먼저 쓰면 이른 쪽이 쓰이지
  * 못한 채 만료되고, 회원은 돈을 낸 회차를 잃는다. 만료일이 같으면 먼저 발급된
@@ -112,25 +140,67 @@ const attendeesOf = (lesson) => {
  * 남은 회원권을 만료가 이른 회원권보다 앞세우지 않는다.
  *
  * @param {Array<any>} passes
- * @param {string} clientId
- * @param {Date} [now]
  * @returns {any | null}
  */
-export function pickPassForClient(passes, clientId, now = new Date()) {
-  const client = text(clientId);
-  if (!client) return null;
-  const usable = (Array.isArray(passes) ? passes : [])
-    .filter((pass) => pass && pass.clientId === client && isDeductablePass(pass, now));
-  if (usable.length === 0) return null;
+export function soonestExpiring(passes) {
+  const list = (Array.isArray(passes) ? passes : []).filter(Boolean);
+  if (list.length === 0) return null;
   const at = (value) => {
     const date = value instanceof Date ? value : new Date(String(value ?? ""));
     const time = date.getTime();
     // 만료일이 없는 회원권은 맨 뒤로. 급한 것을 먼저 쓰는 것이 이 정렬의 목적이다.
     return Number.isFinite(time) ? time : Number.MAX_SAFE_INTEGER;
   };
-  return usable.slice().sort((left, right) => (
+  return list.slice().sort((left, right) => (
     at(left.expiresAt) - at(right.expiresAt) || at(left.createdAt) - at(right.createdAt)
   ))[0];
+}
+
+/**
+ * 혼자 온 회원이 쓸 회원권. **듀엣 회원권은 후보가 아니다.**
+ *
+ * 만료가 이르다는 이유로 듀엣 회원권을 1:1 수업에 쓰면, 계약서 하나로 둘이
+ * 나눠 쓰기로 한 회차가 한 사람의 1:1 수업으로 사라진다. 짝은 자기 잔여가 왜
+ * 줄었는지 알 길이 없고, 원장은 append-only 라 되돌리는 것도 대표만 할 수 있다.
+ *
+ * @param {Array<any>} passes @param {string} clientId @param {Date} [now]
+ * @returns {any | null}
+ */
+export function pickSoloPass(passes, clientId, now = new Date()) {
+  const client = text(clientId);
+  if (!client) return null;
+  return soonestExpiring((Array.isArray(passes) ? passes : []).filter((pass) => (
+    pass && !isDuetPass(pass) && passBelongsTo(pass, client) && isDeductablePass(pass, now)
+  )));
+}
+
+/**
+ * 이 사람들이 **함께** 쓰는 회원권 전부. 쓸 수 있는지는 보지 않는다.
+ *
+ * 쓸 수 없는 것까지 돌려주는 이유가 있다. 잔여가 0인 공유 회원권을 가진 두
+ * 사람이 함께 왔을 때, 그것을 못 본 척하면 각자의 1:1 에서 한 번씩 빠져 **한
+ * 수업에 두 회차가 나간다.** 그 둘은 듀엣이라는 사실이 먼저이고, 잔여가 없다는
+ * 것은 재등록으로 풀 일이다.
+ *
+ * @param {Array<any>} passes @param {Array<string>} clientIds
+ */
+export function sharedDuetPasses(passes, clientIds) {
+  const ids = (Array.isArray(clientIds) ? clientIds : []).map(text).filter(Boolean);
+  if (ids.length < 2) return [];
+  return (Array.isArray(passes) ? passes : []).filter((pass) => (
+    pass && isDuetPass(pass) && ids.every((id) => passBelongsTo(pass, id))
+  ));
+}
+
+/**
+ * 둘이 함께 쓸 회원권 하나.
+ *
+ * @param {Array<any>} passes @param {Array<string>} clientIds @param {Date} [now]
+ * @returns {any | null}
+ */
+export function pickSharedDuetPass(passes, clientIds, now = new Date()) {
+  return soonestExpiring(sharedDuetPasses(passes, clientIds)
+    .filter((pass) => isDeductablePass(pass, now)));
 }
 
 /** 이 수업이 이미 확정됐는가. */
@@ -147,17 +217,65 @@ export const isSettledLesson = (lesson) => Boolean(lesson?.orgSettledAt);
  *           레거시 id 일 수 있고, 회원권은 조직 clientId 로 붙어 있다.
  */
 export function planLessonSettlement(input = {}) {
+  return planPassSelection({ ...input, requireAttendance: true });
+}
+
+/** 일정의 출석 상태를 조직 참가자 문서의 값으로. 둘은 다른 어휘를 쓴다. */
+const attendanceStatusOf = (status) => ({
+  done: ATTENDANCE_STATUS.ATTENDED,
+  noshow: ATTENDANCE_STATUS.NOSHOW,
+  cancel: ATTENDANCE_STATUS.CANCELLED,
+}[text(status)] || ATTENDANCE_STATUS.BOOKED);
+
+/* 쌍을 이룰 수 있는 상태. 취소는 빠진다 -- 미리 취소한 사람은 명단에 없는
+   것과 같고, 남은 한 명은 1:1 수업을 한 것이다 (확정 규칙 5번). */
+const PAIRABLE = ["done", "noshow"];
+
+/**
+ * 이 수업에서 누가 어느 회원권을 쓰는가. **확정과 미리보기가 같이 쓴다.**
+ *
+ * 둘이 갈라지면 강사는 화면에서 본 금액과 다른 금액이 원장에 박히는 것을 보게
+ * 되고, 그때는 되돌릴 수도 없다. 그래서 고르는 자리는 하나뿐이다.
+ *
+ * ── 차감 규칙 (2026-09-23 대표 확정) ──
+ *   혼자 출석            1:1 회원권만, 만료 빠른 것부터
+ *   둘 다 출석           공유 2:1 에서 1회만, 만료 빠른 것부터
+ *   한 명 노쇼           공유 2:1 에서 1회 차감 (노쇼도 차감한다)
+ *   둘 다 노쇼·취소      차감 없음
+ *   명단에 한 명만       1:1 수업으로 보고 1:1 에서
+ *   1:1 잔여 0          차감 없이 solo_pass_missing. 2:1 에서 절대 빼지 않는다
+ *   각자 1:1 만 가진 둘  각자 1:1 에서 2회 (함께 쓰는 회원권이 없으면 듀엣이 아니다)
+ *
+ * 수업의 유형 글자(`type: "듀엣"`)는 보지 않는다. 각자 1:1 을 가진 두 사람이 한
+ * 타임에 들어오는 것도 화면에는 듀엣으로 보이고, 그 수업은 2회 차감이 맞다.
+ * 가르는 것은 **이 사람들이 함께 적힌 회원권이 있는가** 하나다.
+ *
+ * @param {{
+ *   lesson?: any, members?: Array<any>, passes?: Array<any>, now?: Date,
+ *   requireAttendance?: boolean,
+ * }} input
+ *   requireAttendance false 면 출석 상태를 보지 않는다 -- 미리보기는 아직
+ *   아무도 누르지 않은 수업에서도 서야 한다.
+ */
+export function planPassSelection(input = {}) {
   const lesson = input.lesson;
   const members = Array.isArray(input.members) ? input.members : [];
   const passes = Array.isArray(input.passes) ? input.passes : [];
   const now = input.now instanceof Date ? input.now : new Date();
+  const requireAttendance = input.requireAttendance !== false;
 
   const byId = new Map(members.map((member) => [text(member?.id), member]));
   const deductions = [];
   const skips = [];
+  const rows = [];
 
   for (const attendee of attendeesOf(lesson)) {
-    if (attendee.status !== "done") continue;
+    const status = text(attendee.status);
+    /* 취소는 미리보기에서도 빠진다. 미리 취소한 사람을 짝으로 세면 화면은
+       공유 회원권 금액을 보여주는데 확정은 1:1 에서 뺀다 -- 두 숫자가
+       갈라지는 순간이고, 이 한 줄이 없을 때 실제로 갈라졌다. */
+    if (status === "cancel") continue;
+    if (requireAttendance && !PAIRABLE.includes(status)) continue;
     const memberId = text(attendee.memberId);
     const member = byId.get(memberId);
     /* 회원권은 조직 clientId 로 붙어 있다. 맞물린 회원은 기기의 id 를 그대로
@@ -165,20 +283,90 @@ export function planLessonSettlement(input = {}) {
        읽지 않으면 모든 회원이 "회원권 없음"으로 건너뛰어진다. */
     const clientId = text(member?.orgClientId);
     if (!clientId) {
-      skips.push({ memberId, clientId: "", reason: SETTLEMENT_SKIP.NO_CLIENT });
+      // 노쇼인 사람 때문에 "명부에 없다"를 띄우지 않는다 -- 차감할 것이 없다.
+      if (!requireAttendance || status === "done") {
+        skips.push({ memberId, clientId: "", reason: SETTLEMENT_SKIP.NO_CLIENT });
+      }
       continue;
     }
-    const mine = passes.filter((pass) => pass && pass.clientId === clientId);
+    rows.push({ memberId, clientId, status });
+  }
+
+  /* 먼저 쌍을 묶는다. 나중에 묶으면 한 사람이 자기 1:1 에서 이미 빠진 뒤라,
+     같은 수업에서 회차가 두 번 나간다. */
+  const paired = new Set();
+  for (let i = 0; i < rows.length; i += 1) {
+    if (paired.has(i)) continue;
+    for (let j = i + 1; j < rows.length; j += 1) {
+      if (paired.has(j) || rows[j].clientId === rows[i].clientId) continue;
+      const pair = [rows[i], rows[j]];
+      const ids = pair.map((row) => row.clientId);
+      if (sharedDuetPasses(passes, ids).length === 0) continue;
+      paired.add(i);
+      paired.add(j);
+
+      /* 한 명이 노쇼여도 그대로 차감한다 -- 수업은 일어났다. 둘 다 안 왔으면
+         일어나지 않은 것이라 아무것도 움직이지 않는다. */
+      if (requireAttendance && !pair.some((row) => row.status === "done")) break;
+
+      const pass = pickSharedDuetPass(passes, ids, now);
+      if (!pass) {
+        for (const row of pair) {
+          skips.push({ memberId: row.memberId, clientId: row.clientId, reason: SETTLEMENT_SKIP.DUET_PASS_SPENT });
+        }
+        break;
+      }
+      deductions.push({
+        /* 단수 칸은 그대로 둔다. 이 값을 읽는 자리가 이미 여럿이고, 복수를
+           모르는 쪽도 대표 한 명으로는 맞게 돈다. */
+        memberId: pair[0].memberId,
+        clientId: pair[0].clientId,
+        pass,
+        memberIds: pair.map((row) => row.memberId),
+        clientIds: ids,
+        // 누가 왔고 누가 안 왔는지. 없으면 두 달 뒤 "그날 나는 안 갔는데"에 답할 것이 없다.
+        attendanceByClientId: Object.fromEntries(
+          pair.map((row) => [row.clientId, attendanceStatusOf(row.status)]),
+        ),
+        shared: true,
+      });
+      break;
+    }
+  }
+
+  for (let i = 0; i < rows.length; i += 1) {
+    if (paired.has(i)) continue;
+    const { memberId, clientId, status } = rows[i];
+    // 혼자 노쇼면 차감할 것이 없다. 노쇼 과금은 센터의 정책이고 이 앱 밖이다.
+    if (requireAttendance && status !== "done") continue;
+
+    const mine = passes.filter((pass) => pass && passBelongsTo(pass, clientId));
     if (mine.length === 0) {
       skips.push({ memberId, clientId, reason: SETTLEMENT_SKIP.NO_PASS });
       continue;
     }
-    const pass = pickPassForClient(mine, clientId, now);
+    const pass = pickSoloPass(mine, clientId, now);
     if (!pass) {
-      skips.push({ memberId, clientId, reason: SETTLEMENT_SKIP.SPENT });
+      /* 쓸 수 있는 듀엣 회원권이 남아 있는데 1:1 이 없는 것과, 1:1 을 다 쓴
+         것은 고치는 방법이 다르다 -- 앞은 짝과 함께 오면 되고 뒤는 재등록이다. */
+      const hasUsableDuet = mine.some((item) => isDuetPass(item) && isDeductablePass(item, now));
+      const ownsSolo = mine.some((item) => !isDuetPass(item));
+      skips.push({
+        memberId,
+        clientId,
+        reason: hasUsableDuet || !ownsSolo ? SETTLEMENT_SKIP.SOLO_PASS_MISSING : SETTLEMENT_SKIP.SPENT,
+      });
       continue;
     }
-    deductions.push({ memberId, clientId, pass });
+    deductions.push({
+      memberId,
+      clientId,
+      pass,
+      memberIds: [memberId],
+      clientIds: [clientId],
+      attendanceByClientId: { [clientId]: attendanceStatusOf(status) },
+      shared: false,
+    });
   }
 
   return { deductions, skips };
@@ -228,7 +416,12 @@ export function lessonHasEnded(lesson, now = new Date()) {
  * @param {{ at?: string, outcome?: string, results?: Array<any>, skips?: Array<any> }} outcome
  */
 export function applySettlementToLesson(lesson, outcome = {}) {
-  const results = new Map((outcome.results || []).map((item) => [text(item.memberId), item]));
+  /* 공유 회원권에서 나간 한 건은 두 사람의 줄에 모두 적힌다. 짝의 줄이 비어
+     있으면 그 사람 화면에는 차감되지 않은 것으로 보이고, 실제로는 나갔다. */
+  const results = new Map((outcome.results || []).flatMap((item) => (
+    (Array.isArray(item.memberIds) && item.memberIds.length ? item.memberIds : [item.memberId])
+      .map((memberId) => [text(memberId), item])
+  )));
   const skips = new Map((outcome.skips || []).map((item) => [text(item.memberId), item]));
   return {
     ...lesson,
@@ -311,14 +504,27 @@ export const settlementSkipsOf = (lesson) => attendeesOf(lesson)
     code: text(attendee.orgSkipCode),
   }));
 
-/** 이 수업이 차감한 것들. 대표의 되돌리기가 이 목록을 보정한다. */
-export const settledDeductionsOf = (lesson) => attendeesOf(lesson)
-  .filter((attendee) => text(attendee.orgPassId) && text(attendee.orgEntryId))
-  .map((attendee) => ({
-    memberId: text(attendee.memberId),
-    passId: text(attendee.orgPassId),
-    entryId: text(attendee.orgEntryId),
-  }));
+/**
+ * 이 수업이 차감한 것들. 대표의 되돌리기가 이 목록을 보정한다.
+ *
+ * 원장 항목 하나에 한 줄이다. 듀엣은 두 사람의 줄에 같은 항목이 적혀 있는데,
+ * 그것을 둘로 세면 **한 번 나간 회차를 두 번 되돌린다** -- 보정도 append-only
+ * 라 그 두 번째는 지울 수 없고, 잔여가 하나 늘어난 채로 남는다.
+ */
+export const settledDeductionsOf = (lesson) => {
+  const seen = new Set();
+  const found = [];
+  for (const attendee of attendeesOf(lesson)) {
+    const passId = text(attendee.orgPassId);
+    const entryId = text(attendee.orgEntryId);
+    if (!passId || !entryId) continue;
+    const key = `${passId}/${entryId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    found.push({ memberId: text(attendee.memberId), passId, entryId });
+  }
+  return found;
+};
 
 /**
  * 확정할 수 있는 상태인가.
@@ -330,13 +536,35 @@ export const settledDeductionsOf = (lesson) => attendeesOf(lesson)
  * 쓸 수 있는 회원권이 하나도 없어도 확정은 된다 -- 건너뛴 이유를 적고 닫는다.
  * 닫지 못하면 큐에 남아 강사가 매일 같은 줄을 본다.
  */
-export const canSettleLesson = (lesson) => {
+export const canSettleLesson = (lesson, options = {}) => {
   if (isSettledLesson(lesson)) return false;
   if (!lesson || lesson.personal || lesson.isSample || lesson.groupCancelled) return false;
   const list = attendeesOf(lesson);
   if (list.length === 0) return false;
   return list.some((attendee) => ["done", "noshow", "cancel"].includes(attendee.status));
 };
+
+/**
+ * 수업이 시작했는가. 차감의 occurredAt 이 이 시각이다.
+ *
+ * ── 이것으로 카드를 감추지 않는다 ──
+ * 한 번 그렇게 만들었다가 되돌렸다. 시작 전이라고 확정 블록을 통째로 숨겼더니
+ * **이미 실패한 수업의 사유와 [다시 확정]까지 사라졌다.** 토스트는 "아래 이유를
+ * 보고 다시 시도해 주세요" 라고 말하는데 아래에 아무것도 없었다.
+ *
+ * 그래서 판정은 둘로 나눈다: 확정할 수 있는 수업인가(canSettleLesson)와,
+ * 지금 눌러도 서버가 받는가(여기). 앞은 카드를 세우고 뒤는 버튼을 잠근다 --
+ * 잠긴 버튼은 이유를 말할 수 있지만 없는 버튼은 아무 말도 못 한다.
+ */
+export function lessonHasStarted(lesson, now = new Date()) {
+  const date = text(lesson?.date);
+  const start = text(lesson?.start);
+  if (!date || !start) return true;
+  const at = new Date(`${date}T${start}:00`);
+  // 읽을 수 없는 시각이면 막지 않는다 -- 서버가 마지막 문이다.
+  if (!Number.isFinite(at.getTime())) return true;
+  return at.getTime() <= now.getTime();
+}
 
 /** 이 회원권을 차감하면 잔여가 몇 회가 되는가. 확정 전에 보여줄 값이다. */
 export const remainingAfter = (pass) => Math.max(0, remainingCountOf(pass) - 1);

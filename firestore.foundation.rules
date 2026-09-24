@@ -25,21 +25,44 @@ service cloud.firestore {
         && membership(organizationId).data.role in roles;
     }
 
+    /* ── 센터 데이터를 읽는 사람들 ────────────────────────────────────────
+       isActiveMember 는 소속만 보고 역할을 보지 않는다. 그래서 role "member"
+       라도 소속 문서 하나만 있으면 센터의 회원권·원장·상품을 전부 읽었다 --
+       baseUnitPrice · netContractPrice · unitPrice · rule 까지.
+
+       회원용 조회 앱(docs/member-app-design.md)은 "회원에게 memberships 를
+       만들지 않는다" 로 그것을 피하고 있었는데, 그것은 규칙이 아니라 약속이다.
+       약속은 다음 사람이 모르고, 손으로 소속 문서 하나를 만드는 순간 깨진다.
+
+       그래서 규칙으로 옮긴다. 네 역할을 그대로 나열하므로 지금 쓰는 사람의
+       읽기는 하나도 바뀌지 않는다 -- 달라지는 것은 member(와 앞으로 생길 목록
+       밖 역할)뿐이다.
+
+       회원이 읽는 곳은 셋뿐이다: memberViews · memberLinks · 자기 clients 문서. */
+    function isCentreStaff(organizationId) {
+      return hasRole(organizationId, ["owner", "manager", "instructor", "staff"]);
+    }
+
     // ── 돈이 걸린 두 문 ───────────────────────────────────────────────────
-    // 회원권 발급과 회원 등록은 대표 한 사람으로 좁혔다. 발급은 그 순간 급여의
-    // 근거를 만들고, 등록은 그 발급이 가리킬 사람을 만든다 — 둘 다 원장에
-    // append-only 로 남아 나중에 고칠 수 없다.
+    // 회원권 발급과 회원 등록. 발급은 그 순간 급여의 근거를 만들고, 등록은 그
+    // 발급이 가리킬 사람을 만든다 — 둘 다 원장에 append-only 로 남아 나중에
+    // 고칠 수 없다.
     //
-    // manager 역할은 스키마에도 규칙에도 그대로 있다. 담당 강사 교체처럼 이미
-    // 열려 있는 문은 건드리지 않았다. 운영해 보고 대표 혼자 감당이 안 되면
-    // 아래 두 목록에 "manager" 를 다시 넣는 것으로 끝난다 — 되돌리기 위해
-    // 이름을 붙여 한자리에 모아 두었다.
+    // 2026-09-23: FC매니저(role manager)에게 다시 열었다. 상담·계약을 FC 가
+    // 받고, 대표가 센터에 없는 동안 발급이 밀렸다. 회원권 상품 추가·종료도 같은
+    // 날 함께 열었다 (products 블록). 취소·보정·급여·감사 로그·강사 관리는
+    // 여전히 대표만이다. 다시 좁힐 때는 아래 두 목록과 canManageProducts 에서
+    // "manager" 를 빼면 된다.
     function canIssuePass(organizationId) {
-      return hasRole(organizationId, ["owner"]);
+      return hasRole(organizationId, ["owner", "manager"]);
     }
 
     function canRegisterClient(organizationId) {
-      return hasRole(organizationId, ["owner"]);
+      return hasRole(organizationId, ["owner", "manager"]);
+    }
+
+    function canManageProducts(organizationId) {
+      return hasRole(organizationId, ["owner", "manager"]);
     }
 
     // Keep in sync with PAY_CATEGORY in src/data/schema/constants.js. Rules
@@ -257,7 +280,7 @@ service cloud.firestore {
     }
 
     match /organizations/{organizationId} {
-      allow read: if isActiveMember(organizationId);
+      allow read: if isCentreStaff(organizationId);
       allow create, delete: if false;
       allow update: if hasRole(organizationId, ["owner"])
         && immutable(["plan", "subscriptionStatus", "aiUsageCount"]);
@@ -269,11 +292,34 @@ service cloud.firestore {
         // the one document linked to them, and a query cannot express "only my
         // own" without a filter to prove it. So listing the directory is for
         // staff, and a member still reads their own document one at a time.
+        /* ── 없는 문서를 묻는 읽기 ────────────────────────────────────────
+           엑셀 이관은 멱등해야 한다 -- 대표가 같은 파일을 두 번 올려도 앱에서
+           고친 값이 되돌아가면 안 된다. 그래서 행마다 쓰기 전에 그 문서가 이미
+           있는지 읽는다(migration-repository.js 의 runRows).
+
+           그 읽기는 대부분 없는 문서를 향한다. 1차 업로드의 22행이 전부 새
+           회원이면 22번 다 없는 문서다. 없는 문서에서 resource 는 null 이라
+           resource.data.organizationId 를 보는 조건이 그 자리에서 거부되고,
+           화면에는 permission-denied 한 줄로만 돌아온다. 실제로 22행 전부가
+           그렇게 막혔다.
+
+           그래서 직원에게는 null 을 허용한다. 이미 list 로 명부 전체를 볼 수
+           있으므로 존재 여부가 새로 드러나는 정보가 아니다.
+
+           회원 본인에게는 허용하지 않는다. clientId 가 csv_{연락처} 라서,
+           없는 문서를 물을 수 있으면 "이 번호가 이 센터에 있는가" 를 캐는
+           통로가 된다. 본인 문서는 있을 때만 읽힌다. */
         allow get: if isActiveMember(organizationId)
-          && resource.data.organizationId == organizationId
           && (
-            hasRole(organizationId, ["owner", "manager", "instructor", "staff"])
-            || isOwnClientDocument(resource.data)
+            (
+              hasRole(organizationId, ["owner", "manager", "instructor", "staff"])
+              && (resource == null || resource.data.organizationId == organizationId)
+            )
+            || (
+              resource != null
+              && resource.data.organizationId == organizationId
+              && isOwnClientDocument(resource.data)
+            )
           );
         allow list: if hasRole(organizationId, ["owner", "manager", "instructor", "staff"]);
         // Validate what is present rather than requiring a fixed set. The
@@ -284,7 +330,7 @@ service cloud.firestore {
         // predates these fields. A floor that checks each field it actually
         // sees stops a malformed write from either writer without closing a
         // door the migration still needs.
-        // 등록은 대표만. canRegisterClient 의 주석 참고 — 되돌릴 때는 그 목록
+        // 등록은 대표·FC매니저. canRegisterClient 의 주석 참고 — 되돌릴 때는 그 목록
         // 하나만 바꾼다. 읽기와 수정은 그대로 가르치는 사람들에게 열려 있다.
         allow create: if request.resource.data.organizationId == organizationId
           && canRegisterClient(organizationId)
@@ -295,11 +341,37 @@ service cloud.firestore {
         allow delete: if false;
       }
 
+      /* ── 회원이 읽는 유일한 곳 ────────────────────────────────────────
+         회원용 조회 앱이 이 문서 하나만 읽는다 (docs/member-app-design.md).
+
+         왜 원본이 아니라 투영인가: 규칙은 문서 단위로만 열고 닫는다. passes 한
+         문서에 remainingCount 와 baseUnitPrice·netContractPrice 가 같이 있어서,
+         회원에게 그 문서를 열면 단가가 함께 나간다. 원장은 항목마다 unitPrice 와
+         rule 을 들고 있어 더 심하다.
+
+         그래서 functions/src/member-view.js 가 허용 목록으로 골라 만든 문서를
+         여기에 두고, 회원은 그것만 읽는다.
+
+         쓰기는 어느 역할에도 열지 않는다 -- 대표도 아니다. 이 문서를 쓰는 것은
+         서버 트리거(Admin SDK)뿐이고, Admin SDK 는 규칙을 지나지 않는다. 앱
+         쪽에 쓰기를 한 칸이라도 열면 그 경로로 들어온 값이 허용 목록을 거치지
+         않고, 그러면 이 문서가 개인정보의 관문이라는 말이 거짓이 된다.
+
+         list 도 닫는다. 회원은 자기 clientId 를 memberLinks 에서 알고 그 문서
+         하나만 읽는다 -- 목록이 필요 없고, 열면 "내 것만" 을 증명할 필터를
+         요구하게 된다. */
+      match /memberViews/{clientId} {
+        allow get: if signedIn()
+          && resource.data.userId == request.auth.uid;
+        allow list: if false;
+        allow create, update, delete: if false;
+      }
+
       match /lessons/{lessonId} {
         // See the locations block for why get and list are split.
-        allow get: if isActiveMember(organizationId)
+        allow get: if isCentreStaff(organizationId)
           && resource.data.organizationId == organizationId;
-        allow list: if isActiveMember(organizationId);
+        allow list: if isCentreStaff(organizationId);
         allow create: if request.resource.data.organizationId == organizationId
           && hasRole(organizationId, ["owner", "manager", "instructor", "staff"]);
         allow update: if resource.data.organizationId == organizationId
@@ -309,9 +381,9 @@ service cloud.firestore {
 
         match /participants/{clientId} {
           // See the locations block for why get and list are split.
-          allow get: if isActiveMember(organizationId)
+          allow get: if isCentreStaff(organizationId)
             && resource.data.organizationId == organizationId;
-          allow list: if isActiveMember(organizationId);
+          allow list: if isCentreStaff(organizationId);
           allow create: if request.resource.data.organizationId == organizationId
             && request.resource.data.lessonId == lessonId
             && request.resource.data.clientId == clientId
@@ -337,7 +409,7 @@ service cloud.firestore {
       // to write a rate is a second answer, and passes issued from a product
       // whose number disagrees with the table cannot be corrected afterwards.
       match /products/{productId} {
-        allow read: if isActiveMember(organizationId);
+        allow read: if isCentreStaff(organizationId);
         allow create: if request.resource.data.organizationId == organizationId
           && request.resource.data.keys().hasOnly([
             "organizationId", "name", "sessionType", "payCategory",
@@ -383,7 +455,7 @@ service cloud.firestore {
           && request.resource.data.status in ["active", "archived"]
           && request.resource.data.createdAt == request.time
           && request.resource.data.createdBy == request.auth.uid
-          && hasRole(organizationId, ["owner"]);
+          && canManageProducts(organizationId);
         // Only status moves, and it moves both ways. Everything else has to come
         // back unchanged — the set is closed, so this covers every field.
         allow update: if resource.data.organizationId == organizationId
@@ -409,7 +481,7 @@ service cloud.firestore {
           && request.resource.data.createdAt == resource.data.createdAt
           && request.resource.data.createdBy == resource.data.createdBy
           && request.resource.data.status in ["active", "archived"]
-          && hasRole(organizationId, ["owner"]);
+          && canManageProducts(organizationId);
         allow delete: if false;
       }
 
@@ -428,7 +500,7 @@ service cloud.firestore {
 
          문서 id 가 곧 강사-회원 쌍이라 한 쌍에 두 문서가 생길 수 없다. */
       match /instructorClientTotals/{totalId} {
-        allow read: if isActiveMember(organizationId);
+        allow read: if isCentreStaff(organizationId);
         allow create: if request.resource.data.organizationId == organizationId
           && totalId == request.resource.data.instructorId + "_" + request.resource.data.clientId
           && request.resource.data.keys().hasOnly([
@@ -466,7 +538,7 @@ service cloud.firestore {
       }
 
       match /passes/{passId} {
-        allow read: if isActiveMember(organizationId);
+        allow read: if isCentreStaff(organizationId);
         // The product fields are not settled yet, so require a floor rather than
         // closing the set with hasOnly.
         // A product carries the standard combination; what was actually sold is
@@ -558,8 +630,8 @@ service cloud.firestore {
           ]
           && request.resource.data.status is string
           && request.resource.data.createdAt == request.time
-          // 발급은 대표만. canIssuePass 의 주석 참고 — 되돌릴 때는 그 목록
-          // 하나만 바꾼다. 아래 담당 교체 문은 매니저에게 그대로 열려 있다.
+          // 발급은 대표·FC매니저. canIssuePass 의 주석 참고 — 바꿀 때는 그 목록
+          // 하나만 바꾼다.
           && canIssuePass(organizationId);
         // The owner's reach is unchanged. A manager may move one field and
         // nothing else: handovers happen while the owner is not at the centre,
@@ -620,7 +692,7 @@ service cloud.firestore {
         // Append-only, and these numbers feed payroll. Nothing can be corrected
         // afterwards, so the write itself is the only place to reject a bad body.
         match /ledger/{entryId} {
-          allow read: if isActiveMember(organizationId);
+          allow read: if isCentreStaff(organizationId);
           allow create: if request.resource.data.organizationId == organizationId
             && request.resource.data.passId == passId
             && request.resource.data.keys().hasOnly([
@@ -801,9 +873,9 @@ service cloud.firestore {
         // is undefined on object", which reaches the screen as an empty picker.
         // The path already scopes these documents to one organization, so the
         // membership check alone is what a list can honestly enforce.
-        allow get: if isActiveMember(organizationId)
+        allow get: if isCentreStaff(organizationId)
           && resource.data.organizationId == organizationId;
-        allow list: if isActiveMember(organizationId);
+        allow list: if isCentreStaff(organizationId);
         allow create: if request.resource.data.organizationId == organizationId
           && hasRole(organizationId, ["owner", "manager"]);
         allow update: if resource.data.organizationId == organizationId
@@ -837,6 +909,23 @@ service cloud.firestore {
           resource.data.instructorId == request.auth.uid
           || hasRole(resource.data.organizationId, ["owner", "manager"])
         );
+    }
+
+    /* ── 계정과 회원을 잇는 기록 ──────────────────────────────────────────
+       전화번호 인증을 마친 회원이 어느 clientId 에 이어졌는가, 또는 왜 이어지지
+       못했는가 (docs/member-app-design.md 4장).
+
+       본인만 읽는다. 문서 id 가 곧 uid 라 resource 를 보지 않고 경로로 판정할
+       수 있다 -- 없는 문서를 물어도 같은 답이 나오고, 남의 링크는 애초에 가리킬
+       수 없다.
+
+       쓰기는 전부 닫는다. 이 문서를 쓰는 것은 linkMemberAccount(Admin SDK)
+       뿐이다. 클라이언트에게 한 칸이라도 열면 아무 번호나 적어 남의 회원권에
+       붙을 수 있다 -- 그 함수가 인증 토큰의 전화번호만 믿는 이유와 같다. */
+    match /memberLinks/{userId} {
+      allow get: if signedIn() && request.auth.uid == userId;
+      allow list: if false;
+      allow create, update, delete: if false;
     }
 
     match /memberships/{membershipDocumentId} {
@@ -1121,7 +1210,7 @@ service cloud.firestore {
     }
 
     match /events/{eventId} {
-      allow read: if isActiveMember(resource.data.organizationId);
+      allow read: if isCentreStaff(resource.data.organizationId);
       allow create, update, delete: if false;
     }
 

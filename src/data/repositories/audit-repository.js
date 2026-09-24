@@ -19,6 +19,8 @@
  *   member_added             강사를 센터에 붙임
  *   member_profile_changed   이름 · 직함 · 지점 변경
  *   member_revoked           퇴사 · 복직
+ *   member_link_created      회원 계정 연결 (서버가 남긴다)
+ *   member_link_removed      회원 계정 연결 해제 (서버가 남긴다)
  *
  * 감사 화면은 이 컬렉션과 원장을 시간순으로 합쳐 하나의 이력으로 보여준다.
  * 보는 사람에게는 한 줄기이고, 저장은 한 벌이다.
@@ -62,6 +64,16 @@ export const AUDIT_ACTION = Object.freeze({
   MEMBER_ADDED: "member_added",
   MEMBER_PROFILE_CHANGED: "member_profile_changed",
   MEMBER_REVOKED: "member_revoked",
+  /* 회원 계정 연결. 이 둘은 앱이 쓰지 않는다 -- 서버(연결 함수)만 쓰고, 앱은
+     감사 화면에서 읽기만 한다. 규칙의 auditActions() 에도 넣지 않았다:
+     Admin SDK 는 규칙을 지나지 않고, 열어 두면 클라이언트가 지어낼 수 있는
+     기록이 하나 늘 뿐이다.
+
+     남기는 이유는 연결과 해제가 **남의 개인정보를 여닫는 일**이기 때문이다.
+     누가 누구를 이었는지가 없으면 "왜 이 사람이 저 회원권을 봤나"에 답할 수
+     없다. Keep in sync with functions/src/member-link-store.js. */
+  MEMBER_LINK_CREATED: "member_link_created",
+  MEMBER_LINK_REMOVED: "member_link_removed",
 });
 
 /**

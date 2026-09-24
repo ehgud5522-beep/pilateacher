@@ -382,6 +382,24 @@ export async function transferPassInstructor(organizationId, passId, input, opti
 export const DEDUCT_BACKDATE_LIMIT_DAYS = 7;
 
 /**
+ * 차감 시각이 창을 벗어나는 세 가지 이유.
+ *
+ * 규칙도 같은 창을 본다(occurredAt <= request.time, 그리고 7일). 여기서 먼저
+ * 막는 것은 **무엇이 문제인지 말해 주기 위해서**다 -- 규칙이 거부하면
+ * permission-denied 한 줄만 남고, 미래인지 오래됐는지 아무도 모른다.
+ */
+export const DEDUCT_WINDOW = Object.freeze({
+  /** 날짜로 읽을 수 없다. */
+  INVALID: "occurred_at_invalid",
+  /** 아직 일어나지 않은 수업이다. */
+  FUTURE: "occurred_at_future",
+  /** 7일보다 오래됐다. 되돌릴 수 없는 기록이라 창을 둔다. */
+  TOO_OLD: "occurred_at_too_old",
+});
+
+const deductionWindowError = (code) => Object.assign(new Error(code), { code });
+
+/**
  * 잔여 횟수. 정수가 아니면 0 으로 본다 -- 규칙이 remainingCount 를 int 로만
  * 받으므로, 문자열로 저장된 값을 화면이 숫자처럼 보여 주면 누를 수는 있는데
  * 서버가 거부하는 회원권이 된다.
@@ -474,13 +492,18 @@ export async function deductPass(organizationId, pass, input, options = {}) {
   const isDeputyDirector = input?.isDeputyDirector;
   if (typeof isDeputyDirector !== "boolean") throw new Error("Missing isDeputyDirector");
 
+  /* 세 가지가 서로 다른 일이다. 한 문구로 뭉개면 화면이 "Invalid occurredAt" 만
+     보여 주고, 대표는 날짜가 미래인지 너무 오래됐는지 알 수 없다.
+
+     실제로 그렇게 끝났다 -- 아직 시작하지 않은 수업을 확정했는데 화면이
+     "차감이 저장되지 않았습니다 (Invalid occurredAt)" 라고만 말했다. */
   const occurredAt = input?.occurredAt instanceof Date ? input.occurredAt : new Date(String(input?.occurredAt ?? ""));
-  if (!Number.isFinite(occurredAt.getTime())) throw new Error("Invalid occurredAt");
+  if (!Number.isFinite(occurredAt.getTime())) throw deductionWindowError(DEDUCT_WINDOW.INVALID);
   const today = now();
-  if (occurredAt.getTime() > today.getTime()) throw new Error("Invalid occurredAt");
+  if (occurredAt.getTime() > today.getTime()) throw deductionWindowError(DEDUCT_WINDOW.FUTURE);
   const oldest = today.getTime() - DEDUCT_BACKDATE_LIMIT_DAYS * 24 * 60 * 60 * 1000;
   // 규칙이 같은 창으로 막는다. 여기서 먼저 막는 것은 무엇이 문제인지 말해 주기 위해서다.
-  if (occurredAt.getTime() <= oldest) throw new Error("Invalid occurredAt");
+  if (occurredAt.getTime() <= oldest) throw deductionWindowError(DEDUCT_WINDOW.TOO_OLD);
 
   /* 판정 3 이 보는 누적은 지금 이 순간의 값이어야 한다. 화면이 열릴 때 읽어
      두면 20회째에서 한 칸 뒤처지고, 그 한 회차만 신규 단가로 굳는다.

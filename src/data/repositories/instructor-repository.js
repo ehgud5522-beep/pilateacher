@@ -224,7 +224,10 @@ export async function addMembership(organizationId, input, options = {}) {
      그들을 다른 role 로 두면 규칙의 모든 hasRole 목록을 손봐야 한다 -- 하나라도
      빠뜨리면 그 사람이 조용히 아무것도 읽지 못한다. 직함은 title 이 들고 간다. */
   const role = String(input?.role ?? ROLES.INSTRUCTOR).trim() || ROLES.INSTRUCTOR;
-  if (role === ROLES.OWNER) throw new Error("Invalid role");
+  /* FC매니저(manager)는 예외다 (2026-09-23). 수업하지 않고 상담·계약을 받으며,
+     강사 목록에 섞이면 담당 강사로 골라지고 급여가 붙는다. 그래서 role 로 가른다.
+     대표는 앱에서 세우지 않는다 -- 되돌리는 문이 없다. */
+  if (!/** @type {string[]} */ ([ROLES.INSTRUCTOR, ROLES.MANAGER]).includes(role)) throw new Error("Invalid role");
 
   const membershipPath = paths.orgMembership(organization, userId);
   const stampedAt = await store.serverTimestamp();

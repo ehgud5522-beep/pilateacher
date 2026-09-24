@@ -144,6 +144,7 @@ export const PASS_STATUS = Object.freeze({
 //   issue     발급. delta 는 양수(총 회차)
 //   deduct    차감. delta 는 음수이고 lessonId 를 함께 남긴다
 //   transfer  담당 강사 교체. delta 0 — 잔여 횟수는 그대로이고 주인만 바뀐다
+//   handover  회원권 양도. delta 는 음수 — 그만큼이 받는 회원의 새 회원권이 된다
 /**
  * 원장 항목의 종류. 원장은 append-only 라 고치는 항목이 따로 있다.
  *
@@ -155,6 +156,15 @@ export const LEDGER_ENTRY_TYPE = Object.freeze({
   ISSUE: "issue",
   DEDUCT: "deduct",
   TRANSFER: "transfer",
+  /**
+   * 회원권 양도. delta 는 나가는 회차의 음수이고, 그만큼이 받는 회원의 새
+   * 회원권(issue)이 되어 같은 배치에 쓰인다.
+   *
+   * deduct 와 다르다 -- 수업이 일어나지 않았으므로 급여가 나가지 않는다.
+   * cancel 과도 다르다 -- 남은 회차 전부가 아니라 일부만 나갈 수 있고, 돈이
+   * 사라지는 것이 아니라 옮겨 간다.
+   */
+  HANDOVER: "handover",
   /** 잘못 차감한 한 회차를 되돌린다. delta +1. */
   CORRECTION: "correction",
   /** 잘못 발급한 회원권을 무효화한다. delta 는 남은 횟수의 음수. */

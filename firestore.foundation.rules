@@ -699,6 +699,8 @@ service cloud.firestore {
               "organizationId", "passId", "clientId", "locationId", "type", "delta",
               "category", "unitPrice", "rule", "lessonId", "instructorId",
               "fromInstructorId", "toInstructorId",
+              // 양도가 들고 가는 둘. 나간 회차가 어디로 갔는가.
+              "toPassId", "toClientId",
               // 고치는 항목이 들고 가는 둘. 무엇을 되돌리는지와 왜 되돌리는지.
               "correctsEntryId", "reason",
               "occurredAt", "createdAt", "createdBy"
@@ -723,7 +725,17 @@ service cloud.firestore {
             ).data.clientId
             && request.resource.data.type is string
             // Keep in sync with LEDGER_ENTRY_TYPE in src/data/schema/constants.js.
-            && request.resource.data.type in ["issue", "deduct", "transfer", "correction", "cancel"]
+            && request.resource.data.type in [
+              "issue", "deduct", "transfer", "handover", "correction", "cancel"
+            ]
+            /* 양도의 두 칸은 양도에만 있다. hasOnly 는 "있어도 된다" 만
+               말하므로, 차감 항목에 toPassId 가 붙어도 통과해 버린다 -- 그러면
+               회차가 어디로 갔는지를 가리키는 칸이 아무 데나 생기고, 그것을
+               읽는 화면은 가지 않은 회차를 갔다고 말한다. */
+            && (
+              request.resource.data.type == "handover"
+              || !request.resource.data.keys().hasAny(["toPassId", "toClientId"])
+            )
             /* 되돌리는 항목은 대표만 쓴다. 강사와 매니저가 스스로 되돌릴 수
                있으면 기록의 의미가 없다 -- 잘못 누른 사람이 그것을 지울 수
                있다는 뜻이기 때문이다.
@@ -787,6 +799,45 @@ service cloud.firestore {
                   // 담당 교체는 운영하는 사람의 판단이다. 강사가 자기 앞으로
                   // 회원권을 옮길 수 있으면 급여가 스스로 움직인다.
                   && hasRole(organizationId, ["owner", "manager"])
+                )
+              : request.resource.data.type == "handover"
+                ? (
+                  /* 회원권 양도. 이 회원권에서 회차가 나가고, 같은 배치에서
+                     받는 회원의 새 회원권(issue)이 만들어진다.
+
+                     delta 는 음수다. 그런데 deduct 가 아니다 -- 수업이
+                     일어나지 않았으므로 급여가 나가지 않고, 그래서 category 와
+                     unitPrice 에 넣을 참값이 없다. 필수 목록을 채우자고
+                     지어내면 급여가 그 허구를 카테고리별로 묶어 센다.
+
+                     어디로 갔는지를 반드시 남긴다. 이것이 없으면 회차가 줄어든
+                     사실만 남고 그 회차가 어디로 갔는지는 아무도 모른다 --
+                     회원이 "내 회차 어디 갔냐" 고 물을 때 답할 것이 없다.
+
+                     남은 회차보다 많이 나갈 수 없다. get() 은 커밋 전의 값을
+                     읽고, 그것이 바로 "양도 직전에 남아 있던 회차" 다. 서비스
+                     회차를 빼는 일은 규칙이 셀 수 없어 저장소가 맡는다
+                     (pass-transfer.js 의 transferableSessions).
+
+                     대표만 한다. 회원 사이에 돈이 오가는 일이라 차감 보정·취소와
+                     같은 선이다. */
+                  request.resource.data.delta < 0
+                  && request.resource.data.delta >= -get(
+                    /databases/$(database)/documents/organizations/$(organizationId)/passes/$(passId)
+                  ).data.remainingCount
+                  && request.resource.data.keys().hasAll(["toPassId", "toClientId"])
+                  && request.resource.data.toPassId is string
+                  && request.resource.data.toPassId.size() > 0
+                  && request.resource.data.toClientId is string
+                  && request.resource.data.toClientId.size() > 0
+                  // 자기 자신에게 넘기는 것은 양도가 아니다.
+                  && request.resource.data.toClientId != request.resource.data.clientId
+                  && request.resource.data.toPassId != passId
+                  && !("category" in request.resource.data)
+                  && !("unitPrice" in request.resource.data)
+                  && !("lessonId" in request.resource.data)
+                  && !("correctsEntryId" in request.resource.data)
+                  && hasRole(organizationId, ["owner"])
                 )
               : request.resource.data.type == "cancel"
                 ? (

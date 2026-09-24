@@ -2527,6 +2527,58 @@ describe("checking attendance against a pass", () => {
     await assertSucceeds(setDoc(at("owner", "c-ok"), cancel()));
   });
 
+  test("a handover says where the sessions went, and only the owner may send them", async () => {
+    /* 회원권 양도. 회차가 나가는 항목이지만 차감이 아니다 -- 수업이 일어나지
+       않았으므로 급여가 나가지 않고, 그래서 단가와 카테고리에 넣을 참값이
+       없다. 어디로 갔는지가 없으면 회차가 줄어든 사실만 남는다. */
+    const handover = (overrides = {}) => ({
+      organizationId: ORG_A,
+      passId: PASS_A,
+      clientId: "client-member",
+      locationId: "location-a",
+      type: "handover",
+      delta: -5,
+      toPassId: "pass-new",
+      toClientId: "client-other",
+      instructorId: users.instructor,
+      occurredAt: hoursAgo(1),
+      createdAt: serverTimestamp(),
+      createdBy: users.owner,
+      ...overrides,
+    });
+    const at = (userId, entryId) => ledgerDocOf(users[userId], ORG_A, PASS_A, entryId);
+
+    // 어디로 갔는지가 반드시 있어야 한다.
+    const noTarget = handover();
+    delete noTarget.toPassId;
+    await assertFails(setDoc(at("owner", "h-no-target"), noTarget));
+    const noClient = handover();
+    delete noClient.toClientId;
+    await assertFails(setDoc(at("owner", "h-no-client"), noClient));
+    await assertFails(setDoc(at("owner", "h-empty-target"), handover({ toPassId: "" })));
+
+    // 자기 자신에게 넘기는 것은 양도가 아니다.
+    await assertFails(setDoc(at("owner", "h-self"), handover({ toClientId: "client-member" })));
+    await assertFails(setDoc(at("owner", "h-same-pass"), handover({ toPassId: PASS_A })));
+
+    // 남은 회차보다 많이 나갈 수 없고, 양수일 수도 없다.
+    await assertFails(setDoc(at("owner", "h-too-many"), handover({ delta: -21 })));
+    await assertFails(setDoc(at("owner", "h-positive"), handover({ delta: 5 })));
+    await assertFails(setDoc(at("owner", "h-zero"), handover({ delta: 0 })));
+
+    // 돈이 오가지 않는다. 지어낸 단가가 급여에 묶여 들어가면 안 된다.
+    await assertFails(setDoc(at("owner", "h-priced"), handover({ category: "pt_1_1_new", unitPrice: 25000 })));
+    await assertFails(setDoc(at("owner", "h-lesson"), handover({ lessonId: "lesson-1" })));
+    await assertFails(setDoc(at("owner", "h-reason"), handover({ reason: "그냥" })));
+
+    /* 회원 사이에 돈이 오가는 일이라 대표만 한다 -- 차감 보정·취소와 같은
+       선이다. 매니저가 회차를 옮길 수 있으면 급여가 스스로 움직인다. */
+    await assertFails(setDoc(at("manager", "h-by-manager"), handover({ createdBy: users.manager })));
+    await assertFails(setDoc(at("instructor", "h-by-instructor"), handover({ createdBy: users.instructor })));
+
+    await assertSucceeds(setDoc(at("owner", "h-ok"), handover()));
+  });
+
   test("an ordinary entry has no room for a reason it does not need", async () => {
     // 자유 문장은 열어 둔 만큼 들어온다. 되돌리는 항목에만 칸이 있다.
     await assertFails(setDoc(

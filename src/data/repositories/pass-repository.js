@@ -41,6 +41,9 @@ import { paths } from "../schema/paths.js";
 import {
   normalizePassClientIds, passBelongsTo, passClientIds, pricingPriorSessions,
 } from "../schema/pass-clients.js";
+import {
+  TRANSFER_BLOCK, checkTransfer, transferPricing,
+} from "../schema/pass-transfer.js";
 import { toDate } from "./payroll-repository.js";
 import { defaultUnitPriceFor, resolveUnitPrice } from "../schema/pay-rates.js";
 import { RepositoryReadError, readCollection } from "./repository-read.js";
@@ -398,6 +401,19 @@ export const DEDUCT_WINDOW = Object.freeze({
 });
 
 const deductionWindowError = (code) => Object.assign(new Error(code), { code });
+
+/**
+ * 양도가 막힌 이유를 코드와 함께 던진다.
+ *
+ * 화면이 "듀엣이라 안 된다" 와 "회차가 모자란다" 를 다른 문구로 말할 수 있어야
+ * 한다. 한 문구로 뭉개면 대표는 무엇을 고쳐야 하는지 알 수 없다.
+ *
+ * @param {{ code?: string, limit?: number }} blocked
+ */
+const transferBlockedError = (blocked) => {
+  const code = String(blocked?.code || "transfer_blocked");
+  return Object.assign(new Error(code), { code, limit: blocked?.limit });
+};
 
 /**
  * 잔여 횟수. 정수가 아니면 0 으로 본다 -- 규칙이 remainingCount 를 int 로만
@@ -996,4 +1012,162 @@ export async function cancelPass(organizationId, pass, input, options = {}) {
     },
   ]);
   return { passId, entryId, entry };
+}
+
+/**
+ * 회원권 양도 — 남은 회차 일부를 다른 회원에게 넘긴다.
+ *
+ * ── 발급이 아니다 ──
+ * 돈이 새로 들어오지 않는다. 원본에서 회차가 빠지고 그만큼이 받는 회원의 새
+ * 회원권이 된다. 그래서 **총액이 변하지 않아야 하고, 부원장의 회당 단가도
+ * 변하지 않아야 한다** -- 판정과 금액은 pass-transfer.js 가 정하고 여기서는
+ * 그 결과를 쓰기만 한다.
+ *
+ * ── 왜 네 문서가 한 배치인가 ──
+ * 원본의 잔여, 원본의 원장(어디로 갔는가), 새 회원권, 새 회원권의 발급 항목.
+ * 하나라도 빠지면 회차가 증발하거나 근거 없이 생긴다. 원장은 append-only 라
+ * 어느 쪽도 나중에 고칠 수 없다.
+ *
+ * ── 급여 분류는 언제나 1:1 신규다 ──
+ * 받는 회원에게 이 회원권은 처음 받는 회원권이고, 원본의 분류(이벤트 재등록
+ * 같은 것)는 **그 회원이 그때 받은 조건**이지 이 회원의 조건이 아니다.
+ * handedOver 도 false 다 -- 담당 강사를 넘겨받은 것이 아니라 회원이 회원에게
+ * 회차를 넘긴 것이라, 인수인계 단가(판정 2)를 태울 이유가 없다.
+ *
+ * @param {string} organizationId
+ * @param {any} pass 원본 회원권 (id 포함)
+ * @param {{
+ *   toClientId: string, sessions: number, instructorId: string, createdBy: string,
+ *   purchaseRound?: number, unitPrice?: number, fullRoomRate?: number,
+ *   passId?: string, entryId?: string,
+ * }} input
+ * @param {{ store?: PassStore, newId?: () => string, now?: () => Date }} [options]
+ */
+export async function transferPass(organizationId, pass, input, options = {}) {
+  const {
+    store = createFirestorePassStore(),
+    newId = () => globalThis.crypto?.randomUUID?.() || `pass-${Date.now()}`,
+  } = options;
+  const organization = requiredText(organizationId, "organizationId");
+  const sourcePassId = requiredText(pass?.id || pass?.passId, "passId");
+  const toClientId = requiredText(input?.toClientId, "toClientId");
+  const instructorId = requiredText(input?.instructorId, "instructorId");
+  const createdBy = requiredText(input?.createdBy, "createdBy");
+
+  /* 막히는 이유는 코드로 나간다. 화면이 "듀엣이라 안 된다" 와 "회차가
+     모자란다" 를 다른 문구로 말할 수 있어야 한다. */
+  const allowed = checkTransfer({ pass, toClientId, sessions: input?.sessions });
+  if (!allowed.ok) throw transferBlockedError(allowed);
+  const sessions = Number(allowed.sessions);
+
+  /* 부원장 단가가 원본과 정확히 같아지지 않으면 쓰지 않는다. 비슷한 값으로
+     넘기면 그 차이가 원장에 박히고, 원장은 고칠 수 없다. */
+  const priced = transferPricing({ pass, sessions });
+  if (!priced.exact) throw transferBlockedError({ code: TRANSFER_BLOCK.NO_PRICE });
+
+  const locationId = requiredText(pass?.locationId, "locationId");
+  const productId = requiredText(pass?.productId, "productId");
+  /* 만료일은 원본 그대로다 (확정 8번). 넘겼다고 기한이 늘어나지 않는다.
+
+     읽히지 않는 값은 여기서 멈춘다. toDate 는 못 읽은 것을 null 이 아니라
+     Invalid Date 로 돌려주므로 존재만 보면 통과한다 -- 그대로 쓰면 받는
+     회원권의 만료일이 없는 채로 남고, 회원이 가장 자주 묻는 값이 빈다. */
+  const expiresAt = toDate(pass?.expiresAt);
+  if (!Number.isFinite(expiresAt?.getTime?.())) throw new Error("Invalid expiresAt");
+  const purchaseRound = requiredInt(input?.purchaseRound ?? 1, "purchaseRound", { min: 1 });
+  const baseUnitPrice = resolveUnitPrice(PAY_CATEGORY.PT_1_1_NEW, {
+    unitPrice: input?.unitPrice,
+    fullRoomRate: input?.fullRoomRate,
+  });
+
+  const newPassId = String(input?.passId || newId());
+  const issueEntryId = String(input?.entryId || `${newPassId}_issue`);
+  /* 나가는 쪽 항목은 원본의 원장에 쌓인다. 받는 회원권의 id 를 붙여 두면 같은
+     원본에서 두 번 양도해도 서로 다른 자리로 간다. */
+  const handoverEntryId = `${newPassId}_handover`;
+  const stampedAt = await store.serverTimestamp();
+
+  /* 새 회원권의 필드는 issuePass 가 만드는 것과 같은 집합이어야 한다 -- 규칙의
+     hasAll 목록이 둘을 같이 보기 때문이다. 테스트가 두 집합을 견준다. */
+  const newPass = {
+    organizationId: organization,
+    clientId: toClientId,
+    clientIds: [toClientId],
+    locationId,
+    productId,
+    category: PAY_CATEGORY.PT_1_1_NEW,
+    totalSessions: sessions,
+    // 서비스 회차는 넘기지 않는다 (확정 5번).
+    serviceSessions: 0,
+    contractPrice: priced.contractPrice,
+    netContractPrice: priced.netContractPrice,
+    paymentMethod: priced.paymentMethod,
+    purchaseRound,
+    remainingCount: sessions,
+    expiresAt,
+    handedOver: false,
+    baseUnitPrice,
+    serviceUsed: 0,
+    instructorId,
+    status: PASS_STATUS.ACTIVE,
+    createdAt: stampedAt,
+    createdBy,
+  };
+
+  const handoverEntry = {
+    organizationId: organization,
+    passId: sourcePassId,
+    clientId: requiredText(pass?.clientId, "clientId"),
+    locationId,
+    type: LEDGER_ENTRY_TYPE.HANDOVER,
+    delta: -sessions,
+    /* 어디로 갔는가. 이것이 없으면 회차가 줄어든 사실만 남고 그 회차가 어디로
+       갔는지는 아무도 모른다 -- 회원이 물을 때 답할 것이 없다. */
+    toPassId: newPassId,
+    toClientId,
+    instructorId: requiredText(pass?.instructorId || instructorId, "instructorId"),
+    occurredAt: stampedAt,
+    createdAt: stampedAt,
+    createdBy,
+  };
+
+  const issueEntry = {
+    organizationId: organization,
+    passId: newPassId,
+    clientId: toClientId,
+    locationId,
+    type: LEDGER_ENTRY_TYPE.ISSUE,
+    delta: sessions,
+    category: PAY_CATEGORY.PT_1_1_NEW,
+    unitPrice: baseUnitPrice,
+    instructorId,
+    occurredAt: stampedAt,
+    createdAt: stampedAt,
+    createdBy,
+  };
+
+  await store.commit([
+    /* 읽어서 빼지 않는다. 서버가 더한다 -- 같은 회원권에 차감과 양도가 겹쳐도
+       한쪽이 다른 쪽을 덮어쓰지 않는다. */
+    {
+      path: paths.pass(organization, sourcePassId),
+      operation: "decrement",
+      data: { remainingCount: -sessions },
+    },
+    {
+      path: paths.passLedgerEntry(organization, sourcePassId, handoverEntryId),
+      data: handoverEntry,
+    },
+    { path: paths.pass(organization, newPassId), data: newPass },
+    { path: paths.passLedgerEntry(organization, newPassId, issueEntryId), data: issueEntry },
+  ]);
+
+  return {
+    passId: newPassId,
+    issueEntryId,
+    handoverEntryId,
+    sessions,
+    pass: newPass,
+    pricing: priced,
+  };
 }

@@ -3,7 +3,8 @@
 Claude Code · Codex 가 새 세션을 열면 이 파일부터 읽는다. 작업을 끝낼 때마다
 맨 위 "최근 변경"을 갱신하고, 끝난 "남은 일"은 지운다.
 
-- 작업 위치: `.codex-worktrees/h5-ios-audio-camera` · 브랜치 `docs/app-review-account` (PR #12)
+- 작업 위치: `.codex-worktrees/h5-ios-audio-camera` · 브랜치 `docs/app-review-account`
+  (PR #12 는 2026-09-24 에 main 으로 병합됐다 — `59b81a6`)
 - 웹: https://pilateacher.web.app — 배포는 `npm run deploy:web` (호스팅만 나간다)
   배포 전에 멈추는 조건이 둘 있다 (`tools/deploy-guard.mjs`): 브랜치가
   `main` · `docs/app-review-account` 가 아니거나, 커밋되지 않은 변경이 있으면
@@ -13,6 +14,47 @@ Claude Code · Codex 가 새 세션을 열면 이 파일부터 읽는다. 작업
   `npx firebase deploy --only firestore:rules --project pilateacher --config firebase.foundation.json`
 
 ## 최근 변경 (2026-09-23, Cowork 세션)
+
+### 0-15. 릴리스 1.1.28 (57) — AAB 나옴 · main 병합 · 회원 앱 배포 (2026-09-24)
+
+| 항목 | 값 |
+| --- | --- |
+| Android | `versionCode 57` · `versionName 1.1.28` |
+| iOS | `MARKETING_VERSION 1.1.28` · `CURRENT_PROJECT_VERSION` **건드리지 않음** |
+| APP_VER | `1.1.28 (57) · 2026-09-24` |
+| 커밋 | `9d6ba6a` · main 병합 `59b81a6` (PR #12) |
+
+**왜 56 이 아니라 57 인가**: 56 AAB 는 만들어 두고 Play 에 올리지 않았지만 그
+뒤로 강사 앱이 바뀌었다 — 회원에게 보낼 말 칸, 확정 카드 복구. 같은
+versionCode 로 내용이 다른 AAB 가 둘이 되면 어느 쪽이 올라갔는지 나중에 확인할
+방법이 없다. **56 AAB 는 버린다.**
+
+- **AAB**: `android/app/build/outputs/bundle/release/app-release.aab`
+  11,784,061 bytes · `versionCode="57" versionName="1.1.28"` ·
+  서명 SHA-1 `17:07:22:E5:F1:FD:F0:87:CB:D9:33:26:8B:6D:FF:4B:79:81:7A:09`
+  (정책의 `requiredAndroidOAuthSha1` 에 있는 업로드 키와 같다) ·
+  `android:debuggable` **없음**.
+- `npm run android:aab` 로 만들었다. 정책을 보는 경로(`android:release:build`)는
+  이 브랜치를 거부한다 — `allowedBranchPatterns` 가 `^codex/android-` ·
+  `^release/android-` 뿐이다. 올릴 AAB 자체는 같은 Gradle 태스크의 산출물이고
+  서명·버전·debuggable 을 위에서 확인했다. prebuild 가 typecheck · lint ·
+  `test:node` 를 먼저 돌리므로 "옛 화면이 담긴 최신 버전 코드" 는 나올 수 없다.
+- **iOS**: PR #12 를 main 에 병합했다(대표 확인 후). `codemagic.yaml` 의 트리거가
+  `branch_patterns: main` 하나뿐이라, 이 병합이 곧 TestFlight 빌드의 시작이다.
+  빌드 번호는 Codemagic 의 `$BUILD_NUMBER` 가 정한다 — 저장소의
+  `CURRENT_PROJECT_VERSION` 은 자리표시자다.
+- **회원 앱 배포됨**: `index-BlsgDgwL.js` · `index-fQ4-bEpx.css`
+  (`522f163` 이름·의견 보내기 → `eac8e50` 달력·더보기·머리말).
+
+**이 빌드에 새로 들어가는 것** (56 이후):
+
+| 커밋 | 강사에게 보이는 변화 |
+| --- | --- |
+| `922e6a9` | 시작 전 수업도 **확정 카드가 선다** — 버튼만 잠긴다 |
+| `40fd08b` | 일정 시트에 **"회원에게 보낼 말"** 칸 |
+| `9d6ba6a` | 진단 화면의 버전이 1.1.28 (57) |
+
+회원 앱 쪽 변화(달력·더보기)는 폰 앱과 무관하다 — 별도 호스팅이다.
 
 ### 0-13. 강사가 회원에게 보낼 말 (2026-09-24) — 배포됨 `40fd08b`
 
@@ -77,9 +119,9 @@ Claude Code · Codex 가 새 세션을 열면 이 파일부터 읽는다. 작업
 **강사에게 미리 알릴 것**: 연락처가 뒤 4자리로 바뀐 것과, 회원 목록에서
 "전체 보기" 가 사라진 것. 대타는 **이름을 전부 입력**하면 된다.
 
-**폰 앱은 아직 옛 버전이다.** 1.1.28(56) AAB 는 만들어 뒀지만 Play 업로드
-전이고, iOS 는 PR #12 병합이 있어야 TestFlight 로 나간다. 폰으로 쓰는 강사는
-위 변화를 아직 보지 못한다.
+**폰 앱**: 1.1.28(57) AAB 가 새로 나왔고(0-15) iOS 는 PR #12 를 병합해
+Codemagic 이 돌고 있다. Play 업로드만 남았다 -- 그때까지 폰으로 쓰는 강사는
+위 변화를 보지 못한다.
 
 
 

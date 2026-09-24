@@ -14,7 +14,7 @@ Claude Code · Codex 가 새 세션을 열면 이 파일부터 읽는다. 작업
 
 ## 최근 변경 (2026-09-23, Cowork 세션)
 
-### 0-13. 강사가 회원에게 보낼 말 (2026-09-24) — 아직 배포 전
+### 0-13. 강사가 회원에게 보낼 말 (2026-09-24) — 배포됨 `40fd08b`
 
 **왜 생겼나**: 대표가 수업기록을 쓰고 회원 앱을 열었는데 "첫 수업을 기다리고
 있어요" 였다. 화면은 맞았다 — 회원 앱의 수업 탭은 **원장의 차감**으로
@@ -42,14 +42,16 @@ Claude Code · Codex 가 새 세션을 열면 이 파일부터 읽는다. 작업
 
 자세한 설계는 [member-app-design.md](member-app-design.md) 12장.
 
-**배포가 세 갈래다 — 하나라도 빠지면 조용히 안 된다:**
+**배포 셋 다 나갔다 (2026-09-24). 하나라도 빠지면 조용히 안 되는 자리라 적어 둔다:**
 
-1. `npx firebase deploy --only functions:rebuildMemberViewOnLessonNoteWrite,functions:rebuildMemberViewOnPassWrite --project pilateacher --config firebase.ai-gateway.json`
-   — **세 번째 트리거가 새로 생겼다.** 이 쓰기는 회원권도 회원 문서도 건드리지
+1. Functions — `rebuildMemberViewOnLessonNoteWrite` **새로 생성됨**, 나머지 넷은 갱신
+   (`OnPassWrite` · `OnClientWrite` · `rebuildMemberViews` · `verifyMemberViews` — 다섯이
+   `member-view.js` 를 함께 쓴다). Eventarc 권한은 이번엔 걸리지 않았다.
+   **세 번째 트리거가 필요한 이유:** 이 쓰기는 회원권도 회원 문서도 건드리지
    않아 기존 트리거 둘로는 잡히지 않는다. 없으면 강사가 저장해도 다음 차감까지
    회원 앱에 안 나타난다
-2. `npm run deploy:web` — 강사가 쓰는 칸
-3. `npm run deploy:member` — 회원이 읽는 줄
+2. `npm run deploy:web` — 강사가 쓰는 칸 · 번들 `index-DZw3V8bK.js`
+3. `npm run deploy:member` — 회원이 읽는 줄 · 번들 `index-D8gNe6hb.js`
 
 규칙 배포는 필요 없다.
 

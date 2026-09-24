@@ -90,6 +90,22 @@ export function memberScreenCases() {
 
     { name: "여정", element: <Journey view={view({ journey: JOURNEY })} /> },
     { name: "여정 · 없음", element: <Journey view={view({ journey: null })} /> },
+    /* 가장 오래 다닌 회원. 예전에는 여기서 구슬 넷이 전부 채워지고 "다음" 줄이
+       사라졌다 -- 오래 올수록 화면이 비고 100회가 결승선으로 읽혔다. */
+    {
+      name: "여정 · 100회 넘음",
+      element: <Journey view={view({ journey: { ...JOURNEY, usedTotal: 126 } })} />,
+    },
+    /* 다음 이정표까지 4번인데 회원권에는 2번이 남았다. 파는 말은 하지 않고
+       두 사실을 나란히 놓는다 -- 셈은 회원이 한다. */
+    {
+      name: "여정 · 회원권 모자람",
+      element: <Journey view={view({ journey: JOURNEY, remainingTotal: 2 })} />,
+    },
+    {
+      name: "여정 · 잔여 0",
+      element: <Journey view={view({ journey: JOURNEY, remainingTotal: 0 })} />,
+    },
     /* 이름이 없는 투영. "회원님" 같은 것을 채우지 않는다 -- 이름이 없다는 것은
        무언가 잘못됐다는 뜻이고, 지어낸 말로 덮으면 아무도 모른다. */
     {

@@ -255,7 +255,34 @@ body {
 .mark.done .bead { background: var(--rose); }
 .mark p { margin-top: 10px; font-size: var(--t-caption); color: var(--faint); }
 .mark.done p { color: var(--ink); }
-.next { margin-top: 22px; text-align: center; font-size: var(--t-body); color: var(--sub); }
+
+/* 이정표 줄은 화면 밖으로 이어진다. 오른쪽 끝을 바탕색으로 덮어 흐리는 것이
+   이 화면에서 가장 중요한 한 줄이다 -- 마지막 구슬이 또렷하게 보이는 순간
+   그것이 결승선이 되고, 가장 오래 다닌 회원에게 "끝났다"고 말하게 된다.
+
+   음수 margin 으로 .main 의 좌우 여백을 뚫고 나간 뒤 다시 채워 넣는다.
+   그래야 페이드가 화면 가장자리까지 닿는다. */
+.trail { position: relative; margin: 0 -24px; padding: 0 24px; overflow: hidden; }
+.trail .marks { justify-content: flex-start; align-items: flex-start; gap: 40px; }
+.trail .marks::before { left: 30px; right: 0; }
+.trail .mark { text-align: left; }
+.trail .mark .bead { margin: 0; }
+.trail .mark p { white-space: nowrap; margin-left: -2px; }
+.trail::after {
+  content: "";
+  position: absolute; right: 0; top: 0; bottom: 0; width: 88px;
+  background: linear-gradient(90deg, transparent, var(--page) 76%);
+  pointer-events: none;
+}
+/* 바로 다음 이정표. 지나온 것과 아직 먼 것 사이의 중간 톤이다. */
+.mark.soon .bead { background: var(--rose); opacity: .4; }
+.mark.soon p { color: var(--ink); }
+
+.upnext { text-align: center; padding-top: 4px; }
+.upnext .a { font-size: var(--t-body); color: var(--rose); line-height: 1.7; }
+/* 회원권이 모자랄 때만 나오는 줄. 앞줄보다 한 톤 물러나 있다 -- 재촉이
+   아니라 곁들이는 사실이다. */
+.upnext .b { margin-top: 8px; font-size: var(--t-caption); color: var(--faint); line-height: 1.7; }
 .know .cap { font-size: var(--t-caption); color: var(--rose); letter-spacing: .06em; }
 .know p + p { margin-top: 10px; font-size: var(--t-body); line-height: 1.75; color: var(--sub); }
 

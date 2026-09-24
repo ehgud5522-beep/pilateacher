@@ -295,8 +295,79 @@ export function History({ view }) {
 
 /* ── 여정 ────────────────────────────────────────────────────────────── */
 
-/** 함께한 횟수의 이정표. 회원이 스스로 세는 단위다. */
-export const MILESTONES = Object.freeze([10, 30, 50, 100]);
+/**
+ * 함께한 횟수의 이정표. 회원이 스스로 세는 단위다.
+ *
+ * ── 끝이 있으면 안 된다 ──
+ * 처음에는 10·30·50·100 넷이 고정이었다. 그러면 100회를 넘긴 회원의 화면은
+ * 구슬 넷이 전부 채워지고 "다음" 줄이 사라진다 -- **오래 다닌 사람일수록 화면이
+ * 비고, 100회가 결승선으로 읽힌다.** 가장 오래 온 회원에게 "끝났다"고 말하는
+ * 화면이었다.
+ *
+ * 그래서 100 이후로는 50 단위로 계속 생긴다. 끝나지 않는다.
+ */
+const FIXED_MILESTONES = Object.freeze([10, 30, 50, 100]);
+
+/** 아직 남아 있는 이정표 중 가장 가까운 것. 언제나 하나 있다. */
+export function nextMilestone(used) {
+  const found = FIXED_MILESTONES.find((mark) => mark > used);
+  if (found) return found;
+  return Math.floor(used / 50) * 50 + 50;
+}
+
+/** 이미 지나온 이정표 중 가장 나중 것. 하나도 없으면 0. */
+export function lastMilestone(used) {
+  if (used >= 100) return Math.floor(used / 50) * 50;
+  return [...FIXED_MILESTONES].reverse().find((mark) => used >= mark) || 0;
+}
+
+/**
+ * 화면에 그릴 이정표들.
+ *
+ * 지나온 것은 **하나만** 남긴다. 전부 남기면 줄이 과거로 길어지고 다음이 화면
+ * 밖으로 밀린다 -- 회원이 봐야 하는 것은 지나온 자리가 아니라 다음이다.
+ *
+ * 앞으로 넷을 그린다. 화면에는 셋 반쯤 보이고 마지막이 잘리는데, 그것이
+ * 요점이다: **끝이 보이면 그것이 결승선이 된다.**
+ */
+export function milestoneTrail(used, ahead = 4) {
+  const marks = [];
+  const past = lastMilestone(used);
+  if (past > 0) marks.push({ at: past, done: true, soon: false });
+  let at = nextMilestone(used);
+  for (let index = 0; index < ahead; index += 1) {
+    marks.push({ at, done: false, soon: index === 0 });
+    at = nextMilestone(at);
+  }
+  return marks;
+}
+
+/**
+ * 다음 이정표가 손에 닿는 거리. 이 안에서만 회원권 이야기를 꺼낸다.
+ *
+ * 24번 남은 사람에게 "지금 회원권으로는 8번" 을 적는 것은 정보가 아니라
+ * 잔소리다. 아깝다고 느껴지는 자리에서만 말해야 그 말이 살아 있다.
+ */
+const WITHIN_REACH = 10;
+
+/**
+ * 다음 이정표에 닿기에 회원권이 모자란가.
+ *
+ * 세 가지가 모두 참일 때만 말한다: 다음이 가깝고, 회원권이 모자라고, 그
+ * 모자람이 사실일 것. 넉넉한데 "8번 하실 수 있어요" 를 적으면 소음이고,
+ * 매번 적으면 파는 말이 된다.
+ *
+ * **파는 말은 하지 않는다** -- 판매는 센터가 한다. 두 사실을 나란히 놓을
+ * 뿐이고 셈은 회원이 한다. 둘 다 이미 투영에 있는 값이다.
+ *
+ * @returns {string} 적을 말. 없으면 빈 문자열
+ */
+export function shortfallNote(needed, remaining) {
+  if (!(needed > 0) || needed > WITHIN_REACH) return "";
+  if (remaining >= needed) return "";
+  if (remaining <= 0) return "지금은 남은 횟수가 없어요";
+  return `지금 회원권으로는 ${remaining}번 하실 수 있어요`;
+}
 
 /**
  * 의견을 받는 곳. 링크 하나다.
@@ -352,7 +423,10 @@ export function Journey({ view }) {
   }
 
   const used = count(journey.usedTotal);
-  const next = MILESTONES.find((mark) => mark > used) || null;
+  const trail = milestoneTrail(used);
+  const next = nextMilestone(used);
+  const needed = next - used;
+  const shortfall = shortfallNote(needed, count(view?.remainingTotal));
 
   return (
     <div className="stack">
@@ -363,15 +437,23 @@ export function Journey({ view }) {
         <p className="cap">함께했어요</p>
       </section>
 
-      <div className="marks">
-        {MILESTONES.map((mark) => (
-          <div key={mark} className={`mark${used >= mark ? " done" : ""}`}>
-            <span className="bead" />
-            <p className="num">{mark}회</p>
-          </div>
-        ))}
+      {/* 줄이 화면 밖으로 이어진다. 오른쪽 끝을 흐려 두는 것이 전부이고,
+          그것이 이 화면에서 가장 중요한 한 줄이다. */}
+      <div className="trail">
+        <div className="marks">
+          {trail.map((mark) => (
+            <div key={mark.at} className={`mark${mark.done ? " done" : ""}${mark.soon ? " soon" : ""}`}>
+              <span className="bead" />
+              <p className="num">{mark.at}회</p>
+            </div>
+          ))}
+        </div>
       </div>
-      {next ? <p className="next num">{next}회까지 {next - used}번 남았어요</p> : null}
+
+      <div className="upnext">
+        <p className="a num">{next}회까지 {needed}번 남았어요</p>
+        {shortfall ? <p className="b num">{shortfall}</p> : null}
+      </div>
 
       <Card>
         <ul>

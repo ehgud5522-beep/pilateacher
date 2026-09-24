@@ -37,6 +37,9 @@ const memberScreens = async (t) => {
     return renderToStaticMarkup(element);
   };
   markupOf.names = cases.map((item) => item.name);
+  /* 화면이 쓰는 순수 계산들. 그림으로만 확인하면 126회·0회 같은 자리를
+     케이스로 일일이 그려야 하고, 그래도 경계는 빠진다. */
+  markupOf.screens = await vite.ssrLoadModule("/member/src/screens.jsx");
   return markupOf;
 };
 
@@ -195,6 +198,105 @@ test("여정은 다음 이정표까지 몇 번 남았는지 말한다", async (t
   for (const forbidden of ["재등록", "연장", "구매", "결제"]) {
     assert.doesNotMatch(journey, new RegExp(forbidden), `${forbidden} 가 여정에 있다`);
   }
+});
+
+test("다음 이정표는 언제나 하나 있다", async (t) => {
+  /* 이 함수가 null 을 돌려주는 순간이 곧 결승선이다. 어떤 숫자에도 다음이
+     있어야 한다. */
+  const markupOf = await memberScreens(t);
+  const { lastMilestone, nextMilestone } = markupOf.screens;
+
+  const rows = [
+    [0, 0, 10], [9, 0, 10], [10, 10, 30], [26, 10, 30], [30, 30, 50],
+    [50, 50, 100], [99, 50, 100], [100, 100, 150], [126, 100, 150],
+    [150, 150, 200], [999, 950, 1000], [1000, 1000, 1050],
+  ];
+  for (const [used, past, next] of rows) {
+    assert.equal(lastMilestone(used), past, `lastMilestone(${used})`);
+    assert.equal(nextMilestone(used), next, `nextMilestone(${used})`);
+    assert.ok(next > used, `${used} 에 다음이 없다`);
+  }
+});
+
+test("지나온 하나와 앞으로 넷을 그린다", async (t) => {
+  const markupOf = await memberScreens(t);
+  const { milestoneTrail } = markupOf.screens;
+
+  assert.deepEqual(milestoneTrail(26).map((mark) => mark.at), [10, 30, 50, 100, 150]);
+  // 아직 하나도 지나지 않았으면 과거 자리를 비운다 -- 0회 구슬을 그리지 않는다.
+  assert.deepEqual(milestoneTrail(3).map((mark) => mark.at), [10, 30, 50, 100]);
+  assert.deepEqual(milestoneTrail(126).map((mark) => mark.at), [100, 150, 200, 250, 300]);
+  // 바로 다음 하나에만 soon 이 붙는다.
+  assert.deepEqual(milestoneTrail(26).map((mark) => mark.soon), [false, true, false, false, false]);
+  assert.deepEqual(milestoneTrail(26).map((mark) => mark.done), [true, false, false, false, false]);
+});
+
+test("모자란 만큼만 말한다", async (t) => {
+  const markupOf = await memberScreens(t);
+  const { shortfallNote } = markupOf.screens;
+
+  assert.equal(shortfallNote(4, 2), "지금 회원권으로는 2번 하실 수 있어요");
+  assert.equal(shortfallNote(4, 0), "지금은 남은 횟수가 없어요");
+  assert.equal(shortfallNote(10, 3), "지금 회원권으로는 3번 하실 수 있어요");
+  // 딱 맞거나 넉넉하면 아무 말도 하지 않는다.
+  assert.equal(shortfallNote(4, 4), "");
+  assert.equal(shortfallNote(4, 8), "");
+  assert.equal(shortfallNote(0, 0), "");
+  /* 다음이 아직 멀면 말하지 않는다. 24번 남은 사람에게 "8번 하실 수 있어요"
+     는 정보가 아니라 잔소리다. */
+  assert.equal(shortfallNote(11, 3), "");
+  assert.equal(shortfallNote(24, 8), "");
+  assert.equal(shortfallNote(24, 0), "");
+});
+
+test("이정표는 끝나지 않는다", async (t) => {
+  /* 100회를 넘긴 회원의 화면이 비면 안 된다. 예전에는 구슬 넷이 전부 채워지고
+     "다음" 줄이 사라졌다 -- 가장 오래 온 사람에게 "끝났다" 고 말하는 화면이었다. */
+  const markupOf = await memberScreens(t);
+  const far = markupOf("여정 · 100회 넘음");
+  assert.match(far, /126/);
+  assert.match(far, /150회까지 24번 남았어요/);
+  // 다음이 아직 머니 회원권 이야기는 꺼내지 않는다.
+  assert.doesNotMatch(far, /하실 수 있어요/);
+  // 다음 이정표들이 계속 그려진다.
+  for (const mark of ["150회", "200회", "250회"]) {
+    assert.match(far, new RegExp(mark), `${mark} 가 없다`);
+  }
+});
+
+test("지나온 이정표는 하나만 남긴다", async (t) => {
+  /* 전부 남기면 줄이 과거로 길어지고 다음이 화면 밖으로 밀린다. 회원이 봐야
+     하는 것은 지나온 자리가 아니라 다음이다. */
+  const markupOf = await memberScreens(t);
+  const far = markupOf("여정 · 100회 넘음");
+  for (const past of ["10회", "30회", "50회"]) {
+    assert.doesNotMatch(far, new RegExp(`>${past}<`), `${past} 가 아직 줄에 있다`);
+  }
+  assert.match(far, />100회</);
+});
+
+test("회원권이 모자랄 때만 그 사실을 곁들인다", async (t) => {
+  /* 파는 말은 하지 않는다 -- 판매는 센터가 한다. 두 사실을 나란히 놓을 뿐이고
+     셈은 회원이 한다. */
+  const markupOf = await memberScreens(t);
+
+  const tight = markupOf("여정 · 회원권 모자람");
+  assert.match(tight, /30회까지 4번 남았어요/);
+  assert.match(tight, /지금 회원권으로는 2번 하실 수 있어요/);
+  for (const forbidden of ["재등록", "연장", "구매", "결제", "할인"]) {
+    assert.doesNotMatch(tight, new RegExp(forbidden), `${forbidden} 가 여정에 있다`);
+  }
+
+  // 넉넉하면 적지 않는다. 매번 적으면 그것이 파는 말이 된다.
+  assert.doesNotMatch(markupOf("여정"), /하실 수 있어요/);
+});
+
+test("잔여 0 은 다른 말을 한다", async (t) => {
+  /* "0번 하실 수 있어요" 는 읽는 사람에게 아무것도 말해 주지 않는다. */
+  const markupOf = await memberScreens(t);
+  const none = markupOf("여정 · 잔여 0");
+  assert.match(none, /지금은 남은 횟수가 없어요/);
+  assert.doesNotMatch(none, /0번 하실 수 있어요/);
 });
 
 /* ── 의견 보내기 ─────────────────────────────────────────────────────── */

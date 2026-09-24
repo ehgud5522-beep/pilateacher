@@ -298,6 +298,42 @@ export function History({ view }) {
 /** 함께한 횟수의 이정표. 회원이 스스로 세는 단위다. */
 export const MILESTONES = Object.freeze([10, 30, 50, 100]);
 
+/**
+ * 의견을 받는 곳. 링크 하나다.
+ *
+ * 앱 안에 입력 폼을 두지 않는다 -- 폼을 두면 저장할 곳, 읽을 사람, 지울 규칙이
+ * 따라오고, 그 셋이 정해지기 전에 회원의 글부터 쌓인다. 오픈채팅은 이미 익명을
+ * 지원하고 대표가 이미 쓰는 자리다.
+ *
+ * 링크에 회원 정보를 붙이지 않는다. 이름도 번호도 회원권도 붙이지 않는다 --
+ * 익명으로 보낼 수 있다고 적어 두고 주소로 누구인지 흘리면 그것은 거짓말이다.
+ */
+export const FEEDBACK_KAKAO_URL = "https://open.kakao.com/o/sBfqlBTh";
+
+/**
+ * 여정 화면의 머리.
+ *
+ * "여정" 이라는 제목 대신 회원의 이름을 둔다 -- 탭이 이미 어느 화면인지
+ * 말하고 있고, 제목을 한 번 더 적는 것보다 부르는 편이 낫다.
+ *
+ * 이름이 없으면 그 자리를 비운다. "회원님" 같은 것을 채우지 않는다: 투영에
+ * 이름이 없다는 것은 무언가 잘못됐다는 뜻이고, 그것을 지어낸 말로 덮으면
+ * 아무도 모른다.
+ */
+function JourneyHead({ name }) {
+  return (
+    <div className="jhead">
+      <div className="jhead-row">
+        {name ? <p className="who serif">{name} 님</p> : <span />}
+        <a className="feedback" href={FEEDBACK_KAKAO_URL} target="_blank" rel="noopener noreferrer">
+          의견 보내기
+        </a>
+      </div>
+      <p className="jhead-note">칭찬·건의 모두 좋아요. 익명으로도 보낼 수 있어요</p>
+    </div>
+  );
+}
+
 export function Journey({ view }) {
   const journey = view?.journey || null;
   /* 모양은 buildPassJourney 가 정한다 (functions/shared/pass-journey.mjs).
@@ -307,7 +343,7 @@ export function Journey({ view }) {
   if (!hasJourney(journey)) {
     return (
       <div>
-        <h1 className="title serif">여정</h1>
+        <JourneyHead name={text(view?.name)} />
         <div className="empty">
           <p className="big serif">여정은 수업이<br />쌓이면 보여 드릴게요</p>
         </div>
@@ -320,7 +356,7 @@ export function Journey({ view }) {
 
   return (
     <div className="stack">
-      <h1 className="title serif">여정</h1>
+      <JourneyHead name={text(view?.name)} />
       <section className="sum">
         <p className="cap">지금까지</p>
         <p className="big serif num">{used}<span>번</span></p>

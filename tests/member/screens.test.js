@@ -197,6 +197,71 @@ test("여정은 다음 이정표까지 몇 번 남았는지 말한다", async (t
   }
 });
 
+/* ── 의견 보내기 ─────────────────────────────────────────────────────── */
+
+test("여정은 제목 대신 회원을 부른다", async (t) => {
+  const markupOf = await memberScreens(t);
+  const journey = markupOf("여정");
+  assert.match(journey, /김하나 님/);
+  // 탭이 이미 어느 화면인지 말한다. 제목을 한 번 더 적지 않는다.
+  assert.doesNotMatch(journey, /class="title serif">여정</);
+});
+
+test("이름이 없으면 그 자리를 비운다", async (t) => {
+  /* "회원님" 같은 것을 채우지 않는다. 투영에 이름이 없다는 것은 무언가
+     잘못됐다는 뜻이고, 지어낸 말로 덮으면 아무도 모른다. */
+  const markupOf = await memberScreens(t);
+  const nameless = markupOf("여정 · 이름 없음");
+  assert.doesNotMatch(nameless, /님/);
+  // 이름이 없어도 의견 보내기는 그대로 있다.
+  assert.match(nameless, /의견 보내기/);
+});
+
+test("의견 보내기는 오픈채팅을 새 창으로 연다", async (t) => {
+  const markupOf = await memberScreens(t);
+  const journey = markupOf("여정");
+  assert.match(journey, /href="https:\/\/open\.kakao\.com\/o\/sBfqlBTh"/);
+  assert.match(journey, /target="_blank"/);
+  /* rel 이 없으면 새 창이 window.opener 로 이 앱을 건드릴 수 있다. 잔여
+     횟수를 보여 주는 화면이라 더더욱 끊어 둔다. */
+  assert.match(journey, /rel="noopener noreferrer"/);
+});
+
+test("링크에 회원 정보를 붙이지 않는다", async (t) => {
+  /* 익명으로 보낼 수 있다고 적어 두고 주소로 누구인지 흘리면 그것은
+     거짓말이다. 주소는 상수 하나이고 물음표 뒤가 없다. */
+  const markupOf = await memberScreens(t);
+  const journey = markupOf("여정");
+  const href = journey.match(/href="(https:\/\/open\.kakao\.com[^"]*)"/)?.[1];
+  assert.equal(href, "https://open.kakao.com/o/sBfqlBTh");
+  assert.doesNotMatch(String(href), /[?#]/);
+});
+
+test("익명으로 보낼 수 있다고 적는다", async (t) => {
+  const markupOf = await memberScreens(t);
+  const journey = markupOf("여정");
+  assert.match(journey, /칭찬·건의 모두 좋아요/);
+  assert.match(journey, /익명으로도 보낼 수 있어요/);
+});
+
+test("의견 보내기는 여정에만 있고 입력 폼을 만들지 않는다", async (t) => {
+  /* 앱 안에 폼을 두면 저장할 곳·읽을 사람·지울 규칙이 따라오고, 그 셋이
+     정해지기 전에 회원의 글부터 쌓인다. 링크 하나로 끝낸 이유다. */
+  const markupOf = await memberScreens(t);
+  for (const name of ["홈", "회원권", "수업 이력"]) {
+    assert.doesNotMatch(markupOf(name), /의견 보내기/, name);
+  }
+  const journey = markupOf("여정");
+  assert.doesNotMatch(journey, /<textarea/);
+  assert.doesNotMatch(journey, /<form/);
+});
+
+test("여정이 비어 있어도 의견은 보낼 수 있다", async (t) => {
+  /* 아직 수업이 없는 회원이 할 말이 없는 것은 아니다. */
+  const markupOf = await memberScreens(t);
+  assert.match(markupOf("여정 · 없음"), /의견 보내기/);
+});
+
 test("여정이 없으면 빈 줄을 그리지 않는다", async (t) => {
   const markupOf = await memberScreens(t);
   const empty = markupOf("여정 · 없음");

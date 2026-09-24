@@ -205,6 +205,39 @@ body {
 
 /* ── 여정 ──────────────────────────────────────────────────────────── */
 
+/* 여정의 머리. 제목 대신 회원을 부르고, 그 줄 끝에 의견 보내기를 둔다.
+   .title 이 쓰던 자리를 그대로 이어받는다 -- 다른 화면과 높이가 맞아야 탭을
+   오갈 때 화면이 튀지 않는다. */
+.jhead { padding: 10px 0 18px; }
+.jhead-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.jhead .who { font-size: var(--t-heading); letter-spacing: -.01em; }
+/* 앱 톤 그대로. 카카오 노란색을 쓰지 않는다 -- 이 앱의 색은 넷뿐이고,
+   바깥 서비스의 색을 들이면 그 넷이 무너진다. */
+.feedback {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--card);
+  box-shadow: var(--shadow);
+  color: var(--rose);
+  font-size: var(--t-caption);
+  font-weight: 700;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.jhead-note {
+  margin-top: 10px;
+  text-align: right;
+  font-size: var(--t-caption);
+  color: var(--faint);
+  line-height: 1.6;
+  word-break: keep-all;
+}
+
 .sum { text-align: center; padding: 28px 0 30px; }
 .sum .cap { font-size: var(--t-caption); color: var(--sub); letter-spacing: .08em; }
 .sum .big { font-size: 72px; line-height: 1.1; margin: 6px 0; letter-spacing: -.03em; }

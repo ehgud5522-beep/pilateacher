@@ -90,6 +90,12 @@ export function memberScreenCases() {
 
     { name: "여정", element: <Journey view={view({ journey: JOURNEY })} /> },
     { name: "여정 · 없음", element: <Journey view={view({ journey: null })} /> },
+    /* 이름이 없는 투영. "회원님" 같은 것을 채우지 않는다 -- 이름이 없다는 것은
+       무언가 잘못됐다는 뜻이고, 지어낸 말로 덮으면 아무도 모른다. */
+    {
+      name: "여정 · 이름 없음",
+      element: <Journey view={view({ journey: JOURNEY, name: "" })} />,
+    },
 
     { name: "불러오는 중", element: <Loading /> },
     { name: "조회 실패", element: <LoadFailed code="permission-denied" onRetry={noop} /> },

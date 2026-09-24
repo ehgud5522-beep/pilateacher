@@ -179,196 +179,275 @@ test("아직 수업이 없으면 기다린다고 말한다", async (t) => {
   assert.doesNotMatch(empty, /<img/);
 });
 
-/* ── 여정 ────────────────────────────────────────────────────────────── */
+/* ── 더보기 — 달력과 빈도 ────────────────────────────────────────────
 
-test("여정은 앱 이전 기록도 함께 센다", async (t) => {
+   이정표는 걷어냈다. 10·30·50·100 이라는 사다리에는 끝이 있었고, 100회를
+   넘긴 회원은 다 채운 화면을 보게 됐다 -- 가장 오래 온 사람에게 "끝났다" 고
+   말하는 화면이었다. 회원이 알고 싶은 것은 누적이 아니라 요즘 얼마나
+   나오고 있는가였다. */
+
+test("달력이 나온 날을 표시한다", async (t) => {
   const markupOf = await memberScreens(t);
-  const journey = markupOf("여정");
-  assert.match(journey, /26/);
-  assert.match(journey, /앱 이전 기록/);
-  assert.match(journey, /12회 중 12회/);
-  assert.match(journey, /2번째 회원권/);
+  const more = markupOf("더보기");
+  assert.match(more, /2026년 9월/);
+  // 나온 날은 로즈로 도드라진다.
+  assert.equal((more.match(/class="day on"/g) || []).length, 7, "9월 24일은 오늘이라 따로 센다");
+  assert.match(more, /class="day on today"/);
 });
 
-test("여정은 다음 이정표까지 몇 번 남았는지 말한다", async (t) => {
+test("이번 달과 지난달을 나란히 말한다", async (t) => {
   const markupOf = await memberScreens(t);
-  const journey = markupOf("여정");
-  // 26번이면 30회가 다음이다. 함께한 횟수를 세는 것이지 재등록을 권하는 것이 아니다.
-  assert.match(journey, /30회까지 4번 남았어요/);
-  for (const forbidden of ["재등록", "연장", "구매", "결제"]) {
-    assert.doesNotMatch(journey, new RegExp(forbidden), `${forbidden} 가 여정에 있다`);
+  const more = markupOf("더보기");
+  assert.match(more, /8<span>번<\/span>/);
+  assert.match(more, /지난달 7번/);
+});
+
+test("꾸준하면 몇 주째인지 말한다", async (t) => {
+  /* 8월 첫 주부터 이번 주까지 한 주도 거르지 않았다. 그 숫자가 커지는 것을
+     보는 것이 이 탭의 보상이다. */
+  const markupOf = await memberScreens(t);
+  assert.match(markupOf("더보기"), /8주째 쉬지 않고 나오고 있어요/);
+});
+
+test("뜸해지면 며칠 지났는지 말하고, 다시 할 일을 준다", async (t) => {
+  /* 끊긴 주 수를 0 으로 보여주지 않는다. 혼내면 앱을 안 열고, 할 일을
+     말해야 온다. */
+  const markupOf = await memberScreens(t);
+  const fading = markupOf("더보기 · 뜸해짐");
+  assert.match(fading, /마지막 수업에서 18일 지났어요/);
+  assert.match(fading, /이번 주에 한 번 나오면 다시 이어져요/);
+  assert.doesNotMatch(fading, /0주/);
+  assert.doesNotMatch(fading, /주째 쉬지 않고/);
+});
+
+test("달마다 몇 번인지 여섯 달치를 그린다", async (t) => {
+  /* 빈도가 줄고 있으면 여기서 먼저 보인다. 사람은 "지난달보다 줄었다" 를
+     문장보다 모양으로 먼저 안다. */
+  const markupOf = await memberScreens(t);
+  const fading = markupOf("더보기 · 뜸해짐");
+  assert.match(fading, /최근 여섯 달/);
+  for (const label of ["4월", "5월", "6월", "7월", "8월", "9월"]) {
+    assert.match(fading, new RegExp(`>${label}<`), `${label} 막대가 없다`);
   }
 });
 
-test("다음 이정표는 언제나 하나 있다", async (t) => {
-  /* 이 함수가 null 을 돌려주는 순간이 곧 결승선이다. 어떤 숫자에도 다음이
-     있어야 한다. */
+test("아직 수업이 없어도 달력은 서고, 없는 숫자를 지어내지 않는다", async (t) => {
   const markupOf = await memberScreens(t);
-  const { lastMilestone, nextMilestone } = markupOf.screens;
+  const first = markupOf("더보기 · 첫 회원");
+  assert.match(first, /2026년 9월/);
+  assert.doesNotMatch(first, /class="day on"/);
+  // 누적이 없으면 그 줄 자체가 없다.
+  assert.doesNotMatch(first, /함께했어요/);
+  assert.doesNotMatch(first, /주째|지났어요/);
+});
 
+test("기록이 없는 달과 안 나온 달을 구분해 말한다", async (t) => {
+  /* 빈 달력을 말없이 그리면 회원은 그때 안 나온 것으로 읽는다. */
+  const markupOf = await memberScreens(t);
+  assert.match(markupOf("더보기 · 기록 끝"), /이 앱에 남은 기록은 여기까지예요/);
+  // 상한에 닿지 않은 회원에게는 그 말을 하지 않는다.
+  assert.doesNotMatch(markupOf("더보기"), /남은 기록은 여기까지/);
+});
+
+test("앱 이전 기록은 날짜가 없어 한 줄로만 남는다", async (t) => {
+  const markupOf = await memberScreens(t);
+  assert.match(markupOf("더보기"), /지금까지 <b class="num">26번<\/b> 함께했어요/);
+  /* 홈에서는 뺐다. 같은 숫자가 두 번 나오면 홈의 주인공이 흐려진다 --
+     홈은 남은 횟수가 주인공이어야 한다. */
+  assert.doesNotMatch(markupOf("홈"), /함께했어요/);
+});
+
+test("재등록을 권하지 않는다", async (t) => {
+  /* 판매는 센터가 한다. 앱이 파는 자리가 되면 회원이 열어 보는 이유가
+     달라진다. */
+  const markupOf = await memberScreens(t);
+  for (const name of ["더보기", "더보기 · 뜸해짐"]) {
+    for (const forbidden of ["재등록", "연장", "구매", "결제", "할인"]) {
+      assert.doesNotMatch(markupOf(name), new RegExp(forbidden), `${forbidden} 가 ${name} 에 있다`);
+    }
+  }
+});
+
+/* ── 그 계산들 ───────────────────────────────────────────────────────
+
+   그림으로만 확인하면 달 경계·주 경계·빈 이력 같은 자리를 케이스로 일일이
+   그려야 하고, 그래도 빠진다. */
+
+test("수업한 날만 센다", async (t) => {
+  const markupOf = await memberScreens(t);
+  const { attendedDates } = markupOf.screens;
   const rows = [
-    [0, 0, 10], [9, 0, 10], [10, 10, 30], [26, 10, 30], [30, 30, 50],
-    [50, 50, 100], [99, 50, 100], [100, 100, 150], [126, 100, 150],
-    [150, 150, 200], [999, 950, 1000], [1000, 1000, 1050],
+    { occurredAt: new Date(2026, 8, 18, 19, 30), type: "deduct" },
+    { occurredAt: new Date(2026, 8, 10, 7, 0), type: "deduct" },
+    // 발급·취소·담당 변경은 수업이 아니다.
+    { occurredAt: new Date(2026, 8, 20), type: "issue" },
+    { occurredAt: new Date(2026, 8, 21), type: "transfer" },
+    { occurredAt: null, type: "deduct" },
   ];
-  for (const [used, past, next] of rows) {
-    assert.equal(lastMilestone(used), past, `lastMilestone(${used})`);
-    assert.equal(nextMilestone(used), next, `nextMilestone(${used})`);
-    assert.ok(next > used, `${used} 에 다음이 없다`);
-  }
+  const dates = attendedDates(rows);
+  assert.equal(dates.length, 2);
+  // 오래된 것이 앞이고, 시각은 떨어져 자정이다.
+  assert.equal(dates[0].getDate(), 10);
+  assert.equal(dates[0].getHours(), 0);
+  assert.equal(dates[1].getDate(), 18);
 });
 
-test("지나온 하나와 앞으로 넷을 그린다", async (t) => {
+test("달력 칸은 앞의 빈 칸까지 만든다", async (t) => {
   const markupOf = await memberScreens(t);
-  const { milestoneTrail } = markupOf.screens;
-
-  assert.deepEqual(milestoneTrail(26).map((mark) => mark.at), [10, 30, 50, 100, 150]);
-  // 아직 하나도 지나지 않았으면 과거 자리를 비운다 -- 0회 구슬을 그리지 않는다.
-  assert.deepEqual(milestoneTrail(3).map((mark) => mark.at), [10, 30, 50, 100]);
-  assert.deepEqual(milestoneTrail(126).map((mark) => mark.at), [100, 150, 200, 250, 300]);
-  // 바로 다음 하나에만 soon 이 붙는다.
-  assert.deepEqual(milestoneTrail(26).map((mark) => mark.soon), [false, true, false, false, false]);
-  assert.deepEqual(milestoneTrail(26).map((mark) => mark.done), [true, false, false, false, false]);
+  const { monthCells } = markupOf.screens;
+  // 2026년 9월 1일은 화요일이라 앞에 빈 칸이 둘이다.
+  const cells = monthCells(2026, 8, [new Date(2026, 8, 3)], new Date(2026, 8, 24));
+  assert.equal(cells.length, 2 + 30);
+  assert.equal(cells.filter((cell) => cell.blank).length, 2);
+  assert.equal(cells.find((cell) => cell.day === 3).attended, true);
+  assert.equal(cells.find((cell) => cell.day === 4).attended, false);
+  assert.equal(cells.find((cell) => cell.day === 24).today, true);
 });
 
-test("모자란 만큼만 말한다", async (t) => {
+test("2월도, 윤달도 칸 수가 맞는다", async (t) => {
   const markupOf = await memberScreens(t);
-  const { shortfallNote } = markupOf.screens;
-
-  assert.equal(shortfallNote(4, 2), "지금 회원권으로는 2번 하실 수 있어요");
-  assert.equal(shortfallNote(4, 0), "지금은 남은 횟수가 없어요");
-  assert.equal(shortfallNote(10, 3), "지금 회원권으로는 3번 하실 수 있어요");
-  // 딱 맞거나 넉넉하면 아무 말도 하지 않는다.
-  assert.equal(shortfallNote(4, 4), "");
-  assert.equal(shortfallNote(4, 8), "");
-  assert.equal(shortfallNote(0, 0), "");
-  /* 다음이 아직 멀면 말하지 않는다. 24번 남은 사람에게 "8번 하실 수 있어요"
-     는 정보가 아니라 잔소리다. */
-  assert.equal(shortfallNote(11, 3), "");
-  assert.equal(shortfallNote(24, 8), "");
-  assert.equal(shortfallNote(24, 0), "");
+  const { monthCells } = markupOf.screens;
+  const days = (year, month) => monthCells(year, month, [], new Date(year, month, 1))
+    .filter((cell) => !cell.blank).length;
+  assert.equal(days(2026, 1), 28);
+  assert.equal(days(2028, 1), 29, "2028년은 윤년이다");
+  assert.equal(days(2026, 11), 31);
 });
 
-test("이정표는 끝나지 않는다", async (t) => {
-  /* 100회를 넘긴 회원의 화면이 비면 안 된다. 예전에는 구슬 넷이 전부 채워지고
-     "다음" 줄이 사라졌다 -- 가장 오래 온 사람에게 "끝났다" 고 말하는 화면이었다. */
+test("몇 주째인지 센다", async (t) => {
   const markupOf = await memberScreens(t);
-  const far = markupOf("여정 · 100회 넘음");
-  assert.match(far, /126/);
-  assert.match(far, /150회까지 24번 남았어요/);
-  // 다음이 아직 머니 회원권 이야기는 꺼내지 않는다.
-  assert.doesNotMatch(far, /하실 수 있어요/);
-  // 다음 이정표들이 계속 그려진다.
-  for (const mark of ["150회", "200회", "250회"]) {
-    assert.match(far, new RegExp(mark), `${mark} 가 없다`);
-  }
+  const { weekStreak } = markupOf.screens;
+  const now = new Date(2026, 8, 24);
+  const at = (day) => new Date(2026, 8, day);
+
+  // 9월 24일은 목요일. 그 주(20~26)·앞의 세 주에 하나씩 있다.
+  assert.equal(weekStreak([at(2), at(9), at(15), at(22)], now), 4);
+  /* 이번 주가 비어 있어도 지난주까지로 센다 -- 수요일에 열어 본 사람에게
+     "0주" 라고 말할 이유가 없다. */
+  assert.equal(weekStreak([at(2), at(9), at(15)], now), 3);
+  // 중간이 비면 거기서 끊긴다.
+  assert.equal(weekStreak([at(2), at(15), at(22)], now), 2);
+  // 지난주도 비었으면 0 이고, 화면은 며칠 지났는지를 대신 말한다.
+  assert.equal(weekStreak([at(2), at(6)], now), 0);
+  assert.equal(weekStreak([], now), 0);
 });
 
-test("지나온 이정표는 하나만 남긴다", async (t) => {
-  /* 전부 남기면 줄이 과거로 길어지고 다음이 화면 밖으로 밀린다. 회원이 봐야
-     하는 것은 지나온 자리가 아니라 다음이다. */
+test("마지막 수업으로부터 며칠인지 센다", async (t) => {
   const markupOf = await memberScreens(t);
-  const far = markupOf("여정 · 100회 넘음");
-  for (const past of ["10회", "30회", "50회"]) {
-    assert.doesNotMatch(far, new RegExp(`>${past}<`), `${past} 가 아직 줄에 있다`);
-  }
-  assert.match(far, />100회</);
+  const { daysSinceLast } = markupOf.screens;
+  const now = new Date(2026, 8, 24, 21, 0);
+  assert.equal(daysSinceLast([new Date(2026, 8, 6)], now), 18);
+  // 오늘 수업했으면 0 이다. 시각이 섞여도 같은 날은 같은 날이다.
+  assert.equal(daysSinceLast([new Date(2026, 8, 24, 7, 0)], now), 0);
+  assert.equal(daysSinceLast([], now), null);
 });
 
-test("회원권이 모자랄 때만 그 사실을 곁들인다", async (t) => {
-  /* 파는 말은 하지 않는다 -- 판매는 센터가 한다. 두 사실을 나란히 놓을 뿐이고
-     셈은 회원이 한다. */
+test("2주가 지나야 쉬었다고 말한다", async (t) => {
+  /* 그 아래는 그냥 이 사람의 주기일 수 있다. 일주일에 한 번 오는 회원에게
+     8일 만에 "쉬고 있다" 고 하면 틀린 말이다. */
   const markupOf = await memberScreens(t);
+  const { AWAY_DAYS, rhythmNote } = markupOf.screens;
+  const now = new Date(2026, 8, 24);
+  assert.equal(AWAY_DAYS, 14);
 
-  const tight = markupOf("여정 · 회원권 모자람");
-  assert.match(tight, /30회까지 4번 남았어요/);
-  assert.match(tight, /지금 회원권으로는 2번 하실 수 있어요/);
-  for (const forbidden of ["재등록", "연장", "구매", "결제", "할인"]) {
-    assert.doesNotMatch(tight, new RegExp(forbidden), `${forbidden} 가 여정에 있다`);
-  }
+  const weekly = [3, 10, 17].map((day) => new Date(2026, 8, day));
+  assert.equal(rhythmNote(weekly, now).tone, "steady");
 
-  // 넉넉하면 적지 않는다. 매번 적으면 그것이 파는 말이 된다.
-  assert.doesNotMatch(markupOf("여정"), /하실 수 있어요/);
+  const away = [new Date(2026, 8, 6)];
+  const said = rhythmNote(away, now);
+  assert.equal(said.tone, "away");
+  assert.match(said.line, /18일/);
+  assert.match(said.hint, /다시 이어져요/);
+
+  // 수업이 한 번도 없으면 아무 말도 하지 않는다.
+  assert.equal(rhythmNote([], now).tone, "none");
 });
 
-test("잔여 0 은 다른 말을 한다", async (t) => {
-  /* "0번 하실 수 있어요" 는 읽는 사람에게 아무것도 말해 주지 않는다. */
+test("달마다 세는 것은 그 달 것만 센다", async (t) => {
   const markupOf = await memberScreens(t);
-  const none = markupOf("여정 · 잔여 0");
-  assert.match(none, /지금은 남은 횟수가 없어요/);
-  assert.doesNotMatch(none, /0번 하실 수 있어요/);
+  const { countInMonth, monthlyCounts } = markupOf.screens;
+  const dates = [
+    new Date(2026, 7, 31), new Date(2026, 8, 1), new Date(2026, 8, 30), new Date(2026, 9, 1),
+  ];
+  assert.equal(countInMonth(dates, 2026, 8), 2, "달 경계가 샜다");
+
+  const rows = monthlyCounts(dates, new Date(2026, 8, 24));
+  assert.equal(rows.length, 6);
+  // 오래된 것이 앞이고 마지막이 이번 달이다.
+  assert.deepEqual(rows.map((row) => row.label), ["4월", "5월", "6월", "7월", "8월", "9월"]);
+  assert.equal(rows[5].count, 2);
+  assert.equal(rows[4].count, 1);
+});
+
+test("해를 넘어가도 달 이름이 맞는다", async (t) => {
+  const markupOf = await memberScreens(t);
+  const { monthlyCounts } = markupOf.screens;
+  const rows = monthlyCounts([], new Date(2027, 1, 10));
+  assert.deepEqual(rows.map((row) => row.label), ["9월", "10월", "11월", "12월", "1월", "2월"]);
+  assert.equal(rows[0].year, 2026);
+  assert.equal(rows[5].year, 2027);
+});
+
+test("투영이 싣고 오는 상한과 같은 값을 쓴다", async (t) => {
+  /* 어긋나면 달력이 "기록 없음" 을 말해야 할 자리에서 조용히 빈 달을
+     그린다 -- 안 나온 것과 기록이 없는 것은 다르다. */
+  const markupOf = await memberScreens(t);
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const { HISTORY_LIMIT } = require("../../functions/src/member-view-triggers.js");
+  assert.equal(markupOf.screens.HISTORY_KEPT, HISTORY_LIMIT);
 });
 
 /* ── 의견 보내기 ─────────────────────────────────────────────────────── */
 
-test("여정은 제목 대신 회원을 부른다", async (t) => {
+test("더보기는 제목 대신 회원을 부른다", async (t) => {
   const markupOf = await memberScreens(t);
-  const journey = markupOf("여정");
-  assert.match(journey, /김하나 님/);
   // 탭이 이미 어느 화면인지 말한다. 제목을 한 번 더 적지 않는다.
-  assert.doesNotMatch(journey, /class="title serif">여정</);
-});
-
-test("이름이 없으면 그 자리를 비운다", async (t) => {
-  /* "회원님" 같은 것을 채우지 않는다. 투영에 이름이 없다는 것은 무언가
-     잘못됐다는 뜻이고, 지어낸 말로 덮으면 아무도 모른다. */
-  const markupOf = await memberScreens(t);
-  const nameless = markupOf("여정 · 이름 없음");
-  assert.doesNotMatch(nameless, /님/);
-  // 이름이 없어도 의견 보내기는 그대로 있다.
-  assert.match(nameless, /의견 보내기/);
+  assert.doesNotMatch(markupOf("더보기"), /class="title serif">더보기</);
 });
 
 test("의견 보내기는 오픈채팅을 새 창으로 연다", async (t) => {
   const markupOf = await memberScreens(t);
-  const journey = markupOf("여정");
-  assert.match(journey, /href="https:\/\/open\.kakao\.com\/o\/sBfqlBTh"/);
-  assert.match(journey, /target="_blank"/);
+  const more = markupOf("더보기");
+  assert.match(more, /href="https:\/\/open\.kakao\.com\/o\/sBfqlBTh"/);
+  assert.match(more, /target="_blank"/);
   /* rel 이 없으면 새 창이 window.opener 로 이 앱을 건드릴 수 있다. 잔여
      횟수를 보여 주는 화면이라 더더욱 끊어 둔다. */
-  assert.match(journey, /rel="noopener noreferrer"/);
+  assert.match(more, /rel="noopener noreferrer"/);
 });
 
 test("링크에 회원 정보를 붙이지 않는다", async (t) => {
   /* 익명으로 보낼 수 있다고 적어 두고 주소로 누구인지 흘리면 그것은
      거짓말이다. 주소는 상수 하나이고 물음표 뒤가 없다. */
   const markupOf = await memberScreens(t);
-  const journey = markupOf("여정");
-  const href = journey.match(/href="(https:\/\/open\.kakao\.com[^"]*)"/)?.[1];
+  const href = markupOf("더보기").match(/href="(https:\/\/open\.kakao\.com[^"]*)"/)?.[1];
   assert.equal(href, "https://open.kakao.com/o/sBfqlBTh");
   assert.doesNotMatch(String(href), /[?#]/);
 });
 
 test("익명으로 보낼 수 있다고 적는다", async (t) => {
   const markupOf = await memberScreens(t);
-  const journey = markupOf("여정");
-  assert.match(journey, /칭찬·건의 모두 좋아요/);
-  assert.match(journey, /익명으로도 보낼 수 있어요/);
+  const more = markupOf("더보기");
+  assert.match(more, /칭찬도 건의도 좋고/);
+  assert.match(more, /익명으로도 보낼 수 있어요/);
 });
 
-test("의견 보내기는 여정에만 있고 입력 폼을 만들지 않는다", async (t) => {
+test("의견 보내기는 더보기에만 있고 입력 폼을 만들지 않는다", async (t) => {
   /* 앱 안에 폼을 두면 저장할 곳·읽을 사람·지울 규칙이 따라오고, 그 셋이
      정해지기 전에 회원의 글부터 쌓인다. 링크 하나로 끝낸 이유다. */
   const markupOf = await memberScreens(t);
   for (const name of ["홈", "회원권", "수업 이력"]) {
     assert.doesNotMatch(markupOf(name), /의견 보내기/, name);
   }
-  const journey = markupOf("여정");
-  assert.doesNotMatch(journey, /<textarea/);
-  assert.doesNotMatch(journey, /<form/);
+  const more = markupOf("더보기");
+  assert.doesNotMatch(more, /<textarea/);
+  assert.doesNotMatch(more, /<form/);
 });
 
-test("여정이 비어 있어도 의견은 보낼 수 있다", async (t) => {
+test("수업이 없어도 의견은 보낼 수 있다", async (t) => {
   /* 아직 수업이 없는 회원이 할 말이 없는 것은 아니다. */
   const markupOf = await memberScreens(t);
-  assert.match(markupOf("여정 · 없음"), /의견 보내기/);
-});
-
-test("여정이 없으면 빈 줄을 그리지 않는다", async (t) => {
-  const markupOf = await memberScreens(t);
-  const empty = markupOf("여정 · 없음");
-  assert.match(empty, /쌓이면 보여 드릴게요/);
-  assert.doesNotMatch(empty, /번 함께했어요/);
+  assert.match(markupOf("더보기 · 첫 회원"), /의견 보내기/);
 });
 
 /* ── 상태 넷 ─────────────────────────────────────────────────────────── */

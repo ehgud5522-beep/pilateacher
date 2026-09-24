@@ -28,7 +28,7 @@
   --line: rgba(43, 36, 38, .07);
   --shadow: 0 1px 2px rgba(43, 36, 38, .03), 0 8px 24px rgba(43, 36, 38, .05);
   /* 로즈. 보니따 핫핑크를 한 톤 낮춘 값이고, 쓰는 자리는 넷뿐이다 --
-     활성 탭 · 상품명 밑줄 · 잔여 숫자 · 마일스톤 점. */
+     활성 탭 · 상품명 밑줄 · 잔여 숫자 · 달력에서 나온 날. */
   --rose: #C25B78;
   --blush: linear-gradient(152deg, #F7E6EA 0%, #FAF0EC 52%, #F6EDE6 100%);
   --ring: rgba(194, 91, 120, .16);
@@ -88,12 +88,15 @@ body {
   max-width: 480px;
   margin: 0 auto;
 }
+/* 맨 위 한 줄. 앞말은 물러나 있고 센터 이름만 로즈로 선다 -- 이름만 놓으면
+   상호이고, 앞말이 서면 회원이 여기 오는 이유가 된다. */
 .head {
   padding: 18px 24px 6px;
   font-size: 11px;
-  letter-spacing: .18em;
+  letter-spacing: .14em;
   color: var(--faint);
 }
+.head b { margin-left: 5px; font-size: 12px; font-weight: 700; color: var(--rose); letter-spacing: .1em; }
 .main { flex: 1; padding: 8px 24px 112px; }
 .stack > * + * { margin-top: 16px; }
 
@@ -140,8 +143,6 @@ body {
 .ring { position: absolute; right: 24px; top: 30px; width: 116px; height: 116px; }
 
 .rowcard { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
-.together .big { margin-top: 6px; font-size: var(--t-display); }
-.together .big em { font-style: normal; color: var(--rose); }
 
 /* ── 회원권 ────────────────────────────────────────────────────────── */
 
@@ -203,88 +204,82 @@ body {
 .empty .big { font-size: var(--t-display); line-height: 1.7; }
 .empty .sub { margin-top: 20px; font-size: var(--t-caption); color: var(--sub); line-height: 1.9; }
 
-/* ── 여정 ──────────────────────────────────────────────────────────── */
+/* ── 더보기 ────────────────────────────────────────────────────────── */
 
-/* 여정의 머리. 제목 대신 회원을 부르고, 그 줄 끝에 의견 보내기를 둔다.
-   .title 이 쓰던 자리를 그대로 이어받는다 -- 다른 화면과 높이가 맞아야 탭을
-   오갈 때 화면이 튀지 않는다. */
-.jhead { padding: 10px 0 18px; }
-.jhead-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.jhead .who { font-size: var(--t-heading); letter-spacing: -.01em; }
-/* 앱 톤 그대로. 카카오 노란색을 쓰지 않는다 -- 이 앱의 색은 넷뿐이고,
-   바깥 서비스의 색을 들이면 그 넷이 무너진다. */
-.feedback {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  min-height: 34px;
-  padding: 0 14px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: var(--card);
-  box-shadow: var(--shadow);
-  color: var(--rose);
-  font-size: var(--t-caption);
-  font-weight: 700;
-  text-decoration: none;
-  white-space: nowrap;
+/* 앱에 옮기기 전의 수업은 날짜가 없어 달력에 그릴 수 없다. 한 줄로만 남긴다. */
+.total { text-align: center; font-size: var(--t-caption); color: var(--sub); padding: 6px 0 0; }
+.total b { color: var(--ink); font-weight: 600; }
+
+.calhead { display: flex; align-items: center; justify-content: space-between; padding: 0 0 14px; }
+.calhead .mon { font-size: var(--t-title); letter-spacing: -.01em; }
+.calhead .arrows { display: flex; gap: 2px; }
+.calhead button {
+  width: 36px; height: 36px; border: 0; border-radius: 50%;
+  background: transparent; color: var(--faint);
+  font-family: inherit; font-size: 15px;
 }
-.jhead-note {
-  margin-top: 10px;
-  text-align: right;
-  font-size: var(--t-caption);
-  color: var(--faint);
-  line-height: 1.6;
-  word-break: keep-all;
+.calhead button:disabled { opacity: .3; }
+
+.dow { display: grid; grid-template-columns: repeat(7, 1fr); margin-bottom: 4px; }
+.dow span { text-align: center; font-size: 11px; color: var(--faint); letter-spacing: .04em; }
+
+.grid { display: grid; grid-template-columns: repeat(7, 1fr); row-gap: 2px; }
+.day { position: relative; height: 42px; display: flex; align-items: center; justify-content: center; }
+/* 나온 날. 점이 아니라 원이라야 한 달 치가 한눈에 리듬으로 읽힌다. */
+.day i { position: absolute; width: 32px; height: 32px; border-radius: 50%; background: var(--rose); opacity: .14; }
+.day b { position: relative; font-size: 13px; font-weight: 400; color: var(--sub); font-variant-numeric: tabular-nums; }
+.day.on b { color: var(--rose); font-weight: 700; }
+.day.today::after {
+  content: ""; position: absolute; bottom: 4px;
+  width: 3px; height: 3px; border-radius: 50%; background: var(--faint);
 }
+.day.out b { color: transparent; }
 
-.sum { text-align: center; padding: 28px 0 30px; }
-.sum .cap { font-size: var(--t-caption); color: var(--sub); letter-spacing: .08em; }
-.sum .big { font-size: 72px; line-height: 1.1; margin: 6px 0; letter-spacing: -.03em; }
-.sum .big span { font-size: var(--t-heading); margin-left: 4px; }
-.marks { position: relative; display: flex; justify-content: space-between; padding: 0 6px; }
-.marks::before {
-  content: "";
-  position: absolute;
-  left: 14px; right: 14px; top: 7px;
-  height: 1px;
-  background: var(--line);
-}
-.mark { position: relative; text-align: center; }
-.bead { display: block; width: 15px; height: 15px; border-radius: 50%; background: var(--mile-off); margin: 0 auto; }
-.mark.done .bead { background: var(--rose); }
-.mark p { margin-top: 10px; font-size: var(--t-caption); color: var(--faint); }
-.mark.done p { color: var(--ink); }
+/* 기록이 없는 달과 안 나온 달은 다르다. 빈 달력을 말없이 그리면 회원은 그때
+   안 나온 것으로 읽는다. */
+.edge { margin-top: 14px; text-align: center; font-size: var(--t-caption); color: var(--faint); }
 
-/* 이정표 줄은 화면 밖으로 이어진다. 오른쪽 끝을 바탕색으로 덮어 흐리는 것이
-   이 화면에서 가장 중요한 한 줄이다 -- 마지막 구슬이 또렷하게 보이는 순간
-   그것이 결승선이 되고, 가장 오래 다닌 회원에게 "끝났다"고 말하게 된다.
+.rhythm { display: flex; align-items: baseline; justify-content: center; gap: 10px; padding-top: 14px; }
+.rhythm .big { font-size: var(--t-display); color: var(--rose); letter-spacing: -.02em; }
+.rhythm .big span { font-size: var(--t-caption); margin-left: 2px; }
+.rhythm .prev { font-size: var(--t-caption); color: var(--faint); }
 
-   음수 margin 으로 .main 의 좌우 여백을 뚫고 나간 뒤 다시 채워 넣는다.
-   그래야 페이드가 화면 가장자리까지 닿는다. */
-.trail { position: relative; margin: 0 -24px; padding: 0 24px; overflow: hidden; }
-.trail .marks { justify-content: flex-start; align-items: flex-start; gap: 40px; }
-.trail .marks::before { left: 30px; right: 0; }
-.trail .mark { text-align: left; }
-.trail .mark .bead { margin: 0; }
-.trail .mark p { white-space: nowrap; margin-left: -2px; }
-.trail::after {
-  content: "";
-  position: absolute; right: 0; top: 0; bottom: 0; width: 88px;
-  background: linear-gradient(90deg, transparent, var(--page) 76%);
-  pointer-events: none;
-}
-/* 바로 다음 이정표. 지나온 것과 아직 먼 것 사이의 중간 톤이다. */
-.mark.soon .bead { background: var(--rose); opacity: .4; }
-.mark.soon p { color: var(--ink); }
+.since { text-align: center; padding-top: 2px; }
+.since .a { font-size: var(--t-body); color: var(--rose); line-height: 1.7; }
+/* 쉬고 있는 사람에게는 로즈로 외치지 않는다. 사실만 조용히 놓는다. */
+.since .a.quiet { color: var(--sub); }
+.since .b { margin-top: 8px; font-size: var(--t-caption); color: var(--faint); line-height: 1.7; }
 
-.upnext { text-align: center; padding-top: 4px; }
-.upnext .a { font-size: var(--t-body); color: var(--rose); line-height: 1.7; }
-/* 회원권이 모자랄 때만 나오는 줄. 앞줄보다 한 톤 물러나 있다 -- 재촉이
-   아니라 곁들이는 사실이다. */
-.upnext .b { margin-top: 8px; font-size: var(--t-caption); color: var(--faint); line-height: 1.7; }
+/* 최근 여섯 달. 빈도가 줄고 있으면 여기서 먼저 보인다 -- 사람은 "지난달보다
+   줄었다" 를 문장보다 모양으로 먼저 안다. */
+.barwrap .cap { text-align: center; font-size: var(--t-caption); color: var(--sub); letter-spacing: .06em; margin-bottom: 14px; }
+.bars { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; height: 74px; }
+.bar { flex: 1; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; }
+.bar u { display: block; width: 100%; max-width: 30px; border-radius: 5px 5px 0 0; background: var(--mile-off); }
+.bar.on u { background: var(--rose); opacity: .55; }
+/* 이번 달만 또렷하게. 지금 어디에 서 있는지가 이 카드의 요점이다. */
+.bar.last u { opacity: 1; }
+.bar em { font-style: normal; margin-top: 8px; font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
+
 .know .cap { font-size: var(--t-caption); color: var(--rose); letter-spacing: .06em; }
 .know p + p { margin-top: 10px; font-size: var(--t-body); line-height: 1.75; color: var(--sub); }
+
+/* 의견 보내기. 구석의 작은 알약이 아니라 카드 한 장이다 -- 이 탭에서 회원이
+   할 수 있는 단 하나의 행동이라 그만한 자리를 준다.
+
+   맨 아래인 것도 뜻이 있다: 달력을 다 보고 내려온 사람이 마지막에 만나는
+   자리가 말이 나오는 자리다. */
+.say .cap { font-size: var(--t-caption); color: var(--rose); letter-spacing: .06em; }
+.say p { margin-top: 10px; font-size: var(--t-body); line-height: 1.75; color: var(--sub); word-break: keep-all; }
+/* 꽉 찬 로즈로 두지 않는다. 이 탭의 주인공은 달력이다. */
+.say .btn {
+  margin-top: 16px;
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  background: var(--page);
+  text-decoration: none;
+}
+.say .btn span { font-size: 15px; opacity: .6; }
+
 
 /* ── 입력과 버튼 ───────────────────────────────────────────────────── */
 

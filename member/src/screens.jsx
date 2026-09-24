@@ -1,5 +1,5 @@
 /**
- * 화면 넷 — 홈 · 회원권 · 수업 · 여정.
+ * 화면 넷 — 홈 · 회원권 · 수업 · 더보기.
  *
  * 넷 다 **투영 문서 하나**를 그린다. 질의도, 다른 컬렉션도 없다 (member-data.js).
  *
@@ -12,8 +12,20 @@
  * 사람에게 남은 것을 말해 주지 않는다.
  */
 
-import { JOURNEY_PRIOR_NOTE, hasJourney } from "../../functions/shared/pass-journey.mjs";
+import { useMemo, useState } from "react";
 import { TYPE } from "../../src/features/ui/type-scale.js";
+
+/**
+ * 의견을 받는 곳. 링크 하나다.
+ *
+ * 앱 안에 입력 폼을 두지 않는다 -- 폼을 두면 저장할 곳, 읽을 사람, 지울 규칙이
+ * 따라오고, 그 셋이 정해지기 전에 회원의 글부터 쌓인다. 오픈채팅은 이미 익명을
+ * 지원하고 대표가 이미 쓰는 자리다.
+ *
+ * 링크에 회원 정보를 붙이지 않는다. 이름도 번호도 회원권도 붙이지 않는다 --
+ * 익명으로 보낼 수 있다고 적어 두고 주소로 누구인지 흘리면 그것은 거짓말이다.
+ */
+export const FEEDBACK_KAKAO_URL = "https://open.kakao.com/o/sBfqlBTh";
 
 const text = (value) => String(value ?? "").trim();
 const count = (value) => (Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : 0);
@@ -116,7 +128,8 @@ export function Home({ view, now = new Date() }) {
   const using = passes.filter((pass) => isUsable(pass, now));
   const front = using[0] || passes[0] || null;
   const total = front ? count(front.totalSessions) + count(front.serviceSessions) : 0;
-  const used = count(view?.journey?.usedTotal);
+  /* 누적 횟수는 더보기 탭 맨 위 한 줄이 말한다. 홈에도 두면 같은 숫자가 두 번
+     나오고, 홈의 주인공은 남은 횟수여야 한다. */
   const history = Array.isArray(view?.history) ? view.history : [];
 
   /* 임박은 말하되 재등록은 권하지 않는다. 사실만 놓으면 회원이 스스로 센터에
@@ -153,16 +166,6 @@ export function Home({ view, now = new Date() }) {
           <p className="muted mt" style={{ fontSize: TYPE.body }}>첫 수업을 기다리고 있어요</p>
         )}
       </Card>
-
-      {/* 화면 아래 반이 비지 않게. 지어낸 값이 아니라 투영의 여정이다.
-          0번은 그리지 않는다 -- 막 시작한 사람에게 "0번 함께했어요" 는
-          격려가 아니라 셈이다. */}
-      {used > 0 ? (
-        <Card className="together">
-          <p className="muted" style={{ fontSize: TYPE.caption, letterSpacing: ".06em" }}>지금까지</p>
-          <p className="big serif"><em className="num">{used}번</em> 함께했어요</p>
-        </Card>
-      ) : null}
 
       {note ? (
         <Card tone="quietcard">
@@ -293,194 +296,316 @@ export function History({ view }) {
   );
 }
 
-/* ── 여정 ────────────────────────────────────────────────────────────── */
+/* ── 더보기 ──────────────────────────────────────────────────────────── */
 
 /**
- * 함께한 횟수의 이정표. 회원이 스스로 세는 단위다.
+ * 달력과 빈도, 그리고 의견 보내기.
  *
- * ── 끝이 있으면 안 된다 ──
- * 처음에는 10·30·50·100 넷이 고정이었다. 그러면 100회를 넘긴 회원의 화면은
- * 구슬 넷이 전부 채워지고 "다음" 줄이 사라진다 -- **오래 다닌 사람일수록 화면이
- * 비고, 100회가 결승선으로 읽힌다.** 가장 오래 온 회원에게 "끝났다"고 말하는
- * 화면이었다.
+ * ── 왜 이정표를 걷어냈나 ──
+ * 10·30·50·100 이라는 사다리는 **끝이 있었다.** 100회를 넘긴 회원은 다 채운
+ * 화면을 보게 되고, 그것은 가장 오래 온 사람에게 "끝났다" 고 말하는 화면이다.
+ * 끝없이 늘리는 것으로 고쳐 봤지만, 애초에 회원이 알고 싶은 것은 누적이
+ * 아니라 **요즘 얼마나 나오고 있는가** 였다.
  *
- * 그래서 100 이후로는 50 단위로 계속 생긴다. 끝나지 않는다.
+ * ── 달력이 말하는 것 ──
+ * 사람은 "지난달보다 줄었다" 를 문장보다 모양으로 먼저 안다. 그래서 막대를
+ * 둔다. 아무도 혼내지 않는데 본인이 안다.
+ *
+ * 그리고 끊겼을 때 **0 을 보여주지 않는다.** "이번 주에 한 번 나오면 다시
+ * 이어져요" 라고 적는다 -- 혼내면 앱을 안 열고, 할 일을 말해야 온다.
+ *
+ * ── 서버는 건드리지 않았다 ──
+ * 날짜는 이미 투영의 수업 이력에 있다. 여기 있는 것은 전부 그 배열을 세는
+ * 순수 계산이고, 그래서 경계값을 테스트로 고정할 수 있다.
  */
-const FIXED_MILESTONES = Object.freeze([10, 30, 50, 100]);
 
-/** 아직 남아 있는 이정표 중 가장 가까운 것. 언제나 하나 있다. */
-export function nextMilestone(used) {
-  const found = FIXED_MILESTONES.find((mark) => mark > used);
-  if (found) return found;
-  return Math.floor(used / 50) * 50 + 50;
-}
+/**
+ * 투영이 싣고 오는 수업 이력의 최대 건수.
+ *
+ * 서버의 HISTORY_LIMIT 과 같은 값이어야 한다
+ * (functions/src/member-view-triggers.js). 이 숫자가 어긋나면 달력이 "기록
+ * 없음" 을 말해야 할 자리에서 조용히 빈 달을 그린다 -- 안 나온 것과 기록이
+ * 없는 것은 다르다. 테스트가 두 값을 견준다.
+ */
+export const HISTORY_KEPT = 100;
 
-/** 이미 지나온 이정표 중 가장 나중 것. 하나도 없으면 0. */
-export function lastMilestone(used) {
-  if (used >= 100) return Math.floor(used / 50) * 50;
-  return [...FIXED_MILESTONES].reverse().find((mark) => used >= mark) || 0;
+/** 달력에서 한 주의 시작은 일요일이다. 한국 달력이 그렇다. */
+const WEEK_START = 0;
+const DAY = 86400000;
+
+/** 그날 수업이 있었는가를 가리는 이력의 종류. 발급·취소는 수업이 아니다. */
+const ATTENDED_TYPE = "deduct";
+
+/** 자정으로 맞춘 날짜. 시각이 섞이면 같은 날이 다른 날이 된다. */
+const atMidnight = (value) => {
+  const at = toDate(value);
+  return at ? new Date(at.getFullYear(), at.getMonth(), at.getDate()) : null;
+};
+
+const sameDay = (left, right) => (
+  left.getFullYear() === right.getFullYear()
+  && left.getMonth() === right.getMonth()
+  && left.getDate() === right.getDate()
+);
+
+/**
+ * 수업한 날들. 오래된 것부터.
+ *
+ * 되돌린 차감(correction)은 빼지 못한다 -- 투영의 이력에 lessonId 가 없어
+ * 어느 차감을 되돌린 것인지 짝지을 수 없다. 내부 id 를 회원에게 내보내는 것이
+ * 더 나쁘다고 보고 그대로 두었다. 되돌린 사실은 수업 탭이 한 줄로 말한다.
+ */
+export function attendedDates(history) {
+  return (Array.isArray(history) ? history : [])
+    .filter((row) => text(row?.type) === ATTENDED_TYPE)
+    .map((row) => atMidnight(row?.occurredAt))
+    .filter(Boolean)
+    .sort((left, right) => left - right);
 }
 
 /**
- * 화면에 그릴 이정표들.
+ * 한 달 달력의 칸들. 앞쪽 빈 칸까지 포함한다.
  *
- * 지나온 것은 **하나만** 남긴다. 전부 남기면 줄이 과거로 길어지고 다음이 화면
- * 밖으로 밀린다 -- 회원이 봐야 하는 것은 지나온 자리가 아니라 다음이다.
- *
- * 앞으로 넷을 그린다. 화면에는 셋 반쯤 보이고 마지막이 잘리는데, 그것이
- * 요점이다: **끝이 보이면 그것이 결승선이 된다.**
+ * @returns {Array<{ key: string, day: number, blank: boolean, attended: boolean, today: boolean }>}
  */
-export function milestoneTrail(used, ahead = 4) {
-  const marks = [];
-  const past = lastMilestone(used);
-  if (past > 0) marks.push({ at: past, done: true, soon: false });
-  let at = nextMilestone(used);
-  for (let index = 0; index < ahead; index += 1) {
-    marks.push({ at, done: false, soon: index === 0 });
-    at = nextMilestone(at);
+export function monthCells(year, month, dates, now = new Date()) {
+  const first = new Date(year, month, 1);
+  const lead = (first.getDay() - WEEK_START + 7) % 7;
+  const days = new Date(year, month + 1, 0).getDate();
+  const cells = [];
+  for (let index = 0; index < lead; index += 1) {
+    cells.push({ key: `blank-${index}`, day: 0, blank: true, attended: false, today: false });
   }
-  return marks;
-}
-
-/**
- * 다음 이정표가 손에 닿는 거리. 이 안에서만 회원권 이야기를 꺼낸다.
- *
- * 24번 남은 사람에게 "지금 회원권으로는 8번" 을 적는 것은 정보가 아니라
- * 잔소리다. 아깝다고 느껴지는 자리에서만 말해야 그 말이 살아 있다.
- */
-const WITHIN_REACH = 10;
-
-/**
- * 다음 이정표에 닿기에 회원권이 모자란가.
- *
- * 세 가지가 모두 참일 때만 말한다: 다음이 가깝고, 회원권이 모자라고, 그
- * 모자람이 사실일 것. 넉넉한데 "8번 하실 수 있어요" 를 적으면 소음이고,
- * 매번 적으면 파는 말이 된다.
- *
- * **파는 말은 하지 않는다** -- 판매는 센터가 한다. 두 사실을 나란히 놓을
- * 뿐이고 셈은 회원이 한다. 둘 다 이미 투영에 있는 값이다.
- *
- * @returns {string} 적을 말. 없으면 빈 문자열
- */
-export function shortfallNote(needed, remaining) {
-  if (!(needed > 0) || needed > WITHIN_REACH) return "";
-  if (remaining >= needed) return "";
-  if (remaining <= 0) return "지금은 남은 횟수가 없어요";
-  return `지금 회원권으로는 ${remaining}번 하실 수 있어요`;
-}
-
-/**
- * 의견을 받는 곳. 링크 하나다.
- *
- * 앱 안에 입력 폼을 두지 않는다 -- 폼을 두면 저장할 곳, 읽을 사람, 지울 규칙이
- * 따라오고, 그 셋이 정해지기 전에 회원의 글부터 쌓인다. 오픈채팅은 이미 익명을
- * 지원하고 대표가 이미 쓰는 자리다.
- *
- * 링크에 회원 정보를 붙이지 않는다. 이름도 번호도 회원권도 붙이지 않는다 --
- * 익명으로 보낼 수 있다고 적어 두고 주소로 누구인지 흘리면 그것은 거짓말이다.
- */
-export const FEEDBACK_KAKAO_URL = "https://open.kakao.com/o/sBfqlBTh";
-
-/**
- * 여정 화면의 머리.
- *
- * "여정" 이라는 제목 대신 회원의 이름을 둔다 -- 탭이 이미 어느 화면인지
- * 말하고 있고, 제목을 한 번 더 적는 것보다 부르는 편이 낫다.
- *
- * 이름이 없으면 그 자리를 비운다. "회원님" 같은 것을 채우지 않는다: 투영에
- * 이름이 없다는 것은 무언가 잘못됐다는 뜻이고, 그것을 지어낸 말로 덮으면
- * 아무도 모른다.
- */
-function JourneyHead({ name }) {
-  return (
-    <div className="jhead">
-      <div className="jhead-row">
-        {name ? <p className="who serif">{name} 님</p> : <span />}
-        <a className="feedback" href={FEEDBACK_KAKAO_URL} target="_blank" rel="noopener noreferrer">
-          의견 보내기
-        </a>
-      </div>
-      <p className="jhead-note">칭찬·건의 모두 좋아요. 익명으로도 보낼 수 있어요</p>
-    </div>
-  );
-}
-
-export function Journey({ view }) {
-  const journey = view?.journey || null;
-  /* 모양은 buildPassJourney 가 정한다 (functions/shared/pass-journey.mjs).
-     여기서 다시 세지 않는다 -- 두 곳에서 세면 회원 화면과 강사 화면이 다른
-     숫자를 말하는 날이 온다. */
-  const segments = Array.isArray(journey?.segments) ? journey.segments : [];
-  if (!hasJourney(journey)) {
-    return (
-      <div>
-        <JourneyHead name={text(view?.name)} />
-        <div className="empty">
-          <p className="big serif">여정은 수업이<br />쌓이면 보여 드릴게요</p>
-        </div>
-      </div>
-    );
+  for (let day = 1; day <= days; day += 1) {
+    const at = new Date(year, month, day);
+    cells.push({
+      key: `${year}-${month}-${day}`,
+      day,
+      blank: false,
+      attended: dates.some((date) => sameDay(date, at)),
+      today: sameDay(at, now),
+    });
   }
+  return cells;
+}
 
-  const used = count(journey.usedTotal);
-  const trail = milestoneTrail(used);
-  const next = nextMilestone(used);
-  const needed = next - used;
-  const shortfall = shortfallNote(needed, count(view?.remainingTotal));
+/** 그 달에 몇 번. */
+export const countInMonth = (dates, year, month) => dates.filter(
+  (date) => date.getFullYear() === year && date.getMonth() === month,
+).length;
+
+/**
+ * 최근 몇 달의 횟수. 오래된 것이 앞이다.
+ *
+ * 빈도가 줄고 있으면 여기서 먼저 보인다 -- 사람은 "지난달보다 줄었다" 를
+ * 문장보다 모양으로 먼저 안다.
+ */
+export function monthlyCounts(dates, now = new Date(), months = 6) {
+  const rows = [];
+  for (let back = months - 1; back >= 0; back -= 1) {
+    const at = new Date(now.getFullYear(), now.getMonth() - back, 1);
+    rows.push({
+      year: at.getFullYear(),
+      month: at.getMonth(),
+      label: `${at.getMonth() + 1}월`,
+      count: countInMonth(dates, at.getFullYear(), at.getMonth()),
+    });
+  }
+  return rows;
+}
+
+/** 그 날짜가 속한 주의 일요일. */
+function weekStart(at) {
+  const start = new Date(at.getFullYear(), at.getMonth(), at.getDate());
+  start.setDate(start.getDate() - ((start.getDay() - WEEK_START + 7) % 7));
+  return start;
+}
+
+/**
+ * 몇 주째 쉬지 않고 나왔는가.
+ *
+ * 이번 주가 아직 비어 있어도 지난주까지로 센다 -- 수요일에 열어 본 사람에게
+ * "0주" 라고 말할 이유가 없다. 다만 지난주도 비었으면 그때는 0 이고, 화면은
+ * 며칠 지났는지를 대신 말한다.
+ */
+export function weekStreak(dates, now = new Date()) {
+  if (!dates.length) return 0;
+  const weeks = new Set(dates.map((date) => weekStart(date).getTime()));
+  const thisWeek = weekStart(now).getTime();
+  let cursor = weeks.has(thisWeek) ? thisWeek : thisWeek - 7 * DAY;
+  if (!weeks.has(cursor)) return 0;
+  let count = 0;
+  while (weeks.has(cursor)) {
+    count += 1;
+    cursor -= 7 * DAY;
+  }
+  return count;
+}
+
+/** 마지막 수업으로부터 며칠. 수업이 없으면 null. */
+export function daysSinceLast(dates, now = new Date()) {
+  if (!dates.length) return null;
+  const last = dates[dates.length - 1];
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return Math.max(0, Math.round((today - last) / DAY));
+}
+
+/**
+ * 며칠부터 "쉬었다" 고 말할 것인가.
+ *
+ * 2주다. 그 아래는 그냥 이 사람의 주기일 수 있다 -- 일주일에 한 번 오는
+ * 회원에게 8일 만에 "쉬고 있다" 고 하면 틀린 말이다.
+ */
+export const AWAY_DAYS = 14;
+
+/**
+ * 달력 아래 한 줄. 무엇을 말할지는 상태가 정한다.
+ *
+ * @returns {{ tone: "steady" | "away" | "none", line: string, hint: string }}
+ */
+export function rhythmNote(dates, now = new Date()) {
+  const away = daysSinceLast(dates, now);
+  if (away === null) return { tone: "none", line: "", hint: "" };
+  if (away >= AWAY_DAYS) {
+    return {
+      tone: "away",
+      line: `마지막 수업에서 ${away}일 지났어요`,
+      /* 끊긴 주 수를 0 으로 보여주지 않는다. 혼내면 앱을 안 열고, 할 일을
+         말해야 온다. */
+      hint: "이번 주에 한 번 나오면 다시 이어져요",
+    };
+  }
+  const streak = weekStreak(dates, now);
+  if (streak >= 2) return { tone: "steady", line: `${streak}주째 쉬지 않고 나오고 있어요`, hint: "" };
+  return { tone: "none", line: "", hint: "" };
+}
+
+/**
+ * 이 달보다 더 과거로 갈 수 있는가, 그리고 그 끝에서 뭐라고 말할 것인가.
+ *
+ * 기록이 없는 달과 안 나온 달은 다르다. 투영이 최근 100건만 싣고 오므로,
+ * 상한에 닿아 있으면 가장 오래된 기록보다 앞은 **모르는 구간**이다. 빈
+ * 달력을 그려 두면 회원은 그때 안 나온 것으로 읽는다.
+ */
+export function historyEdge(dates, history) {
+  const capped = (Array.isArray(history) ? history : []).length >= HISTORY_KEPT;
+  const oldest = dates[0] || null;
+  return { oldest, capped };
+}
+
+const MONTH_LABEL = (year, month) => `${year}년 ${month + 1}월`;
+const DOW = ["일", "월", "화", "수", "목", "금", "토"];
+
+/**
+ * @param {{ view: any, now?: Date, monthsBack?: number }} props
+ *   monthsBack  처음 보여 줄 달. 0 이 이번 달이다. 화면은 늘 0 으로 열고,
+ *               테스트가 과거 달을 그려 보는 데 쓴다 -- "기록은 여기까지"
+ *               처럼 끝에서만 나오는 문구는 거기까지 가 있어야 확인된다.
+ */
+export function More({ view, now = new Date(), monthsBack = 0 }) {
+  const [back, setBack] = useState(monthsBack);
+  const history = Array.isArray(view?.history) ? view.history : [];
+  const dates = useMemo(() => attendedDates(history), [history]);
+  const shown = new Date(now.getFullYear(), now.getMonth() - back, 1);
+  const year = shown.getFullYear();
+  const month = shown.getMonth();
+  const cells = useMemo(() => monthCells(year, month, dates, now), [year, month, dates, now]);
+  const { oldest, capped } = historyEdge(dates, history);
+  const edge = capped && oldest
+    && year === oldest.getFullYear() && month === oldest.getMonth();
+  /* 가장 오래된 기록보다 더 앞은 볼 것이 없다. 기록이 아예 없으면 이번 달에
+     머문다 -- 빈 달을 넘기게 두면 안 나온 것처럼 읽힌다. */
+  const earliest = oldest || now;
+  const canGoBack = new Date(year, month, 1) > new Date(earliest.getFullYear(), earliest.getMonth(), 1);
+
+  const thisCount = countInMonth(dates, year, month);
+  const prev = new Date(year, month - 1, 1);
+  const prevCount = countInMonth(dates, prev.getFullYear(), prev.getMonth());
+  const note = rhythmNote(dates, now);
+  const months = useMemo(() => monthlyCounts(dates, now), [dates, now]);
+  const top = Math.max(1, ...months.map((row) => row.count));
+  const used = count(view?.journey?.usedTotal);
 
   return (
     <div className="stack">
-      <JourneyHead name={text(view?.name)} />
-      <section className="sum">
-        <p className="cap">지금까지</p>
-        <p className="big serif num">{used}<span>번</span></p>
-        <p className="cap">함께했어요</p>
-      </section>
+      {/* 앱에 옮기기 전의 수업도 회원이 한 수업이다. 날짜가 없어 달력에는
+          그리지 못하므로 한 줄로만 남긴다. */}
+      {used > 0 ? (
+        <p className="total">지금까지 <b className="num">{used}번</b> 함께했어요</p>
+      ) : null}
 
-      {/* 줄이 화면 밖으로 이어진다. 오른쪽 끝을 흐려 두는 것이 전부이고,
-          그것이 이 화면에서 가장 중요한 한 줄이다. */}
-      <div className="trail">
-        <div className="marks">
-          {trail.map((mark) => (
-            <div key={mark.at} className={`mark${mark.done ? " done" : ""}${mark.soon ? " soon" : ""}`}>
-              <span className="bead" />
-              <p className="num">{mark.at}회</p>
+      <Card>
+        <div className="calhead">
+          <p className="mon serif num">{MONTH_LABEL(year, month)}</p>
+          <div className="arrows">
+            <button type="button" aria-label="이전 달" disabled={!canGoBack}
+              onClick={() => setBack((value) => value + 1)}>‹</button>
+            <button type="button" aria-label="다음 달" disabled={back === 0}
+              onClick={() => setBack((value) => Math.max(0, value - 1))}>›</button>
+          </div>
+        </div>
+        <div className="dow">{DOW.map((day) => <span key={day}>{day}</span>)}</div>
+        <div className="grid">
+          {cells.map((cell) => (
+            <div key={cell.key}
+              className={`day${cell.blank ? " out" : ""}${cell.attended ? " on" : ""}${cell.today ? " today" : ""}`}>
+              {cell.attended ? <i /> : null}
+              <b>{cell.blank ? "" : cell.day}</b>
             </div>
           ))}
         </div>
+        {edge ? (
+          <p className="edge">이 앱에 남은 기록은 여기까지예요</p>
+        ) : null}
+      </Card>
+
+      <div className="rhythm">
+        <span className="big serif num">{thisCount}<span>번</span></span>
+        <span className="prev num">지난달 {prevCount}번</span>
       </div>
 
-      <div className="upnext">
-        <p className="a num">{next}회까지 {needed}번 남았어요</p>
-        {shortfall ? <p className="b num">{shortfall}</p> : null}
-      </div>
+      {note.line ? (
+        <div className="since">
+          <p className={`a num${note.tone === "away" ? " quiet" : ""}`}>{note.line}</p>
+          {note.hint ? <p className="b">{note.hint}</p> : null}
+        </div>
+      ) : null}
 
-      <Card>
-        <ul>
-          {segments.map((segment, index) => (
-            <li key={`${text(segment.kind)}-${text(segment.passId)}-${index}`}
-              className="rowcard" style={{ paddingTop: index ? 10 : 0 }}>
-              <span style={{ fontSize: TYPE.caption }}>
-                {/* 앱에 옮기기 전의 수업도 회원이 한 수업이다. 빼면 "내가 더
-                    했는데" 가 되고, 그 기준이 무엇인지도 함께 말해야 한다. */}
-                {segment.kind === "prior" ? JOURNEY_PRIOR_NOTE : roundLabel(segment.round)}
-              </span>
-              <span className="muted num" style={{ fontSize: TYPE.caption }}>
-                {segment.total}회 중 {segment.used}회
-              </span>
-            </li>
+      <Card className="barwrap">
+        <p className="cap">최근 여섯 달</p>
+        <div className="bars">
+          {months.map((row, index) => (
+            <div key={`${row.year}-${row.month}`}
+              className={`bar${row.count ? " on" : ""}${index === months.length - 1 ? " last" : ""}`}>
+              <u style={{ height: `${Math.max(6, Math.round((row.count / top) * 52))}px` }} />
+              <em>{row.label}</em>
+            </div>
           ))}
-        </ul>
+        </div>
       </Card>
 
       {/* 격려 3 : 지식 1. 넷 중 하나만 지식이다. */}
       <Card className="know">
         <p className="cap">알아 두면 좋아요</p>
-        <p>코어는 한 번에 크게 쓰는 것보다 매일 조금씩 쌓일 때 더 오래 남습니다.</p>
+        <p>{note.tone === "away"
+          ? "2~3주 쉬면 심폐 지구력부터 먼저 떨어집니다. 근력은 더 오래 남고, 둘 다 주 한두 번만 이어가도 지키기 쉬워요."
+          : "같은 횟수라도 몰아서 하는 것보다 나눠서 할 때 몸이 더 잘 기억합니다."}</p>
+      </Card>
+
+      {/* 이 탭에서 회원이 할 수 있는 단 하나의 행동이라 카드 한 장을 준다.
+          맨 아래인 것도 뜻이 있다 -- 달력을 다 보고 내려온 사람이 마지막에
+          만나는 자리가 말이 나오는 자리다. */}
+      <Card className="say">
+        <p className="cap">의견 보내기</p>
+        <p>수업이 어땠는지, 불편한 것은 없는지 알려 주세요. 칭찬도 건의도 좋고, 익명으로도 보낼 수 있어요.</p>
+        <a className="btn" href={FEEDBACK_KAKAO_URL} target="_blank" rel="noopener noreferrer">
+          카카오톡으로 보내기 <span aria-hidden="true">→</span>
+        </a>
       </Card>
     </div>
   );
 }
+
 
 /* ── 상태 화면 ───────────────────────────────────────────────────────── */
 

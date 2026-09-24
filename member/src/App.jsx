@@ -10,13 +10,13 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { TYPE } from "../../src/features/ui/type-scale.js";
-import { CENTRE_NAME } from "./brand.js";
+import { CENTRE_NAME, CENTRE_TAGLINE } from "./brand.js";
 import { linkMemberAccount, sendCode, watchAuth, db } from "./firebase.js";
 import { LINK_RESULT, linkResultScreen } from "./link-result.js";
 import { readMemberLink, readMemberViews } from "./member-data.js";
 import { needsReverification, readVerifiedAt, writeVerifiedAt } from "./session.js";
 import {
-  History, Home, Journey, LinkNotice, LoadFailed, Loading, NotMigrated, Passes, Preparing,
+  History, Home, LinkNotice, LoadFailed, Loading, More, NotMigrated, Passes, Preparing,
 } from "./screens.jsx";
 
 /* 아이콘은 인라인 SVG 다. 아이콘 묶음을 하나 들이면 번들이 늘고, 이 앱이
@@ -25,7 +25,7 @@ const TABS = [
   { key: "home", label: "홈", path: "M3 10.5 12 3l9 7.5M5.5 9.5V20h13V9.5" },
   { key: "passes", label: "회원권", path: "M3 9a3 3 0 0 1 3-3h12a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3zM3 11h18" },
   { key: "history", label: "수업", path: "M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0M12 7v5l3 2" },
-  { key: "journey", label: "여정", path: "M4 19c4-1 5-6 8-6s4 5 8 4" },
+  { key: "more", label: "더보기", path: "M5 12h.01M12 12h.01M19 12h.01" },
 ];
 
 const text = (value) => String(value ?? "").trim();
@@ -48,8 +48,9 @@ export default function App() {
 function Shell({ children, footer }) {
   return (
     <div className="shell">
-      {/* 센터 이름은 작고 얇게 위에만. 화면의 주인공은 남은 횟수다. */}
-      <header className="head">{CENTRE_NAME}</header>
+      {/* 작고 얇게 위에만. 화면의 주인공은 남은 횟수다 -- 이름 쪽만 로즈로
+          도드라지고 앞말은 물러나 있다. */}
+      <header className="head">{CENTRE_TAGLINE} <b>{CENTRE_NAME}</b></header>
       <main className="main">{children}</main>
       {footer}
       <div id="recaptcha" />
@@ -189,7 +190,7 @@ function Member({ userId }) {
   else if (!current.view) body = <Preparing onRetry={load} />;
   else if (tab === "passes") body = <Passes view={current.view} />;
   else if (tab === "history") body = <History view={current.view} />;
-  else if (tab === "journey") body = <Journey view={current.view} />;
+  else if (tab === "more") body = <More view={current.view} />;
   else body = <Home view={current.view} />;
 
   return (

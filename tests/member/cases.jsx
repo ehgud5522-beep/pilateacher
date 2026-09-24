@@ -10,7 +10,7 @@
  */
 
 import {
-  History, Home, Journey, LinkNotice, LoadFailed, Loading, NotMigrated, Passes, Preparing,
+  History, Home, LinkNotice, LoadFailed, Loading, More, NotMigrated, Passes, Preparing,
 } from "../../member/src/screens.jsx";
 import { linkResultScreen } from "../../member/src/link-result.js";
 
@@ -37,6 +37,41 @@ const JOURNEY = {
   ],
   prior: 12, usedTotal: 26, grandTotal: 34, currentRound: 2, hasPrior: true,
 };
+
+/* ── 달력이 읽는 것 ──────────────────────────────────────────────────
+
+   더보기 탭은 투영의 수업 이력 하나만 센다. 서버도 규칙도 건드리지 않았으므로,
+   여기 있는 배열이 곧 그 탭이 아는 전부다. */
+
+const lesson = (year, month, day) => ({
+  occurredAt: new Date(year, month, day), type: "deduct", instructorName: "정예진",
+});
+
+/** 2026-09: 2·4·8·10·15·17·22·24 — 넉 주 연속, 이번 달 8번. */
+const STEADY = [
+  ...[2, 4, 8, 10, 15, 17, 22, 24].map((day) => lesson(2026, 8, day)),
+  ...[3, 5, 11, 13, 19, 21, 27].map((day) => lesson(2026, 7, day)),
+];
+
+/**
+ * 마지막이 9월 6일이다. NOW(9/24) 기준 18일 지났다.
+ *
+ * 여섯 달이 8·7·6·5·5·3 으로 내려간다 -- 이 모양이 이 탭을 만든 이유다.
+ * 사람은 "지난달보다 줄었다" 를 문장보다 모양으로 먼저 안다.
+ */
+const FADING = [
+  ...[1, 3, 6].map((day) => lesson(2026, 8, day)),
+  ...[4, 11, 18, 25, 28].map((day) => lesson(2026, 7, day)),
+  ...[2, 9, 16, 23, 30].map((day) => lesson(2026, 6, day)),
+  ...[1, 8, 15, 22, 26, 29].map((day) => lesson(2026, 5, day)),
+  ...[2, 6, 11, 15, 20, 24, 28].map((day) => lesson(2026, 4, day)),
+  ...[1, 4, 8, 11, 15, 18, 22, 25].map((day) => lesson(2026, 3, day)),
+];
+
+/** 상한(100건)에 닿은 이력. 가장 오래된 달보다 앞은 모르는 구간이다. */
+const CAPPED = Array.from({ length: 100 }, (_unused, index) => (
+  lesson(2026, 8 - Math.floor(index / 9), (index % 9) * 3 + 1)
+));
 
 const noop = () => {};
 
@@ -88,30 +123,22 @@ export function memberScreenCases() {
     },
     { name: "수업 이력 · 없음", element: <History view={view({ history: [] })} /> },
 
-    { name: "여정", element: <Journey view={view({ journey: JOURNEY })} /> },
-    { name: "여정 · 없음", element: <Journey view={view({ journey: null })} /> },
-    /* 가장 오래 다닌 회원. 예전에는 여기서 구슬 넷이 전부 채워지고 "다음" 줄이
-       사라졌다 -- 오래 올수록 화면이 비고 100회가 결승선으로 읽혔다. */
+    /* 꾸준한 회원. 9월 2·4·8·10·15·17·22·24 -- 넉 주 연속이다. */
+    { name: "더보기", element: <More view={view({ history: STEADY, journey: JOURNEY })} now={NOW} /> },
+    /* 뜸해진 회원. 마지막이 9월 6일이라 18일 지났고, 막대가 내려간다.
+       이 화면이 이 탭을 만든 이유다. */
+    { name: "더보기 · 뜸해짐", element: <More view={view({ history: FADING })} now={NOW} /> },
+    /* 아직 수업이 없다. 빈 달력을 그리되 지어낸 숫자를 넣지 않는다. */
+    { name: "더보기 · 첫 회원", element: <More view={view({ history: [], journey: null })} now={NOW} /> },
+    /* 이력이 상한(100건)에 닿았다. 가장 오래된 달보다 앞은 **모르는 구간**이고,
+       빈 달력을 말없이 그리면 회원은 그때 안 나온 것으로 읽는다. */
     {
-      name: "여정 · 100회 넘음",
-      element: <Journey view={view({ journey: { ...JOURNEY, usedTotal: 126 } })} />,
+      name: "더보기 · 기록 끝",
+      /* 가장 오래된 달로 넘겨 둔 화면이다. 그 끝에서만 말하면 되는 문구라
+         거기까지 가 있어야 볼 수 있다. */
+      element: <More view={view({ history: CAPPED })} now={NOW} monthsBack={11} />,
     },
-    /* 다음 이정표까지 4번인데 회원권에는 2번이 남았다. 파는 말은 하지 않고
-       두 사실을 나란히 놓는다 -- 셈은 회원이 한다. */
-    {
-      name: "여정 · 회원권 모자람",
-      element: <Journey view={view({ journey: JOURNEY, remainingTotal: 2 })} />,
-    },
-    {
-      name: "여정 · 잔여 0",
-      element: <Journey view={view({ journey: JOURNEY, remainingTotal: 0 })} />,
-    },
-    /* 이름이 없는 투영. "회원님" 같은 것을 채우지 않는다 -- 이름이 없다는 것은
-       무언가 잘못됐다는 뜻이고, 지어낸 말로 덮으면 아무도 모른다. */
-    {
-      name: "여정 · 이름 없음",
-      element: <Journey view={view({ journey: JOURNEY, name: "" })} />,
-    },
+
 
     { name: "불러오는 중", element: <Loading /> },
     { name: "조회 실패", element: <LoadFailed code="permission-denied" onRetry={noop} /> },
@@ -143,7 +170,7 @@ export function memberScreenCases() {
           <Home view={view({ journey: JOURNEY })} now={NOW} />
           <Passes view={view({ journey: JOURNEY })} />
           <History view={view({ journey: JOURNEY })} />
-          <Journey view={view({ journey: JOURNEY })} />
+          <More view={view({ history: STEADY, journey: JOURNEY })} now={NOW} />
         </div>
       ),
     },

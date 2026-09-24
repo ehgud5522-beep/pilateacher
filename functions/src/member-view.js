@@ -65,7 +65,36 @@ function passDisplayName(productId, productNames) {
 }
 
 /** 수업 이력 한 건에서 내보낼 것. */
-const HISTORY_FIELDS = Object.freeze(["occurredAt", "type", "instructorName"]);
+const HISTORY_FIELDS = Object.freeze(["occurredAt", "type", "instructorName", "memberNote"]);
+
+/**
+ * 회원에게 보낼 말의 길이.
+ *
+ * 짧아야 하는 이유가 있다. 이것은 수업기록이 아니라 회원에게 건네는 한두
+ * 문장이고, 길어지면 강사가 내부 기록을 여기에 옮겨 적게 된다 -- 그 순간
+ * 두 칸을 나눈 이유가 사라진다. 화면도 같은 값으로 막는다.
+ */
+const MEMBER_NOTE_MAX = 200;
+
+/**
+ * 이 이력 한 건에 붙는 회원용 문구.
+ *
+ * 차감에만 붙인다. 되돌린 차감(correction)과 담당 강사 변경(transfer)은 그
+ * 수업에 대한 말이 아니고, 같은 문구를 두 줄에 겹쳐 보여 주면 회원은 수업이
+ * 두 번 있었다고 읽는다.
+ *
+ * 길이를 여기서도 자른다. 화면과 리포지토리가 이미 막지만, 투영은 원본이
+ * 무엇이든 회원에게 나가는 마지막 관문이라 스스로 지켜야 한다.
+ */
+function memberNoteFor(entry, notes) {
+  if (text(entry?.type) !== LEDGER_TYPE_DEDUCT) return "";
+  const lessonId = text(entry?.lessonId);
+  if (!lessonId) return "";
+  const found = notes && typeof notes.get === "function"
+    ? text(notes.get(lessonId))
+    : text(notes?.[lessonId]);
+  return found.slice(0, MEMBER_NOTE_MAX);
+}
 
 /** 투영 문서의 최상위. */
 const VIEW_FIELDS = Object.freeze([
@@ -85,6 +114,9 @@ const FORBIDDEN_FIELDS = Object.freeze([
   "handedOver", "serviceUsed", "instructorId", "createdBy", "reason",
   "paymentMethod", "contractPrice", "fullRoomRate", "isDeputyDirector",
   "phone", "clientIds",
+  /* 강사가 자기를 위해 쓴 수업기록. 회원에게 나가는 것은 강사가 따로 적은
+     memberNote 한 줄뿐이고, 원문은 어떤 모양으로도 여기에 실리지 않는다. */
+  "notes", "lessonRecord", "confirmedRecord", "transcript", "rawTranscript", "aiMemory",
 ]);
 
 /** 회원에게 보여 줄 이력의 종류. 발급·취소는 회원권 목록에 이미 있다. */
@@ -92,6 +124,7 @@ const HISTORY_TYPES = Object.freeze(["deduct", "correction", "transfer"]);
 
 const PASS_STATUS_ACTIVE = "active";
 const PASS_STATUS_CANCELLED = "cancelled";
+const LEDGER_TYPE_DEDUCT = "deduct";
 
 const text = (value) => String(value ?? "").trim();
 const count = (value) => (Number.isInteger(Number(value)) && Number(value) >= 0 ? Number(value) : 0);
@@ -148,6 +181,7 @@ function isUsablePass(pass, now) {
  *   client            organizations/{org}/clients/{clientId} 문서
  *   passes            그 회원의 회원권 전부 (끝난 것 포함)
  *   ledger            그 회원권들의 원장 항목
+ *   memberNotes       lessonId → 강사가 회원에게 보내려고 적은 말
  *   locationName      지점 이름. id 가 아니다
  *   instructorNames   uid → 이름. 원장은 uid 만 들고 있다
  *   clientNames       clientId → 이름. 듀엣 상대를 부르는 데 쓴다
@@ -208,6 +242,10 @@ function buildMemberView(input) {
       /* 이름을 박아 둔다. 강사가 퇴사해도 그때 가르친 사람의 이름이 남아야
          한다 -- uid 를 내보내고 화면에서 찾게 하면 그 이름이 사라진다. */
       instructorName: lookup(input?.instructorNames, text(entry.instructorId)),
+      /* 강사가 회원에게 보내려고 따로 적은 말. 수업기록 원문이 아니다 --
+         원문은 강사가 다음 수업을 준비하려고 쓴 글이고 읽는 사람이 다르다.
+         두 칸이 나뉘어 있다는 것이 이 줄의 전부다. */
+      memberNote: memberNoteFor(entry, input?.memberNotes),
     }))
     .filter((entry) => entry.occurredAt)
     .sort((left, right) => right.occurredAt - left.occurredAt);
@@ -250,6 +288,7 @@ module.exports = {
   FORBIDDEN_FIELDS,
   HISTORY_FIELDS,
   HISTORY_TYPES,
+  MEMBER_NOTE_MAX,
   PASS_FIELDS,
   VIEW_FIELDS,
   buildMemberView,

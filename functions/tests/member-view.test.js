@@ -3,7 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
-  FORBIDDEN_FIELDS, HISTORY_FIELDS, PASS_FIELDS, VIEW_FIELDS, buildMemberView,
+  FORBIDDEN_FIELDS, HISTORY_FIELDS, MEMBER_NOTE_MAX, PASS_FIELDS, VIEW_FIELDS, buildMemberView,
 } = require("../src/member-view");
 
 const NOW = new Date(2026, 8, 20, 12, 0, 0);
@@ -352,4 +352,91 @@ test("이름이 늘어도 금지 목록은 그대로다", () => {
   for (const leak of ["30000", "1181818", "1300000", "pt_1_1_new", "card"]) {
     assert.doesNotMatch(json, new RegExp(leak), `${leak} 가 투영에 있다`);
   }
+});
+
+/* ── 강사가 회원에게 보낸 말 ─────────────────────────────────────────────
+
+   수업기록 원문은 강사가 다음 수업을 준비하려고 쓴 글이고, 이 한 줄은 회원을
+   향해 따로 적은 문장이다. 두 칸이 나뉘어 있다는 것을 여기서 고정한다. */
+
+test("회원에게 보낼 말은 그 수업의 차감 줄에 붙는다", () => {
+  const view = build({
+    ledger: [entry({ lessonId: "lesson-1" })],
+    memberNotes: { "lesson-1": "오늘 어깨가 한결 편해 보이셨어요" },
+  });
+  assert.equal(view.history[0].memberNote, "오늘 어깨가 한결 편해 보이셨어요");
+});
+
+test("말이 없는 수업은 빈 문자열이지 빠진 필드가 아니다", () => {
+  /* 화면은 이 값이 비었는지로 줄을 그릴지 정한다. 어떤 줄에는 있고 어떤
+     줄에는 없으면 그 판단이 undefined 를 만나 무너진다. */
+  const view = build({ ledger: [entry({ lessonId: "lesson-1" })] });
+  assert.equal(view.history[0].memberNote, "");
+  assert.deepEqual(Object.keys(view.history[0]).sort(), [...HISTORY_FIELDS].sort());
+});
+
+test("다른 수업의 말이 이 줄에 오지 않는다", () => {
+  const view = build({
+    ledger: [entry({ lessonId: "lesson-1" })],
+    memberNotes: { "lesson-2": "다른 수업의 말" },
+  });
+  assert.equal(view.history[0].memberNote, "");
+});
+
+test("lessonId 가 없는 옛 차감에는 말이 붙지 않는다", () => {
+  /* 규칙이 지금은 lessonId 를 요구하지만 그 전에 쌓인 항목이 있다. 빈
+     문자열을 열쇠로 쓰면 아무 말이나 걸린다. */
+  const view = build({
+    ledger: [entry({ lessonId: "" })],
+    memberNotes: { "": "열쇠 없는 말" },
+  });
+  assert.equal(view.history[0].memberNote, "");
+});
+
+test("되돌린 차감과 담당 강사 변경에는 말을 붙이지 않는다", () => {
+  /* 그 수업에 대한 말이 아니고, 같은 문구가 두 줄에 겹쳐 보이면 회원은
+     수업이 두 번 있었다고 읽는다. */
+  const view = build({
+    ledger: [
+      entry({ id: "d", lessonId: "lesson-1" }),
+      entry({ id: "c", type: "correction", lessonId: "lesson-1", occurredAt: new Date(2026, 8, 19) }),
+      entry({ id: "t", type: "transfer", lessonId: "lesson-1", occurredAt: new Date(2026, 8, 17) }),
+    ],
+    memberNotes: { "lesson-1": "오늘 어깨가 한결 편해 보이셨어요" },
+  });
+  const byType = Object.fromEntries(view.history.map((row) => [row.type, row.memberNote]));
+  assert.equal(byType.deduct, "오늘 어깨가 한결 편해 보이셨어요");
+  assert.equal(byType.correction, "");
+  assert.equal(byType.transfer, "");
+});
+
+test("긴 말은 투영에서 잘린다", () => {
+  /* 화면과 리포지토리가 이미 막지만, 투영은 회원에게 나가는 마지막 관문이라
+     스스로 지켜야 한다. */
+  const view = build({
+    ledger: [entry({ lessonId: "lesson-1" })],
+    memberNotes: { "lesson-1": "가".repeat(MEMBER_NOTE_MAX + 50) },
+  });
+  assert.equal(view.history[0].memberNote.length, MEMBER_NOTE_MAX);
+});
+
+test("수업기록 원문 쪽 필드는 이름부터 금지 목록에 있다", () => {
+  /* 회원에게 가는 것은 강사가 따로 적은 한 줄뿐이다. 언젠가 누군가 원문을
+     투영에 실으려 할 때 이 목록이 먼저 막는다. */
+  for (const field of ["notes", "lessonRecord", "confirmedRecord", "transcript", "rawTranscript"]) {
+    assert.ok(FORBIDDEN_FIELDS.includes(field), `${field} 가 금지 목록에 없다`);
+  }
+});
+
+test("원문이 입력에 섞여 들어와도 따라 나가지 않는다", () => {
+  const view = build({
+    client: client({ notes: [{ body: "코어근육이 많이 약해짐" }], aiMemory: ["무릎 주의"] }),
+    ledger: [entry({ lessonId: "lesson-1", lessonRecord: { rawTranscript: "오늘 너무 힘들어했고" } })],
+    memberNotes: { "lesson-1": "오늘 정말 잘하셨어요" },
+  });
+  const json = JSON.stringify(view);
+  assert.doesNotMatch(json, /코어근육/);
+  assert.doesNotMatch(json, /너무 힘들어했고/);
+  assert.doesNotMatch(json, /무릎 주의/);
+  assert.match(json, /오늘 정말 잘하셨어요/);
 });

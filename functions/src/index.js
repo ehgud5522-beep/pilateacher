@@ -10,7 +10,7 @@ const { HttpsError, onCall, onRequest } = require("firebase-functions/v2/https")
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { onDocumentWritten } = require("firebase-functions/v2/firestore");
 const {
-  clientIdsFromPassChange, rebuildMemberViews,
+  clientIdsFromLessonNoteChange, clientIdsFromPassChange, rebuildMemberViews,
 } = require("./member-view-triggers");
 const { createAccountDeletionService } = require("./account-deletion");
 const { createAIGatewayHandler } = require("./ai-gateway");
@@ -427,6 +427,31 @@ exports.rebuildMemberViewOnClientWrite = onDocumentWritten({
   });
   logger.info("member_view_rebuilt", {
     feature: "member_view", stage: "client_write",
+    organizationId: event.params.organizationId,
+    counts: results.reduce((tally, item) => ({ ...tally, [item.outcome]: (tally[item.outcome] || 0) + 1 }), {}),
+  });
+});
+
+/* 강사가 회원에게 보낼 말을 적었을 때. 이 쓰기는 회원권도 회원 문서도
+   건드리지 않으므로 위의 두 트리거로는 잡히지 않는다. */
+exports.rebuildMemberViewOnLessonNoteWrite = onDocumentWritten({
+  ...MEMBER_VIEW_TRIGGER_OPTIONS,
+  document: "organizations/{organizationId}/lessonNotes/{noteId}",
+}, async (event) => {
+  const clientIds = clientIdsFromLessonNoteChange(
+    event.data?.before?.data() || null,
+    event.data?.after?.data() || null,
+  );
+  if (!clientIds.length) return;
+  const results = await rebuildMemberViews(firestore, {
+    organizationId: event.params.organizationId,
+    clientIds,
+    eventAt: new Date(event.time),
+    buildJourney: await loadBuildJourney(),
+    log: logger,
+  });
+  logger.info("member_view_rebuilt", {
+    feature: "member_view", stage: "lesson_note_write",
     organizationId: event.params.organizationId,
     counts: results.reduce((tally, item) => ({ ...tally, [item.outcome]: (tally[item.outcome] || 0) + 1 }), {}),
   });

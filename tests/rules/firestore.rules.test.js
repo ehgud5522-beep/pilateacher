@@ -1547,6 +1547,63 @@ describe("collection queries the app will run", () => {
     await assertSucceeds(getDoc(doc(dbFor(users.member), "organizations", ORG_A, "lessonNotes", "note-seed")));
   });
 
+  /* ── 회원에게 보낼 말 ────────────────────────────────────────────────
+
+     규칙은 처음부터 이 모양이었고 쓰는 코드만 없었다. 이제 쓰는 코드가
+     생겼으니, 그 코드가 실제로 통과하는지를 규칙 엔진에 직접 묻는다 --
+     "통과할 것이다" 와 "통과한다" 는 다른 말이다. */
+
+  const memberNotePath = (user, noteId) => doc(dbFor(user), "organizations", ORG_A, "lessonNotes", noteId);
+
+  test("an instructor can write a member-facing note", async () => {
+    await assertSucceeds(setDoc(memberNotePath(users.instructor, "lesson-1_client-member"), {
+      organizationId: ORG_A, clientId: "client-member", lessonId: "lesson-1",
+      memberNote: "오늘 정말 잘하셨어요",
+      instructorId: users.instructor, createdBy: users.instructor,
+      createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+    }));
+  });
+
+  test("revising the note must not resend createdAt", async () => {
+    /* immutable 은 값이 아니라 건드린 필드를 본다(affectedKeys). createdAt 에
+       serverTimestamp 를 다시 실으면 값이 달라져 고치기가 통째로 거부되고,
+       강사에게는 "권한이 없습니다" 로만 보인다. 리포지토리가 처음인지
+       고치는지를 먼저 읽는 이유가 이것이다. */
+    const note = memberNotePath(users.instructor, "note-seed");
+    await assertSucceeds(setDoc(note, { memberNote: "고친 말", updatedAt: serverTimestamp() }, { merge: true }));
+    await assertFails(setDoc(note, { memberNote: "또 고친 말", createdAt: serverTimestamp() }, { merge: true }));
+  });
+
+  test("only the instructor who wrote it can revise it", async () => {
+    // note-seed 의 createdBy 는 instructor 다.
+    await assertFails(setDoc(memberNotePath(users.owner, "note-seed"), {
+      memberNote: "대표가 고친 말", updatedAt: serverTimestamp(),
+    }, { merge: true }));
+  });
+
+  test("the member never reads or writes the note directly", async () => {
+    /* 회원 앱은 투영 두 컬렉션만 읽는다. 이 문서에는 userId 가 없으므로 회원
+       본인도 열지 못하고, 강사가 적은 말은 투영을 거쳐서만 간다. */
+    await assertFails(setDoc(memberNotePath(users.member, "lesson-2_client-member"), {
+      organizationId: ORG_A, clientId: "client-member", lessonId: "lesson-2",
+      memberNote: "회원이 쓴 말", createdBy: users.member,
+      createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+    }));
+  });
+
+  test("the note cannot be moved to another member after the fact", async () => {
+    await assertFails(setDoc(memberNotePath(users.instructor, "note-seed"), {
+      clientId: "someone-else", updatedAt: serverTimestamp(),
+    }, { merge: true }));
+  });
+
+  test("a note is never deleted", async () => {
+    /* 지우기는 빈 문자열로 저장된다. 보냈다가 거둬들인 사실은 남는 편이 낫고,
+       무엇보다 규칙이 삭제를 막는다. */
+    await assertFails(deleteDoc(memberNotePath(users.instructor, "note-seed")));
+    await assertFails(deleteDoc(memberNotePath(users.owner, "note-seed")));
+  });
+
   /* 아래 셋은 규칙을 고치지 않았다. read 조건에 resource.data 가 없어 처음부터
      list 가 통과한다. 고치지 않았다는 사실 자체를 고정해 둔다 -- 나중에 누가
      organizationId 조건을 "더 안전해 보여서" 덧붙이면 여기서 깨진다. */

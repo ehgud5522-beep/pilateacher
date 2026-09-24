@@ -277,6 +277,10 @@ export function History({ view }) {
                 {text(row.instructorName)}
                 {text(row.type) !== "deduct" ? ` · ${HISTORY_LABEL[text(row.type)] || text(row.type)}` : ""}
               </p>
+              {/* 강사가 이 수업에 대해 회원에게 남긴 말. 수업기록 원문이 아니라
+                  회원을 향해 따로 적은 문장이고, 없으면 줄 자체가 없다 --
+                  "메시지 없음" 을 그리면 빈 줄이 기록처럼 쌓인다. */}
+              {text(row.memberNote) ? <p className="note">{text(row.memberNote)}</p> : null}
             </div>
             <p className="one num">{text(row.type) === "correction" ? "+1회" : "1회"}</p>
           </li>

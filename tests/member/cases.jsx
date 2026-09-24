@@ -73,6 +73,19 @@ export function memberScreenCases() {
         history: [{ occurredAt: new Date(2026, 8, 19), type: "correction", instructorName: "정예진" }],
       })} />,
     },
+    {
+      /* 강사가 회원에게 보내려고 따로 적은 한 줄. 수업기록 원문이 아니다. */
+      name: "수업 이력 · 강사의 말",
+      element: <History view={view({
+        history: [
+          {
+            occurredAt: new Date(2026, 8, 19), type: "deduct", instructorName: "정예진",
+            memberNote: "오늘 어깨 내리는 게 한결 편해 보이셨어요. 다음까지 벽 스트레칭만 짧게 해 보세요.",
+          },
+          { occurredAt: new Date(2026, 8, 18), type: "deduct", instructorName: "정예진", memberNote: "" },
+        ],
+      })} />,
+    },
     { name: "수업 이력 · 없음", element: <History view={view({ history: [] })} /> },
 
     { name: "여정", element: <Journey view={view({ journey: JOURNEY })} /> },

@@ -141,6 +141,32 @@ test("되돌린 차감은 숨기지 않는다", async (t) => {
   assert.match(markupOf("수업 이력 · 되돌린 차감"), /차감 취소/);
 });
 
+test("강사가 보낸 말은 그 수업 줄에 붙는다", async (t) => {
+  const markupOf = await memberScreens(t);
+  const said = markupOf("수업 이력 · 강사의 말");
+  assert.match(said, /어깨 내리는 게 한결 편해 보이셨어요/);
+  assert.match(said, /벽 스트레칭/);
+});
+
+test("말이 없는 수업은 빈 자리를 그리지 않는다", async (t) => {
+  /* "메시지 없음" 을 그리면 빈 줄이 기록처럼 쌓이고, 회원은 강사가 무언가
+     빠뜨렸다고 읽는다. 없으면 줄 자체가 없어야 한다. */
+  const markupOf = await memberScreens(t);
+  const said = markupOf("수업 이력 · 강사의 말");
+  assert.equal((said.match(/class="note"/g) || []).length, 1);
+  assert.doesNotMatch(said, /메시지 없음|남긴 말 없음/);
+});
+
+test("강사 혼자 보는 기록은 회원 화면에 오지 않는다", async (t) => {
+  /* 투영이 이미 막지만 화면도 확인한다. 이 두 칸이 섞이는 순간 강사가 쓰는
+     방식이 바뀌어야 한다 -- 그때는 이 앱이 기록을 망가뜨린 것이다. */
+  const markupOf = await memberScreens(t);
+  const all = markupOf("전부");
+  for (const forbidden of ["코어근육", "수업기록", "lessonRecord", "rawTranscript"]) {
+    assert.doesNotMatch(all, new RegExp(forbidden), `${forbidden} 가 회원 화면에 있다`);
+  }
+});
+
 test("아직 수업이 없으면 기다린다고 말한다", async (t) => {
   const markupOf = await memberScreens(t);
   const empty = markupOf("수업 이력 · 없음");

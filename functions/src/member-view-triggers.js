@@ -17,6 +17,10 @@
  * clients 는 따로 필요하다. 연결(linkMemberAccount)이 userId 를 채우는 순간과
  * 이름·상태가 바뀌는 순간은 회원권을 건드리지 않는다.
  *
+ * lessonNotes 도 따로다. 강사가 회원에게 보낼 말을 적는 것은 회원권도 회원
+ * 문서도 건드리지 않는다 -- 트리거가 없으면 그 말은 다음 차감이 일어날 때까지
+ * 회원 앱에 나타나지 않고, 강사는 저장했는데 안 보인다고 말하게 된다.
+ *
  * ── 순서가 뒤집혀도 옛 값으로 덮이지 않는다 ──
  * 같은 회원에 쓰기가 몰리면 호출 둘이 겹칠 수 있다. A 가 먼저 읽고, B 가 나중에
  * 읽어 먼저 쓰고, 그 뒤에 A 가 쓰면 옛 값이 남는다.
@@ -58,6 +62,24 @@ function clientIdsFromPassChange(before, after) {
     if (anchor) found.add(anchor);
     const listed = Array.isArray(snapshot.clientIds) ? snapshot.clientIds : [];
     for (const id of listed) if (text(id)) found.add(text(id));
+  }
+  return [...found];
+}
+
+/**
+ * 이 회원용 문구 변화가 어느 회원의 투영을 건드리는가.
+ *
+ * before 와 after 를 모두 본다 -- 규칙이 clientId 를 못 바꾸게 막고 있지만,
+ * 그 규칙을 믿고 after 만 보면 규칙이 느슨해지는 날 조용히 틀린다.
+ *
+ * @param {any} before @param {any} after
+ * @returns {Array<string>}
+ */
+function clientIdsFromLessonNoteChange(before, after) {
+  const found = new Set();
+  for (const snapshot of [before, after]) {
+    const id = text(snapshot?.clientId);
+    if (id) found.add(id);
   }
   return [...found];
 }
@@ -107,6 +129,33 @@ async function collectMemberViewInput(db, organizationId, clientId) {
   const ledger = ledgerPages.flatMap((page) => page.docs.map((snapshot) => ({
     id: snapshot.id, ...snapshot.data(),
   })));
+
+  /* 강사가 회원에게 보내려고 적은 말.
+
+     질의하지 않고 문서 id 로 바로 집는다. 문서 id 가 `${lessonId}_${clientId}`
+     라서 방금 읽은 원장 항목만으로 경로가 전부 나온다 -- 새 색인이 필요 없고,
+     읽는 건수가 이력 상한을 넘지 않는다.
+
+     where("clientId","==",…) 로 긁으면 색인은 자동이지만 정렬을 붙이는 순간
+     복합 색인이 필요해지고, 정렬 없이 자르면 최근 것이 빠진다. */
+  const noteIds = [...new Set(ledger
+    .filter((entry) => text(entry.type) === "deduct")
+    .map((entry) => text(entry.lessonId))
+    .filter(Boolean))].slice(0, HISTORY_LIMIT);
+  const memberNotes = {};
+  if (noteIds.length) {
+    const noteSnapshots = await db.getAll(...noteIds.map((lessonId) => (
+      org.collection("lessonNotes").doc(`${lessonId}_${clientId}`)
+    )));
+    for (const snapshot of noteSnapshots) {
+      if (!snapshot.exists) continue;
+      const data = snapshot.data() || {};
+      const body = text(data.memberNote);
+      /* 다른 회원의 문서를 잘못 집었다면 담지 않는다. id 규칙이 이미 막지만,
+         회원용 투영에서 남의 말이 보이는 것은 되돌릴 수 없는 종류의 실수다. */
+      if (body && text(data.clientId) === clientId) memberNotes[text(data.lessonId)] = body;
+    }
+  }
 
   /* 지점 이름과 강사 이름. 못 읽어도 투영은 만든다 -- 이름이 비는 것이 잔여가
      안 보이는 것보다 낫다. */
@@ -167,6 +216,7 @@ async function collectMemberViewInput(db, organizationId, clientId) {
     client,
     passes,
     ledger,
+    memberNotes,
     locationName: text(locationSnapshot?.data()?.name),
     productNames,
     instructorNames,
@@ -273,6 +323,7 @@ async function rebuildMemberViews(db, input) {
 module.exports = {
   HISTORY_LIMIT,
   LEDGER_LIMIT_PER_PASS,
+  clientIdsFromLessonNoteChange,
   clientIdsFromPassChange,
   collectMemberViewInput,
   rebuildMemberView,

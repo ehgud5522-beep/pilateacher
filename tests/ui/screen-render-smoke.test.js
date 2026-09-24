@@ -34,6 +34,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "일정 탭 · 소속 · 차감 전원 실패",
     "일정 탭 · 소속 · 시작 전",
     "일정 탭 · 소속 · 시작 전 · 실패 기록",
+    "일정 탭 · 소속 · 회원에게 보낼 말",
+    "일정 탭 · 소속 · 회원에게 보낼 말 · 확정됨",
     "일정 탭 · 소속 · 확정됨 · 대표",
     "일정 탭 · 개인 모드 · 확정 없음",
     "회원 목록",
@@ -1951,4 +1953,53 @@ test("a failed lesson keeps its reason and its retry even before it starts", asy
   // 코드가 사람 말로 바뀌어 있다.
   assert.match(failed, /아직 시작하지 않은 수업입니다/);
   assert.match(failed, /occurred_at_future/, "원본 코드가 사라졌다");
+});
+
+/* ── 회원에게 보낼 말 ────────────────────────────────────────────────────
+
+   수업기록은 강사가 다음 수업을 준비하려고 쓰는 글이고, 이 칸은 회원을 향해
+   따로 적는 한 줄이다. 두 칸이 나뉘어 있다는 것이 이 기능의 전부다. */
+
+test("the member-facing note sits beside the lesson record, not inside it", async (t) => {
+  const markupOf = await issueScreens(t);
+  const sheet = markupOf("일정 탭 · 소속 · 회원에게 보낼 말");
+
+  assert.match(sheet, /회원에게 보낼 말/);
+  // 강사가 자기를 위해 쓰는 기록도 그 자리에 그대로 있다 -- 한쪽이 다른 쪽을
+  // 밀어내면 강사는 둘 중 하나를 포기한다.
+  assert.match(sheet, /기록하기/);
+  assert.match(sheet, /직접입력/);
+  // 회원에게 가는 칸이라는 것을 칸 자체가 말한다.
+  assert.match(sheet, /data-member-note/);
+});
+
+test("before the note is loaded the box says so instead of looking empty", async (t) => {
+  /* 빈 칸으로 보이면 강사는 아직 안 썼다고 읽고 그 위에 덮어쓴다 -- 먼젓번에
+     보낸 말이 소리 없이 사라진다. */
+  const markupOf = await issueScreens(t);
+  const sheet = markupOf("일정 탭 · 소속 · 회원에게 보낼 말");
+
+  assert.match(sheet, /불러오는 중…/);
+  assert.match(sheet, /disabled=""/, "읽어 오기 전인데 입력이 열려 있다");
+});
+
+test("the note says when the member will actually see it", async (t) => {
+  /* 확정 전에 저장하면 회원 앱에는 아직 없다 -- 회원의 수업 이력은 차감으로
+     만들어지기 때문이다. 말하지 않으면 강사는 저장하고 나서 안 보인다고 한다.
+     실제로 그 일이 있었고, 그래서 이 기능이 생겼다. */
+  const markupOf = await issueScreens(t);
+
+  const before = markupOf("일정 탭 · 소속 · 회원에게 보낼 말");
+  assert.match(before, /수업을 확정해 회원권이 차감되면 회원 앱에 보입니다/);
+
+  const after = markupOf("일정 탭 · 소속 · 회원에게 보낼 말 · 확정됨");
+  assert.match(after, /회원 앱의 수업 탭에 이 수업과 함께 보입니다/);
+  assert.doesNotMatch(after, /확정해 회원권이 차감되면/);
+});
+
+test("the note is not offered where there is no member app", async (t) => {
+  /* 개인 모드에는 조직 회원이 없다. 보낼 곳이 없는 칸을 그려 두면 강사는
+     쓰고 나서 아무 데도 가지 않은 것을 나중에 안다. */
+  const markupOf = await issueScreens(t);
+  assert.doesNotMatch(markupOf("일정 탭 · 개인 모드 · 확정 없음"), /회원에게 보낼 말/);
 });

@@ -95,6 +95,9 @@ import {
 } from "./data/repositories/location-repository.js";
 import { connectRepositoryLog, toleratingReadFailure } from "./data/repositories/repository-read.js";
 import {
+  MEMBER_NOTE_MAX, memberNoteSaveFailure, readMemberNote, saveMemberNote,
+} from "./data/repositories/member-note-repository.js";
+import {
   createProduct, listProducts, productBaseUnitPrice, setProductStatus,
 } from "./data/repositories/product-repository.js";
 import {
@@ -2830,7 +2833,97 @@ function SchedSettleBlock({ s, members, canSettle, settled, canUnsettle, notStar
   );
 }
 
-function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset, quickAddRequest, onConsumeQuickAdd, openLessonId, onConsumeOpenLesson, onOpenMember, onAddMember, onOpenAttendance, organizationMode = false, rateOf, onSettleLesson, onUnsettleLesson, canUnsettle = false, payCard = null }) {
+/* 회원 앱에 보낼 한 줄이 없을 때 여기가 무엇을 하는 자리인지 말한다. */
+const MEMBER_NOTE_PLACEHOLDER = "오늘 좋았던 점, 다음까지 해 보면 좋을 것 (회원이 읽습니다)";
+
+/**
+ * 강사가 회원에게 보낼 말.
+ *
+ * ── 왜 수업기록 칸과 따로 있는가 ──
+ * 수업기록은 강사가 다음 수업을 준비하려고 쓰는 글이다. "코어근육이 많이
+ * 약해짐" 은 강사끼리 쓰는 말이고, 같은 문장을 회원이 읽으면 뜻이 달라진다.
+ * 그래서 회원에게 가는 것은 이 칸에 적은 것뿐이고, 기록 원문은 기기에 남는다.
+ *
+ * ── 확정 전에는 회원에게 보이지 않는다 ──
+ * 회원 앱의 수업 탭은 원장의 차감으로 만들어진다. 차감이 없으면 그 수업은
+ * 회원의 이력에 아예 없고, 없는 줄에 말만 띄울 자리가 없다. 저장은 지금
+ * 되지만 보이는 것은 확정 뒤라는 것을 화면이 먼저 말한다 -- 말하지 않으면
+ * 강사는 저장하고 나서 안 보인다고 하게 된다.
+ */
+function SchedMemberNote({ lessonId, clientId, settled, onRead, onSave, onToast }) {
+  const [body, setBody] = useState("");
+  const [loaded, setLoaded] = useState(false);
+  const [readError, setReadError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [savedBody, setSavedBody] = useState("");
+
+  /* 회원을 바꾸면 그 회원의 말을 다시 읽는다. 안 읽으면 앞 회원에게 쓰던
+     문장이 다음 회원 칸에 그대로 남는다 -- 그대로 저장되면 남의 말이 간다. */
+  useEffect(() => {
+    let alive = true;
+    setLoaded(false);
+    setReadError("");
+    setBody("");
+    setSavedBody("");
+    if (!lessonId || !clientId || typeof onRead !== "function") { setLoaded(true); return undefined; }
+    (async () => {
+      try {
+        const found = await onRead(lessonId, clientId);
+        if (!alive) return;
+        setBody(String(found || ""));
+        setSavedBody(String(found || ""));
+      } catch (error) {
+        /* 못 읽은 것과 안 쓴 것은 다르다. 빈 칸으로 그려 두면 강사는 지웠다고
+           읽고 그 위에 덮어쓴다. */
+        if (alive) setReadError(`이전에 보낸 말을 불러오지 못했어요 (코드 ${String(error?.code || "unknown")})`);
+      } finally {
+        if (alive) setLoaded(true);
+      }
+    })();
+    return () => { alive = false; };
+  }, [lessonId, clientId, onRead]);
+
+  if (typeof onSave !== "function") return null;
+  const trimmed = body.trim().slice(0, MEMBER_NOTE_MAX);
+  const dirty = trimmed !== savedBody.trim();
+
+  return (
+    <div data-member-note className="space-y-1.5 rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
+      <div className="flex items-center gap-2">
+        <p className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: INK }}>회원에게 보낼 말 <span style={{ fontWeight: 600, color: FAINT }}>(선택)</span></p>
+        <span className="shrink-0 text-caption tabular-nums" style={{ color: FAINT }}>{trimmed.length}/{MEMBER_NOTE_MAX}</span>
+      </div>
+      {readError ? <p role="alert" className="text-xs font-bold" style={{ color: BAD }}>{readError}</p> : null}
+      <textarea rows={2} value={body} disabled={!loaded} maxLength={MEMBER_NOTE_MAX}
+        onChange={(event) => setBody(event.target.value)}
+        placeholder={loaded ? MEMBER_NOTE_PLACEHOLDER : "불러오는 중…"}
+        className={`${inputCls} h-auto resize-none py-2.5 leading-relaxed disabled:opacity-60`} />
+      <p className="text-xs leading-relaxed" style={{ color: INK2 }}>
+        {settled
+          ? "회원 앱의 수업 탭에 이 수업과 함께 보입니다."
+          : "수업을 확정해 회원권이 차감되면 회원 앱에 보입니다. 지금 저장해 두어도 됩니다."}
+      </p>
+      <button type="button" disabled={!loaded || saving || !dirty}
+        onClick={async () => {
+          setSaving(true);
+          try {
+            const saved = await onSave(lessonId, clientId, trimmed);
+            if (saved === false) return;
+            setSavedBody(trimmed);
+            onToast?.({ ok: true, msg: trimmed ? "회원에게 보낼 말을 저장했습니다." : "회원에게 보낼 말을 지웠습니다." });
+          } finally {
+            setSaving(false);
+          }
+        }}
+        className="h-10 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35"
+        style={{ backgroundColor: PRIMARY }}>
+        {saving ? "저장 중" : dirty ? "저장" : "저장됨"}
+      </button>
+    </div>
+  );
+}
+
+function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset, quickAddRequest, onConsumeQuickAdd, openLessonId, onConsumeOpenLesson, onOpenMember, onAddMember, onOpenAttendance, organizationMode = false, rateOf, onSettleLesson, onUnsettleLesson, onReadMemberNote, onSaveMemberNote, canUnsettle = false, payCard = null }) {
   const initialDisplay = useMemo(() => {
     try { return JSON.parse(localStorage.getItem(SCHEDULE_VIEW_KEY) || "null") || {}; }
     catch (e) { return {}; }
@@ -3121,7 +3214,7 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
       {editing && <ScheduleForm draft={liveEditing} members={db.members} schedule={db.schedule} briefingOf={briefingOf} scheduleColors={scheduleColors} returnFocusRef={scheduleTriggerRef} onClose={() => setEditing(null)}
         onSubmit={(v) => { onSave(v); setEditing(null); }} onDelete={(id) => { onDelete(id); setEditing(null); }}
         onStatus={onStatus} onStatusAll={onStatusAll} onNoshowFee={onNoshowFee} onGroupDone={onGroupDone}
-        organizationMode={organizationMode} rateOf={rateOf} onSettleLesson={onSettleLesson} onUnsettleLesson={onUnsettleLesson} canUnsettle={canUnsettle}
+        organizationMode={organizationMode} rateOf={rateOf} onSettleLesson={onSettleLesson} onUnsettleLesson={onUnsettleLesson} onReadMemberNote={onReadMemberNote} onSaveMemberNote={onSaveMemberNote} onToast={onToast} canUnsettle={canUnsettle}
         onNoComment={onNoComment} onSaveNote={onSaveNote} onOpenMember={onOpenMember} onFocusMemberWeek={(memberId) => { setFocusedMemberId(memberId); setEditing(null); }} />}
       {queueOpen && (
         <ScheduleQueueSheet tasks={taskQueue} members={db.members} returnFocusRef={queueTriggerRef} onClose={() => setQueueOpen(false)}
@@ -3508,7 +3601,7 @@ function confirmedLessonNoteArgs(note, reviewedDraft = null) {
   };
 }
 
-function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, onClose, onSubmit, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onOpenMember, onFocusMemberWeek, scheduleColors = null, organizationMode = false, rateOf, onSettleLesson, onUnsettleLesson, canUnsettle = false }) {
+function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, onClose, onSubmit, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onOpenMember, onFocusMemberWeek, scheduleColors = null, organizationMode = false, rateOf, onSettleLesson, onUnsettleLesson, onReadMemberNote, onSaveMemberNote, onToast, canUnsettle = false }) {
   /* 확정된 수업은 출석을 바꿀 수 없다. 상태를 바꿔도 이미 나간 차감은 따라오지
      않고, 둘이 어긋나면 어느 것이 맞는지 알 수 없다. */
   const settledLesson = organizationMode && isSettledLesson(draft);
@@ -3810,6 +3903,13 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
                     {recordMode === "voice" && <VoiceNote key={lessonRecordSessionKey(activeMemberId, draft.id)} memberId={activeMemberId} memberName={activeMember?.name || "회원"} duetPartner={duetPartnerOf(activeMember)} lessonId={draft.id} onLater={() => setRecordMode(null)} onClose={onClose} onDeferred={onClose} onDirectEntry={(message) => { setRecordFallback(message || "음성 인식을 사용할 수 없어 직접 입력으로 전환했습니다."); setRecordMode("write"); }} onDraftChange={(text, meta, options) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, options)} onApply={(text, meta) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, { confirmed: true, upsert: true })} />}
                     {recordMode === "write" && <><textarea rows={4} value={recordBody} onChange={(e) => setRecordBody(e.target.value)} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} /><button disabled={!recordBody.trim()} onClick={async () => { const stored = await onSaveNote?.(activeMemberId, draft.type, draft.id, recordBody.trim(), null); if (stored !== false) onClose(); }} className="h-11 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35" style={{ backgroundColor: PRIMARY }}>저장</button></>}
                   </div>
+                )}
+
+                {/* 위 기록은 강사의 것이고, 이 칸은 회원의 것이다. 나란히 두되
+                    섞이지 않게 둔다 -- 한 칸이면 강사는 둘 중 하나를 포기한다. */}
+                {organizationMode && (
+                  <SchedMemberNote key={`${draft.id}-${activeMemberId}`} lessonId={draft.id} clientId={activeMemberId}
+                    settled={settledLesson} onRead={onReadMemberNote} onSave={onSaveMemberNote} onToast={onToast} />
                 )}
                 </>}
               </>
@@ -19526,6 +19626,17 @@ export function createAppScreenSmokeCases() {
         settleAttendee("m-local-1", { orgSkip: "write_failed", orgSkipCode: "occurred_at_future" }),
       ],
     })) },
+    /* 회원에게 보낼 말. 수업기록 칸과 나란히 있되 섞이지 않는다.
+       첫 그림에는 아직 읽어 온 것이 없다 -- 빈 칸으로 보이면 강사가 그 위에
+       덮어써서 먼젓번에 보낸 말이 사라진다. 그래서 잠가 두고 그렇게 말한다. */
+    { name: "일정 탭 · 소속 · 회원에게 보낼 말", element: scheduleWithSettlement(settleLessonOf(), {
+      onReadMemberNote: asyncNoop, onSaveMemberNote: asyncNoop, onToast: noop,
+    }) },
+    { name: "일정 탭 · 소속 · 회원에게 보낼 말 · 확정됨", element: scheduleWithSettlement(settleLessonOf({
+      orgSettledAt: "2026-09-19T07:00:00.000Z",
+      orgSettledOutcome: "complete",
+      attendees: [settleAttendee("m-local-1", { orgPassId: "p1", orgEntryId: "settle-1_deduct" })],
+    }), { onReadMemberNote: asyncNoop, onSaveMemberNote: asyncNoop, onToast: noop }) },
     { name: "일정 탭 · 소속 · 확정됨 · 대표", element: scheduleWithSettlement(settleLessonOf({
       orgSettledAt: "2026-09-19T07:00:00.000Z",
       attendees: [settleAttendee("m-local-1", { orgPassId: "p1", orgEntryId: "settle-1_deduct" })],
@@ -21502,6 +21613,36 @@ export default function App() {
      두 번 눌리는 것을 막는다. 같은 수업을 두 번 확정하면 같은 회차가 두 번
      차감되고, 원장은 append-only 라 고칠 수 없다. */
   const settlingRef = useRef(new Set());
+  /* 강사가 회원에게 보낼 말. 읽기와 쓰기 둘 다 여기 있는 이유는 조직 id 와
+     내 uid 가 여기서만 확실하기 때문이다 -- 일정 시트까지 그 둘을 들고 내려가면
+     전달만 하는 자리가 늘고, 어느 화면에서 빠졌는지 추적이 어려워진다. */
+  const readMemberNoteFor = useCallback(async (lessonId, clientId) => {
+    if (!organizationRoster || !organizationContext.organizationId) return "";
+    return readMemberNote(organizationContext.organizationId, { lessonId, clientId });
+  }, [organizationRoster, organizationContext.organizationId]);
+
+  const saveMemberNoteFor = useCallback(async (lessonId, clientId, memberNote) => {
+    if (!organizationRoster || !organizationContext.organizationId) return false;
+    try {
+      await saveMemberNote(organizationContext.organizationId, {
+        lessonId, clientId, memberNote,
+        instructorId: account?.id || "",
+        userId: account?.id || "",
+      });
+      return true;
+    } catch (error) {
+      /* 종류마다 할 일이 다르다. 코드는 언제나 함께 보여준다 -- 코드 없는
+         "오류가 발생했습니다" 는 강사도 대표도 아무것도 할 수 없게 만든다. */
+      const failure = memberNoteSaveFailure(error);
+      deviceLog("member_note_save_failed", {
+        feature: "member_note", stage: "save", errorDomain: "firestore",
+        errorCode: failure.errorCode, kind: failure.kind, lessonId,
+      });
+      setToast({ ok: false, msg: failure.message });
+      return false;
+    }
+  }, [organizationRoster, organizationContext.organizationId, account?.id]);
+
   const settleLesson = async (lessonId) => {
     const lesson = db.schedule.find((item) => item.id === lessonId);
     if (!lesson || !organizationRoster || isSettledLesson(lesson)) return;
@@ -22482,7 +22623,7 @@ export default function App() {
       <div className="pt-app-shell safe-t flex h-full min-h-0 w-full flex-col" style={{ backgroundColor: PAGE, boxShadow: "0 0 0 1px rgba(28,36,51,.04)" }}>
         <div className="relative min-h-0 flex-1 overflow-hidden">
           <Guard key={tab}>
-            {tab === "schedule" && <ScheduleManager db={rosterDb} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterMembers ? () => { setMemberRegistrationRequest((value) => value + 1); setTab("members"); } : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} canUnsettle={organizationRoster && organizationContext.role === ROLES.OWNER} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
+            {tab === "schedule" && <ScheduleManager db={rosterDb} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterMembers ? () => { setMemberRegistrationRequest((value) => value + 1); setTab("members"); } : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && organizationContext.role === ROLES.OWNER} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
             {tab === "members" && <div className={`h-full min-h-0 ${mobileView === "detail" && member ? "pt-member-detail-active" : ""}`}>
               <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList members={rosterMembers} schedule={db.schedule} settings={db.settings} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} canBrowseAll={!organizationRoster || canBrowseAllClients(organizationContext.role)} viewerRole={organizationContext.role} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterMembers} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} journeyOf={organizationRoster ? journeyFor : undefined} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
               {mobileView === "detail" && member && <div className="pt-member-detail-pane h-full min-h-0">

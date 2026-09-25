@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   CLIENT_STATUS_FOR_CREATE, createClient, createFirestoreClientStore,
-  findSameNameClients, listClients, normalizePhone,
+  findSameNameClients, findSamePhoneClients, listClients, normalizePhone,
 } from "../../src/data/repositories/client-repository.js";
 
 const ORG = "center-a";
@@ -195,4 +195,62 @@ test("the Firestore store answers the whole ClientStore shape", () => {
   for (const method of ["list", "create", "serverTimestamp"]) {
     assert.equal(typeof store[method], "function", `${method} 가 없으면 호출부가 죽는다`);
   }
+});
+
+/* ── 번호가 겹치면 등록하지 않는다 ───────────────────────────────────
+
+   동명이인과 다르다. 이름이 같은 사람은 실제로 있지만 번호가 같은 사람은
+   없다 -- 같은 번호가 둘이면 회원 앱이 둘을 찾아 누구의 잔여인지 정하지
+   못하고(ambiguous), 연락처 변경도 그 번호를 영영 거부한다. */
+
+test("같은 번호를 쓰는 회원을 찾는다", () => {
+  const clients = [
+    { id: "a", name: "김하나", phone: "01012345678" },
+    { id: "b", name: "박두리", phone: "010-9999-8888" },
+  ];
+  assert.deepEqual(findSamePhoneClients(clients, "010-1234-5678").map((item) => item.id), ["a"]);
+  // 철자가 달라도 같은 번호다. 양쪽 다 숫자만 남겨 비교한다.
+  assert.deepEqual(findSamePhoneClients(clients, "01099998888").map((item) => item.id), ["b"]);
+  assert.deepEqual(findSamePhoneClients(clients, "01055556666"), []);
+  assert.deepEqual(findSamePhoneClients(clients, ""), []);
+  assert.deepEqual(findSamePhoneClients(null, "01012345678"), []);
+});
+
+test("겹치는 번호로는 등록되지 않는다", async () => {
+  const writes = [];
+  const store = {
+    create: async (path, data) => { writes.push([path, data]); },
+    serverTimestamp: async () => "SERVER_TIME",
+    list: async () => [],
+  };
+  await assert.rejects(
+    () => createClient("center-a", {
+      name: "김하나", phone: "010-1234-5678", locationId: "bansong", createdBy: "owner-a",
+      existingClients: [{ id: "a", name: "박두리", phone: "01012345678" }],
+    }, { store }),
+    (error) => {
+      const thrown = /** @type {any} */ (error);
+      assert.equal(thrown.code, "duplicate_phone");
+      // 누구의 번호인지 함께 올려 보낸다 -- 화면이 "같은 분이면 합치기" 를 말할 수 있어야 한다.
+      assert.equal(thrown.clientName, "박두리");
+      return true;
+    },
+  );
+  assert.deepEqual(writes, [], "거부했는데 문서가 만들어졌다");
+});
+
+test("명부를 넘겨주지 않으면 검사하지 않는다", async () => {
+  /* 여기서 명부 전체를 읽으면 등록 한 번에 회원 수만큼 읽기가 붙는다.
+     부르는 쪽이 이미 읽어 둔 것을 넘겨 줄 때만 본다. */
+  const writes = [];
+  const store = {
+    create: async (path, data) => { writes.push([path, data]); },
+    serverTimestamp: async () => "SERVER_TIME",
+    list: async () => [],
+  };
+  await createClient("center-a", {
+    name: "김하나", phone: "010-1234-5678", locationId: "bansong", createdBy: "owner-a",
+  }, { store });
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0][1].phone, "01012345678");
 });

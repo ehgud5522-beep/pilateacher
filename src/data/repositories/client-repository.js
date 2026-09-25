@@ -74,6 +74,28 @@ const clientsCollection = (organizationId) => {
   return documentPath.slice(0, documentPath.lastIndexOf("/"));
 };
 
+/**
+ * 이 번호를 이미 쓰는 회원.
+ *
+ * ── 동명이인과 다르다: 이쪽은 막는다 ──
+ * 이름이 같은 사람은 실제로 있다. 번호가 같은 사람은 없다 -- 같은 번호가 둘이면
+ * 회원 앱이 둘을 찾아 **누구의 잔여인지 정하지 못하고**(link-result 의
+ * ambiguous), 연락처 변경도 그 번호를 영영 거부한다.
+ *
+ * 서버의 중복 검사와 같은 판정이다 (functions/src/client-phone-store.js).
+ * 저쪽은 쿼리이고 이쪽은 이미 읽어 둔 목록이라 방법이 다르지만, 답은 같아야
+ * 한다 -- 철자를 양쪽 다 normalizePhone 으로 맞추는 이유다.
+ *
+ * @param {Array<any>} clients @param {string} phone
+ */
+export function findSamePhoneClients(clients, phone) {
+  const digits = normalizePhone(phone);
+  if (!digits) return [];
+  return (Array.isArray(clients) ? clients : [])
+    .filter(Boolean)
+    .filter((client) => normalizePhone(client.phone) === digits);
+}
+
 const byStatusThenName = (left, right) => {
   const rank = (client) => (client.status === CLIENT_STATUS.ACTIVE ? 0 : 1);
   if (rank(left) !== rank(right)) return rank(left) - rank(right);
@@ -145,7 +167,10 @@ export function findSameNameClients(clients, name) {
  * 만든 시각은 그것이 정확하더라도 거부된다.
  *
  * @param {string} organizationId
- * @param {{ name: string, phone: string, locationId: string, createdBy: string, status?: string, clientId?: string }} input
+ * @param {{
+ *   name: string, phone: string, locationId: string, createdBy: string,
+ *   status?: string, clientId?: string, existingClients?: Array<any>,
+ * }} input
  * @param {{ store?: ClientStore, newId?: () => string }} [options]
  */
 export async function createClient(organizationId, input, options = {}) {
@@ -161,6 +186,16 @@ export async function createClient(organizationId, input, options = {}) {
   // 저장되면, 동명이인 화면이 구분할 것을 잃는다.
   const phone = normalizePhone(input?.phone);
   if (!phone) throw new Error("Missing phone");
+  /* 부르는 쪽이 이미 읽어 둔 명부를 넘겨 주면 여기서도 한 번 본다. 화면이
+     먼저 막지만, 화면만 막으면 다른 호출부가 생기는 날 조용히 뚫린다.
+     넘겨주지 않으면 검사하지 않는다 -- 여기서 명부 전체를 읽으면 등록 한
+     번에 회원 수만큼 읽기가 붙는다. */
+  const taken = findSamePhoneClients(input?.existingClients, phone);
+  if (taken.length > 0) {
+    throw Object.assign(new Error("duplicate_phone"), {
+      code: "duplicate_phone", clientName: String(taken[0]?.name || ""),
+    });
+  }
 
   const document = {
     organizationId: organization,

@@ -88,7 +88,8 @@ import {
   setMembershipProfile, setMembershipStatus, syncOwnMembershipName,
 } from "./data/repositories/instructor-repository.js";
 import {
-  clientMatchesSearch, createClient, findSameNameClients, listClients, normalizePhone,
+  clientMatchesSearch, createClient, findSameNameClients, findSamePhoneClients, listClients,
+  normalizePhone,
 } from "./data/repositories/client-repository.js";
 import {
   ALL_LOCATIONS, NO_LOCATION, countByLocation, createLocation, filterByLocation, listLocations,
@@ -16740,6 +16741,9 @@ function ClientDirectory({ organization, currentUserId, clientStore, locationSto
         phone: form.phone,
         locationId: form.locationId,
         createdBy: currentUserId,
+        /* 저장소도 한 번 본다. 아래에서 이미 막지만, 화면만 막으면 다른
+           호출부가 생기는 날 조용히 뚫린다. */
+        existingClients: clients,
       }, { store: clientStore });
       resetForm();
       setMode("list");
@@ -16759,6 +16763,14 @@ function ClientDirectory({ organization, currentUserId, clientStore, locationSto
     if (!name) { setFormError("이름을 입력해 주세요."); return; }
     if (!normalizePhone(form.phone)) { setFormError("연락처를 숫자로 입력해 주세요."); return; }
     if (!form.locationId) { setFormError("지점을 골라 주세요."); return; }
+    /* 번호가 겹치는 것은 막는다. 이름과 다르다 -- 같은 번호가 둘이면 회원
+       앱이 둘을 찾아 누구의 잔여인지 정하지 못하고, 연락처 변경도 그 번호를
+       영영 거부한다. */
+    const sharing = findSamePhoneClients(clients, form.phone);
+    if (sharing.length > 0) {
+      setFormError(`이미 ${sharing[0].name || "다른"} 회원이 쓰는 번호입니다. 같은 분이면 회원 합치기가 필요합니다.`);
+      return;
+    }
     /* 동명이인은 막지 않는다. 한 번 알려 주고, 그래도 등록하겠다면 등록한다 --
        거부하면 사람이 이름 뒤에 1, 2 를 붙이기 시작해 데이터가 더 나빠진다. */
     const same = findSameNameClients(clients, name);
@@ -17253,7 +17265,7 @@ function CenterMigration({
     try {
       const text = await readMigrationUpload(file, MIGRATION_SHEET_NAME[stage]);
       setPlan(stage === "clients"
-        ? planClientMigration(text, { locations, createdBy: currentUserId })
+        ? planClientMigration(text, { locations, clients, createdBy: currentUserId })
         : planPassMigration(text, { clients, locations, instructors, createdBy: currentUserId }));
     } catch (error) {
       // 읽지 못한 것과 "올릴 행이 없다"는 다른 화면이어야 한다.

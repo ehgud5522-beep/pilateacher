@@ -1,6 +1,7 @@
 import { ATTENDANCE_STATUS, CLIENT_STATUS, DATA_KIND, LESSON_STATUS, RECORD_STATUS, SCHEMA_VERSION } from "../schema/constants.js";
 import { paths } from "../schema/paths.js";
 import { ClientRepository, LessonRepository } from "./contracts.js";
+import { normalizePhone } from "../../../functions/shared/phone.mjs";
 
 const values = (constant) => new Set(Object.values(constant));
 const assertEnum = (value, constant, label) => {
@@ -24,6 +25,24 @@ function audit(context, includeCreationFields) {
   });
 }
 
+/**
+ * 기기 명부의 한 줄을 조직의 회원 문서로.
+ *
+ * ── 연락처는 만들 때만 보낸다 ──
+ * 수정에서 `phone` 을 빼는 데에는 이유가 둘 있다.
+ *
+ * 1. **기기마다 명부가 따로다.** 강사 폰에 옛 번호가 남아 있는데 그 강사가
+ *    회원 메모를 고치면, 이 함수가 옛 번호를 함께 실어 보내 방금 바뀐 번호를
+ *    되돌려 놓는다. 규칙이 phone 을 잠근 뒤로는 되돌리는 대신 **그 수정
+ *    자체가 거부된다** -- 메모를 고치려던 강사에게는 이유 없는 실패다.
+ * 2. 번호를 바꾸는 길은 하나여야 한다 (updateClientPhone). 연결을 끊고
+ *    이전 번호를 남기는 일이 함께 일어나야 하는데, 명부 동기화가 옆문으로
+ *    같은 필드를 쓰면 그 셋이 갈라진다.
+ *
+ * 만들 때는 보낸다. 그때가 번호가 정해지는 순간이고, 숫자만 남겨서 보낸다 --
+ * `010-1234-5678` 로 저장되면 회원 앱의 `where("phone","==",…)` 가 그 회원을
+ * 영영 찾지 못한다 (functions/shared/phone.mjs).
+ */
 export function mapClientDocument(context, client, includeCreationFields = true) {
   const clientId = required(client.id || client.clientId, "clientId");
   return compact({
@@ -31,7 +50,7 @@ export function mapClientDocument(context, client, includeCreationFields = true)
     locationId: context.locationId || null,
     clientId,
     name: client.name || "",
-    phone: client.phone || "",
+    phone: includeCreationFields ? normalizePhone(client.phone) : undefined,
     status: assertEnum(client.status || CLIENT_STATUS.ACTIVE, CLIENT_STATUS, "client status"),
     instructorId: client.instructorId || client.instructor || null,
     membershipBalance: {

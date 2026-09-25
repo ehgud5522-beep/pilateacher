@@ -2541,16 +2541,44 @@ describe("checking attendance against a pass", () => {
       await assertFails(setDoc(at(role), { previousPhones: ["01012345678"] }, { merge: true }), role);
     }
 
-    /* 같은 번호를 다시 보내는 것은 통과한다(affectedKeys). 기기 명부가 옛
-       번호를 들고 있어도 다른 칸을 고치는 일이 막히지 않아야 한다 -- 앱은
-       아예 보내지 않도록 고쳤지만, 규칙이 값으로 막으면 그 수정이 통째로
-       거부된다. */
+    /* 같은 번호를 다시 보내는 것은 통과한다. 기기 명부가 옛 철자를 들고
+       있어도 다른 칸을 고치는 일이 막히지 않아야 한다. */
     await assertSucceeds(setDoc(at("instructor"), {
       phone: "01012345678", name: "김하나 (수정)",
     }, { merge: true }));
 
     // 번호를 빼고 다른 칸만 고치는 것도 통과한다. 강사가 메모를 고치는 길이다.
     await assertSucceeds(setDoc(at("instructor"), { name: "김하나" }, { merge: true }));
+  });
+
+  test("a differently spelled but identical number goes through", async () => {
+    /* 스토어에 나가 있는 앱(AAB 57)은 수정 때 phone 을 함께 보내고, 기기
+       명부의 철자는 저장된 값과 다를 수 있다. 값으로 막으면 그 수정이 통째로
+       거부되는데, 코디네이터가 그 실패를 삼켜 강사에게는 저장된 것으로
+       보인다 -- 그래서 숫자로 막는다.
+
+       진짜 변경은 그대로 막힌다. 바꾸는 길은 callable 하나뿐이다. */
+    const at = (userId) => doc(dbFor(users[userId]), "organizations", ORG_A, "clients", "client-member");
+
+    // 저장된 값은 01012345678 이다. 하이픈을 섞어 보내도 같은 번호다.
+    await assertSucceeds(setDoc(at("instructor"), {
+      phone: "010-1234-5678", name: "김하나 (하이픈)",
+    }, { merge: true }));
+    await assertSucceeds(setDoc(at("instructor"), {
+      phone: "010 1234 5678", name: "김하나 (공백)",
+    }, { merge: true }));
+
+    /* 저장값 쪽이 하이픈이어도 마찬가지다 -- 정규화 구멍으로 이미 그렇게
+       저장된 회원이 있다. 방금 하이픈으로 덮였으니 이제 숫자만으로 보내 본다. */
+    await assertSucceeds(setDoc(at("instructor"), {
+      phone: "01012345678", name: "김하나",
+    }, { merge: true }));
+
+    // 숫자가 다르면 그대로 거부다.
+    await assertFails(setDoc(at("instructor"), { phone: "01099998888" }, { merge: true }));
+    await assertFails(setDoc(at("owner"), { phone: "010-9999-8888" }, { merge: true }));
+    // 자릿수만 달라도 다른 번호다.
+    await assertFails(setDoc(at("owner"), { phone: "0101234567" }, { merge: true }));
   });
 
   test("a handover says where the sessions went, and only the owner may send them", async () => {

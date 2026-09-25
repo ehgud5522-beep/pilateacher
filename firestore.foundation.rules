@@ -152,6 +152,27 @@ service cloud.firestore {
       return !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
     }
 
+    /* 연락처의 숫자만. 하이픈·공백이 섞여도 같은 번호는 같은 값이 된다.
+       저장은 숫자만이지만(functions/shared/phone.mjs), 기기마다 명부가 따로라
+       철자가 다른 값이 올라온다 -- 철자 때문에 수정이 거부되면 안 된다. */
+    function phoneDigits(data) {
+      return ("phone" in data) && (data.phone is string)
+        ? data.phone.replace("[^0-9]", "")
+        : "";
+    }
+
+    /* 번호가 **실제로** 바뀌는가. 값 비교(immutable)가 아니라 숫자 비교다.
+
+       값으로 막으면 옛 철자를 든 기기가 회원 메모를 고칠 때 그 수정이 통째로
+       거부되고, 코디네이터가 그 실패를 조용히 삼킨다 -- 강사에게는 저장된
+       것으로 보인다. 숫자로 막으면 진짜 변경만 걸리고 철자 재전송은 통과한다.
+
+       바꾸는 길은 여전히 하나다: updateClientPhone callable (Admin SDK 는
+       규칙을 지나지 않는다). */
+    function phoneUnchanged() {
+      return phoneDigits(request.resource.data) == phoneDigits(resource.data);
+    }
+
     function isOwnClientDocument(data) {
       return signedIn() && data.userId == request.auth.uid;
     }
@@ -351,7 +372,8 @@ service cloud.firestore {
              번호를 다시 보내도 막히지 않는다는 뜻인데, 그쪽은 아예 보내지
              않도록 고쳐 두었다 (firestore-adapters.js) -- 옛 번호를 든 기기가
              회원 메모를 고칠 때 그 수정이 통째로 거부되지 않게 하기 위해서다. */
-          && immutable(["phone", "previousPhones"])
+          && phoneUnchanged()
+          && immutable(["previousPhones"])
           && hasRole(organizationId, ["owner", "manager", "instructor", "staff"]);
         allow delete: if false;
       }

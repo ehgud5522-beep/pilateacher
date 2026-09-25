@@ -18487,6 +18487,7 @@ const AUDIT_ACTION_LABEL = {
   [AUDIT_ACTION.MEMBER_REVOKED]: "퇴사 · 복직",
   [AUDIT_ACTION.MEMBER_LINK_CREATED]: "회원 계정 연결",
   [AUDIT_ACTION.MEMBER_LINK_REMOVED]: "회원 계정 연결 해제",
+  [AUDIT_ACTION.MEMBER_PHONE_CHANGED]: "연락처 변경",
   issue: "회원권 발급",
   deduct: "차감",
   transfer: "담당 강사 변경",
@@ -18553,6 +18554,50 @@ function AuditTimelineRow({ row, nameOfClient, nameOfInstructor, nameOfLocation 
 }
 
 /** 뽑아 보는 목록 하나. 비어 있으면 "이상 없음"이라고 말한다. */
+/**
+ * 연락처가 바뀐 한 줄.
+ *
+ * ── 번호는 감사 항목에 없다 ──
+ * 그 목록에는 자유 문장 칸이 하나도 없고, 마스킹했어도 번호는 번호다. 그래서
+ * 이전 번호와 새 번호는 **회원 문서**에서 읽어 온다 (previousPhones · phone).
+ *
+ * 그 대가가 하나 있다: 회원 문서는 **지금** 상태만 안다. 한 회원의 번호가 두
+ * 번 이상 바뀌었으면 어느 줄이 어느 번호였는지 짝지을 수 없다. 그럴 때는
+ * 지어내지 않고 몇 번 바뀌었는지만 말한다 -- 틀린 짝을 보여 주는 것보다
+ * 모른다고 하는 편이 낫다.
+ */
+function ClientPhoneChangeRow({ row, client, nameOfClient, nameOfInstructor }) {
+  const previous = Array.isArray(client?.previousPhones) ? client.previousPhones : [];
+  const current = maskPhone(client?.phone);
+  const detail = previous.length === 1
+    ? `${maskPhone(previous[0])} → ${current}`
+    : previous.length > 1
+      ? `${current} · 이전 번호 ${previous.length}개`
+      : current || "번호를 읽지 못함";
+
+  return (
+    <div style={{ padding: "10px 0", borderTop: `1px solid ${LINE}` }}>
+      <div className="flex items-center gap-2">
+        <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+          {dayTimeLabel(toDate(row.createdAt))}
+        </span>
+        <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.body, color: INK }}>
+          {nameOfClient(row.clientId) || "회원"}
+        </span>
+      </div>
+      <div className="mt-0.5 flex items-center gap-2">
+        <span className="min-w-0 flex-1 truncate tabular-nums" style={{ fontSize: TYPE.caption, color: INK2 }}>
+          {detail}
+        </span>
+        {/* 누가 바꿨는가. 강사가 바꾼 줄을 대표가 알아볼 수 있어야 한다. */}
+        <span className="shrink-0 truncate" style={{ fontSize: TYPE.caption, color: FAINT, maxWidth: 110 }}>
+          {nameOfInstructor(row.actorId)}{row.actorRole ? ` · ${labelOf(AUDIT_ROLE_LABEL, row.actorRole)}` : ""}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function AuditReviewSection({ title, hint, rows, empty, children }) {
   const count = rows?.length || 0;
   return (
@@ -18646,6 +18691,9 @@ function AuditLog({
   const nameOfLocation = useCallback((id) => (
     locations.find((item) => item.id === id)?.name || id || "-"
   ), [locations]);
+  /* 연락처 변경 줄은 번호를 회원 문서에서 읽는다 -- 감사 항목에는 번호가
+     담기지 않기 때문이다 (audit-repository.js). */
+  const clientById = useMemo(() => new Map(clients.map((item) => [item.id, item])), [clients]);
 
   if (locked) return (
     <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
@@ -18812,6 +18860,17 @@ function AuditLog({
             {review.rateChanges.map((row) => (
               <AuditTimelineRow key={row.id} row={{ ...row, at: toDate(row.createdAt) }}
                 nameOfClient={nameOfClient} nameOfInstructor={nameOfInstructor} nameOfLocation={nameOfLocation} />
+            ))}
+          </AuditReviewSection>
+
+          {/* 연락처 변경. 강사도 바꿀 수 있게 된 뒤로 대표가 따로 봐야 하는
+              줄이다 -- 번호는 회원의 정체라, 누가 남의 번호를 건드렸는지가
+              묻히면 안 된다. */}
+          <AuditReviewSection title="연락처 변경" rows={review.phoneChanges}
+            hint="회원 번호가 바뀐 이력입니다. 번호는 가운데를 가려 보여 줍니다.">
+            {review.phoneChanges.map((row) => (
+              <ClientPhoneChangeRow key={row.id} row={row} client={clientById.get(row.clientId)}
+                nameOfClient={nameOfClient} nameOfInstructor={nameOfInstructor} />
             ))}
           </AuditReviewSection>
 
@@ -19578,7 +19637,7 @@ export function createAppScreenSmokeCases() {
   const smokeClients = [
     { id: "smoke-client-a", organizationId: "smoke-center", name: "김하나", phone: "01012345678", locationId: "bansong", status: "active" },
     { id: "smoke-client-b", organizationId: "smoke-center", name: "김하나", phone: "01055556666", locationId: "centum", status: "active" },
-    { id: "smoke-client-c", organizationId: "smoke-center", name: "이두리", phone: "01099998888", locationId: "bansong", status: "ended" },
+    { id: "smoke-client-c", organizationId: "smoke-center", name: "이두리", phone: "01099998888", locationId: "bansong", status: "ended", previousPhones: ["01033334444"] },
   ];
   const providerWith = (organization, child) => (
     <AIRecordingStatusContext.Provider value={{ status: AI_RECORDING_STATUS.NORMAL, updateStatus: noop }}>
@@ -19715,6 +19774,9 @@ export function createAppScreenSmokeCases() {
       { id: "a-rate", organizationId: "smoke-center", action: "full_room_rate_set", actorId: "smoke-account", actorRole: "owner", targetId: "u1", amount: 50000, previousAmount: 45000, createdAt: new Date(2026, 9, 2, 9, 0) },
       { id: "a-deputy", organizationId: "smoke-center", action: "deputy_director_set", actorId: "smoke-account", actorRole: "owner", targetId: "u4", enabled: true, createdAt: new Date(2026, 9, 1, 9, 0) },
       { id: "a-migration", organizationId: "smoke-center", action: "migration_uploaded", actorId: "smoke-account", actorRole: "owner", stage: "passes", succeeded: 118, failed: 2, createdAt: new Date(2026, 9, 1, 8, 0) },
+      /* 강사가 바꾼 줄. 번호는 감사 항목에 없고 회원 문서에서 읽어 온다 --
+         대표가 "누가 남의 번호를 건드렸나" 를 알아볼 수 있어야 한다. */
+      { id: "a-phone", organizationId: "smoke-center", action: "member_phone_changed", actorId: "u1", actorRole: "instructor", clientId: "smoke-client-c", targetId: "smoke-client-c", createdAt: new Date(2026, 9, 2, 14, 0) },
     ],
   });
   /* 정산 화면이 그리는 것만 본다. 숫자는 집계 함수가 만든 모양 그대로다. */

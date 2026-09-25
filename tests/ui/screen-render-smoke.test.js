@@ -2104,3 +2104,19 @@ test("the edit button is absent where nothing can save it", async (t) => {
   const markupOf = await issueScreens(t);
   assert.doesNotMatch(markupOf("센터 회원 상세 · 대표"), />연락처 수정</);
 });
+
+test("the owner sees who changed whose number, with the digits masked", async (t) => {
+  /* 강사도 바꿀 수 있게 된 뒤로 대표가 따로 봐야 하는 줄이다 -- 번호는
+     회원의 정체라, 누가 남의 번호를 건드렸는지가 묻히면 안 된다. */
+  const markupOf = await issueScreens(t);
+  const audit = markupOf("감사 로그");
+
+  assert.match(audit, /연락처 변경/);
+  assert.match(audit, /이두리/);
+  // 가운데를 가린다. 전체 번호는 감사 화면에도 늘어놓지 않는다.
+  assert.match(audit, /010····4444 → 010····8888/);
+  assert.doesNotMatch(audit, /01033334444/);
+  assert.doesNotMatch(audit, /01099998888/);
+  // 누가 바꿨는지 -- 강사가 바꾼 줄을 알아볼 수 있어야 한다.
+  assert.match(audit, /강사/);
+});

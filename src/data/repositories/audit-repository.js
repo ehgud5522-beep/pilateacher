@@ -74,6 +74,14 @@ export const AUDIT_ACTION = Object.freeze({
      없다. Keep in sync with functions/src/member-link-store.js. */
   MEMBER_LINK_CREATED: "member_link_created",
   MEMBER_LINK_REMOVED: "member_link_removed",
+  /* 회원 연락처 변경. 서버(updateClientPhone)만 쓰고 앱은 읽기만 한다 --
+     규칙의 auditActions() 에도 넣지 않았다.
+
+     **번호는 여기 담기지 않는다.** 이 목록에는 자유 문장 칸이 하나도 없고,
+     마스킹했어도 번호는 번호다. 이전 번호와 새 번호는 회원 문서가 들고
+     있고(previousPhones·phone), 화면이 둘을 이어 붙여 마스킹해 보여준다.
+     Keep in sync with functions/src/client-phone-store.js. */
+  MEMBER_PHONE_CHANGED: "member_phone_changed",
 });
 
 /**
@@ -406,6 +414,9 @@ export function reviewAudit(input = {}) {
     entry.action === AUDIT_ACTION.DEPUTY_DIRECTOR_SET || entry.action === AUDIT_ACTION.FULL_ROOM_RATE_SET
   ));
   const migrations = inWindow.filter((entry) => entry.action === AUDIT_ACTION.MIGRATION_UPLOADED);
+  /* 연락처 변경. 강사도 바꿀 수 있게 된 뒤로 대표가 따로 봐야 하는 줄이다 --
+     번호는 회원의 정체라, 누가 남의 번호를 건드렸는지가 묻히면 안 된다. */
+  const phoneChanges = inWindow.filter((entry) => entry.action === AUDIT_ACTION.MEMBER_PHONE_CHANGED);
 
   /* 전체 이력. 감사 로그와 원장을 한 줄기로 합친다. 보는 사람에게는 하나의
      이력이고, 저장은 한 벌이다.
@@ -460,6 +471,7 @@ export function reviewAudit(input = {}) {
     corrections,
     rateChanges,
     migrations,
+    phoneChanges,
     timeline,
     // 기준이 없어 1번을 판정할 수 없었던 건. 화면이 그 사실을 말한다.
     unmatchedProductCount: unmatchedProducts.length,

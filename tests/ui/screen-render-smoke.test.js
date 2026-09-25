@@ -121,6 +121,9 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 매니저",
     "회원권 상품",
     "회원권 상품 · 소속 확인 실패",
+    "번호 점검",
+    "번호 점검 · 이상 없음",
+    "번호 점검 · 조회 실패",
     "감사 로그",
     "감사 로그 · 전체 이력",
     "감사 로그 · 이상 없음",
@@ -2119,4 +2122,34 @@ test("the owner sees who changed whose number, with the digits masked", async (t
   assert.doesNotMatch(audit, /01099998888/);
   // 누가 바꿨는지 -- 강사가 바꾼 줄을 알아볼 수 있어야 한다.
   assert.match(audit, /강사/);
+});
+
+/* ── 번호 점검 ───────────────────────────────────────────────────────────
+
+   이 번호로는 회원 앱에 로그인해도 명부에서 찾지 못한다. 한꺼번에
+   정규화하지 않는 이유는 아예 틀린 번호가 섞여 있기 때문이다 -- 고치면 그것이
+   "정상" 이 되어 더 찾기 어려워진다. */
+
+test("the phone check shows the stored spelling, untouched", async (t) => {
+  const markupOf = await issueScreens(t);
+  const screen = markupOf("번호 점검");
+
+  assert.match(screen, /번호 점검/);
+  // 저장된 그대로다. 대표가 고쳐야 할 것이 바로 이 철자다.
+  assert.match(screen, /010-1234-5678/);
+  assert.match(screen, /02-1234-5678/);
+  assert.match(screen, /연락처 수정/);
+  // 연결된 회원은 번호를 바꾸면 로그인이 끊긴다. 미리 말한다.
+  assert.match(screen, /앱 연결됨/);
+});
+
+test("nothing wrong and could not read are different screens", async (t) => {
+  /* 한 문구로 뭉개면 고장을 정상으로 읽는다. */
+  const markupOf = await issueScreens(t);
+  assert.match(markupOf("번호 점검 · 이상 없음"), /깨진 번호가 없습니다/);
+
+  const failed = markupOf("번호 점검 · 조회 실패");
+  assert.match(failed, /불러오지 못했습니다/);
+  assert.match(failed, /코드 permission-denied/);
+  assert.doesNotMatch(failed, /깨진 번호가 없습니다/);
 });

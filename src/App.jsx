@@ -33,6 +33,7 @@ import {
   fbLoadAIRecordingStatus, fbSendDiagnosticReport, fbWritePilotMetricAttempt,
   fbListPhotoBackups, fbUploadPhotoBackup, fbDownloadPhotoBackup, fbSoftDeletePhotoBackup, fbPurgeExpiredPhotoBackups,
   fbLookupCentreMemberByEmail,
+  fbListMalformedClientPhones,
   fbListPendingMemberLinks, fbLinkMemberAccountByOwner, fbUnlinkMemberAccount, fbUpdateClientPhone,
   fbVerifyMemberViews,
   AI_CONSENT_POLICY_VERSION, AI_CONSENT_SCOPES,
@@ -18619,6 +18620,115 @@ function AuditReviewSection({ title, hint, rows, empty, children }) {
   );
 }
 
+/**
+ * 번호 점검 — 철자가 깨진 연락처만 모아 본다. **읽기만 한다.**
+ *
+ * ── 왜 한꺼번에 고치지 않나 ──
+ * 하이픈이 섞인 번호는 대부분 철자 문제지만, 개중에는 번호가 아예 틀린 것도
+ * 섞여 있다. 한꺼번에 정규화하면 틀린 번호가 "정상" 이 되어 더 찾기
+ * 어려워진다 -- 대표가 목록을 보고 하나씩 고친다.
+ *
+ * ── 왜 서버가 목록을 주나 ──
+ * 규칙은 clients 를 대표에게 열어 두지만, 여기서 필요한 것은 "번호가 11자리가
+ * 아닌 회원" 이고 그것은 쿼리로 물을 수 없다(Firestore 에 정규식 조건이 없다).
+ * 대표 전용 callable 이 전부 읽어 걸러서 준다. PC 에 서비스 계정 키를 두지
+ * 않는 이유이기도 하다.
+ */
+function ClientPhoneCheck({ organization, onList, onOpenClient, onRetryOrganization, initialState = null }) {
+  const locked = !organization?.ready || organization?.isLegacy || !organization?.organizationId;
+  const [state, setState] = useState(initialState || { stage: "idle", clients: [] });
+
+  const load = useCallback(async () => {
+    if (locked) return;
+    setState({ stage: "loading", clients: [] });
+    try {
+      const result = await onList?.({ organizationId: organization.organizationId });
+      setState({ stage: "ready", clients: Array.isArray(result?.clients) ? result.clients : [] });
+    } catch (error) {
+      /* 코드를 함께 보여준다. 코드 없는 "오류가 발생했습니다" 는 대표도 저도
+         아무것도 할 수 없게 만든다. */
+      setState({ stage: "failed", clients: [], code: error?.code || error?.details?.code || "unknown" });
+    }
+  }, [locked, onList, organization?.organizationId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  if (locked) return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>소속을 확인하지 못했습니다</h2>
+      <button type="button" onClick={() => onRetryOrganization?.()} className="mt-3 h-11 w-full font-bold"
+        style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>다시 시도</button>
+    </section>
+  );
+
+  return (
+    <section data-phone-check style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <div className="flex items-center gap-2">
+        <h2 className="min-w-0 flex-1" style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>번호 점검</h2>
+        {state.stage === "ready" ? (
+          <span className="shrink-0 tabular-nums" style={{
+            padding: "2px 9px", borderRadius: 999, fontSize: TYPE.caption, fontWeight: 700,
+            backgroundColor: state.clients.length ? WARN_S : CANVAS,
+            color: state.clients.length ? WARN : SUB,
+          }}>{state.clients.length}</span>
+        ) : null}
+      </div>
+      <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        연락처가 <b style={{ color: INK }}>010 열한 자리</b>가 아닌 회원입니다. 이 번호로는 회원 앱에
+        로그인해도 명부에서 찾지 못합니다. 저장된 철자를 그대로 보여 주고, 고치는 것은 회원마다 하나씩 합니다.
+      </p>
+
+      {state.stage === "loading" ? (
+        <p className="mt-3" style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p>
+      ) : null}
+
+      {state.stage === "failed" ? (
+        <div className="mt-3">
+          <p style={{ fontSize: TYPE.caption, color: BAD }}>목록을 불러오지 못했습니다 (코드 {state.code}).</p>
+          <button type="button" onClick={load} className="mt-2 h-11 w-full font-bold"
+            style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>다시 시도</button>
+        </div>
+      ) : null}
+
+      {state.stage === "ready" && state.clients.length === 0 ? (
+        <p className="mt-3" style={{ fontSize: TYPE.caption, color: SUB }}>
+          깨진 번호가 없습니다. 모든 회원이 010 열한 자리입니다.
+        </p>
+      ) : null}
+
+      {state.stage === "ready" && state.clients.length > 0 ? (
+        <div className="mt-2">
+          {state.clients.map((client) => (
+            <div key={client.clientId} style={{ padding: "11px 0", borderTop: `1px solid ${LINE}` }}>
+              <div className="flex items-center gap-2">
+                <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.body, color: INK }}>
+                  {client.name || "이름 없음"}
+                </span>
+                {/* 연결된 회원은 번호를 바꾸면 회원 앱 로그인이 끊긴다. 미리 말한다. */}
+                {client.linked ? (
+                  <span className="shrink-0" style={{ fontSize: TYPE.caption, color: BRAND_D }}>앱 연결됨</span>
+                ) : null}
+                <span className="shrink-0" style={{ fontSize: TYPE.caption, color: SUB }}>
+                  {client.status === "active" ? "운영중" : "종료"}
+                </span>
+              </div>
+              <div className="mt-0.5 flex items-center gap-2">
+                {/* 저장된 그대로다. 여기서 다듬으면 무엇이 문제인지 안 보인다 --
+                    대표가 고쳐야 할 것이 바로 이 철자다. */}
+                <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: BAD }}>
+                  {client.phone || "번호 없음"}
+                </span>
+                <button type="button" onClick={() => onOpenClient?.(client)}
+                  className="shrink-0 font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>연락처 수정</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function AuditLog({
   organization, clientStore, instructorStore, locationStore, productStore, passStore,
   auditStore, ledgerStore, onRetryOrganization, onRetry, now = () => new Date(), initialState = null,
@@ -19166,6 +19276,9 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
        것과, 잘못 이은 것과, 화면의 숫자가 맞는지. */
     ...(showMemberApp ? [{ key: "member-app", title: "회원 앱", description: "연결 대기 · 끊기 · 점검", Icon: Users }] : []),
     ...(showAudit ? [{ key: "audit", title: "감사 로그", description: "이상한 건만 모아 보기 · 전체 이력", Icon: AlertCircle }] : []),
+    /* 번호 점검. 감사 로그 옆이다 -- 둘 다 "무엇이 어긋나 있는지" 를 보는
+       화면이고, 이쪽은 그중 연락처만 본다. */
+    ...(showAudit ? [{ key: "phone-check", title: "번호 점검", description: "010 열한 자리가 아닌 회원 찾기", Icon: AlertCircle }] : []),
     ...(showMigration ? [{ key: "migration", title: "엑셀 이관", description: "쓰던 엑셀의 회원 · 회원권 올리기", Icon: Upload }] : []),
   ];
   const menuGroups = [
@@ -19453,6 +19566,12 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
             clientStore={clientStore} instructorStore={instructorStore} locationStore={locationStore}
             productStore={productStore} passStore={passStore}
             auditStore={auditStore} ledgerStore={ledgerStore}
+            onRetryOrganization={onRetryOrganization} />
+        )}
+        {view === "phone-check" && showAudit && (
+          <ClientPhoneCheck organization={organization}
+            onList={fbListMalformedClientPhones}
+            onOpenClient={(client) => onOpenClient?.({ id: client.clientId, name: client.name, phone: client.phone })}
             onRetryOrganization={onRetryOrganization} />
         )}
         {view === "migration" && showMigration && (
@@ -20301,6 +20420,26 @@ export function createAppScreenSmokeCases() {
     { name: "더보기 탭 · 매니저", element: settingsTab({ ...smokeOwner, role: "manager" }) },
     { name: "회원권 상품", element: providerWith(smokeOwner, <ProductCatalog organization={readyOrganizationContext(smokeOwner)} currentUserId="smoke-account" store={productStore} onRetryOrganization={noop} onToast={noop} />) },
     { name: "회원권 상품 · 소속 확인 실패", element: providerWith(smokeOwner, <ProductCatalog organization={readyOrganizationContext({ organizationId: "", role: "", status: "unknown", isLegacy: false })} currentUserId="smoke-account" store={productStore} onRetryOrganization={noop} onToast={noop} />) },
+    /* 번호 점검. 저장된 철자를 그대로 보여준다 -- 여기서 다듬으면 무엇이
+       문제인지 안 보이고, 대표가 고쳐야 할 것이 바로 그 철자다. */
+    { name: "번호 점검", element: providerWith(smokeOwner, (
+      <ClientPhoneCheck organization={readyOrganizationContext(smokeOwner)} onRetryOrganization={noop}
+        onOpenClient={noop} onList={asyncNoop}
+        initialState={{ stage: "ready", clients: [
+          { clientId: "csv_01012345678", name: "김하나", phone: "010-1234-5678", status: "active", linked: true },
+          { clientId: "csv_0212345678", name: "이두리", phone: "02-1234-5678", status: "ended", linked: false },
+        ] }} />
+    )) },
+    { name: "번호 점검 · 이상 없음", element: providerWith(smokeOwner, (
+      <ClientPhoneCheck organization={readyOrganizationContext(smokeOwner)} onRetryOrganization={noop}
+        onOpenClient={noop} onList={asyncNoop} initialState={{ stage: "ready", clients: [] }} />
+    )) },
+    /* 못 읽은 것과 "깨진 번호가 없다" 는 다른 화면이어야 한다. */
+    { name: "번호 점검 · 조회 실패", element: providerWith(smokeOwner, (
+      <ClientPhoneCheck organization={readyOrganizationContext(smokeOwner)} onRetryOrganization={noop}
+        onOpenClient={noop} onList={asyncNoop}
+        initialState={{ stage: "failed", clients: [], code: "permission-denied" }} />
+    )) },
     { name: "감사 로그", element: auditLog(smokeOwner, {
       review: smokeAuditReview, clients: smokeClients, instructors: smokeInstructors, locations: smokeLocations,
     }) },

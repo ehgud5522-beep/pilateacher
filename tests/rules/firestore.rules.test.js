@@ -2551,6 +2551,32 @@ describe("checking attendance against a pass", () => {
     await assertSucceeds(setDoc(at("instructor"), { name: "김하나" }, { merge: true }));
   });
 
+  test("the review-demo flag cannot be set from the app", async () => {
+    /* 이 표시 하나로 그 회원이 급여·발급 내역·매출에서 전부 빠진다. 앱에서
+       켤 수 있으면 **실적을 숨기는 버튼**이 된다 -- 켜는 것은 콘솔에서
+       대표가 직접 한다. */
+    const at = (userId) => doc(dbFor(users[userId]), "organizations", ORG_A, "clients", "client-member");
+    for (const role of ["owner", "manager", "instructor", "staff"]) {
+      await assertFails(setDoc(at(role), { reviewDemo: true }, { merge: true }), role);
+      await assertFails(setDoc(at(role), { reviewDemo: false }, { merge: true }), role);
+    }
+  });
+
+  test("a new client cannot be born as a review demo", async () => {
+    // 만들 때 열어 두면 고칠 때 막는 것이 무의미하다.
+    const born = (extra) => setDoc(
+      doc(dbFor(users.owner), "organizations", ORG_A, "clients", "client-new"),
+      {
+        organizationId: ORG_A, name: "새 회원", phone: "01077778888",
+        locationId: "location-a", status: "active",
+        createdAt: serverTimestamp(), createdBy: users.owner, ...extra,
+      },
+    );
+    await assertFails(born({ reviewDemo: true }));
+    await assertFails(born({ previousPhones: ["01011112222"] }));
+    await assertSucceeds(born({}));
+  });
+
   test("a differently spelled but identical number goes through", async () => {
     /* 스토어에 나가 있는 앱(AAB 57)은 수정 때 phone 을 함께 보내고, 기기
        명부의 철자는 저장된 값과 다를 수 있다. 값으로 막으면 그 수정이 통째로

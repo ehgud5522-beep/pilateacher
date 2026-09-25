@@ -21,6 +21,7 @@
 import { COLLECTIONS, LEDGER_ENTRY_TYPE, PAY_CATEGORY, PASS_STATUS } from "../schema/constants.js";
 import { paths } from "../schema/paths.js";
 import { listPasses } from "./pass-repository.js";
+import { passIsReviewDemo, withoutReviewDemo } from "../../features/members/review-demo.js";
 import { monthRange, toDate } from "./payroll-repository.js";
 import { readCollection } from "./repository-read.js";
 
@@ -273,13 +274,18 @@ export function createFirestoreIssueReportStore() {
  * 한 달의 발급 내역.
  *
  * @param {string} organizationId
- * @param {{ month: string, store?: IssueReportStore, listPassesFn?: (organizationId: string, options?: any) => Promise<Array<any>> }} options
+ * @param {{
+ *   month: string, store?: IssueReportStore,
+ *   listPassesFn?: (organizationId: string, options?: any) => Promise<Array<any>>,
+ *   excludedClientIds?: Set<string> | null,
+ * }} options
  */
 export async function loadOrganizationMonthlyIssues(organizationId, options) {
   const {
     month,
     store = createFirestoreIssueReportStore(),
     listPassesFn = listPasses,
+    excludedClientIds = null,
   } = options || {};
   const organization = text(organizationId);
   if (!organization) throw new Error("Missing organizationId");
@@ -314,5 +320,13 @@ export async function loadOrganizationMonthlyIssues(organizationId, options) {
     )),
   )).filter(Boolean);
 
-  return summarizeIssues({ month: String(month), entries, passes, cancelEntries });
+  /* 심사용 회원은 사람이 아니다. 그 회원권이 발급 내역에 서면 이달 판매와
+     매출이 실제보다 많아 보인다 -- 0원으로 발급하기로 했더라도 건수는 는다.
+     원장에는 그 표시가 없으므로 명부에서 모아 온 id 로 거른다. */
+  return summarizeIssues({
+    month: String(month),
+    entries: withoutReviewDemo(entries, excludedClientIds),
+    passes: passes.filter((pass) => !passIsReviewDemo(pass, excludedClientIds)),
+    cancelEntries: withoutReviewDemo(cancelEntries, excludedClientIds),
+  });
 }

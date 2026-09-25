@@ -355,6 +355,9 @@ service cloud.firestore {
         // 하나만 바꾼다. 읽기와 수정은 그대로 가르치는 사람들에게 열려 있다.
         allow create: if request.resource.data.organizationId == organizationId
           && canRegisterClient(organizationId)
+          // 만들 때도 못 켠다. 여기를 열어 두면 위의 immutable 이 무의미하다.
+          && !("reviewDemo" in request.resource.data)
+          && !("previousPhones" in request.resource.data)
           && clientFieldsWellFormed();
         allow update: if resource.data.organizationId == organizationId
           && request.resource.data.organizationId == organizationId
@@ -373,7 +376,11 @@ service cloud.firestore {
              않도록 고쳐 두었다 (firestore-adapters.js) -- 옛 번호를 든 기기가
              회원 메모를 고칠 때 그 수정이 통째로 거부되지 않게 하기 위해서다. */
           && phoneUnchanged()
-          && immutable(["previousPhones"])
+          /* 심사용 표시는 앱에서 켜지지 않는다. 이 표시 하나로 그 회원이
+             급여·발급 내역·매출에서 전부 빠지므로, 앱에서 켤 수 있으면
+             **실적을 숨기는 버튼**이 된다. 켜는 것은 Firebase 콘솔에서
+             대표가 직접 한다 -- 회원 하나에 한 번뿐인 일이다. */
+          && immutable(["previousPhones", "reviewDemo"])
           && hasRole(organizationId, ["owner", "manager", "instructor", "staff"]);
         allow delete: if false;
       }

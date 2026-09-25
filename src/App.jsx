@@ -104,6 +104,9 @@ import {
   canEditPhone, maskPhone, phoneEditMessage,
 } from "./features/members/phone-edit.js";
 import {
+  REVIEW_DEMO_BADGE, isReviewDemo, reviewDemoClientIds, visibleToRole,
+} from "./features/members/review-demo.js";
+import {
   MEMBER_NOTE_MAX, memberNoteSaveFailure, readMemberNote, saveMemberNote,
 } from "./data/repositories/member-note-repository.js";
 import {
@@ -16656,7 +16659,15 @@ function ClientDetail({
     <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>{client?.name || "회원"}</h2>
+          <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>
+            {client?.name || "회원"}
+            {isReviewDemo(client) ? (
+              <span className="ml-1.5" style={{
+                padding: "2px 8px", borderRadius: 999, fontSize: TYPE.caption, fontWeight: 700,
+                backgroundColor: WARN_S, color: WARN,
+              }}>{REVIEW_DEMO_BADGE}</span>
+            ) : null}
+          </h2>
           <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>
             {client?.phone ? `···${String(client.phone).slice(-4)}` : "연락처 없음"}
             {" · "}{client?.locationName || client?.locationId || "지점 없음"}
@@ -16773,6 +16784,14 @@ function ClientRow({ client, locationName, onOpen }) {
       style={{ padding: "11px 12px", borderTop: `1px solid ${LINE}`, opacity: ended ? 0.55 : 1 }}>
       <div className="flex items-center justify-between gap-2">
         <span className="min-w-0 truncate" style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>{client.name || "이름 없음"}</span>
+        {/* 이 목록은 대표에게만 이 회원을 보여준다. 배지가 없으면 대표가 그것을
+            진짜 회원으로 읽고, 숫자가 안 맞는 이유를 영영 못 찾는다. */}
+        {isReviewDemo(client) ? (
+          <span className="shrink-0" style={{
+            padding: "2px 8px", borderRadius: 999, fontSize: TYPE.caption, fontWeight: 700,
+            backgroundColor: WARN_S, color: WARN,
+          }}>{REVIEW_DEMO_BADGE}</span>
+        ) : null}
         <span className="shrink-0" style={{
           padding: "2px 8px", borderRadius: 999, fontSize: TYPE.caption, fontWeight: 700,
           backgroundColor: ended ? CANVAS : TINT, color: ended ? SUB : BRAND_D,
@@ -16838,11 +16857,18 @@ function ClientDirectory({ organization, currentUserId, clientStore, locationSto
     () => new Map(locations.map((location) => [location.id, location.name || ""])),
     [locations],
   );
-  const locationCounts = useMemo(() => countByLocation(clients, locations), [clients, locations]);
+  /* 심사용 회원은 사람이 아니다. 대표에게만 보이고(배지가 붙는다), 나머지
+     역할에게는 아예 없다 -- 대표는 그 회원이 거기 있다는 것을 알아야 하고,
+     안 보이면 왜 숫자가 안 맞는지 물을 곳이 없다. */
+  const listed = useMemo(() => visibleToRole(clients, { role: organization?.role }), [clients, organization?.role]);
+  /* 인원수는 대표에게도 뺀다. 보이는 문제가 아니라 세는 문제이고, 지점 칩의
+     숫자가 실제 회원 수여야 한다. */
+  const countedClients = useMemo(() => visibleToRole(clients, {}), [clients]);
+  const locationCounts = useMemo(() => countByLocation(countedClients, locations), [countedClients, locations]);
   const [locationFilter, setLocationFilter] = useLocationFilter(locations, locationCounts);
   const visible = useMemo(
-    () => filterByLocation(clients, locationFilter, locations).filter((client) => clientMatchesSearch(client, search)),
-    [clients, locations, locationFilter, search],
+    () => filterByLocation(listed, locationFilter, locations).filter((client) => clientMatchesSearch(client, search)),
+    [listed, locations, locationFilter, search],
   );
 
   const resetForm = () => {
@@ -17681,11 +17707,16 @@ function IssueReport({
       /* 이름은 숫자를 바꾸지 않는다. 못 읽어도 집계는 보여주고 그 사실만 말한다.
          발급자 목록은 퇴사자까지 읽는다(listMemberships) -- 이번 달에 나간
          FC매니저의 줄이 uid 로 떨어지면 누가 판 것인지 알 수 없다. */
-      const [found, issuerResult, locationResult, clientResult, productResult] = await Promise.all([
-        loadOrganizationMonthlyIssues(organizationId, { month, store: issueStore }),
+      /* 명부를 먼저 읽는다. 심사용 회원을 빼려면 그 id 를 알아야 하고,
+         원장 항목에는 그 표시가 없다 (features/members/review-demo.js).
+         못 읽으면 거르지 못한다 -- 그때는 아래 "이름을 못 읽음" 안내가
+         뜨고, 그 회원권은 0원이라 금액은 틀어지지 않는다. */
+      const clientResult = await toleratingReadFailure(listClients(organizationId, { store: clientStore }));
+      const excludedClientIds = reviewDemoClientIds(clientResult.items);
+      const [found, issuerResult, locationResult, productResult] = await Promise.all([
+        loadOrganizationMonthlyIssues(organizationId, { month, store: issueStore, excludedClientIds }),
         toleratingReadFailure(listMemberships(organizationId, { store: instructorStore })),
         toleratingReadFailure(listLocations(organizationId, { store: locationStore })),
-        toleratingReadFailure(listClients(organizationId, { store: clientStore })),
         toleratingReadFailure(listProducts(organizationId, { store: productStore })),
       ]);
       setSummary(found);
@@ -18188,7 +18219,7 @@ const MEMBER_VIEW_MISMATCH_LABEL = {
 };
 
 function PayrollSummary({
-  organization, locationStore, instructorStore, payrollStore,
+  organization, locationStore, instructorStore, payrollStore, clientStore,
   onRetryOrganization, onToast, now = () => new Date(), initialState = null,
 }) {
   const [month, setMonth] = useState(initialState?.month || currentMonth(now()));
@@ -18214,8 +18245,14 @@ function PayrollSummary({
          퇴사자까지 읽는다(listMemberships). 활성만 읽으면 이번 달에 나간 강사의
          줄이 uid 로 떨어지고, 그 급여를 누구에게 줘야 하는지 화면이 말하지
          못한다 -- 원장은 그 사람의 수업을 그대로 들고 있는데. */
+      /* 심사용 회원을 빼려면 명부가 필요하다 -- 원장 항목에는 그 표시가
+         없다. 이 화면이 예전에는 명부를 읽지 않았고, 읽기 한 번이 느는 대신
+         가짜 회차가 강사 급여에 섞이지 않는다. */
+      const payrollClients = await toleratingReadFailure(listClients(organizationId, { store: clientStore }));
       const [found, instructorResult, locationResult] = await Promise.all([
-        loadOrganizationMonthlyPayroll(organizationId, { month, store: payrollStore }),
+        loadOrganizationMonthlyPayroll(organizationId, {
+          month, store: payrollStore, excludedClientIds: reviewDemoClientIds(payrollClients.items),
+        }),
         toleratingReadFailure(listMemberships(organizationId, { store: instructorStore })),
         toleratingReadFailure(listLocations(organizationId, { store: locationStore })),
       ]);
@@ -18229,7 +18266,7 @@ function PayrollSummary({
     } finally {
       setLoading(false);
     }
-  }, [organizationId, month, payrollStore, instructorStore, locationStore]);
+  }, [organizationId, month, payrollStore, instructorStore, locationStore, clientStore]);
 
   useEffect(() => { if (!locked) reload(); else setLoading(false); }, [locked, reload]);
 
@@ -19552,6 +19589,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
         {view === "payroll" && showPayroll && (
           <PayrollSummary organization={organization}
             locationStore={locationStore} instructorStore={instructorStore} payrollStore={payrollStore}
+            clientStore={clientStore}
             onRetryOrganization={onRetryOrganization} onToast={onToast} />
         )}
         {view === "member-app" && showMemberApp && (
@@ -20418,6 +20456,16 @@ export function createAppScreenSmokeCases() {
     }) },
     { name: "회원 관리 · 지점 없음", element: clientDirectory(smokeOwner, {
       clients: smokeClients, locations: [], mode: "add",
+    }) },
+    /* 심사용 회원. 대표에게만 배지와 함께 보이고, 나머지 역할에게는 목록에
+       아예 없다 -- 지점 칩의 인원수에도 안 센다. */
+    { name: "회원 관리 · 심사용 · 대표", element: clientDirectory(smokeOwner, {
+      clients: [...smokeClients, { id: "review-demo-1", organizationId: "smoke-center", name: "심사용 회원", phone: "01000000000", locationId: "bansong", status: "active", reviewDemo: true }],
+      locations: smokeLocations,
+    }) },
+    { name: "회원 관리 · 심사용 · FC매니저", element: clientDirectory({ ...smokeOwner, role: "manager" }, {
+      clients: [...smokeClients, { id: "review-demo-1", organizationId: "smoke-center", name: "심사용 회원", phone: "01000000000", locationId: "bansong", status: "active", reviewDemo: true }],
+      locations: smokeLocations,
     }) },
     { name: "회원 관리 · 소속 확인 실패", element: clientDirectory({ organizationId: "", role: "", status: "unknown", isLegacy: false }, null) },
     { name: "더보기 탭 · 매니저", element: settingsTab({ ...smokeOwner, role: "manager" }) },

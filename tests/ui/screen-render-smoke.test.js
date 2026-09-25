@@ -117,6 +117,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "회원 관리 · 동명이인 확인",
     "회원 관리 · 지점 조회 실패",
     "회원 관리 · 지점 없음",
+    "회원 관리 · 심사용 · 대표",
+    "회원 관리 · 심사용 · FC매니저",
     "회원 관리 · 소속 확인 실패",
     "더보기 탭 · 매니저",
     "회원권 상품",
@@ -2152,4 +2154,35 @@ test("nothing wrong and could not read are different screens", async (t) => {
   assert.match(failed, /불러오지 못했습니다/);
   assert.match(failed, /코드 permission-denied/);
   assert.doesNotMatch(failed, /깨진 번호가 없습니다/);
+});
+
+/* ── 심사용 회원 ─────────────────────────────────────────────────────────
+
+   스토어 심사관이 로그인해서 볼 가짜 회원이다. 한 군데라도 새면 가짜가 진짜
+   숫자에 섞이고, 그 숫자로 강사 급여가 나간다. */
+
+test("the review demo member shows only to the owner, with a badge", async (t) => {
+  /* 대표는 그 회원이 거기 있다는 것을 알아야 한다. 안 보이면 왜 숫자가
+     안 맞는지 물을 곳이 없다. */
+  const markupOf = await issueScreens(t);
+  const owner = markupOf("회원 관리 · 심사용 · 대표");
+  assert.match(owner, /심사용 회원/);
+  assert.match(owner, />심사용</, "배지가 없다");
+});
+
+test("nobody else sees the review demo member at all", async (t) => {
+  const markupOf = await issueScreens(t);
+  const manager = markupOf("회원 관리 · 심사용 · FC매니저");
+  assert.doesNotMatch(manager, /심사용 회원/);
+  // 실제 회원은 그대로 보인다 -- 목록이 통째로 사라진 것이 아니다.
+  assert.match(manager, /김하나/);
+});
+
+test("the location chip does not count the review demo member", async (t) => {
+  /* 보이는 문제가 아니라 세는 문제다. 대표에게도 뺀다. */
+  const markupOf = await issueScreens(t);
+  const owner = markupOf("회원 관리 · 심사용 · 대표");
+  const manager = markupOf("회원 관리 · 심사용 · FC매니저");
+  const counts = (markup) => (markup.match(/반송점[^<]*<\/span><span[^>]*>(\d+)/) || [])[1];
+  assert.equal(counts(owner), counts(manager), "대표 화면의 인원수가 다르다");
 });

@@ -1417,7 +1417,7 @@ test("one duet lesson takes one session and pays once", async () => {
     [`organizations/${ORG}/instructorClientTotals/instructor-a_client-a`]: { sessions: 40 },
     [`organizations/${ORG}/instructorClientTotals/instructor-a_client-b`]: { sessions: 40 },
   } });
-  const { entry } = await deductPass(ORG, duetPass(), deductInput(), { store });
+  const { entry } = await deductPass(ORG, duetPass(), deductInput(), deductOptions(store));
   assert.equal(entry.delta, -1, "한 번 수업에 한 회차");
   assert.equal(entry.unitPrice, 30000, "2:1 신규 — 수업 한 번 기준");
   const decrements = store.calls.commit[0].filter((write) => write.operation === "decrement");
@@ -1431,7 +1431,7 @@ test("both members get a participant row, and a no-show still deducts", async ()
   const store = fakeStore();
   const { entry } = await deductPass(ORG, duetPass(), deductInput({
     lessonId: "lesson-1", attendanceByClientId: { "client-b": "noshow" },
-  }), { store });
+  }), deductOptions(store));
   assert.equal(entry.delta, -1);
   const rows = store.calls.commit[0].filter((write) => write.path.includes("/participants/"));
   assert.deepEqual(rows.map((write) => write.data.clientId), ["client-a", "client-b"]);
@@ -1441,7 +1441,7 @@ test("both members get a participant row, and a no-show still deducts", async ()
 test("the instructor's running total goes up for both members", async () => {
   // 강사는 그 시간에 두 사람을 각각 가르쳤다.
   const store = fakeStore();
-  await deductPass(ORG, duetPass(), deductInput(), { store });
+  await deductPass(ORG, duetPass(), deductInput(), deductOptions(store));
   const bumps = store.calls.commit[0].filter((write) => write.operation === "bump");
   assert.deepEqual(bumps.map((write) => write.data.clientId), ["client-a", "client-b"]);
   assert.ok(bumps.every((write) => write.data.delta.sessions === 1));
@@ -1454,14 +1454,14 @@ test("the pair is priced by whoever the instructor knows least", async () => {
     [`organizations/${ORG}/instructorClientTotals/instructor-a_client-a`]: { sessions: 40 },
     [`organizations/${ORG}/instructorClientTotals/instructor-a_client-b`]: { sessions: 3 },
   } });
-  const { entry } = await deductPass(ORG, duetPass(), deductInput(), { store });
+  const { entry } = await deductPass(ORG, duetPass(), deductInput(), deductOptions(store));
   assert.equal(entry.unitPrice, 25000);
   assert.equal(entry.rule, "new_to_instructor");
 });
 
 test("both totals are read, not just the anchor's", async () => {
   const store = fakeStore();
-  await deductPass(ORG, duetPass(), deductInput(), { store });
+  await deductPass(ORG, duetPass(), deductInput(), deductOptions(store));
   assert.deepEqual(store.calls.read, [
     `organizations/${ORG}/instructorClientTotals/instructor-a_client-a`,
     `organizations/${ORG}/instructorClientTotals/instructor-a_client-b`,
@@ -1484,7 +1484,7 @@ test("undoing a duet deduction puts both totals back", async () => {
 test("a 1:1 deduction is unchanged — one participant, one total", async () => {
   // 듀엣을 넣으면서 1:1 이 달라지면 안 된다. 센터의 대부분이 1:1 이다.
   const store = fakeStore();
-  await deductPass(ORG, duetPass({ clientIds: undefined, category: "pt_1_1_new", baseUnitPrice: 25000 }), deductInput(), { store });
+  await deductPass(ORG, duetPass({ clientIds: undefined, category: "pt_1_1_new", baseUnitPrice: 25000 }), deductInput(), deductOptions(store));
   const rows = store.calls.commit[0].filter((write) => write.path.includes("/participants/"));
   const bumps = store.calls.commit[0].filter((write) => write.operation === "bump");
   assert.equal(rows.length, 1);
@@ -1504,7 +1504,7 @@ test("a deputy's 5:5 splits the one contract, not one member's share of it", asy
   const store = fakeStore();
   const { entry } = await deductPass(ORG, duetPass({
     contractPrice: 1800000, netContractPrice: 1800000, paymentMethod: "cash", totalSessions: 30,
-  }), deductInput({ isDeputyDirector: true }), { store });
+  }), deductInput({ isDeputyDirector: true }), deductOptions(store));
   assert.equal(entry.unitPrice, 30000);
   assert.equal(entry.rule, "deputy_director");
 });
@@ -1516,7 +1516,7 @@ test("the deputy rate is the same whether the pass is a duet or not", async () =
     const { entry } = await deductPass(ORG, duetPass({
       contractPrice: 1800000, netContractPrice: 1800000, paymentMethod: "cash",
       totalSessions: 30, ...overrides,
-    }), deductInput({ isDeputyDirector: true }), { store });
+    }), deductInput({ isDeputyDirector: true }), deductOptions(store));
     return entry.unitPrice;
   };
   assert.equal(await of({ clientIds: ["client-a", "client-b"] }), await of({ clientIds: undefined }));
@@ -1531,7 +1531,7 @@ test("the deputy rule still beats the partner being new to the instructor", asyn
   } });
   const { entry } = await deductPass(ORG, duetPass({
     contractPrice: 1800000, netContractPrice: 1800000, paymentMethod: "cash", totalSessions: 30,
-  }), deductInput({ isDeputyDirector: true }), { store });
+  }), deductInput({ isDeputyDirector: true }), deductOptions(store));
   assert.equal(entry.rule, "deputy_director");
   assert.equal(entry.unitPrice, 30000);
 });
@@ -1541,6 +1541,6 @@ test("a card duet still takes VAT out of the one contract before halving", async
   const store = fakeStore();
   const { entry } = await deductPass(ORG, duetPass({
     contractPrice: 1980000, netContractPrice: 1800000, paymentMethod: "card", totalSessions: 30,
-  }), deductInput({ isDeputyDirector: true }), { store });
+  }), deductInput({ isDeputyDirector: true }), deductOptions(store));
   assert.equal(entry.unitPrice, 30000);
 });

@@ -101,9 +101,13 @@ import {
   createProduct, listProducts, productBaseUnitPrice, setProductStatus,
 } from "./data/repositories/product-repository.js";
 import {
+  TRANSFER_BLOCK, checkTransfer, transferBlockLabel, transferPricing, transferableSessions,
+} from "./data/schema/pass-transfer.js";
+import {
   DEDUCT_BACKDATE_LIMIT_DAYS, cancelPass, correctDeduction, deductPass, isCancellablePass,
   isCorrectableEntry, isCorrectedEntry, isDeductablePass, isExpiredPass, issuePass,
   listInstructorClientTotals, listPassLedger, listPasses, loadClientPassHistory, remainingCountOf,
+  transferPass,
 } from "./data/repositories/pass-repository.js";
 import {
   SETTLEMENT_OUTCOME, SETTLEMENT_SKIP, SETTLEMENT_SKIP_LABEL, applySettlementToLesson,
@@ -16223,7 +16227,144 @@ function LedgerUndoSheet({ title, description, reason, onReason, onCancel, onCon
   );
 }
 
-function ClientPassRow({ pass, nameOfInstructor, nameOfClient = () => "", clientId = "", now, onCancel, cancellable = false }) {
+/**
+ * 회원권 양도. 대표만 본다.
+ *
+ * ── 받는 회원을 목록으로 훑지 않는다 ──
+ * 이름을 전부 입력해야 찾힌다. 명부를 스크롤하며 고르게 두면 "누가 회원인지"
+ * 자체가 화면에 깔리고, 그것은 대타 경로에서 이미 좁혀 둔 선이다
+ * (roster-visibility.js). 양도는 대표가 누구에게 줄지 이미 알고 여는 화면이다.
+ *
+ * ── 금액을 누르기 전에 보여준다 ──
+ * 원장은 append-only 라 누른 뒤에는 고칠 수 없다. 얼마가 따라가고 부원장
+ * 회당 단가가 얼마가 되는지를 먼저 적는다 -- 보정 1원이 붙었다면 그것도 적는다.
+ */
+/**
+ * @param {{ initialQuery?: string, initialSessions?: string }} props
+ *   initialQuery / initialSessions  처음 채워 둘 값. 화면은 늘 빈 칸으로 열고,
+ *   테스트가 "이름을 넣은 뒤" 의 미리보기를 그려 보는 데 쓴다 -- 금액은
+ *   받는 회원이 정해져야 나오므로 빈 화면에서는 확인할 수 없다.
+ */
+function PassTransferSheet({
+  pass, clients = [], nameOfInstructor, onCancel, onConfirm, busy, error,
+  initialQuery = "", initialSessions = "1",
+}) {
+  const [query, setQuery] = useState(initialQuery);
+  const [sessions, setSessions] = useState(initialSessions);
+  const limit = transferableSessions(pass);
+
+  /* 이름이 정확히 같은 회원만. 부분 일치로 훑게 두면 목록이 된다. */
+  const picked = useMemo(() => {
+    const wanted = query.trim();
+    if (!wanted) return [];
+    return clients.filter((item) => String(item?.name ?? "").trim() === wanted);
+  }, [clients, query]);
+  const [targetId, setTargetId] = useState("");
+  const target = picked.find((item) => item.id === targetId) || (picked.length === 1 ? picked[0] : null);
+
+  const wanted = Number(String(sessions).trim());
+  const allowed = checkTransfer({ pass, toClientId: target?.id || "", sessions: wanted });
+  /* 금액은 회차가 정해져야 나온다. 막혀 있으면 계산하지 않는다 -- 지어낸
+     숫자를 미리보기에 띄우면 그것을 보고 누르게 된다. */
+  let priced = null;
+  if (allowed.ok) {
+    try { priced = transferPricing({ pass, sessions: wanted }); } catch { priced = null; }
+  }
+  const ready = Boolean(allowed.ok && priced?.exact && target);
+
+  return (
+    <section data-pass-transfer style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>회원권 양도</h2>
+      <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        {labelOf(PAY_CATEGORY_LABELS, pass?.category)} · 남은 유료 회차 {limit}회
+        {Number(pass?.serviceSessions) > 0 ? " (서비스 회차는 넘어가지 않습니다)" : ""}
+      </p>
+
+      <div className="mt-3">
+        <Field label="받는 회원 (이름 전체 입력)">
+          <input value={query} className={inputCls} placeholder="예) 김민정"
+            onChange={(event) => { setQuery(event.target.value); setTargetId(""); }} />
+        </Field>
+        {query.trim() && picked.length === 0 ? (
+          <p className="mt-1.5" style={{ fontSize: TYPE.caption, color: WARN }}>
+            그 이름의 회원을 찾지 못했습니다. 센터에 등록된 회원에게만 넘길 수 있습니다.
+          </p>
+        ) : null}
+        {/* 동명이인. 고르게 하되 연락처 뒤 4자리로만 가른다. */}
+        {picked.length > 1 ? (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {picked.map((item) => (
+              <button key={item.id} type="button" onClick={() => setTargetId(item.id)}
+                className="px-2.5 font-bold" style={{
+                  height: 30, borderRadius: 999, fontSize: TYPE.caption,
+                  backgroundColor: target?.id === item.id ? TINT : CANVAS,
+                  color: target?.id === item.id ? BRAND_D : SUB,
+                }}>{item.name} ···{String(item.phone || "").slice(-4)}</button>
+            ))}
+          </div>
+        ) : null}
+      </div>
+
+      <div className="mt-3">
+        <Field label={`넘길 회차 (최대 ${limit}회)`}>
+          <input value={sessions} inputMode="numeric" className={inputCls}
+            onChange={(event) => setSessions(event.target.value.replace(/\D/g, ""))} />
+        </Field>
+      </div>
+
+      {/* 누르기 전에 무엇이 일어나는지. 원장은 고칠 수 없다. */}
+      {priced?.exact ? (
+        <div className="mt-3" style={{ padding: 12, borderRadius: 10, backgroundColor: CANVAS }}>
+          <p style={{ fontSize: TYPE.caption, color: SUB }}>
+            {target?.name || "받는 회원"} 님에게 <b style={{ color: INK }}>{wanted}회</b>가 넘어갑니다.
+          </p>
+          <p className="mt-1 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+            계약 금액 <b style={{ color: INK }}>₩{won(priced.contractPrice)}</b>
+            {priced.nudge !== 0 ? ` (비례식에서 ${priced.nudge > 0 ? "+" : ""}${priced.nudge}원 보정)` : ""}
+            {" · 부원장 회당 "}<b style={{ color: INK }}>₩{won(priced.deputyUnitPrice)}</b>
+          </p>
+          <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>
+            급여 분류는 <b style={{ color: INK }}>1:1 신규</b>, 만료일은 원본 그대로
+            {pass?.expiresAt ? ` (${dayLabel(pass.expiresAt)})` : ""}입니다.
+          </p>
+        </div>
+      ) : null}
+
+      {/* 막힌 이유는 코드별로 다른 문구다. 한 문구로 뭉개면 무엇을 고쳐야
+          하는지 알 수 없다. */}
+      {!allowed.ok && (query.trim() || String(sessions).trim()) ? (
+        <p className="mt-2" style={{ fontSize: TYPE.caption, color: BAD }}>{transferBlockLabel(allowed)}</p>
+      ) : null}
+      {allowed.ok && priced && !priced.exact ? (
+        <p className="mt-2" style={{ fontSize: TYPE.caption, color: BAD }}>
+          이 회차 수로는 부원장 회당 단가를 원본과 같게 맞출 수 없습니다. 회차를 바꿔 주세요.
+        </p>
+      ) : null}
+      {error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: BAD }}>{error}</p> : null}
+
+      <p className="mt-3" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        넘긴 회차는 되돌릴 수 없습니다. 원본에서 빠진 기록과 새 회원권이 모두 남습니다.
+      </p>
+      <div className="mt-3 flex gap-2">
+        <button type="button" onClick={onCancel} className="h-11 flex-1 font-bold"
+          style={{ borderRadius: 10, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>취소</button>
+        <button type="button" disabled={busy || !ready}
+          onClick={() => onConfirm?.({ toClientId: target?.id || "", sessions: wanted })}
+          className="h-11 flex-1 font-bold" style={{
+            borderRadius: 10, backgroundColor: BRAND, color: "#fff", fontSize: TYPE.caption,
+            opacity: busy || !ready ? 0.5 : 1,
+          }}>{busy ? "처리 중" : "양도"}</button>
+      </div>
+      {nameOfInstructor ? (
+        <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>
+          받는 회원의 담당 강사는 {nameOfInstructor(pass?.instructorId)} 님으로 시작합니다.
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
+function ClientPassRow({ pass, nameOfInstructor, nameOfClient = () => "", clientId = "", now, onCancel, cancellable = false, onTransfer }) {
   const usable = isDeductablePass(pass, now);
   /* 듀엣이면 이 회원권을 둘이 함께 쓴다. 잔여 29회가 두 사람의 29회라는
      사실이 화면에 없으면, 대표는 한 사람 몫으로 읽고 재등록 시점을 잘못 센다. */
@@ -16261,6 +16402,15 @@ function ClientPassRow({ pass, nameOfInstructor, nameOfClient = () => "", client
               backgroundColor: CANVAS, color: cancellable ? BAD : SUB, opacity: cancellable ? 1 : 0.45,
             }}>발급 취소</button>
         ) : null}
+        {/* 양도. 듀엣이거나 넘길 유료 회차가 없으면 아예 열지 않는다 --
+            눌러도 거부되는 버튼을 두지 않는다. */}
+        {onTransfer ? (
+          <button type="button" onClick={onTransfer}
+            className="shrink-0 px-2.5 font-bold" style={{
+              height: 28, borderRadius: 999, fontSize: TYPE.caption,
+              backgroundColor: CANVAS, color: BRAND_D,
+            }}>양도</button>
+        ) : null}
       </div>
       {partner ? (
         <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>
@@ -16289,7 +16439,8 @@ function ClientPassRow({ pass, nameOfInstructor, nameOfClient = () => "", client
 
 function ClientDetail({
   organization, client, history, loading, error, instructors = [], currentUserId = "", nameOfClient = () => "",
-  passStore, onClose, onRetry, onChanged, onToast, now = () => new Date(), initialUndo = null,
+  clients = [], passStore, onClose, onRetry, onChanged, onToast, now = () => new Date(),
+  initialUndo = null, initialTransfer = null,
 }) {
   const at = now();
   /* 되돌리기는 대표만 한다. 강사와 매니저가 스스로 되돌릴 수 있으면 기록의
@@ -16300,6 +16451,10 @@ function ClientDetail({
   const [reason, setReason] = useState(initialUndo?.reason || "");
   const [undoError, setUndoError] = useState("");
   const [busy, setBusy] = useState(false);
+  /* 양도도 대표만 한다. 회원 사이에 돈이 오가는 일이라 차감 보정·취소와 같은
+     선이고, 규칙도 대표만 열어 둔다. */
+  const [transfer, setTransfer] = useState(initialTransfer);
+  const [transferError, setTransferError] = useState("");
   const organizationId = organization?.organizationId || "";
 
   const closeUndo = () => { setUndo(null); setReason(""); setUndoError(""); };
@@ -16327,6 +16482,32 @@ function ClientDetail({
       setBusy(false);
     }
   };
+  const runTransfer = async ({ toClientId, sessions }) => {
+    if (!transfer || busy) return;
+    setBusy(true);
+    setTransferError("");
+    try {
+      const result = await transferPass(organizationId, transfer.pass, {
+        toClientId,
+        sessions,
+        /* 받는 회원의 담당 강사다. 지금은 원본의 담당을 그대로 잇는다 --
+           회원을 옮기면서 강사까지 바꾸면 무엇이 급여를 움직였는지 둘로
+           갈린다. 담당은 교체 화면에서 따로 바꾼다. */
+        instructorId: transfer.pass?.instructorId || "",
+        createdBy: currentUserId,
+      }, { store: passStore });
+      setTransfer(null);
+      onToast?.({ ok: true, msg: `${result.sessions}회를 넘겼습니다.` });
+      onChanged?.();
+    } catch (thrown) {
+      /* 막힌 이유는 코드별로 다른 문구다. 코드 없는 "오류가 발생했습니다" 는
+         대표도 저도 아무것도 할 수 없게 만든다. */
+      setTransferError(transferBlockLabel({ code: thrown?.code, limit: thrown?.limit }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const nameOfInstructor = useMemo(() => {
     const byId = new Map(instructors.map((item) => [item.userId, item.displayName || item.userId]));
     // 이름을 못 읽어도 uid 로 보여준다. 빈 칸이면 누구였는지 영영 알 수 없다.
@@ -16341,6 +16522,13 @@ function ClientDetail({
     .map((pass) => toDate(pass.expiresAt))
     .filter((date) => Number.isFinite(date.getTime()))
     .sort((left, right) => left.getTime() - right.getTime())[0];
+
+  if (transfer) return (
+    <PassTransferSheet pass={transfer.pass} clients={clients} nameOfInstructor={nameOfInstructor}
+      initialQuery={transfer.query || ""} initialSessions={transfer.sessions || "1"}
+      onCancel={() => { setTransfer(null); setTransferError(""); }}
+      onConfirm={runTransfer} busy={busy} error={transferError} />
+  );
 
   if (undo) return (
     <LedgerUndoSheet
@@ -16408,7 +16596,10 @@ function ClientDetail({
                 <ClientPassRow key={pass.id} pass={pass} nameOfInstructor={nameOfInstructor}
                   nameOfClient={nameOfClient} clientId={client?.id || ""} now={at}
                   cancellable={canUndo && isCancellablePass(pass, entries)}
-                  onCancel={canUndo ? () => { setUndo({ kind: "cancel", pass }); setReason(""); } : undefined} />
+                  onCancel={canUndo ? () => { setUndo({ kind: "cancel", pass }); setReason(""); } : undefined}
+                  onTransfer={canUndo && transferableSessions(pass) > 0 && isDeductablePass(pass, at)
+                    && checkTransfer({ pass, toClientId: "-", sessions: 1 }).code !== TRANSFER_BLOCK.DUET
+                    ? () => { setTransfer({ pass }); setTransferError(""); } : undefined} />
               ))}
           </div>
 
@@ -19321,6 +19512,11 @@ export function createAppScreenSmokeCases() {
     { id: "smoke-pass-a", clientId: "smoke-client-a", category: "pt_1_1_repurchase_event", totalSessions: 20, serviceSessions: 2, contractPrice: 1300000, purchaseRound: 2, paymentMethod: "card", remainingCount: 8, baseUnitPrice: 30000, serviceUsed: 0, handedOver: false, instructorId: "u1", status: "active", createdAt: new Date(2026, 7, 1), expiresAt: new Date(2027, 1, 1) },
     { id: "smoke-pass-old", clientId: "smoke-client-a", category: "pt_1_1_new", totalSessions: 10, serviceSessions: 0, contractPrice: 550000, purchaseRound: 1, paymentMethod: "cash", remainingCount: 3, baseUnitPrice: 25000, serviceUsed: 0, handedOver: true, instructorId: "u2", status: "active", createdAt: new Date(2026, 3, 1), expiresAt: new Date(2026, 6, 1) },
   ];
+  /* 양도의 받는 회원 후보. 이름을 전부 입력해야 찾히므로 화면에 깔리지 않는다. */
+  const smokeTransferClients = [
+    { id: "smoke-client-b", name: "박두리", phone: "01012345678" },
+    { id: "smoke-client-c", name: "정세인", phone: "01055556666" },
+  ];
   const smokeHistoryEntries = [
     { id: "h-transfer", passId: "smoke-pass-a", clientId: "smoke-client-a", type: "transfer", delta: 0, fromInstructorId: "u1", toInstructorId: "u2", occurredAt: new Date(2026, 8, 16, 11, 0), createdAt: new Date(2026, 8, 16, 11, 0) },
     { id: "h-deduct-late", passId: "smoke-pass-a", clientId: "smoke-client-a", type: "deduct", delta: -1, category: "pt_1_1_repurchase_event", unitPrice: 30000, rule: "base_category", instructorId: "u1", occurredAt: new Date(2026, 8, 12, 19, 0), createdAt: new Date(2026, 8, 13, 23, 40) },
@@ -19703,6 +19899,29 @@ export function createAppScreenSmokeCases() {
     }) },
     { name: "센터 회원 상세 · 발급 취소 확인", element: ownerClientDetail({
       initialUndo: { kind: "cancel", pass: smokeHistoryPasses[0], reason: "" },
+    }) },
+    /* 양도. 대표만 보이고, 누르기 전에 얼마가 따라가는지 화면이 먼저 말한다 --
+       원장은 append-only 라 누른 뒤에는 고칠 수 없다. */
+    { name: "센터 회원 상세 · 양도", element: ownerClientDetail({
+      clients: smokeTransferClients,
+      initialTransfer: { pass: smokeHistoryPasses[0], query: "박두리", sessions: "3" },
+    }) },
+    /* 이름이 같은 회원 둘. 목록으로 훑지 않고 이름 전체 입력으로만 찾으므로,
+       갈라 주는 것은 연락처 뒤 4자리뿐이다. */
+    { name: "센터 회원 상세 · 양도 · 동명이인", element: ownerClientDetail({
+      clients: [
+        ...smokeTransferClients,
+        { id: "smoke-client-d", name: "박두리", phone: "01099998888" },
+      ],
+      initialTransfer: { pass: smokeHistoryPasses[0], query: "박두리", sessions: "3" },
+    }) },
+    /* 듀엣은 아예 열리지 않는다. 열어 두고 거부하면 대표는 방법이 있다고
+       여기고 계속 누른다. */
+    { name: "센터 회원 상세 · 양도 · 듀엣 차단", element: ownerClientDetail({
+      clients: smokeTransferClients,
+      initialTransfer: {
+        pass: { ...smokeHistoryPasses[0], clientIds: ["smoke-client-a", "smoke-client-b"] },
+      },
     }) },
     /* 듀엣. 회원권 하나를 둘이 쓰는 줄이 서는지, 그리고 갈라설 때의 길이
        화면에 있는지 본다 -- 그 문은 아직 없고, 없다는 사실을 화면이 말해야
@@ -22665,6 +22884,11 @@ export default function App() {
               <ClientDetail organization={organizationContext} client={detailClient}
                 history={clientHistory} loading={historyLoading} error={historyError}
                 nameOfClient={(id) => (roster?.roster || []).find((item) => item.orgClientId === id)?.name || ""}
+                /* 양도의 "받는 회원" 은 이름을 전부 입력해야 찾힌다. 목록으로
+                   훑게 두지 않으므로 명부를 넘겨도 화면에 깔리지 않는다. */
+                clients={(roster?.roster || [])
+                  .filter((item) => item.orgClientId)
+                  .map((item) => ({ id: item.orgClientId, name: item.name, phone: item.phone }))}
                 instructors={detailInstructors}
                 currentUserId={account?.id || ""} onToast={setToast}
                 onChanged={() => setHistoryRevision((value) => value + 1)}

@@ -176,3 +176,36 @@ export function transferPricing(input) {
     sourceDeputyUnitPrice, nudge: 0, exact: false,
   };
 }
+
+/**
+ * 막힌 이유를 사람 말로.
+ *
+ * 코드 옆에 둔다. 화면이 제 문구를 따로 만들면 코드가 하나 늘 때 그 문구가
+ * 빠지고, 대표는 "처리하지 못했어요" 만 보게 된다 -- 테스트가 두 목록이 같은
+ * 집합인지 견준다.
+ *
+ * TOO_MANY 는 숫자를 채워야 하므로 함수다 (transferBlockLabel).
+ */
+export const TRANSFER_BLOCK_LABEL = Object.freeze({
+  [TRANSFER_BLOCK.DUET]: "듀엣 회원권은 양도할 수 없습니다. 계약이 두 분의 것이라 한쪽만 넘길 수 없어요.",
+  [TRANSFER_BLOCK.NOT_ACTIVE]: "이미 끝난 회원권입니다.",
+  [TRANSFER_BLOCK.NO_PAID_SESSIONS]: "넘길 수 있는 유료 회차가 없습니다. 서비스 회차는 양도 대상이 아닙니다.",
+  [TRANSFER_BLOCK.SAME_CLIENT]: "받는 회원을 골라 주세요.",
+  [TRANSFER_BLOCK.TOO_MANY]: "남은 유료 회차보다 많이 넘길 수 없습니다.",
+  [TRANSFER_BLOCK.TOO_FEW]: "1회 이상을 넣어 주세요.",
+  [TRANSFER_BLOCK.NO_PRICE]: "이 회원권의 금액을 읽지 못해 급여 근거를 만들 수 없습니다. 센터에 문의해 주세요.",
+});
+
+/**
+ * 화면에 적을 한 줄. 모르는 코드도 숨기지 않는다.
+ *
+ * @param {{ code?: string, limit?: number }} blocked
+ */
+export function transferBlockLabel(blocked) {
+  const code = String(blocked?.code || "");
+  if (code === TRANSFER_BLOCK.TOO_MANY && Number.isInteger(blocked?.limit)) {
+    return `최대 ${blocked.limit}회까지 넘길 수 있습니다.`;
+  }
+  // 코드 없는 "오류가 발생했습니다" 는 금지다.
+  return TRANSFER_BLOCK_LABEL[code] || `양도하지 못했어요 (코드 ${code || "unknown"})`;
+}

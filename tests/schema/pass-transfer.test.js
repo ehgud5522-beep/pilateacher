@@ -219,3 +219,32 @@ test("읽을 수 없는 입력은 계산하지 않는다", () => {
     /netContractPrice/,
   );
 });
+
+/* ── 코드와 문구 ─────────────────────────────────────────────────────── */
+
+test("막는 코드마다 사람 말이 있다", async () => {
+  /* 코드가 하나 늘 때 문구가 빠지면 대표는 "처리하지 못했어요" 만 보게 된다.
+     화면이 제 문구를 따로 만들지 않는 이유이기도 하다. */
+  const { TRANSFER_BLOCK_LABEL } = await import("../../src/data/schema/pass-transfer.js");
+  assert.deepEqual(
+    Object.values(TRANSFER_BLOCK).sort(),
+    Object.keys(TRANSFER_BLOCK_LABEL).sort(),
+  );
+});
+
+test("모르는 코드도 숨기지 않는다", async () => {
+  const { transferBlockLabel } = await import("../../src/data/schema/pass-transfer.js");
+  // 코드 없는 "오류가 발생했습니다" 는 금지다.
+  assert.match(transferBlockLabel({ code: "something_new" }), /코드 something_new/);
+  assert.match(transferBlockLabel({}), /코드 unknown/);
+});
+
+test("회차가 모자랄 때는 몇 회까지인지 문구에 넣는다", async () => {
+  const { transferBlockLabel } = await import("../../src/data/schema/pass-transfer.js");
+  assert.equal(
+    transferBlockLabel({ code: TRANSFER_BLOCK.TOO_MANY, limit: 6 }),
+    "최대 6회까지 넘길 수 있습니다.",
+  );
+  // 숫자를 모르면 숫자 없는 문구로 내려간다 -- 지어내지 않는다.
+  assert.match(transferBlockLabel({ code: TRANSFER_BLOCK.TOO_MANY }), /많이 넘길 수 없습니다/);
+});

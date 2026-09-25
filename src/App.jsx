@@ -15018,7 +15018,7 @@ function IssueField({ label, hint, children }) {
 
 function PassIssue({
   organization, currentUserId, clientStore, productStore, instructorStore, locationStore, passStore,
-  onRetryOrganization, onToast, initialState = null,
+  onRetryOrganization, onToast, now = () => new Date(), initialState = null,
 }) {
   const [clients, setClients] = useState(initialState?.clients || []);
   const [products, setProducts] = useState(initialState?.products || []);
@@ -15118,9 +15118,11 @@ function PassIssue({
   /* 듀엣 판정은 전부 features/passes/duet-issue.js 에 있다. 화면은 그리기만
      한다 -- 막는 것과 알리는 것을 화면 안에서 섞기 시작하면 어느 것이 어느
      무게인지 다음 사람이 알 수 없다. */
+  /* 시계를 넘긴다. "이미 쓸 수 있는 회원권이 있다" 는 만료를 보고 정해지는데,
+     안 넘기면 이 판정만 진짜 시계를 보고 화면의 다른 판정과 어긋난다. */
   const duetNotices = useMemo(() => duetIssueNotices({
-    duet: form.duet, client, partner, product, passes: issuedPasses,
-  }), [form.duet, client, partner, product, issuedPasses]);
+    duet: form.duet, client, partner, product, passes: issuedPasses, now: now(),
+  }), [form.duet, client, partner, product, issuedPasses, now]);
   const duetBlock = blockingNotice(duetNotices);
 
   /* 이미 고른 회원은 짝 후보에서 뺀다. 같은 사람을 고르면 판정이 막지만,
@@ -20029,6 +20031,9 @@ export function createAppScreenSmokeCases() {
     <PassIssue organization={readyOrganizationContext(organization)} currentUserId="smoke-account"
       clientStore={clientStore} productStore={productStore} instructorStore={instructorStore}
       locationStore={locationStore} passStore={passStore} initialState={initialState}
+      /* 시계를 못 박는다. 만료일이 박힌 픽스처라 진짜 시계를 쓰면 언젠가
+         "쓸 수 있는 회원권" 이 아니게 되고, 그날 이 화면의 경고가 사라진다. */
+      now={() => new Date(2026, 8, 17)}
       onRetryOrganization={noop} onToast={noop} />
   ));
   const instructorAdmin = (organization, initialState) => providerWith(organization, (

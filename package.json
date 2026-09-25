@@ -6,7 +6,7 @@
   "scripts": {
     "postinstall": "node tools/patch-camera-preview-ios-no-location.mjs && node tools/patch-camera-preview-ios-session-safety.mjs && node tools/patch-camera-preview-ios-h6.mjs && node tools/patch-firebase-auth-ios-first-login-profile.mjs && node tools/patch-firebase-auth-ios-h14-apple-diagnostics.mjs && node tools/patch-speech-recognition-capacitor8.mjs && node tools/patch-audio-recorder-edge.mjs && node tools/patch-audio-recorder-h4.mjs && node tools/patch-audio-recorder-h5.mjs && node tools/patch-audio-recorder-h6.mjs",
     "dev": "vite",
-    "prebuild": "npm run typecheck && npm run lint:runtime && npm run test:node",
+    "prebuild": "npm run typecheck && npm run lint:runtime && npm run test:node && npm run test:clock",
     "build": "vite build",
     "preview": "vite preview",
     "deploy:web": "node tools/deploy-web.mjs",
@@ -37,7 +37,8 @@
     "test:rules:emulator": "firebase emulators:exec --only firestore,storage --project pilateacher-dev --config firebase.foundation.json \"node --test tests/rules/*.test.js\"",
     "test:member-view": "node tools/test-member-view.mjs",
     "backfill:dry-run": "node tools/migration/cli.js --fixture tests/fixtures/legacy-backup.json",
-    "validate:fixture": "node tools/validation/cli.js --legacy tests/fixtures/legacy-backup.json --new tests/fixtures/new-structure.json --format markdown"
+    "validate:fixture": "node tools/validation/cli.js --legacy tests/fixtures/legacy-backup.json --new tests/fixtures/new-structure.json --format markdown",
+    "test:clock": "node tools/test-clock.mjs"
   },
   "dependencies": {
     "@capacitor-community/speech-recognition": "^7.0.1",

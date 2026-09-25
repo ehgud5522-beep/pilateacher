@@ -482,9 +482,14 @@ export async function deductPass(organizationId, pass, input, options = {}) {
   const instructorId = requiredText(input?.instructorId, "instructorId");
   const createdBy = requiredText(input?.createdBy, "createdBy");
 
-  // 잔여가 없는 회원권은 여기서 막는다. 원장은 고칠 수 없으므로 음수 잔여가
-  // 한 번 생기면 그 회원권의 기록은 영영 앞뒤가 안 맞는다.
-  if (!isDeductablePass(pass)) throw new Error("Missing remainingCount");
+  /* 잔여가 없는 회원권은 여기서 막는다. 원장은 고칠 수 없으므로 음수 잔여가
+     한 번 생기면 그 회원권의 기록은 영영 앞뒤가 안 맞는다.
+
+     **주입받은 시계로 본다.** 이 함수는 now 를 옵션으로 받으면서 만료 판정만
+     진짜 시계를 보고 있었다 -- 한 번의 차감 안에서 두 개의 "지금" 이 쓰인
+     셈이고, 그래서 시계를 옮긴 테스트가 무너졌다. 운영에서는 둘이 같은 값이라
+     동작이 바뀌지 않는다. */
+  if (!isDeductablePass(pass, now())) throw new Error("Missing remainingCount");
 
   const category = requiredText(pass?.category, "category");
   /* 개명 전에 발급된 회원권은 이 값을 unitPrice 라는 이름으로 들고 있다. 이름만

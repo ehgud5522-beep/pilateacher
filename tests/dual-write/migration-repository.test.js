@@ -449,3 +449,66 @@ test("both members get their own running total seeded", async () => {
   assert.equal(store.written.get(totals[0]).sessions, 35);
   assert.equal(store.written.get(totals[1]).sessions, 12);
 });
+
+/* ── 번호가 바뀐 회원이 섞인 엑셀 ────────────────────────────────────
+
+   예전에는 `csv_<번호>` 를 만들어 그것을 그 회원으로 삼았다. 번호를 바꿀 수
+   있게 된 뒤로 그 가정이 깨진다 -- 연락처를 고친 회원은 문서 id 가 옛 번호인
+   채로 남아 있고(그게 정상이다), 새 번호로 적힌 엑셀을 올리면 같은 사람이
+   회원 둘이 된다. */
+
+test("새 번호로 적힌 행은 기존 회원을 그대로 쓴다", () => {
+  const clients = [
+    { id: "csv_01012345678", name: "김하나", phone: "01099998888", previousPhones: ["01012345678"] },
+  ];
+  const { writes, failures } = planClientMigration(
+    clientSheet("김하나,010-9999-8888,반송점"),
+    { locations: LOCATIONS, clients },
+  );
+  assert.deepEqual(failures, []);
+  assert.equal(writes.length, 1);
+  // 문서 id 는 옛 번호 그대로다. 원장·누적·수업이 전부 이 id 를 가리킨다.
+  assert.equal(writes[0].clientId, "csv_01012345678");
+  assert.equal(writes[0].existing, true);
+  assert.equal(writes[0].data.phone, "01099998888");
+});
+
+test("예전 번호로 적힌 행은 막는다", () => {
+  /* 번호를 바꾸기 전에 내려받은 엑셀이다. 새로 만들면 또 회원 둘이 된다. */
+  const clients = [
+    { id: "csv_01012345678", name: "김하나", phone: "01099998888", previousPhones: ["01012345678"] },
+  ];
+  const { writes, failures } = planClientMigration(
+    clientSheet("김하나,010-1234-5678,반송점"),
+    { locations: LOCATIONS, clients },
+  );
+  assert.deepEqual(writes, []);
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].reason, "previous_phone");
+  assert.match(failures[0].message, /김하나 회원의 예전 번호/);
+});
+
+test("예전 번호를 다른 회원이 새로 쓰고 있으면 그쪽이 이긴다", () => {
+  /* 번호는 회수됐다 재발급된다. 지금 누군가 쓰는 번호를 "예전 번호" 라고
+     막으면 실재하는 회원을 못 올린다. */
+  const clients = [
+    { id: "csv_01012345678", name: "김하나", phone: "01099998888", previousPhones: ["01012345678"] },
+    { id: "csv_01055556666", name: "정세인", phone: "01012345678" },
+  ];
+  const { writes, failures } = planClientMigration(
+    clientSheet("정세인,010-1234-5678,반송점"),
+    { locations: LOCATIONS, clients },
+  );
+  assert.deepEqual(failures, []);
+  assert.equal(writes[0].clientId, "csv_01055556666");
+});
+
+test("처음 보는 번호는 예전처럼 새로 만든다", () => {
+  const { writes, failures } = planClientMigration(
+    clientSheet("박두리,010-5555-6666,반송점"),
+    { locations: LOCATIONS, clients: [] },
+  );
+  assert.deepEqual(failures, []);
+  assert.equal(writes[0].clientId, "csv_01055556666");
+  assert.equal(writes[0].existing, false);
+});

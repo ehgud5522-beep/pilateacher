@@ -57,6 +57,9 @@ export const MIGRATION_ERROR = Object.freeze({
   INSTRUCTOR_AMBIGUOUS: "instructor_ambiguous",
   MISSING_RATE: "missing_rate",
   ALREADY_EXISTS: "already_exists",
+  /* 누군가의 예전 번호로 적힌 행. 번호를 바꾸기 전에 내려받은 엑셀을 나중에
+     올리면 여기 걸린다 -- 새로 만들면 같은 사람이 회원 둘이 된다. */
+  PREVIOUS_PHONE: "previous_phone",
   WRITE_FAILED: "write_failed",
   /* 듀엣 세 가지를 따로 둔다. 고칠 것이 서로 다르기 때문이다 -- 하나는 연락처를
      받아 오는 일, 하나는 1차 시트에 줄을 더하는 일, 하나는 강사에게 누적 횟수를
@@ -188,12 +191,42 @@ const readDate = (record, column) => {
 /**
  * 1차 — 회원 시트를 문서로 바꾼다. 쓰지는 않는다.
  *
+ * ── 번호로 먼저 찾는다 ──
+ * 예전에는 `csv_<번호>` 를 만들어 그것을 그 회원으로 삼았다. 번호를 바꿀 수
+ * 있게 된 뒤로는 그 가정이 깨진다: 연락처를 고친 회원은 문서 id 가 옛
+ * 번호인 채로 남아 있고(그게 정상이다 -- id 는 그 회원의 주소라 바꾸면 원장이
+ * 끊긴다), 새 번호로 적힌 엑셀을 올리면 **같은 사람이 회원 둘이 된다.**
+ *
+ * 그래서 phone 으로 먼저 찾고, 없을 때만 새로 만든다.
+ *
+ * ── 예전 번호로 적힌 엑셀은 막는다 ──
+ * 번호를 바꾸기 전에 내려받은 엑셀을 나중에 올리면, 그 번호는 이제 아무
+ * 회원의 것도 아니다. 새로 만들면 또 회원 둘이 된다 -- 누구의 예전 번호인지
+ * 말하고 멈춘다.
+ *
  * @param {string} text
- * @param {{ locations?: Array<any>, createdBy?: string }} [context]
+ * @param {{ locations?: Array<any>, clients?: Array<any>, createdBy?: string }} [context]
  */
-export function planClientMigration(text, { locations = [], createdBy = "" } = {}) {
+export function planClientMigration(text, { locations = [], clients = [], createdBy = "" } = {}) {
   const { rows, missingColumns } = readSheet(text, CLIENT_SHEET_COLUMNS);
   const byLocationName = new Map(locations.map((item) => [String(item.name || "").trim(), item.id]));
+  const known = Array.isArray(clients) ? clients.filter(Boolean) : [];
+  /* 지금 쓰는 번호를 **전부 먼저** 모은다. 한 번에 훑으면 목록 순서가 답을
+     바꾼다 -- 예전 번호를 남이 새로 쓰고 있는데 그 남이 뒤에 있으면, 아직
+     모르는 채로 "예전 번호" 로 막아 버린다. */
+  const byPhone = new Map();
+  for (const client of known) {
+    const digits = normalizePhone(client.phone);
+    if (digits) byPhone.set(digits, client);
+  }
+  const byPreviousPhone = new Map();
+  for (const client of known) {
+    for (const previous of Array.isArray(client.previousPhones) ? client.previousPhones : []) {
+      const old = normalizePhone(previous);
+      // 지금 누군가 쓰는 번호가 이긴다. 번호는 회수됐다 재발급되기도 한다.
+      if (old && !byPhone.has(old)) byPreviousPhone.set(old, client);
+    }
+  }
   const writes = [];
   const failures = [];
   const seenPhones = new Map();
@@ -217,13 +250,26 @@ export function planClientMigration(text, { locations = [], createdBy = "" } = {
       failures.push(failure(line, MIGRATION_ERROR.DUPLICATE_PHONE, `${seenAt}행과 연락처가 같습니다: ${name}`));
       return;
     }
+    /* 누군가의 예전 번호다. 새로 만들면 같은 사람이 회원 둘이 된다. */
+    const previousOwner = byPreviousPhone.get(phone);
+    if (previousOwner) {
+      failures.push(failure(
+        line, MIGRATION_ERROR.PREVIOUS_PHONE,
+        `이 번호는 ${previousOwner.name || "다른"} 회원의 예전 번호입니다: ${name}`,
+      ));
+      return;
+    }
     seenPhones.set(phone, line);
-    const clientId = clientIdForPhone(phone);
+    /* 이미 있는 회원이면 그 문서를 그대로 쓴다. id 는 옛 번호일 수 있고
+       그래도 정상이다 -- 원장·누적·수업이 전부 그 id 를 가리킨다. */
+    const existing = byPhone.get(phone);
+    const clientId = existing ? String(existing.id || existing.clientId) : clientIdForPhone(phone);
     writes.push({
       line,
       name,
       phone,
       clientId,
+      existing: Boolean(existing),
       data: { name, phone, locationId, status: CLIENT_STATUS.ACTIVE, createdBy },
     });
   });

@@ -61,6 +61,11 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "센터 회원 상세 · 대표",
     "센터 회원 상세 · 차감 보정 확인",
     "센터 회원 상세 · 발급 취소 확인",
+    "센터 회원 상세 · 연락처 수정",
+    "센터 회원 상세 · 강사 · 연락처 수정",
+    "센터 회원 상세 · 양도",
+    "센터 회원 상세 · 양도 · 동명이인",
+    "센터 회원 상세 · 양도 · 듀엣 차단",
     "센터 회원 상세 · 듀엣",
     "센터 회원 상세 · 일부 이력 실패",
     "센터 회원 상세 · 조회 실패",
@@ -112,10 +117,15 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "회원 관리 · 동명이인 확인",
     "회원 관리 · 지점 조회 실패",
     "회원 관리 · 지점 없음",
+    "회원 관리 · 심사용 · 대표",
+    "회원 관리 · 심사용 · FC매니저",
     "회원 관리 · 소속 확인 실패",
     "더보기 탭 · 매니저",
     "회원권 상품",
     "회원권 상품 · 소속 확인 실패",
+    "번호 점검",
+    "번호 점검 · 이상 없음",
+    "번호 점검 · 조회 실패",
     "감사 로그",
     "감사 로그 · 전체 이력",
     "감사 로그 · 이상 없음",
@@ -2002,4 +2012,177 @@ test("the note is not offered where there is no member app", async (t) => {
      쓰고 나서 아무 데도 가지 않은 것을 나중에 안다. */
   const markupOf = await issueScreens(t);
   assert.doesNotMatch(markupOf("일정 탭 · 개인 모드 · 확정 없음"), /회원에게 보낼 말/);
+});
+
+/* ── 회원권 양도 ─────────────────────────────────────────────────────────
+
+   원장은 append-only 다. 누른 뒤에는 고칠 수 없으므로, 무엇이 일어나는지를
+   누르기 **전에** 화면이 말해야 한다. */
+
+test("the transfer sheet prices the move before it happens", async (t) => {
+  const markupOf = await issueScreens(t);
+  const sheet = markupOf("센터 회원 상세 · 양도");
+
+  assert.match(sheet, /회원권 양도/);
+  // 서비스 회차를 뺀 유료 잔여다. 잔여 8 중 서비스 2 를 뺀 6.
+  assert.match(sheet, /남은 유료 회차 6회/);
+  assert.match(sheet, /서비스 회차는 넘어가지 않습니다/);
+  // 1회 기준 미리보기가 이미 서 있다. 금액과 부원장 단가를 함께 적는다.
+  assert.match(sheet, /계약 금액/);
+  assert.match(sheet, /부원장 회당/);
+  assert.match(sheet, /1:1 신규/);
+  assert.match(sheet, /만료일은 원본 그대로/);
+});
+
+test("the transfer sheet says the move cannot be undone", async (t) => {
+  /* 되돌릴 수 없다는 사실을 누르기 전에 말한다. 차감 보정처럼 되돌리는 문이
+     양도에는 없다 -- 받는 회원의 회원권이 이미 자기 이력을 쌓기 시작한다. */
+  const markupOf = await issueScreens(t);
+  assert.match(markupOf("센터 회원 상세 · 양도"), /넘긴 회차는 되돌릴 수 없습니다/);
+});
+
+test("the receiving member is typed in full, never browsed", async (t) => {
+  /* 명부를 스크롤하며 고르게 두면 "누가 회원인지" 가 화면에 깔린다. 강사에게
+     명부를 좁혀 둔 것과 같은 선이다. */
+  const markupOf = await issueScreens(t);
+  const sheet = markupOf("센터 회원 상세 · 양도");
+
+  assert.match(sheet, /이름 전체 입력/);
+  // 후보 이름이 미리 깔려 있으면 안 된다.
+  assert.doesNotMatch(sheet, /정세인/);
+  assert.doesNotMatch(sheet, /<select/);
+});
+
+test("a duet transfer is not offered at all", async (t) => {
+  /* 열어 두고 거부하면 대표는 방법이 있다고 여기고 계속 누른다. */
+  const markupOf = await issueScreens(t);
+  const blocked = markupOf("센터 회원 상세 · 양도 · 듀엣 차단");
+  assert.match(blocked, /듀엣 회원권은 양도할 수 없습니다/);
+  // 미리보기도 확인 버튼의 활성도 없다.
+  assert.doesNotMatch(blocked, /부원장 회당/);
+  assert.match(blocked, /disabled=""/);
+});
+
+test("only the owner sees the transfer button", async (t) => {
+  /* 회원 사이에 돈이 오가는 일이라 차감 보정·취소와 같은 선이다. */
+  const markupOf = await issueScreens(t);
+  assert.match(markupOf("센터 회원 상세 · 대표"), />양도</);
+  assert.doesNotMatch(markupOf("센터 회원 상세"), />양도</);
+});
+
+/* ── 연락처 수정 ─────────────────────────────────────────────────────────
+
+   번호는 회원의 정체다. 고치는 것과 보는 것은 다른 일이라, 고치는 창에서도
+   전체 번호를 보여 주지 않는다. */
+
+test("the phone edit sheet never shows the whole current number", async (t) => {
+  /* 강사에게 명부는 뒤 4자리로 가려져 있다. 수정 창에서 전체를 보여 주면
+     그 창이 곧 번호를 보는 길이 된다. */
+  const markupOf = await issueScreens(t);
+  const sheet = markupOf("센터 회원 상세 · 연락처 수정");
+
+  assert.match(sheet, /연락처 수정/);
+  assert.match(sheet, /새 연락처/);
+  // 가운데를 가린 모양만 보인다.
+  assert.doesNotMatch(sheet, /01012345678/);
+  assert.doesNotMatch(sheet, /010-1234-5678/);
+});
+
+test("the phone edit sheet says the app login will break", async (t) => {
+  /* 번호가 바뀐 계정은 더 이상 그 회원이 아니다. 누르기 전에 말한다. */
+  const markupOf = await issueScreens(t);
+  const sheet = markupOf("센터 회원 상세 · 연락처 수정");
+  assert.match(sheet, /새 번호로 다시 로그인/);
+  // 회원 id 가 그대로라는 것도 말한다 -- 대표가 가장 걱정하는 자리다.
+  assert.match(sheet, /회원 번호\(ID\)는 바뀌지 않습니다/);
+});
+
+test("the instructor sees the edit button for their own member", async (t) => {
+  /* 번호가 틀려 있으면 수업이 끝난 자리에서 바로 고치는 편이 낫다. 서버가
+     담당인지 다시 본다. */
+  const markupOf = await issueScreens(t);
+  assert.match(markupOf("센터 회원 상세 · 강사 · 연락처 수정"), />연락처 수정</);
+});
+
+test("the edit button is absent where nothing can save it", async (t) => {
+  // onChangePhone 이 없으면 누를 곳을 만들지 않는다.
+  const markupOf = await issueScreens(t);
+  assert.doesNotMatch(markupOf("센터 회원 상세 · 대표"), />연락처 수정</);
+});
+
+test("the owner sees who changed whose number, with the digits masked", async (t) => {
+  /* 강사도 바꿀 수 있게 된 뒤로 대표가 따로 봐야 하는 줄이다 -- 번호는
+     회원의 정체라, 누가 남의 번호를 건드렸는지가 묻히면 안 된다. */
+  const markupOf = await issueScreens(t);
+  const audit = markupOf("감사 로그");
+
+  assert.match(audit, /연락처 변경/);
+  assert.match(audit, /이두리/);
+  // 가운데를 가린다. 전체 번호는 감사 화면에도 늘어놓지 않는다.
+  assert.match(audit, /010····4444 → 010····8888/);
+  assert.doesNotMatch(audit, /01033334444/);
+  assert.doesNotMatch(audit, /01099998888/);
+  // 누가 바꿨는지 -- 강사가 바꾼 줄을 알아볼 수 있어야 한다.
+  assert.match(audit, /강사/);
+});
+
+/* ── 번호 점검 ───────────────────────────────────────────────────────────
+
+   이 번호로는 회원 앱에 로그인해도 명부에서 찾지 못한다. 한꺼번에
+   정규화하지 않는 이유는 아예 틀린 번호가 섞여 있기 때문이다 -- 고치면 그것이
+   "정상" 이 되어 더 찾기 어려워진다. */
+
+test("the phone check shows the stored spelling, untouched", async (t) => {
+  const markupOf = await issueScreens(t);
+  const screen = markupOf("번호 점검");
+
+  assert.match(screen, /번호 점검/);
+  // 저장된 그대로다. 대표가 고쳐야 할 것이 바로 이 철자다.
+  assert.match(screen, /010-1234-5678/);
+  assert.match(screen, /02-1234-5678/);
+  assert.match(screen, /연락처 수정/);
+  // 연결된 회원은 번호를 바꾸면 로그인이 끊긴다. 미리 말한다.
+  assert.match(screen, /앱 연결됨/);
+});
+
+test("nothing wrong and could not read are different screens", async (t) => {
+  /* 한 문구로 뭉개면 고장을 정상으로 읽는다. */
+  const markupOf = await issueScreens(t);
+  assert.match(markupOf("번호 점검 · 이상 없음"), /깨진 번호가 없습니다/);
+
+  const failed = markupOf("번호 점검 · 조회 실패");
+  assert.match(failed, /불러오지 못했습니다/);
+  assert.match(failed, /코드 permission-denied/);
+  assert.doesNotMatch(failed, /깨진 번호가 없습니다/);
+});
+
+/* ── 심사용 회원 ─────────────────────────────────────────────────────────
+
+   스토어 심사관이 로그인해서 볼 가짜 회원이다. 한 군데라도 새면 가짜가 진짜
+   숫자에 섞이고, 그 숫자로 강사 급여가 나간다. */
+
+test("the review demo member shows only to the owner, with a badge", async (t) => {
+  /* 대표는 그 회원이 거기 있다는 것을 알아야 한다. 안 보이면 왜 숫자가
+     안 맞는지 물을 곳이 없다. */
+  const markupOf = await issueScreens(t);
+  const owner = markupOf("회원 관리 · 심사용 · 대표");
+  assert.match(owner, /심사용 회원/);
+  assert.match(owner, />심사용</, "배지가 없다");
+});
+
+test("nobody else sees the review demo member at all", async (t) => {
+  const markupOf = await issueScreens(t);
+  const manager = markupOf("회원 관리 · 심사용 · FC매니저");
+  assert.doesNotMatch(manager, /심사용 회원/);
+  // 실제 회원은 그대로 보인다 -- 목록이 통째로 사라진 것이 아니다.
+  assert.match(manager, /김하나/);
+});
+
+test("the location chip does not count the review demo member", async (t) => {
+  /* 보이는 문제가 아니라 세는 문제다. 대표에게도 뺀다. */
+  const markupOf = await issueScreens(t);
+  const owner = markupOf("회원 관리 · 심사용 · 대표");
+  const manager = markupOf("회원 관리 · 심사용 · FC매니저");
+  const counts = (markup) => (markup.match(/반송점[^<]*<\/span><span[^>]*>(\d+)/) || [])[1];
+  assert.equal(counts(owner), counts(manager), "대표 화면의 인원수가 다르다");
 });

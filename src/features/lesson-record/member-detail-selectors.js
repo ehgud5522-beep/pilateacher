@@ -301,7 +301,13 @@ export function formatMemberLessonHeader(session, sessions = [], options = {}) {
   const sameDateCount = sessions.filter((item) => item?.date && item.date === session?.date).length;
   const time = sameDateCount > 1 && session?.startTime ? ` ${session.startTime}` : "";
   const type = options.includeType === false ? "" : ` · ${session?.type || "수업"}`;
-  return `${formatMemberLessonDate(session?.date, { weekday: options.weekday !== false })}${time}${type}`;
+  /* 시계를 그대로 넘긴다. 날짜 라벨은 올해면 연도를 떼고 작년이면 붙이는데,
+     여기서 안 넘기면 부르는 쪽이 준 "지금" 과 라벨이 보는 "지금" 이 달라진다 --
+     해가 바뀌는 자정에 같은 목록의 줄마다 연도가 붙었다 떨어진다. */
+  return `${formatMemberLessonDate(session?.date, {
+    weekday: options.weekday !== false,
+    ...(options.now ? { now: options.now } : {}),
+  })}${time}${type}`;
 }
 
 export function selectMemberLessonCounts({ member, schedule = [], now = new Date() } = {}) {

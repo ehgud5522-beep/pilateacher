@@ -282,3 +282,37 @@ test("an organizationId is required before anything is read", async () => {
     /Missing organizationId/,
   );
 });
+
+/* ── 심사용 회원은 발급 내역에서 빠진다 ────────────────────────────
+
+   0원으로 발급하기로 했더라도 건수는 는다. 이달 판매가 실제보다 많아 보이면
+   대표가 옛 엑셀과 맞춰 보며 한 건을 손으로 찾게 된다. */
+
+test("a review-demo member's pass never reaches the issue report", async () => {
+  const store = {
+    listOrganizationIssues: async () => [
+      issue({ id: "real", clientId: "client-1", passId: "pass-1" }),
+      issue({ id: "demo", clientId: "review-demo-1", passId: "pass-demo" }),
+    ],
+    readCancelEntry: async () => null,
+  };
+  const summary = await loadOrganizationMonthlyIssues("center-a", {
+    month: "2026-09", store,
+    listPassesFn: async () => [pass(), pass({ id: "pass-demo", clientId: "review-demo-1" })],
+    excludedClientIds: new Set(["review-demo-1"]),
+  });
+  assert.equal(summary.totals.count, 1, "가짜 발급이 세어졌다");
+  assert.equal(summary.rows.length, 1);
+  assert.equal(summary.rows[0].clientId, "client-1");
+});
+
+test("without the exclusion set the report is unchanged", async () => {
+  const store = {
+    listOrganizationIssues: async () => [issue()],
+    readCancelEntry: async () => null,
+  };
+  const summary = await loadOrganizationMonthlyIssues("center-a", {
+    month: "2026-09", store, listPassesFn: async () => [pass()],
+  });
+  assert.equal(summary.totals.count, 1);
+});

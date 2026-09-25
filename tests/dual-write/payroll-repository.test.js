@@ -556,3 +556,32 @@ test("the rule breakdown reaches the per-location buckets too", () => {
     { rule: "new_to_instructor", sessions: 1, amount: 25000 },
   ]);
 });
+
+/* ── 심사용 회원은 급여에서 빠진다 ──────────────────────────────────
+
+   스토어 심사관이 로그인해서 볼 가짜 회원이다. 그 회차가 합계에 섞이면
+   강사에게 실제로 없는 수업의 돈이 잡힌다 -- 원장은 append-only 라 그 뒤에
+   고칠 방법도 없다. */
+
+test("a review-demo member's sessions never reach the payroll total", async () => {
+  const store = orgStore([
+    orgEntry({ id: "real-1", clientId: "csv_01011112222", unitPrice: 30000 }),
+    orgEntry({ id: "demo-1", clientId: "review-demo-1", unitPrice: 30000 }),
+    orgEntry({ id: "real-2", clientId: "csv_01033334444", unitPrice: 25000 }),
+  ]);
+  const summary = await loadOrganizationMonthlyPayroll(ORG, {
+    month: "2026-09", store, excludedClientIds: new Set(["review-demo-1"]),
+  });
+  assert.equal(summary.sessions, 2, "가짜 회차가 세어졌다");
+  assert.equal(summary.total, 55000);
+});
+
+test("without the exclusion set nothing changes", async () => {
+  /* 부르는 쪽이 명부를 아직 못 읽었을 수 있다. 그때 조용히 전부 빼 버리면
+     급여가 0 으로 보이고, 그것이 더 나쁜 거짓말이다. */
+  const store = orgStore([
+    orgEntry({ id: "real-1", clientId: "csv_01011112222", unitPrice: 30000 }),
+  ]);
+  const summary = await loadOrganizationMonthlyPayroll(ORG, { month: "2026-09", store });
+  assert.equal(summary.sessions, 1);
+});

@@ -38,6 +38,7 @@
 import { COLLECTIONS, LEDGER_ENTRY_TYPE, PAY_CATEGORY } from "../schema/constants.js";
 import { PRICING_RULE } from "../schema/deduction-pricing.js";
 import { readCollection } from "./repository-read.js";
+import { withoutReviewDemo } from "../../features/members/review-demo.js";
 
 /**
  * @typedef {object} PayrollStore
@@ -402,10 +403,13 @@ export function summarizeOrganizationPay(entries) {
  * 센터 한 달치 수업료. 대표만 부른다.
  *
  * @param {string} organizationId
- * @param {{ month?: string, store?: OrganizationPayrollStore }} [options]
+ * @param {{
+ *   month?: string, store?: OrganizationPayrollStore,
+ *   excludedClientIds?: Set<string> | null,
+ * }} [options]
  */
 export async function loadOrganizationMonthlyPayroll(organizationId, options = {}) {
-  const { month, store = createFirestorePayrollStore() } = options;
+  const { month, store = createFirestorePayrollStore(), excludedClientIds = null } = options;
   const organization = requiredText(organizationId, "organizationId");
   const { start, end } = monthRange(month);
   // 조회 실패는 빈 목록이 아니라 RepositoryReadError 로 나간다 -- repository-read.js 참고.
@@ -424,7 +428,11 @@ export async function loadOrganizationMonthlyPayroll(organizationId, options = {
     const at = toDate(entry.occurredAt).getTime();
     return Number.isFinite(at) && at >= start.getTime() && at < end.getTime();
   });
-  return { month: String(month), start, end, ...summarizeOrganizationPay(inMonth) };
+  /* 심사용 회원은 사람이 아니다. 그 회차가 급여 합계에 섞이면 강사에게 실제로
+     없는 수업의 돈이 잡힌다 -- 원장에는 그 표시가 없으므로 명부에서 모아 온
+     id 로 거른다 (features/members/review-demo.js). */
+  const real = withoutReviewDemo(inMonth, excludedClientIds);
+  return { month: String(month), start, end, ...summarizeOrganizationPay(real) };
 }
 
 /**

@@ -192,6 +192,9 @@ async function seed() {
       organizationId: ORG_A,
       userId: users.member,
       displayName: "Member",
+      // 연락처가 잠겨 있는지 보려면 잠글 값이 있어야 한다.
+      phone: "01012345678",
+      name: "김하나",
     });
     await setDoc(doc(db, "organizations", ORG_A, "clients", "client-other"), {
       organizationId: ORG_A,
@@ -2525,6 +2528,135 @@ describe("checking attendance against a pass", () => {
     await assertFails(setDoc(at("instructor", "c-by-instructor"), cancel({ createdBy: users.instructor })));
 
     await assertSucceeds(setDoc(at("owner", "c-ok"), cancel()));
+  });
+
+  test("the phone number cannot be changed from the app, by anyone", async () => {
+    /* 번호는 회원의 정체다. 바꾸는 일에는 중복 쿼리와 이전 번호 기록과 연결
+       해제가 함께 따라오고, 규칙은 셋 다 못 한다 -- 그래서 문은 callable
+       하나이고 여기는 잠긴다. */
+    const at = (userId) => doc(dbFor(users[userId]), "organizations", ORG_A, "clients", "client-member");
+
+    for (const role of ["owner", "manager", "instructor", "staff"]) {
+      await assertFails(setDoc(at(role), { phone: "01099998888" }, { merge: true }), role);
+      await assertFails(setDoc(at(role), { previousPhones: ["01012345678"] }, { merge: true }), role);
+    }
+
+    /* 같은 번호를 다시 보내는 것은 통과한다. 기기 명부가 옛 철자를 들고
+       있어도 다른 칸을 고치는 일이 막히지 않아야 한다. */
+    await assertSucceeds(setDoc(at("instructor"), {
+      phone: "01012345678", name: "김하나 (수정)",
+    }, { merge: true }));
+
+    // 번호를 빼고 다른 칸만 고치는 것도 통과한다. 강사가 메모를 고치는 길이다.
+    await assertSucceeds(setDoc(at("instructor"), { name: "김하나" }, { merge: true }));
+  });
+
+  test("the review-demo flag cannot be set from the app", async () => {
+    /* 이 표시 하나로 그 회원이 급여·발급 내역·매출에서 전부 빠진다. 앱에서
+       켤 수 있으면 **실적을 숨기는 버튼**이 된다 -- 켜는 것은 콘솔에서
+       대표가 직접 한다. */
+    const at = (userId) => doc(dbFor(users[userId]), "organizations", ORG_A, "clients", "client-member");
+    for (const role of ["owner", "manager", "instructor", "staff"]) {
+      await assertFails(setDoc(at(role), { reviewDemo: true }, { merge: true }), role);
+      await assertFails(setDoc(at(role), { reviewDemo: false }, { merge: true }), role);
+    }
+  });
+
+  test("a new client cannot be born as a review demo", async () => {
+    // 만들 때 열어 두면 고칠 때 막는 것이 무의미하다.
+    const born = (extra) => setDoc(
+      doc(dbFor(users.owner), "organizations", ORG_A, "clients", "client-new"),
+      {
+        organizationId: ORG_A, name: "새 회원", phone: "01077778888",
+        locationId: "location-a", status: "active",
+        createdAt: serverTimestamp(), createdBy: users.owner, ...extra,
+      },
+    );
+    await assertFails(born({ reviewDemo: true }));
+    await assertFails(born({ previousPhones: ["01011112222"] }));
+    await assertSucceeds(born({}));
+  });
+
+  test("a differently spelled but identical number goes through", async () => {
+    /* 스토어에 나가 있는 앱(AAB 57)은 수정 때 phone 을 함께 보내고, 기기
+       명부의 철자는 저장된 값과 다를 수 있다. 값으로 막으면 그 수정이 통째로
+       거부되는데, 코디네이터가 그 실패를 삼켜 강사에게는 저장된 것으로
+       보인다 -- 그래서 숫자로 막는다.
+
+       진짜 변경은 그대로 막힌다. 바꾸는 길은 callable 하나뿐이다. */
+    const at = (userId) => doc(dbFor(users[userId]), "organizations", ORG_A, "clients", "client-member");
+
+    // 저장된 값은 01012345678 이다. 하이픈을 섞어 보내도 같은 번호다.
+    await assertSucceeds(setDoc(at("instructor"), {
+      phone: "010-1234-5678", name: "김하나 (하이픈)",
+    }, { merge: true }));
+    await assertSucceeds(setDoc(at("instructor"), {
+      phone: "010 1234 5678", name: "김하나 (공백)",
+    }, { merge: true }));
+
+    /* 저장값 쪽이 하이픈이어도 마찬가지다 -- 정규화 구멍으로 이미 그렇게
+       저장된 회원이 있다. 방금 하이픈으로 덮였으니 이제 숫자만으로 보내 본다. */
+    await assertSucceeds(setDoc(at("instructor"), {
+      phone: "01012345678", name: "김하나",
+    }, { merge: true }));
+
+    // 숫자가 다르면 그대로 거부다.
+    await assertFails(setDoc(at("instructor"), { phone: "01099998888" }, { merge: true }));
+    await assertFails(setDoc(at("owner"), { phone: "010-9999-8888" }, { merge: true }));
+    // 자릿수만 달라도 다른 번호다.
+    await assertFails(setDoc(at("owner"), { phone: "0101234567" }, { merge: true }));
+  });
+
+  test("a handover says where the sessions went, and only the owner may send them", async () => {
+    /* 회원권 양도. 회차가 나가는 항목이지만 차감이 아니다 -- 수업이 일어나지
+       않았으므로 급여가 나가지 않고, 그래서 단가와 카테고리에 넣을 참값이
+       없다. 어디로 갔는지가 없으면 회차가 줄어든 사실만 남는다. */
+    const handover = (overrides = {}) => ({
+      organizationId: ORG_A,
+      passId: PASS_A,
+      clientId: "client-member",
+      locationId: "location-a",
+      type: "handover",
+      delta: -5,
+      toPassId: "pass-new",
+      toClientId: "client-other",
+      instructorId: users.instructor,
+      occurredAt: hoursAgo(1),
+      createdAt: serverTimestamp(),
+      createdBy: users.owner,
+      ...overrides,
+    });
+    const at = (userId, entryId) => ledgerDocOf(users[userId], ORG_A, PASS_A, entryId);
+
+    // 어디로 갔는지가 반드시 있어야 한다.
+    const noTarget = handover();
+    delete noTarget.toPassId;
+    await assertFails(setDoc(at("owner", "h-no-target"), noTarget));
+    const noClient = handover();
+    delete noClient.toClientId;
+    await assertFails(setDoc(at("owner", "h-no-client"), noClient));
+    await assertFails(setDoc(at("owner", "h-empty-target"), handover({ toPassId: "" })));
+
+    // 자기 자신에게 넘기는 것은 양도가 아니다.
+    await assertFails(setDoc(at("owner", "h-self"), handover({ toClientId: "client-member" })));
+    await assertFails(setDoc(at("owner", "h-same-pass"), handover({ toPassId: PASS_A })));
+
+    // 남은 회차보다 많이 나갈 수 없고, 양수일 수도 없다.
+    await assertFails(setDoc(at("owner", "h-too-many"), handover({ delta: -21 })));
+    await assertFails(setDoc(at("owner", "h-positive"), handover({ delta: 5 })));
+    await assertFails(setDoc(at("owner", "h-zero"), handover({ delta: 0 })));
+
+    // 돈이 오가지 않는다. 지어낸 단가가 급여에 묶여 들어가면 안 된다.
+    await assertFails(setDoc(at("owner", "h-priced"), handover({ category: "pt_1_1_new", unitPrice: 25000 })));
+    await assertFails(setDoc(at("owner", "h-lesson"), handover({ lessonId: "lesson-1" })));
+    await assertFails(setDoc(at("owner", "h-reason"), handover({ reason: "그냥" })));
+
+    /* 회원 사이에 돈이 오가는 일이라 대표만 한다 -- 차감 보정·취소와 같은
+       선이다. 매니저가 회차를 옮길 수 있으면 급여가 스스로 움직인다. */
+    await assertFails(setDoc(at("manager", "h-by-manager"), handover({ createdBy: users.manager })));
+    await assertFails(setDoc(at("instructor", "h-by-instructor"), handover({ createdBy: users.instructor })));
+
+    await assertSucceeds(setDoc(at("owner", "h-ok"), handover()));
   });
 
   test("an ordinary entry has no room for a reason it does not need", async () => {

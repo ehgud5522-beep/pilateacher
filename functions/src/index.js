@@ -24,6 +24,8 @@ const {
   createFirestoreMemberViewAdminPorts, createMemberViewAdminService,
 } = require("./member-view-admin");
 const { createMemberLookupService } = require("./member-lookup");
+const { createClientPhoneService } = require("./client-phone-service");
+const { createFirestoreClientPhonePorts } = require("./client-phone-store");
 const { DEFAULT_MODEL, createOpenAIProvider } = require("./openai-provider");
 const { createFirestorePolicyService } = require("./policy");
 const { createPhotoBackupCleanupService } = require("./photo-backup-cleanup");
@@ -89,6 +91,16 @@ const memberLookupService = createMemberLookupService({
 const memberLinkService = createMemberLinkService(
   createFirestoreMemberLinkPorts({ firestore, FieldValue }),
 );
+
+/* 연락처 변경. 번호는 회원의 정체라 서버만 바꾼다 -- 규칙은 클라이언트가
+   phone 을 직접 쓰지 못하게 잠그고, 여기가 유일한 문이다. */
+const clientPhoneService = createClientPhoneService({
+  ...createFirestoreClientPhonePorts({ firestore, FieldValue }),
+  async readMembership(membershipDocumentId) {
+    const snapshot = await firestore.collection("memberships").doc(membershipDocumentId).get();
+    return snapshot.exists ? snapshot.data() : null;
+  },
+});
 
 /* 투영 점검·재작성. loadBuildJourney 는 아래에 선언돼 있지만 함수 선언이라
    끌어올려지고, 실제로 불리는 것은 요청이 왔을 때다. */
@@ -364,6 +376,73 @@ exports.cleanupExpiredPhotoBackups = onSchedule({
   logger.info("photo_backup_cleanup_completed", { purged: result.purged, remaining: result.remaining });
 });
 
+/* ── 연락처 변경 ──────────────────────────────────────────────────────────
+   번호는 회원의 정체다. 회원 앱이 인증된 번호로 명부를 찾고, 엑셀 이관이
+   번호로 문서 id 를 만든다 -- 그래서 바꾸는 일은 중복 검사와 이전 번호 기록,
+   그리고 연결 해제가 함께 일어나야 한다. 규칙으로는 못 하므로 callable 이고,
+   규칙은 클라이언트가 phone 을 직접 쓰지 못하게 잠근다. */
+
+function clientPhoneHttpsError(error) {
+  const code = String(error?.code || "phone_unavailable");
+  const details = { code };
+  /* 중복일 때 누구의 번호인지는 **대표·FC매니저에게만** 실린다. 판정이 이미
+     걸러서 올려 보내므로 여기서는 있는 것만 전달한다 (client-phone.js 의
+     duplicateAnswer). */
+  if (error?.clientName) details.clientName = error.clientName;
+  if (Number.isInteger(error?.limit)) details.limit = error.limit;
+
+  if (code === "unauthenticated") return new HttpsError("unauthenticated", "Please sign in again.", details);
+  if (["phone_not_allowed", "phone_not_my_client", "not_owner"].includes(code)) {
+    return new HttpsError("permission-denied", "This account may not change that number.", details);
+  }
+  if (code === "phone_daily_limit") {
+    return new HttpsError("resource-exhausted", "The daily limit was reached.", details);
+  }
+  if (["phone_invalid", "phone_same", "phone_duplicate", "phone_no_client", "phone_invalid_request"].includes(code)) {
+    return new HttpsError("invalid-argument", "The number was refused.", details);
+  }
+  return new HttpsError("unavailable", "The change did not finish. Please retry.", details);
+}
+
+const CLIENT_PHONE_OPTIONS = {
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  timeoutSeconds: 60,
+  memory: "256MiB",
+  invoker: "public",
+};
+
+function clientPhoneCallable(stage, run) {
+  return async (request) => {
+    try {
+      const result = await run(request);
+      logger.info("client_phone_finished", { feature: "client_phone", stage });
+      return result;
+    } catch (error) {
+      /* 원본 코드를 그대로 남긴다. 번호도 이름도 남기지 않는다 -- 진단에
+         개인정보를 적지 않는 것이 이 저장소의 규칙이다. */
+      logger.error("client_phone_failed", {
+        feature: "client_phone", stage,
+        errorDomain: "firestore",
+        errorCode: String(error?.code || "unknown"),
+        message: String(error?.cause?.message || error?.message || "").slice(0, 200),
+      });
+      throw clientPhoneHttpsError(error);
+    }
+  };
+}
+
+exports.updateClientPhone = onCall(
+  CLIENT_PHONE_OPTIONS,
+  clientPhoneCallable("update", (request) => clientPhoneService.update(request)),
+);
+
+/* 번호 철자가 깨진 회원 목록. 읽기만 한다 -- 한꺼번에 정규화하면 아예 틀린
+   번호가 "정상" 이 되어 더 찾기 어려워진다 (client-phone-store.js). */
+exports.listMalformedClientPhones = onCall(
+  CLIENT_PHONE_OPTIONS,
+  clientPhoneCallable("list_malformed", (request) => clientPhoneService.listMalformed(request)),
+);
+
 /* ── 회원용 투영 트리거 ────────────────────────────────────────────────────
    설계 10장 5번. 자세한 근거는 member-view-triggers.js 머리말에 있다.
 
@@ -462,6 +541,7 @@ exports._test = {
   accountDeletionHttpsError,
   memberLinkHttpsError,
   memberLookupHttpsError,
+  clientPhoneHttpsError,
   memberViewAdminHttpsError,
   requestPath,
 };

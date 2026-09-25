@@ -192,6 +192,9 @@ async function seed() {
       organizationId: ORG_A,
       userId: users.member,
       displayName: "Member",
+      // 연락처가 잠겨 있는지 보려면 잠글 값이 있어야 한다.
+      phone: "01012345678",
+      name: "김하나",
     });
     await setDoc(doc(db, "organizations", ORG_A, "clients", "client-other"), {
       organizationId: ORG_A,
@@ -2525,6 +2528,29 @@ describe("checking attendance against a pass", () => {
     await assertFails(setDoc(at("instructor", "c-by-instructor"), cancel({ createdBy: users.instructor })));
 
     await assertSucceeds(setDoc(at("owner", "c-ok"), cancel()));
+  });
+
+  test("the phone number cannot be changed from the app, by anyone", async () => {
+    /* 번호는 회원의 정체다. 바꾸는 일에는 중복 쿼리와 이전 번호 기록과 연결
+       해제가 함께 따라오고, 규칙은 셋 다 못 한다 -- 그래서 문은 callable
+       하나이고 여기는 잠긴다. */
+    const at = (userId) => doc(dbFor(users[userId]), "organizations", ORG_A, "clients", "client-member");
+
+    for (const role of ["owner", "manager", "instructor", "staff"]) {
+      await assertFails(setDoc(at(role), { phone: "01099998888" }, { merge: true }), role);
+      await assertFails(setDoc(at(role), { previousPhones: ["01012345678"] }, { merge: true }), role);
+    }
+
+    /* 같은 번호를 다시 보내는 것은 통과한다(affectedKeys). 기기 명부가 옛
+       번호를 들고 있어도 다른 칸을 고치는 일이 막히지 않아야 한다 -- 앱은
+       아예 보내지 않도록 고쳤지만, 규칙이 값으로 막으면 그 수정이 통째로
+       거부된다. */
+    await assertSucceeds(setDoc(at("instructor"), {
+      phone: "01012345678", name: "김하나 (수정)",
+    }, { merge: true }));
+
+    // 번호를 빼고 다른 칸만 고치는 것도 통과한다. 강사가 메모를 고치는 길이다.
+    await assertSucceeds(setDoc(at("instructor"), { name: "김하나" }, { merge: true }));
   });
 
   test("a handover says where the sessions went, and only the owner may send them", async () => {

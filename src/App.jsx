@@ -33,7 +33,8 @@ import {
   fbLoadAIRecordingStatus, fbSendDiagnosticReport, fbWritePilotMetricAttempt,
   fbListPhotoBackups, fbUploadPhotoBackup, fbDownloadPhotoBackup, fbSoftDeletePhotoBackup, fbPurgeExpiredPhotoBackups,
   fbLookupCentreMemberByEmail,
-  fbListPendingMemberLinks, fbLinkMemberAccountByOwner, fbUnlinkMemberAccount, fbVerifyMemberViews,
+  fbListPendingMemberLinks, fbLinkMemberAccountByOwner, fbUnlinkMemberAccount, fbUpdateClientPhone,
+  fbVerifyMemberViews,
   AI_CONSENT_POLICY_VERSION, AI_CONSENT_SCOPES,
 } from "./lib/firebase";
 import { runAppDualWrite } from "./data/dual-write/app-runtime";
@@ -95,6 +96,9 @@ import {
   ALL_LOCATIONS, NO_LOCATION, countByLocation, createLocation, filterByLocation, listLocations,
 } from "./data/repositories/location-repository.js";
 import { connectRepositoryLog, toleratingReadFailure } from "./data/repositories/repository-read.js";
+import {
+  canEditPhone, maskPhone, phoneEditMessage,
+} from "./features/members/phone-edit.js";
 import {
   MEMBER_NOTE_MAX, memberNoteSaveFailure, readMemberNote, saveMemberNote,
 } from "./data/repositories/member-note-repository.js";
@@ -16246,6 +16250,67 @@ function LedgerUndoSheet({ title, description, reason, onReason, onCancel, onCon
  *   테스트가 "이름을 넣은 뒤" 의 미리보기를 그려 보는 데 쓴다 -- 금액은
  *   받는 회원이 정해져야 나오므로 빈 화면에서는 확인할 수 없다.
  */
+/**
+ * 연락처 수정. 대표·FC매니저는 모든 회원, 강사는 자기 회원만.
+ *
+ * ── 기존 번호를 보여주지 않는다 ──
+ * 강사에게 명부는 뒤 4자리로 가려져 있다(roster-visibility). 수정 창에서
+ * 전체를 보여 주면 그 창이 곧 번호를 보는 길이 된다 -- 고치는 것과 보는 것은
+ * 다른 일이고, 고치려면 새 번호만 있으면 된다.
+ *
+ * 그래서 이 화면에는 **새 번호 입력 칸 하나뿐**이다. 대표에게도 같다: 두
+ * 화면을 따로 만들 이유가 없고, 지금 번호는 회원 상세에 이미 있다.
+ *
+ * ── 연결이 끊긴다는 것을 먼저 말한다 ──
+ * 번호가 바뀐 계정은 더 이상 그 회원이 아니다. 회원 앱을 쓰던 회원은 새
+ * 번호로 다시 로그인해야 하고, 그 사실을 누르기 전에 말한다.
+ */
+function ClientPhoneSheet({ client, masked, onCancel, onConfirm, busy, error }) {
+  const [phone, setPhone] = useState("");
+  const digits = phone.replace(/\D/g, "");
+  const ready = digits.length === 11 && digits.startsWith("010");
+
+  return (
+    <section data-client-phone style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>연락처 수정</h2>
+      <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        {client?.name || "회원"} · 지금 {masked || "번호 없음"}
+      </p>
+
+      <div className="mt-3">
+        <Field label="새 연락처">
+          {/* 예시 번호를 두지 않는다. 그럴듯한 숫자가 칸에 있으면 그것이
+              지금 번호인지 예시인지 헷갈리고, 이 화면은 지금 번호를 보여
+              주지 않는 것이 요점이다. */}
+          <input value={phone} inputMode="numeric" className={inputCls} placeholder="새 번호 11자리"
+            maxLength={13} onChange={(event) => setPhone(event.target.value.replace(/\D/g, ""))} />
+        </Field>
+        {digits && !ready ? (
+          <p className="mt-1.5" style={{ fontSize: TYPE.caption, color: SUB }}>
+            010으로 시작하는 11자리를 입력해 주세요.
+          </p>
+        ) : null}
+      </div>
+
+      {error ? <p className="mt-2" role="alert" style={{ fontSize: TYPE.caption, color: BAD }}>{error}</p> : null}
+
+      <p className="mt-3" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        회원 번호(ID)는 바뀌지 않습니다. 지난 수업과 회원권은 그대로 남습니다.
+        {" "}회원 앱을 쓰고 계신 분은 <b style={{ color: INK }}>새 번호로 다시 로그인</b>해야 해요.
+      </p>
+      <div className="mt-3 flex gap-2">
+        <button type="button" onClick={onCancel} className="h-11 flex-1 font-bold"
+          style={{ borderRadius: 10, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>취소</button>
+        <button type="button" disabled={busy || !ready} onClick={() => onConfirm?.(digits)}
+          className="h-11 flex-1 font-bold" style={{
+            borderRadius: 10, backgroundColor: BRAND, color: "#fff", fontSize: TYPE.caption,
+            opacity: busy || !ready ? 0.5 : 1,
+          }}>{busy ? "바꾸는 중" : "번호 바꾸기"}</button>
+      </div>
+    </section>
+  );
+}
+
 function PassTransferSheet({
   pass, clients = [], nameOfInstructor, onCancel, onConfirm, busy, error,
   initialQuery = "", initialSessions = "1",
@@ -16440,8 +16505,8 @@ function ClientPassRow({ pass, nameOfInstructor, nameOfClient = () => "", client
 
 function ClientDetail({
   organization, client, history, loading, error, instructors = [], currentUserId = "", nameOfClient = () => "",
-  clients = [], passStore, onClose, onRetry, onChanged, onToast, now = () => new Date(),
-  initialUndo = null, initialTransfer = null,
+  clients = [], passStore, onClose, onRetry, onChanged, onToast, onChangePhone,
+  now = () => new Date(), initialUndo = null, initialTransfer = null, initialPhoneEdit = false,
 }) {
   const at = now();
   /* 되돌리기는 대표만 한다. 강사와 매니저가 스스로 되돌릴 수 있으면 기록의
@@ -16456,6 +16521,10 @@ function ClientDetail({
      선이고, 규칙도 대표만 열어 둔다. */
   const [transfer, setTransfer] = useState(initialTransfer);
   const [transferError, setTransferError] = useState("");
+  /* 연락처 수정. 대표·FC매니저는 모든 회원, 강사는 자기 회원만 -- 서버가
+     같은 것을 다시 본다 (functions/src/client-phone.js). */
+  const [phoneEdit, setPhoneEdit] = useState(initialPhoneEdit);
+  const [phoneError, setPhoneError] = useState("");
   const organizationId = organization?.organizationId || "";
 
   const closeUndo = () => { setUndo(null); setReason(""); setUndoError(""); };
@@ -16483,6 +16552,32 @@ function ClientDetail({
       setBusy(false);
     }
   };
+  const runPhoneEdit = async (newPhone) => {
+    if (busy) return;
+    setBusy(true);
+    setPhoneError("");
+    try {
+      const result = await onChangePhone?.({ organizationId, clientId: client?.id || "", phone: newPhone });
+      setPhoneEdit(false);
+      onToast?.({
+        ok: true,
+        msg: result?.unlinked
+          ? "번호를 바꿨습니다. 회원 앱은 새 번호로 다시 로그인해야 해요."
+          : "번호를 바꿨습니다.",
+      });
+      onChanged?.();
+    } catch (thrown) {
+      /* 서버가 준 코드를 그대로 문구로 옮긴다. 화면이 제 판정을 다시 하면
+         서버와 갈라지고, 갈라지는 쪽은 언제나 화면이다. */
+      setPhoneError(phoneEditMessage({
+        code: thrown?.code || thrown?.details?.code,
+        clientName: thrown?.details?.clientName,
+      }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const runTransfer = async ({ toClientId, sessions }) => {
     if (!transfer || busy) return;
     setBusy(true);
@@ -16517,12 +16612,24 @@ function ClientDetail({
 
   const passes = history?.passes || [];
   const entries = history?.entries || [];
+  /* 판정의 원본은 서버다. 여기는 버튼을 보여 줄지만 정한다 -- 그것은 보안이
+     아니라 친절이고, 눌러도 거부될 버튼을 두지 않으려는 것이다. */
+  const canChangePhone = typeof onChangePhone === "function" && canEditPhone({
+    role: organization?.role, clientId: client?.id || "",
+    instructorId: currentUserId, passes,
+  });
   const failedPassIds = history?.failedPassIds || [];
   const nextExpiry = passes
     .filter((pass) => isDeductablePass(pass, at) && pass.expiresAt)
     .map((pass) => toDate(pass.expiresAt))
     .filter((date) => Number.isFinite(date.getTime()))
     .sort((left, right) => left.getTime() - right.getTime())[0];
+
+  if (phoneEdit) return (
+    <ClientPhoneSheet client={client} masked={maskPhone(client?.phone)}
+      onCancel={() => { setPhoneEdit(false); setPhoneError(""); }}
+      onConfirm={runPhoneEdit} busy={busy} error={phoneError} />
+  );
 
   if (transfer) return (
     <PassTransferSheet pass={transfer.pass} clients={clients} nameOfInstructor={nameOfInstructor}
@@ -16550,6 +16657,13 @@ function ClientDetail({
             {client?.phone ? `···${String(client.phone).slice(-4)}` : "연락처 없음"}
             {" · "}{client?.locationName || client?.locationId || "지점 없음"}
           </p>
+          {/* 강사에게도 열려 있다 -- 자기 회원이면. 번호가 틀려 있으면 수업이
+              끝난 자리에서 바로 고치는 편이 낫고, 서버가 담당인지 다시 본다.
+              눌러도 거부될 버튼은 두지 않는다. */}
+          {canChangePhone ? (
+            <button type="button" onClick={() => { setPhoneEdit(true); setPhoneError(""); }}
+              className="mt-1.5 font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>연락처 수정</button>
+          ) : null}
         </div>
         {onClose ? (
           <button type="button" onClick={onClose} aria-label="닫기" className="shrink-0"
@@ -19912,6 +20026,14 @@ export function createAppScreenSmokeCases() {
     { name: "센터 회원 상세 · 발급 취소 확인", element: ownerClientDetail({
       initialUndo: { kind: "cancel", pass: smokeHistoryPasses[0], reason: "" },
     }) },
+    /* 연락처 수정. 기존 번호는 뒤 4자리로만 보이고, 수정 창에서도 전체를
+       보여 주지 않는다 -- 고치는 것과 보는 것은 다른 일이다. */
+    { name: "센터 회원 상세 · 연락처 수정", element: ownerClientDetail({
+      onChangePhone: asyncNoop, initialPhoneEdit: true,
+    }) },
+    { name: "센터 회원 상세 · 강사 · 연락처 수정", element: clientDetail({
+      onChangePhone: asyncNoop, currentUserId: "u1",
+    }) },
     /* 양도. 대표만 보이고, 누르기 전에 얼마가 따라가는지 화면이 먼저 말한다 --
        원장은 append-only 라 누른 뒤에는 고칠 수 없다. */
     { name: "센터 회원 상세 · 양도", element: ownerClientDetail({
@@ -22903,6 +23025,8 @@ export default function App() {
                   .map((item) => ({ id: item.orgClientId, name: item.name, phone: item.phone }))}
                 instructors={detailInstructors}
                 currentUserId={account?.id || ""} onToast={setToast}
+                /* 규칙이 clients.phone 을 잠그고 있어 이 통로가 유일한 문이다. */
+                onChangePhone={fbUpdateClientPhone}
                 onChanged={() => setHistoryRevision((value) => value + 1)}
                 onRetry={() => setHistoryRevision((value) => value + 1)}
                 onClose={() => { setDetailClient(null); setClientHistory(null); setHistoryError(""); }} />

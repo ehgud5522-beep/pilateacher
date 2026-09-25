@@ -61,6 +61,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "센터 회원 상세 · 대표",
     "센터 회원 상세 · 차감 보정 확인",
     "센터 회원 상세 · 발급 취소 확인",
+    "센터 회원 상세 · 연락처 수정",
+    "센터 회원 상세 · 강사 · 연락처 수정",
     "센터 회원 상세 · 양도",
     "센터 회원 상세 · 양도 · 동명이인",
     "센터 회원 상세 · 양도 · 듀엣 차단",
@@ -2061,4 +2063,44 @@ test("only the owner sees the transfer button", async (t) => {
   const markupOf = await issueScreens(t);
   assert.match(markupOf("센터 회원 상세 · 대표"), />양도</);
   assert.doesNotMatch(markupOf("센터 회원 상세"), />양도</);
+});
+
+/* ── 연락처 수정 ─────────────────────────────────────────────────────────
+
+   번호는 회원의 정체다. 고치는 것과 보는 것은 다른 일이라, 고치는 창에서도
+   전체 번호를 보여 주지 않는다. */
+
+test("the phone edit sheet never shows the whole current number", async (t) => {
+  /* 강사에게 명부는 뒤 4자리로 가려져 있다. 수정 창에서 전체를 보여 주면
+     그 창이 곧 번호를 보는 길이 된다. */
+  const markupOf = await issueScreens(t);
+  const sheet = markupOf("센터 회원 상세 · 연락처 수정");
+
+  assert.match(sheet, /연락처 수정/);
+  assert.match(sheet, /새 연락처/);
+  // 가운데를 가린 모양만 보인다.
+  assert.doesNotMatch(sheet, /01012345678/);
+  assert.doesNotMatch(sheet, /010-1234-5678/);
+});
+
+test("the phone edit sheet says the app login will break", async (t) => {
+  /* 번호가 바뀐 계정은 더 이상 그 회원이 아니다. 누르기 전에 말한다. */
+  const markupOf = await issueScreens(t);
+  const sheet = markupOf("센터 회원 상세 · 연락처 수정");
+  assert.match(sheet, /새 번호로 다시 로그인/);
+  // 회원 id 가 그대로라는 것도 말한다 -- 대표가 가장 걱정하는 자리다.
+  assert.match(sheet, /회원 번호\(ID\)는 바뀌지 않습니다/);
+});
+
+test("the instructor sees the edit button for their own member", async (t) => {
+  /* 번호가 틀려 있으면 수업이 끝난 자리에서 바로 고치는 편이 낫다. 서버가
+     담당인지 다시 본다. */
+  const markupOf = await issueScreens(t);
+  assert.match(markupOf("센터 회원 상세 · 강사 · 연락처 수정"), />연락처 수정</);
+});
+
+test("the edit button is absent where nothing can save it", async (t) => {
+  // onChangePhone 이 없으면 누를 곳을 만들지 않는다.
+  const markupOf = await issueScreens(t);
+  assert.doesNotMatch(markupOf("센터 회원 상세 · 대표"), />연락처 수정</);
 });

@@ -661,6 +661,19 @@ export const fbVerifyMemberViews = callableAsOwner("verifyMemberViews");
 /** 투영을 다시 만든다. **`dryRun: false` 를 명시해야 실제로 쓴다.** */
 export const fbRebuildMemberViews = callableAsOwner("rebuildMemberViews");
 
+/* ---------------- 연락처 변경 ----------------
+   번호는 회원의 정체다. 규칙이 clients.phone 을 잠그고 있어 이 통로가 유일한
+   문이다 -- 중복 쿼리·이전 번호 기록·연결 해제가 함께 일어나야 하고, 규칙은
+   셋 다 못 한다 (functions/src/client-phone.js).
+
+   이름이 callableAsOwner 지만 대표 전용이라는 뜻은 아니다. 로그인만 확인하고
+   역할은 서버가 memberships 에서 직접 읽는다 -- 앱이 보낸 역할을 믿으면 그것은
+   잠긴 문이 아니다. */
+export const fbUpdateClientPhone = callableAsOwner("updateClientPhone");
+
+/** 번호 철자가 깨진 회원 목록. 읽기만 하고, 고치는 것은 대표가 하나씩 한다. */
+export const fbListMalformedClientPhones = callableAsOwner("listMalformedClientPhones");
+
 export async function fbPurgeExpiredPhotoBackups() {
   if (!functions || !auth?.currentUser) return { purged: 0 };
   const call = httpsCallable(functions, "purgeExpiredPhotoBackups");

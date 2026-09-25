@@ -1,10 +1,10 @@
 import { DualWriteCoordinator, mutationFingerprint } from "./coordinator.js";
 import { dualWriteEnabled, legacyOrganizationId } from "./feature-flags.js";
-import { RetryMetadataStore } from "./retry-store.js";
+import { PendingWriteLog, pendingClientWrites } from "./retry-store.js";
 import { FirestoreClientRepository, FirestoreLessonRepository } from "../repositories/firestore-adapters.js";
 import { CLIENT_STATUS, LESSON_STATUS, RECORD_STATUS } from "../schema/constants.js";
 
-const retryStore = typeof globalThis.window === "undefined" ? null : new RetryMetadataStore(globalThis.window.localStorage);
+const retryStore = typeof globalThis.window === "undefined" ? null : new PendingWriteLog(globalThis.window.localStorage);
 const dualWriteEnv = typeof window === "undefined" ? {} : {
   MODE: import.meta.env.MODE,
   PROD: import.meta.env.PROD,
@@ -83,4 +83,14 @@ export async function runAppDualWrite(account, descriptor, legacyWrite) {
         : repository.updateLesson(context, descriptor.payload);
     },
   });
+}
+
+/**
+ * 센터에 아직 못 간 회원 변경들. 화면 위의 숫자가 이것을 센다.
+ *
+ * 다시 보내는 코드는 없다 -- 사람이 그 회원을 다시 저장하면 같은 열쇠가
+ * 지워지고 숫자가 준다 (retry-store.js 머리말).
+ */
+export function readPendingClientWrites() {
+  return pendingClientWrites(retryStore?.read() || []);
 }

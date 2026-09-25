@@ -38,7 +38,10 @@ import {
   fbVerifyMemberViews,
   AI_CONSENT_POLICY_VERSION, AI_CONSENT_SCOPES,
 } from "./lib/firebase";
-import { runAppDualWrite } from "./data/dual-write/app-runtime";
+import { readPendingClientWrites, runAppDualWrite } from "./data/dual-write/app-runtime";
+import {
+  pendingWriteRows, pendingWriteSummary, refusedWriteMessage,
+} from "./features/members/pending-writes.js";
 import {
   AI_STATUSES, aiProvider, buildReportInput,
   buildLessonRecordInput, formatAIReport,
@@ -21543,6 +21546,41 @@ export default function App() {
     }
   };
 
+  /* 센터에 아직 못 간 회원 변경. 다시 보내는 코드는 없다 -- 사람이 그 회원을
+     다시 저장하면 같은 열쇠가 지워지고 숫자가 준다 (retry-store.js). */
+  const [pendingWrites, setPendingWrites] = useState(() => readPendingClientWrites());
+  const refreshPendingWrites = useCallback(() => setPendingWrites(readPendingClientWrites()), []);
+  const [pendingOpen, setPendingOpen] = useState(false);
+
+  /**
+   * 기기에는 저장됐는데 센터에는 안 간 경우를 말한다.
+   *
+   * 예전에는 이 자리가 조용했다. 코디네이터가 실패를 잡아 성공으로 돌려주고,
+   * 화면은 "저장했습니다" 라고 했다 -- 강사는 저장된 것으로 알았다.
+   */
+  const reportSecondaryWrite = useCallback((outcome, descriptor) => {
+    if (!outcome || typeof outcome !== "object") return;
+    if (outcome.secondary === "refused") {
+      /* 서버가 거부했다. 다시 눌러도 같은 답이라 그 자리에서 말한다 --
+         사람이 고쳐야 하는 일이고, 사람에게 닿지 않으면 고쳐지지 않는다. */
+      deviceLog("dual_write_refused", {
+        feature: "dual_write", stage: "secondary_write", errorDomain: "firestore",
+        errorCode: outcome.errorCode || "unknown",
+        entityType: descriptor?.entityType, operation: descriptor?.operation,
+      });
+      setToast({
+        ok: false,
+        msg: refusedWriteMessage({
+          entityType: descriptor?.entityType,
+          entityId: descriptor?.entityId,
+          errorCode: outcome.errorCode,
+        }, (id) => findRosterMember(id)?.name || ""),
+      });
+    }
+    // 성공이든 큐에 남았든 숫자를 다시 센다. 성공했으면 그 줄이 빠져 있다.
+    refreshPendingWrites();
+  }, [findRosterMember, refreshPendingWrites]);
+
   const saveDb = useCallback(async (next, dualWrite) => {
     if (accountDeletionInFlight.current) return false;
     const prev = lessonRecordDbRef.current;
@@ -21557,8 +21595,12 @@ export default function App() {
         queueCloud(account.id, next);
         deviceLog("app_data_saved", { storage: "localStorage", operation: dualWrite?.operation || "legacy_write", count: (next.members?.length || 0) + (next.schedule?.length || 0) });
       };
-      if (dualWrite) await runAppDualWrite(account, dualWrite, legacyWrite);
-      else await legacyWrite();
+      if (dualWrite) {
+        const outcome = await runAppDualWrite(account, dualWrite, legacyWrite);
+        /* 기기에는 저장됐지만 센터에는 안 갔다. 예전에는 이 자리가 조용했고,
+           강사는 저장된 것으로 알았다 -- 그 침묵이 이 코드가 생긴 이유다. */
+        reportSecondaryWrite(outcome, dualWrite);
+      } else await legacyWrite();
       return true;
     }
     catch (e) { lessonRecordDbRef.current = prev; setDb(prev); deviceLog("app_data_save_failed", { storage: "localStorage", operation: dualWrite?.operation || "legacy_write", ...deviceError(e) }); setToast({ ok: false, msg: "저장하지 못했습니다. 방금 입력한 내용을 다시 확인해 주세요." }); return false; }
@@ -23175,6 +23217,38 @@ export default function App() {
     <div className={`${appRootClassName} flex justify-center`} style={{ minHeight: "100vh", height: "100dvh", backgroundColor: PAGE, overflow: "hidden" }}>
       {style}
       <div className="pt-app-shell safe-t flex h-full min-h-0 w-full flex-col" style={{ backgroundColor: PAGE, boxShadow: "0 0 0 1px rgba(28,36,51,.04)" }}>
+        {/* 센터에 아직 못 간 회원 변경. 재촉하지 않고 숫자만 둔다 -- 기기에는
+            저장됐고, 다음에 그 회원을 저장하면 들어간다. 다시 보내는 코드는
+            없으므로 사람이 다시 누르는 것이 유일한 복구 수단이고, 이 줄은
+            **무엇을 다시 눌러야 하는지** 알려 준다. */}
+        {pendingWrites.length > 0 ? (
+          <div className="shrink-0 px-3 pt-2">
+            <button type="button" onClick={() => setPendingOpen(!pendingOpen)}
+              className="flex w-full items-center gap-2 text-left" style={{
+                padding: "8px 11px", borderRadius: 10, backgroundColor: WARN_S,
+              }}>
+              <AlertCircle size={13} style={{ color: WARN, flexShrink: 0 }} />
+              <span className="min-w-0 flex-1" style={{ fontSize: TYPE.caption, fontWeight: 700, color: WARN }}>
+                {pendingWriteSummary(pendingWrites)}
+              </span>
+              <ChevronRight size={13} style={{
+                color: WARN, flexShrink: 0, transform: pendingOpen ? "rotate(90deg)" : "none",
+              }} />
+            </button>
+            {pendingOpen ? (
+              <div style={{ padding: "6px 11px 2px" }}>
+                {pendingWriteRows(pendingWrites, (id) => findRosterMember(id)?.name || "").map((row) => (
+                  <p key={row.key} className="truncate" style={{ fontSize: TYPE.caption, color: INK2, padding: "3px 0" }}>
+                    {row.name} · {row.what} <span style={{ color: FAINT }}>(코드 {row.code})</span>
+                  </p>
+                ))}
+                <p style={{ fontSize: TYPE.caption, color: SUB, paddingTop: 4, lineHeight: 1.5 }}>
+                  그 회원을 다시 저장하면 올라갑니다. 기기에는 이미 저장돼 있습니다.
+                </p>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         <div className="relative min-h-0 flex-1 overflow-hidden">
           <Guard key={tab}>
             {tab === "schedule" && <ScheduleManager db={rosterDb} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterMembers ? () => { setMemberRegistrationRequest((value) => value + 1); setTab("members"); } : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && organizationContext.role === ROLES.OWNER} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}

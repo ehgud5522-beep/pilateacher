@@ -103,3 +103,86 @@ test("unknown error codes cannot expose arbitrary error content", async () => {
   assert.equal(recorded[0].lastErrorCode, "unknown");
   assert.equal(JSON.stringify(recorded).includes("person@example.com"), false);
 });
+
+/* ── 영구 오류와 일시 오류 ──────────────────────────────────────────────
+
+   서버가 "이 쓰기는 안 된다" 고 답한 것은 백 번 보내도 같은 답이다. 기록에
+   쌓아 두면 줄지 않는 숫자가 되고, 강사는 그것을 보고도 아무것도 할 수 없다. */
+
+const failingWrite = (code) => async () => {
+  throw Object.assign(new Error(code), { code });
+};
+
+const logStore = () => {
+  const rows = new Map();
+  return {
+    rows,
+    record: (entry) => { rows.set(entry.idempotencyKey, entry); return entry; },
+    remove: (key) => { rows.delete(key); },
+  };
+};
+
+test("영구 오류는 기록에 쌓지 않고 그 자리에서 거부를 알린다", async () => {
+  for (const code of ["permission-denied", "invalid-argument", "failed-precondition", "not-found"]) {
+    const retryStore = logStore();
+    const coordinator = new DualWriteCoordinator({ enabled: () => true, retryStore });
+    const result = await coordinator.execute({
+      context: { organizationId: "org-1" },
+      entityType: "client", entityId: "c-1", operation: "update",
+      legacyWrite: async () => "local", newWrite: failingWrite(code),
+    });
+    assert.equal(result.secondary, "refused", code);
+    assert.equal(result.errorCode, code);
+    assert.equal(retryStore.rows.size, 0, `${code} 가 기록에 쌓였다`);
+  }
+});
+
+test("네트워크 오류는 기록에 남고 숫자가 된다", async () => {
+  const retryStore = logStore();
+  const coordinator = new DualWriteCoordinator({ enabled: () => true, retryStore });
+  const result = await coordinator.execute({
+    context: { organizationId: "org-1" },
+    entityType: "client", entityId: "c-1", operation: "update",
+    legacyWrite: async () => "local", newWrite: failingWrite("unavailable"),
+  });
+  assert.equal(result.secondary, "queued");
+  assert.equal(result.errorCode, "unavailable");
+  assert.equal(retryStore.rows.size, 1);
+});
+
+test("다음에 성공하면 그 줄이 빠진다", async () => {
+  /* 다시 보내는 코드는 없다. 사람이 그 회원을 다시 저장하는 것이 유일한
+     복구 수단이고, 그때 숫자가 준다. */
+  const retryStore = logStore();
+  const coordinator = new DualWriteCoordinator({ enabled: () => true, retryStore });
+  const call = (newWrite, version) => coordinator.execute({
+    context: { organizationId: "org-1" },
+    entityType: "client", entityId: "c-1", operation: "update", version,
+    legacyWrite: async () => "local", newWrite,
+  });
+
+  await call(failingWrite("unavailable"), 1);
+  assert.equal(retryStore.rows.size, 1);
+
+  // 같은 회원·같은 작업. 열쇠가 같아야 그 줄이 지워진다.
+  const ok = await call(async () => "written", 1);
+  assert.equal(ok.secondary, "written");
+  assert.equal(retryStore.rows.size, 0);
+});
+
+test("영구 오류는 이미 쌓여 있던 줄도 걷어낸다", async () => {
+  /* 연결이 끊겨 한 번 쌓인 뒤 규칙이 거부하기 시작하는 순서가 실제로 있다.
+     그 줄을 두면 영원히 줄지 않는다. */
+  const retryStore = logStore();
+  const coordinator = new DualWriteCoordinator({ enabled: () => true, retryStore });
+  const call = (newWrite) => coordinator.execute({
+    context: { organizationId: "org-1" },
+    entityType: "client", entityId: "c-1", operation: "update",
+    legacyWrite: async () => "local", newWrite,
+  });
+
+  await call(failingWrite("unavailable"));
+  assert.equal(retryStore.rows.size, 1);
+  await call(failingWrite("permission-denied"));
+  assert.equal(retryStore.rows.size, 0);
+});

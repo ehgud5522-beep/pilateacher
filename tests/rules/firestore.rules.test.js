@@ -1318,6 +1318,69 @@ describe("the owner attaches instructors to the centre", () => {
     ), "대표를 앱에서 세우지 않는다");
   });
 
+  test("a cleanup snapshot can be written once and read only by the owner", async () => {
+    /* 강사 기기에서 남의 회원을 지우기 전의 사본이다. users/{uid} 밑에 두면
+       강사가 남의 회원 기록을 계속 가지게 되고, 이 작업이 없애려는 것이
+       그것이다 -- 그래서 조직 쪽이고 읽는 사람은 대표뿐이다. */
+    const at = (userId, id) => doc(dbFor(userId), "organizations", ORG_A, "scopeSnapshots", id);
+    const body = (extra = {}) => ({
+      organizationId: ORG_A, userId: users.instructor,
+      members: [{ id: "m-1", name: "지워질 회원" }],
+      createdAt: serverTimestamp(),
+      expireAt: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),
+      ...extra,
+    });
+
+    await assertSucceeds(setDoc(at(users.instructor, "snap-1"), body()));
+
+    /* 사본은 덮어써지지 않는다. 덮어써지면 그것은 사본이 아니다. */
+    await assertFails(setDoc(at(users.instructor, "snap-1"), body()), "덮어쓰기");
+    await assertFails(deleteDoc(at(users.instructor, "snap-1")), "삭제");
+
+    // 남의 이름으로 남기지 못한다. 누가 무엇을 지웠는지가 이 문서의 요점이다.
+    await assertFails(setDoc(at(users.instructor, "snap-2"), body({ userId: users.manager })), "남의 이름");
+
+    // 빈 사본은 만들지 않는다. 지울 것이 없으면 남길 것도 없다.
+    await assertFails(setDoc(at(users.instructor, "snap-3"), body({ members: [] })), "빈 사본");
+
+    // 읽는 사람은 대표뿐이다.
+    await assertSucceeds(getDoc(at(users.owner, "snap-1")));
+    for (const role of ["manager", "instructor", "staff"]) {
+      await assertFails(getDoc(at(role, "snap-1")), role);
+    }
+  });
+
+  test("an instructor reports their own app version and nothing else", async () => {
+    /* 강사 전원이 새 앱을 쓰는지 대표가 볼 수 있어야 회원 범위 규칙을 켤 수
+       있다. 낡은 앱은 그 규칙 아래서 통째로 멈추므로, 모르는 채 켜면 강사는
+       고칠 자리에 있지 않은 고장을 만난다. */
+    const mine = () => membershipRef(users.instructor, `${ORG_A}_${users.instructor}`);
+    await assertSucceeds(setDoc(mine(), {
+      appVersion: "1.1.29", appBuild: "62", lastSeenAt: serverTimestamp(),
+    }, { merge: true }));
+
+    /* 기기 시계를 그대로 믿으면 "방금 열었다" 를 언제든 적을 수 있고, 그러면
+       이 값으로 판단하는 일이 의미를 잃는다. */
+    await assertFails(setDoc(mine(), {
+      appVersion: "1.1.29", appBuild: "62", lastSeenAt: new Date(2030, 0, 1),
+    }, { merge: true }), "기기 시계");
+
+    // 이 문으로 역할이나 급여가 따라 들어오면 안 된다.
+    await assertFails(setDoc(mine(), {
+      appVersion: "1.1.29", appBuild: "62", lastSeenAt: serverTimestamp(), role: "owner",
+    }, { merge: true }), "역할");
+    await assertFails(setDoc(mine(), {
+      appVersion: "1.1.29", appBuild: "62", lastSeenAt: serverTimestamp(), fullRoomRate: 99999,
+    }, { merge: true }), "풀방금액");
+
+    // 남의 문서에는 못 쓴다.
+    await assertFails(setDoc(
+      membershipRef(users.instructor, `${ORG_A}_${users.manager}`),
+      { appVersion: "1.1.29", appBuild: "62", lastSeenAt: serverTimestamp() },
+      { merge: true },
+    ), "남의 소속");
+  });
+
   test("an attached membership starts active, named, and with a listed title", async () => {
     for (const overrides of [
       { status: "invited" },

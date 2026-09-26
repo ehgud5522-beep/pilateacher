@@ -968,6 +968,37 @@ service cloud.firestore {
         allow delete: if false;
       }
 
+      /* ── 기기 청소 직전의 사본 ────────────────────────────────────────
+         강사 기기에서 남의 회원을 지우기 전에 그 회원들을 한 벌 남긴다.
+         지우는 것은 기록이 이미 센터에 있는 회원뿐이지만, 강사가 그 회원에게
+         적어 둔 레거시 수업 기록은 그 기기와 그 사람의 백업에만 있다 --
+         되돌릴 자리가 없으면 지울 수 없다.
+
+         **users/{uid} 밑에 두지 않는다.** 거기 두면 강사가 남의 회원 기록을
+         계속 가지게 되고, 이 작업 전체가 없애려는 것이 그것이다. 그래서 조직
+         쪽이고 읽는 사람은 대표뿐이다.
+
+         만들기만 한다. 고칠 수도 지울 수도 없다 -- 되돌릴 사본이 덮어써지면
+         그것은 사본이 아니다. expireAt 에 TTL 을 걸어 90일 뒤에 사라진다. */
+      match /scopeSnapshots/{snapshotId} {
+        allow get, list: if hasRole(organizationId, ["owner"]);
+        allow create: if isCentreStaff(organizationId)
+          && request.resource.data.organizationId == organizationId
+          // 남의 이름으로 남기지 못한다. 누가 무엇을 지웠는지가 이 문서의 요점이다.
+          && request.resource.data.userId == request.auth.uid
+          && request.resource.data.keys().hasOnly([
+            "organizationId", "userId", "members", "clientIds", "createdAt", "expireAt"
+          ])
+          && request.resource.data.keys().hasAll([
+            "organizationId", "userId", "members", "createdAt", "expireAt"
+          ])
+          && request.resource.data.createdAt == request.time
+          && request.resource.data.expireAt is timestamp
+          && request.resource.data.members is list
+          && request.resource.data.members.size() > 0;
+        allow update, delete: if false;
+      }
+
       match /locations/{locationId} {
         // get and list are split on purpose. A list rule is evaluated against
         // what the query guarantees, not against the documents it returns, so a
@@ -1119,6 +1150,29 @@ service cloud.firestore {
           && request.resource.data.displayName is string
           && request.resource.data.displayName.size() > 0
           && request.resource.data.displayName.size() <= 60
+        ) || (
+          /* ── 앱 버전 기록 ──────────────────────────────────────────────
+             강사 전원이 새 앱을 쓰는지 대표가 볼 수 있어야 회원 범위 규칙을
+             켤 수 있다. 낡은 앱은 그 규칙 아래서 **통째로 멈추므로**, 모르는
+             채 켜면 강사는 고칠 자리에 있지 않은 고장을 만난다.
+
+             본인 문서의 세 칸만이다. 역할도 지점도 급여도 여기서 움직이지
+             않는다 -- 위의 displayName 문과 같은 모양이다.
+
+             lastSeenAt 은 request.time 이어야 한다. 기기 시계를 그대로 믿으면
+             "방금 열었다" 를 언제든 적을 수 있고, 그러면 이 값으로 판단하는
+             일이 의미를 잃는다. */
+          signedIn()
+          && resource.data.userId == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(["appVersion", "appBuild", "lastSeenAt"])
+          && request.resource.data.appVersion is string
+          && request.resource.data.appVersion.size() > 0
+          && request.resource.data.appVersion.size() <= 40
+          && request.resource.data.appBuild is string
+          && request.resource.data.appBuild.size() > 0
+          && request.resource.data.appBuild.size() <= 40
+          && request.resource.data.lastSeenAt == request.time
         ) || (
           /* 대표가 고치는 세 칸: 이름·직함·지점. 함께 움직여도 되는 것들이라
              한 문으로 묶었다 -- 강사 관리 화면의 수정 시트가 이 셋을 한 번에

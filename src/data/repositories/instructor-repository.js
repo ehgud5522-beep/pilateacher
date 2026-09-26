@@ -616,3 +616,47 @@ export function createFirestoreMembershipNameStore() {
     },
   };
 }
+
+/**
+ * 이 기기가 지금 몇 번 빌드인지 내 소속 문서에 적는다.
+ *
+ * ── 왜 여기 적는가 ──
+ * 회원 범위 규칙을 켜면 낡은 앱은 **통째로 멈춘다** -- 조건 없는 목록 읽기를
+ * 규칙이 거부하기 때문이다. 그러니 "강사 전원이 새 앱을 쓰는가" 를 알기 전에는
+ * 그 규칙을 누를 수 없고, 지금은 그것을 알 방법이 없다.
+ *
+ * 규칙은 본인 문서의 세 칸만 허용한다. 역할도 지점도 급여도 여기서 움직이지
+ * 않는다.
+ *
+ * ── 실패해도 조용하다 ──
+ * 이 쓰기는 사용자가 시킨 일이 아니다. 실패를 화면에 띄우면 앱을 열 때마다
+ * 영문 모를 오류가 뜨고, 그것이 고쳐 주는 것은 없다. 진단에만 남긴다.
+ *
+ * @param {string} organizationId @param {string} userId
+ * @param {{ version: string, build: string }} app
+ * @param {{ store?: any }} [options]
+ * @returns {Promise<"written"|"skipped"|"failed">}
+ */
+export async function reportAppVersion(organizationId, userId, app, options = {}) {
+  const { store = createFirestoreInstructorRateStore() } = options;
+  const organization = String(organizationId ?? "").trim();
+  const target = String(userId ?? "").trim();
+  const version = String(app?.version ?? "").trim();
+  const build = String(app?.build ?? "").trim();
+  if (!organization || !target || !version || !build) return "skipped";
+
+  try {
+    await store.commit([{
+      path: paths.orgMembership(organization, target),
+      operation: "update",
+      data: {
+        appVersion: version.slice(0, 40),
+        appBuild: build.slice(0, 40),
+        lastSeenAt: await store.serverTimestamp(),
+      },
+    }]);
+    return "written";
+  } catch (_error) {
+    return "failed";
+  }
+}

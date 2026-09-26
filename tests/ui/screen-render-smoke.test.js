@@ -55,6 +55,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 개인 모드",
     "더보기 탭 · 소속 확인 실패",
     "더보기 탭 · 월간 리포트",
+    "더보기 탭 · 월간 리포트 · 조회 실패",
     "더보기 탭 · 월간 리포트 · 개인 모드",
     "더보기 탭 · 센터 정보",
     "더보기 탭 · 센터 정보 · 개인 모드",
@@ -1416,18 +1417,23 @@ test("the card shows the month total and nothing else", async (t) => {
   assert.doesNotMatch(card, /최근 차감/);
 });
 
-test("the legacy monthly report says it counts something else in a centre", async (t) => {
-  /* 같은 "예상 급여"라는 말이 두 곳에서 다른 뜻이면 강사가 어느 쪽을 믿어야
-     할지 알 수 없다. 소속 모드에서는 이 화면이 무엇을 세는지 밝힌다. */
+test("the monthly report no longer counts something else in a centre", async (t) => {
+  /* ── 2026-09-27 에 뒤집힌 테스트 ────────────────────────────────────
+     예전에는 이 화면이 기기 일정과 회원별 단가로 따로 계산했고, 이 검사는
+     "무엇을 세는지 밝히는가" 를 고정했다. 밝히는 것으로는 부족했다 -- 일정
+     탭이 50,000 인데 여기는 0 이면, 무엇을 세는지 알아도 강사는 어느 쪽이
+     자기 급여인지 모른다.
+
+     이제 두 화면이 같은 객체를 쓴다. 밝힐 차이가 없다. */
   const markupOf = await issueScreens(t);
   const inOrganization = markupOf("더보기 탭 · 월간 리포트");
-  assert.match(inOrganization, /기기에 저장된 일정과 회원별 단가로 계산합니다/);
-  assert.match(inOrganization, /일정 탭의 예상 급여/);
+  assert.doesNotMatch(inOrganization, /기기에 저장된 일정과 회원별 단가로 계산합니다/);
+  assert.match(inOrganization, /회원권 원장에서 차감된 수업료/);
 
-  // 미소속 개인 강사에게는 지금 문구 그대로다.
+  // 미소속 개인 강사에게는 원장이 없다. 지금 문구 그대로다.
   const personal = markupOf("더보기 탭 · 월간 리포트 · 개인 모드");
   assert.match(personal, /완료·차감 처리된 수업과 센터\/회원별 단가를 기준으로 계산합니다/);
-  assert.doesNotMatch(personal, /일정 탭의 예상 급여/);
+  assert.doesNotMatch(personal, /회원권 원장에서 차감된 수업료/);
 });
 
 /* 센터 회원 상세. 분쟁이 생겼을 때 여는 화면이라 "몇 회 남았나"와 "언제 무엇이
@@ -2190,6 +2196,32 @@ test("the centre settings screen does not open for an instructor", async (t) => 
      설정이고, 월간 리포트가 실제로 그것으로 계산한다. */
   const legacy = markupOf("더보기 탭 · 센터 정보 · 개인 모드");
   assert.match(legacy, /센터 기본 정보/);
+});
+
+test("the monthly report and the schedule tab show the same pay", async (t) => {
+  /* 예전에는 이 화면이 기기 일정과 회원별 단가로 따로 계산했다. 그래서 일정
+     탭이 50,000 인데 여기는 0 이었다 -- 같은 "예상 급여" 라는 말이 두 곳에서
+     다른 뜻이었고, 강사는 어느 쪽을 믿어야 할지 알 수 없었다.
+
+     이제 일정 탭이 읽은 **그 객체를 그대로 받는다.** 다시 읽지도 않으므로
+     다를 수가 없다. */
+  const markupOf = await issueScreens(t);
+  const report = markupOf("더보기 탭 · 월간 리포트");
+  assert.match(report, /137,500/);
+  assert.match(report, /같은 값/);
+  assert.match(report, /차감된 수업/);
+  /* 원장에는 노쇼와 취소가 없다. 0건으로 보이면 "한 건도 없었다" 로 읽힌다. */
+  assert.doesNotMatch(report, />노쇼</);
+  assert.match(report, /노쇼와 취소는 여기서 세지 않습니다/);
+
+  /* 0원과 못 읽음은 다르다. 0원을 보고 넘어가면 그 달 정산에서야 안다. */
+  const failed = markupOf("더보기 탭 · 월간 리포트 · 조회 실패");
+  assert.match(failed, /코드 permission-denied/);
+  assert.doesNotMatch(failed, /₩0/);
+
+  /* 미소속 개인 강사에게는 원장이 없다. 기존 계산이 그대로 유일한 답이다. */
+  const legacy = markupOf("더보기 탭 · 월간 리포트 · 개인 모드");
+  assert.match(legacy, /완료·차감 처리된 수업과 센터/);
 });
 
 test("the expiry report says how many are still inside the 30-day window", async (t) => {

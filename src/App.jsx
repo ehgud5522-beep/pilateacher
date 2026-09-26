@@ -19615,7 +19615,12 @@ function AuditLog({
   );
 }
 
-function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, payrollStore, issueStore, auditStore, ledgerStore, onRetryOrganization, onOpenClient, initialView = "hub" }) {
+function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
+  /* 일정 탭이 이미 읽어 둔 원장 급여를 **그대로** 받는다. 여기서 다시 읽으면
+     두 화면이 서로 다른 순간의 원장을 보게 되고, 그 차이는 아무 데도 적히지
+     않는다 -- 같은 객체를 쓰면 다를 수가 없다. */
+  instructorPay = null, payMonth = "", payLoading = false, payError = "",
+  onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, payrollStore, issueStore, auditStore, ledgerStore, onRetryOrganization, onOpenClient, initialView = "hub" }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const organization = useContext(OrganizationContext);
   /* 회원권 상품은 센터를 운영하는 대표만 본다. 개인 모드(legacy)에는 센터가
@@ -19999,25 +20004,74 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
       <main className="pt-scroll min-h-0 flex-1 overflow-y-auto" style={{ padding: "12px 12px 20px" }}>
         {view === "report" && (
           <div className="space-y-2">
+            {/* ── 소속 센터에서는 원장 하나만 본다 ──────────────────────────
+                예전에는 이 화면이 기기에 저장된 일정과 회원별 단가로 따로
+                계산했다. 그래서 일정 탭이 ₩50,000 인데 여기는 ₩0 이었다 --
+                같은 "예상 급여" 라는 말이 두 곳에서 다른 뜻이었고, 강사는
+                어느 쪽을 믿어야 할지 알 수 없었다.
+
+                이제 **일정 탭이 읽은 그 객체를 그대로 받는다.** 다시 읽지도
+                않는다 -- 같은 값을 쓰면 다를 수가 없다. */}
             <section style={sectionStyle}>
-              <p style={{ fontSize: TYPE.caption, color: SUB }}>{monthLabel(`${reportYm}-01`)}</p>
-              <div className="mt-1 flex items-end gap-2"><p className="tabular-nums" style={{ fontSize: TYPE.hero, lineHeight: 1.1, fontWeight: 700, color: INK }}>₩{won(reportPay)}</p><p style={{ paddingBottom: 3, fontSize: TYPE.caption, color: SUB }}>예상 급여</p></div>
-              {/* 소속 센터에서는 이 화면과 일정 탭의 예상 급여가 서로 다른 것을
-                  센다. 여기는 기기에 저장된 일정과 회원별 단가이고, 그쪽은
-                  회원권 원장이다. 같은 "예상 급여"라는 말이 두 곳에서 다른
-                  뜻이면 강사가 어느 쪽을 믿어야 할지 알 수 없다. */}
-              <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
-                {organization.ready && !organization.isLegacy
-                  ? "이 화면은 기기에 저장된 일정과 회원별 단가로 계산합니다. 센터 회원권에서 차감된 수업료는 일정 탭의 예상 급여에서 봅니다."
-                  : "완료·차감 처리된 수업과 센터/회원별 단가를 기준으로 계산합니다."}
+              <p style={{ fontSize: TYPE.caption, color: SUB }}>
+                {monthLabel(`${inOrganization && payMonth ? payMonth : reportYm}-01`)}
               </p>
+              {inOrganization ? (
+                <>
+                  <div className="mt-1 flex items-end gap-2">
+                    {payLoading ? (
+                      <p style={{ fontSize: TYPE.title, fontWeight: 600, color: SUB }}>불러오는 중…</p>
+                    ) : payError ? (
+                      /* 0원으로 보이면 "이번 달 수업이 없었나" 하고 넘어간다. */
+                      <p style={{ fontSize: TYPE.body, fontWeight: 600, color: BAD }}>불러오지 못했습니다 (코드 {payError})</p>
+                    ) : (
+                      <>
+                        <p className="tabular-nums" style={{ fontSize: TYPE.hero, lineHeight: 1.1, fontWeight: 700, color: INK }}>₩{won(instructorPay?.total)}</p>
+                        <p style={{ paddingBottom: 3, fontSize: TYPE.caption, color: SUB }}>예상 급여</p>
+                      </>
+                    )}
+                  </div>
+                  <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+                    회원권 원장에서 차감된 수업료입니다. 일정 탭의 예상 급여와 <b style={{ color: INK }}>같은 값</b>입니다.
+                    인센티브와 노쇼 수수료는 별도로 정산됩니다.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <div className="mt-1 flex items-end gap-2"><p className="tabular-nums" style={{ fontSize: TYPE.hero, lineHeight: 1.1, fontWeight: 700, color: INK }}>₩{won(reportPay)}</p><p style={{ paddingBottom: 3, fontSize: TYPE.caption, color: SUB }}>예상 급여</p></div>
+                  <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+                    완료·차감 처리된 수업과 센터/회원별 단가를 기준으로 계산합니다.
+                  </p>
+                </>
+              )}
             </section>
             <section style={sectionStyle}>
+              {/* 건수도 같은 출처에서 센다. 기기 일정으로 세면 센터에서 차감된
+                  것과 어긋나고, 그 차이는 아무 데도 적히지 않는다.
+
+                  원장에는 노쇼와 취소가 없다 -- 차감만 남는다. 없는 것을
+                  0건으로 보이면 "노쇼가 한 건도 없었다" 로 읽히므로, 그 줄을
+                  두지 않고 무엇을 세는지 말한다. */}
               <div className="grid grid-cols-2 gap-2">
-                {[{ label: "전체 수업", value: `${reportStats.cls}건` }, { label: "회원 좌석", value: `${reportStats.seats}건` }, { label: "출석", value: `${reportStats.done}건`, color: GOOD }, { label: "예약", value: `${reportStats.booked}건`, color: BRAND }, { label: "노쇼", value: `${reportStats.noshow}건`, color: BAD }, { label: "취소", value: `${reportStats.cancel}건`, color: SUB }].map((item) => (
+                {(inOrganization
+                  ? [
+                    { label: "차감된 수업", value: `${instructorPay?.sessions || 0}건`, color: GOOD },
+                    { label: "차감 항목", value: `${instructorPay?.entries?.length || 0}건` },
+                  ]
+                  : [
+                    { label: "전체 수업", value: `${reportStats.cls}건` }, { label: "회원 좌석", value: `${reportStats.seats}건` },
+                    { label: "출석", value: `${reportStats.done}건`, color: GOOD }, { label: "예약", value: `${reportStats.booked}건`, color: BRAND },
+                    { label: "노쇼", value: `${reportStats.noshow}건`, color: BAD }, { label: "취소", value: `${reportStats.cancel}건`, color: SUB },
+                  ]
+                ).map((item) => (
                   <div key={item.label} style={{ padding: "11px 10px", borderRadius: 9, backgroundColor: CANVAS }}><p style={{ fontSize: TYPE.caption, color: SUB }}>{item.label}</p><p className="mt-1 tabular-nums" style={{ fontSize: TYPE.title, fontWeight: 700, color: item.color || INK }}>{item.value}</p></div>
                 ))}
               </div>
+              {inOrganization ? (
+                <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+                  원장에는 차감만 남습니다 — 노쇼와 취소는 여기서 세지 않습니다.
+                </p>
+              ) : null}
             </section>
           </div>
         )}
@@ -20819,7 +20873,15 @@ export function createAppScreenSmokeCases() {
     { name: "더보기 탭 · 강사", element: settingsTab({ ...smokeOwner, role: "instructor" }) },
     { name: "더보기 탭 · 개인 모드", element: settingsTab({ organizationId: "legacy_smoke", role: "owner", status: "active", isLegacy: true }) },
     { name: "더보기 탭 · 소속 확인 실패", element: settingsTab({ organizationId: "", role: "", status: "unknown", isLegacy: false }) },
-    { name: "더보기 탭 · 월간 리포트", element: settingsTab(smokeInstructorOrg, { initialView: "report" }) },
+    /* 소속 센터의 월간 리포트는 일정 탭이 읽은 원장 급여를 그대로 받는다.
+       예전에는 기기 일정으로 따로 계산해 ₩50,000 vs ₩0 로 갈렸다. */
+    { name: "더보기 탭 · 월간 리포트", element: settingsTab(smokeInstructorOrg, {
+      initialView: "report", payMonth: "2026-09",
+      instructorPay: { total: 137500, sessions: 5, entries: [{ id: "e1" }, { id: "e2" }], byCategory: [], corrections: {} },
+    }) },
+    { name: "더보기 탭 · 월간 리포트 · 조회 실패", element: settingsTab(smokeInstructorOrg, {
+      initialView: "report", payMonth: "2026-09", payError: "permission-denied",
+    }) },
     { name: "더보기 탭 · 월간 리포트 · 개인 모드", element: settingsTab({ organizationId: "legacy_smoke", role: "owner", status: "active", isLegacy: true }, { initialView: "report" }) },
     /* 센터 정보. 이름은 "센터"지만 세 값 모두 기기에 저장된다 -- 소속 모드에서
        그 사실을 말하지 않으면 대표가 여기서 단가를 고치고 기다리게 된다. */
@@ -24021,7 +24083,8 @@ export default function App() {
                   onSaveMarks={(view, photoId, marks, options) => saveMarks(id, view, photoId, marks, options)} onSaveAssessmentRole={(assessmentId, role) => saveAssessmentRole(id, assessmentId, role)} onToggleAssessmentFavorite={(assessmentId, favorite) => toggleAssessmentFavorite(id, assessmentId, favorite)}
                   onToast={setToast} onSaved={(mode) => setAnalysisDone({ id, mode })} /></Guard>;
               }} />}
-            {tab === "settings" && <ReferenceSettingsTab db={db} photos={photos} account={account} savedAt={savedAt} demoMode={demoMode} onChangeSettings={(s) => saveDb({ ...db, settings: s })} onChangePhoto={changePhoto} onToast={setToast} themePref={themePref} onChangeTheme={changeTheme} onLogout={handleLogout} onDeleteAccount={handleDeleteAccount} onImport={importHandoff}
+            {tab === "settings" && <ReferenceSettingsTab db={db} photos={photos} account={account} savedAt={savedAt} demoMode={demoMode}
+              instructorPay={instructorPay} payMonth={payMonth} payLoading={payLoading} payError={payError} onChangeSettings={(s) => saveDb({ ...db, settings: s })} onChangePhoto={changePhoto} onToast={setToast} themePref={themePref} onChangeTheme={changeTheme} onLogout={handleLogout} onDeleteAccount={handleDeleteAccount} onImport={importHandoff}
               onOpenSchedule={() => { setScheduleQuickAddRequest((request) => request + 1); setTab("schedule"); }} onOpenRecords={() => { setMobileView("list"); setTab("members"); }} onOpenOnboarding={openOnboardingReplay} onOpenLessonExamples={() => setLessonExamplesOpen(true)} backupStatus={cloudBackupStatus} onEnablePhotoBackup={enablePhotoBackup} onRetryBackup={retryCloudBackup} onRetryOrganization={retryOrganizationContext} onOpenClient={(picked) => setDetailClient(picked)} />}
           </Guard>
         </div>

@@ -44,6 +44,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "회원 상세 · 강사",
     "회원 상세 · 대표",
     "회원 목록 · 강사",
+    "회원 목록 · 만료",
     "회원 목록 · 대표",
     "회원 상세 · 여정",
     "체형분석 목록",
@@ -621,7 +622,8 @@ test("an instructor sees the centre's members, so there is nothing to re-registe
 
   /* 기본값은 "내 회원"이다. 120명에서 자기 8명을 찾게 만들면 그 화면은 쓰이지
      않고, 강사는 자기 명단을 따로 만들기 시작한다. */
-  assert.match(mine, /내 회원 1명 · 전체 3명/);
+  /* 픽스처에 만료 회원이 하나 늘었다 (2026-09-27, 소진 표시 확인용). */
+  assert.match(mine, /내 회원 2명 · 전체 4명/);
   assert.match(mine, /김하나/, "내 회원은 보인다");
   assert.doesNotMatch(mine, /박서연/, "다른 강사의 회원은 기본값에서 빠진다");
 
@@ -639,7 +641,7 @@ test("an instructor sees the centre's members, so there is nothing to re-registe
 
   // 전체로 바꾸면 센터의 모든 회원이 보인다. 경계가 아니라 편의다.
   const all = markupOf("회원 목록 · 소속 강사 · 전체");
-  assert.match(all, /내 회원 0명 · 전체 3명/);
+  assert.match(all, /내 회원 0명 · 전체 4명/);
 
   /* 못 읽었으면 빈 목록을 보여주지 않는다. 빈 목록은 "센터에 회원이 없다"로
      읽히고, 그 다음 행동이 바로 다시 등록이다. */
@@ -2186,6 +2188,27 @@ test("the centre settings screen does not open for an instructor", async (t) => 
      설정이고, 월간 리포트가 실제로 그것으로 계산한다. */
   const legacy = markupOf("더보기 탭 · 센터 정보 · 개인 모드");
   assert.match(legacy, /센터 기본 정보/);
+});
+
+test("the member tab separates ongoing from expired, and says why it ended", async (t) => {
+  /* 만료 회원은 사라지지 않는다 -- 담당 강사에게 계속 보이고 재등록 상담의
+     대상이다. 다만 같은 목록에 섞이면 "오늘 수업할 사람" 을 찾는 데 매번
+     지나쳐야 한다.
+
+     "소진" 과 "기간 만료" 를 가르는 것은 상담에서 할 말이 다르기 때문이다 --
+     "다 쓰셨어요" 와 "기간이 지났어요" 는 같은 만료가 아니다. */
+  const markupOf = await issueScreens(t);
+  const list = markupOf("회원 목록 · 대표");
+  assert.match(list, /운영중/);
+  assert.match(list, /만료/);
+  /* 기본은 운영중이다. 전체를 먼저 보여 주면 목록이 길고, 그 길이의 대부분이
+     지금 할 일이 아니다. */
+  assert.doesNotMatch(list, /최다 쓴/, "만료 회원은 기본 화면에 없다");
+
+  const expired = markupOf("회원 목록 · 만료");
+  assert.match(expired, /최다 쓴/);
+  assert.match(expired, /소진/, "왜 끝났는지 말한다");
+  assert.doesNotMatch(expired, /김하나/, "운영중 회원은 만료 칩에 없다");
 });
 
 test("the owner is the only one told a member is missing from the centre", async (t) => {

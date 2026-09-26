@@ -139,7 +139,8 @@ import {
   AUDIT_ACTION, STALE_PASS_DAYS, listAuditLogs, recordMigrationUpload, reviewAudit,
 } from "./data/repositories/audit-repository.js";
 import {
-  isMyRosterMember, isRosterMember, isUnlinkedLocalMember, mergeRoster, rosterHideKey,
+  isExpiredRosterMember, isMyRosterMember, isRosterMember, isUnlinkedLocalMember, mergeRoster,
+  rosterExpiryLabel, rosterHideKey,
 } from "./features/roster/roster-bridge.js";
 import { partnerClientId } from "./data/schema/pass-clients.js";
 import {
@@ -5012,10 +5013,15 @@ function ReferenceMemberList({
   /* 강사에게는 "전체 보기" 를 주지 않는다. 경계가 아니라 -- 규칙은 지금도
      열려 있다 -- 120명을 일상적으로 스크롤할 이유가 없어서다.
      기본값 true 는 개인 강사(legacy)를 위한 것이다. */
-  canBrowseAll = true, viewerRole = "",
+  canBrowseAll = true, viewerRole = "", organizationMode = false,
+  /* 스모크 하네스가 칩 하나를 바로 여는 자리다. 앱은 언제나 기본값에서
+     시작한다 -- initialView 와 같은 방식이다. */
+  initialFilter = "",
 }) {
   const [q, setQ] = useState("");
-  const [filter, setFilter] = useState("all");
+  /* 소속 센터에서만 운영중이 기본이다. 개인 모드에는 회원권이 없어 모두가
+     "운영중" 이 되고, 그러면 칩 하나가 아무것도 가르지 않는다. */
+  const [filter, setFilter] = useState(initialFilter || (organizationMode ? "ongoing" : "all"));
   const [sort, setSort] = useState("name");
   const [registerOpen, setRegisterOpen] = useState(false);
   /* 기본값은 "내 회원"이다. 120명 목록에서 자기 8명을 찾게 만들면 그 화면은
@@ -5041,6 +5047,8 @@ function ReferenceMemberList({
     .filter((s) => hasMember(s, memberId) && `${s.date} ${s.start}` >= `${todayISO()} 00:00`)
     .sort((a, b) => `${a.date} ${a.start}`.localeCompare(`${b.date} ${b.start}`))[0] || null;
   const matchFilter = (m) => {
+    if (filter === "ongoing") return !isExpiredRosterMember(m);
+    if (filter === "expired") return isExpiredRosterMember(m);
     if (filter === "private") return isActive(m) && !m.duetWith;
     if (filter === "duet") return isActive(m) && !!m.duetWith;
     if (filter === "hold") return isHold(m);
@@ -5072,12 +5080,22 @@ function ReferenceMemberList({
       if (sort === "recent") return String(b.notes?.[0]?.date || "").localeCompare(String(a.notes?.[0]?.date || ""));
       return String(a.name || "").localeCompare(String(b.name || ""), "ko");
     });
+  /* ── 운영중과 만료를 가른다 ────────────────────────────────────────
+     만료 회원은 사라지지 않는다 -- 담당 강사에게 계속 보이고 재등록 상담의
+     대상이다. 다만 같은 목록에 섞여 있으면 "오늘 수업할 사람" 을 찾는 데
+     매번 지나쳐야 한다.
+
+     기본은 운영중이다. 전체를 먼저 보여 주면 목록이 길고, 그 길이의 대부분이
+     지금 할 일이 아니다. */
   const filters = [
+    { k: "ongoing", l: "운영중" }, { k: "expired", l: "만료" },
     { k: "all", l: "전체" }, { k: "private", l: "개인" }, { k: "duet", l: "듀엣" },
     { k: "hold", l: "홀딩" }, { k: "renew", l: "이용권 임박" }, { k: "inactive", l: "비활성" },
   ];
   const countOf = (k) => (k === "inactive" ? inactiveMembers(nonDraftMembers) : visibleMembers(nonDraftMembers)).filter((m) => {
     if (k === "all" || k === "inactive") return true;
+    if (k === "ongoing") return !isExpiredRosterMember(m);
+    if (k === "expired") return isExpiredRosterMember(m);
     if (k === "private") return isActive(m) && !m.duetWith;
     if (k === "duet") return isActive(m) && !!m.duetWith;
     if (k === "hold") return isHold(m);
@@ -5171,6 +5189,7 @@ function ReferenceMemberList({
           /* 센터에 없는 회원은 잔여를 말할 수 없다. 재등록 임박으로도 세지
              않는다 -- 근거가 조직 회원권에 있고 그것이 없다. */
           const unlinkedRow = isUnlinkedLocalMember(m);
+          const expiredRow = isExpiredRosterMember(m);
           const renew = !unlinkedRow && isActive(m) && (remaining <= 3 || (expiry !== null && expiry <= 14));
           return (
             <div key={m.id} className="relative"><button type="button" onClick={() => onSelect(m.id)} className="h-full w-full text-left"
@@ -5183,6 +5202,11 @@ function ReferenceMemberList({
                     {isEnded(m) && <span style={{ padding: "2px 6px", borderRadius: 5, fontSize: TYPE.caption, fontWeight: 600, backgroundColor: CANVAS, color: SUB }}>종료</span>}
                     {renew && <span style={{ padding: "2px 6px", borderRadius: 5, fontSize: TYPE.caption, fontWeight: 600, backgroundColor: BAD_S, color: BAD }}>재등록 필요</span>}
                     {unlinkedRow && <span style={{ padding: "2px 6px", borderRadius: 5, fontSize: TYPE.caption, fontWeight: 600, backgroundColor: WARN_S, color: WARN }}>센터 미등록</span>}
+                    {/* 왜 끝났는지 말한다. "다 쓰셨어요" 와 "기간이 지났어요" 는
+                        재등록 상담에서 같은 말이 아니다. */}
+                    {expiredRow && rosterExpiryLabel(m)
+                      ? <span style={{ padding: "2px 6px", borderRadius: 5, fontSize: TYPE.caption, fontWeight: 600, backgroundColor: CANVAS, color: SUB }}>{rosterExpiryLabel(m)}</span>
+                      : null}
                   </div>
                   <p className="mt-1 truncate" style={{ fontSize: TYPE.caption, color: SUB }}>{singleInstructorMode ? (m.duetWith ? "듀엣" : "개인") : `${m.instructor || "담당 미지정"} · ${m.duetWith ? "듀엣" : "개인"}`}</p>
                 </div>
@@ -20434,6 +20458,7 @@ export function createAppScreenSmokeCases() {
     clients: [
       { id: "smoke-client-a", name: "김하나", phone: "01012345678", status: "active" },
       { id: "smoke-client-b", name: "박서연", phone: "01055556666", status: "active" },
+      { id: "smoke-client-c", name: "최다 쓴", phone: "01077770000", status: "active" },
     ],
     members: [
       { id: "m-local-1", name: "김하나", phone: "010-1234-5678", regular: 7, service: 2, total: 20, status: "active", notes: [{ id: "n1", date: "2026-09-10", body: "숄더브릿지 3세트" }] },
@@ -20442,6 +20467,8 @@ export function createAppScreenSmokeCases() {
     passes: [
       { id: "p1", clientId: "smoke-client-a", instructorId: "u1", remainingCount: 8, status: "active", expiresAt: new Date(2027, 1, 1), category: "pt_1_1_repurchase_event", totalSessions: 20, serviceSessions: 2, contractPrice: 1300000 },
       { id: "p2", clientId: "smoke-client-b", instructorId: "u2", remainingCount: 12, status: "active", expiresAt: new Date(2027, 1, 1), category: "pt_1_1_new", totalSessions: 20, serviceSessions: 0, contractPrice: 1000000 },
+      /* 다 쓴 회원권. "소진" 과 "기간 만료" 가 다른 말로 서는지 화면에서 본다. */
+      { id: "p3", clientId: "smoke-client-c", instructorId: "u1", remainingCount: 0, status: "active", expiresAt: new Date(2027, 1, 1), category: "pt_1_1_new", totalSessions: 10, serviceSessions: 0, contractPrice: 800000 },
     ],
     now: new Date(2026, 8, 18),
   }).roster;
@@ -20568,13 +20595,20 @@ export function createAppScreenSmokeCases() {
     { name: "회원 상세 · 강사", element: <ReferenceMemberDetail member={smokeRoster[0]} schedule={db.schedule} photos={photos[member.id]} settings={db.settings} organizationMode viewerRole="instructor" onBack={noop} onPatch={asyncNoop} onSaveNote={asyncNoop} onSchedule={noop} onAssess={noop} onToast={noop} onHide={asyncNoop} /> },
     { name: "회원 상세 · 대표", element: <ReferenceMemberDetail member={smokeRoster[0]} schedule={db.schedule} photos={photos[member.id]} settings={db.settings} organizationMode viewerRole="owner" onBack={noop} onPatch={asyncNoop} onSaveNote={asyncNoop} onSchedule={noop} onAssess={noop} onToast={noop} onHide={asyncNoop} /> },
     { name: "회원 목록 · 강사", element: (
-      <ReferenceMemberList members={smokeRoster} schedule={db.schedule} settings={db.settings}
+      <ReferenceMemberList members={smokeRoster} schedule={db.schedule} settings={db.settings} organizationMode
         currentUserId="u1" myMembersDefault canBrowseAll={false} viewerRole="instructor"
         canRegister={false} onSelect={noop} onAdd={noop} onDeleteSamples={noop}
         onConsumeRegisterRequest={noop} onRetryRoster={noop} onShowHidden={noop} />
     ) },
+    /* 만료 칩. 여기서만 "소진" 과 "기간 만료" 가 나란히 선다. */
+    { name: "회원 목록 · 만료", element: (
+      <ReferenceMemberList members={smokeRoster} schedule={db.schedule} settings={db.settings} organizationMode
+        initialFilter="expired" currentUserId="u1" canBrowseAll viewerRole="owner"
+        onSelect={noop} onAdd={noop} onDeleteSamples={noop}
+        onConsumeRegisterRequest={noop} onRetryRoster={noop} onShowHidden={noop} />
+    ) },
     { name: "회원 목록 · 대표", element: (
-      <ReferenceMemberList members={smokeRoster} schedule={db.schedule} settings={db.settings}
+      <ReferenceMemberList members={smokeRoster} schedule={db.schedule} settings={db.settings} organizationMode
         currentUserId="u1" myMembersDefault canBrowseAll viewerRole="owner"
         onSelect={noop} onAdd={noop} onDeleteSamples={noop}
         onConsumeRegisterRequest={noop} onRetryRoster={noop} onShowHidden={noop} />
@@ -23747,7 +23781,7 @@ export default function App() {
           <Guard key={tab}>
             {tab === "schedule" && <ScheduleManager db={rosterDb} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterMembers ? () => { setMemberRegistrationRequest((value) => value + 1); setTab("members"); } : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && organizationContext.role === ROLES.OWNER} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
             {tab === "members" && <div className={`h-full min-h-0 ${mobileView === "detail" && member ? "pt-member-detail-active" : ""}`}>
-              <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList members={rosterMembers} schedule={db.schedule} settings={db.settings} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} canBrowseAll={!organizationRoster || canBrowseAllClients(organizationContext.role)} viewerRole={organizationContext.role} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterMembers} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} journeyOf={organizationRoster ? journeyFor : undefined} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
+              <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList members={rosterMembers} schedule={db.schedule} settings={db.settings} organizationMode={organizationRoster} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} canBrowseAll={!organizationRoster || canBrowseAllClients(organizationContext.role)} viewerRole={organizationContext.role} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterMembers} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} journeyOf={organizationRoster ? journeyFor : undefined} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
               {mobileView === "detail" && member && <div className="pt-member-detail-pane h-full min-h-0">
                 <ReferenceMemberDetail key={member.id} member={member} schedule={db.schedule} photos={photos[member.id]} settings={db.settings} viewerRole={organizationRoster ? organizationContext.role : ""}
                   canViewSettlement={!account?.role || ["owner", "manager", "admin", "director"].includes(String(account.role).toLowerCase())} onBack={() => setMobileView("list")}

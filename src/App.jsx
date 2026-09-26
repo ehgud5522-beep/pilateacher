@@ -263,6 +263,7 @@ import {
   createEmergencyBackupEnvelope, drainPhotoQueue, mergePhotoGraph, mergePhotoMetadata, storageUsage,
 } from "./features/backup/cloud-backup.js";
 import { optimizePhotoBackup } from "./features/backup/photo-optimizer.js";
+import { downscaleToFit } from "./features/photos/downscale.js";
 import {
   checkLessonNotificationPermission, listenForLessonNotificationActions, requestLessonNotificationPermission, syncLessonNotifications,
 } from "./features/notifications/local-notifications.js";
@@ -8680,7 +8681,23 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
         onToast?.({ ok: false, msg: "분석 대상 회원 또는 분석 ID가 변경되어 사진 저장을 중단했습니다." });
         return false;
       }
-      const blob = metadata.preserveResolution ? input : await fileToBlob(input, 1000);
+      /* 앨범에서 고른 사진은 예전처럼 1000px 로 줄인다. 촬영한 사진은 원본을
+         지키되 **긴 변 1600 만 넘지 않게** 한다.
+
+         평소 촬영(CameraPreview)은 1080×1440 이라 제한에 걸리지 않고 한 바이트도
+         바뀌지 않는다. 걸리는 것은 시스템 카메라 폴백뿐인데, 그쪽은 해상도
+         제한 없이 센서 원본을 q92 로 내놓아 장당 3~6MB 가 기기에 쌓인다.
+         분석에는 그만한 해상도가 쓰이지 않는다 -- 앨범 경로가 1000px 로 이미
+         잘 돌고 있다. */
+      const fitted = metadata.preserveResolution ? await downscaleToFit(input) : null;
+      const blob = fitted ? fitted.blob : await fileToBlob(input, 1000);
+      if (fitted?.resized) {
+        deviceLog("posture_photo_downscaled", {
+          view: capturedView, reason: fitted.reason,
+          from: `${fitted.sourceWidth}x${fitted.sourceHeight}`, to: `${fitted.width}x${fitted.height}`,
+          sourceBytes: input.size, bytes: blob.size,
+        });
+      }
       src = URL.createObjectURL(blob);
       const im = new window.Image();
       await new Promise((resolve, reject) => { im.onload = resolve; im.onerror = reject; im.src = src; });

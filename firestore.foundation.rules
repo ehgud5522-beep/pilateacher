@@ -968,6 +968,37 @@ service cloud.firestore {
         allow delete: if false;
       }
 
+      /* ── 기기 청소 직전의 사본 ────────────────────────────────────────
+         강사 기기에서 남의 회원을 지우기 전에 그 회원들을 한 벌 남긴다.
+         지우는 것은 기록이 이미 센터에 있는 회원뿐이지만, 강사가 그 회원에게
+         적어 둔 레거시 수업 기록은 그 기기와 그 사람의 백업에만 있다 --
+         되돌릴 자리가 없으면 지울 수 없다.
+
+         **users/{uid} 밑에 두지 않는다.** 거기 두면 강사가 남의 회원 기록을
+         계속 가지게 되고, 이 작업 전체가 없애려는 것이 그것이다. 그래서 조직
+         쪽이고 읽는 사람은 대표뿐이다.
+
+         만들기만 한다. 고칠 수도 지울 수도 없다 -- 되돌릴 사본이 덮어써지면
+         그것은 사본이 아니다. expireAt 에 TTL 을 걸어 90일 뒤에 사라진다. */
+      match /scopeSnapshots/{snapshotId} {
+        allow get, list: if hasRole(organizationId, ["owner"]);
+        allow create: if isCentreStaff(organizationId)
+          && request.resource.data.organizationId == organizationId
+          // 남의 이름으로 남기지 못한다. 누가 무엇을 지웠는지가 이 문서의 요점이다.
+          && request.resource.data.userId == request.auth.uid
+          && request.resource.data.keys().hasOnly([
+            "organizationId", "userId", "members", "clientIds", "createdAt", "expireAt"
+          ])
+          && request.resource.data.keys().hasAll([
+            "organizationId", "userId", "members", "createdAt", "expireAt"
+          ])
+          && request.resource.data.createdAt == request.time
+          && request.resource.data.expireAt is timestamp
+          && request.resource.data.members is list
+          && request.resource.data.members.size() > 0;
+        allow update, delete: if false;
+      }
+
       match /locations/{locationId} {
         // get and list are split on purpose. A list rule is evaluated against
         // what the query guarantees, not against the documents it returns, so a

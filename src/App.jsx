@@ -97,7 +97,7 @@ import {
 } from "./data/repositories/instructor-repository.js";
 import {
   clientMatchesSearch, createClient, findSameNameClients, findSamePhoneClients, listClients,
-  normalizePhone,
+  normalizePhone, saveScopeSnapshot,
 } from "./data/repositories/client-repository.js";
 import {
   ALL_LOCATIONS, NO_LOCATION, countByLocation, createLocation, filterByLocation, listLocations,
@@ -273,6 +273,9 @@ import {
   scopeHealth, scopeHealthMessage,
 } from "./features/members/instructor-scope-admin.js";
 import { SCOPED_ROLES, clientScopeFor, unlinkedNotice } from "./features/members/client-scope.js";
+import {
+  planRosterPrune, pruneMessage, snapshotId, snapshotPayload,
+} from "./features/members/device-roster-prune.js";
 import {
   instructorVersionRows, readinessMessage, rulesReadiness, shouldReportVersion,
 } from "./features/members/app-version-report.js";
@@ -18894,6 +18897,10 @@ const expiryDayLabel = (at) => (at instanceof Date && Number.isFinite(at.getTime
 
 function ExpiryReportScreen({
   organization, currentUserId, clientStore, passStore, instructorStore,
+  /* 시계를 주입받는다. 스모크의 픽스처는 날짜가 박혀 있어, 진짜 시계를 쓰면
+     "지난달" 이 어느 달인지가 돌리는 날마다 달라진다 -- 만든 날에만 통과하는
+     테스트가 된다 (tools/clock-shift.mjs 머리말). */
+  now = () => new Date(),
   onRetryOrganization, initialState = null,
 }) {
   const sectionStyle = { backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 };
@@ -18943,14 +18950,17 @@ function ExpiryReportScreen({
     }))
     : [];
   const ownerView = canBrowseAllClients(organization?.role);
+  /* 한 번만 읽어 모든 집계가 같은 "지금" 을 쓰게 한다. 줄마다 새로 읽으면
+     자정 근처에서 강사별 표와 합계가 서로 다른 달을 볼 수 있다. */
+  const at = now();
   const report = expiryReport(rows, {
-    period, instructorId: ownerView ? "" : currentUserId,
+    period, now: at, instructorId: ownerView ? "" : currentUserId,
   });
   const byInstructor = ownerView
     ? instructors.map((item) => ({
       userId: String(item.userId || ""),
       name: String(item.displayName || item.userId || ""),
-      report: expiryReport(rows, { period, instructorId: String(item.userId || "") }),
+      report: expiryReport(rows, { period, now: at, instructorId: String(item.userId || "") }),
     })).filter((item) => item.report.expired > 0)
     : [];
 
@@ -21150,6 +21160,9 @@ export function createAppScreenSmokeCases() {
        않으면 대표는 매달 초에 "재등록률이 떨어졌다" 고 읽는다. */
     { name: "만료 회원 · 강사", element: providerWith(smokeInstructorOrg, (
       <ExpiryReportScreen organization={readyOrganizationContext(smokeInstructorOrg)} currentUserId="u1"
+        /* 시계를 못 박는다. 픽스처의 만료일이 고정이라 진짜 시계를 쓰면
+           "지난달" 이 어느 달인지가 돌리는 날마다 달라진다. */
+        now={() => new Date(2026, 8, 27)}
         onRetryOrganization={noop}
         initialState={{ period: "last_month", instructors: [], state: { stage: "ready",
           clients: [
@@ -22164,6 +22177,13 @@ export default function App() {
   const cloudPending = useRef(null);
   const accountDeletionInFlight = useRef(false);
   const attendanceMutationsInFlight = useRef(new Set());
+  /* 청소 직후 한 번만 백업 보호를 연다. 회원이 절반 미만으로 줄면 덮어쓰기가
+     막히는데(cloud-backup.js 의 members_mass_decrease), 청소는 정확히 그런
+     모양이다 -- 막아 두면 그 기기의 백업이 그날부터 멈춘다.
+
+     ref 에 두고 한 번 쓰면 끈다. 켜 둔 채로 두면 다음에 진짜로 데이터가
+     사라졌을 때 그 보호가 없다. */
+  const backupOverrideOnce = useRef(false);
   const queueCloud = useCallback((uidStr, data) => {
     if (!fbReady || !uidStr) return;
     if (restoreBlockedRef.current) {
@@ -22185,7 +22205,9 @@ export default function App() {
       const usage = storageUsage(uploadedManifest);
       try {
         const photoGraph = buildPhotoGraph(photosRef.current);
-        await fbPushBackup(p.uid, p.data, { photoCount: uploadedManifest.length, photoPending: queue.length, storageUsage: usage, photoManifest: uploadedManifest, photoGraph });
+        const allowDestructiveOverwrite = backupOverrideOnce.current;
+        backupOverrideOnce.current = false;
+        await fbPushBackup(p.uid, p.data, { photoCount: uploadedManifest.length, photoPending: queue.length, storageUsage: usage, photoManifest: uploadedManifest, photoGraph, allowDestructiveOverwrite });
         writeCloudSyncMarker(p.uid, { localSavedAt: Date.now(), lastCloudAt: Date.now() });
         setCloudBackupStatus((current) => ({ ...current, state: queue.length ? "backing_up" : "safe", counts: backupCounts(p.data, uploadedManifest, photoGraph), pendingPhotos: queue.length, localPhotoCount: manifest.length, storageUsage: usage, photoEnabled: p.data.settings?.cloudPhotoBackupEnabled === true, lastBackupAt: new Date().toISOString() }));
       } catch (e) {
@@ -22476,6 +22498,89 @@ export default function App() {
     retry();
     return () => window.removeEventListener("online", retry);
   }, [processPhotoQueue]);
+
+  /* ── 기기 명부 청소 ────────────────────────────────────────────────────
+     담당이 아닌 회원을 이 기기에서 지운다. 지우는 것은 **강사가 만진 남의
+     회원** 뿐이다 -- db.members 는 센터 명부의 사본이 아니라 만진 회원만
+     쌓이는 희소한 목록이고, 회원 탭의 "전체 N명" 은 화면을 만들 때 계산해서
+     어디에도 저장되지 않는다.
+
+     ── 지우기 전에 셋을 지킨다 ──
+     1. 미연결 로컬 회원은 건드리지 않는다. 이 기기에만 있는 사람이다.
+     2. 사진이 센터에 다 올라갔을 때만 지운다. 사진은 기기의 별도 저장소에
+        있고 클라우드 사진 백업은 선택이다 -- 안 켰으면 어디에도 없다.
+        기기 전체로 판단한다: 백업이 켜져 있고 대기 중인 사진이 0장이면
+        이 기기의 사진은 모두 올라가 있다.
+     3. 되돌릴 사본을 먼저 남긴다. **사본 쓰기가 실패하면 지우지 않는다** --
+        숨기기로 내린다. 숨김은 되돌릴 수 있다.
+
+     한 번만 돈다. 앱을 열 때마다 돌면 토스트가 반복되고, 지울 것은 이미 없다. */
+  const prunedRef = useRef(false);
+  useEffect(() => {
+    if (prunedRef.current) return;
+    if (!organizationRoster || rosterError || !roster) return;
+    const scope = clientScopeFor(organizationContext, account?.id);
+    // 대표·FC 는 전체를 봐야 한다. 청소할 것이 없다.
+    if (!scope.instructorId) return;
+
+    const photosSafe = cloudBackupStatus.photoEnabled === true
+      && Number(cloudBackupStatus.pendingPhotos || 0) === 0;
+    const myClientIds = new Set(rosterClients.map((client) => String(client.id || "")));
+    const plan = planRosterPrune(roster.roster, {
+      myClientIds,
+      /* 회원별로 따질 것이 없다 -- 위의 기기 전체 판단이 그대로 답이다. */
+      isBackedUp: () => photosSafe,
+    });
+    prunedRef.current = true;
+    if (!plan.remove.length && !plan.hide.length) return;
+
+    (async () => {
+      let removed = [];
+      const hide = [...plan.hide];
+      if (plan.remove.length) {
+        try {
+          await saveScopeSnapshot(
+            organizationContext.organizationId,
+            snapshotId(account.id),
+            snapshotPayload(plan.remove, {
+              userId: account.id, organizationId: organizationContext.organizationId,
+            }),
+          );
+          removed = plan.remove;
+        } catch (error) {
+          /* 사본을 못 남겼으면 지우지 않는다. 같은 날 두 번째 실행도 여기로
+             온다 -- 규칙이 덮어쓰기를 막기 때문이고, 그때 지우지 않는 것이
+             맞다. 숨기는 것은 되돌릴 수 있으므로 그대로 진행한다. */
+          deviceLog("roster_prune_snapshot_failed", {
+            feature: "instructor_scope", stage: "snapshot",
+            errorDomain: "firestore", errorCode: error?.code || "unknown",
+            count: plan.remove.length,
+          });
+          hide.push(...plan.remove.map((member) => rosterHideKey(member)).filter(Boolean));
+        }
+      }
+
+      const removeIds = new Set(removed.map((member) => member.id));
+      const hidden = Array.isArray(db.settings?.hiddenClientIds) ? db.settings.hiddenClientIds : [];
+      const nextHidden = [...new Set([...hidden, ...hide.filter(Boolean)])];
+      const next = {
+        ...db,
+        members: removeIds.size ? db.members.filter((member) => !removeIds.has(member.id)) : db.members,
+        settings: { ...db.settings, hiddenClientIds: nextHidden },
+      };
+      /* 청소는 회원이 크게 주는 모양이라 백업 보호에 걸린다. 이번 한 번만 연다. */
+      if (removeIds.size) backupOverrideOnce.current = true;
+      const stored = await saveDb(next);
+      if (stored === false) return;
+      const message = pruneMessage({ remove: removed, hide });
+      if (message) setToast({ ok: true, msg: message });
+      deviceLog("roster_pruned", {
+        feature: "instructor_scope", stage: "prune",
+        removed: removed.length, hidden: hide.length, photosSafe,
+      });
+    })();
+  }, [organizationRoster, rosterError, roster, rosterClients, organizationContext, account,
+    cloudBackupStatus.photoEnabled, cloudBackupStatus.pendingPhotos, db, saveDb]);
 
   const enablePhotoBackup = useCallback(async () => {
     if (!account) return;

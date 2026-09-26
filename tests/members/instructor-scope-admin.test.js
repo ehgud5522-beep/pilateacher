@@ -36,8 +36,24 @@ test("종료 회원이 비어 있는 것은 정상이다", () => {
 
 test("점검 문구는 빠진 회원 수를 말한다", () => {
   assert.match(scopeHealthMessage({ clients: 106, withInstructors: 104, emptyActive: 2 }), /2명/);
-  assert.match(scopeHealthMessage({ clients: 106, withInstructors: 0, emptyActive: 106 }), /한 번도/);
+  assert.match(scopeHealthMessage({ clients: 106, withInstructors: 0, emptyActive: 106 }), /재계산/);
   assert.match(scopeHealthMessage({ clients: 106, withInstructors: 106, emptyActive: 0 }), /모든/);
+});
+
+test("이미 채워진 뒤 비어 있는 회원에게는 재계산을 권하지 않는다", () => {
+  /* 담당을 정할 근거가 없는 회원이다 -- 몇 번을 다시 계산해도 그대로다.
+     첫 실행에서 106명 중 34명이 이 경우였고, 그때 화면이 "재계산을 눌러
+     주세요" 라고 말했다. 아무 소용 없는 일을 시키는 문구다. */
+  const message = scopeHealthMessage({ clients: 106, withInstructors: 72, emptyActive: 34 });
+  assert.match(message, /34명/);
+  assert.match(message, /회원권이 한 번도 나간 적 없는/);
+  assert.doesNotMatch(message, /재계산/, "여기서 재계산은 아무것도 바꾸지 않는다");
+});
+
+test("아직 안 돌았을 때는 재계산을 권한다", () => {
+  const message = scopeHealthMessage({ clients: 106, withInstructors: 0, emptyActive: 106 });
+  assert.match(message, /아직 한 번도 계산되지 않았습니다/);
+  assert.match(message, /재계산/);
 });
 
 test("미리보기 — 바뀌는 것이 없을 때를 따로 말한다", () => {

@@ -91,7 +91,8 @@ import {
 } from "./data/repositories/organization-context.js";
 import {
   addMembership, fullRoomRateOf, hasUsableFullRoomRate, isActiveMembership, isDeputyDirectorOf,
-  listInstructors, listMemberships, setInstructorDeputyDirector, setInstructorFullRoomRate,
+  listInstructors,
+  reportAppVersion, listMemberships, setInstructorDeputyDirector, setInstructorFullRoomRate,
   setMembershipProfile, setMembershipStatus, syncOwnMembershipName,
 } from "./data/repositories/instructor-repository.js";
 import {
@@ -272,6 +273,9 @@ import {
 } from "./features/members/instructor-scope-admin.js";
 import { SCOPED_ROLES, clientScopeFor, unlinkedNotice } from "./features/members/client-scope.js";
 import {
+  instructorVersionRows, readinessMessage, rulesReadiness, shouldReportVersion,
+} from "./features/members/app-version-report.js";
+import {
   checkLessonNotificationPermission, listenForLessonNotificationActions, requestLessonNotificationPermission, syncLessonNotifications,
 } from "./features/notifications/local-notifications.js";
 import {
@@ -334,6 +338,14 @@ const RUNTIME_BUILD_LABEL = Capacitor.isNativePlatform()
     return APP_BUILD_LABEL;
   }).catch(() => APP_BUILD_LABEL)
   : Promise.resolve(APP_BUILD_LABEL);
+/* 화면에 쓰는 라벨 말고 **숫자 그대로**가 필요한 자리가 있다 -- 소속 문서에
+   적는 앱 버전이다. 라벨을 다시 쪼개면 형식이 바뀌는 날 조용히 빈다. */
+const RUNTIME_APP_IDENTITY = Capacitor.isNativePlatform()
+  ? CapacitorApp.getInfo()
+    .then((info) => ({ version: String(info?.version || "").trim(), build: String(info?.build || "").trim() }))
+    .catch(() => ({ version: "", build: "" }))
+  : Promise.resolve({ version: RELEASE_VERSION, build: RELEASE_BUILD_NUMBER });
+
 function RuntimeBuildLabel() {
   const [label, setLabel] = useState(APP_BUILD_LABEL);
   useEffect(() => { let active = true; RUNTIME_BUILD_LABEL.then((value) => { if (active) setLabel(value); }); return () => { active = false; }; }, []);
@@ -461,6 +473,15 @@ const ACC_KEY = "pilateacher_accounts_v1";
 const SES_KEY = "pilateacher_session_v1";
 const ACCOUNT_DELETION_PENDING_KEY = "pilateacher_account_deletion_pending_v1";
 const DUAL_WRITE_RETRY_KEY = "pilateacher_dual_write_retry_v1";
+/* 마지막으로 소속 문서에 적은 앱 버전. 여기 있는 것은 **내가 쓴 값의 사본**
+   이지 서버의 값이 아니다 -- 지우면 다음에 한 번 더 쓸 뿐이다. */
+const APP_VERSION_REPORT_KEY = "pilateacher_app_version_report_v1";
+/* 회원 범위 잠금(3단계 규칙)을 켜려면 강사 전원이 이 번호 이상이어야 한다.
+   이 빌드에 담긴 번호다 -- 여기 담긴 앱만이 좁혀진 질의를 보내고, 그보다
+   낮은 앱은 규칙 아래서 회원 목록을 통째로 못 읽는다.
+
+   docs/instructor-scope-plan.md 의 표와 같은 값이어야 한다. */
+const RULES_MINIMUM_BUILD = 62;
 const dbKey = (id) => `pilateacher_db_${id}`;
 const phKey = (id) => `pilateacher_photos_${id}`;
 const cloudSyncKey = (id) => `pilateacher_cloud_sync_v1_${id}`;
@@ -18909,6 +18930,8 @@ function InstructorScopeAdmin({
   const health = tally ? scopeHealth(tally) : null;
   const rows = tally ? instructorScopeRows(tally.byInstructor, instructors) : [];
   const empty = tally && Array.isArray(tally.emptyActiveClients) ? tally.emptyActiveClients : [];
+  const versionRows = instructorVersionRows(instructors, { minimumBuild: RULES_MINIMUM_BUILD });
+  const readiness = rulesReadiness(versionRows);
   /* 지점 이름을 못 읽어도 목록은 선다. 그때는 칸이 비고 이름은 그대로 맞다. */
   const locationNameOf = (locationId) => locations.find((item) => item.id === locationId)?.name || "";
 
@@ -18955,6 +18978,39 @@ function InstructorScopeAdmin({
             <button type="button" onClick={verify} className="mt-2 h-11 w-full font-bold"
               style={{ borderRadius: 10, backgroundColor: CANVAS, color: INK2, fontSize: TYPE.caption }}>다시 점검</button>
           </>
+        ) : null}
+      </section>
+
+      <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+        <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>강사 앱 버전</h2>
+        {/* 회원 범위 규칙을 켜면 낡은 앱은 통째로 멈춘다 -- 조건 없는 목록
+            읽기를 규칙이 거부하기 때문이다. 그러니 이 표가 초록이 되기 전에는
+            그 규칙을 누르지 않는다. */}
+        <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+          강사가 앱을 열 때 기록됩니다. <b style={{ color: INK }}>전원이 {RULES_MINIMUM_BUILD} 이상</b>이
+          되어야 회원 범위 잠금을 켤 수 있습니다 — 낡은 앱은 그 잠금 아래서 회원 목록을 아예 못 불러옵니다.
+        </p>
+        <p className="mt-2" style={{
+          fontSize: TYPE.caption, lineHeight: 1.5, fontWeight: 700,
+          color: readiness.safe ? GOOD : WARN,
+        }}>{readinessMessage(readiness, RULES_MINIMUM_BUILD)}</p>
+        {versionRows.length ? (
+          <div className="mt-2">
+            {versionRows.map((row) => (
+              <div key={row.userId} className="flex items-center gap-2"
+                style={{ padding: "9px 0", borderTop: `1px solid ${LINE}` }}>
+                <p className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK }}>
+                  {row.name}
+                </p>
+                <p className="shrink-0 tabular-nums" style={{
+                  fontSize: TYPE.caption, fontWeight: 700,
+                  color: row.state === "ready" ? GOOD : row.state === "outdated" ? BAD : SUB,
+                }}>
+                  {row.build ? `${row.version} (${row.build})` : "앱을 연 적 없음"}
+                </p>
+              </div>
+            ))}
+          </div>
         ) : null}
       </section>
 
@@ -20804,7 +20860,9 @@ export function createAppScreenSmokeCases() {
     { name: "담당 강사 · 빠진 회원", element: providerWith(smokeOwner, (
       <InstructorScopeAdmin organization={readyOrganizationContext(smokeOwner)} onRetryOrganization={noop}
         onVerify={asyncNoop} onRebuild={asyncNoop}
-        initialState={{ instructors: smokeInstructors, locations: smokeLocations, check: { stage: "ready", tally: {
+        initialState={{ instructors: smokeInstructors.map((item, index) => (
+          index === 0 ? { ...item, appVersion: "1.1.29", appBuild: "60" } : item
+        )), locations: smokeLocations, check: { stage: "ready", tally: {
           clients: 106, withInstructors: 104, empty: 2, emptyActive: 2, byInstructor: [],
           emptyActiveClients: [
             { clientId: "csv_01011112222", name: "가회원", locationId: smokeLocations[0]?.id || "" },
@@ -21068,6 +21126,44 @@ export default function App() {
     });
     return () => { alive = false; };
   }, [organizationRoster, organizationContext.organizationId, rosterRevision]);
+
+  /* ── 이 기기가 몇 번 빌드인지 적는다 ──────────────────────────────────
+     회원 범위 규칙을 켜면 낡은 앱은 통째로 멈춘다. 대표가 그것을 켜기 전에
+     "강사 전원이 새 앱을 쓰는가" 를 알아야 하는데, 지금은 알 방법이 없다.
+
+     마지막으로 적은 값을 기기에 남겨 두고 그것과 비교한다 -- 소속 문서를 다시
+     읽지 않기 위해서다. 읽으면 앱을 열 때마다 읽기가 하나 붙는다.
+
+     실패는 조용하다. 사용자가 시킨 일이 아니라, 화면에 띄우면 앱을 열 때마다
+     영문 모를 오류가 뜨고 그것이 고쳐 주는 것은 없다. */
+  useEffect(() => {
+    const organizationId = organizationContext.organizationId;
+    const userId = account?.id || "";
+    if (!organizationId || organizationContext.isLegacy || !userId) return;
+    let alive = true;
+    RUNTIME_APP_IDENTITY.then(async (current) => {
+      if (!alive) return;
+      let stored = {};
+      try { stored = JSON.parse(localStorage.getItem(APP_VERSION_REPORT_KEY) || "{}") || {}; } catch (_e) { stored = {}; }
+      if (stored.userId !== userId || stored.organizationId !== organizationId) stored = {};
+      if (!shouldReportVersion({ current, stored })) return;
+      const outcome = await reportAppVersion(organizationId, userId, current);
+      if (outcome !== "written") {
+        /* 못 적었으면 기기에도 남기지 않는다. 남기면 다음에 안 시도하고,
+           그 강사는 영영 "확인 안 됨" 으로 남는다. */
+        deviceLog("app_version_report_failed", { outcome, stage: "membership_write" });
+        return;
+      }
+      try {
+        localStorage.setItem(APP_VERSION_REPORT_KEY, JSON.stringify({
+          organizationId, userId,
+          appVersion: current.version, appBuild: current.build,
+          lastSeenAt: new Date().toISOString(),
+        }));
+      } catch (_e) {}
+    });
+    return () => { alive = false; };
+  }, [organizationContext.organizationId, organizationContext.isLegacy, account?.id]);
 
   const roster = useMemo(() => {
     if (!organizationRoster || rosterError) return null;

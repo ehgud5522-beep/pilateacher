@@ -1318,6 +1318,37 @@ describe("the owner attaches instructors to the centre", () => {
     ), "대표를 앱에서 세우지 않는다");
   });
 
+  test("an instructor reports their own app version and nothing else", async () => {
+    /* 강사 전원이 새 앱을 쓰는지 대표가 볼 수 있어야 회원 범위 규칙을 켤 수
+       있다. 낡은 앱은 그 규칙 아래서 통째로 멈추므로, 모르는 채 켜면 강사는
+       고칠 자리에 있지 않은 고장을 만난다. */
+    const mine = () => membershipRef(users.instructor, `${ORG_A}_${users.instructor}`);
+    await assertSucceeds(setDoc(mine(), {
+      appVersion: "1.1.29", appBuild: "62", lastSeenAt: serverTimestamp(),
+    }, { merge: true }));
+
+    /* 기기 시계를 그대로 믿으면 "방금 열었다" 를 언제든 적을 수 있고, 그러면
+       이 값으로 판단하는 일이 의미를 잃는다. */
+    await assertFails(setDoc(mine(), {
+      appVersion: "1.1.29", appBuild: "62", lastSeenAt: new Date(2030, 0, 1),
+    }, { merge: true }), "기기 시계");
+
+    // 이 문으로 역할이나 급여가 따라 들어오면 안 된다.
+    await assertFails(setDoc(mine(), {
+      appVersion: "1.1.29", appBuild: "62", lastSeenAt: serverTimestamp(), role: "owner",
+    }, { merge: true }), "역할");
+    await assertFails(setDoc(mine(), {
+      appVersion: "1.1.29", appBuild: "62", lastSeenAt: serverTimestamp(), fullRoomRate: 99999,
+    }, { merge: true }), "풀방금액");
+
+    // 남의 문서에는 못 쓴다.
+    await assertFails(setDoc(
+      membershipRef(users.instructor, `${ORG_A}_${users.manager}`),
+      { appVersion: "1.1.29", appBuild: "62", lastSeenAt: serverTimestamp() },
+      { merge: true },
+    ), "남의 소속");
+  });
+
   test("an attached membership starts active, named, and with a listed title", async () => {
     for (const overrides of [
       { status: "invited" },

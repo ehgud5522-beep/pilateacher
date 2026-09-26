@@ -2181,6 +2181,12 @@ test("the instructor-scope screen separates three states that all end in one but
   assert.match(ok, /강사별 담당 회원/);
 
   const missing = markupOf("담당 강사 · 빠진 회원");
+  /* 강사 앱 버전. 낡은 앱 한 명이라도 있으면 "켜도 된다" 고 말하지 않는다 --
+     그 사람의 회원 목록이 잠금 아래서 통째로 멈춘다. */
+  assert.match(missing, /강사 앱 버전/);
+  assert.match(missing, /낡은 앱 1명/);
+  assert.doesNotMatch(missing, /규칙을 켜도 됩니다/);
+  assert.match(missing, /앱을 연 적 없음/, "안 연 사람도 줄이 서야 한다");
   assert.match(missing, /운영중인 회원 2명에게 담당 강사가 없습니다/);
   /* 숫자만으로는 누가 빠졌는지 알 수 없다. 이름이 함께 서야 대표가 "이 사람은
      회원권을 내줘야 한다" 를 판단할 수 있다. */

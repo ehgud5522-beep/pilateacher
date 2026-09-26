@@ -2172,6 +2172,12 @@ test("the instructor-scope screen separates three states that all end in one but
 
   const missing = markupOf("담당 강사 · 빠진 회원");
   assert.match(missing, /운영중인 회원 2명에게 담당 강사가 없습니다/);
+  /* 숫자만으로는 누가 빠졌는지 알 수 없다. 이름이 함께 서야 대표가 "이 사람은
+     회원권을 내줘야 한다" 를 판단할 수 있다. */
+  assert.match(missing, /담당 없는 운영중 회원/);
+  assert.match(missing, /가회원/);
+  assert.match(missing, /나회원/);
+  assert.match(missing, /강사 화면에 보이지 않습니다/);
   // 미리보기가 떠 있으면 실행 버튼이 함께 있어야 한다. 세어만 보고 끝나면 안 된다.
   assert.match(missing, /106명 중 2명의 담당 강사가 바뀝니다/);
   assert.match(missing, /실행/);

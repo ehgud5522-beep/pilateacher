@@ -190,6 +190,15 @@ async function verifyInstructorIds(db, input) {
   /* 강사별 담당 회원 수. 대표가 비교하는 자리다 -- 한 사람만 0 이면 그
      사람의 회원이 빠진 것이고, 전부 0 이면 채우기가 안 돈 것이다. */
   const byInstructor = new Map();
+  /* 담당 없이 운영중인 회원의 목록. **숫자만으로는 누가 빠졌는지 알 수 없고**,
+     3단계 이후 이 회원들은 강사에게 보이지 않는다 -- 대표가 직접 보고 "이
+     사람은 회원권을 내줘야 한다" 를 판단해야 한다. 첫 채우기에서 106명 중
+     34명이 여기 들어왔다.
+
+     대표만 부르는 문이라 이름을 담는다. 대신 **로그에는 담지 않는다** (index.js
+     의 instructorScopeCallable 이 숫자만 남긴다). */
+  const emptyActiveClients = [];
+  const EMPTY_LIST_LIMIT = 300;
 
   let cursor = null;
   const pageSize = 500;
@@ -213,15 +222,30 @@ async function verifyInstructorIds(db, input) {
         tally.empty += 1;
         /* 빈 것 자체는 정상이다 -- 회원권이 한 번도 안 나간 회원이 있다.
            운영중인데 비어 있으면 그것이 진짜 빠진 것이다. */
-        if (text(data.status) === "active") tally.emptyActive += 1;
+        if (text(data.status) === "active") {
+          tally.emptyActive += 1;
+          if (emptyActiveClients.length < EMPTY_LIST_LIMIT) {
+            emptyActiveClients.push({
+              clientId: snapshot.id,
+              name: text(data.name),
+              locationId: text(data.locationId),
+            });
+          }
+        }
       }
     }
     if (page.size < pageSize) break;
     cursor = page.docs[page.docs.length - 1];
   }
   /* 많은 순으로. 대표가 보는 순간 이상한 줄이 위에 오게 한다. */
+  /* 이름순. 대표가 아는 순서로 읽는다. */
+  emptyActiveClients.sort((left, right) => left.name.localeCompare(right.name, "ko"));
+
   return {
     ...tally,
+    emptyActiveClients,
+    /* 잘린 목록을 전부인 것처럼 보이면 안 된다. */
+    emptyActiveTruncated: tally.emptyActive > emptyActiveClients.length,
     byInstructor: [...byInstructor.entries()]
       .map(([instructorId, clients]) => ({ instructorId, clients }))
       .sort((left, right) => right.clients - left.clients || left.instructorId.localeCompare(right.instructorId)),

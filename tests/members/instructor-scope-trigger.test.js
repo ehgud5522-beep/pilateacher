@@ -205,11 +205,36 @@ test("검증은 고치지 않고 센다 — 운영중인데 빈 회원이 진짜
     passes: {},
   });
   const tally = await verifyInstructorIds(db, { organizationId: "org" });
-  assert.deepEqual(tally, {
-    clients: 3, withInstructors: 1, empty: 2, emptyActive: 1,
-    byInstructor: [{ instructorId: "instructor_a", clients: 1 }],
-  });
+  assert.equal(tally.clients, 3);
+  assert.equal(tally.withInstructors, 1);
+  assert.equal(tally.empty, 2);
+  assert.equal(tally.emptyActive, 1);
+  assert.deepEqual(tally.byInstructor, [{ instructorId: "instructor_a", clients: 1 }]);
   assert.deepEqual(db.writes, [], "검증은 쓰지 않는다");
+});
+
+test("담당 없이 운영중인 회원을 이름과 함께 돌려준다", () => {
+  /* 숫자만으로는 누가 빠졌는지 알 수 없다. 3단계 이후 이 회원들은 강사에게
+     보이지 않으므로, 대표가 직접 보고 회원권을 내줄지 판단해야 한다. */
+  return (async () => {
+    const db = fakeDb({
+      clients: {
+        c1: { status: "active", name: "나회원", locationId: "loc-a" },
+        c2: { status: "active", name: "가회원", locationId: "loc-b" },
+        c3: { status: "active", name: "담당있음", instructorIds: ["a"] },
+        c4: { status: "ended", name: "종료회원" },
+      },
+      passes: {},
+    });
+    const tally = await verifyInstructorIds(db, { organizationId: "org" });
+    assert.equal(tally.emptyActive, 2);
+    assert.deepEqual(tally.emptyActiveClients.map((item) => item.name), ["가회원", "나회원"],
+      "이름순이다 -- 대표가 아는 순서로 읽는다");
+    assert.equal(tally.emptyActiveClients[0].locationId, "loc-b");
+    assert.equal(tally.emptyActiveTruncated, false);
+    assert.equal(tally.emptyActiveClients.some((item) => item.name === "종료회원"), false,
+      "종료 회원은 비어 있어도 정상이다");
+  })();
 });
 
 test("검증은 강사별 담당 회원 수를 많은 순으로 센다", () => {

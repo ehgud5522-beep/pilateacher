@@ -18,7 +18,13 @@ const { createAIRecordingOperations } = require("./ai-recording-operations");
 const { applyCors, parseAllowedOrigins } = require("./cors");
 const { sendError, GatewayError } = require("./errors");
 const { createFirestoreIdempotencyStore } = require("./idempotency");
-const { createMemberLinkService } = require("./member-link");
+const { createMemberLinkService, isActiveOwner, membershipId } = require("./member-link");
+const {
+  clientIdsFromPassChange: clientIdsFromPassChangeForScope,
+  rebuildInstructorIds,
+  syncInstructorIds,
+  verifyInstructorIds,
+} = require("./instructor-scope-triggers");
 const { createFirestoreMemberLinkPorts } = require("./member-link-store");
 const {
   createFirestoreMemberViewAdminPorts, createMemberViewAdminService,
@@ -545,3 +551,101 @@ exports._test = {
   memberViewAdminHttpsError,
   requestPath,
 };
+
+/* ── 강사가 보는 회원의 범위 ──────────────────────────────────────────────
+   clients.instructorIds 를 채운다. 근거는 instructor-scope-triggers.js 머리말과
+   docs/instructor-scope-plan.md 에 있다.
+
+   passes 하나만 단다. 발급·차감·인수인계·양도·종료·취소가 전부 같은 배치에서
+   passes 문서를 쓰므로 이 트리거 하나가 모두를 잡는다.
+
+   retry 는 끄고 간다. 놓친 회원은 rebuildInstructorIds 가 채운다 -- 무한히
+   재시도되는 망가진 문서 하나보다 다시 돌릴 수 있는 문 하나가 낫다. */
+const INSTRUCTOR_SCOPE_TRIGGER_OPTIONS = {
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  memory: "256MiB",
+  timeoutSeconds: 120,
+  retry: false,
+};
+
+exports.syncInstructorIdsOnPassWrite = onDocumentWritten({
+  ...INSTRUCTOR_SCOPE_TRIGGER_OPTIONS,
+  document: "organizations/{organizationId}/passes/{passId}",
+}, async (event) => {
+  const clientIds = clientIdsFromPassChangeForScope(
+    event.data?.before?.data() || null,
+    event.data?.after?.data() || null,
+  );
+  if (!clientIds.length) return;
+  const results = await syncInstructorIds(firestore, {
+    organizationId: event.params.organizationId,
+    clientIds,
+    now: new Date(event.time),
+    log: logger,
+  });
+  logger.info("instructor_scope_synced", {
+    feature: "instructor_scope", stage: "pass_write",
+    organizationId: event.params.organizationId,
+    // 회원 id 는 남기지 않는다. 몇 건이 어떻게 끝났는지만 센다.
+    counts: results.reduce((tally, item) => ({ ...tally, [item.outcome]: (tally[item.outcome] || 0) + 1 }), {}),
+  });
+});
+
+const INSTRUCTOR_SCOPE_ADMIN_OPTIONS = {
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  memory: "512MiB",
+  /* 조직 전체를 훑는다. 회원 120명 규모에서는 몇 초지만, 여유를 둔다 --
+     중간에 잘리면 절반만 채워진 채로 끝나고 그것이 제일 나쁜 상태다. */
+  timeoutSeconds: 540,
+};
+
+/**
+ * 대표만 부른다. 채우기와 검증 둘 다 조직 전체를 읽으므로, 소속만으로는
+ * 열 수 없다 -- 강사가 부를 수 있으면 센터 전체 회원 수를 세는 문이 된다.
+ */
+function instructorScopeCallable(stage, run) {
+  return async (request) => {
+    const callerUid = String(request?.auth?.uid || "").trim();
+    const organizationId = String(request?.data?.organizationId || "").trim();
+    if (!callerUid) throw new HttpsError("unauthenticated", "Please sign in again.");
+    if (!organizationId) throw new HttpsError("invalid-argument", "organizationId is required.");
+
+    const membership = await firestore
+      .collection("memberships").doc(membershipId(organizationId, callerUid)).get();
+    if (!isActiveOwner(membership.exists ? membership.data() : null)) {
+      throw new HttpsError("permission-denied", "Only the centre owner can run this.");
+    }
+
+    try {
+      const result = await run({ organizationId });
+      logger.info("instructor_scope_admin", {
+        feature: "instructor_scope", stage, organizationId, ...result,
+      });
+      return result;
+    } catch (error) {
+      logger.error("instructor_scope_admin_failed", {
+        feature: "instructor_scope", stage, organizationId,
+        errorCode: error?.code || "unknown", message: error?.message || "",
+      });
+      throw new HttpsError("internal", `instructor_scope_${stage}_failed`);
+    }
+  };
+}
+
+/* 일회용 마이그레이션이 아니다. instructorIds 는 파생값이라 트리거가 한 번
+   실패하면 강사가 회원을 잃는다 -- 언제든 다시 돌릴 수 있어야 한다. */
+exports.rebuildInstructorIds = onCall(
+  INSTRUCTOR_SCOPE_ADMIN_OPTIONS,
+  instructorScopeCallable("rebuild", ({ organizationId }) => (
+    rebuildInstructorIds(firestore, { organizationId, log: logger })
+  )),
+);
+
+/* 고치지 않고 센다. 배포 순서에서 채우기 다음에 이것을 돌려 "운영중인데
+   instructorIds 가 빈 회원이 없다" 를 확인한 뒤에야 앱을 내보낸다. */
+exports.verifyInstructorIds = onCall(
+  INSTRUCTOR_SCOPE_ADMIN_OPTIONS,
+  instructorScopeCallable("verify", ({ organizationId }) => (
+    verifyInstructorIds(firestore, { organizationId, log: logger })
+  )),
+);

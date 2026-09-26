@@ -358,6 +358,10 @@ service cloud.firestore {
           // 만들 때도 못 켠다. 여기를 열어 두면 위의 immutable 이 무의미하다.
           && !("reviewDemo" in request.resource.data)
           && !("previousPhones" in request.resource.data)
+          /* 담당 강사 목록도 앱이 만들지 않는다. 이 배열이 곧 "누가 이 회원을
+             볼 수 있는가" 이므로, 앱에서 쓸 수 있으면 자기 uid 를 적어 넣어
+             남의 회원을 여는 문이 된다. 채우는 것은 트리거뿐이다. */
+          && !("instructorIds" in request.resource.data)
           && clientFieldsWellFormed();
         allow update: if resource.data.organizationId == organizationId
           && request.resource.data.organizationId == organizationId
@@ -380,7 +384,11 @@ service cloud.firestore {
              급여·발급 내역·매출에서 전부 빠지므로, 앱에서 켤 수 있으면
              **실적을 숨기는 버튼**이 된다. 켜는 것은 Firebase 콘솔에서
              대표가 직접 한다 -- 회원 하나에 한 번뿐인 일이다. */
-          && immutable(["previousPhones", "reviewDemo"])
+          /* instructorIds 는 트리거만 쓴다. 규칙이 막지 않으면 강사가 자기
+             uid 를 넣어 센터 전체를 여는 한 줄이 된다 -- 아래 list 가 이
+             배열을 믿고 있기 때문이다. 값이 같으면 통과하므로(affectedKeys)
+             문서를 통째로 다시 보내는 기기 동기화는 막히지 않는다. */
+          && immutable(["previousPhones", "reviewDemo", "instructorIds"])
           && hasRole(organizationId, ["owner", "manager", "instructor", "staff"]);
         allow delete: if false;
       }

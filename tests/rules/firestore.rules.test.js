@@ -2562,6 +2562,19 @@ describe("checking attendance against a pass", () => {
     }
   });
 
+  test("the instructor list on a client cannot be written from the app", async () => {
+    /* 이 배열이 곧 "누가 이 회원을 볼 수 있는가" 다. 앱에서 쓸 수 있으면
+       강사가 자기 uid 를 적어 넣어 센터 전체를 여는 한 줄이 된다.
+       채우는 것은 트리거(Admin SDK)뿐이다. */
+    const at = (userId) => doc(dbFor(users[userId]), "organizations", ORG_A, "clients", "client-member");
+    for (const role of ["owner", "manager", "instructor", "staff"]) {
+      await assertFails(setDoc(at(role), { instructorIds: [users[role]] }, { merge: true }), role);
+      await assertFails(setDoc(at(role), { instructorIds: [] }, { merge: true }), role);
+    }
+
+    // 다른 칸만 고치는 것은 그대로 통과한다. 강사가 메모를 고치는 길이다.
+    await assertSucceeds(setDoc(at("instructor"), { name: "김하나" }, { merge: true }));
+  });
   test("a new client cannot be born as a review demo", async () => {
     // 만들 때 열어 두면 고칠 때 막는 것이 무의미하다.
     const born = (extra) => setDoc(
@@ -2574,6 +2587,8 @@ describe("checking attendance against a pass", () => {
     );
     await assertFails(born({ reviewDemo: true }));
     await assertFails(born({ previousPhones: ["01011112222"] }));
+    // 담당 강사 목록도 만들 때 넣을 수 없다. 여기를 열면 위의 immutable 이 무의미하다.
+    await assertFails(born({ instructorIds: [users.instructor] }));
     await assertSucceeds(born({}));
   });
 

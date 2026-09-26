@@ -19681,9 +19681,19 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
       { key: "assessment", title: "변화 기록 설정", description: "기본 방식 · AI 분석 · 직접 포인트/그리기", Icon: Activity },
       /* 이름은 "센터"지만 센터의 설정이 아니다. 이 세 값은 기기에 저장되고 이
          기기의 일정과 레거시 급여 추정에만 쓰인다 -- 소속 센터의 이름도 단가도
-         여기서 오지 않는다. 그래서 운영이 아니라 내 설정 쪽이고, 소속 모드에서는
-         설명이 그 사실을 말한다. */
-      { key: "center", title: "센터 정보", description: inOrganization ? "이 기기의 센터명 · 담당자 · 그룹 단가" : "센터명 · 담당자 · 그룹 단가", Icon: SettingsIcon },
+         여기서 오지 않는다.
+
+         ── 소속 센터에서는 대표에게만 보인다 ──
+         강사에게 이 화면은 아무것도 바꾸지 못하는 칸 셋이다. 센터명을 고쳐도
+         센터가 바뀌지 않고, 그룹 단가를 고쳐도 급여가 바뀌지 않는다(그쪽은
+         회원권 원장이 정한다). 바꿀 수 있는 것처럼 보이는 자리가 실은
+         아무것도 아닌 것이 제일 나쁘다 -- 강사는 고쳤다고 믿고, 숫자는 그대로다.
+
+         미소속 개인 강사에게는 그대로 보인다. 그 사람에게는 이 세 값이
+         유일한 설정이고, 월간 리포트가 실제로 그것으로 계산한다. */
+      ...(!inOrganization || organization.role === ROLES.OWNER
+        ? [{ key: "center", title: "센터 정보", description: inOrganization ? "이 기기의 센터명 · 담당자 · 그룹 단가" : "센터명 · 담당자 · 그룹 단가", Icon: SettingsIcon }]
+        : []),
       { key: "schedule-colors", title: "일정 색상", description: "개인 · 듀엣 · 그룹 · 상담 · 휴무 카드 색", Icon: Palette },
       { key: "theme", title: "화면 설정", description: "폰 설정 · 라이트 · 다크", Icon: Smartphone },
       { key: "data", title: "데이터 상태", description: "기기 저장 · 로그인 상태", Icon: Check },
@@ -19815,7 +19825,9 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
             })}</div>
           </section>
         )}
-        {view === "center" && (
+        {/* 메뉴에서 뺀 것만으로는 부족하다. 뒤로 가기나 저장된 화면 상태로
+            이 자리에 다시 닿을 수 있고, 그때 열리면 숨긴 적이 없는 것과 같다. */}
+        {view === "center" && (!inOrganization || organization.role === ROLES.OWNER) && (
           <section style={sectionStyle}>
             {/* 소속 센터에서는 이 세 값이 센터의 것이 아니다. 기기에 저장되고
                 이 기기의 일정과 레거시 급여 추정에만 쓰인다 -- 센터의 이름도
@@ -20590,6 +20602,8 @@ export function createAppScreenSmokeCases() {
        그 사실을 말하지 않으면 대표가 여기서 단가를 고치고 기다리게 된다. */
     { name: "더보기 탭 · 센터 정보", element: settingsTab(smokeOwner, { initialView: "center" }) },
     { name: "더보기 탭 · 센터 정보 · 개인 모드", element: settingsTab({ organizationId: "legacy_smoke", role: "owner", status: "active", isLegacy: true }, { initialView: "center" }) },
+    /* 강사에게는 이 화면이 아무것도 바꾸지 못한다. 열리면 고쳤다고 믿게 된다. */
+    { name: "더보기 탭 · 센터 정보 · 강사", element: settingsTab({ ...smokeOwner, role: "instructor" }, { initialView: "center" }) },
     { name: "센터 회원 상세", element: clientDetail() },
     { name: "센터 회원 상세 · 대표", element: ownerClientDetail() },
     { name: "센터 회원 상세 · 차감 보정 확인", element: ownerClientDetail({

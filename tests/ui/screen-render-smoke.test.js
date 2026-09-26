@@ -57,6 +57,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 월간 리포트 · 개인 모드",
     "더보기 탭 · 센터 정보",
     "더보기 탭 · 센터 정보 · 개인 모드",
+    "더보기 탭 · 센터 정보 · 강사",
     "센터 회원 상세",
     "센터 회원 상세 · 대표",
     "센터 회원 상세 · 차감 보정 확인",
@@ -1123,8 +1124,14 @@ test("the centre group stands only where there is something in it", async (t) =>
   }
 
   /* 센터 정보는 내 설정 쪽이다. 이름은 "센터"지만 세 값 모두 기기에 저장되고
-     이 기기의 일정과 레거시 급여 추정에만 쓰인다. */
-  assert.match(markupOf("더보기 탭 · 강사"), /센터 정보/);
+     이 기기의 일정과 레거시 급여 추정에만 쓰인다.
+
+     ── 소속 센터의 강사에게는 없다 (2026-09-27) ──
+     그 사람에게 이 화면은 아무것도 바꾸지 못하는 칸 셋이다. 센터명을 고쳐도
+     센터가 바뀌지 않고, 그룹 단가를 고쳐도 급여가 바뀌지 않는다 -- 그쪽은
+     회원권 원장이 정한다. 바꿀 수 있는 것처럼 보이는 자리가 실은 아무것도
+     아닌 것이 제일 나쁘다. */
+  assert.doesNotMatch(markupOf("더보기 탭 · 강사"), /센터 정보/);
   assert.match(owner, /이 기기의 센터명 · 담당자 · 그룹 단가/);
   const legacyHub = markupOf("더보기 탭 · 개인 모드");
   assert.match(legacyHub, /센터명 · 담당자 · 그룹 단가/);
@@ -2158,6 +2165,27 @@ test("nothing wrong and could not read are different screens", async (t) => {
   assert.match(failed, /불러오지 못했습니다/);
   assert.match(failed, /코드 permission-denied/);
   assert.doesNotMatch(failed, /깨진 번호가 없습니다/);
+});
+
+test("the centre settings screen does not open for an instructor", async (t) => {
+  /* 강사에게 이 화면은 아무것도 바꾸지 못하는 칸 셋이다. 센터명을 고쳐도
+     센터가 바뀌지 않고, 그룹 단가를 고쳐도 급여가 바뀌지 않는다 -- 그쪽은
+     회원권 원장이 정한다. 바꿀 수 있는 것처럼 보이는 자리가 실은 아무것도
+     아닌 것이 제일 나쁘다.
+
+     메뉴에서 빼는 것만으로는 부족하다. 뒤로 가기나 저장된 화면 상태로 이
+     자리에 다시 닿을 수 있다. */
+  const markupOf = await issueScreens(t);
+  const instructor = markupOf("더보기 탭 · 센터 정보 · 강사");
+  assert.doesNotMatch(instructor, /센터 기본 정보/);
+
+  const owner = markupOf("더보기 탭 · 센터 정보");
+  assert.match(owner, /센터 기본 정보/);
+
+  /* 미소속 개인 강사에게는 그대로 보인다. 그 사람에게는 이 세 값이 유일한
+     설정이고, 월간 리포트가 실제로 그것으로 계산한다. */
+  const legacy = markupOf("더보기 탭 · 센터 정보 · 개인 모드");
+  assert.match(legacy, /센터 기본 정보/);
 });
 
 test("the owner is the only one told a member is missing from the centre", async (t) => {

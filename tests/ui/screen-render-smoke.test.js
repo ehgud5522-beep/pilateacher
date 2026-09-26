@@ -126,6 +126,10 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "번호 점검",
     "번호 점검 · 이상 없음",
     "번호 점검 · 조회 실패",
+    "담당 강사",
+    "담당 강사 · 빠진 회원",
+    "담당 강사 · 아직 안 돌았음",
+    "담당 강사 · 조회 실패",
     "감사 로그",
     "감사 로그 · 전체 이력",
     "감사 로그 · 이상 없음",
@@ -2156,6 +2160,31 @@ test("nothing wrong and could not read are different screens", async (t) => {
   assert.doesNotMatch(failed, /깨진 번호가 없습니다/);
 });
 
+test("the instructor-scope screen separates three states that all end in one button", async (t) => {
+  /* 정상 · 빠진 회원 있음 · 아직 안 돌았음. 셋 다 "재계산" 으로 끝나지만
+     대표가 읽는 뜻이 다르다. 한 문구로 뭉개면 처음 켠 날과 트리거가 실패한
+     날을 구별할 수 없다. */
+  const markupOf = await issueScreens(t);
+
+  const ok = markupOf("담당 강사");
+  assert.match(ok, /모든 운영중 회원에게 담당 강사가 있습니다/);
+  assert.match(ok, /강사별 담당 회원/);
+
+  const missing = markupOf("담당 강사 · 빠진 회원");
+  assert.match(missing, /운영중인 회원 2명에게 담당 강사가 없습니다/);
+  // 미리보기가 떠 있으면 실행 버튼이 함께 있어야 한다. 세어만 보고 끝나면 안 된다.
+  assert.match(missing, /106명 중 2명의 담당 강사가 바뀝니다/);
+  assert.match(missing, /실행/);
+
+  const notFilled = markupOf("담당 강사 · 아직 안 돌았음");
+  assert.match(notFilled, /아직 한 번도 계산되지 않았습니다/);
+  assert.doesNotMatch(notFilled, /모든 운영중 회원에게/);
+
+  const failed = markupOf("담당 강사 · 조회 실패");
+  assert.match(failed, /점검하지 못했습니다/);
+  assert.match(failed, /코드 permission-denied/);
+  assert.doesNotMatch(failed, /모든 운영중 회원에게/, "못 읽은 것을 정상으로 보이면 안 된다");
+});
 /* ── 심사용 회원 ─────────────────────────────────────────────────────────
 
    스토어 심사관이 로그인해서 볼 가짜 회원이다. 한 군데라도 새면 가짜가 진짜

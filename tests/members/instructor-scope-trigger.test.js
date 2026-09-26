@@ -205,6 +205,51 @@ test("검증은 고치지 않고 센다 — 운영중인데 빈 회원이 진짜
     passes: {},
   });
   const tally = await verifyInstructorIds(db, { organizationId: "org" });
-  assert.deepEqual(tally, { clients: 3, withInstructors: 1, empty: 2, emptyActive: 1 });
+  assert.deepEqual(tally, {
+    clients: 3, withInstructors: 1, empty: 2, emptyActive: 1,
+    byInstructor: [{ instructorId: "instructor_a", clients: 1 }],
+  });
   assert.deepEqual(db.writes, [], "검증은 쓰지 않는다");
+});
+
+test("검증은 강사별 담당 회원 수를 많은 순으로 센다", () => {
+  /* 한 사람만 0 이면 그 사람의 회원이 빠진 것이고, 전부 0 이면 채우기가 안
+     돈 것이다. 대표가 보는 순간 이상한 줄이 위에 오게 한다. */
+  return (async () => {
+    const db = fakeDb({
+      clients: {
+        c1: { status: "active", instructorIds: ["a"] },
+        c2: { status: "active", instructorIds: ["a", "b"] },
+        c3: { status: "active", instructorIds: ["a"] },
+      },
+      passes: {},
+    });
+    const tally = await verifyInstructorIds(db, { organizationId: "org" });
+    assert.deepEqual(tally.byInstructor, [
+      { instructorId: "a", clients: 3 },
+      { instructorId: "b", clients: 1 },
+    ]);
+  })();
+});
+
+test("미리보기는 세기만 하고 쓰지 않는다", async () => {
+  /* 재계산은 되돌리는 문이 없다. 대표가 숫자를 보고 누르기 전에는 아무것도
+     바뀌지 않아야 한다. */
+  const db = fakeDb({
+    clients: { c1: {}, c2: { instructorIds: ["instructor_a"] } },
+    passes: {
+      p1: pass({ clientId: "c1", clientIds: ["c1"] }),
+      p2: pass({ clientId: "c2", clientIds: ["c2"] }),
+    },
+  });
+  const preview = await rebuildInstructorIds(db, { organizationId: "org", now: NOW, dryRun: true });
+  assert.equal(preview.dryRun, true);
+  assert.equal(preview.scanned, 2);
+  assert.equal(preview.wouldUpdate, 1);
+  assert.equal(preview.updated, 0);
+  assert.deepEqual(db.writes, [], "미리보기는 한 줄도 쓰지 않는다");
+
+  const done = await rebuildInstructorIds(db, { organizationId: "org", now: NOW });
+  assert.equal(done.updated, 1, "누르면 그때 바뀐다");
+  assert.equal(db.writes.length, 1);
 });

@@ -674,6 +674,12 @@ export const fbUpdateClientPhone = callableAsOwner("updateClientPhone");
 /** 번호 철자가 깨진 회원 목록. 읽기만 하고, 고치는 것은 대표가 하나씩 한다. */
 export const fbListMalformedClientPhones = callableAsOwner("listMalformedClientPhones");
 
+/* 담당 강사 재계산·점검. 둘 다 조직 전체를 읽으므로 대표만 부른다.
+   재계산은 dryRun: true 로 먼저 세어 보고, 대표가 그 숫자를 보고 누른다 --
+   되돌리는 문이 없기 때문이다. */
+export const fbRebuildInstructorIds = callableAsOwner("rebuildInstructorIds");
+export const fbVerifyInstructorIds = callableAsOwner("verifyInstructorIds");
+
 export async function fbPurgeExpiredPhotoBackups() {
   if (!functions || !auth?.currentUser) return { purged: 0 };
   const call = httpsCallable(functions, "purgeExpiredPhotoBackups");

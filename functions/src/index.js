@@ -607,6 +607,7 @@ function instructorScopeCallable(stage, run) {
   return async (request) => {
     const callerUid = String(request?.auth?.uid || "").trim();
     const organizationId = String(request?.data?.organizationId || "").trim();
+    const dryRun = request?.data?.dryRun === true;
     if (!callerUid) throw new HttpsError("unauthenticated", "Please sign in again.");
     if (!organizationId) throw new HttpsError("invalid-argument", "organizationId is required.");
 
@@ -617,7 +618,7 @@ function instructorScopeCallable(stage, run) {
     }
 
     try {
-      const result = await run({ organizationId });
+      const result = await run({ organizationId, dryRun });
       logger.info("instructor_scope_admin", {
         feature: "instructor_scope", stage, organizationId, ...result,
       });
@@ -636,8 +637,8 @@ function instructorScopeCallable(stage, run) {
    실패하면 강사가 회원을 잃는다 -- 언제든 다시 돌릴 수 있어야 한다. */
 exports.rebuildInstructorIds = onCall(
   INSTRUCTOR_SCOPE_ADMIN_OPTIONS,
-  instructorScopeCallable("rebuild", ({ organizationId }) => (
-    rebuildInstructorIds(firestore, { organizationId, log: logger })
+  instructorScopeCallable("rebuild", ({ organizationId, dryRun }) => (
+    rebuildInstructorIds(firestore, { organizationId, dryRun, log: logger })
   )),
 );
 
@@ -649,3 +650,41 @@ exports.verifyInstructorIds = onCall(
     verifyInstructorIds(firestore, { organizationId, log: logger })
   )),
 );
+
+/* ── 야간 재계산 ──────────────────────────────────────────────────────────
+   회원권이 **날짜만 지나 만료되는 순간에는 아무도 쓰지 않는다.** 그래서 A 와 B
+   의 회원권을 함께 쓰던 회원이 A 것만 만료되면 다음 쓰기까지 A 가 남는다.
+
+   하루 한 번 다시 센다. 바뀐 것이 없으면 아무것도 쓰지 않으므로(syncOneClient
+   의 same 검사) 평소에는 읽기만 하고 끝난다 -- 쓰기가 없으면 memberViews
+   트리거도 깨어나지 않는다.
+
+   04:00 KST 다. 수업이 없고, 자정 직후의 만료가 이미 지나간 시각이다. */
+exports.rebuildInstructorIdsNightly = onSchedule({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  schedule: "every day 04:00",
+  timeZone: "Asia/Seoul",
+  memory: "512MiB",
+  timeoutSeconds: 540,
+}, async () => {
+  const organizations = await firestore.collection("organizations").select().get();
+  for (const snapshot of organizations.docs) {
+    try {
+      const tally = await rebuildInstructorIds(firestore, {
+        organizationId: snapshot.id, log: logger,
+      });
+      logger.info("instructor_scope_nightly", {
+        feature: "instructor_scope", stage: "nightly",
+        organizationId: snapshot.id, ...tally,
+      });
+    } catch (error) {
+      /* 한 센터가 실패해도 나머지는 돈다. 센터 하나의 문제로 전부 멈추면
+         다음 날까지 아무도 갱신되지 않는다. */
+      logger.error("instructor_scope_nightly_failed", {
+        feature: "instructor_scope", stage: "nightly",
+        organizationId: snapshot.id,
+        errorCode: error?.code || "unknown", message: error?.message || "",
+      });
+    }
+  }
+});

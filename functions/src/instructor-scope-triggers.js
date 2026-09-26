@@ -78,7 +78,7 @@ const same = (left, right) => left.length === right.length
  *
  * @returns {Promise<"unchanged"|"updated"|"missing">}
  */
-async function syncOneClient(db, { organizationId, clientId, now }) {
+async function syncOneClient(db, { organizationId, clientId, now, dryRun = false }) {
   const org = db.collection("organizations").doc(organizationId);
   const clientRef = org.collection("clients").doc(clientId);
   const clientSnapshot = await clientRef.get();
@@ -95,6 +95,10 @@ async function syncOneClient(db, { organizationId, clientId, now }) {
      투영을 다시 만든다 -- 아무것도 바뀌지 않은 쓰기 하나가 그 뒤를 전부
      불러오는 셈이고, 차감 한 번에 이 트리거가 회원 수만큼 돈다. */
   if (same(current, next)) return "unchanged";
+
+  /* 미리보기는 세기만 한다. 대표가 "몇 명 바뀌는지" 를 보고 누르기 전에는
+     아무것도 쓰지 않는다 -- 눌러 보고 되돌리는 문이 없기 때문이다. */
+  if (dryRun) return "would_update";
 
   await clientRef.set({ instructorIds: next }, { merge: true });
   return "updated";
@@ -117,7 +121,10 @@ async function syncInstructorIds(db, input) {
     const clientId = text(raw);
     if (!clientId) continue;
     try {
-      results.push({ clientId, outcome: await syncOneClient(db, { organizationId, clientId, now }) });
+      results.push({
+        clientId,
+        outcome: await syncOneClient(db, { organizationId, clientId, now, dryRun: input?.dryRun === true }),
+      });
     } catch (error) {
       /* 회원 id 는 남기지 않는다. 무엇이 왜 실패했는지만 남긴다. */
       input?.log?.error?.("instructor_scope_sync_failed", {
@@ -143,7 +150,7 @@ async function rebuildInstructorIds(db, input) {
   const organizationId = text(input?.organizationId);
   const org = db.collection("organizations").doc(organizationId);
   const pageSize = Number.isInteger(input?.pageSize) && input.pageSize > 0 ? input.pageSize : 200;
-  const tally = { scanned: 0, updated: 0, unchanged: 0, failed: 0 };
+  const tally = { scanned: 0, updated: 0, wouldUpdate: 0, unchanged: 0, failed: 0, dryRun: input?.dryRun === true };
 
   /* 문서 id 순으로 넘긴다. 한 번에 다 읽으면 회원이 늘었을 때 메모리와
      시간 제한에 함께 걸린다. */
@@ -154,12 +161,13 @@ async function rebuildInstructorIds(db, input) {
     const page = await query.get();
     if (page.empty) break;
     const results = await syncInstructorIds(db, {
-      organizationId, now: input?.now, log: input?.log,
+      organizationId, now: input?.now, log: input?.log, dryRun: input?.dryRun === true,
       clientIds: page.docs.map((snapshot) => snapshot.id),
     });
     for (const item of results) {
       tally.scanned += 1;
       if (item.outcome === "updated") tally.updated += 1;
+      else if (item.outcome === "would_update") tally.wouldUpdate += 1;
       else if (item.outcome === "unchanged") tally.unchanged += 1;
       else tally.failed += 1;
     }
@@ -179,6 +187,9 @@ async function verifyInstructorIds(db, input) {
   const organizationId = text(input?.organizationId);
   const org = db.collection("organizations").doc(organizationId);
   const tally = { clients: 0, withInstructors: 0, empty: 0, emptyActive: 0 };
+  /* 강사별 담당 회원 수. 대표가 비교하는 자리다 -- 한 사람만 0 이면 그
+     사람의 회원이 빠진 것이고, 전부 0 이면 채우기가 안 돈 것이다. */
+  const byInstructor = new Map();
 
   let cursor = null;
   const pageSize = 500;
@@ -191,7 +202,13 @@ async function verifyInstructorIds(db, input) {
       const data = snapshot.data() || {};
       const listed = Array.isArray(data.instructorIds) ? data.instructorIds.filter(Boolean) : [];
       tally.clients += 1;
-      if (listed.length) tally.withInstructors += 1;
+      if (listed.length) {
+        tally.withInstructors += 1;
+        for (const raw of listed) {
+          const instructorId = text(raw);
+          if (instructorId) byInstructor.set(instructorId, (byInstructor.get(instructorId) || 0) + 1);
+        }
+      }
       else {
         tally.empty += 1;
         /* 빈 것 자체는 정상이다 -- 회원권이 한 번도 안 나간 회원이 있다.
@@ -202,7 +219,13 @@ async function verifyInstructorIds(db, input) {
     if (page.size < pageSize) break;
     cursor = page.docs[page.docs.length - 1];
   }
-  return tally;
+  /* 많은 순으로. 대표가 보는 순간 이상한 줄이 위에 오게 한다. */
+  return {
+    ...tally,
+    byInstructor: [...byInstructor.entries()]
+      .map(([instructorId, clients]) => ({ instructorId, clients }))
+      .sort((left, right) => right.clients - left.clients || left.instructorId.localeCompare(right.instructorId)),
+  };
 }
 
 module.exports = {

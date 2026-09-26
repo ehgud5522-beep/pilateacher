@@ -67,10 +67,10 @@ function run(command, args, options = {}) {
      포함이다. 워크트리 경로에 공백이 있을 수 있다. */
   const result = isWindows
     ? spawnSync([launcher(command), ...args].map(quoteForShell).join(" "), {
-      cwd: options.cwd ?? root, stdio: "inherit", env: process.env, shell: true,
+      cwd: options.cwd ?? root, stdio: "inherit", env: { ...process.env, ...(options.env || {}) }, shell: true,
     })
     : spawnSync(launcher(command), args, {
-      cwd: options.cwd ?? root, stdio: "inherit", env: process.env,
+      cwd: options.cwd ?? root, stdio: "inherit", env: { ...process.env, ...(options.env || {}) },
     });
   if (result.error) fail("SPAWN_FAILED", `${command} 을 실행하지 못했습니다: ${result.error.message}`);
   if (result.status !== 0) fail("STEP_FAILED", `${command} ${args.join(" ")} 이 ${result.status} 로 끝났습니다.`);
@@ -128,7 +128,25 @@ console.log(`  Java    : ${java.home} (${java.source})`);
 console.log();
 
 console.log("== 1/3 웹 빌드 (타입 검사 · 린트 · 테스트 포함) ==");
-run("npm", ["run", "build"]);
+/* 어느 커밋으로 만든 빌드인지 번들 안에 심는다.
+
+   ── 왜 필요한가 ──
+   빌드 번호만으로는 "그 번호에 무엇이 들어 있었나" 를 나중에 알 수 없다.
+   릴리스 커밋은 번호만 올리므로 git 로그를 봐도 그 번호와 기능이 이어지지
+   않고, 스토어에 올라간 뒤에는 되짚을 방법이 없다. 실제로 "60 에 사진 고침이
+   들어갔나" 를 물어야 했다.
+
+   장치는 이미 있다 -- iOS 쪽 prepare_build_metadata.py 가 같은 이름으로 심고,
+   App.jsx 의 RELEASE_COMMIT_SHORT 가 버전 줄에 붙여 보여 준다. 안드로이드만
+   비어 있었다. */
+run("npm", ["run", "build"], {
+  env: {
+    VITE_APP_VERSION: declaredName,
+    VITE_BUILD_NUMBER: declaredCode,
+    VITE_BUILD_COMMIT: capture("git", ["rev-parse", "HEAD"]),
+    VITE_BUILD_BRANCH: capture("git", ["rev-parse", "--abbrev-ref", "HEAD"]),
+  },
+});
 
 console.log("== 2/3 안드로이드로 복사 ==");
 run("npx", ["cap", "sync", "android"]);

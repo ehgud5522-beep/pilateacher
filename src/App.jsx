@@ -34,6 +34,8 @@ import {
   fbListPhotoBackups, fbUploadPhotoBackup, fbDownloadPhotoBackup, fbSoftDeletePhotoBackup, fbPurgeExpiredPhotoBackups,
   fbLookupCentreMemberByEmail,
   fbListMalformedClientPhones,
+  fbRebuildInstructorIds,
+  fbVerifyInstructorIds,
   fbListPendingMemberLinks, fbLinkMemberAccountByOwner, fbUnlinkMemberAccount, fbUpdateClientPhone,
   fbVerifyMemberViews,
   AI_CONSENT_POLICY_VERSION, AI_CONSENT_SCOPES,
@@ -263,6 +265,11 @@ import {
   createEmergencyBackupEnvelope, drainPhotoQueue, mergePhotoGraph, mergePhotoMetadata, storageUsage,
 } from "./features/backup/cloud-backup.js";
 import { optimizePhotoBackup } from "./features/backup/photo-optimizer.js";
+import { downscaleToFit } from "./features/photos/downscale.js";
+import {
+  SCOPE_HEALTH, instructorScopeRows, rebuildDoneMessage, rebuildPreviewMessage,
+  scopeHealth, scopeHealthMessage,
+} from "./features/members/instructor-scope-admin.js";
 import {
   checkLessonNotificationPermission, listenForLessonNotificationActions, requestLessonNotificationPermission, syncLessonNotifications,
 } from "./features/notifications/local-notifications.js";
@@ -8680,7 +8687,23 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
         onToast?.({ ok: false, msg: "분석 대상 회원 또는 분석 ID가 변경되어 사진 저장을 중단했습니다." });
         return false;
       }
-      const blob = metadata.preserveResolution ? input : await fileToBlob(input, 1000);
+      /* 앨범에서 고른 사진은 예전처럼 1000px 로 줄인다. 촬영한 사진은 원본을
+         지키되 **긴 변 1600 만 넘지 않게** 한다.
+
+         평소 촬영(CameraPreview)은 1080×1440 이라 제한에 걸리지 않고 한 바이트도
+         바뀌지 않는다. 걸리는 것은 시스템 카메라 폴백뿐인데, 그쪽은 해상도
+         제한 없이 센서 원본을 q92 로 내놓아 장당 3~6MB 가 기기에 쌓인다.
+         분석에는 그만한 해상도가 쓰이지 않는다 -- 앨범 경로가 1000px 로 이미
+         잘 돌고 있다. */
+      const fitted = metadata.preserveResolution ? await downscaleToFit(input) : null;
+      const blob = fitted ? fitted.blob : await fileToBlob(input, 1000);
+      if (fitted?.resized) {
+        deviceLog("posture_photo_downscaled", {
+          view: capturedView, reason: fitted.reason,
+          from: `${fitted.sourceWidth}x${fitted.sourceHeight}`, to: `${fitted.width}x${fitted.height}`,
+          sourceBytes: input.size, bytes: blob.size,
+        });
+      }
       src = URL.createObjectURL(blob);
       const im = new window.Image();
       await new Promise((resolve, reject) => { im.onload = resolve; im.onerror = reject; im.src = src; });
@@ -18771,6 +18794,199 @@ function ClientPhoneCheck({ organization, onList, onOpenClient, onRetryOrganizat
   );
 }
 
+/**
+ * 담당 강사 재계산 · 점검 — 대표 전용.
+ *
+ * ── 왜 미리보기가 먼저인가 ──
+ * 재계산은 되돌리는 문이 없다. 눌렀는데 백 명이 바뀌면 그 백 명이 맞는지
+ * 확인할 방법이 그 자리에 없다. 그래서 먼저 세어 보여 주고, 대표가 그 숫자를
+ * 보고 누른다. 미리보기는 서버에서 아무것도 쓰지 않는다 (dryRun).
+ *
+ * ── 왜 이 화면이 필요한가 ──
+ * clients.instructorIds 는 파생값이다. 트리거가 한 번 실패하면 그 회원은 어느
+ * 강사에게도 안 보이는데, **그 사실이 아무 화면에도 나타나지 않는다** -- 강사는
+ * 원래 없던 회원이라고 읽는다. 여기가 그것을 보는 유일한 자리다.
+ *
+ * 판정과 문구는 features/members/instructor-scope-admin.js 에 있다.
+ */
+function InstructorScopeAdmin({
+  organization, instructorStore, onVerify, onRebuild, onRetryOrganization, initialState = null,
+}) {
+  const locked = !organization?.ready || organization?.isLegacy || !organization?.organizationId;
+  const [check, setCheck] = useState(initialState?.check || { stage: "idle" });
+  const [preview, setPreview] = useState(initialState?.preview || null);
+  const [running, setRunning] = useState(false);
+  const [done, setDone] = useState(initialState?.done || null);
+  const organizationId = organization?.organizationId || "";
+
+  const verify = useCallback(async () => {
+    if (locked) return;
+    setCheck({ stage: "loading" });
+    try {
+      const result = await onVerify?.({ organizationId });
+      setCheck({ stage: "ready", tally: result || {} });
+    } catch (error) {
+      setCheck({ stage: "failed", code: error?.code || error?.details?.code || "unknown" });
+    }
+  }, [locked, onVerify, organizationId]);
+
+  useEffect(() => { if (!initialState) verify(); }, [verify, initialState]);
+
+  /* 강사 이름은 membership 에서 온다. 못 읽어도 화면은 선다 -- 그때는 uid 가
+     짧게 보이고, 숫자는 그대로 맞다. 이름 때문에 목록을 못 보는 편이 나쁘다. */
+  const [instructors, setInstructors] = useState(initialState?.instructors || []);
+  useEffect(() => {
+    if (locked || initialState) return;
+    let alive = true;
+    listInstructors(organizationId, { store: instructorStore })
+      .then((found) => { if (alive) setInstructors(found); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [locked, organizationId, instructorStore, initialState]);
+
+  const runPreview = async () => {
+    setPreview({ stage: "loading" });
+    setDone(null);
+    try {
+      const result = await onRebuild?.({ organizationId, dryRun: true });
+      setPreview({ stage: "ready", result: result || {} });
+    } catch (error) {
+      setPreview({ stage: "failed", code: error?.code || error?.details?.code || "unknown" });
+    }
+  };
+
+  const runRebuild = async () => {
+    setRunning(true);
+    try {
+      const result = await onRebuild?.({ organizationId });
+      setDone({ ok: true, result: result || {} });
+      setPreview(null);
+      await verify();
+    } catch (error) {
+      setDone({ ok: false, code: error?.code || error?.details?.code || "unknown" });
+    } finally { setRunning(false); }
+  };
+
+  if (locked) return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>소속을 확인하지 못했습니다</h2>
+      <button type="button" onClick={() => onRetryOrganization?.()} className="mt-3 h-11 w-full font-bold"
+        style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>다시 시도</button>
+    </section>
+  );
+
+  const tally = check.stage === "ready" ? check.tally : null;
+  const health = tally ? scopeHealth(tally) : null;
+  const rows = tally ? instructorScopeRows(tally.byInstructor, instructors) : [];
+
+  return (
+    <div className="space-y-2" data-instructor-scope>
+      <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+        <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>담당 강사</h2>
+        <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+          강사는 <b style={{ color: INK }}>자기 담당 회원만</b> 봅니다. 담당은 회원권에서 자동으로
+          정해지고 매일 새벽에 다시 계산됩니다. 여기서는 그 결과를 확인하고, 필요하면 지금 다시
+          계산합니다.
+        </p>
+
+        {check.stage === "loading" ? (
+          <p className="mt-3" style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p>
+        ) : null}
+
+        {check.stage === "failed" ? (
+          <div className="mt-3">
+            <p style={{ fontSize: TYPE.caption, color: BAD }}>점검하지 못했습니다 (코드 {check.code}).</p>
+            <button type="button" onClick={verify} className="mt-2 h-11 w-full font-bold"
+              style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>다시 시도</button>
+          </div>
+        ) : null}
+
+        {tally ? (
+          <>
+            <p className="mt-3" style={{
+              fontSize: TYPE.caption, lineHeight: 1.5, fontWeight: 700,
+              color: health === SCOPE_HEALTH.OK ? GOOD : WARN,
+            }}>{scopeHealthMessage(tally)}</p>
+            <div className="mt-2 grid grid-cols-3 gap-2">
+              {[
+                { l: "전체 회원", v: tally.clients || 0 },
+                { l: "담당 있음", v: tally.withInstructors || 0 },
+                { l: "운영중 · 담당 없음", v: tally.emptyActive || 0, warn: (tally.emptyActive || 0) > 0 },
+              ].map((item) => (
+                <div key={item.l} style={{ padding: "11px 10px", borderRadius: 9, backgroundColor: CANVAS }}>
+                  <p style={{ fontSize: TYPE.caption, color: SUB }}>{item.l}</p>
+                  <p className="mt-1 tabular-nums" style={{ fontSize: TYPE.title, fontWeight: 700, color: item.warn ? WARN : INK }}>{item.v}</p>
+                </div>
+              ))}
+            </div>
+            <button type="button" onClick={verify} className="mt-2 h-11 w-full font-bold"
+              style={{ borderRadius: 10, backgroundColor: CANVAS, color: INK2, fontSize: TYPE.caption }}>다시 점검</button>
+          </>
+        ) : null}
+      </section>
+
+      {rows.length ? (
+        <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+          <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>강사별 담당 회원</h2>
+          <div className="mt-2">
+            {rows.map((row) => (
+              <div key={row.instructorId} className="flex items-center gap-2"
+                style={{ padding: "9px 0", borderTop: `1px solid ${LINE}` }}>
+                <p className="min-w-0 flex-1 truncate" style={{
+                  fontSize: TYPE.caption, fontWeight: 600, color: row.known ? INK : SUB,
+                }}>{row.name}</p>
+                <p className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>{row.clients}명</p>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+        <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>담당 강사 재계산</h2>
+        <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+          모든 회원의 회원권을 다시 읽어 담당을 맞춥니다. <b style={{ color: INK }}>먼저 몇 명이
+          바뀌는지 보여 드리고</b>, 그 다음에 실행합니다.
+        </p>
+
+        {preview?.stage === "failed" ? (
+          <p className="mt-3" style={{ fontSize: TYPE.caption, color: BAD }}>미리 세지 못했습니다 (코드 {preview.code}).</p>
+        ) : null}
+
+        {preview?.stage === "ready" ? (
+          <div className="mt-3" style={{ padding: 11, borderRadius: 9, backgroundColor: CANVAS }}>
+            <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, fontWeight: 700, color: INK }}>
+              {rebuildPreviewMessage(preview.result)}
+            </p>
+            <div className="mt-2 flex gap-2">
+              <button type="button" onClick={() => setPreview(null)} disabled={running} className="h-11 flex-1 font-bold"
+                style={{ borderRadius: 10, backgroundColor: CARD, color: INK2, fontSize: TYPE.caption, opacity: running ? 0.6 : 1 }}>취소</button>
+              <button type="button" onClick={runRebuild} disabled={running} className="h-11 flex-1 font-bold text-white"
+                style={{ borderRadius: 10, backgroundColor: BRAND, fontSize: TYPE.caption, opacity: running ? 0.6 : 1 }}>
+                {running ? "계산 중…" : "실행"}
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        {done ? (
+          <p className="mt-3" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: done.ok ? GOOD : BAD }}>
+            {done.ok ? rebuildDoneMessage(done.result) : `재계산하지 못했습니다 (코드 ${done.code}).`}
+          </p>
+        ) : null}
+
+        {!preview || preview.stage === "loading" ? (
+          <button type="button" onClick={runPreview} disabled={preview?.stage === "loading"} className="mt-3 h-11 w-full font-bold"
+            style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>
+            {preview?.stage === "loading" ? "세는 중…" : "담당 강사 재계산"}
+          </button>
+        ) : null}
+      </section>
+    </div>
+  );
+}
+
+
 function AuditLog({
   organization, clientStore, instructorStore, locationStore, productStore, passStore,
   auditStore, ledgerStore, onRetryOrganization, onRetry, now = () => new Date(), initialState = null,
@@ -19283,7 +19499,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
     return total;
   }, [db.schedule, db.members, db.settings, reportYm]);
   const detailTitles = {
-    report: "월간 리포트", assessment: "변화 기록 설정", center: "센터 정보", theme: "화면 설정", "schedule-colors": "일정 색상",
+    report: "월간 리포트", "instructor-scope": "담당 강사", assessment: "변화 기록 설정", center: "센터 정보", theme: "화면 설정", "schedule-colors": "일정 색상",
     data: "데이터 상태", backup: "데이터 이관 · 백업", permissions: "접근권한 안내", knowledge: "오늘의 지식", account: "계정", "account-delete": "계정 삭제", app: "앱 정보",
     products: "회원권 상품",
     clients: "회원 관리",
@@ -19321,6 +19537,9 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
     /* 번호 점검. 감사 로그 옆이다 -- 둘 다 "무엇이 어긋나 있는지" 를 보는
        화면이고, 이쪽은 그중 연락처만 본다. */
     ...(showAudit ? [{ key: "phone-check", title: "번호 점검", description: "010 열한 자리가 아닌 회원 찾기", Icon: AlertCircle }] : []),
+    /* 담당 강사. 강사가 보는 회원의 범위가 여기서 정해지므로 감사·점검 옆이다 --
+       셋 다 "무엇이 어긋나 있는지" 를 보는 화면이다. */
+    ...(showAudit ? [{ key: "instructor-scope", title: "담당 강사", description: "강사별 담당 회원 · 재계산", Icon: Users }] : []),
     ...(showMigration ? [{ key: "migration", title: "엑셀 이관", description: "쓰던 엑셀의 회원 · 회원권 올리기", Icon: Upload }] : []),
   ];
   const menuGroups = [
@@ -19615,6 +19834,11 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
           <ClientPhoneCheck organization={organization}
             onList={fbListMalformedClientPhones}
             onOpenClient={(client) => onOpenClient?.({ id: client.clientId, name: client.name, phone: client.phone })}
+            onRetryOrganization={onRetryOrganization} />
+        )}
+        {view === "instructor-scope" && showAudit && (
+          <InstructorScopeAdmin organization={organization} instructorStore={instructorStore}
+            onVerify={fbVerifyInstructorIds} onRebuild={fbRebuildInstructorIds}
             onRetryOrganization={onRetryOrganization} />
         )}
         {view === "migration" && showMigration && (
@@ -20495,6 +20719,36 @@ export function createAppScreenSmokeCases() {
       <ClientPhoneCheck organization={readyOrganizationContext(smokeOwner)} onRetryOrganization={noop}
         onOpenClient={noop} onList={asyncNoop}
         initialState={{ stage: "failed", clients: [], code: "permission-denied" }} />
+    )) },
+    /* 담당 강사. 셋을 나눈다 -- 정상, 빠진 회원이 있음, 아직 안 돌았음.
+       셋 다 "재계산을 누른다" 로 끝나지만 대표가 읽는 뜻이 다르다. */
+    { name: "담당 강사", element: providerWith(smokeOwner, (
+      <InstructorScopeAdmin organization={readyOrganizationContext(smokeOwner)} onRetryOrganization={noop}
+        onVerify={asyncNoop} onRebuild={asyncNoop}
+        initialState={{ instructors: smokeInstructors, check: { stage: "ready", tally: {
+          clients: 106, withInstructors: 104, empty: 2, emptyActive: 0,
+          byInstructor: [{ instructorId: smokeInstructors[0]?.userId || "uid-a", clients: 12 },
+            { instructorId: "uid-unknown", clients: 3 }],
+        } } }} />
+    )) },
+    { name: "담당 강사 · 빠진 회원", element: providerWith(smokeOwner, (
+      <InstructorScopeAdmin organization={readyOrganizationContext(smokeOwner)} onRetryOrganization={noop}
+        onVerify={asyncNoop} onRebuild={asyncNoop}
+        initialState={{ instructors: smokeInstructors, check: { stage: "ready", tally: {
+          clients: 106, withInstructors: 104, empty: 2, emptyActive: 2, byInstructor: [],
+        } }, preview: { stage: "ready", result: { scanned: 106, wouldUpdate: 2 } } }} />
+    )) },
+    { name: "담당 강사 · 아직 안 돌았음", element: providerWith(smokeOwner, (
+      <InstructorScopeAdmin organization={readyOrganizationContext(smokeOwner)} onRetryOrganization={noop}
+        onVerify={asyncNoop} onRebuild={asyncNoop}
+        initialState={{ instructors: [], check: { stage: "ready", tally: {
+          clients: 106, withInstructors: 0, empty: 106, emptyActive: 106, byInstructor: [],
+        } } }} />
+    )) },
+    { name: "담당 강사 · 조회 실패", element: providerWith(smokeOwner, (
+      <InstructorScopeAdmin organization={readyOrganizationContext(smokeOwner)} onRetryOrganization={noop}
+        onVerify={asyncNoop} onRebuild={asyncNoop}
+        initialState={{ instructors: [], check: { stage: "failed", code: "permission-denied" } }} />
     )) },
     { name: "감사 로그", element: auditLog(smokeOwner, {
       review: smokeAuditReview, clients: smokeClients, instructors: smokeInstructors, locations: smokeLocations,

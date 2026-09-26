@@ -270,6 +270,7 @@ import {
   SCOPE_HEALTH, instructorScopeRows, rebuildDoneMessage, rebuildPreviewMessage,
   scopeHealth, scopeHealthMessage,
 } from "./features/members/instructor-scope-admin.js";
+import { clientScopeFor } from "./features/members/client-scope.js";
 import {
   checkLessonNotificationPermission, listenForLessonNotificationActions, requestLessonNotificationPermission, syncLessonNotifications,
 } from "./features/notifications/local-notifications.js";
@@ -14591,6 +14592,10 @@ function SettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings,
 
 const PAY_SCOPE_NOTICE = "수업료만 자동으로 계산됩니다. 인센티브와 노쇼는 별도로 정산됩니다.";
 
+/* 이름을 못 읽은 급여 줄. 회원권 번호를 보여 주면 강사는 그것이 무엇인지 알 수
+   없고, 빈칸으로 두면 화면이 깨진 것으로 읽는다. 무슨 일이 있었는지 말한다. */
+const HANDED_OVER_LABEL = "인수인계된 회원";
+
 function InstructorPayCard({ pay, loading, error, onOpen }) {
   return (
     <button type="button" onClick={onOpen} className="flex w-full items-center gap-2 text-left"
@@ -14614,7 +14619,7 @@ function InstructorPayCard({ pay, loading, error, onOpen }) {
 }
 
 function InstructorPayDetail({
-  organization, pay, loading, error, month, clientStore, passStore,
+  organization, currentUserId, pay, loading, error, month, clientStore, passStore,
   onClose, onRetry, initialState = null,
 }) {
   const [passes, setPasses] = useState(initialState?.passes || []);
@@ -14629,7 +14634,9 @@ function InstructorPayDetail({
     let alive = true;
     Promise.all([
       listPasses(organizationId, { store: passStore }).catch(() => []),
-      listClients(organizationId, { store: clientStore }).catch(() => []),
+      listClients(organizationId, {
+        store: clientStore, ...clientScopeFor(organization, currentUserId),
+      }).catch(() => []),
     ]).then(([foundPasses, foundClients]) => {
       if (!alive) return;
       setPasses(foundPasses);
@@ -14641,9 +14648,17 @@ function InstructorPayDetail({
   const nameOfPass = useMemo(() => {
     const clientById = new Map(clients.map((client) => [client.id, client.name || ""]));
     const map = new Map();
+    /* 이름을 못 읽은 줄은 비우지 않는다. **인수인계된 회원이 여기 온다** --
+       담당이 새 강사로 바뀌면 이전 강사는 그 회원을 더 이상 읽을 수 없는데,
+       지난달 차감의 금액은 그대로 이 강사의 것이다. 빈칸으로 두면 강사는
+       자기 급여 줄이 깨진 것으로 읽는다.
+
+       원장에 이름을 복사해 두지 않는다 -- append-only 라 틀린 이름은 영영
+       못 고치고, 그 이름은 회원의 것이지 이 줄의 것이 아니다. */
     for (const pass of passes) map.set(pass.id, clientById.get(pass.clientId) || "");
     return map;
   }, [passes, clients]);
+  const displayNameOfPass = (passId) => nameOfPass.get(passId) || HANDED_OVER_LABEL;
 
   return (
     <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
@@ -14707,7 +14722,7 @@ function InstructorPayDetail({
                         {at.getMonth() + 1}.{at.getDate()}
                       </span>
                       <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.body, color: INK }}>
-                        {nameOfPass.get(item.passId) || item.passId}
+                        {displayNameOfPass(item.passId)}
                       </span>
                       <span className="shrink-0 truncate" style={{ fontSize: TYPE.caption, color: SUB, maxWidth: 108 }}>
                         {labelOf(PAY_CATEGORY_LABELS, item.category)}
@@ -14791,7 +14806,7 @@ function AttendanceCheck({
     setLoadError("");
     try {
       const [foundClients, foundPasses] = await Promise.all([
-        listClients(organizationId, { store: clientStore }),
+        listClients(organizationId, { store: clientStore, ...clientScopeFor(organization, currentUserId) }),
         listPasses(organizationId, { store: passStore }),
       ]);
       setClients(foundClients);
@@ -21021,8 +21036,10 @@ export default function App() {
        그 값을 본다 -- 판정 3 이 그것으로 갈리기 때문이다. 못 읽어도 화면은
        열린다: 누적이 없으면 이전 구간이 없고 예상 단가는 신규 단가로 보이는데,
        그것은 "아직 모른다" 와 같은 방향이라 거짓을 보여주지 않는다. */
+    /* 강사에게는 담당 회원만 내려온다. 기기에서 거르는 것이 아니라 애초에
+       오지 않는다 -- 화면 필터는 보여주지 않을 뿐 주지 않은 것이 아니다. */
     Promise.all([
-      listClients(organizationContext.organizationId),
+      listClients(organizationContext.organizationId, clientScopeFor(organizationContext, account?.id)),
       listPasses(organizationContext.organizationId),
       toleratingReadFailure(listInstructorClientTotals(organizationContext.organizationId)),
     ]).then(([clients, passes, totalsResult]) => {
@@ -23667,7 +23684,7 @@ export default function App() {
         {payOpen && canSeeOwnPay ? (
           <div className="absolute inset-0 z-50 overflow-y-auto" style={{ backgroundColor: PAGE }}>
             <div className="mx-auto w-full max-w-md p-3">
-              <InstructorPayDetail organization={organizationContext} pay={instructorPay}
+              <InstructorPayDetail organization={organizationContext} currentUserId={account?.id || ""} pay={instructorPay}
                 loading={payLoading} error={payError} month={payMonth}
                 clientStore={undefined} passStore={undefined}
                 onRetry={() => setPayRevision((value) => value + 1)}

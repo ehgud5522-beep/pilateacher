@@ -14,6 +14,7 @@ import {
   SCOPED_ROLES,
   clientScopeFor,
   isScopedToInstructor,
+  unlinkedNotice,
 } from "../../src/features/members/client-scope.js";
 import { listClients } from "../../src/data/repositories/client-repository.js";
 
@@ -76,4 +77,28 @@ test("전체 조회에는 조건이 붙지 않는다", async () => {
     store: { list: async (path, options) => { seen.push(options); return []; } },
   });
   assert.equal(seen[0].instructorId, "");
+});
+
+test("강사에게는 '센터에 없다' 고 말하지 않는다", () => {
+  /* 담당 회원만 내려오므로 안 맞은 줄이 둘 중 무엇인지 기기가 알 수 없다 --
+     센터에 정말 없는 회원이거나, 있지만 내 담당이 아닌 회원이다. 모르는 것을
+     단정하면 강사는 이미 있는 회원을 다시 등록한다. */
+  const scoped = unlinkedNotice({ scoped: true, count: 3 });
+  assert.match(scoped.title, /내 담당 명부에 없는 회원 3명/);
+  assert.doesNotMatch(scoped.title, /센터에 등록되지 않은/);
+  assert.match(scoped.body, /다른 강사가 담당이거나/);
+  assert.match(scoped.body, /새로 등록하지 마시고/);
+});
+
+test("대표에게는 전체가 내려오므로 그때만 '센터에 없다' 가 참이다", () => {
+  const full = unlinkedNotice({ scoped: false, count: 1 });
+  assert.match(full.title, /센터에 등록되지 않은 회원 1명/);
+  assert.doesNotMatch(full.title, /내 담당 명부에 없는/);
+});
+
+test("어느 쪽이든 기록과 사진은 남는다고 말한다", () => {
+  /* 이 한 줄이 빠지면 강사는 목록에서 사라진 회원의 기록도 사라졌다고 읽는다. */
+  for (const scoped of [true, false]) {
+    assert.match(unlinkedNotice({ scoped, count: 1 }).body, /기록과 사진은 그대로 남아 있습니다/);
+  }
 });

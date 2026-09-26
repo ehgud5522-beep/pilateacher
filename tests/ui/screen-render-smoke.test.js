@@ -2160,6 +2160,16 @@ test("nothing wrong and could not read are different screens", async (t) => {
   assert.doesNotMatch(failed, /깨진 번호가 없습니다/);
 });
 
+test("the owner is the only one told a member is missing from the centre", async (t) => {
+  /* 강사 쪽 문구는 unlinkedNotice 의 단위 테스트가 고정한다 (화면 픽스처의
+     강사 목록에는 못 맞춘 줄이 없다). 여기서는 대표 화면이 그 문장을 계속
+     쓰는지만 본다 -- 대표에게는 전체가 내려오므로 그때는 참이다. */
+  const markupOf = await issueScreens(t);
+  const owner = markupOf("회원 목록 · 대표");
+  assert.match(owner, /센터에 등록되지 않은 회원/);
+  assert.doesNotMatch(owner, /내 담당 명부에 없는 회원/);
+});
+
 test("the instructor-scope screen separates three states that all end in one button", async (t) => {
   /* 정상 · 빠진 회원 있음 · 아직 안 돌았음. 셋 다 "재계산" 으로 끝나지만
      대표가 읽는 뜻이 다르다. 한 문구로 뭉개면 처음 켠 날과 트리거가 실패한

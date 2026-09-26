@@ -63,3 +63,33 @@ export const NO_CLIENTS = "__no_instructor__";
 
 /** 이 조회가 좁혀진 것인가. 화면이 "내 회원만 보입니다" 를 말할 때 쓴다. */
 export const isScopedToInstructor = (scope) => Boolean(scope?.instructorId);
+
+/**
+ * 명부에서 못 맞춘 회원을 뭐라고 부를 것인가.
+ *
+ * ── 강사에게는 "센터에 없다" 고 말할 수 없다 ──
+ * 담당 회원만 내려오므로, 안 맞은 줄이 **둘 중 무엇인지 기기가 알 수 없다** --
+ * 센터에 정말 없는 회원이거나, 있지만 내 담당이 아닌 회원이다. 대표에게는
+ * 전체가 내려오므로 그때만 "센터에 없다" 가 참이다.
+ *
+ * 모르는 것을 단정하면 강사는 이미 있는 회원을 다시 등록한다. 그것이 이 작업
+ * 전체가 없애려는 이중 관리다.
+ *
+ * @param {{ scoped?: boolean, count?: number }} input
+ * @returns {{ title: string, body: string }}
+ */
+export function unlinkedNotice({ scoped = false, count = 0 } = {}) {
+  const tail = "기록과 사진은 그대로 남아 있습니다.";
+  if (scoped) {
+    return {
+      title: `내 담당 명부에 없는 회원 ${count}명`,
+      body: `센터에 있지만 다른 강사가 담당이거나, 연락처가 다르게 적혀 못 맞춘 회원입니다.`
+        + ` 새로 등록하지 마시고 대표에게 알려 주세요. ${tail}`,
+    };
+  }
+  return {
+    title: `센터에 등록되지 않은 회원 ${count}명`,
+    body: `이 회원이 센터에 이미 있다면 연락처가 다르게 적혀 못 맞춘 것입니다.`
+      + ` 대표에게 알려 주세요. ${tail}`,
+  };
+}

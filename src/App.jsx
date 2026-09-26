@@ -270,7 +270,7 @@ import {
   SCOPE_HEALTH, instructorScopeRows, rebuildDoneMessage, rebuildPreviewMessage,
   scopeHealth, scopeHealthMessage,
 } from "./features/members/instructor-scope-admin.js";
-import { clientScopeFor } from "./features/members/client-scope.js";
+import { SCOPED_ROLES, clientScopeFor, unlinkedNotice } from "./features/members/client-scope.js";
 import {
   checkLessonNotificationPermission, listenForLessonNotificationActions, requestLessonNotificationPermission, syncLessonNotifications,
 } from "./features/notifications/local-notifications.js";
@@ -5028,6 +5028,12 @@ function ReferenceMemberList({
   };
   const mineCount = realMembers.filter((m) => isMyRosterMember(m, currentUserId)).length;
   const unlinked = realMembers.filter(isUnlinkedLocalMember);
+  /* 이 목록이 좁혀진 것인가. 좁혀졌으면 "못 맞춘 줄" 의 뜻이 달라진다 -- 위
+     경고 문구 참고. 역할로 판정한다: 좁히는 역할과 같은 목록이어야 하므로
+     client-scope.js 의 SCOPED_ROLES 를 그대로 쓴다. */
+  const unlinkedWording = unlinkedNotice({
+    scoped: SCOPED_ROLES.includes(viewerRole), count: unlinked.length,
+  });
   const list = realMembers.filter(matchFilter)
     /* 검색은 필터를 넘어선다. 이름을 쳤는데 "내 회원"이 아니라서 안 나오면
        강사는 그 회원이 센터에 없다고 읽고 다시 등록한다. */
@@ -5116,11 +5122,16 @@ function ReferenceMemberList({
             대표에게 말할 수 있어야 하므로 수를 먼저 말한다. */}
         {unlinked.length > 0 ? (
           <div className="mb-2 rounded-xl px-3 py-2.5" style={{ backgroundColor: WARN_S, border: `1px solid ${WARN}` }}>
-            <p className="text-xs font-bold" style={{ color: WARN }}>센터에 등록되지 않은 회원 {unlinked.length}명</p>
-            <p className="mt-1 text-xs leading-relaxed" style={{ color: INK2 }}>
-              이 회원이 센터에 이미 있다면 연락처가 다르게 적혀 못 맞춘 것입니다. 대표에게 알려 주세요.
-              기록과 사진은 그대로 남아 있습니다.
-            </p>
+            {/* ── 강사에게는 "센터에 없다" 고 말할 수 없다 ──────────────────
+                담당 회원만 내려오므로, 안 맞은 줄은 **둘 중 무엇인지 기기가 알
+                수 없다** -- 센터에 정말 없는 회원이거나, 있지만 내 담당이
+                아닌 회원이다. 대표에게는 전체가 내려오므로 그때만 "센터에
+                없다" 가 참이다.
+
+                아는 것만 말한다. 모르는 것을 단정하면 강사는 이미 있는 회원을
+                다시 등록하고, 그것이 이 작업 전체가 없애려는 이중 관리다. */}
+            <p className="text-xs font-bold" style={{ color: WARN }}>{unlinkedWording.title}</p>
+            <p className="mt-1 text-xs leading-relaxed" style={{ color: INK2 }}>{unlinkedWording.body}</p>
           </div>
         ) : null}
         {/* 되돌릴 수 없는 숨김은 삭제와 다를 바가 없다. 몇 명을 숨겼는지와

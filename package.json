@@ -15,6 +15,8 @@
     "lint:member": "eslint member",
     "test:member": "node --test tests/member/*.test.js",
     "deploy:member": "node tools/deploy-web.mjs --site member",
+    "member:sync": "node tools/member/sync.mjs",
+    "member:aab": "node tools/member/build-aab.mjs",
     "typecheck": "tsc -p jsconfig.foundation.json",
     "lint": "eslint src/ai src/data src/features/auth src/features/account src/features/voice tools tests",
     "lint:runtime": "eslint src",

@@ -44,14 +44,26 @@ test("iOS permanent microphone denial opens native app settings through a regist
   assert.match(storyboard, /customModule="App"/);
 });
 
-test("Codemagic builds main with Node 22, signing group, and TestFlight only", async () => {
+test("Codemagic builds main with Node 22, signing group, and uploads without submitting", async () => {
   const yaml = await read("../../codemagic.yaml");
   assert.match(yaml, /pattern: main/);
   assert.match(yaml, /node: 22/);
   assert.match(yaml, /- signing/);
-  assert.match(yaml, /submit_to_testflight: true/);
+
+  /* 스토어 제출은 사람이 누른다. 이 줄만이 진짜 지켜야 할 것이다. */
   assert.match(yaml, /submit_to_app_store: false/);
-  assert.match(yaml, /beta_groups:[\s\S]*- Internal/);
+
+  /* 베타 심사에 넣지 않는다. 내부 테스터는 처리만 끝나면 바로 받고, 심사는
+     한 트레인에 하나뿐이라 같은 버전의 두 번째 빌드가 422 로 막힌다. */
+  assert.match(yaml, /submit_to_testflight: false/);
+
+  /* beta_groups 를 못 박지 않는다 -- 이 검사가 예전에 'Internal' 을 고정하고
+     있었는데, 그 이름의 그룹은 App Store Connect 에 없었다. 저장소 안에만
+     있는 문자열을 저장소 안에서 확인하니 늘 통과했고, 진짜 실패는 빌드
+     로그에서만 보였다. 저쪽에 있는 것을 여기서 못 박으면 이렇게 된다.
+
+     대신 여기 없는지만 본다. 없는 그룹을 가리키면 배포가 실패한다. */
+  assert.doesNotMatch(yaml, /beta_groups:/);
 });
 
 test("public privacy and deletion pages disclose Firebase, OpenAI, audio deletion and device photos", async () => {

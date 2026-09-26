@@ -619,8 +619,13 @@ function instructorScopeCallable(stage, run) {
 
     try {
       const result = await run({ organizationId, dryRun });
+      /* 결과를 통째로 뿌리지 않는다. verify 가 담당 없는 회원의 **이름**을
+         함께 돌려주는데, 그것은 대표 화면으로 가는 값이지 로그에 남길 값이
+         아니다 (CLAUDE.md 진단 7번). 숫자만 센다. */
       logger.info("instructor_scope_admin", {
-        feature: "instructor_scope", stage, organizationId, ...result,
+        feature: "instructor_scope", stage, organizationId,
+        ...Object.fromEntries(Object.entries(result || {})
+          .filter(([, value]) => typeof value === "number" || typeof value === "boolean")),
       });
       return result;
     } catch (error) {

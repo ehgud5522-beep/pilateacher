@@ -270,6 +270,7 @@ import {
   SCOPE_HEALTH, instructorScopeRows, rebuildDoneMessage, rebuildPreviewMessage,
   scopeHealth, scopeHealthMessage,
 } from "./features/members/instructor-scope-admin.js";
+import { SCOPED_ROLES, clientScopeFor, unlinkedNotice } from "./features/members/client-scope.js";
 import {
   checkLessonNotificationPermission, listenForLessonNotificationActions, requestLessonNotificationPermission, syncLessonNotifications,
 } from "./features/notifications/local-notifications.js";
@@ -315,7 +316,7 @@ const sysDarkNow = () => {
 };
 
 /* 파일이 실제로 교체됐는지 1초 만에 확인하는 표시 — 설정 탭 맨 아래에 뜬다 */
-const APP_VER = "1.1.29 (60) · 2026-09-26";
+const APP_VER = "1.1.29 (61) · 2026-09-26";
 const RELEASE_VERSION = String(import.meta.env.VITE_APP_VERSION || "").trim();
 const RELEASE_BUILD_NUMBER = String(import.meta.env.VITE_BUILD_NUMBER || "").trim();
 const RELEASE_COMMIT_SHORT = String(import.meta.env.VITE_BUILD_COMMIT || "").trim().slice(0, 7);
@@ -5027,6 +5028,12 @@ function ReferenceMemberList({
   };
   const mineCount = realMembers.filter((m) => isMyRosterMember(m, currentUserId)).length;
   const unlinked = realMembers.filter(isUnlinkedLocalMember);
+  /* 이 목록이 좁혀진 것인가. 좁혀졌으면 "못 맞춘 줄" 의 뜻이 달라진다 -- 위
+     경고 문구 참고. 역할로 판정한다: 좁히는 역할과 같은 목록이어야 하므로
+     client-scope.js 의 SCOPED_ROLES 를 그대로 쓴다. */
+  const unlinkedWording = unlinkedNotice({
+    scoped: SCOPED_ROLES.includes(viewerRole), count: unlinked.length,
+  });
   const list = realMembers.filter(matchFilter)
     /* 검색은 필터를 넘어선다. 이름을 쳤는데 "내 회원"이 아니라서 안 나오면
        강사는 그 회원이 센터에 없다고 읽고 다시 등록한다. */
@@ -5115,11 +5122,16 @@ function ReferenceMemberList({
             대표에게 말할 수 있어야 하므로 수를 먼저 말한다. */}
         {unlinked.length > 0 ? (
           <div className="mb-2 rounded-xl px-3 py-2.5" style={{ backgroundColor: WARN_S, border: `1px solid ${WARN}` }}>
-            <p className="text-xs font-bold" style={{ color: WARN }}>센터에 등록되지 않은 회원 {unlinked.length}명</p>
-            <p className="mt-1 text-xs leading-relaxed" style={{ color: INK2 }}>
-              이 회원이 센터에 이미 있다면 연락처가 다르게 적혀 못 맞춘 것입니다. 대표에게 알려 주세요.
-              기록과 사진은 그대로 남아 있습니다.
-            </p>
+            {/* ── 강사에게는 "센터에 없다" 고 말할 수 없다 ──────────────────
+                담당 회원만 내려오므로, 안 맞은 줄은 **둘 중 무엇인지 기기가 알
+                수 없다** -- 센터에 정말 없는 회원이거나, 있지만 내 담당이
+                아닌 회원이다. 대표에게는 전체가 내려오므로 그때만 "센터에
+                없다" 가 참이다.
+
+                아는 것만 말한다. 모르는 것을 단정하면 강사는 이미 있는 회원을
+                다시 등록하고, 그것이 이 작업 전체가 없애려는 이중 관리다. */}
+            <p className="text-xs font-bold" style={{ color: WARN }}>{unlinkedWording.title}</p>
+            <p className="mt-1 text-xs leading-relaxed" style={{ color: INK2 }}>{unlinkedWording.body}</p>
           </div>
         ) : null}
         {/* 되돌릴 수 없는 숨김은 삭제와 다를 바가 없다. 몇 명을 숨겼는지와
@@ -14591,6 +14603,10 @@ function SettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings,
 
 const PAY_SCOPE_NOTICE = "수업료만 자동으로 계산됩니다. 인센티브와 노쇼는 별도로 정산됩니다.";
 
+/* 이름을 못 읽은 급여 줄. 회원권 번호를 보여 주면 강사는 그것이 무엇인지 알 수
+   없고, 빈칸으로 두면 화면이 깨진 것으로 읽는다. 무슨 일이 있었는지 말한다. */
+const HANDED_OVER_LABEL = "인수인계된 회원";
+
 function InstructorPayCard({ pay, loading, error, onOpen }) {
   return (
     <button type="button" onClick={onOpen} className="flex w-full items-center gap-2 text-left"
@@ -14614,7 +14630,7 @@ function InstructorPayCard({ pay, loading, error, onOpen }) {
 }
 
 function InstructorPayDetail({
-  organization, pay, loading, error, month, clientStore, passStore,
+  organization, currentUserId, pay, loading, error, month, clientStore, passStore,
   onClose, onRetry, initialState = null,
 }) {
   const [passes, setPasses] = useState(initialState?.passes || []);
@@ -14629,7 +14645,9 @@ function InstructorPayDetail({
     let alive = true;
     Promise.all([
       listPasses(organizationId, { store: passStore }).catch(() => []),
-      listClients(organizationId, { store: clientStore }).catch(() => []),
+      listClients(organizationId, {
+        store: clientStore, ...clientScopeFor(organization, currentUserId),
+      }).catch(() => []),
     ]).then(([foundPasses, foundClients]) => {
       if (!alive) return;
       setPasses(foundPasses);
@@ -14641,9 +14659,17 @@ function InstructorPayDetail({
   const nameOfPass = useMemo(() => {
     const clientById = new Map(clients.map((client) => [client.id, client.name || ""]));
     const map = new Map();
+    /* 이름을 못 읽은 줄은 비우지 않는다. **인수인계된 회원이 여기 온다** --
+       담당이 새 강사로 바뀌면 이전 강사는 그 회원을 더 이상 읽을 수 없는데,
+       지난달 차감의 금액은 그대로 이 강사의 것이다. 빈칸으로 두면 강사는
+       자기 급여 줄이 깨진 것으로 읽는다.
+
+       원장에 이름을 복사해 두지 않는다 -- append-only 라 틀린 이름은 영영
+       못 고치고, 그 이름은 회원의 것이지 이 줄의 것이 아니다. */
     for (const pass of passes) map.set(pass.id, clientById.get(pass.clientId) || "");
     return map;
   }, [passes, clients]);
+  const displayNameOfPass = (passId) => nameOfPass.get(passId) || HANDED_OVER_LABEL;
 
   return (
     <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
@@ -14707,7 +14733,7 @@ function InstructorPayDetail({
                         {at.getMonth() + 1}.{at.getDate()}
                       </span>
                       <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.body, color: INK }}>
-                        {nameOfPass.get(item.passId) || item.passId}
+                        {displayNameOfPass(item.passId)}
                       </span>
                       <span className="shrink-0 truncate" style={{ fontSize: TYPE.caption, color: SUB, maxWidth: 108 }}>
                         {labelOf(PAY_CATEGORY_LABELS, item.category)}
@@ -14791,7 +14817,7 @@ function AttendanceCheck({
     setLoadError("");
     try {
       const [foundClients, foundPasses] = await Promise.all([
-        listClients(organizationId, { store: clientStore }),
+        listClients(organizationId, { store: clientStore, ...clientScopeFor(organization, currentUserId) }),
         listPasses(organizationId, { store: passStore }),
       ]);
       setClients(foundClients);
@@ -18810,7 +18836,7 @@ function ClientPhoneCheck({ organization, onList, onOpenClient, onRetryOrganizat
  * 판정과 문구는 features/members/instructor-scope-admin.js 에 있다.
  */
 function InstructorScopeAdmin({
-  organization, instructorStore, onVerify, onRebuild, onRetryOrganization, initialState = null,
+  organization, instructorStore, locationStore, onVerify, onRebuild, onRetryOrganization, initialState = null,
 }) {
   const locked = !organization?.ready || organization?.isLegacy || !organization?.organizationId;
   const [check, setCheck] = useState(initialState?.check || { stage: "idle" });
@@ -18835,14 +18861,18 @@ function InstructorScopeAdmin({
   /* 강사 이름은 membership 에서 온다. 못 읽어도 화면은 선다 -- 그때는 uid 가
      짧게 보이고, 숫자는 그대로 맞다. 이름 때문에 목록을 못 보는 편이 나쁘다. */
   const [instructors, setInstructors] = useState(initialState?.instructors || []);
+  const [locations, setLocations] = useState(initialState?.locations || []);
   useEffect(() => {
     if (locked || initialState) return;
     let alive = true;
     listInstructors(organizationId, { store: instructorStore })
       .then((found) => { if (alive) setInstructors(found); })
       .catch(() => {});
+    listLocations(organizationId, { store: locationStore })
+      .then((found) => { if (alive) setLocations(found); })
+      .catch(() => {});
     return () => { alive = false; };
-  }, [locked, organizationId, instructorStore, initialState]);
+  }, [locked, organizationId, instructorStore, locationStore, initialState]);
 
   const runPreview = async () => {
     setPreview({ stage: "loading" });
@@ -18878,6 +18908,9 @@ function InstructorScopeAdmin({
   const tally = check.stage === "ready" ? check.tally : null;
   const health = tally ? scopeHealth(tally) : null;
   const rows = tally ? instructorScopeRows(tally.byInstructor, instructors) : [];
+  const empty = tally && Array.isArray(tally.emptyActiveClients) ? tally.emptyActiveClients : [];
+  /* 지점 이름을 못 읽어도 목록은 선다. 그때는 칸이 비고 이름은 그대로 맞다. */
+  const locationNameOf = (locationId) => locations.find((item) => item.id === locationId)?.name || "";
 
   return (
     <div className="space-y-2" data-instructor-scope>
@@ -18924,6 +18957,43 @@ function InstructorScopeAdmin({
           </>
         ) : null}
       </section>
+
+      {empty.length ? (
+        <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+          <div className="flex items-center gap-2">
+            <h2 className="min-w-0 flex-1" style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>담당 없는 운영중 회원</h2>
+            <span className="shrink-0 tabular-nums" style={{
+              padding: "2px 9px", borderRadius: 999, fontSize: TYPE.caption, fontWeight: 700,
+              backgroundColor: WARN_S, color: WARN,
+            }}>{tally.emptyActive || empty.length}</span>
+          </div>
+          {/* 숫자만으로는 누가 빠졌는지 알 수 없다. 이 회원들은 강사 화면에서
+              사라질 사람들이므로, 대표가 이름을 보고 판단해야 한다. */}
+          <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+            회원권이 한 번도 나간 적 없어 담당을 정할 근거가 없습니다. <b style={{ color: INK }}>이
+            회원들은 강사 화면에 보이지 않습니다</b> — 지금 수업 중인 분이 섞여 있으면 회원권을
+            먼저 발급해 주세요.
+          </p>
+          <div className="mt-2">
+            {empty.map((client) => (
+              <div key={client.clientId} className="flex items-center gap-2"
+                style={{ padding: "9px 0", borderTop: `1px solid ${LINE}` }}>
+                <p className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK }}>
+                  {client.name || "(이름 없음)"}
+                </p>
+                <p className="shrink-0 truncate" style={{ fontSize: TYPE.caption, color: SUB, maxWidth: 120 }}>
+                  {locationNameOf(client.locationId)}
+                </p>
+              </div>
+            ))}
+          </div>
+          {tally.emptyActiveTruncated ? (
+            <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>
+              앞의 {empty.length}명만 보여 드립니다. 전체는 {tally.emptyActive}명입니다.
+            </p>
+          ) : null}
+        </section>
+      ) : null}
 
       {rows.length ? (
         <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
@@ -19837,7 +19907,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
             onRetryOrganization={onRetryOrganization} />
         )}
         {view === "instructor-scope" && showAudit && (
-          <InstructorScopeAdmin organization={organization} instructorStore={instructorStore}
+          <InstructorScopeAdmin organization={organization} instructorStore={instructorStore} locationStore={locationStore}
             onVerify={fbVerifyInstructorIds} onRebuild={fbRebuildInstructorIds}
             onRetryOrganization={onRetryOrganization} />
         )}
@@ -20734,8 +20804,13 @@ export function createAppScreenSmokeCases() {
     { name: "담당 강사 · 빠진 회원", element: providerWith(smokeOwner, (
       <InstructorScopeAdmin organization={readyOrganizationContext(smokeOwner)} onRetryOrganization={noop}
         onVerify={asyncNoop} onRebuild={asyncNoop}
-        initialState={{ instructors: smokeInstructors, check: { stage: "ready", tally: {
+        initialState={{ instructors: smokeInstructors, locations: smokeLocations, check: { stage: "ready", tally: {
           clients: 106, withInstructors: 104, empty: 2, emptyActive: 2, byInstructor: [],
+          emptyActiveClients: [
+            { clientId: "csv_01011112222", name: "가회원", locationId: smokeLocations[0]?.id || "" },
+            { clientId: "csv_01033334444", name: "나회원", locationId: "" },
+          ],
+          emptyActiveTruncated: false,
         } }, preview: { stage: "ready", result: { scanned: 106, wouldUpdate: 2 } } }} />
     )) },
     { name: "담당 강사 · 아직 안 돌았음", element: providerWith(smokeOwner, (
@@ -20972,8 +21047,10 @@ export default function App() {
        그 값을 본다 -- 판정 3 이 그것으로 갈리기 때문이다. 못 읽어도 화면은
        열린다: 누적이 없으면 이전 구간이 없고 예상 단가는 신규 단가로 보이는데,
        그것은 "아직 모른다" 와 같은 방향이라 거짓을 보여주지 않는다. */
+    /* 강사에게는 담당 회원만 내려온다. 기기에서 거르는 것이 아니라 애초에
+       오지 않는다 -- 화면 필터는 보여주지 않을 뿐 주지 않은 것이 아니다. */
     Promise.all([
-      listClients(organizationContext.organizationId),
+      listClients(organizationContext.organizationId, clientScopeFor(organizationContext, account?.id)),
       listPasses(organizationContext.organizationId),
       toleratingReadFailure(listInstructorClientTotals(organizationContext.organizationId)),
     ]).then(([clients, passes, totalsResult]) => {
@@ -23618,7 +23695,7 @@ export default function App() {
         {payOpen && canSeeOwnPay ? (
           <div className="absolute inset-0 z-50 overflow-y-auto" style={{ backgroundColor: PAGE }}>
             <div className="mx-auto w-full max-w-md p-3">
-              <InstructorPayDetail organization={organizationContext} pay={instructorPay}
+              <InstructorPayDetail organization={organizationContext} currentUserId={account?.id || ""} pay={instructorPay}
                 loading={payLoading} error={payError} month={payMonth}
                 clientStore={undefined} passStore={undefined}
                 onRetry={() => setPayRevision((value) => value + 1)}

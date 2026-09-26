@@ -2160,6 +2160,16 @@ test("nothing wrong and could not read are different screens", async (t) => {
   assert.doesNotMatch(failed, /깨진 번호가 없습니다/);
 });
 
+test("the owner is the only one told a member is missing from the centre", async (t) => {
+  /* 강사 쪽 문구는 unlinkedNotice 의 단위 테스트가 고정한다 (화면 픽스처의
+     강사 목록에는 못 맞춘 줄이 없다). 여기서는 대표 화면이 그 문장을 계속
+     쓰는지만 본다 -- 대표에게는 전체가 내려오므로 그때는 참이다. */
+  const markupOf = await issueScreens(t);
+  const owner = markupOf("회원 목록 · 대표");
+  assert.match(owner, /센터에 등록되지 않은 회원/);
+  assert.doesNotMatch(owner, /내 담당 명부에 없는 회원/);
+});
+
 test("the instructor-scope screen separates three states that all end in one button", async (t) => {
   /* 정상 · 빠진 회원 있음 · 아직 안 돌았음. 셋 다 "재계산" 으로 끝나지만
      대표가 읽는 뜻이 다르다. 한 문구로 뭉개면 처음 켠 날과 트리거가 실패한
@@ -2172,6 +2182,12 @@ test("the instructor-scope screen separates three states that all end in one but
 
   const missing = markupOf("담당 강사 · 빠진 회원");
   assert.match(missing, /운영중인 회원 2명에게 담당 강사가 없습니다/);
+  /* 숫자만으로는 누가 빠졌는지 알 수 없다. 이름이 함께 서야 대표가 "이 사람은
+     회원권을 내줘야 한다" 를 판단할 수 있다. */
+  assert.match(missing, /담당 없는 운영중 회원/);
+  assert.match(missing, /가회원/);
+  assert.match(missing, /나회원/);
+  assert.match(missing, /강사 화면에 보이지 않습니다/);
   // 미리보기가 떠 있으면 실행 버튼이 함께 있어야 한다. 세어만 보고 끝나면 안 된다.
   assert.match(missing, /106명 중 2명의 담당 강사가 바뀝니다/);
   assert.match(missing, /실행/);

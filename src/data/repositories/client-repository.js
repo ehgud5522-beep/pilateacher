@@ -16,7 +16,7 @@ import { readCollection } from "./repository-read.js";
 
 /**
  * @typedef {object} ClientStore
- * @property {(collectionPath: string) => Promise<Array<any>>} list
+ * @property {(collectionPath: string, options?: { instructorId?: string }) => Promise<Array<any>>} list
  * @property {(documentPath: string, data: object) => Promise<void>} create
  * @property {() => Promise<any>} serverTimestamp
  */
@@ -51,9 +51,16 @@ export { normalizePhone };
 export function createFirestoreClientStore() {
   const load = () => import("firebase/firestore");
   return {
-    list: async (collectionPath) => {
-      const { collection, getDocs, getFirestore } = await load();
-      const snapshot = await getDocs(collection(getFirestore(), collectionPath));
+    list: async (collectionPath, options = {}) => {
+      const { collection, getDocs, getFirestore, query, where } = await load();
+      const base = collection(getFirestore(), collectionPath);
+      /* 강사는 **조건이 붙은 질의만** 보낸다. 조건 없는 목록 읽기는 규칙이
+         거부하므로(3단계), 여기서 안 붙이면 화면이 통째로 빈다. 단일 조건이라
+         자동 인덱스로 처리된다 -- 새 색인이 필요 없다. */
+      const scoped = options.instructorId
+        ? query(base, where("instructorIds", "array-contains", options.instructorId))
+        : base;
+      const snapshot = await getDocs(scoped);
       return snapshot.docs.map((document) => ({ id: document.id, ...document.data() }));
     },
     create: async (documentPath, data) => {
@@ -127,17 +134,28 @@ export const clientMatchesSearch = (client, search) => {
  * 편이 단순하고, 지점·검색어 조합마다 복합 인덱스를 만들지 않아도 된다. 규모가
  * 커지면 여기부터 서버 쿼리로 옮긴다.
  *
+ * ── 강사는 본인 담당만 ──
+ * instructorId 를 주면 그 강사가 담당인 회원만 서버에서 골라 온다. 기기에서
+ * 거르는 것이 아니라 **애초에 내려오지 않는다** -- 화면 필터는 보여주지 않을
+ * 뿐 주지 않은 것이 아니고, 강사 기기 한 대가 털리면 그 차이가 드러난다.
+ *
+ * 누가 좁혀지는지는 features/members/client-scope.js 가 정한다.
+ *
  * @param {string} organizationId
- * @param {{ locationId?: string, search?: string, includeEnded?: boolean, store?: ClientStore }} [options]
+ * @param {{ locationId?: string, search?: string, includeEnded?: boolean,
+ *   instructorId?: string, store?: ClientStore }} [options]
  */
 export async function listClients(organizationId, options = {}) {
-  const { locationId = "", search = "", includeEnded = true, store = createFirestoreClientStore() } = options;
+  const {
+    locationId = "", search = "", includeEnded = true, instructorId = "",
+    store = createFirestoreClientStore(),
+  } = options;
   const organization = requiredText(organizationId, "organizationId");
   // 조회 실패는 빈 목록이 아니라 RepositoryReadError 로 나간다 -- repository-read.js 참고.
   const found = await readCollection({
     feature: "client_directory",
     path: clientsCollection(organization),
-    read: (path) => store.list(path),
+    read: (path) => store.list(path, { instructorId }),
   });
   return found
     .filter((client) => (locationId ? client.locationId === locationId : true))

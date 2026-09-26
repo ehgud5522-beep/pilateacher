@@ -190,10 +190,80 @@ allow list: if hasRole(organizationId, ["owner", "manager", "instructor", "staff
 
 ## 6. 추가로 반영할 것 (A ~ D)
 
-### A. 클라우드 백업 — **함정이 있다**
+### A. 기기 명부 청소와 백업
 
-백업은 `users/{uid}/backup/latest` **한 문서**를 `transaction.set` 으로 덮어쓴다.
-버전이 따로 남지 않는다. 그러므로 청소 후 다음 백업이 덮으면 끝난다.
+#### 먼저: `db.members` 는 센터 회원 전체 사본이 **아니다** (확인함)
+
+**"만진 회원만" 쌓이는 희소한 명부다.**
+
+- 기기에서 만든 레거시 회원 (조직이 생기기 전, 또는 이 강사가 등록한)
+- 조직 회원은 **강사가 무언가 쓸 때만** 행이 생긴다 — `App.jsx:21833` 의
+  `patch()` 와 `App.jsx:21922` 의 수업기록 저장이 `{ id: clientId, name, phone }`
+  행을 그 자리에서 만든다. 주석이 그대로 말한다: "조직에만 있는 회원은 기기에
+  행이 없다 … 그 자리에서 행을 만든다"
+
+**회원 탭의 "전체 106명" 은 저장된 숫자가 아니다.** `App.jsx:20743` 의
+`mergeRoster({ clients: rosterClients, members: db.members, … })` 가 화면을
+만들 때 계산한다. `rosterClients` 는 `listClients()` 의 전체 읽기이고 **React
+state 에만 있다.** `useMemo` 라 어디에도 저장되지 않는다 — 앱을 닫으면 사라진다.
+
+**그래서 106명 노출은 메모리에만 있다.** 2단계에서 쿼리를 `array-contains` 로
+좁히는 순간 저절로 사라지고, 그 부분은 지울 것이 없다.
+
+기기에 실제로 남는 것은 훨씬 작은 집합 — **강사가 만진 조직 회원**이고, 이들이
+`id = clientId` 와 이름·연락처를 들고 있다. 청소 대상은 이것이다.
+
+#### 지우는 대상
+
+**센터 clientId 와 연결됐고 + 내 `instructorIds` 밖인 회원만.**
+
+센터 회원과 연결되지 않은 로컬 회원(`clientId` 없음, 매칭 실패 =
+`ROSTER_SOURCE.LOCAL_ONLY`)은 **지우지 않는다.** 그 회원은 강사 기기에만 있고,
+지우면 센터 어디에도 남지 않는다.
+
+→ 대표 화면에 **"미연결 회원 N명"** 을 표시한다. 센터가 모르는 회원이 강사
+기기에 몇 명 있는지는 대표가 알아야 하는 숫자다.
+
+#### 지우기 전에 반드시 검사한다
+
+그 회원에 붙은 **강사 작성 기록이 Firestore 에 다 있는지** 본다 — 수업기록,
+목표, 인바디, AI 메모, 그리고 **사진**.
+
+**사진이 진짜 위험이다.** `roster-bridge.js` 머리말이 말한다: "수업 기록은
+레거시 회원 객체 안(`member.notes`)에 있고, 사진과 체형분석은 회원 id 를 키로
+하는 별도 저장소(`photos[id]`)에 있다." **클라우드 사진 백업은 선택 기능이다**
+(`onEnablePhotoBackup`). 켜지 않은 강사의 회원을 지우면 그 사진은 **어디에도
+없다.**
+
+하나라도 센터에 없으면 **그 회원은 지우지 않는다.** 먼저 올리고 다음 실행 때
+청소한다.
+
+→ 검사에 걸린 회원은 대신 **`hiddenClientIds` 로 숨긴다.** 이미 있는 비파괴
+수단이고(`App.jsx:20757`), 화면에서만 안 보이며 되돌릴 수 있다. 목록은 짧아지고
+데이터는 그대로 남는다.
+
+#### 되돌릴 사본을 먼저 만든다
+
+`allowDestructiveOverwrite` 를 쓰기 전에 **청소 직전 백업을 한 벌 남긴다.**
+
+```
+organizations/{organizationId}/scopeSnapshots/{uid}_{yyyy-mm-dd}
+  대표만 읽기 · 클라이언트 쓰기 금지 (Admin SDK callable 만)
+  expireAt 필드 + Firestore TTL 로 90일 뒤 삭제
+```
+
+**`users/{uid}` 밑에 두지 않는다.** 거기 두면 강사가 남의 회원 기록을 계속
+가지게 된다 — 이 작업 전체가 없애려는 것이 그것이다. 그래서 조직 쪽이고 대표
+전용이다.
+
+**사본이 만들어진 뒤에만 덮어쓴다.** 사본 쓰기가 실패하면 청소하지 않는다.
+
+#### 그 다음에야 백업 보호를 한 번 연다
+
+백업은 `users/{uid}/backup/latest` **한 문서**를 `transaction.set` 으로
+덮어쓴다. 버전이 따로 남지 않으므로 청소 후 다음 백업이 덮으면 끝난다.
+규칙은 `match /backup/{backupId}` 로 열려 있지만 **코드가 쓰는 것은 `latest`
+하나뿐이다.**
 
 **그런데 덮어쓰기 보호가 막는다.**
 
@@ -203,14 +273,25 @@ if (localCounts.members > 0 && cloudCounts.members >= 10
     && localCounts.members < cloudCounts.members * 0.5) reasons.push("members_mass_decrease");
 ```
 
-106명 → 1명은 정확히 여기 걸린다. `members_empty` 도 있다 — 담당 회원이 없는
+회원이 절반 미만으로 줄면 걸린다. `members_empty` 도 있다 — 담당 회원이 없는
 강사는 0명이 되어 역시 막힌다. 그대로 두면 **청소가 백업을 조용히 고장 낸다.**
 
 → 청소 직후 **그 한 번만** `allowDestructiveOverwrite: true` 로 올린다. 이유를
 남기고, 그 뒤 백업은 다시 보호 아래로 돌아온다.
 
-규칙은 `match /backup/{backupId}` 로 열려 있지만 **코드가 쓰는 것은 `latest`
-하나뿐이다.** 예전 버전이 따로 쌓이지 않는다.
+#### 강사에게 한 번 말한다
+
+> 담당이 아닌 회원 N명을 이 기기에서 정리했어요 (센터 기록은 그대로)
+
+조용히 사라지면 강사는 앱이 고장 났다고 읽는다. 한 번만 보여주고 다시 띄우지
+않는다.
+
+#### 테스트
+
+- 미연결 회원(`LOCAL_ONLY`)은 보존된다
+- 센터에 없는 기록(사진 포함)이 있는 회원은 보존된다
+- **사본이 만들어진 뒤에만** 덮어쓰기가 일어난다 — 사본 실패 시 청소하지 않는다
+- 사본은 대표만 읽는다 (규칙 테스트)
 
 ### B. Firestore 오프라인 캐시 — **비울 것이 없다**
 
@@ -264,7 +345,9 @@ if (localCounts.members > 0 && cloudCounts.members >= 10
   같은 인자를 넘긴다
 - 회원 탭 칩 **운영중 / 만료**, 만료 사유 표시
 - "내 만료 회원" 현황 + 대표의 강사별 표 (같은 함수)
-- 기기 청소: `src/features/members/device-roster-prune.js` (새) + **A 의 백업 처리**
+- 기기 청소: `src/features/members/device-roster-prune.js` (새) + **A 전체** --
+  대상 한정 · 기록 존재 검사 · scopeSnapshots 사본 · 백업 보호 한 번 열기 · 강사 안내
+- 대표 화면에 "미연결 회원 N명"
 - 월간 리포트를 원장 기준으로 통일 (항목 3)
 - 더보기 → 센터 정보 대표 전용 (항목 2)
 - **앱 버전 기록**: `memberships` 에 `appVersion` · `appBuild` · `lastSeenAt`,
@@ -317,4 +400,8 @@ if (localCounts.members > 0 && cloudCounts.members >= 10
 - 강사 A 가 B 회원을 목록 · 검색 · 일정 추가 · 변화 기록 · 사진 어디서도 못 읽음
 - 대표 · FC 는 전체
 - 강사 화면과 대표 화면의 만료 · 재등록 숫자가 **같은 함수**를 쓴다
+- 미연결 회원(LOCAL_ONLY)은 청소에서 보존된다
+- 센터에 없는 기록(사진 포함)이 있는 회원은 청소에서 보존된다
+- scopeSnapshots 사본이 만들어진 뒤에만 덮어쓰기가 일어난다
+- scopeSnapshots 는 대표만 읽는다
 - 일정 탭과 월간 리포트의 금액이 **같은 값**을 쓴다

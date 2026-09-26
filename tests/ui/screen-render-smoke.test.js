@@ -128,6 +128,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "번호 점검",
     "번호 점검 · 이상 없음",
     "번호 점검 · 조회 실패",
+    "만료 회원 · 강사",
+    "만료 회원 · 조회 실패",
     "담당 강사",
     "담당 강사 · 빠진 회원",
     "담당 강사 · 아직 안 돌았음",
@@ -2188,6 +2190,23 @@ test("the centre settings screen does not open for an instructor", async (t) => 
      설정이고, 월간 리포트가 실제로 그것으로 계산한다. */
   const legacy = markupOf("더보기 탭 · 센터 정보 · 개인 모드");
   assert.match(legacy, /센터 기본 정보/);
+});
+
+test("the expiry report says how many are still inside the 30-day window", async (t) => {
+  /* 재등록 창이 30일이라, 달 중간에는 이번 달 만료의 대부분이 아직 정해지지
+     않았다. 그것을 "안 돌아옴" 으로 세면 매달 초마다 재등록률이 떨어진 것처럼
+     보인다. 지난달은 정해져 있다. */
+  const markupOf = await issueScreens(t);
+  const report = markupOf("만료 회원 · 강사");
+  assert.match(report, /2명 중 1명이 다시 등록했습니다/);
+  assert.match(report, /돌아온/);
+  assert.match(report, /안돌아온/);
+  assert.match(report, /재등록/);
+  assert.doesNotMatch(report, /아직 30일/, "지난달은 이미 정해졌다");
+
+  const failed = markupOf("만료 회원 · 조회 실패");
+  assert.match(failed, /코드 permission-denied/);
+  assert.doesNotMatch(failed, /만료된 회원이 없습니다/, "못 읽은 것을 없는 것으로 보이면 안 된다");
 });
 
 test("the member tab separates ongoing from expired, and says why it ended", async (t) => {

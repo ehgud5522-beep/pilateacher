@@ -277,6 +277,11 @@ import {
   instructorVersionRows, readinessMessage, rulesReadiness, shouldReportVersion,
 } from "./features/members/app-version-report.js";
 import {
+  EXPIRY_PERIOD, EXPIRY_PERIOD_LABELS, expiryReport, expiryReportMessage, outcomeLabel,
+} from "./features/members/expiry-report.js";
+import { EXPIRY_REASON_LABELS } from "./data/schema/instructor-scope.js";
+import { passBelongsTo } from "./data/schema/pass-clients.js";
+import {
   checkLessonNotificationPermission, listenForLessonNotificationActions, requestLessonNotificationPermission, syncLessonNotifications,
 } from "./features/notifications/local-notifications.js";
 import {
@@ -18865,6 +18870,181 @@ function ClientPhoneCheck({ organization, onList, onOpenClient, onRetryOrganizat
   );
 }
 
+
+/**
+ * 만료 회원 현황 — 강사는 자기 것, 대표는 강사별.
+ *
+ * ── 왜 필요한가 ──
+ * 만료는 조용히 일어난다. 회원권이 끝나도 아무 알림이 없고, 강사는 그 회원이
+ * 안 온다는 것을 몇 주 뒤에 안다. 그때는 이미 다른 센터에 등록했을 수도 있다.
+ *
+ * ── 이번 달은 거의 다 "기다리는 중" 이다 ──
+ * 재등록 창이 30일이라, 달 중간에는 이번 달 만료의 대부분이 아직 정해지지
+ * 않았다. 그것을 "안 돌아옴" 으로 세면 매달 초마다 재등록률이 떨어진 것처럼
+ * 보인다 -- 화면이 그 사실을 함께 말한다.
+ *
+ * 세는 일은 features/members/expiry-report.js 가 한다. 강사 화면과 대표
+ * 화면이 같은 함수를 쓴다.
+ */
+/* 소진의 만료일은 원장에 있고 기기에는 없다 -- 없으면 없다고 말한다.
+   지어낸 날짜는 "언제 그만뒀는지" 를 묻는 자리에서 특히 나쁘다. */
+const expiryDayLabel = (at) => (at instanceof Date && Number.isFinite(at.getTime())
+  ? `${at.getFullYear()}.${String(at.getMonth() + 1).padStart(2, "0")}.${String(at.getDate()).padStart(2, "0")}`
+  : "날짜 모름");
+
+function ExpiryReportScreen({
+  organization, currentUserId, clientStore, passStore, instructorStore,
+  onRetryOrganization, initialState = null,
+}) {
+  const sectionStyle = { backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 };
+  const locked = !organization?.ready || organization?.isLegacy || !organization?.organizationId;
+  const organizationId = organization?.organizationId || "";
+  const [period, setPeriod] = useState(initialState?.period || EXPIRY_PERIOD.THIS_MONTH);
+  const [state, setState] = useState(initialState?.state || { stage: "idle" });
+  const [instructors, setInstructors] = useState(initialState?.instructors || []);
+
+  useEffect(() => {
+    if (locked || initialState) return;
+    let alive = true;
+    setState({ stage: "loading" });
+    Promise.all([
+      listClients(organizationId, { store: clientStore, ...clientScopeFor(organization, currentUserId) }),
+      listPasses(organizationId, { store: passStore }),
+    ]).then(([clients, passes]) => {
+      if (!alive) return;
+      setState({ stage: "ready", clients, passes });
+    }).catch((error) => {
+      if (!alive) return;
+      setState({ stage: "failed", code: error?.code || error?.details?.code || "unknown" });
+    });
+    /* 대표 화면만 강사 이름이 필요하다. 못 읽어도 숫자는 맞으므로 조용히
+       넘어간다 -- 이름 때문에 현황을 못 보는 편이 나쁘다. */
+    if (canBrowseAllClients(organization?.role)) {
+      listInstructors(organizationId, { store: instructorStore })
+        .then((found) => { if (alive) setInstructors(found); })
+        .catch(() => {});
+    }
+    return () => { alive = false; };
+  }, [locked, organizationId, clientStore, passStore, instructorStore, currentUserId, organization, initialState]);
+
+  if (locked) return (
+    <section style={sectionStyle}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>소속을 확인하지 못했습니다</h2>
+      <button type="button" onClick={() => onRetryOrganization?.()} className="mt-3 h-11 w-full font-bold"
+        style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>다시 시도</button>
+    </section>
+  );
+
+  const rows = state.stage === "ready"
+    ? state.clients.map((client) => ({
+      clientId: client.id,
+      name: client.name || "",
+      passes: state.passes.filter((item) => passBelongsTo(item, client.id)),
+    }))
+    : [];
+  const ownerView = canBrowseAllClients(organization?.role);
+  const report = expiryReport(rows, {
+    period, instructorId: ownerView ? "" : currentUserId,
+  });
+  const byInstructor = ownerView
+    ? instructors.map((item) => ({
+      userId: String(item.userId || ""),
+      name: String(item.displayName || item.userId || ""),
+      report: expiryReport(rows, { period, instructorId: String(item.userId || "") }),
+    })).filter((item) => item.report.expired > 0)
+    : [];
+
+  return (
+    <div className="space-y-2" data-expiry-report>
+      <section style={sectionStyle}>
+        <div className="flex min-w-0 items-center gap-1">
+          {[EXPIRY_PERIOD.THIS_MONTH, EXPIRY_PERIOD.LAST_MONTH, EXPIRY_PERIOD.ALL].map((key) => (
+            <button type="button" key={key} onClick={() => setPeriod(key)} className="shrink-0"
+              style={{ height: 32, padding: "0 12px", borderRadius: 16, fontSize: TYPE.caption, fontWeight: 600,
+                backgroundColor: period === key ? TINT : CANVAS, color: period === key ? BRAND : SUB }}>
+              {EXPIRY_PERIOD_LABELS[key]}
+            </button>
+          ))}
+        </div>
+
+        {state.stage === "loading" ? (
+          <p className="mt-3" style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p>
+        ) : null}
+        {state.stage === "failed" ? (
+          <p className="mt-3" style={{ fontSize: TYPE.caption, color: BAD }}>
+            불러오지 못했습니다 (코드 {state.code}).
+          </p>
+        ) : null}
+
+        {state.stage === "ready" ? (
+          <>
+            <div className="mt-3 grid grid-cols-3 gap-2">
+              {[
+                { l: "만료", v: report.expired },
+                { l: "재등록", v: report.reenrolled, color: GOOD },
+                { l: "기다리는 중", v: report.pending, color: SUB },
+              ].map((item) => (
+                <div key={item.l} style={{ padding: "11px 10px", borderRadius: 9, backgroundColor: CANVAS }}>
+                  <p style={{ fontSize: TYPE.caption, color: SUB }}>{item.l}</p>
+                  <p className="mt-1 tabular-nums" style={{ fontSize: TYPE.title, fontWeight: 700, color: item.color || INK }}>{item.v}</p>
+                </div>
+              ))}
+            </div>
+            <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+              {expiryReportMessage(report)}
+            </p>
+          </>
+        ) : null}
+      </section>
+
+      {report.members.length ? (
+        <section style={sectionStyle}>
+          <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>만료 회원</h2>
+          <div className="mt-2">
+            {report.members.map((member) => (
+              <div key={member.clientId} className="flex items-center gap-2"
+                style={{ padding: "9px 0", borderTop: `1px solid ${LINE}` }}>
+                <p className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK }}>
+                  {member.name || "(이름 없음)"}
+                </p>
+                <p className="shrink-0" style={{ fontSize: TYPE.caption, color: SUB }}>
+                  {expiryDayLabel(member.at)} · {EXPIRY_REASON_LABELS[member.reason] || "-"}
+                </p>
+                {outcomeLabel(member.outcome) ? (
+                  <span className="shrink-0" style={{
+                    padding: "2px 6px", borderRadius: 5, fontSize: TYPE.caption, fontWeight: 700,
+                    backgroundColor: member.outcome === "returned" ? GOOD_S : CANVAS,
+                    color: member.outcome === "returned" ? GOOD : SUB,
+                  }}>{outcomeLabel(member.outcome)}</span>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {byInstructor.length ? (
+        <section style={sectionStyle}>
+          <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>강사별</h2>
+          {/* 같은 함수로 센 값이다. 강사 화면의 숫자와 여기가 다르면 비교가
+              의미를 잃는다. */}
+          <div className="mt-2">
+            {byInstructor.map((item) => (
+              <div key={item.userId} className="flex items-center gap-2"
+                style={{ padding: "9px 0", borderTop: `1px solid ${LINE}` }}>
+                <p className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK }}>{item.name}</p>
+                <p className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+                  만료 {item.report.expired} · 재등록 {item.report.reenrolled}
+                </p>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
 /**
  * 담당 강사 재계산 · 점검 — 대표 전용.
  *
@@ -19649,7 +19829,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
     return total;
   }, [db.schedule, db.members, db.settings, reportYm]);
   const detailTitles = {
-    report: "월간 리포트", "instructor-scope": "담당 강사", assessment: "변화 기록 설정", center: "센터 정보", theme: "화면 설정", "schedule-colors": "일정 색상",
+    report: "월간 리포트", expiry: "만료 회원", "instructor-scope": "담당 강사", assessment: "변화 기록 설정", center: "센터 정보", theme: "화면 설정", "schedule-colors": "일정 색상",
     data: "데이터 상태", backup: "데이터 이관 · 백업", permissions: "접근권한 안내", knowledge: "오늘의 지식", account: "계정", "account-delete": "계정 삭제", app: "앱 정보",
     products: "회원권 상품",
     clients: "회원 관리",
@@ -19699,6 +19879,10 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
       /* 소속 센터에서는 이 화면과 급여 집계가 서로 다른 것을 센다. 이름이 비슷해
          헷갈리므로 무엇을 세는지로 가른다 -- 화면 안에도 같은 설명이 있다. */
       { key: "report", title: "월간 리포트", description: inOrganization ? "이달 수업 · 성과 · 기기 기준 추정" : "이달 수업 · 성과 · 예상 급여", Icon: ArrowUpRight },
+      /* 만료는 조용히 일어난다. 회원권이 끝나도 알림이 없고, 강사는 그 회원이
+         안 온다는 것을 몇 주 뒤에 안다 -- 그때는 늦다. 개인 모드에는 회원권이
+         없어 셀 것이 없다. */
+      ...(inOrganization ? [{ key: "expiry", title: "만료 회원", description: "이번 달 · 지난달 · 재등록률", Icon: Users }] : []),
     ] },
     ...(centreItems.length ? [{ label: "센터 운영", items: centreItems }] : []),
     { label: "내 설정", items: [
@@ -19996,6 +20180,11 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, onChange
           <ClientPhoneCheck organization={organization}
             onList={fbListMalformedClientPhones}
             onOpenClient={(client) => onOpenClient?.({ id: client.clientId, name: client.name, phone: client.phone })}
+            onRetryOrganization={onRetryOrganization} />
+        )}
+        {view === "expiry" && inOrganization && (
+          <ExpiryReportScreen organization={organization} currentUserId={account?.id || ""}
+            clientStore={clientStore} passStore={passStore} instructorStore={instructorStore}
             onRetryOrganization={onRetryOrganization} />
         )}
         {view === "instructor-scope" && showAudit && (
@@ -20893,6 +21082,29 @@ export function createAppScreenSmokeCases() {
       <ClientPhoneCheck organization={readyOrganizationContext(smokeOwner)} onRetryOrganization={noop}
         onOpenClient={noop} onList={asyncNoop}
         initialState={{ stage: "failed", clients: [], code: "permission-denied" }} />
+    )) },
+    /* 만료 회원 현황. 이번 달은 거의 다 "기다리는 중" 이다 -- 재등록 창이
+       30일이라 달 중간에는 아직 정해지지 않는다. 그 사실을 화면이 말하지
+       않으면 대표는 매달 초에 "재등록률이 떨어졌다" 고 읽는다. */
+    { name: "만료 회원 · 강사", element: providerWith(smokeInstructorOrg, (
+      <ExpiryReportScreen organization={readyOrganizationContext(smokeInstructorOrg)} currentUserId="u1"
+        onRetryOrganization={noop}
+        initialState={{ period: "last_month", instructors: [], state: { stage: "ready",
+          clients: [
+            { id: "c-gone", name: "안돌아온" },
+            { id: "c-back", name: "돌아온" },
+          ],
+          passes: [
+            { id: "g", clientId: "c-gone", clientIds: ["c-gone"], instructorId: "u1", status: "active", remainingCount: 4, expiresAt: new Date(2026, 7, 5), createdAt: new Date(2026, 1, 1) },
+            { id: "b1", clientId: "c-back", clientIds: ["c-back"], instructorId: "u1", status: "active", remainingCount: 4, expiresAt: new Date(2026, 7, 6), createdAt: new Date(2026, 1, 1) },
+            { id: "b2", clientId: "c-back", clientIds: ["c-back"], instructorId: "u1", status: "active", remainingCount: 9, expiresAt: new Date(2027, 5, 1), createdAt: new Date(2026, 7, 20) },
+          ],
+        } }} />
+    )) },
+    { name: "만료 회원 · 조회 실패", element: providerWith(smokeInstructorOrg, (
+      <ExpiryReportScreen organization={readyOrganizationContext(smokeInstructorOrg)} currentUserId="u1"
+        onRetryOrganization={noop}
+        initialState={{ instructors: [], state: { stage: "failed", code: "permission-denied" } }} />
     )) },
     /* 담당 강사. 셋을 나눈다 -- 정상, 빠진 회원이 있음, 아직 안 돌았음.
        셋 다 "재계산을 누른다" 로 끝나지만 대표가 읽는 뜻이 다르다. */

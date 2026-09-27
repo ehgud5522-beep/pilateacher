@@ -1663,6 +1663,67 @@ describe("collection queries the app will run", () => {
     }, { merge: true }));
   });
 
+  /* ── 폰에서 났던 일 ───────────────────────────────────────────────────
+
+     아직 시작하지 않은 수업에서 "회원에게 보낼 말" 을 처음 쓰려 했더니 열
+     때와 저장할 때 모두 permission-denied 가 났다. 원인은 하나였다: 없는
+     문서를 get 하면 resource 가 null 이고, resource.data 를 보는 순간 규칙이
+     오류로 끝난다. 저장까지 막힌 것은 리포지토리가 쓰기 전에 먼저 읽기
+     때문이다.
+
+     아래 넷이 그 자리를 고정한다. */
+
+  test("reading a note that has not been written yet is not a denial", async () => {
+    /* 처음 쓰는 수업에는 이 문서가 없다. "없음" 과 "권한 없음" 이 같은
+       얼굴이면 화면은 고칠 수 없는 것을 고치라고 말하게 된다. */
+    for (const role of ["owner", "manager", "instructor"]) {
+      await assertSucceeds(getDoc(memberNotePath(users[role], "lesson-none_client-member")), role);
+    }
+  });
+
+  test("an outsider still cannot probe for notes that do not exist", async () => {
+    /* 없는 문서라고 아무에게나 열어 주지 않는다. */
+    await assertFails(getDoc(memberNotePath(users.outsider, "lesson-none_client-member")));
+    await assertFails(getDoc(memberNotePath(users.member, "lesson-none_client-member")));
+    await assertFails(getDoc(memberNotePath(users.staff, "lesson-none_client-member")));
+  });
+
+  test("the owner is the assigned instructor and writes the first note before the lesson", async () => {
+    /* 대표 계정이 담당 강사로 잡힌 수업이다. 화면이 하는 순서 그대로 --
+       먼저 읽고, 없으면 만든다. */
+    await assertSucceeds(getDoc(memberNotePath(users.owner, "lesson-owner_client-member")));
+    await assertSucceeds(setDoc(memberNotePath(users.owner, "lesson-owner_client-member"), {
+      organizationId: ORG_A, clientId: "client-member", lessonId: "lesson-owner",
+      memberNote: "시작 전에 미리 적어 둔 말",
+      instructorId: users.owner, createdBy: users.owner,
+      createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+    }));
+  });
+
+  test("the rules never ask when the lesson starts", async () => {
+    /* 화면은 "수업을 확정해 회원권이 차감되면 회원 앱에 보입니다. 지금
+       저장해 두어도 됩니다" 라고 말한다. 규칙에 수업 상태 조건이 붙으면
+       둘 중 하나가 거짓말이 되므로, 조건이 없다는 사실을 못 박는다. */
+    await assertSucceeds(setDoc(memberNotePath(users.instructor, "lesson-future_client-member"), {
+      organizationId: ORG_A, clientId: "client-member", lessonId: "lesson-future",
+      memberNote: "아직 시작 전인 수업",
+      instructorId: users.instructor, createdBy: users.instructor,
+      createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+    }));
+  });
+
+  test("a member reads their own note but not someone else's", async () => {
+    /* 있는 문서에 대한 판정은 그대로다. note-seed 의 userId 는 member 다. */
+    await assertSucceeds(getDoc(memberNotePath(users.member, "note-seed")));
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "organizations", ORG_A, "lessonNotes", "note-other"), {
+        organizationId: ORG_A, clientId: "client-b", lessonId: "lesson-seed",
+        userId: "someone-else", createdBy: users.instructor,
+      });
+    });
+    await assertFails(getDoc(memberNotePath(users.member, "note-other")));
+  });
+
   test("a note is never deleted", async () => {
     /* 지우기는 빈 문자열로 저장된다. 보냈다가 거둬들인 사실은 남는 편이 낫고,
        무엇보다 규칙이 삭제를 막는다. */

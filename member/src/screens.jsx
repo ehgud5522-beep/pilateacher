@@ -17,6 +17,7 @@ import { TYPE } from "../../src/features/ui/type-scale.js";
 import {
   DELETED_ITEMS, DELETE_STEP, KEPT_ITEMS, deleteFailureMessage,
 } from "./delete-account.js";
+import { diagnosticsText } from "./diagnostics.js";
 
 /**
  * 의견을 받는 곳. 링크 하나다.
@@ -678,6 +679,55 @@ export function DeleteAccount({ onDelete }) {
 
 
 /* ── 상태 화면 ───────────────────────────────────────────────────────── */
+
+/**
+ * 연결이 늦다. **무한 스피너를 두지 않는다.**
+ *
+ * 기다리는 화면은 "곧 된다" 고 말하는데, 영영 안 될 수도 있다는 것을 아무도
+ * 말해 주지 않으면 회원은 앱이 고장 난 줄도 모르고 들고 있는다 -- 실제로
+ * TestFlight 빌드가 그렇게 멈췄다.
+ */
+export function SlowConnection({ onRetry, seconds }) {
+  return (
+    <Card tone="warn">
+      <p style={{ fontSize: TYPE.body }}>연결이 늦어요.</p>
+      <p className="muted mt" style={{ fontSize: TYPE.caption }}>
+        {count(seconds) ? `${count(seconds)}초째 기다리고 있어요. ` : ""}
+        네트워크를 확인하고 다시 시도해 주세요.
+      </p>
+      {onRetry ? <button type="button" className="btn mt" onClick={onRetry}>다시 시도</button> : null}
+      <p className="muted mt" style={{ fontSize: TYPE.caption }}>
+        계속 이러면 맨 아래 버전을 다섯 번 눌러 기록을 센터에 보내 주세요.
+      </p>
+    </Card>
+  );
+}
+
+/**
+ * 진단 기록. 화면 맨 아래 버전 글자를 다섯 번 누르면 나온다.
+ *
+ * 대표가 Mac 없이 원인을 볼 수 있는 유일한 자리다. **회원 이름·번호·uid 는
+ * 들어 있지 않다** (diagnostics.js).
+ */
+export function Diagnostics({ entries, onClose, onClear }) {
+  const rows = Array.isArray(entries) ? entries : [];
+  return (
+    <Card className="diag">
+      <div className="diaghead">
+        <p className="cap">진단 기록</p>
+        <button type="button" onClick={onClose} aria-label="닫기">✕</button>
+      </div>
+      <p className="muted" style={{ fontSize: TYPE.caption }}>
+        최근 {rows.length}건. 이름·번호는 들어 있지 않아요. 길게 눌러 복사한 뒤 센터에 보내 주세요.
+      </p>
+      {/* 읽기 전용 textarea 다. 길게 눌러 전체 선택이 되는 것이 요점이고,
+          공유 시트를 붙이면 플러그인이 하나 늘어난다 -- 막혔을 때 보는
+          화면에 새 실패 지점을 더하지 않는다. */}
+      <textarea className="diagbox mt" readOnly rows={12} value={diagnosticsText(rows)} />
+      {onClear ? <button type="button" className="btn mt" onClick={onClear}>기록 지우기</button> : null}
+    </Card>
+  );
+}
 
 export function Loading() {
   return <Card><p className="muted" style={{ fontSize: TYPE.body }}>잠시만요…</p></Card>;

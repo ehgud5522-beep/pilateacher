@@ -410,3 +410,70 @@ test("iOS 와 Android 가 같은 버전을 말한다", async () => {
   const android = gradle.match(/versionName "([^"]+)"/)[1];
   assert.equal(versions[0], `MARKETING_VERSION = ${android};`);
 });
+
+/* ── 아이폰에서 멈췄던 것 ────────────────────────────────────────────── */
+
+test("앱에서는 getAuth 를 쓰지 않는다", async () => {
+  /* **TestFlight 빌드가 여기서 멈췄다.** getAuth() 는
+     browserPopupRedirectResolver 를 다는데, iOS 웹뷰에서 그 리졸버는 Auth
+     초기화 약속 안에서 미리 켜지면서 교차 출처 iframe 을 30~60초
+     시간제한으로 불러온다. 그동안 onAuthStateChanged 가 한 번도 불리지
+     않고 화면은 "잠시만요…" 에 머문다.
+
+     강사 앱이 같은 자리에서 같은 증상을 겪고 남긴 판단을 따른다
+     (src/lib/firebase.js): 저장소는 측정된 것이 localStorage 였다. */
+  const firebase = await read("member/src/firebase.js");
+  assert.match(firebase, /initializeAuth\(app, \{ persistence: browserLocalPersistence \}\)/);
+  /* 주석에서는 그 이름을 설명한다 -- 왜 피하는지가 이 결정의 전부다.
+     그래서 주석을 걷어낸 **코드 줄만** 본다. */
+  const code = firebase.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  assert.doesNotMatch(code, /browserPopupRedirectResolver/);
+  /* 웹은 그대로 둔다. 브라우저에는 이 문제가 없고, 지금 도는 것을 확인 없이
+     건드리지 않는다. */
+  assert.match(firebase, /isNativeRuntime\(\)\s*\?\s*initializeAuth[\s\S]{0,120}:\s*getAuth\(app\)/);
+});
+
+test("기다리는 화면이 영영 기다리지 않는다", async () => {
+  /* 무한 스피너는 "곧 된다" 고 말한다. 영영 안 될 수도 있다는 것을 아무도
+     말해 주지 않으면 회원은 앱이 고장 난 줄도 모른 채 들고 있는다. */
+  const app = await read("member/src/App.jsx");
+  assert.match(app, /const SLOW_AFTER_MS = 10000;/);
+  /* 로그인 상태를 기다리는 쪽과 문서를 읽는 쪽, 둘 다 걸어야 한다. */
+  assert.match(app, /setAuthSlow\(true\)/);
+  assert.match(app, /if \(state\.stage !== "loading"\) return undefined;/);
+  assert.match(app, /<SlowConnection/);
+});
+
+test("진단은 멈춰 있을 때도 열린다", async () => {
+  /* Shell 에 있어야 한다. 안쪽 화면에 두면 멈춘 동안에는 그리지 않는데,
+     바로 그때가 필요한 순간이다. */
+  const app = await read("member/src/App.jsx");
+  const shell = app.slice(app.indexOf("function Shell("), app.indexOf("/* ── 번호 인증"));
+  assert.match(shell, /readDiagnostics\(\)/);
+  assert.match(shell, /<Diagnostics/);
+  assert.match(shell, /DIAGNOSTIC_TAPS/);
+  assert.match(app, /const DIAGNOSTIC_TAPS = 5;/);
+});
+
+test("번들이 자기 커밋을 들고 다닌다", async () => {
+  /* 폰에서 막혔을 때 가장 먼저 묻게 되는 것이 "그 폰에 든 것이 어느
+     코드냐" 인데, 그것을 물을 방법이 없었다. */
+  const config = await read("member/vite.config.js");
+  assert.match(config, /__MEMBER_BUILD__/);
+  assert.match(config, /rev-parse", "--short", "HEAD"/);
+  /* 못 읽으면 빈 값이다. 지어내면 진단이 거짓말을 한다. */
+  assert.match(config, /catch \(_error\)/);
+});
+
+test("상태 표시줄과 겹치지 않는다", async () => {
+  /* viewport-fit=cover 라 웹뷰가 화면 끝까지 차지한다. 위쪽 여백이 없으면
+     제목이 시계와 겹친다 -- 아이폰에서 실제로 그랬다. */
+  const html = await read("member/index.html");
+  assert.match(html, /viewport-fit=cover/);
+  const css = await read("member/src/styles.css");
+  assert.match(css, /\.head \{[\s\S]*?env\(safe-area-inset-top, 0px\)/);
+  /* 아래도 본다. 탭이 안전 영역 위로 떠 있어서 본문도 그만큼 비워야
+     마지막 카드가 안 가린다. */
+  assert.match(css, /\.main \{[^}]*env\(safe-area-inset-bottom, 0px\)/);
+  assert.match(css, /\.tabs \{[\s\S]*?env\(safe-area-inset-bottom, 0px\)/);
+});

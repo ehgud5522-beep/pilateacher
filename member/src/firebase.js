@@ -8,8 +8,8 @@
 
 import { initializeApp } from "firebase/app";
 import {
-  PhoneAuthProvider, RecaptchaVerifier, getAuth, onAuthStateChanged,
-  signInWithCredential, signInWithPhoneNumber, signOut,
+  PhoneAuthProvider, RecaptchaVerifier, browserLocalPersistence, getAuth,
+  initializeAuth, onAuthStateChanged, signInWithCredential, signInWithPhoneNumber, signOut,
 } from "firebase/auth";
 import { getFirestore } from "firebase/firestore/lite";
 import { getFunctions, httpsCallable } from "firebase/functions";
@@ -27,7 +27,36 @@ const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
-export const auth = getAuth(app);
+
+/**
+ * 앱에서는 `getAuth()` 를 쓰지 않는다.
+ *
+ * `getAuth()` 는 `indexedDBLocalPersistence` 를 맨 앞에 두고
+ * `browserPopupRedirectResolver` 를 함께 단다. **iOS 웹뷰에서 그 리졸버는
+ * Auth 초기화 약속 안에서 미리 켜지면서 교차 출처 iframe 을 30~60초
+ * 시간제한으로 불러온다.** 그동안 `onAuthStateChanged` 가 한 번도 불리지
+ * 않고, 화면은 "잠시만요…" 에 머문다 -- TestFlight 빌드에서 실제로 그랬다.
+ *
+ * 리졸버는 이 앱에 필요 없다. 회원 로그인은 네이티브 플러그인이나 웹
+ * reCAPTCHA 로 오고, 둘 다 팝업·리다이렉트를 쓰지 않는다.
+ *
+ * ── 왜 indexedDB 가 아니라 localStorage 인가 ──
+ * 강사 앱이 같은 자리에서 같은 증상을 겪고 남긴 것이다 (src/lib/firebase.js):
+ * 멈추는 곳이 iframe 이거나 **IndexedDB 순환**이었고, 이 기기에서 실제로
+ * 도는 것으로 측정된 저장소가 localStorage 였다. 측정된 쪽을 따른다.
+ *
+ * 웹은 그대로 `getAuth()` 다. 브라우저에서는 이 문제가 없고, 굳이 바꾸면
+ * 지금 도는 것을 확인 없이 건드리는 것이 된다.
+ */
+export const auth = isNativeRuntime()
+  ? initializeAuth(app, { persistence: browserLocalPersistence })
+  : getAuth(app);
+
+/** 네이티브인가. 판정에 실패하면 웹이다 -- 그쪽은 어디서나 돈다. */
+function isNativeRuntime() {
+  try { return Boolean(capacitor()?.isNativePlatform?.()); }
+  catch (_error) { return false; }
+}
 export const db = getFirestore(app);
 const functions = getFunctions(app, "asia-northeast3");
 

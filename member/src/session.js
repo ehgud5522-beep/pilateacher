@@ -17,6 +17,7 @@
  * **틀리는 방향이 안전한 쪽**이다.
  */
 
+import { DIAGNOSTIC_KEY } from "./diagnostics.js";
 import { VIEW_CACHE_KEY } from "./offline-cache.js";
 
 /** 확정 5번. 하루는 86,400,000 밀리초. */
@@ -84,7 +85,7 @@ export function writeVerifiedAt(at, store) {
  * 칸이 늘 때 이 함수를 같이 고치지 않으면 남는 것이 생기고, 그것은 아무도
  * 알아채지 못한다.
  */
-export const DEVICE_KEYS = Object.freeze([VERIFIED_AT_KEY, VIEW_CACHE_KEY]);
+export const DEVICE_KEYS = Object.freeze([VERIFIED_AT_KEY, VIEW_CACHE_KEY, DIAGNOSTIC_KEY]);
 
 export function forgetDevice(store) {
   try {

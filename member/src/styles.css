@@ -91,13 +91,21 @@ body {
 /* 맨 위 한 줄. 앞말은 물러나 있고 센터 이름만 로즈로 선다 -- 이름만 놓으면
    상호이고, 앞말이 서면 회원이 여기 오는 이유가 된다. */
 .head {
-  padding: 18px 24px 6px;
+  /* 상태 표시줄(시계) 아래로 내린다.
+     index.html 이 viewport-fit=cover 라 웹뷰가 화면 끝까지 차지한다 --
+     그것이 없으면 여백이 안 생기지만, 있으면 이 줄이 있어야 겹치지
+     않는다. 아이폰 TestFlight 빌드에서 실제로 시계와 겹쳐 있었다.
+     브라우저에서는 이 값이 0 이라 웹 화면은 그대로다. */
+  padding: calc(18px + env(safe-area-inset-top, 0px)) 24px 6px;
   font-size: 11px;
   letter-spacing: .14em;
   color: var(--faint);
 }
 .head b { margin-left: 5px; font-size: 12px; font-weight: 700; color: var(--rose); letter-spacing: .1em; }
-.main { flex: 1; padding: 8px 24px 112px; }
+/* 아래는 탭 막대(64px)와 그 아래 안전 영역만큼 비운다. 탭이 이미
+   env(safe-area-inset-bottom) 위로 떠 있어서, 여기에도 더하지 않으면
+   마지막 카드가 탭에 가린다. */
+.main { flex: 1; padding: 8px 24px calc(112px + env(safe-area-inset-bottom, 0px)); }
 .stack > * + * { margin-top: 16px; }
 
 .card {
@@ -387,3 +395,32 @@ body {
   color: var(--sub); font: inherit; font-size: var(--t-caption); text-align: left;
 }
 .stale span { float: right; opacity: .55; }
+
+/* 버전 · 진단 ──────────────────────────────────────────────────────────
+   맨 아래에 작게. 다섯 번 누르면 진단이 열린다 -- 대표가 Mac 없이 원인을
+   볼 수 있는 유일한 자리다. 회원에게는 그냥 버전 글자로 보여야 하므로
+   누를 수 있게 생기지 않았다. */
+.ver {
+  margin-top: 28px;
+  text-align: center;
+  font-size: 10px;
+  letter-spacing: .08em;
+  color: var(--faint);
+  -webkit-user-select: none;
+  user-select: none;
+}
+.diaghead { display: flex; align-items: center; justify-content: space-between; }
+.diaghead .cap { font-size: var(--t-caption); color: var(--rose); letter-spacing: .06em; }
+.diaghead button { border: 0; background: none; color: var(--sub); font-size: 16px; }
+.diagbox {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--page);
+  color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  resize: vertical;
+}

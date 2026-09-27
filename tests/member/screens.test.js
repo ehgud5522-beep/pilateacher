@@ -528,3 +528,31 @@ test("첫 화면에서는 지우는 버튼이 안 나온다", async (t) => {
   assert.doesNotMatch(first, /네, 지울게요/);
   assert.match(first, /센터에 등록된 회원 정보와 남은 회원권은 그대로/);
 });
+
+/* ── 멈췄을 때 보는 화면 ─────────────────────────────────────────────── */
+
+test("늦을 때 무엇을 하라고 말한다", async (t) => {
+  const markupOf = await memberScreens(t);
+  const slow = markupOf("연결이 늦다");
+  assert.match(slow, /연결이 늦어요/);
+  assert.match(slow, /10초째/);
+  assert.match(slow, /다시 시도/);
+  /* 막혔을 때 기록을 어디서 꺼내는지도 여기서 알려 준다. 그러지 않으면
+     그 화면이 있다는 것을 아무도 모른다. */
+  assert.match(slow, /다섯 번/);
+});
+
+test("진단은 회원 정보를 그리지 않는다", async (t) => {
+  const markupOf = await memberScreens(t);
+  const diag = markupOf("진단 · 기록 있음");
+  assert.match(diag, /auth_init \/ auth_state_timeout/);
+  assert.match(diag, /firebase_auth:auth_state_never_fired/);
+  /* 어느 코드가 폰에 들어 있는지가 이 화면의 값어치다. */
+  assert.match(diag, /5be3511/);
+  assert.match(diag, /이름·번호는 들어 있지 않아요/);
+});
+
+test("기록이 없으면 없다고 말한다", async (t) => {
+  const markupOf = await memberScreens(t);
+  assert.match(markupOf("진단 · 비어 있음"), /기록이 없습니다/);
+});

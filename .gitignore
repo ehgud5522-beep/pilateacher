@@ -25,3 +25,4 @@ reports/foundation/
 .foundation-build/
 .android-release/
 .codex-sign-android-*.ps1
+__pycache__/

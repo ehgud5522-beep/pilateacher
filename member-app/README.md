@@ -190,6 +190,45 @@ member-app/android/keystore.properties
 | 계정 삭제 | `functions/src/member-account.js` · App Store 5.1.1(v) |
 | 오프라인 표시 | `member/src/offline-cache.js` · 14일까지, 나이를 함께 |
 
+## iOS 빌드는 Codemagic 이 한다
+
+대표 PC 는 Windows 라 Xcode 가 없다. `codemagic.yaml` 에 워크플로가 **둘**이다.
+
+| | 강사 앱 | 회원 앱 |
+| --- | --- | --- |
+| id | `ios-testflight` | `member-ios-testflight` |
+| 번들 | `com.pilateacher.app` | `com.bonitapilates.member` |
+| 프로젝트 | `ios/App` | `member-app/ios/App` |
+| 동기화 | `npx cap sync ios` | `npm run member:sync` |
+
+**트리거가 갈라져 있다.** 회원 앱만 고친 커밋에서 강사 앱 빌드가 돌면, 버전이
+안 올랐을 때 Publishing 에서 90062 로 빨갛게 끝난다 -- 고친 것과 상관없는
+실패다. 반대도 같다.
+
+- 강사 앱: `includes: ['.']` + `excludes: [member/, member-app/]`
+  — **빼는 쪽**으로 적는다. 넣는 쪽으로 적으면 경로 하나를 빠뜨렸을 때 강사
+  앱이 조용히 안 만들어지고, 그것을 릴리스 날에 알게 된다
+- 회원 앱: 관계있는 경로만 `includes` — 빠뜨려도 안 도는 것이 전부이고,
+  그때는 Codemagic 화면에서 브랜치를 골라 직접 돌리면 된다
+
+`when.changeset` 은 **수동 빌드에는 적용되지 않는다.** 화면에서 직접 돌리면
+언제나 돈다.
+
+### TestFlight 내부 배포
+
+`submit_to_testflight: false` 다. 강사 앱과 같다 -- 올리기만 하고 베타 심사에
+넣지 않는다. 내부 테스터는 처리가 끝나면 바로 설치할 수 있고, 심사는 한
+트레인에 한 번뿐이라 같은 버전의 두 번째 빌드가 422 로 막힌다.
+
+**`beta_groups` 를 적지 않는다.** 여기에 그룹 이름을 박아 두면 App Store
+Connect 쪽 이름과 다를 때 매 빌드가 조용히 실패한다 -- 강사 앱에서
+`Internal` 로 실제로 그랬고, 그 이름의 그룹은 없었다.
+
+대신 App Store Connect 에서 한 번 켠다:
+
+TestFlight → 내부 테스팅 → 그룹 선택 → **설정** →
+**자동으로 새 빌드 배포** 켜기
+
 ### 아직 안 한 것
 
 - **Play Console 에 앱 만들기** → 첫 AAB 업로드 → 앱 서명 키 지문 등록

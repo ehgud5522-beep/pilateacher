@@ -270,3 +270,97 @@ test("회원 앱은 애플 로그인을 켜지 않는다", async () => {
   const entitlements = await read("member-app/ios/App/App/App.entitlements");
   assert.doesNotMatch(entitlements, /applesignin/);
 });
+
+/* ── Codemagic — 두 앱이 한 파일에서 갈라진다 ────────────────────────── */
+
+const workflows = async () => {
+  const { load } = await import("js-yaml");
+  return load(await read("codemagic.yaml")).workflows;
+};
+
+test("워크플로 둘이 서로 다른 번들을 만든다", async () => {
+  const all = await workflows();
+  const instructor = all["ios-testflight"].environment.ios_signing.bundle_identifier;
+  const member = all["member-ios-testflight"].environment.ios_signing.bundle_identifier;
+  assert.equal(instructor, "com.pilateacher.app");
+  assert.equal(member, "com.bonitapilates.member");
+  assert.notEqual(instructor, member);
+});
+
+test("한쪽 변경이 다른 쪽 빌드를 돌리지 않는다", async () => {
+  /* 회원 앱 한 줄을 고쳤다고 강사 앱 iOS 빌드가 돌면, 버전이 안 올랐을 때
+     Publishing 에서 90062 로 빨갛게 끝난다 -- 고친 것과 상관없는 실패다. */
+  const all = await workflows();
+  const instructor = all["ios-testflight"].when.changeset;
+  assert.deepEqual(instructor.includes, ["."], "강사 앱은 기본이 '전부' 다");
+  assert.ok(instructor.excludes.includes("member/"));
+  assert.ok(instructor.excludes.includes("member-app/"));
+
+  const member = all["member-ios-testflight"].when.changeset;
+  assert.ok(!member.includes.includes("."), "회원 앱은 관계있는 것만 본다");
+  for (const needed of ["member/", "member-app/", "codemagic.yaml"]) {
+    assert.ok(member.includes.includes(needed), needed);
+  }
+  /* 회원 화면이 강사 앱 코드에서 읽는 것은 지금 이 하나뿐이다. 늘어나면
+     여기도 늘려야 하고, 안 늘리면 회원 앱이 낡은 채로 나간다. */
+  assert.ok(member.includes.includes("src/features/ui/"));
+});
+
+test("회원 앱 빌드가 강사 앱 폴더를 열지 않는다", async () => {
+  const all = await workflows();
+  const scripts = all["member-ios-testflight"].scripts.map((step) => String(step.script));
+  const body = scripts.join("\n");
+  /* 경로가 전부 member-app 밑이다. `ios/App/App.xcodeproj` 를 그냥 적으면
+     강사 앱을 빌드하면서 회원 앱 번들 ID 로 서명하게 된다. */
+  assert.match(body, /member-app\/ios\/App\/App\.xcodeproj/);
+  assert.doesNotMatch(body, /(?<!member-app\/)ios\/App\/App\.xcodeproj/);
+  /* cap 은 member:sync 로만 부른다 -- 루트에서 부르면 강사 앱을 덮어쓴다. */
+  assert.match(body, /npm run member:sync/);
+  assert.doesNotMatch(body, /npx cap sync ios/);
+  /* 빌드가 끝나기 전에 강사 앱이 더럽혀졌는지 본다. */
+  assert.match(body, /git status --porcelain ios\/ android\//);
+});
+
+test("두 워크플로 다 그룹 이름을 박지 않는다", async () => {
+  /* 'Internal' 이 App Store Connect 에 없는 이름이었고, 매 빌드가 조용히
+     실패했다. 실제 그룹 이름은 '테스트' 다 -- '내부' 는 화면의 섹션
+     제목이지 그룹 이름이 아니다. 저쪽 이름을 여기 박으면 또 어긋난다. */
+  const yamlText = await read("codemagic.yaml");
+  assert.doesNotMatch(yamlText, /beta_groups:/);
+  const all = await workflows();
+  for (const [key, wf] of Object.entries(all)) {
+    const publish = wf.publishing.app_store_connect;
+    assert.equal(publish.submit_to_testflight, false, key);
+    assert.equal(publish.submit_to_app_store, false, key);
+  }
+});
+
+test("회원 앱 워크플로가 번들 안까지 확인한다", async () => {
+  /* 빌드가 통과하고 업로드에서 거절당하면 그 문구는 왜 그런지 말해 주지
+     않는다. 나가기 전에 IPA 를 열어 본다. */
+  const all = await workflows();
+  const body = all["member-ios-testflight"].scripts.map((s) => String(s.script)).join("\n");
+  assert.match(body, /CFBundleIdentifier raw[\s\S]*com\.bonitapilates\.member/);
+  assert.match(body, /test -f "\$APP\/GoogleService-Info\.plist"/);
+  assert.match(body, /codesign -d --entitlements/);
+  assert.match(body, /tools\/member\/validate_signing\.py/);
+});
+
+test("서명 검사는 강사 앱 프로필이 섞인 것을 잡는다", async () => {
+  const script = await read("tools/member/validate_signing.py");
+  assert.match(script, /EXPECTED_BUNDLE_ID = "com\.bonitapilates\.member"/);
+  assert.match(script, /INSTRUCTOR_BUNDLE_ID = "com\.pilateacher\.app"/);
+  assert.match(script, /leaked into this build/);
+});
+
+test("iOS 와 Android 가 같은 버전을 말한다", async () => {
+  const pbxproj = await read("member-app/ios/App/App.xcodeproj/project.pbxproj");
+  const versions = pbxproj.match(/MARKETING_VERSION = ([^;]+);/g) || [];
+  assert.equal(versions.length, 2, "Debug 와 Release 둘이다");
+  assert.equal(new Set(versions).size, 1, `설정마다 다르다: ${versions.join(" / ")}`);
+  assert.match(versions[0], /MARKETING_VERSION = \d+\.\d+\.\d+;/);
+
+  const gradle = await read("member-app/android/app/build.gradle");
+  const android = gradle.match(/versionName "([^"]+)"/)[1];
+  assert.equal(versions[0], `MARKETING_VERSION = ${android};`);
+});

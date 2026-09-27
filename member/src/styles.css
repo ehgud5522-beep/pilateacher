@@ -378,3 +378,12 @@ body {
 .danger .bullets li { word-break: keep-all; }
 /* 지우는 버튼만 로즈다. "그만두기" 가 기본 모양이라 손이 먼저 그쪽으로 간다. */
 .danger .btn.danger { color: var(--rose); border-color: var(--ring); }
+
+/* 오프라인 사본을 보는 중. 숫자 위에 둔다 -- 아래에 두면 잔여를 보고 화면을
+   닫은 사람은 읽지 않는다. 경고색을 쓰지 않는 것은 고장이 아니기 때문이다. */
+.stale {
+  width: 100%; margin-bottom: 12px; padding: 10px 14px;
+  border: 0; border-radius: 12px; background: var(--card-tone);
+  color: var(--sub); font: inherit; font-size: var(--t-caption); text-align: left;
+}
+.stale span { float: right; opacity: .55; }

@@ -17,6 +17,7 @@ import {
 import { LINK_RESULT, linkResultScreen } from "./link-result.js";
 import { phoneFailureMessage } from "./phone-auth.js";
 import { readMemberLink, readMemberViews } from "./member-data.js";
+import { offlineNotice, readViewCache, writeViewCache } from "./offline-cache.js";
 import { forgetDevice, needsReverification, readVerifiedAt, writeVerifiedAt } from "./session.js";
 import {
   History, Home, LinkNotice, LoadFailed, Loading, More, NotMigrated, Passes, Preparing,
@@ -166,8 +167,23 @@ function Member({ userId }) {
         return;
       }
       const found = await readMemberViews(db, link.links);
-      setState({ stage: "ready", status: link.status, places: found });
+      /* 읽은 것을 기기에 남긴다. 다음에 지하에서 열 때 이것을 그린다.
+         번호는 들어가지 않는다 -- 사본은 자기 허용 목록을 따로 든다
+         (offline-cache.js). */
+      writeViewCache(found, new Date());
+      setState({ stage: "ready", status: link.status, places: found, offlineAt: null });
     } catch (error) {
+      /* 못 읽었다. 그 사람이 알고 싶은 것은 방금 전까지 참이었던 숫자
+         하나이고, 그것이 기기에 있다면 "불러오지 못했어요" 로 끝내는 것은
+         들고 있는 답을 안 주는 것이다. 다만 **언제 본 것인지 함께**
+         말한다 -- 숫자를 믿을지는 회원이 정한다. */
+      const cached = readViewCache();
+      if (cached) {
+        setState({
+          stage: "ready", status: "", places: cached.places, offlineAt: cached.savedAt,
+        });
+        return;
+      }
       setState({ stage: "failed", code: text(error?.code) || "unknown" });
     }
   }, [userId]);
@@ -205,11 +221,22 @@ function Member({ userId }) {
   else if (!current.view) body = <Preparing onRetry={load} />;
   else if (tab === "passes") body = <Passes view={current.view} />;
   else if (tab === "history") body = <History view={current.view} />;
-  else if (tab === "more") body = <More view={current.view} onDeleteAccount={removeAccount} />;
+  else if (tab === "more") {
+    /* 오프라인 사본을 보는 중에는 계정 삭제를 내지 않는다. 누르면 실패할
+       뿐이고, 되돌릴 수 없는 버튼이 실패하는 것은 회원을 불안하게 한다. */
+    body = <More view={current.view} onDeleteAccount={state.offlineAt ? undefined : removeAccount} />;
+  }
   else body = <Home view={current.view} />;
 
   return (
     <Shell footer={<Tabs tab={tab} onPick={setTab} />}>
+      {/* 오래된 숫자라는 사실이 숫자 위에 있어야 한다. 아래에 두면 잔여를
+          보고 화면을 닫은 사람은 읽지 않는다. */}
+      {state.offlineAt ? (
+        <button type="button" className="stale" onClick={load}>
+          {offlineNotice(state.offlineAt)} <span aria-hidden="true">↻</span>
+        </button>
+      ) : null}
       {/* 여러 지점에 등록된 회원은 지점마다 잔여가 따로다 (확정 7번). */}
       {places.length > 1 ? (
         <div className="chips">

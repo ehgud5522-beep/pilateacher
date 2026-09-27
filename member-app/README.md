@@ -32,12 +32,50 @@
 - 서명: 강사 앱과 **같은 업로드 키**
 - Android 는 비공개 테스트부터, iOS 는 푸시와 오프라인 표시까지 넣고 제출
 
-## 아직 없는 것
+## 네이티브 폴더
 
-`android/`·`ios/` 네이티브 폴더는 `npx cap add` 로 만든다. 그 전에 Firebase
-콘솔에 앱 두 개를 등록하고 `google-services.json` 과
-`GoogleService-Info.plist` 를 받아 와야 한다 — 없으면 네이티브 인증이 붙지
-않는다.
+`member-app/android/` 과 `member-app/ios/` 가 있다. `npx cap add` 로 만들었고,
+**`member-app` 안에서** 불렀다.
 
-넣을 자리는 각각 `member-app/android/app/` 과
-`member-app/ios/App/App/` 이다.
+### 여기 `package.json` 이 있는 이유
+
+Capacitor CLI 는 실행한 폴더에 `package.json` 이 없으면 시작하지 않는다. 그런데
+그 파일은 자리 채우기가 아니다 -- CLI 는 **그 파일의 의존성만 읽어** 네이티브에
+넣을 플러그인을 고른다 (`@capacitor/cli` 의 `plugin.js`).
+
+그래서 이 파일이 회원 앱의 플러그인 경계다. 루트에는 카메라·녹음기·음성인식이
+있지만 여기 적지 않았으므로 회원 앱에 들어가지 않는다. 실제로 `cap add` 가
+찾은 플러그인은 하나였다.
+
+```
+[info] Found 1 Capacitor plugin for android:
+       @capacitor-firebase/authentication@8.3.0
+```
+
+권한이 딸려 들어가면 스토어가 "회원 조회 앱이 왜 마이크가 필요하냐" 고 묻고,
+답할 말이 없다.
+
+**`member-app` 안에서 `npm install` 을 하지 않는다.** 여기 `node_modules` 가
+생기면 같은 플러그인이 두 벌이 되고, 루트의 `postinstall` 패치가 한쪽에만
+걸린다 -- 강사 앱에서 고친 버그가 회원 앱에 살아 있게 된다. Node 해석이
+루트로 올라가게 두고, 대신 버전 범위가 갈라지지 않는지 테스트가 지킨다
+(`tests/member/member-app-shell.test.js`).
+
+### Firebase 설정 파일
+
+| 자리 | 파일 |
+| --- | --- |
+| `member-app/android/app/google-services.json` | Android |
+| `member-app/ios/App/App/GoogleService-Info.plist` | iOS |
+
+**받을 때 파일 안을 열어 본다.** 콘솔에서 내려받으면 두 앱 것이 이름이 같아서
+다운로드 폴더에서 `google-services.json` 과 `google-services (4).json` 으로
+섞인다. 이름으로 집으면 회원 앱에 강사 앱 설정이 들어가고, 그것은 문자 인증이
+조용히 실패할 때까지 드러나지 않는다.
+
+- Android: `client[].client_info.android_client_info.package_name` 에
+  `com.bonitapilates.member` 가 있어야 한다
+- iOS: `BUNDLE_ID` 가 `com.bonitapilates.member` 여야 한다
+
+Android 파일에는 강사 앱 항목도 함께 들어 있다 -- Firebase 가 프로젝트 단위로
+내보내기 때문이고, Gradle 플러그인이 `applicationId` 로 골라 쓴다. 정상이다.

@@ -80,6 +80,93 @@ Capacitor CLI 는 실행한 폴더에 `package.json` 이 없으면 시작하지 
 Android 파일에는 강사 앱 항목도 함께 들어 있다 -- Firebase 가 프로젝트 단위로
 내보내기 때문이고, Gradle 플러그인이 `applicationId` 로 골라 쓴다. 정상이다.
 
+**iOS 는 파일을 넣는 것만으로 끝나지 않는다.** `cap add` 로 만든 Xcode
+프로젝트는 그 파일을 모른다 -- 폴더에 있어도 번들에 복사되지 않고, 앱은
+Firebase 없이 뜬다. 그러면 문자 인증이 "안 된다" 가 아니라 **아무 일도 안
+일어난다**. `project.pbxproj` 의 Resources 빌드 단계에 걸어 뒀고, 테스트가
+그것을 지킨다.
+
+## 지문 두 종류 — 둘 다 등록한다
+
+Android 문자 인증은 Play Integrity 로 앱을 확인하는데, 그 확인은 **앱에 실제로
+서명된 인증서**를 본다. 그리고 그 인증서가 두 개다.
+
+| | 언제 쓰이나 | 어디서 얻나 |
+| --- | --- | --- |
+| **업로드 키** | PC 에서 만든 APK·AAB 를 직접 설치해 시험할 때 | `keytool` (아래) |
+| **앱 서명 키** | **Play 로 받은 앱 전부** — 내부·비공개 테스트 포함 | Play Console |
+
+**앱 서명 키 쪽이 진짜 필요한 것이다.** Play 앱 서명을 쓰면 스토어가 업로드된
+번들을 구글이 관리하는 키로 다시 서명한다. 업로드 키 지문만 등록하면 PC 에서
+직접 설치한 것만 문자 인증이 되고, **테스터가 Play 로 받은 앱은 안 된다** --
+그런데 화면은 reCAPTCHA 를 띄우므로 고장처럼 보이지 않는다.
+
+업로드 키 지문:
+
+```powershell
+# storeFile · keyAlias · 비밀번호는 keystore.properties 에 있다
+keytool -list -v -keystore <storeFile> -alias <keyAlias>
+```
+
+앱 서명 키 지문은 **첫 AAB 를 올린 뒤에** 생긴다:
+
+Play Console → 앱 선택 → **테스트 및 출시** → **설정** → **앱 서명** →
+**앱 서명 키 인증서** 의 SHA-256
+
+둘 다 Firebase 콘솔 → **프로젝트 설정** → **내 앱** → `com.bonitapilates.member`
+→ **디지털 지문 추가** 에 넣는다.
+
+**`google-services.json` 을 다시 받을 필요는 없다.** 지문 확인은 Play Integrity
+가 서버에서 한다. 다시 받아야 하는 것은 구글 로그인을 쓸 때 (`oauth_client` 의
+`certificate_hash`) 인데 회원 앱은 번호 인증만 쓴다.
+
+## APNs — iOS 문자 인증이 조용히 reCAPTCHA 로 가지 않게
+
+iOS 전화 인증은 **무음 푸시**로 기기를 확인한다. 그 길이 막히면 실패하지 않고
+reCAPTCHA 로 되돌아간다 -- 고장이 아니라 "느리고 이유 없는 문턱" 으로 보여서,
+빠진 줄 모른 채 쓰게 된다.
+
+필요한 것이 셋이고, 하나는 코드에 이미 있다.
+
+1. **푸시 권한 (코드)** — `member-app/ios/App/App/App.entitlements` 의
+   `aps-environment`, 그리고 `project.pbxproj` 두 빌드 설정의
+   `CODE_SIGN_ENTITLEMENTS`. 들어가 있다
+2. **App ID 에 Push Notifications 체크** — Apple Developer →
+   Certificates, Identifiers & Profiles → **Identifiers** →
+   `com.bonitapilates.member` → Push Notifications
+3. **APNs 인증 키를 Firebase 에** — 아래
+
+APNs 인증 키는 **앱이 아니라 팀 단위**다. 강사 앱에 이미 올렸으면 **같은 `.p8`
+을 회원 앱 항목에도 올리면 된다** -- 새로 만들지 않는다 (팀당 최대 2개다).
+
+새로 만드는 경우:
+
+1. Apple Developer → **Account** → **Certificates, Identifiers & Profiles**
+2. 왼쪽 **Keys** → **＋**
+3. 이름을 적고 **Apple Push Notifications service (APNs)** 체크 →
+   **Continue** → **Register**
+4. **Download** — `.p8` 은 **이 화면에서 한 번만** 받는다. 다시 못 받는다
+5. **Key ID** 는 같은 화면에 있고 파일 이름에도 있다
+   (`AuthKey_ABCD123456.p8` → `ABCD123456`)
+6. **Team ID** 는 Apple Developer → **Account** → **Membership details**
+
+Firebase 에 올리기:
+
+7. Firebase 콘솔 → **프로젝트 설정** → **클라우드 메시징**
+8. **Apple 앱 구성** 에서 `com.bonitapilates.member` 항목 (강사 앱과 별도다)
+9. **APNs 인증 키 → 업로드** → `.p8` 선택 → Key ID · Team ID 입력
+
+### `aps-environment` 가 development 인 것
+
+Xcode 가 푸시 권한을 켤 때 적는 값이고, 저장소에 들어가는 값도 이것이다.
+App Store 배포용으로 아카이브할 때 도구가 `production` 으로 바꾼다.
+
+**첫 Codemagic 빌드에서 한 번 확인한다.** 배포된 앱의 실제 권한은 이렇게 본다:
+
+```bash
+codesign -d --entitlements :- /path/to/App.app
+```
+
 ### 서명
 
 강사 앱과 **같은 업로드 키**를 쓴다. 다만 설정 파일은 이 폴더의 것을 읽는다.
@@ -105,8 +192,9 @@ member-app/android/keystore.properties
 
 ### 아직 안 한 것
 
-- **Firebase 콘솔에 SHA 지문 등록** (Android). 없으면 Play Integrity 로
-  확인하지 못하고 문자 인증이 웹뷰 reCAPTCHA 로 되돌아간다
-- **APNs 키 등록** (iOS). 없으면 같은 이유로 reCAPTCHA 가 뜬다
+- **Play Console 에 앱 만들기** → 첫 AAB 업로드 → 앱 서명 키 지문 등록
+- **App Store Connect 에 회원 앱 등록** → Codemagic 회원 앱 워크플로
+  (`codemagic.yaml` 에 아직 없다 -- 강사 앱 워크플로 하나뿐이다)
+- SHA 지문 · APNs 키 등록 (위)
 - 앱 아이콘 · 스플래시
 - 푸시 알림 (2단계)

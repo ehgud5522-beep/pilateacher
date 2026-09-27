@@ -240,3 +240,33 @@ test("회원 앱은 자기 폴더의 키 설정을 읽는다", async () => {
   assert.match(gradle, /rootProject\.file\('keystore\.properties'\)/);
   assert.doesNotMatch(gradle, /\.\.\/\.\.\/android/);
 });
+
+test("회원 앱 번들에 Firebase 설정이 실제로 들어간다", async () => {
+  /* **디스크에 있는 것과 번들에 들어가는 것은 다르다.** cap add 로 만든
+     프로젝트는 GoogleService-Info.plist 를 모른다 -- 파일을 폴더에 넣어 둬도
+     Xcode 가 복사하지 않고, 앱은 Firebase 없이 뜬다. 그러면 문자 인증이
+     "안 된다" 가 아니라 **아무 일도 안 일어난다**. */
+  const pbxproj = await read("member-app/ios/App/App.xcodeproj/project.pbxproj");
+  assert.match(pbxproj, /GoogleService-Info\.plist in Resources/);
+  assert.match(pbxproj, /isa = PBXFileReference[^;]*;[^\n]*GoogleService-Info/);
+});
+
+test("푸시 권한이 있어야 iOS 전화 인증이 무음 푸시로 끝난다", async () => {
+  /* 없으면 실패하지 않고 reCAPTCHA 로 되돌아간다 -- 고장이 아니라 문턱으로
+     보여서, 빠진 줄 모른 채 쓰게 된다. */
+  const entitlements = await read("member-app/ios/App/App/App.entitlements");
+  assert.match(entitlements, /<key>aps-environment<\/key>/);
+
+  const pbxproj = await read("member-app/ios/App/App.xcodeproj/project.pbxproj");
+  const links = pbxproj.match(/CODE_SIGN_ENTITLEMENTS = ([^;]+);/g) || [];
+  assert.equal(links.length, 2, "Debug 와 Release 둘 다 걸려야 한다");
+  assert.equal(new Set(links).size, 1, `설정마다 다른 파일을 가리킨다: ${links.join(" / ")}`);
+  assert.match(links[0], /App\/App\.entitlements/);
+});
+
+test("회원 앱은 애플 로그인을 켜지 않는다", async () => {
+  /* 강사 앱 entitlements 를 베껴 오면 따라온다. 회원은 번호 하나로
+     들어오고, 켜 두면 심사에서 "이 기능이 어디 있냐" 를 듣는다. */
+  const entitlements = await read("member-app/ios/App/App/App.entitlements");
+  assert.doesNotMatch(entitlements, /applesignin/);
+});

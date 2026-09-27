@@ -37,6 +37,7 @@ import { normalizePhone } from "../../data/repositories/client-repository.js";
 import { isDeductablePass, remainingCountOf } from "../../data/repositories/pass-repository.js";
 import { PAY_CATEGORY_LABELS } from "../../data/schema/display-names.js";
 import { partnerClientId, passBelongsTo } from "../../data/schema/pass-clients.js";
+import { EXPIRY_REASON_LABELS, clientExpiry } from "../../data/schema/instructor-scope.js";
 
 /** 이 줄이 어디서 왔는가. 화면이 이 값으로 무엇을 말할지 정한다. */
 export const ROSTER_SOURCE = Object.freeze({
@@ -64,6 +65,15 @@ const count = (value) => (Number.isFinite(Number(value)) ? Number(value) : 0);
 
 /** 조직 회원권에서 오는 값. 쓸 수 있는 회차만 센다 -- 만료·취소분은 빼고. */
 function passFactsFor(clientId, passes, now) {
+  /* 만료 판정은 여기서 하지 않는다. functions/shared/instructor-scope.mjs 가
+     정하고 트리거와 대표 화면도 같은 것을 쓴다 -- 화면이 따로 세면 같은 회원이
+     한쪽에서는 만료이고 다른 쪽에서는 아니게 된다.
+
+     소진의 만료일은 원장에 있고 기기에는 없다. 그래서 날짜는 비고 사유만
+     남는다 -- 지어내지 않는다. */
+  const mine = passes.filter((pass) => passBelongsTo(pass, clientId));
+  const expiry = clientExpiry(mine, { now });
+
   let remaining = 0;
   /* 이용권 카드가 묻는 세 가지. 회원권에 다 있는데 아무도 옮겨 오지 않아
      "미등록 · 미설정 · 결제 내역 없음" 으로 비어 있었다 -- 잔여만 29회라고
@@ -112,6 +122,12 @@ function passFactsFor(clientId, passes, now) {
        화면이 한 카드 안에서 서로 다른 회원권을 말하지 않게. */
     partnerClientId: expiryPass ? partnerClientId(expiryPass, clientId) : "",
     instructorIds: [...instructorIds],
+    /* 회원권이 한 장도 없는 회원은 만료가 아니다 -- 아직 시작하지 않은
+       것이고, 그 둘을 한 칩에 넣으면 대표가 재등록 상담을 할 사람과 첫
+       발급을 할 사람을 구별하지 못한다. */
+    expired: mine.length > 0 && expiry.expired,
+    expiryReason: expiry.reason,
+    expiryLabel: EXPIRY_REASON_LABELS[expiry.reason] || "",
   };
 }
 
@@ -182,6 +198,9 @@ export function mergeRoster(input = {}) {
     const facts = passFactsFor(client.id, passes, now);
     const shared = {
       orgClientId: client.id,
+      orgExpired: facts.expired,
+      orgExpiryReason: facts.expiryReason,
+      orgExpiryLabel: facts.expiryLabel,
       orgRemaining: facts.remaining,
       orgInstructorIds: facts.instructorIds,
       /* 레거시 잔여를 눌러 내린다. 화면의 left() 가 orgRemaining 을 더하므로
@@ -238,6 +257,9 @@ export function mergeRoster(input = {}) {
     .map((member) => ({
       ...member,
       orgClientId: "",
+      orgExpired: false,
+      orgExpiryReason: "",
+      orgExpiryLabel: "",
       orgRemaining: 0,
       orgInstructorIds: [],
       regular: 0,
@@ -287,6 +309,18 @@ export const rosterHideKey = (member) => text(member?.orgClientId) || text(membe
 
 /** 이 줄이 조직 목록을 거쳐 왔는가. 옛 차감 경로를 막는 판정이다. */
 export const isRosterMember = (member) => Boolean(member?.rosterSource);
+
+/**
+ * 살아 있는 회원권이 하나도 없는 회원인가.
+ *
+ * 회원권이 **한 장도 없는** 회원은 여기 들어오지 않는다 -- 아직 시작하지 않은
+ * 것이고, 그 둘을 한 칩에 넣으면 재등록 상담을 할 사람과 첫 발급을 할 사람을
+ * 구별하지 못한다.
+ */
+export const isExpiredRosterMember = (member) => member?.orgExpired === true;
+
+/** 왜 끝났는가. "소진" 과 "기간 만료" 는 상담에서 할 말이 다르다. */
+export const rosterExpiryLabel = (member) => text(member?.orgExpiryLabel);
 
 /** 센터에 등록되지 않은 회원인가. 화면이 구역을 나누는 데 쓴다. */
 export const isUnlinkedLocalMember = (member) => member?.rosterSource === ROSTER_SOURCE.LOCAL_ONLY;

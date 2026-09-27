@@ -229,3 +229,25 @@ export async function createClient(organizationId, input, options = {}) {
   await store.create(paths.client(organization, clientId), document);
   return { clientId, ...document };
 }
+
+/**
+ * 기기 청소 직전의 사본을 남긴다. **이 쓰기가 성공해야만 지운다.**
+ *
+ * 규칙은 만들기만 허용한다 -- 같은 날 두 번째 청소는 덮어쓰기 금지에 막히고,
+ * 그때는 지우지 않는다. 한 번 남긴 사본이 그날의 되돌릴 자리로 남는다.
+ *
+ * 읽는 사람은 대표뿐이다. users/{uid} 밑에 두면 강사가 남의 회원 기록을 계속
+ * 가지게 되고, 이 작업 전체가 없애려는 것이 그것이다.
+ *
+ * @param {string} organizationId @param {string} snapshotId
+ * @param {object} payload @param {{ store?: ClientStore }} [options]
+ */
+export async function saveScopeSnapshot(organizationId, snapshotId, payload, options = {}) {
+  const { store = createFirestoreClientStore() } = options;
+  const organization = requiredText(organizationId, "organizationId");
+  const id = requiredText(snapshotId, "snapshotId");
+  await store.create(
+    `${paths.organization(organization)}/scopeSnapshots/${id}`,
+    { ...payload, createdAt: await store.serverTimestamp() },
+  );
+}

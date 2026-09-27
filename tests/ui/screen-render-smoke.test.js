@@ -44,6 +44,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "회원 상세 · 강사",
     "회원 상세 · 대표",
     "회원 목록 · 강사",
+    "회원 목록 · 만료",
     "회원 목록 · 대표",
     "회원 상세 · 여정",
     "체형분석 목록",
@@ -54,9 +55,11 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 개인 모드",
     "더보기 탭 · 소속 확인 실패",
     "더보기 탭 · 월간 리포트",
+    "더보기 탭 · 월간 리포트 · 조회 실패",
     "더보기 탭 · 월간 리포트 · 개인 모드",
     "더보기 탭 · 센터 정보",
     "더보기 탭 · 센터 정보 · 개인 모드",
+    "더보기 탭 · 센터 정보 · 강사",
     "센터 회원 상세",
     "센터 회원 상세 · 대표",
     "센터 회원 상세 · 차감 보정 확인",
@@ -126,6 +129,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "번호 점검",
     "번호 점검 · 이상 없음",
     "번호 점검 · 조회 실패",
+    "만료 회원 · 강사",
+    "만료 회원 · 조회 실패",
     "담당 강사",
     "담당 강사 · 빠진 회원",
     "담당 강사 · 아직 안 돌았음",
@@ -620,7 +625,8 @@ test("an instructor sees the centre's members, so there is nothing to re-registe
 
   /* 기본값은 "내 회원"이다. 120명에서 자기 8명을 찾게 만들면 그 화면은 쓰이지
      않고, 강사는 자기 명단을 따로 만들기 시작한다. */
-  assert.match(mine, /내 회원 1명 · 전체 3명/);
+  /* 픽스처에 만료 회원이 하나 늘었다 (2026-09-27, 소진 표시 확인용). */
+  assert.match(mine, /내 회원 2명 · 전체 4명/);
   assert.match(mine, /김하나/, "내 회원은 보인다");
   assert.doesNotMatch(mine, /박서연/, "다른 강사의 회원은 기본값에서 빠진다");
 
@@ -638,7 +644,7 @@ test("an instructor sees the centre's members, so there is nothing to re-registe
 
   // 전체로 바꾸면 센터의 모든 회원이 보인다. 경계가 아니라 편의다.
   const all = markupOf("회원 목록 · 소속 강사 · 전체");
-  assert.match(all, /내 회원 0명 · 전체 3명/);
+  assert.match(all, /내 회원 0명 · 전체 4명/);
 
   /* 못 읽었으면 빈 목록을 보여주지 않는다. 빈 목록은 "센터에 회원이 없다"로
      읽히고, 그 다음 행동이 바로 다시 등록이다. */
@@ -1123,8 +1129,14 @@ test("the centre group stands only where there is something in it", async (t) =>
   }
 
   /* 센터 정보는 내 설정 쪽이다. 이름은 "센터"지만 세 값 모두 기기에 저장되고
-     이 기기의 일정과 레거시 급여 추정에만 쓰인다. */
-  assert.match(markupOf("더보기 탭 · 강사"), /센터 정보/);
+     이 기기의 일정과 레거시 급여 추정에만 쓰인다.
+
+     ── 소속 센터의 강사에게는 없다 (2026-09-27) ──
+     그 사람에게 이 화면은 아무것도 바꾸지 못하는 칸 셋이다. 센터명을 고쳐도
+     센터가 바뀌지 않고, 그룹 단가를 고쳐도 급여가 바뀌지 않는다 -- 그쪽은
+     회원권 원장이 정한다. 바꿀 수 있는 것처럼 보이는 자리가 실은 아무것도
+     아닌 것이 제일 나쁘다. */
+  assert.doesNotMatch(markupOf("더보기 탭 · 강사"), /센터 정보/);
   assert.match(owner, /이 기기의 센터명 · 담당자 · 그룹 단가/);
   const legacyHub = markupOf("더보기 탭 · 개인 모드");
   assert.match(legacyHub, /센터명 · 담당자 · 그룹 단가/);
@@ -1405,18 +1417,23 @@ test("the card shows the month total and nothing else", async (t) => {
   assert.doesNotMatch(card, /최근 차감/);
 });
 
-test("the legacy monthly report says it counts something else in a centre", async (t) => {
-  /* 같은 "예상 급여"라는 말이 두 곳에서 다른 뜻이면 강사가 어느 쪽을 믿어야
-     할지 알 수 없다. 소속 모드에서는 이 화면이 무엇을 세는지 밝힌다. */
+test("the monthly report no longer counts something else in a centre", async (t) => {
+  /* ── 2026-09-27 에 뒤집힌 테스트 ────────────────────────────────────
+     예전에는 이 화면이 기기 일정과 회원별 단가로 따로 계산했고, 이 검사는
+     "무엇을 세는지 밝히는가" 를 고정했다. 밝히는 것으로는 부족했다 -- 일정
+     탭이 50,000 인데 여기는 0 이면, 무엇을 세는지 알아도 강사는 어느 쪽이
+     자기 급여인지 모른다.
+
+     이제 두 화면이 같은 객체를 쓴다. 밝힐 차이가 없다. */
   const markupOf = await issueScreens(t);
   const inOrganization = markupOf("더보기 탭 · 월간 리포트");
-  assert.match(inOrganization, /기기에 저장된 일정과 회원별 단가로 계산합니다/);
-  assert.match(inOrganization, /일정 탭의 예상 급여/);
+  assert.doesNotMatch(inOrganization, /기기에 저장된 일정과 회원별 단가로 계산합니다/);
+  assert.match(inOrganization, /회원권 원장에서 차감된 수업료/);
 
-  // 미소속 개인 강사에게는 지금 문구 그대로다.
+  // 미소속 개인 강사에게는 원장이 없다. 지금 문구 그대로다.
   const personal = markupOf("더보기 탭 · 월간 리포트 · 개인 모드");
   assert.match(personal, /완료·차감 처리된 수업과 센터\/회원별 단가를 기준으로 계산합니다/);
-  assert.doesNotMatch(personal, /일정 탭의 예상 급여/);
+  assert.doesNotMatch(personal, /회원권 원장에서 차감된 수업료/);
 });
 
 /* 센터 회원 상세. 분쟁이 생겼을 때 여는 화면이라 "몇 회 남았나"와 "언제 무엇이
@@ -2160,6 +2177,91 @@ test("nothing wrong and could not read are different screens", async (t) => {
   assert.doesNotMatch(failed, /깨진 번호가 없습니다/);
 });
 
+test("the centre settings screen does not open for an instructor", async (t) => {
+  /* 강사에게 이 화면은 아무것도 바꾸지 못하는 칸 셋이다. 센터명을 고쳐도
+     센터가 바뀌지 않고, 그룹 단가를 고쳐도 급여가 바뀌지 않는다 -- 그쪽은
+     회원권 원장이 정한다. 바꿀 수 있는 것처럼 보이는 자리가 실은 아무것도
+     아닌 것이 제일 나쁘다.
+
+     메뉴에서 빼는 것만으로는 부족하다. 뒤로 가기나 저장된 화면 상태로 이
+     자리에 다시 닿을 수 있다. */
+  const markupOf = await issueScreens(t);
+  const instructor = markupOf("더보기 탭 · 센터 정보 · 강사");
+  assert.doesNotMatch(instructor, /센터 기본 정보/);
+
+  const owner = markupOf("더보기 탭 · 센터 정보");
+  assert.match(owner, /센터 기본 정보/);
+
+  /* 미소속 개인 강사에게는 그대로 보인다. 그 사람에게는 이 세 값이 유일한
+     설정이고, 월간 리포트가 실제로 그것으로 계산한다. */
+  const legacy = markupOf("더보기 탭 · 센터 정보 · 개인 모드");
+  assert.match(legacy, /센터 기본 정보/);
+});
+
+test("the monthly report and the schedule tab show the same pay", async (t) => {
+  /* 예전에는 이 화면이 기기 일정과 회원별 단가로 따로 계산했다. 그래서 일정
+     탭이 50,000 인데 여기는 0 이었다 -- 같은 "예상 급여" 라는 말이 두 곳에서
+     다른 뜻이었고, 강사는 어느 쪽을 믿어야 할지 알 수 없었다.
+
+     이제 일정 탭이 읽은 **그 객체를 그대로 받는다.** 다시 읽지도 않으므로
+     다를 수가 없다. */
+  const markupOf = await issueScreens(t);
+  const report = markupOf("더보기 탭 · 월간 리포트");
+  assert.match(report, /137,500/);
+  assert.match(report, /같은 값/);
+  assert.match(report, /차감된 수업/);
+  /* 원장에는 노쇼와 취소가 없다. 0건으로 보이면 "한 건도 없었다" 로 읽힌다. */
+  assert.doesNotMatch(report, />노쇼</);
+  assert.match(report, /노쇼와 취소는 여기서 세지 않습니다/);
+
+  /* 0원과 못 읽음은 다르다. 0원을 보고 넘어가면 그 달 정산에서야 안다. */
+  const failed = markupOf("더보기 탭 · 월간 리포트 · 조회 실패");
+  assert.match(failed, /코드 permission-denied/);
+  assert.doesNotMatch(failed, /₩0/);
+
+  /* 미소속 개인 강사에게는 원장이 없다. 기존 계산이 그대로 유일한 답이다. */
+  const legacy = markupOf("더보기 탭 · 월간 리포트 · 개인 모드");
+  assert.match(legacy, /완료·차감 처리된 수업과 센터/);
+});
+
+test("the expiry report says how many are still inside the 30-day window", async (t) => {
+  /* 재등록 창이 30일이라, 달 중간에는 이번 달 만료의 대부분이 아직 정해지지
+     않았다. 그것을 "안 돌아옴" 으로 세면 매달 초마다 재등록률이 떨어진 것처럼
+     보인다. 지난달은 정해져 있다. */
+  const markupOf = await issueScreens(t);
+  const report = markupOf("만료 회원 · 강사");
+  assert.match(report, /2명 중 1명이 다시 등록했습니다/);
+  assert.match(report, /돌아온/);
+  assert.match(report, /안돌아온/);
+  assert.match(report, /재등록/);
+  assert.doesNotMatch(report, /아직 30일/, "지난달은 이미 정해졌다");
+
+  const failed = markupOf("만료 회원 · 조회 실패");
+  assert.match(failed, /코드 permission-denied/);
+  assert.doesNotMatch(failed, /만료된 회원이 없습니다/, "못 읽은 것을 없는 것으로 보이면 안 된다");
+});
+
+test("the member tab separates ongoing from expired, and says why it ended", async (t) => {
+  /* 만료 회원은 사라지지 않는다 -- 담당 강사에게 계속 보이고 재등록 상담의
+     대상이다. 다만 같은 목록에 섞이면 "오늘 수업할 사람" 을 찾는 데 매번
+     지나쳐야 한다.
+
+     "소진" 과 "기간 만료" 를 가르는 것은 상담에서 할 말이 다르기 때문이다 --
+     "다 쓰셨어요" 와 "기간이 지났어요" 는 같은 만료가 아니다. */
+  const markupOf = await issueScreens(t);
+  const list = markupOf("회원 목록 · 대표");
+  assert.match(list, /운영중/);
+  assert.match(list, /만료/);
+  /* 기본은 운영중이다. 전체를 먼저 보여 주면 목록이 길고, 그 길이의 대부분이
+     지금 할 일이 아니다. */
+  assert.doesNotMatch(list, /최다 쓴/, "만료 회원은 기본 화면에 없다");
+
+  const expired = markupOf("회원 목록 · 만료");
+  assert.match(expired, /최다 쓴/);
+  assert.match(expired, /소진/, "왜 끝났는지 말한다");
+  assert.doesNotMatch(expired, /김하나/, "운영중 회원은 만료 칩에 없다");
+});
+
 test("the owner is the only one told a member is missing from the centre", async (t) => {
   /* 강사 쪽 문구는 unlinkedNotice 의 단위 테스트가 고정한다 (화면 픽스처의
      강사 목록에는 못 맞춘 줄이 없다). 여기서는 대표 화면이 그 문장을 계속
@@ -2181,6 +2283,12 @@ test("the instructor-scope screen separates three states that all end in one but
   assert.match(ok, /강사별 담당 회원/);
 
   const missing = markupOf("담당 강사 · 빠진 회원");
+  /* 강사 앱 버전. 낡은 앱 한 명이라도 있으면 "켜도 된다" 고 말하지 않는다 --
+     그 사람의 회원 목록이 잠금 아래서 통째로 멈춘다. */
+  assert.match(missing, /강사 앱 버전/);
+  assert.match(missing, /낡은 앱 1명/);
+  assert.doesNotMatch(missing, /규칙을 켜도 됩니다/);
+  assert.match(missing, /앱을 연 적 없음/, "안 연 사람도 줄이 서야 한다");
   assert.match(missing, /운영중인 회원 2명에게 담당 강사가 없습니다/);
   /* 숫자만으로는 누가 빠졌는지 알 수 없다. 이름이 함께 서야 대표가 "이 사람은
      회원권을 내줘야 한다" 를 판단할 수 있다. */

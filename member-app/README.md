@@ -79,3 +79,34 @@ Capacitor CLI 는 실행한 폴더에 `package.json` 이 없으면 시작하지 
 
 Android 파일에는 강사 앱 항목도 함께 들어 있다 -- Firebase 가 프로젝트 단위로
 내보내기 때문이고, Gradle 플러그인이 `applicationId` 로 골라 쓴다. 정상이다.
+
+### 서명
+
+강사 앱과 **같은 업로드 키**를 쓴다. 다만 설정 파일은 이 폴더의 것을 읽는다.
+
+```
+member-app/android/keystore.properties
+```
+
+`android/keystore.properties` 와 같은 모양이고 (`storeFile` `storePassword`
+`keyAlias` `keyPassword`), **저장소에 들어가지 않는다.** 대표 PC 에만 있다.
+`storeFile` 은 절대 경로로 적으면 두 앱이 같은 키 파일을 가리킬 수 있다.
+
+없으면 `release` 작업이 시작하는 자리에서 멈춘다. 서명 안 된 번들은 Play 가
+거절하는데, 그 사실은 업로드까지 가서야 드러나기 때문이다.
+
+## 1단계에 들어간 것
+
+| | |
+| --- | --- |
+| 네이티브 문자 인증 | `member/src/phone-auth.js` · 웹뷰 reCAPTCHA 를 안 태운다 |
+| 계정 삭제 | `functions/src/member-account.js` · App Store 5.1.1(v) |
+| 오프라인 표시 | `member/src/offline-cache.js` · 14일까지, 나이를 함께 |
+
+### 아직 안 한 것
+
+- **Firebase 콘솔에 SHA 지문 등록** (Android). 없으면 Play Integrity 로
+  확인하지 못하고 문자 인증이 웹뷰 reCAPTCHA 로 되돌아간다
+- **APNs 키 등록** (iOS). 없으면 같은 이유로 reCAPTCHA 가 뜬다
+- 앱 아이콘 · 스플래시
+- 푸시 알림 (2단계)

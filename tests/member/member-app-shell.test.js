@@ -216,3 +216,27 @@ test("회원 앱은 웹에서도 돌아야 한다 — 플러그인을 늦게 부
   assert.match(firebase, /await import\("@capacitor-firebase\/authentication"\)/);
   assert.doesNotMatch(firebase, /^import .*@capacitor/m);
 });
+
+test("서명 없이 release 가 나가지 않는다", async () => {
+  /* 서명 안 된 번들은 Play 가 거절하는데, 그 사실은 업로드까지 가서야
+     드러난다. 강사 앱과 같은 자리에서 멈춘다. */
+  const gradle = await read("member-app/android/app/build.gradle");
+  assert.match(gradle, /signingConfig signingConfigs\.release/);
+  assert.match(gradle, /gradle\.taskGraph\.whenReady/);
+  assert.match(gradle, /must contain all release signing values/);
+});
+
+test("서명 비밀번호는 저장소에 없다", async () => {
+  /* 두 앱이 같은 업로드 키를 쓴다. 한쪽이 새면 둘 다 새는 것이다. */
+  const ignore = await read(".gitignore");
+  assert.match(ignore, /^android\/keystore\.properties$/m);
+  assert.match(ignore, /^member-app\/android\/keystore\.properties$/m);
+});
+
+test("회원 앱은 자기 폴더의 키 설정을 읽는다", async () => {
+  /* rootProject.file 이 member-app/android 를 가리킨다. 강사 앱 폴더를
+     올려다보게 적으면 두 앱의 빌드가 한 파일에 묶인다. */
+  const gradle = await read("member-app/android/app/build.gradle");
+  assert.match(gradle, /rootProject\.file\('keystore\.properties'\)/);
+  assert.doesNotMatch(gradle, /\.\.\/\.\.\/android/);
+});

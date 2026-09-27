@@ -110,7 +110,7 @@ import {
   REVIEW_DEMO_BADGE, isReviewDemo, reviewDemoClientIds, visibleToRole,
 } from "./features/members/review-demo.js";
 import {
-  MEMBER_NOTE_MAX, memberNoteSaveFailure, readMemberNote, saveMemberNote,
+  MEMBER_NOTE_MAX, memberNoteReadFailure, memberNoteSaveFailure, readMemberNote, saveMemberNote,
 } from "./data/repositories/member-note-repository.js";
 import {
   createProduct, listProducts, productBaseUnitPrice, setProductStatus,
@@ -2929,7 +2929,9 @@ function SchedMemberNote({ lessonId, clientId, settled, onRead, onSave, onToast 
       } catch (error) {
         /* 못 읽은 것과 안 쓴 것은 다르다. 빈 칸으로 그려 두면 강사는 지웠다고
            읽고 그 위에 덮어쓴다. */
-        if (alive) setReadError(`이전에 보낸 말을 불러오지 못했어요 (코드 ${String(error?.code || "unknown")})`);
+        /* 종류마다 할 일이 다르다. permission-denied 를 "불러오지 못했어요"
+           하나로 보내면 강사는 연결 문제인지 권한 문제인지 알 수 없다. */
+        if (alive) setReadError(memberNoteReadFailure(error).message);
       } finally {
         if (alive) setLoaded(true);
       }

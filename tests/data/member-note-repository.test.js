@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  MEMBER_NOTE_MAX, memberNoteId, memberNoteSaveFailure, readMemberNote, saveMemberNote,
-  trimMemberNote,
+  MEMBER_NOTE_MAX, MEMBER_NOTE_STAGE, memberNoteId, memberNoteReadFailure,
+  memberNoteSaveFailure, readMemberNote, saveMemberNote, trimMemberNote,
 } from "../../src/data/repositories/member-note-repository.js";
 
 /**
@@ -146,7 +146,9 @@ test("못 읽은 것은 빈 문자열이 아니라 오류로 나간다", async (
 
 test("실패는 종류별로 다른 말을 하고, 코드를 늘 함께 보여준다", () => {
   const rows = [
-    ["permission-denied", "permission", false, /처음 쓴 강사만/],
+    /* permission-denied 하나에 여러 원인이 있다. 단계와 사실을 모를 때는
+       짐작하지 않는다 -- 아래에 경우별 테스트가 따로 있다. */
+    ["permission-denied", "permission", false, /권한이 없어요/],
     ["unavailable", "network", true, /연결이 불안정/],
     ["deadline-exceeded", "network", true, /연결이 불안정/],
     ["unauthenticated", "authentication", false, /다시 로그인/],
@@ -167,4 +169,107 @@ test("코드가 아예 없어도 추적할 것을 남긴다", () => {
   const failure = memberNoteSaveFailure(new Error("terse"));
   assert.equal(failure.kind, "unknown");
   assert.match(failure.message, /코드 unknown/);
+});
+
+/* ── permission-denied 를 한 문구로 뭉개지 않는다 ─────────────────────
+
+   폰에서 실제로 났던 일: 아직 시작하지 않은 수업에 처음 말을 쓰려는데
+   "이 메시지는 처음 쓴 강사만 고칠 수 있어요" 가 떴다. 그 수업에는 글이
+   아예 없었고, 막힌 것은 쓰기 전에 하는 읽기였다. 강사는 남이 쓴 글이라고
+   읽고 손을 뗐다 -- 문구가 없는 사실을 말한 것이다. */
+
+test("쓰기 전에 하는 읽기가 막힌 것을 남의 글이라고 말하지 않는다", async () => {
+  const store = {
+    read: async () => { const error = new Error("denied"); error.code = "permission-denied"; throw error; },
+    commit: async () => { throw new Error("여기까지 오면 안 된다"); },
+    serverTimestamp: async () => "SERVER_TIME",
+  };
+  await assert.rejects(
+    saveMemberNote("center-a", { lessonId: "lesson-1", clientId: "client-a", memberNote: "말", userId: "u1", store }),
+    (error) => {
+      assert.equal(error.code, "permission-denied");
+      assert.equal(error.stage, MEMBER_NOTE_STAGE.READ);
+      assert.equal(error.authoredByOther, false);
+      const failure = memberNoteSaveFailure(error);
+      assert.match(failure.message, /이전에 보낸 말을 확인하지 못해/);
+      assert.doesNotMatch(failure.message, /처음 쓴 강사만/);
+      assert.match(failure.message, /코드 permission-denied/);
+      return true;
+    },
+  );
+});
+
+test("남의 글이라는 말은 확인됐을 때만 한다", async () => {
+  /* 이미 읽어 둔 문서의 createdBy 가 나와 다른 경우다. 짐작이 아니다. */
+  const store = {
+    read: async () => ({ memberNote: "먼저 쓴 말", createdBy: "instructor-2" }),
+    commit: async () => { const error = new Error("denied"); error.code = "permission-denied"; throw error; },
+    serverTimestamp: async () => "SERVER_TIME",
+  };
+  await assert.rejects(
+    saveMemberNote("center-a", { lessonId: "lesson-1", clientId: "client-a", memberNote: "고친 말", userId: "instructor-1", store }),
+    (error) => {
+      assert.equal(error.stage, MEMBER_NOTE_STAGE.WRITE);
+      assert.equal(error.authoredByOther, true);
+      assert.match(memberNoteSaveFailure(error).message, /처음 쓴 강사만/);
+      return true;
+    },
+  );
+});
+
+test("내가 쓴 글인데 거부되면 다른 말을 한다", async () => {
+  /* 소속이 끊겼거나 규칙이 바뀐 것이다. "처음 쓴 강사만" 은 거짓말이 된다. */
+  const store = {
+    read: async () => ({ memberNote: "내가 쓴 말", createdBy: "instructor-1" }),
+    commit: async () => { const error = new Error("denied"); error.code = "permission-denied"; throw error; },
+    serverTimestamp: async () => "SERVER_TIME",
+  };
+  await assert.rejects(
+    saveMemberNote("center-a", { lessonId: "lesson-1", clientId: "client-a", memberNote: "고친 말", userId: "instructor-1", store }),
+    (error) => {
+      assert.equal(error.authoredByOther, false);
+      const failure = memberNoteSaveFailure(error);
+      assert.match(failure.message, /권한이 없어요/);
+      assert.doesNotMatch(failure.message, /처음 쓴 강사만/);
+      return true;
+    },
+  );
+});
+
+test("처음 쓰는 글이 거부돼도 남의 글이라고 하지 않는다", async () => {
+  const store = {
+    read: async () => null,
+    commit: async () => { const error = new Error("denied"); error.code = "permission-denied"; throw error; },
+    serverTimestamp: async () => "SERVER_TIME",
+  };
+  await assert.rejects(
+    saveMemberNote("center-a", { lessonId: "lesson-1", clientId: "client-a", memberNote: "첫 말", userId: "u1", store }),
+    (error) => {
+      assert.equal(error.authoredByOther, false);
+      assert.doesNotMatch(memberNoteSaveFailure(error).message, /처음 쓴 강사만/);
+      return true;
+    },
+  );
+});
+
+test("읽기 실패는 저장 실패와 다른 말을 한다", () => {
+  /* 읽기 실패는 아직 아무것도 잃지 않은 상태다. 강사가 할 일은 다시 열어
+     보기이지 포기가 아니다. */
+  for (const [code, kind, retryable, pattern] of [
+    ["permission-denied", "permission", false, /열 권한이 없어요/],
+    ["unavailable", "network", true, /연결이 불안정해 불러오지/],
+    ["unauthenticated", "authentication", false, /다시 로그인/],
+    ["something-new", "unknown", false, /불러오지 못했어요/],
+  ]) {
+    const failure = memberNoteReadFailure({ code });
+    assert.equal(failure.kind, kind, code);
+    assert.equal(failure.retryable, retryable, code);
+    assert.match(failure.message, pattern, code);
+    assert.match(failure.message, new RegExp(`코드 ${code}`), code);
+  }
+});
+
+test("단계를 모르면 unknown 으로 남긴다", () => {
+  /* 분류하지 못한 것도 숨기지 않는다. */
+  assert.equal(memberNoteSaveFailure({ code: "unavailable" }).stage, "unknown");
 });

@@ -952,11 +952,28 @@ service cloud.firestore {
         // clients, a query cannot prove "only the notes about me", so listing
         // is for the roles that teach and run the centre; a member still reads
         // their own note one document at a time.
+        // 없는 문서를 읽는 것은 거부가 아니다.
+        //
+        // 화면은 "회원에게 보낼 말" 칸을 열 때 이전에 보낸 말을 먼저 읽는데,
+        // 처음 쓰는 수업에는 그 문서가 없다. 그때 resource 는 null 이고
+        // resource.data 를 보는 순간 규칙이 오류로 끝나 거부된다 -- 앱에는
+        // permission-denied 로 도착해서 "아직 없음" 과 "권한 없음" 이 같은
+        // 얼굴이 된다. 저장도 함께 막혔다: 리포지토리가 쓰기 전에 먼저
+        // 읽기 때문이다(createdAt 을 다시 보내지 않으려고).
+        //
+        // 없는 문서에 대해서는 센터 사람인지만 본다. 아직 아무것도 없으므로
+        // 새어 나갈 것이 없고, 회원은 자기 것이 생긴 뒤에만 읽는다.
         allow get: if isActiveMember(organizationId)
-          && resource.data.organizationId == organizationId
           && (
-            hasRole(organizationId, ["owner", "manager", "instructor"])
-            || resource.data.userId == request.auth.uid
+            resource == null
+              ? hasRole(organizationId, ["owner", "manager", "instructor"])
+              : (
+                resource.data.organizationId == organizationId
+                && (
+                  hasRole(organizationId, ["owner", "manager", "instructor"])
+                  || resource.data.userId == request.auth.uid
+                )
+              )
           );
         allow list: if hasRole(organizationId, ["owner", "manager", "instructor"]);
         allow create: if request.resource.data.organizationId == organizationId

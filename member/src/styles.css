@@ -366,3 +366,15 @@ body {
 .tab svg { width: 21px; height: 21px; }
 .tab.on { color: var(--rose); }
 .tab.on span { font-weight: 700; }
+
+/* 계정 삭제. 되돌릴 수 없는 자리라 홈에서 가장 먼 아래에 두고, 색으로
+   소리치지 않는다 -- 붉은 카드는 지나가던 사람을 누르게 만든다. 읽고
+   내려온 사람에게만 보이면 된다. */
+.danger .cap { font-size: var(--t-caption); color: var(--sub); letter-spacing: .06em; }
+.danger .bullets {
+  margin: 6px 0 0; padding-left: 18px;
+  font-size: var(--t-caption); line-height: 1.85; color: var(--sub);
+}
+.danger .bullets li { word-break: keep-all; }
+/* 지우는 버튼만 로즈다. "그만두기" 가 기본 모양이라 손이 먼저 그쪽으로 간다. */
+.danger .btn.danger { color: var(--rose); border-color: var(--ring); }

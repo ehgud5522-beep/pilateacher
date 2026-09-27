@@ -11,11 +11,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { TYPE } from "../../src/features/ui/type-scale.js";
 import { CENTRE_NAME, CENTRE_TAGLINE } from "./brand.js";
-import { linkMemberAccount, startPhoneSignIn, watchAuth, db } from "./firebase.js";
+import {
+  deleteMemberAccount, linkMemberAccount, signOutMember, startPhoneSignIn, watchAuth, db,
+} from "./firebase.js";
 import { LINK_RESULT, linkResultScreen } from "./link-result.js";
 import { phoneFailureMessage } from "./phone-auth.js";
 import { readMemberLink, readMemberViews } from "./member-data.js";
-import { needsReverification, readVerifiedAt, writeVerifiedAt } from "./session.js";
+import { forgetDevice, needsReverification, readVerifiedAt, writeVerifiedAt } from "./session.js";
 import {
   History, Home, LinkNotice, LoadFailed, Loading, More, NotMigrated, Passes, Preparing,
 } from "./screens.jsx";
@@ -172,6 +174,20 @@ function Member({ userId }) {
 
   useEffect(() => { load(); }, [load]);
 
+  /**
+   * 계정을 지운다. 서버가 끝난 뒤에야 기기를 치운다 -- 순서가 반대면
+   * 서버가 실패했을 때 이 폰만 비어 있고 계정은 살아 있다.
+   *
+   * 지운 뒤에는 화면을 되돌리지 않고 통째로 다시 연다. 지워진 계정의
+   * 화면이 한 순간이라도 남아 있으면 안 된다.
+   */
+  const removeAccount = useCallback(async () => {
+    await deleteMemberAccount();
+    forgetDevice();
+    await signOutMember();
+    window.location.reload();
+  }, []);
+
   if (state.stage === "loading") return <Shell><Loading /></Shell>;
   if (state.stage === "failed") return <Shell><LoadFailed code={state.code} onRetry={load} /></Shell>;
   if (state.stage === "notice") {
@@ -189,7 +205,7 @@ function Member({ userId }) {
   else if (!current.view) body = <Preparing onRetry={load} />;
   else if (tab === "passes") body = <Passes view={current.view} />;
   else if (tab === "history") body = <History view={current.view} />;
-  else if (tab === "more") body = <More view={current.view} />;
+  else if (tab === "more") body = <More view={current.view} onDeleteAccount={removeAccount} />;
   else body = <Home view={current.view} />;
 
   return (

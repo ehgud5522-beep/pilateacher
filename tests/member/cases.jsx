@@ -10,7 +10,8 @@
  */
 
 import {
-  History, Home, LinkNotice, LoadFailed, Loading, More, NotMigrated, Passes, Preparing,
+  DeleteAccount, History, Home, LinkNotice, LoadFailed, Loading, More, NotMigrated,
+  Passes, Preparing,
 } from "../../member/src/screens.jsx";
 import { linkResultScreen } from "../../member/src/link-result.js";
 
@@ -125,6 +126,11 @@ export function memberScreenCases() {
 
     /* 꾸준한 회원. 9월 2·4·8·10·15·17·22·24 -- 넉 주 연속이다. */
     { name: "더보기", element: <More view={view({ history: STEADY, journey: JOURNEY })} now={NOW} /> },
+    {
+      name: "더보기 · 계정 삭제 있음",
+      element: <More view={view({ history: STEADY })} now={NOW} onDeleteAccount={async () => {}} />,
+    },
+    { name: "계정 삭제 · 첫 화면", element: <DeleteAccount onDelete={async () => {}} /> },
     /* 뜸해진 회원. 마지막이 9월 6일이라 18일 지났고, 막대가 내려간다.
        이 화면이 이 탭을 만든 이유다. */
     { name: "더보기 · 뜸해짐", element: <More view={view({ history: FADING })} now={NOW} /> },

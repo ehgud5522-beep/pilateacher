@@ -506,3 +506,25 @@ test("회원 화면 어디에도 금액이 없다", async (t) => {
     assert.doesNotMatch(all, new RegExp(forbidden), `${forbidden} 가 회원 화면에 있다`);
   }
 });
+
+/* ── 계정 삭제 ───────────────────────────────────────────────────────── */
+
+test("계정 삭제는 더보기 맨 아래에만 있다", async (t) => {
+  /* 홈이나 회원권 탭에 두면 잔여를 보러 온 사람이 지나가다 누른다. */
+  const markupOf = await memberScreens(t);
+  const more = markupOf("더보기 · 계정 삭제 있음");
+  assert.match(more, /계정 삭제/);
+  const say = more.indexOf("의견 보내기");
+  assert.ok(say >= 0 && more.indexOf("계정 삭제") > say, "의견 보내기보다 아래다");
+
+  // 넘겨주지 않으면 아예 그리지 않는다 -- 웹 미리보기 같은 자리가 있다.
+  assert.doesNotMatch(markupOf("더보기"), /계정 삭제/);
+});
+
+test("첫 화면에서는 지우는 버튼이 안 나온다", async (t) => {
+  /* 되돌릴 수 없는 버튼이라 두 번 만난다. 첫 번째는 목록을 펴는 것뿐이다. */
+  const markupOf = await memberScreens(t);
+  const first = markupOf("계정 삭제 · 첫 화면");
+  assert.doesNotMatch(first, /네, 지울게요/);
+  assert.match(first, /센터에 등록된 회원 정보와 남은 회원권은 그대로/);
+});

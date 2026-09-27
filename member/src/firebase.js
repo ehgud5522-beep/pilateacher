@@ -9,7 +9,7 @@
 import { initializeApp } from "firebase/app";
 import {
   PhoneAuthProvider, RecaptchaVerifier, getAuth, onAuthStateChanged,
-  signInWithCredential, signInWithPhoneNumber,
+  signInWithCredential, signInWithPhoneNumber, signOut,
 } from "firebase/auth";
 import { getFirestore } from "firebase/firestore/lite";
 import { getFunctions, httpsCallable } from "firebase/functions";
@@ -106,4 +106,22 @@ export async function linkMemberAccount() {
   const call = httpsCallable(functions, "linkMemberAccount");
   const response = await call({});
   return response?.data || null;
+}
+
+/**
+ * 자기 계정을 지운다. **대상을 보내지 않는다** -- 서버는 토큰의 uid 만 쓰고,
+ * 보낸 값은 읽지도 않는다.
+ */
+export async function deleteMemberAccount() {
+  const call = httpsCallable(functions, "deleteMemberAccount");
+  const response = await call({});
+  return response?.data || null;
+}
+
+/**
+ * 로그아웃. 실패해도 던지지 않는다 -- 서버에서 이미 지운 계정이라 여기서
+ * 막힐 이유가 없고, 막혀도 다음 새로고침에 세션이 사라진다.
+ */
+export async function signOutMember() {
+  try { await signOut(auth); } catch (_error) { /* 이미 끊겼다 */ }
 }

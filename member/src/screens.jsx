@@ -14,6 +14,9 @@
 
 import { useMemo, useState } from "react";
 import { TYPE } from "../../src/features/ui/type-scale.js";
+import {
+  DELETED_ITEMS, DELETE_STEP, KEPT_ITEMS, deleteFailureMessage,
+} from "./delete-account.js";
 
 /**
  * 의견을 받는 곳. 링크 하나다.
@@ -502,7 +505,7 @@ const DOW = ["일", "월", "화", "수", "목", "금", "토"];
  *               테스트가 과거 달을 그려 보는 데 쓴다 -- "기록은 여기까지"
  *               처럼 끝에서만 나오는 문구는 거기까지 가 있어야 확인된다.
  */
-export function More({ view, now = new Date(), monthsBack = 0 }) {
+export function More({ view, now = new Date(), monthsBack = 0, onDeleteAccount }) {
   const [back, setBack] = useState(monthsBack);
   const history = Array.isArray(view?.history) ? view.history : [];
   const dates = useMemo(() => attendedDates(history), [history]);
@@ -602,7 +605,74 @@ export function More({ view, now = new Date(), monthsBack = 0 }) {
           카카오톡으로 보내기 <span aria-hidden="true">→</span>
         </a>
       </Card>
+
+      {onDeleteAccount ? <DeleteAccount onDelete={onDeleteAccount} /> : null}
     </div>
+  );
+}
+
+/**
+ * 계정 삭제. 되돌릴 수 없는 버튼이라 **두 번 만난다.**
+ *
+ * 첫 번째는 목록을 펴는 것뿐이고, 거기서 무엇이 사라지고 무엇이 남는지 읽은
+ * 뒤에야 지우는 버튼이 나온다. 목록은 delete-account.js 에 있다 -- 서버가
+ * 실제로 하는 일과 나란히 읽히도록.
+ */
+export function DeleteAccount({ onDelete }) {
+  const [step, setStep] = useState(DELETE_STEP.IDLE);
+  const [failure, setFailure] = useState("");
+
+  const run = async () => {
+    setStep(DELETE_STEP.WORKING);
+    setFailure("");
+    try {
+      await onDelete();
+      /* 화면을 되돌리지 않는다. 부르는 쪽이 로그아웃하고 처음 화면으로
+         보낸다 -- 여기서 "완료" 를 그리면 지워진 계정의 화면이 잠깐 남는다. */
+    } catch (error) {
+      setFailure(text(error?.code) || "unknown");
+      setStep(DELETE_STEP.FAILED);
+    }
+  };
+
+  if (step === DELETE_STEP.IDLE) {
+    return (
+      <Card className="danger">
+        <p className="cap">계정 삭제</p>
+        <p className="muted" style={{ fontSize: TYPE.caption }}>
+          앱 계정을 지웁니다. 센터에 등록된 회원 정보와 남은 회원권은 그대로 있어요.
+        </p>
+        <button type="button" className="btn mt"
+          onClick={() => setStep(DELETE_STEP.CONFIRM)}>계정 삭제</button>
+      </Card>
+    );
+  }
+
+  const working = step === DELETE_STEP.WORKING;
+  return (
+    <Card tone="warn" className="danger">
+      <p className="cap">정말 지울까요?</p>
+
+      <p className="mt" style={{ fontSize: TYPE.caption }}>사라지는 것</p>
+      <ul className="bullets">{DELETED_ITEMS.map((item) => <li key={item}>{item}</li>)}</ul>
+
+      <p className="mt" style={{ fontSize: TYPE.caption }}>그대로 남는 것</p>
+      <ul className="bullets">{KEPT_ITEMS.map((item) => <li key={item}>{item}</li>)}</ul>
+
+      <p className="muted mt" style={{ fontSize: TYPE.caption }}>
+        다시 쓰려면 같은 번호로 처음부터 로그인하면 돼요.
+      </p>
+
+      {failure ? (
+        <p className="note mt" style={{ fontSize: TYPE.caption }}>{deleteFailureMessage(failure)}</p>
+      ) : null}
+
+      <button type="button" className="btn danger mt" disabled={working} onClick={run}>
+        {working ? "지우는 중…" : "네, 지울게요"}
+      </button>
+      <button type="button" className="btn mt" disabled={working}
+        onClick={() => { setStep(DELETE_STEP.IDLE); setFailure(""); }}>그만두기</button>
+    </Card>
   );
 }
 

@@ -281,10 +281,56 @@ const workflows = async () => {
 test("워크플로 둘이 서로 다른 번들을 만든다", async () => {
   const all = await workflows();
   const instructor = all["ios-testflight"].environment.ios_signing.bundle_identifier;
-  const member = all["member-ios-testflight"].environment.ios_signing.bundle_identifier;
+  const member = all["member-ios-testflight"].environment.vars.BUNDLE_ID;
   assert.equal(instructor, "com.pilateacher.app");
   assert.equal(member, "com.bonitapilates.member");
   assert.notEqual(instructor, member);
+});
+
+test("회원 앱은 서명을 스스로 받아 온다", async () => {
+  /* environment.ios_signing 은 Codemagic 이 스크립트보다 **먼저** 도는 자동
+     서명을 켠다. 그런데 그것은 이미 있는 프로필을 가져올 뿐 만들지 않는다 --
+     회원 앱은 프로필이 없어서 첫 빌드가 스크립트 시작 전에 죽었다:
+
+       No matching profiles found for bundle identifier
+       com.bonitapilates.member and distribution type app_store
+
+     그래서 이 워크플로는 그 블록을 두지 않고 직접 받아 온다. 다시 넣으면
+     같은 자리에서 또 죽는다. */
+  const all = await workflows();
+  assert.equal(all["member-ios-testflight"].environment.ios_signing, undefined,
+    "회원 앱은 자동 서명을 쓰지 않는다");
+  /* 강사 앱은 그대로 둔다. 그쪽은 프로필이 있어서 자동 서명으로 돌아간다. */
+  assert.ok(all["ios-testflight"].environment.ios_signing);
+
+  const body = all["member-ios-testflight"].scripts.map((s2) => String(s2.script)).join("\n");
+  assert.match(body, /app-store-connect fetch-signing-files "\$BUNDLE_ID"/);
+  assert.match(body, /--type IOS_APP_STORE/);
+  assert.match(body, /--create/);
+  assert.match(body, /keychain initialize/);
+  assert.match(body, /keychain add-certificates/);
+  assert.match(body, /xcode-project use-profiles/);
+});
+
+test("배포 인증서를 새로 만들지 않는다", async () => {
+  /* 배포 인증서는 계정당 개수 제한이 있다. 한 칸을 태우면 되돌리려면 다른
+     것을 폐기해야 하고, 그 다른 것으로 이미 나간 앱이 있을 수 있다. */
+  const all = await workflows();
+  const body = all["member-ios-testflight"].scripts.map((s2) => String(s2.script)).join("\n");
+  /* 기존 인증서를 다시 쓰려면 그 개인키가 있어야 한다. 없으면 멈춘다 --
+     조용히 새로 만드는 것보다 낫다. */
+  assert.match(body, /--certificate-key @env:CERTIFICATE_PRIVATE_KEY/);
+  assert.match(body, /if \[ -z "\$\{CERTIFICATE_PRIVATE_KEY:-\}" \]/);
+  /* 그래도 늘었는지 세어 본다. */
+  assert.match(body, /certificates list --type IOS_DISTRIBUTION/);
+  assert.match(body, /\[ "\$AFTER" -gt "\$BEFORE" \]/);
+});
+
+test("회원 앱도 수출 규정을 미리 답해 둔다", async () => {
+  /* 없으면 업로드마다 App Store Connect 가 묻고, 답하기 전에는 TestFlight
+     테스터에게 가지 않는다 -- 빌드는 초록인데 아무도 못 받는다. */
+  const plist = await read("member-app/ios/App/App/Info.plist");
+  assert.match(plist, /<key>ITSAppUsesNonExemptEncryption<\/key>\s*<false\/>/);
 });
 
 test("한쪽 변경이 다른 쪽 빌드를 돌리지 않는다", async () => {

@@ -346,9 +346,11 @@ workflows:
       xcode: latest
       # CocoaPods 를 쓰지 않는다. Capacitor 8 이 만든 이 프로젝트는 SPM 이고
       # (CapApp-SPM/Package.swift) Podfile 이 없다.
-      ios_signing:
-        distribution_type: app_store
-        bundle_identifier: com.bonitapilates.member
+      #
+      # **ios_signing 을 두지 않는다.** 그 블록은 Codemagic 이 스크립트보다
+      # 먼저 도는 자동 서명을 켜는데, 회원 앱은 아직 프로비저닝 프로필이
+      # 없어서 그 단계가 빌드를 통째로 세운다 -- 내 스크립트는 시작도 못
+      # 한다. 서명은 'Set up code signing' 에서 직접 받아 온다.
       groups:
         - signing
       vars:
@@ -405,7 +407,70 @@ workflows:
           test -z "$(git status --porcelain ios/ android/)"
 
       - name: Set up code signing
-        script: xcode-project use-profiles
+        # 강사 앱과 다른 길이다. 그쪽은 environment.ios_signing 의 Codemagic
+        # 자동 서명에 맡기는데, **그것은 이미 있는 프로필을 가져올 뿐 만들지
+        # 않는다.** 강사 앱 프로필은 예전에 만들어져 있었고 회원 앱은 없어서
+        # 첫 빌드가 이렇게 끝났다:
+        #
+        #   No matching profiles found for bundle identifier
+        #   com.bonitapilates.member and distribution type app_store
+        #
+        # 그 실패는 스크립트가 돌기 전에 난다. 그래서 이 워크플로는
+        # environment.ios_signing 을 두지 않고 여기서 직접 받아 온다 --
+        # --create 가 없으면 만들지 않는다.
+        #
+        # **인증서는 새로 만들지 않는다.** 배포 인증서는 계정당 개수 제한이
+        # 있고, 한 칸을 태우면 되돌리려면 다른 것을 폐기해야 한다. 기존
+        # 인증서를 다시 쓰려면 그 개인키가 있어야 하므로, 없으면 여기서
+        # 멈춘다 -- 조용히 새로 만드는 것보다 낫다.
+        script: |
+          set -euo pipefail
+
+          if [ -z "${CERTIFICATE_PRIVATE_KEY:-}" ]; then
+            echo "CERTIFICATE_PRIVATE_KEY 가 없습니다." >&2
+            echo "" >&2
+            echo "이 값이 있어야 강사 앱과 **같은 배포 인증서**를 다시 씁니다." >&2
+            echo "없이 진행하면 인증서를 새로 만드는데, 배포 인증서는 계정당" >&2
+            echo "개수 제한이 있어 한 칸을 태우게 됩니다." >&2
+            echo "" >&2
+            echo "Codemagic → Teams → (팀) → Environment variables 에서" >&2
+            echo "'signing' 그룹에 CERTIFICATE_PRIVATE_KEY 를 넣으세요" >&2
+            echo "(Secure 체크). 값은 기존 배포 인증서의 .p12 개인키입니다." >&2
+            exit 1
+          fi
+
+          # 인증서가 늘었는지 세어 본다. **이 세기 자체가 빌드를 죽이면 안
+          # 된다** -- CLI 출력 형식이 바뀌면 서명과 상관없는 이유로 빌드가
+          # 멈춘다. 못 세면 못 셌다고 말하고 넘어간다. 진짜 방벽은 위의
+          # CERTIFICATE_PRIVATE_KEY 검사다.
+          count_certs() {
+            app-store-connect certificates list --type IOS_DISTRIBUTION --json 2>/dev/null \
+              | python3 -c "import json,sys;print(len(json.load(sys.stdin)))" 2>/dev/null || echo ""
+          }
+          BEFORE="$(count_certs)"
+          echo "배포 인증서 (전): ${BEFORE:-셀 수 없음}"
+
+          keychain initialize
+
+          # --create 는 **프로필**을 만들기 위한 것이다. 인증서는
+          # --certificate-key 로 기존 것을 찾아 쓴다.
+          app-store-connect fetch-signing-files "$BUNDLE_ID" \
+            --type IOS_APP_STORE \
+            --certificate-key @env:CERTIFICATE_PRIVATE_KEY \
+            --create
+
+          AFTER="$(count_certs)"
+          echo "배포 인증서 (후): ${AFTER:-셀 수 없음}"
+          if [ -n "$BEFORE" ] && [ -n "$AFTER" ] && [ "$AFTER" -gt "$BEFORE" ]; then
+            echo "배포 인증서가 새로 만들어졌습니다 ($BEFORE -> $AFTER)." >&2
+            echo "CERTIFICATE_PRIVATE_KEY 가 기존 인증서와 짝이 맞지 않습니다." >&2
+            echo "Apple Developer -> Certificates 에서 남는 것을 폐기하고," >&2
+            echo "맞는 개인키를 넣은 뒤 다시 돌리세요." >&2
+            exit 1
+          fi
+
+          keychain add-certificates
+          xcode-project use-profiles
 
       - name: Validate applied code signing
         script: |

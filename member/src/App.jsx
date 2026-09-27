@@ -11,8 +11,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { TYPE } from "../../src/features/ui/type-scale.js";
 import { CENTRE_NAME, CENTRE_TAGLINE } from "./brand.js";
-import { linkMemberAccount, sendCode, watchAuth, db } from "./firebase.js";
+import { linkMemberAccount, startPhoneSignIn, watchAuth, db } from "./firebase.js";
 import { LINK_RESULT, linkResultScreen } from "./link-result.js";
+import { phoneFailureMessage } from "./phone-auth.js";
 import { readMemberLink, readMemberViews } from "./member-data.js";
 import { needsReverification, readVerifiedAt, writeVerifiedAt } from "./session.js";
 import {
@@ -71,7 +72,10 @@ function SignIn({ signedIn }) {
     setBusy(true);
     setFailure("");
     try {
-      setPending(await sendCode(phone));
+      /* 앱에서는 문자를 앱이 직접 읽을 수 있다 (Android). 읽으면 칸을
+         채워만 두고 **누르는 것은 사람이 한다** -- 저절로 넘어가면 무슨
+         일이 일어났는지 본 사람이 없다. */
+      setPending(await startPhoneSignIn(phone, { onAutoCode: setCode }));
     } catch (error) {
       setFailure(text(error?.code) || "unknown");
     } finally {
@@ -84,6 +88,7 @@ function SignIn({ signedIn }) {
     setFailure("");
     try {
       await pending.confirm(code);
+      await pending.cancel?.();
       // 확인한 시각을 남긴다. 여기서부터 90일이다.
       writeVerifiedAt(new Date());
       /* 새로고침으로 다시 들어간다. 인증 직후의 토큰에 phone_number 가 실려야
@@ -129,13 +134,7 @@ function SignIn({ signedIn }) {
         {/* 코드를 함께 보여준다. 코드 없는 "오류가 발생했습니다" 는 회원도
             센터도 아무것도 할 수 없게 만든다. */}
         {failure ? (
-          <p className="note mt" style={{ fontSize: TYPE.caption }}>
-            {failure === "auth/invalid-verification-code"
-              ? "인증번호가 맞지 않아요. 다시 입력해 주세요."
-              : failure === "auth/too-many-requests"
-                ? "잠시 뒤에 다시 시도해 주세요."
-                : `지금 확인하지 못했어요. (코드 ${failure})`}
-          </p>
+          <p className="note mt" style={{ fontSize: TYPE.caption }}>{phoneFailureMessage(failure)}</p>
         ) : null}
       </section>
     </Shell>

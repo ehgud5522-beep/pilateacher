@@ -185,3 +185,34 @@ test("빌드 산출물은 커밋하지 않는다", async () => {
   const ios = await read("member-app/ios/.gitignore");
   assert.match(ios, /App\/App\/public/);
 });
+
+test("iOS 가 전화 인증을 앱으로 되돌려받을 길이 있다", async () => {
+  /* APNs 로 조용히 확인하지 못하면 Firebase 는 reCAPTCHA 를 브라우저로 띄우고
+     **인코딩된 앱 ID 의 URL 스킴**으로 앱에 돌아온다. 그 스킴이 없으면
+     브라우저가 열린 채 끝나고, 회원에게는 아무 일도 안 일어난 것으로 보인다.
+     구글 로그인의 REVERSED_CLIENT_ID 와 다른 값이다 -- 그것을 적어 두면
+     돌아오지 못한다. */
+  const plist = await read("member-app/ios/App/App/Info.plist");
+  const services = await readJson("member-app/android/app/google-services.json");
+  const iosApp = (await read("member-app/ios/App/App/GoogleService-Info.plist"))
+    .match(/<key>GOOGLE_APP_ID<\/key>\s*<string>([^<]+)<\/string>/)?.[1];
+  assert.ok(iosApp, "GOOGLE_APP_ID 를 읽지 못했습니다");
+  assert.match(plist, new RegExp(`<string>app-${iosApp.replaceAll(":", "-")}</string>`));
+  assert.equal(services.project_info.project_id, "pilateacher");
+});
+
+test("회원 앱도 한국어 앱이라고 선언한다", async () => {
+  /* 강사 앱에서 실제로 났던 일이다 -- 이 값이 en 이면 WKWebView 안의 날짜
+     입력기가 폰 언어와 무관하게 영어로 뜬다. */
+  const plist = await read("member-app/ios/App/App/Info.plist");
+  assert.match(plist, /<key>CFBundleDevelopmentRegion<\/key>\s*<string>ko<\/string>/);
+  assert.match(plist, /<key>CFBundleLocalizations<\/key>\s*<array>\s*<string>ko<\/string>/);
+});
+
+test("회원 앱은 웹에서도 돌아야 한다 — 플러그인을 늦게 부른다", async () => {
+  /* 같은 코드가 PWA 로도 나간다. 플러그인을 맨 위에서 import 하면 웹 번들에
+     네이티브 껍데기가 딸려 들어가고, 브라우저에서 터질 자리가 하나 는다. */
+  const firebase = await read("member/src/firebase.js");
+  assert.match(firebase, /await import\("@capacitor-firebase\/authentication"\)/);
+  assert.doesNotMatch(firebase, /^import .*@capacitor/m);
+});

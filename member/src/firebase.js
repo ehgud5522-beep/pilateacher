@@ -8,10 +8,12 @@
 
 import { initializeApp } from "firebase/app";
 import {
-  RecaptchaVerifier, getAuth, onAuthStateChanged, signInWithPhoneNumber,
+  PhoneAuthProvider, RecaptchaVerifier, getAuth, onAuthStateChanged,
+  signInWithCredential, signInWithPhoneNumber,
 } from "firebase/auth";
 import { getFirestore } from "firebase/firestore/lite";
 import { getFunctions, httpsCallable } from "firebase/functions";
+import { isNativePhoneAuth, shouldFallBackToWeb, startNativePhoneSignIn } from "./phone-auth.js";
 
 /* 강사 앱과 같은 값이다 (src/lib/firebase.js). 웹 apiKey 는 비밀이 아니다 --
    문을 지키는 것은 규칙과 인증이다. */
@@ -51,6 +53,44 @@ export function recaptcha(containerId = "recaptcha") {
 /** 인증번호를 보낸다. 돌려받은 것으로 `confirm(code)` 를 부른다. */
 export function sendCode(phone, containerId = "recaptcha") {
   return signInWithPhoneNumber(auth, toE164(phone), recaptcha(containerId));
+}
+
+/**
+ * 문자 인증을 시작한다. **화면은 웹인지 앱인지 몰라도 된다** -- 돌려주는
+ * 것에 `.confirm(code)` 가 있는 것은 두 길이 같다.
+ *
+ * 앱에서는 네이티브로 보낸다. 웹뷰 안의 reCAPTCHA 는 잔여 횟수 하나를 보려는
+ * 사람에게 너무 큰 문턱이고, 실패해도 이유가 안 보인다.
+ *
+ * 다만 Android 는 문자 없이 인증이 끝날 수 있는데(즉시 인증) 그때 JS 로
+ * 이어받을 자격이 넘어오지 않는다 (phone-auth.js 머리말). 그 한 갈래에서만
+ * 웹 길로 되돌아간다.
+ */
+export async function startPhoneSignIn(phone, options = {}) {
+  const e164 = toE164(phone);
+  if (isNativePhoneAuth(capacitor())) {
+    const { FirebaseAuthentication } = await import("@capacitor-firebase/authentication");
+    try {
+      return await startNativePhoneSignIn({
+        plugin: FirebaseAuthentication,
+        phoneNumber: e164,
+        onAutoCode: options.onAutoCode,
+        signInWithCode: (verificationId, code) =>
+          signInWithCredential(auth, PhoneAuthProvider.credential(verificationId, code)),
+      });
+    } catch (error) {
+      if (!shouldFallBackToWeb(error)) throw error;
+      /* 즉시 인증이 끝났는데 이어받을 재료가 없다. 웹 길은 reCAPTCHA 를
+         태우는 대신 언제나 ConfirmationResult 를 준다 -- 문턱을 무르는 것이
+         막힌 화면보다 낫다. */
+    }
+  }
+  return sendCode(e164, options.containerId);
+}
+
+/** 네이티브 여부를 묻는 자리. 웹 빌드에서는 없는 것이 정상이다. */
+function capacitor() {
+  return typeof globalThis === "undefined" ? null : globalThis.Capacitor || null;
 }
 
 /** 로그인 상태. 되돌려주는 함수를 부르면 구독이 끊긴다. */

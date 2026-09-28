@@ -1109,6 +1109,146 @@ describe("every way the owner writes a pass today", () => {
   });
 });
 
+/* ── 잔여 조정과 만료일 변경 ─────────────────────────────────────────────
+
+   둘 다 수업이 아니다. 하나는 숫자를 맞추는 일이고 하나는 날짜를 옮기는
+   일이라, 급여에도 강사 누적에도 회원의 수업 이력에도 들어가면 안 된다.
+   원장에는 남는다 -- 덧붙이기만 하는 장부라 무엇을 얼마나 왜 옮겼는지가
+   지워지지 않는다. */
+
+describe("adjusting sessions and moving the expiry date", () => {
+  const common = (passId) => ({
+    organizationId: ORG_A, passId, clientId: "client-member", locationId: "location-a",
+    occurredAt: hoursAgo(1), createdAt: serverTimestamp(),
+  });
+  const passAt = (db, passId) => doc(db, "organizations", ORG_A, "passes", passId);
+  const ledgerAt = (db, passId, entryId) =>
+    doc(db, "organizations", ORG_A, "passes", passId, "ledger", entryId);
+  const totalAt = (db, instructorId, clientId) =>
+    doc(db, "organizations", ORG_A, "instructorClientTotals", `${instructorId}_${clientId}`);
+
+  const adjust = (userId, overrides = {}) => ({
+    ...common(PASS_A), type: "adjust", delta: 3,
+    reason: "실제 잔여와 맞춤", createdBy: userId, ...overrides,
+  });
+  const expiry = (userId, overrides = {}) => ({
+    ...common(PASS_A), type: "expiry", delta: 0,
+    previousExpiresAt: Timestamp.fromDate(new Date(2027, 0, 31)),
+    newExpiresAt: Timestamp.fromDate(new Date(2027, 2, 31)),
+    reason: "홀딩 60일", createdBy: userId, ...overrides,
+  });
+
+  test("대표가 잔여를 조정한다 — 회원권과 항목이 한 배치다", async () => {
+    const db = dbFor(users.owner);
+    const batch = writeBatch(db);
+    batch.set(ledgerAt(db, PASS_A, "adj-1"), adjust(users.owner));
+    batch.update(passAt(db, PASS_A), { remainingCount: increment(3) });
+    await assertSucceeds(batch.commit());
+  });
+
+  test("사유 없이는 조정하지 못한다", async () => {
+    const db = dbFor(users.owner);
+    await assertFails(setDoc(ledgerAt(db, PASS_A, "adj-noreason"), dropField(adjust(users.owner), "reason")));
+    await assertFails(setDoc(ledgerAt(db, PASS_A, "adj-empty"), adjust(users.owner, { reason: "" })));
+    await assertFails(setDoc(ledgerAt(db, PASS_A, "adj-long"), adjust(users.owner, { reason: "가".repeat(201) })));
+  });
+
+  test("0 은 조정이 아니다", async () => {
+    /* 아무것도 안 바뀐 줄이 사유만 달고 쌓이면 나중에 읽는 사람이 그것을
+       세게 된다. */
+    const db = dbFor(users.owner);
+    await assertFails(setDoc(ledgerAt(db, PASS_A, "adj-zero"), adjust(users.owner, { delta: 0 })));
+  });
+
+  test("조정에 단가와 카테고리를 실을 수 없다", async () => {
+    /* 필수 목록을 채우자고 지어내면 급여가 그 허구를 카테고리별로 묶어 센다. */
+    const db = dbFor(users.owner);
+    await assertFails(setDoc(ledgerAt(db, PASS_A, "adj-price"),
+      adjust(users.owner, { unitPrice: 60000, category: "pt_1_1_new" })));
+    await assertFails(setDoc(ledgerAt(db, PASS_A, "adj-lesson"),
+      adjust(users.owner, { lessonId: "lesson-seed" })));
+  });
+
+  test("강사와 매니저는 잔여를 조정하지 못한다", async () => {
+    for (const role of ["instructor", "manager", "staff", "member"]) {
+      await assertFails(setDoc(ledgerAt(dbFor(users[role]), PASS_A, `adj-${role}`),
+        adjust(users[role])), role);
+    }
+  });
+
+  test("조정으로도 잔여는 음수가 되지 못한다", async () => {
+    /* 원장에 -999 를 적어도 회원권 쪽이 막는다. 두 반쪽이 한 배치라 하나가
+       막히면 둘 다 안 나간다. */
+    const db = dbFor(users.owner);
+    const batch = writeBatch(db);
+    batch.set(ledgerAt(db, PASS_A, "adj-negative"), adjust(users.owner, { delta: -999 }));
+    batch.update(passAt(db, PASS_A), { remainingCount: increment(-999) });
+    await assertFails(batch.commit());
+  });
+
+  test("대표와 FC매니저가 만료일을 옮긴다", async () => {
+    for (const role of ["owner", "manager"]) {
+      const db = dbFor(users[role]);
+      const batch = writeBatch(db);
+      batch.set(ledgerAt(db, PASS_A, `exp-${role}`), expiry(users[role]));
+      batch.update(passAt(db, PASS_A), { expiresAt: Timestamp.fromDate(new Date(2027, 2, 31)) });
+      await assertSucceeds(batch.commit(), role);
+    }
+  });
+
+  test("강사는 만료일을 옮기지 못한다", async () => {
+    await assertFails(setDoc(ledgerAt(dbFor(users.instructor), PASS_A, "exp-instructor"),
+      expiry(users.instructor)));
+  });
+
+  test("만료일 변경은 어디서 어디로인지 남긴다", async () => {
+    const db = dbFor(users.owner);
+    await assertFails(setDoc(ledgerAt(db, PASS_A, "exp-nofrom"), dropField(expiry(users.owner), "previousExpiresAt")));
+    await assertFails(setDoc(ledgerAt(db, PASS_A, "exp-noto"), dropField(expiry(users.owner), "newExpiresAt")));
+    // 같은 날짜로 바꾸는 것은 변경이 아니다.
+    const same = Timestamp.fromDate(new Date(2027, 0, 31));
+    await assertFails(setDoc(ledgerAt(db, PASS_A, "exp-same"),
+      expiry(users.owner, { previousExpiresAt: same, newExpiresAt: same })));
+  });
+
+  test("만료일 변경은 회차를 움직이지 않는다", async () => {
+    const db = dbFor(users.owner);
+    await assertFails(setDoc(ledgerAt(db, PASS_A, "exp-delta"), expiry(users.owner, { delta: -1 })));
+  });
+
+  /* ── C. 덧붙이기만 한다 ─────────────────────────────────────────── */
+
+  test("조정과 만료일 항목도 고치거나 지울 수 없다", async () => {
+    const db = dbFor(users.owner);
+    await assertSucceeds(setDoc(ledgerAt(db, PASS_A, "adj-frozen"), adjust(users.owner)));
+    await assertSucceeds(setDoc(ledgerAt(db, PASS_A, "exp-frozen"), expiry(users.owner)));
+
+    for (const entryId of ["adj-frozen", "exp-frozen"]) {
+      await assertFails(updateDoc(ledgerAt(dbFor(users.owner), PASS_A, entryId), { reason: "다시 씀" }), entryId);
+      await assertFails(setDoc(ledgerAt(dbFor(users.owner), PASS_A, entryId), { reason: "덮어씀" }, { merge: true }), entryId);
+      await assertFails(deleteDoc(ledgerAt(dbFor(users.owner), PASS_A, entryId)), entryId);
+    }
+  });
+
+  /* ── B. 강사 누적은 움직이지 않는다 ──────────────────────────────── */
+
+  test("조정은 강사 누적을 건드리지 않는다", async () => {
+    /* 급여 판정 3 이 이 숫자로 신규 단가인지 기준 단가인지 가른다. 조정은
+       수업이 아니므로 여기 들어가면 20회째 단가가 앞당겨지거나 밀린다.
+       규칙은 같은 배치에 이 문서가 오는 것을 막지는 못한다 -- 막는 것은
+       저장소이고, 여기서는 **조정 항목만으로는 아무 일도 안 일어난다**는
+       것을 고정한다. */
+    const db = dbFor(users.owner);
+    const batch = writeBatch(db);
+    batch.set(ledgerAt(db, PASS_A, "adj-no-total"), adjust(users.owner));
+    batch.update(passAt(db, PASS_A), { remainingCount: increment(3) });
+    await assertSucceeds(batch.commit());
+
+    const total = await assertSucceeds(getDoc(totalAt(dbFor(users.owner), users.instructor, "client-member")));
+    assert.equal(total.exists(), false, "조정만으로는 누적 문서가 생기지 않는다");
+  });
+});
+
 describe("ledger and pass bodies are validated at write time", () => {
   const ledgerRef = (userId, entryId) =>
     doc(dbFor(userId), "organizations", ORG_A, "passes", PASS_A, "ledger", entryId);

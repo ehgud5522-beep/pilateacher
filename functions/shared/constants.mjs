@@ -169,6 +169,22 @@ export const LEDGER_ENTRY_TYPE = Object.freeze({
   CORRECTION: "correction",
   /** 잘못 발급한 회원권을 무효화한다. delta 는 남은 횟수의 음수. */
   CANCEL: "cancel",
+  /**
+   * 잔여 회차 맞추기. delta 는 ±N.
+   *
+   * **수업이 아니다.** 실제 잔여와 장부가 어긋났을 때 대표가 숫자를 맞추는
+   * 자리이고, 그래서 급여에 잡히지 않는다 -- PAYROLL_ENTRY_TYPES 가 허용
+   * 목록이라 애초에 질의에 걸리지 않는다. category·unitPrice 도 없다:
+   * 필수 목록을 채우자고 지어내면 급여가 그 허구를 카테고리별로 묶어 센다.
+   */
+  ADJUST: "adjust",
+  /**
+   * 만료일 옮기기. delta 는 0 이고 previousExpiresAt → newExpiresAt 이 남는다.
+   *
+   * 홀딩도 이 종류다. 기간만큼 뒤로 미는 것이고, 홀딩이었다는 사실은 사유에
+   * 적는다 -- 별도 상태를 두면 규칙·투영·판정 세 군데가 같이 는다.
+   */
+  EXPIRY: "expiry",
 });
 
 /** 사유 칸의 길이. 규칙도 같은 값으로 막는다. */

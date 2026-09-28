@@ -691,6 +691,29 @@ service cloud.firestore {
         // deducted session already carries the instructor it was taught by.
         allow update: if resource.data.organizationId == organizationId
           && request.resource.data.organizationId == organizationId
+          /* ── 어느 갈래로 오든 지키는 것 ────────────────────────────────
+             아래 역할 갈래 **밖에** 둔다. 대표 갈래는 `hasRole(["owner"])`
+             한 줄이라 아무 값이나 통과했고, 그래서 대표 계정은 잔여를 -5 로
+             쓰거나 만료일을 아무 값으로나 바꿀 수 있었다. 화면이 없었을 뿐
+             문은 열려 있었다.
+
+             잔여가 음수가 되면 회원 앱이 "-5회 남음" 을 그리고, 원장의
+             합(발급 − 차감)과도 어긋난다. 원장은 append-only 라 그 어긋남은
+             고칠 수 없다.
+
+             만료일이 날짜가 아니면 회원 앱의 만료 표시와 운영중/만료 판정이
+             통째로 무너진다 -- 둘 다 이 값 하나를 읽는다. */
+          && (
+            !request.resource.data.diff(resource.data).affectedKeys().hasAny(["remainingCount"])
+            || (
+              request.resource.data.remainingCount is int
+              && request.resource.data.remainingCount >= 0
+            )
+          )
+          && (
+            !request.resource.data.diff(resource.data).affectedKeys().hasAny(["expiresAt"])
+            || request.resource.data.expiresAt is timestamp
+          )
           /* 누가 이 회원권을 쓰는지는 발급으로만 정해진다. 나중에 바꾸면 이미
              차감된 회차가 누구의 것이었는지가 소급해서 달라지고, 원장은
              append-only 라 그 어긋남을 고칠 수 없다.

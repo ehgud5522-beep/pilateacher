@@ -1073,15 +1073,29 @@ describe("every way the owner writes a pass today", () => {
     await assertSucceeds(batch.commit());
   });
 
-  /* ── 지금 열려 있는 문 ──────────────────────────────────────────────
-     아래 둘은 **통과하면 안 되는데 통과한다.** 회원권 수정을 넣기 전에
-     닫아야 하는 구멍이고, 규칙을 고치면 거부로 뒤집힌다. */
+  /* ── 역할과 무관하게 지키는 것 ─────────────────────────────────────
+     대표 갈래는 hasRole(["owner"]) 한 줄이라 아무 값이나 통과했다. 화면이
+     없었을 뿐 문은 열려 있었고, 그 문으로는 고칠 수 없는 상태가 만들어진다. */
 
-  test("지금은 대표가 잔여를 음수로 쓸 수 있다 (닫아야 한다)", async () => {
-    await assertSucceeds(updateDoc(passAt(dbFor(users.owner), PASS_A), { remainingCount: -5 }));
+  test("대표도 잔여를 음수로 쓰지 못한다", async () => {
+    /* 음수가 되면 회원 앱이 "-5회 남음" 을 그리고 원장의 합과도 어긋난다.
+       원장은 append-only 라 그 어긋남은 고칠 수 없다. */
+    await assertFails(updateDoc(passAt(dbFor(users.owner), PASS_A), { remainingCount: -5 }));
+    await assertFails(updateDoc(passAt(dbFor(users.owner), PASS_A), { remainingCount: increment(-999) }));
+    // 0 은 된다 -- 취소가 그 길로 간다.
+    await assertSucceeds(updateDoc(passAt(dbFor(users.owner), PASS_A), { remainingCount: 0 }));
   });
 
-  test("지금은 대표가 원장 없이 만료일을 바꿀 수 있다 (닫아야 한다)", async () => {
+  test("잔여는 숫자가 아니면 들어가지 못한다", async () => {
+    await assertFails(updateDoc(passAt(dbFor(users.owner), PASS_A), { remainingCount: "다섯" }));
+    await assertFails(updateDoc(passAt(dbFor(users.owner), PASS_A), { remainingCount: 1.5 }));
+  });
+
+  test("만료일은 날짜여야 한다", async () => {
+    /* 날짜가 아니면 회원 앱의 만료 표시와 운영중/만료 판정이 통째로
+       무너진다 -- 둘 다 이 값 하나를 읽는다. */
+    await assertFails(updateDoc(passAt(dbFor(users.owner), PASS_A), { expiresAt: "2099-01-01" }));
+    await assertFails(updateDoc(passAt(dbFor(users.owner), PASS_A), { expiresAt: 0 }));
     await assertSucceeds(updateDoc(passAt(dbFor(users.owner), PASS_A), {
       expiresAt: Timestamp.fromDate(new Date(2099, 0, 1)),
     }));

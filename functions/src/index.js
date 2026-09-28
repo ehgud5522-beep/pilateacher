@@ -25,6 +25,7 @@ const {
   syncInstructorIds,
   verifyInstructorIds,
 } = require("./instructor-scope-triggers");
+const { reconcileOrganization } = require("./pass-reconcile-nightly");
 const { createFirestoreMemberLinkPorts } = require("./member-link-store");
 const {
   createFirestoreMemberViewAdminPorts, createMemberViewAdminService,
@@ -665,6 +666,41 @@ exports.verifyInstructorIds = onCall(
    트리거도 깨어나지 않는다.
 
    04:00 KST 다. 수업이 없고, 자정 직후의 만료가 이미 지나간 시각이다. */
+/* ── 밤마다 잔여를 견준다 ────────────────────────────────────────────────
+   담당 강사 재계산과 같은 시각이다. **건수만 적고 고치지 않는다** --
+   어긋난 것을 자동으로 맞추면 어느 쪽이 참인지 모른 채 한쪽을 덮어쓰게
+   되고, 밤에 아무도 보지 않는 사이에 그 선택을 내리는 것이 가장 나쁘다.
+   원장은 append-only 라 잘못 덮어쓴 것은 되돌릴 수도 없다.
+
+   근거는 pass-reconcile-nightly.js 머리말에 있다. */
+exports.reconcilePassesNightly = onSchedule({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  schedule: "every day 04:00",
+  timeZone: "Asia/Seoul",
+  memory: "512MiB",
+  timeoutSeconds: 540,
+}, async () => {
+  const organizations = await firestore.collection("organizations").select().get();
+  for (const snapshot of organizations.docs) {
+    try {
+      const tally = await reconcileOrganization(firestore, { organizationId: snapshot.id });
+      /* 이름도 회원권 id 도 적지 않는다 (§7). 누가 어긋났는지는 대표가
+         화면에서 본다. */
+      logger.info("pass_reconcile_nightly", {
+        feature: "pass_reconcile", stage: "nightly",
+        organizationId: snapshot.id, ...tally,
+      });
+    } catch (error) {
+      /* 한 센터가 실패해도 나머지는 돈다. */
+      logger.error("pass_reconcile_nightly_failed", {
+        feature: "pass_reconcile", stage: "nightly",
+        organizationId: snapshot.id,
+        errorCode: error?.code || "unknown", message: error?.message || "",
+      });
+    }
+  }
+});
+
 exports.rebuildInstructorIdsNightly = onSchedule({
   region: process.env.FUNCTIONS_REGION || "asia-northeast3",
   schedule: "every day 04:00",

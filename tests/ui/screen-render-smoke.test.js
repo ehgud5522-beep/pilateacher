@@ -128,6 +128,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 매니저",
     "회원권 상품",
     "회원권 상품 · 소속 확인 실패",
+    "잔여 점검 · 안 맞음",
+    "잔여 점검 · 전부 맞음",
     "번호 점검",
     "번호 점검 · 이상 없음",
     "번호 점검 · 조회 실패",
@@ -2342,6 +2344,35 @@ test("the location chip does not count the review demo member", async (t) => {
   assert.equal(counts(owner), counts(manager), "대표 화면의 인원수가 다르다");
 });
 
+
+test("잔여 점검은 안 맞는 것만 보여주고, 많으면 우리를 먼저 의심하게 한다", async (t) => {
+  const vite = await createServer({
+    root: projectRoot, configFile: false, plugins: [react()], appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] }, server: { middlewareMode: true },
+    ssr: { noExternal: ["@capgo/camera-preview"] }, logLevel: "silent",
+  });
+  t.after(() => vite.close());
+  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+
+  const off = markupOf("잔여 점검 · 안 맞음");
+  assert.match(off, /잔여 점검/);
+  /* 안 맞는 것과 확인 불가를 갈라 센다 -- 못 읽은 것을 "안 맞는다" 로
+     보고하면 있지도 않은 장부 오류를 찾아 나선다. */
+  assert.match(off, /안 맞음 1건/);
+  assert.match(off, /확인 불가 1건/);
+  assert.match(off, /김하나/);
+  assert.match(off, /원장 없음/);
+  /* 자동으로 고치지 않는다는 것을 말한다. */
+  assert.match(off, /자동으로 고치지 않습니다/);
+  // 맞는 회원권은 목록에 없다.
+  assert.doesNotMatch(off, /p3/);
+
+  const clean = markupOf("잔여 점검 · 전부 맞음");
+  assert.match(clean, /모두 원장과 맞습니다/);
+  assert.doesNotMatch(clean, /자동으로 고치지 않습니다/);
+});
 
 /* ── 회원권 수정 ─────────────────────────────────────────────────────── */
 

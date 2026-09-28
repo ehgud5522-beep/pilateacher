@@ -120,7 +120,7 @@ import {
 } from "./data/schema/pass-transfer.js";
 import {
   DEDUCT_BACKDATE_LIMIT_DAYS, HOLD_MAX_DAYS, adjustPass, cancelPass, changePassExpiry,
-  correctDeduction, deductPass, holdPass, isCancellablePass,
+  correctDeduction, deductPass, holdPass, isCancellablePass, loadPassReconcileRows,
   isCorrectableEntry, isCorrectedEntry, isDeductablePass, isExpiredPass, issuePass,
   listInstructorClientTotals, listPassLedger, listPasses, loadClientPassHistory, remainingCountOf,
   transferPass,
@@ -273,6 +273,10 @@ import {
   SCOPE_HEALTH, instructorScopeRows, rebuildDoneMessage, rebuildPreviewMessage,
   scopeHealth, scopeHealthMessage,
 } from "./features/members/instructor-scope-admin.js";
+import {
+  RECONCILE_STATE, differenceLabel, looksLikeOurBug, reconcileAdvice, reconcileMessage,
+  reconcileReport, unknownLabel,
+} from "./features/members/pass-reconcile.js";
 import { SCOPED_ROLES, clientScopeFor, unlinkedNotice } from "./features/members/client-scope.js";
 import {
   planRosterPrune, pruneMessage, snapshotId, snapshotPayload,
@@ -19310,13 +19314,27 @@ function ExpiryReportScreen({
  * 판정과 문구는 features/members/instructor-scope-admin.js 에 있다.
  */
 function InstructorScopeAdmin({
-  organization, instructorStore, locationStore, onVerify, onRebuild, onRetryOrganization, initialState = null,
+  organization, instructorStore, locationStore, onVerify, onRebuild, onRetryOrganization,
+  onReconcile, initialState = null,
 }) {
   const locked = !organization?.ready || organization?.isLegacy || !organization?.organizationId;
   const [check, setCheck] = useState(initialState?.check || { stage: "idle" });
   const [preview, setPreview] = useState(initialState?.preview || null);
   const [running, setRunning] = useState(false);
   const [done, setDone] = useState(initialState?.done || null);
+  /* 잔여 점검. 찾기만 하고 고치지 않는다 -- 어느 쪽이 참인지 모른 채 한쪽을
+     덮어쓰는 것이 진짜 사고다. */
+  const [reconcile, setReconcile] = useState(initialState?.reconcile || null);
+
+  const runReconcile = async () => {
+    if (typeof onReconcile !== "function") return;
+    setReconcile({ stage: "loading" });
+    try {
+      setReconcile({ stage: "ready", report: await onReconcile() });
+    } catch (error) {
+      setReconcile({ stage: "failed", code: String(error?.code || "unknown") });
+    }
+  };
   const organizationId = organization?.organizationId || "";
 
   const verify = useCallback(async () => {
@@ -19520,6 +19538,73 @@ function InstructorScopeAdmin({
           </div>
         </section>
       ) : null}
+
+      {/* ── 잔여 점검 ─────────────────────────────────────────────────
+          잔여와 원장이 어긋난 회원권을 찾는다. **고치지는 않는다** --
+          어느 쪽이 참인지 모른 채 한쪽을 덮어쓰면 그것이 진짜 사고다. */}
+      <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+        <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>잔여 점검</h2>
+        <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+          회원권마다 <b style={{ color: INK }}>원장의 합과 남은 회차</b>를 견줍니다.
+          안 맞는 것을 자동으로 고치지는 않습니다.
+        </p>
+
+        {reconcile?.stage === "failed" ? (
+          <p className="mt-3" style={{ fontSize: TYPE.caption, color: BAD }}>
+            점검하지 못했습니다 (코드 {reconcile.code}).
+          </p>
+        ) : null}
+
+        {reconcile?.stage === "ready" ? (
+          <>
+            <p className="mt-3 tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 700, color: reconcile.report.mismatched ? WARN : INK }}>
+              {reconcileMessage(reconcile.report)}
+            </p>
+            {reconcileAdvice(reconcile.report) ? (
+              <p className="mt-1.5" style={{
+                fontSize: TYPE.caption, lineHeight: 1.5,
+                color: looksLikeOurBug(reconcile.report) ? BAD : SUB,
+                fontWeight: looksLikeOurBug(reconcile.report) ? 700 : 400,
+              }}>{reconcileAdvice(reconcile.report)}</p>
+            ) : null}
+
+            {reconcile.report.rows.filter((row) => row.state !== RECONCILE_STATE.MATCHED).length > 0 ? (
+              <div className="mt-3" style={{ borderTop: `1px solid ${LINE}` }}>
+                {reconcile.report.rows
+                  .filter((row) => row.state !== RECONCILE_STATE.MATCHED)
+                  .slice(0, 50)
+                  .map((row) => (
+                    <div key={row.passId} className="flex items-center gap-2"
+                      style={{ padding: "8px 0", borderBottom: `1px solid ${LINE}` }}>
+                      <p className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK }}>
+                        {row.clientName || row.clientId || "이름 없음"}
+                      </p>
+                      {row.state === RECONCILE_STATE.UNKNOWN ? (
+                        <p className="shrink-0" style={{ fontSize: TYPE.caption, color: SUB }}>
+                          {unknownLabel(row.unknownReason)}
+                        </p>
+                      ) : (
+                        <p className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: WARN }}>
+                          원장 {row.ledgerTotal}회 · 잔여 {row.remainingCount}회
+                          {" · "}{differenceLabel(row.difference)}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+              </div>
+            ) : null}
+          </>
+        ) : null}
+
+        <button type="button" disabled={locked || reconcile?.stage === "loading"}
+          onClick={runReconcile}
+          className="mt-3 w-full font-bold" style={{
+            height: 44, borderRadius: 12, fontSize: TYPE.body,
+            backgroundColor: locked ? CANVAS : TINT, color: locked ? SUB : BRAND_D,
+          }}>
+          {reconcile?.stage === "loading" ? "견주는 중…" : "잔여 점검"}
+        </button>
+      </section>
 
       <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
         <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>담당 강사 재계산</h2>
@@ -19872,6 +19957,27 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
   onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, payrollStore, issueStore, auditStore, ledgerStore, onRetryOrganization, onOpenClient, initialView = "hub" }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const organization = useContext(OrganizationContext);
+
+  /**
+   * 잔여 점검. 질의 둘로 센터 전체를 견준다 -- 회원권 목록 하나, 원장 전체
+   * 하나 (loadPassReconcileRows).
+   *
+   * **고치지 않는다.** 어느 쪽이 참인지 모른 채 한쪽을 덮어쓰면 그것이 진짜
+   * 사고다. 사람이 보고 [잔여 조정] 으로 맞추면 맞춘 사실도 원장에 남는다.
+   */
+  const runPassReconcile = useCallback(async () => {
+    const organizationId = organization?.organizationId || "";
+    if (!organizationId) throw new Error("Missing organizationId");
+    const [rows, clients] = await Promise.all([
+      loadPassReconcileRows(organizationId, { store: passStore }),
+      /* 이름이 없으면 대표는 회원권 id 만 보고 누구인지 찾아야 한다. 이름을
+         못 읽어도 점검 자체는 돌아간다 -- 빈 이름으로 둔다. */
+      listClients(organizationId, { store: clientStore }).catch(() => []),
+    ]);
+    const nameById = new Map((Array.isArray(clients) ? clients : [])
+      .map((client) => [client?.id, client?.name || ""]));
+    return reconcileReport(rows, { nameOf: (clientId) => nameById.get(clientId) || "" });
+  }, [organization?.organizationId, passStore, clientStore]);
   /* 회원권 상품은 센터를 운영하는 대표만 본다. 개인 모드(legacy)에는 센터가
      없다. 목록에서 빼면 setView 로 들어갈 길도 함께 닫힌다.
 
@@ -20493,7 +20599,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
         {view === "instructor-scope" && showAudit && (
           <InstructorScopeAdmin organization={organization} instructorStore={instructorStore} locationStore={locationStore}
             onVerify={fbVerifyInstructorIds} onRebuild={fbRebuildInstructorIds}
-            onRetryOrganization={onRetryOrganization} />
+            onRetryOrganization={onRetryOrganization} onReconcile={runPassReconcile} />
         )}
         {view === "migration" && showMigration && (
           <CenterMigration organization={organization} currentUserId={account?.id || ""}
@@ -21384,6 +21490,36 @@ export function createAppScreenSmokeCases() {
     { name: "회원권 상품 · 소속 확인 실패", element: providerWith(smokeOwner, <ProductCatalog organization={readyOrganizationContext({ organizationId: "", role: "", status: "unknown", isLegacy: false })} currentUserId="smoke-account" store={productStore} onRetryOrganization={noop} onToast={noop} />) },
     /* 번호 점검. 저장된 철자를 그대로 보여준다 -- 여기서 다듬으면 무엇이
        문제인지 안 보이고, 대표가 고쳐야 할 것이 바로 그 철자다. */
+    /* 잔여 점검. 안 맞는 목록과 **우리를 먼저 의심하라**는 문구가 함께
+       떠야 한다 -- 없으면 대표가 회원 수십 명에게 전화를 건다. */
+    { name: "잔여 점검 · 안 맞음", element: providerWith(smokeOwner, (
+      <InstructorScopeAdmin organization={readyOrganizationContext(smokeOwner)} onRetryOrganization={noop}
+        onVerify={asyncNoop} onRebuild={asyncNoop} onReconcile={asyncNoop}
+        initialState={{
+          instructors: smokeInstructors,
+          reconcile: {
+            stage: "ready",
+            report: reconcileReport([
+              { pass: { id: "p1", clientId: "smoke-client-a", remainingCount: 8 }, entries: [{ type: "issue", delta: 22 }, { type: "deduct", delta: -1 }] },
+              { pass: { id: "p2", clientId: "smoke-client-b", remainingCount: 5 }, entries: [] },
+              { pass: { id: "p3", clientId: "smoke-client-a", remainingCount: 20 }, entries: [{ type: "issue", delta: 20 }] },
+            ], { nameOf: (id) => ({ "smoke-client-a": "김하나", "smoke-client-b": "이두리" }[id] || "") }),
+          },
+        }} />
+    )) },
+    { name: "잔여 점검 · 전부 맞음", element: providerWith(smokeOwner, (
+      <InstructorScopeAdmin organization={readyOrganizationContext(smokeOwner)} onRetryOrganization={noop}
+        onVerify={asyncNoop} onRebuild={asyncNoop} onReconcile={asyncNoop}
+        initialState={{
+          instructors: smokeInstructors,
+          reconcile: {
+            stage: "ready",
+            report: reconcileReport([
+              { pass: { id: "p1", clientId: "smoke-client-a", remainingCount: 20 }, entries: [{ type: "issue", delta: 20 }] },
+            ]),
+          },
+        }} />
+    )) },
     { name: "번호 점검", element: providerWith(smokeOwner, (
       <ClientPhoneCheck organization={readyOrganizationContext(smokeOwner)} onRetryOrganization={noop}
         onOpenClient={noop} onList={asyncNoop}

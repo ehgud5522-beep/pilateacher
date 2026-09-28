@@ -53,6 +53,7 @@ import { RepositoryReadError, readCollection } from "./repository-read.js";
  * @property {(collectionPath: string) => Promise<Array<any>>} list
  * @property {(writes: Array<{ path: string, data: object, operation?: "set" | "update" | "decrement" | "bump" }>) => Promise<void>} commit
  * @property {(documentPath: string) => Promise<any | null>} read
+ * @property {(organizationId: string) => Promise<Array<any>>} [listLedgerByOrganization]
  * @property {() => Promise<any>} serverTimestamp
  */
 
@@ -121,11 +122,54 @@ export function createFirestorePassStore() {
       const snapshot = await getDoc(doc(getFirestore(), documentPath));
       return snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null;
     },
+    /* 센터 전체의 원장. 잔여 점검이 쓴다.
+       회원권마다 하위 컬렉션을 따로 읽으면 회원권 수만큼 질의가 나간다 --
+       200건이면 200번이다. collectionGroup 한 번이면 끝나고, 인덱스는 이미
+       있다 (organizationId + occurredAt). 이름은 paths.js 의 ledger 와 같다. */
+    listLedgerByOrganization: async (organizationId) => {
+      const { collectionGroup, getDocs, getFirestore, orderBy, query, where } = await load();
+      const snapshot = await getDocs(query(
+        collectionGroup(getFirestore(), "ledger"),
+        where("organizationId", "==", organizationId),
+        orderBy("occurredAt", "asc"),
+      ));
+      return snapshot.docs.map((document) => ({ id: document.id, ...document.data() }));
+    },
     serverTimestamp: async () => {
       const { serverTimestamp } = await load();
       return serverTimestamp();
     },
   };
+}
+
+/**
+ * 센터의 모든 회원권을 원장과 견줄 재료.
+ *
+ * 질의 둘로 끝난다 -- 회원권 목록 하나, 원장 전체 하나. 회원권마다 하위
+ * 컬렉션을 읽으면 200건짜리 센터에서 201번 나간다.
+ *
+ * @param {string} organizationId
+ * @param {{ store?: PassStore }} [options]
+ * @returns {Promise<Array<{ pass: any, entries: Array<any> }>>}
+ */
+export async function loadPassReconcileRows(organizationId, options = {}) {
+  const { store = createFirestorePassStore() } = options;
+  const organization = requiredText(organizationId, "organizationId");
+  const [passes, entries] = await Promise.all([
+    listPasses(organization, { store, includeExpired: true }),
+    /* 이 메서드가 없는 저장소는 테스트용 가짜뿐이다. 없으면 원장이 비고, 점검은
+       "확인 불가" 로 센다 -- 없는 것을 0 으로 치고 "안 맞는다" 고 하지 않는다. */
+    store.listLedgerByOrganization ? store.listLedgerByOrganization(organization) : [],
+  ]);
+  const byPass = new Map();
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const passId = String(entry?.passId ?? "").trim();
+    if (!passId) continue;
+    if (!byPass.has(passId)) byPass.set(passId, []);
+    byPass.get(passId).push(entry);
+  }
+  return (Array.isArray(passes) ? passes : [])
+    .map((pass) => ({ pass, entries: byPass.get(String(pass?.id ?? "")) || [] }));
 }
 
 const passesCollection = (organizationId) => {

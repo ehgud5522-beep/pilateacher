@@ -66,6 +66,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "센터 회원 상세 · 발급 취소 확인",
     "센터 회원 상세 · 연락처 수정",
     "센터 회원 상세 · 강사 · 연락처 수정",
+    "센터 회원 상세 · 잔여 조정",
+    "센터 회원 상세 · 만료일 변경",
     "센터 회원 상세 · 양도",
     "센터 회원 상세 · 양도 · 동명이인",
     "센터 회원 상세 · 양도 · 듀엣 차단",
@@ -2338,4 +2340,44 @@ test("the location chip does not count the review demo member", async (t) => {
   const manager = markupOf("회원 관리 · 심사용 · FC매니저");
   const counts = (markup) => (markup.match(/반송점[^<]*<\/span><span[^>]*>(\d+)/) || [])[1];
   assert.equal(counts(owner), counts(manager), "대표 화면의 인원수가 다르다");
+});
+
+
+/* ── 회원권 수정 ─────────────────────────────────────────────────────── */
+
+test("회원권 수정 화면은 바뀔 값을 미리 보여주고 강사에게는 없다", async (t) => {
+  const vite = await createServer({
+    root: projectRoot,
+    configFile: false,
+    plugins: [react()],
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] },
+    server: { middlewareMode: true },
+    ssr: { noExternal: ["@capgo/camera-preview"] },
+    logLevel: "silent",
+  });
+  t.after(() => vite.close());
+  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+
+  /* 되돌릴 수 없는 버튼 앞에서 결과를 숨기지 않는다. */
+  const adjust = markupOf("센터 회원 상세 · 잔여 조정");
+  assert.match(adjust, /잔여 회차 조정/);
+  assert.match(adjust, /지금 \d+회/);
+  /* 수업이 아니라는 것을 말한다 -- 급여에 잡히는 줄 알면 대표가 안 누른다. */
+  assert.match(adjust, /급여에 잡히지 않고/);
+  assert.match(adjust, /사유/);
+
+  const expiry = markupOf("센터 회원 상세 · 만료일 변경");
+  assert.match(expiry, /만료일 변경/);
+  assert.match(expiry, /홀딩/);
+  assert.match(expiry, /회차는 움직이지 않고/);
+  /* 회원 앱에 반영된다는 사실을 말한다. 모르면 따로 연락해야 하는 줄 안다. */
+  assert.match(expiry, /회원 앱에는 새 날짜가 반영됩니다/);
+
+  /* 강사 화면에는 버튼이 아예 없다. 규칙도 막지만, 눌러도 거부되는 버튼을
+     두지 않는다. */
+  const instructorView = markupOf("센터 회원 상세");
+  assert.doesNotMatch(instructorView, /잔여 조정/);
 });

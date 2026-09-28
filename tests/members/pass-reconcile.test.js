@@ -19,6 +19,8 @@ import {
   RECONCILE_UNKNOWN,
   differenceLabel,
   ledgerTotal,
+  looksLikeOurBug,
+  reconcileAdvice,
   reconcileMessage,
   reconcilePass,
   reconcileReport,
@@ -159,4 +161,31 @@ test("점검 결과를 한 줄로 말한다", () => {
 test("id 가 없는 줄은 세지 않는다", () => {
   const report = reconcileReport([{ pass: { remainingCount: 5 }, entries: [ISSUE] }, null, undefined]);
   assert.equal(report.total, 0);
+});
+
+test("많이 틀렸으면 우리를 먼저 의심한다", () => {
+  /* 회원권마다 따로 어긋나는 일은 드물다. 수십 건이면 장부가 아니라 세는
+     쪽이 틀렸을 가능성이 훨씬 크다 -- 종류 하나의 부호를 놓쳤거나, 이관처럼
+     모르는 규칙이 있는 것이다.
+
+     이 문장이 없으면 대표는 첫 점검에서 빨간 목록을 보고 회원 수십 명에게
+     전화를 건다. 그 전화는 되돌릴 수 없다. */
+  assert.equal(looksLikeOurBug({ total: 100, mismatched: 40 }), true);
+  assert.match(reconcileAdvice({ total: 100, mismatched: 40 }), /점검 식부터 의심/);
+  assert.match(reconcileAdvice({ total: 100, mismatched: 40 }), /회원에게 연락하기 전에/);
+
+  // 한두 건은 진짜 어긋난 것일 수 있다. 그때는 고치는 법을 말한다.
+  assert.equal(looksLikeOurBug({ total: 100, mismatched: 2 }), false);
+  assert.match(reconcileAdvice({ total: 100, mismatched: 2 }), /자동으로 고치지 않습니다/);
+  assert.match(reconcileAdvice({ total: 100, mismatched: 2 }), /\[잔여 조정\]/);
+
+  // 다 맞으면 아무 말도 하지 않는다.
+  assert.equal(reconcileAdvice({ total: 100, mismatched: 0 }), "");
+});
+
+test("표본이 적으면 비율만으로 의심하지 않는다", () => {
+  /* 회원권 4건 중 2건이면 50% 지만, 그 둘이 진짜 어긋난 것일 수 있다. */
+  assert.equal(looksLikeOurBug({ total: 4, mismatched: 2 }), false);
+  assert.equal(looksLikeOurBug({ total: 10, mismatched: 5 }), true);
+  assert.equal(looksLikeOurBug({ total: 0, mismatched: 0 }), false);
 });

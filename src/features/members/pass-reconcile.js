@@ -149,6 +149,40 @@ export function reconcileMessage(report) {
   return `회원권 ${total}건 중 ${parts.join(" · ")}.`;
 }
 
+/**
+ * 많이 틀렸으면 **우리를 먼저 의심한다.**
+ *
+ * 회원권마다 따로 어긋나는 일은 드물다. 어긋남은 한 번에 하나씩 생기고,
+ * 그것이 수십 건이라면 장부가 아니라 세는 쪽이 틀렸을 가능성이 훨씬 크다 --
+ * 종류 하나의 부호를 놓쳤거나, 이관처럼 우리가 모르는 규칙이 있는 것이다.
+ *
+ * 이 문장이 없으면 대표는 첫 점검에서 빨간 목록을 보고 회원 수십 명에게
+ * 전화를 걸게 된다. 그 전화는 되돌릴 수 없다.
+ */
+export const SUSPECT_RATIO = 0.2;
+export const SUSPECT_MINIMUM = 5;
+
+export function looksLikeOurBug(report) {
+  const total = Number(report?.total) || 0;
+  const mismatched = Number(report?.mismatched) || 0;
+  if (total <= 0 || mismatched < SUSPECT_MINIMUM) return false;
+  return mismatched / total >= SUSPECT_RATIO;
+}
+
+/** 점검 결과 아래에 붙는 말. 할 일을 순서대로 말한다. */
+export function reconcileAdvice(report) {
+  if (looksLikeOurBug(report)) {
+    return "이만큼 한꺼번에 어긋나는 일은 드뭅니다. 회원에게 연락하기 전에 "
+      + "점검 식부터 의심해 주세요 — 원장 종류 하나의 부호를 놓쳤거나, "
+      + "아직 모르는 규칙이 있을 수 있습니다. 개발자에게 이 화면을 보여 주세요.";
+  }
+  if ((Number(report?.mismatched) || 0) > 0) {
+    return "안 맞는 회원권은 자동으로 고치지 않습니다. 어느 쪽이 참인지 확인한 뒤 "
+      + "[잔여 조정] 으로 맞추면 맞춘 사실도 원장에 남습니다.";
+  }
+  return "";
+}
+
 /** 확인 불가의 사유를 사람 말로. */
 export function unknownLabel(reason) {
   return {

@@ -2816,18 +2816,34 @@ function SchedSettleBlock({ s, members, canSettle, settled, canUnsettle, notStar
   const [reason, setReason] = useState("");
   const doneCount = attendeesOf(s).filter((a) => a.status === "done").length;
   const line = SETTLEMENT_OUTCOME_LINE[s?.orgSettledOutcome] || SETTLEMENT_OUTCOME_LINE[SETTLEMENT_OUTCOME.COMPLETE];
+  /* 이관 초기화로 사라진 회원권을 가리키는 확정. 대표 기기에서는 초기화가
+     표시를 걷지만 **강사 기기에는 그대로 남는다** -- 서버는 기기에 닿지
+     못한다. 그대로 두면 강사가 [처리 되돌리기] 를 눌러 pass_missing 을 보고
+     자기 앱이 고장 난 줄 안다. */
+  const fromMigratedData = settledDeductionsOf(s).some((item) => String(item.passId).startsWith("csv_"));
 
   if (settled) return (
     <div className="mt-2 rounded-xl p-2.5" style={{ backgroundColor: line.bg }}>
       <div className="flex flex-wrap items-center gap-2">
         <Check size={13} style={{ color: line.tone }} />
         <span className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: line.tone }}>{line.label}</span>
-        {/* 되돌리기는 대표만 본다. 차감 보정과 같은 선이다. */}
-        {canUnsettle && !undoing ? (
+        {/* 되돌리기는 대표만 본다. 차감 보정과 같은 선이다.
+
+            이관 초기화로 사라진 회원권을 가리키는 확정에는 내지 않는다 --
+            눌러도 pass_missing 으로 끝나고, 눌러도 안 되는 버튼은 아무
+            말도 못 한다. */}
+        {canUnsettle && !undoing && !fromMigratedData ? (
           <button type="button" onClick={() => { setUndoing(true); setReason(""); }}
             className="text-xs font-bold" style={{ color: SUB }}>차감 되돌리기</button>
         ) : null}
       </div>
+      {/* 9월 기록이다. 급여를 앱으로 계산하지 않기로 했고 그 회원권은 이미
+          초기화로 사라졌다. 강사가 손댈 것이 없다는 것을 말해 준다. */}
+      {fromMigratedData ? (
+        <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+          이전 데이터 — 급여에 쓰지 않습니다. 되돌리지 않아도 됩니다.
+        </p>
+      ) : null}
       {canUnsettle && undoing ? (
         <div className="mt-1.5">
           <input value={reason} onChange={(event) => setReason(event.target.value)} maxLength={LEDGER_REASON_MAX}
@@ -5611,9 +5627,25 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
             {membership.needsLegacyReview && <p className="mt-2" style={{ padding: "8px 9px", borderRadius: 8, backgroundColor: WARN_S, color: WARN, fontSize: TYPE.caption, lineHeight: 1.45 }}>잔여 합계가 누적 등록 횟수보다 큽니다. 기존 데이터 확인이 필요하며 자동으로 수정하지 않았습니다.</p>}
             {canViewSettlement && !organizationMode && <div className="mt-2 flex items-center gap-2" style={{ padding: "8px 9px", borderRadius: 8, backgroundColor: CARD }}><span className="min-w-0 flex-1"><span className="block" style={{ fontSize: TYPE.caption, color: SUB }}>강사 정산 단가</span><span className="block text-xs font-bold tabular-nums" style={{ color: INK }}>₩{won(settlementUnit)}{Number(member.payRate) > 0 ? "" : " · 센터 기본"}</span></span><button type="button" onClick={openRate} style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND }}>단가 수정</button></div>}
             <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.45, color: SUB }}>회원 회당 금액은 총 결제액을 정규 유료 횟수로 나눕니다. 할인은 결제액에 반영하고 서비스 횟수는 제외합니다.</p>
-            <button type="button" onClick={openMembership} className="mt-2 h-10 w-full text-xs font-bold" style={{ borderRadius: 8, backgroundColor: BRAND, color: "#fff" }}>이용권 수정</button>
+            {/* 센터 소속이면 이 버튼을 내지 않는다.
+
+                이 카드의 잔여·만료일·이용권 이름은 **센터 회원권에서 온다**
+                (roster-bridge.js). 그런데 여기서 고치면 기기에만 쓰이고,
+                다음 로스터 계산이 그 값을 센터 값으로 덮는다 -- 강사는
+                "저장했습니다" 를 보고 화면은 그대로다. 숫자를 망가뜨리는
+                것이 아니라 **아무 일도 일어나지 않는** 버튼이다.
+
+                센터 회원권은 대표가 [잔여 조정], 대표·FC매니저가 [만료일]
+                로 고친다. 그 길에는 원장 기록이 남는다. */}
+            {organizationMode ? (
+              <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+                잔여와 만료일은 센터 회원권에서 옵니다. 바꾸려면 대표에게 요청해 주세요.
+              </p>
+            ) : (
+              <button type="button" onClick={openMembership} className="mt-2 h-10 w-full text-xs font-bold" style={{ borderRadius: 8, backgroundColor: BRAND, color: "#fff" }}>이용권 수정</button>
+            )}
           </section>
-          <Section title="이용권 변경 이력 및 상세 설정" action={<button type="button" onClick={openMembership} style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND }}>관리</button>}>
+          <Section title="이용권 변경 이력 및 상세 설정" action={organizationMode ? null : <button type="button" onClick={openMembership} style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND }}>관리</button>}>
             {(member.payments || []).length ? member.payments.slice(0, 4).map((p) => <div key={p.id || `${p.date}-${p.amount}`} className="flex items-center gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}` }}><span className="min-w-0 flex-1"><span className="block truncate" style={{ fontSize: TYPE.caption, color: INK2 }}>{ymd(p.date)} · {p.name || p.passName || "이용권"}</span>{p.kind === "adjustment" && <span className="block truncate" style={{ fontSize: TYPE.caption, color: SUB }}>잔여 {p.before?.remaining}회 → {p.after?.remaining}회 · 총 {p.before?.total}회 → {p.after?.total}회</span>}</span><span className="tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK }}>{p.kind === "adjustment" ? "수정" : `${num(p.count || p.sessions)}회`}</span></div>) : <p style={{ fontSize: TYPE.caption, color: SUB }}>저장된 변경 이력이 없습니다</p>}
             {holdHistory.slice(0, 4).map((h) => <div key={h.id} className="flex items-center gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}`, backgroundColor: CANVAS }}><span style={{ padding: "2px 6px", borderRadius: 5, color: INK2, fontSize: TYPE.caption, fontWeight: 600 }}>홀딩</span><span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: INK2 }}>{ymd(h.startDate)} ~ {ymd(h.releasedAt || h.endDate)}{h.extendDays ? ` · 만료 +${h.extendDays}일` : ""}</span></div>)}
             {(member.instructorHistory || []).slice(0, 3).map((entry) => <div key={entry.id || entry.date} className="flex gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}` }}><span style={{ fontSize: TYPE.caption, color: SUB }}>담당 변경</span><span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: INK2 }}>{ymd(entry.date)} · {entry.before || "미지정"} → {entry.after || "미지정"}</span></div>)}

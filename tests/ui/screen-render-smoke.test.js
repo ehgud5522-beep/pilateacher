@@ -2378,3 +2378,28 @@ test("이관 초기화는 지울 숫자와 남길 회원을 먼저 보여준다"
   assert.match(done, /강사에게 보낼 안내/);
   assert.match(done, /앱을 완전히 닫고 다시 열어 주세요/);
 });
+
+test("센터 소속이면 기기 이용권 수정 버튼을 내지 않는다", async (t) => {
+  /* 이 카드의 잔여·만료일은 센터 회원권에서 온다. 여기서 고치면 기기에만
+     쓰이고 다음 로스터 계산이 센터 값으로 덮는다 -- "저장했습니다" 를 보고
+     화면은 그대로인, 아무 일도 일어나지 않는 버튼이다. */
+  const vite = await createServer({
+    root: projectRoot, configFile: false, plugins: [react()], appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] }, server: { middlewareMode: true },
+    ssr: { noExternal: ["@capgo/camera-preview"] }, logLevel: "silent",
+  });
+  t.after(() => vite.close());
+  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+
+  for (const name of ["회원 상세 · 소속", "회원 상세 · 강사", "회원 상세 · 대표"]) {
+    const markup = markupOf(name);
+    assert.doesNotMatch(markup, />이용권 수정</, name);
+    assert.match(markup, /잔여와 만료일은 센터 회원권에서 옵니다/, name);
+  }
+
+  /* 개인 모드는 그대로다. 센터가 없으면 이 카드가 유일한 자리다. */
+  const personal = markupOf("회원 상세");
+  assert.match(personal, />이용권 수정</);
+});

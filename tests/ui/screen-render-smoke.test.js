@@ -126,6 +126,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 매니저",
     "회원권 상품",
     "회원권 상품 · 소속 확인 실패",
+    "이관 초기화 · 미리보기",
+    "이관 초기화 · 끝",
     "번호 점검",
     "번호 점검 · 이상 없음",
     "번호 점검 · 조회 실패",
@@ -2338,4 +2340,66 @@ test("the location chip does not count the review demo member", async (t) => {
   const manager = markupOf("회원 관리 · 심사용 · FC매니저");
   const counts = (markup) => (markup.match(/반송점[^<]*<\/span><span[^>]*>(\d+)/) || [])[1];
   assert.equal(counts(owner), counts(manager), "대표 화면의 인원수가 다르다");
+});
+
+test("이관 초기화는 지울 숫자와 남길 회원을 먼저 보여준다", async (t) => {
+  const vite = await createServer({
+    root: projectRoot, configFile: false, plugins: [react()], appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] }, server: { middlewareMode: true },
+    ssr: { noExternal: ["@capgo/camera-preview"] }, logLevel: "silent",
+  });
+  t.after(() => vite.close());
+  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+
+  const preview = markupOf("이관 초기화 · 미리보기");
+  /* 숫자를 보고 누른다. 되돌릴 수 없으므로 "몇 건" 이 버튼에 적혀 있어야 한다. */
+  assert.match(preview, /212건/);
+  assert.match(preview, /1843건/);
+  assert.match(preview, /되돌릴 수 없습니다/);
+  assert.match(preview, /확인했습니다 · 212건 초기화/);
+  /* 앱에서 발급한 회원권이 몇 장 남는지 함께 말한다 -- 0 이면 "전부 지워진다"
+     를 알고 누른다. */
+  assert.match(preview, /남는 회원권/);
+
+  /* 지우지 않는 회원과 그 이유. 접두만 보고 지우면 그 사람의 신원은 사라지고
+     수업 기록은 남는다. */
+  assert.match(preview, /지우지 않는 회원 2명/);
+  assert.match(preview, /김하나/);
+  assert.match(preview, /회원 앱 연결됨/);
+  assert.match(preview, /앱에서 발급한 회원권 있음/);
+  assert.match(preview, /앱에서 번호 변경됨/);
+
+  const done = markupOf("이관 초기화 · 끝");
+  assert.match(done, /회원권 212건 · 원장 1843건/);
+  assert.match(done, /migration-reset/, "사본 경로를 보여준다");
+  /* 강사 안내 문구. 기기 화면은 저절로 비지 않는다. */
+  assert.match(done, /강사에게 보낼 안내/);
+  assert.match(done, /앱을 완전히 닫고 다시 열어 주세요/);
+});
+
+test("센터 소속이면 기기 이용권 수정 버튼을 내지 않는다", async (t) => {
+  /* 이 카드의 잔여·만료일은 센터 회원권에서 온다. 여기서 고치면 기기에만
+     쓰이고 다음 로스터 계산이 센터 값으로 덮는다 -- "저장했습니다" 를 보고
+     화면은 그대로인, 아무 일도 일어나지 않는 버튼이다. */
+  const vite = await createServer({
+    root: projectRoot, configFile: false, plugins: [react()], appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] }, server: { middlewareMode: true },
+    ssr: { noExternal: ["@capgo/camera-preview"] }, logLevel: "silent",
+  });
+  t.after(() => vite.close());
+  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+
+  for (const name of ["회원 상세 · 소속", "회원 상세 · 강사", "회원 상세 · 대표"]) {
+    const markup = markupOf(name);
+    assert.doesNotMatch(markup, />이용권 수정</, name);
+    assert.match(markup, /잔여와 만료일은 센터 회원권에서 옵니다/, name);
+  }
+
+  /* 개인 모드는 그대로다. 센터가 없으면 이 카드가 유일한 자리다. */
+  const personal = markupOf("회원 상세");
+  assert.match(personal, />이용권 수정</);
 });

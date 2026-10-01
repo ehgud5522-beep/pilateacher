@@ -35,6 +35,7 @@ import {
   fbLookupCentreMemberByEmail,
   fbListMalformedClientPhones,
   fbRebuildInstructorIds,
+  fbResetMigratedData,
   fbVerifyInstructorIds,
   fbListPendingMemberLinks, fbLinkMemberAccountByOwner, fbUnlinkMemberAccount, fbUpdateClientPhone,
   fbVerifyMemberViews,
@@ -2815,18 +2816,34 @@ function SchedSettleBlock({ s, members, canSettle, settled, canUnsettle, notStar
   const [reason, setReason] = useState("");
   const doneCount = attendeesOf(s).filter((a) => a.status === "done").length;
   const line = SETTLEMENT_OUTCOME_LINE[s?.orgSettledOutcome] || SETTLEMENT_OUTCOME_LINE[SETTLEMENT_OUTCOME.COMPLETE];
+  /* 이관 초기화로 사라진 회원권을 가리키는 확정. 대표 기기에서는 초기화가
+     표시를 걷지만 **강사 기기에는 그대로 남는다** -- 서버는 기기에 닿지
+     못한다. 그대로 두면 강사가 [처리 되돌리기] 를 눌러 pass_missing 을 보고
+     자기 앱이 고장 난 줄 안다. */
+  const fromMigratedData = settledDeductionsOf(s).some((item) => String(item.passId).startsWith("csv_"));
 
   if (settled) return (
     <div className="mt-2 rounded-xl p-2.5" style={{ backgroundColor: line.bg }}>
       <div className="flex flex-wrap items-center gap-2">
         <Check size={13} style={{ color: line.tone }} />
         <span className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: line.tone }}>{line.label}</span>
-        {/* 되돌리기는 대표만 본다. 차감 보정과 같은 선이다. */}
-        {canUnsettle && !undoing ? (
+        {/* 되돌리기는 대표만 본다. 차감 보정과 같은 선이다.
+
+            이관 초기화로 사라진 회원권을 가리키는 확정에는 내지 않는다 --
+            눌러도 pass_missing 으로 끝나고, 눌러도 안 되는 버튼은 아무
+            말도 못 한다. */}
+        {canUnsettle && !undoing && !fromMigratedData ? (
           <button type="button" onClick={() => { setUndoing(true); setReason(""); }}
             className="text-xs font-bold" style={{ color: SUB }}>차감 되돌리기</button>
         ) : null}
       </div>
+      {/* 9월 기록이다. 급여를 앱으로 계산하지 않기로 했고 그 회원권은 이미
+          초기화로 사라졌다. 강사가 손댈 것이 없다는 것을 말해 준다. */}
+      {fromMigratedData ? (
+        <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+          이전 데이터 — 급여에 쓰지 않습니다. 되돌리지 않아도 됩니다.
+        </p>
+      ) : null}
       {canUnsettle && undoing ? (
         <div className="mt-1.5">
           <input value={reason} onChange={(event) => setReason(event.target.value)} maxLength={LEDGER_REASON_MAX}
@@ -5610,9 +5627,25 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
             {membership.needsLegacyReview && <p className="mt-2" style={{ padding: "8px 9px", borderRadius: 8, backgroundColor: WARN_S, color: WARN, fontSize: TYPE.caption, lineHeight: 1.45 }}>잔여 합계가 누적 등록 횟수보다 큽니다. 기존 데이터 확인이 필요하며 자동으로 수정하지 않았습니다.</p>}
             {canViewSettlement && !organizationMode && <div className="mt-2 flex items-center gap-2" style={{ padding: "8px 9px", borderRadius: 8, backgroundColor: CARD }}><span className="min-w-0 flex-1"><span className="block" style={{ fontSize: TYPE.caption, color: SUB }}>강사 정산 단가</span><span className="block text-xs font-bold tabular-nums" style={{ color: INK }}>₩{won(settlementUnit)}{Number(member.payRate) > 0 ? "" : " · 센터 기본"}</span></span><button type="button" onClick={openRate} style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND }}>단가 수정</button></div>}
             <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.45, color: SUB }}>회원 회당 금액은 총 결제액을 정규 유료 횟수로 나눕니다. 할인은 결제액에 반영하고 서비스 횟수는 제외합니다.</p>
-            <button type="button" onClick={openMembership} className="mt-2 h-10 w-full text-xs font-bold" style={{ borderRadius: 8, backgroundColor: BRAND, color: "#fff" }}>이용권 수정</button>
+            {/* 센터 소속이면 이 버튼을 내지 않는다.
+
+                이 카드의 잔여·만료일·이용권 이름은 **센터 회원권에서 온다**
+                (roster-bridge.js). 그런데 여기서 고치면 기기에만 쓰이고,
+                다음 로스터 계산이 그 값을 센터 값으로 덮는다 -- 강사는
+                "저장했습니다" 를 보고 화면은 그대로다. 숫자를 망가뜨리는
+                것이 아니라 **아무 일도 일어나지 않는** 버튼이다.
+
+                센터 회원권은 대표가 [잔여 조정], 대표·FC매니저가 [만료일]
+                로 고친다. 그 길에는 원장 기록이 남는다. */}
+            {organizationMode ? (
+              <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+                잔여와 만료일은 센터 회원권에서 옵니다. 바꾸려면 대표에게 요청해 주세요.
+              </p>
+            ) : (
+              <button type="button" onClick={openMembership} className="mt-2 h-10 w-full text-xs font-bold" style={{ borderRadius: 8, backgroundColor: BRAND, color: "#fff" }}>이용권 수정</button>
+            )}
           </section>
-          <Section title="이용권 변경 이력 및 상세 설정" action={<button type="button" onClick={openMembership} style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND }}>관리</button>}>
+          <Section title="이용권 변경 이력 및 상세 설정" action={organizationMode ? null : <button type="button" onClick={openMembership} style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND }}>관리</button>}>
             {(member.payments || []).length ? member.payments.slice(0, 4).map((p) => <div key={p.id || `${p.date}-${p.amount}`} className="flex items-center gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}` }}><span className="min-w-0 flex-1"><span className="block truncate" style={{ fontSize: TYPE.caption, color: INK2 }}>{ymd(p.date)} · {p.name || p.passName || "이용권"}</span>{p.kind === "adjustment" && <span className="block truncate" style={{ fontSize: TYPE.caption, color: SUB }}>잔여 {p.before?.remaining}회 → {p.after?.remaining}회 · 총 {p.before?.total}회 → {p.after?.total}회</span>}</span><span className="tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK }}>{p.kind === "adjustment" ? "수정" : `${num(p.count || p.sessions)}회`}</span></div>) : <p style={{ fontSize: TYPE.caption, color: SUB }}>저장된 변경 이력이 없습니다</p>}
             {holdHistory.slice(0, 4).map((h) => <div key={h.id} className="flex items-center gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}`, backgroundColor: CANVAS }}><span style={{ padding: "2px 6px", borderRadius: 5, color: INK2, fontSize: TYPE.caption, fontWeight: 600 }}>홀딩</span><span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: INK2 }}>{ymd(h.startDate)} ~ {ymd(h.releasedAt || h.endDate)}{h.extendDays ? ` · 만료 +${h.extendDays}일` : ""}</span></div>)}
             {(member.instructorHistory || []).slice(0, 3).map((entry) => <div key={entry.id || entry.date} className="flex gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}` }}><span style={{ fontSize: TYPE.caption, color: SUB }}>담당 변경</span><span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: INK2 }}>{ymd(entry.date)} · {entry.before || "미지정"} → {entry.after || "미지정"}</span></div>)}
@@ -19072,14 +19105,53 @@ function ExpiryReportScreen({
  *
  * 판정과 문구는 features/members/instructor-scope-admin.js 에 있다.
  */
+/** 지우지 않는 이유. 대표가 화면에서 읽을 말이다. */
+const MIGRATION_BLOCK_LABELS = Object.freeze({
+  member_link: "회원 앱 연결됨",
+  app_issued_pass: "앱에서 발급한 회원권 있음",
+  phone_changed: "앱에서 번호 변경됨",
+});
+
+/**
+ * 초기화 뒤 강사에게 전할 한 줄.
+ *
+ * 기기 화면은 저절로 비지 않는다. 강사 앱은 로스터를 읽어 둔 상태라, 앱을
+ * 다시 열거나 새로고침해야 옛 회원권이 사라진다. 그 사실을 말하지 않으면
+ * 강사는 "내 화면만 이상하다" 로 읽고 각자 확인 전화를 한다.
+ */
+const INSTRUCTOR_RESET_NOTICE = "회원권 데이터를 새 엑셀로 다시 올렸습니다. "
+  + "앱을 완전히 닫고 다시 열어 주세요 (웹은 새로고침). 그때까지 화면에 보이는 "
+  + "잔여·만료일은 옛 숫자입니다. 9월 수업은 '확정됨' 으로 남아 있어도 "
+  + "급여에는 쓰지 않습니다 — 되돌리기를 누르지 않아도 됩니다.";
+
 function InstructorScopeAdmin({
-  organization, instructorStore, locationStore, onVerify, onRebuild, onRetryOrganization, initialState = null,
+  organization, instructorStore, locationStore, onVerify, onRebuild, onRetryOrganization,
+  onResetMigration, initialState = null,
 }) {
   const locked = !organization?.ready || organization?.isLegacy || !organization?.organizationId;
   const [check, setCheck] = useState(initialState?.check || { stage: "idle" });
   const [preview, setPreview] = useState(initialState?.preview || null);
   const [running, setRunning] = useState(false);
   const [done, setDone] = useState(initialState?.done || null);
+
+  /* 이관 초기화. 미리보기가 기본이고, 숫자를 본 뒤에야 실행 버튼이 나온다 --
+     되돌릴 수 없는 쪽이 기본값이면 안 된다. */
+  const [reset, setReset] = useState(initialState?.reset || null);
+
+  const runReset = async (confirm) => {
+    if (typeof onResetMigration !== "function" || running) return;
+    setRunning(true);
+    setReset({ stage: "loading", confirmed: confirm });
+    try {
+      const result = await onResetMigration({ confirm });
+      setReset({ ...result, confirmed: confirm });
+    } catch (error) {
+      setReset({ stage: "failed", confirmed: confirm, code: String(error?.code || "unknown") });
+    } finally {
+      setRunning(false);
+    }
+  };
+
   const organizationId = organization?.organizationId || "";
 
   const verify = useCallback(async () => {
@@ -19281,6 +19353,100 @@ function InstructorScopeAdmin({
               </div>
             ))}
           </div>
+        </section>
+      ) : null}
+
+      {/* ── 이관 데이터 초기화 ─────────────────────────────────────────
+          출시 전 한 번 쓰는 자리다. 되돌릴 수 없으므로 **미리보기가 먼저**
+          이고, 숫자를 본 뒤에야 실행 버튼이 나온다. */}
+      {onResetMigration ? (
+        <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+          <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>이관 데이터 초기화</h2>
+          <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+            엑셀 이관으로 만든 회원권과 원장을 지웁니다. <b style={{ color: INK }}>앱에서 발급한
+            회원권·강사·지점·상품은 건드리지 않습니다.</b> 지우기 전에 사본을 한 벌 남깁니다.
+          </p>
+
+          {reset?.stage === "failed" ? (
+            <p className="mt-3" style={{ fontSize: TYPE.caption, color: BAD }}>
+              {reset.confirmed ? "초기화하지 못했습니다" : "미리 세지 못했습니다"} (코드 {reset.code}).
+            </p>
+          ) : null}
+
+          {reset?.stage === "preview" ? (
+            <>
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                {[["회원권", reset.counts.passes], ["원장", reset.counts.ledger],
+                  ["회원", reset.counts.clients], ["강사 누적", reset.counts.instructorClientTotals],
+                  ["회원 앱 투영", reset.counts.memberViews], ["남는 회원권", reset.counts.keptPasses]].map(([label, value]) => (
+                  <div key={label} style={{ padding: "8px 9px", borderRadius: 8, backgroundColor: CANVAS }}>
+                    <p style={{ fontSize: TYPE.caption, color: SUB }}>{label}</p>
+                    <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 700, color: label === "남는 회원권" ? BRAND_D : INK }}>{value}건</p>
+                  </div>
+                ))}
+              </div>
+
+              {reset.blockedClients.length > 0 ? (
+                <div className="mt-3">
+                  <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: WARN }}>
+                    지우지 않는 회원 {reset.blockedClients.length}명
+                  </p>
+                  <p className="mt-0.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+                    아래 회원은 이관 뒤 앱에서 쌓인 것이 붙어 있어 회원 문서를 남깁니다.
+                    새 엑셀이 번호로 찾아 이어 붙입니다.
+                  </p>
+                  <div className="mt-1.5" style={{ borderTop: `1px solid ${LINE}` }}>
+                    {reset.blockedClients.slice(0, 30).map((row) => (
+                      <div key={row.clientId} className="flex items-center gap-2"
+                        style={{ padding: "7px 0", borderBottom: `1px solid ${LINE}` }}>
+                        <p className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK }}>
+                          {row.name || row.clientId}
+                        </p>
+                        <p className="shrink-0" style={{ fontSize: TYPE.caption, color: SUB }}>
+                          {row.reasons.map((reason) => MIGRATION_BLOCK_LABELS[reason] || reason).join(" · ")}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              <p className="mt-3 font-bold" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: BAD }}>
+                되돌릴 수 없습니다. 9월 차감 기록과 급여 근거가 함께 사라집니다.
+              </p>
+              <button type="button" disabled={running} onClick={() => runReset(true)}
+                className="mt-2 w-full font-bold" style={{
+                  height: 44, borderRadius: 12, fontSize: TYPE.body,
+                  backgroundColor: running ? CANVAS : BAD, color: running ? SUB : "#fff",
+                }}>{running ? "지우는 중…" : `확인했습니다 · ${reset.counts.passes}건 초기화`}</button>
+            </>
+          ) : null}
+
+          {reset?.stage === "done" ? (
+            <>
+              <p className="mt-3 tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>
+                회원권 {reset.passes}건 · 원장 {reset.ledger}건 · 회원 {reset.clients}건을 지웠습니다.
+              </p>
+              <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+                사본: {reset.snapshot?.path || "저장됨"}
+              </p>
+              {/* 강사에게 전할 한 줄. 기기 화면은 새로고침해야 사라진다. */}
+              <div className="mt-3" style={{ padding: 10, borderRadius: 8, backgroundColor: CANVAS }}>
+                <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>강사에게 보낼 안내</p>
+                <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.6, color: INK2 }}>
+                  {INSTRUCTOR_RESET_NOTICE}
+                </p>
+              </div>
+            </>
+          ) : null}
+
+          {reset?.stage !== "preview" ? (
+            <button type="button" disabled={locked || running} onClick={() => runReset(false)}
+              className="mt-3 w-full font-bold" style={{
+                height: 44, borderRadius: 12, fontSize: TYPE.body,
+                backgroundColor: locked ? CANVAS : TINT, color: locked ? SUB : BRAND_D,
+              }}>{running ? "세는 중…" : "지울 것 먼저 보기"}</button>
+          ) : null}
         </section>
       ) : null}
 
@@ -19632,9 +19798,31 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
      두 화면이 서로 다른 순간의 원장을 보게 되고, 그 차이는 아무 데도 적히지
      않는다 -- 같은 객체를 쓰면 다를 수가 없다. */
   instructorPay = null, payMonth = "", payLoading = false, payError = "",
-  onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, payrollStore, issueStore, auditStore, ledgerStore, onRetryOrganization, onOpenClient, initialView = "hub" }) {
+  onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, payrollStore, issueStore, auditStore, ledgerStore, onRetryOrganization, onOpenClient, onClearMigratedSettlements, initialView = "hub" }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const organization = useContext(OrganizationContext);
+
+  /**
+   * 이관 데이터 초기화. 서버가 전부 한다 -- 규칙을 건드리지 않으려고
+   * Admin SDK 통로로 뒀다 (functions/src/migration-reset.js).
+   *
+   * 지운 뒤 **기기 일정의 확정 표시를 함께 정리한다.** 서버는 기기에 닿지
+   * 못한다. 그대로 두면 9월 수업이 없는 회원권을 가리킨 채 "확정됨" 으로
+   * 남고, 되돌리기는 pass_missing 으로 멈춘다 -- 깨지지는 않지만 대표가
+   * 치울 방법이 없다.
+   */
+  const runMigrationReset = useCallback(async ({ confirm }) => {
+    const organizationId = organization?.organizationId || "";
+    if (!organizationId) throw new Error("Missing organizationId");
+    const result = await fbResetMigratedData({ organizationId, confirm });
+    /* 지운 뒤 **기기 일정의 확정 표시를 함께 정리한다.** 서버는 기기에 닿지
+       못한다. 그대로 두면 9월 수업이 없는 회원권을 가리킨 채 "확정됨" 으로
+       남고, 되돌리기는 pass_missing 으로 멈춘다 -- 깨지지는 않지만 대표가
+       치울 방법이 없다. */
+    if (confirm) await onClearMigratedSettlements?.();
+    return result;
+  }, [organization?.organizationId, onClearMigratedSettlements]);
+
   /* 회원권 상품은 센터를 운영하는 대표만 본다. 개인 모드(legacy)에는 센터가
      없다. 목록에서 빼면 setView 로 들어갈 길도 함께 닫힌다.
 
@@ -20256,7 +20444,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
         {view === "instructor-scope" && showAudit && (
           <InstructorScopeAdmin organization={organization} instructorStore={instructorStore} locationStore={locationStore}
             onVerify={fbVerifyInstructorIds} onRebuild={fbRebuildInstructorIds}
-            onRetryOrganization={onRetryOrganization} />
+            onRetryOrganization={onRetryOrganization} onResetMigration={runMigrationReset} />
         )}
         {view === "migration" && showMigration && (
           <CenterMigration organization={organization} currentUserId={account?.id || ""}
@@ -21139,6 +21327,34 @@ export function createAppScreenSmokeCases() {
     { name: "회원권 상품 · 소속 확인 실패", element: providerWith(smokeOwner, <ProductCatalog organization={readyOrganizationContext({ organizationId: "", role: "", status: "unknown", isLegacy: false })} currentUserId="smoke-account" store={productStore} onRetryOrganization={noop} onToast={noop} />) },
     /* 번호 점검. 저장된 철자를 그대로 보여준다 -- 여기서 다듬으면 무엇이
        문제인지 안 보이고, 대표가 고쳐야 할 것이 바로 그 철자다. */
+    /* 이관 초기화. 되돌릴 수 없는 자리라 미리보기 숫자와 "지우지 않는
+       회원" 목록이 먼저 서야 한다. */
+    { name: "이관 초기화 · 미리보기", element: providerWith(smokeOwner, (
+      <InstructorScopeAdmin organization={readyOrganizationContext(smokeOwner)} onRetryOrganization={noop}
+        onVerify={asyncNoop} onRebuild={asyncNoop} onResetMigration={asyncNoop}
+        initialState={{
+          instructors: smokeInstructors,
+          reset: {
+            stage: "preview",
+            counts: { passes: 212, ledger: 1843, clients: 106, instructorClientTotals: 72, memberViews: 106, keptPasses: 3 },
+            blockedClients: [
+              { clientId: "csv_01011112222", name: "김하나", reasons: ["member_link"] },
+              { clientId: "csv_01033334444", name: "이두리", reasons: ["app_issued_pass", "phone_changed"] },
+            ],
+          },
+        }} />
+    )) },
+    { name: "이관 초기화 · 끝", element: providerWith(smokeOwner, (
+      <InstructorScopeAdmin organization={readyOrganizationContext(smokeOwner)} onRetryOrganization={noop}
+        onVerify={asyncNoop} onRebuild={asyncNoop} onResetMigration={asyncNoop}
+        initialState={{
+          instructors: smokeInstructors,
+          reset: {
+            stage: "done", passes: 212, ledger: 1843, clients: 106,
+            snapshot: { path: "migration-reset/center-a/2026-10-01T12-00-00.000Z.json" },
+          },
+        }} />
+    )) },
     { name: "번호 점검", element: providerWith(smokeOwner, (
       <ClientPhoneCheck organization={readyOrganizationContext(smokeOwner)} onRetryOrganization={noop}
         onOpenClient={noop} onList={asyncNoop}
@@ -23233,6 +23449,28 @@ export default function App() {
 
      지우지 않고 반대 항목을 더한다. 원장은 append-only 이고, 그것이 이 기록의
      값어치 전부다(pass-repository 의 correctDeduction). */
+  /**
+   * 이관 초기화 뒤 기기 일정을 정리한다.
+   *
+   * 서버는 기기에 닿지 못한다. 확정 표시(orgPassId)가 지워진 회원권을
+   * 가리킨 채 남으면 9월 수업이 영영 "확정됨" 이고, 되돌리기는
+   * pass_missing 으로 멈춘다 -- 깨지지는 않지만 치울 방법이 없다.
+   *
+   * 이관 회원권(csv_ 접두)을 가리키는 것만 걷는다. 앱에서 발급한 회원권을
+   * 가리키는 확정은 그대로 둔다 -- 그 회원권은 살아 있고, 그 급여도 유효하다.
+   */
+  const clearMigratedSettlements = useCallback(async () => {
+    const schedule = db.schedule.map((lesson) => {
+      const settled = settledDeductionsOf(lesson);
+      if (!settled.length) return lesson;
+      return settled.some((item) => String(item.passId).startsWith("csv_"))
+        ? clearSettlementFromLesson(lesson)
+        : lesson;
+    });
+    await saveDb({ ...db, schedule });
+    setRosterRevision((value) => value + 1);
+  }, [db]);
+
   const unsettleLesson = async (lessonId, reason) => {
     const lesson = db.schedule.find((item) => item.id === lessonId);
     if (!lesson || !organizationRoster || !isSettledLesson(lesson)) return false;
@@ -24192,7 +24430,7 @@ export default function App() {
               }} />}
             {tab === "settings" && <ReferenceSettingsTab db={db} photos={photos} account={account} savedAt={savedAt} demoMode={demoMode}
               instructorPay={instructorPay} payMonth={payMonth} payLoading={payLoading} payError={payError} onChangeSettings={(s) => saveDb({ ...db, settings: s })} onChangePhoto={changePhoto} onToast={setToast} themePref={themePref} onChangeTheme={changeTheme} onLogout={handleLogout} onDeleteAccount={handleDeleteAccount} onImport={importHandoff}
-              onOpenSchedule={() => { setScheduleQuickAddRequest((request) => request + 1); setTab("schedule"); }} onOpenRecords={() => { setMobileView("list"); setTab("members"); }} onOpenOnboarding={openOnboardingReplay} onOpenLessonExamples={() => setLessonExamplesOpen(true)} backupStatus={cloudBackupStatus} onEnablePhotoBackup={enablePhotoBackup} onRetryBackup={retryCloudBackup} onRetryOrganization={retryOrganizationContext} onOpenClient={(picked) => setDetailClient(picked)} />}
+              onOpenSchedule={() => { setScheduleQuickAddRequest((request) => request + 1); setTab("schedule"); }} onOpenRecords={() => { setMobileView("list"); setTab("members"); }} onOpenOnboarding={openOnboardingReplay} onOpenLessonExamples={() => setLessonExamplesOpen(true)} backupStatus={cloudBackupStatus} onEnablePhotoBackup={enablePhotoBackup} onRetryBackup={retryCloudBackup} onRetryOrganization={retryOrganizationContext} onOpenClient={(picked) => setDetailClient(picked)} onClearMigratedSettlements={clearMigratedSettlements} />}
           </Guard>
         </div>
         {/* 출석 체크는 일정 탭 위에 시트로 뜬다. 탭 구조를 건드리지 않으면서

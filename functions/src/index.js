@@ -25,6 +25,7 @@ const {
   syncInstructorIds,
   verifyInstructorIds,
 } = require("./instructor-scope-triggers");
+const { planMigrationReset, runMigrationReset } = require("./migration-reset");
 const { createFirestoreMemberLinkPorts } = require("./member-link-store");
 const {
   createFirestoreMemberViewAdminPorts, createMemberViewAdminService,
@@ -665,6 +666,61 @@ exports.verifyInstructorIds = onCall(
    트리거도 깨어나지 않는다.
 
    04:00 KST 다. 수업이 없고, 자정 직후의 만료가 이미 지나간 시각이다. */
+/* ── 이관 데이터 초기화 ──────────────────────────────────────────────────
+   출시 전 한 번 쓰는 통로다. 근거는 migration-reset.js 머리말에 있다.
+
+   **규칙을 건드리지 않는다.** Admin SDK 가 규칙을 우회하므로 "아무도 원장을
+   못 지운다" 는 규칙은 그대로 남고, 그 예외는 대표가 부르는 이 함수뿐이다. */
+exports.resetMigratedData = onCall({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  timeoutSeconds: 540,
+  memory: "512MiB",
+  invoker: "public",
+}, async (request) => {
+  const callerUid = String(request?.auth?.uid || "").trim();
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  /* 미리보기가 기본이다. 지우려면 confirm 을 명시해야 한다 -- 되돌릴 수 없는
+     쪽이 기본값이면 안 된다. */
+  const confirmed = request?.data?.confirm === true;
+  if (!callerUid) throw new HttpsError("unauthenticated", "Please sign in again.");
+  if (!organizationId) throw new HttpsError("invalid-argument", "organizationId is required.");
+
+  const membership = await firestore
+    .collection("memberships").doc(membershipId(organizationId, callerUid)).get();
+  if (!isActiveOwner(membership.exists ? membership.data() : null)) {
+    throw new HttpsError("permission-denied", "Only the centre owner can run this.");
+  }
+
+  try {
+    if (!confirmed) {
+      const plan = await planMigrationReset(firestore, { organizationId });
+      logger.info("migration_reset_preview", {
+        feature: "migration_reset", stage: "preview", organizationId, ...plan.counts,
+      });
+      /* 숫자와 막힌 회원 목록만 돌려준다. 지울 문서 경로 수천 개를 화면에
+         보낼 이유가 없다. */
+      return { stage: "preview", counts: plan.counts, blockedClients: plan.blockedClients };
+    }
+    const result = await runMigrationReset(firestore, getStorage().bucket(), {
+      organizationId, actorId: callerUid,
+    });
+    /* 이름은 로그에 적지 않는다 (§7). 건수와 사본 경로만. */
+    logger.warn("migration_reset_done", {
+      feature: "migration_reset", stage: "done", organizationId,
+      passes: result.passes, ledger: result.ledger, clients: result.clients,
+      instructorClientTotals: result.instructorClientTotals, memberViews: result.memberViews,
+      snapshotPath: result.snapshot.path,
+    });
+    return { stage: "done", ...result };
+  } catch (error) {
+    logger.error("migration_reset_failed", {
+      feature: "migration_reset", stage: confirmed ? "done" : "preview", organizationId,
+      errorCode: error?.code || "unknown", message: error?.message || "",
+    });
+    throw new HttpsError("internal", "migration_reset_failed");
+  }
+});
+
 exports.rebuildInstructorIdsNightly = onSchedule({
   region: process.env.FUNCTIONS_REGION || "asia-northeast3",
   schedule: "every day 04:00",

@@ -265,6 +265,15 @@ export function mergeRoster(input = {}) {
       regular: 0,
       service: 0,
       total: 0,
+      /* 이용권 이름과 만료일도 비운다. 잔여만 0 으로 누르고 이 둘을 두면
+         카드가 "1:1 신규 · 잔여 0회 · 12월 31일 만료" 를 그린다 -- 기기에
+         남은 옛 숫자이고, 강사는 그것을 지금 사실로 읽는다.
+
+         이관 초기화 뒤에 실제로 그렇게 된다. 센터 회원 문서가 사라지면 그
+         회원은 맞출 상대를 잃고 이 갈래로 떨어지는데, 그때 기기의 옛
+         만료일이 혼자 남는다. */
+      passName: "",
+      contractEnd: "",
       rosterSource: ROSTER_SOURCE.LOCAL_ONLY,
     }));
 

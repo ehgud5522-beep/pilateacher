@@ -90,7 +90,12 @@ export const MIGRATION_ERROR = Object.freeze({
 
    서비스·렛미인·기타는 어느 쪽도 아니다. 그 셋은 사람 수가 상품으로 정해지지
    않으므로 지금처럼 적힌 대로 둔다 -- 모르는 것을 규칙으로 만들지 않는다. */
+/* 타입을 문자열로 넓혀 둔다. Object.freeze 가 적힌 값들의 합집합으로 좁히는데,
+   이 목록이 받는 것은 엑셀에서 읽어 라벨 표로 옮긴 문자열이다 -- 좁은 타입이면
+   "이 카테고리가 그 목록에 있는가" 라는 질문 자체를 할 수 없다. */
+/** @type {readonly string[]} */
 const DUET_CATEGORIES = Object.freeze([PAY_CATEGORY.PT_2_1_NEW, PAY_CATEGORY.PT_2_1_REPURCHASE]);
+/** @type {readonly string[]} */
 const SOLO_CATEGORIES = Object.freeze([
   PAY_CATEGORY.PT_1_1_NEW,
   PAY_CATEGORY.PT_1_1_REPURCHASE_EVENT,

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  NEXT_DEDUCT, PASS_GROUP, isUsablePass, memberUnitPrice, passCard, passCardList,
-  passSummary, remainingSplit,
+  NEXT_DEDUCT, isUsablePass, isoDay, memberUnitPrice, passCard, passCardList,
+  passListSummary, passSummary, remainingSplit,
 } from "../../src/features/membership/pass-cards.js";
 
 const NOW = new Date(2026, 9, 1);
@@ -154,4 +154,49 @@ test("한 종류만 있으면 그 종류만 적는다", () => {
   assert.equal(passCardList({ passes: [], now: NOW }).summary, "사용 중인 회원권 없음");
   assert.equal(passCardList({ passes: [pass({ remainingCount: 0 })], now: NOW }).summary,
     "사용 중인 회원권 없음");
+});
+
+/* ── 날짜 ─────────────────────────────────────────────────────────────── */
+
+test("표시용 날짜 문자열을 함께 내보낸다 -- Date 를 화면에 넘기면 죽는다", () => {
+  /* 배포 563 이 여기서 터졌다. 화면의 ymd() 는 문자열을 받아 slice 하는데
+     Date 에는 slice 가 없어 회원 상세가 통째로 에러 화면이 됐다. */
+  const card = passCard(pass({ expiresAt: new Date(2026, 10, 9) }), { now: NOW });
+  assert.equal(card.expiresOn, "2026-11-09");
+  assert.equal(typeof card.expiresOn, "string", "화면이 쓰는 값은 문자열이어야 한다");
+  assert.ok(card.expiresAt instanceof Date, "판정이 쓰는 값은 Date 그대로다");
+});
+
+test("읽지 못하는 날짜는 빈 문자열이다 -- 지어내지 않는다", () => {
+  for (const bad of [null, undefined, "", "어제", {}]) {
+    assert.equal(isoDay(bad), "", JSON.stringify(bad));
+  }
+  assert.equal(passCard(pass({ expiresAt: null }), { now: NOW }).expiresOn, "");
+});
+
+/* ── 목록 카드 요약 ───────────────────────────────────────────────────── */
+
+test("목록 요약도 종류별이고, 가장 빠른 만료는 몇 회가 끝나는지 함께 말한다", () => {
+  /* 날짜만 적으면 합계 전부가 그날 끝나는 것으로 읽힌다 -- 고치려던 오해다. */
+  const { active, ended } = passCardList({ passes: FOUR, now: NOW });
+  const summary = passListSummary([...active, ...ended]);
+  assert.deepEqual(summary, {
+    count: 4, solo: 111, duet: 83,
+    soonestOn: "2026-11-09", soonestRemaining: 13,
+  });
+});
+
+test("끝난 회원권만 있으면 목록 요약이 없다", () => {
+  const { active, ended } = passCardList({ passes: [pass({ remainingCount: 0 })], now: NOW });
+  assert.equal(passListSummary([...active, ...ended]), null);
+  assert.equal(passListSummary([]), null);
+});
+
+test("만료일 없는 회원권은 가장 빠른 만료로 서지 않는다", () => {
+  const summary = passListSummary(passCardList({
+    passes: [pass({ id: "no-date", expiresAt: null }), pass({ id: "dated", expiresAt: new Date(2027, 0, 1) })],
+    now: NOW,
+  }).active);
+  assert.equal(summary.soonestOn, "2027-01-01");
+  assert.equal(summary.count, 2);
 });

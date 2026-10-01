@@ -150,7 +150,7 @@ import {
 } from "./features/roster/roster-bridge.js";
 import { partnerClientId } from "./data/schema/pass-clients.js";
 import {
-  NEXT_DEDUCT, PASS_GROUP, passCardList,
+  NEXT_DEDUCT, PASS_GROUP, passCardList, passListSummary,
 } from "./features/membership/pass-cards.js";
 import {
   blockingNotice, duetIssueNotices, duetSummaryLine, reviewNotices,
@@ -1478,6 +1478,21 @@ class Guard extends Component {
     if (this.state.err) {
       const label = this.props.label || "이 부분";
       const msg = String(this.state.err?.message || this.state.err);
+      /* 목록 안의 한 줄을 위한 작은 모양. 카드 한 장이 못 그려졌다고 화면
+         가운데에 큰 흰 상자가 서면, 나머지 멀쩡한 카드가 그 아래로 밀린다.
+         진단은 위 componentDidCatch 가 이미 같은 방식으로 남긴다. */
+      if (this.props.compact) {
+        const detail = !import.meta.env.PROD || String(import.meta.env.VITE_INTERNAL_BUILD || "").trim().toLowerCase() === "true";
+        return (
+          <div style={{ padding: 11, borderRadius: 10, backgroundColor: CARD, border: `1px solid ${BAD}` }}>
+            <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: BAD }}>{label}을(를) 표시하지 못했습니다</p>
+            <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB, lineHeight: 1.45 }}>
+              나머지는 그대로 보실 수 있습니다. 대표에게 알려 주세요.
+            </p>
+            {detail ? <p className="mt-1" style={{ fontSize: TYPE.caption, color: FAINT, wordBreak: "break-all" }}>{msg}</p> : null}
+          </div>
+        );
+      }
       const full = `[${label}] ${msg} ${this.state.info}`;
       const showInternalDetails = !import.meta.env.PROD || String(import.meta.env.VITE_INTERNAL_BUILD || "").trim().toLowerCase() === "true";
       return (
@@ -5076,7 +5091,7 @@ function MemberList({ members, selectedId, onSelect, onAdd, onOpenFav, favCount,
 function ReferenceMemberList({
   members, schedule, settings, onSelect, onAdd, onDeleteSamples, registerRequest = 0,
   onConsumeRegisterRequest, canRegister = true, currentUserId = "", myMembersDefault = false,
-  rosterError = "", onRetryRoster, hiddenCount = 0, onShowHidden, journeyOf,
+  rosterError = "", onRetryRoster, hiddenCount = 0, onShowHidden, journeyOf, passSummaryOf,
   /* 강사에게는 "전체 보기" 를 주지 않는다. 경계가 아니라 -- 규칙은 지금도
      열려 있다 -- 120명을 일상적으로 스크롤할 이유가 없어서다.
      기본값 true 는 개인 강사(legacy)를 위한 것이다. */
@@ -5253,6 +5268,7 @@ function ReferenceMemberList({
         {realMembers.length > 0 && !list.length && <div className="py-12 text-center"><Users size={22} className="mx-auto" style={{ color: FAINT }} /><p className="mt-2 text-sm font-semibold" style={{ color: INK }}>{q ? "검색 결과가 없습니다" : "조건에 맞는 회원이 없습니다"}</p></div>}
         <div className="pt-member-card-grid">{list.map((m) => {
           const remaining = left(m), expiry = ddaySafe(m.contractEnd), next = nextOf(m.id);
+          const passSummary = passSummaryOf ? passSummaryOf(m.id) : null;
           /* 센터에 없는 회원은 잔여를 말할 수 없다. 재등록 임박으로도 세지
              않는다 -- 근거가 조직 회원권에 있고 그것이 없다. */
           const unlinkedRow = isUnlinkedLocalMember(m);
@@ -5281,7 +5297,20 @@ function ReferenceMemberList({
                 <ChevronRight size={16} style={{ color: FAINT }} />
               </div>
               <div className="mt-2 flex min-w-0 items-center gap-2" style={{ paddingTop: 8, borderTop: `1px solid ${LINE}` }}>
-                <span className="truncate" style={{ fontSize: TYPE.caption, color: SUB }}>만료 {m.contractEnd ? ymd(m.contractEnd) : "미설정"}</span><span style={{ color: LINE }}>·</span>
+                {/* 종류별로 말한다. 한 숫자로 합치고 날짜를 하나만 적으면
+                    합계 전부가 그날 끝나는 것으로 읽힌다 -- 상세에서 지운
+                    바로 그 오해가 목록에 남는다. */}
+                {passSummary ? (
+                  <span className="truncate tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+                    {[
+                      passSummary.solo > 0 ? `1:1 ${passSummary.solo}회` : "",
+                      passSummary.duet > 0 ? `2:1 ${passSummary.duet}회` : "",
+                      passSummary.soonestOn ? `가장 빠른 만료 ${passSummary.soonestOn.slice(5).replace("-", ".")}(${passSummary.soonestRemaining}회)` : "",
+                    ].filter(Boolean).join(" · ") || "사용 중인 회원권 없음"}
+                  </span>
+                ) : (
+                  <span className="truncate" style={{ fontSize: TYPE.caption, color: SUB }}>만료 {m.contractEnd ? ymd(m.contractEnd) : "미설정"}</span>
+                )}<span style={{ color: LINE }}>·</span>
                 <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: next ? INK2 : SUB }}>다음 예약 {next ? `${md(next.date)} ${next.start}` : "없음"}</span>
               </div>
               {/* 강사가 "이 회원 얼마나 왔지" 를 숫자로 세지 않아도 되게. 카드에서는
@@ -5495,7 +5524,7 @@ function PassCard({ card, onEdit }) {
       </div>
       <div className="mt-2 flex items-center gap-2" style={{ borderTop: `1px solid ${LINE}`, paddingTop: 7 }}>
         <span className="tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
-          만료 {card.expiresAt ? ymd(card.expiresAt) : "미설정"}
+          만료 {card.expiresOn ? ymd(card.expiresOn) : "미설정"}
         </span>
         {card.unitPrice ? (
           <span className="tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>· 회당 ₩{won(card.unitPrice)}</span>
@@ -5745,7 +5774,9 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
                 ) : null}
                 {passCards.active.length ? (
                   <div className="space-y-2">
-                    {passCards.active.map((card) => <PassCard key={card.passId} card={card} />)}
+                    {passCards.active.map((card) => (
+                      <Guard key={card.passId} label="회원권 카드" compact><PassCard card={card} /></Guard>
+                    ))}
                   </div>
                 ) : (
                   <p style={{ fontSize: TYPE.caption, color: SUB }}>지금 쓸 수 있는 회원권이 없습니다.</p>
@@ -5758,7 +5789,9 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
                       종료된 회원권 {passCards.ended.length}장
                     </summary>
                     <div className="mt-2 space-y-2">
-                      {passCards.ended.map((card) => <PassCard key={card.passId} card={card} />)}
+                      {passCards.ended.map((card) => (
+                        <Guard key={card.passId} label="회원권 카드" compact><PassCard card={card} /></Guard>
+                      ))}
                     </div>
                   </details>
                 ) : null}
@@ -21178,6 +21211,25 @@ export function createAppScreenSmokeCases() {
     { name: "회원 상세", element: <ReferenceMemberDetail member={member} schedule={db.schedule} photos={photos[member.id]} settings={db.settings} onBack={noop} onPatch={asyncNoop} onSaveNote={asyncNoop} onSchedule={noop} onAssess={noop} onToast={noop} /> },
     /* 소속 센터의 회원. 강사가 못 하는 셋 -- 삭제 · 홀딩 · 단가 -- 이 사라지고,
        이용권 카드의 세 칸이 조직 회원권에서 채워진다. */
+    /* 회원권 네 장 짜리 회원. **배포 563 이 죽은 모양이다** -- 카드가 날짜를
+       화면에 넘기는데 Date 에는 slice 가 없어 회원 상세가 통째로 터졌다.
+       위의 "소속" 케이스는 passCards 를 넘기지 않아 레거시 분기만 그렸고,
+       그래서 렌더 테스트가 있는데도 잡지 못했다. */
+    { name: "회원 상세 · 회원권 네 장", element: <ReferenceMemberDetail member={smokeRoster[0]} schedule={db.schedule} photos={photos[member.id]} settings={db.settings} organizationMode
+      passCards={passCardList({
+        now: new Date("2026-10-01T00:00:00+09:00"),
+        nextSoloPassId: "smoke-solo-50", nextDuetPassId: "smoke-duet-100",
+        passes: [
+          { id: "smoke-solo-50", productId: "1:1 PT 50회", category: "pt_1_1_repurchase_event", clientId: "smoke-client-a", totalSessions: 50, serviceSessions: 0, remainingCount: 11, contractPrice: 3181800, status: "active", expiresAt: new Date("2026-12-18T00:00:00+09:00") },
+          { id: "smoke-solo-100", productId: "1:1 PT 100회", category: "pt_1_1_repurchase_event", clientId: "smoke-client-a", totalSessions: 100, serviceSessions: 0, remainingCount: 100, contractPrice: 5000000, status: "active", expiresAt: new Date("2027-12-31T00:00:00+09:00") },
+          { id: "smoke-duet-100", productId: "2:1 PT 33->100 세션업", category: "pt_2_1_new", clientId: "smoke-client-a", clientIds: ["smoke-client-a", "smoke-client-b"], partnerName: "박서연", totalSessions: 100, serviceSessions: 0, remainingCount: 13, contractPrice: 4096000, status: "active", expiresAt: new Date("2026-11-09T00:00:00+09:00") },
+          { id: "smoke-duet-70", productId: "2:1 PT 70회", category: "pt_2_1_new", clientId: "smoke-client-a", clientIds: ["smoke-client-a", "smoke-client-b"], partnerName: "박서연", totalSessions: 70, serviceSessions: 0, remainingCount: 70, contractPrice: 3818200, status: "active", expiresAt: new Date("2027-09-30T00:00:00+09:00") },
+          /* 이관 회원권은 칸이 빌 수 있다. 짝 이름도 만료일도 상품명도 없는 줄이
+             한 장 섞여야 "비어 있어도 그려지는가" 를 본다. */
+          { id: "smoke-csv-bare", clientId: "smoke-client-a", remainingCount: 0 },
+        ],
+      })}
+      onBack={noop} onPatch={asyncNoop} onSaveNote={asyncNoop} onSchedule={noop} onAssess={noop} onToast={noop} onHide={asyncNoop} /> },
     { name: "회원 상세 · 소속", element: <ReferenceMemberDetail member={smokeRoster[0]} schedule={db.schedule} photos={photos[member.id]} settings={db.settings} organizationMode onBack={noop} onPatch={asyncNoop} onSaveNote={asyncNoop} onSchedule={noop} onAssess={noop} onToast={noop} onHide={asyncNoop} /> },
     /* 강사에게는 연락처 뒤 4자리만 보인다. 경계가 아니라 -- 규칙은 지금도
        열려 있다 -- 일상적으로 120명의 번호를 스쳐 갈 이유가 없어서다. */
@@ -21940,6 +21992,7 @@ export default function App() {
     const mine = rosterPasses.filter((item) => passBelongsTo(item, target));
     if (mine.length === 0) return null;
     const now = new Date();
+    try {
 
     const solo = pickSoloPass(mine, target, now);
     /* 2:1 은 짝이 누구냐에 따라 쓰이는 회원권이 다르다. 짝별로 고른 뒤 그중
@@ -21967,7 +22020,37 @@ export default function App() {
       nextSoloPassId: solo?.id || "",
       nextDuetPassId: duet?.id || "",
     });
+    } catch (error) {
+      /* 여기는 렌더 중에 불린다. 던지면 회원 상세가 통째로 죽고, 에러 경계는
+         카드가 아니라 화면 전체를 대신한다 -- 배포 563 에서 일어난 일이다.
+         카드를 못 만들면 카드 없이 보여준다. 기록은 남긴다. */
+      deviceLog("pass_cards_failed", {
+        code: String(error?.name || "Error").slice(0, 80),
+        message: String(error?.message || "unknown").slice(0, 180),
+        appBuild: APP_BUILD_LABEL,
+      });
+      return null;
+    }
   }, [organizationRoster, rosterPasses, rosterMembers]);
+
+  /* 목록 카드가 쓸 요약. 회원마다 다시 만들면 회원 200명 × 회원권 400장이
+     렌더마다 돈다 -- 한 번 만들어 들고 다닌다. */
+  const rosterPassSummaries = useMemo(() => {
+    const out = new Map();
+    if (!organizationRoster) return out;
+    for (const member of rosterMembers) {
+      const clientId = String(member?.orgClientId || "");
+      if (!clientId || out.has(clientId)) continue;
+      const cards = passCardsForClient(clientId);
+      if (cards) out.set(clientId, passListSummary([...cards.active, ...cards.ended]));
+    }
+    return out;
+  }, [organizationRoster, rosterMembers, passCardsForClient]);
+
+  const passSummaryFor = useCallback((memberId) => {
+    const clientId = rosterMembers.find((item) => String(item?.id || "") === String(memberId || ""))?.orgClientId;
+    return clientId ? rosterPassSummaries.get(String(clientId)) || null : null;
+  }, [rosterMembers, rosterPassSummaries]);
 
   const passCardsFor = useCallback(
     (memberId) => passCardsForClient(
@@ -24618,7 +24701,7 @@ export default function App() {
           <Guard key={tab}>
             {tab === "schedule" && <ScheduleManager db={rosterDb} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterMembers ? () => { setMemberRegistrationRequest((value) => value + 1); setTab("members"); } : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && organizationContext.role === ROLES.OWNER} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
             {tab === "members" && <div className={`h-full min-h-0 ${mobileView === "detail" && member ? "pt-member-detail-active" : ""}`}>
-              <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList members={rosterMembers} schedule={db.schedule} settings={db.settings} organizationMode={organizationRoster} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} canBrowseAll={!organizationRoster || canBrowseAllClients(organizationContext.role)} viewerRole={organizationContext.role} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterMembers} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} journeyOf={organizationRoster ? journeyFor : undefined} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
+              <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList passSummaryOf={passSummaryFor} members={rosterMembers} schedule={db.schedule} settings={db.settings} organizationMode={organizationRoster} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} canBrowseAll={!organizationRoster || canBrowseAllClients(organizationContext.role)} viewerRole={organizationContext.role} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterMembers} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} journeyOf={organizationRoster ? journeyFor : undefined} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
               {mobileView === "detail" && member && <div className="pt-member-detail-pane h-full min-h-0">
                 <ReferenceMemberDetail key={member.id} member={member} schedule={db.schedule} photos={photos[member.id]} settings={db.settings} viewerRole={organizationRoster ? organizationContext.role : ""}
                   canViewSettlement={!account?.role || ["owner", "manager", "admin", "director"].includes(String(account.role).toLowerCase())} onBack={() => setMobileView("list")}

@@ -51,6 +51,20 @@ export function toDate(value) {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+/**
+ * 화면이 쓰는 날짜 형식(YYYY-MM-DD). 읽지 못하면 빈 문자열이다.
+ *
+ * Date 를 그대로 내보내지 않는다. 화면의 ymd() 는 문자열을 받아 slice 하는데,
+ * Date 에는 slice 가 없어 **회원 상세가 통째로 죽는다** -- 배포 563 에서 실제로
+ * 일어난 일이다. 날짜를 쓰는 쪽이 둘(판정은 Date, 표시는 문자열)이라 둘 다
+ * 내보내고, 표시하는 쪽이 고를 일이 없게 한다.
+ */
+export function isoDay(value) {
+  const at = toDate(value);
+  if (!at) return "";
+  return `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, "0")}-${String(at.getDate()).padStart(2, "0")}`;
+}
+
 /** 이 카드가 어느 묶음에 들어가는가. */
 export const PASS_GROUP = Object.freeze({
   /** 지금 쓸 수 있다. 만료가 가까운 순으로 선다. */
@@ -150,6 +164,8 @@ export function passCard(pass, { now = new Date(), nextDeduct = NEXT_DEDUCT.NONE
     regularLeft: split.regular,
     serviceLeft: split.service,
     expiresAt: toDate(pass?.expiresAt),
+    /* 표시용. 위 isoDay 의 머리말 참고 -- 화면에 Date 를 넘기면 죽는다. */
+    expiresOn: isoDay(pass?.expiresAt),
     unitPrice: memberUnitPrice(pass),
     purchaseRound: count(pass?.purchaseRound),
     /* 2:1 은 두 사람의 화면에 같은 카드가 선다. 이름이 없으면 투영이 보내 준
@@ -179,6 +195,35 @@ export function passSummary(cards) {
   if (solo > 0) parts.push(`1:1 ${solo}회`);
   if (duet > 0) parts.push(`2:1 ${duet}회`);
   return parts.join(" · ");
+}
+
+/**
+ * 목록 카드 한 줄이 쓸 요약. **상세와 같은 갈래를 쓴다.**
+ *
+ * 목록은 잔여를 한 숫자로 합치고 만료일을 한 날짜로 보여줬다 -- 상세에서
+ * 지운 바로 그 화면이 목록에 남아 있으면, 강사는 목록에서 본 숫자를 믿고
+ * 상세를 열어 다른 숫자를 보게 된다.
+ *
+ * 가장 빠른 만료는 **몇 회가 그날 끝나는지와 함께** 말한다. 날짜만 적으면
+ * 합계 전부가 그날 끝나는 것으로 읽힌다 -- 고치려던 오해가 그것이다.
+ *
+ * @param {Array<any>} cards passCard 의 결과
+ */
+export function passListSummary(cards) {
+  const active = (Array.isArray(cards) ? cards : []).filter((card) => card.group === PASS_GROUP.ACTIVE);
+  if (active.length === 0) return null;
+  const sum = (duet) => active.filter((card) => card.isDuet === duet)
+    .reduce((total, card) => total + card.remaining, 0);
+  /* 목록은 만료가 가까운 순으로 정렬된 것을 받는다 (passCardList). 맨 앞이 곧
+     가장 먼저 끝나는 회원권이고, 만료일이 없는 것은 맨 뒤라 앞에 서지 않는다. */
+  const soonest = active.find((card) => card.expiresOn) || null;
+  return {
+    count: active.length,
+    solo: sum(false),
+    duet: sum(true),
+    soonestOn: soonest ? soonest.expiresOn : "",
+    soonestRemaining: soonest ? soonest.remaining : 0,
+  };
 }
 
 /**

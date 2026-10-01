@@ -1,0 +1,15 @@
+{
+  "name": "bonita-member-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "회원 앱 껍데기. Capacitor CLI 가 이 폴더에서 돌려면 package.json 이 있어야 한다 (@capacitor/cli 는 cwd 의 package.json 을 앱 패키지로 읽는다).",
+  "dependencies": {
+    "@capacitor-firebase/authentication": "^8.3.0",
+    "@capacitor/android": "^8.4.2",
+    "@capacitor/core": "^8.4.2",
+    "@capacitor/ios": "^8.4.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.4.2"
+  }
+}

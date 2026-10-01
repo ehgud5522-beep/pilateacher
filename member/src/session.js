@@ -17,6 +17,9 @@
  * **틀리는 방향이 안전한 쪽**이다.
  */
 
+import { DIAGNOSTIC_KEY } from "./diagnostics.js";
+import { VIEW_CACHE_KEY } from "./offline-cache.js";
+
 /** 확정 5번. 하루는 86,400,000 밀리초. */
 export const REVERIFY_AFTER_DAYS = 90;
 const DAY_MS = 86400000;
@@ -71,5 +74,27 @@ export function writeVerifiedAt(at, store) {
     if (box) box.setItem(VERIFIED_AT_KEY, (at instanceof Date ? at : new Date()).toISOString());
   } catch (_error) {
     /* 적지 못하면 다음에 다시 인증한다. 그것이 이 기능의 안전한 방향이다. */
+  }
+}
+
+/**
+ * 이 기기에서 회원 앱이 남긴 것을 전부 걷는다. 계정 삭제 뒤에 부른다.
+ *
+ * 계정은 지웠는데 마지막 확인 시각이 남아 있으면, 다음에 이 폰을 여는 사람이
+ * **지워진 사람의 흔적**을 밟고 들어간다. 걷는 목록은 여기 한 군데에만 둔다 --
+ * 칸이 늘 때 이 함수를 같이 고치지 않으면 남는 것이 생기고, 그것은 아무도
+ * 알아채지 못한다.
+ */
+export const DEVICE_KEYS = Object.freeze([VERIFIED_AT_KEY, VIEW_CACHE_KEY, DIAGNOSTIC_KEY]);
+
+export function forgetDevice(store) {
+  try {
+    const box = store || (typeof localStorage === "undefined" ? null : localStorage);
+    if (!box) return;
+    for (const key of DEVICE_KEYS) {
+      try { box.removeItem(key); } catch (_error) { /* 한 칸이 막혀도 나머지는 지운다 */ }
+    }
+  } catch (_error) {
+    /* 저장소를 못 열면 지울 것도 없다. */
   }
 }

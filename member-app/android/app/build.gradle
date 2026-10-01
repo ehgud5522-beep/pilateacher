@@ -1,0 +1,90 @@
+apply plugin: 'com.android.application'
+
+/* 강사 앱과 **같은 업로드 키**를 쓴다. 다만 파일은 이 폴더의 것을 읽는다 --
+   rootProject 가 member-app/android 이므로 강사 앱의 android/ 를 보지 않는다.
+   비밀번호가 저장소에 들어가지 않게 keystore.properties 는 gitignore 에 있고,
+   대표 PC 에만 있다. */
+def releaseKeystorePropertiesFile = rootProject.file('keystore.properties')
+def releaseKeystoreProperties = new Properties()
+if (releaseKeystorePropertiesFile.exists()) {
+    releaseKeystorePropertiesFile.withInputStream { releaseKeystoreProperties.load(it) }
+}
+
+android {
+    namespace = "com.bonitapilates.member"
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "com.bonitapilates.member"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 1
+        versionName "1.0.0"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    signingConfigs {
+        release {
+            if (releaseKeystorePropertiesFile.exists()) {
+                storeFile file(releaseKeystoreProperties['storeFile'])
+                storePassword releaseKeystoreProperties['storePassword']
+                keyAlias releaseKeystoreProperties['keyAlias']
+                keyPassword releaseKeystoreProperties['keyPassword']
+            }
+        }
+    }
+    buildTypes {
+        release {
+            signingConfig signingConfigs.release
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation project(':capacitor-android')
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+apply from: 'capacitor.build.gradle'
+
+try {
+    def servicesJSON = file('google-services.json')
+    if (servicesJSON.text) {
+        apply plugin: 'com.google.gms.google-services'
+    }
+} catch(Exception e) {
+    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}
+
+/* 서명 없이 release 가 나가는 것을 막는다. 서명이 안 된 번들은 Play 가
+   거절하는데, 그 사실은 업로드까지 가서야 드러난다 -- 여기서 멈추면
+   빌드를 시작한 자리에서 안다. (강사 앱 android/app/build.gradle 과 같다.) */
+gradle.taskGraph.whenReady { graph ->
+    if (graph.allTasks.any { task -> task.name.toLowerCase().contains('release') }) {
+        def requiredKeys = ['storeFile', 'storePassword', 'keyAlias', 'keyPassword']
+        if (!releaseKeystorePropertiesFile.exists() || requiredKeys.any { key -> !releaseKeystoreProperties[key]?.toString()?.trim() }) {
+            throw new GradleException('member-app/android/keystore.properties must contain all release signing values.')
+        }
+        if (!file(releaseKeystoreProperties['storeFile']).exists()) {
+            throw new GradleException('The configured release keystore file does not exist.')
+        }
+    }
+}

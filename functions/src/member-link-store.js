@@ -58,6 +58,12 @@ function createFirestoreMemberLinkPorts(dependencies) {
     return snapshot.exists ? snapshot.data() : null;
   }
 
+  /** 링크 문서 하나. 없으면 null -- 이미 지웠거나 아직 이은 적이 없다. */
+  async function readLink(userId) {
+    const snapshot = await linkRef(text(userId)).get();
+    return snapshot.exists ? { userId: snapshot.id, ...snapshot.data() } : null;
+  }
+
   async function listLinksByStatus(status) {
     const page = await firestore.collection("memberLinks").where("status", "==", status).get();
     return page.docs.map((snapshot) => ({ userId: snapshot.id, ...snapshot.data() }));
@@ -164,6 +170,49 @@ function createFirestoreMemberLinkPorts(dependencies) {
     return { remaining };
   }
 
+  /**
+   * 계정 삭제. 연결 전부를 한 배치로 끊고 링크 문서 자체를 없앤다.
+   *
+   * `removeLink` 와 다른 점은 **문서를 남기지 않는다**는 것이다. 그쪽은 대표가
+   * 한 지점을 잘못 이었을 때라 나머지 연결과 사유가 남아야 하지만, 여기는 그
+   * 계정이 사라지는 자리다. `rejected` 상태로 남겨 두면 대표 화면에 다시는
+   * 오지 않을 사람이 계속 보인다.
+   *
+   * 명부(`clients`)와 원장(`ledger`)은 건드리지 않는다. 회원이 앱 계정을
+   * 지우는 것과 센터를 그만두는 것은 다른 일이고, 원장은 급여의 유일한
+   * 근거다.
+   */
+  async function purgeMemberAccount(input) {
+    const userId = text(input?.userId);
+    const at = input?.at instanceof Date ? input.at : new Date();
+    const links = (Array.isArray(input?.links) ? input.links : [])
+      .map((link) => ({
+        organizationId: text(link?.organizationId),
+        clientId: text(link?.clientId),
+      }))
+      .filter((link) => link.organizationId && link.clientId);
+
+    const batch = firestore.batch();
+    for (const link of links) {
+      /* 칸을 비우지 않고 없앤다. 아직 아무에게도 연결되지 않은 회원과 같은
+         모양이어야 다시 가입할 때 이어진다. */
+      batch.set(clientRef(link.organizationId, link.clientId), { userId: FieldValue.delete() }, { merge: true });
+      /* 투영을 그 자리에서 지운다. userId 만 지우면 이미 깔린 투영이 남는다. */
+      batch.delete(memberViewRef(link.organizationId, link.clientId));
+      batch.set(auditRef(), auditEntry({
+        organizationId: link.organizationId,
+        actorId: userId,
+        actorRole: "member",
+        clientId: link.clientId,
+        targetId: userId,
+      }, AUDIT_ACTION_LINK_REMOVED, at));
+    }
+    batch.delete(linkRef(userId));
+
+    await batch.commit();
+    return { removed: links.length };
+  }
+
   const auditRef = () => firestore.collection("auditLogs").doc();
 
   /* 규칙의 hasOnly 목록 안에서만 쓴다. 자유 문장 칸은 하나도 없다 -- 있으면
@@ -182,7 +231,9 @@ function createFirestoreMemberLinkPorts(dependencies) {
     findClientsByPhone,
     listLinksByStatus,
     listOrganizationIds,
+    purgeMemberAccount,
     readClient,
+    readLink,
     readMembership,
     removeLink,
     writeLink,

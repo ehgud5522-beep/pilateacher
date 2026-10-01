@@ -14,6 +14,10 @@
 
 import { useMemo, useState } from "react";
 import { TYPE } from "../../src/features/ui/type-scale.js";
+import {
+  DELETED_ITEMS, DELETE_STEP, KEPT_ITEMS, deleteFailureMessage,
+} from "./delete-account.js";
+import { diagnosticsText } from "./diagnostics.js";
 
 /**
  * 의견을 받는 곳. 링크 하나다.
@@ -502,7 +506,7 @@ const DOW = ["일", "월", "화", "수", "목", "금", "토"];
  *               테스트가 과거 달을 그려 보는 데 쓴다 -- "기록은 여기까지"
  *               처럼 끝에서만 나오는 문구는 거기까지 가 있어야 확인된다.
  */
-export function More({ view, now = new Date(), monthsBack = 0 }) {
+export function More({ view, now = new Date(), monthsBack = 0, onDeleteAccount }) {
   const [back, setBack] = useState(monthsBack);
   const history = Array.isArray(view?.history) ? view.history : [];
   const dates = useMemo(() => attendedDates(history), [history]);
@@ -602,12 +606,128 @@ export function More({ view, now = new Date(), monthsBack = 0 }) {
           카카오톡으로 보내기 <span aria-hidden="true">→</span>
         </a>
       </Card>
+
+      {onDeleteAccount ? <DeleteAccount onDelete={onDeleteAccount} /> : null}
     </div>
+  );
+}
+
+/**
+ * 계정 삭제. 되돌릴 수 없는 버튼이라 **두 번 만난다.**
+ *
+ * 첫 번째는 목록을 펴는 것뿐이고, 거기서 무엇이 사라지고 무엇이 남는지 읽은
+ * 뒤에야 지우는 버튼이 나온다. 목록은 delete-account.js 에 있다 -- 서버가
+ * 실제로 하는 일과 나란히 읽히도록.
+ */
+export function DeleteAccount({ onDelete }) {
+  const [step, setStep] = useState(DELETE_STEP.IDLE);
+  const [failure, setFailure] = useState("");
+
+  const run = async () => {
+    setStep(DELETE_STEP.WORKING);
+    setFailure("");
+    try {
+      await onDelete();
+      /* 화면을 되돌리지 않는다. 부르는 쪽이 로그아웃하고 처음 화면으로
+         보낸다 -- 여기서 "완료" 를 그리면 지워진 계정의 화면이 잠깐 남는다. */
+    } catch (error) {
+      setFailure(text(error?.code) || "unknown");
+      setStep(DELETE_STEP.FAILED);
+    }
+  };
+
+  if (step === DELETE_STEP.IDLE) {
+    return (
+      <Card className="danger">
+        <p className="cap">계정 삭제</p>
+        <p className="muted" style={{ fontSize: TYPE.caption }}>
+          앱 계정을 지웁니다. 센터에 등록된 회원 정보와 남은 회원권은 그대로 있어요.
+        </p>
+        <button type="button" className="btn mt"
+          onClick={() => setStep(DELETE_STEP.CONFIRM)}>계정 삭제</button>
+      </Card>
+    );
+  }
+
+  const working = step === DELETE_STEP.WORKING;
+  return (
+    <Card tone="warn" className="danger">
+      <p className="cap">정말 지울까요?</p>
+
+      <p className="mt" style={{ fontSize: TYPE.caption }}>사라지는 것</p>
+      <ul className="bullets">{DELETED_ITEMS.map((item) => <li key={item}>{item}</li>)}</ul>
+
+      <p className="mt" style={{ fontSize: TYPE.caption }}>그대로 남는 것</p>
+      <ul className="bullets">{KEPT_ITEMS.map((item) => <li key={item}>{item}</li>)}</ul>
+
+      <p className="muted mt" style={{ fontSize: TYPE.caption }}>
+        다시 쓰려면 같은 번호로 처음부터 로그인하면 돼요.
+      </p>
+
+      {failure ? (
+        <p className="note mt" style={{ fontSize: TYPE.caption }}>{deleteFailureMessage(failure)}</p>
+      ) : null}
+
+      <button type="button" className="btn danger mt" disabled={working} onClick={run}>
+        {working ? "지우는 중…" : "네, 지울게요"}
+      </button>
+      <button type="button" className="btn mt" disabled={working}
+        onClick={() => { setStep(DELETE_STEP.IDLE); setFailure(""); }}>그만두기</button>
+    </Card>
   );
 }
 
 
 /* ── 상태 화면 ───────────────────────────────────────────────────────── */
+
+/**
+ * 연결이 늦다. **무한 스피너를 두지 않는다.**
+ *
+ * 기다리는 화면은 "곧 된다" 고 말하는데, 영영 안 될 수도 있다는 것을 아무도
+ * 말해 주지 않으면 회원은 앱이 고장 난 줄도 모르고 들고 있는다 -- 실제로
+ * TestFlight 빌드가 그렇게 멈췄다.
+ */
+export function SlowConnection({ onRetry, seconds }) {
+  return (
+    <Card tone="warn">
+      <p style={{ fontSize: TYPE.body }}>연결이 늦어요.</p>
+      <p className="muted mt" style={{ fontSize: TYPE.caption }}>
+        {count(seconds) ? `${count(seconds)}초째 기다리고 있어요. ` : ""}
+        네트워크를 확인하고 다시 시도해 주세요.
+      </p>
+      {onRetry ? <button type="button" className="btn mt" onClick={onRetry}>다시 시도</button> : null}
+      <p className="muted mt" style={{ fontSize: TYPE.caption }}>
+        계속 이러면 맨 아래 버전을 다섯 번 눌러 기록을 센터에 보내 주세요.
+      </p>
+    </Card>
+  );
+}
+
+/**
+ * 진단 기록. 화면 맨 아래 버전 글자를 다섯 번 누르면 나온다.
+ *
+ * 대표가 Mac 없이 원인을 볼 수 있는 유일한 자리다. **회원 이름·번호·uid 는
+ * 들어 있지 않다** (diagnostics.js).
+ */
+export function Diagnostics({ entries, onClose, onClear }) {
+  const rows = Array.isArray(entries) ? entries : [];
+  return (
+    <Card className="diag">
+      <div className="diaghead">
+        <p className="cap">진단 기록</p>
+        <button type="button" onClick={onClose} aria-label="닫기">✕</button>
+      </div>
+      <p className="muted" style={{ fontSize: TYPE.caption }}>
+        최근 {rows.length}건. 이름·번호는 들어 있지 않아요. 길게 눌러 복사한 뒤 센터에 보내 주세요.
+      </p>
+      {/* 읽기 전용 textarea 다. 길게 눌러 전체 선택이 되는 것이 요점이고,
+          공유 시트를 붙이면 플러그인이 하나 늘어난다 -- 막혔을 때 보는
+          화면에 새 실패 지점을 더하지 않는다. */}
+      <textarea className="diagbox mt" readOnly rows={12} value={diagnosticsText(rows)} />
+      {onClear ? <button type="button" className="btn mt" onClick={onClear}>기록 지우기</button> : null}
+    </Card>
+  );
+}
 
 export function Loading() {
   return <Card><p className="muted" style={{ fontSize: TYPE.body }}>잠시만요…</p></Card>;

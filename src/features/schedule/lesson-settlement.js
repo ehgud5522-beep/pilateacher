@@ -15,9 +15,17 @@
  * 판정 엔진과 원장 기록이 전부 그 경로에 있어 우회로를 만들지 않는다.
  */
 
-import { ATTENDANCE_STATUS, PASS_STATUS } from "../../data/schema/constants.js";
+import { ATTENDANCE_STATUS, PASS_STATUS, PAY_CATEGORY } from "../../data/schema/constants.js";
 import { isDuetPass, passBelongsTo } from "../../data/schema/pass-clients.js";
 import { isDeductablePass, remainingCountOf } from "../../data/repositories/pass-repository.js";
+import { lessonTypeKeyOf } from "./lesson-types.js";
+
+/* 2:1 상품. 혼자 온 수업이 여기서 빠지면 짝의 몫이 사라지므로, 짝이 적히지
+   않은 2:1 회원권이라도 1:1 후보로 쓰지 않는다 -- 그런 회원권은 이관이 잘못
+   만든 것이고(migration-repository.js 의 duet_partner_required), 고칠 일이지
+   쓸 일이 아니다. */
+/** @type {readonly string[]} */
+const DUET_PAY_CATEGORIES = Object.freeze([PAY_CATEGORY.PT_2_1_NEW, PAY_CATEGORY.PT_2_1_REPURCHASE]);
 
 /** 왜 차감하지 않았는가. 화면이 이 값으로 무엇을 말할지 정한다. */
 export const SETTLEMENT_SKIP = Object.freeze({
@@ -33,6 +41,11 @@ export const SETTLEMENT_SKIP = Object.freeze({
   SOLO_PASS_MISSING: "solo_pass_missing",
   /** 둘이 함께 왔는데 공유 회원권에 남은 회차가 없다 (또는 만료). */
   DUET_PASS_SPENT: "duet_pass_spent",
+  /* 2:1 수업인데 두 사람이 함께 쓰는 회원권이 아예 없다. 위의 "잔여 없음" 과
+     고칠 방법이 다르다 -- 저쪽은 재등록이고 이쪽은 발급이다. 각자 1:1 을
+     가지고 있어도 거기서 빼지 않는다. 그 둘은 2:1 단가로 계약한 적이 없고,
+     수업 한 번에 회차가 둘 나가면 회원이 그만큼 손해를 본다. */
+  DUET_PASS_MISSING: "duet_pass_missing",
   /* 차감을 시도했고 서버가 받지 않았다.
 
      성공한 차감이 이미 원장에 박혔으므로 이 수업은 확정된 것으로 닫는다. 열어
@@ -93,8 +106,9 @@ export const SETTLEMENT_SKIP_LABEL = Object.freeze({
   ["no_client"]: "센터 명부에 없는 회원입니다. 대표에게 등록을 요청해 주세요.",
   ["no_pass"]: "회원권이 없습니다. 발급 후 출석 체크에서 차감해 주세요.",
   ["spent"]: "쓸 수 있는 회원권이 없습니다 (잔여 0 또는 만료).",
-  ["solo_pass_missing"]: "1:1 수업에 쓸 회원권이 없습니다. 듀엣 회원권은 두 분이 함께 수업할 때만 차감됩니다.",
+  ["solo_pass_missing"]: "1:1 회원권이 없어요. 대표에게 문의해 주세요.",
   ["duet_pass_spent"]: "함께 쓰는 회원권에 남은 회차가 없습니다 (잔여 0 또는 만료).",
+  ["duet_pass_missing"]: "2:1 회원권이 없어요. 대표에게 문의해 주세요.",
   ["write_failed"]: "차감이 저장되지 않았습니다. 출석 체크에서 다시 시도해 주세요.",
 });
 
@@ -157,6 +171,22 @@ export function soonestExpiring(passes) {
 }
 
 /**
+ * 1:1 수업이 쓸 수 있는 회원권인가. **2:1 은 어느 쪽으로도 후보가 아니다.**
+ *
+ * 두 가지로 거른다. 짝이 적힌 회원권은 계약서 하나로 둘이 나눠 쓰기로 한
+ * 회차이고, 2:1 상품은 짝이 적히지 않았더라도 2:1 단가로 판 것이다. 둘 중
+ * 하나라도 1:1 수업에서 빠지면 회원은 자기가 산 것과 다른 회차를 잃는다.
+ *
+ * 서비스·렛미인·기타는 그대로 후보다 -- 그 셋은 사람 수가 상품으로 정해지지
+ * 않으므로 여기서 가를 근거가 없다.
+ *
+ * @param {any} pass
+ */
+export const isSoloCandidate = (pass) => Boolean(pass)
+  && !isDuetPass(pass)
+  && !DUET_PAY_CATEGORIES.includes(text(pass.category));
+
+/**
  * 혼자 온 회원이 쓸 회원권. **듀엣 회원권은 후보가 아니다.**
  *
  * 만료가 이르다는 이유로 듀엣 회원권을 1:1 수업에 쓰면, 계약서 하나로 둘이
@@ -170,7 +200,7 @@ export function pickSoloPass(passes, clientId, now = new Date()) {
   const client = text(clientId);
   if (!client) return null;
   return soonestExpiring((Array.isArray(passes) ? passes : []).filter((pass) => (
-    pass && !isDuetPass(pass) && passBelongsTo(pass, client) && isDeductablePass(pass, now)
+    isSoloCandidate(pass) && passBelongsTo(pass, client) && isDeductablePass(pass, now)
   )));
 }
 
@@ -203,7 +233,71 @@ export function pickSharedDuetPass(passes, clientIds, now = new Date()) {
     .filter((pass) => isDeductablePass(pass, now)));
 }
 
-/** 이 수업이 이미 확정됐는가. */
+/** 짝이 왜 빠졌는가. 문구가 달라야 강사가 무엇을 눌러야 할지 안다. */
+export const ABSENT_PARTNER = Object.freeze({
+  /** 미리 취소했다. 수업은 혼자 받았을 가능성이 높다. */
+  CANCELLED: "cancelled",
+  /** 출석을 아직 표시하지 않았다. 안 온 것인지 안 누른 것인지 모른다. */
+  UNMARKED: "unmarked",
+});
+
+/**
+ * 듀엣으로 등록했는데 짝이 빠진 수업. **확정 전에 물어볼 것이 있다.**
+ *
+ * 수업 종류가 기준이 된 뒤로 이런 수업은 2:1 회원권에서 빠진다. 그것이 맞는
+ * 경우가 많다 -- 짝이 못 왔어도 그 시간은 듀엣으로 열렸다. 하지만 **혼자 1:1
+ * 수업을 받은 날**도 화면에서는 똑같이 보이고, 그때 2:1 에서 빼면 둘이 나눠
+ * 쓰기로 한 회차가 한 사람의 수업으로 사라진다.
+ *
+ * 둘을 가를 수 있는 것은 그 자리에 있던 강사뿐이다. 그래서 짐작하지 않고
+ * 묻는다 -- 확정을 누르기 전에, 되돌릴 수 없게 되기 전에.
+ *
+ * @param {any} lesson
+ * @returns {{ presentMemberId: string, absentMemberId: string, reason: string } | null}
+ *   null 이면 물어볼 것이 없다 (듀엣이 아니거나, 둘 다 왔거나, 둘 다 안 왔거나)
+ */
+export function absentPartnerPrompt(lesson) {
+  if (!lesson || isSettledLesson(lesson)) return null;
+  if (lessonTypeKeyOf(lesson) !== "duet") return null;
+
+  const list = attendeesOf(lesson);
+  if (list.length !== 2) return null;
+
+  const present = list.filter((attendee) => text(attendee.status) === "done");
+  /* 한 명만 왔을 때만 묻는다. 둘 다 왔으면 듀엣이 맞고, 둘 다 안 왔으면
+     차감 자체가 없어 물어볼 것이 없다. */
+  if (present.length !== 1) return null;
+
+  const absent = list.find((attendee) => text(attendee.status) !== "done");
+  const status = text(absent?.status);
+  /* 노쇼는 묻지 않는다. 오기로 해 놓고 안 온 것이라 수업은 듀엣으로 열렸고,
+     그 자리는 비워 둔 채 진행된다 -- 2:1 에서 빠지는 것이 맞다. */
+  if (status !== "cancel" && status !== "booked") return null;
+
+  return {
+    presentMemberId: text(present[0].memberId),
+    absentMemberId: text(absent.memberId),
+    reason: status === "cancel" ? ABSENT_PARTNER.CANCELLED : ABSENT_PARTNER.UNMARKED,
+  };
+}
+
+/**
+ * 그 수업을 1:1 로 바꾼 모습. **쓰지 않는다 -- 새 일정을 돌려줄 뿐이다.**
+ *
+ * 온 사람만 남긴다. 유형 선택으로 바꾸면 첫 번째 칸이 남는데, 빠진 쪽이 첫
+ * 번째면 **온 사람이 지워지고 안 온 사람이 남는다.** 그 일정으로 확정하면
+ * 수업을 받지 않은 사람의 회원권에서 회차가 나간다.
+ *
+ * @param {any} lesson @param {string} keepMemberId 남길 회원
+ */
+export function toSoloLesson(lesson, keepMemberId) {
+  const keep = text(keepMemberId);
+  const attendee = attendeesOf(lesson).find((item) => text(item.memberId) === keep);
+  if (!attendee) return lesson;
+  return { ...lesson, type: "개인레슨", attendees: [attendee] };
+}
+
+/** 이 수업이 이미 확정됐는가. *//** 이 수업이 이미 확정됐는가. */
 export const isSettledLesson = (lesson) => Boolean(lesson?.orgSettledAt);
 
 /**
@@ -237,18 +331,25 @@ const PAIRABLE = ["done", "noshow"];
  * 둘이 갈라지면 강사는 화면에서 본 금액과 다른 금액이 원장에 박히는 것을 보게
  * 되고, 그때는 되돌릴 수도 없다. 그래서 고르는 자리는 하나뿐이다.
  *
- * ── 차감 규칙 (2026-09-23 대표 확정) ──
- *   혼자 출석            1:1 회원권만, 만료 빠른 것부터
- *   둘 다 출석           공유 2:1 에서 1회만, 만료 빠른 것부터
- *   한 명 노쇼           공유 2:1 에서 1회 차감 (노쇼도 차감한다)
- *   둘 다 노쇼·취소      차감 없음
- *   명단에 한 명만       1:1 수업으로 보고 1:1 에서
- *   1:1 잔여 0          차감 없이 solo_pass_missing. 2:1 에서 절대 빼지 않는다
- *   각자 1:1 만 가진 둘  각자 1:1 에서 2회 (함께 쓰는 회원권이 없으면 듀엣이 아니다)
+ * ── 차감 규칙 (2026-10-01 대표 확정) ──
+ * 가르는 것은 **일정에 등록한 수업 종류** 하나다 (lessonTypeKeyOf). 강사가
+ * 카드에서 보는 글자와 회원권에서 빠지는 회차가 같은 것을 가리킨다.
  *
- * 수업의 유형 글자(`type: "듀엣"`)는 보지 않는다. 각자 1:1 을 가진 두 사람이 한
- * 타임에 들어오는 것도 화면에는 듀엣으로 보이고, 그 수업은 2회 차감이 맞다.
- * 가르는 것은 **이 사람들이 함께 적힌 회원권이 있는가** 하나다.
+ *   개인 수업           각자 1:1 회원권에서 1회씩. 2:1 에서는 빼지 않는다
+ *   듀엣 수업           두 사람이 함께 적힌 회원권에서 1회만
+ *   듀엣인데 한 명 결석  그래도 공유 회원권에서 1회 (노쇼든 취소든 종류가 기준)
+ *   둘 다 노쇼·취소      차감 없음
+ *   고른 종류가 없음     차감 없이 막는다. 다른 종류에서 몰래 빼지 않는다
+ *
+ * ── 2026-09-23 결정을 뒤집은 것 ──
+ * 그때는 "이 사람들이 함께 적힌 회원권이 있는가" 로 갈랐다. 그래서 각자 1:1 만
+ * 가진 두 사람이 듀엣 한 타임에 들어오면 각자의 1:1 에서 2회가 나갔다. 숫자로는
+ * 맞지만 강사가 예측할 수 없었다 -- 같은 듀엣 카드가 회원권 구성에 따라 1회도
+ * 되고 2회도 됐다. 지금은 그 수업이 차감되지 않고 막힌다 (duet_pass_missing).
+ * 대표가 2:1 회원권을 발급하면 풀린다.
+ *
+ * 취소도 같이 바뀌었다. 전에는 미리 취소한 사람을 명단에서 지워 남은 한 명이
+ * 1:1 수업을 한 것으로 봤다. 지금은 듀엣으로 등록된 수업이면 그대로 듀엣이다.
  *
  * @param {{
  *   lesson?: any, members?: Array<any>, passes?: Array<any>, now?: Date,
@@ -269,13 +370,17 @@ export function planPassSelection(input = {}) {
   const skips = [];
   const rows = [];
 
+  /* 수업 종류가 기준이다. 출석 인원을 세지 않는다 -- 한 명이 빠졌다고 듀엣이
+     개인 수업이 되지는 않고, 강사는 등록할 때 정한 종류대로 빠질 것을 기대한다. */
+  const duetLesson = lessonTypeKeyOf(lesson) === "duet";
+
   for (const attendee of attendeesOf(lesson)) {
     const status = text(attendee.status);
-    /* 취소는 미리보기에서도 빠진다. 미리 취소한 사람을 짝으로 세면 화면은
-       공유 회원권 금액을 보여주는데 확정은 1:1 에서 뺀다 -- 두 숫자가
-       갈라지는 순간이고, 이 한 줄이 없을 때 실제로 갈라졌다. */
-    if (status === "cancel") continue;
-    if (requireAttendance && !PAIRABLE.includes(status)) continue;
+    /* 취소한 사람도 듀엣에서는 명단에 남긴다. 공유 회원권을 찾으려면 두 사람의
+       clientId 가 모두 있어야 하고, 지우면 남은 한 명이 1:1 로 떨어진다 --
+       2026-09-23 에는 그것이 규칙이었고 지금은 아니다. */
+    if (status === "cancel" && !duetLesson) continue;
+    if (requireAttendance && !duetLesson && !PAIRABLE.includes(status)) continue;
     const memberId = text(attendee.memberId);
     const member = byId.get(memberId);
     /* 회원권은 조직 clientId 로 붙어 있다. 맞물린 회원은 기기의 id 를 그대로
@@ -292,51 +397,56 @@ export function planPassSelection(input = {}) {
     rows.push({ memberId, clientId, status });
   }
 
-  /* 먼저 쌍을 묶는다. 나중에 묶으면 한 사람이 자기 1:1 에서 이미 빠진 뒤라,
-     같은 수업에서 회차가 두 번 나간다. */
-  const paired = new Set();
-  for (let i = 0; i < rows.length; i += 1) {
-    if (paired.has(i)) continue;
-    for (let j = i + 1; j < rows.length; j += 1) {
-      if (paired.has(j) || rows[j].clientId === rows[i].clientId) continue;
-      const pair = [rows[i], rows[j]];
-      const ids = pair.map((row) => row.clientId);
-      if (sharedDuetPasses(passes, ids).length === 0) continue;
-      paired.add(i);
-      paired.add(j);
+  if (duetLesson) {
+    /* 수업은 하나이고 회원권도 하나다. 두 사람을 각자 훑지 않는다 -- 그렇게
+       하면 한 수업에서 회차가 두 번 나가고, 원장은 되돌릴 수 없다. */
+    const unique = [];
+    for (const row of rows) if (!unique.some((item) => item.clientId === row.clientId)) unique.push(row);
 
-      /* 한 명이 노쇼여도 그대로 차감한다 -- 수업은 일어났다. 둘 다 안 왔으면
-         일어나지 않은 것이라 아무것도 움직이지 않는다. */
-      if (requireAttendance && !pair.some((row) => row.status === "done")) break;
-
-      const pass = pickSharedDuetPass(passes, ids, now);
-      if (!pass) {
-        for (const row of pair) {
-          skips.push({ memberId: row.memberId, clientId: row.clientId, reason: SETTLEMENT_SKIP.DUET_PASS_SPENT });
-        }
-        break;
+    /* 둘이 아니면 짝을 정할 수 없다. 짐작해서 아무나 묶으면 엉뚱한 사람의
+       회차가 나가므로, 묶지 않고 막는다. */
+    if (unique.length !== 2) {
+      for (const row of unique) {
+        skips.push({ memberId: row.memberId, clientId: row.clientId, reason: SETTLEMENT_SKIP.DUET_PASS_MISSING });
       }
-      deductions.push({
-        /* 단수 칸은 그대로 둔다. 이 값을 읽는 자리가 이미 여럿이고, 복수를
-           모르는 쪽도 대표 한 명으로는 맞게 돈다. */
-        memberId: pair[0].memberId,
-        clientId: pair[0].clientId,
-        pass,
-        memberIds: pair.map((row) => row.memberId),
-        clientIds: ids,
-        // 누가 왔고 누가 안 왔는지. 없으면 두 달 뒤 "그날 나는 안 갔는데"에 답할 것이 없다.
-        attendanceByClientId: Object.fromEntries(
-          pair.map((row) => [row.clientId, attendanceStatusOf(row.status)]),
-        ),
-        shared: true,
-      });
-      break;
+      return { deductions, skips };
     }
+
+    // 아무도 오지 않은 수업은 일어나지 않았다. 결석 규칙은 그대로다.
+    if (requireAttendance && !unique.some((row) => row.status === "done")) {
+      return { deductions, skips };
+    }
+
+    const ids = unique.map((row) => row.clientId);
+    /* 없는 것과 다 쓴 것은 고칠 방법이 다르다 -- 앞은 발급이고 뒤는 재등록이다.
+       어느 쪽이든 각자의 1:1 에서 빼지는 않는다. */
+    const shared = sharedDuetPasses(passes, ids);
+    const pass = pickSharedDuetPass(passes, ids, now);
+    if (!pass) {
+      const reason = shared.length === 0 ? SETTLEMENT_SKIP.DUET_PASS_MISSING : SETTLEMENT_SKIP.DUET_PASS_SPENT;
+      for (const row of unique) skips.push({ memberId: row.memberId, clientId: row.clientId, reason });
+      return { deductions, skips };
+    }
+
+    deductions.push({
+      /* 단수 칸은 그대로 둔다. 이 값을 읽는 자리가 이미 여럿이고, 복수를
+         모르는 쪽도 대표 한 명으로는 맞게 돈다. */
+      memberId: unique[0].memberId,
+      clientId: unique[0].clientId,
+      pass,
+      memberIds: unique.map((row) => row.memberId),
+      clientIds: ids,
+      // 누가 왔고 누가 안 왔는지. 없으면 두 달 뒤 "그날 나는 안 갔는데"에 답할 것이 없다.
+      attendanceByClientId: Object.fromEntries(
+        unique.map((row) => [row.clientId, attendanceStatusOf(row.status)]),
+      ),
+      shared: true,
+    });
+    return { deductions, skips };
   }
 
-  for (let i = 0; i < rows.length; i += 1) {
-    if (paired.has(i)) continue;
-    const { memberId, clientId, status } = rows[i];
+  for (const row of rows) {
+    const { memberId, clientId, status } = row;
     // 혼자 노쇼면 차감할 것이 없다. 노쇼 과금은 센터의 정책이고 이 앱 밖이다.
     if (requireAttendance && status !== "done") continue;
 
@@ -347,10 +457,11 @@ export function planPassSelection(input = {}) {
     }
     const pass = pickSoloPass(mine, clientId, now);
     if (!pass) {
-      /* 쓸 수 있는 듀엣 회원권이 남아 있는데 1:1 이 없는 것과, 1:1 을 다 쓴
-         것은 고치는 방법이 다르다 -- 앞은 짝과 함께 오면 되고 뒤는 재등록이다. */
-      const hasUsableDuet = mine.some((item) => isDuetPass(item) && isDeductablePass(item, now));
-      const ownsSolo = mine.some((item) => !isDuetPass(item));
+      /* 쓸 수 있는 2:1 이 남아 있는 것과 1:1 을 다 쓴 것은 고치는 방법이
+         다르다 -- 앞은 2:1 수업으로 등록하는 일이고 뒤는 재등록이다. 1:1 을
+         한 장도 가진 적이 없는 사람도 앞쪽이다. 발급이 필요하다. */
+      const hasUsableDuet = mine.some((item) => !isSoloCandidate(item) && isDeductablePass(item, now));
+      const ownsSolo = mine.some(isSoloCandidate);
       skips.push({
         memberId,
         clientId,

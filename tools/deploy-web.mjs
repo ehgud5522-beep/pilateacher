@@ -117,6 +117,24 @@ console.log(`  브랜치  : ${capture("git", ["rev-parse", "--abbrev-ref", "HEAD
 console.log(`  대상    : ${hosting.public}/ → Firebase Hosting (${target.site})`);
 console.log();
 
+/* 웹에도 빌드 번호를 심는다. 안드로이드·아이폰은 build-aab.mjs 와
+   prepare_build_metadata.py 가 versionCode·CFBundleVersion 을 넣어 주는데
+   웹만 비어 있었고, 그래서 **웹은 최소 빌드 검사를 지나칠 수 없었다** --
+   번호가 없으면 settlement-gate 가 "모르는 것" 으로 보고 막지 않는다.
+
+   커밋 수를 쓴다. main 에서 단조 증가하고, 따로 올려 줄 사람이 필요 없다 --
+   사람이 손으로 올리는 번호는 올리는 것을 잊은 날 조용히 틀린다. */
+const webBuildNumber = capture("git", ["rev-list", "--count", "HEAD"]).trim();
+if (/^\d+$/.test(webBuildNumber)) {
+  process.env.VITE_BUILD_NUMBER = webBuildNumber;
+  console.log(`  웹 빌드 번호: ${webBuildNumber} (커밋 수)`);
+} else {
+  /* 못 읽어도 멈추지 않는다. 번호가 없으면 최소 빌드 검사를 지나갈 뿐이고,
+     배포 자체를 막을 일은 아니다. */
+  console.log("  웹 빌드 번호: 읽지 못했습니다 (최소 빌드 검사가 적용되지 않습니다)");
+}
+console.log();
+
 console.log("== 1/2 웹 빌드 (타입 검사 · 린트 · 테스트 포함) ==");
 run("npm", ["run", target.build]);
 

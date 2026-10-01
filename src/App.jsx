@@ -30,7 +30,7 @@ import {
   fbAuthStateReady, fbLoadProfileState, fbSaveProfile, fbPushBackup, fbPullBackup, fbReauthenticate,
   fbRevokeAppleAccess, fbDeleteCurrentUserAccount, fbLoadAIConsent, fbGrantAIConsent, fbCurrentUserId,
   fbDeleteAIConsent,
-  fbLoadAIRecordingStatus, fbSendDiagnosticReport, fbWritePilotMetricAttempt,
+  fbLoadAIRecordingStatus, fbLoadSettlementConfig, fbSendDiagnosticReport, fbWritePilotMetricAttempt,
   fbListPhotoBackups, fbUploadPhotoBackup, fbDownloadPhotoBackup, fbSoftDeletePhotoBackup, fbPurgeExpiredPhotoBackups,
   fbLookupCentreMemberByEmail,
   fbListMalformedClientPhones,
@@ -126,7 +126,11 @@ import {
   transferPass,
 } from "./data/repositories/pass-repository.js";
 import {
+  SETTLEMENT_GATE, SETTLEMENT_GATE_LABEL, blocksSettlement, settlementGate,
+} from "./features/schedule/settlement-gate.js";
+import {
   SETTLEMENT_OUTCOME, SETTLEMENT_SKIP, SETTLEMENT_SKIP_LABEL, applySettlementToLesson,
+  ABSENT_PARTNER, absentPartnerPrompt, toSoloLesson,
   DEDUCTION_CODE_LABEL, NOT_STARTED_NOTICE, lessonHasStarted,
   canSettleLesson, clearSettlementFromLesson, closesSettlement, isSettledLesson, needsSettlement,
   planLessonSettlement, recordSettlementAttempt, settledDeductionsOf, settlementOutcome,
@@ -2781,8 +2785,11 @@ const RATE_SKIP_LINE = {
   no_client: "센터에 등록되지 않은 회원 · 차감 없음",
   no_pass: "회원권 없음 · 발급이 필요합니다",
   spent: "잔여 없음 · 재등록이 필요합니다",
-  solo_pass_missing: "1:1 회원권 없음 · 듀엣 회원권은 두 분이 함께 올 때만 차감됩니다",
+  solo_pass_missing: "1:1 회원권 없음 · 대표에게 문의해 주세요",
   duet_pass_spent: "함께 쓰는 회원권 잔여 없음 · 재등록이 필요합니다",
+  /* 수업 종류가 기준이라, 각자 1:1 을 가지고 있어도 듀엣 수업은 막힌다.
+     "잔여 없음" 과 고칠 방법이 다르다 -- 저쪽은 재등록이고 이쪽은 발급이다. */
+  duet_pass_missing: "2:1 회원권 없음 · 대표에게 문의해 주세요",
 };
 
 function SchedRateLine({ preview }) {
@@ -3713,6 +3720,13 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
     const timer = globalThis.setTimeout?.(scroll, 0);
     return () => globalThis.clearTimeout?.(timer);
   }, [activeMemberId, recordMode]);
+  /* 확정 전에 물어볼 것이 있는가. 저장된 일정을 보므로 폼에서 고르는 중인
+     유형(kind)이 아니라 draft 를 읽는다 -- 아직 저장하지 않은 선택으로
+     "취소했어요" 를 띄우면 강사가 누른 적 없는 말을 하게 된다. */
+  const absentPrompt = useMemo(() => absentPartnerPrompt(draft), [draft]);
+  const absentPromptName = absentPrompt
+    ? (members.find((item) => item.id === absentPrompt.absentMemberId)?.name || "짝")
+    : "";
   const isGroup = kind === "group";
   const isDuet = kind === "duet";
   const isMemberLesson = kind === "solo" || isDuet;
@@ -3995,6 +4009,28 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
                 ))}
               </div>
             )}
+
+            {/* 짝이 빠진 듀엣. 확정하면 2:1 에서 빠지는데, 혼자 1:1 을 받은
+                날도 화면에서는 똑같이 보인다. 가를 수 있는 것은 그 자리에 있던
+                강사뿐이라 짐작하지 않고 묻는다 -- 되돌릴 수 없게 되기 전에. */}
+            {organizationMode && absentPrompt ? (
+              <div className="rounded-xl p-3" style={{ backgroundColor: WARN_S, border: `1px solid ${WARN}` }}>
+                <p className="text-xs font-bold leading-relaxed" style={{ color: INK }}>
+                  {absentPromptName}님이 {absentPrompt.reason === ABSENT_PARTNER.CANCELLED ? "취소했어요" : "아직 출석 표시가 안 됐어요"}.
+                  {" "}혼자 수업했으면 1:1 로 바꿔 주세요.
+                </p>
+                <p className="mt-1 text-caption leading-relaxed" style={{ color: INK2 }}>
+                  그대로 확정하면 2:1 회원권에서 1회 빠집니다.
+                </p>
+                <button type="button" onClick={() => {
+                  onSubmit(toSoloLesson(draft, absentPrompt.presentMemberId));
+                  onToast?.("1:1 수업으로 바꿨습니다. 다시 열어 확정해 주세요.");
+                }} className="mt-2 h-10 w-full text-xs font-extrabold"
+                  style={{ borderRadius: 9, backgroundColor: CARD, color: BRAND_D, border: `1px solid ${WARN}` }}>
+                  1:1 로 바꾸기
+                </button>
+              </div>
+            ) : null}
 
             {/* 여러 명인 수업은 전원을 정한 뒤 한 번에 확정한다 -- 누르는 횟수가
                 오히려 줄어든다. 개인 모드에는 조직 회원권이 없어 이 블록이 없다. */}
@@ -21862,6 +21898,21 @@ export default function App() {
   useEffect(() => {
     notificationDataRef.current = { schedule: db.schedule || [], members: db.members || [] };
   }, [db.schedule, db.members]);
+  /* 확정에 필요한 최소 빌드. 못 읽으면 ALLOWED 로 둔다 -- 네트워크가 흔들렸다고
+     센터 전체가 확정을 못 하게 되는 쪽이 더 나쁘다 (settlement-gate.js). */
+  const [settlementGateState, setSettlementGateState] = useState({ state: SETTLEMENT_GATE.ALLOWED });
+  useEffect(() => {
+    if (phase !== "app" || !account?.id) return undefined;
+    let active = true;
+    (async () => {
+      const [config, identity] = await Promise.all([fbLoadSettlementConfig(), RUNTIME_APP_IDENTITY]);
+      if (!active) return;
+      setSettlementGateState(settlementGate({
+        platform: Capacitor.getPlatform(), build: identity?.build, config,
+      }));
+    })();
+    return () => { active = false; };
+  }, [phase, account?.id]);
   useEffect(() => {
     if (phase !== "app" || !account?.id) return undefined;
     let active = true;
@@ -23367,6 +23418,14 @@ export default function App() {
   const settleLesson = async (lessonId) => {
     const lesson = db.schedule.find((item) => item.id === lessonId);
     if (!lesson || !organizationRoster || isSettledLesson(lesson)) return;
+    /* 차감 계산이 이 기기에서 돈다. 업데이트하지 않은 폰은 옛 규칙으로 계산한
+       차감을 원장에 박을 수 있고, 원장은 append-only 라 대표만 되돌린다.
+       버튼마다 막지 않고 여기 한 곳에서 막는다 -- 확정으로 들어오는 길이
+       일정 시트·출석 화면·처리 큐로 여럿이다. */
+    if (blocksSettlement(settlementGateState)) {
+      setToast(SETTLEMENT_GATE_LABEL[SETTLEMENT_GATE.OUTDATED]);
+      return;
+    }
     if (settlingRef.current.has(lessonId)) return;
     settlingRef.current.add(lessonId);
     try {

@@ -18,7 +18,12 @@ export const LESSON_TYPES = Object.freeze([
 
 export const LESSON_TYPE_KEYS = Object.freeze(LESSON_TYPES.map((item) => item.key));
 
+/* 키를 문자열로 넓혀 둔다. Object.freeze 가 다섯 글자의 합집합으로 좁히는데,
+   이 맵은 저장된 일정에서 온 아무 문자열이나 받아 "없으면 개인" 으로 답하는
+   것이 일이다 -- 좁은 타입이면 그 질문 자체를 할 수 없다. */
+/** @type {Map<string, (typeof LESSON_TYPES)[number]>} */
 const BY_KEY = new Map(LESSON_TYPES.map((item) => [item.key, item]));
+/** @type {Map<string, (typeof LESSON_TYPES)[number]>} */
 const BY_FORM_KIND = new Map(LESSON_TYPES.map((item) => [item.formKind, item]));
 
 export const lessonTypeDef = (key) => BY_KEY.get(String(key ?? "").trim()) || BY_KEY.get("private");

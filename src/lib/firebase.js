@@ -773,6 +773,37 @@ export async function fbDeleteAIConsent(memberId) {
   return true;
 }
 
+/**
+ * 확정에 필요한 최소 빌드. 못 읽으면 null 이고, 그때는 막지 않는다.
+ *
+ * 차감 계산이 기기에서 돌기 때문에 필요한 문서다 -- 업데이트하지 않은 폰은
+ * 옛 규칙으로 계산한 차감을 원장에 박을 수 있고, 원장은 되돌릴 수 없다.
+ * 판정은 settlement-gate.js 가 하고 여기서는 읽기만 한다.
+ */
+export async function fbLoadSettlementConfig() {
+  if (!fs || !auth?.currentUser) return null;
+  try {
+    const snap = await withAuthTimeout(
+      () => getDoc(doc(fs, "runtimeConfig", "settlement")),
+      { timeoutMs: FIRESTORE_READ_TIMEOUT_MS, provider: "firebase", stage: "settlement_config_read" },
+    );
+    if (!snap.exists()) return null;
+    const data = snap.data() || {};
+    const table = data.minBuilds && typeof data.minBuilds === "object" ? data.minBuilds : {};
+    /* 읽는 쪽이 모양을 정한다. 콘솔에서 손으로 적는 문서라 오타가 들어올 수
+       있고, 그것이 화면까지 가면 "왜 막혔는지" 를 아무도 설명할 수 없다. */
+    return {
+      minBuilds: {
+        web: String(table.web ?? "").trim(),
+        android: String(table.android ?? "").trim(),
+        ios: String(table.ios ?? "").trim(),
+      },
+    };
+  } catch (_error) {
+    return null;
+  }
+}
+
 export async function fbLoadAIRecordingStatus() {
   if (!fs || !auth?.currentUser) return { status: "normal", reasonCode: "", updatedAt: "" };
   try {

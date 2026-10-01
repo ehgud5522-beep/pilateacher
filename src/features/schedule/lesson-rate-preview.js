@@ -25,8 +25,9 @@ import {
 } from "../../data/schema/deduction-pricing.js";
 import { defaultUnitPriceFor } from "../../data/schema/pay-rates.js";
 import { remainingCountOf } from "../../data/repositories/pass-repository.js";
-import { isDuetPass } from "../../data/schema/pass-clients.js";
-import { SETTLEMENT_SKIP, pickSoloPass, planPassSelection } from "./lesson-settlement.js";
+import {
+  SETTLEMENT_SKIP, isSoloCandidate, pickSoloPass, planPassSelection,
+} from "./lesson-settlement.js";
 
 const text = (value) => String(value ?? "").trim();
 
@@ -70,7 +71,9 @@ export function previewMemberRate(input = {}) {
        달라서, 짝과 함께 오면 풀린다. */
     const mine = passes.filter((item) => item?.clientId === clientId);
     if (mine.length === 0) return { skip: SETTLEMENT_SKIP.NO_PASS };
-    return { skip: mine.every((item) => isDuetPass(item)) ? SETTLEMENT_SKIP.SOLO_PASS_MISSING : SETTLEMENT_SKIP.SPENT };
+    /* 확정이 쓰는 그 판정을 그대로 쓴다. 2:1 상품은 짝이 적히지 않았더라도
+       1:1 후보가 아니므로, isDuetPass 만으로 가르면 두 화면이 갈라진다. */
+    return { skip: mine.some(isSoloCandidate) ? SETTLEMENT_SKIP.SPENT : SETTLEMENT_SKIP.SOLO_PASS_MISSING };
   }
 
   const category = text(pass.category);

@@ -40,6 +40,9 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "일정 탭 · 개인 모드 · 확정 없음",
     "회원 목록",
     "회원 상세",
+    /* 회원권 네 장 짜리. 배포 563 이 여기서 죽었다 -- "소속" 케이스는
+       passCards 를 넘기지 않아 새 카드 코드가 한 줄도 돌지 않았다. */
+    "회원 상세 · 회원권 네 장",
     "회원 상세 · 소속",
     "회원 상세 · 강사",
     "회원 상세 · 대표",

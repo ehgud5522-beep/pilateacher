@@ -680,6 +680,13 @@ export const fbListMalformedClientPhones = callableAsOwner("listMalformedClientP
 export const fbRebuildInstructorIds = callableAsOwner("rebuildInstructorIds");
 export const fbVerifyInstructorIds = callableAsOwner("verifyInstructorIds");
 
+/* 이관 데이터 초기화. 출시 전 한 번 쓰는 통로다 --
+   functions/src/migration-reset.js 머리말에 근거가 있다.
+
+   confirm 을 보내지 않으면 미리보기다. 되돌릴 수 없는 쪽이 기본값이면 안
+   된다. */
+export const fbResetMigratedData = callableAsOwner("resetMigratedData");
+
 export async function fbPurgeExpiredPhotoBackups() {
   if (!functions || !auth?.currentUser) return { purged: 0 };
   const call = httpsCallable(functions, "purgeExpiredPhotoBackups");

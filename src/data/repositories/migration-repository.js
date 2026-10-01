@@ -67,7 +67,40 @@ export const MIGRATION_ERROR = Object.freeze({
   DUET_PARTNER_PHONE_MISSING: "duet_partner_phone_missing",
   DUET_PARTNER_NOT_FOUND: "duet_partner_not_found",
   DUET_PARTNER_SESSIONS_MISSING: "duet_partner_sessions_missing",
+  /* 카테고리와 짝이 어긋난 행. 위 셋과 다른 사유인 것은 고칠 자리가 다르기
+     때문이다 -- 위 셋은 적다 만 짝을 마저 적는 일이고, 이 둘은 상품 분류와
+     짝 중 **어느 쪽이 맞는지 대표가 정해야** 하는 일이다. */
+  DUET_PARTNER_REQUIRED: "duet_partner_required",
+  DUET_PARTNER_UNEXPECTED: "duet_partner_unexpected",
 });
+
+/* ── 카테고리가 짝을 요구하는가 ───────────────────────────────────────────
+   2:1 은 두 사람이 한 회원권을 나눠 쓰는 상품이다. 짝이 비면 그 회원권은
+   clientIds 가 한 명이 되고, isDuetPass 는 **사람 수만 본다**
+   (pass-clients.js:69) -- 상품명도 카테고리도 보지 않는다. 그래서 짝 없는
+   2:1 은 1:1 회원권으로 취급되어, 혼자 온 수업이 만료만 이르면 그 회원권에서
+   빠진다 (lesson-settlement.js 의 pickSoloPass).
+
+   증상은 조용하다. 잔여는 줄어들고 화면은 멀쩡하며, 원장은 append-only 라
+   대표만 되돌릴 수 있다. 2:1 재등록(35,000)과 1:1 신규(25,000)가 섞인
+   회원이면 수업 한 번당 급여도 1만 원씩 어긋난다.
+
+   반대쪽도 같은 무게다. 1:1 인데 짝이 적히면 두 사람이 한 계약을 나눠 쓰게
+   되어, 짝은 자기가 사지 않은 회원권에서 회차가 빠진다.
+
+   서비스·렛미인·기타는 어느 쪽도 아니다. 그 셋은 사람 수가 상품으로 정해지지
+   않으므로 지금처럼 적힌 대로 둔다 -- 모르는 것을 규칙으로 만들지 않는다. */
+/* 타입을 문자열로 넓혀 둔다. Object.freeze 가 적힌 값들의 합집합으로 좁히는데,
+   이 목록이 받는 것은 엑셀에서 읽어 라벨 표로 옮긴 문자열이다 -- 좁은 타입이면
+   "이 카테고리가 그 목록에 있는가" 라는 질문 자체를 할 수 없다. */
+/** @type {readonly string[]} */
+const DUET_CATEGORIES = Object.freeze([PAY_CATEGORY.PT_2_1_NEW, PAY_CATEGORY.PT_2_1_REPURCHASE]);
+/** @type {readonly string[]} */
+const SOLO_CATEGORIES = Object.freeze([
+  PAY_CATEGORY.PT_1_1_NEW,
+  PAY_CATEGORY.PT_1_1_REPURCHASE_EVENT,
+  PAY_CATEGORY.PT_1_1_REPURCHASE_NORMAL,
+]);
 
 export const CLIENT_SHEET_COLUMNS = Object.freeze(["회원명", "연락처", "지점"]);
 export const PASS_SHEET_COLUMNS = Object.freeze([
@@ -398,6 +431,28 @@ export function planPassMigration(text, {
          된다. */
       const partnerName = requireText(record, "회원명2");
       const partnerPhoneRaw = requireText(record, "연락처2");
+
+      /* 카테고리와 짝이 맞는지 먼저 본다. 아래 블록은 "짝이 적혔으면" 으로
+         시작하므로, 짝이 통째로 빈 2:1 은 거기까지 가지도 못하고 조용히
+         1:1 회원권이 된다 -- 그 침묵이 여기서 막는 것이다.
+
+         두 신호를 나누는 이유: 아래 블록은 이름이나 번호가 있을 때만 짝을 찾으러
+         가므로, "짝을 가리켰는가" 는 그 둘로 판단해야 한다 -- 강사누적진행2 만
+         적힌 2:1 행을 적힌 것으로 쳐 주면 그 행은 검사를 지나가고 아래 블록도
+         건너뛰어, 막으려던 바로 그 모양(짝 없는 2:1)이 그대로 만들어진다.
+         반대로 1:1 쪽은 세 칸 중 하나라도 손댔으면 걸러야 한다 -- 이름을 적다
+         만 행이 조용히 1:1 로 올라가면 안 된다. */
+      const partnerIdentified = Boolean(partnerName || partnerPhoneRaw);
+      const partnerWritten = partnerIdentified || Boolean(requireText(record, "강사누적진행2"));
+      if (DUET_CATEGORIES.includes(category) && !partnerIdentified) {
+        throw failure(line, MIGRATION_ERROR.DUET_PARTNER_REQUIRED,
+          `${categoryLabel} 인데 함께 쓰는 회원이 없습니다. 회원명2·연락처2·강사누적진행2 를 적거나, 혼자 쓰는 회원권이면 급여카테고리를 1:1 로 고쳐 주세요: ${name}`);
+      }
+      if (SOLO_CATEGORIES.includes(category) && partnerWritten) {
+        throw failure(line, MIGRATION_ERROR.DUET_PARTNER_UNEXPECTED,
+          `${categoryLabel} 인데 함께 쓰는 회원이 적혀 있습니다. 둘이 나눠 쓰는 회원권이면 급여카테고리를 2:1 로 고치고, 아니면 회원명2·연락처2·강사누적진행2 를 비워 주세요: ${name}`);
+      }
+
       let clientIds;
       let partner = null;
       let partnerPriorSessions = 0;

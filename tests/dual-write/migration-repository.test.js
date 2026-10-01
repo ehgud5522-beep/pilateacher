@@ -389,8 +389,12 @@ test("the duet columns are optional, so a file without them still uploads", () =
   const { writes, failures } = planPasses(passSheet(passRow()));
   assert.deepEqual(failures, []);
   assert.equal("clientIds" in writes[0].pass, false);
-  // 열이 있어도 비어 있으면 1:1 이다.
-  const blank = planDuet(duetSheet(duetRow({ 회원명2: "", 연락처2: "", 강사누적진행2: "" })));
+  /* 열이 있어도 비어 있으면 1:1 이다 -- 단, 카테고리가 1:1 일 때만이다.
+     이 줄은 한동안 2:1 행으로 적혀 있었고, 그래서 "짝 없는 2:1 이 1:1
+     회원권이 된다" 를 통과로 못 박고 있었다. */
+  const blank = planDuet(duetSheet(
+    duetRow({ 급여카테고리: "1:1 신규", 회원명2: "", 연락처2: "", 강사누적진행2: "" }),
+  ));
   assert.deepEqual(blank.failures, []);
   assert.equal("clientIds" in blank.writes[0].pass, false);
 });
@@ -435,6 +439,72 @@ test("the partner's cumulative count is asked for, never copied from the anchor"
   const { failures } = planDuet(duetSheet(duetRow({ 강사누적진행2: "" })));
   assert.equal(failures[0].reason, MIGRATION_ERROR.DUET_PARTNER_SESSIONS_MISSING);
   assert.match(failures[0].message, /강사누적진행이 필요합니다/);
+});
+
+/* ── 카테고리와 짝이 어긋난 행 ─────────────────────────────────────────
+   isDuetPass 는 사람 수만 본다 (pass-clients.js:69). 상품명도 카테고리도 보지
+   않으므로, 짝 없는 2:1 은 1:1 회원권이 되어 혼자 온 수업에서 빠진다. 이관이
+   막지 않으면 아무도 막지 않는다. */
+
+test("a duet category with no partner at all fails that row", () => {
+  /* 조용한 쪽이라 테스트가 필요하다. 아래의 짝 블록은 "짝이 적혔으면" 으로
+     시작하므로, 세 칸이 모두 비면 거기까지 가지도 않고 1:1 회원권이 된다. */
+  const { writes, failures } = planDuet(duetSheet(
+    duetRow(),
+    duetRow({ 회원명: "이세리", 연락처: "010-1234-5678", 차수: "2", 회원명2: "", 연락처2: "", 강사누적진행2: "" }),
+  ));
+  assert.equal(writes.length, 1, "좋은 행은 그대로 올라간다");
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].reason, MIGRATION_ERROR.DUET_PARTNER_REQUIRED);
+  assert.equal(failures[0].line, 3, "엑셀에서 찾는 행 번호와 맞는다");
+  assert.match(failures[0].message, /급여카테고리를 1:1 로/, "고칠 방법이 두 가지라 둘 다 적는다");
+});
+
+test("a duet category fails even when the sheet has no partner columns", () => {
+  /* 열이 아예 없는 파일로도 2:1 을 올릴 수 있었다. 그 경로가 지금까지
+     열려 있었고, 반송·율하의 2:1 이 그리로 들어갔다면 전부 1:1 이 된다. */
+  const { writes, failures } = planPasses(passSheet(passRow({ 급여카테고리: "2:1 신규" })));
+  assert.equal(writes.length, 0);
+  assert.equal(failures[0].reason, MIGRATION_ERROR.DUET_PARTNER_REQUIRED);
+});
+
+test("a duet row with only the partner's count fails rather than slipping through", () => {
+  /* 강사누적진행2 만 적힌 행. "짝을 가리켰는가" 를 세 칸으로 판단하면 이 행이
+     검사도 짝 블록도 모두 지나가, 막으려던 바로 그 모양이 만들어진다. */
+  const { writes, failures } = planDuet(duetSheet(duetRow({ 회원명2: "", 연락처2: "" })));
+  assert.equal(writes.length, 0);
+  assert.equal(failures[0].reason, MIGRATION_ERROR.DUET_PARTNER_REQUIRED);
+});
+
+test("a solo category with a partner fails that row", () => {
+  // 짝은 자기가 사지 않은 회원권에서 회차가 빠진다.
+  const { failures } = planDuet(duetSheet(duetRow({ 급여카테고리: "1:1 신규" })));
+  assert.equal(failures[0].reason, MIGRATION_ERROR.DUET_PARTNER_UNEXPECTED);
+  assert.match(failures[0].message, /급여카테고리를 2:1 로/);
+});
+
+test("a solo row with a half-written partner fails instead of uploading quietly", () => {
+  /* 세 칸 중 하나라도 손댔으면 걸린다. 이름을 적다 만 행이 1:1 로 올라가면
+     대표는 자기가 적은 짝이 어디로 갔는지 영영 모른다. */
+  for (const stray of [{ 회원명2: "박두리" }, { 연락처2: "010-9999-8888" }, { 강사누적진행2: "35" }]) {
+    const blank = { 회원명2: "", 연락처2: "", 강사누적진행2: "" };
+    const { failures } = planDuet(duetSheet(duetRow({ 급여카테고리: "1:1 신규", ...blank, ...stray })));
+    assert.equal(failures[0]?.reason, MIGRATION_ERROR.DUET_PARTNER_UNEXPECTED, JSON.stringify(stray));
+  }
+});
+
+test("categories that do not decide the head count are left as written", () => {
+  /* 서비스·렛미인·기타는 사람 수가 상품으로 정해지지 않는다. 모르는 것을
+     규칙으로 만들면 멀쩡한 행이 막힌다. */
+  const withPartner = planDuet(duetSheet(duetRow({ 급여카테고리: "서비스" })));
+  assert.deepEqual(withPartner.failures, []);
+  assert.equal(withPartner.writes[0].pass.clientIds.length, 2);
+
+  const alone = planDuet(duetSheet(
+    duetRow({ 급여카테고리: "렛미인", 회원명2: "", 연락처2: "", 강사누적진행2: "" }),
+  ));
+  assert.deepEqual(alone.failures, []);
+  assert.equal("clientIds" in alone.writes[0].pass, false);
 });
 
 test("both members get their own running total seeded", async () => {

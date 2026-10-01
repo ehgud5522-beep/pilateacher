@@ -133,6 +133,7 @@ import {
   ABSENT_PARTNER, absentPartnerPrompt, toSoloLesson,
   DEDUCTION_CODE_LABEL, NOT_STARTED_NOTICE, lessonHasStarted,
   canSettleLesson, clearSettlementFromLesson, closesSettlement, isSettledLesson, needsSettlement,
+  pickSoloPass, pickSharedDuetPass,
   planLessonSettlement, recordSettlementAttempt, settledDeductionsOf, settlementOutcome,
   settlementSkipsOf,
 } from "./features/schedule/lesson-settlement.js";
@@ -148,6 +149,9 @@ import {
   rosterExpiryLabel, rosterHideKey,
 } from "./features/roster/roster-bridge.js";
 import { partnerClientId } from "./data/schema/pass-clients.js";
+import {
+  NEXT_DEDUCT, PASS_GROUP, passCardList,
+} from "./features/membership/pass-cards.js";
 import {
   blockingNotice, duetIssueNotices, duetSummaryLine, reviewNotices,
 } from "./features/passes/duet-issue.js";
@@ -5436,7 +5440,76 @@ function PassJourneyBar({ journey, size = "md" }) {
 
    개인 모드(레거시)에는 셋 다 그대로 남는다. 그쪽에서는 payRate 가 실제로 월간
    리포트 계산에 쓰이고, 회원도 홀딩도 강사 자신의 것이다. */
-function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSettlement = true, organizationMode = false, journey = null, viewerRole = "", onBack, onPatch, onSaveNote, onSchedule, onOpenLesson, onAssess, onToast, onDelete, onDeactivate, onReactivate, onHide }) {
+/**
+ * 회원권 한 장. **합계가 아니라 이 한 장의 숫자다.**
+ *
+ * 급여카테고리와 회당 금액은 강사 앱에만 있다 -- 회원 투영에는 그 칸이 가지
+ * 않는다 (member-view.js 의 금지 목록). 없으면 그 줄을 그리지 않는다.
+ */
+function PassCard({ card, onEdit }) {
+  const next = card.nextDeduct !== NEXT_DEDUCT.NONE;
+  const ended = card.group === PASS_GROUP.ENDED;
+  return (
+    <div style={{
+      padding: 11, borderRadius: 10, backgroundColor: CARD,
+      border: `1px solid ${next ? BRAND : LINE}`, opacity: ended ? 0.72 : 1,
+    }}>
+      <div className="flex items-start gap-2">
+        <div className="min-w-0 flex-1">
+          <p className="truncate" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>
+            {card.name || "이름 없는 회원권"}
+          </p>
+          <div className="mt-1 flex flex-wrap items-center gap-1">
+            {card.categoryLabel ? (
+              <span style={{ padding: "1px 6px", borderRadius: 5, backgroundColor: CANVAS, fontSize: TYPE.caption, color: INK2 }}>
+                {card.categoryLabel}
+              </span>
+            ) : null}
+            {card.isDuet ? (
+              <span style={{ padding: "1px 6px", borderRadius: 5, backgroundColor: LAVENDER_S, fontSize: TYPE.caption, color: INK2 }}>
+                {card.partnerName ? `${card.partnerName}님과 함께` : "함께 쓰는 회원권"}
+              </span>
+            ) : null}
+            {/* 다음 수업에서 여기서 빠진다. 고른 것은 lesson-settlement 이고
+                이 표시는 그 결과를 그대로 받는다 -- 다시 고르지 않는다. */}
+            {next ? (
+              <span style={{ padding: "1px 6px", borderRadius: 5, backgroundColor: TINT, fontSize: TYPE.caption, fontWeight: 700, color: BRAND_D }}>
+                {card.nextDeduct === NEXT_DEDUCT.DUET ? "2:1 수업 시 차감" : "1:1 수업 시 차감"}
+              </span>
+            ) : null}
+            {ended && card.endedReason ? (
+              <span style={{ padding: "1px 6px", borderRadius: 5, backgroundColor: CANVAS, fontSize: TYPE.caption, color: SUB }}>
+                {card.endedReason}
+              </span>
+            ) : null}
+          </div>
+        </div>
+        <div className="shrink-0 text-right">
+          <p className="tabular-nums" style={{ fontSize: TYPE.body, lineHeight: 1.1, fontWeight: 750, color: ended ? SUB : card.remaining <= 3 ? BAD : BRAND }}>
+            {card.remaining}<span style={{ fontSize: TYPE.caption, fontWeight: 600 }}>/{card.issued}회</span>
+          </p>
+          <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+            정규 {card.regularLeft} · 서비스 {card.serviceLeft}
+          </p>
+        </div>
+      </div>
+      <div className="mt-2 flex items-center gap-2" style={{ borderTop: `1px solid ${LINE}`, paddingTop: 7 }}>
+        <span className="tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+          만료 {card.expiresAt ? ymd(card.expiresAt) : "미설정"}
+        </span>
+        {card.unitPrice ? (
+          <span className="tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>· 회당 ₩{won(card.unitPrice)}</span>
+        ) : null}
+        {onEdit ? (
+          <button type="button" onClick={() => onEdit(card)} className="ml-auto shrink-0"
+            style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND }}>정보 수정</button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSettlement = true, organizationMode = false, journey = null, passCards = null, viewerRole = "", onBack, onPatch, onSaveNote, onSchedule, onOpenLesson, onAssess, onToast, onDelete, onDeactivate, onReactivate, onHide }) {
   /* 강사에게는 뒤 4자리만. 동명이인을 가르는 데는 그것으로 충분하고, 전화를
      거는 일은 센터가 한다 (roster-visibility.js). */
   const phoneShown = (value) => phoneForViewer(value, viewerRole, { full: () => maskedPhone(value) });
@@ -5655,12 +5728,49 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
             {resumableAssessment && <button type="button" onClick={() => onAssess?.({ mode: "resume", assessmentId: resumableAssessment.id })} className="mt-2 h-10 w-full text-xs font-bold" style={{ borderRadius: 9, backgroundColor: CANVAS, color: BRAND_D }}>진행 중 분석 이어가기</button>}
           </section>
           <details data-member-management-card="membership" style={{ ...sectionStyle, padding: 0, overflow: "hidden", backgroundColor: TINT, borderColor: "#D5D1EB" }}>
-            <summary aria-label="이용권·결제 관리 카드 열기" className="flex min-h-14 cursor-pointer list-none items-center gap-3 px-3.5 py-3"><span className="min-w-0 flex-1"><span className="block truncate text-sm font-extrabold" style={{ color: INK }}>이용권·결제</span><span className="mt-0.5 block truncate text-caption" style={{ color: SUB }}>{member.passName || "이용권 없음"} · 잔여 {left(member)}회 (정규 {num(member.regular)} · 서비스 {num(member.service)}) · {member.contractEnd ? ymd(member.contractEnd) : "만료일 미설정"}</span></span><ChevronDown size={16} style={{ color: SUB }} /></summary>
+            <summary aria-label="이용권·결제 관리 카드 열기" className="flex min-h-14 cursor-pointer list-none items-center gap-3 px-3.5 py-3"><span className="min-w-0 flex-1"><span className="block truncate text-sm font-extrabold" style={{ color: INK }}>이용권·결제</span><span className="mt-0.5 block truncate text-caption" style={{ color: SUB }}>{passCards ? passCards.summary : `${member.passName || "이용권 없음"} · 잔여 ${left(member)}회 (정규 ${num(member.regular)} · 서비스 ${num(member.service)}) · ${member.contractEnd ? ymd(member.contractEnd) : "만료일 미설정"}`}</span></span><ChevronDown size={16} style={{ color: SUB }} /></summary>
             <div data-member-management-content="membership" style={{ padding: "0 12px 12px" }}>
           <section data-member-section="membership" style={{ ...sectionStyle, backgroundColor: TINT, borderColor: "#D5D1EB" }}>
+            {/* ── 회원권 한 장 = 카드 한 개 ─────────────────────────────
+                합계를 지웠다. 잔여와 누적은 더하고 상품명·만료일·회당 금액은
+                그중 한 장의 것만 쓰던 화면이었다 -- 1:1 두 장과 2:1 두 장을
+                가진 회원이 "2:1 신규 · 잔여 194회 · 2026.11.09" 로 보였고,
+                11/09 에 사라지는 것은 13회뿐인데 194회가 그날 끝나는 것처럼
+                읽혔다. 숫자가 틀린 것이 아니라 서로 다른 회원권의 숫자가 한
+                줄에 섞인 것이다. */}
+            {passCards ? (
+              <>
+                {passCards.active.length === 0 && passCards.ended.length === 0 ? (
+                  <p style={{ fontSize: TYPE.caption, color: SUB }}>센터에 등록된 회원권이 없습니다.</p>
+                ) : null}
+                {passCards.active.length ? (
+                  <div className="space-y-2">
+                    {passCards.active.map((card) => <PassCard key={card.passId} card={card} />)}
+                  </div>
+                ) : (
+                  <p style={{ fontSize: TYPE.caption, color: SUB }}>지금 쓸 수 있는 회원권이 없습니다.</p>
+                )}
+                {/* 끝난 것은 접어 둔다. 재등록 상담에는 필요하지만, 펼쳐 두면
+                    지금 쓰는 회원권이 그 아래로 밀린다. */}
+                {passCards.ended.length ? (
+                  <details className="mt-2">
+                    <summary className="cursor-pointer list-none" style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND_D }}>
+                      종료된 회원권 {passCards.ended.length}장
+                    </summary>
+                    <div className="mt-2 space-y-2">
+                      {passCards.ended.map((card) => <PassCard key={card.passId} card={card} />)}
+                    </div>
+                  </details>
+                ) : null}
+                <div className="mt-3 grid grid-cols-2 gap-2">{[["최근 수업일", recentLesson ? `${md(recentLesson.date)} ${recentLesson.start}` : "수업 이력 없음"], ["다음 예약일", next ? `${md(next.date)} ${next.start}` : "예약 없음"]].map(([k,v]) => <div key={k} style={{ padding: "8px 9px", borderRadius: 8, backgroundColor: CARD }}><p style={{ fontSize: TYPE.caption, color: SUB }}>{k}</p><p className="mt-0.5 truncate tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>{v}</p></div>)}</div>
+              </>
+            ) : (
+              <>
             <div className="flex items-start gap-3"><div className="min-w-0 flex-1"><p style={{ fontSize: TYPE.caption, color: SUB }}>현재 이용권</p><p className="mt-0.5 truncate" style={{ fontSize: TYPE.body, fontWeight: 700, color: INK }}>{member.passName || "이용권 없음"}</p></div><div className="text-right"><p className="tabular-nums" style={{ fontSize: TYPE.display, lineHeight: 1, fontWeight: 750, color: left(member) <= 3 ? BAD : BRAND }}>{left(member)}<span style={{ fontSize: TYPE.caption }}>회 남음</span></p><p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>정규 {num(member.regular)} · 서비스 {num(member.service)}</p></div></div>
             <div className="mt-3 grid grid-cols-2 gap-2">{[["누적 등록 횟수", membership.registeredTotal ? `${membership.registeredTotal}회` : "미등록"], ["이용권 만료일", member.contractEnd ? ymd(member.contractEnd) : "미설정"], ["회원 회당 금액", memberUnit ? `₩${won(memberUnit)}` : "결제 내역 없음"], ["최근 수업일", recentLesson ? `${md(recentLesson.date)} ${recentLesson.start}` : "수업 이력 없음"], ["다음 예약일", next ? `${md(next.date)} ${next.start}` : "예약 없음"]].map(([k,v]) => <div key={k} style={{ padding: "8px 9px", borderRadius: 8, backgroundColor: CARD }}><p style={{ fontSize: TYPE.caption, color: SUB }}>{k}</p><p className="mt-0.5 truncate tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>{v}</p></div>)}</div>
             {membership.needsLegacyReview && <p className="mt-2" style={{ padding: "8px 9px", borderRadius: 8, backgroundColor: WARN_S, color: WARN, fontSize: TYPE.caption, lineHeight: 1.45 }}>잔여 합계가 누적 등록 횟수보다 큽니다. 기존 데이터 확인이 필요하며 자동으로 수정하지 않았습니다.</p>}
+              </>
+            )}
             {canViewSettlement && !organizationMode && <div className="mt-2 flex items-center gap-2" style={{ padding: "8px 9px", borderRadius: 8, backgroundColor: CARD }}><span className="min-w-0 flex-1"><span className="block" style={{ fontSize: TYPE.caption, color: SUB }}>강사 정산 단가</span><span className="block text-xs font-bold tabular-nums" style={{ color: INK }}>₩{won(settlementUnit)}{Number(member.payRate) > 0 ? "" : " · 센터 기본"}</span></span><button type="button" onClick={openRate} style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND }}>단가 수정</button></div>}
             <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.45, color: SUB }}>회원 회당 금액은 총 결제액을 정규 유료 횟수로 나눕니다. 할인은 결제액에 반영하고 서비스 횟수는 제외합니다.</p>
             {/* 센터 소속이면 이 버튼을 내지 않는다.
@@ -21817,6 +21927,55 @@ export default function App() {
     return buildPassJourney({ passes: mine, instructorSessions: total?.sessions });
   }, [organizationRoster, rosterPasses, rosterTotals]);
 
+  /* 회원권 카드. **장별로 하나다 -- 합치지 않는다.**
+
+     "다음 차감" 은 여기서 다시 고르지 않고 lesson-settlement 의 선택 함수를
+     그대로 부른다. 한 줄이라도 다르게 고르면 화면이 가리키는 회원권과 실제로
+     빠지는 회원권이 갈라지고, 원장은 append-only 라 되돌릴 수도 없다. */
+  const passCardsForClient = useCallback((clientId) => {
+    const target = String(clientId || "");
+    if (!target || !organizationRoster) return null;
+    /* passBelongsTo 로 고른다. 2:1 은 짝의 화면에도 같은 카드가 서야 하는데
+       clientId 만 보면 대표 한 명에게만 보인다. */
+    const mine = rosterPasses.filter((item) => passBelongsTo(item, target));
+    if (mine.length === 0) return null;
+    const now = new Date();
+
+    const solo = pickSoloPass(mine, target, now);
+    /* 2:1 은 짝이 누구냐에 따라 쓰이는 회원권이 다르다. 짝별로 고른 뒤 그중
+       만료가 가장 이른 것을 가리킨다 -- 짝이 한 명이면 그것이 곧 답이다. */
+    const partners = [...new Set(mine.map((item) => partnerClientId(item, target)).filter(Boolean))];
+    const duet = partners
+      .map((partner) => pickSharedDuetPass(mine, [target, partner], now))
+      .filter(Boolean)
+      .sort((left, right) => (
+        (new Date(left.expiresAt || 0).getTime() || Number.MAX_SAFE_INTEGER)
+        - (new Date(right.expiresAt || 0).getTime() || Number.MAX_SAFE_INTEGER)
+      ))[0];
+
+    const named = mine.map((item) => {
+      const partner = partnerClientId(item, target);
+      if (!partner) return item;
+      /* 짝의 이름은 명부에서 찾는다. 회원 앱은 서버가 partnerName 을 붙여
+         보내지만(member-view.js), 강사 앱에는 그 칸이 없다. */
+      const who = rosterMembers.find((row) => String(row?.orgClientId || "") === partner);
+      return { ...item, partnerName: String(who?.name || "") };
+    });
+
+    return passCardList({
+      passes: named, now,
+      nextSoloPassId: solo?.id || "",
+      nextDuetPassId: duet?.id || "",
+    });
+  }, [organizationRoster, rosterPasses, rosterMembers]);
+
+  const passCardsFor = useCallback(
+    (memberId) => passCardsForClient(
+      rosterMembers.find((item) => String(item?.id || "") === String(memberId || ""))?.orgClientId,
+    ),
+    [passCardsForClient, rosterMembers],
+  );
+
   /* 화면은 회원 id 로 부르고, 회원권은 조직 clientId 로 붙어 있다. 맞물린 회원은
      둘이 다르므로(roster-bridge) 여기서 바꿔 읽지 않으면 모든 줄이 빈다. */
   const journeyFor = useCallback(
@@ -24466,7 +24625,7 @@ export default function App() {
                   onPatch={(change) => patch(member.id, change)} onSaveNote={(type, body, voiceMeta, noteOptions) => saveScheduleComment(member.id, type, null, body, voiceMeta, noteOptions)}
                   onSchedule={() => { setScheduleMemberId(member.id); setTab("schedule"); }} onOpenLesson={(lessonId) => { setScheduleOpenLessonId(lessonId); setTab("schedule"); }} onAssess={(entry = {}) => { setAnalysisRecordId(entry.poseId || null); setAnalysisAssessmentId(entry.assessmentId || null); setAnalysisEntryMode(entry.mode || "home"); setAnalysisComparisonEntry(entry.beforeAssessmentId && entry.afterAssessmentId ? { beforeAssessmentId: entry.beforeAssessmentId, afterAssessmentId: entry.afterAssessmentId, compareView: entry.compareView || "front" } : null); setAnalysisMemberId(member.id); setTab("analysis"); }} onToast={setToast} onDelete={removeMember} onDeactivate={deactivateMember} onReactivate={reactivateMember}
                   organizationMode={organizationRoster && isRosterMember(member)} onHide={hideRosterMember}
-                  journey={journeyFor(member.id)} />
+                  journey={journeyFor(member.id)} passCards={passCardsFor(member.id)} />
               </div>}
             </div>}
             {tab === "analysis" && <ReferenceAnalysisTab members={rosterMembers} photos={photos} selectedId={analysisMemberId} selectedPoseId={analysisRecordId}

@@ -184,6 +184,18 @@ function Member({ userId }) {
 
   let body;
   if (!current) body = <NotMigrated />;
+  /* ── permission-denied 는 "없다" 는 뜻이다 ────────────────────────────
+     memberViews 의 get 규칙이 resource.data.userId 를 읽는다. 문서가 없으면
+     resource 가 null 이라 그 한 줄이 규칙을 넘어뜨리고, 서버는 "없음" 이 아니라
+     **거부**로 답한다. 아래 Preparing 이 그리려던 바로 그 상태인데 여기서
+     "불러오지 못했어요" 로 갈라졌다.
+
+     이 앱이 읽는 clientId 는 자기 링크 문서에서 온 것뿐이라, 남의 투영을
+     요청할 길이 없다 -- 거부가 나는 경우는 문서가 없을 때 하나다.
+
+     근본 고침은 규칙에 있다 (resource == null 을 먼저 가르는 것). 그때까지
+     화면이라도 정상 상태를 고장으로 말하지 않게 한다. */
+  else if (current.errorCode === "permission-denied") body = <Preparing onRetry={load} />;
   else if (current.errorCode) body = <LoadFailed code={current.errorCode} onRetry={load} />;
   /* 연결은 됐는데 투영이 아직 없다 -- 트리거가 도는 몇 초다. "조회 실패" 로
      말하면 정상 상태를 고장으로 말하는 것이 된다. */

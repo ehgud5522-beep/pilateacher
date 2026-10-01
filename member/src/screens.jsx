@@ -14,6 +14,9 @@
 
 import { useMemo, useState } from "react";
 import { TYPE } from "../../src/features/ui/type-scale.js";
+/* 회원권 카드의 숫자는 강사 앱과 한 곳에서 나온다. 같은 회원권이 두 화면에서
+   다른 숫자가 되는 것을 막는 것이 이 import 의 목적이다. */
+import { isUsablePass, passCardList, remainingSplit } from "../../src/features/membership/pass-cards.js";
 
 /**
  * 의견을 받는 곳. 링크 하나다.
@@ -89,13 +92,14 @@ export function passName(pass) {
 /** 차수를 사람 말로. */
 export const roundLabel = (round) => (count(round) > 1 ? `${count(round)}번째 회원권` : "첫 회원권");
 
-/** 지금 쓸 수 있는 회원권인가. 화면이 "사용 중" 과 "지난" 을 이것으로 가른다. */
-export function isUsable(pass, now = new Date()) {
-  if (text(pass?.status) !== "active") return false;
-  if (count(pass?.remainingCount) <= 0) return false;
-  const expiresAt = toDate(pass?.expiresAt);
-  return !expiresAt || expiresAt.getTime() >= now.getTime();
-}
+/**
+ * 지금 쓸 수 있는 회원권인가. 화면이 "사용 중" 과 "지난" 을 이것으로 가른다.
+ *
+ * 강사 앱과 **같은 판정을 쓴다**. 두 화면이 같은 회원권을 두고 한쪽은 "사용 중",
+ * 다른 쪽은 "지난" 이라고 말하면 회원은 어느 쪽을 믿어야 할지 알 수 없고, 그것을
+ * 물어볼 곳은 강사뿐이다.
+ */
+export const isUsable = isUsablePass;
 
 const Card = ({ children, tone, className = "" }) => (
   <section className={`card${tone ? ` ${tone}` : ""}${className ? ` ${className}` : ""}`}>
@@ -180,11 +184,16 @@ export function Home({ view, now = new Date() }) {
 
 export function Passes({ view, now = new Date() }) {
   const passes = Array.isArray(view?.passes) ? view.passes : [];
-  const using = passes.filter((pass) => isUsable(pass, now));
-  /* "대기(미리 구매)" 는 두지 않는다. 이 데이터에 그런 상태가 없다 --
+  /* 나누는 것도 줄 세우는 것도 강사 앱과 한 곳에서 한다. 사용 중은 만료가
+     가까운 순이라, 다음에 쓰일 회원권이 맨 위에 선다.
+
+     "대기(미리 구매)" 는 두지 않는다. 이 데이터에 그런 상태가 없다 --
      회원권은 발급되는 순간부터 쓸 수 있다. 없는 칸을 그려 두면 아무도 보지
      못하고, 언젠가 보이면 그때는 틀린 화면이다. */
-  const past = passes.filter((pass) => !isUsable(pass, now));
+  const cards = passCardList({ passes, now });
+  const byId = new Map(passes.map((pass) => [text(pass?.passId), pass]));
+  const using = cards.active.map((card) => byId.get(card.passId)).filter(Boolean);
+  const past = cards.ended.map((card) => byId.get(card.passId)).filter(Boolean);
 
   if (passes.length === 0) {
     return (
@@ -220,6 +229,12 @@ export function Passes({ view, now = new Date() }) {
                       ? <>{count(pass.totalSessions) + count(pass.serviceSessions)}회 중 <b>{count(pass.remainingCount)}회</b> 남았어요</>
                       : `${count(pass.totalSessions) + count(pass.serviceSessions)}회를 모두 사용했어요`}
                   </p>
+                  {/* 서비스 회차는 먼저 쓰인다. 몇 회가 서비스인지 말하지
+                      않으면 회원은 정규가 줄어든 줄로 읽고, 재등록 때 숫자가
+                      안 맞는다고 느낀다. 숫자는 강사 앱과 한 곳에서 나온다. */}
+                  {remainingSplit(pass).service > 0 ? (
+                    <p className="meta">그중 서비스 {remainingSplit(pass).service}회</p>
+                  ) : null}
                   {pass.expiresAt ? <p className="meta num">{dateLabel(pass.expiresAt)}까지</p> : null}
                   {/* 각자 30회로 오해하면 계약 자체가 틀어진다. 반드시 적는다. */}
                   {pass.isDuet ? (

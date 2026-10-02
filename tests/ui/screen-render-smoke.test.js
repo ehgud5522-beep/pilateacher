@@ -8,19 +8,65 @@ import react from "@vitejs/plugin-react";
 
 const projectRoot = fileURLToPath(new URL("../../", import.meta.url));
 
+/* ── 서버는 파일에 하나다 ────────────────────────────────────────────────
+   전에는 테스트마다 Vite 개발 서버를 새로 띄웠다. 이 파일에서만 105번이고
+   (issueScreens 74 + 직접 31), 매번 App.jsx 전체를 SSR 로 적재한다.
+
+   한 프로세스가 그만큼을 버티지 못한다. 단독으로 돌리면 253개가 전부
+   통과하는데 전체 스위트에서는 **한 건이 무작위로** 떨어졌다 -- 자원 한계에
+   먼저 닿은 테스트가 떨어지므로 기계마다 다른 테스트가 실패했다. 2026-10-03
+   Codemagic 이 `not ok 149 - tests/ui/screen-render-smoke.test.js` 로 멈춘 것이
+   그것이고, 그 전에는 시간대·날짜·한글 정렬을 의심하느라 빌드 두 판을 버렸다.
+
+   서버와 적재한 모듈만 공유한다. **화면 목록은 공유하지 않는다** -- 그것까지
+   들고 있다가 253개 테스트의 React 트리가 쌓여 4GB 힙을 넘겼다. 비싼 것은
+   모듈 적재이고, 화면 객체는 테스트가 끝나면 치워지게 둔다.
+
+   닫는 것은 파일이 끝날 때 한 번이다 -- 테스트마다 닫으면 다음 테스트가 쓸
+   것이 없다. */
+let sharedScreens = null;
+
+const screenCases = async () => {
+  if (!sharedScreens) {
+    const vite = await createServer({
+      root: projectRoot,
+      configFile: false,
+      plugins: [react()],
+      appType: "custom",
+      optimizeDeps: { noDiscovery: true, include: [] },
+      server: { middlewareMode: true },
+      ssr: { noExternal: ["@capgo/camera-preview"] },
+      logLevel: "silent",
+    });
+    sharedScreens = { vite, module: await vite.ssrLoadModule("/src/App.jsx") };
+  }
+  return sharedScreens;
+};
+
+test.after(async () => {
+  if (sharedScreens) await sharedScreens.vite.close();
+  sharedScreens = null;
+});
+
+/** App.jsx 를 적재한 모듈. 한 번만 적재된다. */
+const screenModule = async () => (await screenCases()).module;
+
+/**
+ * 화면 이름으로 마크업을 뽑는 함수. 서버와 모듈은 공유하고 **화면 목록은 매번
+ * 새로 만든다.**
+ *
+ * 목록까지 들고 있으면 253개 테스트가 그린 React 트리가 파일이 끝날 때까지
+ * 쌓인다 -- 처음에 그렇게 만들었다가 4GB 힙을 넘겨 터뜨렸다. 비싼 것은 모듈
+ * 적재(SSR 변환)이고 그것만 한 번 하면 된다.
+ */
+const screenMarkup = async () => {
+  const loaded = await screenModule();
+  const byName = new Map(loaded.createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  return (name) => renderToStaticMarkup(byName.get(name));
+};
+
 test("all primary tabs and detail surfaces render without a ReferenceError", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const { createAppScreenSmokeCases } = await screenModule();
   const cases = createAppScreenSmokeCases();
   assert.deepEqual(cases.map((item) => item.name), [
     "일정 탭",
@@ -183,19 +229,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
   }
 });
 
-test("the product catalog is reachable only where it should be", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("the product catalog is reachable only where it should be", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -227,19 +262,8 @@ test("the product catalog is reachable only where it should be", async (t) => {
   assert.doesNotMatch(locked, /추가/, "잠긴 상태에서는 추가 버튼이 없어야 한다");
 });
 
-test("the october migration is the owner's alone and never writes before it has shown what it will write", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("the october migration is the owner's alone and never writes before it has shown what it will write", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -283,19 +307,8 @@ test("the october migration is the owner's alone and never writes before it has 
   assert.match(result, /다시 올려도 두 번 저장되지 않습니다/);
 });
 
-test("a deputy's pay basis is stated instead of an amount that is never used", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("a deputy's pay basis is stated instead of an amount that is never used", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -327,19 +340,8 @@ test("a deputy's pay basis is stated instead of an amount that is never used", a
   assert.doesNotMatch(self, /퇴사 처리/);
 });
 
-test("a deduction says why it was worth what it was worth", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("a deduction says why it was worth what it was worth", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -356,19 +358,8 @@ test("a deduction says why it was worth what it was worth", async (t) => {
   assert.match(markupOf("센터 회원 상세"), /기준 단가/);
 });
 
-test("the payroll summary is the owner's, and says out loud what it did not count", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("the payroll summary is the owner's, and says out loud what it did not count", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -457,19 +448,8 @@ test("the payroll summary is the owner's, and says out loud what it did not coun
   assert.doesNotMatch(locked, /CSV 내려받기/);
 });
 
-test("the audit log shows the odd ones first, and never a name it stored itself", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("the audit log shows the odd ones first, and never a name it stored itself", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -541,19 +521,8 @@ test("the audit log shows the odd ones first, and never a name it stored itself"
   assert.doesNotMatch(locked, /전체 이력/);
 });
 
-test("a mistake is undone by adding to the ledger, never by erasing it", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("a mistake is undone by adding to the ledger, never by erasing it", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -592,19 +561,8 @@ test("a mistake is undone by adding to the ledger, never by erasing it", async (
   assert.match(cancelling, /남은 8회를 거두고/);
 });
 
-test("the audit screen's cancellations and corrections come from the ledger", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("the audit screen's cancellations and corrections come from the ledger", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
 
   /* 기능이 생겼으니 "취소할 방법이 없습니다"는 사라져야 한다. 그 문구가 남아
@@ -614,19 +572,8 @@ test("the audit screen's cancellations and corrections come from the ledger", as
   assert.match(audit, /원래 기록은 지워지지 않고 함께 남아 있습니다/);
 });
 
-test("an instructor sees the centre's members, so there is nothing to re-register", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("an instructor sees the centre's members, so there is nothing to re-register", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -663,19 +610,8 @@ test("an instructor sees the centre's members, so there is nothing to re-registe
   assert.match(failed, /다시 시도/);
 });
 
-test("the schedule settles the lesson, and says what that will cost before it does", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("the schedule settles the lesson, and says what that will cost before it does", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -755,19 +691,8 @@ test("ErrorBoundary hides diagnostics in production and records a privacy-safe d
    errorDomain·errorCode 가 버려지면 어느 계층의 무슨 코드였는지 알 수 없다 --
    원본 코드를 잃는 것은 CLAUDE.md §2 가 금지한 그것이다. 진단이 내보내는
    필드와 화이트리스트가 어긋나면 여기서 실패한다. */
-test("every field the organization lookup emits survives deviceLog", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { ORGANIZATION_CONTEXT_LOG_FIELDS, isDeviceLogField } = await vite.ssrLoadModule("/src/App.jsx");
+test("every field the organization lookup emits survives deviceLog", async () => {
+  const { ORGANIZATION_CONTEXT_LOG_FIELDS, isDeviceLogField } = await screenModule();
   const dropped = ORGANIZATION_CONTEXT_LOG_FIELDS.filter((field) => !isDeviceLogField(field));
   assert.deepEqual(dropped, [], `deviceLog 가 버리는 필드: ${dropped.join(", ")}`);
 
@@ -788,19 +713,8 @@ test("every field the organization lookup emits survives deviceLog", async (t) =
   }
 });
 
-test("the member directory shows who is there and who is not", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("the member directory shows who is there and who is not", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -826,19 +740,8 @@ test("the member directory shows who is there and who is not", async (t) => {
   assert.doesNotMatch(empty, /김하나/);
 });
 
-test("registration asks for three things and warns about a namesake", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("registration asks for three things and warns about a namesake", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -860,19 +763,8 @@ test("registration asks for three things and warns about a namesake", async (t) 
   assert.match(duplicate, /그래도 등록/);
 });
 
-test("the member directory is reachable only where it should be", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("the member directory is reachable only where it should be", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -901,19 +793,8 @@ test("the member directory is reachable only where it should be", async (t) => {
 
 /* 조회 실패와 빈 결과가 같은 화면이면, 사용자는 무엇을 해야 할지 알 수 없고
    우리는 원인을 찾을 수 없다. memberships 도 locations 도 그래서 하루씩 걸렸다. */
-test("a failed location read does not look like an empty one", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("a failed location read does not look like an empty one", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -931,19 +812,8 @@ test("a failed location read does not look like an empty one", async (t) => {
 /* 강사 관리. 대표만 보고, 대표만 바꾼다 -- 규칙도 같은 경계를 지킨다.
    풀방금액은 1:1 재등록(정상) 한 카테고리의 단가이므로, 화면이 "모든 단가"처럼
    보이면 안 된다. */
-test("the instructor screen says what it changes and what it does not", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("the instructor screen says what it changes and what it does not", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -978,19 +848,8 @@ test("the instructor screen says what it changes and what it does not", async (t
 
 /* 강사를 붙이는 자리. uid 를 옮겨 적게 하지 않는 것이 요점이다 -- 28자를 카톡으로
    옮기면 오타가 나고, 틀리면 조용히 매칭되지 않는다. */
-test("adding an instructor asks for the e-mail, never a uid", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("adding an instructor asks for the e-mail, never a uid", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -1021,19 +880,8 @@ test("adding an instructor asks for the e-mail, never a uid", async (t) => {
   assert.match(missing, /강사가 앱에 먼저 로그인해야 합니다/);
 });
 
-test("retiring says what it keeps, and the retired can come back", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("retiring says what it keeps, and the retired can come back", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -1049,19 +897,8 @@ test("retiring says what it keeps, and the retired can come back", async (t) => 
   assert.doesNotMatch(retired, /퇴사 처리/);
 });
 
-test("a failed instructor read does not look like an empty centre", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("a failed instructor read does not look like an empty centre", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -1076,19 +913,8 @@ test("a failed instructor read does not look like an empty centre", async (t) =>
   assert.doesNotMatch(empty, /코드/, "없는 것은 오류가 아니므로 코드가 붙지 않는다");
 });
 
-test("only the owner reaches the instructor admin screen", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("only the owner reaches the instructor admin screen", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -1104,19 +930,8 @@ test("only the owner reaches the instructor admin screen", async (t) => {
 
 /* 센터를 운영하는 일과 이 기기를 쓰는 일이 한 그룹에 섞여 목록이 길었다.
    나누되, 강사에게 빈 머리글만 남기지 않는 것이 요점이다. */
-test("the centre group stands only where there is something in it", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("the centre group stands only where there is something in it", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -1161,22 +976,11 @@ test("the centre group stands only where there is something in it", async (t) =>
   assert.doesNotMatch(personal, /이 기기에만 저장되는 값입니다/);
 });
 
-test("the monthly report and the payroll roll-up do not read alike", async (t) => {
+test("the monthly report and the payroll roll-up do not read alike", async () => {
   /* 둘 다 "급여"라는 말을 쓰는데 세는 것이 다르다. 월간 리포트는 기기에 저장된
      일정이고, 급여 집계는 회원권 원장이다. 메뉴에서 구별되지 않으면 강사와
      대표가 서로 다른 숫자를 같은 것으로 읽는다. */
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -1193,22 +997,7 @@ test("the monthly report and the payroll roll-up do not read alike", async (t) =
 
 /* 회원권 발급. 누른 뒤에 고칠 수 있는 것이 거의 없는 화면이라, 무엇이 저장될지가
    누르기 전에 보여야 한다. 단가 해석은 pay-rates 의 UNIT_PRICE_SOURCE 를 따른다. */
-const issueScreens = async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
-  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
-  return (name) => renderToStaticMarkup(byName.get(name));
-};
+const issueScreens = () => screenMarkup();
 
 test("the issue form asks only what the price source needs", async (t) => {
   const markupOf = await issueScreens(t);
@@ -1550,19 +1339,8 @@ test("the confirm card shows the net price when VAT is inside the contract", asy
 
 /* 소속 센터의 회원 상세. 강사가 못 하는 일이 화면에서 사라지고, 이용권 카드가
    조직 회원권에서 채워진다. */
-test("an instructor cannot delete, hold or reprice a centre member", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("an instructor cannot delete, hold or reprice a centre member", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -1605,19 +1383,8 @@ test("an instructor cannot delete, hold or reprice a centre member", async (t) =
 });
 
 /* 회원의 여정 줄과 수업의 예상 단가. 둘 다 "나중에 묻지 않게" 하는 화면이다. */
-test("the journey line shows the whole road, not just this pass", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("the journey line shows the whole road, not just this pass", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -1641,19 +1408,8 @@ test("the journey line shows the whole road, not just this pass", async (t) => {
   assert.doesNotMatch(markupOf("회원 상세"), /누적 \d+ \/ \d+회/);
 });
 
-test("a lesson says what it will be worth before it is settled", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("a lesson says what it will be worth before it is settled", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -2349,16 +2105,8 @@ test("the location chip does not count the review demo member", async (t) => {
   assert.equal(counts(owner), counts(manager), "대표 화면의 인원수가 다르다");
 });
 
-test("이관 초기화는 지울 숫자와 남길 회원을 먼저 보여준다", async (t) => {
-  const vite = await createServer({
-    root: projectRoot, configFile: false, plugins: [react()], appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] }, server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] }, logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
-  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
-  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+test("이관 초기화는 지울 숫자와 남길 회원을 먼저 보여준다", async () => {
+  const markupOf = await screenMarkup();
 
   const preview = markupOf("이관 초기화 · 미리보기");
   /* 숫자를 보고 누른다. 되돌릴 수 없으므로 "몇 건" 이 버튼에 적혀 있어야 한다. */
@@ -2386,19 +2134,11 @@ test("이관 초기화는 지울 숫자와 남길 회원을 먼저 보여준다"
   assert.match(done, /앱을 완전히 닫고 다시 열어 주세요/);
 });
 
-test("센터 소속이면 기기 이용권 수정 버튼을 내지 않는다", async (t) => {
+test("센터 소속이면 기기 이용권 수정 버튼을 내지 않는다", async () => {
   /* 이 카드의 잔여·만료일은 센터 회원권에서 온다. 여기서 고치면 기기에만
      쓰이고 다음 로스터 계산이 센터 값으로 덮는다 -- "저장했습니다" 를 보고
      화면은 그대로인, 아무 일도 일어나지 않는 버튼이다. */
-  const vite = await createServer({
-    root: projectRoot, configFile: false, plugins: [react()], appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] }, server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] }, logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
-  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
-  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+  const markupOf = await screenMarkup();
 
   for (const name of ["회원 상세 · 소속", "회원 상세 · 강사", "회원 상세 · 대표"]) {
     const markup = markupOf(name);
@@ -2411,16 +2151,8 @@ test("센터 소속이면 기기 이용권 수정 버튼을 내지 않는다", a
   assert.match(personal, />이용권 수정</);
 });
 
-test("잔여 점검은 안 맞는 것만 보여주고, 많으면 우리를 먼저 의심하게 한다", async (t) => {
-  const vite = await createServer({
-    root: projectRoot, configFile: false, plugins: [react()], appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] }, server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] }, logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
-  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
-  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+test("잔여 점검은 안 맞는 것만 보여주고, 많으면 우리를 먼저 의심하게 한다", async () => {
+  const markupOf = await screenMarkup();
 
   const off = markupOf("잔여 점검 · 안 맞음");
   assert.match(off, /잔여 점검/);
@@ -2442,19 +2174,8 @@ test("잔여 점검은 안 맞는 것만 보여주고, 많으면 우리를 먼�
 
 /* ── 회원권 수정 ─────────────────────────────────────────────────────── */
 
-test("회원권 수정 화면은 바뀔 값을 미리 보여주고 강사에게는 없다", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("회원권 수정 화면은 바뀔 값을 미리 보여주고 강사에게는 없다", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 

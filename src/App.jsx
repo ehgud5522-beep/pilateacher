@@ -21708,14 +21708,18 @@ export function createAppScreenSmokeCases() {
        위의 "소속" 케이스는 passCards 를 넘기지 않아 레거시 분기만 그렸고,
        그래서 렌더 테스트가 있는데도 잡지 못했다. */
     { name: "회원 상세 · 회원권 네 장", element: <ReferenceMemberDetail member={smokeRoster[0]} schedule={db.schedule} photos={photos[member.id]} settings={db.settings} organizationMode
+      /* 날짜는 **달력 날짜**로 적는다. "2026-11-09T00:00:00+09:00" 처럼 절대
+         순간으로 적으면 UTC 머신에서 하루 전으로 읽히고(isoDay 는 로컬 날짜를
+         쓴다 -- 한국 사용자에게 만료일은 한국 달력 날짜여야 한다), 그러면
+         이 픽스처를 보는 테스트가 Codemagic 에서만 깨진다. 실제로 깨졌다. */
       passCards={passCardList({
-        now: new Date("2026-10-01T00:00:00+09:00"),
+        now: new Date(2026, 9, 1),
         nextSoloPassId: "smoke-solo-50", nextDuetPassId: "smoke-duet-100",
         passes: [
-          { id: "smoke-solo-50", productId: "1:1 PT 50회", category: "pt_1_1_repurchase_event", clientId: "smoke-client-a", totalSessions: 50, serviceSessions: 0, remainingCount: 11, contractPrice: 3181800, status: "active", expiresAt: new Date("2026-12-18T00:00:00+09:00") },
-          { id: "smoke-solo-100", productId: "1:1 PT 100회", category: "pt_1_1_repurchase_event", clientId: "smoke-client-a", totalSessions: 100, serviceSessions: 0, remainingCount: 100, contractPrice: 5000000, status: "active", expiresAt: new Date("2027-12-31T00:00:00+09:00") },
-          { id: "smoke-duet-100", productId: "2:1 PT 33->100 세션업", category: "pt_2_1_new", clientId: "smoke-client-a", clientIds: ["smoke-client-a", "smoke-client-b"], partnerName: "박서연", totalSessions: 100, serviceSessions: 0, remainingCount: 13, contractPrice: 4096000, status: "active", expiresAt: new Date("2026-11-09T00:00:00+09:00") },
-          { id: "smoke-duet-70", productId: "2:1 PT 70회", category: "pt_2_1_new", clientId: "smoke-client-a", clientIds: ["smoke-client-a", "smoke-client-b"], partnerName: "박서연", totalSessions: 70, serviceSessions: 0, remainingCount: 70, contractPrice: 3818200, status: "active", expiresAt: new Date("2027-09-30T00:00:00+09:00") },
+          { id: "smoke-solo-50", productId: "1:1 PT 50회", category: "pt_1_1_repurchase_event", clientId: "smoke-client-a", totalSessions: 50, serviceSessions: 0, remainingCount: 11, contractPrice: 3181800, status: "active", expiresAt: new Date(2026, 11, 18) },
+          { id: "smoke-solo-100", productId: "1:1 PT 100회", category: "pt_1_1_repurchase_event", clientId: "smoke-client-a", totalSessions: 100, serviceSessions: 0, remainingCount: 100, contractPrice: 5000000, status: "active", expiresAt: new Date(2027, 11, 31) },
+          { id: "smoke-duet-100", productId: "2:1 PT 33->100 세션업", category: "pt_2_1_new", clientId: "smoke-client-a", clientIds: ["smoke-client-a", "smoke-client-b"], partnerName: "박서연", totalSessions: 100, serviceSessions: 0, remainingCount: 13, contractPrice: 4096000, status: "active", expiresAt: new Date(2026, 10, 9) },
+          { id: "smoke-duet-70", productId: "2:1 PT 70회", category: "pt_2_1_new", clientId: "smoke-client-a", clientIds: ["smoke-client-a", "smoke-client-b"], partnerName: "박서연", totalSessions: 70, serviceSessions: 0, remainingCount: 70, contractPrice: 3818200, status: "active", expiresAt: new Date(2027, 8, 30) },
           /* 이관 회원권은 칸이 빌 수 있다. 짝 이름도 만료일도 상품명도 없는 줄이
              한 장 섞여야 "비어 있어도 그려지는가" 를 본다. */
           { id: "smoke-csv-bare", clientId: "smoke-client-a", remainingCount: 0 },

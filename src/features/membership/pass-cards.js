@@ -65,6 +65,67 @@ export function isoDay(value) {
   return `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, "0")}-${String(at.getDate()).padStart(2, "0")}`;
 }
 
+/**
+ * 이 회원권을 뭐라고 부를 것인가. **id 는 절대 쓰지 않는다.**
+ *
+ * 앱에서 발급한 회원권은 productId 가 **상품 문서의 id** 다. 이관분은
+ * productId 자체가 상품명이라(migration-repository) 한동안 productId 를
+ * 그대로 썼는데, 그래서 앱 발급분 카드에 긴 식별자가 제목으로 떴다.
+ * 회원에게도 강사에게도 뜻이 없는 글자다.
+ *
+ * 순서가 있다. 계약할 때 들은 이름이 먼저이고, 그것이 없으면 상품 목록에서
+ * 찾고, 그래도 없으면 종류와 횟수로 만든다 -- 상품이 지워졌거나 아주 옛
+ * 회원권이 그렇고, 그때 빈 칸을 두면 무슨 회원권인지 알 수 없다.
+ *
+ *   1. pass.displayName  회원 투영이 서버에서 정해 보낸 이름
+ *   2. pass.productName  발급 때 함께 저장한 이름
+ *   3. 상품 목록 조회     productId 로 찾은 지금의 이름
+ *   4. 종류 + 총 횟수     "1:1 PT 20회"
+ *
+ * 이관분의 productId 는 이름이지만 그것도 3번을 지나 4번으로 가지 않는다 --
+ * 2번과 3번 사이에 두면 id 가 다시 제목이 될 길이 열린다. 이관분은
+ * displayName 을 서버가 채우고(member-view), 강사 앱에서는 아래 migratedName
+ * 이 "csv_" 가 아닌 productId 만 이름으로 받아들인다.
+ *
+ * @param {any} pass
+ * @param {(productId: string) => string} [lookup] 상품 목록에서 이름 찾기
+ */
+export function passTitle(pass, lookup) {
+  const given = text(pass?.displayName) || text(pass?.productName);
+  if (given) return given;
+
+  const productId = text(pass?.productId);
+  const found = typeof lookup === "function" ? text(lookup(productId)) : "";
+  if (found) return found;
+
+  /* 이관분은 productId 가 이름이다. 식별자처럼 생긴 것은 받지 않는다 --
+     앱 발급분의 productId 가 여기로 새면 다시 id 가 제목이 된다. */
+  if (productId && !looksLikeId(productId)) return productId;
+
+  return generatedTitle(pass);
+}
+
+/* 식별자처럼 생겼는가. 상품 문서 id 는 newId() 가 만들고, 사람이 지은 상품명은
+   공백이나 한글이 섞인다. 둘을 가르는 선은 "사람이 읽을 것이 있는가" 다. */
+const looksLikeId = (value) => {
+  const raw = text(value);
+  if (!raw) return true;
+  if (/[\s가-힣]/.test(raw)) return false;
+  // 영숫자(하이픈·밑줄 포함)만 20자 넘게 이어지면 id 로 본다.
+  return raw.length >= 20 && /^[A-Za-z0-9_-]+$/.test(raw);
+};
+
+/** 아무 이름도 없을 때. 종류와 횟수로 부른다 -- 빈 칸보다는 낫다. */
+function generatedTitle(pass) {
+  const total = count(pass?.totalSessions) + count(pass?.serviceSessions);
+  const category = text(pass?.category);
+  const duet = category.startsWith("pt_2_1")
+    || pass?.isDuet === true
+    || (Array.isArray(pass?.clientIds) && pass.clientIds.length > 1);
+  const kind = duet ? "2:1 PT" : category.startsWith("pt_1_1") ? "1:1 PT" : "회원권";
+  return total > 0 ? `${kind} ${total}회` : kind;
+}
+
 /** 이 카드가 어느 묶음에 들어가는가. */
 export const PASS_GROUP = Object.freeze({
   /** 지금 쓸 수 있다. 만료가 가까운 순으로 선다. */
@@ -143,17 +204,19 @@ const byExpiry = (left, right) => {
  * 카드 한 장.
  *
  * @param {any} pass 강사 앱의 passes 문서 또는 회원 앱의 memberViews 투영
- * @param {{ now?: Date, nextDeduct?: string }} [options]
+ * @param {{ now?: Date, nextDeduct?: string, productName?: (id: string) => string }} [options]
  */
-export function passCard(pass, { now = new Date(), nextDeduct = NEXT_DEDUCT.NONE } = {}) {
+export function passCard(pass, options = {}) {
+  const now = options.now instanceof Date ? options.now : new Date();
+  const nextDeduct = text(options.nextDeduct) || NEXT_DEDUCT.NONE;
   const category = text(pass?.category);
   const split = remainingSplit(pass);
   const usable = isUsablePass(pass, now);
   return {
     passId: text(pass?.id || pass?.passId),
-    /* 상품명. 계약할 때 들은 이름이 먼저다 -- 이관분은 productId 자체가 이름이고,
-       회원 투영은 서버가 displayName 으로 정해서 보낸다. */
-    name: text(pass?.displayName) || text(pass?.productId),
+    /* 상품명. 순서는 passTitle 의 머리말에 있다 -- **id 는 절대 제목이 되지
+       않는다.** */
+    name: passTitle(pass, options.productName),
     category,
     /* 급여카테고리는 회원에게 가지 않는다. 없으면 빈 문자열이고, 화면은 그 줄을
        그리지 않는다 -- 빈 칸을 두면 누군가 채우러 투영을 연다. */
@@ -230,9 +293,10 @@ export function passListSummary(cards) {
  * 한 회원의 카드 전부. 사용 중이 먼저, 만료가 가까운 순이다.
  *
  * @param {{
- *   passes?: Array<any>, now?: Date,
+ *   passes?: Array<any>, now?: Date, productName?: (id: string) => string,
  *   nextSoloPassId?: string, nextDuetPassId?: string,
  * }} input
+ *   productName  productId 로 상품 이름을 찾는 함수. 없으면 종류와 횟수로 만든다.
  *   nextSoloPassId / nextDuetPassId 는 **lesson-settlement 가 고른 것**을 받는다.
  *   여기서 다시 고르지 않는다 -- 한 줄이라도 다르게 고르면 화면이 가리키는
  *   회원권과 실제로 빠지는 회원권이 갈라지고, 그때는 되돌릴 수도 없다.
@@ -249,7 +313,7 @@ export function passCardList(input = {}) {
     let nextDeduct = NEXT_DEDUCT.NONE;
     if (id && id === solo) nextDeduct = NEXT_DEDUCT.SOLO;
     else if (id && id === duet) nextDeduct = NEXT_DEDUCT.DUET;
-    return passCard(pass, { now, nextDeduct });
+    return passCard(pass, { now, nextDeduct, productName: input.productName });
   });
 
   return {

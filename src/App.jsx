@@ -153,6 +153,9 @@ import {
   NEXT_DEDUCT, PASS_GROUP, passCardList, passListSummary,
 } from "./features/membership/pass-cards.js";
 import {
+  groupProducts, isArchivedProduct, issuableProducts, issueUnitPrice, productLine, sessionsWarning,
+} from "./features/membership/product-groups.js";
+import {
   blockingNotice, duetIssueNotices, duetSummaryLine, reviewNotices,
 } from "./features/passes/duet-issue.js";
 import { JOURNEY_PRIOR_NOTE, buildPassJourney, hasJourney } from "../functions/shared/pass-journey.mjs";
@@ -331,6 +334,8 @@ const idColor = (id) => {
   return MEMBER_DOT_COLORS[hash % MEMBER_DOT_COLORS.length];
 };
 const THEME_KEY = "pilateacher_theme_v1";
+/* 회원 목록에서 마지막으로 고른 지점. 보던 화면이라 기기에만 둔다. */
+const MEMBER_LOCATION_KEY = "pt.members.location";
 const SCHEDULE_VIEW_KEY = "pilateacher_schedule_view_v1";
 const sysDarkNow = () => {
   try { return !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches); }
@@ -5092,6 +5097,7 @@ function ReferenceMemberList({
   members, schedule, settings, onSelect, onAdd, onDeleteSamples, registerRequest = 0,
   onConsumeRegisterRequest, canRegister = true, currentUserId = "", myMembersDefault = false,
   rosterError = "", onRetryRoster, hiddenCount = 0, onShowHidden, journeyOf, passSummaryOf,
+  locations = [],
   /* 강사에게는 "전체 보기" 를 주지 않는다. 경계가 아니라 -- 규칙은 지금도
      열려 있다 -- 120명을 일상적으로 스크롤할 이유가 없어서다.
      기본값 true 는 개인 강사(legacy)를 위한 것이다. */
@@ -5112,6 +5118,32 @@ function ReferenceMemberList({
 
      경계가 아니라 편의다. 규칙은 강사에게 센터 전체 명부를 열어 준다. */
   const [mineOnly, setMineOnly] = useState(myMembersDefault);
+  /* 마지막으로 고른 지점. 지점이 아홉이 되면 강사는 늘 같은 지점을 보는데,
+     열 때마다 "전체" 로 돌아가면 매번 다시 누르게 된다.
+
+     기기에만 둔다. 회원 정보가 아니라 **보던 화면**이라 센터에 보낼 것이
+     아니고, 다른 기기에서 다른 지점을 보는 것이 이상하지도 않다. */
+  const [locationFilter, setLocationFilter] = useState(() => {
+    try { return String(localStorage.getItem(MEMBER_LOCATION_KEY) || "") || ALL_LOCATIONS; }
+    catch (e) { return ALL_LOCATIONS; }
+  });
+  const chooseLocation = (id) => {
+    setLocationFilter(id);
+    try { localStorage.setItem(MEMBER_LOCATION_KEY, id); } catch (e) { /* 사파리 사생활 모드 */ }
+  };
+  /* 센터 운영 화면이 쓰는 그 칩 줄을 그대로 쓴다 (LocationFilter). 두 화면이
+     지점을 다르게 세면 강사는 어느 숫자가 맞는지 알 수 없다.
+
+     헬퍼는 locationId 를 보고 로스터 행은 orgLocationId 를 들고 있다 --
+     세는 자리에서만 이름을 맞춘다. */
+  const locationItems = useMemo(
+    () => members.map((item) => ({ ...item, locationId: String(item?.orgLocationId || "") })),
+    [members],
+  );
+  const locationCounts = useMemo(
+    () => countByLocation(locationItems, organizationMode ? locations : []),
+    [locationItems, locations, organizationMode],
+  );
   const nonDraftMembers = members.filter((m) => !isDraft(m));
   /* Inactive members are their own view rather than an extra row in the normal
      list, so the everyday list stays what it was. Without this they were
@@ -5129,6 +5161,10 @@ function ReferenceMemberList({
     .filter((s) => hasMember(s, memberId) && `${s.date} ${s.start}` >= `${todayISO()} 00:00`)
     .sort((a, b) => `${a.date} ${a.start}`.localeCompare(`${b.date} ${b.start}`))[0] || null;
   const matchFilter = (m) => {
+    /* 지점이 먼저다. 다른 지점의 회원은 "운영중" 이든 "재등록 필요" 든 이
+       화면에서 셀 것이 아니다 -- 칩을 고른 뒤에도 숫자가 전체로 남으면 강사는
+       자기 지점에 몇 명인지 끝내 알 수 없다. */
+    if (filterByLocation([{ locationId: String(m?.orgLocationId || "") }], locationFilter, locations).length === 0) return false;
     if (filter === "ongoing") return !isExpiredRosterMember(m);
     if (filter === "expired") return isExpiredRosterMember(m);
     if (filter === "private") return isActive(m) && !m.duetWith;
@@ -5199,6 +5235,13 @@ function ReferenceMemberList({
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="회원 이름 또는 연락처 검색" className="w-full border-0 pl-9 pr-3 text-sm outline-none"
             style={{ height: 40, borderRadius: 8, backgroundColor: CANVAS, color: INK }} />
         </div>
+        {/* ── 지점 칩 ─────────────────────────────────────────────────────
+            지점이 아홉이 되면 전체 목록을 훑는 것이 일상이 된다. 상태 칩과
+            줄을 나눠 둔다 -- 한 줄에 섞으면 "운영중" 과 "율하" 가 같은 종류로
+            보이고, 둘은 함께 걸리는 조건이지 서로 바꾸는 조건이 아니다. */}
+        {organizationMode ? (
+          <LocationFilter locations={locations} counts={locationCounts} value={locationFilter} onChange={chooseLocation} />
+        ) : null}
         <div className="mt-2 flex min-w-0 items-center gap-2">
           <div className="pt-hscroll flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
             {filters.map((o) => <button type="button" key={o.k} onClick={() => setFilter(o.k)} className="shrink-0"
@@ -15486,6 +15529,9 @@ function PassIssue({
         payCategory: product.payCategory,
         totalSessions: Number(form.totalSessions),
         serviceSessions: Number(form.serviceSessions || 0),
+        /* 팔릴 때의 이름을 함께 박는다. 상품이 지워지거나 이름이 바뀌어도 이
+           회원권이 무엇으로 팔렸는지는 변하지 않는다. */
+        productName: String(product?.name || ""),
         contractPrice: manwonToWon(Number(form.contractPriceManwon)),
         purchaseRound: Number(form.purchaseRound || 1),
         paymentMethod: form.paymentMethod,
@@ -15572,6 +15618,20 @@ function PassIssue({
             {" · "}{labelOf(PAYMENT_METHOD_LABELS, form.paymentMethod)}
             {" · "}{form.purchaseRound}차
           </p>
+          {/* ── 회당 금액을 발급 전에 보여준다 ──────────────────────────────
+              총 횟수에 남은 횟수를 넣으면 이 숫자가 뛴다. 300,000원은 아무도
+              그냥 지나치지 않는다 -- 발급은 되돌릴 수 없으므로 누르기 전에
+              드러나야 한다. 율하 김진희 건이 136,364원이었다. */}
+          <p className="tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 650, color: INK }}>
+            회원 회당 금액 ₩{won(issueUnitPrice({ contractPrice: contractWon, totalSessions: Number(form.totalSessions) }))}
+            <span style={{ fontWeight: 400, color: SUB }}>{" "}(계약 금액 ÷ 정규 {form.totalSessions}회)</span>
+          </p>
+          {sessionsWarning({ product, totalSessions: form.totalSessions }) ? (
+            <p className="mt-1" style={{
+              padding: "8px 9px", borderRadius: 8, backgroundColor: WARN_S,
+              fontSize: TYPE.caption, lineHeight: 1.5, color: WARN, fontWeight: 650,
+            }}>{sessionsWarning({ product, totalSessions: form.totalSessions })}</p>
+          ) : null}
           {netWon === contractWon ? null : (
             <p className="tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
               공급가액 {won(netWon)}원 · 부원장 단가는 이 금액을 기준으로 합니다
@@ -15693,7 +15753,10 @@ function PassIssue({
               ? <p style={{ fontSize: TYPE.caption, color: SUB }}>운영중인 상품이 없습니다. 회원권 상품에서 먼저 추가해 주세요.</p>
               : (
                 <div className="flex flex-wrap gap-2">
-                  {products.map((item) => (
+                  {/* 삭제한 상품으로는 새로 발급하지 않는다. listProducts 가 이미
+                      거르지만 여기서 한 번 더 막는다 -- 읽는 쪽의 기본값이
+                      바뀌어도 이 화면은 그대로여야 한다. */}
+                  {issuableProducts(products).map((item) => (
                     <button key={item.id} type="button" onClick={() => chooseProduct(item)}
                       className="h-9 px-3 font-bold" style={{
                         borderRadius: 999, fontSize: TYPE.caption,
@@ -16395,10 +16458,40 @@ function InstructorAdmin({
         {!loading && !loadError && members.length > 0 && working.length === 0
           ? <p style={{ fontSize: TYPE.caption, color: SUB }}>이 지점에 근무 중인 강사가 없습니다. 추가를 눌러 강사를 붙이세요.</p>
           : null}
-        {!loading && !loadError && working.map((membership) => (
+        {/* ── 지점별로 묶는다 ─────────────────────────────────────────────
+            칩으로 거를 수도 있지만, 아홉 지점이면 "지금 어느 지점을 보고
+            있었나" 를 칩 하나로 기억해야 한다. 묶어 두면 한 화면에서 전부
+            읽히고, 어느 지점에 강사가 비는지도 보인다.
+
+            "전체" 일 때만 묶는다 -- 한 지점을 고른 뒤에도 그 지점 제목이
+            서면 같은 말이 두 번 나온다. */}
+        {!loading && !loadError && (locationFilter === ALL_LOCATIONS ? (
+          [
+            ...locations.map((place) => ({ id: place.id, name: place.name || place.id })),
+            { id: NO_LOCATION, name: "지점 없음" },
+          ]
+            .map((place) => ({
+              place,
+              rows: working.filter((item) => (place.id === NO_LOCATION
+                ? !locationNames.has(item.locationId)
+                : item.locationId === place.id)),
+            }))
+            .filter((group) => group.rows.length > 0)
+            .map((group) => (
+              <div key={group.place.id} className="mt-2">
+                <p className="tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK2 }}>
+                  {group.place.name} {group.rows.length}명
+                </p>
+                {group.rows.map((membership) => (
+                  <MembershipRow key={membership.userId} membership={membership} busy={saving}
+                    locationName={locationNames.get(membership.locationId)} onEdit={openEditor} />
+                ))}
+              </div>
+            ))
+        ) : working.map((membership) => (
           <MembershipRow key={membership.userId} membership={membership} busy={saving}
             locationName={locationNames.get(membership.locationId)} onEdit={openEditor} />
-        ))}
+        )))}
       </div>
       {/* 퇴사자는 아래에 흐리게. 목록에서 빼면 복직시킬 길이 사라지고, 급여
           화면에서 본 이름을 여기서 찾을 수 없다. */}
@@ -17463,6 +17556,11 @@ function ProductCatalog({ organization, currentUserId, store, onRetryOrganizatio
     }
   };
 
+  /* 삭제 확인을 기다리는 상품. 누르자마자 사라지면 잘못 누른 것을 되돌릴
+     기회가 없다 -- 지우지 않는다고 해도 발급 화면에서는 사라진다. */
+  const [deleting, setDeleting] = useState(null);
+  const [showArchived, setShowArchived] = useState(false);
+
   const toggleStatus = async (product) => {
     const next = product.status === PRODUCT_STATUS.ACTIVE ? PRODUCT_STATUS.ARCHIVED : PRODUCT_STATUS.ACTIVE;
     setBusyId(product.id);
@@ -17473,6 +17571,7 @@ function ProductCatalog({ organization, currentUserId, store, onRetryOrganizatio
       onToast?.({ ok: false, msg: `상태를 바꾸지 못했어요 (코드 ${error?.code || "unknown"})` });
     } finally {
       setBusyId("");
+      setDeleting(null);
     }
   };
 
@@ -17555,7 +17654,8 @@ function ProductCatalog({ organization, currentUserId, store, onRetryOrganizatio
         <div className="min-w-0">
           <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>회원권 상품</h2>
           <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
-            조건을 바꾸려면 종료한 뒤 새 상품을 추가합니다.
+            조건을 바꾸려면 삭제한 뒤 새 상품을 추가합니다. 삭제해도 이미 발급된
+            회원권은 그대로입니다.
           </p>
         </div>
         <button type="button" onClick={() => setMode("add")} className="h-9 shrink-0 px-3 font-bold"
@@ -17567,16 +17667,67 @@ function ProductCatalog({ organization, currentUserId, store, onRetryOrganizatio
         {!loading && !loadError && products.length === 0
           ? <p style={{ fontSize: TYPE.caption, color: SUB }}>등록된 상품이 없습니다. 추가를 눌러 첫 상품을 만드세요.</p>
           : null}
-        {!loading && !loadError && products.map((product) => (
-          <div key={product.id} className="flex items-stretch gap-2">
-            <div className="min-w-0 flex-1"><ProductRow product={product} /></div>
-            <button type="button" disabled={busyId === product.id} onClick={() => toggleStatus(product)}
-              className="shrink-0 self-center px-3 font-bold" style={{
-                height: 32, borderRadius: 999, fontSize: TYPE.caption,
-                backgroundColor: CANVAS, color: SUB, opacity: busyId === product.id ? 0.5 : 1,
-              }}>{product.status === PRODUCT_STATUS.ACTIVE ? "종료" : "운영중으로"}</button>
-          </div>
+        {/* ── 묶어서 접는다 ───────────────────────────────────────────────
+            지점이 아홉이 되면 상품이 수십 줄이다. 한 줄로 늘어놓으면 발급할
+            때 비슷한 이름의 다른 상품을 고르게 되고, 고른 상품이 단가와 급여
+            카테고리를 정하므로 원장이 틀린 채로 쌓인다. */}
+        {!loading && !loadError && groupProducts(products, { includeArchived: showArchived }).map((group) => (
+          <details key={group.key} open style={{ borderTop: `1px solid ${LINE}` }}>
+            <summary className="flex cursor-pointer list-none items-center gap-2" style={{ padding: "9px 2px" }}>
+              <span style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>{group.label}</span>
+              <span className="tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>{group.total}개</span>
+              <ChevronDown size={14} className="ml-auto" style={{ color: SUB }} />
+            </summary>
+            {group.names.map((entry) => (
+              <div key={entry.name} style={{ paddingLeft: 8 }}>
+                <p className="mt-1" style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK2 }}>{entry.name}</p>
+                {entry.items.map((product) => (
+                  <div key={product.id} className="flex items-center gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}` }}>
+                    <span className="min-w-0 flex-1 truncate tabular-nums" style={{
+                      fontSize: TYPE.caption, color: isArchivedProduct(product) ? SUB : INK,
+                      textDecoration: isArchivedProduct(product) ? "line-through" : "none",
+                    }}>{productLine(product)}</span>
+                    {/* "삭제" 지만 지우지 않는다. 이미 발급된 회원권이 이 상품의
+                        이름과 금액을 계속 가리키므로, 지우면 그 회원권들이
+                        무엇으로 팔렸는지 알 수 없다. 목록에서만 사라진다. */}
+                    <button type="button" disabled={busyId === product.id}
+                      onClick={() => (isArchivedProduct(product) ? toggleStatus(product) : setDeleting(product))}
+                      className="shrink-0 px-3 font-bold" style={{
+                        height: 30, borderRadius: 999, fontSize: TYPE.caption,
+                        backgroundColor: CANVAS, color: isArchivedProduct(product) ? BRAND_D : BAD,
+                        opacity: busyId === product.id ? 0.5 : 1,
+                      }}>{isArchivedProduct(product) ? "되살리기" : "삭제"}</button>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </details>
         ))}
+        {deleting ? (
+          <div className="mt-3" style={{ padding: 12, borderRadius: 10, backgroundColor: WARN_S, border: `1px solid ${WARN}` }}>
+            <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>
+              "{deleting.name}" {productLine(deleting)} 을(를) 삭제할까요?
+            </p>
+            <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK2 }}>
+              목록과 발급 화면에서 사라집니다. <b>이미 발급된 회원권은 그대로</b>이고,
+              그 회원권들이 이 상품의 이름과 금액을 계속 가리킵니다.
+            </p>
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              <button type="button" onClick={() => setDeleting(null)} className="h-10 font-bold"
+                style={{ borderRadius: 9, backgroundColor: CARD, color: INK2, fontSize: TYPE.caption }}>그대로 두기</button>
+              <button type="button" disabled={busyId === deleting.id} onClick={() => toggleStatus(deleting)}
+                className="h-10 font-bold text-white" style={{ borderRadius: 9, backgroundColor: BAD, fontSize: TYPE.caption, opacity: busyId === deleting.id ? 0.5 : 1 }}>
+                {busyId === deleting.id ? "삭제 중…" : "삭제"}
+              </button>
+            </div>
+          </div>
+        ) : null}
+        {!loading && !loadError && products.some(isArchivedProduct) ? (
+          <button type="button" onClick={() => setShowArchived((value) => !value)}
+            className="mt-2 font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>
+            {showArchived ? "삭제한 상품 숨기기" : `삭제한 상품 보기 (${products.filter(isArchivedProduct).length}개)`}
+          </button>
+        ) : null}
       </div>
     </section>
   );
@@ -21844,10 +21995,15 @@ export default function App() {
   const [rosterPasses, setRosterPasses] = useState([]);
   const [rosterError, setRosterError] = useState("");
   const [rosterTotals, setRosterTotals] = useState([]);
+  /* 회원권 카드의 제목이 쓴다. 발급 때 이름을 박기 전에 팔린 옛 회원권은
+     productId 밖에 없고, 그것을 제목으로 쓰면 긴 식별자가 뜬다. */
+  const [rosterProducts, setRosterProducts] = useState([]);
+  /* 지점 목록. 필터 칩의 이름이 여기서 온다 -- id 를 칩에 적을 수는 없다. */
+  const [rosterLocations, setRosterLocations] = useState([]);
   const [rosterRevision, setRosterRevision] = useState(0);
 
   useEffect(() => {
-    if (!organizationRoster) { setRosterClients([]); setRosterPasses([]); setRosterTotals([]); setRosterError(""); return undefined; }
+    if (!organizationRoster) { setRosterClients([]); setRosterPasses([]); setRosterTotals([]); setRosterProducts([]); setRosterLocations([]); setRosterError(""); return undefined; }
     let alive = true;
     /* 회원권도 함께 읽는다. 잔여와 담당 강사가 거기서 오고, 둘 다 없으면 목록이
        "잔여 0회"와 "담당 없음"으로 가득 찬다 -- 강사는 그것을 고장으로 읽는다.
@@ -21862,11 +22018,20 @@ export default function App() {
       listClients(organizationContext.organizationId, clientScopeFor(organizationContext, account?.id)),
       listPasses(organizationContext.organizationId),
       toleratingReadFailure(listInstructorClientTotals(organizationContext.organizationId)),
-    ]).then(([clients, passes, totalsResult]) => {
+      /* 못 읽어도 화면은 열린다. 이름을 못 찾으면 카드가 종류와 횟수로 부르고,
+         그것은 "아직 모른다" 와 같은 방향이라 거짓을 보여주지 않는다.
+         보관된 상품도 함께 읽는다 -- 그 상품으로 팔린 회원권이 남아 있다. */
+      toleratingReadFailure(listProducts(organizationContext.organizationId, { includeArchived: true })),
+      /* 지점 이름. 못 읽으면 칩이 서지 않고 목록은 전체로 보인다 -- 거르지
+         못하는 것이지 틀린 것을 보여주지는 않는다. */
+      toleratingReadFailure(listLocations(organizationContext.organizationId)),
+    ]).then(([clients, passes, totalsResult, productResult, locationResult]) => {
       if (!alive) return;
       setRosterClients(clients);
       setRosterPasses(passes);
       setRosterTotals(totalsResult.items);
+      setRosterProducts(productResult.items);
+      setRosterLocations(locationResult.items);
       setRosterError("");
     }).catch((error) => {
       if (!alive) return;
@@ -22017,6 +22182,9 @@ export default function App() {
 
     return passCardList({
       passes: named, now,
+      /* 상품 이름 조회. 발급 때 박은 productName 이 먼저이고(passTitle),
+         옛 회원권만 여기까지 온다. */
+      productName: (id) => String(rosterProducts.find((item) => String(item?.id || "") === String(id || ""))?.name || ""),
       nextSoloPassId: solo?.id || "",
       nextDuetPassId: duet?.id || "",
     });
@@ -22031,7 +22199,7 @@ export default function App() {
       });
       return null;
     }
-  }, [organizationRoster, rosterPasses, rosterMembers]);
+  }, [organizationRoster, rosterPasses, rosterMembers, rosterProducts]);
 
   /* 목록 카드가 쓸 요약. 회원마다 다시 만들면 회원 200명 × 회원권 400장이
      렌더마다 돈다 -- 한 번 만들어 들고 다닌다. */
@@ -24701,7 +24869,7 @@ export default function App() {
           <Guard key={tab}>
             {tab === "schedule" && <ScheduleManager db={rosterDb} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterMembers ? () => { setMemberRegistrationRequest((value) => value + 1); setTab("members"); } : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && organizationContext.role === ROLES.OWNER} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
             {tab === "members" && <div className={`h-full min-h-0 ${mobileView === "detail" && member ? "pt-member-detail-active" : ""}`}>
-              <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList passSummaryOf={passSummaryFor} members={rosterMembers} schedule={db.schedule} settings={db.settings} organizationMode={organizationRoster} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} canBrowseAll={!organizationRoster || canBrowseAllClients(organizationContext.role)} viewerRole={organizationContext.role} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterMembers} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} journeyOf={organizationRoster ? journeyFor : undefined} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
+              <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList passSummaryOf={passSummaryFor} locations={rosterLocations} members={rosterMembers} schedule={db.schedule} settings={db.settings} organizationMode={organizationRoster} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} canBrowseAll={!organizationRoster || canBrowseAllClients(organizationContext.role)} viewerRole={organizationContext.role} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterMembers} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} journeyOf={organizationRoster ? journeyFor : undefined} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
               {mobileView === "detail" && member && <div className="pt-member-detail-pane h-full min-h-0">
                 <ReferenceMemberDetail key={member.id} member={member} schedule={db.schedule} photos={photos[member.id]} settings={db.settings} viewerRole={organizationRoster ? organizationContext.role : ""}
                   canViewSettlement={!account?.role || ["owner", "manager", "admin", "director"].includes(String(account.role).toLowerCase())} onBack={() => setMobileView("list")}

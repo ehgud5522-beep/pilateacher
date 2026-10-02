@@ -81,8 +81,10 @@ test("칸이 빈 이관 회원권도 카드를 그린다", async (t) => {
   const screen = createAppScreenSmokeCases().find((item) => item.name === "회원 상세 · 회원권 네 장");
   const markup = renderToStaticMarkup(screen.element);
 
-  // 빈 칸은 "이름 없는 회원권" 과 "미설정" 으로 서고, 터지지 않는다.
-  assert.ok(markup.includes("이름 없는 회원권"), "빈 이관 회원권이 그려지지 않았다");
+  /* 칸이 전부 비어도 부를 이름이 있다. passTitle 이 종류와 횟수로 만들고,
+     그마저 없으면 "회원권" 이다 -- **id 는 어느 경우에도 제목이 되지 않는다.** */
+  assert.ok(markup.includes("회원권"), "빈 이관 회원권이 그려지지 않았다");
+  assert.equal(markup.includes("smoke-csv-bare"), false, "식별자가 화면에 샜다");
   assert.ok(markup.includes("미설정"), "만료일 없는 카드가 그려지지 않았다");
   // 잔여 0 이라 종료 묶음으로 접힌다.
   assert.ok(markup.includes("종료된 회원권"), "끝난 회원권이 접히지 않았다");

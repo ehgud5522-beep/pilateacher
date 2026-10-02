@@ -111,7 +111,7 @@ import {
   REVIEW_DEMO_BADGE, isReviewDemo, reviewDemoClientIds, visibleToRole,
 } from "./features/members/review-demo.js";
 import {
-  MEMBER_NOTE_MAX, memberNoteReadFailure, memberNoteSaveFailure, readMemberNote, saveMemberNote,
+  MEMBER_NOTE_MAX, memberNoteReadFailure, memberNoteSaveFailure, readCentreLessons, readMemberNote, saveMemberNote,
 } from "./data/repositories/member-note-repository.js";
 import {
   createProduct, listProducts, productBaseUnitPrice, setProductStatus,
@@ -154,8 +154,13 @@ import {
   NEXT_DEDUCT, PASS_GROUP, passCardList, passListSummary,
 } from "./features/membership/pass-cards.js";
 import {
-  groupProducts, isArchivedProduct, issuableProducts, issueUnitPrice, productLine, sessionsWarning,
+  ATTENDANCE_LABEL, centreLessonRows, centreLessonSummary,
+} from "./features/members/centre-lessons.js";
+import {
+  groupProducts, isArchivedProduct, issuableProducts, issueUnitPrice, priceLabel, productLine,
+  productTable, sessionsWarning, unusedProducts,
 } from "./features/membership/product-groups.js";
+import { productMemberRows, productUsage } from "./features/membership/product-usage.js";
 import {
   blockingNotice, duetIssueNotices, duetSummaryLine, reviewNotices,
 } from "./features/passes/duet-issue.js";
@@ -610,6 +615,19 @@ const dday = (iso) => Math.round((new Date(iso + "T00:00:00") - new Date(todayIS
 const ddaySafe = (iso) => { if (!iso) return null; const v = dday(iso); return Number.isFinite(v) ? v : null; };
 const md = (iso) => (iso ? `${iso.slice(5, 7)}.${iso.slice(8, 10)}` : "");
 const ymd = (iso) => (iso ? `${iso.slice(0, 4)}. ${iso.slice(5, 7)}. ${iso.slice(8, 10)}` : "");
+/* Date 를 ymd 가 받는 문자열로. ymd 에 Date 를 그대로 넘기면 slice 가 없어
+   화면이 통째로 죽는다 -- 배포 563 에서 실제로 일어났다. */
+/* Firestore Timestamp · Date · 문자열이 섞여 온다. 못 읽으면 null 이다. */
+const toPassDate = (value) => {
+  if (!value) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (typeof value?.toDate === "function") { try { return toPassDate(value.toDate()); } catch (e) { return null; } }
+  const parsed = new Date(String(value));
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+const isoDayOf = (at) => (at instanceof Date && !Number.isNaN(at.getTime())
+  ? `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, "0")}-${String(at.getDate()).padStart(2, "0")}`
+  : "");
 const timeOf = (stamp) => {
   const value = String(stamp || "");
   if (!value.includes("T")) return "";
@@ -5586,7 +5604,7 @@ function PassCard({ card, onEdit }) {
   );
 }
 
-function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSettlement = true, organizationMode = false, journey = null, passCards = null, viewerRole = "", onBack, onPatch, onSaveNote, onSchedule, onOpenLesson, onAssess, onToast, onDelete, onDeactivate, onReactivate, onHide }) {
+function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSettlement = true, organizationMode = false, journey = null, passCards = null, centreLessons = null, viewerRole = "", onBack, onPatch, onSaveNote, onSchedule, onOpenLesson, onAssess, onToast, onDelete, onDeactivate, onReactivate, onHide }) {
   /* 강사에게는 뒤 4자리만. 동명이인을 가르는 데는 그것으로 충분하고, 전화를
      거는 일은 센터가 한다 (roster-visibility.js). */
   const phoneShown = (value) => phoneForViewer(value, viewerRole, { full: () => maskedPhone(value) });
@@ -5629,6 +5647,21 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
   const notes = [...(member.notes || [])].sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
   const consultationNotes = notes.filter((note) => note.type === "상담").sort((a, b) => Number(Boolean(b.important)) - Number(Boolean(a.important)) || String(b.date || "").localeCompare(String(a.date || "")));
   const prepText = (value, fallback = "기록 없음") => Array.isArray(value) ? (value.map((item) => typeof item === "string" ? item : item?.text).filter(Boolean).join(" · ") || fallback) : (String(value || "").trim() || fallback);
+  /* 센터에 기록된 수업. 대표만 받는다 (centreLessonsFor 가 역할을 본다).
+     열 때마다 다시 읽는다 -- 다른 강사가 방금 쓴 말이 있을 수 있고, 이 화면은
+     자주 열리는 자리가 아니다. */
+  const [centre, setCentre] = useState(null);
+  useEffect(() => {
+    if (typeof centreLessons !== "function" || !member?.id) { setCentre(null); return undefined; }
+    let alive = true;
+    centreLessons(member.id)
+      .then((found) => { if (alive) setCentre(found); })
+      /* 못 읽어도 화면은 열린다. 코드는 요약 줄이 말한다. */
+      .catch((error) => { if (alive) setCentre({ rows: [], errorCode: String(error?.code || "unknown") }); });
+    return () => { alive = false; };
+  }, [centreLessons, member?.id]);
+  const centreSummary = useMemo(() => centreLessonSummary(centre || { rows: [] }), [centre]);
+
   const lessonSessions = useMemo(() => selectMemberLessonSessions({ member, schedule }), [member, schedule]);
   const meaningfulLessonSessions = useMemo(() => lessonSessions.filter(isMeaningfulLessonSession), [lessonSessions]);
   const latestLessonSession = meaningfulLessonSessions[0] || null;
@@ -5792,6 +5825,62 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
               const pendingItem = pendingByLesson.get(String(session.lesson?.id || session.key));
               return <LessonHistorySessionRow key={session.key} session={session} sessions={unresolvedLessonRows} status={pendingLessonState(pendingItem)} disabled={Boolean(saving)} onOpenSheet={(item) => onOpenLesson?.(item.lesson?.id || item.key)} onConfirm={() => confirmSessionRecords(session)} />;
             })}</div></details>}
+            {/* ── 센터에 기록된 수업 ─────────────────────────────────────
+                위의 기록은 **이 기기의 일정**에서 온다. 대표 기기에는 대표가
+                가르친 수업만 있어서, 다른 강사의 회원을 열면 0건이 뜬다 --
+                권한이 아니라 화면이 센터를 안 읽은 것이다.
+
+                읽기만 한다. 규칙이 이미 그렇게 되어 있다: lessonNotes 의
+                update 는 작성한 강사만 통과한다. 여기서 쓰기를 부르지 않는다. */}
+            {centre ? (
+              <details className="mt-2 min-w-0 border-t pt-2" style={{ borderColor: LINE }}>
+                <summary className="cursor-pointer list-none text-xs font-extrabold" style={{ color: BRAND_D }}>
+                  센터 수업 기록 · {centreSummary}
+                </summary>
+                <div className="mt-2 min-w-0 space-y-2">
+                  {centre.rows.length === 0 ? (
+                    <p style={{ fontSize: TYPE.caption, color: SUB }}>
+                      {centre.errorCode
+                        ? "센터 기록을 불러오지 못했습니다. 잠시 뒤 다시 열어 주세요."
+                        : "센터에 기록된 수업이 없습니다."}
+                    </p>
+                  ) : null}
+                  {centre.rows.slice(0, 20).map((row) => (
+                    <div key={row.lessonId} style={{ padding: "8px 9px", borderRadius: 8, backgroundColor: CANVAS }}>
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>
+                          {row.startsAt ? ymd(isoDayOf(row.startsAt)) : "날짜 없음"}
+                        </span>
+                        {row.duet ? <span style={{ fontSize: TYPE.caption, color: SUB }}>듀엣</span> : null}
+                        {row.attendance && ATTENDANCE_LABEL[row.attendance]
+                          ? <span style={{ fontSize: TYPE.caption, color: SUB }}>{ATTENDANCE_LABEL[row.attendance]}</span>
+                          : null}
+                      </div>
+                      <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: INK2 }}>
+                        수업 강사: {row.taughtByName || "강사 미지정"}
+                      </p>
+                      {row.memberNote ? (
+                        <>
+                          <p className="mt-1 whitespace-pre-wrap break-words" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK }}>
+                            {row.memberNote}
+                          </p>
+                          {/* 가르친 강사와 쓴 강사가 다를 수 있다 -- 인수인계
+                              뒤에 그렇다. 그때만 따로 적는다. */}
+                          {row.writtenByOther ? (
+                            <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>
+                              작성 강사: {row.wroteByName || "강사 미지정"}
+                            </p>
+                          ) : null}
+                        </>
+                      ) : null}
+                    </div>
+                  ))}
+                  <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+                    센터 기록은 보기만 합니다. 고치는 것은 그 수업을 쓴 강사입니다.
+                  </p>
+                </div>
+              </details>
+            ) : null}
           </section>
           <section data-member-management-card="posture" data-member-section="posture" className="min-w-0 max-w-full" style={{ ...sectionStyle, overflow: "hidden", backgroundColor: CARD }}>
             <div className="flex min-w-0 items-center gap-2"><h2 className="min-w-0 flex-1 text-sm font-extrabold" style={{ color: INK }}>체형 변화</h2>{bodyPhotoSurface.assessmentCount > 0 && <><span className="shrink-0 text-caption tabular-nums" style={{ color: SUB }}>체형기록 {bodyPhotoSurface.assessmentCount}회 · 최근 {formatMemberLessonDate(bodyPhotoSurface.latestDate)}</span><button type="button" onClick={() => onAssess?.({ mode: "history" })} className="shrink-0 text-caption font-bold" style={{ color: BRAND_D }}>전체 보기</button></>}</div>
@@ -17726,7 +17815,7 @@ function ProductRow({ product }) {
   );
 }
 
-function ProductCatalog({ organization, currentUserId, store, onRetryOrganization, onToast }) {
+function ProductCatalog({ organization, currentUserId, store, onRetryOrganization, onToast, onOpenMember }) {
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -17743,7 +17832,26 @@ function ProductCatalog({ organization, currentUserId, store, onRetryOrganizatio
     setLoading(true);
     setLoadError("");
     try {
-      setProducts(await listProducts(organizationId, { includeArchived: true, store }));
+      /* 회원권도 함께 읽는다. 표의 "사용 중 N명" 과 정리 버튼이 그것으로
+         센다 -- 몇 명이 쓰는지 모른 채 지우면 나중에 그 회원권이 무슨
+         상품이었는지 되짚을 사람이 목록에서 그것을 못 찾는다.
+
+         못 읽어도 화면은 열린다. 그때 칸은 "집계 중" 이라고 적고 0 이라고
+         말하지 않는다 -- 0 으로 보이면 그것을 믿고 지운다. */
+      const [found, passResult] = await Promise.all([
+        listProducts(organizationId, { includeArchived: true, store }),
+        toleratingReadFailure(listPasses(organizationId)),
+      ]);
+      setProducts(found);
+      setIssuedPasses(passResult.items);
+      const [clientResult, locationResult, instructorResult] = await Promise.all([
+        toleratingReadFailure(listClients(organizationId)),
+        toleratingReadFailure(listLocations(organizationId)),
+        toleratingReadFailure(listInstructors(organizationId)),
+      ]);
+      setNames({
+        clients: clientResult.items, locations: locationResult.items, instructors: instructorResult.items,
+      });
     } catch (error) {
       setLoadError(`상품을 불러오지 못했어요 (코드 ${error?.code || "unknown"})`);
     } finally {
@@ -17758,6 +17866,32 @@ function ProductCatalog({ organization, currentUserId, store, onRetryOrganizatio
   /* 표가 단가를 정해 주지 않는 카테고리는 기타 하나뿐이다. 여기서 한 번 정해
      두면 발급할 때마다 손으로 넣지 않아도 된다. */
   const wantsUnitPrice = form.payCategory === PAY_CATEGORY.ETC;
+
+  /**
+   * 상품 "수정". **고치지 않고 새로 만든다.**
+   *
+   * 상품 문서를 고치면 이미 발급된 회원권이 가리키는 이름과 금액이 소급해서
+   * 바뀐다 -- 그 회원권들은 그때의 조건으로 팔린 것이고 급여 근거도 거기에
+   * 달려 있다. 규칙도 그래서 update 를 status 하나로 막아 두었다.
+   *
+   * 새 상품을 만들고 옛 상품을 숨긴다. 옛 회원권은 옛 상품을 계속 가리키므로
+   * 이름도 금액도 그대로다.
+   */
+  const openReplace = (product) => {
+    setReplacing(product);
+    setForm({
+      name: String(product?.name || ""),
+      sessionType: String(product?.sessionType || SESSION_TYPE.PT_1_1),
+      payCategory: String(product?.payCategory || ""),
+      defaultSessions: String(product?.defaultSessions ?? ""),
+      defaultPriceManwon: Number.isInteger(product?.defaultPrice) ? String(Math.round(product.defaultPrice / 10000)) : "",
+      baseUnitPriceWon: Number.isInteger(product?.baseUnitPrice) ? String(product.baseUnitPrice) : "",
+    });
+    setFormError("");
+    setPicked(null);
+    setMode("add");
+  };
+
 
   const submit = async (event) => {
     event.preventDefault();
@@ -17786,9 +17920,15 @@ function ProductCatalog({ organization, currentUserId, store, onRetryOrganizatio
         ...(wantsUnitPrice ? { baseUnitPrice: unitPrice } : {}),
         createdBy: currentUserId,
       }, { store });
+      /* 새 상품이 선 뒤에 옛 것을 숨긴다. 순서를 뒤집으면 만들기가 실패했을
+         때 상품이 하나도 없는 상태가 남는다. */
+      if (replacing?.id) {
+        await setProductStatus(organizationId, replacing.id, PRODUCT_STATUS.ARCHIVED, { store });
+      }
       setForm({ name: "", sessionType: SESSION_TYPE.PT_1_1, payCategory: "", defaultSessions: "", defaultPriceManwon: "", baseUnitPriceWon: "" });
       setMode("list");
-      onToast?.({ ok: true, msg: "상품을 추가했습니다." });
+      onToast?.({ ok: true, msg: replacing ? "새 조건으로 바꿨습니다. 이미 발급한 회원권은 그대로입니다." : "상품을 추가했습니다." });
+      setReplacing(null);
       await reload();
     } catch (error) {
       setFormError(`추가하지 못했어요 (코드 ${error?.code || error?.message || "unknown"})`);
@@ -17801,6 +17941,63 @@ function ProductCatalog({ organization, currentUserId, store, onRetryOrganizatio
      기회가 없다 -- 지우지 않는다고 해도 발급 화면에서는 사라진다. */
   const [deleting, setDeleting] = useState(null);
   const [showArchived, setShowArchived] = useState(false);
+  /* 칸을 누른 상품. 상세 시트가 이것으로 선다. */
+  const [picked, setPicked] = useState(null);
+  const [issuedPasses, setIssuedPasses] = useState([]);
+  /* 상세 시트가 쓰는 이름들. 회원권에는 id 만 있어서 이름을 따로 읽는다 --
+     id 를 화면에 보여주면 대표가 누구인지 알 수 없다. 못 읽어도 열린다. */
+  const [names, setNames] = useState({ clients: [], locations: [], instructors: [] });
+  const clientNames = useMemo(
+    () => new Map(names.clients.map((item) => [String(item?.id || ""), String(item?.name || "")])),
+    [names.clients],
+  );
+  const locationNames = useMemo(
+    () => new Map(names.locations.map((item) => [String(item?.id || ""), String(item?.name || "")])),
+    [names.locations],
+  );
+  const instructorNames = useMemo(
+    () => new Map(names.instructors.map((item) => [String(item?.userId || ""), String(item?.displayName || "")])),
+    [names.instructors],
+  );
+  /* 정리 목록에서 지울 것으로 고른 상품들. 이관 이름과 비슷한 것은 처음부터
+     체크가 풀려 있다 (unusedProducts 의 risky). */
+  const [cleaning, setCleaning] = useState(null);
+  /* 수정 중인 옛 상품. 새 상품이 선 뒤에 이것을 숨긴다. */
+  const [replacing, setReplacing] = useState(null);
+
+  /* 발급 인원. 회원권 전체를 한 번 훑으므로 상품·회원권이 바뀔 때만 센다. */
+  const usage = useMemo(
+    () => productUsage({ products, passes: issuedPasses, now: new Date() }),
+    [products, issuedPasses],
+  );
+
+  /* 아무도 쓰지 않는 상품. 표와 같은 집계를 쓴다 -- 두 숫자가 다르면 대표는
+     어느 쪽을 믿어야 할지 알 수 없다. */
+  const unused = useMemo(
+    () => unusedProducts({ products, usage, passes: issuedPasses }),
+    [products, usage, issuedPasses],
+  );
+
+  /** 체크한 것만 숨긴다. 하나가 실패해도 나머지는 간다. */
+  const cleanUnused = async () => {
+    if (!cleaning || cleaning.size === 0) return;
+    setBusyId("cleaning");
+    const failed = [];
+    for (const productId of cleaning) {
+      try {
+        await setProductStatus(organizationId, productId, PRODUCT_STATUS.ARCHIVED, { store });
+      } catch (error) {
+        failed.push(String(error?.code || "unknown"));
+      }
+    }
+    setBusyId("");
+    setCleaning(null);
+    await reload();
+    onToast?.(failed.length
+      ? { ok: false, msg: `${failed.length}개를 정리하지 못했어요 (코드 ${failed[0]})` }
+      : { ok: true, msg: "정리했습니다. 발급된 회원권은 그대로입니다." });
+  };
+
 
   const toggleStatus = async (product) => {
     const next = product.status === PRODUCT_STATUS.ACTIVE ? PRODUCT_STATUS.ARCHIVED : PRODUCT_STATUS.ACTIVE;
@@ -17912,38 +18109,150 @@ function ProductCatalog({ organization, currentUserId, store, onRetryOrganizatio
             지점이 아홉이 되면 상품이 수십 줄이다. 한 줄로 늘어놓으면 발급할
             때 비슷한 이름의 다른 상품을 고르게 되고, 고른 상품이 단가와 급여
             카테고리를 정하므로 원장이 틀린 채로 쌓인다. */}
-        {!loading && !loadError && groupProducts(products, { includeArchived: showArchived }).map((group) => (
+        {/* ── 표 ──────────────────────────────────────────────────────────
+            행은 이름, 열은 횟수, 칸은 금액이다. 목록으로는 "1차 정상가의 20회가
+            얼마인가" 를 찾으려면 줄을 훑어야 하는데, 지점이 아홉이면 그 줄이
+            수십 개다. 교차점 하나만 보면 되게 한다.
+
+            가로 스크롤을 둔다 -- 폰에서 열이 다섯이면 들어가지 않고, 줄바꿈을
+            하면 표가 아니라 목록이 된다. */}
+        {!loading && !loadError && productTable(products, usage, { includeArchived: showArchived }).map((group) => (
           <details key={group.key} open style={{ borderTop: `1px solid ${LINE}` }}>
             <summary className="flex cursor-pointer list-none items-center gap-2" style={{ padding: "9px 2px" }}>
               <span style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>{group.label}</span>
               <span className="tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>{group.total}개</span>
               <ChevronDown size={14} className="ml-auto" style={{ color: SUB }} />
             </summary>
-            {group.names.map((entry) => (
-              <div key={entry.name} style={{ paddingLeft: 8 }}>
-                <p className="mt-1" style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK2 }}>{entry.name}</p>
-                {entry.items.map((product) => (
-                  <div key={product.id} className="flex items-center gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}` }}>
-                    <span className="min-w-0 flex-1 truncate tabular-nums" style={{
-                      fontSize: TYPE.caption, color: isArchivedProduct(product) ? SUB : INK,
-                      textDecoration: isArchivedProduct(product) ? "line-through" : "none",
-                    }}>{productLine(product)}</span>
-                    {/* "삭제" 지만 지우지 않는다. 이미 발급된 회원권이 이 상품의
-                        이름과 금액을 계속 가리키므로, 지우면 그 회원권들이
-                        무엇으로 팔렸는지 알 수 없다. 목록에서만 사라진다. */}
-                    <button type="button" disabled={busyId === product.id}
-                      onClick={() => (isArchivedProduct(product) ? toggleStatus(product) : setDeleting(product))}
-                      className="shrink-0 px-3 font-bold" style={{
-                        height: 30, borderRadius: 999, fontSize: TYPE.caption,
-                        backgroundColor: CANVAS, color: isArchivedProduct(product) ? BRAND_D : BAD,
-                        opacity: busyId === product.id ? 0.5 : 1,
-                      }}>{isArchivedProduct(product) ? "되살리기" : "삭제"}</button>
-                  </div>
-                ))}
-              </div>
-            ))}
+            <div className="pt-hscroll overflow-x-auto">
+              <table className="w-full" style={{ borderCollapse: "collapse", minWidth: 120 + group.sessions.length * 96 }}>
+                <thead>
+                  <tr>
+                    <th className="text-left" style={{ padding: "6px 8px", fontSize: TYPE.caption, color: SUB, fontWeight: 600, position: "sticky", left: 0, backgroundColor: CARD }}>상품</th>
+                    {group.sessions.map((value) => (
+                      <th key={value} className="tabular-nums" style={{ padding: "6px 8px", fontSize: TYPE.caption, color: SUB, fontWeight: 600, minWidth: 88 }}>{value}회</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {group.rows.map((row) => (
+                    <tr key={row.name} style={{ borderTop: `1px solid ${LINE}` }}>
+                      <th className="text-left" style={{ padding: "8px", position: "sticky", left: 0, backgroundColor: CARD }}>
+                        <span className="block truncate" style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK, maxWidth: 110 }}>{row.name}</span>
+                        {/* 같은 이름인데 급여카테고리가 갈리면 급여가 회차마다
+                            달라진다. 모르고 그렇게 된 것이면 그 상품으로 팔린
+                            회원권의 급여가 전부 틀리고, 원장은 못 고친다. */}
+                        {row.mixed ? (
+                          <span className="mt-0.5 block" style={{ fontSize: TYPE.caption, fontWeight: 700, color: WARN }}>카테고리 다름</span>
+                        ) : null}
+                      </th>
+                      {row.cells.map((cell) => (
+                        <td key={cell.sessions} style={{ padding: "4px", verticalAlign: "top" }}>
+                          {cell.items.length === 0 ? (
+                            <span style={{ fontSize: TYPE.caption, color: FAINT }}>·</span>
+                          ) : cell.items.map(({ product, usage: used }) => (
+                            <button key={product.id} type="button" onClick={() => setPicked(product)}
+                              className="block w-full text-left" style={{
+                                padding: "6px 7px", borderRadius: 8, marginBottom: 3,
+                                backgroundColor: isArchivedProduct(product) ? CANVAS : TINT,
+                                border: `1px solid ${isArchivedProduct(product) ? LINE : RING}`,
+                              }}>
+                              <span className="block tabular-nums" style={{
+                                fontSize: TYPE.caption, fontWeight: 700,
+                                color: isArchivedProduct(product) ? SUB : BRAND_D,
+                                textDecoration: isArchivedProduct(product) ? "line-through" : "none",
+                              }}>{priceLabel(product.defaultPrice)}</span>
+                              <span className="block truncate" style={{ fontSize: TYPE.caption, color: SUB }}>
+                                {labelOf(PAY_CATEGORY_LABELS, product.payCategory)}
+                              </span>
+                              {/* 세지 않았으면 0 이 아니라 아무 말도 하지 않는다 --
+                                  "아무도 안 쓴다" 로 읽히면 그것을 믿고 지운다. */}
+                              <span className="block tabular-nums" style={{ fontSize: TYPE.caption, color: used?.active ? INK2 : SUB }}>
+                                {used ? `사용 중 ${used.active}명${used.ended ? ` · 종료 ${used.ended}` : ""}` : "집계 중"}
+                              </span>
+                            </button>
+                          ))}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </details>
         ))}
+        {/* ── 칸 상세 ─────────────────────────────────────────────────────
+            누른 칸의 상품과, 그 상품으로 발급된 회원이 선다. 지우기 전에
+            "몇 명이 쓰고 있나" 를 같은 화면에서 보게 하는 것이 목적이다. */}
+        {picked ? (
+          <div className="mt-3" style={{ padding: 12, borderRadius: 10, backgroundColor: CANVAS, border: `1px solid ${LINE}` }}>
+            <div className="flex items-start gap-2">
+              <div className="min-w-0 flex-1">
+                <p className="truncate" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>{picked.name}</p>
+                <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>{productLine(picked)}</p>
+              </div>
+              <button type="button" onClick={() => setPicked(null)} className="shrink-0" style={{ fontSize: TYPE.caption, color: SUB }}>닫기</button>
+            </div>
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              {/* 수정은 새 상품을 만들고 옛 상품을 숨기는 일이다. 상품 문서를
+                  고치면 이미 발급된 회원권이 가리키는 이름과 금액이 소급해서
+                  바뀐다 -- 그 회원권들은 그때의 조건으로 팔린 것이다. */}
+              <button type="button" disabled={isArchivedProduct(picked)} onClick={() => openReplace(picked)}
+                className="h-10 font-bold disabled:opacity-40" style={{ borderRadius: 9, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>수정</button>
+              <button type="button" disabled={busyId === picked.id}
+                onClick={() => (isArchivedProduct(picked) ? toggleStatus(picked) : setDeleting(picked))}
+                className="h-10 font-bold" style={{ borderRadius: 9, backgroundColor: CARD, color: isArchivedProduct(picked) ? BRAND_D : BAD, fontSize: TYPE.caption, border: `1px solid ${LINE}` }}>
+                {isArchivedProduct(picked) ? "되살리기" : "삭제"}
+              </button>
+            </div>
+            {(() => {
+              const rows = productMemberRows({
+                product: picked, products, passes: issuedPasses, now: new Date(),
+                clientName: (id) => String(clientNames.get(id) || ""),
+                locationName: (id) => String(locationNames.get(id) || ""),
+                instructorName: (id) => String(instructorNames.get(id) || ""),
+              });
+              const line = (row) => (
+                <button key={row.passId} type="button" onClick={() => onOpenMember?.(row.clientId)}
+                  className="block w-full text-left" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}` }}>
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <span className="min-w-0 truncate" style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK }}>
+                      {row.clientName || "이름 없음"}
+                    </span>
+                    {/* 이관분을 이름으로 맞힌 줄. 확정처럼 보이면 대표가 그
+                        숫자를 믿고 지운다. */}
+                    {row.guessed ? (
+                      <span style={{ padding: "1px 5px", borderRadius: 5, backgroundColor: WARN_S, fontSize: TYPE.caption, color: WARN }}>이름으로 추정</span>
+                    ) : null}
+                  </span>
+                  <span className="mt-0.5 block truncate tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+                    {[row.locationName, row.instructorName, `${row.remaining}/${row.issued}회`,
+                      row.expiresAt ? `${ymd(isoDayOf(toPassDate(row.expiresAt)))}까지` : "만료일 미설정",
+                    ].filter(Boolean).join(" · ")}
+                  </span>
+                </button>
+              );
+              return (
+                <div className="mt-3">
+                  <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK2 }}>
+                    사용 중 {rows.active.length}명{rows.ended.length ? ` · 종료 ${rows.ended.length}명` : ""}
+                  </p>
+                  {rows.active.length === 0 && rows.ended.length === 0 ? (
+                    <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>이 상품으로 발급된 회원권이 없습니다.</p>
+                  ) : null}
+                  {rows.active.map(line)}
+                  {rows.ended.length ? (
+                    <details className="mt-1">
+                      <summary className="cursor-pointer list-none" style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND_D }}>
+                        종료된 회원권 {rows.ended.length}건
+                      </summary>
+                      {rows.ended.map(line)}
+                    </details>
+                  ) : null}
+                </div>
+              );
+            })()}
+          </div>
+        ) : null}
         {deleting ? (
           <div className="mt-3" style={{ padding: 12, borderRadius: 10, backgroundColor: WARN_S, border: `1px solid ${WARN}` }}>
             <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>
@@ -22384,10 +22693,13 @@ export default function App() {
   const [rosterProducts, setRosterProducts] = useState([]);
   /* 지점 목록. 필터 칩의 이름이 여기서 온다 -- id 를 칩에 적을 수는 없다. */
   const [rosterLocations, setRosterLocations] = useState([]);
+  /* 강사 이름. 센터 수업 기록이 "작성 강사: ○○" 을 적는 데 쓴다 -- 남의 글을
+     읽을 때 누가 썼는지 모르면 대표는 그 말을 센터의 말로 읽는다. */
+  const [rosterInstructors, setRosterInstructors] = useState([]);
   const [rosterRevision, setRosterRevision] = useState(0);
 
   useEffect(() => {
-    if (!organizationRoster) { setRosterClients([]); setRosterPasses([]); setRosterTotals([]); setRosterProducts([]); setRosterLocations([]); setRosterError(""); return undefined; }
+    if (!organizationRoster) { setRosterClients([]); setRosterPasses([]); setRosterTotals([]); setRosterProducts([]); setRosterLocations([]); setRosterInstructors([]); setRosterError(""); return undefined; }
     let alive = true;
     /* 회원권도 함께 읽는다. 잔여와 담당 강사가 거기서 오고, 둘 다 없으면 목록이
        "잔여 0회"와 "담당 없음"으로 가득 찬다 -- 강사는 그것을 고장으로 읽는다.
@@ -22409,13 +22721,17 @@ export default function App() {
       /* 지점 이름. 못 읽으면 칩이 서지 않고 목록은 전체로 보인다 -- 거르지
          못하는 것이지 틀린 것을 보여주지는 않는다. */
       toleratingReadFailure(listLocations(organizationContext.organizationId)),
-    ]).then(([clients, passes, totalsResult, productResult, locationResult]) => {
+      /* 못 읽어도 화면은 열린다 -- 이름 없이 "강사 미지정" 으로 적고, uid 를
+         보여주지는 않는다. */
+      toleratingReadFailure(listInstructors(organizationContext.organizationId)),
+    ]).then(([clients, passes, totalsResult, productResult, locationResult, instructorResult]) => {
       if (!alive) return;
       setRosterClients(clients);
       setRosterPasses(passes);
       setRosterTotals(totalsResult.items);
       setRosterProducts(productResult.items);
       setRosterLocations(locationResult.items);
+      setRosterInstructors(instructorResult.items);
       setRosterError("");
     }).catch((error) => {
       if (!alive) return;
@@ -22603,6 +22919,36 @@ export default function App() {
     const clientId = rosterMembers.find((item) => String(item?.id || "") === String(memberId || ""))?.orgClientId;
     return clientId ? rosterPassSummaries.get(String(clientId)) || null : null;
   }, [rosterMembers, rosterPassSummaries]);
+
+  /* 센터에 기록된 수업. **대표만 부른다.**
+
+     회원 상세의 수업 기록은 기기의 일정에서 온다 -- 대표 기기에는 대표가
+     가르친 수업만 있어서 다른 강사의 회원을 열면 "0건" 이 뜬다. 권한이 아니라
+     화면이 센터를 안 읽은 것이고, 여기가 그 둘을 잇는다.
+
+     강사에게는 주지 않는다. 강사 간 규칙은 그대로 두기로 했고, 규칙이 읽기를
+     허용한다는 것과 화면이 그것을 내는 것은 다른 결정이다. */
+  const centreLessonsFor = useCallback(async (memberId) => {
+    const clientId = String(rosterMembers.find(
+      (item) => String(item?.id || "") === String(memberId || ""),
+    )?.orgClientId || "");
+    /* 대표와 FC매니저가 본다. 강사 화면은 그대로 둔다 -- 규칙이 읽기를
+       허용한다는 것과 화면이 그것을 내는 것은 다른 결정이고, 강사 간 경계는
+       따로 정하기로 했다 (instructorIds 3단계). */
+    if (!clientId || !organizationRoster) return null;
+    if (![ROLES.OWNER, ROLES.MANAGER].includes(organizationContext.role)) return null;
+    const found = await readCentreLessons(organizationContext.organizationId, { clientId });
+    const nameById = new Map(rosterInstructors.map(
+      (item) => [String(item?.userId || ""), String(item?.displayName || "")],
+    ));
+    return {
+      rows: centreLessonRows({
+        ...found, clientId,
+        instructorName: (userId) => nameById.get(String(userId || "")) || "",
+      }),
+      errorCode: found.errorCode,
+    };
+  }, [organizationRoster, organizationContext.role, organizationContext.organizationId, rosterMembers, rosterInstructors]);
 
   const passCardsFor = useCallback(
     (memberId) => passCardsForClient(
@@ -25260,7 +25606,8 @@ export default function App() {
                   onPatch={(change) => patch(member.id, change)} onSaveNote={(type, body, voiceMeta, noteOptions) => saveScheduleComment(member.id, type, null, body, voiceMeta, noteOptions)}
                   onSchedule={() => { setScheduleMemberId(member.id); setTab("schedule"); }} onOpenLesson={(lessonId) => { setScheduleOpenLessonId(lessonId); setTab("schedule"); }} onAssess={(entry = {}) => { setAnalysisRecordId(entry.poseId || null); setAnalysisAssessmentId(entry.assessmentId || null); setAnalysisEntryMode(entry.mode || "home"); setAnalysisComparisonEntry(entry.beforeAssessmentId && entry.afterAssessmentId ? { beforeAssessmentId: entry.beforeAssessmentId, afterAssessmentId: entry.afterAssessmentId, compareView: entry.compareView || "front" } : null); setAnalysisMemberId(member.id); setTab("analysis"); }} onToast={setToast} onDelete={removeMember} onDeactivate={deactivateMember} onReactivate={reactivateMember}
                   organizationMode={organizationRoster && isRosterMember(member)} onHide={hideRosterMember}
-                  journey={journeyFor(member.id)} passCards={passCardsFor(member.id)} />
+                  journey={journeyFor(member.id)} passCards={passCardsFor(member.id)}
+                  centreLessons={centreLessonsFor} />
               </div>}
             </div>}
             {tab === "analysis" && <ReferenceAnalysisTab members={rosterMembers} photos={photos} selectedId={analysisMemberId} selectedPoseId={analysisRecordId}

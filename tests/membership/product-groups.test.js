@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   PRODUCT_GROUP, groupProducts, issuableProducts, issueUnitPrice, isArchivedProduct,
-  priceLabel, productGroupOf, productLine, sessionsWarning,
+  priceLabel, productGroupOf, productLine, productTable, sessionsWarning, unusedProducts,
 } from "../../src/features/membership/product-groups.js";
 
 const product = (overrides = {}) => ({
@@ -125,4 +125,112 @@ test("회당 금액은 정규 유료 횟수로만 나눈다", () => {
   assert.equal(issueUnitPrice({ contractPrice: 1500000, totalSessions: 20 }), 75000);
   assert.equal(issueUnitPrice({ contractPrice: 0, totalSessions: 20 }), 0);
   assert.equal(issueUnitPrice({ contractPrice: 1000000, totalSessions: 0 }), 0);
+});
+
+/* ── 표 ───────────────────────────────────────────────────────────────── */
+
+test("열은 있는 횟수만, 오름차순으로 선다", () => {
+  /* 10/20/30/50/100 을 고정하면 쓰지 않는 열이 폭을 먹고, 센터가 파는 15회가
+     들어갈 자리가 없다. */
+  const table = productTable([
+    product({ id: "a", defaultSessions: 20 }),
+    product({ id: "b", defaultSessions: 10 }),
+    product({ id: "c", defaultSessions: 15 }),
+  ]);
+  assert.deepEqual(table[0].sessions, [10, 15, 20]);
+});
+
+test("행은 이름, 칸은 그 이름·그 횟수의 상품들", () => {
+  const table = productTable([
+    product({ id: "a", name: "1차 정상가", defaultSessions: 10 }),
+    product({ id: "b", name: "1차 정상가", defaultSessions: 20 }),
+    product({ id: "c", name: "이벤트", defaultSessions: 10 }),
+  ]);
+  const row = table[0].rows.find((item) => item.name === "1차 정상가");
+  assert.deepEqual(row.cells.map((cell) => cell.sessions), [10, 20]);
+  assert.deepEqual(row.cells[0].items.map((item) => item.product.id), ["a"]);
+  assert.deepEqual(row.cells[1].items.map((item) => item.product.id), ["b"]);
+  // 이벤트 행에는 20회 칸이 비어 있다.
+  const event = table[0].rows.find((item) => item.name === "이벤트");
+  assert.deepEqual(event.cells[1].items, []);
+});
+
+test("한 칸에 둘이 들어가도 숨기지 않는다", () => {
+  /* 같은 이름·같은 횟수로 금액이 다른 상품을 만들 수 있다. 숨기면 대표가
+     그 상태를 모른 채 발급한다. */
+  const table = productTable([
+    product({ id: "a", defaultPrice: 1000000 }),
+    product({ id: "b", defaultPrice: 1200000 }),
+  ]);
+  assert.deepEqual(table[0].rows[0].cells[0].items.map((item) => item.product.id), ["a", "b"]);
+});
+
+test("한 행에서 카테고리가 갈리면 표가 그것을 들고 있다", () => {
+  const mixed = productTable([
+    product({ id: "a", defaultSessions: 10 }),
+    product({ id: "b", defaultSessions: 20, payCategory: "pt_1_1_repurchase_event" }),
+  ]);
+  assert.equal(mixed[0].rows[0].mixed, true);
+  const same = productTable([product({ id: "a" }), product({ id: "b", defaultSessions: 20 })]);
+  assert.equal(same[0].rows[0].mixed, false);
+});
+
+test("발급 인원을 세지 않았으면 0 이 아니라 null 이다", () => {
+  /* "아무도 안 쓴다" 와 "아직 세지 않았다" 를 같은 얼굴로 보여주면 대표가
+     0 을 믿고 지운다. */
+  const table = productTable([product()]);
+  assert.equal(table[0].rows[0].cells[0].items[0].usage, null);
+
+  const counted = productTable([product()], new Map([["p1", { total: 3, active: 2 }]]));
+  assert.deepEqual(counted[0].rows[0].cells[0].items[0].usage, { total: 3, active: 2 });
+});
+
+test("숨긴 상품은 표에 서지 않는다", () => {
+  const table = productTable([product({ id: "a" }), product({ id: "b", status: "archived" })]);
+  assert.equal(table[0].rows[0].cells[0].items.length, 1);
+});
+
+/* ── 안 쓰는 상품 정리 ────────────────────────────────────────────────── */
+
+test("발급 0명인 것만 목록에 올린다", () => {
+  const usage = new Map([["used", { total: 2 }], ["unused", { total: 0 }]]);
+  const list = unusedProducts({
+    products: [product({ id: "used" }), product({ id: "unused" })], usage, passes: [],
+  });
+  assert.deepEqual(list.map((item) => item.product.id), ["unused"]);
+  assert.equal(list[0].risky, false);
+});
+
+test("세지 않은 상품도 0명으로 본다 -- usage 가 없으면 비어 있는 것이다", () => {
+  const list = unusedProducts({ products: [product({ id: "x" })], passes: [] });
+  assert.deepEqual(list.map((item) => item.product.id), ["x"]);
+});
+
+test("이관 회원권 이름과 비슷하면 위험으로 표시한다", () => {
+  /* 발급 0명으로 보이는 이유가 "이관분을 못 맞혔다" 일 수 있다. 지우면 그
+     회원권들이 가리킬 상품이 목록에서 사라진다. */
+  const list = unusedProducts({
+    products: [product({ id: "x", name: "PT 50회" })],
+    usage: new Map([["x", { total: 0 }]]),
+    passes: [{ id: "csv_a_1", productId: "1:1 PT 50회" }],
+  });
+  assert.equal(list[0].risky, true);
+  assert.match(list[0].reason, /이관 회원권 이름과 비슷합니다/);
+});
+
+test("앱에서 발급한 회원권 이름은 위험 판정에 쓰지 않는다", () => {
+  const list = unusedProducts({
+    products: [product({ id: "x", name: "PT 50회" })],
+    usage: new Map([["x", { total: 0 }]]),
+    passes: [{ id: "app-1", productId: "1:1 PT 50회" }],
+  });
+  assert.equal(list[0].risky, false, "csv_ 접두가 아니면 이관분이 아니다");
+});
+
+test("이미 숨긴 상품은 정리 목록에 다시 오르지 않는다", () => {
+  const list = unusedProducts({
+    products: [product({ id: "x", status: "archived" })],
+    usage: new Map([["x", { total: 0 }]]), passes: [],
+  });
+  assert.deepEqual(list, []);
 });

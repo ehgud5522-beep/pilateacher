@@ -150,6 +150,89 @@ export function groupProducts(products, { includeArchived = false } = {}) {
 }
 
 /**
+ * 표 한 장. **행은 이름, 열은 횟수, 칸은 금액이다.**
+ *
+ * ── 왜 표인가 ──
+ * 목록으로는 "1차 정상가의 20회가 얼마인가" 를 찾으려면 줄을 훑어야 한다.
+ * 지점이 아홉이 되면 그 줄이 수십 개다. 표는 이름과 횟수가 두 축이라 교차점
+ * 하나만 보면 된다 -- 대표가 발급 전에 묻는 질문의 모양이 그것이다.
+ *
+ * 열은 **있는 횟수만** 낸다. 10/20/30/50/100 을 고정해 두면 쓰지 않는 열이
+ * 화면 폭을 먹고, 정작 센터가 파는 15회가 들어갈 자리가 없다.
+ *
+ * 한 칸에 둘 이상 들어갈 수 있다 -- 같은 이름·같은 횟수로 금액이 다른 상품을
+ * 만들 수 있기 때문이다. 숨기지 않고 둘 다 보여준다. 그 상태가 의도한 것이
+ * 아니면 대표가 보고 지운다.
+ *
+ * @param {Array<any>} products
+ * @param {Map<string, { total: number, active: number }>} [usage] productUsage 의 결과
+ * @param {{ includeArchived?: boolean }} [options]
+ */
+export function productTable(products, usage, { includeArchived = false } = {}) {
+  return groupProducts(products, { includeArchived }).map((group) => {
+    /* 이 묶음에 실제로 있는 횟수만, 오름차순. */
+    const sessions = [...new Set(group.names.flatMap(
+      (entry) => entry.items.map((item) => count(item?.defaultSessions)),
+    ))].filter((value) => value > 0).sort((left, right) => left - right);
+
+    const rows = group.names.map((entry) => {
+      const byCount = new Map(sessions.map((value) => [value, []]));
+      for (const item of entry.items) {
+        const key = count(item?.defaultSessions);
+        if (byCount.has(key)) byCount.get(key).push(item);
+      }
+      return {
+        name: entry.name,
+        /* 같은 이름으로 파는데 급여카테고리가 갈리면 급여가 회차마다 달라진다.
+           의도한 것일 수도 있지만 모르고 그렇게 된 것이면 그 상품으로 팔린
+           회원권의 급여가 전부 틀리고, 원장은 되돌릴 수 없다. */
+        mixed: new Set(entry.items.map((item) => text(item?.payCategory)).filter(Boolean)).size > 1,
+        cells: sessions.map((value) => ({
+          sessions: value,
+          items: (byCount.get(value) || []).map((item) => ({
+            product: item,
+            /* 발급 인원. 없으면 0 이 아니라 null 이다 -- "아무도 안 쓴다" 와
+               "아직 세지 않았다" 를 같은 얼굴로 보여주면 대표가 0 을 믿고 지운다. */
+            usage: usage?.get(text(item?.id)) || null,
+          })),
+        })),
+      };
+    });
+    return { ...group, sessions, rows };
+  });
+}
+
+/**
+ * 아무도 쓰지 않는 상품. **정리 버튼이 묻는 목록이다.**
+ *
+ * 이관 회원권과 이름이 비슷한 것은 **체크를 풀어 둔다.** 발급 0명으로 보이는
+ * 이유가 "정말 안 팔렸다" 일 수도 있고 "이관분을 못 맞혔다" 일 수도 있는데,
+ * 뒤쪽이면 지우는 순간 그 회원권들이 가리킬 상품이 목록에서 사라진다.
+ *
+ * @param {{ products?: Array<any>, usage?: Map<string, any>, passes?: Array<any> }} input
+ * @returns {Array<{ product: any, risky: boolean, reason: string }>}
+ */
+export function unusedProducts({ products, usage, passes } = {}) {
+  const migrated = (Array.isArray(passes) ? passes : [])
+    .filter((pass) => text(pass?.id || pass?.passId).startsWith("csv_"))
+    .map((pass) => text(pass?.productId).replace(/\s+/g, "").toLowerCase())
+    .filter(Boolean);
+
+  return (Array.isArray(products) ? products : [])
+    .filter((product) => product && !isArchivedProduct(product))
+    .filter((product) => (usage?.get(text(product.id))?.total ?? 0) === 0)
+    .map((product) => {
+      const name = text(product.name).replace(/\s+/g, "").toLowerCase();
+      const risky = Boolean(name) && migrated.some((label) => label.includes(name));
+      return {
+        product,
+        risky,
+        reason: risky ? "이관 회원권 이름과 비슷합니다. 확인하고 지워 주세요." : "",
+      };
+    });
+}
+
+/**
  * 발급 화면이 띄울 경고. **총 횟수에 남은 횟수를 넣는 실수를 막는다.**
  *
  * 율하 김진희 건이 그랬다. 20회 상품을 11회로 적어 회원권이 11회짜리가 됐고,

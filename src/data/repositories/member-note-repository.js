@@ -25,12 +25,14 @@
  * 화면은 이 사실을 강사에게 그대로 말한다.
  */
 
+import { COLLECTIONS } from "../schema/constants.js";
 import { paths } from "../schema/paths.js";
 import { RepositoryReadError } from "./repository-read.js";
 
 /**
  * @typedef {object} MemberNoteStore
  * @property {(documentPath: string) => Promise<any | null>} read
+ * @property {(collectionPath: string, filter: { field: string, op: string, value: unknown }) => Promise<Array<any>>} [query]
  * @property {(writes: Array<{ path: string, data: object, operation?: "set" | "update" }>) => Promise<void>} commit
  * @property {() => Promise<any>} serverTimestamp
  */
@@ -69,6 +71,16 @@ export function createFirestoreMemberNoteStore() {
       const { doc, getDoc, getFirestore } = await load();
       const snapshot = await getDoc(doc(getFirestore(), documentPath));
       return snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null;
+    },
+    /* 한 회원의 것만 받아 온다. 정렬은 붙이지 않는다 -- array-contains 에
+       orderBy 를 더하면 복합 색인이 필요하고 그것은 또 한 번의 배포다. */
+    query: async (collectionPath, filter) => {
+      const { collection, getDocs, getFirestore, query, where } = await load();
+      const snapshot = await getDocs(query(
+        collection(getFirestore(), collectionPath),
+        where(filter.field, filter.op, filter.value),
+      ));
+      return snapshot.docs.map((document) => ({ id: document.id, ...document.data() }));
     },
     commit: async (writes) => {
       const { doc, getFirestore, writeBatch } = await load();
@@ -192,6 +204,49 @@ export function memberNoteReadFailure(error) {
     return of("authentication", false, `다시 로그인한 뒤 열어 주세요 (코드 ${errorCode})`);
   }
   return of("unknown", false, `이전에 보낸 말을 불러오지 못했어요 (코드 ${errorCode})`);
+}
+
+/**
+ * 이 회원의 센터 수업과 그 수업의 말. **대표가 남의 수업을 읽는 자리다.**
+ *
+ * 회원 상세의 수업 기록은 기기의 일정에서 온다. 대표 기기에는 대표가 가르친
+ * 수업만 있어서, 다른 강사의 회원을 열면 "0건" 이 뜬다 -- 권한이 아니라
+ * 화면이 센터를 안 읽은 것이다. 여기가 그 둘을 잇는다.
+ *
+ * ── 색인을 더하지 않는다 ──
+ * `clientIds array-contains` 에 `orderBy startsAt` 을 붙이면 복합 색인이
+ * 필요하고 그것은 또 한 번의 배포다. 한 회원의 수업은 많아도 수백 건이라
+ * 받아서 화면에서 줄 세운다 (centre-lessons.js 의 centreLessonRows).
+ *
+ * ── 한쪽만 실패해도 나머지는 보여준다 ──
+ * 수업은 읽혔는데 말이 안 읽힌 경우, 수업 목록이라도 서는 편이 낫다. 둘 다
+ * 묶어 던지면 "기록이 없다" 와 구별되지 않는다.
+ *
+ * @param {string} organizationId
+ * @param {{ clientId: string, store?: MemberNoteStore }} input
+ * @returns {Promise<{ lessons: Array<any>, notes: Array<any>, errorCode: string }>}
+ */
+export async function readCentreLessons(organizationId, input) {
+  const organization = requiredText(organizationId, "organizationId");
+  const clientId = requiredText(input?.clientId, "clientId");
+  const store = input?.store || createFirestoreMemberNoteStore();
+  const root = paths.organization(organization);
+
+  const [lessons, notes] = await Promise.all([
+    store.query(`${root}/${COLLECTIONS.LESSONS}`, { field: "clientIds", op: "array-contains", value: clientId })
+      .catch((error) => ({ failed: String(error?.code || "unknown") })),
+    store.query(`${root}/${COLLECTIONS.LESSON_NOTES}`, { field: "clientId", op: "==", value: clientId })
+      .catch((error) => ({ failed: String(error?.code || "unknown") })),
+  ]);
+
+  /* 수업을 못 읽으면 보여줄 것이 없다. 말만 못 읽은 것은 수업 목록이라도
+     서므로 조용히 비운다 -- 그때 화면은 "말 0건" 이 아니라 수업만 보여준다. */
+  const failed = Array.isArray(lessons) ? "" : lessons.failed;
+  return {
+    lessons: Array.isArray(lessons) ? lessons : [],
+    notes: Array.isArray(notes) ? notes : [],
+    errorCode: failed,
+  };
 }
 
 /**

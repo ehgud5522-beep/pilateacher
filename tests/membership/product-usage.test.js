@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  USAGE_MATCH, isMigratedPass, looksLikeProduct, mixedCategories, productMemberRows, productUsage,
+  isMigratedPass, looksLikeProduct, mixedCategories, productMemberRows, productUsage,
 } from "../../src/features/membership/product-usage.js";
 
 const NOW = new Date(2026, 9, 1);

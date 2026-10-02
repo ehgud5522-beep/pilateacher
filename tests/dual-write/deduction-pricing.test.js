@@ -165,11 +165,23 @@ test("a used service session does not zero out the other categories", () => {
   assert.equal(priceOf({ serviceUsedCount: 3, handedOver: true }).unitPrice, 25000);
 });
 
-test("the first service session still follows the rest of the order", () => {
-  // 판정 0 이 걸리지 않으면 아래 판정이 그대로 이어진다.
-  assert.equal(resolveDeductionUnitPrice(servicePass({ priorSessions: 5 })).rule, PRICING_RULE.NEW_TO_INSTRUCTOR);
-  assert.equal(resolveDeductionUnitPrice(servicePass({ priorSessions: 5 })).unitPrice, 25000);
-  assert.equal(resolveDeductionUnitPrice(servicePass({ handedOver: true })).unitPrice, 25000);
+test("아래 판정이 첫 서비스를 가로채지 않는다 (2026-10-03 정정)", () => {
+  /* 전에는 판정 0 이 "이미 썼는가" 만 보고 지나가서, 첫 서비스가 판정 3(누적
+     20회 미만)에 걸려 25,000원이 됐다 -- 신규 회원일수록 그랬다. 부원장이면
+     5:5 가, 인수인계면 25,000 이 가로챘다.
+
+     서비스는 센터가 정한 금액이지 그 강사의 단가가 아니다. 어느 판정에도
+     걸리지 않는다. */
+  for (const overrides of [
+    { priorSessions: 5 },
+    { priorSessions: 0 },
+    { handedOver: true },
+    { isDeputyDirector: true, netContractPrice: 1000000, totalSessions: 20 },
+  ]) {
+    const found = resolveDeductionUnitPrice(servicePass(overrides));
+    assert.equal(found.unitPrice, 10000, JSON.stringify(overrides));
+    assert.equal(found.rule, PRICING_RULE.SERVICE_FIRST, JSON.stringify(overrides));
+  }
 });
 
 test("a second service session is zero even for a seasoned instructor", () => {
@@ -180,28 +192,38 @@ test("a second service session is zero even for a seasoned instructor", () => {
 /* ── 순서 그 자체 ─────────────────────────────────────────────────────── */
 
 test("each rule beats the ones below it", () => {
-  // 전부 걸리게 해 두고 하나씩 꺼 가며 무엇이 이기는지 본다.
-  const everything = servicePass({
-    serviceUsedCount: 1, isDeputyDirector: true, handedOver: true, priorSessions: 0,
-  });
-  assert.equal(resolveDeductionUnitPrice(everything).rule, PRICING_RULE.SERVICE_ALREADY_USED);
+  /* 서비스 차감은 판정 0 에서 끝난다 -- 아래 어느 것도 보지 않는다. 쓴 적이
+     있으면 0원, 없으면 센터 금액이다. */
+  const anyService = { isDeputyDirector: true, handedOver: true, priorSessions: 0 };
   assert.equal(
-    resolveDeductionUnitPrice({ ...everything, serviceUsedCount: 0 }).rule,
-    PRICING_RULE.DEPUTY_DIRECTOR,
+    resolveDeductionUnitPrice(servicePass({ ...anyService, serviceUsedCount: 1 })).rule,
+    PRICING_RULE.SERVICE_ALREADY_USED,
   );
   assert.equal(
-    resolveDeductionUnitPrice({ ...everything, serviceUsedCount: 0, isDeputyDirector: false }).rule,
+    resolveDeductionUnitPrice(servicePass({ ...anyService, serviceUsedCount: 0 })).rule,
+    PRICING_RULE.SERVICE_FIRST,
+  );
+
+  /* 서비스가 아닌 차감은 아래 순서대로다. serviceUsedCount 는 보지 않는다 --
+     서비스를 한 번 쓴 회원권의 1:1 수업까지 0원이 되면 안 된다. */
+  const everything = pass({
+    serviceUsedCount: 1, isDeputyDirector: true, handedOver: true, priorSessions: 0,
+    netContractPrice: 1000000, totalSessions: 20,
+  });
+  assert.equal(resolveDeductionUnitPrice(everything).rule, PRICING_RULE.DEPUTY_DIRECTOR);
+  assert.equal(
+    resolveDeductionUnitPrice({ ...everything, isDeputyDirector: false }).rule,
     PRICING_RULE.HANDED_OVER,
   );
   assert.equal(
     resolveDeductionUnitPrice({
-      ...everything, serviceUsedCount: 0, isDeputyDirector: false, handedOver: false,
+      ...everything, isDeputyDirector: false, handedOver: false,
     }).rule,
     PRICING_RULE.NEW_TO_INSTRUCTOR,
   );
   assert.equal(
     resolveDeductionUnitPrice({
-      ...everything, serviceUsedCount: 0, isDeputyDirector: false, handedOver: false, priorSessions: 20,
+      ...everything, isDeputyDirector: false, handedOver: false, priorSessions: 20,
     }).rule,
     PRICING_RULE.BASE_CATEGORY,
   );
@@ -256,14 +278,24 @@ test("a pass that is entirely service says so without counting", () => {
   assert.equal(spendsServiceSession({ category: "service", serviceSessions: 0, serviceUsed: 9 }), true);
 });
 
-test("the judgement order is unchanged by which session is being spent", () => {
-  /* 서비스 회차라도 판정 순서는 그대로다. 판정 3 이 카테고리를 가리지 않으므로,
-     이 강사에게 이 회원이 아직 20회 미만이면 서비스라도 25,000 이다. */
-  const early = resolveDeductionUnitPrice(pass({
-    category: "service", baseUnitPrice: PAY_RATES.service, priorSessions: 3,
+test("어느 회차를 쓰는가가 판정을 가른다 (2026-10-03 정정)", () => {
+  /* 전에는 "서비스 회차라도 판정 순서는 그대로" 였다. 그래서 이 강사에게 이
+     회원이 20회 미만이면 서비스도 25,000 이었다 -- 이 테스트가 그것을 정상으로
+     못 박고 있었다.
+
+     서비스는 센터가 정한 금액이지 그 강사의 단가가 아니다. 같은 입력에서
+     서비스 회차와 정규 회차가 다른 답을 낸다. */
+  const early = { priorSessions: 3 };
+  const service = resolveDeductionUnitPrice(pass({
+    ...early, category: "service", baseUnitPrice: PAY_RATES.service,
   }));
-  assert.equal(early.unitPrice, NEW_TO_INSTRUCTOR_UNIT_PRICE);
-  assert.equal(early.rule, PRICING_RULE.NEW_TO_INSTRUCTOR);
+  assert.equal(service.unitPrice, PAY_RATES.service);
+  assert.equal(service.rule, PRICING_RULE.SERVICE_FIRST);
+
+  // 같은 강사·같은 회원이라도 정규 회차는 판정 3 이 가져간다.
+  const regular = resolveDeductionUnitPrice(pass({ ...early, category: "pt_1_1_new" }));
+  assert.equal(regular.unitPrice, NEW_TO_INSTRUCTOR_UNIT_PRICE);
+  assert.equal(regular.rule, PRICING_RULE.NEW_TO_INSTRUCTOR);
 });
 
 /* ── 부원장 5:5 는 현금가 기준이다 ──────────────────────────────────────────

@@ -45,6 +45,7 @@ export const PAY_CATEGORY_LABELS = Object.freeze({
  * Keep in sync with PRICING_RULE in deduction-pricing.js.
  */
 export const PRICING_RULE_LABELS = Object.freeze({
+  [PRICING_RULE.SERVICE_FIRST]: "서비스 — 센터 지원",
   [PRICING_RULE.SERVICE_ALREADY_USED]: `서비스 ${PAID_SERVICE_SESSIONS_PER_PASS + 1}회차 — 센터 지원 소진`,
   [PRICING_RULE.DEPUTY_DIRECTOR]: "부원장 5:5",
   [PRICING_RULE.HANDED_OVER]: "인수인계 — 신규 단가",

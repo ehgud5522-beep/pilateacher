@@ -70,6 +70,9 @@ export const MIGRATION_ERROR = Object.freeze({
   /* 카테고리와 짝이 어긋난 행. 위 셋과 다른 사유인 것은 고칠 자리가 다르기
      때문이다 -- 위 셋은 적다 만 짝을 마저 적는 일이고, 이 둘은 상품 분류와
      짝 중 **어느 쪽이 맞는지 대표가 정해야** 하는 일이다. */
+  /* 총세션 칸에 서비스까지 더해 적은 행. 그대로 받으면 회당 금액이 낮아지고
+     (계약금액 ÷ 총세션) 서비스 회차가 두 번 세어진다. */
+  TOTAL_INCLUDES_SERVICE: "total_includes_service",
   DUET_PARTNER_REQUIRED: "duet_partner_required",
   DUET_PARTNER_UNEXPECTED: "duet_partner_unexpected",
 });
@@ -128,6 +131,31 @@ export const PASS_SHEET_COLUMNS = Object.freeze([
  * 증상이다. 짐작해서 대표의 값을 복사하지 않는다. 강사에게 물어 적는다.
  */
 export const PASS_SHEET_DUET_COLUMNS = Object.freeze(["회원명2", "연락처2", "강사누적진행2"]);
+
+/**
+ * 총세션 칸에 서비스까지 더해 적은 행인가. **그 행만 멈춘다.**
+ *
+ * 상품명에 횟수가 적혀 있다 ("깍두기 40회e", "30회 2차"). 그 숫자에 서비스를
+ * 더하면 총세션과 같아지는 행은, 총세션 칸에 서비스가 섞여 들어온 것이다.
+ *
+ * 그대로 받으면 둘이 틀어진다. 회당 금액이 계약금액 ÷ 총세션이라 낮아지고,
+ * 서비스 회차가 상품 횟수 안에 한 번, 서비스세션 칸에 또 한 번 세어진다.
+ * 2026-10 이관에서 열 건이 그랬다.
+ *
+ * 숫자가 없는 상품명은 보지 않는다 -- 맞혀 볼 근거가 없다.
+ *
+ * @param {{ productName?: string, totalSessions?: number, serviceSessions?: number }} input
+ */
+export function totalLooksLikeItIncludesService({ productName, totalSessions, serviceSessions } = {}) {
+  const service = Number(serviceSessions) || 0;
+  const total = Number(totalSessions) || 0;
+  if (service <= 0 || total <= 0) return false;
+  /* 상품명 안의 "N회". 맨 뒤의 것을 쓴다 -- "2:1 PT 33 ->100 세션업" 처럼
+     숫자가 여럿이면 뒤쪽이 실제로 판 횟수다. */
+  const found = [...String(productName ?? "").matchAll(/(\d+)\s*회/g)].map((match) => Number(match[1]));
+  if (found.length === 0) return false;
+  return found[found.length - 1] + service === total;
+}
 
 /** 회원 문서 id. 연락처 하나로 정해진다 -- 위 머리말 참고. */
 export const clientIdForPhone = (phone) => {
@@ -429,6 +457,17 @@ export function planPassMigration(text, {
          임시 번호를 만들어 심지 않는다. 한 번 심으면 그 번호가 그 회원의
          정체가 되어 그대로 남고, 나중에 진짜 번호가 오면 같은 사람이 둘이
          된다. */
+      /* 총세션에 서비스가 섞인 행. 그 행만 돌려준다 -- 대표가 상품명과 견줘
+         총세션을 고쳐 다시 올린다. 짐작해서 빼 주지 않는다: 상품명의 숫자가
+         실제로 판 횟수가 아닌 경우가 있고, 그때 조용히 깎으면 회원이 산 회차가
+         사라진다. */
+      if (totalLooksLikeItIncludesService({
+        productName: requireText(record, "상품명"), totalSessions, serviceSessions,
+      })) {
+        throw failure(line, MIGRATION_ERROR.TOTAL_INCLUDES_SERVICE,
+          `총세션 ${totalSessions}회가 상품 횟수 + 서비스 ${serviceSessions}회로 보입니다. 총세션에는 서비스를 빼고 적어 주세요: ${name}`);
+      }
+
       const partnerName = requireText(record, "회원명2");
       const partnerPhoneRaw = requireText(record, "연락처2");
 
@@ -523,7 +562,20 @@ export function planPassMigration(text, {
              한쪽은 강사의 한 회차 차액이고 다른 쪽은 회원이 산 것의 일부라,
              회원 쪽으로 기운 이 선택을 그대로 둔다. 급여 집계에서 category 가
              service 로 보이므로 대표가 알아볼 수는 있다. */
-          serviceUsed: 0,
+          /* 이관 전에 이미 쓴 서비스. 엑셀에 그 칸이 없으므로 셋으로 센다.
+
+             서비스부터 쓰는 규칙이라(deduction-pricing 의 spendsServiceSession)
+             쓴 횟수가 서비스 개수를 넘기 전까지는 전부 서비스다:
+
+               쓴 횟수    = (총세션 + 서비스세션) - 남은횟수
+               serviceUsed = min(서비스세션, 쓴 횟수)
+
+             0 으로 두면 이미 쓴 서비스가 다시 주어진다 -- 이관 후 첫 수업이
+             서비스로 빠지고 센터가 그 회차를 한 번 더 지원한다. */
+          serviceUsed: Math.max(0, Math.min(
+            serviceSessions,
+            totalSessions + serviceSessions - remainingCount,
+          )),
           instructorId,
           handedOver,
           expiresAt,

@@ -26,6 +26,9 @@ const {
   verifyInstructorIds,
 } = require("./instructor-scope-triggers");
 const { planMigrationReset, runMigrationReset } = require("./migration-reset");
+const {
+  findServiceDeductions, planServiceSessionFix, runServiceSessionFix,
+} = require("./service-session-fix");
 const { reconcileOrganization } = require("./pass-reconcile-nightly");
 const { createFirestoreMemberLinkPorts } = require("./member-link-store");
 const {
@@ -667,6 +670,62 @@ exports.verifyInstructorIds = onCall(
    트리거도 깨어나지 않는다.
 
    04:00 KST 다. 수업이 없고, 자정 직후의 만료가 이미 지나간 시각이다. */
+/* ── 이관분 서비스 보정 ───────────────────────────────────────────────────
+   한 번 쓰고 지울 통로다. 근거는 service-session-fix.js 머리말에 있다.
+
+   규칙은 그대로 둔다 -- passes 의 update 가 totalSessions 를 막고 있고, 한 번
+   쓰는 보정을 위해 그 문을 여는 것은 그 문이 영원히 열려 있게 되는 일이다. */
+exports.fixMigratedServiceSessions = onCall({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  timeoutSeconds: 300,
+  memory: "512MiB",
+  invoker: "public",
+}, async (request) => {
+  const callerUid = String(request?.auth?.uid || "").trim();
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  /* 미리보기가 기본이다. 고치려면 confirm 을 명시해야 한다. */
+  const confirmed = request?.data?.confirm === true;
+  if (!callerUid) throw new HttpsError("unauthenticated", "Please sign in again.");
+  if (!organizationId) throw new HttpsError("invalid-argument", "organizationId is required.");
+
+  const membership = await firestore
+    .collection("memberships").doc(membershipId(organizationId, callerUid)).get();
+  if (!isActiveOwner(membership.exists ? membership.data() : null)) {
+    throw new HttpsError("permission-denied", "Only the centre owner can run this.");
+  }
+
+  try {
+    const plan = await planServiceSessionFix(firestore, { organizationId });
+    /* 이관 뒤에 서비스로 나간 수업. serviceUsed 가 0 이었던 탓에 센터가 같은
+       회차를 두 번 지원했을 수 있다 -- 되돌리지 않고 목록만 올린다. */
+    const since = new Date("2026-10-01T00:00:00+09:00");
+    const served = await findServiceDeductions(firestore, {
+      organizationId, passIds: plan.rows.map((row) => row.passId), since,
+    });
+
+    if (!confirmed) {
+      logger.info("service_session_fix_preview", {
+        feature: "service_session_fix", stage: "preview", organizationId,
+        passes: plan.rows.length, servedSince: served.length,
+      });
+      return { stage: "preview", rows: plan.rows, served };
+    }
+
+    const result = await runServiceSessionFix(firestore, { organizationId, actorId: callerUid });
+    logger.warn("service_session_fix_done", {
+      feature: "service_session_fix", stage: "done", organizationId,
+      fixed: result.fixed, servedSince: served.length,
+    });
+    return { stage: "done", fixed: result.fixed, rows: result.rows, served };
+  } catch (error) {
+    logger.error("service_session_fix_failed", {
+      feature: "service_session_fix", stage: confirmed ? "done" : "preview", organizationId,
+      errorCode: error?.code || "unknown", message: error?.message || "",
+    });
+    throw new HttpsError("internal", "service_session_fix_failed");
+  }
+});
+
 /* ── 이관 데이터 초기화 ──────────────────────────────────────────────────
    출시 전 한 번 쓰는 통로다. 근거는 migration-reset.js 머리말에 있다.
 

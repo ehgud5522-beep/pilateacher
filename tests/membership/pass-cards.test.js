@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  NEXT_DEDUCT, isUsablePass, isoDay, memberUnitPrice, passCard, passCardList,
+  NEXT_DEDUCT, isUsablePass, isoDay, memberUnitPrice, passCard, passCardList, passTitle,
   passListSummary, passSummary, remainingSplit,
 } from "../../src/features/membership/pass-cards.js";
 
@@ -199,4 +199,51 @@ test("만료일 없는 회원권은 가장 빠른 만료로 서지 않는다", (
   }).active);
   assert.equal(summary.soonestOn, "2027-01-01");
   assert.equal(summary.count, 2);
+});
+
+/* ── 제목 ─────────────────────────────────────────────────────────────────
+   앱에서 발급한 회원권은 productId 가 **상품 문서의 id** 다. 그것을 제목으로
+   쓰면 회원 화면에 긴 식별자가 뜬다 -- 율하 김진희 건이 그랬다. */
+
+const UUID = "7a1f3c9e-4b2d-4a88-9f31-0c5e2b7d6a14";
+
+test("식별자는 절대 제목이 되지 않는다", () => {
+  const card = passCard({
+    passId: "pass-x", productId: UUID, category: "pt_1_1_new",
+    totalSessions: 20, serviceSessions: 0, remainingCount: 20,
+  });
+  assert.equal(card.name.includes(UUID), false, "id 가 제목에 섞였다");
+  assert.equal(card.name, "1:1 PT 20회", "이름이 없으면 종류와 횟수로 부른다");
+});
+
+test("제목은 네 단계를 순서대로 본다", () => {
+  const base = { productId: UUID, category: "pt_1_1_new", totalSessions: 20 };
+  const lookup = () => "상품 목록의 이름";
+  assert.equal(passTitle({ ...base, displayName: "투영 이름", productName: "발급 이름" }, lookup), "투영 이름");
+  assert.equal(passTitle({ ...base, productName: "발급 이름" }, lookup), "발급 이름");
+  assert.equal(passTitle(base, lookup), "상품 목록의 이름");
+  assert.equal(passTitle(base, () => ""), "1:1 PT 20회", "상품이 지워졌어도 부를 이름이 있다");
+});
+
+test("이관분은 productId 가 이름이라 그대로 쓴다", () => {
+  /* migration-repository 가 상품명을 productId 에 넣는다. 사람이 읽을 것이
+     있으면 식별자가 아니다. */
+  for (const name of ["1:1 PT 50회", "2:1 PT 33 ->100 세션업", "csv"]) {
+    assert.equal(passTitle({ productId: name }), name, name);
+  }
+});
+
+test("서비스 회차도 총 횟수에 든다", () => {
+  assert.equal(passTitle({ category: "pt_1_1_new", totalSessions: 20, serviceSessions: 2 }), "1:1 PT 22회");
+});
+
+test("2:1 은 세 가지 모양 모두에서 2:1 로 불린다", () => {
+  assert.equal(passTitle({ category: "pt_2_1_new", totalSessions: 30 }), "2:1 PT 30회");
+  assert.equal(passTitle({ clientIds: ["a", "b"], totalSessions: 30 }), "2:1 PT 30회");
+  assert.equal(passTitle({ isDuet: true, totalSessions: 30 }), "2:1 PT 30회");
+});
+
+test("종류도 횟수도 모르면 '회원권' 이다 -- 빈 칸은 두지 않는다", () => {
+  assert.equal(passTitle({}), "회원권");
+  assert.equal(passTitle({ productId: UUID }), "회원권");
 });

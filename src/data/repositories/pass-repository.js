@@ -179,7 +179,8 @@ export async function listPasses(organizationId, options = {}) {
  *
  * @param {string} organizationId
  * @param {{
- *   clientId: string, locationId: string, productId: string, payCategory: string,
+ *   clientId: string, locationId: string, productId: string, productName?: string,
+ *   payCategory: string,
  *   totalSessions: number, contractPrice: number, instructorId: string, createdBy: string,
  *   serviceSessions?: number, purchaseRound?: number, paymentMethod?: string,
  *   unitPrice?: number, fullRoomRate?: number, expiresAt?: Date | string,
@@ -218,6 +219,18 @@ export async function issuePass(organizationId, input, options = {}) {
   if (!Number.isFinite(expiresAt.getTime())) throw new Error("Invalid expiresAt");
   const locationId = requiredText(input?.locationId, "locationId");
   const productId = requiredText(input?.productId, "productId");
+  /* 상품 이름을 회원권에 함께 박는다. **id 는 사람이 읽을 것이 아니다.**
+
+     이름을 안 박았을 때 카드가 productId 를 제목으로 썼고, 앱 발급분은 그것이
+     상품 문서의 id 라 긴 식별자가 회원 화면에 떴다. 상품 목록에서 찾으면 되지만
+     그 조회는 상품이 지워지거나 이름이 바뀌면 끊긴다 -- **팔릴 때의 이름**이
+     그 회원권의 이름이어야 한다. 계약 금액과 단가를 발급 시점에 박는 것과 같은
+     이유다.
+
+     없으면 넣지 않는다. 규칙의 passes create 는 hasAll(하한)이라 칸이 하나
+     늘어도 거부되지 않지만, 빈 문자열을 박으면 "이름이 없다" 와 "이름이 빈
+     문자열이다" 가 구별되지 않는다. */
+  const productName = String(input?.productName ?? "").trim();
   const instructorId = requiredText(input?.instructorId, "instructorId");
   const createdBy = requiredText(input?.createdBy, "createdBy");
 
@@ -234,6 +247,7 @@ export async function issuePass(organizationId, input, options = {}) {
     clientIds,
     locationId,
     productId,
+    ...(productName ? { productName } : {}),
     category: payCategory,
     totalSessions,
     serviceSessions,

@@ -198,6 +198,11 @@ export function mergeRoster(input = {}) {
     const facts = passFactsFor(client.id, passes, now);
     const shared = {
       orgClientId: client.id,
+      /* 지점. 목록의 지점 필터가 이것으로 거른다 -- 지점이 아홉이 되면 전체
+         목록을 훑는 것이 일상이 되고, 그때 강사는 자기 지점 회원을 찾지 못한다.
+         회원권이 아니라 **회원 문서**의 지점이다: 회원권은 여러 장이고 서로 다른
+         지점일 수 있는데, 회원이 다니는 곳은 하나다. */
+      orgLocationId: text(client.locationId),
       orgExpired: facts.expired,
       orgExpiryReason: facts.expiryReason,
       orgExpiryLabel: facts.expiryLabel,

@@ -120,7 +120,8 @@ import {
   TRANSFER_BLOCK, checkTransfer, transferBlockLabel, transferPricing, transferableSessions,
 } from "./data/schema/pass-transfer.js";
 import {
-  DEDUCT_BACKDATE_LIMIT_DAYS, cancelPass, correctDeduction, deductPass, isCancellablePass,
+  DEDUCT_BACKDATE_LIMIT_DAYS, HOLD_MAX_DAYS, adjustPass, cancelPass, changePassExpiry,
+  correctDeduction, deductPass, holdPass, isCancellablePass, loadPassReconcileRows,
   isCorrectableEntry, isCorrectedEntry, isDeductablePass, isExpiredPass, issuePass,
   listInstructorClientTotals, listPassLedger, listPasses, loadClientPassHistory, remainingCountOf,
   transferPass,
@@ -284,6 +285,10 @@ import {
   SCOPE_HEALTH, instructorScopeRows, rebuildDoneMessage, rebuildPreviewMessage,
   scopeHealth, scopeHealthMessage,
 } from "./features/members/instructor-scope-admin.js";
+import {
+  RECONCILE_STATE, differenceLabel, looksLikeOurBug, reconcileAdvice, reconcileMessage,
+  reconcileReport, unknownLabel,
+} from "./features/members/pass-reconcile.js";
 import { SCOPED_ROLES, clientScopeFor, unlinkedNotice } from "./features/members/client-scope.js";
 import {
   planRosterPrune, pruneMessage, snapshotId, snapshotPayload,
@@ -16729,6 +16734,172 @@ function ClientPhoneSheet({ client, masked, onCancel, onConfirm, busy, error }) 
   );
 }
 
+/**
+ * 잔여 조정과 만료일 변경. 되돌릴 수 없는 쓰기라 사유를 먼저 받는다.
+ *
+ * 한 화면에 둘을 둔 이유가 있다. 둘 다 "회원권의 숫자 하나를 바꾸고 원장에
+ * 한 줄을 남긴다" 는 같은 모양이고, 화면을 갈라 두면 사유 칸과 미리보기가
+ * 두 벌이 되어 한쪽만 고쳐진다.
+ *
+ * **바뀔 값을 누르기 전에 보여준다.** 조정은 "10회 → 13회", 만료일은
+ * "3월 31일 → 6월 30일". 되돌릴 수 없는 버튼 앞에서 결과를 숨기지 않는다.
+ */
+/**
+ * 회원권 수정이 막혔을 때 뭐라고 말할 것인가.
+ *
+ * 잔여가 모자란 것 · 만료일이 없는 것 · 권한이 없는 것은 대표가 할 일이
+ * 서로 다르다. 한 문구로 뭉개면 자기가 못 하는 일인 줄 알고 물러난다.
+ * 코드는 언제나 함께 보여준다.
+ */
+function passEditFailure(error) {
+  const code = String(error?.code || "unknown");
+  if (code === "below_zero") {
+    return `잔여는 0회 미만이 될 수 없어요. 지금 ${Number(error?.remaining) || 0}회 남아 있습니다.`;
+  }
+  if (code === "no_previous_expiry") {
+    return "이 회원권에는 만료일이 없어 옮길 수 없어요. 회원권을 다시 발급해 주세요.";
+  }
+  if (code === "unchanged") return "지금과 같은 날짜예요.";
+  if (code === "permission-denied") {
+    return `이 회원권을 고칠 권한이 없어요. 센터에 문의해 주세요. (코드 ${code})`;
+  }
+  if (["unavailable", "deadline-exceeded", "aborted", "cancelled"].includes(code)) {
+    return `연결이 불안정해 저장하지 못했어요. 다시 시도해 주세요. (코드 ${code})`;
+  }
+  return `저장하지 못했어요. (코드 ${code})`;
+}
+
+function PassEditSheet({
+  kind, pass, onCancel, onConfirm, busy, error,
+  initialDelta = "", initialDays = "", initialDate = "", initialReason = "",
+  initialMode = "date",
+}) {
+  const adjust = kind === "adjust";
+  const [delta, setDelta] = useState(initialDelta);
+  const [mode, setMode] = useState(initialMode);
+  const [days, setDays] = useState(initialDays);
+  const [date, setDate] = useState(initialDate);
+  const [reason, setReason] = useState(initialReason);
+
+  const remaining = remainingCountOf(pass);
+  const deltaNumber = Number.parseInt(String(delta).trim(), 10);
+  const nextRemaining = Number.isInteger(deltaNumber) ? remaining + deltaNumber : null;
+  const below = nextRemaining !== null && nextRemaining < 0;
+
+  const currentExpiry = pass?.expiresAt ? toDate(pass.expiresAt) : null;
+  const heldDays = Number.parseInt(String(days).trim(), 10);
+  let nextExpiry = null;
+  if (!adjust) {
+    if (mode === "hold") {
+      nextExpiry = Number.isInteger(heldDays) && heldDays > 0 && heldDays <= HOLD_MAX_DAYS
+        ? new Date((currentExpiry?.getTime() || 0) + heldDays * 86400000) : null;
+    } else if (date) {
+      const parsed = new Date(`${date}T23:59:59`);
+      nextExpiry = Number.isFinite(parsed.getTime()) ? parsed : null;
+    }
+  }
+  const sameDay = Boolean(nextExpiry && currentExpiry && nextExpiry.getTime() === currentExpiry.getTime());
+
+  const ready = Boolean(reason.trim())
+    && (adjust
+      ? Number.isInteger(deltaNumber) && deltaNumber !== 0 && !below
+      : Boolean(nextExpiry) && !sameDay);
+
+  return (
+    <section data-pass-edit style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>
+        {adjust ? "잔여 회차 조정" : "만료일 변경"}
+      </h2>
+      <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        {adjust
+          ? "실제 잔여와 장부가 어긋났을 때 맞춥니다. 수업이 아니므로 급여에 잡히지 않고, 회원의 수업 이력에도 뜨지 않습니다."
+          : "연장과 단축, 홀딩이 모두 이 화면입니다. 회차는 움직이지 않고, 회원 앱에는 새 날짜가 반영됩니다."}
+      </p>
+
+      {adjust ? (
+        <>
+          <div className="mt-3 flex items-center gap-2">
+            <input inputMode="numeric" value={delta} placeholder="+3 또는 -2"
+              onChange={(event) => setDelta(event.target.value)} className={inputCls}
+              style={{ maxWidth: 140 }} />
+            <p className="tabular-nums" style={{ fontSize: TYPE.caption, color: below ? BAD : SUB }}>
+              {Number.isInteger(deltaNumber) && deltaNumber !== 0
+                ? `${remaining}회 → ${nextRemaining}회`
+                : `지금 ${remaining}회`}
+            </p>
+          </div>
+          {below ? (
+            <p role="alert" className="mt-1 font-bold" style={{ fontSize: TYPE.caption, color: BAD }}>
+              잔여는 0회 미만이 될 수 없어요. 지금 {remaining}회 남아 있습니다.
+            </p>
+          ) : null}
+        </>
+      ) : (
+        <>
+          <div className="mt-3 flex gap-1.5">
+            {[["date", "날짜 지정"], ["hold", "홀딩"]].map(([value, label]) => (
+              <button key={value} type="button" onClick={() => setMode(value)}
+                className="px-3 font-bold" style={{
+                  height: 30, borderRadius: 999, fontSize: TYPE.caption,
+                  backgroundColor: mode === value ? TINT : CANVAS,
+                  color: mode === value ? BRAND_D : SUB,
+                }}>{label}</button>
+            ))}
+          </div>
+          {mode === "hold" ? (
+            <div className="mt-2 flex items-center gap-2">
+              <input inputMode="numeric" value={days} placeholder="30"
+                onChange={(event) => setDays(event.target.value)} className={inputCls}
+                style={{ maxWidth: 110 }} />
+              <p style={{ fontSize: TYPE.caption, color: SUB }}>일만큼 뒤로 밉니다</p>
+            </div>
+          ) : (
+            <input type="date" value={date} onChange={(event) => setDate(event.target.value)}
+              className={`${inputCls} mt-2`} />
+          )}
+          <p className="mt-1 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+            {currentExpiry ? dayLabel(currentExpiry) : "만료일 없음"}
+            {nextExpiry ? ` → ${dayLabel(nextExpiry)}` : ""}
+          </p>
+          {sameDay ? (
+            <p role="alert" className="mt-1 font-bold" style={{ fontSize: TYPE.caption, color: WARN }}>
+              지금과 같은 날짜예요.
+            </p>
+          ) : null}
+        </>
+      )}
+
+      {/* 사유는 비울 수 없다. 반년 뒤 이 줄을 보는 사람에게 숫자만 남으면
+          조정과 실수를 구별할 방법이 없다. */}
+      <input value={reason} maxLength={LEDGER_REASON_MAX} className={`${inputCls} mt-3`}
+        placeholder={adjust ? "사유 (예: 이관 누락분 보정)" : "사유 (예: 부상으로 3개월 홀딩)"}
+        onChange={(event) => setReason(event.target.value)} />
+
+      {error ? (
+        <p role="alert" className="mt-2 font-bold" style={{ fontSize: TYPE.caption, color: BAD }}>{error}</p>
+      ) : null}
+
+      <div className="mt-4 flex gap-2">
+        <button type="button" onClick={onCancel} disabled={busy}
+          className="flex-1 font-bold" style={{
+            height: 44, borderRadius: 12, backgroundColor: CANVAS, color: INK, fontSize: TYPE.body,
+          }}>그만두기</button>
+        <button type="button" disabled={!ready || busy}
+          onClick={() => onConfirm?.({
+            kind, delta: deltaNumber, reason: reason.trim(),
+            days: mode === "hold" ? heldDays : null,
+            expiresAt: nextExpiry,
+          })}
+          className="flex-1 font-bold" style={{
+            height: 44, borderRadius: 12, fontSize: TYPE.body,
+            backgroundColor: ready && !busy ? BRAND : CANVAS,
+            color: ready && !busy ? "#fff" : SUB,
+          }}>{busy ? "처리 중" : "저장"}</button>
+      </div>
+    </section>
+  );
+}
+
 function PassTransferSheet({
   pass, clients = [], nameOfInstructor, onCancel, onConfirm, busy, error,
   initialQuery = "", initialSessions = "1",
@@ -16848,7 +17019,7 @@ function PassTransferSheet({
   );
 }
 
-function ClientPassRow({ pass, nameOfInstructor, nameOfClient = () => "", clientId = "", now, onCancel, cancellable = false, onTransfer }) {
+function ClientPassRow({ pass, nameOfInstructor, nameOfClient = () => "", clientId = "", now, onCancel, cancellable = false, onTransfer, onAdjust, onExpiry }) {
   const usable = isDeductablePass(pass, now);
   /* 듀엣이면 이 회원권을 둘이 함께 쓴다. 잔여 29회가 두 사람의 29회라는
      사실이 화면에 없으면, 대표는 한 사람 몫으로 읽고 재등록 시점을 잘못 센다. */
@@ -16895,6 +17066,23 @@ function ClientPassRow({ pass, nameOfInstructor, nameOfClient = () => "", client
               backgroundColor: CANVAS, color: BRAND_D,
             }}>양도</button>
         ) : null}
+        {/* 잔여 조정은 대표만, 만료일 변경은 대표와 FC매니저. 강사에게는
+            아예 그려지지 않는다 -- 부르는 쪽이 넘겨주지 않는다. 규칙도 같은
+            선을 긋고, 여기는 눌러도 거부되는 버튼을 두지 않는 자리다. */}
+        {onAdjust ? (
+          <button type="button" onClick={onAdjust}
+            className="shrink-0 px-2.5 font-bold" style={{
+              height: 28, borderRadius: 999, fontSize: TYPE.caption,
+              backgroundColor: CANVAS, color: BRAND_D,
+            }}>잔여 조정</button>
+        ) : null}
+        {onExpiry ? (
+          <button type="button" onClick={onExpiry}
+            className="shrink-0 px-2.5 font-bold" style={{
+              height: 28, borderRadius: 999, fontSize: TYPE.caption,
+              backgroundColor: CANVAS, color: BRAND_D,
+            }}>만료일</button>
+        ) : null}
       </div>
       {partner ? (
         <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>
@@ -16925,6 +17113,7 @@ function ClientDetail({
   organization, client, history, loading, error, instructors = [], currentUserId = "", nameOfClient = () => "",
   clients = [], passStore, onClose, onRetry, onChanged, onToast, onChangePhone,
   now = () => new Date(), initialUndo = null, initialTransfer = null, initialPhoneEdit = false,
+  initialPassEdit = null,
 }) {
   const at = now();
   /* 되돌리기는 대표만 한다. 강사와 매니저가 스스로 되돌릴 수 있으면 기록의
@@ -16939,6 +17128,15 @@ function ClientDetail({
      선이고, 규칙도 대표만 열어 둔다. */
   const [transfer, setTransfer] = useState(initialTransfer);
   const [transferError, setTransferError] = useState("");
+  /* 잔여 조정은 대표만. 회차는 돈이라 차감 보정·취소·양도와 같은 선이다.
+     만료일은 FC매니저도 옮긴다 -- 연장과 홀딩은 운영이 하는 일이고, 그때마다
+     대표를 불러야 하면 회원이 기다린다. 규칙이 같은 선을 긋는다. */
+  const canAdjust = canUndo;
+  const canChangeExpiry = !organization?.isLegacy
+    && (organization?.role === ROLES.OWNER || organization?.role === ROLES.MANAGER);
+  const [passEdit, setPassEdit] = useState(initialPassEdit);
+  const [passEditError, setPassEditError] = useState("");
+
   /* 연락처 수정. 대표·FC매니저는 모든 회원, 강사는 자기 회원만 -- 서버가
      같은 것을 다시 본다 (functions/src/client-phone.js). */
   const [phoneEdit, setPhoneEdit] = useState(initialPhoneEdit);
@@ -16996,6 +17194,40 @@ function ClientDetail({
     }
   };
 
+  const runPassEdit = async ({ kind, delta, reason, days, expiresAt }) => {
+    if (!passEdit || busy) return;
+    setBusy(true);
+    setPassEditError("");
+    try {
+      if (kind === "adjust") {
+        const result = await adjustPass(organizationId, passEdit.pass, {
+          delta, reason, createdBy: currentUserId,
+        }, { store: passStore });
+        onToast?.({ ok: true, msg: `잔여를 ${result.remainingCount}회로 맞췄습니다.` });
+      } else if (days) {
+        /* 홀딩은 만료일 변경 위에 얹는 것뿐이다. 사유에 "홀딩 30일" 이
+           붙는다 -- 별도 상태를 두지 않는 대신 그것이 자취다. */
+        const result = await holdPass(organizationId, passEdit.pass, {
+          days, reason, createdBy: currentUserId,
+        }, { store: passStore });
+        onToast?.({ ok: true, msg: `${days}일 홀딩했습니다. 만료 ${dayLabel(result.expiresAt)}.` });
+      } else {
+        const result = await changePassExpiry(organizationId, passEdit.pass, {
+          expiresAt, reason, createdBy: currentUserId,
+        }, { store: passStore });
+        onToast?.({ ok: true, msg: `만료일을 ${dayLabel(result.expiresAt)}로 옮겼습니다.` });
+      }
+      setPassEdit(null);
+      onChanged?.();
+    } catch (thrown) {
+      /* 종류마다 할 일이 다르다. 잔여가 모자란 것과 권한이 없는 것을 한
+         문구로 뭉개면 대표는 자기가 못 하는 일인 줄 안다. */
+      setPassEditError(passEditFailure(thrown));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const runTransfer = async ({ toClientId, sessions }) => {
     if (!transfer || busy) return;
     setBusy(true);
@@ -17047,6 +17279,12 @@ function ClientDetail({
     <ClientPhoneSheet client={client} masked={maskPhone(client?.phone)}
       onCancel={() => { setPhoneEdit(false); setPhoneError(""); }}
       onConfirm={runPhoneEdit} busy={busy} error={phoneError} />
+  );
+
+  if (passEdit) return (
+    <PassEditSheet kind={passEdit.kind} pass={passEdit.pass}
+      onCancel={() => { setPassEdit(null); setPassEditError(""); }}
+      onConfirm={runPassEdit} busy={busy} error={passEditError} />
   );
 
   if (transfer) return (
@@ -17140,7 +17378,10 @@ function ClientDetail({
                   onCancel={canUndo ? () => { setUndo({ kind: "cancel", pass }); setReason(""); } : undefined}
                   onTransfer={canUndo && transferableSessions(pass) > 0 && isDeductablePass(pass, at)
                     && checkTransfer({ pass, toClientId: "-", sessions: 1 }).code !== TRANSFER_BLOCK.DUET
-                    ? () => { setTransfer({ pass }); setTransferError(""); } : undefined} />
+                    ? () => { setTransfer({ pass }); setTransferError(""); } : undefined}
+                  onAdjust={canAdjust ? () => { setPassEdit({ kind: "adjust", pass }); setPassEditError(""); } : undefined}
+                  onExpiry={canChangeExpiry && pass.expiresAt
+                    ? () => { setPassEdit({ kind: "expiry", pass }); setPassEditError(""); } : undefined} />
               ))}
           </div>
 
@@ -19456,7 +19697,7 @@ const INSTRUCTOR_RESET_NOTICE = "회원권 데이터를 새 엑셀로 다시 올
 
 function InstructorScopeAdmin({
   organization, instructorStore, locationStore, onVerify, onRebuild, onRetryOrganization,
-  onResetMigration, initialState = null,
+  onResetMigration, onReconcile, initialState = null,
 }) {
   const locked = !organization?.ready || organization?.isLegacy || !organization?.organizationId;
   const [check, setCheck] = useState(initialState?.check || { stage: "idle" });
@@ -19482,6 +19723,19 @@ function InstructorScopeAdmin({
     }
   };
 
+  /* 잔여 점검. 찾기만 하고 고치지 않는다 -- 어느 쪽이 참인지 모른 채 한쪽을
+     덮어쓰는 것이 진짜 사고다. */
+  const [reconcile, setReconcile] = useState(initialState?.reconcile || null);
+
+  const runReconcile = async () => {
+    if (typeof onReconcile !== "function") return;
+    setReconcile({ stage: "loading" });
+    try {
+      setReconcile({ stage: "ready", report: await onReconcile() });
+    } catch (error) {
+      setReconcile({ stage: "failed", code: String(error?.code || "unknown") });
+    }
+  };
   const organizationId = organization?.organizationId || "";
 
   const verify = useCallback(async () => {
@@ -19779,6 +20033,72 @@ function InstructorScopeAdmin({
           ) : null}
         </section>
       ) : null}
+      {/* ── 잔여 점검 ─────────────────────────────────────────────────
+          잔여와 원장이 어긋난 회원권을 찾는다. **고치지는 않는다** --
+          어느 쪽이 참인지 모른 채 한쪽을 덮어쓰면 그것이 진짜 사고다. */}
+      <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+        <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>잔여 점검</h2>
+        <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+          회원권마다 <b style={{ color: INK }}>원장의 합과 남은 회차</b>를 견줍니다.
+          안 맞는 것을 자동으로 고치지는 않습니다.
+        </p>
+
+        {reconcile?.stage === "failed" ? (
+          <p className="mt-3" style={{ fontSize: TYPE.caption, color: BAD }}>
+            점검하지 못했습니다 (코드 {reconcile.code}).
+          </p>
+        ) : null}
+
+        {reconcile?.stage === "ready" ? (
+          <>
+            <p className="mt-3 tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 700, color: reconcile.report.mismatched ? WARN : INK }}>
+              {reconcileMessage(reconcile.report)}
+            </p>
+            {reconcileAdvice(reconcile.report) ? (
+              <p className="mt-1.5" style={{
+                fontSize: TYPE.caption, lineHeight: 1.5,
+                color: looksLikeOurBug(reconcile.report) ? BAD : SUB,
+                fontWeight: looksLikeOurBug(reconcile.report) ? 700 : 400,
+              }}>{reconcileAdvice(reconcile.report)}</p>
+            ) : null}
+
+            {reconcile.report.rows.filter((row) => row.state !== RECONCILE_STATE.MATCHED).length > 0 ? (
+              <div className="mt-3" style={{ borderTop: `1px solid ${LINE}` }}>
+                {reconcile.report.rows
+                  .filter((row) => row.state !== RECONCILE_STATE.MATCHED)
+                  .slice(0, 50)
+                  .map((row) => (
+                    <div key={row.passId} className="flex items-center gap-2"
+                      style={{ padding: "8px 0", borderBottom: `1px solid ${LINE}` }}>
+                      <p className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK }}>
+                        {row.clientName || row.clientId || "이름 없음"}
+                      </p>
+                      {row.state === RECONCILE_STATE.UNKNOWN ? (
+                        <p className="shrink-0" style={{ fontSize: TYPE.caption, color: SUB }}>
+                          {unknownLabel(row.unknownReason)}
+                        </p>
+                      ) : (
+                        <p className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: WARN }}>
+                          원장 {row.ledgerTotal}회 · 잔여 {row.remainingCount}회
+                          {" · "}{differenceLabel(row.difference)}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+              </div>
+            ) : null}
+          </>
+        ) : null}
+
+        <button type="button" disabled={locked || reconcile?.stage === "loading"}
+          onClick={runReconcile}
+          className="mt-3 w-full font-bold" style={{
+            height: 44, borderRadius: 12, fontSize: TYPE.body,
+            backgroundColor: locked ? CANVAS : TINT, color: locked ? SUB : BRAND_D,
+          }}>
+          {reconcile?.stage === "loading" ? "견주는 중…" : "잔여 점검"}
+        </button>
+      </section>
 
       <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
         <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>담당 강사 재계산</h2>
@@ -20153,6 +20473,26 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
     return result;
   }, [organization?.organizationId, onClearMigratedSettlements]);
 
+  /**
+   * 잔여 점검. 질의 둘로 센터 전체를 견준다 -- 회원권 목록 하나, 원장 전체
+   * 하나 (loadPassReconcileRows).
+   *
+   * **고치지 않는다.** 어느 쪽이 참인지 모른 채 한쪽을 덮어쓰면 그것이 진짜
+   * 사고다. 사람이 보고 [잔여 조정] 으로 맞추면 맞춘 사실도 원장에 남는다.
+   */
+  const runPassReconcile = useCallback(async () => {
+    const organizationId = organization?.organizationId || "";
+    if (!organizationId) throw new Error("Missing organizationId");
+    const [rows, clients] = await Promise.all([
+      loadPassReconcileRows(organizationId, { store: passStore }),
+      /* 이름이 없으면 대표는 회원권 id 만 보고 누구인지 찾아야 한다. 이름을
+         못 읽어도 점검 자체는 돌아간다 -- 빈 이름으로 둔다. */
+      listClients(organizationId, { store: clientStore }).catch(() => []),
+    ]);
+    const nameById = new Map((Array.isArray(clients) ? clients : [])
+      .map((client) => [client?.id, client?.name || ""]));
+    return reconcileReport(rows, { nameOf: (clientId) => nameById.get(clientId) || "" });
+  }, [organization?.organizationId, passStore, clientStore]);
   /* 회원권 상품은 센터를 운영하는 대표만 본다. 개인 모드(legacy)에는 센터가
      없다. 목록에서 빼면 setView 로 들어갈 길도 함께 닫힌다.
 
@@ -20774,7 +21114,8 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
         {view === "instructor-scope" && showAudit && (
           <InstructorScopeAdmin organization={organization} instructorStore={instructorStore} locationStore={locationStore}
             onVerify={fbVerifyInstructorIds} onRebuild={fbRebuildInstructorIds}
-            onRetryOrganization={onRetryOrganization} onResetMigration={runMigrationReset} />
+            onRetryOrganization={onRetryOrganization} onResetMigration={runMigrationReset}
+            onReconcile={runPassReconcile} />
         )}
         {view === "migration" && showMigration && (
           <CenterMigration organization={organization} currentUserId={account?.id || ""}
@@ -21461,6 +21802,14 @@ export function createAppScreenSmokeCases() {
     }) },
     /* 양도. 대표만 보이고, 누르기 전에 얼마가 따라가는지 화면이 먼저 말한다 --
        원장은 append-only 라 누른 뒤에는 고칠 수 없다. */
+    /* 회원권 수정. 되돌릴 수 없는 버튼 앞에서 바뀔 값을 미리 보여주는지가
+       요점이다 -- "10회 → 13회", "3월 31일 → 6월 30일". */
+    { name: "센터 회원 상세 · 잔여 조정", element: ownerClientDetail({
+      initialPassEdit: { kind: "adjust", pass: smokeHistoryPasses[0] },
+    }) },
+    { name: "센터 회원 상세 · 만료일 변경", element: ownerClientDetail({
+      initialPassEdit: { kind: "expiry", pass: smokeHistoryPasses[0] },
+    }) },
     { name: "센터 회원 상세 · 양도", element: ownerClientDetail({
       clients: smokeTransferClients,
       initialTransfer: { pass: smokeHistoryPasses[0], query: "박두리", sessions: "3" },
@@ -21701,6 +22050,37 @@ export function createAppScreenSmokeCases() {
           reset: {
             stage: "done", passes: 212, ledger: 1843, clients: 106,
             snapshot: { path: "migration-reset/center-a/2026-10-01T12-00-00.000Z.json" },
+            blockedClients: [],
+          },
+        }} />
+    )) },
+    /* 잔여 점검. 안 맞는 목록과 **우리를 먼저 의심하라**는 문구가 함께
+       떠야 한다 -- 없으면 대표가 회원 수십 명에게 전화를 건다. */
+    { name: "잔여 점검 · 안 맞음", element: providerWith(smokeOwner, (
+      <InstructorScopeAdmin organization={readyOrganizationContext(smokeOwner)} onRetryOrganization={noop}
+        onVerify={asyncNoop} onRebuild={asyncNoop} onReconcile={asyncNoop}
+        initialState={{
+          instructors: smokeInstructors,
+          reconcile: {
+            stage: "ready",
+            report: reconcileReport([
+              { pass: { id: "p1", clientId: "smoke-client-a", remainingCount: 8 }, entries: [{ type: "issue", delta: 22 }, { type: "deduct", delta: -1 }] },
+              { pass: { id: "p2", clientId: "smoke-client-b", remainingCount: 5 }, entries: [] },
+              { pass: { id: "p3", clientId: "smoke-client-a", remainingCount: 20 }, entries: [{ type: "issue", delta: 20 }] },
+            ], { nameOf: (id) => ({ "smoke-client-a": "김하나", "smoke-client-b": "이두리" }[id] || "") }),
+          },
+        }} />
+    )) },
+    { name: "잔여 점검 · 전부 맞음", element: providerWith(smokeOwner, (
+      <InstructorScopeAdmin organization={readyOrganizationContext(smokeOwner)} onRetryOrganization={noop}
+        onVerify={asyncNoop} onRebuild={asyncNoop} onReconcile={asyncNoop}
+        initialState={{
+          instructors: smokeInstructors,
+          reconcile: {
+            stage: "ready",
+            report: reconcileReport([
+              { pass: { id: "p1", clientId: "smoke-client-a", remainingCount: 20 }, entries: [{ type: "issue", delta: 20 }] },
+            ]),
           },
         }} />
     )) },

@@ -158,6 +158,25 @@ skip 이다. 되살릴 때 플래그와 skip 세 줄만 되돌리면 된다.
 - **규칙 배포** — 문이 한 번 열리고 닫히면 그 사이의 모든 쓰기에 적용된다
 - **되돌릴 수 없는 콘솔 작업**
 
+## 커밋할 파일은 손으로 지정한다
+
+`git add -A` 와 `git add .` 를 쓰지 않는다. 고친 파일을 이름으로 적는다.
+
+```bash
+git add firestore.foundation.rules tests/rules/firestore.rules.test.js
+```
+
+이 워크트리에는 다른 브랜치에서 남은 빌드 산출물이 굴러다닌다. 회원 앱
+`member:sync` 가 만든 `member-app/ios/App/App/public/` 같은 것들인데, main
+에서 딴 브랜치에는 그것을 걸러 줄 `.gitignore` 가 아직 없다. 실제로
+`git add -A` 한 번에 44개가 딸려 들어갔다 -- 테스트 한 파일을 담을 커밋이었다.
+
+커밋 전에 무엇이 들어가는지 본다.
+
+```bash
+git status --porcelain | grep -v '^??'
+```
+
 ## 하지 않는 것
 
 - 원인을 확정하기 전에 스키마를 느슨하게 만들거나 `additionalProperties: true` 로 우회하지 않는다

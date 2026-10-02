@@ -136,7 +136,11 @@ async function planServiceSessionFix(firestore, { organizationId }) {
 
     rows.push({
       passId: snapshot.id,
+      /* id 만 올린다. 이름은 화면이 자기 목록에서 붙인다 -- 서버 로그에
+         이름이 남으면 안 된다 (§7). */
       clientId: text(before.clientId),
+      locationId: text(before.locationId),
+      instructorId: text(before.instructorId),
       productId: text(before.productId),
       before: {
         totalSessions: count(before.totalSessions),

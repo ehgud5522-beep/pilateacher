@@ -53,6 +53,7 @@ import { RepositoryReadError, readCollection } from "./repository-read.js";
  * @property {(collectionPath: string) => Promise<Array<any>>} list
  * @property {(writes: Array<{ path: string, data: object, operation?: "set" | "update" | "decrement" | "bump" }>) => Promise<void>} commit
  * @property {(documentPath: string) => Promise<any | null>} read
+ * @property {(organizationId: string) => Promise<Array<any>>} [listLedgerByOrganization]
  * @property {() => Promise<any>} serverTimestamp
  */
 
@@ -121,11 +122,54 @@ export function createFirestorePassStore() {
       const snapshot = await getDoc(doc(getFirestore(), documentPath));
       return snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null;
     },
+    /* 센터 전체의 원장. 잔여 점검이 쓴다.
+       회원권마다 하위 컬렉션을 따로 읽으면 회원권 수만큼 질의가 나간다 --
+       200건이면 200번이다. collectionGroup 한 번이면 끝나고, 인덱스는 이미
+       있다 (organizationId + occurredAt). 이름은 paths.js 의 ledger 와 같다. */
+    listLedgerByOrganization: async (organizationId) => {
+      const { collectionGroup, getDocs, getFirestore, orderBy, query, where } = await load();
+      const snapshot = await getDocs(query(
+        collectionGroup(getFirestore(), "ledger"),
+        where("organizationId", "==", organizationId),
+        orderBy("occurredAt", "asc"),
+      ));
+      return snapshot.docs.map((document) => ({ id: document.id, ...document.data() }));
+    },
     serverTimestamp: async () => {
       const { serverTimestamp } = await load();
       return serverTimestamp();
     },
   };
+}
+
+/**
+ * 센터의 모든 회원권을 원장과 견줄 재료.
+ *
+ * 질의 둘로 끝난다 -- 회원권 목록 하나, 원장 전체 하나. 회원권마다 하위
+ * 컬렉션을 읽으면 200건짜리 센터에서 201번 나간다.
+ *
+ * @param {string} organizationId
+ * @param {{ store?: PassStore }} [options]
+ * @returns {Promise<Array<{ pass: any, entries: Array<any> }>>}
+ */
+export async function loadPassReconcileRows(organizationId, options = {}) {
+  const { store = createFirestorePassStore() } = options;
+  const organization = requiredText(organizationId, "organizationId");
+  const [passes, entries] = await Promise.all([
+    listPasses(organization, { store, includeExpired: true }),
+    /* 이 메서드가 없는 저장소는 테스트용 가짜뿐이다. 없으면 원장이 비고, 점검은
+       "확인 불가" 로 센다 -- 없는 것을 0 으로 치고 "안 맞는다" 고 하지 않는다. */
+    store.listLedgerByOrganization ? store.listLedgerByOrganization(organization) : [],
+  ]);
+  const byPass = new Map();
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const passId = String(entry?.passId ?? "").trim();
+    if (!passId) continue;
+    if (!byPass.has(passId)) byPass.set(passId, []);
+    byPass.get(passId).push(entry);
+  }
+  return (Array.isArray(passes) ? passes : [])
+    .map((pass) => ({ pass, entries: byPass.get(String(pass?.id ?? "")) || [] }));
 }
 
 const passesCollection = (organizationId) => {
@@ -1189,4 +1233,215 @@ export async function transferPass(organizationId, pass, input, options = {}) {
     pass: newPass,
     pricing: priced,
   };
+}
+
+/* ── 회원권 수정 ──────────────────────────────────────────────────────────
+
+   잔여 조정과 만료일 변경. 둘 다 **수업이 아니다** -- 급여에 잡히지 않고
+   (PAYROLL_ENTRY_TYPES 가 허용 목록이라 애초에 질의에 안 걸린다) 회원의 수업
+   이력에도 뜨지 않는다 (투영의 HISTORY_TYPES).
+
+   원래 기록은 건드리지 않는다. 원장은 덧붙이기만 하므로 조정도 한 줄로 남고,
+   무엇을 얼마나 왜 옮겼는지가 지워지지 않는다. */
+
+/** 홀딩 최대 일수. 이보다 길면 회원권을 다시 발급하는 편이 맞다. */
+export const HOLD_MAX_DAYS = 365;
+
+/** 홀딩 사유 앞에 붙는 말. 화면과 점검이 같은 철자를 본다. */
+export const HOLD_REASON_PREFIX = "홀딩";
+
+const DAY_MS = 86400000;
+
+/** 잔여가 모자라 조정을 못 한 것. 권한 문제와 다른 말을 하기 위해 따로 둔다. */
+export class PassAdjustError extends Error {
+  /** @param {string} code @param {{ remaining?: number, delta?: number }} detail */
+  constructor(code, detail) {
+    super(`pass adjust refused (${code})`);
+    this.name = "PassAdjustError";
+    this.code = code;
+    this.feature = "pass_adjust";
+    this.remaining = detail?.remaining;
+    this.delta = detail?.delta;
+  }
+}
+
+/** 만료일을 못 옮긴 것. 사유마다 화면이 할 말이 다르다. */
+export class PassExpiryError extends Error {
+  /** @param {string} code @param {{ previous?: Date }} detail */
+  constructor(code, detail) {
+    super(`pass expiry refused (${code})`);
+    this.name = "PassExpiryError";
+    this.code = code;
+    this.feature = "pass_expiry";
+    this.previous = detail?.previous;
+  }
+}
+
+/**
+ * 잔여 회차를 맞춘다. **대표만** (규칙이 막는다).
+ *
+ * 0 미만으로는 내려가지 않는다. 규칙도 막지만 여기서 먼저 막는 이유는, 규칙이
+ * 막으면 화면에 "권한이 없습니다" 로 도착하기 때문이다 -- 권한 문제가 아니라
+ * 숫자가 모자란 것이고, 그 둘은 할 일이 다르다.
+ *
+ * @param {string} organizationId
+ * @param {any} pass 회원권 문서 (id, clientId, locationId, remainingCount)
+ * @param {{ delta: number, reason: string, createdBy: string, occurredAt?: Date, entryId?: string }} input
+ * @param {{ store?: PassStore, newId?: () => string, now?: () => Date }} [options]
+ */
+export async function adjustPass(organizationId, pass, input, options = {}) {
+  const {
+    store = createFirestorePassStore(),
+    newId = () => globalThis.crypto?.randomUUID?.() || String(Date.now()),
+    now = () => new Date(),
+  } = options;
+
+  const organization = requiredText(organizationId, "organizationId");
+  const passId = requiredText(pass?.id || pass?.passId, "passId");
+  const clientId = requiredText(pass?.clientId, "clientId");
+  const locationId = requiredText(pass?.locationId, "locationId");
+  const createdBy = requiredText(input?.createdBy, "createdBy");
+
+  const delta = input?.delta;
+  if (!Number.isInteger(delta)) throw new Error("Invalid delta");
+  /* 0 은 조정이 아니다. 아무것도 안 바뀐 줄이 사유만 달고 쌓이면 나중에 읽는
+     사람이 그것을 세게 된다. */
+  if (delta === 0) throw new Error("Invalid delta");
+
+  const remaining = remainingCountOf(pass);
+  const next = remaining + delta;
+  if (next < 0) throw new PassAdjustError("below_zero", { remaining, delta });
+
+  /* 사유가 없으면 반년 뒤 이 줄을 보는 사람에게 남는 것이 숫자뿐이다 --
+     조정과 실수를 구별할 방법이 없다. */
+  const reason = requiredText(input?.reason, "reason");
+  if (reason.length > LEDGER_REASON_MAX) throw new Error("Invalid reason");
+
+  const stampedAt = await store.serverTimestamp();
+  const entryId = String(input?.entryId || `${passId}_adjust_${newId()}`);
+  const entry = {
+    organizationId: organization,
+    passId,
+    clientId,
+    locationId,
+    type: LEDGER_ENTRY_TYPE.ADJUST,
+    delta,
+    reason,
+    occurredAt: input?.occurredAt instanceof Date ? input.occurredAt : now(),
+    createdAt: stampedAt,
+    createdBy,
+  };
+
+  await store.commit([
+    { path: paths.passLedgerEntry(organization, passId, entryId), data: entry },
+    /* 읽어서 더하지 않는다. 같은 회원권에 차감과 조정이 겹쳐도 한쪽이 다른
+       쪽을 덮어쓰지 않도록 서버가 더한다. */
+    {
+      path: paths.pass(organization, passId),
+      operation: "decrement",
+      data: { remainingCount: delta },
+    },
+  ]);
+  return { passId, entryId, delta, remainingCount: next };
+}
+
+/**
+ * 만료일을 옮긴다. **대표와 FC매니저** (규칙이 막는다).
+ *
+ * 회차는 움직이지 않는다. 어디서 어디로 옮겼는지를 원장에 남기는데, 그것이
+ * 없으면 "언제부터 이 날짜였나" 를 물을 때 답할 것이 없고 회원 앱에는 새
+ * 날짜만 조용히 나타난다.
+ *
+ * 회원 앱 반영은 저절로 된다 -- rebuildMemberViewOnPassWrite 가 passes 쓰기에
+ * 붙어 있다.
+ *
+ * @param {string} organizationId
+ * @param {any} pass
+ * @param {{ expiresAt: Date, reason: string, createdBy: string, occurredAt?: Date, entryId?: string }} input
+ * @param {{ store?: PassStore, newId?: () => string, now?: () => Date }} [options]
+ */
+export async function changePassExpiry(organizationId, pass, input, options = {}) {
+  const {
+    store = createFirestorePassStore(),
+    newId = () => globalThis.crypto?.randomUUID?.() || String(Date.now()),
+    now = () => new Date(),
+  } = options;
+
+  const organization = requiredText(organizationId, "organizationId");
+  const passId = requiredText(pass?.id || pass?.passId, "passId");
+  const clientId = requiredText(pass?.clientId, "clientId");
+  const locationId = requiredText(pass?.locationId, "locationId");
+  const createdBy = requiredText(input?.createdBy, "createdBy");
+
+  const previous = pass?.expiresAt ? toDate(pass.expiresAt) : null;
+  if (!previous || !Number.isFinite(previous.getTime())) {
+    /* 옛 회원권에는 만료일이 없다. 어디서 옮겼는지를 적을 수 없으므로 이
+       통로로는 손대지 않는다 -- 규칙도 previousExpiresAt 을 요구한다. */
+    throw new PassExpiryError("no_previous_expiry", {});
+  }
+  const nextAt = input?.expiresAt instanceof Date ? input.expiresAt : toDate(input?.expiresAt);
+  if (!nextAt || !Number.isFinite(nextAt.getTime())) throw new Error("Invalid expiresAt");
+  // 같은 날짜로 바꾸는 것은 변경이 아니다.
+  if (nextAt.getTime() === previous.getTime()) throw new PassExpiryError("unchanged", { previous });
+
+  const reason = requiredText(input?.reason, "reason");
+  if (reason.length > LEDGER_REASON_MAX) throw new Error("Invalid reason");
+
+  const stampedAt = await store.serverTimestamp();
+  const entryId = String(input?.entryId || `${passId}_expiry_${newId()}`);
+  const entry = {
+    organizationId: organization,
+    passId,
+    clientId,
+    locationId,
+    type: LEDGER_ENTRY_TYPE.EXPIRY,
+    delta: 0,
+    previousExpiresAt: previous,
+    newExpiresAt: nextAt,
+    reason,
+    occurredAt: input?.occurredAt instanceof Date ? input.occurredAt : now(),
+    createdAt: stampedAt,
+    createdBy,
+  };
+
+  await store.commit([
+    { path: paths.passLedgerEntry(organization, passId, entryId), data: entry },
+    /* set 이 아니라 update 다. set 이면 계약 금액도 잔여도 통째로 날아간다. */
+    {
+      path: paths.pass(organization, passId),
+      operation: "update",
+      data: { expiresAt: nextAt },
+    },
+  ]);
+  return { passId, entryId, previousExpiresAt: previous, expiresAt: nextAt };
+}
+
+/** 홀딩한 날짜. 만료일을 그만큼 뒤로 민 값이다. */
+export function heldExpiry(expiresAt, days) {
+  const at = expiresAt ? toDate(expiresAt) : null;
+  if (!at || !Number.isFinite(at.getTime())) return null;
+  const held = requiredInt(days, "days", { min: 1 });
+  if (held > HOLD_MAX_DAYS) throw new Error("Invalid days");
+  return new Date(at.getTime() + held * DAY_MS);
+}
+
+/**
+ * 홀딩. **만료일 변경 위에 얹는 것뿐이다.**
+ *
+ * 따로 상태를 두지 않는다. `holdUntil` 같은 칸을 만들면 규칙·투영·판정 세
+ * 군데가 같이 늘고, 그 셋이 어긋나면 회원 화면과 대표 화면이 다른 말을 한다.
+ * 홀딩이었다는 사실은 사유에 남고, 원장은 지워지지 않는다.
+ *
+ * @param {string} organizationId
+ * @param {any} pass
+ * @param {{ days: number, reason?: string, createdBy: string }} input
+ * @param {object} [options]
+ */
+export async function holdPass(organizationId, pass, input, options = {}) {
+  const days = requiredInt(input?.days, "days", { min: 1 });
+  const expiresAt = heldExpiry(pass?.expiresAt, days);
+  if (!expiresAt) throw new PassExpiryError("no_previous_expiry", {});
+  const note = String(input?.reason ?? "").trim();
+  const reason = `${HOLD_REASON_PREFIX} ${days}일${note ? ` · ${note}` : ""}`.slice(0, LEDGER_REASON_MAX);
+  return changePassExpiry(organizationId, pass, { expiresAt, reason, createdBy: input?.createdBy }, options);
 }

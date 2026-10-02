@@ -177,6 +177,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 매니저",
     "회원권 상품",
     "회원권 상품 · 소속 확인 실패",
+    "이관 서비스 보정 · 미리보기",
+    "이관 서비스 보정 · 보정할 것 없음",
     "이관 초기화 · 미리보기",
     "이관 초기화 · 끝",
     "잔여 점검 · 안 맞음",
@@ -2198,4 +2200,27 @@ test("회원권 수정 화면은 바뀔 값을 미리 보여주고 강사에게�
      두지 않는다. */
   const instructorView = markupOf("센터 회원 상세");
   assert.doesNotMatch(instructorView, /잔여 조정/);
+});
+
+test("이관 서비스 보정은 바뀔 값을 전후로 보여준다", async () => {
+  /* 숫자만 바뀌는 일이라 "무엇이 바뀌었더라" 를 나중에 물을 수 없다. */
+  const markupOf = await screenMarkup();
+  const preview = markupOf("이관 서비스 보정 · 미리보기");
+
+  assert.match(preview, /대상 1건/);
+  // 서버는 id 만 보낸다 (§7). 이름은 화면이 명부에서 붙인다.
+  assert.match(preview, /김하나/);
+  assert.equal(preview.includes("csv_01011112222"), false, "회원 id 가 화면에 샜다");
+  // 전 -> 후가 한 줄에 선다.
+  assert.match(preview, /43/);
+  assert.match(preview, /40/);
+  assert.match(preview, /남은횟수는 바꾸지 않습니다/);
+  // 10/1 이후 서비스로 확정된 수업은 보고만 한다.
+  assert.match(preview, /서비스로 확정된 수업 1건/);
+  assert.match(preview, /되돌리지 않습니다/);
+  assert.match(preview, /확인했습니다 · 1건 보정/);
+
+  const clean = markupOf("이관 서비스 보정 · 보정할 것 없음");
+  assert.match(clean, /보정할 것 없음/);
+  assert.equal(clean.includes("확인했습니다"), false, "고칠 것이 없으면 확정 버튼을 내지 않는다");
 });

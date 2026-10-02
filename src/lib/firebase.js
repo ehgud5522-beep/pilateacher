@@ -687,6 +687,13 @@ export const fbVerifyInstructorIds = callableAsOwner("verifyInstructorIds");
    된다. */
 export const fbResetMigratedData = callableAsOwner("resetMigratedData");
 
+/* 이관분 서비스 보정. 총세션에 서비스가 섞여 들어온 회원권을 고친다 --
+   functions/src/service-session-fix.js 머리말에 근거가 있다.
+
+   여기도 confirm 없이는 미리보기다. 서버가 돌려주는 줄에는 id 만 있고 이름은
+   없다 -- 이름은 화면이 자기 명부에서 붙인다 (§7). */
+export const fbFixMigratedServiceSessions = callableAsOwner("fixMigratedServiceSessions");
+
 export async function fbPurgeExpiredPhotoBackups() {
   if (!functions || !auth?.currentUser) return { purged: 0 };
   const call = httpsCallable(functions, "purgeExpiredPhotoBackups");

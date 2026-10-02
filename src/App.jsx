@@ -35,6 +35,7 @@ import {
   fbLookupCentreMemberByEmail,
   fbListMalformedClientPhones,
   fbRebuildInstructorIds,
+  fbFixMigratedServiceSessions,
   fbResetMigratedData,
   fbVerifyInstructorIds,
   fbListPendingMemberLinks, fbLinkMemberAccountByOwner, fbUnlinkMemberAccount, fbUpdateClientPhone,
@@ -20053,7 +20054,7 @@ const INSTRUCTOR_RESET_NOTICE = "회원권 데이터를 새 엑셀로 다시 올
 
 function InstructorScopeAdmin({
   organization, instructorStore, locationStore, onVerify, onRebuild, onRetryOrganization,
-  onResetMigration, onReconcile, initialState = null,
+  onResetMigration, onReconcile, onServiceFix, onLoadClients, initialState = null,
 }) {
   const locked = !organization?.ready || organization?.isLegacy || !organization?.organizationId;
   const [check, setCheck] = useState(initialState?.check || { stage: "idle" });
@@ -20064,6 +20065,28 @@ function InstructorScopeAdmin({
   /* 이관 초기화. 미리보기가 기본이고, 숫자를 본 뒤에야 실행 버튼이 나온다 --
      되돌릴 수 없는 쪽이 기본값이면 안 된다. */
   const [reset, setReset] = useState(initialState?.reset || null);
+
+  /* 이관분 서비스 보정. 미리보기가 먼저이고, 숫자를 본 뒤에야 확정 버튼이
+     나온다 -- 회원권의 총세션을 고치는 일이라 되돌리기 어렵다. */
+  const [serviceFix, setServiceFix] = useState(initialState?.serviceFix || null);
+  const runServiceFix = async (confirm) => {
+    if (typeof onServiceFix !== "function" || running) return;
+    setRunning(true);
+    setServiceFix({ stage: "loading", confirmed: confirm });
+    try {
+      const found = await onServiceFix({ confirm });
+      /* 이름을 함께 받아 둔다. 서버는 id 만 보내므로(§7) 표가 id 를 그대로
+         보여주면 대표는 누구인지 알 수 없다. */
+      if (typeof onLoadClients === "function") {
+        setFixClients(await onLoadClients().catch(() => []));
+      }
+      setServiceFix({ ...found, confirmed: confirm });
+    } catch (error) {
+      setServiceFix({ stage: "failed", confirmed: confirm, code: String(error?.code || "unknown") });
+    } finally {
+      setRunning(false);
+    }
+  };
 
   const runReset = async (confirm) => {
     if (typeof onResetMigration !== "function" || running) return;
@@ -20111,6 +20134,19 @@ function InstructorScopeAdmin({
      짧게 보이고, 숫자는 그대로 맞다. 이름 때문에 목록을 못 보는 편이 나쁘다. */
   const [instructors, setInstructors] = useState(initialState?.instructors || []);
   const [locations, setLocations] = useState(initialState?.locations || []);
+  /* 보정 표의 회원 이름. 서버는 id 만 보낸다 (§7) -- 이름은 여기서 붙인다.
+     미리보기를 누를 때만 읽는다: 이 화면의 다른 기능은 회원을 쓰지 않는다. */
+  const [fixClients, setFixClients] = useState(initialState?.fixClients || []);
+
+  const nameOfClient = (clientId) => String(
+    fixClients.find((item) => String(item?.id || "") === String(clientId || ""))?.name || "",
+  ) || "이름 없음";
+  const nameOfLocation = (locationId) => String(
+    locations.find((item) => String(item?.id || "") === String(locationId || ""))?.name || "",
+  );
+  const nameOfInstructor = (userId) => String(
+    instructors.find((item) => String(item?.userId || "") === String(userId || ""))?.displayName || "",
+  );
   useEffect(() => {
     if (locked || initialState) return;
     let alive = true;
@@ -20295,6 +20331,113 @@ function InstructorScopeAdmin({
           </div>
         </section>
       ) : null}
+
+      {/* ── 이관분 서비스 보정 ─────────────────────────────────────────
+          엑셀의 총세션 칸에 서비스가 섞여 들어온 회원권을 고친다. 미리보기가
+          먼저다 -- 회원권의 총세션을 바꾸는 일이라 되돌리기 어렵다.
+
+          이름은 서버가 보내지 않는다 (§7). id 만 받아 여기서 명부로 붙인다. */}
+      {!locked && typeof onServiceFix === "function" ? (
+        <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+          <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>이관 서비스 보정</h2>
+          <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+            총세션 칸에 서비스 회차가 섞여 들어온 회원권을 고칩니다.
+            <b style={{ color: INK }}> 남은횟수는 바꾸지 않습니다.</b>
+          </p>
+
+          {serviceFix?.stage === "failed" ? (
+            <p className="mt-3" style={{ fontSize: TYPE.caption, color: BAD }}>
+              {serviceFix.confirmed ? "보정하지" : "세지"} 못했습니다 (코드 {serviceFix.code}).
+            </p>
+          ) : null}
+
+          {serviceFix?.stage === "preview" || serviceFix?.stage === "done" ? (
+            <>
+              <p className="mt-3 tabular-nums" style={{ fontSize: TYPE.body, fontWeight: 750, color: serviceFix.rows.length ? INK : SUB }}>
+                {serviceFix.stage === "done"
+                  ? `${serviceFix.fixed}건 보정했습니다`
+                  : serviceFix.rows.length ? `대상 ${serviceFix.rows.length}건` : "보정할 것 없음"}
+              </p>
+
+              {serviceFix.rows.length ? (
+                <div className="pt-hscroll mt-2 overflow-x-auto">
+                  <table className="w-full" style={{ borderCollapse: "collapse", minWidth: 760 }}>
+                    <thead>
+                      <tr>
+                        {["회원", "지점", "담당강사", "상품명", "총세션", "서비스", "쓴 서비스", "회당 금액", "남은"].map((head) => (
+                          <th key={head} className="text-left" style={{ padding: "6px 8px", fontSize: TYPE.caption, color: SUB, fontWeight: 600, whiteSpace: "nowrap" }}>{head}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {serviceFix.rows.map((row) => (
+                        <tr key={row.passId} style={{ borderTop: `1px solid ${LINE}` }}>
+                          <td style={{ padding: "7px 8px", fontSize: TYPE.caption, color: INK, whiteSpace: "nowrap" }}>{nameOfClient(row.clientId)}</td>
+                          <td style={{ padding: "7px 8px", fontSize: TYPE.caption, color: SUB, whiteSpace: "nowrap" }}>{nameOfLocation(row.locationId)}</td>
+                          <td style={{ padding: "7px 8px", fontSize: TYPE.caption, color: SUB, whiteSpace: "nowrap" }}>{nameOfInstructor(row.instructorId)}</td>
+                          <td className="truncate" style={{ padding: "7px 8px", fontSize: TYPE.caption, color: SUB, maxWidth: 160 }}>{row.productId}</td>
+                          <td className="tabular-nums" style={{ padding: "7px 8px", fontSize: TYPE.caption, color: INK, whiteSpace: "nowrap" }}>
+                            <span style={{ color: SUB, textDecoration: "line-through" }}>{row.before.totalSessions}</span> → <b>{row.after.totalSessions}</b>
+                          </td>
+                          <td className="tabular-nums" style={{ padding: "7px 8px", fontSize: TYPE.caption, color: SUB }}>{row.after.serviceSessions}</td>
+                          <td className="tabular-nums" style={{ padding: "7px 8px", fontSize: TYPE.caption, color: INK, whiteSpace: "nowrap" }}>
+                            <span style={{ color: SUB, textDecoration: "line-through" }}>{row.before.serviceUsed}</span> → <b>{row.after.serviceUsed}</b>
+                          </td>
+                          <td className="tabular-nums" style={{ padding: "7px 8px", fontSize: TYPE.caption, color: INK, whiteSpace: "nowrap" }}>
+                            <span style={{ color: SUB, textDecoration: "line-through" }}>₩{won(row.before.baseUnitPrice)}</span> → <b>₩{won(row.after.baseUnitPrice)}</b>
+                          </td>
+                          <td className="tabular-nums" style={{ padding: "7px 8px", fontSize: TYPE.caption, color: SUB }}>{row.after.remainingCount}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
+
+              {/* 10/1 이후 서비스로 확정된 수업. serviceUsed 가 0 이었던 탓에
+                  센터가 같은 회차를 두 번 지원했을 수 있다 -- 되돌리지 않고
+                  보고만 한다. 보정할지는 대표가 정한다. */}
+              {serviceFix.served?.length ? (
+                <div className="mt-3" style={{ padding: 10, borderRadius: 8, backgroundColor: WARN_S }}>
+                  <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: WARN }}>
+                    10/1 이후 서비스로 확정된 수업 {serviceFix.served.length}건
+                  </p>
+                  <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK2 }}>
+                    되돌리지 않습니다. 원장은 지울 수 없고 그 수업은 실제로 있었습니다.
+                    급여를 고칠지는 대표님이 정하세요.
+                  </p>
+                  {serviceFix.served.map((item) => (
+                    <p key={item.entryId} className="mt-1 tabular-nums" style={{ fontSize: TYPE.caption, color: INK2 }}>
+                      {item.occurredAt ? ymd(item.occurredAt.slice(0, 10)) : "날짜 없음"}
+                      {" · "}{nameOfInstructor(item.instructorId) || "강사 미지정"}
+                      {" · ₩"}{won(item.unitPrice)}
+                    </p>
+                  ))}
+                </div>
+              ) : null}
+            </>
+          ) : null}
+
+          {serviceFix?.stage === "preview" && serviceFix.rows.length > 0 ? (
+            <button type="button" disabled={running} onClick={() => runServiceFix(true)}
+              className="mt-3 w-full font-bold text-white" style={{
+                height: 44, borderRadius: 12, fontSize: TYPE.body,
+                backgroundColor: running ? CANVAS : BAD, color: running ? SUB : "#fff",
+              }}>
+              {running ? "보정 중…" : `확인했습니다 · ${serviceFix.rows.length}건 보정`}
+            </button>
+          ) : (
+            <button type="button" disabled={running} onClick={() => runServiceFix(false)}
+              className="mt-3 w-full font-bold" style={{
+                height: 44, borderRadius: 12, fontSize: TYPE.body,
+                backgroundColor: running ? CANVAS : TINT, color: running ? SUB : BRAND_D,
+              }}>
+              {running ? "세는 중…" : "바뀔 것 먼저 보기"}
+            </button>
+          )}
+        </section>
+      ) : null}
+
 
       {/* ── 이관 데이터 초기화 ─────────────────────────────────────────
           출시 전 한 번 쓰는 자리다. 되돌릴 수 없으므로 **미리보기가 먼저**
@@ -20817,6 +20960,15 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
    * 남고, 되돌리기는 pass_missing 으로 멈춘다 -- 깨지지는 않지만 대표가
    * 치울 방법이 없다.
    */
+  /* 이관분 서비스 보정. 서버가 전부 한다 -- 규칙이 totalSessions 를 막고
+     있고, 한 번 쓰는 보정을 위해 그 문을 여는 것은 그 문이 영원히 열려 있게
+     되는 일이다 (functions/src/service-session-fix.js). */
+  const runServiceFix = useCallback(async ({ confirm }) => {
+    const organizationId = organization?.organizationId || "";
+    if (!organizationId) throw new Error("Missing organizationId");
+    return fbFixMigratedServiceSessions({ organizationId, confirm });
+  }, [organization?.organizationId]);
+
   const runMigrationReset = useCallback(async ({ confirm }) => {
     const organizationId = organization?.organizationId || "";
     if (!organizationId) throw new Error("Missing organizationId");
@@ -21471,7 +21623,8 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
           <InstructorScopeAdmin organization={organization} instructorStore={instructorStore} locationStore={locationStore}
             onVerify={fbVerifyInstructorIds} onRebuild={fbRebuildInstructorIds}
             onRetryOrganization={onRetryOrganization} onResetMigration={runMigrationReset}
-            onReconcile={runPassReconcile} />
+            onReconcile={runPassReconcile} onServiceFix={runServiceFix}
+            onLoadClients={() => listClients(organization?.organizationId || "", { store: clientStore })} />
         )}
         {view === "migration" && showMigration && (
           <CenterMigration organization={organization} currentUserId={account?.id || ""}
@@ -22385,6 +22538,35 @@ export function createAppScreenSmokeCases() {
     { name: "회원권 상품 · 소속 확인 실패", element: providerWith(smokeOwner, <ProductCatalog organization={readyOrganizationContext({ organizationId: "", role: "", status: "unknown", isLegacy: false })} currentUserId="smoke-account" store={productStore} onRetryOrganization={noop} onToast={noop} />) },
     /* 번호 점검. 저장된 철자를 그대로 보여준다 -- 여기서 다듬으면 무엇이
        문제인지 안 보이고, 대표가 고쳐야 할 것이 바로 그 철자다. */
+    /* 이관분 서비스 보정. 전/후가 한 줄에 보여야 대표가 무엇이 바뀌는지 안다 --
+       숫자만 바뀌는 일이라 "무엇이 바뀌었더라" 를 나중에 물을 수 없다. */
+    { name: "이관 서비스 보정 · 미리보기", element: providerWith(smokeOwner, (
+      <InstructorScopeAdmin organization={readyOrganizationContext(smokeOwner)} onRetryOrganization={noop}
+        onVerify={asyncNoop} onRebuild={asyncNoop} onServiceFix={asyncNoop} onLoadClients={asyncNoop}
+        initialState={{
+          instructors: smokeInstructors,
+          locations: smokeLocations,
+          fixClients: [{ id: "csv_01011112222", name: "김하나" }],
+          serviceFix: {
+            stage: "preview",
+            rows: [{
+              passId: "csv_csv_01011112222_1", clientId: "csv_01011112222",
+              locationId: "bansong", instructorId: "u1", productId: "1:1 PT 깍두기 40회e",
+              before: { totalSessions: 43, serviceSessions: 3, serviceUsed: 0, baseUnitPrice: 93023, remainingCount: 10 },
+              after: { totalSessions: 40, serviceSessions: 3, serviceUsed: 3, baseUnitPrice: 100000, remainingCount: 10 },
+            }],
+            served: [{
+              passId: "csv_csv_01011112222_1", entryId: "e-1",
+              occurredAt: "2026-10-02T10:00:00.000Z", unitPrice: 10000, instructorId: "u1",
+            }],
+          },
+        }} />
+    )) },
+    { name: "이관 서비스 보정 · 보정할 것 없음", element: providerWith(smokeOwner, (
+      <InstructorScopeAdmin organization={readyOrganizationContext(smokeOwner)} onRetryOrganization={noop}
+        onVerify={asyncNoop} onRebuild={asyncNoop} onServiceFix={asyncNoop} onLoadClients={asyncNoop}
+        initialState={{ instructors: smokeInstructors, serviceFix: { stage: "preview", rows: [], served: [] } }} />
+    )) },
     /* 이관 초기화. 되돌릴 수 없는 자리라 미리보기 숫자와 "지우지 않는
        회원" 목록이 먼저 서야 한다. */
     { name: "이관 초기화 · 미리보기", element: providerWith(smokeOwner, (

@@ -247,3 +247,39 @@ test("종류도 횟수도 모르면 '회원권' 이다 -- 빈 칸은 두지 않�
   assert.equal(passTitle({}), "회원권");
   assert.equal(passTitle({ productId: UUID }), "회원권");
 });
+
+/* ── 쓴 서비스는 회원권이 세고 있으면 그것이 참이다 ─────────────────────── */
+
+test("serviceUsed 가 있으면 역산보다 그것을 쓴다", () => {
+  /* 역산은 "차감만 일어났다" 를 전제한다. 대표가 [잔여 조정]으로 잔여를
+     올리면 그 전제가 깨지고, 카드만 서비스가 늘어난 것처럼 보인다 -- 급여
+     판정은 serviceUsed 를 쓰므로 둘이 갈린다. */
+  const adjusted = { totalSessions: 20, serviceSessions: 2, remainingCount: 26, serviceUsed: 1 };
+  assert.deepEqual(remainingSplit(adjusted), { regular: 25, service: 1 });
+
+  // 역산했다면 서비스가 2 로 보였을 것이다.
+  const guessed = { ...adjusted, serviceUsed: undefined };
+  assert.deepEqual(remainingSplit(guessed), { regular: 24, service: 2 });
+});
+
+test("serviceUsed 가 없으면 그대로 역산한다 -- 회원 투영에는 그 칸이 없다", () => {
+  assert.deepEqual(remainingSplit({ totalSessions: 20, serviceSessions: 2, remainingCount: 21 }),
+    { regular: 20, service: 1 });
+});
+
+test("serviceUsed 가 서비스 개수를 넘어도 넘치지 않는다", () => {
+  assert.deepEqual(remainingSplit({ totalSessions: 20, serviceSessions: 2, remainingCount: 20, serviceUsed: 9 }),
+    { regular: 20, service: 0 });
+});
+
+test("차감만 일어났으면 역산과 같은 답이다", () => {
+  for (const remaining of [22, 21, 20, 8]) {
+    const spent = 22 - remaining;
+    const pass = { totalSessions: 20, serviceSessions: 2, remainingCount: remaining };
+    assert.deepEqual(
+      remainingSplit({ ...pass, serviceUsed: Math.min(spent, 2) }),
+      remainingSplit(pass),
+      String(remaining),
+    );
+  }
+});

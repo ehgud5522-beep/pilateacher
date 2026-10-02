@@ -26,6 +26,8 @@ import { PAY_CATEGORY, PAYMENT_METHOD } from "./constants.js";
 
 /** 어느 판정이 이겼는가. 분쟁 때 "왜 이 금액인가"를 답하는 값이다. */
 export const PRICING_RULE = Object.freeze({
+  /** 이 회원권의 첫 서비스 회차. 센터가 지원하는 그 한 번이다. */
+  SERVICE_FIRST: "service_first",
   SERVICE_ALREADY_USED: "service_already_used",
   DEPUTY_DIRECTOR: "deputy_director",
   HANDED_OVER: "handed_over",
@@ -221,16 +223,30 @@ export function resolveDeductionUnitPrice(input = {}) {
   const priorSessions = countOf(input?.priorSessions);
   const serviceUsedCount = countOf(input?.serviceUsedCount);
 
-  /* 판정 0. service 카테고리일 때만 본다.
-     여기의 category 는 *이 차감의* 성격이지 회원권의 카테고리가 아니다. 결제
-     회차가 남아 있어도 서비스 회차를 먼저 쓰면 그 회차는 service 다
+  /* ── 판정 0. 서비스 회차는 여기서 끝난다 ────────────────────────────
+     여기의 category 는 **이 차감의** 성격이지 회원권의 카테고리가 아니다.
+     결제 회차가 남아 있어도 서비스가 남아 있으면 그 회차는 service 다
      (spendsServiceSession).
-     "이미 service 차감이 있었는가"는 service 차감에 대한 이야기다. 카테고리를
-     보지 않고 앞에 세우면, 서비스를 한 번 쓴 회원권의 1:1 수업까지 0원이 된다.
-     부원장에게는 서비스 세션이 없어 판정 1과 부딪칠 일은 없지만, 언젠가
-     부딪치면 확정본의 번호대로 0이 이긴다. */
-  if (category === PAY_CATEGORY.SERVICE && serviceUsedCount >= PAID_SERVICE_SESSIONS_PER_PASS) {
-    return { unitPrice: 0, rule: PRICING_RULE.SERVICE_ALREADY_USED };
+
+     아래 판정 1·2·3 보다 앞이다. 전에는 "이미 썼는가" 만 앞에 두어서, 첫
+     서비스 회차가 판정 3(누적 20회 미만)에 걸려 25,000원이 됐다 -- 신규
+     회원일수록 그랬다. 부원장이면 5:5 가, 인수인계면 25,000 이 가로챘다.
+     서비스는 센터가 정한 금액이지 그 강사의 단가가 아니므로, 어느 쪽에도
+     걸리지 않아야 한다.
+
+     센터가 급여를 주는 서비스는 회원권당 PAID_SERVICE_SESSIONS_PER_PASS
+     회분이고, 그다음부터는 0원이다. 회차는 그대로 빠진다 -- 회원은 받은
+     것이고, 0원인 것은 강사에게 주는 돈이다. */
+  if (category === PAY_CATEGORY.SERVICE) {
+    if (serviceUsedCount >= PAID_SERVICE_SESSIONS_PER_PASS) {
+      return { unitPrice: 0, rule: PRICING_RULE.SERVICE_ALREADY_USED };
+    }
+    /* 표에 적힌 서비스 금액. baseUnitPrice 로 들어온다 -- 부르는 쪽이
+       defaultUnitPriceFor(SERVICE) 를 넣는다 (pass-repository). */
+    return {
+      unitPrice: requiredInt(input?.baseUnitPrice, "baseUnitPrice", { min: 0 }),
+      rule: PRICING_RULE.SERVICE_FIRST,
+    };
   }
 
   // 판정 1. 누적에도, 인수인계에도, 카테고리에도 걸리지 않는다. 언제나 5:5.

@@ -4,6 +4,7 @@ import {
   CLIENT_SHEET_COLUMNS, MIGRATION_ERROR, PASS_SHEET_COLUMNS, applyClientMigration,
   applyPassMigration, clientIdForPhone, groupFailures, parseCsv, passIdFor,
   PASS_SHEET_DUET_COLUMNS, planClientMigration, planPassMigration, readSheet,
+  totalLooksLikeItIncludesService,
 } from "../../src/data/repositories/migration-repository.js";
 
 const ORG = "center-a";
@@ -581,4 +582,69 @@ test("처음 보는 번호는 예전처럼 새로 만든다", () => {
   assert.deepEqual(failures, []);
   assert.equal(writes[0].clientId, "csv_01055556666");
   assert.equal(writes[0].existing, false);
+});
+
+/* ── 이관 전에 이미 쓴 서비스 ─────────────────────────────────────────────
+   엑셀에 "쓴 서비스" 칸이 없다. 0 으로 두면 이미 쓴 서비스가 다시 주어지고,
+   이관 후 첫 수업이 서비스로 빠져 센터가 그 회차를 한 번 더 지원한다. */
+
+test("쓴 횟수에서 서비스 사용량을 센다", () => {
+  /* 서비스부터 쓰는 규칙이라 쓴 횟수가 서비스 개수를 넘기 전까지는 전부
+     서비스다: serviceUsed = min(서비스, (총 + 서비스) - 잔여) */
+  const used = (total, service, remaining) => planPasses(passSheet(passRow({
+    총세션: String(total), 서비스세션: String(service), 남은횟수: String(remaining),
+  }))).writes[0].pass.serviceUsed;
+
+  assert.equal(used(20, 2, 22), 0, "한 번도 안 썼다");
+  assert.equal(used(20, 2, 21), 1, "서비스부터 빠진다");
+  assert.equal(used(20, 2, 20), 2, "서비스를 다 썼다");
+  assert.equal(used(20, 2, 8), 2, "그 뒤로는 정규만 줄어든다");
+  assert.equal(used(20, 0, 8), 0, "서비스가 없으면 0 이다");
+});
+
+test("잔여가 총보다 크면 음수로 가지 않는다", () => {
+  /* 이관분은 총 횟수와 잔여가 따로 적혀 와서 어긋난 행이 있다. */
+  const { writes } = planPasses(passSheet(passRow({
+    총세션: "20", 서비스세션: "2", 남은횟수: "99",
+  })));
+  assert.equal(writes[0].pass.serviceUsed, 0);
+});
+
+/* ── 총세션에 서비스가 섞인 행 ────────────────────────────────────────── */
+
+test("상품명 숫자 + 서비스 = 총세션이면 섞인 것으로 본다", () => {
+  const mixed = (productName, totalSessions, serviceSessions) =>
+    totalLooksLikeItIncludesService({ productName, totalSessions, serviceSessions });
+
+  assert.equal(mixed("깍두기 40회e", 43, 3), true);
+  assert.equal(mixed("30회 2차", 34, 4), true);
+  assert.equal(mixed("50회", 51, 1), true);
+  // 맞지 않으면 건드리지 않는다.
+  assert.equal(mixed("깍두기 40회e", 40, 3), false);
+  assert.equal(mixed("깍두기 40회e", 43, 0), false, "서비스가 없으면 섞일 것이 없다");
+});
+
+test("숫자가 여럿이면 뒤쪽을 판 횟수로 본다", () => {
+  // "2:1 PT 33 ->100 세션업" 은 100회를 판 것이다.
+  assert.equal(totalLooksLikeItIncludesService({
+    productName: "2:1 PT 33회 ->100회 세션업", totalSessions: 102, serviceSessions: 2,
+  }), true);
+});
+
+test("상품명에 숫자가 없으면 맞혀 보지 않는다", () => {
+  assert.equal(totalLooksLikeItIncludesService({ productName: "깍두기", totalSessions: 43, serviceSessions: 3 }), false);
+  assert.equal(totalLooksLikeItIncludesService({}), false);
+});
+
+test("섞인 행은 그 행만 실패하고 나머지는 올라간다", () => {
+  /* 짐작해서 빼 주지 않는다 -- 상품명의 숫자가 실제로 판 횟수가 아닌 경우가
+     있고, 그때 조용히 깎으면 회원이 산 회차가 사라진다. */
+  const { writes, failures } = planPasses(passSheet(
+    passRow(),
+    passRow({ 회원명: "이세리", 차수: "2", 상품명: "깍두기 40회e", 총세션: "43", 서비스세션: "3", 남은횟수: "43" }),
+  ));
+  assert.equal(writes.length, 1, "좋은 행은 그대로 올라간다");
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].reason, MIGRATION_ERROR.TOTAL_INCLUDES_SERVICE);
+  assert.match(failures[0].message, /총세션에는 서비스를 빼고 적어 주세요/);
 });

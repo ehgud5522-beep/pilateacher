@@ -489,7 +489,10 @@ test("a deduction is priced by the engine, and the entry says which rule won", a
       pass: { category: "service", serviceUsed: 0, baseUnitPrice: 10000 },
       totals: settledPair(),
       unitPrice: 10000,
-      rule: "base_category",
+      /* 금액은 전과 같지만 어느 판정이 이겼는지가 바뀌었다 (2026-10-03).
+         전에는 아래까지 흘러가 base_category 가 답했고, 그래서 누적 20회
+         미만이면 판정 3 이 먼저 가로챘다. 이제 판정 0 에서 끝난다. */
+      rule: "service_first",
     },
     {
       label: "두 번째 서비스 회차부터는 0원이다",
@@ -1254,13 +1257,17 @@ test("the second service session of a pass is the instructor's own", async () =>
 });
 
 test("a service session does not escape the judgements that come before the table", async () => {
-  /* 확정본의 판정 순서는 그대로다. 이 강사에게 이 회원이 아직 20회 미만이면
-     서비스 회차라도 25,000 이다 -- 판정 3 이 카테고리를 가리지 않는다. */
+  /* 2026-10-03 정정. 전에는 판정 3 이 카테고리를 가리지 않아, 이 강사에게
+     이 회원이 20회 미만이면 서비스 회차도 25,000 이었다 -- 이 테스트가 그것을
+     정상으로 못 박고 있었다.
+
+     서비스는 센터가 정한 금액이지 그 강사의 단가가 아니다. 아래 판정 어느
+     것에도 걸리지 않는다. */
   const store = fakeStore({ totals: settledPair(3) });
   const { entry } = await deductPass(ORG, withService(), deductInput(), deductOptions(store));
   assert.equal(entry.category, "service");
-  assert.equal(entry.unitPrice, 25000);
-  assert.equal(entry.rule, "new_to_instructor");
+  assert.equal(entry.unitPrice, 10000);
+  assert.equal(entry.rule, "service_first");
 });
 
 test("a pass with no service sessions is untouched by any of this", async () => {

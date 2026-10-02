@@ -153,8 +153,18 @@ export function remainingSplit(pass) {
   const service = count(pass?.serviceSessions);
   const issued = count(pass?.totalSessions) + service;
   const remaining = count(pass?.remainingCount);
-  const spent = Math.max(0, issued - remaining);
-  const serviceLeft = Math.max(0, service - Math.min(spent, service));
+  /* 회원권이 쓴 서비스를 세고 있으면 그것이 참이다. 역산은 "차감만 일어났다"
+     를 전제하는데, 대표가 [잔여 조정]으로 잔여를 올리면 그 전제가 깨진다 --
+     그때 카드만 서비스가 늘어난 것처럼 보이고, 급여 판정은 serviceUsed 를
+     쓰므로 둘이 갈린다.
+
+     회원 앱 투영에는 이 칸이 가지 않는다 (member-view 의 허용 목록). 그래서
+     없을 때는 그대로 역산한다 -- 두 화면이 대개 같고, 조정이 있었던 회원권만
+     강사 화면이 더 정확하다. */
+  const counted = Number.isInteger(pass?.serviceUsed) && pass.serviceUsed >= 0
+    ? Math.min(pass.serviceUsed, service)
+    : Math.min(Math.max(0, issued - remaining), service);
+  const serviceLeft = Math.max(0, service - counted);
   /* 잔여를 넘지 않게 한 번 더 막는다. 이관분은 총 횟수와 잔여가 따로 적혀
      오므로 둘이 어긋난 행이 있을 수 있고, 그때 서비스가 잔여보다 커지면
      정규가 음수로 나온다 -- 화면에 "-3회" 가 뜨는 길이다. */

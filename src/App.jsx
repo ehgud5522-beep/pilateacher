@@ -18180,6 +18180,53 @@ function ProductCatalog({ organization, currentUserId, store, onRetryOrganizatio
             </div>
           </details>
         ))}
+        {/* ── 안 쓰는 상품 정리 ─────────────────────────────────────────
+            아무도 발급받지 않은 상품만 묶어 보여주고, 체크한 것만 지운다.
+            이관 회원권과 이름이 비슷한 것은 **체크가 풀려서** 선다 -- 발급
+            0명인 이유가 "이관분을 못 맞혔다" 일 수 있고, 그러면 지우는 순간
+            그 회원권들이 가리킬 상품이 목록에서 사라진다. */}
+        {!loading && !loadError && unused.length > 0 && !cleaning ? (
+          <button type="button" onClick={() => setCleaning(new Set(unused.filter((item) => !item.risky).map((item) => item.product.id)))}
+            className="mt-2 font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>
+            발급 0명 상품 {unused.length}개 정리
+          </button>
+        ) : null}
+        {cleaning ? (
+          <div className="mt-3" style={{ padding: 12, borderRadius: 10, backgroundColor: CANVAS, border: `1px solid ${LINE}` }}>
+            <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>발급 0명 상품 {unused.length}개</p>
+            <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+              체크한 것만 목록에서 사라집니다. 데이터는 지우지 않습니다.
+            </p>
+            <div className="mt-2">
+              {unused.map(({ product, risky, reason }) => (
+                <label key={product.id} className="flex items-start gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}` }}>
+                  <input type="checkbox" checked={cleaning.has(product.id)} className="mt-0.5"
+                    onChange={(event) => setCleaning((current) => {
+                      const next = new Set(current);
+                      if (event.target.checked) next.add(product.id); else next.delete(product.id);
+                      return next;
+                    })} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate" style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK }}>{product.name}</span>
+                    <span className="block truncate tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>{productLine(product)}</span>
+                    {risky ? (
+                      <span className="block" style={{ fontSize: TYPE.caption, fontWeight: 650, color: WARN }}>{reason}</span>
+                    ) : null}
+                  </span>
+                </label>
+              ))}
+            </div>
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              <button type="button" onClick={() => setCleaning(null)} className="h-10 font-bold"
+                style={{ borderRadius: 9, backgroundColor: CARD, color: INK2, fontSize: TYPE.caption }}>그대로 두기</button>
+              <button type="button" disabled={cleaning.size === 0 || Boolean(busyId)} onClick={cleanUnused}
+                className="h-10 font-bold text-white disabled:opacity-40" style={{ borderRadius: 9, backgroundColor: BAD, fontSize: TYPE.caption }}>
+                {busyId === "cleaning" ? "정리 중…" : `${cleaning.size}개 삭제`}
+              </button>
+            </div>
+          </div>
+        ) : null}
+
         {/* ── 칸 상세 ─────────────────────────────────────────────────────
             누른 칸의 상품과, 그 상품으로 발급된 회원이 선다. 지우기 전에
             "몇 명이 쓰고 있나" 를 같은 화면에서 보게 하는 것이 목적이다. */}

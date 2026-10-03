@@ -25,7 +25,23 @@
  * 한 번으로 지나간다.
  */
 
-const { FieldValue } = require("firebase-admin/firestore");
+/**
+ * 서버 센티넬(`increment` · `serverTimestamp`). **모듈을 읽을 때 부르지 않는다.**
+ *
+ * firebase-admin 은 `functions/node_modules` 에만 있다. CI 는 저장소 루트에서만
+ * `npm install` 하므로 그 폴더가 **아예 없고**, 루트에서 도는 테스트가 이 파일을
+ * 읽는 순간 `MODULE_NOT_FOUND` 로 죽는다 -- TAP 줄도 못 내고 죽어서 "not ok" 로는
+ * 잡히지도 않는다. 2026-10-03 Codemagic 이 그렇게 멈췄다.
+ *
+ * service-session-fix.js 는 같은 이유로 FieldValue 를 아예 안 쓴다. 여기는
+ * 증감 센티넬이 꼭 필요하다 -- 같은 회원권에 차감과 양도가 겹치면 읽어서 뺀 쪽이
+ * 다른 쪽을 지운다. 그래서 없애는 대신 **쓰는 순간에** 부른다.
+ *
+ * 테스트는 자기 것을 넣는다. 가짜 저장소가 "읽어서 빼지 않았다" 를 실제로 볼 수
+ * 있어야 하기 때문이다.
+ */
+const sentinels = (input) => input?.fieldValue
+  || require("firebase-admin/firestore").FieldValue;
 
 /* functions/ 는 CommonJS 이고 shared/ 는 ESM 이다. 핸들러 안에서 한 번 읽고
    들고 있는다 -- src/data/schema/constants.js 머리말과 같은 이유다. */
@@ -85,6 +101,7 @@ const asDate = (value) => {
  */
 async function runSessionUp(firestore, input) {
   const { planSessionUp, sessionUpError } = await shared();
+  const FieldValue = sentinels(input);
   const organizationId = text(input?.organizationId);
   const passId = text(input?.passId);
   const at = (input?.now || (() => new Date()))();
@@ -154,6 +171,7 @@ async function runHandover(firestore, input) {
     checkTransfer, transferPricing, resolveUnitPrice, TRANSFER_BLOCK,
   } = await shared();
 
+  const FieldValue = sentinels(input);
   const organizationId = text(input?.organizationId);
   const passId = text(input?.passId);
   const toClientId = text(input?.toClientId);

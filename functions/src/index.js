@@ -29,6 +29,7 @@ const { planMigrationReset, runMigrationReset } = require("./migration-reset");
 const {
   findServiceDeductions, planServiceSessionFix, runServiceSessionFix,
 } = require("./service-session-fix");
+const { isPassAdmin, runHandover, runSessionUp } = require("./pass-admin");
 const { reconcileOrganization } = require("./pass-reconcile-nightly");
 const { createFirestoreMemberLinkPorts } = require("./member-link-store");
 const {
@@ -670,6 +671,91 @@ exports.verifyInstructorIds = onCall(
    트리거도 깨어나지 않는다.
 
    04:00 KST 다. 수업이 없고, 자정 직후의 만료가 이미 지나간 시각이다. */
+/* ── 세션업과 회원 간 양도 ───────────────────────────────────────────────
+   대표와 FC매니저가 쓴다. 근거는 pass-admin.js 머리말에 있다.
+
+   규칙은 그대로 둔다 -- 양도는 규칙이 대표에게만 열어 두었고, 세션업이 바꾸는
+   totalSessions 는 아예 막혀 있다. 그 문을 여는 대신 통로를 하나 낸다. */
+const assertPassAdmin = async (organizationId, callerUid) => {
+  if (!callerUid) throw new HttpsError("unauthenticated", "Please sign in again.");
+  if (!organizationId) throw new HttpsError("invalid-argument", "organizationId is required.");
+  const membership = await firestore
+    .collection("memberships").doc(membershipId(organizationId, callerUid)).get();
+  /* 화면이 버튼을 감추는 것은 안내이고 막는 것은 여기다. 화면만 믿으면
+     호출 한 번으로 지나간다. */
+  if (!isPassAdmin(membership.exists ? membership.data() : null)) {
+    throw new HttpsError("permission-denied", "Only the owner or manager can do this.");
+  }
+};
+
+exports.sessionUpPass = onCall({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  timeoutSeconds: 60,
+  invoker: "public",
+}, async (request) => {
+  const callerUid = String(request?.auth?.uid || "").trim();
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  await assertPassAdmin(organizationId, callerUid);
+  try {
+    const expiresAt = request?.data?.expiresAt ? new Date(String(request.data.expiresAt)) : null;
+    const result = await runSessionUp(firestore, {
+      organizationId,
+      passId: String(request?.data?.passId || "").trim(),
+      actorId: callerUid,
+      addSessions: Number(request?.data?.addSessions),
+      addPrice: Number(request?.data?.addPrice),
+      addService: Number(request?.data?.addService || 0),
+      paymentMethod: String(request?.data?.paymentMethod || ""),
+      expiresAt: expiresAt && Number.isFinite(expiresAt.getTime()) ? expiresAt : null,
+    });
+    /* 이름도 금액 밖의 것도 적지 않는다 (§7). 무엇이 몇 회 늘었는지만. */
+    logger.info("session_up_done", {
+      feature: "session_up", stage: "done", organizationId,
+      addedSessions: Number(request?.data?.addSessions) || 0,
+    });
+    return result;
+  } catch (error) {
+    logger.error("session_up_failed", {
+      feature: "session_up", stage: "done", organizationId,
+      errorCode: error?.message || "unknown",
+    });
+    /* 막힌 이유를 그대로 올린다 -- 화면이 "왜 안 되는지" 를 말할 수 있어야 한다. */
+    throw new HttpsError("failed-precondition", String(error?.message || "session_up_failed"));
+  }
+});
+
+exports.handoverPass = onCall({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  timeoutSeconds: 60,
+  invoker: "public",
+}, async (request) => {
+  const callerUid = String(request?.auth?.uid || "").trim();
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  await assertPassAdmin(organizationId, callerUid);
+  try {
+    const result = await runHandover(firestore, {
+      organizationId,
+      passId: String(request?.data?.passId || "").trim(),
+      toClientId: String(request?.data?.toClientId || "").trim(),
+      sessions: Number(request?.data?.sessions),
+      instructorId: String(request?.data?.instructorId || "").trim(),
+      unitPrice: Number(request?.data?.unitPrice || 0),
+      actorId: callerUid,
+    });
+    logger.info("handover_done", {
+      feature: "handover", stage: "done", organizationId,
+      sessions: Number(request?.data?.sessions) || 0,
+    });
+    return result;
+  } catch (error) {
+    logger.error("handover_failed", {
+      feature: "handover", stage: "done", organizationId,
+      errorCode: error?.message || "unknown",
+    });
+    throw new HttpsError("failed-precondition", String(error?.message || "handover_failed"));
+  }
+});
+
 /* ── 이관분 서비스 보정 ───────────────────────────────────────────────────
    한 번 쓰고 지울 통로다. 근거는 service-session-fix.js 머리말에 있다.
 

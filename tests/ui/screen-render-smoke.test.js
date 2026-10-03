@@ -117,6 +117,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "센터 회원 상세 · 강사 · 연락처 수정",
     "센터 회원 상세 · 잔여 조정",
     "센터 회원 상세 · 만료일 변경",
+    "센터 회원 상세 · 매니저",
+    "센터 회원 상세 · 세션업",
     "센터 회원 상세 · 양도",
     "센터 회원 상세 · 양도 · 동명이인",
     "센터 회원 상세 · 양도 · 듀엣 차단",
@@ -1851,11 +1853,76 @@ test("a duet transfer is not offered at all", async (t) => {
   assert.match(blocked, /disabled=""/);
 });
 
-test("only the owner sees the transfer button", async (t) => {
-  /* 회원 사이에 돈이 오가는 일이라 차감 보정·취소와 같은 선이다. */
+test("the owner and the manager see the handover button, the instructor does not", async (t) => {
+  /* 대표만 보던 버튼이다. 2026-10 에 FC매니저도 하도록 바뀌었다 -- 운영이
+     매일 하는 일이고 그때마다 대표를 불러야 하면 회원이 기다린다.
+
+     **규칙은 그대로 대표만 연다.** 매니저도 대표도 서버 통로로만 간다
+     (functions/src/pass-admin.js). 규칙을 고쳐 문을 열지 않는 이유는 그
+     머리말에 있다. */
   const markupOf = await issueScreens(t);
-  assert.match(markupOf("센터 회원 상세 · 대표"), />양도</);
-  assert.doesNotMatch(markupOf("센터 회원 상세"), />양도</);
+  assert.match(markupOf("센터 회원 상세 · 대표"), />양도\(회원 간\)</);
+  assert.match(markupOf("센터 회원 상세 · 매니저"), />양도\(회원 간\)</);
+  assert.doesNotMatch(markupOf("센터 회원 상세"), />양도/);
+});
+
+test("the handover button never reads as the instructor change", async (t) => {
+  /* 둘 다 "양도" 로 읽히면 대표가 회원에게 넘길 자리에서 강사를 바꾸거나 그
+     반대를 하고, 어느 쪽도 되돌릴 수 없다. 한 글자도 겹치지 않아야 한다. */
+  const markupOf = await issueScreens(t);
+  const owner = markupOf("센터 회원 상세 · 대표");
+  assert.match(owner, />양도\(회원 간\)</);
+  // 담당 강사 변경은 이력 줄의 문구다. 버튼 문구와 겹치지 않는다.
+  assert.match(owner, /담당 강사 변경/);
+  assert.doesNotMatch(owner, />양도</);
+});
+
+/* ── 세션업 ─────────────────────────────────────────────────────────────
+
+   같은 회원권을 늘린다. 새로 발급하면 회원권이 둘이 되고 차감이 갈린다. */
+
+test("the manager sees session up but not the owner-only buttons", async (t) => {
+  const markupOf = await issueScreens(t);
+  const manager = markupOf("센터 회원 상세 · 매니저");
+  assert.match(manager, />세션업</);
+  assert.match(manager, />만료일</);
+  /* 잔여 조정과 발급 취소는 대표만. 이미 일어난 일을 없던 일로 만드는 쪽이라
+     새 사실을 더하는 세션업·양도와 선이 다르다. */
+  assert.doesNotMatch(manager, />잔여 조정</);
+  assert.doesNotMatch(manager, />발급 취소</);
+});
+
+test("the instructor sees none of the pass buttons", async (t) => {
+  const markupOf = await issueScreens(t);
+  const instructor = markupOf("센터 회원 상세");
+  assert.doesNotMatch(instructor, />세션업</);
+  assert.doesNotMatch(instructor, />잔여 조정</);
+  assert.doesNotMatch(instructor, />만료일</);
+});
+
+test("the session up sheet shows before and after before the button", async (t) => {
+  /* 누르기 전에 무엇이 일어나는지. 원장은 append-only 라 고칠 수 없다. */
+  const markupOf = await issueScreens(t);
+  const sheet = markupOf("센터 회원 상세 · 세션업");
+
+  assert.match(sheet, /세션업/);
+  // 20회 + 50회 = 70회. 잔여 8 + 50 = 58.
+  assert.match(sheet, /70회/);
+  assert.match(sheet, /58회/);
+  // 계약 130만 + 250만 = 380만, 회당 3,800,000 ÷ 70 = 54,286.
+  assert.match(sheet, /3,800,000/);
+  assert.match(sheet, /54,286/);
+  assert.match(sheet, /세션업 확정/);
+});
+
+test("the session up history line says what grew and who did it", async (t) => {
+  /* "세션업" 만 적으면 반년 뒤 "왜 150회냐" 에 답할 것이 없다. 회당 단가가
+     없는 종류라 금액도 따로 적지 않으면 ₩0 으로 읽힌다. */
+  const markupOf = await issueScreens(t);
+  const owner = markupOf("센터 회원 상세 · 대표");
+  assert.match(owner, /세션업 20→70회/);
+  assert.match(owner, /\+₩2,500,000/);
+  assert.match(owner, /처리자/);
 });
 
 /* ── 연락처 수정 ─────────────────────────────────────────────────────────

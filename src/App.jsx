@@ -36,6 +36,8 @@ import {
   fbListMalformedClientPhones,
   fbRebuildInstructorIds,
   fbFixMigratedServiceSessions,
+  fbHandoverPass,
+  fbSessionUpPass,
   fbResetMigratedData,
   fbVerifyInstructorIds,
   fbListPendingMemberLinks, fbLinkMemberAccountByOwner, fbUnlinkMemberAccount, fbUpdateClientPhone,
@@ -118,7 +120,8 @@ import {
   createProduct, listProducts, productBaseUnitPrice, setProductStatus,
 } from "./data/repositories/product-repository.js";
 import {
-  TRANSFER_BLOCK, checkTransfer, transferBlockLabel, transferPricing, transferableSessions,
+  TRANSFER_BLOCK, TRANSFER_BLOCK_LABEL, checkTransfer, transferBlockLabel, transferPricing,
+  transferableSessions,
 } from "./data/schema/pass-transfer.js";
 import {
   DEDUCT_BACKDATE_LIMIT_DAYS, HOLD_MAX_DAYS, adjustPass, cancelPass, changePassExpiry,
@@ -166,6 +169,9 @@ import {
   blockingNotice, duetIssueNotices, duetSummaryLine, reviewNotices,
 } from "./features/passes/duet-issue.js";
 import { JOURNEY_PRIOR_NOTE, buildPassJourney, hasJourney } from "../functions/shared/pass-journey.mjs";
+import {
+  SESSION_UP_ERROR_LABEL, planSessionUp, sessionUpError, sessionUpLabel,
+} from "../functions/shared/session-up.mjs";
 import { previewLessonRates } from "./features/schedule/lesson-rate-preview.js";
 import {
   issueReportCsv, loadOrganizationMonthlyIssues,
@@ -16635,6 +16641,11 @@ const sameDay = (left, right) => {
 const LEDGER_TYPE_LABEL = {
   [LEDGER_ENTRY_TYPE.CORRECTION]: "차감 보정",
   [LEDGER_ENTRY_TYPE.CANCEL]: "발급 취소",
+  [LEDGER_ENTRY_TYPE.SESSIONUP]: "세션업",
+  /* 회원이 회원에게 넘긴 것. 담당 강사 변경과 한 글자도 겹치지 않게 적는다 --
+     이력을 훑는 사람이 둘을 같은 일로 읽으면 "왜 회차가 줄었나" 에 엉뚱한
+     답을 하게 된다. */
+  [LEDGER_ENTRY_TYPE.HANDOVER]: "양도(회원 간)",
 };
 
 /** 원장 한 줄이 무엇을 말하는가. 종류마다 읽는 법이 다르다. */
@@ -16642,8 +16653,14 @@ function LedgerRow({ entry, nameOfInstructor, corrected = false, onCorrect }) {
   const transfer = entry.type === LEDGER_ENTRY_TYPE.TRANSFER;
   const issue = entry.type === LEDGER_ENTRY_TYPE.ISSUE;
   const undoing = entry.type === LEDGER_ENTRY_TYPE.CORRECTION || entry.type === LEDGER_ENTRY_TYPE.CANCEL;
+  /* 세션업과 양도는 수업이 아니다. 회당 단가가 없어 `|delta| × unitPrice` 가
+     0 이 되는데, 그대로 두면 250만원이 오간 줄에 ₩0 이 적힌다. */
+  const sessionUp = entry.type === LEDGER_ENTRY_TYPE.SESSIONUP;
+  const handover = entry.type === LEDGER_ENTRY_TYPE.HANDOVER;
+  const titled = sessionUp || handover || undoing;
   const delta = Number(entry.delta) || 0;
   const amount = Math.abs(delta) * (Number(entry.unitPrice) || 0);
+  const addedPrice = Number(entry.addedPrice) || 0;
   /* 되돌려진 차감은 지우지 않는다. 흐리게 두고 취소선을 긋는다 -- 잘못 눌렀다는
      사실 자체가 사라지면 그것도 기록이 아니다. */
   return (
@@ -16661,9 +16678,13 @@ function LedgerRow({ entry, nameOfInstructor, corrected = false, onCorrect }) {
             /* 교체는 숫자가 움직이지 않는다. 무엇이 바뀌었는지 문장으로 읽혀야
                이력을 훑는 사람이 건너뛰지 않는다. */
             ? `담당 강사 변경 ${nameOfInstructor(entry.fromInstructorId)} → ${nameOfInstructor(entry.toInstructorId)}`
-            : undoing
-              ? LEDGER_TYPE_LABEL[entry.type]
-              : labelOf(PAY_CATEGORY_LABELS, entry.category)}
+            /* 세션업은 "몇 회가 몇 회가 됐는가" 가 읽혀야 한다. 종류 이름만
+               적으면 반년 뒤 "왜 150회냐" 에 답할 것이 없다. */
+            : sessionUp
+              ? sessionUpLabel(entry)
+              : titled
+                ? LEDGER_TYPE_LABEL[entry.type]
+                : labelOf(PAY_CATEGORY_LABELS, entry.category)}
         </span>
         <span className="shrink-0 tabular-nums" style={{
           fontSize: TYPE.body, fontWeight: 600, color: transfer ? SUB : issue ? BRAND_D : INK,
@@ -16679,14 +16700,25 @@ function LedgerRow({ entry, nameOfInstructor, corrected = false, onCorrect }) {
           </span>
         ) : null}
         <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: SUB }}>
-          {transfer ? "" : nameOfInstructor(entry.instructorId)}
+          {/* 누가 눌렀는가. 세션업과 양도는 돈이 움직이는 일이라 담당 강사가
+              아니라 처리한 사람이 남아야 한다 -- 분쟁 때 물을 상대가 그쪽이다. */}
+          {transfer ? "" : sessionUp || handover
+            ? `처리자 ${nameOfInstructor(entry.createdBy)}`
+            : nameOfInstructor(entry.instructorId)}
           {/* 분쟁이 생겼을 때 여는 화면이다. 금액 옆에 근거가 없으면
               "왜 이 금액이냐"에 아무도 답할 수 없다. */}
           {!transfer && entry.rule ? ` · ${labelOf(PRICING_RULE_LABELS, entry.rule)}` : ""}
         </span>
-        {!transfer && !undoing ? (
+        {!transfer && !titled ? (
           <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
             ₩{won(amount)}
+          </span>
+        ) : null}
+        {/* 세션업으로 들어온 돈. 0원 세션업(서비스만 얹기)도 있어 조건을 둔다 --
+            ₩0 을 적으면 돈이 오간 줄로 읽힌다. */}
+        {sessionUp && addedPrice > 0 ? (
+          <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: BRAND_D }}>
+            +₩{won(addedPrice)}
           </span>
         ) : null}
         {/* 되돌리는 항목은 급여에서 그만큼을 뺀다. 부호가 보여야 읽힌다. */}
@@ -16857,6 +16889,46 @@ function passEditFailure(error) {
     return `연결이 불안정해 저장하지 못했어요. 다시 시도해 주세요. (코드 ${code})`;
   }
   return `저장하지 못했어요. (코드 ${code})`;
+}
+
+/**
+ * 세션업·양도가 서버에서 막힌 이유. **코드를 반드시 함께 보여준다.**
+ *
+ * 서버는 막은 이유를 `message` 에 원본 코드로 싣는다 (pass-admin.js). callable
+ * 은 그것을 `failed-precondition` 으로 감싸므로, `code` 만 보면 전부 한 덩어리가
+ * 된다 -- 듀엣이라 안 되는 것과 연결이 끊긴 것이 같은 문구가 된다.
+ *
+ * 분류는 CLAUDE.md 의 표를 따른다: 결정적 오류는 자동 재시도하지 않고 사람이
+ * 무엇을 고쳐야 하는지 말한다.
+ */
+function passAdminFailure(error) {
+  const code = String(error?.code || "unknown");
+  const detail = String(error?.message || "").trim();
+  const reason = detail.replace(/^.*?\/?(failed-precondition|internal):\s*/i, "") || detail;
+
+  const known = {
+    ...SESSION_UP_ERROR_LABEL,
+    ...TRANSFER_BLOCK_LABEL,
+    pass_not_found: "이 회원권을 찾지 못했습니다. 화면을 새로 고쳐 주세요.",
+    transfer_target_not_found: "받는 회원을 센터 명부에서 찾지 못했습니다.",
+    transfer_instructor_required: "담당 강사가 없는 회원권은 넘길 수 없습니다.",
+    transfer_expires_invalid: "이 회원권의 만료일을 읽을 수 없습니다. 만료일을 먼저 맞춰 주세요.",
+  };
+  if (known[reason]) return `${known[reason]} (코드 ${reason})`;
+
+  if (code === "functions/permission-denied" || code === "permission-denied") {
+    return `이 작업을 할 권한이 없어요. 대표나 FC매니저만 할 수 있습니다. (코드 ${code})`;
+  }
+  if (code === "functions/unauthenticated" || code === "unauthenticated") {
+    return `로그인이 풀렸어요. 다시 로그인해 주세요. (코드 ${code})`;
+  }
+  /* 일시적인 것만 "다시 시도" 를 권한다. 결정적 오류에 재시도를 권하면
+     대표는 같은 버튼을 열 번 누른다. */
+  if (["functions/unavailable", "unavailable", "functions/deadline-exceeded", "deadline-exceeded",
+    "functions/aborted", "aborted", "functions/cancelled", "cancelled"].includes(code)) {
+    return `연결이 불안정해 저장하지 못했어요. 다시 시도해 주세요. (코드 ${code})`;
+  }
+  return `처리하지 못했어요. (코드 ${reason || code})`;
 }
 
 function PassEditSheet({
@@ -17109,7 +17181,161 @@ function PassTransferSheet({
   );
 }
 
-function ClientPassRow({ pass, nameOfInstructor, nameOfClient = () => "", clientId = "", now, onCancel, cancellable = false, onTransfer, onAdjust, onExpiry }) {
+/**
+ * 세션업 — **같은 회원권을 늘린다. 새로 발급하지 않는다.**
+ *
+ * 33회를 쓰다가 100회로 올리는 것은 같은 계약을 키운 것이다. 새로 발급하면
+ * 그 회원에게 회원권이 둘이 되고 차감이 둘로 갈린다. 회원은 하나로 알고 있는데
+ * 장부만 둘이 된다.
+ *
+ * 숫자는 planSessionUp 이 센다 -- **서버가 쓰는 것과 같은 함수다.** 여기서 따로
+ * 세면 대표가 본 숫자와 박히는 숫자가 갈라지고, 그때는 원장이 이미 쌓인 뒤다.
+ */
+function PassSessionUpSheet({
+  pass, onCancel, onConfirm, busy, error,
+  initialSessions = "", initialPrice = "", initialService = "", initialDate = "",
+  initialMethod = "",
+}) {
+  const [sessions, setSessions] = useState(initialSessions);
+  const [price, setPrice] = useState(initialPrice);
+  const [service, setService] = useState(initialService);
+  const [date, setDate] = useState(initialDate);
+  const [method, setMethod] = useState(initialMethod || pass?.paymentMethod || PAYMENT_METHOD.CARD);
+
+  /* 새 만료일은 선택이다. 안 주면 기존 날짜 그대로다 -- 늘린 회차를 쓸 기간이
+     없으면 늘린 뜻이 없지만, 그 판단은 사람이 한다. */
+  let nextExpiry = null;
+  if (date) {
+    const parsed = new Date(`${date}T23:59:59`);
+    nextExpiry = Number.isFinite(parsed.getTime()) ? parsed : null;
+  }
+
+  const input = {
+    pass,
+    addSessions: Number.parseInt(String(sessions).trim(), 10),
+    addPrice: Number.parseInt(String(price).trim() || "0", 10),
+    addService: Number.parseInt(String(service).trim() || "0", 10),
+  };
+  const refused = String(sessions).trim() || String(price).trim() ? sessionUpError(input) : "";
+  const ready = !refused && Number.isInteger(input.addSessions) && input.addSessions > 0 && !busy;
+  /* 막혀 있으면 미리보기를 띄우지 않는다. 지어낸 숫자를 보고 누르게 된다. */
+  const plan = ready || (!refused && Number.isInteger(input.addSessions) && input.addSessions > 0)
+    ? planSessionUp({ ...input, expiresAt: nextExpiry })
+    : null;
+
+  const rows = plan ? [
+    ["총 회차", `${plan.before.totalSessions}회`, `${plan.after.totalSessions}회`],
+    ["잔여", `${plan.before.remainingCount}회`, `${plan.after.remainingCount}회`],
+    ["서비스", `${plan.before.serviceSessions}회`, `${plan.after.serviceSessions}회`],
+    ["계약 금액", `₩${won(plan.before.contractPrice)}`, `₩${won(plan.after.contractPrice)}`],
+    ["회당 금액", `₩${won(plan.before.baseUnitPrice)}`,
+      plan.after.baseUnitPrice === null ? "계산 불가" : `₩${won(plan.after.baseUnitPrice)}`],
+    ["만료일", plan.before.expiresAt ? dayLabel(plan.before.expiresAt) : "없음",
+      plan.after.expiresAt ? dayLabel(plan.after.expiresAt) : "없음"],
+  ] : [];
+
+  return (
+    <section data-pass-session-up style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>세션업</h2>
+      <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        이 회원권의 회차와 계약 금액을 함께 늘립니다. 새 회원권을 만들지 않으므로
+        차감도 누적도 하나로 이어집니다.
+      </p>
+      <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        이미 확정된 차감은 그때의 단가 그대로입니다. 새 회당 금액은 앞으로의 수업부터 적용됩니다.
+      </p>
+
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <Field label="추가 횟수">
+          <input value={sessions} inputMode="numeric" className={inputCls} placeholder="예) 50"
+            onChange={(event) => setSessions(event.target.value.replace(/\D/g, ""))} />
+        </Field>
+        <Field label="추가 금액 (원)">
+          <input value={price} inputMode="numeric" className={inputCls} placeholder="예) 2500000"
+            onChange={(event) => setPrice(event.target.value.replace(/\D/g, ""))} />
+        </Field>
+      </div>
+
+      <div className="mt-2 grid grid-cols-2 gap-2">
+        <Field label="추가 서비스 (선택)">
+          <input value={service} inputMode="numeric" className={inputCls} placeholder="0"
+            onChange={(event) => setService(event.target.value.replace(/\D/g, ""))} />
+        </Field>
+        <Field label="새 만료일 (선택)">
+          <input type="date" value={date} className={inputCls}
+            onChange={(event) => setDate(event.target.value)} />
+        </Field>
+      </div>
+
+      <div className="mt-2">
+        <p className="mb-1" style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>결제수단</p>
+        <div className="flex flex-wrap gap-1.5">
+          {Object.entries(PAYMENT_METHOD_LABELS).map(([value, label]) => (
+            <button key={value} type="button" onClick={() => setMethod(value)}
+              className="px-3 font-bold" style={{
+                height: 30, borderRadius: 999, fontSize: TYPE.caption,
+                backgroundColor: method === value ? TINT : CANVAS,
+                color: method === value ? BRAND_D : SUB,
+              }}>{label}</button>
+          ))}
+        </div>
+      </div>
+
+      {/* 누르기 전에 무엇이 일어나는지. 원장은 고칠 수 없다. */}
+      {plan ? (
+        <div className="mt-3" style={{ padding: 12, borderRadius: 10, backgroundColor: CANVAS }}>
+          <p className="mb-1.5" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>
+            이렇게 바뀝니다
+          </p>
+          {rows.map(([label, before, after]) => (
+            <div key={label} className="flex items-center gap-2 py-0.5">
+              <span className="w-20 shrink-0" style={{ fontSize: TYPE.caption, color: SUB }}>{label}</span>
+              <span className="min-w-0 flex-1 text-right tabular-nums"
+                style={{ fontSize: TYPE.caption, color: SUB }}>{before}</span>
+              <ChevronRight size={12} style={{ color: FAINT, flexShrink: 0 }} />
+              <span className="min-w-0 flex-1 tabular-nums"
+                style={{ fontSize: TYPE.caption, fontWeight: 700, color: before === after ? SUB : BRAND_D }}>{after}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {/* 막힌 이유는 코드별로 다른 문구다. 한 문구로 뭉개면 무엇을 고쳐야 하는지
+          알 수 없다. */}
+      {refused ? (
+        <p role="alert" className="mt-2" style={{ fontSize: TYPE.caption, color: BAD }}>
+          {SESSION_UP_ERROR_LABEL[refused] || `처리하지 못했어요 (코드 ${refused})`}
+        </p>
+      ) : null}
+      {error ? <p role="alert" className="mt-2" style={{ fontSize: TYPE.caption, color: BAD }}>{error}</p> : null}
+
+      <p className="mt-3" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        늘린 기록은 이력에 남고 되돌릴 수 없습니다. 잘못 넣었다면 잔여 조정으로 맞춰 주세요.
+      </p>
+      <div className="mt-3 flex gap-2">
+        <button type="button" onClick={onCancel} className="h-11 flex-1 font-bold"
+          style={{ borderRadius: 10, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>취소</button>
+        <button type="button" disabled={!ready}
+          onClick={() => onConfirm?.({
+            addSessions: input.addSessions,
+            addPrice: input.addPrice,
+            addService: input.addService,
+            paymentMethod: method,
+            expiresAt: nextExpiry ? nextExpiry.toISOString() : "",
+          })}
+          className="h-11 flex-1 font-bold" style={{
+            borderRadius: 10, backgroundColor: BRAND, color: "#fff", fontSize: TYPE.caption,
+            opacity: ready ? 1 : 0.5,
+          }}>{busy ? "처리 중" : "세션업 확정"}</button>
+      </div>
+    </section>
+  );
+}
+
+function ClientPassRow({
+  pass, nameOfInstructor, nameOfClient = () => "", clientId = "", now,
+  onCancel, cancellable = false, onTransfer, onAdjust, onExpiry, onSessionUp,
+}) {
   const usable = isDeductablePass(pass, now);
   /* 듀엣이면 이 회원권을 둘이 함께 쓴다. 잔여 29회가 두 사람의 29회라는
      사실이 화면에 없으면, 대표는 한 사람 몫으로 읽고 재등록 시점을 잘못 센다. */
@@ -17147,14 +17373,26 @@ function ClientPassRow({ pass, nameOfInstructor, nameOfClient = () => "", client
               backgroundColor: CANVAS, color: cancellable ? BAD : SUB, opacity: cancellable ? 1 : 0.45,
             }}>발급 취소</button>
         ) : null}
+        {/* 세션업. 회차를 늘리는 쪽이라 가장 자주 눌리고, 그래서 앞에 둔다. */}
+        {onSessionUp ? (
+          <button type="button" onClick={onSessionUp}
+            className="shrink-0 px-2.5 font-bold" style={{
+              height: 28, borderRadius: 999, fontSize: TYPE.caption,
+              backgroundColor: TINT, color: BRAND_D,
+            }}>세션업</button>
+        ) : null}
         {/* 양도. 듀엣이거나 넘길 유료 회차가 없으면 아예 열지 않는다 --
-            눌러도 거부되는 버튼을 두지 않는다. */}
+            눌러도 거부되는 버튼을 두지 않는다.
+
+            "담당 강사 변경" 과 한 글자도 겹치지 않게 적는다. 둘 다 "양도" 로
+            읽히면 대표가 회원에게 넘길 자리에서 강사를 바꾸거나 그 반대를
+            하고, 어느 쪽도 되돌릴 수 없다. */}
         {onTransfer ? (
           <button type="button" onClick={onTransfer}
             className="shrink-0 px-2.5 font-bold" style={{
               height: 28, borderRadius: 999, fontSize: TYPE.caption,
               backgroundColor: CANVAS, color: BRAND_D,
-            }}>양도</button>
+            }}>양도(회원 간)</button>
         ) : null}
         {/* 잔여 조정은 대표만, 만료일 변경은 대표와 FC매니저. 강사에게는
             아예 그려지지 않는다 -- 부르는 쪽이 넘겨주지 않는다. 규칙도 같은
@@ -17203,7 +17441,7 @@ function ClientDetail({
   organization, client, history, loading, error, instructors = [], currentUserId = "", nameOfClient = () => "",
   clients = [], passStore, onClose, onRetry, onChanged, onToast, onChangePhone,
   now = () => new Date(), initialUndo = null, initialTransfer = null, initialPhoneEdit = false,
-  initialPassEdit = null,
+  initialPassEdit = null, initialSessionUp = null,
 }) {
   const at = now();
   /* 되돌리기는 대표만 한다. 강사와 매니저가 스스로 되돌릴 수 있으면 기록의
@@ -17214,16 +17452,26 @@ function ClientDetail({
   const [reason, setReason] = useState(initialUndo?.reason || "");
   const [undoError, setUndoError] = useState("");
   const [busy, setBusy] = useState(false);
-  /* 양도도 대표만 한다. 회원 사이에 돈이 오가는 일이라 차감 보정·취소와 같은
-     선이고, 규칙도 대표만 열어 둔다. */
+  /* 양도와 세션업은 대표와 FC매니저가 한다. **규칙은 그대로 대표만 연다** --
+     두 경로 모두 서버 통로(functions/src/pass-admin.js)로만 간다. 규칙을 고쳐
+     문을 열지 않는 이유는 그 머리말에 있다.
+
+     되돌리기·취소와 선이 다른 이유: 저 둘은 이미 일어난 일을 없던 일로 만드는
+     것이고, 이 둘은 새 사실을 더하는 것이다. 운영이 매일 하는 일을 할 때마다
+     대표를 불러야 하면 회원이 기다린다. */
   const [transfer, setTransfer] = useState(initialTransfer);
   const [transferError, setTransferError] = useState("");
+  const [sessionUp, setSessionUp] = useState(initialSessionUp);
+  const [sessionUpErr, setSessionUpErr] = useState("");
   /* 잔여 조정은 대표만. 회차는 돈이라 차감 보정·취소·양도와 같은 선이다.
      만료일은 FC매니저도 옮긴다 -- 연장과 홀딩은 운영이 하는 일이고, 그때마다
      대표를 불러야 하면 회원이 기다린다. 규칙이 같은 선을 긋는다. */
   const canAdjust = canUndo;
   const canChangeExpiry = !organization?.isLegacy
     && (organization?.role === ROLES.OWNER || organization?.role === ROLES.MANAGER);
+  /* 세션업·양도와 같은 선이다. 만료일을 옮기는 사람이 회차를 늘리지 못할
+     이유가 없다 -- 둘 다 운영이 매일 하는 일이고, 둘 다 이력이 남는다. */
+  const canSessionUp = canChangeExpiry;
   const [passEdit, setPassEdit] = useState(initialPassEdit);
   const [passEditError, setPassEditError] = useState("");
 
@@ -17323,22 +17571,54 @@ function ClientDetail({
     setBusy(true);
     setTransferError("");
     try {
-      const result = await transferPass(organizationId, transfer.pass, {
+      /* 규칙이 아니라 서버 통로로 간다. 규칙은 양도를 대표에게만 열어 두고
+         있고, FC매니저도 하려면 그 문을 열어야 하는데 -- 규칙은 한 번 나가면
+         그 사이의 모든 쓰기에 적용된다. 통로 하나를 내는 쪽이 좁다.
+
+         금액은 보내지 않는다. 서버가 같은 모듈로 다시 센다. */
+      const result = await fbHandoverPass({
+        organizationId,
+        passId: transfer.pass?.id || "",
         toClientId,
         sessions,
         /* 받는 회원의 담당 강사다. 지금은 원본의 담당을 그대로 잇는다 --
            회원을 옮기면서 강사까지 바꾸면 무엇이 급여를 움직였는지 둘로
            갈린다. 담당은 교체 화면에서 따로 바꾼다. */
         instructorId: transfer.pass?.instructorId || "",
-        createdBy: currentUserId,
-      }, { store: passStore });
+      });
       setTransfer(null);
       onToast?.({ ok: true, msg: `${result.sessions}회를 넘겼습니다.` });
       onChanged?.();
     } catch (thrown) {
       /* 막힌 이유는 코드별로 다른 문구다. 코드 없는 "오류가 발생했습니다" 는
-         대표도 저도 아무것도 할 수 없게 만든다. */
-      setTransferError(transferBlockLabel({ code: thrown?.code, limit: thrown?.limit }));
+         대표도 저도 아무것도 할 수 없게 만든다.
+
+         서버가 던진 원본 코드를 읽는다 -- callable 이 전부 failed-precondition
+         으로 감싸므로 code 만 보면 듀엣과 연결 끊김이 같은 문구가 된다. */
+      setTransferError(passAdminFailure(thrown));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /* 세션업. 숫자는 화면과 서버가 같은 함수로 세고, 쓰는 것은 서버뿐이다. */
+  const runSessionUp = async (payload) => {
+    if (!sessionUp || busy) return;
+    setBusy(true);
+    setSessionUpErr("");
+    try {
+      const result = await fbSessionUpPass({
+        organizationId,
+        passId: sessionUp.pass?.id || "",
+        ...payload,
+      });
+      setSessionUp(null);
+      onToast?.({ ok: true, msg: `${result?.after?.totalSessions ?? "?"}회로 늘렸습니다.` });
+      onChanged?.();
+    } catch (thrown) {
+      /* 서버가 막은 이유를 그대로 문구로 바꾼다. 코드 없는 "오류가
+         발생했습니다" 는 대표도 저도 아무것도 할 수 없게 만든다. */
+      setSessionUpErr(passAdminFailure(thrown));
     } finally {
       setBusy(false);
     }
@@ -17375,6 +17655,13 @@ function ClientDetail({
     <PassEditSheet kind={passEdit.kind} pass={passEdit.pass}
       onCancel={() => { setPassEdit(null); setPassEditError(""); }}
       onConfirm={runPassEdit} busy={busy} error={passEditError} />
+  );
+
+  if (sessionUp) return (
+    <PassSessionUpSheet pass={sessionUp.pass}
+      initialSessions={sessionUp.sessions || ""} initialPrice={sessionUp.price || ""}
+      onCancel={() => { setSessionUp(null); setSessionUpErr(""); }}
+      onConfirm={runSessionUp} busy={busy} error={sessionUpErr} />
   );
 
   if (transfer) return (
@@ -17466,9 +17753,11 @@ function ClientDetail({
                   nameOfClient={nameOfClient} clientId={client?.id || ""} now={at}
                   cancellable={canUndo && isCancellablePass(pass, entries)}
                   onCancel={canUndo ? () => { setUndo({ kind: "cancel", pass }); setReason(""); } : undefined}
-                  onTransfer={canUndo && transferableSessions(pass) > 0 && isDeductablePass(pass, at)
+                  onTransfer={canSessionUp && transferableSessions(pass) > 0 && isDeductablePass(pass, at)
                     && checkTransfer({ pass, toClientId: "-", sessions: 1 }).code !== TRANSFER_BLOCK.DUET
                     ? () => { setTransfer({ pass }); setTransferError(""); } : undefined}
+                  onSessionUp={canSessionUp && pass.status === "active"
+                    ? () => { setSessionUp({ pass }); setSessionUpErr(""); } : undefined}
                   onAdjust={canAdjust ? () => { setPassEdit({ kind: "adjust", pass }); setPassEditError(""); } : undefined}
                   onExpiry={canChangeExpiry && pass.expiresAt
                     ? () => { setPassEdit({ kind: "expiry", pass }); setPassEditError(""); } : undefined} />
@@ -21882,11 +22171,24 @@ export function createAppScreenSmokeCases() {
     { id: "h-deduct-wrong", passId: "smoke-pass-a", clientId: "smoke-client-a", type: "deduct", delta: -1, category: "pt_1_1_repurchase_event", unitPrice: 30000, instructorId: "u1", occurredAt: new Date(2026, 8, 14, 10, 0), createdAt: new Date(2026, 8, 14, 10, 0) },
     { id: "h-deduct-wrong_correction", passId: "smoke-pass-a", clientId: "smoke-client-a", type: "correction", delta: 1, category: "pt_1_1_repurchase_event", unitPrice: 30000, correctsEntryId: "h-deduct-wrong", reason: "강사가 다른 회원을 눌렀습니다", instructorId: "u1", occurredAt: new Date(2026, 8, 15, 9, 0), createdAt: new Date(2026, 8, 15, 9, 0) },
     { id: "h-issue", passId: "smoke-pass-a", clientId: "smoke-client-a", type: "issue", delta: 22, category: "pt_1_1_repurchase_event", unitPrice: 30000, instructorId: "u1", occurredAt: new Date(2026, 7, 1, 10, 0), createdAt: new Date(2026, 7, 1, 10, 0) },
+    /* 세션업. 회당 단가가 없는 종류라 `|delta| × unitPrice` 가 0 이 되는데,
+       그대로 두면 250만원이 오간 줄에 ₩0 이 적힌다. 처리자도 담당 강사가
+       아니라 누른 사람이어야 한다. */
+    { id: "h-sessionup", passId: "smoke-pass-a", clientId: "smoke-client-a", type: "sessionup", delta: 50, addedSessions: 50, addedService: 0, addedPrice: 2500000, fromTotalSessions: 20, paymentMethod: "card", instructorId: "u1", occurredAt: new Date(2026, 8, 16, 15, 0), createdAt: new Date(2026, 8, 16, 15, 0), createdBy: "u2" },
   ];
   const smokeHistory = { passes: smokeHistoryPasses, entries: smokeHistoryEntries, remainingTotal: 8, failedPassIds: [] };
   const clientDetail = (extra = {}) => providerWith(smokeInstructorOrg, (
     <ClientDetail organization={readyOrganizationContext(smokeInstructorOrg)} client={smokeDetailClient}
       history={smokeHistory} loading={false} error="" instructors={smokeInstructors}
+      now={() => new Date(2026, 8, 17)} onClose={noop} onRetry={noop} {...extra} />
+  ));
+  /* 세션업과 양도는 FC매니저도 한다. 되돌리기·취소·잔여 조정은 아니다 --
+     같은 화면을 매니저로 띄워 그 선이 지켜지는지 본다. */
+  const smokeManagerOrg = { organizationId: "smoke-center", role: "manager", status: "active", isLegacy: false };
+  const managerClientDetail = (extra = {}) => providerWith(smokeManagerOrg, (
+    <ClientDetail organization={readyOrganizationContext(smokeManagerOrg)} client={smokeDetailClient}
+      history={smokeHistory} loading={false} error="" instructors={smokeInstructors}
+      currentUserId="smoke-manager" passStore={passStore} clients={smokeTransferClients}
       now={() => new Date(2026, 8, 17)} onClose={noop} onRetry={noop} {...extra} />
   ));
   /* 되돌리기는 대표만 본다. 같은 화면을 대표로 띄워 버튼이 생기는지 본다. */
@@ -22322,6 +22624,10 @@ export function createAppScreenSmokeCases() {
     }) },
     { name: "센터 회원 상세 · 만료일 변경", element: ownerClientDetail({
       initialPassEdit: { kind: "expiry", pass: smokeHistoryPasses[0] },
+    }) },
+    { name: "센터 회원 상세 · 매니저", element: managerClientDetail() },
+    { name: "센터 회원 상세 · 세션업", element: ownerClientDetail({
+      initialSessionUp: { pass: smokeHistoryPasses[0], sessions: "50", price: "2500000" },
     }) },
     { name: "센터 회원 상세 · 양도", element: ownerClientDetail({
       clients: smokeTransferClients,
@@ -23593,12 +23899,20 @@ export default function App() {
       /* 조회 실패가 "회원권이 없다"로 보이면 분쟁 중에 없는 사실을 말하게 된다. */
       .catch((error) => { if (alive) setHistoryError(error?.code || "unknown"); })
       .finally(() => { if (alive) setHistoryLoading(false); });
-    /* 이름은 곁들이다. 못 읽어도 uid 로 보여주고 화면은 선다. */
-    listInstructors(organizationContext.organizationId)
+    /* 이름은 곁들이다. 못 읽어도 uid 로 보여주고 화면은 선다.
+
+       대표·FC매니저는 센터 사람 전부를 읽는다 -- 이력의 "처리자" 가 대표나
+       매니저일 수 있는데, 강사 목록만 읽으면 그 자리에 uid 가 뜬다. 강사는
+       규칙이 소속 목록 전체를 막으므로 강사 목록만 읽는다. */
+    const seesEveryone = organizationContext.role === ROLES.OWNER
+      || organizationContext.role === ROLES.MANAGER;
+    (seesEveryone
+      ? listMemberships(organizationContext.organizationId)
+      : listInstructors(organizationContext.organizationId))
       .then((found) => { if (alive) setDetailInstructors(found); })
       .catch(() => {});
     return () => { alive = false; };
-  }, [detailClient?.id, organizationContext.organizationId, historyRevision]);
+  }, [detailClient?.id, organizationContext.organizationId, organizationContext.role, historyRevision]);
 
   const retryOrganizationContext = useCallback(async () => {
     const userId = fbCurrentUserId();

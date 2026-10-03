@@ -694,6 +694,17 @@ export const fbResetMigratedData = callableAsOwner("resetMigratedData");
    없다 -- 이름은 화면이 자기 명부에서 붙인다 (§7). */
 export const fbFixMigratedServiceSessions = callableAsOwner("fixMigratedServiceSessions");
 
+/* ── 세션업과 회원 간 양도 ────────────────────────────────────────────────
+   대표와 FC매니저가 쓴다. 근거는 functions/src/pass-admin.js 머리말에 있다.
+
+   규칙은 그대로다 -- 양도는 규칙이 대표에게만 열어 두었고, 세션업이 바꾸는
+   totalSessions 는 아예 막혀 있다. 그 문을 여는 대신 통로를 하나 냈다.
+
+   금액은 보내지 않는다. 회차와 받는 사람만 보내고 서버가 같은 모듈로 다시
+   센다 -- 앱이 보낸 금액을 그대로 박으면 그것은 잠긴 문이 아니다. */
+export const fbSessionUpPass = callableAsOwner("sessionUpPass");
+export const fbHandoverPass = callableAsOwner("handoverPass");
+
 export async function fbPurgeExpiredPhotoBackups() {
   if (!functions || !auth?.currentUser) return { purged: 0 };
   const call = httpsCallable(functions, "purgeExpiredPhotoBackups");

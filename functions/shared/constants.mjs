@@ -165,6 +165,17 @@ export const LEDGER_ENTRY_TYPE = Object.freeze({
    * 사라지는 것이 아니라 옮겨 간다.
    */
   HANDOVER: "handover",
+  /**
+   * 세션업. 같은 회원권의 회차와 계약 금액이 함께 늘어난다 -- 33회를 쓰다가
+   * 100회로 올리는 것은 같은 계약을 키운 것이지 새 회원권이 아니다.
+   *
+   * delta 는 늘어난 잔여의 양수다. 급여에는 잡히지 않는다 -- 수업이 아니고,
+   * PAYROLL_ENTRY_TYPES 가 허용 목록이라 애초에 질의에 걸리지 않는다.
+   *
+   * **규칙은 이 종류를 받지 않는다.** 서버(Admin SDK)만 쓴다 -- 회원권의
+   * totalSessions 를 바꾸는 일이라 클라이언트에 그 문을 열 수 없다.
+   */
+  SESSIONUP: "sessionup",
   /** 잘못 차감한 한 회차를 되돌린다. delta +1. */
   CORRECTION: "correction",
   /** 잘못 발급한 회원권을 무효화한다. delta 는 남은 횟수의 음수. */

@@ -73,16 +73,18 @@ function fakeFirestore(seed = {}) {
   };
 }
 
-/* firebase-admin 의 FieldValue.increment 는 센티넬 객체다. 가짜에서도 같은
-   모양이어야 "읽어서 빼지 않는다" 가 실제로 지켜지는지 볼 수 있다.
+/* 서버 센티넬을 우리 것으로 넣는다. **firebase-admin 을 부르지 않는다.**
 
-   functions/ 를 기준으로 부른다 -- firebase-admin 은 거기에만 설치돼 있고,
-   pass-admin.js 가 읽는 것과 **같은 모듈 인스턴스**여야 갈아끼운 것이 먹는다. */
-const requireFromFunctions = createRequire(new URL("../../functions/package.json", import.meta.url));
-const { FieldValue } = requireFromFunctions("firebase-admin/firestore");
-const originalIncrement = FieldValue.increment;
-FieldValue.increment = (amount) => ({ [INCREMENT]: amount, _delta: amount });
-test.after(() => { FieldValue.increment = originalIncrement; });
+   그 패키지는 functions/node_modules 에만 있고 CI 는 루트에서만 npm install
+   한다 -- 여기서 부르면 CI 에서 이 파일이 로드 단계에 죽고, TAP 줄도 못 내고
+   죽어서 "not ok" 로는 잡히지도 않는다 (2026-10-03 Codemagic).
+
+   증감은 센티넬 모양 그대로 둔다. 가짜 저장소가 "읽어서 빼지 않았다" 를 실제로
+   볼 수 있어야 하기 때문이다. */
+const fieldValue = {
+  increment: (amount) => ({ [INCREMENT]: amount, _delta: amount }),
+  serverTimestamp: () => "SERVER_TIME",
+};
 
 const ORG = "organizations/center-a";
 const basePass = (overrides = {}) => ({
@@ -127,7 +129,7 @@ test("session up writes the pass and the ledger in one batch", async () => {
   const store = fakeFirestore({ [`${ORG}/passes/pass-1`]: basePass({ remainingCount: 8 }) });
 
   const result = await runSessionUp(store, {
-    organizationId: "center-a", passId: "pass-1", actorId: "u-owner",
+    fieldValue, organizationId: "center-a", passId: "pass-1", actorId: "u-owner",
     addSessions: 50, addPrice: 2500000, paymentMethod: "card",
     now: () => new Date(2026, 9, 3, 10, 0),
   });
@@ -156,7 +158,7 @@ test("session up refuses an ended pass and writes nothing", async () => {
 
   await assert.rejects(
     () => runSessionUp(store, {
-      organizationId: "center-a", passId: "pass-1", actorId: "u-owner",
+      fieldValue, organizationId: "center-a", passId: "pass-1", actorId: "u-owner",
       addSessions: 10, addPrice: 500000,
     }),
     /pass_not_active/,
@@ -168,7 +170,7 @@ test("session up refuses a pass that is not there", async () => {
   const store = fakeFirestore({});
   await assert.rejects(
     () => runSessionUp(store, {
-      organizationId: "center-a", passId: "ghost", actorId: "u-owner",
+      fieldValue, organizationId: "center-a", passId: "ghost", actorId: "u-owner",
       addSessions: 10, addPrice: 500000,
     }),
     new RegExp(ADMIN_ERROR.NOT_FOUND),
@@ -184,7 +186,7 @@ test("session up does not touch serviceUsed", async () => {
   });
 
   await runSessionUp(store, {
-    organizationId: "center-a", passId: "pass-1", actorId: "u-owner",
+    fieldValue, organizationId: "center-a", passId: "pass-1", actorId: "u-owner",
     addSessions: 10, addPrice: 500000, addService: 2,
     now: () => new Date(2026, 9, 3),
   });
@@ -207,7 +209,7 @@ test("the callable handover matches the rules path exactly", async () => {
   });
 
   await runHandover(store, {
-    organizationId: "center-a", passId: "pass-1", toClientId: "client-b",
+    fieldValue, organizationId: "center-a", passId: "pass-1", toClientId: "client-b",
     sessions: 5, actorId: "u-owner", newPassId: "pass-new",
     now: () => new Date(2026, 9, 3),
   });
@@ -224,12 +226,9 @@ test("the callable handover matches the rules path exactly", async () => {
   }, { store: ruleStore, newId: () => "pass-new" });
   const viaRules = committed.find((item) => item.path.endsWith("passes/pass-new"))?.data;
 
-  /* 서버가 찍는 시각은 다를 수밖에 없다. 그 둘만 빼고 전부 같아야 한다. */
-  const comparable = (pass) => {
-    const { createdAt, ...rest } = pass;
-    return rest;
-  };
-  assert.deepEqual(comparable(viaCallable), comparable(viaRules));
+  /* 한 칸도 빼지 않고 견준다. 센티넬까지 같은 모양으로 넣었으므로 가릴 것이
+     없다 -- 빼 두면 그 칸이 갈라져도 테스트는 통과한다. */
+  assert.deepEqual(viaCallable, viaRules);
 });
 
 test("the handover ledger says where the sessions went", async () => {
@@ -239,7 +238,7 @@ test("the handover ledger says where the sessions went", async () => {
   });
 
   const result = await runHandover(store, {
-    organizationId: "center-a", passId: "pass-1", toClientId: "client-b",
+    fieldValue, organizationId: "center-a", passId: "pass-1", toClientId: "client-b",
     sessions: 5, actorId: "u-manager", newPassId: "pass-new",
     now: () => new Date(2026, 9, 3),
   });
@@ -266,7 +265,7 @@ test("the source pass is decremented, not overwritten", async () => {
   });
 
   await runHandover(store, {
-    organizationId: "center-a", passId: "pass-1", toClientId: "client-b",
+    fieldValue, organizationId: "center-a", passId: "pass-1", toClientId: "client-b",
     sessions: 5, actorId: "u-owner", newPassId: "pass-new",
     now: () => new Date(2026, 9, 3),
   });
@@ -287,7 +286,7 @@ test("a duet pass cannot be handed over", async () => {
 
   await assert.rejects(
     () => runHandover(store, {
-      organizationId: "center-a", passId: "pass-1", toClientId: "client-b",
+      fieldValue, organizationId: "center-a", passId: "pass-1", toClientId: "client-b",
       sessions: 5, actorId: "u-owner",
     }),
     /transfer_duet/,
@@ -302,7 +301,7 @@ test("a handover to someone outside the centre is refused", async () => {
 
   await assert.rejects(
     () => runHandover(store, {
-      organizationId: "center-a", passId: "pass-1", toClientId: "ghost",
+      fieldValue, organizationId: "center-a", passId: "pass-1", toClientId: "ghost",
       sessions: 5, actorId: "u-owner",
     }),
     new RegExp(ADMIN_ERROR.TARGET_NOT_FOUND),
@@ -318,7 +317,7 @@ test("more sessions than are left is refused", async () => {
 
   await assert.rejects(
     () => runHandover(store, {
-      organizationId: "center-a", passId: "pass-1", toClientId: "client-b",
+      fieldValue, organizationId: "center-a", passId: "pass-1", toClientId: "client-b",
       sessions: 5, actorId: "u-owner",
     }),
     /transfer_too_many/,
@@ -335,7 +334,7 @@ test("the price the caller sends is ignored", async () => {
   });
 
   await runHandover(store, {
-    organizationId: "center-a", passId: "pass-1", toClientId: "client-b",
+    fieldValue, organizationId: "center-a", passId: "pass-1", toClientId: "client-b",
     sessions: 5, actorId: "u-owner", newPassId: "pass-new",
     contractPrice: 1, netContractPrice: 1,
     now: () => new Date(2026, 9, 3),

@@ -155,12 +155,14 @@ const STATUS_BY_CLIENT_STATUS = { active: "active", hold: "hold", ended: "ended"
  *
  * @param {{
  *   clients?: Array<any>, members?: Array<any>, passes?: Array<any>, now?: Date,
- *   hiddenClientIds?: Array<string>,
+ *   hiddenClientIds?: Array<string>, hideUnlinked?: boolean,
  * }} input
  *   clients 조직 회원 (organizations/{org}/clients)
  *   members 기기에 저장된 레거시 회원 (db.members)
  *   passes  조직 회원권. 잔여와 담당 강사가 여기서 온다
  *   hiddenClientIds 이 기기에서만 숨긴 조직 회원
+ *   hideUnlinked 어느 조직 회원과도 맞지 않은 기기 회원을 목록에서 뺀다.
+ *     센터 소속 화면이 켠다 -- 아래 leftovers 주석 참고
  */
 export function mergeRoster(input = {}) {
   const clients = Array.isArray(input.clients) ? input.clients : [];
@@ -176,12 +178,19 @@ export function mergeRoster(input = {}) {
      문서에서 다시 읽어 덮어쓴다. 기기에 적어 둔 상태는 다음 병합에서 사라진다. */
   const hidden = new Set((Array.isArray(input.hiddenClientIds) ? input.hiddenClientIds : []).map(text).filter(Boolean));
 
+  /* 연락처로만 붙인다. **이름으로는 붙이지 않는다.**
+
+     이름 매칭이 있던 이유는 이관 직후 연락처가 비어 맞출 길이 없던 회원
+     때문이었다. 대가가 컸다: 동명이인이면 **남의 수업기록과 체형사진이 엉뚱한
+     센터 회원에게 붙는다.** 기기 쪽에만 있는 글과 사진이라 붙고 나면 어느
+     쪽이 원래 누구 것이었는지 가릴 방법도 없다.
+
+     못 붙은 회원은 사라지지 않는다. leftovers 로 내려가고 unlinkedLocal 로도
+     돌아간다 -- 연락처를 채우면 그때 붙는다. */
   const byPhone = new Map();
-  const byName = new Map();
   for (const member of members) {
     const key = keysOf(member);
     if (key.phone && !byPhone.has(key.phone)) byPhone.set(key.phone, member);
-    if (key.name && !byName.has(key.name)) byName.set(key.name, member);
   }
 
   const linked = new Set();
@@ -191,10 +200,6 @@ export function mergeRoster(input = {}) {
        않도록 이미 쓴 것은 건너뛴다 -- 그러면 기록이 둘로 보인다. */
     let match = key.phone ? byPhone.get(key.phone) : null;
     if (match && linked.has(match.id)) match = null;
-    if (!match && key.name) {
-      const candidate = byName.get(key.name);
-      if (candidate && !linked.has(candidate.id)) match = candidate;
-    }
     const facts = passFactsFor(client.id, passes, now);
     const shared = {
       orgClientId: client.id,
@@ -252,8 +257,9 @@ export function mergeRoster(input = {}) {
     };
   });
 
-  /* 어느 조직 회원과도 맞지 않은 레거시 회원. 이관 직후에는 연락처가 달라
-     못 맞춘 같은 사람이 여기 섞인다 -- 화면이 그 가능성을 말한다.
+  /* 어느 조직 회원과도 맞지 않은 레거시 회원. 이관 직후에는 연락처가 비거나
+     달라서 못 맞춘 같은 사람이 여기 섞인다 -- 화면이 그 가능성을 말한다.
+     이름으로는 붙이지 않으므로(위 참고) 그 수가 전보다 많을 수 있다.
 
      잔여는 여기서도 보여주지 않는다. 조직 회원권이 없으니 쓸 수 있는 회차를
      아는 방법이 없고, 레거시 숫자를 보여주면 강사가 그것으로 수업을 센다. */
@@ -305,7 +311,15 @@ export function mergeRoster(input = {}) {
     return { ...member, duetWith: text(partner.id), duetWithName: text(partner.name) };
   });
 
-  const all = [...paired, ...leftovers];
+  /* 센터 소속 화면에서는 못 붙은 기기 회원을 빼고 그린다.
+
+     명부 원본이 서버이므로, 거기 없는 기기 회원은 센터가 모르는 사람이다.
+     그대로 두면 "잔여 0회" 짜리 줄이 명부에 섞이고 강사는 그것을 지금 다니는
+     회원으로 읽는다. 특히 새 폰에서 옛 개인 백업을 불러온 직후가 그렇다.
+
+     목록에서만 뺀다. 데이터는 그대로 있고 unlinkedLocal 로 돌아가므로,
+     연락처를 채워 붙이거나 따로 보여 줄 길이 남는다. */
+  const all = input.hideUnlinked === true ? [...paired] : [...paired, ...leftovers];
   /* 숨긴 회원은 목록에서 빼되 세어서 돌려준다. 몇 명을 숨겼는지 모르면 되돌릴
      길이 없고, 되돌릴 수 없는 숨김은 삭제와 다를 바가 없다. */
   const visible = hidden.size === 0

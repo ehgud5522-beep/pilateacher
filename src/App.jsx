@@ -27,7 +27,8 @@ import {
 } from "recharts";
 import {
   fbReady, fbAuthApiKey, fbSignInSocial, fbSignInEmail, fbSignUpEmail, fbSignOut, fbOnAuth,
-  fbAuthStateReady, fbLoadProfileState, fbSaveProfile, fbPushBackup, fbPullBackup, fbReauthenticate,
+  fbAuthStateReady, fbLoadProfileState, fbSaveProfile, fbPushBackup, fbPullBackup,
+  fbPreservePreviousBackup, PREVIOUS_PHONE_BACKUP, fbReauthenticate,
   fbRevokeAppleAccess, fbDeleteCurrentUserAccount, fbLoadAIConsent, fbGrantAIConsent, fbCurrentUserId,
   fbDeleteAIConsent,
   fbLoadAIRecordingStatus, fbLoadSettlementConfig, fbSendDiagnosticReport, fbWritePilotMetricAttempt,
@@ -172,6 +173,10 @@ import { JOURNEY_PRIOR_NOTE, buildPassJourney, hasJourney } from "../functions/s
 import {
   SESSION_UP_ERROR_LABEL, planSessionUp, sessionUpError, sessionUpLabel,
 } from "../functions/shared/session-up.mjs";
+import {
+  RESTORE_OFFER, backupPaused, canOverwriteBackup, isCentreAccount,
+  restoreOfferDecision, restorePreview,
+} from "./features/backup/restore-offer.js";
 import { previewLessonRates } from "./features/schedule/lesson-rate-preview.js";
 import {
   issueReportCsv, loadOrganizationMonthlyIssues,
@@ -14806,7 +14811,7 @@ const compactBytes = (value) => {
   if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1048576).toFixed(1)} MB`;
 };
-function CloudBackupCard({ status, onEnablePhotos, onRetry }) {
+function CloudBackupCard({ status, onEnablePhotos, onRetry, onRestorePrevious }) {
   const photoCovered = status?.photoEnabled || Number(status?.localPhotoCount || 0) === 0;
   const safe = status?.state === "safe" && Number(status?.pendingPhotos || 0) === 0 && photoCovered;
   const counts = status?.counts || {};
@@ -14825,6 +14830,20 @@ function CloudBackupCard({ status, onEnablePhotos, onRetry }) {
       <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>사진 {compactBytes(usage.photoBytes)} · 썸네일 {compactBytes(usage.thumbnailBytes)} · 데이터 {compactBytes(counts.firestoreBytes)}</p>
       {!status?.photoEnabled && <button type="button" onClick={onEnablePhotos} className="mt-3 h-11 w-full rounded-lg text-sm font-bold text-white" style={{ backgroundColor: BRAND }}>사진 클라우드 백업 켜기</button>}
       {status?.photoEnabled && <p className="mt-3 rounded-lg px-3 py-2" style={{ backgroundColor: GOOD_S, fontSize: TYPE.caption, lineHeight: 1.5, color: GOOD }}>사진 복구 백업 사용 중 · 고화질 최적화본과 썸네일을 본인 계정에 저장합니다.</p>}
+      {/* 폰을 바꾼 강사가 찾아오는 자리다. 묻지 않고 띄우던 창을 여기로 옮겼다 --
+          센터 소속이면 기기가 비어 있는 것이 정상이라, 그것만 보고 물으면
+          매번 틀린 질문이 된다 (restore-offer.js). 옛 기록은 지워지지 않으므로
+          필요할 때 여기서 꺼낸다. */}
+      {onRestorePrevious ? (
+        <>
+          <button type="button" onClick={onRestorePrevious}
+            className="mt-3 h-11 w-full rounded-lg text-sm font-bold"
+            style={{ backgroundColor: CANVAS, color: BRAND_D }}>이전 폰 기록 불러오기</button>
+          <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+            수업기록 원문·사진 구성·설정을 되살립니다. 회원과 회원권은 센터 서버에 있어 영향이 없습니다.
+          </p>
+        </>
+      ) : null}
     </Card>
   );
 }
@@ -21236,7 +21255,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
      두 화면이 서로 다른 순간의 원장을 보게 되고, 그 차이는 아무 데도 적히지
      않는다 -- 같은 객체를 쓰면 다를 수가 없다. */
   instructorPay = null, payMonth = "", payLoading = false, payError = "",
-  onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, payrollStore, issueStore, auditStore, ledgerStore, onRetryOrganization, onOpenClient, onClearMigratedSettlements, initialView = "hub" }) {
+  onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, onRestorePrevious, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, payrollStore, issueStore, auditStore, ledgerStore, onRetryOrganization, onOpenClient, onClearMigratedSettlements, initialView = "hub" }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const organization = useContext(OrganizationContext);
 
@@ -21852,7 +21871,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
             {demoMode && <section style={{ ...sectionStyle, backgroundColor: WARN_S, borderColor: WARN }}><p style={{ fontSize: TYPE.caption, fontWeight: 700, color: WARN }}>개발·데모 데이터 사용 중</p><p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK2 }}>현재 데이터는 실제 운영 데이터가 아닙니다.</p></section>}
           </div>
         )}
-        {view === "backup" && <div className="space-y-3"><CloudBackupCard status={backupStatus} onEnablePhotos={onEnablePhotoBackup} onRetry={onRetryBackup} /><HandoffCard db={db} photos={photos} account={account} onImport={onImport} onToast={onToast} /></div>}
+        {view === "backup" && <div className="space-y-3"><CloudBackupCard status={backupStatus} onEnablePhotos={onEnablePhotoBackup} onRetry={onRetryBackup} onRestorePrevious={onRestorePrevious} /><HandoffCard db={db} photos={photos} account={account} onImport={onImport} onToast={onToast} /></div>}
         {view === "pass-issue" && showClients && (
           <PassIssue organization={organization} currentUserId={account?.id || ""}
             clientStore={clientStore} productStore={productStore} instructorStore={instructorStore}
@@ -22578,6 +22597,12 @@ export function createAppScreenSmokeCases() {
     { name: "더보기 탭 · 강사", element: settingsTab({ ...smokeOwner, role: "instructor" }) },
     { name: "더보기 탭 · 개인 모드", element: settingsTab({ organizationId: "legacy_smoke", role: "owner", status: "active", isLegacy: true }) },
     { name: "더보기 탭 · 소속 확인 실패", element: settingsTab({ organizationId: "", role: "", status: "unknown", isLegacy: false }) },
+    /* 폰을 바꾼 강사가 찾아오는 자리. 묻지 않고 띄우던 창을 여기로 옮겼으므로,
+       이 버튼이 없으면 되살릴 길 자체가 없다. */
+    { name: "더보기 탭 · 백업", element: settingsTab(smokeOwner, {
+      initialView: "backup", onRestorePrevious: noop,
+      backupStatus: { state: "safe", counts: { members: 16, sessions: 6, photos: 4 }, lastBackupAt: new Date(2026, 8, 3, 9, 0).toISOString() },
+    }) },
     /* 소속 센터의 월간 리포트는 일정 탭이 읽은 원장 급여를 그대로 받는다.
        예전에는 기기 일정으로 따로 계산해 ₩50,000 vs ₩0 로 갈렸다. */
     { name: "더보기 탭 · 월간 리포트", element: settingsTab(smokeInstructorOrg, {
@@ -23323,8 +23348,13 @@ export default function App() {
       members: db.members,
       passes: rosterPasses,
       hiddenClientIds: db.settings?.hiddenClientIds,
+      /* 센터 명부에 없는 기기 회원은 목록에서 뺀다. 명부 원본이 서버이므로
+         거기 없는 사람은 센터가 모르는 사람이고, 그대로 두면 "잔여 0회" 짜리
+         줄이 섞여 강사가 그것을 지금 다니는 회원으로 읽는다. 데이터는
+         지우지 않는다 -- unlinkedLocal 로 그대로 돌아온다. */
+      hideUnlinked: isCentreAccount(organizationContext),
     });
-  }, [organizationRoster, rosterError, rosterClients, rosterPasses, db.members, db.settings?.hiddenClientIds]);
+  }, [organizationRoster, rosterError, rosterClients, rosterPasses, db.members, db.settings?.hiddenClientIds, organizationContext]);
 
   /* 조직 회원은 강사가 지울 대상이 아니다. 지우면 그 회원의 수업 기록과 사진이
      함께 사라지고, 그 데이터는 센터가 아니라 강사 기기에만 있다.
@@ -23538,6 +23568,11 @@ export default function App() {
   const [savedAt, setSavedAt] = useState(null);
   const [cloudBackupStatus, setCloudBackupStatus] = useState({ state: "idle", counts: {}, pendingPhotos: 0, localPhotoCount: 0, storageUsage: {}, photoEnabled: false, lastBackupAt: null });
   const [restoreOffer, setRestoreOffer] = useState(null);
+  /* 소속을 알기 전에 적어 두는 자리. 계정 읽기가 소속 조회보다 먼저 끝나므로
+     그 자리에서 물으면 센터 소속인지 모르는 채로 묻게 된다 (restore-offer.js). */
+  const [restoreCandidate, setRestoreCandidate] = useState(null);
+  /* 더보기 → "이전 폰 기록 불러오기". 사용자가 찾아온 길이라 전/후를 먼저 본다. */
+  const [restoreLookup, setRestoreLookup] = useState(null);
   const [restoreBusy, setRestoreBusy] = useState(false);
   const [restoreStartConfirm, setRestoreStartConfirm] = useState(false);
   const [lessonExamplesOpen, setLessonExamplesOpen] = useState(false);
@@ -23927,6 +23962,7 @@ export default function App() {
     accountRef.current = acc;
     restoreBlockedRef.current = false;
     setRestoreOffer(null);
+    setRestoreCandidate(null);
     let data = null, ph = {}, restored = false, reviewPhotos = null, cloudSnapshot = null, cloudManifest = [];
     let photoMetadataExists = false, photoMetadataParsed = false;
     const previousPostureTarget = readPosturePersistenceDiagnostics().find((entry) => entry?.selectedMemberIdHash || entry?.memberIdHash) || null;
@@ -23967,12 +24003,20 @@ export default function App() {
             reviewPhotos = cloudSnapshot.reviewPhotos;
           }
           try { await window.storage.set(dbKey(acc.id), JSON.stringify(data)); } catch (e) {}
-        } else if (cloudHasData && !localHasData && !restoreDecisionMade) {
+        } else if (cloudHasData && !localHasData) {
+          /* 여기서 묻지 않는다. 소속을 아직 모르기 때문이다 -- 계정 읽기가
+             소속 조회보다 먼저 끝난다. 후보만 적어 두고, 판단은 소속이 읽힌
+             뒤 아래 effect 가 한다 (restore-offer.js 머리말).
+
+             그동안은 올리지 않는다. 고르기도 전에 올리면 옛 기록 위에 빈
+             기기를 덮을 수 있다. */
           restoreBlockedRef.current = true;
-          setRestoreOffer({ accountId: acc.id, cloud: cloudSnapshot, manifest: cloudManifest.filter((item) => item?.status !== "deleted") });
-        } else if (cloudHasData && !localHasData && restoreDecisionMade) {
-          /* 새로 시작을 선택한 설치에서는 기존 클라우드 기록을 덮어쓰지 않는다. */
-          restoreBlockedRef.current = true;
+          setRestoreCandidate({
+            accountId: acc.id,
+            cloud: cloudSnapshot,
+            manifest: cloudManifest.filter((item) => item?.status !== "deleted"),
+            decisionMade: restoreDecisionMade,
+          });
         }
       } catch (e) { deviceLog("cloud_backup_load_failed", { stage: "manifest", ...deviceError(e) }); }
     }
@@ -24136,6 +24180,11 @@ export default function App() {
      ref 에 두고 한 번 쓰면 끈다. 켜 둔 채로 두면 다음에 진짜로 데이터가
      사라졌을 때 그 보호가 없다. */
   const backupOverrideOnce = useRef(false);
+  /* queueCloud 는 의존성이 비어 있어(매 저장마다 다시 만들면 타이머가 끊긴다)
+     상태를 직접 읽지 못한다. 덮어쓰기 보호에 걸렸을 때 센터 소속인지 보려면
+     그 순간의 값이 필요하다. */
+  const organizationRef = useRef(organizationContext);
+  useEffect(() => { organizationRef.current = organizationContext; }, [organizationContext]);
   const queueCloud = useCallback((uidStr, data) => {
     if (!fbReady || !uidStr) return;
     if (restoreBlockedRef.current) {
@@ -24155,20 +24204,48 @@ export default function App() {
       const uploadedManifest = manifest.filter((item) => item.storagePath && item.thumbnailPath);
       const queue = createPhotoQueue(window.localStorage, p.uid).read();
       const usage = storageUsage(uploadedManifest);
-      try {
-        const photoGraph = buildPhotoGraph(photosRef.current);
-        const allowDestructiveOverwrite = backupOverrideOnce.current;
-        backupOverrideOnce.current = false;
-        await fbPushBackup(p.uid, p.data, { photoCount: uploadedManifest.length, photoPending: queue.length, storageUsage: usage, photoManifest: uploadedManifest, photoGraph, allowDestructiveOverwrite });
+      const photoGraph = buildPhotoGraph(photosRef.current);
+      /* try 밖에 둔다. 덮어쓰기 보호에 걸렸을 때 catch 안에서 한 번 더 올려야
+         하는데, 안에 두면 거기서 보이지 않는다. */
+      const pushOptions = { photoCount: uploadedManifest.length, photoPending: queue.length, storageUsage: usage, photoManifest: uploadedManifest, photoGraph };
+      const markSaved = () => {
         writeCloudSyncMarker(p.uid, { localSavedAt: Date.now(), lastCloudAt: Date.now() });
         setCloudBackupStatus((current) => ({ ...current, state: queue.length ? "backing_up" : "safe", counts: backupCounts(p.data, uploadedManifest, photoGraph), pendingPhotos: queue.length, localPhotoCount: manifest.length, storageUsage: usage, photoEnabled: p.data.settings?.cloudPhotoBackupEnabled === true, lastBackupAt: new Date().toISOString() }));
+      };
+      try {
+        const allowDestructiveOverwrite = backupOverrideOnce.current;
+        backupOverrideOnce.current = false;
+        await fbPushBackup(p.uid, p.data, { ...pushOptions, allowDestructiveOverwrite });
+        markSaved();
       } catch (e) {
         if (e?.code === "backup/overwrite-blocked") {
-          restoreBlockedRef.current = true;
-          try {
-            const [cloud, manifest] = await Promise.all([fbPullBackup(p.uid), fbListPhotoBackups(p.uid)]);
-            if (cloud?.data) setRestoreOffer({ accountId: p.uid, cloud, manifest: manifest.filter((item) => item?.status !== "deleted") });
-          } catch (restoreError) {}
+          /* 보호 장치는 "기기 회원이 갑자기 줄었다" 를 사고로 본다. 센터
+             소속에서는 신호가 아니다 -- 명부 원본이 서버에 있고 기기 쪽은
+             건드린 회원만 한 줄씩 생기므로, 새 폰이면 당연히 적다. 여기서
+             막으면 백업이 영영 안 되고 같은 창이 다시 뜬다.
+
+             밀어붙이기 전에 옛 백업을 옆으로 옮긴다. 그것이 "이전 폰 기록
+             불러오기" 가 읽을 유일한 자리다. 옮기지 못하면 밀지 않는다 --
+             지킬 자리를 못 만든 채 덮으면 옛 폰의 수업기록이 사라진다. */
+          if (canOverwriteBackup(organizationRef.current)) {
+            try {
+              const preserved = await fbPreservePreviousBackup(p.uid);
+              deviceLog("cloud_backup_previous_preserved", { feature: "cloud_backup", stage: "preserve", state: preserved });
+              await fbPushBackup(p.uid, p.data, { ...pushOptions, allowDestructiveOverwrite: true });
+              markSaved();
+              return;
+            } catch (forceError) {
+              deviceLog("cloud_backup_force_failed", { feature: "cloud_backup", stage: "preserve", code: forceError?.code || "unknown" });
+            }
+          } else {
+            /* 개인 모드다. 기기가 원본이라 줄어든 것은 실제로 잃은 것이고,
+               무엇을 할지는 사람이 고른다. */
+            restoreBlockedRef.current = true;
+            try {
+              const [cloud, manifest] = await Promise.all([fbPullBackup(p.uid), fbListPhotoBackups(p.uid)]);
+              if (cloud?.data) setRestoreOffer({ accountId: p.uid, cloud, manifest: manifest.filter((item) => item?.status !== "deleted") });
+            } catch (restoreError) {}
+          }
         }
         setCloudBackupStatus((current) => ({ ...current, state: e?.code === "backup/overwrite-blocked" ? "blocked" : "error" }));
         deviceLog("cloud_backup_write_failed", { stage: "backup", code: e?.code || "unknown" });
@@ -24547,7 +24624,17 @@ export default function App() {
     await processPhotoQueue(account.id, next);
   }, [account, db, processPhotoQueue, saveDb]);
 
-  const applyCloudRestore = useCallback(async () => {
+  /**
+   * 백업 한 벌을 이 기기에 올린다. **병합이 아니라 통째 교체다.**
+   *
+   * 두 곳에서 부른다: 개인 모드의 시작 화면(restoreOffer)과 더보기의
+   * "이전 폰 기록 불러오기"(restoreLookup). 하는 일이 같아 한 함수다 --
+   * 두 벌로 두면 한쪽만 고쳐지는 날이 온다.
+   *
+   * 센터 서버에는 아무것도 쓰지 않는다. 회원·회원권·원장은 그대로다.
+   */
+  const applyCloudRestore = useCallback(async (source) => {
+    const restoreOffer = source && source.cloud ? source : null;
     if (!restoreOffer || restoreBusy || restoreOffer.accountId !== account?.id) return;
     setRestoreBusy(true);
     try {
@@ -24574,6 +24661,8 @@ export default function App() {
       try { globalThis.localStorage?.setItem(restoreDecisionKey(account.id), "1"); } catch (_error) {}
       restoreBlockedRef.current = false;
       setRestoreOffer(null);
+      setRestoreLookup(null);
+      setRestoreCandidate(null);
       const usage = storageUsage(restoreOffer.manifest);
       setCloudBackupStatus({ state: thumbnailFailures ? "error" : "safe", counts: restoreOffer.cloud.counts || backupCounts(restoredDb, restoreOffer.manifest), pendingPhotos: Math.max(0, Number(restoreOffer.cloud.photoPending) || 0), localPhotoCount: restoreOffer.manifest.length, storageUsage: restoreOffer.cloud.storageUsage || usage, photoEnabled: restoredDb.settings?.cloudPhotoBackupEnabled === true, lastBackupAt: restoreOffer.cloud.at || null });
       setToast({ ok: true, msg: `회원 ${restoredDb.members.length}명 · 수업 ${restoredDb.schedule.length}건 · 사진 ${restoreOffer.manifest.length}장의 기록을 복원했습니다.${thumbnailFailures ? ` 썸네일 ${thumbnailFailures}장은 화면에서 다시 불러옵니다.` : ""}` });
@@ -24581,7 +24670,7 @@ export default function App() {
       setToast({ ok: false, msg: "기존 데이터를 복원하지 못했습니다. 네트워크를 확인한 뒤 다시 시도해 주세요." });
       deviceLog("cloud_restore_failed", { stage: "restore", code: error?.code || "unknown" });
     } finally { setRestoreBusy(false); }
-  }, [account, restoreBusy, restoreOffer]);
+  }, [account, restoreBusy]);
   const startFreshOnDevice = useCallback(() => {
     if (!restoreOffer || restoreOffer.accountId !== account?.id) return;
     try { globalThis.localStorage?.setItem(restoreDecisionKey(account.id), "1"); } catch (_error) {}
@@ -24621,6 +24710,83 @@ export default function App() {
     const memberId = tab === "analysis" ? analysisMemberId : tab === "members" && mobileView === "detail" ? selectedId : null;
     if (memberId) hydrateMemberCloudPhotos(memberId).catch(() => {});
   }, [analysisMemberId, hydrateMemberCloudPhotos, mobileView, selectedId, tab]);
+
+  /**
+   * 묻거나, 조용히 넘어가거나. **소속이 읽힌 뒤에 한 번 정한다.**
+   *
+   * 계정 읽기가 소속 조회보다 먼저 끝나기 때문에 loadAccount 는 후보만 적어
+   * 둔다. 여기서 정하고, 정하는 규칙은 restore-offer.js 에 있다.
+   *
+   * 묻지 않기로 했다고 백업까지 멈추면 안 된다 -- 그러면 화면만 조용해지고
+   * 수업기록 원문과 체형사진은 그대로 사본 없이 남는다. 그래서 멈출지는 따로
+   * 묻고, 멈추지 않기로 했으면 그 자리에서 한 번 올린다.
+   */
+  useEffect(() => {
+    if (!restoreCandidate || restoreCandidate.accountId !== account?.id) return;
+    /* 후보가 생기는 조건 자체가 "클라우드에 있고 기기에 없다" 이다
+       (loadAccount). 그래서 둘은 여기서 상수다. */
+    const shape = { hasCloudData: true, hasLocalData: false };
+    const decision = restoreOfferDecision({
+      organization: organizationContext,
+      ...shape,
+      decisionMade: restoreCandidate.decisionMade === true,
+    });
+    // 아직 모른다. 다음 렌더에 소속이 들어오면 다시 온다.
+    if (decision === RESTORE_OFFER.WAIT) return;
+
+    const paused = backupPaused({ decision, organization: organizationContext, ...shape });
+    restoreBlockedRef.current = paused;
+    deviceLog("restore_offer_resolved", {
+      feature: "cloud_backup", stage: "restore_offer",
+      state: decision, role: organizationContext?.role || "", isLegacy: organizationContext?.isLegacy === true,
+    });
+    if (decision === RESTORE_OFFER.SHOW) {
+      setRestoreOffer({
+        accountId: restoreCandidate.accountId,
+        cloud: restoreCandidate.cloud,
+        manifest: restoreCandidate.manifest,
+      });
+    } else {
+      setCloudBackupStatus((current) => ({ ...current, state: paused ? "blocked" : "safe" }));
+      /* 다음 저장을 기다리지 않는다. 그 사이에 폰을 잃으면 아무것도 없다. */
+      if (!paused) queueCloud(account?.id, db);
+    }
+    setRestoreCandidate(null);
+  }, [restoreCandidate, account?.id, organizationContext, queueCloud, db]);
+
+  /**
+   * 더보기 → "이전 폰 기록 불러오기".
+   *
+   * 센터 소속 기기가 덮어쓰기 보호를 밀고 지나갈 때 옛 백업을 `previousPhone`
+   * 으로 옮겨 둔다 (firebase.js). 거기 있으면 그것을, 없으면 `latest` 를 읽는다
+   * -- 아직 한 번도 밀어붙인 적이 없으면 옛 내용이 아직 `latest` 에 있다.
+   *
+   * 바로 덮지 않는다. 불러오기는 병합이 아니라 통째 교체라, 무엇이 몇 개에서
+   * 몇 개로 바뀌는지 먼저 보여주고 사용자가 누른다.
+   */
+  const openPreviousPhoneRestore = useCallback(async () => {
+    const uid = account?.id;
+    if (!uid || restoreBusy) return;
+    setRestoreBusy(true);
+    try {
+      let cloud = await fbPullBackup(uid, PREVIOUS_PHONE_BACKUP);
+      let source = PREVIOUS_PHONE_BACKUP;
+      if (!cloud?.data) { cloud = await fbPullBackup(uid); source = "latest"; }
+      if (!cloud?.data) {
+        setToast({ ok: false, msg: "불러올 이전 기록이 없습니다." });
+        return;
+      }
+      const manifest = (await fbListPhotoBackups(uid).catch(() => []))
+        .filter((item) => item?.status !== "deleted");
+      setRestoreLookup({
+        accountId: uid, cloud, manifest, source,
+        preview: restorePreview({ local: db, cloud: cloud.data, photoCount: manifest.length }),
+      });
+    } catch (error) {
+      setToast({ ok: false, msg: "이전 기록을 읽지 못했습니다. 네트워크를 확인한 뒤 다시 시도해 주세요." });
+      deviceLog("cloud_restore_lookup_failed", { feature: "cloud_backup", stage: "lookup", code: error?.code || "unknown" });
+    } finally { setRestoreBusy(false); }
+  }, [account?.id, db, restoreBusy]);
 
   const retryCloudBackup = useCallback(() => {
     if (restoreOffer) return;
@@ -26173,7 +26339,7 @@ export default function App() {
               }} />}
             {tab === "settings" && <ReferenceSettingsTab db={db} photos={photos} account={account} savedAt={savedAt} demoMode={demoMode}
               instructorPay={instructorPay} payMonth={payMonth} payLoading={payLoading} payError={payError} onChangeSettings={(s) => saveDb({ ...db, settings: s })} onChangePhoto={changePhoto} onToast={setToast} themePref={themePref} onChangeTheme={changeTheme} onLogout={handleLogout} onDeleteAccount={handleDeleteAccount} onImport={importHandoff}
-              onOpenSchedule={() => { setScheduleQuickAddRequest((request) => request + 1); setTab("schedule"); }} onOpenRecords={() => { setMobileView("list"); setTab("members"); }} onOpenOnboarding={openOnboardingReplay} onOpenLessonExamples={() => setLessonExamplesOpen(true)} backupStatus={cloudBackupStatus} onEnablePhotoBackup={enablePhotoBackup} onRetryBackup={retryCloudBackup} onRetryOrganization={retryOrganizationContext} onOpenClient={(picked) => setDetailClient(picked)} onClearMigratedSettlements={clearMigratedSettlements} />}
+              onOpenSchedule={() => { setScheduleQuickAddRequest((request) => request + 1); setTab("schedule"); }} onOpenRecords={() => { setMobileView("list"); setTab("members"); }} onOpenOnboarding={openOnboardingReplay} onOpenLessonExamples={() => setLessonExamplesOpen(true)} backupStatus={cloudBackupStatus} onEnablePhotoBackup={enablePhotoBackup} onRetryBackup={retryCloudBackup} onRestorePrevious={openPreviousPhoneRestore} onRetryOrganization={retryOrganizationContext} onOpenClient={(picked) => setDetailClient(picked)} onClearMigratedSettlements={clearMigratedSettlements} />}
           </Guard>
         </div>
         {/* 출석 체크는 일정 탭 위에 시트로 뜬다. 탭 구조를 건드리지 않으면서
@@ -26224,6 +26390,47 @@ export default function App() {
         ) : null}
         <Tabs tab={tab} setTab={goTab} />
       </div>
+      {/* 이전 폰 기록 불러오기. 사용자가 메뉴에서 찾아온 길이라 묻는 창이 아니라
+          **무엇이 바뀌는지 보여주는 창**이다 -- 불러오기는 병합이 아니라 통째
+          교체라, 숫자를 먼저 보여주지 않으면 누른 뒤에야 알게 된다. */}
+      {restoreLookup && <ScheduleBottomSheet title="이전 폰 기록 불러오기"
+        subtitle={`${restoreLookup.source === PREVIOUS_PHONE_BACKUP ? "이전 폰" : "마지막"} 백업 · ${backupTimeLabel(restoreLookup.cloud?.at)}`}
+        onClose={() => setRestoreLookup(null)}>
+        <div className="space-y-3">
+          <div className="rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
+            <p className="mb-2 text-xs font-bold" style={{ color: INK }}>이 기기가 이렇게 바뀝니다</p>
+            {[
+              ["수업기록", restoreLookup.preview.notes, "건"],
+              ["회원(기기)", restoreLookup.preview.members, "명"],
+              ["일정", restoreLookup.preview.sessions, "건"],
+            ].map(([label, pair, unit]) => (
+              <div key={label} className="flex items-center gap-2 py-1">
+                <span className="w-20 shrink-0" style={{ fontSize: TYPE.caption, color: SUB }}>{label}</span>
+                <span className="min-w-0 flex-1 text-right tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>{pair.before}{unit}</span>
+                <ChevronRight size={12} style={{ color: FAINT, flexShrink: 0 }} />
+                <span className="min-w-0 flex-1 tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 700, color: pair.before === pair.after ? SUB : BRAND_D }}>{pair.after}{unit}</span>
+              </div>
+            ))}
+            <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>사진 {restoreLookup.preview.photos.after}장을 함께 내려받습니다.</p>
+          </div>
+          {/* 줄어드는 쪽을 먼저 말한다. 지금 기기에 있는 것이 더 많으면
+              불러오기가 그것을 덮는다 -- 그 사실을 모르고 누르면 안 된다. */}
+          {restoreLookup.preview.notes.after < restoreLookup.preview.notes.before
+            || restoreLookup.preview.sessions.after < restoreLookup.preview.sessions.before ? (
+            <p role="alert" className="rounded-xl px-3 py-2" style={{ backgroundColor: CARD, border: `1px solid ${BAD}`, fontSize: TYPE.caption, lineHeight: 1.5, color: BAD }}>
+              지금 이 기기에 있는 기록이 더 많습니다. 불러오면 지금 것이 사라집니다.
+            </p>
+          ) : null}
+          <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+            회원·회원권·확정된 수업은 센터 서버에 있어 이 작업의 영향을 받지 않습니다.
+            되돌릴 수 없으니 숫자를 확인한 뒤 눌러 주세요.
+          </p>
+          <div className="grid grid-cols-2 gap-2">
+            <button type="button" onClick={() => setRestoreLookup(null)} className="h-12 text-sm font-extrabold" style={{ borderRadius: 11, backgroundColor: CANVAS, color: INK2 }}>취소</button>
+            <button type="button" disabled={restoreBusy} onClick={() => applyCloudRestore(restoreLookup)} className="h-12 text-sm font-extrabold text-white disabled:opacity-50" style={{ borderRadius: 11, backgroundColor: BRAND }}>{restoreBusy ? "불러오는 중…" : "불러오기"}</button>
+          </div>
+        </div>
+      </ScheduleBottomSheet>}
       {localPhotoWarning && <ScheduleBottomSheet title="원본 사진 저장 안내" subtitle="사진 기록을 안전하게 보관해 주세요" onClose={() => setLocalPhotoWarning(false)}>
         <div className="space-y-3">
           <p className="text-sm font-bold leading-relaxed" style={{ color: INK }}>{cloudBackupStatus.photoEnabled ? "원본 사진은 이 기기에 저장되고, 복구용 고화질 최적화본과 썸네일은 본인 계정에 백업됩니다. 백업 화면의 ‘사진 백업 대기’가 0장이 될 때까지 앱을 닫지 마세요." : LOCAL_PHOTO_NOTICE_MESSAGE}</p>
@@ -26234,7 +26441,7 @@ export default function App() {
       {restoreOffer && <div className="fixed inset-0 z-[85] flex items-center justify-center px-5" role="dialog" aria-modal="true" aria-label="기존 기록 불러오기" style={{ backgroundColor: PAGE }}><section className="w-full max-w-[520px] rounded-2xl p-5" style={{ backgroundColor: CARD, boxShadow: SHADOW }}><h2 className="text-xl font-extrabold" style={{ color: INK }}>이 계정의 기록을 불러올까요?</h2><p className="mt-1 text-xs tabular-nums" style={{ color: SUB }}>{`지난 백업 ${backupTimeLabel(restoreOffer.cloud?.at)} · 회원 ${restoreOffer.cloud?.counts?.members ?? restoreOffer.cloud?.members ?? 0}명 · 수업 ${restoreOffer.cloud?.counts?.sessions ?? restoreOffer.cloud?.data?.schedule?.length ?? 0}건`}</p>
         <div className="mt-5 space-y-3">
           <p className="text-sm leading-relaxed" style={{ color: INK2 }}>불러오기 전에는 이 기기의 내용이 클라우드에 올라가지 않아요.</p>
-          {!restoreStartConfirm ? <><button type="button" disabled={restoreBusy} onClick={applyCloudRestore} className="flex h-12 w-full items-center justify-center gap-2 rounded-xl text-sm font-extrabold text-white disabled:opacity-50" style={{ backgroundColor: BRAND }}>{restoreBusy ? <><Loader2 size={16} className="animate-spin" />불러오는 중…</> : "기록 불러오기"}</button><button type="button" disabled={restoreBusy} onClick={() => setRestoreStartConfirm(true)} className="h-12 w-full rounded-xl text-sm font-extrabold" style={{ backgroundColor: CANVAS, color: INK }}>새로 시작하기</button></> : <div className="rounded-xl p-3" style={{ backgroundColor: CANVAS }}><p className="text-sm font-bold leading-relaxed" style={{ color: INK }}>기존 기록은 클라우드에 그대로 남아요. 이 기기에서만 새로 시작할까요?</p><div className="mt-3 grid grid-cols-2 gap-2"><button type="button" onClick={() => setRestoreStartConfirm(false)} className="h-11 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: INK2 }}>돌아가기</button><button type="button" onClick={startFreshOnDevice} className="h-11 rounded-lg text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>이 기기에서 시작</button></div></div>}
+          {!restoreStartConfirm ? <><button type="button" disabled={restoreBusy} onClick={() => applyCloudRestore(restoreOffer)} className="flex h-12 w-full items-center justify-center gap-2 rounded-xl text-sm font-extrabold text-white disabled:opacity-50" style={{ backgroundColor: BRAND }}>{restoreBusy ? <><Loader2 size={16} className="animate-spin" />불러오는 중…</> : "기록 불러오기"}</button><button type="button" disabled={restoreBusy} onClick={() => setRestoreStartConfirm(true)} className="h-12 w-full rounded-xl text-sm font-extrabold" style={{ backgroundColor: CANVAS, color: INK }}>새로 시작하기</button></> : <div className="rounded-xl p-3" style={{ backgroundColor: CANVAS }}><p className="text-sm font-bold leading-relaxed" style={{ color: INK }}>기존 기록은 클라우드에 그대로 남아요. 이 기기에서만 새로 시작할까요?</p><div className="mt-3 grid grid-cols-2 gap-2"><button type="button" onClick={() => setRestoreStartConfirm(false)} className="h-11 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: INK2 }}>돌아가기</button><button type="button" onClick={startFreshOnDevice} className="h-11 rounded-lg text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>이 기기에서 시작</button></div></div>}
         </div></section></div>}
       {lessonExamplesOpen && <LessonRecordExamplesModal onClose={() => setLessonExamplesOpen(false)} onPractice={(speech) => { setLessonExamplesOpen(false); window.dispatchEvent(new CustomEvent("pilateacher:practice-record-example", { detail: { speech } })); }} />}
       {onboardingOpen && <Onboarding replay={onboardingReplay} onSkip={completeAndCloseOnboarding} onRegisterMember={finishOnboardingAndRegister} onExploreSample={finishOnboardingWithSample} onLater={finishOnboardingToMembers} />}

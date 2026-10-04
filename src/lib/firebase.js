@@ -442,15 +442,49 @@ export async function fbPushBackup(uid, data, options = {}) {
   return { counts };
 }
 
-export async function fbPullBackup(uid) {
+/** 센터 소속 기기가 덮어쓰기 전에 옛 백업을 옮겨 두는 자리. */
+export const PREVIOUS_PHONE_BACKUP = "previousPhone";
+
+export async function fbPullBackup(uid, backupId = "latest") {
   if (!fs || !uid) return null;
   try {
     const snap = await withAuthTimeout(
-      () => getDoc(doc(fs, "users", uid, "backup", "latest")),
+      () => getDoc(doc(fs, "users", uid, "backup", String(backupId || "latest"))),
       { timeoutMs: FIRESTORE_READ_TIMEOUT_MS, provider: "firebase", stage: "backup_read" },
     );
     return snap.exists() ? snap.data() : null;
   } catch (e) { return null; }
+}
+
+/**
+ * 옛 백업을 `previousPhone` 으로 옮겨 둔다. **한 번만 쓴다.**
+ *
+ * 센터 소속 기기는 덮어쓰기 보호를 밀고 지나간다 -- 기기 회원이 적은 것이
+ * 사고가 아니기 때문이다 (restore-offer.js 의 canOverwriteBackup). 그러면
+ * `latest` 는 새 기기의 내용이 되고, 옛 폰의 수업기록 원문과 사진 구성은
+ * 읽을 자리가 없어진다. 그 전에 한 벌을 옆으로 옮긴다.
+ *
+ * **이미 있으면 덮지 않는다.** 두 번째 밀어붙이기 때는 `latest` 가 이미 새
+ * 기기 것이라, 덮으면 보관본이 그 내용으로 바뀐다 -- 지키려던 것이 사라진다.
+ *
+ * 규칙은 그대로다: `match /backup/{backupId}` 가 본인의 모든 문서를 연다.
+ *
+ * @returns {Promise<"saved" | "exists" | "nothing">}
+ */
+export async function fbPreservePreviousBackup(uid) {
+  if (!fs || !uid) return "nothing";
+  return withAuthTimeout(
+    () => runTransaction(fs, async (transaction) => {
+      const previousRef = doc(fs, "users", uid, "backup", PREVIOUS_PHONE_BACKUP);
+      const existing = await transaction.get(previousRef);
+      if (existing.exists()) return "exists";
+      const latest = await transaction.get(doc(fs, "users", uid, "backup", "latest"));
+      if (!latest.exists()) return "nothing";
+      transaction.set(previousRef, { ...latest.data(), preservedAt: serverTimestamp() });
+      return "saved";
+    }),
+    { timeoutMs: FIRESTORE_WRITE_TIMEOUT_MS, provider: "firebase", stage: "backup_preserve" },
+  );
 }
 
 const assertOwnPhotoPath = (uid, photoId) => {

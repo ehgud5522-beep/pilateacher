@@ -105,6 +105,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 강사",
     "더보기 탭 · 개인 모드",
     "더보기 탭 · 소속 확인 실패",
+    "더보기 탭 · 백업",
     "더보기 탭 · 월간 리포트",
     "더보기 탭 · 월간 리포트 · 조회 실패",
     "더보기 탭 · 월간 리포트 · 개인 모드",
@@ -1946,6 +1947,20 @@ test("a no-show lesson still offers the confirm button and says it will deduct",
     // 소속 모드에서는 고를 수 없는 것을 고르게 두지 않는다.
     assert.doesNotMatch(markup, />비차감</, name);
   }
+});
+
+test("the backup screen offers the previous phone's records", async (t) => {
+  /* 2026-10-04 에 시작 화면의 "이 계정의 기록을 불러올까요?" 를 센터 소속
+     강사에게는 띄우지 않기로 했다 -- 그 기기가 비어 있는 것은 사고가 아니다.
+
+     대신 이 버튼이 유일한 길이 됐다. 없으면 폰을 바꾼 강사가 옛 수업기록을
+     되살릴 방법이 아예 없다. */
+  const markupOf = await issueScreens(t);
+  const backup = markupOf("더보기 탭 · 백업");
+  assert.match(backup, /이전 폰 기록 불러오기/);
+  // 무엇이 되살아나고 무엇이 영향을 안 받는지 그 자리에서 말한다.
+  assert.match(backup, /수업기록 원문/);
+  assert.match(backup, /센터 서버에 있어 영향이 없습니다/);
 });
 
 test("the phone edit sheet never shows the whole current number", async (t) => {

@@ -303,8 +303,16 @@ export const isSettledLesson = (lesson) => Boolean(lesson?.orgSettledAt);
 /**
  * 확정하면 무엇이 일어나는가.
  *
- * 출석("done")만 차감한다. 노쇼와 취소는 수업이 일어나지 않았으므로 회원권이
- * 움직이지 않는다 -- 노쇼 과금은 센터의 정책이고 이 앱의 자동 계산 범위 밖이다.
+ * **출석과 노쇼가 차감한다. 취소만 움직이지 않는다.**
+ *
+ * 2026-10-04 에 대표가 정했다: 노쇼도 1회 차감하고, 그 회차의 단가는 출석과
+ * 같다. 회원은 그 시간을 예약했고 강사는 그 시간을 비워 두었으므로, 회차도
+ * 수업료도 수업이 일어난 것과 같게 센다.
+ *
+ * 취소는 다르다 -- 미리 알리고 뺀 자리라 아무것도 움직이지 않는다.
+ *
+ * 그 전에는 노쇼가 아무것도 차감하지 않았다. 그래서 노쇼만 있는 수업은
+ * 확정해도 0건이 나갔고, 큐에도 잡히지 않아 조용히 사라졌다.
  *
  * @param {{ lesson?: any, members?: Array<any>, passes?: Array<any>, now?: Date }} input
  *   members 화면이 쓰는 회원 목록(roster-bridge 의 결과). attendee.memberId 는
@@ -321,8 +329,16 @@ const attendanceStatusOf = (status) => ({
   cancel: ATTENDANCE_STATUS.CANCELLED,
 }[text(status)] || ATTENDANCE_STATUS.BOOKED);
 
-/* 쌍을 이룰 수 있는 상태. 취소는 빠진다 -- 미리 취소한 사람은 명단에 없는
-   것과 같고, 남은 한 명은 1:1 수업을 한 것이다 (확정 규칙 5번). */
+/**
+ * **수업이 일어난 것으로 세는 상태.** 이 목록이 두 가지를 정한다:
+ * 듀엣에서 쌍을 이루는가, 그리고 회원권을 차감하는가.
+ *
+ * 취소는 빠진다 -- 미리 알리고 뺀 자리라 아무것도 움직이지 않고, 듀엣에서도
+ * 명단에 없는 것과 같아 남은 한 명은 1:1 수업을 한 것이다 (확정 규칙 5번).
+ *
+ * 노쇼는 들어간다. 회원은 그 시간을 예약했고 강사는 그 시간을 비워 두었다 --
+ * 2026-10-04 에 대표가 정했고, 단가도 출석과 같다.
+ */
 const PAIRABLE = ["done", "noshow"];
 
 /**
@@ -388,8 +404,9 @@ export function planPassSelection(input = {}) {
        읽지 않으면 모든 회원이 "회원권 없음"으로 건너뛰어진다. */
     const clientId = text(member?.orgClientId);
     if (!clientId) {
-      // 노쇼인 사람 때문에 "명부에 없다"를 띄우지 않는다 -- 차감할 것이 없다.
-      if (!requireAttendance || status === "done") {
+      /* 노쇼도 차감하므로 노쇼인 사람도 명부에 있어야 한다. 취소한 사람은
+         차감할 것이 없어 띄우지 않는다. */
+      if (!requireAttendance || PAIRABLE.includes(status)) {
         skips.push({ memberId, clientId: "", reason: SETTLEMENT_SKIP.NO_CLIENT });
       }
       continue;
@@ -412,8 +429,9 @@ export function planPassSelection(input = {}) {
       return { deductions, skips };
     }
 
-    // 아무도 오지 않은 수업은 일어나지 않았다. 결석 규칙은 그대로다.
-    if (requireAttendance && !unique.some((row) => row.status === "done")) {
+    /* 둘 다 취소면 일어나지 않은 수업이다. 둘 다 노쇼면 일어난 것으로 센다 --
+       강사는 그 시간을 비워 두었고 회원은 알리지 않았다. */
+    if (requireAttendance && !unique.some((row) => PAIRABLE.includes(row.status))) {
       return { deductions, skips };
     }
 
@@ -447,8 +465,8 @@ export function planPassSelection(input = {}) {
 
   for (const row of rows) {
     const { memberId, clientId, status } = row;
-    // 혼자 노쇼면 차감할 것이 없다. 노쇼 과금은 센터의 정책이고 이 앱 밖이다.
-    if (requireAttendance && status !== "done") continue;
+    /* 노쇼도 차감한다 (위 머리말). 취소만 건너뛴다. */
+    if (requireAttendance && !PAIRABLE.includes(status)) continue;
 
     const mine = passes.filter((pass) => pass && passBelongsTo(pass, clientId));
     if (mine.length === 0) {
@@ -502,8 +520,14 @@ export function needsSettlement(lesson, options = {}) {
   const list = attendeesOf(lesson);
   // 기구 그룹은 참석자가 없다. 회원권이 아니라 진행 완료로 세는 수업이다.
   if (list.length === 0) return false;
-  // 아직 아무도 정해지지 않았으면 그것은 "출석 미기록"이고 다른 줄이 잡는다.
-  if (!list.some((attendee) => attendee.status === "done")) return false;
+  /* 아직 아무도 정해지지 않았으면 그것은 "출석 미기록"이고 다른 줄이 잡는다.
+
+     **노쇼도 센다.** 전에는 "done" 만 봤고, 그래서 노쇼만 있는 수업은 큐에
+     아예 들어오지 않았다 -- 강사에게는 확정할 자리가 사라진 것으로 보였고,
+     차감도 급여도 없이 조용히 넘어갔다. 2026-10-04 에 대표가 본 것이 그것이다.
+
+     취소만 있는 수업은 그대로 빠진다. 차감할 것이 없어 닦달할 이유가 없다. */
+  if (!list.some((attendee) => PAIRABLE.includes(text(attendee.status)))) return false;
   const now = options.now instanceof Date ? options.now : new Date();
   return lessonHasEnded(lesson, now);
 };

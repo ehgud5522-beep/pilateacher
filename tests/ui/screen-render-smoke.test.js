@@ -72,6 +72,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "일정 탭",
     "일정 탭 · 하루 11건 혼합",
     "일정 탭 · 소속 · 확정 전",
+    "일정 탭 · 소속 · 1:1 노쇼",
+    "일정 탭 · 소속 · 2:1 둘 다 노쇼",
     "일정 탭 · 소속 · 예상 단가",
     "일정 탭 · 소속 · 예상 단가 · 서비스",
     "일정 탭 · 소속 · 확정됨",
@@ -1930,6 +1932,22 @@ test("the session up history line says what grew and who did it", async (t) => {
 
    번호는 회원의 정체다. 고치는 것과 보는 것은 다른 일이라, 고치는 창에서도
    전체 번호를 보여 주지 않는다. */
+
+test("a no-show lesson still offers the confirm button and says it will deduct", async (t) => {
+  /* 2026-10-04 에 대표가 본 증상: 노쇼로 표시하면 확정할 자리가 사라졌다.
+     진짜 원인은 큐(needsSettlement)였지만, 화면 쪽도 함께 고정해 둔다 --
+     확정 버튼이 사라지는 회귀가 나면 큐 테스트만으로는 안 잡힌다. */
+  const markupOf = await issueScreens(t);
+  for (const name of ["일정 탭 · 소속 · 1:1 노쇼", "일정 탭 · 소속 · 2:1 둘 다 노쇼"]) {
+    const markup = markupOf(name);
+    assert.match(markup, /수업 확정/, name);
+    /* 노쇼는 확정 전까지 아무것도 움직이지 않는다. 그 말을 하지 않으면 강사는
+       노쇼를 누른 것으로 끝난 줄 안다. */
+    assert.match(markup, /노쇼도 1회 차감됩니다/, name);
+    // 소속 모드에서는 고를 수 없는 것을 고르게 두지 않는다.
+    assert.doesNotMatch(markup, />비차감</, name);
+  }
+});
 
 test("the backup screen offers the previous phone's records", async (t) => {
   /* 2026-10-04 에 시작 화면의 "이 계정의 기록을 불러올까요?" 를 센터 소속

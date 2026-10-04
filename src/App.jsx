@@ -4021,11 +4021,26 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
                       </p>
                     )
                     : activeAttendee.status === "done" && <p className="mt-1.5 text-xs font-bold" style={{ color: activeAttendee.deductFrom ? GOOD : SUB }}>{activeAttendee.deductFrom ? `${activeAttendee.deductFrom} 1회 차감 완료` : "차감 없이 출석 기록"}</p>}
-                  {!settledLesson && activeAttendee.status === "noshow" && (
+                  {/* 차감 여부를 묻는 자리. **소속 모드에는 없다** -- 2026-10-04
+                      부터 노쇼는 언제나 1회 차감이고, 여기서 [비차감]을 고를 수
+                      있으면 고른 대로 되지 않는다. 고를 수 없는 것을 고르게
+                      두는 것이 "확정했는데 왜 빠졌지"의 출발점이다.
+
+                      개인 모드는 그대로다. 거기서는 이 버튼이 기기의 잔여를
+                      실제로 줄이고, 센터 규칙이 닿지 않는다. */}
+                  {!settledLesson && activeAttendee.status === "noshow" && !organizationMode && (
                     <div className="mt-2 grid grid-cols-2 gap-2">
                       <button onClick={() => onNoshowFee?.(draft.id, true, activeMemberId)} className="h-9 rounded-lg text-xs font-extrabold" style={activeAttendee.noshowFee === true ? { backgroundColor: BAD, color: "#fff" } : { backgroundColor: BAD_S, color: BAD }}>차감</button>
                       <button onClick={() => onNoshowFee?.(draft.id, false, activeMemberId)} className="h-9 rounded-lg text-xs font-extrabold" style={activeAttendee.noshowFee === false ? { backgroundColor: BRAND, color: "#fff" } : { backgroundColor: CANVAS, color: SUB }}>비차감</button>
                     </div>
+                  )}
+                  {/* 무엇이 일어날지 미리 말한다. 노쇼는 확정 전까지 아무것도
+                      움직이지 않으므로, 이 줄이 없으면 강사는 노쇼를 누른 것으로
+                      끝난 줄 안다 -- 그 수업은 차감도 급여도 없이 남는다. */}
+                  {!settledLesson && activeAttendee.status === "noshow" && organizationMode && (
+                    <p className="mt-1.5 text-xs font-bold leading-relaxed" style={{ color: BAD }}>
+                      노쇼도 1회 차감됩니다. 아래 [수업 확정]을 눌러 주세요.
+                    </p>
                   )}
                 </div>
 
@@ -22430,6 +22445,15 @@ export function createAppScreenSmokeCases() {
     { name: "일정 탭", element: provider(<ScheduleManager db={db} photos={photos} onSave={noop} onDelete={noop} onStatus={noop} onStatusAll={noop} onNoshowFee={noop} onGroupDone={noop} onNoComment={noop} onSaveNote={noop} onToast={noop} onSettings={noop} onConsumeMemberPreset={noop} onConsumeQuickAdd={noop} onOpenMember={noop} />) },
     { name: "일정 탭 · 하루 11건 혼합", element: provider(<ScheduleManager db={busyDb} photos={{}} onSave={noop} onDelete={noop} onStatus={noop} onStatusAll={noop} onNoshowFee={noop} onGroupDone={noop} onNoComment={noop} onSaveNote={noop} onToast={noop} onSettings={noop} onConsumeMemberPreset={noop} onConsumeQuickAdd={noop} onOpenMember={noop} />) },
     { name: "일정 탭 · 소속 · 확정 전", element: scheduleWithSettlement(settleLessonOf()) },
+    { name: "일정 탭 · 소속 · 1:1 노쇼", element: scheduleWithSettlement(settleLessonOf({
+      type: "1:1", attendees: [{ ...settleAttendee("m-local-1"), status: "noshow" }],
+    })) },
+    { name: "일정 탭 · 소속 · 2:1 둘 다 노쇼", element: scheduleWithSettlement(settleLessonOf({
+      attendees: [
+        { ...settleAttendee("m-local-1"), status: "noshow" },
+        { ...settleAttendee("smoke-client-b"), status: "noshow" },
+      ],
+    })) },
     /* 확정 전 예상 단가. 한 회원은 기준 단가, 한 회원은 회원권이 없다 --
        금액과 "왜 그 금액인지" 와 "왜 못 하는지" 가 한 화면에 함께 선다. */
     { name: "일정 탭 · 소속 · 예상 단가", element: scheduleWithSettlement(settleLessonOf(), {

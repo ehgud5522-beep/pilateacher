@@ -312,16 +312,30 @@ test("규칙 3 — 한 명이 노쇼여도 공유 2:1 에서 1회 차감", () =>
   assert.deepEqual(plan.skips, []);
 });
 
-test("규칙 4 — 둘 다 노쇼거나 취소면 차감이 없다", () => {
-  for (const statuses of [["noshow", "noshow"], ["cancel", "cancel"], ["noshow", "cancel"]]) {
+test("규칙 4 — 둘 다 노쇼면 2:1 에서 1회, 둘 다 취소면 0회 (2026-10-04 변경)", () => {
+  /* 전에는 둘 다 노쇼여도 차감이 없었다. 대표가 정정했다: **노쇼도 1회
+     차감한다.** 회원은 그 시간을 예약했고 강사는 그 시간을 비워 두었다.
+
+     취소는 그대로 0 이다 -- 미리 알리고 뺀 자리다. 한쪽만 취소한 경우는
+     규칙 5 가 따로 본다(듀엣은 듀엣이다). */
+  for (const statuses of [["noshow", "noshow"], ["noshow", "cancel"]]) {
     const plan = planWith([
       { memberId: "m-a", status: statuses[0] },
       { memberId: "m-b", status: statuses[1] },
     ]);
-    assert.deepEqual(plan.deductions, [], statuses.join("·"));
-    // 오지 않은 것은 실패가 아니다. 사유 줄을 띄우지 않는다.
+    assert.deepEqual(
+      plan.deductions.map((item) => item.pass.id), ["duet-soon"], statuses.join("·"),
+    );
     assert.deepEqual(plan.skips, [], statuses.join("·"));
   }
+
+  // 아무도 오지 않겠다고 미리 알린 수업. 일어나지 않았다.
+  const bothCancelled = planWith([
+    { memberId: "m-a", status: "cancel" },
+    { memberId: "m-b", status: "cancel" },
+  ]);
+  assert.deepEqual(bothCancelled.deductions, []);
+  assert.deepEqual(bothCancelled.skips, []);
 });
 
 test("규칙 5 — 명단에 A 한 명뿐이면 1:1 수업이다", () => {
@@ -415,10 +429,24 @@ test("짝이 혼자 와도 공유 회원권에서 빠지지 않는다", () => {
 
 /* ── 확정하면 무엇이 일어나는가 ─────────────────────────────────────────── */
 
-test("only attendance is deducted — a no-show or a cancellation moves nothing", () => {
-  /* 노쇼 과금은 센터의 정책이고 이 앱의 자동 계산 범위 밖이다. 여기서 차감하면
-     정책을 코드가 정해 버린다. */
-  for (const status of ["noshow", "cancel", "booked"]) {
+test("a 1:1 no-show deducts one, a cancellation deducts nothing (2026-10-04 변경)", () => {
+  /* 전에는 "노쇼 과금은 센터의 정책이고 이 앱 밖" 이라 아무것도 차감하지
+     않았다. 대표가 정정했다 -- 노쇼도 1회이고 단가도 출석과 같다.
+
+     그 전 동작의 진짜 비용은 차감이 빠진 것이 아니라 **수업이 사라진 것**
+     이었다: 노쇼만 있는 수업은 큐에도 안 잡혀 아무도 손대지 않았다. */
+  const noshow = planLessonSettlement({
+    lesson: lesson({ attendees: [{ memberId: "m-1", status: "noshow" }] }),
+    members: [member()],
+    passes: [pass()],
+    now: NOW,
+  });
+  assert.deepEqual(noshow.deductions.map((item) => item.pass.id), ["pass-a"]);
+  assert.deepEqual(noshow.skips, []);
+
+  /* 취소와 미체크는 그대로 0 이다. 취소는 미리 알린 것이고, 미체크는 아직
+     아무것도 정해지지 않은 것이다. */
+  for (const status of ["cancel", "booked"]) {
     const plan = planLessonSettlement({
       lesson: lesson({ attendees: [{ memberId: "m-1", status }] }),
       members: [member()],
@@ -528,13 +556,28 @@ test("a settled lesson, a cancelled group and a personal event are all done with
   assert.equal(needsSettlement(lesson({ attendees: [{ memberId: "m-1", status: "booked" }] }), { now: NOW }), false);
 });
 
-test("a no-show-only lesson can still be settled, and settling it deducts nothing", () => {
-  /* 노쇼만 있는 수업도 확정해서 닫아야 한다. 열어 두면 큐에 남아 강사가 매일
-     같은 줄을 본다. */
+test("a no-show-only lesson reaches the queue, the button, and the ledger", () => {
+  /* 2026-10-04 에 대표가 본 증상: 노쇼로 표시하면 확정할 자리가 사라졌다.
+
+     원인이 둘이었다. needsSettlement 가 "done" 만 세어 큐에 들어오지 않았고,
+     들어왔더라도 차감이 0 건이라 급여에 아무것도 남지 않았다. 셋을 한 번에
+     본다 -- 하나만 고치면 증상이 절반만 사라진다. */
   const noshow = lesson({ attendees: [{ memberId: "m-1", status: "noshow" }] });
-  assert.equal(canSettleLesson(noshow), true);
+
+  assert.equal(needsSettlement(noshow, { now: NOW }), true, "확인할 수업 큐에 잡힌다");
+  assert.equal(canSettleLesson(noshow), true, "확정 버튼이 선다");
+
   const plan = planLessonSettlement({ lesson: noshow, members: [member()], passes: [pass()], now: NOW });
-  assert.deepEqual(plan.deductions, []);
+  assert.deepEqual(plan.deductions.map((item) => item.pass.id), ["pass-a"], "회원권에서 1회 빠진다");
+});
+
+test("a cancellation-only lesson stays out of the queue", () => {
+  /* 차감할 것이 없는 수업으로 큐를 채우면 강사가 매일 같은 줄을 보고, 그러면
+     큐 전체를 안 보게 된다. */
+  const cancelled = lesson({ attendees: [{ memberId: "m-1", status: "cancel" }] });
+  assert.equal(needsSettlement(cancelled, { now: NOW }), false);
+  // 그래도 열어서 닫을 수는 있다 -- 강사가 직접 확정하면 0 건으로 닫힌다.
+  assert.equal(canSettleLesson(cancelled), true);
 });
 
 /* ── 확정한 결과를 적는다 ───────────────────────────────────────────────── */

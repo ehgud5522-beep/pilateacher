@@ -143,8 +143,13 @@ export function previewLessonRates(input = {}) {
      출석 상태는 보지 않는다 -- 아직 아무도 누르지 않은 수업에서도 서야 한다. */
   const plan = planPassSelection({ ...input, requireAttendance: false });
   const chosen = new Map();
+  /* 추가 관리는 같은 사람의 **두 번째** 줄이다. 한 통에 담으면 뒤엣것이
+     앞엣것을 덮어 PT 줄이 사라진다 -- 강사는 디오사 금액만 보고 그것이 이
+     수업의 전부라고 읽는다. */
+  const careChosen = new Map();
   for (const item of plan.deductions) {
-    item.memberIds.forEach((memberId, index) => chosen.set(text(memberId), {
+    const target = item.care === true ? careChosen : chosen;
+    item.memberIds.forEach((memberId, index) => target.set(text(memberId), {
       chosen: item.pass, shared: item.shared === true, deducts: index === 0,
     }));
   }
@@ -155,9 +160,14 @@ export function previewLessonRates(input = {}) {
     if (!memberId || out.has(memberId)) continue;
     const member = byId.get(memberId);
     if (!member) continue;
-    out.set(memberId, previewMemberRate({
-      ...input, member, skip: skipped.get(memberId) || "", ...(chosen.get(memberId) || {}),
-    }));
+    const skip = skipped.get(memberId) || "";
+    const line = previewMemberRate({
+      ...input, member, skip, ...(chosen.get(memberId) || {}),
+    });
+    const care = careChosen.get(memberId);
+    out.set(memberId, care
+      ? { ...line, care: previewMemberRate({ ...input, member, skip: "", ...care }) }
+      : line);
   }
   return out;
 }

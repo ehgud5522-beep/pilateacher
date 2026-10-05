@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  SETTLEMENT_SKIP, carePayCategory, isSoloCandidate, planLessonSettlement,
+  CARE_GRADE, SETTLEMENT_SKIP, carePayCategory, careGradeOf, isSoloCandidate,
+  planLessonSettlement,
 } from "../../src/features/schedule/lesson-settlement.js";
 import { lessonTypeKeyOf } from "../../src/features/schedule/lesson-types.js";
 import { PAY_CATEGORY, isDiosaCategory } from "../../src/data/schema/constants.js";
@@ -168,4 +169,154 @@ test("the care lesson type is written, never guessed", () => {
   assert.equal(lessonTypeKeyOf({ type: "관리A", attendees: [{ memberId: "a" }] }), "care_a");
   assert.equal(lessonTypeKeyOf({ type: "관리B", attendees: [{ memberId: "a" }] }), "care_b");
   assert.equal(lessonTypeKeyOf({ type: "", attendees: [{ memberId: "a" }] }), "private");
+});
+
+/* ── 추가 관리 ───────────────────────────────────────────────────────────
+
+   디오사는 PT 와 별도로 끊는 추가 관리권이다 (2026-10-05). 한 수업에서 PT
+   회원권과 디오사 회원권이 **함께** 빠진다.
+
+   이 묶음이 지키는 것은 하나다: **반쪽으로 끝나지 않는다.** 한쪽만 나가면
+   회원은 받지 않은 관리의 회차를 잃거나, 받은 관리가 공짜가 된다 -- 원장은
+   append-only 라 어느 쪽도 되돌릴 수 없다. */
+
+const duetPass = (id, overrides = {}) => pass(id, PAY_CATEGORY.PT_2_1_REPURCHASE, {
+  clientIds: ["c1", "c2"], ...overrides,
+});
+const bothMembers = [
+  members[0],
+  { id: "m2", name: "박두리", orgClientId: "c2", orgRemaining: 8, rosterSource: "org_linked" },
+];
+
+const planOf = (lessonInput, passes, people = members) => planLessonSettlement({
+  lesson: lessonInput, members: people, passes, now: NOW,
+});
+const idsOf = (plan) => plan.deductions.map((item) => `${item.pass.id}${item.care ? "(관리)" : ""}`);
+
+test("a PT lesson with an add-on deducts both passes", () => {
+  const plan = planOf(
+    lesson("개인레슨", [{ memberId: "m1", status: "done", careGrade: CARE_GRADE.A }]),
+    [pass("pt", PAY_CATEGORY.PT_1_1_REPURCHASE_EVENT), pass("dio-a", PAY_CATEGORY.DIOSA_A)],
+  );
+  assert.deepEqual(idsOf(plan), ["pt", "dio-a(관리)"]);
+  assert.deepEqual(plan.skips, []);
+});
+
+test("no add-on means nothing extra comes out", () => {
+  /* 디오사를 가지고 있어도 고르지 않았으면 빠지지 않는다. 추가 관리는
+     수업마다 고르는 것이지 회원권이 있으면 자동인 것이 아니다. */
+  const plan = planOf(
+    lesson("개인레슨", [{ memberId: "m1", status: "done" }]),
+    [pass("pt", PAY_CATEGORY.PT_1_1_REPURCHASE_EVENT), pass("dio-a", PAY_CATEGORY.DIOSA_A)],
+  );
+  assert.deepEqual(idsOf(plan), ["pt"]);
+});
+
+test("a missing or spent diosa pass blocks the PT deduction too", () => {
+  /* 반쪽 차감 금지. PT 만 빠지면 회원은 받지 않은 관리 때문에 PT 회차를
+     잃는다 -- 그리고 그 사실은 확정 화면에만 잠깐 뜬다. */
+  const pt = pass("pt", PAY_CATEGORY.PT_1_1_REPURCHASE_EVENT);
+  const withAddOn = lesson("개인레슨", [{ memberId: "m1", status: "done", careGrade: CARE_GRADE.A }]);
+
+  const missing = planOf(withAddOn, [pt]);
+  assert.deepEqual(idsOf(missing), [], "PT 도 빠지지 않는다");
+  assert.deepEqual(missing.skips.map((item) => item.reason), [SETTLEMENT_SKIP.CARE_PASS_MISSING]);
+
+  const spent = planOf(withAddOn, [pt, pass("dio-a", PAY_CATEGORY.DIOSA_A, { remainingCount: 0 })]);
+  assert.deepEqual(idsOf(spent), []);
+  assert.deepEqual(spent.skips.map((item) => item.reason), [SETTLEMENT_SKIP.CARE_PASS_SPENT]);
+});
+
+test("a missing PT pass never leaves the diosa deducted on its own", () => {
+  /* 반대 방향도 반쪽이다. 디오사만 빠지면 받은 PT 수업이 공짜가 된다. */
+  const plan = planOf(
+    lesson("개인레슨", [{ memberId: "m1", status: "done", careGrade: CARE_GRADE.A }]),
+    [pass("dio-a", PAY_CATEGORY.DIOSA_A)],
+  );
+  assert.deepEqual(idsOf(plan), []);
+  assert.deepEqual(plan.skips.map((item) => item.reason), [SETTLEMENT_SKIP.SOLO_PASS_MISSING]);
+});
+
+test("a no-show deducts both, a cancellation deducts neither", () => {
+  const passes = [pass("pt", PAY_CATEGORY.PT_1_1_REPURCHASE_EVENT), pass("dio-a", PAY_CATEGORY.DIOSA_A)];
+
+  const noshow = planOf(lesson("개인레슨", [{ memberId: "m1", status: "noshow", careGrade: CARE_GRADE.A }]), passes);
+  assert.deepEqual(idsOf(noshow), ["pt", "dio-a(관리)"], "노쇼도 둘 다 1회씩");
+
+  const cancelled = planOf(lesson("개인레슨", [{ memberId: "m1", status: "cancel", careGrade: CARE_GRADE.A }]), passes);
+  assert.deepEqual(idsOf(cancelled), []);
+  assert.deepEqual(cancelled.skips, []);
+});
+
+test("each member of a duet chooses their own add-on", () => {
+  /* 2:1 은 한 사람만 받을 수도, 둘이 다른 등급을 받을 수도 있다. 수업이 아니라
+     참가자에 붙는 이유가 이것이다. */
+  const duet = duetPass("duet");
+  const dioA = pass("dio-a", PAY_CATEGORY.DIOSA_A);
+  const dioB = pass("dio-b", PAY_CATEGORY.DIOSA_B, { clientId: "c2", clientIds: ["c2"] });
+
+  const onlyOne = planOf(
+    lesson("듀엣", [{ memberId: "m1", status: "done" }, { memberId: "m2", status: "done", careGrade: CARE_GRADE.B }]),
+    [duet, dioB], bothMembers,
+  );
+  assert.deepEqual(idsOf(onlyOne), ["duet", "dio-b(관리)"], "PT 는 공유 한 장, 관리는 그 사람 것만");
+
+  const bothDifferent = planOf(
+    lesson("듀엣", [
+      { memberId: "m1", status: "done", careGrade: CARE_GRADE.A },
+      { memberId: "m2", status: "done", careGrade: CARE_GRADE.B },
+    ]),
+    [duet, dioA, dioB], bothMembers,
+  );
+  assert.deepEqual(idsOf(bothDifferent), ["duet", "dio-a(관리)", "dio-b(관리)"]);
+});
+
+test("a duet where one add-on is missing stops the whole lesson", () => {
+  /* 둘이 한 장을 나눠 쓰므로 한 명만 빼는 길이 없다. 짝의 회차는 그 사람의
+     것이기도 하다. */
+  const plan = planOf(
+    lesson("듀엣", [{ memberId: "m1", status: "done" }, { memberId: "m2", status: "done", careGrade: CARE_GRADE.B }]),
+    [duetPass("duet")], bothMembers,
+  );
+  assert.deepEqual(idsOf(plan), []);
+  assert.deepEqual(plan.skips.map((item) => item.reason), [SETTLEMENT_SKIP.CARE_PASS_MISSING]);
+});
+
+test("a duet with one no-show still deducts the shared pass and the add-on", () => {
+  const plan = planOf(
+    lesson("듀엣", [{ memberId: "m1", status: "done" }, { memberId: "m2", status: "noshow", careGrade: CARE_GRADE.B }]),
+    [duetPass("duet"), pass("dio-b", PAY_CATEGORY.DIOSA_B, { clientId: "c2", clientIds: ["c2"] })],
+    bothMembers,
+  );
+  assert.deepEqual(idsOf(plan), ["duet", "dio-b(관리)"]);
+});
+
+test("a standalone care lesson ignores the add-on, so diosa never goes out twice", () => {
+  /* 단독 관리 수업은 PT 대신이고 추가 관리는 PT 에 더하는 것이다. 섞이면
+     한 수업에서 디오사가 두 번 빠진다. */
+  const plan = planOf(
+    lesson("관리A", [{ memberId: "m1", status: "done", careGrade: CARE_GRADE.A }]),
+    [pass("pt", PAY_CATEGORY.PT_1_1_REPURCHASE_EVENT), pass("dio-a", PAY_CATEGORY.DIOSA_A)],
+  );
+  assert.deepEqual(idsOf(plan), ["dio-a"], "한 번만, 그리고 PT 는 건드리지 않는다");
+});
+
+test("a session-upped diosa pass is still the one that gets used", () => {
+  /* 세션업한 회원권은 totalSessions 와 contractPrice 가 함께 늘어난 같은
+     회원권이다. 새 회원권이 아니므로 고르는 자리가 달라질 이유가 없다. */
+  const grown = pass("dio-a", PAY_CATEGORY.DIOSA_A, {
+    totalSessions: 30, contractPrice: 1320000, netContractPrice: 1320000, remainingCount: 22,
+  });
+  const plan = planOf(
+    lesson("개인레슨", [{ memberId: "m1", status: "done", careGrade: CARE_GRADE.A }]),
+    [pass("pt", PAY_CATEGORY.PT_1_1_REPURCHASE_EVENT), grown],
+  );
+  assert.deepEqual(idsOf(plan), ["pt", "dio-a(관리)"]);
+
+  // 부원장이면 늘어난 금액과 회차로 다시 센다: 1,320,000 ÷ 30 ÷ 2 = 22,000
+  const deputy = resolveDeductionUnitPrice({
+    category: PAY_CATEGORY.DIOSA_A, baseUnitPrice: 20000, isDeputyDirector: true,
+    netContractPrice: 1320000, totalSessions: 30, priorSessions: 50, serviceUsedCount: 0,
+  });
+  assert.equal(deputy.unitPrice, 22000);
 });

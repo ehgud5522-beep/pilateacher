@@ -213,6 +213,31 @@ export const isSoloCandidate = (pass) => Boolean(pass)
  * @param {any} lesson
  * @returns {string} PAY_CATEGORY.DIOSA_A | DIOSA_B | ""
  */
+export const CARE_GRADE = Object.freeze({ NONE: "", A: "a", B: "b" });
+
+/** 그 등급이 가리키는 디오사 카테고리. 등급이 없으면 빈 문자열이다. */
+export function careCategoryOfGrade(grade) {
+  const value = text(grade);
+  if (value === CARE_GRADE.A) return PAY_CATEGORY.DIOSA_A;
+  if (value === CARE_GRADE.B) return PAY_CATEGORY.DIOSA_B;
+  return "";
+}
+
+/**
+ * 이 참가자가 고른 **추가 관리** 등급.
+ *
+ * 디오사는 PT 와 별도로 끊는 추가 관리권이다 (2026-10-05). 한 수업에서 PT
+ * 회원권과 디오사 회원권이 **함께** 빠질 수 있고, 2:1 이면 두 사람이 각자
+ * 다르게 고를 수 있어 수업이 아니라 참가자에 붙는다.
+ *
+ * 단독 관리 수업(수업 종류가 관리 A·B)과는 다른 것이다. 저쪽은 PT 대신이고
+ * 이쪽은 PT 에 더하는 것이다 -- 섞이면 한 수업에서 디오사가 두 번 빠진다.
+ */
+export const careGradeOf = (attendee) => {
+  const grade = text(attendee?.careGrade);
+  return grade === CARE_GRADE.A || grade === CARE_GRADE.B ? grade : CARE_GRADE.NONE;
+};
+
 export function carePayCategory(lesson) {
   const key = lessonTypeKeyOf(lesson);
   if (key === "care_a") return PAY_CATEGORY.DIOSA_A;
@@ -468,7 +493,53 @@ export function planPassSelection(input = {}) {
       }
       continue;
     }
-    rows.push({ memberId, clientId, status });
+    rows.push({ memberId, clientId, status, attendee });
+  }
+
+  /* 관리 수업이면 그 등급의 디오사 회원권에서만 뺀다. PT 쪽 판정을 아예
+     타지 않는다 -- 듀엣 후보도 1:1 후보도 여기서는 답이 아니다. */
+  const careCategory = carePayCategory(lesson);
+
+  /* ── 추가 관리 ────────────────────────────────────────────────────────
+     PT 와 **함께** 빠지는 디오사 회차다. 단독 관리 수업에는 붙지 않는다 --
+     저쪽은 PT 대신이라, 겹치면 한 수업에서 디오사가 두 번 나간다.
+
+     **반쪽으로 끝내지 않는다.** 디오사가 없거나 다 썼으면 그 사람의 PT 도
+     빼지 않는다 (아래 careBlocked). 한쪽만 나가면 회원은 받지 않은 관리의
+     회차를 잃거나, 받은 관리가 공짜가 된다 -- 원장은 append-only 라 어느
+     쪽도 되돌릴 수 없다. */
+  const careAddOns = [];
+  const careBlocked = new Set();
+  if (!careCategory) {
+    for (const row of rows) {
+      const category = careCategoryOfGrade(careGradeOf(row.attendee));
+      if (!category) continue;
+      const carePass = pickCarePass(passes, row.clientId, category, now);
+      if (!carePass) {
+        careBlocked.add(row.clientId);
+        skips.push({
+          memberId: row.memberId,
+          clientId: row.clientId,
+          reason: ownsCarePass(passes, row.clientId, category)
+            ? SETTLEMENT_SKIP.CARE_PASS_SPENT
+            : SETTLEMENT_SKIP.CARE_PASS_MISSING,
+        });
+        continue;
+      }
+      careAddOns.push({
+        memberId: row.memberId,
+        clientId: row.clientId,
+        pass: carePass,
+        memberIds: [row.memberId],
+        clientIds: [row.clientId],
+        attendanceByClientId: { [row.clientId]: attendanceStatusOf(row.status) },
+        shared: false,
+        /* 미리보기와 화면이 PT 줄과 가른다. 한 수업에 두 줄이 서는데 어느
+           것이 무엇인지 말하지 않으면 강사는 두 배로 빠진 줄 안다. */
+        care: true,
+        careCategory: category,
+      });
+    }
   }
 
   if (duetLesson) {
@@ -491,6 +562,10 @@ export function planPassSelection(input = {}) {
     if (requireAttendance && !unique.some((row) => PAIRABLE.includes(row.status))) {
       return { deductions, skips };
     }
+
+    /* 둘이 한 장을 나눠 쓰므로 한 명만 빼는 길이 없다. 한 명의 디오사가
+       막히면 그 수업은 통째로 멈춘다 -- 사유는 위에서 이미 적었다. */
+    if (careBlocked.size > 0) return { deductions, skips };
 
     const ids = unique.map((row) => row.clientId);
     /* 없는 것과 다 쓴 것은 고칠 방법이 다르다 -- 앞은 발급이고 뒤는 재등록이다.
@@ -517,17 +592,16 @@ export function planPassSelection(input = {}) {
       ),
       shared: true,
     });
+    deductions.push(...careAddOns);
     return { deductions, skips };
   }
-
-  /* 관리 수업이면 그 등급의 디오사 회원권에서만 뺀다. PT 쪽 판정을 아예
-     타지 않는다 -- 듀엣 후보도 1:1 후보도 여기서는 답이 아니다. */
-  const careCategory = carePayCategory(lesson);
 
   for (const row of rows) {
     const { memberId, clientId, status } = row;
     /* 노쇼도 차감한다 (위 머리말). 취소만 건너뛴다. */
     if (requireAttendance && !PAIRABLE.includes(status)) continue;
+    // 추가 관리가 막힌 사람. 사유는 위에서 적었고, PT 도 빼지 않는다.
+    if (careBlocked.has(clientId)) continue;
 
     const mine = passes.filter((pass) => pass && passBelongsTo(pass, clientId));
     if (mine.length === 0) {
@@ -577,6 +651,13 @@ export function planPassSelection(input = {}) {
       attendanceByClientId: { [clientId]: attendanceStatusOf(status) },
       shared: false,
     });
+  }
+
+  /* PT 가 실제로 나간 사람의 추가 관리만 붙인다. PT 가 막힌 사람(회원권 없음·
+     잔여 0)에게 디오사만 빼면 그것이 바로 반쪽 차감이다. */
+  const deducted = new Set(deductions.flatMap((item) => item.clientIds || [item.clientId]));
+  for (const add of careAddOns) {
+    if (deducted.has(add.clientId)) deductions.push(add);
   }
 
   return { deductions, skips };

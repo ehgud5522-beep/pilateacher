@@ -22,28 +22,35 @@
  * 10회와 20회가 멀리 떨어져 있으면 둘을 견주지 못한다.
  */
 
-import { PAY_CATEGORY, PRODUCT_STATUS, SESSION_TYPE } from "../../data/schema/constants.js";
+import {
+  PAY_CATEGORY, PRODUCT_STATUS, SESSION_TYPE, isDiosaCategory,
+} from "../../data/schema/constants.js";
 import { PAY_CATEGORY_LABELS } from "../../data/schema/display-names.js";
 
 const text = (value) => String(value ?? "").trim();
 const count = (value) => (Number.isFinite(Number(value)) && Number(value) > 0 ? Math.floor(Number(value)) : 0);
 
-/** 묶음 셋. 수업에서 갈리는 단위다. */
+/** 묶음 넷. 수업에서 갈리는 단위다. */
 export const PRODUCT_GROUP = Object.freeze({
   SOLO: "solo",
   DUET: "duet",
+  /* 디오사 (2026-10-05). PT 와 다른 상품이고 차감하는 회원권도 다르다 --
+     기타에 섞으면 서비스·렛미인과 한 덩어리가 되어 대표가 "디오사 상품이
+     몇 개인가" 를 한눈에 못 본다. */
+  DIOSA: "diosa",
   OTHER: "other",
 });
 
 export const PRODUCT_GROUP_LABEL = Object.freeze({
   [PRODUCT_GROUP.SOLO]: "1:1",
   [PRODUCT_GROUP.DUET]: "2:1",
+  [PRODUCT_GROUP.DIOSA]: "디오사",
   [PRODUCT_GROUP.OTHER]: "기타",
 });
 
 /* 화면에 서는 차례. 1:1 이 대부분이라 먼저이고, 기타는 서비스·렛미인처럼
    수가 적은 것들이라 맨 뒤다. */
-const GROUP_ORDER = [PRODUCT_GROUP.SOLO, PRODUCT_GROUP.DUET, PRODUCT_GROUP.OTHER];
+const GROUP_ORDER = [PRODUCT_GROUP.SOLO, PRODUCT_GROUP.DUET, PRODUCT_GROUP.DIOSA, PRODUCT_GROUP.OTHER];
 
 /**
  * 이 상품은 어느 묶음인가.
@@ -61,6 +68,9 @@ export function productGroupOf(product) {
   const category = text(product?.payCategory);
   if (category.startsWith("pt_1_1")) return PRODUCT_GROUP.SOLO;
   if (category.startsWith("pt_2_1")) return PRODUCT_GROUP.DUET;
+  /* 디오사는 sessionType 이 없다 -- 1:1 도 2:1 도 아닌 관리 수업이라 그 칸이
+     답할 수 있는 질문이 아니다. 급여카테고리가 유일한 근거다. */
+  if (isDiosaCategory(category)) return PRODUCT_GROUP.DIOSA;
   return PRODUCT_GROUP.OTHER;
 }
 

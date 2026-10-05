@@ -22,7 +22,7 @@
  * 확정본의 모든 예시를 테스트로 그대로 옮길 수 있다.
  */
 
-import { PAY_CATEGORY, PAYMENT_METHOD } from "./constants.mjs";
+import { MEMBERSHIP_TITLE, PAY_CATEGORY, PAYMENT_METHOD, isDiosaCategory } from "./constants.mjs";
 
 /** 어느 판정이 이겼는가. 분쟁 때 "왜 이 금액인가"를 답하는 값이다. */
 export const PRICING_RULE = Object.freeze({
@@ -30,6 +30,10 @@ export const PRICING_RULE = Object.freeze({
   SERVICE_FIRST: "service_first",
   SERVICE_ALREADY_USED: "service_already_used",
   DEPUTY_DIRECTOR: "deputy_director",
+  /** 디오사 관리 수업. 표값 고정이고 직급·인수인계·누적에 걸리지 않는다. */
+  DIOSA_FIXED: "diosa_fixed",
+  /** 점장·팀장의 1:1 재등록(이벤트). 직급에 붙는 고정 단가다. */
+  SENIOR_TITLE_EVENT: "senior_title_event",
   HANDED_OVER: "handed_over",
   NEW_TO_INSTRUCTOR: "new_to_instructor",
   BASE_CATEGORY: "base_category",
@@ -43,6 +47,35 @@ export const PRICING_RULE = Object.freeze({
  * 서로 다른 이유로 정해진다.
  */
 export const NEW_TO_INSTRUCTOR_UNIT_PRICE = 25000;
+
+/**
+ * 점장·팀장의 1:1 재등록(이벤트) 단가.
+ *
+ * 일반 강사는 표값 30,000 이고 이 둘만 31,000 이다. 직급에 붙는 금액이라
+ * 표(PAY_RATES)에 두지 않는다 -- 표는 "이 상품이 얼마인가" 이고 이것은
+ * "누가 했는가" 다. 표에 섞으면 상품 단가를 고칠 때 직급 수당이 함께 움직인다.
+ */
+export const SENIOR_TITLE_EVENT_UNIT_PRICE = 31000;
+
+/**
+ * 그 단가를 받는 직급. **부원장은 여기 없다.**
+ *
+ * 부원장은 판정 1 에서 이미 끝난다 (5:5). 2026-10-05 에 대표가 정했다 --
+ * 부원장이면서 점장인 사람은 부원장 몫이 먼저다.
+ */
+export const SENIOR_TITLES = Object.freeze(
+  /** @type {ReadonlyArray<string>} */ ([MEMBERSHIP_TITLE.TEAM_LEAD, MEMBERSHIP_TITLE.BRANCH_MANAGER]),
+);
+
+/**
+ * 이 직급이 1:1 재등록(이벤트)에서 고정 단가를 받는가.
+ *
+ * @param {unknown} title @param {unknown} category
+ */
+export function hasSeniorTitleRate(title, category) {
+  return SENIOR_TITLES.includes(String(title ?? ""))
+    && String(category ?? "") === PAY_CATEGORY.PT_1_1_REPURCHASE_EVENT;
+}
 
 /** 이 강사에게 이 회원 누적이 이 횟수 미만이면 신규로 본다. */
 export const NEW_TO_INSTRUCTOR_THRESHOLD = 20;
@@ -108,10 +141,15 @@ const countOf = (value) => (typeof value === "number" && Number.isInteger(value)
    기준은 수단의 이름이 아니라 "센터가 그 돈에서 부가세를 떼고 받는가"다.
    현금·계좌가 예외이고, 결제망을 타고 매출로 잡히는 나머지가 기본이다.
 
-   제로페이와 바우처를 카드와 같게 둔 것은 판단이다. 제로페이는 가맹점 수수료가
-   0% 이지만 매출 신고는 그대로 되고, 바우처(스포츠강좌이용권 등)도 센터가
-   청구해 받는 매출이다. 둘 다 부가세가 나간다 -- 수수료가 없다는 것과 세금이
-   없다는 것은 다른 이야기다.
+   2026-10-05 에 대표가 정했다: **카드만 뺀다.** 전에는 제로페이와 바우처도
+   카드와 같이 두고 "수수료가 없다는 것과 세금이 없다는 것은 다른 이야기" 라고
+   적어 두었는데, 대표가 보는 기준은 센터가 실제로 떼이는 결제 수수료였다.
+   제로페이는 가맹점 수수료가 0% 이고 바우처도 떼이는 것이 없으므로, 그 돈은
+   계약 금액 그대로 강사의 분자가 된다.
+
+   이미 발급된 회원권은 움직이지 않는다 -- 발급 시점의 공급가액이 문서에 박혀
+   있고(netContractPriceOf 가 그것을 먼저 본다), 이관분도 마찬가지다. 바뀌는
+   것은 앞으로 발급되는 제로페이·바우처 회원권뿐이다.
 
    이 표에 빈칸을 두지 않는다. 결제 수단이 하나 늘면 여기서 반드시 답해야 하고,
    답하지 않으면 발급이 거부된다. 기본값을 두면 새 수단이 조용히 한쪽으로
@@ -124,8 +162,8 @@ export const PAYMENT_INCLUDES_VAT = Object.freeze({
   [PAYMENT_METHOD.CARD]: true,
   [PAYMENT_METHOD.CASH]: false,
   [PAYMENT_METHOD.TRANSFER]: false,
-  [PAYMENT_METHOD.ZEROPAY]: true,
-  [PAYMENT_METHOD.VOUCHER]: true,
+  [PAYMENT_METHOD.ZEROPAY]: false,
+  [PAYMENT_METHOD.VOUCHER]: false,
 });
 
 /**
@@ -204,11 +242,13 @@ export function deputyDirectorUnitPrice({ netContractPrice, totalSessions }) {
  *   netContractPrice?: number,
  *   totalSessions?: number,
  *   isDeputyDirector?: boolean,
+ *   title?: string,
  *   handedOver?: boolean,
  *   priorSessions?: number,
  *   serviceUsedCount?: number,
  * }} input
  *   category          회원권의 기준 카테고리
+ *   title             차감 시점의 강사 직급 (판정 1.5가 쓰는 값)
  *   baseUnitPrice     발급 시 박힌 기준 단가 (판정 4가 쓰는 값)
  *   netContractPrice  부가세를 뺀 공급가액 (판정 1의 분자)
  *   totalSessions     서비스를 뺀 기준 회차 (판정 1의 분모)
@@ -259,6 +299,38 @@ export function resolveDeductionUnitPrice(input = {}) {
       }),
       rule: PRICING_RULE.DEPUTY_DIRECTOR,
     };
+  }
+
+  /* ── 판정 1.2. 디오사는 표값 고정 ───────────────────────────────────────
+     관리 수업이다. PT 와 다른 상품이고, 강사가 누구든 같은 금액이다.
+
+     **부원장(판정 1)보다는 뒤다.** 2026-10-05 에 대표가 정했다 -- 디오사도
+     5:5 는 그대로 받는다.
+
+     **직급·인수인계·누적 20회보다는 앞이다.** 저 셋은 전부 PT 를 전제로 한
+     판정이다. 디오사에 걸리면 20,000 짜리 관리 수업이 25,000 으로 나가고,
+     그 차이는 원장에 박혀 고칠 수 없다. */
+  if (isDiosaCategory(category)) {
+    return {
+      unitPrice: requiredInt(input?.baseUnitPrice, "baseUnitPrice", { min: 0 }),
+      rule: PRICING_RULE.DIOSA_FIXED,
+    };
+  }
+
+  /* ── 판정 1.5. 점장·팀장의 1:1 재등록(이벤트) ──────────────────────────
+     직급에 붙는 고정 단가다. 일반 강사는 표값 30,000 이고 이 둘만 31,000 이다.
+
+     **부원장보다 뒤다.** 부원장이면서 점장인 사람은 5:5 가 먼저다 --
+     2026-10-05 에 대표가 정했다.
+
+     **인수인계·누적 20회보다는 앞이다.** 점장이 넘겨받은 회원권을 하든 처음
+     보는 회원을 하든 31,000 이다. 뒤에 두면 그 두 판정이 25,000 으로
+     가로채고, 직급 수당은 그 회원이 20회를 넘긴 뒤에야 나타난다.
+
+     직급은 차감 시점의 값이다. 부르는 쪽이 그때의 소속 문서에서 읽어 넣고,
+     원장 항목에 함께 박힌다 -- 승진해도 지난달 급여가 흔들리지 않는다. */
+  if (hasSeniorTitleRate(input?.title, category)) {
+    return { unitPrice: SENIOR_TITLE_EVENT_UNIT_PRICE, rule: PRICING_RULE.SENIOR_TITLE_EVENT };
   }
 
   // 판정 2. 넘겨받은 회원권은 횟수와 무관하게 계속 신규 단가다.

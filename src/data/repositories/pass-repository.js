@@ -522,6 +522,7 @@ export function isDeductablePass(pass, now = new Date()) {
  *   remainingCount)
  * @param {{
  *   instructorId: string, createdBy: string, occurredAt: Date, isDeputyDirector?: boolean,
+ *   title?: string,
  *   lessonId?: string, entryId?: string,
  *   attendanceByClientId?: Record<string, string>,
  * }} input
@@ -570,6 +571,13 @@ export async function deductPass(organizationId, pass, input, options = {}) {
      여기서 멈춘다. */
   const isDeputyDirector = input?.isDeputyDirector;
   if (typeof isDeputyDirector !== "boolean") throw new Error("Missing isDeputyDirector");
+  /* 차감 시점의 직급. 판정 1.5 가 본다 (deduction-pricing.mjs).
+
+     없으면 빈 문자열이고 판정 1.5 는 그냥 지나간다 -- 직급을 못 읽었다고
+     차감이 막히면 안 된다. isDeputyDirector 와 다른 선인 이유: 저쪽은 없으면
+     5:5 를 못 세어 금액 자체가 틀리고, 이쪽은 없으면 일반 강사 단가로 떨어져
+     기존과 같다. */
+  const title = String(input?.title ?? "").trim();
 
   /* 세 가지가 서로 다른 일이다. 한 문구로 뭉개면 화면이 "Invalid occurredAt" 만
      보여 주고, 대표는 날짜가 미래인지 너무 오래됐는지 알 수 없다.
@@ -632,6 +640,7 @@ export async function deductPass(organizationId, pass, input, options = {}) {
     netContractPrice: netContractPriceOf(pass),
     totalSessions: pass?.totalSessions,
     isDeputyDirector,
+    title,
     handedOver: pass?.handedOver === true,
     priorSessions,
     serviceUsedCount: pass?.serviceUsed,
@@ -687,6 +696,13 @@ export async function deductPass(organizationId, pass, input, options = {}) {
        움직인다. 이 한 글자가 없으면 반년 뒤 "왜 25,000 이냐"에 아무도 답할 수
        없다. 급여 화면이 이 값을 한 줄로 보여준다. */
     rule,
+    /* 직급은 따로 적지 않는다. 규칙의 ledger create 가 닫힌 목록(hasOnly)이라
+       칸을 하나 늘리면 규칙을 배포하기 전까지 **모든 차감이 거부된다** --
+       급여 규칙 하나를 바꾸자고 전체를 규칙 배포에 묶을 이유가 없다.
+
+       답은 이미 위 rule 에 있다: senior_title_event 가 적혀 있으면 그때 그
+       강사가 점장이거나 팀장이었다는 뜻이다. 둘 중 어느 쪽이었는지는 남지
+       않지만, 금액이 같아 급여를 설명하는 데는 쓰이지 않는다. */
     lessonId,
     instructorId,
     occurredAt,

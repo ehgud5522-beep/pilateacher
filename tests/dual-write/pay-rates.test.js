@@ -14,6 +14,9 @@ const FIXED = Object.freeze({
   [PAY_CATEGORY.PT_2_1_REPURCHASE]: 35000,
   [PAY_CATEGORY.SERVICE]: 10000,
   [PAY_CATEGORY.LETMEIN]: 28000,
+  /* 디오사 (2026-10-05). 30분·50분이고 강사가 누구든 같다. */
+  [PAY_CATEGORY.DIOSA_A]: 20000,
+  [PAY_CATEGORY.DIOSA_B]: 35000,
 });
 
 test("every pay category has a decided source", () => {

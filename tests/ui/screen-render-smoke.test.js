@@ -72,6 +72,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "일정 탭",
     "일정 탭 · 하루 11건 혼합",
     "일정 탭 · 소속 · 확정 전",
+    "일정 탭 · 소속 · 추가 관리",
     "일정 탭 · 소속 · 1:1 노쇼",
     "일정 탭 · 소속 · 2:1 둘 다 노쇼",
     "일정 탭 · 소속 · 예상 단가",
@@ -1947,6 +1948,20 @@ test("a no-show lesson still offers the confirm button and says it will deduct",
     // 소속 모드에서는 고를 수 없는 것을 고르게 두지 않는다.
     assert.doesNotMatch(markup, />비차감</, name);
   }
+});
+
+test("an add-on care lesson shows both rate lines and the picker", async (t) => {
+  /* 한 수업에서 PT 회원권과 디오사 회원권이 함께 빠진다. 한 줄로 합치면 강사는
+     둘 중 하나만 보고 그것이 이 수업의 전부라고 읽는다. */
+  const markupOf = await issueScreens(t);
+  const markup = markupOf("일정 탭 · 소속 · 추가 관리");
+
+  assert.match(markup, /30,000원/, "PT 줄");
+  assert.match(markup, /추가 관리 20,000원/, "디오사 줄");
+  assert.match(markup, /추가 관리 \(디오사\)/, "고르는 자리");
+  assert.match(markup, /관리 A\(30분\)/);
+  // 반쪽 차감이 없다는 것을 누르기 전에 말한다.
+  assert.match(markup, /디오사 회원권이 없으면 둘 다 빠지지 않습니다/);
 });
 
 test("the backup screen offers the previous phone's records", async (t) => {

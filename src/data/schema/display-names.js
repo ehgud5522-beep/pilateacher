@@ -30,8 +30,19 @@ export const PAY_CATEGORY_LABELS = Object.freeze({
   [PAY_CATEGORY.PT_2_1_REPURCHASE]: "2:1 재등록",
   [PAY_CATEGORY.SERVICE]: "서비스",
   [PAY_CATEGORY.LETMEIN]: "렛미인",
+  [PAY_CATEGORY.DIOSA_A]: "디오사 A",
+  [PAY_CATEGORY.DIOSA_B]: "디오사 B",
   [PAY_CATEGORY.ETC]: "기타",
 });
+
+/**
+ * 엑셀 정산지에서 디오사가 들어가는 칸.
+ *
+ * 정산지에는 디오사 칸이 없다. 새로 만들지 않고 빈 칸 둘을 빌려 쓰기로 했다
+ * (2026-10-05) -- 급여 화면이 이 문장을 그대로 띄워서, 옮겨 적는 사람이
+ * 어디에 넣을지 헤매지 않게 한다.
+ */
+export const DIOSA_PAYROLL_NOTICE = "엑셀 정산지: 디오사 A → 서비스세션 칸, 디오사 B → 듀엣재등 칸";
 
 /**
  * 왜 이 금액인가. 원장 항목의 rule 을 한 줄로 읽는다.
@@ -50,6 +61,8 @@ export const PRICING_RULE_LABELS = Object.freeze({
   [PRICING_RULE.DEPUTY_DIRECTOR]: "부원장 5:5",
   [PRICING_RULE.HANDED_OVER]: "인수인계 — 신규 단가",
   [PRICING_RULE.NEW_TO_INSTRUCTOR]: `누적 ${NEW_TO_INSTRUCTOR_THRESHOLD}회 미만 — 신규 단가`,
+  [PRICING_RULE.DIOSA_FIXED]: "디오사 — 고정 단가",
+  [PRICING_RULE.SENIOR_TITLE_EVENT]: "점장·팀장 — 이벤트 고정 단가",
   [PRICING_RULE.BASE_CATEGORY]: "기준 단가",
 });
 

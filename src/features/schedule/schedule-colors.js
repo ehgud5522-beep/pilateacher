@@ -56,6 +56,10 @@ const BY_ID = new Map(SCHEDULE_COLOR_PRESETS.map((item) => [item.id, item]));
 export const DEFAULT_SCHEDULE_COLORS = Object.freeze({
   private: "violet",
   duet: "blue",
+  /* 관리 A·B. 개인(violet)과 듀엣(blue)에서 떨어뜨려 둔다 -- 주간 격자에서
+     PT 와 섞이면 "오늘 PT 가 몇 개인가" 를 눈으로 셀 수 없다. */
+  care_a: "rose",
+  care_b: "amber",
   group: "teal",
   consult: "amber",
   off: "slate",

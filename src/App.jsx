@@ -138,7 +138,8 @@ import {
   SETTLEMENT_OUTCOME, SETTLEMENT_SKIP, SETTLEMENT_SKIP_LABEL, applySettlementToLesson,
   ABSENT_PARTNER, absentPartnerPrompt, toSoloLesson,
   DEDUCTION_CODE_LABEL, NOT_STARTED_NOTICE, lessonHasStarted,
-  canSettleLesson, clearSettlementFromLesson, closesSettlement, isSettledLesson, needsSettlement,
+  canSettleLesson, carePayCategory, clearSettlementFromLesson, closesSettlement, isSettledLesson,
+  needsSettlement,
   pickSoloPass, pickSharedDuetPass,
   planLessonSettlement, recordSettlementAttempt, settledDeductionsOf, settlementOutcome,
   settlementSkipsOf,
@@ -192,11 +193,12 @@ import {
   NEW_TO_INSTRUCTOR_THRESHOLD, NEW_TO_INSTRUCTOR_UNIT_PRICE, netContractPriceFor,
 } from "./data/schema/deduction-pricing.js";
 import {
-  CLIENT_STATUS, LEDGER_ENTRY_TYPE, LEDGER_REASON_MAX, MEMBERSHIP_STATUS, MEMBERSHIP_TITLE,
+  CLIENT_STATUS, LEDGER_ENTRY_TYPE, LEDGER_REASON_MAX, MEMBERSHIP_STATUS, MEMBERSHIP_TITLE, isDiosaCategory,
   PAY_CATEGORY, PAYMENT_METHOD, PRODUCT_STATUS, ROLES, SESSION_TYPE,
 } from "./data/schema/constants.js";
 import {
-  CLIENT_STATUS_LABELS, DEPUTY_DIRECTOR_LABEL, MEMBERSHIP_STATUS_LABELS, MEMBERSHIP_TITLE_LABELS,
+  CLIENT_STATUS_LABELS, DEPUTY_DIRECTOR_LABEL, DIOSA_PAYROLL_NOTICE,
+  MEMBERSHIP_STATUS_LABELS, MEMBERSHIP_TITLE_LABELS,
   PAYMENT_METHOD_LABELS, PAY_CATEGORY_LABELS, PRICING_RULE_LABELS, PRODUCT_STATUS_LABELS,
   SESSION_TYPE_LABELS, labelOf, membershipTitleLabel, payCategoriesFor,
 } from "./data/schema/display-names.js";
@@ -2876,6 +2878,24 @@ function SchedRateLine({ preview }) {
   );
 }
 
+/* 추가 관리 줄. PT 줄 아래에 따로 선다 -- 한 수업에서 회원권 둘이 빠지므로,
+   한 줄로 합치면 강사는 둘 중 하나만 보고 그것이 전부라고 읽는다. */
+function SchedCareRateLine({ preview }) {
+  if (!preview?.care) return null;
+  return (
+    <span className="mt-0.5 block truncate tabular-nums" style={{ fontSize: TYPE.caption, color: BRAND_D }}>
+      {"+ 추가 관리 "}{won(preview.care.unitPrice)}원 · {labelOf(PRICING_RULE_LABELS, preview.care.rule)}
+    </span>
+  );
+}
+
+/** 추가 관리 고르기. 디오사는 PT 와 별도로 끊는 관리권이라 참가자마다 고른다. */
+const CARE_CHOICES = [
+  { key: "", label: "없음" },
+  { key: "a", label: "관리 A(30분)" },
+  { key: "b", label: "관리 B(50분)" },
+];
+
 function SchedSettleBlock({ s, members, canSettle, settled, canUnsettle, notStarted = false, onSettle, onUnsettle }) {
   const [busy, setBusy] = useState(false);
   const [undoing, setUndoing] = useState(false);
@@ -3062,7 +3082,7 @@ function SchedMemberNote({ lessonId, clientId, settled, onRead, onSave, onToast 
   );
 }
 
-function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset, quickAddRequest, onConsumeQuickAdd, openLessonId, onConsumeOpenLesson, onOpenMember, onAddMember, onOpenAttendance, organizationMode = false, rateOf, onSettleLesson, onUnsettleLesson, onReadMemberNote, onSaveMemberNote, canUnsettle = false, payCard = null }) {
+function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onCareGrade, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset, quickAddRequest, onConsumeQuickAdd, openLessonId, onConsumeOpenLesson, onOpenMember, onAddMember, onOpenAttendance, organizationMode = false, rateOf, onSettleLesson, onUnsettleLesson, onReadMemberNote, onSaveMemberNote, canUnsettle = false, payCard = null }) {
   const initialDisplay = useMemo(() => {
     try { return JSON.parse(localStorage.getItem(SCHEDULE_VIEW_KEY) || "null") || {}; }
     catch (e) { return {}; }
@@ -3352,7 +3372,7 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
 
       {editing && <ScheduleForm draft={liveEditing} members={db.members} schedule={db.schedule} briefingOf={briefingOf} scheduleColors={scheduleColors} returnFocusRef={scheduleTriggerRef} onClose={() => setEditing(null)}
         onSubmit={(v) => { onSave(v); setEditing(null); }} onDelete={(id) => { onDelete(id); setEditing(null); }}
-        onStatus={onStatus} onStatusAll={onStatusAll} onNoshowFee={onNoshowFee} onGroupDone={onGroupDone}
+        onStatus={onStatus} onStatusAll={onStatusAll} onCareGrade={onCareGrade} onNoshowFee={onNoshowFee} onGroupDone={onGroupDone}
         organizationMode={organizationMode} rateOf={rateOf} onSettleLesson={onSettleLesson} onUnsettleLesson={onUnsettleLesson} onReadMemberNote={onReadMemberNote} onSaveMemberNote={onSaveMemberNote} onToast={onToast} canUnsettle={canUnsettle}
         onNoComment={onNoComment} onSaveNote={onSaveNote} onOpenMember={onOpenMember} onFocusMemberWeek={(memberId) => { setFocusedMemberId(memberId); setEditing(null); }} />}
       {queueOpen && (
@@ -3740,7 +3760,7 @@ function confirmedLessonNoteArgs(note, reviewedDraft = null) {
   };
 }
 
-function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, onClose, onSubmit, onDelete, onStatus, onStatusAll, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onOpenMember, onFocusMemberWeek, scheduleColors = null, organizationMode = false, rateOf, onSettleLesson, onUnsettleLesson, onReadMemberNote, onSaveMemberNote, onToast, canUnsettle = false }) {
+function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, onClose, onSubmit, onDelete, onStatus, onStatusAll, onCareGrade, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onOpenMember, onFocusMemberWeek, scheduleColors = null, organizationMode = false, rateOf, onSettleLesson, onUnsettleLesson, onReadMemberNote, onSaveMemberNote, onToast, canUnsettle = false }) {
   /* 확정된 수업은 출석을 바꿀 수 없다. 상태를 바꿔도 이미 나간 차감은 따라오지
      않고, 둘이 어긋나면 어느 것이 맞는지 알 수 없다. */
   const settledLesson = organizationMode && isSettledLesson(draft);
@@ -3974,6 +3994,7 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
                           아는 것은 다르다 -- 원장은 append-only 라 누른 뒤에는
                           고칠 수 없다. */}
                       <SchedRateLine preview={rates.get(a.memberId)} />
+                      <SchedCareRateLine preview={rates.get(a.memberId)} />
                     </button>
                     {m?.goal ? <p className="mt-1 line-clamp-2 text-xs" style={{ color: INK2 }}>목표 · {m.goal}</p> : <button type="button" onClick={() => onOpenMember?.(a.memberId)} className="mt-1 text-xs font-extrabold" style={{ color: BRAND_D }}>+ 목표 추가</button>}
                   </div>
@@ -4026,6 +4047,38 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
                       </p>
                     )
                     : activeAttendee.status === "done" && <p className="mt-1.5 text-xs font-bold" style={{ color: activeAttendee.deductFrom ? GOOD : SUB }}>{activeAttendee.deductFrom ? `${activeAttendee.deductFrom} 1회 차감 완료` : "차감 없이 출석 기록"}</p>}
+                  {/* 추가 관리. 디오사는 PT 와 별도로 끊는 관리권이라 한 수업에서
+                      둘이 함께 빠진다. 2:1 이면 두 사람이 각자 다르게 고르므로
+                      수업이 아니라 이 사람의 칸이다.
+
+                      단독 관리 수업(종류가 관리 A·B)에는 내지 않는다 -- 그
+                      수업 자체가 관리라, 여기서 또 고르면 한 수업에서 디오사가
+                      두 번 빠지는 것처럼 읽힌다. 실제로는 무시되지만, 무시되는
+                      것을 고르게 두지 않는다. */}
+                  {organizationMode && !settledLesson && onCareGrade && !carePayCategory(draft) ? (
+                    <div className="mt-2">
+                      <p className="mb-1 text-caption font-extrabold" style={{ color: SUB }}>추가 관리 (디오사)</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {CARE_CHOICES.map((choice) => {
+                          const picked = (activeAttendee.careGrade || "") === choice.key;
+                          return (
+                            <button key={choice.key || "none"} type="button"
+                              onClick={() => onCareGrade(draft.id, activeMemberId, choice.key)}
+                              className="px-2.5 font-bold" style={{
+                                height: 30, borderRadius: 999, fontSize: TYPE.caption,
+                                backgroundColor: picked ? TINT : CANVAS,
+                                color: picked ? BRAND_D : SUB,
+                              }}>{choice.label}</button>
+                          );
+                        })}
+                      </div>
+                      {activeAttendee.careGrade ? (
+                        <p className="mt-1 text-caption leading-relaxed" style={{ color: INK2 }}>
+                          확정하면 PT 1회와 디오사 1회가 함께 빠집니다. 디오사 회원권이 없으면 둘 다 빠지지 않습니다.
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
                   {/* 차감 여부를 묻는 자리. **소속 모드에는 없다** -- 2026-10-04
                       부터 노쇼는 언제나 1회 차감이고, 여기서 [비차감]을 고를 수
                       있으면 고른 대로 되지 않는다. 고를 수 없는 것을 고르게
@@ -15161,6 +15214,15 @@ function InstructorPayDetail({
                   </span>
                 </div>
               ))}
+              {/* 정산지에는 디오사 칸이 없다. 빈 칸 둘을 빌려 쓰기로 했으므로
+                  (2026-10-05) 어디에 옮겨 적을지를 그 자리에서 말해 준다.
+                  디오사를 한 건도 안 한 달에는 띄우지 않는다 -- 상관없는
+                  안내가 매달 서 있으면 아무도 읽지 않게 된다. */}
+              {pay.byCategory.some((row) => isDiosaCategory(row.category)) ? (
+                <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+                  {DIOSA_PAYROLL_NOTICE}
+                </p>
+              ) : null}
             </div>
           ) : (
             <p style={{ fontSize: TYPE.caption, color: SUB }}>이번 달 차감된 수업이 없습니다.</p>
@@ -15314,6 +15376,8 @@ function AttendanceCheck({
         /* 급여 판정 1 이 보는 값이다. 로그인할 때 읽은 내 membership 에서 온다 --
            차감마다 다시 읽지 않는다 (organization-context.js 참고). */
         isDeputyDirector: organization?.isDeputyDirector === true,
+        // 판정 1.5. 점장·팀장의 1:1 재등록(이벤트)은 31,000 이다.
+        title: organization?.title || "",
       }, { store: passStore });
       onToast?.({ ok: true, msg: `${client?.name || "회원"}님 1회 차감했습니다.` });
       setConfirming(null);
@@ -22464,6 +22528,15 @@ export function createAppScreenSmokeCases() {
     { name: "일정 탭", element: provider(<ScheduleManager db={db} photos={photos} onSave={noop} onDelete={noop} onStatus={noop} onStatusAll={noop} onNoshowFee={noop} onGroupDone={noop} onNoComment={noop} onSaveNote={noop} onToast={noop} onSettings={noop} onConsumeMemberPreset={noop} onConsumeQuickAdd={noop} onOpenMember={noop} />) },
     { name: "일정 탭 · 하루 11건 혼합", element: provider(<ScheduleManager db={busyDb} photos={{}} onSave={noop} onDelete={noop} onStatus={noop} onStatusAll={noop} onNoshowFee={noop} onGroupDone={noop} onNoComment={noop} onSaveNote={noop} onToast={noop} onSettings={noop} onConsumeMemberPreset={noop} onConsumeQuickAdd={noop} onOpenMember={noop} />) },
     { name: "일정 탭 · 소속 · 확정 전", element: scheduleWithSettlement(settleLessonOf()) },
+    /* 추가 관리. PT 와 디오사가 한 수업에서 함께 빠지는 자리라, 두 줄이 모두
+       서는지와 고르는 칩이 있는지를 함께 본다. */
+    { name: "일정 탭 · 소속 · 추가 관리", element: scheduleWithSettlement(settleLessonOf({
+      type: "1:1",
+      attendees: [{ ...settleAttendee("m-local-1"), careGrade: "a" }],
+    }), { onCareGrade: noop, rateOf: () => new Map([["m-local-1", {
+      passId: "pt-1", unitPrice: 30000, rule: "base_category", shared: false, deducts: true,
+      care: { passId: "dio-1", unitPrice: 20000, rule: "diosa_fixed", shared: false, deducts: true },
+    }]]) }) },
     { name: "일정 탭 · 소속 · 1:1 노쇼", element: scheduleWithSettlement(settleLessonOf({
       type: "1:1", attendees: [{ ...settleAttendee("m-local-1"), status: "noshow" }],
     })) },
@@ -23562,8 +23635,10 @@ export default function App() {
     totals: rosterTotals,
     instructorId: account?.id || "",
     isDeputyDirector: organizationContext.isDeputyDirector === true,
+    // 판정 1.5. 미리보기가 확정과 같은 값을 써야 숫자가 갈라지지 않는다.
+    title: organizationContext.title || "",
     now: new Date(),
-  }), [rosterMembers, rosterPasses, rosterTotals, account?.id, organizationContext.isDeputyDirector]);
+  }), [rosterMembers, rosterPasses, rosterTotals, account?.id, organizationContext.isDeputyDirector, organizationContext.title]);
 
   const findRosterMember = useCallback(
     (memberId) => {
@@ -25185,6 +25260,32 @@ export default function App() {
     })) return;
     setToast({ ok: true, msg: msg || `${stOf(status).label} 처리했습니다.` });
   };
+  /**
+   * 추가 관리 고르기. **참가자에 붙는다.**
+   *
+   * 디오사는 PT 와 별도로 끊는 관리권이라 한 수업에서 둘이 함께 빠진다.
+   * 2:1 이면 두 사람이 각자 다르게 고를 수 있어 수업이 아니라 참가자의 칸이다.
+   *
+   * 차감은 확정할 때 함께 일어난다 -- 여기서는 고른 것만 적는다. 고르자마자
+   * 빠지면 수업 전에 잘못 눌렀을 때 되돌릴 길이 대표밖에 없다.
+   */
+  const setCareGrade = (id, memberId, grade) => {
+    const lesson = db.schedule.find((item) => item.id === id);
+    if (!lesson) return;
+    const list = attendeesOf(lesson);
+    const mid = memberId || list[0]?.memberId;
+    if (!list.some((item) => item.memberId === mid)) return;
+    const next = grade === "a" || grade === "b" ? grade : "";
+    const attendees = list.map((item) => (item.memberId === mid ? { ...item, careGrade: next } : item));
+    saveDb({ ...db, schedule: db.schedule.map((item) => (item.id === id ? { ...item, attendees } : item)) });
+    setToast({
+      ok: true,
+      msg: next
+        ? `추가 관리 ${next === "a" ? "A(30분)" : "B(50분)"} — 확정할 때 디오사에서 1회 함께 빠집니다.`
+        : "추가 관리를 뺐습니다.",
+    });
+  };
+
   /* 듀엣처럼 여러 명인 수업을 한 번에 처리 — 따로 두 번 호출하면 뒤엣것이 앞엣것을 덮는다 */
   const setStatusAll = (id, status) => {
     const s0 = db.schedule.find((x) => x.id === id);
@@ -25317,6 +25418,10 @@ export default function App() {
             createdBy: account?.id || "",
             occurredAt,
             isDeputyDirector: organizationContext.isDeputyDirector === true,
+            /* 급여 판정 1.5 가 보는 값. 지금 이 순간의 직급이고, 그것으로
+               정해진 금액이 원장에 박힌다 -- 나중에 승진해도 이 회차는
+               그대로다. */
+            title: organizationContext.title || "",
             // 조직 수업 문서도 이 일정과 같은 id 를 쓴다. 원장의 lessonId 가
             // 일정을 가리켜야 "이 수업의 차감"을 되짚을 수 있다.
             lessonId: lesson.id,
@@ -26330,7 +26435,7 @@ export default function App() {
         ) : null}
         <div className="relative min-h-0 flex-1 overflow-hidden">
           <Guard key={tab}>
-            {tab === "schedule" && <ScheduleManager db={rosterDb} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterMembers ? () => { setMemberRegistrationRequest((value) => value + 1); setTab("members"); } : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && organizationContext.role === ROLES.OWNER} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
+            {tab === "schedule" && <ScheduleManager db={rosterDb} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onCareGrade={setCareGrade} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterMembers ? () => { setMemberRegistrationRequest((value) => value + 1); setTab("members"); } : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && organizationContext.role === ROLES.OWNER} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
             {tab === "members" && <div className={`h-full min-h-0 ${mobileView === "detail" && member ? "pt-member-detail-active" : ""}`}>
               <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList passSummaryOf={passSummaryFor} locations={rosterLocations} members={rosterMembers} schedule={db.schedule} settings={db.settings} organizationMode={organizationRoster} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} canBrowseAll={!organizationRoster || canBrowseAllClients(organizationContext.role)} viewerRole={organizationContext.role} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterMembers} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} journeyOf={organizationRoster ? journeyFor : undefined} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
               {mobileView === "detail" && member && <div className="pt-member-detail-pane h-full min-h-0">

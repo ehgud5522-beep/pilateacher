@@ -49,7 +49,7 @@ export function instructorClientSessionsOf(totals, instructorId, clientId) {
  *
  * @param {{
  *   member?: any, passes?: Array<any>, totals?: Array<any>,
- *   instructorId?: string, isDeputyDirector?: boolean, now?: Date,
+ *   instructorId?: string, isDeputyDirector?: boolean, title?: string, now?: Date,
  *   chosen?: any, skip?: string, shared?: boolean, deducts?: boolean,
  * }} input
  *   chosen 수업 단위로 이미 고른 회원권 (planPassSelection). 없으면 혼자 온
@@ -95,6 +95,10 @@ export function previewMemberRate(input = {}) {
       netContractPrice: netContractPriceOf(pass),
       totalSessions: pass.totalSessions,
       isDeputyDirector: input.isDeputyDirector === true,
+      /* 판정 1.5 가 본다. 미리보기와 확정이 같은 값을 넣어야 강사가 본 금액과
+         박히는 금액이 같다 -- 점장에게 30,000 을 보여주고 31,000 을 박으면
+         원장은 append-only 라 그 차이를 되돌릴 수 없다. */
+      title: input.title,
       handedOver: pass.handedOver === true,
       priorSessions: instructorClientSessionsOf(input.totals, input.instructorId, clientId),
       serviceUsedCount: pass.serviceUsed,
@@ -122,7 +126,7 @@ export function previewMemberRate(input = {}) {
  *
  * @param {{
  *   lesson?: any, members?: Array<any>, passes?: Array<any>, totals?: Array<any>,
- *   instructorId?: string, isDeputyDirector?: boolean, now?: Date,
+ *   instructorId?: string, isDeputyDirector?: boolean, title?: string, now?: Date,
  * }} input
  * @returns {Map<string, object>} memberId → 위 previewMemberRate 의 결과
  */
@@ -139,8 +143,13 @@ export function previewLessonRates(input = {}) {
      출석 상태는 보지 않는다 -- 아직 아무도 누르지 않은 수업에서도 서야 한다. */
   const plan = planPassSelection({ ...input, requireAttendance: false });
   const chosen = new Map();
+  /* 추가 관리는 같은 사람의 **두 번째** 줄이다. 한 통에 담으면 뒤엣것이
+     앞엣것을 덮어 PT 줄이 사라진다 -- 강사는 디오사 금액만 보고 그것이 이
+     수업의 전부라고 읽는다. */
+  const careChosen = new Map();
   for (const item of plan.deductions) {
-    item.memberIds.forEach((memberId, index) => chosen.set(text(memberId), {
+    const target = item.care === true ? careChosen : chosen;
+    item.memberIds.forEach((memberId, index) => target.set(text(memberId), {
       chosen: item.pass, shared: item.shared === true, deducts: index === 0,
     }));
   }
@@ -151,9 +160,14 @@ export function previewLessonRates(input = {}) {
     if (!memberId || out.has(memberId)) continue;
     const member = byId.get(memberId);
     if (!member) continue;
-    out.set(memberId, previewMemberRate({
-      ...input, member, skip: skipped.get(memberId) || "", ...(chosen.get(memberId) || {}),
-    }));
+    const skip = skipped.get(memberId) || "";
+    const line = previewMemberRate({
+      ...input, member, skip, ...(chosen.get(memberId) || {}),
+    });
+    const care = careChosen.get(memberId);
+    out.set(memberId, care
+      ? { ...line, care: previewMemberRate({ ...input, member, skip: "", ...care }) }
+      : line);
   }
   return out;
 }

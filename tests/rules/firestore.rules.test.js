@@ -238,6 +238,11 @@ async function seed() {
       userId: users.member, createdBy: users.instructor,
     });
     await setDoc(doc(db, "runtimeConfig", "aiRecording"), { status: "normal", reasonCode: "", updatedAt: Timestamp.now() });
+    await setDoc(doc(db, "runtimeConfig", "settlement"), { minBuilds: { web: "", android: "", ios: "" } });
+    await setDoc(doc(db, "runtimeConfig", "appUpdate"), {
+      android: { latestBuild: "", minimumBuild: "", message: "" },
+      ios: { latestBuild: "", minimumBuild: "", message: "" },
+    });
   });
 }
 
@@ -1793,6 +1798,23 @@ describe("protected and append-only data", () => {
     await assertSucceeds(getDoc(doc(dbFor(users.instructor), "runtimeConfig", "aiRecording")));
     await assertFails(getDoc(doc(dbFor(null), "runtimeConfig", "aiRecording")));
     await assertFails(updateDoc(doc(dbFor(users.owner), "runtimeConfig", "aiRecording"), { status: "off" }));
+  });
+
+  test("the app reads the two operational settings and can never write them", async () => {
+    /* 둘 다 숫자 하나가 센터 전체의 확정을 막을 수 있다. 읽기만 연다 --
+       쓰는 자리는 콘솔과 대표 전용 통로뿐이고, 실수로 눌러지는 자리를
+       만들지 않는다 (aiRecording 과 같은 판단).
+
+       settlement 는 지금까지 match 가 아예 없어 읽기가 막혀 있었고, 그래서
+       settlement-gate 가 언제나 열린 채로 돌았다 -- 최소 빌드를 올려도 아무도
+       막히지 않았다. 이 테스트가 그 장치가 실제로 켜졌다는 증거다. */
+    for (const document of ["settlement", "appUpdate"]) {
+      await assertSucceeds(getDoc(doc(dbFor(users.instructor), "runtimeConfig", document)));
+      await assertFails(getDoc(doc(dbFor(null), "runtimeConfig", document)));
+      // 대표도 앱에서는 못 쓴다.
+      await assertFails(updateDoc(doc(dbFor(users.owner), "runtimeConfig", document), { touched: true }));
+      await assertFails(setDoc(doc(dbFor(users.owner), "runtimeConfig", document), { touched: true }));
+    }
   });
 
   test("ordinary users cannot change roles", async () => {

@@ -49,7 +49,7 @@ export function instructorClientSessionsOf(totals, instructorId, clientId) {
  *
  * @param {{
  *   member?: any, passes?: Array<any>, totals?: Array<any>,
- *   instructorId?: string, isDeputyDirector?: boolean, now?: Date,
+ *   instructorId?: string, isDeputyDirector?: boolean, title?: string, now?: Date,
  *   chosen?: any, skip?: string, shared?: boolean, deducts?: boolean,
  * }} input
  *   chosen 수업 단위로 이미 고른 회원권 (planPassSelection). 없으면 혼자 온
@@ -95,6 +95,10 @@ export function previewMemberRate(input = {}) {
       netContractPrice: netContractPriceOf(pass),
       totalSessions: pass.totalSessions,
       isDeputyDirector: input.isDeputyDirector === true,
+      /* 판정 1.5 가 본다. 미리보기와 확정이 같은 값을 넣어야 강사가 본 금액과
+         박히는 금액이 같다 -- 점장에게 30,000 을 보여주고 31,000 을 박으면
+         원장은 append-only 라 그 차이를 되돌릴 수 없다. */
+      title: input.title,
       handedOver: pass.handedOver === true,
       priorSessions: instructorClientSessionsOf(input.totals, input.instructorId, clientId),
       serviceUsedCount: pass.serviceUsed,
@@ -122,7 +126,7 @@ export function previewMemberRate(input = {}) {
  *
  * @param {{
  *   lesson?: any, members?: Array<any>, passes?: Array<any>, totals?: Array<any>,
- *   instructorId?: string, isDeputyDirector?: boolean, now?: Date,
+ *   instructorId?: string, isDeputyDirector?: boolean, title?: string, now?: Date,
  * }} input
  * @returns {Map<string, object>} memberId → 위 previewMemberRate 의 결과
  */

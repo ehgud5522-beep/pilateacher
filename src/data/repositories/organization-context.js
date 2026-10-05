@@ -38,6 +38,12 @@ export const UNRESOLVED_ORGANIZATION_CONTEXT = Object.freeze({
      다시 읽을 때부터 안다. 등급 승진처럼 미리 정해지고 거의 바뀌지 않는
      값이라 그 대가를 받아들였고, 강사 단가 화면이 그 사실을 말한다. */
   isDeputyDirector: false,
+  /* 직급. 급여 판정 1.5 가 이 값을 본다 (deduction-pricing.mjs) -- 점장·팀장의
+     1:1 재등록(이벤트)은 31,000 이다. isDeputyDirector 와 같은 이유로 여기 있다:
+     차감할 때마다 소속 문서를 다시 읽으면 수업이 끝난 자리에서 누르는 버튼에
+     왕복이 하나 더 붙는다. 대가도 같다 -- 승진은 다음에 컨텍스트를 읽을 때부터
+     반영된다. */
+  title: "",
   isLegacy: false,
   ready: false,
 });
@@ -60,6 +66,7 @@ export function unknownOrganizationContext() {
  * @property {string} [status]
  * @property {string} [displayName]
  * @property {boolean} [isDeputyDirector]
+ * @property {string} [title]
  */
 
 const required = (value, label) => {
@@ -133,7 +140,7 @@ const withLookupTimeout = (promise, { timeoutMs, setTimer, clearTimer }) => {
 /**
  * @param {string} userId
  * @param {{ listActiveMemberships?: (userId: string) => Promise<Array<MembershipDocument>>, warn?: (code: string, detail: object) => void, log?: (code: string, detail: object) => void, timeoutMs?: number, setTimer?: Function, clearTimer?: Function }} [options]
- * @returns {Promise<{ organizationId: string, role: string, status: string, displayName?: string, isDeputyDirector?: boolean, isLegacy: boolean }>}
+ * @returns {Promise<{ organizationId: string, role: string, status: string, displayName?: string, isDeputyDirector?: boolean, title?: string, isLegacy: boolean }>}
  */
 export async function resolveOrganizationContext(userId, options = {}) {
   const id = required(userId, "userId");
@@ -233,6 +240,7 @@ export async function resolveOrganizationContext(userId, options = {}) {
     displayName: String(membership.displayName || ""),
     // 없으면 false 다. 부원장은 지정받은 사람만이다.
     isDeputyDirector: membership.isDeputyDirector === true,
+    title: String(membership.title ?? ""),
     isLegacy: false,
   }, "membership", {
     count: receivedCount,

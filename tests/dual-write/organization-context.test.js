@@ -26,7 +26,19 @@ test("an active membership decides the organization and the role", async () => {
     status: "active",
     displayName: "",
     isDeputyDirector: false,
+    // 급여 판정 1.5 가 읽는다. 없으면 빈 문자열이고 일반 강사 단가로 간다.
+    title: "",
     isLegacy: false,
+  });
+});
+
+test("the title rides along for the senior-title pay rule", () => {
+  /* 점장·팀장의 1:1 재등록(이벤트)은 31,000 이다. 차감할 때마다 소속 문서를
+     다시 읽지 않으려고 로그인 때 한 번 싣는다 -- isDeputyDirector 와 같다. */
+  return resolveOrganizationContext("user-1", {
+    listActiveMemberships: async () => [{ ...membership(), title: "branch_manager" }],
+  }).then((context) => {
+    assert.equal(context.title, "branch_manager");
   });
 });
 

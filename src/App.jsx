@@ -15314,6 +15314,8 @@ function AttendanceCheck({
         /* 급여 판정 1 이 보는 값이다. 로그인할 때 읽은 내 membership 에서 온다 --
            차감마다 다시 읽지 않는다 (organization-context.js 참고). */
         isDeputyDirector: organization?.isDeputyDirector === true,
+        // 판정 1.5. 점장·팀장의 1:1 재등록(이벤트)은 31,000 이다.
+        title: organization?.title || "",
       }, { store: passStore });
       onToast?.({ ok: true, msg: `${client?.name || "회원"}님 1회 차감했습니다.` });
       setConfirming(null);
@@ -23562,8 +23564,10 @@ export default function App() {
     totals: rosterTotals,
     instructorId: account?.id || "",
     isDeputyDirector: organizationContext.isDeputyDirector === true,
+    // 판정 1.5. 미리보기가 확정과 같은 값을 써야 숫자가 갈라지지 않는다.
+    title: organizationContext.title || "",
     now: new Date(),
-  }), [rosterMembers, rosterPasses, rosterTotals, account?.id, organizationContext.isDeputyDirector]);
+  }), [rosterMembers, rosterPasses, rosterTotals, account?.id, organizationContext.isDeputyDirector, organizationContext.title]);
 
   const findRosterMember = useCallback(
     (memberId) => {
@@ -25317,6 +25321,10 @@ export default function App() {
             createdBy: account?.id || "",
             occurredAt,
             isDeputyDirector: organizationContext.isDeputyDirector === true,
+            /* 급여 판정 1.5 가 보는 값. 지금 이 순간의 직급이고, 그것으로
+               정해진 금액이 원장에 박힌다 -- 나중에 승진해도 이 회차는
+               그대로다. */
+            title: organizationContext.title || "",
             // 조직 수업 문서도 이 일정과 같은 id 를 쓴다. 원장의 lessonId 가
             // 일정을 가리켜야 "이 수업의 차감"을 되짚을 수 있다.
             lessonId: lesson.id,

@@ -2,10 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   NEW_TO_INSTRUCTOR_THRESHOLD, NEW_TO_INSTRUCTOR_UNIT_PRICE, PAYMENT_INCLUDES_VAT, PRICING_RULE,
+  SENIOR_TITLES, SENIOR_TITLE_EVENT_UNIT_PRICE,
   deputyDirectorUnitPrice, netContractPriceFor, netContractPriceOf, resolveDeductionUnitPrice,
   spendsServiceSession,
 } from "../../src/data/schema/deduction-pricing.js";
-import { PAYMENT_METHOD } from "../../src/data/schema/constants.js";
+import { MEMBERSHIP_TITLE, PAYMENT_METHOD } from "../../src/data/schema/constants.js";
 import { PAY_RATES } from "../../src/data/schema/pay-rates.js";
 
 /** 1:1 재등록(이벤트) 회원권. 판정 4 가 걸리면 30,000 이다. */
@@ -318,11 +319,26 @@ test("cash and transfer are the contract itself", () => {
   assert.equal(netContractPriceFor(1300000, "transfer"), 1300000);
 });
 
-test("zeropay and voucher are taxed like a card", () => {
-  /* 수수료가 없다는 것과 세금이 없다는 것은 다른 이야기다. 제로페이도
-     바우처도 매출로 잡히고 부가세가 나간다. */
-  assert.equal(netContractPriceFor(1100000, "zeropay"), 1000000);
-  assert.equal(netContractPriceFor(1100000, "voucher"), 1000000);
+test("only a card is discounted — zeropay and voucher are not (2026-10-05 변경)", () => {
+  /* 전에는 셋을 같이 두고 "수수료가 없다는 것과 세금이 없다는 것은 다른
+     이야기" 라고 적었다. 대표가 보는 기준은 센터가 실제로 떼이는 결제
+     수수료였고, 제로페이(가맹점 수수료 0%)와 바우처는 떼이는 것이 없다.
+
+     이미 발급된 회원권은 움직이지 않는다 -- 발급 시점의 공급가액이 문서에
+     박혀 있고 netContractPriceOf 가 그것을 먼저 본다. 이관분도 마찬가지다. */
+  assert.equal(netContractPriceFor(1100000, "card"), 1000000, "카드만 뺀다");
+  assert.equal(netContractPriceFor(1100000, "zeropay"), 1100000);
+  assert.equal(netContractPriceFor(1100000, "voucher"), 1100000);
+  assert.equal(netContractPriceFor(1100000, "cash"), 1100000);
+  assert.equal(netContractPriceFor(1100000, "transfer"), 1100000);
+});
+
+test("an already issued pass keeps the net price it was sold with", () => {
+  /* 이 변경이 지난 회원권의 급여를 흔들면 안 된다. 발급 때 박은 값이
+     먼저이고, 그것이 없을 때만 지금 규칙으로 다시 센다. */
+  assert.equal(netContractPriceOf({ netContractPrice: 1000000, contractPrice: 1100000, paymentMethod: "zeropay" }), 1000000);
+  // 박힌 값이 없는 옛 회원권만 지금 규칙을 탄다.
+  assert.equal(netContractPriceOf({ contractPrice: 1100000, paymentMethod: "zeropay" }), 1100000);
 });
 
 test("every payment method answers whether it carries VAT", () => {
@@ -363,4 +379,72 @@ test("a pass carries its net price, and an older one is worked out again", () =>
   assert.equal(netContractPriceOf({ contractPrice: 1100000 }), null);
   assert.equal(netContractPriceOf({ paymentMethod: "card" }), null);
   assert.equal(netContractPriceOf(null), null);
+});
+
+/* ── 판정 1.5. 점장·팀장의 1:1 재등록(이벤트) ──────────────────────────────
+
+   2026-10-05 에 대표가 정했다. 직급에 붙는 고정 단가이고, 부원장보다는 뒤,
+   인수인계·누적 20회보다는 앞이다. */
+
+test("a branch manager and a team lead get 31,000 on the event repurchase", () => {
+  for (const title of ["branch_manager", "team_lead"]) {
+    const result = priceOf({ title });
+    assert.equal(result.unitPrice, SENIOR_TITLE_EVENT_UNIT_PRICE, title);
+    assert.equal(result.rule, PRICING_RULE.SENIOR_TITLE_EVENT, title);
+  }
+});
+
+test("a plain instructor still gets 30,000", () => {
+  /* 표값 그대로다. 직급 수당이 일반 강사까지 번지면 센터 전체의 인건비가
+     조용히 올라간다. */
+  for (const title of ["instructor", "", undefined]) {
+    const result = priceOf({ title });
+    assert.equal(result.unitPrice, 30000, String(title));
+    assert.equal(result.rule, PRICING_RULE.BASE_CATEGORY, String(title));
+  }
+});
+
+test("the senior title beats the handover and the under-20 rules", () => {
+  /* 뒤에 두면 저 둘이 25,000 으로 가로채고, 직급 수당은 그 회원이 20회를
+     넘긴 뒤에야 나타난다 -- 점장이 새 회원을 맡을수록 손해가 된다. */
+  assert.equal(priceOf({ title: "branch_manager", handedOver: true }).unitPrice, 31000);
+  assert.equal(priceOf({ title: "team_lead", priorSessions: 3 }).unitPrice, 31000);
+  // 같은 조건의 일반 강사는 그대로 25,000 이다.
+  assert.equal(priceOf({ title: "instructor", handedOver: true }).unitPrice, NEW_TO_INSTRUCTOR_UNIT_PRICE);
+  assert.equal(priceOf({ title: "instructor", priorSessions: 3 }).unitPrice, NEW_TO_INSTRUCTOR_UNIT_PRICE);
+});
+
+test("the deputy director rule still wins over the senior title", () => {
+  /* 부원장이면서 점장인 사람이 있다. 2026-10-05 에 대표가 정했다: 부원장이
+     먼저다. 5:5 는 그 회원권이 실제로 판 금액에서 나오므로, 고정 단가로
+     덮으면 비싼 계약일수록 그 사람이 손해를 본다. */
+  const result = priceOf({ title: "branch_manager", isDeputyDirector: true });
+  assert.equal(result.rule, PRICING_RULE.DEPUTY_DIRECTOR);
+  // 2,100,000 ÷ 30 ÷ 2 = 35,000
+  assert.equal(result.unitPrice, 35000);
+});
+
+test("the service judgment still comes first for a senior title", () => {
+  /* 서비스는 센터가 정한 금액이지 그 강사의 단가가 아니다. 직급도 가로채지
+     않는다. */
+  const result = priceOf({ title: "branch_manager", category: "service", baseUnitPrice: 10000 });
+  assert.equal(result.rule, PRICING_RULE.SERVICE_FIRST);
+  assert.equal(result.unitPrice, 10000);
+});
+
+test("only the 1:1 event repurchase carries the senior rate", () => {
+  /* 2:1 재등록은 이번 변경 대상이 아니다. 1:1 정상(풀방금액)도 아니다 --
+     거기는 강사별 금액이라 직급 수당이 이중으로 얹힌다. */
+  assert.equal(priceOf({ title: "branch_manager", category: "pt_2_1_repurchase", baseUnitPrice: 35000 }).unitPrice, 35000);
+  assert.equal(priceOf({ title: "branch_manager", category: "pt_1_1_repurchase_normal", baseUnitPrice: 45000 }).unitPrice, 45000);
+  assert.equal(priceOf({ title: "branch_manager", category: "pt_1_1_new", baseUnitPrice: 25000 }).unitPrice, 25000);
+});
+
+test("every senior title is a real membership title", () => {
+  /* 오타 하나면 그 직급은 영영 31,000 을 못 받고, 아무도 그 사실을 모른다. */
+  const known = /** @type {ReadonlyArray<string>} */ (Object.values(MEMBERSHIP_TITLE));
+  for (const title of SENIOR_TITLES) {
+    assert.ok(known.includes(title), title);
+  }
+  assert.equal(SENIOR_TITLES.includes(MEMBERSHIP_TITLE.INSTRUCTOR), false);
 });

@@ -35,6 +35,11 @@ export const PAY_RATES = Object.freeze({
   [PAY_CATEGORY.PT_2_1_REPURCHASE]: 35000,
   [PAY_CATEGORY.SERVICE]: 10000,
   [PAY_CATEGORY.LETMEIN]: 28000,
+  /* 디오사. 30분과 50분의 차이가 그대로 단가의 차이다. 강사가 누구든 같고,
+     인수인계·누적 20회·직급 어느 것에도 걸리지 않는다 -- 부원장 5:5 만
+     예외이고 그것은 판정 1 이 먼저 잡는다 (deduction-pricing.mjs). */
+  [PAY_CATEGORY.DIOSA_A]: 20000,
+  [PAY_CATEGORY.DIOSA_B]: 35000,
 });
 
 /** 단가가 어디서 오는가. 화면은 이 값으로 무엇을 물어볼지 정한다. */

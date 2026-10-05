@@ -22,7 +22,7 @@
  * 확정본의 모든 예시를 테스트로 그대로 옮길 수 있다.
  */
 
-import { MEMBERSHIP_TITLE, PAY_CATEGORY, PAYMENT_METHOD } from "./constants.mjs";
+import { MEMBERSHIP_TITLE, PAY_CATEGORY, PAYMENT_METHOD, isDiosaCategory } from "./constants.mjs";
 
 /** 어느 판정이 이겼는가. 분쟁 때 "왜 이 금액인가"를 답하는 값이다. */
 export const PRICING_RULE = Object.freeze({
@@ -30,6 +30,8 @@ export const PRICING_RULE = Object.freeze({
   SERVICE_FIRST: "service_first",
   SERVICE_ALREADY_USED: "service_already_used",
   DEPUTY_DIRECTOR: "deputy_director",
+  /** 디오사 관리 수업. 표값 고정이고 직급·인수인계·누적에 걸리지 않는다. */
+  DIOSA_FIXED: "diosa_fixed",
   /** 점장·팀장의 1:1 재등록(이벤트). 직급에 붙는 고정 단가다. */
   SENIOR_TITLE_EVENT: "senior_title_event",
   HANDED_OVER: "handed_over",
@@ -296,6 +298,22 @@ export function resolveDeductionUnitPrice(input = {}) {
         totalSessions: input?.totalSessions,
       }),
       rule: PRICING_RULE.DEPUTY_DIRECTOR,
+    };
+  }
+
+  /* ── 판정 1.2. 디오사는 표값 고정 ───────────────────────────────────────
+     관리 수업이다. PT 와 다른 상품이고, 강사가 누구든 같은 금액이다.
+
+     **부원장(판정 1)보다는 뒤다.** 2026-10-05 에 대표가 정했다 -- 디오사도
+     5:5 는 그대로 받는다.
+
+     **직급·인수인계·누적 20회보다는 앞이다.** 저 셋은 전부 PT 를 전제로 한
+     판정이다. 디오사에 걸리면 20,000 짜리 관리 수업이 25,000 으로 나가고,
+     그 차이는 원장에 박혀 고칠 수 없다. */
+  if (isDiosaCategory(category)) {
+    return {
+      unitPrice: requiredInt(input?.baseUnitPrice, "baseUnitPrice", { min: 0 }),
+      rule: PRICING_RULE.DIOSA_FIXED,
     };
   }
 

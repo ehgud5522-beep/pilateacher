@@ -192,11 +192,12 @@ import {
   NEW_TO_INSTRUCTOR_THRESHOLD, NEW_TO_INSTRUCTOR_UNIT_PRICE, netContractPriceFor,
 } from "./data/schema/deduction-pricing.js";
 import {
-  CLIENT_STATUS, LEDGER_ENTRY_TYPE, LEDGER_REASON_MAX, MEMBERSHIP_STATUS, MEMBERSHIP_TITLE,
+  CLIENT_STATUS, LEDGER_ENTRY_TYPE, LEDGER_REASON_MAX, MEMBERSHIP_STATUS, MEMBERSHIP_TITLE, isDiosaCategory,
   PAY_CATEGORY, PAYMENT_METHOD, PRODUCT_STATUS, ROLES, SESSION_TYPE,
 } from "./data/schema/constants.js";
 import {
-  CLIENT_STATUS_LABELS, DEPUTY_DIRECTOR_LABEL, MEMBERSHIP_STATUS_LABELS, MEMBERSHIP_TITLE_LABELS,
+  CLIENT_STATUS_LABELS, DEPUTY_DIRECTOR_LABEL, DIOSA_PAYROLL_NOTICE,
+  MEMBERSHIP_STATUS_LABELS, MEMBERSHIP_TITLE_LABELS,
   PAYMENT_METHOD_LABELS, PAY_CATEGORY_LABELS, PRICING_RULE_LABELS, PRODUCT_STATUS_LABELS,
   SESSION_TYPE_LABELS, labelOf, membershipTitleLabel, payCategoriesFor,
 } from "./data/schema/display-names.js";
@@ -15161,6 +15162,15 @@ function InstructorPayDetail({
                   </span>
                 </div>
               ))}
+              {/* 정산지에는 디오사 칸이 없다. 빈 칸 둘을 빌려 쓰기로 했으므로
+                  (2026-10-05) 어디에 옮겨 적을지를 그 자리에서 말해 준다.
+                  디오사를 한 건도 안 한 달에는 띄우지 않는다 -- 상관없는
+                  안내가 매달 서 있으면 아무도 읽지 않게 된다. */}
+              {pay.byCategory.some((row) => isDiosaCategory(row.category)) ? (
+                <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+                  {DIOSA_PAYROLL_NOTICE}
+                </p>
+              ) : null}
             </div>
           ) : (
             <p style={{ fontSize: TYPE.caption, color: SUB }}>이번 달 차감된 수업이 없습니다.</p>

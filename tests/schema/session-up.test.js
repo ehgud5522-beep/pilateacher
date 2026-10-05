@@ -196,3 +196,23 @@ test("the history line says what grew from where", () => {
   assert.equal(sessionUpLabel({ addedSessions: 50 }), "세션업 +50회");
   assert.equal(sessionUpLabel({}), "세션업");
 });
+
+/* ── 디오사 ─────────────────────────────────────────────────────────────── */
+
+test("session up works on a diosa pass just like a PT one", () => {
+  /* 세션업은 카테고리를 보지 않는다 -- 회차와 금액만 센다. 그래서 디오사에도
+     그대로 돈다. 보지 않는다는 사실 자체를 고정해 둔다: 나중에 카테고리별
+     분기가 생기면 디오사가 조용히 빠진다. */
+  const diosaA = pass({
+    category: "diosa_a", totalSessions: 20, serviceSessions: 0,
+    contractPrice: 880000, baseUnitPrice: 44000, remainingCount: 12,
+  });
+  const { after } = planSessionUp({ pass: diosaA, addSessions: 10, addPrice: 440000 });
+
+  assert.equal(after.totalSessions, 30);
+  assert.equal(after.remainingCount, 22);
+  assert.equal(after.contractPrice, 1320000);
+  // 1,320,000 ÷ 30 = 44,000. 회당 결제 금액은 그대로다.
+  assert.equal(after.baseUnitPrice, 44000);
+  assert.equal(sessionUpError({ pass: diosaA, addSessions: 10, addPrice: 440000 }), "");
+});

@@ -126,8 +126,22 @@ export const PAY_CATEGORY = Object.freeze({
   PT_2_1_REPURCHASE: "pt_2_1_repurchase",
   SERVICE: "service",
   LETMEIN: "letmein",
+  /* 디오사 — 관리 수업. PT 와 다른 상품이고 단가도 고정이다 (2026-10-05).
+     A 는 30분, B 는 50분이고 그 차이가 곧 단가의 차이다. */
+  DIOSA_A: "diosa_a",
+  DIOSA_B: "diosa_b",
   ETC: "etc",
 });
+
+/** 디오사 급여 카테고리. 수업 종류 ↔ 회원권 종류를 잇는 데도 쓴다. */
+export const DIOSA_CATEGORIES = Object.freeze(
+  /** @type {ReadonlyArray<string>} */ ([PAY_CATEGORY.DIOSA_A, PAY_CATEGORY.DIOSA_B]),
+);
+
+/** 이 회원권이 디오사인가. @param {unknown} category */
+export function isDiosaCategory(category) {
+  return DIOSA_CATEGORIES.includes(String(category ?? ""));
+}
 
 // 회원권의 생애. firestore.foundation.rules 의 passes create 는 status 가
 // 문자열이기만 요구하므로, 값을 좁히는 것은 여기와 리포지토리의 몫이다.

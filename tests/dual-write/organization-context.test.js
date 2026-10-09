@@ -25,6 +25,10 @@ test("an active membership decides the organization and the role", async () => {
     role: "instructor",
     status: "active",
     displayName: "",
+    /* 그 이름을 누가 정했는가. 로그인 동기화가 이 값을 보고 손을 뗀다 --
+       대표가 정한 이름을 덮으면 강사 목록과 급여가 로그인 계정 이름으로
+       되돌아간다 (2026-10-10 의 "e asy"). */
+    displayNameBy: "",
     isDeputyDirector: false,
     // 급여 판정 1.5 가 읽는다. 없으면 빈 문자열이고 일반 강사 단가로 간다.
     title: "",

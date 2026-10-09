@@ -247,6 +247,24 @@ service cloud.firestore {
             && request.resource.data.locationId.size() > 0));
     }
 
+    /* ── 센터에서 부르는 이름을 누가 정했는가 ──────────────────────────────
+       강사 앱은 열릴 때마다 로그인 계정의 이름을 자기 소속 문서에 적는다
+       (syncOwnMembershipName). 그래서 대표가 강사 관리에서 고친 이름이 그
+       강사가 앱을 **한 번 여는 순간** 구글 계정 이름으로 되돌아갔고, 급여
+       집계도 그 이름으로 섰다 -- 2026-10-10 에 "e asy" 로 보고된 것이 이것이다.
+
+       앱만 고치면 모자란다. 업데이트하지 않은 기기가 계속 되돌리기 때문에,
+       **문을 여기서 닫는다.** 대표가 정한 이름이면 본인도 덮지 못한다.
+
+       본인 문이 하는 일은 하나뿐이었다(로그인 이름 채우기)라, 그것을 막는
+       것이 곧 그 동기화를 막는 것이다 -- 사람이 손으로 자기 이름을 고치는
+       화면은 이 앱에 없다.
+
+       Keep in sync with DISPLAY_NAME_BY in functions/shared/constants.mjs. */
+    function nameSetByOwner(data) {
+      return ("displayNameBy" in data) && data.displayNameBy == "owner";
+    }
+
     match /users/{userId} {
       allow create, read: if signedIn() && request.auth.uid == userId;
       allow update: if signedIn()
@@ -1328,7 +1346,9 @@ service cloud.firestore {
         && membershipDocumentId == request.resource.data.organizationId + "_" + request.resource.data.userId
         && request.resource.data.keys().hasOnly([
           "organizationId", "userId", "role", "status",
-          "displayName", "title", "locationId",
+          /* 붙일 때부터 대표가 정한 이름이다. 표시가 없으면 그 강사가 앱을
+             처음 여는 순간 로그인 계정 이름으로 덮어써진다 (nameSetByOwner). */
+          "displayName", "displayNameBy", "title", "locationId",
           "createdAt", "createdBy"
         ])
         && request.resource.data.keys().hasAll([
@@ -1347,6 +1367,8 @@ service cloud.firestore {
         && request.resource.data.displayName is string
         && request.resource.data.displayName.size() > 0
         && request.resource.data.displayName.size() <= 60
+        // 적으면 "owner" 여야 한다. 다른 값은 그 칸의 뜻을 흐린다.
+        && (!("displayNameBy" in request.resource.data) || nameSetByOwner(request.resource.data))
         && membershipProfileWellFormed()
         && request.resource.data.createdAt == request.time
         && request.resource.data.createdBy == request.auth.uid;
@@ -1387,6 +1409,8 @@ service cloud.firestore {
           signedIn()
           && resource.data.userId == request.auth.uid
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["displayName"])
+          // 대표가 정한 이름은 본인도 덮지 못한다 (위 nameSetByOwner 머리말).
+          && !nameSetByOwner(resource.data)
           && request.resource.data.displayName is string
           && request.resource.data.displayName.size() > 0
           && request.resource.data.displayName.size() <= 60
@@ -1424,10 +1448,14 @@ service cloud.firestore {
              열었으면 본인이 쓴 이름이 그대로 남는다. */
           mayManageMembership(resource.data.organizationId, resource.data)
           && request.resource.data.diff(resource.data).affectedKeys()
-            .hasOnly(["displayName", "title", "locationId"])
+            .hasOnly(["displayName", "title", "locationId", "displayNameBy"])
           && request.resource.data.displayName is string
           && request.resource.data.displayName.size() > 0
           && request.resource.data.displayName.size() <= 60
+          /* 이름을 적으면 **누가 정했는지도 적는다.** 표시 없이 들어온 이름은
+             로그인 동기화가 그대로 덮어 쓰고, 대표는 자기가 고친 것이 왜
+             되돌아갔는지 알 수 없다. */
+          && nameSetByOwner(request.resource.data)
           && membershipProfileWellFormed()
         ) || (
           /* 퇴사. active 와 revoked 사이만 오간다.

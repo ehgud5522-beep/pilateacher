@@ -102,6 +102,22 @@ export const PRODUCT_STATUS = Object.freeze({
 export const SESSION_TYPE = Object.freeze({
   PT_1_1: "pt_1_1",
   PT_2_1: "pt_2_1",
+  /* 디오사 관리. **PT 와 다른 상품이다** -- 따로 끊고, 따로 쓰고, 단가도
+     고정이다. 상품 표에서 1:1·2:1 과 나란히 서야 대표가 발급할 수 있다
+     (PAY_CATEGORIES_BY_SESSION_TYPE). */
+  DIOSA: "diosa",
+});
+
+/**
+ * 디오사 수업의 길이. **A 와 B 의 차이가 곧 이것이고, 단가의 차이다.**
+ *
+ * 둘은 **따로 파는 회원권**이다 (2026-10-10 확인). A 회원권으로 50분 수업을
+ * 할 수 없고 그 반대도 안 된다 -- 섞어 쓰게 두면 20,000 짜리 회차가 35,000
+ * 짜리 수업에 나가고, 원장은 append-only 라 되돌릴 수 없다.
+ */
+export const DIOSA_MINUTES = Object.freeze({
+  [/** @type {string} */ ("diosa_a")]: 30,
+  [/** @type {string} */ ("diosa_b")]: 50,
 });
 
 // 결제 수단. 급여 자동 계산에는 쓰지 않는다 — 바우처 결제는 인센을 수동으로

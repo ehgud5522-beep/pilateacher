@@ -73,6 +73,9 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "일정 탭 · 하루 11건 혼합",
     "일정 탭 · 소속 · 확정 전",
     "일정 탭 · 소속 · 추가 관리",
+    "일정 탭 · 소속 · 추가 관리 · 디오사 없음",
+    "일정 탭 · 소속 · 디오사 관리 30분",
+    "일정 탭 · 소속 · 디오사 50분 · B 없음",
     "일정 탭 · 소속 · 1:1 노쇼",
     "일정 탭 · 소속 · 2:1 둘 다 노쇼",
     "일정 탭 · 소속 · 예상 단가",
@@ -1967,6 +1970,35 @@ test("an add-on care lesson shows both rate lines and the picker", async (t) => 
   assert.match(markup, /관리 A\(30분\)/);
   // 반쪽 차감이 없다는 것을 누르기 전에 말한다.
   assert.match(markup, /디오사 회원권이 없으면 둘 다 빠지지 않습니다/);
+});
+
+test("a care chip the member cannot use is closed, and says which", async (t) => {
+  /* 열어 두면 강사가 고르고, 그 순간 PT 까지 막힌다 -- 반쪽 차감을 하지 않기
+     때문이다. 확정 화면에서야 드러나고, 왜 막혔는지는 어디에도 없다. */
+  const markupOf = await issueScreens(t);
+  const markup = markupOf("일정 탭 · 소속 · 추가 관리 · 디오사 없음");
+
+  assert.match(markup, /관리 A\(30분\) · 회원권 없음/);
+  assert.match(markup, /관리 B\(50분\) · 잔여 없음/);
+  assert.match(markup, /disabled/, "고를 수 없는 것은 눌리지 않아야 한다");
+});
+
+test("a standalone care lesson settles on its own, at the fixed rate", async (t) => {
+  /* 디오사만 끊은 회원(PT 회원권 없음)이 여기서 처음 처리된다. */
+  const markupOf = await issueScreens(t);
+  const markup = markupOf("일정 탭 · 소속 · 디오사 관리 30분");
+
+  assert.match(markup, /20,000원/);
+  assert.match(markup, /디오사/);
+});
+
+test("a 50-minute lesson names the pass it needed, not just 디오사", async (t) => {
+  /* "디오사 회원권이 없어요" 로는 A 를 가진 회원이 왜 막혔는지 알 수 없다.
+     둘은 따로 파는 회원권이고, 대표에게 보낼 말이 다르다. */
+  const markupOf = await issueScreens(t);
+  const markup = markupOf("일정 탭 · 소속 · 디오사 50분 · B 없음");
+
+  assert.match(markup, /디오사 B\(50분\) 회원권이 없어요/);
 });
 
 test("the app update card starts empty and says so", async (t) => {

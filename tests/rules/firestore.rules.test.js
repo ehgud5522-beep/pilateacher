@@ -23,7 +23,9 @@ import {
   where,
   writeBatch,
 } from "firebase/firestore";
-import { CLIENT_STATUS, COLLECTIONS, MEMBERSHIP_STATUS } from "../../src/data/schema/constants.js";
+import {
+  CLIENT_STATUS, COLLECTIONS, MEMBERSHIP_STATUS, PAY_CATEGORY, SESSION_TYPE,
+} from "../../src/data/schema/constants.js";
 import { netContractPriceFor } from "../../src/data/schema/deduction-pricing.js";
 import { CLIENT_STATUS_FOR_CREATE } from "../../src/data/repositories/client-repository.js";
 import { deleteObject, getMetadata, ref, uploadBytes } from "firebase/storage";
@@ -44,14 +46,26 @@ const PT_1_1_CATEGORIES = [
   "letmein",
   "etc",
 ];
-const PT_2_1_CATEGORIES = ["pt_2_1_new", "pt_2_1_repurchase", "service", "etc"];
+const PT_2_1_CATEGORIES = [
+  "pt_2_1_new", "pt_2_1_repurchase", "pt_2_1_repurchase_event", "service", "etc",
+];
+/* 디오사는 그 둘뿐이다. 서비스도 기타도 붙지 않는다 -- 관리 수업의 단가는
+   고정이고, 다른 카테고리가 섞이면 그 고정이 깨진다. */
+const DIOSA_CATEGORIES = ["diosa_a", "diosa_b"];
 const PAYMENT_METHODS = ["card", "cash", "transfer", "zeropay", "voucher"];
+/* 원장 항목의 category 가 지나는 목록. **여기 없는 카테고리는 차감이
+   거부된다** -- 상품을 못 만드는 것으로 끝나지 않는다. 2026-10-10 에 셋이
+   빠져 있었고(2:1 이벤트 · 디오사 A · 디오사 B), 앱은 그 카테고리로 차감을
+   보내고 있었다. */
 const PAY_CATEGORIES = [
   "pt_1_1_new",
   "pt_1_1_repurchase_event",
   "pt_1_1_repurchase_normal",
   "pt_2_1_new",
   "pt_2_1_repurchase",
+  "pt_2_1_repurchase_event",
+  "diosa_a",
+  "diosa_b",
   "service",
   "letmein",
   "etc",
@@ -831,6 +845,39 @@ describe("membership products are added and archived, never edited", () => {
         productFixture(ORG_A, { sessionType: "pt_2_1", payCategory }),
       ));
     }
+    for (const payCategory of DIOSA_CATEGORIES) {
+      await assertSucceeds(setDoc(
+        productRef(users.owner, ORG_A, `product-diosa-${payCategory}`),
+        productFixture(ORG_A, { sessionType: "diosa", payCategory }),
+      ));
+    }
+  });
+
+  test("diosa is its own session type and takes nothing else", async () => {
+    /* 디오사 상품을 만들 길이 없으면 회원권도 발급할 수 없고, 그러면 디오사만
+       끊은 회원은 아무 수업도 못 받는다 -- 2026-10-10 까지 그 상태였다.
+
+       서비스도 기타도 붙이지 않는다: 관리 수업의 단가는 고정이고(20,000 /
+       35,000), 다른 카테고리가 섞이면 그 고정이 깨진다. */
+    for (const payCategory of ["service", "etc", "pt_1_1_new", "letmein"]) {
+      await assertFails(setDoc(
+        productRef(users.owner, ORG_A, `product-diosa-bad-${payCategory}`),
+        productFixture(ORG_A, { sessionType: "diosa", payCategory }),
+      ), payCategory);
+    }
+    // 반대쪽도 막힌다. 디오사 카테고리는 PT 상품에 붙지 않는다.
+    for (const sessionType of ["pt_1_1", "pt_2_1"]) {
+      await assertFails(setDoc(
+        productRef(users.owner, ORG_A, `product-${sessionType}-diosa`),
+        productFixture(ORG_A, { sessionType, payCategory: "diosa_a" }),
+      ), sessionType);
+    }
+  });
+
+  test("the session types the rules take are the ones the app offers", async () => {
+    /* 규칙은 import 을 할 수 없어 리터럴로 적는다. 한쪽만 늘면 화면에서는
+       고를 수 있는데 저장이 거부된다. */
+    assert.deepEqual(Object.values(SESSION_TYPE).sort(), ["diosa", "pt_1_1", "pt_2_1"]);
   });
 
   test("a pay category from the other session shape is rejected", async () => {
@@ -1425,7 +1472,17 @@ describe("ledger and pass bodies are validated at write time", () => {
   });
 
   test("every pay table category is accepted", async () => {
-    assert.equal(PAY_CATEGORIES.length, 8);
+    /* **앱이 쓰는 목록과 같아야 한다.** 규칙은 import 을 할 수 없어 리터럴로
+       적는 수밖에 없고, 그래서 한쪽만 늘어난다 -- 2026-10-09 에 2:1 이벤트가,
+       10-05 에 디오사 둘이 그렇게 늘었다. 셋 다 규칙이 받지 않았고, 그 회원권의
+       **모든 차감이 거부됐다.** 코드가 아니라 permission-denied 한 줄로만
+       돌아오므로 아무도 원인을 짚지 못한다. */
+    assert.deepEqual(
+      [...PAY_CATEGORIES].sort(),
+      Object.values(PAY_CATEGORY).sort(),
+      "firestore.foundation.rules 의 payCategories() 와 PAY_CATEGORY 가 어긋났습니다",
+    );
+    assert.equal(PAY_CATEGORIES.length, 11);
     for (const category of PAY_CATEGORIES) {
       await assertSucceeds(setDoc(
         ledgerRef(users.instructor, `category-ok-${category}`),

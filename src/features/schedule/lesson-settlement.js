@@ -545,6 +545,9 @@ export function planPassSelection(input = {}) {
           reason: ownsCarePass(passes, row.clientId, category)
             ? SETTLEMENT_SKIP.CARE_PASS_SPENT
             : SETTLEMENT_SKIP.CARE_PASS_MISSING,
+          /* 어느 관리권인지. A 와 B 는 따로 파는 회원권이라, 이름을 빼면
+             "디오사가 있는데 왜 안 되지" 에서 멈춘다 (care-options.js). */
+          careCategory: category,
         });
         continue;
       }
@@ -630,6 +633,7 @@ export function planPassSelection(input = {}) {
       skips.push({
         memberId, clientId,
         reason: careCategory ? SETTLEMENT_SKIP.CARE_PASS_MISSING : SETTLEMENT_SKIP.NO_PASS,
+        ...(careCategory ? { careCategory } : {}),
       });
       continue;
     }
@@ -644,10 +648,25 @@ export function planPassSelection(input = {}) {
           reason: ownsCarePass(passes, clientId, careCategory)
             ? SETTLEMENT_SKIP.CARE_PASS_SPENT
             : SETTLEMENT_SKIP.CARE_PASS_MISSING,
+          careCategory,
         });
         continue;
       }
-      deductions.push({ memberId, clientId, pass: carePass });
+      /* 1:1 줄과 **같은 모양**이어야 한다. memberIds 를 빼면 미리보기가
+         그 자리에서 터진다 (previewLessonRates 가 forEach 한다) -- 단독 관리
+         수업을 넣는 순간 일정 화면이 통째로 죽었다. */
+      deductions.push({
+        memberId,
+        clientId,
+        pass: carePass,
+        memberIds: [memberId],
+        clientIds: [clientId],
+        attendanceByClientId: { [clientId]: attendanceStatusOf(status) },
+        shared: false,
+        /* 단독 관리 수업이다. 추가 관리(care: true)와 가른다 -- 저쪽은 PT 줄
+           아래에 따로 서지만 이것은 그 수업의 유일한 줄이다. */
+        careCategory,
+      });
       continue;
     }
     const pass = pickSoloPass(mine, clientId, now);
@@ -763,6 +782,7 @@ export function applySettlementToLesson(lesson, outcome = {}) {
           orgEntryId: result.entryId,
           orgSkip: "",
           orgSkipCode: "",
+          orgSkipCare: "",
         };
       }
       /* 사유 코드를 버리지 않는다. "차감이 저장되지 않았습니다"만으로는 무엇을
@@ -774,9 +794,12 @@ export function applySettlementToLesson(lesson, outcome = {}) {
           orgEntryId: "",
           orgSkip: skip.reason,
           orgSkipCode: String(skip.code || ""),
+          /* 어느 관리권이 모자랐는가. 사유 코드만으로는 A 와 B 를 가를 수
+             없고, 둘은 따로 파는 회원권이라 할 일이 다르다. */
+          orgSkipCare: String(skip.careCategory || ""),
         };
       }
-      return { ...attendee, orgPassId: "", orgEntryId: "", orgSkip: "", orgSkipCode: "" };
+      return { ...attendee, orgPassId: "", orgEntryId: "", orgSkip: "", orgSkipCode: "", orgSkipCare: "" };
     }),
   };
 }
@@ -803,7 +826,7 @@ export function recordSettlementAttempt(lesson, outcome = {}) {
 /** 확정을 되돌린 뒤의 일정. 차감 흔적만 지우고 출석 상태는 그대로 둔다. */
 export function clearSettlementFromLesson(lesson) {
   const next = { ...lesson, attendees: attendeesOf(lesson).map((attendee) => ({
-    ...attendee, orgPassId: "", orgEntryId: "", orgSkip: "", orgSkipCode: "",
+    ...attendee, orgPassId: "", orgEntryId: "", orgSkip: "", orgSkipCode: "", orgSkipCare: "",
   })) };
   delete next.orgSettledAt;
   return next;
@@ -821,6 +844,7 @@ export const settlementSkipsOf = (lesson) => attendeesOf(lesson)
     memberId: text(attendee.memberId),
     reason: text(attendee.orgSkip),
     code: text(attendee.orgSkipCode),
+    careCategory: text(attendee.orgSkipCare),
   }));
 
 /**

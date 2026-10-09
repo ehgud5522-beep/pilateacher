@@ -63,8 +63,12 @@ import {
 } from "./features/schedule/equipment.js";
 import {
   DEFAULT_GROUP_COUNT, GROUP_COUNT_MAX, GROUP_COUNT_MIN, LESSON_TYPES,
-  clampGroupCount, lessonTypeDef, lessonTypeKeyOf,
+  careKeyForMinutes, clampGroupCount, isCareLessonKey, lessonTypeByFormKind,
+  lessonTypeDef, lessonTypeKeyOf,
 } from "./features/schedule/lesson-types.js";
+import {
+  careChoices, careMinutesOfGrade, careOnlyClient, settlementSkipMessage,
+} from "./features/schedule/care-options.js";
 import {
   DEFAULT_SCHEDULE_COLORS, SCHEDULE_COLOR_PRESETS, isDefaultScheduleColors,
   normalizeScheduleColors, resolveScheduleTypeTone, scheduleTypeTones, setScheduleTypeColor,
@@ -143,7 +147,7 @@ import {
   DEDUCTION_CODE_LABEL, NOT_STARTED_NOTICE, lessonHasStarted,
   canSettleLesson, carePayCategory, clearSettlementFromLesson, closesSettlement, isSettledLesson,
   needsSettlement,
-  nextByPurchaseRound, pickSoloPass, pickSharedDuetPass,
+  nextByPurchaseRound, pickCarePass, pickSoloPass, pickSharedDuetPass,
   planLessonSettlement, recordSettlementAttempt, settledDeductionsOf, settlementOutcome,
   settlementSkipsOf,
 } from "./features/schedule/lesson-settlement.js";
@@ -160,7 +164,7 @@ import {
 } from "./features/roster/roster-bridge.js";
 import { partnerClientId } from "./data/schema/pass-clients.js";
 import {
-  NEXT_DEDUCT, PASS_GROUP, passCardList, passListSummary,
+  NEXT_DEDUCT, NEXT_DEDUCT_LABEL, PASS_GROUP, passCardList, passListSummary,
 } from "./features/membership/pass-cards.js";
 import {
   ATTENDANCE_LABEL, centreLessonRows, centreLessonSummary,
@@ -2840,8 +2844,10 @@ function SchedSettleSkips({ s, members }) {
           <span style={{ fontWeight: 700 }}>{nameOf(skip.memberId)}</span>
           {/* 서버가 거부한 이유가 코드로 오면 그 코드의 문구를 쓴다 --
               "저장되지 않았습니다" 는 무엇을 고쳐야 하는지 말해 주지 않는다. */}
+          {/* 어느 관리권인지까지 말한다. A 와 B 는 따로 파는 회원권이라
+              "디오사 회원권이 없어요" 로는 무엇을 발급해야 하는지 알 수 없다. */}
           {" · "}{DEDUCTION_CODE_LABEL[skip.code]
-            || SETTLEMENT_SKIP_LABEL[skip.reason] || "차감하지 못했습니다."}
+            || settlementSkipMessage(skip, SETTLEMENT_SKIP_LABEL)}
           {/* 원본 코드를 버리지 않는다. 없으면 무엇을 고쳐야 하는지 알 수 없다. */}
           {skip.code ? <span style={{ color: SUB }}>{" (" + skip.code + ")"}</span> : null}
         </p>
@@ -2904,12 +2910,15 @@ function SchedCareRateLine({ preview }) {
   );
 }
 
-/** 추가 관리 고르기. 디오사는 PT 와 별도로 끊는 관리권이라 참가자마다 고른다. */
-const CARE_CHOICES = [
-  { key: "", label: "없음" },
-  { key: "a", label: "관리 A(30분)" },
-  { key: "b", label: "관리 B(50분)" },
-];
+
+/* 회원권을 읽지 못했을 때의 칩. **숨기지 않고 닫는다** -- 칸이 사라지면
+   그 자리가 있었다는 것조차 모르고, 강사는 추가 관리를 고를 수 없는 것이
+   고장인지 규칙인지 가릴 수 없다. */
+const CARE_CHOICES_UNKNOWN = Object.freeze([
+  Object.freeze({ key: "", label: "없음", usable: true, note: "" }),
+  Object.freeze({ key: "a", label: "관리 A(30분)", usable: false, note: "확인 안 됨" }),
+  Object.freeze({ key: "b", label: "관리 B(50분)", usable: false, note: "확인 안 됨" }),
+]);
 
 function SchedSettleBlock({ s, members, canSettle, settled, canUnsettle, notStarted = false, onSettle, onUnsettle }) {
   const [busy, setBusy] = useState(false);
@@ -3097,7 +3106,7 @@ function SchedMemberNote({ lessonId, clientId, settled, onRead, onSave, onToast 
   );
 }
 
-function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onCareGrade, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset, quickAddRequest, onConsumeQuickAdd, openLessonId, onConsumeOpenLesson, onOpenMember, onAddMember, onOpenAttendance, organizationMode = false, rateOf, onSettleLesson, onUnsettleLesson, onReadMemberNote, onSaveMemberNote, canUnsettle = false, payCard = null }) {
+function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onCareGrade, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset, quickAddRequest, onConsumeQuickAdd, openLessonId, onConsumeOpenLesson, onOpenMember, onAddMember, onOpenAttendance, organizationMode = false, rateOf, careOptionsOf, onSettleLesson, onUnsettleLesson, onReadMemberNote, onSaveMemberNote, canUnsettle = false, payCard = null }) {
   const initialDisplay = useMemo(() => {
     try { return JSON.parse(localStorage.getItem(SCHEDULE_VIEW_KEY) || "null") || {}; }
     catch (e) { return {}; }
@@ -3388,7 +3397,7 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
       {editing && <ScheduleForm draft={liveEditing} members={db.members} schedule={db.schedule} briefingOf={briefingOf} scheduleColors={scheduleColors} returnFocusRef={scheduleTriggerRef} onClose={() => setEditing(null)}
         onSubmit={(v) => { onSave(v); setEditing(null); }} onDelete={(id) => { onDelete(id); setEditing(null); }}
         onStatus={onStatus} onStatusAll={onStatusAll} onCareGrade={onCareGrade} onNoshowFee={onNoshowFee} onGroupDone={onGroupDone}
-        organizationMode={organizationMode} rateOf={rateOf} onSettleLesson={onSettleLesson} onUnsettleLesson={onUnsettleLesson} onReadMemberNote={onReadMemberNote} onSaveMemberNote={onSaveMemberNote} onToast={onToast} canUnsettle={canUnsettle}
+        organizationMode={organizationMode} rateOf={rateOf} careOptionsOf={careOptionsOf} onSettleLesson={onSettleLesson} onUnsettleLesson={onUnsettleLesson} onReadMemberNote={onReadMemberNote} onSaveMemberNote={onSaveMemberNote} onToast={onToast} canUnsettle={canUnsettle}
         onNoComment={onNoComment} onSaveNote={onSaveNote} onOpenMember={onOpenMember} onFocusMemberWeek={(memberId) => { setFocusedMemberId(memberId); setEditing(null); }} />}
       {queueOpen && (
         <ScheduleQueueSheet tasks={taskQueue} members={db.members} returnFocusRef={queueTriggerRef} onClose={() => setQueueOpen(false)}
@@ -3775,7 +3784,7 @@ function confirmedLessonNoteArgs(note, reviewedDraft = null) {
   };
 }
 
-function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, onClose, onSubmit, onDelete, onStatus, onStatusAll, onCareGrade, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onOpenMember, onFocusMemberWeek, scheduleColors = null, organizationMode = false, rateOf, onSettleLesson, onUnsettleLesson, onReadMemberNote, onSaveMemberNote, onToast, canUnsettle = false }) {
+function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, onClose, onSubmit, onDelete, onStatus, onStatusAll, onCareGrade, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onOpenMember, onFocusMemberWeek, scheduleColors = null, organizationMode = false, rateOf, careOptionsOf, onSettleLesson, onUnsettleLesson, onReadMemberNote, onSaveMemberNote, onToast, canUnsettle = false }) {
   /* 확정된 수업은 출석을 바꿀 수 없다. 상태를 바꿔도 이미 나간 차감은 따라오지
      않고, 둘이 어긋나면 어느 것이 맞는지 알 수 없다. */
   const settledLesson = organizationMode && isSettledLesson(draft);
@@ -3823,9 +3832,29 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
     : "";
   const isGroup = kind === "group";
   const isDuet = kind === "duet";
-  const isMemberLesson = kind === "solo" || isDuet;
+  /* ── 단독 디오사 관리 수업 ──────────────────────────────────────────────
+     **회원 한 명이 받는 수업이다.** 여기 들어오기 전까지는 회원 칸이 아예
+     뜨지 않았고, 그래서 참가자 없는 일정으로 저장됐다 -- 그러면 종류 판정이
+     그것을 그룹으로 읽고(lessonTypeKeyOf 는 사람 수를 먼저 본다) 디오사는
+     한 회차도 빠지지 않는다.
+
+     디오사만 끊은 회원(PT 회원권 없음)은 그래서 아예 처리할 수 없었다. */
+  const isCareLesson = isCareLessonKey(lessonTypeByFormKind(kind).key);
+  const isMemberLesson = kind === "solo" || isDuet || isCareLesson;
   const activeMember = members.find((m) => m.id === activeMemberId) || null;
   const activeAttendee = attendeesOf(draft).find((a) => a.memberId === activeMemberId) || null;
+  /* 이 회원이 어떤 디오사 회원권을 가졌는가. 칩을 열고 닫는 것도, 디오사만
+     끊은 회원을 PT 로 넣으려 할 때 길을 알려주는 것도 이 하나에서 나온다. */
+  const activeCare = useMemo(
+    () => (activeMemberId ? careOptionsOf?.(activeMemberId) || null : null),
+    [activeMemberId, careOptionsOf],
+  );
+  /* 등록 중인 수업의 회원. 아직 참가자로 저장되기 전이라 activeMemberId 가
+     없다 -- 그래서 고른 슬롯에서 읽는다. */
+  const pickedCare = useMemo(
+    () => (memberIds[0] ? careOptionsOf?.(memberIds[0]) || null : null),
+    [memberIds, careOptionsOf],
+  );
   const latestNote = (activeMember?.notes || []).slice().sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")))[0] || null;
   const activeBriefing = useMemo(() => activeMember ? (briefingOf?.(activeMember.id, draft.id) || createMemberBriefing({ member: activeMember, currentSessionId: draft.id })) : null, [activeMember, briefingOf, draft.id]);
   const activeLessonSessions = useMemo(() => activeMember ? selectMemberLessonSessions({ member: activeMember, schedule }) : [], [activeMember, schedule]);
@@ -3867,7 +3896,10 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
     const personal = kind === "consult" || kind === "off";
     onSubmit({
       id: draft.id || uid(), date: f.date, start: f.start, end: addMin(f.start, Number(f.dur) || 50),
-      type: personal ? "개인일정" : isGroup ? "그룹" : isDuet ? "듀엣" : "개인레슨",
+      /* 일정 문서에 적히는 종류. **정의에서 읽는다** -- 여기서 따로 적으면
+         관리 수업이 "개인레슨" 으로 저장되고, 되읽을 때 PT 회원권에서 빠진다
+         (lesson-types.js 의 legacyType · lessonTypeKeyOf). */
+      type: personal ? "개인일정" : lessonTypeByFormKind(kind).legacyType,
       instructor: personal ? "" : (f.instructor || ""), room: personal ? "" : (f.room || ""), memo: f.memo || "",
       /* 기구는 stable id 배열로 저장하고, 옛 코드가 읽는 equip 문자열은 거울로만 남긴다 */
       equipmentIds: personal ? [] : normalizeEquipmentIds(equipmentIds),
@@ -3923,13 +3955,20 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
         <div>
           <p className="mb-1.5 text-xs font-bold" style={{ color: SUB }}>유형</p>
           <div className="grid grid-cols-6 gap-2">
-            {LESSON_TYPES.map((type, index) => {
+            {LESSON_TYPES.map((type) => {
               const tone = typeTones[type.key];
               const active = kind === type.formKind;
               return (
-                <button key={type.key} onClick={() => { setKind(type.formKind); if (type.formKind === "group") setF((current) => ({ ...current, groupCount: num(current.groupCount) > 0 ? current.groupCount : DEFAULT_GROUP_COUNT })); }}
+                <button key={type.key} onClick={() => {
+                  setKind(type.formKind);
+                  if (type.formKind === "group") setF((current) => ({ ...current, groupCount: num(current.groupCount) > 0 ? current.groupCount : DEFAULT_GROUP_COUNT }));
+                  /* 관리 수업은 길이가 곧 종류다. 30분을 골랐는데 길이가 50분
+                     이면 그 일정은 회원권과 어긋난 채 저장되고, 확정할 때에야
+                     드러난다 -- A 와 B 는 따로 파는 회원권이다. */
+                  if (type.minutes) setF((current) => ({ ...current, dur: type.minutes }));
+                }}
                   className="flex h-11 items-center justify-center gap-1.5 rounded-lg text-sm font-bold"
-                  style={{ gridColumn: `span ${index < 3 ? 2 : 3}`, backgroundColor: active ? tone.surface : CARD, color: active ? tone.ink : SUB, border: `1px solid ${active ? tone.edge : LINE}` }}>
+                  style={{ gridColumn: `span ${type.span || 2}`, backgroundColor: active ? tone.surface : CARD, color: active ? tone.ink : SUB, border: `1px solid ${active ? tone.edge : LINE}` }}>
                   <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: 2, backgroundColor: tone.edge, opacity: active ? 1 : 0.55 }} />
                   {type.label}
                 </button>
@@ -3950,6 +3989,30 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
             </div>
           </div>
         )}
+        {/* ── 디오사만 끊은 회원 ──────────────────────────────────────────
+            PT 회원권이 한 장도 없으면 이 수업은 확정되지 않는다. 그 사실이
+            확정할 때 드러나면 강사는 일정을 지우고 다시 만들어야 한다 --
+            등록하는 지금 말하고, 한 번에 바꿔 준다.
+
+            어느 관리인지까지 말한다. A 만 가진 사람에게 "관리 수업으로
+            넣을까요" 만 물으면 50분을 고르고, 그 수업도 확정되지 않는다. */}
+        {isMemberLesson && !isCareLesson && pickedCare?.only?.careOnly ? (
+          <div className="rounded-xl p-3" style={{ backgroundColor: WARN_S }}>
+            <p className="text-caption leading-relaxed" style={{ color: INK }}>
+              이 회원은 <b>{pickedCare.only.label} 회원권만</b> 있습니다. PT 수업으로 두면
+              {" "}확정할 때 빠질 회원권이 없습니다.
+            </p>
+            {pickedCare.only.grade ? (
+              <button type="button" onClick={() => {
+                const next = lessonTypeDef(careKeyForMinutes(careMinutesOfGrade(pickedCare.only.grade)));
+                setKind(next.formKind);
+                if (next.minutes) setF((current) => ({ ...current, dur: next.minutes }));
+              }} className="mt-2 h-10 w-full font-bold" style={{
+                borderRadius: 10, backgroundColor: CARD, color: BRAND_D, fontSize: TYPE.caption,
+              }}>디오사 관리 수업으로 바꾸기</button>
+            ) : null}
+          </div>
+        ) : null}
         {isGroup && (
           <div>
             <p className="mb-1.5 text-xs font-bold" style={{ color: SUB }}>인원 <span style={{ fontWeight: 600, color: FAINT }}>({GROUP_COUNT_MIN}~{GROUP_COUNT_MAX}명)</span></p>
@@ -4057,7 +4120,10 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
                         {activeAttendee.orgEntryId
                           ? "회원권 1회 차감됨"
                           : activeAttendee.orgSkip
-                          ? SETTLEMENT_SKIP_LABEL[activeAttendee.orgSkip] || "차감하지 못했습니다."
+                          ? settlementSkipMessage(
+                            { reason: activeAttendee.orgSkip, careCategory: activeAttendee.orgSkipCare },
+                            SETTLEMENT_SKIP_LABEL,
+                          )
                           : "차감 없음"}
                       </p>
                     )
@@ -4074,16 +4140,24 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
                     <div className="mt-2">
                       <p className="mb-1 text-caption font-extrabold" style={{ color: SUB }}>추가 관리 (디오사)</p>
                       <div className="flex flex-wrap gap-1.5">
-                        {CARE_CHOICES.map((choice) => {
+                        {/* 가질 수 없는 것은 **고르지 못하게** 한다. 디오사가 없는데
+                            고르면 반쪽 차감을 막느라 PT 까지 멈추고, 강사에게는
+                            "확정했는데 아무것도 안 빠짐" 으로 보인다. 칩을 열어
+                            두는 것이 그 혼란의 출발점이었다 (2026-10-10). */}
+                        {(activeCare?.choices || CARE_CHOICES_UNKNOWN).map((choice) => {
                           const picked = (activeAttendee.careGrade || "") === choice.key;
+                          const off = !choice.usable;
                           return (
-                            <button key={choice.key || "none"} type="button"
+                            <button key={choice.key || "none"} type="button" disabled={off}
                               onClick={() => onCareGrade(draft.id, activeMemberId, choice.key)}
                               className="px-2.5 font-bold" style={{
                                 height: 30, borderRadius: 999, fontSize: TYPE.caption,
                                 backgroundColor: picked ? TINT : CANVAS,
-                                color: picked ? BRAND_D : SUB,
-                              }}>{choice.label}</button>
+                                color: picked ? BRAND_D : off ? FAINT : SUB,
+                                opacity: off ? 0.55 : 1,
+                              }}>
+                              {choice.label}{off ? ` · ${choice.note}` : ""}
+                            </button>
                           );
                         })}
                       </div>
@@ -4207,7 +4281,15 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
     </ScheduleBottomSheet>
     {picker?.type === "hour" && <ChoiceBottomSheet title="시 선택" value={hour} columns={2} onClose={() => setPicker(null)} options={Array.from({ length: 24 }, (_, value) => ({ value, label: `${value}시` }))} onSelect={(value) => setTime(value, minute)} />}
     {picker?.type === "minute" && <ChoiceBottomSheet title="분 선택" value={minute} columns={2} onClose={() => setPicker(null)} options={[0, 10, 20, 30, 40, 50].map((value) => ({ value, label: `${String(value).padStart(2, "0")}분` }))} onSelect={(value) => setTime(hour, value)} />}
-    {picker?.type === "duration" && <ChoiceBottomSheet title="수업 길이" value={Number(f.dur)} columns={2} onClose={() => setPicker(null)} options={durationOptions.map((value) => ({ value, label: `${value}분` }))} onSelect={(value) => setF((current) => ({ ...current, dur: value }))} />}
+    {picker?.type === "duration" && <ChoiceBottomSheet title="수업 길이" value={Number(f.dur)} columns={2} onClose={() => setPicker(null)} options={durationOptions.map((value) => ({ value, label: `${value}분` }))}
+      onSelect={(value) => {
+        setF((current) => ({ ...current, dur: value }));
+        /* 관리 수업일 때만 따라간다. PT 수업의 길이를 30분으로 줄였다고
+           디오사로 바뀌면, 고르지도 않은 회원권에서 빼겠다는 말이 된다. */
+        if (!isCareLesson) return;
+        const next = careKeyForMinutes(value);
+        if (next) setKind(lessonTypeDef(next).formKind);
+      }} />}
     {picker?.type === "member" && <ChoiceBottomSheet title="회원 선택" subtitle="기존 회원과 정확히 연결합니다" value={memberIds[picker.slot] || ""} onClose={() => setPicker(null)}
       options={members.filter(isActive).map((item) => ({ value: item.id, label: item.name || "이름 미입력", description: `잔여 ${left(item)}회${item.contractEnd ? ` · ${ymd(item.contractEnd)}까지` : ""}` }))}
       onSelect={(id) => { const item = members.find((memberItem) => memberItem.id === id); const ids = [...memberIds]; const names = [...memberNames]; ids[picker.slot] = id; names[picker.slot] = item?.name || ""; setMemberIds(ids); setMemberNames(names); if (!draft.id && picker.slot === 0 && item) setF((current) => ({ ...current, dur: lessonDurationOf(item) })); }} />}
@@ -5664,7 +5746,7 @@ function PassCard({ card, onEdit }) {
                 이 표시는 그 결과를 그대로 받는다 -- 다시 고르지 않는다. */}
             {next ? (
               <span style={{ padding: "1px 6px", borderRadius: 5, backgroundColor: TINT, fontSize: TYPE.caption, fontWeight: 700, color: BRAND_D }}>
-                {card.nextDeduct === NEXT_DEDUCT.DUET ? "2:1 수업 시 차감" : "1:1 수업 시 차감"}
+                {NEXT_DEDUCT_LABEL[card.nextDeduct] || "다음 차감"}
               </span>
             ) : null}
             {ended && card.endedReason ? (
@@ -23105,10 +23187,61 @@ export function createAppScreenSmokeCases() {
     { name: "일정 탭 · 소속 · 추가 관리", element: scheduleWithSettlement(settleLessonOf({
       type: "1:1",
       attendees: [{ ...settleAttendee("m-local-1"), careGrade: "a" }],
-    }), { onCareGrade: noop, rateOf: () => new Map([["m-local-1", {
-      passId: "pt-1", unitPrice: 30000, rule: "base_category", shared: false, deducts: true,
-      care: { passId: "dio-1", unitPrice: 20000, rule: "diosa_fixed", shared: false, deducts: true },
+    }), {
+      onCareGrade: noop,
+      careOptionsOf: () => ({
+        choices: [
+          { key: "", label: "없음", usable: true, note: "" },
+          { key: "a", label: "관리 A(30분)", usable: true, note: "" },
+          { key: "b", label: "관리 B(50분)", usable: true, note: "" },
+        ],
+        only: { careOnly: false, grade: "", label: "" },
+      }),
+      rateOf: () => new Map([["m-local-1", {
+        passId: "pt-1", unitPrice: 30000, rule: "base_category", shared: false, deducts: true,
+        care: { passId: "dio-1", unitPrice: 20000, rule: "diosa_fixed", shared: false, deducts: true },
+      }]]),
+    }) },
+    /* 디오사 회원권이 없는 회원. 칩을 열어 두면 강사가 고르고, 그 순간
+       **PT 까지 막힌다** (반쪽 차감을 안 하므로) -- 확정 화면에서야 드러나고
+       왜 막혔는지는 어디에도 없다. 2026-10-10 에 실제로 그렇게 됐다. */
+    { name: "일정 탭 · 소속 · 추가 관리 · 디오사 없음", element: scheduleWithSettlement(settleLessonOf({
+      type: "개인레슨",
+      attendees: [settleAttendee("m-local-1")],
+    }), {
+      onCareGrade: noop,
+      careOptionsOf: () => ({
+        choices: [
+          { key: "", label: "없음", usable: true, note: "" },
+          { key: "a", label: "관리 A(30분)", usable: false, note: "회원권 없음" },
+          { key: "b", label: "관리 B(50분)", usable: false, note: "잔여 없음" },
+        ],
+        only: { careOnly: false, grade: "", label: "" },
+      }),
+    }) },
+    /* 단독 디오사 관리 수업. **PT 회원권이 없어도 확정된다** -- 디오사만 끊은
+       회원이 여기서 처음 처리된다. 금액은 표가 정하는 20,000 이다. */
+    { name: "일정 탭 · 소속 · 디오사 관리 30분", element: scheduleWithSettlement(settleLessonOf({
+      type: "관리A",
+      start: "06:00",
+      end: "06:30",
+      dur: 30,
+      attendees: [settleAttendee("m-local-1")],
+    }), { rateOf: () => new Map([["m-local-1", {
+      passId: "dio-1", unitPrice: 20000, rule: "diosa_fixed", shared: false, deducts: true,
     }]]) }) },
+    /* 50분 수업을 A 회원권으로 하려던 경우. **어느 쪽이 없는지**를 말해야
+       대표에게 보낼 말이 "디오사 B 를 발급해 주세요" 가 된다. */
+    { name: "일정 탭 · 소속 · 디오사 50분 · B 없음", element: scheduleWithSettlement(settleLessonOf({
+      type: "관리B",
+      start: "06:00",
+      end: "06:50",
+      attendees: [settleAttendee("m-local-1", {
+        orgSkip: "care_pass_missing", orgSkipCare: "diosa_b",
+      })],
+      orgSettledAt: new Date().toISOString(),
+      orgSettledOutcome: "none",
+    })) },
     { name: "일정 탭 · 소속 · 1:1 노쇼", element: scheduleWithSettlement(settleLessonOf({
       type: "1:1", attendees: [{ ...settleAttendee("m-local-1"), status: "noshow" }],
     })) },
@@ -24163,6 +24296,11 @@ export default function App() {
       productName: (id) => String(rosterProducts.find((item) => String(item?.id || "") === String(id || ""))?.name || ""),
       nextSoloPassId: solo?.id || "",
       nextDuetPassId: duet?.id || "",
+      /* 관리 수업의 다음 차감도 **차감이 쓰는 그 함수**로 고른다. 디오사만
+         끊은 회원에게는 이 줄이 카드의 전부다 -- 없으면 어느 회원권이 다음에
+         빠지는지 화면 어디에도 없다. */
+      nextCareAPassId: pickCarePass(mine, target, PAY_CATEGORY.DIOSA_A, now)?.id || "",
+      nextCareBPassId: pickCarePass(mine, target, PAY_CATEGORY.DIOSA_B, now)?.id || "",
     });
     } catch (error) {
       /* 여기는 렌더 중에 불린다. 던지면 회원 상세가 통째로 죽고, 에러 경계는
@@ -24253,6 +24391,25 @@ export default function App() {
     title: organizationContext.title || "",
     now: new Date(),
   }), [rosterMembers, rosterPasses, rosterTotals, account?.id, organizationContext.isDeputyDirector, organizationContext.title]);
+
+  /* 추가 관리 칩이 고를 수 있는 것만 열려면 그 회원의 디오사 회원권을 알아야
+     한다. 디오사가 없는데 고르면 **PT 까지 막힌다** (반쪽 차감을 안 하므로) --
+     강사는 PT 수업이 왜 멈췄는지 모른 채 확정 화면에 선다.
+
+     PT 쪽도 함께 답한다. 디오사만 끊은 회원을 1:1 로 넣으면 그 수업은 확정되지
+     않는데, 그 사실이 등록할 때 보여야 다시 열 일이 없다. */
+  const careOptionsFor = useCallback((memberId) => {
+    if (!organizationRoster) return null;
+    const clientId = String(
+      rosterMembers.find((item) => String(item?.id || "") === String(memberId || ""))?.orgClientId || "",
+    );
+    if (!clientId) return null;
+    const now = new Date();
+    return {
+      choices: careChoices(rosterPasses, clientId, { now }),
+      only: careOnlyClient(rosterPasses, clientId, { now }),
+    };
+  }, [organizationRoster, rosterMembers, rosterPasses]);
 
   const findRosterMember = useCallback(
     (memberId) => {
@@ -27122,7 +27279,7 @@ export default function App() {
         ) : null}
         <div className="relative min-h-0 flex-1 overflow-hidden">
           <Guard key={tab}>
-            {tab === "schedule" && <ScheduleManager db={rosterDb} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onCareGrade={setCareGrade} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterMembers ? () => { setMemberRegistrationRequest((value) => value + 1); setTab("members"); } : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && organizationContext.role === ROLES.OWNER} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
+            {tab === "schedule" && <ScheduleManager db={rosterDb} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onCareGrade={setCareGrade} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterMembers ? () => { setMemberRegistrationRequest((value) => value + 1); setTab("members"); } : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} careOptionsOf={careOptionsFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && organizationContext.role === ROLES.OWNER} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
             {tab === "members" && <div className={`h-full min-h-0 ${mobileView === "detail" && member ? "pt-member-detail-active" : ""}`}>
               <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList passSummaryOf={passSummaryFor} locations={rosterLocations} members={rosterMembers} schedule={db.schedule} settings={db.settings} organizationMode={organizationRoster} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} canBrowseAll={!organizationRoster || canBrowseAllClients(organizationContext.role)} viewerRole={organizationContext.role} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterMembers} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} journeyOf={organizationRoster ? journeyFor : undefined} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
               {mobileView === "detail" && member && <div className="pt-member-detail-pane h-full min-h-0">

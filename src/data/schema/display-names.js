@@ -20,6 +20,7 @@ import {
 export const SESSION_TYPE_LABELS = Object.freeze({
   [SESSION_TYPE.PT_1_1]: "1:1",
   [SESSION_TYPE.PT_2_1]: "2:1",
+  [SESSION_TYPE.DIOSA]: "디오사",
 });
 
 export const PAY_CATEGORY_LABELS = Object.freeze({
@@ -31,8 +32,11 @@ export const PAY_CATEGORY_LABELS = Object.freeze({
   [PAY_CATEGORY.PT_2_1_REPURCHASE_EVENT]: "2:1 재등록(이벤트)",
   [PAY_CATEGORY.SERVICE]: "서비스",
   [PAY_CATEGORY.LETMEIN]: "렛미인",
-  [PAY_CATEGORY.DIOSA_A]: "디오사 A",
-  [PAY_CATEGORY.DIOSA_B]: "디오사 B",
+  /* 분을 적어 둔다. 둘은 **따로 파는 회원권**이라 대표가 발급 화면에서 고를
+     때 A 가 몇 분짜리인지 알아야 한다 -- 틀리면 회원이 30분 수업에 35,000
+     짜리 회차를 쓰거나, 50분 수업에서 아무것도 못 쓴다. */
+  [PAY_CATEGORY.DIOSA_A]: "디오사 A(30분)",
+  [PAY_CATEGORY.DIOSA_B]: "디오사 B(50분)",
   [PAY_CATEGORY.ETC]: "기타",
 });
 
@@ -143,6 +147,16 @@ export const PAY_CATEGORIES_BY_SESSION_TYPE = Object.freeze({
     PAY_CATEGORY.SERVICE,
     PAY_CATEGORY.ETC,
   ]),
+  /* 디오사는 그 둘뿐이다. 서비스도 기타도 붙이지 않는다 -- 관리 수업의 단가는
+     고정이고(20,000 / 35,000), 다른 카테고리가 섞이면 그 고정이 깨진다.
+
+     **A 와 B 를 따로 파는 것이 요점이다.** 한 상품으로 묶으면 30분을 산
+     회원이 50분 수업에 들어오고, 그때 어느 회차가 빠져야 하는지는 아무도
+     답할 수 없다. */
+  [SESSION_TYPE.DIOSA]: Object.freeze([
+    PAY_CATEGORY.DIOSA_A,
+    PAY_CATEGORY.DIOSA_B,
+  ]),
 });
 
 /**
@@ -185,6 +199,10 @@ export const PAY_CATEGORY_BY_LABEL = withAliases(PAY_CATEGORY_LABELS, {
   // 확정본이 쓰는 긴 이름들. 상품 이름이 아니라 카테고리를 가리킨다.
   "1:1 재등록(고정페이 이벤트)": PAY_CATEGORY.PT_1_1_REPURCHASE_EVENT,
   "1:1 재등록(정상단가)": PAY_CATEGORY.PT_1_1_REPURCHASE_NORMAL,
+  /* 분이 붙기 전의 이름. 이미 올라간 이관 파일이 이 글자를 쓰고 있다 --
+     떨어뜨리면 그 행이 "카테고리를 읽지 못했습니다" 로 멈춘다. */
+  "디오사 A": PAY_CATEGORY.DIOSA_A,
+  "디오사 B": PAY_CATEGORY.DIOSA_B,
 });
 
 export const PAYMENT_METHOD_BY_LABEL = withAliases(PAYMENT_METHOD_LABELS, {

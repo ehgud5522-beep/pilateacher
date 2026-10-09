@@ -142,6 +142,20 @@ export const NEXT_DEDUCT = Object.freeze({
   SOLO: "solo",
   /** 2:1 수업을 하면 여기서 빠진다. */
   DUET: "duet",
+  /* 디오사 관리 수업을 하면 여기서 빠진다. A 와 B 를 나눈다 -- **따로 파는
+     회원권**이라 30분 수업은 A 에서만, 50분은 B 에서만 빠진다. 한 칸으로
+     묶으면 카드가 "관리 수업 시 차감" 이라 적고, 50분 수업을 넣은 회원은
+     자기 A 회원권이 왜 안 빠지는지 알 수 없다. */
+  CARE_A: "care_a",
+  CARE_B: "care_b",
+});
+
+/** 다음 차감 표시의 문구. 어느 수업에서 빠지는지를 그대로 말한다. */
+export const NEXT_DEDUCT_LABEL = Object.freeze({
+  [NEXT_DEDUCT.SOLO]: "1:1 수업 시 차감",
+  [NEXT_DEDUCT.DUET]: "2:1 수업 시 차감",
+  [NEXT_DEDUCT.CARE_A]: "관리 30분 수업 시 차감",
+  [NEXT_DEDUCT.CARE_B]: "관리 50분 수업 시 차감",
 });
 
 /**
@@ -310,6 +324,7 @@ export function passListSummary(cards) {
  * @param {{
  *   passes?: Array<any>, now?: Date, productName?: (id: string) => string,
  *   nextSoloPassId?: string, nextDuetPassId?: string,
+ *   nextCareAPassId?: string, nextCareBPassId?: string,
  * }} input
  *   productName  productId 로 상품 이름을 찾는 함수. 없으면 종류와 횟수로 만든다.
  *   nextSoloPassId / nextDuetPassId 는 **lesson-settlement 가 고른 것**을 받는다.
@@ -321,6 +336,10 @@ export function passCardList(input = {}) {
   const now = input.now instanceof Date ? input.now : new Date();
   const solo = text(input.nextSoloPassId);
   const duet = text(input.nextDuetPassId);
+  /* 관리 수업의 다음 차감. 둘을 따로 받는다 -- 한 칸이면 어느 길이의 수업이
+     이 회원권을 쓰는지 카드가 말하지 못한다. */
+  const careA = text(input.nextCareAPassId);
+  const careB = text(input.nextCareBPassId);
   const list = (Array.isArray(input.passes) ? input.passes : []).filter(Boolean);
 
   /* 뒤 차수가 앞 차수보다 먼저 만료되는 회원권. 차수 순으로 쓰므로 그 회차는
@@ -337,6 +356,8 @@ export function passCardList(input = {}) {
     let nextDeduct = NEXT_DEDUCT.NONE;
     if (id && id === solo) nextDeduct = NEXT_DEDUCT.SOLO;
     else if (id && id === duet) nextDeduct = NEXT_DEDUCT.DUET;
+    else if (id && id === careA) nextDeduct = NEXT_DEDUCT.CARE_A;
+    else if (id && id === careB) nextDeduct = NEXT_DEDUCT.CARE_B;
     return {
       ...passCard(pass, { now, nextDeduct, productName: input.productName }),
       expiryOrderWarning: outOfOrder.get(id) || "",

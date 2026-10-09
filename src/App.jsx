@@ -37,6 +37,8 @@ import {
   fbListMalformedClientPhones,
   fbRebuildInstructorIds,
   fbFixMigratedServiceSessions,
+  fbLoadAppUpdateConfig,
+  fbUpdateRuntimeConfig,
   fbHandoverPass,
   fbSessionUpPass,
   fbResetMigratedData,
@@ -178,6 +180,9 @@ import {
   RESTORE_OFFER, backupPaused, canOverwriteBackup, isCentreAccount,
   restoreOfferDecision, restorePreview,
 } from "./features/backup/restore-offer.js";
+import {
+  UPDATE_COPY, UPDATE_PROMPT, storeLinks, updatePrompt,
+} from "./features/app-update/update-gate.js";
 import { previewLessonRates } from "./features/schedule/lesson-rate-preview.js";
 import {
   issueReportCsv, loadOrganizationMonthlyIssues,
@@ -342,6 +347,9 @@ const SERVER_AUDIO_SESSION_DIAGNOSTIC = Object.freeze({ audioSessionCategory: "p
 const AppSettings = registerPlugin("AppSettings");
 const LESSON_RECORD_EXAMPLES_SEEN_KEY = "pilateacher_lesson_record_examples_seen_v1";
 const restoreDecisionKey = (accountId) => `pilateacher_restore_decision_v1:${String(accountId || "")}`;
+/* [나중에] 를 누른 날. 계정이 아니라 기기에 붙는다 -- 업데이트는 그 폰의
+   일이지 그 계정의 일이 아니다. */
+const UPDATE_SNOOZE_KEY = "pilateacher_app_update_snoozed_v1";
 const LESSON_RECORD_REVIEW_FLAGS = new Set(["no_speech", "low_confidence", "tail_dropped"]);
 const hasLessonRecordReviewFlag = (record) => (record?.reviewFlags || record?.flags || []).some((flag) => LESSON_RECORD_REVIEW_FLAGS.has(flag));
 const LessonRecordLinkContext = createContext({
@@ -20439,6 +20447,211 @@ const INSTRUCTOR_RESET_NOTICE = "회원권 데이터를 새 엑셀로 다시 올
   + "잔여·만료일은 옛 숫자입니다. 9월 수업은 '확정됨' 으로 남아 있어도 "
   + "급여에는 쓰지 않습니다 — 되돌리기를 누르지 않아도 됩니다.";
 
+/**
+ * 앱 업데이트 안내 — **대표가 켜고 끄는 자리.**
+ *
+ * 두 설정을 한 화면에서 본다. 둘 다 빌드 번호를 다루고, 하나를 올릴 때 다른
+ * 하나를 함께 봐야 하기 때문이다:
+ *
+ *   안내 (appUpdate)       최신보다 낮으면 권유, 최소보다 낮으면 필수 팝업
+ *   확정 차단 (settlement)  최소보다 낮으면 수업 확정 자체를 막는다
+ *
+ * 차단을 먼저 올리고 안내를 안 켜면, 강사는 이유도 모른 채 확정이 막힌다.
+ * 그래서 강사들이 지금 어느 빌드를 쓰는지도 같은 화면에 둔다.
+ *
+ * 쓰기는 대표 전용 통로로만 간다 -- 규칙은 이 문서들의 쓰기를 닫아 두었다
+ * (functions/src/runtime-config-admin.js).
+ */
+function AppUpdateAdmin({ organization, instructorStore, onLoadConfig, onSaveConfig, onRetryOrganization }) {
+  const [instructors, setInstructors] = useState([]);
+  const [draft, setDraft] = useState(draftFromConfig(null));
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState("");
+  const locked = organization?.status === "unknown";
+  const organizationId = organization?.organizationId || "";
+
+  useEffect(() => {
+    if (!organizationId || locked) return undefined;
+    let alive = true;
+    listInstructors(organizationId, { store: instructorStore })
+      .then((found) => { if (alive) setInstructors(found); })
+      .catch(() => {});
+    Promise.resolve(onLoadConfig?.(organizationId))
+      .then((found) => { if (alive) setDraft(draftFromConfig(found)); })
+      .catch((thrown) => { if (alive) setError(configFailure(thrown)); });
+    return () => { alive = false; };
+  }, [organizationId, locked, instructorStore, onLoadConfig]);
+
+  const save = async (document) => {
+    if (busy) return;
+    setBusy(document);
+    setError("");
+    setSaved("");
+    try {
+      const value = document === "appUpdate"
+        ? { android: draft.android, ios: draft.ios }
+        : { minBuilds: draft.minBuilds };
+      const result = await onSaveConfig?.(organizationId, document, value);
+      setDraft(draftFromConfig(result?.config));
+      setSaved(document);
+    } catch (thrown) {
+      setError(configFailure(thrown));
+    } finally { setBusy(""); }
+  };
+
+  if (locked) return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>소속을 확인하지 못했습니다</h2>
+      <button type="button" onClick={() => onRetryOrganization?.()} className="mt-3 h-11 w-full font-bold"
+        style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>다시 시도</button>
+    </section>
+  );
+
+  /* 차단 기준으로 강사 줄을 가른다. 차단을 아직 안 켰으면 안내의 최신 빌드로
+     센다 -- 올리기 전에 "지금 올리면 몇 명이 막히는가" 를 먼저 보여준다. */
+  const blockingBuild = draft.minBuilds.android || draft.android.latestBuild || "";
+  const versionRows = instructorVersionRows(instructors, { minimumBuild: blockingBuild });
+  const behind = versionRows.filter((row) => row.state === "outdated").length;
+  const buildField = (path, label) => (
+    <Field key={path} label={label}>
+      <input value={valueAt(draft, path)} inputMode="numeric" className={inputCls} placeholder="비움 = 사용 안 함"
+        onChange={(event) => setDraft((current) => withValueAt(current, path, event.target.value.replace(/\D/g, "")))} />
+    </Field>
+  );
+
+  return (
+    <div className="space-y-2" data-app-update-admin>
+      <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+        <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>앱 업데이트 안내</h2>
+        <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+          설치된 빌드가 <b>최신</b>보다 낮으면 [업데이트] [나중에] 가 뜹니다.
+          <b> 최소</b>보다 낮으면 [나중에] 가 없습니다. <b>비워 두면 아무것도 띄우지 않습니다.</b>
+        </p>
+        {/* 웹 칸이 없다. 배포한 순간이 최신이고, 보낼 스토어도 없다. */}
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          {buildField("android.latestBuild", "Android 최신 빌드")}
+          {buildField("android.minimumBuild", "Android 최소 빌드")}
+          {buildField("ios.latestBuild", "iOS 최신 빌드")}
+          {buildField("ios.minimumBuild", "iOS 최소 빌드")}
+        </div>
+        <div className="mt-2">
+          <Field label="안내 문구 (선택 · Android)">
+            <input value={draft.android.message} className={inputCls} maxLength={200}
+              placeholder="예) 급여 화면이 바뀌었어요"
+              onChange={(event) => setDraft((current) => withValueAt(current, "android.message", event.target.value))} />
+          </Field>
+        </div>
+        <div className="mt-2">
+          <Field label="안내 문구 (선택 · iOS)">
+            <input value={draft.ios.message} className={inputCls} maxLength={200}
+              onChange={(event) => setDraft((current) => withValueAt(current, "ios.message", event.target.value))} />
+          </Field>
+        </div>
+        <button type="button" disabled={busy === "appUpdate"} onClick={() => save("appUpdate")}
+          className="mt-3 h-11 w-full font-bold disabled:opacity-50"
+          style={{ borderRadius: 10, backgroundColor: BRAND, color: "#fff", fontSize: TYPE.caption }}>
+          {busy === "appUpdate" ? "저장 중…" : "안내 설정 저장"}
+        </button>
+        {saved === "appUpdate" ? (
+          <p className="mt-2" style={{ fontSize: TYPE.caption, color: GOOD }}>저장했습니다. 강사 앱이 다음에 열 때부터 보입니다.</p>
+        ) : null}
+      </section>
+
+      <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+        <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>옛 앱 확정 차단</h2>
+        <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+          이 빌드보다 낮은 앱은 <b>수업 확정 자체가 막힙니다.</b> 차감 계산이 기기에서 돌기 때문입니다.
+          올리기 전에 아래 강사 목록에서 전원이 새 빌드를 쓰는지 보세요.
+        </p>
+        <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: WARN }}>
+          웹 칸을 잘못 올리면 대표 화면에서도 확정이 막힙니다.
+        </p>
+        <div className="mt-3 grid grid-cols-3 gap-2">
+          {buildField("minBuilds.android", "Android")}
+          {buildField("minBuilds.ios", "iOS")}
+          {buildField("minBuilds.web", "웹")}
+        </div>
+        <button type="button" disabled={busy === "settlement"} onClick={() => save("settlement")}
+          className="mt-3 h-11 w-full font-bold disabled:opacity-50"
+          style={{ borderRadius: 10, backgroundColor: BAD, color: "#fff", fontSize: TYPE.caption }}>
+          {busy === "settlement" ? "저장 중…" : "확정 차단 저장"}
+        </button>
+        {saved === "settlement" ? (
+          <p className="mt-2" style={{ fontSize: TYPE.caption, color: GOOD }}>저장했습니다.</p>
+        ) : null}
+      </section>
+
+      {error ? (
+        <p role="alert" className="px-1" style={{ fontSize: TYPE.caption, color: BAD }}>{error}</p>
+      ) : null}
+
+      <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+        <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>강사 앱 버전</h2>
+        <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+          {blockingBuild
+            ? `기준 ${blockingBuild} · 아직 안 올린 강사 ${behind}명`
+            : "기준이 없습니다. 위에 빌드 번호를 넣으면 여기서 가릅니다."}
+        </p>
+        {versionRows.length === 0 ? (
+          <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>강사가 없습니다.</p>
+        ) : versionRows.map((row) => (
+          <div key={row.userId} className="flex items-center gap-2" style={{ padding: "9px 0", borderTop: `1px solid ${LINE}` }}>
+            <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: INK }}>{row.name}</span>
+            <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+              {row.version || "-"}{row.build ? ` (${row.build})` : ""}
+            </span>
+            <span className="shrink-0 font-bold" style={{
+              fontSize: TYPE.caption,
+              color: row.state === "outdated" ? BAD : row.state === "ready" ? GOOD : SUB,
+            }}>{row.state === "outdated" ? "옛 버전" : row.state === "ready" ? "최신" : "확인 안 됨"}</span>
+          </div>
+        ))}
+        <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+          강사가 앱을 열 때 적힙니다. “확인 안 됨” 은 그 뒤로 한 번도 열지 않았다는 뜻입니다.
+        </p>
+      </section>
+    </div>
+  );
+}
+
+/** 저장된 문서를 입력 칸의 모양으로. 없으면 전부 빈 칸이다. */
+function draftFromConfig(config) {
+  const row = (value) => ({
+    latestBuild: String(value?.latestBuild ?? ""),
+    minimumBuild: String(value?.minimumBuild ?? ""),
+    message: String(value?.message ?? ""),
+  });
+  const minBuilds = config?.settlement?.minBuilds || {};
+  return {
+    android: row(config?.appUpdate?.android),
+    ios: row(config?.appUpdate?.ios),
+    minBuilds: {
+      web: String(minBuilds.web ?? ""),
+      android: String(minBuilds.android ?? ""),
+      ios: String(minBuilds.ios ?? ""),
+    },
+  };
+}
+
+const valueAt = (source, path) => String(path.split(".").reduce((item, key) => item?.[key], source) ?? "");
+const withValueAt = (source, path, value) => {
+  const [head, tail] = path.split(".");
+  return { ...(source || {}), [head]: { ...((source || {})[head] || {}), [tail]: value } };
+};
+
+/** 저장이 막힌 이유. 코드 없는 "저장하지 못했습니다" 를 남기지 않는다. */
+function configFailure(error) {
+  const detail = String(error?.message || "").replace(/^.*?:\s*/, "").trim();
+  if (detail === "minimum_above_latest") {
+    return "최소 빌드가 최신 빌드보다 높습니다. 그대로 두면 최신 앱을 깐 사람까지 막힙니다.";
+  }
+  if (detail.endsWith("_invalid")) return `빌드 번호는 숫자만 넣어 주세요 (${detail}).`;
+  const code = String(error?.code || "unknown");
+  if (code.includes("permission-denied")) return `대표만 바꿀 수 있습니다 (코드 ${code}).`;
+  return `저장하지 못했습니다 (코드 ${detail || code}).`;
+}
+
 function InstructorScopeAdmin({
   organization, instructorStore, locationStore, onVerify, onRebuild, onRetryOrganization,
   onResetMigration, onReconcile, onServiceFix, onLoadClients, initialState = null,
@@ -21334,7 +21547,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
      두 화면이 서로 다른 순간의 원장을 보게 되고, 그 차이는 아무 데도 적히지
      않는다 -- 같은 객체를 쓰면 다를 수가 없다. */
   instructorPay = null, payMonth = "", payLoading = false, payError = "",
-  onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, onRestorePrevious, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, payrollStore, issueStore, auditStore, ledgerStore, onRetryOrganization, onOpenClient, onClearMigratedSettlements, initialView = "hub" }) {
+  onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, onRestorePrevious, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, payrollStore, issueStore, auditStore, ledgerStore, onRetryOrganization, onOpenClient, onClearMigratedSettlements, onLoadRuntimeConfig, onSaveRuntimeConfig, initialView = "hub" }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const organization = useContext(OrganizationContext);
 
@@ -21599,7 +21812,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
     return total;
   }, [db.schedule, db.members, db.settings, reportYm]);
   const detailTitles = {
-    report: "월간 리포트", expiry: "만료 회원", "instructor-scope": "담당 강사", assessment: "변화 기록 설정", center: "센터 정보", theme: "화면 설정", "schedule-colors": "일정 색상",
+    report: "월간 리포트", expiry: "만료 회원", "instructor-scope": "담당 강사", "app-update": "앱 업데이트 안내", assessment: "변화 기록 설정", center: "센터 정보", theme: "화면 설정", "schedule-colors": "일정 색상",
     data: "데이터 상태", backup: "데이터 이관 · 백업", permissions: "접근권한 안내", knowledge: "오늘의 지식", account: "계정", "account-delete": "계정 삭제", app: "앱 정보",
     products: "회원권 상품",
     clients: "회원 관리",
@@ -21640,6 +21853,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
     /* 담당 강사. 강사가 보는 회원의 범위가 여기서 정해지므로 감사·점검 옆이다 --
        셋 다 "무엇이 어긋나 있는지" 를 보는 화면이다. */
     ...(showAudit ? [{ key: "instructor-scope", title: "담당 강사", description: "강사별 담당 회원 · 재계산", Icon: Users }] : []),
+    ...(showAudit ? [{ key: "app-update", title: "앱 업데이트 안내", description: "새 버전 알림 · 옛 앱 차단 · 강사 버전", Icon: Smartphone }] : []),
     ...(showMigration ? [{ key: "migration", title: "엑셀 이관", description: "쓰던 엑셀의 회원 · 회원권 올리기", Icon: Upload }] : []),
   ];
   const menuGroups = [
@@ -22004,6 +22218,11 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
         {view === "expiry" && inOrganization && (
           <ExpiryReportScreen organization={organization} currentUserId={account?.id || ""}
             clientStore={clientStore} passStore={passStore} instructorStore={instructorStore}
+            onRetryOrganization={onRetryOrganization} />
+        )}
+        {view === "app-update" && showAudit && (
+          <AppUpdateAdmin organization={organization} instructorStore={instructorStore}
+            onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
             onRetryOrganization={onRetryOrganization} />
         )}
         {view === "instructor-scope" && showAudit && (
@@ -22696,6 +22915,14 @@ export function createAppScreenSmokeCases() {
     { name: "더보기 탭 · 소속 확인 실패", element: settingsTab({ organizationId: "", role: "", status: "unknown", isLegacy: false }) },
     /* 폰을 바꾼 강사가 찾아오는 자리. 묻지 않고 띄우던 창을 여기로 옮겼으므로,
        이 버튼이 없으면 되살릴 길 자체가 없다. */
+    /* 앱 업데이트 안내. 빈 설정이 곧 "아무것도 띄우지 않음" 이라, 그 상태가
+       화면에 그대로 보이는지 본다 -- 1.1.33 이 스토어에 올라갈 때까지 이
+       화면이 비어 있는 것이 정상이다. */
+    { name: "더보기 탭 · 앱 업데이트 안내", element: settingsTab(smokeOwner, {
+      initialView: "app-update",
+      onLoadRuntimeConfig: async () => null,
+      onSaveRuntimeConfig: async () => ({ config: null }),
+    }) },
     { name: "더보기 탭 · 백업", element: settingsTab(smokeOwner, {
       initialView: "backup", onRestorePrevious: noop,
       backupStatus: { state: "safe", counts: { members: 16, sessions: 6, photos: 4 }, lastBackupAt: new Date(2026, 8, 3, 9, 0).toISOString() },
@@ -23707,6 +23934,54 @@ export default function App() {
   useEffect(() => {
     notificationDataRef.current = { schedule: db.schedule || [], members: db.members || [] };
   }, [db.schedule, db.members]);
+  /* ── 앱 업데이트 안내 ──────────────────────────────────────────────────
+     차감 계산이 전부 기기에서 돈다. 업데이트하지 않은 폰은 옛 규칙으로 계산한
+     차감을 계속 박는데, 지금은 강사가 새 빌드가 나온 사실 자체를 알 길이 없다.
+
+     판정은 update-gate.js 가 한다. 못 읽으면 아무것도 띄우지 않는다 --
+     네트워크가 흔들렸다고 앱이 팝업에 막히면 업데이트를 돕는 것이 아니라
+     일을 막는 것이다. */
+  const [updateNotice, setUpdateNotice] = useState({ prompt: UPDATE_PROMPT.NONE, latestBuild: null, message: "" });
+  useEffect(() => {
+    if (phase !== "app" || !account?.id) return undefined;
+    let active = true;
+    const check = async () => {
+      const [config, identity] = await Promise.all([fbLoadAppUpdateConfig(), RUNTIME_APP_IDENTITY]);
+      if (!active) return;
+      let snoozedAt = "";
+      try { snoozedAt = globalThis.localStorage?.getItem(UPDATE_SNOOZE_KEY) || ""; } catch (_error) {}
+      setUpdateNotice(updatePrompt({
+        config, platform: Capacitor.getPlatform(), installedBuild: identity?.build, snoozedAt,
+      }));
+    };
+    check();
+    /* 앱이 다시 앞으로 올 때 한 번 더 본다. 켜 둔 채로 며칠 쓰는 강사가 있고,
+       그 사이에 대표가 켠 안내를 못 보면 띄우는 뜻이 없다. AI 상태 새로고침이
+       쓰는 것과 같은 길이다. */
+    window.addEventListener("focus", check);
+    window.addEventListener("online", check);
+    return () => {
+      active = false;
+      window.removeEventListener("focus", check);
+      window.removeEventListener("online", check);
+    };
+  }, [phase, account?.id]);
+
+  const openStore = useCallback(() => {
+    const links = storeLinks(Capacitor.getPlatform());
+    /* 스토어 앱을 먼저 연다. 없는 기기(에뮬레이터·일부 롬)에서는 아무 일도
+       일어나지 않으므로 웹 주소로 한 번 더 시도한다 -- 버튼이 침묵하면
+       강사는 앱이 고장 난 줄 안다. */
+    try { window.open(links.app, "_system"); } catch (_error) {}
+    setTimeout(() => { try { window.open(links.web, "_system"); } catch (_error) {} }, 700);
+    deviceLog("app_update_store_opened", { feature: "app_update", stage: "open_store", platform: Capacitor.getPlatform() });
+  }, []);
+
+  const snoozeUpdate = useCallback(() => {
+    try { globalThis.localStorage?.setItem(UPDATE_SNOOZE_KEY, new Date().toISOString()); } catch (_error) {}
+    setUpdateNotice({ prompt: UPDATE_PROMPT.NONE, latestBuild: null, message: "" });
+  }, []);
+
   /* 확정에 필요한 최소 빌드. 못 읽으면 ALLOWED 로 둔다 -- 네트워크가 흔들렸다고
      센터 전체가 확정을 못 하게 되는 쪽이 더 나쁘다 (settlement-gate.js). */
   const [settlementGateState, setSettlementGateState] = useState({ state: SETTLEMENT_GATE.ALLOWED });
@@ -24863,6 +25138,17 @@ export default function App() {
    * 바로 덮지 않는다. 불러오기는 병합이 아니라 통째 교체라, 무엇이 몇 개에서
    * 몇 개로 바뀌는지 먼저 보여주고 사용자가 누른다.
    */
+  /* 운영 설정 읽기·쓰기. 대표 화면만 부른다 -- 서버가 역할을 다시 본다
+     (functions/src/runtime-config-admin.js). */
+  const loadRuntimeConfig = useCallback(
+    (organizationId) => fbUpdateRuntimeConfig({ organizationId }).then((result) => result?.config || null),
+    [],
+  );
+  const saveRuntimeConfig = useCallback(
+    (organizationId, document, value) => fbUpdateRuntimeConfig({ organizationId, document, value }),
+    [],
+  );
+
   const openPreviousPhoneRestore = useCallback(async () => {
     const uid = account?.id;
     if (!uid || restoreBusy) return;
@@ -26468,7 +26754,7 @@ export default function App() {
               }} />}
             {tab === "settings" && <ReferenceSettingsTab db={db} photos={photos} account={account} savedAt={savedAt} demoMode={demoMode}
               instructorPay={instructorPay} payMonth={payMonth} payLoading={payLoading} payError={payError} onChangeSettings={(s) => saveDb({ ...db, settings: s })} onChangePhoto={changePhoto} onToast={setToast} themePref={themePref} onChangeTheme={changeTheme} onLogout={handleLogout} onDeleteAccount={handleDeleteAccount} onImport={importHandoff}
-              onOpenSchedule={() => { setScheduleQuickAddRequest((request) => request + 1); setTab("schedule"); }} onOpenRecords={() => { setMobileView("list"); setTab("members"); }} onOpenOnboarding={openOnboardingReplay} onOpenLessonExamples={() => setLessonExamplesOpen(true)} backupStatus={cloudBackupStatus} onEnablePhotoBackup={enablePhotoBackup} onRetryBackup={retryCloudBackup} onRestorePrevious={openPreviousPhoneRestore} onRetryOrganization={retryOrganizationContext} onOpenClient={(picked) => setDetailClient(picked)} onClearMigratedSettlements={clearMigratedSettlements} />}
+              onOpenSchedule={() => { setScheduleQuickAddRequest((request) => request + 1); setTab("schedule"); }} onOpenRecords={() => { setMobileView("list"); setTab("members"); }} onOpenOnboarding={openOnboardingReplay} onOpenLessonExamples={() => setLessonExamplesOpen(true)} backupStatus={cloudBackupStatus} onEnablePhotoBackup={enablePhotoBackup} onRetryBackup={retryCloudBackup} onRestorePrevious={openPreviousPhoneRestore} onRetryOrganization={retryOrganizationContext} onLoadRuntimeConfig={loadRuntimeConfig} onSaveRuntimeConfig={saveRuntimeConfig} onOpenClient={(picked) => setDetailClient(picked)} onClearMigratedSettlements={clearMigratedSettlements} />}
           </Guard>
         </div>
         {/* 출석 체크는 일정 탭 위에 시트로 뜬다. 탭 구조를 건드리지 않으면서
@@ -26567,6 +26853,41 @@ export default function App() {
           <button type="button" onClick={() => setLocalPhotoWarning(false)} className="h-12 w-full text-sm font-extrabold text-white" style={{ borderRadius: 11, backgroundColor: BRAND }}>확인했습니다</button>
         </div>
       </ScheduleBottomSheet>}
+      {/* 앱 업데이트 안내. 복원 창보다 위에 두지 않는다 -- 복원은 이 기기의
+          데이터가 걸린 일이고, 업데이트는 다음에 해도 되는 일이다.
+
+          필수(최소 빌드 미만)에는 [나중에] 가 없다. 그 선은 "이 빌드로는 더
+          이상 쓰면 안 된다" 는 뜻이고, 미룰 수 있으면 그 뜻이 사라진다. */}
+      {updateNotice.prompt !== UPDATE_PROMPT.NONE && !restoreOffer ? (
+        <div className="fixed inset-0 z-[84] flex items-center justify-center px-5" role="dialog" aria-modal="true"
+          aria-label={UPDATE_COPY.title} style={{ backgroundColor: "rgba(28,36,51,.46)" }}>
+          <section className="w-full max-w-[420px] rounded-2xl p-5" style={{ backgroundColor: CARD, boxShadow: SHADOW }}>
+            <h2 className="text-xl font-extrabold" style={{ color: INK }}>{UPDATE_COPY.title}</h2>
+            <p className="mt-1.5 text-xs leading-relaxed" style={{ color: SUB }}>
+              {updateNotice.message
+                || (updateNotice.prompt === UPDATE_PROMPT.REQUIRED ? UPDATE_COPY.required : UPDATE_COPY.optional)}
+            </p>
+            {/* 지금 빌드와 새 빌드를 함께 적는다. 숫자가 없으면 "이미 했는데
+                왜 또 뜨지" 를 아무도 확인할 수 없다. */}
+            <p className="mt-2 text-caption tabular-nums" style={{ color: FAINT }}>
+              지금 <RuntimeBuildLabel />
+              {updateNotice.latestBuild ? ` · 새 빌드 ${updateNotice.latestBuild}` : ""}
+            </p>
+            <button type="button" onClick={openStore}
+              className="mt-4 h-12 w-full rounded-xl text-sm font-extrabold text-white"
+              style={{ backgroundColor: BRAND }}>{UPDATE_COPY.update}</button>
+            {updateNotice.prompt === UPDATE_PROMPT.OPTIONAL ? (
+              <button type="button" onClick={snoozeUpdate}
+                className="mt-2 h-12 w-full rounded-xl text-sm font-extrabold"
+                style={{ backgroundColor: CANVAS, color: INK }}>{UPDATE_COPY.later}</button>
+            ) : (
+              <p className="mt-2 text-caption leading-relaxed" style={{ color: SUB }}>
+                이 버전은 더 이상 쓸 수 없어 미룰 수 없습니다.
+              </p>
+            )}
+          </section>
+        </div>
+      ) : null}
       {restoreOffer && <div className="fixed inset-0 z-[85] flex items-center justify-center px-5" role="dialog" aria-modal="true" aria-label="기존 기록 불러오기" style={{ backgroundColor: PAGE }}><section className="w-full max-w-[520px] rounded-2xl p-5" style={{ backgroundColor: CARD, boxShadow: SHADOW }}><h2 className="text-xl font-extrabold" style={{ color: INK }}>이 계정의 기록을 불러올까요?</h2><p className="mt-1 text-xs tabular-nums" style={{ color: SUB }}>{`지난 백업 ${backupTimeLabel(restoreOffer.cloud?.at)} · 회원 ${restoreOffer.cloud?.counts?.members ?? restoreOffer.cloud?.members ?? 0}명 · 수업 ${restoreOffer.cloud?.counts?.sessions ?? restoreOffer.cloud?.data?.schedule?.length ?? 0}건`}</p>
         <div className="mt-5 space-y-3">
           <p className="text-sm leading-relaxed" style={{ color: INK2 }}>불러오기 전에는 이 기기의 내용이 클라우드에 올라가지 않아요.</p>

@@ -99,7 +99,10 @@ function createClientPhoneService(dependencies) {
   async function listMalformed(request) {
     const { callerUid, organizationId } = scopeOf(request);
     const actorRole = await callerRole(organizationId, callerUid);
-    if (actorRole !== "owner") throw new ClientPhoneError("not_owner");
+    // 대표와 총괄매니저. 규칙의 ownerLevel() 과 같은 선이다.
+    if (actorRole !== "owner" && actorRole !== "area_manager") {
+      throw new ClientPhoneError("not_owner");
+    }
     try {
       return { ok: true, clients: await listMalformedPhones(organizationId) };
     } catch (error) {

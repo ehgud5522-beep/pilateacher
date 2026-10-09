@@ -118,9 +118,14 @@ test("only an active owner or manager passes the membership check", () => {
 });
 
 test("the instructor is not on the list at all", () => {
-  /* 목록에 없는 것과 조건에서 걸러지는 것은 다르다. 목록 자체를 본다. */
-  assert.deepEqual([...PASS_ADMIN_ROLES], ["owner", "manager"]);
+  /* 목록에 없는 것과 조건에서 걸러지는 것은 다르다. 목록 자체를 본다.
+
+     총괄매니저가 2026-10-10 에 들어왔다 -- 지점 경계 없이 대표와 같은 자리라,
+     세션업과 양도도 대표와 같다. 강사는 그때도 목록 밖이다. */
+  assert.deepEqual([...PASS_ADMIN_ROLES], ["owner", "area_manager", "manager"]);
   assert.equal(PASS_ADMIN_ROLES.includes("instructor"), false);
+  assert.equal(isPassAdmin({ role: "area_manager", status: "active" }), true);
+  assert.equal(isPassAdmin({ role: "area_manager", status: "revoked" }), false);
 });
 
 /* ── 세션업 ──────────────────────────────────────────────────────────────── */

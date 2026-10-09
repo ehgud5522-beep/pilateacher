@@ -96,6 +96,26 @@ const isActiveOwner = (membership) => (
   Boolean(membership) && membership.status === "active" && membership.role === "owner"
 );
 
+/**
+ * 대표와 **같은 자리**인가. 규칙의 `hasRole(ownerLevel())` 과 같다.
+ *
+ * 총괄매니저(area_manager)는 지점 경계 없이 대표와 같은 권한이다 (2026-10-10).
+ * 규칙에서 `["owner"]` 였던 자리가 거의 전부 이 목록이 되었으므로, 서버의
+ * 문들도 같은 선에 서야 한다 -- 한쪽만 바꾸면 화면에서는 되는데 서버가 막거나
+ * 그 반대가 되고, 쓰는 사람에게는 둘 다 "눌렀는데 아무 일도 안 일어남" 이다.
+ *
+ * **대표만 남은 자리에는 쓰지 않는다.** 이관 초기화(resetMigratedData)가
+ * 그것이고, 그 문은 isActiveOwner 를 그대로 쓴다.
+ *
+ * Keep in sync with OWNER_LEVEL_ROLES in functions/shared/constants.mjs and
+ * ownerLevel() in firestore.foundation.rules.
+ */
+const isOwnerLevel = (membership) => (
+  Boolean(membership)
+  && membership.status === "active"
+  && (membership.role === "owner" || membership.role === "area_manager")
+);
+
 /** 후보 하나를 판정에 필요한 만큼만 남긴다. 이름·연락처는 담지 않는다. */
 function normalizeCandidate(candidate) {
   return {
@@ -188,7 +208,7 @@ function createMemberLinkService(dependencies) {
     now = () => new Date(),
   } = dependencies || {};
 
-  /** 이 사람이 이 센터의 대표인가. 규칙의 hasRole(["owner"]) 과 같은 판정이다. */
+  /** 이 사람이 이 센터에서 대표와 같은 자리인가. 규칙의 hasRole(ownerLevel()) 과 같다. */
   async function requireOwner(organizationId, callerUid) {
     let membership = null;
     try {
@@ -196,7 +216,7 @@ function createMemberLinkService(dependencies) {
     } catch (error) {
       throw new MemberLinkError("link_unavailable", { stage: STAGES.VERIFY_OWNER, cause: error });
     }
-    if (!isActiveOwner(membership)) {
+    if (!isOwnerLevel(membership)) {
       throw new MemberLinkError("not_owner", { stage: STAGES.VERIFY_OWNER });
     }
     return membership;
@@ -396,6 +416,7 @@ module.exports = {
   createMemberLinkService,
   decideLink,
   isActiveOwner,
+  isOwnerLevel,
   membershipId,
   normalizeCandidate,
 };

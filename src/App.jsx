@@ -105,7 +105,7 @@ import {
   addMembership, fullRoomRateOf, hasUsableFullRoomRate, isActiveMembership, isDeputyDirectorOf,
   listInstructors,
   reportAppVersion, listMemberships, setInstructorDeputyDirector, setInstructorFullRoomRate,
-  setMembershipProfile, setMembershipStatus, syncOwnMembershipName,
+  setMembershipProfile, setMembershipRole, setMembershipStatus, syncOwnMembershipName,
 } from "./data/repositories/instructor-repository.js";
 import {
   clientMatchesSearch, createClient, findSameNameClients, findSamePhoneClients, listClients,
@@ -210,7 +210,7 @@ import {
 } from "./data/schema/deduction-pricing.js";
 import {
   CLIENT_STATUS, LEDGER_ENTRY_TYPE, LEDGER_REASON_MAX, MEMBERSHIP_STATUS, MEMBERSHIP_TITLE, isDiosaCategory,
-  PAY_CATEGORY, PAYMENT_METHOD, PRODUCT_STATUS, ROLES, SESSION_TYPE,
+  PAY_CATEGORY, PAYMENT_METHOD, PRODUCT_STATUS, ROLES, SESSION_TYPE, isOwnerLevelRole,
 } from "./data/schema/constants.js";
 import {
   CLIENT_STATUS_LABELS, DEPUTY_DIRECTOR_LABEL, DIOSA_PAYROLL_NOTICE,
@@ -329,7 +329,7 @@ import {
   planRosterPrune, pruneMessage, snapshotId, snapshotPayload,
 } from "./features/members/device-roster-prune.js";
 import {
-  instructorVersionRows, readinessMessage, rulesReadiness, shouldReportVersion,
+  VERSION_STATE, instructorVersionRows, readinessMessage, rulesReadiness, shouldReportVersion,
 } from "./features/members/app-version-report.js";
 import {
   EXPIRY_PERIOD, EXPIRY_PERIOD_LABELS, expiryReport, expiryReportMessage, outcomeLabel,
@@ -548,6 +548,15 @@ const APP_VERSION_REPORT_KEY = "pilateacher_app_version_report_v1";
 
    docs/instructor-scope-plan.md 의 표와 같은 값이어야 한다. */
 const RULES_MINIMUM_BUILD = 62;
+/* 총괄매니저가 **쓸 수 있는** 가장 낮은 빌드. 이 역할이 담긴 첫 빌드다.
+   (1.1.33 / 65)
+
+   그보다 낮은 앱은 `area_manager` 라는 글자를 모른다. 규칙은 다 열어 주지만
+   화면이 어느 역할 목록에도 그 값을 넣지 않아서, **로그인은 되는데 더보기가
+   거의 비어 있다** -- 급여도 감사 로그도 강사 관리도 회원 등록도 없다.
+   거부가 아니라 "없음" 으로 도착하므로, 그 사람은 고장인지 권한인지 알 수
+   없다. 그래서 지정 화면이 누르기 전에 말한다. */
+const AREA_MANAGER_MINIMUM_BUILD = 65;
 const dbKey = (id) => `pilateacher_db_${id}`;
 const phKey = (id) => `pilateacher_photos_${id}`;
 const cloudSyncKey = (id) => `pilateacher_cloud_sync_v1_${id}`;
@@ -16294,7 +16303,8 @@ function MembershipRow({ membership, locationName, busy, onEdit }) {
           }}>수정</button>
       </div>
       <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>
-        {membership.role === ROLES.MANAGER ? "FC매니저" : membershipTitleLabel(membership)}
+        {membership.role === ROLES.AREA_MANAGER ? "총괄매니저"
+          : membership.role === ROLES.MANAGER ? "FC매니저" : membershipTitleLabel(membership)}
         {" · "}{locationName || "지점 없음"}
         {" · "}{labelOf(MEMBERSHIP_STATUS_LABELS, membership.status)}
       </p>
@@ -16356,7 +16366,9 @@ function InstructorSwapSheet({ swap, members, onChange, onRun, onClose, onDone }
   const candidates = (Array.isArray(members) ? members : []).filter((item) => (
     String(item?.status || "") === MEMBERSHIP_STATUS.ACTIVE
     && String(item?.userId || "") !== String(from.userId || "")
-    && String(item?.role || "") !== ROLES.OWNER
+    /* 대표와 총괄매니저는 받는 쪽이 될 수 없다. 로그인 계정을 옮기는 일이라,
+       새 계정은 아직 아무 자리도 아닌 강사여야 한다. */
+    && !isOwnerLevelRole(String(item?.role || ""))
     && previousUidsOf(item).length === 0
   ));
   const counts = swap.plan?.counts;
@@ -16694,6 +16706,35 @@ function InstructorAdmin({
     }
   };
 
+  /* 총괄매니저 지정 · 해제. **대표만 보이는 버튼이다** -- 총괄매니저가
+     총괄매니저를 세울 수 있으면 대표가 모르는 사이에 그 자리가 늘고, 되돌리는
+     문은 없다. 규칙도 같은 선을 긋는다. */
+  const changeRole = async (role) => {
+    if (!editing) return;
+    setFormError("");
+    setSaving(true);
+    try {
+      await setMembershipRole(organizationId, editing.userId, {
+        role,
+        /* 기본 지점. 지정할 때만 보낸다 -- 해제하면서 지점을 지우면 그 사람이
+           강사로 돌아간 뒤 어느 지점 소속인지가 사라진다. */
+        locationId: role === ROLES.AREA_MANAGER ? (draft.locationId || editing.locationId || "") : "",
+        changedBy: currentUserId,
+        actorRole: organization?.role || "",
+      }, { store: rateStore });
+      onToast?.({
+        ok: true,
+        msg: role === ROLES.AREA_MANAGER ? "총괄매니저로 지정했습니다." : "강사로 되돌렸습니다.",
+      });
+      close();
+      await reload();
+    } catch (error) {
+      setFormError(`바꾸지 못했어요 (코드 ${error?.code || error?.message || "unknown"})`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   if (locked) return (
     <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
       <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>소속을 확인하지 못했습니다</h2>
@@ -16842,6 +16883,11 @@ function InstructorAdmin({
   if (mode === "edit" && editing) {
     const self = editing.userId === currentUserId;
     const active = isActiveMembership(editing);
+    /* 이 강사의 앱이 총괄매니저를 아는 빌드인가. 같은 판정 함수를 쓴다 --
+       대표 화면의 "강사 앱 버전" 과 다른 기준을 쓰면 한쪽만 보고 지정한다. */
+    const [areaManagerReady] = instructorVersionRows([editing], {
+      minimumBuild: AREA_MANAGER_MINIMUM_BUILD,
+    });
     return (
       <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
         <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>
@@ -16902,6 +16948,73 @@ function InstructorAdmin({
                 color: active ? BAD : BRAND_D,
                 opacity: saving ? 0.6 : 1,
               }}>{active ? "퇴사 처리" : "복직 처리"}</button>
+          </div>
+        )}
+
+        {/* ── 총괄매니저 지정 · 해제 ──────────────────────────────────────
+            **대표만 보인다.** 총괄매니저는 지점 경계 없이 대표와 같은 권한이라,
+            이 자리를 세우는 일만은 대표에게 남겨 두었다 -- 총괄매니저가
+            총괄매니저를 세울 수 있으면 대표가 모르는 사이에 그 자리가 늘고,
+            되돌리는 문은 없다.
+
+            무엇이 열리는지를 누르기 전에 적는다. "같은 권한" 이라는 말만으로는
+            대표가 무엇을 넘기는지 알 수 없다. */}
+        {self || organization?.role !== ROLES.OWNER || !isActiveMembership(editing) ? null : (
+          <div className="mt-3" style={{ borderTop: `1px solid ${LINE}`, paddingTop: 12 }}>
+            {editing.role === ROLES.AREA_MANAGER ? (
+              <>
+                <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+                  지금 <b style={{ color: INK }}>총괄매니저</b>입니다. 되돌리면 강사로 돌아갑니다 —
+                  {" "}<b>퇴사가 아닙니다.</b> 담당 회원과 급여는 그대로입니다.
+                </p>
+                <button type="button" disabled={saving} onClick={() => changeRole(ROLES.INSTRUCTOR)}
+                  className="mt-2 h-11 w-full font-bold" style={{
+                    borderRadius: 10, fontSize: TYPE.caption, backgroundColor: CANVAS, color: SUB,
+                    opacity: saving ? 0.6 : 1,
+                  }}>강사로 되돌리기</button>
+              </>
+            ) : (
+              <>
+                <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+                  <b style={{ color: INK }}>총괄매니저</b>는 전 지점을 보고 처리합니다 —
+                  {" "}회원 등록 · 회원권 발급과 취소 · 세션업 · 양도 · 만료일 · 잔여 조정 ·
+                  {" "}담당 강사 변경 · 급여 집계 · 감사 로그 ·
+                  {" "}강사 추가 · 퇴사 · 직급 · 단가 · 계정 교체.
+                </p>
+                <p className="mt-1.5" style={{
+                  padding: "10px 11px", borderRadius: 10, backgroundColor: WARN_S,
+                  fontSize: TYPE.caption, lineHeight: 1.5, color: INK,
+                }}>
+                  <b>대표만 할 수 있는 것은 넷입니다</b> — 총괄매니저 지정·해제, 대표 계정 수정,
+                  {" "}누구를 대표로 지정, 이관 초기화. 나머지는 대표와 같습니다.
+                </p>
+                <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+                  위에서 고른 지점이 <b>기본 지점</b>이 됩니다. 화면을 열면 그 지점이 먼저
+                  {" "}선택될 뿐, 다른 지점도 전부 볼 수 있습니다.
+                </p>
+                {/* 옛 앱은 이 역할을 모른다. 규칙은 다 열어 주는데 화면이 어느
+                    목록에도 넣지 않아서, 로그인은 되고 더보기가 거의 빈다 --
+                    거부가 아니라 "없음" 으로 도착해 고장처럼 보인다. */}
+                {areaManagerReady.state === VERSION_STATE.READY ? null : (
+                  <p className="mt-1.5" style={{
+                    padding: "10px 11px", borderRadius: 10, backgroundColor: BAD_S,
+                    fontSize: TYPE.caption, lineHeight: 1.5, color: BAD,
+                  }}>
+                    {areaManagerReady.state === VERSION_STATE.UNKNOWN
+                      ? <>이 강사의 <b>앱 버전을 아직 모릅니다</b> (앱을 연 적이 없거나 기록 전 빌드입니다).</>
+                      : <>이 강사의 앱이 <b>빌드 {areaManagerReady.build || "?"}</b> 입니다.</>}
+                    {" "}총괄매니저 화면은 <b>빌드 {AREA_MANAGER_MINIMUM_BUILD} 이상</b>에서만 보입니다 —
+                    {" "}지금 지정하면 그 사람 앱에서 <b>더보기가 거의 비어 보입니다.</b>
+                    {" "}앱을 먼저 업데이트하게 한 뒤 지정하세요.
+                  </p>
+                )}
+                <button type="button" disabled={saving} onClick={() => changeRole(ROLES.AREA_MANAGER)}
+                  className="mt-2 h-11 w-full font-bold" style={{
+                    borderRadius: 10, fontSize: TYPE.caption, backgroundColor: TINT, color: BRAND_D,
+                    opacity: saving ? 0.6 : 1,
+                  }}>총괄매니저로 지정</button>
+              </>
+            )}
           </div>
         )}
 
@@ -17860,7 +17973,7 @@ function ClientDetail({
   /* 되돌리기는 대표만 한다. 강사와 매니저가 스스로 되돌릴 수 있으면 기록의
      의미가 없다 -- 잘못 누른 사람이 그것을 지울 수 있다는 뜻이기 때문이다.
      규칙도 같은 선을 긋는다. */
-  const canUndo = organization?.role === ROLES.OWNER && !organization?.isLegacy;
+  const canUndo = isOwnerLevelRole(organization?.role) && !organization?.isLegacy;
   const [undo, setUndo] = useState(initialUndo);
   const [reason, setReason] = useState(initialUndo?.reason || "");
   const [undoError, setUndoError] = useState("");
@@ -17881,7 +17994,7 @@ function ClientDetail({
      대표를 불러야 하면 회원이 기다린다. 규칙이 같은 선을 긋는다. */
   const canAdjust = canUndo;
   const canChangeExpiry = !organization?.isLegacy
-    && (organization?.role === ROLES.OWNER || organization?.role === ROLES.MANAGER);
+    && (isOwnerLevelRole(organization?.role) || organization?.role === ROLES.MANAGER);
   /* 세션업·양도와 같은 선이다. 만료일을 옮기는 사람이 회차를 늘리지 못할
      이유가 없다 -- 둘 다 운영이 매일 하는 일이고, 둘 다 이력이 남는다. */
   const canSessionUp = canChangeExpiry;
@@ -17907,7 +18020,8 @@ function ClientDetail({
         }, { store: passStore });
       } else {
         await cancelPass(organizationId, undo.pass, {
-          reason, createdBy: currentUserId, entries: history?.entries || [],
+          reason, createdBy: currentUserId, actorRole: organization?.role || "",
+          entries: history?.entries || [],
         }, { store: passStore });
       }
       closeUndo();
@@ -17952,7 +18066,7 @@ function ClientDetail({
     try {
       if (kind === "adjust") {
         const result = await adjustPass(organizationId, passEdit.pass, {
-          delta, reason, createdBy: currentUserId,
+          delta, reason, createdBy: currentUserId, actorRole: organization?.role || "",
         }, { store: passStore });
         onToast?.({ ok: true, msg: `잔여를 ${result.remainingCount}회로 맞췄습니다.` });
       } else if (days) {
@@ -20337,11 +20451,12 @@ const MIGRATION_STAGE_LABEL_SHORT = { clients: "회원", passes: "회원권" };
 
 /** 회원권 상품 · 발급 · 회원 등록을 하는 역할. 규칙의 canIssuePass ·
  *  canRegisterClient · canManageProducts 와 같은 목록이다. */
-const FC_ROLES = [ROLES.OWNER, ROLES.MANAGER];
+const FC_ROLES = [ROLES.OWNER, ROLES.AREA_MANAGER, ROLES.MANAGER];
 
 /** 행위자의 역할. 감사 항목에만 있다 -- 원장은 uid 만 들고 있다. */
 const AUDIT_ROLE_LABEL = {
   [ROLES.OWNER]: "대표",
+  [ROLES.AREA_MANAGER]: "총괄매니저",
   [ROLES.MANAGER]: "매니저",
   [ROLES.INSTRUCTOR]: "강사",
   [ROLES.STAFF]: "직원",
@@ -22058,17 +22173,17 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
      "강사 뭐 고치려면 어디 가지"가 매번 생긴다. */
   const showInstructorAdmin = organization.ready
     && !organization.isLegacy
-    && organization.role === ROLES.OWNER;
+    && isOwnerLevelRole(organization.role);
   /* 엑셀 이관은 대표만 본다. 한 번 올리면 센터 전체의 회원과 회원권이
      만들어진다 -- 매니저에게 열어 둘 종류의 버튼이 아니다. */
   const showMigration = organization.ready
     && !organization.isLegacy
-    && organization.role === ROLES.OWNER;
+    && isOwnerLevelRole(organization.role);
   /* 급여 집계도 대표만 본다. 센터 전체의 급여는 한 사람의 것이 아니다.
      매니저에게 자기 지점만 열어 주는 방안은 PayrollSummary 머리말 참고. */
   const showPayroll = organization.ready
     && !organization.isLegacy
-    && organization.role === ROLES.OWNER;
+    && isOwnerLevelRole(organization.role);
   /* 발급 내역도 대표만 본다. 급여 집계와 같은 조건을 쓴다 -- 둘 다 센터 전체를
      보는 화면이라 경계가 같아야 하고, 한쪽만 바꾸면 다음 사람이 왜 다른지
      알 수 없다. */
@@ -22080,7 +22195,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
      눌러도 빈 화면만 나온다. */
   const showAudit = organization.ready
     && !organization.isLegacy
-    && organization.role === ROLES.OWNER;
+    && isOwnerLevelRole(organization.role);
   /* 소속 센터에 있는가. 역할과 무관하다 -- 여기에 걸린 것은 권한이 아니라 문구다.
      같은 화면이 개인 모드에서는 유일한 답이고 소속 모드에서는 둘 중 하나라,
      무엇을 세는 값인지 그때만 밝혀야 한다. 못 읽은 상태(unknown)는 개인 모드로
@@ -22308,7 +22423,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
 
          미소속 개인 강사에게는 그대로 보인다. 그 사람에게는 이 세 값이
          유일한 설정이고, 월간 리포트가 실제로 그것으로 계산한다. */
-      ...(!inOrganization || organization.role === ROLES.OWNER
+      ...(!inOrganization || isOwnerLevelRole(organization.role)
         ? [{ key: "center", title: "센터 정보", description: inOrganization ? "이 기기의 센터명 · 담당자 · 그룹 단가" : "센터명 · 담당자 · 그룹 단가", Icon: SettingsIcon }]
         : []),
       { key: "schedule-colors", title: "일정 색상", description: "개인 · 듀엣 · 그룹 · 상담 · 휴무 카드 색", Icon: Palette },
@@ -22493,7 +22608,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
         )}
         {/* 메뉴에서 뺀 것만으로는 부족하다. 뒤로 가기나 저장된 화면 상태로
             이 자리에 다시 닿을 수 있고, 그때 열리면 숨긴 적이 없는 것과 같다. */}
-        {view === "center" && (!inOrganization || organization.role === ROLES.OWNER) && (
+        {view === "center" && (!inOrganization || isOwnerLevelRole(organization.role)) && (
           <section style={sectionStyle}>
             {/* 소속 센터에서는 이 세 값이 센터의 것이 아니다. 기기에 저장되고
                 이 기기의 일정과 레거시 급여 추정에만 쓰인다 -- 센터의 이름도
@@ -23642,6 +23757,52 @@ export function createAppScreenSmokeCases() {
         },
       },
     }) },
+    /* 총괄매니저 지정. 무엇이 열리고 무엇이 대표에게 남는지가 **누르기 전에**
+       화면에 있어야 한다 -- 대표와 같은 권한이라 되돌리기가 쉽지 않다. */
+    { name: "강사 관리 · 총괄매니저 지정", element: instructorAdmin(smokeOwner, {
+      members: smokeInstructors, locations: smokeLocations,
+      mode: "edit",
+      editing: { ...smokeInstructors[0], appVersion: "1.1.33", appBuild: "65" },
+      draft: {
+        displayName: "정예진", title: "team_lead", locationId: "bansong",
+        rateManwon: "4.5", deputy: false, role: "instructor",
+      },
+    }) },
+    /* 옛 앱을 쓰는 강사. 규칙은 다 열어 주는데 화면이 역할을 몰라 더보기가
+       거의 빈다 -- 거부가 아니라 "없음" 으로 도착해 고장처럼 보인다. */
+    { name: "강사 관리 · 총괄매니저 지정 · 옛 앱", element: instructorAdmin(smokeOwner, {
+      members: smokeInstructors, locations: smokeLocations,
+      mode: "edit",
+      editing: { ...smokeInstructors[1], appVersion: "1.1.32", appBuild: "64" },
+      draft: {
+        displayName: "박서연", title: "instructor", locationId: "bansong",
+        rateManwon: "4", deputy: false, role: "instructor",
+      },
+    }) },
+    /* 이미 총괄매니저인 사람. 해제는 "강사로 되돌리기" 이지 퇴사가 아니다. */
+    { name: "강사 관리 · 총괄매니저 해제", element: instructorAdmin(smokeOwner, {
+      members: smokeInstructors, locations: smokeLocations,
+      mode: "edit",
+      editing: { ...smokeInstructors[0], role: "area_manager", appBuild: "65" },
+      draft: {
+        displayName: "정예진", title: "team_lead", locationId: "bansong",
+        rateManwon: "4.5", deputy: false, role: "area_manager",
+      },
+    }) },
+    /* 총괄매니저가 열었을 때. 지정 버튼이 **없어야 한다** -- 자기 자리를 자기가
+       늘리는 길이 열리면 대표가 모르는 사이에 그 자리가 는다. */
+    { name: "강사 관리 · 총괄매니저가 본 화면", element: instructorAdmin(
+      { ...smokeOwner, role: "area_manager" },
+      {
+        members: smokeInstructors, locations: smokeLocations,
+        mode: "edit",
+        editing: { ...smokeInstructors[1], appBuild: "65" },
+        draft: {
+          displayName: "박서연", title: "instructor", locationId: "bansong",
+          rateManwon: "4", deputy: false, role: "instructor",
+        },
+      },
+    ) },
     /* 같은 이름의 떠난 강사가 있는 채로 추가하려는 순간. 막지 않고 길을 말한다. */
     { name: "강사 관리 · 추가 · 동명 퇴사자", element: instructorAdmin(smokeOwner, {
       members: [...smokeInstructors, smokeRetired], locations: smokeLocations, mode: "add",
@@ -24064,7 +24225,7 @@ export default function App() {
      허용한다 -- 규칙도 같은 셋에게만 잔여를 줄이게 열려 있다. */
   const canCheckAttendance = organizationContext.ready
     && !organizationContext.isLegacy
-    && [ROLES.OWNER, ROLES.MANAGER, ROLES.INSTRUCTOR].includes(organizationContext.role);
+    && [ROLES.OWNER, ROLES.AREA_MANAGER, ROLES.MANAGER, ROLES.INSTRUCTOR].includes(organizationContext.role);
   /* 예상 급여 카드는 소속 강사의 것이다. 미소속 개인 강사에게는 원장이 없고,
      기존 월간 리포트가 로컬 일정으로 계산한 값을 그대로 쓴다. 대표의 전 지점
      급여는 계산이 달라 별도 화면으로 남겨 둔다. */
@@ -24350,7 +24511,7 @@ export default function App() {
        허용한다는 것과 화면이 그것을 내는 것은 다른 결정이고, 강사 간 경계는
        따로 정하기로 했다 (instructorIds 3단계). */
     if (!clientId || !organizationRoster) return null;
-    if (![ROLES.OWNER, ROLES.MANAGER].includes(organizationContext.role)) return null;
+    if (![ROLES.OWNER, ROLES.AREA_MANAGER, ROLES.MANAGER].includes(organizationContext.role)) return null;
     const found = await readCentreLessons(organizationContext.organizationId, { clientId });
     const nameById = new Map(rosterInstructors.map(
       (item) => [String(item?.userId || ""), String(item?.displayName || "")],
@@ -24861,7 +25022,7 @@ export default function App() {
        대표·FC매니저는 센터 사람 전부를 읽는다 -- 이력의 "처리자" 가 대표나
        매니저일 수 있는데, 강사 목록만 읽으면 그 자리에 uid 가 뜬다. 강사는
        규칙이 소속 목록 전체를 막으므로 강사 목록만 읽는다. */
-    const seesEveryone = organizationContext.role === ROLES.OWNER
+    const seesEveryone = isOwnerLevelRole(organizationContext.role)
       || organizationContext.role === ROLES.MANAGER;
     (seesEveryone
       ? listMemberships(organizationContext.organizationId)
@@ -27279,7 +27440,7 @@ export default function App() {
         ) : null}
         <div className="relative min-h-0 flex-1 overflow-hidden">
           <Guard key={tab}>
-            {tab === "schedule" && <ScheduleManager db={rosterDb} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onCareGrade={setCareGrade} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterMembers ? () => { setMemberRegistrationRequest((value) => value + 1); setTab("members"); } : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} careOptionsOf={careOptionsFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && organizationContext.role === ROLES.OWNER} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
+            {tab === "schedule" && <ScheduleManager db={rosterDb} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onCareGrade={setCareGrade} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterMembers ? () => { setMemberRegistrationRequest((value) => value + 1); setTab("members"); } : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} careOptionsOf={careOptionsFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && isOwnerLevelRole(organizationContext.role)} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
             {tab === "members" && <div className={`h-full min-h-0 ${mobileView === "detail" && member ? "pt-member-detail-active" : ""}`}>
               <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList passSummaryOf={passSummaryFor} locations={rosterLocations} members={rosterMembers} schedule={db.schedule} settings={db.settings} organizationMode={organizationRoster} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} canBrowseAll={!organizationRoster || canBrowseAllClients(organizationContext.role)} viewerRole={organizationContext.role} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterMembers} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} journeyOf={organizationRoster ? journeyFor : undefined} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
               {mobileView === "detail" && member && <div className="pt-member-detail-pane h-full min-h-0">

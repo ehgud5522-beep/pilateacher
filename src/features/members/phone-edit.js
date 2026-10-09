@@ -20,7 +20,7 @@ import { isMyClient } from "./roster-visibility.js";
  * 고치지는 못한다. 보는 것과 고치는 것은 다른 일이고, 보는 쪽 목록을 그대로
  * 쓰면 눌러도 서버가 거부하는 버튼이 생긴다.
  */
-export const FULL_EDIT_ROLES = Object.freeze(["owner", "manager"]);
+export const FULL_EDIT_ROLES = Object.freeze(["owner", "area_manager", "manager"]);
 
 /** 서버가 돌려주는 코드. functions/src/client-phone.js 의 PHONE_EDIT 와 같다. */
 export const PHONE_EDIT_CODE = Object.freeze({

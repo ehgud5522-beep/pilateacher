@@ -18,7 +18,7 @@ const { createAIRecordingOperations } = require("./ai-recording-operations");
 const { applyCors, parseAllowedOrigins } = require("./cors");
 const { sendError, GatewayError } = require("./errors");
 const { createFirestoreIdempotencyStore } = require("./idempotency");
-const { createMemberLinkService, isActiveOwner, membershipId } = require("./member-link");
+const { createMemberLinkService, isActiveOwner, isOwnerLevel, membershipId } = require("./member-link");
 const {
   clientIdsFromPassChange: clientIdsFromPassChangeForScope,
   rebuildInstructorIds,
@@ -621,8 +621,8 @@ function instructorScopeCallable(stage, run) {
 
     const membership = await firestore
       .collection("memberships").doc(membershipId(organizationId, callerUid)).get();
-    if (!isActiveOwner(membership.exists ? membership.data() : null)) {
-      throw new HttpsError("permission-denied", "Only the centre owner can run this.");
+    if (!isOwnerLevel(membership.exists ? membership.data() : null)) {
+      throw new HttpsError("permission-denied", "Only an owner or area manager can run this.");
     }
 
     try {
@@ -692,8 +692,8 @@ exports.swapInstructorAccount = onCall({
 
   const membership = await firestore
     .collection("memberships").doc(membershipId(organizationId, callerUid)).get();
-  if (!isActiveOwner(membership.exists ? membership.data() : null)) {
-    throw new HttpsError("permission-denied", "Only the centre owner can swap an account.");
+  if (!isOwnerLevel(membership.exists ? membership.data() : null)) {
+    throw new HttpsError("permission-denied", "Only an owner or area manager can swap an account.");
   }
 
   const payload = {
@@ -701,6 +701,9 @@ exports.swapInstructorAccount = onCall({
     fromUid: String(request?.data?.fromUid || "").trim(),
     toUid: String(request?.data?.toUid || "").trim(),
     actorId: callerUid,
+    /* 소속 문서에서 읽은 역할이다. 부르는 쪽이 보낸 값이 아니다 -- 보냈다면
+       "나는 대표입니다" 한 줄로 아래 판정을 지나갈 수 있다. */
+    actorRole: String(membership.data()?.role || ""),
   };
   const confirmed = request?.data?.confirm === true;
 
@@ -750,8 +753,8 @@ exports.updateRuntimeConfig = onCall({
   /* 화면이 카드를 감추는 것은 안내이고 막는 것은 여기다. 이 설정은 조직의
      것이 아니라 앱 전체의 것이라, 어느 센터의 대표든 바꿀 수 있다는 뜻이
      되지 않도록 소속 확인을 지나게 둔다. */
-  if (!isActiveOwner(membership.exists ? membership.data() : null)) {
-    throw new HttpsError("permission-denied", "Only the centre owner can change this.");
+  if (!isOwnerLevel(membership.exists ? membership.data() : null)) {
+    throw new HttpsError("permission-denied", "Only an owner or area manager can change this.");
   }
 
   /* 쓰지 않고 읽기만 할 수도 있다. 화면이 고치기 전에 지금 값을 보여준다. */
@@ -882,8 +885,8 @@ exports.fixMigratedServiceSessions = onCall({
 
   const membership = await firestore
     .collection("memberships").doc(membershipId(organizationId, callerUid)).get();
-  if (!isActiveOwner(membership.exists ? membership.data() : null)) {
-    throw new HttpsError("permission-denied", "Only the centre owner can run this.");
+  if (!isOwnerLevel(membership.exists ? membership.data() : null)) {
+    throw new HttpsError("permission-denied", "Only an owner or area manager can run this.");
   }
 
   try {
@@ -940,7 +943,7 @@ exports.resetMigratedData = onCall({
   const membership = await firestore
     .collection("memberships").doc(membershipId(organizationId, callerUid)).get();
   if (!isActiveOwner(membership.exists ? membership.data() : null)) {
-    throw new HttpsError("permission-denied", "Only the centre owner can run this.");
+    throw new HttpsError("permission-denied", "Only the centre owner can reset migrated data.");
   }
 
   try {

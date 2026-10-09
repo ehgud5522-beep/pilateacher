@@ -23,7 +23,7 @@
 
 const { FORBIDDEN_FIELDS, buildMemberView } = require("./member-view");
 const { collectMemberViewInput, rebuildMemberView } = require("./member-view-triggers");
-const { isActiveOwner, membershipId } = require("./member-link");
+const { isOwnerLevel, membershipId } = require("./member-link");
 
 /** 한 번 호출에 볼 수 있는 회원 수. 넘으면 커서를 돌려주고 멈춘다. */
 const MAX_MEMBERS_PER_CALL = 200;
@@ -201,7 +201,7 @@ function createMemberViewAdminService(dependencies) {
     } catch (error) {
       throw new MemberViewAdminError("admin_unavailable", { stage: STAGES.VERIFY_OWNER, cause: error });
     }
-    if (!isActiveOwner(membership)) {
+    if (!isOwnerLevel(membership)) {
       throw new MemberViewAdminError("not_owner", { stage: STAGES.VERIFY_OWNER });
     }
     return membership;

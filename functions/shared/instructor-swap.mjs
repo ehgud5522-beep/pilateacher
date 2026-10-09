@@ -43,6 +43,9 @@ export const SWAP_ERROR = Object.freeze({
   TO_NOT_ACTIVE: "swap_to_not_active",
   TO_ALREADY_SWAPPED: "swap_to_already_swapped",
   FROM_IS_OWNER: "swap_from_is_owner",
+  /* 총괄매니저가 총괄매니저(나 대표)의 계정을 바꾸려 한 경우. 대표만이다 --
+     소속 문서의 role 문과 같은 선이고, 같은 이유다. */
+  ACTOR_BELOW_TARGET: "swap_actor_below_target",
 });
 
 /** 막힌 이유를 사람 말로. 고칠 방법까지 말한다. */
@@ -54,6 +57,7 @@ export const SWAP_ERROR_LABEL = Object.freeze({
   [SWAP_ERROR.TO_NOT_ACTIVE]: "새 계정이 재직 상태가 아닙니다.",
   [SWAP_ERROR.TO_ALREADY_SWAPPED]: "새 계정은 이미 다른 계정을 넘겨받았습니다.",
   [SWAP_ERROR.FROM_IS_OWNER]: "대표 계정은 이 통로로 바꾸지 않습니다. 콘솔에서 합니다.",
+  [SWAP_ERROR.ACTOR_BELOW_TARGET]: "총괄매니저 계정 교체는 대표만 할 수 있습니다.",
 });
 
 /**
@@ -104,10 +108,10 @@ export function canonicalInstructorIdFrom(memberships) {
 /**
  * 이 교체가 성립하는가. **서버가 쓰기 전에 이것을 먼저 본다.**
  *
- * @param {{ from?: any, to?: any }} input 두 소속 문서
+ * @param {{ from?: any, to?: any, actorRole?: string }} input 두 소속 문서와 누르는 사람의 역할
  * @returns {string} 빈 문자열이면 통과
  */
-export function swapError({ from, to } = {}) {
+export function swapError({ from, to, actorRole = "owner" } = {}) {
   const fromUid = text(from?.userId);
   const toUid = text(to?.userId);
   if (!from) return SWAP_ERROR.FROM_MISSING;
@@ -117,6 +121,14 @@ export function swapError({ from, to } = {}) {
   /* 대표는 이 통로로 바꾸지 않는다. 규칙이 owner 를 앱에서 세우지 못하게 해
      두었고(memberships create), 여기로 열면 그 선이 뒤로 뚫린다. */
   if (text(from.role) === "owner" || text(to.role) === "owner") return SWAP_ERROR.FROM_IS_OWNER;
+  /* 총괄매니저는 자기와 같은 자리를 건드리지 못한다. 교체는 그 사람의 로그인
+     계정을 통째로 바꾸는 일이라, 열어 두면 총괄매니저가 다른 총괄매니저의
+     자리를 자기가 아는 계정으로 옮길 수 있다 -- 규칙의 mayManageMembership 과
+     같은 선이다. */
+  if (text(actorRole) !== "owner"
+    && (text(from.role) === "area_manager" || text(to.role) === "area_manager")) {
+    return SWAP_ERROR.ACTOR_BELOW_TARGET;
+  }
   if (text(to.status) !== "active") return SWAP_ERROR.TO_NOT_ACTIVE;
   /* 이미 누군가를 넘겨받은 계정에 또 얹지 않는다. 두 사람의 원장이 한 줄로
      합쳐지면 그것을 가르는 길이 없다. */

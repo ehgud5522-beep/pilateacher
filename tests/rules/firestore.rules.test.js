@@ -4063,6 +4063,24 @@ describe("the area manager stands where the owner stands, minus four doors", () 
 
   /* ── 대표만 할 수 있는 것은 대표가 할 수 있어야 한다 ───────────────── */
 
+  test("the owner still writes a membership that has no role field", async () => {
+    /* 퇴사·단가·직함 문이 2026-10-10 에 mayManageMembership 으로 바뀌었다.
+       그 함수는 **대상의 role 을 읽는다** -- 없는 칸을 읽으면 규칙은 거짓이
+       아니라 오류로 끝나고, 그것은 거부다.
+
+       대표 갈래가 먼저 끊어 주므로 (role == "owner" || ...) 대표의 쓰기는
+       그대로다. 콘솔이나 옛 이관 도구로 만들어진 소속에 role 이 없을 수
+       있어, 그 경우를 못으로 박아 둔다. */
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "memberships", `${ORG_A}_uid-roleless`), {
+        organizationId: ORG_A, userId: "uid-roleless", status: "active", displayName: "옛 소속",
+      });
+    });
+    const target = `${ORG_A}_uid-roleless`;
+    await assertSucceeds(updateDoc(membershipRef(users.owner, target), { fullRoomRate: 45000 }));
+    await assertSucceeds(updateDoc(membershipRef(users.owner, target), { status: "revoked" }));
+  });
+
   test("the owner appoints and releases an area manager, with a default location", async () => {
     const target = `${ORG_A}_${users.instructor}`;
     await assertSucceeds(updateDoc(membershipRef(users.owner, target), {

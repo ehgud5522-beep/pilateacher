@@ -98,8 +98,12 @@ test("감사 목록의 번호는 가운데를 가린다", () => {
 
 test("고칠 수 있는 역할 목록이 서버와 같다", () => {
   /* staff 는 번호를 볼 수는 있어도 고치지는 못한다. 보는 쪽 목록을 그대로
-     쓰면 눌러도 서버가 거부하는 버튼이 생긴다. */
+     쓰면 눌러도 서버가 거부하는 버튼이 생긴다.
+
+     총괄매니저는 대표와 같은 자리라 둘 다에 들어 있어야 한다 -- 한쪽만
+     넣으면 화면에는 버튼이 있고 서버가 거부한다. */
   const require = createRequire(import.meta.url);
   const { FULL_EDIT_ROLES: server } = require("../../functions/src/client-phone.js");
   assert.deepEqual([...FULL_EDIT_ROLES].sort(), [...server].sort());
+  assert.ok(FULL_EDIT_ROLES.includes("area_manager"), "총괄매니저는 대표와 같은 자리다");
 });

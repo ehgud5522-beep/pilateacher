@@ -1034,6 +1034,20 @@ export async function correctDeduction(organizationId, pass, entry, input, optio
   return { passId, entryId, entry: correction };
 }
 
+/* 누가 눌렀는가의 **역할**. createdBy 는 uid 뿐이라, 반년 뒤 그 줄을 보는
+   사람은 누른 사람이 그때 무엇이었는지 알 수 없다 -- 소속 문서는 지금 상태만
+   들고 있고, 그 사이에 역할이 바뀌거나 퇴사했을 수 있다.
+
+   총괄매니저가 생기면서 그 질문이 실제로 생겼다 (2026-10-10): 잔여 조정과
+   발급 취소를 대표가 했는지 총괄매니저가 했는지.
+
+   **없어도 된다.** 이 필드가 생기기 전 항목이 이미 쌓여 있고, 옛 앱은 보내지
+   않는다. 규칙은 보낼 때만 소속 문서와 대조한다. */
+const actorRoleOf = (input) => {
+  const role = String(input?.actorRole ?? "").trim();
+  return role ? { actorRole: role } : {};
+};
+
 /**
  * 잘못 발급한 회원권을 무효화한다. 대표만.
  *
@@ -1042,7 +1056,7 @@ export async function correctDeduction(organizationId, pass, entry, input, optio
  *
  * @param {string} organizationId
  * @param {any} pass
- * @param {{ reason?: string, createdBy?: string, entries?: Array<any> }} input
+ * @param {{ reason?: string, createdBy?: string, actorRole?: string, entries?: Array<any> }} input
  * @param {{ store?: PassStore }} [options]
  */
 export async function cancelPass(organizationId, pass, input, options = {}) {
@@ -1078,6 +1092,7 @@ export async function cancelPass(organizationId, pass, input, options = {}) {
     occurredAt: stampedAt,
     createdAt: stampedAt,
     createdBy,
+    ...actorRoleOf(input),
   };
 
   await store.commit([
@@ -1302,7 +1317,7 @@ export class PassExpiryError extends Error {
  *
  * @param {string} organizationId
  * @param {any} pass 회원권 문서 (id, clientId, locationId, remainingCount)
- * @param {{ delta: number, reason: string, createdBy: string, occurredAt?: Date, entryId?: string }} input
+ * @param {{ delta: number, reason: string, createdBy: string, actorRole?: string, occurredAt?: Date, entryId?: string }} input
  * @param {{ store?: PassStore, newId?: () => string, now?: () => Date }} [options]
  */
 export async function adjustPass(organizationId, pass, input, options = {}) {
@@ -1346,6 +1361,7 @@ export async function adjustPass(organizationId, pass, input, options = {}) {
     occurredAt: input?.occurredAt instanceof Date ? input.occurredAt : now(),
     createdAt: stampedAt,
     createdBy,
+    ...actorRoleOf(input),
   };
 
   await store.commit([

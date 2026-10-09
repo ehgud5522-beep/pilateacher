@@ -82,6 +82,13 @@ export const AUDIT_ACTION = Object.freeze({
      있고(previousPhones·phone), 화면이 둘을 이어 붙여 마스킹해 보여준다.
      Keep in sync with functions/src/client-phone-store.js. */
   MEMBER_PHONE_CHANGED: "member_phone_changed",
+  /* 총괄매니저 지정·해제. **대표만 할 수 있는 넷 중 하나**라, 누가 언제 그
+     자리를 세웠는지가 남아야 한다 -- 소속 문서는 지금 역할만 들고 있다.
+
+     enabled 가 방향이다: 지정이면 true, 해제면 false. 퇴사·복직이 한 동작에
+     두 방향을 담는 것과 같은 모양이다.
+     Keep in sync with auditActions() in firestore.foundation.rules. */
+  AREA_MANAGER_SET: "area_manager_set",
 });
 
 /**

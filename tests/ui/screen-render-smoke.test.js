@@ -112,6 +112,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 소속 확인 실패",
     "더보기 탭 · 앱 업데이트 안내",
     "더보기 탭 · 만료일 순서 확인",
+    "더보기 탭 · 총괄매니저",
     "더보기 탭 · 백업",
     "더보기 탭 · 월간 리포트",
     "더보기 탭 · 월간 리포트 · 조회 실패",
@@ -168,6 +169,10 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "회원권 발급 · 조회 실패",
     "강사 관리",
     "강사 관리 · 계정 교체",
+    "강사 관리 · 총괄매니저 지정",
+    "강사 관리 · 총괄매니저 지정 · 옛 앱",
+    "강사 관리 · 총괄매니저 해제",
+    "강사 관리 · 총괄매니저가 본 화면",
     "강사 관리 · 추가 · 동명 퇴사자",
     "강사 관리 · 수정",
     "강사 관리 · 부원장 지정",
@@ -2001,6 +2006,19 @@ test("a 50-minute lesson names the pass it needed, not just 디오사", async (t
   assert.match(markup, /디오사 B\(50분\) 회원권이 없어요/);
 });
 
+test("the area manager runs the centre but never the app update setting", async (t) => {
+  /* 다른 자리는 전부 대표와 같다. 여기만 아닌 이유는 하나다 -- settlement
+     최소 빌드를 올리면 **센터 전체의 수업 확정이 막힌다.** 숫자 하나가
+     센터를 세우는 자리라 이관 초기화와 같은 선에 둔다. */
+  const markupOf = await issueScreens(t);
+  const hub = markupOf("더보기 탭 · 총괄매니저");
+
+  assert.match(hub, /급여 집계/);
+  assert.match(hub, /감사 로그/);
+  assert.match(hub, /강사 관리/);
+  assert.doesNotMatch(hub, /앱 업데이트 안내/);
+});
+
 test("the app update card starts empty and says so", async (t) => {
   /* 1.1.33 이 스토어에 올라갈 때까지 비어 있는 것이 정상이다. 빈 설정이 곧
      "아무것도 띄우지 않음" 이라는 말이 화면에 있어야, 대표가 켜지 않은 것과
@@ -2040,6 +2058,58 @@ test("the centre-wide expiry order screen names what it is for", async (t) => {
   assert.match(screen, /만료일 순서 확인 필요/);
   assert.match(screen, /차수가 빠른 것부터/);
   assert.match(screen, /쓰이지 못한 채 사라집니다/);
+});
+
+test("appointing an area manager says what opens and what stays with the owner", async (t) => {
+  /* 대표와 같은 권한이다. 되돌리는 것이 쉽지 않으므로 무엇을 넘기는지가
+     누르기 전에 화면에 있어야 한다 -- "같은 권한" 한 마디로는 알 수 없다. */
+  const markupOf = await issueScreens(t);
+  const sheet = markupOf("강사 관리 · 총괄매니저 지정");
+
+  assert.match(sheet, /총괄매니저로 지정/);
+  assert.match(sheet, /전 지점을 보고 처리합니다/);
+  // 대표에게 남는 넷이 같은 화면에 있어야 한다.
+  assert.match(sheet, /대표만 할 수 있는 것은 넷입니다/);
+  assert.match(sheet, /총괄매니저 지정·해제/);
+  assert.match(sheet, /이관 초기화/);
+  // 기본 지점은 편의일 뿐 경계가 아니다. 그렇게 읽히면 안 된다.
+  assert.match(sheet, /다른 지점도 전부 볼 수 있습니다/);
+});
+
+test("an old app cannot show the area manager screens, and the sheet says so first", async (t) => {
+  /* 1.1.32 이하는 area_manager 라는 글자를 모른다. 규칙은 다 열어 주는데
+     화면이 어느 역할 목록에도 넣지 않아서, 로그인은 되고 더보기가 거의 빈다 --
+     거부가 아니라 "없음" 으로 도착하므로 그 사람은 고장인지 권한인지 모른다. */
+  const markupOf = await issueScreens(t);
+  const sheet = markupOf("강사 관리 · 총괄매니저 지정 · 옛 앱");
+
+  assert.match(sheet, /빌드 64/);
+  assert.match(sheet, /빌드 65 이상/);
+  assert.match(sheet, /더보기가 거의 비어 보입니다/);
+});
+
+test("releasing an area manager is not a dismissal", async (t) => {
+  /* 퇴사와 섞이면 대표는 그 사람의 담당 회원과 급여가 어떻게 되는지부터
+     다시 묻는다. 계정 교체 화면이 "퇴사가 아닙니다" 를 먼저 말하는 것과
+     같은 자리다. */
+  const markupOf = await issueScreens(t);
+  const sheet = markupOf("강사 관리 · 총괄매니저 해제");
+
+  assert.match(sheet, /강사로 되돌리기/);
+  assert.match(sheet, /퇴사가 아닙니다/);
+  assert.doesNotMatch(sheet, /총괄매니저로 지정<\/button>/);
+});
+
+test("an area manager never sees the button that would make another one", async (t) => {
+  /* 열리면 대표가 모르는 사이에 그 자리가 늘고, 되돌리는 문은 없다.
+     규칙도 막지만 눌러도 거부되는 버튼은 고장으로 보인다. */
+  const markupOf = await issueScreens(t);
+  const sheet = markupOf("강사 관리 · 총괄매니저가 본 화면");
+
+  assert.doesNotMatch(sheet, /총괄매니저로 지정/);
+  assert.doesNotMatch(sheet, /강사로 되돌리기/);
+  // 나머지 강사 관리는 그대로 할 수 있다.
+  assert.match(sheet, /퇴사 처리/);
 });
 
 test("the account swap says what moves and what does not", async (t) => {

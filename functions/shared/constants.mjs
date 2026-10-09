@@ -13,12 +13,62 @@ export const UNITS = Object.freeze({
   PAIN_MAX: 10,
 });
 
+/**
+ * 센터 안의 역할. **규칙 전체가 읽는 접근 권한 값이다.**
+ *
+ * ── 총괄매니저(area_manager) ──
+ * 대표와 같은 자리다. 지점 경계가 없고, 전 지점을 보고 처리한다. 대표만
+ * 남겨 둔 것은 넷뿐이다 (OWNER_ONLY 참고).
+ *
+ * `branch_manager` 라고 부르지 않는다 -- 그 글자는 이미 **직함**(점장)이고
+ * 급여 판정이 그것을 본다 (MEMBERSHIP_TITLE, deduction-pricing.mjs). 같은
+ * 글자가 두 뜻이면 둘 중 하나는 언젠가 틀린 쪽을 읽는다.
+ */
 export const ROLES = Object.freeze({
   OWNER: "owner",
+  /** 총괄매니저. 대표와 같은 권한, 지점 경계 없음. */
+  AREA_MANAGER: "area_manager",
   MANAGER: "manager",
   INSTRUCTOR: "instructor",
   STAFF: "staff",
   MEMBER: "member",
+});
+
+/**
+ * 대표와 같은 자리에 서는 역할들. **규칙의 ownerLevel() 과 같은 목록이다.**
+ *
+ * 한쪽만 고치면 화면에서는 되는데 규칙이 막거나, 그 반대가 된다. 둘 중 어느
+ * 쪽이든 쓰는 사람에게는 "눌렀는데 아무 일도 안 일어남" 으로 도착한다.
+ */
+export const OWNER_LEVEL_ROLES = Object.freeze(
+  /** @type {ReadonlyArray<string>} */ ([ROLES.OWNER, ROLES.AREA_MANAGER]),
+);
+
+/** 이 역할이 대표와 같은 자리인가. */
+export function isOwnerLevelRole(role) {
+  return OWNER_LEVEL_ROLES.includes(String(role || ""));
+}
+
+/**
+ * 총괄매니저에게 열지 않는 넷. **대표만이다.**
+ *
+ * 공통점 하나: 넷 다 **자기 자리를 자기가 넓히는 길**이거나 되돌릴 수 없다.
+ * 총괄매니저가 총괄매니저를 세울 수 있으면 대표가 모르는 사이에 그 자리가
+ * 늘고, 그것을 되돌리는 문은 없다.
+ */
+export const OWNER_ONLY = Object.freeze({
+  /** 총괄매니저 지정·해제 */
+  AREA_MANAGER_ROLE: "area_manager_role",
+  /** 대표 계정 수정 */
+  OWNER_MEMBERSHIP: "owner_membership",
+  /** 누구를 대표로 지정 (규칙이 앱에서 owner 를 세우지 못하게 이미 막아 두었다) */
+  OWNER_GRANT: "owner_grant",
+  /** 이관 초기화 */
+  MIGRATION_RESET: "migration_reset",
+  /* 앱 업데이트 설정 (runtimeConfig 의 appUpdate · settlement 쓰기).
+     숫자 하나가 센터 전체의 수업 확정을 막거나, 모든 앱을 필수 팝업에
+     가둔다 -- 다른 자리는 대표와 같아도 여기만은 아니다. */
+  RUNTIME_CONFIG: "runtime_config",
 });
 
 export const MEMBERSHIP_STATUS = Object.freeze({

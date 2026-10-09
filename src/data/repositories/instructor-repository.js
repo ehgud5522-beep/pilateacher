@@ -364,6 +364,69 @@ export async function setMembershipStatus(organizationId, userId, input, options
   return { userId: target, status, audit };
 }
 
+/**
+ * 총괄매니저 지정 · 해제. **대표만, 자기 자신에게는 쓸 수 없다.**
+ *
+ * 총괄매니저는 지점 경계 없이 대표와 같은 권한이다. 그래서 이 자리를 세우는
+ * 일만은 대표에게 남겨 두었다 -- 총괄매니저가 총괄매니저를 세울 수 있으면
+ * 대표가 모르는 사이에 그 자리가 늘고, 되돌리는 문은 없다.
+ *
+ * 오가는 것은 area_manager 와 그 아래(강사 · FC매니저) 사이뿐이다. 대표는
+ * 양쪽 어디에도 없다 -- 규칙의 role 문과 같은 선이다.
+ *
+ * **기본 지점이 같은 쓰기에 간다.** 지정 화면이 둘을 한 번에 저장하는데, 따로
+ * 쓰면 하나가 실패했을 때 역할만 바뀌고 지점이 빈 상태가 남는다. 규칙도 그
+ * 둘만 받는다 (hasOnly(["role", "locationId"])).
+ *
+ * @param {string} organizationId
+ * @param {string} userId
+ * @param {{ role: string, locationId?: string, changedBy: string, actorRole: string }} input
+ * @param {{ store?: InstructorRateStore }} [options]
+ */
+export async function setMembershipRole(organizationId, userId, input, options = {}) {
+  const { store = createFirestoreInstructorRateStore() } = options;
+  const organization = requiredText(organizationId, "organizationId");
+  const target = requiredText(userId, "userId");
+  const changedBy = requiredText(input?.changedBy, "changedBy");
+  /* 자기 자신은 아니다. 대표가 자기를 총괄매니저로 내리면 그 센터에 대표가
+     없어지고, 되돌릴 문이 아무 데도 없다 -- 퇴사 문과 같은 이유다. */
+  if (target === changedBy) throw new Error("Invalid userId");
+  /* 대표만이다. 규칙도 막지만 여기서 먼저 막는다 -- 거부된 쓰기는
+     permission-denied 한 줄로만 돌아온다. */
+  if (requiredText(input?.actorRole, "actorRole") !== ROLES.OWNER) throw new Error("Invalid actorRole");
+
+  const role = requiredText(input?.role, "role");
+  if (role !== ROLES.AREA_MANAGER && role !== ROLES.INSTRUCTOR && role !== ROLES.MANAGER) {
+    throw new Error("Invalid role");
+  }
+
+  const locationId = String(input?.locationId ?? "").trim();
+  const stampedAt = await store.serverTimestamp();
+  const audit = auditEntry(organization, {
+    action: AUDIT_ACTION.AREA_MANAGER_SET,
+    actorId: changedBy,
+    actorRole: ROLES.OWNER,
+    targetId: target,
+    // 지정인가 해제인가. 한 동작에 두 방향이 있어 이 칸이 없으면 읽을 수 없다.
+    enabled: role === ROLES.AREA_MANAGER,
+    ...(locationId ? { locationId } : {}),
+    stampedAt,
+  });
+
+  await store.commit([
+    {
+      path: paths.orgMembership(organization, target),
+      data: locationId ? { role, locationId } : { role },
+      operation: "update",
+    },
+    {
+      path: paths.auditLog(auditLogId(AUDIT_ACTION.AREA_MANAGER_SET, target, String(Date.now()))),
+      data: audit,
+    },
+  ]);
+  return { userId: target, role, locationId, audit };
+}
+
 /* ── 풀방금액 ──────────────────────────────────────────────────────────────
    pt_1_1_repurchase_normal 한 카테고리만 이 값을 쓴다 (pay-rates.js 참고).
    강사가 등급 시험에 합격하면 오르므로 이 값은 바뀌고, "언제부터 이 금액이었나"

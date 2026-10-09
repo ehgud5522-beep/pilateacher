@@ -25,6 +25,46 @@ service cloud.firestore {
         && membership(organizationId).data.role in roles;
     }
 
+    /* ── 대표와 같은 자리 ─────────────────────────────────────────────────
+       총괄매니저(area_manager)는 **지점 경계 없이 대표와 같은 권한**이다.
+       2026-10-10 결정. 지점으로 가르는 설계는 보류했다 (branch-manager-plan.md).
+
+       그래서 규칙에서 `["owner"]` 였던 자리는 거의 전부 이 목록이 된다.
+       대표만 남는 것은 넷뿐이고, 공통점 하나로 묶인다 -- **자기 자리를 자기가
+       넓히는 길**이거나 되돌릴 수 없다:
+
+         1. 총괄매니저 지정·해제   (memberships 의 role 문)
+         2. 대표 계정 수정         (아래 mayManageMembership)
+         3. 누구를 대표로 지정     (memberships create 의 role 목록)
+         4. 이관 초기화            (resetMigratedData -- callable 쪽)
+
+       총괄매니저가 총괄매니저를 세울 수 있으면 대표가 모르는 사이에 그 자리가
+       늘고, 그것을 되돌리는 문은 없다.
+
+       Keep in sync with OWNER_LEVEL_ROLES in functions/shared/constants.mjs. */
+    function ownerLevel() {
+      return ["owner", "area_manager"];
+    }
+
+    /* 이 소속 문서를 건드려도 되는가.
+
+       대표는 전부. 총괄매니저는 **자기보다 아래만** -- 대표와 다른 총괄매니저의
+       소속은 건드리지 못한다 (위 1·2번).
+
+       역할 판정을 한 번만 부른다. 같은 문서를 여러 번 읽는 것이 요청당 접근
+       수를 올리지는 않지만(같은 경로는 한 번으로 센다), 조건이 길어질수록
+       어느 갈래가 통과했는지 읽기 어려워진다. */
+    function mayManageMembership(organizationId, target) {
+      return isActiveMember(organizationId)
+        && (
+          membership(organizationId).data.role == "owner"
+          || (
+            membership(organizationId).data.role == "area_manager"
+            && !(target.role in ownerLevel())
+          )
+        );
+    }
+
     /* ── 센터 데이터를 읽는 사람들 ────────────────────────────────────────
        isActiveMember 는 소속만 보고 역할을 보지 않는다. 그래서 role "member"
        라도 소속 문서 하나만 있으면 센터의 회원권·원장·상품을 전부 읽었다 --
@@ -40,7 +80,7 @@ service cloud.firestore {
 
        회원이 읽는 곳은 셋뿐이다: memberViews · memberLinks · 자기 clients 문서. */
     function isCentreStaff(organizationId) {
-      return hasRole(organizationId, ["owner", "manager", "instructor", "staff"]);
+      return hasRole(organizationId, ["owner", "area_manager", "manager", "instructor", "staff"]);
     }
 
     // ── 돈이 걸린 두 문 ───────────────────────────────────────────────────
@@ -54,15 +94,15 @@ service cloud.firestore {
     // 여전히 대표만이다. 다시 좁힐 때는 아래 두 목록과 canManageProducts 에서
     // "manager" 를 빼면 된다.
     function canIssuePass(organizationId) {
-      return hasRole(organizationId, ["owner", "manager"]);
+      return hasRole(organizationId, ["owner", "area_manager", "manager"]);
     }
 
     function canRegisterClient(organizationId) {
-      return hasRole(organizationId, ["owner", "manager"]);
+      return hasRole(organizationId, ["owner", "area_manager", "manager"]);
     }
 
     function canManageProducts(organizationId) {
-      return hasRole(organizationId, ["owner", "manager"]);
+      return hasRole(organizationId, ["owner", "area_manager", "manager"]);
     }
 
     // Keep in sync with PAY_CATEGORY in src/data/schema/constants.js. Rules
@@ -342,7 +382,7 @@ service cloud.firestore {
     match /organizations/{organizationId} {
       allow read: if isCentreStaff(organizationId);
       allow create, delete: if false;
-      allow update: if hasRole(organizationId, ["owner"])
+      allow update: if hasRole(organizationId, ownerLevel())
         && immutable(["plan", "subscriptionStatus", "aiUsageCount"]);
 
       // Additive dual-write v1 paths. Existing top-level paths remain unchanged.
@@ -372,7 +412,7 @@ service cloud.firestore {
         allow get: if isActiveMember(organizationId)
           && (
             (
-              hasRole(organizationId, ["owner", "manager", "instructor", "staff"])
+              hasRole(organizationId, ["owner", "area_manager", "manager", "instructor", "staff"])
               && (resource == null || resource.data.organizationId == organizationId)
             )
             || (
@@ -381,7 +421,7 @@ service cloud.firestore {
               && isOwnClientDocument(resource.data)
             )
           );
-        allow list: if hasRole(organizationId, ["owner", "manager", "instructor", "staff"]);
+        allow list: if hasRole(organizationId, ["owner", "area_manager", "manager", "instructor", "staff"]);
         // Validate what is present rather than requiring a fixed set. The
         // registration screen writes seven fields; the dual-write adapter
         // writes a wider legacy shape (clientId, membershipBalance,
@@ -428,7 +468,7 @@ service cloud.firestore {
              배열을 믿고 있기 때문이다. 값이 같으면 통과하므로(affectedKeys)
              문서를 통째로 다시 보내는 기기 동기화는 막히지 않는다. */
           && immutable(["previousPhones", "reviewDemo", "instructorIds"])
-          && hasRole(organizationId, ["owner", "manager", "instructor", "staff"]);
+          && hasRole(organizationId, ["owner", "area_manager", "manager", "instructor", "staff"]);
         allow delete: if false;
       }
 
@@ -464,10 +504,10 @@ service cloud.firestore {
           && resource.data.organizationId == organizationId;
         allow list: if isCentreStaff(organizationId);
         allow create: if request.resource.data.organizationId == organizationId
-          && hasRole(organizationId, ["owner", "manager", "instructor", "staff"]);
+          && hasRole(organizationId, ["owner", "area_manager", "manager", "instructor", "staff"]);
         allow update: if resource.data.organizationId == organizationId
           && request.resource.data.organizationId == organizationId
-          && hasRole(organizationId, ["owner", "manager", "instructor", "staff"]);
+          && hasRole(organizationId, ["owner", "area_manager", "manager", "instructor", "staff"]);
         allow delete: if false;
 
         match /participants/{clientId} {
@@ -478,11 +518,11 @@ service cloud.firestore {
           allow create: if request.resource.data.organizationId == organizationId
             && request.resource.data.lessonId == lessonId
             && request.resource.data.clientId == clientId
-            && hasRole(organizationId, ["owner", "manager", "instructor", "staff"]);
+            && hasRole(organizationId, ["owner", "area_manager", "manager", "instructor", "staff"]);
           allow update: if resource.data.organizationId == organizationId
             && request.resource.data.organizationId == organizationId
             && immutable(["lessonId", "clientId", "organizationId"])
-            && hasRole(organizationId, ["owner", "manager", "instructor", "staff"]);
+            && hasRole(organizationId, ["owner", "area_manager", "manager", "instructor", "staff"]);
           allow delete: if false;
         }
       }
@@ -616,11 +656,11 @@ service cloud.firestore {
           && (
             // 첫 수업.
             (
-              hasRole(organizationId, ["owner", "manager", "instructor"])
+              hasRole(organizationId, ["owner", "area_manager", "manager", "instructor"])
               && request.resource.data.sessions == 1
             )
             // 이관. 엑셀에서 옮겨 온 누적을 대표가 심는다.
-            || (hasRole(organizationId, ["owner"]) && request.resource.data.sessions >= 0)
+            || (hasRole(organizationId, ownerLevel()) && request.resource.data.sessions >= 0)
           );
         allow update: if resource.data.organizationId == organizationId
           && request.resource.data.organizationId == organizationId
@@ -628,10 +668,10 @@ service cloud.firestore {
           && request.resource.data.sessions is int
           && (
             (
-              hasRole(organizationId, ["owner", "manager", "instructor"])
+              hasRole(organizationId, ["owner", "area_manager", "manager", "instructor"])
               && request.resource.data.sessions == resource.data.sessions + 1
             )
-            || (hasRole(organizationId, ["owner"]) && request.resource.data.sessions >= 0)
+            || (hasRole(organizationId, ownerLevel()) && request.resource.data.sessions >= 0)
           );
         allow delete: if false;
       }
@@ -770,7 +810,7 @@ service cloud.firestore {
              나중에 제대로 넣을 때 여기에 문을 하나 더 내면 된다. */
           && immutable(["clientId", "clientIds"])
           && (
-            hasRole(organizationId, ["owner"])
+            hasRole(organizationId, ownerLevel())
             // 담당 교체. 넘겨받았다는 사실이 함께 남아야 급여 판정이 그것을 볼
             // 수 있다 -- 둘 중 하나만 바뀌면 단가가 조용히 틀린다.
             || (
@@ -805,7 +845,7 @@ service cloud.firestore {
             // travels in the same update and is checked the same way: up by one,
             // never further, never back down.
             || (
-              hasRole(organizationId, ["owner", "manager", "instructor"])
+              hasRole(organizationId, ["owner", "area_manager", "manager", "instructor"])
               && request.resource.data.diff(resource.data).affectedKeys()
                 .hasOnly(["remainingCount", "serviceUsed"])
               && request.resource.data.remainingCount is int
@@ -841,12 +881,31 @@ service cloud.firestore {
               "correctsEntryId", "reason",
               // 만료일 변경이 들고 가는 둘. 어디서 어디로 옮겼는가.
               "previousExpiresAt", "newExpiresAt",
+              /* 처리한 사람의 **역할**. createdBy 는 uid 만 들고 있어서, 반년
+                 뒤 그 줄을 보는 사람은 누른 사람이 그때 무엇이었는지 알 수
+                 없다 -- 소속 문서는 지금 상태만 들고 있고, 그 사이에 역할이
+                 바뀌거나 퇴사했을 수 있다.
+
+                 총괄매니저가 생기면서 그 질문이 실제로 생겼다: 잔여 조정과
+                 발급 취소를 대표가 했는지 총괄매니저가 했는지가 "총괄매니저
+                 처리 내역" 화면의 전부다.
+
+                 **없어도 된다.** 이 필드가 생기기 전 항목이 이미 쌓여 있고,
+                 옛 앱은 보내지 않는다. 다만 보낼 때는 거짓말을 못 한다
+                 (아래에서 소속 문서와 대조한다) -- 거짓 역할이 남으면 기록이
+                 없는 것보다 해롭다. auditLogs 의 actorRole 과 같은 판단이다. */
+              "actorRole",
               "occurredAt", "createdAt", "createdBy"
             ])
             && request.resource.data.keys().hasAll([
               "organizationId", "passId", "clientId", "locationId", "type", "delta",
               "occurredAt", "createdAt", "createdBy"
             ])
+            // 역할은 적어도 되고 안 적어도 되지만, 적으면 자기 역할이어야 한다.
+            && (
+              !("actorRole" in request.resource.data)
+              || request.resource.data.actorRole == membership(organizationId).data.role
+            )
             // The entry says whose lesson it was. The ledger is append-only, so a
             // wrong name here can never be corrected — it is checked against the
             // pass the entry hangs off rather than trusted from the caller.
@@ -891,7 +950,7 @@ service cloud.firestore {
             && (
               request.resource.data.type in ["correction", "cancel"]
                 ? (
-                  hasRole(organizationId, ["owner"])
+                  hasRole(organizationId, ownerLevel())
                   && request.resource.data.reason is string
                   && request.resource.data.reason.size() > 0
                   // Keep in sync with LEDGER_REASON_MAX in constants.js.
@@ -907,8 +966,8 @@ service cloud.firestore {
                   && request.resource.data.reason.size() <= 200
                   && (
                     request.resource.data.type == "adjust"
-                      ? hasRole(organizationId, ["owner"])
-                      : hasRole(organizationId, ["owner", "manager"])
+                      ? hasRole(organizationId, ownerLevel())
+                      : hasRole(organizationId, ["owner", "area_manager", "manager"])
                   )
                   && !("correctsEntryId" in request.resource.data)
                 )
@@ -955,7 +1014,7 @@ service cloud.firestore {
                   && !("lessonId" in request.resource.data)
                   // 담당 교체는 운영하는 사람의 판단이다. 강사가 자기 앞으로
                   // 회원권을 옮길 수 있으면 급여가 스스로 움직인다.
-                  && hasRole(organizationId, ["owner", "manager"])
+                  && hasRole(organizationId, ["owner", "area_manager", "manager"])
                 )
               : request.resource.data.type == "handover"
                 ? (
@@ -994,7 +1053,7 @@ service cloud.firestore {
                   && !("unitPrice" in request.resource.data)
                   && !("lessonId" in request.resource.data)
                   && !("correctsEntryId" in request.resource.data)
-                  && hasRole(organizationId, ["owner"])
+                  && hasRole(organizationId, ownerLevel())
                 )
               : request.resource.data.type == "cancel"
                 ? (
@@ -1082,7 +1141,7 @@ service cloud.firestore {
                       )
                       : request.resource.data.delta < 0 && "lessonId" in request.resource.data
                   )
-                  && hasRole(organizationId, ["owner", "manager", "instructor"])
+                  && hasRole(organizationId, ["owner", "area_manager", "manager", "instructor"])
                 )
             );
           allow update, delete: if false;
@@ -1108,18 +1167,18 @@ service cloud.firestore {
         allow get: if isActiveMember(organizationId)
           && (
             resource == null
-              ? hasRole(organizationId, ["owner", "manager", "instructor"])
+              ? hasRole(organizationId, ["owner", "area_manager", "manager", "instructor"])
               : (
                 resource.data.organizationId == organizationId
                 && (
-                  hasRole(organizationId, ["owner", "manager", "instructor"])
+                  hasRole(organizationId, ["owner", "area_manager", "manager", "instructor"])
                   || resource.data.userId == request.auth.uid
                 )
               )
           );
-        allow list: if hasRole(organizationId, ["owner", "manager", "instructor"]);
+        allow list: if hasRole(organizationId, ["owner", "area_manager", "manager", "instructor"]);
         allow create: if request.resource.data.organizationId == organizationId
-          && hasRole(organizationId, ["owner", "manager", "instructor"]);
+          && hasRole(organizationId, ["owner", "area_manager", "manager", "instructor"]);
         allow update: if resource.data.organizationId == organizationId
           && request.resource.data.organizationId == organizationId
           && request.auth.uid == resource.data.createdBy
@@ -1140,7 +1199,7 @@ service cloud.firestore {
          만들기만 한다. 고칠 수도 지울 수도 없다 -- 되돌릴 사본이 덮어써지면
          그것은 사본이 아니다. expireAt 에 TTL 을 걸어 90일 뒤에 사라진다. */
       match /scopeSnapshots/{snapshotId} {
-        allow get, list: if hasRole(organizationId, ["owner"]);
+        allow get, list: if hasRole(organizationId, ownerLevel());
         allow create: if isCentreStaff(organizationId)
           && request.resource.data.organizationId == organizationId
           // 남의 이름으로 남기지 못한다. 누가 무엇을 지웠는지가 이 문서의 요점이다.
@@ -1170,10 +1229,10 @@ service cloud.firestore {
           && resource.data.organizationId == organizationId;
         allow list: if isCentreStaff(organizationId);
         allow create: if request.resource.data.organizationId == organizationId
-          && hasRole(organizationId, ["owner", "manager"]);
+          && hasRole(organizationId, ["owner", "area_manager", "manager"]);
         allow update: if resource.data.organizationId == organizationId
           && request.resource.data.organizationId == organizationId
-          && hasRole(organizationId, ["owner", "manager"]);
+          && hasRole(organizationId, ["owner", "area_manager", "manager"]);
         allow delete: if false;
       }
     }
@@ -1184,6 +1243,18 @@ service cloud.firestore {
     // see the list note near the top of this file.
     function membershipOrganizationId(membershipDocumentId) {
       return get(/databases/$(database)/documents/memberships/$(membershipDocumentId)).data.organizationId;
+    }
+
+    /* 그 소속 문서의 주인을 건드려도 되는가. 위 mayManageMembership 과 같은
+       판정이고, 대상을 경로에서 읽어 온다는 것만 다르다 -- 총괄매니저는 대표와
+       다른 총괄매니저의 단가 이력에 손대지 못한다.
+
+       같은 문서를 두 번 읽지만 요청당 접근 수는 한 번으로 센다 (같은 경로). */
+    function mayManageMembershipDocument(membershipDocumentId) {
+      return mayManageMembership(
+        membershipOrganizationId(membershipDocumentId),
+        get(/databases/$(database)/documents/memberships/$(membershipDocumentId)).data
+      );
     }
 
     // A collection-group query does not reach the nested rule above it, so the
@@ -1200,7 +1271,7 @@ service cloud.firestore {
       allow read: if isActiveMember(resource.data.organizationId)
         && (
           resource.data.instructorId == request.auth.uid
-          || hasRole(resource.data.organizationId, ["owner", "manager"])
+          || hasRole(resource.data.organizationId, ["owner", "area_manager", "manager"])
         );
     }
 
@@ -1224,7 +1295,7 @@ service cloud.firestore {
     match /memberships/{membershipDocumentId} {
       allow read: if signedIn() && (
         resource.data.userId == request.auth.uid
-        || hasRole(resource.data.organizationId, ["owner", "manager"])
+        || hasRole(resource.data.organizationId, ["owner", "area_manager", "manager"])
       );
       /* ── 강사를 붙이는 문 ────────────────────────────────────────────────
          지금까지 소속 문서는 콘솔이나 이관 도구(Admin SDK)로만 생겼다. 대표가
@@ -1243,7 +1314,15 @@ service cloud.firestore {
          정해지는 길이 하나 생긴다. 추가 화면은 소속을 먼저 만들고 단가를 그
          다음에 넣는다.
          ────────────────────────────────────────────────────────────────── */
-      allow create: if hasRole(request.resource.data.organizationId, ["owner"])
+      /* 총괄매니저도 강사를 붙인다. 단, **자기와 같은 자리는 세우지 못한다** --
+         role 목록을 아래에서 가른다 (대표: area_manager 까지, 총괄매니저:
+         그 아래만). 열어 두면 대표가 모르는 사이에 그 자리가 늘고, 되돌리는
+         문은 없다. */
+      allow create: if hasRole(request.resource.data.organizationId, ownerLevel())
+        && (
+          hasRole(request.resource.data.organizationId, ["owner"])
+          || !(request.resource.data.role in ownerLevel())
+        )
         // 문서 id 가 곧 조직-사용자 쌍이다. 규칙의 membershipId() 와 같은 형식이
         // 아니면 isActiveMember 가 영영 찾지 못하는 소속이 만들어진다.
         && membershipDocumentId == request.resource.data.organizationId + "_" + request.resource.data.userId
@@ -1259,8 +1338,10 @@ service cloud.firestore {
         && request.resource.data.userId is string
         && request.resource.data.userId.size() > 0
         && request.resource.data.userId != request.auth.uid
-        // Keep in sync with ROLES in src/data/schema/constants.js.
-        && request.resource.data.role in ["instructor", "manager", "staff"]
+        /* owner 는 여기 없다. 대표를 앱에서 세우지 않는다 (위 머리말).
+           area_manager 는 **대표만** 쓸 수 있다 -- 바로 위 갈래가 가른다.
+           Keep in sync with ROLES in functions/shared/constants.mjs. */
+        && request.resource.data.role in ["instructor", "manager", "staff", "area_manager"]
         && request.resource.data.status == "active"
         // 이름이 없으면 목록이 uid 로 되돌아간다. 대표가 보고 고를 수 있어야 한다.
         && request.resource.data.displayName is string
@@ -1293,12 +1374,12 @@ service cloud.firestore {
       // Nothing else about a membership — role, status, organization — travels
       // through either door.
       allow update: if (
-          hasRole(resource.data.organizationId, ["owner"])
+          mayManageMembership(resource.data.organizationId, resource.data)
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["fullRoomRate"])
           && request.resource.data.fullRoomRate is int
           && request.resource.data.fullRoomRate >= 0
         ) || (
-          hasRole(resource.data.organizationId, ["owner"])
+          mayManageMembership(resource.data.organizationId, resource.data)
           && resource.data.userId != request.auth.uid
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["isDeputyDirector"])
           && request.resource.data.isDeputyDirector is bool
@@ -1341,7 +1422,7 @@ service cloud.firestore {
              이름을 대표도 쓸 수 있는 것은 위 본인 문과 겹치지만 부딪치지
              않는다: 강사가 앱을 한 번도 안 열었으면 이름을 채울 사람이 대표뿐이고,
              열었으면 본인이 쓴 이름이 그대로 남는다. */
-          hasRole(resource.data.organizationId, ["owner"])
+          mayManageMembership(resource.data.organizationId, resource.data)
           && request.resource.data.diff(resource.data).affectedKeys()
             .hasOnly(["displayName", "title", "locationId"])
           && request.resource.data.displayName is string
@@ -1358,10 +1439,33 @@ service cloud.firestore {
 
              회수해도 그 사람이 남긴 원장과 급여는 그대로다. 원장은 append-only
              이고 각 항목이 그때의 instructorId 를 들고 있다. */
-          hasRole(resource.data.organizationId, ["owner"])
+          mayManageMembership(resource.data.organizationId, resource.data)
           && resource.data.userId != request.auth.uid
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["status"])
           && request.resource.data.status in ["active", "revoked"]
+        ) || (
+          /* ── 총괄매니저 지정·해제 ──────────────────────────────────────
+             **대표만이다.** 총괄매니저는 대표와 같은 권한이라, 총괄매니저가
+             총괄매니저를 세울 수 있으면 대표가 모르는 사이에 그 자리가 늘고
+             되돌리는 문은 없다.
+
+             오가는 것은 area_manager 와 그 아래 사이뿐이다. owner 는 양쪽
+             어디에도 없다 -- 대표를 앱에서 세우거나 내리지 않는다 (create
+             머리말과 같은 선이다).
+
+             기본 지점(locationId)이 같은 문으로 온다. 지정 화면이 역할과
+             기본 지점을 한 번에 저장하는데, 둘을 따로 쓰면 하나가 실패했을
+             때 역할만 바뀌고 지점이 비는 상태가 남는다. */
+          hasRole(resource.data.organizationId, ["owner"])
+          && resource.data.userId != request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["role", "locationId"])
+          && (
+            (request.resource.data.role == "area_manager"
+              && resource.data.role in ["instructor", "manager"])
+            || (resource.data.role == "area_manager"
+              && request.resource.data.role in ["instructor", "manager"])
+          )
+          && membershipProfileWellFormed()
         );
 
       // Append-only. The rate changes when an instructor passes a grading, and
@@ -1378,8 +1482,8 @@ service cloud.firestore {
       //
       // An entry carries one pair or the other, never both and never neither.
       match /rateHistory/{entryId} {
-        allow read: if hasRole(membershipOrganizationId(membershipDocumentId), ["owner"]);
-        allow create: if hasRole(membershipOrganizationId(membershipDocumentId), ["owner"])
+        allow read: if mayManageMembershipDocument(membershipDocumentId);
+        allow create: if mayManageMembershipDocument(membershipDocumentId)
           && request.resource.data.organizationId == membershipOrganizationId(membershipDocumentId)
           && request.resource.data.keys().hasOnly([
             "organizationId", "userId", "previousRate", "newRate",
@@ -1433,20 +1537,20 @@ service cloud.firestore {
     match /assessments/{assessmentId} {
       allow read: if isActiveMember(resource.data.organizationId)
         && (
-          hasRole(resource.data.organizationId, ["owner", "manager", "instructor"])
+          hasRole(resource.data.organizationId, ["owner", "area_manager", "manager", "instructor"])
           || resource.data.userId == request.auth.uid
         );
-      allow create: if hasRole(request.resource.data.organizationId, ["owner", "manager", "instructor"]);
+      allow create: if hasRole(request.resource.data.organizationId, ["owner", "area_manager", "manager", "instructor"]);
       allow update: if sameOrganization()
         && immutable(["clientId", "createdBy", "createdAt"])
-        && hasRole(resource.data.organizationId, ["owner", "manager", "instructor"]);
+        && hasRole(resource.data.organizationId, ["owner", "area_manager", "manager", "instructor"]);
       allow delete: if false;
     }
 
     match /assessmentMedia/{mediaId} {
       allow read: if isActiveMember(resource.data.organizationId)
         && (
-          hasRole(resource.data.organizationId, ["owner", "manager", "instructor"])
+          hasRole(resource.data.organizationId, ["owner", "area_manager", "manager", "instructor"])
           || resource.data.userId == request.auth.uid
         );
       allow create, update, delete: if false;
@@ -1455,71 +1559,71 @@ service cloud.firestore {
     match /inbodyMeasurements/{measurementId} {
       allow read: if isActiveMember(resource.data.organizationId)
         && (
-          hasRole(resource.data.organizationId, ["owner", "manager", "instructor"])
+          hasRole(resource.data.organizationId, ["owner", "area_manager", "manager", "instructor"])
           || resource.data.userId == request.auth.uid
         );
-      allow create: if hasRole(request.resource.data.organizationId, ["owner", "manager", "instructor"]);
+      allow create: if hasRole(request.resource.data.organizationId, ["owner", "area_manager", "manager", "instructor"]);
       allow update, delete: if false;
     }
 
     match /exercisePrograms/{programId} {
       allow read: if isActiveMember(resource.data.organizationId)
         && (
-          hasRole(resource.data.organizationId, ["owner", "manager", "instructor"])
+          hasRole(resource.data.organizationId, ["owner", "area_manager", "manager", "instructor"])
           || resource.data.userId == request.auth.uid
         );
-      allow create: if hasRole(request.resource.data.organizationId, ["owner", "manager", "instructor"]);
+      allow create: if hasRole(request.resource.data.organizationId, ["owner", "area_manager", "manager", "instructor"]);
       allow update: if sameOrganization()
         && immutable(["sourceRecommendationId", "createdBy", "createdAt"])
-        && hasRole(resource.data.organizationId, ["owner", "manager", "instructor"]);
+        && hasRole(resource.data.organizationId, ["owner", "area_manager", "manager", "instructor"]);
       allow delete: if false;
     }
 
     match /exerciseHistory/{historyId} {
       allow read: if isActiveMember(resource.data.organizationId)
         && (
-          hasRole(resource.data.organizationId, ["owner", "manager", "instructor"])
+          hasRole(resource.data.organizationId, ["owner", "area_manager", "manager", "instructor"])
           || resource.data.userId == request.auth.uid
         );
-      allow create: if hasRole(request.resource.data.organizationId, ["owner", "manager", "instructor"]);
+      allow create: if hasRole(request.resource.data.organizationId, ["owner", "area_manager", "manager", "instructor"]);
       allow update, delete: if false;
     }
 
     match /aiRecommendations/{recommendationId} {
       allow read: if isActiveMember(resource.data.organizationId)
         && (
-          hasRole(resource.data.organizationId, ["owner", "manager", "instructor"])
+          hasRole(resource.data.organizationId, ["owner", "area_manager", "manager", "instructor"])
           || resource.data.userId == request.auth.uid
         );
       allow create, update, delete: if false;
     }
 
     match /aiFeedback/{feedbackId} {
-      allow read: if hasRole(resource.data.organizationId, ["owner", "manager", "instructor"]);
-      allow create: if hasRole(request.resource.data.organizationId, ["owner", "manager", "instructor"])
+      allow read: if hasRole(resource.data.organizationId, ["owner", "area_manager", "manager", "instructor"]);
+      allow create: if hasRole(request.resource.data.organizationId, ["owner", "area_manager", "manager", "instructor"])
         && request.resource.data.createdBy == request.auth.uid;
       allow update, delete: if false;
     }
 
     match /outcomes/{outcomeId} {
-      allow read: if hasRole(resource.data.organizationId, ["owner", "manager", "instructor"]);
+      allow read: if hasRole(resource.data.organizationId, ["owner", "area_manager", "manager", "instructor"]);
       allow create, update, delete: if false;
     }
 
     match /memberGoals/{goalId} {
       allow read: if isActiveMember(resource.data.organizationId)
         && (
-          hasRole(resource.data.organizationId, ["owner", "manager", "instructor"])
+          hasRole(resource.data.organizationId, ["owner", "area_manager", "manager", "instructor"])
           || resource.data.userId == request.auth.uid
         );
-      allow create: if hasRole(request.resource.data.organizationId, ["owner", "manager", "instructor"]);
+      allow create: if hasRole(request.resource.data.organizationId, ["owner", "area_manager", "manager", "instructor"]);
       allow update, delete: if false;
     }
 
     match /memberProgress/{progressId} {
       allow read: if isActiveMember(resource.data.organizationId)
         && (
-          hasRole(resource.data.organizationId, ["owner", "manager", "instructor"])
+          hasRole(resource.data.organizationId, ["owner", "area_manager", "manager", "instructor"])
           || resource.data.userId == request.auth.uid
         );
       allow create, update, delete: if false;
@@ -1542,7 +1646,10 @@ service cloud.firestore {
         "deputy_director_set", "full_room_rate_set", "migration_uploaded",
         // 강사 관리. 누가 센터에 붙고, 무엇으로 불리고, 언제 나갔는가. 소속
         // 문서는 현재 상태만 들고 있어 그 이력을 답할 수 없다.
-        "member_added", "member_profile_changed", "member_revoked"
+        "member_added", "member_profile_changed", "member_revoked",
+        /* 총괄매니저 지정·해제. 아래 mayRecordAudit 이 이것만 대표로 좁힌다 --
+           총괄매니저가 자기 자리를 세운 기록을 지어내지 못하게. */
+        "area_manager_set"
       ];
     }
 
@@ -1551,7 +1658,13 @@ service cloud.firestore {
     // 없어야 한다. 지금은 셋 다 대표의 조작이라 셋 다 대표뿐이고, 발급·차감이
     // 나중에 이 목록에 들어온다면 그때는 매니저·강사가 함께 열려야 한다.
     function mayRecordAudit(organizationId, action) {
-      return action in auditActions() && hasRole(organizationId, ["owner"]);
+      return action in auditActions()
+        && (
+          action == "area_manager_set"
+            // 그 조작 자체가 대표만이므로 기록도 대표만이다.
+            ? hasRole(organizationId, ["owner"])
+            : hasRole(organizationId, ownerLevel())
+        );
     }
 
     match /auditLogs/{logId} {
@@ -1560,7 +1673,7 @@ service cloud.firestore {
       // 이 절이 resource.data.organizationId 를 보기 때문에, 조직을 좁히지 않은
       // list 는 평가할 것이 없어 거부된다. 그것이 class B 의 강제 장치다 --
       // 이 파일 머리말 참고.
-      allow read: if hasRole(resource.data.organizationId, ["owner"]);
+      allow read: if hasRole(resource.data.organizationId, ownerLevel());
 
       // Append-only. 고칠 수 없다는 것이 이 컬렉션의 값어치 전부다.
       allow create: if mayRecordAudit(request.resource.data.organizationId, request.resource.data.action)
@@ -1604,12 +1717,12 @@ service cloud.firestore {
     }
 
     match /dailyStats/{statId} {
-      allow read: if hasRole(resource.data.organizationId, ["owner", "manager", "instructor", "staff"]);
+      allow read: if hasRole(resource.data.organizationId, ["owner", "area_manager", "manager", "instructor", "staff"]);
       allow create, update, delete: if false;
     }
 
     match /teacherPatterns/{patternId} {
-      allow read: if hasRole(resource.data.organizationId, ["owner", "manager", "instructor"]);
+      allow read: if hasRole(resource.data.organizationId, ["owner", "area_manager", "manager", "instructor"]);
       allow create, update, delete: if false;
     }
 

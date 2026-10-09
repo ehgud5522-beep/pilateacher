@@ -71,7 +71,9 @@ async function planAccountSwap(firestore, input) {
   const from = fromDoc.exists ? { ...fromDoc.data(), userId: fromUid } : null;
   const to = toDoc.exists ? { ...toDoc.data(), userId: toUid } : null;
 
-  const refused = swapError({ from, to });
+  /* 누가 누르는가에 따라 막히는 것이 다르다. 총괄매니저는 자기와 같은 자리를
+     건드리지 못한다 (shared/instructor-swap.mjs 의 ACTOR_BELOW_TARGET). */
+  const refused = swapError({ from, to, actorRole: text(input?.actorRole) || "owner" });
   if (refused) throw new Error(refused);
 
   const [passes, clients, totals, lessons] = await Promise.all([

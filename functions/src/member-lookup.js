@@ -77,7 +77,7 @@ function createMemberLookupService(dependencies) {
     isNotFoundError = (error) => String(error?.code || "") === "auth/user-not-found",
   } = dependencies || {};
 
-  /** 이 사람이 이 센터의 대표인가. 규칙의 hasRole(["owner"]) 과 같은 판정이다. */
+  /** 이 사람이 이 센터에서 대표와 같은 자리인가. 규칙의 hasRole(ownerLevel()) 과 같다. */
   async function requireOwner(organizationId, callerUid) {
     let membership = null;
     try {
@@ -85,7 +85,8 @@ function createMemberLookupService(dependencies) {
     } catch (error) {
       throw new MemberLookupError("lookup_unavailable", { stage: STAGES.VERIFY_OWNER, cause: error });
     }
-    if (!membership || membership.status !== "active" || membership.role !== "owner") {
+    if (!membership || membership.status !== "active"
+      || !(membership.role === "owner" || membership.role === "area_manager")) {
       throw new MemberLookupError("not_owner", { stage: STAGES.VERIFY_OWNER });
     }
     return membership;

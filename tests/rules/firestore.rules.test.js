@@ -72,6 +72,9 @@ const PAY_CATEGORIES = [
 ];
 const users = {
   owner: "owner-a",
+  /* 총괄매니저. 키가 곧 role 값이라 seed 가 그대로 쓴다 -- 다른 이름을 쓰면
+     소속 문서의 role 과 어긋나 규칙이 영영 못 찾는 소속이 하나 생긴다. */
+  area_manager: "area-manager-a",
   manager: "manager-a",
   instructor: "instructor-a",
   staff: "staff-a",
@@ -1900,7 +1903,7 @@ describe("protected and append-only data", () => {
   });
 
   test("fixture sanity check has all role identities", () => {
-    assert.equal(Object.keys(users).length, 6);
+    assert.equal(Object.keys(users).length, 7);
   });
 
   /* 앱이 소속을 읽을 때 실제로 하는 연산은 list 쿼리 하나뿐이다
@@ -3859,5 +3862,295 @@ describe("what the member app may read", () => {
     /* 좁히면서 이 문까지 닫으면 안 된다. clients get 의 본인 분기는 그대로
        열려 있어야 한다 -- 규칙 함수 isOwnClientDocument 가 기다리는 자리다. */
     return assertSucceeds(getDoc(doc(dbFor(users.member), "organizations", ORG_A, "clients", "client-member")));
+  });
+});
+
+/* ── 총괄매니저 ────────────────────────────────────────────────────────────
+   2026-10-10 결정: **지점 경계 없이 대표와 같은 권한.**
+
+   그래서 이 블록이 지키는 것은 "무엇을 할 수 있나" 가 아니라 **무엇을 못 하나**
+   다. 할 수 있는 쪽은 대표와 같은 조건을 지나므로 이미 다른 블록이 고정하고
+   있고, 여기서는 대표와 같아졌다는 사실만 한 번 확인한다.
+
+   못 하는 넷은 공통점 하나로 묶인다 -- **자기 자리를 자기가 넓히는 길**이거나
+   되돌릴 수 없다. 하나라도 열리면 대표가 모르는 사이에 그 자리가 늘고, 그것을
+   되돌리는 문은 아무 데도 없다. */
+describe("the area manager stands where the owner stands, minus four doors", () => {
+  beforeEach(seedAll);
+
+  const asArea = () => dbFor(users.area_manager);
+  const membershipRef = (userId, documentId) => doc(dbFor(userId), "memberships", documentId);
+  /* 잔여 조정 항목. 단가·카테고리·수업 id 는 싣지 않는다 -- 수업이 아니므로
+     급여에 잡히면 안 되고, 규칙이 그것을 거부한다. */
+  const adjustFixture = (overrides = {}) => ({
+    organizationId: ORG_A, passId: PASS_A, clientId: "client-member", locationId: "location-a",
+    type: "adjust", delta: 2, reason: "엑셀 이관에서 두 회차가 빠졌습니다",
+    occurredAt: hoursAgo(1), createdAt: serverTimestamp(), ...overrides,
+  });
+
+  /* ── 대표와 같아진 자리 ────────────────────────────────────────────── */
+
+  test("the centre opens to them at all — this is the one that breaks everything", async () => {
+    /* isCentreStaff 에 빠뜨리면 로그인은 되는데 **회원도 회원권도 한 건도
+       안 온다.** 역할을 더할 때 제일 먼저 틀리는 자리이고, 화면에는 "권한
+       없음" 이 아니라 빈 목록으로 도착한다. */
+    await assertSucceeds(getDocs(collection(asArea(), "organizations", ORG_A, "clients")));
+    await assertSucceeds(getDocs(collection(asArea(), "organizations", ORG_A, "passes")));
+    await assertSucceeds(getDoc(doc(asArea(), "organizations", ORG_A)));
+    await assertSucceeds(getDocs(collection(asArea(), "organizations", ORG_A, "locations")));
+    await assertSucceeds(getDocs(collection(asArea(), "organizations", ORG_A, "products")));
+  });
+
+  test("they read the centre-wide ledger the payroll screen reads", async () => {
+    // 급여 집계가 이 질의 하나다. 막히면 화면이 통째로 빈다.
+    await assertSucceeds(getDocs(query(
+      collectionGroup(asArea(), "ledger"),
+      where("organizationId", "==", ORG_A),
+    )));
+  });
+
+  test("they read the audit log, which was the owner's alone", async () => {
+    await assertSucceeds(getDocs(query(
+      collection(asArea(), "auditLogs"),
+      where("organizationId", "==", ORG_A),
+    )));
+  });
+
+  test("they issue a pass and register a member", async () => {
+    await assertSucceeds(setDoc(
+      doc(asArea(), "organizations", ORG_A, "passes", "pass-by-area"),
+      passFixture(ORG_A, "pass-by-area", { createdBy: users.area_manager }),
+    ));
+    await assertSucceeds(setDoc(doc(asArea(), "organizations", ORG_A, "clients", "client-by-area"), {
+      organizationId: ORG_A,
+      name: "정세인",
+      phone: "01044445555",
+      locationId: "location-a",
+      status: "active",
+      createdAt: serverTimestamp(),
+      createdBy: users.area_manager,
+    }));
+  });
+
+  test("they adjust a remaining count, which only the owner could", async () => {
+    await assertSucceeds(setDoc(
+      doc(asArea(), "organizations", ORG_A, "passes", PASS_A, "ledger", "entry-adjust-area"),
+      adjustFixture({ createdBy: users.area_manager }),
+    ));
+  });
+
+  test("they set an instructor's full-room rate, with its history entry", async () => {
+    await assertSucceeds(updateDoc(
+      membershipRef(users.area_manager, `${ORG_A}_${users.instructor}`),
+      { fullRoomRate: 50000 },
+    ));
+    await assertSucceeds(setDoc(
+      doc(asArea(), "memberships", `${ORG_A}_${users.instructor}`, "rateHistory", "rate-by-area"),
+      {
+        organizationId: ORG_A,
+        userId: users.instructor,
+        previousRate: null,
+        newRate: 50000,
+        effectiveFrom: serverTimestamp(),
+        changedBy: users.area_manager,
+        createdAt: serverTimestamp(),
+      },
+    ));
+  });
+
+  test("they attach an instructor and revoke one", async () => {
+    await assertSucceeds(setDoc(membershipRef(users.area_manager, `${ORG_A}_uid-hired-by-area`), {
+      organizationId: ORG_A,
+      userId: "uid-hired-by-area",
+      role: "instructor",
+      status: "active",
+      displayName: "박서연",
+      createdAt: serverTimestamp(),
+      createdBy: users.area_manager,
+    }));
+    await assertSucceeds(updateDoc(
+      membershipRef(users.area_manager, `${ORG_A}_${users.instructor}`),
+      { status: "revoked" },
+    ));
+  });
+
+  test("a ledger entry may carry the role that pressed the button", async () => {
+    /* createdBy 는 uid 뿐이라, 반년 뒤 그 줄을 보는 사람은 누른 사람이 그때
+       무엇이었는지 알 수 없다 -- 소속 문서는 지금 상태만 들고 있다. */
+    await assertSucceeds(setDoc(
+      doc(asArea(), "organizations", ORG_A, "passes", PASS_A, "ledger", "entry-adjust-role"),
+      adjustFixture({ createdBy: users.area_manager, actorRole: "area_manager" }),
+    ));
+  });
+
+  test("a ledger entry cannot claim a role its writer does not have", async () => {
+    // 거짓 역할이 남으면 기록이 없는 것보다 해롭다. auditLogs 와 같은 판단이다.
+    await assertFails(setDoc(
+      doc(asArea(), "organizations", ORG_A, "passes", PASS_A, "ledger", "entry-adjust-lying"),
+      adjustFixture({ createdBy: users.area_manager, actorRole: "owner" }),
+    ));
+  });
+
+  /* ── 닫혀 있는 넷 ──────────────────────────────────────────────────── */
+
+  test("they cannot appoint another area manager", async () => {
+    // 1번 문. 열리면 대표가 모르는 사이에 그 자리가 늘고, 되돌리는 문은 없다.
+    await assertFails(setDoc(membershipRef(users.area_manager, `${ORG_A}_uid-second-area`), {
+      organizationId: ORG_A,
+      userId: "uid-second-area",
+      role: "area_manager",
+      status: "active",
+      displayName: "정예진",
+      createdAt: serverTimestamp(),
+      createdBy: users.area_manager,
+    }));
+    // 이미 있는 강사를 올리는 길도 막힌다.
+    await assertFails(updateDoc(
+      membershipRef(users.area_manager, `${ORG_A}_${users.instructor}`),
+      { role: "area_manager" },
+    ));
+  });
+
+  test("they cannot strip another area manager, or themselves", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "memberships", `${ORG_A}_uid-other-area`), {
+        organizationId: ORG_A, userId: "uid-other-area", role: "area_manager",
+        status: "active", displayName: "최소연",
+      });
+    });
+    const other = `${ORG_A}_uid-other-area`;
+    await assertFails(updateDoc(membershipRef(users.area_manager, other), { role: "instructor" }));
+    await assertFails(updateDoc(membershipRef(users.area_manager, other), { status: "revoked" }));
+    await assertFails(updateDoc(membershipRef(users.area_manager, other), { fullRoomRate: 90000 }));
+    // 자기 자신도 아니다. 자기 자리를 자기가 움직이는 길은 어느 쪽으로도 없다.
+    await assertFails(updateDoc(
+      membershipRef(users.area_manager, `${ORG_A}_${users.area_manager}`),
+      { role: "instructor" },
+    ));
+  });
+
+  test("they cannot touch the owner's membership", async () => {
+    /* 2번 문. 대표의 단가·직함·퇴사 어느 것도 아니다 -- 대표를 내릴 수 있으면
+       센터에 대표가 없는 상태를 만들 수 있고, 그것을 되돌릴 문은 없다. */
+    const ownerDoc = `${ORG_A}_${users.owner}`;
+    await assertFails(updateDoc(membershipRef(users.area_manager, ownerDoc), { fullRoomRate: 90000 }));
+    await assertFails(updateDoc(membershipRef(users.area_manager, ownerDoc), { status: "revoked" }));
+    await assertFails(updateDoc(membershipRef(users.area_manager, ownerDoc), { title: "branch_manager" }));
+    await assertFails(updateDoc(membershipRef(users.area_manager, ownerDoc), { isDeputyDirector: true }));
+  });
+
+  test("they cannot read the owner's rate history", async () => {
+    await assertFails(getDocs(collection(
+      asArea(), "memberships", `${ORG_A}_${users.owner}`, "rateHistory",
+    )));
+  });
+
+  test("they cannot make anyone the owner", async () => {
+    /* 3번 문. 규칙이 앱에서 owner 를 세우지 못하게 이미 막아 두었고, 총괄매니저
+       에게 열면서 그 선이 뒤로 뚫리면 안 된다. 대표도 못 한다. */
+    for (const userId of [users.area_manager, users.owner]) {
+      await assertFails(setDoc(membershipRef(userId, `${ORG_A}_uid-new-owner-${userId}`), {
+        organizationId: ORG_A,
+        userId: `uid-new-owner-${userId}`,
+        role: "owner",
+        status: "active",
+        displayName: "새 대표",
+        createdAt: serverTimestamp(),
+        createdBy: userId,
+      }));
+    }
+  });
+
+  /* ── 대표만 할 수 있는 것은 대표가 할 수 있어야 한다 ───────────────── */
+
+  test("the owner appoints and releases an area manager, with a default location", async () => {
+    const target = `${ORG_A}_${users.instructor}`;
+    await assertSucceeds(updateDoc(membershipRef(users.owner, target), {
+      role: "area_manager", locationId: "location-a",
+    }));
+    await assertSucceeds(updateDoc(membershipRef(users.owner, target), { role: "instructor" }));
+  });
+
+  test("the role door moves only into and out of area manager", async () => {
+    /* 이 문으로 다른 역할 변경까지 열면, 규칙이 지금까지 받지 않던 승격이
+       조용히 하나 생긴다. */
+    const target = `${ORG_A}_${users.instructor}`;
+    await assertFails(updateDoc(membershipRef(users.owner, target), { role: "staff" }));
+    await assertFails(updateDoc(membershipRef(users.owner, target), { role: "owner" }));
+    // 역할 문으로 다른 칸을 끼워 넣지 못한다.
+    await assertFails(updateDoc(membershipRef(users.owner, target), {
+      role: "area_manager", fullRoomRate: 90000,
+    }));
+  });
+
+  test("the owner cannot change their own role through that door", async () => {
+    await assertFails(updateDoc(
+      membershipRef(users.owner, `${ORG_A}_${users.owner}`),
+      { role: "area_manager" },
+    ));
+  });
+
+  test("the owner creates an area manager directly", async () => {
+    await assertSucceeds(setDoc(membershipRef(users.owner, `${ORG_A}_uid-area-by-owner`), {
+      organizationId: ORG_A,
+      userId: "uid-area-by-owner",
+      role: "area_manager",
+      status: "active",
+      displayName: "정예진",
+      locationId: "location-a",
+      createdAt: serverTimestamp(),
+      createdBy: users.owner,
+    }));
+  });
+
+  /* ── 아래 역할은 올라오지 않는다 ───────────────────────────────────── */
+
+  test("an FC manager and an instructor gain nothing from this change", async () => {
+    /* FC매니저는 지시대로 지금 범위 그대로다. 역할을 하나 더하면서 옆줄이
+       함께 넓어지는 일이 제일 조용히 일어난다. */
+    for (const userId of [users.manager, users.instructor, users.staff]) {
+      await assertFails(getDocs(query(
+        collection(dbFor(userId), "auditLogs"),
+        where("organizationId", "==", ORG_A),
+      )), `${userId} 는 감사 로그를 못 읽는다`);
+      await assertFails(updateDoc(
+        membershipRef(userId, `${ORG_A}_${users.instructor}`),
+        { fullRoomRate: 70000 },
+      ), `${userId} 는 단가를 못 쓴다`);
+      await assertFails(setDoc(membershipRef(userId, `${ORG_A}_uid-hired-by-${userId}`), {
+        organizationId: ORG_A,
+        userId: `uid-hired-by-${userId}`,
+        role: "instructor",
+        status: "active",
+        displayName: "박서연",
+        createdAt: serverTimestamp(),
+        createdBy: userId,
+      }), `${userId} 는 강사를 못 붙인다`);
+    }
+  });
+
+  test("an area manager of another centre reaches nothing here", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "memberships", `${ORG_B}_uid-area-b`), {
+        organizationId: ORG_B, userId: "uid-area-b", role: "area_manager",
+        status: "active", displayName: "다른 센터",
+      });
+    });
+    const outside = dbFor("uid-area-b");
+    await assertFails(getDocs(collection(outside, "organizations", ORG_A, "clients")));
+    await assertFails(updateDoc(
+      doc(outside, "memberships", `${ORG_A}_${users.instructor}`),
+      { fullRoomRate: 70000 },
+    ));
+  });
+
+  test("a revoked area manager is nobody", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "memberships", `${ORG_A}_${users.area_manager}`), {
+        organizationId: ORG_A, userId: users.area_manager, role: "area_manager",
+        status: "revoked", displayName: "나간 총괄매니저",
+      });
+    });
+    await assertFails(getDocs(collection(asArea(), "organizations", ORG_A, "clients")));
   });
 });

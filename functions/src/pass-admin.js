@@ -62,8 +62,9 @@ async function shared() {
 const text = (value) => String(value ?? "").trim();
 const count = (value) => (Number.isInteger(Number(value)) && Number(value) >= 0 ? Number(value) : 0);
 
-/** 이 두 역할만 쓴다. 강사는 어느 쪽도 못 한다. */
-const PASS_ADMIN_ROLES = Object.freeze(["owner", "manager"]);
+/** 운영하는 역할만 쓴다. 강사는 어느 쪽도 못 한다.
+    총괄매니저는 대표와 같은 자리다 (규칙의 ownerLevel). */
+const PASS_ADMIN_ROLES = Object.freeze(["owner", "area_manager", "manager"]);
 
 /** 센터를 운영하는 사람인가. 퇴사한 사람은 역할이 남아 있어도 아니다. */
 const isPassAdmin = (membership) => Boolean(membership)

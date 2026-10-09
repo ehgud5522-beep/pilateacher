@@ -194,23 +194,40 @@ export function summarizeInstructorPay(entries) {
  * 한 강사의 한 달치 차감을 읽어 집계한다.
  *
  * @param {string} organizationId
- * @param {{ instructorId?: string, month?: string, store?: PayrollStore }} [options]
+ * @param {{
+ *   instructorId?: string, month?: string, store?: PayrollStore,
+ *   previousUids?: Array<string>,
+ * }} [options]
+ *   previousUids 계정을 바꾸기 전에 쓰던 uid 들. 그 달의 수업이 두 uid 에
+ *     걸쳐 있을 때 둘 다 읽는다 (functions/shared/instructor-swap.mjs).
  */
 export async function loadInstructorMonthlyPay(organizationId, options = {}) {
-  const { instructorId, month, store = createFirestorePayrollStore() } = options;
+  const {
+    instructorId, month, store = createFirestorePayrollStore(), previousUids = [],
+  } = options;
   const organization = requiredText(organizationId, "organizationId");
   const instructor = requiredText(instructorId, "instructorId");
   const { start, end } = monthRange(month);
+  /* 계정을 바꾼 강사는 그 달의 수업이 두 uid 에 걸쳐 있다. 원장은 append-only
+     라 옛 것을 옮길 수 없으므로 여기서 둘 다 읽는다 -- 안 그러면 바꾼 그날
+     이전의 수업료가 자기 화면에서 통째로 사라진다.
+
+     질의는 instructorId 하나만 걸 수 있어(규칙과 색인) uid 마다 한 번씩
+     간다. 바꾼 강사만 한 번 더 읽는다. */
+  const mineIds = [instructor, ...(Array.isArray(previousUids) ? previousUids : [])]
+    .map((value) => String(value || "").trim())
+    .filter((value, index, list) => value && list.indexOf(value) === index);
   // 조회 실패는 빈 목록이 아니라 RepositoryReadError 로 나간다 -- repository-read.js 참고.
-  const found = await readCollection({
+  const batches = await Promise.all(mineIds.map((uid) => readCollection({
     feature: "instructor_payroll",
     path: `${COLLECTIONS.LEDGER}?organizationId=${organization}&month=${month}`,
-    read: () => store.listDeductions({ organizationId: organization, instructorId: instructor, start, end }),
-  });
+    read: () => store.listDeductions({ organizationId: organization, instructorId: uid, start, end }),
+  })));
+  const found = batches.flat();
   /* 서버가 이미 걸러 주지만 한 번 더 본다. 인덱스나 쿼리를 잘못 고치면 남의
      항목이 조용히 섞여 들어오고, 급여 화면에서 그것을 알아차릴 방법이 없다. */
   const mine = found.filter((entry) => (
-    entry.instructorId === instructor
+    mineIds.includes(String(entry.instructorId || ""))
     && PAYROLL_ENTRY_TYPES.includes(entry.type)
     && entry.organizationId === organization
   ));
@@ -355,15 +372,26 @@ export function onlyNewInstructorRate(summary) {
   return counted.every((row) => row.rule === PRICING_RULE.NEW_TO_INSTRUCTOR);
 }
 
-export function summarizeOrganizationPay(entries) {
+/**
+ * @param {Array<any>} entries
+ * @param {{ canonicalInstructorId?: (id: unknown) => string }} [options]
+ *   canonicalInstructorId 계정을 바꾼 강사의 옛 uid 를 지금 uid 로 바꾼다
+ *     (functions/shared/instructor-swap.mjs). 없으면 그대로 센다.
+ */
+export function summarizeOrganizationPay(entries, options = {}) {
   const rows = (Array.isArray(entries) ? entries : []).filter(Boolean);
+  /* 계정을 바꾼 강사는 옛 uid 로 박힌 차감과 새 uid 의 차감이 둘로 흩어진다.
+     원장은 append-only 라 고쳐 쓸 수 없으므로 **세는 쪽이 합친다.** */
+  const canonical = typeof options.canonicalInstructorId === "function"
+    ? options.canonicalInstructorId
+    : (id) => String(id || "");
   const instructors = new Map();
   const locations = new Map();
   let total = 0;
   let sessions = 0;
 
   for (const entry of rows) {
-    const instructorId = String(entry.instructorId || "");
+    const instructorId = canonical(entry.instructorId);
     const locationId = String(entry.locationId || "");
     total += amountOf(entry);
     sessions += sessionsOf(entry);
@@ -406,10 +434,14 @@ export function summarizeOrganizationPay(entries) {
  * @param {{
  *   month?: string, store?: OrganizationPayrollStore,
  *   excludedClientIds?: Set<string> | null,
+ *   canonicalInstructorId?: ((id: unknown) => string) | null,
  * }} [options]
  */
 export async function loadOrganizationMonthlyPayroll(organizationId, options = {}) {
-  const { month, store = createFirestorePayrollStore(), excludedClientIds = null } = options;
+  const {
+    month, store = createFirestorePayrollStore(), excludedClientIds = null,
+    canonicalInstructorId = null,
+  } = options;
   const organization = requiredText(organizationId, "organizationId");
   const { start, end } = monthRange(month);
   // 조회 실패는 빈 목록이 아니라 RepositoryReadError 로 나간다 -- repository-read.js 참고.
@@ -432,7 +464,7 @@ export async function loadOrganizationMonthlyPayroll(organizationId, options = {
      없는 수업의 돈이 잡힌다 -- 원장에는 그 표시가 없으므로 명부에서 모아 온
      id 로 거른다 (features/members/review-demo.js). */
   const real = withoutReviewDemo(inMonth, excludedClientIds);
-  return { month: String(month), start, end, ...summarizeOrganizationPay(real) };
+  return { month: String(month), start, end, ...summarizeOrganizationPay(real, { canonicalInstructorId }) };
 }
 
 /**

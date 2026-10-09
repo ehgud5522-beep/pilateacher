@@ -28,6 +28,9 @@ test("an active membership decides the organization and the role", async () => {
     isDeputyDirector: false,
     // 급여 판정 1.5 가 읽는다. 없으면 빈 문자열이고 일반 강사 단가로 간다.
     title: "",
+    /* 계정을 바꾼 강사의 옛 uid. 내 급여가 이것으로 옛 원장을 함께 읽는다 --
+       원장은 append-only 라 옛 uid 를 고쳐 쓸 수 없다. */
+    previousUids: [],
     isLegacy: false,
   });
 });

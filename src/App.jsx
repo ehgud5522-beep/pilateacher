@@ -38,6 +38,7 @@ import {
   fbRebuildInstructorIds,
   fbFixMigratedServiceSessions,
   fbLoadAppUpdateConfig,
+  fbSwapInstructorAccount,
   fbUpdateRuntimeConfig,
   fbHandoverPass,
   fbSessionUpPass,
@@ -183,6 +184,9 @@ import {
 import {
   UPDATE_COPY, UPDATE_PROMPT, storeLinks, updatePrompt,
 } from "./features/app-update/update-gate.js";
+import {
+  MEMBERSHIP_SWAPPED, SWAP_ERROR_LABEL, canonicalInstructorIdFrom, instructorIdsOf, previousUidsOf,
+} from "../functions/shared/instructor-swap.mjs";
 import { previewLessonRates } from "./features/schedule/lesson-rate-preview.js";
 import {
   issueReportCsv, loadOrganizationMonthlyIssues,
@@ -16209,11 +16213,158 @@ function lookupMessage(error) {
   return `찾지 못했습니다 (코드 ${code || "unknown"}).`;
 }
 
+/**
+ * 같은 이름으로 이 센터를 떠난 사람. **추가하려는 그 사람일 수 있다.**
+ *
+ * 로그인 계정만 바꾸는 것을 "퇴사 + 추가" 로 하면 담당 회원도 누적 진행도
+ * 따라오지 않고, 그 달의 수업료가 두 uid 로 흩어진다 (2026-10 에 실제로
+ * 그랬다). 막지 않고 길을 알려 준다 -- 동명이인은 실제로 있다.
+ */
+function leftWithSameName(members, displayName) {
+  const wanted = String(displayName ?? "").trim();
+  if (!wanted) return [];
+  return (Array.isArray(members) ? members : []).filter((item) => (
+    String(item?.displayName ?? "").trim() === wanted
+    && String(item?.status ?? "") !== MEMBERSHIP_STATUS.ACTIVE
+  ));
+}
+
+/**
+ * 계정 교체 확인 화면. **누르기 전에 무엇이 옮겨지는지 숫자로 보여준다.**
+ *
+ * 누적 진행은 더하는 값이라 두 번 돌면 두 배가 되고 되돌릴 수 없다. 서버가
+ * 끝난 교체를 알아보고 멈추지만, 그것은 마지막 문이지 첫 문이 아니다.
+ */
+function InstructorSwapSheet({ swap, members, onChange, onRun, onClose, onDone }) {
+  const from = swap.from || {};
+  /* 받을 수 있는 계정만 고르게 둔다 -- 재직 중이고, 자기 자신이 아니고, 대표가
+     아니고, 이미 남을 넘겨받지 않은 계정. 고를 수 없는 것을 고르게 두지 않는다. */
+  const candidates = (Array.isArray(members) ? members : []).filter((item) => (
+    String(item?.status || "") === MEMBERSHIP_STATUS.ACTIVE
+    && String(item?.userId || "") !== String(from.userId || "")
+    && String(item?.role || "") !== ROLES.OWNER
+    && previousUidsOf(item).length === 0
+  ));
+  const counts = swap.plan?.counts;
+
+  const preview = async () => {
+    if (!swap.toUid || swap.busy) return;
+    onChange({ ...swap, busy: true, error: "" });
+    try {
+      const plan = await onRun(from.userId, swap.toUid, false);
+      onChange({ ...swap, busy: false, plan, error: "" });
+    } catch (error) {
+      onChange({ ...swap, busy: false, plan: null, error: swapFailure(error) });
+    }
+  };
+
+  const apply = async () => {
+    if (!swap.plan || swap.busy) return;
+    onChange({ ...swap, busy: true, error: "" });
+    try {
+      const result = await onRun(from.userId, swap.toUid, true);
+      await onDone(result?.applied === false
+        ? "이미 교체된 계정입니다. 바뀐 것은 없습니다."
+        : "계정을 교체했습니다. 급여는 두 계정을 한 사람으로 셉니다.");
+    } catch (error) {
+      onChange({ ...swap, busy: false, error: swapFailure(error) });
+    }
+  };
+
+  return (
+    <section data-instructor-swap style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>계정 교체</h2>
+      <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        <b>{from.displayName || from.userId}</b> 님이 쓰던 계정을 새 계정으로 넘깁니다.
+        퇴사가 아닙니다 — 같은 사람이고 로그인 계정만 바뀝니다.
+      </p>
+
+      <div className="mt-3">
+        <Field label="새 계정" hint="먼저 [강사 추가] 로 등록한 계정이어야 합니다">
+          <select value={swap.toUid} className={inputCls}
+            onChange={(event) => onChange({ ...swap, toUid: event.target.value, plan: null, error: "" })}>
+            <option value="">고르세요</option>
+            {candidates.map((item) => (
+              <option key={item.userId} value={item.userId}>{item.displayName || item.userId}</option>
+            ))}
+          </select>
+        </Field>
+      </div>
+
+      {candidates.length === 0 ? (
+        <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: WARN }}>
+          넘길 수 있는 계정이 없습니다. 새 이메일로 먼저 [강사 추가] 를 해 주세요.
+        </p>
+      ) : null}
+
+      <button type="button" disabled={!swap.toUid || swap.busy} onClick={preview}
+        className="mt-3 h-11 w-full font-bold disabled:opacity-50"
+        style={{ borderRadius: 10, backgroundColor: CANVAS, color: BRAND_D, fontSize: TYPE.caption }}>
+        {swap.busy && !swap.plan ? "세는 중…" : "무엇이 옮겨지는지 보기"}
+      </button>
+
+      {counts ? (
+        <div className="mt-3" style={{ padding: 12, borderRadius: 10, backgroundColor: CANVAS }}>
+          <p className="mb-1.5" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>이렇게 옮겨집니다</p>
+          {[
+            ["회원권 담당", `${counts.passes}장`],
+            ["담당 회원", `${counts.clients}명`],
+            ["누적 진행", `${counts.totals}명 · ${counts.totalSessions}회`],
+            ["앞으로의 일정", `${counts.futureLessons}건`],
+          ].map(([label, value]) => (
+            <div key={label} className="flex items-center gap-2 py-0.5">
+              <span className="min-w-0 flex-1" style={{ fontSize: TYPE.caption, color: SUB }}>{label}</span>
+              <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>{value}</span>
+            </div>
+          ))}
+          {/* 원장은 옮기지 않는다. 그 사실과, 그래도 합쳐 보인다는 것을 함께 말한다. */}
+          <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK2 }}>
+            지난 수업 기록(원장)은 옮기지 않습니다. 옛 계정에 그대로 남고, 급여는 두 계정을
+            한 사람으로 세어 보여줍니다
+            {swap.plan?.pay?.total === null || swap.plan?.pay?.total === undefined
+              ? ""
+              : ` — ${swap.plan.pay.month} 옛 계정 ${swap.plan.pay.sessions}건 · ₩${won(swap.plan.pay.total)}`}.
+          </p>
+          {swap.plan?.done ? (
+            <p className="mt-1.5" style={{ fontSize: TYPE.caption, fontWeight: 700, color: GOOD }}>
+              이미 교체가 끝난 계정입니다. 다시 눌러도 바뀌는 것이 없습니다.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {swap.error ? (
+        <p role="alert" className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: BAD }}>{swap.error}</p>
+      ) : null}
+
+      <div className="mt-3 flex gap-2">
+        <button type="button" onClick={onClose} className="h-11 flex-1 font-bold"
+          style={{ borderRadius: 10, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>취소</button>
+        <button type="button" disabled={!swap.plan || swap.busy} onClick={apply}
+          className="h-11 flex-1 font-bold disabled:opacity-50"
+          style={{ borderRadius: 10, backgroundColor: BRAND, color: "#fff", fontSize: TYPE.caption }}>
+          {swap.busy && swap.plan ? "옮기는 중…" : "교체 실행"}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+/** 교체가 막힌 이유. 코드 없는 "할 수 없습니다" 를 남기지 않는다. */
+function swapFailure(error) {
+  const detail = String(error?.message || "").replace(/^.*?:\s*/, "").trim();
+  if (SWAP_ERROR_LABEL[detail]) return `${SWAP_ERROR_LABEL[detail]} (코드 ${detail})`;
+  const code = String(error?.code || "unknown");
+  if (code.includes("permission-denied")) return `대표만 할 수 있습니다 (코드 ${code}).`;
+  return `옮기지 못했습니다 (코드 ${detail || code}).`;
+}
+
 function InstructorAdmin({
   organization, currentUserId, instructorStore, rateStore, locationStore,
   lookupByEmail = fbLookupCentreMemberByEmail,
-  onRetryOrganization, onToast, initialState = null,
+  onRetryOrganization, onToast, onSwap, initialState = null,
 }) {
+  const [swap, setSwap] = useState(initialState?.swap || null);
   const [members, setMembers] = useState(initialState?.members || []);
   const [locations, setLocations] = useState(initialState?.locations || []);
   const [loading, setLoading] = useState(!initialState);
@@ -16459,6 +16610,18 @@ function InstructorAdmin({
     </Field>
   );
 
+  /* 교체 화면이 편집 시트보다 먼저 선다 -- [계정 교체] 를 누르면 바로 여기다. */
+  if (swap) return (
+    <InstructorSwapSheet swap={swap} members={members} onChange={setSwap} onRun={onSwap}
+      onClose={() => setSwap(null)} onDone={async (message) => {
+        setSwap(null);
+        setEditing(null);
+        setMode("list");
+        onToast?.({ ok: true, msg: message });
+        await reload();
+      }} />
+  );
+
   if (mode === "add") return (
     <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
       <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>강사 추가</h2>
@@ -16500,6 +16663,19 @@ function InstructorAdmin({
             <input value={draft.displayName} className={inputCls} placeholder="예) 박서연"
               onChange={(e) => setDraft((current) => ({ ...current, displayName: e.target.value }))} />
           </Field>
+          {/* 같은 이름의 떠난 강사가 있다. **로그인 계정만 바꾸는 것이라면
+              추가가 아니라 교체다** -- 2026-10 에 그렇게 추가했다가 그 사람의
+              그 달 수업료가 두 uid 로 흩어졌다. 막지는 않는다: 동명이인은
+              실제로 있고, 둘을 가릴 수 있는 것은 대표뿐이다. */}
+          {leftWithSameName(members, draft.displayName).map((item) => (
+            <p key={item.userId} className="rounded-lg px-3 py-2" style={{
+              backgroundColor: WARN_S, fontSize: TYPE.caption, lineHeight: 1.5, color: INK,
+            }}>
+              같은 이름의 {labelOf(MEMBERSHIP_STATUS_LABELS, item.status)} 강사가 있습니다.
+              {" "}<b>로그인 계정만 바꾸는 것이라면</b> 추가하지 말고 목록에서 그 강사의
+              {" "}<b>[계정 교체]</b>를 쓰세요. 그래야 담당 회원·누적 진행·급여가 이어집니다.
+            </p>
+          ))}
           <Field label="권한">
             {/* FC매니저는 수업하지 않고 상담·계약을 받는다. 회원권 상품 · 발급 ·
                 회원 등록이 열리고, 강사 목록(담당 강사 · 급여)에는 나오지 않는다.
@@ -16612,6 +16788,23 @@ function InstructorAdmin({
                 color: active ? BAD : BRAND_D,
                 opacity: saving ? 0.6 : 1,
               }}>{active ? "퇴사 처리" : "복직 처리"}</button>
+          </div>
+        )}
+
+        {/* 계정 교체. **퇴사와 다른 일이다** -- 그 사람은 그대로 있고 로그인
+            계정만 바뀐다. 퇴사 처리 바로 아래 두는 이유: 2026-10 에 대표가
+            둘을 구분할 자리가 없어 퇴사 + 추가로 했고, 그 달의 수업료가 두
+            uid 로 흩어졌다. */}
+        {self || !onSwap ? null : (
+          <div className="mt-3" style={{ borderTop: `1px solid ${LINE}`, paddingTop: 12 }}>
+            <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+              이 강사가 <b>로그인 계정만 바꾸는 경우</b>입니다. 담당 회원·누적 진행·앞으로의 일정이
+              새 계정으로 따라가고, 급여는 두 계정을 한 사람으로 셉니다.
+            </p>
+            <button type="button" onClick={() => setSwap({ from: editing, toUid: "", plan: null, busy: false, error: "" })}
+              className="mt-2 h-11 w-full font-bold" style={{
+                borderRadius: 10, fontSize: TYPE.caption, backgroundColor: TINT, color: BRAND_D,
+              }}>계정 교체</button>
           </div>
         )}
       </section>
@@ -19075,7 +19268,15 @@ const shiftMonth = (month, by) => {
 };
 
 /** 강사 한 사람의 줄. 누르면 카테고리별 내역이 펼쳐진다. */
-function PayrollInstructorRow({ row, name, open, onToggle }) {
+/* 지금 이 센터에 없는 사람. 원장은 그 사람의 수업을 그대로 들고 있어서
+   줄은 서야 하는데, 이름만 두면 대표는 그 줄이 왜 있는지 묻게 된다.
+   월 중간 퇴사자의 수업료가 빠지면 안 되므로 거르지 않고 표시만 한다. */
+const PAYROLL_STATE_BADGE = {
+  revoked: { label: "퇴사", get color() { return WARN; }, get bg() { return WARN_S; } },
+  swapped: { label: "계정 교체됨", get color() { return SUB; }, get bg() { return CANVAS; } },
+};
+
+function PayrollInstructorRow({ row, name, badge, open, onToggle }) {
   return (
     <div style={{ borderTop: `1px solid ${LINE}` }}>
       <button type="button" onClick={onToggle} className="flex w-full items-center gap-2 text-left"
@@ -19086,6 +19287,10 @@ function PayrollInstructorRow({ row, name, open, onToggle }) {
         <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>
           {name}
         </span>
+        {badge ? (
+          <span className="shrink-0 rounded-full px-2 py-0.5 font-extrabold"
+            style={{ fontSize: TYPE.caption, backgroundColor: badge.bg, color: badge.color }}>{badge.label}</span>
+        ) : null}
         <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
           {row.sessions}건
         </span>
@@ -19710,14 +19915,21 @@ function PayrollSummary({
       /* 심사용 회원을 빼려면 명부가 필요하다 -- 원장 항목에는 그 표시가
          없다. 이 화면이 예전에는 명부를 읽지 않았고, 읽기 한 번이 느는 대신
          가짜 회차가 강사 급여에 섞이지 않는다. */
-      const payrollClients = await toleratingReadFailure(listClients(organizationId, { store: clientStore }));
-      const [found, instructorResult, locationResult] = await Promise.all([
-        loadOrganizationMonthlyPayroll(organizationId, {
-          month, store: payrollStore, excludedClientIds: reviewDemoClientIds(payrollClients.items),
-        }),
+      const [payrollClients, instructorResult, locationResult] = await Promise.all([
+        toleratingReadFailure(listClients(organizationId, { store: clientStore })),
         toleratingReadFailure(listMemberships(organizationId, { store: instructorStore })),
         toleratingReadFailure(listLocations(organizationId, { store: locationStore })),
       ]);
+      /* 집계보다 명부를 먼저 읽는다. 계정을 바꾼 강사를 한 사람으로 합치려면
+         previousUids 가 있어야 하고, 그것은 소속 문서에만 있다 -- 나중에
+         합치려면 이미 묶인 줄을 다시 풀어야 한다.
+
+         명부를 못 읽어도 집계는 선다. 그때는 합쳐지지 않은 채로 두 줄이
+         서고, 화면이 이름 대신 uid 를 보여주므로 그 사실이 드러난다. */
+      const found = await loadOrganizationMonthlyPayroll(organizationId, {
+        month, store: payrollStore, excludedClientIds: reviewDemoClientIds(payrollClients.items),
+        canonicalInstructorId: canonicalInstructorIdFrom(instructorResult.items),
+      });
       setSummary(found);
       setInstructors(instructorResult.items);
       setLocations(locationResult.items);
@@ -19737,6 +19949,15 @@ function PayrollSummary({
     // 이름을 모르면 id 를 보여준다. 빈칸이면 어느 줄이 누구인지 알 수 없다.
     return found?.displayName || id || "(알 수 없음)";
   }, [instructors]);
+  /* 지금 이 센터에 없는 사람의 줄. 거르지 않고 표시만 한다 -- 월 중간에 나간
+     강사의 수업료가 빠지면 그 달 정산이 통째로 틀린다. */
+  const badgeOfInstructor = useCallback((id) => {
+    const found = instructors.find((item) => item.userId === id);
+    return PAYROLL_STATE_BADGE[String(found?.status || "")] || null;
+  }, [instructors]);
+  /* 계정을 바꾼 강사는 옛 uid 와 새 uid 에 차감이 흩어져 있다. 한 사람으로
+     합쳐서 센다 (functions/shared/instructor-swap.mjs). */
+  const canonicalInstructorId = useMemo(() => canonicalInstructorIdFrom(instructors), [instructors]);
   const nameOfLocation = useCallback((id) => {
     const found = locations.find((item) => item.id === id);
     return found?.name || id || "(지점 없음)";
@@ -19874,6 +20095,7 @@ function PayrollSummary({
                 {location.byInstructor.map((row) => (
                   <PayrollInstructorRow key={row.instructorId} row={row}
                     name={nameOfInstructor(row.instructorId)}
+                    badge={badgeOfInstructor(row.instructorId)}
                     open={open === `${location.locationId}/${row.instructorId}`}
                     onToggle={() => toggle(`${location.locationId}/${row.instructorId}`)} />
                 ))}
@@ -19897,6 +20119,7 @@ function PayrollSummary({
                 {summary.byInstructor.map((row) => (
                   <PayrollInstructorRow key={row.instructorId} row={row}
                     name={nameOfInstructor(row.instructorId)}
+                    badge={badgeOfInstructor(row.instructorId)}
                     open={open === `all/${row.instructorId}`}
                     onToggle={() => toggle(`all/${row.instructorId}`)} />
                 ))}
@@ -21547,7 +21770,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
      두 화면이 서로 다른 순간의 원장을 보게 되고, 그 차이는 아무 데도 적히지
      않는다 -- 같은 객체를 쓰면 다를 수가 없다. */
   instructorPay = null, payMonth = "", payLoading = false, payError = "",
-  onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, onRestorePrevious, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, payrollStore, issueStore, auditStore, ledgerStore, onRetryOrganization, onOpenClient, onClearMigratedSettlements, onLoadRuntimeConfig, onSaveRuntimeConfig, initialView = "hub" }) {
+  onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, onRestorePrevious, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, payrollStore, issueStore, auditStore, ledgerStore, onRetryOrganization, onOpenClient, onClearMigratedSettlements, onLoadRuntimeConfig, onSaveRuntimeConfig, onSwapInstructorAccount, initialView = "hub" }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const organization = useContext(OrganizationContext);
 
@@ -22175,7 +22398,8 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
           <InstructorAdmin organization={organization} currentUserId={account?.id || ""}
             instructorStore={instructorStore} rateStore={instructorRateStore}
             locationStore={locationStore}
-            onRetryOrganization={onRetryOrganization} onToast={onToast} />
+            onRetryOrganization={onRetryOrganization} onToast={onToast}
+            onSwap={onSwapInstructorAccount} />
         )}
         {view === "clients" && showClients && (
           <ClientDirectory organization={organization} currentUserId={account?.id || ""}
@@ -22668,7 +22892,12 @@ export function createAppScreenSmokeCases() {
     <InstructorAdmin organization={readyOrganizationContext(organization)} currentUserId="smoke-account"
       instructorStore={instructorStore} rateStore={instructorRateStore} locationStore={locationStore}
       lookupByEmail={async () => ({ userId: "u-new", displayName: "정예진", membership: null })}
-      initialState={initialState} onRetryOrganization={noop} onToast={noop} />
+      initialState={initialState} onRetryOrganization={noop} onToast={noop}
+      onSwap={async () => ({
+        counts: { passes: 7, clients: 12, totals: 12, totalSessions: 184, futureLessons: 3 },
+        pay: { month: "2026-10", sessions: 21, total: 630000 },
+        done: false,
+      })} />
   ));
   const settingsTab = (organization, extra = {}) => providerWith(organization, <ReferenceSettingsTab db={db} photos={photos} account={{ id: "smoke-account", role: "owner" }} savedAt={null} demoMode={false} onChangeSettings={noop} onChangePhoto={noop} onLogout={noop} onDeleteAccount={noop} onToast={noop} themePref="light" onChangeTheme={noop} onImport={noop} onOpenSchedule={noop} onOpenRecords={noop} onOpenOnboarding={noop} backupStatus={{}} onEnablePhotoBackup={noop} onRetryBackup={noop} productStore={productStore} clientStore={clientStore} locationStore={locationStore} instructorStore={instructorStore} instructorRateStore={instructorRateStore} passStore={passStore} onRetryOrganization={noop} {...extra} />);
   const clientDirectory = (organization, initialState) => providerWith(organization, (
@@ -23128,6 +23357,25 @@ export function createAppScreenSmokeCases() {
     }) },
     { name: "회원권 발급 · 조회 실패", element: passIssue(smokeOwner, { clients: [], products: [], instructors: [], locations: [], loadError: "permission-denied" }) },
     { name: "강사 관리", element: instructorAdmin(smokeOwner, { members: [...smokeInstructors, smokeRetired], locations: smokeLocations }) },
+    /* 계정 교체. 퇴사와 다른 일이라는 것과, 원장은 옮기지 않는다는 것이
+       누르기 전에 화면에 있어야 한다. */
+    { name: "강사 관리 · 계정 교체", element: instructorAdmin(smokeOwner, {
+      members: [...smokeInstructors, smokeRetired], locations: smokeLocations,
+      swap: {
+        from: smokeRetired, toUid: smokeInstructors[0].userId, busy: false, error: "",
+        plan: {
+          counts: { passes: 7, clients: 12, totals: 12, totalSessions: 184, futureLessons: 3 },
+          pay: { month: "2026-10", sessions: 21, total: 630000 },
+          done: false,
+        },
+      },
+    }) },
+    /* 같은 이름의 떠난 강사가 있는 채로 추가하려는 순간. 막지 않고 길을 말한다. */
+    { name: "강사 관리 · 추가 · 동명 퇴사자", element: instructorAdmin(smokeOwner, {
+      members: [...smokeInstructors, smokeRetired], locations: smokeLocations, mode: "add",
+      draft: { displayName: smokeRetired.displayName, title: "instructor", locationId: "", rateManwon: "", deputy: false, role: "instructor" },
+      lookup: { email: "new@studio.com", busy: false, error: "", found: { userId: "u-new", displayName: smokeRetired.displayName, membership: null } },
+    }) },
     { name: "강사 관리 · 수정", element: instructorAdmin(smokeOwner, {
       members: smokeInstructors, locations: smokeLocations, mode: "edit", editing: smokeInstructors[0],
       draft: { displayName: "정예진", title: "team_lead", locationId: "bansong", rateManwon: "4.5", deputy: false },
@@ -24290,13 +24538,17 @@ export default function App() {
     setPayError("");
     loadInstructorMonthlyPay(organizationContext.organizationId, {
       instructorId: account.id, month: payMonth,
+      /* 계정을 바꾼 강사는 그 달의 수업이 두 uid 에 걸쳐 있다. 이것이 없으면
+         바꾼 날 이전의 수업료가 자기 화면에서 통째로 사라진다 -- 2026-10 에
+         실제로 그렇게 보였다. */
+      previousUids: previousUidsOf(organizationContext),
     }).then((summary) => { if (alive) setInstructorPay(summary); })
       /* 0원과 못 읽음을 구분한다. 강사가 0원을 보고 "이번 달 수업이 없었나"
          하고 넘어가면 그 달 정산에서야 어긋난 것을 알게 된다. */
       .catch((error) => { if (alive) setPayError(error?.code || "unknown"); })
       .finally(() => { if (alive) setPayLoading(false); });
     return () => { alive = false; };
-  }, [canSeeOwnPay, account?.id, organizationContext.organizationId, payMonth, payRevision]);
+  }, [canSeeOwnPay, account?.id, organizationContext.organizationId, organizationContext.previousUids, payMonth, payRevision]);
 
   useEffect(() => {
     if (!detailClient?.id || !organizationContext.organizationId) return undefined;
@@ -25144,6 +25396,16 @@ export default function App() {
     (organizationId) => fbUpdateRuntimeConfig({ organizationId }).then((result) => result?.config || null),
     [],
   );
+  /* 강사 계정 교체. confirm 없이는 미리보기다 -- 되돌릴 수 없는 쪽이
+     기본값이면 안 된다 (functions/src/instructor-swap.js). */
+  const swapInstructorAccount = useCallback(
+    (fromUid, toUid, confirm) => fbSwapInstructorAccount({
+      organizationId: organizationContext.organizationId, fromUid, toUid, confirm: confirm === true,
+      month: monthKey(todayISO()),
+    }),
+    [organizationContext.organizationId],
+  );
+
   const saveRuntimeConfig = useCallback(
     (organizationId, document, value) => fbUpdateRuntimeConfig({ organizationId, document, value }),
     [],
@@ -26754,7 +27016,7 @@ export default function App() {
               }} />}
             {tab === "settings" && <ReferenceSettingsTab db={db} photos={photos} account={account} savedAt={savedAt} demoMode={demoMode}
               instructorPay={instructorPay} payMonth={payMonth} payLoading={payLoading} payError={payError} onChangeSettings={(s) => saveDb({ ...db, settings: s })} onChangePhoto={changePhoto} onToast={setToast} themePref={themePref} onChangeTheme={changeTheme} onLogout={handleLogout} onDeleteAccount={handleDeleteAccount} onImport={importHandoff}
-              onOpenSchedule={() => { setScheduleQuickAddRequest((request) => request + 1); setTab("schedule"); }} onOpenRecords={() => { setMobileView("list"); setTab("members"); }} onOpenOnboarding={openOnboardingReplay} onOpenLessonExamples={() => setLessonExamplesOpen(true)} backupStatus={cloudBackupStatus} onEnablePhotoBackup={enablePhotoBackup} onRetryBackup={retryCloudBackup} onRestorePrevious={openPreviousPhoneRestore} onRetryOrganization={retryOrganizationContext} onLoadRuntimeConfig={loadRuntimeConfig} onSaveRuntimeConfig={saveRuntimeConfig} onOpenClient={(picked) => setDetailClient(picked)} onClearMigratedSettlements={clearMigratedSettlements} />}
+              onOpenSchedule={() => { setScheduleQuickAddRequest((request) => request + 1); setTab("schedule"); }} onOpenRecords={() => { setMobileView("list"); setTab("members"); }} onOpenOnboarding={openOnboardingReplay} onOpenLessonExamples={() => setLessonExamplesOpen(true)} backupStatus={cloudBackupStatus} onEnablePhotoBackup={enablePhotoBackup} onRetryBackup={retryCloudBackup} onRestorePrevious={openPreviousPhoneRestore} onRetryOrganization={retryOrganizationContext} onLoadRuntimeConfig={loadRuntimeConfig} onSaveRuntimeConfig={saveRuntimeConfig} onSwapInstructorAccount={swapInstructorAccount} onOpenClient={(picked) => setDetailClient(picked)} onClearMigratedSettlements={clearMigratedSettlements} />}
           </Guard>
         </div>
         {/* 출석 체크는 일정 탭 위에 시트로 뜬다. 탭 구조를 건드리지 않으면서

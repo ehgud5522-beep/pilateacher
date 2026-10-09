@@ -742,6 +742,13 @@ export const fbFixMigratedServiceSessions = callableAsOwner("fixMigratedServiceS
    document 를 비워 보내면 읽기만 한다. 화면이 고치기 전에 지금 값을 본다. */
 export const fbUpdateRuntimeConfig = callableAsOwner("updateRuntimeConfig");
 
+/* 강사 계정 교체. 대표 전용이고 역할은 서버가 다시 읽는다 --
+   functions/src/instructor-swap.js 머리말에 근거가 있다.
+
+   confirm 을 보내지 않으면 미리보기다. 누적 진행은 더하는 값이라 두 번 돌면
+   두 배가 되고, 그것은 되돌릴 수 없다. */
+export const fbSwapInstructorAccount = callableAsOwner("swapInstructorAccount");
+
 export const fbSessionUpPass = callableAsOwner("sessionUpPass");
 export const fbHandoverPass = callableAsOwner("handoverPass");
 

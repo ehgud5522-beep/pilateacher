@@ -36,6 +36,7 @@
  */
 
 import { PAY_CATEGORY_LABELS } from "../../data/schema/display-names.js";
+import { expiryOrderWarning, expiryOutOfOrder } from "./purchase-round.js";
 
 const text = (value) => String(value ?? "").trim();
 const count = (value) => (Number.isFinite(Number(value)) && Number(value) > 0 ? Math.floor(Number(value)) : 0);
@@ -302,6 +303,10 @@ export function passListSummary(cards) {
 /**
  * 한 회원의 카드 전부. 사용 중이 먼저, 만료가 가까운 순이다.
  *
+ * 차수와 만료일이 어긋난 카드에는 expiryOrderWarning 한 줄이 붙는다 --
+ * 2026-10-09 부터 차감이 차수 순이라, 뒤 차수가 먼저 만료되면 그 회차를
+ * 쓰지 못한 채 잃는다.
+ *
  * @param {{
  *   passes?: Array<any>, now?: Date, productName?: (id: string) => string,
  *   nextSoloPassId?: string, nextDuetPassId?: string,
@@ -318,12 +323,24 @@ export function passCardList(input = {}) {
   const duet = text(input.nextDuetPassId);
   const list = (Array.isArray(input.passes) ? input.passes : []).filter(Boolean);
 
+  /* 뒤 차수가 앞 차수보다 먼저 만료되는 회원권. 차수 순으로 쓰므로 그 회차는
+     손도 못 대 보고 사라질 수 있다 -- 회원이 돈을 낸 회차다.
+
+     자동으로 피하지 않는다 (순서를 뒤집으면 예측이 깨진다). 카드가 먼저
+     말하고, 대표가 만료일을 옮겨 푼다. */
+  const outOfOrder = new Map(expiryOutOfOrder(list, { now }).map((row) => [
+    text(row.pass?.id || row.pass?.passId), expiryOrderWarning(row),
+  ]));
+
   const cards = list.slice().sort(byExpiry).map((pass) => {
     const id = text(pass?.id || pass?.passId);
     let nextDeduct = NEXT_DEDUCT.NONE;
     if (id && id === solo) nextDeduct = NEXT_DEDUCT.SOLO;
     else if (id && id === duet) nextDeduct = NEXT_DEDUCT.DUET;
-    return passCard(pass, { now, nextDeduct, productName: input.productName });
+    return {
+      ...passCard(pass, { now, nextDeduct, productName: input.productName }),
+      expiryOrderWarning: outOfOrder.get(id) || "",
+    };
   });
 
   return {

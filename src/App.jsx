@@ -187,6 +187,9 @@ import {
 import {
   MEMBERSHIP_SWAPPED, SWAP_ERROR_LABEL, canonicalInstructorIdFrom, instructorIdsOf, previousUidsOf,
 } from "../functions/shared/instructor-swap.mjs";
+import {
+  expiryOrderByClient, expiryOrderWarning, nextPurchaseRound,
+} from "./features/membership/purchase-round.js";
 import { previewLessonRates } from "./features/schedule/lesson-rate-preview.js";
 import {
   issueReportCsv, loadOrganizationMonthlyIssues,
@@ -328,7 +331,7 @@ import {
   EXPIRY_PERIOD, EXPIRY_PERIOD_LABELS, expiryReport, expiryReportMessage, outcomeLabel,
 } from "./features/members/expiry-report.js";
 import { EXPIRY_REASON_LABELS } from "./data/schema/instructor-scope.js";
-import { passBelongsTo } from "./data/schema/pass-clients.js";
+import { passBelongsTo, passClientIds } from "./data/schema/pass-clients.js";
 import {
   checkLessonNotificationPermission, listenForLessonNotificationActions, requestLessonNotificationPermission, syncLessonNotifications,
 } from "./features/notifications/local-notifications.js";
@@ -5692,6 +5695,14 @@ function PassCard({ card, onEdit }) {
             style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND }}>정보 수정</button>
         ) : null}
       </div>
+      {/* 차수 순으로 쓰는데 뒤 차수가 먼저 만료된다. 그 회차는 손도 못 대 보고
+          사라질 수 있다 -- 회원이 돈을 낸 회차다. 자동으로 피하지 않고(순서를
+          뒤집으면 예측이 깨진다) 여기서 말한다. 푸는 길은 만료일 변경이다. */}
+      {card.expiryOrderWarning ? (
+        <p className="mt-2 rounded-lg px-2.5 py-1.5" style={{
+          backgroundColor: WARN_S, fontSize: TYPE.caption, lineHeight: 1.5, color: INK,
+        }}>{card.expiryOrderWarning}</p>
+      ) : null}
     </div>
   );
 }
@@ -15656,6 +15667,20 @@ function PassIssue({
   );
   const client = clients.find((item) => item.id === form.clientId) || null;
   const partner = form.duet ? clients.find((item) => item.id === form.partnerClientId) || null : null;
+  /* 차수를 저절로 채운다. 2026-10-09 부터 차감이 차수 순으로 가므로, 손으로
+     넣는 값이 틀리면 엉뚱한 회원권에서 빠진다 -- 전에는 화면에 적히기만 하는
+     숫자라 틀려도 아무 일이 없었다.
+
+     대표가 고칠 수 있게 둔다. 이관분의 번호가 비어 있거나 건너뛴 경우가 있고,
+     그때 맞는 번호를 아는 것은 대표뿐이다. */
+  const suggestedRound = useMemo(
+    () => nextPurchaseRound(issuedPasses, form.clientId, passBelongsTo),
+    [issuedPasses, form.clientId],
+  );
+  useEffect(() => {
+    if (!form.clientId) return;
+    setForm((current) => ({ ...current, purchaseRound: String(suggestedRound) }));
+  }, [form.clientId, suggestedRound]);
   const product = products.find((item) => item.id === form.productId) || null;
   const instructor = instructors.find((item) => item.userId === form.instructorId) || null;
   const priceSource = unitPriceSourceFor(product?.payCategory);
@@ -16038,6 +16063,13 @@ function PassIssue({
               <IssueField label="차수">
                 <input inputMode="numeric" value={form.purchaseRound} className={inputCls} placeholder="1"
                   onChange={(e) => setForm({ ...form, purchaseRound: e.target.value.replace(/\D/g, "") })} />
+                {/* 회원권을 쓰는 순서가 이 번호다. 저절로 채우지만 고칠 수
+                    있고, 고치면 그것이 차감 순서가 된다. */}
+                <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+                  {Number(form.purchaseRound || 0) === suggestedRound
+                    ? `이 회원의 ${suggestedRound}번째 회원권입니다. 차수가 빠른 것부터 차감됩니다.`
+                    : `자동으로 채운 번호는 ${suggestedRound}차입니다. 차수가 빠른 것부터 차감됩니다.`}
+                </p>
               </IssueField>
               <IssueField label="결제 수단">
                 <div className="flex flex-wrap gap-2">
@@ -20671,6 +20703,93 @@ const INSTRUCTOR_RESET_NOTICE = "회원권 데이터를 새 엑셀로 다시 올
   + "급여에는 쓰지 않습니다 — 되돌리기를 누르지 않아도 됩니다.";
 
 /**
+ * 만료일 순서 확인 — **뒤 차수가 먼저 만료되는 회원들.**
+ *
+ * 2026-10-09 부터 차감이 차수 순으로 간다. 앞 차수에 잔여가 남아 있는 동안
+ * 뒤 차수는 쓰이지 않는데, 그 뒤 차수가 먼저 만료되면 회원이 돈을 낸 회차가
+ * 손도 못 대 보고 사라진다.
+ *
+ * 자동으로 피하지 않는다 -- 순서를 뒤집으면 예측이 깨지고, 그것이 차수 순으로
+ * 바꾼 이유였다. 대신 여기 모아 두고 대표가 만료일을 옮겨 푼다.
+ */
+function ExpiryOrderReview({ organization, passStore, clientStore, onOpenClient, onRetryOrganization }) {
+  const [rows, setRows] = useState(null);
+  const [error, setError] = useState("");
+  const locked = organization?.status === "unknown";
+  const organizationId = organization?.organizationId || "";
+
+  useEffect(() => {
+    if (!organizationId || locked) return undefined;
+    let alive = true;
+    Promise.all([
+      listPasses(organizationId, { store: passStore }),
+      listClients(organizationId, { store: clientStore }),
+    ])
+      .then(([passes, clients]) => {
+        if (!alive) return;
+        const nameById = new Map(clients.map((item) => [String(item?.id || ""), String(item?.name || "")]));
+        /* 이름은 여기서 붙인다. 판정 모듈은 회원 이름을 모르고, 알 필요도
+           없다 (§7). */
+        setRows(expiryOrderByClient(passes, {
+          clientIdsOf: (pass) => passClientIds(pass),
+        }).map((item) => ({ ...item, name: nameById.get(item.clientId) || "" })));
+      })
+      .catch((thrown) => { if (alive) setError(thrown?.code || "unknown"); });
+    return () => { alive = false; };
+  }, [organizationId, locked, passStore, clientStore]);
+
+  if (locked) return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>소속을 확인하지 못했습니다</h2>
+      <button type="button" onClick={() => onRetryOrganization?.()} className="mt-3 h-11 w-full font-bold"
+        style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>다시 시도</button>
+    </section>
+  );
+
+  return (
+    <section data-expiry-order style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>
+        만료일 순서 확인 필요{rows ? ` ${rows.length}명` : ""}
+      </h2>
+      <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        회원권은 <b>차수가 빠른 것부터</b> 차감됩니다. 뒤 차수가 먼저 만료되면 그 회차는
+        쓰이지 못한 채 사라집니다 — 만료일을 옮겨 주세요.
+      </p>
+
+      {error ? (
+        <p role="alert" className="mt-3" style={{ fontSize: TYPE.caption, color: BAD }}>
+          불러오지 못했습니다 (코드 {error}).
+        </p>
+      ) : null}
+      {!rows && !error ? (
+        <p className="mt-3" style={{ fontSize: TYPE.caption, color: SUB }}>세는 중…</p>
+      ) : null}
+      {rows && rows.length === 0 ? (
+        <p className="mt-3" style={{ fontSize: TYPE.caption, color: GOOD }}>어긋난 회원이 없습니다.</p>
+      ) : null}
+
+      {(rows || []).map((row) => (
+        <button key={row.clientId} type="button" onClick={() => onOpenClient?.({ id: row.clientId, name: row.name })}
+          className="flex w-full items-start gap-2 text-left"
+          style={{ padding: "11px 0", borderTop: `1px solid ${LINE}` }}>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate" style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>
+              {row.name || `(이름 없음 · ${row.clientId.slice(0, 6)}…)`}
+            </span>
+            {row.rows.map((item) => (
+              <span key={item.pass?.id} className="mt-0.5 block" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: WARN }}>
+                {expiryOrderWarning(item)}
+              </span>
+            ))}
+          </span>
+          <ChevronRight size={14} style={{ color: FAINT, flexShrink: 0, marginTop: 3 }} />
+        </button>
+      ))}
+    </section>
+  );
+}
+
+/**
  * 앱 업데이트 안내 — **대표가 켜고 끄는 자리.**
  *
  * 두 설정을 한 화면에서 본다. 둘 다 빌드 번호를 다루고, 하나를 올릴 때 다른
@@ -22035,7 +22154,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
     return total;
   }, [db.schedule, db.members, db.settings, reportYm]);
   const detailTitles = {
-    report: "월간 리포트", expiry: "만료 회원", "instructor-scope": "담당 강사", "app-update": "앱 업데이트 안내", assessment: "변화 기록 설정", center: "센터 정보", theme: "화면 설정", "schedule-colors": "일정 색상",
+    report: "월간 리포트", expiry: "만료 회원", "instructor-scope": "담당 강사", "app-update": "앱 업데이트 안내", "expiry-order": "만료일 순서 확인", assessment: "변화 기록 설정", center: "센터 정보", theme: "화면 설정", "schedule-colors": "일정 색상",
     data: "데이터 상태", backup: "데이터 이관 · 백업", permissions: "접근권한 안내", knowledge: "오늘의 지식", account: "계정", "account-delete": "계정 삭제", app: "앱 정보",
     products: "회원권 상품",
     clients: "회원 관리",
@@ -22077,6 +22196,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
        셋 다 "무엇이 어긋나 있는지" 를 보는 화면이다. */
     ...(showAudit ? [{ key: "instructor-scope", title: "담당 강사", description: "강사별 담당 회원 · 재계산", Icon: Users }] : []),
     ...(showAudit ? [{ key: "app-update", title: "앱 업데이트 안내", description: "새 버전 알림 · 옛 앱 차단 · 강사 버전", Icon: Smartphone }] : []),
+    ...(showAudit ? [{ key: "expiry-order", title: "만료일 순서 확인", description: "뒤 차수가 먼저 만료되는 회원", Icon: AlertTriangle }] : []),
     ...(showMigration ? [{ key: "migration", title: "엑셀 이관", description: "쓰던 엑셀의 회원 · 회원권 올리기", Icon: Upload }] : []),
   ];
   const menuGroups = [
@@ -22400,6 +22520,10 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
             locationStore={locationStore}
             onRetryOrganization={onRetryOrganization} onToast={onToast}
             onSwap={onSwapInstructorAccount} />
+        )}
+        {view === "expiry-order" && showAudit && (
+          <ExpiryOrderReview organization={organization} passStore={passStore} clientStore={clientStore}
+            onOpenClient={onOpenClient} onRetryOrganization={onRetryOrganization} />
         )}
         {view === "clients" && showClients && (
           <ClientDirectory organization={organization} currentUserId={account?.id || ""}
@@ -23101,6 +23225,18 @@ export function createAppScreenSmokeCases() {
         ],
       })}
       onBack={noop} onPatch={asyncNoop} onSaveNote={asyncNoop} onSchedule={noop} onAssess={noop} onToast={noop} onHide={asyncNoop} /> },
+    /* 만료일이 차수와 어긋난 회원. 2차에 잔여가 있는데 1차보다 먼저 만료되면
+       그 회차는 쓰이지 못한 채 사라진다 -- 차감이 차수 순이기 때문이다.
+       카드가 그 한 줄을 말하는지 본다. */
+    { name: "회원 상세 · 만료일 순서 경고", element: <ReferenceMemberDetail member={smokeRoster[0]} schedule={db.schedule} photos={photos[member.id]} settings={db.settings} organizationMode
+      passCards={passCardList({
+        now: new Date(2026, 9, 1),
+        passes: [
+          { id: "smoke-order-1", productId: "1:1 PT 20회", category: "pt_1_1_repurchase_event", clientId: "smoke-client-a", purchaseRound: 1, totalSessions: 20, serviceSessions: 0, remainingCount: 9, contractPrice: 1300000, status: "active", expiresAt: new Date(2027, 6, 1) },
+          { id: "smoke-order-2", productId: "1:1 PT 30회", category: "pt_1_1_repurchase_event", clientId: "smoke-client-a", purchaseRound: 2, totalSessions: 30, serviceSessions: 0, remainingCount: 30, contractPrice: 1800000, status: "active", expiresAt: new Date(2026, 11, 1) },
+        ],
+      })}
+      onBack={noop} onPatch={asyncNoop} onSaveNote={asyncNoop} onSchedule={noop} onAssess={noop} onToast={noop} onHide={asyncNoop} /> },
     { name: "회원 상세 · 소속", element: <ReferenceMemberDetail member={smokeRoster[0]} schedule={db.schedule} photos={photos[member.id]} settings={db.settings} organizationMode onBack={noop} onPatch={asyncNoop} onSaveNote={asyncNoop} onSchedule={noop} onAssess={noop} onToast={noop} onHide={asyncNoop} /> },
     /* 강사에게는 연락처 뒤 4자리만 보인다. 경계가 아니라 -- 규칙은 지금도
        열려 있다 -- 일상적으로 120명의 번호를 스쳐 갈 이유가 없어서다. */
@@ -23152,6 +23288,9 @@ export function createAppScreenSmokeCases() {
       onLoadRuntimeConfig: async () => null,
       onSaveRuntimeConfig: async () => ({ config: null }),
     }) },
+    /* 만료일 순서 확인. 대표가 한 화면에서 어긋난 회원을 보고 만료일을 옮긴다 --
+       차감이 차수 순이라 뒤 차수가 먼저 만료되면 그 회차를 잃는다. */
+    { name: "더보기 탭 · 만료일 순서 확인", element: settingsTab(smokeOwner, { initialView: "expiry-order" }) },
     { name: "더보기 탭 · 백업", element: settingsTab(smokeOwner, {
       initialView: "backup", onRestorePrevious: noop,
       backupStatus: { state: "safe", counts: { members: 16, sessions: 6, photos: 4 }, lastBackupAt: new Date(2026, 8, 3, 9, 0).toISOString() },

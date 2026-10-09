@@ -67,10 +67,25 @@ service cloud.firestore {
 
     // Keep in sync with PAY_CATEGORY in src/data/schema/constants.js. Rules
     // files cannot import, so products and the pass ledger share this instead.
+    /* ── 급여 카테고리 ────────────────────────────────────────────────────
+       **원장 항목의 category 가 이 목록을 지난다** (아래 ledger create). 그래서
+       여기 없는 카테고리는 상품을 못 만드는 것으로 끝나지 않고, **그 회원권의
+       모든 차감이 거부된다.**
+
+       2026-10-10: 셋이 빠져 있었다 -- pt_2_1_repurchase_event (2026-10-09 신설),
+       diosa_a, diosa_b (2026-10-05 신설). 앱은 그 카테고리로 차감을 보내고
+       규칙이 그것을 받지 않았다. 화면에는 permission-denied 한 줄로 도착한다.
+
+       앱의 PAY_CATEGORY 를 늘릴 때 이 목록을 함께 늘리지 않으면 같은 일이
+       다시 난다. 규칙은 import 을 할 수 없어 리터럴로 적는 수밖에 없고, 그래서
+       tests/rules 가 두 목록이 같은지 본다.
+       Keep in sync with PAY_CATEGORY in functions/shared/constants.mjs. */
     function payCategories() {
       return [
         "pt_1_1_new", "pt_1_1_repurchase_event", "pt_1_1_repurchase_normal",
-        "pt_2_1_new", "pt_2_1_repurchase", "service", "letmein", "etc"
+        "pt_2_1_new", "pt_2_1_repurchase", "pt_2_1_repurchase_event",
+        "diosa_a", "diosa_b",
+        "service", "letmein", "etc"
       ];
     }
 
@@ -498,20 +513,28 @@ service cloud.firestore {
           ])
           && request.resource.data.name is string
           && request.resource.data.name.size() > 0
-          && request.resource.data.sessionType in ["pt_1_1", "pt_2_1"]
+          && request.resource.data.sessionType in ["pt_1_1", "pt_2_1", "diosa"]
           && request.resource.data.payCategory in payCategories()
           // A 2:1 lesson priced at the 1:1 rate differs by about ten thousand won
           // per session, and one bad product spreads that to every pass issued
           // from it. service and etc attach to either shape; letmein is 1:1 only.
+          /* 디오사는 그 둘뿐이다. 서비스도 기타도 붙지 않는다 -- 관리 수업의
+             단가는 고정이고(20,000 / 35,000), 다른 카테고리가 섞이면 그 고정이
+             깨진다. A 와 B 를 따로 파는 것이 요점이라, 한 상품이 둘 다를
+             가리키는 길도 없다.
+             Keep in sync with PAY_CATEGORIES_BY_SESSION_TYPE. */
           && (
             request.resource.data.sessionType == "pt_1_1"
               ? request.resource.data.payCategory in [
                 "pt_1_1_new", "pt_1_1_repurchase_event", "pt_1_1_repurchase_normal",
                 "service", "letmein", "etc"
               ]
-              : request.resource.data.payCategory in [
-                "pt_2_1_new", "pt_2_1_repurchase", "service", "etc"
+            : request.resource.data.sessionType == "pt_2_1"
+              ? request.resource.data.payCategory in [
+                "pt_2_1_new", "pt_2_1_repurchase", "pt_2_1_repurchase_event",
+                "service", "etc"
               ]
+              : request.resource.data.payCategory in ["diosa_a", "diosa_b"]
           )
           && request.resource.data.defaultSessions is int
           && request.resource.data.defaultSessions > 0

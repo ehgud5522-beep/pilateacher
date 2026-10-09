@@ -826,8 +826,11 @@ test("a failed attempt stays open but keeps the reason it failed", () => {
   assert.equal("orgSettledOutcome" in attempt, false);
   /* 사유는 남는다. 다시 확정하기 전에 무엇을 고쳐야 하는지 화면이 말해야 한다.
      원본 코드를 버리면 "저장되지 않았습니다"만 남고 원인 확정이 불가능하다. */
+  /* careCategory 는 디오사 전용 칸이다. 쓰기 실패에는 들어갈 값이 없고,
+     빈 문자열로 선다 -- 없는 칸과 빈 칸을 가르지 않으면 화면이 "디오사"
+     이야기를 꺼낼 자리를 고를 수 없다 (care-options.js 의 skip 문구). */
   assert.deepEqual(settlementSkipsOf(attempt), [
-    { memberId: "m-1", reason: SETTLEMENT_SKIP.WRITE_FAILED, code: "Missing baseUnitPrice" },
+    { memberId: "m-1", reason: SETTLEMENT_SKIP.WRITE_FAILED, code: "Missing baseUnitPrice", careCategory: "" },
   ]);
 });
 

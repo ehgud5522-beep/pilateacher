@@ -183,6 +183,9 @@ import {
 import {
   UPDATE_COPY, UPDATE_PROMPT, storeLinks, updatePrompt,
 } from "./features/app-update/update-gate.js";
+import {
+  MEMBERSHIP_SWAPPED, SWAP_ERROR_LABEL, canonicalInstructorIdFrom, instructorIdsOf, previousUidsOf,
+} from "../functions/shared/instructor-swap.mjs";
 import { previewLessonRates } from "./features/schedule/lesson-rate-preview.js";
 import {
   issueReportCsv, loadOrganizationMonthlyIssues,
@@ -19075,7 +19078,15 @@ const shiftMonth = (month, by) => {
 };
 
 /** 강사 한 사람의 줄. 누르면 카테고리별 내역이 펼쳐진다. */
-function PayrollInstructorRow({ row, name, open, onToggle }) {
+/* 지금 이 센터에 없는 사람. 원장은 그 사람의 수업을 그대로 들고 있어서
+   줄은 서야 하는데, 이름만 두면 대표는 그 줄이 왜 있는지 묻게 된다.
+   월 중간 퇴사자의 수업료가 빠지면 안 되므로 거르지 않고 표시만 한다. */
+const PAYROLL_STATE_BADGE = {
+  revoked: { label: "퇴사", get color() { return WARN; }, get bg() { return WARN_S; } },
+  swapped: { label: "계정 교체됨", get color() { return SUB; }, get bg() { return CANVAS; } },
+};
+
+function PayrollInstructorRow({ row, name, badge, open, onToggle }) {
   return (
     <div style={{ borderTop: `1px solid ${LINE}` }}>
       <button type="button" onClick={onToggle} className="flex w-full items-center gap-2 text-left"
@@ -19086,6 +19097,10 @@ function PayrollInstructorRow({ row, name, open, onToggle }) {
         <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>
           {name}
         </span>
+        {badge ? (
+          <span className="shrink-0 rounded-full px-2 py-0.5 font-extrabold"
+            style={{ fontSize: TYPE.caption, backgroundColor: badge.bg, color: badge.color }}>{badge.label}</span>
+        ) : null}
         <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
           {row.sessions}건
         </span>
@@ -19710,14 +19725,21 @@ function PayrollSummary({
       /* 심사용 회원을 빼려면 명부가 필요하다 -- 원장 항목에는 그 표시가
          없다. 이 화면이 예전에는 명부를 읽지 않았고, 읽기 한 번이 느는 대신
          가짜 회차가 강사 급여에 섞이지 않는다. */
-      const payrollClients = await toleratingReadFailure(listClients(organizationId, { store: clientStore }));
-      const [found, instructorResult, locationResult] = await Promise.all([
-        loadOrganizationMonthlyPayroll(organizationId, {
-          month, store: payrollStore, excludedClientIds: reviewDemoClientIds(payrollClients.items),
-        }),
+      const [payrollClients, instructorResult, locationResult] = await Promise.all([
+        toleratingReadFailure(listClients(organizationId, { store: clientStore })),
         toleratingReadFailure(listMemberships(organizationId, { store: instructorStore })),
         toleratingReadFailure(listLocations(organizationId, { store: locationStore })),
       ]);
+      /* 집계보다 명부를 먼저 읽는다. 계정을 바꾼 강사를 한 사람으로 합치려면
+         previousUids 가 있어야 하고, 그것은 소속 문서에만 있다 -- 나중에
+         합치려면 이미 묶인 줄을 다시 풀어야 한다.
+
+         명부를 못 읽어도 집계는 선다. 그때는 합쳐지지 않은 채로 두 줄이
+         서고, 화면이 이름 대신 uid 를 보여주므로 그 사실이 드러난다. */
+      const found = await loadOrganizationMonthlyPayroll(organizationId, {
+        month, store: payrollStore, excludedClientIds: reviewDemoClientIds(payrollClients.items),
+        canonicalInstructorId: canonicalInstructorIdFrom(instructorResult.items),
+      });
       setSummary(found);
       setInstructors(instructorResult.items);
       setLocations(locationResult.items);
@@ -19737,6 +19759,15 @@ function PayrollSummary({
     // 이름을 모르면 id 를 보여준다. 빈칸이면 어느 줄이 누구인지 알 수 없다.
     return found?.displayName || id || "(알 수 없음)";
   }, [instructors]);
+  /* 지금 이 센터에 없는 사람의 줄. 거르지 않고 표시만 한다 -- 월 중간에 나간
+     강사의 수업료가 빠지면 그 달 정산이 통째로 틀린다. */
+  const badgeOfInstructor = useCallback((id) => {
+    const found = instructors.find((item) => item.userId === id);
+    return PAYROLL_STATE_BADGE[String(found?.status || "")] || null;
+  }, [instructors]);
+  /* 계정을 바꾼 강사는 옛 uid 와 새 uid 에 차감이 흩어져 있다. 한 사람으로
+     합쳐서 센다 (functions/shared/instructor-swap.mjs). */
+  const canonicalInstructorId = useMemo(() => canonicalInstructorIdFrom(instructors), [instructors]);
   const nameOfLocation = useCallback((id) => {
     const found = locations.find((item) => item.id === id);
     return found?.name || id || "(지점 없음)";
@@ -19874,6 +19905,7 @@ function PayrollSummary({
                 {location.byInstructor.map((row) => (
                   <PayrollInstructorRow key={row.instructorId} row={row}
                     name={nameOfInstructor(row.instructorId)}
+                    badge={badgeOfInstructor(row.instructorId)}
                     open={open === `${location.locationId}/${row.instructorId}`}
                     onToggle={() => toggle(`${location.locationId}/${row.instructorId}`)} />
                 ))}
@@ -19897,6 +19929,7 @@ function PayrollSummary({
                 {summary.byInstructor.map((row) => (
                   <PayrollInstructorRow key={row.instructorId} row={row}
                     name={nameOfInstructor(row.instructorId)}
+                    badge={badgeOfInstructor(row.instructorId)}
                     open={open === `all/${row.instructorId}`}
                     onToggle={() => toggle(`all/${row.instructorId}`)} />
                 ))}
@@ -24290,13 +24323,17 @@ export default function App() {
     setPayError("");
     loadInstructorMonthlyPay(organizationContext.organizationId, {
       instructorId: account.id, month: payMonth,
+      /* 계정을 바꾼 강사는 그 달의 수업이 두 uid 에 걸쳐 있다. 이것이 없으면
+         바꾼 날 이전의 수업료가 자기 화면에서 통째로 사라진다 -- 2026-10 에
+         실제로 그렇게 보였다. */
+      previousUids: previousUidsOf(organizationContext),
     }).then((summary) => { if (alive) setInstructorPay(summary); })
       /* 0원과 못 읽음을 구분한다. 강사가 0원을 보고 "이번 달 수업이 없었나"
          하고 넘어가면 그 달 정산에서야 어긋난 것을 알게 된다. */
       .catch((error) => { if (alive) setPayError(error?.code || "unknown"); })
       .finally(() => { if (alive) setPayLoading(false); });
     return () => { alive = false; };
-  }, [canSeeOwnPay, account?.id, organizationContext.organizationId, payMonth, payRevision]);
+  }, [canSeeOwnPay, account?.id, organizationContext.organizationId, organizationContext.previousUids, payMonth, payRevision]);
 
   useEffect(() => {
     if (!detailClient?.id || !organizationContext.organizationId) return undefined;

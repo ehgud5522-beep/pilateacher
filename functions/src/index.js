@@ -31,6 +31,7 @@ const {
 } = require("./service-session-fix");
 const { isPassAdmin, runHandover, runSessionUp } = require("./pass-admin");
 const { readRuntimeConfig, writeRuntimeConfig } = require("./runtime-config-admin");
+const { monthlyPayFor, planAccountSwap, runAccountSwap } = require("./instructor-swap");
 const { reconcileOrganization } = require("./pass-reconcile-nightly");
 const { createFirestoreMemberLinkPorts } = require("./member-link-store");
 const {
@@ -672,6 +673,62 @@ exports.verifyInstructorIds = onCall(
    트리거도 깨어나지 않는다.
 
    04:00 KST 다. 수업이 없고, 자정 직후의 만료가 이미 지나간 시각이다. */
+/* ── 강사 계정 교체 ──────────────────────────────────────────────────────
+   대표 전용. 근거는 instructor-swap.js 머리말에 있다.
+
+   confirm 을 보내지 않으면 미리보기다. 되돌릴 수 없는 쪽이 기본값이면 안
+   된다 -- 누적 진행은 더하는 값이라 두 번 돌면 두 배가 되고, 그것은 고칠 수
+   없다. 실행도 두 번 눌러 안전하게 만들어 두었지만 기본값은 그대로 읽기다. */
+exports.swapInstructorAccount = onCall({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  timeoutSeconds: 120,
+  memory: "512MiB",
+  invoker: "public",
+}, async (request) => {
+  const callerUid = String(request?.auth?.uid || "").trim();
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  if (!callerUid) throw new HttpsError("unauthenticated", "Please sign in again.");
+  if (!organizationId) throw new HttpsError("invalid-argument", "organizationId is required.");
+
+  const membership = await firestore
+    .collection("memberships").doc(membershipId(organizationId, callerUid)).get();
+  if (!isActiveOwner(membership.exists ? membership.data() : null)) {
+    throw new HttpsError("permission-denied", "Only the centre owner can swap an account.");
+  }
+
+  const payload = {
+    organizationId,
+    fromUid: String(request?.data?.fromUid || "").trim(),
+    toUid: String(request?.data?.toUid || "").trim(),
+    actorId: callerUid,
+  };
+  const confirmed = request?.data?.confirm === true;
+
+  try {
+    const result = confirmed
+      ? await runAccountSwap(firestore, payload)
+      : await planAccountSwap(firestore, payload);
+    /* 이번 달에 옛 uid 로 박힌 수업료. 옮기지는 않고, 세는 쪽이 합쳐 보여 줄
+       금액이 얼마인지만 말한다. */
+    const pay = await monthlyPayFor(firestore, {
+      organizationId, instructorId: payload.fromUid, month: String(request?.data?.month || ""),
+    });
+    /* 건수만 남긴다. 이름도 uid 도 로그에 적지 않는다 (§7). */
+    logger.info("instructor_swap", {
+      feature: "instructor_swap", stage: confirmed ? "apply" : "plan", organizationId,
+      passes: result?.counts?.passes || 0, clients: result?.counts?.clients || 0,
+      applied: result?.applied === true,
+    });
+    return { ...result, pay, confirmed };
+  } catch (error) {
+    logger.error("instructor_swap_failed", {
+      feature: "instructor_swap", stage: confirmed ? "apply" : "plan", organizationId,
+      errorCode: error?.message || "unknown",
+    });
+    throw new HttpsError("failed-precondition", String(error?.message || "instructor_swap_failed"));
+  }
+});
+
 /* ── 운영 설정 쓰기 ──────────────────────────────────────────────────────
    대표 전용. 근거는 runtime-config-admin.js 머리말에 있다.
 

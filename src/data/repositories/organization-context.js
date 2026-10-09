@@ -44,6 +44,10 @@ export const UNRESOLVED_ORGANIZATION_CONTEXT = Object.freeze({
      왕복이 하나 더 붙는다. 대가도 같다 -- 승진은 다음에 컨텍스트를 읽을 때부터
      반영된다. */
   title: "",
+  /* 계정을 바꾸기 전에 쓰던 uid 들. 급여를 세는 쪽이 이것으로 옛 원장을 내
+     것으로 본다 (functions/shared/instructor-swap.mjs) -- 원장은 append-only
+     라 옛 uid 를 고쳐 쓸 수 없다. */
+  previousUids: [],
   isLegacy: false,
   ready: false,
 });
@@ -241,6 +245,7 @@ export async function resolveOrganizationContext(userId, options = {}) {
     // 없으면 false 다. 부원장은 지정받은 사람만이다.
     isDeputyDirector: membership.isDeputyDirector === true,
     title: String(membership.title ?? ""),
+    previousUids: Array.isArray(membership.previousUids) ? membership.previousUids.map(String) : [],
     isLegacy: false,
   }, "membership", {
     count: receivedCount,

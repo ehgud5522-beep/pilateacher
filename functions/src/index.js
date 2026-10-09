@@ -752,9 +752,15 @@ exports.updateRuntimeConfig = onCall({
     .collection("memberships").doc(membershipId(organizationId, callerUid)).get();
   /* 화면이 카드를 감추는 것은 안내이고 막는 것은 여기다. 이 설정은 조직의
      것이 아니라 앱 전체의 것이라, 어느 센터의 대표든 바꿀 수 있다는 뜻이
-     되지 않도록 소속 확인을 지나게 둔다. */
-  if (!isOwnerLevel(membership.exists ? membership.data() : null)) {
-    throw new HttpsError("permission-denied", "Only an owner or area manager can change this.");
+     되지 않도록 소속 확인을 지나게 둔다.
+
+     **총괄매니저에게는 열지 않는다** (2026-10-10 결정). 다른 자리는 전부
+     대표와 같지만 여기만은 아니다 -- settlement 최소 빌드를 올리면 **센터
+     전체의 수업 확정이 막히고**, appUpdate 최소 빌드를 올리면 그 번호보다
+     낮은 앱이 전부 필수 팝업에 갇힌다. 숫자 하나가 센터를 세우는 자리라
+     이관 초기화와 같은 선에 둔다. */
+  if (!isActiveOwner(membership.exists ? membership.data() : null)) {
+    throw new HttpsError("permission-denied", "Only the centre owner can change this.");
   }
 
   /* 쓰지 않고 읽기만 할 수도 있다. 화면이 고치기 전에 지금 값을 보여준다. */

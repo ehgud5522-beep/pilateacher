@@ -41,9 +41,10 @@ test("owner level is exactly two roles, and nothing below sneaks in", () => {
   }
 });
 
-test("the four owner-only doors are named, so nobody has to remember them", () => {
+test("the owner-only doors are named, so nobody has to remember them", () => {
   assert.deepEqual(Object.values(OWNER_ONLY).sort(), [
     "area_manager_role", "migration_reset", "owner_grant", "owner_membership",
+    "runtime_config",
   ]);
 });
 

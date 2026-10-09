@@ -22196,6 +22196,17 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
   const showAudit = organization.ready
     && !organization.isLegacy
     && isOwnerLevelRole(organization.role);
+  /* ── 앱 업데이트 안내는 대표만 ──────────────────────────────────────────
+     총괄매니저는 다른 자리에서 전부 대표와 같지만 여기만은 아니다
+     (2026-10-10 결정). settlement 최소 빌드를 올리면 **센터 전체의 수업
+     확정이 막히고**, appUpdate 최소 빌드를 올리면 그 번호보다 낮은 앱이
+     전부 필수 팝업에 갇힌다. 숫자 하나가 센터를 세우는 자리다.
+
+     서버도 같은 선을 긋는다 (updateRuntimeConfig 의 isActiveOwner) --
+     한쪽만 바꾸면 눌러도 거부되는 카드가 남는다. */
+  const showAppUpdate = organization.ready
+    && !organization.isLegacy
+    && organization.role === ROLES.OWNER;
   /* 소속 센터에 있는가. 역할과 무관하다 -- 여기에 걸린 것은 권한이 아니라 문구다.
      같은 화면이 개인 모드에서는 유일한 답이고 소속 모드에서는 둘 중 하나라,
      무엇을 세는 값인지 그때만 밝혀야 한다. 못 읽은 상태(unknown)는 개인 모드로
@@ -22392,7 +22403,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
     /* 담당 강사. 강사가 보는 회원의 범위가 여기서 정해지므로 감사·점검 옆이다 --
        셋 다 "무엇이 어긋나 있는지" 를 보는 화면이다. */
     ...(showAudit ? [{ key: "instructor-scope", title: "담당 강사", description: "강사별 담당 회원 · 재계산", Icon: Users }] : []),
-    ...(showAudit ? [{ key: "app-update", title: "앱 업데이트 안내", description: "새 버전 알림 · 옛 앱 차단 · 강사 버전", Icon: Smartphone }] : []),
+    ...(showAppUpdate ? [{ key: "app-update", title: "앱 업데이트 안내", description: "새 버전 알림 · 옛 앱 차단 · 강사 버전", Icon: Smartphone }] : []),
     ...(showAudit ? [{ key: "expiry-order", title: "만료일 순서 확인", description: "뒤 차수가 먼저 만료되는 회원", Icon: AlertTriangle }] : []),
     ...(showMigration ? [{ key: "migration", title: "엑셀 이관", description: "쓰던 엑셀의 회원 · 회원권 올리기", Icon: Upload }] : []),
   ];
@@ -22765,7 +22776,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
             clientStore={clientStore} passStore={passStore} instructorStore={instructorStore}
             onRetryOrganization={onRetryOrganization} />
         )}
-        {view === "app-update" && showAudit && (
+        {view === "app-update" && showAppUpdate && (
           <AppUpdateAdmin organization={organization} instructorStore={instructorStore}
             onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
             onRetryOrganization={onRetryOrganization} />
@@ -23539,6 +23550,9 @@ export function createAppScreenSmokeCases() {
     /* 만료일 순서 확인. 대표가 한 화면에서 어긋난 회원을 보고 만료일을 옮긴다 --
        차감이 차수 순이라 뒤 차수가 먼저 만료되면 그 회차를 잃는다. */
     { name: "더보기 탭 · 만료일 순서 확인", element: settingsTab(smokeOwner, { initialView: "expiry-order" }) },
+    /* 총괄매니저가 연 더보기. 급여·감사·강사 관리는 보이고 **앱 업데이트
+       안내만 없다** -- 숫자 하나가 센터 전체의 수업 확정을 막는 자리다. */
+    { name: "더보기 탭 · 총괄매니저", element: settingsTab({ ...smokeOwner, role: "area_manager" }) },
     { name: "더보기 탭 · 백업", element: settingsTab(smokeOwner, {
       initialView: "backup", onRestorePrevious: noop,
       backupStatus: { state: "safe", counts: { members: 16, sessions: 6, photos: 4 }, lastBackupAt: new Date(2026, 8, 3, 9, 0).toISOString() },

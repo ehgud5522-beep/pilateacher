@@ -65,6 +65,10 @@ export const OWNER_ONLY = Object.freeze({
   OWNER_GRANT: "owner_grant",
   /** 이관 초기화 */
   MIGRATION_RESET: "migration_reset",
+  /* 앱 업데이트 설정 (runtimeConfig 의 appUpdate · settlement 쓰기).
+     숫자 하나가 센터 전체의 수업 확정을 막거나, 모든 앱을 필수 팝업에
+     가둔다 -- 다른 자리는 대표와 같아도 여기만은 아니다. */
+  RUNTIME_CONFIG: "runtime_config",
 });
 
 export const MEMBERSHIP_STATUS = Object.freeze({

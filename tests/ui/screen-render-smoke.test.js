@@ -112,6 +112,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 소속 확인 실패",
     "더보기 탭 · 앱 업데이트 안내",
     "더보기 탭 · 만료일 순서 확인",
+    "더보기 탭 · 총괄매니저",
     "더보기 탭 · 백업",
     "더보기 탭 · 월간 리포트",
     "더보기 탭 · 월간 리포트 · 조회 실패",
@@ -2003,6 +2004,19 @@ test("a 50-minute lesson names the pass it needed, not just 디오사", async (t
   const markup = markupOf("일정 탭 · 소속 · 디오사 50분 · B 없음");
 
   assert.match(markup, /디오사 B\(50분\) 회원권이 없어요/);
+});
+
+test("the area manager runs the centre but never the app update setting", async (t) => {
+  /* 다른 자리는 전부 대표와 같다. 여기만 아닌 이유는 하나다 -- settlement
+     최소 빌드를 올리면 **센터 전체의 수업 확정이 막힌다.** 숫자 하나가
+     센터를 세우는 자리라 이관 초기화와 같은 선에 둔다. */
+  const markupOf = await issueScreens(t);
+  const hub = markupOf("더보기 탭 · 총괄매니저");
+
+  assert.match(hub, /급여 집계/);
+  assert.match(hub, /감사 로그/);
+  assert.match(hub, /강사 관리/);
+  assert.doesNotMatch(hub, /앱 업데이트 안내/);
 });
 
 test("the app update card starts empty and says so", async (t) => {

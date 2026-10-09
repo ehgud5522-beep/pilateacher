@@ -33,6 +33,9 @@ export const PAY_RATES = Object.freeze({
   [PAY_CATEGORY.PT_1_1_REPURCHASE_EVENT]: 30000,
   [PAY_CATEGORY.PT_2_1_NEW]: 30000,
   [PAY_CATEGORY.PT_2_1_REPURCHASE]: 35000,
+  /* 2:1 재등록(이벤트). 1:1 이벤트(30,000)와 같은 성격이고 둘이라 금액만
+     다르다 -- 강사가 누구든 같고, 풀방금액을 끌고 움직이지 않는다. */
+  [PAY_CATEGORY.PT_2_1_REPURCHASE_EVENT]: 32000,
   [PAY_CATEGORY.SERVICE]: 10000,
   [PAY_CATEGORY.LETMEIN]: 28000,
   /* 디오사. 30분과 50분의 차이가 그대로 단가의 차이다. 강사가 누구든 같고,

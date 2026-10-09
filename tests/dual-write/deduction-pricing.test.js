@@ -6,7 +6,9 @@ import {
   deputyDirectorUnitPrice, netContractPriceFor, netContractPriceOf, resolveDeductionUnitPrice,
   spendsServiceSession,
 } from "../../src/data/schema/deduction-pricing.js";
-import { MEMBERSHIP_TITLE, PAYMENT_METHOD } from "../../src/data/schema/constants.js";
+import {
+  DUET_PAY_CATEGORIES, MEMBERSHIP_TITLE, PAY_CATEGORY, PAYMENT_METHOD, isDuetPayCategory,
+} from "../../src/data/schema/constants.js";
 import { PAY_RATES } from "../../src/data/schema/pay-rates.js";
 
 /** 1:1 재등록(이벤트) 회원권. 판정 4 가 걸리면 30,000 이다. */
@@ -447,4 +449,66 @@ test("every senior title is a real membership title", () => {
     assert.ok(known.includes(title), title);
   }
   assert.equal(SENIOR_TITLES.includes(MEMBERSHIP_TITLE.INSTRUCTOR), false);
+});
+
+/* ── 2:1 재등록(이벤트) ─────────────────────────────────────────────────────
+
+   2026-10-09 에 대표가 정했다. 32,000 고정이고, 디오사와 같은 자리(판정 1.2)
+   에 선다 -- 표값이 곧 답인 카테고리다. */
+
+test("the 2:1 event rate is 32,000 and the handover cannot take it", () => {
+  /* 인수인계·누적 20회·직급은 전부 1:1 PT 를 전제로 한 판정이다. 여기에
+     걸리면 32,000 짜리 수업이 25,000 으로 나가고, 그 차이는 원장에 박혀
+     고칠 수 없다. */
+  const duetEvent = {
+    category: PAY_CATEGORY.PT_2_1_REPURCHASE_EVENT, baseUnitPrice: 32000,
+    totalSessions: 20, netContractPrice: 1280000, priorSessions: 50, serviceUsedCount: 0,
+  };
+  for (const extra of [{}, { handedOver: true }, { priorSessions: 3 }, { title: "branch_manager" }, { title: "team_lead" }]) {
+    const result = resolveDeductionUnitPrice({ ...duetEvent, ...extra });
+    assert.equal(result.unitPrice, 32000, JSON.stringify(extra));
+    assert.equal(result.rule, PRICING_RULE.DUET_EVENT_FIXED, JSON.stringify(extra));
+  }
+});
+
+test("the deputy director still gets five-five on a 2:1 event pass", () => {
+  /* 고정 단가가 5:5 를 덮지 않는다. 5:5 는 그 회원권이 실제로 팔린 금액에서
+     나오므로, 덮으면 비싼 계약일수록 부원장이 손해를 본다. */
+  const result = resolveDeductionUnitPrice({
+    category: PAY_CATEGORY.PT_2_1_REPURCHASE_EVENT, baseUnitPrice: 32000, isDeputyDirector: true,
+    // 1,280,000 ÷ 20 ÷ 2 = 32,000 -- 우연히 같아도 거쳐 온 길이 다르다.
+    netContractPrice: 1280000, totalSessions: 20, priorSessions: 50, serviceUsedCount: 0,
+  });
+  assert.equal(result.rule, PRICING_RULE.DEPUTY_DIRECTOR);
+  assert.equal(result.unitPrice, 32000);
+
+  // 다른 금액으로 팔린 계약에서는 갈라진다.
+  const cheaper = resolveDeductionUnitPrice({
+    category: PAY_CATEGORY.PT_2_1_REPURCHASE_EVENT, baseUnitPrice: 32000, isDeputyDirector: true,
+    netContractPrice: 1000000, totalSessions: 20, priorSessions: 50, serviceUsedCount: 0,
+  });
+  assert.equal(cheaper.unitPrice, 25000, "고정 단가가 아니라 그 계약의 절반이다");
+});
+
+test("the service judgment still comes first for a 2:1 event pass", () => {
+  const result = resolveDeductionUnitPrice({
+    category: PAY_CATEGORY.SERVICE, baseUnitPrice: 10000,
+    totalSessions: 20, netContractPrice: 1280000, priorSessions: 50, serviceUsedCount: 0,
+  });
+  assert.equal(result.rule, PRICING_RULE.SERVICE_FIRST);
+  assert.equal(result.unitPrice, 10000);
+});
+
+test("every duet category sits in one list, so no screen can miss one", () => {
+  /* 전에는 네 곳이 각자 들고 있었다: 차감 · 발급 안내 · 이관 검사 · 발급
+     화면의 카테고리 목록. 하나를 빠뜨리면 조용히 다르게 동작했다. */
+  assert.deepEqual([...DUET_PAY_CATEGORIES], [
+    PAY_CATEGORY.PT_2_1_NEW,
+    PAY_CATEGORY.PT_2_1_REPURCHASE,
+    PAY_CATEGORY.PT_2_1_REPURCHASE_EVENT,
+  ]);
+  for (const category of DUET_PAY_CATEGORIES) assert.equal(isDuetPayCategory(category), true, category);
+  for (const category of [PAY_CATEGORY.PT_1_1_NEW, PAY_CATEGORY.DIOSA_A, PAY_CATEGORY.SERVICE, ""]) {
+    assert.equal(isDuetPayCategory(category), false, String(category));
+  }
 });

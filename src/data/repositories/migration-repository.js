@@ -32,7 +32,9 @@
  * 한 사람이 사라진다.
  */
 
-import { CLIENT_STATUS, PASS_STATUS, PAY_CATEGORY } from "../schema/constants.js";
+import {
+  CLIENT_STATUS, DUET_PAY_CATEGORIES, PASS_STATUS, PAY_CATEGORY,
+} from "../schema/constants.js";
 import {
   PAYMENT_METHOD_BY_LABEL, PAY_CATEGORY_BY_LABEL, valueOfLabel,
 } from "../schema/display-names.js";
@@ -97,7 +99,9 @@ export const MIGRATION_ERROR = Object.freeze({
    이 목록이 받는 것은 엑셀에서 읽어 라벨 표로 옮긴 문자열이다 -- 좁은 타입이면
    "이 카테고리가 그 목록에 있는가" 라는 질문 자체를 할 수 없다. */
 /** @type {readonly string[]} */
-const DUET_CATEGORIES = Object.freeze([PAY_CATEGORY.PT_2_1_NEW, PAY_CATEGORY.PT_2_1_REPURCHASE]);
+/* 짝 세 칸을 요구하는 카테고리. 목록은 constants.mjs 하나다 -- 전에 여기만
+   빠지면 짝 없는 2:1 이 그대로 들어왔다 (DUET_PAY_CATEGORIES 머리말). */
+const DUET_CATEGORIES = DUET_PAY_CATEGORIES;
 /** @type {readonly string[]} */
 const SOLO_CATEGORIES = Object.freeze([
   PAY_CATEGORY.PT_1_1_NEW,

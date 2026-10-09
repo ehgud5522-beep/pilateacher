@@ -143,7 +143,7 @@ import {
   DEDUCTION_CODE_LABEL, NOT_STARTED_NOTICE, lessonHasStarted,
   canSettleLesson, carePayCategory, clearSettlementFromLesson, closesSettlement, isSettledLesson,
   needsSettlement,
-  pickSoloPass, pickSharedDuetPass,
+  nextByPurchaseRound, pickSoloPass, pickSharedDuetPass,
   planLessonSettlement, recordSettlementAttempt, settledDeductionsOf, settlementOutcome,
   settlementSkipsOf,
 } from "./features/schedule/lesson-settlement.js";
@@ -23998,15 +23998,15 @@ export default function App() {
 
     const solo = pickSoloPass(mine, target, now);
     /* 2:1 은 짝이 누구냐에 따라 쓰이는 회원권이 다르다. 짝별로 고른 뒤 그중
-       만료가 가장 이른 것을 가리킨다 -- 짝이 한 명이면 그것이 곧 답이다. */
+       하나를 가리킨다 -- 짝이 한 명이면 그것이 곧 답이다.
+
+       여기서 다시 고르지 않고 **차감이 쓰는 그 함수**를 부른다. 전에는 이
+       줄만 만료일로 따로 정렬했는데, 2026-10-09 에 차감이 차수 순으로
+       바뀌면서 화면과 실제가 갈라질 자리가 됐다. */
     const partners = [...new Set(mine.map((item) => partnerClientId(item, target)).filter(Boolean))];
-    const duet = partners
+    const duet = nextByPurchaseRound(partners
       .map((partner) => pickSharedDuetPass(mine, [target, partner], now))
-      .filter(Boolean)
-      .sort((left, right) => (
-        (new Date(left.expiresAt || 0).getTime() || Number.MAX_SAFE_INTEGER)
-        - (new Date(right.expiresAt || 0).getTime() || Number.MAX_SAFE_INTEGER)
-      ))[0];
+      .filter(Boolean));
 
     const named = mine.map((item) => {
       const partner = partnerClientId(item, target);

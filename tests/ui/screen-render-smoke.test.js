@@ -162,6 +162,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "회원권 발급 · 확인 · 현금",
     "회원권 발급 · 조회 실패",
     "강사 관리",
+    "강사 관리 · 계정 교체",
+    "강사 관리 · 추가 · 동명 퇴사자",
     "강사 관리 · 수정",
     "강사 관리 · 부원장 지정",
     "강사 관리 · 본인",
@@ -1980,6 +1982,35 @@ test("the app update card starts empty and says so", async (t) => {
   assert.match(card, /수업 확정 자체가 막힙니다/);
   assert.match(card, /웹 칸을 잘못 올리면 대표 화면에서도 확정이 막힙니다/);
   assert.match(card, /기준이 없습니다/);
+});
+
+test("the account swap says what moves and what does not", async (t) => {
+  /* 2026-10 에 대표가 퇴사 + 추가로 했다가 그 사람의 그 달 수업료가 두 uid 로
+     흩어졌다. 퇴사와 다른 일이라는 것, 그리고 원장은 옮기지 않는다는 것이
+     누르기 전에 화면에 있어야 한다. */
+  const markupOf = await issueScreens(t);
+  const sheet = markupOf("강사 관리 · 계정 교체");
+
+  assert.match(sheet, /계정 교체/);
+  assert.match(sheet, /퇴사가 아닙니다/);
+  // 옮겨지는 것이 숫자로 선다. 누적은 더하는 값이라 되돌릴 수 없다.
+  assert.match(sheet, /회원권 담당/);
+  assert.match(sheet, /184회/);
+  assert.match(sheet, /앞으로의 일정/);
+  assert.match(sheet, /지난 수업 기록\(원장\)은 옮기지 않습니다/);
+  // 합쳐 보일 금액을 미리 말한다.
+  assert.match(sheet, /630,000/);
+});
+
+test("adding an instructor warns when someone who left has the same name", async (t) => {
+  /* 막지는 않는다 -- 동명이인은 실제로 있고, 둘을 가릴 수 있는 것은 대표뿐이다.
+     길만 알려 준다. */
+  const markupOf = await issueScreens(t);
+  const add = markupOf("강사 관리 · 추가 · 동명 퇴사자");
+
+  assert.match(add, /같은 이름의/);
+  assert.match(add, /로그인 계정만 바꾸는 것이라면/);
+  assert.match(add, /\[계정 교체\]/);
 });
 
 test("the backup screen offers the previous phone's records", async (t) => {

@@ -469,6 +469,16 @@ test("a duet category fails even when the sheet has no partner columns", () => {
   assert.equal(failures[0].reason, MIGRATION_ERROR.DUET_PARTNER_REQUIRED);
 });
 
+test("the new 2:1 event category needs a partner like every other 2:1", () => {
+  /* 2026-10-09 에 늘린 카테고리다. 짝 목록이 네 곳에 흩어져 있었고, 이관
+     검사만 빠지면 **짝 없는 2:1 이 그대로 들어와 1:1 회원권이 된다** -- 그
+     회원권은 2:1 수업에서 빠지지 않고, 회원은 자기가 산 것과 다른 회차를
+     잃는다. 목록을 constants.mjs 하나로 모은 이유가 이것이다. */
+  const { writes, failures } = planPasses(passSheet(passRow({ 급여카테고리: "2:1 재등록(이벤트)" })));
+  assert.equal(writes.length, 0);
+  assert.equal(failures[0].reason, MIGRATION_ERROR.DUET_PARTNER_REQUIRED);
+});
+
 test("a duet row with only the partner's count fails rather than slipping through", () => {
   /* 강사누적진행2 만 적힌 행. "짝을 가리켰는가" 를 세 칸으로 판단하면 이 행이
      검사도 짝 블록도 모두 지나가, 막으려던 바로 그 모양이 만들어진다. */

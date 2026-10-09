@@ -16,7 +16,7 @@
  */
 
 import {
-  ATTENDANCE_STATUS, PASS_STATUS, PAY_CATEGORY, isDiosaCategory,
+  ATTENDANCE_STATUS, DUET_PAY_CATEGORIES, PASS_STATUS, PAY_CATEGORY, isDiosaCategory,
 } from "../../data/schema/constants.js";
 import { isDuetPass, passBelongsTo } from "../../data/schema/pass-clients.js";
 import { isDeductablePass, remainingCountOf } from "../../data/repositories/pass-repository.js";
@@ -27,7 +27,8 @@ import { lessonTypeKeyOf } from "./lesson-types.js";
    만든 것이고(migration-repository.js 의 duet_partner_required), 고칠 일이지
    쓸 일이 아니다. */
 /** @type {readonly string[]} */
-const DUET_PAY_CATEGORIES = Object.freeze([PAY_CATEGORY.PT_2_1_NEW, PAY_CATEGORY.PT_2_1_REPURCHASE]);
+/* 목록은 constants.mjs 하나다. 전에는 네 곳이 각자 들고 있었고, 하나를
+   빠뜨리면 조용히 다르게 동작했다 -- 그 머리말 참고. */
 
 /** 왜 차감하지 않았는가. 화면이 이 값으로 무엇을 말할지 정한다. */
 export const SETTLEMENT_SKIP = Object.freeze({

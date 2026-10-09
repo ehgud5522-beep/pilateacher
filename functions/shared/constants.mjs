@@ -124,6 +124,9 @@ export const PAY_CATEGORY = Object.freeze({
   PT_1_1_REPURCHASE_NORMAL: "pt_1_1_repurchase_normal",
   PT_2_1_NEW: "pt_2_1_new",
   PT_2_1_REPURCHASE: "pt_2_1_repurchase",
+  /* 2:1 재등록(이벤트). 32,000 고정이고 인수인계·누적 20회·직급에 걸리지
+     않는다 (2026-10-09). 짝 규칙은 다른 2:1 과 똑같다. */
+  PT_2_1_REPURCHASE_EVENT: "pt_2_1_repurchase_event",
   SERVICE: "service",
   LETMEIN: "letmein",
   /* 디오사 — 관리 수업. PT 와 다른 상품이고 단가도 고정이다 (2026-10-05).
@@ -132,6 +135,30 @@ export const PAY_CATEGORY = Object.freeze({
   DIOSA_B: "diosa_b",
   ETC: "etc",
 });
+
+/**
+ * 둘이 함께 쓰는 회원권의 카테고리. **목록은 여기 하나다.**
+ *
+ * 전에는 네 곳이 각자 들고 있었다 -- 차감(lesson-settlement), 발급 안내
+ * (duet-issue), 이관 검사(migration-repository), 발급 화면의 고를 수 있는
+ * 카테고리(display-names). 그래서 카테고리를 하나 늘릴 때 네 곳을 모두 고쳐야
+ * 했고, 하나를 빠뜨리면 **조용히 다르게** 동작했다: 이관 검사만 빠지면 짝 없는
+ * 2:1 이 그대로 들어오고, 차감만 빠지면 그 회원권이 1:1 수업에서 빠진다.
+ *
+ * 한 곳으로 모은다. 다음에 늘릴 때는 여기만 고치면 된다.
+ */
+export const DUET_PAY_CATEGORIES = Object.freeze(
+  /** @type {ReadonlyArray<string>} */ ([
+    PAY_CATEGORY.PT_2_1_NEW,
+    PAY_CATEGORY.PT_2_1_REPURCHASE,
+    PAY_CATEGORY.PT_2_1_REPURCHASE_EVENT,
+  ]),
+);
+
+/** 둘이 함께 쓰는 회원권인가. @param {unknown} category */
+export function isDuetPayCategory(category) {
+  return DUET_PAY_CATEGORIES.includes(String(category ?? ""));
+}
 
 /** 디오사 급여 카테고리. 수업 종류 ↔ 회원권 종류를 잇는 데도 쓴다. */
 export const DIOSA_CATEGORIES = Object.freeze(

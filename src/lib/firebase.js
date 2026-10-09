@@ -736,6 +736,12 @@ export const fbFixMigratedServiceSessions = callableAsOwner("fixMigratedServiceS
 
    금액은 보내지 않는다. 회차와 받는 사람만 보내고 서버가 같은 모듈로 다시
    센다 -- 앱이 보낸 금액을 그대로 박으면 그것은 잠긴 문이 아니다. */
+/* 운영 설정 쓰기. 대표 전용이고 역할은 서버가 다시 읽는다 --
+   functions/src/runtime-config-admin.js 머리말에 근거가 있다.
+
+   document 를 비워 보내면 읽기만 한다. 화면이 고치기 전에 지금 값을 본다. */
+export const fbUpdateRuntimeConfig = callableAsOwner("updateRuntimeConfig");
+
 export const fbSessionUpPass = callableAsOwner("sessionUpPass");
 export const fbHandoverPass = callableAsOwner("handoverPass");
 
@@ -851,6 +857,25 @@ export async function fbLoadSettlementConfig() {
         ios: String(table.ios ?? "").trim(),
       },
     };
+  } catch (_error) {
+    return null;
+  }
+}
+
+/**
+ * 앱 업데이트 안내 설정. **못 읽으면 null 이고, 그러면 아무것도 띄우지 않는다.**
+ *
+ * 판정은 features/app-update/update-gate.js 가 하고 여기서는 읽기만 한다 --
+ * fbLoadSettlementConfig 와 같은 모양이다.
+ */
+export async function fbLoadAppUpdateConfig() {
+  if (!fs || !auth?.currentUser) return null;
+  try {
+    const snap = await withAuthTimeout(
+      () => getDoc(doc(fs, "runtimeConfig", "appUpdate")),
+      { timeoutMs: FIRESTORE_READ_TIMEOUT_MS, provider: "firebase", stage: "app_update_config_read" },
+    );
+    return snap.exists() ? snap.data() : null;
   } catch (_error) {
     return null;
   }

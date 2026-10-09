@@ -106,6 +106,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 강사",
     "더보기 탭 · 개인 모드",
     "더보기 탭 · 소속 확인 실패",
+    "더보기 탭 · 앱 업데이트 안내",
     "더보기 탭 · 백업",
     "더보기 탭 · 월간 리포트",
     "더보기 탭 · 월간 리포트 · 조회 실패",
@@ -1962,6 +1963,23 @@ test("an add-on care lesson shows both rate lines and the picker", async (t) => 
   assert.match(markup, /관리 A\(30분\)/);
   // 반쪽 차감이 없다는 것을 누르기 전에 말한다.
   assert.match(markup, /디오사 회원권이 없으면 둘 다 빠지지 않습니다/);
+});
+
+test("the app update card starts empty and says so", async (t) => {
+  /* 1.1.33 이 스토어에 올라갈 때까지 비어 있는 것이 정상이다. 빈 설정이 곧
+     "아무것도 띄우지 않음" 이라는 말이 화면에 있어야, 대표가 켜지 않은 것과
+     고장 난 것을 가른다. */
+  const markupOf = await issueScreens(t);
+  const card = markupOf("더보기 탭 · 앱 업데이트 안내");
+
+  assert.match(card, /앱 업데이트 안내/);
+  assert.match(card, /비워 두면 아무것도 띄우지 않습니다/);
+  assert.match(card, /Android 최신 빌드/);
+  assert.match(card, /iOS 최소 빌드/);
+  // 확정 차단은 같은 화면에 있되, 무엇이 걸리는지 먼저 말한다.
+  assert.match(card, /수업 확정 자체가 막힙니다/);
+  assert.match(card, /웹 칸을 잘못 올리면 대표 화면에서도 확정이 막힙니다/);
+  assert.match(card, /기준이 없습니다/);
 });
 
 test("the backup screen offers the previous phone's records", async (t) => {

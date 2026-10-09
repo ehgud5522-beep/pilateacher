@@ -30,6 +30,7 @@ const {
   findServiceDeductions, planServiceSessionFix, runServiceSessionFix,
 } = require("./service-session-fix");
 const { isPassAdmin, runHandover, runSessionUp } = require("./pass-admin");
+const { readRuntimeConfig, writeRuntimeConfig } = require("./runtime-config-admin");
 const { reconcileOrganization } = require("./pass-reconcile-nightly");
 const { createFirestoreMemberLinkPorts } = require("./member-link-store");
 const {
@@ -671,6 +672,54 @@ exports.verifyInstructorIds = onCall(
    트리거도 깨어나지 않는다.
 
    04:00 KST 다. 수업이 없고, 자정 직후의 만료가 이미 지나간 시각이다. */
+/* ── 운영 설정 쓰기 ──────────────────────────────────────────────────────
+   대표 전용. 근거는 runtime-config-admin.js 머리말에 있다.
+
+   규칙은 runtimeConfig 의 쓰기를 닫아 두었다 -- 숫자 하나가 센터 전체의 수업
+   확정을 막을 수 있어, 앱에서 실수로 눌러지는 자리를 만들지 않았다. 그 문을
+   여는 대신 통로를 하나 낸다. */
+exports.updateRuntimeConfig = onCall({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  timeoutSeconds: 60,
+  invoker: "public",
+}, async (request) => {
+  const callerUid = String(request?.auth?.uid || "").trim();
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  if (!callerUid) throw new HttpsError("unauthenticated", "Please sign in again.");
+  if (!organizationId) throw new HttpsError("invalid-argument", "organizationId is required.");
+
+  const membership = await firestore
+    .collection("memberships").doc(membershipId(organizationId, callerUid)).get();
+  /* 화면이 카드를 감추는 것은 안내이고 막는 것은 여기다. 이 설정은 조직의
+     것이 아니라 앱 전체의 것이라, 어느 센터의 대표든 바꿀 수 있다는 뜻이
+     되지 않도록 소속 확인을 지나게 둔다. */
+  if (!isActiveOwner(membership.exists ? membership.data() : null)) {
+    throw new HttpsError("permission-denied", "Only the centre owner can change this.");
+  }
+
+  /* 쓰지 않고 읽기만 할 수도 있다. 화면이 고치기 전에 지금 값을 보여준다. */
+  const document = String(request?.data?.document || "").trim();
+  if (!document) return { config: await readRuntimeConfig(firestore) };
+
+  try {
+    const result = await writeRuntimeConfig(firestore, {
+      document, value: request?.data?.value, actorId: callerUid,
+    });
+    /* 숫자만 남긴다. 이 값이 센터 전체를 막을 수 있어 누가 언제 무엇으로
+       바꿨는지가 남아야 한다 (§7 -- 이름도 번호도 아니다). */
+    logger.info("runtime_config_updated", {
+      feature: "runtime_config", stage: "write", organizationId, document,
+    });
+    return { ...result, config: await readRuntimeConfig(firestore) };
+  } catch (error) {
+    logger.error("runtime_config_write_failed", {
+      feature: "runtime_config", stage: "write", organizationId, document,
+      errorCode: error?.message || "unknown",
+    });
+    throw new HttpsError("failed-precondition", String(error?.message || "runtime_config_failed"));
+  }
+});
+
 /* ── 세션업과 회원 간 양도 ───────────────────────────────────────────────
    대표와 FC매니저가 쓴다. 근거는 pass-admin.js 머리말에 있다.
 

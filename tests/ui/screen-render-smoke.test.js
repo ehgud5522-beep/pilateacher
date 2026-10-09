@@ -92,6 +92,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     /* 회원권 네 장 짜리. 배포 563 이 여기서 죽었다 -- "소속" 케이스는
        passCards 를 넘기지 않아 새 카드 코드가 한 줄도 돌지 않았다. */
     "회원 상세 · 회원권 네 장",
+    "회원 상세 · 만료일 순서 경고",
     "회원 상세 · 소속",
     "회원 상세 · 강사",
     "회원 상세 · 대표",
@@ -107,6 +108,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 개인 모드",
     "더보기 탭 · 소속 확인 실패",
     "더보기 탭 · 앱 업데이트 안내",
+    "더보기 탭 · 만료일 순서 확인",
     "더보기 탭 · 백업",
     "더보기 탭 · 월간 리포트",
     "더보기 탭 · 월간 리포트 · 조회 실패",
@@ -1982,6 +1984,30 @@ test("the app update card starts empty and says so", async (t) => {
   assert.match(card, /수업 확정 자체가 막힙니다/);
   assert.match(card, /웹 칸을 잘못 올리면 대표 화면에서도 확정이 막힙니다/);
   assert.match(card, /기준이 없습니다/);
+});
+
+test("a pass whose later round expires first says so on the card", async (t) => {
+  /* 2026-10-09 부터 차감이 차수 순이다. 1차에 잔여가 남아 있는 동안 2차는
+     쓰이지 않는데, 그 2차가 먼저 만료되면 회원이 돈을 낸 회차가 손도 못 대 보고
+     사라진다. 자동으로 피하지 않으므로 -- 순서를 뒤집으면 예측이 깨지고 그것이
+     차수 순으로 바꾼 이유였다 -- 화면이 먼저 말하는 것이 유일한 안전장치다. */
+  const markupOf = await issueScreens(t);
+  const detail = markupOf("회원 상세 · 만료일 순서 경고");
+
+  assert.match(detail, /2차가 1차보다 먼저 만료돼요/);
+  assert.match(detail, /만료일을 확인해 주세요/);
+});
+
+test("the centre-wide expiry order screen names what it is for", async (t) => {
+  /* 대표가 한 화면에서 어긋난 회원을 보고 만료일을 옮긴다. 회원권이 왜
+     차수 순으로 빠지는지가 같은 화면에 없으면, 경고만 보고 무엇을 고칠지
+     모른다. */
+  const markupOf = await issueScreens(t);
+  const screen = markupOf("더보기 탭 · 만료일 순서 확인");
+
+  assert.match(screen, /만료일 순서 확인 필요/);
+  assert.match(screen, /차수가 빠른 것부터/);
+  assert.match(screen, /쓰이지 못한 채 사라집니다/);
 });
 
 test("the account swap says what moves and what does not", async (t) => {

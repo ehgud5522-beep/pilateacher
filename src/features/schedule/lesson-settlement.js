@@ -157,29 +157,50 @@ const attendeesOf = (lesson) => {
 /**
  * 여럿 중 하나를 고르는 순서. **차감 규칙 전체에서 이 정렬 하나만 쓴다.**
  *
- * 만료가 이른 것을 먼저 쓴다. 늦게 만료되는 것을 먼저 쓰면 이른 쪽이 쓰이지
- * 못한 채 만료되고, 회원은 돈을 낸 회차를 잃는다. 만료일이 같으면 먼저 발급된
- * 것을 쓴다 -- 먼저 팔린 것이 먼저 소진되는 것이 계약의 순서다.
+ * ── 차수 순이다 (2026-10-09 대표 확정) ──
+ * 같은 종류 안에서 **먼저 산 것부터** 쓴다. 1차를 다 쓰고 2차, 그다음 3차다.
+ * 회원이 "지난번에 끊은 것부터 쓰고 있다" 고 말할 수 있는 순서이고, 재등록
+ * 상담에서 대표가 설명하는 순서도 그것이다.
  *
- * 고른 회원권 *안에서* 결제 회차와 서비스 회차 중 어느 쪽을 쓰는지는 다른 층위의
- * 판단이고, deduction-pricing.js 의 spendsServiceSession 이 답한다(서비스가
- * 먼저다). 이 판단이 먼저다 -- 만료는 회원이 돈을 낸 회차를 없애므로, 서비스가
- * 남은 회원권을 만료가 이른 회원권보다 앞세우지 않는다.
+ * 별도로 끊은 서비스 회원권도 자기 차수 자리에 선다 -- 따로 빼 두지 않는다.
+ * 그것도 그 시점에 센터와 주고받은 한 건이다.
+ *
+ * ── 만료일은 보지 않는다 ──
+ * 전에는 만료가 이른 것을 먼저 썼다. 근거는 "늦게 만료되는 것을 먼저 쓰면
+ * 이른 쪽이 쓰이지 못한 채 만료되고, 회원은 돈을 낸 회차를 잃는다" 였다.
+ *
+ * 대표가 뒤집었다. **그 위험은 그대로 남는다** -- 1차가 아직 남았는데 2차의
+ * 만료가 먼저 오면, 2차가 쓰이지 못한 채 만료될 수 있다. 그때는 만료일을
+ * 옮기는 쪽으로 푼다(회원권 수정의 만료일 변경). 순서가 예측되는 것이
+ * 그 손실을 자동으로 피하는 것보다 낫다는 판단이다.
+ *
+ * 차수를 읽을 수 없는 회원권은 맨 뒤다. 0 으로 보면 그 회원권이 1차보다 먼저
+ * 쓰이고, 그것은 아무도 의도하지 않은 순서다. 차수가 같으면 먼저 발급된 것을
+ * 쓴다 -- 먼저 팔린 것이 먼저 소진되는 것이 계약의 순서다.
+ *
+ * ── 한 회원권 *안에서* 는 서비스가 먼저 ──
+ * 다른 층위의 판단이고 deduction-pricing.js 의 spendsServiceSession 이
+ * 답한다. 이 정렬이 회원권을 고르고, 그 안에서 어느 회차를 쓸지는 거기서
+ * 정해진다.
  *
  * @param {Array<any>} passes
  * @returns {any | null}
  */
-export function soonestExpiring(passes) {
+export function nextByPurchaseRound(passes) {
   const list = (Array.isArray(passes) ? passes : []).filter(Boolean);
   if (list.length === 0) return null;
-  const at = (value) => {
+  const roundOf = (pass) => {
+    const round = Number(pass?.purchaseRound);
+    // 못 읽으면 맨 뒤. 0 으로 보면 1차보다 먼저 쓰인다.
+    return Number.isInteger(round) && round > 0 ? round : Number.MAX_SAFE_INTEGER;
+  };
+  const issuedAt = (value) => {
     const date = value instanceof Date ? value : new Date(String(value ?? ""));
     const time = date.getTime();
-    // 만료일이 없는 회원권은 맨 뒤로. 급한 것을 먼저 쓰는 것이 이 정렬의 목적이다.
     return Number.isFinite(time) ? time : Number.MAX_SAFE_INTEGER;
   };
   return list.slice().sort((left, right) => (
-    at(left.expiresAt) - at(right.expiresAt) || at(left.createdAt) - at(right.createdAt)
+    roundOf(left) - roundOf(right) || issuedAt(left.createdAt) - issuedAt(right.createdAt)
   ))[0];
 }
 
@@ -255,7 +276,7 @@ export function pickCarePass(passes, clientId, category, now = new Date()) {
   const client = text(clientId);
   const wanted = text(category);
   if (!client || !wanted) return null;
-  return soonestExpiring((Array.isArray(passes) ? passes : []).filter((pass) => (
+  return nextByPurchaseRound((Array.isArray(passes) ? passes : []).filter((pass) => (
     text(pass?.category) === wanted && passBelongsTo(pass, client) && isDeductablePass(pass, now)
   )));
 }
@@ -282,7 +303,7 @@ export function ownsCarePass(passes, clientId, category) {
 export function pickSoloPass(passes, clientId, now = new Date()) {
   const client = text(clientId);
   if (!client) return null;
-  return soonestExpiring((Array.isArray(passes) ? passes : []).filter((pass) => (
+  return nextByPurchaseRound((Array.isArray(passes) ? passes : []).filter((pass) => (
     isSoloCandidate(pass) && passBelongsTo(pass, client) && isDeductablePass(pass, now)
   )));
 }
@@ -312,7 +333,7 @@ export function sharedDuetPasses(passes, clientIds) {
  * @returns {any | null}
  */
 export function pickSharedDuetPass(passes, clientIds, now = new Date()) {
-  return soonestExpiring(sharedDuetPasses(passes, clientIds)
+  return nextByPurchaseRound(sharedDuetPasses(passes, clientIds)
     .filter((pass) => isDeductablePass(pass, now)));
 }
 

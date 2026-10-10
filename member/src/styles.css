@@ -84,28 +84,48 @@ body {
 .shell {
   display: flex;
   flex-direction: column;
+  /* dvh 를 모르는 브라우저는 앞 줄을 쓴다. dvh 는 주소창이 접히고 펴질 때
+     따라 변해 아래가 잘리지 않는다. */
+  min-height: 100vh;
   min-height: 100dvh;
   max-width: 480px;
   margin: 0 auto;
+  /* viewport-fit=cover 라 화면이 노치·상태 표시줄 밑까지 깔린다. 그만큼
+     안으로 들인다 -- 홈 화면에 추가한 PWA 에서 맨 위 줄이 시계 밑에 숨었다.
+     안전 영역이 없는 기기에서는 0 이다. */
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
 }
 /* 맨 위 한 줄. 앞말은 물러나 있고 센터 이름만 로즈로 선다 -- 이름만 놓으면
    상호이고, 앞말이 서면 회원이 여기 오는 이유가 된다. */
 .head {
-  /* 상태 표시줄(시계) 아래로 내린다.
-     index.html 이 viewport-fit=cover 라 웹뷰가 화면 끝까지 차지한다 --
-     그것이 없으면 여백이 안 생기지만, 있으면 이 줄이 있어야 겹치지
-     않는다. 아이폰 TestFlight 빌드에서 실제로 시계와 겹쳐 있었다.
-     브라우저에서는 이 값이 0 이라 웹 화면은 그대로다. */
-  padding: calc(18px + env(safe-area-inset-top, 0px)) 24px 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 24px 6px;
   font-size: 11px;
   letter-spacing: .14em;
   color: var(--faint);
 }
 .head b { margin-left: 5px; font-size: 12px; font-weight: 700; color: var(--rose); letter-spacing: .1em; }
-/* 아래는 탭 막대(64px)와 그 아래 안전 영역만큼 비운다. 탭이 이미
-   env(safe-area-inset-bottom) 위로 떠 있어서, 여기에도 더하지 않으면
-   마지막 카드가 탭에 가린다. */
-.main { flex: 1; padding: 8px 24px calc(112px + env(safe-area-inset-bottom, 0px)); }
+/* 머리줄과 같은 무게로 물러나 있다. 글자는 작아도 누르는 자리는 44px 이다. */
+.signout {
+  min-height: 44px;
+  margin: -12px -12px -12px 0;
+  padding: 0 12px;
+  border: 0;
+  background: transparent;
+  color: var(--sub);
+  font-family: inherit;
+  font-size: 12px;
+  letter-spacing: .02em;
+  white-space: nowrap;
+}
+/* 아래 112px 는 떠 있는 탭 자리다. 안전 영역은 .shell 이 이미 들였다. */
+.main { flex: 1; padding: 8px 24px 112px; }
 .stack > * + * { margin-top: 16px; }
 
 .card {

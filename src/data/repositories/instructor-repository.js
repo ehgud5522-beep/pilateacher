@@ -19,7 +19,10 @@
  * firestore.foundation.rules 머리말의 B 항목이 그 이야기다.
  */
 
-import { COLLECTIONS, MEMBERSHIP_STATUS, MEMBERSHIP_TITLE, ROLES } from "../schema/constants.js";
+import {
+  COLLECTIONS, DISPLAY_NAME_BY, MEMBERSHIP_STATUS, MEMBERSHIP_TITLE, ROLES,
+  displayNameSetByOwner,
+} from "../schema/constants.js";
 import { paths } from "../schema/paths.js";
 import { AUDIT_ACTION, auditEntry, auditLogId } from "./audit-repository.js";
 import { readCollection } from "./repository-read.js";
@@ -238,6 +241,10 @@ export async function addMembership(organizationId, input, options = {}) {
     role,
     status: MEMBERSHIP_STATUS.ACTIVE,
     displayName,
+    /* 붙일 때부터 **대표가 정한 이름**이다. 표시가 없으면 그 강사가 앱을 처음
+       여는 순간 로그인 계정 이름으로 덮어써진다 -- 추가 화면에서 이름을 적는
+       일 자체가 무의미해진다. */
+    displayNameBy: DISPLAY_NAME_BY.OWNER,
     title,
     createdAt: stampedAt,
     createdBy,
@@ -290,9 +297,12 @@ export async function setMembershipProfile(organizationId, userId, input, option
   const stampedAt = await store.serverTimestamp();
   /* 지점을 비우는 일은 이 화면이 하지 않는다. 규칙이 빈 문자열을 거부하므로
      보내면 통째로 실패하고, 화면에는 "저장하지 못했다"만 남는다. */
+  /* **누가 정한 이름인지 함께 적는다.** 이 표시가 없으면 그 강사가 앱을 한 번
+     여는 순간 로그인 계정 이름으로 되돌아간다 -- 규칙이 본인의 이름 쓰기를
+     열어 두고 있고, 그 문은 "대표가 정했는가" 를 이 칸으로만 안다. */
   const profile = locationId
-    ? { displayName, title, locationId }
-    : { displayName, title };
+    ? { displayName, title, locationId, displayNameBy: DISPLAY_NAME_BY.OWNER }
+    : { displayName, title, displayNameBy: DISPLAY_NAME_BY.OWNER };
 
   const audit = auditEntry(organization, {
     action: AUDIT_ACTION.MEMBER_PROFILE_CHANGED,
@@ -362,6 +372,69 @@ export async function setMembershipStatus(organizationId, userId, input, options
     },
   ]);
   return { userId: target, status, audit };
+}
+
+/**
+ * 총괄매니저 지정 · 해제. **대표만, 자기 자신에게는 쓸 수 없다.**
+ *
+ * 총괄매니저는 지점 경계 없이 대표와 같은 권한이다. 그래서 이 자리를 세우는
+ * 일만은 대표에게 남겨 두었다 -- 총괄매니저가 총괄매니저를 세울 수 있으면
+ * 대표가 모르는 사이에 그 자리가 늘고, 되돌리는 문은 없다.
+ *
+ * 오가는 것은 area_manager 와 그 아래(강사 · FC매니저) 사이뿐이다. 대표는
+ * 양쪽 어디에도 없다 -- 규칙의 role 문과 같은 선이다.
+ *
+ * **기본 지점이 같은 쓰기에 간다.** 지정 화면이 둘을 한 번에 저장하는데, 따로
+ * 쓰면 하나가 실패했을 때 역할만 바뀌고 지점이 빈 상태가 남는다. 규칙도 그
+ * 둘만 받는다 (hasOnly(["role", "locationId"])).
+ *
+ * @param {string} organizationId
+ * @param {string} userId
+ * @param {{ role: string, locationId?: string, changedBy: string, actorRole: string }} input
+ * @param {{ store?: InstructorRateStore }} [options]
+ */
+export async function setMembershipRole(organizationId, userId, input, options = {}) {
+  const { store = createFirestoreInstructorRateStore() } = options;
+  const organization = requiredText(organizationId, "organizationId");
+  const target = requiredText(userId, "userId");
+  const changedBy = requiredText(input?.changedBy, "changedBy");
+  /* 자기 자신은 아니다. 대표가 자기를 총괄매니저로 내리면 그 센터에 대표가
+     없어지고, 되돌릴 문이 아무 데도 없다 -- 퇴사 문과 같은 이유다. */
+  if (target === changedBy) throw new Error("Invalid userId");
+  /* 대표만이다. 규칙도 막지만 여기서 먼저 막는다 -- 거부된 쓰기는
+     permission-denied 한 줄로만 돌아온다. */
+  if (requiredText(input?.actorRole, "actorRole") !== ROLES.OWNER) throw new Error("Invalid actorRole");
+
+  const role = requiredText(input?.role, "role");
+  if (role !== ROLES.AREA_MANAGER && role !== ROLES.INSTRUCTOR && role !== ROLES.MANAGER) {
+    throw new Error("Invalid role");
+  }
+
+  const locationId = String(input?.locationId ?? "").trim();
+  const stampedAt = await store.serverTimestamp();
+  const audit = auditEntry(organization, {
+    action: AUDIT_ACTION.AREA_MANAGER_SET,
+    actorId: changedBy,
+    actorRole: ROLES.OWNER,
+    targetId: target,
+    // 지정인가 해제인가. 한 동작에 두 방향이 있어 이 칸이 없으면 읽을 수 없다.
+    enabled: role === ROLES.AREA_MANAGER,
+    ...(locationId ? { locationId } : {}),
+    stampedAt,
+  });
+
+  await store.commit([
+    {
+      path: paths.orgMembership(organization, target),
+      data: locationId ? { role, locationId } : { role },
+      operation: "update",
+    },
+    {
+      path: paths.auditLog(auditLogId(AUDIT_ACTION.AREA_MANAGER_SET, target, String(Date.now()))),
+      data: audit,
+    },
+  ]);
+  return { userId: target, role, locationId, audit };
 }
 
 /* ── 풀방금액 ──────────────────────────────────────────────────────────────
@@ -582,14 +655,21 @@ export async function setInstructorDeputyDirector(organizationId, userId, input,
  * 있다 -- 이름을 얻자고 그 문서를 열면 전화번호와 이메일이 함께 열리고,
  * Firestore 규칙은 읽기에서 필드를 가릴 수 없다.
  *
- * 쓰는 사람은 언제나 본인이다. 이름은 본인의 것이고, 남이 고쳐 쓸 이유가 없다.
+ * ── **빈칸만 채운다** ──
+ * 2026-10-10 까지 이 함수는 로그인 이름과 저장된 이름이 다르면 언제나 덮어
+ * 썼다. 그래서 대표가 강사 관리에서 고친 이름이 그 강사가 앱을 한 번 여는
+ * 순간 **구글 계정 이름으로 되돌아갔고**, 급여 집계도 그 이름으로 섰다.
  *
- * 값이 같으면 쓰지 않는다 -- 앱을 열 때마다 같은 값을 다시 쓰면 규칙 평가와
- * 쓰기 비용만 늘고 얻는 것이 없다.
+ * 로그인 이름은 **씨앗이지 출처가 아니다.** 아직 아무 이름도 없을 때 한 번
+ * 채우고, 그다음부터는 손대지 않는다. 센터에서 부르는 이름을 정하는 것은
+ * 대표다 (setMembershipProfile).
+ *
+ * 규칙도 같은 선을 긋는다 -- 앱만 고치면 업데이트하지 않은 기기가 계속
+ * 되돌린다. displayNameBy 가 그 표시다.
  *
  * @param {string} organizationId
  * @param {string} userId
- * @param {{ displayName: string, currentDisplayName?: string }} input
+ * @param {{ displayName: string, currentDisplayName?: string, membership?: any }} input
  * @param {{ store?: { update: (path: string, data: object) => Promise<void> } }} [options]
  * @returns {Promise<{ written: boolean, displayName: string }>}
  */
@@ -601,9 +681,13 @@ export async function syncOwnMembershipName(organizationId, userId, input, optio
   // 빈 이름으로 덮어쓰면 목록이 uid 로 되돌아간다. 규칙도 빈 문자열을 거부한다.
   if (!displayName) return { written: false, displayName: "" };
   if (displayName.length > 60) return { written: false, displayName: "" };
-  if (displayName === String(input?.currentDisplayName ?? "").trim()) {
-    return { written: false, displayName };
-  }
+  /* **이미 이름이 있으면 손대지 않는다.** 대표가 정했든 전에 채워졌든, 그것이
+     센터에서 부르는 이름이다. 로그인 이름으로 덮으면 대표가 고친 것이 조용히
+     되돌아간다. */
+  const current = String(input?.currentDisplayName ?? "").trim();
+  if (current) return { written: false, displayName: current };
+  // 표시가 있으면 더 볼 것도 없다. 규칙도 이 경우를 거부한다.
+  if (displayNameSetByOwner(input?.membership)) return { written: false, displayName: current };
   await store.update(paths.orgMembership(organization, id), { displayName });
   return { written: true, displayName };
 }

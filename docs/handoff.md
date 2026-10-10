@@ -10,8 +10,32 @@ Claude Code · Codex 가 새 세션을 열면 이 파일부터 읽는다. 작업
   `main` · `docs/app-review-account` 가 아니거나, 커밋되지 않은 변경이 있으면
   (package-lock.json 만 예외) 빌드 전에 이유를 적고 멈춘다. 늘리려면 그 파일의
   `DEPLOYABLE_BRANCHES` 하나만 고친다.
+- 회원 앱: https://pilateacher-member.web.app — **main 병합 시 자동 배포**
+  (`.github/workflows/deploy-member.yml`). 회원 앱이 쓰는 경로가 바뀐 push 에만
+  돈다 -- 강사 앱만 바뀌면 돌지 않는다. PR 에는 7일짜리 미리보기 주소가 코멘트로
+  달린다. **배포가 됐는지 · 어느 번들이 나갔는지는 이 문서에 적지 않는다.**
+  GitHub 의 Actions 실행 내역(Deploy member app)을 본다. 회원 앱이 member/ 밖
+  파일을 새로 import 하면 워크플로의 paths 두 곳에 함께 적는다 -- 빠지면
+  `tests/member/deploy-paths.test.js` 가 깨진다. 수동 배포(`npm run deploy:member`)는
+  비상용으로 남아 있다.
 - 규칙 배포는 따로다: `npm run test:rules` 통과 후
   `npx firebase deploy --only firestore:rules --project pilateacher --config firebase.foundation.json`
+
+## 회원 앱 — 번호 인증 오류 · 안전 영역 · 로그아웃 (2026-10-10) · PR #57
+
+회원 앱(`member/`)만 고쳤다. 강사 앱 번들은 그대로다.
+
+- 인증 실패를 종류별로 가른다 — `member/src/auth-errors.js` (단위 테스트로 고정).
+  `console.error("[member/phone_auth]", {feature, stage, errorCode …})` 로 원본 코드를
+  남긴다. 번호는 남기지 않는다. unknown 은 운영에서도 코드를 보이고, 알려진 실패는
+  개발 모드에서만 코드를 덧붙인다
+- reCAPTCHA 는 하나만 만든다. 보안 확인 · 횟수 초과 · 네트워크 · 모르는 실패면
+  `resetRecaptcha()` 로 clear 하고 다음에 새 자식 요소에 다시 만든다
+- `toE164` 를 `member/src/phone.js` 로 뺐다. `+82 010-…` 이 `+82010…` 이 되던 것을 고쳤다
+- `.shell` 에 safe-area 네 방향 padding, `100vh` → `100dvh` 대비 한 줄
+- 머리줄 오른쪽 "로그아웃" — 확인창 → `signOut` → `pilateacher.member.*` 칸을 걷는다.
+  화면 이동은 `onAuthStateChanged` 하나가 한다
+- 실제 문자 수신 → confirm 은 아직 기기에서 확인하지 않았다 (테스트 번호로 볼 것)
 
 ## 회원 앱 1단계 (2026-09-27) · 브랜치 `feat/member-app-shell` · PR #21
 
@@ -140,6 +164,26 @@ main 병합 · 빌드 · 배포는 대표가 지시한다 (CLAUDE.md).
 ---
 
 ## 최근 변경 (2026-09-23, Cowork 세션)
+
+### 0-20. 빌드 61 — 강사는 담당 회원만 본다 (2026-09-26)
+
+main `527fc0c`. 웹 배포됨. **규칙 배포는 아직 안 했다.**
+
+강사 조회가 `where("instructorIds", "array-contains", uid)` 로 바뀌었다.
+기기에서 거르는 것이 아니라 애초에 안 내려온다. 붙인 곳은 강사가 닿는 세
+곳이다 -- 로스터(회원 탭·일정·검색의 원천), 출석 체크, 급여 상세.
+
+**그 과정에서 거짓말을 하나 찾아 고쳤다.** 기기 명부에 남아 있던 다른 강사의
+회원이 `local_only` 로 떨어지면서 화면이 "센터에 등록되지 않은 회원 N명"
+이라고 말하게 됐다 -- 전환 전에는 참이었고 전환 뒤에는 거짓이다. 강사에게는
+"내 담당 명부에 없는 회원" 이라고 말한다.
+
+**③ 규칙 배포의 기준은 61 이 아니다.** 앱 버전 기록이 없어서 강사 전원이
+업데이트했는지 볼 방법이 없다. 62 이상이 기준이다 --
+[instructor-scope-plan.md](instructor-scope-plan.md) 의 표 참고.
+
+**main 병합은 대표가 이 턴에 지시했다.** 규칙은 CLAUDE.md 에 적혀 있다.
+
 
 ### 0-19. 강사가 보는 회원의 범위 — 0단계 (2026-09-26) · **미배포**
 

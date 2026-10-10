@@ -19,6 +19,7 @@
 
 import { DIAGNOSTIC_KEY } from "./diagnostics.js";
 import { VIEW_CACHE_KEY } from "./offline-cache.js";
+import { CODE_SENT_AT_KEY } from "./resend.js";
 
 /** 확정 5번. 하루는 86,400,000 밀리초. */
 export const REVERIFY_AFTER_DAYS = 90;
@@ -77,22 +78,39 @@ export function writeVerifiedAt(at, store) {
   }
 }
 
-/**
- * 이 기기에서 회원 앱이 남긴 것을 전부 걷는다. 계정 삭제 뒤에 부른다.
- *
- * 계정은 지웠는데 마지막 확인 시각이 남아 있으면, 다음에 이 폰을 여는 사람이
- * **지워진 사람의 흔적**을 밟고 들어간다. 걷는 목록은 여기 한 군데에만 둔다 --
- * 칸이 늘 때 이 함수를 같이 고치지 않으면 남는 것이 생기고, 그것은 아무도
- * 알아채지 못한다.
- */
-export const DEVICE_KEYS = Object.freeze([VERIFIED_AT_KEY, VIEW_CACHE_KEY, DIAGNOSTIC_KEY]);
+/** 이 앱이 기기에 적는 칸은 전부 이 이름으로 시작한다. */
+const MEMBER_KEY_PREFIX = "pilateacher.member.";
 
+/**
+ * 이 기기에서 회원 앱이 남긴 것을 전부 걷는다. 로그아웃과 계정 삭제 뒤에 부른다.
+ *
+ * 계정을 지웠거나 로그아웃했는데 마지막 확인 시각이 남아 있으면, 다음에 이
+ * 폰을 여는 사람이 **앞사람의 흔적**을 밟고 들어간다 -- 90일 장치가 그 사람에게는
+ * 열린 채로 시작하고, 오프라인 사본이 앞사람의 잔여를 보여준다.
+ *
+ * 두 겹이다. 아는 칸(DEVICE_KEYS)은 하나씩 지운다 -- 한 칸이 막혀도 나머지는
+ * 지운다. 그다음 같은 접두어의 칸을 쓸어 낸다 -- 칸이 늘었는데 목록을 고치지
+ * 않아도 남는 것이 없게.
+ */
+export const DEVICE_KEYS = Object.freeze([
+  VERIFIED_AT_KEY, VIEW_CACHE_KEY, DIAGNOSTIC_KEY, CODE_SENT_AT_KEY,
+]);
+
+/** @param {any} [store] */
 export function forgetDevice(store) {
   try {
     const box = store || (typeof localStorage === "undefined" ? null : localStorage);
     if (!box) return;
     for (const key of DEVICE_KEYS) {
-      try { box.removeItem(key); } catch (_error) { /* 한 칸이 막혀도 나머지는 지운다 */ }
+      try { box.removeItem?.(key); } catch (_error) { /* 한 칸이 막혀도 나머지는 지운다 */ }
+    }
+    const rest = [];
+    for (let index = 0; index < Number(box.length || 0); index += 1) {
+      const key = box.key?.(index);
+      if (key && key.startsWith(MEMBER_KEY_PREFIX)) rest.push(key);
+    }
+    for (const key of rest) {
+      try { box.removeItem?.(key); } catch (_error) { /* 한 칸이 막혀도 나머지는 지운다 */ }
     }
   } catch (_error) {
     /* 저장소를 못 열면 지울 것도 없다. */

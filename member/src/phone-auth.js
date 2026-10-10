@@ -34,6 +34,8 @@
  * `ConfirmationResult` 를 준다.
  */
 
+import { classifyPhoneAuthError } from "./auth-errors.js";
+
 /** 이 단계에서 날 수 있는 실패. 화면이 종류별로 다른 말을 하게 한다. */
 export const PHONE_FAILURE = {
   /** 즉시 인증이 끝났는데 JS 가 쓸 재료가 없다. 웹 길로 되돌아간다. */
@@ -180,15 +182,7 @@ export function shouldFallBackToWeb(error) {
  * "오류가 발생했습니다" 는 회원도 센터도 아무것도 할 수 없게 만든다.
  */
 export function phoneFailureMessage(code) {
-  const known = {
-    "auth/invalid-verification-code": "인증번호가 맞지 않아요. 다시 입력해 주세요.",
-    "auth/code-expired": "인증번호가 만료됐어요. 다시 받아 주세요.",
-    "auth/invalid-phone-number": "번호를 다시 확인해 주세요.",
-    "auth/too-many-requests": "잠시 뒤에 다시 시도해 주세요.",
-    "auth/network-request-failed": "연결이 불안정해요. 잠시 뒤에 다시 시도해 주세요.",
-    [PHONE_FAILURE.NO_VERIFICATION_ID]: "문자를 보내지 못했어요. 다시 시도해 주세요.",
-    [PHONE_FAILURE.NATIVE_FAILED]: "지금 인증하지 못했어요. 잠시 뒤에 다시 시도해 주세요.",
-  }[text(code)];
-  if (known) return known;
-  return `지금 확인하지 못했어요. (코드 ${text(code) || "unknown"})`;
+  /* 문구는 auth-errors.js 한 곳에서 나온다. 웹 길과 네이티브 길이 같은 코드에
+     다른 말을 하면 안 된다. */
+  return classifyPhoneAuthError({ code: text(code) }).text;
 }

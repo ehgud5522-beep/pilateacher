@@ -6,21 +6,29 @@
  *
  * 로그인해 있으면 인증을 건너뛰고 바로 읽는다. 다만 마지막 확인이 90일을
  * 넘었으면 다시 묻는다 (확정 5번, session.js).
+ *
+ * 로그아웃하면 onAuthStateChanged 가 null 을 주고, 아래 App 이 로그인 화면으로
+ * 돌린다. 회원 화면은 user 가 있을 때만 그려지므로 로그아웃한 채로 들어갈
+ * 길이 없다.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { TYPE } from "../../src/features/ui/type-scale.js";
 import { CENTRE_NAME, CENTRE_TAGLINE } from "./brand.js";
+import { classifyPhoneAuthError } from "./auth-errors.js";
 import {
-  deleteMemberAccount, linkMemberAccount, signOutMember, startPhoneSignIn, watchAuth, db,
+  deleteMemberAccount, linkMemberAccount, resetRecaptcha, signOutMember, startPhoneSignIn,
+  watchAuth, db,
 } from "./firebase.js";
 import { LINK_RESULT, linkResultScreen } from "./link-result.js";
-import { phoneFailureMessage } from "./phone-auth.js";
 import {
   MEMBER_FEATURE, MEMBER_STAGE, clearDiagnostics, readDiagnostics, recordDiagnostic,
 } from "./diagnostics.js";
 import { readMemberLink, readMemberViews } from "./member-data.js";
 import { offlineNotice, readViewCache, writeViewCache } from "./offline-cache.js";
+import {
+  readCodeSentAt, resendSecondsLeft, sendButtonLabel, writeCodeSentAt,
+} from "./resend.js";
 import { forgetDevice, needsReverification, readVerifiedAt, writeVerifiedAt } from "./session.js";
 import {
   Diagnostics, History, Home, LinkNotice, LoadFailed, Loading, More, NotMigrated,
@@ -37,6 +45,7 @@ const TABS = [
 ];
 
 const text = (value) => String(value ?? "").trim();
+const DEV = Boolean(import.meta.env?.DEV);
 
 export default function App() {
   const [user, setUser] = useState(null);
@@ -111,7 +120,7 @@ function buildLabel() {
   return commit ? `v${version} · ${commit}` : `v${version}`;
 }
 
-function Shell({ children, footer }) {
+function Shell({ children, footer, onSignOut }) {
   /* 진단은 **Shell 에 있다.** 화면이 "잠시만요…" 에서 멈춰 있을 때도 열려야
      하고, 그때가 바로 필요한 순간이다. 안쪽 화면에 두면 멈춘 동안에는
      그리지 않는다. */
@@ -128,8 +137,14 @@ function Shell({ children, footer }) {
   return (
     <div className="shell">
       {/* 작고 얇게 위에만. 화면의 주인공은 남은 횟수다 -- 이름 쪽만 로즈로
-          도드라지고 앞말은 물러나 있다. */}
-      <header className="head">{CENTRE_TAGLINE} <b>{CENTRE_NAME}</b></header>
+          도드라지고 앞말은 물러나 있다. 로그아웃도 같은 줄에 물러나 있다 --
+          어느 탭에서든 보이되 주인공을 가리지 않게. */}
+      <header className="head">
+        <span>{CENTRE_TAGLINE} <b>{CENTRE_NAME}</b></span>
+        {onSignOut ? (
+          <button type="button" className="signout" onClick={onSignOut}>로그아웃</button>
+        ) : null}
+      </header>
       <main className="main">
         {entries ? (
           <Diagnostics entries={entries}
@@ -152,27 +167,82 @@ function SignIn({ signedIn }) {
   const [phone, setPhone] = useState("");
   const [code, setCode] = useState("");
   const [pending, setPending] = useState(null);
-  const [busy, setBusy] = useState(false);
-  const [failure, setFailure] = useState("");
+  /* 무엇을 하는 중인가 -- "send" · "confirm" · null. 보내는 중에 "확인" 이
+     "보내는 중…" 이라고 말하지 않게 둘을 가른다. */
+  const [busy, setBusy] = useState(null);
+  const [failure, setFailure] = useState(null);
+  /* 요청 중 두 번 누르기를 막는 것은 state 가 아니라 ref 다. setBusy 가 화면에
+     반영되기 전에 두 번째 탭이 들어오면 disabled 는 아직 false 다. */
+  const inFlight = useRef(false);
+
+  // 마지막 발송 시각. 새로고침해도 기다림이 이어지도록 기기에서 읽어 온다.
+  const [sentAt, setSentAt] = useState(() => readCodeSentAt());
+  const [now, setNow] = useState(() => Date.now());
+  const secondsLeft = resendSecondsLeft(sentAt, now);
+  const waiting = secondsLeft > 0;
+  useEffect(() => {
+    if (!waiting) return undefined;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [waiting]);
+
+  /* 실패는 원본 코드를 남기고 종류별로 말한다 (auth-errors.js). 번호는 남기지
+     않는다 -- 진단에 전화번호를 적지 않는다. */
+  const fail = (stage, error) => {
+    const result = classifyPhoneAuthError(error, { dev: DEV });
+    const errorDomain = text(error?.errorDomain) || "firebase_auth";
+    console.error("[member/phone_auth]", {
+      feature: MEMBER_FEATURE.PHONE_SIGN_IN, stage, errorDomain,
+      errorCode: result.code, kind: result.kind, message: text(error?.message),
+    });
+    recordDiagnostic({
+      feature: MEMBER_FEATURE.PHONE_SIGN_IN, stage: MEMBER_STAGE.FAILED,
+      errorDomain, errorCode: result.code, message: `${stage}: ${text(error?.message)}`,
+    });
+    /* 한 번 실패한 reCAPTCHA 로 다시 보내면 같은 이유로 진다. 걷어 두면
+       다음 "인증번호 받기" 가 새로 만든다. */
+    if (result.resetRecaptcha) resetRecaptcha();
+    if (result.restart) { setPending(null); setCode(""); }
+    setFailure(result);
+  };
 
   const send = async () => {
-    setBusy(true);
-    setFailure("");
+    if (inFlight.current || resendSecondsLeft(sentAt, Date.now()) > 0) return;
+    inFlight.current = true;
+    setBusy("send");
+    setFailure(null);
     try {
+      /* 다시 받기다. 앞 시도의 네이티브 리스너를 걷고, 웹이면 이미 소모된
+         reCAPTCHA 토큰 대신 새것을 만든다 -- 같은 것으로 보내면 captcha
+         검증에서 진다. */
+      if (pending) {
+        await pending.cancel?.();
+        resetRecaptcha();
+      }
       /* 앱에서는 문자를 앱이 직접 읽을 수 있다 (Android). 읽으면 칸을
          채워만 두고 **누르는 것은 사람이 한다** -- 저절로 넘어가면 무슨
          일이 일어났는지 본 사람이 없다. */
-      setPending(await startPhoneSignIn(phone, { onAutoCode: setCode }));
+      const result = await startPhoneSignIn(phone, { onAutoCode: setCode });
+      const at = Date.now();
+      writeCodeSentAt(at);
+      setSentAt(at);
+      setNow(at);
+      setCode("");
+      setPending(result);
+      recordDiagnostic({ feature: MEMBER_FEATURE.PHONE_SIGN_IN, stage: MEMBER_STAGE.CODE_SENT });
     } catch (error) {
-      setFailure(text(error?.code) || "unknown");
+      fail("send_code", error);
     } finally {
-      setBusy(false);
+      inFlight.current = false;
+      setBusy(null);
     }
   };
 
   const confirm = async () => {
-    setBusy(true);
-    setFailure("");
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setBusy("confirm");
+    setFailure(null);
     try {
       await pending.confirm(code);
       await pending.cancel?.();
@@ -182,9 +252,10 @@ function SignIn({ signedIn }) {
          서버가 그것을 믿을 수 있고, 새로 읽는 편이 확실하다. */
       window.location.reload();
     } catch (error) {
-      setFailure(text(error?.code) || "unknown");
+      fail("confirm_code", error);
     } finally {
-      setBusy(false);
+      inFlight.current = false;
+      setBusy(null);
     }
   };
 
@@ -205,23 +276,36 @@ function SignIn({ signedIn }) {
             <input className="field mt" inputMode="tel" autoComplete="tel"
               placeholder="010-0000-0000" value={phone}
               onChange={(event) => setPhone(event.target.value)} />
-            <button type="button" className="btn primary mt" disabled={busy || !phone}
-              onClick={send}>{busy ? "보내는 중…" : "인증번호 받기"}</button>
+            <button type="button" className="btn primary mt"
+              disabled={Boolean(busy) || !phone || waiting}
+              onClick={send}>{sendButtonLabel({ busy: busy === "send", secondsLeft })}</button>
           </>
         ) : (
           <>
             <input className="field mt" inputMode="numeric" autoComplete="one-time-code"
               placeholder="인증번호 6자리" value={code}
               onChange={(event) => setCode(event.target.value)} />
-            <button type="button" className="btn primary mt" disabled={busy || !code}
-              onClick={confirm}>{busy ? "확인하는 중…" : "확인"}</button>
+            <button type="button" className="btn primary mt" disabled={Boolean(busy) || !code}
+              onClick={confirm}>{busy === "confirm" ? "확인하는 중…" : "확인"}</button>
+            {/* 문자가 안 왔을 때. 60초 동안은 남은 초만 보인다. */}
+            <button type="button" className="btn mt" disabled={Boolean(busy) || waiting}
+              onClick={send}>
+              {sendButtonLabel({ busy: busy === "send", secondsLeft, resend: true })}
+            </button>
+            {/* 번호를 잘못 넣었을 때 돌아갈 길. */}
+            <button type="button" className="btn mt" disabled={Boolean(busy)}
+              onClick={() => { setPending(null); setCode(""); setFailure(null); }}>
+              번호 다시 입력
+            </button>
           </>
         )}
 
         {/* 코드를 함께 보여준다. 코드 없는 "오류가 발생했습니다" 는 회원도
             센터도 아무것도 할 수 없게 만든다. */}
         {failure ? (
-          <p className="note mt" style={{ fontSize: TYPE.caption }}>{phoneFailureMessage(failure)}</p>
+          <p className="note mt" role="alert" style={{ fontSize: TYPE.caption }}>
+            {failure.text}
+          </p>
         ) : null}
       </section>
     </Shell>
@@ -305,22 +389,43 @@ function Member({ userId }) {
   const removeAccount = useCallback(async () => {
     await deleteMemberAccount();
     forgetDevice();
-    await signOutMember();
+    await signOutMember({ quiet: true });
     window.location.reload();
   }, []);
 
+  /* 로그아웃 → onAuthStateChanged 가 null → App 이 로그인 화면을 그린다.
+     여기서 화면을 직접 옮기지 않는다 -- 상태가 하나여야 어긋나지 않는다. */
+  const signOutNow = async () => {
+    if (!window.confirm("로그아웃할까요?")) return;
+    try {
+      await signOutMember();
+      forgetDevice();
+    } catch (error) {
+      const code = text(error?.code) || "unknown";
+      recordDiagnostic({
+        feature: MEMBER_FEATURE.SIGN_OUT, stage: MEMBER_STAGE.FAILED,
+        errorDomain: "firebase_auth", errorCode: code, message: error?.message,
+      });
+      window.alert(`로그아웃하지 못했어요. 잠시 후 다시 시도해 주세요. (코드 ${code})`);
+    }
+  };
+
+  /* 불러오지 못했거나 연결이 안 된 화면에서도 로그아웃은 보인다. 다른 번호로
+     들어가야 하는 사람이 갇히지 않게. */
   if (state.stage === "loading") {
     return (
-      <Shell>
+      <Shell onSignOut={signOutNow}>
         {slow
           ? <SlowConnection seconds={Math.round(SLOW_AFTER_MS / 1000)} onRetry={load} />
           : <Loading />}
       </Shell>
     );
   }
-  if (state.stage === "failed") return <Shell><LoadFailed code={state.code} onRetry={load} /></Shell>;
+  if (state.stage === "failed") {
+    return <Shell onSignOut={signOutNow}><LoadFailed code={state.code} onRetry={load} /></Shell>;
+  }
   if (state.stage === "notice") {
-    return <Shell><LinkNotice screen={state.screen} onRetry={load} /></Shell>;
+    return <Shell onSignOut={signOutNow}><LinkNotice screen={state.screen} onRetry={load} /></Shell>;
   }
 
   const places = Array.isArray(state.places) ? state.places : [];
@@ -328,6 +433,18 @@ function Member({ userId }) {
 
   let body;
   if (!current) body = <NotMigrated />;
+  /* ── permission-denied 는 "없다" 는 뜻이다 ────────────────────────────
+     memberViews 의 get 규칙이 resource.data.userId 를 읽는다. 문서가 없으면
+     resource 가 null 이라 그 한 줄이 규칙을 넘어뜨리고, 서버는 "없음" 이 아니라
+     **거부**로 답한다. 아래 Preparing 이 그리려던 바로 그 상태인데 여기서
+     "불러오지 못했어요" 로 갈라졌다.
+
+     이 앱이 읽는 clientId 는 자기 링크 문서에서 온 것뿐이라, 남의 투영을
+     요청할 길이 없다 -- 거부가 나는 경우는 문서가 없을 때 하나다.
+
+     근본 고침은 규칙에 있다 (resource == null 을 먼저 가르는 것). 그때까지
+     화면이라도 정상 상태를 고장으로 말하지 않게 한다. */
+  else if (current.errorCode === "permission-denied") body = <Preparing onRetry={load} />;
   else if (current.errorCode) body = <LoadFailed code={current.errorCode} onRetry={load} />;
   /* 연결은 됐는데 투영이 아직 없다 -- 트리거가 도는 몇 초다. "조회 실패" 로
      말하면 정상 상태를 고장으로 말하는 것이 된다. */
@@ -342,7 +459,7 @@ function Member({ userId }) {
   else body = <Home view={current.view} />;
 
   return (
-    <Shell footer={<Tabs tab={tab} onPick={setTab} />}>
+    <Shell footer={<Tabs tab={tab} onPick={setTab} />} onSignOut={signOutNow}>
       {/* 오래된 숫자라는 사실이 숫자 위에 있어야 한다. 아래에 두면 잔여를
           보고 화면을 닫은 사람은 읽지 않는다. */}
       {state.offlineAt ? (

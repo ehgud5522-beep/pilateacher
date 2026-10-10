@@ -45,8 +45,9 @@ const PHONE_EDIT = Object.freeze({
 /** 강사가 하루에 바꿀 수 있는 건수. 대표·FC매니저에게는 한도가 없다. */
 const INSTRUCTOR_DAILY_LIMIT = 10;
 
-/** 연락처를 바꿀 수 있는 역할. 강사는 자기 회원만이라 따로 본다. */
-const FULL_EDIT_ROLES = Object.freeze(["owner", "manager"]);
+/** 연락처를 바꿀 수 있는 역할. 강사는 자기 회원만이라 따로 본다.
+    총괄매니저는 대표와 같은 자리다 (ownerLevel). */
+const FULL_EDIT_ROLES = Object.freeze(["owner", "area_manager", "manager"]);
 
 const text = (value) => String(value ?? "").trim();
 const digitsOf = (value) => String(value ?? "").replace(/\D/g, "");

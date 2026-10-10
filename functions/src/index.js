@@ -18,13 +18,22 @@ const { createAIRecordingOperations } = require("./ai-recording-operations");
 const { applyCors, parseAllowedOrigins } = require("./cors");
 const { sendError, GatewayError } = require("./errors");
 const { createFirestoreIdempotencyStore } = require("./idempotency");
-const { createMemberLinkService, isActiveOwner, membershipId } = require("./member-link");
+const { createMemberLinkService, isActiveOwner, isOwnerLevel, membershipId } = require("./member-link");
+const { confirmInstructorNames, planInstructorNames } = require("./instructor-names");
 const {
   clientIdsFromPassChange: clientIdsFromPassChangeForScope,
   rebuildInstructorIds,
   syncInstructorIds,
   verifyInstructorIds,
 } = require("./instructor-scope-triggers");
+const { planMigrationReset, runMigrationReset } = require("./migration-reset");
+const {
+  findServiceDeductions, planServiceSessionFix, runServiceSessionFix,
+} = require("./service-session-fix");
+const { isPassAdmin, runHandover, runSessionUp } = require("./pass-admin");
+const { readRuntimeConfig, writeRuntimeConfig } = require("./runtime-config-admin");
+const { monthlyPayFor, planAccountSwap, runAccountSwap } = require("./instructor-swap");
+const { reconcileOrganization } = require("./pass-reconcile-nightly");
 const { createFirestoreMemberLinkPorts } = require("./member-link-store");
 const { createMemberAccountService } = require("./member-account");
 const {
@@ -657,8 +666,8 @@ function instructorScopeCallable(stage, run) {
 
     const membership = await firestore
       .collection("memberships").doc(membershipId(organizationId, callerUid)).get();
-    if (!isActiveOwner(membership.exists ? membership.data() : null)) {
-      throw new HttpsError("permission-denied", "Only the centre owner can run this.");
+    if (!isOwnerLevel(membership.exists ? membership.data() : null)) {
+      throw new HttpsError("permission-denied", "Only an owner or area manager can run this.");
     }
 
     try {
@@ -709,6 +718,399 @@ exports.verifyInstructorIds = onCall(
    트리거도 깨어나지 않는다.
 
    04:00 KST 다. 수업이 없고, 자정 직후의 만료가 이미 지나간 시각이다. */
+/* ── 강사 계정 교체 ──────────────────────────────────────────────────────
+   대표 전용. 근거는 instructor-swap.js 머리말에 있다.
+
+   confirm 을 보내지 않으면 미리보기다. 되돌릴 수 없는 쪽이 기본값이면 안
+   된다 -- 누적 진행은 더하는 값이라 두 번 돌면 두 배가 되고, 그것은 고칠 수
+   없다. 실행도 두 번 눌러 안전하게 만들어 두었지만 기본값은 그대로 읽기다. */
+exports.swapInstructorAccount = onCall({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  timeoutSeconds: 120,
+  memory: "512MiB",
+  invoker: "public",
+}, async (request) => {
+  const callerUid = String(request?.auth?.uid || "").trim();
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  if (!callerUid) throw new HttpsError("unauthenticated", "Please sign in again.");
+  if (!organizationId) throw new HttpsError("invalid-argument", "organizationId is required.");
+
+  const membership = await firestore
+    .collection("memberships").doc(membershipId(organizationId, callerUid)).get();
+  if (!isOwnerLevel(membership.exists ? membership.data() : null)) {
+    throw new HttpsError("permission-denied", "Only an owner or area manager can swap an account.");
+  }
+
+  const payload = {
+    organizationId,
+    fromUid: String(request?.data?.fromUid || "").trim(),
+    toUid: String(request?.data?.toUid || "").trim(),
+    actorId: callerUid,
+    /* 소속 문서에서 읽은 역할이다. 부르는 쪽이 보낸 값이 아니다 -- 보냈다면
+       "나는 대표입니다" 한 줄로 아래 판정을 지나갈 수 있다. */
+    actorRole: String(membership.data()?.role || ""),
+  };
+  const confirmed = request?.data?.confirm === true;
+
+  try {
+    const result = confirmed
+      ? await runAccountSwap(firestore, payload)
+      : await planAccountSwap(firestore, payload);
+    /* 이번 달에 옛 uid 로 박힌 수업료. 옮기지는 않고, 세는 쪽이 합쳐 보여 줄
+       금액이 얼마인지만 말한다. */
+    const pay = await monthlyPayFor(firestore, {
+      organizationId, instructorId: payload.fromUid, month: String(request?.data?.month || ""),
+    });
+    /* 건수만 남긴다. 이름도 uid 도 로그에 적지 않는다 (§7). */
+    logger.info("instructor_swap", {
+      feature: "instructor_swap", stage: confirmed ? "apply" : "plan", organizationId,
+      passes: result?.counts?.passes || 0, clients: result?.counts?.clients || 0,
+      applied: result?.applied === true,
+    });
+    return { ...result, pay, confirmed };
+  } catch (error) {
+    logger.error("instructor_swap_failed", {
+      feature: "instructor_swap", stage: confirmed ? "apply" : "plan", organizationId,
+      errorCode: error?.message || "unknown",
+    });
+    throw new HttpsError("failed-precondition", String(error?.message || "instructor_swap_failed"));
+  }
+});
+
+/* ── 운영 설정 쓰기 ──────────────────────────────────────────────────────
+   대표 전용. 근거는 runtime-config-admin.js 머리말에 있다.
+
+   규칙은 runtimeConfig 의 쓰기를 닫아 두었다 -- 숫자 하나가 센터 전체의 수업
+   확정을 막을 수 있어, 앱에서 실수로 눌러지는 자리를 만들지 않았다. 그 문을
+   여는 대신 통로를 하나 낸다. */
+exports.updateRuntimeConfig = onCall({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  timeoutSeconds: 60,
+  invoker: "public",
+}, async (request) => {
+  const callerUid = String(request?.auth?.uid || "").trim();
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  if (!callerUid) throw new HttpsError("unauthenticated", "Please sign in again.");
+  if (!organizationId) throw new HttpsError("invalid-argument", "organizationId is required.");
+
+  const membership = await firestore
+    .collection("memberships").doc(membershipId(organizationId, callerUid)).get();
+  /* 화면이 카드를 감추는 것은 안내이고 막는 것은 여기다. 이 설정은 조직의
+     것이 아니라 앱 전체의 것이라, 어느 센터의 대표든 바꿀 수 있다는 뜻이
+     되지 않도록 소속 확인을 지나게 둔다.
+
+     **총괄매니저에게는 열지 않는다** (2026-10-10 결정). 다른 자리는 전부
+     대표와 같지만 여기만은 아니다 -- settlement 최소 빌드를 올리면 **센터
+     전체의 수업 확정이 막히고**, appUpdate 최소 빌드를 올리면 그 번호보다
+     낮은 앱이 전부 필수 팝업에 갇힌다. 숫자 하나가 센터를 세우는 자리라
+     이관 초기화와 같은 선에 둔다. */
+  if (!isActiveOwner(membership.exists ? membership.data() : null)) {
+    throw new HttpsError("permission-denied", "Only the centre owner can change this.");
+  }
+
+  /* 쓰지 않고 읽기만 할 수도 있다. 화면이 고치기 전에 지금 값을 보여준다. */
+  const document = String(request?.data?.document || "").trim();
+  if (!document) return { config: await readRuntimeConfig(firestore) };
+
+  try {
+    const result = await writeRuntimeConfig(firestore, {
+      document, value: request?.data?.value, actorId: callerUid,
+    });
+    /* 숫자만 남긴다. 이 값이 센터 전체를 막을 수 있어 누가 언제 무엇으로
+       바꿨는지가 남아야 한다 (§7 -- 이름도 번호도 아니다). */
+    logger.info("runtime_config_updated", {
+      feature: "runtime_config", stage: "write", organizationId, document,
+    });
+    return { ...result, config: await readRuntimeConfig(firestore) };
+  } catch (error) {
+    logger.error("runtime_config_write_failed", {
+      feature: "runtime_config", stage: "write", organizationId, document,
+      errorCode: error?.message || "unknown",
+    });
+    throw new HttpsError("failed-precondition", String(error?.message || "runtime_config_failed"));
+  }
+});
+
+/* ── 세션업과 회원 간 양도 ───────────────────────────────────────────────
+   대표와 FC매니저가 쓴다. 근거는 pass-admin.js 머리말에 있다.
+
+   규칙은 그대로 둔다 -- 양도는 규칙이 대표에게만 열어 두었고, 세션업이 바꾸는
+   totalSessions 는 아예 막혀 있다. 그 문을 여는 대신 통로를 하나 낸다. */
+const assertPassAdmin = async (organizationId, callerUid) => {
+  if (!callerUid) throw new HttpsError("unauthenticated", "Please sign in again.");
+  if (!organizationId) throw new HttpsError("invalid-argument", "organizationId is required.");
+  const membership = await firestore
+    .collection("memberships").doc(membershipId(organizationId, callerUid)).get();
+  /* 화면이 버튼을 감추는 것은 안내이고 막는 것은 여기다. 화면만 믿으면
+     호출 한 번으로 지나간다. */
+  if (!isPassAdmin(membership.exists ? membership.data() : null)) {
+    throw new HttpsError("permission-denied", "Only the owner or manager can do this.");
+  }
+};
+
+exports.sessionUpPass = onCall({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  timeoutSeconds: 60,
+  invoker: "public",
+}, async (request) => {
+  const callerUid = String(request?.auth?.uid || "").trim();
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  await assertPassAdmin(organizationId, callerUid);
+  try {
+    const expiresAt = request?.data?.expiresAt ? new Date(String(request.data.expiresAt)) : null;
+    const result = await runSessionUp(firestore, {
+      organizationId,
+      passId: String(request?.data?.passId || "").trim(),
+      actorId: callerUid,
+      addSessions: Number(request?.data?.addSessions),
+      addPrice: Number(request?.data?.addPrice),
+      addService: Number(request?.data?.addService || 0),
+      paymentMethod: String(request?.data?.paymentMethod || ""),
+      expiresAt: expiresAt && Number.isFinite(expiresAt.getTime()) ? expiresAt : null,
+    });
+    /* 이름도 금액 밖의 것도 적지 않는다 (§7). 무엇이 몇 회 늘었는지만. */
+    logger.info("session_up_done", {
+      feature: "session_up", stage: "done", organizationId,
+      addedSessions: Number(request?.data?.addSessions) || 0,
+    });
+    return result;
+  } catch (error) {
+    logger.error("session_up_failed", {
+      feature: "session_up", stage: "done", organizationId,
+      errorCode: error?.message || "unknown",
+    });
+    /* 막힌 이유를 그대로 올린다 -- 화면이 "왜 안 되는지" 를 말할 수 있어야 한다. */
+    throw new HttpsError("failed-precondition", String(error?.message || "session_up_failed"));
+  }
+});
+
+exports.handoverPass = onCall({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  timeoutSeconds: 60,
+  invoker: "public",
+}, async (request) => {
+  const callerUid = String(request?.auth?.uid || "").trim();
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  await assertPassAdmin(organizationId, callerUid);
+  try {
+    const result = await runHandover(firestore, {
+      organizationId,
+      passId: String(request?.data?.passId || "").trim(),
+      toClientId: String(request?.data?.toClientId || "").trim(),
+      sessions: Number(request?.data?.sessions),
+      instructorId: String(request?.data?.instructorId || "").trim(),
+      unitPrice: Number(request?.data?.unitPrice || 0),
+      actorId: callerUid,
+    });
+    logger.info("handover_done", {
+      feature: "handover", stage: "done", organizationId,
+      sessions: Number(request?.data?.sessions) || 0,
+    });
+    return result;
+  } catch (error) {
+    logger.error("handover_failed", {
+      feature: "handover", stage: "done", organizationId,
+      errorCode: error?.message || "unknown",
+    });
+    throw new HttpsError("failed-precondition", String(error?.message || "handover_failed"));
+  }
+});
+
+/* ── 이관분 서비스 보정 ───────────────────────────────────────────────────
+   한 번 쓰고 지울 통로다. 근거는 service-session-fix.js 머리말에 있다.
+
+   규칙은 그대로 둔다 -- passes 의 update 가 totalSessions 를 막고 있고, 한 번
+   쓰는 보정을 위해 그 문을 여는 것은 그 문이 영원히 열려 있게 되는 일이다. */
+exports.fixMigratedServiceSessions = onCall({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  timeoutSeconds: 300,
+  memory: "512MiB",
+  invoker: "public",
+}, async (request) => {
+  const callerUid = String(request?.auth?.uid || "").trim();
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  /* 미리보기가 기본이다. 고치려면 confirm 을 명시해야 한다. */
+  const confirmed = request?.data?.confirm === true;
+  if (!callerUid) throw new HttpsError("unauthenticated", "Please sign in again.");
+  if (!organizationId) throw new HttpsError("invalid-argument", "organizationId is required.");
+
+  const membership = await firestore
+    .collection("memberships").doc(membershipId(organizationId, callerUid)).get();
+  if (!isOwnerLevel(membership.exists ? membership.data() : null)) {
+    throw new HttpsError("permission-denied", "Only an owner or area manager can run this.");
+  }
+
+  try {
+    const plan = await planServiceSessionFix(firestore, { organizationId });
+    /* 이관 뒤에 서비스로 나간 수업. serviceUsed 가 0 이었던 탓에 센터가 같은
+       회차를 두 번 지원했을 수 있다 -- 되돌리지 않고 목록만 올린다. */
+    const since = new Date("2026-10-01T00:00:00+09:00");
+    const served = await findServiceDeductions(firestore, {
+      organizationId, passIds: plan.rows.map((row) => row.passId), since,
+    });
+
+    if (!confirmed) {
+      logger.info("service_session_fix_preview", {
+        feature: "service_session_fix", stage: "preview", organizationId,
+        passes: plan.rows.length, servedSince: served.length,
+      });
+      return { stage: "preview", rows: plan.rows, served };
+    }
+
+    const result = await runServiceSessionFix(firestore, { organizationId, actorId: callerUid });
+    logger.warn("service_session_fix_done", {
+      feature: "service_session_fix", stage: "done", organizationId,
+      fixed: result.fixed, servedSince: served.length,
+    });
+    return { stage: "done", fixed: result.fixed, rows: result.rows, served };
+  } catch (error) {
+    logger.error("service_session_fix_failed", {
+      feature: "service_session_fix", stage: confirmed ? "done" : "preview", organizationId,
+      errorCode: error?.code || "unknown", message: error?.message || "",
+    });
+    throw new HttpsError("internal", "service_session_fix_failed");
+  }
+});
+
+/* ── 강사 이름 확정 ──────────────────────────────────────────────────────
+   한 번 쓰는 통로다. 근거는 shared/instructor-names.mjs 머리말에 있다.
+
+   요약: 2026-10-10 까지 강사 앱이 열릴 때마다 로그인 계정 이름을 덮어썼고,
+   그 문을 닫는 표시(displayNameBy)가 **이미 있는 소속에는 없다.** 대표가
+   강사 수만큼 강사 관리에 들어가 저장해야 붙는데, 하나를 빠뜨리면 그 사람만
+   계속 되돌아가고 왜 그 사람만인지는 아무도 모른다. */
+exports.confirmInstructorNames = onCall({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  timeoutSeconds: 120,
+  memory: "512MiB",
+  invoker: "public",
+}, async (request) => {
+  const callerUid = String(request?.auth?.uid || "").trim();
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  /* 미리보기가 기본이다. 찍으려면 confirm 을 명시해야 한다 -- 되돌리는 문이
+     없는 쪽이 기본값이면 안 된다. */
+  const confirmed = request?.data?.confirm === true;
+  if (!callerUid) throw new HttpsError("unauthenticated", "Please sign in again.");
+  if (!organizationId) throw new HttpsError("invalid-argument", "organizationId is required.");
+
+  const membership = await firestore
+    .collection("memberships").doc(membershipId(organizationId, callerUid)).get();
+  /* 대표만이다. 총괄매니저에게도 열지 않는다 -- 센터 전체의 이름을 한 번에
+     굳히는 일이고, 되돌리려면 한 사람씩 다시 저장하는 길밖에 없다. */
+  if (!isActiveOwner(membership.exists ? membership.data() : null)) {
+    throw new HttpsError("permission-denied", "Only the centre owner can confirm instructor names.");
+  }
+
+  try {
+    const result = confirmed
+      ? await confirmInstructorNames(firestore, { organizationId })
+      : await planInstructorNames(firestore, { organizationId });
+    /* 건수만 남긴다. **이름은 로그에 적지 않는다** -- 화면에는 보여야 대표가
+       확정할지 정할 수 있지만, 로그에 남길 이유는 없다. */
+    logger.info("instructor_names_confirm", {
+      feature: "instructor_names", stage: confirmed ? "apply" : "preview", organizationId,
+      targets: result.counts.targets, already: result.counts.already, noName: result.counts.noName,
+    });
+    return { ...result, confirmed };
+  } catch (error) {
+    logger.error("instructor_names_failed", {
+      feature: "instructor_names", stage: confirmed ? "apply" : "preview", organizationId,
+      errorCode: String(error?.code || error?.message || "unknown"),
+    });
+    throw new HttpsError("internal", "instructor_names_failed");
+  }
+});
+
+/* ── 이관 데이터 초기화 ──────────────────────────────────────────────────
+   출시 전 한 번 쓰는 통로다. 근거는 migration-reset.js 머리말에 있다.
+
+   **규칙을 건드리지 않는다.** Admin SDK 가 규칙을 우회하므로 "아무도 원장을
+   못 지운다" 는 규칙은 그대로 남고, 그 예외는 대표가 부르는 이 함수뿐이다. */
+exports.resetMigratedData = onCall({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  timeoutSeconds: 540,
+  memory: "512MiB",
+  invoker: "public",
+}, async (request) => {
+  const callerUid = String(request?.auth?.uid || "").trim();
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  /* 미리보기가 기본이다. 지우려면 confirm 을 명시해야 한다 -- 되돌릴 수 없는
+     쪽이 기본값이면 안 된다. */
+  const confirmed = request?.data?.confirm === true;
+  if (!callerUid) throw new HttpsError("unauthenticated", "Please sign in again.");
+  if (!organizationId) throw new HttpsError("invalid-argument", "organizationId is required.");
+
+  const membership = await firestore
+    .collection("memberships").doc(membershipId(organizationId, callerUid)).get();
+  if (!isActiveOwner(membership.exists ? membership.data() : null)) {
+    throw new HttpsError("permission-denied", "Only the centre owner can reset migrated data.");
+  }
+
+  try {
+    if (!confirmed) {
+      const plan = await planMigrationReset(firestore, { organizationId });
+      logger.info("migration_reset_preview", {
+        feature: "migration_reset", stage: "preview", organizationId, ...plan.counts,
+      });
+      /* 숫자와 막힌 회원 목록만 돌려준다. 지울 문서 경로 수천 개를 화면에
+         보낼 이유가 없다. */
+      return { stage: "preview", counts: plan.counts, blockedClients: plan.blockedClients };
+    }
+    const result = await runMigrationReset(firestore, getStorage().bucket(), {
+      organizationId, actorId: callerUid,
+    });
+    /* 이름은 로그에 적지 않는다 (§7). 건수와 사본 경로만. */
+    logger.warn("migration_reset_done", {
+      feature: "migration_reset", stage: "done", organizationId,
+      passes: result.passes, ledger: result.ledger, clients: result.clients,
+      instructorClientTotals: result.instructorClientTotals, memberViews: result.memberViews,
+      snapshotPath: result.snapshot.path,
+    });
+    return { stage: "done", ...result };
+  } catch (error) {
+    logger.error("migration_reset_failed", {
+      feature: "migration_reset", stage: confirmed ? "done" : "preview", organizationId,
+      errorCode: error?.code || "unknown", message: error?.message || "",
+    });
+    throw new HttpsError("internal", "migration_reset_failed");
+  }
+});
+
+/* ── 밤마다 잔여를 견준다 ────────────────────────────────────────────────
+   담당 강사 재계산과 같은 시각이다. **건수만 적고 고치지 않는다** --
+   어긋난 것을 자동으로 맞추면 어느 쪽이 참인지 모른 채 한쪽을 덮어쓰게
+   되고, 밤에 아무도 보지 않는 사이에 그 선택을 내리는 것이 가장 나쁘다.
+   원장은 append-only 라 잘못 덮어쓴 것은 되돌릴 수도 없다.
+
+   근거는 pass-reconcile-nightly.js 머리말에 있다. */
+exports.reconcilePassesNightly = onSchedule({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  schedule: "every day 04:00",
+  timeZone: "Asia/Seoul",
+  memory: "512MiB",
+  timeoutSeconds: 540,
+}, async () => {
+  const organizations = await firestore.collection("organizations").select().get();
+  for (const snapshot of organizations.docs) {
+    try {
+      const tally = await reconcileOrganization(firestore, { organizationId: snapshot.id });
+      /* 이름도 회원권 id 도 적지 않는다 (§7). 누가 어긋났는지는 대표가
+         화면에서 본다. */
+      logger.info("pass_reconcile_nightly", {
+        feature: "pass_reconcile", stage: "nightly",
+        organizationId: snapshot.id, ...tally,
+      });
+    } catch (error) {
+      /* 한 센터가 실패해도 나머지는 돈다. */
+      logger.error("pass_reconcile_nightly_failed", {
+        feature: "pass_reconcile", stage: "nightly",
+        organizationId: snapshot.id,
+        errorCode: error?.code || "unknown", message: error?.message || "",
+      });
+    }
+  }
+});
+
 exports.rebuildInstructorIdsNightly = onSchedule({
   region: process.env.FUNCTIONS_REGION || "asia-northeast3",
   schedule: "every day 04:00",

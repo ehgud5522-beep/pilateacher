@@ -442,15 +442,49 @@ export async function fbPushBackup(uid, data, options = {}) {
   return { counts };
 }
 
-export async function fbPullBackup(uid) {
+/** 센터 소속 기기가 덮어쓰기 전에 옛 백업을 옮겨 두는 자리. */
+export const PREVIOUS_PHONE_BACKUP = "previousPhone";
+
+export async function fbPullBackup(uid, backupId = "latest") {
   if (!fs || !uid) return null;
   try {
     const snap = await withAuthTimeout(
-      () => getDoc(doc(fs, "users", uid, "backup", "latest")),
+      () => getDoc(doc(fs, "users", uid, "backup", String(backupId || "latest"))),
       { timeoutMs: FIRESTORE_READ_TIMEOUT_MS, provider: "firebase", stage: "backup_read" },
     );
     return snap.exists() ? snap.data() : null;
   } catch (e) { return null; }
+}
+
+/**
+ * 옛 백업을 `previousPhone` 으로 옮겨 둔다. **한 번만 쓴다.**
+ *
+ * 센터 소속 기기는 덮어쓰기 보호를 밀고 지나간다 -- 기기 회원이 적은 것이
+ * 사고가 아니기 때문이다 (restore-offer.js 의 canOverwriteBackup). 그러면
+ * `latest` 는 새 기기의 내용이 되고, 옛 폰의 수업기록 원문과 사진 구성은
+ * 읽을 자리가 없어진다. 그 전에 한 벌을 옆으로 옮긴다.
+ *
+ * **이미 있으면 덮지 않는다.** 두 번째 밀어붙이기 때는 `latest` 가 이미 새
+ * 기기 것이라, 덮으면 보관본이 그 내용으로 바뀐다 -- 지키려던 것이 사라진다.
+ *
+ * 규칙은 그대로다: `match /backup/{backupId}` 가 본인의 모든 문서를 연다.
+ *
+ * @returns {Promise<"saved" | "exists" | "nothing">}
+ */
+export async function fbPreservePreviousBackup(uid) {
+  if (!fs || !uid) return "nothing";
+  return withAuthTimeout(
+    () => runTransaction(fs, async (transaction) => {
+      const previousRef = doc(fs, "users", uid, "backup", PREVIOUS_PHONE_BACKUP);
+      const existing = await transaction.get(previousRef);
+      if (existing.exists()) return "exists";
+      const latest = await transaction.get(doc(fs, "users", uid, "backup", "latest"));
+      if (!latest.exists()) return "nothing";
+      transaction.set(previousRef, { ...latest.data(), preservedAt: serverTimestamp() });
+      return "saved";
+    }),
+    { timeoutMs: FIRESTORE_WRITE_TIMEOUT_MS, provider: "firebase", stage: "backup_preserve" },
+  );
 }
 
 const assertOwnPhotoPath = (uid, photoId) => {
@@ -680,6 +714,51 @@ export const fbListMalformedClientPhones = callableAsOwner("listMalformedClientP
 export const fbRebuildInstructorIds = callableAsOwner("rebuildInstructorIds");
 export const fbVerifyInstructorIds = callableAsOwner("verifyInstructorIds");
 
+/* 이관 데이터 초기화. 출시 전 한 번 쓰는 통로다 --
+   functions/src/migration-reset.js 머리말에 근거가 있다.
+
+   confirm 을 보내지 않으면 미리보기다. 되돌릴 수 없는 쪽이 기본값이면 안
+   된다. */
+export const fbResetMigratedData = callableAsOwner("resetMigratedData");
+
+/* 이관분 서비스 보정. 총세션에 서비스가 섞여 들어온 회원권을 고친다 --
+   functions/src/service-session-fix.js 머리말에 근거가 있다.
+
+   여기도 confirm 없이는 미리보기다. 서버가 돌려주는 줄에는 id 만 있고 이름은
+   없다 -- 이름은 화면이 자기 명부에서 붙인다 (§7). */
+export const fbFixMigratedServiceSessions = callableAsOwner("fixMigratedServiceSessions");
+
+/* ── 세션업과 회원 간 양도 ────────────────────────────────────────────────
+   대표와 FC매니저가 쓴다. 근거는 functions/src/pass-admin.js 머리말에 있다.
+
+   규칙은 그대로다 -- 양도는 규칙이 대표에게만 열어 두었고, 세션업이 바꾸는
+   totalSessions 는 아예 막혀 있다. 그 문을 여는 대신 통로를 하나 냈다.
+
+   금액은 보내지 않는다. 회차와 받는 사람만 보내고 서버가 같은 모듈로 다시
+   센다 -- 앱이 보낸 금액을 그대로 박으면 그것은 잠긴 문이 아니다. */
+/* 운영 설정 쓰기. 대표 전용이고 역할은 서버가 다시 읽는다 --
+   functions/src/runtime-config-admin.js 머리말에 근거가 있다.
+
+   document 를 비워 보내면 읽기만 한다. 화면이 고치기 전에 지금 값을 본다. */
+export const fbUpdateRuntimeConfig = callableAsOwner("updateRuntimeConfig");
+
+/* 강사 계정 교체. 대표 전용이고 역할은 서버가 다시 읽는다 --
+   functions/src/instructor-swap.js 머리말에 근거가 있다.
+
+   confirm 을 보내지 않으면 미리보기다. 누적 진행은 더하는 값이라 두 번 돌면
+   두 배가 되고, 그것은 되돌릴 수 없다. */
+export const fbSwapInstructorAccount = callableAsOwner("swapInstructorAccount");
+
+/* 강사 이름 확정. 대표 전용이고 역할은 서버가 다시 읽는다 --
+   functions/shared/instructor-names.mjs 머리말에 근거가 있다.
+
+   confirm 을 보내지 않으면 미리보기다. 찍고 나면 그 이름은 로그인 동기화가
+   덮지 못하고, 되돌리려면 한 사람씩 강사 관리에서 다시 저장해야 한다. */
+export const fbConfirmInstructorNames = callableAsOwner("confirmInstructorNames");
+
+export const fbSessionUpPass = callableAsOwner("sessionUpPass");
+export const fbHandoverPass = callableAsOwner("handoverPass");
+
 export async function fbPurgeExpiredPhotoBackups() {
   if (!functions || !auth?.currentUser) return { purged: 0 };
   const call = httpsCallable(functions, "purgeExpiredPhotoBackups");
@@ -764,6 +843,56 @@ export async function fbDeleteAIConsent(memberId) {
     { timeoutMs: FIRESTORE_WRITE_TIMEOUT_MS, provider: "firebase", stage: "ai_consent_delete" },
   );
   return true;
+}
+
+/**
+ * 확정에 필요한 최소 빌드. 못 읽으면 null 이고, 그때는 막지 않는다.
+ *
+ * 차감 계산이 기기에서 돌기 때문에 필요한 문서다 -- 업데이트하지 않은 폰은
+ * 옛 규칙으로 계산한 차감을 원장에 박을 수 있고, 원장은 되돌릴 수 없다.
+ * 판정은 settlement-gate.js 가 하고 여기서는 읽기만 한다.
+ */
+export async function fbLoadSettlementConfig() {
+  if (!fs || !auth?.currentUser) return null;
+  try {
+    const snap = await withAuthTimeout(
+      () => getDoc(doc(fs, "runtimeConfig", "settlement")),
+      { timeoutMs: FIRESTORE_READ_TIMEOUT_MS, provider: "firebase", stage: "settlement_config_read" },
+    );
+    if (!snap.exists()) return null;
+    const data = snap.data() || {};
+    const table = data.minBuilds && typeof data.minBuilds === "object" ? data.minBuilds : {};
+    /* 읽는 쪽이 모양을 정한다. 콘솔에서 손으로 적는 문서라 오타가 들어올 수
+       있고, 그것이 화면까지 가면 "왜 막혔는지" 를 아무도 설명할 수 없다. */
+    return {
+      minBuilds: {
+        web: String(table.web ?? "").trim(),
+        android: String(table.android ?? "").trim(),
+        ios: String(table.ios ?? "").trim(),
+      },
+    };
+  } catch (_error) {
+    return null;
+  }
+}
+
+/**
+ * 앱 업데이트 안내 설정. **못 읽으면 null 이고, 그러면 아무것도 띄우지 않는다.**
+ *
+ * 판정은 features/app-update/update-gate.js 가 하고 여기서는 읽기만 한다 --
+ * fbLoadSettlementConfig 와 같은 모양이다.
+ */
+export async function fbLoadAppUpdateConfig() {
+  if (!fs || !auth?.currentUser) return null;
+  try {
+    const snap = await withAuthTimeout(
+      () => getDoc(doc(fs, "runtimeConfig", "appUpdate")),
+      { timeoutMs: FIRESTORE_READ_TIMEOUT_MS, provider: "firebase", stage: "app_update_config_read" },
+    );
+    return snap.exists() ? snap.data() : null;
+  } catch (_error) {
+    return null;
+  }
 }
 
 export async function fbLoadAIRecordingStatus() {

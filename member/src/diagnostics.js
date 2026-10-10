@@ -33,6 +33,7 @@ export const MEMBER_FEATURE = Object.freeze({
   READ_VIEW: "read_member_view",
   OFFLINE_CACHE: "offline_cache",
   DELETE_ACCOUNT: "delete_account",
+  SIGN_OUT: "sign_out",
 });
 
 /** 그 기능의 어느 단계인가. */

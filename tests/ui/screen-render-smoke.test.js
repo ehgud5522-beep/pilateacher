@@ -8,24 +8,76 @@ import react from "@vitejs/plugin-react";
 
 const projectRoot = fileURLToPath(new URL("../../", import.meta.url));
 
+/* ── 서버는 파일에 하나다 ────────────────────────────────────────────────
+   전에는 테스트마다 Vite 개발 서버를 새로 띄웠다. 이 파일에서만 105번이고
+   (issueScreens 74 + 직접 31), 매번 App.jsx 전체를 SSR 로 적재한다.
+
+   한 프로세스가 그만큼을 버티지 못한다. 단독으로 돌리면 253개가 전부
+   통과하는데 전체 스위트에서는 **한 건이 무작위로** 떨어졌다 -- 자원 한계에
+   먼저 닿은 테스트가 떨어지므로 기계마다 다른 테스트가 실패했다. 2026-10-03
+   Codemagic 이 `not ok 149 - tests/ui/screen-render-smoke.test.js` 로 멈춘 것이
+   그것이고, 그 전에는 시간대·날짜·한글 정렬을 의심하느라 빌드 두 판을 버렸다.
+
+   서버와 적재한 모듈만 공유한다. **화면 목록은 공유하지 않는다** -- 그것까지
+   들고 있다가 253개 테스트의 React 트리가 쌓여 4GB 힙을 넘겼다. 비싼 것은
+   모듈 적재이고, 화면 객체는 테스트가 끝나면 치워지게 둔다.
+
+   닫는 것은 파일이 끝날 때 한 번이다 -- 테스트마다 닫으면 다음 테스트가 쓸
+   것이 없다. */
+let sharedScreens = null;
+
+const screenCases = async () => {
+  if (!sharedScreens) {
+    const vite = await createServer({
+      root: projectRoot,
+      configFile: false,
+      plugins: [react()],
+      appType: "custom",
+      optimizeDeps: { noDiscovery: true, include: [] },
+      server: { middlewareMode: true },
+      ssr: { noExternal: ["@capgo/camera-preview"] },
+      logLevel: "silent",
+    });
+    sharedScreens = { vite, module: await vite.ssrLoadModule("/src/App.jsx") };
+  }
+  return sharedScreens;
+};
+
+test.after(async () => {
+  if (sharedScreens) await sharedScreens.vite.close();
+  sharedScreens = null;
+});
+
+/** App.jsx 를 적재한 모듈. 한 번만 적재된다. */
+const screenModule = async () => (await screenCases()).module;
+
+/**
+ * 화면 이름으로 마크업을 뽑는 함수. 서버와 모듈은 공유하고 **화면 목록은 매번
+ * 새로 만든다.**
+ *
+ * 목록까지 들고 있으면 253개 테스트가 그린 React 트리가 파일이 끝날 때까지
+ * 쌓인다 -- 처음에 그렇게 만들었다가 4GB 힙을 넘겨 터뜨렸다. 비싼 것은 모듈
+ * 적재(SSR 변환)이고 그것만 한 번 하면 된다.
+ */
+const screenMarkup = async () => {
+  const loaded = await screenModule();
+  const byName = new Map(loaded.createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  return (name) => renderToStaticMarkup(byName.get(name));
+};
+
 test("all primary tabs and detail surfaces render without a ReferenceError", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const { createAppScreenSmokeCases } = await screenModule();
   const cases = createAppScreenSmokeCases();
   assert.deepEqual(cases.map((item) => item.name), [
     "일정 탭",
     "일정 탭 · 하루 11건 혼합",
     "일정 탭 · 소속 · 확정 전",
+    "일정 탭 · 소속 · 추가 관리",
+    "일정 탭 · 소속 · 추가 관리 · 디오사 없음",
+    "일정 탭 · 소속 · 디오사 관리 30분",
+    "일정 탭 · 소속 · 디오사 50분 · B 없음",
+    "일정 탭 · 소속 · 1:1 노쇼",
+    "일정 탭 · 소속 · 2:1 둘 다 노쇼",
     "일정 탭 · 소속 · 예상 단가",
     "일정 탭 · 소속 · 예상 단가 · 서비스",
     "일정 탭 · 소속 · 확정됨",
@@ -40,6 +92,10 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "일정 탭 · 개인 모드 · 확정 없음",
     "회원 목록",
     "회원 상세",
+    /* 회원권 네 장 짜리. 배포 563 이 여기서 죽었다 -- "소속" 케이스는
+       passCards 를 넘기지 않아 새 카드 코드가 한 줄도 돌지 않았다. */
+    "회원 상세 · 회원권 네 장",
+    "회원 상세 · 만료일 순서 경고",
     "회원 상세 · 소속",
     "회원 상세 · 강사",
     "회원 상세 · 대표",
@@ -54,6 +110,16 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 강사",
     "더보기 탭 · 개인 모드",
     "더보기 탭 · 소속 확인 실패",
+    "더보기 탭 · 앱 업데이트 안내",
+    "더보기 탭 · 만료일 순서 확인",
+    "더보기 탭 · 묶음 펼침",
+    "더보기 탭 · 강사 이름 확정",
+    "더보기 탭 · 강사 이름 확정 · 할 것 없음",
+    "더보기 탭 · 묶음 펼침 · 매니저",
+    "더보기 탭 · 묶음 펼침 · 강사",
+    "더보기 탭 · 묶음 펼침 · 총괄매니저",
+    "더보기 탭 · 총괄매니저",
+    "더보기 탭 · 백업",
     "더보기 탭 · 월간 리포트",
     "더보기 탭 · 월간 리포트 · 조회 실패",
     "더보기 탭 · 월간 리포트 · 개인 모드",
@@ -66,6 +132,10 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "센터 회원 상세 · 발급 취소 확인",
     "센터 회원 상세 · 연락처 수정",
     "센터 회원 상세 · 강사 · 연락처 수정",
+    "센터 회원 상세 · 잔여 조정",
+    "센터 회원 상세 · 만료일 변경",
+    "센터 회원 상세 · 매니저",
+    "센터 회원 상세 · 세션업",
     "센터 회원 상세 · 양도",
     "센터 회원 상세 · 양도 · 동명이인",
     "센터 회원 상세 · 양도 · 듀엣 차단",
@@ -104,6 +174,12 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "회원권 발급 · 확인 · 현금",
     "회원권 발급 · 조회 실패",
     "강사 관리",
+    "강사 관리 · 계정 교체",
+    "강사 관리 · 총괄매니저 지정",
+    "강사 관리 · 총괄매니저 지정 · 옛 앱",
+    "강사 관리 · 총괄매니저 해제",
+    "강사 관리 · 총괄매니저가 본 화면",
+    "강사 관리 · 추가 · 동명 퇴사자",
     "강사 관리 · 수정",
     "강사 관리 · 부원장 지정",
     "강사 관리 · 본인",
@@ -125,7 +201,14 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "회원 관리 · 소속 확인 실패",
     "더보기 탭 · 매니저",
     "회원권 상품",
+    "회원권 상품 · 폰 폭",
     "회원권 상품 · 소속 확인 실패",
+    "이관 서비스 보정 · 미리보기",
+    "이관 서비스 보정 · 보정할 것 없음",
+    "이관 초기화 · 미리보기",
+    "이관 초기화 · 끝",
+    "잔여 점검 · 안 맞음",
+    "잔여 점검 · 전부 맞음",
     "번호 점검",
     "번호 점검 · 이상 없음",
     "번호 점검 · 조회 실패",
@@ -174,19 +257,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
   }
 });
 
-test("the product catalog is reachable only where it should be", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("the product catalog is reachable only where it should be", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -218,29 +290,20 @@ test("the product catalog is reachable only where it should be", async (t) => {
   assert.doesNotMatch(locked, /추가/, "잠긴 상태에서는 추가 버튼이 없어야 한다");
 });
 
-test("the october migration is the owner's alone and never writes before it has shown what it will write", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("the october migration is the owner's alone and never writes before it has shown what it will write", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
   /* 한 번 올리면 센터 전체의 회원과 회원권이 만들어진다. 매니저·강사에게는
      진입점이 없어야 하고, 항목이 없으면 setView 로 들어갈 길도 닫힌다. */
-  assert.match(markupOf("더보기 탭"), /엑셀 이관/);
-  assert.doesNotMatch(markupOf("더보기 탭 · 매니저"), /엑셀 이관/);
-  assert.doesNotMatch(markupOf("더보기 탭 · 강사"), /엑셀 이관/);
-  assert.doesNotMatch(markupOf("더보기 탭 · 개인 모드"), /엑셀 이관/);
-  assert.doesNotMatch(markupOf("더보기 탭 · 소속 확인 실패"), /엑셀 이관/);
+  /* 2026-10-10 부터 "대표 설정" 묶음 안이고 이름은 "이관 데이터" 다. 그 묶음은
+     접힌 채로 시작하므로 펼친 화면에서 본다 -- 접힘은 숨김이 아니다. */
+  assert.match(markupOf("더보기 탭 · 묶음 펼침"), /이관 데이터/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 묶음 펼침 · 매니저"), /이관 데이터/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 묶음 펼침 · 강사"), /이관 데이터/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 개인 모드"), /이관 데이터/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 소속 확인 실패"), /이관 데이터/);
 
   // 소속을 읽지 못하면 다른 센터에 회원을 올릴 수 있다. 그 상태는 잠근다.
   const locked = markupOf("엑셀 이관 · 소속 확인 실패");
@@ -274,19 +337,8 @@ test("the october migration is the owner's alone and never writes before it has 
   assert.match(result, /다시 올려도 두 번 저장되지 않습니다/);
 });
 
-test("a deputy's pay basis is stated instead of an amount that is never used", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("a deputy's pay basis is stated instead of an amount that is never used", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -318,19 +370,8 @@ test("a deputy's pay basis is stated instead of an amount that is never used", a
   assert.doesNotMatch(self, /퇴사 처리/);
 });
 
-test("a deduction says why it was worth what it was worth", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("a deduction says why it was worth what it was worth", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -347,19 +388,8 @@ test("a deduction says why it was worth what it was worth", async (t) => {
   assert.match(markupOf("센터 회원 상세"), /기준 단가/);
 });
 
-test("the payroll summary is the owner's, and says out loud what it did not count", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("the payroll summary is the owner's, and says out loud what it did not count", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -448,26 +478,17 @@ test("the payroll summary is the owner's, and says out loud what it did not coun
   assert.doesNotMatch(locked, /CSV 내려받기/);
 });
 
-test("the audit log shows the odd ones first, and never a name it stored itself", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("the audit log shows the odd ones first, and never a name it stored itself", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
   // 센터 전체의 조작 이력은 한 사람의 것이 아니다. 매니저도 못 본다.
-  assert.match(markupOf("더보기 탭"), /감사 로그/);
-  assert.doesNotMatch(markupOf("더보기 탭 · 매니저"), /감사 로그/);
-  assert.doesNotMatch(markupOf("더보기 탭 · 강사"), /감사 로그/);
+  /* 감사 로그는 "점검" 묶음 안이고, 그 묶음은 접힌 채로 시작한다. 펼친
+     화면에서 본다 -- 접힘은 역할로 숨기는 것과 다른 일이다. */
+  assert.match(markupOf("더보기 탭 · 묶음 펼침"), /감사 로그/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 묶음 펼침 · 매니저"), /감사 로그/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 묶음 펼침 · 강사"), /감사 로그/);
   assert.doesNotMatch(markupOf("더보기 탭 · 개인 모드"), /감사 로그/);
 
   const audit = markupOf("감사 로그");
@@ -532,19 +553,8 @@ test("the audit log shows the odd ones first, and never a name it stored itself"
   assert.doesNotMatch(locked, /전체 이력/);
 });
 
-test("a mistake is undone by adding to the ledger, never by erasing it", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("a mistake is undone by adding to the ledger, never by erasing it", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -583,19 +593,8 @@ test("a mistake is undone by adding to the ledger, never by erasing it", async (
   assert.match(cancelling, /남은 8회를 거두고/);
 });
 
-test("the audit screen's cancellations and corrections come from the ledger", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("the audit screen's cancellations and corrections come from the ledger", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
 
   /* 기능이 생겼으니 "취소할 방법이 없습니다"는 사라져야 한다. 그 문구가 남아
@@ -605,19 +604,8 @@ test("the audit screen's cancellations and corrections come from the ledger", as
   assert.match(audit, /원래 기록은 지워지지 않고 함께 남아 있습니다/);
 });
 
-test("an instructor sees the centre's members, so there is nothing to re-register", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("an instructor sees the centre's members, so there is nothing to re-register", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -654,19 +642,8 @@ test("an instructor sees the centre's members, so there is nothing to re-registe
   assert.match(failed, /다시 시도/);
 });
 
-test("the schedule settles the lesson, and says what that will cost before it does", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("the schedule settles the lesson, and says what that will cost before it does", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -746,19 +723,8 @@ test("ErrorBoundary hides diagnostics in production and records a privacy-safe d
    errorDomain·errorCode 가 버려지면 어느 계층의 무슨 코드였는지 알 수 없다 --
    원본 코드를 잃는 것은 CLAUDE.md §2 가 금지한 그것이다. 진단이 내보내는
    필드와 화이트리스트가 어긋나면 여기서 실패한다. */
-test("every field the organization lookup emits survives deviceLog", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { ORGANIZATION_CONTEXT_LOG_FIELDS, isDeviceLogField } = await vite.ssrLoadModule("/src/App.jsx");
+test("every field the organization lookup emits survives deviceLog", async () => {
+  const { ORGANIZATION_CONTEXT_LOG_FIELDS, isDeviceLogField } = await screenModule();
   const dropped = ORGANIZATION_CONTEXT_LOG_FIELDS.filter((field) => !isDeviceLogField(field));
   assert.deepEqual(dropped, [], `deviceLog 가 버리는 필드: ${dropped.join(", ")}`);
 
@@ -779,19 +745,8 @@ test("every field the organization lookup emits survives deviceLog", async (t) =
   }
 });
 
-test("the member directory shows who is there and who is not", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("the member directory shows who is there and who is not", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -817,19 +772,8 @@ test("the member directory shows who is there and who is not", async (t) => {
   assert.doesNotMatch(empty, /김하나/);
 });
 
-test("registration asks for three things and warns about a namesake", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("registration asks for three things and warns about a namesake", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -851,19 +795,8 @@ test("registration asks for three things and warns about a namesake", async (t) 
   assert.match(duplicate, /그래도 등록/);
 });
 
-test("the member directory is reachable only where it should be", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("the member directory is reachable only where it should be", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -892,19 +825,8 @@ test("the member directory is reachable only where it should be", async (t) => {
 
 /* 조회 실패와 빈 결과가 같은 화면이면, 사용자는 무엇을 해야 할지 알 수 없고
    우리는 원인을 찾을 수 없다. memberships 도 locations 도 그래서 하루씩 걸렸다. */
-test("a failed location read does not look like an empty one", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("a failed location read does not look like an empty one", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -922,19 +844,8 @@ test("a failed location read does not look like an empty one", async (t) => {
 /* 강사 관리. 대표만 보고, 대표만 바꾼다 -- 규칙도 같은 경계를 지킨다.
    풀방금액은 1:1 재등록(정상) 한 카테고리의 단가이므로, 화면이 "모든 단가"처럼
    보이면 안 된다. */
-test("the instructor screen says what it changes and what it does not", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("the instructor screen says what it changes and what it does not", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -969,19 +880,8 @@ test("the instructor screen says what it changes and what it does not", async (t
 
 /* 강사를 붙이는 자리. uid 를 옮겨 적게 하지 않는 것이 요점이다 -- 28자를 카톡으로
    옮기면 오타가 나고, 틀리면 조용히 매칭되지 않는다. */
-test("adding an instructor asks for the e-mail, never a uid", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("adding an instructor asks for the e-mail, never a uid", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -1012,19 +912,8 @@ test("adding an instructor asks for the e-mail, never a uid", async (t) => {
   assert.match(missing, /강사가 앱에 먼저 로그인해야 합니다/);
 });
 
-test("retiring says what it keeps, and the retired can come back", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("retiring says what it keeps, and the retired can come back", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -1040,19 +929,8 @@ test("retiring says what it keeps, and the retired can come back", async (t) => 
   assert.doesNotMatch(retired, /퇴사 처리/);
 });
 
-test("a failed instructor read does not look like an empty centre", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("a failed instructor read does not look like an empty centre", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -1067,19 +945,8 @@ test("a failed instructor read does not look like an empty centre", async (t) =>
   assert.doesNotMatch(empty, /코드/, "없는 것은 오류가 아니므로 코드가 붙지 않는다");
 });
 
-test("only the owner reaches the instructor admin screen", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("only the owner reaches the instructor admin screen", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -1095,35 +962,29 @@ test("only the owner reaches the instructor admin screen", async (t) => {
 
 /* 센터를 운영하는 일과 이 기기를 쓰는 일이 한 그룹에 섞여 목록이 길었다.
    나누되, 강사에게 빈 머리글만 남기지 않는 것이 요점이다. */
-test("the centre group stands only where there is something in it", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("the centre group stands only where there is something in it", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
   const owner = markupOf("더보기 탭");
-  assert.match(owner, /센터 운영/);
+  /* 2026-10-10 부터 "센터 운영" 한 묶음이 아니라 하는 일로 갈린다. 첫 묶음의
+     자리는 그대로다 -- 업무와 내 설정 사이다. */
+  assert.ok(owner.includes("회원 · 회원권"));
   assert.match(owner, /내 설정/);
-  // 센터 운영은 통째로 대표의 것이다. 업무와 기타는 그대로 남는다.
-  assert.ok(owner.indexOf("센터 운영") < owner.indexOf("내 설정"), "운영이 위");
+  assert.ok(owner.indexOf("회원 · 회원권") < owner.indexOf("내 설정"), "운영이 위");
 
   /* 대표가 아니면 그 그룹에 들어갈 항목이 하나도 없다. 머리글만 남기면
      "여기 뭔가 있어야 하는데 안 보인다"가 된다. */
-  // FC매니저에게는 센터 운영 묶음이 선다 -- 회원권 발급 · 회원 관리 · 상품 (2026-09-23).
-  assert.match(markupOf("더보기 탭 · 매니저"), /센터 운영/);
+  // FC매니저에게는 회원·회원권과 상품이 선다 -- 발급 · 회원 관리 · 상품 (2026-09-23).
+  const manager = markupOf("더보기 탭 · 매니저");
+  assert.ok(manager.includes("회원 · 회원권"), "FC매니저도 발급과 회원 관리를 한다");
+  assert.ok(manager.includes("상품"));
+  // 강사·급여와 점검은 그 역할에 하나도 없으므로 머리글째 사라진다.
+  assert.equal(manager.includes("강사 · 급여"), false);
   for (const name of ["더보기 탭 · 강사", "더보기 탭 · 개인 모드", "더보기 탭 · 소속 확인 실패"]) {
     const markup = markupOf(name);
-    assert.doesNotMatch(markup, /센터 운영/, name);
+    assert.equal(markup.includes("회원 · 회원권"), false, name);
     assert.match(markup, /내 설정/, `${name} — 내 설정은 모두에게`);
     assert.match(markup, /화면 설정/, name);
   }
@@ -1152,22 +1013,11 @@ test("the centre group stands only where there is something in it", async (t) =>
   assert.doesNotMatch(personal, /이 기기에만 저장되는 값입니다/);
 });
 
-test("the monthly report and the payroll roll-up do not read alike", async (t) => {
+test("the monthly report and the payroll roll-up do not read alike", async () => {
   /* 둘 다 "급여"라는 말을 쓰는데 세는 것이 다르다. 월간 리포트는 기기에 저장된
      일정이고, 급여 집계는 회원권 원장이다. 메뉴에서 구별되지 않으면 강사와
      대표가 서로 다른 숫자를 같은 것으로 읽는다. */
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -1184,22 +1034,7 @@ test("the monthly report and the payroll roll-up do not read alike", async (t) =
 
 /* 회원권 발급. 누른 뒤에 고칠 수 있는 것이 거의 없는 화면이라, 무엇이 저장될지가
    누르기 전에 보여야 한다. 단가 해석은 pay-rates 의 UNIT_PRICE_SOURCE 를 따른다. */
-const issueScreens = async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
-  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
-  return (name) => renderToStaticMarkup(byName.get(name));
-};
+const issueScreens = () => screenMarkup();
 
 test("the issue form asks only what the price source needs", async (t) => {
   const markupOf = await issueScreens(t);
@@ -1541,19 +1376,8 @@ test("the confirm card shows the net price when VAT is inside the contract", asy
 
 /* 소속 센터의 회원 상세. 강사가 못 하는 일이 화면에서 사라지고, 이용권 카드가
    조직 회원권에서 채워진다. */
-test("an instructor cannot delete, hold or reprice a centre member", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("an instructor cannot delete, hold or reprice a centre member", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -1596,19 +1420,8 @@ test("an instructor cannot delete, hold or reprice a centre member", async (t) =
 });
 
 /* 회원의 여정 줄과 수업의 예상 단가. 둘 다 "나중에 묻지 않게" 하는 화면이다. */
-test("the journey line shows the whole road, not just this pass", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("the journey line shows the whole road, not just this pass", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -1632,19 +1445,8 @@ test("the journey line shows the whole road, not just this pass", async (t) => {
   assert.doesNotMatch(markupOf("회원 상세"), /누적 \d+ \/ \d+회/);
 });
 
-test("a lesson says what it will be worth before it is settled", async (t) => {
-  const vite = await createServer({
-    root: projectRoot,
-    configFile: false,
-    plugins: [react()],
-    appType: "custom",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { middlewareMode: true },
-    ssr: { noExternal: ["@capgo/camera-preview"] },
-    logLevel: "silent",
-  });
-  t.after(() => vite.close());
-  const { createAppScreenSmokeCases } = await vite.ssrLoadModule("/src/App.jsx");
+test("a lesson says what it will be worth before it is settled", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
@@ -2084,17 +1886,384 @@ test("a duet transfer is not offered at all", async (t) => {
   assert.match(blocked, /disabled=""/);
 });
 
-test("only the owner sees the transfer button", async (t) => {
-  /* 회원 사이에 돈이 오가는 일이라 차감 보정·취소와 같은 선이다. */
+test("the owner and the manager see the handover button, the instructor does not", async (t) => {
+  /* 대표만 보던 버튼이다. 2026-10 에 FC매니저도 하도록 바뀌었다 -- 운영이
+     매일 하는 일이고 그때마다 대표를 불러야 하면 회원이 기다린다.
+
+     **규칙은 그대로 대표만 연다.** 매니저도 대표도 서버 통로로만 간다
+     (functions/src/pass-admin.js). 규칙을 고쳐 문을 열지 않는 이유는 그
+     머리말에 있다. */
   const markupOf = await issueScreens(t);
-  assert.match(markupOf("센터 회원 상세 · 대표"), />양도</);
-  assert.doesNotMatch(markupOf("센터 회원 상세"), />양도</);
+  assert.match(markupOf("센터 회원 상세 · 대표"), />양도\(회원 간\)</);
+  assert.match(markupOf("센터 회원 상세 · 매니저"), />양도\(회원 간\)</);
+  assert.doesNotMatch(markupOf("센터 회원 상세"), />양도/);
+});
+
+test("the handover button never reads as the instructor change", async (t) => {
+  /* 둘 다 "양도" 로 읽히면 대표가 회원에게 넘길 자리에서 강사를 바꾸거나 그
+     반대를 하고, 어느 쪽도 되돌릴 수 없다. 한 글자도 겹치지 않아야 한다. */
+  const markupOf = await issueScreens(t);
+  const owner = markupOf("센터 회원 상세 · 대표");
+  assert.match(owner, />양도\(회원 간\)</);
+  // 담당 강사 변경은 이력 줄의 문구다. 버튼 문구와 겹치지 않는다.
+  assert.match(owner, /담당 강사 변경/);
+  assert.doesNotMatch(owner, />양도</);
+});
+
+/* ── 세션업 ─────────────────────────────────────────────────────────────
+
+   같은 회원권을 늘린다. 새로 발급하면 회원권이 둘이 되고 차감이 갈린다. */
+
+test("the manager sees session up but not the owner-only buttons", async (t) => {
+  const markupOf = await issueScreens(t);
+  const manager = markupOf("센터 회원 상세 · 매니저");
+  assert.match(manager, />세션업</);
+  assert.match(manager, />만료일</);
+  /* 잔여 조정과 발급 취소는 대표만. 이미 일어난 일을 없던 일로 만드는 쪽이라
+     새 사실을 더하는 세션업·양도와 선이 다르다. */
+  assert.doesNotMatch(manager, />잔여 조정</);
+  assert.doesNotMatch(manager, />발급 취소</);
+});
+
+test("the instructor sees none of the pass buttons", async (t) => {
+  const markupOf = await issueScreens(t);
+  const instructor = markupOf("센터 회원 상세");
+  assert.doesNotMatch(instructor, />세션업</);
+  assert.doesNotMatch(instructor, />잔여 조정</);
+  assert.doesNotMatch(instructor, />만료일</);
+});
+
+test("the session up sheet shows before and after before the button", async (t) => {
+  /* 누르기 전에 무엇이 일어나는지. 원장은 append-only 라 고칠 수 없다. */
+  const markupOf = await issueScreens(t);
+  const sheet = markupOf("센터 회원 상세 · 세션업");
+
+  assert.match(sheet, /세션업/);
+  // 20회 + 50회 = 70회. 잔여 8 + 50 = 58.
+  assert.match(sheet, /70회/);
+  assert.match(sheet, /58회/);
+  // 계약 130만 + 250만 = 380만, 회당 3,800,000 ÷ 70 = 54,286.
+  assert.match(sheet, /3,800,000/);
+  assert.match(sheet, /54,286/);
+  assert.match(sheet, /세션업 확정/);
+});
+
+test("the session up history line says what grew and who did it", async (t) => {
+  /* "세션업" 만 적으면 반년 뒤 "왜 150회냐" 에 답할 것이 없다. 회당 단가가
+     없는 종류라 금액도 따로 적지 않으면 ₩0 으로 읽힌다. */
+  const markupOf = await issueScreens(t);
+  const owner = markupOf("센터 회원 상세 · 대표");
+  assert.match(owner, /세션업 20→70회/);
+  assert.match(owner, /\+₩2,500,000/);
+  assert.match(owner, /처리자/);
 });
 
 /* ── 연락처 수정 ─────────────────────────────────────────────────────────
 
    번호는 회원의 정체다. 고치는 것과 보는 것은 다른 일이라, 고치는 창에서도
    전체 번호를 보여 주지 않는다. */
+
+test("a no-show lesson still offers the confirm button and says it will deduct", async (t) => {
+  /* 2026-10-04 에 대표가 본 증상: 노쇼로 표시하면 확정할 자리가 사라졌다.
+     진짜 원인은 큐(needsSettlement)였지만, 화면 쪽도 함께 고정해 둔다 --
+     확정 버튼이 사라지는 회귀가 나면 큐 테스트만으로는 안 잡힌다. */
+  const markupOf = await issueScreens(t);
+  for (const name of ["일정 탭 · 소속 · 1:1 노쇼", "일정 탭 · 소속 · 2:1 둘 다 노쇼"]) {
+    const markup = markupOf(name);
+    assert.match(markup, /수업 확정/, name);
+    /* 노쇼는 확정 전까지 아무것도 움직이지 않는다. 그 말을 하지 않으면 강사는
+       노쇼를 누른 것으로 끝난 줄 안다. */
+    assert.match(markup, /노쇼도 1회 차감됩니다/, name);
+    // 소속 모드에서는 고를 수 없는 것을 고르게 두지 않는다.
+    assert.doesNotMatch(markup, />비차감</, name);
+  }
+});
+
+test("an add-on care lesson shows both rate lines and the picker", async (t) => {
+  /* 한 수업에서 PT 회원권과 디오사 회원권이 함께 빠진다. 한 줄로 합치면 강사는
+     둘 중 하나만 보고 그것이 이 수업의 전부라고 읽는다. */
+  const markupOf = await issueScreens(t);
+  const markup = markupOf("일정 탭 · 소속 · 추가 관리");
+
+  assert.match(markup, /30,000원/, "PT 줄");
+  assert.match(markup, /추가 관리 20,000원/, "디오사 줄");
+  assert.match(markup, /추가 관리 \(디오사\)/, "고르는 자리");
+  assert.match(markup, /관리 A\(30분\)/);
+  // 반쪽 차감이 없다는 것을 누르기 전에 말한다.
+  assert.match(markup, /디오사 회원권이 없으면 둘 다 빠지지 않습니다/);
+});
+
+test("a care chip the member cannot use is closed, and says which", async (t) => {
+  /* 열어 두면 강사가 고르고, 그 순간 PT 까지 막힌다 -- 반쪽 차감을 하지 않기
+     때문이다. 확정 화면에서야 드러나고, 왜 막혔는지는 어디에도 없다. */
+  const markupOf = await issueScreens(t);
+  const markup = markupOf("일정 탭 · 소속 · 추가 관리 · 디오사 없음");
+
+  assert.match(markup, /관리 A\(30분\) · 회원권 없음/);
+  assert.match(markup, /관리 B\(50분\) · 잔여 없음/);
+  assert.match(markup, /disabled/, "고를 수 없는 것은 눌리지 않아야 한다");
+});
+
+test("a standalone care lesson settles on its own, at the fixed rate", async (t) => {
+  /* 디오사만 끊은 회원(PT 회원권 없음)이 여기서 처음 처리된다. */
+  const markupOf = await issueScreens(t);
+  const markup = markupOf("일정 탭 · 소속 · 디오사 관리 30분");
+
+  assert.match(markup, /20,000원/);
+  assert.match(markup, /디오사/);
+});
+
+test("a 50-minute lesson names the pass it needed, not just 디오사", async (t) => {
+  /* "디오사 회원권이 없어요" 로는 A 를 가진 회원이 왜 막혔는지 알 수 없다.
+     둘은 따로 파는 회원권이고, 대표에게 보낼 말이 다르다. */
+  const markupOf = await issueScreens(t);
+  const markup = markupOf("일정 탭 · 소속 · 디오사 50분 · B 없음");
+
+  assert.match(markup, /디오사 B\(50분\) 회원권이 없어요/);
+});
+
+test("the area manager runs the centre but never the app update setting", async (t) => {
+  /* 다른 자리는 전부 대표와 같다. 여기만 아닌 이유는 하나다 -- settlement
+     최소 빌드를 올리면 **센터 전체의 수업 확정이 막힌다.** 숫자 하나가
+     센터를 세우는 자리라 이관 초기화와 같은 선에 둔다. */
+  const markupOf = await issueScreens(t);
+  const hub = markupOf("더보기 탭 · 묶음 펼침 · 총괄매니저");
+
+  assert.match(hub, /급여 집계/);
+  assert.match(hub, /감사 로그/);
+  assert.match(hub, /강사 관리/);
+  /* 접혀서 안 보이는 것과 역할로 없는 것은 다르다. 펼친 화면에서도 없다 --
+     그것이 "대표만" 이다. */
+  assert.doesNotMatch(hub, /앱 업데이트 안내/);
+  /* "대표 설정" 묶음 자체는 선다 -- 이관 데이터는 총괄매니저도 올린다
+     (대표만인 것은 이관 **초기화** 쪽이고, 그것은 서버의 문이다). 묶음이
+     사라지는 것과 그 안의 한 줄이 없는 것은 다른 일이다. */
+  assert.ok(hub.includes("대표 설정"));
+  assert.match(hub, /이관 데이터/);
+});
+
+/* ── 폰 폭(390px) ──────────────────────────────────────────────────────────
+   같은 화면이 폰과 PC 에서 같은 코드를 쓴다. 가로 폭을 전제한 자리는 폰에서
+   읽을 수 없게 되는데, 그것은 PC 로만 보면 영영 드러나지 않는다. */
+
+test("the pass row keeps its meta text off the button line", async (t) => {
+  /* 390px 에서 버튼 다섯이 자리를 다 가져가고 만료·담당 글자가 몇 px 로 눌려
+     **한 글자씩 세로로** 깨졌다 -- flex-1 은 줄어들고 shrink-0 은 안 줄어든다.
+
+     글자 줄과 버튼 줄이 **다른 요소**여야 한다. 같은 flex 줄에 있으면 폭이
+     좁아지는 순간 다시 깨진다. */
+  const markupOf = await issueScreens(t);
+  const detail = markupOf("센터 회원 상세 · 대표");
+
+  const meta = detail.match(/<p[^>]*>[^<]*만료[^<]*담당[^<]*<\/p>/);
+  assert.ok(meta, "만료·담당 줄이 자기 <p> 로 서야 한다");
+  assert.equal(/flex-1/.test(meta[0]), false, "버튼과 폭을 나눠 쓰지 않는다");
+  // 버튼 줄은 넘치면 줄바꿈한다. 390px 에 다섯이 한 줄로 들어가지 않는다.
+  assert.match(detail, /flex flex-wrap items-center gap-1\.5/);
+});
+
+test("the product screen becomes a list on a phone, with the same numbers", async (t) => {
+  /* 표는 두 축이 보여야 값어치가 있다. 폰에서는 첫 열과 반 칸만 보이고
+     나머지는 가로 스크롤 뒤에 숨는다. */
+  const markupOf = await issueScreens(t);
+  const phone = markupOf("회원권 상품 · 폰 폭");
+  const desktop = markupOf("회원권 상품");
+
+  assert.equal(phone.includes("<table"), false, "폰에서는 표를 내지 않는다");
+  assert.match(desktop, /<table/, "PC 에서는 표 그대로");
+  // 칩 하나에 횟수와 금액이 함께 선다 -- 누르면 지금의 칸 상세가 열린다.
+  assert.match(phone, /20회 /);
+  assert.match(phone, /사용 중|집계 중/);
+});
+
+test("the settings hub groups the centre work, and folds the dangerous half", async (t) => {
+  /* 한 줄로 늘어놓으면 열두 개다. 매일 쓰는 둘과 반년에 한 번 여는 것이 같은
+     크기로 서 있으면 찾는 것을 눈으로 훑어야 한다.
+
+     점검과 대표 설정은 **접힌 채로** 시작한다 -- 지나다 누를 자리에 두지
+     않는다. 접힌 묶음도 머리글과 개수는 보여야 "빈 자리" 로 읽히지 않는다. */
+  const markupOf = await issueScreens(t);
+  const hub = markupOf("더보기 탭");
+
+  for (const label of ["회원 · 회원권", "강사 · 급여", "상품", "점검", "대표 설정"]) {
+    assert.ok(hub.includes(label), `${label} 묶음 머리글이 보여야 한다`);
+  }
+  // 펼쳐진 묶음의 항목은 보인다.
+  assert.match(hub, /회원권 발급/);
+  assert.match(hub, /급여 집계/);
+  // 접힌 묶음의 항목은 아직 그려지지 않는다.
+  assert.equal(hub.includes("이상한 건만 모아 보기"), false, "감사 로그는 접혀 있다");
+  assert.equal(hub.includes("쓰던 엑셀의 회원"), false, "이관 데이터는 접혀 있다");
+  assert.match(hub, /aria-expanded="false"/);
+});
+
+test("a role that sees none of a group never sees its heading", async (t) => {
+  /* 빈 머리글만 남기면 "여기 뭔가 있어야 하는데 안 보인다" 가 되고, 그것은
+     권한이 없다는 말보다 나쁘다. */
+  const markupOf = await issueScreens(t);
+  const instructor = markupOf("더보기 탭 · 강사");
+
+  assert.equal(instructor.includes("강사 · 급여"), false);
+  assert.equal(instructor.includes("대표 설정"), false);
+  assert.equal(instructor.includes("점검"), false);
+});
+
+test("confirming instructor names says what will freeze, before it freezes", async (t) => {
+  /* 되돌리는 문이 없다 -- 되돌리려면 한 사람씩 강사 관리에서 다시 저장해야
+     한다. 그러니 **무엇이 굳는지**가 누르기 전에 보여야 하고, 이미 되돌아간
+     이름("e asy")이 섞여 있으면 그것이 굳는다는 말도 같은 화면에 있어야 한다. */
+  const markupOf = await issueScreens(t);
+  const card = markupOf("더보기 탭 · 강사 이름 확정");
+
+  assert.match(card, /강사 이름 확정/);
+  assert.match(card, /지금 적혀 있는 이름을 그대로 확정합니다/);
+  assert.match(card, /이름을 바꾸지 않습니다/);
+  assert.match(card, /그 이름이 굳습니다/);
+  // 미리보기 버튼이 먼저다. 목록 없이 확정을 누를 수 없다.
+  assert.match(card, /누가 확정되는지 보기/);
+});
+
+test("a centre with nothing left to confirm says so instead of looking broken", async (t) => {
+  const markupOf = await issueScreens(t);
+  const card = markupOf("더보기 탭 · 강사 이름 확정 · 할 것 없음");
+  assert.match(card, /확정할 것이 없습니다/);
+});
+
+test("the app update card starts empty and says so", async (t) => {
+  /* 1.1.33 이 스토어에 올라갈 때까지 비어 있는 것이 정상이다. 빈 설정이 곧
+     "아무것도 띄우지 않음" 이라는 말이 화면에 있어야, 대표가 켜지 않은 것과
+     고장 난 것을 가른다. */
+  const markupOf = await issueScreens(t);
+  const card = markupOf("더보기 탭 · 앱 업데이트 안내");
+
+  assert.match(card, /앱 업데이트 안내/);
+  assert.match(card, /비워 두면 아무것도 띄우지 않습니다/);
+  assert.match(card, /Android 최신 빌드/);
+  assert.match(card, /iOS 최소 빌드/);
+  // 확정 차단은 같은 화면에 있되, 무엇이 걸리는지 먼저 말한다.
+  assert.match(card, /수업 확정 자체가 막힙니다/);
+  assert.match(card, /웹 칸을 잘못 올리면 대표 화면에서도 확정이 막힙니다/);
+  assert.match(card, /기준이 없습니다/);
+});
+
+test("a pass whose later round expires first says so on the card", async (t) => {
+  /* 2026-10-09 부터 차감이 차수 순이다. 1차에 잔여가 남아 있는 동안 2차는
+     쓰이지 않는데, 그 2차가 먼저 만료되면 회원이 돈을 낸 회차가 손도 못 대 보고
+     사라진다. 자동으로 피하지 않으므로 -- 순서를 뒤집으면 예측이 깨지고 그것이
+     차수 순으로 바꾼 이유였다 -- 화면이 먼저 말하는 것이 유일한 안전장치다. */
+  const markupOf = await issueScreens(t);
+  const detail = markupOf("회원 상세 · 만료일 순서 경고");
+
+  assert.match(detail, /2차가 1차보다 먼저 만료돼요/);
+  assert.match(detail, /만료일을 확인해 주세요/);
+});
+
+test("the centre-wide expiry order screen names what it is for", async (t) => {
+  /* 대표가 한 화면에서 어긋난 회원을 보고 만료일을 옮긴다. 회원권이 왜
+     차수 순으로 빠지는지가 같은 화면에 없으면, 경고만 보고 무엇을 고칠지
+     모른다. */
+  const markupOf = await issueScreens(t);
+  const screen = markupOf("더보기 탭 · 만료일 순서 확인");
+
+  assert.match(screen, /만료일 순서 확인 필요/);
+  assert.match(screen, /차수가 빠른 것부터/);
+  assert.match(screen, /쓰이지 못한 채 사라집니다/);
+});
+
+test("appointing an area manager says what opens and what stays with the owner", async (t) => {
+  /* 대표와 같은 권한이다. 되돌리는 것이 쉽지 않으므로 무엇을 넘기는지가
+     누르기 전에 화면에 있어야 한다 -- "같은 권한" 한 마디로는 알 수 없다. */
+  const markupOf = await issueScreens(t);
+  const sheet = markupOf("강사 관리 · 총괄매니저 지정");
+
+  assert.match(sheet, /총괄매니저로 지정/);
+  assert.match(sheet, /전 지점을 보고 처리합니다/);
+  // 대표에게 남는 넷이 같은 화면에 있어야 한다.
+  assert.match(sheet, /대표만 할 수 있는 것은 넷입니다/);
+  assert.match(sheet, /총괄매니저 지정·해제/);
+  assert.match(sheet, /이관 초기화/);
+  // 기본 지점은 편의일 뿐 경계가 아니다. 그렇게 읽히면 안 된다.
+  assert.match(sheet, /다른 지점도 전부 볼 수 있습니다/);
+});
+
+test("an old app cannot show the area manager screens, and the sheet says so first", async (t) => {
+  /* 1.1.32 이하는 area_manager 라는 글자를 모른다. 규칙은 다 열어 주는데
+     화면이 어느 역할 목록에도 넣지 않아서, 로그인은 되고 더보기가 거의 빈다 --
+     거부가 아니라 "없음" 으로 도착하므로 그 사람은 고장인지 권한인지 모른다. */
+  const markupOf = await issueScreens(t);
+  const sheet = markupOf("강사 관리 · 총괄매니저 지정 · 옛 앱");
+
+  assert.match(sheet, /빌드 64/);
+  assert.match(sheet, /빌드 65 이상/);
+  assert.match(sheet, /더보기가 거의 비어 보입니다/);
+});
+
+test("releasing an area manager is not a dismissal", async (t) => {
+  /* 퇴사와 섞이면 대표는 그 사람의 담당 회원과 급여가 어떻게 되는지부터
+     다시 묻는다. 계정 교체 화면이 "퇴사가 아닙니다" 를 먼저 말하는 것과
+     같은 자리다. */
+  const markupOf = await issueScreens(t);
+  const sheet = markupOf("강사 관리 · 총괄매니저 해제");
+
+  assert.match(sheet, /강사로 되돌리기/);
+  assert.match(sheet, /퇴사가 아닙니다/);
+  assert.doesNotMatch(sheet, /총괄매니저로 지정<\/button>/);
+});
+
+test("an area manager never sees the button that would make another one", async (t) => {
+  /* 열리면 대표가 모르는 사이에 그 자리가 늘고, 되돌리는 문은 없다.
+     규칙도 막지만 눌러도 거부되는 버튼은 고장으로 보인다. */
+  const markupOf = await issueScreens(t);
+  const sheet = markupOf("강사 관리 · 총괄매니저가 본 화면");
+
+  assert.doesNotMatch(sheet, /총괄매니저로 지정/);
+  assert.doesNotMatch(sheet, /강사로 되돌리기/);
+  // 나머지 강사 관리는 그대로 할 수 있다.
+  assert.match(sheet, /퇴사 처리/);
+});
+
+test("the account swap says what moves and what does not", async (t) => {
+  /* 2026-10 에 대표가 퇴사 + 추가로 했다가 그 사람의 그 달 수업료가 두 uid 로
+     흩어졌다. 퇴사와 다른 일이라는 것, 그리고 원장은 옮기지 않는다는 것이
+     누르기 전에 화면에 있어야 한다. */
+  const markupOf = await issueScreens(t);
+  const sheet = markupOf("강사 관리 · 계정 교체");
+
+  assert.match(sheet, /계정 교체/);
+  assert.match(sheet, /퇴사가 아닙니다/);
+  // 옮겨지는 것이 숫자로 선다. 누적은 더하는 값이라 되돌릴 수 없다.
+  assert.match(sheet, /회원권 담당/);
+  assert.match(sheet, /184회/);
+  assert.match(sheet, /앞으로의 일정/);
+  assert.match(sheet, /지난 수업 기록\(원장\)은 옮기지 않습니다/);
+  // 합쳐 보일 금액을 미리 말한다.
+  assert.match(sheet, /630,000/);
+});
+
+test("adding an instructor warns when someone who left has the same name", async (t) => {
+  /* 막지는 않는다 -- 동명이인은 실제로 있고, 둘을 가릴 수 있는 것은 대표뿐이다.
+     길만 알려 준다. */
+  const markupOf = await issueScreens(t);
+  const add = markupOf("강사 관리 · 추가 · 동명 퇴사자");
+
+  assert.match(add, /같은 이름의/);
+  assert.match(add, /로그인 계정만 바꾸는 것이라면/);
+  assert.match(add, /\[계정 교체\]/);
+});
+
+test("the backup screen offers the previous phone's records", async (t) => {
+  /* 2026-10-04 에 시작 화면의 "이 계정의 기록을 불러올까요?" 를 센터 소속
+     강사에게는 띄우지 않기로 했다 -- 그 기기가 비어 있는 것은 사고가 아니다.
+
+     대신 이 버튼이 유일한 길이 됐다. 없으면 폰을 바꾼 강사가 옛 수업기록을
+     되살릴 방법이 아예 없다. */
+  const markupOf = await issueScreens(t);
+  const backup = markupOf("더보기 탭 · 백업");
+  assert.match(backup, /이전 폰 기록 불러오기/);
+  // 무엇이 되살아나고 무엇이 영향을 안 받는지 그 자리에서 말한다.
+  assert.match(backup, /수업기록 원문/);
+  assert.match(backup, /센터 서버에 있어 영향이 없습니다/);
+});
 
 test("the phone edit sheet never shows the whole current number", async (t) => {
   /* 강사에게 명부는 뒤 4자리로 가려져 있다. 수정 창에서 전체를 보여 주면
@@ -2338,4 +2507,122 @@ test("the location chip does not count the review demo member", async (t) => {
   const manager = markupOf("회원 관리 · 심사용 · FC매니저");
   const counts = (markup) => (markup.match(/반송점[^<]*<\/span><span[^>]*>(\d+)/) || [])[1];
   assert.equal(counts(owner), counts(manager), "대표 화면의 인원수가 다르다");
+});
+
+test("이관 초기화는 지울 숫자와 남길 회원을 먼저 보여준다", async () => {
+  const markupOf = await screenMarkup();
+
+  const preview = markupOf("이관 초기화 · 미리보기");
+  /* 숫자를 보고 누른다. 되돌릴 수 없으므로 "몇 건" 이 버튼에 적혀 있어야 한다. */
+  assert.match(preview, /212건/);
+  assert.match(preview, /1843건/);
+  assert.match(preview, /되돌릴 수 없습니다/);
+  assert.match(preview, /확인했습니다 · 212건 초기화/);
+  /* 앱에서 발급한 회원권이 몇 장 남는지 함께 말한다 -- 0 이면 "전부 지워진다"
+     를 알고 누른다. */
+  assert.match(preview, /남는 회원권/);
+
+  /* 지우지 않는 회원과 그 이유. 접두만 보고 지우면 그 사람의 신원은 사라지고
+     수업 기록은 남는다. */
+  assert.match(preview, /지우지 않는 회원 2명/);
+  assert.match(preview, /김하나/);
+  assert.match(preview, /회원 앱 연결됨/);
+  assert.match(preview, /앱에서 발급한 회원권 있음/);
+  assert.match(preview, /앱에서 번호 변경됨/);
+
+  const done = markupOf("이관 초기화 · 끝");
+  assert.match(done, /회원권 212건 · 원장 1843건/);
+  assert.match(done, /migration-reset/, "사본 경로를 보여준다");
+  /* 강사 안내 문구. 기기 화면은 저절로 비지 않는다. */
+  assert.match(done, /강사에게 보낼 안내/);
+  assert.match(done, /앱을 완전히 닫고 다시 열어 주세요/);
+});
+
+test("센터 소속이면 기기 이용권 수정 버튼을 내지 않는다", async () => {
+  /* 이 카드의 잔여·만료일은 센터 회원권에서 온다. 여기서 고치면 기기에만
+     쓰이고 다음 로스터 계산이 센터 값으로 덮는다 -- "저장했습니다" 를 보고
+     화면은 그대로인, 아무 일도 일어나지 않는 버튼이다. */
+  const markupOf = await screenMarkup();
+
+  for (const name of ["회원 상세 · 소속", "회원 상세 · 강사", "회원 상세 · 대표"]) {
+    const markup = markupOf(name);
+    assert.doesNotMatch(markup, />이용권 수정</, name);
+    assert.match(markup, /잔여와 만료일은 센터 회원권에서 옵니다/, name);
+  }
+
+  /* 개인 모드는 그대로다. 센터가 없으면 이 카드가 유일한 자리다. */
+  const personal = markupOf("회원 상세");
+  assert.match(personal, />이용권 수정</);
+});
+
+test("잔여 점검은 안 맞는 것만 보여주고, 많으면 우리를 먼저 의심하게 한다", async () => {
+  const markupOf = await screenMarkup();
+
+  const off = markupOf("잔여 점검 · 안 맞음");
+  assert.match(off, /잔여 점검/);
+  /* 안 맞는 것과 확인 불가를 갈라 센다 -- 못 읽은 것을 "안 맞는다" 로
+     보고하면 있지도 않은 장부 오류를 찾아 나선다. */
+  assert.match(off, /안 맞음 1건/);
+  assert.match(off, /확인 불가 1건/);
+  assert.match(off, /김하나/);
+  assert.match(off, /원장 없음/);
+  /* 자동으로 고치지 않는다는 것을 말한다. */
+  assert.match(off, /자동으로 고치지 않습니다/);
+  // 맞는 회원권은 목록에 없다.
+  assert.doesNotMatch(off, /p3/);
+
+  const clean = markupOf("잔여 점검 · 전부 맞음");
+  assert.match(clean, /모두 원장과 맞습니다/);
+  assert.doesNotMatch(clean, /자동으로 고치지 않습니다/);
+});
+
+/* ── 회원권 수정 ─────────────────────────────────────────────────────── */
+
+test("회원권 수정 화면은 바뀔 값을 미리 보여주고 강사에게는 없다", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+
+  /* 되돌릴 수 없는 버튼 앞에서 결과를 숨기지 않는다. */
+  const adjust = markupOf("센터 회원 상세 · 잔여 조정");
+  assert.match(adjust, /잔여 회차 조정/);
+  assert.match(adjust, /지금 \d+회/);
+  /* 수업이 아니라는 것을 말한다 -- 급여에 잡히는 줄 알면 대표가 안 누른다. */
+  assert.match(adjust, /급여에 잡히지 않고/);
+  assert.match(adjust, /사유/);
+
+  const expiry = markupOf("센터 회원 상세 · 만료일 변경");
+  assert.match(expiry, /만료일 변경/);
+  assert.match(expiry, /홀딩/);
+  assert.match(expiry, /회차는 움직이지 않고/);
+  /* 회원 앱에 반영된다는 사실을 말한다. 모르면 따로 연락해야 하는 줄 안다. */
+  assert.match(expiry, /회원 앱에는 새 날짜가 반영됩니다/);
+
+  /* 강사 화면에는 버튼이 아예 없다. 규칙도 막지만, 눌러도 거부되는 버튼을
+     두지 않는다. */
+  const instructorView = markupOf("센터 회원 상세");
+  assert.doesNotMatch(instructorView, /잔여 조정/);
+});
+
+test("이관 서비스 보정은 바뀔 값을 전후로 보여준다", async () => {
+  /* 숫자만 바뀌는 일이라 "무엇이 바뀌었더라" 를 나중에 물을 수 없다. */
+  const markupOf = await screenMarkup();
+  const preview = markupOf("이관 서비스 보정 · 미리보기");
+
+  assert.match(preview, /대상 1건/);
+  // 서버는 id 만 보낸다 (§7). 이름은 화면이 명부에서 붙인다.
+  assert.match(preview, /김하나/);
+  assert.equal(preview.includes("csv_01011112222"), false, "회원 id 가 화면에 샜다");
+  // 전 -> 후가 한 줄에 선다.
+  assert.match(preview, /43/);
+  assert.match(preview, /40/);
+  assert.match(preview, /남은횟수는 바꾸지 않습니다/);
+  // 10/1 이후 서비스로 확정된 수업은 보고만 한다.
+  assert.match(preview, /서비스로 확정된 수업 1건/);
+  assert.match(preview, /되돌리지 않습니다/);
+  assert.match(preview, /확인했습니다 · 1건 보정/);
+
+  const clean = markupOf("이관 서비스 보정 · 보정할 것 없음");
+  assert.match(clean, /보정할 것 없음/);
+  assert.equal(clean.includes("확인했습니다"), false, "고칠 것이 없으면 확정 버튼을 내지 않는다");
 });

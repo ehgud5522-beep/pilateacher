@@ -4,6 +4,7 @@ import {
   CLIENT_SHEET_COLUMNS, MIGRATION_ERROR, PASS_SHEET_COLUMNS, applyClientMigration,
   applyPassMigration, clientIdForPhone, groupFailures, parseCsv, passIdFor,
   PASS_SHEET_DUET_COLUMNS, planClientMigration, planPassMigration, readSheet,
+  totalLooksLikeItIncludesService,
 } from "../../src/data/repositories/migration-repository.js";
 
 const ORG = "center-a";
@@ -389,8 +390,12 @@ test("the duet columns are optional, so a file without them still uploads", () =
   const { writes, failures } = planPasses(passSheet(passRow()));
   assert.deepEqual(failures, []);
   assert.equal("clientIds" in writes[0].pass, false);
-  // 열이 있어도 비어 있으면 1:1 이다.
-  const blank = planDuet(duetSheet(duetRow({ 회원명2: "", 연락처2: "", 강사누적진행2: "" })));
+  /* 열이 있어도 비어 있으면 1:1 이다 -- 단, 카테고리가 1:1 일 때만이다.
+     이 줄은 한동안 2:1 행으로 적혀 있었고, 그래서 "짝 없는 2:1 이 1:1
+     회원권이 된다" 를 통과로 못 박고 있었다. */
+  const blank = planDuet(duetSheet(
+    duetRow({ 급여카테고리: "1:1 신규", 회원명2: "", 연락처2: "", 강사누적진행2: "" }),
+  ));
   assert.deepEqual(blank.failures, []);
   assert.equal("clientIds" in blank.writes[0].pass, false);
 });
@@ -435,6 +440,82 @@ test("the partner's cumulative count is asked for, never copied from the anchor"
   const { failures } = planDuet(duetSheet(duetRow({ 강사누적진행2: "" })));
   assert.equal(failures[0].reason, MIGRATION_ERROR.DUET_PARTNER_SESSIONS_MISSING);
   assert.match(failures[0].message, /강사누적진행이 필요합니다/);
+});
+
+/* ── 카테고리와 짝이 어긋난 행 ─────────────────────────────────────────
+   isDuetPass 는 사람 수만 본다 (pass-clients.js:69). 상품명도 카테고리도 보지
+   않으므로, 짝 없는 2:1 은 1:1 회원권이 되어 혼자 온 수업에서 빠진다. 이관이
+   막지 않으면 아무도 막지 않는다. */
+
+test("a duet category with no partner at all fails that row", () => {
+  /* 조용한 쪽이라 테스트가 필요하다. 아래의 짝 블록은 "짝이 적혔으면" 으로
+     시작하므로, 세 칸이 모두 비면 거기까지 가지도 않고 1:1 회원권이 된다. */
+  const { writes, failures } = planDuet(duetSheet(
+    duetRow(),
+    duetRow({ 회원명: "이세리", 연락처: "010-1234-5678", 차수: "2", 회원명2: "", 연락처2: "", 강사누적진행2: "" }),
+  ));
+  assert.equal(writes.length, 1, "좋은 행은 그대로 올라간다");
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].reason, MIGRATION_ERROR.DUET_PARTNER_REQUIRED);
+  assert.equal(failures[0].line, 3, "엑셀에서 찾는 행 번호와 맞는다");
+  assert.match(failures[0].message, /급여카테고리를 1:1 로/, "고칠 방법이 두 가지라 둘 다 적는다");
+});
+
+test("a duet category fails even when the sheet has no partner columns", () => {
+  /* 열이 아예 없는 파일로도 2:1 을 올릴 수 있었다. 그 경로가 지금까지
+     열려 있었고, 반송·율하의 2:1 이 그리로 들어갔다면 전부 1:1 이 된다. */
+  const { writes, failures } = planPasses(passSheet(passRow({ 급여카테고리: "2:1 신규" })));
+  assert.equal(writes.length, 0);
+  assert.equal(failures[0].reason, MIGRATION_ERROR.DUET_PARTNER_REQUIRED);
+});
+
+test("the new 2:1 event category needs a partner like every other 2:1", () => {
+  /* 2026-10-09 에 늘린 카테고리다. 짝 목록이 네 곳에 흩어져 있었고, 이관
+     검사만 빠지면 **짝 없는 2:1 이 그대로 들어와 1:1 회원권이 된다** -- 그
+     회원권은 2:1 수업에서 빠지지 않고, 회원은 자기가 산 것과 다른 회차를
+     잃는다. 목록을 constants.mjs 하나로 모은 이유가 이것이다. */
+  const { writes, failures } = planPasses(passSheet(passRow({ 급여카테고리: "2:1 재등록(이벤트)" })));
+  assert.equal(writes.length, 0);
+  assert.equal(failures[0].reason, MIGRATION_ERROR.DUET_PARTNER_REQUIRED);
+});
+
+test("a duet row with only the partner's count fails rather than slipping through", () => {
+  /* 강사누적진행2 만 적힌 행. "짝을 가리켰는가" 를 세 칸으로 판단하면 이 행이
+     검사도 짝 블록도 모두 지나가, 막으려던 바로 그 모양이 만들어진다. */
+  const { writes, failures } = planDuet(duetSheet(duetRow({ 회원명2: "", 연락처2: "" })));
+  assert.equal(writes.length, 0);
+  assert.equal(failures[0].reason, MIGRATION_ERROR.DUET_PARTNER_REQUIRED);
+});
+
+test("a solo category with a partner fails that row", () => {
+  // 짝은 자기가 사지 않은 회원권에서 회차가 빠진다.
+  const { failures } = planDuet(duetSheet(duetRow({ 급여카테고리: "1:1 신규" })));
+  assert.equal(failures[0].reason, MIGRATION_ERROR.DUET_PARTNER_UNEXPECTED);
+  assert.match(failures[0].message, /급여카테고리를 2:1 로/);
+});
+
+test("a solo row with a half-written partner fails instead of uploading quietly", () => {
+  /* 세 칸 중 하나라도 손댔으면 걸린다. 이름을 적다 만 행이 1:1 로 올라가면
+     대표는 자기가 적은 짝이 어디로 갔는지 영영 모른다. */
+  for (const stray of [{ 회원명2: "박두리" }, { 연락처2: "010-9999-8888" }, { 강사누적진행2: "35" }]) {
+    const blank = { 회원명2: "", 연락처2: "", 강사누적진행2: "" };
+    const { failures } = planDuet(duetSheet(duetRow({ 급여카테고리: "1:1 신규", ...blank, ...stray })));
+    assert.equal(failures[0]?.reason, MIGRATION_ERROR.DUET_PARTNER_UNEXPECTED, JSON.stringify(stray));
+  }
+});
+
+test("categories that do not decide the head count are left as written", () => {
+  /* 서비스·렛미인·기타는 사람 수가 상품으로 정해지지 않는다. 모르는 것을
+     규칙으로 만들면 멀쩡한 행이 막힌다. */
+  const withPartner = planDuet(duetSheet(duetRow({ 급여카테고리: "서비스" })));
+  assert.deepEqual(withPartner.failures, []);
+  assert.equal(withPartner.writes[0].pass.clientIds.length, 2);
+
+  const alone = planDuet(duetSheet(
+    duetRow({ 급여카테고리: "렛미인", 회원명2: "", 연락처2: "", 강사누적진행2: "" }),
+  ));
+  assert.deepEqual(alone.failures, []);
+  assert.equal("clientIds" in alone.writes[0].pass, false);
 });
 
 test("both members get their own running total seeded", async () => {
@@ -511,4 +592,69 @@ test("처음 보는 번호는 예전처럼 새로 만든다", () => {
   assert.deepEqual(failures, []);
   assert.equal(writes[0].clientId, "csv_01055556666");
   assert.equal(writes[0].existing, false);
+});
+
+/* ── 이관 전에 이미 쓴 서비스 ─────────────────────────────────────────────
+   엑셀에 "쓴 서비스" 칸이 없다. 0 으로 두면 이미 쓴 서비스가 다시 주어지고,
+   이관 후 첫 수업이 서비스로 빠져 센터가 그 회차를 한 번 더 지원한다. */
+
+test("쓴 횟수에서 서비스 사용량을 센다", () => {
+  /* 서비스부터 쓰는 규칙이라 쓴 횟수가 서비스 개수를 넘기 전까지는 전부
+     서비스다: serviceUsed = min(서비스, (총 + 서비스) - 잔여) */
+  const used = (total, service, remaining) => planPasses(passSheet(passRow({
+    총세션: String(total), 서비스세션: String(service), 남은횟수: String(remaining),
+  }))).writes[0].pass.serviceUsed;
+
+  assert.equal(used(20, 2, 22), 0, "한 번도 안 썼다");
+  assert.equal(used(20, 2, 21), 1, "서비스부터 빠진다");
+  assert.equal(used(20, 2, 20), 2, "서비스를 다 썼다");
+  assert.equal(used(20, 2, 8), 2, "그 뒤로는 정규만 줄어든다");
+  assert.equal(used(20, 0, 8), 0, "서비스가 없으면 0 이다");
+});
+
+test("잔여가 총보다 크면 음수로 가지 않는다", () => {
+  /* 이관분은 총 횟수와 잔여가 따로 적혀 와서 어긋난 행이 있다. */
+  const { writes } = planPasses(passSheet(passRow({
+    총세션: "20", 서비스세션: "2", 남은횟수: "99",
+  })));
+  assert.equal(writes[0].pass.serviceUsed, 0);
+});
+
+/* ── 총세션에 서비스가 섞인 행 ────────────────────────────────────────── */
+
+test("상품명 숫자 + 서비스 = 총세션이면 섞인 것으로 본다", () => {
+  const mixed = (productName, totalSessions, serviceSessions) =>
+    totalLooksLikeItIncludesService({ productName, totalSessions, serviceSessions });
+
+  assert.equal(mixed("깍두기 40회e", 43, 3), true);
+  assert.equal(mixed("30회 2차", 34, 4), true);
+  assert.equal(mixed("50회", 51, 1), true);
+  // 맞지 않으면 건드리지 않는다.
+  assert.equal(mixed("깍두기 40회e", 40, 3), false);
+  assert.equal(mixed("깍두기 40회e", 43, 0), false, "서비스가 없으면 섞일 것이 없다");
+});
+
+test("숫자가 여럿이면 뒤쪽을 판 횟수로 본다", () => {
+  // "2:1 PT 33 ->100 세션업" 은 100회를 판 것이다.
+  assert.equal(totalLooksLikeItIncludesService({
+    productName: "2:1 PT 33회 ->100회 세션업", totalSessions: 102, serviceSessions: 2,
+  }), true);
+});
+
+test("상품명에 숫자가 없으면 맞혀 보지 않는다", () => {
+  assert.equal(totalLooksLikeItIncludesService({ productName: "깍두기", totalSessions: 43, serviceSessions: 3 }), false);
+  assert.equal(totalLooksLikeItIncludesService({}), false);
+});
+
+test("섞인 행은 그 행만 실패하고 나머지는 올라간다", () => {
+  /* 짐작해서 빼 주지 않는다 -- 상품명의 숫자가 실제로 판 횟수가 아닌 경우가
+     있고, 그때 조용히 깎으면 회원이 산 회차가 사라진다. */
+  const { writes, failures } = planPasses(passSheet(
+    passRow(),
+    passRow({ 회원명: "이세리", 차수: "2", 상품명: "깍두기 40회e", 총세션: "43", 서비스세션: "3", 남은횟수: "43" }),
+  ));
+  assert.equal(writes.length, 1, "좋은 행은 그대로 올라간다");
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].reason, MIGRATION_ERROR.TOTAL_INCLUDES_SERVICE);
+  assert.match(failures[0].message, /총세션에는 서비스를 빼고 적어 주세요/);
 });

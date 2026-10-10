@@ -10,8 +10,8 @@
  */
 
 import {
-  CLIENT_STATUS, MEMBERSHIP_STATUS, MEMBERSHIP_TITLE, PAY_CATEGORY, PAYMENT_METHOD, PRODUCT_STATUS,
-  SESSION_TYPE,
+  CLIENT_STATUS, DUET_PAY_CATEGORIES, MEMBERSHIP_STATUS, MEMBERSHIP_TITLE, PAY_CATEGORY,
+  PAYMENT_METHOD, PRODUCT_STATUS, SESSION_TYPE,
 } from "./constants.js";
 import {
   NEW_TO_INSTRUCTOR_THRESHOLD, PAID_SERVICE_SESSIONS_PER_PASS, PRICING_RULE,
@@ -20,6 +20,7 @@ import {
 export const SESSION_TYPE_LABELS = Object.freeze({
   [SESSION_TYPE.PT_1_1]: "1:1",
   [SESSION_TYPE.PT_2_1]: "2:1",
+  [SESSION_TYPE.DIOSA]: "디오사",
 });
 
 export const PAY_CATEGORY_LABELS = Object.freeze({
@@ -28,10 +29,25 @@ export const PAY_CATEGORY_LABELS = Object.freeze({
   [PAY_CATEGORY.PT_1_1_REPURCHASE_NORMAL]: "1:1 재등록(정상)",
   [PAY_CATEGORY.PT_2_1_NEW]: "2:1 신규",
   [PAY_CATEGORY.PT_2_1_REPURCHASE]: "2:1 재등록",
+  [PAY_CATEGORY.PT_2_1_REPURCHASE_EVENT]: "2:1 재등록(이벤트)",
   [PAY_CATEGORY.SERVICE]: "서비스",
   [PAY_CATEGORY.LETMEIN]: "렛미인",
+  /* 분을 적어 둔다. 둘은 **따로 파는 회원권**이라 대표가 발급 화면에서 고를
+     때 A 가 몇 분짜리인지 알아야 한다 -- 틀리면 회원이 30분 수업에 35,000
+     짜리 회차를 쓰거나, 50분 수업에서 아무것도 못 쓴다. */
+  [PAY_CATEGORY.DIOSA_A]: "디오사 A(30분)",
+  [PAY_CATEGORY.DIOSA_B]: "디오사 B(50분)",
   [PAY_CATEGORY.ETC]: "기타",
 });
+
+/**
+ * 엑셀 정산지에서 디오사가 들어가는 칸.
+ *
+ * 정산지에는 디오사 칸이 없다. 새로 만들지 않고 빈 칸 둘을 빌려 쓰기로 했다
+ * (2026-10-05) -- 급여 화면이 이 문장을 그대로 띄워서, 옮겨 적는 사람이
+ * 어디에 넣을지 헤매지 않게 한다.
+ */
+export const DIOSA_PAYROLL_NOTICE = "엑셀 정산지: 디오사 A → 서비스세션 칸, 디오사 B → 듀엣재등 칸";
 
 /**
  * 왜 이 금액인가. 원장 항목의 rule 을 한 줄로 읽는다.
@@ -45,10 +61,13 @@ export const PAY_CATEGORY_LABELS = Object.freeze({
  * Keep in sync with PRICING_RULE in deduction-pricing.js.
  */
 export const PRICING_RULE_LABELS = Object.freeze({
+  [PRICING_RULE.SERVICE_FIRST]: "서비스 — 센터 지원",
   [PRICING_RULE.SERVICE_ALREADY_USED]: `서비스 ${PAID_SERVICE_SESSIONS_PER_PASS + 1}회차 — 센터 지원 소진`,
   [PRICING_RULE.DEPUTY_DIRECTOR]: "부원장 5:5",
   [PRICING_RULE.HANDED_OVER]: "인수인계 — 신규 단가",
   [PRICING_RULE.NEW_TO_INSTRUCTOR]: `누적 ${NEW_TO_INSTRUCTOR_THRESHOLD}회 미만 — 신규 단가`,
+  [PRICING_RULE.DIOSA_FIXED]: "디오사 — 고정 단가",
+  [PRICING_RULE.SENIOR_TITLE_EVENT]: "점장·팀장 — 이벤트 고정 단가",
   [PRICING_RULE.BASE_CATEGORY]: "기준 단가",
 });
 
@@ -124,10 +143,19 @@ export const PAY_CATEGORIES_BY_SESSION_TYPE = Object.freeze({
     PAY_CATEGORY.ETC,
   ]),
   [SESSION_TYPE.PT_2_1]: Object.freeze([
-    PAY_CATEGORY.PT_2_1_NEW,
-    PAY_CATEGORY.PT_2_1_REPURCHASE,
+    ...DUET_PAY_CATEGORIES,
     PAY_CATEGORY.SERVICE,
     PAY_CATEGORY.ETC,
+  ]),
+  /* 디오사는 그 둘뿐이다. 서비스도 기타도 붙이지 않는다 -- 관리 수업의 단가는
+     고정이고(20,000 / 35,000), 다른 카테고리가 섞이면 그 고정이 깨진다.
+
+     **A 와 B 를 따로 파는 것이 요점이다.** 한 상품으로 묶으면 30분을 산
+     회원이 50분 수업에 들어오고, 그때 어느 회차가 빠져야 하는지는 아무도
+     답할 수 없다. */
+  [SESSION_TYPE.DIOSA]: Object.freeze([
+    PAY_CATEGORY.DIOSA_A,
+    PAY_CATEGORY.DIOSA_B,
   ]),
 });
 
@@ -171,6 +199,10 @@ export const PAY_CATEGORY_BY_LABEL = withAliases(PAY_CATEGORY_LABELS, {
   // 확정본이 쓰는 긴 이름들. 상품 이름이 아니라 카테고리를 가리킨다.
   "1:1 재등록(고정페이 이벤트)": PAY_CATEGORY.PT_1_1_REPURCHASE_EVENT,
   "1:1 재등록(정상단가)": PAY_CATEGORY.PT_1_1_REPURCHASE_NORMAL,
+  /* 분이 붙기 전의 이름. 이미 올라간 이관 파일이 이 글자를 쓰고 있다 --
+     떨어뜨리면 그 행이 "카테고리를 읽지 못했습니다" 로 멈춘다. */
+  "디오사 A": PAY_CATEGORY.DIOSA_A,
+  "디오사 B": PAY_CATEGORY.DIOSA_B,
 });
 
 export const PAYMENT_METHOD_BY_LABEL = withAliases(PAYMENT_METHOD_LABELS, {

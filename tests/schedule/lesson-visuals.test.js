@@ -54,8 +54,15 @@ test("옛 코드가 읽는 equip 거울값은 첫 기구, 미선택이면 기존
   assert.equal(legacyEquipLabel([]), "그룹");
 });
 
-test("일정 유형은 5종으로만 갈린다", () => {
-  assert.deepEqual(LESSON_TYPE_KEYS, ["private", "duet", "group", "consult", "off"]);
+test("일정 유형은 7종으로 갈린다", () => {
+  /* 2026-10-05 에 관리 A·B 가 늘었다 (디오사). 개인과 모양이 같아 보이지만
+     차감하는 회원권이 다르다 -- 적힌 종류가 그대로 답이어야 하고, 사람 수로
+     맞히면 PT 회원권에서 빠진다. */
+  assert.deepEqual(LESSON_TYPE_KEYS, ["private", "duet", "care_a", "care_b", "group", "consult", "off"]);
+  assert.equal(lessonTypeKeyOf({ type: "관리A", attendees: [{ memberId: "a" }] }), "care_a");
+  assert.equal(lessonTypeKeyOf({ type: "관리B", attendees: [{ memberId: "a" }] }), "care_b");
+  // 종류가 사람 수를 이긴다. 관리 수업에 둘이 적혀 있어도 듀엣이 아니다.
+  assert.equal(lessonTypeKeyOf({ type: "관리A", attendees: [{ memberId: "a" }, { memberId: "b" }] }), "care_a");
   assert.equal(lessonTypeKeyOf({ personal: true, title: "상담" }), "consult");
   assert.equal(lessonTypeKeyOf({ personal: true, title: "휴무" }), "off");
   assert.equal(lessonTypeKeyOf({ type: "그룹", attendees: [] }), "group");
@@ -76,6 +83,8 @@ test("그룹 인원은 기본 8명, 1~20명으로 묶인다", () => {
 
 test("색 설정은 모르는 값을 기본값으로 되돌린다", () => {
   assert.deepEqual(normalizeScheduleColors(null), { ...DEFAULT_SCHEDULE_COLORS });
+  // 유형이 늘면 색도 함께 늘어야 한다. 빠지면 그 유형이 색 없이 뜬다.
+  assert.deepEqual(Object.keys(DEFAULT_SCHEDULE_COLORS).sort(), [...LESSON_TYPE_KEYS].sort());
   assert.deepEqual(normalizeScheduleColors({ private: "없는색" }), { ...DEFAULT_SCHEDULE_COLORS });
   assert.equal(normalizeScheduleColors({ private: "rose" }).private, "rose");
   assert.equal(isDefaultScheduleColors(null), true);

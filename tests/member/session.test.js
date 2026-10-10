@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  REVERIFY_AFTER_DAYS, VERIFIED_AT_KEY, needsReverification, readVerifiedAt, writeVerifiedAt,
+  REVERIFY_AFTER_DAYS, VERIFIED_AT_KEY, forgetDevice, needsReverification, readVerifiedAt,
+  writeVerifiedAt,
 } from "../../member/src/session.js";
 
 const NOW = new Date(2026, 8, 24, 12, 0);
@@ -52,4 +53,27 @@ test("적은 값을 그대로 읽는다", () => {
   writeVerifiedAt(NOW, store);
   assert.equal(box.get(VERIFIED_AT_KEY), NOW.toISOString());
   assert.equal(needsReverification(readVerifiedAt(store), NOW), false);
+});
+
+test("로그아웃은 이 앱이 적은 칸만 걷는다", () => {
+  const data = new Map([
+    [VERIFIED_AT_KEY, NOW.toISOString()],
+    ["pilateacher.member.other", "x"],
+    ["someone.else", "keep"],
+  ]);
+  const store = {
+    get length() { return data.size; },
+    key: (index) => [...data.keys()][index] ?? null,
+    getItem: (key) => data.get(key) ?? null,
+    removeItem: (key) => { data.delete(key); },
+  };
+  forgetDevice(store);
+  assert.deepEqual([...data.keys()], ["someone.else"]);
+  // 걷은 뒤에는 다시 인증해야 한다 -- 다음 사람이 앞사람의 90일을 물려받지 않는다.
+  assert.equal(needsReverification(readVerifiedAt(store), NOW), true);
+});
+
+test("저장이 막힌 기기에서 로그아웃이 죽지 않는다", () => {
+  const blocked = { get length() { throw new Error("SecurityError"); } };
+  assert.doesNotThrow(() => forgetDevice(blocked));
 });

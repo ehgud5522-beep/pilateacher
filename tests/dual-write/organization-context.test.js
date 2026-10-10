@@ -25,8 +25,27 @@ test("an active membership decides the organization and the role", async () => {
     role: "instructor",
     status: "active",
     displayName: "",
+    /* 그 이름을 누가 정했는가. 로그인 동기화가 이 값을 보고 손을 뗀다 --
+       대표가 정한 이름을 덮으면 강사 목록과 급여가 로그인 계정 이름으로
+       되돌아간다 (2026-10-10 의 "e asy"). */
+    displayNameBy: "",
     isDeputyDirector: false,
+    // 급여 판정 1.5 가 읽는다. 없으면 빈 문자열이고 일반 강사 단가로 간다.
+    title: "",
+    /* 계정을 바꾼 강사의 옛 uid. 내 급여가 이것으로 옛 원장을 함께 읽는다 --
+       원장은 append-only 라 옛 uid 를 고쳐 쓸 수 없다. */
+    previousUids: [],
     isLegacy: false,
+  });
+});
+
+test("the title rides along for the senior-title pay rule", () => {
+  /* 점장·팀장의 1:1 재등록(이벤트)은 31,000 이다. 차감할 때마다 소속 문서를
+     다시 읽지 않으려고 로그인 때 한 번 싣는다 -- isDeputyDirector 와 같다. */
+  return resolveOrganizationContext("user-1", {
+    listActiveMemberships: async () => [{ ...membership(), title: "branch_manager" }],
+  }).then((context) => {
+    assert.equal(context.title, "branch_manager");
   });
 });
 

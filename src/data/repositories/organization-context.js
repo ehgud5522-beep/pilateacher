@@ -28,6 +28,7 @@ export const UNRESOLVED_ORGANIZATION_CONTEXT = Object.freeze({
      memberships 블록 주석에 있다 -- 이름을 읽자고 그 문서를 열면 전화번호와
      이메일이 함께 열린다. */
   displayName: "",
+  displayNameBy: "",
   /* 부원장인가. 차감할 때 급여 판정 1 이 이 값을 본다
      (deduction-pricing.js). 여기 두는 이유는 값이 필요한 그 순간에 이미
      읽혀 있기 때문이다 -- 로그인할 때 내 membership 을 한 번 읽고, 그 문서에
@@ -38,6 +39,16 @@ export const UNRESOLVED_ORGANIZATION_CONTEXT = Object.freeze({
      다시 읽을 때부터 안다. 등급 승진처럼 미리 정해지고 거의 바뀌지 않는
      값이라 그 대가를 받아들였고, 강사 단가 화면이 그 사실을 말한다. */
   isDeputyDirector: false,
+  /* 직급. 급여 판정 1.5 가 이 값을 본다 (deduction-pricing.mjs) -- 점장·팀장의
+     1:1 재등록(이벤트)은 31,000 이다. isDeputyDirector 와 같은 이유로 여기 있다:
+     차감할 때마다 소속 문서를 다시 읽으면 수업이 끝난 자리에서 누르는 버튼에
+     왕복이 하나 더 붙는다. 대가도 같다 -- 승진은 다음에 컨텍스트를 읽을 때부터
+     반영된다. */
+  title: "",
+  /* 계정을 바꾸기 전에 쓰던 uid 들. 급여를 세는 쪽이 이것으로 옛 원장을 내
+     것으로 본다 (functions/shared/instructor-swap.mjs) -- 원장은 append-only
+     라 옛 uid 를 고쳐 쓸 수 없다. */
+  previousUids: [],
   isLegacy: false,
   ready: false,
 });
@@ -59,7 +70,9 @@ export function unknownOrganizationContext() {
  * @property {string} [role]
  * @property {string} [status]
  * @property {string} [displayName]
+ * @property {string} [displayNameBy]
  * @property {boolean} [isDeputyDirector]
+ * @property {string} [title]
  */
 
 const required = (value, label) => {
@@ -133,7 +146,7 @@ const withLookupTimeout = (promise, { timeoutMs, setTimer, clearTimer }) => {
 /**
  * @param {string} userId
  * @param {{ listActiveMemberships?: (userId: string) => Promise<Array<MembershipDocument>>, warn?: (code: string, detail: object) => void, log?: (code: string, detail: object) => void, timeoutMs?: number, setTimer?: Function, clearTimer?: Function }} [options]
- * @returns {Promise<{ organizationId: string, role: string, status: string, displayName?: string, isDeputyDirector?: boolean, isLegacy: boolean }>}
+ * @returns {Promise<{ organizationId: string, role: string, status: string, displayName?: string, displayNameBy?: string, isDeputyDirector?: boolean, title?: string, isLegacy: boolean }>}
  */
 export async function resolveOrganizationContext(userId, options = {}) {
   const id = required(userId, "userId");
@@ -231,8 +244,14 @@ export async function resolveOrganizationContext(userId, options = {}) {
     role: membership.role || ROLES.MEMBER,
     status: membership.status,
     displayName: String(membership.displayName || ""),
+    /* 그 이름을 누가 정했는가. 로그인 동기화가 이 값을 보고 손을 뗀다 --
+       대표가 정한 이름을 덮으면 강사 목록과 급여가 로그인 계정 이름으로
+       되돌아간다 (syncOwnMembershipName). */
+    displayNameBy: String(membership.displayNameBy || ""),
     // 없으면 false 다. 부원장은 지정받은 사람만이다.
     isDeputyDirector: membership.isDeputyDirector === true,
+    title: String(membership.title ?? ""),
+    previousUids: Array.isArray(membership.previousUids) ? membership.previousUids.map(String) : [],
     isLegacy: false,
   }, "membership", {
     count: receivedCount,

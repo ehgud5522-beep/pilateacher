@@ -32,7 +32,9 @@
  * 한 사람이 사라진다.
  */
 
-import { CLIENT_STATUS, PASS_STATUS, PAY_CATEGORY } from "../schema/constants.js";
+import {
+  CLIENT_STATUS, DUET_PAY_CATEGORIES, PASS_STATUS, PAY_CATEGORY,
+} from "../schema/constants.js";
 import {
   PAYMENT_METHOD_BY_LABEL, PAY_CATEGORY_BY_LABEL, valueOfLabel,
 } from "../schema/display-names.js";
@@ -67,7 +69,45 @@ export const MIGRATION_ERROR = Object.freeze({
   DUET_PARTNER_PHONE_MISSING: "duet_partner_phone_missing",
   DUET_PARTNER_NOT_FOUND: "duet_partner_not_found",
   DUET_PARTNER_SESSIONS_MISSING: "duet_partner_sessions_missing",
+  /* 카테고리와 짝이 어긋난 행. 위 셋과 다른 사유인 것은 고칠 자리가 다르기
+     때문이다 -- 위 셋은 적다 만 짝을 마저 적는 일이고, 이 둘은 상품 분류와
+     짝 중 **어느 쪽이 맞는지 대표가 정해야** 하는 일이다. */
+  /* 총세션 칸에 서비스까지 더해 적은 행. 그대로 받으면 회당 금액이 낮아지고
+     (계약금액 ÷ 총세션) 서비스 회차가 두 번 세어진다. */
+  TOTAL_INCLUDES_SERVICE: "total_includes_service",
+  DUET_PARTNER_REQUIRED: "duet_partner_required",
+  DUET_PARTNER_UNEXPECTED: "duet_partner_unexpected",
 });
+
+/* ── 카테고리가 짝을 요구하는가 ───────────────────────────────────────────
+   2:1 은 두 사람이 한 회원권을 나눠 쓰는 상품이다. 짝이 비면 그 회원권은
+   clientIds 가 한 명이 되고, isDuetPass 는 **사람 수만 본다**
+   (pass-clients.js:69) -- 상품명도 카테고리도 보지 않는다. 그래서 짝 없는
+   2:1 은 1:1 회원권으로 취급되어, 혼자 온 수업이 만료만 이르면 그 회원권에서
+   빠진다 (lesson-settlement.js 의 pickSoloPass).
+
+   증상은 조용하다. 잔여는 줄어들고 화면은 멀쩡하며, 원장은 append-only 라
+   대표만 되돌릴 수 있다. 2:1 재등록(35,000)과 1:1 신규(25,000)가 섞인
+   회원이면 수업 한 번당 급여도 1만 원씩 어긋난다.
+
+   반대쪽도 같은 무게다. 1:1 인데 짝이 적히면 두 사람이 한 계약을 나눠 쓰게
+   되어, 짝은 자기가 사지 않은 회원권에서 회차가 빠진다.
+
+   서비스·렛미인·기타는 어느 쪽도 아니다. 그 셋은 사람 수가 상품으로 정해지지
+   않으므로 지금처럼 적힌 대로 둔다 -- 모르는 것을 규칙으로 만들지 않는다. */
+/* 타입을 문자열로 넓혀 둔다. Object.freeze 가 적힌 값들의 합집합으로 좁히는데,
+   이 목록이 받는 것은 엑셀에서 읽어 라벨 표로 옮긴 문자열이다 -- 좁은 타입이면
+   "이 카테고리가 그 목록에 있는가" 라는 질문 자체를 할 수 없다. */
+/** @type {readonly string[]} */
+/* 짝 세 칸을 요구하는 카테고리. 목록은 constants.mjs 하나다 -- 전에 여기만
+   빠지면 짝 없는 2:1 이 그대로 들어왔다 (DUET_PAY_CATEGORIES 머리말). */
+const DUET_CATEGORIES = DUET_PAY_CATEGORIES;
+/** @type {readonly string[]} */
+const SOLO_CATEGORIES = Object.freeze([
+  PAY_CATEGORY.PT_1_1_NEW,
+  PAY_CATEGORY.PT_1_1_REPURCHASE_EVENT,
+  PAY_CATEGORY.PT_1_1_REPURCHASE_NORMAL,
+]);
 
 export const CLIENT_SHEET_COLUMNS = Object.freeze(["회원명", "연락처", "지점"]);
 export const PASS_SHEET_COLUMNS = Object.freeze([
@@ -95,6 +135,31 @@ export const PASS_SHEET_COLUMNS = Object.freeze([
  * 증상이다. 짐작해서 대표의 값을 복사하지 않는다. 강사에게 물어 적는다.
  */
 export const PASS_SHEET_DUET_COLUMNS = Object.freeze(["회원명2", "연락처2", "강사누적진행2"]);
+
+/**
+ * 총세션 칸에 서비스까지 더해 적은 행인가. **그 행만 멈춘다.**
+ *
+ * 상품명에 횟수가 적혀 있다 ("깍두기 40회e", "30회 2차"). 그 숫자에 서비스를
+ * 더하면 총세션과 같아지는 행은, 총세션 칸에 서비스가 섞여 들어온 것이다.
+ *
+ * 그대로 받으면 둘이 틀어진다. 회당 금액이 계약금액 ÷ 총세션이라 낮아지고,
+ * 서비스 회차가 상품 횟수 안에 한 번, 서비스세션 칸에 또 한 번 세어진다.
+ * 2026-10 이관에서 열 건이 그랬다.
+ *
+ * 숫자가 없는 상품명은 보지 않는다 -- 맞혀 볼 근거가 없다.
+ *
+ * @param {{ productName?: string, totalSessions?: number, serviceSessions?: number }} input
+ */
+export function totalLooksLikeItIncludesService({ productName, totalSessions, serviceSessions } = {}) {
+  const service = Number(serviceSessions) || 0;
+  const total = Number(totalSessions) || 0;
+  if (service <= 0 || total <= 0) return false;
+  /* 상품명 안의 "N회". 맨 뒤의 것을 쓴다 -- "2:1 PT 33 ->100 세션업" 처럼
+     숫자가 여럿이면 뒤쪽이 실제로 판 횟수다. */
+  const found = [...String(productName ?? "").matchAll(/(\d+)\s*회/g)].map((match) => Number(match[1]));
+  if (found.length === 0) return false;
+  return found[found.length - 1] + service === total;
+}
 
 /** 회원 문서 id. 연락처 하나로 정해진다 -- 위 머리말 참고. */
 export const clientIdForPhone = (phone) => {
@@ -396,8 +461,41 @@ export function planPassMigration(text, {
          임시 번호를 만들어 심지 않는다. 한 번 심으면 그 번호가 그 회원의
          정체가 되어 그대로 남고, 나중에 진짜 번호가 오면 같은 사람이 둘이
          된다. */
+      /* 총세션에 서비스가 섞인 행. 그 행만 돌려준다 -- 대표가 상품명과 견줘
+         총세션을 고쳐 다시 올린다. 짐작해서 빼 주지 않는다: 상품명의 숫자가
+         실제로 판 횟수가 아닌 경우가 있고, 그때 조용히 깎으면 회원이 산 회차가
+         사라진다. */
+      if (totalLooksLikeItIncludesService({
+        productName: requireText(record, "상품명"), totalSessions, serviceSessions,
+      })) {
+        throw failure(line, MIGRATION_ERROR.TOTAL_INCLUDES_SERVICE,
+          `총세션 ${totalSessions}회가 상품 횟수 + 서비스 ${serviceSessions}회로 보입니다. 총세션에는 서비스를 빼고 적어 주세요: ${name}`);
+      }
+
       const partnerName = requireText(record, "회원명2");
       const partnerPhoneRaw = requireText(record, "연락처2");
+
+      /* 카테고리와 짝이 맞는지 먼저 본다. 아래 블록은 "짝이 적혔으면" 으로
+         시작하므로, 짝이 통째로 빈 2:1 은 거기까지 가지도 못하고 조용히
+         1:1 회원권이 된다 -- 그 침묵이 여기서 막는 것이다.
+
+         두 신호를 나누는 이유: 아래 블록은 이름이나 번호가 있을 때만 짝을 찾으러
+         가므로, "짝을 가리켰는가" 는 그 둘로 판단해야 한다 -- 강사누적진행2 만
+         적힌 2:1 행을 적힌 것으로 쳐 주면 그 행은 검사를 지나가고 아래 블록도
+         건너뛰어, 막으려던 바로 그 모양(짝 없는 2:1)이 그대로 만들어진다.
+         반대로 1:1 쪽은 세 칸 중 하나라도 손댔으면 걸러야 한다 -- 이름을 적다
+         만 행이 조용히 1:1 로 올라가면 안 된다. */
+      const partnerIdentified = Boolean(partnerName || partnerPhoneRaw);
+      const partnerWritten = partnerIdentified || Boolean(requireText(record, "강사누적진행2"));
+      if (DUET_CATEGORIES.includes(category) && !partnerIdentified) {
+        throw failure(line, MIGRATION_ERROR.DUET_PARTNER_REQUIRED,
+          `${categoryLabel} 인데 함께 쓰는 회원이 없습니다. 회원명2·연락처2·강사누적진행2 를 적거나, 혼자 쓰는 회원권이면 급여카테고리를 1:1 로 고쳐 주세요: ${name}`);
+      }
+      if (SOLO_CATEGORIES.includes(category) && partnerWritten) {
+        throw failure(line, MIGRATION_ERROR.DUET_PARTNER_UNEXPECTED,
+          `${categoryLabel} 인데 함께 쓰는 회원이 적혀 있습니다. 둘이 나눠 쓰는 회원권이면 급여카테고리를 2:1 로 고치고, 아니면 회원명2·연락처2·강사누적진행2 를 비워 주세요: ${name}`);
+      }
+
       let clientIds;
       let partner = null;
       let partnerPriorSessions = 0;
@@ -468,7 +566,20 @@ export function planPassMigration(text, {
              한쪽은 강사의 한 회차 차액이고 다른 쪽은 회원이 산 것의 일부라,
              회원 쪽으로 기운 이 선택을 그대로 둔다. 급여 집계에서 category 가
              service 로 보이므로 대표가 알아볼 수는 있다. */
-          serviceUsed: 0,
+          /* 이관 전에 이미 쓴 서비스. 엑셀에 그 칸이 없으므로 셋으로 센다.
+
+             서비스부터 쓰는 규칙이라(deduction-pricing 의 spendsServiceSession)
+             쓴 횟수가 서비스 개수를 넘기 전까지는 전부 서비스다:
+
+               쓴 횟수    = (총세션 + 서비스세션) - 남은횟수
+               serviceUsed = min(서비스세션, 쓴 횟수)
+
+             0 으로 두면 이미 쓴 서비스가 다시 주어진다 -- 이관 후 첫 수업이
+             서비스로 빠지고 센터가 그 회차를 한 번 더 지원한다. */
+          serviceUsed: Math.max(0, Math.min(
+            serviceSessions,
+            totalSessions + serviceSessions - remainingCount,
+          )),
           instructorId,
           handedOver,
           expiresAt,

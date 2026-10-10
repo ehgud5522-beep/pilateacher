@@ -25,6 +25,9 @@ const pass = (overrides = {}) => ({
   handedOver: false,
   remainingCount: 8,
   status: "active",
+  /* 차수가 고르는 순서다 (2026-10-09). 기본값이 없으면 모든 회원권이
+     "차수를 못 읽음" 으로 떨어져 배열 순서가 답이 된다. */
+  purchaseRound: 1,
   expiresAt: new Date(2027, 0, 31),
   ...overrides,
 });
@@ -78,16 +81,20 @@ test("the preview is the number the deduction will actually write", async () => 
 });
 
 test("the preview picks the same pass the settlement would", () => {
-  /* 만료가 이른 것부터 쓴다. 다른 회원권을 골라 보여주면 금액도 사유도 달라진다. */
+  /* 차수가 앞선 것부터 쓴다 (2026-10-09). 다른 회원권을 골라 보여주면 금액도
+     사유도 달라지고, 강사가 본 숫자와 원장에 박히는 숫자가 갈라진다.
+
+     2차의 만료가 더 이른데도 1차를 고른다 -- 미리보기가 만료일로 따로
+     정렬하지 않는지 함께 본다. */
   const shown = previewMemberRate({
     member: member(),
     passes: [
-      pass({ id: "later", expiresAt: new Date(2027, 5, 1), baseUnitPrice: 30000 }),
-      pass({ id: "sooner", expiresAt: new Date(2026, 11, 1), baseUnitPrice: 25000, category: "pt_1_1_new" }),
+      pass({ id: "second", purchaseRound: 2, expiresAt: new Date(2026, 11, 1), baseUnitPrice: 30000 }),
+      pass({ id: "first", purchaseRound: 1, expiresAt: new Date(2027, 5, 1), baseUnitPrice: 25000, category: "pt_1_1_new" }),
     ],
     totals: totals(40), instructorId: "u1", now: NOW,
   });
-  assert.equal(shown.passId, "sooner");
+  assert.equal(shown.passId, "first");
   assert.equal(shown.unitPrice, 25000);
 });
 
@@ -140,22 +147,44 @@ test("the cumulative count is found by the instructor-client pair", () => {
 test("every attendee gets a number, whatever their attendance says", () => {
   /* 확정 전에 보여주는 것이 목적이다. 아직 아무도 출석을 누르지 않은 수업에서도
      서야 한다 -- 눌러야 보이면 "확정하면 얼마인가" 를 미리 알 수 없다. */
-  const lesson = {
+  /* 한 수업에 둘을 넣지 않는다. 수업 종류가 기준이 된 뒤로 회원이 둘이면
+     듀엣이고, 공유 회원권이 없으면 금액이 아니라 사유가 나온다 -- 여기서
+     보려는 것은 그것이 아니라 "출석을 누르기 전에도 금액이 선다" 이다. */
+  const rateFor = (status) => previewLessonRates({
+    lesson: { id: "lesson-1", attendees: [{ memberId: "m-1", status }] },
+    members: [member()],
+    passes: [pass()],
+    totals: totals(40),
+    instructorId: "u1", now: NOW,
+  }).get("m-1");
+
+  for (const status of ["booked", "done", "noshow"]) {
+    assert.equal(rateFor(status).unitPrice, 30000, status);
+  }
+});
+
+test("듀엣 수업은 짝이 결석해도 공유 회원권 금액을 보여준다", () => {
+  /* 확정이 공유 회원권에서 뺄 것이므로 미리보기도 그 금액이어야 한다.
+     두 줄에 같은 금액이 서지만 나가는 것은 한 번이라, deducts 로 가린다. */
+  const duetLesson = {
     id: "lesson-1",
-    attendees: [
-      { memberId: "m-1", status: "booked" },
-      { memberId: "m-2", status: "noshow" },
-    ],
+    type: "듀엣",
+    attendees: [{ memberId: "m-1", status: "done" }, { memberId: "m-2", status: "cancel" }],
   };
   const rates = previewLessonRates({
-    lesson,
+    lesson: duetLesson,
     members: [member(), member({ id: "m-2", orgClientId: "client-b" })],
-    passes: [pass(), pass({ id: "pass-b", clientId: "client-b", baseUnitPrice: 35000, category: "pt_2_1_repurchase" })],
+    passes: [pass({
+      id: "pass-duet", clientIds: ["client-a", "client-b"],
+      category: "pt_2_1_new", baseUnitPrice: 30000,
+    })],
     totals: [...totals(40), { id: "u1_client-b", instructorId: "u1", clientId: "client-b", sessions: 40 }],
     instructorId: "u1", now: NOW,
   });
-  assert.equal(rates.get("m-1").unitPrice, 30000);
-  assert.equal(rates.get("m-2").unitPrice, 35000);
+  assert.equal(rates.get("m-1").passId, "pass-duet");
+  assert.equal(rates.get("m-1").shared, true);
+  assert.equal(rates.get("m-1").deducts, true);
+  assert.equal(rates.get("m-2").deducts, false, "나가는 것은 한 번이다");
 });
 
 test("a lesson that names one member without an attendee list still works", () => {
@@ -191,12 +220,18 @@ const duet = (id, overrides = {}) => pass({
   id, clientId: A, clientIds: [A, B], category: "pt_2_1_new", baseUnitPrice: 35000, ...overrides,
 });
 
-/** A 의 1:1 2장 + A·B 공유 2장. 공유 쪽이 먼저 만료된다. */
+/**
+ * A 의 1:1 2장 + A·B 공유 2장. 종류마다 1차와 2차가 있다.
+ *
+ * 만료일은 일부러 차수와 **반대로** 둔다 -- 2차가 먼저 만료된다. 미리보기와
+ * 확정이 둘 다 차수로만 고르는지, 어느 한쪽이 만료일로 슬쩍 정렬하지 않는지를
+ * 이 한 벌이 같이 본다 (2026-10-09).
+ */
 const FOUR = [
-  solo("solo-late", { expiresAt: new Date(2027, 6, 1) }),
-  solo("solo-soon", { expiresAt: new Date(2027, 5, 1) }),
-  duet("duet-late", { expiresAt: new Date(2026, 11, 1) }),
-  duet("duet-soon", { expiresAt: new Date(2026, 10, 1) }),
+  solo("solo-late", { purchaseRound: 2, expiresAt: new Date(2027, 2, 1) }),
+  solo("solo-soon", { purchaseRound: 1, expiresAt: new Date(2027, 6, 1) }),
+  duet("duet-late", { purchaseRound: 2, expiresAt: new Date(2026, 10, 1) }),
+  duet("duet-soon", { purchaseRound: 1, expiresAt: new Date(2026, 11, 1) }),
 ];
 
 const PEOPLE = [
@@ -222,35 +257,40 @@ test("미리보기와 확정이 일곱 가지 모두 같은 회원권을 고른�
       expect: { "m-a": "duet-soon", "m-b": "duet-soon" },
     },
     {
-      /* 둘 다 노쇼면 확정은 차감하지 않는다. 미리보기는 "확정하면 얼마인가"를
-         보여주는 쪽이라 공유 회원권을 그대로 가리킨다 -- 고르는 회원권은 같다. */
+      /* 2026-10-04 변경 — 전에는 둘 다 노쇼면 확정이 차감하지 않았고, 그래서
+         미리보기만 공유 회원권을 가리켰다. 이제 노쇼도 1회 차감하므로 둘이
+         완전히 같다. */
       label: "4 둘 다 노쇼",
       attendees: [["m-a", "noshow"], ["m-b", "noshow"]],
       expect: { "m-a": "duet-soon", "m-b": "duet-soon" },
-      settles: false,
     },
     {
+      /* 2026-10-01 변경 — 전에는 취소한 사람을 명단에서 지워 남은 한 명이
+         1:1 수업을 한 것으로 봤다. 지금은 등록한 종류가 기준이라 듀엣이다. */
       label: "5 B 미리 취소",
       attendees: [["m-a", "done"], ["m-b", "cancel"]],
-      expect: { "m-a": "solo-soon" },
+      expect: { "m-a": "duet-soon", "m-b": "duet-soon" },
     },
     {
       label: "6 1:1 잔여 0",
       attendees: [["m-a", "done"]],
       passes: [
-        solo("solo-soon", { expiresAt: new Date(2027, 5, 1), remainingCount: 0 }),
+        solo("solo-soon", { purchaseRound: 1, expiresAt: new Date(2027, 6, 1), remainingCount: 0 }),
         duet("duet-soon", { expiresAt: new Date(2026, 10, 1) }),
       ],
       skip: { "m-a": "solo_pass_missing" },
     },
     {
-      label: "7 각자 1:1",
+      /* 2026-10-01 변경 — 전에는 각자의 1:1 에서 한 회씩, 한 수업에 2회가
+         나갔다. 지금은 차감하지 않고 막는다. 미리보기도 같은 말을 해야 한다. */
+      label: "7 각자 1:1 (듀엣 회원권 없음)",
       attendees: [["m-a", "done"], ["m-b", "done"]],
       passes: [
         solo("solo-a", { expiresAt: new Date(2027, 5, 1) }),
         pass({ id: "solo-b", clientId: B, clientIds: [B], expiresAt: new Date(2027, 5, 1) }),
       ],
-      expect: { "m-a": "solo-a", "m-b": "solo-b" },
+      skip: { "m-a": "duet_pass_missing", "m-b": "duet_pass_missing" },
+      settles: false,
     },
   ];
 

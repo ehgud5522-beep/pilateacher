@@ -132,16 +132,21 @@ test("the phone matches even when one side writes the hyphens", () => {
   assert.equal(roster[0].rosterSource, ROSTER_SOURCE.ORG_LINKED);
 });
 
-test("a member with no phone at all still matches by name", () => {
-  // 연락처가 없는 옛 회원이 실제로 있다.
-  const { roster } = mergeRoster({
+test("a member with no phone no longer matches by name", () => {
+  /* 2026-10-04 에 이름 매칭을 없앴다. 전에는 여기서 붙었다.
+
+     바꾼 이유: 동명이인이면 **남의 수업기록과 체형사진이 엉뚱한 센터 회원에게
+     붙는다.** 기기에만 있는 글과 사진이라, 한 번 붙으면 어느 쪽이 원래 누구
+     것이었는지 가릴 방법이 없다. 연락처 없는 옛 회원을 못 붙이는 대가보다
+     그쪽이 크다 -- 못 붙은 회원은 사라지지 않고 unlinkedLocal 로 남는다. */
+  const { roster, unlinkedLocal } = mergeRoster({
     clients: [client({ phone: "" })],
     members: [member({ phone: "" })],
     passes: [],
     now: NOW,
   });
-  assert.equal(roster[0].rosterSource, ROSTER_SOURCE.ORG_LINKED);
-  assert.equal(roster[0].id, "m-local-1");
+  assert.equal(roster[0].rosterSource, ROSTER_SOURCE.ORG, "센터 회원은 혼자 선다");
+  assert.deepEqual(unlinkedLocal.map((item) => item.id), ["m-local-1"], "기기 회원은 남는다");
 });
 
 test("a member with neither a phone nor a name matches nothing", () => {
@@ -156,10 +161,12 @@ test("a member with neither a phone nor a name matches nothing", () => {
   assert.equal(unlinkedLocal.length, 1);
 });
 
-test("one device member never attaches to two centre members", () => {
-  /* 달라붙으면 같은 기록이 두 사람 아래에 보이고, 강사는 어느 쪽이 진짜인지
-     알 수 없다. */
-  const { roster } = mergeRoster({
+test("a same-name device member attaches to neither centre member", () => {
+  /* 전에는 먼저 온 쪽에 붙었다. 어느 쪽이 맞는지 아무도 모르는 채로 붙는
+     것이었고, 그 회원의 수업기록이 반반의 확률로 남의 것이 됐다.
+
+     이제 둘 다 안 붙는다. 붙이려면 연락처를 채워야 한다. */
+  const { roster, unlinkedLocal } = mergeRoster({
     clients: [
       client({ id: "c1", name: "김하나", phone: "" }),
       client({ id: "c2", name: "김하나", phone: "" }),
@@ -168,8 +175,39 @@ test("one device member never attaches to two centre members", () => {
     passes: [],
     now: NOW,
   });
-  assert.deepEqual(roster.map((item) => item.rosterSource), [ROSTER_SOURCE.ORG_LINKED, ROSTER_SOURCE.ORG]);
-  assert.deepEqual(roster.map((item) => item.id), ["m-one", "c2"]);
+  /* 개인 모드라 못 붙은 기기 회원은 제 줄로 남는다. 센터 화면에서는
+     hideUnlinked 가 그 줄을 뺀다 (아래 테스트). */
+  assert.deepEqual(
+    roster.map((item) => item.rosterSource),
+    [ROSTER_SOURCE.ORG, ROSTER_SOURCE.ORG, ROSTER_SOURCE.LOCAL_ONLY],
+  );
+  assert.deepEqual(roster.map((item) => item.id), ["c1", "c2", "m-one"]);
+  assert.deepEqual(unlinkedLocal.map((item) => item.id), ["m-one"]);
+});
+
+test("the centre screen leaves unlinked device members out of the list", () => {
+  /* 명부 원본이 서버다. 거기 없는 기기 회원을 섞어 그리면 "잔여 0회" 짜리
+     줄이 서고, 강사는 그것을 지금 다니는 회원으로 읽는다. 새 폰에서 옛 개인
+     백업을 불러온 직후가 특히 그렇다.
+
+     목록에서만 뺀다 -- 데이터는 unlinkedLocal 로 그대로 돌아온다. */
+  const input = {
+    clients: [client({ id: "c1", name: "김하나", phone: "01012345678" })],
+    members: [
+      member({ id: "m-linked", name: "김하나", phone: "01012345678" }),
+      member({ id: "m-stray", name: "박두리", phone: "01055556666" }),
+    ],
+    passes: [],
+    now: NOW,
+  };
+
+  const shown = mergeRoster({ ...input, hideUnlinked: true });
+  assert.deepEqual(shown.roster.map((item) => item.id), ["m-linked"]);
+  assert.deepEqual(shown.unlinkedLocal.map((item) => item.id), ["m-stray"], "사라지지는 않는다");
+
+  // 개인 모드는 그대로다. 거기서는 기기가 원본이라 빼면 회원이 없어진다.
+  const personal = mergeRoster(input);
+  assert.deepEqual(personal.roster.map((item) => item.id), ["m-linked", "m-stray"]);
 });
 
 test("the phone wins over the name", () => {

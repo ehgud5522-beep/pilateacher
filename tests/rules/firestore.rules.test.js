@@ -23,7 +23,9 @@ import {
   where,
   writeBatch,
 } from "firebase/firestore";
-import { CLIENT_STATUS, COLLECTIONS, MEMBERSHIP_STATUS } from "../../src/data/schema/constants.js";
+import {
+  CLIENT_STATUS, COLLECTIONS, MEMBERSHIP_STATUS, PAY_CATEGORY, SESSION_TYPE,
+} from "../../src/data/schema/constants.js";
 import { netContractPriceFor } from "../../src/data/schema/deduction-pricing.js";
 import { CLIENT_STATUS_FOR_CREATE } from "../../src/data/repositories/client-repository.js";
 import { deleteObject, getMetadata, ref, uploadBytes } from "firebase/storage";
@@ -44,20 +46,35 @@ const PT_1_1_CATEGORIES = [
   "letmein",
   "etc",
 ];
-const PT_2_1_CATEGORIES = ["pt_2_1_new", "pt_2_1_repurchase", "service", "etc"];
+const PT_2_1_CATEGORIES = [
+  "pt_2_1_new", "pt_2_1_repurchase", "pt_2_1_repurchase_event", "service", "etc",
+];
+/* 디오사는 그 둘뿐이다. 서비스도 기타도 붙지 않는다 -- 관리 수업의 단가는
+   고정이고, 다른 카테고리가 섞이면 그 고정이 깨진다. */
+const DIOSA_CATEGORIES = ["diosa_a", "diosa_b"];
 const PAYMENT_METHODS = ["card", "cash", "transfer", "zeropay", "voucher"];
+/* 원장 항목의 category 가 지나는 목록. **여기 없는 카테고리는 차감이
+   거부된다** -- 상품을 못 만드는 것으로 끝나지 않는다. 2026-10-10 에 셋이
+   빠져 있었고(2:1 이벤트 · 디오사 A · 디오사 B), 앱은 그 카테고리로 차감을
+   보내고 있었다. */
 const PAY_CATEGORIES = [
   "pt_1_1_new",
   "pt_1_1_repurchase_event",
   "pt_1_1_repurchase_normal",
   "pt_2_1_new",
   "pt_2_1_repurchase",
+  "pt_2_1_repurchase_event",
+  "diosa_a",
+  "diosa_b",
   "service",
   "letmein",
   "etc",
 ];
 const users = {
   owner: "owner-a",
+  /* 총괄매니저. 키가 곧 role 값이라 seed 가 그대로 쓴다 -- 다른 이름을 쓰면
+     소속 문서의 role 과 어긋나 규칙이 영영 못 찾는 소속이 하나 생긴다. */
+  area_manager: "area-manager-a",
   manager: "manager-a",
   instructor: "instructor-a",
   staff: "staff-a",
@@ -238,6 +255,11 @@ async function seed() {
       userId: users.member, createdBy: users.instructor,
     });
     await setDoc(doc(db, "runtimeConfig", "aiRecording"), { status: "normal", reasonCode: "", updatedAt: Timestamp.now() });
+    await setDoc(doc(db, "runtimeConfig", "settlement"), { minBuilds: { web: "", android: "", ios: "" } });
+    await setDoc(doc(db, "runtimeConfig", "appUpdate"), {
+      android: { latestBuild: "", minimumBuild: "", message: "" },
+      ios: { latestBuild: "", minimumBuild: "", message: "" },
+    });
   });
 }
 
@@ -826,6 +848,39 @@ describe("membership products are added and archived, never edited", () => {
         productFixture(ORG_A, { sessionType: "pt_2_1", payCategory }),
       ));
     }
+    for (const payCategory of DIOSA_CATEGORIES) {
+      await assertSucceeds(setDoc(
+        productRef(users.owner, ORG_A, `product-diosa-${payCategory}`),
+        productFixture(ORG_A, { sessionType: "diosa", payCategory }),
+      ));
+    }
+  });
+
+  test("diosa is its own session type and takes nothing else", async () => {
+    /* 디오사 상품을 만들 길이 없으면 회원권도 발급할 수 없고, 그러면 디오사만
+       끊은 회원은 아무 수업도 못 받는다 -- 2026-10-10 까지 그 상태였다.
+
+       서비스도 기타도 붙이지 않는다: 관리 수업의 단가는 고정이고(20,000 /
+       35,000), 다른 카테고리가 섞이면 그 고정이 깨진다. */
+    for (const payCategory of ["service", "etc", "pt_1_1_new", "letmein"]) {
+      await assertFails(setDoc(
+        productRef(users.owner, ORG_A, `product-diosa-bad-${payCategory}`),
+        productFixture(ORG_A, { sessionType: "diosa", payCategory }),
+      ), payCategory);
+    }
+    // 반대쪽도 막힌다. 디오사 카테고리는 PT 상품에 붙지 않는다.
+    for (const sessionType of ["pt_1_1", "pt_2_1"]) {
+      await assertFails(setDoc(
+        productRef(users.owner, ORG_A, `product-${sessionType}-diosa`),
+        productFixture(ORG_A, { sessionType, payCategory: "diosa_a" }),
+      ), sessionType);
+    }
+  });
+
+  test("the session types the rules take are the ones the app offers", async () => {
+    /* 규칙은 import 을 할 수 없어 리터럴로 적는다. 한쪽만 늘면 화면에서는
+       고를 수 있는데 저장이 거부된다. */
+    assert.deepEqual(Object.values(SESSION_TYPE).sort(), ["diosa", "pt_1_1", "pt_2_1"]);
   });
 
   test("a pay category from the other session shape is rejected", async () => {
@@ -948,6 +1003,304 @@ describe("membership products are added and archived, never edited", () => {
     await assertFails(getDoc(productRef(users.owner, ORG_B, PRODUCT_B)));
     await assertFails(setDoc(productRef(users.owner, ORG_B, "product-crossing"), productFixture(ORG_B)));
     await assertFails(updateDoc(productRef(users.owner, ORG_B, PRODUCT_B), { status: "archived" }));
+  });
+});
+
+/* ── 대표가 passes 를 쓰는 길 전수 ───────────────────────────────────────
+
+   회원권 수정(잔여 조정·만료일 변경)을 넣기 전에 대표 갈래를 조여야 한다.
+   지금은 `hasRole(["owner"])` 한 줄뿐이라 대표 계정이 remainingCount 를 -5 로
+   쓰거나 만료일을 아무 날짜로 바꿔도 통과한다 -- 화면이 없을 뿐이고 문은
+   열려 있다.
+
+   조이기 전에 **지금 무엇이 지나가고 있는지**를 먼저 못 박는다. 아래 일곱은
+   앱이 실제로 쓰는 배치를 그대로 옮긴 것이다. 규칙을 고친 뒤에도 이 일곱이
+   그대로 통과해야 한다 -- 하나라도 깨지면 그 규칙은 틀린 것이다.
+
+   경로는 코드에서 세었다 (paths.pass 를 쓰는 자리 전부):
+     pass-repository.js  292 issuePass · 354 transferPassInstructor ·
+                         650 deductPass · 944 correctDeduction ·
+                         1014 cancelPass · 1158·1166 transferPass
+     migration-repository.js 630 applyPassMigration */
+
+describe("every way the owner writes a pass today", () => {
+  /* 항목 본문은 ledgerFixture 를 쓰지 않고 앱이 쓰는 것을 그대로 옮긴다.
+     기본값에 category·unitPrice·lessonId 가 들어 있는데 transfer·handover·
+     cancel 에는 그 셋이 있으면 안 된다 -- fixture 로 덮으면 앱이 실제로
+     보내는 모양과 어긋나고, 그러면 이 테스트가 지키는 것이 없어진다. */
+  const common = (passId) => ({
+    organizationId: ORG_A, passId, clientId: "client-member", locationId: "location-a",
+    occurredAt: hoursAgo(2), createdAt: serverTimestamp(), createdBy: users.owner,
+  });
+  const passAt = (db, passId) => doc(db, "organizations", ORG_A, "passes", passId);
+  const ledgerAt = (db, passId, entryId) =>
+    doc(db, "organizations", ORG_A, "passes", passId, "ledger", entryId);
+
+  test("1. 발급 — 회원권과 issue 항목이 한 배치다", async () => {
+    const db = dbFor(users.owner);
+    const batch = writeBatch(db);
+    batch.set(passAt(db, "pin-issue"), passFixture(ORG_A, "pin-issue"));
+    batch.set(ledgerAt(db, "pin-issue", "pin-issue-entry"), {
+      ...common("pin-issue"), type: "issue", delta: 20,
+      category: "pt_1_1_new", unitPrice: 60000, instructorId: users.instructor,
+    });
+    await assertSucceeds(batch.commit());
+  });
+
+  test("2. 담당 교체 · 인수인계 — transfer 항목과 두 칸만 움직인다", async () => {
+    const db = dbFor(users.owner);
+    const batch = writeBatch(db);
+    batch.set(ledgerAt(db, PASS_A, "pin-transfer-instructor"), {
+      ...common(PASS_A), type: "transfer", delta: 0,
+      fromInstructorId: users.instructor, toInstructorId: "instructor-b",
+    });
+    batch.update(passAt(db, PASS_A), { instructorId: "instructor-b", handedOver: true });
+    await assertSucceeds(batch.commit());
+  });
+
+  test("3. 차감 — 잔여가 하나 줄고 deduct 항목이 붙는다", async () => {
+    const db = dbFor(users.owner);
+    const batch = writeBatch(db);
+    batch.set(ledgerAt(db, PASS_A, "pin-deduct-entry"), {
+      ...common(PASS_A), type: "deduct", delta: -1,
+      category: "pt_1_1_new", unitPrice: 60000,
+      instructorId: users.instructor, lessonId: "lesson-seed",
+    });
+    batch.update(passAt(db, PASS_A), { remainingCount: increment(-1) });
+    await assertSucceeds(batch.commit());
+  });
+
+  test("4. 차감 되돌리기 — 잔여가 하나 늘고 correction 항목이 붙는다", async () => {
+    const db = dbFor(users.owner);
+    const batch = writeBatch(db);
+    batch.set(ledgerAt(db, PASS_A, "entry-issue_correction"), {
+      ...common(PASS_A), type: "correction", delta: 1,
+      category: "pt_1_1_new", unitPrice: 60000,
+      correctsEntryId: "entry-issue", reason: "잘못 눌렀습니다",
+      instructorId: users.instructor,
+    });
+    batch.update(passAt(db, PASS_A), { remainingCount: increment(1) });
+    await assertSucceeds(batch.commit());
+  });
+
+  test("5. 취소 — 잔여를 0 으로 내리고 상태를 바꾼다", async () => {
+    const db = dbFor(users.owner);
+    const batch = writeBatch(db);
+    batch.set(ledgerAt(db, PASS_A, `${PASS_A}_cancel`), {
+      ...common(PASS_A), type: "cancel", delta: -20, reason: "환불",
+    });
+    batch.update(passAt(db, PASS_A), { status: "cancelled", remainingCount: 0 });
+    await assertSucceeds(batch.commit());
+  });
+
+  test("6. 양도 — 원본에서 빼고 새 회원권을 만든다 (문서 넷)", async () => {
+    const db = dbFor(users.owner);
+    const batch = writeBatch(db);
+    batch.update(passAt(db, PASS_A), { remainingCount: increment(-5) });
+    /* 받는 회원은 달라야 한다 -- 규칙이 "자기 자신에게 넘기는 것은 양도가
+       아니다" 로 막는다. */
+    batch.set(ledgerAt(db, PASS_A, "pin-handover-out"), {
+      ...common(PASS_A), type: "handover", delta: -5,
+      toPassId: "pin-transfer-new", toClientId: "client-other",
+      instructorId: users.instructor,
+    });
+    batch.set(passAt(db, "pin-transfer-new"),
+      passFixture(ORG_A, "pin-transfer-new", {
+        clientId: "client-other", remainingCount: 5, totalSessions: 5,
+      }));
+    batch.set(ledgerAt(db, "pin-transfer-new", "pin-handover-in"), {
+      ...common("pin-transfer-new"), clientId: "client-other",
+      type: "issue", delta: 5,
+      category: "pt_1_1_new", unitPrice: 0, instructorId: users.instructor,
+    });
+    await assertSucceeds(batch.commit());
+  });
+
+  test("7. 엑셀 이관 — 회원권과 issue 항목이 한 배치다", async () => {
+    const db = dbFor(users.owner);
+    const batch = writeBatch(db);
+    batch.set(passAt(db, "pin-migrated"),
+      passFixture(ORG_A, "pin-migrated", { remainingCount: 7, totalSessions: 7 }));
+    batch.set(ledgerAt(db, "pin-migrated", "pin-migrated_issue"), {
+      ...common("pin-migrated"), type: "issue", delta: 7,
+      category: "pt_1_1_new", unitPrice: 0, instructorId: users.instructor,
+    });
+    await assertSucceeds(batch.commit());
+  });
+
+  /* ── 역할과 무관하게 지키는 것 ─────────────────────────────────────
+     대표 갈래는 hasRole(["owner"]) 한 줄이라 아무 값이나 통과했다. 화면이
+     없었을 뿐 문은 열려 있었고, 그 문으로는 고칠 수 없는 상태가 만들어진다. */
+
+  test("대표도 잔여를 음수로 쓰지 못한다", async () => {
+    /* 음수가 되면 회원 앱이 "-5회 남음" 을 그리고 원장의 합과도 어긋난다.
+       원장은 append-only 라 그 어긋남은 고칠 수 없다. */
+    await assertFails(updateDoc(passAt(dbFor(users.owner), PASS_A), { remainingCount: -5 }));
+    await assertFails(updateDoc(passAt(dbFor(users.owner), PASS_A), { remainingCount: increment(-999) }));
+    // 0 은 된다 -- 취소가 그 길로 간다.
+    await assertSucceeds(updateDoc(passAt(dbFor(users.owner), PASS_A), { remainingCount: 0 }));
+  });
+
+  test("잔여는 숫자가 아니면 들어가지 못한다", async () => {
+    await assertFails(updateDoc(passAt(dbFor(users.owner), PASS_A), { remainingCount: "다섯" }));
+    await assertFails(updateDoc(passAt(dbFor(users.owner), PASS_A), { remainingCount: 1.5 }));
+  });
+
+  test("만료일은 날짜여야 한다", async () => {
+    /* 날짜가 아니면 회원 앱의 만료 표시와 운영중/만료 판정이 통째로
+       무너진다 -- 둘 다 이 값 하나를 읽는다. */
+    await assertFails(updateDoc(passAt(dbFor(users.owner), PASS_A), { expiresAt: "2099-01-01" }));
+    await assertFails(updateDoc(passAt(dbFor(users.owner), PASS_A), { expiresAt: 0 }));
+    await assertSucceeds(updateDoc(passAt(dbFor(users.owner), PASS_A), {
+      expiresAt: Timestamp.fromDate(new Date(2099, 0, 1)),
+    }));
+  });
+
+  test("강사는 지금도 잔여를 올리거나 만료일을 바꾸지 못한다", async () => {
+    await assertFails(updateDoc(passAt(dbFor(users.instructor), PASS_A), { remainingCount: increment(1) }));
+    await assertFails(updateDoc(passAt(dbFor(users.instructor), PASS_A), {
+      expiresAt: Timestamp.fromDate(new Date(2099, 0, 1)),
+    }));
+  });
+});
+
+/* ── 잔여 조정과 만료일 변경 ─────────────────────────────────────────────
+
+   둘 다 수업이 아니다. 하나는 숫자를 맞추는 일이고 하나는 날짜를 옮기는
+   일이라, 급여에도 강사 누적에도 회원의 수업 이력에도 들어가면 안 된다.
+   원장에는 남는다 -- 덧붙이기만 하는 장부라 무엇을 얼마나 왜 옮겼는지가
+   지워지지 않는다. */
+
+describe("adjusting sessions and moving the expiry date", () => {
+  const common = (passId) => ({
+    organizationId: ORG_A, passId, clientId: "client-member", locationId: "location-a",
+    occurredAt: hoursAgo(1), createdAt: serverTimestamp(),
+  });
+  const passAt = (db, passId) => doc(db, "organizations", ORG_A, "passes", passId);
+  const ledgerAt = (db, passId, entryId) =>
+    doc(db, "organizations", ORG_A, "passes", passId, "ledger", entryId);
+  const totalAt = (db, instructorId, clientId) =>
+    doc(db, "organizations", ORG_A, "instructorClientTotals", `${instructorId}_${clientId}`);
+
+  const adjust = (userId, overrides = {}) => ({
+    ...common(PASS_A), type: "adjust", delta: 3,
+    reason: "실제 잔여와 맞춤", createdBy: userId, ...overrides,
+  });
+  const expiry = (userId, overrides = {}) => ({
+    ...common(PASS_A), type: "expiry", delta: 0,
+    previousExpiresAt: Timestamp.fromDate(new Date(2027, 0, 31)),
+    newExpiresAt: Timestamp.fromDate(new Date(2027, 2, 31)),
+    reason: "홀딩 60일", createdBy: userId, ...overrides,
+  });
+
+  test("대표가 잔여를 조정한다 — 회원권과 항목이 한 배치다", async () => {
+    const db = dbFor(users.owner);
+    const batch = writeBatch(db);
+    batch.set(ledgerAt(db, PASS_A, "adj-1"), adjust(users.owner));
+    batch.update(passAt(db, PASS_A), { remainingCount: increment(3) });
+    await assertSucceeds(batch.commit());
+  });
+
+  test("사유 없이는 조정하지 못한다", async () => {
+    const db = dbFor(users.owner);
+    await assertFails(setDoc(ledgerAt(db, PASS_A, "adj-noreason"), dropField(adjust(users.owner), "reason")));
+    await assertFails(setDoc(ledgerAt(db, PASS_A, "adj-empty"), adjust(users.owner, { reason: "" })));
+    await assertFails(setDoc(ledgerAt(db, PASS_A, "adj-long"), adjust(users.owner, { reason: "가".repeat(201) })));
+  });
+
+  test("0 은 조정이 아니다", async () => {
+    /* 아무것도 안 바뀐 줄이 사유만 달고 쌓이면 나중에 읽는 사람이 그것을
+       세게 된다. */
+    const db = dbFor(users.owner);
+    await assertFails(setDoc(ledgerAt(db, PASS_A, "adj-zero"), adjust(users.owner, { delta: 0 })));
+  });
+
+  test("조정에 단가와 카테고리를 실을 수 없다", async () => {
+    /* 필수 목록을 채우자고 지어내면 급여가 그 허구를 카테고리별로 묶어 센다. */
+    const db = dbFor(users.owner);
+    await assertFails(setDoc(ledgerAt(db, PASS_A, "adj-price"),
+      adjust(users.owner, { unitPrice: 60000, category: "pt_1_1_new" })));
+    await assertFails(setDoc(ledgerAt(db, PASS_A, "adj-lesson"),
+      adjust(users.owner, { lessonId: "lesson-seed" })));
+  });
+
+  test("강사와 매니저는 잔여를 조정하지 못한다", async () => {
+    for (const role of ["instructor", "manager", "staff", "member"]) {
+      await assertFails(setDoc(ledgerAt(dbFor(users[role]), PASS_A, `adj-${role}`),
+        adjust(users[role])), role);
+    }
+  });
+
+  test("조정으로도 잔여는 음수가 되지 못한다", async () => {
+    /* 원장에 -999 를 적어도 회원권 쪽이 막는다. 두 반쪽이 한 배치라 하나가
+       막히면 둘 다 안 나간다. */
+    const db = dbFor(users.owner);
+    const batch = writeBatch(db);
+    batch.set(ledgerAt(db, PASS_A, "adj-negative"), adjust(users.owner, { delta: -999 }));
+    batch.update(passAt(db, PASS_A), { remainingCount: increment(-999) });
+    await assertFails(batch.commit());
+  });
+
+  test("대표와 FC매니저가 만료일을 옮긴다", async () => {
+    for (const role of ["owner", "manager"]) {
+      const db = dbFor(users[role]);
+      const batch = writeBatch(db);
+      batch.set(ledgerAt(db, PASS_A, `exp-${role}`), expiry(users[role]));
+      batch.update(passAt(db, PASS_A), { expiresAt: Timestamp.fromDate(new Date(2027, 2, 31)) });
+      await assertSucceeds(batch.commit(), role);
+    }
+  });
+
+  test("강사는 만료일을 옮기지 못한다", async () => {
+    await assertFails(setDoc(ledgerAt(dbFor(users.instructor), PASS_A, "exp-instructor"),
+      expiry(users.instructor)));
+  });
+
+  test("만료일 변경은 어디서 어디로인지 남긴다", async () => {
+    const db = dbFor(users.owner);
+    await assertFails(setDoc(ledgerAt(db, PASS_A, "exp-nofrom"), dropField(expiry(users.owner), "previousExpiresAt")));
+    await assertFails(setDoc(ledgerAt(db, PASS_A, "exp-noto"), dropField(expiry(users.owner), "newExpiresAt")));
+    // 같은 날짜로 바꾸는 것은 변경이 아니다.
+    const same = Timestamp.fromDate(new Date(2027, 0, 31));
+    await assertFails(setDoc(ledgerAt(db, PASS_A, "exp-same"),
+      expiry(users.owner, { previousExpiresAt: same, newExpiresAt: same })));
+  });
+
+  test("만료일 변경은 회차를 움직이지 않는다", async () => {
+    const db = dbFor(users.owner);
+    await assertFails(setDoc(ledgerAt(db, PASS_A, "exp-delta"), expiry(users.owner, { delta: -1 })));
+  });
+
+  /* ── C. 덧붙이기만 한다 ─────────────────────────────────────────── */
+
+  test("조정과 만료일 항목도 고치거나 지울 수 없다", async () => {
+    const db = dbFor(users.owner);
+    await assertSucceeds(setDoc(ledgerAt(db, PASS_A, "adj-frozen"), adjust(users.owner)));
+    await assertSucceeds(setDoc(ledgerAt(db, PASS_A, "exp-frozen"), expiry(users.owner)));
+
+    for (const entryId of ["adj-frozen", "exp-frozen"]) {
+      await assertFails(updateDoc(ledgerAt(dbFor(users.owner), PASS_A, entryId), { reason: "다시 씀" }), entryId);
+      await assertFails(setDoc(ledgerAt(dbFor(users.owner), PASS_A, entryId), { reason: "덮어씀" }, { merge: true }), entryId);
+      await assertFails(deleteDoc(ledgerAt(dbFor(users.owner), PASS_A, entryId)), entryId);
+    }
+  });
+
+  /* ── B. 강사 누적은 움직이지 않는다 ──────────────────────────────── */
+
+  test("조정은 강사 누적을 건드리지 않는다", async () => {
+    /* 급여 판정 3 이 이 숫자로 신규 단가인지 기준 단가인지 가른다. 조정은
+       수업이 아니므로 여기 들어가면 20회째 단가가 앞당겨지거나 밀린다.
+       규칙은 같은 배치에 이 문서가 오는 것을 막지는 못한다 -- 막는 것은
+       저장소이고, 여기서는 **조정 항목만으로는 아무 일도 안 일어난다**는
+       것을 고정한다. */
+    const db = dbFor(users.owner);
+    const batch = writeBatch(db);
+    batch.set(ledgerAt(db, PASS_A, "adj-no-total"), adjust(users.owner));
+    batch.update(passAt(db, PASS_A), { remainingCount: increment(3) });
+    await assertSucceeds(batch.commit());
+
+    const total = await assertSucceeds(getDoc(totalAt(dbFor(users.owner), users.instructor, "client-member")));
+    assert.equal(total.exists(), false, "조정만으로는 누적 문서가 생기지 않는다");
   });
 });
 
@@ -1122,7 +1475,17 @@ describe("ledger and pass bodies are validated at write time", () => {
   });
 
   test("every pay table category is accepted", async () => {
-    assert.equal(PAY_CATEGORIES.length, 8);
+    /* **앱이 쓰는 목록과 같아야 한다.** 규칙은 import 을 할 수 없어 리터럴로
+       적는 수밖에 없고, 그래서 한쪽만 늘어난다 -- 2026-10-09 에 2:1 이벤트가,
+       10-05 에 디오사 둘이 그렇게 늘었다. 셋 다 규칙이 받지 않았고, 그 회원권의
+       **모든 차감이 거부됐다.** 코드가 아니라 permission-denied 한 줄로만
+       돌아오므로 아무도 원인을 짚지 못한다. */
+    assert.deepEqual(
+      [...PAY_CATEGORIES].sort(),
+      Object.values(PAY_CATEGORY).sort(),
+      "firestore.foundation.rules 의 payCategories() 와 PAY_CATEGORY 가 어긋났습니다",
+    );
+    assert.equal(PAY_CATEGORIES.length, 11);
     for (const category of PAY_CATEGORIES) {
       await assertSucceeds(setDoc(
         ledgerRef(users.instructor, `category-ok-${category}`),
@@ -1428,8 +1791,17 @@ describe("the owner attaches instructors to the centre", () => {
     const ref = membershipRef(users.owner, `${ORG_A}_${users.instructor}`);
     await assertSucceeds(updateDoc(ref, {
       displayName: "정예진", title: "branch_manager", locationId: "location-b",
+      displayNameBy: "owner",
     }));
-    await assertSucceeds(updateDoc(ref, { displayName: "정예진2" }));
+    await assertSucceeds(updateDoc(ref, { displayName: "정예진2", displayNameBy: "owner" }));
+    /* 표시가 붙은 뒤에는 이름만 보내도 된다 -- 결과 문서에 표시가 남아 있다. */
+    await assertSucceeds(updateDoc(ref, { displayName: "정예진3" }));
+    /* 아직 표시가 없는 문서에 이름만 보내는 것은 받지 않는다. 받아 두면 그
+       이름을 로그인 동기화가 그대로 덮어 쓰고, 대표는 자기가 고친 것이 왜
+       되돌아갔는지 알 수 없다. */
+    await assertFails(updateDoc(
+      membershipRef(users.owner, `${ORG_A}_${users.staff}`), { displayName: "표시 없음" },
+    ));
     await assertFails(updateDoc(ref, { title: "deputy_director" }));
     await assertFails(updateDoc(ref, { locationId: "" }));
     await assertFails(updateDoc(ref, { displayName: "" }));
@@ -1497,6 +1869,23 @@ describe("protected and append-only data", () => {
     await assertFails(updateDoc(doc(dbFor(users.owner), "runtimeConfig", "aiRecording"), { status: "off" }));
   });
 
+  test("the app reads the two operational settings and can never write them", async () => {
+    /* 둘 다 숫자 하나가 센터 전체의 확정을 막을 수 있다. 읽기만 연다 --
+       쓰는 자리는 콘솔과 대표 전용 통로뿐이고, 실수로 눌러지는 자리를
+       만들지 않는다 (aiRecording 과 같은 판단).
+
+       settlement 는 지금까지 match 가 아예 없어 읽기가 막혀 있었고, 그래서
+       settlement-gate 가 언제나 열린 채로 돌았다 -- 최소 빌드를 올려도 아무도
+       막히지 않았다. 이 테스트가 그 장치가 실제로 켜졌다는 증거다. */
+    for (const document of ["settlement", "appUpdate"]) {
+      await assertSucceeds(getDoc(doc(dbFor(users.instructor), "runtimeConfig", document)));
+      await assertFails(getDoc(doc(dbFor(null), "runtimeConfig", document)));
+      // 대표도 앱에서는 못 쓴다.
+      await assertFails(updateDoc(doc(dbFor(users.owner), "runtimeConfig", document), { touched: true }));
+      await assertFails(setDoc(doc(dbFor(users.owner), "runtimeConfig", document), { touched: true }));
+    }
+  });
+
   test("ordinary users cannot change roles", async () => {
     await assertFails(updateDoc(doc(dbFor(users.owner), "memberships", `${ORG_A}_${users.owner}`), {
       role: "member",
@@ -1523,7 +1912,7 @@ describe("protected and append-only data", () => {
   });
 
   test("fixture sanity check has all role identities", () => {
-    assert.equal(Object.keys(users).length, 6);
+    assert.equal(Object.keys(users).length, 7);
   });
 
   /* 앱이 소속을 읽을 때 실제로 하는 연산은 list 쿼리 하나뿐이다
@@ -1661,6 +2050,67 @@ describe("collection queries the app will run", () => {
     await assertFails(setDoc(memberNotePath(users.instructor, "note-seed"), {
       clientId: "someone-else", updatedAt: serverTimestamp(),
     }, { merge: true }));
+  });
+
+  /* ── 폰에서 났던 일 ───────────────────────────────────────────────────
+
+     아직 시작하지 않은 수업에서 "회원에게 보낼 말" 을 처음 쓰려 했더니 열
+     때와 저장할 때 모두 permission-denied 가 났다. 원인은 하나였다: 없는
+     문서를 get 하면 resource 가 null 이고, resource.data 를 보는 순간 규칙이
+     오류로 끝난다. 저장까지 막힌 것은 리포지토리가 쓰기 전에 먼저 읽기
+     때문이다.
+
+     아래 넷이 그 자리를 고정한다. */
+
+  test("reading a note that has not been written yet is not a denial", async () => {
+    /* 처음 쓰는 수업에는 이 문서가 없다. "없음" 과 "권한 없음" 이 같은
+       얼굴이면 화면은 고칠 수 없는 것을 고치라고 말하게 된다. */
+    for (const role of ["owner", "manager", "instructor"]) {
+      await assertSucceeds(getDoc(memberNotePath(users[role], "lesson-none_client-member")), role);
+    }
+  });
+
+  test("an outsider still cannot probe for notes that do not exist", async () => {
+    /* 없는 문서라고 아무에게나 열어 주지 않는다. */
+    await assertFails(getDoc(memberNotePath(users.outsider, "lesson-none_client-member")));
+    await assertFails(getDoc(memberNotePath(users.member, "lesson-none_client-member")));
+    await assertFails(getDoc(memberNotePath(users.staff, "lesson-none_client-member")));
+  });
+
+  test("the owner is the assigned instructor and writes the first note before the lesson", async () => {
+    /* 대표 계정이 담당 강사로 잡힌 수업이다. 화면이 하는 순서 그대로 --
+       먼저 읽고, 없으면 만든다. */
+    await assertSucceeds(getDoc(memberNotePath(users.owner, "lesson-owner_client-member")));
+    await assertSucceeds(setDoc(memberNotePath(users.owner, "lesson-owner_client-member"), {
+      organizationId: ORG_A, clientId: "client-member", lessonId: "lesson-owner",
+      memberNote: "시작 전에 미리 적어 둔 말",
+      instructorId: users.owner, createdBy: users.owner,
+      createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+    }));
+  });
+
+  test("the rules never ask when the lesson starts", async () => {
+    /* 화면은 "수업을 확정해 회원권이 차감되면 회원 앱에 보입니다. 지금
+       저장해 두어도 됩니다" 라고 말한다. 규칙에 수업 상태 조건이 붙으면
+       둘 중 하나가 거짓말이 되므로, 조건이 없다는 사실을 못 박는다. */
+    await assertSucceeds(setDoc(memberNotePath(users.instructor, "lesson-future_client-member"), {
+      organizationId: ORG_A, clientId: "client-member", lessonId: "lesson-future",
+      memberNote: "아직 시작 전인 수업",
+      instructorId: users.instructor, createdBy: users.instructor,
+      createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+    }));
+  });
+
+  test("a member reads their own note but not someone else's", async () => {
+    /* 있는 문서에 대한 판정은 그대로다. note-seed 의 userId 는 member 다. */
+    await assertSucceeds(getDoc(memberNotePath(users.member, "note-seed")));
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "organizations", ORG_A, "lessonNotes", "note-other"), {
+        organizationId: ORG_A, clientId: "client-b", lessonId: "lesson-seed",
+        userId: "someone-else", createdBy: users.instructor,
+      });
+    });
+    await assertFails(getDoc(memberNotePath(users.member, "note-other")));
   });
 
   test("a note is never deleted", async () => {
@@ -2016,9 +2466,14 @@ describe("instructor full-room rate", () => {
 
   test("the owner writes a name, and nobody else writes another's", async () => {
     /* 강사 관리 화면이 이름을 정한다 -- 강사가 앱을 한 번도 안 열었으면 이름을
-       채울 사람이 대표뿐이고, 그때까지 목록은 uid 로 서 있다. 열었으면 본인이
-       쓴 이름이 그대로 남는다. */
-    await assertSucceeds(updateDoc(membershipDoc(users.owner), { displayName: "정예진" }));
+       채울 사람이 대표뿐이고, 그때까지 목록은 uid 로 서 있다.
+
+       **열었어도 대표가 정한 이름이 이긴다** (2026-10-10). 전에는 본인이 쓴
+       것이 남았고, 로그인 동기화가 그 "본인" 이라 대표의 수정이 매번
+       되돌아갔다. */
+    await assertSucceeds(updateDoc(
+      membershipDoc(users.owner), { displayName: "정예진", displayNameBy: "owner" },
+    ));
     await assertFails(updateDoc(membershipDoc(users.manager), { displayName: "남의이름" }));
     await assertFails(updateDoc(membershipDoc(users.staff), { displayName: "남의이름" }));
     await assertFails(updateDoc(membershipDoc(users.outsider), { displayName: "남의이름" }));
@@ -3421,5 +3876,398 @@ describe("what the member app may read", () => {
     /* 좁히면서 이 문까지 닫으면 안 된다. clients get 의 본인 분기는 그대로
        열려 있어야 한다 -- 규칙 함수 isOwnClientDocument 가 기다리는 자리다. */
     return assertSucceeds(getDoc(doc(dbFor(users.member), "organizations", ORG_A, "clients", "client-member")));
+  });
+});
+
+/* ── 총괄매니저 ────────────────────────────────────────────────────────────
+   2026-10-10 결정: **지점 경계 없이 대표와 같은 권한.**
+
+   그래서 이 블록이 지키는 것은 "무엇을 할 수 있나" 가 아니라 **무엇을 못 하나**
+   다. 할 수 있는 쪽은 대표와 같은 조건을 지나므로 이미 다른 블록이 고정하고
+   있고, 여기서는 대표와 같아졌다는 사실만 한 번 확인한다.
+
+   못 하는 넷은 공통점 하나로 묶인다 -- **자기 자리를 자기가 넓히는 길**이거나
+   되돌릴 수 없다. 하나라도 열리면 대표가 모르는 사이에 그 자리가 늘고, 그것을
+   되돌리는 문은 아무 데도 없다. */
+describe("the area manager stands where the owner stands, minus four doors", () => {
+  beforeEach(seedAll);
+
+  const asArea = () => dbFor(users.area_manager);
+  const membershipRef = (userId, documentId) => doc(dbFor(userId), "memberships", documentId);
+  /* 잔여 조정 항목. 단가·카테고리·수업 id 는 싣지 않는다 -- 수업이 아니므로
+     급여에 잡히면 안 되고, 규칙이 그것을 거부한다. */
+  const adjustFixture = (overrides = {}) => ({
+    organizationId: ORG_A, passId: PASS_A, clientId: "client-member", locationId: "location-a",
+    type: "adjust", delta: 2, reason: "엑셀 이관에서 두 회차가 빠졌습니다",
+    occurredAt: hoursAgo(1), createdAt: serverTimestamp(), ...overrides,
+  });
+
+  /* ── 대표와 같아진 자리 ────────────────────────────────────────────── */
+
+  test("the centre opens to them at all — this is the one that breaks everything", async () => {
+    /* isCentreStaff 에 빠뜨리면 로그인은 되는데 **회원도 회원권도 한 건도
+       안 온다.** 역할을 더할 때 제일 먼저 틀리는 자리이고, 화면에는 "권한
+       없음" 이 아니라 빈 목록으로 도착한다. */
+    await assertSucceeds(getDocs(collection(asArea(), "organizations", ORG_A, "clients")));
+    await assertSucceeds(getDocs(collection(asArea(), "organizations", ORG_A, "passes")));
+    await assertSucceeds(getDoc(doc(asArea(), "organizations", ORG_A)));
+    await assertSucceeds(getDocs(collection(asArea(), "organizations", ORG_A, "locations")));
+    await assertSucceeds(getDocs(collection(asArea(), "organizations", ORG_A, "products")));
+  });
+
+  test("they read the centre-wide ledger the payroll screen reads", async () => {
+    // 급여 집계가 이 질의 하나다. 막히면 화면이 통째로 빈다.
+    await assertSucceeds(getDocs(query(
+      collectionGroup(asArea(), "ledger"),
+      where("organizationId", "==", ORG_A),
+    )));
+  });
+
+  test("they read the audit log, which was the owner's alone", async () => {
+    await assertSucceeds(getDocs(query(
+      collection(asArea(), "auditLogs"),
+      where("organizationId", "==", ORG_A),
+    )));
+  });
+
+  test("they issue a pass and register a member", async () => {
+    await assertSucceeds(setDoc(
+      doc(asArea(), "organizations", ORG_A, "passes", "pass-by-area"),
+      passFixture(ORG_A, "pass-by-area", { createdBy: users.area_manager }),
+    ));
+    await assertSucceeds(setDoc(doc(asArea(), "organizations", ORG_A, "clients", "client-by-area"), {
+      organizationId: ORG_A,
+      name: "정세인",
+      phone: "01044445555",
+      locationId: "location-a",
+      status: "active",
+      createdAt: serverTimestamp(),
+      createdBy: users.area_manager,
+    }));
+  });
+
+  test("they adjust a remaining count, which only the owner could", async () => {
+    await assertSucceeds(setDoc(
+      doc(asArea(), "organizations", ORG_A, "passes", PASS_A, "ledger", "entry-adjust-area"),
+      adjustFixture({ createdBy: users.area_manager }),
+    ));
+  });
+
+  test("they set an instructor's full-room rate, with its history entry", async () => {
+    await assertSucceeds(updateDoc(
+      membershipRef(users.area_manager, `${ORG_A}_${users.instructor}`),
+      { fullRoomRate: 50000 },
+    ));
+    await assertSucceeds(setDoc(
+      doc(asArea(), "memberships", `${ORG_A}_${users.instructor}`, "rateHistory", "rate-by-area"),
+      {
+        organizationId: ORG_A,
+        userId: users.instructor,
+        previousRate: null,
+        newRate: 50000,
+        effectiveFrom: serverTimestamp(),
+        changedBy: users.area_manager,
+        createdAt: serverTimestamp(),
+      },
+    ));
+  });
+
+  test("they attach an instructor and revoke one", async () => {
+    await assertSucceeds(setDoc(membershipRef(users.area_manager, `${ORG_A}_uid-hired-by-area`), {
+      organizationId: ORG_A,
+      userId: "uid-hired-by-area",
+      role: "instructor",
+      status: "active",
+      displayName: "박서연",
+      createdAt: serverTimestamp(),
+      createdBy: users.area_manager,
+    }));
+    await assertSucceeds(updateDoc(
+      membershipRef(users.area_manager, `${ORG_A}_${users.instructor}`),
+      { status: "revoked" },
+    ));
+  });
+
+  test("a ledger entry may carry the role that pressed the button", async () => {
+    /* createdBy 는 uid 뿐이라, 반년 뒤 그 줄을 보는 사람은 누른 사람이 그때
+       무엇이었는지 알 수 없다 -- 소속 문서는 지금 상태만 들고 있다. */
+    await assertSucceeds(setDoc(
+      doc(asArea(), "organizations", ORG_A, "passes", PASS_A, "ledger", "entry-adjust-role"),
+      adjustFixture({ createdBy: users.area_manager, actorRole: "area_manager" }),
+    ));
+  });
+
+  test("a ledger entry cannot claim a role its writer does not have", async () => {
+    // 거짓 역할이 남으면 기록이 없는 것보다 해롭다. auditLogs 와 같은 판단이다.
+    await assertFails(setDoc(
+      doc(asArea(), "organizations", ORG_A, "passes", PASS_A, "ledger", "entry-adjust-lying"),
+      adjustFixture({ createdBy: users.area_manager, actorRole: "owner" }),
+    ));
+  });
+
+  /* ── 닫혀 있는 넷 ──────────────────────────────────────────────────── */
+
+  test("they cannot appoint another area manager", async () => {
+    // 1번 문. 열리면 대표가 모르는 사이에 그 자리가 늘고, 되돌리는 문은 없다.
+    await assertFails(setDoc(membershipRef(users.area_manager, `${ORG_A}_uid-second-area`), {
+      organizationId: ORG_A,
+      userId: "uid-second-area",
+      role: "area_manager",
+      status: "active",
+      displayName: "정예진",
+      createdAt: serverTimestamp(),
+      createdBy: users.area_manager,
+    }));
+    // 이미 있는 강사를 올리는 길도 막힌다.
+    await assertFails(updateDoc(
+      membershipRef(users.area_manager, `${ORG_A}_${users.instructor}`),
+      { role: "area_manager" },
+    ));
+  });
+
+  test("they cannot strip another area manager, or themselves", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "memberships", `${ORG_A}_uid-other-area`), {
+        organizationId: ORG_A, userId: "uid-other-area", role: "area_manager",
+        status: "active", displayName: "최소연",
+      });
+    });
+    const other = `${ORG_A}_uid-other-area`;
+    await assertFails(updateDoc(membershipRef(users.area_manager, other), { role: "instructor" }));
+    await assertFails(updateDoc(membershipRef(users.area_manager, other), { status: "revoked" }));
+    await assertFails(updateDoc(membershipRef(users.area_manager, other), { fullRoomRate: 90000 }));
+    // 자기 자신도 아니다. 자기 자리를 자기가 움직이는 길은 어느 쪽으로도 없다.
+    await assertFails(updateDoc(
+      membershipRef(users.area_manager, `${ORG_A}_${users.area_manager}`),
+      { role: "instructor" },
+    ));
+  });
+
+  test("they cannot touch the owner's membership", async () => {
+    /* 2번 문. 대표의 단가·직함·퇴사 어느 것도 아니다 -- 대표를 내릴 수 있으면
+       센터에 대표가 없는 상태를 만들 수 있고, 그것을 되돌릴 문은 없다. */
+    const ownerDoc = `${ORG_A}_${users.owner}`;
+    await assertFails(updateDoc(membershipRef(users.area_manager, ownerDoc), { fullRoomRate: 90000 }));
+    await assertFails(updateDoc(membershipRef(users.area_manager, ownerDoc), { status: "revoked" }));
+    await assertFails(updateDoc(membershipRef(users.area_manager, ownerDoc), { title: "branch_manager" }));
+    await assertFails(updateDoc(membershipRef(users.area_manager, ownerDoc), { isDeputyDirector: true }));
+  });
+
+  test("they cannot read the owner's rate history", async () => {
+    await assertFails(getDocs(collection(
+      asArea(), "memberships", `${ORG_A}_${users.owner}`, "rateHistory",
+    )));
+  });
+
+  test("they cannot make anyone the owner", async () => {
+    /* 3번 문. 규칙이 앱에서 owner 를 세우지 못하게 이미 막아 두었고, 총괄매니저
+       에게 열면서 그 선이 뒤로 뚫리면 안 된다. 대표도 못 한다. */
+    for (const userId of [users.area_manager, users.owner]) {
+      await assertFails(setDoc(membershipRef(userId, `${ORG_A}_uid-new-owner-${userId}`), {
+        organizationId: ORG_A,
+        userId: `uid-new-owner-${userId}`,
+        role: "owner",
+        status: "active",
+        displayName: "새 대표",
+        createdAt: serverTimestamp(),
+        createdBy: userId,
+      }));
+    }
+  });
+
+  /* ── 대표만 할 수 있는 것은 대표가 할 수 있어야 한다 ───────────────── */
+
+  test("the owner still writes a membership that has no role field", async () => {
+    /* 퇴사·단가·직함 문이 2026-10-10 에 mayManageMembership 으로 바뀌었다.
+       그 함수는 **대상의 role 을 읽는다** -- 없는 칸을 읽으면 규칙은 거짓이
+       아니라 오류로 끝나고, 그것은 거부다.
+
+       대표 갈래가 먼저 끊어 주므로 (role == "owner" || ...) 대표의 쓰기는
+       그대로다. 콘솔이나 옛 이관 도구로 만들어진 소속에 role 이 없을 수
+       있어, 그 경우를 못으로 박아 둔다. */
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "memberships", `${ORG_A}_uid-roleless`), {
+        organizationId: ORG_A, userId: "uid-roleless", status: "active", displayName: "옛 소속",
+      });
+    });
+    const target = `${ORG_A}_uid-roleless`;
+    await assertSucceeds(updateDoc(membershipRef(users.owner, target), { fullRoomRate: 45000 }));
+    await assertSucceeds(updateDoc(membershipRef(users.owner, target), { status: "revoked" }));
+  });
+
+  test("the owner appoints and releases an area manager, with a default location", async () => {
+    const target = `${ORG_A}_${users.instructor}`;
+    await assertSucceeds(updateDoc(membershipRef(users.owner, target), {
+      role: "area_manager", locationId: "location-a",
+    }));
+    await assertSucceeds(updateDoc(membershipRef(users.owner, target), { role: "instructor" }));
+  });
+
+  test("the role door moves only into and out of area manager", async () => {
+    /* 이 문으로 다른 역할 변경까지 열면, 규칙이 지금까지 받지 않던 승격이
+       조용히 하나 생긴다. */
+    const target = `${ORG_A}_${users.instructor}`;
+    await assertFails(updateDoc(membershipRef(users.owner, target), { role: "staff" }));
+    await assertFails(updateDoc(membershipRef(users.owner, target), { role: "owner" }));
+    // 역할 문으로 다른 칸을 끼워 넣지 못한다.
+    await assertFails(updateDoc(membershipRef(users.owner, target), {
+      role: "area_manager", fullRoomRate: 90000,
+    }));
+  });
+
+  test("the owner cannot change their own role through that door", async () => {
+    await assertFails(updateDoc(
+      membershipRef(users.owner, `${ORG_A}_${users.owner}`),
+      { role: "area_manager" },
+    ));
+  });
+
+  test("the owner creates an area manager directly", async () => {
+    await assertSucceeds(setDoc(membershipRef(users.owner, `${ORG_A}_uid-area-by-owner`), {
+      organizationId: ORG_A,
+      userId: "uid-area-by-owner",
+      role: "area_manager",
+      status: "active",
+      displayName: "정예진",
+      locationId: "location-a",
+      createdAt: serverTimestamp(),
+      createdBy: users.owner,
+    }));
+  });
+
+  /* ── 아래 역할은 올라오지 않는다 ───────────────────────────────────── */
+
+  test("an FC manager and an instructor gain nothing from this change", async () => {
+    /* FC매니저는 지시대로 지금 범위 그대로다. 역할을 하나 더하면서 옆줄이
+       함께 넓어지는 일이 제일 조용히 일어난다. */
+    for (const userId of [users.manager, users.instructor, users.staff]) {
+      await assertFails(getDocs(query(
+        collection(dbFor(userId), "auditLogs"),
+        where("organizationId", "==", ORG_A),
+      )), `${userId} 는 감사 로그를 못 읽는다`);
+      await assertFails(updateDoc(
+        membershipRef(userId, `${ORG_A}_${users.instructor}`),
+        { fullRoomRate: 70000 },
+      ), `${userId} 는 단가를 못 쓴다`);
+      await assertFails(setDoc(membershipRef(userId, `${ORG_A}_uid-hired-by-${userId}`), {
+        organizationId: ORG_A,
+        userId: `uid-hired-by-${userId}`,
+        role: "instructor",
+        status: "active",
+        displayName: "박서연",
+        createdAt: serverTimestamp(),
+        createdBy: userId,
+      }), `${userId} 는 강사를 못 붙인다`);
+    }
+  });
+
+  test("an area manager of another centre reaches nothing here", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "memberships", `${ORG_B}_uid-area-b`), {
+        organizationId: ORG_B, userId: "uid-area-b", role: "area_manager",
+        status: "active", displayName: "다른 센터",
+      });
+    });
+    const outside = dbFor("uid-area-b");
+    await assertFails(getDocs(collection(outside, "organizations", ORG_A, "clients")));
+    await assertFails(updateDoc(
+      doc(outside, "memberships", `${ORG_A}_${users.instructor}`),
+      { fullRoomRate: 70000 },
+    ));
+  });
+
+  test("a revoked area manager is nobody", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "memberships", `${ORG_A}_${users.area_manager}`), {
+        organizationId: ORG_A, userId: users.area_manager, role: "area_manager",
+        status: "revoked", displayName: "나간 총괄매니저",
+      });
+    });
+    await assertFails(getDocs(collection(asArea(), "organizations", ORG_A, "clients")));
+  });
+});
+
+/* ── 대표가 정한 이름은 되돌아가지 않는다 ─────────────────────────────────
+   강사 앱은 열릴 때마다 로그인 계정 이름을 자기 소속 문서에 적어 왔다. 그래서
+   대표가 강사 관리에서 고친 이름이 그 강사가 앱을 **한 번 여는 순간** 구글
+   계정 이름으로 되돌아갔고, 급여 집계도 그 이름으로 섰다 -- 2026-10-10 에
+   "e asy" 로 보고된 것이 이것이다.
+
+   앱만 고치면 모자란다. 업데이트하지 않은 기기가 계속 되돌리므로 문을 여기서
+   닫는다. */
+describe("the name the centre calls someone does not revert on the next login", () => {
+  beforeEach(seedAll);
+
+  const ref = (userId, documentId) => doc(dbFor(userId), COLLECTIONS.MEMBERSHIPS, documentId);
+  const own = `${ORG_A}_${users.instructor}`;
+
+  const ownerNames = async (displayName) => assertSucceeds(updateDoc(
+    ref(users.owner, own), { displayName, displayNameBy: "owner" },
+  ));
+
+  test("the login sync cannot overwrite a name the owner set", async () => {
+    await ownerNames("최형인");
+    // 옛 앱이 보내는 그 쓰기다. 업데이트하지 않은 기기도 여기서 막힌다.
+    await assertFails(updateDoc(ref(users.instructor, own), { displayName: "e asy" }));
+  });
+
+  test("until the owner names them, the login sync still fills the blank", async () => {
+    /* 막아야 하는 것은 **덮어쓰기**이지 채우기가 아니다. 아무도 이름을 정하지
+       않았으면 목록이 uid 로 서 있고, 그것을 메우는 길은 이것뿐이다. */
+    await assertSucceeds(updateDoc(ref(users.instructor, own), { displayName: "정예진" }));
+  });
+
+  test("the owner can still rename afterwards, as often as they like", async () => {
+    await ownerNames("최형인");
+    await ownerNames("최형인2");
+  });
+
+  test("the marker cannot be cleared by the person it constrains", async () => {
+    /* 지울 수 있으면 막는 것이 아니다 -- 지우고 쓰면 된다. 본인 문은
+       displayName 한 칸뿐이라 이 칸에 닿지 못한다. */
+    await ownerNames("최형인");
+    await assertFails(updateDoc(ref(users.instructor, own), { displayNameBy: "" }));
+    await assertFails(updateDoc(ref(users.instructor, own), {
+      displayName: "e asy", displayNameBy: "",
+    }));
+  });
+
+  test("nobody else writes the marker onto someone else", async () => {
+    for (const userId of [users.manager, users.staff, users.outsider]) {
+      await assertFails(updateDoc(ref(userId, own), {
+        displayName: "남이 고침", displayNameBy: "owner",
+      }), userId);
+    }
+  });
+
+  test("a newly attached instructor keeps the name the owner typed", async () => {
+    /* 추가 화면이 이름을 받는다. 표시 없이 만들면 그 강사가 앱을 **처음 여는
+       순간** 로그인 계정 이름으로 덮어써지고, 이름을 적는 일 자체가 무의미해진다. */
+    await assertSucceeds(setDoc(ref(users.owner, `${ORG_A}_uid-fresh`), {
+      organizationId: ORG_A, userId: "uid-fresh", role: "instructor", status: "active",
+      displayName: "최형인", displayNameBy: "owner",
+      createdAt: serverTimestamp(), createdBy: users.owner,
+    }));
+    await assertFails(updateDoc(
+      doc(dbFor("uid-fresh"), COLLECTIONS.MEMBERSHIPS, `${ORG_A}_uid-fresh`),
+      { displayName: "e asy" },
+    ));
+  });
+
+  test("the marker only ever says owner", async () => {
+    // 다른 값을 받아 두면 그 칸이 무엇을 뜻하는지 아무도 모르게 된다.
+    await assertFails(setDoc(ref(users.owner, `${ORG_A}_uid-odd`), {
+      organizationId: ORG_A, userId: "uid-odd", role: "instructor", status: "active",
+      displayName: "최형인", displayNameBy: "self",
+      createdAt: serverTimestamp(), createdBy: users.owner,
+    }));
+  });
+
+  test("an area manager names an instructor the same way the owner does", async () => {
+    // 대표와 같은 자리다. 이름을 정하는 것도 같다.
+    await assertSucceeds(updateDoc(
+      ref(users.area_manager, own), { displayName: "최형인", displayNameBy: "owner" },
+    ));
+    await assertFails(updateDoc(ref(users.instructor, own), { displayName: "e asy" }));
   });
 });

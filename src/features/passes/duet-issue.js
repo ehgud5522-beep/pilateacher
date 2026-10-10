@@ -21,14 +21,15 @@
  * 수도 있으니 대표가 알고 누르게 한다.
  */
 
-import { PAY_CATEGORY, SESSION_TYPE } from "../../data/schema/constants.js";
+import { DUET_PAY_CATEGORIES, PAY_CATEGORY, SESSION_TYPE } from "../../data/schema/constants.js";
 import { isDeductablePass, remainingCountOf } from "../../data/repositories/pass-repository.js";
 import { passBelongsTo } from "../../data/schema/pass-clients.js";
 
 const text = (value) => String(value ?? "").trim();
 
 /** 2:1 로 팔리는 카테고리. 상품이 둘 중 무엇으로 말하든 같은 뜻으로 읽는다. */
-const DUET_CATEGORIES = new Set([PAY_CATEGORY.PT_2_1_NEW, PAY_CATEGORY.PT_2_1_REPURCHASE]);
+/* 목록은 constants.mjs 하나다 (DUET_PAY_CATEGORIES 머리말 참고). */
+const DUET_CATEGORIES = new Set(DUET_PAY_CATEGORIES);
 
 /**
  * 이 상품이 2:1 인가. 급여 카테고리가 먼저이고, 없으면 상품의 수업 형태를 본다.

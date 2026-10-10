@@ -1,0 +1,109 @@
+# 회원 앱(pilateacher-member.web.app) 배포.
+#
+#   main 에 push(PR 병합 포함) → live 채널
+#   PR 이 열리거나 커밋이 붙으면 → preview 채널 (7일 뒤 만료) + PR 코멘트에 주소
+#
+# ── 강사 앱(pilateacher.web.app)은 건드리지 않는다 ──
+# 두 겹으로 막는다.
+#   1. 이 워크플로가 쓰는 firebase.json 은 firebase.foundation.json 에서
+#      회원 앱 사이트 한 줄만 떼어 만든 것이다. 강사 앱 사이트는 설정에 없다.
+#   2. action 에 target 으로 회원 앱 사이트를 이름으로 지정한다.
+#
+# ── paths 가 왜 이렇게 생겼나 ──
+# 회원 앱은 member/ 밖의 공용 파일 여섯 개를 import 한다. 그 파일이 바뀌면
+# 회원 앱 번들도 바뀌므로 배포해야 한다. 목록은 손으로 적되,
+# tests/member/deploy-paths.test.js 가 실제 import 그래프와 맞는지 확인한다 --
+# 회원 앱이 새 공용 파일을 가져오면서 여기 적는 것을 잊으면 테스트가 깨진다.
+#
+# 서비스 계정 키는 GitHub secret 으로만 받는다. 레포에 키 파일을 두지 않는다.
+
+name: Deploy member app
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "member/**"
+      - "tests/member/**"
+      - "src/features/ui/type-scale.js"
+      - "src/features/membership/pass-cards.js"
+      - "src/features/membership/purchase-round.js"
+      - "src/data/schema/display-names.js"
+      - "src/data/schema/constants.js"
+      - "src/data/schema/deduction-pricing.js"
+      - "package.json"
+      - "package-lock.json"
+      - "firebase.foundation.json"
+      - ".github/workflows/deploy-member.yml"
+  # push 와 같은 목록이다. 하나를 고치면 둘 다 고친다 (테스트가 확인한다).
+  pull_request:
+    paths:
+      - "member/**"
+      - "tests/member/**"
+      - "src/features/ui/type-scale.js"
+      - "src/features/membership/pass-cards.js"
+      - "src/features/membership/purchase-round.js"
+      - "src/data/schema/display-names.js"
+      - "src/data/schema/constants.js"
+      - "src/data/schema/deduction-pricing.js"
+      - "package.json"
+      - "package-lock.json"
+      - "firebase.foundation.json"
+      - ".github/workflows/deploy-member.yml"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # 포크에서 온 PR 은 secret 을 받지 못한다. 실패로 남기지 않고 건너뛴다.
+    if: >-
+      github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    # live 배포는 하나씩. 앞의 배포를 취소하면 반쯤 나간 상태가 남을 수 있다.
+    concurrency:
+      group: deploy-member-${{ github.event_name == 'push' && 'live' || github.event.pull_request.number }}
+      cancel-in-progress: ${{ github.event_name != 'push' }}
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      # prebuild:member 가 타입 검사 · 린트 · test:node 를 먼저 돌린다.
+      # 로컬의 npm run deploy:member 와 같은 관문이다.
+      - run: npm run build:member
+
+      - name: 회원 앱 사이트만 담은 firebase.json
+        run: |
+          node -e '
+            const fs = require("fs");
+            const config = JSON.parse(fs.readFileSync("firebase.foundation.json", "utf8"));
+            const hosting = [].concat(config.hosting).filter((entry) => entry && entry.site === "pilateacher-member");
+            if (hosting.length !== 1) {
+              console.error(`pilateacher-member hosting 설정이 ${hosting.length}개입니다. 1개여야 합니다.`);
+              process.exit(1);
+            }
+            if (!fs.existsSync(`${hosting[0].public}/index.html`)) {
+              console.error(`${hosting[0].public}/index.html 이 없습니다. 빌드가 만들지 못했습니다.`);
+              process.exit(1);
+            }
+            fs.writeFileSync("firebase.json", JSON.stringify({ hosting }, null, 2));
+          '
+          cat firebase.json
+
+      - uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_PILATEACHER }}
+          projectId: pilateacher
+          target: pilateacher-member
+          # push 면 live, PR 이면 비워 두어 action 이 pr-<번호> 채널을 만든다.
+          channelId: ${{ github.event_name == 'push' && 'live' || '' }}
+          expires: 7d

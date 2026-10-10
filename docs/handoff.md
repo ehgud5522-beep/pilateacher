@@ -10,12 +10,20 @@ Claude Code · Codex 가 새 세션을 열면 이 파일부터 읽는다. 작업
   `main` · `docs/app-review-account` 가 아니거나, 커밋되지 않은 변경이 있으면
   (package-lock.json 만 예외) 빌드 전에 이유를 적고 멈춘다. 늘리려면 그 파일의
   `DEPLOYABLE_BRANCHES` 하나만 고친다.
+- 회원 앱: https://pilateacher-member.web.app — **main 병합 시 자동 배포**
+  (`.github/workflows/deploy-member.yml`). 회원 앱이 쓰는 경로가 바뀐 push 에만
+  돈다 -- 강사 앱만 바뀌면 돌지 않는다. PR 에는 7일짜리 미리보기 주소가 코멘트로
+  달린다. **배포가 됐는지 · 어느 번들이 나갔는지는 이 문서에 적지 않는다.**
+  GitHub 의 Actions 실행 내역(Deploy member app)을 본다. 회원 앱이 member/ 밖
+  파일을 새로 import 하면 워크플로의 paths 두 곳에 함께 적는다 -- 빠지면
+  `tests/member/deploy-paths.test.js` 가 깨진다. 수동 배포(`npm run deploy:member`)는
+  비상용으로 남아 있다.
 - 규칙 배포는 따로다: `npm run test:rules` 통과 후
   `npx firebase deploy --only firestore:rules --project pilateacher --config firebase.foundation.json`
 
-## 회원 앱 — 번호 인증 오류 · 안전 영역 · 로그아웃 (2026-10-10) · 브랜치 `fix/member-phone-auth-logout`
+## 회원 앱 — 번호 인증 오류 · 안전 영역 · 로그아웃 (2026-10-10) · PR #57
 
-**커밋 전 · 배포 전.** 회원 앱(`member/`)만 고쳤다. 강사 앱 번들은 그대로다.
+회원 앱(`member/`)만 고쳤다. 강사 앱 번들은 그대로다.
 
 - 인증 실패를 종류별로 가른다 — `member/src/auth-errors.js` (단위 테스트로 고정).
   `console.error("[member/phone_auth]", {feature, stage, errorCode …})` 로 원본 코드를

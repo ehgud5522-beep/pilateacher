@@ -4,7 +4,7 @@ import {
   CODE_SENT_AT_KEY, RESEND_AFTER_SECONDS, readCodeSentAt, resendSecondsLeft, sendButtonLabel,
   writeCodeSentAt,
 } from "../../member/src/resend.js";
-import { clearMemberStorage } from "../../member/src/session.js";
+import { forgetDevice } from "../../member/src/session.js";
 
 const NOW = Date.UTC(2026, 9, 10, 3, 0, 0);
 
@@ -61,7 +61,7 @@ test("새로고침해도 기다림이 이어진다 — 기기에 적고 읽는�
 test("로그아웃이 발송 시각도 걷는다", () => {
   const store = memoryStore();
   writeCodeSentAt(NOW, store);
-  clearMemberStorage(store);
+  forgetDevice(store);
   assert.equal(store.getItem(CODE_SENT_AT_KEY), null);
 });
 

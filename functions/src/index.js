@@ -35,6 +35,7 @@ const { readRuntimeConfig, writeRuntimeConfig } = require("./runtime-config-admi
 const { monthlyPayFor, planAccountSwap, runAccountSwap } = require("./instructor-swap");
 const { reconcileOrganization } = require("./pass-reconcile-nightly");
 const { createFirestoreMemberLinkPorts } = require("./member-link-store");
+const { createMemberAccountService } = require("./member-account");
 const {
   createFirestoreMemberViewAdminPorts, createMemberViewAdminService,
 } = require("./member-view-admin");
@@ -103,9 +104,16 @@ const memberLookupService = createMemberLookupService({
   },
 });
 
-const memberLinkService = createMemberLinkService(
-  createFirestoreMemberLinkPorts({ firestore, FieldValue }),
-);
+const memberLinkPorts = createFirestoreMemberLinkPorts({ firestore, FieldValue });
+const memberLinkService = createMemberLinkService(memberLinkPorts);
+
+/* 회원이 자기 계정을 지우는 통로. 쓰기 모양은 연결과 같은 파일이 들고 있다 --
+   갈라지면 한쪽만 고쳐진다. */
+const memberAccountService = createMemberAccountService({
+  readLink: memberLinkPorts.readLink,
+  purgeMemberAccount: memberLinkPorts.purgeMemberAccount,
+  deleteAuthUser: (userId) => getAuth().deleteUser(userId),
+});
 
 /* 연락처 변경. 번호는 회원의 정체라 서버만 바꾼다 -- 규칙은 클라이언트가
    phone 을 직접 쓰지 못하게 잠그고, 여기가 유일한 문이다. */
@@ -318,6 +326,42 @@ exports.unlinkMemberAccount = onCall(
   MEMBER_LINK_OPTIONS,
   memberLinkCallable("unlink", (request) => memberLinkService.unlink(request)),
 );
+
+/* ── 계정 삭제 ────────────────────────────────────────────────────────────
+   App Store 5.1.1(v). 지우는 것은 계정이고 센터 명부가 아니다 --
+   근거는 member-account.js 머리말에 있다. */
+
+exports.deleteMemberAccount = onCall(MEMBER_LINK_OPTIONS, async (request) => {
+  try {
+    const result = await memberAccountService.deleteForCaller(request);
+    /* 로그에 uid·번호·이름은 적지 않는다 (§7). 끊은 연결 수만 센다. */
+    logger.info("member_account_deleted", {
+      feature: "member_account", stage: "delete",
+      unlinked: Number(result?.unlinked) || 0,
+    });
+    return result;
+  } catch (error) {
+    logger.warn("member_account_delete_failed", {
+      feature: "member_account", stage: "delete",
+      errorDomain: "member_account",
+      errorCode: String(error?.code || "unknown"),
+      failedStage: String(error?.stage || "unknown"),
+    });
+    throw memberAccountHttpsError(error);
+  }
+});
+
+/** 삭제 실패를 종류별로 가른다. 되돌릴 수 있는 것과 아닌 것이 다르다. */
+function memberAccountHttpsError(error) {
+  const code = String(error?.code || "delete_unavailable");
+  const details = { code, stage: String(error?.stage || "unknown") };
+  if (code === "unauthenticated") return new HttpsError("unauthenticated", "Please sign in again.", details);
+  /* 연결은 끊겼고 계정만 남았다. 다시 로그인하면 번호로 다시 이어진다. */
+  if (code === "account_not_removed") {
+    return new HttpsError("internal", "The account was not fully removed. Please retry.", details);
+  }
+  return new HttpsError("unavailable", "The deletion did not finish. Please retry.", details);
+}
 
 exports.listPendingMemberLinks = onCall(
   MEMBER_LINK_OPTIONS,

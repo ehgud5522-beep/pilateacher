@@ -7,7 +7,7 @@
  *
  * 마지막으로 보낸 시각은 기기에 적는다. 새로고침으로 기다림을 건너뛰면
  * 막으려던 일이 그대로 일어난다. 로그아웃하면 session.js 의
- * clearMemberStorage 가 이 칸도 걷는다 (같은 접두어다).
+ * forgetDevice 가 이 칸도 걷는다.
  */
 
 export const RESEND_AFTER_SECONDS = 60;

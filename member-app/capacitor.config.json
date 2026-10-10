@@ -1,0 +1,17 @@
+{
+  "appId": "com.bonitapilates.member",
+  "appName": "보니따필라테스",
+  "webDir": "../dist-member",
+  "android": {
+    "path": "android"
+  },
+  "ios": {
+    "path": "ios"
+  },
+  "plugins": {
+    "FirebaseAuthentication": {
+      "skipNativeAuth": true,
+      "providers": ["phone"]
+    }
+  }
+}

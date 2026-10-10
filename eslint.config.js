@@ -44,9 +44,16 @@ export default [
       parserOptions: { ecmaFeatures: { jsx: true } },
       globals: {
         __dirname: "readonly",
+        /* 빌드가 심는 값 (member/vite.config.js). 폰에서 막혔을 때 "그 폰에
+           든 것이 어느 코드냐" 를 물을 수 있는 유일한 자리다. */
+        __MEMBER_BUILD__: "readonly",
+        clearTimeout: "readonly",
         console: "readonly",
         document: "readonly",
         localStorage: "readonly",
+        /* 무한 스피너를 두지 않기 위한 것이다 -- 10초가 지나면 화면이 늦다고
+           말한다. */
+        setTimeout: "readonly",
         window: "readonly",
       },
     },

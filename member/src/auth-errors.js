@@ -9,8 +9,21 @@
  * 코드 → 종류 → 문구가 한 줄로 이어진다 (tests/member/auth-errors.test.js).
  */
 
+/* 네이티브 길(phone-auth.js)이 붙이는 코드. 그 파일을 가져오면 서로를
+   가져오게 되므로 값만 같이 적는다 -- 같은지는 테스트가 본다. */
+const NATIVE_NO_VERIFICATION_ID = "phone_verification_id_missing";
+const NATIVE_FAILED = "phone_native_verification_failed";
+
 /** 원본 코드별 종류와 문구. 여기 없는 코드는 unknown 이다. */
 const KNOWN = {
+  [NATIVE_NO_VERIFICATION_ID]: {
+    kind: "server_unavailable", message: "문자를 보내지 못했어요. 다시 시도해 주세요.",
+  },
+  /* 네이티브 이벤트에는 코드가 없고 문구만 온다 (phone-auth.js). 원본 문구는
+     진단에 남고, 화면은 다시 시도를 권한다. */
+  [NATIVE_FAILED]: {
+    kind: "unknown", message: "지금 인증하지 못했어요. 잠시 뒤에 다시 시도해 주세요.",
+  },
   "auth/invalid-phone-number": {
     kind: "invalid_request", message: "휴대폰 번호 형식을 확인해 주세요.",
   },

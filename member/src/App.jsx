@@ -17,18 +17,24 @@ import { TYPE } from "../../src/features/ui/type-scale.js";
 import { CENTRE_NAME, CENTRE_TAGLINE } from "./brand.js";
 import { classifyPhoneAuthError } from "./auth-errors.js";
 import {
-  linkMemberAccount, resetRecaptcha, sendCode, signOutMember, watchAuth, db,
+  deleteMemberAccount, linkMemberAccount, resetRecaptcha, signOutMember, startPhoneSignIn,
+  watchAuth, db,
 } from "./firebase.js";
+import { wantsAccountDeletion } from "./delete-account.js";
 import { LINK_RESULT, linkResultScreen } from "./link-result.js";
+import {
+  MEMBER_FEATURE, MEMBER_STAGE, clearDiagnostics, readDiagnostics, recordDiagnostic,
+} from "./diagnostics.js";
 import { readMemberLink, readMemberViews } from "./member-data.js";
+import { offlineNotice, readViewCache, writeViewCache } from "./offline-cache.js";
 import {
   readCodeSentAt, resendSecondsLeft, sendButtonLabel, writeCodeSentAt,
 } from "./resend.js";
+import { forgetDevice, needsReverification, readVerifiedAt, writeVerifiedAt } from "./session.js";
 import {
-  clearMemberStorage, needsReverification, readVerifiedAt, writeVerifiedAt,
-} from "./session.js";
-import {
-  History, Home, LinkNotice, LoadFailed, Loading, More, NotMigrated, Passes, Preparing,
+  DeleteAccountGuide, Diagnostics, History, Home, LinkNotice, LoadFailed, Loading, More,
+  NotMigrated,
+  Passes, Preparing, SlowConnection,
 } from "./screens.jsx";
 
 /* 아이콘은 인라인 SVG 다. 아이콘 묶음을 하나 들이면 번들이 늘고, 이 앱이
@@ -41,24 +47,100 @@ const TABS = [
 ];
 
 const text = (value) => String(value ?? "").trim();
+/** 스토어에 올라가는 앱 이름 (member-app/capacitor.config.json 의 appName). */
+const APP_NAME = "보니따필라테스";
 const DEV = Boolean(import.meta.env?.DEV);
 
 export default function App() {
   const [user, setUser] = useState(null);
   const [authReady, setAuthReady] = useState(false);
-  useEffect(() => watchAuth((found) => { setUser(found); setAuthReady(true); }), []);
+  const [authSlow, setAuthSlow] = useState(false);
+
+  useEffect(() => {
+    recordDiagnostic({ feature: MEMBER_FEATURE.AUTH_INIT, stage: MEMBER_STAGE.STARTED });
+    /* **여기가 앱이 멈췄던 자리다.** iOS 웹뷰에서 onAuthStateChanged 가 한
+       번도 불리지 않으면 화면은 영영 "잠시만요…" 에 머문다. 이제는 늦으면
+       늦다고 말하고, 그 사실을 기록에 남긴다. */
+    const timer = setTimeout(() => {
+      setAuthSlow(true);
+      recordDiagnostic({
+        feature: MEMBER_FEATURE.AUTH_INIT, stage: MEMBER_STAGE.AUTH_STATE_TIMEOUT,
+        errorDomain: "firebase_auth", errorCode: "auth_state_never_fired",
+        message: `${SLOW_AFTER_MS}ms 안에 로그인 상태가 오지 않았습니다.`,
+      });
+    }, SLOW_AFTER_MS);
+
+    const stop = watchAuth((found) => {
+      clearTimeout(timer);
+      setUser(found);
+      setAuthReady(true);
+      setAuthSlow(false);
+      recordDiagnostic({
+        feature: MEMBER_FEATURE.AUTH_INIT, stage: MEMBER_STAGE.AUTH_STATE_FIRST,
+        message: found ? "로그인 상태" : "로그인 안 됨",
+      });
+    });
+    return () => { clearTimeout(timer); stop(); };
+  }, []);
 
   /* 로그인해 있어도 90일이 지났으면 다시 묻는다. 폰을 잃어버렸거나 번호가
      바뀐 사람이 영영 남의 잔여를 보고 있지 않게 하는 장치다 -- 서버가 막아
      주는 것이 아니라 앱이 스스로 닫는 것이다 (session.js). */
   const stale = useMemo(() => needsReverification(readVerifiedAt()), [user]);
 
-  if (!authReady) return <Shell><Loading /></Shell>;
-  if (!user || stale) return <SignIn signedIn={Boolean(user)} />;
-  return <Member userId={user.uid} />;
+  if (!authReady) {
+    /* 다시 시도는 통째로 다시 여는 것이다. Auth 초기화가 막힌 상태에서
+       다시 부를 것이 없다 -- 막힌 것은 우리가 부르는 함수가 아니라 그
+       안쪽의 약속이다. */
+    return (
+      <Shell>
+        {authSlow
+          ? <SlowConnection seconds={Math.round(SLOW_AFTER_MS / 1000)}
+            onRetry={() => window.location.reload()} />
+          : <Loading />}
+      </Shell>
+    );
+  }
+  /* `/delete-account` 로 왔으면 로그인 전에는 삭제 안내를, 로그인 뒤에는
+     삭제 버튼이 있는 더보기 탭을 먼저 연다 (플레이스토어 계정 삭제 URL). */
+  const deletion = wantsAccountDeletion(window.location.pathname);
+  if (!user || stale) return <SignIn signedIn={Boolean(user)} deletion={deletion} />;
+  return <Member userId={user.uid} initialTab={deletion ? "more" : "home"} />;
+}
+
+/**
+ * 화면이 늦다고 말하기까지 기다리는 시간.
+ *
+ * 무한 스피너를 두지 않는다. 기다리는 화면은 "곧 된다" 고 말하는데, 영영
+ * 안 될 수도 있다는 것을 아무도 말해 주지 않으면 회원은 앱이 고장 난 줄도
+ * 모른 채 들고 있는다.
+ */
+const SLOW_AFTER_MS = 10000;
+
+/** 진단 화면을 여는 횟수. 회원이 실수로 누르지 않을 만큼이면 된다. */
+const DIAGNOSTIC_TAPS = 5;
+
+function buildLabel() {
+  const build = (typeof __MEMBER_BUILD__ === "undefined" ? null : __MEMBER_BUILD__) || {};
+  const version = text(build.version) || "?";
+  const commit = text(build.commit);
+  return commit ? `v${version} · ${commit}` : `v${version}`;
 }
 
 function Shell({ children, footer, onSignOut }) {
+  /* 진단은 **Shell 에 있다.** 화면이 "잠시만요…" 에서 멈춰 있을 때도 열려야
+     하고, 그때가 바로 필요한 순간이다. 안쪽 화면에 두면 멈춘 동안에는
+     그리지 않는다. */
+  const [taps, setTaps] = useState(0);
+  const [entries, setEntries] = useState(null);
+
+  const tap = () => {
+    const next = taps + 1;
+    if (next < DIAGNOSTIC_TAPS) { setTaps(next); return; }
+    setTaps(0);
+    setEntries(readDiagnostics());
+  };
+
   return (
     <div className="shell">
       {/* 작고 얇게 위에만. 화면의 주인공은 남은 횟수다 -- 이름 쪽만 로즈로
@@ -70,7 +152,16 @@ function Shell({ children, footer, onSignOut }) {
           <button type="button" className="signout" onClick={onSignOut}>로그아웃</button>
         ) : null}
       </header>
-      <main className="main">{children}</main>
+      <main className="main">
+        {entries ? (
+          <Diagnostics entries={entries}
+            onClose={() => setEntries(null)}
+            onClear={() => { clearDiagnostics(); setEntries([]); }} />
+        ) : children}
+        {/* 맨 아래다. 다섯 번 누르면 진단이 열린다 -- 대표가 Mac 없이
+            원인을 볼 수 있는 유일한 자리다. */}
+        <p className="ver" onClick={tap}>{buildLabel()}</p>
+      </main>
       {footer}
       <div id="recaptcha" />
     </div>
@@ -79,7 +170,7 @@ function Shell({ children, footer, onSignOut }) {
 
 /* ── 번호 인증 ───────────────────────────────────────────────────────── */
 
-function SignIn({ signedIn }) {
+function SignIn({ signedIn, deletion = false }) {
   const [phone, setPhone] = useState("");
   const [code, setCode] = useState("");
   const [pending, setPending] = useState(null);
@@ -106,9 +197,14 @@ function SignIn({ signedIn }) {
      않는다 -- 진단에 전화번호를 적지 않는다. */
   const fail = (stage, error) => {
     const result = classifyPhoneAuthError(error, { dev: DEV });
+    const errorDomain = text(error?.errorDomain) || "firebase_auth";
     console.error("[member/phone_auth]", {
-      feature: "member_phone_auth", stage, errorDomain: "firebase_auth",
+      feature: MEMBER_FEATURE.PHONE_SIGN_IN, stage, errorDomain,
       errorCode: result.code, kind: result.kind, message: text(error?.message),
+    });
+    recordDiagnostic({
+      feature: MEMBER_FEATURE.PHONE_SIGN_IN, stage: MEMBER_STAGE.FAILED,
+      errorDomain, errorCode: result.code, message: `${stage}: ${text(error?.message)}`,
     });
     /* 한 번 실패한 reCAPTCHA 로 다시 보내면 같은 이유로 진다. 걷어 두면
        다음 "인증번호 받기" 가 새로 만든다. */
@@ -123,16 +219,24 @@ function SignIn({ signedIn }) {
     setBusy("send");
     setFailure(null);
     try {
-      /* 다시 받기다. 앞의 발송에 쓴 reCAPTCHA 토큰은 이미 소모됐으므로 새로
-         만든다 -- 같은 것으로 보내면 captcha 검증에서 진다. */
-      if (pending) resetRecaptcha();
-      const result = await sendCode(phone);
+      /* 다시 받기다. 앞 시도의 네이티브 리스너를 걷고, 웹이면 이미 소모된
+         reCAPTCHA 토큰 대신 새것을 만든다 -- 같은 것으로 보내면 captcha
+         검증에서 진다. */
+      if (pending) {
+        await pending.cancel?.();
+        resetRecaptcha();
+      }
+      /* 앱에서는 문자를 앱이 직접 읽을 수 있다 (Android). 읽으면 칸을
+         채워만 두고 **누르는 것은 사람이 한다** -- 저절로 넘어가면 무슨
+         일이 일어났는지 본 사람이 없다. */
+      const result = await startPhoneSignIn(phone, { onAutoCode: setCode });
       const at = Date.now();
       writeCodeSentAt(at);
       setSentAt(at);
       setNow(at);
       setCode("");
       setPending(result);
+      recordDiagnostic({ feature: MEMBER_FEATURE.PHONE_SIGN_IN, stage: MEMBER_STAGE.CODE_SENT });
     } catch (error) {
       fail("send_code", error);
     } finally {
@@ -148,6 +252,7 @@ function SignIn({ signedIn }) {
     setFailure(null);
     try {
       await pending.confirm(code);
+      await pending.cancel?.();
       // 확인한 시각을 남긴다. 여기서부터 90일이다.
       writeVerifiedAt(new Date());
       /* 새로고침으로 다시 들어간다. 인증 직후의 토큰에 phone_number 가 실려야
@@ -163,6 +268,9 @@ function SignIn({ signedIn }) {
 
   return (
     <Shell>
+      {deletion ? <div className="stack" style={{ marginBottom: 16 }}>
+        <DeleteAccountGuide appName={APP_NAME} />
+      </div> : null}
       <section className="card">
         <p className="serif" style={{ fontSize: TYPE.heading, lineHeight: 1.5 }}>
           {signedIn
@@ -216,18 +324,22 @@ function SignIn({ signedIn }) {
 
 /* ── 회원 화면 ───────────────────────────────────────────────────────── */
 
-function Member({ userId }) {
+function Member({ userId, initialTab = "home" }) {
   const [state, setState] = useState({ stage: "loading" });
-  const [tab, setTab] = useState("home");
+  const [tab, setTab] = useState(initialTab);
   const [place, setPlace] = useState(0);
+  const [slow, setSlow] = useState(false);
 
   const load = useCallback(async () => {
     setState({ stage: "loading" });
+    setSlow(false);
     try {
+      recordDiagnostic({ feature: MEMBER_FEATURE.LINK, stage: MEMBER_STAGE.READ_LINK });
       let link = await readMemberLink(db, userId);
       /* 링크 문서가 없으면 아직 이어지지 않은 계정이다. 이 순간이 첫 로그인이고,
          여기서 서버가 명부에서 이 번호를 찾는다. */
       if (!link) {
+        recordDiagnostic({ feature: MEMBER_FEATURE.LINK, stage: MEMBER_STAGE.CALL_LINK });
         const result = await linkMemberAccount();
         link = { status: text(result?.status), links: result?.links || [] };
       }
@@ -236,14 +348,60 @@ function Member({ userId }) {
         setState({ stage: "notice", screen });
         return;
       }
+      recordDiagnostic({
+        feature: MEMBER_FEATURE.READ_VIEW, stage: MEMBER_STAGE.READ_VIEWS,
+        message: `${link.links.length}곳`,
+      });
       const found = await readMemberViews(db, link.links);
-      setState({ stage: "ready", status: link.status, places: found });
+      /* 읽은 것을 기기에 남긴다. 다음에 지하에서 열 때 이것을 그린다.
+         번호는 들어가지 않는다 -- 사본은 자기 허용 목록을 따로 든다
+         (offline-cache.js). */
+      writeViewCache(found, new Date());
+      setState({ stage: "ready", status: link.status, places: found, offlineAt: null });
     } catch (error) {
+      /* 못 읽었다. 그 사람이 알고 싶은 것은 방금 전까지 참이었던 숫자
+         하나이고, 그것이 기기에 있다면 "불러오지 못했어요" 로 끝내는 것은
+         들고 있는 답을 안 주는 것이다. 다만 **언제 본 것인지 함께**
+         말한다 -- 숫자를 믿을지는 회원이 정한다. */
+      recordDiagnostic({
+        feature: MEMBER_FEATURE.LINK, stage: MEMBER_STAGE.FAILED,
+        errorDomain: "firestore", errorCode: text(error?.code) || "unknown",
+        message: error?.message,
+      });
+      const cached = readViewCache();
+      if (cached) {
+        recordDiagnostic({ feature: MEMBER_FEATURE.OFFLINE_CACHE, stage: MEMBER_STAGE.CACHE_HIT });
+        setState({
+          stage: "ready", status: "", places: cached.places, offlineAt: cached.savedAt,
+        });
+        return;
+      }
       setState({ stage: "failed", code: text(error?.code) || "unknown" });
     }
   }, [userId]);
 
   useEffect(() => { load(); }, [load]);
+
+  /* 읽기도 영영 안 끝날 수 있다. Firestore 호출에는 시간제한이 없다. */
+  useEffect(() => {
+    if (state.stage !== "loading") return undefined;
+    const timer = setTimeout(() => setSlow(true), SLOW_AFTER_MS);
+    return () => clearTimeout(timer);
+  }, [state.stage]);
+
+  /**
+   * 계정을 지운다. 서버가 끝난 뒤에야 기기를 치운다 -- 순서가 반대면
+   * 서버가 실패했을 때 이 폰만 비어 있고 계정은 살아 있다.
+   *
+   * 지운 뒤에는 화면을 되돌리지 않고 통째로 다시 연다. 지워진 계정의
+   * 화면이 한 순간이라도 남아 있으면 안 된다.
+   */
+  const removeAccount = useCallback(async () => {
+    await deleteMemberAccount();
+    forgetDevice();
+    await signOutMember({ quiet: true });
+    window.location.reload();
+  }, []);
 
   /* 로그아웃 → onAuthStateChanged 가 null → App 이 로그인 화면을 그린다.
      여기서 화면을 직접 옮기지 않는다 -- 상태가 하나여야 어긋나지 않는다. */
@@ -251,12 +409,12 @@ function Member({ userId }) {
     if (!window.confirm("로그아웃할까요?")) return;
     try {
       await signOutMember();
-      clearMemberStorage();
+      forgetDevice();
     } catch (error) {
       const code = text(error?.code) || "unknown";
-      console.error("[member/sign_out]", {
-        feature: "member_sign_out", stage: "sign_out", errorDomain: "firebase_auth",
-        errorCode: code, message: text(error?.message),
+      recordDiagnostic({
+        feature: MEMBER_FEATURE.SIGN_OUT, stage: MEMBER_STAGE.FAILED,
+        errorDomain: "firebase_auth", errorCode: code, message: error?.message,
       });
       window.alert(`로그아웃하지 못했어요. 잠시 후 다시 시도해 주세요. (코드 ${code})`);
     }
@@ -264,7 +422,15 @@ function Member({ userId }) {
 
   /* 불러오지 못했거나 연결이 안 된 화면에서도 로그아웃은 보인다. 다른 번호로
      들어가야 하는 사람이 갇히지 않게. */
-  if (state.stage === "loading") return <Shell onSignOut={signOutNow}><Loading /></Shell>;
+  if (state.stage === "loading") {
+    return (
+      <Shell onSignOut={signOutNow}>
+        {slow
+          ? <SlowConnection seconds={Math.round(SLOW_AFTER_MS / 1000)} onRetry={load} />
+          : <Loading />}
+      </Shell>
+    );
+  }
   if (state.stage === "failed") {
     return <Shell onSignOut={signOutNow}><LoadFailed code={state.code} onRetry={load} /></Shell>;
   }
@@ -295,11 +461,22 @@ function Member({ userId }) {
   else if (!current.view) body = <Preparing onRetry={load} />;
   else if (tab === "passes") body = <Passes view={current.view} />;
   else if (tab === "history") body = <History view={current.view} />;
-  else if (tab === "more") body = <More view={current.view} />;
+  else if (tab === "more") {
+    /* 오프라인 사본을 보는 중에는 계정 삭제를 내지 않는다. 누르면 실패할
+       뿐이고, 되돌릴 수 없는 버튼이 실패하는 것은 회원을 불안하게 한다. */
+    body = <More view={current.view} onDeleteAccount={state.offlineAt ? undefined : removeAccount} />;
+  }
   else body = <Home view={current.view} />;
 
   return (
     <Shell footer={<Tabs tab={tab} onPick={setTab} />} onSignOut={signOutNow}>
+      {/* 오래된 숫자라는 사실이 숫자 위에 있어야 한다. 아래에 두면 잔여를
+          보고 화면을 닫은 사람은 읽지 않는다. */}
+      {state.offlineAt ? (
+        <button type="button" className="stale" onClick={load}>
+          {offlineNotice(state.offlineAt)} <span aria-hidden="true">↻</span>
+        </button>
+      ) : null}
       {/* 여러 지점에 등록된 회원은 지점마다 잔여가 따로다 (확정 7번). */}
       {places.length > 1 ? (
         <div className="chips">

@@ -37,6 +37,59 @@ Claude Code · Codex 가 새 세션을 열면 이 파일부터 읽는다. 작업
   화면 이동은 `onAuthStateChanged` 하나가 한다
 - 실제 문자 수신 → confirm 은 아직 기기에서 확인하지 않았다 (테스트 번호로 볼 것)
 
+## 회원 앱 1단계 (2026-09-27) · 브랜치 `feat/member-app-shell` · PR #21
+
+**회원용 스토어 앱** `com.bonitapilates.member`. 강사 앱과 같은 저장소, 같은
+Firebase 프로젝트, 다른 번들이다. 경계와 빌드 명령은
+[member-app/README.md](../member-app/README.md) 에 있다.
+
+### 끝난 커밋
+
+| 커밋 | 무엇 |
+| --- | --- |
+| `22c00b0` | 껍데기 — 설정 · 빌드 스크립트 · 경계 테스트 |
+| `95e8239` | **네이티브 폴더** — `cap add` · Firebase 설정 파일 |
+| `7fce905` | **네이티브 문자 인증** — 즉시 인증 갈래를 막는다 |
+| `d3f0c29` | **계정 삭제** — Firestore 먼저, Auth 나중 |
+| `f6ff19d` | **오프라인 표시** — 14일까지, 나이를 함께 |
+| `467340a` | 서명 · 1단계 정리 (이 표를 담은 커밋) |
+
+### 알아 둘 것 셋
+
+**`member-app/package.json` 은 플러그인 경계다.** Capacitor CLI 는 실행한
+폴더에 package.json 이 없으면 시작하지 않는데, 그 파일은 자리 채우기가 아니다
+-- CLI 가 **그 파일의 의존성만 읽어** 네이티브에 넣을 플러그인을 고른다
+(`@capacitor/cli` 의 `plugin.js`). 루트의 카메라·녹음기·음성인식은 여기 적지
+않았으므로 안 들어간다. `cap add` 가 찾은 플러그인은 하나였다.
+
+**`member-app` 안에서 `npm install` 하지 않는다.** node_modules 가 생기면 같은
+플러그인이 두 벌이 되고 루트의 postinstall 패치가 한쪽에만 걸린다. Node 해석이
+루트로 올라가게 두고, 버전 범위가 갈라지지 않는지는 테스트가 지킨다.
+
+**Android 즉시 인증에는 이어받을 자격이 없다.** 문자 없이 인증이 끝나면
+(`smsCode == null`) 플러그인이 JS 로 넘기는 자격에는 `providerId` 만 남는다 --
+`FirebaseAuthenticationHelper.createCredentialResult` 가 OAuthCredential 만
+풀어 쓰기 때문이다. 그 갈래에서만 웹 reCAPTCHA 길로 되돌아간다
+(`member/src/phone-auth.js`).
+
+### 대표가 콘솔에서 할 일 — 이것 없이는 문자 인증이 reCAPTCHA 로 되돌아간다
+
+1. **Firebase 콘솔 → 프로젝트 설정 → `com.bonitapilates.member`(Android) →
+   SHA 인증서 지문 추가.** 강사 앱과 같은 업로드 키이므로 지문도 같다
+   (SHA-1 `17:07:22:…:7a:09`). 등록 후 `google-services.json` 을 다시 받아
+   `member-app/android/app/` 에 덮어쓴다
+2. **APNs 인증 키 등록** (iOS). Firebase 콘솔 → 클라우드 메시징 → Apple 앱 구성
+3. **`member-app/android/keystore.properties`** 를 만든다 (`android/` 의 것과
+   같은 모양, 저장소에 안 들어간다)
+4. 심사용 테스트 번호는 **Firebase 콘솔에서만** 등록한다 — 코드·문서에 적지
+   않는다
+
+### 1단계에 없는 것
+
+앱 아이콘 · 스플래시 · 푸시 알림(2단계) · 스토어 등록 정보.
+
+---
+
 ## 빌드 62 — 2단계 완료 (2026-09-27) · 브랜치 `feat/app-version-report`
 
 **세션이 끊기면 여기부터 읽는다.** 설계는

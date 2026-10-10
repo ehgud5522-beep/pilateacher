@@ -506,3 +506,65 @@ test("회원 화면 어디에도 금액이 없다", async (t) => {
     assert.doesNotMatch(all, new RegExp(forbidden), `${forbidden} 가 회원 화면에 있다`);
   }
 });
+
+/* ── 계정 삭제 ───────────────────────────────────────────────────────── */
+
+test("계정 삭제는 더보기 맨 아래에만 있다", async (t) => {
+  /* 홈이나 회원권 탭에 두면 잔여를 보러 온 사람이 지나가다 누른다. */
+  const markupOf = await memberScreens(t);
+  const more = markupOf("더보기 · 계정 삭제 있음");
+  assert.match(more, /계정 삭제/);
+  const say = more.indexOf("의견 보내기");
+  assert.ok(say >= 0 && more.indexOf("계정 삭제") > say, "의견 보내기보다 아래다");
+
+  // 넘겨주지 않으면 아예 그리지 않는다 -- 웹 미리보기 같은 자리가 있다.
+  assert.doesNotMatch(markupOf("더보기"), /계정 삭제/);
+});
+
+test("첫 화면에서는 지우는 버튼이 안 나온다", async (t) => {
+  /* 되돌릴 수 없는 버튼이라 두 번 만난다. 첫 번째는 목록을 펴는 것뿐이다. */
+  const markupOf = await memberScreens(t);
+  const first = markupOf("계정 삭제 · 첫 화면");
+  assert.doesNotMatch(first, /네, 지울게요/);
+  assert.match(first, /센터에 등록된 회원 정보와 남은 회원권은 그대로/);
+});
+
+/* ── 멈췄을 때 보는 화면 ─────────────────────────────────────────────── */
+
+test("늦을 때 무엇을 하라고 말한다", async (t) => {
+  const markupOf = await memberScreens(t);
+  const slow = markupOf("연결이 늦다");
+  assert.match(slow, /연결이 늦어요/);
+  assert.match(slow, /10초째/);
+  assert.match(slow, /다시 시도/);
+  /* 막혔을 때 기록을 어디서 꺼내는지도 여기서 알려 준다. 그러지 않으면
+     그 화면이 있다는 것을 아무도 모른다. */
+  assert.match(slow, /다섯 번/);
+});
+
+test("진단은 회원 정보를 그리지 않는다", async (t) => {
+  const markupOf = await memberScreens(t);
+  const diag = markupOf("진단 · 기록 있음");
+  assert.match(diag, /auth_init \/ auth_state_timeout/);
+  assert.match(diag, /firebase_auth:auth_state_never_fired/);
+  /* 어느 코드가 폰에 들어 있는지가 이 화면의 값어치다. */
+  assert.match(diag, /5be3511/);
+  assert.match(diag, /이름·번호는 들어 있지 않아요/);
+});
+
+test("기록이 없으면 없다고 말한다", async (t) => {
+  const markupOf = await memberScreens(t);
+  assert.match(markupOf("진단 · 비어 있음"), /기록이 없습니다/);
+});
+
+test("계정 삭제 요청 URL — 로그인 없이 방법과 지워지는 것 · 남는 것을 말한다", async (t) => {
+  const markupOf = await memberScreens(t);
+  const guide = markupOf("계정 삭제 안내 (스토어 URL)");
+  // 스토어는 앱 이름이 페이지에 보이기를 요구한다.
+  assert.match(guide, /보니따필라테스 계정 삭제/);
+  assert.match(guide, /더보기/);
+  const { DELETED_ITEMS, KEPT_ITEMS } = await import("../../member/src/delete-account.js");
+  for (const item of [...DELETED_ITEMS, ...KEPT_ITEMS]) assert.ok(guide.includes(item), item);
+  // 회원 정보가 들어갈 자리가 없다 -- 로그인 전에 보이는 화면이다.
+  assert.doesNotMatch(guide, /김하나|010-|uid/);
+});

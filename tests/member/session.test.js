@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  REVERIFY_AFTER_DAYS, VERIFIED_AT_KEY, clearMemberStorage, needsReverification, readVerifiedAt,
+  REVERIFY_AFTER_DAYS, VERIFIED_AT_KEY, forgetDevice, needsReverification, readVerifiedAt,
   writeVerifiedAt,
 } from "../../member/src/session.js";
 
@@ -67,7 +67,7 @@ test("로그아웃은 이 앱이 적은 칸만 걷는다", () => {
     getItem: (key) => data.get(key) ?? null,
     removeItem: (key) => { data.delete(key); },
   };
-  clearMemberStorage(store);
+  forgetDevice(store);
   assert.deepEqual([...data.keys()], ["someone.else"]);
   // 걷은 뒤에는 다시 인증해야 한다 -- 다음 사람이 앞사람의 90일을 물려받지 않는다.
   assert.equal(needsReverification(readVerifiedAt(store), NOW), true);
@@ -75,5 +75,5 @@ test("로그아웃은 이 앱이 적은 칸만 걷는다", () => {
 
 test("저장이 막힌 기기에서 로그아웃이 죽지 않는다", () => {
   const blocked = { get length() { throw new Error("SecurityError"); } };
-  assert.doesNotThrow(() => clearMemberStorage(blocked));
+  assert.doesNotThrow(() => forgetDevice(blocked));
 });

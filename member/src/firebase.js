@@ -8,10 +8,12 @@
 
 import { initializeApp } from "firebase/app";
 import {
-  RecaptchaVerifier, getAuth, onAuthStateChanged, signInWithPhoneNumber, signOut,
+  PhoneAuthProvider, RecaptchaVerifier, browserLocalPersistence, getAuth,
+  initializeAuth, onAuthStateChanged, signInWithCredential, signInWithPhoneNumber, signOut,
 } from "firebase/auth";
 import { getFirestore } from "firebase/firestore/lite";
 import { getFunctions, httpsCallable } from "firebase/functions";
+import { isNativePhoneAuth, shouldFallBackToWeb, startNativePhoneSignIn } from "./phone-auth.js";
 import { toE164 } from "./phone.js";
 
 /* 강사 앱과 같은 값이다 (src/lib/firebase.js). 웹 apiKey 는 비밀이 아니다 --
@@ -26,7 +28,36 @@ const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
-export const auth = getAuth(app);
+
+/**
+ * 앱에서는 `getAuth()` 를 쓰지 않는다.
+ *
+ * `getAuth()` 는 `indexedDBLocalPersistence` 를 맨 앞에 두고
+ * `browserPopupRedirectResolver` 를 함께 단다. **iOS 웹뷰에서 그 리졸버는
+ * Auth 초기화 약속 안에서 미리 켜지면서 교차 출처 iframe 을 30~60초
+ * 시간제한으로 불러온다.** 그동안 `onAuthStateChanged` 가 한 번도 불리지
+ * 않고, 화면은 "잠시만요…" 에 머문다 -- TestFlight 빌드에서 실제로 그랬다.
+ *
+ * 리졸버는 이 앱에 필요 없다. 회원 로그인은 네이티브 플러그인이나 웹
+ * reCAPTCHA 로 오고, 둘 다 팝업·리다이렉트를 쓰지 않는다.
+ *
+ * ── 왜 indexedDB 가 아니라 localStorage 인가 ──
+ * 강사 앱이 같은 자리에서 같은 증상을 겪고 남긴 것이다 (src/lib/firebase.js):
+ * 멈추는 곳이 iframe 이거나 **IndexedDB 순환**이었고, 이 기기에서 실제로
+ * 도는 것으로 측정된 저장소가 localStorage 였다. 측정된 쪽을 따른다.
+ *
+ * 웹은 그대로 `getAuth()` 다. 브라우저에서는 이 문제가 없고, 굳이 바꾸면
+ * 지금 도는 것을 확인 없이 건드리는 것이 된다.
+ */
+export const auth = isNativeRuntime()
+  ? initializeAuth(app, { persistence: browserLocalPersistence })
+  : getAuth(app);
+
+/** 네이티브인가. 판정에 실패하면 웹이다 -- 그쪽은 어디서나 돈다. */
+function isNativeRuntime() {
+  try { return Boolean(capacitor()?.isNativePlatform?.()); }
+  catch (_error) { return false; }
+}
 export const db = getFirestore(app);
 const functions = getFunctions(app, "asia-northeast3");
 
@@ -68,10 +99,42 @@ export function sendCode(phone, containerId = "recaptcha") {
   return signInWithPhoneNumber(auth, toE164(phone), recaptcha(containerId));
 }
 
-/** 로그아웃. 다음 사람이 이 기기에서 인증할 때 쓸 reCAPTCHA 도 새로 만든다. */
-export async function signOutMember() {
-  resetRecaptcha();
-  await signOut(auth);
+/**
+ * 문자 인증을 시작한다. **화면은 웹인지 앱인지 몰라도 된다** -- 돌려주는
+ * 것에 `.confirm(code)` 가 있는 것은 두 길이 같다.
+ *
+ * 앱에서는 네이티브로 보낸다. 웹뷰 안의 reCAPTCHA 는 잔여 횟수 하나를 보려는
+ * 사람에게 너무 큰 문턱이고, 실패해도 이유가 안 보인다.
+ *
+ * 다만 Android 는 문자 없이 인증이 끝날 수 있는데(즉시 인증) 그때 JS 로
+ * 이어받을 자격이 넘어오지 않는다 (phone-auth.js 머리말). 그 한 갈래에서만
+ * 웹 길로 되돌아간다.
+ */
+export async function startPhoneSignIn(phone, options = {}) {
+  const e164 = toE164(phone);
+  if (isNativePhoneAuth(capacitor())) {
+    const { FirebaseAuthentication } = await import("@capacitor-firebase/authentication");
+    try {
+      return await startNativePhoneSignIn({
+        plugin: FirebaseAuthentication,
+        phoneNumber: e164,
+        onAutoCode: options.onAutoCode,
+        signInWithCode: (verificationId, code) =>
+          signInWithCredential(auth, PhoneAuthProvider.credential(verificationId, code)),
+      });
+    } catch (error) {
+      if (!shouldFallBackToWeb(error)) throw error;
+      /* 즉시 인증이 끝났는데 이어받을 재료가 없다. 웹 길은 reCAPTCHA 를
+         태우는 대신 언제나 ConfirmationResult 를 준다 -- 문턱을 무르는 것이
+         막힌 화면보다 낫다. */
+    }
+  }
+  return sendCode(e164, options.containerId);
+}
+
+/** 네이티브 여부를 묻는 자리. 웹 빌드에서는 없는 것이 정상이다. */
+function capacitor() {
+  return typeof globalThis === "undefined" ? null : globalThis.Capacitor || null;
 }
 
 /** 로그인 상태. 되돌려주는 함수를 부르면 구독이 끊긴다. */
@@ -87,4 +150,31 @@ export async function linkMemberAccount() {
   const call = httpsCallable(functions, "linkMemberAccount");
   const response = await call({});
   return response?.data || null;
+}
+
+/**
+ * 자기 계정을 지운다. **대상을 보내지 않는다** -- 서버는 토큰의 uid 만 쓰고,
+ * 보낸 값은 읽지도 않는다.
+ */
+export async function deleteMemberAccount() {
+  const call = httpsCallable(functions, "deleteMemberAccount");
+  const response = await call({});
+  return response?.data || null;
+}
+
+/**
+ * 로그아웃. 다음 사람이 이 기기에서 인증할 때 쓸 reCAPTCHA 도 새로 만든다.
+ *
+ * 회원이 누른 로그아웃은 실패를 던진다 -- 끊기지 않았는데 조용히 넘어가면
+ * 화면이 그대로라 회원은 버튼이 고장 났다고 읽는다 (App 이 코드와 함께 알린다).
+ * 계정 삭제 뒤에는 `{ quiet: true }` 로 부른다. 서버에서 이미 지운 계정이라
+ * 막힐 이유가 없고, 막혀도 다음 새로고침에 세션이 사라진다.
+ */
+export async function signOutMember({ quiet = false } = {}) {
+  resetRecaptcha();
+  try {
+    await signOut(auth);
+  } catch (error) {
+    if (!quiet) throw error;
+  }
 }

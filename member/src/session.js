@@ -17,6 +17,10 @@
  * **틀리는 방향이 안전한 쪽**이다.
  */
 
+import { DIAGNOSTIC_KEY } from "./diagnostics.js";
+import { VIEW_CACHE_KEY } from "./offline-cache.js";
+import { CODE_SENT_AT_KEY } from "./resend.js";
+
 /** 확정 5번. 하루는 86,400,000 밀리초. */
 export const REVERIFY_AFTER_DAYS = 90;
 const DAY_MS = 86400000;
@@ -78,25 +82,37 @@ export function writeVerifiedAt(at, store) {
 const MEMBER_KEY_PREFIX = "pilateacher.member.";
 
 /**
- * 로그아웃할 때 기기에 남긴 것을 걷는다. 다음에 이 폰을 쥔 사람이 앞사람의
- * 확인 시각을 물려받으면 90일 장치가 그 사람에게는 열린 채로 시작한다.
+ * 이 기기에서 회원 앱이 남긴 것을 전부 걷는다. 로그아웃과 계정 삭제 뒤에 부른다.
  *
- * 회원 연결(memberLinks)과 잔여(memberViews)는 기기에 캐시하지 않는다 --
- * 매번 서버에서 읽는다. 그래서 걷을 것은 이 이름의 칸들뿐이다.
+ * 계정을 지웠거나 로그아웃했는데 마지막 확인 시각이 남아 있으면, 다음에 이
+ * 폰을 여는 사람이 **앞사람의 흔적**을 밟고 들어간다 -- 90일 장치가 그 사람에게는
+ * 열린 채로 시작하고, 오프라인 사본이 앞사람의 잔여를 보여준다.
  *
- * @param {Storage} [store]
+ * 두 겹이다. 아는 칸(DEVICE_KEYS)은 하나씩 지운다 -- 한 칸이 막혀도 나머지는
+ * 지운다. 그다음 같은 접두어의 칸을 쓸어 낸다 -- 칸이 늘었는데 목록을 고치지
+ * 않아도 남는 것이 없게.
  */
-export function clearMemberStorage(store) {
+export const DEVICE_KEYS = Object.freeze([
+  VERIFIED_AT_KEY, VIEW_CACHE_KEY, DIAGNOSTIC_KEY, CODE_SENT_AT_KEY,
+]);
+
+/** @param {any} [store] */
+export function forgetDevice(store) {
   try {
     const box = store || (typeof localStorage === "undefined" ? null : localStorage);
     if (!box) return;
-    const keys = [];
-    for (let index = 0; index < box.length; index += 1) {
-      const key = box.key(index);
-      if (key && key.startsWith(MEMBER_KEY_PREFIX)) keys.push(key);
+    for (const key of DEVICE_KEYS) {
+      try { box.removeItem?.(key); } catch (_error) { /* 한 칸이 막혀도 나머지는 지운다 */ }
     }
-    for (const key of keys) box.removeItem(key);
+    const rest = [];
+    for (let index = 0; index < Number(box.length || 0); index += 1) {
+      const key = box.key?.(index);
+      if (key && key.startsWith(MEMBER_KEY_PREFIX)) rest.push(key);
+    }
+    for (const key of rest) {
+      try { box.removeItem?.(key); } catch (_error) { /* 한 칸이 막혀도 나머지는 지운다 */ }
+    }
   } catch (_error) {
-    /* 저장이 막힌 기기다. 거기엔 애초에 적힌 것도 없다. */
+    /* 저장소를 못 열면 지울 것도 없다. */
   }
 }

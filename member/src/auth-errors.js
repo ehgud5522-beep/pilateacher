@@ -17,8 +17,11 @@ const KNOWN = {
   "auth/missing-phone-number": {
     kind: "invalid_request", message: "휴대폰 번호 형식을 확인해 주세요.",
   },
+  /* Firebase 가 이 기기나 번호를 한동안 막은 것이다. 보통 한 시간쯤 풀리지
+     않으므로 "잠시 후" 라고 하면 회원은 몇 번 더 누르고 더 오래 막힌다. */
   "auth/too-many-requests": {
-    kind: "rate_limited", message: "시도가 많았어요. 잠시 후 다시 시도해 주세요.",
+    kind: "rate_limited",
+    message: "요청이 많아 잠시 막혔어요. 1시간쯤 뒤에 다시 시도하거나 센터에 문의해 주세요.",
   },
   "auth/quota-exceeded": {
     kind: "rate_limited", message: "시도가 많았어요. 잠시 후 다시 시도해 주세요.",

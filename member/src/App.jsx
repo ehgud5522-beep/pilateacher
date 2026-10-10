@@ -12,7 +12,7 @@
  * 길이 없다.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { TYPE } from "../../src/features/ui/type-scale.js";
 import { CENTRE_NAME, CENTRE_TAGLINE } from "./brand.js";
 import { classifyPhoneAuthError } from "./auth-errors.js";
@@ -21,6 +21,9 @@ import {
 } from "./firebase.js";
 import { LINK_RESULT, linkResultScreen } from "./link-result.js";
 import { readMemberLink, readMemberViews } from "./member-data.js";
+import {
+  readCodeSentAt, resendSecondsLeft, sendButtonLabel, writeCodeSentAt,
+} from "./resend.js";
 import {
   clearMemberStorage, needsReverification, readVerifiedAt, writeVerifiedAt,
 } from "./session.js";
@@ -80,8 +83,24 @@ function SignIn({ signedIn }) {
   const [phone, setPhone] = useState("");
   const [code, setCode] = useState("");
   const [pending, setPending] = useState(null);
-  const [busy, setBusy] = useState(false);
+  /* 무엇을 하는 중인가 -- "send" · "confirm" · null. 보내는 중에 "확인" 이
+     "보내는 중…" 이라고 말하지 않게 둘을 가른다. */
+  const [busy, setBusy] = useState(null);
   const [failure, setFailure] = useState(null);
+  /* 요청 중 두 번 누르기를 막는 것은 state 가 아니라 ref 다. setBusy 가 화면에
+     반영되기 전에 두 번째 탭이 들어오면 disabled 는 아직 false 다. */
+  const inFlight = useRef(false);
+
+  // 마지막 발송 시각. 새로고침해도 기다림이 이어지도록 기기에서 읽어 온다.
+  const [sentAt, setSentAt] = useState(() => readCodeSentAt());
+  const [now, setNow] = useState(() => Date.now());
+  const secondsLeft = resendSecondsLeft(sentAt, now);
+  const waiting = secondsLeft > 0;
+  useEffect(() => {
+    if (!waiting) return undefined;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [waiting]);
 
   /* 실패는 원본 코드를 남기고 종류별로 말한다 (auth-errors.js). 번호는 남기지
      않는다 -- 진단에 전화번호를 적지 않는다. */
@@ -99,19 +118,33 @@ function SignIn({ signedIn }) {
   };
 
   const send = async () => {
-    setBusy(true);
+    if (inFlight.current || resendSecondsLeft(sentAt, Date.now()) > 0) return;
+    inFlight.current = true;
+    setBusy("send");
     setFailure(null);
     try {
-      setPending(await sendCode(phone));
+      /* 다시 받기다. 앞의 발송에 쓴 reCAPTCHA 토큰은 이미 소모됐으므로 새로
+         만든다 -- 같은 것으로 보내면 captcha 검증에서 진다. */
+      if (pending) resetRecaptcha();
+      const result = await sendCode(phone);
+      const at = Date.now();
+      writeCodeSentAt(at);
+      setSentAt(at);
+      setNow(at);
+      setCode("");
+      setPending(result);
     } catch (error) {
       fail("send_code", error);
     } finally {
-      setBusy(false);
+      inFlight.current = false;
+      setBusy(null);
     }
   };
 
   const confirm = async () => {
-    setBusy(true);
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setBusy("confirm");
     setFailure(null);
     try {
       await pending.confirm(code);
@@ -123,7 +156,8 @@ function SignIn({ signedIn }) {
     } catch (error) {
       fail("confirm_code", error);
     } finally {
-      setBusy(false);
+      inFlight.current = false;
+      setBusy(null);
     }
   };
 
@@ -144,18 +178,24 @@ function SignIn({ signedIn }) {
             <input className="field mt" inputMode="tel" autoComplete="tel"
               placeholder="010-0000-0000" value={phone}
               onChange={(event) => setPhone(event.target.value)} />
-            <button type="button" className="btn primary mt" disabled={busy || !phone}
-              onClick={send}>{busy ? "보내는 중…" : "인증번호 받기"}</button>
+            <button type="button" className="btn primary mt"
+              disabled={Boolean(busy) || !phone || waiting}
+              onClick={send}>{sendButtonLabel({ busy: busy === "send", secondsLeft })}</button>
           </>
         ) : (
           <>
             <input className="field mt" inputMode="numeric" autoComplete="one-time-code"
               placeholder="인증번호 6자리" value={code}
               onChange={(event) => setCode(event.target.value)} />
-            <button type="button" className="btn primary mt" disabled={busy || !code}
-              onClick={confirm}>{busy ? "확인하는 중…" : "확인"}</button>
-            {/* 문자가 안 왔거나 번호를 잘못 넣었을 때 돌아갈 길. */}
-            <button type="button" className="btn mt" disabled={busy}
+            <button type="button" className="btn primary mt" disabled={Boolean(busy) || !code}
+              onClick={confirm}>{busy === "confirm" ? "확인하는 중…" : "확인"}</button>
+            {/* 문자가 안 왔을 때. 60초 동안은 남은 초만 보인다. */}
+            <button type="button" className="btn mt" disabled={Boolean(busy) || waiting}
+              onClick={send}>
+              {sendButtonLabel({ busy: busy === "send", secondsLeft, resend: true })}
+            </button>
+            {/* 번호를 잘못 넣었을 때 돌아갈 길. */}
+            <button type="button" className="btn mt" disabled={Boolean(busy)}
               onClick={() => { setPending(null); setCode(""); setFailure(null); }}>
               번호 다시 입력
             </button>

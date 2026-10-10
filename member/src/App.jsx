@@ -6,15 +6,24 @@
  *
  * 로그인해 있으면 인증을 건너뛰고 바로 읽는다. 다만 마지막 확인이 90일을
  * 넘었으면 다시 묻는다 (확정 5번, session.js).
+ *
+ * 로그아웃하면 onAuthStateChanged 가 null 을 주고, 아래 App 이 로그인 화면으로
+ * 돌린다. 회원 화면은 user 가 있을 때만 그려지므로 로그아웃한 채로 들어갈
+ * 길이 없다.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { TYPE } from "../../src/features/ui/type-scale.js";
 import { CENTRE_NAME, CENTRE_TAGLINE } from "./brand.js";
-import { linkMemberAccount, sendCode, watchAuth, db } from "./firebase.js";
+import { classifyPhoneAuthError } from "./auth-errors.js";
+import {
+  linkMemberAccount, resetRecaptcha, sendCode, signOutMember, watchAuth, db,
+} from "./firebase.js";
 import { LINK_RESULT, linkResultScreen } from "./link-result.js";
 import { readMemberLink, readMemberViews } from "./member-data.js";
-import { needsReverification, readVerifiedAt, writeVerifiedAt } from "./session.js";
+import {
+  clearMemberStorage, needsReverification, readVerifiedAt, writeVerifiedAt,
+} from "./session.js";
 import {
   History, Home, LinkNotice, LoadFailed, Loading, More, NotMigrated, Passes, Preparing,
 } from "./screens.jsx";
@@ -29,6 +38,7 @@ const TABS = [
 ];
 
 const text = (value) => String(value ?? "").trim();
+const DEV = Boolean(import.meta.env?.DEV);
 
 export default function App() {
   const [user, setUser] = useState(null);
@@ -45,12 +55,18 @@ export default function App() {
   return <Member userId={user.uid} />;
 }
 
-function Shell({ children, footer }) {
+function Shell({ children, footer, onSignOut }) {
   return (
     <div className="shell">
       {/* 작고 얇게 위에만. 화면의 주인공은 남은 횟수다 -- 이름 쪽만 로즈로
-          도드라지고 앞말은 물러나 있다. */}
-      <header className="head">{CENTRE_TAGLINE} <b>{CENTRE_NAME}</b></header>
+          도드라지고 앞말은 물러나 있다. 로그아웃도 같은 줄에 물러나 있다 --
+          어느 탭에서든 보이되 주인공을 가리지 않게. */}
+      <header className="head">
+        <span>{CENTRE_TAGLINE} <b>{CENTRE_NAME}</b></span>
+        {onSignOut ? (
+          <button type="button" className="signout" onClick={onSignOut}>로그아웃</button>
+        ) : null}
+      </header>
       <main className="main">{children}</main>
       {footer}
       <div id="recaptcha" />
@@ -65,15 +81,30 @@ function SignIn({ signedIn }) {
   const [code, setCode] = useState("");
   const [pending, setPending] = useState(null);
   const [busy, setBusy] = useState(false);
-  const [failure, setFailure] = useState("");
+  const [failure, setFailure] = useState(null);
+
+  /* 실패는 원본 코드를 남기고 종류별로 말한다 (auth-errors.js). 번호는 남기지
+     않는다 -- 진단에 전화번호를 적지 않는다. */
+  const fail = (stage, error) => {
+    const result = classifyPhoneAuthError(error, { dev: DEV });
+    console.error("[member/phone_auth]", {
+      feature: "member_phone_auth", stage, errorDomain: "firebase_auth",
+      errorCode: result.code, kind: result.kind, message: text(error?.message),
+    });
+    /* 한 번 실패한 reCAPTCHA 로 다시 보내면 같은 이유로 진다. 걷어 두면
+       다음 "인증번호 받기" 가 새로 만든다. */
+    if (result.resetRecaptcha) resetRecaptcha();
+    if (result.restart) { setPending(null); setCode(""); }
+    setFailure(result);
+  };
 
   const send = async () => {
     setBusy(true);
-    setFailure("");
+    setFailure(null);
     try {
       setPending(await sendCode(phone));
     } catch (error) {
-      setFailure(text(error?.code) || "unknown");
+      fail("send_code", error);
     } finally {
       setBusy(false);
     }
@@ -81,7 +112,7 @@ function SignIn({ signedIn }) {
 
   const confirm = async () => {
     setBusy(true);
-    setFailure("");
+    setFailure(null);
     try {
       await pending.confirm(code);
       // 확인한 시각을 남긴다. 여기서부터 90일이다.
@@ -90,7 +121,7 @@ function SignIn({ signedIn }) {
          서버가 그것을 믿을 수 있고, 새로 읽는 편이 확실하다. */
       window.location.reload();
     } catch (error) {
-      setFailure(text(error?.code) || "unknown");
+      fail("confirm_code", error);
     } finally {
       setBusy(false);
     }
@@ -123,18 +154,19 @@ function SignIn({ signedIn }) {
               onChange={(event) => setCode(event.target.value)} />
             <button type="button" className="btn primary mt" disabled={busy || !code}
               onClick={confirm}>{busy ? "확인하는 중…" : "확인"}</button>
+            {/* 문자가 안 왔거나 번호를 잘못 넣었을 때 돌아갈 길. */}
+            <button type="button" className="btn mt" disabled={busy}
+              onClick={() => { setPending(null); setCode(""); setFailure(null); }}>
+              번호 다시 입력
+            </button>
           </>
         )}
 
         {/* 코드를 함께 보여준다. 코드 없는 "오류가 발생했습니다" 는 회원도
             센터도 아무것도 할 수 없게 만든다. */}
         {failure ? (
-          <p className="note mt" style={{ fontSize: TYPE.caption }}>
-            {failure === "auth/invalid-verification-code"
-              ? "인증번호가 맞지 않아요. 다시 입력해 주세요."
-              : failure === "auth/too-many-requests"
-                ? "잠시 뒤에 다시 시도해 주세요."
-                : `지금 확인하지 못했어요. (코드 ${failure})`}
+          <p className="note mt" role="alert" style={{ fontSize: TYPE.caption }}>
+            {failure.text}
           </p>
         ) : null}
       </section>
@@ -173,10 +205,31 @@ function Member({ userId }) {
 
   useEffect(() => { load(); }, [load]);
 
-  if (state.stage === "loading") return <Shell><Loading /></Shell>;
-  if (state.stage === "failed") return <Shell><LoadFailed code={state.code} onRetry={load} /></Shell>;
+  /* 로그아웃 → onAuthStateChanged 가 null → App 이 로그인 화면을 그린다.
+     여기서 화면을 직접 옮기지 않는다 -- 상태가 하나여야 어긋나지 않는다. */
+  const signOutNow = async () => {
+    if (!window.confirm("로그아웃할까요?")) return;
+    try {
+      await signOutMember();
+      clearMemberStorage();
+    } catch (error) {
+      const code = text(error?.code) || "unknown";
+      console.error("[member/sign_out]", {
+        feature: "member_sign_out", stage: "sign_out", errorDomain: "firebase_auth",
+        errorCode: code, message: text(error?.message),
+      });
+      window.alert(`로그아웃하지 못했어요. 잠시 후 다시 시도해 주세요. (코드 ${code})`);
+    }
+  };
+
+  /* 불러오지 못했거나 연결이 안 된 화면에서도 로그아웃은 보인다. 다른 번호로
+     들어가야 하는 사람이 갇히지 않게. */
+  if (state.stage === "loading") return <Shell onSignOut={signOutNow}><Loading /></Shell>;
+  if (state.stage === "failed") {
+    return <Shell onSignOut={signOutNow}><LoadFailed code={state.code} onRetry={load} /></Shell>;
+  }
   if (state.stage === "notice") {
-    return <Shell><LinkNotice screen={state.screen} onRetry={load} /></Shell>;
+    return <Shell onSignOut={signOutNow}><LinkNotice screen={state.screen} onRetry={load} /></Shell>;
   }
 
   const places = Array.isArray(state.places) ? state.places : [];
@@ -206,7 +259,7 @@ function Member({ userId }) {
   else body = <Home view={current.view} />;
 
   return (
-    <Shell footer={<Tabs tab={tab} onPick={setTab} />}>
+    <Shell footer={<Tabs tab={tab} onPick={setTab} />} onSignOut={signOutNow}>
       {/* 여러 지점에 등록된 회원은 지점마다 잔여가 따로다 (확정 7번). */}
       {places.length > 1 ? (
         <div className="chips">

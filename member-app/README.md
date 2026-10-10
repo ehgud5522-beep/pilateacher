@@ -30,7 +30,7 @@
 
 - 번들 ID `com.bonitapilates.member` (iOS·Android 같게)
 - 앱 이름 **보니따필라테스**
-- 서명: 강사 앱과 **같은 업로드 키**
+- 서명: 회원 앱 **전용 업로드 키** (2026-10-10 — 강사 앱 키를 쓰지 않는다)
 - Android 는 비공개 테스트부터, iOS 는 푸시와 오프라인 표시까지 넣고 제출
 
 ## 네이티브 폴더
@@ -119,6 +119,7 @@ Android 문자 인증은 Play Integrity 로 앱을 확인하는데, 그 확인�
 ```powershell
 # storeFile · keyAlias · 비밀번호는 keystore.properties 에 있다
 keytool -list -v -keystore <storeFile> -alias <keyAlias>
+# 지금 값: SHA-1 4B:70:C9:9E:…:88:CA (tools/member/upload-key.mjs 에 전체가 있다)
 ```
 
 앱 서명 키 지문은 **첫 AAB 를 올린 뒤에** 생긴다:
@@ -180,17 +181,36 @@ App Store 배포용으로 아카이브할 때 도구가 `production` 으로 바�
 codesign -d --entitlements :- /path/to/App.app
 ```
 
-### 서명
+### 서명 — 회원 앱 전용 업로드 키
 
-강사 앱과 **같은 업로드 키**를 쓴다. 다만 설정 파일은 이 폴더의 것을 읽는다.
+**강사 앱 키를 쓰지 않는다.** 2026-10-10 에 새로 만들었다.
 
-```
-member-app/android/keystore.properties
-```
+| | |
+| --- | --- |
+| 키스토어 | `C:\Users\ehgud\bonita-member-key\bonita-member-upload.keystore` (PKCS12, RSA 2048, 10000일) |
+| 별칭 | `bonita-member-upload` |
+| 비밀번호 | 같은 폴더의 `keystore.properties` (저장소 비밀번호 = 키 비밀번호) |
+| SHA-1 · SHA-256 | `tools/member/upload-key.mjs` |
 
-`android/keystore.properties` 와 같은 모양이고 (`storeFile` `storePassword`
-`keyAlias` `keyPassword`), **저장소에 들어가지 않는다.** 대표 PC 에만 있다.
-`storeFile` 은 절대 경로로 적으면 두 앱이 같은 키 파일을 가리킬 수 있다.
+Gradle 이 읽는 것은 `member-app/android/keystore.properties` 다. 같은 폴더의
+`keystore.properties` 를 복사한 것이고, **저장소에 들어가지 않는다.**
+
+`npm run member:aab` 는 만든 번들의 서명 지문을 `upload-key.mjs` 와 맞춰 보고,
+다르면 멈춘다 -- 강사 앱 키로 서명된 번들은 빌드가 통과하고 Play 업로드에서야
+거절당하기 때문이다.
+
+#### 백업 — 잃어버리면 이 앱을 다시는 업데이트하지 못한다
+
+`bonita-member-key` 폴더 **통째로**(키스토어 + `keystore.properties`) 두 곳 이상에
+둔다. 둘이 같은 곳에 있으면 백업이 아니다.
+
+1. 비밀번호 관리자(1Password · Bitwarden 등)에 키스토어 파일을 첨부하고
+   비밀번호를 같은 항목에 적는다
+2. 암호화한 USB 나 외장 디스크에 폴더를 복사한다
+3. Codemagic 에 올린 것은 **백업이 아니다** -- 다시 내려받을 수 없다
+
+Play 앱 서명을 쓰므로 업로드 키를 잃어버려도 Play Console 에서 **업로드 키
+재설정**을 요청할 수 있다. 다만 며칠 걸리고 그동안 업데이트를 못 낸다.
 
 없으면 `release` 작업이 시작하는 자리에서 멈춘다. 서명 안 된 번들은 Play 가
 거절하는데, 그 사실은 업로드까지 가서야 드러나기 때문이다.
@@ -226,6 +246,48 @@ npm run member:assets
 | 네이티브 문자 인증 | `member/src/phone-auth.js` · 웹뷰 reCAPTCHA 를 안 태운다 |
 | 계정 삭제 | `functions/src/member-account.js` · App Store 5.1.1(v) |
 | 오프라인 표시 | `member/src/offline-cache.js` · 14일까지, 나이를 함께 |
+
+## Android 빌드도 Codemagic 이 한다 — `member-android`
+
+**수동 실행만** (트리거 없음). Codemagic → 앱 → Start new build → 브랜치 →
+워크플로 **Bonita Member Android (AAB + APK)**. 결과물은 두 개다.
+
+| 파일 | 쓰는 곳 |
+| --- | --- |
+| `app-release.aab` | Play Console 에 올린다 (대표가 직접) |
+| `app-release.apk` | 폰에 바로 깔아 본다. 업로드 키로 서명돼 있다 |
+
+versionCode 는 Codemagic 빌드 번호다 (`-PmemberVersionCode=$BUILD_NUMBER`).
+로컬 빌드는 1 이다. versionName 은 `member-app/android/app/build.gradle` 에서
+손으로 올린다.
+
+### 환경변수 그룹 `bonita_member_signing`
+
+**sign-ing 이다.** 강사 앱 때 `singing` 으로 적어 아홉 번 실패했다. 이름이
+틀리면 Codemagic 은 그룹을 못 찾았다고 말하지 않고 변수가 빈 채로 빌드를
+시작한다 -- 그래서 워크플로 첫 단계가 다섯 변수가 다 있는지부터 본다.
+
+| 변수 | 값 | Secure |
+| --- | --- | --- |
+| `MEMBER_KEYSTORE_BASE64` | `bonita-member-upload.keystore` 를 base64 로 | ✔ |
+| `MEMBER_KEYSTORE_PASSWORD` | `~/bonita-member-key/keystore.properties` 의 `storePassword` | ✔ |
+| `MEMBER_KEY_ALIAS` | `bonita-member-upload` | |
+| `MEMBER_KEY_PASSWORD` | 같은 파일의 `keyPassword` (저장소 비밀번호와 같다) | ✔ |
+| `MEMBER_GOOGLE_SERVICES_JSON` | `member-app/android/app/google-services.json` 을 base64 로 | ✔ |
+
+base64 는 PowerShell 에서 이렇게 만들어 클립보드에 넣는다 (화면에 찍지 않는다):
+
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("$HOME\bonita-member-key\bonita-member-upload.keystore")) | Set-Clipboard
+```
+
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("member-app\android\app\google-services.json")) | Set-Clipboard
+```
+
+워크플로는 키를 빌드 폴더 밖에 풀고, 서명 지문이 `tools/member/upload-key.mjs`
+와 같은지 보고, APK 의 패키지 이름과 versionCode 를 확인한 뒤, 끝나면 키와
+설정 파일을 지운다.
 
 ## iOS 빌드는 Codemagic 이 한다
 

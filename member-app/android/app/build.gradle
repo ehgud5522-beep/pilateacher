@@ -1,9 +1,9 @@
 apply plugin: 'com.android.application'
 
-/* 강사 앱과 **같은 업로드 키**를 쓴다. 다만 파일은 이 폴더의 것을 읽는다 --
-   rootProject 가 member-app/android 이므로 강사 앱의 android/ 를 보지 않는다.
-   비밀번호가 저장소에 들어가지 않게 keystore.properties 는 gitignore 에 있고,
-   대표 PC 에만 있다. */
+/* 회원 앱 **전용 업로드 키**를 쓴다 (강사 앱 키와 다르다). 파일은 이 폴더의
+   것을 읽는다 -- rootProject 가 member-app/android 이므로 강사 앱의 android/
+   를 보지 않는다. 비밀번호가 저장소에 들어가지 않게 keystore.properties 는
+   gitignore 에 있고, 대표 PC 와 Codemagic 에만 있다 (member-app/README.md). */
 def releaseKeystorePropertiesFile = rootProject.file('keystore.properties')
 def releaseKeystoreProperties = new Properties()
 if (releaseKeystorePropertiesFile.exists()) {
@@ -17,7 +17,9 @@ android {
         applicationId "com.bonitapilates.member"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
+        /* Codemagic 이 빌드 번호를 넘긴다 (-PmemberVersionCode=$BUILD_NUMBER).
+           Play 는 같은 번호를 두 번 받지 않는다. 로컬은 1 이다. */
+        versionCode((project.findProperty('memberVersionCode') ?: '1') as Integer)
         versionName "1.0.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {

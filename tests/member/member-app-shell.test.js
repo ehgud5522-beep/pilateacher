@@ -221,7 +221,7 @@ test("서명 없이 release 가 나가지 않는다", async () => {
 });
 
 test("서명 비밀번호는 저장소에 없다", async () => {
-  /* 두 앱이 같은 업로드 키를 쓴다. 한쪽이 새면 둘 다 새는 것이다. */
+  /* 두 앱의 키는 다르지만 설정 파일 이름이 같다. 둘 다 저장소 밖이어야 한다. */
   const ignore = await read(".gitignore");
   assert.match(ignore, /^android\/keystore\.properties$/m);
   assert.match(ignore, /^member-app\/android\/keystore\.properties$/m);
@@ -368,7 +368,11 @@ test("두 워크플로 다 그룹 이름을 박지 않는다", async () => {
   const yamlText = await read("codemagic.yaml");
   assert.doesNotMatch(yamlText, /beta_groups:/);
   const all = await workflows();
-  for (const [key, wf] of Object.entries(all)) {
+  /* App Store Connect 로 올리는 워크플로만 본다. 회원 앱 Android 는 아무 데도
+     올리지 않는다 (member-android-codemagic.test.js). */
+  const ios = Object.entries(all).filter(([, wf]) => wf.publishing?.app_store_connect);
+  assert.deepEqual(ios.map(([key]) => key).sort(), ["ios-testflight", "member-ios-testflight"]);
+  for (const [key, wf] of ios) {
     const publish = wf.publishing.app_store_connect;
     assert.equal(publish.submit_to_testflight, false, key);
     assert.equal(publish.submit_to_app_store, false, key);

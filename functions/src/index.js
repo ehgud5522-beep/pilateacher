@@ -19,6 +19,7 @@ const { applyCors, parseAllowedOrigins } = require("./cors");
 const { sendError, GatewayError } = require("./errors");
 const { createFirestoreIdempotencyStore } = require("./idempotency");
 const { createMemberLinkService, isActiveOwner, isOwnerLevel, membershipId } = require("./member-link");
+const { confirmInstructorNames, planInstructorNames } = require("./instructor-names");
 const {
   clientIdsFromPassChange: clientIdsFromPassChangeForScope,
   rebuildInstructorIds,
@@ -924,6 +925,55 @@ exports.fixMigratedServiceSessions = onCall({
       errorCode: error?.code || "unknown", message: error?.message || "",
     });
     throw new HttpsError("internal", "service_session_fix_failed");
+  }
+});
+
+/* ── 강사 이름 확정 ──────────────────────────────────────────────────────
+   한 번 쓰는 통로다. 근거는 shared/instructor-names.mjs 머리말에 있다.
+
+   요약: 2026-10-10 까지 강사 앱이 열릴 때마다 로그인 계정 이름을 덮어썼고,
+   그 문을 닫는 표시(displayNameBy)가 **이미 있는 소속에는 없다.** 대표가
+   강사 수만큼 강사 관리에 들어가 저장해야 붙는데, 하나를 빠뜨리면 그 사람만
+   계속 되돌아가고 왜 그 사람만인지는 아무도 모른다. */
+exports.confirmInstructorNames = onCall({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  timeoutSeconds: 120,
+  memory: "512MiB",
+  invoker: "public",
+}, async (request) => {
+  const callerUid = String(request?.auth?.uid || "").trim();
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  /* 미리보기가 기본이다. 찍으려면 confirm 을 명시해야 한다 -- 되돌리는 문이
+     없는 쪽이 기본값이면 안 된다. */
+  const confirmed = request?.data?.confirm === true;
+  if (!callerUid) throw new HttpsError("unauthenticated", "Please sign in again.");
+  if (!organizationId) throw new HttpsError("invalid-argument", "organizationId is required.");
+
+  const membership = await firestore
+    .collection("memberships").doc(membershipId(organizationId, callerUid)).get();
+  /* 대표만이다. 총괄매니저에게도 열지 않는다 -- 센터 전체의 이름을 한 번에
+     굳히는 일이고, 되돌리려면 한 사람씩 다시 저장하는 길밖에 없다. */
+  if (!isActiveOwner(membership.exists ? membership.data() : null)) {
+    throw new HttpsError("permission-denied", "Only the centre owner can confirm instructor names.");
+  }
+
+  try {
+    const result = confirmed
+      ? await confirmInstructorNames(firestore, { organizationId })
+      : await planInstructorNames(firestore, { organizationId });
+    /* 건수만 남긴다. **이름은 로그에 적지 않는다** -- 화면에는 보여야 대표가
+       확정할지 정할 수 있지만, 로그에 남길 이유는 없다. */
+    logger.info("instructor_names_confirm", {
+      feature: "instructor_names", stage: confirmed ? "apply" : "preview", organizationId,
+      targets: result.counts.targets, already: result.counts.already, noName: result.counts.noName,
+    });
+    return { ...result, confirmed };
+  } catch (error) {
+    logger.error("instructor_names_failed", {
+      feature: "instructor_names", stage: confirmed ? "apply" : "preview", organizationId,
+      errorCode: String(error?.code || error?.message || "unknown"),
+    });
+    throw new HttpsError("internal", "instructor_names_failed");
   }
 });
 

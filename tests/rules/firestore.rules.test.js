@@ -1791,8 +1791,17 @@ describe("the owner attaches instructors to the centre", () => {
     const ref = membershipRef(users.owner, `${ORG_A}_${users.instructor}`);
     await assertSucceeds(updateDoc(ref, {
       displayName: "정예진", title: "branch_manager", locationId: "location-b",
+      displayNameBy: "owner",
     }));
-    await assertSucceeds(updateDoc(ref, { displayName: "정예진2" }));
+    await assertSucceeds(updateDoc(ref, { displayName: "정예진2", displayNameBy: "owner" }));
+    /* 표시가 붙은 뒤에는 이름만 보내도 된다 -- 결과 문서에 표시가 남아 있다. */
+    await assertSucceeds(updateDoc(ref, { displayName: "정예진3" }));
+    /* 아직 표시가 없는 문서에 이름만 보내는 것은 받지 않는다. 받아 두면 그
+       이름을 로그인 동기화가 그대로 덮어 쓰고, 대표는 자기가 고친 것이 왜
+       되돌아갔는지 알 수 없다. */
+    await assertFails(updateDoc(
+      membershipRef(users.owner, `${ORG_A}_${users.staff}`), { displayName: "표시 없음" },
+    ));
     await assertFails(updateDoc(ref, { title: "deputy_director" }));
     await assertFails(updateDoc(ref, { locationId: "" }));
     await assertFails(updateDoc(ref, { displayName: "" }));
@@ -2457,9 +2466,14 @@ describe("instructor full-room rate", () => {
 
   test("the owner writes a name, and nobody else writes another's", async () => {
     /* 강사 관리 화면이 이름을 정한다 -- 강사가 앱을 한 번도 안 열었으면 이름을
-       채울 사람이 대표뿐이고, 그때까지 목록은 uid 로 서 있다. 열었으면 본인이
-       쓴 이름이 그대로 남는다. */
-    await assertSucceeds(updateDoc(membershipDoc(users.owner), { displayName: "정예진" }));
+       채울 사람이 대표뿐이고, 그때까지 목록은 uid 로 서 있다.
+
+       **열었어도 대표가 정한 이름이 이긴다** (2026-10-10). 전에는 본인이 쓴
+       것이 남았고, 로그인 동기화가 그 "본인" 이라 대표의 수정이 매번
+       되돌아갔다. */
+    await assertSucceeds(updateDoc(
+      membershipDoc(users.owner), { displayName: "정예진", displayNameBy: "owner" },
+    ));
     await assertFails(updateDoc(membershipDoc(users.manager), { displayName: "남의이름" }));
     await assertFails(updateDoc(membershipDoc(users.staff), { displayName: "남의이름" }));
     await assertFails(updateDoc(membershipDoc(users.outsider), { displayName: "남의이름" }));
@@ -4170,5 +4184,90 @@ describe("the area manager stands where the owner stands, minus four doors", () 
       });
     });
     await assertFails(getDocs(collection(asArea(), "organizations", ORG_A, "clients")));
+  });
+});
+
+/* ── 대표가 정한 이름은 되돌아가지 않는다 ─────────────────────────────────
+   강사 앱은 열릴 때마다 로그인 계정 이름을 자기 소속 문서에 적어 왔다. 그래서
+   대표가 강사 관리에서 고친 이름이 그 강사가 앱을 **한 번 여는 순간** 구글
+   계정 이름으로 되돌아갔고, 급여 집계도 그 이름으로 섰다 -- 2026-10-10 에
+   "e asy" 로 보고된 것이 이것이다.
+
+   앱만 고치면 모자란다. 업데이트하지 않은 기기가 계속 되돌리므로 문을 여기서
+   닫는다. */
+describe("the name the centre calls someone does not revert on the next login", () => {
+  beforeEach(seedAll);
+
+  const ref = (userId, documentId) => doc(dbFor(userId), COLLECTIONS.MEMBERSHIPS, documentId);
+  const own = `${ORG_A}_${users.instructor}`;
+
+  const ownerNames = async (displayName) => assertSucceeds(updateDoc(
+    ref(users.owner, own), { displayName, displayNameBy: "owner" },
+  ));
+
+  test("the login sync cannot overwrite a name the owner set", async () => {
+    await ownerNames("최형인");
+    // 옛 앱이 보내는 그 쓰기다. 업데이트하지 않은 기기도 여기서 막힌다.
+    await assertFails(updateDoc(ref(users.instructor, own), { displayName: "e asy" }));
+  });
+
+  test("until the owner names them, the login sync still fills the blank", async () => {
+    /* 막아야 하는 것은 **덮어쓰기**이지 채우기가 아니다. 아무도 이름을 정하지
+       않았으면 목록이 uid 로 서 있고, 그것을 메우는 길은 이것뿐이다. */
+    await assertSucceeds(updateDoc(ref(users.instructor, own), { displayName: "정예진" }));
+  });
+
+  test("the owner can still rename afterwards, as often as they like", async () => {
+    await ownerNames("최형인");
+    await ownerNames("최형인2");
+  });
+
+  test("the marker cannot be cleared by the person it constrains", async () => {
+    /* 지울 수 있으면 막는 것이 아니다 -- 지우고 쓰면 된다. 본인 문은
+       displayName 한 칸뿐이라 이 칸에 닿지 못한다. */
+    await ownerNames("최형인");
+    await assertFails(updateDoc(ref(users.instructor, own), { displayNameBy: "" }));
+    await assertFails(updateDoc(ref(users.instructor, own), {
+      displayName: "e asy", displayNameBy: "",
+    }));
+  });
+
+  test("nobody else writes the marker onto someone else", async () => {
+    for (const userId of [users.manager, users.staff, users.outsider]) {
+      await assertFails(updateDoc(ref(userId, own), {
+        displayName: "남이 고침", displayNameBy: "owner",
+      }), userId);
+    }
+  });
+
+  test("a newly attached instructor keeps the name the owner typed", async () => {
+    /* 추가 화면이 이름을 받는다. 표시 없이 만들면 그 강사가 앱을 **처음 여는
+       순간** 로그인 계정 이름으로 덮어써지고, 이름을 적는 일 자체가 무의미해진다. */
+    await assertSucceeds(setDoc(ref(users.owner, `${ORG_A}_uid-fresh`), {
+      organizationId: ORG_A, userId: "uid-fresh", role: "instructor", status: "active",
+      displayName: "최형인", displayNameBy: "owner",
+      createdAt: serverTimestamp(), createdBy: users.owner,
+    }));
+    await assertFails(updateDoc(
+      doc(dbFor("uid-fresh"), COLLECTIONS.MEMBERSHIPS, `${ORG_A}_uid-fresh`),
+      { displayName: "e asy" },
+    ));
+  });
+
+  test("the marker only ever says owner", async () => {
+    // 다른 값을 받아 두면 그 칸이 무엇을 뜻하는지 아무도 모르게 된다.
+    await assertFails(setDoc(ref(users.owner, `${ORG_A}_uid-odd`), {
+      organizationId: ORG_A, userId: "uid-odd", role: "instructor", status: "active",
+      displayName: "최형인", displayNameBy: "self",
+      createdAt: serverTimestamp(), createdBy: users.owner,
+    }));
+  });
+
+  test("an area manager names an instructor the same way the owner does", async () => {
+    // 대표와 같은 자리다. 이름을 정하는 것도 같다.
+    await assertSucceeds(updateDoc(
+      ref(users.area_manager, own), { displayName: "최형인", displayNameBy: "owner" },
+    ));
+    await assertFails(updateDoc(ref(users.instructor, own), { displayName: "e asy" }));
   });
 });

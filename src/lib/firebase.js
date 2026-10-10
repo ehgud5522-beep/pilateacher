@@ -749,6 +749,13 @@ export const fbUpdateRuntimeConfig = callableAsOwner("updateRuntimeConfig");
    두 배가 되고, 그것은 되돌릴 수 없다. */
 export const fbSwapInstructorAccount = callableAsOwner("swapInstructorAccount");
 
+/* 강사 이름 확정. 대표 전용이고 역할은 서버가 다시 읽는다 --
+   functions/shared/instructor-names.mjs 머리말에 근거가 있다.
+
+   confirm 을 보내지 않으면 미리보기다. 찍고 나면 그 이름은 로그인 동기화가
+   덮지 못하고, 되돌리려면 한 사람씩 강사 관리에서 다시 저장해야 한다. */
+export const fbConfirmInstructorNames = callableAsOwner("confirmInstructorNames");
+
 export const fbSessionUpPass = callableAsOwner("sessionUpPass");
 export const fbHandoverPass = callableAsOwner("handoverPass");
 

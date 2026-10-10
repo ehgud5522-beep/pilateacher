@@ -71,6 +71,32 @@ export const OWNER_ONLY = Object.freeze({
   RUNTIME_CONFIG: "runtime_config",
 });
 
+/**
+ * 센터에서 부르는 이름을 **누가 정했는가.**
+ *
+ * ── 왜 필요한가 ──
+ * 강사 앱은 열릴 때마다 로그인 계정의 이름을 소속 문서에 적어 왔다
+ * (syncOwnMembershipName). 대표가 강사 관리에서 이름을 고쳐도 그 강사가 앱을
+ * 한 번 열면 **구글 계정 이름으로 되돌아갔고**, 급여 집계도 그 이름으로
+ * 섰다 -- 2026-10-10 에 "e asy" 로 보고된 것이 이것이다.
+ *
+ * 이름은 둘 중 하나다: 아직 아무도 정하지 않아 로그인 이름으로 채워진 것,
+ * 또는 **대표가 정한 것**. 뒤엣것은 아무도 덮지 못한다. 그 사실을 문서에
+ * 적어 두어야 규칙이 옛 앱의 쓰기도 막을 수 있다 -- 앱만 고치면 업데이트하지
+ * 않은 기기가 계속 되돌린다.
+ *
+ * Keep in sync with firestore.foundation.rules (memberships 의 두 이름 문).
+ */
+export const DISPLAY_NAME_BY = Object.freeze({
+  /** 대표·총괄매니저가 강사 관리에서 정했다. 로그인 동기화가 덮지 않는다. */
+  OWNER: "owner",
+});
+
+/** 이 소속의 이름을 대표가 정했는가. @param {any} membership */
+export function displayNameSetByOwner(membership) {
+  return String(membership?.displayNameBy ?? "") === DISPLAY_NAME_BY.OWNER;
+}
+
 export const MEMBERSHIP_STATUS = Object.freeze({
   ACTIVE: "active",
   INVITED: "invited",

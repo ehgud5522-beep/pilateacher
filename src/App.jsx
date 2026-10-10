@@ -39,6 +39,7 @@ import {
   fbFixMigratedServiceSessions,
   fbLoadAppUpdateConfig,
   fbSwapInstructorAccount,
+  fbConfirmInstructorNames,
   fbUpdateRuntimeConfig,
   fbHandoverPass,
   fbSessionUpPass,
@@ -69,6 +70,7 @@ import {
 import {
   careChoices, careMinutesOfGrade, careOnlyClient, settlementSkipMessage,
 } from "./features/schedule/care-options.js";
+import { useNarrowViewport } from "./features/ui/viewport.js";
 import {
   DEFAULT_SCHEDULE_COLORS, SCHEDULE_COLOR_PRESETS, isDefaultScheduleColors,
   normalizeScheduleColors, resolveScheduleTypeTone, scheduleTypeTones, setScheduleTypeColor,
@@ -542,6 +544,10 @@ const DUAL_WRITE_RETRY_KEY = "pilateacher_dual_write_retry_v1";
 /* 마지막으로 소속 문서에 적은 앱 버전. 여기 있는 것은 **내가 쓴 값의 사본**
    이지 서버의 값이 아니다 -- 지우면 다음에 한 번 더 쓸 뿐이다. */
 const APP_VERSION_REPORT_KEY = "pilateacher_app_version_report_v1";
+/* 더보기에서 펼쳐 둔 묶음. 접힘이 기본이고, 편 것만 적는다. */
+const SETTINGS_GROUPS_KEY = "pilateacher_settings_groups_v1";
+/* 접는 묶음 전부를 편 상태. 스모크 하네스가 접힌 항목을 보는 데 쓴다. */
+const ALL_MENU_GROUPS_OPEN = Object.freeze({ "점검": true, "대표 설정": true });
 /* 회원 범위 잠금(3단계 규칙)을 켜려면 강사 전원이 이 번호 이상이어야 한다.
    이 빌드에 담긴 번호다 -- 여기 담긴 앱만이 좁혀진 질의를 보내고, 그보다
    낮은 앱은 규칙 아래서 회원 목록을 통째로 못 읽는다.
@@ -17884,11 +17890,17 @@ function ClientPassRow({
         {" · "}{pass.purchaseRound}차
         {" · "}{labelOf(PAYMENT_METHOD_LABELS, pass.paymentMethod)}
       </p>
-      <div className="mt-0.5 flex items-center gap-2">
-        <p className="min-w-0 flex-1 tabular-nums" style={{ fontSize: TYPE.caption, color: expired ? WARN : SUB }}>
-          {pass.expiresAt ? `${dayLabel(pass.expiresAt)} 만료${expired ? " (지남)" : ""}` : "만료일 없음"}
-          {" · 담당 "}{nameOfInstructor(pass.instructorId)}
-        </p>
+      {/* ── 글자 줄과 버튼 줄을 나눈다 ──────────────────────────────────
+          전에는 한 줄이었다. 390px 폰에서 버튼 다섯이 자리를 다 가져가고
+          만료·담당 글자가 몇 px 로 눌려 **한 글자씩 세로로** 깨졌다 --
+          flex-1 은 줄어들 수 있고 shrink-0 은 줄어들지 않기 때문이다.
+
+          글자는 전체 폭을 쓰고, 버튼은 아래 줄에서 넘치면 줄바꿈한다. */}
+      <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.caption, color: expired ? WARN : SUB }}>
+        {pass.expiresAt ? `${dayLabel(pass.expiresAt)} 만료${expired ? " (지남)" : ""}` : "만료일 없음"}
+        {" · 담당 "}{nameOfInstructor(pass.instructorId)}
+      </p>
+      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
         {/* 이미 차감이 있으면 취소하지 않는다. 그 수업은 실제로 일어났고, 없던
             일로 만들면 그 회차의 급여도 함께 사라진다. 차감을 전부 보정하면
             버튼이 열린다 -- 눌러도 거부되는 버튼을 두지 않는다. */}
@@ -18632,10 +18644,17 @@ function ProductRow({ product }) {
   );
 }
 
-function ProductCatalog({ organization, currentUserId, store, onRetryOrganization, onToast, onOpenMember }) {
-  const [products, setProducts] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState("");
+function ProductCatalog({ organization, currentUserId, store, onRetryOrganization, onToast, onOpenMember, narrowViewport = undefined, initialState = null }) {
+  /* 폰이면 표 대신 목록이다. 표는 두 축이 보여야 값어치가 있는데 390px 에서는
+     첫 열과 반 칸만 보인다. narrowViewport 는 테스트가 폭을 못 박는 자리다 --
+     SSR 에는 window 가 없어 언제나 넓은 쪽으로 떨어진다. */
+  const narrow = useNarrowViewport(narrowViewport);
+  /* initialState 는 스모크 하네스가 **그려진 화면**을 보는 자리다. SSR 에서는
+     효과가 돌지 않아 언제나 "불러오는 중" 으로 끝나고, 그러면 표도 목록도 한
+     번도 그려지지 않는다 -- 다른 화면들과 같은 방식이다. */
+  const [products, setProducts] = useState(initialState?.products || []);
+  const [loading, setLoading] = useState(!initialState);
+  const [loadError, setLoadError] = useState(initialState?.loadError || "");
   const [mode, setMode] = useState("list");
   const [busyId, setBusyId] = useState("");
   const [form, setForm] = useState({ name: "", sessionType: SESSION_TYPE.PT_1_1, payCategory: "", defaultSessions: "", defaultPriceManwon: "", baseUnitPriceWon: "" });
@@ -18676,7 +18695,11 @@ function ProductCatalog({ organization, currentUserId, store, onRetryOrganizatio
     }
   }, [organizationId, store]);
 
-  useEffect(() => { if (!locked) reload(); else setLoading(false); }, [locked, reload]);
+  // 못 박은 상태로 그릴 때는 다시 읽지 않는다 -- 그리려던 화면이 사라진다.
+  useEffect(() => {
+    if (initialState) return;
+    if (!locked) reload(); else setLoading(false);
+  }, [locked, reload, initialState]);
 
   const categories = payCategoriesFor(form.sessionType);
   const chooseSessionType = (sessionType) => setForm((current) => ({ ...current, sessionType, payCategory: "", baseUnitPriceWon: "" }));
@@ -18940,6 +18963,57 @@ function ProductCatalog({ organization, currentUserId, store, onRetryOrganizatio
               <span className="tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>{group.total}개</span>
               <ChevronDown size={14} className="ml-auto" style={{ color: SUB }} />
             </summary>
+            {/* ── 폰에서는 표가 아니라 목록이다 ────────────────────────────
+                표는 두 축(이름 × 횟수)이 있어야 값어치가 있는데, 390px 에서는
+                첫 열 하나와 반 칸이 보이고 나머지는 가로 스크롤 뒤에 숨는다.
+                "20회가 얼마인가" 를 보려고 옆으로 밀어야 하면 그것은 표가
+                답해 주던 질문이 아니다.
+
+                그래서 이름 한 줄 + 횟수 칩으로 편다. **같은 데이터다** --
+                productTable 의 같은 행을 다르게 그릴 뿐이라, 두 화면이
+                서로 다른 숫자를 말할 자리가 없다. */}
+            {narrow ? (
+              <div className="pb-1">
+                {group.rows.map((row) => (
+                  <div key={row.name} style={{ padding: "9px 2px", borderTop: `1px solid ${LINE}` }}>
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                      <span className="min-w-0 break-words" style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK }}>
+                        {row.name}
+                      </span>
+                      {/* 경고는 이름 옆이다. 칩 안에 넣으면 칩마다 반복되고,
+                          아래로 내리면 어느 상품의 이야기인지 끊긴다. */}
+                      {row.mixed ? (
+                        <span className="shrink-0" style={{
+                          padding: "1px 6px", borderRadius: 5, backgroundColor: WARN_S,
+                          fontSize: TYPE.caption, fontWeight: 700, color: WARN,
+                        }}>카테고리 다름</span>
+                      ) : null}
+                    </div>
+                    <div className="mt-1.5 flex flex-wrap gap-1.5">
+                      {row.cells.flatMap((cell) => cell.items.map(({ product, usage: used }) => (
+                        <button key={product.id} type="button" onClick={() => setPicked(product)}
+                          className="text-left" style={{
+                            padding: "6px 9px", borderRadius: 9,
+                            backgroundColor: isArchivedProduct(product) ? CANVAS : TINT,
+                            border: `1px solid ${isArchivedProduct(product) ? LINE : RING}`,
+                          }}>
+                          <span className="block tabular-nums" style={{
+                            fontSize: TYPE.caption, fontWeight: 700,
+                            color: isArchivedProduct(product) ? SUB : BRAND_D,
+                            textDecoration: isArchivedProduct(product) ? "line-through" : "none",
+                          }}>{cell.sessions}회 {priceLabel(product.defaultPrice)}</span>
+                          <span className="block" style={{ fontSize: TYPE.caption, color: SUB }}>
+                            {labelOf(PAY_CATEGORY_LABELS, product.payCategory)}
+                            {/* 세지 않았으면 0 이 아니라 아무 말도 하지 않는다. */}
+                            {used ? ` · 사용 중 ${used.active}명` : " · 집계 중"}
+                          </span>
+                        </button>
+                      )))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
             <div className="pt-hscroll overflow-x-auto">
               <table className="w-full" style={{ borderCollapse: "collapse", minWidth: 120 + group.sessions.length * 96 }}>
                 <thead>
@@ -18995,6 +19069,7 @@ function ProductCatalog({ organization, currentUserId, store, onRetryOrganizatio
                 </tbody>
               </table>
             </div>
+            )}
           </details>
         ))}
         {/* ── 안 쓰는 상품 정리 ─────────────────────────────────────────
@@ -21001,6 +21076,128 @@ function ExpiryOrderReview({ organization, passStore, clientStore, onOpenClient,
  * 쓰기는 대표 전용 통로로만 간다 -- 규칙은 이 문서들의 쓰기를 닫아 두었다
  * (functions/src/runtime-config-admin.js).
  */
+/**
+ * 강사 이름 확정 — **한 번 누르는 버튼이다.**
+ *
+ * 2026-10-10 까지 강사 앱은 열릴 때마다 로그인 계정 이름을 소속 문서에 덮어
+ * 썼다. 그래서 대표가 고친 이름이 매번 되돌아갔다 ("e asy").
+ *
+ * 고친 뒤로는 "대표가 정했다" 는 표시가 그 문을 닫는데, **이미 있는 소속에는
+ * 그 표시가 없다.** 붙는 길은 대표가 한 사람씩 강사 관리에서 다시 저장하는
+ * 것뿐이고, 열 명 중 하나를 빠뜨리면 그 사람만 계속 되돌아간다 -- 왜 그
+ * 사람만인지는 화면 어디에도 없다.
+ *
+ * 그래서 한 번에 찍는다. **이름은 바꾸지 않는다** -- 지금 적혀 있는 글자를
+ * 그대로 확정하므로, 이미 되돌아간 이름이 있으면 그것이 굳는다. 목록을 먼저
+ * 보여주고 대표가 정한다.
+ */
+function InstructorNameConfirm({ organization, onPreview, onConfirm, onToast, initialState = null }) {
+  const [plan, setPlan] = useState(initialState?.plan || null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(initialState?.error || "");
+  const [done, setDone] = useState(initialState?.done || 0);
+  const organizationId = organization?.organizationId || "";
+  const locked = organization?.status === "unknown";
+
+  const run = async (confirm) => {
+    if (!organizationId || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const result = confirm
+        ? await onConfirm?.(organizationId)
+        : await onPreview?.(organizationId);
+      setPlan(result || null);
+      if (confirm) {
+        setDone(Number(result?.applied) || 0);
+        onToast?.({ ok: true, msg: `${Number(result?.applied) || 0}명의 이름을 확정했습니다.` });
+      }
+    } catch (thrown) {
+      setError(String(thrown?.code || thrown?.message || "unknown"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (locked) return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>소속을 확인하지 못했습니다</h2>
+    </section>
+  );
+
+  return (
+    <section data-instructor-name-confirm style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>강사 이름 확정</h2>
+      <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        강사 앱이 열릴 때마다 로그인 계정 이름으로 되돌아가던 것을 막습니다.
+        {" "}<b style={{ color: INK }}>지금 적혀 있는 이름을 그대로 확정합니다</b> — 이름을 바꾸지 않습니다.
+      </p>
+      <p className="mt-1.5" style={{
+        padding: "10px 11px", borderRadius: 10, backgroundColor: WARN_S,
+        fontSize: TYPE.caption, lineHeight: 1.5, color: INK,
+      }}>
+        이미 되돌아간 이름이 있으면 <b>그 이름이 굳습니다.</b> 아래 목록을 보고,
+        {" "}고칠 것이 있으면 강사 관리에서 먼저 고친 뒤 다시 누르세요.
+      </p>
+
+      {error ? (
+        <p role="alert" className="mt-2" style={{ fontSize: TYPE.caption, color: BAD }}>
+          처리하지 못했어요 (코드 {error}).
+        </p>
+      ) : null}
+
+      {plan ? (
+        <div className="mt-3">
+          <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>
+            확정할 강사 {plan.counts?.targets ?? 0}명
+            {plan.counts?.already ? ` · 이미 확정됨 ${plan.counts.already}명` : ""}
+            {plan.counts?.noName ? ` · 이름 없음 ${plan.counts.noName}명` : ""}
+          </p>
+          {(plan.targets || []).map((item) => (
+            <p key={item.userId} className="mt-1" style={{ fontSize: TYPE.caption, color: INK2 }}>
+              {item.displayName}
+            </p>
+          ))}
+          {(plan.targets || []).length === 0 ? (
+            <p className="mt-1" style={{ fontSize: TYPE.caption, color: GOOD }}>
+              확정할 것이 없습니다. 재직 중인 강사의 이름이 모두 확정돼 있습니다.
+            </p>
+          ) : null}
+          {/* 이름 없는 소속은 건너뛴다. 찍어도 목록은 uid 로 서고, 로그인
+              동기화가 채울 길만 막는다. */}
+          {plan.counts?.noName ? (
+            <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+              이름이 비어 있는 {plan.counts.noName}명은 건너뜁니다 — 강사 관리에서 이름을 넣어 주세요.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button type="button" disabled={busy} onClick={() => run(false)}
+          className="h-11 flex-1 font-bold" style={{
+            borderRadius: 10, backgroundColor: CANVAS, color: SUB,
+            fontSize: TYPE.caption, minWidth: 120, opacity: busy ? 0.6 : 1,
+          }}>{busy ? "확인 중" : "누가 확정되는지 보기"}</button>
+        {/* 미리보기를 거치지 않으면 누를 수 없다. 되돌리는 문이 없는 쪽을
+            목록 없이 누르게 두지 않는다. */}
+        <button type="button" disabled={busy || !plan || (plan.targets || []).length === 0}
+          onClick={() => run(true)}
+          className="h-11 flex-1 font-bold" style={{
+            borderRadius: 10, backgroundColor: TINT, color: BRAND_D,
+            fontSize: TYPE.caption, minWidth: 120,
+            opacity: busy || !plan || (plan.targets || []).length === 0 ? 0.45 : 1,
+          }}>확정</button>
+      </div>
+      {done > 0 ? (
+        <p className="mt-2" style={{ fontSize: TYPE.caption, color: GOOD }}>
+          {done}명을 확정했습니다. 이제 그 이름은 강사가 앱을 열어도 되돌아가지 않습니다.
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
 function AppUpdateAdmin({ organization, instructorStore, onLoadConfig, onSaveConfig, onRetryOrganization }) {
   const [instructors, setInstructors] = useState([]);
   const [draft, setDraft] = useState(draftFromConfig(null));
@@ -22086,7 +22283,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
      두 화면이 서로 다른 순간의 원장을 보게 되고, 그 차이는 아무 데도 적히지
      않는다 -- 같은 객체를 쓰면 다를 수가 없다. */
   instructorPay = null, payMonth = "", payLoading = false, payError = "",
-  onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, onRestorePrevious, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, payrollStore, issueStore, auditStore, ledgerStore, onRetryOrganization, onOpenClient, onClearMigratedSettlements, onLoadRuntimeConfig, onSaveRuntimeConfig, onSwapInstructorAccount, initialView = "hub" }) {
+  onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, onRestorePrevious, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, payrollStore, issueStore, auditStore, ledgerStore, onRetryOrganization, onOpenClient, onClearMigratedSettlements, onLoadRuntimeConfig, onSaveRuntimeConfig, onSwapInstructorAccount, onPreviewInstructorNames, onConfirmInstructorNames, initialView = "hub", initialOpenGroups = null, nameConfirmState = null }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const organization = useContext(OrganizationContext);
 
@@ -22224,6 +22421,24 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
   const [diagnosticTapCount, setDiagnosticTapCount] = useState(0);
   const [showLessonDiagnostics, setShowLessonDiagnostics] = useState(false);
   const [diagnosticSending, setDiagnosticSending] = useState(false);
+  /* ── 접은 묶음을 기억한다 ────────────────────────────────────────────
+     점검과 대표 설정은 접힌 채로 시작한다. 한 번 편 사람에게 다음에도 접힌
+     화면을 보여주면, 그 사람은 매번 같은 자리를 다시 펴야 한다.
+
+     읽지 못해도 화면은 선다 -- 사생활 보호 창에서는 저장소가 던진다. 그때는
+     기본값(접힘)으로 돌고, 그것은 틀린 상태가 아니다. */
+  const [openMenuGroups, setOpenMenuGroups] = useState(() => {
+    /* initialOpenGroups 는 스모크 하네스가 펼친 상태를 보는 자리다 -- SSR 에는
+       저장소도 클릭도 없어, 접힌 묶음의 항목은 한 번도 그려지지 않는다. */
+    if (initialOpenGroups) return { ...initialOpenGroups };
+    try { return JSON.parse(localStorage.getItem(SETTINGS_GROUPS_KEY) || "null") || {}; }
+    catch { return {}; }
+  });
+  const toggleMenuGroup = (label) => setOpenMenuGroups((current) => {
+    const next = { ...current, [label]: current[label] !== true };
+    try { localStorage.setItem(SETTINGS_GROUPS_KEY, JSON.stringify(next)); } catch { /* 저장 못 해도 이번 화면은 열린다. */ }
+    return next;
+  });
   const [diagnosticQueueRevision, setDiagnosticQueueRevision] = useState(0);
   const [permissionStatuses, setPermissionStatuses] = useState({ microphone: "확인 필요", camera: "확인 필요", photos: "필요할 때 선택", notifications: "확인 필요" });
   const cameraRef = useRef(null), albumRef = useRef(null);
@@ -22362,7 +22577,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
     return total;
   }, [db.schedule, db.members, db.settings, reportYm]);
   const detailTitles = {
-    report: "월간 리포트", expiry: "만료 회원", "instructor-scope": "담당 강사", "app-update": "앱 업데이트 안내", "expiry-order": "만료일 순서 확인", assessment: "변화 기록 설정", center: "센터 정보", theme: "화면 설정", "schedule-colors": "일정 색상",
+    report: "월간 리포트", expiry: "만료 회원", "instructor-scope": "담당 강사", "app-update": "앱 업데이트 안내", "name-confirm": "강사 이름 확정", "expiry-order": "만료일 순서 확인", assessment: "변화 기록 설정", center: "센터 정보", theme: "화면 설정", "schedule-colors": "일정 색상",
     data: "데이터 상태", backup: "데이터 이관 · 백업", permissions: "접근권한 안내", knowledge: "오늘의 지식", account: "계정", "account-delete": "계정 삭제", app: "앱 정보",
     products: "회원권 상품",
     clients: "회원 관리",
@@ -22381,32 +22596,60 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
      센터 운영은 통째로 대표의 것이다 -- 아래 항목이 모두 같은 조건으로 걸려
      있어, 대표가 아니면 이 그룹은 아예 서지 않는다. 빈 그룹 머리글만 남기면
      "여기 뭔가 있어야 하는데 안 보인다"가 된다. */
-  const centreItems = [
-    ...(showClients ? [{ key: "pass-issue", title: "회원권 발급", description: "회원에게 회원권 발급", Icon: Ticket }] : []),
-    ...(showClients ? [{ key: "clients", title: "회원 관리", description: "회원 등록 · 검색", Icon: UserPlus }] : []),
-    ...(showInstructorAdmin ? [{ key: "instructor-admin", title: "강사 관리", description: "강사 추가 · 지점 · 직함 · 풀방금액", Icon: Users }] : []),
-    ...(showProducts ? [{ key: "products", title: "회원권 상품", description: "이벤트 상품 추가 · 종료", Icon: Ticket }] : []),
-    /* "월말 정산"만으로는 위의 월간 리포트와 구별되지 않는다. 무엇을 세는지가
-       둘의 차이다 -- 이쪽은 회원권 원장, 그쪽은 기기에 저장된 일정이다. */
-    ...(showPayroll ? [{ key: "payroll", title: "급여 집계", description: "강사별 수업료 · 원장 기준 월말 정산", Icon: ArrowUpRight }] : []),
-    /* 발급 내역도 대표만 본다. 급여와 같은 조건이다 -- 센터 전체의 매출은
-       한 사람의 것이 아니고, FC매니저에게는 자기 실적만 보이는 화면이 따로
-       필요하다 (아직 없다). */
-    ...(showIssues ? [{ key: "issues", title: "발급 내역", description: "이달 판매 · 지점별 · 발급자별", Icon: Ticket }] : []),
-    /* 회원이 자기 잔여를 보는 앱. 여기서는 연결만 다룬다 -- 자동으로 잇지 못한
-       것과, 잘못 이은 것과, 화면의 숫자가 맞는지. */
-    ...(showMemberApp ? [{ key: "member-app", title: "회원 앱", description: "연결 대기 · 끊기 · 점검", Icon: Users }] : []),
-    ...(showAudit ? [{ key: "audit", title: "감사 로그", description: "이상한 건만 모아 보기 · 전체 이력", Icon: AlertCircle }] : []),
-    /* 번호 점검. 감사 로그 옆이다 -- 둘 다 "무엇이 어긋나 있는지" 를 보는
-       화면이고, 이쪽은 그중 연락처만 본다. */
-    ...(showAudit ? [{ key: "phone-check", title: "번호 점검", description: "010 열한 자리가 아닌 회원 찾기", Icon: AlertCircle }] : []),
-    /* 담당 강사. 강사가 보는 회원의 범위가 여기서 정해지므로 감사·점검 옆이다 --
-       셋 다 "무엇이 어긋나 있는지" 를 보는 화면이다. */
-    ...(showAudit ? [{ key: "instructor-scope", title: "담당 강사", description: "강사별 담당 회원 · 재계산", Icon: Users }] : []),
-    ...(showAppUpdate ? [{ key: "app-update", title: "앱 업데이트 안내", description: "새 버전 알림 · 옛 앱 차단 · 강사 버전", Icon: Smartphone }] : []),
-    ...(showAudit ? [{ key: "expiry-order", title: "만료일 순서 확인", description: "뒤 차수가 먼저 만료되는 회원", Icon: AlertTriangle }] : []),
-    ...(showMigration ? [{ key: "migration", title: "엑셀 이관", description: "쓰던 엑셀의 회원 · 회원권 올리기", Icon: Upload }] : []),
-  ];
+  /* ── 센터 운영을 묶음으로 ──────────────────────────────────────────────
+     한 줄로 늘어놓으면 열두 개다. 매일 쓰는 둘(발급·회원 관리)과 반년에 한 번
+     여는 것(엑셀 이관)이 같은 크기로 서 있어서, 찾는 것을 눈으로 훑어야 했다.
+
+     묶음은 **하는 일**로 가른다 -- 회원을 다루는 일, 강사와 돈을 다루는 일,
+     파는 것을 다루는 일, 어긋난 것을 찾는 일, 되돌릴 수 없는 일.
+
+     뒤의 둘은 접어 둔다. 점검은 평소에 볼 것이 아니고, 대표 설정은 숫자 하나가
+     센터 전체를 세울 수 있는 자리다 -- 지나다 누를 자리에 두지 않는다.
+
+     **역할로 빈 묶음은 통째로 사라진다.** 머리글만 남기면 "여기 뭔가 있어야
+     하는데 안 보인다" 가 되고, 그것은 권한이 없다는 말보다 나쁘다. */
+  const centreGroups = [
+    { label: "회원 · 회원권", items: [
+      ...(showClients ? [{ key: "pass-issue", title: "회원권 발급", description: "회원에게 회원권 발급", Icon: Ticket }] : []),
+      ...(showClients ? [{ key: "clients", title: "회원 관리", description: "회원 등록 · 검색", Icon: UserPlus }] : []),
+      /* 발급 내역도 대표만 본다. 급여와 같은 조건이다 -- 센터 전체의 매출은
+         한 사람의 것이 아니고, FC매니저에게는 자기 실적만 보이는 화면이 따로
+         필요하다 (아직 없다). */
+      ...(showIssues ? [{ key: "issues", title: "발급 내역", description: "이달 판매 · 지점별 · 발급자별", Icon: Ticket }] : []),
+      /* 회원이 자기 잔여를 보는 앱. 여기서는 연결만 다룬다 -- 자동으로 잇지
+         못한 것과, 잘못 이은 것과, 화면의 숫자가 맞는지. */
+      ...(showMemberApp ? [{ key: "member-app", title: "회원 앱", description: "연결 대기 · 끊기 · 점검", Icon: Users }] : []),
+    ] },
+    { label: "강사 · 급여", items: [
+      ...(showInstructorAdmin ? [{ key: "instructor-admin", title: "강사 관리", description: "강사 추가 · 지점 · 직함 · 풀방금액", Icon: Users }] : []),
+      /* "월말 정산"만으로는 위의 월간 리포트와 구별되지 않는다. 무엇을 세는지가
+         둘의 차이다 -- 이쪽은 회원권 원장, 그쪽은 기기에 저장된 일정이다. */
+      ...(showPayroll ? [{ key: "payroll", title: "급여 집계", description: "강사별 수업료 · 원장 기준 월말 정산", Icon: ArrowUpRight }] : []),
+      /* 담당 강사. 강사가 보는 회원의 범위가 여기서 정해진다 -- 점검이 아니라
+         강사를 다루는 일이라 이 묶음이다. */
+      ...(showAudit ? [{ key: "instructor-scope", title: "담당 강사", description: "강사별 담당 회원 · 재계산", Icon: Users }] : []),
+    ] },
+    { label: "상품", items: [
+      ...(showProducts ? [{ key: "products", title: "회원권 상품", description: "이벤트 상품 추가 · 종료", Icon: Ticket }] : []),
+    ] },
+    /* 평소에 볼 것이 아니다. 셋 다 "무엇이 어긋나 있는지" 를 찾는 화면이고,
+       찾을 일이 생겼을 때만 연다. */
+    { label: "점검", collapsible: true, items: [
+      ...(showAudit ? [{ key: "expiry-order", title: "만료일 순서 확인", description: "뒤 차수가 먼저 만료되는 회원", Icon: AlertTriangle }] : []),
+      ...(showAudit ? [{ key: "phone-check", title: "번호 점검", description: "010 열한 자리가 아닌 회원 찾기", Icon: AlertCircle }] : []),
+      ...(showAudit ? [{ key: "audit", title: "감사 로그", description: "이상한 건만 모아 보기 · 전체 이력", Icon: AlertCircle }] : []),
+    ] },
+    /* 되돌릴 수 없거나 센터 전체를 세우는 것들. 접어 두는 이유가 "자주 안 써서"
+       가 아니라 **지나다 누를 자리에 두지 않으려고** 다. */
+    { label: "대표 설정", collapsible: true, items: [
+      ...(showAppUpdate ? [{ key: "app-update", title: "앱 업데이트 안내", description: "새 버전 알림 · 옛 앱 차단 · 강사 버전", Icon: Smartphone }] : []),
+      /* 한 번 누르는 버튼이다. 고친 뒤에 붙은 소속에는 표시가 저절로 들어가므로
+         이 화면은 **이미 있던 강사들**만을 위한 것이다. */
+      ...(showAppUpdate ? [{ key: "name-confirm", title: "강사 이름 확정", description: "로그인 때마다 되돌아가던 이름 고정", Icon: Users }] : []),
+      ...(showMigration ? [{ key: "migration", title: "이관 데이터", description: "쓰던 엑셀의 회원 · 회원권 올리기", Icon: Upload }] : []),
+    ] },
+  ].filter((group) => group.items.length > 0);
+
   const menuGroups = [
     { label: "업무", items: [
       { key: "schedule", title: "일정 등록", description: "새 수업 · 상담 · 휴무 추가", Icon: Plus, action: onOpenSchedule },
@@ -22419,7 +22662,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
          없어 셀 것이 없다. */
       ...(inOrganization ? [{ key: "expiry", title: "만료 회원", description: "이번 달 · 지난달 · 재등록률", Icon: Users }] : []),
     ] },
-    ...(centreItems.length ? [{ label: "센터 운영", items: centreItems }] : []),
+    ...centreGroups,
     { label: "내 설정", items: [
       { key: "assessment", title: "변화 기록 설정", description: "기본 방식 · AI 분석 · 직접 포인트/그리기", Icon: Activity },
       /* 이름은 "센터"지만 센터의 설정이 아니다. 이 세 값은 기기에 저장되고 이
@@ -22502,7 +22745,25 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
         <div className="space-y-4">
           {menuGroups.map((group) => (
             <section key={group.label}>
-              <h2 style={{ margin: "0 4px 7px", fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>{group.label}</h2>
+              {/* 접는 묶음은 머리글이 버튼이다. 접힌 채로 두면 몇 개가 숨어
+                  있는지 모르므로 개수를 함께 적는다 -- 빈 줄과 접힌 줄이
+                  같은 얼굴이면 "여기 뭔가 있어야 하는데" 가 된다. */}
+              {group.collapsible ? (
+                <button type="button" onClick={() => toggleMenuGroup(group.label)}
+                  aria-expanded={openMenuGroups[group.label] === true}
+                  className="flex w-full items-center gap-1.5"
+                  style={{ margin: "0 0 7px", padding: "0 4px", minHeight: 28 }}>
+                  <span style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>{group.label}</span>
+                  <span className="tabular-nums" style={{ fontSize: TYPE.caption, color: FAINT }}>{group.items.length}</span>
+                  <ChevronDown size={14} style={{
+                    color: SUB, marginLeft: "auto",
+                    transform: openMenuGroups[group.label] ? "rotate(180deg)" : "none",
+                  }} />
+                </button>
+              ) : (
+                <h2 style={{ margin: "0 4px 7px", fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>{group.label}</h2>
+              )}
+              {group.collapsible && openMenuGroups[group.label] !== true ? null : (
               <div style={{ overflow: "hidden", borderRadius: 12, border: `1px solid ${LINE}`, backgroundColor: CARD }}>
                 {group.items.map((item, index) => {
                   const Icon = item.Icon;
@@ -22519,6 +22780,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
                   );
                 })}
               </div>
+              )}
             </section>
           ))}
         </div>
@@ -22775,6 +23037,10 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
           <ExpiryReportScreen organization={organization} currentUserId={account?.id || ""}
             clientStore={clientStore} passStore={passStore} instructorStore={instructorStore}
             onRetryOrganization={onRetryOrganization} />
+        )}
+        {view === "name-confirm" && showAppUpdate && (
+          <InstructorNameConfirm organization={organization} initialState={nameConfirmState}
+            onPreview={onPreviewInstructorNames} onConfirm={onConfirmInstructorNames} onToast={onToast} />
         )}
         {view === "app-update" && showAppUpdate && (
           <AppUpdateAdmin organization={organization} instructorStore={instructorStore}
@@ -23552,6 +23818,31 @@ export function createAppScreenSmokeCases() {
     { name: "더보기 탭 · 만료일 순서 확인", element: settingsTab(smokeOwner, { initialView: "expiry-order" }) },
     /* 총괄매니저가 연 더보기. 급여·감사·강사 관리는 보이고 **앱 업데이트
        안내만 없다** -- 숫자 하나가 센터 전체의 수업 확정을 막는 자리다. */
+    /* 접는 묶음을 펼친 화면. 접힌 상태로는 그 항목이 한 번도 그려지지 않아,
+       "대표에게만 보인다" 를 확인할 자리가 없다. */
+    { name: "더보기 탭 · 묶음 펼침", element: settingsTab(smokeOwner, { initialOpenGroups: ALL_MENU_GROUPS_OPEN }) },
+    /* 강사 이름 확정. 되돌리는 문이 없으므로 **무엇이 굳는지**가 누르기 전에
+       화면에 있어야 한다 -- 이미 되돌아간 이름이 섞여 있으면 그것이 굳는다. */
+    { name: "더보기 탭 · 강사 이름 확정", element: settingsTab(smokeOwner, {
+      initialView: "name-confirm",
+      onPreviewInstructorNames: async () => ({
+        counts: { targets: 2, skipped: 2, already: 1, noName: 1 },
+        targets: [{ userId: "u1", displayName: "정예진" }, { userId: "u2", displayName: "e asy" }],
+        skipped: [],
+      }),
+      onConfirmInstructorNames: async () => ({ applied: 2, counts: { targets: 2, skipped: 2, already: 1, noName: 1 }, targets: [] }),
+    }) },
+    /* 이미 다 찍은 센터. 누를 것이 없다는 말이 화면에 있어야 "고장인가" 가
+       되지 않는다. */
+    { name: "더보기 탭 · 강사 이름 확정 · 할 것 없음", element: settingsTab(smokeOwner, {
+      initialView: "name-confirm",
+      nameConfirmState: { plan: {
+        counts: { targets: 0, skipped: 3, already: 3, noName: 0 }, targets: [], skipped: [],
+      } },
+    }) },
+    { name: "더보기 탭 · 묶음 펼침 · 매니저", element: settingsTab({ ...smokeOwner, role: "manager" }, { initialOpenGroups: ALL_MENU_GROUPS_OPEN }) },
+    { name: "더보기 탭 · 묶음 펼침 · 강사", element: settingsTab({ ...smokeOwner, role: "instructor" }, { initialOpenGroups: ALL_MENU_GROUPS_OPEN }) },
+    { name: "더보기 탭 · 묶음 펼침 · 총괄매니저", element: settingsTab({ ...smokeOwner, role: "area_manager" }, { initialOpenGroups: ALL_MENU_GROUPS_OPEN }) },
     { name: "더보기 탭 · 총괄매니저", element: settingsTab({ ...smokeOwner, role: "area_manager" }) },
     { name: "더보기 탭 · 백업", element: settingsTab(smokeOwner, {
       initialView: "backup", onRestorePrevious: noop,
@@ -23884,7 +24175,23 @@ export function createAppScreenSmokeCases() {
     }) },
     { name: "회원 관리 · 소속 확인 실패", element: clientDirectory({ organizationId: "", role: "", status: "unknown", isLegacy: false }, null) },
     { name: "더보기 탭 · 매니저", element: settingsTab({ ...smokeOwner, role: "manager" }) },
-    { name: "회원권 상품", element: providerWith(smokeOwner, <ProductCatalog organization={readyOrganizationContext(smokeOwner)} currentUserId="smoke-account" store={productStore} onRetryOrganization={noop} onToast={noop} />) },
+    { name: "회원권 상품", element: providerWith(smokeOwner, (
+      <ProductCatalog organization={readyOrganizationContext(smokeOwner)} currentUserId="smoke-account"
+        store={productStore} initialState={{ products: smokeProducts }}
+        onRetryOrganization={noop} onToast={noop} />
+    )) },
+    /* ── 폰 폭 ──────────────────────────────────────────────────────────
+       390px 에서는 표가 아니라 목록이다. 표는 두 축(이름 × 횟수)이 보여야
+       값어치가 있는데, 폰에서는 첫 열과 반 칸만 보이고 나머지는 가로 스크롤
+       뒤에 숨는다 -- "20회가 얼마인가" 를 보려고 옆으로 밀어야 하면 그것은
+       표가 답해 주던 질문이 아니다.
+
+       SSR 에는 window 가 없어 좁은 폭을 스스로 알 수 없다. 못 박아 넣는다. */
+    { name: "회원권 상품 · 폰 폭", element: providerWith(smokeOwner, (
+      <ProductCatalog organization={readyOrganizationContext(smokeOwner)} currentUserId="smoke-account"
+        store={productStore} narrowViewport initialState={{ products: smokeProducts }}
+        onRetryOrganization={noop} onToast={noop} />
+    )) },
     { name: "회원권 상품 · 소속 확인 실패", element: providerWith(smokeOwner, <ProductCatalog organization={readyOrganizationContext({ organizationId: "", role: "", status: "unknown", isLegacy: false })} currentUserId="smoke-account" store={productStore} onRetryOrganization={noop} onToast={noop} />) },
     /* 번호 점검. 저장된 철자를 그대로 보여준다 -- 여기서 다듬으면 무엇이
        문제인지 안 보이고, 대표가 고쳐야 할 것이 바로 그 철자다. */
@@ -24984,7 +25291,12 @@ export default function App() {
          실패해도 앱 시작을 막지 않는다. 이름이 없으면 uid 로 보일 뿐이다. */
       if (!resolved.isLegacy && resolved.organizationId && displayName) {
         syncOwnMembershipName(resolved.organizationId, userId, {
-          displayName, currentDisplayName: resolved.displayName,
+          displayName,
+          currentDisplayName: resolved.displayName,
+          /* 대표가 정한 이름이면 손대지 않는다. 덮으면 강사 목록과 급여가
+             로그인 계정 이름으로 되돌아간다 -- 2026-10-10 의 "e asy" 가
+             그것이다. 규칙도 같은 선을 긋는다. */
+          membership: { displayNameBy: resolved.displayNameBy },
         }).catch((error) => deviceLog("membership_name_sync_failed", {
           feature: ORGANIZATION_CONTEXT_FEATURE, stage: "sync_name", ...deviceError(error),
         }));
@@ -25875,6 +26187,18 @@ export default function App() {
       month: monthKey(todayISO()),
     }),
     [organizationContext.organizationId],
+  );
+
+  /* 강사 이름 확정. confirm 없이는 미리보기다 -- 센터 전체의 이름을 한 번에
+     굳히는 일이고, 되돌리려면 한 사람씩 강사 관리에서 다시 저장해야 한다
+     (functions/shared/instructor-names.mjs). */
+  const previewInstructorNames = useCallback(
+    (organizationId) => fbConfirmInstructorNames({ organizationId }),
+    [],
+  );
+  const confirmInstructorNames = useCallback(
+    (organizationId) => fbConfirmInstructorNames({ organizationId, confirm: true }),
+    [],
   );
 
   const saveRuntimeConfig = useCallback(
@@ -27487,7 +27811,7 @@ export default function App() {
               }} />}
             {tab === "settings" && <ReferenceSettingsTab db={db} photos={photos} account={account} savedAt={savedAt} demoMode={demoMode}
               instructorPay={instructorPay} payMonth={payMonth} payLoading={payLoading} payError={payError} onChangeSettings={(s) => saveDb({ ...db, settings: s })} onChangePhoto={changePhoto} onToast={setToast} themePref={themePref} onChangeTheme={changeTheme} onLogout={handleLogout} onDeleteAccount={handleDeleteAccount} onImport={importHandoff}
-              onOpenSchedule={() => { setScheduleQuickAddRequest((request) => request + 1); setTab("schedule"); }} onOpenRecords={() => { setMobileView("list"); setTab("members"); }} onOpenOnboarding={openOnboardingReplay} onOpenLessonExamples={() => setLessonExamplesOpen(true)} backupStatus={cloudBackupStatus} onEnablePhotoBackup={enablePhotoBackup} onRetryBackup={retryCloudBackup} onRestorePrevious={openPreviousPhoneRestore} onRetryOrganization={retryOrganizationContext} onLoadRuntimeConfig={loadRuntimeConfig} onSaveRuntimeConfig={saveRuntimeConfig} onSwapInstructorAccount={swapInstructorAccount} onOpenClient={(picked) => setDetailClient(picked)} onClearMigratedSettlements={clearMigratedSettlements} />}
+              onOpenSchedule={() => { setScheduleQuickAddRequest((request) => request + 1); setTab("schedule"); }} onOpenRecords={() => { setMobileView("list"); setTab("members"); }} onOpenOnboarding={openOnboardingReplay} onOpenLessonExamples={() => setLessonExamplesOpen(true)} backupStatus={cloudBackupStatus} onEnablePhotoBackup={enablePhotoBackup} onRetryBackup={retryCloudBackup} onRestorePrevious={openPreviousPhoneRestore} onRetryOrganization={retryOrganizationContext} onLoadRuntimeConfig={loadRuntimeConfig} onSaveRuntimeConfig={saveRuntimeConfig} onSwapInstructorAccount={swapInstructorAccount} onPreviewInstructorNames={previewInstructorNames} onConfirmInstructorNames={confirmInstructorNames} onOpenClient={(picked) => setDetailClient(picked)} onClearMigratedSettlements={clearMigratedSettlements} />}
           </Guard>
         </div>
         {/* 출석 체크는 일정 탭 위에 시트로 뜬다. 탭 구조를 건드리지 않으면서

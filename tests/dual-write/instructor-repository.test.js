@@ -371,13 +371,48 @@ test("the same name is not written again", async () => {
   assert.equal(store.calls.length, 0);
 });
 
-test("a changed name is written", async () => {
+test("a name that is already there is never overwritten by the login name", async () => {
+  /* **2026-10-10 에 보고된 버그다.** 전에는 로그인 이름과 저장된 이름이 다르면
+     언제나 덮어썼다. 그래서 대표가 강사 관리에서 고친 이름이 그 강사가 앱을
+     한 번 여는 순간 구글 계정 이름("e asy")으로 되돌아갔고, 급여 집계도 그
+     이름으로 섰다.
+
+     로그인 이름은 **씨앗이지 출처가 아니다.** 센터에서 부르는 이름을 정하는
+     것은 대표다. */
   const store = fakeNameStore();
   const result = await syncOwnMembershipName(ORG, "instructor-a", {
-    displayName: "정예진", currentDisplayName: "예전이름",
+    displayName: "e asy", currentDisplayName: "최형인",
   }, { store });
-  assert.equal(result.written, true);
-  assert.equal(store.calls.length, 1);
+  assert.equal(result.written, false);
+  assert.equal(result.displayName, "최형인", "그대로 둔 이름을 돌려준다");
+  assert.equal(store.calls.length, 0);
+});
+
+test("the marker alone is enough to stop it, even with no name read back", async () => {
+  /* 소속을 읽은 쪽이 이름을 못 실어 보냈어도 표시 하나면 막힌다 -- 규칙이
+     거부할 쓰기를 보내 봐야 진단 로그만 늘어난다. */
+  const store = fakeNameStore();
+  const result = await syncOwnMembershipName(ORG, "instructor-a", {
+    displayName: "e asy", membership: { displayNameBy: "owner" },
+  }, { store });
+  assert.equal(result.written, false);
+  assert.equal(store.calls.length, 0);
+});
+
+test("the blank is still filled, which is the one thing this sync is for", async () => {
+  /* 막아야 하는 것은 **덮어쓰기**이지 채우기가 아니다. 아무도 이름을 정하지
+     않았으면 대표의 강사 목록이 uid 로 서 있고, 그것을 메우는 길은 이것뿐이다. */
+  for (const empty of ["", "   ", undefined]) {
+    const store = fakeNameStore();
+    const result = await syncOwnMembershipName(ORG, "instructor-a", {
+      displayName: "정예진", currentDisplayName: empty,
+    }, { store });
+    assert.equal(result.written, true, JSON.stringify(empty));
+    assert.deepEqual(store.calls, [{
+      path: "memberships/center-a_instructor-a",
+      data: { displayName: "정예진" },
+    }]);
+  }
 });
 
 test("a blank name never overwrites a real one", async () => {
@@ -458,6 +493,10 @@ test("adding an instructor writes the membership and its audit entry at once", a
     role: "instructor",
     status: "active",
     displayName: "박서연",
+    /* 붙일 때부터 대표가 정한 이름이다. 표시가 없으면 그 강사가 앱을 처음
+       여는 순간 로그인 계정 이름으로 덮어써지고, 추가 화면에서 이름을 적는
+       일 자체가 무의미해진다. */
+    displayNameBy: "owner",
     title: "team_lead",
     locationId: "bansong",
     createdAt: "SERVER_TIME",
@@ -565,8 +604,11 @@ test("the profile moves its three fields together, with a record", async () => {
   }, { store });
   const [profileWrite, auditWrite] = store.calls[0];
   assert.equal(profileWrite.operation, "update", "set 이면 role 도 status 도 날아간다");
+  /* 누가 정한 이름인지 함께 적는다. 이 표시가 없으면 그 강사가 앱을 한 번
+     여는 순간 로그인 계정 이름으로 되돌아간다 (syncOwnMembershipName). */
   assert.deepEqual(profileWrite.data, {
     displayName: "박서연", title: "branch_manager", locationId: "haeundae",
+    displayNameBy: "owner",
   });
   assert.equal(auditWrite.data.action, "member_profile_changed");
   assert.equal(auditWrite.data.targetId, "u-1");

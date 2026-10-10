@@ -112,6 +112,12 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 소속 확인 실패",
     "더보기 탭 · 앱 업데이트 안내",
     "더보기 탭 · 만료일 순서 확인",
+    "더보기 탭 · 묶음 펼침",
+    "더보기 탭 · 강사 이름 확정",
+    "더보기 탭 · 강사 이름 확정 · 할 것 없음",
+    "더보기 탭 · 묶음 펼침 · 매니저",
+    "더보기 탭 · 묶음 펼침 · 강사",
+    "더보기 탭 · 묶음 펼침 · 총괄매니저",
     "더보기 탭 · 총괄매니저",
     "더보기 탭 · 백업",
     "더보기 탭 · 월간 리포트",
@@ -195,6 +201,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "회원 관리 · 소속 확인 실패",
     "더보기 탭 · 매니저",
     "회원권 상품",
+    "회원권 상품 · 폰 폭",
     "회원권 상품 · 소속 확인 실패",
     "이관 서비스 보정 · 미리보기",
     "이관 서비스 보정 · 보정할 것 없음",
@@ -290,11 +297,13 @@ test("the october migration is the owner's alone and never writes before it has 
 
   /* 한 번 올리면 센터 전체의 회원과 회원권이 만들어진다. 매니저·강사에게는
      진입점이 없어야 하고, 항목이 없으면 setView 로 들어갈 길도 닫힌다. */
-  assert.match(markupOf("더보기 탭"), /엑셀 이관/);
-  assert.doesNotMatch(markupOf("더보기 탭 · 매니저"), /엑셀 이관/);
-  assert.doesNotMatch(markupOf("더보기 탭 · 강사"), /엑셀 이관/);
-  assert.doesNotMatch(markupOf("더보기 탭 · 개인 모드"), /엑셀 이관/);
-  assert.doesNotMatch(markupOf("더보기 탭 · 소속 확인 실패"), /엑셀 이관/);
+  /* 2026-10-10 부터 "대표 설정" 묶음 안이고 이름은 "이관 데이터" 다. 그 묶음은
+     접힌 채로 시작하므로 펼친 화면에서 본다 -- 접힘은 숨김이 아니다. */
+  assert.match(markupOf("더보기 탭 · 묶음 펼침"), /이관 데이터/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 묶음 펼침 · 매니저"), /이관 데이터/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 묶음 펼침 · 강사"), /이관 데이터/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 개인 모드"), /이관 데이터/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 소속 확인 실패"), /이관 데이터/);
 
   // 소속을 읽지 못하면 다른 센터에 회원을 올릴 수 있다. 그 상태는 잠근다.
   const locked = markupOf("엑셀 이관 · 소속 확인 실패");
@@ -475,9 +484,11 @@ test("the audit log shows the odd ones first, and never a name it stored itself"
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
   // 센터 전체의 조작 이력은 한 사람의 것이 아니다. 매니저도 못 본다.
-  assert.match(markupOf("더보기 탭"), /감사 로그/);
-  assert.doesNotMatch(markupOf("더보기 탭 · 매니저"), /감사 로그/);
-  assert.doesNotMatch(markupOf("더보기 탭 · 강사"), /감사 로그/);
+  /* 감사 로그는 "점검" 묶음 안이고, 그 묶음은 접힌 채로 시작한다. 펼친
+     화면에서 본다 -- 접힘은 역할로 숨기는 것과 다른 일이다. */
+  assert.match(markupOf("더보기 탭 · 묶음 펼침"), /감사 로그/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 묶음 펼침 · 매니저"), /감사 로그/);
+  assert.doesNotMatch(markupOf("더보기 탭 · 묶음 펼침 · 강사"), /감사 로그/);
   assert.doesNotMatch(markupOf("더보기 탭 · 개인 모드"), /감사 로그/);
 
   const audit = markupOf("감사 로그");
@@ -957,18 +968,23 @@ test("the centre group stands only where there is something in it", async () => 
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
   const owner = markupOf("더보기 탭");
-  assert.match(owner, /센터 운영/);
+  /* 2026-10-10 부터 "센터 운영" 한 묶음이 아니라 하는 일로 갈린다. 첫 묶음의
+     자리는 그대로다 -- 업무와 내 설정 사이다. */
+  assert.ok(owner.includes("회원 · 회원권"));
   assert.match(owner, /내 설정/);
-  // 센터 운영은 통째로 대표의 것이다. 업무와 기타는 그대로 남는다.
-  assert.ok(owner.indexOf("센터 운영") < owner.indexOf("내 설정"), "운영이 위");
+  assert.ok(owner.indexOf("회원 · 회원권") < owner.indexOf("내 설정"), "운영이 위");
 
   /* 대표가 아니면 그 그룹에 들어갈 항목이 하나도 없다. 머리글만 남기면
      "여기 뭔가 있어야 하는데 안 보인다"가 된다. */
-  // FC매니저에게는 센터 운영 묶음이 선다 -- 회원권 발급 · 회원 관리 · 상품 (2026-09-23).
-  assert.match(markupOf("더보기 탭 · 매니저"), /센터 운영/);
+  // FC매니저에게는 회원·회원권과 상품이 선다 -- 발급 · 회원 관리 · 상품 (2026-09-23).
+  const manager = markupOf("더보기 탭 · 매니저");
+  assert.ok(manager.includes("회원 · 회원권"), "FC매니저도 발급과 회원 관리를 한다");
+  assert.ok(manager.includes("상품"));
+  // 강사·급여와 점검은 그 역할에 하나도 없으므로 머리글째 사라진다.
+  assert.equal(manager.includes("강사 · 급여"), false);
   for (const name of ["더보기 탭 · 강사", "더보기 탭 · 개인 모드", "더보기 탭 · 소속 확인 실패"]) {
     const markup = markupOf(name);
-    assert.doesNotMatch(markup, /센터 운영/, name);
+    assert.equal(markup.includes("회원 · 회원권"), false, name);
     assert.match(markup, /내 설정/, `${name} — 내 설정은 모두에게`);
     assert.match(markup, /화면 설정/, name);
   }
@@ -2011,12 +2027,106 @@ test("the area manager runs the centre but never the app update setting", async 
      최소 빌드를 올리면 **센터 전체의 수업 확정이 막힌다.** 숫자 하나가
      센터를 세우는 자리라 이관 초기화와 같은 선에 둔다. */
   const markupOf = await issueScreens(t);
-  const hub = markupOf("더보기 탭 · 총괄매니저");
+  const hub = markupOf("더보기 탭 · 묶음 펼침 · 총괄매니저");
 
   assert.match(hub, /급여 집계/);
   assert.match(hub, /감사 로그/);
   assert.match(hub, /강사 관리/);
+  /* 접혀서 안 보이는 것과 역할로 없는 것은 다르다. 펼친 화면에서도 없다 --
+     그것이 "대표만" 이다. */
   assert.doesNotMatch(hub, /앱 업데이트 안내/);
+  /* "대표 설정" 묶음 자체는 선다 -- 이관 데이터는 총괄매니저도 올린다
+     (대표만인 것은 이관 **초기화** 쪽이고, 그것은 서버의 문이다). 묶음이
+     사라지는 것과 그 안의 한 줄이 없는 것은 다른 일이다. */
+  assert.ok(hub.includes("대표 설정"));
+  assert.match(hub, /이관 데이터/);
+});
+
+/* ── 폰 폭(390px) ──────────────────────────────────────────────────────────
+   같은 화면이 폰과 PC 에서 같은 코드를 쓴다. 가로 폭을 전제한 자리는 폰에서
+   읽을 수 없게 되는데, 그것은 PC 로만 보면 영영 드러나지 않는다. */
+
+test("the pass row keeps its meta text off the button line", async (t) => {
+  /* 390px 에서 버튼 다섯이 자리를 다 가져가고 만료·담당 글자가 몇 px 로 눌려
+     **한 글자씩 세로로** 깨졌다 -- flex-1 은 줄어들고 shrink-0 은 안 줄어든다.
+
+     글자 줄과 버튼 줄이 **다른 요소**여야 한다. 같은 flex 줄에 있으면 폭이
+     좁아지는 순간 다시 깨진다. */
+  const markupOf = await issueScreens(t);
+  const detail = markupOf("센터 회원 상세 · 대표");
+
+  const meta = detail.match(/<p[^>]*>[^<]*만료[^<]*담당[^<]*<\/p>/);
+  assert.ok(meta, "만료·담당 줄이 자기 <p> 로 서야 한다");
+  assert.equal(/flex-1/.test(meta[0]), false, "버튼과 폭을 나눠 쓰지 않는다");
+  // 버튼 줄은 넘치면 줄바꿈한다. 390px 에 다섯이 한 줄로 들어가지 않는다.
+  assert.match(detail, /flex flex-wrap items-center gap-1\.5/);
+});
+
+test("the product screen becomes a list on a phone, with the same numbers", async (t) => {
+  /* 표는 두 축이 보여야 값어치가 있다. 폰에서는 첫 열과 반 칸만 보이고
+     나머지는 가로 스크롤 뒤에 숨는다. */
+  const markupOf = await issueScreens(t);
+  const phone = markupOf("회원권 상품 · 폰 폭");
+  const desktop = markupOf("회원권 상품");
+
+  assert.equal(phone.includes("<table"), false, "폰에서는 표를 내지 않는다");
+  assert.match(desktop, /<table/, "PC 에서는 표 그대로");
+  // 칩 하나에 횟수와 금액이 함께 선다 -- 누르면 지금의 칸 상세가 열린다.
+  assert.match(phone, /20회 /);
+  assert.match(phone, /사용 중|집계 중/);
+});
+
+test("the settings hub groups the centre work, and folds the dangerous half", async (t) => {
+  /* 한 줄로 늘어놓으면 열두 개다. 매일 쓰는 둘과 반년에 한 번 여는 것이 같은
+     크기로 서 있으면 찾는 것을 눈으로 훑어야 한다.
+
+     점검과 대표 설정은 **접힌 채로** 시작한다 -- 지나다 누를 자리에 두지
+     않는다. 접힌 묶음도 머리글과 개수는 보여야 "빈 자리" 로 읽히지 않는다. */
+  const markupOf = await issueScreens(t);
+  const hub = markupOf("더보기 탭");
+
+  for (const label of ["회원 · 회원권", "강사 · 급여", "상품", "점검", "대표 설정"]) {
+    assert.ok(hub.includes(label), `${label} 묶음 머리글이 보여야 한다`);
+  }
+  // 펼쳐진 묶음의 항목은 보인다.
+  assert.match(hub, /회원권 발급/);
+  assert.match(hub, /급여 집계/);
+  // 접힌 묶음의 항목은 아직 그려지지 않는다.
+  assert.equal(hub.includes("이상한 건만 모아 보기"), false, "감사 로그는 접혀 있다");
+  assert.equal(hub.includes("쓰던 엑셀의 회원"), false, "이관 데이터는 접혀 있다");
+  assert.match(hub, /aria-expanded="false"/);
+});
+
+test("a role that sees none of a group never sees its heading", async (t) => {
+  /* 빈 머리글만 남기면 "여기 뭔가 있어야 하는데 안 보인다" 가 되고, 그것은
+     권한이 없다는 말보다 나쁘다. */
+  const markupOf = await issueScreens(t);
+  const instructor = markupOf("더보기 탭 · 강사");
+
+  assert.equal(instructor.includes("강사 · 급여"), false);
+  assert.equal(instructor.includes("대표 설정"), false);
+  assert.equal(instructor.includes("점검"), false);
+});
+
+test("confirming instructor names says what will freeze, before it freezes", async (t) => {
+  /* 되돌리는 문이 없다 -- 되돌리려면 한 사람씩 강사 관리에서 다시 저장해야
+     한다. 그러니 **무엇이 굳는지**가 누르기 전에 보여야 하고, 이미 되돌아간
+     이름("e asy")이 섞여 있으면 그것이 굳는다는 말도 같은 화면에 있어야 한다. */
+  const markupOf = await issueScreens(t);
+  const card = markupOf("더보기 탭 · 강사 이름 확정");
+
+  assert.match(card, /강사 이름 확정/);
+  assert.match(card, /지금 적혀 있는 이름을 그대로 확정합니다/);
+  assert.match(card, /이름을 바꾸지 않습니다/);
+  assert.match(card, /그 이름이 굳습니다/);
+  // 미리보기 버튼이 먼저다. 목록 없이 확정을 누를 수 없다.
+  assert.match(card, /누가 확정되는지 보기/);
+});
+
+test("a centre with nothing left to confirm says so instead of looking broken", async (t) => {
+  const markupOf = await issueScreens(t);
+  const card = markupOf("더보기 탭 · 강사 이름 확정 · 할 것 없음");
+  assert.match(card, /확정할 것이 없습니다/);
 });
 
 test("the app update card starts empty and says so", async (t) => {

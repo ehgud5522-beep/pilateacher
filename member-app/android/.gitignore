@@ -62,7 +62,10 @@ captures/
 .cxx/
 
 # Google Services (e.g. APIs or Firebase)
-# google-services.json
+# 레포에 두지 않는다. 로컬은 손으로 두고, Codemagic 은 MEMBER_GOOGLE_SERVICES_JSON
+# 을 풀어 쓴다. 놓은 뒤에는 `node tools/member/google-services.mjs` 가 회원 앱
+# 것인지 본다.
+app/google-services.json
 
 # Freeline
 freeline.py

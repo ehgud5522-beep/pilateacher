@@ -13,6 +13,22 @@ Claude Code · Codex 가 새 세션을 열면 이 파일부터 읽는다. 작업
 - 규칙 배포는 따로다: `npm run test:rules` 통과 후
   `npx firebase deploy --only firestore:rules --project pilateacher --config firebase.foundation.json`
 
+## 회원 앱 — 번호 인증 오류 · 안전 영역 · 로그아웃 (2026-10-10) · 브랜치 `fix/member-phone-auth-logout`
+
+**커밋 전 · 배포 전.** 회원 앱(`member/`)만 고쳤다. 강사 앱 번들은 그대로다.
+
+- 인증 실패를 종류별로 가른다 — `member/src/auth-errors.js` (단위 테스트로 고정).
+  `console.error("[member/phone_auth]", {feature, stage, errorCode …})` 로 원본 코드를
+  남긴다. 번호는 남기지 않는다. unknown 은 운영에서도 코드를 보이고, 알려진 실패는
+  개발 모드에서만 코드를 덧붙인다
+- reCAPTCHA 는 하나만 만든다. 보안 확인 · 횟수 초과 · 네트워크 · 모르는 실패면
+  `resetRecaptcha()` 로 clear 하고 다음에 새 자식 요소에 다시 만든다
+- `toE164` 를 `member/src/phone.js` 로 뺐다. `+82 010-…` 이 `+82010…` 이 되던 것을 고쳤다
+- `.shell` 에 safe-area 네 방향 padding, `100vh` → `100dvh` 대비 한 줄
+- 머리줄 오른쪽 "로그아웃" — 확인창 → `signOut` → `pilateacher.member.*` 칸을 걷는다.
+  화면 이동은 `onAuthStateChanged` 하나가 한다
+- 실제 문자 수신 → confirm 은 아직 기기에서 확인하지 않았다 (테스트 번호로 볼 것)
+
 ## 빌드 62 — 2단계 완료 (2026-09-27) · 브랜치 `feat/app-version-report`
 
 **세션이 끊기면 여기부터 읽는다.** 설계는

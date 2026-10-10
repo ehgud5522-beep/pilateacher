@@ -84,19 +84,47 @@ body {
 .shell {
   display: flex;
   flex-direction: column;
+  /* dvh 를 모르는 브라우저는 앞 줄을 쓴다. dvh 는 주소창이 접히고 펴질 때
+     따라 변해 아래가 잘리지 않는다. */
+  min-height: 100vh;
   min-height: 100dvh;
   max-width: 480px;
   margin: 0 auto;
+  /* viewport-fit=cover 라 화면이 노치·상태 표시줄 밑까지 깔린다. 그만큼
+     안으로 들인다 -- 홈 화면에 추가한 PWA 에서 맨 위 줄이 시계 밑에 숨었다.
+     안전 영역이 없는 기기에서는 0 이다. */
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
 }
 /* 맨 위 한 줄. 앞말은 물러나 있고 센터 이름만 로즈로 선다 -- 이름만 놓으면
    상호이고, 앞말이 서면 회원이 여기 오는 이유가 된다. */
 .head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   padding: 18px 24px 6px;
   font-size: 11px;
   letter-spacing: .14em;
   color: var(--faint);
 }
 .head b { margin-left: 5px; font-size: 12px; font-weight: 700; color: var(--rose); letter-spacing: .1em; }
+/* 머리줄과 같은 무게로 물러나 있다. 글자는 작아도 누르는 자리는 44px 이다. */
+.signout {
+  min-height: 44px;
+  margin: -12px -12px -12px 0;
+  padding: 0 12px;
+  border: 0;
+  background: transparent;
+  color: var(--sub);
+  font-family: inherit;
+  font-size: 12px;
+  letter-spacing: .02em;
+  white-space: nowrap;
+}
+/* 아래 112px 는 떠 있는 탭 자리다. 안전 영역은 .shell 이 이미 들였다. */
 .main { flex: 1; padding: 8px 24px 112px; }
 .stack > * + * { margin-top: 16px; }
 

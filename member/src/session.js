@@ -73,3 +73,30 @@ export function writeVerifiedAt(at, store) {
     /* 적지 못하면 다음에 다시 인증한다. 그것이 이 기능의 안전한 방향이다. */
   }
 }
+
+/** 이 앱이 기기에 적는 칸은 전부 이 이름으로 시작한다. */
+const MEMBER_KEY_PREFIX = "pilateacher.member.";
+
+/**
+ * 로그아웃할 때 기기에 남긴 것을 걷는다. 다음에 이 폰을 쥔 사람이 앞사람의
+ * 확인 시각을 물려받으면 90일 장치가 그 사람에게는 열린 채로 시작한다.
+ *
+ * 회원 연결(memberLinks)과 잔여(memberViews)는 기기에 캐시하지 않는다 --
+ * 매번 서버에서 읽는다. 그래서 걷을 것은 이 이름의 칸들뿐이다.
+ *
+ * @param {Storage} [store]
+ */
+export function clearMemberStorage(store) {
+  try {
+    const box = store || (typeof localStorage === "undefined" ? null : localStorage);
+    if (!box) return;
+    const keys = [];
+    for (let index = 0; index < box.length; index += 1) {
+      const key = box.key(index);
+      if (key && key.startsWith(MEMBER_KEY_PREFIX)) keys.push(key);
+    }
+    for (const key of keys) box.removeItem(key);
+  } catch (_error) {
+    /* 저장이 막힌 기기다. 거기엔 애초에 적힌 것도 없다. */
+  }
+}

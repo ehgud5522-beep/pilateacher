@@ -20,6 +20,7 @@ import {
   deleteMemberAccount, linkMemberAccount, resetRecaptcha, signOutMember, startPhoneSignIn,
   watchAuth, db,
 } from "./firebase.js";
+import { wantsAccountDeletion } from "./delete-account.js";
 import { LINK_RESULT, linkResultScreen } from "./link-result.js";
 import {
   MEMBER_FEATURE, MEMBER_STAGE, clearDiagnostics, readDiagnostics, recordDiagnostic,
@@ -31,7 +32,8 @@ import {
 } from "./resend.js";
 import { forgetDevice, needsReverification, readVerifiedAt, writeVerifiedAt } from "./session.js";
 import {
-  Diagnostics, History, Home, LinkNotice, LoadFailed, Loading, More, NotMigrated,
+  DeleteAccountGuide, Diagnostics, History, Home, LinkNotice, LoadFailed, Loading, More,
+  NotMigrated,
   Passes, Preparing, SlowConnection,
 } from "./screens.jsx";
 
@@ -45,6 +47,8 @@ const TABS = [
 ];
 
 const text = (value) => String(value ?? "").trim();
+/** 스토어에 올라가는 앱 이름 (member-app/capacitor.config.json 의 appName). */
+const APP_NAME = "보니따필라테스";
 const DEV = Boolean(import.meta.env?.DEV);
 
 export default function App() {
@@ -97,8 +101,11 @@ export default function App() {
       </Shell>
     );
   }
-  if (!user || stale) return <SignIn signedIn={Boolean(user)} />;
-  return <Member userId={user.uid} />;
+  /* `/delete-account` 로 왔으면 로그인 전에는 삭제 안내를, 로그인 뒤에는
+     삭제 버튼이 있는 더보기 탭을 먼저 연다 (플레이스토어 계정 삭제 URL). */
+  const deletion = wantsAccountDeletion(window.location.pathname);
+  if (!user || stale) return <SignIn signedIn={Boolean(user)} deletion={deletion} />;
+  return <Member userId={user.uid} initialTab={deletion ? "more" : "home"} />;
 }
 
 /**
@@ -163,7 +170,7 @@ function Shell({ children, footer, onSignOut }) {
 
 /* ── 번호 인증 ───────────────────────────────────────────────────────── */
 
-function SignIn({ signedIn }) {
+function SignIn({ signedIn, deletion = false }) {
   const [phone, setPhone] = useState("");
   const [code, setCode] = useState("");
   const [pending, setPending] = useState(null);
@@ -261,6 +268,9 @@ function SignIn({ signedIn }) {
 
   return (
     <Shell>
+      {deletion ? <div className="stack" style={{ marginBottom: 16 }}>
+        <DeleteAccountGuide appName={APP_NAME} />
+      </div> : null}
       <section className="card">
         <p className="serif" style={{ fontSize: TYPE.heading, lineHeight: 1.5 }}>
           {signedIn
@@ -314,9 +324,9 @@ function SignIn({ signedIn }) {
 
 /* ── 회원 화면 ───────────────────────────────────────────────────────── */
 
-function Member({ userId }) {
+function Member({ userId, initialTab = "home" }) {
   const [state, setState] = useState({ stage: "loading" });
-  const [tab, setTab] = useState("home");
+  const [tab, setTab] = useState(initialTab);
   const [place, setPlace] = useState(0);
   const [slow, setSlow] = useState(false);
 

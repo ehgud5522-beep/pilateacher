@@ -71,6 +71,19 @@ const text = (value) => String(value ?? "").trim();
  */
 export function scrubMessage(value) {
   return text(value)
+    /* 인증 값. Firebase 오류에 요청 주소가 실려 오면 `?key=AIza…` 가 붙고,
+       네이티브 문구에 토큰이 섞일 수도 있다. 웹 apiKey 는 비밀이 아니지만
+       캡처되어 돌아다닐 화면에 둘 이유도 없다. */
+    .replace(/AIza[0-9A-Za-z_-]{20,}/g, "[키]")
+    .replace(/\beyJ[0-9A-Za-z_-]{10,}(?:\.[0-9A-Za-z_-]+){0,2}/g, "[토큰]")
+    .replace(/\b(Bearer|token|access_token|id_token|key)([=:\s]+)[^\s&"']+/gi, "$1$2[토큰]")
+    /* 문서 경로는 모양만 남긴다. `memberViews/abc123…` 의 컬렉션 이름은 왜
+       거절됐는지 읽는 재료이고, 뒤의 id 는 사람을 가리킬 수 있는 값이다. */
+    /* 오류 코드(`auth/invalid-verification-code`)는 경로가 아니다 -- 낱말로만
+       된 것은 두고, 숫자가 섞인 12자 이상만 id 로 본다. */
+    .replace(/\b(?!auth\/)([A-Za-z]+)\/(?=[A-Za-z0-9_-]{12,}\b)(?=[A-Za-z_-]*\d)([A-Za-z0-9_-]+)/g, "$1/[id]")
+    // 그 밖의 긴 불투명 문자열 -- uid · verificationId 같은 것
+    .replace(/\b[A-Za-z0-9_-]{32,}\b/g, "[값]")
     // +8210... 같은 국제 표기
     .replace(/\+\d[\d\-\s]{6,}\d/g, "[번호]")
     // 010-0000-0000 · 01000000000

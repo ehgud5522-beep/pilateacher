@@ -24,7 +24,7 @@ import {
   runtimeInfo,
   scrubMessage,
 } from "../../member/src/diagnostics.js";
-import { DEVICE_KEYS } from "../../member/src/session.js";
+import { DEVICE_KEYS, forgetDevice } from "../../member/src/session.js";
 
 const NOW = new Date(2026, 8, 28, 9, 30, 0);
 const runtime = { platform: "ios", appVersion: "1.0.0", appCommit: "5be3511", builtAt: "", device: "iPhone" };
@@ -162,4 +162,38 @@ test("복사해서 보낼 한 덩어리", () => {
 
 test("계정을 지우면 진단도 걷는다", () => {
   assert.ok(DEVICE_KEYS.includes(DIAGNOSTIC_KEY));
+});
+
+test("키 · 토큰 · 문서 id 는 지우고 모양은 남긴다", () => {
+  const apiKey = `AIza${"S".repeat(35)}`;
+  const jwt = `eyJhbGciOiJSUzI1NiJ9.${"a".repeat(40)}.${"b".repeat(40)}`;
+  const uid = "Xq7Rk2mLp9TzW4vNb8cYd1Ef";
+  const scrubbed = scrubMessage([
+    `POST https://firestore.googleapis.com/v1/x?key=${apiKey} failed`,
+    `Authorization: Bearer ${jwt}`,
+    `Missing or insufficient permissions: memberViews/${uid}`,
+    `verificationId ${"V".repeat(40)} expired`,
+  ].join(" | "));
+  for (const secret of [apiKey, jwt, uid, "V".repeat(40)]) {
+    assert.ok(!scrubbed.includes(secret), secret.slice(0, 8));
+  }
+  // 왜 거절됐는지는 읽을 수 있어야 한다.
+  assert.match(scrubbed, /memberViews\/\[id\]/);
+  assert.match(scrubbed, /Missing or insufficient permissions/);
+  assert.match(scrubbed, /expired/);
+});
+
+test("오류 코드와 짧은 낱말은 지우지 않는다", () => {
+  const scrubbed = scrubMessage("Firebase: Error (auth/invalid-verification-code). confirm_code");
+  assert.equal(scrubbed, "Firebase: Error (auth/invalid-verification-code). confirm_code");
+});
+
+test("로그아웃해도 진단을 걷는다 — 다음 사람이 앞사람 기록을 보지 않게", () => {
+  const data = new Map([[DIAGNOSTIC_KEY, "[]"], ["pilateacher.member.diagnostics.old", "x"]]);
+  forgetDevice({
+    get length() { return data.size; },
+    key: (index) => [...data.keys()][index] ?? null,
+    removeItem: (key) => { data.delete(key); },
+  });
+  assert.equal(data.size, 0);
 });

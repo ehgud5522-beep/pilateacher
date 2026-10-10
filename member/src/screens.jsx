@@ -634,6 +634,36 @@ export function More({ view, now = new Date(), monthsBack = 0, onDeleteAccount }
  * 뒤에야 지우는 버튼이 나온다. 목록은 delete-account.js 에 있다 -- 서버가
  * 실제로 하는 일과 나란히 읽히도록.
  */
+/**
+ * 계정 삭제 안내 -- `/delete-account` 로 들어왔을 때 로그인 화면 위에 선다.
+ *
+ * 스토어 심사자와 앱을 지운 회원이 읽는 자리다. 로그인 없이도 어떻게
+ * 지우는지, 무엇이 사라지고 무엇이 남는지를 말한다. 목록은 실제 삭제 확인
+ * 화면과 같은 것을 쓴다 (delete-account.js) -- 두 곳의 말이 갈라지면 안 된다.
+ */
+export function DeleteAccountGuide({ appName }) {
+  return (
+    <Card className="danger">
+      <p className="cap">{text(appName) || "회원 앱"} 계정 삭제</p>
+      <ol className="bullets mt" style={{ fontSize: TYPE.caption }}>
+        <li>아래에서 센터에 등록된 휴대폰 번호로 로그인해요.</li>
+        <li>로그인하면 더보기 탭이 열려요. 맨 아래 "계정 삭제" 를 눌러요.</li>
+        <li>"네, 지울게요" 를 누르면 바로 지워져요.</li>
+      </ol>
+
+      <p className="mt" style={{ fontSize: TYPE.caption }}>사라지는 것</p>
+      <ul className="bullets">{DELETED_ITEMS.map((item) => <li key={item}>{item}</li>)}</ul>
+
+      <p className="mt" style={{ fontSize: TYPE.caption }}>그대로 남는 것</p>
+      <ul className="bullets">{KEPT_ITEMS.map((item) => <li key={item}>{item}</li>)}</ul>
+
+      <p className="muted mt" style={{ fontSize: TYPE.caption }}>
+        앱을 이미 지웠어도 이 페이지에서 지울 수 있어요. 로그인이 안 되면 센터에 말씀해 주세요.
+      </p>
+    </Card>
+  );
+}
+
 export function DeleteAccount({ onDelete }) {
   const [step, setStep] = useState(DELETE_STEP.IDLE);
   const [failure, setFailure] = useState("");

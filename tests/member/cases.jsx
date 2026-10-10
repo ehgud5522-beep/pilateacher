@@ -10,7 +10,7 @@
  */
 
 import {
-  DeleteAccount, Diagnostics, History, Home, LinkNotice, LoadFailed, Loading, More,
+  DeleteAccount, DeleteAccountGuide, Diagnostics, History, Home, LinkNotice, LoadFailed, Loading, More,
   NotMigrated, Passes, Preparing, SlowConnection,
 } from "../../member/src/screens.jsx";
 import { linkResultScreen } from "../../member/src/link-result.js";
@@ -131,6 +131,7 @@ export function memberScreenCases() {
       element: <More view={view({ history: STEADY })} now={NOW} onDeleteAccount={async () => {}} />,
     },
     { name: "계정 삭제 · 첫 화면", element: <DeleteAccount onDelete={async () => {}} /> },
+    { name: "계정 삭제 안내 (스토어 URL)", element: <DeleteAccountGuide appName="보니따필라테스" /> },
     { name: "연결이 늦다", element: <SlowConnection seconds={10} onRetry={() => {}} /> },
     { name: "진단 · 비어 있음", element: <Diagnostics entries={[]} onClose={() => {}} /> },
     {

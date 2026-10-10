@@ -107,3 +107,14 @@ test("계정만 안 지워진 것은 다른 말을 한다", () => {
 test("단계는 넷이다", () => {
   assert.deepEqual(Object.values(DELETE_STEP), ["idle", "confirm", "working", "failed"]);
 });
+
+test("계정 삭제 요청 URL 은 /delete-account 하나다", async () => {
+  const { DELETE_ACCOUNT_PATH, wantsAccountDeletion } = await import("../../member/src/delete-account.js");
+  assert.equal(DELETE_ACCOUNT_PATH, "/delete-account");
+  for (const path of ["/delete-account", "/delete-account/", "/Delete-Account"]) {
+    assert.equal(wantsAccountDeletion(path), true, path);
+  }
+  for (const path of ["/", "", null, "/delete", "/delete-account/x", "/more"]) {
+    assert.equal(wantsAccountDeletion(path), false, String(path));
+  }
+});

@@ -26,14 +26,30 @@ export const KEPT_ITEMS = Object.freeze([
   "남은 회원권과 이용 기록",
 ]);
 
+const text = (value) => String(value ?? "").trim();
+
+/**
+ * 계정 삭제를 요청하는 주소. 플레이스토어 "계정 삭제 요청 URL" 에 이것을 적는다.
+ *
+ * 스토어는 **앱을 깔지 않은 사람도** 이 주소에서 삭제 방법을 읽고 요청할 수
+ * 있기를 요구한다. 그래서 로그인 전에도 무엇이 지워지고 무엇이 남는지를
+ * 보여 주고, 로그인하면 삭제 버튼이 있는 탭(더보기)으로 바로 연다.
+ * 호스팅의 `** → /index.html` 이 이 경로를 앱으로 보낸다.
+ */
+export const DELETE_ACCOUNT_PATH = "/delete-account";
+
+/** 지금 주소가 계정 삭제 요청인가. 끝의 `/` 와 대소문자는 가리지 않는다. */
+export function wantsAccountDeletion(pathname) {
+  const path = text(pathname).toLowerCase().replace(/\/+$/, "");
+  return path === DELETE_ACCOUNT_PATH;
+}
+
 export const DELETE_STEP = Object.freeze({
   IDLE: "idle",
   CONFIRM: "confirm",
   WORKING: "working",
   FAILED: "failed",
 });
-
-const text = (value) => String(value ?? "").trim();
 
 /**
  * 실패를 회원이 읽을 말로. **코드는 언제나 함께 보인다.**

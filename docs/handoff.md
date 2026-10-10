@@ -32,7 +32,24 @@ PR #21(`9891991`) 병합 · 라이브 배포 · `/delete-account` 확인. 앱 �
 | 2. 네이티브 문자 인증 | 끝 — `google-services.json` 은 레포 밖 (`tools/member/google-services.mjs` 가 검사). 디버그 지문 · Play Integrity API 는 대표가 등록함 |
 | 3. 서명 키 | 끝 — 회원 앱 **전용** 업로드 키 `~/bonita-member-key/` (SHA-1 `4B:70:…:88:CA`). 지문은 `tools/member/upload-key.mjs` |
 | 4. Codemagic | 끝 — 워크플로 `member-android`, 그룹 `bonita_member_signing` (sign**ing**), 수동 실행만, AAB + APK, versionCode = 빌드 번호. 변수 다섯 개는 `member-app/README.md` |
-| 5. 디버그 APK 확인 | 남음 |
+| 5. 디버그 APK 확인 | 끝 — 로컬 디버그 APK · 서명된 AAB(versionCode 1) 확인. PR #60 (`[skip ci]` 병합) |
+| 6. Play 비공개 테스트 | **대기 — 업로드 키 재설정 승인** (아래) |
+
+**Play 업로드 키 재설정 요청함 (2026-10-10).** 첫 AAB 업로드가 "잘못된 키로
+서명됨" 으로 거절됐다. Play Console 의 보니따필라테스 앱이 **2026-09-28 에 강사
+앱 업로드 키(SHA-1 `17:07:22:…:7A:09`)로 이미 등록돼 있었다** -- PR #21 이
+"강사 앱과 같은 업로드 키" 였던 때 한 번 올라간 것이다. 설치자 0명이라 전용
+키로 바꾸기로 했다 (대표 결정). 앱 무결성 → 앱 서명 → 업로드 키 재설정 요청에
+`~/bonita-member-key/upload_certificate.pem` (SHA-1 `4B:70:…:88:CA`) 을 올렸다.
+
+- 승인(보통 1~2일) 메일에 적힌 시점 뒤에 로컬 AAB(versionCode 1)를 비공개
+  테스트에 올린다. 다시 빌드할 필요 없다
+- 승인되면 앱 서명 화면의 업로드 키 SHA-1 이 `4B:70:…` 로 바뀌었는지 본다
+- **승인 전에는 이 앱에 아무것도 올라가지 않는다.** Codemagic `member-android`
+  결과물도 같은 키라 마찬가지다
+- 로컬 AAB 를 먼저 올리면 Codemagic 빌드 번호가 1 보다 커야 Play 가 받는다
+- Play 앱 서명 키 SHA-1 · SHA-256 (앱 서명 화면 오른쪽 위) 을 Firebase
+  `com.bonitapilates.member` 에 등록할 것 -- 업로드 키 재설정과 무관하게 그대로다
 
 - 계정 삭제 요청 URL (Play Console 에 적는 것): https://pilateacher-member.web.app/delete-account
 - **보류 — Android API 키 제한. 강사 앱 Play 서명 SHA-1 포함 필수.**

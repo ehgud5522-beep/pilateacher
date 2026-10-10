@@ -31,7 +31,7 @@ PR #21(`9891991`) 병합 · 라이브 배포 · `/delete-account` 확인. 앱 �
 | 1. Capacitor 래핑 | 끝 — `member-app/`, 임시 아이콘(`member-app/resources/` → `npm run member:assets`) |
 | 2. 네이티브 문자 인증 | 끝 — `google-services.json` 은 레포 밖 (`tools/member/google-services.mjs` 가 검사). 디버그 지문 · Play Integrity API 는 대표가 등록함 |
 | 3. 서명 키 | 끝 — 회원 앱 **전용** 업로드 키 `~/bonita-member-key/` (SHA-1 `4B:70:…:88:CA`). 지문은 `tools/member/upload-key.mjs` |
-| 4. Codemagic | 남음 — 그룹 `bonita_member_signing` (sign**ing**), 수동 트리거, AAB + APK |
+| 4. Codemagic | 끝 — 워크플로 `member-android`, 그룹 `bonita_member_signing` (sign**ing**), 수동 실행만, AAB + APK, versionCode = 빌드 번호. 변수 다섯 개는 `member-app/README.md` |
 | 5. 디버그 APK 확인 | 남음 |
 
 - 계정 삭제 요청 URL (Play Console 에 적는 것): https://pilateacher-member.web.app/delete-account

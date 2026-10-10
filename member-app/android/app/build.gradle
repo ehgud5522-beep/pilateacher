@@ -17,7 +17,9 @@ android {
         applicationId "com.bonitapilates.member"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
+        /* Codemagic 이 빌드 번호를 넘긴다 (-PmemberVersionCode=$BUILD_NUMBER).
+           Play 는 같은 번호를 두 번 받지 않는다. 로컬은 1 이다. */
+        versionCode((project.findProperty('memberVersionCode') ?: '1') as Integer)
         versionName "1.0.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {

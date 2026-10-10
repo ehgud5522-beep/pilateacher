@@ -247,6 +247,48 @@ npm run member:assets
 | 계정 삭제 | `functions/src/member-account.js` · App Store 5.1.1(v) |
 | 오프라인 표시 | `member/src/offline-cache.js` · 14일까지, 나이를 함께 |
 
+## Android 빌드도 Codemagic 이 한다 — `member-android`
+
+**수동 실행만** (트리거 없음). Codemagic → 앱 → Start new build → 브랜치 →
+워크플로 **Bonita Member Android (AAB + APK)**. 결과물은 두 개다.
+
+| 파일 | 쓰는 곳 |
+| --- | --- |
+| `app-release.aab` | Play Console 에 올린다 (대표가 직접) |
+| `app-release.apk` | 폰에 바로 깔아 본다. 업로드 키로 서명돼 있다 |
+
+versionCode 는 Codemagic 빌드 번호다 (`-PmemberVersionCode=$BUILD_NUMBER`).
+로컬 빌드는 1 이다. versionName 은 `member-app/android/app/build.gradle` 에서
+손으로 올린다.
+
+### 환경변수 그룹 `bonita_member_signing`
+
+**sign-ing 이다.** 강사 앱 때 `singing` 으로 적어 아홉 번 실패했다. 이름이
+틀리면 Codemagic 은 그룹을 못 찾았다고 말하지 않고 변수가 빈 채로 빌드를
+시작한다 -- 그래서 워크플로 첫 단계가 다섯 변수가 다 있는지부터 본다.
+
+| 변수 | 값 | Secure |
+| --- | --- | --- |
+| `MEMBER_KEYSTORE_BASE64` | `bonita-member-upload.keystore` 를 base64 로 | ✔ |
+| `MEMBER_KEYSTORE_PASSWORD` | `~/bonita-member-key/keystore.properties` 의 `storePassword` | ✔ |
+| `MEMBER_KEY_ALIAS` | `bonita-member-upload` | |
+| `MEMBER_KEY_PASSWORD` | 같은 파일의 `keyPassword` (저장소 비밀번호와 같다) | ✔ |
+| `MEMBER_GOOGLE_SERVICES_JSON` | `member-app/android/app/google-services.json` 을 base64 로 | ✔ |
+
+base64 는 PowerShell 에서 이렇게 만들어 클립보드에 넣는다 (화면에 찍지 않는다):
+
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("$HOME\bonita-member-key\bonita-member-upload.keystore")) | Set-Clipboard
+```
+
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("member-app\android\app\google-services.json")) | Set-Clipboard
+```
+
+워크플로는 키를 빌드 폴더 밖에 풀고, 서명 지문이 `tools/member/upload-key.mjs`
+와 같은지 보고, APK 의 패키지 이름과 versionCode 를 확인한 뒤, 끝나면 키와
+설정 파일을 지운다.
+
 ## iOS 빌드는 Codemagic 이 한다
 
 대표 PC 는 Windows 라 Xcode 가 없다. `codemagic.yaml` 에 워크플로가 **둘**이다.

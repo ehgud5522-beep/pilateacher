@@ -73,7 +73,9 @@ if (!existsSync(androidRoot)) {
 
 const gradle = readFileSync(path.join(androidRoot, "app", "build.gradle"), "utf8");
 const applicationId = gradle.match(/applicationId\s+"([^"]+)"/)?.[1] ?? "?";
-const declaredCode = gradle.match(/versionCode\s+(\d+)/)?.[1] ?? "?";
+/* versionCode 는 Codemagic 이 -PmemberVersionCode 로 넘긴다. 로컬에서는 기본값이다. */
+const declaredCode = gradle.match(/findProperty\('memberVersionCode'\) \?: '(\d+)'/)?.[1]
+  ?? gradle.match(/versionCode\s+(\d+)/)?.[1] ?? "?";
 const declaredName = gradle.match(/versionName\s+"([^"]+)"/)?.[1] ?? "?";
 
 /* 강사 앱을 만들고 있는 것이 아닌지 여기서 멈춘다. 이름이 비슷한 두 명령이

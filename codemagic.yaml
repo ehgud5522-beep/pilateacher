@@ -529,3 +529,128 @@ workflows:
         # 쪽 이름과 다를 때 매 빌드가 조용히 실패한다 -- 강사 앱에서
         # 'Internal' 로 실제로 그랬고, 그 이름의 그룹은 없었다. 내부 그룹에는
         # App Store Connect 의 "자동으로 새 빌드 배포" 로 보낸다.
+
+  # ── 회원 앱 Android ─────────────────────────────────────────────────────
+  # AAB(Play 업로드용) 과 APK(폰에 직접 깔아 보는 용)를 만든다. **올리지는
+  # 않는다** -- Play 업로드는 대표가 한다 (CLAUDE.md: 스토어 업로드는 지시가
+  # 있을 때만).
+  #
+  # 트리거가 없다 = **수동 실행만.** Codemagic 화면에서 브랜치를 골라 누른다.
+  # 위 두 iOS 워크플로는 main push 로 돌지만 이것은 돌지 않는다 -- 자동 배포는
+  # 나중에 정한다.
+  #
+  # 서명과 Firebase 설정은 저장소에 없다. 전부 그룹 bonita_member_signing 에서
+  # 온다. **sign-ing 이다** -- 강사 앱 때 그룹 이름을 singing 으로 적어 아홉 번
+  # 실패했다. 이름이 틀리면 Codemagic 은 그룹을 못 찾았다고 말하지 않고, 변수가
+  # 비어 있는 채로 빌드가 시작된다. 그래서 첫 단계가 변수부터 본다.
+  member-android:
+    name: Bonita Member Android (AAB + APK)
+    max_build_duration: 45
+    instance_type: linux_x2
+
+    environment:
+      node: 22
+      java: 21
+      groups:
+        - bonita_member_signing
+      vars:
+        PACKAGE_NAME: "com.bonitapilates.member"
+
+    scripts:
+      - name: 서명 · Firebase 변수가 다 있는지 먼저 본다
+        script: |
+          set -euo pipefail
+          missing=""
+          for name in MEMBER_KEYSTORE_BASE64 MEMBER_KEYSTORE_PASSWORD MEMBER_KEY_ALIAS MEMBER_KEY_PASSWORD MEMBER_GOOGLE_SERVICES_JSON; do
+            if [ -z "${!name:-}" ]; then missing="$missing $name"; fi
+          done
+          if [ -n "$missing" ]; then
+            echo "[MEMBER_SIGNING_VARS_MISSING] 비어 있는 변수:$missing"
+            echo "  그룹 이름이 bonita_member_signing 인지(singing 아님), 변수가 그 그룹에 있는지 보세요."
+            exit 1
+          fi
+          # 별칭이 회원 앱 키인가. 강사 앱 키를 올리면 여기서 걸린다.
+          test "$MEMBER_KEY_ALIAS" = "bonita-member-upload" || {
+            echo "[WRONG_KEY_ALIAS] 별칭이 bonita-member-upload 가 아닙니다."; exit 1; }
+
+      - name: Install npm packages
+        script: npm ci
+
+      - name: 회원 앱을 만들고 있는지 본다
+        script: |
+          set -euo pipefail
+          test "$PACKAGE_NAME" = "com.bonitapilates.member"
+          grep -q 'applicationId "com.bonitapilates.member"' member-app/android/app/build.gradle
+          node -e "const c=require('./member-app/capacitor.config.json');if(c.appId!=='com.bonitapilates.member')process.exit(1)"
+
+      - name: google-services.json 을 놓고 회원 앱 것인지 본다
+        # 저장소에 없다. Gradle 은 이 파일이 없으면 **경고만 남기고 Firebase
+        # 없이 빌드한다** -- 그 앱은 열리고, 문자 인증만 안 된다.
+        script: |
+          set -euo pipefail
+          echo "$MEMBER_GOOGLE_SERVICES_JSON" | base64 --decode > member-app/android/app/google-services.json
+          node tools/member/google-services.mjs
+
+      - name: 업로드 키를 놓는다
+        # 키와 비밀번호는 빌드 폴더 밖에 두고, 로그에 찍지 않는다.
+        script: |
+          set -euo pipefail
+          KEYSTORE="$HOME/bonita-member-upload.keystore"
+          echo "$MEMBER_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE"
+          test -s "$KEYSTORE"
+          {
+            echo "storeFile=$KEYSTORE"
+            echo "storePassword=$MEMBER_KEYSTORE_PASSWORD"
+            echo "keyAlias=$MEMBER_KEY_ALIAS"
+            echo "keyPassword=$MEMBER_KEY_PASSWORD"
+          } > member-app/android/keystore.properties
+          chmod 600 "$KEYSTORE" member-app/android/keystore.properties
+
+      - name: Build member web and sync android
+        # 웹 빌드(typecheck · lint · 전체 테스트 포함)와 cap sync. cap 은
+        # member-app 안에서만 돈다 (tools/member/sync.mjs).
+        script: |
+          set -euo pipefail
+          npm run member:sync
+          # 강사 앱을 건드리지 않았는가.
+          test -z "$(git status --porcelain android/ ios/)"
+
+      - name: AAB 와 APK
+        # versionCode 는 이 워크플로의 빌드 번호다 -- Play 는 같은 번호를 두 번
+        # 받지 않는다. 손으로 올리는 번호는 올리는 것을 잊은 날 조용히 틀린다.
+        script: |
+          set -euo pipefail
+          cd member-app/android
+          chmod +x gradlew
+          ./gradlew bundleRelease assembleRelease --console=plain \
+            -PmemberVersionCode="$BUILD_NUMBER"
+
+      - name: 서명과 번호를 확인한다
+        script: |
+          set -euo pipefail
+          AAB=member-app/android/app/build/outputs/bundle/release/app-release.aab
+          APK=member-app/android/app/build/outputs/apk/release/app-release.apk
+          test -s "$AAB"
+          test -s "$APK"
+          # 회원 앱 업로드 키로 서명됐는가 (tools/member/upload-key.mjs 의 지문).
+          keytool -printcert -jarfile "$AAB" > /tmp/aab-cert.txt
+          node --input-type=module -e "
+            import { readFileSync } from 'node:fs';
+            import { checkUploadSignature } from './tools/member/upload-key.mjs';
+            const result = checkUploadSignature(readFileSync('/tmp/aab-cert.txt', 'utf8'));
+            console.log('AAB 서명 SHA1:', result.found || '(없음)');
+            if (!result.ok) { console.error('[' + result.code + '] 회원 앱 업로드 키가 아닙니다.'); process.exit(1); }
+          "
+          BUILD_TOOLS="$(ls -d "$ANDROID_SDK_ROOT"/build-tools/* | sort -V | tail -1)"
+          "$BUILD_TOOLS/aapt2" dump badging "$APK" | head -1
+          "$BUILD_TOOLS/aapt2" dump badging "$APK" | grep -q "package: name='com.bonitapilates.member' versionCode='$BUILD_NUMBER'"
+          "$BUILD_TOOLS/apksigner" verify --print-certs "$APK" | grep -i "SHA-1"
+
+      - name: 남은 비밀을 걷는다
+        script: |
+          rm -f "$HOME/bonita-member-upload.keystore" member-app/android/keystore.properties member-app/android/app/google-services.json
+
+    artifacts:
+      - member-app/android/app/build/outputs/bundle/release/*.aab
+      - member-app/android/app/build/outputs/apk/release/*.apk
+      - member-app/android/app/build/outputs/mapping/release/mapping.txt

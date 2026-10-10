@@ -368,7 +368,11 @@ test("두 워크플로 다 그룹 이름을 박지 않는다", async () => {
   const yamlText = await read("codemagic.yaml");
   assert.doesNotMatch(yamlText, /beta_groups:/);
   const all = await workflows();
-  for (const [key, wf] of Object.entries(all)) {
+  /* App Store Connect 로 올리는 워크플로만 본다. 회원 앱 Android 는 아무 데도
+     올리지 않는다 (member-android-codemagic.test.js). */
+  const ios = Object.entries(all).filter(([, wf]) => wf.publishing?.app_store_connect);
+  assert.deepEqual(ios.map(([key]) => key).sort(), ["ios-testflight", "member-ios-testflight"]);
+  for (const [key, wf] of ios) {
     const publish = wf.publishing.app_store_connect;
     assert.equal(publish.submit_to_testflight, false, key);
     assert.equal(publish.submit_to_app_store, false, key);

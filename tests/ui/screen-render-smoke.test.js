@@ -113,6 +113,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 앱 업데이트 안내",
     "더보기 탭 · 만료일 순서 확인",
     "더보기 탭 · 묶음 펼침",
+    "더보기 탭 · 강사 이름 확정",
+    "더보기 탭 · 강사 이름 확정 · 할 것 없음",
     "더보기 탭 · 묶음 펼침 · 매니저",
     "더보기 탭 · 묶음 펼침 · 강사",
     "더보기 탭 · 묶음 펼침 · 총괄매니저",
@@ -2104,6 +2106,27 @@ test("a role that sees none of a group never sees its heading", async (t) => {
   assert.equal(instructor.includes("강사 · 급여"), false);
   assert.equal(instructor.includes("대표 설정"), false);
   assert.equal(instructor.includes("점검"), false);
+});
+
+test("confirming instructor names says what will freeze, before it freezes", async (t) => {
+  /* 되돌리는 문이 없다 -- 되돌리려면 한 사람씩 강사 관리에서 다시 저장해야
+     한다. 그러니 **무엇이 굳는지**가 누르기 전에 보여야 하고, 이미 되돌아간
+     이름("e asy")이 섞여 있으면 그것이 굳는다는 말도 같은 화면에 있어야 한다. */
+  const markupOf = await issueScreens(t);
+  const card = markupOf("더보기 탭 · 강사 이름 확정");
+
+  assert.match(card, /강사 이름 확정/);
+  assert.match(card, /지금 적혀 있는 이름을 그대로 확정합니다/);
+  assert.match(card, /이름을 바꾸지 않습니다/);
+  assert.match(card, /그 이름이 굳습니다/);
+  // 미리보기 버튼이 먼저다. 목록 없이 확정을 누를 수 없다.
+  assert.match(card, /누가 확정되는지 보기/);
+});
+
+test("a centre with nothing left to confirm says so instead of looking broken", async (t) => {
+  const markupOf = await issueScreens(t);
+  const card = markupOf("더보기 탭 · 강사 이름 확정 · 할 것 없음");
+  assert.match(card, /확정할 것이 없습니다/);
 });
 
 test("the app update card starts empty and says so", async (t) => {

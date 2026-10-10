@@ -39,6 +39,7 @@ import {
   fbFixMigratedServiceSessions,
   fbLoadAppUpdateConfig,
   fbSwapInstructorAccount,
+  fbConfirmInstructorNames,
   fbUpdateRuntimeConfig,
   fbHandoverPass,
   fbSessionUpPass,
@@ -21075,6 +21076,128 @@ function ExpiryOrderReview({ organization, passStore, clientStore, onOpenClient,
  * 쓰기는 대표 전용 통로로만 간다 -- 규칙은 이 문서들의 쓰기를 닫아 두었다
  * (functions/src/runtime-config-admin.js).
  */
+/**
+ * 강사 이름 확정 — **한 번 누르는 버튼이다.**
+ *
+ * 2026-10-10 까지 강사 앱은 열릴 때마다 로그인 계정 이름을 소속 문서에 덮어
+ * 썼다. 그래서 대표가 고친 이름이 매번 되돌아갔다 ("e asy").
+ *
+ * 고친 뒤로는 "대표가 정했다" 는 표시가 그 문을 닫는데, **이미 있는 소속에는
+ * 그 표시가 없다.** 붙는 길은 대표가 한 사람씩 강사 관리에서 다시 저장하는
+ * 것뿐이고, 열 명 중 하나를 빠뜨리면 그 사람만 계속 되돌아간다 -- 왜 그
+ * 사람만인지는 화면 어디에도 없다.
+ *
+ * 그래서 한 번에 찍는다. **이름은 바꾸지 않는다** -- 지금 적혀 있는 글자를
+ * 그대로 확정하므로, 이미 되돌아간 이름이 있으면 그것이 굳는다. 목록을 먼저
+ * 보여주고 대표가 정한다.
+ */
+function InstructorNameConfirm({ organization, onPreview, onConfirm, onToast, initialState = null }) {
+  const [plan, setPlan] = useState(initialState?.plan || null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(initialState?.error || "");
+  const [done, setDone] = useState(initialState?.done || 0);
+  const organizationId = organization?.organizationId || "";
+  const locked = organization?.status === "unknown";
+
+  const run = async (confirm) => {
+    if (!organizationId || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const result = confirm
+        ? await onConfirm?.(organizationId)
+        : await onPreview?.(organizationId);
+      setPlan(result || null);
+      if (confirm) {
+        setDone(Number(result?.applied) || 0);
+        onToast?.({ ok: true, msg: `${Number(result?.applied) || 0}명의 이름을 확정했습니다.` });
+      }
+    } catch (thrown) {
+      setError(String(thrown?.code || thrown?.message || "unknown"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (locked) return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>소속을 확인하지 못했습니다</h2>
+    </section>
+  );
+
+  return (
+    <section data-instructor-name-confirm style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>강사 이름 확정</h2>
+      <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        강사 앱이 열릴 때마다 로그인 계정 이름으로 되돌아가던 것을 막습니다.
+        {" "}<b style={{ color: INK }}>지금 적혀 있는 이름을 그대로 확정합니다</b> — 이름을 바꾸지 않습니다.
+      </p>
+      <p className="mt-1.5" style={{
+        padding: "10px 11px", borderRadius: 10, backgroundColor: WARN_S,
+        fontSize: TYPE.caption, lineHeight: 1.5, color: INK,
+      }}>
+        이미 되돌아간 이름이 있으면 <b>그 이름이 굳습니다.</b> 아래 목록을 보고,
+        {" "}고칠 것이 있으면 강사 관리에서 먼저 고친 뒤 다시 누르세요.
+      </p>
+
+      {error ? (
+        <p role="alert" className="mt-2" style={{ fontSize: TYPE.caption, color: BAD }}>
+          처리하지 못했어요 (코드 {error}).
+        </p>
+      ) : null}
+
+      {plan ? (
+        <div className="mt-3">
+          <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>
+            확정할 강사 {plan.counts?.targets ?? 0}명
+            {plan.counts?.already ? ` · 이미 확정됨 ${plan.counts.already}명` : ""}
+            {plan.counts?.noName ? ` · 이름 없음 ${plan.counts.noName}명` : ""}
+          </p>
+          {(plan.targets || []).map((item) => (
+            <p key={item.userId} className="mt-1" style={{ fontSize: TYPE.caption, color: INK2 }}>
+              {item.displayName}
+            </p>
+          ))}
+          {(plan.targets || []).length === 0 ? (
+            <p className="mt-1" style={{ fontSize: TYPE.caption, color: GOOD }}>
+              확정할 것이 없습니다. 재직 중인 강사의 이름이 모두 확정돼 있습니다.
+            </p>
+          ) : null}
+          {/* 이름 없는 소속은 건너뛴다. 찍어도 목록은 uid 로 서고, 로그인
+              동기화가 채울 길만 막는다. */}
+          {plan.counts?.noName ? (
+            <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+              이름이 비어 있는 {plan.counts.noName}명은 건너뜁니다 — 강사 관리에서 이름을 넣어 주세요.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button type="button" disabled={busy} onClick={() => run(false)}
+          className="h-11 flex-1 font-bold" style={{
+            borderRadius: 10, backgroundColor: CANVAS, color: SUB,
+            fontSize: TYPE.caption, minWidth: 120, opacity: busy ? 0.6 : 1,
+          }}>{busy ? "확인 중" : "누가 확정되는지 보기"}</button>
+        {/* 미리보기를 거치지 않으면 누를 수 없다. 되돌리는 문이 없는 쪽을
+            목록 없이 누르게 두지 않는다. */}
+        <button type="button" disabled={busy || !plan || (plan.targets || []).length === 0}
+          onClick={() => run(true)}
+          className="h-11 flex-1 font-bold" style={{
+            borderRadius: 10, backgroundColor: TINT, color: BRAND_D,
+            fontSize: TYPE.caption, minWidth: 120,
+            opacity: busy || !plan || (plan.targets || []).length === 0 ? 0.45 : 1,
+          }}>확정</button>
+      </div>
+      {done > 0 ? (
+        <p className="mt-2" style={{ fontSize: TYPE.caption, color: GOOD }}>
+          {done}명을 확정했습니다. 이제 그 이름은 강사가 앱을 열어도 되돌아가지 않습니다.
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
 function AppUpdateAdmin({ organization, instructorStore, onLoadConfig, onSaveConfig, onRetryOrganization }) {
   const [instructors, setInstructors] = useState([]);
   const [draft, setDraft] = useState(draftFromConfig(null));
@@ -22160,7 +22283,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
      두 화면이 서로 다른 순간의 원장을 보게 되고, 그 차이는 아무 데도 적히지
      않는다 -- 같은 객체를 쓰면 다를 수가 없다. */
   instructorPay = null, payMonth = "", payLoading = false, payError = "",
-  onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, onRestorePrevious, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, payrollStore, issueStore, auditStore, ledgerStore, onRetryOrganization, onOpenClient, onClearMigratedSettlements, onLoadRuntimeConfig, onSaveRuntimeConfig, onSwapInstructorAccount, initialView = "hub", initialOpenGroups = null }) {
+  onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, onRestorePrevious, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, payrollStore, issueStore, auditStore, ledgerStore, onRetryOrganization, onOpenClient, onClearMigratedSettlements, onLoadRuntimeConfig, onSaveRuntimeConfig, onSwapInstructorAccount, onPreviewInstructorNames, onConfirmInstructorNames, initialView = "hub", initialOpenGroups = null, nameConfirmState = null }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const organization = useContext(OrganizationContext);
 
@@ -22454,7 +22577,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
     return total;
   }, [db.schedule, db.members, db.settings, reportYm]);
   const detailTitles = {
-    report: "월간 리포트", expiry: "만료 회원", "instructor-scope": "담당 강사", "app-update": "앱 업데이트 안내", "expiry-order": "만료일 순서 확인", assessment: "변화 기록 설정", center: "센터 정보", theme: "화면 설정", "schedule-colors": "일정 색상",
+    report: "월간 리포트", expiry: "만료 회원", "instructor-scope": "담당 강사", "app-update": "앱 업데이트 안내", "name-confirm": "강사 이름 확정", "expiry-order": "만료일 순서 확인", assessment: "변화 기록 설정", center: "센터 정보", theme: "화면 설정", "schedule-colors": "일정 색상",
     data: "데이터 상태", backup: "데이터 이관 · 백업", permissions: "접근권한 안내", knowledge: "오늘의 지식", account: "계정", "account-delete": "계정 삭제", app: "앱 정보",
     products: "회원권 상품",
     clients: "회원 관리",
@@ -22520,6 +22643,9 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
        가 아니라 **지나다 누를 자리에 두지 않으려고** 다. */
     { label: "대표 설정", collapsible: true, items: [
       ...(showAppUpdate ? [{ key: "app-update", title: "앱 업데이트 안내", description: "새 버전 알림 · 옛 앱 차단 · 강사 버전", Icon: Smartphone }] : []),
+      /* 한 번 누르는 버튼이다. 고친 뒤에 붙은 소속에는 표시가 저절로 들어가므로
+         이 화면은 **이미 있던 강사들**만을 위한 것이다. */
+      ...(showAppUpdate ? [{ key: "name-confirm", title: "강사 이름 확정", description: "로그인 때마다 되돌아가던 이름 고정", Icon: Users }] : []),
       ...(showMigration ? [{ key: "migration", title: "이관 데이터", description: "쓰던 엑셀의 회원 · 회원권 올리기", Icon: Upload }] : []),
     ] },
   ].filter((group) => group.items.length > 0);
@@ -22911,6 +23037,10 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
           <ExpiryReportScreen organization={organization} currentUserId={account?.id || ""}
             clientStore={clientStore} passStore={passStore} instructorStore={instructorStore}
             onRetryOrganization={onRetryOrganization} />
+        )}
+        {view === "name-confirm" && showAppUpdate && (
+          <InstructorNameConfirm organization={organization} initialState={nameConfirmState}
+            onPreview={onPreviewInstructorNames} onConfirm={onConfirmInstructorNames} onToast={onToast} />
         )}
         {view === "app-update" && showAppUpdate && (
           <AppUpdateAdmin organization={organization} instructorStore={instructorStore}
@@ -23691,6 +23821,25 @@ export function createAppScreenSmokeCases() {
     /* 접는 묶음을 펼친 화면. 접힌 상태로는 그 항목이 한 번도 그려지지 않아,
        "대표에게만 보인다" 를 확인할 자리가 없다. */
     { name: "더보기 탭 · 묶음 펼침", element: settingsTab(smokeOwner, { initialOpenGroups: ALL_MENU_GROUPS_OPEN }) },
+    /* 강사 이름 확정. 되돌리는 문이 없으므로 **무엇이 굳는지**가 누르기 전에
+       화면에 있어야 한다 -- 이미 되돌아간 이름이 섞여 있으면 그것이 굳는다. */
+    { name: "더보기 탭 · 강사 이름 확정", element: settingsTab(smokeOwner, {
+      initialView: "name-confirm",
+      onPreviewInstructorNames: async () => ({
+        counts: { targets: 2, skipped: 2, already: 1, noName: 1 },
+        targets: [{ userId: "u1", displayName: "정예진" }, { userId: "u2", displayName: "e asy" }],
+        skipped: [],
+      }),
+      onConfirmInstructorNames: async () => ({ applied: 2, counts: { targets: 2, skipped: 2, already: 1, noName: 1 }, targets: [] }),
+    }) },
+    /* 이미 다 찍은 센터. 누를 것이 없다는 말이 화면에 있어야 "고장인가" 가
+       되지 않는다. */
+    { name: "더보기 탭 · 강사 이름 확정 · 할 것 없음", element: settingsTab(smokeOwner, {
+      initialView: "name-confirm",
+      nameConfirmState: { plan: {
+        counts: { targets: 0, skipped: 3, already: 3, noName: 0 }, targets: [], skipped: [],
+      } },
+    }) },
     { name: "더보기 탭 · 묶음 펼침 · 매니저", element: settingsTab({ ...smokeOwner, role: "manager" }, { initialOpenGroups: ALL_MENU_GROUPS_OPEN }) },
     { name: "더보기 탭 · 묶음 펼침 · 강사", element: settingsTab({ ...smokeOwner, role: "instructor" }, { initialOpenGroups: ALL_MENU_GROUPS_OPEN }) },
     { name: "더보기 탭 · 묶음 펼침 · 총괄매니저", element: settingsTab({ ...smokeOwner, role: "area_manager" }, { initialOpenGroups: ALL_MENU_GROUPS_OPEN }) },
@@ -26040,6 +26189,18 @@ export default function App() {
     [organizationContext.organizationId],
   );
 
+  /* 강사 이름 확정. confirm 없이는 미리보기다 -- 센터 전체의 이름을 한 번에
+     굳히는 일이고, 되돌리려면 한 사람씩 강사 관리에서 다시 저장해야 한다
+     (functions/shared/instructor-names.mjs). */
+  const previewInstructorNames = useCallback(
+    (organizationId) => fbConfirmInstructorNames({ organizationId }),
+    [],
+  );
+  const confirmInstructorNames = useCallback(
+    (organizationId) => fbConfirmInstructorNames({ organizationId, confirm: true }),
+    [],
+  );
+
   const saveRuntimeConfig = useCallback(
     (organizationId, document, value) => fbUpdateRuntimeConfig({ organizationId, document, value }),
     [],
@@ -27650,7 +27811,7 @@ export default function App() {
               }} />}
             {tab === "settings" && <ReferenceSettingsTab db={db} photos={photos} account={account} savedAt={savedAt} demoMode={demoMode}
               instructorPay={instructorPay} payMonth={payMonth} payLoading={payLoading} payError={payError} onChangeSettings={(s) => saveDb({ ...db, settings: s })} onChangePhoto={changePhoto} onToast={setToast} themePref={themePref} onChangeTheme={changeTheme} onLogout={handleLogout} onDeleteAccount={handleDeleteAccount} onImport={importHandoff}
-              onOpenSchedule={() => { setScheduleQuickAddRequest((request) => request + 1); setTab("schedule"); }} onOpenRecords={() => { setMobileView("list"); setTab("members"); }} onOpenOnboarding={openOnboardingReplay} onOpenLessonExamples={() => setLessonExamplesOpen(true)} backupStatus={cloudBackupStatus} onEnablePhotoBackup={enablePhotoBackup} onRetryBackup={retryCloudBackup} onRestorePrevious={openPreviousPhoneRestore} onRetryOrganization={retryOrganizationContext} onLoadRuntimeConfig={loadRuntimeConfig} onSaveRuntimeConfig={saveRuntimeConfig} onSwapInstructorAccount={swapInstructorAccount} onOpenClient={(picked) => setDetailClient(picked)} onClearMigratedSettlements={clearMigratedSettlements} />}
+              onOpenSchedule={() => { setScheduleQuickAddRequest((request) => request + 1); setTab("schedule"); }} onOpenRecords={() => { setMobileView("list"); setTab("members"); }} onOpenOnboarding={openOnboardingReplay} onOpenLessonExamples={() => setLessonExamplesOpen(true)} backupStatus={cloudBackupStatus} onEnablePhotoBackup={enablePhotoBackup} onRetryBackup={retryCloudBackup} onRestorePrevious={openPreviousPhoneRestore} onRetryOrganization={retryOrganizationContext} onLoadRuntimeConfig={loadRuntimeConfig} onSaveRuntimeConfig={saveRuntimeConfig} onSwapInstructorAccount={swapInstructorAccount} onPreviewInstructorNames={previewInstructorNames} onConfirmInstructorNames={confirmInstructorNames} onOpenClient={(picked) => setDetailClient(picked)} onClearMigratedSettlements={clearMigratedSettlements} />}
           </Guard>
         </div>
         {/* 출석 체크는 일정 탭 위에 시트로 뜬다. 탭 구조를 건드리지 않으면서

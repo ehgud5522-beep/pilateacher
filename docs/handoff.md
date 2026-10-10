@@ -21,6 +21,32 @@ Claude Code · Codex 가 새 세션을 열면 이 파일부터 읽는다. 작업
 - 규칙 배포는 따로다: `npm run test:rules` 통과 후
   `npx firebase deploy --only firestore:rules --project pilateacher --config firebase.foundation.json`
 
+## 회원 앱 Android 출시 준비 (2026-10-10) · PR #21 병합 → `feat/member-android-signing`
+
+PR #21(`9891991`) 병합 · 라이브 배포 · `/delete-account` 확인. 앱 이름
+"보니따필라테스", 앱 ID `com.bonitapilates.member` (iOS · Android 같게).
+
+| 단계 | 상태 |
+| --- | --- |
+| 1. Capacitor 래핑 | 끝 — `member-app/`, 임시 아이콘(`member-app/resources/` → `npm run member:assets`) |
+| 2. 네이티브 문자 인증 | 끝 — `google-services.json` 은 레포 밖 (`tools/member/google-services.mjs` 가 검사). 디버그 지문 · Play Integrity API 는 대표가 등록함 |
+| 3. 서명 키 | 끝 — 회원 앱 **전용** 업로드 키 `~/bonita-member-key/` (SHA-1 `4B:70:…:88:CA`). 지문은 `tools/member/upload-key.mjs` |
+| 4. Codemagic | 남음 — 그룹 `bonita_member_signing` (sign**ing**), 수동 트리거, AAB + APK |
+| 5. 디버그 APK 확인 | 남음 |
+
+- 계정 삭제 요청 URL (Play Console 에 적는 것): https://pilateacher-member.web.app/delete-account
+- **보류 — Android API 키 제한. 강사 앱 Play 서명 SHA-1 포함 필수.**
+  `Android key (auto created by Firebase)` 는 **강사 앱과 회원 앱이 같이 쓰는
+  키**다. 회원 앱 출시 후에 제한한다. 제한할 때 Android 앱 목록에
+  `com.pilateacher.app` (업로드 SHA-1 `17:07:22:…:7a:09` + **Play 앱 서명
+  SHA-1**) 과 `com.bonitapilates.member` (디버그 · 업로드 · Play 앱 서명 SHA-1)
+  를 **모두** 넣는다. 강사 앱 Play 서명 SHA-1 이 빠지면 스토어로 받은 강사 앱
+  로그인이 바로 막힌다. 웹 키(`AIzaSyABFq…`)는 다른 키라 상관없다.
+- 회원 앱 Firebase 지문: 업로드 키 SHA-1 · SHA-256 을 대표가 등록해야 한다
+  (3단계 보고). Play 앱 서명 키 지문은 첫 AAB 업로드 뒤.
+- PR #21 의 옛 결정 두 개를 뒤집었다: "강사 앱과 같은 업로드 키" → 전용 키,
+  "google-services.json 을 레포에" → 레포 밖. 이력은 정리하지 않는다 (대표 결정).
+
 ## 회원 앱 — 번호 인증 오류 · 안전 영역 · 로그아웃 (2026-10-10) · PR #57
 
 회원 앱(`member/`)만 고쳤다. 강사 앱 번들은 그대로다.
@@ -74,13 +100,11 @@ Firebase 프로젝트, 다른 번들이다. 경계와 빌드 명령은
 
 ### 대표가 콘솔에서 할 일 — 이것 없이는 문자 인증이 reCAPTCHA 로 되돌아간다
 
-1. **Firebase 콘솔 → 프로젝트 설정 → `com.bonitapilates.member`(Android) →
-   SHA 인증서 지문 추가.** 강사 앱과 같은 업로드 키이므로 지문도 같다
-   (SHA-1 `17:07:22:…:7a:09`). 등록 후 `google-services.json` 을 다시 받아
-   `member-app/android/app/` 에 덮어쓴다
+1. ~~강사 앱과 같은 업로드 키~~ — **2026-10-10 에 전용 키로 바뀌었다** (위
+   "회원 앱 Android 출시 준비" 절). 지문은 `tools/member/upload-key.mjs`
 2. **APNs 인증 키 등록** (iOS). Firebase 콘솔 → 클라우드 메시징 → Apple 앱 구성
-3. **`member-app/android/keystore.properties`** 를 만든다 (`android/` 의 것과
-   같은 모양, 저장소에 안 들어간다)
+3. ~~`member-app/android/keystore.properties` 를 만든다~~ — 만들었다
+   (`~/bonita-member-key/keystore.properties` 의 사본)
 4. 심사용 테스트 번호는 **Firebase 콘솔에서만** 등록한다 — 코드·문서에 적지
    않는다
 

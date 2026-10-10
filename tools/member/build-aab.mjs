@@ -17,6 +17,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { javaTool, useJava } from "../java-home.mjs";
+import { MEMBER_UPLOAD_KEY, checkUploadSignature } from "./upload-key.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const memberApp = path.join(root, "member-app");
@@ -126,9 +127,16 @@ if (/android:debuggable="true"/.test(built)) {
 }
 
 const certificate = capture(javaTool(java, "keytool"), ["-printcert", "-jarfile", aab]);
-const sha1 = certificate.split(/\r?\n/).find((line) => /SHA1:/i.test(line));
-console.log(`  서명 ${sha1 ? sha1.trim() : "(읽지 못했습니다 -- 서명되지 않았을 수 있습니다)"}`);
-if (!sha1) fail("SIGNATURE_UNREADABLE", "번들에서 서명을 읽지 못했습니다.");
+const signature = checkUploadSignature(certificate);
+console.log(`  서명 SHA1: ${signature.found || "(읽지 못했습니다 -- 서명되지 않았을 수 있습니다)"}`);
+if (signature.code === "SIGNATURE_UNREADABLE") fail("SIGNATURE_UNREADABLE", "번들에서 서명을 읽지 못했습니다.");
+/* 회원 앱 전용 업로드 키여야 한다. 강사 앱 키로 서명된 번들은 여기까지 다
+   통과하고 Play 업로드에서 거절당한다 (upload-key.mjs). */
+if (!signature.ok) {
+  fail("WRONG_UPLOAD_KEY",
+    `회원 앱 업로드 키가 아닙니다. 기대 ${MEMBER_UPLOAD_KEY.sha1}`,
+    "member-app/android/keystore.properties 가 ~/bonita-member-key/ 의 키를 가리키는지 보세요.");
+}
 
 console.log();
 console.log("강사 앱의 android/ · ios/ 는 건드리지 않았습니다.");

@@ -30,7 +30,7 @@
 
 - 번들 ID `com.bonitapilates.member` (iOS·Android 같게)
 - 앱 이름 **보니따필라테스**
-- 서명: 강사 앱과 **같은 업로드 키**
+- 서명: 회원 앱 **전용 업로드 키** (2026-10-10 — 강사 앱 키를 쓰지 않는다)
 - Android 는 비공개 테스트부터, iOS 는 푸시와 오프라인 표시까지 넣고 제출
 
 ## 네이티브 폴더
@@ -119,6 +119,7 @@ Android 문자 인증은 Play Integrity 로 앱을 확인하는데, 그 확인�
 ```powershell
 # storeFile · keyAlias · 비밀번호는 keystore.properties 에 있다
 keytool -list -v -keystore <storeFile> -alias <keyAlias>
+# 지금 값: SHA-1 4B:70:C9:9E:…:88:CA (tools/member/upload-key.mjs 에 전체가 있다)
 ```
 
 앱 서명 키 지문은 **첫 AAB 를 올린 뒤에** 생긴다:
@@ -180,17 +181,36 @@ App Store 배포용으로 아카이브할 때 도구가 `production` 으로 바�
 codesign -d --entitlements :- /path/to/App.app
 ```
 
-### 서명
+### 서명 — 회원 앱 전용 업로드 키
 
-강사 앱과 **같은 업로드 키**를 쓴다. 다만 설정 파일은 이 폴더의 것을 읽는다.
+**강사 앱 키를 쓰지 않는다.** 2026-10-10 에 새로 만들었다.
 
-```
-member-app/android/keystore.properties
-```
+| | |
+| --- | --- |
+| 키스토어 | `C:\Users\ehgud\bonita-member-key\bonita-member-upload.keystore` (PKCS12, RSA 2048, 10000일) |
+| 별칭 | `bonita-member-upload` |
+| 비밀번호 | 같은 폴더의 `keystore.properties` (저장소 비밀번호 = 키 비밀번호) |
+| SHA-1 · SHA-256 | `tools/member/upload-key.mjs` |
 
-`android/keystore.properties` 와 같은 모양이고 (`storeFile` `storePassword`
-`keyAlias` `keyPassword`), **저장소에 들어가지 않는다.** 대표 PC 에만 있다.
-`storeFile` 은 절대 경로로 적으면 두 앱이 같은 키 파일을 가리킬 수 있다.
+Gradle 이 읽는 것은 `member-app/android/keystore.properties` 다. 같은 폴더의
+`keystore.properties` 를 복사한 것이고, **저장소에 들어가지 않는다.**
+
+`npm run member:aab` 는 만든 번들의 서명 지문을 `upload-key.mjs` 와 맞춰 보고,
+다르면 멈춘다 -- 강사 앱 키로 서명된 번들은 빌드가 통과하고 Play 업로드에서야
+거절당하기 때문이다.
+
+#### 백업 — 잃어버리면 이 앱을 다시는 업데이트하지 못한다
+
+`bonita-member-key` 폴더 **통째로**(키스토어 + `keystore.properties`) 두 곳 이상에
+둔다. 둘이 같은 곳에 있으면 백업이 아니다.
+
+1. 비밀번호 관리자(1Password · Bitwarden 등)에 키스토어 파일을 첨부하고
+   비밀번호를 같은 항목에 적는다
+2. 암호화한 USB 나 외장 디스크에 폴더를 복사한다
+3. Codemagic 에 올린 것은 **백업이 아니다** -- 다시 내려받을 수 없다
+
+Play 앱 서명을 쓰므로 업로드 키를 잃어버려도 Play Console 에서 **업로드 키
+재설정**을 요청할 수 있다. 다만 며칠 걸리고 그동안 업데이트를 못 낸다.
 
 없으면 `release` 작업이 시작하는 자리에서 멈춘다. 서명 안 된 번들은 Play 가
 거절하는데, 그 사실은 업로드까지 가서야 드러나기 때문이다.

@@ -18,7 +18,8 @@ test("E.164 — 하이픈 · 숫자만 · 국가번호 붙은 것 모두 같은 
 test("코드 → 종류 → 문구가 한 줄로 이어진다", () => {
   const rows = [
     ["auth/invalid-phone-number", "invalid_request", "휴대폰 번호 형식을 확인해 주세요."],
-    ["auth/too-many-requests", "rate_limited", "시도가 많았어요. 잠시 후 다시 시도해 주세요."],
+    ["auth/too-many-requests", "rate_limited",
+      "요청이 많아 잠시 막혔어요. 1시간쯤 뒤에 다시 시도하거나 센터에 문의해 주세요."],
     ["auth/captcha-check-failed", "security_check", "보안 확인에 실패했어요. 새로고침 후 다시 시도해 주세요."],
     ["auth/unauthorized-domain", "security_check", "보안 확인에 실패했어요. 새로고침 후 다시 시도해 주세요."],
     ["auth/invalid-verification-code", "invalid_request", "인증번호가 맞지 않아요. 다시 입력해 주세요."],

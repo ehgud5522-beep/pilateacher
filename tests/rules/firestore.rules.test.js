@@ -4271,3 +4271,187 @@ describe("the name the centre calls someone does not revert on the next login", 
     await assertFails(updateDoc(ref(users.instructor, own), { displayName: "e asy" }));
   });
 });
+
+/* ── 공지사항 ──────────────────────────────────────────────────────────────
+   대표·총괄매니저가 쓰고 센터 사람이 읽는다. 읽음은 본인만 자기 것을 적는다 --
+   남이 대신 적으면 "읽음 N명" 이 거짓이 되고, 그 숫자가 이 기능의 전부다. */
+describe("notices are written by the owner level and read by the centre", () => {
+  beforeEach(seedAll);
+
+  const noticesAt = (userId, noticeId = "n-1") =>
+    doc(dbFor(userId), "organizations", ORG_A, "notices", noticeId);
+  const readsAt = (userId, noticeId, readId) =>
+    doc(dbFor(userId), "organizations", ORG_A, "notices", noticeId, "reads", readId);
+
+  const notice = (userId, overrides = {}) => ({
+    organizationId: ORG_A,
+    title: "다음 주 월요일 휴무",
+    body: "9월 15일은 센터 전체가 쉽니다.\n문의는 대표에게 주세요.",
+    status: "active",
+    createdAt: serverTimestamp(),
+    createdBy: userId,
+    ...overrides,
+  });
+
+  const seedNotice = async (overrides = {}) => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "organizations", ORG_A, "notices", "n-1"), {
+        organizationId: ORG_A, title: "공지", body: "본문", status: "active",
+        createdBy: users.owner, ...overrides,
+      });
+    });
+  };
+
+  /* ── 쓰는 사람 ───────────────────────────────────────────────────────── */
+
+  test("the owner and the area manager write one; nobody below does", async () => {
+    await assertSucceeds(setDoc(noticesAt(users.owner), notice(users.owner)));
+    await assertSucceeds(setDoc(
+      noticesAt(users.area_manager, "n-area"), notice(users.area_manager),
+    ));
+    for (const userId of [users.manager, users.instructor, users.staff, users.outsider]) {
+      await assertFails(setDoc(
+        noticesAt(userId, `n-by-${userId}`), notice(userId),
+      ), userId);
+    }
+  });
+
+  test("a notice is filed under the writer's own name", async () => {
+    // 남의 이름으로 쓴 공지가 남으면 "누가 알렸나" 에 답할 수 없다.
+    await assertFails(setDoc(noticesAt(users.owner), notice(users.area_manager)));
+  });
+
+  test("an empty title or body is not a notice", async () => {
+    for (const broken of [{ title: "" }, { body: "" }, { title: "가".repeat(61) }]) {
+      await assertFails(setDoc(
+        noticesAt(users.owner, `n-bad-${Object.keys(broken)[0]}-${Object.values(broken)[0].length}`),
+        notice(users.owner, broken),
+      ), JSON.stringify(broken).slice(0, 40));
+    }
+  });
+
+  test("a link that is not http is refused", async () => {
+    /* javascript: 가 들어오면 누르는 사람의 앱 안에서 돈다. 쓰는 사람이
+       대표라도 그 문을 열어 둘 이유가 없다. */
+    for (const bad of ["javascript:alert(1)", "data:text/html,x", "file:///etc"]) {
+      await assertFails(setDoc(
+        noticesAt(users.owner, "n-link"), notice(users.owner, { linkUrl: bad }),
+      ), bad);
+    }
+    await assertSucceeds(setDoc(
+      noticesAt(users.owner, "n-link-ok"), notice(users.owner, { linkUrl: "https://example.com/a" }),
+    ));
+  });
+
+  test("a date has to be a calendar day", async () => {
+    /* 절대 순간으로 적으면 UTC 기기에서 하루 어긋나고, "오늘부터" 라고 쓴
+       공지가 어제 뜨거나 내일 뜬다. */
+    await assertFails(setDoc(
+      noticesAt(users.owner, "n-when"), notice(users.owner, { startsOn: "2026-10-11T00:00:00Z" }),
+    ));
+    await assertSucceeds(setDoc(
+      noticesAt(users.owner, "n-when-ok"),
+      notice(users.owner, { startsOn: "2026-10-11", endsOn: "2026-10-20" }),
+    ));
+  });
+
+  /* ── 읽는 사람 ───────────────────────────────────────────────────────── */
+
+  test("everyone in the centre reads the list; outsiders do not", async () => {
+    await seedNotice();
+    for (const userId of [users.owner, users.area_manager, users.manager, users.instructor, users.staff]) {
+      await assertSucceeds(getDocs(collection(
+        dbFor(userId), "organizations", ORG_A, "notices",
+      )), userId);
+    }
+    await assertFails(getDocs(collection(
+      dbFor(users.outsider), "organizations", ORG_A, "notices",
+    )));
+    // 회원은 센터 사람이 아니다.
+    await assertFails(getDocs(collection(
+      dbFor(users.member), "organizations", ORG_A, "notices",
+    )));
+  });
+
+  test("a notice is ended, never deleted", async () => {
+    /* 읽음 기록이 가리킬 글이 사라지면 "읽음 N명" 이 무엇의 N 인지 알 수 없다. */
+    await seedNotice();
+    await assertSucceeds(updateDoc(noticesAt(users.owner), {
+      status: "ended", updatedAt: serverTimestamp(), updatedBy: users.owner,
+    }));
+    await assertFails(deleteDoc(noticesAt(users.owner)));
+  });
+
+  test("who wrote it and when never move", async () => {
+    await seedNotice();
+    await assertFails(updateDoc(noticesAt(users.owner), {
+      createdBy: users.area_manager, updatedAt: serverTimestamp(), updatedBy: users.owner,
+    }));
+  });
+
+  /* ── 읽음 ────────────────────────────────────────────────────────────── */
+
+  const readBody = (userId) => ({
+    organizationId: ORG_A, noticeId: "n-1", userId, readAt: serverTimestamp(),
+  });
+
+  test("a reader marks their own notice read", async () => {
+    await seedNotice();
+    await assertSucceeds(setDoc(
+      readsAt(users.instructor, "n-1", `n-1_${users.instructor}`), readBody(users.instructor),
+    ));
+  });
+
+  test("nobody marks it read for somebody else", async () => {
+    /* 이 한 줄이 거짓이면 "읽음 N명" 이 거짓이고, 그 숫자가 이 기능의 전부다. */
+    await seedNotice();
+    await assertFails(setDoc(
+      readsAt(users.owner, "n-1", `n-1_${users.instructor}`), readBody(users.instructor),
+    ));
+    // 문서 id 만 자기 것으로 맞춘 경우도 막힌다 -- 본문의 userId 가 어긋난다.
+    await assertFails(setDoc(
+      readsAt(users.owner, "n-1", `n-1_${users.owner}`), readBody(users.instructor),
+    ));
+  });
+
+  test("one person cannot be two reads", async () => {
+    // 문서 id 가 곧 공지-사람 쌍이다. 둘이 되면 "읽음 N명" 이 사람 수가 아니다.
+    await seedNotice();
+    await assertFails(setDoc(
+      readsAt(users.instructor, "n-1", "n-1-again"), readBody(users.instructor),
+    ));
+  });
+
+  test("a read is never taken back", async () => {
+    /* 읽은 것을 안 읽은 것으로 되돌리는 일은 없고, 있으면 그것은 집계를
+       흔드는 길이다. */
+    await seedNotice();
+    const ref = readsAt(users.instructor, "n-1", `n-1_${users.instructor}`);
+    await assertSucceeds(setDoc(ref, readBody(users.instructor)));
+    await assertFails(updateDoc(ref, { readAt: serverTimestamp() }));
+    await assertFails(deleteDoc(ref));
+  });
+
+  test("only the owner level reads the whole list of who has read", async () => {
+    /* 누가 안 읽었는지는 대표가 보는 것이다. 강사끼리 서로의 읽음을 훑을
+       이유가 없다. */
+    await seedNotice();
+    for (const userId of [users.owner, users.area_manager]) {
+      await assertSucceeds(getDocs(collection(
+        dbFor(userId), "organizations", ORG_A, "notices", "n-1", "reads",
+      )), userId);
+    }
+    for (const userId of [users.manager, users.instructor, users.staff]) {
+      await assertFails(getDocs(collection(
+        dbFor(userId), "organizations", ORG_A, "notices", "n-1", "reads",
+      )), userId);
+    }
+  });
+
+  test("a notice from another centre is out of reach either way", async () => {
+    await assertFails(setDoc(
+      doc(dbFor(users.owner), "organizations", ORG_B, "notices", "n-other"),
+      { ...notice(users.owner), organizationId: ORG_B },
+    ));
+  });
+});

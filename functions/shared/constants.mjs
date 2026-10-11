@@ -348,6 +348,10 @@ export const COLLECTIONS = Object.freeze({
   INSTRUCTOR_CLIENT_TOTALS: "instructorClientTotals",
   PARTICIPANTS: "participants",
   LESSON_NOTES: "lessonNotes",
+  /* 공지사항과 그 읽음 기록. 읽음은 공지 아래에 매단다 -- 공지가 끝나도
+     그 글은 남으므로(지우지 않는다) 가리킬 부모가 사라지지 않는다. */
+  NOTICES: "notices",
+  NOTICE_READS: "reads",
   ASSESSMENTS: "assessments",
   ASSESSMENT_MEDIA: "assessmentMedia",
   INBODY_MEASUREMENTS: "inbodyMeasurements",

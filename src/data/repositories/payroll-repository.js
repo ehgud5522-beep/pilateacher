@@ -196,7 +196,7 @@ export function summarizeInstructorPay(entries) {
  * @param {string} organizationId
  * @param {{
  *   instructorId?: string, month?: string, store?: PayrollStore,
- *   previousUids?: Array<string>,
+ *   previousUids?: Array<string>, excludedClientIds?: Set<string> | null,
  * }} [options]
  *   previousUids 계정을 바꾸기 전에 쓰던 uid 들. 그 달의 수업이 두 uid 에
  *     걸쳐 있을 때 둘 다 읽는다 (functions/shared/instructor-swap.mjs).
@@ -204,6 +204,7 @@ export function summarizeInstructorPay(entries) {
 export async function loadInstructorMonthlyPay(organizationId, options = {}) {
   const {
     instructorId, month, store = createFirestorePayrollStore(), previousUids = [],
+    excludedClientIds = null,
   } = options;
   const organization = requiredText(organizationId, "organizationId");
   const instructor = requiredText(instructorId, "instructorId");
@@ -235,7 +236,14 @@ export async function loadInstructorMonthlyPay(organizationId, options = {}) {
     const at = toDate(entry.occurredAt).getTime();
     return Number.isFinite(at) && at >= start.getTime() && at < end.getTime();
   });
-  return { month: String(month), start, end, ...summarizeInstructorPay(inMonth) };
+  /* 심사용 회원은 사람이 아니다. **대표의 집계가 거르는 것과 같은 줄을 여기서도
+     건다** -- 안 걸면 강사 화면의 합계가 대표의 집계보다 그만큼 크고, 월말에
+     두 숫자가 맞지 않는 이유를 아무도 짚지 못한다 (2026-10-11).
+
+     원장에는 그 표시가 없으므로 명부에서 모아 온 id 로 거른다
+     (features/members/review-demo.js). */
+  const real = withoutReviewDemo(inMonth, excludedClientIds);
+  return { month: String(month), start, end, ...summarizeInstructorPay(real) };
 }
 
 /* ── 대표의 월말 정산 ──────────────────────────────────────────────────────

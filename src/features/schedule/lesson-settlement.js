@@ -146,7 +146,10 @@ export const DEDUCTION_CODE_LABEL = Object.freeze({
   ["occurred_at_invalid"]: "수업 시각을 읽지 못했습니다. 일정의 날짜와 시간을 확인해 주세요.",
 });
 
-const attendeesOf = (lesson) => {
+/* 이 수업의 참가자. **App 의 같은 이름과 같은 규칙이다** -- 옛 일정은
+   memberId 하나만 들고 있다. 확정 전 수업료를 세는 쪽도 같은 판정을 써야
+   한다 (upcoming-pay.js): 참가자를 다르게 세면 금액이 갈라진다. */
+export const attendeesOf = (lesson) => {
   if (!lesson || typeof lesson !== "object") return [];
   if (Array.isArray(lesson.attendees) && lesson.attendees.length) {
     return lesson.attendees.filter((attendee) => attendee && attendee.memberId);

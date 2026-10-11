@@ -147,6 +147,12 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "이달 예상 급여 · 빈 달",
     "이달 예상 급여 · 조회 실패",
     "예상 급여 카드",
+    "예상 급여 카드 · 예정 포함",
+    "공지사항 · 대표",
+    "공지사항 · 읽음 현황",
+    "공지사항 · 강사",
+    "공지사항 · 새 공지",
+    "공지 팝업",
     "예상 급여 카드 · 조회 실패",
     "출석 체크",
     "출석 체크 · 확인",
@@ -2127,6 +2133,73 @@ test("a centre with nothing left to confirm says so instead of looking broken", 
   const markupOf = await issueScreens(t);
   const card = markupOf("더보기 탭 · 강사 이름 확정 · 할 것 없음");
   assert.match(card, /확정할 것이 없습니다/);
+});
+
+test("confirmed pay and planned pay are two numbers, never one", async (t) => {
+  /* 앞은 원장에 박혀 되돌릴 수 없고, 뒤는 회원권이 모자라면 한 푼도 나가지
+     않는다. 합치면 강사는 둘을 구분할 수 없고, 월말에 대표의 집계와 다른
+     숫자를 들고 묻는다. */
+  const markupOf = await issueScreens(t);
+  const card = markupOf("예상 급여 카드 · 예정 포함");
+
+  assert.match(card, /확정/);
+  assert.match(card, /예정/);
+  assert.match(card, /90,000/);
+  // 빠질 수 없는 수업은 예정에서 빼 두고, 그런 것이 있다는 사실만 말한다.
+  assert.match(card, /회원권이 없어 빠지지 않는 수업 1건/);
+});
+
+test("a notice popup can only be closed by confirming it", async (t) => {
+  /* X 로 넘기면 읽음이 아니고, 그러면 다음에 또 뜬다 -- 대표의 "읽음 N명" 도
+     그만큼 거짓이 된다. */
+  const markupOf = await issueScreens(t);
+  const popup = markupOf("공지 팝업");
+
+  assert.match(popup, /다음 주 월요일 휴무/);
+  assert.match(popup, /확인하면 다시 뜨지 않습니다/);
+  assert.match(popup, /2건 중 1건/);
+  assert.equal(popup.includes("아래로 끌어 닫기"), false, "끌어서 닫는 길을 두지 않는다");
+});
+
+test("the notice list is one screen, with writing bolted on for the owner", async (t) => {
+  /* 둘로 나누면 "내가 쓴 공지가 강사에게 어떻게 보이나" 를 확인할 자리가
+     없어진다. */
+  const markupOf = await issueScreens(t);
+  const owner = markupOf("공지사항 · 대표");
+  const instructor = markupOf("공지사항 · 강사");
+
+  assert.match(owner, /새 공지/);
+  assert.match(owner, /다음 주 월요일 휴무/);
+  // 끝난 공지도 목록에는 남는다 -- 읽음 기록이 가리킬 글이 사라지면 안 된다.
+  assert.match(owner, /종료/);
+
+  assert.match(instructor, /다음 주 월요일 휴무/);
+  assert.equal(instructor.includes("새 공지"), false, "강사는 쓰지 않는다");
+  assert.match(instructor, /다시 볼 수 있습니다/);
+});
+
+test("the owner sees who has not read it", async (t) => {
+  // 안 읽은 사람이 보여야 대표가 누구에게 다시 말할지 안다.
+  const markupOf = await issueScreens(t);
+  const opened = markupOf("공지사항 · 읽음 현황");
+
+  assert.match(opened, /읽음 1\/4명/, "재직 강사 넷 중 하나가 읽었다");
+  assert.match(opened, /안 읽음/);
+  assert.match(opened, /박서연/);
+  assert.match(opened, /최소연/);
+  // 퇴사자는 분모에 없다. 남아 있으면 "읽음 N/전체" 가 영영 안 찬다.
+  assert.equal(opened.includes("김하나"), false, "퇴사자는 세지 않는다");
+});
+
+test("the notice form says an empty target means everyone", async (t) => {
+  /* 빈 목록을 "아무도 아님" 으로 읽으면 공지를 쓰고 아무에게도 안 보이는
+     일이 생기고, 쓴 사람은 그것을 알 길이 없다. */
+  const markupOf = await issueScreens(t);
+  const form = markupOf("공지사항 · 새 공지");
+
+  assert.match(form, /아무것도 고르지 않으면 전체입니다/);
+  assert.match(form, /모두 해당하는 사람/);
+  assert.match(form, /중요한 공지가 먼저 뜹니다/);
 });
 
 test("the app update card starts empty and says so", async (t) => {

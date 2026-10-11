@@ -71,6 +71,12 @@ import {
   careChoices, careMinutesOfGrade, careOnlyClient, settlementSkipMessage,
 } from "./features/schedule/care-options.js";
 import { useNarrowViewport } from "./features/ui/viewport.js";
+import { upcomingPayPreview } from "./features/schedule/upcoming-pay.js";
+import {
+  NOTICE_STATUS, createFirestoreNoticeStore, createNotice, endNotice, listMyNoticeReads,
+  listNoticeReads, listNotices, markNoticeRead, noticeError, noticeReadSummary,
+  pendingNotices, updateNotice,
+} from "./data/repositories/notice-repository.js";
 import {
   DEFAULT_SCHEDULE_COLORS, SCHEDULE_COLOR_PRESETS, isDefaultScheduleColors,
   normalizeScheduleColors, resolveScheduleTypeTone, scheduleTypeTones, setScheduleTypeColor,
@@ -15225,7 +15231,14 @@ const PAY_SCOPE_NOTICE = "수업료만 자동으로 계산됩니다. 인센티�
    없고, 빈칸으로 두면 화면이 깨진 것으로 읽는다. 무슨 일이 있었는지 말한다. */
 const HANDED_OVER_LABEL = "인수인계된 회원";
 
-function InstructorPayCard({ pay, loading, error, onOpen }) {
+/* 확정과 예정을 **한 숫자로 합치지 않는다.** 앞은 원장에 박혀 되돌릴 수 없고,
+   뒤는 회원권이 모자라면 한 푼도 나가지 않는다 -- 합치면 강사는 둘을 구분할 수
+   없고, 월말에 대표의 집계와 다른 숫자를 들고 묻게 된다.
+
+   확정 금액은 대표의 급여 집계와 **같은 원장·같은 줄**에서 나온다 (심사용
+   회원까지 같이 거른다). 그래서 두 화면의 "확정" 은 언제나 같은 값이다. */
+function InstructorPayCard({ pay, loading, error, upcoming = null, onOpen }) {
+  const planned = Number(upcoming?.total) || 0;
   return (
     <button type="button" onClick={onOpen} className="flex w-full items-center gap-2 text-left"
       style={{ padding: "10px 14px", backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
@@ -15237,9 +15250,24 @@ function InstructorPayCard({ pay, loading, error, onOpen }) {
           // 0원으로 보이면 강사가 "이번 달 수업이 없었나" 하고 넘어간다.
           <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: BAD }}>불러오지 못했습니다 (코드 {error})</p>
         ) : (
-          <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.title, fontWeight: 700, color: INK }}>
-            ₩{won(pay?.total)}
-          </p>
+          <>
+            <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.title, fontWeight: 700, color: INK }}>
+              ₩{won(pay?.total)}
+              <span style={{ fontSize: TYPE.caption, fontWeight: 600, color: SUB }}>{" 확정"}</span>
+            </p>
+            {planned > 0 ? (
+              <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.caption, color: BRAND_D }}>
+                + 예정 ₩{won(planned)} · 확정 전 {upcoming?.lessons || 0}건
+              </p>
+            ) : null}
+            {/* 빠질 수 없는 사람이 있으면 그 수업은 확정해도 금액이 0 이다.
+                예정에서 빼 두고, 그런 것이 있다는 사실만 말한다. */}
+            {upcoming?.blocked ? (
+              <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: WARN }}>
+                회원권이 없어 빠지지 않는 수업 {upcoming.blocked}건
+              </p>
+            ) : null}
+          </>
         )}
       </div>
       <ChevronRight size={16} style={{ color: FAINT }} />
@@ -21091,6 +21119,399 @@ function ExpiryOrderReview({ organization, passStore, clientStore, onOpenClient,
  * 그대로 확정하므로, 이미 되돌아간 이름이 있으면 그것이 굳는다. 목록을 먼저
  * 보여주고 대표가 정한다.
  */
+
+/* ── 공지사항 ──────────────────────────────────────────────────────────────
+   대표·총괄매니저가 쓰고, 센터 사람이 읽는다.
+
+   한 화면이다. 쓰는 사람에게는 [새 공지] 와 읽음 집계가 더 붙을 뿐, 목록은
+   같다 -- 둘로 나누면 "내가 쓴 공지가 강사에게 어떻게 보이나" 를 확인할
+   자리가 없어진다. */
+const NOTICE_TARGET_ROLES = [
+  [ROLES.INSTRUCTOR, "강사"],
+  [ROLES.MANAGER, "FC매니저"],
+  [ROLES.AREA_MANAGER, "총괄매니저"],
+];
+
+const noticeDayLabel = (value) => {
+  const text = String(value ?? "").trim();
+  return text ? text.slice(5).replace("-", ".") : "";
+};
+
+/** 대상 한 줄. 비어 있으면 전체다 -- 그 말을 적어야 "안 걸었다" 가 보인다. */
+function noticeAudienceLabel(notice, locationName) {
+  const parts = [];
+  const locations = Array.isArray(notice?.locationIds) ? notice.locationIds : [];
+  const titles = Array.isArray(notice?.titles) ? notice.titles : [];
+  const roles = Array.isArray(notice?.roles) ? notice.roles : [];
+  if (locations.length) parts.push(locations.map((id) => locationName(id) || id).join(" · "));
+  if (titles.length) parts.push(titles.map((value) => labelOf(MEMBERSHIP_TITLE_LABELS, value)).join(" · "));
+  if (roles.length) {
+    parts.push(roles.map((value) => (
+      NOTICE_TARGET_ROLES.find(([key]) => key === value)?.[1] || value
+    )).join(" · "));
+  }
+  return parts.length ? parts.join(" / ") : "전체";
+}
+
+function NoticeCentre({
+  organization, currentUserId, noticeStore, instructorStore, locationStore,
+  onRetryOrganization, onToast, initialState = null,
+}) {
+  const [notices, setNotices] = useState(initialState?.notices || []);
+  const [members, setMembers] = useState(initialState?.members || []);
+  const [locations, setLocations] = useState(initialState?.locations || []);
+  const [reads, setReads] = useState(initialState?.reads || null);
+  const [openId, setOpenId] = useState(initialState?.openId || "");
+  const [draft, setDraft] = useState(initialState?.draft || null);
+  const [loading, setLoading] = useState(!initialState);
+  const [loadError, setLoadError] = useState(initialState?.loadError || "");
+  const [formError, setFormError] = useState(initialState?.formError || "");
+  const [saving, setSaving] = useState(false);
+  const organizationId = organization?.organizationId || "";
+  const locked = organization?.status === "unknown";
+  const canWrite = isOwnerLevelRole(organization?.role);
+
+  const reload = useCallback(async () => {
+    if (!organizationId) return;
+    setLoading(true);
+    setLoadError("");
+    try {
+      /* 이름과 지점은 곁들이다. 못 읽어도 공지는 선다 -- 대상 줄이 id 로
+         떨어질 뿐이고, 그 사실이 화면에 드러난다. */
+      const [found, memberResult, locationResult] = await Promise.all([
+        listNotices(organizationId, { store: noticeStore }),
+        canWrite
+          ? toleratingReadFailure(listMemberships(organizationId, { store: instructorStore }))
+          : Promise.resolve({ items: [] }),
+        toleratingReadFailure(listLocations(organizationId, { store: locationStore })),
+      ]);
+      setNotices(found);
+      setMembers(memberResult.items);
+      setLocations(locationResult.items);
+    } catch (error) {
+      setLoadError(error?.code || "unknown");
+    } finally {
+      setLoading(false);
+    }
+  }, [organizationId, noticeStore, instructorStore, locationStore, canWrite]);
+
+  useEffect(() => { if (!locked) reload(); else setLoading(false); }, [locked, reload]);
+
+  const locationName = useCallback(
+    (id) => String(locations.find((item) => String(item?.id || "") === String(id || ""))?.name || ""),
+    [locations],
+  );
+
+  /* 읽음은 공지를 열었을 때만 읽는다. 공지마다 하위 컬렉션을 훑으면 목록 한
+     번에 공지 수만큼 질의가 나간다. */
+  const openReads = async (noticeId) => {
+    if (openId === noticeId) { setOpenId(""); return; }
+    setOpenId(noticeId);
+    setReads(null);
+    if (!canWrite) return;
+    try {
+      setReads(await listNoticeReads(organizationId, noticeId, { store: noticeStore }));
+    } catch (error) {
+      setReads([]);
+      onToast?.({ ok: false, msg: `읽음을 불러오지 못했어요 (코드 ${error?.code || "unknown"})` });
+    }
+  };
+
+  const save = async (event) => {
+    event.preventDefault();
+    setFormError("");
+    const refused = noticeError(draft);
+    if (refused) { setFormError(refused); return; }
+    setSaving(true);
+    try {
+      if (draft.noticeId) {
+        await updateNotice(organizationId, draft.noticeId, { ...draft, updatedBy: currentUserId }, { store: noticeStore });
+      } else {
+        await createNotice(organizationId, { ...draft, createdBy: currentUserId }, { store: noticeStore });
+      }
+      onToast?.({ ok: true, msg: draft.noticeId ? "공지를 수정했습니다." : "공지를 올렸습니다." });
+      setDraft(null);
+      await reload();
+    } catch (error) {
+      setFormError(error?.message || `저장하지 못했어요 (코드 ${error?.code || "unknown"})`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const end = async (notice) => {
+    setSaving(true);
+    try {
+      await endNotice(organizationId, notice.id, { updatedBy: currentUserId }, { store: noticeStore });
+      onToast?.({ ok: true, msg: "공지를 종료했습니다. 목록에는 남습니다." });
+      await reload();
+    } catch (error) {
+      onToast?.({ ok: false, msg: `종료하지 못했어요 (코드 ${error?.code || "unknown"})` });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (locked) return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>소속을 확인하지 못했습니다</h2>
+      <button type="button" onClick={() => onRetryOrganization?.()} className="mt-3 h-11 w-full font-bold"
+        style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>다시 시도</button>
+    </section>
+  );
+
+  const toggleIn = (key, value) => setDraft((current) => {
+    const list = Array.isArray(current?.[key]) ? current[key] : [];
+    return {
+      ...current,
+      [key]: list.includes(value) ? list.filter((item) => item !== value) : [...list, value],
+    };
+  });
+
+  if (draft) return (
+    <section data-notice-form style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>
+        {draft.noticeId ? "공지 수정" : "새 공지"}
+      </h2>
+      <form onSubmit={save} className="mt-3 space-y-3">
+        <Field label="제목">
+          <input value={draft.title} className={inputCls} placeholder="예) 다음 주 월요일 휴무"
+            onChange={(e) => setDraft((c) => ({ ...c, title: e.target.value }))} />
+        </Field>
+        <Field label="내용">
+          <textarea value={draft.body} rows={5} className={inputCls} style={{ height: "auto", padding: 10, lineHeight: 1.5 }}
+            placeholder={"줄을 바꿔 적어도 그대로 보입니다."}
+            onChange={(e) => setDraft((c) => ({ ...c, body: e.target.value }))} />
+        </Field>
+        <Field label="이미지 주소" hint="선택 · https 로 시작하는 주소">
+          <input value={draft.imageUrl || ""} className={inputCls} placeholder="https://"
+            onChange={(e) => setDraft((c) => ({ ...c, imageUrl: e.target.value }))} />
+        </Field>
+        <Field label="링크" hint="선택 · 누르면 열립니다">
+          <input value={draft.linkUrl || ""} className={inputCls} placeholder="https://"
+            onChange={(e) => setDraft((c) => ({ ...c, linkUrl: e.target.value }))} />
+        </Field>
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="시작일" hint="비우면 바로">
+            <input type="date" value={draft.startsOn || ""} className={inputCls}
+              onChange={(e) => setDraft((c) => ({ ...c, startsOn: e.target.value }))} />
+          </Field>
+          <Field label="종료일" hint="그날까지 보입니다">
+            <input type="date" value={draft.endsOn || ""} className={inputCls}
+              onChange={(e) => setDraft((c) => ({ ...c, endsOn: e.target.value }))} />
+          </Field>
+        </div>
+        {/* 대상. **비우면 전체다** -- 빈 목록을 "아무도 아님" 으로 읽으면
+            공지를 쓰고 아무에게도 안 보이는 일이 생긴다. */}
+        <Field label="대상" hint="아무것도 고르지 않으면 전체입니다">
+          <div className="space-y-2">
+            {locations.length ? (
+              <div className="flex flex-wrap gap-1.5">
+                {locations.map((item) => (
+                  <button key={item.id} type="button" onClick={() => toggleIn("locationIds", item.id)}
+                    className="px-2.5 font-bold" style={{
+                      height: 30, borderRadius: 999, fontSize: TYPE.caption,
+                      backgroundColor: (draft.locationIds || []).includes(item.id) ? TINT : CANVAS,
+                      color: (draft.locationIds || []).includes(item.id) ? BRAND_D : SUB,
+                    }}>{item.name}</button>
+                ))}
+              </div>
+            ) : null}
+            <div className="flex flex-wrap gap-1.5">
+              {Object.values(MEMBERSHIP_TITLE).map((value) => (
+                <button key={value} type="button" onClick={() => toggleIn("titles", value)}
+                  className="px-2.5 font-bold" style={{
+                    height: 30, borderRadius: 999, fontSize: TYPE.caption,
+                    backgroundColor: (draft.titles || []).includes(value) ? TINT : CANVAS,
+                    color: (draft.titles || []).includes(value) ? BRAND_D : SUB,
+                  }}>{labelOf(MEMBERSHIP_TITLE_LABELS, value)}</button>
+              ))}
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {NOTICE_TARGET_ROLES.map(([value, label]) => (
+                <button key={value} type="button" onClick={() => toggleIn("roles", value)}
+                  className="px-2.5 font-bold" style={{
+                    height: 30, borderRadius: 999, fontSize: TYPE.caption,
+                    backgroundColor: (draft.roles || []).includes(value) ? TINT : CANVAS,
+                    color: (draft.roles || []).includes(value) ? BRAND_D : SUB,
+                  }}>{label}</button>
+              ))}
+            </div>
+            <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+              여럿을 고르면 <b>모두 해당하는 사람</b>에게만 갑니다 — 반송점 + 점장이면 반송점의 점장입니다.
+            </p>
+          </div>
+        </Field>
+        <button type="button" onClick={() => setDraft((c) => ({ ...c, important: !c.important }))}
+          className="flex h-11 w-full items-center justify-between px-3 font-bold" style={{
+            borderRadius: 10, fontSize: TYPE.caption,
+            border: `1px solid ${draft.important ? BRAND : LINE}`,
+            backgroundColor: draft.important ? TINT : CARD,
+            color: draft.important ? BRAND_D : SUB,
+          }}>
+          <span>중요 표시</span>
+          <span>{draft.important ? "중요" : "보통"}</span>
+        </button>
+        {draft.important ? (
+          <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+            중요한 공지가 먼저 뜹니다. 여러 개가 밀려 있으면 이것부터 보게 됩니다.
+          </p>
+        ) : null}
+        {formError ? <p role="alert" style={{ fontSize: TYPE.caption, color: BAD }}>{formError}</p> : null}
+        <div className="flex gap-2 pt-1">
+          <button type="button" onClick={() => { setDraft(null); setFormError(""); }}
+            className="h-11 flex-1 font-bold" style={{ borderRadius: 10, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>취소</button>
+          <button type="submit" disabled={saving} className="h-11 flex-1 font-bold"
+            style={{ borderRadius: 10, backgroundColor: BRAND, color: "#fff", fontSize: TYPE.caption, opacity: saving ? 0.6 : 1 }}>
+            {saving ? "저장 중" : draft.noticeId ? "저장" : "올리기"}
+          </button>
+        </div>
+      </form>
+    </section>
+  );
+
+  return (
+    <section data-notice-centre style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <div className="flex items-center gap-2">
+        <h2 className="min-w-0 flex-1" style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>공지사항</h2>
+        {canWrite ? (
+          <button type="button" onClick={() => setDraft({ title: "", body: "", important: false })}
+            className="shrink-0 px-3 font-bold" style={{
+              height: 32, borderRadius: 999, fontSize: TYPE.caption, backgroundColor: TINT, color: BRAND_D,
+            }}>새 공지</button>
+        ) : null}
+      </div>
+      <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        {canWrite
+          ? "올리면 대상 강사가 앱을 열 때 한 번 뜹니다. [확인]을 누르면 다시 뜨지 않고, 여기 목록에는 남습니다."
+          : "한 번 보고 넘긴 공지도 여기서 다시 볼 수 있습니다."}
+      </p>
+
+      {loading ? <p className="mt-3" style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : null}
+      {!loading && loadError ? (
+        <p role="alert" className="mt-3" style={{ fontSize: TYPE.caption, color: BAD }}>
+          불러오지 못했습니다 (코드 {loadError}).
+        </p>
+      ) : null}
+      {!loading && !loadError && notices.length === 0 ? (
+        <p className="mt-3" style={{ fontSize: TYPE.caption, color: SUB }}>아직 공지가 없습니다.</p>
+      ) : null}
+
+      {[...notices]
+        .sort((left, right) => String(right.startsOn || "").localeCompare(String(left.startsOn || ""))
+          || String(right.id || "").localeCompare(String(left.id || "")))
+        .map((notice) => {
+          const ended = notice.status === NOTICE_STATUS.ENDED;
+          const summary = canWrite && openId === notice.id && reads
+            ? noticeReadSummary({ notice, audience: members, reads })
+            : null;
+          return (
+            <div key={notice.id} style={{ padding: "11px 0", borderTop: `1px solid ${LINE}`, opacity: ended ? 0.6 : 1 }}>
+              <button type="button" onClick={() => openReads(notice.id)} className="flex w-full items-start gap-2 text-left">
+                <span className="min-w-0 flex-1">
+                  <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+                    {notice.important ? (
+                      <span style={{ padding: "1px 6px", borderRadius: 5, backgroundColor: WARN_S, fontSize: TYPE.caption, fontWeight: 700, color: WARN }}>중요</span>
+                    ) : null}
+                    <span className="min-w-0" style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>{notice.title}</span>
+                    {ended ? (
+                      <span style={{ padding: "1px 6px", borderRadius: 5, backgroundColor: CANVAS, fontSize: TYPE.caption, color: SUB }}>종료</span>
+                    ) : null}
+                  </span>
+                  <span className="mt-0.5 block" style={{ fontSize: TYPE.caption, color: SUB }}>
+                    {noticeDayLabel(notice.startsOn) || "바로"}
+                    {notice.endsOn ? ` ~ ${noticeDayLabel(notice.endsOn)}` : ""}
+                    {" · "}{noticeAudienceLabel(notice, locationName)}
+                  </span>
+                </span>
+                <ChevronDown size={14} className="shrink-0" style={{ color: FAINT, marginTop: 3 }} />
+              </button>
+
+              {openId === notice.id ? (
+                <div className="mt-2">
+                  <p style={{ fontSize: TYPE.caption, lineHeight: 1.6, color: INK2, whiteSpace: "pre-wrap" }}>{notice.body}</p>
+                  {notice.linkUrl ? (
+                    <a href={notice.linkUrl} target="_blank" rel="noreferrer" className="mt-1.5 inline-block"
+                      style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND_D }}>링크 열기</a>
+                  ) : null}
+                  {canWrite ? (
+                    <div className="mt-2">
+                      {/* 읽음은 이 기능의 전부다. 안 읽은 사람이 보여야 대표가
+                          누구에게 다시 말할지 안다. */}
+                      <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>
+                        {reads === null ? "읽음 세는 중…" : `읽음 ${summary?.read ?? 0}/${summary?.total ?? 0}명`}
+                      </p>
+                      {summary && summary.unread.length ? (
+                        <p className="mt-0.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+                          안 읽음 · {summary.unread.map((item) => item.displayName || item.userId).join(", ")}
+                        </p>
+                      ) : null}
+                      {summary && summary.total === 0 ? (
+                        <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: WARN }}>
+                          대상인 재직 강사가 없습니다. 대상 조건을 확인해 주세요.
+                        </p>
+                      ) : null}
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        <button type="button" disabled={saving}
+                          onClick={() => setDraft({ ...notice, noticeId: notice.id })}
+                          className="px-2.5 font-bold" style={{
+                            height: 30, borderRadius: 999, fontSize: TYPE.caption, backgroundColor: CANVAS, color: BRAND_D,
+                          }}>수정</button>
+                        {ended ? null : (
+                          <button type="button" disabled={saving} onClick={() => end(notice)}
+                            className="px-2.5 font-bold" style={{
+                              height: 30, borderRadius: 999, fontSize: TYPE.caption, backgroundColor: CANVAS, color: BAD,
+                            }}>종료</button>
+                        )}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+    </section>
+  );
+}
+
+/**
+ * 공지 팝업. **한 번 보여주고 끝난다.**
+ *
+ * 목록에만 두면 아무도 안 본다 -- 센터의 공지는 "봤는지" 가 요점이다. 그렇다고
+ * 매번 띄우면 X 를 누르는 손버릇이 되고, 그때부터는 중요한 공지도 안 읽힌다.
+ *
+ * 여럿이면 하나씩, 중요한 것부터. [확인] 이 곧 읽음이다.
+ */
+function NoticePopup({ notice, remaining, busy, onConfirm }) {
+  if (!notice) return null;
+  return (
+    <ScheduleBottomSheet title={notice.important ? "중요 공지" : "공지사항"}
+      subtitle={remaining > 1 ? `${remaining}건 중 1건` : ""} dismissible={false} onClose={() => {}}>
+      <div className="space-y-3">
+        <p style={{ fontSize: TYPE.title, fontWeight: 700, lineHeight: 1.35, color: INK }}>{notice.title}</p>
+        {notice.imageUrl ? (
+          <img src={notice.imageUrl} alt="" style={{ width: "100%", borderRadius: 12, display: "block" }} />
+        ) : null}
+        <p style={{ fontSize: TYPE.body, lineHeight: 1.6, color: INK2, whiteSpace: "pre-wrap" }}>{notice.body}</p>
+        {notice.linkUrl ? (
+          <a href={notice.linkUrl} target="_blank" rel="noreferrer" className="block"
+            style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND_D }}>링크 열기</a>
+        ) : null}
+        {/* 닫는 길이 [확인] 하나다. X 로 넘기면 읽음이 아니고, 그러면 다음에
+            또 뜬다 -- 대표의 "읽음 N명" 도 그만큼 거짓이 된다. */}
+        <button type="button" disabled={busy} onClick={onConfirm}
+          className="h-12 w-full font-extrabold text-white" style={{
+            borderRadius: 10, backgroundColor: BRAND, fontSize: TYPE.body, opacity: busy ? 0.6 : 1,
+          }}>{busy ? "처리 중" : "확인"}</button>
+        <p className="text-center" style={{ fontSize: TYPE.caption, color: SUB }}>
+          확인하면 다시 뜨지 않습니다. 더보기 → 공지사항에서 다시 볼 수 있습니다.
+        </p>
+      </div>
+    </ScheduleBottomSheet>
+  );
+}
+
 function InstructorNameConfirm({ organization, onPreview, onConfirm, onToast, initialState = null }) {
   const [plan, setPlan] = useState(initialState?.plan || null);
   const [busy, setBusy] = useState(false);
@@ -22283,7 +22704,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
      두 화면이 서로 다른 순간의 원장을 보게 되고, 그 차이는 아무 데도 적히지
      않는다 -- 같은 객체를 쓰면 다를 수가 없다. */
   instructorPay = null, payMonth = "", payLoading = false, payError = "",
-  onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, onRestorePrevious, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, payrollStore, issueStore, auditStore, ledgerStore, onRetryOrganization, onOpenClient, onClearMigratedSettlements, onLoadRuntimeConfig, onSaveRuntimeConfig, onSwapInstructorAccount, onPreviewInstructorNames, onConfirmInstructorNames, initialView = "hub", initialOpenGroups = null, nameConfirmState = null }) {
+  onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, onRestorePrevious, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, payrollStore, issueStore, auditStore, ledgerStore, onRetryOrganization, onOpenClient, onClearMigratedSettlements, onLoadRuntimeConfig, onSaveRuntimeConfig, onSwapInstructorAccount, onPreviewInstructorNames, onConfirmInstructorNames, noticeStore, initialView = "hub", initialOpenGroups = null, nameConfirmState = null, noticeState = null }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const organization = useContext(OrganizationContext);
 
@@ -22577,7 +22998,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
     return total;
   }, [db.schedule, db.members, db.settings, reportYm]);
   const detailTitles = {
-    report: "월간 리포트", expiry: "만료 회원", "instructor-scope": "담당 강사", "app-update": "앱 업데이트 안내", "name-confirm": "강사 이름 확정", "expiry-order": "만료일 순서 확인", assessment: "변화 기록 설정", center: "센터 정보", theme: "화면 설정", "schedule-colors": "일정 색상",
+    report: "월간 리포트", expiry: "만료 회원", "instructor-scope": "담당 강사", "app-update": "앱 업데이트 안내", "name-confirm": "강사 이름 확정", notices: "공지사항", "expiry-order": "만료일 순서 확인", assessment: "변화 기록 설정", center: "센터 정보", theme: "화면 설정", "schedule-colors": "일정 색상",
     data: "데이터 상태", backup: "데이터 이관 · 백업", permissions: "접근권한 안내", knowledge: "오늘의 지식", account: "계정", "account-delete": "계정 삭제", app: "앱 정보",
     products: "회원권 상품",
     clients: "회원 관리",
@@ -22661,6 +23082,9 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
          안 온다는 것을 몇 주 뒤에 안다 -- 그때는 늦다. 개인 모드에는 회원권이
          없어 셀 것이 없다. */
       ...(inOrganization ? [{ key: "expiry", title: "만료 회원", description: "이번 달 · 지난달 · 재등록률", Icon: Users }] : []),
+      /* 공지는 **모두가 본다.** 쓰는 사람에게만 보이는 자리에 두면 강사는
+         넘긴 공지를 다시 볼 길이 없다 -- 한 번 뜨고 끝나는 창이기 때문이다. */
+      ...(inOrganization ? [{ key: "notices", title: "공지사항", description: "센터에서 알리는 글 · 다시 보기", Icon: Bell }] : []),
     ] },
     ...centreGroups,
     { label: "내 설정", items: [
@@ -23038,6 +23462,11 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
             clientStore={clientStore} passStore={passStore} instructorStore={instructorStore}
             onRetryOrganization={onRetryOrganization} />
         )}
+        {view === "notices" && inOrganization && (
+          <NoticeCentre organization={organization} currentUserId={account?.id || ""}
+            noticeStore={noticeStore} instructorStore={instructorStore} locationStore={locationStore}
+            onRetryOrganization={onRetryOrganization} onToast={onToast} initialState={noticeState} />
+        )}
         {view === "name-confirm" && showAppUpdate && (
           <InstructorNameConfirm organization={organization} initialState={nameConfirmState}
             onPreview={onPreviewInstructorNames} onConfirm={onConfirmInstructorNames} onToast={onToast} />
@@ -23361,6 +23790,29 @@ export function createAppScreenSmokeCases() {
       smokePayEntry("e1", "pt_1_1_repurchase_normal", 45000, 4, "deputy_director"),
     ],
   };
+  /* 공지. 화면이 그리는 것만 본다 -- Firestore 를 건드리지 않는다. */
+  const smokeNoticeStore = {
+    list: async () => [], read: async () => null, commit: async () => {},
+    serverTimestamp: async () => "SERVER_TIME", newId: () => "n-new",
+  };
+  const smokeNotices = [
+    {
+      id: "n-holiday", organizationId: "smoke-center", title: "다음 주 월요일 휴무",
+      body: "10월 20일은 센터 전체가 쉽니다.\n문의는 대표에게 주세요.",
+      startsOn: "2026-10-11", endsOn: "2026-10-20", important: true,
+      locationIds: ["bansong"], status: "active", createdBy: "smoke-account",
+    },
+    {
+      id: "n-rate", organizationId: "smoke-center", title: "11월부터 바뀌는 단가",
+      body: "1:1 재등록(정상) 단가가 조정됩니다.",
+      startsOn: "2026-10-05", status: "active", createdBy: "smoke-account",
+    },
+    {
+      id: "n-old", organizationId: "smoke-center", title: "지난 공지",
+      body: "끝난 공지도 목록에는 남습니다.",
+      startsOn: "2026-09-01", status: "ended", createdBy: "smoke-account",
+    },
+  ];
   const smokeAuditStore = { list: async () => [], commit: async () => {}, serverTimestamp: async () => "SERVER_TIME" };
   const smokeLedgerStore = { listOrganizationEntries: async () => [] };
   /* 감사 화면이 그리는 것만 본다. 목록은 reviewAudit 이 만든 모양 그대로다. */
@@ -23961,6 +24413,56 @@ export function createAppScreenSmokeCases() {
         initialState={{ passes: [], clients: [] }} />
     )) },
     { name: "예상 급여 카드", element: <InstructorPayCard pay={smokePay} loading={false} error="" onOpen={noop} /> },
+    /* 확정과 예정은 **다른 종류의 숫자다** -- 앞은 원장에 박혀 되돌릴 수 없고,
+       뒤는 회원권이 모자라면 한 푼도 나가지 않는다. 한 줄로 합치면 강사는
+       둘을 구분할 수 없고, 월말에 대표의 집계와 다른 숫자를 들고 묻는다. */
+    { name: "예상 급여 카드 · 예정 포함", element: (
+      <InstructorPayCard pay={smokePay} loading={false} error=""
+        upcoming={{ total: 90000, sessions: 3, lessons: 3, blocked: 1 }} onOpen={noop} />
+    ) },
+    /* 공지사항. 쓰는 사람과 읽는 사람이 같은 화면을 보되, 읽음 집계와
+       [새 공지] 는 대표·총괄매니저에게만 붙는다. */
+    { name: "공지사항 · 대표", element: providerWith(smokeOwner, (
+      <NoticeCentre organization={readyOrganizationContext(smokeOwner)} currentUserId="smoke-account"
+        noticeStore={smokeNoticeStore} instructorStore={instructorStore} locationStore={locationStore}
+        onRetryOrganization={noop} onToast={noop}
+        initialState={{ notices: smokeNotices, members: smokeInstructors, locations: smokeLocations }} />
+    )) },
+    /* 공지를 펼친 자리. **안 읽은 사람이 보여야** 대표가 누구에게 다시
+       말할지 안다 -- 그 목록이 이 기능의 전부다. */
+    { name: "공지사항 · 읽음 현황", element: providerWith(smokeOwner, (
+      <NoticeCentre organization={readyOrganizationContext(smokeOwner)} currentUserId="smoke-account"
+        noticeStore={smokeNoticeStore} instructorStore={instructorStore} locationStore={locationStore}
+        onRetryOrganization={noop} onToast={noop}
+        initialState={{
+          notices: smokeNotices, members: smokeInstructors, locations: smokeLocations,
+          /* 대상을 안 건 공지다 -- 재직 강사 전부가 분모다. 지점 공지로
+             보면 픽스처에 반송점 강사가 하나뿐이라 "안 읽음" 이 서지 않는다. */
+          openId: "n-rate", reads: [{ userId: "u1" }],
+        }} />
+    )) },
+    { name: "공지사항 · 강사", element: providerWith(smokeInstructorOrg, (
+      <NoticeCentre organization={readyOrganizationContext(smokeInstructorOrg)} currentUserId="u1"
+        noticeStore={smokeNoticeStore} instructorStore={instructorStore} locationStore={locationStore}
+        onRetryOrganization={noop} onToast={noop}
+        initialState={{ notices: smokeNotices, members: [], locations: smokeLocations }} />
+    )) },
+    /* 새 공지 쓰는 자리. 대상을 비우면 전체라는 말이 그 자리에 있어야 한다 --
+       빈 목록을 "아무도 아님" 으로 읽으면 공지를 쓰고 아무에게도 안 보인다. */
+    { name: "공지사항 · 새 공지", element: providerWith(smokeOwner, (
+      <NoticeCentre organization={readyOrganizationContext(smokeOwner)} currentUserId="smoke-account"
+        noticeStore={smokeNoticeStore} instructorStore={instructorStore} locationStore={locationStore}
+        onRetryOrganization={noop} onToast={noop}
+        initialState={{
+          notices: smokeNotices, members: smokeInstructors, locations: smokeLocations,
+          draft: { title: "", body: "", important: true, locationIds: ["bansong"] },
+        }} />
+    )) },
+    /* 팝업. 닫는 길이 [확인] 하나다 -- X 로 넘기면 읽음이 아니고, 그러면
+       다음에 또 뜬다. */
+    { name: "공지 팝업", element: provider(
+      <NoticePopup notice={smokeNotices[0]} remaining={2} busy={false} onConfirm={noop} />,
+    ) },
     { name: "예상 급여 카드 · 조회 실패", element: <InstructorPayCard pay={null} loading={false} error="failed-precondition" onOpen={noop} /> },
     { name: "출석 체크", element: attendance(smokeInstructorOrg, {
       clients: smokeClients, passes: smokePasses, clientId: "smoke-client-a", day: "2026-09-17", time: "19:00",
@@ -24893,6 +25395,16 @@ export default function App() {
     };
   }, [organizationRoster, rosterMembers, rosterPasses]);
 
+  /* 확정 전 수업료. **미리보기와 같은 함수를 쓴다** -- 일정 카드의 예상 단가와
+     같은 값이고, 그것은 다시 확정이 쓰는 판정을 지난다. 여기서 다시 계산하면
+     세 화면이 서로 다른 금액을 말하는 날이 온다. */
+  const upcomingPay = useMemo(
+    () => (organizationRoster
+      ? upcomingPayPreview({ schedule: db.schedule, month: payMonth, rateOf: previewRatesFor })
+      : null),
+    [organizationRoster, db.schedule, payMonth, previewRatesFor],
+  );
+
   const findRosterMember = useCallback(
     (memberId) => {
       const target = String(memberId || "");
@@ -24920,6 +25432,15 @@ export default function App() {
   const [savedAt, setSavedAt] = useState(null);
   const [cloudBackupStatus, setCloudBackupStatus] = useState({ state: "idle", counts: {}, pendingPhotos: 0, localPhotoCount: 0, storageUsage: {}, photoEnabled: false, lastBackupAt: null });
   const [restoreOffer, setRestoreOffer] = useState(null);
+  /* ── 공지 팝업 ────────────────────────────────────────────────────────
+     기간 안의 **안 읽은** 공지를 앱을 열 때 한 번 띄운다. 목록에만 두면
+     아무도 안 보고, 매번 띄우면 X 를 누르는 손버릇이 된다.
+
+     읽음은 서버에 있다 (본인만 자기 것을 적는다). 기기에 두면 폰을 바꿀 때마다
+     지난 공지가 전부 다시 뜨고, 대표의 "읽음 N명" 도 셀 수 없다. */
+  const [noticeQueue, setNoticeQueue] = useState([]);
+  const [noticeBusy, setNoticeBusy] = useState(false);
+  const noticeStore = useMemo(() => createFirestoreNoticeStore(), []);
   /* 소속을 알기 전에 적어 두는 자리. 계정 읽기가 소속 조회보다 먼저 끝나므로
      그 자리에서 물으면 센터 소속인지 모르는 채로 묻게 된다 (restore-offer.js). */
   const [restoreCandidate, setRestoreCandidate] = useState(null);
@@ -24949,6 +25470,58 @@ export default function App() {
   const [favOpen, setFavOpen] = useState(false);
   const [themePref, setThemePref] = useState("system");
   const [sysDark, setSysDark] = useState(sysDarkNow());
+  /* 공지를 읽어 큐를 채운다. 앱이 서면 한 번, 그리고 앞으로 돌아올 때마다 --
+     대표가 방금 올린 공지를 다음 날까지 기다려 보게 할 이유가 없다. */
+  /* 이번 세션에 확인한 공지. 서버에 적고 나서 여기에도 담는다 -- 다시 읽어
+     오기 전에 같은 공지가 한 번 더 뜨는 것을 막는다. */
+  const noticeReadsRef = useRef([]);
+  const refreshNotices = useCallback(async () => {
+    if (!organizationRoster || !account?.id || !organizationContext.organizationId) return;
+    try {
+      const notices = await listNotices(organizationContext.organizationId, { store: noticeStore });
+      /* 기간 안이고 나에게 오는 것만 먼저 고른다 -- 읽음은 공지마다 한 건씩
+         묻는 길밖에 없어서(규칙), 물어볼 것을 먼저 줄인다. */
+      const who = {
+        locationId: organizationContext.locationId || "",
+        title: organizationContext.title || "",
+        role: organizationContext.role || "",
+      };
+      const mine = pendingNotices({ notices, readIds: noticeReadsRef.current, today: todayISO(), who });
+      const { readIds, unknownIds } = await listMyNoticeReads(
+        organizationContext.organizationId,
+        mine.map((item) => item.id),
+        { userId: account.id, store: noticeStore },
+      );
+      /* 읽었는지 **모르는** 것도 띄우지 않는다. 네트워크가 흔들렸다고 이미 본
+         공지를 다시 띄우면 그 창은 곧 X 를 누르는 손버릇이 된다. */
+      noticeReadsRef.current = [...new Set([...noticeReadsRef.current, ...readIds, ...unknownIds])];
+      setNoticeQueue(pendingNotices({
+        notices, readIds: noticeReadsRef.current, today: todayISO(),
+        who,
+      }));
+    } catch (error) {
+      /* 공지를 못 읽었다고 앱이 멈추지 않는다. 다음에 앞으로 돌아올 때 다시 본다. */
+      deviceLog("notice_load_failed", { feature: "notices", stage: "list", ...deviceError(error) });
+    }
+  }, [organizationRoster, account?.id, organizationContext.organizationId,
+    organizationContext.locationId, organizationContext.title, organizationContext.role, noticeStore]);
+
+  const confirmNotice = async (notice) => {
+    if (!notice?.id || noticeBusy) return;
+    setNoticeBusy(true);
+    try {
+      await markNoticeRead(organizationContext.organizationId, notice.id, { userId: account?.id }, { store: noticeStore });
+      noticeReadsRef.current = [...noticeReadsRef.current, String(notice.id)];
+      setNoticeQueue((current) => current.filter((item) => String(item.id) !== String(notice.id)));
+    } catch (error) {
+      /* 적지 못하면 **넘기지 않는다.** 넘기면 그 공지는 이 사람에게 영영 안
+         뜨는데 대표의 집계에는 안 읽음으로 남는다 -- 둘 다 틀린 상태다. */
+      setToast({ ok: false, msg: `확인을 저장하지 못했어요 (코드 ${error?.code || "unknown"}). 다시 눌러 주세요.` });
+    } finally {
+      setNoticeBusy(false);
+    }
+  };
+
   const notificationDataRef = useRef({ schedule: [], members: [] });
   const [aiRecordingStatus, setAIRecordingStatus] = useState(() => readAIRecordingStatus(globalThis.localStorage));
   const lessonRecordContextSyncRef = useRef(null);
@@ -25065,6 +25638,16 @@ export default function App() {
     window.addEventListener("focus", onOnline);
     return () => { active = false; clearTimeout(timer); window.removeEventListener("online", onOnline); window.removeEventListener("focus", onOnline); };
   }, [phase, account?.id, aiRecordingStatus.status]);
+  /* 앱이 서면 한 번, 그리고 앞으로 돌아올 때마다. 대표가 방금 올린 공지를
+     다음 날까지 기다려 보게 할 이유가 없다. */
+  useEffect(() => {
+    if (phase !== "app") return undefined;
+    refreshNotices();
+    const onVisible = () => { if (document.visibilityState === "visible") refreshNotices(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [phase, refreshNotices]);
+
   useEffect(() => {
     if (phase !== "app" || !account?.id) return undefined;
     let removeActionListener = () => {};
@@ -25325,13 +25908,17 @@ export default function App() {
          바꾼 날 이전의 수업료가 자기 화면에서 통째로 사라진다 -- 2026-10 에
          실제로 그렇게 보였다. */
       previousUids: previousUidsOf(organizationContext),
+      /* 대표의 집계가 거르는 것과 같은 줄이다. 안 걸면 강사 화면의 합계가
+         대표의 집계보다 그만큼 크고, 월말에 두 숫자가 맞지 않는 이유를
+         아무도 짚지 못한다. */
+      excludedClientIds: reviewDemoClientIds(rosterClients),
     }).then((summary) => { if (alive) setInstructorPay(summary); })
       /* 0원과 못 읽음을 구분한다. 강사가 0원을 보고 "이번 달 수업이 없었나"
          하고 넘어가면 그 달 정산에서야 어긋난 것을 알게 된다. */
       .catch((error) => { if (alive) setPayError(error?.code || "unknown"); })
       .finally(() => { if (alive) setPayLoading(false); });
     return () => { alive = false; };
-  }, [canSeeOwnPay, account?.id, organizationContext.organizationId, organizationContext.previousUids, payMonth, payRevision]);
+  }, [canSeeOwnPay, account?.id, organizationContext.organizationId, organizationContext.previousUids, payMonth, payRevision, rosterClients]);
 
   useEffect(() => {
     if (!detailClient?.id || !organizationContext.organizationId) return undefined;
@@ -26562,7 +27149,19 @@ export default function App() {
       return false;
     }
     attendanceMutationsInFlight.current.add(lessonId);
-    Promise.resolve(saveDb(next, descriptor)).finally(() => attendanceMutationsInFlight.current.delete(lessonId));
+    Promise.resolve(saveDb(next, descriptor))
+      .then((saved) => {
+        /* 출석을 '취소' 로 바꾸면 그 수업의 알림도 사라져야 한다. 전에는 여기서
+           재예약을 부르지 않아, 앱을 켜 둔 채 두면 **취소한 수업의 10분 전
+           알림이 그대로 울렸다** -- 회원에게 안 간다고 말해 둔 수업이다.
+
+           앞으로 돌아올 때 어차피 정리되지만, 그것은 앱을 한 번 내렸다 올린
+           사람에게만이다. */
+        if (saved !== false) {
+          syncLessonNotifications({ schedule: next.schedule, members: next.members }).catch(() => {});
+        }
+      })
+      .finally(() => attendanceMutationsInFlight.current.delete(lessonId));
     return true;
   };
   const setStatus = (id, status, memberId) => {
@@ -27778,7 +28377,7 @@ export default function App() {
         ) : null}
         <div className="relative min-h-0 flex-1 overflow-hidden">
           <Guard key={tab}>
-            {tab === "schedule" && <ScheduleManager db={rosterDb} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onCareGrade={setCareGrade} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterMembers ? () => { setMemberRegistrationRequest((value) => value + 1); setTab("members"); } : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} careOptionsOf={careOptionsFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && isOwnerLevelRole(organizationContext.role)} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
+            {tab === "schedule" && <ScheduleManager db={rosterDb} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onCareGrade={setCareGrade} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterMembers ? () => { setMemberRegistrationRequest((value) => value + 1); setTab("members"); } : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} careOptionsOf={careOptionsFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && isOwnerLevelRole(organizationContext.role)} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} upcoming={upcomingPay} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
             {tab === "members" && <div className={`h-full min-h-0 ${mobileView === "detail" && member ? "pt-member-detail-active" : ""}`}>
               <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList passSummaryOf={passSummaryFor} locations={rosterLocations} members={rosterMembers} schedule={db.schedule} settings={db.settings} organizationMode={organizationRoster} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} canBrowseAll={!organizationRoster || canBrowseAllClients(organizationContext.role)} viewerRole={organizationContext.role} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterMembers} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} journeyOf={organizationRoster ? journeyFor : undefined} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
               {mobileView === "detail" && member && <div className="pt-member-detail-pane h-full min-h-0">
@@ -27811,7 +28410,7 @@ export default function App() {
               }} />}
             {tab === "settings" && <ReferenceSettingsTab db={db} photos={photos} account={account} savedAt={savedAt} demoMode={demoMode}
               instructorPay={instructorPay} payMonth={payMonth} payLoading={payLoading} payError={payError} onChangeSettings={(s) => saveDb({ ...db, settings: s })} onChangePhoto={changePhoto} onToast={setToast} themePref={themePref} onChangeTheme={changeTheme} onLogout={handleLogout} onDeleteAccount={handleDeleteAccount} onImport={importHandoff}
-              onOpenSchedule={() => { setScheduleQuickAddRequest((request) => request + 1); setTab("schedule"); }} onOpenRecords={() => { setMobileView("list"); setTab("members"); }} onOpenOnboarding={openOnboardingReplay} onOpenLessonExamples={() => setLessonExamplesOpen(true)} backupStatus={cloudBackupStatus} onEnablePhotoBackup={enablePhotoBackup} onRetryBackup={retryCloudBackup} onRestorePrevious={openPreviousPhoneRestore} onRetryOrganization={retryOrganizationContext} onLoadRuntimeConfig={loadRuntimeConfig} onSaveRuntimeConfig={saveRuntimeConfig} onSwapInstructorAccount={swapInstructorAccount} onPreviewInstructorNames={previewInstructorNames} onConfirmInstructorNames={confirmInstructorNames} onOpenClient={(picked) => setDetailClient(picked)} onClearMigratedSettlements={clearMigratedSettlements} />}
+              onOpenSchedule={() => { setScheduleQuickAddRequest((request) => request + 1); setTab("schedule"); }} onOpenRecords={() => { setMobileView("list"); setTab("members"); }} onOpenOnboarding={openOnboardingReplay} onOpenLessonExamples={() => setLessonExamplesOpen(true)} backupStatus={cloudBackupStatus} onEnablePhotoBackup={enablePhotoBackup} onRetryBackup={retryCloudBackup} onRestorePrevious={openPreviousPhoneRestore} onRetryOrganization={retryOrganizationContext} onLoadRuntimeConfig={loadRuntimeConfig} onSaveRuntimeConfig={saveRuntimeConfig} onSwapInstructorAccount={swapInstructorAccount} onPreviewInstructorNames={previewInstructorNames} onConfirmInstructorNames={confirmInstructorNames} noticeStore={noticeStore} onOpenClient={(picked) => setDetailClient(picked)} onClearMigratedSettlements={clearMigratedSettlements} />}
           </Guard>
         </div>
         {/* 출석 체크는 일정 탭 위에 시트로 뜬다. 탭 구조를 건드리지 않으면서
@@ -27952,6 +28551,12 @@ export default function App() {
         </div></section></div>}
       {lessonExamplesOpen && <LessonRecordExamplesModal onClose={() => setLessonExamplesOpen(false)} onPractice={(speech) => { setLessonExamplesOpen(false); window.dispatchEvent(new CustomEvent("pilateacher:practice-record-example", { detail: { speech } })); }} />}
       {onboardingOpen && <Onboarding replay={onboardingReplay} onSkip={completeAndCloseOnboarding} onRegisterMember={finishOnboardingAndRegister} onExploreSample={finishOnboardingWithSample} onLater={finishOnboardingToMembers} />}
+      {/* 공지 팝업. 복원 창이 떠 있으면 그 뒤에 선다 -- 둘이 겹치면 어느
+          쪽을 먼저 답해야 하는지 알 수 없고, 복원은 되돌릴 수 없는 쪽이다. */}
+      {!restoreOffer && noticeQueue.length > 0 && (
+        <NoticePopup notice={noticeQueue[0]} remaining={noticeQueue.length} busy={noticeBusy}
+          onConfirm={() => confirmNotice(noticeQueue[0])} />
+      )}
       {notificationSoftPrompt && <ScheduleBottomSheet title="다음 수업 전에 알려드릴까요?" subtitle="수업 10분 전 알림을 받을 수 있어요" onClose={() => setNotificationSoftPrompt(false)}><div className="space-y-2"><button type="button" onClick={async () => { const permission = await requestLessonNotificationPermission(); if (permission.granted) await syncLessonNotifications(notificationDataRef.current); setNotificationSoftPrompt(false); setToast(permission.granted ? { ok: true, msg: "수업 알림을 켰습니다." } : { ok: false, msg: "알림 권한이 꺼져 있습니다." }); }} className="h-12 w-full rounded-lg text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>알림 받기</button><button type="button" onClick={() => setNotificationSoftPrompt(false)} className="h-11 w-full rounded-lg text-sm font-bold" style={{ color: SUB }}>나중에</button></div></ScheduleBottomSheet>}
       {reflection && <NextLessonReflection
         reflection={reflection}

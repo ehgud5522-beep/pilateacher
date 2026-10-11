@@ -33,6 +33,12 @@ export const paths = Object.freeze({
   /** @param {string} organizationId @param {string} locationId */
   location: (organizationId, locationId) =>
     `${organizationRoot(organizationId)}/${COLLECTIONS.LOCATIONS}/${segment(locationId, "locationId")}`,
+  /** 센터 공지. 목록으로만 읽으므로 컬렉션 경로다. @param {string} organizationId */
+  notices: (organizationId) =>
+    `${organizationRoot(organizationId)}/${COLLECTIONS.NOTICES}`,
+  /** 한 공지의 읽음 기록. @param {string} organizationId @param {string} noticeId */
+  noticeReads: (organizationId, noticeId) =>
+    `${organizationRoot(organizationId)}/${COLLECTIONS.NOTICES}/${segment(noticeId, "noticeId")}/${COLLECTIONS.NOTICE_READS}`,
   /** @param {string} organizationId @param {string} clientId */
   client: (organizationId, clientId) =>
     `${organizationRoot(organizationId)}/${COLLECTIONS.CLIENTS}/${segment(clientId, "clientId")}`,

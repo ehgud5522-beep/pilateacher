@@ -136,3 +136,67 @@ test("the Firestore store can also write", () => {
   assert.equal(typeof store.create, "function");
   assert.equal(typeof store.serverTimestamp, "function");
 });
+
+/* ── 누구에게 어느 지점이 보이는가 ─────────────────────────────────────────
+   강사는 자기 지점의 회원만 가르친다. 아홉 개 칩을 주면 그중 여덟은 눌러도
+   빈 목록이고, 그 빈 화면은 **"회원이 없다" 로 읽힌다** -- 실제로는 볼 자격이
+   없는 지점이다. */
+
+const PLACES = [{ id: "bansong", name: "반송점" }, { id: "centum", name: "센텀점" }];
+
+test("an instructor sees their own branch and no others", async () => {
+  const { locationsVisibleTo } = await import("../../src/data/repositories/location-repository.js");
+  const found = locationsVisibleTo(PLACES, { role: "instructor", locationId: "bansong" });
+  assert.deepEqual(found.map((item) => item.id), ["bansong"]);
+});
+
+test("staff is narrowed the same way", async () => {
+  const { locationsVisibleTo } = await import("../../src/data/repositories/location-repository.js");
+  assert.deepEqual(
+    locationsVisibleTo(PLACES, { role: "staff", locationId: "centum" }).map((item) => item.id),
+    ["centum"],
+  );
+});
+
+test("the owner level and the FC manager keep every branch", async () => {
+  /* 센터 전체를 보는 자리다. 거르면 대표가 자기 센터의 절반을 못 본다. */
+  const { locationsVisibleTo } = await import("../../src/data/repositories/location-repository.js");
+  for (const role of ["owner", "area_manager", "manager"]) {
+    assert.deepEqual(
+      locationsVisibleTo(PLACES, { role, locationId: "bansong" }).map((item) => item.id),
+      ["bansong", "centum"],
+      role,
+    );
+  }
+});
+
+test("an instructor with no branch set still sees everything", async () => {
+  /* 아직 지점을 안 넣은 강사가 있다 (이 필드가 생기기 전에 만들어진 소속).
+     빈 목록을 보여 주면 **자기 회원까지 사라진다** -- 모를 때는 다 보여주는
+     쪽이 틀려도 덜 틀린다. */
+  const { locationsVisibleTo } = await import("../../src/data/repositories/location-repository.js");
+  for (const missing of ["", "   ", undefined]) {
+    assert.equal(
+      locationsVisibleTo(PLACES, { role: "instructor", locationId: missing }).length,
+      2,
+      JSON.stringify(missing),
+    );
+  }
+});
+
+test("a branch that no longer exists does not empty the list", async () => {
+  /* 지점이 지워졌거나 목록을 못 읽었다. 그 강사의 칩만 사라지는 것이 아니라
+     회원이 전부 사라지므로, 거르지 않는 쪽으로 둔다. */
+  const { locationsVisibleTo } = await import("../../src/data/repositories/location-repository.js");
+  assert.equal(
+    locationsVisibleTo(PLACES, { role: "instructor", locationId: "yulha" }).length,
+    2,
+  );
+});
+
+test("an unreadable list is an empty one, not a crash", async () => {
+  const { locationsVisibleTo } = await import("../../src/data/repositories/location-repository.js");
+  for (const bad of [null, undefined, "nope"]) {
+    assert.deepEqual(locationsVisibleTo(bad, { role: "instructor", locationId: "bansong" }), []);
+  }
+});

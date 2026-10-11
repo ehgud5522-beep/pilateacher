@@ -29,6 +29,9 @@ test("an active membership decides the organization and the role", async () => {
        대표가 정한 이름을 덮으면 강사 목록과 급여가 로그인 계정 이름으로
        되돌아간다 (2026-10-10 의 "e asy"). */
     displayNameBy: "",
+    /* 이 강사의 지점. 회원 목록의 지점 칩이 이것으로 좁혀진다 -- 강사에게
+       아홉 개 칩을 주면 그중 여덟은 눌러도 빈 목록이다. */
+    locationId: "",
     isDeputyDirector: false,
     // 급여 판정 1.5 가 읽는다. 없으면 빈 문자열이고 일반 강사 단가로 간다.
     title: "",

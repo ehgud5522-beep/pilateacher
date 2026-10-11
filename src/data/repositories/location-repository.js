@@ -153,6 +153,39 @@ export function filterByLocation(items, filter, locations = []) {
 }
 
 /**
+ * 이 사람에게 보여 줄 지점 목록.
+ *
+ * ── 강사에게는 자기 지점뿐이다 ──
+ * 강사는 자기 지점의 회원만 가르친다. 아홉 개 칩을 주면 그중 여덟은 눌러도
+ * 빈 목록이고, 그 빈 화면은 "회원이 없다" 로 읽힌다 -- 실제로는 볼 자격이
+ * 없는 지점이다.
+ *
+ * **소속 문서의 locationId 가 비어 있으면 거르지 않는다.** 아직 지점을 안
+ * 넣은 강사가 있고(이 필드가 생기기 전에 만들어진 소속), 그 사람에게 빈
+ * 목록을 보여 주면 자기 회원까지 사라진다 -- 모를 때는 다 보여주는 쪽이
+ * 틀려도 덜 틀린다.
+ *
+ * 대표·총괄매니저·FC매니저는 그대로 전부 본다. 센터 전체를 보는 자리다.
+ *
+ * 목록 자리에 무엇이 와도 받는다 -- 못 읽었을 때 빈 목록이 아니라 null 이
+ * 오는 경로가 있고, 거기서 던지면 더보기 탭이 통째로 열리지 않는다.
+ *
+ * @param {unknown} locations
+ * @param {{ role?: string, locationId?: string }} viewer
+ * @returns {Array<{ id: string }>}
+ */
+export function locationsVisibleTo(locations, viewer = {}) {
+  const all = Array.isArray(locations) ? locations.filter(Boolean) : [];
+  const role = String(viewer?.role || "").trim();
+  if (role !== "instructor" && role !== "staff") return all;
+  const mine = String(viewer?.locationId || "").trim();
+  if (!mine) return all;
+  const found = all.filter((location) => String(location?.id || "") === mine);
+  // 그 지점이 목록에서 사라졌으면(지워졌거나 못 읽었으면) 거르지 않는다.
+  return found.length ? found : all;
+}
+
+/**
  * 필터 칩에 붙일 인원 수. 칩 순서는 locations 순서(이름순)를 따른다.
  *
  * @param {Array<{ locationId?: string }>} items

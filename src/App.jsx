@@ -121,6 +121,7 @@ import {
 } from "./data/repositories/client-repository.js";
 import {
   ALL_LOCATIONS, NO_LOCATION, countByLocation, createLocation, filterByLocation, listLocations,
+  locationsVisibleTo,
 } from "./data/repositories/location-repository.js";
 import { connectRepositoryLog, toleratingReadFailure } from "./data/repositories/repository-read.js";
 import {
@@ -342,6 +343,10 @@ import {
 import {
   EXPIRY_PERIOD, EXPIRY_PERIOD_LABELS, expiryReport, expiryReportMessage, outcomeLabel,
 } from "./features/members/expiry-report.js";
+import {
+  EXPIRY_SOON_DAYS, LOW_REMAINING, QUIET_DAYS, WATCH_REASON,
+  instructorMonthReport, previousMonthOf,
+} from "./features/members/instructor-month.js";
 import { EXPIRY_REASON_LABELS } from "./data/schema/instructor-scope.js";
 import { passBelongsTo, passClientIds } from "./data/schema/pass-clients.js";
 import {
@@ -369,6 +374,12 @@ const restoreDecisionKey = (accountId) => `pilateacher_restore_decision_v1:${Str
 /* [나중에] 를 누른 날. 계정이 아니라 기기에 붙는다 -- 업데이트는 그 폰의
    일이지 그 계정의 일이 아니다. */
 const UPDATE_SNOOZE_KEY = "pilateacher_app_update_snoozed_v1";
+/* [이 버전 다시 보지 않기] 를 누른 빌드 번호. **번호에 걸린다** -- 다음 빌드가
+   나오면 다시 묻는다 (update-gate.js 의 dismissedThisBuild). */
+const UPDATE_DISMISSED_KEY = "pilateacher_app_update_dismissed_build_v1";
+/* 앞으로 돌아올 때 다시 본 날. **하루 한 번이다** -- 앱을 오갈 때마다 설정을
+   읽으면 쓰는 사람에게는 아무 일도 없고 읽기만 는다. */
+const STARTUP_CHECK_KEY = "pilateacher_startup_check_day_v1";
 const LESSON_RECORD_REVIEW_FLAGS = new Set(["no_speech", "low_confidence", "tail_dropped"]);
 const hasLessonRecordReviewFlag = (record) => (record?.reviewFlags || record?.flags || []).some((flag) => LESSON_RECORD_REVIEW_FLAGS.has(flag));
 const LessonRecordLinkContext = createContext({
@@ -5322,7 +5333,7 @@ function ReferenceMemberList({
   /* 강사에게는 "전체 보기" 를 주지 않는다. 경계가 아니라 -- 규칙은 지금도
      열려 있다 -- 120명을 일상적으로 스크롤할 이유가 없어서다.
      기본값 true 는 개인 강사(legacy)를 위한 것이다. */
-  canBrowseAll = true, viewerRole = "", organizationMode = false,
+  canBrowseAll = true, viewerRole = "", viewerLocationId = "", organizationMode = false,
   /* 스모크 하네스가 칩 하나를 바로 여는 자리다. 앱은 언제나 기본값에서
      시작한다 -- initialView 와 같은 방식이다. */
   initialFilter = "",
@@ -5361,10 +5372,26 @@ function ReferenceMemberList({
     () => members.map((item) => ({ ...item, locationId: String(item?.orgLocationId || "") })),
     [members],
   );
-  const locationCounts = useMemo(
-    () => countByLocation(locationItems, organizationMode ? locations : []),
-    [locationItems, locations, organizationMode],
+  /* 강사에게는 자기 지점만 남는다 -- 나머지 칩은 눌러도 빈 목록이고, 그 빈
+     화면은 "회원이 없다" 로 읽힌다. */
+  const visibleLocations = useMemo(
+    () => (organizationMode
+      ? locationsVisibleTo(locations, { role: viewerRole, locationId: viewerLocationId })
+      : []),
+    [organizationMode, locations, viewerRole, viewerLocationId],
   );
+  const locationCounts = useMemo(
+    () => countByLocation(locationItems, visibleLocations),
+    [locationItems, visibleLocations],
+  );
+  /* 저장해 둔 칩이 지금 보이는 목록에 없으면 전체로 돌아간다. 기기에 남아
+     있던 남의 지점을 그대로 걸면 **자기 회원까지 사라지고**, 고를 칩도 없어서
+     되돌릴 길이 없다 -- 강사에게는 그 줄이 아예 안 보인다. */
+  const effectiveLocation = useMemo(() => {
+    if (locationFilter === ALL_LOCATIONS) return ALL_LOCATIONS;
+    if (locationFilter === NO_LOCATION) return locationCounts[NO_LOCATION] > 0 ? NO_LOCATION : ALL_LOCATIONS;
+    return visibleLocations.some((item) => item.id === locationFilter) ? locationFilter : ALL_LOCATIONS;
+  }, [locationFilter, visibleLocations, locationCounts]);
   const nonDraftMembers = members.filter((m) => !isDraft(m));
   /* Inactive members are their own view rather than an extra row in the normal
      list, so the everyday list stays what it was. Without this they were
@@ -5385,7 +5412,7 @@ function ReferenceMemberList({
     /* 지점이 먼저다. 다른 지점의 회원은 "운영중" 이든 "재등록 필요" 든 이
        화면에서 셀 것이 아니다 -- 칩을 고른 뒤에도 숫자가 전체로 남으면 강사는
        자기 지점에 몇 명인지 끝내 알 수 없다. */
-    if (filterByLocation([{ locationId: String(m?.orgLocationId || "") }], locationFilter, locations).length === 0) return false;
+    if (filterByLocation([{ locationId: String(m?.orgLocationId || "") }], effectiveLocation, visibleLocations).length === 0) return false;
     if (filter === "ongoing") return !isExpiredRosterMember(m);
     if (filter === "expired") return isExpiredRosterMember(m);
     if (filter === "private") return isActive(m) && !m.duetWith;
@@ -5461,7 +5488,7 @@ function ReferenceMemberList({
             줄을 나눠 둔다 -- 한 줄에 섞으면 "운영중" 과 "율하" 가 같은 종류로
             보이고, 둘은 함께 걸리는 조건이지 서로 바꾸는 조건이 아니다. */}
         {organizationMode ? (
-          <LocationFilter locations={locations} counts={locationCounts} value={locationFilter} onChange={chooseLocation} />
+          <LocationFilter locations={visibleLocations} counts={locationCounts} value={effectiveLocation} onChange={chooseLocation} />
         ) : null}
         <div className="mt-2 flex min-w-0 items-center gap-2">
           <div className="pt-hscroll flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
@@ -15319,20 +15346,23 @@ function InstructorPayDetail({
 
   return (
     <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <p style={{ fontSize: TYPE.caption, color: SUB }}>{monthLabel(`${month}-01`)}</p>
-          <div className="mt-1 flex items-end gap-2">
-            <p className="tabular-nums" style={{ fontSize: TYPE.hero, lineHeight: 1.1, fontWeight: 700, color: INK }}>
-              ₩{won(pay?.total)}
-            </p>
-            <p style={{ paddingBottom: 3, fontSize: TYPE.caption, color: SUB }}>예상 급여</p>
-          </div>
-        </div>
+      {/* 달 이름과 닫기는 **같은 줄**이다. 금액은 그 아래로 내린다 -- 전에는
+          달·금액 한 덩어리가 왼쪽에 서고 X 가 그 옆이라, 폭이 좁아지면 X 가
+          달 이름 쪽으로 내려와 겹쳐 보였다. */}
+      <div className="flex min-h-8 items-center gap-2">
+        <p className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: SUB }}>
+          {monthLabel(`${month}-01`)}
+        </p>
         {onClose ? (
-          <button type="button" onClick={onClose} aria-label="닫기" className="shrink-0"
+          <button type="button" onClick={onClose} aria-label="닫기" className="shrink-0 flex items-center justify-center"
             style={{ width: 32, height: 32, color: SUB }}><X size={18} /></button>
         ) : null}
+      </div>
+      <div className="mt-1 flex flex-wrap items-end gap-x-2">
+        <p className="tabular-nums" style={{ fontSize: TYPE.hero, lineHeight: 1.1, fontWeight: 700, color: INK }}>
+          ₩{won(pay?.total)}
+        </p>
+        <p style={{ paddingBottom: 3, fontSize: TYPE.caption, color: SUB }}>예상 급여</p>
       </div>
       <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>{PAY_SCOPE_NOTICE}</p>
 
@@ -16287,12 +16317,16 @@ function TitlePicker({ title, deputy, allowDeputy = true, onPick }) {
    "지점 없음"은 해당하는 사람이 있을 때만 나온다. 지점을 비워 둔 강사나,
    목록에 없는 지점을 가리키는 회원이 어느 칸에도 안 보이면 찾을 길이 없다. */
 function LocationFilter({ locations, counts, value, onChange }) {
-  if (locations.length < 2 && !(counts[NO_LOCATION] > 0 && locations.length > 0)) return null;
-  const chips = [
-    { id: ALL_LOCATIONS, label: "전체" },
+  const buckets = [
     ...locations.map((location) => ({ id: location.id, label: location.name || location.id })),
     ...(counts[NO_LOCATION] > 0 ? [{ id: NO_LOCATION, label: "지점 없음" }] : []),
   ];
+  /* 나눌 것이 하나뿐이면 줄을 내지 않는다. "전체 23" 옆에 "반송 23" 이 서면
+     같은 숫자가 두 번 보이고, 누르면 아무것도 달라지지 않는다 -- 고를 것이
+     없는 고르기다. 강사에게는 보이는 지점이 자기 것 하나뿐이라 이 경우가
+     기본이다 (locationsVisibleTo). */
+  if (buckets.length < 2) return null;
+  const chips = [{ id: ALL_LOCATIONS, label: "전체" }, ...buckets];
   return (
     <div className="mt-3 flex flex-wrap gap-2">
       {chips.map((chip) => {
@@ -21483,7 +21517,7 @@ function NoticeCentre({
  *
  * 여럿이면 하나씩, 중요한 것부터. [확인] 이 곧 읽음이다.
  */
-function NoticePopup({ notice, remaining, busy, onConfirm }) {
+function NoticePopup({ notice, remaining, busy, onConfirm, onClose }) {
   if (!notice) return null;
   return (
     <ScheduleBottomSheet title={notice.important ? "중요 공지" : "공지사항"}
@@ -21498,14 +21532,23 @@ function NoticePopup({ notice, remaining, busy, onConfirm }) {
           <a href={notice.linkUrl} target="_blank" rel="noreferrer" className="block"
             style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND_D }}>링크 열기</a>
         ) : null}
-        {/* 닫는 길이 [확인] 하나다. X 로 넘기면 읽음이 아니고, 그러면 다음에
-            또 뜬다 -- 대표의 "읽음 N명" 도 그만큼 거짓이 된다. */}
+        {/* ── 닫는 길이 둘이다 ────────────────────────────────────────
+            [닫기] 는 **이번만** 넘긴다 -- 다음에 앱을 켜면 다시 선다. 읽음으로
+            적지 않으므로 대표의 "읽음 N명" 도 늘지 않는다. 지금 읽을 짬이
+            없는 사람에게 영영 숨기거나 읽은 것으로 세는 것, 둘 다 틀렸다.
+
+            [다시 보지 않기] 가 읽음이다. 그것만 서버에 남는다. */}
         <button type="button" disabled={busy} onClick={onConfirm}
           className="h-12 w-full font-extrabold text-white" style={{
             borderRadius: 10, backgroundColor: BRAND, fontSize: TYPE.body, opacity: busy ? 0.6 : 1,
-          }}>{busy ? "처리 중" : "확인"}</button>
-        <p className="text-center" style={{ fontSize: TYPE.caption, color: SUB }}>
-          확인하면 다시 뜨지 않습니다. 더보기 → 공지사항에서 다시 볼 수 있습니다.
+          }}>{busy ? "처리 중" : "다시 보지 않기"}</button>
+        <button type="button" disabled={busy} onClick={onClose}
+          className="h-11 w-full font-bold" style={{
+            borderRadius: 10, backgroundColor: CANVAS, color: INK, fontSize: TYPE.caption,
+          }}>닫기</button>
+        <p className="text-center" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+          [닫기] 는 다음에 앱을 켤 때 다시 보여드립니다.
+          {" "}[다시 보지 않기] 를 누르면 더보기 → 공지사항에서만 볼 수 있습니다.
         </p>
       </div>
     </ScheduleBottomSheet>
@@ -22699,11 +22742,30 @@ function AuditLog({
   );
 }
 
+/* 챙길 이유. **셋은 할 일이 다르다** -- 재등록을 권할 사람, 만료일을 짚어 줄
+   사람, 안부를 물을 사람. 한 색 한 문구로 묶으면 목록을 보고도 무엇을 해야
+   할지 알 수 없어 결국 아무것도 하지 않게 된다. */
+const WATCH_LABEL = {
+  [WATCH_REASON.LOW]: `잔여 ${LOW_REMAINING}회 이하`,
+  [WATCH_REASON.EXPIRING]: `${EXPIRY_SOON_DAYS}일 안 만료`,
+  [WATCH_REASON.QUIET]: `${QUIET_DAYS}일 넘게 수업 없음`,
+};
+const WATCH_TONE = {
+  get [WATCH_REASON.LOW]() { return { backgroundColor: TINT, color: BRAND_D }; },
+  get [WATCH_REASON.EXPIRING]() { return { backgroundColor: WARN_S, color: WARN }; },
+  get [WATCH_REASON.QUIET]() { return { backgroundColor: CANVAS, color: INK2 }; },
+};
+
 function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
   /* 일정 탭이 이미 읽어 둔 원장 급여를 **그대로** 받는다. 여기서 다시 읽으면
      두 화면이 서로 다른 순간의 원장을 보게 되고, 그 차이는 아무 데도 적히지
      않는다 -- 같은 객체를 쓰면 다를 수가 없다. */
   instructorPay = null, payMonth = "", payLoading = false, payError = "",
+  /* "이번 달 내 수업 활동" 이 쓰는 것들. 회원과 회원권은 **앱이 이미 읽어 둔
+     것을 그대로 받는다** -- 여기서 다시 읽으면 목록 화면과 다른 순간의 센터를
+     보게 되고, 그 차이는 아무 데도 적히지 않는다. 지난달 원장만 이 화면을
+     열었을 때 따로 읽는다. */
+  currentUserId = "", rosterClients = [], rosterPasses = [], monthReportState = null, onOpenPay,
   onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, onRestorePrevious, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, payrollStore, issueStore, auditStore, ledgerStore, onRetryOrganization, onOpenClient, onClearMigratedSettlements, onLoadRuntimeConfig, onSaveRuntimeConfig, onSwapInstructorAccount, onPreviewInstructorNames, onConfirmInstructorNames, noticeStore, initialView = "hub", initialOpenGroups = null, nameConfirmState = null, noticeState = null }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const organization = useContext(OrganizationContext);
@@ -22887,6 +22949,58 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
   };
   const reportYm = monthKey(todayISO());
   const reportStats = useMemo(() => monthStats(db.schedule, reportYm), [db.schedule, reportYm]);
+
+  /* ── 이번 달 내 수업 활동 ─────────────────────────────────────────────────
+     지난달 원장은 **이 화면을 열었을 때만** 읽는다. 증감 한 줄을 위해 앱을 열
+     때마다 질의를 하나 더 보내는 것은, 그 줄을 보지 않는 날에도 치르는 값이다.
+
+     못 읽어도 화면은 열린다 -- 증감만 빠지고 나머지는 그대로다. 0으로 보이면
+     강사는 "지난달에 한 건도 안 했다" 로 읽는다. */
+  const reportMonth = inOrganization && payMonth ? payMonth : reportYm;
+  const [lastMonthPay, setLastMonthPay] = useState(monthReportState?.lastMonthPay ?? null);
+  const [lastMonthError, setLastMonthError] = useState(monthReportState?.lastMonthError || "");
+  useEffect(() => {
+    if (view !== "report" || !inOrganization || !currentUserId || monthReportState) return undefined;
+    const organizationId = organization?.organizationId || "";
+    const previousMonth = previousMonthOf(reportMonth);
+    if (!organizationId || !previousMonth) return undefined;
+    let alive = true;
+    setLastMonthError("");
+    loadInstructorMonthlyPay(organizationId, {
+      instructorId: currentUserId, month: previousMonth, store: payrollStore,
+      // 계정을 바꾼 강사는 지난달 수업이 옛 uid 에 걸려 있다.
+      previousUids: previousUidsOf(organization),
+      // 대표의 집계가 거르는 것과 같은 줄이다.
+      excludedClientIds: reviewDemoClientIds(rosterClients),
+    }).then((summary) => { if (alive) setLastMonthPay(summary); })
+      .catch((error) => { if (alive) setLastMonthError(error?.code || "unknown"); });
+    return () => { alive = false; };
+  }, [view, inOrganization, currentUserId, organization, reportMonth, payrollStore, rosterClients, monthReportState]);
+
+  /* 원장을 읽어 온 범위. 이번 달 + 지난달이라 **오늘이 며칠이든 21일을 덮는다** --
+     "21일 넘게 수업 없음" 이 그 사실에 기대고 있다. 지난달을 못 읽었으면 범위가
+     좁아지므로 null 로 넘겨, 모르는 것을 "안 왔다" 로 적지 않게 한다. */
+  const monthReport = useMemo(() => {
+    if (!inOrganization) return null;
+    const entries = Array.isArray(instructorPay?.entries) ? instructorPay.entries : [];
+    const previousEntries = lastMonthPay ? (lastMonthPay.entries || []) : null;
+    return instructorMonthReport({
+      month: reportMonth, previousMonth: previousMonthOf(reportMonth),
+      instructorId: currentUserId,
+      entries: previousEntries ? [...entries, ...previousEntries] : entries,
+      previousEntries,
+      entriesSince: lastMonthPay?.start instanceof Date ? lastMonthPay.start : null,
+      passes: rosterPasses, schedule: db.schedule, members: db.members, photos,
+      // 스모크만 시계를 고정한다. 만료 임박과 "오래 안 옴" 이 오늘에 달려 있다.
+      now: monthReportState?.now,
+    });
+  }, [inOrganization, instructorPay, lastMonthPay, reportMonth, currentUserId, rosterPasses, db.schedule, db.members, photos, monthReportState]);
+
+  /** 회원 이름. 못 찾으면 이름을 지어내지 않는다 -- 없는 사람이 목록에 선다. */
+  const clientNameOf = useCallback((clientId) => {
+    const found = rosterClients.find((client) => String(client?.id || "") === String(clientId));
+    return found?.name || "";
+  }, [rosterClients]);
   const scheduleColors = useMemo(() => normalizeScheduleColors(db.settings?.scheduleColors), [db.settings?.scheduleColors]);
   const diagnosticRecordSources = useMemo(() => {
     const pickDate = (candidates) => {
@@ -22998,7 +23112,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
     return total;
   }, [db.schedule, db.members, db.settings, reportYm]);
   const detailTitles = {
-    report: "월간 리포트", expiry: "만료 회원", "instructor-scope": "담당 강사", "app-update": "앱 업데이트 안내", "name-confirm": "강사 이름 확정", notices: "공지사항", "expiry-order": "만료일 순서 확인", assessment: "변화 기록 설정", center: "센터 정보", theme: "화면 설정", "schedule-colors": "일정 색상",
+    report: inOrganization ? "이번 달 내 수업 활동" : "월간 리포트", expiry: "만료 회원", "instructor-scope": "담당 강사", "app-update": "앱 업데이트 안내", "name-confirm": "강사 이름 확정", notices: "공지사항", "expiry-order": "만료일 순서 확인", assessment: "변화 기록 설정", center: "센터 정보", theme: "화면 설정", "schedule-colors": "일정 색상",
     data: "데이터 상태", backup: "데이터 이관 · 백업", permissions: "접근권한 안내", knowledge: "오늘의 지식", account: "계정", "account-delete": "계정 삭제", app: "앱 정보",
     products: "회원권 상품",
     clients: "회원 관리",
@@ -23077,7 +23191,9 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
       { key: "records", title: "기록", description: "회원별 수업 · 변화 기록", Icon: ClipboardList, action: onOpenRecords },
       /* 소속 센터에서는 이 화면과 급여 집계가 서로 다른 것을 센다. 이름이 비슷해
          헷갈리므로 무엇을 세는지로 가른다 -- 화면 안에도 같은 설명이 있다. */
-      { key: "report", title: "월간 리포트", description: inOrganization ? "이달 수업 · 성과 · 기기 기준 추정" : "이달 수업 · 성과 · 예상 급여", Icon: ArrowUpRight },
+      /* 소속 강사에게는 더 이상 금액 화면이 아니다. 금액은 일정 탭의 급여
+         카드 하나로 모았고, 여기는 "이번 달 나는 무엇을 했나" 를 답한다. */
+      { key: "report", title: inOrganization ? "이번 달 내 수업 활동" : "월간 리포트", description: inOrganization ? "수업 수 · 출석 · 챙길 회원" : "이달 수업 · 성과 · 예상 급여", Icon: ArrowUpRight },
       /* 만료는 조용히 일어난다. 회원권이 끝나도 알림이 없고, 강사는 그 회원이
          안 온다는 것을 몇 주 뒤에 안다 -- 그때는 늦다. 개인 모드에는 회원권이
          없어 셀 것이 없다. */
@@ -23220,75 +23336,228 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
       <main className="pt-scroll min-h-0 flex-1 overflow-y-auto" style={{ padding: "12px 12px 20px" }}>
         {view === "report" && (
           <div className="space-y-2">
-            {/* ── 소속 센터에서는 원장 하나만 본다 ──────────────────────────
-                예전에는 이 화면이 기기에 저장된 일정과 회원별 단가로 따로
-                계산했다. 그래서 일정 탭이 ₩50,000 인데 여기는 ₩0 이었다 --
-                같은 "예상 급여" 라는 말이 두 곳에서 다른 뜻이었고, 강사는
-                어느 쪽을 믿어야 할지 알 수 없었다.
+            {/* ── 이 화면은 돈을 말하지 않는다 ──────────────────────────────
+                전에는 첫 줄이 "예상 급여" 였다. 그런데 같은 금액이 일정 탭
+                카드와 급여 시트에도 있어서 한 숫자를 세 곳에서 보여주고
+                있었고, 셋 중 하나가 늦게 갱신되면 강사는 어느 쪽을 믿어야
+                할지 알 수 없었다.
 
-                이제 **일정 탭이 읽은 그 객체를 그대로 받는다.** 다시 읽지도
-                않는다 -- 같은 값을 쓰면 다를 수가 없다. */}
-            <section style={sectionStyle}>
-              <p style={{ fontSize: TYPE.caption, color: SUB }}>
-                {monthLabel(`${inOrganization && payMonth ? payMonth : reportYm}-01`)}
-              </p>
-              {inOrganization ? (
-                <>
-                  <div className="mt-1 flex items-end gap-2">
-                    {payLoading ? (
-                      <p style={{ fontSize: TYPE.title, fontWeight: 600, color: SUB }}>불러오는 중…</p>
-                    ) : payError ? (
-                      /* 0원으로 보이면 "이번 달 수업이 없었나" 하고 넘어간다. */
-                      <p style={{ fontSize: TYPE.body, fontWeight: 600, color: BAD }}>불러오지 못했습니다 (코드 {payError})</p>
-                    ) : (
-                      <>
-                        <p className="tabular-nums" style={{ fontSize: TYPE.hero, lineHeight: 1.1, fontWeight: 700, color: INK }}>₩{won(instructorPay?.total)}</p>
-                        <p style={{ paddingBottom: 3, fontSize: TYPE.caption, color: SUB }}>예상 급여</p>
-                      </>
-                    )}
+                금액은 급여 화면 하나로 모았다. 여기가 답하는 것은 "이번 달
+                나는 무엇을 했나" 이고, 그것은 돈이 아니라 수업과 회원이다. */}
+            {inOrganization && monthReport ? (
+              <>
+                <section style={sectionStyle}>
+                  <p style={{ fontSize: TYPE.caption, color: SUB }}>{monthLabel(`${reportMonth}-01`)}</p>
+                  {payLoading ? (
+                    <p className="mt-1" style={{ fontSize: TYPE.title, fontWeight: 600, color: SUB }}>불러오는 중…</p>
+                  ) : payError ? (
+                    /* 0건으로 보이면 "이번 달 수업이 없었나" 하고 넘어간다. */
+                    <p className="mt-1" style={{ fontSize: TYPE.body, fontWeight: 600, color: BAD }}>불러오지 못했습니다 (코드 {payError})</p>
+                  ) : (
+                    <div className="mt-1 flex flex-wrap items-end gap-x-2">
+                      <p className="tabular-nums" style={{ fontSize: TYPE.hero, lineHeight: 1.1, fontWeight: 700, color: INK }}>{monthReport.trend.sessions}건</p>
+                      <p style={{ paddingBottom: 3, fontSize: TYPE.caption, color: SUB }}>수업</p>
+                      {/* 지난달을 못 읽은 것과 0건인 것은 다르다. 0으로 두면
+                          이번 달 전부가 "증가" 로 보이고 그것은 거짓이다. */}
+                      {monthReport.trend.delta === null ? (
+                        <p className="ml-auto" style={{ paddingBottom: 3, fontSize: TYPE.caption, color: SUB }}>
+                          {lastMonthError ? `지난달을 불러오지 못했습니다 (코드 ${lastMonthError})` : "지난달 확인 중…"}
+                        </p>
+                      ) : (
+                        <p className="ml-auto tabular-nums" style={{ paddingBottom: 3, fontSize: TYPE.caption, fontWeight: 600, color: monthReport.trend.delta > 0 ? GOOD : monthReport.trend.delta < 0 ? BAD : SUB }}>
+                          지난달 {monthReport.trend.previous}건 · {monthReport.trend.delta > 0 ? "+" : ""}{monthReport.trend.delta}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                  <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+                    회원권 원장에서 차감된 수업입니다. 급여 집계와 <b style={{ color: INK }}>같은 출처</b>이고, 본인 담당 회원만 셉니다.
+                  </p>
+                  {onOpenPay ? (
+                    <button type="button" onClick={onOpenPay} className="mt-3 flex h-11 w-full items-center justify-center gap-1.5"
+                      style={{ borderRadius: 9, backgroundColor: CANVAS, border: `1px solid ${LINE}`, color: INK2, fontSize: TYPE.caption, fontWeight: 700 }}>
+                      이달 예상 급여 보기 <ChevronRight size={13} />
+                    </button>
+                  ) : null}
+                </section>
+
+                {/* ── 출석은 다른 출처다 ────────────────────────────────────
+                    원장에는 차감만 남는다 -- 취소한 수업은 회원권을 건드리지
+                    않으므로 서버에 남길 것이 아예 없다. 그래서 이 세 줄만은
+                    기기 일정에서 세고, 화면이 그 사실을 말한다. 말없이 섞으면
+                    숫자가 어긋났을 때 어느 쪽을 의심할지 아무도 모른다. */}
+                <section style={sectionStyle}>
+                  <div className="flex items-baseline gap-2">
+                    <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>출석</h2>
+                    <p className="ml-auto tabular-nums" style={{ fontSize: TYPE.body, fontWeight: 700, color: monthReport.attendance.rate === null ? SUB : GOOD }}>
+                      {monthReport.attendance.rate === null ? "아직 없음" : `${monthReport.attendance.rate}%`}
+                    </p>
+                  </div>
+                  <div className="mt-2 grid grid-cols-3 gap-2">
+                    {[
+                      { label: "출석", value: monthReport.attendance.done, color: GOOD },
+                      { label: "노쇼", value: monthReport.attendance.noshow, color: BAD },
+                      { label: "취소", value: monthReport.attendance.cancel, color: SUB },
+                    ].map((item) => (
+                      <div key={item.label} style={{ padding: "11px 10px", borderRadius: 9, backgroundColor: CANVAS }}>
+                        <p style={{ fontSize: TYPE.caption, color: SUB }}>{item.label}</p>
+                        <p className="mt-1 tabular-nums" style={{ fontSize: TYPE.title, fontWeight: 700, color: item.color }}>{item.value}건</p>
+                      </div>
+                    ))}
                   </div>
                   <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
-                    회원권 원장에서 차감된 수업료입니다. 일정 탭의 예상 급여와 <b style={{ color: INK }}>같은 값</b>입니다.
-                    인센티브와 노쇼 수수료는 별도로 정산됩니다.
+                    출석·노쇼·취소는 <b style={{ color: INK }}>이 기기의 일정</b>에서 셉니다. 취소한 수업은 회원권을 건드리지 않아 센터 원장에 남지 않습니다.
+                    {monthReport.attendance.booked > 0 ? ` 아직 예약 상태인 ${monthReport.attendance.booked}건은 비율에서 빼고 셉니다.` : ""}
                   </p>
-                </>
-              ) : (
-                <>
+                </section>
+
+                {/* ── 원장을 못 읽었으면 0 을 그리지 않는다 ─────────────────
+                    아래 셋은 전부 센터 원장과 회원권에서 나온다. 못 읽은 것을
+                    0명 · 0장으로 그리면 "이번 달엔 아무 일도 없었다" 로 읽히고,
+                    강사는 그 달 정산에서야 아니었다는 것을 안다. */}
+                {payLoading || payError ? (
+                  <section style={sectionStyle}>
+                    <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+                      {payLoading
+                        ? "센터 기록을 불러오는 중입니다. 수업한 회원 · 챙길 회원 · 종료시킨 회원권은 잠시 뒤에 보입니다."
+                        : `센터 기록을 불러오지 못해 수업한 회원 · 챙길 회원 · 종료시킨 회원권을 셀 수 없습니다 (코드 ${payError}). 위의 출석과 아래의 기록은 이 기기에 있는 것이라 그대로 보입니다.`}
+                    </p>
+                  </section>
+                ) : (
+                  <>
+                  <section style={sectionStyle}>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div style={{ padding: "11px 10px", borderRadius: 9, backgroundColor: CANVAS }}>
+                        <p style={{ fontSize: TYPE.caption, color: SUB }}>수업한 회원</p>
+                        <p className="mt-1 tabular-nums" style={{ fontSize: TYPE.title, fontWeight: 700, color: INK }}>{monthReport.clients.taught.length}명</p>
+                      </div>
+                      <div style={{ padding: "11px 10px", borderRadius: 9, backgroundColor: CANVAS }}>
+                        <p style={{ fontSize: TYPE.caption, color: SUB }}>새로 맡은 회원</p>
+                        <p className="mt-1 tabular-nums" style={{ fontSize: TYPE.title, fontWeight: 700, color: BRAND_D }}>{monthReport.clients.fresh.length}명</p>
+                      </div>
+                    </div>
+                    {/* 재등록한 기존 회원도 여기 선다. 틀린 것이 아니라 "이번
+                        달에 내게 새로 맡겨진 회원권" 이고, 그렇게 부른다. */}
+                    <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+                      새로 맡은 회원은 이번 달 내 담당으로 발급된 회원권 기준입니다 — 다시 끊은 기존 회원도 포함됩니다.
+                    </p>
+                  </section>
+
+                  {/* ── 챙길 회원 ─────────────────────────────────────────────
+                      이름만 주면 무엇을 해야 할지 알 수 없다. 셋은 할 일이
+                      다르다 (재등록 권유 / 만료일 / 안부). 그래서 이유가 이름과
+                      함께 가고, 한 사람이 여럿에 걸리면 한 줄로 합친다. */}
+                  <section style={sectionStyle}>
+                    <div className="mb-2 flex items-baseline gap-2">
+                      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>챙길 회원</h2>
+                      <p className="ml-auto tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>{monthReport.watch.length}명</p>
+                    </div>
+                    {monthReport.watch.length === 0 ? (
+                      <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>지금 챙길 회원이 없습니다. 잔여 {LOW_REMAINING}회 이하 · {EXPIRY_SOON_DAYS}일 안 만료 · {QUIET_DAYS}일 넘게 수업 없음을 봅니다.</p>
+                    ) : (
+                      <div className="space-y-1.5">
+                        {monthReport.watch.map((item) => {
+                          const client = rosterClients.find((row) => String(row?.id || "") === item.clientId);
+                          return (
+                            <button type="button" key={item.clientId} disabled={!client || !onOpenClient}
+                              onClick={() => onOpenClient?.(client)}
+                              className="flex w-full items-center gap-2 text-left disabled:opacity-60"
+                              style={{ padding: "10px 11px", borderRadius: 9, backgroundColor: CANVAS }}>
+                              <span className="min-w-0 flex-1">
+                                {/* 이름을 못 찾으면 지어내지 않는다 -- 없는
+                                    사람이 목록에 서면 그 목록을 못 믿는다. */}
+                                <span className="block truncate" style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>{clientNameOf(item.clientId) || "이름을 불러오지 못했습니다"}</span>
+                                <span className="mt-0.5 flex flex-wrap gap-1">
+                                  {item.reasons.map((reason) => (
+                                    <span key={reason} style={{ padding: "2px 6px", borderRadius: 6, fontSize: TYPE.caption, fontWeight: 600, ...WATCH_TONE[reason] }}>{WATCH_LABEL[reason]}</span>
+                                  ))}
+                                </span>
+                              </span>
+                              {client && onOpenClient ? <ChevronRight size={15} style={{ color: FAINT }} /> : null}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </section>
+
+                  {/* ── 종료시킨 회원 ─────────────────────────────────────────
+                      다 쓴 것은 끝이 아니라 재등록을 말할 시점이다. 그래서 끝난
+                      수와 다시 끊은 수를 함께 센다 -- 끝난 수만 보여주면 그것이
+                      좋은 소식인지 나쁜 소식인지 알 수 없다. */}
+                  <section style={sectionStyle}>
+                    <div className="mb-2 flex items-baseline gap-2">
+                      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>종료시킨 회원권</h2>
+                      <p className="ml-auto tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+                        {monthReport.exhausted.passes}장 · 재등록 {monthReport.exhausted.renewedClientIds.length}명
+                      </p>
+                    </div>
+                    {monthReport.exhausted.clientIds.length === 0 ? (
+                      <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>이번 달 내 수업으로 잔여 0이 된 회원권이 없습니다.</p>
+                    ) : (
+                      <div className="flex flex-wrap gap-1.5">
+                        {monthReport.exhausted.clientIds.map((clientId) => {
+                          const renewed = monthReport.exhausted.renewedClientIds.includes(clientId);
+                          return (
+                            <span key={clientId} style={{ padding: "5px 9px", borderRadius: 7, backgroundColor: renewed ? GOOD_S : CANVAS, color: renewed ? GOOD : INK2, fontSize: TYPE.caption, fontWeight: 600 }}>
+                              {clientNameOf(clientId) || "이름 없음"}{renewed ? " · 재등록" : ""}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
+                    <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+                      재등록은 그 회원 앞으로 이번 달에 나간 다른 회원권입니다 — 담당이 바뀌었어도 셉니다.
+                    </p>
+                  </section>
+                  </>
+                )}
+
+                <section style={sectionStyle}>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div style={{ padding: "11px 10px", borderRadius: 9, backgroundColor: CANVAS }}>
+                      <p style={{ fontSize: TYPE.caption, color: SUB }}>수업 기록 작성률</p>
+                      <p className="mt-1 tabular-nums" style={{ fontSize: TYPE.title, fontWeight: 700, color: INK }}>
+                        {monthReport.records.rate === null ? "아직 없음" : `${monthReport.records.rate}%`}
+                      </p>
+                      {monthReport.records.done > 0 && (
+                        <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>{monthReport.records.recorded}/{monthReport.records.done}건</p>
+                      )}
+                    </div>
+                    <div style={{ padding: "11px 10px", borderRadius: 9, backgroundColor: CANVAS }}>
+                      <p style={{ fontSize: TYPE.caption, color: SUB }}>체형 사진</p>
+                      <p className="mt-1 tabular-nums" style={{ fontSize: TYPE.title, fontWeight: 700, color: INK }}>{monthReport.records.photos}장</p>
+                    </div>
+                  </div>
+                  <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+                    기록과 사진도 <b style={{ color: INK }}>이 기기</b>에 있는 것을 셉니다. 작성률의 분모는 출석으로 끝난 수업입니다 — 취소한 수업은 세지 않습니다.
+                  </p>
+                </section>
+              </>
+            ) : (
+              /* 미소속 개인 강사. 원장이 없으므로 기기 일정과 회원별 단가로
+                 계산한 기존 화면을 그대로 둔다. */
+              <>
+                <section style={sectionStyle}>
+                  <p style={{ fontSize: TYPE.caption, color: SUB }}>{monthLabel(`${reportYm}-01`)}</p>
                   <div className="mt-1 flex items-end gap-2"><p className="tabular-nums" style={{ fontSize: TYPE.hero, lineHeight: 1.1, fontWeight: 700, color: INK }}>₩{won(reportPay)}</p><p style={{ paddingBottom: 3, fontSize: TYPE.caption, color: SUB }}>예상 급여</p></div>
                   <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
                     완료·차감 처리된 수업과 센터/회원별 단가를 기준으로 계산합니다.
                   </p>
-                </>
-              )}
-            </section>
-            <section style={sectionStyle}>
-              {/* 건수도 같은 출처에서 센다. 기기 일정으로 세면 센터에서 차감된
-                  것과 어긋나고, 그 차이는 아무 데도 적히지 않는다.
-
-                  원장에는 노쇼와 취소가 없다 -- 차감만 남는다. 없는 것을
-                  0건으로 보이면 "노쇼가 한 건도 없었다" 로 읽히므로, 그 줄을
-                  두지 않고 무엇을 세는지 말한다. */}
-              <div className="grid grid-cols-2 gap-2">
-                {(inOrganization
-                  ? [
-                    { label: "차감된 수업", value: `${instructorPay?.sessions || 0}건`, color: GOOD },
-                    { label: "차감 항목", value: `${instructorPay?.entries?.length || 0}건` },
-                  ]
-                  : [
-                    { label: "전체 수업", value: `${reportStats.cls}건` }, { label: "회원 좌석", value: `${reportStats.seats}건` },
-                    { label: "출석", value: `${reportStats.done}건`, color: GOOD }, { label: "예약", value: `${reportStats.booked}건`, color: BRAND },
-                    { label: "노쇼", value: `${reportStats.noshow}건`, color: BAD }, { label: "취소", value: `${reportStats.cancel}건`, color: SUB },
-                  ]
-                ).map((item) => (
-                  <div key={item.label} style={{ padding: "11px 10px", borderRadius: 9, backgroundColor: CANVAS }}><p style={{ fontSize: TYPE.caption, color: SUB }}>{item.label}</p><p className="mt-1 tabular-nums" style={{ fontSize: TYPE.title, fontWeight: 700, color: item.color || INK }}>{item.value}</p></div>
-                ))}
-              </div>
-              {inOrganization ? (
-                <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
-                  원장에는 차감만 남습니다 — 노쇼와 취소는 여기서 세지 않습니다.
-                </p>
-              ) : null}
-            </section>
+                </section>
+                <section style={sectionStyle}>
+                  <div className="grid grid-cols-2 gap-2">
+                    {[
+                      { label: "전체 수업", value: `${reportStats.cls}건` }, { label: "회원 좌석", value: `${reportStats.seats}건` },
+                      { label: "출석", value: `${reportStats.done}건`, color: GOOD }, { label: "예약", value: `${reportStats.booked}건`, color: BRAND },
+                      { label: "노쇼", value: `${reportStats.noshow}건`, color: BAD }, { label: "취소", value: `${reportStats.cancel}건`, color: SUB },
+                    ].map((item) => (
+                      <div key={item.label} style={{ padding: "11px 10px", borderRadius: 9, backgroundColor: CANVAS }}><p style={{ fontSize: TYPE.caption, color: SUB }}>{item.label}</p><p className="mt-1 tabular-nums" style={{ fontSize: TYPE.title, fontWeight: 700, color: item.color || INK }}>{item.value}</p></div>
+                    ))}
+                  </div>
+                </section>
+              </>
+            )}
           </div>
         )}
         {view === "assessment" && (
@@ -23766,6 +24035,56 @@ export function createAppScreenSmokeCases() {
       currentUserId="smoke-account" passStore={passStore}
       now={() => new Date(2026, 8, 17)} onClose={noop} onRetry={noop} {...extra} />
   ));
+  /* ── 이번 달 내 수업 활동이 읽는 것 ───────────────────────────────────────
+     **두 출처다.** 수업 수·종료·재등록·챙길 회원은 서버 원장과 회원권이고,
+     출석·노쇼·취소와 기록·사진은 기기 일정이다. 화면이 그 사실을 말하는지가
+     이 스모크의 절반이라, 양쪽을 모두 채운다.
+
+     회원권 넷이 서로 다른 답을 끌어낸다: 다 쓴 것(종료 + 재등록), 잔여가 얼마
+     안 남은 것, 만료가 가까우면서 오래 안 온 것. 하나만 두면 화면의 절반이 빈
+     채로만 보여 "고장인가" 와 구별되지 않는다. */
+  const smokeReportEntry = (id, passId, clientId, day, overrides = {}) => ({
+    id, organizationId: "smoke-center", passId, clientId, type: "deduct", delta: -1,
+    category: "pt_1_1_repurchase_event", unitPrice: 30000, instructorId: "smoke-instructor",
+    occurredAt: new Date(2026, 8, day, 10, 0, 0), ...overrides,
+  });
+  const smokeMonthEntries = [
+    smokeReportEntry("r1", "smoke-report-spent", "smoke-client-a", 4),
+    smokeReportEntry("r2", "smoke-report-spent", "smoke-client-a", 11),
+    smokeReportEntry("r3", "smoke-report-low", "smoke-client-b", 18),
+    // 9월 1일이 마지막이다 -- 9월 22일 기준으로 21일을 넘겼다.
+    smokeReportEntry("r4", "smoke-report-expiring", "smoke-client-c", 1),
+  ];
+  // 지난달 세 건. 이번 달 네 건이라 증감은 +1 이다.
+  const smokeLastMonthEntries = [
+    smokeReportEntry("q1", "smoke-report-spent", "smoke-client-a", 3, { occurredAt: new Date(2026, 7, 3, 10, 0) }),
+    smokeReportEntry("q2", "smoke-report-low", "smoke-client-b", 9, { occurredAt: new Date(2026, 7, 9, 10, 0) }),
+    smokeReportEntry("q3", "smoke-report-low", "smoke-client-b", 25, { occurredAt: new Date(2026, 7, 25, 10, 0) }),
+  ];
+  const smokeReportPasses = [
+    { id: "smoke-report-spent", organizationId: "smoke-center", clientId: "smoke-client-a", instructorId: "smoke-instructor", status: "active", remainingCount: 0, createdAt: new Date(2026, 5, 1), expiresAt: new Date(2027, 0, 1) },
+    // 같은 회원이 이번 달에 다시 끊었다. 종료 옆에 "재등록" 이 선다.
+    { id: "smoke-report-again", organizationId: "smoke-center", clientId: "smoke-client-a", instructorId: "smoke-instructor", status: "active", remainingCount: 20, createdAt: new Date(2026, 8, 20), expiresAt: new Date(2027, 2, 1) },
+    { id: "smoke-report-low", organizationId: "smoke-center", clientId: "smoke-client-b", instructorId: "smoke-instructor", status: "active", remainingCount: 2, createdAt: new Date(2026, 4, 1), expiresAt: new Date(2027, 0, 1) },
+    { id: "smoke-report-expiring", organizationId: "smoke-center", clientId: "smoke-client-c", instructorId: "smoke-instructor", status: "active", remainingCount: 9, createdAt: new Date(2026, 4, 1), expiresAt: new Date(2026, 8, 28) },
+  ];
+  /* 기기 쪽. 출석 둘 · 노쇼 하나 · 취소 하나 · 아직 예약 하나 -- 예약은 비율의
+     분모에서 빠진다. 기록은 두 건 중 한 건에만 붙어 50% 다. */
+  const smokeReportSchedule = [
+    { id: "sr-1", date: "2026-09-04", start: "10:00", type: "개인레슨", attendees: [{ memberId: "smoke-member", status: "done" }] },
+    { id: "sr-2", date: "2026-09-11", start: "10:00", type: "개인레슨", attendees: [{ memberId: "smoke-member", status: "done" }] },
+    { id: "sr-3", date: "2026-09-18", start: "10:00", type: "개인레슨", attendees: [{ memberId: "smoke-member", status: "noshow" }] },
+    { id: "sr-4", date: "2026-09-20", start: "10:00", type: "개인레슨", attendees: [{ memberId: "smoke-member", status: "cancel" }] },
+    { id: "sr-5", date: "2026-09-25", start: "10:00", type: "개인레슨", attendees: [{ memberId: "smoke-member", status: "booked" }] },
+  ];
+  const smokeReportDb = {
+    ...db,
+    members: [{ ...member, notes: [{ id: "sr-note", sid: "sr-1", date: "2026-09-04", body: "숄더브릿지 3세트" }] }],
+    schedule: smokeReportSchedule,
+  };
+  const smokeReportPhotos = {
+    [member.id]: { front: [{ id: "sr-photo", date: "2026-09-06" }], poses: [{ id: "sr-photo", date: "2026-09-06" }] },
+  };
   const smokePayEntry = (id, category, unitPrice, day, rule) => ({
     id, organizationId: "smoke-center", passId: "smoke-pass-a", type: "deduct", delta: -1,
     category, unitPrice, rule, instructorId: "smoke-instructor", lessonId: `lesson-${id}`,
@@ -24300,14 +24619,33 @@ export function createAppScreenSmokeCases() {
       initialView: "backup", onRestorePrevious: noop,
       backupStatus: { state: "safe", counts: { members: 16, sessions: 6, photos: 4 }, lastBackupAt: new Date(2026, 8, 3, 9, 0).toISOString() },
     }) },
-    /* 소속 센터의 월간 리포트는 일정 탭이 읽은 원장 급여를 그대로 받는다.
-       예전에는 기기 일정으로 따로 계산해 ₩50,000 vs ₩0 로 갈렸다. */
+    /* ── 이번 달 내 수업 활동 ─────────────────────────────────────────────
+       금액은 이 화면에 없다. 같은 숫자가 일정 탭 카드와 급여 시트에도 있어서
+       한 값을 세 곳에서 보여주고 있었고, 셋 중 하나가 늦으면 강사는 어느
+       쪽을 믿어야 할지 알 수 없었다. 여기는 수업과 회원만 답한다. */
     { name: "더보기 탭 · 월간 리포트", element: settingsTab(smokeInstructorOrg, {
-      initialView: "report", payMonth: "2026-09",
-      instructorPay: { total: 137500, sessions: 5, entries: [{ id: "e1" }, { id: "e2" }], byCategory: [], corrections: {} },
+      initialView: "report", payMonth: "2026-09", currentUserId: "smoke-instructor",
+      db: smokeReportDb, photos: smokeReportPhotos, onOpenPay: noop, onOpenClient: noop,
+      instructorPay: { total: 137500, sessions: 4, entries: smokeMonthEntries, byCategory: [], corrections: {} },
+      rosterClients: smokeClients, rosterPasses: smokeReportPasses,
+      monthReportState: {
+        now: new Date(2026, 8, 22, 9, 0),
+        lastMonthPay: { month: "2026-08", sessions: 3, start: new Date(2026, 7, 1), entries: smokeLastMonthEntries },
+      },
+    }) },
+    /* 지난달을 못 읽었다. **0건으로 두면 이번 달 전부가 "증가" 로 보이고,
+       그것은 거짓이다.** 증감만 빠지고 나머지는 그대로 선다. */
+    { name: "더보기 탭 · 월간 리포트 · 지난달 못 읽음", element: settingsTab(smokeInstructorOrg, {
+      initialView: "report", payMonth: "2026-09", currentUserId: "smoke-instructor",
+      db: smokeReportDb, photos: smokeReportPhotos, onOpenPay: noop, onOpenClient: noop,
+      instructorPay: { total: 137500, sessions: 4, entries: smokeMonthEntries, byCategory: [], corrections: {} },
+      rosterClients: smokeClients, rosterPasses: smokeReportPasses,
+      monthReportState: { now: new Date(2026, 8, 22, 9, 0), lastMonthPay: null, lastMonthError: "unavailable" },
     }) },
     { name: "더보기 탭 · 월간 리포트 · 조회 실패", element: settingsTab(smokeInstructorOrg, {
       initialView: "report", payMonth: "2026-09", payError: "permission-denied",
+      currentUserId: "smoke-instructor",
+      monthReportState: { now: new Date(2026, 8, 22, 9, 0), lastMonthPay: null },
     }) },
     { name: "더보기 탭 · 월간 리포트 · 개인 모드", element: settingsTab({ organizationId: "legacy_smoke", role: "owner", status: "active", isLegacy: true }, { initialView: "report" }) },
     /* 센터 정보. 이름은 "센터"지만 세 값 모두 기기에 저장된다 -- 소속 모드에서
@@ -25506,6 +25844,14 @@ export default function App() {
   }, [organizationRoster, account?.id, organizationContext.organizationId,
     organizationContext.locationId, organizationContext.title, organizationContext.role, noticeStore]);
 
+  /* [닫기] -- **이번만** 넘긴다. 서버에 아무것도 적지 않으므로 다음에 앱을
+     켜면 다시 선다. 지금 읽을 짬이 없는 사람에게 영영 숨기거나 읽은 것으로
+     세는 것, 둘 다 틀렸다. */
+  const skipNoticeForNow = (notice) => {
+    if (!notice?.id) return;
+    setNoticeQueue((current) => current.filter((item) => String(item.id) !== String(notice.id)));
+  };
+
   const confirmNotice = async (notice) => {
     if (!notice?.id || noticeBusy) return;
     setNoticeBusy(true);
@@ -25548,21 +25894,36 @@ export default function App() {
       const [config, identity] = await Promise.all([fbLoadAppUpdateConfig(), RUNTIME_APP_IDENTITY]);
       if (!active) return;
       let snoozedAt = "";
-      try { snoozedAt = globalThis.localStorage?.getItem(UPDATE_SNOOZE_KEY) || ""; } catch (_error) {}
+      let dismissedBuild = "";
+      try {
+        snoozedAt = globalThis.localStorage?.getItem(UPDATE_SNOOZE_KEY) || "";
+        dismissedBuild = globalThis.localStorage?.getItem(UPDATE_DISMISSED_KEY) || "";
+      } catch (_error) {}
       setUpdateNotice(updatePrompt({
-        config, platform: Capacitor.getPlatform(), installedBuild: identity?.build, snoozedAt,
+        config, platform: Capacitor.getPlatform(), installedBuild: identity?.build,
+        snoozedAt, dismissedBuild,
       }));
     };
     check();
-    /* 앱이 다시 앞으로 올 때 한 번 더 본다. 켜 둔 채로 며칠 쓰는 강사가 있고,
-       그 사이에 대표가 켠 안내를 못 보면 띄우는 뜻이 없다. AI 상태 새로고침이
-       쓰는 것과 같은 길이다. */
-    window.addEventListener("focus", check);
-    window.addEventListener("online", check);
+    /* 앱이 다시 앞으로 올 때도 본다. 켜 둔 채로 며칠 쓰는 강사가 있고, 그
+       사이에 대표가 켠 안내를 못 보면 띄우는 뜻이 없다.
+
+       **하루 한 번이다.** 오갈 때마다 읽으면 쓰는 사람에게는 아무 일도 없고
+       읽기만 는다 -- 공지 쪽과 같은 선이고 같은 날짜 칸을 쓴다. */
+    const checkOncePerDay = () => {
+      const today = todayISO();
+      let last = "";
+      try { last = globalThis.localStorage?.getItem(STARTUP_CHECK_KEY) || ""; } catch (_error) {}
+      if (last === today) return;
+      try { globalThis.localStorage?.setItem(STARTUP_CHECK_KEY, today); } catch (_error) {}
+      check();
+    };
+    window.addEventListener("focus", checkOncePerDay);
+    window.addEventListener("online", checkOncePerDay);
     return () => {
       active = false;
-      window.removeEventListener("focus", check);
-      window.removeEventListener("online", check);
+      window.removeEventListener("focus", checkOncePerDay);
+      window.removeEventListener("online", checkOncePerDay);
     };
   }, [phase, account?.id]);
 
@@ -25578,6 +25939,13 @@ export default function App() {
 
   const snoozeUpdate = useCallback(() => {
     try { globalThis.localStorage?.setItem(UPDATE_SNOOZE_KEY, new Date().toISOString()); } catch (_error) {}
+    setUpdateNotice({ prompt: UPDATE_PROMPT.NONE, latestBuild: null, message: "" });
+  }, []);
+
+  /* 이 빌드는 그만 본다. **번호를 적는다** -- 날짜가 아니라 번호라, 다음
+     빌드가 나오면 다시 묻는다. */
+  const dismissUpdateBuild = useCallback((latestBuild) => {
+    try { globalThis.localStorage?.setItem(UPDATE_DISMISSED_KEY, String(latestBuild ?? "")); } catch (_error) {}
     setUpdateNotice({ prompt: UPDATE_PROMPT.NONE, latestBuild: null, message: "" });
   }, []);
 
@@ -25638,12 +26006,25 @@ export default function App() {
     window.addEventListener("focus", onOnline);
     return () => { active = false; clearTimeout(timer); window.removeEventListener("online", onOnline); window.removeEventListener("focus", onOnline); };
   }, [phase, account?.id, aiRecordingStatus.status]);
-  /* 앱이 서면 한 번, 그리고 앞으로 돌아올 때마다. 대표가 방금 올린 공지를
-     다음 날까지 기다려 보게 할 이유가 없다. */
+  /* ── 앱이 설 때는 언제나, 앞으로 돌아올 때는 하루 한 번 ─────────────────
+     켜 둔 채로 며칠 쓰는 강사가 있어 앞으로 돌아올 때도 봐야 한다. 그렇다고
+     오갈 때마다 읽으면 쓰는 사람에게는 아무 일도 없고 읽기만 는다 -- 공지가
+     하루에 여러 번 바뀌는 것도 아니다.
+
+     날짜로 센다. 24시간으로 세면 매일 조금씩 밀려서, 아침에 본 사람이 다음
+     날은 저녁에야 본다 (snoozedToday 와 같은 이유). */
   useEffect(() => {
     if (phase !== "app") return undefined;
     refreshNotices();
-    const onVisible = () => { if (document.visibilityState === "visible") refreshNotices(); };
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      const today = todayISO();
+      let last = "";
+      try { last = globalThis.localStorage?.getItem(STARTUP_CHECK_KEY) || ""; } catch (_error) {}
+      if (last === today) return;
+      try { globalThis.localStorage?.setItem(STARTUP_CHECK_KEY, today); } catch (_error) {}
+      refreshNotices();
+    };
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [phase, refreshNotices]);
@@ -28379,7 +28760,7 @@ export default function App() {
           <Guard key={tab}>
             {tab === "schedule" && <ScheduleManager db={rosterDb} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onCareGrade={setCareGrade} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterMembers ? () => { setMemberRegistrationRequest((value) => value + 1); setTab("members"); } : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} careOptionsOf={careOptionsFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && isOwnerLevelRole(organizationContext.role)} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} upcoming={upcomingPay} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
             {tab === "members" && <div className={`h-full min-h-0 ${mobileView === "detail" && member ? "pt-member-detail-active" : ""}`}>
-              <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList passSummaryOf={passSummaryFor} locations={rosterLocations} members={rosterMembers} schedule={db.schedule} settings={db.settings} organizationMode={organizationRoster} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} canBrowseAll={!organizationRoster || canBrowseAllClients(organizationContext.role)} viewerRole={organizationContext.role} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterMembers} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} journeyOf={organizationRoster ? journeyFor : undefined} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
+              <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList passSummaryOf={passSummaryFor} locations={rosterLocations} members={rosterMembers} schedule={db.schedule} settings={db.settings} organizationMode={organizationRoster} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} canBrowseAll={!organizationRoster || canBrowseAllClients(organizationContext.role)} viewerRole={organizationContext.role} viewerLocationId={organizationContext.locationId || ""} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterMembers} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} journeyOf={organizationRoster ? journeyFor : undefined} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
               {mobileView === "detail" && member && <div className="pt-member-detail-pane h-full min-h-0">
                 <ReferenceMemberDetail key={member.id} member={member} schedule={db.schedule} photos={photos[member.id]} settings={db.settings} viewerRole={organizationRoster ? organizationContext.role : ""}
                   canViewSettlement={!account?.role || ["owner", "manager", "admin", "director"].includes(String(account.role).toLowerCase())} onBack={() => setMobileView("list")}
@@ -28409,7 +28790,9 @@ export default function App() {
                   onToast={setToast} onSaved={(mode) => setAnalysisDone({ id, mode })} /></Guard>;
               }} />}
             {tab === "settings" && <ReferenceSettingsTab db={db} photos={photos} account={account} savedAt={savedAt} demoMode={demoMode}
-              instructorPay={instructorPay} payMonth={payMonth} payLoading={payLoading} payError={payError} onChangeSettings={(s) => saveDb({ ...db, settings: s })} onChangePhoto={changePhoto} onToast={setToast} themePref={themePref} onChangeTheme={changeTheme} onLogout={handleLogout} onDeleteAccount={handleDeleteAccount} onImport={importHandoff}
+              instructorPay={instructorPay} payMonth={payMonth} payLoading={payLoading} payError={payError}
+              currentUserId={account?.id || ""} rosterClients={rosterClients} rosterPasses={rosterPasses}
+              onOpenPay={canSeeOwnPay ? () => setPayOpen(true) : undefined} onChangeSettings={(s) => saveDb({ ...db, settings: s })} onChangePhoto={changePhoto} onToast={setToast} themePref={themePref} onChangeTheme={changeTheme} onLogout={handleLogout} onDeleteAccount={handleDeleteAccount} onImport={importHandoff}
               onOpenSchedule={() => { setScheduleQuickAddRequest((request) => request + 1); setTab("schedule"); }} onOpenRecords={() => { setMobileView("list"); setTab("members"); }} onOpenOnboarding={openOnboardingReplay} onOpenLessonExamples={() => setLessonExamplesOpen(true)} backupStatus={cloudBackupStatus} onEnablePhotoBackup={enablePhotoBackup} onRetryBackup={retryCloudBackup} onRestorePrevious={openPreviousPhoneRestore} onRetryOrganization={retryOrganizationContext} onLoadRuntimeConfig={loadRuntimeConfig} onSaveRuntimeConfig={saveRuntimeConfig} onSwapInstructorAccount={swapInstructorAccount} onPreviewInstructorNames={previewInstructorNames} onConfirmInstructorNames={confirmInstructorNames} noticeStore={noticeStore} onOpenClient={(picked) => setDetailClient(picked)} onClearMigratedSettlements={clearMigratedSettlements} />}
           </Guard>
         </div>
@@ -28417,7 +28800,10 @@ export default function App() {
             수업이 끝난 자리에서 바로 열리게 하기 위해서다. */}
         {detailClient ? (
           <div className="absolute inset-0 z-50 overflow-y-auto" style={{ backgroundColor: PAGE }}>
-            <div className="mx-auto w-full max-w-md p-3">
+            {/* 상태바 아래로 내린다. 전면 오버레이는 화면 꼭대기에서 시작하므로
+                패딩 12px 만으로는 노치·상태바가 첫 줄을 덮는다 -- 급여 시트에서
+                "2026년 10월" 이 잘리고 닫기 버튼과 겹쳐 보인 것이 이것이다. */}
+            <div className="mx-auto w-full max-w-md p-3" style={{ paddingTop: "max(env(safe-area-inset-top, 0px), 12px)" }}>
               <ClientDetail organization={organizationContext} client={detailClient}
                 history={clientHistory} loading={historyLoading} error={historyError}
                 nameOfClient={(id) => (roster?.roster || []).find((item) => item.orgClientId === id)?.name || ""}
@@ -28438,7 +28824,10 @@ export default function App() {
         ) : null}
         {payOpen && canSeeOwnPay ? (
           <div className="absolute inset-0 z-50 overflow-y-auto" style={{ backgroundColor: PAGE }}>
-            <div className="mx-auto w-full max-w-md p-3">
+            {/* 상태바 아래로 내린다. 전면 오버레이는 화면 꼭대기에서 시작하므로
+                패딩 12px 만으로는 노치·상태바가 첫 줄을 덮는다 -- 급여 시트에서
+                "2026년 10월" 이 잘리고 닫기 버튼과 겹쳐 보인 것이 이것이다. */}
+            <div className="mx-auto w-full max-w-md p-3" style={{ paddingTop: "max(env(safe-area-inset-top, 0px), 12px)" }}>
               <InstructorPayDetail organization={organizationContext} currentUserId={account?.id || ""} pay={instructorPay}
                 loading={payLoading} error={payError} month={payMonth}
                 clientStore={undefined} passStore={undefined}
@@ -28449,7 +28838,10 @@ export default function App() {
         ) : null}
         {attendanceOpen && canCheckAttendance ? (
           <div className="absolute inset-0 z-50 overflow-y-auto" style={{ backgroundColor: PAGE }}>
-            <div className="mx-auto w-full max-w-md p-3">
+            {/* 상태바 아래로 내린다. 전면 오버레이는 화면 꼭대기에서 시작하므로
+                패딩 12px 만으로는 노치·상태바가 첫 줄을 덮는다 -- 급여 시트에서
+                "2026년 10월" 이 잘리고 닫기 버튼과 겹쳐 보인 것이 이것이다. */}
+            <div className="mx-auto w-full max-w-md p-3" style={{ paddingTop: "max(env(safe-area-inset-top, 0px), 12px)" }}>
               <AttendanceCheck organization={organizationContext} currentUserId={account?.id || ""}
                 clientStore={undefined} passStore={undefined}
                 onRetryOrganization={retryOrganizationContext} onToast={setToast}
@@ -28532,10 +28924,20 @@ export default function App() {
             <button type="button" onClick={openStore}
               className="mt-4 h-12 w-full rounded-xl text-sm font-extrabold text-white"
               style={{ backgroundColor: BRAND }}>{UPDATE_COPY.update}</button>
+            {/* 필수에는 [업데이트] 하나뿐이다. 미룰 길을 두면 "더 이상 쓰면
+                안 된다" 는 말이 거짓이 된다. */}
             {updateNotice.prompt === UPDATE_PROMPT.OPTIONAL ? (
-              <button type="button" onClick={snoozeUpdate}
-                className="mt-2 h-12 w-full rounded-xl text-sm font-extrabold"
-                style={{ backgroundColor: CANVAS, color: INK }}>{UPDATE_COPY.later}</button>
+              <>
+                <button type="button" onClick={snoozeUpdate}
+                  className="mt-2 h-12 w-full rounded-xl text-sm font-extrabold"
+                  style={{ backgroundColor: CANVAS, color: INK }}>{UPDATE_COPY.later}</button>
+                {/* 이 빌드만 그만 본다. **다음 빌드가 나오면 다시 묻는다** --
+                    영영 안 묻게 두면 그 강사는 업데이트를 영영 안 하고, 아무도
+                    그 사실을 모른다. */}
+                <button type="button" onClick={() => dismissUpdateBuild(updateNotice.latestBuild)}
+                  className="mt-2 h-11 w-full rounded-xl text-xs font-bold"
+                  style={{ color: SUB }}>{UPDATE_COPY.dismiss}</button>
+              </>
             ) : (
               <p className="mt-2 text-caption leading-relaxed" style={{ color: SUB }}>
                 이 버전은 더 이상 쓸 수 없어 미룰 수 없습니다.
@@ -28551,11 +28953,17 @@ export default function App() {
         </div></section></div>}
       {lessonExamplesOpen && <LessonRecordExamplesModal onClose={() => setLessonExamplesOpen(false)} onPractice={(speech) => { setLessonExamplesOpen(false); window.dispatchEvent(new CustomEvent("pilateacher:practice-record-example", { detail: { speech } })); }} />}
       {onboardingOpen && <Onboarding replay={onboardingReplay} onSkip={completeAndCloseOnboarding} onRegisterMember={finishOnboardingAndRegister} onExploreSample={finishOnboardingWithSample} onLater={finishOnboardingToMembers} />}
-      {/* 공지 팝업. 복원 창이 떠 있으면 그 뒤에 선다 -- 둘이 겹치면 어느
-          쪽을 먼저 답해야 하는지 알 수 없고, 복원은 되돌릴 수 없는 쪽이다. */}
-      {!restoreOffer && noticeQueue.length > 0 && (
+      {/* ── 앱을 켜면 서는 순서 ──────────────────────────────────────────
+          복원 → 업데이트 → 공지. 셋이 한 화면에 겹치면 어느 쪽을 먼저 답해야
+          하는지 알 수 없다.
+
+          복원이 맨 앞인 이유는 되돌릴 수 없어서이고, 업데이트가 공지보다 앞인
+          이유는 **안 고친 앱으로 읽은 공지는 다시 읽어야 할 수 있어서**다 --
+          업데이트가 화면 문구를 바꾸는 일이 실제로 있었다. */}
+      {!restoreOffer && updateNotice.prompt === UPDATE_PROMPT.NONE && noticeQueue.length > 0 && (
         <NoticePopup notice={noticeQueue[0]} remaining={noticeQueue.length} busy={noticeBusy}
-          onConfirm={() => confirmNotice(noticeQueue[0])} />
+          onConfirm={() => confirmNotice(noticeQueue[0])}
+          onClose={() => skipNoticeForNow(noticeQueue[0])} />
       )}
       {notificationSoftPrompt && <ScheduleBottomSheet title="다음 수업 전에 알려드릴까요?" subtitle="수업 10분 전 알림을 받을 수 있어요" onClose={() => setNotificationSoftPrompt(false)}><div className="space-y-2"><button type="button" onClick={async () => { const permission = await requestLessonNotificationPermission(); if (permission.granted) await syncLessonNotifications(notificationDataRef.current); setNotificationSoftPrompt(false); setToast(permission.granted ? { ok: true, msg: "수업 알림을 켰습니다." } : { ok: false, msg: "알림 권한이 꺼져 있습니다." }); }} className="h-12 w-full rounded-lg text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>알림 받기</button><button type="button" onClick={() => setNotificationSoftPrompt(false)} className="h-11 w-full rounded-lg text-sm font-bold" style={{ color: SUB }}>나중에</button></div></ScheduleBottomSheet>}
       {reflection && <NextLessonReflection

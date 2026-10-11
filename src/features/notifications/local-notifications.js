@@ -3,8 +3,23 @@ import { LocalNotifications } from "@capacitor/local-notifications";
 
 export const LESSON_NOTIFICATION_CHANNEL_ID = "lesson-reminders";
 export const LESSON_NOTIFICATION_KIND = "lesson_reminder";
-export const LESSON_NOTIFICATION_WINDOW_DAYS = 7;
-export const LESSON_NOTIFICATION_LIMIT = 30;
+/* ── 얼마나 앞까지 깔아 두는가 ────────────────────────────────────────────
+   **예약은 앱을 열 때만 다시 깔린다.** 그래서 창이 곧 "앱을 안 열어도 알림이
+   가는 기간" 이다. 7일이었을 때는 휴가를 한 주 다녀오면 그 뒤 수업에 알림이
+   한 건도 가지 않았고, 그 사실을 아무도 알 수 없었다 -- 안 울린 알림은
+   화면에 아무것도 남기지 않는다.
+
+   14일이면 한 주를 통째로 비워도 그다음 주가 덮인다 (2026-10-11).
+
+   건수는 iOS 때문에 자른다. iOS 는 앱당 **예약 64건**까지만 들고 있고, 넘으면
+   가장 이른 64건만 남기고 **나머지를 조용히 버린다** -- 버려진 것은 어디에도
+   안 나타난다. 50 은 그 선 안쪽이고, 다른 알림이 생기더라도 여유가 남는다.
+
+   50건을 넘기는 2주는 하루 네 탕 이상을 2주 내내 하는 경우다. 그때는 뒤쪽이
+   잘리지만, 앱을 한 번만 열면 그 자리가 다시 채워진다 -- 7일 창에서 잘리던
+   것과 달리 "안 열면 영영" 이 아니다. */
+export const LESSON_NOTIFICATION_WINDOW_DAYS = 14;
+export const LESSON_NOTIFICATION_LIMIT = 50;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const REMINDER_MS = 10 * 60 * 1000;

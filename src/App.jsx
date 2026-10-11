@@ -27149,7 +27149,19 @@ export default function App() {
       return false;
     }
     attendanceMutationsInFlight.current.add(lessonId);
-    Promise.resolve(saveDb(next, descriptor)).finally(() => attendanceMutationsInFlight.current.delete(lessonId));
+    Promise.resolve(saveDb(next, descriptor))
+      .then((saved) => {
+        /* 출석을 '취소' 로 바꾸면 그 수업의 알림도 사라져야 한다. 전에는 여기서
+           재예약을 부르지 않아, 앱을 켜 둔 채 두면 **취소한 수업의 10분 전
+           알림이 그대로 울렸다** -- 회원에게 안 간다고 말해 둔 수업이다.
+
+           앞으로 돌아올 때 어차피 정리되지만, 그것은 앱을 한 번 내렸다 올린
+           사람에게만이다. */
+        if (saved !== false) {
+          syncLessonNotifications({ schedule: next.schedule, members: next.members }).catch(() => {});
+        }
+      })
+      .finally(() => attendanceMutationsInFlight.current.delete(lessonId));
     return true;
   };
   const setStatus = (id, status, memberId) => {

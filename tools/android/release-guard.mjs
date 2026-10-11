@@ -11,6 +11,8 @@ import {
 import { dirname, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { javaTool, useJava } from "../java-home.mjs";
+
 const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = resolve(dirname(scriptPath), "../..");
 const policyPath = resolve(repoRoot, "release/android-release-policy.json");
@@ -69,8 +71,15 @@ function run(command, args, { allowFailure = false } = {}) {
     encoding: "utf8",
     shell: false,
   });
+  /* 실행 파일 자체를 못 찾으면 status 가 null 이고 stdout·stderr 는 비어 있다.
+     그대로 두면 "실패 / undefined" 만 남아, 서명이 잘못된 것인지 도구가 없는
+     것인지 가릴 수 없다 -- 실제로 jarsigner 가 PATH 에 없어서 그렇게 보였다. */
+  if (result.error) {
+    throw new Error(`${command} 을 실행하지 못했습니다: ${result.error.message}`);
+  }
   if (!allowFailure && result.status !== 0) {
-    throw new Error(`${command} ${args.join(" ")} 실패\n${result.stderr || result.stdout}`.trim());
+    const detail = `${result.stderr || ""}${result.stdout || ""}`.trim();
+    throw new Error(`${command} ${args.join(" ")} 실패${detail ? `\n${detail}` : ""}`);
   }
   return result;
 }
@@ -308,12 +317,20 @@ function verifyArtifact(policy) {
     throw new Error(`AAB 크기가 비정상적으로 작습니다: ${size.toLocaleString()} bytes`);
   }
 
-  const signatureCheck = run("jarsigner", ["-verify", aabPath]);
+  /* jarsigner 와 jar 는 JDK 안에 있다. 이 기기의 Java 는 PATH 에 없고 Android
+     Studio 가 들고 다니는 것이라, 맨 이름으로 부르면 **서명이 잘못된 것이
+     아니라 도구가 없어서** 막힌다 -- 마지막 검증이 영영 돌지 않는다.
+
+     빌드 쪽(build-aab.mjs)은 처음부터 java-home 을 거쳤는데 검증 쪽만 빠져
+     있었다. 같은 경로 목록을 두 곳에 두면 한쪽만 고쳐지는 날이 온다는, 그
+     모듈이 머리말에 적어 둔 바로 그 일이다. */
+  const java = useJava();
+  const signatureCheck = run(javaTool(java, "jarsigner"), ["-verify", aabPath]);
   const signatureOutput = `${signatureCheck.stdout}\n${signatureCheck.stderr}`;
   if (!/jar verified[.!]?/i.test(signatureOutput)) {
     throw new Error("AAB 서명을 확인하지 못했습니다. 서명된 파일인지 확인하세요.");
   }
-  const entries = run("jar", ["tf", aabPath]).stdout;
+  const entries = run(javaTool(java, "jar"), ["tf", aabPath]).stdout;
   if (!entries.includes("base/assets/public/index.html")) {
     throw new Error("AAB 안에 웹 앱 index.html이 없습니다.");
   }

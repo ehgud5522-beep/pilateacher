@@ -121,6 +121,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 총괄매니저",
     "더보기 탭 · 백업",
     "더보기 탭 · 월간 리포트",
+    "더보기 탭 · 월간 리포트 · 지난달 못 읽음",
     "더보기 탭 · 월간 리포트 · 조회 실패",
     "더보기 탭 · 월간 리포트 · 개인 모드",
     "더보기 탭 · 센터 정보",
@@ -1020,15 +1021,18 @@ test("the centre group stands only where there is something in it", async () => 
 });
 
 test("the monthly report and the payroll roll-up do not read alike", async () => {
-  /* 둘 다 "급여"라는 말을 쓰는데 세는 것이 다르다. 월간 리포트는 기기에 저장된
-     일정이고, 급여 집계는 회원권 원장이다. 메뉴에서 구별되지 않으면 강사와
-     대표가 서로 다른 숫자를 같은 것으로 읽는다. */
+  /* 한때 둘 다 "급여" 라는 말을 쓰면서 세는 것이 달랐고, 메뉴에서 구별되지
+     않아 강사와 대표가 서로 다른 숫자를 같은 것으로 읽었다.
+
+     이제 소속 강사의 그 화면은 금액을 말하지 않는다 -- 이름부터 "이번 달 내
+     수업 활동" 이고, 급여는 급여 시트 하나로 모았다. 헷갈릴 짝이 없다. */
   const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
   const owner = markupOf("더보기 탭");
-  assert.match(owner, /이달 수업 · 성과 · 기기 기준 추정/);
+  assert.match(owner, /이번 달 내 수업 활동/);
+  assert.match(owner, /수업 수 · 출석 · 챙길 회원/);
   assert.match(owner, /강사별 수업료 · 원장 기준 월말 정산/);
   assert.doesNotMatch(owner, /이달 수업 · 성과 · 예상 급여/);
 
@@ -1258,23 +1262,30 @@ test("the card shows the month total and nothing else", async (t) => {
   assert.doesNotMatch(card, /최근 차감/);
 });
 
-test("the monthly report no longer counts something else in a centre", async (t) => {
-  /* ── 2026-09-27 에 뒤집힌 테스트 ────────────────────────────────────
-     예전에는 이 화면이 기기 일정과 회원별 단가로 따로 계산했고, 이 검사는
-     "무엇을 세는지 밝히는가" 를 고정했다. 밝히는 것으로는 부족했다 -- 일정
-     탭이 50,000 인데 여기는 0 이면, 무엇을 세는지 알아도 강사는 어느 쪽이
-     자기 급여인지 모른다.
+test("the monthly report stopped being a second place to read your pay", async (t) => {
+  /* ── 두 번 뒤집힌 테스트 ────────────────────────────────────────────
+     처음에 이 화면은 기기 일정과 회원별 단가로 급여를 따로 계산했고, 이
+     검사는 "무엇을 세는지 밝히는가" 를 고정했다. 밝히는 것으로는 부족해서
+     (2026-09-27) 일정 탭이 읽은 원장 객체를 그대로 쓰게 했다.
 
-     이제 두 화면이 같은 객체를 쓴다. 밝힐 차이가 없다. */
+     그래도 **같은 금액이 세 곳에 있었다** -- 일정 탭 카드, 급여 시트,
+     그리고 여기. 셋 중 하나가 늦게 갱신되면 강사는 어느 쪽을 믿어야 할지
+     알 수 없고, 그것이 애초에 고치려던 바로 그 문제다.
+
+     금액은 급여 시트 하나로 모았다. 이 화면은 수업과 회원만 답하고, 돈은
+     링크로 넘긴다. */
   const markupOf = await issueScreens(t);
   const inOrganization = markupOf("더보기 탭 · 월간 리포트");
-  assert.doesNotMatch(inOrganization, /기기에 저장된 일정과 회원별 단가로 계산합니다/);
-  assert.match(inOrganization, /회원권 원장에서 차감된 수업료/);
 
-  // 미소속 개인 강사에게는 원장이 없다. 지금 문구 그대로다.
+  assert.doesNotMatch(inOrganization, /기기에 저장된 일정과 회원별 단가로 계산합니다/);
+  assert.doesNotMatch(inOrganization, /137,500/, "금액은 이 화면에 없다");
+  assert.doesNotMatch(inOrganization, /예상 급여<\/p>/, "금액 줄도 없다");
+  assert.match(inOrganization, /이달 예상 급여 보기/, "대신 급여 화면으로 가는 길이 있다");
+
+  // 미소속 개인 강사에게는 원장이 없다. 기존 화면 그대로다.
   const personal = markupOf("더보기 탭 · 월간 리포트 · 개인 모드");
   assert.match(personal, /완료·차감 처리된 수업과 센터\/회원별 단가를 기준으로 계산합니다/);
-  assert.doesNotMatch(personal, /회원권 원장에서 차감된 수업료/);
+  assert.doesNotMatch(personal, /챙길 회원/);
 });
 
 /* 센터 회원 상세. 분쟁이 생겼을 때 여는 화면이라 "몇 회 남았나"와 "언제 무엇이
@@ -2068,6 +2079,25 @@ test("the pass row keeps its meta text off the button line", async (t) => {
   assert.match(detail, /flex flex-wrap items-center gap-1\.5/);
 });
 
+test("the pay sheet keeps its month off the close button", async (t) => {
+  /* 390px 에서 "2026년 10월" 이 X 와 겹쳐 보이고 노치에 윗줄이 잘렸다.
+     달·금액이 한 덩어리로 왼쪽에 서고 X 가 그 옆이라, 폭이 좁아지면 X 가
+     달 이름 줄로 내려왔다.
+
+     **달 이름과 X 가 같은 줄이고, 금액은 그 아래 줄이다.** 한 줄에 셋을
+     두면 폭이 좁아지는 순간 다시 겹친다. */
+  const markupOf = await issueScreens(t);
+  const sheet = markupOf("이달 예상 급여");
+
+  const header = sheet.match(/<div class="flex min-h-8 items-center gap-2">[\s\S]*?<\/div>/);
+  assert.ok(header, "달 이름과 X 가 자기 줄로 서야 한다");
+  assert.match(header[0], /2026년 9월/);
+  assert.match(header[0], /aria-label="닫기"/);
+  assert.doesNotMatch(header[0], /₩/, "금액은 이 줄에 없다");
+  // 금액 줄은 넘치면 줄바꿈한다. 좁은 폭에서 "예상 급여" 가 밀려나지 않는다.
+  assert.match(sheet, /<div class="mt-1 flex flex-wrap items-end gap-x-2">/);
+});
+
 test("the product screen becomes a list on a phone, with the same numbers", async (t) => {
   /* 표는 두 축이 보여야 값어치가 있다. 폰에서는 첫 열과 반 칸만 보이고
      나머지는 가로 스크롤 뒤에 숨는다. */
@@ -2149,14 +2179,19 @@ test("confirmed pay and planned pay are two numbers, never one", async (t) => {
   assert.match(card, /회원권이 없어 빠지지 않는 수업 1건/);
 });
 
-test("a notice popup can only be closed by confirming it", async (t) => {
-  /* X 로 넘기면 읽음이 아니고, 그러면 다음에 또 뜬다 -- 대표의 "읽음 N명" 도
-     그만큼 거짓이 된다. */
+test("a notice popup says which button makes it stop coming back", async (t) => {
+  /* 닫는 길이 하나뿐이면 "읽음" 은 읽었다는 뜻이 아니라 창을 치웠다는 뜻이
+     되고, 대표의 "읽음 N명" 이 그만큼 거짓이 된다.
+
+     그래서 둘이다. [닫기] 는 이번만 넘기고 다음에 앱을 켜면 다시 서며,
+     [다시 보지 않기] 만 읽음으로 서버에 남는다. **어느 쪽이 어느 쪽인지
+     화면이 말해야** 누르는 사람이 고를 수 있다. */
   const markupOf = await issueScreens(t);
   const popup = markupOf("공지 팝업");
 
   assert.match(popup, /다음 주 월요일 휴무/);
-  assert.match(popup, /확인하면 다시 뜨지 않습니다/);
+  assert.match(popup, /다시 보지 않기/);
+  assert.match(popup, /\[닫기\] 는 다음에 앱을 켤 때 다시 보여드립니다/);
   assert.match(popup, /2건 중 1건/);
   assert.equal(popup.includes("아래로 끌어 닫기"), false, "끌어서 닫는 길을 두지 않는다");
 });
@@ -2440,30 +2475,65 @@ test("the centre settings screen does not open for an instructor", async (t) => 
   assert.match(legacy, /센터 기본 정보/);
 });
 
-test("the monthly report and the schedule tab show the same pay", async (t) => {
-  /* 예전에는 이 화면이 기기 일정과 회원별 단가로 따로 계산했다. 그래서 일정
-     탭이 50,000 인데 여기는 0 이었다 -- 같은 "예상 급여" 라는 말이 두 곳에서
-     다른 뜻이었고, 강사는 어느 쪽을 믿어야 할지 알 수 없었다.
+test("this month's activity answers what the instructor did, from two named sources", async (t) => {
+  /* 한 화면에 두 출처가 있다. 회원권과 돈에 닿는 것은 서버 원장이고,
+     출석·노쇼·취소와 기록·사진은 이 기기다 -- 원장에는 차감만 남아서 취소한
+     수업은 서버에 아예 적히지 않는다.
 
-     이제 일정 탭이 읽은 **그 객체를 그대로 받는다.** 다시 읽지도 않으므로
-     다를 수가 없다. */
+     **말없이 섞으면 숫자가 어긋났을 때 어느 쪽을 의심할지 아무도 모른다.**
+     그래서 화면이 출처를 말하는지까지 함께 고정한다. */
   const markupOf = await issueScreens(t);
   const report = markupOf("더보기 탭 · 월간 리포트");
-  assert.match(report, /137,500/);
-  assert.match(report, /같은 값/);
-  assert.match(report, /차감된 수업/);
-  /* 원장에는 노쇼와 취소가 없다. 0건으로 보이면 "한 건도 없었다" 로 읽힌다. */
-  assert.doesNotMatch(report, />노쇼</);
-  assert.match(report, /노쇼와 취소는 여기서 세지 않습니다/);
 
-  /* 0원과 못 읽음은 다르다. 0원을 보고 넘어가면 그 달 정산에서야 안다. */
+  // 수업 수와 지난달 대비. 급여 집계와 같은 원장에서 센다.
+  assert.match(report, /4건/);
+  assert.match(report, /지난달 3건 · \+1/);
+  assert.match(report, /급여 집계와 .*같은 출처/s);
+
+  // 출석 둘 · 노쇼 하나 · 취소 하나. 아직 예약인 한 건은 비율에서 빠진다.
+  assert.match(report, /50%/, "출석 2 / 찍힌 4 (노쇼와 취소도 분모다)");
+  assert.match(report, /아직 예약 상태인 1건은 비율에서 빼고 셉니다/);
+  assert.match(report, /이 기기의 일정.*에서 셉니다/s);
+
+  // 챙길 회원. 이름만으로는 무엇을 해야 할지 알 수 없어 이유가 함께 간다.
+  assert.match(report, /챙길 회원/);
+  assert.match(report, /잔여 5회 이하/);
+  assert.match(report, /14일 안 만료/);
+  assert.match(report, /21일 넘게 수업 없음/);
+
+  /* 종료는 끝이 아니라 재등록을 말할 시점이다. 끝난 수만 보여주면 그것이
+     좋은 소식인지 나쁜 소식인지 알 수 없다. */
+  assert.match(report, /1장 · 재등록 1명/);
+  assert.match(report, /김하나 · 재등록/);
+
+  // 기록 두 건 중 한 건, 사진 한 장(두 목록에 있어도 한 장이다).
+  assert.match(report, /50%/);
+  assert.match(report, /1장/);
+});
+
+test("what we could not read is never drawn as a zero", async (t) => {
+  /* 0 은 "그런 일이 없었다" 로 읽힌다. 지난달을 못 읽고 0건으로 두면 이번
+     달 전부가 "증가" 로 보이고, 강사는 자기가 두 배로 일했다고 읽는다. */
+  const markupOf = await issueScreens(t);
+  const partial = markupOf("더보기 탭 · 월간 리포트 · 지난달 못 읽음");
+
+  assert.match(partial, /지난달을 불러오지 못했습니다 \(코드 unavailable\)/);
+  assert.doesNotMatch(partial, /지난달 0건/);
+  // 나머지는 그대로 선다 -- 증감 한 줄 때문에 화면 전체를 닫지 않는다.
+  assert.match(partial, /챙길 회원/);
+
+  /* 이번 달 원장을 통째로 못 읽은 경우. 0건을 보고 넘어가면 그 달 정산에서야
+     안다. */
   const failed = markupOf("더보기 탭 · 월간 리포트 · 조회 실패");
   assert.match(failed, /코드 permission-denied/);
-  assert.doesNotMatch(failed, /₩0/);
-
-  /* 미소속 개인 강사에게는 원장이 없다. 기존 계산이 그대로 유일한 답이다. */
-  const legacy = markupOf("더보기 탭 · 월간 리포트 · 개인 모드");
-  assert.match(legacy, /완료·차감 처리된 수업과 센터/);
+  /* 회원 쪽 셋은 전부 센터 원장에서 나온다. 0명 · 0장으로 그리면 "이번 달엔
+     아무 일도 없었다" 로 읽히고, 강사는 그 달 정산에서야 아니었다는 것을 안다. */
+  assert.doesNotMatch(failed, /챙길 회원<\/h2>/);
+  assert.doesNotMatch(failed, /0장 · 재등록 0명/);
+  assert.doesNotMatch(failed, /0명<\/p>/);
+  assert.match(failed, /수업한 회원 · 챙길 회원 · 종료시킨 회원권을 셀 수 없습니다/);
+  // 기기에 있는 것은 그대로 보인다 -- 한 줄 때문에 화면 전체를 닫지 않는다.
+  assert.match(failed, /이 기기의 일정/);
 });
 
 test("the expiry report says how many are still inside the 30-day window", async (t) => {

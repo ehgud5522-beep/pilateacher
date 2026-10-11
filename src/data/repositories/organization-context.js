@@ -29,6 +29,7 @@ export const UNRESOLVED_ORGANIZATION_CONTEXT = Object.freeze({
      이메일이 함께 열린다. */
   displayName: "",
   displayNameBy: "",
+  locationId: "",
   /* 부원장인가. 차감할 때 급여 판정 1 이 이 값을 본다
      (deduction-pricing.js). 여기 두는 이유는 값이 필요한 그 순간에 이미
      읽혀 있기 때문이다 -- 로그인할 때 내 membership 을 한 번 읽고, 그 문서에
@@ -71,6 +72,7 @@ export function unknownOrganizationContext() {
  * @property {string} [status]
  * @property {string} [displayName]
  * @property {string} [displayNameBy]
+ * @property {string} [locationId]
  * @property {boolean} [isDeputyDirector]
  * @property {string} [title]
  */
@@ -146,7 +148,7 @@ const withLookupTimeout = (promise, { timeoutMs, setTimer, clearTimer }) => {
 /**
  * @param {string} userId
  * @param {{ listActiveMemberships?: (userId: string) => Promise<Array<MembershipDocument>>, warn?: (code: string, detail: object) => void, log?: (code: string, detail: object) => void, timeoutMs?: number, setTimer?: Function, clearTimer?: Function }} [options]
- * @returns {Promise<{ organizationId: string, role: string, status: string, displayName?: string, displayNameBy?: string, isDeputyDirector?: boolean, title?: string, isLegacy: boolean }>}
+ * @returns {Promise<{ organizationId: string, role: string, status: string, displayName?: string, displayNameBy?: string, locationId?: string, isDeputyDirector?: boolean, title?: string, isLegacy: boolean }>}
  */
 export async function resolveOrganizationContext(userId, options = {}) {
   const id = required(userId, "userId");
@@ -251,6 +253,10 @@ export async function resolveOrganizationContext(userId, options = {}) {
     // 없으면 false 다. 부원장은 지정받은 사람만이다.
     isDeputyDirector: membership.isDeputyDirector === true,
     title: String(membership.title ?? ""),
+    /* 이 강사의 지점. 회원 목록의 지점 칩이 이것으로 좁혀진다 -- 강사에게
+       아홉 개 칩을 주면 그중 여덟은 눌러도 빈 목록이고, 그 빈 화면은
+       "회원이 없다" 로 읽힌다 (locationsVisibleTo). */
+    locationId: String(membership.locationId ?? ""),
     previousUids: Array.isArray(membership.previousUids) ? membership.previousUids.map(String) : [],
     isLegacy: false,
   }, "membership", {

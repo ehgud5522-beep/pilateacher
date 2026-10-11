@@ -88,7 +88,10 @@ export function readAppUpdateConfig(document) {
  * }} input
  *   platform       "android" | "ios" | 그 밖(웹 포함)
  *   installedBuild 지금 깔린 빌드 번호
- *   snoozedAt      마지막으로 [나중에] 를 누른 시각 (ISO 또는 ms)
+ *   snoozedAt      마지막으로 [닫기] 를 누른 시각 (ISO 또는 ms) -- 그날만 쉰다
+ *   dismissedBuild [이 버전 다시 보지 않기] 를 누른 빌드. **그 번호에만 걸린다**
+ *                  -- 다음 빌드가 나오면 다시 묻는다. 영영 안 묻게 두면 그
+ *                  강사는 업데이트를 영영 안 하고, 아무도 그 사실을 모른다
  * @returns {{ prompt: string, latestBuild: number | null, message: string }}
  */
 export function updatePrompt(input = {}) {
@@ -115,6 +118,11 @@ export function updatePrompt(input = {}) {
 
   if (latest === null || installed >= latest) return nothing;
 
+  /* **이 빌드는 그만 보겠다.** 번호에 걸리므로 다음 빌드가 나오면 다시 묻는다
+     -- 한 번 누르면 영영 안 묻는 설정이면 그 강사는 업데이트를 영영 안 하고,
+     아무도 그 사실을 모른다. */
+  if (dismissedThisBuild(input.dismissedBuild, latest)) return nothing;
+
   // 하루에 한 번만 묻는다. 열 때마다 뜨면 그 팝업은 곧 반사적으로 닫힌다.
   if (snoozedToday(input.snoozedAt, input.now)) return nothing;
 
@@ -122,7 +130,20 @@ export function updatePrompt(input = {}) {
 }
 
 /**
- * 오늘 이미 "나중에" 를 눌렀는가. **날짜로 센다.**
+ * 이 빌드를 그만 보겠다고 눌렀는가.
+ *
+ * 저장된 번호가 **지금 최신 빌드와 같을 때만** 참이다. 더 높은 빌드가 나오면
+ * 그 번호와 다르므로 다시 묻는다 -- 그것이 "이 버전" 의 뜻이다.
+ *
+ * @param {unknown} dismissedBuild @param {number | null} latest
+ */
+export function dismissedThisBuild(dismissedBuild, latest) {
+  const dismissed = buildNumberOf(dismissedBuild);
+  return dismissed !== null && latest !== null && dismissed >= latest;
+}
+
+/**
+ * 오늘 이미 "닫기" 를 눌렀는가. **날짜로 센다.**
  *
  * 24시간으로 세면 매일 조금씩 밀려서, 아침에 누른 사람이 다음 날 아침에는
  * 안 보고 저녁에 보게 된다. 날짜가 바뀌면 다시 묻는 쪽이 예측된다.
@@ -175,5 +196,9 @@ export const UPDATE_COPY = Object.freeze({
   optional: "업데이트하면 최근에 고친 것들이 함께 적용됩니다.",
   required: "이 버전으로는 수업 확정이 막힐 수 있어요. 업데이트해 주세요.",
   update: "업데이트",
-  later: "나중에",
+  /* [닫기] 는 오늘만 쉰다. 날짜가 바뀌면 다시 묻는다 -- 이름이 "나중에" 였을
+     때는 얼마나 나중인지 아무도 몰랐다. */
+  later: "닫기",
+  /* 이 빌드만 그만 본다. 다음 빌드가 나오면 다시 묻는다. */
+  dismiss: "이 버전 다시 보지 않기",
 });

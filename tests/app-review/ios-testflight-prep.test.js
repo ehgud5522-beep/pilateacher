@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+import yaml from "js-yaml";
+
 const read = (path) => readFile(new URL(path, import.meta.url), "utf8");
 
 test("iOS release metadata and privacy usage descriptions are review-ready", async () => {
@@ -44,9 +46,8 @@ test("iOS permanent microphone denial opens native app settings through a regist
   assert.match(storyboard, /customModule="App"/);
 });
 
-test("Codemagic builds main with Node 22, signing group, and uploads without submitting", async () => {
+test("Codemagic builds with Node 22, signing group, and uploads without submitting", async () => {
   const yaml = await read("../../codemagic.yaml");
-  assert.match(yaml, /pattern: main/);
   assert.match(yaml, /node: 22/);
   assert.match(yaml, /- signing/);
 
@@ -64,6 +65,37 @@ test("Codemagic builds main with Node 22, signing group, and uploads without sub
 
      대신 여기 없는지만 본다. 없는 그룹을 가리키면 배포가 실패한다. */
   assert.doesNotMatch(yaml, /beta_groups:/);
+});
+
+/* 자동 트리거가 없다 — **빌드는 사람이 고른다.**
+
+   한때 main 에 푸시가 들어가면 두 iOS 워크플로가 자동으로 돌았다. 병합 한
+   번이 빌드 하나였고, 무료 플랜은 macOS 를 한 번에 하나만 돌린다. 2026-10-12
+   에 네 번 병합했더니 네 개가 줄을 섰는데 올려야 할 것은 마지막 하나뿐이었고,
+   앞의 셋 중에는 **버린 버전 번호로 만든 빌드**가 끼어 있었다. 그것이 먼저
+   끝나 TestFlight 에 올라가면 1.1.36 빌드가 1.1.37 자리에 선다.
+
+   강사 앱 쪽은 changeset 이 '.' 이라 **문서를 한 글자 고쳐도 돌았다.**
+
+   이 검사가 지키는 것은 "자동으로 도는 자리가 없다" 하나다. 되살리는 방법은
+   codemagic.yaml 의 주석에 그대로 남아 있다. */
+test("iOS 워크플로 둘 다 수동 실행만 — 자동 트리거가 없다", async () => {
+  const source = await read("../../codemagic.yaml");
+  const { workflows } = yaml.load(source);
+
+  for (const key of ["ios-testflight", "member-ios-testflight"]) {
+    assert.ok(workflows[key], `${key} 가 없다`);
+    assert.equal(workflows[key].triggering, undefined, `${key} 에 트리거가 남아 있다`);
+    /* changeset 은 웹훅 빌드에만 적용된다. 트리거가 없는데 남아 있으면 읽는
+       사람이 "이 조건으로 돈다" 고 믿게 된다 -- 아무것도 안 하는 설정이다. */
+    assert.equal(workflows[key].when, undefined, `${key} 에 when 이 남아 있다`);
+  }
+
+  /* 회원 앱 Android 는 처음부터 수동이었다. 셋이 같아야 한다 -- 하나만 자동이면
+     그 하나가 병합 때마다 조용히 돈다. */
+  for (const flow of Object.values(workflows)) {
+    assert.equal(flow.triggering, undefined);
+  }
 });
 
 test("public privacy and deletion pages disclose Firebase, OpenAI, audio deletion and device photos", async () => {

@@ -329,21 +329,49 @@ test("회원 앱도 수출 규정을 미리 답해 둔다", async () => {
 
 test("한쪽 변경이 다른 쪽 빌드를 돌리지 않는다", async () => {
   /* 회원 앱 한 줄을 고쳤다고 강사 앱 iOS 빌드가 돌면, 버전이 안 올랐을 때
-     Publishing 에서 90062 로 빨갛게 끝난다 -- 고친 것과 상관없는 실패다. */
-  const all = await workflows();
-  const instructor = all["ios-testflight"].when.changeset;
-  assert.deepEqual(instructor.includes, ["."], "강사 앱은 기본이 '전부' 다");
-  assert.ok(instructor.excludes.includes("member/"));
-  assert.ok(instructor.excludes.includes("member-app/"));
+     Publishing 에서 90062 로 빨갛게 끝난다 -- 고친 것과 상관없는 실패다.
 
-  const member = all["member-ios-testflight"].when.changeset;
-  assert.ok(!member.includes.includes("."), "회원 앱은 관계있는 것만 본다");
-  for (const needed of ["member/", "member-app/", "codemagic.yaml"]) {
-    assert.ok(member.includes.includes(needed), needed);
+     ── 2026-10-12 에 조건부로 바뀐 검사 ──────────────────────────────
+     지금은 **자동으로 도는 워크플로가 하나도 없다.** 그래서 한쪽 변경이 다른
+     쪽을 돌릴 길 자체가 없고, 이 검사가 세던 changeset 은 아예 사라졌다
+     (codemagic.yaml 의 주석에 되살릴 모양이 그대로 있다).
+
+     그런데 **되살리는 날이 위험한 날이다.** triggering 만 되돌리고 when 을
+     잊으면 그 순간 회원 앱 커밋이 강사 앱 빌드를 돌린다 -- 그리고 그것은
+     스토어 업로드 단계에서야 빨갛게 보인다.
+
+     그래서 "자동 트리거가 있으면 반드시 가르는 조건도 있어야 한다" 로 바꾼다.
+     오늘은 앞 조건이 거짓이라 조용히 지나가고, 되살리는 날 바로 운다. */
+  const all = await workflows();
+
+  const instructor = all["ios-testflight"];
+  if (instructor.triggering) {
+    const changeset = instructor.when?.changeset;
+    assert.ok(changeset, "강사 앱 트리거를 되살렸으면 changeset 도 되살린다");
+    assert.deepEqual(changeset.includes, ["."], "강사 앱은 기본이 '전부' 다");
+    assert.ok(changeset.excludes.includes("member/"));
+    assert.ok(changeset.excludes.includes("member-app/"));
   }
-  /* 회원 화면이 강사 앱 코드에서 읽는 것은 지금 이 하나뿐이다. 늘어나면
-     여기도 늘려야 하고, 안 늘리면 회원 앱이 낡은 채로 나간다. */
-  assert.ok(member.includes.includes("src/features/ui/"));
+
+  const member = all["member-ios-testflight"];
+  if (member.triggering) {
+    const changeset = member.when?.changeset;
+    assert.ok(changeset, "회원 앱 트리거를 되살렸으면 changeset 도 되살린다");
+    assert.ok(!changeset.includes.includes("."), "회원 앱은 관계있는 것만 본다");
+    for (const needed of ["member/", "member-app/", "codemagic.yaml"]) {
+      assert.ok(changeset.includes.includes(needed), needed);
+    }
+    /* 회원 화면이 강사 앱 코드에서 읽는 것은 지금 이 하나뿐이다. 늘어나면
+       여기도 늘려야 하고, 안 늘리면 회원 앱이 낡은 채로 나간다. */
+    assert.ok(changeset.includes.includes("src/features/ui/"));
+  }
+
+  /* 되살릴 모양을 어디서 찾는지가 코드 안에 있어야 한다. 주석이 사라지면
+     다음 사람은 changeset 을 처음부터 다시 생각해 내야 한다. */
+  const source = await read("codemagic.yaml");
+  for (const hint of ["cancel_previous_builds: true", "excludes: ['member/', 'member-app/']"]) {
+    assert.ok(source.includes(hint), `되살릴 모양이 주석에 남아 있어야 한다: ${hint}`);
+  }
 });
 
 test("회원 앱 빌드가 강사 앱 폴더를 열지 않는다", async () => {

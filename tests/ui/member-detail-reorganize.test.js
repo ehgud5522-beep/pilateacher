@@ -168,6 +168,101 @@ test("G/H/I: status distinguishes warning from critical membership states", () =
   assert.equal(selectMemberDetailStatus({ member: { id: "m", regular: 5, contractEnd: "2026-09-01" }, now }).risk, "critical");
 });
 
+/* ── 맨 위 한 줄은 센터 회원권을 본다 ───────────────────────────────────────
+   잔여와 만료는 기기에도 있다 (regular · service · contractEnd). 미소속 개인
+   강사에게는 그것이 유일한 답이지만, **센터 소속에서는 참이 아니다** -- 회차는
+   센터 원장에서 빠지고 이 기기는 다른 기기의 차감을 모른다.
+
+   2026-10-12 에 그 차이가 드러났다. 수업 확정이 규칙에 막혀 원장에 아무것도
+   안 들어갔는데(permission-denied), 화면은 기기 값으로 "잔여 0회 · 만료" 를
+   말하고 있었다 -- 두 숫자가 서로 다른 것을 세고 있으면 틀린 쪽을 가려낼
+   방법이 없다. */
+
+const pass = (overrides = {}) => ({
+  id: "p1", clientId: "c1", status: "active", remainingCount: 8,
+  expiresAt: new Date(2027, 0, 1), ...overrides,
+});
+const NOW = new Date("2026-09-05T12:00:00");
+
+test("centre passes outrank the stale numbers kept on this phone", () => {
+  const member = { id: "m", regular: 0, service: 0, contractEnd: "2026-01-01" };
+  const found = selectMemberDetailStatus({
+    member, now: NOW,
+    passes: [pass({ remainingCount: 8 }), pass({ id: "p2", remainingCount: 3 })],
+  });
+  assert.equal(found.remaining, 11, "쓸 수 있는 회원권의 합이다");
+  assert.equal(found.expiry, "2027-01-01");
+  /* 기기 값(잔여 0 · 2026-01-01 만료)이었다면 critical 이다. 여기서 warning
+     인 것은 예약이 없어서이고(schedule 을 주지 않았다), 회원권 때문이 아니다. */
+  assert.equal(found.risk, "warning");
+  assert.deepEqual(found.reasons, ["다음 예약 없음"]);
+});
+
+test("without centre passes the phone's own numbers still answer", () => {
+  /* 미소속 개인 강사에게는 원장이 없다. 기기 값이 유일한 답이고, 그 화면은
+     지금까지와 똑같이 돌아야 한다. */
+  const member = { id: "m", regular: 4, service: 1, contractEnd: "2026-12-31" };
+  const found = selectMemberDetailStatus({ member, now: NOW });
+  assert.equal(found.remaining, 5);
+  assert.equal(found.expiry, "2026-12-31");
+});
+
+test("read the centre and find nothing usable is not the same as not reading it", () => {
+  /* 빈 배열은 "쓸 수 있는 것이 없다" 는 참이다. null 은 "모른다" 라 기기
+     값으로 돌아간다 -- 둘을 같게 다루면 맞물리지 않은 회원의 잔여가 전부
+     0 으로 보인다. */
+  const member = { id: "m", regular: 7, service: 0, contractEnd: "2026-12-31" };
+  assert.equal(selectMemberDetailStatus({ member, passes: [], now: NOW }).remaining, 0);
+  assert.equal(selectMemberDetailStatus({ member, passes: null, now: NOW }).remaining, 7);
+});
+
+test("a pass that cannot be used is not remaining", () => {
+  /* 숫자가 들어 있어도 그 회원권으로 수업할 수 없다. 더하면 화면이 실제보다
+     많이 남았다고 말하고, 분쟁 때 그 숫자가 곧 근거가 된다. */
+  const member = { id: "m" };
+  const found = selectMemberDetailStatus({
+    member, now: NOW,
+    passes: [
+      pass({ id: "ok", remainingCount: 5 }),
+      pass({ id: "expired", remainingCount: 9, expiresAt: new Date(2026, 7, 31) }),
+      pass({ id: "cancelled", remainingCount: 9, status: "cancelled" }),
+    ],
+  });
+  assert.equal(found.remaining, 5);
+});
+
+test("the expiry shown is the soonest door to close", () => {
+  /* 가장 늦은 것을 보여주면 그 사이에 쓸 수 없게 된 회차를 아무도 모른다. */
+  const found = selectMemberDetailStatus({
+    member: { id: "m" }, now: NOW,
+    passes: [
+      pass({ id: "late", expiresAt: new Date(2027, 5, 1) }),
+      pass({ id: "soon", expiresAt: new Date(2026, 8, 20) }),
+    ],
+  });
+  assert.equal(found.expiry, "2026-09-20");
+  assert.equal(found.risk, "warning", "30일 안이면 만료 임박이다");
+});
+
+test("expiry is a calendar day, so a pass is usable through its last one", () => {
+  /* 절대 순간으로 비교하면 UTC 기기에서 하루 어긋나고, 오늘 만료인 회원권이
+     어제 사라진다 -- 회원은 그 회차를 쓸 수 있다. */
+  const today = selectMemberDetailStatus({
+    member: { id: "m" }, now: NOW,
+    passes: [pass({ remainingCount: 4, expiresAt: new Date(2026, 8, 5, 0, 0) })],
+  });
+  assert.equal(today.remaining, 4, "만료 당일은 아직 쓸 수 있다");
+});
+
+test("a pass with no expiry date is not treated as expired", () => {
+  // 이 칸이 생기기 전에 발급된 회원권이 있다. 하루아침에 못 쓰게 할 수 없다.
+  const found = selectMemberDetailStatus({
+    member: { id: "m" }, now: NOW, passes: [pass({ remainingCount: 6, expiresAt: null })],
+  });
+  assert.equal(found.remaining, 6);
+  assert.equal(found.expiry, "", "만료일이 없으면 없다고 말한다");
+});
+
 test("J/K: long names and duplicate names do not affect member-keyed sessions", () => {
   const long = { id: "long-id", name: "매우 긴 이름을 가진 회원 테스트 사용자", notes: [note("n1", "s1", "2026-09-01")] };
   const twin = { id: "other-id", name: long.name, notes: [note("n2", "s2", "2026-09-01")] };

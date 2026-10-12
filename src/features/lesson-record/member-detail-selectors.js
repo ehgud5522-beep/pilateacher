@@ -243,15 +243,78 @@ export function selectLessonSheetBriefing({ sessions = [], briefing = null } = {
   };
 }
 
-export function selectMemberDetailStatus({ member, schedule = [], now = new Date() } = {}) {
+/** 잔여 횟수. 정수가 아니면 0 -- 규칙이 int 로만 받는다 (pass-repository). */
+const remainingOf = (pass) => {
+  const count = pass?.remainingCount;
+  return typeof count === "number" && Number.isInteger(count) && count >= 0 ? count : 0;
+};
+
+/** 만료일을 달력 하루로. 절대 순간으로 비교하면 UTC 기기에서 하루 어긋난다. */
+const expiryDayOf = (pass) => {
+  const value = pass?.expiresAt;
+  if (!value) return "";
+  const at = typeof value?.toDate === "function" ? value.toDate() : new Date(value);
+  if (!Number.isFinite(at?.getTime?.())) return "";
+  return `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, "0")}-${String(at.getDate()).padStart(2, "0")}`;
+};
+
+/**
+ * 지금 쓸 수 있는 회원권만. 끝난 것과 만료된 것은 뺀다.
+ *
+ * 남은 숫자가 들어 있어도 그 회원권으로 수업할 수 없으므로, 더하면 화면이
+ * 실제보다 많이 남았다고 말한다 -- 분쟁 때 여는 화면이라 그 숫자가 곧
+ * 근거가 된다 (pass-repository 의 activeRemainingTotal 과 같은 선이다).
+ */
+const usablePasses = (passes, now) => passes.filter((pass) => {
+  if (!pass || String(pass.status || "") !== "active") return false;
+  const day = expiryDayOf(pass);
+  if (!day) return true;
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  return day >= today;
+});
+
+/**
+ * 회원 상세 맨 위의 한 줄 — 잔여 · 다음 예약 · 만료.
+ *
+ * ── 왜 passes 를 받는가 ──
+ * 잔여와 만료는 **기기에도 저장되어 있다** (member.regular · member.service ·
+ * member.contractEnd). 미소속 개인 강사에게는 그것이 유일한 답이지만, 센터
+ * 소속에서는 **참이 아니다** -- 회차는 센터 원장에서 빠지고, 그 결과는 회원권
+ * 문서에 있다. 기기 값은 다른 기기에서 일어난 차감을 모른다.
+ *
+ * 2026-10-12 에 그 차이가 드러났다. 수업 확정이 규칙에 막혀 원장에 아무것도
+ * 안 들어갔는데(permission-denied), 화면은 기기 값으로 "잔여 0회 · 만료" 를
+ * 말하고 있었다. **두 숫자가 서로 다른 것을 세고 있으면, 틀린 쪽을 가려낼
+ * 방법이 없다.**
+ *
+ * 그래서 센터 회원권을 받으면 그쪽이 이긴다: 쓸 수 있는 회원권의 잔여 합과
+ * 그중 가장 이른 만료일이다. **`passes` 를 주지 않으면 기기 값 그대로** --
+ * 미소속 강사의 화면은 지금과 똑같이 돈다.
+ *
+ * @param {{
+ *   member?: any, schedule?: Array<any>, passes?: Array<any> | null, now?: Date,
+ * }} [input]
+ *   passes 센터 회원권. 이 회원의 것만. null 이면 기기 값을 쓴다
+ */
+export function selectMemberDetailStatus({ member, schedule = [], passes = null, now = new Date() } = {}) {
   const memberId = String(member?.id || "");
   const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
   const nextLesson = schedule.filter((lesson) => scheduleMemberIds(lesson).includes(memberId)
     && String(lesson?.date || "") >= today
     && (lesson?.attendees || []).find((attendee) => String(attendee?.memberId || "") === memberId)?.status === "booked")
     .sort((a, b) => `${a.date}|${a.start || ""}`.localeCompare(`${b.date}|${b.start || ""}`))[0] || null;
-  const remaining = Math.max(0, Number(member?.regular || 0) + Number(member?.service || 0));
-  const expiry = String(member?.contractEnd || "").slice(0, 10);
+  const centre = Array.isArray(passes) ? usablePasses(passes, now) : null;
+  /* 센터 회원권을 **읽어 왔는데 한 장도 없는** 경우와 아예 안 받은 경우는
+     다르다. 앞은 "쓸 수 있는 것이 없다" 는 참이고, 뒤는 "모른다" 라 기기
+     값으로 돌아간다. */
+  const remaining = centre
+    ? centre.reduce((sum, pass) => sum + remainingOf(pass), 0)
+    : Math.max(0, Number(member?.regular || 0) + Number(member?.service || 0));
+  /* 가장 이른 만료. 여러 장이면 그것이 먼저 닫히는 문이다 -- 가장 늦은 것을
+     보여주면 그 사이에 쓸 수 없게 된 회차를 아무도 모른다. */
+  const expiry = centre
+    ? centre.map(expiryDayOf).filter(Boolean).sort()[0] || ""
+    : String(member?.contractEnd || "").slice(0, 10);
   const expiryTime = expiry ? new Date(`${expiry}T00:00:00`).getTime() : NaN;
   const todayTime = new Date(`${today}T00:00:00`).getTime();
   const daysToExpiry = Number.isNaN(expiryTime) ? null : Math.ceil((expiryTime - todayTime) / 86400000);

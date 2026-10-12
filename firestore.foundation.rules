@@ -1023,14 +1023,30 @@ service cloud.firestore {
             // accumulated count only ever goes up, and the deputy flag and the
             // service counter both move on — so the reason is written down at
             // the moment it decided something. Entries from before this field
-            // existed do not have it, so it is optional; when it is there it has
-            // to be one of the five the engine can return.
-            // Keep in sync with PRICING_RULE in src/data/schema/deduction-pricing.js.
+            // existed do not have it, so it is optional; when it is there it
+            // has to be one the engine can return.
+            //
+            // 이 목록은 **차감을 막는 목록이다.** 여기 없는 값이 오면 상품이
+            // 안 만들어지는 것으로 끝나지 않고 그 수업의 차감이 통째로
+            // 거부되고, 화면에는 permission-denied 한 줄로만 도착한다.
+            //
+            // 2026-10-12 에 그 일이 났다. 이 목록은 2026-10-04 에 그때 있던
+            // 다섯으로 적힌 뒤 한 번도 안 늘었는데, 그 뒤로 판정이 넷 늘었다
+            // (service_first · diosa_fixed · duet_event_fixed ·
+            // senior_title_event). 점장·팀장은 1:1 재등록(이벤트) 수업을
+            // **한 건도 확정할 수 없었다** -- 그 조합만 senior_title_event 가
+            // 이기기 때문이고, 같은 회원권을 일반 강사가 하면 통과했다.
+            // payCategories() 와 똑같은 모양의 사고다 (2026-10-10).
+            //
+            // tests/rules 가 이 목록과 PRICING_RULE 이 같은지 본다. 판정을
+            // 늘릴 때 여기를 같이 안 고치면 거기서 깨진다.
             && (
               !("rule" in request.resource.data)
               || request.resource.data.rule in [
-                "service_already_used", "deputy_director", "handed_over",
-                "new_to_instructor", "base_category"
+                "service_first", "service_already_used",
+                "deputy_director",
+                "diosa_fixed", "duet_event_fixed", "senior_title_event",
+                "handed_over", "new_to_instructor", "base_category"
               ]
             )
             && request.resource.data.delta is int

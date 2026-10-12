@@ -26,7 +26,9 @@ import {
 import {
   CLIENT_STATUS, COLLECTIONS, MEMBERSHIP_STATUS, PAY_CATEGORY, SESSION_TYPE,
 } from "../../src/data/schema/constants.js";
-import { netContractPriceFor } from "../../src/data/schema/deduction-pricing.js";
+import {
+  PRICING_RULE, netContractPriceFor,
+} from "../../src/data/schema/deduction-pricing.js";
 import { CLIENT_STATUS_FOR_CREATE } from "../../src/data/repositories/client-repository.js";
 import { deleteObject, getMetadata, ref, uploadBytes } from "firebase/storage";
 
@@ -3227,7 +3229,7 @@ describe("checking attendance against a pass", () => {
       ledgerDocOf(users.instructor, ORG_A, PASS_A, "entry-with-rule"),
       deductEntry({ rule: "new_to_instructor" }),
     ));
-    // 판정 엔진이 돌려줄 수 있는 다섯 가지 말고는 들어가지 않는다.
+    // 판정 엔진이 돌려줄 수 없는 값은 들어가지 않는다.
     await assertFails(setDoc(
       ledgerDocOf(users.instructor, ORG_A, PASS_A, "entry-made-up-rule"),
       deductEntry({ rule: "because_i_said_so" }),
@@ -3237,6 +3239,57 @@ describe("checking attendance against a pass", () => {
       ledgerDocOf(users.instructor, ORG_A, PASS_A, "entry-without-rule"),
       deductEntry(),
     ));
+  });
+
+  test("every rule the pricing engine can return is accepted", async () => {
+    /* **이 목록은 차감을 막는 목록이다.** 규칙이 rule 값을 리터럴로 들고
+       있는데 import 을 할 수 없어서, 판정을 늘릴 때 한쪽만 늘어난다.
+
+       2026-10-12 에 그 일이 났다. 목록은 2026-10-04 에 그때 있던 다섯으로
+       적힌 뒤 한 번도 안 늘었고, 그 뒤로 판정이 넷 늘었다 -- service_first ·
+       diosa_fixed · duet_event_fixed · senior_title_event. **점장·팀장은
+       1:1 재등록(이벤트) 수업을 한 건도 확정할 수 없었다** (그 조합만
+       senior_title_event 가 이긴다). 화면에는 permission-denied 한 줄로만
+       도착해서, 같은 회원권을 일반 강사가 하면 되는 이유를 아무도 짚지
+       못했다. payCategories() 와 똑같은 모양의 사고다 (2026-10-10).
+
+       그래서 **목록을 베껴 적지 않고 PRICING_RULE 로 직접 돈다.** 여기 적은
+       literal 은 규칙 파일과 함께 썩을 수 있지만, 앱 상수는 그럴 수 없다. */
+    const values = Object.values(PRICING_RULE);
+    assert.equal(values.length, 9, "판정이 늘었으면 규칙 목록도 늘려야 한다");
+    for (const rule of values) {
+      await assertSucceeds(setDoc(
+        ledgerDocOf(users.instructor, ORG_A, PASS_A, `entry-rule-${rule}`),
+        deductEntry({ rule }),
+      ), rule);
+    }
+  });
+
+  test("the four combinations that were refused on 2026-10-12 go through", async () => {
+    /* 값 하나씩이 아니라 **실제로 올라가는 조합**으로 다시 본다. 규칙은
+       category 와 rule 을 따로 보므로, 둘 다 맞아야 수업이 확정된다.
+
+       아래 넷이 그날 거부된 전부다. 앞의 셋은 강사를 가리지 않았고, 마지막
+       하나만 직급을 탔다 -- 그래서 "일반 강사는 되는데 점장은 안 된다" 로
+       보였다. */
+    const cases = [
+      // 서비스 회차. 회원권마다 첫 한 번은 센터가 낸다 -- 그 한 건이 막혔다.
+      { name: "서비스 첫 회차", category: "service", rule: PRICING_RULE.SERVICE_FIRST, unitPrice: 20000 },
+      // 디오사 관리 수업 A·B. 표값 고정이라 누가 해도 같은 판정이다.
+      { name: "디오사 A", category: "diosa_a", rule: PRICING_RULE.DIOSA_FIXED, unitPrice: 20000 },
+      // 2:1 재등록(이벤트). 역시 표값 고정이다.
+      { name: "2:1 이벤트", category: "pt_2_1_repurchase_event", rule: PRICING_RULE.DUET_EVENT_FIXED, unitPrice: 32000 },
+      /* 점장·팀장의 1:1 재등록(이벤트) 31,000. **이 조합만 직급을 탄다** --
+         같은 회원권을 일반 강사가 하면 base_category 로 떨어져 통과했고,
+         그것이 "일반 강사는 정상" 의 정체다. */
+      { name: "점장·팀장 1:1 재등록(이벤트)", category: "pt_1_1_repurchase_event", rule: PRICING_RULE.SENIOR_TITLE_EVENT, unitPrice: 31000 },
+    ];
+    for (const item of cases) {
+      await assertSucceeds(setDoc(
+        ledgerDocOf(users.instructor, ORG_A, PASS_A, `entry-combo-${item.rule}-${item.category}`),
+        deductEntry({ category: item.category, rule: item.rule, unitPrice: item.unitPrice }),
+      ), item.name);
+    }
   });
 
   test("staff and outsiders do not spend sessions", async () => {

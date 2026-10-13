@@ -41,7 +41,9 @@ import {
 import {
   UNIT_PRICE_SOURCE, resolveUnitPrice, unitPriceSourceFor,
 } from "../schema/pay-rates.js";
-import { netContractPriceFor } from "../schema/deduction-pricing.js";
+import {
+  NEW_TO_INSTRUCTOR_THRESHOLD, netContractPriceFor,
+} from "../schema/deduction-pricing.js";
 import { paths } from "../schema/paths.js";
 import { normalizePhone } from "./client-repository.js";
 import { fullRoomRateOf } from "./instructor-repository.js";
@@ -77,6 +79,20 @@ export const MIGRATION_ERROR = Object.freeze({
   TOTAL_INCLUDES_SERVICE: "total_includes_service",
   DUET_PARTNER_REQUIRED: "duet_partner_required",
   DUET_PARTNER_UNEXPECTED: "duet_partner_unexpected",
+  /* ── "20회미만" 칸이 누적과 어긋난 행 ──────────────────────────────────
+     그 칸은 **저장되지 않는다.** 강사누적진행이 맞게 적혔는지 교차 검증하는
+     용도뿐이다 (2026-10-13 대표 확정).
+
+     셋을 따로 둔다. 고칠 자리가 서로 다르기 때문이다 -- 앞의 둘은 두 칸 중
+     어느 쪽이 맞는지 대표가 정해야 하는 일이고, 마지막 하나는 듀엣 두 사람의
+     누적을 강사에게 다시 물어야 하는 일이다.
+
+     **적힌 숫자는 짐작으로 덮지 않는다.** X 가 비워 둔 칸을 채우기는 해도
+     (아래 planPassMigration 머리말), 적어 놓은 값과 어긋나면 그것은 둘 중
+     하나가 틀린 것이고 어느 쪽인지는 대표만 안다. */
+  UNDER20_SAYS_YES_BUT_REACHED: "under20_says_yes_but_reached",
+  UNDER20_SAYS_NO_BUT_SHORT: "under20_says_no_but_short",
+  DUET_SESSIONS_DISAGREE: "duet_sessions_disagree",
 });
 
 /* ── 카테고리가 짝을 요구하는가 ───────────────────────────────────────────
@@ -425,7 +441,49 @@ export function planPassMigration(text, {
       const totalSessions = readInt(record, "총세션", { min: 1 });
       const serviceSessions = readInt(record, "서비스세션", { min: 0, optional: true }) ?? 0;
       const remainingCount = readInt(record, "남은횟수", { min: 0 });
-      const priorSessions = readInt(record, "강사누적진행", { min: 0 });
+      /* ── "20회미만" 칸 (U열) ─────────────────────────────────────────────
+         대표가 직접 판단해 적는 칸이다. O = 아직 20회 미만, X = 넘겼다.
+
+         PASS_SHEET_COLUMNS 에 넣지 않았다 -- 넣으면 이 칸이 없는 옛 엑셀이
+         통째로 거부된다. readSheet 은 머리글에 있는 칸을 전부 담으므로, 있으면
+         읽히고 없으면 빈 문자열이다.
+
+         빈칸은 "안 적었다" 이고 아무것도 하지 않는다. 빈칸을 X 로 읽으면 적지
+         않은 행이 전부 "20회 넘었다" 로 굳는다. */
+      const under20Raw = requireText(record, "20회미만");
+      const under20 = /^(o|y|yes|예|true|1)$/i.test(under20Raw) ? true
+        : /^(x|n|no|아니오|false|0)$/i.test(under20Raw) ? false : null;
+
+      /* ── X 면 **비워 둔 칸만** 채운다 (2026-10-13 대표 확정) ─────────────
+         "넘겼다" 는 것을 아는데 정확히 몇 번인지는 모르는 회원이 있다. 그
+         행을 거부하면 대표가 숫자를 지어내 적게 되고, 그 숫자가 곧 급여가
+         된다 -- 모르는 것은 비워 두는 편이 낫다.
+
+         빈칸이면 20 이다. 판정이 "20 이상인가" 하나만 보므로 그보다 더 아는
+         척할 이유가 없고, 20 은 X 와 모순되지 않는 값 중 가장 작다.
+
+         **적어 놓은 숫자는 덮지 않는다.** 한때 max(적힌 값, 20) 으로 올렸는데
+         (2026-10-13 오전), 그러면 X + 7 이 조용히 20 이 되어 **어느 쪽이
+         틀렸는지 아무도 모르는 채 급여가 나간다.** 어긋나면 거부한다. */
+      const priorSessionsRaw = readInt(record, "강사누적진행", {
+        min: 0, optional: under20 === false,
+      });
+      const priorSessions = priorSessionsRaw === null
+        ? NEW_TO_INSTRUCTOR_THRESHOLD
+        : priorSessionsRaw;
+
+      /* 두 칸이 어긋난 행. 어느 쪽이 참인지는 짐작할 수 없고, 짐작해서 심으면
+         그 회원권의 단가가 조용히 틀린다 -- 적힌 두 값을 함께 보여주고 대표가
+         고르게 한다. */
+      if (under20 === true && priorSessions >= NEW_TO_INSTRUCTOR_THRESHOLD) {
+        throw failure(line, MIGRATION_ERROR.UNDER20_SAYS_YES_BUT_REACHED,
+          `20회미만이 O 인데 강사누적진행이 ${priorSessions} 입니다. 둘 중 어느 쪽이 맞는지 정해 주세요: ${name}`);
+      }
+      if (under20 === false && priorSessionsRaw !== null
+        && priorSessionsRaw < NEW_TO_INSTRUCTOR_THRESHOLD) {
+        throw failure(line, MIGRATION_ERROR.UNDER20_SAYS_NO_BUT_SHORT,
+          `20회미만이 X 인데 강사누적진행이 ${priorSessionsRaw} 입니다. 둘 중 어느 쪽이 맞는지 정해 주세요: ${name}`);
+      }
       const contractPrice = readInt(record, "계약금액", { min: 0 });
       const purchaseRound = readInt(record, "차수", { min: 1 });
       const expiresAt = readDate(record, "만료일");
@@ -520,6 +578,17 @@ export function planPassMigration(text, {
         if (partnerSessions === null) {
           throw failure(line, MIGRATION_ERROR.DUET_PARTNER_SESSIONS_MISSING,
             `듀엣 상대의 강사누적진행이 필요합니다: ${partnerName || partnerPhoneRaw}`);
+        }
+        /* 듀엣은 두 사람이 **같이** 차감된다. 한 수업에 둘 다 1 씩 오르므로
+           누적은 늘 같아야 한다 -- 다르면 둘 중 하나가 틀렸고, 단가는 적은
+           쪽을 보므로(pricingPriorSessions) 그 차이만큼 신규 단가 구간이
+           길어지거나 짧아진다.
+
+           한쪽이 따로 1:1 도 하면 실제로 갈릴 수 있다. 그때는 이 행을 거부하는
+           것이 맞다 -- 어느 쪽이 참인지는 강사만 안다. */
+        if (partnerSessions !== priorSessions) {
+          throw failure(line, MIGRATION_ERROR.DUET_SESSIONS_DISAGREE,
+            `듀엣인데 강사누적진행(${priorSessions})과 강사누적진행2(${partnerSessions})가 다릅니다. 강사에게 확인해 주세요: ${name}`);
         }
         partnerPriorSessions = partnerSessions;
         clientIds = [clientId, partner.id];

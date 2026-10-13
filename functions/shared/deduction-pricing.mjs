@@ -22,7 +22,10 @@
  * 확정본의 모든 예시를 테스트로 그대로 옮길 수 있다.
  */
 
-import { MEMBERSHIP_TITLE, PAY_CATEGORY, PAYMENT_METHOD } from "./constants.mjs";
+import {
+  MEMBERSHIP_TITLE, PAY_CATEGORY, PAYMENT_METHOD, isDuetPayCategory,
+} from "./constants.mjs";
+import { PAY_RATES } from "./pay-rates.mjs";
 
 /** 어느 판정이 이겼는가. 분쟁 때 "왜 이 금액인가"를 답하는 값이다. */
 export const PRICING_RULE = Object.freeze({
@@ -77,10 +80,24 @@ export const SENIOR_TITLES = Object.freeze(
  *
  * 사유를 하나로 묶지 않는다 -- 급여 화면이 "왜 이 금액이냐" 에 답할 때
  * "고정 단가" 만으로는 어느 상품의 고정인지 말하지 못한다.
+ *
+ * ── 둘로 갈라져 있다 (2026-10-13) ──────────────────────────────────────
+ * 둘 다 표값 고정이지만 **20회 판정을 기준으로 서 있는 자리가 다르다.**
+ *
+ * 디오사는 앞이다. 관리 수업은 PT 가 아니라서 "이 강사에게 처음인 회원" 이라는
+ * 말이 성립하지 않는다 -- 30분/50분 수업의 값은 누가 몇 번째로 하든 같다.
+ *
+ * 2:1 재등록(이벤트)는 뒤다. 그것은 PT 이고, 처음 스무 회차는 2:1 신규 단가를
+ * 받는다. 앞에 두면 1회차부터 32,000 이 되어 20회 규칙이 2:1 에만 적용되지
+ * 않는다.
  */
 export const FIXED_RATE_RULE = Object.freeze({
   [PAY_CATEGORY.DIOSA_A]: PRICING_RULE.DIOSA_FIXED,
   [PAY_CATEGORY.DIOSA_B]: PRICING_RULE.DIOSA_FIXED,
+});
+
+/** 20회를 넘긴 뒤에야 적용되는 고정 단가. 위 머리말 참고. */
+export const POST_THRESHOLD_FIXED_RATE_RULE = Object.freeze({
   [PAY_CATEGORY.PT_2_1_REPURCHASE_EVENT]: PRICING_RULE.DUET_EVENT_FIXED,
 });
 
@@ -96,6 +113,25 @@ export function hasSeniorTitleRate(title, category) {
 
 /** 이 강사에게 이 회원 누적이 이 횟수 미만이면 신규로 본다. */
 export const NEW_TO_INSTRUCTOR_THRESHOLD = 20;
+
+/**
+ * 20회 미만일 때의 단가. **회원권 종류가 정한다.**
+ *
+ * 1:1 은 25,000 이고 2:1 은 2:1 신규 단가(30,000)다. 하나로 묶으면 2:1 수업의
+ * 처음 스무 회차가 1:1 값으로 나간다 -- 수업 한 번에 두 사람을 가르치는데
+ * 금액은 한 사람 값이 된다.
+ *
+ * 2:1 쪽은 표에서 읽는다. 표가 움직이면 이 값도 따라가야 하는 것이 맞다 --
+ * "2:1 신규 단가" 라는 말 자체가 그 표의 칸을 가리킨다. 1:1 쪽이 상수인 것은
+ * 그 반대여서다 (NEW_TO_INSTRUCTOR_UNIT_PRICE 머리말 참고).
+ *
+ * @param {unknown} category
+ */
+export function newToInstructorUnitPrice(category) {
+  return isDuetPayCategory(category)
+    ? /** @type {number} */ (PAY_RATES[PAY_CATEGORY.PT_2_1_NEW])
+    : NEW_TO_INSTRUCTOR_UNIT_PRICE;
+}
 
 /**
  * 한 회원권이 급여를 주는 서비스 회차 수.
@@ -270,7 +306,9 @@ export function deputyDirectorUnitPrice({ netContractPrice, totalSessions }) {
  *   netContractPrice  부가세를 뺀 공급가액 (판정 1의 분자)
  *   totalSessions     서비스를 뺀 기준 회차 (판정 1의 분모)
  *   isDeputyDirector  담당 강사가 부원장인가
- *   handedOver        이 회원권을 인수인계받았는가
+ *   handedOver        이 회원권을 인수인계받았는가. **단가 판정에 쓰이지 않는다**
+ *                     (2026-10-13) -- 인계받아도 이 강사와의 누적으로 판단한다.
+ *                     회원권에는 이력으로 남고 지난 원장 항목이 그 사유를 들고 있다
  *   priorSessions     이 강사가 이 회원에게 이미 진행한 횟수
  *   serviceUsedCount  이 회원권에서 이미 나간 service 차감 수
  * @returns {{ unitPrice: number, rule: string }}
@@ -318,17 +356,18 @@ export function resolveDeductionUnitPrice(input = {}) {
     };
   }
 
-  /* ── 판정 1.2. 표값이 곧 답인 카테고리 ─────────────────────────────────
-     디오사(관리 수업)와 2:1 재등록(이벤트)다. 둘 다 강사가 누구든 같은
-     금액이고, 그 금액이 상품으로 정해져 있다.
+  /* ── 판정 1.2. 디오사 ───────────────────────────────────────────────────
+     관리 수업이다. 표값이 곧 답이고 강사가 누구든 같다.
 
-     **부원장(판정 1)보다는 뒤다.** 대표가 정했다 -- 이 둘도 5:5 는 그대로
-     받는다 (2026-10-05 디오사, 2026-10-09 2:1 이벤트).
+     **부원장(판정 1)보다는 뒤다.** 대표가 정했다 -- 디오사도 5:5 는 그대로
+     받는다 (2026-10-05).
 
-     **직급·인수인계·누적 20회보다는 앞이다.** 저 셋은 전부 1:1 PT 를 전제로
-     한 판정이다. 여기에 걸리면 20,000 짜리 관리 수업이 25,000 으로, 32,000
-     짜리 2:1 이벤트가 25,000 으로 나간다 -- 그 차이는 원장에 박혀 고칠 수
-     없다. */
+     **누적 20회보다는 앞이다.** 20회 규칙은 PT 를 전제로 한 판정이고 --
+     "이 강사에게 처음인 회원" 이라는 말이 관리 수업에는 성립하지 않는다 --
+     뒤에 두면 20,000 짜리 관리 수업의 처음 스무 회차가 25,000 으로 나간다.
+
+     2:1 재등록(이벤트)는 여기 없다. 그것은 PT 라 20회 판정 뒤에 선다
+     (POST_THRESHOLD_FIXED_RATE_RULE, 2026-10-13 대표 확정). */
   const fixedRule = FIXED_RATE_RULE[category];
   if (fixedRule) {
     return {
@@ -337,15 +376,35 @@ export function resolveDeductionUnitPrice(input = {}) {
     };
   }
 
-  /* ── 판정 1.5. 점장·팀장의 1:1 재등록(이벤트) ──────────────────────────
+  /* ── 판정 3. 이 강사에게 스무 번째까지는 신규 단가 ──────────────────────
+     기준은 강사-회원 쌍이다. 같은 회원이라도 강사가 다르면 각자 0부터 세고,
+     같은 강사에게 재등록해도 그 강사 기준 20회까지는 신규 단가다.
+
+     **인수인계도 여기서 끝난다** (2026-10-13 대표 확정). 전에는 판정 2 가
+     "넘겨받은 회원권은 횟수와 무관하게 계속 신규 단가" 로 가로챘고, 그래서
+     인계받은 회원은 스물한 번째가 와도 영영 25,000 이었다. 이제 넘겨받았든
+     처음부터 맡았든 **이 강사와 몇 번 했는가** 하나로 판단한다.
+
+     `handedOver` 는 회원권에 그대로 남는다 -- 이력이고, 지난 원장 항목이
+     PRICING_RULE.HANDED_OVER 를 들고 있다.
+
+     **직급도 여기 걸린다.** 점장·팀장이라도 처음 스무 회차는 25,000 이고,
+     31,000 은 그 뒤부터다 (2026-10-13 확정 — 전에는 판정 1.5 가 앞에 있어
+     1회차부터 31,000 이었다).
+
+     금액은 회원권 종류가 정한다: 1:1 은 25,000, 2:1 은 2:1 신규 단가다. */
+  if (priorSessions < NEW_TO_INSTRUCTOR_THRESHOLD) {
+    return {
+      unitPrice: newToInstructorUnitPrice(category),
+      rule: PRICING_RULE.NEW_TO_INSTRUCTOR,
+    };
+  }
+
+  /* ── 판정 3.5. 점장·팀장의 1:1 재등록(이벤트) ──────────────────────────
      직급에 붙는 고정 단가다. 일반 강사는 표값 30,000 이고 이 둘만 31,000 이다.
 
-     **부원장보다 뒤다.** 부원장이면서 점장인 사람은 5:5 가 먼저다 --
-     2026-10-05 에 대표가 정했다.
-
-     **인수인계·누적 20회보다는 앞이다.** 점장이 넘겨받은 회원권을 하든 처음
-     보는 회원을 하든 31,000 이다. 뒤에 두면 그 두 판정이 25,000 으로
-     가로채고, 직급 수당은 그 회원이 20회를 넘긴 뒤에야 나타난다.
+     **20회 판정 뒤다.** 스무 번째까지는 직급과 무관하게 신규 단가이고, 직급
+     수당은 그 회원이 스물한 번째에 들어선 뒤부터다.
 
      직급은 차감 시점의 값이다. 부르는 쪽이 그때의 소속 문서에서 읽어 넣고,
      원장 항목에 함께 박힌다 -- 승진해도 지난달 급여가 흔들리지 않는다. */
@@ -353,16 +412,15 @@ export function resolveDeductionUnitPrice(input = {}) {
     return { unitPrice: SENIOR_TITLE_EVENT_UNIT_PRICE, rule: PRICING_RULE.SENIOR_TITLE_EVENT };
   }
 
-  // 판정 2. 넘겨받은 회원권은 횟수와 무관하게 계속 신규 단가다.
-  if (input?.handedOver === true) {
-    return { unitPrice: NEW_TO_INSTRUCTOR_UNIT_PRICE, rule: PRICING_RULE.HANDED_OVER };
-  }
-
-  /* 판정 3. 기준은 강사-회원 쌍이다. 같은 회원이라도 강사가 다르면 각자 0부터
-     세고, 같은 강사에게 재등록해도 그 강사 기준 20회까지는 신규 단가다.
-     카테고리를 가리지 않는다 -- 2:1 재등록 상품이라도 19회째면 25,000 이다. */
-  if (priorSessions < NEW_TO_INSTRUCTOR_THRESHOLD) {
-    return { unitPrice: NEW_TO_INSTRUCTOR_UNIT_PRICE, rule: PRICING_RULE.NEW_TO_INSTRUCTOR };
+  /* ── 판정 3.6. 2:1 재등록(이벤트) ──────────────────────────────────────
+     표값 고정 32,000 이다. 20회를 넘긴 뒤에야 선다 -- 그 전에는 위 판정 3 이
+     2:1 신규 단가를 준다. */
+  const postFixedRule = POST_THRESHOLD_FIXED_RATE_RULE[category];
+  if (postFixedRule) {
+    return {
+      unitPrice: requiredInt(input?.baseUnitPrice, "baseUnitPrice", { min: 0 }),
+      rule: postFixedRule,
+    };
   }
 
   // 판정 4. 발급 시 박힌 기준값. 지어내지 않는다 -- 없으면 0원 급여가 된다.

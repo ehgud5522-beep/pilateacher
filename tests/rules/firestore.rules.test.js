@@ -1913,6 +1913,134 @@ describe("protected and append-only data", () => {
     await assertFails(deleteDoc(doc(dbFor(users.owner), "auditLogs", "audit-1")));
   });
 
+  /* ── 누적 보정 기록 ─────────────────────────────────────────────────────
+     급여 판정 3 이 보는 숫자를 손으로 고치는 일이다. 그 숫자 하나가 그 회원의
+     남은 수업 단가를 전부 정하므로(20 을 넘기면 카테고리 단가), **기록 없이
+     고칠 수 있으면 그 숫자는 아무 때나 움직일 수 있는 값이 된다.**
+
+     누적 문서 자체는 규칙이 이미 ownerLevel 에게 열어 두고 있다. 여기서 닫는
+     것은 그 옆에 남아야 하는 기록 쪽이다. */
+
+  const adjustmentLog = (overrides = {}) => ({
+    organizationId: ORG_A,
+    actorId: users.owner,
+    actorRole: "owner",
+    action: "instructor_total_adjusted",
+    targetId: users.instructor,
+    clientId: "client-member",
+    previousAmount: 25,
+    amount: 22,
+    reason: "service_sessions_removed",
+    createdAt: serverTimestamp(),
+    ...overrides,
+  });
+  const adjustmentRef = (userId, logId) => doc(dbFor(userId), "auditLogs", logId);
+
+  test("the owner and the area manager record a totals adjustment", async () => {
+    /* 2026-10-13 대표 결정: 보정은 ownerLevel 이다. 총괄매니저는 대표와 같은
+       자리이고, 이 일은 자기 자리를 넓히는 종류가 아니다. */
+    await assertSucceeds(setDoc(adjustmentRef(users.owner, "adjust-owner"), adjustmentLog()));
+    await assertSucceeds(setDoc(
+      adjustmentRef(users.area_manager, "adjust-area"),
+      adjustmentLog({ actorId: users.area_manager, actorRole: "area_manager" }),
+    ));
+  });
+
+  test("nobody below owner level records one", async () => {
+    /* 강사가 자기 누적을 고친 기록을 스스로 적을 수 있으면 그 기록은 아무것도
+       증명하지 못한다. */
+    for (const role of ["manager", "instructor", "staff"]) {
+      await assertFails(setDoc(
+        adjustmentRef(users[role], `adjust-${role}`),
+        adjustmentLog({ actorId: users[role], actorRole: role }),
+      ), role);
+    }
+  });
+
+  test("an adjustment without its before, after or reason is refused", async () => {
+    /* 셋 중 하나라도 없으면 반년 뒤 그 줄은 "왜 이렇게 됐나" 에 답하지 못하고,
+       그 질문이 곧 급여 분쟁이다. */
+    for (const missing of ["previousAmount", "amount", "reason", "targetId", "clientId"]) {
+      const body = adjustmentLog();
+      delete body[missing];
+      await assertFails(setDoc(adjustmentRef(users.owner, `adjust-no-${missing}`), body), missing);
+    }
+  });
+
+  test("a reason outside the list is refused", async () => {
+    /* 자유 문장을 받지 않는다 -- 이 컬렉션에 문장 칸을 하나 열면 언젠가 거기에
+       회원 이름이 들어간다. */
+    for (const bad of ["그냥요", "manual", "", "회원이 항의함"]) {
+      await assertFails(setDoc(
+        adjustmentRef(users.owner, `adjust-bad-reason-${bad || "empty"}`),
+        adjustmentLog({ reason: bad }),
+      ), bad);
+    }
+    for (const good of ["service_sessions_removed", "migration_overwrite", "manual_correction"]) {
+      await assertSucceeds(setDoc(
+        adjustmentRef(users.owner, `adjust-${good}`),
+        adjustmentLog({ reason: good }),
+      ), good);
+    }
+  });
+
+  test("an adjustment that changes nothing is refused", async () => {
+    // 같은 값을 적은 줄이 쌓이면 목록이 길어지고, 그 목록의 값어치는 변화 하나다.
+    await assertFails(setDoc(
+      adjustmentRef(users.owner, "adjust-noop"),
+      adjustmentLog({ previousAmount: 22, amount: 22 }),
+    ));
+  });
+
+  test("the other audit actions are not asked for a reason", async () => {
+    /* 동작마다 말이 되는 칸이 다르다. 전부에게 사유를 요구하면 말이 안 되는
+       칸을 채우게 되고, 화면이 그것을 진짜 값으로 읽는다. */
+    const rateChange = (overrides = {}) => ({
+      organizationId: ORG_A,
+      actorId: users.owner,
+      actorRole: "owner",
+      action: "full_room_rate_set",
+      targetId: users.instructor,
+      amount: 45000,
+      previousAmount: 40000,
+      createdAt: serverTimestamp(),
+      ...overrides,
+    });
+    await assertSucceeds(setDoc(doc(dbFor(users.owner), "auditLogs", "adjust-other"), rateChange()));
+
+    /* 하지만 **사유 칸을 자유 문장으로 쓰는 길은 어느 동작에도 없다.** 이
+       컬렉션의 값어치가 "자유 문장 칸이 하나도 없다" 는 것이라, 보정이 아닌
+       동작에 끼워 넣는 길이 열려 있으면 그 말이 거짓이 된다. */
+    await assertFails(setDoc(
+      doc(dbFor(users.owner), "auditLogs", "adjust-other-free-text"),
+      rateChange({ reason: "회원이 항의해서 올려 줌" }),
+    ));
+    // 열거값이면 다른 동작에 붙어도 해롭지 않다. 막는 것은 문장이다.
+    await assertSucceeds(setDoc(
+      doc(dbFor(users.owner), "auditLogs", "adjust-other-enum"),
+      rateChange({ reason: "manual_correction" }),
+    ));
+  });
+
+  test("a totals document itself moves for owner level, and not below", async () => {
+    /* 보정이 실제로 쓰는 문서다. 규칙은 이미 열어 두고 있었고, 이 검사는 그
+       사실이 계속 참인지를 본다 -- 닫히면 보정 통로가 조용히 막힌다. */
+    const totalRef = (userId) => doc(
+      dbFor(userId), "organizations", ORG_A, "instructorClientTotals",
+      `${users.instructor}_client-member`,
+    );
+    await assertSucceeds(setDoc(totalRef(users.owner), {
+      organizationId: ORG_A, instructorId: users.instructor, clientId: "client-member", sessions: 22,
+    }));
+    await assertFails(setDoc(totalRef(users.instructor), {
+      organizationId: ORG_A, instructorId: users.instructor, clientId: "client-member", sessions: 22,
+    }), "강사는 자기 누적을 정할 수 없다");
+    // 음수는 누구도 쓸 수 없다 -- 들어가면 그 회원의 차감이 통째로 막힌다.
+    await assertFails(setDoc(totalRef(users.owner), {
+      organizationId: ORG_A, instructorId: users.instructor, clientId: "client-member", sessions: -1,
+    }));
+  });
+
   test("fixture sanity check has all role identities", () => {
     assert.equal(Object.keys(users).length, 7);
   });

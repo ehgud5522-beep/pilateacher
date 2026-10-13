@@ -131,6 +131,67 @@ const planPasses = (sheet, extra = {}) => planPassMigration(sheet, {
   clients, locations: LOCATIONS, instructors: INSTRUCTORS, createdBy: "owner-a", ...extra,
 });
 
+/* ── "20회미만" 칸 (U열) ─────────────────────────────────────────────────
+   **저장하지 않는다.** 강사누적진행이 맞게 적혔는지 보는 눈 하나다
+   (2026-10-13 대표 확정). 어긋나면 그 행을 거부한다 -- 어느 쪽이 참인지는
+   대표가 정해야 하고, 짐작해서 한쪽을 심으면 그 회원권의 단가가 조용히
+   틀린다. */
+
+/** U열이 붙은 시트. PASS_SHEET_COLUMNS 에는 없는 칸이다. */
+const sheetWithUnder20 = (value, overrides = {}) => {
+  const header = [...PASS_SHEET_COLUMNS, "20회미만"].join(",");
+  return [header, `${passRow(overrides)},${value}`].join("\n");
+};
+
+test("the under-20 column is read without being declared, so old sheets still load", () => {
+  /* PASS_SHEET_COLUMNS 에 넣으면 이 칸이 없는 옛 엑셀이 통째로 거부된다.
+     readSheet 은 머리글에 있는 칸을 전부 담으므로 선언할 필요가 없다. */
+  assert.equal(PASS_SHEET_COLUMNS.includes("20회미만"), false, "선언하지 않는다");
+  // 칸이 없는 옛 시트는 그대로 들어간다.
+  assert.deepEqual(planPasses(passSheet(passRow())).failures, []);
+  // 칸이 있고 값이 맞으면 역시 들어간다.
+  assert.deepEqual(planPasses(sheetWithUnder20("X")).failures, []);
+});
+
+test("the under-20 column is never stored — it only checks the count", () => {
+  const { writes } = planPasses(sheetWithUnder20("X"));
+  assert.equal(writes.length, 1);
+  for (const key of Object.keys(writes[0])) {
+    assert.equal(/under20|20회미만|baseRateLocked/.test(key), false, key);
+  }
+  assert.equal(writes[0].priorSessions, 35, "세는 값은 강사누적진행 하나다");
+});
+
+test("O with twenty or more sessions is refused, and says both numbers", () => {
+  /* 둘 중 어느 쪽이 맞는지는 대표가 정해야 한다. 한쪽을 골라 심으면 그
+     회원권의 단가가 조용히 틀리고, 원장은 append-only 라 고칠 수 없다. */
+  const { failures, writes } = planPasses(sheetWithUnder20("O", { 강사누적진행: "35" }));
+  assert.equal(writes.length, 0);
+  assert.equal(failures[0].reason, MIGRATION_ERROR.UNDER20_SAYS_YES_BUT_REACHED);
+  assert.match(failures[0].message, /35/);
+});
+
+test("X with fewer than twenty sessions is refused", () => {
+  const { failures, writes } = planPasses(sheetWithUnder20("X", { 강사누적진행: "7" }));
+  assert.equal(writes.length, 0);
+  assert.equal(failures[0].reason, MIGRATION_ERROR.UNDER20_SAYS_NO_BUT_SHORT);
+  assert.match(failures[0].message, /7/);
+});
+
+test("the two sides agreeing is the ordinary case, on both sides of the line", () => {
+  assert.deepEqual(planPasses(sheetWithUnder20("O", { 강사누적진행: "19" })).failures, []);
+  assert.deepEqual(planPasses(sheetWithUnder20("X", { 강사누적진행: "20" })).failures, [],
+    "스무 번째를 채웠으면 20회 미만이 아니다");
+});
+
+test("a blank under-20 cell is not a judgement, so nothing is checked", () => {
+  /* 빈칸을 X 로 읽으면 적지 않은 행이 전부 "20회 넘었다" 로 굳고, 누적이
+     적은 회원권이 통째로 거부된다. */
+  for (const blank of ["", "   ", "-"]) {
+    assert.deepEqual(planPasses(sheetWithUnder20(blank, { 강사누적진행: "7" })).failures, [], blank);
+  }
+});
+
 test("a pass row finds its client by phone and gets a deterministic id", () => {
   const { writes, failures } = planPasses(passSheet(passRow()));
   assert.deepEqual(failures, []);
@@ -518,8 +579,29 @@ test("categories that do not decide the head count are left as written", () => {
   assert.equal("clientIds" in alone.writes[0].pass, false);
 });
 
+test("a duet whose two counts disagree is refused", () => {
+  /* 듀엣은 두 사람이 같이 차감되므로 누적은 늘 같아야 한다 (2026-10-13).
+     다르면 둘 중 하나가 틀렸고, 단가는 적은 쪽을 보므로(pricingPriorSessions)
+     그 차이만큼 신규 단가 구간이 길어지거나 짧아진다.
+
+     한쪽이 따로 1:1 도 하면 실제로 갈릴 수 있다. 그때도 이 행을 거부하는
+     것이 맞다 -- 어느 쪽이 참인지는 강사만 안다. */
+  const bad = planDuet(duetSheet(duetRow({ 강사누적진행: "12", 강사누적진행2: "9" })));
+  assert.equal(bad.writes.length, 0);
+  assert.equal(bad.failures[0].reason, MIGRATION_ERROR.DUET_SESSIONS_DISAGREE);
+  assert.match(bad.failures[0].message, /12/);
+  assert.match(bad.failures[0].message, /9/);
+
+  const good = planDuet(duetSheet(duetRow({ 강사누적진행: "12", 강사누적진행2: "12" })));
+  assert.deepEqual(good.failures, []);
+  assert.equal(good.writes[0].partnerPriorSessions, 12);
+});
+
 test("both members get their own running total seeded", async () => {
-  const { writes } = planDuet(duetSheet(duetRow({ 강사누적진행: "35", 강사누적진행2: "12" })));
+  /* 두 값은 같아야 한다 (2026-10-13) -- 다르면 위 테스트가 그 행을 거부한다.
+     그래도 **문서는 둘이다.** 하나만 심으면 짝은 0 에서 시작하고, 단가가
+     적은 쪽을 보므로 그 회원권의 처음 스무 회차가 전부 신규 단가로 나간다. */
+  const { writes } = planDuet(duetSheet(duetRow({ 강사누적진행: "35", 강사누적진행2: "35" })));
   const store = fakeStore();
   await applyPassMigration("center-a", writes, { store });
   const totals = [...store.written.keys()].filter((path) => path.includes("instructorClientTotals"));
@@ -528,7 +610,7 @@ test("both members get their own running total seeded", async () => {
     "organizations/center-a/instructorClientTotals/u1_csv_01099998888",
   ]);
   assert.equal(store.written.get(totals[0]).sessions, 35);
-  assert.equal(store.written.get(totals[1]).sessions, 12);
+  assert.equal(store.written.get(totals[1]).sessions, 35, "짝도 0 이 아니라 그 값에서 시작한다");
 });
 
 /* ── 번호가 바뀐 회원이 섞인 엑셀 ────────────────────────────────────

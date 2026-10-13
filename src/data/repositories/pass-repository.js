@@ -732,7 +732,13 @@ export async function deductPass(organizationId, pass, input, options = {}) {
     /* 듀엣이면 두 사람 모두 올린다. 강사는 그 시간에 두 사람을 각각 가르쳤고,
        한 명만 올리면 짝은 스무 번을 같이 하고도 영영 "처음 보는 회원" 으로
        남는다. 단가를 정할 때 둘 중 적은 쪽을 보는 것은 위에서 따로 한다. */
-    ...clientIds.map((id) => ({
+    /* **서비스 회차는 세지 않는다** (2026-10-13 대표 확정). 서비스는 따로
+       정산하는 회차라 "이 강사와 몇 번 했는가" 에 들어가지 않는다.
+
+       전에는 조건 없이 올렸다. 서비스를 먼저 쓰므로 회원권마다 앞쪽 몇
+       회차가 서비스인데 그것이 전부 20 에 들어갔고, 그만큼 신규 단가 구간이
+       일찍 끝났다 -- 강사가 받을 25,000 짜리 회차 몇 개가 조용히 사라졌다. */
+    ...(spendsService ? [] : clientIds.map((id) => ({
       path: paths.instructorClientTotal(organization, instructorId, id),
       data: {
         organizationId: organization,
@@ -741,7 +747,7 @@ export async function deductPass(organizationId, pass, input, options = {}) {
         delta: { sessions: 1 },
       },
       operation: /** @type {"bump"} */ ("bump"),
-    })),
+    }))),
   ]);
   return { passId, lessonId, entryId, entry, lesson };
 }
@@ -1011,6 +1017,10 @@ export async function correctDeduction(organizationId, pass, entry, input, optio
   /* 서비스 회차를 되돌리면 카운터도 되돌린다. 그러지 않으면 센터가 내주기로 한
      1회분이 실수 하나로 사라지고, 회원의 다음 서비스 수업이 강사 봉사가 된다. */
   const returnsService = category === PAY_CATEGORY.SERVICE && (Number(pass?.serviceUsed) || 0) > 0;
+  /* 되돌리는 것이 서비스 회차인가. 위 returnsService 와 다르다 -- 저쪽은
+     "서비스 카운터를 되돌릴 것이 남아 있는가" 까지 보고, 이쪽은 종류만 본다.
+     카운터가 이미 0 이어도 그 회차는 누적에 들어간 적이 없다. */
+  const correctsService = category === PAY_CATEGORY.SERVICE;
 
   await store.commit([
     { path: paths.passLedgerEntry(organization, passId, entryId), data: correction },
@@ -1024,12 +1034,16 @@ export async function correctDeduction(organizationId, pass, entry, input, optio
 
        차감이 둘 다 올렸으면 되돌리는 것도 둘 다다. 한쪽만 되돌리면 두 사람의
        누적이 영영 1 만큼 어긋난 채로 남고, 그 차이는 20회째 단가를 서로 다른
-       날에 오게 만든다 -- 원장으로는 고칠 수 없는 종류의 어긋남이다. */
-    ...passClientIds(pass).map((id) => ({
+       날에 오게 만든다 -- 원장으로는 고칠 수 없는 종류의 어긋남이다.
+
+       **서비스 회차는 애초에 올리지 않았으므로 내리지도 않는다.** 내리면
+       누적이 취소할 때마다 줄어, 되돌린 적도 없는 회차가 사라진다. 차감 쪽과
+       같은 조건이어야 한다 (deductPass 의 spendsService). */
+    ...(correctsService ? [] : passClientIds(pass).map((id) => ({
       path: paths.instructorClientTotal(organization, instructorId, id),
       data: { organizationId: organization, instructorId, clientId: id, delta: { sessions: -1 } },
       operation: /** @type {"bump"} */ ("bump"),
-    })),
+    }))),
   ]);
   return { passId, entryId, entry: correction };
 }

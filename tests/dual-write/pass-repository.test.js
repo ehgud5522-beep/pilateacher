@@ -417,6 +417,96 @@ test("a deduction writes the lesson, the participant, the entry, the count and t
   ]);
 });
 
+/* ── 서비스 회차는 누적에 들어가지 않는다 (2026-10-13 대표 확정) ──────────
+   서비스는 따로 정산하는 회차라 "이 강사와 몇 번 했는가" 에 들어가지 않는다.
+
+   전에는 조건 없이 올렸다. 서비스를 먼저 쓰므로 회원권마다 앞쪽 몇 회차가
+   서비스인데 그것이 전부 20 에 들어갔고, 그만큼 신규 단가 구간이 일찍
+   끝났다 -- 강사가 받을 25,000 짜리 회차 몇 개가 조용히 사라졌다. */
+
+const TOTALS_WRITE = "organizations/center-a/instructorClientTotals/instructor-a_client-a";
+const totalsWriteIn = (commit) => commit.find((write) => write.path === TOTALS_WRITE) || null;
+
+test("a service session spends a count but does not raise the instructor's total", async () => {
+  /* 서비스 회차가 남아 있으면 그 차감은 결제 회차가 아니라 서비스다
+     (spendsServiceSession). 잔여는 줄고, 누적은 그대로여야 한다. */
+  const store = fakeStore();
+  const { entry } = await deductPass(
+    ORG,
+    activePass({ serviceSessions: 2, serviceUsed: 0 }),
+    deductInput(),
+    deductOptions(store),
+  );
+
+  assert.equal(entry.category, "service", "서비스를 먼저 쓴다");
+  const commit = store.calls.commit[0];
+  assert.equal(totalsWriteIn(commit), null, "누적 문서를 건드리지 않는다");
+  // 잔여는 그대로 줄어든다 -- 회원은 그 회차를 받았다.
+  const passWrite = commit.find((write) => write.path === "organizations/center-a/passes/pass-a");
+  assert.equal(passWrite.data.remainingCount, -1);
+  assert.equal(passWrite.data.serviceUsed, 1);
+});
+
+test("a paid session still raises the total", async () => {
+  // 조건을 거꾸로 달면 모든 차감이 누적을 멈춘다. 반대쪽도 못 박는다.
+  const store = fakeStore();
+  await deductPass(ORG, activePass(), deductInput(), deductOptions(store));
+  const write = totalsWriteIn(store.calls.commit[0]);
+  assert.ok(write, "결제 회차는 누적을 올린다");
+  assert.deepEqual(write.data.delta, { sessions: 1 });
+});
+
+test("a whole service pass never raises the total, however many sessions it runs", async () => {
+  /* 통째로 service 카테고리인 회원권이 있다. 몇 번을 해도 누적은 0 이다. */
+  const store = fakeStore();
+  const { entry } = await deductPass(
+    ORG,
+    activePass({ category: "service", baseUnitPrice: 10000, serviceSessions: 0, serviceUsed: 5 }),
+    deductInput(),
+    deductOptions(store),
+  );
+  assert.equal(entry.category, "service");
+  assert.equal(totalsWriteIn(store.calls.commit[0]), null);
+});
+
+test("cancelling a service deduction does not pull the total down", async () => {
+  /* 올리지 않은 것은 내리지도 않는다. 내리면 취소할 때마다 누적이 줄어,
+     되돌린 적도 없는 회차가 사라진다 -- 그만큼 신규 단가 구간이 길어지고
+     센터가 더 낸다. */
+  const store = fakeStore();
+  await correctDeduction(
+    ORG,
+    activePass({ serviceSessions: 2, serviceUsed: 1 }),
+    {
+      id: "lesson-new_deduct", clientId: "client-a", locationId: "bansong",
+      type: "deduct", category: "service", unitPrice: 10000, delta: -1, instructorId: "instructor-a",
+      occurredAt: new Date("2026-09-17T10:00:00.000Z"),
+    },
+    { reason: "잘못 눌렀습니다", createdBy: "owner-a" },
+    { store },
+  );
+  assert.equal(totalsWriteIn(store.calls.commit[0]), null, "누적을 건드리지 않는다");
+});
+
+test("cancelling a paid deduction still pulls the total down", async () => {
+  /* 있지도 않은 수업이 누적에 남아 있으면 20회째가 앞당겨진다. */
+  const store = fakeStore();
+  await correctDeduction(
+    ORG,
+    activePass(),
+    {
+      id: "lesson-new_deduct", clientId: "client-a", locationId: "bansong",
+      type: "deduct", category: "pt_1_1_new", unitPrice: 25000, delta: -1, instructorId: "instructor-a",
+      occurredAt: new Date("2026-09-17T10:00:00.000Z"),
+    },
+    { reason: "잘못 눌렀습니다", createdBy: "owner-a" },
+    { store },
+  );
+  const write = totalsWriteIn(store.calls.commit[0]);
+  assert.ok(write);
+  assert.deepEqual(write.data.delta, { sessions: -1 });
+});
+
 test("the entry points at the lesson it was taught in", async () => {
   const store = fakeStore();
   const { entry, lesson } = await deductPass(ORG, activePass(), deductInput(), deductOptions(store));
@@ -463,18 +553,29 @@ test("a deduction is priced by the engine, and the entry says which rule won", a
      계산할 수 없으므로 그 자리에서 적는다. */
   const cases = [
     {
-      label: "누적 20회 미만이면 카테고리와 무관하게 신규 단가",
+      /* 누적은 카테고리를 가리지 않지만 **금액은 가린다** (2026-10-13).
+         2:1 은 수업 한 번에 두 사람이라 2:1 신규 단가를 받는다. */
+      label: "2:1 은 누적 20회 미만이면 2:1 신규 단가",
       pass: { category: "pt_2_1_repurchase", baseUnitPrice: 35000 },
+      totals: { [TOTALS_PATH]: { sessions: 19 } },
+      unitPrice: 30000,
+      rule: "new_to_instructor",
+    },
+    {
+      label: "1:1 은 누적 20회 미만이면 25,000",
+      pass: { category: "pt_1_1_repurchase_normal", baseUnitPrice: 45000 },
       totals: { [TOTALS_PATH]: { sessions: 19 } },
       unitPrice: 25000,
       rule: "new_to_instructor",
     },
     {
-      label: "인수인계받은 회원권은 횟수와 무관하게 신규 단가",
+      /* 2026-10-13 에 뒤집혔다. 전에는 인수인계가 횟수를 가로채 영영 신규
+         단가였고, 넘겨받은 강사는 그 회원으로 기준 단가를 못 받았다. */
+      label: "인수인계받은 회원권도 이 강사와의 누적으로 판단한다",
       pass: { handedOver: true, baseUnitPrice: 45000 },
       totals: settledPair(),
-      unitPrice: 25000,
-      rule: "handed_over",
+      unitPrice: 45000,
+      rule: "base_category",
     },
     {
       label: "부원장은 계약 금액의 5:5",
@@ -1456,14 +1557,31 @@ test("the instructor's running total goes up for both members", async () => {
 
 test("the pair is priced by whoever the instructor knows least", async () => {
   /* 대표는 40회지만 짝은 3회다. 강사에게 아직 새 사람이 섞여 있으므로 그 수업은
-     신규 단가다 (판정 3, 25,000). 대표만 봤다면 30,000 이 되었을 것이다. */
+     신규 단가다 (판정 3).
+
+     2:1 회원권이라 그 신규 단가는 **2:1 신규 단가 30,000** 이다 (2026-10-13).
+     여기서는 기준 단가(pt_2_1_new 30,000)와 우연히 같지만 거쳐 온 길이
+     다르다 -- 아래 rule 이 그것을 가른다. */
   const store = fakeStore({ totals: {
     [`organizations/${ORG}/instructorClientTotals/instructor-a_client-a`]: { sessions: 40 },
     [`organizations/${ORG}/instructorClientTotals/instructor-a_client-b`]: { sessions: 3 },
   } });
   const { entry } = await deductPass(ORG, duetPass(), deductInput(), deductOptions(store));
-  assert.equal(entry.unitPrice, 25000);
-  assert.equal(entry.rule, "new_to_instructor");
+  assert.equal(entry.unitPrice, 30000);
+  assert.equal(entry.rule, "new_to_instructor", "기준 단가가 아니라 신규 단가로 왔다");
+
+  /* 짝도 스무 번을 넘기면 기준 단가다. 금액이 같아 위에서는 구별되지 않으므로,
+     단가가 다른 2:1 재등록으로 한 번 더 본다. */
+  const seasoned = fakeStore({ totals: {
+    [`organizations/${ORG}/instructorClientTotals/instructor-a_client-a`]: { sessions: 40 },
+    [`organizations/${ORG}/instructorClientTotals/instructor-a_client-b`]: { sessions: 25 },
+  } });
+  const later = await deductPass(
+    ORG, duetPass({ category: "pt_2_1_repurchase", baseUnitPrice: 35000 }),
+    deductInput(), deductOptions(seasoned),
+  );
+  assert.equal(later.entry.unitPrice, 35000);
+  assert.equal(later.entry.rule, "base_category");
 });
 
 test("both totals are read, not just the anchor's", async () => {

@@ -41,7 +41,9 @@ import {
 import {
   UNIT_PRICE_SOURCE, resolveUnitPrice, unitPriceSourceFor,
 } from "../schema/pay-rates.js";
-import { netContractPriceFor } from "../schema/deduction-pricing.js";
+import {
+  NEW_TO_INSTRUCTOR_THRESHOLD, netContractPriceFor,
+} from "../schema/deduction-pricing.js";
 import { paths } from "../schema/paths.js";
 import { normalizePhone } from "./client-repository.js";
 import { fullRoomRateOf } from "./instructor-repository.js";
@@ -77,6 +79,16 @@ export const MIGRATION_ERROR = Object.freeze({
   TOTAL_INCLUDES_SERVICE: "total_includes_service",
   DUET_PARTNER_REQUIRED: "duet_partner_required",
   DUET_PARTNER_UNEXPECTED: "duet_partner_unexpected",
+  /* ── "20회미만" 칸이 누적과 어긋난 행 ──────────────────────────────────
+     그 칸은 **저장되지 않는다.** 강사누적진행이 맞게 적혔는지 교차 검증하는
+     용도뿐이다 (2026-10-13 대표 확정).
+
+     셋을 따로 둔다. 고칠 자리가 서로 다르기 때문이다 -- 앞의 둘은 두 칸 중
+     어느 쪽이 맞는지 대표가 정해야 하는 일이고, 마지막 하나는 듀엣 두 사람의
+     누적을 강사에게 다시 물어야 하는 일이다. */
+  UNDER20_SAYS_YES_BUT_REACHED: "under20_says_yes_but_reached",
+  UNDER20_SAYS_NO_BUT_SHORT: "under20_says_no_but_short",
+  DUET_SESSIONS_DISAGREE: "duet_sessions_disagree",
 });
 
 /* ── 카테고리가 짝을 요구하는가 ───────────────────────────────────────────
@@ -426,6 +438,26 @@ export function planPassMigration(text, {
       const serviceSessions = readInt(record, "서비스세션", { min: 0, optional: true }) ?? 0;
       const remainingCount = readInt(record, "남은횟수", { min: 0 });
       const priorSessions = readInt(record, "강사누적진행", { min: 0 });
+      /* ── "20회미만" 칸 (U열) ─────────────────────────────────────────────
+         **저장하지 않는다.** 강사누적진행이 맞게 적혔는지 보는 눈 하나다.
+
+         PASS_SHEET_COLUMNS 에 넣지 않은 것도 그래서다 -- 넣으면 이 칸이 없는
+         옛 엑셀이 통째로 거부된다. readSheet 은 머리글에 있는 칸을 전부
+         담으므로, 있으면 읽히고 없으면 빈 문자열이다.
+
+         빈칸은 "안 적었다" 이고 검사하지 않는다. 빈칸을 X 로 읽으면 적지 않은
+         행이 전부 "20회 넘었다" 로 굳는다. */
+      const under20Raw = requireText(record, "20회미만");
+      const under20 = /^(o|y|yes|예|true|1)$/i.test(under20Raw) ? true
+        : /^(x|n|no|아니오|false|0)$/i.test(under20Raw) ? false : null;
+      if (under20 === true && priorSessions >= NEW_TO_INSTRUCTOR_THRESHOLD) {
+        throw failure(line, MIGRATION_ERROR.UNDER20_SAYS_YES_BUT_REACHED,
+          `20회미만이 O 인데 강사누적진행이 ${priorSessions} 입니다. 둘 중 어느 쪽이 맞는지 정해 주세요: ${name}`);
+      }
+      if (under20 === false && priorSessions < NEW_TO_INSTRUCTOR_THRESHOLD) {
+        throw failure(line, MIGRATION_ERROR.UNDER20_SAYS_NO_BUT_SHORT,
+          `20회미만이 X 인데 강사누적진행이 ${priorSessions} 입니다. 둘 중 어느 쪽이 맞는지 정해 주세요: ${name}`);
+      }
       const contractPrice = readInt(record, "계약금액", { min: 0 });
       const purchaseRound = readInt(record, "차수", { min: 1 });
       const expiresAt = readDate(record, "만료일");
@@ -520,6 +552,17 @@ export function planPassMigration(text, {
         if (partnerSessions === null) {
           throw failure(line, MIGRATION_ERROR.DUET_PARTNER_SESSIONS_MISSING,
             `듀엣 상대의 강사누적진행이 필요합니다: ${partnerName || partnerPhoneRaw}`);
+        }
+        /* 듀엣은 두 사람이 **같이** 차감된다. 한 수업에 둘 다 1 씩 오르므로
+           누적은 늘 같아야 한다 -- 다르면 둘 중 하나가 틀렸고, 단가는 적은
+           쪽을 보므로(pricingPriorSessions) 그 차이만큼 신규 단가 구간이
+           길어지거나 짧아진다.
+
+           한쪽이 따로 1:1 도 하면 실제로 갈릴 수 있다. 그때는 이 행을 거부하는
+           것이 맞다 -- 어느 쪽이 참인지는 강사만 안다. */
+        if (partnerSessions !== priorSessions) {
+          throw failure(line, MIGRATION_ERROR.DUET_SESSIONS_DISAGREE,
+            `듀엣인데 강사누적진행(${priorSessions})과 강사누적진행2(${partnerSessions})가 다릅니다. 강사에게 확인해 주세요: ${name}`);
         }
         partnerPriorSessions = partnerSessions;
         clientIds = [clientId, partner.id];

@@ -182,12 +182,20 @@ test("X with a blank count is accepted and stored as twenty", () => {
   assert.equal(writes[0].priorSessions, 20);
 });
 
-test("X raises a short count instead of refusing the row", () => {
-  /* **X 가 숫자를 이긴다** (2026-10-13). 어제까지는 이 행을 거부했는데
-     (under20_says_no_but_short), max 로 바뀌면서 그 검사가 할 일이 없어졌다. */
-  const { failures, writes } = planPasses(sheetWithUnder20("X", { 강사누적진행: "7" }));
-  assert.deepEqual(failures, []);
-  assert.equal(writes[0].priorSessions, 20);
+test("X with a short count written out is refused, not quietly raised", () => {
+  /* **적어 놓은 숫자는 짐작으로 덮지 않는다.** 한때 max(적힌 값, 20) 으로
+     올렸는데(2026-10-13 오전), 그러면 X + 7 이 조용히 20 이 되어 어느 쪽이
+     틀렸는지 아무도 모르는 채 급여가 나간다.
+
+     비워 둔 칸을 채우는 것과 적힌 값을 덮는 것은 다른 일이다. */
+  for (const written of ["7", "19"]) {
+    const { failures, writes } = planPasses(sheetWithUnder20("X", { 강사누적진행: written }));
+    assert.equal(writes.length, 0, written);
+    assert.equal(failures[0].reason, MIGRATION_ERROR.UNDER20_SAYS_NO_BUT_SHORT, written);
+    assert.match(failures[0].message, new RegExp(written));
+  }
+  // 경계는 20 이다. 스무 번째를 채웠으면 X 와 어긋나지 않는다.
+  assert.deepEqual(planPasses(sheetWithUnder20("X", { 강사누적진행: "20" })).failures, []);
 });
 
 test("X leaves a count that already passed twenty alone", () => {

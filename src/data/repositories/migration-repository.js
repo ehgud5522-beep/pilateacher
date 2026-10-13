@@ -83,11 +83,13 @@ export const MIGRATION_ERROR = Object.freeze({
      그 칸은 **저장되지 않는다.** 강사누적진행이 맞게 적혔는지 교차 검증하는
      용도뿐이다 (2026-10-13 대표 확정).
 
-     셋을 따로 둔다. 고칠 자리가 서로 다르기 때문이다 -- 앞의 둘은 두 칸 중
-     어느 쪽이 맞는지 대표가 정해야 하는 일이고, 마지막 하나는 듀엣 두 사람의
-     누적을 강사에게 다시 물어야 하는 일이다. */
+     둘을 따로 둔다. 고칠 자리가 서로 다르기 때문이다 -- 앞은 두 칸 중 어느
+     쪽이 맞는지 대표가 정해야 하는 일이고, 뒤는 듀엣 두 사람의 누적을
+     강사에게 다시 물어야 하는 일이다.
+
+     X 쪽은 거부하지 않는다. 적힌 값이 20 미만이어도 20 으로 올린다
+     (2026-10-13) -- 위 planPassMigration 의 머리말 참고. */
   UNDER20_SAYS_YES_BUT_REACHED: "under20_says_yes_but_reached",
-  UNDER20_SAYS_NO_BUT_SHORT: "under20_says_no_but_short",
   DUET_SESSIONS_DISAGREE: "duet_sessions_disagree",
 });
 
@@ -437,26 +439,44 @@ export function planPassMigration(text, {
       const totalSessions = readInt(record, "총세션", { min: 1 });
       const serviceSessions = readInt(record, "서비스세션", { min: 0, optional: true }) ?? 0;
       const remainingCount = readInt(record, "남은횟수", { min: 0 });
-      const priorSessions = readInt(record, "강사누적진행", { min: 0 });
       /* ── "20회미만" 칸 (U열) ─────────────────────────────────────────────
-         **저장하지 않는다.** 강사누적진행이 맞게 적혔는지 보는 눈 하나다.
+         대표가 직접 판단해 적는 칸이다. O = 아직 20회 미만, X = 넘겼다.
 
-         PASS_SHEET_COLUMNS 에 넣지 않은 것도 그래서다 -- 넣으면 이 칸이 없는
-         옛 엑셀이 통째로 거부된다. readSheet 은 머리글에 있는 칸을 전부
-         담으므로, 있으면 읽히고 없으면 빈 문자열이다.
+         PASS_SHEET_COLUMNS 에 넣지 않았다 -- 넣으면 이 칸이 없는 옛 엑셀이
+         통째로 거부된다. readSheet 은 머리글에 있는 칸을 전부 담으므로, 있으면
+         읽히고 없으면 빈 문자열이다.
 
-         빈칸은 "안 적었다" 이고 검사하지 않는다. 빈칸을 X 로 읽으면 적지 않은
-         행이 전부 "20회 넘었다" 로 굳는다. */
+         빈칸은 "안 적었다" 이고 아무것도 하지 않는다. 빈칸을 X 로 읽으면 적지
+         않은 행이 전부 "20회 넘었다" 로 굳는다. */
       const under20Raw = requireText(record, "20회미만");
       const under20 = /^(o|y|yes|예|true|1)$/i.test(under20Raw) ? true
         : /^(x|n|no|아니오|false|0)$/i.test(under20Raw) ? false : null;
+
+      /* ── X 면 횟수를 몰라도 받는다 (2026-10-13 대표 확정) ────────────────
+         "넘겼다" 는 것을 아는데 정확히 몇 번인지는 모르는 회원이 있다. 그
+         행을 거부하면 대표가 숫자를 지어내 적게 되고, 그 숫자가 곧 급여가
+         된다 -- 모르는 것은 비워 두는 편이 낫다.
+
+         저장값은 `max(적힌 값, 20)` 이다. 비었으면 20 -- 판정이 "20 이상인가"
+         하나만 보므로 그보다 더 아는 척할 이유가 없고, 20 은 X 와 모순되지
+         않는 값 중 가장 작다.
+
+         **적힌 값이 20 미만이어도 20 으로 올린다.** 어제까지는 그 행을
+         거부했는데(UNDER20_SAYS_NO_BUT_SHORT), max 로 바뀌면서 그 검사가
+         할 일이 없어졌다 -- X 가 숫자를 이긴다. */
+      const priorSessionsRaw = readInt(record, "강사누적진행", {
+        min: 0, optional: under20 === false,
+      });
+      const priorSessions = under20 === false
+        ? Math.max(priorSessionsRaw ?? 0, NEW_TO_INSTRUCTOR_THRESHOLD)
+        : /** @type {number} */ (priorSessionsRaw);
+
+      /* O 쪽은 그대로 거부한다. 여기에는 올려 줄 값이 없다 -- "20회 미만" 과
+         "누적 35" 중 어느 쪽이 참인지는 짐작할 수 없고, 짐작해서 심으면 그
+         회원권의 단가가 조용히 틀린다. */
       if (under20 === true && priorSessions >= NEW_TO_INSTRUCTOR_THRESHOLD) {
         throw failure(line, MIGRATION_ERROR.UNDER20_SAYS_YES_BUT_REACHED,
           `20회미만이 O 인데 강사누적진행이 ${priorSessions} 입니다. 둘 중 어느 쪽이 맞는지 정해 주세요: ${name}`);
-      }
-      if (under20 === false && priorSessions < NEW_TO_INSTRUCTOR_THRESHOLD) {
-        throw failure(line, MIGRATION_ERROR.UNDER20_SAYS_NO_BUT_SHORT,
-          `20회미만이 X 인데 강사누적진행이 ${priorSessions} 입니다. 둘 중 어느 쪽이 맞는지 정해 주세요: ${name}`);
       }
       const contractPrice = readInt(record, "계약금액", { min: 0 });
       const purchaseRound = readInt(record, "차수", { min: 1 });

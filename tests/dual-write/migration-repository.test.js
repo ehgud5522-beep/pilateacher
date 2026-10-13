@@ -171,17 +171,42 @@ test("O with twenty or more sessions is refused, and says both numbers", () => {
   assert.match(failures[0].message, /35/);
 });
 
-test("X with fewer than twenty sessions is refused", () => {
-  const { failures, writes } = planPasses(sheetWithUnder20("X", { 강사누적진행: "7" }));
-  assert.equal(writes.length, 0);
-  assert.equal(failures[0].reason, MIGRATION_ERROR.UNDER20_SAYS_NO_BUT_SHORT);
-  assert.match(failures[0].message, /7/);
+test("X with a blank count is accepted and stored as twenty", () => {
+  /* "넘겼다" 는 것을 아는데 정확히 몇 번인지는 모르는 회원이 있다. 그 행을
+     거부하면 대표가 숫자를 지어내 적게 되고, **그 숫자가 곧 급여가 된다.**
+
+     20 으로 심는다 -- 판정이 "20 이상인가" 하나만 보므로 그보다 더 아는 척할
+     이유가 없고, X 와 모순되지 않는 값 중 가장 작다. */
+  const { failures, writes } = planPasses(sheetWithUnder20("X", { 강사누적진행: "" }));
+  assert.deepEqual(failures, []);
+  assert.equal(writes[0].priorSessions, 20);
 });
 
-test("the two sides agreeing is the ordinary case, on both sides of the line", () => {
+test("X raises a short count instead of refusing the row", () => {
+  /* **X 가 숫자를 이긴다** (2026-10-13). 어제까지는 이 행을 거부했는데
+     (under20_says_no_but_short), max 로 바뀌면서 그 검사가 할 일이 없어졌다. */
+  const { failures, writes } = planPasses(sheetWithUnder20("X", { 강사누적진행: "7" }));
+  assert.deepEqual(failures, []);
+  assert.equal(writes[0].priorSessions, 20);
+});
+
+test("X leaves a count that already passed twenty alone", () => {
+  // 아는 숫자가 있으면 그것이 더 정확하다. 20 으로 깎으면 정보를 버린다.
+  const { writes } = planPasses(sheetWithUnder20("X", { 강사누적진행: "35" }));
+  assert.equal(writes[0].priorSessions, 35);
+});
+
+test("a blank count is still refused when the sheet does not say X", () => {
+  /* 올려 줄 근거가 없다. 0 으로 심으면 그 회원의 처음 스무 회차가 신규
+     단가로 나가고, 비운 사람은 그것을 모른다. */
+  for (const under20 of ["", "O"]) {
+    const { failures } = planPasses(sheetWithUnder20(under20, { 강사누적진행: "" }));
+    assert.equal(failures[0].reason, MIGRATION_ERROR.MISSING_FIELD, under20);
+  }
+});
+
+test("O with a count under twenty is the ordinary case", () => {
   assert.deepEqual(planPasses(sheetWithUnder20("O", { 강사누적진행: "19" })).failures, []);
-  assert.deepEqual(planPasses(sheetWithUnder20("X", { 강사누적진행: "20" })).failures, [],
-    "스무 번째를 채웠으면 20회 미만이 아니다");
 });
 
 test("a blank under-20 cell is not a judgement, so nothing is checked", () => {

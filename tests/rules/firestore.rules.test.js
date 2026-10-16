@@ -3350,6 +3350,45 @@ describe("checking attendance against a pass", () => {
     }
   });
 
+  /* ── 옛 빌드 차단 (꺼져 있다) ───────────────────────────────────────────
+     차감 단가도 누적 증가도 전부 기기에서 돈다. 규칙은 금액이 맞는지 따질 수
+     없으므로, 업데이트하지 않은 폰은 **옛 규칙으로 계산한 차감을 그대로
+     원장에 박는다** -- 원장은 append-only 다.
+
+     장치는 들어왔지만 `minimumLedgerBuild()` 가 0 이라 **아무도 막히지
+     않는다.** 강사 전원이 새 빌드를 받은 것을 확인한 뒤 그 숫자를 올린다.
+
+     여기서는 꺼져 있다는 것만 못 박는다. 켠 상태의 동작은 규칙 파일을 고쳐야
+     확인할 수 있고, 그 확인은 켜는 날 그 PR 에서 한다. */
+
+  test("the build gate is off, so every current build still writes", async () => {
+    /* 켜진 채로 들어가면 그 순간 센터 전체의 수업 확정이 멈춘다 -- 화면에는
+       permission-denied 한 줄뿐이라 아무도 원인을 짚지 못한다. 2026-10-12 에
+       그 모양을 한 번 겪었다. */
+    const source = await readFile(new URL("../../firestore.foundation.rules", import.meta.url), "utf8");
+    assert.match(source, /function minimumLedgerBuild\(\) \{\s*return 0;/,
+      "최소 빌드는 0(꺼짐)으로 들어간다");
+
+    // 앱 버전을 한 번도 안 적은 강사도 지금은 차감할 수 있다.
+    await assertSucceeds(setDoc(
+      ledgerDocOf(users.instructor, ORG_A, PASS_A, "entry-no-build"),
+      deductEntry(),
+    ));
+  });
+
+  test("the gate hangs on the field the app already writes", async () => {
+    /* 새 칸을 만들지 않는다. memberships 가 빌드 62 부터 appBuild 를 들고
+       있고, 원장 규칙은 **그 문서를 이미 읽는다** (actorRole 대조) -- 문서
+       읽기가 늘지 않는다는 뜻이다.
+
+       숫자로 비교한다. 문자열로 두면 "9" > "10" 이다. */
+    const source = await readFile(new URL("../../firestore.foundation.rules", import.meta.url), "utf8");
+    assert.match(source, /appBuild.*matches\("\^\[0-9\]\+\$"\)/s, "숫자인지 먼저 본다");
+    assert.match(source, /int\(membership\(organizationId\)\.data\.appBuild\)/, "숫자로 비교한다");
+    /* 차감에만 건다. 발급·양도·보정까지 막으면 켜는 날 센터가 통째로 멈춘다. */
+    assert.match(source, /request\.resource\.data\.type != "deduct" \|\| appBuildAllowed/);
+  });
+
   test("a deduction says which rule decided its price", async () => {
     /* 나중에 다시 계산할 수 없다 -- 그때의 누적 횟수는 계속 올라가 사라지고,
        부원장 지정과 서비스 사용 수도 그 뒤로 움직인다. */

@@ -673,3 +673,86 @@ workflows:
       - member-app/android/app/build/outputs/bundle/release/*.aab
       - member-app/android/app/build/outputs/apk/release/*.apk
       - member-app/android/app/build/outputs/mapping/release/mapping.txt
+
+  instructor-android-production:
+    name: Pilateacher Android Production
+    max_build_duration: 60
+    instance_type: linux_x2
+    # Start once from Codemagic; all remaining build/sign/upload steps are automatic.
+    # No push trigger: unrelated commits must not publish the app.
+    environment:
+      node: 22
+      java: 21
+      android_signing:
+        - pilateacher-upload-v2
+      groups:
+        - google_play
+      vars:
+        PACKAGE_NAME: "com.pilateacher.app"
+        VITE_AI_ENABLED: "true"
+        VITE_AI_PROVIDER: "openai"
+        VITE_AI_GATEWAY_URL: "https://asia-northeast3-pilateacher.cloudfunctions.net/aiGateway/v1/ai/execute"
+
+    scripts:
+      - name: Check publishing credentials and uploaded keystore
+        script: |
+          set -euo pipefail
+          for name in GOOGLE_PLAY_SERVICE_ACCOUNT_CREDENTIALS CM_KEYSTORE_PATH CM_KEYSTORE_PASSWORD CM_KEY_ALIAS CM_KEY_PASSWORD CM_COMMIT CM_BRANCH; do
+            if [ -z "${!name:-}" ]; then
+              echo "[ANDROID_CI_VARIABLE_MISSING] $name"; exit 1
+            fi
+          done
+          test -s "$CM_KEYSTORE_PATH"
+          test "$CM_KEY_ALIAS" = "pilateacher-upload-v2"
+          test "$PACKAGE_NAME" = "com.pilateacher.app"
+          # Do not print any part of the service account key.
+          python3 -c 'import json,os; c=json.loads(os.environ["GOOGLE_PLAY_SERVICE_ACCOUNT_CREDENTIALS"]); assert c.get("type")=="service_account" and c.get("private_key") and c.get("client_email"), "INVALID_PLAY_CREDENTIALS"'
+          test "$(git rev-parse HEAD)" = "$CM_COMMIT"
+
+      - name: Install npm packages
+        script: npm ci
+
+      - name: Allocate version above all Google Play tracks
+        script: |
+          set -euo pipefail
+          # API failure stops this build; never fall back to a stale local number.
+          LATEST_GOOGLE_PLAY_BUILD_NUMBER="$(google-play get-latest-build-number --package-name "$PACKAGE_NAME")"
+          export LATEST_GOOGLE_PLAY_BUILD_NUMBER
+          node tools/android/ci-version.mjs
+          printf 'LATEST_GOOGLE_PLAY_BUILD_NUMBER=%s\n' "$LATEST_GOOGLE_PLAY_BUILD_NUMBER" >> "$CM_ENV"
+
+      - name: Validate release source and Android tests
+        script: |
+          set -euo pipefail
+          node tools/android/release-guard.mjs --stage preflight
+          npm run test:android-release
+
+      - name: Build current web source and sync Android
+        script: |
+          set -euo pipefail
+          npm run build
+          npx cap sync android
+          node tools/android/release-guard.mjs --stage assets
+
+      - name: Build signed release AAB
+        script: |
+          set -euo pipefail
+          cd android
+          bash ./gradlew bundleRelease --console=plain
+
+      - name: Verify AAB signature, version, embedded assets and SHA-256
+        script: |
+          set -euo pipefail
+          node tools/android/release-guard.mjs --stage artifact --aab android/app/build/outputs/bundle/release/app-release.aab
+          python3 tools/android/ci-verify.py
+
+    artifacts:
+      - android/app/build/outputs/bundle/release/*.aab
+      - android/app/build/outputs/mapping/release/mapping.txt
+      - .android-release/*.json
+
+    publishing:
+      google_play:
+        credentials: $GOOGLE_PLAY_SERVICE_ACCOUNT_CREDENTIALS
+        track: production
+        submit_as_draft: false

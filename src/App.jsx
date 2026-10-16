@@ -5837,7 +5837,7 @@ function PassCard({ card, onEdit }) {
   );
 }
 
-function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSettlement = true, organizationMode = false, journey = null, passCards = null, centreLessons = null, viewerRole = "", onBack, onPatch, onSaveNote, onSchedule, onOpenLesson, onAssess, onToast, onDelete, onDeactivate, onReactivate, onHide }) {
+function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSettlement = true, organizationMode = false, journey = null, passCards = null, centrePasses = null, centreLessons = null, viewerRole = "", onBack, onPatch, onSaveNote, onSchedule, onOpenLesson, onAssess, onToast, onDelete, onDeactivate, onReactivate, onHide }) {
   /* 강사에게는 뒤 4자리만. 동명이인을 가르는 데는 그것으로 충분하고, 전화를
      거는 일은 센터가 한다 (roster-visibility.js). */
   const phoneShown = (value) => phoneForViewer(value, viewerRole, { full: () => maskedPhone(value) });
@@ -5898,7 +5898,19 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
   const lessonSessions = useMemo(() => selectMemberLessonSessions({ member, schedule }), [member, schedule]);
   const meaningfulLessonSessions = useMemo(() => lessonSessions.filter(isMeaningfulLessonSession), [lessonSessions]);
   const latestLessonSession = meaningfulLessonSessions[0] || null;
-  const detailStatus = useMemo(() => selectMemberDetailStatus({ member, schedule }), [member, schedule]);
+  /* 잔여와 만료는 **센터 회원권이 먼저다.** 기기에도 같은 이름의 값이 있지만
+     (regular · service · contractEnd) 센터 소속에서는 참이 아니다 -- 회차는
+     센터 원장에서 빠지고, 이 기기는 다른 기기에서 일어난 차감을 모른다.
+
+     2026-10-12 에 그 차이가 드러났다. 확정이 규칙에 막혀 원장에 아무것도 안
+     들어갔는데 이 줄은 기기 값으로 "잔여 0회 · 만료" 라고 말하고 있었다.
+
+     미소속 개인 강사에게는 null 이 가고, 그때는 지금까지와 똑같이 기기 값을
+     쓴다 -- 그쪽에는 원장이 없고 기기 값이 유일한 답이다. */
+  const detailStatus = useMemo(
+    () => selectMemberDetailStatus({ member, schedule, passes: centrePasses }),
+    [member, schedule, centrePasses],
+  );
   const pendingLessonSummary = useMemo(() => selectPendingLessonSessions({ members: [member], schedule, pendingDrafts: listPendingLessonRecords().filter((draft) => String(draft?.memberId || "") === String(member.id)) }), [member, schedule, recordQueueRevision]);
   const pendingSessionCount = pendingLessonSummary.countForMember(member.id);
   const pendingByLesson = useMemo(() => new Map(pendingLessonSummary.sessions.map((item) => [String(item.lessonId || item.session?.key || ""), item])), [pendingLessonSummary]);
@@ -25693,6 +25705,23 @@ export default function App() {
     [passCardsForClient, rosterMembers],
   );
 
+  /* 회원 상세 맨 위 한 줄이 쓰는 날것의 회원권 목록. 카드(passCardsFor)는
+     이름과 "다음 차감" 까지 붙여 놓은 것이라 합계를 내기에는 가공이 많다.
+
+     **미소속이면 null 이다** -- 그 화면은 기기 값을 그대로 써야 한다.
+     빈 배열로 주면 "쓸 수 있는 회원권이 하나도 없다" 가 되어 잔여가 0 으로
+     보인다. */
+  const centrePassesFor = useCallback((memberId) => {
+    if (!organizationRoster) return null;
+    const target = String(
+      rosterMembers.find((item) => String(item?.id || "") === String(memberId || ""))?.orgClientId || "",
+    );
+    /* 아직 센터 명부에 맞물리지 않은 회원. 회원권이 없는 것이 아니라 어느
+       것이 그 사람의 것인지 모르는 것이라, 기기 값으로 돌아간다. */
+    if (!target) return null;
+    return rosterPasses.filter((item) => passBelongsTo(item, target));
+  }, [organizationRoster, rosterMembers, rosterPasses]);
+
   /* 화면은 회원 id 로 부르고, 회원권은 조직 clientId 로 붙어 있다. 맞물린 회원은
      둘이 다르므로(roster-bridge) 여기서 바꿔 읽지 않으면 모든 줄이 빈다. */
   const journeyFor = useCallback(
@@ -28767,7 +28796,7 @@ export default function App() {
                   onPatch={(change) => patch(member.id, change)} onSaveNote={(type, body, voiceMeta, noteOptions) => saveScheduleComment(member.id, type, null, body, voiceMeta, noteOptions)}
                   onSchedule={() => { setScheduleMemberId(member.id); setTab("schedule"); }} onOpenLesson={(lessonId) => { setScheduleOpenLessonId(lessonId); setTab("schedule"); }} onAssess={(entry = {}) => { setAnalysisRecordId(entry.poseId || null); setAnalysisAssessmentId(entry.assessmentId || null); setAnalysisEntryMode(entry.mode || "home"); setAnalysisComparisonEntry(entry.beforeAssessmentId && entry.afterAssessmentId ? { beforeAssessmentId: entry.beforeAssessmentId, afterAssessmentId: entry.afterAssessmentId, compareView: entry.compareView || "front" } : null); setAnalysisMemberId(member.id); setTab("analysis"); }} onToast={setToast} onDelete={removeMember} onDeactivate={deactivateMember} onReactivate={reactivateMember}
                   organizationMode={organizationRoster && isRosterMember(member)} onHide={hideRosterMember}
-                  journey={journeyFor(member.id)} passCards={passCardsFor(member.id)}
+                  journey={journeyFor(member.id)} passCards={passCardsFor(member.id)} centrePasses={centrePassesFor(member.id)}
                   centreLessons={centreLessonsFor} />
               </div>}
             </div>}

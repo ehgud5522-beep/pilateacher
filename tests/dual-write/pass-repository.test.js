@@ -545,6 +545,88 @@ test("a pass without a frozen base price is refused rather than re-priced", asyn
   }
 });
 
+/* ── 담당 교체가 누적을 함께 옮긴다 (2026-10-16 대표 확정) ──────────────
+   넘겨받은 그 회원권은 남은 회차 전부가 신규 단가다 (판정 2). 그런데 그
+   회원권이 끝나고 **같은 회원이 재등록하면** 그때는 이 강사가 그 회원을 이미
+   아는 만큼으로 판단해야 한다 -- 0 에서 다시 세면 같은 회원을 스무 번 더
+   가르쳐야 기준 단가가 되고, 그 스무 번은 이미 일어난 일이다. */
+
+const transferInput = (overrides = {}) => ({
+  clientId: "client-a",
+  fromInstructorId: "instructor-a",
+  toInstructorId: "instructor-b",
+  locationId: "bansong",
+  createdBy: "owner-a",
+  ...overrides,
+});
+
+const totalDocPath = (instructorId, clientId) =>
+  `organizations/${ORG}/instructorClientTotals/${instructorId}_${clientId}`;
+
+test("a handover carries the previous instructor's count to the new one", async () => {
+  const store = fakeStore({ totals: { [totalDocPath("instructor-a", "client-a")]: { sessions: 30 } } });
+  await transferPassInstructor(ORG, "pass-a", transferInput(), { store, newId: () => "t1" });
+
+  const write = store.calls.commit[0].find((item) => item.path === totalDocPath("instructor-b", "client-a"));
+  assert.ok(write, "새 강사 쪽에 누적이 더해져야 한다");
+  assert.deepEqual(write.data.delta, { sessions: 30 });
+  assert.equal(write.operation, "bump", "덮어쓰지 않는다 -- 이미 그 회원을 알 수 있다");
+});
+
+test("the previous instructor keeps their own count", async () => {
+  /* 그 숫자는 그 사람이 실제로 한 수업의 기록이다. 지우면 그 강사가 나중에
+     같은 회원을 다시 맡을 때 처음 보는 사이가 된다. */
+  const store = fakeStore({ totals: { [totalDocPath("instructor-a", "client-a")]: { sessions: 30 } } });
+  await transferPassInstructor(ORG, "pass-a", transferInput(), { store, newId: () => "t1" });
+
+  const touched = store.calls.commit[0].map((item) => item.path);
+  assert.equal(touched.includes(totalDocPath("instructor-a", "client-a")), false);
+});
+
+test("a handover with nothing to carry writes no totals document", async () => {
+  /* 0 을 심으면 "이 강사가 이 회원을 가르쳤다" 는 기록이 없는 채로 생긴다. */
+  const store = fakeStore();
+  await transferPassInstructor(ORG, "pass-a", transferInput(), { store, newId: () => "t1" });
+  const touched = store.calls.commit[0].map((item) => item.path);
+  assert.equal(touched.some((path) => path.includes("instructorClientTotals")), false);
+});
+
+test("both halves of a duet carry over", async () => {
+  /* 단가가 둘 중 적은 쪽을 보므로, 한 명만 옮기면 짝이 영영 새 사람으로
+     남고 그 회원권의 다음 장이 전부 신규 단가로 나간다. */
+  const store = fakeStore({ totals: {
+    [totalDocPath("instructor-a", "client-a")]: { sessions: 30 },
+    [totalDocPath("instructor-a", "client-b")]: { sessions: 25 },
+  } });
+  await transferPassInstructor(
+    ORG, "pass-a",
+    transferInput({ clientIds: ["client-a", "client-b"] }),
+    { store, newId: () => "t1" },
+  );
+
+  const written = new Map(store.calls.commit[0].map((item) => [item.path, item]));
+  assert.deepEqual(written.get(totalDocPath("instructor-b", "client-a")).data.delta, { sessions: 30 });
+  assert.deepEqual(written.get(totalDocPath("instructor-b", "client-b")).data.delta, { sessions: 25 });
+});
+
+test("the pass, the entry and the carried counts land in one batch", async () => {
+  /* 담당만 바뀌고 누적이 안 따라오거나 그 반대면, 다음 재등록의 단가가
+     틀리고 원장은 append-only 라 되돌릴 수 없다. */
+  const store = fakeStore({ totals: { [totalDocPath("instructor-a", "client-a")]: { sessions: 30 } } });
+  await transferPassInstructor(ORG, "pass-a", transferInput(), { store, newId: () => "t1" });
+  assert.equal(store.calls.commit.length, 1);
+  assert.equal(store.calls.commit[0].length, 3);
+});
+
+test("a count we could not read does not block the handover", async () => {
+  /* 교체는 그 자리에서 해야 하는 일이다. 못 읽었다고 막으면 회원 앞에서
+     멈춘다 -- 덜 옮긴 것은 나중에 보정으로 고칠 수 있다. */
+  const store = fakeStore();
+  store.read = async () => { throw new Error("boom"); };
+  await transferPassInstructor(ORG, "pass-a", transferInput(), { store, newId: () => "t1" });
+  assert.equal(store.calls.commit.length, 1, "회원권과 이력은 그대로 쓰인다");
+});
+
 /* ── 차감 단가 판정 (2026-09-15 확정본) ────────────────────────────────── */
 
 test("a deduction is priced by the engine, and the entry says which rule won", async () => {
@@ -569,13 +651,13 @@ test("a deduction is priced by the engine, and the entry says which rule won", a
       rule: "new_to_instructor",
     },
     {
-      /* 2026-10-13 에 뒤집혔다. 전에는 인수인계가 횟수를 가로채 영영 신규
-         단가였고, 넘겨받은 강사는 그 회원으로 기준 단가를 못 받았다. */
-      label: "인수인계받은 회원권도 이 강사와의 누적으로 판단한다",
+      /* 넘겨받은 회원권은 전 강사가 판 것이다. 그 장이 끝날 때까지 신규
+         단가이고, 누적은 보지 않는다 (2026-10-16 최종). */
+      label: "인수인계받은 회원권은 남은 회차 전부가 신규 단가다",
       pass: { handedOver: true, baseUnitPrice: 45000 },
       totals: settledPair(),
-      unitPrice: 45000,
-      rule: "base_category",
+      unitPrice: 25000,
+      rule: "handed_over",
     },
     {
       label: "부원장은 계약 금액의 5:5",

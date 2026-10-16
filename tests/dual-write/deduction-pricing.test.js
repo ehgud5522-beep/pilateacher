@@ -97,32 +97,31 @@ test("the threshold is the number the spec fixed", () => {
 
 /* ── 판정 2. 인수인계 ─────────────────────────────────────────────────── */
 
-test("a handed-over pass is judged by this instructor's own count", () => {
-  /* ── 2026-10-13 에 뒤집힌 테스트 ──────────────────────────────────
-     전에는 판정 2 가 "넘겨받은 회원권은 횟수와 무관하게 계속 신규 단가" 로
-     가로챘다. 그래서 인계받은 회원은 스물한 번째가 와도 영영 25,000 이었고,
-     넘겨받은 강사만 그 회원으로는 영영 기준 단가를 못 받았다.
+test("a handed-over pass pays the new rate for every session left on it", () => {
+  /* ── 두 번 뒤집힌 테스트 (2026-10-16 이 최종) ─────────────────────
+     2026-10-13 에 이 판정을 지웠다가 되돌렸다.
 
-     이제 넘겨받았든 처음부터 맡았든 **이 강사와 몇 번 했는가** 하나로
-     판단한다. handedOver 는 회원권에 이력으로 남을 뿐 단가를 바꾸지 않는다. */
-  assert.equal(priceOf({ handedOver: true, priorSessions: 5 }).unitPrice, NEW_TO_INSTRUCTOR_UNIT_PRICE);
-  assert.equal(priceOf({ handedOver: true, priorSessions: 5 }).rule, PRICING_RULE.NEW_TO_INSTRUCTOR);
-
-  const crossed = priceOf({ handedOver: true, priorSessions: 20 });
-  assert.equal(crossed.unitPrice, 30000, "스물한 번째부터는 카테고리 단가다");
-  assert.equal(crossed.rule, PRICING_RULE.BASE_CATEGORY);
+     넘겨받은 회원권은 **전 강사가 판 것**이다. 새 강사는 그 계약에 기여가
+     없고, 그 회원권이 끝날 때까지는 "처음 맡은 회원" 단가를 받는다. 누적으로
+     판단하면 전 강사가 스무 번 가르친 회원을 넘겨받는 순간 첫 수업부터 기준
+     단가가 되어, 판 사람과 가르치는 사람의 몫이 뒤집힌다. */
+  for (const priorSessions of [0, 5, 19, 20, 100]) {
+    const found = priceOf({ handedOver: true, priorSessions });
+    assert.equal(found.unitPrice, NEW_TO_INSTRUCTOR_UNIT_PRICE, String(priorSessions));
+    assert.equal(found.rule, PRICING_RULE.HANDED_OVER, String(priorSessions));
+  }
 });
 
-test("the handover rule stays in the vocabulary for what is already written", () => {
-  /* 값을 지우지 않는다. 이미 원장에 박힌 항목이 그것을 들고 있고, 급여
-     화면이 "왜 이 금액이냐" 에 그 값으로 답한다. 지우면 지난 줄이 사유를
-     잃는다 -- 원장은 append-only 라 고쳐 쓸 수도 없다. */
-  assert.equal(PRICING_RULE.HANDED_OVER, "handed_over");
-  // 다만 판정은 더 이상 그것을 돌려주지 않는다.
-  const everyRule = new Set([0, 5, 19, 20, 100].map(
-    (priorSessions) => priceOf({ handedOver: true, priorSessions }).rule,
-  ));
-  assert.equal(everyRule.has(PRICING_RULE.HANDED_OVER), false);
+test("the next pass after a handover is judged by the carried count", () => {
+  /* 신규 단가로 묶이는 것은 **넘겨받은 그 회원권 하나**다. 같은 회원이
+     재등록하면 그 새 회원권은 handedOver 가 아니고, 인계 때 따라온 누적으로
+     판정 3 을 지난다 (transferPassInstructor 가 더한다).
+
+     0 에서 다시 세면 같은 회원을 스무 번 더 가르쳐야 기준 단가가 되고, 그
+     스무 번은 이미 일어난 일이다. */
+  const renewed = priceOf({ handedOver: false, priorSessions: 30 });
+  assert.equal(renewed.unitPrice, 30000);
+  assert.equal(renewed.rule, PRICING_RULE.BASE_CATEGORY);
 });
 
 /* ── 판정 1. 부원장 ───────────────────────────────────────────────────── */
@@ -187,9 +186,8 @@ test("a used service session does not zero out the other categories", () => {
      1:1 수업까지 0원이 된다. */
   assert.equal(priceOf({ serviceUsedCount: 3 }).unitPrice, 30000);
   assert.equal(priceOf({ serviceUsedCount: 3, priorSessions: 5 }).unitPrice, 25000);
-  /* 인수인계는 더 이상 단가를 바꾸지 않는다 (2026-10-13). 이 fixture 의
-     누적이 99 라 기준 단가로 떨어진다 -- 전에는 25,000 이었다. */
-  assert.equal(priceOf({ serviceUsedCount: 3, handedOver: true }).unitPrice, 30000);
+  // 인수인계는 누적과 무관하게 신규 단가다 (판정 2).
+  assert.equal(priceOf({ serviceUsedCount: 3, handedOver: true }).unitPrice, 25000);
 });
 
 test("아래 판정이 첫 서비스를 가로채지 않는다 (2026-10-03 정정)", () => {
@@ -238,15 +236,18 @@ test("each rule beats the ones below it", () => {
     netContractPrice: 1000000, totalSessions: 20,
   });
   assert.equal(resolveDeductionUnitPrice(everything).rule, PRICING_RULE.DEPUTY_DIRECTOR);
-  /* 부원장이 아니면 바로 누적 판정이다 -- 인수인계는 더 이상 그 사이에
-     서지 않는다 (2026-10-13). */
+  // 부원장이 아니면 인수인계가 받는다 (판정 2). 누적은 보지 않는다.
   assert.equal(
     resolveDeductionUnitPrice({ ...everything, isDeputyDirector: false }).rule,
+    PRICING_RULE.HANDED_OVER,
+  );
+  assert.equal(
+    resolveDeductionUnitPrice({ ...everything, isDeputyDirector: false, handedOver: false }).rule,
     PRICING_RULE.NEW_TO_INSTRUCTOR,
   );
   assert.equal(
     resolveDeductionUnitPrice({
-      ...everything, isDeputyDirector: false, priorSessions: 20,
+      ...everything, isDeputyDirector: false, handedOver: false, priorSessions: 20,
     }).rule,
     PRICING_RULE.BASE_CATEGORY,
   );
@@ -442,8 +443,11 @@ test("the senior title waits for the twentieth session, like everyone else", () 
   }
   // 같은 자리의 일반 강사는 30,000 이다. 그 1,000원이 직급 수당이다.
   assert.equal(priceOf({ title: "instructor", priorSessions: 20 }).unitPrice, 30000);
-  // 인수인계는 이제 아무것도 가로채지 않는다.
-  assert.equal(priceOf({ title: "branch_manager", handedOver: true, priorSessions: 20 }).unitPrice, 31000);
+  /* **인수인계가 직급보다 앞이다** (2026-10-16). 점장이 넘겨받은 회원권은
+     그 장이 끝날 때까지 신규 단가다 -- 그 계약은 전 강사가 팔았다. */
+  const handed = priceOf({ title: "branch_manager", handedOver: true, priorSessions: 20 });
+  assert.equal(handed.unitPrice, NEW_TO_INSTRUCTOR_UNIT_PRICE);
+  assert.equal(handed.rule, PRICING_RULE.HANDED_OVER);
 });
 
 test("the deputy director rule still wins over the senior title", () => {
@@ -504,11 +508,17 @@ test("the 2:1 event rate is 32,000 once the twentieth session has passed", () =>
 
   /* 스물한 번째부터는 32,000 고정이다. 직급도 인수인계도 그것을 바꾸지
      않는다 -- 2:1 이벤트는 강사가 누구든 같은 금액이다. */
-  for (const extra of [{}, { handedOver: true }, { title: "branch_manager" }, { title: "team_lead" }]) {
+  for (const extra of [{}, { title: "branch_manager" }, { title: "team_lead" }]) {
     const result = resolveDeductionUnitPrice({ ...duetEvent, priorSessions: 50, ...extra });
     assert.equal(result.unitPrice, 32000, JSON.stringify(extra));
     assert.equal(result.rule, PRICING_RULE.DUET_EVENT_FIXED, JSON.stringify(extra));
   }
+
+  /* 넘겨받은 2:1 이벤트는 예외다 -- 그 장이 끝날 때까지 2:1 신규 단가다
+     (판정 2 가 앞에 있다). */
+  const handed = resolveDeductionUnitPrice({ ...duetEvent, priorSessions: 50, handedOver: true });
+  assert.equal(handed.unitPrice, PAY_RATES[PAY_CATEGORY.PT_2_1_NEW]);
+  assert.equal(handed.rule, PRICING_RULE.HANDED_OVER);
 });
 
 test("the deputy director still gets five-five on a 2:1 event pass", () => {

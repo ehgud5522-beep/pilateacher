@@ -67,17 +67,43 @@ test("전환점은 스무 번째와 스물한 번째 사이 한 곳뿐이다", (
   assert.equal(rateAt(NEW_TO_INSTRUCTOR_THRESHOLD).unitPrice, 30000);
 });
 
-test("인계받은 회원권도 이 강사와의 누적으로 판단한다", () => {
-  /* 이 강사와 누적 5회인 회원을 넘겨받았다. 15회를 더 하면 스무 번을
-     채우고, 그 다음부터 카테고리 단가다.
+test("전 강사 30회인 회원을 넘겨받으면 그 회원권은 끝까지 25,000 이다", () => {
+  /* 대표 확정 (2026-10-16). 넘겨받은 회원권은 **전 강사가 판 것**이라 새
+     강사는 그 계약에 기여가 없다. 누적으로 판단하면 첫 수업부터 기준 단가가
+     되어, 판 사람과 가르치는 사람의 몫이 뒤집힌다. */
+  const found = walk(30, 12, { handedOver: true });
+  assert.deepEqual(pricesOf(found), Array(12).fill(NEW_TO_INSTRUCTOR_UNIT_PRICE));
+  assert.deepEqual(rulesOf(found), [PRICING_RULE.HANDED_OVER]);
+});
 
-     전에는 인수인계가 판정을 가로채 **영영** 25,000 이었다 (2026-10-13 폐지). */
-  const found = walk(5, 16, { handedOver: true });
+test("넘겨받은 2:1 회원권은 끝까지 2:1 신규 단가다", () => {
+  const found = walk(30, 12, {
+    handedOver: true, category: PAY_CATEGORY.PT_2_1_REPURCHASE, baseUnitPrice: 35000,
+  });
+  assert.deepEqual(pricesOf(found), Array(12).fill(PAY_RATES[PAY_CATEGORY.PT_2_1_NEW]));
+  assert.deepEqual(rulesOf(found), [PRICING_RULE.HANDED_OVER]);
+});
 
-  assert.deepEqual(pricesOf(found.slice(0, 15)), Array(15).fill(25000), "6~20번째");
-  assert.equal(found[15].unitPrice, 30000, "21번째");
-  assert.equal(found[15].rule, PRICING_RULE.BASE_CATEGORY);
-  assert.equal(rulesOf(found).includes(PRICING_RULE.HANDED_OVER), false);
+test("그 회원이 재등록하면 넘어온 누적으로 판단한다", () => {
+  /* 신규 단가로 묶이는 것은 넘겨받은 **그 회원권 하나**다. 다음 장은
+     handedOver 가 아니고, 인계 때 따라온 누적으로 판정 3 을 지난다. */
+  const renewed = rateAt(30, { handedOver: false });
+  assert.equal(renewed.unitPrice, 30000, "첫 차감부터 카테고리 단가");
+  assert.equal(renewed.rule, PRICING_RULE.BASE_CATEGORY);
+});
+
+test("전 강사 10회 + 인계 회원권 12회 → 재등록은 누적 22 로 판단한다", () => {
+  /* 대표가 든 예시 그대로다. 인계로 10 이 넘어오고, 그 회원권에서 12회를
+     진행하면 누적은 22 다 -- 재등록 첫 차감부터 카테고리 단가다.
+
+     인계받은 회원권의 12회는 그 자체로는 전부 25,000 이다. 누적은 올라가지만
+     단가는 판정 2 가 먼저 잡기 때문이다. */
+  const handedPass = walk(10, 12, { handedOver: true });
+  assert.deepEqual(pricesOf(handedPass), Array(12).fill(NEW_TO_INSTRUCTOR_UNIT_PRICE));
+
+  const renewed = rateAt(10 + 12, { handedOver: false });
+  assert.equal(renewed.unitPrice, 30000);
+  assert.equal(renewed.rule, PRICING_RULE.BASE_CATEGORY);
 });
 
 test("점장·팀장도 스무 번째까지는 신규 단가이고, 31,000 은 그 뒤다", () => {

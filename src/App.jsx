@@ -28,7 +28,7 @@ import {
 import {
   fbReady, fbAuthApiKey, fbSignInSocial, fbSignInEmail, fbSignUpEmail, fbSignOut, fbOnAuth,
   fbAuthStateReady, fbLoadProfileState, fbSaveProfile, fbPushBackup, fbPullBackup,
-  fbPreservePreviousBackup, PREVIOUS_PHONE_BACKUP, fbReauthenticate,
+  fbPreservePreviousBackup, PREVIOUS_PHONE_BACKUP, fbReauthenticate, fbRefreshIdToken,
   fbRevokeAppleAccess, fbDeleteCurrentUserAccount, fbLoadAIConsent, fbGrantAIConsent, fbCurrentUserId,
   fbDeleteAIConsent,
   fbLoadAIRecordingStatus, fbLoadSettlementConfig, fbSendDiagnosticReport, fbWritePilotMetricAttempt,
@@ -5521,8 +5521,18 @@ function ReferenceMemberList({
             읽히고, 그 다음 행동이 바로 다시 등록이다. */}
         {rosterError ? (
           <div className="mb-2 rounded-xl px-3 py-2.5" style={{ backgroundColor: BAD_S, border: `1px solid ${BAD}` }}>
+            {/* 권한과 네트워크를 가른다. 할 일이 다르다 -- 앞은 다시 로그인이고
+                뒤는 기다리는 일이다. 한 문구로 묶으면 둘 다 "다시 시도" 만 누르고
+                끝나고, 권한 쪽은 그것으로 모를 일이 아니다. */}
             <p className="text-xs font-bold" style={{ color: BAD }}>
-              센터 회원을 불러오지 못했습니다 (코드 {rosterError}). 아래는 이 기기에 저장된 목록입니다.
+              {rosterError === "permission-denied"
+                ? "회원권을 불러오지 못했어요. 다시 로그인해 주세요."
+                : `센터 회원을 불러오지 못했습니다 (코드 ${rosterError}).`}
+            </p>
+            <p className="mt-1 text-xs" style={{ color: INK2 }}>
+              {/* 아래 목록이 서버가 아니라는 것을 말해야 한다. 그렇지 않으면
+                  거기 보이는 잔여를 센터의 숫자로 읽는다. */}
+              아래는 이 기기에 저장된 목록이고, 회원권 잔여는 센터의 값이 아닙니다.
             </p>
             {onRetryRoster ? (
               <button type="button" onClick={onRetryRoster} className="mt-2 h-8 px-3 text-xs font-extrabold"
@@ -24833,6 +24843,9 @@ export function createAppScreenSmokeCases() {
     { name: "회원 목록 · 소속 강사", element: <ReferenceMemberList members={smokeRoster} schedule={db.schedule} settings={db.settings} canRegister={false} currentUserId="u1" myMembersDefault onSelect={noop} onAdd={noop} /> },
     { name: "회원 목록 · 소속 강사 · 전체", element: <ReferenceMemberList members={smokeRoster} schedule={db.schedule} settings={db.settings} canRegister={false} currentUserId="zzz" myMembersDefault onSelect={noop} onAdd={noop} /> },
     { name: "회원 목록 · 소속 강사 · 명부 조회 실패", element: <ReferenceMemberList members={db.members} schedule={db.schedule} settings={db.settings} canRegister={false} currentUserId="u1" myMembersDefault rosterError="permission-denied" onRetryRoster={noop} onSelect={noop} onAdd={noop} /> },
+    /* 권한과 네트워크는 할 일이 다르다 -- 앞은 다시 로그인이고 뒤는 기다리는
+       일이다. 한 문구로 묶으면 둘 다 "다시 시도" 만 누르고 끝난다. */
+    { name: "회원 목록 · 소속 강사 · 명부 조회 실패 · 네트워크", element: <ReferenceMemberList members={db.members} schedule={db.schedule} settings={db.settings} canRegister={false} currentUserId="u1" myMembersDefault rosterError="unavailable" onRetryRoster={noop} onSelect={noop} onAdd={noop} /> },
     { name: "회원 목록 · 강사 · 비어 있음", element: <ReferenceMemberList members={[]} schedule={[]} settings={db.settings} canRegister={false} onSelect={noop} onAdd={noop} /> },
     { name: "회원권 발급", element: passIssue(smokeOwner, { ...smokeIssueBase }) },
     /* 듀엣. 회원을 고른 뒤에 토글이 뜨고, 켜면 짝 칸이 생긴다. */
@@ -25435,6 +25448,10 @@ export default function App() {
      읽을 때 누가 썼는지 모르면 대표는 그 말을 센터의 말로 읽는다. */
   const [rosterInstructors, setRosterInstructors] = useState([]);
   const [rosterRevision, setRosterRevision] = useState(0);
+  /* 토큰을 새로 받아 다시 해 본 적이 있는가. **효과 밖에 둔다** -- 안에 두면
+     재시도가 효과를 다시 돌리면서 값이 false 로 돌아가고, 권한이 정말 없는
+     사람에게 무한 반복이 된다. */
+  const rosterAuthRetried = useRef(false);
 
   useEffect(() => {
     if (!organizationRoster) { setRosterClients([]); setRosterPasses([]); setRosterTotals([]); setRosterProducts([]); setRosterLocations([]); setRosterInstructors([]); setRosterError(""); return undefined; }
@@ -25471,12 +25488,36 @@ export default function App() {
       setRosterLocations(locationResult.items);
       setRosterInstructors(instructorResult.items);
       setRosterError("");
-    }).catch((error) => {
+    }).catch(async (error) => {
       if (!alive) return;
+      const code = error?.code || "unknown";
+      /* ── permission-denied 는 한 번만 다시 해 본다 (2026-10-16) ──────────
+         소속이 방금 만들어졌거나 역할이 바뀌면 손에 든 토큰은 그 전의 것이고,
+         규칙은 그것을 거부한다. 화면에는 "회원권 없음" 으로 보이는데 앱을
+         껐다 켜면 멀쩡해진다 -- 그 사이에 토큰이 바뀌기 때문이다.
+
+         **한 번뿐이다.** 진짜로 권한이 없는 사람에게 무한히 다시 하면 그만큼
+         요청만 나가고 화면은 영영 "불러오는 중" 이다. 두 번째도 막히면 그때는
+         사람이 할 일이 있다 (다시 로그인).
+
+         다른 코드는 다시 하지 않는다 -- unavailable 은 네트워크가 돌아와야
+         하는 일이고, 토큰을 갈아도 달라지지 않는다. */
+      if (code === "permission-denied" && !rosterAuthRetried.current) {
+        rosterAuthRetried.current = true;
+        const refreshed = await fbRefreshIdToken();
+        if (!alive) return;
+        if (refreshed) {
+          deviceLog("roster_read_retry_after_token_refresh", {
+            feature: "centre_roster", stage: "retry", errorDomain: "firestore", errorCode: code,
+          });
+          setRosterRevision((value) => value + 1);
+          return;
+        }
+      }
       /* 못 읽었으면 빈 목록을 보여주지 않는다. 빈 목록은 "센터에 회원이 없다"로
          읽히고, 그 다음 행동이 바로 다시 등록이다. 기기 저장 목록을 그대로 두고
          읽지 못한 사실만 말한다. */
-      setRosterError(error?.code || "unknown");
+      setRosterError(code);
     });
     return () => { alive = false; };
   }, [organizationRoster, organizationContext.organizationId, rosterRevision]);
@@ -25713,6 +25754,11 @@ export default function App() {
      보인다. */
   const centrePassesFor = useCallback((memberId) => {
     if (!organizationRoster) return null;
+    /* **못 읽었으면 "없다" 가 아니라 "모른다" 다** (2026-10-16). rosterPasses
+       는 조회가 실패해도 빈 배열이라, 그대로 넘기면 화면이 "잔여 0회" 를
+       말한다 -- 회원권이 멀가히 있는 사람에게 그 줄이 뜼면 강사는 재등록을
+       권하고, 회원은 자기가 산 회차가 사라졌다고 듣는다. */
+    if (rosterError) return null;
     const target = String(
       rosterMembers.find((item) => String(item?.id || "") === String(memberId || ""))?.orgClientId || "",
     );
@@ -25720,7 +25766,7 @@ export default function App() {
        것이 그 사람의 것인지 모르는 것이라, 기기 값으로 돌아간다. */
     if (!target) return null;
     return rosterPasses.filter((item) => passBelongsTo(item, target));
-  }, [organizationRoster, rosterMembers, rosterPasses]);
+  }, [organizationRoster, rosterError, rosterMembers, rosterPasses]);
 
   /* 화면은 회원 id 로 부르고, 회원권은 조직 clientId 로 붙어 있다. 맞물린 회원은
      둘이 다르므로(roster-bridge) 여기서 바꿔 읽지 않으면 모든 줄이 빈다. */

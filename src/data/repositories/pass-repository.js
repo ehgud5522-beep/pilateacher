@@ -366,7 +366,12 @@ export async function issuePass(organizationId, input, options = {}) {
  *
  * @param {string} organizationId
  * @param {string} passId
- * @param {{ clientId: string, fromInstructorId: string, toInstructorId: string, locationId: string, createdBy: string, entryId?: string }} input
+ * @param {{
+ *   clientId: string, fromInstructorId: string, toInstructorId: string,
+ *   locationId: string, createdBy: string, entryId?: string,
+ *   clientIds?: Array<string>,
+ * }} input
+ *   clientIds 듀엣이면 두 사람 모두. 누적을 둘 다 옮기려면 필요하다
  * @param {{ store?: PassStore, newId?: () => string }} [options]
  */
 export async function transferPassInstructor(organizationId, passId, input, options = {}) {
@@ -385,6 +390,32 @@ export async function transferPassInstructor(organizationId, passId, input, opti
   const createdBy = requiredText(input?.createdBy, "createdBy");
 
   const entryId = String(input?.entryId || `${id}_transfer_${newId()}`);
+
+  /* ── 누적도 함께 넘어간다 (2026-10-16 대표 확정) ─────────────────────────
+     전 강사가 이 회원에게 한 횟수를 새 강사 쪽에 **더한다.**
+
+     넘겨받은 그 회원권 자체는 남은 회차 전부가 신규 단가다 (판정 2) -- 새
+     강사는 그 계약에 기여가 없다. 그런데 그 회원권이 끝나고 **같은 회원이
+     재등록하면** 그때는 이 강사가 그 회원을 이미 아는 만큼으로 판단해야
+     한다. 0 에서 다시 세면 같은 회원을 스무 번 더 가르쳐야 기준 단가가
+     되고, 그 스무 번은 이미 일어난 일이다.
+
+     **더하고, 전 강사 쪽은 그대로 둔다.** 그 숫자는 그 사람이 실제로 한
+     수업의 기록이고, 지우면 그 강사가 나중에 같은 회원을 다시 맡을 때 처음
+     보는 사이가 된다.
+
+     듀엣이면 두 사람 모두 옮긴다 -- 단가가 둘 중 적은 쪽을 보므로, 한 명만
+     옮기면 짝이 영영 새 사람으로 남는다.
+
+     읽지 못하면 0 으로 본다. 더할 것이 없다는 뜻이고, 던지면 담당 교체 자체가
+     막힌다 -- 교체는 그 자리에서 해야 하는 일이다. */
+  const movingClientIds = passClientIds({ clientId, clientIds: input?.clientIds });
+  const carried = await Promise.all(movingClientIds.map(async (id2) => ({
+    clientId: id2,
+    sessions: await readInstructorClientSessions(organization, fromInstructorId, id2, { store })
+      .catch(() => 0),
+  })));
+
   const stampedAt = await store.serverTimestamp();
 
   const entry = {
@@ -413,8 +444,20 @@ export async function transferPassInstructor(organizationId, passId, input, opti
       data: { instructorId: toInstructorId, handedOver: true },
       operation: "update",
     },
+    /* 0 은 쓰지 않는다. 더할 것이 없는데 문서를 만들면 "이 강사가 이 회원을
+       가르쳤다" 는 기록이 없는 채로 생긴다. */
+    ...carried.filter((item) => item.sessions > 0).map((item) => ({
+      path: paths.instructorClientTotal(organization, toInstructorId, item.clientId),
+      data: {
+        organizationId: organization,
+        instructorId: toInstructorId,
+        clientId: item.clientId,
+        delta: { sessions: item.sessions },
+      },
+      operation: /** @type {"bump"} */ ("bump"),
+    })),
   ]);
-  return { passId: id, entryId, entry };
+  return { passId: id, entryId, entry, carriedSessions: carried };
 }
 
 /* ── 출석 체크(차감) ───────────────────────────────────────────────────────

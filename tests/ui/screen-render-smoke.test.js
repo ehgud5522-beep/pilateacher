@@ -163,6 +163,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "회원 목록 · 소속 강사",
     "회원 목록 · 소속 강사 · 전체",
     "회원 목록 · 소속 강사 · 명부 조회 실패",
+    "회원 목록 · 소속 강사 · 명부 조회 실패 · 네트워크",
     "회원 목록 · 강사 · 비어 있음",
     "회원권 발급",
     "회원권 발급 · 듀엣 꺼짐",
@@ -644,8 +645,11 @@ test("an instructor sees the centre's members, so there is nothing to re-registe
   /* 못 읽었으면 빈 목록을 보여주지 않는다. 빈 목록은 "센터에 회원이 없다"로
      읽히고, 그 다음 행동이 바로 다시 등록이다. */
   const failed = markupOf("회원 목록 · 소속 강사 · 명부 조회 실패");
-  assert.match(failed, /센터 회원을 불러오지 못했습니다 \(코드 permission-denied\)/);
-  assert.match(failed, /아래는 이 기기에 저장된 목록입니다/);
+  /* 문구가 사유별로 갈렸다 (2026-10-16). 권한이면 코드가 아니라 **할 일**을
+     말한다 -- 자세한 비교는 "a roster we could not read says which kind of
+     failure it was" 가 한다. */
+  assert.match(failed, /회원권을 불러오지 못했어요/);
+  assert.match(failed, /이 기기에 저장된 목록/);
   assert.match(failed, /다시 시도/);
 });
 
@@ -2077,6 +2081,32 @@ test("the pass row keeps its meta text off the button line", async (t) => {
   assert.equal(/flex-1/.test(meta[0]), false, "버튼과 폭을 나눠 쓰지 않는다");
   // 버튼 줄은 넘치면 줄바꿈한다. 390px 에 다섯이 한 줄로 들어가지 않는다.
   assert.match(detail, /flex flex-wrap items-center gap-1\.5/);
+});
+
+test("a roster we could not read says which kind of failure it was", async (t) => {
+  /* ── 2026-10-16 ────────────────────────────────────────────────────
+     권한과 네트워크는 **할 일이 다르다.** 앞은 다시 로그인이고 뒤는 기다리는
+     일이다. 한 문구로 묶으면 둘 다 "다시 시도" 만 누르고 끝나는데, 권한 쪽은
+     그것으로 풀릴 일이 아니다.
+
+     그리고 아래 목록이 **서버가 아니라는 것**을 말해야 한다. 그러지 않으면
+     거기 보이는 잔여를 센터의 숫자로 읽고, 멀쩡한 회원권을 가진 사람에게
+     재등록을 권하게 된다. */
+  const markupOf = await issueScreens(t);
+
+  const denied = markupOf("회원 목록 · 소속 강사 · 명부 조회 실패");
+  assert.match(denied, /회원권을 불러오지 못했어요\. 다시 로그인해 주세요/);
+  assert.doesNotMatch(denied, /코드 permission-denied/, "권한은 코드가 아니라 할 일을 말한다");
+
+  const offline = markupOf("회원 목록 · 소속 강사 · 명부 조회 실패 · 네트워크");
+  assert.match(offline, /코드 unavailable/, "그 밖의 실패는 추적 가능한 코드와 함께");
+  assert.doesNotMatch(offline, /다시 로그인/);
+
+  // 둘 다 아래 목록의 출처를 밝힌다.
+  for (const markup of [denied, offline]) {
+    assert.match(markup, /이 기기에 저장된 목록이고, 회원권 잔여는 센터의 값이 아닙니다/);
+    assert.match(markup, /다시 시도/);
+  }
 });
 
 test("the pay sheet keeps its month off the close button", async (t) => {

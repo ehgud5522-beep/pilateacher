@@ -120,6 +120,44 @@ service cloud.firestore {
        다시 난다. 규칙은 import 을 할 수 없어 리터럴로 적는 수밖에 없고, 그래서
        tests/rules 가 두 목록이 같은지 본다.
        Keep in sync with PAY_CATEGORY in functions/shared/constants.mjs. */
+    /* ── 원장에 쓸 수 있는 최소 앱 빌드 ────────────────────────────────────
+       **0 이면 꺼져 있다.** 지금이 그 상태다.
+
+       왜 필요한가: 차감 단가도 누적 증가도 전부 기기에서 돈다. 규칙은 금액이
+       맞는지 따질 수 없다 -- 20회 판정이 다른 컬렉션에 있고 부원장 5:5 는
+       계약 금액을 나눠야 한다. 그래서 **업데이트하지 않은 폰은 옛 규칙으로
+       계산한 차감을 그대로 원장에 박는다.** 원장은 append-only 다.
+
+       2026-10-01 에 한 번 겪었다 (settlement-gate.js 머리말): 같은 듀엣
+       수업을 새 빌드는 2:1 에서, 옛 빌드는 1:1 에서 뺐다. 2026-10-16 에
+       또 겪었다 -- 2:1 재등록이 20회 미만에서 25,000 으로 찍혔다.
+
+       settlement-gate 는 **화면을 막는 자리**이고 옛 빌드는 그 코드를 아예
+       갖고 있지 않다. 진짜로 막는 것은 여기다.
+
+       ── 켜기 전에 ──
+       **강사 전원이 그 번호 이상이어야 한다.** 낮은 앱은 수업 확정이
+       permission-denied 로 막히고, 화면에는 그 한 줄만 도착한다. 대표 화면이
+       "강사 N명 모두 ○○ 이상" 을 말해 준다 (app-version-report.js).
+
+       ── 모르는 빌드는 막는다 ──
+       빌드 62 부터 앱이 열릴 때 스스로 적는다. 그보다 낮은 앱은 이 칸이 아예
+       없고, 그것이 곧 "아주 낡은 앱" 이다. 열어 두면 막으려던 바로 그 앱이
+       지나간다.
+
+       숫자로 비교한다. 문자열로 두면 "9" > "10" 이다. */
+    function minimumLedgerBuild() {
+      return 0;
+    }
+
+    function appBuildAllowed(organizationId) {
+      return minimumLedgerBuild() <= 0 || (
+        ("appBuild" in membership(organizationId).data)
+        && membership(organizationId).data.appBuild.matches("^[0-9]+$")
+        && int(membership(organizationId).data.appBuild) >= minimumLedgerBuild()
+      );
+    }
+
     function payCategories() {
       return [
         "pt_1_1_new", "pt_1_1_repurchase_event", "pt_1_1_repurchase_normal",
@@ -965,6 +1003,10 @@ service cloud.firestore {
             && request.resource.data.clientId == getAfter(
               /databases/$(database)/documents/organizations/$(organizationId)/passes/$(passId)
             ).data.clientId
+            /* 옛 빌드가 옛 단가로 쓰는 것을 막는다 (위 minimumLedgerBuild).
+               **차감에만 건다** -- 발급·양도·보정은 금액 판정이 없거나 대표가
+               누르는 일이고, 거기까지 막으면 켜는 날 센터가 통째로 멈춘다. */
+            && (request.resource.data.type != "deduct" || appBuildAllowed(organizationId))
             && request.resource.data.type is string
             // Keep in sync with LEDGER_ENTRY_TYPE in src/data/schema/constants.js.
             && request.resource.data.type in [
@@ -1796,8 +1838,34 @@ service cloud.firestore {
         "member_added", "member_profile_changed", "member_revoked",
         /* 총괄매니저 지정·해제. 아래 mayRecordAudit 이 이것만 대표로 좁힌다 --
            총괄매니저가 자기 자리를 세운 기록을 지어내지 못하게. */
-        "area_manager_set"
+        "area_manager_set",
+        /* 누적 보정. 급여 판정 3 이 보는 숫자를 손으로 고치는 일이고, 그
+           숫자 하나가 그 회원의 남은 수업 단가를 전부 정한다 -- 20 을 넘기면
+           카테고리 단가, 아니면 신규 단가다.
+
+           전·후·사유가 전부 필수다 (아래 adjustmentWellFormed). 기록 없이
+           고칠 수 있으면 그 숫자는 아무 때나 움직일 수 있는 값이 된다. */
+        "instructor_total_adjusted"
       ];
+    }
+
+    /* 누적을 왜 고쳤는가. **열거값이다** -- 이 목록에는 자유 문장 칸이 하나도
+       없고, 하나 열면 언젠가 거기에 회원 이름이 들어간다.
+       Keep in sync with TOTAL_ADJUST_REASON in audit-repository.js. */
+    function totalAdjustReasons() {
+      return ["service_sessions_removed", "migration_overwrite", "manual_correction"];
+    }
+
+    /* 누적 보정 항목이 들고 와야 하는 것. 다른 동작에는 요구하지 않는다 --
+       동작마다 말이 되는 칸이 다르고, 말이 안 되는 칸을 0 으로 채우면 화면이
+       그것을 진짜 값으로 읽는다. */
+    function adjustmentWellFormed(data) {
+      return data.action != "instructor_total_adjusted" || (
+        data.keys().hasAll(["targetId", "clientId", "previousAmount", "amount", "reason"])
+        && data.reason in totalAdjustReasons()
+        // 바꾸지 않은 보정은 기록하지 않는다. 같은 값을 적은 줄은 목록만 늘린다.
+        && data.previousAmount != data.amount
+      );
     }
 
     // 무엇을 했는지에 따라 남길 수 있는 사람이 다르다. 규칙은 그 조작 자체를
@@ -1838,7 +1906,9 @@ service cloud.firestore {
           "amount", "previousAmount", "succeeded", "failed", "enabled", "stage",
           // 직함. 열거값이라 자유 문장이 아니다 — 이 집합에 문장 칸을 하나
           // 열면 언젠가 거기에 회원 이름이 들어간다.
-          "title"
+          "title",
+          // 누적을 왜 고쳤는가. 역시 열거값이다 (totalAdjustReasons).
+          "reason"
         ])
         && request.resource.data.keys().hasAll([
           "organizationId", "actorId", "actorRole", "action", "createdAt"
@@ -1856,6 +1926,9 @@ service cloud.firestore {
         // Keep in sync with MEMBERSHIP_TITLE in src/data/schema/constants.js.
         && (!("title" in request.resource.data)
           || request.resource.data.title in ["instructor", "team_lead", "branch_manager"])
+        && (!("reason" in request.resource.data)
+          || request.resource.data.reason in totalAdjustReasons())
+        && adjustmentWellFormed(request.resource.data)
         && (!("targetId" in request.resource.data) || request.resource.data.targetId is string)
         && (!("clientId" in request.resource.data) || request.resource.data.clientId is string)
         && (!("locationId" in request.resource.data) || request.resource.data.locationId is string)

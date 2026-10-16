@@ -1,5 +1,15 @@
 # 이어서 작업하기 — 최근 변경과 남은 일
 
+## 2026-10-16 Android Codemagic 자동 업로드
+
+- 대표 요청: `release/1-1-38` 최신 소스로 프로덕션까지 자동 제출.
+- `codex/android-codemagic-production`에서 작업. main 병합은 하지 않는다.
+- `instructor-android-production` 워크플로: 등록한 `google_play` 비밀 변수 그룹과
+  `pilateacher-upload-v2` 키스토어 사용. Play 최대 번호 조회 후 CI 버전 할당,
+  기존 릴리스 가드와 AAB 서명·버전·내장 웹 자산 검증 후 제출한다.
+- 첫 클라우드 빌드/업로드 성공 여부는 Codemagic 실행 기록에서 확인해야 한다.
+- 실행 방법 및 보호 조건: [android-codemagic.md](android-codemagic.md).
+
 Claude Code · Codex 가 새 세션을 열면 이 파일부터 읽는다. 작업을 끝낼 때마다
 맨 위 "최근 변경"을 갱신하고, 끝난 "남은 일"은 지운다.
 

@@ -12,6 +12,7 @@ import { dirname, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { javaTool, useJava } from "../java-home.mjs";
+import { effectiveVersion, releaseBranch } from "./ci-version.mjs";
 
 const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = resolve(dirname(scriptPath), "../..");
@@ -147,7 +148,7 @@ function currentReleaseInfo(policy) {
   const capacitor = readJson(resolve(repoRoot, "capacitor.config.json"));
   const packageJson = readJson(resolve(repoRoot, "package.json"));
   const googleServices = readJson(resolve(repoRoot, "android/app/google-services.json"));
-  const version = parseGradleVersion(gradle);
+  const version = effectiveVersion(parseGradleVersion(gradle));
 
   if (capacitor.appId !== policy.applicationId) {
     throw new Error(`앱 ID 불일치: ${capacitor.appId} (필요: ${policy.applicationId})`);
@@ -176,7 +177,7 @@ function currentReleaseInfo(policy) {
 }
 
 function assertApprovedLineage(policy) {
-  const branch = git(["branch", "--show-current"]);
+  const branch = releaseBranch(git(["branch", "--show-current"]), git(["rev-parse", "HEAD"]));
   if (!branch) throw new Error("분리된 HEAD에서는 Android 릴리스를 만들 수 없습니다.");
   if (!isAllowedBranch(branch, policy.allowedBranchPatterns)) {
     throw new Error(`허용되지 않은 릴리스 브랜치입니다: ${branch}`);
@@ -257,7 +258,7 @@ function assertSameCandidate(policy) {
   }
   const proof = readJson(preflightProofPath);
   const currentHead = git(["rev-parse", "HEAD"]);
-  const currentBranch = git(["branch", "--show-current"]);
+  const currentBranch = releaseBranch(git(["branch", "--show-current"]), currentHead);
   const version = currentReleaseInfo(policy);
   if (proof.head !== currentHead || proof.branch !== currentBranch) {
     throw new Error("사전 검증 이후 커밋 또는 브랜치가 바뀌었습니다. 처음부터 다시 빌드하세요.");

@@ -335,6 +335,9 @@ import {
 } from "./features/members/pass-reconcile.js";
 import { SCOPED_ROLES, clientScopeFor, unlinkedNotice } from "./features/members/client-scope.js";
 import {
+  clientBreakdown, monthChoices, payrollRows, payrollWeeks,
+} from "./features/schedule/payroll-weeks.js";
+import {
   planRosterPrune, pruneMessage, snapshotId, snapshotPayload,
 } from "./features/members/device-roster-prune.js";
 import {
@@ -15326,7 +15329,7 @@ function InstructorPayCard({ pay, loading, error, upcoming = null, onOpen }) {
 
 function InstructorPayDetail({
   organization, currentUserId, pay, loading, error, month, clientStore, passStore,
-  onClose, onRetry, initialState = null,
+  onClose, onRetry, onChangeMonth, initialState = null,
 }) {
   const [passes, setPasses] = useState(initialState?.passes || []);
   const [clients, setClients] = useState(initialState?.clients || []);
@@ -15366,6 +15369,36 @@ function InstructorPayDetail({
   }, [passes, clients]);
   const displayNameOfPass = (passId) => nameOfPass.get(passId) || HANDED_OVER_LABEL;
 
+  /* ── 그 달의 차감 전부를 주 단위로 ───────────────────────────────────────
+     전에는 `최근 차감` 스무 줄이었다. 항목은 최신순이라 스물한 번째부터
+     조용히 사라졌고, 10월 16일에 10월 13일 이전이 안 보였다 -- 그 달의
+     급여를 설명하는 화면에서. */
+  const passById = useCallback(
+    (passId) => passes.find((item) => String(item?.id || "") === String(passId || "")) || null,
+    [passes],
+  );
+  const clientNameById = useCallback(
+    (clientId) => clients.find((item) => String(item?.id || "") === String(clientId || ""))?.name || "",
+    [clients],
+  );
+  const payWeeks = useMemo(() => payrollWeeks({
+    rows: payrollRows({
+      entries: pay?.entries,
+      passOf: passById,
+      clientNameOf: clientNameById,
+      passLabelOf: displayNameOfPass,
+    }),
+    /* 이번 주를 펼친 채로 연다. 지난달을 보고 있으면 그 달에 "이번 주" 가
+       없으므로 전부 접힌 채로 뜬다 -- 그것이 맞다. */
+    now: new Date(),
+  }), [pay?.entries, passById, clientNameById, nameOfPass]);
+  /* 스모크는 주를 전부 펼쳐 둘 수 있어야 한다. 접힌 줄은 아예 그려지지
+     않으므로, 펼치지 않으면 그 화면의 절반을 검사할 수 없다. */
+  const [openWeeks, setOpenWeeks] = useState(() => (
+    initialState?.openWeeks === "all" ? "all" : {}
+  ));
+  const [openRow, setOpenRow] = useState("");
+
   return (
     <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
       {/* 달 이름과 닫기는 **같은 줄**이다. 금액은 그 아래로 내린다 -- 전에는
@@ -15387,6 +15420,24 @@ function InstructorPayDetail({
         <p style={{ paddingBottom: 3, fontSize: TYPE.caption, color: SUB }}>예상 급여</p>
       </div>
       <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>{PAY_SCOPE_NOTICE}</p>
+
+      {/* ── 지난달 보기 ────────────────────────────────────────────────
+          월말 정산은 다음 달에 한다. 이번 달만 보이면 그때 강사는 자기 숫자를
+          확인할 자리가 없고, 대표의 집계만 믿게 된다. */}
+      {onChangeMonth ? (
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {monthChoices(new Date(), 6).map((choice) => {
+            const on = choice === month;
+            return (
+              <button type="button" key={choice} onClick={() => onChangeMonth(choice)}
+                className="h-8 px-2.5 font-bold" style={{
+                  borderRadius: 999, fontSize: TYPE.caption,
+                  backgroundColor: on ? TINT : CANVAS, color: on ? BRAND_D : SUB,
+                }}>{Number(choice.slice(5, 7))}월</button>
+            );
+          })}
+        </div>
+      ) : null}
 
       {loading ? <p className="mt-3" style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : null}
       {!loading && error ? (
@@ -15430,33 +15481,90 @@ function InstructorPayDetail({
 
           {pay?.entries?.length ? (
             <div className="mt-4">
-              <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>최근 차감</p>
-              {pay.entries.slice(0, 20).map((item) => {
-                const at = toDate(item.occurredAt);
+              {/* ── 그 달의 전부를 주 단위로 ──────────────────────────────
+                  전에는 `최근 차감` 스무 줄이었다. 항목은 최신순이라 스물한
+                  번째부터 조용히 사라졌고, 10월 16일에 10월 13일 이전이 안
+                  보였다 -- 그 달의 급여를 설명하는 화면에서.
+
+                  전부 펼쳐 두면 스크롤이 길어 결국 안 읽힌다. 주별 소계로
+                  접고, 이번 주만 열어 둔다. */}
+              <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>차감 내역</p>
+              {payWeeks.map((week) => {
+                const open = openWeeks === "all" ? true : (openWeeks[week.key] ?? week.current);
                 return (
-                  <div key={item.id} style={{ padding: "10px 0", borderTop: `1px solid ${LINE}` }}>
-                    <div className="flex items-center gap-2">
-                      <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
-                        {at.getMonth() + 1}.{at.getDate()}
+                  <div key={week.key} style={{ borderTop: `1px solid ${LINE}` }}>
+                    <button type="button" onClick={() => setOpenWeeks((value) => (
+                      value === "all" ? { [week.key]: false } : { ...value, [week.key]: !open }
+                    ))}
+                      className="flex w-full items-center gap-2" style={{ padding: "10px 0" }}>
+                      <ChevronDown size={14} style={{ color: FAINT, transform: open ? "none" : "rotate(-90deg)" }} />
+                      <span className="min-w-0 flex-1 text-left tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>
+                        {week.start.getMonth() + 1}.{week.start.getDate()} 주
                       </span>
-                      <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.body, color: INK }}>
-                        {displayNameOfPass(item.passId)}
-                      </span>
-                      <span className="shrink-0 truncate" style={{ fontSize: TYPE.caption, color: SUB, maxWidth: 108 }}>
-                        {labelOf(PAY_CATEGORY_LABELS, item.category)}
-                      </span>
-                      <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK }}>
-                        ₩{won(Math.abs(Number(item.delta) || 0) * (Number(item.unitPrice) || 0))}
-                      </span>
-                    </div>
-                    {/* 왜 이 금액인가. 같은 회원권 안에서도 회차마다 답이 달라
-                        금액만 보면 계산이 틀린 것처럼 보인다. 이 필드가 생기기
-                        전 항목에는 없으므로 있을 때만 적는다. */}
-                    {item.rule ? (
-                      <p className="mt-0.5 truncate" style={{ fontSize: TYPE.caption, color: FAINT }}>
-                        {labelOf(PRICING_RULE_LABELS, item.rule)}
-                      </p>
-                    ) : null}
+                      <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>{week.sessions}건</span>
+                      <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>₩{won(week.amount)}</span>
+                    </button>
+                    {open ? week.rows.map((row) => {
+                      const expanded = openRow === row.id;
+                      return (
+                        <div key={row.id} style={{ padding: "0 0 8px 20px" }}>
+                          <button type="button" onClick={() => setOpenRow(expanded ? "" : row.id)}
+                            className="flex w-full items-center gap-2 text-left" style={{ padding: "6px 0" }}>
+                            <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+                              {row.occurredAt ? `${row.occurredAt.getMonth() + 1}.${row.occurredAt.getDate()}` : "날짜 없음"}
+                            </span>
+                            {/* 듀엣은 두 이름이 함께 선다. 원장 항목은 대표
+                                한 명만 들고 있어 전에는 한 이름만 떴다 --
+                                차감은 둘 다 맞았는데 화면만 반쪽이었다. */}
+                            <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.body, color: INK }}>
+                              {row.title}
+                              {row.isDuet ? <span style={{ fontSize: TYPE.caption, color: SUB }}> (2:1)</span> : null}
+                            </span>
+                            <span className="shrink-0 truncate" style={{ fontSize: TYPE.caption, color: SUB, maxWidth: 84 }}>
+                              {labelOf(PAY_CATEGORY_LABELS, row.category)}
+                            </span>
+                            <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK }}>
+                              ₩{won(row.amount)}
+                            </span>
+                          </button>
+                          {/* 왜 이 금액인가. 같은 회원권 안에서도 회차마다
+                              답이 달라 금액만 보면 계산이 틀린 것처럼 보인다.
+                              이 필드가 생기기 전 항목에는 없으므로 있을 때만. */}
+                          {row.rule ? (
+                            <p className="truncate" style={{ paddingLeft: 34, fontSize: TYPE.caption, color: FAINT }}>
+                              {labelOf(PRICING_RULE_LABELS, row.rule)}
+                            </p>
+                          ) : null}
+                          {/* 회원별로 어느 회원권에서 몇 회 빠졌는가. "3회
+                              차감" 만으로는 어느 계약인지 알 수 없고, 분쟁 때
+                              여는 화면이라 그 구분이 곧 근거가 된다. */}
+                          {expanded ? (
+                            <div style={{ marginTop: 4, marginLeft: 34, padding: "8px 10px", borderRadius: 8, backgroundColor: CANVAS }}>
+                              {clientBreakdown({
+                                clientIds: row.clientIds, entries: pay.entries,
+                                passOf: passById, clientNameOf: clientNameById, passLabelOf: displayNameOfPass,
+                              }).map((person) => (
+                                <div key={person.clientId} style={{ padding: "3px 0" }}>
+                                  <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>
+                                    {person.name || "이름을 불러오지 못했습니다"}
+                                  </p>
+                                  {person.passes.map((item) => (
+                                    <p key={item.passId} className="flex gap-2 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+                                      <span className="min-w-0 flex-1 truncate">{item.label || item.passId}</span>
+                                      <span className="shrink-0">{item.sessions}회</span>
+                                      <span className="shrink-0">₩{won(item.amount)}</span>
+                                    </p>
+                                  ))}
+                                </div>
+                              ))}
+                              <p className="mt-1" style={{ fontSize: TYPE.caption, color: FAINT }}>
+                                이번 달 이 회원의 차감 전부입니다 (이 수업 한 건이 아닙니다).
+                              </p>
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    }) : null}
                   </div>
                 );
               })}
@@ -24759,7 +24867,14 @@ export function createAppScreenSmokeCases() {
     }) },
     { name: "이달 예상 급여", element: providerWith(smokeInstructorOrg, (
       <InstructorPayDetail organization={readyOrganizationContext(smokeInstructorOrg)} month="2026-09"
-        pay={smokePay} loading={false} error="" onClose={noop} onRetry={noop}
+        pay={smokePay} loading={false} error="" onClose={noop} onRetry={noop} onChangeMonth={noop}
+        initialState={{ passes: smokePasses, clients: smokeClients, openWeeks: "all" }} />
+    )) },
+    /* 접은 채로. 주별 소계가 보이고 그 안의 줄은 안 그려진다 -- 그것이
+       목록을 접은 이유다 (한 달 치를 펼쳐 두면 결국 안 읽힌다). */
+    { name: "이달 예상 급여 · 주 접힘", element: providerWith(smokeInstructorOrg, (
+      <InstructorPayDetail organization={readyOrganizationContext(smokeInstructorOrg)} month="2026-09"
+        pay={smokePay} loading={false} error="" onClose={noop} onRetry={noop} onChangeMonth={noop}
         initialState={{ passes: smokePasses, clients: smokeClients }} />
     )) },
     { name: "이달 예상 급여 · 빈 달", element: providerWith(smokeInstructorOrg, (
@@ -25418,7 +25533,10 @@ export default function App() {
   const canSeeOwnPay = organizationContext.ready
     && !organizationContext.isLegacy
     && organizationContext.role === ROLES.INSTRUCTOR;
-  const payMonth = monthKey(todayISO());
+  /* 보고 있는 달. 기본은 이번 달이고, 급여 시트에서 지난달로 바꿀 수 있다 --
+     월말 정산은 다음 달에 하므로 그때 강사가 자기 숫자를 확인할 자리가
+     있어야 한다. */
+  const [payMonth, setPayMonth] = useState(() => monthKey(todayISO()));
   const [db, setDb] = useState(emptyDb("", ""));
   const lessonRecordDbRef = useRef(db);
   useEffect(() => { lessonRecordDbRef.current = db; }, [db]);
@@ -28907,6 +29025,7 @@ export default function App() {
                 loading={payLoading} error={payError} month={payMonth}
                 clientStore={undefined} passStore={undefined}
                 onRetry={() => setPayRevision((value) => value + 1)}
+                onChangeMonth={setPayMonth}
                 onClose={() => setPayOpen(false)} />
             </div>
           </div>

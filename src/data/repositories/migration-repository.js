@@ -90,6 +90,16 @@ export const MIGRATION_ERROR = Object.freeze({
      **적힌 숫자는 짐작으로 덮지 않는다.** X 가 비워 둔 칸을 채우기는 해도
      (아래 planPassMigration 머리말), 적어 놓은 값과 어긋나면 그것은 둘 중
      하나가 틀린 것이고 어느 쪽인지는 대표만 안다. */
+  /* 상품명에 적힌 횟수와 총세션이 다른 행. TOTAL_INCLUDES_SERVICE 와 다르다 --
+     저쪽은 "총세션 = 상품 횟수 + 서비스" 라 섞인 것이 확실한 경우이고, 이쪽은
+     그냥 두 숫자가 안 맞는 경우다. 고치는 자리가 다르다. */
+  TOTAL_DISAGREES_WITH_NAME: "total_disagrees_with_name",
+  /* 남은횟수가 판 회차보다 많다. 그대로 받으면 회원이 사지 않은 회차를
+     쓰게 되고, 그 수업의 급여가 센터에서 나간다. */
+  REMAINING_EXCEEDS_TOTAL: "remaining_exceeds_total",
+  /* 같은 회원·같은 강사인데 줄마다 강사누적진행이 다르다. 이관이 행마다
+     덮어쓰므로 마지막 줄만 남는다 -- 어느 값이 참인지 정해야 한다. */
+  PRIOR_SESSIONS_DISAGREE: "prior_sessions_disagree",
   UNDER20_SAYS_YES_BUT_REACHED: "under20_says_yes_but_reached",
   UNDER20_SAYS_NO_BUT_SHORT: "under20_says_no_but_short",
   DUET_SESSIONS_DISAGREE: "duet_sessions_disagree",
@@ -175,6 +185,20 @@ export function totalLooksLikeItIncludesService({ productName, totalSessions, se
   const found = [...String(productName ?? "").matchAll(/(\d+)\s*회/g)].map((match) => Number(match[1]));
   if (found.length === 0) return false;
   return found[found.length - 1] + service === total;
+}
+
+/**
+ * 상품명에 적힌 "N회". 없으면 null 이다.
+ *
+ * 맨 뒤의 것을 쓴다 -- "2:1 PT 33 ->100 세션업" 처럼 숫자가 여럿이면 뒤쪽이
+ * 실제로 판 횟수다 (totalLooksLikeItIncludesService 와 같은 규칙).
+ *
+ * @param {unknown} productName
+ * @returns {number | null}
+ */
+export function sessionsInProductName(productName) {
+  const found = [...String(productName ?? "").matchAll(/(\d+)\s*회/g)].map((match) => Number(match[1]));
+  return found.length ? found[found.length - 1] : null;
 }
 
 /** 회원 문서 id. 연락처 하나로 정해진다 -- 위 머리말 참고. */
@@ -530,6 +554,32 @@ export function planPassMigration(text, {
           `총세션 ${totalSessions}회가 상품 횟수 + 서비스 ${serviceSessions}회로 보입니다. 총세션에는 서비스를 빼고 적어 주세요: ${name}`);
       }
 
+      /* 상품명의 숫자와 총세션이 그냥 다른 행. 위의 "서비스가 섞였다" 와는
+         고칠 자리가 다르다 -- 저쪽은 총세션에서 서비스를 빼면 되고, 이쪽은
+         둘 중 **어느 쪽이 참인지** 를 대표가 정해야 한다.
+
+         회당 금액이 계약금액 ÷ 총세션이라, 총세션이 틀리면 그 회원권의 모든
+         회차 단가가 틀린다. 짐작해서 상품명을 믿지 않는다 -- 이름은 사람이
+         적은 글자이고 숫자 칸은 숫자 칸이다.
+
+         숫자가 없는 상품명은 보지 않는다. 맞혀 볼 근거가 없다. */
+      const namedSessions = sessionsInProductName(requireText(record, "상품명"));
+      if (namedSessions !== null && namedSessions !== totalSessions) {
+        throw failure(line, MIGRATION_ERROR.TOTAL_DISAGREES_WITH_NAME,
+          `상품명은 ${namedSessions}회인데 총세션이 ${totalSessions} 입니다. 둘 중 어느 쪽이 맞는지 정해 주세요: ${name}`);
+      }
+
+      /* 남은횟수가 판 회차보다 많다. 그대로 받으면 회원이 사지 않은 회차를
+         쓰게 되고, 그 수업의 급여가 센터에서 나간다 -- 원장은 append-only 라
+         나중에 되돌릴 수 없다.
+
+         전에는 serviceUsed 계산이 Math.max(0, ...) 으로 **조용히 0 으로
+         깎아** 넘겼다. 숫자가 안 맞는다는 사실 자체가 사라졌다. */
+      if (remainingCount > totalSessions + serviceSessions) {
+        throw failure(line, MIGRATION_ERROR.REMAINING_EXCEEDS_TOTAL,
+          `남은횟수 ${remainingCount}회가 총세션 ${totalSessions} + 서비스 ${serviceSessions} 보다 많습니다: ${name}`);
+      }
+
       const partnerName = requireText(record, "회원명2");
       const partnerPhoneRaw = requireText(record, "연락처2");
 
@@ -663,7 +713,80 @@ export function planPassMigration(text, {
     }
   });
 
-  return { writes, failures, missingColumns };
+  return { ...refuseDisagreeingPriorSessions(writes, failures), missingColumns };
+}
+
+/**
+ * 같은 강사–회원 쌍인데 줄마다 강사누적진행이 다른 행들을 거부한다.
+ *
+ * ── 왜 거부하는가 ──
+ * 이관은 한 행마다 누적 문서를 **덮어쓴다** (batch.set). 한 회원에 회원권이
+ * 여러 장이면 그만큼 덮어쓰이고 **마지막 행만 남는다.**
+ *
+ * 값이 모두 같으면 어느 줄이 이기든 결과가 같아 문제가 없다 -- 새 양식이
+ * 그렇게 생겼다 (모든 줄에 같은 총합). 다르면 어느 값이 참인지 짐작할 수
+ * 없고, 짐작해서 하나를 심으면 그 회원의 20회 경계가 틀린 자리에 선다.
+ *
+ * ── 왜 여기서 하는가 ──
+ * 한 줄만 봐서는 알 수 없는 유일한 검사다. 행 단위 검사가 전부 끝난 뒤에
+ * 남은 것들끼리 견준다 -- 이미 거부된 행은 누적을 심지 않으므로 함께 셀
+ * 이유가 없다.
+ *
+ * ── 짝도 함께 본다 ──
+ * 듀엣의 짝은 자기 줄이 없고 `강사누적진행2` 로만 적힌다. 그 값도 같은
+ * 문서를 덮어쓰므로 같은 검사를 받아야 한다.
+ *
+ * @param {Array<any>} writes
+ * @param {Array<any>} failures
+ */
+function refuseDisagreeingPriorSessions(writes, failures) {
+  /** 강사–회원 쌍마다 적힌 값들. 줄 번호를 함께 들고 있어야 말해 줄 수 있다. */
+  const seen = new Map();
+  const note = (instructorId, clientId, sessions, line) => {
+    const key = `${String(instructorId || "")}_${String(clientId || "")}`;
+    if (!seen.has(key)) seen.set(key, []);
+    seen.get(key).push({ sessions: Number(sessions) || 0, line });
+  };
+  for (const row of writes) {
+    note(row.instructorId, row.clientId, row.priorSessions, row.line);
+    if (row.partnerClientId) {
+      note(row.instructorId, row.partnerClientId, row.partnerPriorSessions, row.line);
+    }
+  }
+
+  /* 값이 갈린 쌍을 줄마다 모은다. **한 줄이 두 쌍에 걸릴 수 있다** -- 듀엣은
+     대표와 짝이 각각 자기 문서를 갖는다. 먼저 걸린 쪽만 적고 끝내면 짝의
+     누적이 조용히 덮어쓰이고, 듀엣 단가는 둘 중 적은 쪽을 보므로 그 차이가
+     그대로 급여가 된다. 한 줄에 걸린 회원을 **전부** 적는다. */
+  const perLine = new Map();
+  for (const [key, entries] of seen) {
+    const values = [...new Set(entries.map((item) => item.sessions))].sort((a, b) => a - b);
+    if (values.length < 2) continue;
+    const clientId = key.slice(key.indexOf("_") + 1);
+    for (const item of entries) {
+      if (!perLine.has(item.line)) perLine.set(item.line, []);
+      const listed = perLine.get(item.line);
+      if (!listed.some((entry) => entry.clientId === clientId)) {
+        listed.push({ clientId, values });
+      }
+    }
+  }
+  if (perLine.size === 0) return { writes, failures };
+
+  const refused = [...perLine.entries()]
+    .sort((left, right) => left[0] - right[0])
+    .map(([line, listed]) => failure(
+      line,
+      MIGRATION_ERROR.PRIOR_SESSIONS_DISAGREE,
+      `강사누적진행이 줄마다 다릅니다 — ${
+        listed.map((item) => `${item.clientId}: ${item.values.join(" · ")}`).join(", ")
+      }. 이관은 마지막 줄로 덮어쓰므로 어느 값이 맞는지 정해 주세요.`,
+    ));
+
+  return {
+    writes: writes.filter((row) => !perLine.has(row.line)),
+    failures: [...failures, ...refused],
+  };
 }
 
 /** 사유별로 묶는다. 대표가 "무엇을 고쳐야 하는가"를 한눈에 본다. */

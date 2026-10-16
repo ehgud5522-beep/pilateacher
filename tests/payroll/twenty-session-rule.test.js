@@ -132,6 +132,68 @@ test("2:1 신규 단가는 표에서 온다 — 1:1 값을 베끼지 않는다",
   );
 });
 
+test("every 2:1 category is recognised as 2:1 under the threshold", () => {
+  /* ── 2026-10-16 에 대표가 본 것 ──────────────────────────────────────
+     "2:1 재등록" 이 20회 미만에서 25,000 으로 찍혔다. 그것은 **옛 규칙**이다
+     ("누적 20회 미만이면 카테고리와 무관하게 25,000") -- 새 규칙이 아직
+     배포되지 않은 폰과 웹이 그 값을 쓰고 있었다.
+
+     세 카테고리를 한 줄씩 못 박는다. 하나라도 2:1 로 안 읽히면 그 상품의
+     처음 스무 회차가 1:1 값으로 나가고, 수업 한 번에 두 사람을 가르치는데
+     금액은 한 사람 값이 된다. */
+  const duetRate = PAY_RATES[PAY_CATEGORY.PT_2_1_NEW];
+  for (const [category, base] of [
+    [PAY_CATEGORY.PT_2_1_NEW, 30000],
+    [PAY_CATEGORY.PT_2_1_REPURCHASE, 35000],
+    [PAY_CATEGORY.PT_2_1_REPURCHASE_EVENT, 32000],
+  ]) {
+    const early = rateAt(19, { category, baseUnitPrice: base });
+    assert.equal(early.unitPrice, duetRate, `${category} 20회차`);
+    assert.equal(early.rule, PRICING_RULE.NEW_TO_INSTRUCTOR, category);
+    assert.notEqual(early.unitPrice, NEW_TO_INSTRUCTOR_UNIT_PRICE, `${category} 가 1:1 값으로 샜다`);
+  }
+});
+
+test("each 2:1 category lands on its own rate once the threshold passes", () => {
+  /* 스물한 번째부터는 셋이 갈린다. 하나로 뭉치면 재등록(35,000)과
+     이벤트(32,000)의 3,000원 차이가 사라진다. */
+  assert.equal(rateAt(20, { category: PAY_CATEGORY.PT_2_1_NEW, baseUnitPrice: 30000 }).unitPrice, 30000);
+  assert.equal(rateAt(20, { category: PAY_CATEGORY.PT_2_1_REPURCHASE, baseUnitPrice: 35000 }).unitPrice, 35000);
+  assert.equal(rateAt(20, { category: PAY_CATEGORY.PT_2_1_REPURCHASE_EVENT, baseUnitPrice: 32000 }).unitPrice, 32000);
+});
+
+test("2:1 new pays the same rate on every session, before and after twenty", () => {
+  /* 대표 확정: 2:1 신규는 20회와 무관하게 30,000 이다.
+
+     **두 길로 같은 값에 닿는다** -- 20회 전에는 판정 3 의 "2:1 신규 단가" 이고
+     그 뒤에는 판정 4 의 기준 단가다. 둘이 같은 숫자인 것은 우연이 아니라, 판정
+     3 이 그 표값을 읽기 때문이다 (newToInstructorUnitPrice).
+
+     그래서 **발급 때 표와 다른 단가를 박은 회원권은 21번째부터 그 값으로
+     간다.** 표를 따르지 않은 계약이라 그것이 맞다 -- 아래가 그 경우다. */
+  const walked = walk(0, 25, { category: PAY_CATEGORY.PT_2_1_NEW, baseUnitPrice: 30000 });
+  assert.deepEqual(new Set(pricesOf(walked)), new Set([30000]), "1~25번째가 전부 같다");
+
+  const custom = rateAt(20, { category: PAY_CATEGORY.PT_2_1_NEW, baseUnitPrice: 28000 });
+  assert.equal(custom.unitPrice, 28000, "표와 다르게 팔린 회원권은 그 값으로 간다");
+  assert.equal(rateAt(19, { category: PAY_CATEGORY.PT_2_1_NEW, baseUnitPrice: 28000 }).unitPrice, 30000,
+    "20회 전에는 표값이다 -- 그 구간은 상품이 아니라 강사 기준이기 때문이다");
+});
+
+test("a 1:1 category never borrows the 2:1 rate", () => {
+  // 반대 방향도 막는다. 1:1 이 30,000 을 받으면 그만큼 더 나간다.
+  for (const category of [
+    PAY_CATEGORY.PT_1_1_NEW, PAY_CATEGORY.PT_1_1_REPURCHASE_EVENT,
+    PAY_CATEGORY.PT_1_1_REPURCHASE_NORMAL, PAY_CATEGORY.LETMEIN, PAY_CATEGORY.ETC,
+  ]) {
+    assert.equal(
+      rateAt(19, { category, baseUnitPrice: 45000 }).unitPrice,
+      NEW_TO_INSTRUCTOR_UNIT_PRICE,
+      category,
+    );
+  }
+});
+
 /* ── 디오사 ──────────────────────────────────────────────────────────────── */
 
 test("디오사는 1회차부터 고정 단가다 — 20회 규칙을 타지 않는다", () => {

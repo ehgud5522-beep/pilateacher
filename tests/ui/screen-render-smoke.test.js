@@ -145,6 +145,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "센터 회원 상세 · 조회 실패",
     "센터 회원 상세 · 회원권 없음",
     "이달 예상 급여",
+    "이달 예상 급여 · 주 접힘",
     "이달 예상 급여 · 빈 달",
     "이달 예상 급여 · 조회 실패",
     "예상 급여 카드",
@@ -1218,16 +1219,43 @@ test("the pay screen says what it counted and what it did not", async (t) => {
   assert.match(detail, /₩85,000/);
 });
 
-test("the recent list names the member, the day and the amount", async (t) => {
+test("the list holds the whole month, grouped by week", async (t) => {
+  /* ── 2026-10-16 에 바뀐 검사 ──────────────────────────────────────
+     전에는 `최근 차감` 스무 줄이었다. 항목은 최신순이라 **스물한 번째부터
+     조용히 사라졌고**, 10월 16일에 10월 13일 이전이 안 보였다 -- 그 달의
+     급여를 설명하는 화면에서.
+
+     이제 그 달의 전부가 주 단위로 들어간다. */
   const markupOf = await issueScreens(t);
   const detail = markupOf("이달 예상 급여");
-  assert.match(detail, /최근 차감/);
+  assert.match(detail, /차감 내역/);
+  assert.doesNotMatch(detail, /최근 차감/);
+
   // 원장은 회원권만 가리키므로 회원권 → 회원으로 이어 붙인다.
   assert.match(detail, /김하나/);
+  // 그 달의 첫 주와 마지막 주가 **함께** 보인다 -- 잘라내지 않는다.
   assert.match(detail, /9\.16/);
   assert.match(detail, /9\.4/);
   // 한 건의 금액은 그 항목에 박힌 단가다.
   assert.match(detail, /₩30,000/);
+  // 주별 소계. "이번 주에 얼마" 가 바로 보여야 접은 값어치가 있다.
+  assert.match(detail, /9\.14 주/);
+
+  /* 월 선택. 월말 정산은 다음 달에 하므로 그때 강사가 자기 숫자를 확인할
+     자리가 있어야 한다. */
+  assert.match(detail, />9월</);
+  assert.match(detail, />8월</);
+});
+
+test("a collapsed week shows its subtotal and not its rows", async (t) => {
+  /* 접는 것이 요점이다 -- 한 달 치 마흔 줄을 펼쳐 두면 스크롤이 길어 결국
+     안 읽힌다. 소계는 보이고 그 안의 줄은 안 그려진다. */
+  const markupOf = await issueScreens(t);
+  const folded = markupOf("이달 예상 급여 · 주 접힘");
+  assert.match(folded, /8\.31 주/, "접힌 주도 머리줄은 있다");
+  assert.doesNotMatch(folded, /9\.4/, "그 안의 줄은 안 그려진다");
+  // 가장 최근 주는 펼쳐진다 -- 전부 접으면 빈 화면으로 보인다.
+  assert.match(folded, /9\.16/);
 });
 
 test("an empty month is not an error", async (t) => {

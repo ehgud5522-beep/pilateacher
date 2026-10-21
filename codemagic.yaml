@@ -724,6 +724,10 @@ workflows:
       - name: Validate release source and Android tests
         script: |
           set -euo pipefail
+          # Codemagic clones shallow history; the approved UI ancestor must be present.
+          if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+            git fetch --unshallow origin "$CM_BRANCH"
+          fi
           node tools/android/release-guard.mjs --stage preflight
           npm run test:android-release
 

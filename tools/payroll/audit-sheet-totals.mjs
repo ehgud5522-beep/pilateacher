@@ -19,6 +19,7 @@
  * 엑셀은 CSV 로 내보내 주세요 -- 이 스크립트는 xlsx 를 열지 않습니다.
  */
 
+import { openFirestore } from "./admin-sdk.mjs";
 import { readFile } from "node:fs/promises";
 
 import { planPassMigration } from "../../src/data/repositories/migration-repository.js";
@@ -41,12 +42,7 @@ if (!organizationId || options.sheet.length === 0) {
   process.exit(1);
 }
 
-const { cert, getApps, initializeApp } = await import("firebase-admin/app");
-const { getFirestore } = await import("firebase-admin/firestore");
-if (!getApps().length) {
-  initializeApp(options.key ? { credential: cert(options.key) } : undefined);
-}
-const firestore = getFirestore();
+const firestore = await openFirestore({ key: options.key });
 
 /* 엑셀을 읽으려면 회원·지점·강사 명부가 필요하다 -- planPassMigration 이
    이름과 번호를 그것으로 푼다. 이관 때와 **같은 함수**를 쓰는 것이 요점이다:

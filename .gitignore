@@ -22,6 +22,8 @@ firebase-debug.log
 firestore-debug.log
 ui-debug.log
 reports/foundation/
+# 급여 보고서는 회원·강사 이름이 그대로 들어 있다. 기기에만 둔다.
+reports/payroll/
 .foundation-build/
 .android-release/
 .codex-sign-android-*.ps1

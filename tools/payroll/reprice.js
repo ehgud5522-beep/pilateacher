@@ -62,6 +62,53 @@ export function sessionsAtStart({ storedSessions, entriesSince } = {}) {
 }
 
 /**
+ * 되짚기가 **0 아래로 내려간 만큼**. 0 이면 들어맞은 것이다.
+ *
+ * sessionsAtStart 는 음수를 0 으로 눌러 버린다. 누르는 것 자체는 맞다 --
+ * 음수로 계속 세면 그 뒤가 전부 틀린다. 그런데 **누른 사실을 말하지 않으면**
+ * 그 회원의 새 단가가 "들어맞은 값" 과 똑같은 얼굴로 나온다.
+ *
+ * 0 보다 크다는 것은 지금 저장된 누적이 원장만으로는 설명되지 않는다는
+ * 뜻이다. 콘솔에서 손으로 고친 회원이 여기 걸린다 -- 그 줄의 새 단가는
+ * 믿을 수 없고, 사람이 봐야 한다.
+ *
+ * @param {{ storedSessions?: unknown, entriesSince?: Array<any> }} input
+ * @returns {number}
+ */
+export function rewindShortfall({ storedSessions, entriesSince } = {}) {
+  const since = Array.isArray(entriesSince) ? entriesSince : [];
+  const bumped = since.filter(isDeduction).length;
+  const undone = since.filter((entry) => text(entry?.type) === "correction").length;
+  const raw = count(storedSessions) - bumped + undone;
+  return raw < 0 ? -raw : 0;
+}
+
+/**
+ * 강사별 합계. **올라간 것과 내려간 것을 따로 센다** -- 합계만 보면 서로
+ * 지워져 "차이 없음" 으로 보이는데, 강사마다는 받을 돈과 돌려줄 돈이 따로다.
+ *
+ * @param {Array<any>} rows
+ * @returns {Array<{ instructorId: string, entries: number, increased: number,
+ *   decreased: number, up: number, down: number, difference: number }>}
+ */
+export function byInstructor(rows) {
+  const map = new Map();
+  for (const row of (Array.isArray(rows) ? rows : [])) {
+    if (row?.skipped || !row?.difference) continue;
+    const id = text(row.instructorId);
+    const at = map.get(id) || {
+      instructorId: id, entries: 0, increased: 0, decreased: 0, up: 0, down: 0, difference: 0,
+    };
+    at.entries += 1;
+    at.difference += row.difference;
+    if (row.difference > 0) { at.increased += 1; at.up += row.difference; }
+    else { at.decreased += 1; at.down += row.difference; }
+    map.set(id, at);
+  }
+  return [...map.values()].sort((left, right) => Math.abs(right.difference) - Math.abs(left.difference));
+}
+
+/**
  * 한 강사–회원 쌍의 차감들을 날짜 순으로 걸으며 새 단가를 구한다.
  *
  * **듀엣은 호출하는 쪽이 적은 쪽을 넘겨준다** (`priorSessionsFor`). 여기서는

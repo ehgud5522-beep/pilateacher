@@ -25,6 +25,7 @@
  * 단계에서 죽지 않도록 **쓰는 순간에** 들여온다 (CLAUDE.md 의 CI 항목).
  */
 
+import { openFirestore } from "./admin-sdk.mjs";
 import {
   planTotalsRepair, serviceDeductionsByPair, summarizeRepair,
 } from "./totals-repair.js";
@@ -51,14 +52,7 @@ if (Number.isNaN(since.getTime())) {
   process.exit(1);
 }
 
-const { cert, getApps, initializeApp } = await import("firebase-admin/app");
-const { getFirestore } = await import("firebase-admin/firestore");
-if (!getApps().length) {
-  /* 자격은 환경이 준다 (GOOGLE_APPLICATION_CREDENTIALS). 키를 코드에 두지
-     않는 것이 요점이고, cert 는 그 경로를 쓰는 분을 위해 남겨 둔다. */
-  initializeApp(options.key ? { credential: cert(options.key) } : undefined);
-}
-const firestore = getFirestore();
+const firestore = await openFirestore({ key: options.key });
 
 console.log(`센터       : ${organizationId}`);
 console.log(`기준 시각  : ${since.toISOString()} 이후`);

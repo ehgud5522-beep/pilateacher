@@ -372,12 +372,22 @@ export async function issuePass(organizationId, input, options = {}) {
  *   clientIds?: Array<string>,
  * }} input
  *   clientIds 듀엣이면 두 사람 모두. 누적을 둘 다 옮기려면 필요하다
- * @param {{ store?: PassStore, newId?: () => string }} [options]
+ * @param {{
+ *   store?: PassStore, newId?: () => string, carrySessions?: boolean,
+ * }} [options]
+ *   carrySessions 누적을 여기서 옮길 것인가. 기본은 참이다.
+ *
+ *     **한 회원의 회원권을 여러 장 한꺼번에 넘길 때는 거짓으로 둔다.** 누적은
+ *     강사-회원 쌍 하나당 하나뿐이라, 장마다 더하면 세 장이면 세 배가 된다 --
+ *     그 숫자가 20회 경계를 정하므로 부풀면 재등록 첫 차감부터 기준 단가가
+ *     되고 센터가 더 낸다. 그때는 부르는 쪽이 회원당 한 번 옮긴다
+ *     (instructor-handover.js 의 carries).
  */
 export async function transferPassInstructor(organizationId, passId, input, options = {}) {
   const {
     store = createFirestorePassStore(),
     newId = () => globalThis.crypto?.randomUUID?.() || `transfer-${Date.now()}`,
+    carrySessions = true,
   } = options;
   const organization = requiredText(organizationId, "organizationId");
   const id = requiredText(passId, "passId");
@@ -410,11 +420,13 @@ export async function transferPassInstructor(organizationId, passId, input, opti
      읽지 못하면 0 으로 본다. 더할 것이 없다는 뜻이고, 던지면 담당 교체 자체가
      막힌다 -- 교체는 그 자리에서 해야 하는 일이다. */
   const movingClientIds = passClientIds({ clientId, clientIds: input?.clientIds });
-  const carried = await Promise.all(movingClientIds.map(async (id2) => ({
-    clientId: id2,
-    sessions: await readInstructorClientSessions(organization, fromInstructorId, id2, { store })
-      .catch(() => 0),
-  })));
+  const carried = carrySessions
+    ? await Promise.all(movingClientIds.map(async (id2) => ({
+      clientId: id2,
+      sessions: await readInstructorClientSessions(organization, fromInstructorId, id2, { store })
+        .catch(() => 0),
+    })))
+    : [];
 
   const stampedAt = await store.serverTimestamp();
 

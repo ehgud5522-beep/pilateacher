@@ -160,31 +160,42 @@ export const attendeesOf = (lesson) => {
 /**
  * 여럿 중 하나를 고르는 순서. **차감 규칙 전체에서 이 정렬 하나만 쓴다.**
  *
- * ── 차수 순이다 (2026-10-09 대표 확정) ──
- * 같은 종류 안에서 **먼저 산 것부터** 쓴다. 1차를 다 쓰고 2차, 그다음 3차다.
- * 회원이 "지난번에 끊은 것부터 쓰고 있다" 고 말할 수 있는 순서이고, 재등록
- * 상담에서 대표가 설명하는 순서도 그것이다.
+ * ── 만료일 순이다 (2026-10-22 대표 확정) ──
+ * 같은 종류 안에서 **먼저 만료되는 것부터** 쓴다. 만료일이 같으면 차수가
+ * 낮은 것, 그것도 같으면 먼저 발급된 것이다.
  *
- * 별도로 끊은 서비스 회원권도 자기 차수 자리에 선다 -- 따로 빼 두지 않는다.
+ * 근거는 회원이 잃는 돈이다. 늦게 만료되는 것을 먼저 쓰면 이른 쪽이 손도 못
+ * 대 보고 만료되고, 그 회차는 회원이 돈을 낸 것이다.
+ *
+ * ── 두 번 뒤집힌 자리다 ──
+ * 2026-10-09 에 대표가 만료일 순에서 **차수 순으로** 바꿨다. 그때의 근거는
+ * "순서가 예측되는 것이 손실을 자동으로 피하는 것보다 낫다" 였고, 어긋난
+ * 회원권은 화면이 먼저 말하고(만료일 순서 확인) 대표가 만료일을 옮겨 푸는
+ * 쪽이었다.
+ *
+ * 2026-10-22 에 다시 만료일 순으로 돌아왔다. 실제로 그 손실이 났기 때문이다
+ * (율하점 10/15 차감).
+ *
+ * **그래서 expiryOutOfOrder 경고는 이제 울릴 일이 없다.** 뒤 차수가 먼저
+ * 만료되면 이 정렬이 그것을 먼저 쓴다 -- 경고가 막으려던 상황이 생기지
+ * 않는다. 그 화면(더보기 → 만료일 순서 확인)은 빈 목록만 보여 준다.
+ *
+ * 만료일을 읽을 수 없는 회원권은 **맨 뒤**다. 0 으로 보면 그것이 모든
+ * 회원권보다 먼저 쓰이는데, 만료일이 없다는 것은 "언제까지든 쓸 수 있다" 는
+ * 뜻이라 오히려 급하지 않다.
+ *
+ * 별도로 끊은 서비스 회원권도 자기 만료일 자리에 선다 -- 따로 빼 두지 않는다.
  * 그것도 그 시점에 센터와 주고받은 한 건이다.
  *
- * ── 만료일은 보지 않는다 ──
- * 전에는 만료가 이른 것을 먼저 썼다. 근거는 "늦게 만료되는 것을 먼저 쓰면
- * 이른 쪽이 쓰이지 못한 채 만료되고, 회원은 돈을 낸 회차를 잃는다" 였다.
- *
- * 대표가 뒤집었다. **그 위험은 그대로 남는다** -- 1차가 아직 남았는데 2차의
- * 만료가 먼저 오면, 2차가 쓰이지 못한 채 만료될 수 있다. 그때는 만료일을
- * 옮기는 쪽으로 푼다(회원권 수정의 만료일 변경). 순서가 예측되는 것이
- * 그 손실을 자동으로 피하는 것보다 낫다는 판단이다.
- *
- * 차수를 읽을 수 없는 회원권은 맨 뒤다. 0 으로 보면 그 회원권이 1차보다 먼저
- * 쓰이고, 그것은 아무도 의도하지 않은 순서다. 차수가 같으면 먼저 발급된 것을
- * 쓴다 -- 먼저 팔린 것이 먼저 소진되는 것이 계약의 순서다.
- *
  * ── 한 회원권 *안에서* 는 서비스가 먼저 ──
- * 다른 층위의 판단이고 deduction-pricing.js 의 spendsServiceSession 이
- * 답한다. 이 정렬이 회원권을 고르고, 그 안에서 어느 회차를 쓸지는 거기서
- * 정해진다.
+ * **다른 층위의 판단이라 이 정렬과 부딪치지 않는다.** 이 함수는 "어느
+ * 회원권" 을 고르고, 그 회원권 안에서 "어느 회차" 를 쓸지는
+ * deduction-pricing.js 의 spendsServiceSession 이 답한다. 순서를 바꿔도
+ * 그쪽은 그대로다.
+ *
+ * ── 이름은 그대로 둔다 ──
+ * 부르는 곳이 여럿이고, 이름을 바꾸면 그 커밋이 정렬 변경과 이름 변경을 함께
+ * 담아 무엇이 바뀌었는지 보이지 않는다. 하는 일은 머리말이 말한다.
  *
  * @param {Array<any>} passes
  * @returns {any | null}
@@ -192,9 +203,17 @@ export const attendeesOf = (lesson) => {
 export function nextByPurchaseRound(passes) {
   const list = (Array.isArray(passes) ? passes : []).filter(Boolean);
   if (list.length === 0) return null;
+  const expiryOf = (pass) => {
+    const value = pass?.expiresAt;
+    const date = typeof value?.toDate === "function" ? value.toDate() : new Date(String(value ?? ""));
+    const time = date?.getTime?.();
+    /* 만료일이 없으면 맨 뒤다. "언제까지든 쓸 수 있다" 는 뜻이라 급하지 않고,
+       0 으로 보면 그것이 모든 회원권보다 먼저 쓰인다. */
+    return Number.isFinite(time) ? time : Number.MAX_SAFE_INTEGER;
+  };
   const roundOf = (pass) => {
     const round = Number(pass?.purchaseRound);
-    // 못 읽으면 맨 뒤. 0 으로 보면 1차보다 먼저 쓰인다.
+    // 못 읽으면 맨 뒤. 0 으로 보면 그 회원권이 1차보다 먼저 쓰인다.
     return Number.isInteger(round) && round > 0 ? round : Number.MAX_SAFE_INTEGER;
   };
   const issuedAt = (value) => {
@@ -203,7 +222,9 @@ export function nextByPurchaseRound(passes) {
     return Number.isFinite(time) ? time : Number.MAX_SAFE_INTEGER;
   };
   return list.slice().sort((left, right) => (
-    roundOf(left) - roundOf(right) || issuedAt(left.createdAt) - issuedAt(right.createdAt)
+    expiryOf(left) - expiryOf(right)
+    || roundOf(left) - roundOf(right)
+    || issuedAt(left.createdAt) - issuedAt(right.createdAt)
   ))[0];
 }
 

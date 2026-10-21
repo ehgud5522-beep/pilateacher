@@ -48,17 +48,41 @@ const lesson = (overrides = {}) => ({
 
 /* ── 어느 회원권을 쓰는가 ───────────────────────────────────────────────── */
 
-test("the earlier purchase round is spent first, whatever the expiry says", () => {
-  /* 2026-10-09 대표 확정. 전에는 만료가 이른 것을 먼저 썼다.
+test("the pass that expires first is spent first, whatever the round says", () => {
+  /* ── 두 번 뒤집힌 자리다 ──────────────────────────────────────────
+     2026-10-09 에 만료일 순 → 차수 순으로 바뀌었다. 그때의 근거는 "순서가
+     예측되는 것이 손실을 자동으로 피하는 것보다 낫다" 였고, 어긋난 회원권은
+     화면이 먼저 말하고 대표가 만료일을 옮겨 푸는 쪽이었다.
 
-     회원이 "지난번에 끊은 것부터 쓰고 있다" 고 말할 수 있는 순서이고,
-     재등록 상담에서 대표가 설명하는 순서도 그것이다. 만료일은 보지 않는다 --
-     여기서 2차의 만료가 더 이른데도 1차를 먼저 쓴다. */
+     2026-10-22 에 다시 만료일 순으로 돌아왔다. **실제로 그 손실이 났기
+     때문이다** (율하점 10/15 차감) -- 뒤 차수가 먼저 만료되면 그 회차는 손도
+     못 대 보고 사라지고, 그것은 회원이 돈을 낸 회차다.
+
+     여기서 2차의 만료가 더 이르므로 2차를 먼저 쓴다. */
   const picked = pickSoloPass([
     pass({ id: "second", purchaseRound: 2, expiresAt: new Date(2026, 10, 1) }),
     pass({ id: "first", purchaseRound: 1, expiresAt: new Date(2027, 5, 1) }),
   ], "client-a", NOW);
+  assert.equal(picked.id, "second");
+});
+
+test("the round breaks the tie when two passes expire on the same day", () => {
+  const sameDay = new Date(2027, 0, 1);
+  const picked = pickSoloPass([
+    pass({ id: "second", purchaseRound: 2, expiresAt: sameDay }),
+    pass({ id: "first", purchaseRound: 1, expiresAt: sameDay }),
+  ], "client-a", NOW);
   assert.equal(picked.id, "first");
+});
+
+test("a pass with no expiry date waits until the dated ones are used", () => {
+  /* "언제까지든 쓸 수 있다" 는 뜻이라 급하지 않다. 맨 앞에 두면 만료가 코앞인
+     회차가 밀려 사라진다 -- 이 정렬이 막으려는 바로 그 일이다. */
+  const picked = pickSoloPass([
+    pass({ id: "forever", purchaseRound: 1, expiresAt: null }),
+    pass({ id: "dated", purchaseRound: 2, expiresAt: new Date(2027, 5, 1) }),
+  ], "client-a", NOW);
+  assert.equal(picked.id, "dated");
 });
 
 test("a separately bought service pass takes its own round slot", () => {
@@ -80,19 +104,13 @@ test("passes in the same round go oldest first", () => {
 });
 
 test("a pass with no readable round waits until the numbered ones are used", () => {
-  /* 0 으로 보면 그 회원권이 1차보다 먼저 쓰이고, 그것은 아무도 의도하지 않은
-     순서다. 만료일은 이제 순서에 쓰지 않으므로 없어도 뒤로 밀리지 않는다. */
+  /* 차수는 **만료일이 같을 때** 가르는 값이다 (2026-10-22). 못 읽으면 맨
+     뒤다 -- 0 으로 보면 그 회원권이 1차보다 먼저 쓰인다. */
   const picked = pickSoloPass([
-    pass({ id: "no-round", purchaseRound: null }),
-    pass({ id: "numbered", purchaseRound: 3 }),
+    pass({ id: "no-round", purchaseRound: null, expiresAt: new Date(2027, 0, 1) }),
+    pass({ id: "numbered", purchaseRound: 3, expiresAt: new Date(2027, 0, 1) }),
   ], "client-a", NOW);
   assert.equal(picked.id, "numbered");
-
-  const noExpiry = pickSoloPass([
-    pass({ id: "no-expiry", purchaseRound: 1, expiresAt: null }),
-    pass({ id: "dated", purchaseRound: 2, expiresAt: new Date(2027, 0, 1) }),
-  ], "client-a", NOW);
-  assert.equal(noExpiry.id, "no-expiry", "만료일이 없어도 차수가 앞이면 먼저다");
 });
 
 test("nothing usable comes back as nothing, never as a spent pass", () => {
@@ -130,11 +148,17 @@ const duetPass = (id, overrides = {}) => pass({
  * 차수로만 정해지는지(2026-10-09), 만료일이 슬쩍 끼어들지 않는지를 이 한
  * 벌이 같이 본다.
  */
+/* 만료일을 일부러 차수와 **반대로** 둔다 -- 2차가 먼저 만료된다. 그래서
+   차수로 고르는지 만료일로 고르는지가 고른 회원권 하나로 드러난다.
+
+   2026-10-22 부터 먼저 만료되는 것을 쓴다. 이름을 만료 순으로 바꿔 두었다 --
+   전에는 `-soon`/`-late` 가 차수를 가리켜서, 순서가 뒤집힌 뒤에는 읽는
+   사람이 반대로 이해한다. */
 const bothKinds = (overrides = {}) => [
-  soloPass("solo-late", { purchaseRound: 2, expiresAt: new Date(2027, 2, 1) }),
-  soloPass("solo-soon", { purchaseRound: 1, expiresAt: new Date(2027, 6, 1), ...(overrides.solo || {}) }),
-  duetPass("duet-late", { purchaseRound: 2, expiresAt: new Date(2026, 10, 1) }),
-  duetPass("duet-soon", { purchaseRound: 1, expiresAt: new Date(2026, 11, 1), ...(overrides.duet || {}) }),
+  soloPass("solo-expires-first", { purchaseRound: 2, expiresAt: new Date(2027, 2, 1) }),
+  soloPass("solo-expires-later", { purchaseRound: 1, expiresAt: new Date(2027, 6, 1), ...(overrides.solo || {}) }),
+  duetPass("duet-expires-first", { purchaseRound: 2, expiresAt: new Date(2026, 10, 1) }),
+  duetPass("duet-expires-later", { purchaseRound: 1, expiresAt: new Date(2026, 11, 1), ...(overrides.duet || {}) }),
 ];
 
 const memberA = () => member({ id: "m-a", name: "성승현", orgClientId: A });
@@ -210,7 +234,7 @@ test("1:1 로 바꾸면 온 사람만 남는다 -- 자리 순서가 아니라", 
   const plan = planLessonSettlement({
     lesson: solo, members: [memberA(), memberB()], passes: bothKinds(), now: NOW,
   });
-  assert.deepEqual(plan.deductions.map((item) => item.pass.id), ["solo-soon"]);
+  assert.deepEqual(plan.deductions.map((item) => item.pass.id), ["solo-expires-first"]);
 });
 
 test("없는 회원을 남기라고 하면 일정을 그대로 돌려준다", () => {
@@ -234,7 +258,7 @@ test("듀엣으로 등록했으면 한 명만 와도 2:1 에서 빠진다", () =
       { memberId: "m-a", status: "done" },
       { memberId: "m-b", status: absent },
     ]);
-    assert.deepEqual(plan.deductions.map((item) => item.pass.id), ["duet-soon"], absent);
+    assert.deepEqual(plan.deductions.map((item) => item.pass.id), ["duet-expires-first"], absent);
     assert.equal(plan.deductions[0].shared, true, absent);
   }
 });
@@ -303,7 +327,7 @@ test("서비스 회원권은 1:1 수업에서 그대로 쓰인다", () => {
   assert.deepEqual(plan.deductions.map((item) => item.pass.id), ["service-a"]);
 });
 
-test("규칙 1 — A 혼자 출석하면 1:1 만, 차수 빠른 것부터", () => {
+test("규칙 1 — A 혼자 출석하면 1:1 만, 만료 빠른 것부터", () => {
   /* 공유 회원권은 쓰지 않는다. 혼자 온 수업에 그것을 쓰면 둘이 나눠 쓰기로 한
      회차가 한 사람의 1:1 로 사라지고, 짝은 자기 잔여가 왜 줄었는지 알 길이
      없다.
@@ -311,17 +335,17 @@ test("규칙 1 — A 혼자 출석하면 1:1 만, 차수 빠른 것부터", () =
      고른 1:1 중에서는 1차가 먼저다. 이 한 벌은 2차가 더 일찍 만료되게 두어,
      만료일이 순서에 끼어들지 않는 것까지 함께 본다. */
   const plan = planWith([{ memberId: "m-a", status: "done" }]);
-  assert.deepEqual(plan.deductions.map((item) => item.pass.id), ["solo-soon"]);
+  assert.deepEqual(plan.deductions.map((item) => item.pass.id), ["solo-expires-first"]);
   assert.deepEqual(plan.skips, []);
 });
 
-test("규칙 2 — A·B 둘 다 출석하면 공유 2:1 에서 1회만, 차수 빠른 것부터", () => {
+test("규칙 2 — A·B 둘 다 출석하면 공유 2:1 에서 1회만, 만료 빠른 것부터", () => {
   const plan = planWith([
     { memberId: "m-a", status: "done" },
     { memberId: "m-b", status: "done" },
   ]);
   assert.equal(plan.deductions.length, 1, "수업 한 번에 1회 차감");
-  assert.equal(plan.deductions[0].pass.id, "duet-soon");
+  assert.equal(plan.deductions[0].pass.id, "duet-expires-first");
   assert.deepEqual(plan.deductions[0].clientIds, [A, B]);
   assert.deepEqual(plan.deductions[0].attendanceByClientId, {
     [A]: "attended", [B]: "attended",
@@ -336,7 +360,7 @@ test("규칙 3 — 한 명이 노쇼여도 공유 2:1 에서 1회 차감", () =>
     { memberId: "m-b", status: "noshow" },
   ]);
   assert.equal(plan.deductions.length, 1);
-  assert.equal(plan.deductions[0].pass.id, "duet-soon");
+  assert.equal(plan.deductions[0].pass.id, "duet-expires-first");
   assert.deepEqual(plan.deductions[0].attendanceByClientId, {
     [A]: "attended", [B]: "noshow",
   });
@@ -356,7 +380,7 @@ test("규칙 4 — 둘 다 노쇼면 2:1 에서 1회, 둘 다 취소면 0회 (20
       { memberId: "m-b", status: statuses[1] },
     ]);
     assert.deepEqual(
-      plan.deductions.map((item) => item.pass.id), ["duet-soon"], statuses.join("·"),
+      plan.deductions.map((item) => item.pass.id), ["duet-expires-first"], statuses.join("·"),
     );
     assert.deepEqual(plan.skips, [], statuses.join("·"));
   }
@@ -372,7 +396,7 @@ test("규칙 4 — 둘 다 노쇼면 2:1 에서 1회, 둘 다 취소면 0회 (20
 
 test("규칙 5 — 명단에 A 한 명뿐이면 1:1 수업이다", () => {
   const onlyA = planWith([{ memberId: "m-a", status: "done" }]);
-  assert.deepEqual(onlyA.deductions.map((item) => item.pass.id), ["solo-soon"]);
+  assert.deepEqual(onlyA.deductions.map((item) => item.pass.id), ["solo-expires-first"]);
 });
 
 test("규칙 5 — B 가 미리 취소해도 듀엣 수업은 듀엣이다 (2026-10-01 변경)", () => {
@@ -383,7 +407,7 @@ test("규칙 5 — B 가 미리 취소해도 듀엣 수업은 듀엣이다 (2026
     { memberId: "m-a", status: "done" },
     { memberId: "m-b", status: "cancel" },
   ]);
-  assert.deepEqual(cancelledB.deductions.map((item) => item.pass.id), ["duet-soon"]);
+  assert.deepEqual(cancelledB.deductions.map((item) => item.pass.id), ["duet-expires-first"]);
   assert.equal(cancelledB.deductions[0].shared, true, "회원권 하나에서 1회만 나간다");
   // 취소한 사람도 누가 안 왔는지 남는다 -- 두 달 뒤 "그날 나는 안 갔는데" 에 답한다.
   assert.equal(cancelledB.deductions[0].clientIds.length, 2);
@@ -393,9 +417,9 @@ test("규칙 6 — A 혼자이고 1:1 잔여 0 이면 차감 없이 solo_pass_mi
   /* 2:1 에서 절대 빼지 않는다. 여기서 한 번 빼면 짝의 회차가 사라지고, 그
      사실은 아무도 모른다. */
   const plan = planWith([{ memberId: "m-a", status: "done" }], [
-    soloPass("solo-late", { expiresAt: new Date(2027, 6, 1), remainingCount: 0 }),
-    soloPass("solo-soon", { expiresAt: new Date(2027, 5, 1), remainingCount: 0 }),
-    duetPass("duet-soon", { expiresAt: new Date(2026, 10, 1) }),
+    soloPass("solo-expires-later", { expiresAt: new Date(2027, 6, 1), remainingCount: 0 }),
+    soloPass("solo-expires-first", { expiresAt: new Date(2027, 5, 1), remainingCount: 0 }),
+    duetPass("duet-expires-first", { expiresAt: new Date(2026, 10, 1) }),
   ]);
   assert.deepEqual(plan.deductions, []);
   assert.deepEqual(plan.skips, [

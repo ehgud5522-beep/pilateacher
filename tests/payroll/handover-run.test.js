@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { runHandover } from "../../src/data/repositories/handover-repository.js";
+import { handoverPlan } from "../../src/features/members/instructor-handover.js";
 
 /**
  * 인계 실행.
@@ -56,6 +57,104 @@ const plan = (overrides = {}) => ({
 const carryWrites = (commits) => commits
   .flat()
   .filter((item) => item.path.includes("instructorClientTotals"));
+
+/* ── 미리보기와 실행이 **같은 객체**를 쓴다 ──────────────────────────────
+   화면이 보여 준 목록과 실제로 넘어가는 목록이 다르면, 대표는 자기가 승인한
+   것과 다른 일이 일어난 것을 **나중에야** 안다 -- 원장은 append-only 라
+   그때는 되돌릴 수 없다.
+
+   그래서 실행은 계획을 다시 세우지 않는다. `handoverPlan` 이 낸 그 객체를
+   그대로 받는다. 아래가 그 계약이다. */
+
+const PASSES = [
+  { id: "p1", clientId: "c1", instructorId: "u-old", status: "active", category: "pt_1_1_new", baseUnitPrice: 25000, remainingCount: 8, locationId: "bansong", expiresAt: new Date(2027, 0, 1) },
+  { id: "p2", clientId: "c2", clientIds: ["c2", "c3"], instructorId: "u-old", status: "active", category: "pt_2_1_repurchase", baseUnitPrice: 35000, remainingCount: 5, locationId: "bansong", expiresAt: new Date(2027, 0, 1) },
+  // 끝난 회원권. 계획에 들어가지 않으므로 실행에도 없어야 한다.
+  { id: "spent", clientId: "c4", instructorId: "u-old", status: "active", remainingCount: 0, locationId: "bansong" },
+];
+const TARGETS = { "u-new": { userId: "u-new", displayName: "정예진", locationId: "bansong", status: "active" } };
+
+const realPlan = (assignments, sessionsOf = () => 0) => handoverPlan({
+  passes: PASSES, assignments, fromInstructorId: "u-old", now: new Date(2026, 9, 22),
+  instructorOf: (id) => TARGETS[id] || null,
+  clientNameOf: (id) => ({ c1: "김하나", c2: "이두리", c3: "박세인" })[id] || "",
+  sessionsOf,
+});
+
+test("the rows the preview drew are exactly the rows that move", async () => {
+  const planned = realPlan({ p1: "u-new", p2: "u-new" }, () => 30);
+  assert.equal(planned.canRun, true);
+
+  const { store, passStore, transfers } = fakeStores();
+  const found = await runHandover(ORG, {
+    fromInstructorId: "u-old", actorId: "owner-a", actorRole: "owner",
+    rows: planned.rows, carries: planned.carries,
+  }, { store, passStore });
+
+  /* 화면이 보여 준 것과 넘어간 것이 같다. 끝난 회원권은 계획에 없었으므로
+     실행에도 없다. */
+  assert.deepEqual(
+    found.moved.map((row) => row.passId).sort(),
+    planned.rows.map((row) => row.passId).sort(),
+  );
+  assert.deepEqual(transfers.map((item) => item.passId).sort(), ["p1", "p2"]);
+  assert.equal(transfers.some((item) => item.passId === "spent"), false);
+});
+
+test("a plan the preview refused is refused by the runner too", async () => {
+  /* 화면이 막아도 실행이 한 번 더 본다 -- 목록이 낡았을 수 있고, 그 한 줄이
+     원장에 박히면 되돌릴 수 없다. */
+  const planned = realPlan({ p1: "u-new" });
+  assert.equal(planned.canRun, false, "p2 가 아직 안 정해졌다");
+
+  const { store, passStore, transfers } = fakeStores();
+  const found = await runHandover(ORG, {
+    fromInstructorId: "u-old", actorId: "owner-a", actorRole: "owner",
+    rows: planned.rows, carries: planned.carries,
+  }, { store, passStore });
+
+  assert.deepEqual(transfers.map((item) => item.passId), ["p1"], "정해진 줄만 간다");
+  assert.deepEqual(found.moved.map((row) => row.passId), ["p1"]);
+});
+
+test("a duet split in the preview moves nothing at all", async () => {
+  /* 두 사람이 다른 강사로 가면 함께 수업을 받을 수 없다. 계획이 그 줄 전부를
+     막고, 실행은 그 표시를 그대로 읽는다. */
+  const split = { ...TARGETS, "u-two": { userId: "u-two", displayName: "최둘", locationId: "bansong", status: "active" } };
+  const planned = handoverPlan({
+    passes: [
+      { id: "duet", clientId: "c1", clientIds: ["c1", "c2"], instructorId: "u-old", status: "active", remainingCount: 5, locationId: "bansong", expiresAt: new Date(2027, 0, 1) },
+      { id: "solo", clientId: "c2", instructorId: "u-old", status: "active", remainingCount: 5, locationId: "bansong", expiresAt: new Date(2027, 0, 1) },
+    ],
+    assignments: { duet: "u-new", solo: "u-two" },
+    fromInstructorId: "u-old", now: new Date(2026, 9, 22),
+    instructorOf: (id) => split[id] || null,
+  });
+  assert.equal(planned.canRun, false);
+
+  const { store, passStore, transfers } = fakeStores();
+  await runHandover(ORG, {
+    fromInstructorId: "u-old", actorId: "owner-a", actorRole: "owner",
+    rows: planned.rows, carries: planned.carries,
+  }, { store, passStore });
+  assert.deepEqual(transfers, [], "한 장도 넘어가지 않는다");
+});
+
+test("the preview's carried counts are the ones the runner writes", async () => {
+  /* 미리보기가 "누적 30 이 따라갑니다" 라고 말했으면 그 30 이 가야 한다.
+     실행이 다시 세면 그 사이에 바뀐 값이 들어가고, 화면은 거짓이 된다. */
+  const planned = realPlan({ p1: "u-new", p2: "u-new" }, (id) => ({ c1: 30, c2: 12, c3: 7 })[id] || 0);
+  const { store, passStore, commits } = fakeStores();
+  await runHandover(ORG, {
+    fromInstructorId: "u-old", actorId: "owner-a", actorRole: "owner",
+    rows: planned.rows, carries: planned.carries,
+  }, { store, passStore });
+
+  const written = carryWrites(commits).map((item) => [item.path.split("/").pop(), item.data.delta.sessions]);
+  assert.deepEqual(written.sort(), [
+    ["u-new_c1", 30], ["u-new_c2", 12], ["u-new_c3", 7],
+  ].sort());
+});
 
 /* ── 누적은 회원당 한 번 ─────────────────────────────────────────────────── */
 

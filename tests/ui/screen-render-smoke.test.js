@@ -123,6 +123,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 월간 리포트",
     "더보기 탭 · 월간 리포트 · 지난달 못 읽음",
     "더보기 탭 · 월간 리포트 · 조회 실패",
+    "담당 인계",
+    "담당 인계 · 미확정 수업",
     "더보기 탭 · 월간 리포트 · 개인 모드",
     "더보기 탭 · 센터 정보",
     "더보기 탭 · 센터 정보 · 개인 모드",
@@ -2135,6 +2137,45 @@ test("a roster we could not read says which kind of failure it was", async (t) =
     assert.match(markup, /이 기기에 저장된 목록이고, 회원권 잔여는 센터의 값이 아닙니다/);
     assert.match(markup, /다시 시도/);
   }
+});
+
+test("the handover preview says the rate the new instructor will actually get", async (t) => {
+  /* 인계 후 단가는 **판정 2 라 정확히 말할 수 있다** -- 누적과 무관하게 남은
+     회차 전부가 신규 단가다. 그래서 이 미리보기가 값어치가 있다.
+
+     1:1 은 25,000, 2:1 은 2:1 신규 단가(30,000). 디오사는 그 둘보다 앞이라
+     자기 표값을 그대로 받는다. */
+  const markupOf = await issueScreens(t);
+  const sheet = markupOf("담당 인계");
+
+  assert.match(sheet, /인계 후/);
+  assert.match(sheet, /₩25,000/, "1:1 은 신규 단가");
+  assert.match(sheet, /남은 \d+회 전부/);
+
+  /* 누적이 함께 간다는 것을 말해야 한다 -- 말하지 않으면 다음 재등록의
+     단가가 왜 기준 단가인지 아무도 설명하지 못한다. */
+  assert.match(sheet, /누적 수업 횟수도 함께 넘어갑니다/);
+  assert.match(sheet, /재등록하면/);
+
+  // 퇴사 처리는 지우는 것이 아니다. 과거 급여가 남는다는 말이 함께 있어야 한다.
+  assert.match(sheet, /퇴사 처리/);
+  assert.match(sheet, /지난 수업과 급여 기록은 그대로 남고/);
+});
+
+test("the handover is blocked until the taught-but-unsettled lessons are closed", async (t) => {
+  /* 담당이 바뀐 뒤에 확정하면 그 회차가 **새 강사의 급여**로 들어간다 --
+     수업한 사람은 전 강사인데. 원장은 append-only 라 되돌릴 수 없다.
+
+     그리고 확정 여부는 그 강사의 폰이 들고 있다. 대표 화면에서 안 보일 수
+     있다는 것까지 말해야 한다. */
+  const markupOf = await issueScreens(t);
+  const blocked = markupOf("담당 인계 · 미확정 수업");
+
+  assert.match(blocked, /확정하지 않은 수업 2건/);
+  assert.match(blocked, /새 강사의 급여/);
+  assert.match(blocked, /이 기기가 아는 것만입니다/);
+  // 넘기기 버튼이 잠긴다.
+  assert.match(blocked, /disabled=""[^>]*>[^<]*장 넘기기|장 넘기기/);
 });
 
 test("the pay sheet keeps its month off the close button", async (t) => {

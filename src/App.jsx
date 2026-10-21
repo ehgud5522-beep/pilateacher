@@ -145,6 +145,7 @@ import {
   correctDeduction, deductPass, holdPass, isCancellablePass, loadPassReconcileRows,
   isCorrectableEntry, isCorrectedEntry, isDeductablePass, isExpiredPass, issuePass,
   listInstructorClientTotals, listPassLedger, listPasses, loadClientPassHistory, remainingCountOf,
+  transferPassInstructor,
   transferPass,
 } from "./data/repositories/pass-repository.js";
 import {
@@ -337,6 +338,9 @@ import { SCOPED_ROLES, clientScopeFor, unlinkedNotice } from "./features/members
 import {
   clientBreakdown, monthChoices, payrollRows, payrollWeeks,
 } from "./features/schedule/payroll-weeks.js";
+import HandoverSheet from "./features/members/HandoverSheet.jsx";
+import { unsettledBeforeHandover } from "./features/members/instructor-handover.js";
+import { runHandover } from "./data/repositories/handover-repository.js";
 import {
   planRosterPrune, pruneMessage, snapshotId, snapshotPayload,
 } from "./features/members/device-roster-prune.js";
@@ -5850,7 +5854,7 @@ function PassCard({ card, onEdit }) {
   );
 }
 
-function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSettlement = true, organizationMode = false, journey = null, passCards = null, centrePasses = null, centreLessons = null, viewerRole = "", onBack, onPatch, onSaveNote, onSchedule, onOpenLesson, onAssess, onToast, onDelete, onDeactivate, onReactivate, onHide }) {
+function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSettlement = true, organizationMode = false, journey = null, passCards = null, centrePasses = null, centreLessons = null, viewerRole = "", onHandoverPass, onBack, onPatch, onSaveNote, onSchedule, onOpenLesson, onAssess, onToast, onDelete, onDeactivate, onReactivate, onHide }) {
   /* 강사에게는 뒤 4자리만. 동명이인을 가르는 데는 그것으로 충분하고, 전화를
      거는 일은 센터가 한다 (roster-visibility.js). */
   const phoneShown = (value) => phoneForViewer(value, viewerRole, { full: () => maskedPhone(value) });
@@ -6170,7 +6174,21 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
                 {passCards.active.length ? (
                   <div className="space-y-2">
                     {passCards.active.map((card) => (
-                      <Guard key={card.passId} label="회원권 카드" compact><PassCard card={card} /></Guard>
+                      <Guard key={card.passId} label="회원권 카드" compact>
+                        <PassCard card={card} />
+                        {/* 담당 변경. **대표·총괄매니저·FC매니저만** 보인다 --
+                            강사가 자기 회원권을 남에게 넘기거나 남의 것을
+                            가져올 수 있으면 그것은 급여를 옮기는 버튼이다.
+
+                            한 장짜리라 누적은 여기서 함께 옮긴다
+                            (transferPassInstructor 의 carrySessions 기본값). */}
+                        {onHandoverPass ? (
+                          <button type="button" onClick={() => onHandoverPass(card.passId)}
+                            className="mt-1 h-9 w-full font-bold" style={{
+                              borderRadius: 8, backgroundColor: CANVAS, color: INK2, fontSize: TYPE.caption,
+                            }}>담당 변경</button>
+                        ) : null}
+                      </Guard>
                     ))}
                   </div>
                 ) : (
@@ -16683,6 +16701,205 @@ function swapFailure(error) {
   return `옮기지 못했습니다 (코드 ${detail || code}).`;
 }
 
+/**
+ * 퇴사 인계. **그만두는 강사의 회원권을 한 번에 넘긴다.**
+ *
+ * 강사 관리와 따로 둔 이유: 한 강사의 회원권을 전부 옮기는 일이라 직함을
+ * 고치는 일과 무게가 다르고, 되돌리려면 한 장씩 되돌려야 한다.
+ *
+ * 화면은 `HandoverSheet` 하나다 -- 회원 상세의 "담당 변경" 과 같은 것을 쓴다.
+ * 여기가 하는 일은 읽어 오는 것과 실행뿐이다.
+ */
+function InstructorHandoverScreen({
+  organization, currentUserId, instructorStore, rateStore, passStore, clientStore,
+  schedule = [], onToast, onRetryOrganization,
+}) {
+  const organizationId = organization?.organizationId || "";
+  const [instructors, setInstructors] = useState([]);
+  const [clients, setClients] = useState([]);
+  const [passes, setPasses] = useState([]);
+  const [totals, setTotals] = useState([]);
+  const [loadError, setLoadError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [fromId, setFromId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [runError, setRunError] = useState("");
+  const [result, setResult] = useState(null);
+  const [revision, setRevision] = useState(0);
+  const sectionStyle = { backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 };
+
+  useEffect(() => {
+    if (!organizationId) return undefined;
+    let alive = true;
+    setLoading(true);
+    setLoadError("");
+    Promise.all([
+      listInstructors(organizationId, { store: instructorStore }),
+      listClients(organizationId, { store: clientStore }),
+      listPasses(organizationId, { store: passStore }),
+      /* 누적. 인계와 함께 넘어가는 값이라 미리보기가 몇 명분인지 말하려면
+         여기서 읽어야 한다. 못 읽으면 "0명" 이 아니라 못 읽은 것이다. */
+      listInstructorClientTotals(organizationId, { store: passStore }),
+    ]).then(([foundInstructors, foundClients, foundPasses, foundTotals]) => {
+      if (!alive) return;
+      setInstructors(foundInstructors);
+      setClients(foundClients);
+      setPasses(foundPasses);
+      setTotals(foundTotals);
+    }).catch((error) => {
+      if (!alive) return;
+      /* 빈 목록을 보여주지 않는다. "넘길 것이 없다" 로 읽히고, 그 다음 행동이
+         바로 퇴사 처리다 -- 회원권은 그대로 남은 채로. */
+      setLoadError(error?.code || "unknown");
+    }).finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [organizationId, instructorStore, clientStore, passStore, revision]);
+
+  const nameOf = useCallback(
+    (clientId) => clients.find((item) => String(item?.id || "") === String(clientId))?.name || "",
+    [clients],
+  );
+  const sessionsOf = useCallback((clientId) => {
+    const found = totals.find((item) => (
+      String(item?.instructorId || "") === fromId && String(item?.clientId || "") === String(clientId)
+    ));
+    return Number(found?.sessions) || 0;
+  }, [totals, fromId]);
+
+  const from = instructors.find((item) => String(item?.userId || "") === fromId) || null;
+
+  /* 아직 확정하지 않은 수업. **이 기기가 아는 것만이다** -- 확정 여부는 그
+     강사의 폰이 들고 있다. 화면이 그 사실을 말한다. */
+  const unsettled = useMemo(() => (fromId ? unsettledBeforeHandover({
+    schedule, isSettled: (lesson) => Boolean(lesson?.orgSettledAt),
+  }) : []), [schedule, fromId]);
+
+  const run = async ({ plan, revoke }) => {
+    setBusy(true);
+    setRunError("");
+    try {
+      const found = await runHandover(organizationId, {
+        fromInstructorId: fromId,
+        rows: plan.rows,
+        carries: plan.carries,
+        actorId: currentUserId,
+        actorRole: organization?.role || "",
+      }, { store: passStore, passStore });
+
+      /* 넘긴 **뒤에** 퇴사 처리한다. 먼저 내리면 그 소속으로 하는 쓰기가
+         규칙에 막혀 인계가 통째로 실패한다. */
+      if (revoke && found.failed.length === 0) {
+        await setMembershipStatus(organizationId, fromId, {
+          status: MEMBERSHIP_STATUS.REVOKED,
+          changedBy: currentUserId,
+          actorRole: organization?.role || "",
+        }, { store: rateStore });
+      }
+      setResult({ ...found, revoked: revoke && found.failed.length === 0 });
+      setRevision((value) => value + 1);
+      onToast?.({
+        ok: found.failed.length === 0,
+        msg: found.failed.length === 0
+          ? `${found.moved.length}장을 넘겼습니다.`
+          : `${found.moved.length}장을 넘기고 ${found.failed.length}장이 막혔습니다.`,
+      });
+    } catch (error) {
+      setRunError(error?.code || error?.message || "unknown");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (loadError) {
+    return (
+      <section style={sectionStyle}>
+        <p className="text-xs font-bold" style={{ color: BAD }}>센터 자료를 불러오지 못했습니다 (코드 {loadError})</p>
+        <p className="mt-1 text-xs" style={{ color: INK2 }}>
+          목록이 비어 보이는 것과 못 읽은 것은 다릅니다 — 이 상태로는 넘길 것이 없는지 알 수 없습니다.
+        </p>
+        <button type="button" onClick={() => { setRevision((value) => value + 1); onRetryOrganization?.(); }}
+          className="mt-2 h-9 px-3 font-extrabold"
+          style={{ borderRadius: 8, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>다시 시도</button>
+      </section>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      <section style={sectionStyle}>
+        <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>그만두는 강사</h2>
+        <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+          고르면 그 강사가 맡은 회원권이 모두 나옵니다. 잔여가 남아 있고 만료되지 않은 것만입니다 — 끝난 회원권의 지난 수업료는 그대로 그 강사의 급여로 남습니다.
+        </p>
+        {loading ? (
+          <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p>
+        ) : (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {instructors.filter((item) => String(item?.status || "") === "active").map((item) => {
+              const on = String(item.userId) === fromId;
+              return (
+                <button type="button" key={item.userId}
+                  onClick={() => { setFromId(on ? "" : String(item.userId)); setResult(null); }}
+                  className="h-9 px-3 font-bold" style={{
+                    borderRadius: 999, fontSize: TYPE.caption,
+                    backgroundColor: on ? TINT : CANVAS, color: on ? BRAND_D : SUB,
+                  }}>{item.displayName || String(item.userId).slice(0, 6)}</button>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      {fromId ? (
+        <section style={sectionStyle}>
+          {result ? (
+            <div>
+              <p style={{ fontSize: TYPE.body, fontWeight: 600, color: result.failed.length ? WARN : GOOD }}>
+                {result.moved.length}장을 넘겼습니다{result.failed.length ? ` · ${result.failed.length}장이 막혔습니다` : ""}
+              </p>
+              {result.failed.length ? (
+                <div className="mt-2 space-y-1">
+                  {/* 원본 코드를 버리지 않는다. 그것이 없으면 왜 막혔는지 확정할 수 없다. */}
+                  {result.failed.map((row, index) => (
+                    <p key={`${row.passId}-${index}`} className="truncate" style={{ fontSize: TYPE.caption, color: BAD }}>
+                      {row.clientIds?.map(nameOf).filter(Boolean).join(" · ") || row.passId} — 코드 {row.errorCode}
+                    </p>
+                  ))}
+                  <p className="mt-1" style={{ fontSize: TYPE.caption, color: INK2 }}>
+                    막힌 장은 그대로 남아 있습니다. 위에서 그 강사를 다시 골라 남은 것만 넘기면 됩니다.
+                  </p>
+                </div>
+              ) : null}
+              {result.revoked ? (
+                <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>
+                  {from?.displayName || "그 강사"}를 퇴사 처리했습니다. 지난 수업과 급여 기록은 그대로 남아 있습니다.
+                </p>
+              ) : null}
+              <button type="button" onClick={() => setResult(null)} className="mt-3 h-11 w-full font-bold"
+                style={{ borderRadius: 9, backgroundColor: CANVAS, color: INK2, fontSize: TYPE.caption }}>계속</button>
+            </div>
+          ) : (
+            <HandoverSheet
+              passes={passes}
+              instructors={instructors}
+              fromInstructorId={fromId}
+              fromName={from?.displayName || ""}
+              clientNameOf={nameOf}
+              sessionsOf={sessionsOf}
+              unsettled={unsettled}
+              busy={busy}
+              errorCode={runError}
+              offerRevoke
+              onRun={run}
+              onClose={() => setFromId("")}
+            />
+          )}
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
 function InstructorAdmin({
   organization, currentUserId, instructorStore, rateStore, locationStore,
   lookupByEmail = fbLookupCentreMemberByEmail,
@@ -23247,6 +23464,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
     products: "회원권 상품",
     clients: "회원 관리",
     "instructor-admin": "강사 관리",
+    handover: "퇴사 인계",
     "pass-issue": "회원권 발급",
     migration: "엑셀 이관",
     payroll: "급여 집계",
@@ -23287,6 +23505,9 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
     ] },
     { label: "강사 · 급여", items: [
       ...(showInstructorAdmin ? [{ key: "instructor-admin", title: "강사 관리", description: "강사 추가 · 지점 · 직함 · 풀방금액", Icon: Users }] : []),
+      /* 강사 관리와 따로 둔다. 한 강사의 회원권을 **전부** 옮기는 일이라
+         직함을 고치는 일과 무게가 다르고, 되돌리려면 한 장씩 되돌려야 한다. */
+      ...(showInstructorAdmin ? [{ key: "handover", title: "퇴사 인계", description: "그만두는 강사의 회원권을 한 번에 넘긴다", Icon: UserPlus }] : []),
       /* "월말 정산"만으로는 위의 월간 리포트와 구별되지 않는다. 무엇을 세는지가
          둘의 차이다 -- 이쪽은 회원권 원장, 그쪽은 기기에 저장된 일정이다. */
       ...(showPayroll ? [{ key: "payroll", title: "급여 집계", description: "강사별 수업료 · 원장 기준 월말 정산", Icon: ArrowUpRight }] : []),
@@ -23806,6 +24027,12 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
             clientStore={clientStore} productStore={productStore} instructorStore={instructorStore}
             locationStore={locationStore} passStore={passStore}
             onRetryOrganization={onRetryOrganization} onToast={onToast} />
+        )}
+        {view === "handover" && showInstructorAdmin && (
+          <InstructorHandoverScreen organization={organization} currentUserId={account?.id || ""}
+            instructorStore={instructorStore} rateStore={instructorRateStore} passStore={passStore}
+            clientStore={clientStore} schedule={db.schedule}
+            onToast={onToast} onRetryOrganization={onRetryOrganization} />
         )}
         {view === "instructor-admin" && showInstructorAdmin && (
           <InstructorAdmin organization={organization} currentUserId={account?.id || ""}
@@ -24777,6 +25004,34 @@ export function createAppScreenSmokeCases() {
       currentUserId: "smoke-instructor",
       monthReportState: { now: new Date(2026, 8, 22, 9, 0), lastMonthPay: null },
     }) },
+    /* 인계 화면. 한 장짜리와 퇴사 인계가 **같은 컴포넌트**를 쓴다 -- 보여 준
+       목록이 곧 넘어가는 목록이어야 하므로 둘이 갈라지면 안 된다. */
+    { name: "담당 인계", element: (
+      <HandoverSheet
+        passes={smokeReportPasses.map((item) => ({ ...item, instructorId: "u-old" }))}
+        instructors={[
+          { userId: "u-new", displayName: "정예진", locationId: "bansong", status: "active" },
+          { userId: "u-far", displayName: "최센텀", locationId: "centum", status: "active" },
+        ]}
+        fromInstructorId="u-old" fromName="김전임"
+        clientNameOf={(id) => ({ "smoke-client-a": "김하나", "smoke-client-b": "이두리", "smoke-client-c": "박세인" })[id] || ""}
+        sessionsOf={() => 30}
+        initialAssignments={{ "smoke-report-spent": "u-new", "smoke-report-again": "u-new", "smoke-report-low": "u-new", "smoke-report-expiring": "u-new" }}
+        now={new Date(2026, 8, 22)}
+        offerRevoke onRun={noop} onClose={noop} />
+    ) },
+    /* 먼저 확정해야 하는 수업이 있으면 넘기지 못한다. 담당이 바뀐 뒤 확정하면
+       그 회차가 새 강사의 급여로 들어간다. */
+    { name: "담당 인계 · 미확정 수업", element: (
+      <HandoverSheet
+        passes={smokeReportPasses.map((item) => ({ ...item, instructorId: "u-old" }))}
+        instructors={[{ userId: "u-new", displayName: "정예진", locationId: "bansong", status: "active" }]}
+        fromInstructorId="u-old" fromName="김전임"
+        clientNameOf={() => "김하나"} sessionsOf={() => 0}
+        unsettled={[{ id: "l1" }, { id: "l2" }]}
+        now={new Date(2026, 8, 22)}
+        onRun={noop} onClose={noop} />
+    ) },
     { name: "더보기 탭 · 월간 리포트 · 개인 모드", element: settingsTab({ organizationId: "legacy_smoke", role: "owner", status: "active", isLegacy: true }, { initialView: "report" }) },
     /* 센터 정보. 이름은 "센터"지만 세 값 모두 기기에 저장된다 -- 소속 모드에서
        그 사실을 말하지 않으면 대표가 여기서 단가를 고치고 기다리게 된다. */
@@ -25553,6 +25808,17 @@ export default function App() {
   const organizationRoster = organizationContext.ready
     && !organizationContext.isLegacy
     && Boolean(organizationContext.organizationId);
+
+  /* 담당 변경을 누를 수 있는 사람. **대표·총괄매니저·FC매니저**다 -- 강사가
+     자기 회원권을 남에게 넘기거나 남의 것을 가져올 수 있으면 그것은 급여를
+     옮기는 버튼이다. 규칙도 같은 선을 긋는다 (passes update 의 manager 갈래). */
+  const canHandoverPass = organizationRoster
+    && (isOwnerLevelRole(organizationContext.role) || organizationContext.role === "manager");
+  /* 한 장짜리 인계. 어느 회원권을 넘기는 중인가. */
+  const [handoverPassId, setHandoverPassId] = useState("");
+  const [handoverBusy, setHandoverBusy] = useState(false);
+  const [handoverError, setHandoverError] = useState("");
+
   const [rosterClients, setRosterClients] = useState([]);
   const [rosterPasses, setRosterPasses] = useState([]);
   const [rosterError, setRosterError] = useState("");
@@ -28961,6 +29227,7 @@ export default function App() {
                   onSchedule={() => { setScheduleMemberId(member.id); setTab("schedule"); }} onOpenLesson={(lessonId) => { setScheduleOpenLessonId(lessonId); setTab("schedule"); }} onAssess={(entry = {}) => { setAnalysisRecordId(entry.poseId || null); setAnalysisAssessmentId(entry.assessmentId || null); setAnalysisEntryMode(entry.mode || "home"); setAnalysisComparisonEntry(entry.beforeAssessmentId && entry.afterAssessmentId ? { beforeAssessmentId: entry.beforeAssessmentId, afterAssessmentId: entry.afterAssessmentId, compareView: entry.compareView || "front" } : null); setAnalysisMemberId(member.id); setTab("analysis"); }} onToast={setToast} onDelete={removeMember} onDeactivate={deactivateMember} onReactivate={reactivateMember}
                   organizationMode={organizationRoster && isRosterMember(member)} onHide={hideRosterMember}
                   journey={journeyFor(member.id)} passCards={passCardsFor(member.id)} centrePasses={centrePassesFor(member.id)}
+                  onHandoverPass={canHandoverPass ? (passId) => { setHandoverError(""); setHandoverPassId(passId); } : undefined}
                   centreLessons={centreLessonsFor} />
               </div>}
             </div>}
@@ -28991,6 +29258,61 @@ export default function App() {
         </div>
         {/* 출석 체크는 일정 탭 위에 시트로 뜬다. 탭 구조를 건드리지 않으면서
             수업이 끝난 자리에서 바로 열리게 하기 위해서다. */}
+        {/* ── 한 장짜리 담당 변경 ──────────────────────────────────────
+            퇴사 인계와 **같은 화면**을 쓴다. 서버에서 일어나는 일이 같으므로
+            둘을 따로 그리면 한쪽만 고쳐지는 날이 오고, 그날 대표가 보는
+            숫자와 실제로 넘어가는 것이 갈라진다. */}
+        {handoverPassId ? (
+          <div className="absolute inset-0 z-50 overflow-y-auto" style={{ backgroundColor: PAGE }}>
+            <div className="mx-auto w-full max-w-md p-3" style={{ paddingTop: "max(env(safe-area-inset-top, 0px), 12px)" }}>
+              <h2 className="mb-2" style={{ fontSize: TYPE.title, fontWeight: 600, color: INK }}>담당 변경</h2>
+              <HandoverSheet
+                passes={rosterPasses.filter((item) => String(item?.id || "") === handoverPassId)}
+                instructors={rosterInstructors}
+                fromInstructorId={String(
+                  rosterPasses.find((item) => String(item?.id || "") === handoverPassId)?.instructorId || "",
+                )}
+                fromName={String(rosterInstructors.find((item) => String(item?.userId || "") === String(
+                  rosterPasses.find((row) => String(row?.id || "") === handoverPassId)?.instructorId || "",
+                ))?.displayName || "")}
+                clientNameOf={(clientId) => rosterClients.find(
+                  (item) => String(item?.id || "") === String(clientId),
+                )?.name || ""}
+                /* 한 장짜리는 누적을 transferPassInstructor 가 함께 옮긴다.
+                   여기서 또 세면 두 배가 되므로 0 으로 둔다 -- 미리보기의
+                   "누적도 함께" 줄만 빠지고, 실제로는 옮겨진다. */
+                sessionsOf={() => 0}
+                busy={handoverBusy}
+                errorCode={handoverError}
+                onClose={() => setHandoverPassId("")}
+                onRun={async ({ plan }) => {
+                  const row = plan.ready[0];
+                  if (!row) return;
+                  setHandoverBusy(true);
+                  setHandoverError("");
+                  try {
+                    const pass = rosterPasses.find((item) => String(item?.id || "") === handoverPassId);
+                    await transferPassInstructor(organizationContext.organizationId, handoverPassId, {
+                      clientId: row.clientIds[0],
+                      clientIds: row.clientIds,
+                      fromInstructorId: String(pass?.instructorId || ""),
+                      toInstructorId: row.toInstructorId,
+                      locationId: row.locationId,
+                      createdBy: account?.id || "",
+                    });
+                    setHandoverPassId("");
+                    setRosterRevision((value) => value + 1);
+                    setToast({ ok: true, msg: "담당을 바꿨습니다." });
+                  } catch (error) {
+                    setHandoverError(error?.code || error?.message || "unknown");
+                  } finally {
+                    setHandoverBusy(false);
+                  }
+                }}
+              />
+            </div>
+          </div>
+        ) : null}
         {detailClient ? (
           <div className="absolute inset-0 z-50 overflow-y-auto" style={{ backgroundColor: PAGE }}>
             {/* 상태바 아래로 내린다. 전면 오버레이는 화면 꼭대기에서 시작하므로

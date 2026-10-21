@@ -7,7 +7,7 @@ PC를 켜둘 필요가 없다. Google 심사와 관리형 게시 설정에 따�
 ## 등록된 자원
 
 - 앱 환경 변수 그룹 `google_play`: Secret 변수 `GOOGLE_PLAY_SERVICE_ACCOUNT_CREDENTIALS` (JSON 원문).
-- Android keystore reference `pilateacher-upload-v2` 및 해당 비밀번호·별칭.
+- Android keystore reference `pilateacher-upload-v2-ci` 및 해당 비밀번호·별칭.
 - Play Console 서비스 계정에 이 앱의 읽기·프로덕션 출시 권한.
 - 패키지 `com.pilateacher.app`. 회원 앱 배포 설정은 변경하지 않는다.
 

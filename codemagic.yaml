@@ -684,7 +684,7 @@ workflows:
       node: 22
       java: 21
       android_signing:
-        - pilateacher-upload-v2
+        - pilateacher-upload-v2-ci
       groups:
         - google_play
       vars:

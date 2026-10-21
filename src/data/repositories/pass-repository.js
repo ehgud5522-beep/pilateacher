@@ -366,13 +366,28 @@ export async function issuePass(organizationId, input, options = {}) {
  *
  * @param {string} organizationId
  * @param {string} passId
- * @param {{ clientId: string, fromInstructorId: string, toInstructorId: string, locationId: string, createdBy: string, entryId?: string }} input
- * @param {{ store?: PassStore, newId?: () => string }} [options]
+ * @param {{
+ *   clientId: string, fromInstructorId: string, toInstructorId: string,
+ *   locationId: string, createdBy: string, entryId?: string,
+ *   clientIds?: Array<string>,
+ * }} input
+ *   clientIds 듀엣이면 두 사람 모두. 누적을 둘 다 옮기려면 필요하다
+ * @param {{
+ *   store?: PassStore, newId?: () => string, carrySessions?: boolean,
+ * }} [options]
+ *   carrySessions 누적을 여기서 옮길 것인가. 기본은 참이다.
+ *
+ *     **한 회원의 회원권을 여러 장 한꺼번에 넘길 때는 거짓으로 둔다.** 누적은
+ *     강사-회원 쌍 하나당 하나뿐이라, 장마다 더하면 세 장이면 세 배가 된다 --
+ *     그 숫자가 20회 경계를 정하므로 부풀면 재등록 첫 차감부터 기준 단가가
+ *     되고 센터가 더 낸다. 그때는 부르는 쪽이 회원당 한 번 옮긴다
+ *     (instructor-handover.js 의 carries).
  */
 export async function transferPassInstructor(organizationId, passId, input, options = {}) {
   const {
     store = createFirestorePassStore(),
     newId = () => globalThis.crypto?.randomUUID?.() || `transfer-${Date.now()}`,
+    carrySessions = true,
   } = options;
   const organization = requiredText(organizationId, "organizationId");
   const id = requiredText(passId, "passId");
@@ -385,6 +400,34 @@ export async function transferPassInstructor(organizationId, passId, input, opti
   const createdBy = requiredText(input?.createdBy, "createdBy");
 
   const entryId = String(input?.entryId || `${id}_transfer_${newId()}`);
+
+  /* ── 누적도 함께 넘어간다 (2026-10-16 대표 확정) ─────────────────────────
+     전 강사가 이 회원에게 한 횟수를 새 강사 쪽에 **더한다.**
+
+     넘겨받은 그 회원권 자체는 남은 회차 전부가 신규 단가다 (판정 2) -- 새
+     강사는 그 계약에 기여가 없다. 그런데 그 회원권이 끝나고 **같은 회원이
+     재등록하면** 그때는 이 강사가 그 회원을 이미 아는 만큼으로 판단해야
+     한다. 0 에서 다시 세면 같은 회원을 스무 번 더 가르쳐야 기준 단가가
+     되고, 그 스무 번은 이미 일어난 일이다.
+
+     **더하고, 전 강사 쪽은 그대로 둔다.** 그 숫자는 그 사람이 실제로 한
+     수업의 기록이고, 지우면 그 강사가 나중에 같은 회원을 다시 맡을 때 처음
+     보는 사이가 된다.
+
+     듀엣이면 두 사람 모두 옮긴다 -- 단가가 둘 중 적은 쪽을 보므로, 한 명만
+     옮기면 짝이 영영 새 사람으로 남는다.
+
+     읽지 못하면 0 으로 본다. 더할 것이 없다는 뜻이고, 던지면 담당 교체 자체가
+     막힌다 -- 교체는 그 자리에서 해야 하는 일이다. */
+  const movingClientIds = passClientIds({ clientId, clientIds: input?.clientIds });
+  const carried = carrySessions
+    ? await Promise.all(movingClientIds.map(async (id2) => ({
+      clientId: id2,
+      sessions: await readInstructorClientSessions(organization, fromInstructorId, id2, { store })
+        .catch(() => 0),
+    })))
+    : [];
+
   const stampedAt = await store.serverTimestamp();
 
   const entry = {
@@ -413,8 +456,20 @@ export async function transferPassInstructor(organizationId, passId, input, opti
       data: { instructorId: toInstructorId, handedOver: true },
       operation: "update",
     },
+    /* 0 은 쓰지 않는다. 더할 것이 없는데 문서를 만들면 "이 강사가 이 회원을
+       가르쳤다" 는 기록이 없는 채로 생긴다. */
+    ...carried.filter((item) => item.sessions > 0).map((item) => ({
+      path: paths.instructorClientTotal(organization, toInstructorId, item.clientId),
+      data: {
+        organizationId: organization,
+        instructorId: toInstructorId,
+        clientId: item.clientId,
+        delta: { sessions: item.sessions },
+      },
+      operation: /** @type {"bump"} */ ("bump"),
+    })),
   ]);
-  return { passId: id, entryId, entry };
+  return { passId: id, entryId, entry, carriedSessions: carried };
 }
 
 /* ── 출석 체크(차감) ───────────────────────────────────────────────────────
@@ -732,7 +787,13 @@ export async function deductPass(organizationId, pass, input, options = {}) {
     /* 듀엣이면 두 사람 모두 올린다. 강사는 그 시간에 두 사람을 각각 가르쳤고,
        한 명만 올리면 짝은 스무 번을 같이 하고도 영영 "처음 보는 회원" 으로
        남는다. 단가를 정할 때 둘 중 적은 쪽을 보는 것은 위에서 따로 한다. */
-    ...clientIds.map((id) => ({
+    /* **서비스 회차는 세지 않는다** (2026-10-13 대표 확정). 서비스는 따로
+       정산하는 회차라 "이 강사와 몇 번 했는가" 에 들어가지 않는다.
+
+       전에는 조건 없이 올렸다. 서비스를 먼저 쓰므로 회원권마다 앞쪽 몇
+       회차가 서비스인데 그것이 전부 20 에 들어갔고, 그만큼 신규 단가 구간이
+       일찍 끝났다 -- 강사가 받을 25,000 짜리 회차 몇 개가 조용히 사라졌다. */
+    ...(spendsService ? [] : clientIds.map((id) => ({
       path: paths.instructorClientTotal(organization, instructorId, id),
       data: {
         organizationId: organization,
@@ -741,7 +802,7 @@ export async function deductPass(organizationId, pass, input, options = {}) {
         delta: { sessions: 1 },
       },
       operation: /** @type {"bump"} */ ("bump"),
-    })),
+    }))),
   ]);
   return { passId, lessonId, entryId, entry, lesson };
 }
@@ -1011,6 +1072,10 @@ export async function correctDeduction(organizationId, pass, entry, input, optio
   /* 서비스 회차를 되돌리면 카운터도 되돌린다. 그러지 않으면 센터가 내주기로 한
      1회분이 실수 하나로 사라지고, 회원의 다음 서비스 수업이 강사 봉사가 된다. */
   const returnsService = category === PAY_CATEGORY.SERVICE && (Number(pass?.serviceUsed) || 0) > 0;
+  /* 되돌리는 것이 서비스 회차인가. 위 returnsService 와 다르다 -- 저쪽은
+     "서비스 카운터를 되돌릴 것이 남아 있는가" 까지 보고, 이쪽은 종류만 본다.
+     카운터가 이미 0 이어도 그 회차는 누적에 들어간 적이 없다. */
+  const correctsService = category === PAY_CATEGORY.SERVICE;
 
   await store.commit([
     { path: paths.passLedgerEntry(organization, passId, entryId), data: correction },
@@ -1024,12 +1089,16 @@ export async function correctDeduction(organizationId, pass, entry, input, optio
 
        차감이 둘 다 올렸으면 되돌리는 것도 둘 다다. 한쪽만 되돌리면 두 사람의
        누적이 영영 1 만큼 어긋난 채로 남고, 그 차이는 20회째 단가를 서로 다른
-       날에 오게 만든다 -- 원장으로는 고칠 수 없는 종류의 어긋남이다. */
-    ...passClientIds(pass).map((id) => ({
+       날에 오게 만든다 -- 원장으로는 고칠 수 없는 종류의 어긋남이다.
+
+       **서비스 회차는 애초에 올리지 않았으므로 내리지도 않는다.** 내리면
+       누적이 취소할 때마다 줄어, 되돌린 적도 없는 회차가 사라진다. 차감 쪽과
+       같은 조건이어야 한다 (deductPass 의 spendsService). */
+    ...(correctsService ? [] : passClientIds(pass).map((id) => ({
       path: paths.instructorClientTotal(organization, instructorId, id),
       data: { organizationId: organization, instructorId, clientId: id, delta: { sessions: -1 } },
       operation: /** @type {"bump"} */ ("bump"),
-    })),
+    }))),
   ]);
   return { passId, entryId, entry: correction };
 }

@@ -287,6 +287,32 @@ async function runReauthenticate(provider, password = "") {
   return { provider, authorizationCode: "" };
 }
 
+/**
+ * ID 토큰을 새로 받는다. **다시 로그인하지 않는다** -- 이미 로그인한 사용자의
+ * 토큰만 갈아 끼운다.
+ *
+ * 왜 필요한가: 소속이 방금 만들어졌거나 역할이 바뀌면, 손에 든 토큰은 그
+ * 전의 것이라 규칙이 permission-denied 로 돌려보낸다. 사용자에게는 "회원권이
+ * 없음" 으로 보이고, 앱을 껐다 켜면 멀쩡해진다 -- 그 사이에 토큰이 바뀌기
+ * 때문이다.
+ *
+ * 돌려주는 것은 "새로 받았는가" 다. 로그인 상태가 아니면 false 이고, 그때는
+ * 부르는 쪽이 다시 시도할 이유가 없다.
+ */
+export async function fbRefreshIdToken() {
+  const user = auth?.currentUser;
+  if (!user) return false;
+  try {
+    await user.getIdToken(true);
+    return true;
+  } catch (_error) {
+    /* 못 받아도 던지지 않는다. 이것은 재시도를 돕는 보조 동작이고, 여기서
+       던지면 원래의 조회 실패 코드가 이 오류로 덮인다 -- 원인 확정이
+       불가능해진다 (CLAUDE.md 2항). */
+    return false;
+  }
+}
+
 export async function fbRevokeAppleAccess(authorizationCode) {
   if (!authorizationCode) return;
   if (!auth) throw Object.assign(new Error("Firebase Authentication is unavailable."), { code: "auth/unauthenticated" });

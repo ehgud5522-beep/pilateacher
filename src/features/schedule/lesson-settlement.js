@@ -217,8 +217,17 @@ export function nextByPurchaseRound(passes) {
     return Number.isInteger(round) && round > 0 ? round : Number.MAX_SAFE_INTEGER;
   };
   const issuedAt = (value) => {
-    const date = value instanceof Date ? value : new Date(String(value ?? ""));
-    const time = date.getTime();
+    /* **Firestore Timestamp 도 읽는다.** 이것을 빠뜨리면 String(값) 이
+       "[object Object]" 가 되고 new Date 가 NaN 을 내, 모든 회원권이
+       MAX_SAFE_INTEGER 로 **같은 값**이 된다 -- 비교가 통째로 무력해져
+       정렬이 배열 순서를 그대로 돌려준다.
+
+       2026-10-02~10-08 에 실제로 그렇게 돌았다 (옛 soonestExpiring). 화면도
+       로그도 아무 말을 하지 않았고, 틀린 회원권에서 빠진 뒤에야 보였다. */
+    const date = typeof value?.toDate === "function"
+      ? value.toDate()
+      : (value instanceof Date ? value : new Date(String(value ?? "")));
+    const time = date?.getTime?.();
     return Number.isFinite(time) ? time : Number.MAX_SAFE_INTEGER;
   };
   return list.slice().sort((left, right) => (

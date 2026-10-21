@@ -170,6 +170,50 @@ test("만료일이 없는 회원권은 맨 뒤다", () => {
    값은 읽지 못했으므로(이 기기에 Admin 자격이 없다) 대표가 말한 모양 그대로
    세운다. */
 
+/* Firestore 는 Date 가 아니라 Timestamp 를 돌려준다. 정렬이 그것을 못 읽으면
+   모든 회원권이 MAX_SAFE_INTEGER 로 **같은 값**이 되어 비교가 통째로 무력해지고,
+   정렬은 배열 순서를 그대로 돌려준다 -- 2026-10-02~10-08 에 실제로 그랬다. */
+const stamp = (date) => ({ toDate: () => date });
+
+test("Timestamp 로 와도 만료일 순이 선다", () => {
+  const shown = previewMemberRate({
+    member: member(),
+    passes: [
+      pass({
+        id: "late", purchaseRound: 1, category: "pt_1_1_new", baseUnitPrice: 25000,
+        expiresAt: stamp(new Date(2027, 2, 31)), createdAt: stamp(new Date(2026, 9, 1)),
+      }),
+      pass({
+        id: "soon", purchaseRound: 2, baseUnitPrice: 30000,
+        expiresAt: stamp(new Date(2026, 10, 14)), createdAt: stamp(new Date(2026, 9, 1)),
+      }),
+    ],
+    totals: totals(40), instructorId: "u1", now: NOW,
+  });
+  assert.equal(shown.passId, "soon", "Timestamp 를 못 읽으면 배열 순서가 답이 되어 late 가 나온다");
+});
+
+test("만료일·차수가 같으면 Timestamp 생성일이 가른다", () => {
+  /* createdAt 도 Timestamp 로 온다. 여기가 blind 하면 마지막 가름이 무력해져
+     배열 순서가 답이 된다 -- 조용하고, 아무 화면도 말하지 않는다. */
+  const sameDay = new Date(2027, 0, 31);
+  const shown = previewMemberRate({
+    member: member(),
+    passes: [
+      pass({
+        id: "newer", purchaseRound: 1, category: "pt_1_1_new", baseUnitPrice: 25000,
+        expiresAt: stamp(sameDay), createdAt: stamp(new Date(2026, 9, 20)),
+      }),
+      pass({
+        id: "older", purchaseRound: 1, category: "pt_1_1_new", baseUnitPrice: 25000,
+        expiresAt: stamp(sameDay), createdAt: stamp(new Date(2026, 9, 1)),
+      }),
+    ],
+    totals: totals(40), instructorId: "u1", now: NOW,
+  });
+  assert.equal(shown.passId, "older", "먼저 끊은 것이 먼저 나간다");
+});
+
 test("강은경 건 — 만료가 이른 75회권이 먼저 빠진다", () => {
   const shown = previewMemberRate({
     member: member(),

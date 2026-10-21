@@ -53,7 +53,9 @@ console.log(`센터      : ${organizationId}`);
    전날 15시가 되어, --from 2026-10-01 을 주고 09-30 을 읽게 된다. */
 const localDay = (at) => [at.getFullYear(), at.getMonth() + 1, at.getDate()]
   .map((part, index) => String(part).padStart(index ? 2 : 4, "0")).join("-");
-console.log(`구간      : ${localDay(from)} ~ ${localDay(to)} (차수 순으로 돌던 기간)`);
+console.log(`구간      : ${localDay(from)} ~ ${localDay(to)}`);
+console.log("배경      : 10-01~10-08 만료일 정렬이 Timestamp 를 못 읽어 무력했고(배열 순서),");
+console.log("            10-09~10-21 은 차수 순으로 돌았습니다. 둘 다 만료일을 보지 않았습니다.");
 console.log("읽기 전용 : 아무것도 바꾸지 않습니다");
 console.log("");
 

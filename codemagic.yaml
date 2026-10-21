@@ -677,7 +677,7 @@ workflows:
   instructor-android-production:
     name: Pilateacher Android Production
     max_build_duration: 60
-    instance_type: linux_x2
+    instance_type: mac_mini_m2
     # Start once from Codemagic; all remaining build/sign/upload steps are automatic.
     # No push trigger: unrelated commits must not publish the app.
     environment:

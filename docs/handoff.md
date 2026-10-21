@@ -1,5 +1,42 @@
 # 이어서 작업하기 — 최근 변경과 남은 일
 
+## 2026-10-22 1.1.38 / 70 — 배포 준비 끝, 빌드는 대표가 누른다
+
+`release/1-1-38` 에 #76 · #77 이 병합돼 있다. **#75(release → main)는 열려
+있다** — main 병합은 대표가 누른다.
+
+- 병합: #76 `5df79b2` · #77 `57461ff`. #77 은 release 기준으로 `src/` 변경이
+  0건이라 통째로 받았다 (앱 코드는 이미 #73·#74 로 들어와 있었다)
+- 규칙 **배포 완료** (2026-10-22). 빌드 게이트는 `minimumLedgerBuild() = 0`
+  으로 **꺼진 채** 나갔다. 켜려면 강사 전원이 70 이상인지 먼저 본다
+- Codemagic: `instructor-android-production`(프로덕션 20% 단계적 출시) ·
+  `ios-testflight`(TestFlight 업로드까지만). **네 워크플로 전부 트리거 없음**
+- versionCode 는 CI 가 Play API 로 정한다 — `max(70, Play최대+1)`. 그래서
+  `appUpdate.minimumBuild` 는 **빌드 로그에 찍힌 번호**를 쓴다 (70이 아닐 수 있다)
+
+### 정렬이 Timestamp 를 못 읽던 자리 (고침)
+
+옛 `soonestExpiring` 이 `new Date(String(값))` 으로 읽어 Firestore Timestamp
+가 전부 NaN → MAX_SAFE_INTEGER 로 **같은 값**이 됐다. 비교가 통째로 무력해져
+정렬이 배열 순서를 돌려줬다 — 2026-10-02~10-08 의 차감은 아무 순서도 아니었다.
+`expiryOf` 는 10-22 에 고쳤지만 `issuedAt` 은 남아 있었고, 빌드 70 에 그대로
+나갈 뻔했다. 둘 다 고쳤고 테스트로 묶었다.
+
+### 남은 일 (대표 몫)
+
+1. Codemagic 두 워크플로를 `release/1-1-38` 로 시작
+2. Play Console 에서 20% → 100%
+3. App Store Connect 에서 심사 제출
+4. 웹 배포 (`npm run deploy:web`) — 앱이 프로덕션에 올라간 뒤
+5. `appUpdate.minimumBuild` = 빌드 로그의 번호
+6. 잔여 정정 66장 — `reports/payroll/order-impact-*.txt` 목록대로 콘솔에서
+
+### 읽기 전용 보고서 (기기에만 있다, .gitignore)
+
+`reports/payroll/` — 회원·강사 이름이 그대로라 커밋하지 않는다.
+`reprice-2026-10-01.txt` 는 **배포 전 기준**이라 다시 돌리거나 덮어쓰지 않는다.
+
+
 ## 2026-10-16 Android Codemagic 자동 업로드
 
 - 대표 요청: `release/1-1-38` 최신 소스로 프로덕션까지 자동 제출.

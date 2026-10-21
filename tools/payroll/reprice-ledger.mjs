@@ -16,6 +16,7 @@
  * firebase-admin 은 쓰는 순간에 들여온다 (CLAUDE.md 의 CI 항목).
  */
 
+import { openFirestore } from "./admin-sdk.mjs";
 import {
   changedOnly, repriceEntries, sessionsAtStart, summarizeReprice,
 } from "./reprice.js";
@@ -41,12 +42,7 @@ if (Number.isNaN(since.getTime())) {
   process.exit(1);
 }
 
-const { cert, getApps, initializeApp } = await import("firebase-admin/app");
-const { getFirestore } = await import("firebase-admin/firestore");
-if (!getApps().length) {
-  initializeApp(options.key ? { credential: cert(options.key) } : undefined);
-}
-const firestore = getFirestore();
+const firestore = await openFirestore({ key: options.key });
 
 console.log(`센터      : ${organizationId}`);
 console.log(`기준 시각 : ${since.toISOString()} 이후`);

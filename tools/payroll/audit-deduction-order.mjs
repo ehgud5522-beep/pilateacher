@@ -17,7 +17,8 @@
  * firebase-admin 은 쓰는 순간에 들여온다 (CLAUDE.md 의 CI 항목).
  */
 
-import { misorderedDeductions, summarizeOrderAudit } from "./deduction-order-audit.js";
+import { openFirestore } from "./admin-sdk.mjs";
+import { candidateKind, misorderedDeductions, summarizeOrderAudit } from "./deduction-order-audit.js";
 
 const parseArgs = (argv) => {
   const options = {};
@@ -45,15 +46,14 @@ const dayOf = (value, fallback) => {
 const from = dayOf(options.from, "2026-10-09");
 const to = dayOf(options.to, "2026-10-22");
 
-const { cert, getApps, initializeApp } = await import("firebase-admin/app");
-const { getFirestore } = await import("firebase-admin/firestore");
-if (!getApps().length) {
-  initializeApp(options.key ? { credential: cert(options.key) } : undefined);
-}
-const firestore = getFirestore();
+const firestore = await openFirestore({ key: options.key });
 
 console.log(`센터      : ${organizationId}`);
-console.log(`구간      : ${from.toISOString().slice(0, 10)} ~ ${to.toISOString().slice(0, 10)} (차수 순으로 돌던 기간)`);
+/* 화면에 찍는 날짜는 **그 자리의 날짜**다. toISOString 으로 찍으면 KST 자정이
+   전날 15시가 되어, --from 2026-10-01 을 주고 09-30 을 읽게 된다. */
+const localDay = (at) => [at.getFullYear(), at.getMonth() + 1, at.getDate()]
+  .map((part, index) => String(part).padStart(index ? 2 : 4, "0")).join("-");
+console.log(`구간      : ${localDay(from)} ~ ${localDay(to)} (차수 순으로 돌던 기간)`);
 console.log("읽기 전용 : 아무것도 바꾸지 않습니다");
 console.log("");
 
@@ -96,6 +96,61 @@ for (const row of rows) {
     `${row.usedPassId} (${row.usedRound ?? "?"}차 · ${day(row.usedExpiresAt)})`.padEnd(28),
     `${row.shouldPassId} (${row.shouldRound ?? "?"}차 · ${day(row.shouldExpiresAt)})`,
   ].join(" "));
+}
+
+/* ── --client: 한 회원의 회원권을 전부 펼친다 ──────────────────────────
+   "왜 저 회원권이 안 빠졌나" 는 순서만 봐서는 답이 안 나온다. 거름망에서
+   떨어졌을 수도 있기 때문이다 (잔여 0 · 비활성 · 2:1 카테고리 · 짝이 적힌
+   1:1). 그 셋은 정렬을 바꿔도 후보에 없다.
+
+   그래서 **필드를 그대로** 찍는다. 정규화한 판정만 보여 주면 원인을 확정할
+   수 없다 -- 상품명에 "3차" 가 적혀 있어도 purchaseRound 가 비어 있으면
+   코드는 그것을 모르고, 그 차이는 원본 값에서만 보인다. */
+const wanted = String(options.client || "").trim();
+if (wanted) {
+  const ids = new Set([...nameById.entries()]
+    .filter(([id, name]) => id === wanted || name === wanted)
+    .map(([id]) => id));
+  if (ids.size === 0) {
+    console.log("");
+    console.log(`"${wanted}" 로 회원을 찾지 못했습니다. 이름이 정확한지, 센터가 맞는지 보세요.`);
+  } else {
+    console.log("");
+    console.log(`── ${wanted} 의 회원권 (거름망 그대로) ──`);
+    console.log("회원권        상품명              종류   차수      잔여  상태      만료일      후보?");
+    console.log("".padEnd(104, "-"));
+    const mine = passes.filter((item) => ids.has(String(item?.clientId || ""))
+      || (Array.isArray(item?.clientIds) && item.clientIds.some((id) => ids.has(String(id)))));
+    for (const item of mine) {
+      const kind = candidateKind(item);
+      const round = item?.purchaseRound;
+      const remaining = Number(item?.remainingCount);
+      const status = String(item?.status || "");
+      const at = item?.expiresAt;
+      const expiry = typeof at?.toDate === "function" ? at.toDate() : (at ? new Date(String(at)) : null);
+      const live = Number.isFinite(expiry?.getTime?.()) ? expiry : null;
+      /* 1:1 수업 기준으로 후보인가. 막은 것이 무엇인지 하나만 적는다 --
+         여럿이면 앞의 것부터다. */
+      const blocked = kind !== "solo" ? kind
+        : status !== "active" ? `상태 ${status || "없음"}`
+          : !(remaining > 0) ? "잔여 0"
+            : (live && live.getTime() < Date.now()) ? "만료됨" : "";
+      console.log([
+        String(item.id).padEnd(13).slice(0, 13),
+        String(item?.productId || "").padEnd(19).slice(0, 19),
+        String(item?.category || "").padEnd(6).slice(0, 6),
+        (Number.isInteger(Number(round)) && Number(round) > 0 ? `${round}차` : "**비어있음**").padEnd(9),
+        String(Number.isFinite(remaining) ? remaining : "?").padStart(4),
+        `  ${status.padEnd(8).slice(0, 8)}`,
+        (live ? live.toISOString().slice(0, 10) : "없음").padEnd(11),
+        blocked ? `아니오 (${blocked})` : "예",
+      ].join(" "));
+    }
+    console.log("");
+    console.log("차수가 **비어있음** 이면 차수 순 정렬에서 그 회원권은 맨 뒤로 밀렸습니다 --");
+    console.log("상품명에 차수가 적혀 있어도 필드가 비어 있으면 코드는 그것을 모릅니다.");
+    console.log("후보가 '아니오' 면 순서를 바꿔도 빠지지 않습니다. 그 갈래는 정렬로 고쳐지지 않습니다.");
+  }
 }
 
 console.log("");

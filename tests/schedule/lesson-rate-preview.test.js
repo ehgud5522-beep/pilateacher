@@ -161,6 +161,83 @@ test("만료일이 없는 회원권은 맨 뒤다", () => {
   assert.equal(shown.passId, "soon");
 });
 
+/* ── 율하 강은경 건 (2026-10-22 대표 보고) ──────────────────────────────
+   75회 재등록(이벤트) 3차 · 만료 11/14 가 있는데 20회 깍두기 4차 · 만료
+   2027-03-31 에서 3회가 빠졌다. **차수 순으로도 설명이 안 되는 자리다** --
+   3차가 4차보다 먼저여야 했다.
+
+   아래 두 테스트가 새 정렬로 이것이 어떻게 끝나는지 고정한다. 실제 문서의
+   값은 읽지 못했으므로(이 기기에 Admin 자격이 없다) 대표가 말한 모양 그대로
+   세운다. */
+
+test("강은경 건 — 만료가 이른 75회권이 먼저 빠진다", () => {
+  const shown = previewMemberRate({
+    member: member(),
+    passes: [
+      pass({
+        id: "kkakdugi-20", purchaseRound: 4, category: "pt_1_1_repurchase_normal",
+        baseUnitPrice: 35000, totalSessions: 20, remainingCount: 17,
+        expiresAt: new Date(2027, 2, 31),
+      }),
+      pass({
+        id: "event-75", purchaseRound: 3, category: "pt_1_1_repurchase_event",
+        baseUnitPrice: 30000, totalSessions: 75, remainingCount: 60,
+        expiresAt: new Date(2026, 10, 14),
+      }),
+    ],
+    totals: totals(40), instructorId: "u1", now: NOW,
+  });
+  assert.equal(shown.passId, "event-75");
+});
+
+test("강은경 건 — 75회권에 차수가 없어도 만료일이 먼저라 그것이 빠진다", () => {
+  /* **차수 순이던 동안 4차가 이긴 이유로 가장 그럴듯한 것이다.** roundOf 는
+     purchaseRound 를 못 읽으면 MAX_SAFE_INTEGER 를 돌려준다 -- 차수 순
+     정렬에서 그 회원권은 **맨 뒤**로 밀린다. 상품명에 "3차" 가 적혀 있어도
+     필드가 비어 있으면 코드는 그것을 모른다.
+
+     새 정렬에서는 만료일이 첫 번째 키라 이 경우에도 75회권이 먼저 나간다 --
+     원인이 무엇이었든 이 자리는 닫힌다. */
+  const shown = previewMemberRate({
+    member: member(),
+    passes: [
+      pass({
+        id: "kkakdugi-20", purchaseRound: 4, category: "pt_1_1_repurchase_normal",
+        baseUnitPrice: 35000, remainingCount: 17, expiresAt: new Date(2027, 2, 31),
+      }),
+      pass({
+        id: "event-75", purchaseRound: undefined, category: "pt_1_1_repurchase_event",
+        baseUnitPrice: 30000, remainingCount: 60, expiresAt: new Date(2026, 10, 14),
+      }),
+    ],
+    totals: totals(40), instructorId: "u1", now: NOW,
+  });
+  assert.equal(shown.passId, "event-75", "차수를 못 읽어도 만료일이 이긴다");
+});
+
+test("강은경 건 — 75회권이 걸러졌다면 새 정렬로도 깍두기가 나간다", () => {
+  /* **정렬이 고치지 못하는 갈래다.** 잔여 0 · 비활성 · 2:1 카테고리처럼
+     거름망에서 떨어진 것이면 순서를 아무리 바꿔도 후보에 없다.
+
+     그래서 원인을 확정하기 전에는 "고쳤다" 고 말할 수 없다. 이 테스트는 그
+     사실을 적어 둔다. */
+  const shown = previewMemberRate({
+    member: member(),
+    passes: [
+      pass({
+        id: "kkakdugi-20", purchaseRound: 4, category: "pt_1_1_repurchase_normal",
+        baseUnitPrice: 35000, remainingCount: 17, expiresAt: new Date(2027, 2, 31),
+      }),
+      pass({
+        id: "event-75", purchaseRound: 3, category: "pt_1_1_repurchase_event",
+        baseUnitPrice: 30000, remainingCount: 0, expiresAt: new Date(2026, 10, 14),
+      }),
+    ],
+    totals: totals(40), instructorId: "u1", now: NOW,
+  });
+  assert.equal(shown.passId, "kkakdugi-20");
+});
+
 test("종류가 먼저다 — 2:1 이 아무리 빨리 만료돼도 1:1 수업에 쓰이지 않는다", () => {
   /* 정렬은 **걸러낸 뒤**에 돈다. 종류를 넘어 고르면 회원은 자기가 산 것과
      다른 회차를 잃는다. */

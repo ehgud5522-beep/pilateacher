@@ -158,16 +158,39 @@ test("staff is narrowed the same way", async () => {
   );
 });
 
-test("the owner level and the FC manager keep every branch", async () => {
+test("the owner level keeps every branch", async () => {
   /* 센터 전체를 보는 자리다. 거르면 대표가 자기 센터의 절반을 못 본다. */
   const { locationsVisibleTo } = await import("../../src/data/repositories/location-repository.js");
-  for (const role of ["owner", "area_manager", "manager"]) {
+  for (const role of ["owner", "area_manager"]) {
     assert.deepEqual(
       locationsVisibleTo(PLACES, { role, locationId: "bansong" }).map((item) => item.id),
       ["bansong", "centum"],
       role,
     );
   }
+});
+
+test("the FC manager now keeps only the branches they hold", async () => {
+  /* 2026-10-26 대표 결정으로 뒤집힌 자리다. 전에는 FC매니저도 전 지점이었다.
+
+     한 사람이 두 지점 이상을 맡는 일이 실제로 있고, 그 사람에게 아홉 지점을
+     전부 주면 자기 지점을 매번 칩으로 찾아야 한다. 반대로 한 칸짜리로
+     고정하면 둘 중 하나를 버리게 된다. */
+  const { locationsVisibleTo } = await import("../../src/data/repositories/location-repository.js");
+  assert.deepEqual(
+    locationsVisibleTo(PLACES, { role: "manager", locationIds: ["bansong"] }).map((item) => item.id),
+    ["bansong"],
+  );
+  assert.deepEqual(
+    locationsVisibleTo(PLACES, { role: "manager", locationIds: ["bansong", "centum"] }).map((item) => item.id),
+    ["bansong", "centum"],
+  );
+  /* 옛 문서는 한 칸짜리뿐이다. 그것도 읽어야 한다 -- 새 필드만 보면 아직
+     마이그레이션하지 않은 FC매니저의 지점이 통째로 사라진다. */
+  assert.deepEqual(
+    locationsVisibleTo(PLACES, { role: "manager", locationId: "centum" }).map((item) => item.id),
+    ["centum"],
+  );
 });
 
 test("an instructor with no branch set still sees everything", async () => {

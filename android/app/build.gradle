@@ -22,7 +22,7 @@ android {
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 70
-        versionName "1.1.38"
+        versionName "1.1.39"
         if (codemagicBuild) {
             def ciCode = System.getenv('ANDROID_VERSION_CODE')
             if (!ciCode || !(ciCode ==~ /[1-9][0-9]*/) || ciCode.toLong() > 2100000000L) {

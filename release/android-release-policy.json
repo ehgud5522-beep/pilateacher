@@ -7,7 +7,8 @@
   "allowedBranchPatterns": [
     "^codex/android-",
     "^release/android-",
-    "^release/1-1-38$"
+    "^release/1-1-38$",
+    "^release/1-1-39$"
   ],
   "criticalSourceFile": "src/App.jsx",
   "minimumCriticalFileSizeRatio": 0.75,

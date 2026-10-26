@@ -768,3 +768,41 @@ export async function reportAppVersion(organizationId, userId, app, options = {}
     return "failed";
   }
 }
+
+/**
+ * 대표가 그 강사 대신 비밀번호 재설정 메일을 보냈다는 기록.
+ *
+ * **메일을 보내는 것은 이 함수가 아니다.** 발송은 Firebase Auth 가 하고
+ * (fbSendPasswordReset), 여기는 그 일이 있었다는 사실만 남긴다. 둘을 한
+ * 함수에 묶지 않는 이유는 Auth 와 Firestore 가 서로의 실패를 되돌릴 수 없기
+ * 때문이다 -- 묶으면 "메일은 갔는데 기록이 없다" 와 "기록은 있는데 메일이 안
+ * 갔다" 중 하나를 고르는 자리가 생긴다. 부르는 쪽이 보낸 뒤에 적는다.
+ *
+ * **이메일 주소는 담지 않는다.** auditLogs 에 그 칸이 없고 열지도 않는다 --
+ * 누구에게 보냈는지는 targetId(uid) 가 말한다 (CLAUDE.md §7).
+ *
+ * @param {string} organizationId
+ * @param {{ targetId: string, changedBy: string, actorRole: string }} input
+ * @param {{ store?: any }} [options]
+ */
+export async function recordPasswordResetSent(organizationId, input, options = {}) {
+  const { store = createFirestoreInstructorRateStore() } = options;
+  const organization = requiredText(organizationId, "organizationId");
+  const target = requiredText(input?.targetId, "targetId");
+  const changedBy = requiredText(input?.changedBy, "changedBy");
+
+  const stampedAt = await store.serverTimestamp();
+  const audit = auditEntry(organization, {
+    action: AUDIT_ACTION.PASSWORD_RESET_SENT,
+    actorId: changedBy,
+    actorRole: requiredText(input?.actorRole, "actorRole"),
+    targetId: target,
+    stampedAt,
+  });
+
+  await store.commit([{
+    path: paths.auditLog(auditLogId(AUDIT_ACTION.PASSWORD_RESET_SENT, target, String(Date.now()))),
+    data: audit,
+  }]);
+  return { targetId: target, audit };
+}

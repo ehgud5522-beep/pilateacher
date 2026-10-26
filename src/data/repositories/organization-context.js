@@ -30,6 +30,11 @@ export const UNRESOLVED_ORGANIZATION_CONTEXT = Object.freeze({
   displayName: "",
   displayNameBy: "",
   locationId: "",
+  /* 맡은 지점들. **FC매니저만 둘 이상일 수 있다** (2026-10-26 대표 결정).
+     읽는 쪽은 scopedLocationIds 로 locationId 와 함께 본다 -- 옛 앱이 깔린
+     폰은 아직 한 칸짜리만 쓰고, 새 필드만 보면 그 사람의 지점이 통째로
+     사라진다. */
+  locationIds: [],
   /* 부원장인가. 차감할 때 급여 판정 1 이 이 값을 본다
      (deduction-pricing.js). 여기 두는 이유는 값이 필요한 그 순간에 이미
      읽혀 있기 때문이다 -- 로그인할 때 내 membership 을 한 번 읽고, 그 문서에
@@ -73,6 +78,7 @@ export function unknownOrganizationContext() {
  * @property {string} [displayName]
  * @property {string} [displayNameBy]
  * @property {string} [locationId]
+ * @property {Array<string>} [locationIds]
  * @property {boolean} [isDeputyDirector]
  * @property {string} [title]
  */
@@ -257,6 +263,9 @@ export async function resolveOrganizationContext(userId, options = {}) {
        아홉 개 칩을 주면 그중 여덟은 눌러도 빈 목록이고, 그 빈 화면은
        "회원이 없다" 로 읽힌다 (locationsVisibleTo). */
     locationId: String(membership.locationId ?? ""),
+    locationIds: Array.isArray(membership.locationIds)
+      ? membership.locationIds.map((item) => String(item ?? "").trim()).filter(Boolean)
+      : [],
     previousUids: Array.isArray(membership.previousUids) ? membership.previousUids.map(String) : [],
     isLegacy: false,
   }, "membership", {

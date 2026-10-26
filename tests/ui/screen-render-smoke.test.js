@@ -188,6 +188,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "강사 관리",
     "강사 관리 · 계정 교체",
     "강사 관리 · 총괄매니저 지정",
+    "강사 관리 · FC매니저 지점 여럿",
+    "강사 관리 · FC매니저 지점 0개",
     "강사 관리 · 총괄매니저 지정 · 옛 앱",
     "강사 관리 · 총괄매니저 해제",
     "강사 관리 · 총괄매니저가 본 화면",
@@ -2138,6 +2140,35 @@ test("a roster we could not read says which kind of failure it was", async (t) =
     assert.match(markup, /이 기기에 저장된 목록이고, 회원권 잔여는 센터의 값이 아닙니다/);
     assert.match(markup, /다시 시도/);
   }
+});
+
+test("FC매니저만 지점을 여럿 고른다", async (t) => {
+  /* 한 사람이 두 지점 이상을 맡는 일이 실제로 있고, 그때 한 칸짜리 필드는
+     둘 중 하나를 버리게 만든다 (2026-10-26 대표 결정).
+
+     강사·팀장·점장은 그대로 하나다 -- 그 사람들의 동작은 바뀌지 않는다. */
+  const markupOf = await issueScreens(t);
+
+  const many = markupOf("강사 관리 · FC매니저 지점 여럿");
+  assert.match(many, /지점 \(여러 곳\)/);
+  assert.match(many, /맡은 지점을 모두 고르세요/);
+
+  /* 강사를 고치는 화면은 옛 모양 그대로다. "여러 곳" 이 뜨면 한 지점짜리
+     역할에까지 다중 선택이 샌 것이다. */
+  const one = markupOf("강사 관리 · 총괄매니저 지정");
+  assert.doesNotMatch(one, /지점 \(여러 곳\)/, "강사는 한 지점 그대로");
+});
+
+test("지점 0개인 FC매니저는 저장을 막고 이유를 말한다", async (t) => {
+  /* 0개로 저장하면 그 FC매니저는 어느 회원도 못 본다 -- 화면이 통째로 빈
+     목록이 되고, 그것은 "고장" 과 구별되지 않는다.
+
+     막기만 하면 왜 안 눌리는지 알 수 없으므로 이유를 함께 띄운다. */
+  const markupOf = await issueScreens(t);
+  const none = markupOf("강사 관리 · FC매니저 지점 0개");
+
+  assert.match(none, /지점을 하나 이상 고르세요/);
+  assert.match(none, /고른 지점의 회원만 봅니다/);
 });
 
 test("담당 변경은 회원 상세를 여는 두 길 모두에 선다", async (t) => {

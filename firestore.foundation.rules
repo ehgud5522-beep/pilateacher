@@ -309,7 +309,17 @@ service cloud.firestore {
           || request.resource.data.title in ["instructor", "team_lead", "branch_manager"])
         && (!("locationId" in request.resource.data)
           || (request.resource.data.locationId is string
-            && request.resource.data.locationId.size() > 0));
+            && request.resource.data.locationId.size() > 0))
+        /* 맡은 지점들. **목록인지까지만 본다** -- 어느 지점이 실재하는지는
+           규칙이 알 수 없고(locations 를 훑어야 한다), 그것은 화면이 고르게
+           해서 지킨다. 빈 목록도 받는다: FC매니저에게 0개를 막는 것은 화면의
+           일이고, 여기서 막으면 지점을 지우는 길이 영영 없어진다.
+
+           **누가 쓸 수 있는가는 바뀌지 않는다** -- 이 칸도 위의
+           mayManageMembership 문으로만 들어온다 (대표·총괄매니저). FC매니저는
+           자기 지점을 볼 수만 있고 바꾸지 못한다. */
+        && (!("locationIds" in request.resource.data)
+          || request.resource.data.locationIds is list);
     }
 
     /* ── 센터에서 부르는 이름을 누가 정했는가 ──────────────────────────────
@@ -1407,11 +1417,22 @@ service cloud.firestore {
         allow get: if isCentreStaff(organizationId)
           && resource.data.organizationId == organizationId;
         allow list: if isCentreStaff(organizationId);
+        /* 지점을 만들고 고치는 것은 **대표·총괄매니저뿐이다** (2026-10-26
+           대표 결정). FC매니저는 목록을 읽기만 한다.
+
+           전에는 FC매니저도 쓸 수 있었다. 화면은 주지 않았지만(강사 관리가
+           대표 전용) 문은 열려 있었고, 규칙으로만 막혀 있지 않은 문은 다음
+           화면이 생기는 날 조용히 열린다. 지금은 FC매니저가 맡은 지점으로
+           자기 범위가 정해지므로, 지점을 만들 수 있다는 것은 **자기 범위를
+           자기가 넓히는 길**이기도 하다.
+
+           읽기(get·list)는 그대로 isCentreStaff 다 -- 회원권 발급과 회원
+           등록의 지점 칩이 그것으로 뜬다. */
         allow create: if request.resource.data.organizationId == organizationId
-          && hasRole(organizationId, ["owner", "area_manager", "manager"]);
+          && hasRole(organizationId, ownerLevel());
         allow update: if resource.data.organizationId == organizationId
           && request.resource.data.organizationId == organizationId
-          && hasRole(organizationId, ["owner", "area_manager", "manager"]);
+          && hasRole(organizationId, ownerLevel());
         allow delete: if false;
       }
     }
@@ -1510,6 +1531,10 @@ service cloud.firestore {
           /* 붙일 때부터 대표가 정한 이름이다. 표시가 없으면 그 강사가 앱을
              처음 여는 순간 로그인 계정 이름으로 덮어써진다 (nameSetByOwner). */
           "displayName", "displayNameBy", "title", "locationId",
+          /* 맡은 지점들. **FC매니저만 둘 이상일 수 있다** (2026-10-26).
+             한 칸짜리 locationId 는 그대로 둔다 -- 옛 앱이 깔린 폰이 아직
+             그것만 쓰고, 지우면 그 폰들의 지점이 통째로 사라진다. */
+          "locationIds",
           "createdAt", "createdBy"
         ])
         && request.resource.data.keys().hasAll([
@@ -1609,7 +1634,7 @@ service cloud.firestore {
              열었으면 본인이 쓴 이름이 그대로 남는다. */
           mayManageMembership(resource.data.organizationId, resource.data)
           && request.resource.data.diff(resource.data).affectedKeys()
-            .hasOnly(["displayName", "title", "locationId", "displayNameBy"])
+            .hasOnly(["displayName", "title", "locationId", "locationIds", "displayNameBy"])
           && request.resource.data.displayName is string
           && request.resource.data.displayName.size() > 0
           && request.resource.data.displayName.size() <= 60

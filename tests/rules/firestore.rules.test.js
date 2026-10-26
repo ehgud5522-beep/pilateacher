@@ -394,11 +394,32 @@ describe("role permissions", () => {
     await assertFails(updateDoc(doc(dbFor(users.owner), "organizations", ORG_A), { aiUsageCount: 999 }));
   });
 
-  test("manager can create a location", async () => {
-    await assertSucceeds(setDoc(doc(dbFor(users.manager), "organizations", ORG_A, "locations", "location-a"), {
+  test("manager can no longer create a location", async () => {
+    /* 2026-10-26 대표 결정으로 뒤집힌 자리다. 전에는 FC매니저도 만들 수
+       있었다 -- 화면은 없었지만 문은 열려 있었다.
+
+       FC매니저의 범위가 맡은 지점으로 정해지면서, 지점을 만들 수 있다는 것은
+       **자기 범위를 자기가 넓히는 길**이 된다. */
+    await assertFails(setDoc(doc(dbFor(users.manager), "organizations", ORG_A, "locations", "location-a"), {
       organizationId: ORG_A,
       name: "Location",
     }));
+  });
+
+  test("the owner level still creates locations", async () => {
+    /* 좁히다가 대표까지 막으면 지점을 만들 사람이 없어진다. */
+    await assertSucceeds(setDoc(doc(dbFor(users.owner), "organizations", ORG_A, "locations", "location-owner"), {
+      organizationId: ORG_A,
+      name: "Location",
+    }));
+  });
+
+  test("a manager still reads the branch list", async () => {
+    /* 발급·등록 화면의 지점 칩이 이것으로 뜬다. 읽기까지 막으면 FC매니저는
+       회원권을 발급할 수 없다. */
+    await assertSucceeds(getDocs(
+      collection(dbFor(users.manager), "organizations", ORG_A, COLLECTIONS.LOCATIONS),
+    ));
   });
 
   /* 회원 등록 화면은 지점 목록을 list 쿼리로 읽는다 (location-repository).

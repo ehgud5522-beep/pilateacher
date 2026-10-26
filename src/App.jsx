@@ -120,8 +120,8 @@ import {
   normalizePhone, saveScopeSnapshot,
 } from "./data/repositories/client-repository.js";
 import {
-  ALL_LOCATIONS, NO_LOCATION, countByLocation, createLocation, filterByLocation, listLocations,
-  locationsVisibleTo,
+  ALL_LOCATIONS, BRANCH_SCOPED_ROLES, NO_LOCATION, countByLocation, createLocation, filterByLocation,
+  holdsManyLocations, itemsVisibleTo, listLocations, locationsVisibleTo, scopedLocationIds,
 } from "./data/repositories/location-repository.js";
 import { connectRepositoryLog, toleratingReadFailure } from "./data/repositories/repository-read.js";
 import {
@@ -5340,7 +5340,12 @@ function ReferenceMemberList({
   /* 강사에게는 "전체 보기" 를 주지 않는다. 경계가 아니라 -- 규칙은 지금도
      열려 있다 -- 120명을 일상적으로 스크롤할 이유가 없어서다.
      기본값 true 는 개인 강사(legacy)를 위한 것이다. */
-  canBrowseAll = true, viewerRole = "", viewerLocationId = "", organizationMode = false,
+  canBrowseAll = true, viewerRole = "", viewerLocationId = "",
+  /* FC매니저가 맡은 지점들. **한 칸짜리와 함께 본다** -- 옛 앱이 깔린 폰은
+     아직 locationId 만 쓰고, 새 필드만 보면 그 사람의 지점이 통째로 사라진다
+     (scopedLocationIds). */
+  viewerLocationIds = null,
+  organizationMode = false,
   /* 스모크 하네스가 칩 하나를 바로 여는 자리다. 앱은 언제나 기본값에서
      시작한다 -- initialView 와 같은 방식이다. */
   initialFilter = "",
@@ -5375,21 +5380,32 @@ function ReferenceMemberList({
 
      헬퍼는 locationId 를 보고 로스터 행은 orgLocationId 를 들고 있다 --
      세는 자리에서만 이름을 맞춘다. */
+  const viewerScope = useMemo(
+    () => ({ role: viewerRole, locationId: viewerLocationId, locationIds: viewerLocationIds || [] }),
+    [viewerRole, viewerLocationId, viewerLocationIds],
+  );
   const locationItems = useMemo(
     () => members.map((item) => ({ ...item, locationId: String(item?.orgLocationId || "") })),
     [members],
   );
+  /* 맡은 지점 밖의 회원은 명단에서 뺀다 (2026-10-26 대표 결정). 칩만 줄이고
+     명단을 그대로 두면 "전체" 칩에서 남의 지점 회원이 그대로 나온다.
+
+     **지점이 비어 있는 회원은 남긴다.** 이관 전에 만들어진 회원이 실제로
+     있고, 빼면 그 회원은 어느 화면에서도 안 보인 채 아무도 모른다. */
+  const scopedMembers = useMemo(
+    () => (organizationMode ? itemsVisibleTo(locationItems, viewerScope) : locationItems),
+    [organizationMode, locationItems, viewerScope],
+  );
   /* 강사에게는 자기 지점만 남는다 -- 나머지 칩은 눌러도 빈 목록이고, 그 빈
      화면은 "회원이 없다" 로 읽힌다. */
   const visibleLocations = useMemo(
-    () => (organizationMode
-      ? locationsVisibleTo(locations, { role: viewerRole, locationId: viewerLocationId })
-      : []),
-    [organizationMode, locations, viewerRole, viewerLocationId],
+    () => (organizationMode ? locationsVisibleTo(locations, viewerScope) : []),
+    [organizationMode, locations, viewerScope],
   );
   const locationCounts = useMemo(
-    () => countByLocation(locationItems, visibleLocations),
-    [locationItems, visibleLocations],
+    () => countByLocation(scopedMembers, visibleLocations),
+    [scopedMembers, visibleLocations],
   );
   /* 저장해 둔 칩이 지금 보이는 목록에 없으면 전체로 돌아간다. 기기에 남아
      있던 남의 지점을 그대로 걸면 **자기 회원까지 사라지고**, 고를 칩도 없어서
@@ -5399,7 +5415,10 @@ function ReferenceMemberList({
     if (locationFilter === NO_LOCATION) return locationCounts[NO_LOCATION] > 0 ? NO_LOCATION : ALL_LOCATIONS;
     return visibleLocations.some((item) => item.id === locationFilter) ? locationFilter : ALL_LOCATIONS;
   }, [locationFilter, visibleLocations, locationCounts]);
-  const nonDraftMembers = members.filter((m) => !isDraft(m));
+  /* **scopedMembers 를 쓴다.** members 를 그대로 쓰면 칩만 줄고 "전체" 에서
+     남의 지점 회원이 그대로 나온다. locationId 가 붙어 있는 행이라 아래
+     filterByLocation 과 모양이 같다. */
+  const nonDraftMembers = scopedMembers.filter((m) => !isDraft(m));
   /* Inactive members are their own view rather than an extra row in the normal
      list, so the everyday list stays what it was. Without this they were
      reachable from nowhere at all. */
@@ -15904,10 +15923,27 @@ function PassIssue({
   organization, currentUserId, clientStore, productStore, instructorStore, locationStore, passStore,
   onRetryOrganization, onToast, now = () => new Date(), initialState = null,
 }) {
-  const [clients, setClients] = useState(initialState?.clients || []);
+  const [allClients, setClients] = useState(initialState?.clients || []);
   const [products, setProducts] = useState(initialState?.products || []);
-  const [instructors, setInstructors] = useState(initialState?.instructors || []);
-  const [locations, setLocations] = useState(initialState?.locations || []);
+  const [allInstructors, setInstructors] = useState(initialState?.instructors || []);
+  const [allLocations, setLocations] = useState(initialState?.locations || []);
+  /* 맡은 지점 밖은 고를 수 없다 (2026-10-26 대표 결정 2·10항). 회원·강사·
+     지점 셋 다 좁힌다 -- 하나라도 넓으면 FC매니저가 남의 지점 회원에게
+     자기 지점 강사를 붙이거나 그 반대가 되고, 그 회원권은 발급한 사람의
+     화면에서 바로 사라진다.
+
+     대표·총괄매니저는 그대로 전부다. 강사·팀장·점장은 이 화면을 열지 못한다. */
+  const issueScope = useMemo(() => ({
+    role: organization?.role || "",
+    locationId: organization?.locationId || "",
+    locationIds: organization?.locationIds || [],
+  }), [organization]);
+  const clients = useMemo(() => itemsVisibleTo(allClients, issueScope), [allClients, issueScope]);
+  const instructors = useMemo(
+    () => itemsVisibleTo(allInstructors, issueScope),
+    [allInstructors, issueScope],
+  );
+  const locations = useMemo(() => locationsVisibleTo(allLocations, issueScope), [allLocations, issueScope]);
   const [loading, setLoading] = useState(!initialState);
   const [loadError, setLoadError] = useState(initialState?.loadError || "");
   const [mode, setMode] = useState(initialState?.mode || "form");
@@ -16913,9 +16949,16 @@ function InstructorAdmin({
   const [mode, setMode] = useState(initialState?.mode || "list");
   const [editing, setEditing] = useState(initialState?.editing || null);
   const [draft, setDraft] = useState(initialState?.draft || {
-    displayName: "", title: MEMBERSHIP_TITLE.INSTRUCTOR, locationId: "", rateManwon: "", deputy: false,
+    displayName: "", title: MEMBERSHIP_TITLE.INSTRUCTOR, locationId: "", locationIds: [],
+    rateManwon: "", deputy: false,
     role: ROLES.INSTRUCTOR,
   });
+  /* FC매니저만 지점을 여럿 갖는다 (2026-10-26 대표 결정). 추가 시트와 수정
+     시트가 같은 draft 를 쓰므로 여기 한 번만 센다 -- 두 곳에서 따로 세면
+     한쪽만 고쳐지는 날이 온다. */
+  const manyLocations = holdsManyLocations(draft.role);
+  /* 저장된 값은 한 칸짜리일 수 있다 (옛 문서). 읽을 때 둘을 합쳐 본다. */
+  const draftLocationIds = scopedLocationIds(draft);
   const [lookup, setLookup] = useState(initialState?.lookup || { email: "", found: null, error: "", busy: false });
   const [formError, setFormError] = useState(initialState?.formError || "");
   const [locationDraft, setLocationDraft] = useState(initialState?.locationDraft || null);
@@ -16950,12 +16993,28 @@ function InstructorAdmin({
     () => new Map(locations.map((location) => [location.id, location.name || ""])),
     [locations],
   );
-  const locationCounts = useMemo(
-    () => countByLocation(members.filter(isActiveMembership), locations),
-    [members, locations],
+  /* 맡은 지점 밖의 강사는 목록에 없다 (2026-10-26 대표 결정 2항). 대표·총괄
+     매니저는 그대로 전부이고 FC매니저만 좁혀진다 -- 강사·팀장·점장은 애초에
+     이 화면을 열지 못한다 (showInstructorAdmin).
+
+     **고를 수 있는 지점 칩도 함께 좁힌다.** 목록만 좁히면 늘 비어 있는 칩이
+     생기고, 그 빈 화면은 "강사가 없다" 로 읽힌다. */
+  const adminScope = useMemo(() => ({
+    role: organization?.role || "",
+    locationId: organization?.locationId || "",
+    locationIds: organization?.locationIds || [],
+  }), [organization]);
+  const scopedLocations = useMemo(
+    () => locationsVisibleTo(locations, adminScope),
+    [locations, adminScope],
   );
-  const [locationFilter, setLocationFilter] = useLocationFilter(locations, locationCounts);
-  const inLocation = filterByLocation(members, locationFilter, locations);
+  const scopedMembers = useMemo(() => itemsVisibleTo(members, adminScope), [members, adminScope]);
+  const locationCounts = useMemo(
+    () => countByLocation(scopedMembers.filter(isActiveMembership), scopedLocations),
+    [scopedMembers, scopedLocations],
+  );
+  const [locationFilter, setLocationFilter] = useLocationFilter(scopedLocations, locationCounts);
+  const inLocation = filterByLocation(scopedMembers, locationFilter, scopedLocations);
   const working = inLocation.filter(isActiveMembership);
   const retired = inLocation.filter((membership) => !isActiveMembership(membership));
 
@@ -16986,7 +17045,7 @@ function InstructorAdmin({
     setMode("list");
     setEditing(null);
     setLookup({ email: "", found: null, error: "", busy: false });
-    setDraft({ displayName: "", title: MEMBERSHIP_TITLE.INSTRUCTOR, locationId: "", rateManwon: "", deputy: false, role: ROLES.INSTRUCTOR });
+    setDraft({ displayName: "", title: MEMBERSHIP_TITLE.INSTRUCTOR, locationId: "", locationIds: [], rateManwon: "", deputy: false, role: ROLES.INSTRUCTOR });
     setFormError("");
   };
 
@@ -16999,6 +17058,11 @@ function InstructorAdmin({
         ? picked.title
         : MEMBERSHIP_TITLE.INSTRUCTOR,
       locationId: picked.locationId || "",
+      /* 저장된 목록을 그대로 싣는다. **역할도 함께 싣는다** -- 이것이 없으면
+         draft.role 이 undefined 라 FC매니저를 수정할 때 칩이 단일 선택으로
+         뜨고, 저장하면 지점 하나만 남는다. */
+      locationIds: scopedLocationIds(picked),
+      role: picked.role || ROLES.INSTRUCTOR,
       rateManwon: rate ? String(rate / WON_PER_MANWON) : "",
       deputy: isDeputyDirectorOf(picked),
     });
@@ -17029,6 +17093,11 @@ function InstructorAdmin({
     const userId = String(lookup.found?.userId || "");
     if (!userId) { setFormError("먼저 이메일로 강사를 찾아 주세요."); return; }
     if (!draft.displayName.trim()) { setFormError("이름을 입력해 주세요."); return; }
+    // 추가도 같은 선이다 -- 지점 없이 들어온 FC매니저는 첫 화면이 빈 목록이다.
+    if (manyLocations && draftLocationIds.length === 0) {
+      setFormError("지점을 하나 이상 고르세요. FC매니저는 고른 지점의 회원만 봅니다.");
+      return;
+    }
     setSaving(true);
     try {
       await addMembership(organizationId, {
@@ -17037,6 +17106,7 @@ function InstructorAdmin({
         title: draft.role === ROLES.MANAGER ? MEMBERSHIP_TITLE.INSTRUCTOR : draft.title,
         role: draft.role === ROLES.MANAGER ? ROLES.MANAGER : ROLES.INSTRUCTOR,
         locationId: draft.locationId,
+        ...(manyLocations ? { locationIds: draftLocationIds } : {}),
         createdBy: currentUserId,
         actorRole: organization?.role || "",
       }, { store: rateStore });
@@ -17055,6 +17125,12 @@ function InstructorAdmin({
     setFormError("");
     if (!editing) return;
     if (!draft.displayName.trim()) { setFormError("이름을 입력해 주세요."); return; }
+    /* 0개로 저장하면 그 FC매니저는 어느 회원도 못 본다 -- 화면이 통째로 빈
+       목록이 되고, 그것은 "고장" 과 구별되지 않는다. */
+    if (manyLocations && draftLocationIds.length === 0) {
+      setFormError("지점을 하나 이상 고르세요. FC매니저는 고른 지점의 회원만 봅니다.");
+      return;
+    }
     const wasDeputy = isDeputyDirectorOf(editing);
     const previousRate = fullRoomRateOf(editing);
     const nextRate = draft.deputy || draft.rateManwon === "" ? null : manwonToWon(Number(draft.rateManwon));
@@ -17085,6 +17161,10 @@ function InstructorAdmin({
         displayName: draft.displayName.trim(),
         title: draft.title,
         locationId: draft.locationId,
+        /* FC매니저일 때만 보낸다. 다른 역할에 빈 목록을 쓰면 그 문서에
+           쓸모없는 칸이 하나 생기고, 읽는 쪽(scopedLocationIds)이 그것을
+           "지점 없음" 으로 읽어 한 칸짜리를 덮는다. */
+        ...(manyLocations ? { locationIds: draftLocationIds } : {}),
         changedBy: currentUserId,
         actorRole,
       }, { store: rateStore });
@@ -17161,22 +17241,52 @@ function InstructorAdmin({
     </section>
   );
 
+  /* ── 지점 ─────────────────────────────────────────────────────────────
+     **FC매니저만 여럿이다** (2026-10-26 대표 결정). 한 사람이 두 지점 이상을
+     맡는 일이 실제로 있고, 그때 한 칸짜리는 둘 중 하나를 버리게 만든다.
+
+     강사·팀장·점장은 그대로 하나다 -- 그 사람들의 동작은 바뀌지 않는다. */
   const locationPicker = (
-    <Field label="지점" hint={locations.length === 0 ? "등록된 지점이 없습니다" : "선택"}>
+    <Field
+      label={manyLocations ? "지점 (여러 곳)" : "지점"}
+      hint={locations.length === 0
+        ? "등록된 지점이 없습니다"
+        : (manyLocations ? "맡은 지점을 모두 고르세요" : "선택")}
+    >
       <div className="flex flex-wrap gap-2">
-        {locations.map((location) => (
-          <button key={location.id} type="button"
-            onClick={() => setDraft((current) => ({
-              ...current,
-              locationId: current.locationId === location.id ? "" : location.id,
-            }))}
-            className="h-9 px-3 font-bold" style={{
-              borderRadius: 999, fontSize: TYPE.caption,
-              backgroundColor: draft.locationId === location.id ? TINT : CANVAS,
-              color: draft.locationId === location.id ? BRAND_D : SUB,
-            }}>{location.name || location.id}</button>
-        ))}
+        {locations.map((location) => {
+          const on = manyLocations
+            ? draftLocationIds.includes(location.id)
+            : draft.locationId === location.id;
+          return (
+            <button key={location.id} type="button"
+              onClick={() => setDraft((current) => {
+                if (!manyLocations) {
+                  return { ...current, locationId: current.locationId === location.id ? "" : location.id };
+                }
+                const held = Array.isArray(current.locationIds) ? current.locationIds : [];
+                const next = held.includes(location.id)
+                  ? held.filter((id) => id !== location.id)
+                  : [...held, location.id];
+                /* 한 칸짜리도 함께 맞춘다. 옛 앱이 깔린 폰은 그것만 읽고,
+                   비워 두면 그 폰에서 이 사람의 지점이 사라진다. */
+                return { ...current, locationIds: next, locationId: next[0] || "" };
+              })}
+              className="h-9 px-3 font-bold" style={{
+                borderRadius: 999, fontSize: TYPE.caption,
+                backgroundColor: on ? TINT : CANVAS,
+                color: on ? BRAND_D : SUB,
+              }}>{location.name || location.id}</button>
+          );
+        })}
       </div>
+      {/* 0개로 저장하면 그 FC매니저는 어느 회원도 못 본다. 저장을 막고
+          이유를 말한다 -- 막기만 하면 왜 안 눌리는지 알 수 없다. */}
+      {manyLocations && draftLocationIds.length === 0 ? (
+        <p role="alert" className="mt-1.5 font-bold" style={{ fontSize: TYPE.caption, color: BAD }}>
+          지점을 하나 이상 고르세요. FC매니저는 고른 지점의 회원만 봅니다.
+        </p>
+      ) : null}
     </Field>
   );
 
@@ -17488,7 +17598,7 @@ function InstructorAdmin({
         </form>
       ) : null}
       {locationDraft?.error ? <p className="mt-1.5" style={{ fontSize: TYPE.caption, color: BAD }}>{locationDraft.error}</p> : null}
-      <LocationFilter locations={locations} counts={locationCounts} value={locationFilter} onChange={setLocationFilter} />
+      <LocationFilter locations={scopedLocations} counts={locationCounts} value={locationFilter} onChange={setLocationFilter} />
       <div className="mt-3">
         {loading ? <p style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : null}
         {!loading && loadError
@@ -17509,7 +17619,7 @@ function InstructorAdmin({
             서면 같은 말이 두 번 나온다. */}
         {!loading && !loadError && (locationFilter === ALL_LOCATIONS ? (
           [
-            ...locations.map((place) => ({ id: place.id, name: place.name || place.id })),
+            ...scopedLocations.map((place) => ({ id: place.id, name: place.name || place.id })),
             { id: NO_LOCATION, name: "지점 없음" },
           ]
             .map((place) => ({
@@ -18862,11 +18972,31 @@ function ClientDirectory({ organization, currentUserId, clientStore, locationSto
   /* 인원수는 대표에게도 뺀다. 보이는 문제가 아니라 세는 문제이고, 지점 칩의
      숫자가 실제 회원 수여야 한다. */
   const countedClients = useMemo(() => visibleToRole(clients, {}), [clients]);
-  const locationCounts = useMemo(() => countByLocation(countedClients, locations), [countedClients, locations]);
-  const [locationFilter, setLocationFilter] = useLocationFilter(locations, locationCounts);
+  /* 맡은 지점 밖은 보여 주지 않는다 (2026-10-26 대표 결정 2항). 대표·총괄
+     매니저는 그대로 전부이고, FC매니저만 좁혀진다 -- 강사·팀장·점장의
+     동작은 바뀌지 않는다 (BRANCH_SCOPED_ROLES).
+
+     **고를 수 있는 지점도 같이 좁힌다.** 칩만 두고 목록을 좁히면 누를 수
+     있는데 늘 비어 있는 칩이 생기고, 그 빈 화면은 "회원이 없다" 로 읽힌다. */
+  const viewerScope = useMemo(() => ({
+    role: organization?.role || "",
+    locationId: organization?.locationId || "",
+    locationIds: organization?.locationIds || [],
+  }), [organization]);
+  const choosableLocations = useMemo(
+    () => locationsVisibleTo(locations, viewerScope),
+    [locations, viewerScope],
+  );
+  const scopedClients = useMemo(() => itemsVisibleTo(listed, viewerScope), [listed, viewerScope]);
+  const locationCounts = useMemo(
+    () => countByLocation(itemsVisibleTo(countedClients, viewerScope), choosableLocations),
+    [countedClients, viewerScope, choosableLocations],
+  );
+  const [locationFilter, setLocationFilter] = useLocationFilter(choosableLocations, locationCounts);
   const visible = useMemo(
-    () => filterByLocation(listed, locationFilter, locations).filter((client) => clientMatchesSearch(client, search)),
-    [listed, locations, locationFilter, search],
+    () => filterByLocation(scopedClients, locationFilter, choosableLocations)
+      .filter((client) => clientMatchesSearch(client, search)),
+    [scopedClients, choosableLocations, locationFilter, search],
   );
 
   const resetForm = () => {
@@ -18954,8 +19084,12 @@ function ClientDirectory({ organization, currentUserId, clientStore, locationSto
                 : <p style={{ fontSize: TYPE.caption, color: SUB }}>등록된 지점이 없습니다. 센터 정보에서 지점을 먼저 만들어 주세요.</p>
             )
             : (
+              /* 회원은 한 지점에만 속한다 -- 여기는 그대로 하나만 고른다.
+                 바뀌는 것은 **고를 수 있는 목록**이다: FC매니저에게는 자기
+                 지점만 뜬다 (2026-10-26 대표 결정 10항). 남의 지점으로
+                 등록해 두면 그 회원은 등록한 사람 화면에서 바로 사라진다. */
               <div className="flex flex-wrap gap-2">
-                {locations.map((location) => (
+                {choosableLocations.map((location) => (
                   <button key={location.id} type="button" onClick={() => setForm({ ...form, locationId: location.id })}
                     className="h-9 px-3 font-bold" style={{
                       borderRadius: 999, fontSize: TYPE.caption,
@@ -19011,7 +19145,7 @@ function ClientDirectory({ organization, currentUserId, clientStore, locationSto
       <div className="mt-3">
         <input value={search} onChange={(e) => setSearch(e.target.value)} className={inputCls} placeholder="이름 또는 연락처" />
       </div>
-      <LocationFilter locations={locations} counts={locationCounts} value={locationFilter} onChange={setLocationFilter} />
+      <LocationFilter locations={choosableLocations} counts={locationCounts} value={locationFilter} onChange={setLocationFilter} />
       <div className="mt-3">
         {loading ? <p style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : null}
         {!loading && loadError ? <p style={{ fontSize: TYPE.caption, color: BAD }}>{loadError}</p> : null}
@@ -21255,8 +21389,21 @@ function ExpiryReportScreen({
     </section>
   );
 
+  /* ── 지점으로 좁힌다 (2026-10-26 대표 결정 2항) ──────────────────────
+     **여기는 강사·팀장·점장도 자기 지점만 본다.** 명부와 다른 선인데, 그
+     화면은 "누구를 챙겨야 하는가" 를 묻는 자리라 남의 지점 회원이 섞이면
+     할 일이 아닌 것이 할 일로 보인다.
+
+     FC매니저는 맡은 지점 전부 (locationIds), 강사·팀장·점장은 자기 한 지점
+     (locationId), 대표·총괄매니저는 전 지점이다 -- scopedLocationIds 가 옛
+     필드와 새 필드를 함께 읽어 그 셋을 한 줄로 가른다. */
+  const expiryScope = {
+    role: organization?.role || "",
+    locationId: organization?.locationId || "",
+    locationIds: organization?.locationIds || [],
+  };
   const rows = state.stage === "ready"
-    ? state.clients.map((client) => ({
+    ? itemsVisibleTo(state.clients, expiryScope, { roles: BRANCH_SCOPED_ROLES }).map((client) => ({
       clientId: client.id,
       name: client.name || "",
       passes: state.passes.filter((item) => passBelongsTo(item, client.id)),
@@ -25331,6 +25478,31 @@ export function createAppScreenSmokeCases() {
         rateManwon: "4.5", deputy: false, role: "instructor",
       },
     }) },
+    /* ── FC매니저의 지점 칩 ──────────────────────────────────────────
+       **여럿 고를 수 있는 것은 이 역할뿐이다** (2026-10-26 대표 결정).
+       강사·팀장·점장은 그대로 하나이고, 그 사실도 함께 본다. */
+    { name: "강사 관리 · FC매니저 지점 여럿", element: instructorAdmin(smokeOwner, {
+      members: smokeInstructors, locations: smokeLocations,
+      mode: "edit",
+      editing: { ...smokeInstructors[0], role: "manager" },
+      draft: {
+        displayName: "정예진", title: "instructor",
+        locationId: "bansong", locationIds: ["bansong", "centum"],
+        rateManwon: "4.5", deputy: false, role: "manager",
+      },
+    }) },
+    /* 0개로 저장하면 그 FC매니저는 어느 회원도 못 본다. 막기만 하면 왜 안
+       눌리는지 알 수 없으므로 이유를 함께 띄운다. */
+    { name: "강사 관리 · FC매니저 지점 0개", element: instructorAdmin(smokeOwner, {
+      members: smokeInstructors, locations: smokeLocations,
+      mode: "edit",
+      editing: { ...smokeInstructors[0], role: "manager" },
+      draft: {
+        displayName: "정예진", title: "instructor",
+        locationId: "", locationIds: [],
+        rateManwon: "4.5", deputy: false, role: "manager",
+      },
+    }) },
     /* 옛 앱을 쓰는 강사. 규칙은 다 열어 주는데 화면이 역할을 몰라 더보기가
        거의 빈다 -- 거부가 아니라 "없음" 으로 도착해 고장처럼 보인다. */
     { name: "강사 관리 · 총괄매니저 지정 · 옛 앱", element: instructorAdmin(smokeOwner, {
@@ -29245,7 +29417,7 @@ export default function App() {
           <Guard key={tab}>
             {tab === "schedule" && <ScheduleManager db={rosterDb} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onCareGrade={setCareGrade} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterMembers ? () => { setMemberRegistrationRequest((value) => value + 1); setTab("members"); } : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} careOptionsOf={careOptionsFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && isOwnerLevelRole(organizationContext.role)} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} upcoming={upcomingPay} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
             {tab === "members" && <div className={`h-full min-h-0 ${mobileView === "detail" && member ? "pt-member-detail-active" : ""}`}>
-              <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList passSummaryOf={passSummaryFor} locations={rosterLocations} members={rosterMembers} schedule={db.schedule} settings={db.settings} organizationMode={organizationRoster} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} canBrowseAll={!organizationRoster || canBrowseAllClients(organizationContext.role)} viewerRole={organizationContext.role} viewerLocationId={organizationContext.locationId || ""} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterMembers} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} journeyOf={organizationRoster ? journeyFor : undefined} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
+              <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList passSummaryOf={passSummaryFor} locations={rosterLocations} members={rosterMembers} schedule={db.schedule} settings={db.settings} organizationMode={organizationRoster} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} canBrowseAll={!organizationRoster || canBrowseAllClients(organizationContext.role)} viewerRole={organizationContext.role} viewerLocationId={organizationContext.locationId || ""} viewerLocationIds={organizationContext.locationIds || []} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterMembers} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} journeyOf={organizationRoster ? journeyFor : undefined} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
               {mobileView === "detail" && member && <div className="pt-member-detail-pane h-full min-h-0">
                 <ReferenceMemberDetail key={member.id} member={member} schedule={db.schedule} photos={photos[member.id]} settings={db.settings} viewerRole={organizationRoster ? organizationContext.role : ""}
                   canViewSettlement={!account?.role || ["owner", "manager", "admin", "director"].includes(String(account.role).toLowerCase())} onBack={() => setMobileView("list")}

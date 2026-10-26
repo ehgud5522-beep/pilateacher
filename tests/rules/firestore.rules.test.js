@@ -124,6 +124,11 @@ function hoursAgo(hours) {
   return Timestamp.fromMillis(Date.now() - hours * 60 * 60 * 1000);
 }
 
+/* ORG_A 에 심는 회원권 수. **목록 테스트가 이 숫자를 센다** -- 씨앗에
+   회원권을 더하면 여기도 함께 올린다. 숫자를 테스트마다 박아 두면 다음에
+   하나 더하는 사람이 왜 깨졌는지부터 찾게 된다. */
+const ORG_A_PASS_COUNT = 3;
+
 function passFixture(organizationId, passId, overrides = {}) {
   const body = {
     organizationId,
@@ -235,6 +240,15 @@ async function seed() {
     await setDoc(doc(db, "organizations", ORG_A, "products", PRODUCT_A), productFixture(ORG_A));
     await setDoc(doc(db, "organizations", ORG_B, "products", PRODUCT_B), productFixture(ORG_B));
     await setDoc(doc(db, "organizations", ORG_A, "passes", PASS_A), passFixture(ORG_A, PASS_A));
+    /* FC매니저의 취소 창을 재는 두 회원권 (2026-10-26). 하나는 **어제 발급**,
+       하나는 **한 회차 쓴 것**이다 -- 창을 좁히는 조건이 둘이라 각각을 따로
+       세워야 어느 쪽이 막았는지가 드러난다. */
+    await setDoc(doc(db, "organizations", ORG_A, "passes", "pass-stale"),
+      passFixture(ORG_A, "pass-stale", {
+        createdAt: Timestamp.fromDate(new Date(Date.now() - 48 * 60 * 60 * 1000)),
+      }));
+    await setDoc(doc(db, "organizations", ORG_A, "passes", "pass-used"),
+      passFixture(ORG_A, "pass-used", { remainingCount: 19 }));
     await setDoc(doc(db, "organizations", ORG_B, "passes", PASS_B), passFixture(ORG_B, PASS_B));
     await setDoc(
       doc(db, "organizations", ORG_A, "passes", PASS_A, "ledger", "entry-issue"),
@@ -1247,11 +1261,33 @@ describe("adjusting sessions and moving the expiry date", () => {
       adjust(users.owner, { lessonId: "lesson-seed" })));
   });
 
-  test("강사와 매니저는 잔여를 조정하지 못한다", async () => {
-    for (const role of ["instructor", "manager", "staff", "member"]) {
+  test("강사·스태프·회원은 잔여를 조정하지 못한다", async () => {
+    /* FC매니저는 2026-10-26 에 빠졌다 -- 아래 테스트가 그쪽을 본다. */
+    for (const role of ["instructor", "staff", "member"]) {
       await assertFails(setDoc(ledgerAt(dbFor(users[role]), PASS_A, `adj-${role}`),
         adjust(users[role])), role);
     }
+  });
+
+  test("FC매니저도 잔여를 조정한다 — 사유는 그대로 필수다", async () => {
+    /* 2026-10-26 대표 결정. 만료일과 같은 선이 됐다 -- 둘 다 운영이 매일
+       하는 일이고, 둘 다 사유와 이력이 함께 남는다.
+
+       **차감 보정은 열리지 않았다.** 그쪽은 이미 일어난 수업의 급여를
+       되돌리는 일이라 대표·총괄 그대로다 (아래 테스트). */
+    await assertSucceeds(setDoc(ledgerAt(dbFor(users.manager), PASS_A, "adj-manager-ok"),
+      adjust(users.manager)));
+  });
+
+  test("FC매니저의 조정도 사유 없이는 거부된다", async () => {
+    await assertFails(setDoc(ledgerAt(dbFor(users.manager), PASS_A, "adj-manager-noreason"),
+      adjust(users.manager, { reason: "" })));
+  });
+
+  test("FC매니저는 차감 보정을 하지 못한다", async () => {
+    /* 조정과 보정은 다른 일이다. 보정은 이미 일어난 수업의 급여를 되돌린다. */
+    await assertFails(setDoc(ledgerAt(dbFor(users.manager), PASS_A, "corr-manager"),
+      { ...adjust(users.manager), type: "correction", correctsEntryId: "no-such-entry" }));
   });
 
   test("조정으로도 잔여는 음수가 되지 못한다", async () => {
@@ -2282,7 +2318,7 @@ describe("collection queries the app will run", () => {
 
   test("passes list without a rule change", async () => {
     const snapshot = await assertSucceeds(getDocs(orgList(users.instructor, COLLECTIONS.PASSES)));
-    assert.equal(snapshot.size, 1);
+    assert.equal(snapshot.size, ORG_A_PASS_COUNT);
     await assertFails(getDocs(listOf(users.outsider, "organizations", ORG_A, COLLECTIONS.PASSES)));
   });
 
@@ -2336,7 +2372,8 @@ describe("issuing a pass and moving its instructor", () => {
     const snapshot = await assertSucceeds(getDocs(
       collection(dbFor(users.instructor), "organizations", ORG_A, COLLECTIONS.PASSES),
     ));
-    assert.equal(snapshot.size, 1);
+    /* ORG_B 의 회원권이 섞이지 않는 것이 이 줄의 요점이다. */
+    assert.equal(snapshot.size, ORG_A_PASS_COUNT);
     await assertFails(getDocs(collection(dbFor(users.outsider), "organizations", ORG_A, COLLECTIONS.PASSES)));
     await assertFails(getDocs(collection(dbFor(null), "organizations", ORG_A, COLLECTIONS.PASSES)));
   });
@@ -3193,10 +3230,39 @@ describe("checking attendance against a pass", () => {
     await assertFails(setDoc(at("owner", "c-positive"), cancel({ delta: 20 })));
     // 취소는 돈이 오가지 않는다. 지어낸 단가가 급여에 묶여 들어가면 안 된다.
     await assertFails(setDoc(at("owner", "c-priced"), cancel({ category: "pt_1_1_new", unitPrice: 25000 })));
-    await assertFails(setDoc(at("manager", "c-by-manager"), cancel({ createdBy: users.manager })));
     await assertFails(setDoc(at("instructor", "c-by-instructor"), cancel({ createdBy: users.instructor })));
 
     await assertSucceeds(setDoc(at("owner", "c-ok"), cancel()));
+  });
+
+  /* ── FC매니저의 취소 창 (2026-10-26 대표 결정) ─────────────────────────
+     **갓 발급하고 한 회차도 안 쓴 것만.** 자기가 방금 잘못 발급한 것을
+     되무르는 자리다 -- 어제 판 것이나 쓰던 것을 지우는 길이 아니다.
+
+     조건이 둘이라 각각을 따로 재야 한다. 하나로 묶어 "거부된다" 만 보면,
+     나중에 한쪽이 느슨해져도 다른 쪽이 가려 준다. */
+  test("FC매니저는 갓 발급하고 안 쓴 회원권만 취소한다", async () => {
+    const cancelOf = (passId, delta) => ({
+      organizationId: ORG_A, passId, clientId: "client-member", locationId: "location-a",
+      type: "cancel", delta, reason: "잘못 발급했습니다",
+      occurredAt: hoursAgo(1), createdAt: serverTimestamp(), createdBy: users.manager,
+    });
+    const at = (passId, entryId) => ledgerDocOf(users.manager, ORG_A, passId, entryId);
+
+    // 어제 발급 -- 창 밖이다.
+    await assertFails(setDoc(at("pass-stale", "mc-stale"), cancelOf("pass-stale", -20)));
+    // 한 회차 썼다 -- 잔여가 총회차와 다르다.
+    await assertFails(setDoc(at("pass-used", "mc-used"), cancelOf("pass-used", -19)));
+    // 갓 발급하고 안 썼다 -- 통과한다.
+    await assertSucceeds(setDoc(at(PASS_A, "mc-fresh"), cancelOf(PASS_A, -20)));
+  });
+
+  test("FC매니저의 취소도 사유가 없으면 거부된다", async () => {
+    await assertFails(setDoc(ledgerDocOf(users.manager, ORG_A, PASS_A, "mc-noreason"), {
+      organizationId: ORG_A, passId: PASS_A, clientId: "client-member", locationId: "location-a",
+      type: "cancel", delta: -20, reason: "",
+      occurredAt: hoursAgo(1), createdAt: serverTimestamp(), createdBy: users.manager,
+    }));
   });
 
   test("the phone number cannot be changed from the app, by anyone", async () => {

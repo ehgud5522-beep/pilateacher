@@ -144,6 +144,7 @@ import {
 } from "./data/schema/pass-transfer.js";
 import {
   DEDUCT_BACKDATE_LIMIT_DAYS, HOLD_MAX_DAYS, adjustPass, cancelPass, changePassExpiry,
+  isFreshlyIssuedPass,
   correctDeduction, deductPass, holdPass, isCancellablePass, loadPassReconcileRows,
   isCorrectableEntry, isCorrectedEntry, isDeductablePass, isExpiredPass, issuePass,
   listInstructorClientTotals, listPassLedger, listPasses, loadClientPassHistory, remainingCountOf,
@@ -18727,7 +18728,22 @@ function ClientDetail({
   /* 잔여 조정은 대표만. 회차는 돈이라 차감 보정·취소·양도와 같은 선이다.
      만료일은 FC매니저도 옮긴다 -- 연장과 홀딩은 운영이 하는 일이고, 그때마다
      대표를 불러야 하면 회원이 기다린다. 규칙이 같은 선을 긋는다. */
-  const canAdjust = canUndo;
+  /* 잔여 조정. **FC매니저도 한다** (2026-10-26 대표 결정). 사유 필수와 감사
+     기록은 그대로다 -- 장부의 숫자를 손으로 바꾸는 일이라, 누가 왜 바꿨는지가
+     없으면 그 숫자는 아무 때나 움직일 수 있는 값이 된다.
+
+     차감 보정(correction)은 여기 없다. 그쪽은 이미 일어난 수업의 급여를
+     되돌리는 일이라 대표·총괄에 그대로 묶여 있다. */
+  const canAdjust = !organization?.isLegacy
+    && (isOwnerLevelRole(organization?.role) || organization?.role === ROLES.MANAGER);
+  /* 회원권 취소. **FC매니저는 갓 발급하고 아직 안 쓴 것만** (2026-10-26).
+     자기가 방금 잘못 발급한 것을 되무르는 자리다 -- 어제 판 것이나 쓰던 것을
+     지우는 길이 아니다.
+
+     규칙의 freshlyIssuedPass() 와 **같은 조건**이다 (isFreshlyIssuedPass).
+     한쪽만 고치면 화면은 되는데 규칙이 막고, 쓰는 사람에게는 "눌렀는데
+     아무 일도 안 일어남" 으로 도착한다. */
+  const canCancelFresh = !organization?.isLegacy && organization?.role === ROLES.MANAGER;
   const canChangeExpiry = !organization?.isLegacy
     && (isOwnerLevelRole(organization?.role) || organization?.role === ROLES.MANAGER);
   /* 세션업·양도와 같은 선이다. 만료일을 옮기는 사람이 회차를 늘리지 못할
@@ -19013,8 +19029,12 @@ function ClientDetail({
               : passes.map((pass) => (
                 <ClientPassRow key={pass.id} pass={pass} nameOfInstructor={nameOfInstructor}
                   nameOfClient={nameOfClient} clientId={client?.id || ""} now={at}
-                  cancellable={canUndo && isCancellablePass(pass, entries)}
-                  onCancel={canUndo ? () => { setUndo({ kind: "cancel", pass }); setReason(""); } : undefined}
+                  /* 대표·총괄은 전처럼 차감이 전부 보정된 것까지 취소한다.
+                     FC매니저는 그 위에 "갓 발급 · 안 씀" 이 더 걸린다. */
+                  cancellable={isCancellablePass(pass, entries)
+                    && (canUndo || (canCancelFresh && isFreshlyIssuedPass(pass, at)))}
+                  onCancel={canUndo || (canCancelFresh && isFreshlyIssuedPass(pass, at))
+                    ? () => { setUndo({ kind: "cancel", pass }); setReason(""); } : undefined}
                   onTransfer={canSessionUp && transferableSessions(pass) > 0 && isDeductablePass(pass, at)
                     && checkTransfer({ pass, toClientId: "-", sessions: 1 }).code !== TRANSFER_BLOCK.DUET
                     ? () => { setTransfer({ pass }); setTransferError(""); } : undefined}

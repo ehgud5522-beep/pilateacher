@@ -36,12 +36,13 @@ function fail(code, ...lines) {
    따옴표를 직접 붙여 한 줄로 합친다 (DEP0190). build-aab.mjs 와 같은 방식이다. */
 const quoteForShell = (value) => (/[\s&|<>^"]/.test(value) ? `"${value.replaceAll('"', '\\"')}"` : value);
 
-function run(command, args) {
+function run(command, args, extraEnv = {}) {
+  const env = { ...process.env, ...extraEnv };
   const result = isWindows
     ? spawnSync([`${command}.cmd`, ...args].map(quoteForShell).join(" "), {
-      cwd: root, stdio: "inherit", env: process.env, shell: true,
+      cwd: root, stdio: "inherit", env, shell: true,
     })
-    : spawnSync(command, args, { cwd: root, stdio: "inherit", env: process.env });
+    : spawnSync(command, args, { cwd: root, stdio: "inherit", env });
   if (result.error) fail("SPAWN_FAILED", `${command} 을 실행하지 못했습니다: ${result.error.message}`);
   if (result.status !== 0) fail("STEP_FAILED", `${command} ${args.join(" ")} 이 ${result.status} 로 끝났습니다.`);
 }
@@ -136,7 +137,35 @@ if (/^\d+$/.test(webBuildNumber)) {
 console.log();
 
 console.log("== 1/2 웹 빌드 (타입 검사 · 린트 · 테스트 포함) ==");
-run("npm", ["run", target.build]);
+/* ── 화면에 뜰 버전 ──────────────────────────────────────────────────────
+   **웹은 이것을 넣지 않으면 App.jsx 의 손으로 적은 상수로 떨어진다.** 그 상수는
+   배포해도 안 바뀌어서, "파일이 실제로 교체됐는지 1초 만에 확인하는 표시" 라는
+   제 용도를 못 한다 -- 1.1.40 을 올리고도 1.1.38 이 떠 있었다.
+
+   Codemagic 은 ci-version.mjs 가 Play 에 물어 넣는다. 웹에는 그런 자리가 없으니
+   **build.gradle 의 versionName 을 읽는다** -- 안드로이드와 웹이 같은 숫자를
+   말하게 하는 가장 짧은 길이고, 올리는 자리도 한 곳으로 남는다.
+
+   빌드 번호는 넣지 않는다. 웹에는 그런 것이 없고, 지어내면 스토어의 번호와
+   어긋난 숫자가 화면에 뜬다. RELEASE_VERSION 만 있으면 App.jsx 가 상수로
+   떨어지므로, 커밋 해시를 빌드 번호 자리에 넣어 "웹에서 온 것" 을 드러낸다. */
+const gradlePath = path.join(root, "android/app/build.gradle");
+const versionName = readFileSync(gradlePath, "utf8").match(/versionName\s+"([^"]+)"/)?.[1] || "";
+if (!versionName) {
+  fail("VERSION_NOT_FOUND",
+    `${gradlePath} 에서 versionName 을 읽지 못했습니다.`,
+    "화면의 버전 표시가 옛 값으로 남으므로 여기서 멈춥니다.");
+}
+const headShort = (capture("git", ["rev-parse", "--short", "HEAD"]) || "").trim();
+console.log(`버전: ${versionName}${headShort ? ` · ${headShort}` : ""}`);
+
+run("npm", ["run", target.build], {
+  VITE_APP_VERSION: versionName,
+  /* 스토어 빌드 번호가 아니라 **웹이라는 표시**다. 숫자를 지어내면 스토어의
+     번호와 어긋난 값이 화면에 뜬다. */
+  VITE_BUILD_NUMBER: "web",
+  VITE_BUILD_COMMIT: headShort,
+});
 
 const publicDir = path.join(root, hosting.public);
 if (!existsSync(path.join(publicDir, "index.html"))) {

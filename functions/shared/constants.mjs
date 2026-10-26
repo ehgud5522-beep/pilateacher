@@ -196,16 +196,70 @@ export const DIOSA_MINUTES = Object.freeze({
   [/** @type {string} */ ("diosa_b")]: 50,
 });
 
-// 결제 수단. 급여 자동 계산에는 쓰지 않는다 — 바우처 결제는 인센을 수동으로
-// 조정하므로, 월말에 해당 건만 뽑아 보기 위한 기록이다.
-// firestore.foundation.rules의 passes create 조건에 같은 목록이 리터럴로 있다.
+/* ── 결제 수단 ────────────────────────────────────────────────────────────
+   **표시용이 아니다.** 부원장의 5:5 가 계약 금액이 아니라 공급가액을 반으로
+   접고, 그 공급가액을 이 값이 정한다 (deduction-pricing.mjs 의
+   PAYMENT_INCLUDES_VAT). 하나 늘면 거기서 반드시 답해야 한다.
+
+   firestore.foundation.rules 의 passes create 조건에 같은 목록이 리터럴로
+   있다 -- 규칙 파일은 import 을 하지 못한다.
+
+   2026-10-27 대표 결정. 제로페이와 바우처를 **기타결제 하나로 접었다** --
+   둘 다 부가세를 떼지 않고(둘 다 false 였다) 급여 판정이 둘을 구별하지
+   않는데, 고르는 자리에서만 셋으로 갈라져 있었다. 원래 이름은 paymentNote
+   칸에 글자로 남는다. 접었다고 그 글자까지 잃으면 "이 회원이 무엇으로
+   냈나" 에 답할 수 없다.
+
+   복합결제는 **금액을 쪼개 적는 수단**이다. 카드 50만 + 현금 30만 이면
+   부가세가 걸린 돈은 카드분뿐이라, 계약 금액 전체에 10/11 을 걸 수도
+   그냥 둘 수도 없다. paymentBreakdown 에 수단별 금액이 함께 저장된다.
+   ────────────────────────────────────────────────────────────────────── */
 export const PAYMENT_METHOD = Object.freeze({
   CARD: "card",
   CASH: "cash",
   TRANSFER: "transfer",
+  /* 제로페이 · 평생교육바우처 · 그 밖의 것. 무엇이었는지는 paymentNote 에 글자로. */
+  OTHER: "other",
+  /* 한 계약을 여러 수단으로. 금액은 paymentBreakdown 에. */
+  MIXED: "mixed",
+});
+
+/* ── 옛 값 ────────────────────────────────────────────────────────────────
+   2026-10-27 전에 발급된 회원권이 들고 있다. **고를 수는 없고 읽을 수는
+   있다** -- 라벨도 부가세 판정도 규칙의 목록도 그대로 받아들인다.
+
+   지우면 그 회원권들이 "결제수단을 알 수 없음" 이 되고, 양도·재계산 경로가
+   netContractPriceFor 에서 통째로 멈춘다. 변환(기타결제로 옮기기)이 끝난
+   뒤에도 남겨 둔다 -- 비용이 0 이고, 빠뜨린 문서가 하나라도 있으면 그것이
+   조용히 깨지는 쪽이 훨씬 비싸다. */
+export const LEGACY_PAYMENT_METHOD = Object.freeze({
   ZEROPAY: "zeropay",
   VOUCHER: "voucher",
 });
+
+/** 저장된 값으로 받아들이는 전부. 화면이 **고를 수 있는 것은 PAYMENT_METHOD 뿐**이다. */
+export const STORED_PAYMENT_METHODS = Object.freeze([
+  ...Object.values(PAYMENT_METHOD),
+  ...Object.values(LEGACY_PAYMENT_METHOD),
+]);
+
+/** 금액 하나로 끝나는 수단. 복합결제만 빠진다 -- 그것은 이 넷의 합이다. */
+export const SINGLE_PAYMENT_METHODS = Object.freeze(
+  Object.values(PAYMENT_METHOD).filter((method) => method !== PAYMENT_METHOD.MIXED),
+);
+
+/**
+ * 복합결제가 쪼개는 칸. **순서가 화면의 순서다.**
+ *
+ * 현금이 끝인 것은 대표가 적는 순서가 그렇기 때문이다 (카드 → 계좌 → 기타 →
+ * 현금). 바꾸면 발급 화면의 칸 순서가 함께 바뀐다.
+ */
+export const MIXED_PAYMENT_PARTS = Object.freeze([
+  PAYMENT_METHOD.CARD, PAYMENT_METHOD.TRANSFER, PAYMENT_METHOD.OTHER, PAYMENT_METHOD.CASH,
+]);
+
+/** 기타결제의 "내용" 칸 길이. 규칙에도 같은 숫자가 리터럴로 있다. */
+export const PAYMENT_NOTE_MAX = 100;
 
 // 급여 단가표의 카테고리. firestore.foundation.rules의 passes/ledger create
 // 조건에 같은 목록이 리터럴로 들어가 있다 — 규칙 파일은 import을 할 수 없다.

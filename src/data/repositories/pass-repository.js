@@ -32,7 +32,7 @@
 
 import {
   ATTENDANCE_STATUS, LEDGER_ENTRY_TYPE, LEDGER_REASON_MAX, LESSON_STATUS, PASS_STATUS,
-  PAY_CATEGORY, PAYMENT_METHOD,
+  MIXED_PAYMENT_PARTS, PAYMENT_NOTE_MAX, PAY_CATEGORY, PAYMENT_METHOD,
 } from "../schema/constants.js";
 import {
   netContractPriceFor, netContractPriceOf, resolveDeductionUnitPrice, spendsServiceSession,
@@ -227,6 +227,8 @@ export async function listPasses(organizationId, options = {}) {
  *   payCategory: string,
  *   totalSessions: number, contractPrice: number, instructorId: string, createdBy: string,
  *   serviceSessions?: number, purchaseRound?: number, paymentMethod?: string,
+ *   paymentBreakdown?: Record<string, number>, balance?: number,
+ *   balanceEdited?: boolean, paymentNote?: string,
  *   unitPrice?: number, fullRoomRate?: number, expiresAt?: Date | string,
  *   passId?: string, entryId?: string, clientIds?: Array<string>,
  * }} input
@@ -240,7 +242,21 @@ export async function issuePass(organizationId, input, options = {}) {
   const organization = requiredText(organizationId, "organizationId");
   const payCategory = requiredText(input?.payCategory, "payCategory");
   const paymentMethod = String(input?.paymentMethod ?? PAYMENT_METHOD.CARD).trim() || PAYMENT_METHOD.CARD;
+  /* 옛 값(제로페이 · 바우처)은 여기서 거부된다. 읽기는 하지만 **새로 만들지는
+     않는다** -- 접어 둔 수단으로 다시 발급되면 변환이 끝나지 않는다. */
   if (!values(PAYMENT_METHOD).has(paymentMethod)) throw new Error("Invalid paymentMethod");
+  const mixed = paymentMethod === PAYMENT_METHOD.MIXED;
+  /* 복합결제의 수단별 금액. **복합결제가 아니면 넣지 않는다** -- 네 칸이 전부
+     0 인 객체가 단일 결제 회원권에 붙으면, 매출 집계가 그것을 "쪼갠 적이 있는
+     계약" 으로 읽고 수단별 합계가 0 쪽으로 샌다. */
+  const paymentBreakdown = mixed ? readPaymentBreakdown(input?.paymentBreakdown) : null;
+  /* 잔금. 단일 결제든 복합결제든 들고 있다 (대표 결정: 단일은 0). 합계와
+     어긋나도 막지 않는다 -- FC 가 판단할 일이라고 대표가 정했다. */
+  const balance = requiredInt(input?.balance ?? 0, "balance", { min: 0 });
+  const balanceEdited = input?.balanceEdited === true;
+  /* 기타결제의 "내용". 제로페이 · 평생교육바우처처럼 **무엇이었는지**가 여기
+     남는다. 수단을 하나로 접으면서 잃을 뻔한 글자다. */
+  const paymentNote = String(input?.paymentNote ?? "").trim().slice(0, PAYMENT_NOTE_MAX);
 
   const totalSessions = requiredInt(input?.totalSessions, "totalSessions", { min: 1 });
   const serviceSessions = requiredInt(input?.serviceSessions ?? 0, "serviceSessions", { min: 0 });
@@ -303,8 +319,12 @@ export async function issuePass(organizationId, input, options = {}) {
        팔린 회원권의 급여 근거는 그때의 것이어야 한다. 담당 강사가 지금
        부원장이 아니어도 넣는다 -- 부원장 지정은 나중에 일어날 수 있고, 그때
        이 값이 없으면 발급 조건이 아니라 그 시점의 세율로 계산된다. */
-    netContractPrice: netContractPriceFor(contractPrice, paymentMethod),
+    netContractPrice: netContractPriceFor(contractPrice, paymentMethod, paymentBreakdown),
     paymentMethod,
+    ...(paymentBreakdown ? { paymentBreakdown } : {}),
+    balance,
+    ...(balanceEdited ? { balanceEdited: true } : {}),
+    ...(paymentNote ? { paymentNote } : {}),
     purchaseRound,
     remainingCount: totalCount,
     expiresAt,
@@ -1017,6 +1037,28 @@ export function isFreshlyIssuedPass(pass, now = new Date()) {
   return elapsed >= 0 && elapsed <= MANAGER_CANCEL_WINDOW_MS;
 }
 
+/**
+ * 복합결제의 수단별 금액을 네 칸 정수로. 빈 칸은 0 이다.
+ *
+ * 전부 0 이어도 받는다. 대표가 "합계가 계약 금액과 달라도 막지 않는다" 고
+ * 정했고, 적다 만 것과 0 원을 여기서 구별할 방법이 없다 -- 구별한 척하면
+ * 발급이 막히는 자리가 하나 늘 뿐이다.
+ *
+ * 음수와 소수는 거부한다. 그것은 적다 만 것이 아니라 틀린 것이고, 그대로
+ * 받으면 공급가액이 계약 금액보다 커진다.
+ *
+ * @param {any} input @returns {Record<string, number>}
+ */
+function readPaymentBreakdown(input) {
+  const source = input && typeof input === "object" ? input : {};
+  /** @type {Record<string, number>} */
+  const parts = {};
+  for (const part of MIXED_PAYMENT_PARTS) {
+    parts[part] = requiredInt(source[part] ?? 0, `paymentBreakdown.${part}`, { min: 0 });
+  }
+  return parts;
+}
+
 /** 이 회원권을 취소할 수 있는가. 실제로 일어난 수업은 없던 일이 되지 않는다. */
 export function isCancellablePass(pass, entries) {
   if (!pass || pass.status !== PASS_STATUS.ACTIVE) return false;
@@ -1279,6 +1321,11 @@ export async function transferPass(organizationId, pass, input, options = {}) {
     contractPrice: priced.contractPrice,
     netContractPrice: priced.netContractPrice,
     paymentMethod: priced.paymentMethod,
+    /* 복합결제면 쪼갠 비율을 그대로 들고 온다. 없으면 받는 회원권의 공급가액을
+       다시 셀 수 없고, 그 강사가 나중에 부원장이 되는 날 판정이 멈춘다. */
+    ...(priced.paymentBreakdown ? { paymentBreakdown: priced.paymentBreakdown } : {}),
+    /* 양도는 새로 받은 돈이 아니다 -- 잔금은 원본 쪽에 남는다. */
+    balance: 0,
     purchaseRound,
     remainingCount: sessions,
     expiresAt,

@@ -54,7 +54,13 @@ const PT_2_1_CATEGORIES = [
 /* 디오사는 그 둘뿐이다. 서비스도 기타도 붙지 않는다 -- 관리 수업의 단가는
    고정이고, 다른 카테고리가 섞이면 그 고정이 깨진다. */
 const DIOSA_CATEGORIES = ["diosa_a", "diosa_b"];
-const PAYMENT_METHODS = ["card", "cash", "transfer", "zeropay", "voucher"];
+/* 저장값으로 받아들이는 전부. zeropay · voucher 는 2026-10-27 에 기타결제로
+   접힌 **옛 값**이고, 고를 수는 없지만 이미 발급된 회원권이 들고 있다 --
+   양도는 원본의 결제 수단을 그대로 새 문서에 쓰므로 목록에서 빼면 그 길이
+   막힌다. STORED_PAYMENT_METHODS 와 같은 집합이다. */
+const PAYMENT_METHODS = ["card", "cash", "transfer", "other", "mixed", "zeropay", "voucher"];
+/** 복합결제는 금액이 함께 와야 통과한다. 그 금액을 붙여 주는 자리다. */
+const MIXED_BREAKDOWN = { card: 500000, transfer: 0, other: 0, cash: 700000 };
 /* 원장 항목의 category 가 지나는 목록. **여기 없는 카테고리는 차감이
    거부된다** -- 상품을 못 만드는 것으로 끝나지 않는다. 2026-10-10 에 셋이
    빠져 있었고(2:1 이벤트 · 디오사 A · 디오사 B), 앱은 그 카테고리로 차감을
@@ -1165,6 +1171,25 @@ describe("every way the owner writes a pass today", () => {
     await assertSucceeds(batch.commit());
   });
 
+  test("7-1. 다 쓴 회원권도 이관된다 — 남은횟수 0 (2026-10-27 결정 4)", async () => {
+    /* 장유점 43줄이 permission-denied 로 멈춘 자리다. 막은 것은 회원권 문서가
+       아니라 **원장의 발급 항목**이었다 -- 이관은 남은 횟수를 그대로 발급으로
+       적고, 다 쓴 회원권은 그 값이 0 이다. 두 반쪽이 한 배치라 회원권까지
+       함께 거부됐다.
+
+       올리지 못하면 그 회원의 지난 계약이 앱에 아예 없는 것이 되고, 차수와
+       누적이 그만큼 어긋난다. */
+    const db = dbFor(users.owner);
+    const batch = writeBatch(db);
+    batch.set(passAt(db, "pin-migrated-spent"),
+      passFixture(ORG_A, "pin-migrated-spent", { remainingCount: 0, totalSessions: 20 }));
+    batch.set(ledgerAt(db, "pin-migrated-spent", "pin-migrated-spent_issue"), {
+      ...common("pin-migrated-spent"), type: "issue", delta: 0,
+      category: "pt_1_1_new", unitPrice: 0, instructorId: users.instructor,
+    });
+    await assertSucceeds(batch.commit());
+  });
+
   /* ── 역할과 무관하게 지키는 것 ─────────────────────────────────────
      대표 갈래는 hasRole(["owner"]) 한 줄이라 아무 값이나 통과했다. 화면이
      없었을 뿐 문은 열려 있었고, 그 문으로는 고칠 수 없는 상태가 만들어진다. */
@@ -1424,6 +1449,21 @@ describe("ledger and pass bodies are validated at write time", () => {
     await assertFails(setDoc(ledgerRef(users.instructor, "delta-zero"), ledgerFixture(ORG_A, PASS_A, { delta: 0 })));
   });
 
+  test("an issue entry of zero sessions is accepted (2026-10-27 결정 4)", async () => {
+    /* 이관 업로드가 **남은 횟수를 그대로** 발급으로 적는다. 다 쓴 회원권은 그
+       값이 0 이고, 전에는 여기서 거부되어 회원권 문서까지 같은 배치로 함께
+       거부됐다 -- 장유점 43줄이 permission-denied 로 멈춘 것이 이것이다.
+
+       0 은 아무 회차도 더하지 않으므로 "이미 있는 회원권에 20회 발급 한 줄
+       덧붙이기" 와 무관하다. 음수는 그대로 막힌다. */
+    await assertSucceeds(setDoc(
+      ledgerRef(users.owner, "issue-zero"),
+      withoutField(ledgerFixture(ORG_A, PASS_A, {
+        type: "issue", delta: 0, instructorId: users.instructor, createdBy: users.owner,
+      }), "lessonId"),
+    ));
+  });
+
   test("delta has to agree in sign with the entry type", async () => {
     await assertFails(setDoc(ledgerRef(users.instructor, "deduct-positive"), ledgerFixture(ORG_A, PASS_A, { delta: 1 })));
     await assertFails(setDoc(ledgerRef(users.owner, "issue-negative"), withoutField(ledgerFixture(ORG_A, PASS_A, {
@@ -1648,11 +1688,14 @@ describe("ledger and pass bodies are validated at write time", () => {
   });
 
   test("every payment method is accepted and nothing else is", async () => {
-    assert.equal(PAYMENT_METHODS.length, 5);
+    assert.equal(PAYMENT_METHODS.length, 7);
     for (const paymentMethod of PAYMENT_METHODS) {
       await assertSucceeds(setDoc(
         passRef(users.owner, `pass-pay-${paymentMethod}`),
-        passFixture(ORG_A, `pass-pay-${paymentMethod}`, { paymentMethod }),
+        passFixture(ORG_A, `pass-pay-${paymentMethod}`, {
+          paymentMethod,
+          ...(paymentMethod === "mixed" ? { paymentBreakdown: MIXED_BREAKDOWN } : {}),
+        }),
       ));
     }
     for (const bogus of ["Card", "credit", "", "kakao"]) {
@@ -1661,6 +1704,48 @@ describe("ledger and pass bodies are validated at write time", () => {
         passFixture(ORG_A, `pass-pay-bad-${bogus || "empty"}`, { paymentMethod: bogus }),
       ));
     }
+  });
+
+  test("a mixed payment without its amounts is refused", async () => {
+    /* 공급가액이 카드 칸 하나로만 정해진다. 금액 없이 "복합결제" 만 들어오면
+       그 회원권의 부원장 단가를 영영 셀 수 없고, 그때는 이미 팔린 뒤다. */
+    await assertFails(setDoc(
+      passRef(users.owner, "pass-mixed-bare"),
+      passFixture(ORG_A, "pass-mixed-bare", { paymentMethod: "mixed" }),
+    ));
+  });
+
+  test("the split must be four whole, non-negative amounts", async () => {
+    const bad = [
+      ["missing-cash", { card: 1, transfer: 0, other: 0 }],
+      ["extra-key", { ...MIXED_BREAKDOWN, crypto: 1 }],
+      ["negative", { ...MIXED_BREAKDOWN, card: -1 }],
+      ["string", { ...MIXED_BREAKDOWN, card: "500000" }],
+      ["not-a-map", 500000],
+    ];
+    for (const [name, paymentBreakdown] of bad) {
+      await assertFails(setDoc(
+        passRef(users.owner, `pass-split-${name}`),
+        passFixture(ORG_A, `pass-split-${name}`, { paymentMethod: "mixed", paymentBreakdown }),
+      ), name);
+    }
+  });
+
+  test("the balance and the payment note are checked but never required", async () => {
+    await assertSucceeds(setDoc(
+      passRef(users.owner, "pass-note"),
+      passFixture(ORG_A, "pass-note", {
+        paymentMethod: "other", paymentNote: "평생교육바우처", balance: 0,
+      }),
+    ));
+    await assertFails(setDoc(
+      passRef(users.owner, "pass-balance-negative"),
+      passFixture(ORG_A, "pass-balance-negative", { balance: -1 }),
+    ));
+    await assertFails(setDoc(
+      passRef(users.owner, "pass-note-long"),
+      passFixture(ORG_A, "pass-note-long", { paymentNote: "가".repeat(101) }),
+    ));
   });
 
   test("a pass needs its product fields and a positive session count", async () => {
@@ -2504,8 +2589,15 @@ describe("issuing a pass and moving its instructor", () => {
     await assertSucceeds(setDoc(ledgerDoc(users.owner, PASS_A, "entry-issue-full"), {
       ...issue, category: "pt_1_1_new", unitPrice: 25000,
     }));
-    await assertFails(setDoc(ledgerDoc(users.owner, PASS_A, "entry-issue-zero"), {
+    /* 0 회차 발급은 **받는다** (2026-10-27 대표 결정 4). 이관이 남은 횟수를
+       그대로 발급으로 적고, 다 쓴 회원권은 그 값이 0 이다. 아무 회차도 더하지
+       않으므로 이 테스트가 지키려는 것(카테고리·단가)과 무관하다. */
+    await assertSucceeds(setDoc(ledgerDoc(users.owner, PASS_A, "entry-issue-zero"), {
       ...issue, category: "pt_1_1_new", unitPrice: 25000, delta: 0,
+    }));
+    // 음수는 그대로 막힌다 -- 발급이 회차를 빼앗을 수는 없다.
+    await assertFails(setDoc(ledgerDoc(users.owner, PASS_A, "entry-issue-negative"), {
+      ...issue, category: "pt_1_1_new", unitPrice: 25000, delta: -1,
     }));
   });
 

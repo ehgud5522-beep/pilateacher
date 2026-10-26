@@ -18,7 +18,11 @@
  * 이관은 엑셀에서 옮겨 온 것이라 이 달의 매출이 아니다. 목록에서도 뺀다.
  */
 
-import { COLLECTIONS, LEDGER_ENTRY_TYPE, PAY_CATEGORY, PASS_STATUS } from "../schema/constants.js";
+import {
+  COLLECTIONS, LEDGER_ENTRY_TYPE, LEGACY_PAYMENT_METHOD, MIXED_PAYMENT_PARTS,
+  PAY_CATEGORY, PASS_STATUS, PAYMENT_METHOD,
+} from "../schema/constants.js";
+import { paymentBreakdownOf } from "../schema/deduction-pricing.js";
 import { paths } from "../schema/paths.js";
 import { listPasses } from "./pass-repository.js";
 import { passIsReviewDemo, withoutReviewDemo } from "../../features/members/review-demo.js";
@@ -70,6 +74,69 @@ const monthDayLabel = (value) => {
   const at = toDate(value);
   return Number.isFinite(at?.getTime?.()) ? `${at.getMonth() + 1}/${at.getDate()}` : "";
 };
+
+/* ── 수단별 매출 ──────────────────────────────────────────────────────────
+   **복합결제는 한 칸이 아니다.** 카드 50만 + 현금 30만 짜리 계약을 "복합결제
+   80만" 으로 세면 대표가 묻는 것("이 달 카드 매출이 얼마인가")에 답할 수
+   없다. 쪼갠 대로 센다.
+
+   잔금은 따로 둔다. 아직 받지 않은 돈이라 어느 수단에도 들어가지 않고,
+   그렇다고 버리면 수단별 합계가 계약 금액 합계보다 작아진다 -- 두 숫자가
+   어긋나 보이면 읽는 사람이 둘 다 믿지 않게 된다.
+
+   잔금은 **저장된 값이 아니라 남은 값**으로 센다. 저장된 잔금은 FC 가 손으로
+   고칠 수 있고(대표 결정: 막지 않는다), 고친 값을 쓰면 수단별 합계 + 잔금이
+   계약 금액과 어긋난다. 여기서는 합이 맞는 쪽을 고른다.
+
+   옛 값(제로페이 · 바우처)은 기타결제 칸에 들어간다. 2026-10-27 에 하나로
+   접은 것이라, 합계에서만 셋으로 갈라져 있으면 같은 돈을 두 이름으로 세게
+   된다.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/** 수단별 칸 + 잔금. 네 칸의 합 + 잔금 = 계약 금액이다. */
+export const PAYMENT_SPLIT_COLUMNS = Object.freeze([...MIXED_PAYMENT_PARTS, "balance"]);
+
+const LEGACY_PAYMENT_BUCKET = Object.freeze(
+  Object.fromEntries(Object.values(LEGACY_PAYMENT_METHOD).map((method) => [method, PAYMENT_METHOD.OTHER])),
+);
+
+/**
+ * 한 줄의 계약 금액을 수단별로 쪼갠다.
+ *
+ * @param {{ contractPrice?: number | null, paymentMethod?: string, paymentBreakdown?: any }} row
+ * @returns {Record<string, number>}
+ */
+export function paymentSplitOf(row) {
+  /** @type {Record<string, number>} */
+  const split = {};
+  for (const column of PAYMENT_SPLIT_COLUMNS) split[column] = 0;
+  const amount = count(row?.contractPrice);
+  if (amount <= 0) return split;
+
+  const method = text(row?.paymentMethod);
+  if (method === PAYMENT_METHOD.MIXED) {
+    const breakdown = paymentBreakdownOf(row?.paymentBreakdown);
+    /* 복합결제인데 쪼갠 금액이 없는 줄. 지어내지 않고 전부 잔금으로 둔다 --
+       한 수단에 몰아넣으면 그 수단의 매출이 있지도 않은 만큼 올라간다. */
+    if (!breakdown) { split.balance = amount; return split; }
+    let paid = 0;
+    for (const part of MIXED_PAYMENT_PARTS) {
+      /* 쪼갠 합이 계약 금액을 넘는 줄(입력 실수)에서 매출이 부풀지 않도록
+         계약 금액에서 잘라 쓴다. */
+      const share = Math.min(breakdown[part], Math.max(0, amount - paid));
+      split[part] = share;
+      paid += share;
+    }
+    split.balance = amount - paid;
+    return split;
+  }
+
+  const bucket = LEGACY_PAYMENT_BUCKET[method] || method;
+  if (Object.prototype.hasOwnProperty.call(split, bucket)) split[bucket] = amount;
+  /* 칸이 없는 수단은 잔금으로 떨어뜨리지 않는다 -- 합계에서 조용히 사라지는
+     편이 "안 받은 돈" 으로 세는 것보다 낫고, 그런 값은 규칙이 이미 막는다. */
+  return split;
+}
 
 /**
  * 한 달의 발급 내역을 지점 → 발급자로 묶는다.
@@ -135,6 +202,9 @@ export function summarizeIssues(input) {
          지어내지 않고 null 로 둔다. 0 으로 채우면 합계가 조용히 낮아진다. */
       contractPrice: pass ? count(pass.contractPrice) : null,
       paymentMethod: pass ? text(pass.paymentMethod) : "",
+      /* 복합결제의 수단별 금액. 없으면 undefined 다 -- 네 칸이 전부 0 인
+         객체를 심으면 단일 결제가 "쪼갠 적 있는 계약" 으로 읽힌다. */
+      paymentBreakdown: pass?.paymentBreakdown ?? undefined,
       passMissing: !pass,
       cancelled,
       cancelledAtLabel: cancelled ? monthDayLabel(cancelAtByPassId.get(passId)) : "",
@@ -164,6 +234,13 @@ export function summarizeIssues(input) {
     /* 회원권을 못 읽은 줄. 금액이 빠져 있으므로 합계가 실제보다 낮다는 것을
        화면이 말해야 한다. */
     missingPassCount: rows.filter((row) => row.passMissing).length,
+    /* 수단별 매출. 취소된 줄은 빠진다 (live) -- 합계와 같은 기준이 아니면
+       두 숫자가 어긋나 보이고, 읽는 사람이 둘 다 믿지 않게 된다. */
+    byPaymentMethod: live.reduce((sums, row) => {
+      const split = paymentSplitOf(row);
+      for (const column of PAYMENT_SPLIT_COLUMNS) sums[column] += split[column];
+      return sums;
+    }, Object.fromEntries(PAYMENT_SPLIT_COLUMNS.map((column) => [column, 0]))),
   };
 
   const byLocation = [];
@@ -199,11 +276,17 @@ export function issueReportCsv(summary, names = {}) {
   const labelOfPayment = names.labelOfPayment || ((value) => value);
   const dayLabel = names.dayLabel || ((value) => toDate(value).toISOString().slice(0, 10));
 
+  /* 수단별 칸을 줄마다 넣는다. 대표가 엑셀에서 그 열을 그대로 더해 "이 달
+     카드 매출" 을 보는 자리다 -- 복합결제가 한 칸으로만 적혀 있으면 그 더하기가
+     안 된다. 단일 결제는 자기 칸에 전액이 들어가고 나머지는 0 이다. */
   const lines = [[
     "월", "날짜", "지점", "발급자", "회원", "상품", "카테고리",
-    "총횟수", "계약금액", "결제수단", "신규", "취소",
+    "총횟수", "계약금액", "결제수단",
+    "카드", "계좌이체", "기타결제", "현금", "잔금",
+    "신규", "취소",
   ].join(",")];
   for (const row of summary?.rows || []) {
+    const split = paymentSplitOf(row);
     lines.push([
       summary.month,
       dayLabel(row.occurredAt),
@@ -215,6 +298,7 @@ export function issueReportCsv(summary, names = {}) {
       row.totalCount,
       row.contractPrice === null ? "" : row.contractPrice,
       labelOfPayment(row.paymentMethod),
+      ...PAYMENT_SPLIT_COLUMNS.map((column) => split[column]),
       row.isNew ? "신규" : "",
       row.cancelled ? `취소${row.cancelledAtLabel ? ` ${row.cancelledAtLabel}` : ""}` : "",
     ].map(csvCell).join(","));

@@ -24,7 +24,7 @@
  * 2원을 움직이는 것이고, 총액은 사실상 그대로이면서 급여는 정확해진다.
  */
 
-import { PAYMENT_METHOD } from "./constants.mjs";
+import { MIXED_PAYMENT_PARTS, PAYMENT_METHOD } from "./constants.mjs";
 import { deputyDirectorUnitPrice, netContractPriceFor, netContractPriceOf } from "./deduction-pricing.mjs";
 import { passClientIds } from "./pass-clients.mjs";
 
@@ -125,6 +125,7 @@ export function checkTransfer(input) {
  * @param {{ pass: any, sessions: number | string }} input
  * @returns {{
  *   contractPrice: number, netContractPrice: number, paymentMethod: string,
+ *   paymentBreakdown: Record<string, number> | null,
  *   deputyUnitPrice: number, sourceDeputyUnitPrice: number,
  *   nudge: number, exact: boolean,
  * }}
@@ -141,6 +142,27 @@ export function transferPricing(input) {
   const paymentMethod = String(pass?.paymentMethod ?? PAYMENT_METHOD.CARD).trim() || PAYMENT_METHOD.CARD;
   const sourcePrice = count(pass?.contractPrice);
 
+  /* ── 복합결제는 쪼갠 비율을 그대로 들고 간다 ────────────────────────────
+     공급가액이 카드분에만 걸리므로 (deduction-pricing 의 PAYMENT_INCLUDES_VAT),
+     넘기는 몫의 카드 비율이 원본과 달라지면 **같은 계약의 회차가 사람에 따라
+     다른 급여가 된다** -- 이 함수가 통째로 막으려는 바로 그 일이다.
+
+     반올림 때문에 네 칸의 합이 계약 금액과 1~2원 어긋날 수 있다. 그래도
+     공급가액은 카드 칸 하나로만 정해지므로 급여는 정확하다. */
+  /** @type {Array<{ part: string, amount: number }> | null} */
+  const sourceBreakdown = paymentMethod === PAYMENT_METHOD.MIXED
+    ? MIXED_PAYMENT_PARTS.map((part) => ({ part, amount: count(pass?.paymentBreakdown?.[part]) }))
+    : null;
+  const breakdownFor = (price) => {
+    if (!sourceBreakdown) return null;
+    /** @type {Record<string, number>} */
+    const parts = {};
+    for (const { part, amount } of sourceBreakdown) {
+      parts[part] = sourcePrice > 0 ? Math.round((amount * price) / sourcePrice) : 0;
+    }
+    return parts;
+  };
+
   /* 원본의 부원장 회당 단가. 받는 회원권이 맞춰야 할 값이고, 여기서 벗어나면
      같은 계약의 회차가 사람에 따라 다른 급여가 된다. */
   const sourceDeputyUnitPrice = deputyDirectorUnitPrice({
@@ -155,11 +177,12 @@ export function transferPricing(input) {
   for (const nudge of steps) {
     const contractPrice = base + nudge;
     if (contractPrice < 0) continue;
-    const netContractPrice = netContractPriceFor(contractPrice, paymentMethod);
+    const paymentBreakdown = breakdownFor(contractPrice);
+    const netContractPrice = netContractPriceFor(contractPrice, paymentMethod, paymentBreakdown);
     const deputyUnitPrice = deputyDirectorUnitPrice({ netContractPrice, totalSessions: sessions });
     if (deputyUnitPrice === sourceDeputyUnitPrice) {
       return {
-        contractPrice, netContractPrice, paymentMethod,
+        contractPrice, netContractPrice, paymentMethod, paymentBreakdown,
         deputyUnitPrice, sourceDeputyUnitPrice, nudge, exact: true,
       };
     }
@@ -169,9 +192,10 @@ export function transferPricing(input) {
      돌려준다** -- 조용히 비슷한 값을 쓰면 그 차이가 원장에 박히고, 원장은
      고칠 수 없다. 저장소가 이 값을 보고 멈춘다. */
   const contractPrice = base;
-  const netContractPrice = netContractPriceFor(contractPrice, paymentMethod);
+  const paymentBreakdown = breakdownFor(contractPrice);
+  const netContractPrice = netContractPriceFor(contractPrice, paymentMethod, paymentBreakdown);
   return {
-    contractPrice, netContractPrice, paymentMethod,
+    contractPrice, netContractPrice, paymentMethod, paymentBreakdown,
     deputyUnitPrice: deputyDirectorUnitPrice({ netContractPrice, totalSessions: sessions }),
     sourceDeputyUnitPrice, nudge: 0, exact: false,
   };

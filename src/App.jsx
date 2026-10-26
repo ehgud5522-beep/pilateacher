@@ -212,7 +212,7 @@ import {
   issueReportCsv, loadOrganizationMonthlyIssues,
 } from "./data/repositories/issue-report-repository.js";
 import {
-  MIGRATION_ERROR, applyClientMigration, applyPassMigration, groupFailures,
+  MIGRATION_ERROR, MIGRATION_WARNING, applyClientMigration, applyPassMigration, groupFailures,
   planClientMigration, planPassMigration,
 } from "./data/repositories/migration-repository.js";
 import {
@@ -223,6 +223,7 @@ import {
 } from "./data/schema/deduction-pricing.js";
 import {
   CLIENT_STATUS, LEDGER_ENTRY_TYPE, LEDGER_REASON_MAX, MEMBERSHIP_STATUS, MEMBERSHIP_TITLE, isDiosaCategory,
+  MIXED_PAYMENT_PARTS, PAYMENT_NOTE_MAX, SINGLE_PAYMENT_METHODS,
   PAY_CATEGORY, PAYMENT_METHOD, PRODUCT_STATUS, ROLES, SESSION_TYPE, isOwnerLevelRole,
 } from "./data/schema/constants.js";
 import {
@@ -15989,6 +15990,21 @@ function AttendanceCheck({
    하지 않는 것: 잔금 분할, 횟수미정 발급, 계약서 이미지. */
 
 const manwonInput = (value) => String(value).replace(/[^\d.]/g, "");
+
+/* ── 복합결제 금액 칸 ──────────────────────────────────────────────────────
+   네 칸이 **처음부터 전부 있어야** 한다. 없는 칸에 값을 넣는 순간 React 의
+   input 이 uncontrolled 에서 controlled 로 바뀌고, 그 경고가 뜨는 자리에서
+   커서가 끝으로 튄다. */
+const emptyBreakdown = () => Object.fromEntries(MIXED_PAYMENT_PARTS.map((part) => [part, ""]));
+
+/** 만원 칸 넷을 원 단위 숫자 넷으로. 빈 칸은 0 이다 (대표 결정: 빈칸 = 0). */
+const breakdownToWon = (parts) => Object.fromEntries(
+  MIXED_PAYMENT_PARTS.map((part) => [part, manwonToWon(Number(parts?.[part] || 0))]),
+);
+
+/* 원 → 만원 입력값. toFixed 로 한 번 접는 것은 100만 - 80만 이 부동소수로
+   20.000000000000004 로 떨어져 칸에 그대로 뜨는 것을 막기 위해서다. */
+const wonToManwonInput = (value) => String(Number((Number(value || 0) / WON_PER_MANWON).toFixed(4)));
 const manwonLabelOf = (manwon) => {
   const number = Number(manwon);
   return Number.isFinite(number) ? `${number}만원` : "-";
@@ -16042,12 +16058,46 @@ function PassIssue({
     serviceSessions: "0", purchaseRound: "1", paymentMethod: PAYMENT_METHOD.CARD,
     instructorId: "", unitPriceManwon: "", expiresAt: "",
     duet: false, partnerClientId: "",
+    /* 복합결제의 칸들. 복합결제가 아니면 쓰이지 않지만 폼에는 늘 있다 --
+       수단을 바꿀 때마다 칸을 만들고 지우면 적다 만 숫자가 사라진다. */
+    paymentBreakdown: emptyBreakdown(), balanceManwon: "", balanceEdited: false,
+    /* 기타결제가 무엇이었는지. 제로페이 · 평생교육바우처가 여기 남는다. */
+    paymentNote: "",
     ...(initialState?.form || {}),
   });
   const [formError, setFormError] = useState("");
   const [saving, setSaving] = useState(false);
   const organizationId = organization?.organizationId || "";
   const locked = organization?.status === "unknown";
+
+  /* ── 복합결제 (2026-10-27 대표 결정) ──────────────────────────────────────
+     계약 금액은 그대로 두고 **그 안을 수단별로 쪼갠다.** 공급가액이 카드분에만
+     걸리므로 (deduction-pricing 의 netContractPriceForMixed) 쪼갠 숫자가 곧
+     부원장의 급여 근거다.
+
+     ── 잔금은 저장하는 값이 아니라 고르는 값이다 ──
+     기본은 계약 금액 - 결제 합계이고, 손대면 그때부터 적은 값이 이긴다.
+     "손댔는가"(balanceEdited) 하나로 가른다 -- 자동값을 폼에 복사해 두고
+     맞춰 가면 어느 쪽이 사람의 뜻인지 알 수 없어지고, 결제 금액을 고칠 때마다
+     사람이 적은 잔금을 덮어쓰게 된다.
+
+     합계와 잔금이 계약 금액과 어긋나도 **경고하지 않고 막지도 않는다** --
+     얼마를 언제 받기로 했는지는 FC 가 아는 일이라고 대표가 정했다. */
+  const isMixedPayment = form.paymentMethod === PAYMENT_METHOD.MIXED;
+  const contractWon = manwonToWon(Number(form.contractPriceManwon || 0));
+  const breakdownWon = breakdownToWon(form.paymentBreakdown);
+  const paidWon = MIXED_PAYMENT_PARTS.reduce((sum, part) => sum + breakdownWon[part], 0);
+  /* 0 아래로 내려가지 않는다. 결제 합계가 계약 금액을 넘는 것은 입력 실수이고,
+     음수 잔금은 그 실수를 숫자로 굳히는 일이다. */
+  const autoBalanceWon = Math.max(0, contractWon - paidWon);
+  const balanceInput = form.balanceEdited ? form.balanceManwon : wonToManwonInput(autoBalanceWon);
+  const balanceWon = !isMixedPayment ? 0
+    : form.balanceEdited ? manwonToWon(Number(form.balanceManwon || 0))
+    : autoBalanceWon;
+  /* "내용" 칸을 띄울 때. 기타결제를 골랐거나, 복합결제에서 기타결제 칸에 금액을
+     적었을 때다 -- 금액만 있고 무엇인지가 없으면 월말에 답할 것이 없다. */
+  const asksPaymentNote = form.paymentMethod === PAYMENT_METHOD.OTHER
+    || (isMixedPayment && breakdownWon[PAYMENT_METHOD.OTHER] > 0);
 
   const reload = useCallback(async () => {
     if (!organizationId) return;
@@ -16194,6 +16244,12 @@ function PassIssue({
         contractPrice: manwonToWon(Number(form.contractPriceManwon)),
         purchaseRound: Number(form.purchaseRound || 1),
         paymentMethod: form.paymentMethod,
+        /* 복합결제일 때만 보낸다. 단일 결제에 네 칸짜리 객체가 붙으면 매출
+           집계가 그것을 "쪼갠 계약" 으로 읽고 수단별 합계가 0 쪽으로 샌다. */
+        ...(isMixedPayment ? { paymentBreakdown: breakdownWon } : {}),
+        balance: balanceWon,
+        balanceEdited: isMixedPayment && form.balanceEdited,
+        paymentNote: asksPaymentNote ? form.paymentNote : "",
         instructorId: form.instructorId,
         expiresAt: new Date(`${form.expiresAt}T23:59:59`),
         /* 표에서 오는 카테고리는 아래 둘을 보지 않는다 -- pay-rates.js 가 가른다.
@@ -16214,6 +16270,8 @@ function PassIssue({
         serviceSessions: "0", purchaseRound: "1", paymentMethod: PAYMENT_METHOD.CARD,
         instructorId: "", unitPriceManwon: "", expiresAt: "",
         duet: false, partnerClientId: "",
+        paymentBreakdown: emptyBreakdown(), balanceManwon: "", balanceEdited: false,
+        paymentNote: "",
       });
       setSearch("");
       setPartnerSearch("");
@@ -16242,8 +16300,9 @@ function PassIssue({
     /* 부가세를 뺀 공급가액. 부원장의 5:5 가 계약 금액이 아니라 이 숫자를 반으로
        접으므로, 계약 금액과 다를 때는 발급 전에 보여 준다 -- 결제 수단 하나로
        그 강사의 회당 단가가 9% 움직이고, 원장에 박히면 고칠 수 없다. */
-    const contractWon = manwonToWon(Number(form.contractPriceManwon));
-    const netWon = netContractPriceFor(contractWon, form.paymentMethod);
+    const netWon = netContractPriceFor(
+      contractWon, form.paymentMethod, isMixedPayment ? breakdownWon : null,
+    );
     return (
       <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
         <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>이대로 발급할까요?</h2>
@@ -16275,8 +16334,20 @@ function PassIssue({
           <p className="tabular-nums" style={{ fontSize: TYPE.caption, color: INK2 }}>
             {manwonLabelOf(form.contractPriceManwon)}
             {" · "}{labelOf(PAYMENT_METHOD_LABELS, form.paymentMethod)}
+            {form.paymentNote && asksPaymentNote ? ` (${form.paymentNote})` : ""}
             {" · "}{form.purchaseRound}차
           </p>
+          {/* 쪼갠 숫자를 누르기 전에 그대로 보여준다. 공급가액이 카드분으로만
+              정해지므로, 카드 칸 하나가 틀리면 그 강사의 회당 단가가 틀린다. */}
+          {isMixedPayment ? (
+            <p className="tabular-nums" style={{ fontSize: TYPE.caption, color: INK2 }}>
+              {MIXED_PAYMENT_PARTS
+                .filter((part) => breakdownWon[part] > 0)
+                .map((part) => `${labelOf(PAYMENT_METHOD_LABELS, part)} ${won(breakdownWon[part])}원`)
+                .join(" · ") || "결제 금액 없음"}
+              {balanceWon > 0 ? ` · 잔금 ${won(balanceWon)}원` : ""}
+            </p>
+          ) : null}
           {/* ── 회당 금액을 발급 전에 보여준다 ──────────────────────────────
               총 횟수에 남은 횟수를 넣으면 이 숫자가 뛴다. 300,000원은 아무도
               그냥 지나치지 않는다 -- 발급은 되돌릴 수 없으므로 누르기 전에
@@ -16496,6 +16567,8 @@ function PassIssue({
               </IssueField>
               <IssueField label="결제 수단">
                 <div className="flex flex-wrap gap-2">
+                  {/* 옛 값(제로페이 · 바우처)은 여기 없다. 기타결제 하나로 접었고,
+                      무엇이었는지는 아래 "내용" 칸에 글자로 남는다. */}
                   {Object.values(PAYMENT_METHOD).map((method) => (
                     <button key={method} type="button" onClick={() => setForm({ ...form, paymentMethod: method })}
                       className="h-9 px-3 font-bold" style={{
@@ -16506,6 +16579,67 @@ function PassIssue({
                   ))}
                 </div>
               </IssueField>
+
+              {/* ── 복합결제: 계약 금액 안을 수단별로 쪼갠다 ──────────────────
+                  빈 칸은 0 이다. 네 칸을 다 채우게 하지 않는 것은, 실제로 둘로
+                  나눠 받는 계약이 대부분이기 때문이다. */}
+              {isMixedPayment ? (
+                <div className="space-y-3" style={{
+                  padding: 12, borderRadius: 10, backgroundColor: CANVAS,
+                }}>
+                  <div className="grid grid-cols-2 gap-2">
+                    {MIXED_PAYMENT_PARTS.map((part) => (
+                      <Field key={part} label={`${labelOf(PAYMENT_METHOD_LABELS, part)} (만원)`}>
+                        <input inputMode="decimal" value={form.paymentBreakdown?.[part] ?? ""}
+                          className={inputCls} placeholder="0"
+                          onChange={(e) => setForm({
+                            ...form,
+                            paymentBreakdown: {
+                              ...form.paymentBreakdown,
+                              [part]: manwonInput(e.target.value),
+                            },
+                          })} />
+                      </Field>
+                    ))}
+                  </div>
+                  <p className="tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>
+                    결제 합계 {won(paidWon)}원
+                  </p>
+                  <Field label="잔금 (만원)">
+                    <input inputMode="decimal" value={balanceInput} className={inputCls} placeholder="0"
+                      onChange={(e) => setForm({
+                        ...form, balanceEdited: true, balanceManwon: manwonInput(e.target.value),
+                      })} />
+                  </Field>
+                  {/* 자동값인지 사람이 적은 값인지가 보여야 한다. 안 보이면
+                      결제 금액을 고친 뒤에도 잔금이 그대로인 것이 버그처럼 읽힌다. */}
+                  {form.balanceEdited ? (
+                    <div className="flex items-center gap-2">
+                      <span style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND_D }}>직접 수정</span>
+                      <button type="button"
+                        onClick={() => setForm({ ...form, balanceEdited: false, balanceManwon: "" })}
+                        className="px-2.5 font-bold" style={{
+                          height: 28, borderRadius: 999, fontSize: TYPE.caption,
+                          backgroundColor: TINT, color: BRAND_D,
+                        }}>자동 계산으로</button>
+                    </div>
+                  ) : (
+                    <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+                      계약 금액 − 결제 합계로 자동 계산됩니다. 고치면 그 값이 그대로 저장됩니다.
+                    </p>
+                  )}
+                </div>
+              ) : null}
+
+              {/* 기타결제가 무엇이었는지. 제로페이 · 평생교육바우처가 여기 남는다 --
+                  수단을 하나로 접으면서 잃을 뻔한 글자다. */}
+              {asksPaymentNote ? (
+                <IssueField label="내용 (선택)">
+                  <input value={form.paymentNote} className={inputCls} maxLength={PAYMENT_NOTE_MAX}
+                    placeholder="예) 평생교육바우처, 제로페이"
+                    onChange={(e) => setForm({ ...form, paymentNote: e.target.value })} />
+                </IssueField>
+              ) : null}
             </div>
           ) : null}
 
@@ -18442,7 +18576,17 @@ function PassSessionUpSheet({
   const [price, setPrice] = useState(initialPrice);
   const [service, setService] = useState(initialService);
   const [date, setDate] = useState(initialDate);
-  const [method, setMethod] = useState(initialMethod || pass?.paymentMethod || PAYMENT_METHOD.CARD);
+  /* 세션업은 **늘린 금액을 무엇으로 받았는가**를 적는다. 그래서 단일 수단만
+     고른다 -- 복합결제는 계약 금액 안을 쪼개는 것이고, 여기서 쪼개면 회원권의
+     paymentBreakdown 과 세션업으로 더한 금액이 서로 다른 것을 뜻하게 된다.
+
+     원래 회원권이 복합결제(또는 옛 제로페이·바우처)였으면 그 값은 칩에 없다.
+     카드로 시작해 사람이 고르게 둔다 -- 목록에 없는 값이 기본으로 남으면
+     아무 칩도 눌리지 않은 채 그대로 저장된다. */
+  const initialSingleMethod = SINGLE_PAYMENT_METHODS.includes(initialMethod || pass?.paymentMethod)
+    ? (initialMethod || pass?.paymentMethod)
+    : PAYMENT_METHOD.CARD;
+  const [method, setMethod] = useState(initialSingleMethod);
 
   /* 새 만료일은 선택이다. 안 주면 기존 날짜 그대로다 -- 늘린 회차를 쓸 기간이
      없으면 늘린 뜻이 없지만, 그 판단은 사람이 한다. */
@@ -18512,13 +18656,13 @@ function PassSessionUpSheet({
       <div className="mt-2">
         <p className="mb-1" style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>결제수단</p>
         <div className="flex flex-wrap gap-1.5">
-          {Object.entries(PAYMENT_METHOD_LABELS).map(([value, label]) => (
+          {SINGLE_PAYMENT_METHODS.map((value) => (
             <button key={value} type="button" onClick={() => setMethod(value)}
               className="px-3 font-bold" style={{
                 height: 30, borderRadius: 999, fontSize: TYPE.caption,
                 backgroundColor: method === value ? TINT : CANVAS,
                 color: method === value ? BRAND_D : SUB,
-              }}>{label}</button>
+              }}>{labelOf(PAYMENT_METHOD_LABELS, value)}</button>
           ))}
         </div>
       </div>
@@ -20032,6 +20176,9 @@ const MIGRATION_FAILURE_LABEL = {
   [MIGRATION_ERROR.MISSING_RATE]: "기준 단가를 정할 수 없습니다",
   [MIGRATION_ERROR.ALREADY_EXISTS]: "이미 올라간 행입니다",
   [MIGRATION_ERROR.WRITE_FAILED]: "저장하지 못했습니다",
+  /* 실패가 아니라 **올라간 줄의 확인 목록**이다. 같은 표를 쓰는 것은 화면도
+     같은 컴포넌트를 쓰기 때문이다 -- MigrationFailureList. */
+  [MIGRATION_WARNING.MIXED_AMOUNT_UNCONFIRMED]: "복합결제 금액 확인 필요",
 };
 
 /**
@@ -20193,6 +20340,7 @@ function CenterMigration({
   );
 
   const missingColumns = plan?.missingColumns || [];
+  const warnings = plan?.warnings || [];
   const ready = plan && missingColumns.length === 0 && plan.writes.length > 0;
 
   return (
@@ -20279,6 +20427,18 @@ function CenterMigration({
             </p>
           )}
           <MigrationFailureList failures={plan.failures} />
+          {/* ── 올라가지만 한 번 봐야 하는 줄 ──────────────────────────────
+              막지 않는다 (2026-10-27 대표 결정). 거부하면 그 회원권이 없는
+              것이 되고, 회원이 다음 수업에서 그 사실을 만난다. 원문은 그대로
+              올라가므로 나중에 이 목록을 보고 손으로 맞추면 된다. */}
+          {warnings.length > 0 ? (
+            <>
+              <p className="mt-3 tabular-nums" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: WARN }}>
+                올라가지만 확인이 필요한 행 <span style={{ fontWeight: 700 }}>{warnings.length}</span>
+              </p>
+              <MigrationFailureList failures={warnings} />
+            </>
+          ) : null}
           <div className="mt-3 flex gap-2">
             <button type="button" onClick={clearUpload} className="h-11 flex-1 font-bold"
               style={{ borderRadius: 10, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>취소</button>
@@ -25599,6 +25759,47 @@ export function createAppScreenSmokeCases() {
     { name: "회원 목록 · 소속 강사 · 명부 조회 실패 · 네트워크", element: <ReferenceMemberList members={db.members} schedule={db.schedule} settings={db.settings} canRegister={false} currentUserId="u1" myMembersDefault rosterError="unavailable" onRetryRoster={noop} onSelect={noop} onAdd={noop} /> },
     { name: "회원 목록 · 강사 · 비어 있음", element: <ReferenceMemberList members={[]} schedule={[]} settings={db.settings} canRegister={false} onSelect={noop} onAdd={noop} /> },
     { name: "회원권 발급", element: passIssue(smokeOwner, { ...smokeIssueBase }) },
+    /* ── 복합결제 (2026-10-27) ──────────────────────────────────────────
+       금액 칸 넷 · 결제 합계 · 잔금이 한 화면에 선다. 잔금은 손대기 전까지
+       계약 금액 - 결제 합계이고, 손대면 "직접 수정" 과 되돌리기가 뜬다. */
+    { name: "회원권 발급 · 복합결제", element: passIssue(smokeOwner, {
+      ...smokeIssueBase, search: "김하나", moreOpen: true,
+      form: {
+        clientId: "smoke-client-a", productId: "smoke-product-active", totalSessions: "20",
+        contractPriceManwon: "100", serviceSessions: "0", purchaseRound: "1",
+        paymentMethod: "mixed", instructorId: "u1", expiresAt: "2027-04-30",
+        paymentBreakdown: { card: "50", transfer: "", other: "", cash: "30" },
+      },
+    }) },
+    { name: "회원권 발급 · 복합결제 · 잔금 직접 수정", element: passIssue(smokeOwner, {
+      ...smokeIssueBase, search: "김하나", moreOpen: true,
+      form: {
+        clientId: "smoke-client-a", productId: "smoke-product-active", totalSessions: "20",
+        contractPriceManwon: "100", serviceSessions: "0", purchaseRound: "1",
+        paymentMethod: "mixed", instructorId: "u1", expiresAt: "2027-04-30",
+        paymentBreakdown: { card: "50", transfer: "", other: "", cash: "30" },
+        balanceManwon: "0", balanceEdited: true,
+      },
+    }) },
+    { name: "회원권 발급 · 복합결제 · 확인", element: passIssue(smokeOwner, {
+      ...smokeIssueBase, mode: "confirm", search: "김하나",
+      form: {
+        clientId: "smoke-client-a", productId: "smoke-product-active", totalSessions: "20",
+        contractPriceManwon: "100", serviceSessions: "0", purchaseRound: "1",
+        paymentMethod: "mixed", instructorId: "u1", expiresAt: "2027-04-30",
+        paymentBreakdown: { card: "50", transfer: "", other: "", cash: "30" },
+      },
+    }) },
+    /* 기타결제. 제로페이 · 바우처가 접힌 자리이고, 무엇이었는지는 내용 칸에 남는다. */
+    { name: "회원권 발급 · 기타결제", element: passIssue(smokeOwner, {
+      ...smokeIssueBase, search: "김하나", moreOpen: true,
+      form: {
+        clientId: "smoke-client-a", productId: "smoke-product-active", totalSessions: "20",
+        contractPriceManwon: "130", serviceSessions: "0", purchaseRound: "1",
+        paymentMethod: "other", instructorId: "u1", expiresAt: "2027-04-30",
+        paymentNote: "평생교육바우처",
+      },
+    }) },
     /* 듀엣. 회원을 고른 뒤에 토글이 뜨고, 켜면 짝 칸이 생긴다. */
     { name: "회원권 발급 · 듀엣 꺼짐", element: passIssue(smokeOwner, {
       ...smokeIssueBase, search: "김하나",

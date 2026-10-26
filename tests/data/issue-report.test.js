@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  NEW_PASS_CATEGORIES, isMigratedPass, issueReportCsv, loadOrganizationMonthlyIssues, summarizeIssues,
+  NEW_PASS_CATEGORIES, isMigratedPass, issueReportCsv, loadOrganizationMonthlyIssues,
+  paymentSplitOf, summarizeIssues,
 } from "../../src/data/repositories/issue-report-repository.js";
 
 const at = (day, hour = 10) => new Date(2026, 8, day, hour, 0, 0);
@@ -204,13 +205,94 @@ test("the csv is one line per issue, with the payroll columns absent", () => {
   });
   const lines = csv.replace("﻿", "").split("\n");
   assert.equal(lines.length, 2, "머리말 한 줄 + 건 한 줄");
-  assert.match(lines[0], /^월,날짜,지점,발급자,회원,상품,카테고리,총횟수,계약금액,결제수단,신규,취소$/);
+  /* 수단별 칸이 줄마다 선다. 대표가 엑셀에서 그 열을 그대로 더해 "이 달 카드
+     매출" 을 보는 자리다 -- 복합결제가 한 칸으로만 적혀 있으면 그 더하기가
+     안 된다 (2026-10-27). */
+  assert.match(
+    lines[0],
+    /^월,날짜,지점,발급자,회원,상품,카테고리,총횟수,계약금액,결제수단,카드,계좌이체,기타결제,현금,잔금,신규,취소$/,
+  );
   assert.match(lines[1], /반송점/);
   assert.match(lines[1], /1300000/);
   assert.match(lines[1], /취소/);
   for (const forbidden of ["단가", "25000", "1181818"]) {
     assert.doesNotMatch(csv, new RegExp(forbidden), `${forbidden} 가 CSV 에 있다`);
   }
+});
+
+/* ── 수단별 매출 (2026-10-27) ─────────────────────────────────────────── */
+
+test("a single-method sale lands whole in its own column", () => {
+  for (const method of ["card", "cash", "transfer", "other"]) {
+    const split = paymentSplitOf({ contractPrice: 1300000, paymentMethod: method });
+    assert.equal(split[method], 1300000, method);
+    assert.equal(split.balance, 0, method);
+  }
+});
+
+test("old zeropay and voucher sales are counted as 기타결제, not as names of their own", () => {
+  /* 2026-10-27 에 하나로 접었다. 합계에서만 셋으로 갈라져 있으면 같은 돈을 두
+     이름으로 세게 된다. */
+  for (const method of ["zeropay", "voucher"]) {
+    assert.equal(paymentSplitOf({ contractPrice: 700000, paymentMethod: method }).other, 700000, method);
+  }
+});
+
+test("a mixed payment is counted method by method, never as one lump", () => {
+  /* 대표가 묻는 것은 "이 달 카드 매출이 얼마인가" 다. "복합결제 80만" 으로
+     세면 그 물음에 답할 수 없다. */
+  const split = paymentSplitOf({
+    contractPrice: 1000000, paymentMethod: "mixed",
+    paymentBreakdown: { card: 500000, cash: 300000, transfer: 0, other: 0 },
+  });
+  assert.equal(split.card, 500000);
+  assert.equal(split.cash, 300000);
+  assert.equal(split.balance, 200000, "아직 받지 않은 돈은 잔금으로");
+  assert.equal(
+    split.card + split.transfer + split.other + split.cash + split.balance, 1000000,
+    "쪼갠 합 + 잔금 = 계약 금액",
+  );
+});
+
+test("a split that cannot be read is held as balance, not pushed into a method", () => {
+  /* 한 수단에 몰아넣으면 그 수단의 매출이 있지도 않은 만큼 올라간다. */
+  const split = paymentSplitOf({ contractPrice: 1000000, paymentMethod: "mixed" });
+  assert.equal(split.balance, 1000000);
+  assert.equal(split.card, 0);
+});
+
+test("amounts that overrun the contract do not inflate revenue", () => {
+  const split = paymentSplitOf({
+    contractPrice: 1000000, paymentMethod: "mixed",
+    paymentBreakdown: { card: 900000, cash: 900000, transfer: 0, other: 0 },
+  });
+  assert.equal(split.card + split.cash + split.balance, 1000000);
+  assert.equal(split.balance, 0);
+});
+
+test("the month totals carry the per-method split, cancelled rows excluded", () => {
+  const summary = summarizeIssues({
+    month: "2026-09",
+    entries: [issue(), issue({ id: "e-2", passId: "pass-2" }), issue({ id: "e-3", passId: "pass-3" })],
+    passes: [
+      pass(),
+      pass({
+        id: "pass-2", contractPrice: 1000000, paymentMethod: "mixed",
+        paymentBreakdown: { card: 500000, cash: 300000, transfer: 0, other: 0 },
+      }),
+      // 취소된 줄은 합계에서 빠진다 -- 금액 합계와 같은 기준이어야 한다.
+      pass({ id: "pass-3", contractPrice: 900000, paymentMethod: "cash", status: "cancelled" }),
+    ],
+  });
+  assert.equal(summary.totals.byPaymentMethod.card, 1300000 + 500000);
+  assert.equal(summary.totals.byPaymentMethod.cash, 300000);
+  assert.equal(summary.totals.byPaymentMethod.balance, 200000);
+  const split = summary.totals.byPaymentMethod;
+  assert.equal(
+    split.card + split.transfer + split.other + split.cash + split.balance,
+    summary.totals.amount,
+    "수단별 합계가 금액 합계와 어긋나면 둘 다 믿을 수 없게 된다",
+  );
 });
 
 /* ── 읽기 ─────────────────────────────────────────────────────────────── */

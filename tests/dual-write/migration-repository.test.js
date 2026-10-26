@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  CLIENT_SHEET_COLUMNS, MIGRATION_ERROR, PASS_SHEET_COLUMNS, applyClientMigration,
+  CLIENT_SHEET_COLUMNS, MIGRATION_ERROR, MIGRATION_WARNING, PASS_SHEET_COLUMNS, applyClientMigration,
   sessionsInProductName,
   applyPassMigration, clientIdForPhone, groupFailures, parseCsv, passIdFor,
   PASS_SHEET_DUET_COLUMNS, planClientMigration, planPassMigration, readSheet,
@@ -369,6 +369,111 @@ test("korean labels become stored values through the one shared table", () => {
   ));
   assert.equal(writes[0].pass.category, "pt_1_1_repurchase_normal");
   assert.equal(writes[0].pass.paymentMethod, "transfer");
+});
+
+/* ── 결제수단 정리 · 복합결제 (2026-10-27 대표 결정) ───────────────────── */
+
+/* 비고는 PASS_SHEET_COLUMNS 에 없다. 20회미만 칸과 같은 이유다 -- 넣으면 그
+   칸이 없는 옛 엑셀이 통째로 거부된다. 머리글에 있으면 읽히고 없으면 빈 칸이다. */
+const noteSheet = (...rows) => [[...PASS_SHEET_COLUMNS, "비고"].join(","), ...rows].join("\n");
+const noteRow = (note, overrides = {}) => `${passRow(overrides)},"${note}"`;
+
+test("zeropay and voucher become 기타결제 and keep what they were in the note", () => {
+  /* 셋을 하나로 접었다. 접었다고 "이 회원이 무엇으로 냈나" 까지 잃으면 안 된다 --
+     원래 글자가 paymentNote 로 간다. */
+  for (const label of ["제로페이", "바우처", "평생교육바우처"]) {
+    const { writes, failures } = planPasses(passSheet(passRow({ 결제수단: label })));
+    assert.deepEqual(failures, [], label);
+    assert.equal(writes[0].pass.paymentMethod, "other", label);
+    assert.equal(writes[0].pass.paymentNote, label, label);
+  }
+});
+
+test("기타결제 on its own carries no made-up note", () => {
+  const { writes } = planPasses(passSheet(passRow({ 결제수단: "기타결제" })));
+  assert.equal(writes[0].pass.paymentMethod, "other");
+  assert.equal(writes[0].pass.paymentNote, undefined);
+});
+
+test("a mixed payment reads its amounts out of 비고 and works out the balance", () => {
+  /* 계약 130만 · 카드 50만 + 현금 30만 → 결제 합계 80만, 잔금 50만.
+     공급가액은 카드분만 깎는다: (130만 - 50만) + round(50만 x 10/11). */
+  const { writes, failures } = planPasses(noteSheet(
+    noteRow("카드 50만 + 현금 30만", { 결제수단: "복합결제" }),
+  ));
+  assert.deepEqual(failures, []);
+  const pass = writes[0].pass;
+  assert.equal(pass.paymentMethod, "mixed");
+  assert.deepEqual(pass.paymentBreakdown, { card: 500000, transfer: 0, other: 0, cash: 300000 });
+  assert.equal(pass.balance, 500000);
+  // 현금 30만만 그대로이고 나머지 100만(카드 50만 + 잔금 50만)이 깎인다.
+  assert.equal(pass.netContractPrice, 300000 + Math.round((1000000 * 10) / 11));
+  assert.equal(pass.paymentNote, "카드 50만 + 현금 30만", "원문을 버리지 않는다");
+});
+
+test("all five of the owner's 비고 examples upload, voucher included", () => {
+  const rows = [
+    { note: "현금500만/카드50만", expected: { cash: 5000000, card: 500000 } },
+    { note: "카드 5.5만 현금 135만", expected: { card: 55000, cash: 1350000 } },
+    { note: "바우처 70만 + 카드 20만", expected: { other: 700000, card: 200000 } },
+    { note: "계좌이체10만,카드187만", expected: { transfer: 100000, card: 1870000 } },
+    { note: "평생교육바우처35만/개인카드20만", expected: { other: 350000, card: 200000 } },
+  ];
+  rows.forEach(({ note, expected }, index) => {
+    const { writes, failures } = planPasses(noteSheet(noteRow(note, {
+      결제수단: "복합결제", 차수: String(index + 2), 계약금액: "9000000",
+    })));
+    assert.deepEqual(failures, [], note);
+    const breakdown = writes[0].pass.paymentBreakdown;
+    for (const [part, amount] of Object.entries(expected)) {
+      assert.equal(breakdown[part], amount, `${note} → ${part}`);
+    }
+  });
+});
+
+test("a 비고 that cannot be read still uploads, flagged for the owner", () => {
+  /* 거부하면 그 회원권이 아예 없는 것이 되고, 회원은 다음 수업에서 "회원권이
+     없다" 를 만난다. 원문을 들고 올라가고 목록에만 세운다. */
+  const { writes, failures, warnings } = planPasses(noteSheet(
+    noteRow("기프티콘으로 받음", { 결제수단: "복합결제" }),
+  ));
+  assert.deepEqual(failures, [], "막지 않는다");
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].pass.paymentNote, "기프티콘으로 받음");
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0].reason, MIGRATION_WARNING.MIXED_AMOUNT_UNCONFIRMED);
+  assert.equal(warnings[0].line, 2);
+});
+
+test("amounts that add up past the contract are flagged, a balance is not", () => {
+  // 모자라는 것은 잔금이라 정상이다.
+  const fine = planPasses(noteSheet(noteRow("카드 50만", { 결제수단: "복합결제" })));
+  assert.deepEqual(fine.warnings, []);
+  assert.equal(fine.writes[0].pass.balance, 800000);
+
+  // 넘치는 것은 단위를 잘못 읽었거나 같은 금액을 두 번 적은 것이다.
+  const over = planPasses(noteSheet(noteRow("카드 500만", { 결제수단: "복합결제" })));
+  assert.equal(over.warnings.length, 1);
+  assert.equal(over.writes[0].pass.balance, 0, "잔금은 0 아래로 내려가지 않는다");
+});
+
+test("두 수단이 적힌 결제수단 칸은 복합결제로 읽고 행을 버리지 않는다", () => {
+  /* 거부하면 대표가 그 줄을 손으로 고쳐 다시 올려야 하는데, 금액은 어차피
+     비고에 있으므로 고쳐 봐야 같은 글자를 옮겨 적는 일이다. */
+  const { writes, failures } = planPasses(noteSheet(
+    noteRow("카드 50만 + 현금 30만", { 결제수단: "현금/카드" }),
+  ));
+  assert.deepEqual(failures, []);
+  assert.equal(writes[0].pass.paymentMethod, "mixed");
+});
+
+test("a single-method row still stores a zero balance and no breakdown", () => {
+  /* 단일 결제에 네 칸짜리 객체가 붙으면 매출 집계가 그것을 "쪼갠 계약" 으로
+     읽고 수단별 합계가 0 쪽으로 샌다. */
+  const { writes } = planPasses(passSheet(passRow({ 결제수단: "카드" })));
+  assert.equal(writes[0].pass.paymentBreakdown, undefined);
+  assert.equal(writes[0].pass.balance, 0);
+  assert.equal(writes[0].pass.netContractPrice, Math.round((1300000 * 10) / 11));
 });
 
 test("a label that is not on the list fails the row instead of being guessed", () => {

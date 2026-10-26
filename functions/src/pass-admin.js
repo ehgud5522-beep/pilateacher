@@ -236,6 +236,9 @@ async function runHandover(firestore, input) {
     contractPrice: priced.contractPrice,
     netContractPrice: priced.netContractPrice,
     paymentMethod: priced.paymentMethod,
+    // 복합결제면 쪼갠 비율을 그대로. pass-repository 의 transferPass 와 같다.
+    ...(priced.paymentBreakdown ? { paymentBreakdown: priced.paymentBreakdown } : {}),
+    balance: 0,
     purchaseRound: count(input?.purchaseRound) || 1,
     remainingCount: sessions,
     expiresAt,

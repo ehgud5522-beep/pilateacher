@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   NEW_TO_INSTRUCTOR_THRESHOLD, NEW_TO_INSTRUCTOR_UNIT_PRICE, PAYMENT_INCLUDES_VAT, PRICING_RULE,
-  SENIOR_TITLES, SENIOR_TITLE_EVENT_UNIT_PRICE,
+  SENIOR_TITLES, SENIOR_TITLE_EVENT_UNIT_PRICE, VAT_BY_PARTS, vatablePortionOf,
   deputyDirectorUnitPrice, netContractPriceFor, netContractPriceOf, resolveDeductionUnitPrice,
   spendsServiceSession,
 } from "../../src/data/schema/deduction-pricing.js";
 import {
-  DUET_PAY_CATEGORIES, MEMBERSHIP_TITLE, PAY_CATEGORY, PAYMENT_METHOD, isDuetPayCategory,
+  DUET_PAY_CATEGORIES, LEGACY_PAYMENT_METHOD, MEMBERSHIP_TITLE,
+  PAY_CATEGORY, PAYMENT_METHOD, SINGLE_PAYMENT_METHODS, STORED_PAYMENT_METHODS,
+  isDuetPayCategory,
 } from "../../src/data/schema/constants.js";
 import { PAY_RATES } from "../../src/data/schema/pay-rates.js";
 
@@ -337,43 +339,144 @@ test("the same contract pays a deputy differently on card and in cash", () => {
   assert.equal(deputyDirectorUnitPrice({ netContractPrice: cash, totalSessions: 20 }), 27500);
 });
 
-test("cash and transfer are the contract itself", () => {
+test("cash is the contract itself", () => {
   assert.equal(netContractPriceFor(1300000, "cash"), 1300000);
-  assert.equal(netContractPriceFor(1300000, "transfer"), 1300000);
 });
 
-test("only a card is discounted — zeropay and voucher are not (2026-10-05 변경)", () => {
-  /* 전에는 셋을 같이 두고 "수수료가 없다는 것과 세금이 없다는 것은 다른
-     이야기" 라고 적었다. 대표가 보는 기준은 센터가 실제로 떼이는 결제
-     수수료였고, 제로페이(가맹점 수수료 0%)와 바우처는 떼이는 것이 없다.
+test("only cash sits outside VAT (2026-10-27 대표 정정)", () => {
+  /* 한 번 뒤집힌 자리다. 2026-10-05 에는 "카드만 뺀다" 였고, 기준을 센터가
+     떼이는 **결제 수수료**로 잡았다 -- 제로페이는 가맹점 수수료가 0% 이니
+     계약 금액 그대로 간다는 셈이었다.
 
-     이미 발급된 회원권은 움직이지 않는다 -- 발급 시점의 공급가액이 문서에
-     박혀 있고 netContractPriceOf 가 그것을 먼저 본다. 이관분도 마찬가지다. */
-  assert.equal(netContractPriceFor(1100000, "card"), 1000000, "카드만 뺀다");
-  assert.equal(netContractPriceFor(1100000, "zeropay"), 1100000);
-  assert.equal(netContractPriceFor(1100000, "voucher"), 1100000);
-  assert.equal(netContractPriceFor(1100000, "cash"), 1100000);
-  assert.equal(netContractPriceFor(1100000, "transfer"), 1100000);
+     그 셈이 틀렸다. 수수료와 부가세는 다른 돈이다. 계좌이체도 제로페이도
+     바우처도 매출로 잡히고 세금계산서가 나간다. 현금만 그 바깥에 있다. */
+  assert.equal(netContractPriceFor(1100000, "cash"), 1100000, "현금만 그대로다");
+  for (const method of ["card", "transfer", "other", "zeropay", "voucher"]) {
+    assert.equal(netContractPriceFor(1100000, method), 1000000, method);
+  }
+});
+
+test("only transfer, zeropay and voucher move under the corrected rule", () => {
+  /* 대표가 확인하라고 한 것: 기존 단일 결제수단 회원권 중 **계산이 바뀌는
+     것은 이 셋뿐**인가. 카드는 전에도 깎였고 현금은 전에도 안 깎였다.
+
+     여기서 "전" 은 2026-10-05 의 표다 (카드만 true). 그 표를 그대로 적어 두고
+     두 답을 견준다 -- 말로만 "셋뿐" 이라고 하면 다음에 표가 또 움직일 때
+     무엇이 바뀌는지 아무도 모른다. */
+  const BEFORE_2026_10_27 = { card: true, cash: false, transfer: false, zeropay: false, voucher: false };
+  const moved = [];
+  for (const [method, wasVat] of Object.entries(BEFORE_2026_10_27)) {
+    const before = wasVat ? Math.round((1100000 * 10) / 11) : 1100000;
+    if (netContractPriceFor(1100000, method) !== before) moved.push(method);
+  }
+  assert.deepEqual(moved.sort(), ["transfer", "voucher", "zeropay"]);
 });
 
 test("an already issued pass keeps the net price it was sold with", () => {
   /* 이 변경이 지난 회원권의 급여를 흔들면 안 된다. 발급 때 박은 값이
-     먼저이고, 그것이 없을 때만 지금 규칙으로 다시 센다. */
-  assert.equal(netContractPriceOf({ netContractPrice: 1000000, contractPrice: 1100000, paymentMethod: "zeropay" }), 1000000);
+     먼저이고, 그것이 없을 때만 지금 규칙으로 다시 센다. 이미 박힌 값을
+     바로잡을지는 대표가 따로 정한다. */
+  assert.equal(netContractPriceOf({ netContractPrice: 1100000, contractPrice: 1100000, paymentMethod: "zeropay" }), 1100000);
   // 박힌 값이 없는 옛 회원권만 지금 규칙을 탄다.
-  assert.equal(netContractPriceOf({ contractPrice: 1100000, paymentMethod: "zeropay" }), 1100000);
+  assert.equal(netContractPriceOf({ contractPrice: 1100000, paymentMethod: "zeropay" }), 1000000);
 });
 
 test("every payment method answers whether it carries VAT", () => {
   /* 빈칸이 있으면 새 결제 수단이 조용히 한쪽으로 떨어지고, 그 오차가 원장에
-     박힌다. 표와 열거형이 같은 집합이어야 한다. */
+     박힌다. 표와 **저장 가능한 수단 전부**가 같은 집합이어야 한다 -- 옛 값
+     (제로페이 · 바우처)도 포함이다. 그것들을 표에서 빼면 이미 발급된 회원권을
+     양도하거나 다시 계산하는 길이 통째로 막힌다. */
   assert.deepEqual(
     Object.keys(PAYMENT_INCLUDES_VAT).sort(),
-    Object.values(PAYMENT_METHOD).sort(),
+    [...STORED_PAYMENT_METHODS].sort(),
   );
-  for (const method of Object.values(PAYMENT_METHOD)) {
+  for (const method of SINGLE_PAYMENT_METHODS) {
     assert.equal(typeof PAYMENT_INCLUDES_VAT[method], "boolean", method);
   }
+  for (const method of Object.values(LEGACY_PAYMENT_METHOD)) {
+    assert.equal(typeof PAYMENT_INCLUDES_VAT[method], "boolean", method);
+  }
+  /* 복합결제만 불리언이 아니다. 카드 50만 + 현금 30만 을 한 글자로 답할 수
+     없기 때문이고, 그 답은 "수단별 금액을 보라" 다. */
+  assert.equal(PAYMENT_INCLUDES_VAT[PAYMENT_METHOD.MIXED], VAT_BY_PARTS);
+});
+
+test("a mixed payment leaves only the cash share whole (2026-10-27 결정 A)", () => {
+  /* 카드 50만 + 현금 30만 짜리 100만 계약. 공급가액은
+     30만 + round(70만 x 10/11) = 300,000 + 636,364 = 936,364.
+
+     분모가 "카드+잔금" 이 아니라 **계약금액 - 현금분** 인 것에 주의한다.
+     잔금 20만도 받기로 한 돈이고, 그것이 현금일지 카드일지는 아직 모른다 --
+     모를 때는 세금계산서가 따라가는 쪽으로 둔다.
+
+     전부 부가세 포함으로 보면 909,091 이 되어 **강사가 덜 받고**, 전부
+     미포함으로 보면 100만이 되어 **센터가 더 낸다.** 둘 다 매번 틀린다. */
+  const net = netContractPriceFor(1000000, "mixed", {
+    card: 500000, cash: 300000, transfer: 0, other: 0,
+  });
+  assert.equal(net, 936364);
+  assert.equal(net, 300000 + Math.round((700000 * 10) / 11));
+});
+
+test("a mixed payment of one method lands exactly where that method alone lands", () => {
+  /* 쪼갬이 단일 결제와 어긋나면 "같은 돈을 어떻게 적었느냐" 로 급여가 갈린다. */
+  for (const price of [1100000, 1000000, 1300000, 550000, 6, 0]) {
+    assert.equal(
+      netContractPriceFor(price, "mixed", { card: price, cash: 0, transfer: 0, other: 0 }),
+      netContractPriceFor(price, "card"),
+      `카드 ${price}`,
+    );
+    assert.equal(
+      netContractPriceFor(price, "mixed", { cash: price, card: 0, transfer: 0, other: 0 }),
+      netContractPriceFor(price, "cash"),
+      `현금 ${price}`,
+    );
+  }
+});
+
+test("adding mixed payment does not move any single method on its own", () => {
+  /* 복합결제를 더한 것만으로는 단일 수단이 움직이지 않는다. 움직인 것은 위
+     테스트가 짚는 부가세 기준 정정이고, 그 둘은 다른 변경이다. */
+  for (const { method, expected } of [
+    { method: "card", expected: 1000000 },
+    { method: "cash", expected: 1100000 },
+  ]) {
+    assert.equal(netContractPriceFor(1100000, method), expected, method);
+  }
+});
+
+test("a mixed payment without amounts is refused, never guessed", () => {
+  /* 0 으로 읽으면 카드분이 사라져 공급가액이 조용히 계약 금액과 같아진다.
+     netContractPriceOf 가 이 던짐을 null 로 받아 부원장 판정이 멈춘다. */
+  for (const bad of [undefined, null, "", 0]) {
+    assert.throws(
+      () => netContractPriceFor(1000000, "mixed", bad),
+      /Invalid paymentBreakdown/, JSON.stringify(bad),
+    );
+  }
+  assert.equal(netContractPriceOf({ contractPrice: 1000000, paymentMethod: "mixed" }), null);
+  // 박힌 값이 있으면 그것이 먼저다 -- 쪼갠 금액을 못 읽어도 급여는 움직이지 않는다.
+  assert.equal(
+    netContractPriceOf({ contractPrice: 1000000, netContractPrice: 954545, paymentMethod: "mixed" }),
+    954545,
+  );
+});
+
+test("the VAT-bearing share of a pass is read the same way for single and mixed", () => {
+  assert.equal(vatablePortionOf({ contractPrice: 1100000, paymentMethod: "card" }), 1100000);
+  assert.equal(vatablePortionOf({ contractPrice: 1100000, paymentMethod: "transfer" }), 1100000);
+  assert.equal(vatablePortionOf({ contractPrice: 1100000, paymentMethod: "cash" }), 0);
+  /* 복합결제는 계약 금액에서 현금 칸을 뺀다. 잔금 20만도 여기 들어간다 --
+     받기로 한 돈이고, 현금일지는 아직 모른다. */
+  assert.equal(vatablePortionOf({
+    contractPrice: 1000000, paymentMethod: "mixed",
+    paymentBreakdown: { card: 500000, cash: 300000, transfer: 0, other: 0 },
+  }), 700000);
+  // 현금분이 계약 금액을 넘는 입력 실수. 그 위는 세지 않는다.
+  assert.equal(vatablePortionOf({
+    contractPrice: 1000000, paymentMethod: "mixed",
+    paymentBreakdown: { cash: 9000000, card: 0, transfer: 0, other: 0 },
+  }), 0);
 });
 
 test("an unknown payment method is refused rather than guessed", () => {

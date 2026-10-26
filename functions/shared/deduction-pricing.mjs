@@ -23,7 +23,8 @@
  */
 
 import {
-  MEMBERSHIP_TITLE, PAY_CATEGORY, PAYMENT_METHOD, isDuetPayCategory,
+  LEGACY_PAYMENT_METHOD, MEMBERSHIP_TITLE, MIXED_PAYMENT_PARTS,
+  PAY_CATEGORY, PAYMENT_METHOD, isDuetPayCategory,
 } from "./constants.mjs";
 import { PAY_RATES } from "./pay-rates.mjs";
 
@@ -194,30 +195,114 @@ const countOf = (value) => (typeof value === "number" && Number.isInteger(value)
    기준은 수단의 이름이 아니라 "센터가 그 돈에서 부가세를 떼고 받는가"다.
    현금·계좌가 예외이고, 결제망을 타고 매출로 잡히는 나머지가 기본이다.
 
-   2026-10-05 에 대표가 정했다: **카드만 뺀다.** 전에는 제로페이와 바우처도
-   카드와 같이 두고 "수수료가 없다는 것과 세금이 없다는 것은 다른 이야기" 라고
-   적어 두었는데, 대표가 보는 기준은 센터가 실제로 떼이는 결제 수수료였다.
-   제로페이는 가맹점 수수료가 0% 이고 바우처도 떼이는 것이 없으므로, 그 돈은
-   계약 금액 그대로 강사의 분자가 된다.
+   ── 2026-10-27 대표 정정: **현금만 그대로다** ──
+   한 번 뒤집힌 자리다. 2026-10-05 에는 "카드만 뺀다" 였고, 기준을 센터가
+   떼이는 **결제 수수료**로 잡았다 -- 제로페이는 가맹점 수수료가 0% 이고
+   바우처도 떼이는 것이 없으니 계약 금액 그대로 간다는 셈이었다.
 
-   이미 발급된 회원권은 움직이지 않는다 -- 발급 시점의 공급가액이 문서에 박혀
-   있고(netContractPriceOf 가 그것을 먼저 본다), 이관분도 마찬가지다. 바뀌는
-   것은 앞으로 발급되는 제로페이·바우처 회원권뿐이다.
+   그 셈이 틀렸다. 수수료와 부가세는 다른 돈이다. 계좌이체도 제로페이도
+   바우처도 **매출로 잡히고 세금계산서가 나간다** -- 센터가 쥐는 것은 그
+   금액에서 부가세를 뺀 공급가액이다. 현금만 그 바깥에 있다.
+
+   그래서 표가 뒤집혔다: 현금만 false 이고 나머지는 전부 true.
+
+   이미 발급된 회원권은 **이 변경으로 움직이지 않는다** -- 발급 시점의
+   공급가액이 문서에 박혀 있고(netContractPriceOf 가 그것을 먼저 본다),
+   이관분도 마찬가지다. 바뀌는 것은 앞으로 발급되는 계좌이체·기타결제
+   회원권과, 공급가액이 박혀 있지 않은 옛 회원권뿐이다. 이미 박힌 값을
+   바로잡을지는 대표가 따로 정한다.
 
    이 표에 빈칸을 두지 않는다. 결제 수단이 하나 늘면 여기서 반드시 답해야 하고,
    답하지 않으면 발급이 거부된다. 기본값을 두면 새 수단이 조용히 한쪽으로
    떨어지고, 그 오차는 원장에 박혀 고칠 수 없다. (테스트가 이 표와
-   PAYMENT_METHOD 가 같은 집합인지 고정한다.)
+   저장 가능한 결제 수단이 같은 집합인지 고정한다.)
+
+   ── 복합결제는 불리언으로 답할 수 없다 (2026-10-27 대표 결정 A) ──
+   카드 50만 + 현금 30만 짜리 계약에서 부가세 바깥에 있는 돈은 현금분
+   30만뿐이다. 계약 금액 전체에 10/11 을 걸면 현금분까지 깎여 **강사가 덜
+   받고**, 안 걸면 나머지가 안 깎여 **센터가 더 낸다.** 둘 다 매번 틀린다.
+
+   그래서 "부분" 이라고 답한다. 답을 적는 자리는 비우지 않되, 그 답이
+   paymentBreakdown 을 보라는 뜻이다 -- 아래 netContractPriceForMixed.
    ────────────────────────────────────────────────────────────────────────── */
 
-/** @type {Readonly<Record<string, boolean>>} */
+/** 복합결제의 답. 불리언이 아니라 "수단별 금액을 보라" 는 표식이다. */
+export const VAT_BY_PARTS = "parts";
+
+/** @type {Readonly<Record<string, boolean | "parts">>} */
 export const PAYMENT_INCLUDES_VAT = Object.freeze({
   [PAYMENT_METHOD.CARD]: true,
+  /* **현금만 바깥이다** (2026-10-27 대표 정정). 이 한 줄이 false 인 이유는
+     그 돈에 세금계산서가 따라가지 않기 때문이다. */
   [PAYMENT_METHOD.CASH]: false,
-  [PAYMENT_METHOD.TRANSFER]: false,
-  [PAYMENT_METHOD.ZEROPAY]: false,
-  [PAYMENT_METHOD.VOUCHER]: false,
+  [PAYMENT_METHOD.TRANSFER]: true,
+  /* 기타결제 -- 제로페이 · 평생교육바우처 · 그 밖의 것. 수수료는 0 이어도
+     매출로 잡히고 세금계산서가 나간다. */
+  [PAYMENT_METHOD.OTHER]: true,
+  [PAYMENT_METHOD.MIXED]: VAT_BY_PARTS,
+  /* 옛 값. 고를 수는 없지만 이미 발급된 회원권이 들고 있고, 양도와 재계산이
+     그것으로 다시 묻는다. 지우면 그 회원권들이 여기서 멈춘다. 기타결제로
+     접힌 값이므로 답도 기타결제와 같다. */
+  [LEGACY_PAYMENT_METHOD.ZEROPAY]: true,
+  [LEGACY_PAYMENT_METHOD.VOUCHER]: true,
 });
+
+/**
+ * 복합결제의 수단별 금액을 정수 네 칸으로 읽는다. 빈 칸은 0 이다.
+ *
+ * null 을 돌려주는 것은 **객체 자체가 없을 때뿐**이다. 그때는 "복합결제인데
+ * 금액을 모른다" 는 뜻이고, 부르는 쪽이 멈춰야 한다 -- 0 으로 읽으면 카드분이
+ * 없는 것이 되어 부가세가 조용히 사라진다.
+ *
+ * @param {any} breakdown
+ * @returns {Record<string, number> | null}
+ */
+export function paymentBreakdownOf(breakdown) {
+  if (!breakdown || typeof breakdown !== "object") return null;
+  /** @type {Record<string, number>} */
+  const parts = {};
+  for (const part of MIXED_PAYMENT_PARTS) {
+    const raw = Number(breakdown[part] ?? 0);
+    parts[part] = Number.isInteger(raw) && raw >= 0 ? raw : 0;
+  }
+  return parts;
+}
+
+/**
+ * 복합결제의 공급가액. **현금분만 그대로 두고 나머지를 깎는다** (대표 결정 A,
+ * 2026-10-27 정정).
+ *
+ *     공급가액 = 현금분 + round((계약금액 - 현금분) x 10/11)
+ *
+ * ── 왜 분모가 계약금액인가 ──
+ * 쪼갠 금액의 합이 아니라 계약 금액에서 출발한다. 잔금(아직 안 받은 돈)이
+ * 있으면 합은 계약보다 적은데, 그 돈도 받기로 한 돈이라 이 계약의 급여
+ * 근거에서 빠지면 안 된다 -- netContractPrice 는 발급 시점에 박히므로, 잔금을
+ * 나중에 받아도 그 강사의 단가는 영영 낮은 채로 굳는다.
+ *
+ * 잔금은 부가세 쪽으로 넣는다. 받기로 한 돈이 현금일지 카드일지는 아직
+ * 모르고, 현금으로 치면 그 회원권만 공급가액이 높게 굳는다 -- 모를 때는
+ * 흔한 쪽(세금계산서가 따라가는 쪽)으로 둔다.
+ *
+ * 합과 잔금이 계약 금액과 어긋나도 막지 않는다 (대표 결정: 경고 없음). 그래도
+ * 숫자는 망가지지 않는다 -- 현금분이 계약 금액을 넘는 입력 실수에서는 그
+ * 위를 세지 않는다.
+ *
+ * ── 단일 수단과 어긋나지 않는다 ──
+ * 현금 한 장으로 110만이면 현금분도 110만이라 110만 + round(0) = 110만.
+ * 카드 한 장이면 현금분이 0 이라 round(110만 x 10/11) = 100만. 둘 다
+ * netContractPriceFor 의 단일 수단 경로와 같은 값이고, 테스트가 고정한다.
+ *
+ * @param {number} contractPrice @param {any} breakdown
+ * @returns {number}
+ */
+export function netContractPriceForMixed(contractPrice, breakdown) {
+  const price = requiredInt(contractPrice, "contractPrice", { min: 0 });
+  const parts = paymentBreakdownOf(breakdown);
+  if (!parts) throw new Error("Invalid paymentBreakdown");
+  const cash = Math.min(parts[PAYMENT_METHOD.CASH], price);
+  return cash + Math.round(((price - cash) * 10) / 11);
+}
 
 /**
  * 계약 금액에서 부가세를 뺀 공급가액.
@@ -232,14 +317,41 @@ export const PAYMENT_INCLUDES_VAT = Object.freeze({
  * 않아 110만 ÷ 1.1 이 999999.9999... 로 떨어지는데, 정수비로 계산하면 그 자리가
  * 정확히 100만이다.
  *
+ * 복합결제는 세 번째 인자가 있어야 한다. 없으면 던진다 -- 0 으로 읽으면
+ * 카드분이 사라져 공급가액이 조용히 계약 금액과 같아진다.
+ *
  * @param {number} contractPrice @param {string} paymentMethod
+ * @param {any} [paymentBreakdown] 복합결제일 때의 수단별 금액
  * @returns {number}
  */
-export function netContractPriceFor(contractPrice, paymentMethod) {
+export function netContractPriceFor(contractPrice, paymentMethod, paymentBreakdown = null) {
   const price = requiredInt(contractPrice, "contractPrice", { min: 0 });
   const method = String(paymentMethod ?? "");
   if (!(method in PAYMENT_INCLUDES_VAT)) throw new Error("Invalid paymentMethod");
-  return PAYMENT_INCLUDES_VAT[method] ? Math.round((price * 10) / 11) : price;
+  const rule = PAYMENT_INCLUDES_VAT[method];
+  if (rule === VAT_BY_PARTS) return netContractPriceForMixed(price, paymentBreakdown);
+  return rule ? Math.round((price * 10) / 11) : price;
+}
+
+/**
+ * 이 계약에서 **부가세가 걸린 돈**. 현금분을 뺀 나머지다.
+ *
+ * 단일 수단이면 현금일 때 0 이고 나머지는 전액이다. 복합결제면 계약 금액에서
+ * 현금 칸을 뺀 값이다 -- 쪼갠 합이 아니라 계약 금액에서 빼는 것은
+ * netContractPriceForMixed 와 같은 이유다(잔금도 받기로 한 돈이다).
+ *
+ * @param {any} pass @returns {number}
+ */
+export function vatablePortionOf(pass) {
+  const price = Number(pass?.contractPrice);
+  const contract = Number.isInteger(price) && price >= 0 ? price : 0;
+  const method = String(pass?.paymentMethod ?? "");
+  if (method === PAYMENT_METHOD.MIXED) {
+    const parts = paymentBreakdownOf(pass?.paymentBreakdown);
+    if (!parts) return contract;
+    return contract - Math.min(parts[PAYMENT_METHOD.CASH], contract);
+  }
+  return method === PAYMENT_METHOD.CASH ? 0 : contract;
 }
 
 /**
@@ -263,7 +375,7 @@ export function netContractPriceOf(pass) {
   const stored = pass?.netContractPrice;
   if (Number.isInteger(stored) && stored >= 0) return stored;
   try {
-    return netContractPriceFor(pass?.contractPrice, pass?.paymentMethod);
+    return netContractPriceFor(pass?.contractPrice, pass?.paymentMethod, pass?.paymentBreakdown);
   } catch {
     return null;
   }

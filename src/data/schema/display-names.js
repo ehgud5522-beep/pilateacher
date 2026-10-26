@@ -11,7 +11,7 @@
 
 import {
   CLIENT_STATUS, DUET_PAY_CATEGORIES, MEMBERSHIP_STATUS, MEMBERSHIP_TITLE, PAY_CATEGORY,
-  PAYMENT_METHOD, PRODUCT_STATUS, SESSION_TYPE,
+  LEGACY_PAYMENT_METHOD, PAYMENT_METHOD, PRODUCT_STATUS, SESSION_TYPE,
 } from "./constants.js";
 import {
   NEW_TO_INSTRUCTOR_THRESHOLD, PAID_SERVICE_SESSIONS_PER_PASS, PRICING_RULE,
@@ -86,12 +86,26 @@ export const PRODUCT_STATUS_LABELS = Object.freeze({
   [PRODUCT_STATUS.ARCHIVED]: "종료",
 });
 
-export const PAYMENT_METHOD_LABELS = Object.freeze({
+/** 지금 고를 수 있는 것. 발급·세션업 화면의 칩이 이 순서로 선다. */
+export const LIVE_PAYMENT_METHOD_LABELS = Object.freeze({
   [PAYMENT_METHOD.CARD]: "카드",
   [PAYMENT_METHOD.CASH]: "현금",
   [PAYMENT_METHOD.TRANSFER]: "계좌이체",
-  [PAYMENT_METHOD.ZEROPAY]: "제로페이",
-  [PAYMENT_METHOD.VOUCHER]: "바우처",
+  [PAYMENT_METHOD.OTHER]: "기타결제",
+  [PAYMENT_METHOD.MIXED]: "복합결제",
+});
+
+/* 옛 값의 이름. **고를 수는 없고 읽을 수는 있다** -- 2026-10-27 전에 발급된
+   회원권이 들고 있고, 이름이 없으면 그 회원권 줄에 "zeropay" 가 그대로
+   뜬다. 변환이 끝난 뒤에도 남겨 둔다 (constants.mjs 의 LEGACY_PAYMENT_METHOD). */
+export const LEGACY_PAYMENT_METHOD_LABELS = Object.freeze({
+  [LEGACY_PAYMENT_METHOD.ZEROPAY]: "제로페이",
+  [LEGACY_PAYMENT_METHOD.VOUCHER]: "바우처",
+});
+
+export const PAYMENT_METHOD_LABELS = Object.freeze({
+  ...LIVE_PAYMENT_METHOD_LABELS,
+  ...LEGACY_PAYMENT_METHOD_LABELS,
 });
 
 export const MEMBERSHIP_STATUS_LABELS = Object.freeze({
@@ -205,9 +219,22 @@ export const PAY_CATEGORY_BY_LABEL = withAliases(PAY_CATEGORY_LABELS, {
   "디오사 B": PAY_CATEGORY.DIOSA_B,
 });
 
-export const PAYMENT_METHOD_BY_LABEL = withAliases(PAYMENT_METHOD_LABELS, {
+/* ── 이관 엑셀의 글자 → 저장값 ────────────────────────────────────────────
+   **옛 이름은 기타결제로 간다** (2026-10-27 대표 결정). 표를 LIVE 로만 만드는
+   것이 그 뜻이다 -- PAYMENT_METHOD_LABELS 로 만들면 "제로페이" 가 다시
+   zeropay 로 돌아가고, 접은 것이 업로드 한 번에 풀린다.
+
+   원래 글자는 버리지 않는다. migration-repository 가 그것을 paymentNote 로
+   옮긴다 -- 접은 뒤에도 "이 회원이 무엇으로 냈나" 에 답할 수 있어야 한다. */
+export const PAYMENT_METHOD_BY_LABEL = withAliases(LIVE_PAYMENT_METHOD_LABELS, {
   계좌: PAYMENT_METHOD.TRANSFER,
   이체: PAYMENT_METHOD.TRANSFER,
+  계좌이체: PAYMENT_METHOD.TRANSFER,
+  제로페이: PAYMENT_METHOD.OTHER,
+  바우처: PAYMENT_METHOD.OTHER,
+  평생교육바우처: PAYMENT_METHOD.OTHER,
+  기타: PAYMENT_METHOD.OTHER,
+  복합: PAYMENT_METHOD.MIXED,
 });
 
 /**

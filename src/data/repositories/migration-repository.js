@@ -33,10 +33,13 @@
  */
 
 import {
-  CLIENT_STATUS, DUET_PAY_CATEGORIES, PASS_STATUS, PAY_CATEGORY,
+  CLIENT_STATUS, DUET_PAY_CATEGORIES, MIXED_PAYMENT_PARTS, PASS_STATUS,
+  PAYMENT_METHOD, PAYMENT_NOTE_MAX, PAY_CATEGORY,
 } from "../schema/constants.js";
+import { methodsNamedIn, parseMixedPayment } from "../schema/mixed-payment.js";
 import {
   PAYMENT_METHOD_BY_LABEL, PAY_CATEGORY_BY_LABEL, valueOfLabel,
+  LEGACY_PAYMENT_METHOD_LABELS,
 } from "../schema/display-names.js";
 import {
   UNIT_PRICE_SOURCE, resolveUnitPrice, unitPriceSourceFor,
@@ -49,6 +52,19 @@ import { normalizePhone } from "./client-repository.js";
 import { fullRoomRateOf } from "./instructor-repository.js";
 
 /** 실패 사유. 화면이 사유별로 묶어 보여주고, 대표가 무엇을 고칠지 안다. */
+/**
+ * 올라가기는 했는데 **대표가 한 번 봐야 하는** 줄.
+ *
+ * 실패와 다르다. 실패는 올리지 않는 것이고 이것은 올린 것이다 -- 거부하면
+ * 그 회원권이 아예 없는 것이 되고, 회원은 다음 수업에서 "회원권이 없다" 를
+ * 만난다. 숫자가 미심쩍다는 이유로 사람을 돌려보내지 않는다 (2026-10-27).
+ */
+export const MIGRATION_WARNING = Object.freeze({
+  /* 복합결제인데 비고의 금액을 읽지 못했거나, 읽은 합이 계약 금액을 넘는다.
+     원문은 paymentNote 에 그대로 올라가 있으므로 나중에 손으로 맞출 수 있다. */
+  MIXED_AMOUNT_UNCONFIRMED: "mixed_amount_unconfirmed",
+});
+
 export const MIGRATION_ERROR = Object.freeze({
   MISSING_FIELD: "missing_field",
   INVALID_NUMBER: "invalid_number",
@@ -458,8 +474,20 @@ export function planPassMigration(text, {
       const category = valueOfLabel(PAY_CATEGORY_BY_LABEL, categoryLabel);
       if (!category) throw failure(line, MIGRATION_ERROR.UNKNOWN_LABEL, `급여카테고리를 알 수 없습니다: ${categoryLabel}`);
 
+      /* ── 결제수단 ────────────────────────────────────────────────────
+         제로페이 · 바우처는 **기타결제로 간다** (2026-10-27 대표 결정).
+         PAYMENT_METHOD_BY_LABEL 의 별칭이 그 일을 하고, 원래 글자는 아래에서
+         paymentNote 로 옮겨진다 -- 접었다고 "이 회원이 무엇으로 냈나" 까지
+         잃으면 안 된다.
+
+         칸에 두 수단이 적혀 있으면("현금/카드") 복합결제로 읽는다. 거부하면
+         대표가 그 줄을 손으로 고쳐 다시 올려야 하는데, 금액은 어차피 비고에
+         있으므로 고쳐 봐야 같은 글자를 옮겨 적는 일이다. */
       const methodLabel = requireText(record, "결제수단");
-      const paymentMethod = valueOfLabel(PAYMENT_METHOD_BY_LABEL, methodLabel);
+      const noteRaw = requireText(record, "비고");
+      const methodFromLabel = valueOfLabel(PAYMENT_METHOD_BY_LABEL, methodLabel);
+      const paymentMethod = methodFromLabel
+        || (methodsNamedIn(methodLabel).length >= 2 ? PAYMENT_METHOD.MIXED : null);
       if (!paymentMethod) throw failure(line, MIGRATION_ERROR.UNKNOWN_LABEL, `결제수단을 알 수 없습니다: ${methodLabel}`);
 
       const totalSessions = readInt(record, "총세션", { min: 1 });
@@ -644,9 +672,51 @@ export function planPassMigration(text, {
         clientIds = [clientId, partner.id];
       }
 
+      /* ── 복합결제: 비고의 글자를 수단별 금액으로 ──────────────────────
+         공급가액이 **카드분에만** 걸리므로 (deduction-pricing 의
+         netContractPriceForMixed), 이 쪼갬이 곧 부원장의 급여 근거다.
+
+         못 읽어도 올린다. 원문을 paymentNote 에 그대로 두고 "확인 필요" 를
+         붙인다 -- 거부하면 그 회원권이 없는 것이 되고, 회원이 다음 수업에서
+         그 사실을 만난다.
+
+         합이 계약 금액을 넘으면 그것도 확인 대상이다. 모자라는 것은 잔금이라
+         정상이지만, 넘치는 것은 단위를 잘못 읽었거나("50" 을 50만으로) 같은
+         금액을 두 번 적은 것이다. */
+      let paymentBreakdown = null;
+      let paymentNote = "";
+      let warning = null;
+      if (paymentMethod === PAYMENT_METHOD.MIXED) {
+        const parsed = parseMixedPayment(noteRaw || methodLabel);
+        paymentBreakdown = parsed.parts;
+        paymentNote = noteRaw || methodLabel;
+        if (!parsed.ok || parsed.total > contractPrice) {
+          warning = {
+            line,
+            reason: MIGRATION_WARNING.MIXED_AMOUNT_UNCONFIRMED,
+            message: `복합결제 금액 확인 필요 (${paymentNote || "비고 없음"}): ${name}`,
+          };
+        }
+      } else if (paymentMethod === PAYMENT_METHOD.OTHER) {
+        /* 제로페이 · 바우처였던 줄. **원래 이름을 내용 칸으로 옮긴다** --
+           하나로 접은 뒤에 남는 것은 이 글자뿐이다. 비고에 더 적어 둔 것이
+           있으면 그것을 쓴다. */
+        const wasLegacy = Object.values(LEGACY_PAYMENT_METHOD_LABELS)
+          .some((label) => methodLabel.includes(label));
+        paymentNote = noteRaw || (wasLegacy || methodLabel !== "기타결제" ? methodLabel : "");
+      }
+      /* 잔금은 세지 않고 뺀다. 0 아래로는 내려가지 않는다 -- 음수 잔금은
+         입력 실수를 숫자로 굳히는 일이고, 위에서 이미 확인 표시가 붙는다. */
+      const balance = paymentBreakdown
+        ? Math.max(0, contractPrice - MIXED_PAYMENT_PARTS.reduce(
+          (sum, part) => sum + paymentBreakdown[part], 0,
+        ))
+        : 0;
+
       const passId = passIdFor(clientId, purchaseRound);
       writes.push({
         line,
+        ...(warning ? { warning } : {}),
         name,
         clientId,
         /* 짝이 없으면 undefined 로 둔다. 길이 1 짜리 배열을 심어도 뜻은 같지만,
@@ -670,8 +740,11 @@ export function planPassMigration(text, {
              이관분에도 넣는다 -- 담당 강사가 나중에 부원장이 되면 그때 이
              회원권의 남은 회차가 5:5 로 가고, 값이 없으면 그 시점의 세율로
              계산된다. */
-          netContractPrice: netContractPriceFor(contractPrice, paymentMethod),
+          netContractPrice: netContractPriceFor(contractPrice, paymentMethod, paymentBreakdown),
           paymentMethod,
+          ...(paymentBreakdown ? { paymentBreakdown } : {}),
+          balance,
+          ...(paymentNote ? { paymentNote: paymentNote.slice(0, PAYMENT_NOTE_MAX) } : {}),
           purchaseRound,
           remainingCount,
           baseUnitPrice,
@@ -713,7 +786,14 @@ export function planPassMigration(text, {
     }
   });
 
-  return { ...refuseDisagreeingPriorSessions(writes, failures), missingColumns };
+  const planned = refuseDisagreeingPriorSessions(writes, failures);
+  /* 확인이 필요한 줄은 **올라간 줄 중에서만** 센다. 누적 불일치로 거부된 줄까지
+     세면 "올릴 수 있는 행" 보다 "확인할 행" 이 많아지는 화면이 나온다. */
+  return {
+    ...planned,
+    warnings: planned.writes.map((row) => row.warning).filter(Boolean),
+    missingColumns,
+  };
 }
 
 /**

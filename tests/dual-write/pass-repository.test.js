@@ -1499,13 +1499,85 @@ test("the net price is frozen at issue, for every pass", async () => {
   assert.equal(passWrite.data.netContractPrice, 1000000);
 });
 
-test("cash and transfer are issued at the contract itself", async () => {
-  for (const paymentMethod of ["cash", "transfer"]) {
+test("a mixed payment is issued with its split, and only the cash share stays whole", async () => {
+  /* 확인 예시(2026-10-27): 계약 100만 · 카드 50만 · 현금 30만
+     → 결제 합계 80만, 잔금 20만, 공급가액 30만 + round(70만 x 10/11). */
+  const store = fakeStore();
+  await issuePass(ORG, issueInput({
+    contractPrice: 1000000,
+    paymentMethod: "mixed",
+    paymentBreakdown: { card: 500000, cash: 300000 },
+    balance: 200000,
+  }), { store, newId: () => "pass-mixed" });
+  const data = store.calls.commit[0][0].data;
+  assert.equal(data.paymentMethod, "mixed");
+  // 빈 칸은 0 이다. 네 칸이 모두 있어야 규칙이 받는다.
+  assert.deepEqual(data.paymentBreakdown, { card: 500000, transfer: 0, other: 0, cash: 300000 });
+  assert.equal(data.balance, 200000);
+  assert.equal(data.netContractPrice, 300000 + Math.round((700000 * 10) / 11));
+});
+
+test("a hand-set balance is marked so, and an automatic one is not", async () => {
+  /* 화면이 "직접 수정" 을 띄우는 근거다. 표시가 없으면 결제 금액을 고친 뒤에도
+     잔금이 그대로인 것이 버그처럼 읽힌다. */
+  const edited = fakeStore();
+  await issuePass(ORG, issueInput({
+    contractPrice: 1000000, paymentMethod: "mixed",
+    paymentBreakdown: { card: 500000 }, balance: 0, balanceEdited: true,
+  }), { store: edited, newId: () => "pass-edited" });
+  assert.equal(edited.calls.commit[0][0].data.balanceEdited, true);
+  assert.equal(edited.calls.commit[0][0].data.balance, 0, "0 으로 적어도 그대로 저장된다");
+
+  const auto = fakeStore();
+  await issuePass(ORG, issueInput({
+    contractPrice: 1000000, paymentMethod: "mixed",
+    paymentBreakdown: { card: 500000 }, balance: 500000,
+  }), { store: auto, newId: () => "pass-auto" });
+  assert.equal(auto.calls.commit[0][0].data.balanceEdited, undefined);
+});
+
+test("기타결제 keeps what it actually was, and single methods carry no split", async () => {
+  const other = fakeStore();
+  await issuePass(ORG, issueInput({
+    contractPrice: 700000, paymentMethod: "other", paymentNote: "평생교육바우처",
+  }), { store: other, newId: () => "pass-other" });
+  const data = other.calls.commit[0][0].data;
+  assert.equal(data.paymentNote, "평생교육바우처");
+  /* 기타결제도 매출로 잡히고 세금계산서가 나간다 (2026-10-27 대표 정정).
+     현금만 바깥이다. */
+  assert.equal(data.netContractPrice, Math.round((700000 * 10) / 11));
+  /* 단일 결제에 네 칸짜리 객체가 붙으면 매출 집계가 "쪼갠 계약" 으로 읽는다. */
+  assert.equal(data.paymentBreakdown, undefined);
+  assert.equal(data.balance, 0);
+});
+
+test("the old payment methods can no longer be issued, only read", async () => {
+  /* 접어 둔 수단으로 다시 발급되면 변환이 끝나지 않는다. 읽기는 그대로다 --
+     netContractPriceFor 가 옛 값을 여전히 받는다 (deduction-pricing 테스트). */
+  for (const paymentMethod of ["zeropay", "voucher"]) {
+    const store = fakeStore();
+    await assert.rejects(
+      () => issuePass(ORG, issueInput({ paymentMethod }), { store }),
+      /Invalid paymentMethod/, paymentMethod,
+    );
+  }
+});
+
+test("cash is issued at the contract itself, and everything else is netted", async () => {
+  const cash = fakeStore();
+  await issuePass(ORG, issueInput({ contractPrice: 1100000, paymentMethod: "cash" }), {
+    store: cash, newId: () => "pass-cash",
+  });
+  assert.equal(cash.calls.commit[0][0].data.netContractPrice, 1100000);
+
+  /* 계좌이체가 여기로 옮겨 왔다 (2026-10-27 대표 정정). 수수료와 부가세는
+     다른 돈이고, 계좌이체도 매출로 잡혀 세금계산서가 나간다. */
+  for (const paymentMethod of ["transfer", "other"]) {
     const store = fakeStore();
     await issuePass(ORG, issueInput({ contractPrice: 1100000, paymentMethod }), {
       store, newId: () => "pass-new",
     });
-    assert.equal(store.calls.commit[0][0].data.netContractPrice, 1100000, paymentMethod);
+    assert.equal(store.calls.commit[0][0].data.netContractPrice, 1000000, paymentMethod);
   }
 });
 

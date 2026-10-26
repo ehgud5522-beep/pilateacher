@@ -883,10 +883,60 @@ service cloud.firestore {
           && request.resource.data.contractPrice >= 0
           && request.resource.data.purchaseRound is int
           && request.resource.data.purchaseRound >= 1
-          // Keep in sync with PAYMENT_METHOD in src/data/schema/constants.js.
+          /* Keep in sync with STORED_PAYMENT_METHODS in
+             functions/shared/constants.mjs. 규칙은 import 을 하지 못한다.
+
+             zeropay · voucher 는 **옛 값**이다. 2026-10-27 에 기타결제(other)
+             하나로 접었지만 목록에 남긴다 -- 이미 발급된 회원권이 들고 있고,
+             양도는 원본의 결제 수단을 그대로 새 문서에 쓴다. 빼면 그 회원권을
+             넘기는 길이 막힌다. */
           && request.resource.data.paymentMethod in [
-            "card", "cash", "transfer", "zeropay", "voucher"
+            "card", "cash", "transfer", "other", "mixed", "zeropay", "voucher"
           ]
+          /* ── 복합결제: 수단별 금액이 함께 와야 한다 ──────────────────────
+             공급가액이 **카드 칸 하나로만** 정해진다 (deduction-pricing 의
+             netContractPriceForMixed). 금액 없이 "복합결제" 만 들어오면 그
+             회원권의 부원장 단가를 영영 셀 수 없고, 그때는 이미 팔린 뒤다. */
+          && (
+            request.resource.data.paymentMethod != "mixed"
+            || "paymentBreakdown" in request.resource.data
+          )
+          && (
+            !("paymentBreakdown" in request.resource.data)
+            || (
+              request.resource.data.paymentBreakdown is map
+              // MIXED_PAYMENT_PARTS 와 같은 넷. 한 칸이라도 비면 합이 달라진다.
+              && request.resource.data.paymentBreakdown.keys().hasOnly(["card", "transfer", "other", "cash"])
+              && request.resource.data.paymentBreakdown.keys().hasAll(["card", "transfer", "other", "cash"])
+              && request.resource.data.paymentBreakdown.card is int
+              && request.resource.data.paymentBreakdown.card >= 0
+              && request.resource.data.paymentBreakdown.transfer is int
+              && request.resource.data.paymentBreakdown.transfer >= 0
+              && request.resource.data.paymentBreakdown.other is int
+              && request.resource.data.paymentBreakdown.other >= 0
+              && request.resource.data.paymentBreakdown.cash is int
+              && request.resource.data.paymentBreakdown.cash >= 0
+            )
+          )
+          /* 잔금. 결제 합계와 어긋나도 막지 않는다 -- 얼마를 언제 받기로 했는지는
+             FC 가 아는 일이라고 대표가 정했다 (2026-10-27). 음수만 막는다. */
+          && (
+            !("balance" in request.resource.data)
+            || (request.resource.data.balance is int && request.resource.data.balance >= 0)
+          )
+          && (
+            !("balanceEdited" in request.resource.data)
+            || request.resource.data.balanceEdited is bool
+          )
+          /* 기타결제가 무엇이었는지. 제로페이 · 평생교육바우처를 하나로 접으면서
+             그 글자가 가는 자리다. Keep in sync with PAYMENT_NOTE_MAX. */
+          && (
+            !("paymentNote" in request.resource.data)
+            || (
+              request.resource.data.paymentNote is string
+              && request.resource.data.paymentNote.size() <= 100
+            )
+          )
           && request.resource.data.status is string
           && request.resource.data.createdAt == request.time
           // 발급은 대표·FC매니저. canIssuePass 의 주석 참고 — 바꿀 때는 그 목록
@@ -1296,14 +1346,23 @@ service cloud.firestore {
                   && request.resource.data.category in payCategories()
                   && request.resource.data.unitPrice is int
                   && request.resource.data.unitPrice >= 0
-                  && request.resource.data.delta != 0
                   && (
                     request.resource.data.type == "issue"
                       // 발급 항목은 회원권 문서와 한 배치로 쓰인다. 회원권 쪽만
                       // 좁히면 매니저가 이미 있는 회원권에 "20회 발급" 한 줄을
                       // 덧붙일 수 있고, 회원 이력 화면이 그것을 그대로 읽는다.
                       // 두 반쪽은 같은 문을 통과해야 한다.
-                      ? request.resource.data.delta > 0 && canIssuePass(organizationId)
+                      /* ── 0 회차 발급을 받는다 (2026-10-27 대표 결정 4) ──
+                         이관 업로드가 **남은 횟수를 그대로** 발급으로 적는다
+                         (migration-repository 의 applyPassMigration). 다 쓴
+                         회원권은 그 값이 0 이고, 전에는 여기서 거부되어 회원권
+                         문서까지 같은 배치로 함께 거부됐다 -- 장유점 43줄이
+                         permission-denied 로 멈춘 것이 이것이다.
+
+                         0 은 아무 회차도 더하지 않으므로 위 주석이 막으려던
+                         일("20회 발급" 한 줄 덧붙이기)과 무관하다. 음수는 그대로
+                         막는다 -- 발급이 회차를 빼앗을 수는 없다. */
+                      ? request.resource.data.delta >= 0 && canIssuePass(organizationId)
                     : request.resource.data.type == "correction"
                       /* 정확히 한 회차를 되돌리고, 무엇을 되돌리는지 가리킨다.
                          단가와 카테고리는 원래 항목과 같은 값이어야 급여에서 그

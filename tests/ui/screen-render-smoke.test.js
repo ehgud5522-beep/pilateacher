@@ -1970,14 +1970,24 @@ test("the handover button never reads as the instructor change", async (t) => {
 
    같은 회원권을 늘린다. 새로 발급하면 회원권이 둘이 되고 차감이 갈린다. */
 
-test("the manager sees session up but not the owner-only buttons", async (t) => {
+test("the manager sees session up, expiry and the remaining adjustment", async (t) => {
+  /* 잔여 조정이 2026-10-26 에 FC매니저에게 열렸다. 만료일·세션업과 같은
+     선이 됐다 -- 셋 다 운영이 매일 하는 일이고, 셋 다 사유와 이력이 함께
+     남는다. */
   const markupOf = await issueScreens(t);
   const manager = markupOf("센터 회원 상세 · 매니저");
   assert.match(manager, />세션업</);
   assert.match(manager, />만료일</);
-  /* 잔여 조정과 발급 취소는 대표만. 이미 일어난 일을 없던 일로 만드는 쪽이라
-     새 사실을 더하는 세션업·양도와 선이 다르다. */
-  assert.doesNotMatch(manager, />잔여 조정</);
+  assert.match(manager, />잔여 조정</);
+});
+
+test("the manager's cancel button only shows on a freshly issued pass", async (t) => {
+  /* **창이 좁다** -- 갓 발급하고 한 회차도 안 쓴 것만이다. 자기가 방금 잘못
+     발급한 것을 되무르는 자리이지, 어제 판 것이나 쓰던 것을 지우는 길이 아니다.
+
+     스모크의 회원권은 쓰던 것이라(잔여 < 총회차) 버튼이 서지 않아야 한다. */
+  const markupOf = await issueScreens(t);
+  const manager = markupOf("센터 회원 상세 · 매니저");
   assert.doesNotMatch(manager, />발급 취소</);
 });
 

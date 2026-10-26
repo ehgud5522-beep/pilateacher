@@ -114,7 +114,10 @@ test("the deploy script asks before it builds anything", async () => {
   const guard = source.indexOf("deployBlockers({ branch, status })");
   /* 사이트마다 빌드 명령이 다르다(강사 앱 build · 회원 앱 build:member).
      명령 이름이 아니라 "빌드를 부르는 자리" 를 찾는다. */
-  const build = source.indexOf('run("npm", ["run", target.build])');
+  /* 닫는 괄호까지 찾지 않는다 -- 빌드 호출에 환경변수가 붙었고(VITE_APP_VERSION),
+     인자가 하나 늘 때마다 이 테스트가 깨지면 그것은 판정이 아니라 서식을 지키는
+     일이 된다. */
+  const build = source.indexOf('run("npm", ["run", target.build]');
   assert.ok(guard > 0, "배포 스크립트가 판정을 부르지 않는다");
   assert.ok(build > 0, "배포 스크립트가 빌드를 부르지 않는다");
   assert.ok(build > guard, "빌드가 판정보다 먼저 일어난다");

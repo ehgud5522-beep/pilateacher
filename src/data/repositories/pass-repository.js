@@ -965,6 +965,58 @@ export function isCorrectableEntry(entry, entries) {
   return entry?.type === LEDGER_ENTRY_TYPE.DEDUCT && !isCorrectedEntry(entry, entries);
 }
 
+/**
+ * FC매니저가 취소할 수 있는 창. **발급 직후 · 한 회차도 안 쓴 것만** (2026-10-26).
+ *
+ * ── 왜 조건을 둘이나 거는가 ──
+ * 취소는 발급을 없던 일로 만든다. 그 회원권에 걸린 급여 근거가 통째로
+ * 사라지고, 원장은 append-only 라 되돌리려면 또 한 줄을 쌓아야 한다. 대표에게
+ * 묶여 있던 이유가 그것이다.
+ *
+ * FC매니저에게 여는 것은 **자기가 방금 잘못 발급한 것**을 되무르는 자리다.
+ * 그래서 "갓 발급" 과 "아직 안 씀" 을 함께 요구한다 -- 하나만 걸면 어제 판
+ * 회원권을 지우거나, 다 쓴 회원권을 지우는 길이 열린다.
+ *
+ * ── 안 쓴 것을 어떻게 아는가 ──
+ * **잔여가 총회차(서비스 포함)와 같은가**로 본다. 차감 건수를 세지 않는다 --
+ * 규칙이 하위 컬렉션을 훑을 수 없어서, 세는 방식으로는 앱과 규칙이 같은 조건을
+ * 쓸 수 없다 (대표 결정 ②).
+ *
+ * 대가 하나: **차감했다가 보정으로 되돌린 회원권**도 잔여가 돌아와 통과한다.
+ * 그 경우에도 "쓴 적 없음" 과 수업료가 오간 흔적은 다르지만, 보정 자체가
+ * 대표만 할 수 있는 일이라 그 앞 단계에서 이미 걸러진다.
+ *
+ * ── 창의 길이 ──
+ * **24시간이다.** 규칙은 UTC 만 알아서 "같은 날" 을 한국 날짜로 판정할 수
+ * 없다 -- KST 아침에 취소하면 UTC 로는 어제라 거부된다. 24시간으로 두면
+ * 시간대를 건드리지 않고 "갓 발급" 을 똑같이 뜻한다.
+ *
+ * **규칙의 freshlyIssuedPass() 와 같은 조건이다.** 한쪽만 고치면 화면은
+ * 되는데 규칙이 막거나 그 반대가 되고, 둘 다 쓰는 사람에게는 "눌렀는데
+ * 아무 일도 안 일어남" 으로 도착한다.
+ *
+ * @param {any} pass
+ * @param {Date} [now]
+ */
+export const MANAGER_CANCEL_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+export function isFreshlyIssuedPass(pass, now = new Date()) {
+  if (!pass) return false;
+  const total = Number(pass.totalSessions);
+  const service = Number(pass.serviceSessions ?? 0);
+  const remaining = Number(pass.remainingCount);
+  if (!Number.isInteger(total) || !Number.isInteger(remaining)) return false;
+  const untouched = remaining === total + (Number.isInteger(service) ? service : 0);
+  if (!untouched) return false;
+  const issuedAt = toDate(pass.createdAt);
+  const at = Number.isFinite(issuedAt?.getTime?.()) ? issuedAt.getTime() : null;
+  /* 발급 시각을 못 읽으면 창 밖으로 본다. 모를 때 열어 두면 옛 회원권이
+     전부 통과한다 -- 그 칸이 없던 시절에 만들어진 것이 실제로 있다. */
+  if (at === null) return false;
+  const elapsed = now.getTime() - at;
+  return elapsed >= 0 && elapsed <= MANAGER_CANCEL_WINDOW_MS;
+}
+
 /** 이 회원권을 취소할 수 있는가. 실제로 일어난 수업은 없던 일이 되지 않는다. */
 export function isCancellablePass(pass, entries) {
   if (!pass || pass.status !== PASS_STATUS.ACTIVE) return false;

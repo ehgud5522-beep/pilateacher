@@ -177,7 +177,7 @@ export function filterByLocation(items, filter, locations = []) {
 export function locationsVisibleTo(locations, viewer = {}) {
   const all = Array.isArray(locations) ? locations.filter(Boolean) : [];
   const role = String(viewer?.role || "").trim();
-  if (!SCOPED_ROLES.includes(role)) return all;
+  if (!BRANCH_SCOPED_ROLES.includes(role)) return all;
   const mine = scopedLocationIds(viewer);
   if (mine.length === 0) return all;
   const found = all.filter((location) => mine.includes(String(location?.id || "")));
@@ -202,7 +202,7 @@ export const holdsManyLocations = (role) => String(role || "").trim() === "manag
  * 지점으로 범위가 좁혀지는 역할들. **대표·총괄매니저는 없다** -- 센터 전체를
  * 보는 자리이고, 그 둘을 좁히면 이관도 급여도 반쪽만 보인다.
  */
-export const SCOPED_ROLES = Object.freeze(
+export const BRANCH_SCOPED_ROLES = Object.freeze(
   /** @type {ReadonlyArray<string>} */ (["manager", "instructor", "staff"]),
 );
 
@@ -238,7 +238,7 @@ export function scopedLocationIds(membership) {
  */
 export function canSeeLocation(viewer, locationId) {
   const role = String(viewer?.role || "").trim();
-  if (!SCOPED_ROLES.includes(role)) return true;
+  if (!BRANCH_SCOPED_ROLES.includes(role)) return true;
   const mine = scopedLocationIds(viewer);
   // 지점을 아직 안 넣은 사람은 거르지 않는다 -- locationsVisibleTo 와 같은 판단.
   if (mine.length === 0) return true;
@@ -246,7 +246,7 @@ export function canSeeLocation(viewer, locationId) {
 }
 
 /**
- * **명단**이 좁혀지는 역할. 칩(SCOPED_ROLES)보다 좁다 -- FC매니저뿐이다.
+ * **명단**이 좁혀지는 역할. 칩(BRANCH_SCOPED_ROLES)보다 좁다 -- FC매니저뿐이다.
  *
  * 둘이 다른 이유가 있다. 강사·팀장·점장은 전부터 **칩만** 자기 지점으로
  * 좁혀져 있었고 명단은 센터 전체였다 -- 그 사람들은 "내 회원" 토글로 자기
@@ -256,7 +256,7 @@ export function canSeeLocation(viewer, locationId) {
  * 2026-10-26 대표 결정도 같은 선이다: 범위를 좁히는 것은 FC매니저뿐이고,
  * 강사·팀장·점장의 동작은 바뀌지 않는다.
  */
-export const LIST_SCOPED_ROLES = Object.freeze(
+export const BRANCH_LIST_SCOPED_ROLES = Object.freeze(
   /** @type {ReadonlyArray<string>} */ (["manager"]),
 );
 
@@ -266,15 +266,25 @@ export const LIST_SCOPED_ROLES = Object.freeze(
  * 지점이 비어 있는 회원이 실제로 있다 (이관 전에 만들어진 것). 그것을 빼면
  * 그 회원은 어느 화면에서도 안 보이고, 아무도 그 사실을 모른다.
  *
+ * ── 어느 역할까지 좁히는가는 부르는 쪽이 정한다 ──
+ * 기본은 FC매니저뿐이다 (BRANCH_LIST_SCOPED_ROLES). 명부·강사 목록이 그렇다.
+ *
+ * **만료 회원은 다르다** (2026-10-26 대표 결정 2항). 거기서는 강사·팀장·
+ * 점장도 자기 지점만 본다 -- 그 화면은 "누구를 챙겨야 하는가" 를 묻는
+ * 자리라 남의 지점 회원이 섞이면 할 일이 아닌 것이 할 일로 보인다.
+ * 그때는 roles 에 BRANCH_SCOPED_ROLES 를 준다.
+ *
  * @template {{ locationId?: string }} T
  * @param {Array<T>} items
  * @param {{ role?: string, locationId?: string, locationIds?: Array<string> }} viewer
+ * @param {{ roles?: ReadonlyArray<string> }} [options]
  * @returns {Array<T>}
  */
-export function itemsVisibleTo(items, viewer = {}) {
+export function itemsVisibleTo(items, viewer = {}, options = {}) {
   const all = Array.isArray(items) ? items.filter(Boolean) : [];
   const role = String(viewer?.role || "").trim();
-  if (!LIST_SCOPED_ROLES.includes(role)) return all;
+  const roles = Array.isArray(options?.roles) ? options.roles : BRANCH_LIST_SCOPED_ROLES;
+  if (!roles.includes(role)) return all;
   const mine = scopedLocationIds(viewer);
   if (mine.length === 0) return all;
   return all.filter((item) => {

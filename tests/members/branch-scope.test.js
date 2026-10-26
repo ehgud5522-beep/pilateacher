@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  SCOPED_ROLES, canSeeLocation, holdsManyLocations, itemsVisibleTo, locationsVisibleTo,
+  BRANCH_SCOPED_ROLES, canSeeLocation, holdsManyLocations, itemsVisibleTo, locationsVisibleTo,
   scopedLocationIds,
 } from "../../src/data/repositories/location-repository.js";
 
@@ -27,9 +27,9 @@ const member = (id, locationId) => ({ id, locationId });
 test("좁혀지는 역할은 셋뿐이고, 대표·총괄매니저는 들어 있지 않다", () => {
   /* 대표·총괄매니저를 좁히면 이관도 급여도 반쪽만 보인다 -- 센터 전체를
      보는 자리다. */
-  assert.deepEqual([...SCOPED_ROLES].sort(), ["instructor", "manager", "staff"]);
-  assert.equal(SCOPED_ROLES.includes("owner"), false);
-  assert.equal(SCOPED_ROLES.includes("area_manager"), false);
+  assert.deepEqual([...BRANCH_SCOPED_ROLES].sort(), ["instructor", "manager", "staff"]);
+  assert.equal(BRANCH_SCOPED_ROLES.includes("owner"), false);
+  assert.equal(BRANCH_SCOPED_ROLES.includes("area_manager"), false);
 });
 
 test("지점을 여럿 갖는 것은 FC매니저뿐이다", () => {
@@ -133,4 +133,41 @@ test("못 읽어 null 이 와도 던지지 않는다", () => {
   assert.deepEqual(locationsVisibleTo(null, { role: "manager" }), []);
   assert.deepEqual(itemsVisibleTo(null, { role: "manager" }), []);
   assert.deepEqual(itemsVisibleTo(undefined, { role: "owner" }), []);
+});
+
+/* ── 만료 회원은 강사도 좁힌다 ───────────────────────────────────────────
+   **명부와 다른 선이다** (2026-10-26 대표 결정 2항).
+
+   명부에서 강사를 좁히지 않는 이유는 대타 차감이 그 길에 걸려 있기 때문이다.
+   만료 회원은 그런 길이 없고, "누구를 챙겨야 하는가" 를 묻는 자리라 남의
+   지점 회원이 섞이면 할 일이 아닌 것이 할 일로 보인다. */
+
+test("만료 회원 화면은 강사·팀장·점장도 자기 지점만 본다", () => {
+  const all = [member("a", "yulha"), member("b", "bansong")];
+  const found = itemsVisibleTo(all, { role: "instructor", locationId: "yulha" },
+    { roles: BRANCH_SCOPED_ROLES });
+  assert.deepEqual(found.map((item) => item.id), ["a"]);
+});
+
+test("만료 회원 화면에서 FC매니저는 맡은 지점 전부를 본다", () => {
+  const all = [member("a", "yulha"), member("b", "bansong"), member("c", "centum")];
+  const found = itemsVisibleTo(all, { role: "manager", locationIds: ["yulha", "centum"] },
+    { roles: BRANCH_SCOPED_ROLES });
+  assert.deepEqual(found.map((item) => item.id), ["a", "c"]);
+});
+
+test("만료 회원 화면에서도 대표·총괄매니저는 전 지점이다", () => {
+  const all = [member("a", "yulha"), member("b", "bansong")];
+  for (const role of ["owner", "area_manager"]) {
+    assert.equal(
+      itemsVisibleTo(all, { role, locationId: "yulha" }, { roles: BRANCH_SCOPED_ROLES }).length, 2, role,
+    );
+  }
+});
+
+test("기본값은 FC매니저뿐이다 — 명부는 강사를 좁히지 않는다", () => {
+  /* roles 를 주지 않으면 BRANCH_LIST_SCOPED_ROLES 다. 이 기본값이 흔들리면 강사의
+     명부가 조용히 좁아지고, 대타 차감이 막힌다. */
+  const all = [member("a", "yulha"), member("b", "bansong")];
+  assert.equal(itemsVisibleTo(all, { role: "instructor", locationId: "yulha" }).length, 2);
 });

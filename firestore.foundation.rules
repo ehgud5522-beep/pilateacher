@@ -1417,11 +1417,22 @@ service cloud.firestore {
         allow get: if isCentreStaff(organizationId)
           && resource.data.organizationId == organizationId;
         allow list: if isCentreStaff(organizationId);
+        /* 지점을 만들고 고치는 것은 **대표·총괄매니저뿐이다** (2026-10-26
+           대표 결정). FC매니저는 목록을 읽기만 한다.
+
+           전에는 FC매니저도 쓸 수 있었다. 화면은 주지 않았지만(강사 관리가
+           대표 전용) 문은 열려 있었고, 규칙으로만 막혀 있지 않은 문은 다음
+           화면이 생기는 날 조용히 열린다. 지금은 FC매니저가 맡은 지점으로
+           자기 범위가 정해지므로, 지점을 만들 수 있다는 것은 **자기 범위를
+           자기가 넓히는 길**이기도 하다.
+
+           읽기(get·list)는 그대로 isCentreStaff 다 -- 회원권 발급과 회원
+           등록의 지점 칩이 그것으로 뜬다. */
         allow create: if request.resource.data.organizationId == organizationId
-          && hasRole(organizationId, ["owner", "area_manager", "manager"]);
+          && hasRole(organizationId, ownerLevel());
         allow update: if resource.data.organizationId == organizationId
           && request.resource.data.organizationId == organizationId
-          && hasRole(organizationId, ["owner", "area_manager", "manager"]);
+          && hasRole(organizationId, ownerLevel());
         allow delete: if false;
       }
     }

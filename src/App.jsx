@@ -120,7 +120,7 @@ import {
   normalizePhone, saveScopeSnapshot,
 } from "./data/repositories/client-repository.js";
 import {
-  ALL_LOCATIONS, NO_LOCATION, countByLocation, createLocation, filterByLocation,
+  ALL_LOCATIONS, BRANCH_SCOPED_ROLES, NO_LOCATION, countByLocation, createLocation, filterByLocation,
   holdsManyLocations, itemsVisibleTo, listLocations, locationsVisibleTo, scopedLocationIds,
 } from "./data/repositories/location-repository.js";
 import { connectRepositoryLog, toleratingReadFailure } from "./data/repositories/repository-read.js";
@@ -18974,7 +18974,7 @@ function ClientDirectory({ organization, currentUserId, clientStore, locationSto
   const countedClients = useMemo(() => visibleToRole(clients, {}), [clients]);
   /* 맡은 지점 밖은 보여 주지 않는다 (2026-10-26 대표 결정 2항). 대표·총괄
      매니저는 그대로 전부이고, FC매니저만 좁혀진다 -- 강사·팀장·점장의
-     동작은 바뀌지 않는다 (SCOPED_ROLES).
+     동작은 바뀌지 않는다 (BRANCH_SCOPED_ROLES).
 
      **고를 수 있는 지점도 같이 좁힌다.** 칩만 두고 목록을 좁히면 누를 수
      있는데 늘 비어 있는 칩이 생기고, 그 빈 화면은 "회원이 없다" 로 읽힌다. */
@@ -21389,8 +21389,21 @@ function ExpiryReportScreen({
     </section>
   );
 
+  /* ── 지점으로 좁힌다 (2026-10-26 대표 결정 2항) ──────────────────────
+     **여기는 강사·팀장·점장도 자기 지점만 본다.** 명부와 다른 선인데, 그
+     화면은 "누구를 챙겨야 하는가" 를 묻는 자리라 남의 지점 회원이 섞이면
+     할 일이 아닌 것이 할 일로 보인다.
+
+     FC매니저는 맡은 지점 전부 (locationIds), 강사·팀장·점장은 자기 한 지점
+     (locationId), 대표·총괄매니저는 전 지점이다 -- scopedLocationIds 가 옛
+     필드와 새 필드를 함께 읽어 그 셋을 한 줄로 가른다. */
+  const expiryScope = {
+    role: organization?.role || "",
+    locationId: organization?.locationId || "",
+    locationIds: organization?.locationIds || [],
+  };
   const rows = state.stage === "ready"
-    ? state.clients.map((client) => ({
+    ? itemsVisibleTo(state.clients, expiryScope, { roles: BRANCH_SCOPED_ROLES }).map((client) => ({
       clientId: client.id,
       name: client.name || "",
       passes: state.passes.filter((item) => passBelongsTo(item, client.id)),

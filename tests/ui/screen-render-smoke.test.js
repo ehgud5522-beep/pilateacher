@@ -138,6 +138,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "센터 회원 상세 · 잔여 조정",
     "센터 회원 상세 · 만료일 변경",
     "센터 회원 상세 · 매니저",
+    "센터 회원 상세 · 담당 변경",
     "센터 회원 상세 · 세션업",
     "센터 회원 상세 · 양도",
     "센터 회원 상세 · 양도 · 동명이인",
@@ -2137,6 +2138,22 @@ test("a roster we could not read says which kind of failure it was", async (t) =
     assert.match(markup, /이 기기에 저장된 목록이고, 회원권 잔여는 센터의 값이 아닙니다/);
     assert.match(markup, /다시 시도/);
   }
+});
+
+test("담당 변경은 회원 상세를 여는 두 길 모두에 선다", async (t) => {
+  /* 회원 탭의 회원 상세(ReferenceMemberDetail)와 더보기 → 회원 관리의 회원
+     상세(ClientDetail)는 **다른 컴포넌트다.** 1.1.38 에서는 앞쪽에만 버튼이
+     붙어 있었고, 대표는 더보기로 열어 보고 "버튼이 없다" 고 했다.
+
+     한쪽만 고쳐지는 일이 또 일어나지 않게 두 길을 함께 본다. */
+  const markupOf = await issueScreens(t);
+
+  assert.match(markupOf("회원 상세 · 회원권 네 장"), /담당 변경/, "회원 탭 경로");
+  assert.match(markupOf("센터 회원 상세 · 담당 변경"), /담당 변경/, "더보기 → 회원 관리 경로");
+
+  /* 넘겨주지 않으면 그려지지 않는다 -- 권한은 한 곳에서만 판단한다. 강사가
+     누를 수 있으면 그것은 급여를 옮기는 버튼이다. */
+  assert.doesNotMatch(markupOf("센터 회원 상세 · 매니저"), /담당 변경/, "권한 없으면 안 보인다");
 });
 
 test("the handover preview says the rate the new instructor will actually get", async (t) => {

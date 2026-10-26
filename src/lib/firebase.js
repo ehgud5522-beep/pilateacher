@@ -382,6 +382,10 @@ export async function fbSignInEmail(email, pw, { onStage = () => {} } = {}) {
  * 사용자가 할 일이 다르고, 그것까지 "보냈습니다" 로 덮으면 오지 않는 메일을
  * 영영 기다리게 된다.
  *
+ * ── 메일은 한국어로 ──
+ * 보내기 직전에 `auth.languageCode = "ko"` 를 지정한다. 콘솔의 템플릿을
+ * 바꿀 수 없을 때 이것이 유일한 손잡이이고, 없으면 영어로 나간다.
+ *
  * ── 메일을 누른 뒤 ──
  * continueUrl 로 웹 로그인 화면을 준다. 주지 않으면 Firebase 의 기본
  * 완료 화면에서 끝나고 돌아올 길이 없다 -- 사용자는 거기서 앱을 손으로
@@ -400,6 +404,18 @@ export async function fbSendPasswordReset(email, options = {}) {
   const address = String(email ?? "").trim();
   if (!address) throw Object.assign(new Error("Email is required."), { code: "invalid-email" });
   const continueUrl = String(options.continueUrl || PASSWORD_RESET_CONTINUE_URL);
+  /* ── 메일을 한국어로 ────────────────────────────────────────────────
+     **콘솔의 템플릿을 바꿀 수 없을 때 이것이 유일한 손잡이다.** 지정하지
+     않으면 Firebase 가 프로젝트 기본 언어(영어)로 보내고, 강사는 영어
+     메일을 받는다 -- 스팸으로 읽고 지우는 일이 실제로 생긴다.
+
+     **로그인 화면과 강사 관리가 같은 함수를 지난다.** 그래서 여기 한 곳에
+     둔다 -- 부르는 쪽마다 두면 한쪽만 고쳐지는 날이 오고, 그날 두 통로가
+     다른 언어로 나간다.
+
+     auth 전체에 남는 설정이라 뒤에 오는 다른 메일(인증 메일 등)도 한국어가
+     된다. 이 앱의 사용자는 모두 한국어라 그것이 맞는 쪽이다. */
+  auth.languageCode = "ko";
   try {
     await sendPasswordResetEmail(auth, address, { url: continueUrl, handleCodeInApp: false });
     return { sent: true };

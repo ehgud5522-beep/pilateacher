@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { AUDIT_ACTION, auditEntry } from "../../src/data/repositories/audit-repository.js";
@@ -82,4 +83,47 @@ test("기록은 한 번에 한 줄이다", async () => {
   }, { store });
   assert.equal(store.calls.commit.length, 1);
   assert.equal(store.calls.commit[0].length, 1);
+});
+
+/* ── 메일은 한국어로 나간다 ───────────────────────────────────────────────
+   콘솔의 템플릿을 바꿀 수 없어 `auth.languageCode` 가 유일한 손잡이다.
+   지정하지 않으면 Firebase 가 프로젝트 기본 언어(영어)로 보내고, 강사는
+   영어 메일을 받는다 -- 스팸으로 읽고 지우는 일이 실제로 생긴다.
+
+   firebase.js 는 브라우저 Auth 를 들여오므로 Node 에서 부를 수 없다. 그래서
+   **원문을 읽어 본다** -- auth-initialization.test.js 가 쓰는 길과 같다. */
+
+const firebaseSource = () => readFile(
+  new URL("../../src/lib/firebase.js", import.meta.url), "utf8",
+);
+
+/* 주석을 걷어 낸 코드만 본다. 머리말이 같은 줄을 설명으로 들고 있어서,
+   그대로 세면 설명 한 줄이 "두 곳에서 지정한다" 로 읽힌다. */
+const codeOnly = (source) => source
+  .replace(/\/\*[\s\S]*?\*\//g, "")
+  .replace(/^\s*\/\/.*$/gm, "");
+
+test("재설정 메일은 한국어로 보낸다", async () => {
+  const source = codeOnly(await firebaseSource());
+  assert.match(source, /auth\.languageCode\s*=\s*"ko"/, "언어를 지정하지 않으면 영어로 나간다");
+});
+
+test("언어 지정은 보내기 전에 한 번, 한 곳에서만 한다", async () => {
+  /* **로그인 화면과 강사 관리가 같은 함수를 지난다.** 부르는 쪽마다 두면
+     한쪽만 고쳐지는 날이 오고, 그날 두 통로가 다른 언어로 나간다. */
+  const source = codeOnly(await firebaseSource());
+  const occurrences = source.match(/auth\.languageCode\s*=/g) || [];
+  assert.equal(occurrences.length, 1, "한 곳에서만 지정한다");
+
+  const at = source.indexOf('auth.languageCode = "ko"');
+  const sent = source.indexOf("await sendPasswordResetEmail(");
+  assert.ok(at > 0 && sent > 0, "두 줄이 모두 있어야 한다");
+  assert.ok(at < sent, "보내기 **전에** 지정해야 한다 -- 뒤면 그 메일은 이미 나갔다");
+});
+
+test("앱 어디에서도 언어를 따로 지정하지 않는다", async () => {
+  /* App.jsx 가 자기 자리에서 또 지정하면 두 곳이 생기고, 위 테스트가
+     지키려던 것이 무너진다. */
+  const app = codeOnly(await readFile(new URL("../../src/App.jsx", import.meta.url), "utf8"));
+  assert.doesNotMatch(app, /languageCode/, "언어 지정은 firebase.js 한 곳이다");
 });

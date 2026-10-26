@@ -190,6 +190,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "강사 관리 · 총괄매니저 지정",
     "강사 관리 · FC매니저 지점 여럿",
     "강사 관리 · FC매니저 지점 0개",
+    "강사 관리 · 비밀번호 재설정",
+    "강사 관리 · 비밀번호 재설정 보냄",
     "강사 관리 · 총괄매니저 지정 · 옛 앱",
     "강사 관리 · 총괄매니저 해제",
     "강사 관리 · 총괄매니저가 본 화면",
@@ -2140,6 +2142,23 @@ test("a roster we could not read says which kind of failure it was", async (t) =
     assert.match(markup, /이 기기에 저장된 목록이고, 회원권 잔여는 센터의 값이 아닙니다/);
     assert.match(markup, /다시 시도/);
   }
+});
+
+test("대표가 강사 대신 재설정 메일을 보내는 자리가 있다", async (t) => {
+  /* 강사가 주소를 기억 못 하거나 오타를 내는 일이 실제로 있다. 로그인
+     화면에만 두면 그때 대표가 할 수 있는 것이 없다. */
+  const markupOf = await issueScreens(t);
+  const sheet = markupOf("강사 관리 · 비밀번호 재설정");
+
+  assert.match(sheet, /비밀번호 재설정 메일 보내기/);
+  /* 주소를 손으로 받는다는 것과, 다른 주소면 안 보낸다는 것을 함께 말한다 --
+     말하지 않으면 대표는 아무 주소나 적고 갔다고 믿는다. */
+  assert.match(sheet, /이 강사의 로그인 이메일/);
+  assert.match(sheet, /다른 주소면 보내지 않습니다/);
+
+  const sent = markupOf("강사 관리 · 비밀번호 재설정 보냄");
+  assert.match(sent, /스팸함/);
+  assert.match(sent, /브라우저에서 열리고/, "어디로 가는지 말한다");
 });
 
 test("FC매니저만 지점을 여럿 고른다", async (t) => {

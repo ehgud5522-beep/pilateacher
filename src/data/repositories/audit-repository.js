@@ -64,6 +64,16 @@ export const AUDIT_ACTION = Object.freeze({
   MEMBER_ADDED: "member_added",
   MEMBER_PROFILE_CHANGED: "member_profile_changed",
   MEMBER_REVOKED: "member_revoked",
+  /* 대표가 그 강사 대신 비밀번호 재설정 메일을 보냈다.
+     **이메일 주소는 적지 않는다.** 이 컬렉션에 그 칸이 없고, 열 생각도
+     없다 -- 누구에게 보냈는지는 targetId(uid) 가 말하고, 주소 자체는
+     로그에 남길 이유가 없다 (CLAUDE.md §7).
+
+     위 "이메일 조회는 여기 없다" 와 다른 판단인 이유: 조회는 대표가
+     아무 주소나 넣어 보는 일이라 성공만 적으면 기록이 거짓이 되지만,
+     이쪽은 **센터 강사 한 명을 골라서** 하는 일이고 그 사람의 로그인을
+     건드린다. 누가 언제 했는지가 남아야 한다. */
+  PASSWORD_RESET_SENT: "password_reset_sent",
   /* 회원 계정 연결. 이 둘은 앱이 쓰지 않는다 -- 서버(연결 함수)만 쓰고, 앱은
      감사 화면에서 읽기만 한다. 규칙의 auditActions() 에도 넣지 않았다:
      Admin SDK 는 규칙을 지나지 않고, 열어 두면 클라이언트가 지어낼 수 있는

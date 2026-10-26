@@ -14,7 +14,8 @@ import {
   onAuthStateChanged, signOut,
   GoogleAuthProvider, OAuthProvider, signInWithPopup,
   EmailAuthProvider, createUserWithEmailAndPassword, signInWithEmailAndPassword,
-  reauthenticateWithCredential, reauthenticateWithPopup, revokeAccessToken, updateProfile,
+  reauthenticateWithCredential, reauthenticateWithPopup, revokeAccessToken,
+  sendPasswordResetEmail, updateProfile,
 } from "firebase/auth";
 import { getFirestore, collection, deleteDoc, doc, getDoc, getDocs, runTransaction, setDoc, serverTimestamp } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
@@ -367,6 +368,58 @@ export async function fbSignInEmail(email, pw, { onStage = () => {} } = {}) {
   );
   return { ...shape(res.user), provider: "email" };
 }
+
+/**
+ * 비밀번호 재설정 메일. **가입 여부를 밖으로 흘리지 않는다.**
+ *
+ * ── 왜 늘 성공으로 끝나는가 ──
+ * `auth/user-not-found` 를 그대로 올리면 이 화면이 **가입 여부 확인기**가
+ * 된다 -- 아무 이메일이나 넣어 보며 "이 사람이 우리 센터를 쓰는가" 를 셀 수
+ * 있다. 그래서 그 코드만 성공과 같은 자리로 접고, 부르는 쪽은 언제나 같은
+ * 문구를 띄운다.
+ *
+ * 나머지 실패는 그대로 올린다. 네트워크가 끊겼거나 요청이 너무 잦은 것은
+ * 사용자가 할 일이 다르고, 그것까지 "보냈습니다" 로 덮으면 오지 않는 메일을
+ * 영영 기다리게 된다.
+ *
+ * ── 메일을 누른 뒤 ──
+ * continueUrl 로 웹 로그인 화면을 준다. 주지 않으면 Firebase 의 기본
+ * 완료 화면에서 끝나고 돌아올 길이 없다 -- 사용자는 거기서 앱을 손으로
+ * 다시 연다.
+ *
+ * 네이티브 앱으로 되돌리는 것은 지금 길이 없다 (Dynamic Links 종료). 폰에서
+ * 눌러도 브라우저의 로그인 화면으로 간다.
+ *
+ * @param {string} email
+ * @param {{ continueUrl?: string }} [options]
+ * @returns {Promise<{ sent: boolean }>} sent 는 **진단용이다.** 화면 문구를
+ *   이것으로 가르면 안 된다 -- 가르는 순간 가입 여부가 드러난다.
+ */
+export async function fbSendPasswordReset(email, options = {}) {
+  if (!auth) throw Object.assign(new Error("Auth is not ready."), { code: "auth-unavailable" });
+  const address = String(email ?? "").trim();
+  if (!address) throw Object.assign(new Error("Email is required."), { code: "invalid-email" });
+  const continueUrl = String(options.continueUrl || PASSWORD_RESET_CONTINUE_URL);
+  try {
+    await sendPasswordResetEmail(auth, address, { url: continueUrl, handleCodeInApp: false });
+    return { sent: true };
+  } catch (error) {
+    /* 없는 계정은 성공과 같은 자리로 접는다. 위 머리말 참고. */
+    if (error?.code === "auth/user-not-found" || error?.code === "auth/invalid-email") {
+      return { sent: false };
+    }
+    throw error;
+  }
+}
+
+/**
+ * 재설정을 마친 사람이 돌아올 곳. **웹 로그인 화면이다.**
+ *
+ * Firebase Auth 의 승인된 도메인에 있어야 한다 -- 없으면 메일 발송 자체가
+ * auth/invalid-continue-uri 로 거부된다. pilateacher.web.app 은 Hosting 의
+ * 기본 도메인이라 처음부터 들어 있다.
+ */
+export const PASSWORD_RESET_CONTINUE_URL = "https://pilateacher.web.app/";
 
 /** The public Web API key, so a probe can exercise the exact route the SDK uses. */
 export const fbAuthApiKey = firebaseConfig.apiKey;

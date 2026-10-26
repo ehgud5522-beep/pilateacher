@@ -30,6 +30,7 @@ import {
   fbAuthStateReady, fbLoadProfileState, fbSaveProfile, fbPushBackup, fbPullBackup,
   fbPreservePreviousBackup, PREVIOUS_PHONE_BACKUP, fbReauthenticate, fbRefreshIdToken,
   fbRevokeAppleAccess, fbDeleteCurrentUserAccount, fbLoadAIConsent, fbGrantAIConsent, fbCurrentUserId,
+  fbSendPasswordReset,
   fbDeleteAIConsent,
   fbLoadAIRecordingStatus, fbLoadSettlementConfig, fbSendDiagnosticReport, fbWritePilotMetricAttempt,
   fbListPhotoBackups, fbUploadPhotoBackup, fbDownloadPhotoBackup, fbSoftDeletePhotoBackup, fbPurgeExpiredPhotoBackups,
@@ -112,6 +113,7 @@ import {
 import {
   addMembership, fullRoomRateOf, hasUsableFullRoomRate, isActiveMembership, isDeputyDirectorOf,
   listInstructors,
+  recordPasswordResetSent,
   reportAppVersion, listMemberships, setInstructorDeputyDirector, setInstructorFullRoomRate,
   setMembershipProfile, setMembershipRole, setMembershipStatus, syncOwnMembershipName,
 } from "./data/repositories/instructor-repository.js";
@@ -2396,6 +2398,14 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
   const [auto, setAuto] = useState(true);
   const [signup, setSignup] = useState(null);
   const [f, setF] = useState({ name: "", email: "", pw: "", center: "", phone: "" });
+  /* 비밀번호 재설정. 보낸 뒤에도 시트를 닫지 않고 같은 자리에서 안내를
+     바꾼다 -- 토스트로만 알리면 메일함을 열었다 돌아왔을 때 그 말이 사라져
+     있고, 사용자는 보냈는지 아닌지부터 다시 묻는다. */
+  const [resetOpen, setResetOpen] = useState(false);
+  const [resetEmail, setResetEmail] = useState("");
+  const [resetBusy, setResetBusy] = useState(false);
+  const [resetDone, setResetDone] = useState(false);
+  const [resetError, setResetError] = useState("");
 
   const [busy, setBusy] = useState("");
   const [diagnosticTaps, setDiagnosticTaps] = useState(0);
@@ -2558,6 +2568,18 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
                   }}>
                   {emailTab === "signup" ? "가입하고 시작하기" : "로그인"}
                 </PrimaryBtn>
+                {/* ── 비밀번호를 잊으셨나요 ─────────────────────────────
+                    로그인 탭에만 둔다. 가입 탭에서는 아직 계정이 없다.
+
+                    **결과를 가르지 않는다.** 가입 여부를 문구로 흘리면 이
+                    화면이 가입 여부 확인기가 된다 -- 아무 이메일이나 넣어
+                    보며 "이 사람이 우리 센터를 쓰는가" 를 셀 수 있다. */}
+                {emailTab !== "signup" ? (
+                  <button type="button" onClick={() => { setResetEmail(f.email); setResetDone(false); setResetOpen(true); }}
+                    className="w-full py-2 text-xs font-bold" style={{ color: BRAND_D }}>
+                    비밀번호를 잊으셨나요?
+                  </button>
+                ) : null}
                 <button onClick={() => setMode("main")} className="w-full py-2 text-xs font-bold" style={{ color: SUB }}>다른 방법으로 로그인</button>
               </div>
             </div>
@@ -2598,6 +2620,67 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
       </div>
 
       {diagnosticsOpen && <AuthDiagnosticsPanel onClose={() => setDiagnosticsOpen(false)} onToast={onToast} />}
+
+      {/* ── 비밀번호 재설정 ───────────────────────────────────────────────
+          **가입 여부를 문구로 가르지 않는다.** 없는 이메일에도 같은 안내가
+          뜬다 -- 가르는 순간 이 화면이 가입 여부 확인기가 되고, 아무 주소나
+          넣어 보며 "이 사람이 우리 센터를 쓰는가" 를 셀 수 있다.
+
+          판정은 fbSendPasswordReset 안에 있고, 여기서는 그 결과를 읽지도
+          않는다. 읽으면 언젠가 그것으로 문구를 가르게 된다. */}
+      {resetOpen && (
+        <Sheet title="비밀번호 재설정" onClose={() => setResetOpen(false)}>
+          <div className="space-y-3">
+            {resetDone ? (
+              <>
+                <div style={{ padding: 12, borderRadius: 10, backgroundColor: CANVAS }}>
+                  <p className="text-xs leading-relaxed" style={{ color: INK2 }}>
+                    가입된 이메일이면 재설정 링크를 보냈어요. 메일이 안 오면 스팸함을 확인하세요.
+                  </p>
+                </div>
+                <p className="text-caption leading-relaxed" style={{ color: SUB }}>
+                  링크는 브라우저에서 열립니다. 새 비밀번호를 정한 뒤 이 화면으로 돌아와 로그인해 주세요.
+                </p>
+                <button type="button" onClick={() => setResetOpen(false)}
+                  className="h-12 w-full text-sm font-bold" style={{ borderRadius: 8, backgroundColor: CANVAS, color: INK2 }}>닫기</button>
+              </>
+            ) : (
+              <>
+                <Sub>가입할 때 쓴 이메일을 적어 주세요. 재설정 링크를 보내 드립니다.</Sub>
+                <Field label="이메일">
+                  <input value={resetEmail} onChange={(e) => setResetEmail(e.target.value)}
+                    placeholder="teacher@studio.com" className={inputCls} />
+                </Field>
+                {resetError ? (
+                  <p role="alert" style={{ fontSize: TYPE.caption, color: BAD }}>{resetError}</p>
+                ) : null}
+                <PrimaryBtn disabled={resetBusy || !resetEmail.trim()} onClick={async () => {
+                  setResetBusy(true);
+                  setResetError("");
+                  try {
+                    await fbSendPasswordReset(resetEmail.trim());
+                    setResetDone(true);
+                  } catch (error) {
+                    /* 여기 오는 것은 가입 여부와 **무관한** 실패뿐이다 --
+                       없는 계정은 저쪽에서 성공으로 접힌다. 네트워크와
+                       과다 요청은 사용자가 할 일이 다르므로 가른다. */
+                    const code = String(error?.code || "");
+                    setResetError(
+                      code === "auth/network-request-failed"
+                        ? "네트워크 연결을 확인한 뒤 다시 시도해 주세요."
+                        : code === "auth/too-many-requests"
+                          ? "요청이 너무 잦습니다. 잠시 뒤에 다시 시도해 주세요."
+                          : `메일을 보내지 못했어요 (코드 ${code || "unknown"})`,
+                    );
+                  } finally {
+                    setResetBusy(false);
+                  }
+                }}>{resetBusy ? "보내는 중…" : "재설정 링크 보내기"}</PrimaryBtn>
+              </>
+            )}
+          </div>
+        </Sheet>
+      )}
 
       {signup && (
         <Sheet title={`${PROVIDER_LABEL[signup.provider]} 계정으로 가입`} onClose={() => setSignup(null)}>
@@ -16939,6 +17022,9 @@ function InstructorHandoverScreen({
 function InstructorAdmin({
   organization, currentUserId, instructorStore, rateStore, locationStore,
   lookupByEmail = fbLookupCentreMemberByEmail,
+  /* 메일 발송. 주입받는 이유는 스모크가 Auth 를 띄우지 않기 때문이다 --
+     기본값이 진짜 발송이라 실수로 테스트에서 메일이 나가지 않는다. */
+  sendReset = fbSendPasswordReset,
   onRetryOrganization, onToast, onSwap, initialState = null,
 }) {
   const [swap, setSwap] = useState(initialState?.swap || null);
@@ -16962,6 +17048,13 @@ function InstructorAdmin({
   const [lookup, setLookup] = useState(initialState?.lookup || { email: "", found: null, error: "", busy: false });
   const [formError, setFormError] = useState(initialState?.formError || "");
   const [locationDraft, setLocationDraft] = useState(initialState?.locationDraft || null);
+  /* 비밀번호 재설정. 소속 문서에 이메일이 없어 손으로 받는다 -- 규칙이
+     users/{uid} 를 닫아 두었고(열면 전화번호까지 함께 열린다), 센터가 아는
+     것은 조회 함수로 email → uid 한 방향뿐이다. */
+  const [resetEmail, setResetEmail] = useState(initialState?.resetEmail || "");
+  const [resetBusy, setResetBusy] = useState(false);
+  const [resetSent, setResetSent] = useState(initialState?.resetSent || false);
+  const [resetError, setResetError] = useState(initialState?.resetError || "");
   const [saving, setSaving] = useState(false);
   const organizationId = organization?.organizationId || "";
   const locked = organization?.status === "unknown";
@@ -17067,6 +17160,9 @@ function InstructorAdmin({
       deputy: isDeputyDirectorOf(picked),
     });
     setFormError("");
+    setResetEmail("");
+    setResetSent(false);
+    setResetError("");
     setMode("edit");
   };
 
@@ -17198,6 +17294,57 @@ function InstructorAdmin({
       setFormError(`바꾸지 못했어요 (코드 ${error?.code || error?.message || "unknown"})`);
     } finally {
       setSaving(false);
+    }
+  };
+
+  /* ── 비밀번호 재설정 메일 ───────────────────────────────────────────
+     강사가 비밀번호를 잊었을 때 대표가 대신 보낸다. 로그인 화면에도 같은
+     길이 있지만, 그 강사가 메일 주소를 기억 못 하거나 오타를 내는 일이
+     실제로 있다.
+
+     **이메일을 손으로 받는다.** 소속 문서에 주소가 없다 -- 규칙이
+     users/{uid} 를 닫아 두었고(열면 전화번호까지 함께 열린다), 센터가 아는
+     것은 조회 함수로 email → uid 한 방향뿐이다.
+
+     그래서 **보내기 전에 uid 를 맞춰 본다.** 맞춰 보지 않으면 대표가
+     엉뚱한 주소를 적어도 "정예진에게 보냈다" 는 기록만 남는다. */
+  const sendPasswordReset = async () => {
+    if (!editing) return;
+    const address = resetEmail.trim();
+    if (!address) { setResetError("이메일을 입력해 주세요."); return; }
+    setResetError("");
+    setResetBusy(true);
+    try {
+      const found = await lookupByEmail({ organizationId, email: address });
+      const foundUserId = String(found?.userId || "");
+      if (!foundUserId || foundUserId !== String(editing.userId || "")) {
+        /* 주소가 이 강사의 것이 아니다. 여기서 "그 주소는 누구의 것" 까지
+           말하지 않는다 -- 대표 화면이지만 남의 계정을 확인해 주는 자리가
+           될 이유가 없다. */
+        setResetError("이 강사의 계정 이메일이 아닙니다. 주소를 확인해 주세요.");
+        return;
+      }
+      await sendReset(address);
+      /* 보낸 **뒤에** 적는다. 둘을 묶으면 "메일은 갔는데 기록이 없다" 와
+         "기록은 있는데 메일이 안 갔다" 중 하나를 고르는 자리가 생기는데,
+         앞쪽이 덜 나쁘다 -- 뒤쪽은 대표가 보냈다고 믿고 기다리게 한다. */
+      await recordPasswordResetSent(organizationId, {
+        targetId: foundUserId,
+        changedBy: currentUserId,
+        actorRole: organization?.role || "",
+      }, { store: rateStore });
+      setResetSent(true);
+    } catch (error) {
+      const code = String(error?.code || error?.message || "unknown");
+      setResetError(
+        code === "auth/network-request-failed"
+          ? "네트워크 연결을 확인한 뒤 다시 시도해 주세요."
+          : code === "auth/too-many-requests"
+            ? "요청이 너무 잦습니다. 잠시 뒤에 다시 시도해 주세요."
+            : `보내지 못했어요 (코드 ${code})`,
+      );
+    } finally {
+      setResetBusy(false);
     }
   };
 
@@ -17457,6 +17604,49 @@ function InstructorAdmin({
             </button>
           </div>
         </form>
+
+        {/* ── 비밀번호 재설정 메일 ───────────────────────────────────────
+            강사가 비밀번호를 잊었을 때 대표가 대신 보낸다. 로그인 화면에도
+            같은 길이 있지만, 그 강사가 주소를 기억 못 하거나 오타를 내는
+            일이 실제로 있다.
+
+            **이메일을 손으로 받는다.** 소속 문서에 주소가 없다 -- 규칙이
+            users/{uid} 를 닫아 두었고(열면 전화번호까지 함께 열린다),
+            센터가 아는 것은 조회 함수로 email → uid 한 방향뿐이다.
+
+            보내기 전에 그 주소가 **이 강사의 것인지** 맞춰 본다. 맞춰 보지
+            않으면 엉뚱한 주소로 보내 놓고 "정예진에게 보냈다" 는 기록만
+            남는다.
+
+            대표·총괄매니저만 이 화면을 연다 (showInstructorAdmin). 그래서
+            여기에 역할 판정을 또 두지 않는다 -- 두 곳에 두면 한쪽만
+            고쳐지는 날이 온다. */}
+        <div className="mt-3" style={{ borderTop: `1px solid ${LINE}`, paddingTop: 12 }}>
+          <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>비밀번호 재설정 메일 보내기</p>
+          {resetSent ? (
+            <p className="mt-1.5 text-xs leading-relaxed" style={{ color: INK2 }}>
+              보냈습니다. 메일이 안 오면 스팸함을 확인하라고 전해 주세요. 링크는 브라우저에서 열리고,
+              새 비밀번호를 정한 뒤 앱에서 다시 로그인하면 됩니다.
+            </p>
+          ) : (
+            <>
+              <p className="mt-1 text-caption leading-relaxed" style={{ color: SUB }}>
+                이 강사의 로그인 이메일을 적어 주세요. 다른 주소면 보내지 않습니다.
+              </p>
+              <div className="mt-2 flex gap-2">
+                <input value={resetEmail} onChange={(event) => { setResetEmail(event.target.value); setResetError(""); }}
+                  placeholder="teacher@studio.com" className={inputCls} style={{ flex: 1 }} />
+                <button type="button" disabled={resetBusy || !resetEmail.trim()} onClick={sendPasswordReset}
+                  className="h-11 shrink-0 px-3 font-bold disabled:opacity-40" style={{
+                    borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption,
+                  }}>{resetBusy ? "보내는 중" : "보내기"}</button>
+              </div>
+              {resetError ? (
+                <p role="alert" className="mt-1.5 font-bold" style={{ fontSize: TYPE.caption, color: BAD }}>{resetError}</p>
+              ) : null}
+            </>
+          )}
+        </div>
 
         {/* 자기 자신은 퇴사시키지 못한다. 대표가 자기 소속을 회수하면 그 센터에
             대표가 없어지고, 되돌릴 문이 아무 데도 없다. */}
@@ -21076,6 +21266,7 @@ const AUDIT_ACTION_LABEL = {
   [AUDIT_ACTION.MEMBER_ADDED]: "강사 추가",
   [AUDIT_ACTION.MEMBER_PROFILE_CHANGED]: "강사 정보 변경",
   [AUDIT_ACTION.MEMBER_REVOKED]: "퇴사 · 복직",
+  [AUDIT_ACTION.PASSWORD_RESET_SENT]: "비밀번호 재설정 메일",
   [AUDIT_ACTION.MEMBER_LINK_CREATED]: "회원 계정 연결",
   [AUDIT_ACTION.MEMBER_LINK_REMOVED]: "회원 계정 연결 해제",
   [AUDIT_ACTION.MEMBER_PHONE_CHANGED]: "연락처 변경",
@@ -25501,6 +25692,25 @@ export function createAppScreenSmokeCases() {
         displayName: "정예진", title: "instructor",
         locationId: "", locationIds: [],
         rateManwon: "4.5", deputy: false, role: "manager",
+      },
+    }) },
+    /* ── 비밀번호 재설정 메일 ───────────────────────────────────────
+       강사가 주소를 기억 못 하거나 오타를 내는 일이 실제로 있어 대표가
+       대신 보낸다. 보내기 전에 그 주소가 이 강사의 것인지 맞춰 본다. */
+    { name: "강사 관리 · 비밀번호 재설정", element: instructorAdmin(smokeOwner, {
+      members: smokeInstructors, locations: smokeLocations,
+      mode: "edit", editing: smokeInstructors[0],
+      draft: {
+        displayName: "정예진", title: "team_lead", locationId: "bansong",
+        rateManwon: "4.5", deputy: false, role: "instructor",
+      },
+    }) },
+    { name: "강사 관리 · 비밀번호 재설정 보냄", element: instructorAdmin(smokeOwner, {
+      members: smokeInstructors, locations: smokeLocations,
+      mode: "edit", editing: smokeInstructors[0], resetSent: true,
+      draft: {
+        displayName: "정예진", title: "team_lead", locationId: "bansong",
+        rateManwon: "4.5", deputy: false, role: "instructor",
       },
     }) },
     /* 옛 앱을 쓰는 강사. 규칙은 다 열어 주는데 화면이 역할을 몰라 더보기가

@@ -1861,6 +1861,13 @@ service cloud.firestore {
         // 강사 관리. 누가 센터에 붙고, 무엇으로 불리고, 언제 나갔는가. 소속
         // 문서는 현재 상태만 들고 있어 그 이력을 답할 수 없다.
         "member_added", "member_profile_changed", "member_revoked",
+        /* 대표가 그 강사 대신 비밀번호 재설정 메일을 보냈다. 그 사람의
+           로그인을 건드리는 일이라 누가 언제 했는지가 남아야 한다.
+
+           mayRecordAudit 이 이미 ownerLevel 로 좁히므로 여기 넣는 것만으로
+           대표·총괄매니저뿐이다. 이메일 주소를 담을 칸은 열지 않는다 --
+           누구인지는 targetId(uid) 가 말한다. */
+        "password_reset_sent",
         /* 총괄매니저 지정·해제. 아래 mayRecordAudit 이 이것만 대표로 좁힌다 --
            총괄매니저가 자기 자리를 세운 기록을 지어내지 못하게. */
         "area_manager_set",

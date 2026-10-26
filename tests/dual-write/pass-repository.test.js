@@ -563,14 +563,21 @@ const transferInput = (overrides = {}) => ({
 const totalDocPath = (instructorId, clientId) =>
   `organizations/${ORG}/instructorClientTotals/${instructorId}_${clientId}`;
 
-test("a handover carries the previous instructor's count to the new one", async () => {
+test("a handover does not carry the previous instructor's count", async () => {
+  /* 2026-10-23 대표 결정. **새 강사의 누적은 새 강사가 실제로 한 수업만
+     센다.** 전 강사의 누적을 더하면 새 강사는 한 번도 보지 않은 회원을
+     "이미 20회 넘긴 회원" 으로 물려받고 첫 수업부터 기준 단가가 된다.
+
+     회원권 자체는 그대로 인수인계 단가다 (handedOver → 판정 2) -- 남은 회차
+     전부가 신규 단가라 누적과 무관하게 낮게 유지된다. 두 층위가 다르다. */
   const store = fakeStore({ totals: { [totalDocPath("instructor-a", "client-a")]: { sessions: 30 } } });
   await transferPassInstructor(ORG, "pass-a", transferInput(), { store, newId: () => "t1" });
 
-  const write = store.calls.commit[0].find((item) => item.path === totalDocPath("instructor-b", "client-a"));
-  assert.ok(write, "새 강사 쪽에 누적이 더해져야 한다");
-  assert.deepEqual(write.data.delta, { sessions: 30 });
-  assert.equal(write.operation, "bump", "덮어쓰지 않는다 -- 이미 그 회원을 알 수 있다");
+  const touched = store.calls.commit[0].map((item) => item.path);
+  assert.equal(
+    touched.some((path) => path.includes("instructorClientTotals")), false,
+    "누적 문서는 어느 쪽도 건드리지 않는다",
+  );
 });
 
 test("the previous instructor keeps their own count", async () => {
@@ -591,9 +598,9 @@ test("a handover with nothing to carry writes no totals document", async () => {
   assert.equal(touched.some((path) => path.includes("instructorClientTotals")), false);
 });
 
-test("both halves of a duet carry over", async () => {
-  /* 단가가 둘 중 적은 쪽을 보므로, 한 명만 옮기면 짝이 영영 새 사람으로
-     남고 그 회원권의 다음 장이 전부 신규 단가로 나간다. */
+test("neither half of a duet carries a count over", async () => {
+  /* 듀엣도 같다. 한쪽만 안 옮기는 것이 아니라 **둘 다 안 옮긴다** --
+     반쪽만 적용하면 단가가 둘 중 적은 쪽을 보는 규칙과 엇갈린다. */
   const store = fakeStore({ totals: {
     [totalDocPath("instructor-a", "client-a")]: { sessions: 30 },
     [totalDocPath("instructor-a", "client-b")]: { sessions: 25 },
@@ -604,18 +611,17 @@ test("both halves of a duet carry over", async () => {
     { store, newId: () => "t1" },
   );
 
-  const written = new Map(store.calls.commit[0].map((item) => [item.path, item]));
-  assert.deepEqual(written.get(totalDocPath("instructor-b", "client-a")).data.delta, { sessions: 30 });
-  assert.deepEqual(written.get(totalDocPath("instructor-b", "client-b")).data.delta, { sessions: 25 });
+  const touched = store.calls.commit[0].map((item) => item.path);
+  assert.equal(touched.some((path) => path.includes("instructorClientTotals")), false);
 });
 
-test("the pass, the entry and the carried counts land in one batch", async () => {
-  /* 담당만 바뀌고 누적이 안 따라오거나 그 반대면, 다음 재등록의 단가가
-     틀리고 원장은 append-only 라 되돌릴 수 없다. */
+test("the pass and the entry land in one batch", async () => {
+  /* 회원권의 주인이 바뀌었는데 이력이 없거나 그 반대면 둘 다 틀린 상태다.
+     누적은 이제 여기 없다 (2026-10-23) -- 그래서 둘이다. */
   const store = fakeStore({ totals: { [totalDocPath("instructor-a", "client-a")]: { sessions: 30 } } });
   await transferPassInstructor(ORG, "pass-a", transferInput(), { store, newId: () => "t1" });
   assert.equal(store.calls.commit.length, 1);
-  assert.equal(store.calls.commit[0].length, 3);
+  assert.equal(store.calls.commit[0].length, 2);
 });
 
 test("a count we could not read does not block the handover", async () => {

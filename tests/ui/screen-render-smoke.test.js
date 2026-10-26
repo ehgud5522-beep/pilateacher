@@ -2169,10 +2169,12 @@ test("the handover preview says the rate the new instructor will actually get", 
   assert.match(sheet, /₩25,000/, "1:1 은 신규 단가");
   assert.match(sheet, /남은 \d+회 전부/);
 
-  /* 누적이 함께 간다는 것을 말해야 한다 -- 말하지 않으면 다음 재등록의
-     단가가 왜 기준 단가인지 아무도 설명하지 못한다. */
-  assert.match(sheet, /누적 수업 횟수도 함께 넘어갑니다/);
-  assert.match(sheet, /재등록하면/);
+  /* 누적이 **따라가지 않는다**는 것을 말해야 한다 (2026-10-23 대표 결정).
+     말하지 않으면 대표는 전처럼 합산되는 줄 알고, 새 강사의 첫 재등록
+     단가가 왜 신규인지 설명하지 못한다. */
+  assert.match(sheet, /함께 넘어가지 않습니다/);
+  assert.match(sheet, /새 강사가 실제로 한 수업만/);
+  assert.doesNotMatch(sheet, /누적 수업 횟수도 함께 넘어갑니다/, "옛 문구가 남아 있으면 안 된다");
 
   // 퇴사 처리는 지우는 것이 아니다. 과거 급여가 남는다는 말이 함께 있어야 한다.
   assert.match(sheet, /퇴사 처리/);

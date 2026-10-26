@@ -257,3 +257,77 @@ test("부원장 5:5 는 20회 규칙보다 앞이다", () => {
   assert.equal(found.unitPrice, 35000, "2,100,000 ÷ 30 ÷ 2");
   assert.equal(found.rule, PRICING_RULE.DEPUTY_DIRECTOR);
 });
+
+/* ── 서비스 회차는 20회 규칙에 걸리지 않는다 ─────────────────────────────
+   2026-10 문주희 건. 서비스 회차에 신규 단가 25,000 이 붙어 있었다.
+
+   서비스는 **센터가 정한 금액이지 그 강사의 단가가 아니다.** 누적이 몇이든,
+   인수인계든, 직급이 무엇이든 같은 금액이어야 한다. 디오사와 같은 이유로
+   같은 자리에 선다 -- 20회 판정 **앞**이다.
+
+   판정 0 이 이미 그렇게 서 있다. 이 테스트는 그것이 다시 뒤로 밀리지 않게
+   못을 박는다 -- 한 번 밀리면 신규 회원일수록 틀리고, 원장은 append-only 라
+   되돌릴 수 없다. */
+
+const SERVICE_RATE = /** @type {number} */ (PAY_RATES[PAY_CATEGORY.SERVICE]);
+
+test("서비스 회차는 누적이 20회 미만이어도 서비스 단가다", () => {
+  /* 문주희 건이 이것이다. 누적 2회짜리 회원의 서비스 회차가 판정 3 에
+     걸려 25,000 으로 나갔다. */
+  const found = resolveDeductionUnitPrice({
+    category: PAY_CATEGORY.SERVICE,
+    baseUnitPrice: SERVICE_RATE,
+    totalSessions: 20,
+    priorSessions: 2,
+    serviceUsedCount: 0,
+  });
+  assert.equal(found.rule, PRICING_RULE.SERVICE_FIRST);
+  assert.equal(found.unitPrice, SERVICE_RATE);
+  assert.notEqual(found.unitPrice, NEW_TO_INSTRUCTOR_UNIT_PRICE, "신규 단가가 가로채면 안 된다");
+});
+
+test("서비스 회차는 인수인계·직급·부원장 어느 쪽에도 걸리지 않는다", () => {
+  /* 넷 다 서비스보다 뒤여야 한다. 하나라도 앞에 서면 그 갈래의 회원만
+     조용히 다른 금액으로 나가고, 화면은 아무 말도 하지 않는다. */
+  const cases = [
+    { label: "인수인계", extra: { handedOver: true } },
+    { label: "점장", extra: { title: "branch_manager" } },
+    { label: "부원장", extra: { isDeputyDirector: true, netContractPrice: 1000000 } },
+    { label: "누적 40회", extra: { priorSessions: 40 } },
+  ];
+  for (const item of cases) {
+    const found = resolveDeductionUnitPrice({
+      category: PAY_CATEGORY.SERVICE,
+      baseUnitPrice: SERVICE_RATE,
+      totalSessions: 20,
+      priorSessions: 2,
+      serviceUsedCount: 0,
+      ...item.extra,
+    });
+    assert.equal(found.rule, PRICING_RULE.SERVICE_FIRST, `${item.label}: 판정 0 이 이겨야 한다`);
+    assert.equal(found.unitPrice, SERVICE_RATE, `${item.label}: 금액은 표값`);
+  }
+});
+
+test("두 번째 서비스 회차는 0원이고, 그것도 20회 규칙을 타지 않는다", () => {
+  /* 회차는 그대로 빠진다 -- 회원은 받은 것이고, 0원인 것은 강사에게 주는
+     돈이다. 여기서 25,000 이 나오면 센터가 두 번 낸다. */
+  const found = resolveDeductionUnitPrice({
+    category: PAY_CATEGORY.SERVICE,
+    baseUnitPrice: SERVICE_RATE,
+    totalSessions: 20,
+    priorSessions: 2,
+    serviceUsedCount: 1,
+  });
+  assert.equal(found.rule, PRICING_RULE.SERVICE_ALREADY_USED);
+  assert.equal(found.unitPrice, 0);
+});
+
+test("서비스 회차는 누적 경계를 넘기는 데 쓰이지 않는다", () => {
+  /* 20회 경계는 **그 강사와 실제로 한 수업**의 수다. 서비스가 그 수를
+     올리면 경계가 앞당겨져 다음 회차부터 카테고리 단가가 된다.
+
+     세는 쪽은 pass-repository 이고(서비스는 instructorClientTotal 을 올리지
+     않는다), 여기서는 경계값 자체가 흔들리지 않는 것만 본다. */
+  assert.equal(NEW_TO_INSTRUCTOR_THRESHOLD, 20);
+});

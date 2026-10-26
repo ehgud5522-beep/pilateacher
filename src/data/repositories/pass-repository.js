@@ -371,23 +371,22 @@ export async function issuePass(organizationId, input, options = {}) {
  *   locationId: string, createdBy: string, entryId?: string,
  *   clientIds?: Array<string>,
  * }} input
- *   clientIds 듀엣이면 두 사람 모두. 누적을 둘 다 옮기려면 필요하다
- * @param {{
- *   store?: PassStore, newId?: () => string, carrySessions?: boolean,
- * }} [options]
- *   carrySessions 누적을 여기서 옮길 것인가. 기본은 참이다.
+ *   clientIds 듀엣이면 두 사람 모두
+ * @param {{ store?: PassStore, newId?: () => string }} [options]
  *
- *     **한 회원의 회원권을 여러 장 한꺼번에 넘길 때는 거짓으로 둔다.** 누적은
- *     강사-회원 쌍 하나당 하나뿐이라, 장마다 더하면 세 장이면 세 배가 된다 --
- *     그 숫자가 20회 경계를 정하므로 부풀면 재등록 첫 차감부터 기준 단가가
- *     되고 센터가 더 낸다. 그때는 부르는 쪽이 회원당 한 번 옮긴다
- *     (instructor-handover.js 의 carries).
+ * ── 누적은 따라가지 않는다 (2026-10-23 대표 결정) ──
+ * **새 강사의 누적은 새 강사가 실제로 한 수업만 센다.** 전 강사의 누적을
+ * 더하면 새 강사는 한 번도 보지 않은 회원을 "이미 20회 넘긴 회원" 으로
+ * 물려받고, 첫 수업부터 기준 단가가 된다.
+ *
+ * 회원권 자체는 그대로 인수인계 단가다 (handedOver → 판정 2). 남은 회차
+ * 전부가 신규 단가이므로 누적을 옮기지 않아도 단가는 낮게 유지된다 -- 둘은
+ * 다른 층위다.
  */
 export async function transferPassInstructor(organizationId, passId, input, options = {}) {
   const {
     store = createFirestorePassStore(),
     newId = () => globalThis.crypto?.randomUUID?.() || `transfer-${Date.now()}`,
-    carrySessions = true,
   } = options;
   const organization = requiredText(organizationId, "organizationId");
   const id = requiredText(passId, "passId");
@@ -400,33 +399,6 @@ export async function transferPassInstructor(organizationId, passId, input, opti
   const createdBy = requiredText(input?.createdBy, "createdBy");
 
   const entryId = String(input?.entryId || `${id}_transfer_${newId()}`);
-
-  /* ── 누적도 함께 넘어간다 (2026-10-16 대표 확정) ─────────────────────────
-     전 강사가 이 회원에게 한 횟수를 새 강사 쪽에 **더한다.**
-
-     넘겨받은 그 회원권 자체는 남은 회차 전부가 신규 단가다 (판정 2) -- 새
-     강사는 그 계약에 기여가 없다. 그런데 그 회원권이 끝나고 **같은 회원이
-     재등록하면** 그때는 이 강사가 그 회원을 이미 아는 만큼으로 판단해야
-     한다. 0 에서 다시 세면 같은 회원을 스무 번 더 가르쳐야 기준 단가가
-     되고, 그 스무 번은 이미 일어난 일이다.
-
-     **더하고, 전 강사 쪽은 그대로 둔다.** 그 숫자는 그 사람이 실제로 한
-     수업의 기록이고, 지우면 그 강사가 나중에 같은 회원을 다시 맡을 때 처음
-     보는 사이가 된다.
-
-     듀엣이면 두 사람 모두 옮긴다 -- 단가가 둘 중 적은 쪽을 보므로, 한 명만
-     옮기면 짝이 영영 새 사람으로 남는다.
-
-     읽지 못하면 0 으로 본다. 더할 것이 없다는 뜻이고, 던지면 담당 교체 자체가
-     막힌다 -- 교체는 그 자리에서 해야 하는 일이다. */
-  const movingClientIds = passClientIds({ clientId, clientIds: input?.clientIds });
-  const carried = carrySessions
-    ? await Promise.all(movingClientIds.map(async (id2) => ({
-      clientId: id2,
-      sessions: await readInstructorClientSessions(organization, fromInstructorId, id2, { store })
-        .catch(() => 0),
-    })))
-    : [];
 
   const stampedAt = await store.serverTimestamp();
 
@@ -456,20 +428,10 @@ export async function transferPassInstructor(organizationId, passId, input, opti
       data: { instructorId: toInstructorId, handedOver: true },
       operation: "update",
     },
-    /* 0 은 쓰지 않는다. 더할 것이 없는데 문서를 만들면 "이 강사가 이 회원을
-       가르쳤다" 는 기록이 없는 채로 생긴다. */
-    ...carried.filter((item) => item.sessions > 0).map((item) => ({
-      path: paths.instructorClientTotal(organization, toInstructorId, item.clientId),
-      data: {
-        organizationId: organization,
-        instructorId: toInstructorId,
-        clientId: item.clientId,
-        delta: { sessions: item.sessions },
-      },
-      operation: /** @type {"bump"} */ ("bump"),
-    })),
   ]);
-  return { passId: id, entryId, entry, carriedSessions: carried };
+  /* carriedSessions 는 **늘 빈 배열이다** (2026-10-23). 부르는 쪽이 이 칸을
+     읽고 있어 모양은 남긴다 -- 없애면 undefined 를 세게 된다. */
+  return { passId: id, entryId, entry, carriedSessions: [] };
 }
 
 /* ── 출석 체크(차감) ───────────────────────────────────────────────────────

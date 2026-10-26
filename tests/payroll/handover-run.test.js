@@ -140,39 +140,37 @@ test("a duet split in the preview moves nothing at all", async () => {
   assert.deepEqual(transfers, [], "한 장도 넘어가지 않는다");
 });
 
-test("the preview's carried counts are the ones the runner writes", async () => {
-  /* 미리보기가 "누적 30 이 따라갑니다" 라고 말했으면 그 30 이 가야 한다.
-     실행이 다시 세면 그 사이에 바뀐 값이 들어가고, 화면은 거짓이 된다. */
+/* ── 누적은 따라가지 않는다 (2026-10-23 대표 결정) ─────────────────────── */
+
+test("the runner never writes a totals document, whatever the plan carries", async () => {
+  /* **새 강사의 누적은 새 강사가 실제로 한 수업만 센다.** 전 강사의 누적을
+     더하면 새 강사는 한 번도 보지 않은 회원을 "이미 20회 넘긴 회원" 으로
+     물려받고 첫 수업부터 기준 단가가 된다.
+
+     계획이 옛 모양으로 carries 를 들고 와도 쓰지 않는다 -- 옛 화면이 깔린
+     폰이 그것을 보낼 수 있고, 그때 조용히 옛 규칙으로 돌아가면 안 된다. */
   const planned = realPlan({ p1: "u-new", p2: "u-new" }, (id) => ({ c1: 30, c2: 12, c3: 7 })[id] || 0);
   const { store, passStore, commits } = fakeStores();
   await runHandover(ORG, {
     fromInstructorId: "u-old", actorId: "owner-a", actorRole: "owner",
-    rows: planned.rows, carries: planned.carries,
+    rows: planned.rows,
+    carries: [{ toInstructorId: "u-new", clientId: "c1", sessions: 30 }],
   }, { store, passStore });
 
-  const written = carryWrites(commits).map((item) => [item.path.split("/").pop(), item.data.delta.sessions]);
-  assert.deepEqual(written.sort(), [
-    ["u-new_c1", 30], ["u-new_c2", 12], ["u-new_c3", 7],
-  ].sort());
+  assert.deepEqual(carryWrites(commits), [], "누적 문서는 쓰지 않는다");
 });
 
-/* ── 누적은 회원당 한 번 ─────────────────────────────────────────────────── */
-
-test("three passes for one member carry the count once, not three times", async () => {
-  /* 세 번 더하면 그 회원의 20회 경계가 세 배로 당겨지고, 재등록 첫 차감부터
-     기준 단가가 되어 센터가 더 낸다. */
+test("three passes for one member still move, and still carry nothing", async () => {
   const { store, passStore, commits, transfers } = fakeStores();
   await runHandover(ORG, plan({
     rows: [row({ passId: "p1" }), row({ passId: "p2" }), row({ passId: "p3" })],
   }), { store, passStore });
 
   assert.equal(transfers.length, 3, "회원권 세 장은 각각 넘어간다");
-  const carries = carryWrites(commits);
-  assert.equal(carries.length, 1, "누적은 한 번만");
-  assert.deepEqual(carries[0].data.delta, { sessions: 30 });
+  assert.deepEqual(carryWrites(commits), []);
 });
 
-test("each half of a duet carries its own count", async () => {
+test("neither half of a duet carries a count", async () => {
   const { store, passStore, commits } = fakeStores();
   await runHandover(ORG, plan({
     rows: [row({ clientIds: ["c1", "c2"] })],
@@ -182,8 +180,7 @@ test("each half of a duet carries its own count", async () => {
     ],
   }), { store, passStore });
 
-  const carries = carryWrites(commits);
-  assert.deepEqual(carries.map((item) => item.data.delta.sessions).sort((a, b) => a - b), [12, 30]);
+  assert.deepEqual(carryWrites(commits), []);
 });
 
 /* ── 한 장이 막혀도 ──────────────────────────────────────────────────────── */

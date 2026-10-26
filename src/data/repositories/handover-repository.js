@@ -37,7 +37,6 @@ const text = (value) => String(value ?? "").trim();
  * @param {{
  *   fromInstructorId?: string,
  *   rows?: Array<any>,
- *   carries?: Array<any>,
  *   actorId?: string, actorRole?: string,
  * }} plan
  * @param {{ store?: HandoverStore, passStore?: any, now?: () => Date }} [options]
@@ -66,12 +65,7 @@ export async function runHandover(organizationId, plan, options = {}) {
         toInstructorId: row.toInstructorId,
         locationId: row.locationId,
         createdBy: text(plan?.actorId),
-      }, {
-        store: passStore,
-        /* 누적은 아래에서 회원당 한 번 옮긴다 -- 여기서 장마다 더하면 한
-           회원의 회원권이 세 장일 때 세 배가 된다. */
-        carrySessions: false,
-      });
+      }, { store: passStore });
       moved.push(row);
     } catch (error) {
       /* 한 장이 막혀도 나머지는 간다. 원본 코드를 버리지 않는다 -- 그것이
@@ -80,35 +74,14 @@ export async function runHandover(organizationId, plan, options = {}) {
     }
   }
 
-  /* 누적 이월. **넘어간 장이 있는 회원만** 옮긴다 -- 그 장이 실패했으면 그
-     회원은 아직 전 강사의 회원이고, 누적만 옮기면 두 사람 모두 틀린 값을
-     들게 된다. */
-  const movedClientIds = new Set(moved.flatMap((row) => row.clientIds.map(text)));
-  const carries = (Array.isArray(plan?.carries) ? plan.carries : [])
-    .filter((item) => item && movedClientIds.has(text(item.clientId)) && Number(item.sessions) > 0);
+  /* ── 누적은 옮기지 않는다 (2026-10-23 대표 결정) ────────────────────
+     **새 강사의 누적은 새 강사가 실제로 한 수업만 센다.** 전 강사의 누적을
+     더하면 새 강사는 한 번도 보지 않은 회원을 "이미 20회 넘긴 회원" 으로
+     물려받고, 첫 수업부터 기준 단가가 된다.
 
+     회원권은 그대로 인수인계 단가다 (handedOver → 판정 2) -- 남은 회차
+     전부가 신규 단가이므로 누적과 무관하게 낮게 유지된다. */
   const carried = [];
-  for (const item of carries) {
-    try {
-      await store.commit([{
-        path: paths.instructorClientTotal(organization, text(item.toInstructorId), text(item.clientId)),
-        data: {
-          organizationId: organization,
-          instructorId: text(item.toInstructorId),
-          clientId: text(item.clientId),
-          delta: { sessions: Number(item.sessions) },
-        },
-        operation: "bump",
-      }]);
-      carried.push(item);
-    } catch (error) {
-      failed.push({
-        passId: "", clientIds: [text(item.clientId)], toInstructorId: text(item.toInstructorId),
-        stage: "carry_sessions",
-        errorCode: text(error?.code) || text(error?.message) || "unknown",
-      });
-    }
-  }
 
   /* 기록은 **한 번**이다. 장마다 남기면 퇴사 인계 하나가 감사 목록 수십 줄이
      되고, 그러면 그 목록은 안 읽힌다. 몇 장이 넘어갔는지가 그 줄의 내용이다. */

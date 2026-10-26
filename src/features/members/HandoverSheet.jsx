@@ -174,12 +174,13 @@ export default function HandoverSheet({
             })}
           </div>
 
-          {/* 누적이 함께 간다는 것을 말한다. 말하지 않으면 다음 재등록의 단가가
-              왜 기준 단가인지 아무도 설명하지 못한다. */}
-          {plan.carries.length > 0 ? (
+          {/* 누적은 따라가지 않는다는 것을 말한다 (2026-10-23 대표 결정).
+              말하지 않으면 대표는 전처럼 합산되는 줄 알고, 새 강사의 첫
+              재등록 단가가 왜 신규인지 설명하지 못한다. */}
+          {plan.ready.length > 0 ? (
             <p className="text-caption leading-relaxed" style={{ color: "var(--sub)" }}>
-              {fromName || "전 강사"}의 누적 수업 횟수도 함께 넘어갑니다 ({plan.carries.length}명).
-              넘겨받은 회원권은 끝까지 신규 단가이고, 그 회원이 <b>재등록하면</b> 그때부터 합산된 누적으로 판단합니다.
+              넘겨받은 회원권은 끝까지 신규 단가입니다. {fromName || "전 강사"}의 누적 수업 횟수는 <b>함께 넘어가지 않습니다</b> —
+              새 강사의 누적은 새 강사가 실제로 한 수업만 셉니다.
             </p>
           ) : null}
 

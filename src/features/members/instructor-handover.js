@@ -124,7 +124,8 @@ export function unitPriceAfterHandover(pass, target = {}) {
  *   now?: Date,
  * }} input
  *   assignments  회원권 id → 받을 강사 uid. 비면 그 줄은 아직 안 정해진 것이다
- *   sessionsOf   전 강사의 그 회원 누적. 새 강사 쪽에 더해질 값이다
+ *   sessionsOf   전 강사의 그 회원 누적. **단가 미리보기에만 쓴다** --
+ *                2026-10-23 부터 이 값은 새 강사에게 더해지지 않는다
  */
 export function handoverPlan(input = {}) {
   const now = input.now instanceof Date ? input.now : new Date();
@@ -203,27 +204,15 @@ export function handoverPlan(input = {}) {
     }
   }
 
-  /* 새 강사 쪽에 더할 누적. **회원 한 명당 한 번이다** -- 그 회원의 회원권이
-     세 장이어도 누적은 하나이고, 세 번 더하면 세 배가 된다. */
-  const carries = [];
-  const seenPairs = new Set();
-  for (const row of rows) {
-    if (row.blocks.length) continue;
-    for (const clientId of row.clientIds) {
-      const key = `${row.toInstructorId}_${clientId}`;
-      if (seenPairs.has(key)) continue;
-      seenPairs.add(key);
-      const sessions = Number(sessionsOf(clientId)) || 0;
-      if (sessions > 0) carries.push({ toInstructorId: row.toInstructorId, clientId, sessions });
-    }
-  }
-
   const ready = rows.filter((row) => row.blocks.length === 0);
   return {
     rows: rows.slice().sort((left, right) => (left.clientNames[0] || "").localeCompare(right.clientNames[0] || "")),
     ready,
     blocked: rows.filter((row) => row.blocks.length > 0),
-    carries,
+    /* **누적은 따라가지 않는다 (2026-10-23 대표 결정).** 비워 둔 채 남긴다 --
+       부르는 쪽 둘이 이 칸을 읽고 있어, 없애면 undefined 를 세게 된다.
+       되살릴 일이 생기면 여기 하나만 다시 채우면 된다. */
+    carries: [],
     /* 넘길 것이 없으면 실행할 것도 없다. 빈 실행을 허용하면 "했습니다" 가
        뜨는데 아무것도 안 바뀐다. */
     canRun: ready.length > 0 && rows.every((row) => row.blocks.length === 0),

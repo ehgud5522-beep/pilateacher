@@ -158,35 +158,26 @@ test("a duet whose partner is also on a solo pass elsewhere must agree", () => {
   assert.equal(found.blocked.length, 2);
 });
 
-/* ── 누적 이월 ───────────────────────────────────────────────────────────── */
+/* ── 누적은 따라가지 않는다 (2026-10-23 대표 결정) ─────────────────────── */
 
-test("the carried count is one per member, however many passes they hold", () => {
-  /* 세 번 더하면 세 배가 된다. 그 숫자가 20회 경계를 정하므로, 부풀면 재등록
-     첫 차감부터 기준 단가가 되어 센터가 더 낸다. */
-  const found = planOf([
+test("the plan carries nothing, however many passes or sessions there are", () => {
+  /* **새 강사의 누적은 새 강사가 실제로 한 수업만 센다.** 전 강사의 누적을
+     더하면 새 강사는 한 번도 보지 않은 회원을 "이미 20회 넘긴 회원" 으로
+     물려받고 첫 수업부터 기준 단가가 된다.
+
+     회원권 자체는 그대로 인수인계 단가다 (handedOver → 판정 2) -- 남은 회차
+     전부가 신규 단가라 누적과 무관하게 낮게 유지된다. */
+  const many = planOf([
     pass({ id: "p1", clientId: "c1" }),
     pass({ id: "p2", clientId: "c1" }),
     pass({ id: "p3", clientId: "c1" }),
   ], { p1: "u-new", p2: "u-new", p3: "u-new" }, { sessionsOf: () => 30 });
+  assert.deepEqual(many.carries, []);
+  assert.equal(many.ready.length, 3, "넘기는 것 자체는 그대로다");
 
-  assert.equal(found.carries.length, 1);
-  assert.deepEqual(found.carries[0], { toInstructorId: "u-new", clientId: "c1", sessions: 30 });
-});
-
-test("both halves of a duet carry their own count", () => {
-  const found = planOf([pass({ clientIds: ["c1", "c2"] })], { p1: "u-new" },
+  const duet = planOf([pass({ clientIds: ["c1", "c2"] })], { p1: "u-new" },
     { sessionsOf: (id) => (id === "c1" ? 30 : 12) });
-  assert.deepEqual(found.carries.map((item) => item.sessions).sort((a, b) => a - b), [12, 30]);
-});
-
-test("nothing to carry writes nothing", () => {
-  const found = planOf([pass()], { p1: "u-new" }, { sessionsOf: () => 0 });
-  assert.deepEqual(found.carries, []);
-});
-
-test("a blocked row carries nothing — the plan has to be clean first", () => {
-  const found = planOf([pass()], {}, { sessionsOf: () => 30 });
-  assert.deepEqual(found.carries, []);
+  assert.deepEqual(duet.carries, [], "듀엣도 둘 다 안 옮긴다");
 });
 
 /* ── 받을 수 있는 강사 ───────────────────────────────────────────────────── */

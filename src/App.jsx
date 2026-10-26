@@ -18276,6 +18276,7 @@ function PassSessionUpSheet({
 function ClientPassRow({
   pass, nameOfInstructor, nameOfClient = () => "", clientId = "", now,
   onCancel, cancellable = false, onTransfer, onAdjust, onExpiry, onSessionUp,
+  onHandover,
 }) {
   const usable = isDeductablePass(pass, now);
   /* 듀엣이면 이 회원권을 둘이 함께 쓴다. 잔여 29회가 두 사람의 29회라는
@@ -18341,6 +18342,16 @@ function ClientPassRow({
               backgroundColor: CANVAS, color: BRAND_D,
             }}>양도(회원 간)</button>
         ) : null}
+        {/* 담당 변경. **양도(회원 간) 와 다른 일이다** -- 저쪽은 회차가 다른
+            회원에게 가고, 이쪽은 같은 회원의 회차가 다른 강사의 급여로
+            간다. 둘을 나란히 두는 이유가 그것이다. */}
+        {onHandover ? (
+          <button type="button" onClick={onHandover}
+            className="shrink-0 px-2.5 font-bold" style={{
+              height: 28, borderRadius: 999, fontSize: TYPE.caption,
+              backgroundColor: CANVAS, color: BRAND_D,
+            }}>담당 변경</button>
+        ) : null}
         {/* 잔여 조정은 대표만, 만료일 변경은 대표와 FC매니저. 강사에게는
             아예 그려지지 않는다 -- 부르는 쪽이 넘겨주지 않는다. 규칙도 같은
             선을 긋고, 여기는 눌러도 거부되는 버튼을 두지 않는 자리다. */}
@@ -18387,6 +18398,9 @@ function ClientPassRow({
 function ClientDetail({
   organization, client, history, loading, error, instructors = [], currentUserId = "", nameOfClient = () => "",
   clients = [], passStore, onClose, onRetry, onChanged, onToast, onChangePhone,
+  /* 담당 변경. 부르는 쪽이 넘겨주지 않으면 그려지지 않는다 -- 권한은 한
+     곳에서만 판단한다 (canHandoverPass). */
+  onHandover,
   now = () => new Date(), initialUndo = null, initialTransfer = null, initialPhoneEdit = false,
   initialPassEdit = null, initialSessionUp = null,
 }) {
@@ -18708,7 +18722,12 @@ function ClientDetail({
                     ? () => { setSessionUp({ pass }); setSessionUpErr(""); } : undefined}
                   onAdjust={canAdjust ? () => { setPassEdit({ kind: "adjust", pass }); setPassEditError(""); } : undefined}
                   onExpiry={canChangeExpiry && pass.expiresAt
-                    ? () => { setPassEdit({ kind: "expiry", pass }); setPassEditError(""); } : undefined} />
+                    ? () => { setPassEdit({ kind: "expiry", pass }); setPassEditError(""); } : undefined}
+                  /* 넘길 수 있는 것만. 끝난 회원권의 지난 수업료는 그대로 전
+                     강사의 급여로 남으므로 넘길 것이 없다 (isHandoverable 과
+                     같은 조건이다 -- 여기서만 느슨하면 눌러도 0장이 뜬다). */
+                  onHandover={onHandover && isDeductablePass(pass, at)
+                    ? () => onHandover(pass) : undefined} />
               ))}
           </div>
 
@@ -24877,7 +24896,7 @@ export function createAppScreenSmokeCases() {
           { id: "smoke-csv-bare", clientId: "smoke-client-a", remainingCount: 0 },
         ],
       })}
-      onBack={noop} onPatch={asyncNoop} onSaveNote={asyncNoop} onSchedule={noop} onAssess={noop} onToast={noop} onHide={asyncNoop} /> },
+      onBack={noop} onPatch={asyncNoop} onSaveNote={asyncNoop} onSchedule={noop} onAssess={noop} onHandoverPass={noop} onToast={noop} onHide={asyncNoop} /> },
     /* 만료일이 차수와 어긋난 회원. 2차에 잔여가 있는데 1차보다 먼저 만료되면
        그 회차는 쓰이지 못한 채 사라진다 -- 차감이 차수 순이기 때문이다.
        카드가 그 한 줄을 말하는지 본다. */
@@ -25071,6 +25090,10 @@ export function createAppScreenSmokeCases() {
       initialPassEdit: { kind: "expiry", pass: smokeHistoryPasses[0] },
     }) },
     { name: "센터 회원 상세 · 매니저", element: managerClientDetail() },
+    /* 더보기 → 회원 관리로 연 회원 상세다. **회원 탭과 다른 컴포넌트라**
+       1.1.38 에서 이쪽에만 "담당 변경" 이 없었다 -- 대표가 찾지 못했다.
+       두 길에 같은 버튼이 서는지 여기서 고정한다. */
+    { name: "센터 회원 상세 · 담당 변경", element: ownerClientDetail({ onHandover: noop }) },
     { name: "센터 회원 상세 · 세션업", element: ownerClientDetail({
       initialSessionUp: { pass: smokeHistoryPasses[0], sessions: "50", price: "2500000" },
     }) },
@@ -25814,8 +25837,11 @@ export default function App() {
      옮기는 버튼이다. 규칙도 같은 선을 긋는다 (passes update 의 manager 갈래). */
   const canHandoverPass = organizationRoster
     && (isOwnerLevelRole(organizationContext.role) || organizationContext.role === "manager");
-  /* 한 장짜리 인계. 어느 회원권을 넘기는 중인가. */
-  const [handoverPassId, setHandoverPassId] = useState("");
+  /* 한 장짜리 인계. **id 가 아니라 회원권 자체를 들고 있는다.**
+     id 만 들고 rosterPasses 에서 되찾으면, 그 목록에 없는 회원권은 시트가
+     "넘길 회원권이 없습니다" 로 뜬다 -- 더보기 → 회원 관리는 명부 밖의
+     회원도 열 수 있어서 그 길로 연 회원권이 전부 그렇게 끝난다. */
+  const [handoverPass, setHandoverPass] = useState(null);
   const [handoverBusy, setHandoverBusy] = useState(false);
   const [handoverError, setHandoverError] = useState("");
 
@@ -29227,7 +29253,10 @@ export default function App() {
                   onSchedule={() => { setScheduleMemberId(member.id); setTab("schedule"); }} onOpenLesson={(lessonId) => { setScheduleOpenLessonId(lessonId); setTab("schedule"); }} onAssess={(entry = {}) => { setAnalysisRecordId(entry.poseId || null); setAnalysisAssessmentId(entry.assessmentId || null); setAnalysisEntryMode(entry.mode || "home"); setAnalysisComparisonEntry(entry.beforeAssessmentId && entry.afterAssessmentId ? { beforeAssessmentId: entry.beforeAssessmentId, afterAssessmentId: entry.afterAssessmentId, compareView: entry.compareView || "front" } : null); setAnalysisMemberId(member.id); setTab("analysis"); }} onToast={setToast} onDelete={removeMember} onDeactivate={deactivateMember} onReactivate={reactivateMember}
                   organizationMode={organizationRoster && isRosterMember(member)} onHide={hideRosterMember}
                   journey={journeyFor(member.id)} passCards={passCardsFor(member.id)} centrePasses={centrePassesFor(member.id)}
-                  onHandoverPass={canHandoverPass ? (passId) => { setHandoverError(""); setHandoverPassId(passId); } : undefined}
+                  onHandoverPass={canHandoverPass ? (passId) => {
+                    setHandoverError("");
+                    setHandoverPass(rosterPasses.find((item) => String(item?.id || "") === String(passId)) || null);
+                  } : undefined}
                   centreLessons={centreLessonsFor} />
               </div>}
             </div>}
@@ -29262,46 +29291,50 @@ export default function App() {
             퇴사 인계와 **같은 화면**을 쓴다. 서버에서 일어나는 일이 같으므로
             둘을 따로 그리면 한쪽만 고쳐지는 날이 오고, 그날 대표가 보는
             숫자와 실제로 넘어가는 것이 갈라진다. */}
-        {handoverPassId ? (
+        {handoverPass ? (
           <div className="absolute inset-0 z-50 overflow-y-auto" style={{ backgroundColor: PAGE }}>
             <div className="mx-auto w-full max-w-md p-3" style={{ paddingTop: "max(env(safe-area-inset-top, 0px), 12px)" }}>
               <h2 className="mb-2" style={{ fontSize: TYPE.title, fontWeight: 600, color: INK }}>담당 변경</h2>
               <HandoverSheet
-                passes={rosterPasses.filter((item) => String(item?.id || "") === handoverPassId)}
+                passes={[handoverPass]}
                 instructors={rosterInstructors}
-                fromInstructorId={String(
-                  rosterPasses.find((item) => String(item?.id || "") === handoverPassId)?.instructorId || "",
-                )}
-                fromName={String(rosterInstructors.find((item) => String(item?.userId || "") === String(
-                  rosterPasses.find((row) => String(row?.id || "") === handoverPassId)?.instructorId || "",
-                ))?.displayName || "")}
+                fromInstructorId={String(handoverPass?.instructorId || "")}
+                fromName={String(rosterInstructors.find(
+                  (item) => String(item?.userId || "") === String(handoverPass?.instructorId || ""),
+                )?.displayName || "")}
+                /* 명부 밖의 회원이면 이름이 없다. 더보기에서 연 회원이 그렇다 --
+                   그때는 그 화면이 들고 있던 이름을 쓴다. */
                 clientNameOf={(clientId) => rosterClients.find(
                   (item) => String(item?.id || "") === String(clientId),
-                )?.name || ""}
+                )?.name
+                  || (String(detailClient?.id || "") === String(clientId) ? String(detailClient?.name || "") : "")
+                  || ""}
                 /* 한 장짜리는 누적을 transferPassInstructor 가 함께 옮긴다.
                    여기서 또 세면 두 배가 되므로 0 으로 둔다 -- 미리보기의
                    "누적도 함께" 줄만 빠지고, 실제로는 옮겨진다. */
                 sessionsOf={() => 0}
                 busy={handoverBusy}
                 errorCode={handoverError}
-                onClose={() => setHandoverPassId("")}
+                onClose={() => setHandoverPass(null)}
                 onRun={async ({ plan }) => {
                   const row = plan.ready[0];
                   if (!row) return;
                   setHandoverBusy(true);
                   setHandoverError("");
                   try {
-                    const pass = rosterPasses.find((item) => String(item?.id || "") === handoverPassId);
-                    await transferPassInstructor(organizationContext.organizationId, handoverPassId, {
+                    await transferPassInstructor(organizationContext.organizationId, String(handoverPass?.id || ""), {
                       clientId: row.clientIds[0],
                       clientIds: row.clientIds,
-                      fromInstructorId: String(pass?.instructorId || ""),
+                      fromInstructorId: String(handoverPass?.instructorId || ""),
                       toInstructorId: row.toInstructorId,
                       locationId: row.locationId,
                       createdBy: account?.id || "",
                     });
-                    setHandoverPassId("");
+                    setHandoverPass(null);
                     setRosterRevision((value) => value + 1);
+                    /* 더보기에서 연 회원이면 그 화면도 다시 읽어야 한다 --
+                       안 그러면 방금 바꾼 담당이 옛 이름 그대로 남는다. */
+                    setHistoryRevision((value) => value + 1);
                     setToast({ ok: true, msg: "담당을 바꿨습니다." });
                   } catch (error) {
                     setHandoverError(error?.code || error?.message || "unknown");
@@ -29332,6 +29365,10 @@ export default function App() {
                 /* 규칙이 clients.phone 을 잠그고 있어 이 통로가 유일한 문이다. */
                 onChangePhone={fbUpdateClientPhone}
                 onChanged={() => setHistoryRevision((value) => value + 1)}
+                /* 회원 탭의 "담당 변경" 과 **같은 시트**를 연다. 더보기로 연
+                   회원 상세에만 이 버튼이 없어서 대표가 찾지 못했다 (1.1.38).
+                   두 화면이 다른 컴포넌트라 한쪽만 고쳐져 있었다. */
+                onHandover={canHandoverPass ? (pass) => { setHandoverError(""); setHandoverPass(pass); } : undefined}
                 onRetry={() => setHistoryRevision((value) => value + 1)}
                 onClose={() => { setDetailClient(null); setClientHistory(null); setHistoryError(""); }} />
             </div>

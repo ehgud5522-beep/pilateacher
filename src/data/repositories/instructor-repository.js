@@ -208,6 +208,7 @@ const requiredDisplayName = (value) => {
  * @param {string} organizationId
  * @param {{
  *   userId: string, displayName: string, title?: string, locationId?: string,
+ *   locationIds?: Array<string>,
  *   role?: string, createdBy: string, actorRole: string,
  * }} input
  * @param {{ store?: InstructorRateStore }} [options]
@@ -253,6 +254,12 @@ export async function addMembership(organizationId, input, options = {}) {
   // 규칙이 거부한다 -- 없는 것은 없다고 둔다.
   const locationId = String(input?.locationId ?? "").trim();
   if (locationId) membership.locationId = locationId;
+  /* 맡은 지점들. FC매니저만 온다 (2026-10-26). 빈 목록은 쓰지 않는다 --
+     없는 것은 없다고 둔다. */
+  const locationIds = Array.isArray(input?.locationIds)
+    ? [...new Set(input.locationIds.map((item) => String(item ?? "").trim()).filter(Boolean))]
+    : [];
+  if (locationIds.length) membership.locationIds = locationIds;
 
   const audit = auditEntry(organization, {
     action: AUDIT_ACTION.MEMBER_ADDED,
@@ -280,7 +287,7 @@ export async function addMembership(organizationId, input, options = {}) {
  * @param {string} organizationId
  * @param {string} userId
  * @param {{
- *   displayName: string, title: string, locationId?: string,
+ *   displayName: string, title: string, locationId?: string, locationIds?: Array<string>,
  *   changedBy: string, actorRole: string,
  * }} input
  * @param {{ store?: InstructorRateStore }} [options]
@@ -293,6 +300,12 @@ export async function setMembershipProfile(organizationId, userId, input, option
   const displayName = requiredDisplayName(input?.displayName);
   const title = requiredTitle(input?.title);
   const locationId = String(input?.locationId ?? "").trim();
+  /* 맡은 지점들. **FC매니저만 둘 이상이다** (2026-10-26 대표 결정).
+     부르는 쪽이 보내지 않으면 건드리지 않는다 -- undefined 를 쓰면 이미
+     저장된 목록이 지워진다. */
+  const locationIds = Array.isArray(input?.locationIds)
+    ? [...new Set(input.locationIds.map((item) => String(item ?? "").trim()).filter(Boolean))]
+    : null;
 
   const stampedAt = await store.serverTimestamp();
   /* 지점을 비우는 일은 이 화면이 하지 않는다. 규칙이 빈 문자열을 거부하므로
@@ -300,9 +313,13 @@ export async function setMembershipProfile(organizationId, userId, input, option
   /* **누가 정한 이름인지 함께 적는다.** 이 표시가 없으면 그 강사가 앱을 한 번
      여는 순간 로그인 계정 이름으로 되돌아간다 -- 규칙이 본인의 이름 쓰기를
      열어 두고 있고, 그 문은 "대표가 정했는가" 를 이 칸으로만 안다. */
-  const profile = locationId
-    ? { displayName, title, locationId, displayNameBy: DISPLAY_NAME_BY.OWNER }
-    : { displayName, title, displayNameBy: DISPLAY_NAME_BY.OWNER };
+  const profile = {
+    displayName,
+    title,
+    displayNameBy: DISPLAY_NAME_BY.OWNER,
+    ...(locationId ? { locationId } : {}),
+    ...(locationIds ? { locationIds } : {}),
+  };
 
   const audit = auditEntry(organization, {
     action: AUDIT_ACTION.MEMBER_PROFILE_CHANGED,
@@ -310,7 +327,14 @@ export async function setMembershipProfile(organizationId, userId, input, option
     actorRole: requiredText(input?.actorRole, "actorRole"),
     targetId: target,
     title,
-    locationId,
+    /* 감사 항목은 한 칸짜리만 든다. auditLogs 의 허용 목록에 locationIds 가
+       없고, 그것을 여는 것은 규칙을 한 줄 더 고치는 일이라 이번 범위 밖이다.
+
+       **여러 지점이면 첫 지점을 적는다.** 전부를 한 칸에 이어 붙이면 그
+       칸을 읽는 다른 화면이 그것을 지점 id 하나로 읽는다 -- 없는 지점이
+       하나 생긴 것처럼 보인다. 지점이 바뀌었다는 사실과 시각·행위자는
+       그대로 남고, 그것이 이 줄의 일이다. */
+    locationId: locationIds && locationIds.length ? locationIds[0] : locationId,
     stampedAt,
   });
 
@@ -743,4 +767,42 @@ export async function reportAppVersion(organizationId, userId, app, options = {}
   } catch (_error) {
     return "failed";
   }
+}
+
+/**
+ * 대표가 그 강사 대신 비밀번호 재설정 메일을 보냈다는 기록.
+ *
+ * **메일을 보내는 것은 이 함수가 아니다.** 발송은 Firebase Auth 가 하고
+ * (fbSendPasswordReset), 여기는 그 일이 있었다는 사실만 남긴다. 둘을 한
+ * 함수에 묶지 않는 이유는 Auth 와 Firestore 가 서로의 실패를 되돌릴 수 없기
+ * 때문이다 -- 묶으면 "메일은 갔는데 기록이 없다" 와 "기록은 있는데 메일이 안
+ * 갔다" 중 하나를 고르는 자리가 생긴다. 부르는 쪽이 보낸 뒤에 적는다.
+ *
+ * **이메일 주소는 담지 않는다.** auditLogs 에 그 칸이 없고 열지도 않는다 --
+ * 누구에게 보냈는지는 targetId(uid) 가 말한다 (CLAUDE.md §7).
+ *
+ * @param {string} organizationId
+ * @param {{ targetId: string, changedBy: string, actorRole: string }} input
+ * @param {{ store?: any }} [options]
+ */
+export async function recordPasswordResetSent(organizationId, input, options = {}) {
+  const { store = createFirestoreInstructorRateStore() } = options;
+  const organization = requiredText(organizationId, "organizationId");
+  const target = requiredText(input?.targetId, "targetId");
+  const changedBy = requiredText(input?.changedBy, "changedBy");
+
+  const stampedAt = await store.serverTimestamp();
+  const audit = auditEntry(organization, {
+    action: AUDIT_ACTION.PASSWORD_RESET_SENT,
+    actorId: changedBy,
+    actorRole: requiredText(input?.actorRole, "actorRole"),
+    targetId: target,
+    stampedAt,
+  });
+
+  await store.commit([{
+    path: paths.auditLog(auditLogId(AUDIT_ACTION.PASSWORD_RESET_SENT, target, String(Date.now()))),
+    data: audit,
+  }]);
+  return { targetId: target, audit };
 }

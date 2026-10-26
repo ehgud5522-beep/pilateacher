@@ -5,6 +5,14 @@ def releaseKeystoreProperties = new Properties()
 if (releaseKeystorePropertiesFile.exists()) {
     releaseKeystorePropertiesFile.withInputStream { releaseKeystoreProperties.load(it) }
 }
+// Codemagic supplies the uploaded keystore without writing passwords to the repo.
+def codemagicBuild = System.getenv('CM_BUILD_ID') != null
+if (codemagicBuild) {
+    ['storeFile': 'CM_KEYSTORE_PATH', 'storePassword': 'CM_KEYSTORE_PASSWORD',
+     'keyAlias': 'CM_KEY_ALIAS', 'keyPassword': 'CM_KEY_PASSWORD'].each { key, envName ->
+        releaseKeystoreProperties[key] = System.getenv(envName) ?: ''
+    }
+}
 
 android {
     namespace = "com.pilateacher.app"
@@ -13,8 +21,15 @@ android {
         applicationId "com.pilateacher.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 69
-        versionName "1.1.37"
+        versionCode 70
+        versionName "1.1.40"
+        if (codemagicBuild) {
+            def ciCode = System.getenv('ANDROID_VERSION_CODE')
+            if (!ciCode || !(ciCode ==~ /[1-9][0-9]*/) || ciCode.toLong() > 2100000000L) {
+                throw new GradleException('ANDROID_VERSION_CODE must be a valid Play version code.')
+            }
+            versionCode ciCode.toInteger()
+        }
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -24,7 +39,7 @@ android {
     }
     signingConfigs {
         release {
-            if (releaseKeystorePropertiesFile.exists()) {
+            if (codemagicBuild || releaseKeystorePropertiesFile.exists()) {
                 storeFile file(releaseKeystoreProperties['storeFile'])
                 storePassword releaseKeystoreProperties['storePassword']
                 keyAlias releaseKeystoreProperties['keyAlias']
@@ -44,7 +59,7 @@ android {
 gradle.taskGraph.whenReady { graph ->
     if (graph.allTasks.any { task -> task.name.toLowerCase().contains('release') }) {
         def requiredKeys = ['storeFile', 'storePassword', 'keyAlias', 'keyPassword']
-        if (!releaseKeystorePropertiesFile.exists() || requiredKeys.any { key -> !releaseKeystoreProperties[key]?.toString()?.trim() }) {
+        if ((!codemagicBuild && !releaseKeystorePropertiesFile.exists()) || requiredKeys.any { key -> !releaseKeystoreProperties[key]?.toString()?.trim() }) {
             throw new GradleException('android/keystore.properties must contain all release signing values.')
         }
         if (!file(releaseKeystoreProperties['storeFile']).exists()) {

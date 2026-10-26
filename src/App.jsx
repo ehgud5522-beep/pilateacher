@@ -28,8 +28,9 @@ import {
 import {
   fbReady, fbAuthApiKey, fbSignInSocial, fbSignInEmail, fbSignUpEmail, fbSignOut, fbOnAuth,
   fbAuthStateReady, fbLoadProfileState, fbSaveProfile, fbPushBackup, fbPullBackup,
-  fbPreservePreviousBackup, PREVIOUS_PHONE_BACKUP, fbReauthenticate,
+  fbPreservePreviousBackup, PREVIOUS_PHONE_BACKUP, fbReauthenticate, fbRefreshIdToken,
   fbRevokeAppleAccess, fbDeleteCurrentUserAccount, fbLoadAIConsent, fbGrantAIConsent, fbCurrentUserId,
+  fbSendPasswordReset,
   fbDeleteAIConsent,
   fbLoadAIRecordingStatus, fbLoadSettlementConfig, fbSendDiagnosticReport, fbWritePilotMetricAttempt,
   fbListPhotoBackups, fbUploadPhotoBackup, fbDownloadPhotoBackup, fbSoftDeletePhotoBackup, fbPurgeExpiredPhotoBackups,
@@ -112,6 +113,7 @@ import {
 import {
   addMembership, fullRoomRateOf, hasUsableFullRoomRate, isActiveMembership, isDeputyDirectorOf,
   listInstructors,
+  recordPasswordResetSent,
   reportAppVersion, listMemberships, setInstructorDeputyDirector, setInstructorFullRoomRate,
   setMembershipProfile, setMembershipRole, setMembershipStatus, syncOwnMembershipName,
 } from "./data/repositories/instructor-repository.js";
@@ -120,8 +122,8 @@ import {
   normalizePhone, saveScopeSnapshot,
 } from "./data/repositories/client-repository.js";
 import {
-  ALL_LOCATIONS, NO_LOCATION, countByLocation, createLocation, filterByLocation, listLocations,
-  locationsVisibleTo,
+  ALL_LOCATIONS, BRANCH_SCOPED_ROLES, NO_LOCATION, countByLocation, createLocation, filterByLocation,
+  holdsManyLocations, itemsVisibleTo, listLocations, locationsVisibleTo, scopedLocationIds,
 } from "./data/repositories/location-repository.js";
 import { connectRepositoryLog, toleratingReadFailure } from "./data/repositories/repository-read.js";
 import {
@@ -145,6 +147,7 @@ import {
   correctDeduction, deductPass, holdPass, isCancellablePass, loadPassReconcileRows,
   isCorrectableEntry, isCorrectedEntry, isDeductablePass, isExpiredPass, issuePass,
   listInstructorClientTotals, listPassLedger, listPasses, loadClientPassHistory, remainingCountOf,
+  transferPassInstructor,
   transferPass,
 } from "./data/repositories/pass-repository.js";
 import {
@@ -335,6 +338,12 @@ import {
 } from "./features/members/pass-reconcile.js";
 import { SCOPED_ROLES, clientScopeFor, unlinkedNotice } from "./features/members/client-scope.js";
 import {
+  clientBreakdown, monthChoices, payrollRows, payrollWeeks,
+} from "./features/schedule/payroll-weeks.js";
+import HandoverSheet from "./features/members/HandoverSheet.jsx";
+import { unsettledBeforeHandover } from "./features/members/instructor-handover.js";
+import { runHandover } from "./data/repositories/handover-repository.js";
+import {
   planRosterPrune, pruneMessage, snapshotId, snapshotPayload,
 } from "./features/members/device-roster-prune.js";
 import {
@@ -405,7 +414,7 @@ const sysDarkNow = () => {
 };
 
 /* 파일이 실제로 교체됐는지 1초 만에 확인하는 표시 — 설정 탭 맨 아래에 뜬다 */
-const APP_VER = "1.1.37 (69) · 2026-10-12";
+const APP_VER = "1.1.38 (70) · 2026-10-16";
 const RELEASE_VERSION = String(import.meta.env.VITE_APP_VERSION || "").trim();
 const RELEASE_BUILD_NUMBER = String(import.meta.env.VITE_BUILD_NUMBER || "").trim();
 const RELEASE_COMMIT_SHORT = String(import.meta.env.VITE_BUILD_COMMIT || "").trim().slice(0, 7);
@@ -2389,6 +2398,14 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
   const [auto, setAuto] = useState(true);
   const [signup, setSignup] = useState(null);
   const [f, setF] = useState({ name: "", email: "", pw: "", center: "", phone: "" });
+  /* 비밀번호 재설정. 보낸 뒤에도 시트를 닫지 않고 같은 자리에서 안내를
+     바꾼다 -- 토스트로만 알리면 메일함을 열었다 돌아왔을 때 그 말이 사라져
+     있고, 사용자는 보냈는지 아닌지부터 다시 묻는다. */
+  const [resetOpen, setResetOpen] = useState(false);
+  const [resetEmail, setResetEmail] = useState("");
+  const [resetBusy, setResetBusy] = useState(false);
+  const [resetDone, setResetDone] = useState(false);
+  const [resetError, setResetError] = useState("");
 
   const [busy, setBusy] = useState("");
   const [diagnosticTaps, setDiagnosticTaps] = useState(0);
@@ -2551,6 +2568,18 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
                   }}>
                   {emailTab === "signup" ? "가입하고 시작하기" : "로그인"}
                 </PrimaryBtn>
+                {/* ── 비밀번호를 잊으셨나요 ─────────────────────────────
+                    로그인 탭에만 둔다. 가입 탭에서는 아직 계정이 없다.
+
+                    **결과를 가르지 않는다.** 가입 여부를 문구로 흘리면 이
+                    화면이 가입 여부 확인기가 된다 -- 아무 이메일이나 넣어
+                    보며 "이 사람이 우리 센터를 쓰는가" 를 셀 수 있다. */}
+                {emailTab !== "signup" ? (
+                  <button type="button" onClick={() => { setResetEmail(f.email); setResetDone(false); setResetOpen(true); }}
+                    className="w-full py-2 text-xs font-bold" style={{ color: BRAND_D }}>
+                    비밀번호를 잊으셨나요?
+                  </button>
+                ) : null}
                 <button onClick={() => setMode("main")} className="w-full py-2 text-xs font-bold" style={{ color: SUB }}>다른 방법으로 로그인</button>
               </div>
             </div>
@@ -2591,6 +2620,67 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
       </div>
 
       {diagnosticsOpen && <AuthDiagnosticsPanel onClose={() => setDiagnosticsOpen(false)} onToast={onToast} />}
+
+      {/* ── 비밀번호 재설정 ───────────────────────────────────────────────
+          **가입 여부를 문구로 가르지 않는다.** 없는 이메일에도 같은 안내가
+          뜬다 -- 가르는 순간 이 화면이 가입 여부 확인기가 되고, 아무 주소나
+          넣어 보며 "이 사람이 우리 센터를 쓰는가" 를 셀 수 있다.
+
+          판정은 fbSendPasswordReset 안에 있고, 여기서는 그 결과를 읽지도
+          않는다. 읽으면 언젠가 그것으로 문구를 가르게 된다. */}
+      {resetOpen && (
+        <Sheet title="비밀번호 재설정" onClose={() => setResetOpen(false)}>
+          <div className="space-y-3">
+            {resetDone ? (
+              <>
+                <div style={{ padding: 12, borderRadius: 10, backgroundColor: CANVAS }}>
+                  <p className="text-xs leading-relaxed" style={{ color: INK2 }}>
+                    가입된 이메일이면 재설정 링크를 보냈어요. 메일이 안 오면 스팸함을 확인하세요.
+                  </p>
+                </div>
+                <p className="text-caption leading-relaxed" style={{ color: SUB }}>
+                  링크는 브라우저에서 열립니다. 새 비밀번호를 정한 뒤 이 화면으로 돌아와 로그인해 주세요.
+                </p>
+                <button type="button" onClick={() => setResetOpen(false)}
+                  className="h-12 w-full text-sm font-bold" style={{ borderRadius: 8, backgroundColor: CANVAS, color: INK2 }}>닫기</button>
+              </>
+            ) : (
+              <>
+                <Sub>가입할 때 쓴 이메일을 적어 주세요. 재설정 링크를 보내 드립니다.</Sub>
+                <Field label="이메일">
+                  <input value={resetEmail} onChange={(e) => setResetEmail(e.target.value)}
+                    placeholder="teacher@studio.com" className={inputCls} />
+                </Field>
+                {resetError ? (
+                  <p role="alert" style={{ fontSize: TYPE.caption, color: BAD }}>{resetError}</p>
+                ) : null}
+                <PrimaryBtn disabled={resetBusy || !resetEmail.trim()} onClick={async () => {
+                  setResetBusy(true);
+                  setResetError("");
+                  try {
+                    await fbSendPasswordReset(resetEmail.trim());
+                    setResetDone(true);
+                  } catch (error) {
+                    /* 여기 오는 것은 가입 여부와 **무관한** 실패뿐이다 --
+                       없는 계정은 저쪽에서 성공으로 접힌다. 네트워크와
+                       과다 요청은 사용자가 할 일이 다르므로 가른다. */
+                    const code = String(error?.code || "");
+                    setResetError(
+                      code === "auth/network-request-failed"
+                        ? "네트워크 연결을 확인한 뒤 다시 시도해 주세요."
+                        : code === "auth/too-many-requests"
+                          ? "요청이 너무 잦습니다. 잠시 뒤에 다시 시도해 주세요."
+                          : `메일을 보내지 못했어요 (코드 ${code || "unknown"})`,
+                    );
+                  } finally {
+                    setResetBusy(false);
+                  }
+                }}>{resetBusy ? "보내는 중…" : "재설정 링크 보내기"}</PrimaryBtn>
+              </>
+            )}
+          </div>
+        </Sheet>
+      )}
 
       {signup && (
         <Sheet title={`${PROVIDER_LABEL[signup.provider]} 계정으로 가입`} onClose={() => setSignup(null)}>
@@ -5333,7 +5423,12 @@ function ReferenceMemberList({
   /* 강사에게는 "전체 보기" 를 주지 않는다. 경계가 아니라 -- 규칙은 지금도
      열려 있다 -- 120명을 일상적으로 스크롤할 이유가 없어서다.
      기본값 true 는 개인 강사(legacy)를 위한 것이다. */
-  canBrowseAll = true, viewerRole = "", viewerLocationId = "", organizationMode = false,
+  canBrowseAll = true, viewerRole = "", viewerLocationId = "",
+  /* FC매니저가 맡은 지점들. **한 칸짜리와 함께 본다** -- 옛 앱이 깔린 폰은
+     아직 locationId 만 쓰고, 새 필드만 보면 그 사람의 지점이 통째로 사라진다
+     (scopedLocationIds). */
+  viewerLocationIds = null,
+  organizationMode = false,
   /* 스모크 하네스가 칩 하나를 바로 여는 자리다. 앱은 언제나 기본값에서
      시작한다 -- initialView 와 같은 방식이다. */
   initialFilter = "",
@@ -5368,21 +5463,32 @@ function ReferenceMemberList({
 
      헬퍼는 locationId 를 보고 로스터 행은 orgLocationId 를 들고 있다 --
      세는 자리에서만 이름을 맞춘다. */
+  const viewerScope = useMemo(
+    () => ({ role: viewerRole, locationId: viewerLocationId, locationIds: viewerLocationIds || [] }),
+    [viewerRole, viewerLocationId, viewerLocationIds],
+  );
   const locationItems = useMemo(
     () => members.map((item) => ({ ...item, locationId: String(item?.orgLocationId || "") })),
     [members],
   );
+  /* 맡은 지점 밖의 회원은 명단에서 뺀다 (2026-10-26 대표 결정). 칩만 줄이고
+     명단을 그대로 두면 "전체" 칩에서 남의 지점 회원이 그대로 나온다.
+
+     **지점이 비어 있는 회원은 남긴다.** 이관 전에 만들어진 회원이 실제로
+     있고, 빼면 그 회원은 어느 화면에서도 안 보인 채 아무도 모른다. */
+  const scopedMembers = useMemo(
+    () => (organizationMode ? itemsVisibleTo(locationItems, viewerScope) : locationItems),
+    [organizationMode, locationItems, viewerScope],
+  );
   /* 강사에게는 자기 지점만 남는다 -- 나머지 칩은 눌러도 빈 목록이고, 그 빈
      화면은 "회원이 없다" 로 읽힌다. */
   const visibleLocations = useMemo(
-    () => (organizationMode
-      ? locationsVisibleTo(locations, { role: viewerRole, locationId: viewerLocationId })
-      : []),
-    [organizationMode, locations, viewerRole, viewerLocationId],
+    () => (organizationMode ? locationsVisibleTo(locations, viewerScope) : []),
+    [organizationMode, locations, viewerScope],
   );
   const locationCounts = useMemo(
-    () => countByLocation(locationItems, visibleLocations),
-    [locationItems, visibleLocations],
+    () => countByLocation(scopedMembers, visibleLocations),
+    [scopedMembers, visibleLocations],
   );
   /* 저장해 둔 칩이 지금 보이는 목록에 없으면 전체로 돌아간다. 기기에 남아
      있던 남의 지점을 그대로 걸면 **자기 회원까지 사라지고**, 고를 칩도 없어서
@@ -5392,7 +5498,10 @@ function ReferenceMemberList({
     if (locationFilter === NO_LOCATION) return locationCounts[NO_LOCATION] > 0 ? NO_LOCATION : ALL_LOCATIONS;
     return visibleLocations.some((item) => item.id === locationFilter) ? locationFilter : ALL_LOCATIONS;
   }, [locationFilter, visibleLocations, locationCounts]);
-  const nonDraftMembers = members.filter((m) => !isDraft(m));
+  /* **scopedMembers 를 쓴다.** members 를 그대로 쓰면 칩만 줄고 "전체" 에서
+     남의 지점 회원이 그대로 나온다. locationId 가 붙어 있는 행이라 아래
+     filterByLocation 과 모양이 같다. */
+  const nonDraftMembers = scopedMembers.filter((m) => !isDraft(m));
   /* Inactive members are their own view rather than an extra row in the normal
      list, so the everyday list stays what it was. Without this they were
      reachable from nowhere at all. */
@@ -5521,8 +5630,18 @@ function ReferenceMemberList({
             읽히고, 그 다음 행동이 바로 다시 등록이다. */}
         {rosterError ? (
           <div className="mb-2 rounded-xl px-3 py-2.5" style={{ backgroundColor: BAD_S, border: `1px solid ${BAD}` }}>
+            {/* 권한과 네트워크를 가른다. 할 일이 다르다 -- 앞은 다시 로그인이고
+                뒤는 기다리는 일이다. 한 문구로 묶으면 둘 다 "다시 시도" 만 누르고
+                끝나고, 권한 쪽은 그것으로 모를 일이 아니다. */}
             <p className="text-xs font-bold" style={{ color: BAD }}>
-              센터 회원을 불러오지 못했습니다 (코드 {rosterError}). 아래는 이 기기에 저장된 목록입니다.
+              {rosterError === "permission-denied"
+                ? "회원권을 불러오지 못했어요. 다시 로그인해 주세요."
+                : `센터 회원을 불러오지 못했습니다 (코드 ${rosterError}).`}
+            </p>
+            <p className="mt-1 text-xs" style={{ color: INK2 }}>
+              {/* 아래 목록이 서버가 아니라는 것을 말해야 한다. 그렇지 않으면
+                  거기 보이는 잔여를 센터의 숫자로 읽는다. */}
+              아래는 이 기기에 저장된 목록이고, 회원권 잔여는 센터의 값이 아닙니다.
             </p>
             {onRetryRoster ? (
               <button type="button" onClick={onRetryRoster} className="mt-2 h-8 px-3 text-xs font-extrabold"
@@ -5837,7 +5956,7 @@ function PassCard({ card, onEdit }) {
   );
 }
 
-function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSettlement = true, organizationMode = false, journey = null, passCards = null, centreLessons = null, viewerRole = "", onBack, onPatch, onSaveNote, onSchedule, onOpenLesson, onAssess, onToast, onDelete, onDeactivate, onReactivate, onHide }) {
+function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSettlement = true, organizationMode = false, journey = null, passCards = null, centrePasses = null, centreLessons = null, viewerRole = "", onHandoverPass, onBack, onPatch, onSaveNote, onSchedule, onOpenLesson, onAssess, onToast, onDelete, onDeactivate, onReactivate, onHide }) {
   /* 강사에게는 뒤 4자리만. 동명이인을 가르는 데는 그것으로 충분하고, 전화를
      거는 일은 센터가 한다 (roster-visibility.js). */
   const phoneShown = (value) => phoneForViewer(value, viewerRole, { full: () => maskedPhone(value) });
@@ -5898,7 +6017,19 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
   const lessonSessions = useMemo(() => selectMemberLessonSessions({ member, schedule }), [member, schedule]);
   const meaningfulLessonSessions = useMemo(() => lessonSessions.filter(isMeaningfulLessonSession), [lessonSessions]);
   const latestLessonSession = meaningfulLessonSessions[0] || null;
-  const detailStatus = useMemo(() => selectMemberDetailStatus({ member, schedule }), [member, schedule]);
+  /* 잔여와 만료는 **센터 회원권이 먼저다.** 기기에도 같은 이름의 값이 있지만
+     (regular · service · contractEnd) 센터 소속에서는 참이 아니다 -- 회차는
+     센터 원장에서 빠지고, 이 기기는 다른 기기에서 일어난 차감을 모른다.
+
+     2026-10-12 에 그 차이가 드러났다. 확정이 규칙에 막혀 원장에 아무것도 안
+     들어갔는데 이 줄은 기기 값으로 "잔여 0회 · 만료" 라고 말하고 있었다.
+
+     미소속 개인 강사에게는 null 이 가고, 그때는 지금까지와 똑같이 기기 값을
+     쓴다 -- 그쪽에는 원장이 없고 기기 값이 유일한 답이다. */
+  const detailStatus = useMemo(
+    () => selectMemberDetailStatus({ member, schedule, passes: centrePasses }),
+    [member, schedule, centrePasses],
+  );
   const pendingLessonSummary = useMemo(() => selectPendingLessonSessions({ members: [member], schedule, pendingDrafts: listPendingLessonRecords().filter((draft) => String(draft?.memberId || "") === String(member.id)) }), [member, schedule, recordQueueRevision]);
   const pendingSessionCount = pendingLessonSummary.countForMember(member.id);
   const pendingByLesson = useMemo(() => new Map(pendingLessonSummary.sessions.map((item) => [String(item.lessonId || item.session?.key || ""), item])), [pendingLessonSummary]);
@@ -6145,7 +6276,21 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
                 {passCards.active.length ? (
                   <div className="space-y-2">
                     {passCards.active.map((card) => (
-                      <Guard key={card.passId} label="회원권 카드" compact><PassCard card={card} /></Guard>
+                      <Guard key={card.passId} label="회원권 카드" compact>
+                        <PassCard card={card} />
+                        {/* 담당 변경. **대표·총괄매니저·FC매니저만** 보인다 --
+                            강사가 자기 회원권을 남에게 넘기거나 남의 것을
+                            가져올 수 있으면 그것은 급여를 옮기는 버튼이다.
+
+                            한 장짜리라 누적은 여기서 함께 옮긴다
+                            (transferPassInstructor 의 carrySessions 기본값). */}
+                        {onHandoverPass ? (
+                          <button type="button" onClick={() => onHandoverPass(card.passId)}
+                            className="mt-1 h-9 w-full font-bold" style={{
+                              borderRadius: 8, backgroundColor: CANVAS, color: INK2, fontSize: TYPE.caption,
+                            }}>담당 변경</button>
+                        ) : null}
+                      </Guard>
                     ))}
                   </div>
                 ) : (
@@ -15304,7 +15449,7 @@ function InstructorPayCard({ pay, loading, error, upcoming = null, onOpen }) {
 
 function InstructorPayDetail({
   organization, currentUserId, pay, loading, error, month, clientStore, passStore,
-  onClose, onRetry, initialState = null,
+  onClose, onRetry, onChangeMonth, initialState = null,
 }) {
   const [passes, setPasses] = useState(initialState?.passes || []);
   const [clients, setClients] = useState(initialState?.clients || []);
@@ -15344,6 +15489,36 @@ function InstructorPayDetail({
   }, [passes, clients]);
   const displayNameOfPass = (passId) => nameOfPass.get(passId) || HANDED_OVER_LABEL;
 
+  /* ── 그 달의 차감 전부를 주 단위로 ───────────────────────────────────────
+     전에는 `최근 차감` 스무 줄이었다. 항목은 최신순이라 스물한 번째부터
+     조용히 사라졌고, 10월 16일에 10월 13일 이전이 안 보였다 -- 그 달의
+     급여를 설명하는 화면에서. */
+  const passById = useCallback(
+    (passId) => passes.find((item) => String(item?.id || "") === String(passId || "")) || null,
+    [passes],
+  );
+  const clientNameById = useCallback(
+    (clientId) => clients.find((item) => String(item?.id || "") === String(clientId || ""))?.name || "",
+    [clients],
+  );
+  const payWeeks = useMemo(() => payrollWeeks({
+    rows: payrollRows({
+      entries: pay?.entries,
+      passOf: passById,
+      clientNameOf: clientNameById,
+      passLabelOf: displayNameOfPass,
+    }),
+    /* 이번 주를 펼친 채로 연다. 지난달을 보고 있으면 그 달에 "이번 주" 가
+       없으므로 전부 접힌 채로 뜬다 -- 그것이 맞다. */
+    now: new Date(),
+  }), [pay?.entries, passById, clientNameById, nameOfPass]);
+  /* 스모크는 주를 전부 펼쳐 둘 수 있어야 한다. 접힌 줄은 아예 그려지지
+     않으므로, 펼치지 않으면 그 화면의 절반을 검사할 수 없다. */
+  const [openWeeks, setOpenWeeks] = useState(() => (
+    initialState?.openWeeks === "all" ? "all" : {}
+  ));
+  const [openRow, setOpenRow] = useState("");
+
   return (
     <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
       {/* 달 이름과 닫기는 **같은 줄**이다. 금액은 그 아래로 내린다 -- 전에는
@@ -15365,6 +15540,24 @@ function InstructorPayDetail({
         <p style={{ paddingBottom: 3, fontSize: TYPE.caption, color: SUB }}>예상 급여</p>
       </div>
       <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>{PAY_SCOPE_NOTICE}</p>
+
+      {/* ── 지난달 보기 ────────────────────────────────────────────────
+          월말 정산은 다음 달에 한다. 이번 달만 보이면 그때 강사는 자기 숫자를
+          확인할 자리가 없고, 대표의 집계만 믿게 된다. */}
+      {onChangeMonth ? (
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {monthChoices(new Date(), 6).map((choice) => {
+            const on = choice === month;
+            return (
+              <button type="button" key={choice} onClick={() => onChangeMonth(choice)}
+                className="h-8 px-2.5 font-bold" style={{
+                  borderRadius: 999, fontSize: TYPE.caption,
+                  backgroundColor: on ? TINT : CANVAS, color: on ? BRAND_D : SUB,
+                }}>{Number(choice.slice(5, 7))}월</button>
+            );
+          })}
+        </div>
+      ) : null}
 
       {loading ? <p className="mt-3" style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : null}
       {!loading && error ? (
@@ -15408,33 +15601,90 @@ function InstructorPayDetail({
 
           {pay?.entries?.length ? (
             <div className="mt-4">
-              <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>최근 차감</p>
-              {pay.entries.slice(0, 20).map((item) => {
-                const at = toDate(item.occurredAt);
+              {/* ── 그 달의 전부를 주 단위로 ──────────────────────────────
+                  전에는 `최근 차감` 스무 줄이었다. 항목은 최신순이라 스물한
+                  번째부터 조용히 사라졌고, 10월 16일에 10월 13일 이전이 안
+                  보였다 -- 그 달의 급여를 설명하는 화면에서.
+
+                  전부 펼쳐 두면 스크롤이 길어 결국 안 읽힌다. 주별 소계로
+                  접고, 이번 주만 열어 둔다. */}
+              <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>차감 내역</p>
+              {payWeeks.map((week) => {
+                const open = openWeeks === "all" ? true : (openWeeks[week.key] ?? week.current);
                 return (
-                  <div key={item.id} style={{ padding: "10px 0", borderTop: `1px solid ${LINE}` }}>
-                    <div className="flex items-center gap-2">
-                      <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
-                        {at.getMonth() + 1}.{at.getDate()}
+                  <div key={week.key} style={{ borderTop: `1px solid ${LINE}` }}>
+                    <button type="button" onClick={() => setOpenWeeks((value) => (
+                      value === "all" ? { [week.key]: false } : { ...value, [week.key]: !open }
+                    ))}
+                      className="flex w-full items-center gap-2" style={{ padding: "10px 0" }}>
+                      <ChevronDown size={14} style={{ color: FAINT, transform: open ? "none" : "rotate(-90deg)" }} />
+                      <span className="min-w-0 flex-1 text-left tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>
+                        {week.start.getMonth() + 1}.{week.start.getDate()} 주
                       </span>
-                      <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.body, color: INK }}>
-                        {displayNameOfPass(item.passId)}
-                      </span>
-                      <span className="shrink-0 truncate" style={{ fontSize: TYPE.caption, color: SUB, maxWidth: 108 }}>
-                        {labelOf(PAY_CATEGORY_LABELS, item.category)}
-                      </span>
-                      <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK }}>
-                        ₩{won(Math.abs(Number(item.delta) || 0) * (Number(item.unitPrice) || 0))}
-                      </span>
-                    </div>
-                    {/* 왜 이 금액인가. 같은 회원권 안에서도 회차마다 답이 달라
-                        금액만 보면 계산이 틀린 것처럼 보인다. 이 필드가 생기기
-                        전 항목에는 없으므로 있을 때만 적는다. */}
-                    {item.rule ? (
-                      <p className="mt-0.5 truncate" style={{ fontSize: TYPE.caption, color: FAINT }}>
-                        {labelOf(PRICING_RULE_LABELS, item.rule)}
-                      </p>
-                    ) : null}
+                      <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>{week.sessions}건</span>
+                      <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>₩{won(week.amount)}</span>
+                    </button>
+                    {open ? week.rows.map((row) => {
+                      const expanded = openRow === row.id;
+                      return (
+                        <div key={row.id} style={{ padding: "0 0 8px 20px" }}>
+                          <button type="button" onClick={() => setOpenRow(expanded ? "" : row.id)}
+                            className="flex w-full items-center gap-2 text-left" style={{ padding: "6px 0" }}>
+                            <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+                              {row.occurredAt ? `${row.occurredAt.getMonth() + 1}.${row.occurredAt.getDate()}` : "날짜 없음"}
+                            </span>
+                            {/* 듀엣은 두 이름이 함께 선다. 원장 항목은 대표
+                                한 명만 들고 있어 전에는 한 이름만 떴다 --
+                                차감은 둘 다 맞았는데 화면만 반쪽이었다. */}
+                            <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.body, color: INK }}>
+                              {row.title}
+                              {row.isDuet ? <span style={{ fontSize: TYPE.caption, color: SUB }}> (2:1)</span> : null}
+                            </span>
+                            <span className="shrink-0 truncate" style={{ fontSize: TYPE.caption, color: SUB, maxWidth: 84 }}>
+                              {labelOf(PAY_CATEGORY_LABELS, row.category)}
+                            </span>
+                            <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK }}>
+                              ₩{won(row.amount)}
+                            </span>
+                          </button>
+                          {/* 왜 이 금액인가. 같은 회원권 안에서도 회차마다
+                              답이 달라 금액만 보면 계산이 틀린 것처럼 보인다.
+                              이 필드가 생기기 전 항목에는 없으므로 있을 때만. */}
+                          {row.rule ? (
+                            <p className="truncate" style={{ paddingLeft: 34, fontSize: TYPE.caption, color: FAINT }}>
+                              {labelOf(PRICING_RULE_LABELS, row.rule)}
+                            </p>
+                          ) : null}
+                          {/* 회원별로 어느 회원권에서 몇 회 빠졌는가. "3회
+                              차감" 만으로는 어느 계약인지 알 수 없고, 분쟁 때
+                              여는 화면이라 그 구분이 곧 근거가 된다. */}
+                          {expanded ? (
+                            <div style={{ marginTop: 4, marginLeft: 34, padding: "8px 10px", borderRadius: 8, backgroundColor: CANVAS }}>
+                              {clientBreakdown({
+                                clientIds: row.clientIds, entries: pay.entries,
+                                passOf: passById, clientNameOf: clientNameById, passLabelOf: displayNameOfPass,
+                              }).map((person) => (
+                                <div key={person.clientId} style={{ padding: "3px 0" }}>
+                                  <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>
+                                    {person.name || "이름을 불러오지 못했습니다"}
+                                  </p>
+                                  {person.passes.map((item) => (
+                                    <p key={item.passId} className="flex gap-2 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+                                      <span className="min-w-0 flex-1 truncate">{item.label || item.passId}</span>
+                                      <span className="shrink-0">{item.sessions}회</span>
+                                      <span className="shrink-0">₩{won(item.amount)}</span>
+                                    </p>
+                                  ))}
+                                </div>
+                              ))}
+                              <p className="mt-1" style={{ fontSize: TYPE.caption, color: FAINT }}>
+                                이번 달 이 회원의 차감 전부입니다 (이 수업 한 건이 아닙니다).
+                              </p>
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    }) : null}
                   </div>
                 );
               })}
@@ -15756,10 +16006,27 @@ function PassIssue({
   organization, currentUserId, clientStore, productStore, instructorStore, locationStore, passStore,
   onRetryOrganization, onToast, now = () => new Date(), initialState = null,
 }) {
-  const [clients, setClients] = useState(initialState?.clients || []);
+  const [allClients, setClients] = useState(initialState?.clients || []);
   const [products, setProducts] = useState(initialState?.products || []);
-  const [instructors, setInstructors] = useState(initialState?.instructors || []);
-  const [locations, setLocations] = useState(initialState?.locations || []);
+  const [allInstructors, setInstructors] = useState(initialState?.instructors || []);
+  const [allLocations, setLocations] = useState(initialState?.locations || []);
+  /* 맡은 지점 밖은 고를 수 없다 (2026-10-26 대표 결정 2·10항). 회원·강사·
+     지점 셋 다 좁힌다 -- 하나라도 넓으면 FC매니저가 남의 지점 회원에게
+     자기 지점 강사를 붙이거나 그 반대가 되고, 그 회원권은 발급한 사람의
+     화면에서 바로 사라진다.
+
+     대표·총괄매니저는 그대로 전부다. 강사·팀장·점장은 이 화면을 열지 못한다. */
+  const issueScope = useMemo(() => ({
+    role: organization?.role || "",
+    locationId: organization?.locationId || "",
+    locationIds: organization?.locationIds || [],
+  }), [organization]);
+  const clients = useMemo(() => itemsVisibleTo(allClients, issueScope), [allClients, issueScope]);
+  const instructors = useMemo(
+    () => itemsVisibleTo(allInstructors, issueScope),
+    [allInstructors, issueScope],
+  );
+  const locations = useMemo(() => locationsVisibleTo(allLocations, issueScope), [allLocations, issueScope]);
   const [loading, setLoading] = useState(!initialState);
   const [loadError, setLoadError] = useState(initialState?.loadError || "");
   const [mode, setMode] = useState(initialState?.mode || "form");
@@ -16553,9 +16820,211 @@ function swapFailure(error) {
   return `옮기지 못했습니다 (코드 ${detail || code}).`;
 }
 
+/**
+ * 퇴사 인계. **그만두는 강사의 회원권을 한 번에 넘긴다.**
+ *
+ * 강사 관리와 따로 둔 이유: 한 강사의 회원권을 전부 옮기는 일이라 직함을
+ * 고치는 일과 무게가 다르고, 되돌리려면 한 장씩 되돌려야 한다.
+ *
+ * 화면은 `HandoverSheet` 하나다 -- 회원 상세의 "담당 변경" 과 같은 것을 쓴다.
+ * 여기가 하는 일은 읽어 오는 것과 실행뿐이다.
+ */
+function InstructorHandoverScreen({
+  organization, currentUserId, instructorStore, rateStore, passStore, clientStore,
+  schedule = [], onToast, onRetryOrganization,
+}) {
+  const organizationId = organization?.organizationId || "";
+  const [instructors, setInstructors] = useState([]);
+  const [clients, setClients] = useState([]);
+  const [passes, setPasses] = useState([]);
+  const [totals, setTotals] = useState([]);
+  const [loadError, setLoadError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [fromId, setFromId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [runError, setRunError] = useState("");
+  const [result, setResult] = useState(null);
+  const [revision, setRevision] = useState(0);
+  const sectionStyle = { backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 };
+
+  useEffect(() => {
+    if (!organizationId) return undefined;
+    let alive = true;
+    setLoading(true);
+    setLoadError("");
+    Promise.all([
+      listInstructors(organizationId, { store: instructorStore }),
+      listClients(organizationId, { store: clientStore }),
+      listPasses(organizationId, { store: passStore }),
+      /* 누적. 인계와 함께 넘어가는 값이라 미리보기가 몇 명분인지 말하려면
+         여기서 읽어야 한다. 못 읽으면 "0명" 이 아니라 못 읽은 것이다. */
+      listInstructorClientTotals(organizationId, { store: passStore }),
+    ]).then(([foundInstructors, foundClients, foundPasses, foundTotals]) => {
+      if (!alive) return;
+      setInstructors(foundInstructors);
+      setClients(foundClients);
+      setPasses(foundPasses);
+      setTotals(foundTotals);
+    }).catch((error) => {
+      if (!alive) return;
+      /* 빈 목록을 보여주지 않는다. "넘길 것이 없다" 로 읽히고, 그 다음 행동이
+         바로 퇴사 처리다 -- 회원권은 그대로 남은 채로. */
+      setLoadError(error?.code || "unknown");
+    }).finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [organizationId, instructorStore, clientStore, passStore, revision]);
+
+  const nameOf = useCallback(
+    (clientId) => clients.find((item) => String(item?.id || "") === String(clientId))?.name || "",
+    [clients],
+  );
+  const sessionsOf = useCallback((clientId) => {
+    const found = totals.find((item) => (
+      String(item?.instructorId || "") === fromId && String(item?.clientId || "") === String(clientId)
+    ));
+    return Number(found?.sessions) || 0;
+  }, [totals, fromId]);
+
+  const from = instructors.find((item) => String(item?.userId || "") === fromId) || null;
+
+  /* 아직 확정하지 않은 수업. **이 기기가 아는 것만이다** -- 확정 여부는 그
+     강사의 폰이 들고 있다. 화면이 그 사실을 말한다. */
+  const unsettled = useMemo(() => (fromId ? unsettledBeforeHandover({
+    schedule, isSettled: (lesson) => Boolean(lesson?.orgSettledAt),
+  }) : []), [schedule, fromId]);
+
+  const run = async ({ plan, revoke }) => {
+    setBusy(true);
+    setRunError("");
+    try {
+      const found = await runHandover(organizationId, {
+        fromInstructorId: fromId,
+        rows: plan.rows,
+        carries: plan.carries,
+        actorId: currentUserId,
+        actorRole: organization?.role || "",
+      }, { store: passStore, passStore });
+
+      /* 넘긴 **뒤에** 퇴사 처리한다. 먼저 내리면 그 소속으로 하는 쓰기가
+         규칙에 막혀 인계가 통째로 실패한다. */
+      if (revoke && found.failed.length === 0) {
+        await setMembershipStatus(organizationId, fromId, {
+          status: MEMBERSHIP_STATUS.REVOKED,
+          changedBy: currentUserId,
+          actorRole: organization?.role || "",
+        }, { store: rateStore });
+      }
+      setResult({ ...found, revoked: revoke && found.failed.length === 0 });
+      setRevision((value) => value + 1);
+      onToast?.({
+        ok: found.failed.length === 0,
+        msg: found.failed.length === 0
+          ? `${found.moved.length}장을 넘겼습니다.`
+          : `${found.moved.length}장을 넘기고 ${found.failed.length}장이 막혔습니다.`,
+      });
+    } catch (error) {
+      setRunError(error?.code || error?.message || "unknown");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (loadError) {
+    return (
+      <section style={sectionStyle}>
+        <p className="text-xs font-bold" style={{ color: BAD }}>센터 자료를 불러오지 못했습니다 (코드 {loadError})</p>
+        <p className="mt-1 text-xs" style={{ color: INK2 }}>
+          목록이 비어 보이는 것과 못 읽은 것은 다릅니다 — 이 상태로는 넘길 것이 없는지 알 수 없습니다.
+        </p>
+        <button type="button" onClick={() => { setRevision((value) => value + 1); onRetryOrganization?.(); }}
+          className="mt-2 h-9 px-3 font-extrabold"
+          style={{ borderRadius: 8, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>다시 시도</button>
+      </section>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      <section style={sectionStyle}>
+        <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>그만두는 강사</h2>
+        <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+          고르면 그 강사가 맡은 회원권이 모두 나옵니다. 잔여가 남아 있고 만료되지 않은 것만입니다 — 끝난 회원권의 지난 수업료는 그대로 그 강사의 급여로 남습니다.
+        </p>
+        {loading ? (
+          <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p>
+        ) : (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {instructors.filter((item) => String(item?.status || "") === "active").map((item) => {
+              const on = String(item.userId) === fromId;
+              return (
+                <button type="button" key={item.userId}
+                  onClick={() => { setFromId(on ? "" : String(item.userId)); setResult(null); }}
+                  className="h-9 px-3 font-bold" style={{
+                    borderRadius: 999, fontSize: TYPE.caption,
+                    backgroundColor: on ? TINT : CANVAS, color: on ? BRAND_D : SUB,
+                  }}>{item.displayName || String(item.userId).slice(0, 6)}</button>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      {fromId ? (
+        <section style={sectionStyle}>
+          {result ? (
+            <div>
+              <p style={{ fontSize: TYPE.body, fontWeight: 600, color: result.failed.length ? WARN : GOOD }}>
+                {result.moved.length}장을 넘겼습니다{result.failed.length ? ` · ${result.failed.length}장이 막혔습니다` : ""}
+              </p>
+              {result.failed.length ? (
+                <div className="mt-2 space-y-1">
+                  {/* 원본 코드를 버리지 않는다. 그것이 없으면 왜 막혔는지 확정할 수 없다. */}
+                  {result.failed.map((row, index) => (
+                    <p key={`${row.passId}-${index}`} className="truncate" style={{ fontSize: TYPE.caption, color: BAD }}>
+                      {row.clientIds?.map(nameOf).filter(Boolean).join(" · ") || row.passId} — 코드 {row.errorCode}
+                    </p>
+                  ))}
+                  <p className="mt-1" style={{ fontSize: TYPE.caption, color: INK2 }}>
+                    막힌 장은 그대로 남아 있습니다. 위에서 그 강사를 다시 골라 남은 것만 넘기면 됩니다.
+                  </p>
+                </div>
+              ) : null}
+              {result.revoked ? (
+                <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>
+                  {from?.displayName || "그 강사"}를 퇴사 처리했습니다. 지난 수업과 급여 기록은 그대로 남아 있습니다.
+                </p>
+              ) : null}
+              <button type="button" onClick={() => setResult(null)} className="mt-3 h-11 w-full font-bold"
+                style={{ borderRadius: 9, backgroundColor: CANVAS, color: INK2, fontSize: TYPE.caption }}>계속</button>
+            </div>
+          ) : (
+            <HandoverSheet
+              passes={passes}
+              instructors={instructors}
+              fromInstructorId={fromId}
+              fromName={from?.displayName || ""}
+              clientNameOf={nameOf}
+              sessionsOf={sessionsOf}
+              unsettled={unsettled}
+              busy={busy}
+              errorCode={runError}
+              offerRevoke
+              onRun={run}
+              onClose={() => setFromId("")}
+            />
+          )}
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
 function InstructorAdmin({
   organization, currentUserId, instructorStore, rateStore, locationStore,
   lookupByEmail = fbLookupCentreMemberByEmail,
+  /* 메일 발송. 주입받는 이유는 스모크가 Auth 를 띄우지 않기 때문이다 --
+     기본값이 진짜 발송이라 실수로 테스트에서 메일이 나가지 않는다. */
+  sendReset = fbSendPasswordReset,
   onRetryOrganization, onToast, onSwap, initialState = null,
 }) {
   const [swap, setSwap] = useState(initialState?.swap || null);
@@ -16566,12 +17035,26 @@ function InstructorAdmin({
   const [mode, setMode] = useState(initialState?.mode || "list");
   const [editing, setEditing] = useState(initialState?.editing || null);
   const [draft, setDraft] = useState(initialState?.draft || {
-    displayName: "", title: MEMBERSHIP_TITLE.INSTRUCTOR, locationId: "", rateManwon: "", deputy: false,
+    displayName: "", title: MEMBERSHIP_TITLE.INSTRUCTOR, locationId: "", locationIds: [],
+    rateManwon: "", deputy: false,
     role: ROLES.INSTRUCTOR,
   });
+  /* FC매니저만 지점을 여럿 갖는다 (2026-10-26 대표 결정). 추가 시트와 수정
+     시트가 같은 draft 를 쓰므로 여기 한 번만 센다 -- 두 곳에서 따로 세면
+     한쪽만 고쳐지는 날이 온다. */
+  const manyLocations = holdsManyLocations(draft.role);
+  /* 저장된 값은 한 칸짜리일 수 있다 (옛 문서). 읽을 때 둘을 합쳐 본다. */
+  const draftLocationIds = scopedLocationIds(draft);
   const [lookup, setLookup] = useState(initialState?.lookup || { email: "", found: null, error: "", busy: false });
   const [formError, setFormError] = useState(initialState?.formError || "");
   const [locationDraft, setLocationDraft] = useState(initialState?.locationDraft || null);
+  /* 비밀번호 재설정. 소속 문서에 이메일이 없어 손으로 받는다 -- 규칙이
+     users/{uid} 를 닫아 두었고(열면 전화번호까지 함께 열린다), 센터가 아는
+     것은 조회 함수로 email → uid 한 방향뿐이다. */
+  const [resetEmail, setResetEmail] = useState(initialState?.resetEmail || "");
+  const [resetBusy, setResetBusy] = useState(false);
+  const [resetSent, setResetSent] = useState(initialState?.resetSent || false);
+  const [resetError, setResetError] = useState(initialState?.resetError || "");
   const [saving, setSaving] = useState(false);
   const organizationId = organization?.organizationId || "";
   const locked = organization?.status === "unknown";
@@ -16603,12 +17086,28 @@ function InstructorAdmin({
     () => new Map(locations.map((location) => [location.id, location.name || ""])),
     [locations],
   );
-  const locationCounts = useMemo(
-    () => countByLocation(members.filter(isActiveMembership), locations),
-    [members, locations],
+  /* 맡은 지점 밖의 강사는 목록에 없다 (2026-10-26 대표 결정 2항). 대표·총괄
+     매니저는 그대로 전부이고 FC매니저만 좁혀진다 -- 강사·팀장·점장은 애초에
+     이 화면을 열지 못한다 (showInstructorAdmin).
+
+     **고를 수 있는 지점 칩도 함께 좁힌다.** 목록만 좁히면 늘 비어 있는 칩이
+     생기고, 그 빈 화면은 "강사가 없다" 로 읽힌다. */
+  const adminScope = useMemo(() => ({
+    role: organization?.role || "",
+    locationId: organization?.locationId || "",
+    locationIds: organization?.locationIds || [],
+  }), [organization]);
+  const scopedLocations = useMemo(
+    () => locationsVisibleTo(locations, adminScope),
+    [locations, adminScope],
   );
-  const [locationFilter, setLocationFilter] = useLocationFilter(locations, locationCounts);
-  const inLocation = filterByLocation(members, locationFilter, locations);
+  const scopedMembers = useMemo(() => itemsVisibleTo(members, adminScope), [members, adminScope]);
+  const locationCounts = useMemo(
+    () => countByLocation(scopedMembers.filter(isActiveMembership), scopedLocations),
+    [scopedMembers, scopedLocations],
+  );
+  const [locationFilter, setLocationFilter] = useLocationFilter(scopedLocations, locationCounts);
+  const inLocation = filterByLocation(scopedMembers, locationFilter, scopedLocations);
   const working = inLocation.filter(isActiveMembership);
   const retired = inLocation.filter((membership) => !isActiveMembership(membership));
 
@@ -16639,7 +17138,7 @@ function InstructorAdmin({
     setMode("list");
     setEditing(null);
     setLookup({ email: "", found: null, error: "", busy: false });
-    setDraft({ displayName: "", title: MEMBERSHIP_TITLE.INSTRUCTOR, locationId: "", rateManwon: "", deputy: false, role: ROLES.INSTRUCTOR });
+    setDraft({ displayName: "", title: MEMBERSHIP_TITLE.INSTRUCTOR, locationId: "", locationIds: [], rateManwon: "", deputy: false, role: ROLES.INSTRUCTOR });
     setFormError("");
   };
 
@@ -16652,10 +17151,18 @@ function InstructorAdmin({
         ? picked.title
         : MEMBERSHIP_TITLE.INSTRUCTOR,
       locationId: picked.locationId || "",
+      /* 저장된 목록을 그대로 싣는다. **역할도 함께 싣는다** -- 이것이 없으면
+         draft.role 이 undefined 라 FC매니저를 수정할 때 칩이 단일 선택으로
+         뜨고, 저장하면 지점 하나만 남는다. */
+      locationIds: scopedLocationIds(picked),
+      role: picked.role || ROLES.INSTRUCTOR,
       rateManwon: rate ? String(rate / WON_PER_MANWON) : "",
       deputy: isDeputyDirectorOf(picked),
     });
     setFormError("");
+    setResetEmail("");
+    setResetSent(false);
+    setResetError("");
     setMode("edit");
   };
 
@@ -16682,6 +17189,11 @@ function InstructorAdmin({
     const userId = String(lookup.found?.userId || "");
     if (!userId) { setFormError("먼저 이메일로 강사를 찾아 주세요."); return; }
     if (!draft.displayName.trim()) { setFormError("이름을 입력해 주세요."); return; }
+    // 추가도 같은 선이다 -- 지점 없이 들어온 FC매니저는 첫 화면이 빈 목록이다.
+    if (manyLocations && draftLocationIds.length === 0) {
+      setFormError("지점을 하나 이상 고르세요. FC매니저는 고른 지점의 회원만 봅니다.");
+      return;
+    }
     setSaving(true);
     try {
       await addMembership(organizationId, {
@@ -16690,6 +17202,7 @@ function InstructorAdmin({
         title: draft.role === ROLES.MANAGER ? MEMBERSHIP_TITLE.INSTRUCTOR : draft.title,
         role: draft.role === ROLES.MANAGER ? ROLES.MANAGER : ROLES.INSTRUCTOR,
         locationId: draft.locationId,
+        ...(manyLocations ? { locationIds: draftLocationIds } : {}),
         createdBy: currentUserId,
         actorRole: organization?.role || "",
       }, { store: rateStore });
@@ -16708,6 +17221,12 @@ function InstructorAdmin({
     setFormError("");
     if (!editing) return;
     if (!draft.displayName.trim()) { setFormError("이름을 입력해 주세요."); return; }
+    /* 0개로 저장하면 그 FC매니저는 어느 회원도 못 본다 -- 화면이 통째로 빈
+       목록이 되고, 그것은 "고장" 과 구별되지 않는다. */
+    if (manyLocations && draftLocationIds.length === 0) {
+      setFormError("지점을 하나 이상 고르세요. FC매니저는 고른 지점의 회원만 봅니다.");
+      return;
+    }
     const wasDeputy = isDeputyDirectorOf(editing);
     const previousRate = fullRoomRateOf(editing);
     const nextRate = draft.deputy || draft.rateManwon === "" ? null : manwonToWon(Number(draft.rateManwon));
@@ -16738,6 +17257,10 @@ function InstructorAdmin({
         displayName: draft.displayName.trim(),
         title: draft.title,
         locationId: draft.locationId,
+        /* FC매니저일 때만 보낸다. 다른 역할에 빈 목록을 쓰면 그 문서에
+           쓸모없는 칸이 하나 생기고, 읽는 쪽(scopedLocationIds)이 그것을
+           "지점 없음" 으로 읽어 한 칸짜리를 덮는다. */
+        ...(manyLocations ? { locationIds: draftLocationIds } : {}),
         changedBy: currentUserId,
         actorRole,
       }, { store: rateStore });
@@ -16771,6 +17294,57 @@ function InstructorAdmin({
       setFormError(`바꾸지 못했어요 (코드 ${error?.code || error?.message || "unknown"})`);
     } finally {
       setSaving(false);
+    }
+  };
+
+  /* ── 비밀번호 재설정 메일 ───────────────────────────────────────────
+     강사가 비밀번호를 잊었을 때 대표가 대신 보낸다. 로그인 화면에도 같은
+     길이 있지만, 그 강사가 메일 주소를 기억 못 하거나 오타를 내는 일이
+     실제로 있다.
+
+     **이메일을 손으로 받는다.** 소속 문서에 주소가 없다 -- 규칙이
+     users/{uid} 를 닫아 두었고(열면 전화번호까지 함께 열린다), 센터가 아는
+     것은 조회 함수로 email → uid 한 방향뿐이다.
+
+     그래서 **보내기 전에 uid 를 맞춰 본다.** 맞춰 보지 않으면 대표가
+     엉뚱한 주소를 적어도 "정예진에게 보냈다" 는 기록만 남는다. */
+  const sendPasswordReset = async () => {
+    if (!editing) return;
+    const address = resetEmail.trim();
+    if (!address) { setResetError("이메일을 입력해 주세요."); return; }
+    setResetError("");
+    setResetBusy(true);
+    try {
+      const found = await lookupByEmail({ organizationId, email: address });
+      const foundUserId = String(found?.userId || "");
+      if (!foundUserId || foundUserId !== String(editing.userId || "")) {
+        /* 주소가 이 강사의 것이 아니다. 여기서 "그 주소는 누구의 것" 까지
+           말하지 않는다 -- 대표 화면이지만 남의 계정을 확인해 주는 자리가
+           될 이유가 없다. */
+        setResetError("이 강사의 계정 이메일이 아닙니다. 주소를 확인해 주세요.");
+        return;
+      }
+      await sendReset(address);
+      /* 보낸 **뒤에** 적는다. 둘을 묶으면 "메일은 갔는데 기록이 없다" 와
+         "기록은 있는데 메일이 안 갔다" 중 하나를 고르는 자리가 생기는데,
+         앞쪽이 덜 나쁘다 -- 뒤쪽은 대표가 보냈다고 믿고 기다리게 한다. */
+      await recordPasswordResetSent(organizationId, {
+        targetId: foundUserId,
+        changedBy: currentUserId,
+        actorRole: organization?.role || "",
+      }, { store: rateStore });
+      setResetSent(true);
+    } catch (error) {
+      const code = String(error?.code || error?.message || "unknown");
+      setResetError(
+        code === "auth/network-request-failed"
+          ? "네트워크 연결을 확인한 뒤 다시 시도해 주세요."
+          : code === "auth/too-many-requests"
+            ? "요청이 너무 잦습니다. 잠시 뒤에 다시 시도해 주세요."
+            : `보내지 못했어요 (코드 ${code})`,
+      );
+    } finally {
+      setResetBusy(false);
     }
   };
 
@@ -16814,22 +17388,52 @@ function InstructorAdmin({
     </section>
   );
 
+  /* ── 지점 ─────────────────────────────────────────────────────────────
+     **FC매니저만 여럿이다** (2026-10-26 대표 결정). 한 사람이 두 지점 이상을
+     맡는 일이 실제로 있고, 그때 한 칸짜리는 둘 중 하나를 버리게 만든다.
+
+     강사·팀장·점장은 그대로 하나다 -- 그 사람들의 동작은 바뀌지 않는다. */
   const locationPicker = (
-    <Field label="지점" hint={locations.length === 0 ? "등록된 지점이 없습니다" : "선택"}>
+    <Field
+      label={manyLocations ? "지점 (여러 곳)" : "지점"}
+      hint={locations.length === 0
+        ? "등록된 지점이 없습니다"
+        : (manyLocations ? "맡은 지점을 모두 고르세요" : "선택")}
+    >
       <div className="flex flex-wrap gap-2">
-        {locations.map((location) => (
-          <button key={location.id} type="button"
-            onClick={() => setDraft((current) => ({
-              ...current,
-              locationId: current.locationId === location.id ? "" : location.id,
-            }))}
-            className="h-9 px-3 font-bold" style={{
-              borderRadius: 999, fontSize: TYPE.caption,
-              backgroundColor: draft.locationId === location.id ? TINT : CANVAS,
-              color: draft.locationId === location.id ? BRAND_D : SUB,
-            }}>{location.name || location.id}</button>
-        ))}
+        {locations.map((location) => {
+          const on = manyLocations
+            ? draftLocationIds.includes(location.id)
+            : draft.locationId === location.id;
+          return (
+            <button key={location.id} type="button"
+              onClick={() => setDraft((current) => {
+                if (!manyLocations) {
+                  return { ...current, locationId: current.locationId === location.id ? "" : location.id };
+                }
+                const held = Array.isArray(current.locationIds) ? current.locationIds : [];
+                const next = held.includes(location.id)
+                  ? held.filter((id) => id !== location.id)
+                  : [...held, location.id];
+                /* 한 칸짜리도 함께 맞춘다. 옛 앱이 깔린 폰은 그것만 읽고,
+                   비워 두면 그 폰에서 이 사람의 지점이 사라진다. */
+                return { ...current, locationIds: next, locationId: next[0] || "" };
+              })}
+              className="h-9 px-3 font-bold" style={{
+                borderRadius: 999, fontSize: TYPE.caption,
+                backgroundColor: on ? TINT : CANVAS,
+                color: on ? BRAND_D : SUB,
+              }}>{location.name || location.id}</button>
+          );
+        })}
       </div>
+      {/* 0개로 저장하면 그 FC매니저는 어느 회원도 못 본다. 저장을 막고
+          이유를 말한다 -- 막기만 하면 왜 안 눌리는지 알 수 없다. */}
+      {manyLocations && draftLocationIds.length === 0 ? (
+        <p role="alert" className="mt-1.5 font-bold" style={{ fontSize: TYPE.caption, color: BAD }}>
+          지점을 하나 이상 고르세요. FC매니저는 고른 지점의 회원만 봅니다.
+        </p>
+      ) : null}
     </Field>
   );
 
@@ -17001,6 +17605,49 @@ function InstructorAdmin({
           </div>
         </form>
 
+        {/* ── 비밀번호 재설정 메일 ───────────────────────────────────────
+            강사가 비밀번호를 잊었을 때 대표가 대신 보낸다. 로그인 화면에도
+            같은 길이 있지만, 그 강사가 주소를 기억 못 하거나 오타를 내는
+            일이 실제로 있다.
+
+            **이메일을 손으로 받는다.** 소속 문서에 주소가 없다 -- 규칙이
+            users/{uid} 를 닫아 두었고(열면 전화번호까지 함께 열린다),
+            센터가 아는 것은 조회 함수로 email → uid 한 방향뿐이다.
+
+            보내기 전에 그 주소가 **이 강사의 것인지** 맞춰 본다. 맞춰 보지
+            않으면 엉뚱한 주소로 보내 놓고 "정예진에게 보냈다" 는 기록만
+            남는다.
+
+            대표·총괄매니저만 이 화면을 연다 (showInstructorAdmin). 그래서
+            여기에 역할 판정을 또 두지 않는다 -- 두 곳에 두면 한쪽만
+            고쳐지는 날이 온다. */}
+        <div className="mt-3" style={{ borderTop: `1px solid ${LINE}`, paddingTop: 12 }}>
+          <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>비밀번호 재설정 메일 보내기</p>
+          {resetSent ? (
+            <p className="mt-1.5 text-xs leading-relaxed" style={{ color: INK2 }}>
+              보냈습니다. 메일이 안 오면 스팸함을 확인하라고 전해 주세요. 링크는 브라우저에서 열리고,
+              새 비밀번호를 정한 뒤 앱에서 다시 로그인하면 됩니다.
+            </p>
+          ) : (
+            <>
+              <p className="mt-1 text-caption leading-relaxed" style={{ color: SUB }}>
+                이 강사의 로그인 이메일을 적어 주세요. 다른 주소면 보내지 않습니다.
+              </p>
+              <div className="mt-2 flex gap-2">
+                <input value={resetEmail} onChange={(event) => { setResetEmail(event.target.value); setResetError(""); }}
+                  placeholder="teacher@studio.com" className={inputCls} style={{ flex: 1 }} />
+                <button type="button" disabled={resetBusy || !resetEmail.trim()} onClick={sendPasswordReset}
+                  className="h-11 shrink-0 px-3 font-bold disabled:opacity-40" style={{
+                    borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption,
+                  }}>{resetBusy ? "보내는 중" : "보내기"}</button>
+              </div>
+              {resetError ? (
+                <p role="alert" className="mt-1.5 font-bold" style={{ fontSize: TYPE.caption, color: BAD }}>{resetError}</p>
+              ) : null}
+            </>
+          )}
+        </div>
+
         {/* 자기 자신은 퇴사시키지 못한다. 대표가 자기 소속을 회수하면 그 센터에
             대표가 없어지고, 되돌릴 문이 아무 데도 없다. */}
         {self ? null : (
@@ -17141,7 +17788,7 @@ function InstructorAdmin({
         </form>
       ) : null}
       {locationDraft?.error ? <p className="mt-1.5" style={{ fontSize: TYPE.caption, color: BAD }}>{locationDraft.error}</p> : null}
-      <LocationFilter locations={locations} counts={locationCounts} value={locationFilter} onChange={setLocationFilter} />
+      <LocationFilter locations={scopedLocations} counts={locationCounts} value={locationFilter} onChange={setLocationFilter} />
       <div className="mt-3">
         {loading ? <p style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : null}
         {!loading && loadError
@@ -17162,7 +17809,7 @@ function InstructorAdmin({
             서면 같은 말이 두 번 나온다. */}
         {!loading && !loadError && (locationFilter === ALL_LOCATIONS ? (
           [
-            ...locations.map((place) => ({ id: place.id, name: place.name || place.id })),
+            ...scopedLocations.map((place) => ({ id: place.id, name: place.name || place.id })),
             { id: NO_LOCATION, name: "지점 없음" },
           ]
             .map((place) => ({
@@ -17929,6 +18576,7 @@ function PassSessionUpSheet({
 function ClientPassRow({
   pass, nameOfInstructor, nameOfClient = () => "", clientId = "", now,
   onCancel, cancellable = false, onTransfer, onAdjust, onExpiry, onSessionUp,
+  onHandover,
 }) {
   const usable = isDeductablePass(pass, now);
   /* 듀엣이면 이 회원권을 둘이 함께 쓴다. 잔여 29회가 두 사람의 29회라는
@@ -17994,6 +18642,16 @@ function ClientPassRow({
               backgroundColor: CANVAS, color: BRAND_D,
             }}>양도(회원 간)</button>
         ) : null}
+        {/* 담당 변경. **양도(회원 간) 와 다른 일이다** -- 저쪽은 회차가 다른
+            회원에게 가고, 이쪽은 같은 회원의 회차가 다른 강사의 급여로
+            간다. 둘을 나란히 두는 이유가 그것이다. */}
+        {onHandover ? (
+          <button type="button" onClick={onHandover}
+            className="shrink-0 px-2.5 font-bold" style={{
+              height: 28, borderRadius: 999, fontSize: TYPE.caption,
+              backgroundColor: CANVAS, color: BRAND_D,
+            }}>담당 변경</button>
+        ) : null}
         {/* 잔여 조정은 대표만, 만료일 변경은 대표와 FC매니저. 강사에게는
             아예 그려지지 않는다 -- 부르는 쪽이 넘겨주지 않는다. 규칙도 같은
             선을 긋고, 여기는 눌러도 거부되는 버튼을 두지 않는 자리다. */}
@@ -18040,6 +18698,9 @@ function ClientPassRow({
 function ClientDetail({
   organization, client, history, loading, error, instructors = [], currentUserId = "", nameOfClient = () => "",
   clients = [], passStore, onClose, onRetry, onChanged, onToast, onChangePhone,
+  /* 담당 변경. 부르는 쪽이 넘겨주지 않으면 그려지지 않는다 -- 권한은 한
+     곳에서만 판단한다 (canHandoverPass). */
+  onHandover,
   now = () => new Date(), initialUndo = null, initialTransfer = null, initialPhoneEdit = false,
   initialPassEdit = null, initialSessionUp = null,
 }) {
@@ -18361,7 +19022,12 @@ function ClientDetail({
                     ? () => { setSessionUp({ pass }); setSessionUpErr(""); } : undefined}
                   onAdjust={canAdjust ? () => { setPassEdit({ kind: "adjust", pass }); setPassEditError(""); } : undefined}
                   onExpiry={canChangeExpiry && pass.expiresAt
-                    ? () => { setPassEdit({ kind: "expiry", pass }); setPassEditError(""); } : undefined} />
+                    ? () => { setPassEdit({ kind: "expiry", pass }); setPassEditError(""); } : undefined}
+                  /* 넘길 수 있는 것만. 끝난 회원권의 지난 수업료는 그대로 전
+                     강사의 급여로 남으므로 넘길 것이 없다 (isHandoverable 과
+                     같은 조건이다 -- 여기서만 느슨하면 눌러도 0장이 뜬다). */
+                  onHandover={onHandover && isDeductablePass(pass, at)
+                    ? () => onHandover(pass) : undefined} />
               ))}
           </div>
 
@@ -18496,11 +19162,31 @@ function ClientDirectory({ organization, currentUserId, clientStore, locationSto
   /* 인원수는 대표에게도 뺀다. 보이는 문제가 아니라 세는 문제이고, 지점 칩의
      숫자가 실제 회원 수여야 한다. */
   const countedClients = useMemo(() => visibleToRole(clients, {}), [clients]);
-  const locationCounts = useMemo(() => countByLocation(countedClients, locations), [countedClients, locations]);
-  const [locationFilter, setLocationFilter] = useLocationFilter(locations, locationCounts);
+  /* 맡은 지점 밖은 보여 주지 않는다 (2026-10-26 대표 결정 2항). 대표·총괄
+     매니저는 그대로 전부이고, FC매니저만 좁혀진다 -- 강사·팀장·점장의
+     동작은 바뀌지 않는다 (BRANCH_SCOPED_ROLES).
+
+     **고를 수 있는 지점도 같이 좁힌다.** 칩만 두고 목록을 좁히면 누를 수
+     있는데 늘 비어 있는 칩이 생기고, 그 빈 화면은 "회원이 없다" 로 읽힌다. */
+  const viewerScope = useMemo(() => ({
+    role: organization?.role || "",
+    locationId: organization?.locationId || "",
+    locationIds: organization?.locationIds || [],
+  }), [organization]);
+  const choosableLocations = useMemo(
+    () => locationsVisibleTo(locations, viewerScope),
+    [locations, viewerScope],
+  );
+  const scopedClients = useMemo(() => itemsVisibleTo(listed, viewerScope), [listed, viewerScope]);
+  const locationCounts = useMemo(
+    () => countByLocation(itemsVisibleTo(countedClients, viewerScope), choosableLocations),
+    [countedClients, viewerScope, choosableLocations],
+  );
+  const [locationFilter, setLocationFilter] = useLocationFilter(choosableLocations, locationCounts);
   const visible = useMemo(
-    () => filterByLocation(listed, locationFilter, locations).filter((client) => clientMatchesSearch(client, search)),
-    [listed, locations, locationFilter, search],
+    () => filterByLocation(scopedClients, locationFilter, choosableLocations)
+      .filter((client) => clientMatchesSearch(client, search)),
+    [scopedClients, choosableLocations, locationFilter, search],
   );
 
   const resetForm = () => {
@@ -18588,8 +19274,12 @@ function ClientDirectory({ organization, currentUserId, clientStore, locationSto
                 : <p style={{ fontSize: TYPE.caption, color: SUB }}>등록된 지점이 없습니다. 센터 정보에서 지점을 먼저 만들어 주세요.</p>
             )
             : (
+              /* 회원은 한 지점에만 속한다 -- 여기는 그대로 하나만 고른다.
+                 바뀌는 것은 **고를 수 있는 목록**이다: FC매니저에게는 자기
+                 지점만 뜬다 (2026-10-26 대표 결정 10항). 남의 지점으로
+                 등록해 두면 그 회원은 등록한 사람 화면에서 바로 사라진다. */
               <div className="flex flex-wrap gap-2">
-                {locations.map((location) => (
+                {choosableLocations.map((location) => (
                   <button key={location.id} type="button" onClick={() => setForm({ ...form, locationId: location.id })}
                     className="h-9 px-3 font-bold" style={{
                       borderRadius: 999, fontSize: TYPE.caption,
@@ -18645,7 +19335,7 @@ function ClientDirectory({ organization, currentUserId, clientStore, locationSto
       <div className="mt-3">
         <input value={search} onChange={(e) => setSearch(e.target.value)} className={inputCls} placeholder="이름 또는 연락처" />
       </div>
-      <LocationFilter locations={locations} counts={locationCounts} value={locationFilter} onChange={setLocationFilter} />
+      <LocationFilter locations={choosableLocations} counts={locationCounts} value={locationFilter} onChange={setLocationFilter} />
       <div className="mt-3">
         {loading ? <p style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : null}
         {!loading && loadError ? <p style={{ fontSize: TYPE.caption, color: BAD }}>{loadError}</p> : null}
@@ -20576,6 +21266,7 @@ const AUDIT_ACTION_LABEL = {
   [AUDIT_ACTION.MEMBER_ADDED]: "강사 추가",
   [AUDIT_ACTION.MEMBER_PROFILE_CHANGED]: "강사 정보 변경",
   [AUDIT_ACTION.MEMBER_REVOKED]: "퇴사 · 복직",
+  [AUDIT_ACTION.PASSWORD_RESET_SENT]: "비밀번호 재설정 메일",
   [AUDIT_ACTION.MEMBER_LINK_CREATED]: "회원 계정 연결",
   [AUDIT_ACTION.MEMBER_LINK_REMOVED]: "회원 계정 연결 해제",
   [AUDIT_ACTION.MEMBER_PHONE_CHANGED]: "연락처 변경",
@@ -20889,8 +21580,21 @@ function ExpiryReportScreen({
     </section>
   );
 
+  /* ── 지점으로 좁힌다 (2026-10-26 대표 결정 2항) ──────────────────────
+     **여기는 강사·팀장·점장도 자기 지점만 본다.** 명부와 다른 선인데, 그
+     화면은 "누구를 챙겨야 하는가" 를 묻는 자리라 남의 지점 회원이 섞이면
+     할 일이 아닌 것이 할 일로 보인다.
+
+     FC매니저는 맡은 지점 전부 (locationIds), 강사·팀장·점장은 자기 한 지점
+     (locationId), 대표·총괄매니저는 전 지점이다 -- scopedLocationIds 가 옛
+     필드와 새 필드를 함께 읽어 그 셋을 한 줄로 가른다. */
+  const expiryScope = {
+    role: organization?.role || "",
+    locationId: organization?.locationId || "",
+    locationIds: organization?.locationIds || [],
+  };
   const rows = state.stage === "ready"
-    ? state.clients.map((client) => ({
+    ? itemsVisibleTo(state.clients, expiryScope, { roles: BRANCH_SCOPED_ROLES }).map((client) => ({
       clientId: client.id,
       name: client.name || "",
       passes: state.passes.filter((item) => passBelongsTo(item, client.id)),
@@ -23117,6 +23821,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
     products: "회원권 상품",
     clients: "회원 관리",
     "instructor-admin": "강사 관리",
+    handover: "퇴사 인계",
     "pass-issue": "회원권 발급",
     migration: "엑셀 이관",
     payroll: "급여 집계",
@@ -23157,6 +23862,9 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
     ] },
     { label: "강사 · 급여", items: [
       ...(showInstructorAdmin ? [{ key: "instructor-admin", title: "강사 관리", description: "강사 추가 · 지점 · 직함 · 풀방금액", Icon: Users }] : []),
+      /* 강사 관리와 따로 둔다. 한 강사의 회원권을 **전부** 옮기는 일이라
+         직함을 고치는 일과 무게가 다르고, 되돌리려면 한 장씩 되돌려야 한다. */
+      ...(showInstructorAdmin ? [{ key: "handover", title: "퇴사 인계", description: "그만두는 강사의 회원권을 한 번에 넘긴다", Icon: UserPlus }] : []),
       /* "월말 정산"만으로는 위의 월간 리포트와 구별되지 않는다. 무엇을 세는지가
          둘의 차이다 -- 이쪽은 회원권 원장, 그쪽은 기기에 저장된 일정이다. */
       ...(showPayroll ? [{ key: "payroll", title: "급여 집계", description: "강사별 수업료 · 원장 기준 월말 정산", Icon: ArrowUpRight }] : []),
@@ -23676,6 +24384,12 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
             clientStore={clientStore} productStore={productStore} instructorStore={instructorStore}
             locationStore={locationStore} passStore={passStore}
             onRetryOrganization={onRetryOrganization} onToast={onToast} />
+        )}
+        {view === "handover" && showInstructorAdmin && (
+          <InstructorHandoverScreen organization={organization} currentUserId={account?.id || ""}
+            instructorStore={instructorStore} rateStore={instructorRateStore} passStore={passStore}
+            clientStore={clientStore} schedule={db.schedule}
+            onToast={onToast} onRetryOrganization={onRetryOrganization} />
         )}
         {view === "instructor-admin" && showInstructorAdmin && (
           <InstructorAdmin organization={organization} currentUserId={account?.id || ""}
@@ -24520,7 +25234,7 @@ export function createAppScreenSmokeCases() {
           { id: "smoke-csv-bare", clientId: "smoke-client-a", remainingCount: 0 },
         ],
       })}
-      onBack={noop} onPatch={asyncNoop} onSaveNote={asyncNoop} onSchedule={noop} onAssess={noop} onToast={noop} onHide={asyncNoop} /> },
+      onBack={noop} onPatch={asyncNoop} onSaveNote={asyncNoop} onSchedule={noop} onAssess={noop} onHandoverPass={noop} onToast={noop} onHide={asyncNoop} /> },
     /* 만료일이 차수와 어긋난 회원. 2차에 잔여가 있는데 1차보다 먼저 만료되면
        그 회차는 쓰이지 못한 채 사라진다 -- 차감이 차수 순이기 때문이다.
        카드가 그 한 줄을 말하는지 본다. */
@@ -24647,6 +25361,34 @@ export function createAppScreenSmokeCases() {
       currentUserId: "smoke-instructor",
       monthReportState: { now: new Date(2026, 8, 22, 9, 0), lastMonthPay: null },
     }) },
+    /* 인계 화면. 한 장짜리와 퇴사 인계가 **같은 컴포넌트**를 쓴다 -- 보여 준
+       목록이 곧 넘어가는 목록이어야 하므로 둘이 갈라지면 안 된다. */
+    { name: "담당 인계", element: (
+      <HandoverSheet
+        passes={smokeReportPasses.map((item) => ({ ...item, instructorId: "u-old" }))}
+        instructors={[
+          { userId: "u-new", displayName: "정예진", locationId: "bansong", status: "active" },
+          { userId: "u-far", displayName: "최센텀", locationId: "centum", status: "active" },
+        ]}
+        fromInstructorId="u-old" fromName="김전임"
+        clientNameOf={(id) => ({ "smoke-client-a": "김하나", "smoke-client-b": "이두리", "smoke-client-c": "박세인" })[id] || ""}
+        sessionsOf={() => 30}
+        initialAssignments={{ "smoke-report-spent": "u-new", "smoke-report-again": "u-new", "smoke-report-low": "u-new", "smoke-report-expiring": "u-new" }}
+        now={new Date(2026, 8, 22)}
+        offerRevoke onRun={noop} onClose={noop} />
+    ) },
+    /* 먼저 확정해야 하는 수업이 있으면 넘기지 못한다. 담당이 바뀐 뒤 확정하면
+       그 회차가 새 강사의 급여로 들어간다. */
+    { name: "담당 인계 · 미확정 수업", element: (
+      <HandoverSheet
+        passes={smokeReportPasses.map((item) => ({ ...item, instructorId: "u-old" }))}
+        instructors={[{ userId: "u-new", displayName: "정예진", locationId: "bansong", status: "active" }]}
+        fromInstructorId="u-old" fromName="김전임"
+        clientNameOf={() => "김하나"} sessionsOf={() => 0}
+        unsettled={[{ id: "l1" }, { id: "l2" }]}
+        now={new Date(2026, 8, 22)}
+        onRun={noop} onClose={noop} />
+    ) },
     { name: "더보기 탭 · 월간 리포트 · 개인 모드", element: settingsTab({ organizationId: "legacy_smoke", role: "owner", status: "active", isLegacy: true }, { initialView: "report" }) },
     /* 센터 정보. 이름은 "센터"지만 세 값 모두 기기에 저장된다 -- 소속 모드에서
        그 사실을 말하지 않으면 대표가 여기서 단가를 고치고 기다리게 된다. */
@@ -24686,6 +25428,10 @@ export function createAppScreenSmokeCases() {
       initialPassEdit: { kind: "expiry", pass: smokeHistoryPasses[0] },
     }) },
     { name: "센터 회원 상세 · 매니저", element: managerClientDetail() },
+    /* 더보기 → 회원 관리로 연 회원 상세다. **회원 탭과 다른 컴포넌트라**
+       1.1.38 에서 이쪽에만 "담당 변경" 이 없었다 -- 대표가 찾지 못했다.
+       두 길에 같은 버튼이 서는지 여기서 고정한다. */
+    { name: "센터 회원 상세 · 담당 변경", element: ownerClientDetail({ onHandover: noop }) },
     { name: "센터 회원 상세 · 세션업", element: ownerClientDetail({
       initialSessionUp: { pass: smokeHistoryPasses[0], sessions: "50", price: "2500000" },
     }) },
@@ -24737,7 +25483,14 @@ export function createAppScreenSmokeCases() {
     }) },
     { name: "이달 예상 급여", element: providerWith(smokeInstructorOrg, (
       <InstructorPayDetail organization={readyOrganizationContext(smokeInstructorOrg)} month="2026-09"
-        pay={smokePay} loading={false} error="" onClose={noop} onRetry={noop}
+        pay={smokePay} loading={false} error="" onClose={noop} onRetry={noop} onChangeMonth={noop}
+        initialState={{ passes: smokePasses, clients: smokeClients, openWeeks: "all" }} />
+    )) },
+    /* 접은 채로. 주별 소계가 보이고 그 안의 줄은 안 그려진다 -- 그것이
+       목록을 접은 이유다 (한 달 치를 펼쳐 두면 결국 안 읽힌다). */
+    { name: "이달 예상 급여 · 주 접힘", element: providerWith(smokeInstructorOrg, (
+      <InstructorPayDetail organization={readyOrganizationContext(smokeInstructorOrg)} month="2026-09"
+        pay={smokePay} loading={false} error="" onClose={noop} onRetry={noop} onChangeMonth={noop}
         initialState={{ passes: smokePasses, clients: smokeClients }} />
     )) },
     { name: "이달 예상 급여 · 빈 달", element: providerWith(smokeInstructorOrg, (
@@ -24821,6 +25574,9 @@ export function createAppScreenSmokeCases() {
     { name: "회원 목록 · 소속 강사", element: <ReferenceMemberList members={smokeRoster} schedule={db.schedule} settings={db.settings} canRegister={false} currentUserId="u1" myMembersDefault onSelect={noop} onAdd={noop} /> },
     { name: "회원 목록 · 소속 강사 · 전체", element: <ReferenceMemberList members={smokeRoster} schedule={db.schedule} settings={db.settings} canRegister={false} currentUserId="zzz" myMembersDefault onSelect={noop} onAdd={noop} /> },
     { name: "회원 목록 · 소속 강사 · 명부 조회 실패", element: <ReferenceMemberList members={db.members} schedule={db.schedule} settings={db.settings} canRegister={false} currentUserId="u1" myMembersDefault rosterError="permission-denied" onRetryRoster={noop} onSelect={noop} onAdd={noop} /> },
+    /* 권한과 네트워크는 할 일이 다르다 -- 앞은 다시 로그인이고 뒤는 기다리는
+       일이다. 한 문구로 묶으면 둘 다 "다시 시도" 만 누르고 끝난다. */
+    { name: "회원 목록 · 소속 강사 · 명부 조회 실패 · 네트워크", element: <ReferenceMemberList members={db.members} schedule={db.schedule} settings={db.settings} canRegister={false} currentUserId="u1" myMembersDefault rosterError="unavailable" onRetryRoster={noop} onSelect={noop} onAdd={noop} /> },
     { name: "회원 목록 · 강사 · 비어 있음", element: <ReferenceMemberList members={[]} schedule={[]} settings={db.settings} canRegister={false} onSelect={noop} onAdd={noop} /> },
     { name: "회원권 발급", element: passIssue(smokeOwner, { ...smokeIssueBase }) },
     /* 듀엣. 회원을 고른 뒤에 토글이 뜨고, 켜면 짝 칸이 생긴다. */
@@ -24908,6 +25664,50 @@ export function createAppScreenSmokeCases() {
       members: smokeInstructors, locations: smokeLocations,
       mode: "edit",
       editing: { ...smokeInstructors[0], appVersion: "1.1.33", appBuild: "65" },
+      draft: {
+        displayName: "정예진", title: "team_lead", locationId: "bansong",
+        rateManwon: "4.5", deputy: false, role: "instructor",
+      },
+    }) },
+    /* ── FC매니저의 지점 칩 ──────────────────────────────────────────
+       **여럿 고를 수 있는 것은 이 역할뿐이다** (2026-10-26 대표 결정).
+       강사·팀장·점장은 그대로 하나이고, 그 사실도 함께 본다. */
+    { name: "강사 관리 · FC매니저 지점 여럿", element: instructorAdmin(smokeOwner, {
+      members: smokeInstructors, locations: smokeLocations,
+      mode: "edit",
+      editing: { ...smokeInstructors[0], role: "manager" },
+      draft: {
+        displayName: "정예진", title: "instructor",
+        locationId: "bansong", locationIds: ["bansong", "centum"],
+        rateManwon: "4.5", deputy: false, role: "manager",
+      },
+    }) },
+    /* 0개로 저장하면 그 FC매니저는 어느 회원도 못 본다. 막기만 하면 왜 안
+       눌리는지 알 수 없으므로 이유를 함께 띄운다. */
+    { name: "강사 관리 · FC매니저 지점 0개", element: instructorAdmin(smokeOwner, {
+      members: smokeInstructors, locations: smokeLocations,
+      mode: "edit",
+      editing: { ...smokeInstructors[0], role: "manager" },
+      draft: {
+        displayName: "정예진", title: "instructor",
+        locationId: "", locationIds: [],
+        rateManwon: "4.5", deputy: false, role: "manager",
+      },
+    }) },
+    /* ── 비밀번호 재설정 메일 ───────────────────────────────────────
+       강사가 주소를 기억 못 하거나 오타를 내는 일이 실제로 있어 대표가
+       대신 보낸다. 보내기 전에 그 주소가 이 강사의 것인지 맞춰 본다. */
+    { name: "강사 관리 · 비밀번호 재설정", element: instructorAdmin(smokeOwner, {
+      members: smokeInstructors, locations: smokeLocations,
+      mode: "edit", editing: smokeInstructors[0],
+      draft: {
+        displayName: "정예진", title: "team_lead", locationId: "bansong",
+        rateManwon: "4.5", deputy: false, role: "instructor",
+      },
+    }) },
+    { name: "강사 관리 · 비밀번호 재설정 보냄", element: instructorAdmin(smokeOwner, {
+      members: smokeInstructors, locations: smokeLocations,
+      mode: "edit", editing: smokeInstructors[0], resetSent: true,
       draft: {
         displayName: "정예진", title: "team_lead", locationId: "bansong",
         rateManwon: "4.5", deputy: false, role: "instructor",
@@ -25393,7 +26193,10 @@ export default function App() {
   const canSeeOwnPay = organizationContext.ready
     && !organizationContext.isLegacy
     && organizationContext.role === ROLES.INSTRUCTOR;
-  const payMonth = monthKey(todayISO());
+  /* 보고 있는 달. 기본은 이번 달이고, 급여 시트에서 지난달로 바꿀 수 있다 --
+     월말 정산은 다음 달에 하므로 그때 강사가 자기 숫자를 확인할 자리가
+     있어야 한다. */
+  const [payMonth, setPayMonth] = useState(() => monthKey(todayISO()));
   const [db, setDb] = useState(emptyDb("", ""));
   const lessonRecordDbRef = useRef(db);
   useEffect(() => { lessonRecordDbRef.current = db; }, [db]);
@@ -25410,6 +26213,20 @@ export default function App() {
   const organizationRoster = organizationContext.ready
     && !organizationContext.isLegacy
     && Boolean(organizationContext.organizationId);
+
+  /* 담당 변경을 누를 수 있는 사람. **대표·총괄매니저·FC매니저**다 -- 강사가
+     자기 회원권을 남에게 넘기거나 남의 것을 가져올 수 있으면 그것은 급여를
+     옮기는 버튼이다. 규칙도 같은 선을 긋는다 (passes update 의 manager 갈래). */
+  const canHandoverPass = organizationRoster
+    && (isOwnerLevelRole(organizationContext.role) || organizationContext.role === "manager");
+  /* 한 장짜리 인계. **id 가 아니라 회원권 자체를 들고 있는다.**
+     id 만 들고 rosterPasses 에서 되찾으면, 그 목록에 없는 회원권은 시트가
+     "넘길 회원권이 없습니다" 로 뜬다 -- 더보기 → 회원 관리는 명부 밖의
+     회원도 열 수 있어서 그 길로 연 회원권이 전부 그렇게 끝난다. */
+  const [handoverPass, setHandoverPass] = useState(null);
+  const [handoverBusy, setHandoverBusy] = useState(false);
+  const [handoverError, setHandoverError] = useState("");
+
   const [rosterClients, setRosterClients] = useState([]);
   const [rosterPasses, setRosterPasses] = useState([]);
   const [rosterError, setRosterError] = useState("");
@@ -25423,6 +26240,10 @@ export default function App() {
      읽을 때 누가 썼는지 모르면 대표는 그 말을 센터의 말로 읽는다. */
   const [rosterInstructors, setRosterInstructors] = useState([]);
   const [rosterRevision, setRosterRevision] = useState(0);
+  /* 토큰을 새로 받아 다시 해 본 적이 있는가. **효과 밖에 둔다** -- 안에 두면
+     재시도가 효과를 다시 돌리면서 값이 false 로 돌아가고, 권한이 정말 없는
+     사람에게 무한 반복이 된다. */
+  const rosterAuthRetried = useRef(false);
 
   useEffect(() => {
     if (!organizationRoster) { setRosterClients([]); setRosterPasses([]); setRosterTotals([]); setRosterProducts([]); setRosterLocations([]); setRosterInstructors([]); setRosterError(""); return undefined; }
@@ -25459,12 +26280,36 @@ export default function App() {
       setRosterLocations(locationResult.items);
       setRosterInstructors(instructorResult.items);
       setRosterError("");
-    }).catch((error) => {
+    }).catch(async (error) => {
       if (!alive) return;
+      const code = error?.code || "unknown";
+      /* ── permission-denied 는 한 번만 다시 해 본다 (2026-10-16) ──────────
+         소속이 방금 만들어졌거나 역할이 바뀌면 손에 든 토큰은 그 전의 것이고,
+         규칙은 그것을 거부한다. 화면에는 "회원권 없음" 으로 보이는데 앱을
+         껐다 켜면 멀쩡해진다 -- 그 사이에 토큰이 바뀌기 때문이다.
+
+         **한 번뿐이다.** 진짜로 권한이 없는 사람에게 무한히 다시 하면 그만큼
+         요청만 나가고 화면은 영영 "불러오는 중" 이다. 두 번째도 막히면 그때는
+         사람이 할 일이 있다 (다시 로그인).
+
+         다른 코드는 다시 하지 않는다 -- unavailable 은 네트워크가 돌아와야
+         하는 일이고, 토큰을 갈아도 달라지지 않는다. */
+      if (code === "permission-denied" && !rosterAuthRetried.current) {
+        rosterAuthRetried.current = true;
+        const refreshed = await fbRefreshIdToken();
+        if (!alive) return;
+        if (refreshed) {
+          deviceLog("roster_read_retry_after_token_refresh", {
+            feature: "centre_roster", stage: "retry", errorDomain: "firestore", errorCode: code,
+          });
+          setRosterRevision((value) => value + 1);
+          return;
+        }
+      }
       /* 못 읽었으면 빈 목록을 보여주지 않는다. 빈 목록은 "센터에 회원이 없다"로
          읽히고, 그 다음 행동이 바로 다시 등록이다. 기기 저장 목록을 그대로 두고
          읽지 못한 사실만 말한다. */
-      setRosterError(error?.code || "unknown");
+      setRosterError(code);
     });
     return () => { alive = false; };
   }, [organizationRoster, organizationContext.organizationId, rosterRevision]);
@@ -25692,6 +26537,28 @@ export default function App() {
     ),
     [passCardsForClient, rosterMembers],
   );
+
+  /* 회원 상세 맨 위 한 줄이 쓰는 날것의 회원권 목록. 카드(passCardsFor)는
+     이름과 "다음 차감" 까지 붙여 놓은 것이라 합계를 내기에는 가공이 많다.
+
+     **미소속이면 null 이다** -- 그 화면은 기기 값을 그대로 써야 한다.
+     빈 배열로 주면 "쓸 수 있는 회원권이 하나도 없다" 가 되어 잔여가 0 으로
+     보인다. */
+  const centrePassesFor = useCallback((memberId) => {
+    if (!organizationRoster) return null;
+    /* **못 읽었으면 "없다" 가 아니라 "모른다" 다** (2026-10-16). rosterPasses
+       는 조회가 실패해도 빈 배열이라, 그대로 넘기면 화면이 "잔여 0회" 를
+       말한다 -- 회원권이 멀가히 있는 사람에게 그 줄이 뜼면 강사는 재등록을
+       권하고, 회원은 자기가 산 회차가 사라졌다고 듣는다. */
+    if (rosterError) return null;
+    const target = String(
+      rosterMembers.find((item) => String(item?.id || "") === String(memberId || ""))?.orgClientId || "",
+    );
+    /* 아직 센터 명부에 맞물리지 않은 회원. 회원권이 없는 것이 아니라 어느
+       것이 그 사람의 것인지 모르는 것이라, 기기 값으로 돌아간다. */
+    if (!target) return null;
+    return rosterPasses.filter((item) => passBelongsTo(item, target));
+  }, [organizationRoster, rosterError, rosterMembers, rosterPasses]);
 
   /* 화면은 회원 id 로 부르고, 회원권은 조직 clientId 로 붙어 있다. 맞물린 회원은
      둘이 다르므로(roster-bridge) 여기서 바꿔 읽지 않으면 모든 줄이 빈다. */
@@ -28760,14 +29627,18 @@ export default function App() {
           <Guard key={tab}>
             {tab === "schedule" && <ScheduleManager db={rosterDb} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onCareGrade={setCareGrade} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterMembers ? () => { setMemberRegistrationRequest((value) => value + 1); setTab("members"); } : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} careOptionsOf={careOptionsFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && isOwnerLevelRole(organizationContext.role)} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} upcoming={upcomingPay} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
             {tab === "members" && <div className={`h-full min-h-0 ${mobileView === "detail" && member ? "pt-member-detail-active" : ""}`}>
-              <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList passSummaryOf={passSummaryFor} locations={rosterLocations} members={rosterMembers} schedule={db.schedule} settings={db.settings} organizationMode={organizationRoster} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} canBrowseAll={!organizationRoster || canBrowseAllClients(organizationContext.role)} viewerRole={organizationContext.role} viewerLocationId={organizationContext.locationId || ""} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterMembers} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} journeyOf={organizationRoster ? journeyFor : undefined} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
+              <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList passSummaryOf={passSummaryFor} locations={rosterLocations} members={rosterMembers} schedule={db.schedule} settings={db.settings} organizationMode={organizationRoster} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} canBrowseAll={!organizationRoster || canBrowseAllClients(organizationContext.role)} viewerRole={organizationContext.role} viewerLocationId={organizationContext.locationId || ""} viewerLocationIds={organizationContext.locationIds || []} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterMembers} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} journeyOf={organizationRoster ? journeyFor : undefined} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
               {mobileView === "detail" && member && <div className="pt-member-detail-pane h-full min-h-0">
                 <ReferenceMemberDetail key={member.id} member={member} schedule={db.schedule} photos={photos[member.id]} settings={db.settings} viewerRole={organizationRoster ? organizationContext.role : ""}
                   canViewSettlement={!account?.role || ["owner", "manager", "admin", "director"].includes(String(account.role).toLowerCase())} onBack={() => setMobileView("list")}
                   onPatch={(change) => patch(member.id, change)} onSaveNote={(type, body, voiceMeta, noteOptions) => saveScheduleComment(member.id, type, null, body, voiceMeta, noteOptions)}
                   onSchedule={() => { setScheduleMemberId(member.id); setTab("schedule"); }} onOpenLesson={(lessonId) => { setScheduleOpenLessonId(lessonId); setTab("schedule"); }} onAssess={(entry = {}) => { setAnalysisRecordId(entry.poseId || null); setAnalysisAssessmentId(entry.assessmentId || null); setAnalysisEntryMode(entry.mode || "home"); setAnalysisComparisonEntry(entry.beforeAssessmentId && entry.afterAssessmentId ? { beforeAssessmentId: entry.beforeAssessmentId, afterAssessmentId: entry.afterAssessmentId, compareView: entry.compareView || "front" } : null); setAnalysisMemberId(member.id); setTab("analysis"); }} onToast={setToast} onDelete={removeMember} onDeactivate={deactivateMember} onReactivate={reactivateMember}
                   organizationMode={organizationRoster && isRosterMember(member)} onHide={hideRosterMember}
-                  journey={journeyFor(member.id)} passCards={passCardsFor(member.id)}
+                  journey={journeyFor(member.id)} passCards={passCardsFor(member.id)} centrePasses={centrePassesFor(member.id)}
+                  onHandoverPass={canHandoverPass ? (passId) => {
+                    setHandoverError("");
+                    setHandoverPass(rosterPasses.find((item) => String(item?.id || "") === String(passId)) || null);
+                  } : undefined}
                   centreLessons={centreLessonsFor} />
               </div>}
             </div>}
@@ -28798,6 +29669,65 @@ export default function App() {
         </div>
         {/* 출석 체크는 일정 탭 위에 시트로 뜬다. 탭 구조를 건드리지 않으면서
             수업이 끝난 자리에서 바로 열리게 하기 위해서다. */}
+        {/* ── 한 장짜리 담당 변경 ──────────────────────────────────────
+            퇴사 인계와 **같은 화면**을 쓴다. 서버에서 일어나는 일이 같으므로
+            둘을 따로 그리면 한쪽만 고쳐지는 날이 오고, 그날 대표가 보는
+            숫자와 실제로 넘어가는 것이 갈라진다. */}
+        {handoverPass ? (
+          <div className="absolute inset-0 z-50 overflow-y-auto" style={{ backgroundColor: PAGE }}>
+            <div className="mx-auto w-full max-w-md p-3" style={{ paddingTop: "max(env(safe-area-inset-top, 0px), 12px)" }}>
+              <h2 className="mb-2" style={{ fontSize: TYPE.title, fontWeight: 600, color: INK }}>담당 변경</h2>
+              <HandoverSheet
+                passes={[handoverPass]}
+                instructors={rosterInstructors}
+                fromInstructorId={String(handoverPass?.instructorId || "")}
+                fromName={String(rosterInstructors.find(
+                  (item) => String(item?.userId || "") === String(handoverPass?.instructorId || ""),
+                )?.displayName || "")}
+                /* 명부 밖의 회원이면 이름이 없다. 더보기에서 연 회원이 그렇다 --
+                   그때는 그 화면이 들고 있던 이름을 쓴다. */
+                clientNameOf={(clientId) => rosterClients.find(
+                  (item) => String(item?.id || "") === String(clientId),
+                )?.name
+                  || (String(detailClient?.id || "") === String(clientId) ? String(detailClient?.name || "") : "")
+                  || ""}
+                /* 한 장짜리는 누적을 transferPassInstructor 가 함께 옮긴다.
+                   여기서 또 세면 두 배가 되므로 0 으로 둔다 -- 미리보기의
+                   "누적도 함께" 줄만 빠지고, 실제로는 옮겨진다. */
+                sessionsOf={() => 0}
+                busy={handoverBusy}
+                errorCode={handoverError}
+                onClose={() => setHandoverPass(null)}
+                onRun={async ({ plan }) => {
+                  const row = plan.ready[0];
+                  if (!row) return;
+                  setHandoverBusy(true);
+                  setHandoverError("");
+                  try {
+                    await transferPassInstructor(organizationContext.organizationId, String(handoverPass?.id || ""), {
+                      clientId: row.clientIds[0],
+                      clientIds: row.clientIds,
+                      fromInstructorId: String(handoverPass?.instructorId || ""),
+                      toInstructorId: row.toInstructorId,
+                      locationId: row.locationId,
+                      createdBy: account?.id || "",
+                    });
+                    setHandoverPass(null);
+                    setRosterRevision((value) => value + 1);
+                    /* 더보기에서 연 회원이면 그 화면도 다시 읽어야 한다 --
+                       안 그러면 방금 바꾼 담당이 옛 이름 그대로 남는다. */
+                    setHistoryRevision((value) => value + 1);
+                    setToast({ ok: true, msg: "담당을 바꿨습니다." });
+                  } catch (error) {
+                    setHandoverError(error?.code || error?.message || "unknown");
+                  } finally {
+                    setHandoverBusy(false);
+                  }
+                }}
+              />
+            </div>
+          </div>
+        ) : null}
         {detailClient ? (
           <div className="absolute inset-0 z-50 overflow-y-auto" style={{ backgroundColor: PAGE }}>
             {/* 상태바 아래로 내린다. 전면 오버레이는 화면 꼭대기에서 시작하므로
@@ -28817,6 +29747,10 @@ export default function App() {
                 /* 규칙이 clients.phone 을 잠그고 있어 이 통로가 유일한 문이다. */
                 onChangePhone={fbUpdateClientPhone}
                 onChanged={() => setHistoryRevision((value) => value + 1)}
+                /* 회원 탭의 "담당 변경" 과 **같은 시트**를 연다. 더보기로 연
+                   회원 상세에만 이 버튼이 없어서 대표가 찾지 못했다 (1.1.38).
+                   두 화면이 다른 컴포넌트라 한쪽만 고쳐져 있었다. */
+                onHandover={canHandoverPass ? (pass) => { setHandoverError(""); setHandoverPass(pass); } : undefined}
                 onRetry={() => setHistoryRevision((value) => value + 1)}
                 onClose={() => { setDetailClient(null); setClientHistory(null); setHistoryError(""); }} />
             </div>
@@ -28832,6 +29766,7 @@ export default function App() {
                 loading={payLoading} error={payError} month={payMonth}
                 clientStore={undefined} passStore={undefined}
                 onRetry={() => setPayRevision((value) => value + 1)}
+                onChangeMonth={setPayMonth}
                 onClose={() => setPayOpen(false)} />
             </div>
           </div>

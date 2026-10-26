@@ -64,6 +64,16 @@ export const AUDIT_ACTION = Object.freeze({
   MEMBER_ADDED: "member_added",
   MEMBER_PROFILE_CHANGED: "member_profile_changed",
   MEMBER_REVOKED: "member_revoked",
+  /* 대표가 그 강사 대신 비밀번호 재설정 메일을 보냈다.
+     **이메일 주소는 적지 않는다.** 이 컬렉션에 그 칸이 없고, 열 생각도
+     없다 -- 누구에게 보냈는지는 targetId(uid) 가 말하고, 주소 자체는
+     로그에 남길 이유가 없다 (CLAUDE.md §7).
+
+     위 "이메일 조회는 여기 없다" 와 다른 판단인 이유: 조회는 대표가
+     아무 주소나 넣어 보는 일이라 성공만 적으면 기록이 거짓이 되지만,
+     이쪽은 **센터 강사 한 명을 골라서** 하는 일이고 그 사람의 로그인을
+     건드린다. 누가 언제 했는지가 남아야 한다. */
+  PASSWORD_RESET_SENT: "password_reset_sent",
   /* 회원 계정 연결. 이 둘은 앱이 쓰지 않는다 -- 서버(연결 함수)만 쓰고, 앱은
      감사 화면에서 읽기만 한다. 규칙의 auditActions() 에도 넣지 않았다:
      Admin SDK 는 규칙을 지나지 않고, 열어 두면 클라이언트가 지어낼 수 있는
@@ -89,6 +99,30 @@ export const AUDIT_ACTION = Object.freeze({
      두 방향을 담는 것과 같은 모양이다.
      Keep in sync with auditActions() in firestore.foundation.rules. */
   AREA_MANAGER_SET: "area_manager_set",
+  /* 누적 보정. 급여 판정 3 이 보는 숫자를 손으로 고치는 일이라, **무엇을
+     얼마에서 얼마로 바꿨고 왜 바꿨는지** 가 남아야 한다 -- 그 숫자 하나가
+     그 회원의 남은 수업 단가를 전부 정한다.
+
+     previousAmount → amount 가 전후이고, reason 이 왜다. 셋 다 필수다
+     (recordTotalAdjustment).
+     Keep in sync with auditActions() in firestore.foundation.rules. */
+  INSTRUCTOR_TOTAL_ADJUSTED: "instructor_total_adjusted",
+});
+
+/**
+ * 누적을 왜 고쳤는가. **열거값이다.**
+ *
+ * 자유 문장을 두지 않는 이유는 AUDIT_FIELDS 머리말과 같다 -- 열어 두면 언젠가
+ * 거기에 회원 이름이 들어간다. 세 가지면 지금 일어나는 일이 다 덮이고, 늘어날
+ * 때는 여기와 규칙을 함께 고친다.
+ */
+export const TOTAL_ADJUST_REASON = Object.freeze({
+  /** 서비스 회차가 누적에 섞여 있었다 (2026-10-13 이전 차감). */
+  SERVICE_SESSIONS_REMOVED: "service_sessions_removed",
+  /** 이관이 행마다 덮어써서 여러 장의 합이 아니라 마지막 한 장만 남았다. */
+  MIGRATION_OVERWRITE: "migration_overwrite",
+  /** 그 밖에 대표가 강사·회원에게 확인해 바로잡은 것. */
+  MANUAL_CORRECTION: "manual_correction",
 });
 
 /**
@@ -103,6 +137,9 @@ export const AUDIT_FIELDS = Object.freeze([
   "amount", "previousAmount", "succeeded", "failed", "enabled", "stage",
   // 직함. 열거값이라 자유 문장이 아니고, "무엇으로 불리게 됐나"를 남긴다.
   "title",
+  /* 누적을 왜 고쳤는가. **열거값이다** (TOTAL_ADJUST_REASON) -- 자유 문장이
+     아니다. 여기에 문장 칸을 하나 열면 언젠가 거기에 회원 이름이 들어간다. */
+  "reason",
 ]);
 
 const requiredText = (value, label) => {
@@ -130,6 +167,7 @@ const requiredInt = (value, label) => {
  *   locationId?: string, targetId?: string, clientId?: string,
  *   amount?: number | null, previousAmount?: number | null,
  *   succeeded?: number, failed?: number, enabled?: boolean, stage?: string, title?: string,
+ *   reason?: string,
  * }} input
  */
 export function auditEntry(organizationId, input = {}) {
@@ -160,6 +198,7 @@ export function auditEntry(organizationId, input = {}) {
   optionalText("clientId");
   optionalText("stage");
   optionalText("title");
+  optionalText("reason");
 
   for (const field of ["amount", "previousAmount", "succeeded", "failed"]) {
     const value = input?.[field];
@@ -258,6 +297,47 @@ export async function recordMigrationUpload(organizationId, input, options = {})
   const logId = auditLogId(entry.action, entry.stage, String(Date.now()));
   await store.commit([{ path: paths.auditLog(logId), data: entry }]);
   return { logId, entry };
+}
+
+/**
+ * 누적 보정 한 건의 감사 항목.
+ *
+ * **전·후·사유가 전부 필수다.** 하나라도 빠지면 반년 뒤 그 줄을 보는 사람은
+ * "이 숫자가 왜 이렇게 됐나" 에 답할 수 없고, 누적은 급여 판정 3 이 보는 값이라
+ * 그 질문이 곧 급여 분쟁이 된다.
+ *
+ * 사유는 열거값이다 (TOTAL_ADJUST_REASON). 자유 문장을 받지 않는다.
+ *
+ * @param {string} organizationId
+ * @param {{
+ *   actorId?: string, actorRole?: string, instructorId?: string, clientId?: string,
+ *   previousSessions?: number, sessions?: number, reason?: string, stampedAt?: any,
+ * }} input
+ */
+export function totalAdjustmentEntry(organizationId, input = {}) {
+  const reason = requiredText(input?.reason, "reason");
+  if (!(/** @type {Array<string>} */ (Object.values(TOTAL_ADJUST_REASON))).includes(reason)) {
+    throw new Error("Invalid reason");
+  }
+  /* 바꾸지 않는 보정은 기록하지 않는다. 같은 값을 적은 줄이 쌓이면 목록이
+     길어지고, 그 목록의 값어치는 "무엇이 바뀌었나" 하나뿐이다. */
+  const previousAmount = requiredInt(input?.previousSessions, "previousSessions");
+  const amount = requiredInt(input?.sessions, "sessions");
+  if (previousAmount === amount) throw new Error("Invalid sessions");
+
+  return auditEntry(organizationId, {
+    action: AUDIT_ACTION.INSTRUCTOR_TOTAL_ADJUSTED,
+    actorId: input?.actorId,
+    actorRole: input?.actorRole,
+    /* 누구의 누적인가. targetId 가 강사이고 clientId 가 회원이다 -- 누적은
+       그 쌍의 값이라 한쪽만으로는 어느 문서인지 가리키지 못한다. */
+    targetId: requiredText(input?.instructorId, "instructorId"),
+    clientId: requiredText(input?.clientId, "clientId"),
+    previousAmount,
+    amount,
+    reason,
+    stampedAt: input?.stampedAt,
+  });
 }
 
 /* ── 이상한 것만 보는 목록 ───────────────────────────────────────────────

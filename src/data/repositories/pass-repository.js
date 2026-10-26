@@ -366,8 +366,22 @@ export async function issuePass(organizationId, input, options = {}) {
  *
  * @param {string} organizationId
  * @param {string} passId
- * @param {{ clientId: string, fromInstructorId: string, toInstructorId: string, locationId: string, createdBy: string, entryId?: string }} input
+ * @param {{
+ *   clientId: string, fromInstructorId: string, toInstructorId: string,
+ *   locationId: string, createdBy: string, entryId?: string,
+ *   clientIds?: Array<string>,
+ * }} input
+ *   clientIds 듀엣이면 두 사람 모두
  * @param {{ store?: PassStore, newId?: () => string }} [options]
+ *
+ * ── 누적은 따라가지 않는다 (2026-10-23 대표 결정) ──
+ * **새 강사의 누적은 새 강사가 실제로 한 수업만 센다.** 전 강사의 누적을
+ * 더하면 새 강사는 한 번도 보지 않은 회원을 "이미 20회 넘긴 회원" 으로
+ * 물려받고, 첫 수업부터 기준 단가가 된다.
+ *
+ * 회원권 자체는 그대로 인수인계 단가다 (handedOver → 판정 2). 남은 회차
+ * 전부가 신규 단가이므로 누적을 옮기지 않아도 단가는 낮게 유지된다 -- 둘은
+ * 다른 층위다.
  */
 export async function transferPassInstructor(organizationId, passId, input, options = {}) {
   const {
@@ -385,6 +399,7 @@ export async function transferPassInstructor(organizationId, passId, input, opti
   const createdBy = requiredText(input?.createdBy, "createdBy");
 
   const entryId = String(input?.entryId || `${id}_transfer_${newId()}`);
+
   const stampedAt = await store.serverTimestamp();
 
   const entry = {
@@ -414,7 +429,9 @@ export async function transferPassInstructor(organizationId, passId, input, opti
       operation: "update",
     },
   ]);
-  return { passId: id, entryId, entry };
+  /* carriedSessions 는 **늘 빈 배열이다** (2026-10-23). 부르는 쪽이 이 칸을
+     읽고 있어 모양은 남긴다 -- 없애면 undefined 를 세게 된다. */
+  return { passId: id, entryId, entry, carriedSessions: [] };
 }
 
 /* ── 출석 체크(차감) ───────────────────────────────────────────────────────
@@ -732,7 +749,13 @@ export async function deductPass(organizationId, pass, input, options = {}) {
     /* 듀엣이면 두 사람 모두 올린다. 강사는 그 시간에 두 사람을 각각 가르쳤고,
        한 명만 올리면 짝은 스무 번을 같이 하고도 영영 "처음 보는 회원" 으로
        남는다. 단가를 정할 때 둘 중 적은 쪽을 보는 것은 위에서 따로 한다. */
-    ...clientIds.map((id) => ({
+    /* **서비스 회차는 세지 않는다** (2026-10-13 대표 확정). 서비스는 따로
+       정산하는 회차라 "이 강사와 몇 번 했는가" 에 들어가지 않는다.
+
+       전에는 조건 없이 올렸다. 서비스를 먼저 쓰므로 회원권마다 앞쪽 몇
+       회차가 서비스인데 그것이 전부 20 에 들어갔고, 그만큼 신규 단가 구간이
+       일찍 끝났다 -- 강사가 받을 25,000 짜리 회차 몇 개가 조용히 사라졌다. */
+    ...(spendsService ? [] : clientIds.map((id) => ({
       path: paths.instructorClientTotal(organization, instructorId, id),
       data: {
         organizationId: organization,
@@ -741,7 +764,7 @@ export async function deductPass(organizationId, pass, input, options = {}) {
         delta: { sessions: 1 },
       },
       operation: /** @type {"bump"} */ ("bump"),
-    })),
+    }))),
   ]);
   return { passId, lessonId, entryId, entry, lesson };
 }
@@ -1011,6 +1034,10 @@ export async function correctDeduction(organizationId, pass, entry, input, optio
   /* 서비스 회차를 되돌리면 카운터도 되돌린다. 그러지 않으면 센터가 내주기로 한
      1회분이 실수 하나로 사라지고, 회원의 다음 서비스 수업이 강사 봉사가 된다. */
   const returnsService = category === PAY_CATEGORY.SERVICE && (Number(pass?.serviceUsed) || 0) > 0;
+  /* 되돌리는 것이 서비스 회차인가. 위 returnsService 와 다르다 -- 저쪽은
+     "서비스 카운터를 되돌릴 것이 남아 있는가" 까지 보고, 이쪽은 종류만 본다.
+     카운터가 이미 0 이어도 그 회차는 누적에 들어간 적이 없다. */
+  const correctsService = category === PAY_CATEGORY.SERVICE;
 
   await store.commit([
     { path: paths.passLedgerEntry(organization, passId, entryId), data: correction },
@@ -1024,12 +1051,16 @@ export async function correctDeduction(organizationId, pass, entry, input, optio
 
        차감이 둘 다 올렸으면 되돌리는 것도 둘 다다. 한쪽만 되돌리면 두 사람의
        누적이 영영 1 만큼 어긋난 채로 남고, 그 차이는 20회째 단가를 서로 다른
-       날에 오게 만든다 -- 원장으로는 고칠 수 없는 종류의 어긋남이다. */
-    ...passClientIds(pass).map((id) => ({
+       날에 오게 만든다 -- 원장으로는 고칠 수 없는 종류의 어긋남이다.
+
+       **서비스 회차는 애초에 올리지 않았으므로 내리지도 않는다.** 내리면
+       누적이 취소할 때마다 줄어, 되돌린 적도 없는 회차가 사라진다. 차감 쪽과
+       같은 조건이어야 한다 (deductPass 의 spendsService). */
+    ...(correctsService ? [] : passClientIds(pass).map((id) => ({
       path: paths.instructorClientTotal(organization, instructorId, id),
       data: { organizationId: organization, instructorId, clientId: id, delta: { sessions: -1 } },
       operation: /** @type {"bump"} */ ("bump"),
-    })),
+    }))),
   ]);
   return { passId, entryId, entry: correction };
 }

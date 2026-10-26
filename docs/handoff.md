@@ -1,5 +1,91 @@
 # 이어서 작업하기 — 최근 변경과 남은 일
 
+## 2026-10-26 1.1.39 — 규칙·마이그레이션 끝, 빌드는 대표가 시작
+
+**작업 브랜치가 `release/1-1-39` 로 옮겨졌다.** `release/1-1-38` 은 남아
+있지만 더 쓰지 않는다 -- 릴리스 정책은 둘 다 허용한다 (되빌드가 막히지
+않도록).
+
+- 버전명 1.1.39. **versionCode 와 iOS 빌드 번호는 CI 가 정한다** --
+  저장소의 70 은 바닥값이고 Play 최대보다 큰 값이 자동으로 잡힌다
+- 규칙 **배포 완료**: memberships 에 `locationIds` 칸, locations 생성·수정을
+  대표·총괄로 좁힘. 빌드 게이트는 계속 `minimumLedgerBuild() = 0` (OFF)
+- 마이그레이션 **실행 완료**: FC매니저 4명(안나리·강채련·진현령·황라연)에
+  `locationIds` 를 심었다. 옛 `locationId` 는 그대로 둔다
+
+### FC매니저 지점 범위 (2026-10-26 대표 결정)
+
+여럿을 맡는 것은 FC매니저뿐이다. 강사·팀장·점장은 한 지점 그대로, 대표·
+총괄은 전 지점이다. 읽을 때는 `scopedLocationIds` 가 새 필드와 옛 필드를
+함께 본다 -- 옛 앱이 깔린 폰이 아직 한 칸짜리만 쓴다.
+
+좁히는 화면: 회원 목록·조회·등록, 회원권 발급, 강사 목록, 만료 회원.
+**만료 회원만 강사도 좁힌다** (`BRANCH_SCOPED_ROLES`) -- 명부는 대타 차감
+때문에 강사를 좁히지 않는다.
+
+좁히지 않은 것: 일정, 급여 집계(대표가 취소), 발급 내역, 회원 앱 연결,
+감사 로그, 담당 변경·퇴사 인계, 공지.
+
+### 남은 일
+
+1. Codemagic 두 워크플로를 **`release/1-1-39`** 로 시작 (대표)
+2. Play 20% → 100%, App Store Connect 심사 제출 (대표)
+3. 웹 배포 -- 아직 하지 않는다
+4. 대표가 FC매니저 4명의 지점을 강사 관리 화면에서 확인·수정
+5. `appUpdate.minimumBuild` = 빌드 로그에 찍힌 번호
+6. **별도 과제**: `passes/{id}/ledger` 의 `isCentreStaff` 를 좁힐 것인가.
+   지금은 강사도 남의 원장(unitPrice 포함)을 읽을 수 있다 -- 화면으로는
+   닿지 않지만 규칙은 열려 있다. 강사 화면이 원장을 어디서 읽는지 목록과,
+   좁혔을 때 막히는 화면을 먼저 뽑는다
+
+
+## 2026-10-22 1.1.38 / 70 — 배포 준비 끝, 빌드는 대표가 누른다
+
+`release/1-1-38` 에 #76 · #77 이 병합돼 있다. **#75(release → main)는 열려
+있다** — main 병합은 대표가 누른다.
+
+- 병합: #76 `5df79b2` · #77 `57461ff`. #77 은 release 기준으로 `src/` 변경이
+  0건이라 통째로 받았다 (앱 코드는 이미 #73·#74 로 들어와 있었다)
+- 규칙 **배포 완료** (2026-10-22). 빌드 게이트는 `minimumLedgerBuild() = 0`
+  으로 **꺼진 채** 나갔다. 켜려면 강사 전원이 70 이상인지 먼저 본다
+- Codemagic: `instructor-android-production`(프로덕션 20% 단계적 출시) ·
+  `ios-testflight`(TestFlight 업로드까지만). **네 워크플로 전부 트리거 없음**
+- versionCode 는 CI 가 Play API 로 정한다 — `max(70, Play최대+1)`. 그래서
+  `appUpdate.minimumBuild` 는 **빌드 로그에 찍힌 번호**를 쓴다 (70이 아닐 수 있다)
+
+### 정렬이 Timestamp 를 못 읽던 자리 (고침)
+
+옛 `soonestExpiring` 이 `new Date(String(값))` 으로 읽어 Firestore Timestamp
+가 전부 NaN → MAX_SAFE_INTEGER 로 **같은 값**이 됐다. 비교가 통째로 무력해져
+정렬이 배열 순서를 돌려줬다 — 2026-10-02~10-08 의 차감은 아무 순서도 아니었다.
+`expiryOf` 는 10-22 에 고쳤지만 `issuedAt` 은 남아 있었고, 빌드 70 에 그대로
+나갈 뻔했다. 둘 다 고쳤고 테스트로 묶었다.
+
+### 남은 일 (대표 몫)
+
+1. Codemagic 두 워크플로를 `release/1-1-38` 로 시작
+2. Play Console 에서 20% → 100%
+3. App Store Connect 에서 심사 제출
+4. 웹 배포 (`npm run deploy:web`) — 앱이 프로덕션에 올라간 뒤
+5. `appUpdate.minimumBuild` = 빌드 로그의 번호
+6. 잔여 정정 66장 — `reports/payroll/order-impact-*.txt` 목록대로 콘솔에서
+
+### 읽기 전용 보고서 (기기에만 있다, .gitignore)
+
+`reports/payroll/` — 회원·강사 이름이 그대로라 커밋하지 않는다.
+`reprice-2026-10-01.txt` 는 **배포 전 기준**이라 다시 돌리거나 덮어쓰지 않는다.
+
+
+## 2026-10-16 Android Codemagic 자동 업로드
+
+- 대표 요청: `release/1-1-38` 최신 소스로 프로덕션까지 자동 제출.
+- `codex/android-codemagic-production`에서 작업. main 병합은 하지 않는다.
+- `instructor-android-production` 워크플로: 등록한 `google_play` 비밀 변수 그룹과
+  `pilateacher-upload-v2-ci` 키스토어 사용. Play 최대 번호 조회 후 CI 버전 할당,
+  기존 릴리스 가드와 AAB 서명·버전·내장 웹 자산 검증 후 제출한다.
+- 첫 클라우드 빌드/업로드 성공 여부는 Codemagic 실행 기록에서 확인해야 한다.
+- 실행 방법 및 보호 조건: [android-codemagic.md](android-codemagic.md).
+
 Claude Code · Codex 가 새 세션을 열면 이 파일부터 읽는다. 작업을 끝낼 때마다
 맨 위 "최근 변경"을 갱신하고, 끝난 "남은 일"은 지운다.
 

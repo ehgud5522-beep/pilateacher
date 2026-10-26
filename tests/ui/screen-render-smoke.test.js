@@ -123,6 +123,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 월간 리포트",
     "더보기 탭 · 월간 리포트 · 지난달 못 읽음",
     "더보기 탭 · 월간 리포트 · 조회 실패",
+    "담당 인계",
+    "담당 인계 · 미확정 수업",
     "더보기 탭 · 월간 리포트 · 개인 모드",
     "더보기 탭 · 센터 정보",
     "더보기 탭 · 센터 정보 · 개인 모드",
@@ -136,6 +138,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "센터 회원 상세 · 잔여 조정",
     "센터 회원 상세 · 만료일 변경",
     "센터 회원 상세 · 매니저",
+    "센터 회원 상세 · 담당 변경",
     "센터 회원 상세 · 세션업",
     "센터 회원 상세 · 양도",
     "센터 회원 상세 · 양도 · 동명이인",
@@ -145,6 +148,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "센터 회원 상세 · 조회 실패",
     "센터 회원 상세 · 회원권 없음",
     "이달 예상 급여",
+    "이달 예상 급여 · 주 접힘",
     "이달 예상 급여 · 빈 달",
     "이달 예상 급여 · 조회 실패",
     "예상 급여 카드",
@@ -163,6 +167,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "회원 목록 · 소속 강사",
     "회원 목록 · 소속 강사 · 전체",
     "회원 목록 · 소속 강사 · 명부 조회 실패",
+    "회원 목록 · 소속 강사 · 명부 조회 실패 · 네트워크",
     "회원 목록 · 강사 · 비어 있음",
     "회원권 발급",
     "회원권 발급 · 듀엣 꺼짐",
@@ -183,6 +188,10 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "강사 관리",
     "강사 관리 · 계정 교체",
     "강사 관리 · 총괄매니저 지정",
+    "강사 관리 · FC매니저 지점 여럿",
+    "강사 관리 · FC매니저 지점 0개",
+    "강사 관리 · 비밀번호 재설정",
+    "강사 관리 · 비밀번호 재설정 보냄",
     "강사 관리 · 총괄매니저 지정 · 옛 앱",
     "강사 관리 · 총괄매니저 해제",
     "강사 관리 · 총괄매니저가 본 화면",
@@ -644,8 +653,11 @@ test("an instructor sees the centre's members, so there is nothing to re-registe
   /* 못 읽었으면 빈 목록을 보여주지 않는다. 빈 목록은 "센터에 회원이 없다"로
      읽히고, 그 다음 행동이 바로 다시 등록이다. */
   const failed = markupOf("회원 목록 · 소속 강사 · 명부 조회 실패");
-  assert.match(failed, /센터 회원을 불러오지 못했습니다 \(코드 permission-denied\)/);
-  assert.match(failed, /아래는 이 기기에 저장된 목록입니다/);
+  /* 문구가 사유별로 갈렸다 (2026-10-16). 권한이면 코드가 아니라 **할 일**을
+     말한다 -- 자세한 비교는 "a roster we could not read says which kind of
+     failure it was" 가 한다. */
+  assert.match(failed, /회원권을 불러오지 못했어요/);
+  assert.match(failed, /이 기기에 저장된 목록/);
   assert.match(failed, /다시 시도/);
 });
 
@@ -1214,16 +1226,43 @@ test("the pay screen says what it counted and what it did not", async (t) => {
   assert.match(detail, /₩85,000/);
 });
 
-test("the recent list names the member, the day and the amount", async (t) => {
+test("the list holds the whole month, grouped by week", async (t) => {
+  /* ── 2026-10-16 에 바뀐 검사 ──────────────────────────────────────
+     전에는 `최근 차감` 스무 줄이었다. 항목은 최신순이라 **스물한 번째부터
+     조용히 사라졌고**, 10월 16일에 10월 13일 이전이 안 보였다 -- 그 달의
+     급여를 설명하는 화면에서.
+
+     이제 그 달의 전부가 주 단위로 들어간다. */
   const markupOf = await issueScreens(t);
   const detail = markupOf("이달 예상 급여");
-  assert.match(detail, /최근 차감/);
+  assert.match(detail, /차감 내역/);
+  assert.doesNotMatch(detail, /최근 차감/);
+
   // 원장은 회원권만 가리키므로 회원권 → 회원으로 이어 붙인다.
   assert.match(detail, /김하나/);
+  // 그 달의 첫 주와 마지막 주가 **함께** 보인다 -- 잘라내지 않는다.
   assert.match(detail, /9\.16/);
   assert.match(detail, /9\.4/);
   // 한 건의 금액은 그 항목에 박힌 단가다.
   assert.match(detail, /₩30,000/);
+  // 주별 소계. "이번 주에 얼마" 가 바로 보여야 접은 값어치가 있다.
+  assert.match(detail, /9\.14 주/);
+
+  /* 월 선택. 월말 정산은 다음 달에 하므로 그때 강사가 자기 숫자를 확인할
+     자리가 있어야 한다. */
+  assert.match(detail, />9월</);
+  assert.match(detail, />8월</);
+});
+
+test("a collapsed week shows its subtotal and not its rows", async (t) => {
+  /* 접는 것이 요점이다 -- 한 달 치 마흔 줄을 펼쳐 두면 스크롤이 길어 결국
+     안 읽힌다. 소계는 보이고 그 안의 줄은 안 그려진다. */
+  const markupOf = await issueScreens(t);
+  const folded = markupOf("이달 예상 급여 · 주 접힘");
+  assert.match(folded, /8\.31 주/, "접힌 주도 머리줄은 있다");
+  assert.doesNotMatch(folded, /9\.4/, "그 안의 줄은 안 그려진다");
+  // 가장 최근 주는 펼쳐진다 -- 전부 접으면 빈 화면으로 보인다.
+  assert.match(folded, /9\.16/);
 });
 
 test("an empty month is not an error", async (t) => {
@@ -2077,6 +2116,135 @@ test("the pass row keeps its meta text off the button line", async (t) => {
   assert.equal(/flex-1/.test(meta[0]), false, "버튼과 폭을 나눠 쓰지 않는다");
   // 버튼 줄은 넘치면 줄바꿈한다. 390px 에 다섯이 한 줄로 들어가지 않는다.
   assert.match(detail, /flex flex-wrap items-center gap-1\.5/);
+});
+
+test("a roster we could not read says which kind of failure it was", async (t) => {
+  /* ── 2026-10-16 ────────────────────────────────────────────────────
+     권한과 네트워크는 **할 일이 다르다.** 앞은 다시 로그인이고 뒤는 기다리는
+     일이다. 한 문구로 묶으면 둘 다 "다시 시도" 만 누르고 끝나는데, 권한 쪽은
+     그것으로 풀릴 일이 아니다.
+
+     그리고 아래 목록이 **서버가 아니라는 것**을 말해야 한다. 그러지 않으면
+     거기 보이는 잔여를 센터의 숫자로 읽고, 멀쩡한 회원권을 가진 사람에게
+     재등록을 권하게 된다. */
+  const markupOf = await issueScreens(t);
+
+  const denied = markupOf("회원 목록 · 소속 강사 · 명부 조회 실패");
+  assert.match(denied, /회원권을 불러오지 못했어요\. 다시 로그인해 주세요/);
+  assert.doesNotMatch(denied, /코드 permission-denied/, "권한은 코드가 아니라 할 일을 말한다");
+
+  const offline = markupOf("회원 목록 · 소속 강사 · 명부 조회 실패 · 네트워크");
+  assert.match(offline, /코드 unavailable/, "그 밖의 실패는 추적 가능한 코드와 함께");
+  assert.doesNotMatch(offline, /다시 로그인/);
+
+  // 둘 다 아래 목록의 출처를 밝힌다.
+  for (const markup of [denied, offline]) {
+    assert.match(markup, /이 기기에 저장된 목록이고, 회원권 잔여는 센터의 값이 아닙니다/);
+    assert.match(markup, /다시 시도/);
+  }
+});
+
+test("대표가 강사 대신 재설정 메일을 보내는 자리가 있다", async (t) => {
+  /* 강사가 주소를 기억 못 하거나 오타를 내는 일이 실제로 있다. 로그인
+     화면에만 두면 그때 대표가 할 수 있는 것이 없다. */
+  const markupOf = await issueScreens(t);
+  const sheet = markupOf("강사 관리 · 비밀번호 재설정");
+
+  assert.match(sheet, /비밀번호 재설정 메일 보내기/);
+  /* 주소를 손으로 받는다는 것과, 다른 주소면 안 보낸다는 것을 함께 말한다 --
+     말하지 않으면 대표는 아무 주소나 적고 갔다고 믿는다. */
+  assert.match(sheet, /이 강사의 로그인 이메일/);
+  assert.match(sheet, /다른 주소면 보내지 않습니다/);
+
+  const sent = markupOf("강사 관리 · 비밀번호 재설정 보냄");
+  assert.match(sent, /스팸함/);
+  assert.match(sent, /브라우저에서 열리고/, "어디로 가는지 말한다");
+});
+
+test("FC매니저만 지점을 여럿 고른다", async (t) => {
+  /* 한 사람이 두 지점 이상을 맡는 일이 실제로 있고, 그때 한 칸짜리 필드는
+     둘 중 하나를 버리게 만든다 (2026-10-26 대표 결정).
+
+     강사·팀장·점장은 그대로 하나다 -- 그 사람들의 동작은 바뀌지 않는다. */
+  const markupOf = await issueScreens(t);
+
+  const many = markupOf("강사 관리 · FC매니저 지점 여럿");
+  assert.match(many, /지점 \(여러 곳\)/);
+  assert.match(many, /맡은 지점을 모두 고르세요/);
+
+  /* 강사를 고치는 화면은 옛 모양 그대로다. "여러 곳" 이 뜨면 한 지점짜리
+     역할에까지 다중 선택이 샌 것이다. */
+  const one = markupOf("강사 관리 · 총괄매니저 지정");
+  assert.doesNotMatch(one, /지점 \(여러 곳\)/, "강사는 한 지점 그대로");
+});
+
+test("지점 0개인 FC매니저는 저장을 막고 이유를 말한다", async (t) => {
+  /* 0개로 저장하면 그 FC매니저는 어느 회원도 못 본다 -- 화면이 통째로 빈
+     목록이 되고, 그것은 "고장" 과 구별되지 않는다.
+
+     막기만 하면 왜 안 눌리는지 알 수 없으므로 이유를 함께 띄운다. */
+  const markupOf = await issueScreens(t);
+  const none = markupOf("강사 관리 · FC매니저 지점 0개");
+
+  assert.match(none, /지점을 하나 이상 고르세요/);
+  assert.match(none, /고른 지점의 회원만 봅니다/);
+});
+
+test("담당 변경은 회원 상세를 여는 두 길 모두에 선다", async (t) => {
+  /* 회원 탭의 회원 상세(ReferenceMemberDetail)와 더보기 → 회원 관리의 회원
+     상세(ClientDetail)는 **다른 컴포넌트다.** 1.1.38 에서는 앞쪽에만 버튼이
+     붙어 있었고, 대표는 더보기로 열어 보고 "버튼이 없다" 고 했다.
+
+     한쪽만 고쳐지는 일이 또 일어나지 않게 두 길을 함께 본다. */
+  const markupOf = await issueScreens(t);
+
+  assert.match(markupOf("회원 상세 · 회원권 네 장"), /담당 변경/, "회원 탭 경로");
+  assert.match(markupOf("센터 회원 상세 · 담당 변경"), /담당 변경/, "더보기 → 회원 관리 경로");
+
+  /* 넘겨주지 않으면 그려지지 않는다 -- 권한은 한 곳에서만 판단한다. 강사가
+     누를 수 있으면 그것은 급여를 옮기는 버튼이다. */
+  assert.doesNotMatch(markupOf("센터 회원 상세 · 매니저"), /담당 변경/, "권한 없으면 안 보인다");
+});
+
+test("the handover preview says the rate the new instructor will actually get", async (t) => {
+  /* 인계 후 단가는 **판정 2 라 정확히 말할 수 있다** -- 누적과 무관하게 남은
+     회차 전부가 신규 단가다. 그래서 이 미리보기가 값어치가 있다.
+
+     1:1 은 25,000, 2:1 은 2:1 신규 단가(30,000). 디오사는 그 둘보다 앞이라
+     자기 표값을 그대로 받는다. */
+  const markupOf = await issueScreens(t);
+  const sheet = markupOf("담당 인계");
+
+  assert.match(sheet, /인계 후/);
+  assert.match(sheet, /₩25,000/, "1:1 은 신규 단가");
+  assert.match(sheet, /남은 \d+회 전부/);
+
+  /* 누적이 **따라가지 않는다**는 것을 말해야 한다 (2026-10-23 대표 결정).
+     말하지 않으면 대표는 전처럼 합산되는 줄 알고, 새 강사의 첫 재등록
+     단가가 왜 신규인지 설명하지 못한다. */
+  assert.match(sheet, /함께 넘어가지 않습니다/);
+  assert.match(sheet, /새 강사가 실제로 한 수업만/);
+  assert.doesNotMatch(sheet, /누적 수업 횟수도 함께 넘어갑니다/, "옛 문구가 남아 있으면 안 된다");
+
+  // 퇴사 처리는 지우는 것이 아니다. 과거 급여가 남는다는 말이 함께 있어야 한다.
+  assert.match(sheet, /퇴사 처리/);
+  assert.match(sheet, /지난 수업과 급여 기록은 그대로 남고/);
+});
+
+test("the handover is blocked until the taught-but-unsettled lessons are closed", async (t) => {
+  /* 담당이 바뀐 뒤에 확정하면 그 회차가 **새 강사의 급여**로 들어간다 --
+     수업한 사람은 전 강사인데. 원장은 append-only 라 되돌릴 수 없다.
+
+     그리고 확정 여부는 그 강사의 폰이 들고 있다. 대표 화면에서 안 보일 수
+     있다는 것까지 말해야 한다. */
+  const markupOf = await issueScreens(t);
+  const blocked = markupOf("담당 인계 · 미확정 수업");
+
+  assert.match(blocked, /확정하지 않은 수업 2건/);
+  assert.match(blocked, /새 강사의 급여/);
+  assert.match(blocked, /이 기기가 아는 것만입니다/);
+  // 넘기기 버튼이 잠긴다.
+  assert.match(blocked, /disabled=""[^>]*>[^<]*장 넘기기|장 넘기기/);
 });
 
 test("the pay sheet keeps its month off the close button", async (t) => {

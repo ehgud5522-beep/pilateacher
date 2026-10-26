@@ -32,6 +32,8 @@ test("an active membership decides the organization and the role", async () => {
     /* 이 강사의 지점. 회원 목록의 지점 칩이 이것으로 좁혀진다 -- 강사에게
        아홉 개 칩을 주면 그중 여덟은 눌러도 빈 목록이다. */
     locationId: "",
+    // FC매니저만 둘 이상이다 (2026-10-26). 다른 역할은 빈 목록으로 온다.
+    locationIds: [],
     isDeputyDirector: false,
     // 급여 판정 1.5 가 읽는다. 없으면 빈 문자열이고 일반 강사 단가로 간다.
     title: "",

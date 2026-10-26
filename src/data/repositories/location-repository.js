@@ -171,18 +171,126 @@ export function filterByLocation(items, filter, locations = []) {
  * 오는 경로가 있고, 거기서 던지면 더보기 탭이 통째로 열리지 않는다.
  *
  * @param {unknown} locations
- * @param {{ role?: string, locationId?: string }} viewer
+ * @param {{ role?: string, locationId?: string, locationIds?: Array<string> }} viewer
  * @returns {Array<{ id: string }>}
  */
 export function locationsVisibleTo(locations, viewer = {}) {
   const all = Array.isArray(locations) ? locations.filter(Boolean) : [];
   const role = String(viewer?.role || "").trim();
-  if (role !== "instructor" && role !== "staff") return all;
-  const mine = String(viewer?.locationId || "").trim();
-  if (!mine) return all;
-  const found = all.filter((location) => String(location?.id || "") === mine);
+  if (!BRANCH_SCOPED_ROLES.includes(role)) return all;
+  const mine = scopedLocationIds(viewer);
+  if (mine.length === 0) return all;
+  const found = all.filter((location) => mine.includes(String(location?.id || "")));
   // 그 지점이 목록에서 사라졌으면(지워졌거나 못 읽었으면) 거르지 않는다.
   return found.length ? found : all;
+}
+
+/**
+ * 이 사람이 **여러 지점**을 가질 수 있는 역할인가.
+ *
+ * FC매니저만이다 (2026-10-26 대표 결정). 한 사람이 두 지점 이상을 맡는 일이
+ * 실제로 있고, 그때 한 칸짜리 필드는 둘 중 하나를 버리게 만든다.
+ *
+ * 강사·팀장·점장은 그대로 한 지점이다 -- 그 사람들의 동작은 바뀌지 않는다.
+ * 대표·총괄매니저는 애초에 지점으로 좁히지 않는다.
+ *
+ * @param {unknown} role
+ */
+export const holdsManyLocations = (role) => String(role || "").trim() === "manager";
+
+/**
+ * 지점으로 범위가 좁혀지는 역할들. **대표·총괄매니저는 없다** -- 센터 전체를
+ * 보는 자리이고, 그 둘을 좁히면 이관도 급여도 반쪽만 보인다.
+ */
+export const BRANCH_SCOPED_ROLES = Object.freeze(
+  /** @type {ReadonlyArray<string>} */ (["manager", "instructor", "staff"]),
+);
+
+/**
+ * 이 소속 문서가 가리키는 지점들. **읽을 때는 둘 다 본다.**
+ *
+ * `locationIds` 가 새 필드이고 `locationId` 가 옛 필드다. 옛 앱이 깔린 폰은
+ * 아직 옛 필드만 쓰므로, 읽는 쪽이 둘을 모두 받아야 한다 -- 새 필드만 보면
+ * 업데이트하지 않은 사람의 지점이 통째로 사라지고, 그것은 화면에서 "회원이
+ * 없다" 로 도착한다.
+ *
+ * 둘 다 비어 있으면 빈 배열이다. 부르는 쪽이 그것을 "좁히지 않는다" 로 읽을지
+ * "아무 데도 없다" 로 읽을지 정한다 -- locationsVisibleTo 는 앞쪽이다
+ * (모를 때는 다 보여주는 쪽이 틀려도 덜 틀린다).
+ *
+ * @param {unknown} membership
+ * @returns {Array<string>}
+ */
+export function scopedLocationIds(membership) {
+  const source = /** @type {any} */ (membership) || {};
+  const many = Array.isArray(source.locationIds) ? source.locationIds : [];
+  const list = many.map((item) => String(item ?? "").trim()).filter(Boolean);
+  if (list.length > 0) return [...new Set(list)];
+  const one = String(source.locationId ?? "").trim();
+  return one ? [one] : [];
+}
+
+/**
+ * 이 사람이 그 지점을 볼 수 있는가. **대표·총괄매니저는 늘 참이다.**
+ *
+ * @param {{ role?: string, locationId?: string, locationIds?: Array<string> }} viewer
+ * @param {unknown} locationId
+ */
+export function canSeeLocation(viewer, locationId) {
+  const role = String(viewer?.role || "").trim();
+  if (!BRANCH_SCOPED_ROLES.includes(role)) return true;
+  const mine = scopedLocationIds(viewer);
+  // 지점을 아직 안 넣은 사람은 거르지 않는다 -- locationsVisibleTo 와 같은 판단.
+  if (mine.length === 0) return true;
+  return mine.includes(String(locationId ?? "").trim());
+}
+
+/**
+ * **명단**이 좁혀지는 역할. 칩(BRANCH_SCOPED_ROLES)보다 좁다 -- FC매니저뿐이다.
+ *
+ * 둘이 다른 이유가 있다. 강사·팀장·점장은 전부터 **칩만** 자기 지점으로
+ * 좁혀져 있었고 명단은 센터 전체였다 -- 그 사람들은 "내 회원" 토글로 자기
+ * 회원을 찾고, 대타로 남의 회원을 차감하는 길이 거기 걸려 있다
+ * (roster-visibility.js). 명단까지 좁히면 그 길이 끊긴다.
+ *
+ * 2026-10-26 대표 결정도 같은 선이다: 범위를 좁히는 것은 FC매니저뿐이고,
+ * 강사·팀장·점장의 동작은 바뀌지 않는다.
+ */
+export const BRANCH_LIST_SCOPED_ROLES = Object.freeze(
+  /** @type {ReadonlyArray<string>} */ (["manager"]),
+);
+
+/**
+ * 그 사람에게 보여 줄 **회원·강사 목록**. 지점이 없는 항목은 남긴다.
+ *
+ * 지점이 비어 있는 회원이 실제로 있다 (이관 전에 만들어진 것). 그것을 빼면
+ * 그 회원은 어느 화면에서도 안 보이고, 아무도 그 사실을 모른다.
+ *
+ * ── 어느 역할까지 좁히는가는 부르는 쪽이 정한다 ──
+ * 기본은 FC매니저뿐이다 (BRANCH_LIST_SCOPED_ROLES). 명부·강사 목록이 그렇다.
+ *
+ * **만료 회원은 다르다** (2026-10-26 대표 결정 2항). 거기서는 강사·팀장·
+ * 점장도 자기 지점만 본다 -- 그 화면은 "누구를 챙겨야 하는가" 를 묻는
+ * 자리라 남의 지점 회원이 섞이면 할 일이 아닌 것이 할 일로 보인다.
+ * 그때는 roles 에 BRANCH_SCOPED_ROLES 를 준다.
+ *
+ * @template {{ locationId?: string }} T
+ * @param {Array<T>} items
+ * @param {{ role?: string, locationId?: string, locationIds?: Array<string> }} viewer
+ * @param {{ roles?: ReadonlyArray<string> }} [options]
+ * @returns {Array<T>}
+ */
+export function itemsVisibleTo(items, viewer = {}, options = {}) {
+  const all = Array.isArray(items) ? items.filter(Boolean) : [];
+  const role = String(viewer?.role || "").trim();
+  const roles = Array.isArray(options?.roles) ? options.roles : BRANCH_LIST_SCOPED_ROLES;
+  if (!roles.includes(role)) return all;
+  const mine = scopedLocationIds(viewer);
+  if (mine.length === 0) return all;
+  return all.filter((item) => {
+    const at = String(item?.locationId ?? "").trim();
+    return at === "" || mine.includes(at);
+  });
 }
 
 /**

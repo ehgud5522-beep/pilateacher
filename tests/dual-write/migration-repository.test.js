@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   CLIENT_SHEET_COLUMNS, MIGRATION_ERROR, PASS_SHEET_COLUMNS, applyClientMigration,
+  sessionsInProductName,
   applyPassMigration, clientIdForPhone, groupFailures, parseCsv, passIdFor,
   PASS_SHEET_DUET_COLUMNS, planClientMigration, planPassMigration, readSheet,
   totalLooksLikeItIncludesService,
@@ -129,6 +130,229 @@ test("a bad row does not stop the good ones", () => {
 const clients = [{ id: "csv_01012345678", name: "김하나", phone: "01012345678", locationId: "bansong" }];
 const planPasses = (sheet, extra = {}) => planPassMigration(sheet, {
   clients, locations: LOCATIONS, instructors: INSTRUCTORS, createdBy: "owner-a", ...extra,
+});
+
+/* ── 숫자끼리 안 맞는 행 (2026-10-16) ───────────────────────────────────
+   셋 다 **그 행만** 멈춘다. 짐작해서 고쳐 주지 않는다 -- 어느 쪽이 참인지는
+   대표만 알고, 짐작한 값이 곧 급여가 된다. */
+
+test("a total that disagrees with the number in the product name is refused", () => {
+  /* 회당 금액이 계약금액 ÷ 총세션이라, 총세션이 틀리면 그 회원권의 **모든
+     회차 단가**가 틀린다. 상품명을 믿고 덮지도 않는다 -- 이름은 사람이 적은
+     글자이고 숫자 칸은 숫자 칸이다. */
+  const { failures, writes } = planPasses(passSheet(passRow({
+    상품명: "1:1 30회 가을", 총세션: "20", 서비스세션: "0",
+  })));
+  assert.equal(writes.length, 0);
+  assert.equal(failures[0].reason, MIGRATION_ERROR.TOTAL_DISAGREES_WITH_NAME);
+  assert.match(failures[0].message, /30/);
+  assert.match(failures[0].message, /20/);
+});
+
+test("a product name with no number is not second-guessed", () => {
+  // 맞혀 볼 근거가 없다. 숫자가 없으면 총세션이 유일한 답이다.
+  assert.deepEqual(
+    planPasses(passSheet(passRow({ 상품명: "깍두기 이벤트", 총세션: "20", 서비스세션: "0" }))).failures,
+    [],
+  );
+});
+
+test("the last number in a product name is the one that counts", () => {
+  /* "2:1 PT 33 ->100 세션업" 처럼 숫자가 여럿이면 뒤쪽이 실제로 판 횟수다
+     (totalLooksLikeItIncludesService 와 같은 규칙). */
+  assert.equal(sessionsInProductName("2:1 PT 33회 ->100회 세션업"), 100);
+  assert.equal(sessionsInProductName("깍두기 40회e"), 40);
+  assert.equal(sessionsInProductName("이벤트 상품"), null);
+  assert.deepEqual(
+    planPasses(passSheet(passRow({ 상품명: "33회 ->20회 세션업", 총세션: "20", 서비스세션: "0" }))).failures,
+    [],
+  );
+});
+
+test("more sessions left than were ever sold is refused", () => {
+  /* 그대로 받으면 회원이 사지 않은 회차를 쓰게 되고, 그 수업의 급여가
+     센터에서 나간다 -- 원장은 append-only 라 되돌릴 수 없다.
+
+     전에는 serviceUsed 계산이 Math.max(0, ...) 으로 조용히 0 으로 깎아
+     넘겼다. 숫자가 안 맞는다는 사실 자체가 사라졌다. */
+  const { failures, writes } = planPasses(passSheet(passRow({
+    상품명: "1:1 20회", 총세션: "20", 서비스세션: "2", 남은횟수: "25",
+  })));
+  assert.equal(writes.length, 0);
+  assert.equal(failures[0].reason, MIGRATION_ERROR.REMAINING_EXCEEDS_TOTAL);
+  assert.match(failures[0].message, /25/);
+});
+
+test("remaining exactly equal to what was sold is the untouched pass", () => {
+  // 한 번도 안 쓴 회원권이다. 경계에서 막으면 멀쩡한 행이 거부된다.
+  assert.deepEqual(
+    planPasses(passSheet(passRow({
+      상품명: "1:1 20회", 총세션: "20", 서비스세션: "2", 남은횟수: "22",
+    }))).failures,
+    [],
+  );
+});
+
+test("the same member written twice with different counts is refused on both rows", () => {
+  /* 이관은 행마다 누적 문서를 덮어쓰므로 **마지막 줄만 남는다.** 값이 다르면
+     어느 쪽이 참인지 짐작할 수 없고, 짐작해서 하나를 심으면 그 회원의 20회
+     경계가 틀린 자리에 선다.
+
+     **두 줄 다 거부한다** -- 한 줄만 돌려보내면 대표는 남은 줄이 맞는 값이라고
+     읽는다. */
+  const sheet = passSheet(
+    passRow({ 차수: "1", 강사누적진행: "10" }),
+    passRow({ 차수: "2", 강사누적진행: "35" }),
+  );
+  const { failures, writes } = planPasses(sheet);
+  assert.equal(writes.length, 0, "두 줄 다 빠진다");
+  assert.equal(failures.length, 2);
+  for (const item of failures) {
+    assert.equal(item.reason, MIGRATION_ERROR.PRIOR_SESSIONS_DISAGREE);
+    assert.match(item.message, /10 · 35/);
+  }
+});
+
+test("the same member written twice with the same count is the new sheet format", () => {
+  /* 새 양식은 모든 줄에 같은 총합을 적는다. 어느 줄이 이기든 값이 같아
+     덮어쓰기가 해롭지 않다 -- 막을 이유가 없다. */
+  const sheet = passSheet(
+    passRow({ 차수: "1", 강사누적진행: "35" }),
+    passRow({ 차수: "2", 강사누적진행: "35" }),
+  );
+  const { failures, writes } = planPasses(sheet);
+  assert.deepEqual(failures, []);
+  assert.equal(writes.length, 2);
+});
+
+test("a row already refused for another reason is not counted in the comparison", () => {
+  /* 거부된 행은 누적을 심지 않는다. 함께 세면 고친 적도 없는 행 때문에
+     멀쩡한 줄이 막힌다. */
+  const sheet = passSheet(
+    passRow({ 차수: "1", 강사누적진행: "35" }),
+    passRow({ 차수: "2", 강사누적진행: "10", 남은횟수: "999" }),
+  );
+  const { failures, writes } = planPasses(sheet);
+  assert.equal(writes.length, 1, "멀쩡한 첫 줄은 올라간다");
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].reason, MIGRATION_ERROR.REMAINING_EXCEEDS_TOTAL);
+});
+
+test("a duet written twice with different counts is refused on both rows", () => {
+  /* 듀엣 두 장이 같은 두 사람에게 나갔는데 줄마다 누적이 다르다. 덮어쓰기로
+     마지막 줄만 남으므로 **두 사람 모두** 틀린 값에서 시작한다.
+
+     한 줄 안에서 두 사람의 값이 갈리는 경우는 여기까지 오지 않는다 --
+     DUET_SESSIONS_DISAGREE 가 행 단위에서 먼저 막는다. 그래서 이 검사가
+     보는 것은 **줄과 줄 사이**뿐이고, 짝의 값도 그때 함께 따라온다. */
+  const { failures, writes } = planDuet(duetSheet(
+    duetRow({ 차수: "1", 강사누적진행: "12", 강사누적진행2: "12" }),
+    duetRow({ 차수: "2", 강사누적진행: "30", 강사누적진행2: "30" }),
+  ));
+  assert.equal(writes.length, 0, "두 줄 다 빠진다");
+  assert.equal(failures.length, 2);
+  for (const item of failures) {
+    assert.equal(item.reason, MIGRATION_ERROR.PRIOR_SESSIONS_DISAGREE);
+  }
+  /* 대표와 짝이 **각각** 걸린다. 짝을 안 세면 그 사람의 누적만 조용히
+     덮어쓰이고, 듀엣 단가는 둘 중 적은 쪽을 보므로 그 차이가 그대로 급여가
+     된다. */
+  assert.ok(failures.some((item) => /csv_01012345678/.test(item.message)));
+  assert.ok(failures.some((item) => /csv_01099998888/.test(item.message)));
+});
+
+/* ── "20회미만" 칸 (U열) ─────────────────────────────────────────────────
+   **저장하지 않는다.** 강사누적진행이 맞게 적혔는지 보는 눈 하나다
+   (2026-10-13 대표 확정). 어긋나면 그 행을 거부한다 -- 어느 쪽이 참인지는
+   대표가 정해야 하고, 짐작해서 한쪽을 심으면 그 회원권의 단가가 조용히
+   틀린다. */
+
+/** U열이 붙은 시트. PASS_SHEET_COLUMNS 에는 없는 칸이다. */
+const sheetWithUnder20 = (value, overrides = {}) => {
+  const header = [...PASS_SHEET_COLUMNS, "20회미만"].join(",");
+  return [header, `${passRow(overrides)},${value}`].join("\n");
+};
+
+test("the under-20 column is read without being declared, so old sheets still load", () => {
+  /* PASS_SHEET_COLUMNS 에 넣으면 이 칸이 없는 옛 엑셀이 통째로 거부된다.
+     readSheet 은 머리글에 있는 칸을 전부 담으므로 선언할 필요가 없다. */
+  assert.equal(PASS_SHEET_COLUMNS.includes("20회미만"), false, "선언하지 않는다");
+  // 칸이 없는 옛 시트는 그대로 들어간다.
+  assert.deepEqual(planPasses(passSheet(passRow())).failures, []);
+  // 칸이 있고 값이 맞으면 역시 들어간다.
+  assert.deepEqual(planPasses(sheetWithUnder20("X")).failures, []);
+});
+
+test("the under-20 column is never stored — it only checks the count", () => {
+  const { writes } = planPasses(sheetWithUnder20("X"));
+  assert.equal(writes.length, 1);
+  for (const key of Object.keys(writes[0])) {
+    assert.equal(/under20|20회미만|baseRateLocked/.test(key), false, key);
+  }
+  assert.equal(writes[0].priorSessions, 35, "세는 값은 강사누적진행 하나다");
+});
+
+test("O with twenty or more sessions is refused, and says both numbers", () => {
+  /* 둘 중 어느 쪽이 맞는지는 대표가 정해야 한다. 한쪽을 골라 심으면 그
+     회원권의 단가가 조용히 틀리고, 원장은 append-only 라 고칠 수 없다. */
+  const { failures, writes } = planPasses(sheetWithUnder20("O", { 강사누적진행: "35" }));
+  assert.equal(writes.length, 0);
+  assert.equal(failures[0].reason, MIGRATION_ERROR.UNDER20_SAYS_YES_BUT_REACHED);
+  assert.match(failures[0].message, /35/);
+});
+
+test("X with a blank count is accepted and stored as twenty", () => {
+  /* "넘겼다" 는 것을 아는데 정확히 몇 번인지는 모르는 회원이 있다. 그 행을
+     거부하면 대표가 숫자를 지어내 적게 되고, **그 숫자가 곧 급여가 된다.**
+
+     20 으로 심는다 -- 판정이 "20 이상인가" 하나만 보므로 그보다 더 아는 척할
+     이유가 없고, X 와 모순되지 않는 값 중 가장 작다. */
+  const { failures, writes } = planPasses(sheetWithUnder20("X", { 강사누적진행: "" }));
+  assert.deepEqual(failures, []);
+  assert.equal(writes[0].priorSessions, 20);
+});
+
+test("X with a short count written out is refused, not quietly raised", () => {
+  /* **적어 놓은 숫자는 짐작으로 덮지 않는다.** 한때 max(적힌 값, 20) 으로
+     올렸는데(2026-10-13 오전), 그러면 X + 7 이 조용히 20 이 되어 어느 쪽이
+     틀렸는지 아무도 모르는 채 급여가 나간다.
+
+     비워 둔 칸을 채우는 것과 적힌 값을 덮는 것은 다른 일이다. */
+  for (const written of ["7", "19"]) {
+    const { failures, writes } = planPasses(sheetWithUnder20("X", { 강사누적진행: written }));
+    assert.equal(writes.length, 0, written);
+    assert.equal(failures[0].reason, MIGRATION_ERROR.UNDER20_SAYS_NO_BUT_SHORT, written);
+    assert.match(failures[0].message, new RegExp(written));
+  }
+  // 경계는 20 이다. 스무 번째를 채웠으면 X 와 어긋나지 않는다.
+  assert.deepEqual(planPasses(sheetWithUnder20("X", { 강사누적진행: "20" })).failures, []);
+});
+
+test("X leaves a count that already passed twenty alone", () => {
+  // 아는 숫자가 있으면 그것이 더 정확하다. 20 으로 깎으면 정보를 버린다.
+  const { writes } = planPasses(sheetWithUnder20("X", { 강사누적진행: "35" }));
+  assert.equal(writes[0].priorSessions, 35);
+});
+
+test("a blank count is still refused when the sheet does not say X", () => {
+  /* 올려 줄 근거가 없다. 0 으로 심으면 그 회원의 처음 스무 회차가 신규
+     단가로 나가고, 비운 사람은 그것을 모른다. */
+  for (const under20 of ["", "O"]) {
+    const { failures } = planPasses(sheetWithUnder20(under20, { 강사누적진행: "" }));
+    assert.equal(failures[0].reason, MIGRATION_ERROR.MISSING_FIELD, under20);
+  }
+});
+
+test("O with a count under twenty is the ordinary case", () => {
+  assert.deepEqual(planPasses(sheetWithUnder20("O", { 강사누적진행: "19" })).failures, []);
+});
+
+test("a blank under-20 cell is not a judgement, so nothing is checked", () => {
+  /* 빈칸을 X 로 읽으면 적지 않은 행이 전부 "20회 넘었다" 로 굳고, 누적이
+     적은 회원권이 통째로 거부된다. */
+  for (const blank of ["", "   ", "-"]) {
+    assert.deepEqual(planPasses(sheetWithUnder20(blank, { 강사누적진행: "7" })).failures, [], blank);
+  }
 });
 
 test("a pass row finds its client by phone and gets a deterministic id", () => {
@@ -518,8 +742,29 @@ test("categories that do not decide the head count are left as written", () => {
   assert.equal("clientIds" in alone.writes[0].pass, false);
 });
 
+test("a duet whose two counts disagree is refused", () => {
+  /* 듀엣은 두 사람이 같이 차감되므로 누적은 늘 같아야 한다 (2026-10-13).
+     다르면 둘 중 하나가 틀렸고, 단가는 적은 쪽을 보므로(pricingPriorSessions)
+     그 차이만큼 신규 단가 구간이 길어지거나 짧아진다.
+
+     한쪽이 따로 1:1 도 하면 실제로 갈릴 수 있다. 그때도 이 행을 거부하는
+     것이 맞다 -- 어느 쪽이 참인지는 강사만 안다. */
+  const bad = planDuet(duetSheet(duetRow({ 강사누적진행: "12", 강사누적진행2: "9" })));
+  assert.equal(bad.writes.length, 0);
+  assert.equal(bad.failures[0].reason, MIGRATION_ERROR.DUET_SESSIONS_DISAGREE);
+  assert.match(bad.failures[0].message, /12/);
+  assert.match(bad.failures[0].message, /9/);
+
+  const good = planDuet(duetSheet(duetRow({ 강사누적진행: "12", 강사누적진행2: "12" })));
+  assert.deepEqual(good.failures, []);
+  assert.equal(good.writes[0].partnerPriorSessions, 12);
+});
+
 test("both members get their own running total seeded", async () => {
-  const { writes } = planDuet(duetSheet(duetRow({ 강사누적진행: "35", 강사누적진행2: "12" })));
+  /* 두 값은 같아야 한다 (2026-10-13) -- 다르면 위 테스트가 그 행을 거부한다.
+     그래도 **문서는 둘이다.** 하나만 심으면 짝은 0 에서 시작하고, 단가가
+     적은 쪽을 보므로 그 회원권의 처음 스무 회차가 전부 신규 단가로 나간다. */
+  const { writes } = planDuet(duetSheet(duetRow({ 강사누적진행: "35", 강사누적진행2: "35" })));
   const store = fakeStore();
   await applyPassMigration("center-a", writes, { store });
   const totals = [...store.written.keys()].filter((path) => path.includes("instructorClientTotals"));
@@ -528,7 +773,7 @@ test("both members get their own running total seeded", async () => {
     "organizations/center-a/instructorClientTotals/u1_csv_01099998888",
   ]);
   assert.equal(store.written.get(totals[0]).sessions, 35);
-  assert.equal(store.written.get(totals[1]).sessions, 12);
+  assert.equal(store.written.get(totals[1]).sessions, 35, "짝도 0 이 아니라 그 값에서 시작한다");
 });
 
 /* ── 번호가 바뀐 회원이 섞인 엑셀 ────────────────────────────────────
@@ -612,12 +857,18 @@ test("쓴 횟수에서 서비스 사용량을 센다", () => {
   assert.equal(used(20, 0, 8), 0, "서비스가 없으면 0 이다");
 });
 
-test("잔여가 총보다 크면 음수로 가지 않는다", () => {
-  /* 이관분은 총 횟수와 잔여가 따로 적혀 와서 어긋난 행이 있다. */
-  const { writes } = planPasses(passSheet(passRow({
+test("잔여가 총보다 크면 그 행을 거부한다 (2026-10-16 에 뒤집힘)", () => {
+  /* 전에는 serviceUsed 를 Math.max(0, ...) 으로 깎아 그대로 올렸다. 숫자가
+     안 맞는다는 사실 자체가 사라졌고, 회원은 사지 않은 회차를 쓰게 됐다 --
+     그 수업의 급여는 센터에서 나간다.
+
+     클램프 자체는 그대로 둔다. 거부가 먼저 걸려 닿지 않지만, 그 한 줄이
+     사라지면 다른 경로로 음수가 들어올 때 막을 것이 없다. */
+  const { writes, failures } = planPasses(passSheet(passRow({
     총세션: "20", 서비스세션: "2", 남은횟수: "99",
   })));
-  assert.equal(writes[0].pass.serviceUsed, 0);
+  assert.equal(writes.length, 0);
+  assert.equal(failures[0].reason, MIGRATION_ERROR.REMAINING_EXCEEDS_TOTAL);
 });
 
 /* ── 총세션에 서비스가 섞인 행 ────────────────────────────────────────── */

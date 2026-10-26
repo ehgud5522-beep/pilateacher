@@ -394,11 +394,32 @@ describe("role permissions", () => {
     await assertFails(updateDoc(doc(dbFor(users.owner), "organizations", ORG_A), { aiUsageCount: 999 }));
   });
 
-  test("manager can create a location", async () => {
-    await assertSucceeds(setDoc(doc(dbFor(users.manager), "organizations", ORG_A, "locations", "location-a"), {
+  test("manager can no longer create a location", async () => {
+    /* 2026-10-26 대표 결정으로 뒤집힌 자리다. 전에는 FC매니저도 만들 수
+       있었다 -- 화면은 없었지만 문은 열려 있었다.
+
+       FC매니저의 범위가 맡은 지점으로 정해지면서, 지점을 만들 수 있다는 것은
+       **자기 범위를 자기가 넓히는 길**이 된다. */
+    await assertFails(setDoc(doc(dbFor(users.manager), "organizations", ORG_A, "locations", "location-a"), {
       organizationId: ORG_A,
       name: "Location",
     }));
+  });
+
+  test("the owner level still creates locations", async () => {
+    /* 좁히다가 대표까지 막으면 지점을 만들 사람이 없어진다. */
+    await assertSucceeds(setDoc(doc(dbFor(users.owner), "organizations", ORG_A, "locations", "location-owner"), {
+      organizationId: ORG_A,
+      name: "Location",
+    }));
+  });
+
+  test("a manager still reads the branch list", async () => {
+    /* 발급·등록 화면의 지점 칩이 이것으로 뜬다. 읽기까지 막으면 FC매니저는
+       회원권을 발급할 수 없다. */
+    await assertSucceeds(getDocs(
+      collection(dbFor(users.manager), "organizations", ORG_A, COLLECTIONS.LOCATIONS),
+    ));
   });
 
   /* 회원 등록 화면은 지점 목록을 list 쿼리로 읽는다 (location-repository).
@@ -1913,6 +1934,134 @@ describe("protected and append-only data", () => {
     await assertFails(deleteDoc(doc(dbFor(users.owner), "auditLogs", "audit-1")));
   });
 
+  /* ── 누적 보정 기록 ─────────────────────────────────────────────────────
+     급여 판정 3 이 보는 숫자를 손으로 고치는 일이다. 그 숫자 하나가 그 회원의
+     남은 수업 단가를 전부 정하므로(20 을 넘기면 카테고리 단가), **기록 없이
+     고칠 수 있으면 그 숫자는 아무 때나 움직일 수 있는 값이 된다.**
+
+     누적 문서 자체는 규칙이 이미 ownerLevel 에게 열어 두고 있다. 여기서 닫는
+     것은 그 옆에 남아야 하는 기록 쪽이다. */
+
+  const adjustmentLog = (overrides = {}) => ({
+    organizationId: ORG_A,
+    actorId: users.owner,
+    actorRole: "owner",
+    action: "instructor_total_adjusted",
+    targetId: users.instructor,
+    clientId: "client-member",
+    previousAmount: 25,
+    amount: 22,
+    reason: "service_sessions_removed",
+    createdAt: serverTimestamp(),
+    ...overrides,
+  });
+  const adjustmentRef = (userId, logId) => doc(dbFor(userId), "auditLogs", logId);
+
+  test("the owner and the area manager record a totals adjustment", async () => {
+    /* 2026-10-13 대표 결정: 보정은 ownerLevel 이다. 총괄매니저는 대표와 같은
+       자리이고, 이 일은 자기 자리를 넓히는 종류가 아니다. */
+    await assertSucceeds(setDoc(adjustmentRef(users.owner, "adjust-owner"), adjustmentLog()));
+    await assertSucceeds(setDoc(
+      adjustmentRef(users.area_manager, "adjust-area"),
+      adjustmentLog({ actorId: users.area_manager, actorRole: "area_manager" }),
+    ));
+  });
+
+  test("nobody below owner level records one", async () => {
+    /* 강사가 자기 누적을 고친 기록을 스스로 적을 수 있으면 그 기록은 아무것도
+       증명하지 못한다. */
+    for (const role of ["manager", "instructor", "staff"]) {
+      await assertFails(setDoc(
+        adjustmentRef(users[role], `adjust-${role}`),
+        adjustmentLog({ actorId: users[role], actorRole: role }),
+      ), role);
+    }
+  });
+
+  test("an adjustment without its before, after or reason is refused", async () => {
+    /* 셋 중 하나라도 없으면 반년 뒤 그 줄은 "왜 이렇게 됐나" 에 답하지 못하고,
+       그 질문이 곧 급여 분쟁이다. */
+    for (const missing of ["previousAmount", "amount", "reason", "targetId", "clientId"]) {
+      const body = adjustmentLog();
+      delete body[missing];
+      await assertFails(setDoc(adjustmentRef(users.owner, `adjust-no-${missing}`), body), missing);
+    }
+  });
+
+  test("a reason outside the list is refused", async () => {
+    /* 자유 문장을 받지 않는다 -- 이 컬렉션에 문장 칸을 하나 열면 언젠가 거기에
+       회원 이름이 들어간다. */
+    for (const bad of ["그냥요", "manual", "", "회원이 항의함"]) {
+      await assertFails(setDoc(
+        adjustmentRef(users.owner, `adjust-bad-reason-${bad || "empty"}`),
+        adjustmentLog({ reason: bad }),
+      ), bad);
+    }
+    for (const good of ["service_sessions_removed", "migration_overwrite", "manual_correction"]) {
+      await assertSucceeds(setDoc(
+        adjustmentRef(users.owner, `adjust-${good}`),
+        adjustmentLog({ reason: good }),
+      ), good);
+    }
+  });
+
+  test("an adjustment that changes nothing is refused", async () => {
+    // 같은 값을 적은 줄이 쌓이면 목록이 길어지고, 그 목록의 값어치는 변화 하나다.
+    await assertFails(setDoc(
+      adjustmentRef(users.owner, "adjust-noop"),
+      adjustmentLog({ previousAmount: 22, amount: 22 }),
+    ));
+  });
+
+  test("the other audit actions are not asked for a reason", async () => {
+    /* 동작마다 말이 되는 칸이 다르다. 전부에게 사유를 요구하면 말이 안 되는
+       칸을 채우게 되고, 화면이 그것을 진짜 값으로 읽는다. */
+    const rateChange = (overrides = {}) => ({
+      organizationId: ORG_A,
+      actorId: users.owner,
+      actorRole: "owner",
+      action: "full_room_rate_set",
+      targetId: users.instructor,
+      amount: 45000,
+      previousAmount: 40000,
+      createdAt: serverTimestamp(),
+      ...overrides,
+    });
+    await assertSucceeds(setDoc(doc(dbFor(users.owner), "auditLogs", "adjust-other"), rateChange()));
+
+    /* 하지만 **사유 칸을 자유 문장으로 쓰는 길은 어느 동작에도 없다.** 이
+       컬렉션의 값어치가 "자유 문장 칸이 하나도 없다" 는 것이라, 보정이 아닌
+       동작에 끼워 넣는 길이 열려 있으면 그 말이 거짓이 된다. */
+    await assertFails(setDoc(
+      doc(dbFor(users.owner), "auditLogs", "adjust-other-free-text"),
+      rateChange({ reason: "회원이 항의해서 올려 줌" }),
+    ));
+    // 열거값이면 다른 동작에 붙어도 해롭지 않다. 막는 것은 문장이다.
+    await assertSucceeds(setDoc(
+      doc(dbFor(users.owner), "auditLogs", "adjust-other-enum"),
+      rateChange({ reason: "manual_correction" }),
+    ));
+  });
+
+  test("a totals document itself moves for owner level, and not below", async () => {
+    /* 보정이 실제로 쓰는 문서다. 규칙은 이미 열어 두고 있었고, 이 검사는 그
+       사실이 계속 참인지를 본다 -- 닫히면 보정 통로가 조용히 막힌다. */
+    const totalRef = (userId) => doc(
+      dbFor(userId), "organizations", ORG_A, "instructorClientTotals",
+      `${users.instructor}_client-member`,
+    );
+    await assertSucceeds(setDoc(totalRef(users.owner), {
+      organizationId: ORG_A, instructorId: users.instructor, clientId: "client-member", sessions: 22,
+    }));
+    await assertFails(setDoc(totalRef(users.instructor), {
+      organizationId: ORG_A, instructorId: users.instructor, clientId: "client-member", sessions: 22,
+    }), "강사는 자기 누적을 정할 수 없다");
+    // 음수는 누구도 쓸 수 없다 -- 들어가면 그 회원의 차감이 통째로 막힌다.
+    await assertFails(setDoc(totalRef(users.owner), {
+      organizationId: ORG_A, instructorId: users.instructor, clientId: "client-member", sessions: -1,
+    }));
+  });
+
   test("fixture sanity check has all role identities", () => {
     assert.equal(Object.keys(users).length, 7);
   });
@@ -3220,6 +3369,45 @@ describe("checking attendance against a pass", () => {
       await assertFails(updateDoc(ledgerDocOf(users[role], ORG_A, PASS_A, "entry-fix_correction"), { delta: 9 }));
       await assertFails(deleteDoc(ledgerDocOf(users[role], ORG_A, PASS_A, "entry-fix_correction")));
     }
+  });
+
+  /* ── 옛 빌드 차단 (꺼져 있다) ───────────────────────────────────────────
+     차감 단가도 누적 증가도 전부 기기에서 돈다. 규칙은 금액이 맞는지 따질 수
+     없으므로, 업데이트하지 않은 폰은 **옛 규칙으로 계산한 차감을 그대로
+     원장에 박는다** -- 원장은 append-only 다.
+
+     장치는 들어왔지만 `minimumLedgerBuild()` 가 0 이라 **아무도 막히지
+     않는다.** 강사 전원이 새 빌드를 받은 것을 확인한 뒤 그 숫자를 올린다.
+
+     여기서는 꺼져 있다는 것만 못 박는다. 켠 상태의 동작은 규칙 파일을 고쳐야
+     확인할 수 있고, 그 확인은 켜는 날 그 PR 에서 한다. */
+
+  test("the build gate is off, so every current build still writes", async () => {
+    /* 켜진 채로 들어가면 그 순간 센터 전체의 수업 확정이 멈춘다 -- 화면에는
+       permission-denied 한 줄뿐이라 아무도 원인을 짚지 못한다. 2026-10-12 에
+       그 모양을 한 번 겪었다. */
+    const source = await readFile(new URL("../../firestore.foundation.rules", import.meta.url), "utf8");
+    assert.match(source, /function minimumLedgerBuild\(\) \{\s*return 0;/,
+      "최소 빌드는 0(꺼짐)으로 들어간다");
+
+    // 앱 버전을 한 번도 안 적은 강사도 지금은 차감할 수 있다.
+    await assertSucceeds(setDoc(
+      ledgerDocOf(users.instructor, ORG_A, PASS_A, "entry-no-build"),
+      deductEntry(),
+    ));
+  });
+
+  test("the gate hangs on the field the app already writes", async () => {
+    /* 새 칸을 만들지 않는다. memberships 가 빌드 62 부터 appBuild 를 들고
+       있고, 원장 규칙은 **그 문서를 이미 읽는다** (actorRole 대조) -- 문서
+       읽기가 늘지 않는다는 뜻이다.
+
+       숫자로 비교한다. 문자열로 두면 "9" > "10" 이다. */
+    const source = await readFile(new URL("../../firestore.foundation.rules", import.meta.url), "utf8");
+    assert.match(source, /appBuild.*matches\("\^\[0-9\]\+\$"\)/s, "숫자인지 먼저 본다");
+    assert.match(source, /int\(membership\(organizationId\)\.data\.appBuild\)/, "숫자로 비교한다");
+    /* 차감에만 건다. 발급·양도·보정까지 막으면 켜는 날 센터가 통째로 멈춘다. */
+    assert.match(source, /request\.resource\.data\.type != "deduct" \|\| appBuildAllowed/);
   });
 
   test("a deduction says which rule decided its price", async () => {

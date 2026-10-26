@@ -14,7 +14,8 @@ import {
   onAuthStateChanged, signOut,
   GoogleAuthProvider, OAuthProvider, signInWithPopup,
   EmailAuthProvider, createUserWithEmailAndPassword, signInWithEmailAndPassword,
-  reauthenticateWithCredential, reauthenticateWithPopup, revokeAccessToken, updateProfile,
+  reauthenticateWithCredential, reauthenticateWithPopup, revokeAccessToken,
+  sendPasswordResetEmail, updateProfile,
 } from "firebase/auth";
 import { getFirestore, collection, deleteDoc, doc, getDoc, getDocs, runTransaction, setDoc, serverTimestamp } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
@@ -287,6 +288,32 @@ async function runReauthenticate(provider, password = "") {
   return { provider, authorizationCode: "" };
 }
 
+/**
+ * ID 토큰을 새로 받는다. **다시 로그인하지 않는다** -- 이미 로그인한 사용자의
+ * 토큰만 갈아 끼운다.
+ *
+ * 왜 필요한가: 소속이 방금 만들어졌거나 역할이 바뀌면, 손에 든 토큰은 그
+ * 전의 것이라 규칙이 permission-denied 로 돌려보낸다. 사용자에게는 "회원권이
+ * 없음" 으로 보이고, 앱을 껐다 켜면 멀쩡해진다 -- 그 사이에 토큰이 바뀌기
+ * 때문이다.
+ *
+ * 돌려주는 것은 "새로 받았는가" 다. 로그인 상태가 아니면 false 이고, 그때는
+ * 부르는 쪽이 다시 시도할 이유가 없다.
+ */
+export async function fbRefreshIdToken() {
+  const user = auth?.currentUser;
+  if (!user) return false;
+  try {
+    await user.getIdToken(true);
+    return true;
+  } catch (_error) {
+    /* 못 받아도 던지지 않는다. 이것은 재시도를 돕는 보조 동작이고, 여기서
+       던지면 원래의 조회 실패 코드가 이 오류로 덮인다 -- 원인 확정이
+       불가능해진다 (CLAUDE.md 2항). */
+    return false;
+  }
+}
+
 export async function fbRevokeAppleAccess(authorizationCode) {
   if (!authorizationCode) return;
   if (!auth) throw Object.assign(new Error("Firebase Authentication is unavailable."), { code: "auth/unauthenticated" });
@@ -341,6 +368,74 @@ export async function fbSignInEmail(email, pw, { onStage = () => {} } = {}) {
   );
   return { ...shape(res.user), provider: "email" };
 }
+
+/**
+ * 비밀번호 재설정 메일. **가입 여부를 밖으로 흘리지 않는다.**
+ *
+ * ── 왜 늘 성공으로 끝나는가 ──
+ * `auth/user-not-found` 를 그대로 올리면 이 화면이 **가입 여부 확인기**가
+ * 된다 -- 아무 이메일이나 넣어 보며 "이 사람이 우리 센터를 쓰는가" 를 셀 수
+ * 있다. 그래서 그 코드만 성공과 같은 자리로 접고, 부르는 쪽은 언제나 같은
+ * 문구를 띄운다.
+ *
+ * 나머지 실패는 그대로 올린다. 네트워크가 끊겼거나 요청이 너무 잦은 것은
+ * 사용자가 할 일이 다르고, 그것까지 "보냈습니다" 로 덮으면 오지 않는 메일을
+ * 영영 기다리게 된다.
+ *
+ * ── 메일은 한국어로 ──
+ * 보내기 직전에 `auth.languageCode = "ko"` 를 지정한다. 콘솔의 템플릿을
+ * 바꿀 수 없을 때 이것이 유일한 손잡이이고, 없으면 영어로 나간다.
+ *
+ * ── 메일을 누른 뒤 ──
+ * continueUrl 로 웹 로그인 화면을 준다. 주지 않으면 Firebase 의 기본
+ * 완료 화면에서 끝나고 돌아올 길이 없다 -- 사용자는 거기서 앱을 손으로
+ * 다시 연다.
+ *
+ * 네이티브 앱으로 되돌리는 것은 지금 길이 없다 (Dynamic Links 종료). 폰에서
+ * 눌러도 브라우저의 로그인 화면으로 간다.
+ *
+ * @param {string} email
+ * @param {{ continueUrl?: string }} [options]
+ * @returns {Promise<{ sent: boolean }>} sent 는 **진단용이다.** 화면 문구를
+ *   이것으로 가르면 안 된다 -- 가르는 순간 가입 여부가 드러난다.
+ */
+export async function fbSendPasswordReset(email, options = {}) {
+  if (!auth) throw Object.assign(new Error("Auth is not ready."), { code: "auth-unavailable" });
+  const address = String(email ?? "").trim();
+  if (!address) throw Object.assign(new Error("Email is required."), { code: "invalid-email" });
+  const continueUrl = String(options.continueUrl || PASSWORD_RESET_CONTINUE_URL);
+  /* ── 메일을 한국어로 ────────────────────────────────────────────────
+     **콘솔의 템플릿을 바꿀 수 없을 때 이것이 유일한 손잡이다.** 지정하지
+     않으면 Firebase 가 프로젝트 기본 언어(영어)로 보내고, 강사는 영어
+     메일을 받는다 -- 스팸으로 읽고 지우는 일이 실제로 생긴다.
+
+     **로그인 화면과 강사 관리가 같은 함수를 지난다.** 그래서 여기 한 곳에
+     둔다 -- 부르는 쪽마다 두면 한쪽만 고쳐지는 날이 오고, 그날 두 통로가
+     다른 언어로 나간다.
+
+     auth 전체에 남는 설정이라 뒤에 오는 다른 메일(인증 메일 등)도 한국어가
+     된다. 이 앱의 사용자는 모두 한국어라 그것이 맞는 쪽이다. */
+  auth.languageCode = "ko";
+  try {
+    await sendPasswordResetEmail(auth, address, { url: continueUrl, handleCodeInApp: false });
+    return { sent: true };
+  } catch (error) {
+    /* 없는 계정은 성공과 같은 자리로 접는다. 위 머리말 참고. */
+    if (error?.code === "auth/user-not-found" || error?.code === "auth/invalid-email") {
+      return { sent: false };
+    }
+    throw error;
+  }
+}
+
+/**
+ * 재설정을 마친 사람이 돌아올 곳. **웹 로그인 화면이다.**
+ *
+ * Firebase Auth 의 승인된 도메인에 있어야 한다 -- 없으면 메일 발송 자체가
+ * auth/invalid-continue-uri 로 거부된다. pilateacher.web.app 은 Hosting 의
+ * 기본 도메인이라 처음부터 들어 있다.
+ */
+export const PASSWORD_RESET_CONTINUE_URL = "https://pilateacher.web.app/";
 
 /** The public Web API key, so a probe can exercise the exact route the SDK uses. */
 export const fbAuthApiKey = firebaseConfig.apiKey;

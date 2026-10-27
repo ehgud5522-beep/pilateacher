@@ -561,3 +561,25 @@ test("미리보기와 확정이 일곱 가지 모두 같은 회원권을 고른�
     }
   }
 });
+
+/* ── 세션업 기간 ─────────────────────────────────────────────────────────
+
+   확정 화면이 이 값을 그대로 그린다. 회원권 카드와 **같은 함수**로 세야
+   두 화면이 같은 숫자를 말한다 -- 여기서 다시 세면 갈라질 자리가 생긴다. */
+
+test("미리보기가 세션업 기간을 함께 돌려준다", () => {
+  // 20회권(6회차까지) 잔여 8 → 유료 12회 사용. 이미 지났다.
+  assert.deepEqual(preview().sessionUp, { limit: 6, used: 12, left: 0, open: false });
+
+  // 같은 회원권을 4회만 썼으면 지금 포함 3회 남았다.
+  assert.deepEqual(
+    preview({ passes: [pass({ remainingCount: 16 })] }).sessionUp,
+    { limit: 6, used: 4, left: 3, open: true },
+  );
+});
+
+test("회원권이 없으면 기간도 없다 -- 지어내지 않는다", () => {
+  /* skip 인 줄에는 금액도 기간도 없다. 없는 회원권의 기간을 그리면 강사는
+     있지도 않은 것을 회원에게 말한다. */
+  assert.equal(preview({ passes: [] }).sessionUp, undefined);
+});

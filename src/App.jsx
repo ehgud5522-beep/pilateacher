@@ -192,7 +192,9 @@ import {
 } from "./features/passes/duet-issue.js";
 import { JOURNEY_PRIOR_NOTE, buildPassJourney, hasJourney } from "../functions/shared/pass-journey.mjs";
 import {
-  SESSION_UP_ERROR_LABEL, planSessionUp, sessionUpError, sessionUpLabel,
+  SESSION_UP_ERROR_LABEL, SESSION_UP_REASON_MAX, canOverrideSessionUpWindow,
+  planSessionUp, sessionUpError, sessionUpLabel, sessionUpNumbersError,
+  sessionUpWindowLabel, sessionUpWindowOf,
 } from "../functions/shared/session-up.mjs";
 import {
   RESTORE_OFFER, backupPaused, canOverwriteBackup, isCentreAccount,
@@ -3022,6 +3024,25 @@ const RATE_SKIP_LINE = {
   duet_pass_missing: "2:1 회원권 없음 · 대표에게 문의해 주세요",
 };
 
+/**
+ * 세션업 기간 한 줄. **회원권 카드와 수업 확정 화면이 같은 문구를 쓴다.**
+ *
+ * 마지막 한 회차는 강조한다 -- 그 수업을 확정하고 나면 FC매니저는 더 이상
+ * 늘릴 수 없고, 그때는 대표를 불러야 한다. 지나간 뒤에 아는 것과 누르기
+ * 전에 아는 것은 다른 일이다.
+ */
+function SessionUpWindowLine({ window, className = "mt-0.5 block" }) {
+  if (!window) return null;
+  const last = window.open && Number(window.left) <= 1;
+  return (
+    <span className={`${className} truncate tabular-nums`} style={{
+      fontSize: TYPE.caption,
+      fontWeight: last || !window.open ? 700 : 400,
+      color: last ? WARN : SUB,
+    }}>{sessionUpWindowLabel(window)}</span>
+  );
+}
+
 function SchedRateLine({ preview }) {
   if (!preview) return null;
   if (preview.skip) {
@@ -3033,17 +3054,17 @@ function SchedRateLine({ preview }) {
   }
   /* 함께 쓰는 회원권은 두 줄에 같은 금액이 선다. 실제로 나가는 것은 한 번이라,
      그 말을 하지 않으면 강사가 두 배로 읽는다. */
-  if (preview.shared) {
-    return (
-      <span className="mt-0.5 block truncate tabular-nums" style={{ fontSize: TYPE.caption, color: FAINT }}>
-        {won(preview.unitPrice)}원 · {labelOf(PRICING_RULE_LABELS, preview.rule)} · 함께 쓰는 회원권에서 1회
-      </span>
-    );
-  }
   return (
-    <span className="mt-0.5 block truncate tabular-nums" style={{ fontSize: TYPE.caption, color: FAINT }}>
-      {won(preview.unitPrice)}원 · {labelOf(PRICING_RULE_LABELS, preview.rule)}
-    </span>
+    <>
+      <span className="mt-0.5 block truncate tabular-nums" style={{ fontSize: TYPE.caption, color: FAINT }}>
+        {won(preview.unitPrice)}원 · {labelOf(PRICING_RULE_LABELS, preview.rule)}
+        {preview.shared ? " · 함께 쓰는 회원권에서 1회" : ""}
+      </span>
+      {/* 이 수업을 확정하면 세션업 기간이 한 칸 줄어든다. 강사가 누르기
+          **전에** 알아야 대표에게 말할 수 있다 -- 지나간 뒤에는 대표·총괄만
+          열 수 있는 일이 된다. */}
+      <SessionUpWindowLine window={preview.sessionUp} />
+    </>
   );
 }
 
@@ -5911,7 +5932,7 @@ function PassJourneyBar({ journey, size = "md" }) {
  * 급여카테고리와 회당 금액은 강사 앱에만 있다 -- 회원 투영에는 그 칸이 가지
  * 않는다 (member-view.js 의 금지 목록). 없으면 그 줄을 그리지 않는다.
  */
-function PassCard({ card, onEdit }) {
+function PassCard({ card, onEdit, sessionUpWindow = null }) {
   const next = card.nextDeduct !== NEXT_DEDUCT.NONE;
   const ended = card.group === PASS_GROUP.ENDED;
   return (
@@ -5970,6 +5991,16 @@ function PassCard({ card, onEdit }) {
             style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND }}>정보 수정</button>
         ) : null}
       </div>
+      {/* 세션업 기간. **강사도 본다** -- 늘릴 수 있는 사람은 대표와 FC매니저
+          뿐이지만, 회원에게 "더 끊으시겠어요" 를 말하는 사람은 강사다.
+          기간이 끝난 뒤에 알면 그 회원은 재등록으로 가야 한다.
+
+          회원 앱에는 가지 않는다. passCard 가 아니라 부르는 쪽이 회원권
+          문서에서 세어 넘긴다 -- pass-cards.js 머리말의 "회원에게 가지 않는
+          것은 여기서도 만들지 않는다" 와 같은 선이다. */}
+      {sessionUpWindow ? (
+        <SessionUpWindowLine window={sessionUpWindow} className="mt-1 block" />
+      ) : null}
       {/* 차수 순으로 쓰는데 뒤 차수가 먼저 만료된다. 그 회차는 손도 못 대 보고
           사라질 수 있다 -- 회원이 돈을 낸 회차다. 자동으로 피하지 않고(순서를
           뒤집으면 예측이 깨진다) 여기서 말한다. 푸는 길은 만료일 변경이다. */}
@@ -5983,6 +6014,13 @@ function PassCard({ card, onEdit }) {
 }
 
 function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSettlement = true, organizationMode = false, journey = null, passCards = null, centrePasses = null, centreLessons = null, viewerRole = "", onHandoverPass, onBack, onPatch, onSaveNote, onSchedule, onOpenLesson, onAssess, onToast, onDelete, onDeactivate, onReactivate, onHide }) {
+  /* 세션업 기간은 **회원권 문서에서** 센다. 카드(passCards)는 회원 앱과 함께
+     쓰는 모양이라 그 칸이 없다 -- pass-cards.js 머리말의 "회원에게 가지 않는
+     것은 여기서도 만들지 않는다". 그래서 여기서 짝지어 넘긴다. */
+  const sessionUpWindows = useMemo(() => new Map(
+    (Array.isArray(centrePasses) ? centrePasses : [])
+      .map((pass) => [String(pass?.id || ""), sessionUpWindowOf(pass)]),
+  ), [centrePasses]);
   /* 강사에게는 뒤 4자리만. 동명이인을 가르는 데는 그것으로 충분하고, 전화를
      거는 일은 센터가 한다 (roster-visibility.js). */
   const phoneShown = (value) => phoneForViewer(value, viewerRole, { full: () => maskedPhone(value) });
@@ -6303,7 +6341,10 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
                   <div className="space-y-2">
                     {passCards.active.map((card) => (
                       <Guard key={card.passId} label="회원권 카드" compact>
-                        <PassCard card={card} />
+                        {/* 끝난 회원권에는 붙이지 않는다 -- 어차피 늘릴 수
+                            없고(NOT_ACTIVE), "기간 종료" 가 끝난 이유로
+                            읽힌다. */}
+                        <PassCard card={card} sessionUpWindow={sessionUpWindows.get(card.passId) || null} />
                         {/* 담당 변경. **대표·총괄매니저·FC매니저만** 보인다 --
                             강사가 자기 회원권을 남에게 넘기거나 남의 것을
                             가져올 수 있으면 그것은 급여를 옮기는 버튼이다.
@@ -18594,7 +18635,7 @@ function PassTransferSheet({
 function PassSessionUpSheet({
   pass, onCancel, onConfirm, busy, error,
   initialSessions = "", initialPrice = "", initialService = "", initialDate = "",
-  initialMethod = "",
+  initialMethod = "", actorRole = "", initialOverrideReason = "",
 }) {
   const [sessions, setSessions] = useState(initialSessions);
   const [price, setPrice] = useState(initialPrice);
@@ -18612,6 +18653,15 @@ function PassSessionUpSheet({
     : PAYMENT_METHOD.CARD;
   const [method, setMethod] = useState(initialSingleMethod);
 
+  /* ── 기간 ──────────────────────────────────────────────────────────────
+     판정은 서버와 **같은 함수**다. 화면만 느슨하면 대표는 여기를 지나 서버에서
+     거부되고, 왜인지 알 수 없다. 반대로 화면만 빡빡하면 할 수 있는 일을
+     못 하게 막는다. */
+  const sessionUpWindow = sessionUpWindowOf(pass);
+  const canOverride = canOverrideSessionUpWindow(actorRole);
+  const [overrideReason, setOverrideReason] = useState(initialOverrideReason);
+  const needsReason = !sessionUpWindow.open && canOverride;
+
   /* 새 만료일은 선택이다. 안 주면 기존 날짜 그대로다 -- 늘린 회차를 쓸 기간이
      없으면 늘린 뜻이 없지만, 그 판단은 사람이 한다. */
   let nextExpiry = null;
@@ -18625,11 +18675,19 @@ function PassSessionUpSheet({
     addSessions: Number.parseInt(String(sessions).trim(), 10),
     addPrice: Number.parseInt(String(price).trim() || "0", 10),
     addService: Number.parseInt(String(service).trim() || "0", 10),
+    actorRole,
+    overrideReason,
   };
-  const refused = String(sessions).trim() || String(price).trim() ? sessionUpError(input) : "";
+  const typed = Boolean(String(sessions).trim() || String(price).trim());
+  const refused = typed ? sessionUpError(input) : "";
   const ready = !refused && Number.isInteger(input.addSessions) && input.addSessions > 0 && !busy;
-  /* 막혀 있으면 미리보기를 띄우지 않는다. 지어낸 숫자를 보고 누르게 된다. */
-  const plan = ready || (!refused && Number.isInteger(input.addSessions) && input.addSessions > 0)
+  /* 막혀 있으면 미리보기를 띄우지 않는다. 지어낸 숫자를 보고 누르게 된다.
+
+     다만 **숫자만 본다.** 기간이 지난 회원권에서도 대표는 사유를 적기 전에
+     무엇이 일어날지 봐야 한다 -- 표가 안 보이면 얼마가 되는지 모르는 채로
+     사유를 적게 된다. */
+  const numbersRefused = typed ? sessionUpNumbersError(input) : "";
+  const plan = !numbersRefused && Number.isInteger(input.addSessions) && input.addSessions > 0
     ? planSessionUp({ ...input, expiresAt: nextExpiry })
     : null;
 
@@ -18654,6 +18712,32 @@ function PassSessionUpSheet({
       <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
         이미 확정된 차감은 그때의 단가 그대로입니다. 새 회당 금액은 앞으로의 수업부터 적용됩니다.
       </p>
+
+      {/* ── 기간 ────────────────────────────────────────────────────────
+          열려 있으면 몇 회 남았는지, 닫혔으면 왜 닫혔고 누가 열 수 있는지.
+          "할 수 없습니다" 만 띄우면 대표를 부를 생각을 못 한다. */}
+      <div className="mt-2.5" style={{
+        padding: 10, borderRadius: 8,
+        backgroundColor: sessionUpWindow.open ? CANVAS : WARN_S,
+      }}>
+        <p style={{
+          fontSize: TYPE.caption, fontWeight: 700,
+          color: sessionUpWindow.open ? INK : WARN,
+        }}>
+          {sessionUpWindowLabel(sessionUpWindow)}
+        </p>
+        <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+          {`유료 ${sessionUpWindow.used}회 사용 · ${sessionUpWindow.limit}회차까지 가능`}
+          {Number(pass?.serviceSessions) > 0 ? " (서비스 회차는 세지 않습니다)" : ""}
+        </p>
+        {!sessionUpWindow.open ? (
+          <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: canOverride ? INK : WARN }}>
+            {canOverride
+              ? "기간이 지났습니다. 사유를 적으면 예외로 진행할 수 있고, 그 사유가 이력과 감사 기록에 남습니다."
+              : "기간이 지났습니다. 대표·총괄매니저만 사유를 적고 진행할 수 있습니다."}
+          </p>
+        ) : null}
+      </div>
 
       <div className="mt-3 grid grid-cols-2 gap-2">
         <Field label="추가 횟수">
@@ -18690,6 +18774,24 @@ function PassSessionUpSheet({
           ))}
         </div>
       </div>
+
+      {/* 기간을 넘겨 여는 사유. **열거값이 아니라 문장이다** -- 예외는 그때마다
+          다른 사정이고, 고정 목록으로 받으면 전부 "기타" 가 된다. 원장의
+          보정·취소 사유와 같은 자리에 같은 한도로 남는다.
+
+          회원 이름은 적지 않도록 안내만 한다 -- 원장의 reason 은 센터 사람만
+          읽고(규칙), 이미 그 회원의 회원권에 붙어 있는 줄이다. */}
+      {needsReason ? (
+        <div className="mt-2.5">
+          <p className="mb-1" style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>
+            예외 사유 (필수)
+          </p>
+          <textarea value={overrideReason} rows={2} className={inputCls}
+            maxLength={SESSION_UP_REASON_MAX}
+            placeholder="예) 회원 요청으로 기간 지나 추가 결제"
+            onChange={(event) => setOverrideReason(event.target.value)} />
+        </div>
+      ) : null}
 
       {/* 누르기 전에 무엇이 일어나는지. 원장은 고칠 수 없다. */}
       {plan ? (
@@ -18732,6 +18834,9 @@ function PassSessionUpSheet({
             addService: input.addService,
             paymentMethod: method,
             expiresAt: nextExpiry ? nextExpiry.toISOString() : "",
+            /* 기간 안이면 빈 문자열이다. 서버가 역할과 기간을 다시 보고
+               예외일 때만 기록한다 -- 앱이 보낸 사유만으로 열리지 않는다. */
+            overrideReason: needsReason ? String(overrideReason).trim() : "",
           })}
           className="h-11 flex-1 font-bold" style={{
             borderRadius: 10, backgroundColor: BRAND, color: "#fff", fontSize: TYPE.caption,
@@ -18745,9 +18850,14 @@ function PassSessionUpSheet({
 function ClientPassRow({
   pass, nameOfInstructor, nameOfClient = () => "", clientId = "", now,
   onCancel, cancellable = false, onTransfer, onAdjust, onExpiry, onSessionUp,
-  onHandover,
+  onHandover, canOverrideSessionUp = false,
 }) {
   const usable = isDeductablePass(pass, now);
+  /* 세션업 기간. 지났으면 FC매니저의 버튼은 **감추지 않고 잠근다** -- 없어진
+     버튼은 "이 회원권은 세션업이 안 되는 종류" 로 읽히고, 그러면 대표를 부를
+     생각을 못 한다. 잠긴 버튼 옆에 이유를 둔다. */
+  const sessionUpWindow = sessionUpWindowOf(pass);
+  const sessionUpAllowed = sessionUpWindow.open || canOverrideSessionUp;
   /* 듀엣이면 이 회원권을 둘이 함께 쓴다. 잔여 29회가 두 사람의 29회라는
      사실이 화면에 없으면, 대표는 한 사람 몫으로 읽고 재등록 시점을 잘못 센다. */
   const partner = partnerClientId(pass, clientId);
@@ -18779,6 +18889,11 @@ function ClientPassRow({
         {pass.expiresAt ? `${dayLabel(pass.expiresAt)} 만료${expired ? " (지남)" : ""}` : "만료일 없음"}
         {" · 담당 "}{nameOfInstructor(pass.instructorId)}
       </p>
+      {/* 세션업 기간. 버튼이 있든 없든 적는다 -- 누를 수 없는 사람도 회원에게
+          "언제까지 늘릴 수 있다" 를 말할 수 있어야 한다. */}
+      {pass.status === "active" ? (
+        <SessionUpWindowLine window={sessionUpWindow} />
+      ) : null}
       <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
         {/* 이미 차감이 있으면 취소하지 않는다. 그 수업은 실제로 일어났고, 없던
             일로 만들면 그 회차의 급여도 함께 사라진다. 차감을 전부 보정하면
@@ -18792,10 +18907,13 @@ function ClientPassRow({
         ) : null}
         {/* 세션업. 회차를 늘리는 쪽이라 가장 자주 눌리고, 그래서 앞에 둔다. */}
         {onSessionUp ? (
-          <button type="button" onClick={onSessionUp}
+          <button type="button" onClick={onSessionUp} disabled={!sessionUpAllowed}
+            title={sessionUpAllowed ? undefined : "세션업 기간이 지났습니다"}
             className="shrink-0 px-2.5 font-bold" style={{
               height: 28, borderRadius: 999, fontSize: TYPE.caption,
-              backgroundColor: TINT, color: BRAND_D,
+              backgroundColor: sessionUpAllowed ? TINT : CANVAS,
+              color: sessionUpAllowed ? BRAND_D : SUB,
+              opacity: sessionUpAllowed ? 1 : 0.45,
             }}>세션업</button>
         ) : null}
         {/* 양도. 듀엣이거나 넘길 유료 회차가 없으면 아예 열지 않는다 --
@@ -18837,6 +18955,13 @@ function ClientPassRow({
               height: 28, borderRadius: 999, fontSize: TYPE.caption,
               backgroundColor: CANVAS, color: BRAND_D,
             }}>만료일</button>
+        ) : null}
+        {/* 왜 잠겼는가. 코드 없는 "할 수 없습니다" 를 남기지 않는 것과 같은
+            이유로, 누를 수 없는 버튼 옆에는 이유가 선다. */}
+        {onSessionUp && !sessionUpAllowed ? (
+          <span className="w-full" style={{ fontSize: TYPE.caption, color: WARN }}>
+            세션업 기간이 지났습니다 · 대표·총괄매니저만 사유를 적고 진행할 수 있습니다
+          </span>
         ) : null}
       </div>
       {partner ? (
@@ -19104,7 +19229,8 @@ function ClientDetail({
   );
 
   if (sessionUp) return (
-    <PassSessionUpSheet pass={sessionUp.pass}
+    <PassSessionUpSheet pass={sessionUp.pass} actorRole={organization?.role || ""}
+      initialOverrideReason={sessionUp.overrideReason || ""}
       initialSessions={sessionUp.sessions || ""} initialPrice={sessionUp.price || ""}
       onCancel={() => { setSessionUp(null); setSessionUpErr(""); }}
       onConfirm={runSessionUp} busy={busy} error={sessionUpErr} />
@@ -19197,6 +19323,9 @@ function ClientDetail({
               : passes.map((pass) => (
                 <ClientPassRow key={pass.id} pass={pass} nameOfInstructor={nameOfInstructor}
                   nameOfClient={nameOfClient} clientId={client?.id || ""} now={at}
+                  /* 기간이 지난 뒤에도 여는 사람. 서버가 소속 문서의 역할로
+                     같은 것을 다시 본다 -- 여기는 버튼을 잠글지만 정한다. */
+                  canOverrideSessionUp={canOverrideSessionUpWindow(organization?.role)}
                   /* 대표·총괄은 전처럼 차감이 전부 보정된 것까지 취소한다.
                      FC매니저는 그 위에 "갓 발급 · 안 씀" 이 더 걸린다. */
                   cancellable={isCancellablePass(pass, entries)
@@ -21474,6 +21603,7 @@ const AUDIT_ACTION_LABEL = {
   [AUDIT_ACTION.MEMBER_LINK_CREATED]: "회원 계정 연결",
   [AUDIT_ACTION.MEMBER_LINK_REMOVED]: "회원 계정 연결 해제",
   [AUDIT_ACTION.MEMBER_PHONE_CHANGED]: "연락처 변경",
+  [AUDIT_ACTION.SESSION_UP_OVERRIDE]: "세션업 기간 예외",
   issue: "회원권 발급",
   deduct: "차감",
   transfer: "담당 강사 변경",
@@ -21510,6 +21640,10 @@ function AuditTimelineRow({ row, nameOfClient, nameOfInstructor, nameOfLocation 
     detail = `${nameOfInstructor(row.targetId)} · ${row.enabled ? "퇴사" : "복직"}`;
   } else if (row.action === AUDIT_ACTION.MEMBER_ADDED || row.action === AUDIT_ACTION.MEMBER_PROFILE_CHANGED) {
     detail = `${nameOfInstructor(row.targetId)} · ${labelOf(MEMBERSHIP_TITLE_LABELS, row.title)}`;
+  } else if (row.action === AUDIT_ACTION.SESSION_UP_OVERRIDE) {
+    /* 사유는 원장에 있다 (감사 로그에는 자유 문장 칸이 없다). 여기서는
+       **얼마나 지나서 열었는지**를 숫자로 말한다. */
+    detail = `${nameOfClient(row.clientId)} · ${row.previousAmount ?? "?"}회차까지인데 ${row.amount ?? "?"}회 사용`;
   } else if (row.action === "transfer") {
     detail = `${nameOfInstructor(row.fromInstructorId)} → ${nameOfInstructor(row.toInstructorId)}`;
   } else {
@@ -24912,6 +25046,22 @@ export function createAppScreenSmokeCases() {
     { id: "smoke-pass-a", clientId: "smoke-client-a", category: "pt_1_1_repurchase_event", totalSessions: 20, serviceSessions: 2, contractPrice: 1300000, purchaseRound: 2, paymentMethod: "card", remainingCount: 8, baseUnitPrice: 30000, serviceUsed: 0, handedOver: false, instructorId: "u1", status: "active", createdAt: new Date(2026, 7, 1), expiresAt: new Date(2027, 1, 1) },
     { id: "smoke-pass-old", clientId: "smoke-client-a", category: "pt_1_1_new", totalSessions: 10, serviceSessions: 0, contractPrice: 550000, purchaseRound: 1, paymentMethod: "cash", remainingCount: 3, baseUnitPrice: 25000, serviceUsed: 0, handedOver: true, instructorId: "u2", status: "active", createdAt: new Date(2026, 3, 1), expiresAt: new Date(2026, 6, 1) },
   ];
+  /* 회원 상세의 회원권 네 장. 카드와 회원권 문서가 같은 목록을 본다. */
+  const smokeMemberPasses = [
+    { id: "smoke-solo-50", productId: "1:1 PT 50회", category: "pt_1_1_repurchase_event", clientId: "smoke-client-a", totalSessions: 50, serviceSessions: 0, remainingCount: 11, contractPrice: 3181800, status: "active", expiresAt: new Date(2026, 11, 18) },
+    { id: "smoke-solo-100", productId: "1:1 PT 100회", category: "pt_1_1_repurchase_event", clientId: "smoke-client-a", totalSessions: 100, serviceSessions: 0, remainingCount: 100, contractPrice: 5000000, status: "active", expiresAt: new Date(2027, 11, 31) },
+    { id: "smoke-duet-100", productId: "2:1 PT 33->100 세션업", category: "pt_2_1_new", clientId: "smoke-client-a", clientIds: ["smoke-client-a", "smoke-client-b"], partnerName: "박서연", totalSessions: 100, serviceSessions: 0, remainingCount: 13, contractPrice: 4096000, status: "active", expiresAt: new Date(2026, 10, 9) },
+    { id: "smoke-duet-70", productId: "2:1 PT 70회", category: "pt_2_1_new", clientId: "smoke-client-a", clientIds: ["smoke-client-a", "smoke-client-b"], partnerName: "박서연", totalSessions: 70, serviceSessions: 0, remainingCount: 70, contractPrice: 3818200, status: "active", expiresAt: new Date(2027, 8, 30) },
+    /* 이관 회원권은 칸이 빌 수 있다. 짝 이름도 만료일도 상품명도 없는 줄이
+       한 장 섞여야 "비어 있어도 그려지는가" 를 본다. */
+    { id: "smoke-csv-bare", clientId: "smoke-client-a", remainingCount: 0 },
+  ];
+  /* 세션업 기간 **안**의 회원권. smokeHistoryPasses[0] 은 20회권을 14회 쓴
+     것이라 이미 기간이 지났다 (6회차까지) -- 두 상태를 같은 회원권으로 보일
+     수 없어 하나를 더 둔다. 20회권 잔여 16 → 유료 4회 사용, 3회 남음. */
+  const smokeFreshPass = {
+    ...smokeHistoryPasses[0], id: "smoke-pass-fresh", serviceSessions: 0, remainingCount: 16,
+  };
   /* 양도의 받는 회원 후보. 이름을 전부 입력해야 찾히므로 화면에 깔리지 않는다. */
   const smokeTransferClients = [
     { id: "smoke-client-b", name: "박두리", phone: "01012345678" },
@@ -25340,6 +25490,21 @@ export function createAppScreenSmokeCases() {
         ["smoke-client-b", { skip: "no_pass" }],
       ]),
     }) },
+    /* 세션업 기간. 강사가 **확정을 누르기 전에** 본다 -- 이 수업을 확정하면
+       기간이 한 칸 줄고, 마지막 한 회차를 지나가면 대표·총괄만 열 수 있다.
+       한 명은 마지막 한 회, 한 명은 이미 지났다. */
+    { name: "일정 탭 · 소속 · 예상 단가 · 세션업 기간", element: scheduleWithSettlement(settleLessonOf(), {
+      rateOf: () => new Map([
+        ["m-local-1", {
+          unitPrice: 30000, rule: "base_category", passId: "p1", remaining: 8,
+          sessionUp: { limit: 6, used: 6, left: 1, open: true },
+        }],
+        ["smoke-client-b", {
+          unitPrice: 30000, rule: "base_category", passId: "p2", remaining: 3,
+          sessionUp: { limit: 6, used: 9, left: 0, open: false },
+        }],
+      ]),
+    }) },
     { name: "일정 탭 · 소속 · 예상 단가 · 서비스", element: scheduleWithSettlement(settleLessonOf(), {
       rateOf: () => new Map([
         ["m-local-1", { unitPrice: 10000, rule: "base_category", passId: "p1", remaining: 8 }],
@@ -25420,6 +25585,8 @@ export function createAppScreenSmokeCases() {
        화면에 넘기는데 Date 에는 slice 가 없어 회원 상세가 통째로 터졌다.
        위의 "소속" 케이스는 passCards 를 넘기지 않아 레거시 분기만 그렸고,
        그래서 렌더 테스트가 있는데도 잡지 못했다. */
+    /* 한 회원의 회원권 네 장. 카드(passCards)와 회원권 문서(centrePasses)로
+       같은 목록을 넘긴다 -- 두 길이 한 화면에서 맞물려야 한다. */
     { name: "회원 상세 · 회원권 네 장", element: <ReferenceMemberDetail member={smokeRoster[0]} schedule={db.schedule} photos={photos[member.id]} settings={db.settings} organizationMode
       /* 날짜는 **달력 날짜**로 적는다. "2026-11-09T00:00:00+09:00" 처럼 절대
          순간으로 적으면 UTC 머신에서 하루 전으로 읽히고(isoDay 는 로컬 날짜를
@@ -25428,16 +25595,12 @@ export function createAppScreenSmokeCases() {
       passCards={passCardList({
         now: new Date(2026, 9, 1),
         nextSoloPassId: "smoke-solo-50", nextDuetPassId: "smoke-duet-100",
-        passes: [
-          { id: "smoke-solo-50", productId: "1:1 PT 50회", category: "pt_1_1_repurchase_event", clientId: "smoke-client-a", totalSessions: 50, serviceSessions: 0, remainingCount: 11, contractPrice: 3181800, status: "active", expiresAt: new Date(2026, 11, 18) },
-          { id: "smoke-solo-100", productId: "1:1 PT 100회", category: "pt_1_1_repurchase_event", clientId: "smoke-client-a", totalSessions: 100, serviceSessions: 0, remainingCount: 100, contractPrice: 5000000, status: "active", expiresAt: new Date(2027, 11, 31) },
-          { id: "smoke-duet-100", productId: "2:1 PT 33->100 세션업", category: "pt_2_1_new", clientId: "smoke-client-a", clientIds: ["smoke-client-a", "smoke-client-b"], partnerName: "박서연", totalSessions: 100, serviceSessions: 0, remainingCount: 13, contractPrice: 4096000, status: "active", expiresAt: new Date(2026, 10, 9) },
-          { id: "smoke-duet-70", productId: "2:1 PT 70회", category: "pt_2_1_new", clientId: "smoke-client-a", clientIds: ["smoke-client-a", "smoke-client-b"], partnerName: "박서연", totalSessions: 70, serviceSessions: 0, remainingCount: 70, contractPrice: 3818200, status: "active", expiresAt: new Date(2027, 8, 30) },
-          /* 이관 회원권은 칸이 빌 수 있다. 짝 이름도 만료일도 상품명도 없는 줄이
-             한 장 섞여야 "비어 있어도 그려지는가" 를 본다. */
-          { id: "smoke-csv-bare", clientId: "smoke-client-a", remainingCount: 0 },
-        ],
+        passes: smokeMemberPasses,
       })}
+      /* 세션업 기간은 **회원권 문서에서** 센다 -- 카드에는 그 칸이 없다
+         (pass-cards.js 머리말). 같은 목록을 둘로 넘겨 두 길이 한 화면에서
+         맞물리는지 본다. 50회권은 39회를 써 끝났고, 100회권은 아직이다. */
+      centrePasses={smokeMemberPasses}
       onBack={noop} onPatch={asyncNoop} onSaveNote={asyncNoop} onSchedule={noop} onAssess={noop} onHandoverPass={noop} onToast={noop} onHide={asyncNoop} /> },
     /* 만료일이 차수와 어긋난 회원. 2차에 잔여가 있는데 1차보다 먼저 만료되면
        그 회차는 쓰이지 못한 채 사라진다 -- 차감이 차수 순이기 때문이다.
@@ -25647,7 +25810,18 @@ export function createAppScreenSmokeCases() {
         <AppOverlay layer="PAGE" name="출석 체크">출석 체크</AppOverlay>
       </>
     ) },
+    /* 기간 **안**. 평소의 세션업이고, 남은 회차가 몇 번인지 말한다. */
     { name: "센터 회원 상세 · 세션업", element: ownerClientDetail({
+      initialSessionUp: { pass: smokeFreshPass, sessions: "50", price: "2500000" },
+    }) },
+    /* 기간이 **지난 뒤**, 대표가 연다. 사유 칸이 서고, 전/후 표는 사유를 적기
+       전에도 보인다 -- 얼마가 되는지 모르는 채로 사유를 적게 하지 않는다. */
+    { name: "센터 회원 상세 · 세션업 · 기간 예외", element: ownerClientDetail({
+      initialSessionUp: { pass: smokeHistoryPasses[0], sessions: "50", price: "2500000" },
+    }) },
+    /* 같은 회원권을 FC매니저가 본다. 사유 칸이 없고, 대표를 불러야 한다는
+       말이 선다. */
+    { name: "센터 회원 상세 · 세션업 · 기간 종료 (매니저)", element: managerClientDetail({
       initialSessionUp: { pass: smokeHistoryPasses[0], sessions: "50", price: "2500000" },
     }) },
     { name: "센터 회원 상세 · 양도", element: ownerClientDetail({

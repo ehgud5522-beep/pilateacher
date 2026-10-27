@@ -185,7 +185,7 @@ import {
 } from "./features/members/centre-lessons.js";
 import {
   groupProducts, isArchivedProduct, issuableProducts, issueUnitPrice, priceLabel, productLine,
-  productTable, sessionsWarning, unusedProducts,
+  productGroupOf, productNameChips, productTable, sessionsWarning, unusedProducts,
 } from "./features/membership/product-groups.js";
 import { productMemberRows, productUsage } from "./features/membership/product-usage.js";
 import {
@@ -16087,6 +16087,10 @@ function IssueField({ label, hint, children }) {
 
 function PassIssue({
   organization, currentUserId, clientStore, productStore, instructorStore, locationStore, passStore,
+  /* 상품 화면으로 가는 길. **부르는 쪽이 넘겨주지 않으면 그려지지 않는다** --
+     권한은 한 곳에서만 판단한다. 상품을 만드는 것과 발급하는 것은 다른 일이고
+     규칙도 다른 목록으로 묻는다. */
+  onOpenProducts,
   onRetryOrganization, onToast, now = () => new Date(), initialState = null,
 }) {
   const [allClients, setClients] = useState(initialState?.clients || []);
@@ -16248,6 +16252,41 @@ function PassIssue({
     contractPriceManwon: String((Number(picked.defaultPrice) || 0) / WON_PER_MANWON),
     unitPriceManwon: "",
   }));
+
+  /* ── 상품 고르기는 두 단계다 ────────────────────────────────────────────
+     전에는 칩 하나에 이름만 적혀 있었다. "1:1 PT 1차 정상가" 를 10·20·30회로
+     파는 센터에서는 **똑같아 보이는 칩이 셋** 서고, 어느 것이 몇 회짜리인지
+     눌러 봐야 알았다. 고른 상품이 단가와 급여카테고리를 정하므로, 잘못 고르면
+     원장이 틀린 채로 쌓인다 -- append-only 라 되돌릴 수 없다.
+
+     묶는 방법과 순서는 **회원권 상품 화면과 같은 함수**가 정한다
+     (productNameChips). 두 화면의 순서가 다르면 눈이 줄을 잃는다. */
+  const productChips = useMemo(
+    () => productNameChips(issuableProducts(products)),
+    [products],
+  );
+  const chipKeyOf = useCallback((item) => (
+    item ? `${productGroupOf(item)}|${String(item.name ?? "").trim() || "(이름 없음)"}` : ""
+  ), []);
+  const [productChipKey, setProductChipKey] = useState(initialState?.productChipKey || "");
+  /* 고른 상품이 있으면 그 상품의 묶음이 열려 있어야 한다 -- 안 그러면 고른
+     카드가 화면에 없는데 아래 요약에는 그 상품이 서 있다. */
+  const activeChipKey = productChipKey || chipKeyOf(product);
+  const activeChip = productChips.find((item) => item.key === activeChipKey) || null;
+
+  const chooseProductName = (chip) => {
+    setProductChipKey(chip.key);
+    /* 회차가 하나뿐인 상품은 여기서 끝난다. 한 번 더 누르게 하면 지금보다
+       손이 느려지고, 고를 것이 없는 자리에서 고르라고 하는 셈이다. */
+    if (chip.items.length === 1) { chooseProduct(chip.items[0]); return; }
+    /* 다른 이름으로 옮기면 고른 상품을 놓는다. 들고 있으면 보이지 않는 카드가
+       선택된 채로 남고, 그 상품의 계약 금액이 그대로 발급된다. */
+    if (!chip.items.some((item) => item.id === form.productId)) {
+      setForm((current) => ({
+        ...current, productId: "", totalSessions: "", contractPriceManwon: "", unitPriceManwon: "",
+      }));
+    }
+  };
 
   /* 듀엣 판정은 전부 features/passes/duet-issue.js 에 있다. 화면은 그리기만
      한다 -- 막는 것과 알리는 것을 화면 안에서 섞기 시작하면 어느 것이 어느
@@ -16473,7 +16512,20 @@ function PassIssue({
 
   return (
     <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
-      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>회원권 발급</h2>
+      <div className="flex items-start justify-between gap-2">
+        <h2 className="min-w-0" style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>회원권 발급</h2>
+        {/* 고를 상품이 없거나 금액이 틀렸을 때 가는 곳. 메뉴로 돌아 나가면
+            적어 둔 회원과 금액이 날아간다 -- 발급은 한 화면에서 끝나야 한다.
+
+            **부르는 쪽이 넘겨주지 않으면 그려지지 않는다.** 권한은 한 곳에서만
+            판단한다 (ReferenceSettingsTab). */}
+        {onOpenProducts ? (
+          <button type="button" onClick={() => onOpenProducts()} className="h-9 shrink-0 px-3 font-bold"
+            style={{ borderRadius: 10, backgroundColor: CANVAS, color: BRAND_D, fontSize: TYPE.caption }}>
+            상품 관리
+          </button>
+        ) : null}
+      </div>
       {loading ? <p className="mt-3" style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : null}
       {!loading && loadError
         ? <p className="mt-3" style={{ fontSize: TYPE.caption, color: BAD }}>발급에 필요한 정보를 불러오지 못했습니다 (코드 {loadError}).</p>
@@ -16545,22 +16597,60 @@ function PassIssue({
           ) : null}
 
           <IssueField label="상품">
-            {products.length === 0
+            {productChips.length === 0
               ? <p style={{ fontSize: TYPE.caption, color: SUB }}>운영중인 상품이 없습니다. 회원권 상품에서 먼저 추가해 주세요.</p>
               : (
-                <div className="flex flex-wrap gap-2">
-                  {/* 삭제한 상품으로는 새로 발급하지 않는다. listProducts 가 이미
-                      거르지만 여기서 한 번 더 막는다 -- 읽는 쪽의 기본값이
-                      바뀌어도 이 화면은 그대로여야 한다. */}
-                  {issuableProducts(products).map((item) => (
-                    <button key={item.id} type="button" onClick={() => chooseProduct(item)}
-                      className="h-9 px-3 font-bold" style={{
-                        borderRadius: 999, fontSize: TYPE.caption,
-                        backgroundColor: form.productId === item.id ? TINT : CANVAS,
-                        color: form.productId === item.id ? BRAND_D : SUB,
-                      }}>{item.name}</button>
-                  ))}
-                </div>
+                <>
+                  {/* ── 1단계: 상품 이름 ──────────────────────────────────
+                      이름 하나당 칩 하나다. 1:1 · 2:1 을 함께 적는 것은 이름이
+                      같은 두 상품이 있을 수 있기 때문이고, 그 둘은 차감하는
+                      회원권부터 다르다.
+
+                      삭제한 상품으로는 새로 발급하지 않는다 -- listProducts 가
+                      이미 거르지만 여기서 한 번 더 막는다 (issuableProducts). */}
+                  <div className="flex flex-wrap gap-2">
+                    {productChips.map((chip) => (
+                      <button key={chip.key} type="button" onClick={() => chooseProductName(chip)}
+                        className="h-9 px-3 font-bold" style={{
+                          borderRadius: 999, fontSize: TYPE.caption,
+                          backgroundColor: activeChipKey === chip.key ? TINT : CANVAS,
+                          color: activeChipKey === chip.key ? BRAND_D : SUB,
+                        }}>
+                        <span style={{ fontWeight: 400 }}>{chip.groupLabel}</span>
+                        {" "}{chip.name}
+                        {chip.items.length > 1 ? (
+                          <span style={{ fontWeight: 400 }}>{` (${chip.items.length})`}</span>
+                        ) : null}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* ── 2단계: 회차 · 금액 ────────────────────────────────
+                      상품 화면과 **같은 카드**다 (ProductSessionCard). 회차는
+                      적은 순이고, 그 순서는 productNameChips 가 정한다. */}
+                  {activeChip ? (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {activeChip.items.map((item) => (
+                        <ProductSessionCard key={item.id} product={item}
+                          selected={form.productId === item.id}
+                          onClick={() => chooseProduct(item)} />
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>
+                      상품을 고르면 회차와 금액이 여기 섭니다.
+                    </p>
+                  )}
+
+                  {/* 같은 이름인데 급여카테고리가 갈리면 급여가 회차마다
+                      달라진다. 고르기 전에 말해야 한다 -- 발급은 되돌릴 수
+                      없고, 상품 화면이 쓰는 그 판정이다 (mixedCategories). */}
+                  {activeChip?.mixed ? (
+                    <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: WARN }}>
+                      이 상품은 회차마다 급여카테고리가 다릅니다. 카드 아래 값을 확인해 주세요.
+                    </p>
+                  ) : null}
+                </>
               )}
           </IssueField>
 
@@ -19690,6 +19780,51 @@ const wonToManwonLabel = (won) => {
   return `${Number.isInteger(manwon) ? manwon : manwon.toFixed(1)}만원`;
 };
 
+/**
+ * 상품 한 장 — "10회 · 100만원" 과 그 아래 급여카테고리.
+ *
+ * **회원권 상품 화면과 발급 화면이 같은 것을 쓴다.** 둘을 따로 그리면 대표가
+ * 상품 화면에서 본 모양과 발급 화면의 모양이 달라지고, 고르는 자리에서 다른
+ * 상품을 고르게 된다 -- 고른 상품이 그 회원권의 단가와 급여카테고리를 정하고,
+ * 원장은 append-only 라 되돌릴 수 없다.
+ *
+ * 두 화면을 **합치지는 않는다.** 권한이 다르다 -- 상품을 만드는 것과 발급하는
+ * 것은 다른 일이고, 규칙도 다른 목록으로 묻는다.
+ *
+ * @param {{
+ *   product: any, note?: string, selected?: boolean, onClick?: () => void,
+ * }} input
+ *   note 상품 화면의 "사용 중 3명" 처럼 카드마다 다른 한 조각. 발급 화면에는
+ *        그 숫자가 없으므로 비어 있다.
+ */
+function ProductSessionCard({ product, note = "", selected = false, onClick }) {
+  const archived = isArchivedProduct(product);
+  const sessions = Number(product?.defaultSessions) || 0;
+  return (
+    <button type="button" onClick={onClick} aria-pressed={selected}
+      className="text-left" style={{
+        padding: "6px 9px", borderRadius: 9,
+        backgroundColor: archived ? CANVAS : selected ? BRAND : TINT,
+        border: `1px solid ${archived ? LINE : selected ? BRAND : RING}`,
+      }}>
+      <span className="block tabular-nums" style={{
+        fontSize: TYPE.caption, fontWeight: 700,
+        color: archived ? SUB : selected ? "#fff" : BRAND_D,
+        textDecoration: archived ? "line-through" : "none",
+      }}>
+        {sessions > 0 ? `${sessions}회 · ` : ""}{priceLabel(product?.defaultPrice)}
+      </span>
+      {/* 급여카테고리는 작게. 고를 때 보는 것은 회차와 금액이고, 카테고리는
+          "이게 맞나" 를 확인하는 값이다 -- 크게 적으면 둘이 다툰다. */}
+      <span className="block" style={{
+        fontSize: TYPE.caption, color: selected ? "#fff" : SUB,
+      }}>
+        {labelOf(PAY_CATEGORY_LABELS, product?.payCategory)}{note ? ` · ${note}` : ""}
+      </span>
+    </button>
+  );
+}
+
 function ProductRow({ product }) {
   const archived = product.status === PRODUCT_STATUS.ARCHIVED;
   return (
@@ -20060,24 +20195,16 @@ function ProductCatalog({ organization, currentUserId, store, onRetryOrganizatio
                       ) : null}
                     </div>
                     <div className="mt-1.5 flex flex-wrap gap-1.5">
+                      {/* 발급 화면과 **같은 카드**다 (ProductSessionCard). 둘이
+                          갈라지면 상품 화면에서 본 모양과 고르는 자리의 모양이
+                          달라진다. */}
                       {row.cells.flatMap((cell) => cell.items.map(({ product, usage: used }) => (
-                        <button key={product.id} type="button" onClick={() => setPicked(product)}
-                          className="text-left" style={{
-                            padding: "6px 9px", borderRadius: 9,
-                            backgroundColor: isArchivedProduct(product) ? CANVAS : TINT,
-                            border: `1px solid ${isArchivedProduct(product) ? LINE : RING}`,
-                          }}>
-                          <span className="block tabular-nums" style={{
-                            fontSize: TYPE.caption, fontWeight: 700,
-                            color: isArchivedProduct(product) ? SUB : BRAND_D,
-                            textDecoration: isArchivedProduct(product) ? "line-through" : "none",
-                          }}>{cell.sessions}회 {priceLabel(product.defaultPrice)}</span>
-                          <span className="block" style={{ fontSize: TYPE.caption, color: SUB }}>
-                            {labelOf(PAY_CATEGORY_LABELS, product.payCategory)}
-                            {/* 세지 않았으면 0 이 아니라 아무 말도 하지 않는다. */}
-                            {used ? ` · 사용 중 ${used.active}명` : " · 집계 중"}
-                          </span>
-                        </button>
+                        <ProductSessionCard key={product.id} product={product}
+                          onClick={() => setPicked(product)}
+                          selected={picked?.id === product.id}
+                          /* 세지 않았으면 0 이 아니라 아무 말도 하지 않는다 --
+                             "아무도 안 쓴다" 로 읽히면 그것을 믿고 지운다. */
+                          note={used ? `사용 중 ${used.active}명` : "집계 중"} />
                       )))}
                     </div>
                   </div>
@@ -24067,6 +24194,12 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
   const showProducts = organization.ready
     && !organization.isLegacy
     && FC_ROLES.includes(organization.role);
+  /* 발급 화면 우상단의 [상품 관리]. **대표·총괄만** (2026-10-27 대표 결정).
+     FC매니저도 회원권 상품 화면 자체는 메뉴에서 열 수 있지만, 발급 도중에
+     상품을 손보는 것은 대표가 하는 일로 두기로 했다 -- 상품은 지우고 다시
+     만드는 것이고, 그 자리에서 급하게 하면 이미 팔린 회원권이 가리키던 이름이
+     사라진다. */
+  const showProductAdmin = showProducts && isOwnerLevelRole(organization.role);
   /* 회원권 상품 · 회원권 발급 · 회원 관리는 대표와 FC매니저가 본다 (2026-09-23).
      발급은 그 순간 급여의 근거를 만들고, 등록은 그 발급이 가리킬 사람을 만든다
      -- 둘 다 원장에 append-only 로 남아 나중에 고칠 수 없다. 그래서 강사에게는
@@ -24914,6 +25047,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
           <PassIssue organization={organization} currentUserId={account?.id || ""}
             clientStore={clientStore} productStore={productStore} instructorStore={instructorStore}
             locationStore={locationStore} passStore={passStore}
+            onOpenProducts={showProductAdmin ? () => setView("products") : undefined}
             onRetryOrganization={onRetryOrganization} onToast={onToast} />
         )}
         {view === "handover" && showInstructorAdmin && (
@@ -25199,6 +25333,17 @@ export function createAppScreenSmokeCases() {
     { id: "smoke-product-etc", organizationId: "smoke-center", name: "체험 1회", sessionType: "pt_1_1", payCategory: "etc", defaultSessions: 1, defaultPrice: 55000, status: "active" },
     { id: "smoke-product-etc-priced", organizationId: "smoke-center", name: "보강 5회", sessionType: "pt_1_1", payCategory: "etc", defaultSessions: 5, defaultPrice: 250000, baseUnitPrice: 28000, status: "active" },
     { id: "smoke-product-duet", organizationId: "smoke-center", name: "2:1 30회", sessionType: "pt_2_1", payCategory: "pt_2_1_new", defaultSessions: 30, defaultPrice: 1800000, status: "active" },
+  ];
+  /* ── 같은 이름을 회차만 바꿔 파는 센터 ───────────────────────────────
+     실제 운영이 이렇다. 전에는 발급 화면이 이름만 적은 칩을 셋 세웠고,
+     **똑같아 보이는 칩** 중 어느 것이 몇 회짜리인지 눌러 봐야 알았다. */
+  const smokeRepeatedProducts = [
+    { id: "smoke-repeat-10", organizationId: "smoke-center", name: "1:1 PT 1차 정상가", sessionType: "pt_1_1", payCategory: "pt_1_1_new", defaultSessions: 10, defaultPrice: 1000000, status: "active" },
+    { id: "smoke-repeat-20", organizationId: "smoke-center", name: "1:1 PT 1차 정상가", sessionType: "pt_1_1", payCategory: "pt_1_1_new", defaultSessions: 20, defaultPrice: 1900000, status: "active" },
+    { id: "smoke-repeat-30", organizationId: "smoke-center", name: "1:1 PT 1차 정상가", sessionType: "pt_1_1", payCategory: "pt_1_1_new", defaultSessions: 30, defaultPrice: 2700000, status: "active" },
+    /* 이름이 같은 2:1. 칩에 1:1 · 2:1 을 함께 적지 않으면 구별되지 않는데,
+       그 둘은 차감하는 회원권부터 다르다. */
+    { id: "smoke-repeat-duet", organizationId: "smoke-center", name: "1:1 PT 1차 정상가", sessionType: "pt_2_1", payCategory: "pt_2_1_new", defaultSessions: 20, defaultPrice: 2400000, status: "active" },
   ];
   const productStore = {
     list: async () => [
@@ -25539,14 +25684,14 @@ export function createAppScreenSmokeCases() {
   const smokeIssueBase = {
     clients: smokeClients, products: smokeProducts, instructors: smokeInstructors, locations: smokeLocations,
   };
-  const passIssue = (organization, initialState) => providerWith(organization, (
+  const passIssue = (organization, initialState, extra = {}) => providerWith(organization, (
     <PassIssue organization={readyOrganizationContext(organization)} currentUserId="smoke-account"
       clientStore={clientStore} productStore={productStore} instructorStore={instructorStore}
       locationStore={locationStore} passStore={passStore} initialState={initialState}
       /* 시계를 못 박는다. 만료일이 박힌 픽스처라 진짜 시계를 쓰면 언젠가
          "쓸 수 있는 회원권" 이 아니게 되고, 그날 이 화면의 경고가 사라진다. */
       now={() => new Date(2026, 8, 17)}
-      onRetryOrganization={noop} onToast={noop} />
+      onRetryOrganization={noop} onToast={noop} {...extra} />
   ));
   const instructorAdmin = (organization, initialState) => providerWith(organization, (
     <InstructorAdmin organization={readyOrganizationContext(organization)} currentUserId="smoke-account"
@@ -26192,6 +26337,23 @@ export function createAppScreenSmokeCases() {
     { name: "회원 목록 · 소속 강사 · 명부 조회 실패 · 네트워크", element: <ReferenceMemberList members={db.members} schedule={db.schedule} settings={db.settings} canRegister={false} currentUserId="u1" myMembersDefault rosterError="unavailable" onRetryRoster={noop} onSelect={noop} onAdd={noop} /> },
     { name: "회원 목록 · 강사 · 비어 있음", element: <ReferenceMemberList members={[]} schedule={[]} settings={db.settings} canRegister={false} onSelect={noop} onAdd={noop} /> },
     { name: "회원권 발급", element: passIssue(smokeOwner, { ...smokeIssueBase }) },
+    /* ── 같은 이름을 회차만 바꿔 파는 센터 ─────────────────────────────
+       1단계는 이름 칩 **둘**이다 (1:1 과 2:1). 셋이 아니다 -- 10·20·30회가
+       한 칩으로 접힌다. */
+    { name: "회원권 발급 · 같은 이름 여러 회차", element: passIssue(smokeOwner, {
+      ...smokeIssueBase, products: smokeRepeatedProducts,
+    }) },
+    /* 이름을 고르면 2단계가 선다. 회차 · 금액 카드이고 아래에 급여카테고리가
+       작게 붙는다 -- 회원권 상품 화면과 같은 카드다. */
+    { name: "회원권 발급 · 같은 이름 여러 회차 · 펼침", element: passIssue(smokeOwner, {
+      ...smokeIssueBase, products: smokeRepeatedProducts,
+      productChipKey: "solo|1:1 PT 1차 정상가",
+    }) },
+    /* 대표·총괄만. 고를 상품이 없거나 금액이 틀렸을 때 가는 길이다 -- 메뉴로
+       돌아 나가면 적어 둔 회원과 금액이 날아간다. */
+    { name: "회원권 발급 · 상품 관리", element: passIssue(smokeOwner, { ...smokeIssueBase }, {
+      onOpenProducts: noop,
+    }) },
     /* ── 복합결제 (2026-10-27) ──────────────────────────────────────────
        금액 칸 넷 · 결제 합계 · 잔금이 한 화면에 선다. 잔금은 손대기 전까지
        계약 금액 - 결제 합계이고, 손대면 "직접 수정" 과 되돌리기가 뜬다. */

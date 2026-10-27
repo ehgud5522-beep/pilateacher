@@ -160,6 +160,59 @@ export function groupProducts(products, { includeArchived = false } = {}) {
 }
 
 /**
+ * 같은 이름으로 파는데 급여카테고리가 갈렸는가.
+ *
+ * 의도한 것일 수도 있지만 모르고 그렇게 된 것이면 그 상품으로 팔린 회원권의
+ * 급여가 회차마다 달라지고, 원장은 되돌릴 수 없다. 상품 화면과 발급 화면이
+ * **같은 판정으로** 경고해야 한다 -- 한쪽에만 뜨면 다른 쪽에서 고르는 사람은
+ * 그 사실을 모른 채 고른다.
+ *
+ * @param {Array<any>} items 같은 이름의 상품들
+ */
+export function mixedCategories(items) {
+  return new Set(
+    (Array.isArray(items) ? items : []).map((item) => text(item?.payCategory)).filter(Boolean),
+  ).size > 1;
+}
+
+/**
+ * 상품 이름 하나당 한 줄. **발급 화면의 1단계가 쓴다.**
+ *
+ * ── 왜 이름이 1단계인가 ──
+ * 발급 화면은 상품을 칩 하나로 늘어놓았고, 칩에 이름만 적었다. "1:1 PT 1차
+ * 정상가" 를 10·20·30회로 파는 센터에서는 **똑같아 보이는 칩이 셋** 서고,
+ * 고르는 사람은 어느 것이 몇 회짜리인지 눌러 봐야 알았다. 고른 상품이 단가와
+ * 급여카테고리를 정하므로, 잘못 고르면 원장이 틀린 채로 쌓인다.
+ *
+ * 그래서 이름으로 한 번 좁히고 회차·금액을 고른다 -- 상품 화면이 이미 그렇게
+ * 묶여 있고(groupProducts), 두 화면의 순서가 같아야 눈이 줄을 잃지 않는다.
+ *
+ * 1:1 · 2:1 은 칩에 함께 적는다. 이름이 같은 1:1 과 2:1 상품이 있으면 이름만
+ * 으로는 구별되지 않고, 그 둘은 차감하는 회원권부터 다르다.
+ *
+ * @param {Array<any>} products
+ * @param {{ includeArchived?: boolean }} [options]
+ * @returns {Array<{
+ *   key: string, name: string, groupKey: string, groupLabel: string,
+ *   items: Array<any>, mixed: boolean,
+ * }>}
+ */
+export function productNameChips(products, { includeArchived = false } = {}) {
+  return groupProducts(products, { includeArchived }).flatMap((group) => (
+    group.names.map((entry) => ({
+      /* 이름이 같은 1:1 과 2:1 이 따로 서야 하므로 묶음까지 키에 넣는다. */
+      key: `${group.key}|${entry.name}`,
+      name: entry.name,
+      groupKey: group.key,
+      groupLabel: group.label,
+      // groupProducts 가 이미 회차 오름차순으로 세워 두었다.
+      items: entry.items,
+      mixed: mixedCategories(entry.items),
+    }))
+  ));
+}
+
+/**
  * 표 한 장. **행은 이름, 열은 횟수, 칸은 금액이다.**
  *
  * ── 왜 표인가 ──
@@ -193,10 +246,8 @@ export function productTable(products, usage, { includeArchived = false } = {}) 
       }
       return {
         name: entry.name,
-        /* 같은 이름으로 파는데 급여카테고리가 갈리면 급여가 회차마다 달라진다.
-           의도한 것일 수도 있지만 모르고 그렇게 된 것이면 그 상품으로 팔린
-           회원권의 급여가 전부 틀리고, 원장은 되돌릴 수 없다. */
-        mixed: new Set(entry.items.map((item) => text(item?.payCategory)).filter(Boolean)).size > 1,
+        // 발급 화면과 **같은 판정**이다 (mixedCategories 머리말).
+        mixed: mixedCategories(entry.items),
         cells: sessions.map((value) => ({
           sessions: value,
           items: (byCount.get(value) || []).map((item) => ({

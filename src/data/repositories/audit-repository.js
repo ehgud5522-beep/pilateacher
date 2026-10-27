@@ -107,6 +107,20 @@ export const AUDIT_ACTION = Object.freeze({
      (recordTotalAdjustment).
      Keep in sync with auditActions() in firestore.foundation.rules. */
   INSTRUCTOR_TOTAL_ADJUSTED: "instructor_total_adjusted",
+  /* 회원권 상품 추가 · 보관. **대표·총괄·FC매니저가 한다** (2026-10-27 대표,
+     규칙의 canManageProducts 와 같은 선).
+
+     상품 문서는 `createdBy` 로 "누가 만들었나" 를 들고 있지만, 보관(화면의
+     "삭제")은 status 한 칸만 바꾸므로 **누가 언제 내렸는지가 어디에도
+     없었다.** 그 상품으로는 더 이상 발급되지 않으니 운영이 바뀌는 일이고,
+     팔던 조건이 조용히 사라지면 반년 뒤 "이 상품 왜 없어졌나" 에 답할 것이
+     없다.
+
+     `enabled` 가 방향이다 -- 보관이면 true, 되살림이면 false. 퇴사·복직이 한
+     동작에 두 방향을 담는 것과 같은 모양이다 (MEMBER_REVOKED).
+     Keep in sync with auditActions() in firestore.foundation.rules. */
+  PRODUCT_ADDED: "product_added",
+  PRODUCT_ARCHIVED: "product_archived",
   /* 세션업 기간이 지난 회원권을 대표·총괄매니저가 예외로 늘렸다. 서버
      (sessionUpPass)만 쓰고 앱은 읽기만 한다 -- 규칙의 auditActions() 에도
      넣지 않았다. Admin SDK 는 규칙을 지나지 않고, 열어 두면 클라이언트가

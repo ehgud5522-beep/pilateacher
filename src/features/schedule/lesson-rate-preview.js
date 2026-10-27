@@ -20,6 +20,7 @@
  */
 
 import { PAY_CATEGORY } from "../../data/schema/constants.js";
+import { sessionUpWindowOf } from "../../../functions/shared/session-up.mjs";
 import {
   netContractPriceOf, resolveDeductionUnitPrice, spendsServiceSession,
 } from "../../data/schema/deduction-pricing.js";
@@ -105,6 +106,11 @@ export function previewMemberRate(input = {}) {
     });
     return {
       unitPrice, rule, passId: text(pass.id), remaining: remainingCountOf(pass),
+      /* 세션업 기간. 강사가 확정을 누르기 **전에** 보는 자리라, 마지막
+         회차가 지나가 버리기 전에 대표에게 말할 수 있다. 판정은 회원권
+         카드와 같은 함수다 -- 두 화면이 다른 숫자를 말하면 어느 쪽을
+         믿어야 하는지 알 수 없다. */
+      sessionUp: sessionUpWindowOf(pass),
       /* 함께 쓰는 회원권이면 두 줄에 같은 금액이 서는데, 실제로 나가는 것은
          한 번이다. 화면이 그 말을 할 수 있어야 강사가 2회로 읽지 않는다. */
       shared: input.shared === true,

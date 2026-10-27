@@ -131,7 +131,9 @@ test("the instructor is not on the list at all", () => {
 /* ── 세션업 ──────────────────────────────────────────────────────────────── */
 
 test("session up writes the pass and the ledger in one batch", async () => {
-  const store = fakeFirestore({ [`${ORG}/passes/pass-1`]: basePass({ remainingCount: 8 }) });
+  /* 잔여 16 = 유료 4회 사용. 20회권은 6회차까지라 **기간 안**이다 -- 평소의
+     세션업이 무엇을 쓰는지가 이 테스트의 주제이고, 기간은 아래에서 따로 본다. */
+  const store = fakeFirestore({ [`${ORG}/passes/pass-1`]: basePass({ remainingCount: 16 }) });
 
   const result = await runSessionUp(store, {
     fieldValue, organizationId: "center-a", passId: "pass-1", actorId: "u-owner",
@@ -141,7 +143,7 @@ test("session up writes the pass and the ledger in one batch", async () => {
 
   const pass = store.docs.get(`${ORG}/passes/pass-1`);
   assert.equal(pass.totalSessions, 70);
-  assert.equal(pass.remainingCount, 58);
+  assert.equal(pass.remainingCount, 66);
   assert.equal(pass.contractPrice, 3800000);
   assert.equal(pass.baseUnitPrice, 54286);
 
@@ -154,6 +156,13 @@ test("session up writes the pass and the ledger in one batch", async () => {
   assert.equal(entry.addedPrice, 2500000);
   assert.equal(entry.fromTotalSessions, 20);
   assert.equal(entry.createdBy, "u-owner");
+
+  /* 기간 안의 세션업은 사유도 감사 로그도 남기지 않는다. 모든 세션업을 감사
+     로그에 적으면 "예외" 가 목록에서 묻힌다. */
+  assert.equal("reason" in entry, false);
+  assert.equal("windowOverride" in entry, false);
+  assert.equal(store.writes.some((item) => item.path.startsWith("auditLogs/")), false);
+  assert.equal(result.windowOverride, false);
 });
 
 test("session up refuses an ended pass and writes nothing", async () => {
@@ -187,7 +196,7 @@ test("session up does not touch serviceUsed", async () => {
   /* 서비스를 더해도 "회원권당 한 번" 은 그대로다. 세션업이 그 권리를 새로
      주면 서비스를 얹을 때마다 센터가 한 번씩 더 지불한다. */
   const store = fakeFirestore({
-    [`${ORG}/passes/pass-1`]: basePass({ serviceSessions: 1, serviceUsed: 1, remainingCount: 5 }),
+    [`${ORG}/passes/pass-1`]: basePass({ serviceSessions: 1, serviceUsed: 1, remainingCount: 17 }),
   });
 
   await runSessionUp(store, {
@@ -199,7 +208,107 @@ test("session up does not touch serviceUsed", async () => {
   const pass = store.docs.get(`${ORG}/passes/pass-1`);
   assert.equal(pass.serviceUsed, 1, "쓴 서비스는 그대로다");
   assert.equal(pass.serviceSessions, 3);
-  assert.equal(pass.remainingCount, 5 + 10 + 2);
+  assert.equal(pass.remainingCount, 17 + 10 + 2);
+});
+
+/* ── 세션업 기간 (2026-10-27) ────────────────────────────────────────────
+   거의 다 쓰고 나서 늘리는 것은 사실상 재등록인데, 세션업으로 하면 회당 금액이
+   옛 회차까지 합쳐 다시 나뉜다 -- 강사의 남은 회차가 전부 그 낮아진 단가가
+   된다. 그래서 기간을 둔다.
+
+   **서버가 막는 자리다.** 화면이 버튼을 잠그는 것은 안내다. */
+
+/** 20회권을 유료 15회 썼다. 6회차까지라 기간이 지났다. */
+const spentPass = (overrides = {}) => basePass({ remainingCount: 5, ...overrides });
+
+test("기간이 지나면 FC매니저의 세션업은 거부되고 아무것도 쓰이지 않는다", async () => {
+  const store = fakeFirestore({ [`${ORG}/passes/pass-1`]: spentPass() });
+
+  await assert.rejects(
+    () => runSessionUp(store, {
+      fieldValue, organizationId: "center-a", passId: "pass-1", actorId: "u-manager",
+      actorRole: "manager", addSessions: 10, addPrice: 500000,
+      /* 사유를 적어 보내도 열리지 않는다. 역할이 먼저다 -- 앱이 보낸 사유만으로
+         열린다면 그것은 잠긴 문이 아니다. */
+      overrideReason: "회원 요청",
+    }),
+    /session_up_window_closed/,
+  );
+  assert.equal(store.writes.length, 0);
+});
+
+test("기간이 지난 대표의 세션업은 사유가 없으면 거부된다", async () => {
+  const store = fakeFirestore({ [`${ORG}/passes/pass-1`]: spentPass() });
+
+  await assert.rejects(
+    () => runSessionUp(store, {
+      fieldValue, organizationId: "center-a", passId: "pass-1", actorId: "u-owner",
+      actorRole: "owner", addSessions: 10, addPrice: 500000,
+    }),
+    /session_up_override_reason_required/,
+  );
+  assert.equal(store.writes.length, 0);
+});
+
+test("대표의 예외 세션업은 원장에 사유를, 감사 로그에 사실을 남긴다", async () => {
+  const store = fakeFirestore({ [`${ORG}/passes/pass-1`]: spentPass() });
+
+  const result = await runSessionUp(store, {
+    fieldValue, organizationId: "center-a", passId: "pass-1", actorId: "u-owner",
+    actorRole: "owner", addSessions: 10, addPrice: 500000,
+    overrideReason: "회원 요청으로 기간 지나 추가 결제",
+    now: () => new Date(2026, 9, 27, 10, 0),
+  });
+
+  assert.equal(result.windowOverride, true);
+
+  /* 사유는 **원장**에 남는다. 감사 로그에는 자유 문장 칸이 하나도 없고, 하나
+     열면 언젠가 거기에 회원 이름이 들어간다 (audit-repository.js 머리말). */
+  const entry = store.docs.get(`${ORG}/passes/pass-1/ledger/${result.entryId}`);
+  assert.equal(entry.reason, "회원 요청으로 기간 지나 추가 결제");
+  assert.equal(entry.windowOverride, true);
+
+  /* 감사 로그는 **예외였다는 사실과 숫자만**. 얼마나 지나서 열었는지가
+     previousAmount(한도) → amount(사용) 다. */
+  const audit = store.writes.find((item) => item.path.startsWith("auditLogs/"));
+  assert.ok(audit, "감사 로그가 없다");
+  assert.equal(audit.data.action, "session_up_override");
+  assert.equal(audit.data.actorId, "u-owner");
+  assert.equal(audit.data.actorRole, "owner");
+  assert.equal(audit.data.targetId, "pass-1");
+  assert.equal(audit.data.previousAmount, 6, "한도");
+  assert.equal(audit.data.amount, 15, "그때의 사용 회차");
+  /* 이름도 사유도 담지 않는다 (CLAUDE.md §7). */
+  assert.equal("reason" in audit.data, false);
+});
+
+test("총괄매니저도 열 수 있고, 그 역할이 그대로 남는다", async () => {
+  const store = fakeFirestore({ [`${ORG}/passes/pass-1`]: spentPass() });
+
+  const result = await runSessionUp(store, {
+    fieldValue, organizationId: "center-a", passId: "pass-1", actorId: "u-area",
+    actorRole: "area_manager", addSessions: 10, addPrice: 500000,
+    overrideReason: "대표 승인",
+  });
+
+  assert.equal(result.windowOverride, true);
+  const audit = store.writes.find((item) => item.path.startsWith("auditLogs/"));
+  assert.equal(audit.data.actorRole, "area_manager");
+});
+
+test("역할을 안 보내면 기간을 넘지 못한다", async () => {
+  /* 옛 앱은 actorRole 을 보내지 않는다. 모르는 사람에게 예외를 열어 주는
+     기본값을 두지 않는다 -- 그 기본값이 곧 기간이 없는 것이다. */
+  const store = fakeFirestore({ [`${ORG}/passes/pass-1`]: spentPass() });
+
+  await assert.rejects(
+    () => runSessionUp(store, {
+      fieldValue, organizationId: "center-a", passId: "pass-1", actorId: "u-owner",
+      addSessions: 10, addPrice: 500000, overrideReason: "사유",
+    }),
+    /session_up_window_closed/,
+  );
+  assert.equal(store.writes.length, 0);
 });
 
 /* ── 양도 ────────────────────────────────────────────────────────────────── */

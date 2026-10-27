@@ -843,9 +843,14 @@ const assertPassAdmin = async (organizationId, callerUid) => {
     .collection("memberships").doc(membershipId(organizationId, callerUid)).get();
   /* 화면이 버튼을 감추는 것은 안내이고 막는 것은 여기다. 화면만 믿으면
      호출 한 번으로 지나간다. */
-  if (!isPassAdmin(membership.exists ? membership.data() : null)) {
+  const data = membership.exists ? membership.data() : null;
+  if (!isPassAdmin(data)) {
     throw new HttpsError("permission-denied", "Only the owner or manager can do this.");
   }
+  /* 역할을 돌려준다. 세션업 기간 예외는 **대표·총괄매니저만** 열 수 있는데,
+     앱이 보낸 역할을 믿으면 그것은 잠긴 문이 아니다 -- 소속 문서가 말한
+     역할만 쓴다. */
+  return String(data?.role || "").trim();
 };
 
 exports.sessionUpPass = onCall({
@@ -855,13 +860,16 @@ exports.sessionUpPass = onCall({
 }, async (request) => {
   const callerUid = String(request?.auth?.uid || "").trim();
   const organizationId = String(request?.data?.organizationId || "").trim();
-  await assertPassAdmin(organizationId, callerUid);
+  const actorRole = await assertPassAdmin(organizationId, callerUid);
   try {
     const expiresAt = request?.data?.expiresAt ? new Date(String(request.data.expiresAt)) : null;
     const result = await runSessionUp(firestore, {
       organizationId,
       passId: String(request?.data?.passId || "").trim(),
       actorId: callerUid,
+      /* 기간 판정이 쓴다. 앱이 보낸 역할이 아니라 소속 문서의 역할이다. */
+      actorRole,
+      overrideReason: String(request?.data?.overrideReason || ""),
       addSessions: Number(request?.data?.addSessions),
       addPrice: Number(request?.data?.addPrice),
       addService: Number(request?.data?.addService || 0),
@@ -872,6 +880,8 @@ exports.sessionUpPass = onCall({
     logger.info("session_up_done", {
       feature: "session_up", stage: "done", organizationId,
       addedSessions: Number(request?.data?.addSessions) || 0,
+      /* 사유는 적지 않는다 (§7) -- 예외였는지 여부만. 사유는 원장에 있다. */
+      windowOverride: result?.windowOverride === true,
     });
     return result;
   } catch (error) {

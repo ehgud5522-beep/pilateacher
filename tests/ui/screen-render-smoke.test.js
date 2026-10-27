@@ -80,6 +80,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "일정 탭 · 소속 · 1:1 노쇼",
     "일정 탭 · 소속 · 2:1 둘 다 노쇼",
     "일정 탭 · 소속 · 예상 단가",
+    "일정 탭 · 소속 · 예상 단가 · 세션업 기간",
     "일정 탭 · 소속 · 예상 단가 · 서비스",
     "일정 탭 · 소속 · 확정됨",
     "일정 탭 · 소속 · 일부만 차감",
@@ -142,6 +143,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "센터 회원 상세 · 담당 변경",
     "전면 오버레이 겹침",
     "센터 회원 상세 · 세션업",
+    "센터 회원 상세 · 세션업 · 기간 예외",
+    "센터 회원 상세 · 세션업 · 기간 종료 (매니저)",
     "센터 회원 상세 · 양도",
     "센터 회원 상세 · 양도 · 동명이인",
     "센터 회원 상세 · 양도 · 듀엣 차단",
@@ -1534,6 +1537,32 @@ test("a lesson says what it will be worth before it is settled", async () => {
    회원권 하나를 둘이 쓴다. 그 사실이 화면에 없으면 대표는 잔여 29회를 한 사람
    몫으로 읽고 재등록 시점을 잘못 센다. */
 
+test("회원권 카드가 세션업 기간을 말한다 -- 강사도 본다", async (t) => {
+  /* 늘릴 수 있는 사람은 대표와 FC매니저뿐이지만, 회원에게 "더 끊으시겠어요"
+     를 말하는 사람은 강사다. 기간이 끝난 뒤에 알면 그 회원은 재등록으로
+     가야 하고, 재등록은 단가가 다르다. */
+  const markupOf = await issueScreens(t);
+  const markup = markupOf("회원 상세 · 회원권 네 장");
+
+  // 100회권은 아직 한 회도 안 썼다 → 지금 포함 7번.
+  assert.match(markup, /세션업 가능 7회 남음/);
+  // 50회권은 39회를 썼다 → 끝났다.
+  assert.match(markup, /세션업 기간 종료/);
+});
+
+test("수업 확정 화면이 세션업 기간을 함께 말한다", async (t) => {
+  /* 이 수업을 확정하면 기간이 한 칸 줄어든다. 강사가 누르기 **전에** 알아야
+     대표에게 말할 수 있다 -- 지나간 뒤에는 대표·총괄만 열 수 있는 일이 된다.
+
+     문구는 회원권 카드와 **같은 함수**가 만든다. 두 화면이 다른 숫자를
+     말하면 어느 쪽을 믿어야 하는지 알 수 없다. */
+  const markupOf = await issueScreens(t);
+  const markup = markupOf("일정 탭 · 소속 · 예상 단가 · 세션업 기간");
+
+  assert.match(markup, /세션업 가능 1회 남음/, "마지막 한 회");
+  assert.match(markup, /세션업 기간 종료/, "이미 지난 회원권");
+});
+
 test("a shared pass says it is shared, and with whom", async (t) => {
   const markupOf = await issueScreens(t);
   const duet = markupOf("센터 회원 상세 · 듀엣");
@@ -2012,13 +2041,61 @@ test("the session up sheet shows before and after before the button", async (t) 
   const sheet = markupOf("센터 회원 상세 · 세션업");
 
   assert.match(sheet, /세션업/);
-  // 20회 + 50회 = 70회. 잔여 8 + 50 = 58.
+  // 20회 + 50회 = 70회. 잔여 16 + 50 = 66.
   assert.match(sheet, /70회/);
-  assert.match(sheet, /58회/);
+  assert.match(sheet, /66회/);
   // 계약 130만 + 250만 = 380만, 회당 3,800,000 ÷ 70 = 54,286.
   assert.match(sheet, /3,800,000/);
   assert.match(sheet, /54,286/);
   assert.match(sheet, /세션업 확정/);
+});
+
+/* ── 세션업 기간 ─────────────────────────────────────────────────────────
+
+   2026-10-27 대표 결정. 거의 다 쓰고 나서 늘리는 것은 사실상 재등록인데,
+   세션업으로 하면 회당 금액이 옛 회차까지 합쳐 다시 나뉜다 -- 강사의 남은
+   회차가 전부 그 낮아진 단가가 된다. */
+
+test("기간이 남아 있으면 몇 회 남았는지 말한다", async (t) => {
+  const markupOf = await issueScreens(t);
+  const sheet = markupOf("센터 회원 상세 · 세션업");
+
+  // 20회권(10회 이상 → 6회차까지) 을 유료 4회 썼다. 지금 포함 3회 남았다.
+  assert.match(sheet, /세션업 가능 3회 남음/);
+  assert.match(sheet, /유료 4회 사용/);
+  assert.match(sheet, /6회차까지 가능/);
+  // 기간 안이면 사유를 묻지 않는다.
+  assert.doesNotMatch(sheet, /예외 사유/);
+});
+
+test("기간이 지나면 대표에게는 사유 칸이, 매니저에게는 이유가 선다", async (t) => {
+  const markupOf = await issueScreens(t);
+
+  /* 대표. 사유를 적으면 연다. **전/후 표는 사유를 적기 전에도 보인다** --
+     얼마가 되는지 모르는 채로 사유를 적게 하지 않는다. */
+  const owner = markupOf("센터 회원 상세 · 세션업 · 기간 예외");
+  assert.match(owner, /세션업 기간 종료/);
+  assert.match(owner, /예외 사유 \(필수\)/);
+  assert.match(owner, /이력과 감사 기록에 남습니다/);
+  assert.match(owner, /70회/, "사유 전에도 전/후 표가 선다");
+
+  /* FC매니저. 사유 칸이 없고, 누구를 불러야 하는지가 선다 -- "할 수
+     없습니다" 만 띄우면 대표를 부를 생각을 못 한다. */
+  const manager = markupOf("센터 회원 상세 · 세션업 · 기간 종료 (매니저)");
+  assert.match(manager, /세션업 기간 종료/);
+  assert.doesNotMatch(manager, /예외 사유/);
+  assert.match(manager, /대표·총괄매니저만 사유를 적고 진행할 수 있습니다/);
+});
+
+test("기간이 지난 회원권의 세션업 버튼은 사라지지 않고 잠긴다", async (t) => {
+  /* 없어진 버튼은 "이 회원권은 세션업이 안 되는 종류" 로 읽히고, 그러면
+     대표를 부를 생각을 못 한다. 잠긴 버튼 옆에 이유를 둔다. */
+  const markupOf = await issueScreens(t);
+  const manager = markupOf("센터 회원 상세 · 매니저");
+
+  assert.match(manager, />세션업</, "버튼은 남는다");
+  assert.match(manager, /disabled/, "누를 수는 없다");
+  assert.match(manager, /세션업 기간이 지났습니다/);
 });
 
 test("the session up history line says what grew and who did it", async (t) => {

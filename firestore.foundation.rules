@@ -942,6 +942,23 @@ service cloud.firestore {
           // 발급은 대표·FC매니저. canIssuePass 의 주석 참고 — 바꿀 때는 그 목록
           // 하나만 바꾼다.
           && canIssuePass(organizationId);
+        /* ── 세션업 기간은 왜 여기 없는가 (2026-10-27) ───────────────────
+           세션업은 **이 문을 아예 지나지 않는다.** totalSessions 는 아래 어느
+           갈래에도 없어 클라이언트가 쓸 수 없고, 짝이 되는 원장 항목의 종류
+           "sessionup" 도 아래 허용 목록에 없다. 유일한 길이 Admin SDK
+           (functions/src/pass-admin.js 의 runSessionUp)이고, 그쪽은 규칙을
+           지나지 않는다. 그래서 기간 판정은 서버에 있다.
+
+           **쓸 수 없어서가 아니다.** 사용 회차는 회원권 문서 네 숫자로
+           정해지므로 규칙도 셀 수 있다 (하위 컬렉션을 훑지 않는다):
+
+             서비스사용 = serviceUsed (없으면 총+서비스−잔여 를 서비스로 자름)
+             서비스잔여 = 서비스 − 서비스사용, 잔여를 넘지 않게
+             사용       = 총회차 − (잔여 − 서비스잔여)
+             한도       = 총회차 >= 10 ? 6 : 3        // 사용 <= 한도면 가능
+
+           클라이언트가 회차를 쓰는 문이 언젠가 열리면 그때 이 식을 여기에
+           옮긴다. 지금 넣으면 아무 요청도 통과하지 않는 죽은 조건이 된다. */
         // The owner's reach is unchanged. A manager may move one field and
         // nothing else: handovers happen while the owner is not at the centre,
         // and the transfer is safe because it rewrites no past entry — every

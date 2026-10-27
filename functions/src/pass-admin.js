@@ -101,7 +101,9 @@ const asDate = (value) => {
  * }} input
  */
 async function runSessionUp(firestore, input) {
-  const { planSessionUp, sessionUpError } = await shared();
+  const {
+    planSessionUp, sessionUpError, sessionUpWindowOf, canOverrideSessionUpWindow,
+  } = await shared();
   const FieldValue = sentinels(input);
   const organizationId = text(input?.organizationId);
   const passId = text(input?.passId);
@@ -115,6 +117,12 @@ async function runSessionUp(firestore, input) {
 
   const refused = sessionUpError({ pass, ...input });
   if (refused) throw new Error(refused);
+
+  /* 기간이 지난 것을 대표·총괄매니저가 연 것인가. 위 sessionUpError 가 이미
+     역할과 사유를 봤으므로 여기서는 **그 사실을 기록할지**만 정한다. */
+  const window = sessionUpWindowOf(pass);
+  const overrode = !window.open && canOverrideSessionUpWindow(input?.actorRole);
+  const overrideReason = overrode ? text(input?.overrideReason) : "";
 
   const { before, after } = planSessionUp({ pass, ...input });
 
@@ -148,13 +156,42 @@ async function runSessionUp(firestore, input) {
     addedPrice: count(input?.addPrice),
     fromTotalSessions: before.totalSessions,
     ...(text(input?.paymentMethod) ? { paymentMethod: text(input.paymentMethod) } : {}),
+    /* 기간이 지난 뒤 예외로 연 것이면 **왜** 가 함께 남는다. 이 줄이 없으면
+       반년 뒤 "7회차에 왜 세션업이 됐나" 에 답할 것이 아무것도 없다.
+
+       사유가 원장에 있고 감사 로그에 없는 것은 일부러다 -- auditLogs 에는
+       자유 문장 칸이 하나도 없고(머리말), 하나 열면 언젠가 거기에 회원
+       이름이 들어간다. 원장은 이미 보정·취소·조정의 사유를 들고 있다. */
+    ...(overrideReason ? { reason: overrideReason, windowOverride: true } : {}),
     instructorId: text(pass.instructorId),
     occurredAt: at,
     createdAt: FieldValue.serverTimestamp(),
     createdBy: text(input?.actorId),
   });
+
+  /* 감사 로그. **예외로 열었을 때만** 쓴다 -- 기간 안의 세션업은 원장 항목이
+     곧 기록이고, 모든 세션업을 여기에도 적으면 "예외" 가 목록에서 묻힌다.
+
+     이름도 사유도 담지 않는다 (CLAUDE.md §7). amount 는 예외를 연 시점의
+     사용 회차이고, previousAmount 는 그때의 한도다 -- 두 숫자가 "얼마나
+     지나서 열었나" 를 말한다. */
+  if (overrode) {
+    batch.set(firestore.collection("auditLogs").doc(), {
+      organizationId,
+      actorId: text(input?.actorId),
+      actorRole: text(input?.actorRole),
+      action: "session_up_override",
+      createdAt: at,
+      targetId: passId,
+      clientId: text(pass.clientId),
+      locationId: text(pass.locationId),
+      amount: window.used,
+      previousAmount: window.limit,
+    });
+  }
+
   await batch.commit();
-  return { passId, before, after, entryId };
+  return { passId, before, after, entryId, windowOverride: overrode };
 }
 
 /**

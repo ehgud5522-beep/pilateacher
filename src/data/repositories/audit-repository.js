@@ -107,6 +107,16 @@ export const AUDIT_ACTION = Object.freeze({
      (recordTotalAdjustment).
      Keep in sync with auditActions() in firestore.foundation.rules. */
   INSTRUCTOR_TOTAL_ADJUSTED: "instructor_total_adjusted",
+  /* 세션업 기간이 지난 회원권을 대표·총괄매니저가 예외로 늘렸다. 서버
+     (sessionUpPass)만 쓰고 앱은 읽기만 한다 -- 규칙의 auditActions() 에도
+     넣지 않았다. Admin SDK 는 규칙을 지나지 않고, 열어 두면 클라이언트가
+     지어낼 수 있는 기록이 하나 늘 뿐이다 (MEMBER_LINK_CREATED 와 같은 판단).
+
+     **사유는 여기 없다.** 이 목록에는 자유 문장 칸이 하나도 없고, 사유는
+     원장 항목(reason)에 남는다. amount 가 예외를 연 시점의 사용 회차이고
+     previousAmount 가 그때의 한도다 -- 둘이 "얼마나 지나서 열었나" 를
+     말한다. Keep in sync with functions/src/pass-admin.js. */
+  SESSION_UP_OVERRIDE: "session_up_override",
 });
 
 /**

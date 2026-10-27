@@ -2,6 +2,13 @@
 #
 #   main 에 push(PR 병합 포함) → live 채널
 #   PR 이 열리거나 커밋이 붙으면 → preview 채널 (7일 뒤 만료) + PR 코멘트에 주소
+#   Actions 화면에서 수동 실행(workflow_dispatch) → live 채널
+#
+# ── 수동 실행이 있는 이유 ──
+# 병합 커밋에 [skip ci] 를 넣으면 Codemagic 자동 빌드와 이 배포가 **같이**
+# 건너뛰어진다. member-app/ 을 바꾸는 PR 은 병합만으로 회원 앱 iOS 가
+# TestFlight 로 올라가므로 [skip ci] 로 막는데, 그때 웹은 여기서 따로 내보낸다:
+#   gh workflow run deploy-member.yml --ref main
 #
 # ── 강사 앱(pilateacher.web.app)은 건드리지 않는다 ──
 # 두 겹으로 막는다.
@@ -35,6 +42,7 @@ on:
       - "package-lock.json"
       - "firebase.foundation.json"
       - ".github/workflows/deploy-member.yml"
+  workflow_dispatch:
   # push 와 같은 목록이다. 하나를 고치면 둘 다 고친다 (테스트가 확인한다).
   pull_request:
     paths:
@@ -56,12 +64,12 @@ jobs:
     runs-on: ubuntu-latest
     # 포크에서 온 PR 은 secret 을 받지 못한다. 실패로 남기지 않고 건너뛴다.
     if: >-
-      github.event_name == 'push' ||
+      github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
     # live 배포는 하나씩. 앞의 배포를 취소하면 반쯤 나간 상태가 남을 수 있다.
     concurrency:
-      group: deploy-member-${{ github.event_name == 'push' && 'live' || github.event.pull_request.number }}
-      cancel-in-progress: ${{ github.event_name != 'push' }}
+      group: deploy-member-${{ github.event_name != 'pull_request' && 'live' || github.event.pull_request.number }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     permissions:
       contents: read
       checks: write
@@ -105,5 +113,5 @@ jobs:
           projectId: pilateacher
           target: pilateacher-member
           # push 면 live, PR 이면 비워 두어 action 이 pr-<번호> 채널을 만든다.
-          channelId: ${{ github.event_name == 'push' && 'live' || '' }}
+          channelId: ${{ github.event_name != 'pull_request' && 'live' || '' }}
           expires: 7d

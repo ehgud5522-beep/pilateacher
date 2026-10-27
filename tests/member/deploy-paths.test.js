@@ -88,3 +88,11 @@ test("강사 앱 사이트를 지정하지 않는다", () => {
   assert.match(text, /entry\.site === "pilateacher-member"/);
   assert.doesNotMatch(text, /hosting:pilateacher\b(?!-member)/);
 });
+
+test("수동 실행은 live 로 간다 — [skip ci] 병합 뒤 웹을 따로 내보내는 길", () => {
+  const text = readFileSync(WORKFLOW, "utf8");
+  assert.match(text, /^  workflow_dispatch:/m);
+  // 이벤트 판정이 push 하나만 보면 수동 실행이 preview 채널로 새거나 건너뛰어진다.
+  assert.doesNotMatch(text, /event_name == 'push'/);
+  assert.match(text, /channelId: \$\{\{ github\.event_name != 'pull_request' && 'live' \|\| '' \}\}/);
+});

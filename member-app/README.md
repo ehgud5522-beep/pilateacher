@@ -215,16 +215,29 @@ Play 앱 서명을 쓰므로 업로드 키를 잃어버려도 Play Console 에�
 없으면 `release` 작업이 시작하는 자리에서 멈춘다. 서명 안 된 번들은 Play 가
 거절하는데, 그 사실은 업로드까지 가서야 드러나기 때문이다.
 
-## 아이콘 · 스플래시 — 지금은 임시다
+## 아이콘 · 스플래시 — BONITA VIP (2026-10-27)
 
-원본은 `member-app/resources/` 의 다섯 장이다. 지금 것은 로즈 바탕에 "B" 한
-글자인 **임시 그림**이다. 교체는 이 다섯 장만 같은 이름 · 같은 크기로 덮어쓰고
-명령 한 줄을 돌리면 된다.
+원본은 **`member-app/resources/icon-source.png` 한 장**이다 (검정 바탕, 핑크
+글자, 정사각형). 나머지는 전부 여기서 나온다.
+
+```bash
+node member-app/scripts/make-icons.mjs
+npm run member:assets
+```
+
+첫 줄이 아래 다섯 장과 웹 아이콘(`member/public/` 의 favicon · apple-touch-icon ·
+PWA 아이콘)을 만들고, 둘째 줄이 Android · iOS 크기별 파일을 만든다.
+
+**안전 영역은 스크립트가 지킨다.** capacitor-assets 는 적응형 아이콘 앞면을
+`inset 16.7%` 로 넣으므로 원본 1024px 이 곧 보이는 72dp 영역이고, 어떤 마스크
+(원 · 둥근 사각형 · 물방울)에도 남는 66dp 원은 그 안의 지름 1024×66/72 다. 글자
+픽셀이 하나라도 그 원 밖이면 `[ICON_OUTSIDE_SAFE_ZONE]` 으로 멈춘다. 웹
+maskable 아이콘은 웹 규칙(지름 80%)으로 따로 맞춘다.
 
 | 파일 | 크기 | 쓰이는 곳 |
 | --- | --- | --- |
 | `icon-only.png` | 1024×1024, 투명 없이 | iOS 아이콘, Android 기본 아이콘 |
-| `icon-foreground.png` | 1024×1024, 투명 배경 | Android 적응형 아이콘의 앞면. 가운데 66% 안에 그린다 -- 바깥은 기기마다 잘린다 |
+| `icon-foreground.png` | 1024×1024, 투명 배경 | Android 적응형 아이콘의 앞면. 글자를 안전 원 안에 맞춰 스크립트가 만든다 |
 | `icon-background.png` | 1024×1024 | Android 적응형 아이콘의 뒷면 |
 | `splash.png` | 2732×2732 | 밝은 모드 시작 화면. 가운데 1200px 안에 그린다 |
 | `splash-dark.png` | 2732×2732 | 어두운 모드 시작 화면 |

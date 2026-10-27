@@ -369,6 +369,7 @@ import {
 } from "./features/account/account-deletion.js";
 import { Users, Settings as SettingsIcon, Search, ChevronRight, ChevronLeft, Plus, Camera, MessageSquare, Check, X, Trash2, ArrowLeft, Target, ClipboardList, RotateCcw, Redo2, Palette, Sparkles, Copy, ArrowUpRight, ArrowDownRight, Loader as Loader2, Pencil, UserPlus, Activity, Ticket, Calendar, Clock, Bell, Download, Share2, TriangleAlert as AlertTriangle, CircleAlert as AlertCircle, LogOut, Mail, Star, Sun, Moon, Smartphone, Move, Crosshair, ChevronDown, ImagePlus, SlidersHorizontal, CalendarDays, ArrowUpDown, Minus, Upload, Link2, Users as Users2, Play } from "lucide-react";
 import { TYPE } from "./features/ui/type-scale.js";
+import { overlayZ } from "./features/ui/overlay-stack.js";
 
 const IOS_NATIVE_CAPTURE_ENABLED = String(import.meta.env.VITE_IOS_NATIVE_CAPTURE_ENABLED || "true").trim().toLowerCase() !== "false";
 const VOICE_ENGINE_MODE = resolveVoiceEngine(import.meta.env.VITE_VOICE_ENGINE || DEFAULT_VOICE_ENGINE);
@@ -1816,6 +1817,29 @@ function Sheet({ title, sub, subtitle, onClose, children, wide = false, safeTop 
         <div className="pt-scroll min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden" style={{ padding: "4px 16px 20px" }}>{children}</div>
         {footer && <div className="shrink-0 px-4 pt-3" style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 12px)" }}>{footer}</div>}
       </section>
+    </div>
+  );
+}
+/**
+ * 탭 위를 통째로 덮는 한 장. 회원 상세 · 이달 예상 급여 · 출석 체크 ·
+ * 담당 변경이 모두 이것으로 열린다.
+ *
+ * **쌓이는 순서는 `layer` 가 정한다 -- JSX 순서가 아니다.** 넷이 같은 자리에
+ * 형제로 그려지므로, z-index 가 같으면 파일에서 먼저 적힌 것이 밑으로 간다.
+ * 1.1.42 웹에서 담당 변경이 회원 상세 뒤에서 열린 것이 그것이었다. 표와 그
+ * 이유는 features/ui/overlay-stack.js 에 있다.
+ *
+ * 상태바 아래로도 내린다. 전면 오버레이는 화면 꼭대기에서 시작하므로 패딩
+ * 12px 만으로는 노치·상태바가 첫 줄을 덮는다 -- 급여 시트에서 "2026년 10월"
+ * 이 잘리고 닫기 버튼과 겹쳐 보인 것이 이것이다.
+ */
+function AppOverlay({ layer, name, children }) {
+  return (
+    <div data-overlay={name} className="absolute inset-0 overflow-y-auto"
+      style={{ zIndex: overlayZ(layer), backgroundColor: PAGE }}>
+      <div className="mx-auto w-full max-w-md p-3" style={{ paddingTop: "max(env(safe-area-inset-top, 0px), 12px)" }}>
+        {children}
+      </div>
     </div>
   );
 }
@@ -25612,6 +25636,17 @@ export function createAppScreenSmokeCases() {
        1.1.38 에서 이쪽에만 "담당 변경" 이 없었다 -- 대표가 찾지 못했다.
        두 길에 같은 버튼이 서는지 여기서 고정한다. */
     { name: "센터 회원 상세 · 담당 변경", element: ownerClientDetail({ onHandover: noop }) },
+    /* 겹쳐 열리는 전면 오버레이를 **App 과 같은 JSX 순서로** 늘어놓는다 --
+       담당 변경이 회원 상세보다 먼저 적혀 있고, 그래도 위에 서야 한다.
+       순서가 아니라 z-index 가 정한다는 것이 이 화면이 지키는 것이다. */
+    { name: "전면 오버레이 겹침", element: (
+      <>
+        <AppOverlay layer="ACTION" name="담당 변경">담당 변경</AppOverlay>
+        <AppOverlay layer="DETAIL" name="회원 상세">회원 상세</AppOverlay>
+        <AppOverlay layer="PAGE" name="이달 예상 급여">이달 예상 급여</AppOverlay>
+        <AppOverlay layer="PAGE" name="출석 체크">출석 체크</AppOverlay>
+      </>
+    ) },
     { name: "센터 회원 상세 · 세션업", element: ownerClientDetail({
       initialSessionUp: { pass: smokeHistoryPasses[0], sessions: "50", price: "2500000" },
     }) },
@@ -29895,117 +29930,100 @@ export default function App() {
             둘을 따로 그리면 한쪽만 고쳐지는 날이 오고, 그날 대표가 보는
             숫자와 실제로 넘어가는 것이 갈라진다. */}
         {handoverPass ? (
-          <div className="absolute inset-0 z-50 overflow-y-auto" style={{ backgroundColor: PAGE }}>
-            <div className="mx-auto w-full max-w-md p-3" style={{ paddingTop: "max(env(safe-area-inset-top, 0px), 12px)" }}>
-              <h2 className="mb-2" style={{ fontSize: TYPE.title, fontWeight: 600, color: INK }}>담당 변경</h2>
-              <HandoverSheet
-                passes={[handoverPass]}
-                instructors={rosterInstructors}
-                fromInstructorId={String(handoverPass?.instructorId || "")}
-                fromName={String(rosterInstructors.find(
-                  (item) => String(item?.userId || "") === String(handoverPass?.instructorId || ""),
-                )?.displayName || "")}
-                /* 명부 밖의 회원이면 이름이 없다. 더보기에서 연 회원이 그렇다 --
-                   그때는 그 화면이 들고 있던 이름을 쓴다. */
-                clientNameOf={(clientId) => rosterClients.find(
-                  (item) => String(item?.id || "") === String(clientId),
-                )?.name
-                  || (String(detailClient?.id || "") === String(clientId) ? String(detailClient?.name || "") : "")
-                  || ""}
-                /* 한 장짜리는 누적을 transferPassInstructor 가 함께 옮긴다.
-                   여기서 또 세면 두 배가 되므로 0 으로 둔다 -- 미리보기의
-                   "누적도 함께" 줄만 빠지고, 실제로는 옮겨진다. */
-                sessionsOf={() => 0}
-                busy={handoverBusy}
-                errorCode={handoverError}
-                onClose={() => setHandoverPass(null)}
-                onRun={async ({ plan }) => {
-                  const row = plan.ready[0];
-                  if (!row) return;
-                  setHandoverBusy(true);
-                  setHandoverError("");
-                  try {
-                    await transferPassInstructor(organizationContext.organizationId, String(handoverPass?.id || ""), {
-                      clientId: row.clientIds[0],
-                      clientIds: row.clientIds,
-                      fromInstructorId: String(handoverPass?.instructorId || ""),
-                      toInstructorId: row.toInstructorId,
-                      locationId: row.locationId,
-                      createdBy: account?.id || "",
-                    });
-                    setHandoverPass(null);
-                    setRosterRevision((value) => value + 1);
-                    /* 더보기에서 연 회원이면 그 화면도 다시 읽어야 한다 --
-                       안 그러면 방금 바꾼 담당이 옛 이름 그대로 남는다. */
-                    setHistoryRevision((value) => value + 1);
-                    setToast({ ok: true, msg: "담당을 바꿨습니다." });
-                  } catch (error) {
-                    setHandoverError(error?.code || error?.message || "unknown");
-                  } finally {
-                    setHandoverBusy(false);
-                  }
-                }}
-              />
-            </div>
-          </div>
+          <AppOverlay layer="ACTION" name="담당 변경">
+            <h2 className="mb-2" style={{ fontSize: TYPE.title, fontWeight: 600, color: INK }}>담당 변경</h2>
+            <HandoverSheet
+              passes={[handoverPass]}
+              instructors={rosterInstructors}
+              fromInstructorId={String(handoverPass?.instructorId || "")}
+              fromName={String(rosterInstructors.find(
+                (item) => String(item?.userId || "") === String(handoverPass?.instructorId || ""),
+              )?.displayName || "")}
+              /* 명부 밖의 회원이면 이름이 없다. 더보기에서 연 회원이 그렇다 --
+                 그때는 그 화면이 들고 있던 이름을 쓴다. */
+              clientNameOf={(clientId) => rosterClients.find(
+                (item) => String(item?.id || "") === String(clientId),
+              )?.name
+                || (String(detailClient?.id || "") === String(clientId) ? String(detailClient?.name || "") : "")
+                || ""}
+              /* 한 장짜리는 누적을 transferPassInstructor 가 함께 옮긴다.
+                 여기서 또 세면 두 배가 되므로 0 으로 둔다 -- 미리보기의
+                 "누적도 함께" 줄만 빠지고, 실제로는 옮겨진다. */
+              sessionsOf={() => 0}
+              busy={handoverBusy}
+              errorCode={handoverError}
+              onClose={() => setHandoverPass(null)}
+              onRun={async ({ plan }) => {
+                const row = plan.ready[0];
+                if (!row) return;
+                setHandoverBusy(true);
+                setHandoverError("");
+                try {
+                  await transferPassInstructor(organizationContext.organizationId, String(handoverPass?.id || ""), {
+                    clientId: row.clientIds[0],
+                    clientIds: row.clientIds,
+                    fromInstructorId: String(handoverPass?.instructorId || ""),
+                    toInstructorId: row.toInstructorId,
+                    locationId: row.locationId,
+                    createdBy: account?.id || "",
+                  });
+                  setHandoverPass(null);
+                  setRosterRevision((value) => value + 1);
+                  /* 더보기에서 연 회원이면 그 화면도 다시 읽어야 한다 --
+                     안 그러면 방금 바꾼 담당이 옛 이름 그대로 남는다. */
+                  setHistoryRevision((value) => value + 1);
+                  setToast({ ok: true, msg: "담당을 바꿨습니다." });
+                } catch (error) {
+                  setHandoverError(error?.code || error?.message || "unknown");
+                } finally {
+                  setHandoverBusy(false);
+                }
+              }}
+            />
+          </AppOverlay>
         ) : null}
         {detailClient ? (
-          <div className="absolute inset-0 z-50 overflow-y-auto" style={{ backgroundColor: PAGE }}>
-            {/* 상태바 아래로 내린다. 전면 오버레이는 화면 꼭대기에서 시작하므로
-                패딩 12px 만으로는 노치·상태바가 첫 줄을 덮는다 -- 급여 시트에서
-                "2026년 10월" 이 잘리고 닫기 버튼과 겹쳐 보인 것이 이것이다. */}
-            <div className="mx-auto w-full max-w-md p-3" style={{ paddingTop: "max(env(safe-area-inset-top, 0px), 12px)" }}>
-              <ClientDetail organization={organizationContext} client={detailClient}
-                history={clientHistory} loading={historyLoading} error={historyError}
-                nameOfClient={(id) => (roster?.roster || []).find((item) => item.orgClientId === id)?.name || ""}
-                /* 양도의 "받는 회원" 은 이름을 전부 입력해야 찾힌다. 목록으로
-                   훑게 두지 않으므로 명부를 넘겨도 화면에 깔리지 않는다. */
-                clients={(roster?.roster || [])
-                  .filter((item) => item.orgClientId)
-                  .map((item) => ({ id: item.orgClientId, name: item.name, phone: item.phone }))}
-                instructors={detailInstructors}
-                currentUserId={account?.id || ""} onToast={setToast}
-                /* 규칙이 clients.phone 을 잠그고 있어 이 통로가 유일한 문이다. */
-                onChangePhone={fbUpdateClientPhone}
-                onChanged={() => setHistoryRevision((value) => value + 1)}
-                /* 회원 탭의 "담당 변경" 과 **같은 시트**를 연다. 더보기로 연
-                   회원 상세에만 이 버튼이 없어서 대표가 찾지 못했다 (1.1.38).
-                   두 화면이 다른 컴포넌트라 한쪽만 고쳐져 있었다. */
-                onHandover={canHandoverPass ? (pass) => { setHandoverError(""); setHandoverPass(pass); } : undefined}
-                onRetry={() => setHistoryRevision((value) => value + 1)}
-                onClose={() => { setDetailClient(null); setClientHistory(null); setHistoryError(""); }} />
-            </div>
-          </div>
+          <AppOverlay layer="DETAIL" name="회원 상세">
+            <ClientDetail organization={organizationContext} client={detailClient}
+              history={clientHistory} loading={historyLoading} error={historyError}
+              nameOfClient={(id) => (roster?.roster || []).find((item) => item.orgClientId === id)?.name || ""}
+              /* 양도의 "받는 회원" 은 이름을 전부 입력해야 찾힌다. 목록으로
+                 훑게 두지 않으므로 명부를 넘겨도 화면에 깔리지 않는다. */
+              clients={(roster?.roster || [])
+                .filter((item) => item.orgClientId)
+                .map((item) => ({ id: item.orgClientId, name: item.name, phone: item.phone }))}
+              instructors={detailInstructors}
+              currentUserId={account?.id || ""} onToast={setToast}
+              /* 규칙이 clients.phone 을 잠그고 있어 이 통로가 유일한 문이다. */
+              onChangePhone={fbUpdateClientPhone}
+              onChanged={() => setHistoryRevision((value) => value + 1)}
+              /* 회원 탭의 "담당 변경" 과 **같은 시트**를 연다. 더보기로 연
+                 회원 상세에만 이 버튼이 없어서 대표가 찾지 못했다 (1.1.38).
+                 두 화면이 다른 컴포넌트라 한쪽만 고쳐져 있었다. */
+              onHandover={canHandoverPass ? (pass) => { setHandoverError(""); setHandoverPass(pass); } : undefined}
+              onRetry={() => setHistoryRevision((value) => value + 1)}
+              onClose={() => { setDetailClient(null); setClientHistory(null); setHistoryError(""); }} />
+          </AppOverlay>
         ) : null}
         {payOpen && canSeeOwnPay ? (
-          <div className="absolute inset-0 z-50 overflow-y-auto" style={{ backgroundColor: PAGE }}>
-            {/* 상태바 아래로 내린다. 전면 오버레이는 화면 꼭대기에서 시작하므로
-                패딩 12px 만으로는 노치·상태바가 첫 줄을 덮는다 -- 급여 시트에서
-                "2026년 10월" 이 잘리고 닫기 버튼과 겹쳐 보인 것이 이것이다. */}
-            <div className="mx-auto w-full max-w-md p-3" style={{ paddingTop: "max(env(safe-area-inset-top, 0px), 12px)" }}>
-              <InstructorPayDetail organization={organizationContext} currentUserId={account?.id || ""} pay={instructorPay}
-                loading={payLoading} error={payError} month={payMonth}
-                clientStore={undefined} passStore={undefined}
-                onRetry={() => setPayRevision((value) => value + 1)}
-                onChangeMonth={setPayMonth}
-                onClose={() => setPayOpen(false)} />
-            </div>
-          </div>
+          <AppOverlay layer="PAGE" name="이달 예상 급여">
+            <InstructorPayDetail organization={organizationContext} currentUserId={account?.id || ""} pay={instructorPay}
+              loading={payLoading} error={payError} month={payMonth}
+              clientStore={undefined} passStore={undefined}
+              onRetry={() => setPayRevision((value) => value + 1)}
+              onChangeMonth={setPayMonth}
+              onClose={() => setPayOpen(false)} />
+          </AppOverlay>
         ) : null}
         {attendanceOpen && canCheckAttendance ? (
-          <div className="absolute inset-0 z-50 overflow-y-auto" style={{ backgroundColor: PAGE }}>
-            {/* 상태바 아래로 내린다. 전면 오버레이는 화면 꼭대기에서 시작하므로
-                패딩 12px 만으로는 노치·상태바가 첫 줄을 덮는다 -- 급여 시트에서
-                "2026년 10월" 이 잘리고 닫기 버튼과 겹쳐 보인 것이 이것이다. */}
-            <div className="mx-auto w-full max-w-md p-3" style={{ paddingTop: "max(env(safe-area-inset-top, 0px), 12px)" }}>
-              <AttendanceCheck organization={organizationContext} currentUserId={account?.id || ""}
-                clientStore={undefined} passStore={undefined}
-                onRetryOrganization={retryOrganizationContext} onToast={setToast}
-                onOpenClient={(picked) => setDetailClient(picked)}
-                journeyOfClient={journeyForClient}
-                onClose={() => setAttendanceOpen(false)} />
-            </div>
-          </div>
+          <AppOverlay layer="PAGE" name="출석 체크">
+            <AttendanceCheck organization={organizationContext} currentUserId={account?.id || ""}
+              clientStore={undefined} passStore={undefined}
+              onRetryOrganization={retryOrganizationContext} onToast={setToast}
+              onOpenClient={(picked) => setDetailClient(picked)}
+              journeyOfClient={journeyForClient}
+              onClose={() => setAttendanceOpen(false)} />
+          </AppOverlay>
         ) : null}
         <Tabs tab={tab} setTab={goTab} />
       </div>
@@ -30129,8 +30147,11 @@ export default function App() {
         onNextPending={reflectionPending.sessions[0]?.lessonId
           ? () => openLessonRecord(reflectionPending.sessions[0].lessonId)
           : null} />}
+      {/* 결과 문구는 **무엇 위에서 눌렀든** 보여야 한다. 전에는 담당 변경과
+          같은 z-70 이었고, 값이 같으면 DOM 순서가 정한다 -- 그 순서가 뒤집히는
+          날 저장은 됐는데 아무 말도 없는 화면이 된다. */}
       {toast && (
-        <div className="fixed inset-x-0 z-[70] flex justify-center px-4" style={{ bottom: "calc(62px + max(env(safe-area-inset-bottom, 0px), 8px))" }}>
+        <div className="fixed inset-x-0 flex justify-center px-4" style={{ zIndex: overlayZ("TOAST"), bottom: "calc(62px + max(env(safe-area-inset-bottom, 0px), 8px))" }}>
           <div className="flex max-w-[360px] items-center gap-2 px-4 py-2.5" style={{ borderRadius: 8, backgroundColor: toast.ok ? TOAST : BAD, boxShadow: SHADOW }}>
             {toast.ok ? <Check size={14} color="#fff" /> : <AlertTriangle size={14} color="#fff" />}
             <span className="text-sm font-bold text-white">{toast.msg}</span>

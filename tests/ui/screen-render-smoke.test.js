@@ -4,6 +4,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
+import { SHEET_Z } from "../../src/features/ui/overlay-stack.js";
 import react from "@vitejs/plugin-react";
 
 const projectRoot = fileURLToPath(new URL("../../", import.meta.url));
@@ -139,6 +140,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "센터 회원 상세 · 만료일 변경",
     "센터 회원 상세 · 매니저",
     "센터 회원 상세 · 담당 변경",
+    "전면 오버레이 겹침",
     "센터 회원 상세 · 세션업",
     "센터 회원 상세 · 양도",
     "센터 회원 상세 · 양도 · 동명이인",
@@ -2219,6 +2221,33 @@ test("담당 변경은 회원 상세를 여는 두 길 모두에 선다", async 
   /* 넘겨주지 않으면 그려지지 않는다 -- 권한은 한 곳에서만 판단한다. 강사가
      누를 수 있으면 그것은 급여를 옮기는 버튼이다. */
   assert.doesNotMatch(markupOf("센터 회원 상세 · 매니저"), /담당 변경/, "권한 없으면 안 보인다");
+});
+
+test("버튼을 누르면 그 시트가 맨 위에 보인다", async (t) => {
+  /* 1.1.42 웹에서 회원 상세의 "담당 변경" 을 누르면 담당 변경이 회원 상세
+     **뒤에서** 열렸다. 둘 다 z-50 이었고, 값이 같으면 App.jsx 에서 먼저 적힌
+     쪽이 밑으로 간다 -- 하필 담당 변경이 먼저 적혀 있었다. 누른 사람에게는
+     아무 일도 일어나지 않은 것으로 보였고, 회원 상세를 X 로 닫아야 나타났다.
+
+     JSX 순서는 그대로 두고 z-index 로 뒤집었다. 그래서 이 테스트는 **먼저
+     적힌 것이 위에 선다**는, 순서만 보면 틀려 보이는 상태를 고정한다 --
+     누가 "순서가 거꾸로네" 하고 되돌려 놓으면 여기서 걸린다. */
+  const markupOf = await issueScreens(t);
+  const markup = markupOf("전면 오버레이 겹침");
+
+  const stack = [...markup.matchAll(/data-overlay="([^"]+)"[^>]*z-index:(\d+)/g)]
+    .map(([, name, z]) => ({ name, z: Number(z) }));
+  assert.deepEqual(stack.map((item) => item.name),
+    ["담당 변경", "회원 상세", "이달 예상 급여", "출석 체크"],
+    "App.jsx 와 같은 JSX 순서여야 이 테스트가 뜻이 있다");
+
+  const zOf = (name) => stack.find((item) => item.name === name).z;
+  assert.ok(zOf("담당 변경") > zOf("회원 상세"),
+    "회원 상세 위에서 누르는 것이므로 그 위에 선다");
+  assert.ok(zOf("회원 상세") > zOf("출석 체크"),
+    "출석 체크에서도 회원 상세를 연다 -- 그쪽도 뒤에서 열리면 안 된다");
+  assert.ok(zOf("담당 변경") > SHEET_Z,
+    "회원 상세가 안에서 연 시트보다도 위여야 한다");
 });
 
 test("the handover preview says the rate the new instructor will actually get", async (t) => {

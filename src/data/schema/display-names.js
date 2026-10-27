@@ -71,6 +71,63 @@ export const PRICING_RULE_LABELS = Object.freeze({
   [PRICING_RULE.BASE_CATEGORY]: "기준 단가",
 });
 
+/**
+ * 단가 옆에 붙는 **짧은** 이름 (2026-10-27 대표).
+ *
+ * 급여 집계의 "단가별 횟수" 표는 한 줄이 (단가 · 횟수 · 금액) 이고, 그 옆에
+ * 어떤 판정인지가 한 눈에 들어와야 한다. 위의 긴 문구는 한 줄을 다 차지해서
+ * 숫자를 밀어낸다.
+ *
+ * `BASE_CATEGORY` 는 **여기 없다.** 기준 단가는 카테고리가 정하므로 "기준
+ * 단가" 라고만 적으면 무엇의 기준인지 알 수 없다 -- 그때는 카테고리 이름을
+ * 쓴다 (payBasisLabel).
+ */
+export const PRICING_RULE_SHORT_LABELS = Object.freeze({
+  [PRICING_RULE.SERVICE_FIRST]: "서비스",
+  [PRICING_RULE.SERVICE_ALREADY_USED]: "서비스 소진",
+  [PRICING_RULE.DEPUTY_DIRECTOR]: "부원장 5:5",
+  [PRICING_RULE.HANDED_OVER]: "인계",
+  [PRICING_RULE.NEW_TO_INSTRUCTOR]: `신규 · 누적 ${NEW_TO_INSTRUCTOR_THRESHOLD}회 미만`,
+  [PRICING_RULE.DIOSA_FIXED]: "디오사",
+  [PRICING_RULE.DUET_EVENT_FIXED]: "2:1 이벤트",
+  [PRICING_RULE.SENIOR_TITLE_EVENT]: "점장·팀장",
+});
+
+/** 카테고리의 짧은 이름. 기준 단가 줄이 쓴다. */
+export const PAY_CATEGORY_SHORT_LABELS = Object.freeze({
+  [PAY_CATEGORY.PT_1_1_NEW]: "1:1 신규",
+  [PAY_CATEGORY.PT_1_1_REPURCHASE_EVENT]: "재등록 이벤트",
+  [PAY_CATEGORY.PT_1_1_REPURCHASE_NORMAL]: "재등록 정상",
+  [PAY_CATEGORY.PT_2_1_NEW]: "2:1 신규",
+  [PAY_CATEGORY.PT_2_1_REPURCHASE]: "2:1 재등록",
+  [PAY_CATEGORY.PT_2_1_REPURCHASE_EVENT]: "2:1 재등록 이벤트",
+  [PAY_CATEGORY.SERVICE]: "서비스",
+  [PAY_CATEGORY.LETMEIN]: "렛미인",
+  [PAY_CATEGORY.DIOSA_A]: "디오사 A",
+  [PAY_CATEGORY.DIOSA_B]: "디오사 B",
+  [PAY_CATEGORY.ETC]: "기타",
+});
+
+/**
+ * 이 단가가 왜 이 금액인가, 한 조각으로.
+ *
+ * 판정이 비어 있는 옛 항목은 **카테고리로 메우지 않는다.** 그 항목이 기준
+ * 단가였는지 다른 판정이었는지 알 방법이 없고, 모르는 것을 아는 것처럼 적으면
+ * 대표는 그 줄을 근거로 숫자를 맞춘다.
+ *
+ * @param {string} rule
+ * @param {string} category
+ */
+export function payBasisLabel(rule, category) {
+  const key = String(rule || "");
+  if (!key) return "옛 기록 · 판정 없음";
+  if (key !== PRICING_RULE.BASE_CATEGORY) return PRICING_RULE_SHORT_LABELS[key] || key;
+  return PAY_CATEGORY_SHORT_LABELS[String(category || "")]
+    || PAY_CATEGORY_LABELS[String(category || "")]
+    || String(category || "")
+    || "기준 단가";
+}
+
 export const CLIENT_STATUS_LABELS = Object.freeze({
   [CLIENT_STATUS.ACTIVE]: "운영중",
   [CLIENT_STATUS.HOLD]: "일시중지",

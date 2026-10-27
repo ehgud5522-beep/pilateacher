@@ -290,8 +290,17 @@ const byRuleOrder = (left, right) => {
   return (a < 0 ? RULE_ORDER.length : a) - (b < 0 ? RULE_ORDER.length : b);
 };
 
+/* ── 정산은 횟수로 센다 (2026-10-27 대표) ────────────────────────────────
+   대표가 급여를 맞추는 단위는 "이 강사가 이 단가로 몇 회" 다. 카테고리별·
+   판정별 표는 **왜 그 단가인지**를 설명하는 자리이고, 맞추는 자리가 아니다 --
+   같은 카테고리 안에서도 회차마다 판정이 갈려 단가가 섞이기 때문이다.
+
+   그래서 단가별과 회원별을 함께 쌓는다. 셋은 같은 항목을 다르게 묶은 것이라
+   합계가 **반드시** 같다 (tests/payroll 이 고정한다). 어긋나면 어느 쪽이
+   틀렸는지 알 수 없고, 그때는 이미 지급한 뒤다. */
 const emptyBucket = (key, field) => ({
-  [field]: key, sessions: 0, total: 0, categories: new Map(), rules: new Map(),
+  [field]: key, sessions: 0, total: 0,
+  categories: new Map(), rules: new Map(), prices: new Map(), clients: new Map(),
 });
 
 const addToBucket = (bucket, entry) => {
@@ -305,6 +314,57 @@ const addToBucket = (bucket, entry) => {
   row.amount += amount;
   bucket.categories.set(category, row);
 
+  const unitPrice = Number(entry.unitPrice) || 0;
+
+  /* ── 단가별 ──────────────────────────────────────────────────────────
+     판정(rule)이 비어 있어도 **센다.** 아래 byRule 은 빈 값을 버리는데, 그쪽은
+     "왜 이 금액인지" 를 설명하는 표라 모르는 칸을 만들면 없는 종류가 생긴다.
+     여기는 합계를 맞추는 표다 -- 한 건이라도 빠지면 단가별 합이 강사 금액과
+     달라지고, 그 차이는 아무도 설명하지 못한다. */
+  const price = bucket.prices.get(unitPrice)
+    || { unitPrice, sessions: 0, amount: 0, basis: new Map() };
+  price.sessions += count;
+  price.amount += amount;
+  const basisKey = `${String(entry.rule || "")}|${category}`;
+  const basisRow = price.basis.get(basisKey)
+    || { rule: String(entry.rule || ""), category, sessions: 0 };
+  basisRow.sessions += count;
+  price.basis.set(basisKey, basisRow);
+  bucket.prices.set(unitPrice, price);
+
+  /* ── 회원별 ──────────────────────────────────────────────────────────
+     한 줄은 (회원 · 회원권 · 단가) 하나다. **단가를 키에 넣는다** -- 달 중간에
+     누적 20회를 넘기면 같은 회원권의 단가가 바뀌는데, 한 줄로 합치면 그 줄의
+     "횟수 × 단가" 가 금액과 맞지 않는다. 대표가 손으로 검산하는 자리다.
+
+     수업 날짜도 함께 든다. 줄을 눌렀을 때 "언제 한 수업인지" 가 없으면, 숫자가
+     이상할 때 확인할 방법이 원장을 직접 여는 것뿐이다. */
+  const clientKey = `${String(entry.clientId || "")}|${String(entry.passId || "")}|${unitPrice}`;
+  const client = bucket.clients.get(clientKey) || {
+    key: clientKey,
+    clientId: String(entry.clientId || ""),
+    passId: String(entry.passId || ""),
+    category,
+    unitPrice,
+    sessions: 0,
+    amount: 0,
+    lessons: [],
+  };
+  client.sessions += count;
+  client.amount += amount;
+  client.lessons.push({
+    id: String(entry.id || ""),
+    occurredAt: entry.occurredAt,
+    /* 보정은 −1회다. 날짜 목록에서 그것이 드러나야 "왜 이 회원이 3회인데
+       날짜가 4개인가" 에 답할 수 있다. */
+    sessions: count,
+    amount: amountOf(entry),
+    unitPrice,
+    type: String(entry.type || ""),
+    locationId: String(entry.locationId || ""),
+  });
+  bucket.clients.set(clientKey, client);
+
   /* 이 필드가 생기기 전 항목에는 rule 이 없다. 빈 값으로 한 칸을 만들면 화면이
      "판정 없음" 이라는 없는 종류를 보여주게 되므로, 없으면 세지 않는다 --
      건수 합이 위의 sessions 보다 적을 수 있고 그것이 맞다. */
@@ -316,12 +376,37 @@ const addToBucket = (bucket, entry) => {
   bucket.rules.set(rule, ruleRow);
 };
 
+/** 수업이 일어난 순서. 날짜 목록은 위에서 아래로 읽는다. */
+const byOccurredAtAsc = (left, right) =>
+  toDate(left.occurredAt).getTime() - toDate(right.occurredAt).getTime();
+
+/* 회원 줄의 순서. 같은 회원의 줄끼리 붙어 있어야 "단가가 바뀌었다" 가 눈에
+   보인다. 이름은 여기서 모르므로 id 로 묶고, 그 안에서 단가가 높은 것이
+   앞이다 -- 화면이 이름순으로 다시 세울 때도 이 순서는 유지된다. */
+const byClientThenPrice = (left, right) => (
+  left.clientId < right.clientId ? -1
+    : left.clientId > right.clientId ? 1
+      : right.unitPrice - left.unitPrice
+);
+
 const sealBucket = (bucket, field) => ({
   [field]: bucket[field],
   sessions: bucket.sessions,
   total: bucket.total,
   byCategory: [...bucket.categories.values()].sort(bySpecOrder),
   byRule: [...bucket.rules.values()].sort(byRuleOrder),
+  // 비싼 단가가 앞이다. 정산할 때 큰 금액부터 확인한다.
+  byUnitPrice: [...bucket.prices.values()]
+    .map((row) => ({
+      unitPrice: row.unitPrice,
+      sessions: row.sessions,
+      amount: row.amount,
+      basis: [...row.basis.values()].sort(byRuleOrder),
+    }))
+    .sort((left, right) => right.unitPrice - left.unitPrice),
+  byClient: [...bucket.clients.values()]
+    .map((row) => ({ ...row, lessons: row.lessons.slice().sort(byOccurredAtAsc) }))
+    .sort(byClientThenPrice),
 });
 
 /**
@@ -498,38 +583,87 @@ const csvCell = (value) => {
   return /[",\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
 };
 
+/** 엑셀이 날짜로 읽는 모양. 시각까지 적는다 -- 같은 날 두 번 한 수업이 있다. */
+const csvMoment = (value) => {
+  const at = toDate(value);
+  if (!Number.isFinite(at.getTime())) return "";
+  const pad = (number) => String(number).padStart(2, "0");
+  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`
+    + ` ${pad(at.getHours())}:${pad(at.getMinutes())}`;
+};
+
 /**
- * 집계를 CSV 한 장으로. 한 줄이 (지점, 강사, 카테고리) 하나다.
+ * 어느 강사의 줄을 뽑을지.
  *
- * 모양을 하나로 둔다. 소계 줄을 섞으면 엑셀에서 정렬 한 번에 무너지고, 대표는
- * 그것을 알아채지 못한 채 대조한다. 소계는 엑셀이 더 잘한다.
+ * 강사 하나를 고를 때는 **지점을 가로지른 합계**에서 고른다. 한 강사가 두
+ * 지점에서 수업하면 지점별 묶음에는 두 번 서는데, 급여는 한 번 준다.
+ */
+const instructorsInScope = (summary, scope = {}) => {
+  const instructorId = String(scope.instructorId || "");
+  const locationId = String(scope.locationId || "");
+  if (instructorId) {
+    return (summary?.byInstructor || []).filter(
+      (row) => String(row.instructorId || "") === instructorId,
+    );
+  }
+  if (locationId) {
+    const location = (summary?.byLocation || []).find(
+      (row) => String(row.locationId || "") === locationId,
+    );
+    return location?.byInstructor || [];
+  }
+  return summary?.byInstructor || [];
+};
+
+/**
+ * 정산용 CSV. **한 줄이 수업 한 회다** (2026-10-27 대표).
  *
- * 앞에 BOM 을 붙인다. 없으면 엑셀이 UTF-8 로 읽지 않아 강사 이름이 깨지고,
+ * 전에는 한 줄이 (지점 · 강사 · 카테고리) 하나였다. 그 모양으로는 "이 회원이
+ * 몇 회를 얼마에" 를 셀 수 없는데, 대표가 정산에서 맞추는 것이 바로 그것이다.
+ * 회차 단위로 내보내면 소계는 엑셀이 만든다 -- 반대 방향은 불가능하다.
+ *
+ * 소계 줄을 섞지 않는다. 엑셀에서 정렬 한 번에 무너지고, 대표는 그것을
+ * 알아채지 못한 채 대조한다.
+ *
+ * 앞에 BOM 을 붙인다. 없으면 엑셀이 UTF-8 로 읽지 않아 이름이 깨지고,
  * 대조하려고 내려받은 파일이 대조할 수 없는 파일이 된다.
  *
- * @param {{ month: string, byLocation: Array<any> }} summary
- * @param {{ nameOfInstructor?: (id: string) => string, nameOfLocation?: (id: string) => string, labelOfCategory?: (value: string) => string }} [names]
+ * @param {{ month?: string, byInstructor?: Array<any>, byLocation?: Array<any> }} summary
+ * @param {{
+ *   nameOfInstructor?: (id: string) => string, nameOfLocation?: (id: string) => string,
+ *   nameOfClient?: (id: string) => string,
+ *   nameOfPass?: (passId: string, category: string) => string,
+ * }} [names]
+ * @param {{ instructorId?: string, locationId?: string }} [scope]
+ *   instructorId 한 강사만 (지점을 가로지른다). locationId 그 지점만.
+ *   둘 다 없으면 센터 전체다.
  */
-export function payrollCsv(summary, names = {}) {
+export function payrollClientCsv(summary, names = {}, scope = {}) {
   const nameOfInstructor = names.nameOfInstructor || ((id) => id);
   const nameOfLocation = names.nameOfLocation || ((id) => id);
-  const labelOfCategory = names.labelOfCategory || ((value) => value);
-  const lines = [["월", "지점", "강사", "카테고리", "건수", "수업료"].join(",")];
-  for (const location of summary?.byLocation || []) {
-    for (const instructor of location.byInstructor || []) {
-      for (const row of instructor.byCategory || []) {
+  const nameOfClient = names.nameOfClient || ((id) => id);
+  const nameOfPass = names.nameOfPass || ((passId, category) => category || passId);
+  const lines = [["월", "지점", "강사", "회원", "회원권", "날짜", "횟수", "단가", "금액"].join(",")];
+  for (const instructor of instructorsInScope(summary, scope)) {
+    for (const row of instructor.byClient || []) {
+      for (const lesson of row.lessons || []) {
+        /* 지점은 **그 회차의 것**이다. 한 강사가 두 지점에서 수업하면 줄마다
+           다르고, 강사별로 뽑을 때도 어느 지점 수업인지 보여야 한다. */
         lines.push([
-          summary.month,
-          nameOfLocation(location.locationId),
+          summary?.month || "",
+          nameOfLocation(lesson.locationId),
           nameOfInstructor(instructor.instructorId),
-          labelOfCategory(row.category),
-          row.sessions,
-          row.amount,
+          nameOfClient(row.clientId),
+          nameOfPass(row.passId, row.category),
+          csvMoment(lesson.occurredAt),
+          lesson.sessions,
+          row.unitPrice,
+          lesson.amount,
         ].map(csvCell).join(","));
       }
     }
   }
-  return `\uFEFF${lines.join("\n")}`;
+  return `﻿${lines.join("\n")}`;
 }
 
 /**

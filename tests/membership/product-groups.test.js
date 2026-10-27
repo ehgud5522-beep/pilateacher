@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   PRODUCT_GROUP, groupProducts, issuableProducts, issueUnitPrice, isArchivedProduct,
-  priceLabel, productGroupOf, productLine, productTable, sessionsWarning, unusedProducts,
+  mixedCategories, priceLabel, productGroupOf, productLine, productNameChips, productTable,
+  sessionsWarning, unusedProducts,
 } from "../../src/features/membership/product-groups.js";
 
 const product = (overrides = {}) => ({
@@ -233,4 +234,89 @@ test("이미 숨긴 상품은 정리 목록에 다시 오르지 않는다", () =
     usage: new Map([["x", { total: 0 }]]), passes: [],
   });
   assert.deepEqual(list, []);
+});
+
+/* ── 발급 화면의 1단계 (2026-10-27 대표) ─────────────────────────────────
+
+   발급 화면은 상품을 칩 하나로 늘어놓고 이름만 적었다. "1:1 PT 1차 정상가" 를
+   10·20·30회로 파는 센터에서는 **똑같아 보이는 칩이 셋** 서고, 어느 것이 몇
+   회짜리인지 눌러 봐야 알았다. 고른 상품이 단가와 급여카테고리를 정하므로,
+   잘못 고르면 원장이 틀린 채로 쌓인다.
+
+   상품 화면과 **같은 함수로** 묶어야 두 화면의 순서가 같다. */
+
+test("이름 하나당 칩 하나다 -- 회차는 그 안에 접힌다", () => {
+  const chips = productNameChips([
+    product({ id: "c", name: "1차 정상가", defaultSessions: 30, defaultPrice: 2700000 }),
+    product({ id: "a", name: "1차 정상가", defaultSessions: 10, defaultPrice: 1000000 }),
+    product({ id: "b", name: "1차 정상가", defaultSessions: 20, defaultPrice: 1900000 }),
+    product({ id: "d", name: "이벤트", defaultSessions: 10 }),
+  ]);
+
+  assert.equal(chips.length, 2, "이름 둘");
+  assert.deepEqual(chips.map((chip) => chip.name), ["1차 정상가", "이벤트"]);
+  // 회차는 적은 순이다. 10회와 30회가 멀리 떨어져 있으면 둘을 견주지 못한다.
+  assert.deepEqual(chips[0].items.map((item) => item.defaultSessions), [10, 20, 30]);
+});
+
+test("이름이 같아도 1:1 과 2:1 은 따로 선다", () => {
+  /* 그 둘은 차감하는 회원권부터 다르다. 이름만으로 묶으면 2:1 수업에 1:1
+     회원권을 발급하게 된다. */
+  const chips = productNameChips([
+    product({ id: "duet", name: "1차 정상가", sessionType: "pt_2_1", payCategory: "pt_2_1_new" }),
+    product({ id: "solo", name: "1차 정상가" }),
+  ]);
+
+  assert.equal(chips.length, 2);
+  // 상품 화면과 같은 순서다 -- 1:1 이 먼저, 그다음 2:1.
+  assert.deepEqual(chips.map((chip) => chip.groupLabel), ["1:1", "2:1"]);
+  assert.notEqual(chips[0].key, chips[1].key, "키가 갈려야 둘을 따로 고른다");
+});
+
+test("숨긴 상품으로는 새로 발급하지 않는다", () => {
+  const chips = productNameChips([
+    product({ id: "live" }),
+    product({ id: "gone", name: "지난 이벤트", status: "archived" }),
+  ]);
+  assert.deepEqual(chips.map((chip) => chip.name), ["1차 정상가"]);
+});
+
+test("급여카테고리가 갈린 이름은 그 사실을 들고 다닌다", () => {
+  /* 같은 이름으로 파는데 카테고리가 갈리면 급여가 회차마다 달라진다. 상품
+     화면과 발급 화면이 **같은 판정으로** 경고해야 한다 -- 한쪽에만 뜨면 다른
+     쪽에서 고르는 사람은 그 사실을 모른 채 고른다. */
+  const mixed = productNameChips([
+    product({ id: "a", defaultSessions: 10, payCategory: "pt_1_1_new" }),
+    product({ id: "b", defaultSessions: 20, payCategory: "pt_1_1_repurchase_normal" }),
+  ]);
+  assert.equal(mixed[0].mixed, true);
+
+  const same = productNameChips([
+    product({ id: "a", defaultSessions: 10 }),
+    product({ id: "b", defaultSessions: 20 }),
+  ]);
+  assert.equal(same[0].mixed, false);
+
+  // 표도 같은 함수로 묻는다 -- 두 화면이 다른 답을 낼 자리가 없다.
+  assert.equal(mixedCategories([{ payCategory: "a" }, { payCategory: "b" }]), true);
+  assert.equal(mixedCategories([{ payCategory: "a" }, { payCategory: "a" }]), false);
+  // 비어 있는 칸은 "다르다" 가 아니다. 적지 않은 것과 다른 것은 다른 일이다.
+  assert.equal(mixedCategories([{ payCategory: "a" }, {}]), false);
+  assert.equal(mixedCategories(null), false);
+});
+
+test("칩의 순서와 표의 순서가 같다", () => {
+  /* 두 화면의 순서가 다르면 상품 화면에서 본 줄을 발급 화면에서 다시 찾게
+     되고, 그러다 비슷한 이름의 다른 상품을 고른다. */
+  const products = [
+    product({ id: "d", name: "이벤트", sessionType: "pt_2_1", payCategory: "pt_2_1_new" }),
+    product({ id: "b", name: "이벤트" }),
+    product({ id: "a", name: "1차 정상가" }),
+  ];
+  const fromTable = productTable(products).flatMap(
+    (group) => group.rows.map((row) => `${group.label}|${row.name}`),
+  );
+  const fromChips = productNameChips(products).map((chip) => `${chip.groupLabel}|${chip.name}`);
+
+  assert.deepEqual(fromChips, fromTable);
 });

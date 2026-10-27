@@ -175,6 +175,9 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "회원 목록 · 소속 강사 · 명부 조회 실패 · 네트워크",
     "회원 목록 · 강사 · 비어 있음",
     "회원권 발급",
+    "회원권 발급 · 같은 이름 여러 회차",
+    "회원권 발급 · 같은 이름 여러 회차 · 펼침",
+    "회원권 발급 · 상품 관리",
     /* 복합결제 (2026-10-27). 금액 칸 넷 · 결제 합계 · 잔금이 한 화면에 선다. */
     "회원권 발급 · 복합결제",
     "회원권 발급 · 복합결제 · 잔금 직접 수정",
@@ -1120,6 +1123,50 @@ test("the monthly report and the payroll roll-up do not read alike", async () =>
 /* 회원권 발급. 누른 뒤에 고칠 수 있는 것이 거의 없는 화면이라, 무엇이 저장될지가
    누르기 전에 보여야 한다. 단가 해석은 pay-rates 의 UNIT_PRICE_SOURCE 를 따른다. */
 const issueScreens = () => screenMarkup();
+
+/* ── 발급 화면의 상품 고르기 ─────────────────────────────────────────────
+
+   전에는 칩 하나에 상품 이름만 적혀 있었다. "1:1 PT 1차 정상가" 를 10·20·30회로
+   파는 센터에서는 **똑같아 보이는 칩이 셋** 서고, 어느 것이 몇 회짜리인지 눌러
+   봐야 알았다. 고른 상품이 그 회원권의 단가와 급여카테고리를 정하므로, 잘못
+   고르면 원장이 틀린 채로 쌓인다 -- append-only 라 되돌릴 수 없다. */
+
+test("같은 이름을 여러 회차로 팔면 회차·금액으로 갈라 보인다", async (t) => {
+  const markupOf = await issueScreens(t);
+
+  /* 1단계는 이름 하나당 칩 하나다. 10·20·30회가 한 칩으로 접히고, 몇 개가
+     들어 있는지를 칩이 말한다 -- 눌러 보기 전에 알 수 있어야 한다. */
+  const folded = markupOf("회원권 발급 · 같은 이름 여러 회차");
+  assert.equal((folded.match(/1:1 PT 1차 정상가/g) || []).length, 2,
+    "1:1 과 2:1 로 두 칩. 회차마다 하나씩 서지 않는다");
+  assert.match(folded, /\(3\)/, "그 이름에 상품이 셋이라는 것을 칩이 말한다");
+  assert.match(folded, /상품을 고르면 회차와 금액이 여기 섭니다/);
+  // 고르기 전에는 회차·금액이 없다. 셋 중 어느 것인지 아직 정해지지 않았다.
+  assert.doesNotMatch(folded, /10회 · 100만원/);
+
+  /* 2단계는 회차 · 금액 카드다. 적은 회차가 앞이고, 급여카테고리가 아래에
+     작게 붙는다 -- 회원권 상품 화면과 같은 카드(ProductSessionCard)다. */
+  const opened = markupOf("회원권 발급 · 같은 이름 여러 회차 · 펼침");
+  const cards = ["10회 · 100만원", "20회 · 190만원", "30회 · 270만원"]
+    .map((label) => opened.indexOf(label));
+  assert.ok(cards.every((at) => at >= 0), "회차와 금액이 카드에 함께 선다");
+  assert.deepEqual(cards.slice().sort((a, b) => a - b), cards, "회차가 적은 순");
+  assert.match(opened, /1:1 신규/, "급여카테고리가 카드 아래에 붙는다");
+
+  /* 이름이 같은 1:1 과 2:1 은 따로 선다. 이름만으로는 구별되지 않는데, 그
+     둘은 차감하는 회원권부터 다르다. */
+  const groups = ["1:1", "2:1"].map((label) => folded.indexOf(label));
+  assert.ok(groups.every((at) => at >= 0), "칩이 1:1 · 2:1 을 함께 적는다");
+});
+
+test("발급 화면의 [상품 관리]는 넘겨준 화면에만 선다", async (t) => {
+  /* 대표·총괄만 (2026-10-27 대표 결정). 권한은 한 곳에서만 판단한다 --
+     부르는 쪽이 넘겨주지 않으면 그려지지 않는다. */
+  const markupOf = await issueScreens(t);
+
+  assert.match(markupOf("회원권 발급 · 상품 관리"), /상품 관리/);
+  assert.doesNotMatch(markupOf("회원권 발급"), /상품 관리/);
+});
 
 test("the issue form asks only what the price source needs", async (t) => {
   const markupOf = await issueScreens(t);

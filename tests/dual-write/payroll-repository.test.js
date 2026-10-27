@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createFirestorePayrollStore, loadInstructorMonthlyPay, loadOrganizationMonthlyPayroll,
-  monthRange, payrollCsv, currentMonth, previousMonth, summarizeCorrections, summarizeInstructorPay,
-  onlyNewInstructorRate, summarizeOrganizationPay, toDate,
+  monthRange, payrollClientCsv, currentMonth, previousMonth, summarizeCorrections,
+  summarizeInstructorPay, onlyNewInstructorRate, summarizeOrganizationPay, toDate,
 } from "../../src/data/repositories/payroll-repository.js";
 import { PAY_CATEGORY } from "../../src/data/schema/constants.js";
 import { PAY_RATES } from "../../src/data/schema/pay-rates.js";
@@ -371,24 +371,68 @@ test("the screen opens on the month in progress", () => {
   assert.equal(currentMonth(new Date(2026, 11, 31, 23, 59)), "2026-12");
 });
 
-test("the csv is one shape, readable by Excel, with the month on every row", () => {
-  /* 소계 줄을 섞으면 엑셀에서 정렬 한 번에 무너지고, 대표는 그것을 알아채지
-     못한 채 대조한다. */
+/* ── 정산용 CSV ──────────────────────────────────────────────────────────
+   한 줄이 **수업 한 회**다 (2026-10-27 대표). 전에는 한 줄이 (지점 · 강사 ·
+   카테고리) 하나였는데, 그 모양으로는 "이 회원이 몇 회를 얼마에" 를 셀 수
+   없다 -- 대표가 정산에서 맞추는 것이 바로 그것이다. */
+
+const csvNames = {
+  nameOfInstructor: () => "정, 예진",
+  nameOfLocation: () => "반송점",
+  nameOfClient: (id) => (id === "client-a" ? "김하나" : "박두리"),
+  nameOfPass: (passId) => (passId === "pass-a" ? "1:1 PT 20회" : "1:1 PT 10회"),
+};
+
+test("the csv is one row per lesson, readable by Excel", () => {
   const summary = summarizeOrganizationPay([
-    orgEntry({ id: "a", locationId: "bansong", category: PAY_CATEGORY.PT_1_1_NEW, unitPrice: 25000 }),
-    orgEntry({ id: "b", locationId: "bansong", category: PAY_CATEGORY.PT_1_1_NEW, unitPrice: 25000 }),
+    orgEntry({
+      id: "a", clientId: "client-a", passId: "pass-a",
+      category: PAY_CATEGORY.PT_1_1_NEW, unitPrice: 25000,
+      occurredAt: new Date(2026, 8, 15, 10, 0),
+    }),
+    orgEntry({
+      id: "b", clientId: "client-a", passId: "pass-a",
+      category: PAY_CATEGORY.PT_1_1_NEW, unitPrice: 25000,
+      occurredAt: new Date(2026, 8, 17, 14, 30),
+    }),
   ]);
-  const csv = payrollCsv({ ...summary, month: "2026-09" }, {
-    nameOfInstructor: () => "정, 예진",
-    nameOfLocation: () => "반송점",
-    labelOfCategory: () => "1:1 신규",
-  });
+  const csv = payrollClientCsv({ ...summary, month: "2026-09" }, csvNames);
+
   assert.ok(csv.startsWith("\uFEFF"), "BOM 이 없으면 엑셀에서 한글이 깨진다");
   const lines = csv.slice(1).split("\n");
-  assert.equal(lines[0], "월,지점,강사,카테고리,건수,수업료");
+  assert.equal(lines[0], "월,지점,강사,회원,회원권,날짜,횟수,단가,금액");
   // 쉼표가 든 이름은 다시 감싼다. 그러지 않으면 엑셀이 열을 쪼갠다.
-  assert.equal(lines[1], '2026-09,반송점,"정, 예진",1:1 신규,2,50000');
-  assert.equal(lines.length, 2, "한 줄이 (지점, 강사, 카테고리) 하나다");
+  assert.equal(lines[1], '2026-09,반송점,"정, 예진",김하나,1:1 PT 20회,2026-09-15 10:00,1,25000,25000');
+  assert.equal(lines[2], '2026-09,반송점,"정, 예진",김하나,1:1 PT 20회,2026-09-17 14:30,1,25000,25000');
+  assert.equal(lines.length, 3, "한 줄이 수업 한 회다");
+});
+
+test("the csv can be cut to one instructor or one location", () => {
+  /* 대표가 강사에게 보내는 것은 그 사람 것뿐이고, 지점장에게 보내는 것은 그
+     지점 것뿐이다. 한 장으로만 뽑히면 남의 급여가 함께 나간다. */
+  const summary = summarizeOrganizationPay([
+    orgEntry({ id: "a", instructorId: "u1", locationId: "bansong", clientId: "client-a", passId: "pass-a" }),
+    orgEntry({ id: "b", instructorId: "u2", locationId: "bansong", clientId: "client-b", passId: "pass-b" }),
+    orgEntry({ id: "c", instructorId: "u1", locationId: "jangyu", clientId: "client-a", passId: "pass-a" }),
+  ]);
+  const names = { ...csvNames, nameOfInstructor: (id) => id, nameOfLocation: (id) => id };
+  const rows = (csv) => csv.slice(1).split("\n").slice(1);
+
+  // 센터 전체는 셋 다.
+  assert.equal(rows(payrollClientCsv({ ...summary, month: "2026-09" }, names)).length, 3);
+
+  /* 강사 하나는 **지점을 가로지른다** -- 두 지점에서 수업했어도 급여는 한 번
+     준다. 그래서 두 줄이고, 줄마다 그 회차의 지점이 적힌다. */
+  const mine = rows(payrollClientCsv({ ...summary, month: "2026-09" }, names, { instructorId: "u1" }));
+  assert.equal(mine.length, 2);
+  assert.ok(mine.some((line) => line.includes("bansong")));
+  assert.ok(mine.some((line) => line.includes("jangyu")));
+  assert.ok(mine.every((line) => line.includes("u1")), "남의 줄이 섞이지 않는다");
+
+  // 지점 하나는 그 지점 수업만.
+  const here = rows(payrollClientCsv({ ...summary, month: "2026-09" }, names, { locationId: "jangyu" }));
+  assert.equal(here.length, 1);
+  assert.ok(here[0].includes("jangyu"));
 });
 
 test("the Firestore store answers the organization-wide shape too", () => {
@@ -584,4 +628,167 @@ test("without the exclusion set nothing changes", async () => {
   ]);
   const summary = await loadOrganizationMonthlyPayroll(ORG, { month: "2026-09", store });
   assert.equal(summary.sessions, 1);
+});
+
+/* ── 정산용 묶음: 단가별 · 회원별 (2026-10-27 대표) ──────────────────────
+
+   대표가 급여를 맞추는 단위는 "이 강사가 이 단가로 몇 회" 다. 카테고리별·
+   판정별 표는 **왜 그 단가인지**를 설명하는 자리이고, 맞추는 자리가 아니다.
+
+   셋은 같은 항목을 다르게 묶은 것이라 합계가 **반드시** 같다. 어긋나면 어느
+   쪽이 틀렸는지 알 수 없고, 그때는 이미 지급한 뒤다. */
+
+/** 한 달치 원장. 단가가 넷으로 갈리고, 한 회원권 안에서도 갈린다. */
+const mixedMonth = () => [
+  // 김하나 · pass-a · 누적 20회를 넘기 전
+  ...Array.from({ length: 9 }, (_unused, index) => orgEntry({
+    id: `a-new-${index}`, clientId: "client-a", passId: "pass-a",
+    category: PAY_CATEGORY.PT_1_1_REPURCHASE_EVENT, unitPrice: 25000, rule: "new_to_instructor",
+    occurredAt: new Date(2026, 8, 2 + index, 10, 0),
+  })),
+  // 같은 회원권인데 **단가가 바뀌었다** -- 그 달 중간에 누적 20회를 넘겼다.
+  ...Array.from({ length: 4 }, (_unused, index) => orgEntry({
+    id: `a-base-${index}`, clientId: "client-a", passId: "pass-a",
+    category: PAY_CATEGORY.PT_1_1_REPURCHASE_EVENT, unitPrice: 30000, rule: "base_category",
+    occurredAt: new Date(2026, 8, 20 + index, 10, 0),
+  })),
+  // 박두리 · pass-b · 부원장 5:5
+  ...Array.from({ length: 2 }, (_unused, index) => orgEntry({
+    id: `b-deputy-${index}`, clientId: "client-b", passId: "pass-b",
+    category: PAY_CATEGORY.PT_1_1_REPURCHASE_NORMAL, unitPrice: 55000, rule: "deputy_director",
+    occurredAt: new Date(2026, 8, 7 + index, 15, 0),
+  })),
+  // 되돌린 한 회차. 음수로 센다 -- 절댓값을 쓰면 되돌린 회차가 한 번 더 나간다.
+  orgEntry({
+    id: "a-correct", type: "correction", delta: 1, correctsEntryId: "a-new-0",
+    clientId: "client-a", passId: "pass-a",
+    category: PAY_CATEGORY.PT_1_1_REPURCHASE_EVENT, unitPrice: 25000, rule: "new_to_instructor",
+    occurredAt: new Date(2026, 8, 25, 10, 0),
+  }),
+];
+
+const onlyInstructor = (summary) => summary.byInstructor[0];
+
+test("단가별 합계 = 회원별 합계 = 강사 금액", () => {
+  /* 세 표가 같은 항목을 다르게 묶은 것이라는 사실을 숫자로 고정한다. 한 쪽만
+     고치는 날 이 테스트가 먼저 떨어져야 한다 -- 화면에서는 세 숫자가 나란히
+     서 있어도 어느 것이 맞는지 알 수 없다. */
+  const summary = summarizeOrganizationPay(mixedMonth());
+  const row = onlyInstructor(summary);
+  const sum = (rows, field) => rows.reduce((total, item) => total + item[field], 0);
+
+  assert.equal(sum(row.byUnitPrice, "amount"), row.total, "단가별 금액");
+  assert.equal(sum(row.byClient, "amount"), row.total, "회원별 금액");
+  assert.equal(sum(row.byCategory, "amount"), row.total, "카테고리별 금액");
+
+  assert.equal(sum(row.byUnitPrice, "sessions"), row.sessions, "단가별 횟수");
+  assert.equal(sum(row.byClient, "sessions"), row.sessions, "회원별 횟수");
+
+  // 센터 합계까지 같은 숫자여야 한다.
+  assert.equal(summary.total, row.total);
+  assert.equal(summary.sessions, row.sessions);
+
+  // 9 × 25,000 + 4 × 30,000 + 2 × 55,000 − 25,000(보정) = 430,000
+  assert.equal(row.total, 430000);
+  assert.equal(row.sessions, 14);
+});
+
+test("지점별로 묶어도 세 표의 합계가 같다", () => {
+  /* 한 강사가 두 지점에서 수업하면 지점 묶음에 두 번 선다. 그 안에서도
+     합계가 깨지면 안 된다 -- 대표는 지점 줄로 지점장과 맞춘다. */
+  const summary = summarizeOrganizationPay([
+    ...mixedMonth(),
+    orgEntry({ id: "other", locationId: "jangyu", clientId: "client-c", passId: "pass-c", unitPrice: 40000 }),
+  ]);
+  for (const location of summary.byLocation) {
+    for (const row of location.byInstructor) {
+      const sum = (rows) => rows.reduce((total, item) => total + item.amount, 0);
+      assert.equal(sum(row.byUnitPrice), row.total, `${location.locationId} 단가별`);
+      assert.equal(sum(row.byClient), row.total, `${location.locationId} 회원별`);
+    }
+    assert.equal(
+      location.byInstructor.reduce((total, item) => total + item.total, 0),
+      location.total,
+      `${location.locationId} 지점 합계`,
+    );
+  }
+  assert.equal(
+    summary.byLocation.reduce((total, item) => total + item.total, 0),
+    summary.total,
+    "지점 합 = 센터 합",
+  );
+});
+
+test("단가별은 비싼 것부터, 그 옆에 왜 그 금액인지가 붙는다", () => {
+  const row = onlyInstructor(summarizeOrganizationPay(mixedMonth()));
+
+  assert.deepEqual(row.byUnitPrice.map((item) => item.unitPrice), [55000, 30000, 25000]);
+  assert.deepEqual(
+    row.byUnitPrice.map((item) => ({ sessions: item.sessions, amount: item.amount })),
+    [
+      { sessions: 2, amount: 110000 },
+      { sessions: 4, amount: 120000 },
+      // 9회에서 보정 1회가 빠진다.
+      { sessions: 8, amount: 200000 },
+    ],
+  );
+  assert.deepEqual(
+    row.byUnitPrice[0].basis.map((item) => item.rule),
+    ["deputy_director"],
+  );
+});
+
+test("판정이 없는 옛 항목도 단가별에서는 센다", () => {
+  /* byRule 은 빈 판정을 버린다 -- 그쪽은 설명하는 표라 "판정 없음" 이라는
+     없는 종류를 만들면 안 된다. 단가별은 **합계를 맞추는 표**라 한 건이라도
+     빠지면 강사 금액과 달라지고, 그 차이는 아무도 설명하지 못한다. */
+  const row = onlyInstructor(summarizeOrganizationPay([
+    orgEntry({ id: "old", unitPrice: 30000, rule: undefined }),
+    orgEntry({ id: "new", unitPrice: 30000, rule: "base_category" }),
+  ]));
+
+  assert.equal(row.byUnitPrice.length, 1);
+  assert.equal(row.byUnitPrice[0].sessions, 2);
+  assert.equal(row.byUnitPrice[0].amount, 60000);
+  assert.equal(row.byRule.reduce((total, item) => total + item.sessions, 0), 1, "판정별은 하나만 센다");
+  assert.deepEqual(row.byUnitPrice[0].basis.map((item) => item.rule).sort(), ["", "base_category"]);
+});
+
+test("같은 회원권이라도 단가가 바뀌면 줄이 나뉜다", () => {
+  /* 한 줄로 합치면 그 줄의 "횟수 × 단가" 가 금액과 맞지 않는다. 대표가 손으로
+     검산하는 자리가 바로 그것이다. */
+  const row = onlyInstructor(summarizeOrganizationPay(mixedMonth()));
+  const mine = row.byClient.filter((item) => item.clientId === "client-a" && item.passId === "pass-a");
+
+  assert.equal(mine.length, 2, "25,000 과 30,000 이 두 줄이다");
+  for (const item of mine) {
+    assert.equal(item.sessions * item.unitPrice, item.amount, `${item.unitPrice} 줄의 검산`);
+  }
+  // 비싼 단가가 앞이다.
+  assert.deepEqual(mine.map((item) => item.unitPrice), [30000, 25000]);
+});
+
+test("회원 줄은 그 회차의 날짜를 들고 있고, 보정은 −1회로 선다", () => {
+  /* 숫자가 이상할 때 확인할 길이 원장을 직접 여는 것뿐이면 아무도 확인하지
+     않는다. 보정을 적지 않으면 "8회인데 날짜가 9개" 가 된다. */
+  const row = onlyInstructor(summarizeOrganizationPay(mixedMonth()));
+  const corrected = row.byClient.find(
+    (item) => item.clientId === "client-a" && item.unitPrice === 25000,
+  );
+
+  assert.equal(corrected.lessons.length, 10, "차감 9 + 보정 1");
+  assert.equal(corrected.sessions, 8);
+  assert.equal(corrected.lessons.filter((item) => item.sessions < 0).length, 1);
+  assert.equal(
+    corrected.lessons.reduce((total, item) => total + item.sessions, 0),
+    corrected.sessions,
+    "날짜 줄의 합이 그 줄의 횟수다",
+  );
+
+  // 수업이 일어난 순서로. 위에서 아래로 읽는다.
+  const times = corrected.lessons.map((item) => toDate(item.occurredAt).getTime());
+  assert.deepEqual(times.slice().sort((a, b) => a - b), times);
+
+  // 지점은 그 회차의 것이다 -- CSV 가 줄마다 적는다.
+  assert.ok(corrected.lessons.every((item) => item.locationId === "bansong"));
 });

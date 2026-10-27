@@ -261,6 +261,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "발급 내역 · 이름 조회 실패",
     "급여 집계",
     "급여 집계 · 강사 펼침",
+    "급여 집계 · 회원별",
+    "급여 집계 · 회원별 · 날짜",
     "급여 집계 · 두 지점",
     "급여 집계 · 이관 전",
     "급여 집계 · 빈 달",
@@ -444,24 +446,75 @@ test("the payroll summary is the owner's, and says out loud what it did not coun
   // 정산은 월이 끝난 뒤에 한다. 10월 3일에 열면 9월이 떠야 한다.
   assert.match(summary, /2026년 9월/);
   assert.match(summary, /₩665,000/);
-  assert.match(summary, /수업 25건 · 강사 2명/);
-  assert.match(summary, /CSV 내려받기/);
+  // 정산은 횟수로 맞춘다 (2026-10-27 대표). "건" 은 무엇의 건인지 말하지 않는다.
+  assert.match(summary, /수업 25회 · 강사 2명/);
+  assert.match(summary, /센터 전체 CSV/);
 
-  /* 카테고리는 눌러야 나온다. 그리고 확정본 단가표의 순서로 선다 -- 금액순이면
-     달마다 줄 순서가 달라지고, 옛 엑셀과 맞추던 눈이 줄을 잃는다. */
+  /* 펼치기 전에는 아무 내역도 없다. */
   assert.doesNotMatch(summary, /1:1 재등록\(이벤트\)/);
-  const opened = markupOf("급여 집계 · 강사 펼침");
-  const order = ["1:1 재등록(정상)", "1:1 재등록(이벤트)", "서비스"]
-    .map((label) => opened.indexOf(label));
-  assert.ok(order.every((at) => at >= 0), "펼치면 카테고리별 내역이 나온다");
-  assert.deepEqual(order.slice().sort((a, b) => a - b), order, "단가표 순서 그대로");
-  assert.match(opened, /₩95,000/, "한 카테고리 안에서 단가가 섞여도 합계는 항목의 합이다");
 
-  /* 카테고리만 보면 "이벤트페이 12건 36만원" 이고, 그 상품의 기준 단가는 30,000
+  /* ── 펼치면 단가별이 먼저 ──────────────────────────────────────────────
+     대표가 급여를 맞추는 단위는 "이 강사가 이 단가로 몇 회" 다. 카테고리별·
+     판정별은 **왜 그 단가인지**를 설명하는 자리라 [상세] 안으로 들어갔다 --
+     설명이 기본이면 맞추는 숫자가 그 아래로 밀린다. */
+  const opened = markupOf("급여 집계 · 강사 펼침");
+  const prices = ["₩55,000", "₩30,000", "₩25,000", "₩5,000"].map((label) => opened.indexOf(label));
+  assert.ok(prices.every((at) => at >= 0), "펼치면 단가별 내역이 나온다");
+  assert.deepEqual(prices.slice().sort((a, b) => a - b), prices, "비싼 단가가 앞이다");
+  // 횟수와 금액이 단가 옆에 붙는다. 9회 × 25,000 = 225,000.
+  assert.match(opened, /9회/);
+  assert.match(opened, /₩225,000/);
+
+  /* 단가 옆에 왜 그 금액인지가 짧게 붙는다. 긴 문구는 한 줄을 다 차지해서
+     숫자를 밀어낸다. */
+  assert.match(opened, /부원장 5:5/);
+  assert.match(opened, /신규 · 누적 20회 미만/);
+  assert.match(opened, /재등록 이벤트/);
+
+  /* 카테고리별·판정별은 [상세] 안이다. 그 안에서는 확정본 단가표의 순서로
+     선다 -- 금액순이면 달마다 줄 순서가 달라지고, 옛 엑셀과 맞추던 눈이 줄을
+     잃는다. */
+  assert.match(opened, /상세 — 카테고리별 · 판정별/);
+  const details = opened.slice(opened.indexOf("상세 — 카테고리별 · 판정별"));
+  const order = ["1:1 재등록(이벤트)", "1:1 재등록(정상)", "서비스"]
+    .map((label) => details.indexOf(label));
+  assert.ok(order.every((at) => at >= 0), "상세에 카테고리별 내역이 있다");
+  assert.deepEqual(order.slice().sort((a, b) => a - b), order, "단가표 순서 그대로");
+  // 한 카테고리(이벤트 13회) 안에서 단가가 둘로 갈려도 합계는 항목의 합이다.
+  assert.match(details, /₩345,000/);
+
+  /* 카테고리만 보면 "이벤트페이 13회 34만원" 이고, 그 상품의 기준 단가는 30,000
      이라 계산이 틀린 것처럼 읽힌다. 왜 섞였는지는 판정이 답한다. */
-  assert.match(opened, /적용된 단가 판정/);
-  assert.match(opened, /누적 20회 미만 — 신규 단가/);
-  assert.match(opened, /기준 단가/);
+  assert.match(details, /적용된 단가 판정/);
+  assert.match(details, /누적 20회 미만 — 신규 단가/);
+  assert.match(details, /기준 단가/);
+
+  /* ── 회원별 보기 ──────────────────────────────────────────────────────
+     정산 문의는 회원 단위로 온다 -- "이 회원 몇 회 했죠?" 가 먼저이고 단가는
+     그다음이다. */
+  const byClient = markupOf("급여 집계 · 회원별");
+  assert.match(byClient, /김하나/);
+  assert.match(byClient, /1:1 PT 20회/, "회원권 이름이 선다");
+  assert.match(byClient, /이두리/);
+  assert.match(byClient, /1:1 PT 10회/);
+  /* **같은 회원권인데 단가가 갈리면 줄이 나뉜다.** 한 줄로 합치면 그 줄의
+     "횟수 × 단가" 가 금액과 맞지 않고, 대표가 손으로 검산하는 자리가 그것이다.
+     김하나의 pass-a 는 25,000 9회 · 30,000 4회 · 서비스 5,000 2회 로 세 줄이다. */
+  for (const amount of ["₩225,000", "₩120,000", "₩10,000"]) {
+    assert.match(byClient, new RegExp(amount), amount);
+  }
+
+  // 회원 줄을 누르면 그 회차의 날짜가 선다.
+  const withDates = markupOf("급여 집계 · 회원별 · 날짜");
+  // 30,000 짜리 네 회차는 9/2 ~ 9/5 다. 시각까지 적는다 -- 같은 날 두 번도 있다.
+  for (const day of ["9.2 10:00", "9.3 10:00", "9.4 10:00", "9.5 10:00"]) {
+    assert.ok(withDates.includes(day), `수업 날짜 ${day} 가 보여야 한다`);
+  }
+
+  /* 내보내기는 셋이다 -- 강사 한 명 · 지점 전체 · 센터 전체. 한 장으로만
+     뽑히면 강사에게 남의 급여가 함께 나간다. */
+  assert.match(opened, /CSV/);
+  assert.match(markupOf("급여 집계 · 두 지점"), /반송점 전체 CSV/);
 
   /* 이관 전에는 모든 강사-회원 쌍이 0 에서 시작해 판정 3 이 먼저 걸린다. 그래서
      이벤트페이도 2:1 재등록도 전부 25,000 이 되는데, 화면이 말하지 않으면 대표는

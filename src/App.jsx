@@ -166,7 +166,8 @@ import {
 } from "./features/schedule/lesson-settlement.js";
 import {
   loadInstructorMonthlyPay, loadOrganizationLedger, loadOrganizationMonthlyPayroll,
-  monthRange, onlyNewInstructorRate, payrollCsv, currentMonth, toDate,
+  monthRange, onlyNewInstructorRate, payrollClientCsv, summarizeOrganizationPay,
+  currentMonth, toDate,
 } from "./data/repositories/payroll-repository.js";
 import {
   AUDIT_ACTION, STALE_PASS_DAYS, listAuditLogs, recordMigrationUpload, reviewAudit,
@@ -177,7 +178,7 @@ import {
 } from "./features/roster/roster-bridge.js";
 import { partnerClientId } from "./data/schema/pass-clients.js";
 import {
-  NEXT_DEDUCT, NEXT_DEDUCT_LABEL, PASS_GROUP, passCardList, passListSummary,
+  NEXT_DEDUCT, NEXT_DEDUCT_LABEL, PASS_GROUP, passCardList, passListSummary, passTitle,
 } from "./features/membership/pass-cards.js";
 import {
   ATTENDANCE_LABEL, centreLessonRows, centreLessonSummary,
@@ -232,7 +233,7 @@ import {
   CLIENT_STATUS_LABELS, DEPUTY_DIRECTOR_LABEL, DIOSA_PAYROLL_NOTICE,
   MEMBERSHIP_STATUS_LABELS, MEMBERSHIP_TITLE_LABELS,
   PAYMENT_METHOD_LABELS, PAY_CATEGORY_LABELS, PRICING_RULE_LABELS, PRODUCT_STATUS_LABELS,
-  SESSION_TYPE_LABELS, labelOf, membershipTitleLabel, payCategoriesFor,
+  SESSION_TYPE_LABELS, labelOf, membershipTitleLabel, payBasisLabel, payCategoriesFor,
 } from "./data/schema/display-names.js";
 import { validatePostureMeasurement, validPostureMetrics } from "./features/posture/measurement-validity.js";
 import {
@@ -20664,7 +20665,103 @@ const PAYROLL_STATE_BADGE = {
   swapped: { label: "계정 교체됨", get color() { return SUB; }, get bg() { return CANVAS; } },
 };
 
-function PayrollInstructorRow({ row, name, badge, open, onToggle }) {
+/* ── 한 강사를 펼쳤을 때 ──────────────────────────────────────────────────
+
+   **정산은 횟수로 맞춘다** (2026-10-27 대표). 대표가 급여를 맞추는 단위는
+   "이 강사가 이 단가로 몇 회" 이고, 카테고리별·판정별 표는 **왜 그 단가인지**
+   를 설명하는 자리다. 설명을 기본으로 두면 맞추는 숫자가 그 아래로 밀린다.
+
+   그래서 펼치면 단가별이 먼저 서고, 설명은 [상세] 안으로 들어간다.
+   ──────────────────────────────────────────────────────────────────────── */
+
+/** 어느 줄을 보고 있는가. */
+const PAYROLL_VIEW = Object.freeze({ PRICE: "price", CLIENT: "client" });
+
+/** 단가 한 줄. 왜 이 금액인지가 숫자 **아래**에 붙는다. */
+function PayrollPriceRow({ row }) {
+  /* 같은 단가에 여러 판정이 겹칠 수 있다 -- 부원장 5:5 가 우연히 기준 단가와
+     같은 금액이 되는 달이 있다. 짧은 이름이 겹치면 한 번만 적는다. */
+  const basis = [...new Set((row.basis || []).map((item) => payBasisLabel(item.rule, item.category)))];
+  return (
+    <div style={{ padding: "7px 0", borderTop: `1px solid ${LINE}` }}>
+      <div className="flex items-center gap-2">
+        <span className="min-w-0 flex-1 tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>
+          ₩{won(row.unitPrice)}
+        </span>
+        <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK2 }}>
+          {row.sessions}회
+        </span>
+        <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: INK }}>
+          ₩{won(row.amount)}
+        </span>
+      </div>
+      {basis.length ? (
+        <p className="mt-0.5 truncate" style={{ fontSize: TYPE.caption, color: SUB }}>{basis.join(" · ")}</p>
+      ) : null}
+    </div>
+  );
+}
+
+/** 회원 한 줄. 누르면 그 회차들의 날짜가 선다. */
+function PayrollClientRow({ row, clientName, passName, open, onToggle }) {
+  return (
+    <div style={{ borderTop: `1px solid ${LINE}` }}>
+      <button type="button" onClick={onToggle} className="w-full text-left" style={{ padding: "7px 0" }}>
+        <div className="flex items-center gap-2">
+          <ChevronRight size={12} style={{
+            color: FAINT, flexShrink: 0, transform: open ? "rotate(90deg)" : "none", transition: "transform .12s",
+          }} />
+          <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>
+            {clientName}
+          </span>
+          <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK2 }}>
+            {row.sessions}회
+          </span>
+          <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: INK }}>
+            ₩{won(row.amount)}
+          </span>
+        </div>
+        {/* 회원권과 단가는 둘째 줄이다. 390px 폰에서 다섯 칸을 한 줄에 두면
+            이름이 한 글자씩 세로로 깨진다 -- 회원권 카드에서 겪은 그것이다. */}
+        <p className="truncate tabular-nums" style={{ fontSize: TYPE.caption, color: SUB, paddingLeft: 20 }}>
+          {passName}{" · ₩"}{won(row.unitPrice)}
+        </p>
+      </button>
+      {open ? (
+        <div className="pb-1.5" style={{ paddingLeft: 20 }}>
+          {(row.lessons || []).map((lesson) => (
+            <p key={lesson.id || `${lesson.occurredAt}`} className="tabular-nums"
+              style={{ fontSize: TYPE.caption, color: lesson.sessions < 0 ? WARN : INK2, padding: "2px 0" }}>
+              {dayTimeLabel(lesson.occurredAt)}
+              {/* 보정은 −1회다. 적지 않으면 "3회인데 날짜가 4개" 가 된다. */}
+              {lesson.sessions < 0 ? " · 보정 −1회" : ""}
+            </p>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function PayrollInstructorRow({
+  row, name, badge, open, onToggle,
+  nameOfClient = (id) => id, nameOfPass = (passId, category) => category || passId,
+  onDownload, initialView = PAYROLL_VIEW.PRICE, initialOpenClient = "",
+}) {
+  const [view, setView] = useState(initialView);
+  const [openClient, setOpenClient] = useState(initialOpenClient);
+  /* 이름순으로 세운다. 집계는 id 로 묶어 돌려주므로(이름을 모른다) 여기서
+     다시 세운다 -- 같은 회원의 줄끼리는 집계가 이미 붙여 두었고, 그 안의
+     단가 순서는 흐트러뜨리지 않는다. */
+  const clientRows = useMemo(() => {
+    const rows = [...(row.byClient || [])];
+    const nameOf = (item) => nameOfClient(item.clientId) || item.clientId;
+    return rows.sort((left, right) => (
+      nameOf(left).localeCompare(nameOf(right), "ko")
+      || right.unitPrice - left.unitPrice
+    ));
+  }, [row.byClient, nameOfClient]);
+
   return (
     <div style={{ borderTop: `1px solid ${LINE}` }}>
       <button type="button" onClick={onToggle} className="flex w-full items-center gap-2 text-left"
@@ -20679,8 +20776,9 @@ function PayrollInstructorRow({ row, name, badge, open, onToggle }) {
           <span className="shrink-0 rounded-full px-2 py-0.5 font-extrabold"
             style={{ fontSize: TYPE.caption, backgroundColor: badge.bg, color: badge.color }}>{badge.label}</span>
         ) : null}
+        {/* 정산은 횟수로 맞춘다. "건" 은 무엇의 건인지 말하지 않는다. */}
         <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
-          {row.sessions}건
+          {row.sessions}회
         </span>
         <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>
           ₩{won(row.total)}
@@ -20688,40 +20786,82 @@ function PayrollInstructorRow({ row, name, badge, open, onToggle }) {
       </button>
       {open ? (
         <div className="pb-2" style={{ paddingLeft: 22 }}>
-          {row.byCategory.map((item) => (
-            <div key={item.category} className="flex items-center gap-2" style={{ padding: "7px 0" }}>
-              <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: INK2 }}>
-                {labelOf(PAY_CATEGORY_LABELS, item.category)}
-              </span>
-              <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
-                {item.sessions}건
-              </span>
-              <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: INK }}>
-                ₩{won(item.amount)}
-              </span>
-            </div>
-          ))}
-          {/* 카테고리만 보면 "이벤트페이 10건 25만원" 이고, 그 상품의 기준 단가는
-              30,000 이라 계산이 틀린 것처럼 읽힌다. 실제로는 그 열 건이 다른
-              판정에 걸린 것이다 -- 같은 회원권 안에서도 19회째와 21회째가 다르다.
-              그래서 판정별로도 센다. */}
-          {(row.byRule || []).length > 0 ? (
-            <div className="mt-1" style={{ borderTop: `1px solid ${LINE}`, paddingTop: 6 }}>
-              <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>적용된 단가 판정</p>
-              {row.byRule.map((item) => (
-                <div key={item.rule} className="flex items-center gap-2" style={{ padding: "6px 0" }}>
+          <div className="flex items-center gap-1.5" style={{ paddingBottom: 4 }}>
+            {[[PAYROLL_VIEW.PRICE, "단가별"], [PAYROLL_VIEW.CLIENT, "회원별"]].map(([key, label]) => (
+              <button key={key} type="button" onClick={() => setView(key)}
+                className="px-2.5 font-bold" style={{
+                  height: 26, borderRadius: 999, fontSize: TYPE.caption,
+                  backgroundColor: view === key ? TINT : CANVAS,
+                  color: view === key ? BRAND_D : SUB,
+                }}>{label}</button>
+            ))}
+          </div>
+
+          {view === PAYROLL_VIEW.PRICE ? (
+            (row.byUnitPrice || []).map((item) => (
+              <PayrollPriceRow key={item.unitPrice} row={item} />
+            ))
+          ) : (
+            clientRows.map((item) => (
+              <PayrollClientRow key={item.key} row={item}
+                clientName={nameOfClient(item.clientId)}
+                passName={nameOfPass(item.passId, item.category)}
+                open={openClient === item.key}
+                onToggle={() => setOpenClient(openClient === item.key ? "" : item.key)} />
+            ))
+          )}
+
+          {/* ── 설명은 접어 둔다 ────────────────────────────────────────
+              카테고리만 보면 "이벤트페이 10회 25만원" 이고, 그 상품의 기준
+              단가는 30,000 이라 계산이 틀린 것처럼 읽힌다. 실제로는 그 열
+              회가 다른 판정에 걸린 것이다 -- 같은 회원권 안에서도 19회째와
+              21회째가 다르다. 그 설명이 여기 있고, 맞추는 숫자는 위에 있다. */}
+          <details className="mt-1.5" style={{ borderTop: `1px solid ${LINE}`, paddingTop: 6 }}>
+            <summary className="cursor-pointer list-none"
+              style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND_D }}>
+              상세 — 카테고리별 · 판정별
+            </summary>
+            <div className="mt-1">
+              {(row.byCategory || []).map((item) => (
+                <div key={item.category} className="flex items-center gap-2" style={{ padding: "6px 0" }}>
                   <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: INK2 }}>
-                    {labelOf(PRICING_RULE_LABELS, item.rule)}
+                    {labelOf(PAY_CATEGORY_LABELS, item.category)}
                   </span>
                   <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
-                    {item.sessions}건
+                    {item.sessions}회
                   </span>
                   <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: INK }}>
                     ₩{won(item.amount)}
                   </span>
                 </div>
               ))}
+              {(row.byRule || []).length > 0 ? (
+                <div className="mt-1" style={{ borderTop: `1px solid ${LINE}`, paddingTop: 6 }}>
+                  <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>적용된 단가 판정</p>
+                  {row.byRule.map((item) => (
+                    <div key={item.rule} className="flex items-center gap-2" style={{ padding: "6px 0" }}>
+                      <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: INK2 }}>
+                        {labelOf(PRICING_RULE_LABELS, item.rule)}
+                      </span>
+                      <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+                        {item.sessions}회
+                      </span>
+                      <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: INK }}>
+                        ₩{won(item.amount)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
             </div>
+          </details>
+
+          {onDownload ? (
+            <button type="button" onClick={onDownload}
+              className="mt-2 flex h-9 w-full items-center justify-center gap-1.5 font-bold"
+              style={{ borderRadius: 8, backgroundColor: CANVAS, color: BRAND_D, fontSize: TYPE.caption }}>
+              <Download size={13} />{name} CSV
+            </button>
           ) : null}
         </div>
       ) : null}
@@ -21274,13 +21414,20 @@ const MEMBER_VIEW_MISMATCH_LABEL = {
 };
 
 function PayrollSummary({
-  organization, locationStore, instructorStore, payrollStore, clientStore,
+  organization, locationStore, instructorStore, payrollStore, clientStore, passStore,
   onRetryOrganization, onToast, now = () => new Date(), initialState = null,
 }) {
   const [month, setMonth] = useState(initialState?.month || currentMonth(now()));
   const [summary, setSummary] = useState(initialState?.summary || null);
   const [instructors, setInstructors] = useState(initialState?.instructors || []);
   const [locations, setLocations] = useState(initialState?.locations || []);
+  /* 회원별 보기가 쓴다. 집계는 id 만 들고 있고(원장에 이름이 없다), 이름이
+     없으면 대표는 어느 줄이 누구인지 모른 채 숫자만 본다.
+
+     못 읽어도 집계는 선다 -- 그때는 id 가 그대로 보이고, 위의 namesFailed 줄이
+     그 사실을 말한다. 이름 때문에 정산 전체를 막지 않는다. */
+  const [clients, setClients] = useState(initialState?.clients || []);
+  const [passes, setPasses] = useState(initialState?.passes || []);
   const [namesFailed, setNamesFailed] = useState(initialState?.namesFailed || "");
   const [loading, setLoading] = useState(!initialState);
   const [loadError, setLoadError] = useState(initialState?.loadError || "");
@@ -21303,10 +21450,14 @@ function PayrollSummary({
       /* 심사용 회원을 빼려면 명부가 필요하다 -- 원장 항목에는 그 표시가
          없다. 이 화면이 예전에는 명부를 읽지 않았고, 읽기 한 번이 느는 대신
          가짜 회차가 강사 급여에 섞이지 않는다. */
-      const [payrollClients, instructorResult, locationResult] = await Promise.all([
+      const [payrollClients, instructorResult, locationResult, passResult] = await Promise.all([
         toleratingReadFailure(listClients(organizationId, { store: clientStore })),
         toleratingReadFailure(listMemberships(organizationId, { store: instructorStore })),
         toleratingReadFailure(listLocations(organizationId, { store: locationStore })),
+        /* 회원권 이름. 원장 항목은 passId 만 들고 있어서, 이것이 없으면 회원별
+           보기의 "회원권" 칸이 카테고리 이름으로만 선다 -- 같은 회원이 같은
+           종류를 두 장 들고 있으면 두 줄이 구별되지 않는다. */
+        toleratingReadFailure(listPasses(organizationId, { store: passStore })),
       ]);
       /* 집계보다 명부를 먼저 읽는다. 계정을 바꾼 강사를 한 사람으로 합치려면
          previousUids 가 있어야 하고, 그것은 소속 문서에만 있다 -- 나중에
@@ -21321,14 +21472,19 @@ function PayrollSummary({
       setSummary(found);
       setInstructors(instructorResult.items);
       setLocations(locationResult.items);
-      setNamesFailed(instructorResult.errorCode || locationResult.errorCode || "");
+      setClients(payrollClients.items);
+      setPasses(passResult.items);
+      setNamesFailed(
+        instructorResult.errorCode || locationResult.errorCode
+        || payrollClients.errorCode || passResult.errorCode || "",
+      );
     } catch (error) {
       setLoadError(error?.code || "unknown");
       setSummary(null);
     } finally {
       setLoading(false);
     }
-  }, [organizationId, month, payrollStore, instructorStore, locationStore, clientStore]);
+  }, [organizationId, month, payrollStore, instructorStore, locationStore, clientStore, passStore]);
 
   useEffect(() => { if (!locked) reload(); else setLoading(false); }, [locked, reload]);
 
@@ -21350,18 +21506,35 @@ function PayrollSummary({
     const found = locations.find((item) => item.id === id);
     return found?.name || id || "(지점 없음)";
   }, [locations]);
+  const nameOfClient = useCallback((id) => {
+    const found = clients.find((item) => String(item?.id || "") === String(id || ""));
+    // 이름을 모르면 id 를 보여준다. 빈칸이면 어느 줄이 누구인지 알 수 없다.
+    return found?.name || id || "(알 수 없음)";
+  }, [clients]);
+  /* 회원권 이름. 못 찾으면 카테고리로 적는다 -- 이관 전 항목이나 그 사이에
+     지워진 회원권이 그렇고, 그때 빈 칸을 두면 무슨 회원권인지 알 수 없다. */
+  const nameOfPass = useCallback((passId, category) => {
+    const found = passes.find((item) => String(item?.id || "") === String(passId || ""));
+    if (found) return passTitle(found);
+    return labelOf(PAY_CATEGORY_LABELS, category) || passId || "(회원권 없음)";
+  }, [passes]);
 
-  const download = () => {
+  /**
+   * 정산용 CSV. 한 줄이 수업 한 회다 (payrollClientCsv 머리말).
+   *
+   * 범위는 셋이다 -- 강사 한 명 · 지점 전체 · 센터 전체. 대표가 강사에게
+   * 보내는 것은 그 사람 것뿐이고, 지점장에게 보내는 것은 그 지점 것뿐이다.
+   */
+  const download = (scope = {}, suffix = "") => {
     if (!summary) return;
-    const csv = payrollCsv(summary, {
-      nameOfInstructor, nameOfLocation,
-      labelOfCategory: (value) => labelOf(PAY_CATEGORY_LABELS, value),
-    });
+    const csv = payrollClientCsv(summary, {
+      nameOfInstructor, nameOfLocation, nameOfClient, nameOfPass,
+    }, scope);
     try {
       const url = globalThis.URL.createObjectURL(new globalThis.Blob([csv], { type: "text/csv;charset=utf-8" }));
       const anchor = globalThis.document.createElement("a");
       anchor.href = url;
-      anchor.download = `pilateacher-payroll-${summary.month}.csv`;
+      anchor.download = `pilateacher-payroll-${summary.month}${suffix ? `-${suffix}` : ""}.csv`;
       anchor.click();
       globalThis.URL.revokeObjectURL(url);
     } catch (error) {
@@ -21473,7 +21646,7 @@ function PayrollSummary({
                   {nameOfLocation(location.locationId)}
                 </h3>
                 <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
-                  {location.sessions}건
+                  {location.sessions}회
                 </span>
                 <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.body, fontWeight: 700, color: INK }}>
                   ₩{won(location.total)}
@@ -21484,10 +21657,22 @@ function PayrollSummary({
                   <PayrollInstructorRow key={row.instructorId} row={row}
                     name={nameOfInstructor(row.instructorId)}
                     badge={badgeOfInstructor(row.instructorId)}
+                    nameOfClient={nameOfClient} nameOfPass={nameOfPass}
                     open={open === `${location.locationId}/${row.instructorId}`}
+                    initialView={initialState?.view || PAYROLL_VIEW.PRICE}
+                    initialOpenClient={initialState?.openClient || ""}
+                    onDownload={() => download(
+                      { instructorId: row.instructorId }, nameOfInstructor(row.instructorId),
+                    )}
                     onToggle={() => toggle(`${location.locationId}/${row.instructorId}`)} />
                 ))}
               </div>
+              <button type="button"
+                onClick={() => download({ locationId: location.locationId }, nameOfLocation(location.locationId))}
+                className="mt-2 flex h-10 w-full items-center justify-center gap-1.5 font-bold"
+                style={{ borderRadius: 8, backgroundColor: CANVAS, color: BRAND_D, fontSize: TYPE.caption }}>
+                <Download size={13} />{nameOfLocation(location.locationId)} 전체 CSV
+              </button>
             </section>
           )) : null}
 
@@ -21508,7 +21693,13 @@ function PayrollSummary({
                   <PayrollInstructorRow key={row.instructorId} row={row}
                     name={nameOfInstructor(row.instructorId)}
                     badge={badgeOfInstructor(row.instructorId)}
+                    nameOfClient={nameOfClient} nameOfPass={nameOfPass}
                     open={open === `all/${row.instructorId}`}
+                    initialView={initialState?.view || PAYROLL_VIEW.PRICE}
+                    initialOpenClient={initialState?.openClient || ""}
+                    onDownload={() => download(
+                      { instructorId: row.instructorId }, nameOfInstructor(row.instructorId),
+                    )}
                     onToggle={() => toggle(`all/${row.instructorId}`)} />
                 ))}
               </div>
@@ -21525,27 +21716,29 @@ function PayrollSummary({
               </p>
             </div>
             <p className="mt-1 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
-              수업 {summary.sessions}건 · 강사 {summary.byInstructor.length}명
+              수업 {summary.sessions}회 · 강사 {summary.byInstructor.length}명
             </p>
             {/* 지난달 차감을 이번 달에 보정하면 이미 지급된 급여에서 빠진다.
                 말하지 않으면 대표가 이번 달 합계를 보고 계산이 틀렸다고 읽는다. */}
             {summary.corrections?.priorMonth?.sessions ? (
               <p className="mt-1 tabular-nums" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: WARN }}>
-                지난달 차감 {summary.corrections.priorMonth.sessions}건을 이 달에서 뺐습니다
+                지난달 차감 {summary.corrections.priorMonth.sessions}회를 이 달에서 뺐습니다
                 {" ("}−₩{won(Math.abs(summary.corrections.priorMonth.amount))}{"). "}
                 이미 지급된 달은 고치지 않습니다.
               </p>
             ) : null}
-            <button type="button" onClick={download} disabled={summary.byInstructor.length === 0}
+            <button type="button" onClick={() => download()} disabled={summary.byInstructor.length === 0}
               className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 font-bold"
               style={{
                 borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption,
                 opacity: summary.byInstructor.length === 0 ? 0.5 : 1,
               }}>
-              <Download size={14} />CSV 내려받기
+              <Download size={14} />센터 전체 CSV
             </button>
             <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
-              한 줄이 지점 · 강사 · 카테고리 하나입니다. 옛 급여 엑셀과 나란히 놓고 맞춰 보세요.
+              한 줄이 수업 한 회입니다 (강사 · 회원 · 회원권 · 날짜 · 단가 · 금액).
+              {" "}소계는 엑셀의 피벗으로 만드세요 -- 반대 방향은 할 수 없습니다.
+              {" "}강사별·지점별은 각 묶음 안의 버튼으로 받습니다.
             </p>
           </section>
         </>
@@ -24752,7 +24945,9 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
         {view === "payroll" && showPayroll && (
           <PayrollSummary organization={organization}
             locationStore={locationStore} instructorStore={instructorStore} payrollStore={payrollStore}
-            clientStore={clientStore}
+            /* 회원별 보기가 쓴다. 원장 항목은 id 만 들고 있어서, 이름 없이는
+               대표가 어느 줄이 누구인지 모른 채 숫자만 본다. */
+            clientStore={clientStore} passStore={passStore}
             onRetryOrganization={onRetryOrganization} onToast={onToast} />
         )}
         {view === "member-app" && showMemberApp && (
@@ -25279,34 +25474,62 @@ export function createAppScreenSmokeCases() {
       migratedCount: 0, priorMonthCancelCount: 0, missingPassCount: 0, ...totals,
     },
   });
-  const payrollRow = (instructorId, rows, ruleRows = []) => ({
-    instructorId,
-    sessions: rows.reduce((sum, item) => sum + item.sessions, 0),
-    total: rows.reduce((sum, item) => sum + item.amount, 0),
-    byCategory: rows,
-    byRule: ruleRows,
-  });
-  const smokePayrollInstructors = [
-    payrollRow("u1", [
-      // 같은 카테고리 안에서 단가가 섞인다 -- 20회를 넘은 회차와 그 전 회차.
-      { category: "pt_1_1_repurchase_normal", sessions: 3, amount: 95000 },
-      { category: "pt_1_1_repurchase_event", sessions: 12, amount: 360000 },
-      { category: "service", sessions: 2, amount: 10000 },
-    ], [
-      /* 카테고리만 보면 왜 단가가 섞였는지 알 수 없다. 그 답이 이 목록이다. */
-      { rule: "new_to_instructor", sessions: 9, amount: 225000 },
-      { rule: "base_category", sessions: 8, amount: 240000 },
-    ]),
-    payrollRow("u2", [{ category: "pt_1_1_new", sessions: 8, amount: 200000 }]),
+  /* ── 급여 픽스처는 **진짜 집계**로 만든다 ──────────────────────────────
+     전에는 byCategory·byRule 을 손으로 적었다. 그러면 화면이 새 묶음(단가별 ·
+     회원별)을 그릴 때 그 칸이 비고, 무엇보다 **합계가 맞는지 화면으로 확인할
+     수 없다** -- 손으로 적은 숫자는 손으로 적은 대로 맞기 때문이다.
+
+     원장 항목을 적고 summarizeOrganizationPay 를 그대로 통과시킨다. 실제
+     화면이 받는 것과 같은 모양이고, 단가별 합 = 회원별 합 = 강사 금액이
+     픽스처에서도 성립한다. */
+  const payrollEntries = (count, overrides = {}) => Array.from({ length: count }, (_unused, index) => ({
+    id: `${overrides.id || "pay"}-${index}`,
+    organizationId: "smoke-center",
+    instructorId: "u1",
+    locationId: "bansong",
+    clientId: "smoke-client-a",
+    passId: "smoke-pass-a",
+    type: "deduct",
+    delta: -1,
+    category: "pt_1_1_repurchase_event",
+    unitPrice: 25000,
+    rule: "new_to_instructor",
+    ...overrides,
+    // 같은 날 두 번 한 수업이 아니라 서로 다른 날이어야 날짜 목록이 뜻을 갖는다.
+    occurredAt: new Date(2026, 8, 2 + index, 10, 0),
+  }));
+  /* 한 강사 안에서 단가가 넷으로 갈린다 -- 누적 20회를 넘기 전과 후, 부원장
+     5:5, 서비스. 정산에서 대표가 실제로 보는 모양이다. */
+  const smokePayrollEntries = [
+    ...payrollEntries(9, { id: "u1-new", unitPrice: 25000, rule: "new_to_instructor" }),
+    ...payrollEntries(4, { id: "u1-base", unitPrice: 30000, rule: "base_category" }),
+    ...payrollEntries(2, {
+      id: "u1-deputy", unitPrice: 55000, rule: "deputy_director",
+      category: "pt_1_1_repurchase_normal", clientId: "smoke-client-c", passId: "smoke-pass-b",
+    }),
+    ...payrollEntries(2, {
+      id: "u1-service", unitPrice: 5000, rule: "service_first", category: "service",
+    }),
+    ...payrollEntries(8, {
+      id: "u2", instructorId: "u2", unitPrice: 25000, rule: "base_category",
+      category: "pt_1_1_new", clientId: "smoke-client-b", passId: "smoke-pass-c",
+    }),
   ];
-  const smokePayroll = {
+  const smokePayrollPasses = [
+    { id: "smoke-pass-a", productName: "1:1 PT 20회", category: "pt_1_1_repurchase_event", totalSessions: 20 },
+    { id: "smoke-pass-b", productName: "1:1 PT 10회", category: "pt_1_1_repurchase_normal", totalSessions: 10 },
+    { id: "smoke-pass-c", productName: "1:1 PT 30회", category: "pt_1_1_new", totalSessions: 30 },
+  ];
+  const smokePayrollOf = (entries) => ({
     month: "2026-09",
     start: new Date(2026, 8, 1),
     end: new Date(2026, 9, 1),
-    total: 665000,
-    sessions: 25,
-    byInstructor: smokePayrollInstructors,
-    byLocation: [{ locationId: "bansong", sessions: 25, total: 665000, byInstructor: smokePayrollInstructors }],
+    ...summarizeOrganizationPay(entries),
+  });
+  const smokePayroll = smokePayrollOf(smokePayrollEntries);
+  const smokePayrollNames = {
+    instructors: smokeInstructors, locations: smokeLocations,
+    clients: smokeClients, passes: smokePayrollPasses,
   };
   const attendance = (organization, initialState) => providerWith(organization, (
     <AttendanceCheck organization={readyOrganizationContext(organization)} currentUserId="smoke-instructor"
@@ -25352,6 +25575,7 @@ export function createAppScreenSmokeCases() {
   const payrollSummary = (organization, initialState) => providerWith(organization, (
     <PayrollSummary organization={readyOrganizationContext(organization)}
       locationStore={locationStore} instructorStore={instructorStore} payrollStore={smokePayrollStore}
+      clientStore={clientStore} passStore={passStore}
       now={() => new Date(2026, 9, 3)} initialState={initialState}
       onRetryOrganization={noop} onToast={noop} />
   ));
@@ -26498,37 +26722,42 @@ export function createAppScreenSmokeCases() {
       issuers: [], locations: [], clients: [], products: [], namesFailed: "unavailable",
     }) },
     { name: "급여 집계", element: payrollSummary(smokeOwner, {
-      summary: smokePayroll, instructors: smokeInstructors, locations: smokeLocations,
+      summary: smokePayroll, ...smokePayrollNames,
     }) },
+    /* 펼치면 **단가별이 먼저** 선다. 정산에서 맞추는 단위가 그것이고,
+       카테고리별·판정별은 왜 그 단가인지를 설명하는 자리라 [상세] 안이다. */
     { name: "급여 집계 · 강사 펼침", element: payrollSummary(smokeOwner, {
-      summary: smokePayroll, instructors: smokeInstructors, locations: smokeLocations, open: "all/u1",
+      summary: smokePayroll, ...smokePayrollNames, open: "all/u1",
+    }) },
+    /* 회원별 보기. 같은 회원권인데 달 중간에 단가가 바뀌면 줄이 나뉜다 --
+       한 줄로 합치면 그 줄의 "횟수 × 단가" 가 금액과 맞지 않는다. */
+    { name: "급여 집계 · 회원별", element: payrollSummary(smokeOwner, {
+      summary: smokePayroll, ...smokePayrollNames, open: "all/u1", view: "client",
+    }) },
+    /* 회원 줄을 누르면 그 회차의 날짜가 선다. 숫자가 이상할 때 확인할 길이
+       원장을 직접 여는 것뿐이면 아무도 확인하지 않는다. */
+    { name: "급여 집계 · 회원별 · 날짜", element: payrollSummary(smokeOwner, {
+      summary: smokePayroll, ...smokePayrollNames, open: "all/u1", view: "client",
+      openClient: "smoke-client-a|smoke-pass-a|30000",
     }) },
     { name: "급여 집계 · 두 지점", element: payrollSummary(smokeOwner, {
-      instructors: smokeInstructors,
-      locations: smokeLocations,
-      summary: {
-        ...smokePayroll,
-        byLocation: [
-          { locationId: "bansong", sessions: 17, total: 465000, byInstructor: [smokePayrollInstructors[0]] },
-          { locationId: "centum", sessions: 8, total: 200000, byInstructor: [smokePayrollInstructors[1]] },
-        ],
-      },
+      ...smokePayrollNames,
+      summary: smokePayrollOf(smokePayrollEntries.map((entry) => (
+        entry.instructorId === "u2" ? { ...entry, locationId: "centum" } : entry
+      ))),
     }) },
     /* 이관 전. 모든 강사-회원 쌍이 0 에서 시작해 판정 3 이 먼저 걸리므로
        카테고리와 무관하게 전부 25,000 이다. 화면이 그 이유를 합계보다 먼저
        말해야 한다 -- 말하지 않으면 계산이 고장 난 것으로 읽힌다. */
     { name: "급여 집계 · 이관 전", element: payrollSummary(smokeOwner, {
-      instructors: smokeInstructors,
-      locations: smokeLocations,
-      summary: {
-        month: "2026-09", start: new Date(2026, 8, 1), end: new Date(2026, 9, 1),
-        total: 500000, sessions: 20,
-        byInstructor: [payrollRow("u1", [
-          { category: "pt_1_1_repurchase_event", sessions: 12, amount: 300000 },
-          { category: "pt_2_1_repurchase", sessions: 8, amount: 200000 },
-        ], [{ rule: "new_to_instructor", sessions: 20, amount: 500000 }])],
-        byLocation: [],
-      },
+      ...smokePayrollNames,
+      summary: smokePayrollOf([
+        ...payrollEntries(12, { id: "pre-event", unitPrice: 25000, rule: "new_to_instructor" }),
+        ...payrollEntries(8, {
+          id: "pre-duet", unitPrice: 25000, rule: "new_to_instructor",
+          category: "pt_2_1_repurchase", clientId: "smoke-client-b", passId: "smoke-pass-b",
+        }),
+      ]),
       open: "all/u1",
     }) },
     { name: "급여 집계 · 빈 달", element: payrollSummary(smokeOwner, {
@@ -26541,7 +26770,8 @@ export function createAppScreenSmokeCases() {
     }) },
     { name: "급여 집계 · 조회 실패", element: payrollSummary(smokeOwner, { loadError: "permission-denied" }) },
     { name: "급여 집계 · 이름 조회 실패", element: payrollSummary(smokeOwner, {
-      summary: smokePayroll, instructors: [], locations: [], namesFailed: "permission-denied",
+      summary: smokePayroll, instructors: [], locations: [], clients: [], passes: [],
+      namesFailed: "permission-denied",
     }) },
     { name: "급여 집계 · 소속 확인 실패", element: payrollSummary({ organizationId: "", role: "", status: "unknown", isLegacy: false }, null) },
     { name: "엑셀 이관", element: centerMigration(smokeOwner, {

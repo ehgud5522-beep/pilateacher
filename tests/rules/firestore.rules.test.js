@@ -2957,6 +2957,59 @@ describe("the audit log", () => {
     }
   });
 
+  /* ── 회원권 상품 (2026-10-27 대표) ──────────────────────────────────────
+     상품을 만들고 내리는 것은 FC매니저도 한다 (canManageProducts). 기록을
+     대표에게만 열어 두면 FC매니저의 쓰기가 통째로 거부되고 -- 조작과 기록이
+     한 배치라 상품까지 못 만든다 -- 그러면 기록을 빼는 쪽으로 고치게 된다.
+     조작할 수 있는 사람이 기록도 남긴다. */
+
+  const productEntry = (overrides = {}) => {
+    const entry = rateEntry({ action: "product_added", targetId: "product-1", ...overrides });
+    delete entry.amount;
+    delete entry.previousAmount;
+    return entry;
+  };
+
+  test("상품을 만들고 내린 기록은 FC매니저도 남긴다", async () => {
+    for (const action of ["product_added", "product_archived"]) {
+      await assertSucceeds(setDoc(
+        auditRef(users.owner, `audit-${action}-owner`),
+        productEntry({ action }),
+      ), `owner ${action}`);
+      await assertSucceeds(setDoc(
+        auditRef(users.manager, `audit-${action}-manager`),
+        productEntry({ action, actorId: users.manager, actorRole: "manager" }),
+      ), `manager ${action}`);
+    }
+
+    // 방향이 함께 간다. 내린 것과 되살린 것이 한 동작에 두 방향이다.
+    await assertSucceeds(setDoc(
+      auditRef(users.manager, "audit-product-restored"),
+      productEntry({
+        action: "product_archived", enabled: false,
+        actorId: users.manager, actorRole: "manager",
+      }),
+    ));
+  });
+
+  test("상품 기록이 넓어져도 나머지 문은 그대로다", async () => {
+    /* 상품 둘만 넓혔다. 같은 FC매니저가 풀방금액이나 부원장 지정을 적을 수
+       있으면 그것은 다른 문을 연 것이다. */
+    for (const action of ["full_room_rate_set", "deputy_director_set", "migration_uploaded"]) {
+      await assertFails(setDoc(
+        auditRef(users.manager, `audit-${action}-manager`),
+        productEntry({ action, actorId: users.manager, actorRole: "manager" }),
+      ), action);
+    }
+    // 상품을 만들 수 없는 사람은 그 기록도 못 남긴다 (canManageProducts).
+    for (const role of ["instructor", "staff", "outsider"]) {
+      await assertFails(setDoc(
+        auditRef(users[role], `audit-product-${role}`),
+        productEntry({ actorId: users[role], actorRole: role }),
+      ), role);
+    }
+  });
+
   test("an entry cannot be filed under someone else's name or role", async () => {
     /* 거짓말한 행위자나 역할이 남으면 이 기록은 없는 것보다 해롭다 -- 있는
        그대로라고 믿고 읽게 된다. */

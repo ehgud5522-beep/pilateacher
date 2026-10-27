@@ -19854,6 +19854,9 @@ function ProductCatalog({ organization, currentUserId, store, onRetryOrganizatio
      첫 열과 반 칸만 보인다. narrowViewport 는 테스트가 폭을 못 박는 자리다 --
      SSR 에는 window 가 없어 언제나 넓은 쪽으로 떨어진다. */
   const narrow = useNarrowViewport(narrowViewport);
+  /* 감사 항목에 적히는 역할. 규칙이 소속 문서와 대조하므로 거짓 역할은
+     쓰기째로 거부된다 -- 조작과 기록이 한 배치라 상품까지 안 만들어진다. */
+  const actorRole = String(organization?.role || "");
   /* initialState 는 스모크 하네스가 **그려진 화면**을 보는 자리다. SSR 에서는
      효과가 돌지 않아 언제나 "불러오는 중" 으로 끝나고, 그러면 표도 목록도 한
      번도 그려지지 않는다 -- 다른 화면들과 같은 방식이다. */
@@ -19964,11 +19967,16 @@ function ProductCatalog({ organization, currentUserId, store, onRetryOrganizatio
         // 기타가 아니면 아예 보내지 않는다. 규칙이 다른 카테고리에서는 이 필드를 거부한다.
         ...(wantsUnitPrice ? { baseUnitPrice: unitPrice } : {}),
         createdBy: currentUserId,
+        /* 누가 만들었는지가 감사 로그에 남는다. 역할은 규칙이 소속 문서와
+           대조하므로 지어낼 수 없다. */
+        actorRole,
       }, { store });
       /* 새 상품이 선 뒤에 옛 것을 숨긴다. 순서를 뒤집으면 만들기가 실패했을
          때 상품이 하나도 없는 상태가 남는다. */
       if (replacing?.id) {
-        await setProductStatus(organizationId, replacing.id, PRODUCT_STATUS.ARCHIVED, { store });
+        await setProductStatus(organizationId, replacing.id, PRODUCT_STATUS.ARCHIVED, {
+          store, actorId: currentUserId, actorRole,
+        });
       }
       setForm({ name: "", sessionType: SESSION_TYPE.PT_1_1, payCategory: "", defaultSessions: "", defaultPriceManwon: "", baseUnitPriceWon: "" });
       setMode("list");
@@ -20030,7 +20038,9 @@ function ProductCatalog({ organization, currentUserId, store, onRetryOrganizatio
     const failed = [];
     for (const productId of cleaning) {
       try {
-        await setProductStatus(organizationId, productId, PRODUCT_STATUS.ARCHIVED, { store });
+        await setProductStatus(organizationId, productId, PRODUCT_STATUS.ARCHIVED, {
+          store, actorId: currentUserId, actorRole,
+        });
       } catch (error) {
         failed.push(String(error?.code || "unknown"));
       }
@@ -20048,7 +20058,9 @@ function ProductCatalog({ organization, currentUserId, store, onRetryOrganizatio
     const next = product.status === PRODUCT_STATUS.ACTIVE ? PRODUCT_STATUS.ARCHIVED : PRODUCT_STATUS.ACTIVE;
     setBusyId(product.id);
     try {
-      await setProductStatus(organizationId, product.id, next, { store });
+      await setProductStatus(organizationId, product.id, next, {
+        store, actorId: currentUserId, actorRole,
+      });
       await reload();
     } catch (error) {
       onToast?.({ ok: false, msg: `상태를 바꾸지 못했어요 (코드 ${error?.code || "unknown"})` });
@@ -21924,6 +21936,8 @@ const AUDIT_ACTION_LABEL = {
   [AUDIT_ACTION.MEMBER_LINK_REMOVED]: "회원 계정 연결 해제",
   [AUDIT_ACTION.MEMBER_PHONE_CHANGED]: "연락처 변경",
   [AUDIT_ACTION.SESSION_UP_OVERRIDE]: "세션업 기간 예외",
+  [AUDIT_ACTION.PRODUCT_ADDED]: "상품 추가",
+  [AUDIT_ACTION.PRODUCT_ARCHIVED]: "상품 삭제 · 되살림",
   issue: "회원권 발급",
   deduct: "차감",
   transfer: "담당 강사 변경",
@@ -21960,6 +21974,12 @@ function AuditTimelineRow({ row, nameOfClient, nameOfInstructor, nameOfLocation 
     detail = `${nameOfInstructor(row.targetId)} · ${row.enabled ? "퇴사" : "복직"}`;
   } else if (row.action === AUDIT_ACTION.MEMBER_ADDED || row.action === AUDIT_ACTION.MEMBER_PROFILE_CHANGED) {
     detail = `${nameOfInstructor(row.targetId)} · ${labelOf(MEMBERSHIP_TITLE_LABELS, row.title)}`;
+  } else if (row.action === AUDIT_ACTION.PRODUCT_ARCHIVED) {
+    /* 한 동작에 두 방향이다. 어느 쪽이었는지가 없으면 줄을 읽을 수 없다 --
+       퇴사·복직과 같은 모양이다. 상품 이름은 담기지 않으므로 id 로 보여준다. */
+    detail = `${row.targetId || "(상품 없음)"} · ${row.enabled ? "삭제" : "되살림"}`;
+  } else if (row.action === AUDIT_ACTION.PRODUCT_ADDED) {
+    detail = String(row.targetId || "(상품 없음)");
   } else if (row.action === AUDIT_ACTION.SESSION_UP_OVERRIDE) {
     /* 사유는 원장에 있다 (감사 로그에는 자유 문장 칸이 없다). 여기서는
        **얼마나 지나서 열었는지**를 숫자로 말한다. */
@@ -24194,12 +24214,14 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
   const showProducts = organization.ready
     && !organization.isLegacy
     && FC_ROLES.includes(organization.role);
-  /* 발급 화면 우상단의 [상품 관리]. **대표·총괄만** (2026-10-27 대표 결정).
-     FC매니저도 회원권 상품 화면 자체는 메뉴에서 열 수 있지만, 발급 도중에
-     상품을 손보는 것은 대표가 하는 일로 두기로 했다 -- 상품은 지우고 다시
-     만드는 것이고, 그 자리에서 급하게 하면 이미 팔린 회원권이 가리키던 이름이
-     사라진다. */
-  const showProductAdmin = showProducts && isOwnerLevelRole(organization.role);
+  /* 발급 화면 우상단의 [상품 관리]. **메뉴의 "회원권 상품" 과 같은 선이다**
+     (2026-10-27 대표 결정: FC매니저도 추가·삭제한다). 둘이 갈리면 FC매니저는
+     메뉴로는 들어가는데 발급 도중에는 길이 없어, 적어 둔 회원과 금액을 버리고
+     돌아 나가게 된다.
+
+     누가 만들고 내렸는지는 감사 로그가 든다 (AUDIT_ACTION.PRODUCT_ADDED ·
+     PRODUCT_ARCHIVED). 문을 넓히는 대신 기록을 남긴다. */
+  const showProductAdmin = showProducts;
   /* 회원권 상품 · 회원권 발급 · 회원 관리는 대표와 FC매니저가 본다 (2026-09-23).
      발급은 그 순간 급여의 근거를 만들고, 등록은 그 발급이 가리킬 사람을 만든다
      -- 둘 다 원장에 append-only 로 남아 나중에 고칠 수 없다. 그래서 강사에게는
@@ -25350,8 +25372,8 @@ export function createAppScreenSmokeCases() {
       { id: "smoke-product-active", organizationId: "smoke-center", name: "1:1 20회 가을 이벤트", sessionType: "pt_1_1", payCategory: "pt_1_1_new", defaultSessions: 20, defaultPrice: 1200000, status: "active" },
       { id: "smoke-product-archived", organizationId: "smoke-center", name: "2:1 10회 지난 이벤트", sessionType: "pt_2_1", payCategory: "pt_2_1_repurchase", defaultSessions: 10, defaultPrice: 700000, status: "archived" },
     ],
-    create: async () => {},
-    update: async () => {},
+    /* 상품과 감사 항목이 한 배치로 나간다 (product-repository 의 ProductStore). */
+    commit: async () => {},
     serverTimestamp: async () => "SERVER_TIME",
   };
   /* 회원 목록도 Firestore 를 건드리지 않는다. 화면이 그리는 것만 본다. */

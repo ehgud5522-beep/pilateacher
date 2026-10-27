@@ -19,13 +19,13 @@
 import { PAY_CATEGORY, PRODUCT_STATUS, SESSION_TYPE } from "../schema/constants.js";
 import { payCategoriesFor } from "../schema/display-names.js";
 import { paths } from "../schema/paths.js";
+import { AUDIT_ACTION, auditEntry, auditLogId } from "./audit-repository.js";
 import { readCollection } from "./repository-read.js";
 
 /**
  * @typedef {object} ProductStore
  * @property {(collectionPath: string) => Promise<Array<any>>} list
- * @property {(documentPath: string, data: object) => Promise<void>} create
- * @property {(documentPath: string, data: object) => Promise<void>} update
+ * @property {(writes: Array<{ path: string, data: object, operation?: string }>) => Promise<void>} commit
  * @property {() => Promise<any>} serverTimestamp
  */
 
@@ -62,13 +62,19 @@ export function createFirestoreProductStore() {
       const snapshot = await getDocs(collection(getFirestore(), collectionPath));
       return snapshot.docs.map((document) => ({ id: document.id, ...document.data() }));
     },
-    create: async (documentPath, data) => {
-      const { doc, getFirestore, setDoc } = await load();
-      await setDoc(doc(getFirestore(), documentPath), data);
-    },
-    update: async (documentPath, data) => {
-      const { doc, getFirestore, updateDoc } = await load();
-      await updateDoc(doc(getFirestore(), documentPath), data);
+    /* 상품과 그 감사 항목이 **한 배치다.** 따로 나가면 기록만 실패한 조작이
+       생기고, 감사 로그에서 그것은 "일어나지 않은 일" 과 구별되지 않는다
+       (audit-repository.js 머리말). */
+    commit: async (writes) => {
+      const { doc, getFirestore, writeBatch } = await load();
+      const firestore = getFirestore();
+      const batch = writeBatch(firestore);
+      for (const write of writes) {
+        const reference = doc(firestore, write.path);
+        if (write.operation === "update") batch.update(reference, write.data);
+        else batch.set(reference, write.data);
+      }
+      await batch.commit();
     },
     serverTimestamp: async () => {
       const { serverTimestamp } = await load();
@@ -113,8 +119,12 @@ export async function listProducts(organizationId, options = {}) {
  * 규칙이 createdAt == request.time 을 요구하므로 서버 시각을 넣는다. 클라이언트가
  * 만든 시각은 그것이 정확하더라도 거부된다.
  *
+ * 감사 항목이 함께 간다. 상품 문서가 createdBy 를 들고 있어도 **목록에서는
+ * 보이지 않는다** -- 대표가 "이 달에 누가 무엇을 만들었나" 를 묻는 자리는
+ * 감사 화면이고, 거기 없으면 상품을 하나씩 열어 봐야 한다.
+ *
  * @param {string} organizationId
- * @param {{ name: string, sessionType: string, payCategory: string, defaultSessions: number, defaultPrice: number, createdBy: string, baseUnitPrice?: number, productId?: string }} input
+ * @param {{ name: string, sessionType: string, payCategory: string, defaultSessions: number, defaultPrice: number, createdBy: string, actorRole: string, baseUnitPrice?: number, productId?: string }} input
  * @param {{ store?: ProductStore, newId?: () => string }} [options]
  */
 export async function createProduct(organizationId, input, options = {}) {
@@ -161,9 +171,23 @@ export async function createProduct(organizationId, input, options = {}) {
     createdBy: requiredText(input?.createdBy, "createdBy"),
   };
 
+  /* 역할은 규칙이 소속 문서와 대조한다. 거짓 역할이 남으면 기록이 없는 것보다
+     해롭다 -- 그 줄을 보는 사람이 "FC매니저가 만든 것" 을 "대표가 만든 것" 으로
+     읽는다. */
+  const actorRole = requiredText(input?.actorRole, "actorRole");
   const productId = String(input?.productId || newId());
-  await store.create(paths.product(organization, productId), document);
-  return { productId, ...document };
+  const audit = auditEntry(organization, {
+    action: AUDIT_ACTION.PRODUCT_ADDED,
+    actorId: document.createdBy,
+    actorRole,
+    targetId: productId,
+    stampedAt: document.createdAt,
+  });
+  await store.commit([
+    { path: paths.product(organization, productId), data: document },
+    { path: paths.auditLog(auditLogId(AUDIT_ACTION.PRODUCT_ADDED, productId, "")), data: audit },
+  ]);
+  return { productId, ...document, audit };
 }
 
 /**
@@ -183,10 +207,20 @@ export function productBaseUnitPrice(product) {
 
 /**
  * 바꿀 수 있는 것은 status 뿐이다. 나머지 필드를 넘기려는 호출은 여기서 막는다.
+ *
+ * ── 왜 기록이 함께 가는가 ──────────────────────────────────────────────
+ * 화면의 "삭제" 가 이것이다. 상품은 지우지 않고 내린다 -- 이미 발급된 회원권이
+ * 그 상품의 이름과 금액을 계속 가리키기 때문이다. 그런데 status 한 칸만
+ * 바뀌므로 **누가 언제 내렸는지가 어디에도 남지 않았다.** 그 상품으로는 더
+ * 이상 발급되지 않으니 운영이 바뀌는 일이고, 반년 뒤 "이 상품 왜 없어졌나" 에
+ * 답할 것이 있어야 한다.
+ *
+ * 상품과 감사 항목이 한 배치다. 따로 나가면 기록만 실패한 조작이 생긴다.
+ *
  * @param {string} organizationId
  * @param {string} productId
  * @param {string} status
- * @param {{ store?: ProductStore }} [options]
+ * @param {{ store?: ProductStore, actorId?: string, actorRole?: string, stampedAt?: any }} [options]
  */
 export async function setProductStatus(organizationId, productId, status, options = {}) {
   const { store = createFirestoreProductStore() } = options;
@@ -194,6 +228,24 @@ export async function setProductStatus(organizationId, productId, status, option
   const id = requiredText(productId, "productId");
   const next = requiredText(status, "status");
   if (!values(PRODUCT_STATUS).has(next)) throw new Error("Invalid status");
-  await store.update(paths.product(organization, id), { status: next });
-  return { productId: id, status: next };
+  const actorId = requiredText(options?.actorId, "actorId");
+  const actorRole = requiredText(options?.actorRole, "actorRole");
+  const stampedAt = options?.stampedAt ?? await store.serverTimestamp();
+  const audit = auditEntry(organization, {
+    action: AUDIT_ACTION.PRODUCT_ARCHIVED,
+    actorId,
+    actorRole,
+    targetId: id,
+    // 방향. 내린 것인지 되살린 것인지가 없으면 줄을 읽을 수 없다.
+    enabled: next === PRODUCT_STATUS.ARCHIVED,
+    stampedAt,
+  });
+  await store.commit([
+    { path: paths.product(organization, id), data: { status: next }, operation: "update" },
+    {
+      path: paths.auditLog(auditLogId(AUDIT_ACTION.PRODUCT_ARCHIVED, id, String(next))),
+      data: audit,
+    },
+  ]);
+  return { productId: id, status: next, audit };
 }

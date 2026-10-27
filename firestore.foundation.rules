@@ -2021,7 +2021,14 @@ service cloud.firestore {
 
            전·후·사유가 전부 필수다 (아래 adjustmentWellFormed). 기록 없이
            고칠 수 있으면 그 숫자는 아무 때나 움직일 수 있는 값이 된다. */
-        "instructor_total_adjusted"
+        "instructor_total_adjusted",
+        /* 회원권 상품 추가 · 보관 (2026-10-27 대표). **FC매니저도 한다** --
+           아래 mayRecordAudit 이 이 둘만 canManageProducts 로 넓힌다.
+
+           상품 문서는 createdBy 로 "누가 만들었나" 를 들고 있지만, 보관은
+           status 한 칸만 바꾸므로 누가 언제 내렸는지가 어디에도 없었다.
+           Keep in sync with AUDIT_ACTION in audit-repository.js. */
+        "product_added", "product_archived"
       ];
     }
 
@@ -2054,7 +2061,13 @@ service cloud.firestore {
           action == "area_manager_set"
             // 그 조작 자체가 대표만이므로 기록도 대표만이다.
             ? hasRole(organizationId, ["owner"])
-            : hasRole(organizationId, ownerLevel())
+            /* 상품을 만들고 내리는 것은 FC매니저도 한다 (canManageProducts).
+               기록을 대표에게만 열어 두면 FC매니저의 쓰기가 통째로 거부되고 --
+               조작과 기록이 한 배치라 상품까지 못 만든다 -- 그러면 기록을
+               빼는 쪽으로 고치게 된다. 조작할 수 있는 사람이 기록도 남긴다. */
+            : action in ["product_added", "product_archived"]
+              ? canManageProducts(organizationId)
+              : hasRole(organizationId, ownerLevel())
         );
     }
 

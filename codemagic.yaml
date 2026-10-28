@@ -565,7 +565,7 @@ workflows:
   member-android:
     name: Bonita Member Android (AAB + APK)
     max_build_duration: 45
-    instance_type: linux_x2
+    instance_type: mac_mini_m2
 
     environment:
       node: 22

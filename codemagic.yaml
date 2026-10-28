@@ -661,8 +661,8 @@ workflows:
             if (!result.ok) { console.error('[' + result.code + '] 회원 앱 업로드 키가 아닙니다.'); process.exit(1); }
           "
           BUILD_TOOLS="$(ls -d "$ANDROID_SDK_ROOT"/build-tools/* | sort -V | tail -1)"
-          "$BUILD_TOOLS/aapt2" dump badging "$APK" | head -1
-          "$BUILD_TOOLS/aapt2" dump badging "$APK" | grep -q "package: name='com.bonitapilates.member' versionCode='$BUILD_NUMBER'"
+          "$BUILD_TOOLS/aapt2" dump badging "$APK" | sed -n '1p'
+          "$BUILD_TOOLS/aapt2" dump badging "$APK" | grep "package: name='com.bonitapilates.member' versionCode='$BUILD_NUMBER'"
           "$BUILD_TOOLS/apksigner" verify --print-certs "$APK" | grep -i "SHA-1"
 
       - name: 남은 비밀을 걷는다

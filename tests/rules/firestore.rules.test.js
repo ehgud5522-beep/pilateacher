@@ -36,7 +36,11 @@ import {
   createFirestoreLessonScheduleStore, publishScheduledLessons,
 } from "../../src/data/repositories/lesson-schedule-repository.js";
 import { scheduleChanges } from "../../src/features/schedule/schedule-publish.js";
-import { deleteObject, getMetadata, ref, uploadBytes } from "firebase/storage";
+import {
+  listBackups, preservePreviousBackup, pushBackup, uploadMigrationSnapshot,
+} from "../../src/data/repositories/backup-repository.js";
+import { buildMigrationSnapshot } from "../../src/features/backup/backup-safety.js";
+import { deleteObject, getBytes, getMetadata, ref, uploadBytes } from "firebase/storage";
 
 const PROJECT_ID = "pilateacher-dev";
 const ORG_A = "org-a";
@@ -5026,5 +5030,130 @@ describe("schedule publish — the app's own write paths through the rules", () 
       const results = await publish(userId, [], [entry({ id: `sched-${userId}` })]);
       assert.deepEqual(outcomes(results), ["failed:permission-denied"], String(userId));
     }
+  });
+});
+
+/* ── 백업 안전망: 앱 코드 그대로 (2026-10-31, 서버 기준 동기화 0단계) ──────────
+   backup-repository.js 의 함수를 에뮬레이터 규칙에 그대로 통과시킨다.
+   기기별 자리 · 크기 · 옮기기 전 스냅샷(사진 원본 없음) · 이전 폰 보관본. */
+describe("cloud backup safety net — the app code through the rules", () => {
+  const ME = users.instructor;
+  const backupData = (sessions, extra = {}) => ({
+    members: [{ id: "m1", name: "회원", notes: [{ id: "n1", body: "기록" }] }],
+    schedule: Array.from({ length: sessions }, (_, index) => ({ id: `s${index}`, date: "2026-11-03" })),
+    settings: { center: "센터" },
+    ...extra,
+  });
+  const read = async (uid, id) => {
+    let value = null;
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const snapshot = await getDoc(doc(context.firestore(), "users", uid, "backup", id));
+      value = snapshot.exists() ? snapshot.data() : null;
+    });
+    return value;
+  };
+
+  test("A1-2 처음 백업(없는 문서) · 같은 기기 다시 — latest 와 기기 자리에 함께", async () => {
+    const first = await assertSucceeds(pushBackup(dbFor(ME), ME, backupData(3), { deviceId: "pcdevice01", appBuild: "143" }));
+    assert.equal(first.deviceBackupId, "device_pcdevice01");
+    assert.equal((await read(ME, "latest")).counts.sessions, 3);
+    const own = await read(ME, "device_pcdevice01");
+    assert.equal(own.counts.sessions, 3);
+    assert.equal(own.appBuild, "143");
+    await assertSucceeds(pushBackup(dbFor(ME), ME, backupData(4), { deviceId: "pcdevice01", appBuild: "143" }));
+    assert.equal((await read(ME, "device_pcdevice01")).counts.sessions, 4);
+  });
+
+  test("A3 PC 와 폰이 번갈아 백업해도 서로의 자리를 덮지 않는다", async () => {
+    const pc = { deviceId: "pcdevice01", appBuild: "143" };
+    const phone = { deviceId: "phonedev02", appBuild: "140" };
+    await pushBackup(dbFor(ME), ME, backupData(40), pc);
+    // 폰의 첫 백업: 자기 자리가 없어 latest(PC, 40건)와 견준다 -- 지금처럼 막힌다.
+    // 센터 소속이면 앱이 옛 것을 보관본으로 옮긴 뒤 밀어붙인다 (App.jsx queueCloud).
+    await assert.rejects(pushBackup(dbFor(ME), ME, backupData(3), phone), (error) => error.code === "backup/overwrite-blocked");
+    await assertSucceeds(pushBackup(dbFor(ME), ME, backupData(3), { ...phone, allowDestructiveOverwrite: true }));
+    // 그 뒤로는 각자 자기 자리와 견준다 -- 번갈아 써도 막히지 않는다.
+    await assertSucceeds(pushBackup(dbFor(ME), ME, backupData(41), pc));
+    const again = await assertSucceeds(pushBackup(dbFor(ME), ME, backupData(3), phone));
+    assert.equal(again.latestWritten, false, "PC 의 더 큰 latest 를 폰이 줄여서 덮지 않는다");
+    assert.equal((await read(ME, "device_pcdevice01")).counts.sessions, 41, "PC 것이 남는다");
+    assert.equal((await read(ME, "device_phonedev02")).counts.sessions, 3);
+    assert.equal((await read(ME, "latest")).counts.sessions, 41);
+  });
+
+  test("A5-6 목록은 본인만 · 본문 없이 · 다른 계정 · 비로그인은 읽지도 쓰지도 못한다 · 지우기 없음", async () => {
+    await pushBackup(dbFor(ME), ME, backupData(2), { deviceId: "pcdevice01" });
+    const listed = await assertSucceeds(listBackups(dbFor(ME), ME));
+    assert.deepEqual(listed.map((item) => item.id).sort(), ["device_pcdevice01", "latest"]);
+    assert.equal("data" in listed[0], false, "목록에는 본문이 없다");
+    await assertFails(listBackups(dbFor(users.outsider), ME));
+    await assertFails(listBackups(dbFor(null), ME));
+    await assertFails(pushBackup(dbFor(users.outsider), ME, backupData(1), { deviceId: "intruder01" }));
+    await assertFails(deleteDoc(doc(dbFor(ME), "users", ME, "backup", "device_pcdevice01")));
+  });
+
+  test("A7 크기 — 경고선은 쓰고 알린다, 한도를 넘으면 쓰지 않고 backup/too-large", async () => {
+    const note = "가".repeat(1000); // 3KB
+    const notes = (count) => Array.from({ length: count }, (_, i) => ({ id: `n${i}`, body: note }));
+    const warn = await assertSucceeds(pushBackup(dbFor(ME), ME,
+      backupData(1, { members: [{ id: "m1", notes: notes(280) }] }), { deviceId: "pcdevice01" }));
+    assert.equal(warn.size, "warn");
+    await assert.rejects(
+      pushBackup(dbFor(ME), ME, backupData(1, { members: [{ id: "m1", notes: notes(400) }] }), { deviceId: "pcdevice02" }),
+      (error) => error.code === "backup/too-large" && error.bytes > 1_000_000,
+    );
+    assert.equal(await read(ME, "device_pcdevice02"), null, "아무것도 쓰지 않았다");
+  });
+
+  test("A8 이전 폰 보관본 — 한 번만 옮기고 다시는 덮지 않는다 (회귀)", async () => {
+    await pushBackup(dbFor(ME), ME, backupData(26), { deviceId: "oldphone01" });
+    assert.equal(await assertSucceeds(preservePreviousBackup(dbFor(ME), ME)), "saved");
+    await pushBackup(dbFor(ME), ME, backupData(1), { deviceId: "newphone02", allowDestructiveOverwrite: true });
+    assert.equal(await preservePreviousBackup(dbFor(ME), ME), "exists");
+    assert.equal((await read(ME, "previousPhone")).counts.sessions, 26);
+    await assertFails(preservePreviousBackup(dbFor(users.outsider), ME));
+  });
+
+  test("B1 스냅샷 — 본인이 올리고 읽는다, 사진 원본은 들어 있지 않다", async () => {
+    const pixel = `data:image/jpeg;base64,${"A".repeat(4000)}`;
+    const snapshot = buildMigrationSnapshot({
+      data: backupData(2, { members: [{ id: "m1", avatar: pixel }] }),
+      photos: { m1: { front: [{ id: "p1", photoId: "p1", blobId: "blob-p1", src: pixel, view: "front" }] } },
+      deviceId: "pcdevice01", appBuild: "143", at: new Date("2026-10-31T01:00:00Z"),
+    });
+    const { path } = await assertSucceeds(uploadMigrationSnapshot(storageFor(ME), ME, snapshot));
+    const meta = await assertSucceeds(getMetadata(ref(storageFor(ME), path)));
+    assert.equal(meta.contentType, "application/json");
+    const stored = new TextDecoder().decode(await assertSucceeds(getBytes(ref(storageFor(ME), path))));
+    assert.doesNotMatch(stored, /data:image/, "올라간 파일에 그림 원본이 없다");
+    const parsed = JSON.parse(stored);
+    assert.equal(parsed.photoManifest[0].blobId, "blob-p1", "사진은 목록(참조)만");
+    assert.equal(parsed.photoManifest[0].record.src, undefined);
+  });
+
+  test("B2 스냅샷은 한 번 쓰면 덮지도 지우지도 못한다", async () => {
+    const snapshot = buildMigrationSnapshot({ data: backupData(1), deviceId: "pcdevice01", at: new Date("2026-10-31T02:00:00Z") });
+    const { path } = await uploadMigrationSnapshot(storageFor(ME), ME, snapshot);
+    await assertFails(uploadMigrationSnapshot(storageFor(ME), ME, snapshot));
+    await assertFails(deleteObject(ref(storageFor(ME), path)));
+  });
+
+  test("B3 다른 계정 · 비로그인은 스냅샷을 읽지도 쓰지도 못한다", async () => {
+    const snapshot = buildMigrationSnapshot({ data: backupData(1), deviceId: "pcdevice01", at: new Date("2026-10-31T03:00:00Z") });
+    const { path } = await uploadMigrationSnapshot(storageFor(ME), ME, snapshot);
+    await assertFails(getMetadata(ref(storageFor(users.outsider), path)));
+    await assertFails(getBytes(ref(storageFor(null), path)));
+    const other = buildMigrationSnapshot({ data: backupData(1), deviceId: "intruder01", at: new Date("2026-10-31T03:00:00Z") });
+    await assertFails(uploadMigrationSnapshot(storageFor(users.outsider), ME, other));
+    await assertFails(uploadMigrationSnapshot(storageFor(null), ME, other));
+  });
+
+  test("B4 한도 밖 — 20MB 초과 · JSON 이 아닌 것 · 정해진 이름 밖은 거절", async () => {
+    const at = (name) => ref(storageFor(ME), `users/${ME}/snapshots/${name}`);
+    await assertFails(uploadBytes(at("big_1/db.json"), new Uint8Array(20 * 1024 * 1024 + 1), { contentType: "application/json" }));
+    await assertFails(uploadBytes(at("type_1/db.json"), new Uint8Array([123, 125]), { contentType: "image/jpeg" }));
+    await assertFails(uploadBytes(at("name_1/photo.jpg"), new Uint8Array([123, 125]), { contentType: "application/json" }));
+    await assertFails(uploadBytes(at("bad.id/db.json"), new Uint8Array([123, 125]), { contentType: "application/json" }));
+    await assertSucceeds(uploadBytes(at("ok_1/db.json"), new Uint8Array([123, 125]), { contentType: "application/json" }));
   });
 });

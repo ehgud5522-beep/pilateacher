@@ -17,7 +17,7 @@ import {
   reauthenticateWithCredential, reauthenticateWithPopup, revokeAccessToken,
   sendPasswordResetEmail, updateProfile,
 } from "firebase/auth";
-import { getFirestore, collection, deleteDoc, doc, getDoc, getDocs, runTransaction, setDoc, serverTimestamp } from "firebase/firestore";
+import { getFirestore, collection, deleteDoc, doc, getDoc, getDocs, setDoc, serverTimestamp } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { getStorage, ref as storageRef, uploadBytes, getBlob } from "firebase/storage";
 import { withAuthTimeout } from "../features/auth/apple-sign-in.js";
@@ -27,7 +27,9 @@ import { setAuthInstance } from "../features/auth/auth-instance.js";
 import { attachAuthFetchBridge, recordAuthInitEvent } from "../features/auth/auth-init-log.js";
 import { measureAuthInitialization, recoverAuthStorage } from "../features/auth/auth-init-guard.js";
 import { googleNativeSignInOptions } from "../features/auth/google-sign-in.js";
-import { CLOUD_BACKUP_VERSION, backupCounts, evaluateOverwriteRisk, sanitizeFirestorePayload } from "../features/backup/cloud-backup.js";
+import {
+  listBackups, preservePreviousBackup, pushBackup, uploadMigrationSnapshot,
+} from "../data/repositories/backup-repository.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyABFqCur9nKHUuD_-EvvRNtxVbEhif9gjs",
@@ -500,41 +502,31 @@ const deviceTag = () => {
   } catch (e) { return "기타"; }
 };
 
+/* 본문은 backup-repository.js 에 있다 -- 규칙 테스트가 그 코드를 그대로 돌린다.
+   여기는 시간 제한과 기기 표시만 얹는다. */
 export async function fbPushBackup(uid, data, options = {}) {
   if (!fs || !uid || !data) return;
-  // The in-memory app database can hold keys whose value is `undefined`; only
-  // the localStorage copy ever passes through JSON. Firestore rejects the whole
-  // write for those with code "invalid-argument", so drop them at this boundary.
-  const payload = sanitizeFirestorePayload(data);
-  const photoManifest = sanitizeFirestorePayload(options.photoManifest || []);
-  const photoGraph = sanitizeFirestorePayload(options.photoGraph || {});
-  const counts = backupCounts(payload, photoManifest, photoGraph);
-  await withAuthTimeout(
-    () => runTransaction(fs, async (transaction) => {
-      const backupRef = doc(fs, "users", uid, "backup", "latest");
-      const snapshot = await transaction.get(backupRef);
-      const current = snapshot.exists() ? snapshot.data() : null;
-      const risk = current ? evaluateOverwriteRisk(payload, current) : { blocked: false, reasons: [] };
-      if (risk.blocked && options.allowDestructiveOverwrite !== true) {
-        const error = new Error("Cloud backup overwrite was blocked.");
-        Object.assign(error, { code: "backup/overwrite-blocked", reasons: risk.reasons, risk });
-        throw error;
-      }
-      transaction.set(backupRef, {
-        schemaVersion: CLOUD_BACKUP_VERSION,
-        data: payload,
-        device: deviceTag(),
-        at: serverTimestamp(),
-        members: counts.members,
-        counts: { ...counts, photos: Number.isFinite(Number(options.photoCount)) ? Math.max(0, Number(options.photoCount)) : Math.max(0, Number(current?.counts?.photos) || 0) },
-        photoPending: Math.max(0, Number(options.photoPending) || 0),
-        storageUsage: options.storageUsage && typeof options.storageUsage === "object" ? sanitizeFirestorePayload(options.storageUsage) : current?.storageUsage || null,
-        photoGraph: options.photoGraph && typeof options.photoGraph === "object" ? photoGraph : current?.photoGraph || {},
-      });
-    }),
+  return withAuthTimeout(
+    () => pushBackup(fs, uid, data, { ...options, device: deviceTag() }),
     { timeoutMs: FIRESTORE_WRITE_TIMEOUT_MS, provider: "firebase", stage: "backup_write" },
   );
-  return { counts };
+}
+
+/** 이 계정의 백업 자리들 (본문 없이). 복원 목록이 쓴다. */
+export async function fbListBackups(uid) {
+  if (!fs || !uid) return [];
+  return withAuthTimeout(
+    () => listBackups(fs, uid),
+    { timeoutMs: FIRESTORE_READ_TIMEOUT_MS, provider: "firebase", stage: "backup_list" },
+  );
+}
+
+/** 옮기기 전 스냅샷 (사진 원본 없이). */
+export async function fbUploadMigrationSnapshot(uid, snapshot) {
+  if (!storage || !uid || auth?.currentUser?.uid !== uid) {
+    throw Object.assign(new Error("Snapshot upload requires the signed-in owner."), { code: "auth/unauthenticated" });
+  }
+  return uploadMigrationSnapshot(storage, uid, snapshot);
 }
 
 /** 센터 소속 기기가 덮어쓰기 전에 옛 백업을 옮겨 두는 자리. */
@@ -569,15 +561,7 @@ export async function fbPullBackup(uid, backupId = "latest") {
 export async function fbPreservePreviousBackup(uid) {
   if (!fs || !uid) return "nothing";
   return withAuthTimeout(
-    () => runTransaction(fs, async (transaction) => {
-      const previousRef = doc(fs, "users", uid, "backup", PREVIOUS_PHONE_BACKUP);
-      const existing = await transaction.get(previousRef);
-      if (existing.exists()) return "exists";
-      const latest = await transaction.get(doc(fs, "users", uid, "backup", "latest"));
-      if (!latest.exists()) return "nothing";
-      transaction.set(previousRef, { ...latest.data(), preservedAt: serverTimestamp() });
-      return "saved";
-    }),
+    () => preservePreviousBackup(fs, uid, PREVIOUS_PHONE_BACKUP),
     { timeoutMs: FIRESTORE_WRITE_TIMEOUT_MS, provider: "firebase", stage: "backup_preserve" },
   );
 }

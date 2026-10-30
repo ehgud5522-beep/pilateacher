@@ -123,6 +123,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 묶음 펼침 · 총괄매니저",
     "더보기 탭 · 총괄매니저",
     "더보기 탭 · 백업",
+    "더보기 탭 · 백업 · 크기 경고",
+    "더보기 탭 · 백업 · 한도 넘음",
     "더보기 탭 · 월간 리포트",
     "더보기 탭 · 월간 리포트 · 지난달 못 읽음",
     "더보기 탭 · 월간 리포트 · 조회 실패",

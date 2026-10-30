@@ -13,5 +13,23 @@ service firebase.storage {
         && request.resource.contentType == "image/jpeg";
       allow delete: if false;
     }
+
+    /* 옮기기 전 스냅샷 (2026-10-31, 서버 기준 동기화 0단계).
+       기기 데이터를 서버로 옮기기 직전에 한 벌 남기는 자리다. 무엇이 꼬여도
+       이것으로 돌아가므로 **한 번 쓰면 고치지도 지우지도 못한다** -- update 가
+       열려 있으면 같은 이름으로 다시 올린 것이 원래 것을 덮는다.
+       사진 원본은 담지 않는다(대표 결정): 앱이 사진 목록만 싣고, 여기서는
+       JSON 파일 하나 · 20MB 까지만 받는다. 본인만 읽는다. */
+    match /users/{userId}/snapshots/{snapshotId}/{fileName} {
+      allow read: if request.auth != null && request.auth.uid == userId;
+      allow create: if request.auth != null
+        && request.auth.uid == userId
+        && snapshotId.matches("^[A-Za-z0-9_-]{1,120}$")
+        && fileName == "db.json"
+        && resource == null
+        && request.resource.size < 20 * 1024 * 1024
+        && request.resource.contentType == "application/json";
+      allow update, delete: if false;
+    }
   }
 }

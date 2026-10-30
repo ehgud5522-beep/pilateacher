@@ -2022,11 +2022,26 @@ function LessonRecordExamplesModal({ onClose, onPractice }) {
   );
 }
 
-function ChoiceBottomSheet({ title, subtitle, options, value, onSelect, onClose, columns = 1 }) {
+/* matches 를 주면 위에 검색 칸이 생긴다. 회원 선택처럼 목록이 길 때 -- 센터 회원이
+   백 명을 넘으면 스크롤로 찾을 수 없다 (2026-10-31). */
+function ChoiceBottomSheet({ title, subtitle, options, value, onSelect, onClose, columns = 1, matches = null, searchPlaceholder = "검색" }) {
+  const [query, setQuery] = useState("");
+  const shown = matches && query.trim() ? options.filter((option) => matches(option, query)) : options;
   return (
     <ScheduleBottomSheet title={title} subtitle={subtitle} onClose={onClose}>
+      {matches && (
+        <label className="mb-3 flex h-11 items-center gap-2 px-3" style={{ borderRadius: 9, backgroundColor: CANVAS, border: `1px solid ${LINE}` }}>
+          <Search size={15} style={{ color: SUB }} />
+          <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={searchPlaceholder}
+            aria-label={searchPlaceholder} className="min-w-0 flex-1 bg-transparent text-sm font-bold outline-none" style={{ color: INK }} />
+          {query && <button type="button" aria-label="검색어 지우기" onClick={() => setQuery("")} style={{ color: SUB }}><X size={15} /></button>}
+        </label>
+      )}
+      {matches && query.trim() && shown.length === 0 && (
+        <p className="py-6 text-center text-xs font-bold" style={{ color: SUB }}>‘{query.trim()}’ 검색 결과가 없어요.</p>
+      )}
       <div className={columns > 1 ? "grid grid-cols-2 gap-2" : "space-y-2"}>
-        {options.map((option) => {
+        {shown.map((option) => {
           const active = option.value === value;
           return (
             <button key={option.value} type="button" onClick={() => { onSelect(option.value); onClose(); }}
@@ -4495,7 +4510,8 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
         if (next) setKind(lessonTypeDef(next).formKind);
       }} />}
     {picker?.type === "member" && <ChoiceBottomSheet title="회원 선택" subtitle="기존 회원과 정확히 연결합니다" value={memberIds[picker.slot] || ""} onClose={() => setPicker(null)}
-      options={members.filter(isActive).map((item) => ({ value: item.id, label: item.name || "이름 미입력", description: `잔여 ${left(item)}회${item.contractEnd ? ` · ${ymd(item.contractEnd)}까지` : ""}` }))}
+      searchPlaceholder="이름 또는 연락처" matches={(option, query) => clientMatchesSearch(option.member, query)}
+      options={members.filter(isActive).map((item) => ({ value: item.id, member: item, label: item.name || "이름 미입력", description: `잔여 ${left(item)}회${item.contractEnd ? ` · ${ymd(item.contractEnd)}까지` : ""}` }))}
       onSelect={(id) => { const item = members.find((memberItem) => memberItem.id === id); const ids = [...memberIds]; const names = [...memberNames]; ids[picker.slot] = id; names[picker.slot] = item?.name || ""; setMemberIds(ids); setMemberNames(names); if (!draft.id && picker.slot === 0 && item) setF((current) => ({ ...current, dur: lessonDurationOf(item) })); }} />}
     </>
   );

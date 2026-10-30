@@ -3240,12 +3240,27 @@ function SchedMemberNote({ lessonId, clientId, settled, onRead, onSave, onToast 
   const trimmed = body.trim().slice(0, MEMBER_NOTE_MAX);
   const dirty = trimmed !== savedBody.trim();
 
+  /* 센터 회원과 맞물리지 않은 회원에게는 회원 앱이 없다. 칸을 열어 두면 강사는
+     쓰고 나서 아무 데도 가지 않은 것을 나중에 안다. */
+  if (!clientId) {
+    return (
+      <div data-member-note className="rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
+        <p className="text-xs font-extrabold" style={{ color: INK }}>회원에게 보낼 말</p>
+        <p className="mt-1 text-xs leading-relaxed" style={{ color: INK2 }}>
+          이 회원은 센터 회원과 연결되지 않아 회원 앱으로 보낼 수 없어요.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div data-member-note className="space-y-1.5 rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
       <div className="flex items-center gap-2">
         <p className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: INK }}>회원에게 보낼 말 <span style={{ fontWeight: 600, color: FAINT }}>(선택)</span></p>
         <span className="shrink-0 text-caption tabular-nums" style={{ color: FAINT }}>{trimmed.length}/{MEMBER_NOTE_MAX}</span>
       </div>
+      {/* 쓰기 전에 누가 읽는지 말한다. 수업기록 칸과 나란히 있어서 섞어 쓰기 쉽다. */}
+      <p className="text-xs font-bold" style={{ color: PRIMARY }}>이 내용은 회원에게 보입니다.</p>
       {readError ? <p role="alert" className="text-xs font-bold" style={{ color: BAD }}>{readError}</p> : null}
       <textarea rows={2} value={body} disabled={!loaded} maxLength={MEMBER_NOTE_MAX}
         onChange={(event) => setBody(event.target.value)}
@@ -4381,7 +4396,11 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
                 {/* 위 기록은 강사의 것이고, 이 칸은 회원의 것이다. 나란히 두되
                     섞이지 않게 둔다 -- 한 칸이면 강사는 둘 중 하나를 포기한다. */}
                 {organizationMode && (
-                  <SchedMemberNote key={`${draft.id}-${activeMemberId}`} lessonId={draft.id} clientId={activeMemberId}
+                  /* 센터 회원 id 로 저장한다. 맞물린 회원은 기기 id(activeMemberId)와
+                     센터 id(orgClientId)가 다르고, 회원 앱은 센터 id 로 찾는다 --
+                     기기 id 로 저장하면 말은 남는데 회원에게 끝내 안 간다. 차감도
+                     같은 이유로 orgClientId 를 쓴다 (lesson-settlement.js). */
+                  <SchedMemberNote key={`${draft.id}-${activeMemberId}`} lessonId={draft.id} clientId={activeMember?.orgClientId || ""}
                     settled={settledLesson} onRead={onReadMemberNote} onSave={onSaveMemberNote} onToast={onToast} />
                 )}
                 </>}
@@ -25953,6 +25972,10 @@ export function createAppScreenSmokeCases() {
     { name: "일정 탭 · 소속 · 회원에게 보낼 말", element: scheduleWithSettlement(settleLessonOf(), {
       onReadMemberNote: asyncNoop, onSaveMemberNote: asyncNoop, onToast: noop,
     }) },
+    /* 센터 회원과 맞물리지 않은 회원. 보낼 곳이 없다는 것을 칸이 말한다. */
+    { name: "일정 탭 · 소속 · 회원에게 보낼 말 · 연결 안 됨", element: scheduleWithSettlement(settleLessonOf({
+      type: "개인레슨", attendees: [settleAttendee("m-orphan")],
+    }), { onReadMemberNote: asyncNoop, onSaveMemberNote: asyncNoop, onToast: noop }) },
     { name: "일정 탭 · 소속 · 회원에게 보낼 말 · 확정됨", element: scheduleWithSettlement(settleLessonOf({
       orgSettledAt: "2026-09-19T07:00:00.000Z",
       orgSettledOutcome: "complete",

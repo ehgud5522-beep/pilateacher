@@ -81,12 +81,22 @@ export function memberScreenCases() {
     { name: "홈", element: <Home view={view()} now={NOW} /> },
     {
       name: "홈 · 만료 임박",
-      element: <Home view={view({ nextExpiresAt: new Date(2026, 9, 1) })} now={NOW} />,
+      /* 날짜는 회원권 자체에 둔다. 홈은 이름과 날짜를 같은 회원권에서 읽는다
+         (home-summary.js) -- 문서 꼭대기의 nextExpiresAt 만 바꾸면 회원권과
+         어긋난 픽스처가 된다. */
+      element: <Home view={view({
+        nextExpiresAt: new Date(2026, 9, 1),
+        passes: [{ ...view().passes[0], expiresAt: new Date(2026, 9, 1) }],
+      })} now={NOW} />,
     },
-    { name: "홈 · 잔여 0", element: <Home view={view({ remainingTotal: 0 })} now={NOW} /> },
+    { name: "홈 · 잔여 0", element: <Home view={view({
+      remainingTotal: 0, passes: [{ ...view().passes[0], remainingCount: 0 }],
+    })} now={NOW} /> },
     {
       name: "홈 · 종료 회원",
-      element: <Home view={view({ clientStatus: "ended", remainingTotal: 0 })} now={NOW} />,
+      element: <Home view={view({
+        clientStatus: "ended", remainingTotal: 0, passes: [{ ...view().passes[0], remainingCount: 0 }],
+      })} now={NOW} />,
     },
 
     { name: "회원권", element: <Passes view={view()} /> },

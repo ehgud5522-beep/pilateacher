@@ -111,6 +111,7 @@ onWrite(clients/{clientId}) → 그 회원만 재작성
 | `nextExpiresAt` | `passes.expiresAt` 최솟값 | |
 | `passes[]` | 아래 | 회원권 목록 |
 | `history[]` | 아래 | 수업 이력 |
+| `schedule` | 예정 수업 (2026-10-30) — `startsAt` · `endsAt` · `lessonType` · `instructorName` · `locationName` | 강사가 일정을 등록하면 곧바로. 취소는 사라진다. 못 읽으면 `null` |
 | `journey` | `{ usedTotal }` 만 (`buildPassJourney` 결과에서 고른다) | 차수(`round` · `currentRound`)가 따라 나가지 않게 (2026-10-30) |
 | `updatedAt` | 서버 시각 | 뒤처짐을 눈으로 본다 |
 

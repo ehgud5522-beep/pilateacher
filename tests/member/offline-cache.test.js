@@ -197,3 +197,25 @@ test("화면은 사본을 지금 것처럼 그리지 않는다", async () => {
      되돌릴 수 없는 버튼이 실패하는 것은 회원을 불안하게 한다. */
   assert.match(app, /state\.offlineAt \? undefined : removeAccount/);
 });
+
+test("예정 수업도 사본에 남되, 허용한 칸만", () => {
+  const dirty = place({
+    schedule: [{
+      startsAt: new Date(2026, 10, 3, 19), lessonType: "1:1", instructorName: "정예진",
+      locationName: "반송점", clientIds: ["client-b"], memo: "강사 메모",
+    }],
+  });
+  const store = box();
+  writeViewCache([dirty], NOW, store);
+  const raw = store.map.get(VIEW_CACHE_KEY);
+  assert.match(raw, /정예진/);
+  assert.doesNotMatch(raw, /client-b|강사 메모|clientIds|memo/);
+  const back = readViewCache(store, NOW);
+  assert.equal(back.places[0].view.schedule.length, 1);
+});
+
+test("예정 수업이 없는 옛 문서는 사본에도 칸이 없다 — 화면이 그것으로 가른다", () => {
+  const store = box();
+  writeViewCache([place()], NOW, store);
+  assert.equal("schedule" in readViewCache(store, NOW).places[0].view, false);
+});

@@ -54,6 +54,14 @@ const CAPPED = Array.from({ length: 100 }, (_unused, index) => (
 
 const JOURNEY = { usedTotal: 26 };
 
+/** 오늘(9/24) 19:00 · 10/1 · 10/15 의 예정 수업. */
+const SCHEDULE = [
+  { startsAt: new Date(2026, 8, 24, 19, 0), endsAt: new Date(2026, 8, 24, 19, 50),
+    lessonType: "2:1", instructorName: "김도형", locationName: "해운대점" },
+  { startsAt: new Date(2026, 9, 1, 10, 0), lessonType: "1:1", instructorName: "정예진", locationName: "반송점" },
+  { startsAt: new Date(2026, 9, 15, 10, 0), lessonType: "1:1", instructorName: "정예진", locationName: "반송점" },
+];
+
 const noop = () => {};
 
 export function memberScreenCases() {
@@ -88,6 +96,11 @@ export function memberScreenCases() {
       passes: [{ ...view().passes[0], remainingCount: 22 }],
     })} now={NOW} /> },
     { name: "홈 · 기록 끝", element: <Home view={view({ history: CAPPED })} now={NOW} monthsBack={11} /> },
+    /* 강사가 잡은 예정 수업 (2026-10-30). 오늘 19시 2:1 수업은 다른 지점이고,
+       다음 주와 다음 달에도 하나씩 있다. */
+    { name: "홈 · 예정 수업", element: <Home view={view({ schedule: SCHEDULE })} now={NOW} onOpenRecords={noop} /> },
+    /* 예정 수업을 아는 문서인데 오늘은 없다 -- 그때만 "예정된 수업이 없어요". */
+    { name: "홈 · 예정 없음", element: <Home view={view({ schedule: [] })} now={NOW} onOpenRecords={noop} /> },
 
     { name: "수업기록", element: <Records view={view({ history: STEADY, journey: JOURNEY })} /> },
     {

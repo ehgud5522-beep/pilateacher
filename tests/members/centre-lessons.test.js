@@ -199,3 +199,17 @@ test("회원 id 가 없으면 질의하지 않고 거부한다", async () => {
   await assert.rejects(() => readCentreLessons("center-a", { clientId: "", store }));
   assert.deepEqual(store.asked, []);
 });
+
+test("예정 · 취소된 일정은 수업 기록으로 서지 않는다 — 같은 컬렉션에 산다", async () => {
+  const { centreLessonRows } = await import("../../src/features/members/centre-lessons.js");
+  const rows = centreLessonRows({
+    clientId: "client-a",
+    lessons: [
+      { id: "done", clientIds: ["client-a"], status: "completed", startsAt: new Date(2026, 9, 20, 10) },
+      { id: "old", clientId: "client-a", startsAt: new Date(2026, 8, 1, 10) },
+      { id: "soon", clientIds: ["client-a"], status: "scheduled", startsAt: new Date(2026, 10, 3, 19) },
+      { id: "gone", clientIds: ["client-a"], status: "cancelled", startsAt: new Date(2026, 10, 4, 19) },
+    ],
+  });
+  assert.deepEqual(rows.map((row) => row.lessonId || row.id).sort(), ["done", "old"]);
+});

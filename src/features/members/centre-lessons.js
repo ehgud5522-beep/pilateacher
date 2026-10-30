@@ -76,7 +76,11 @@ export function centreLessonRows(input = {}) {
   const clientId = text(input.clientId);
   const nameOf = typeof input.instructorName === "function" ? input.instructorName : () => "";
   const lessons = (Array.isArray(input.lessons) ? input.lessons : [])
-    .filter((lesson) => lesson && lessonHasClient(lesson, clientId));
+    .filter((lesson) => lesson && lessonHasClient(lesson, clientId))
+    /* 일정도 같은 컬렉션에 산다 (2026-10-30, schedule-publish.js) -- 예정 ·
+       취소된 수업은 "기록" 이 아니다. 상태가 없는 옛 문서는 확정이 만든 것이라
+       그대로 둔다. */
+    .filter((lesson) => !["scheduled", "cancelled"].includes(text(lesson.status)));
 
   /* 말은 수업마다 하나다 (문서 id 가 `${lessonId}_${clientId}`). 같은 수업에
      둘이 오면 나중 것을 쓴다 -- 투영이 그렇게 읽기 때문이다. */

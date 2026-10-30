@@ -485,3 +485,77 @@ test("이력 한 줄은 차감된 회원권의 수업 유형을 싣는다 — pa
   assert.deepEqual(view.history.map((row) => row.lessonType), [LESSON_TYPE.SOLO, LESSON_TYPE.DIOSA]);
   assert.doesNotMatch(JSON.stringify(view.history), /"solo"|passId|diosa_a|pt_1_1_new/);
 });
+
+/* ── 예정 수업 (2026-10-30) ───────────────────────────────────────────────
+
+   강사가 일정을 등록하면 확정 없이 곧바로 회원 데이터에 들어간다. 날짜 · 시간 ·
+   수업 유형 · 강사 · 지점만 -- 메모 · 상품명 · 차수 · 단가 · 다른 회원 id 는 없다. */
+
+const scheduleView = (scheduled, now = new Date(2026, 9, 30, 12)) => buildMemberView({
+  client: { id: "client-a", organizationId: "center-a", userId: "uid-1", name: "김하나", locationId: "bansong" },
+  passes: [],
+  scheduled,
+  instructorNames: { u1: "정예진" },
+  locationNames: { bansong: "반송점", haeundae: "해운대점" },
+  locationName: "반송점",
+  now,
+});
+
+test("예정 수업은 날짜 · 시간 · 유형 · 강사 · 지점만 싣는다", () => {
+  const { SCHEDULE_FIELDS } = require("../src/member-view");
+  const view = scheduleView([{
+    id: "L1", status: "scheduled", clientIds: ["client-a", "client-b"], instructorId: "u1",
+    startsAt: new Date(2026, 10, 3, 19), endsAt: new Date(2026, 10, 3, 19, 50),
+    lessonType: "2:1", locationId: "haeundae", memo: "허리 통증 — 강사 메모", productId: "깍두기",
+  }]);
+  assert.equal(view.schedule.length, 1);
+  assert.deepEqual(Object.keys(view.schedule[0]).sort(), [...SCHEDULE_FIELDS].sort());
+  assert.deepEqual(view.schedule[0], {
+    startsAt: new Date(2026, 10, 3, 19), endsAt: new Date(2026, 10, 3, 19, 50),
+    lessonType: "2:1", instructorName: "정예진", locationName: "해운대점",
+  });
+  assert.doesNotMatch(JSON.stringify(view.schedule), /client-b|L1|u1|허리|메모|깍두기/);
+});
+
+test("취소된 수업 · 지난 수업 · 남의 수업은 싣지 않는다", () => {
+  const view = scheduleView([
+    { status: "scheduled", clientIds: ["client-a"], startsAt: new Date(2026, 10, 1, 10), lessonType: "1:1" },
+    { status: "cancelled", clientIds: ["client-a"], startsAt: new Date(2026, 10, 2, 10), lessonType: "1:1" },
+    { status: "completed", clientIds: ["client-a"], startsAt: new Date(2026, 10, 3, 10), lessonType: "1:1" },
+    { status: "scheduled", clientIds: ["client-a"], startsAt: new Date(2026, 9, 20, 10), lessonType: "1:1" },
+    { status: "scheduled", clientIds: ["client-z"], startsAt: new Date(2026, 10, 4, 10), lessonType: "1:1" },
+  ]);
+  assert.deepEqual(view.schedule.map((lesson) => lesson.startsAt.getDate()), [1]);
+});
+
+test("오늘 이미 시작한 수업도 그날 칸에 남는다 — 하루 전부터 싣는다", () => {
+  const view = scheduleView([
+    { status: "scheduled", clientIds: ["client-a"], startsAt: new Date(2026, 9, 30, 9), lessonType: "1:1" },
+  ], new Date(2026, 9, 30, 21));
+  assert.equal(view.schedule.length, 1);
+});
+
+test("모르는 유형은 other · 지점을 모르면 회원의 지점 · 이른 시각부터", () => {
+  const view = scheduleView([
+    { status: "scheduled", clientIds: ["client-a"], startsAt: new Date(2026, 10, 5, 19), lessonType: "pt_1_1_new" },
+    { status: "scheduled", clientIds: ["client-a"], startsAt: new Date(2026, 10, 5, 9), lessonType: "diosa" },
+  ]);
+  assert.deepEqual(view.schedule.map((lesson) => [lesson.startsAt.getHours(), lesson.lessonType, lesson.locationName]), [
+    [9, "diosa", "반송점"], [19, "other", "반송점"],
+  ]);
+});
+
+test("일정 문서가 바뀌면 앞뒤 회원 모두를 다시 만든다 — 듀엣에서 빠진 사람도", () => {
+  const { clientIdsFromLessonChange } = require("../src/member-view-triggers.js");
+  assert.deepEqual(
+    clientIdsFromLessonChange({ clientIds: ["a", "b"] }, { clientIds: ["a"] }).sort(),
+    ["a", "b"],
+  );
+  assert.deepEqual(clientIdsFromLessonChange(null, { clientId: "c" }), ["c"]);
+  assert.deepEqual(clientIdsFromLessonChange(null, null), []);
+});
+
+test("예정 수업을 못 읽었으면 schedule 은 null — '없음' 이 아니라 '모름'", () => {
+  assert.equal(scheduleView(null).schedule, null);
+  assert.deepEqual(scheduleView([]).schedule, []);
+});

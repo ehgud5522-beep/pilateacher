@@ -39,12 +39,17 @@ const DAY_MS = 86400000;
 /** 사본에 담는 최상위 칸. 여기 없는 것은 저장하지 않는다. */
 export const CACHED_VIEW_FIELDS = Object.freeze([
   "organizationId", "clientId", "name", "locationName", "clientStatus",
-  "remainingTotal", "nextExpiresAt", "passes", "history", "journey",
+  "remainingTotal", "nextExpiresAt", "passes", "history", "schedule", "journey",
 ]);
 
 export const CACHED_PASS_FIELDS = Object.freeze([
   "passId", "lessonType", "totalSessions", "serviceSessions",
   "remainingCount", "expiresAt", "status", "isDuet", "partnerName",
+]);
+
+/** 예정 수업 (2026-10-30). 서버의 SCHEDULE_FIELDS 와 같다. */
+export const CACHED_SCHEDULE_FIELDS = Object.freeze([
+  "startsAt", "endsAt", "lessonType", "instructorName", "locationName",
 ]);
 
 export const CACHED_HISTORY_FIELDS = Object.freeze([
@@ -84,7 +89,7 @@ function iso(value) {
   return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : "";
 }
 
-const DATE_FIELDS = new Set(["nextExpiresAt", "expiresAt", "occurredAt"]);
+const DATE_FIELDS = new Set(["nextExpiresAt", "expiresAt", "occurredAt", "startsAt", "endsAt"]);
 
 /** 허용 목록으로만 옮긴다. 모르는 칸은 말없이 버린다. */
 function pick(source, fields) {
@@ -113,6 +118,11 @@ export function cacheableViews(places) {
           .map((pass) => pick(pass, CACHED_PASS_FIELDS)),
         history: (Array.isArray(place.view.history) ? place.view.history : [])
           .map((entry) => pick(entry, CACHED_HISTORY_FIELDS)),
+        /* 예정 수업이 없는 옛 문서는 칸을 만들지 않는다 -- 화면이 그것으로
+           "예정 수업을 아는가" 를 가른다 (knowsSchedule). */
+        ...(Array.isArray(place.view.schedule) ? {
+          schedule: place.view.schedule.map((lesson) => pick(lesson, CACHED_SCHEDULE_FIELDS)),
+        } : {}),
       },
     }))
     .filter((place) => place.link.organizationId && place.link.clientId);

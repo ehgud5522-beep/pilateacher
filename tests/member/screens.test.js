@@ -484,3 +484,47 @@ test("이벤트 회원권(깍두기 · 양도권) 계정 — 홈 · 수업기록
   // 투영 문서에도 없다.
   assert.doesNotMatch(JSON.stringify(view), /깍두기|양도권|세일즈|특가|purchaseRound|displayName/);
 });
+
+/* ── 예정 수업 (2026-10-30, 강사 일정 → 서버 → 회원 앱) ─────────────────── */
+
+test("오늘 수업 카드에 강사가 잡은 예정 수업이 선다 — 시각 · 이름 · 강사 · 지점", async (t) => {
+  const markupOf = await memberScreens(t);
+  const home = markupOf("홈 · 예정 수업");
+  assert.match(home, /class="lesson planned"[^>]*><span class="time num">19:00</);
+  assert.match(home, /<b>2:1 필라테스 수업<\/b><span class="tags"><i>김도형 강사<\/i><i>해운대점<\/i>/);
+  // 예정 수업은 누를 곳이 없다.
+  assert.doesNotMatch(home, /class="lesson planned"[\s\S]{0,400}class="chev"/);
+});
+
+test("예정된 날은 속이 빈 점, 받은 날은 꽉 찬 점", async (t) => {
+  const markupOf = await memberScreens(t);
+  const home = markupOf("홈 · 예정 수업");
+  // 18일은 받은 수업, 24일(오늘)은 예정.
+  assert.match(home, /aria-label="9월 18일 · 수업 있음"[^>]*class="day on"/);
+  assert.match(home, /aria-label="9월 24일 · 수업 예정"[^>]*class="day plan today picked"/);
+});
+
+test("예정 수업이 있는 달까지 앞으로 넘길 수 있다 — 없으면 이번 달에서 멈춘다", async (t) => {
+  const markupOf = await memberScreens(t);
+  assert.doesNotMatch(markupOf("홈 · 예정 수업"), /aria-label="다음 달" disabled=""/);
+  assert.match(markupOf("홈 · 예정 없음"), /aria-label="다음 달" disabled=""/);
+});
+
+test("예정 수업을 아는 문서에서만 '예정된 수업이 없어요' 라고 한다", async (t) => {
+  const markupOf = await memberScreens(t);
+  assert.match(markupOf("홈 · 예정 없음"), /오늘은 예정된 수업이 없어요/);
+  // 옛 문서(서버가 다시 만들기 전) -- 모르는 것을 없다고 단정하지 않는다.
+  assert.doesNotMatch(markupOf("홈 · 오늘 수업 없음"), /예정된 수업이 없어요/);
+});
+
+test("그날 수업은 예정과 받은 것을 시각 순으로 한 줄에", async (t) => {
+  const markupOf = await memberScreens(t);
+  const { dayLessons } = markupOf.screens;
+  const rows = dayLessons({
+    schedule: [{ startsAt: new Date(2026, 8, 24, 19), lessonType: "1:1" }],
+    history: [{ occurredAt: new Date(2026, 8, 24, 10), type: "deduct", lessonType: "1:1" }],
+  }, new Date(2026, 8, 24));
+  assert.deepEqual(rows.map((row) => [toHour(row.when), row.planned]), [[10, false], [19, true]]);
+});
+
+const toHour = (value) => new Date(value).getHours();

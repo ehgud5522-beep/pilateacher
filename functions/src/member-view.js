@@ -120,10 +120,23 @@ function memberNoteFor(entry, notes) {
   return found.slice(0, MEMBER_NOTE_MAX);
 }
 
+/**
+ * 예정 수업 한 건에서 내보낼 것 (2026-10-30, 대표 결정).
+ *
+ * 날짜 · 시간 · 수업 이름의 재료(유형) · 담당 강사 · 지점만. **강사 메모, 상품명,
+ * 차수, 단가는 담지 않는다** -- 일정 문서에도 메모는 없지만, 여기서 한 번 더
+ * 고른다. 다른 회원(듀엣 상대)의 id 도 내보내지 않는다.
+ */
+const SCHEDULE_FIELDS = Object.freeze(["startsAt", "endsAt", "lessonType", "instructorName", "locationName"]);
+
+/** 회원 화면이 오늘 지난 수업도 그날 칸에 보이게, 하루 전부터 싣는다. */
+const SCHEDULE_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+const SCHEDULE_MAX = 60;
+
 /** 투영 문서의 최상위. */
 const VIEW_FIELDS = Object.freeze([
   "organizationId", "clientId", "userId", "name", "locationName", "clientStatus",
-  "remainingTotal", "nextExpiresAt", "passes", "history", "journey", "updatedAt",
+  "remainingTotal", "nextExpiresAt", "passes", "history", "schedule", "journey", "updatedAt",
 ]);
 
 /**
@@ -296,6 +309,26 @@ function buildMemberView(input) {
     }
   }
 
+  /* 예정 수업. 지난 것과 취소된 것은 싣지 않는다 -- 취소는 목록에서 사라지는
+     것으로 충분하다 ("취소됨" 을 따로 그리지 않는다). */
+  const from = now.getTime() - SCHEDULE_LOOKBACK_MS;
+  /* 예정 수업을 못 읽었으면(null) null 로 둔다 -- 빈 배열은 "없다" 이고 null 은
+     "모른다" 다. 회원 화면이 둘을 다르게 말한다. */
+  const schedule = input?.scheduled === null ? null : (Array.isArray(input?.scheduled) ? input.scheduled : [])
+    .filter((lesson) => lesson && text(lesson.status) === "scheduled")
+    .filter((lesson) => clientIdsOf(lesson).includes(clientId))
+    .map((lesson) => ({
+      startsAt: toDate(lesson.startsAt),
+      endsAt: toDate(lesson.endsAt),
+      lessonType: Object.values(LESSON_TYPE).includes(text(lesson.lessonType))
+        ? text(lesson.lessonType) : LESSON_TYPE.OTHER,
+      instructorName: lookup(input?.instructorNames, text(lesson.instructorId)),
+      locationName: lookup(input?.locationNames, text(lesson.locationId)) || text(input?.locationName),
+    }))
+    .filter((lesson) => lesson.startsAt && lesson.startsAt.getTime() >= from)
+    .sort((left, right) => left.startsAt - right.startsAt)
+    .slice(0, SCHEDULE_MAX);
+
   return {
     organizationId: text(client.organizationId),
     clientId,
@@ -311,6 +344,7 @@ function buildMemberView(input) {
       : null,
     passes,
     history,
+    schedule,
     journey,
     updatedAt: now,
   };
@@ -323,6 +357,7 @@ module.exports = {
   LESSON_TYPE,
   MEMBER_NOTE_MAX,
   PASS_FIELDS,
+  SCHEDULE_FIELDS,
   VIEW_FIELDS,
   buildMemberView,
 };

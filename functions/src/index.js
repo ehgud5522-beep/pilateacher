@@ -10,7 +10,7 @@ const { HttpsError, onCall, onRequest } = require("firebase-functions/v2/https")
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { onDocumentWritten } = require("firebase-functions/v2/firestore");
 const {
-  clientIdsFromLessonNoteChange, clientIdsFromPassChange, rebuildMemberViews,
+  clientIdsFromLessonChange, clientIdsFromLessonNoteChange, clientIdsFromPassChange, rebuildMemberViews,
 } = require("./member-view-triggers");
 const { createAccountDeletionService } = require("./account-deletion");
 const { createAIGatewayHandler } = require("./ai-gateway");
@@ -590,6 +590,32 @@ exports.rebuildMemberViewOnLessonNoteWrite = onDocumentWritten({
   });
   logger.info("member_view_rebuilt", {
     feature: "member_view", stage: "lesson_note_write",
+    organizationId: event.params.organizationId,
+    counts: results.reduce((tally, item) => ({ ...tally, [item.outcome]: (tally[item.outcome] || 0) + 1 }), {}),
+  });
+});
+
+/* 강사가 일정을 등록 · 수정 · 취소했을 때 (2026-10-30). 확정 단계 없이 곧바로
+   회원 데이터에 반영한다 -- 회원 앱의 달력과 "오늘 수업" 이 이것을 그린다.
+   확정(차감)도 같은 문서를 completed 로 바꾸며 여기를 지난다. */
+exports.rebuildMemberViewOnLessonWrite = onDocumentWritten({
+  ...MEMBER_VIEW_TRIGGER_OPTIONS,
+  document: "organizations/{organizationId}/lessons/{lessonId}",
+}, async (event) => {
+  const clientIds = clientIdsFromLessonChange(
+    event.data?.before?.data() || null,
+    event.data?.after?.data() || null,
+  );
+  if (!clientIds.length) return;
+  const results = await rebuildMemberViews(firestore, {
+    organizationId: event.params.organizationId,
+    clientIds,
+    eventAt: new Date(event.time),
+    buildJourney: await loadBuildJourney(),
+    log: logger,
+  });
+  logger.info("member_view_rebuilt", {
+    feature: "member_view", stage: "lesson_write",
     organizationId: event.params.organizationId,
     counts: results.reduce((tally, item) => ({ ...tally, [item.outcome]: (tally[item.outcome] || 0) + 1 }), {}),
   });

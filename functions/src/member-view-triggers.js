@@ -85,12 +85,31 @@ function clientIdsFromLessonNoteChange(before, after) {
 }
 
 /**
+ * 수업(일정) 문서가 바뀌었을 때 다시 만들 회원.
+ *
+ * 앞뒤 둘 다 본다. 듀엣에서 한 사람이 빠지면 뒤 문서에는 그 사람이 없지만, 그
+ * 사람의 화면에서 그 수업을 지워야 한다 (2026-10-30, schedule-publish.js).
+ */
+function clientIdsFromLessonChange(before, after) {
+  const found = new Set();
+  for (const snapshot of [before, after]) {
+    for (const id of [snapshot?.clientId, ...(Array.isArray(snapshot?.clientIds) ? snapshot.clientIds : [])]) {
+      if (text(id)) found.add(text(id));
+    }
+  }
+  return [...found];
+}
+
+/** 회원 데이터에 싣는 예정 수업의 최대 건수. 몇 주치면 충분하다. */
+const SCHEDULE_LIMIT = 60;
+
+/**
  * 투영을 만드는 데 필요한 것을 전부 읽어 온다.
  *
  * @param {any} db Firestore (Admin SDK)
  * @param {string} organizationId @param {string} clientId
  */
-async function collectMemberViewInput(db, organizationId, clientId) {
+async function collectMemberViewInput(db, organizationId, clientId, options = {}) {
   const org = db.collection("organizations").doc(organizationId);
 
   const clientSnapshot = await org.collection("clients").doc(clientId).get();
@@ -157,13 +176,46 @@ async function collectMemberViewInput(db, organizationId, clientId) {
     }
   }
 
+  /* 예정 수업 (2026-10-30). 강사가 일정을 등록 · 수정 · 취소하면 lessons 문서가
+     바뀌고 이 회원의 투영이 다시 만들어진다. 예정(scheduled)만 읽는다 -- 완료된
+     것은 원장 이력에, 취소된 것은 어디에도 없다.
+
+     array-contains 와 == 하나는 단일 필드 색인으로 풀린다 (복합 색인 배포가
+     필요 없다). 날짜는 받아서 거른다: 확정하지 않고 지나간 예정 수업도 남아
+     있을 수 있다. */
+  /* 못 읽으면 null -- "예정 수업 없음" 이 아니라 "모름" 이다. 회원 화면은 그때
+     "예정된 수업이 없어요" 라고 하지 않는다. 그리고 이 한 줄 때문에 잔여 · 이력의
+     갱신까지 멈추면 안 되므로 던지지 않는다. 원본 코드는 로그에 남긴다. */
+  let scheduled = null;
+  try {
+    const scheduledPage = await org.collection("lessons")
+      .where("clientIds", "array-contains", clientId)
+      .where("status", "==", "scheduled")
+      .get();
+    scheduled = scheduledPage.docs.map((snapshot) => ({ id: snapshot.id, ...snapshot.data() }));
+  } catch (error) {
+    options?.log?.error?.("member_view_schedule_read_failed", {
+      feature: "member_view", stage: "read_schedule", errorDomain: "firestore",
+      errorCode: error?.code || "unknown", message: String(error?.message || error).slice(0, 300),
+      organizationId, clientId,
+    });
+  }
+
   /* 지점 이름과 강사 이름. 못 읽어도 투영은 만든다 -- 이름이 비는 것이 잔여가
-     안 보이는 것보다 낫다. */
+     안 보이는 것보다 낫다. 수업마다 지점이 다를 수 있어 그 이름도 함께 읽는다. */
   const locationId = text(client.locationId);
-  const [locationSnapshot, membershipPage] = await Promise.all([
+  const lessonLocationIds = [...new Set((scheduled || []).map((lesson) => text(lesson.locationId)).filter(Boolean))]
+    .filter((id) => id !== locationId);
+  const [locationSnapshot, membershipPage, ...lessonLocationSnapshots] = await Promise.all([
     locationId ? org.collection("locations").doc(locationId).get() : Promise.resolve(null),
     db.collection("memberships").where("organizationId", "==", organizationId).get(),
+    ...lessonLocationIds.map((id) => org.collection("locations").doc(id).get()),
   ]);
+  const locationNames = {};
+  if (locationId && locationSnapshot?.exists) locationNames[locationId] = text(locationSnapshot.data()?.name);
+  for (const snapshot of lessonLocationSnapshots) {
+    if (snapshot?.exists) locationNames[snapshot.id] = text(snapshot.data()?.name);
+  }
   const instructorNames = {};
   for (const snapshot of membershipPage.docs) {
     const data = snapshot.data() || {};
@@ -218,6 +270,8 @@ async function collectMemberViewInput(db, organizationId, clientId) {
     ledger,
     memberNotes,
     locationName: text(locationSnapshot?.data()?.name),
+    scheduled,
+    locationNames,
     productSessionTypes,
     instructorNames,
     clientNames,
@@ -237,7 +291,7 @@ async function rebuildMemberView(db, input) {
   const clientId = text(input?.clientId);
   if (!organizationId || !clientId) return "no_client";
 
-  const collected = await collectMemberViewInput(db, organizationId, clientId);
+  const collected = await collectMemberViewInput(db, organizationId, clientId, { log: input?.log });
   /* 회원 문서가 없으면 투영도 없다. 지우지는 않는다 -- 규칙이 삭제를 막고 있고,
      회원 삭제는 지금 어느 화면에도 없다. */
   if (!collected) return "no_client";
@@ -301,6 +355,7 @@ async function rebuildMemberViews(db, input) {
         clientId,
         eventAt: input.eventAt,
         buildJourney: input.buildJourney,
+        log: input.log,
       });
       results.push({ clientId, outcome });
     } catch (error) {
@@ -323,6 +378,8 @@ async function rebuildMemberViews(db, input) {
 module.exports = {
   HISTORY_LIMIT,
   LEDGER_LIMIT_PER_PASS,
+  SCHEDULE_LIMIT,
+  clientIdsFromLessonChange,
   clientIdsFromLessonNoteChange,
   clientIdsFromPassChange,
   collectMemberViewInput,

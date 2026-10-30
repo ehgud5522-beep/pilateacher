@@ -172,6 +172,8 @@ body {
   position: absolute; bottom: 2px; left: 50%; transform: translateX(-50%);
   width: 4px; height: 4px; border-radius: 50%; background: var(--rose);
 }
+/* 예정된 날은 속이 빈 점. 받은 수업(꽉 찬 점)과 한눈에 갈린다. */
+.day.plan:not(.on) i { background: transparent; box-shadow: inset 0 0 0 1.5px var(--rose); width: 5px; height: 5px; }
 .day.picked b { box-shadow: inset 0 0 0 1.5px var(--rose); color: var(--rose); }
 .day.today b { background: var(--rose); color: var(--on-rose); box-shadow: none; font-weight: 800; }
 .day.out { pointer-events: none; }
@@ -211,6 +213,8 @@ body {
   padding: 3px 8px; border-radius: 999px; background: var(--card-tone);
 }
 .lesson .chev { color: var(--faint); font-size: 20px; }
+/* 받은 수업은 기록으로 이어진다. 예정 수업은 누를 곳이 없어 버튼처럼 보이지 않게. */
+.lesson.planned { cursor: default; }
 
 /* 내 회원권 — 남은 횟수 칩 */
 .left .lefthead { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }

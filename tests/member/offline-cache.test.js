@@ -49,7 +49,7 @@ const place = (overrides = {}) => ({
     organizationId: "org", clientId: "c1", name: "김하나", locationName: "반송점",
     clientStatus: "active", remainingTotal: 8,
     nextExpiresAt: new Date(2027, 0, 31),
-    passes: [{ passId: "p1", displayName: "1:1 퍼스널 20회", remainingCount: 8, expiresAt: new Date(2027, 0, 31) }],
+    passes: [{ passId: "p1", lessonType: "1:1", totalSessions: 20, remainingCount: 8, expiresAt: new Date(2027, 0, 31) }],
     history: [{ occurredAt: new Date(2026, 8, 18), type: "deduct", instructorName: "정예진" }],
     ...overrides,
   },

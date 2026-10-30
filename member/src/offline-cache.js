@@ -28,7 +28,9 @@
 export const VIEW_CACHE_KEY = "pilateacher.member.view";
 
 /** 사본의 모양이 바뀌면 올린다. 다른 판은 읽지 않고 버린다. */
-export const CACHE_VERSION = 1;
+export const CACHE_VERSION = 2;
+/* 2 (2026-10-30): 회원권에서 상품명(displayName)과 차수(purchaseRound)를 뺐다.
+   판을 올려 옛 사본 -- 상품명이 든 것 -- 을 읽지 않는다. */
 
 /** 이보다 오래된 사본은 쓰지 않는다. */
 export const CACHE_MAX_AGE_DAYS = 14;
@@ -41,7 +43,7 @@ export const CACHED_VIEW_FIELDS = Object.freeze([
 ]);
 
 export const CACHED_PASS_FIELDS = Object.freeze([
-  "passId", "displayName", "purchaseRound", "totalSessions", "serviceSessions",
+  "passId", "lessonType", "totalSessions", "serviceSessions",
   "remainingCount", "expiresAt", "status", "isDuet", "partnerName",
 ]);
 

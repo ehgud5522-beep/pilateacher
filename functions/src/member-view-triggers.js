@@ -170,19 +170,19 @@ async function collectMemberViewInput(db, organizationId, clientId) {
     if (text(data.userId)) instructorNames[text(data.userId)] = text(data.displayName);
   }
 
-  /* 회원권의 상품 이름. 이 회원의 회원권이 가리키는 상품만 읽는다 -- 보통
-     한둘이라 목록 전체를 읽는 것보다 싸다.
+  /* 회원권 상품의 수업 유형(sessionType). 이 회원의 회원권이 가리키는 상품만
+     읽는다 -- 보통 한둘이라 목록 전체를 읽는 것보다 싸다.
 
-     없는 문서를 물어도 읽기 한 번이고, 그 경우는 이관분이다(상품 문서 없이
-     productId 에 상품명이 그대로 들어 있다). 이름을 고르는 판단은
-     member-view.js 의 passDisplayName 이 한다. */
+     상품 **이름은 읽지 않는다.** 회원에게 상품명을 보내지 않기로 했다
+     (2026-10-30) -- 읽지 않으면 실수로 실어 보낼 일도 없다. 없는 문서는
+     이관분이고, 그때는 member-view.js 가 회원권의 급여카테고리로 가른다. */
   const productIds = [...new Set(passes.map((pass) => text(pass.productId)).filter(Boolean))];
   const productSnapshots = await Promise.all(
     productIds.map((id) => org.collection("products").doc(id).get()),
   );
-  const productNames = {};
+  const productSessionTypes = {};
   for (const snapshot of productSnapshots) {
-    if (snapshot.exists) productNames[snapshot.id] = text(snapshot.data()?.name);
+    if (snapshot.exists) productSessionTypes[snapshot.id] = text(snapshot.data()?.sessionType);
   }
 
   /* 듀엣 상대의 이름. 이 회원의 회원권에 함께 적힌 사람만 읽는다 -- 명부 전체를
@@ -218,7 +218,7 @@ async function collectMemberViewInput(db, organizationId, clientId) {
     ledger,
     memberNotes,
     locationName: text(locationSnapshot?.data()?.name),
-    productNames,
+    productSessionTypes,
     instructorNames,
     clientNames,
     instructorSessions,

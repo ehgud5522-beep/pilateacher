@@ -111,16 +111,27 @@ onWrite(clients/{clientId}) → 그 회원만 재작성
 | `nextExpiresAt` | `passes.expiresAt` 최솟값 | |
 | `passes[]` | 아래 | 회원권 목록 |
 | `history[]` | 아래 | 수업 이력 |
-| `journey` | `buildPassJourney` 결과 | 계산을 두 번 쓰지 않는다 |
+| `journey` | `{ usedTotal }` 만 (`buildPassJourney` 결과에서 고른다) | 차수(`round` · `currentRound`)가 따라 나가지 않게 (2026-10-30) |
 | `updatedAt` | 서버 시각 | 뒤처짐을 눈으로 본다 |
 
-`passes[]` 한 건: `passId` · `displayName` · `purchaseRound` · `totalSessions` ·
-`serviceSessions` · `remainingCount` · `expiresAt` · `status` · `isDuet` · `partnerName`
+`passes[]` 한 건: `passId` · `lessonType` · `totalSessions` · `serviceSessions` ·
+`remainingCount` · `expiresAt` · `status` · `isDuet` · `partnerName`
 
-`displayName` 은 **이름 하나**다 (2026-09-24 추가). 상품 문서의 `name` 이 먼저고,
-없으면 `productId` 자체가 이름인지 본다 — 엑셀 이관이 상품명을 그대로 id 로 썼다.
-만들어진 id(영숫자·하이픈뿐)는 이름으로 쓰지 않는다: uuid 를 띄우면 회원이 그것을
-자기 회원권 이름으로 읽는다. 금액과 카테고리는 아래 금지 목록 그대로다.
+**상품명(`displayName`)과 차수(`purchaseRound`)는 나가지 않는다** (2026-10-30, 대표
+결정 — 2026-09-24 에 넣었던 `displayName` 을 뺐다). 상품명에는 "깍두기 · 양도권 ·
+세일즈" 같은 센터 안의 이름이 붙고, 차수 · 세션업 · 급여카테고리 · 단가와 함께
+관리용이다. 회원 화면은 이름을 이렇게 짓는다 (`member/src/pass-label.js`):
+
+| `lessonType` | 화면 |
+| --- | --- |
+| `1:1` | 1:1 필라테스 수업 {유상}회 |
+| `2:1` | 2:1 필라테스 수업 {유상}회 |
+| `diosa` | 디오사 프로그램 {유상}회 |
+| `other` | 필라테스 수업 {유상}회 |
+
+서비스는 더하지 않고 따로 "서비스 {n}회", 0 이면 줄이 없다. `lessonType` 은 상품의
+`sessionType` → 회원권 급여카테고리 → 함께 쓰는 회원권이면 2:1 순서로 정한다. 급여
+카테고리 문자열은 그대로 내보내지 않는다. 회원용 이름 입력칸은 두지 않는다.
 
 `history[]` 한 건: `occurredAt` · `type`(`deduct`·`correction`·`transfer`) ·
 `instructorName`
@@ -715,7 +726,7 @@ Firestore 를 만지는 파일은 `member-data.js` 하나뿐이고,
 | 1 | 회원 등록: `테스트(대표)` · **반송점** · 대표 번호 | | |
 | 2 | 회원권 상품 **"기타" · 0원 · 1회** 발급 | | 급여 카테고리는 `기타`, 계약금액 0 |
 | 3 | | 번호 인증 → 로그인 | 홈이 열리고 **잔여 1회** |
-| 4 | | | 회원권 탭에 그 상품명이 뜨는지 (`displayName`) |
+| 4 | | | 회원권 탭에 상품명이 **아니라** "필라테스 수업 1회" 가 뜨는지 (`lessonType` 이 `other`) |
 | 5 | 출석 체크에서 **1회 차감** | 새로고침 | 잔여 0 · 수업 탭에 한 줄 |
 | 6 | 더보기 → 회원 앱 → **점검하기** | | "어긋난 회원이 없습니다" |
 | 7 | **급여 집계** · **발급 내역** | | 이 건이 **0원**으로 들어갔는지 |

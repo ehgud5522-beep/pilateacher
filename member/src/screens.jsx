@@ -21,6 +21,8 @@ import { diagnosticsText } from "./diagnostics.js";
 /* 회원권 카드의 숫자는 강사 앱과 한 곳에서 나온다. 같은 회원권이 두 화면에서
    다른 숫자가 되는 것을 막는 것이 이 import 의 목적이다. */
 import { isUsablePass, passCardList, remainingSplit } from "../../src/features/membership/pass-cards.js";
+/* 수강권 이름은 상품명이 아니라 수업 유형과 횟수로 짓는다 (pass-label.js). */
+import { passLabel, passTitle, serviceLabel } from "./pass-label.js";
 
 /**
  * 의견을 받는 곳. 링크 하나다.
@@ -74,27 +76,6 @@ export function daysUntil(value, now = new Date()) {
   if (!at) return null;
   return Math.ceil((at.getTime() - now.getTime()) / 86400000);
 }
-
-/**
- * 회원권 한 장을 뭐라고 부를 것인가.
- *
- * 계약할 때 들은 이름이 먼저다 (`displayName`). 투영이 상품 문서에서 가져오고,
- * 이관분은 productId 자체가 이름이다 -- 그 판단은 서버가 한다
- * (functions/src/member-view.js 의 passDisplayName).
- *
- * 이름이 없으면 회차와 듀엣 여부로 부른다. 상품 문서가 지워졌거나 아주 옛
- * 회원권이 그렇고, 그때 빈 칸을 두면 회원은 무슨 회원권인지 알 수 없다.
- */
-export function passName(pass) {
-  const given = text(pass?.displayName);
-  if (given) return given;
-  const total = count(pass?.totalSessions) + count(pass?.serviceSessions);
-  const kind = pass?.isDuet ? "듀엣 회원권" : "회원권";
-  return total ? `${total}회 ${kind}` : kind;
-}
-
-/** 차수를 사람 말로. */
-export const roundLabel = (round) => (count(round) > 1 ? `${count(round)}번째 회원권` : "첫 회원권");
 
 /**
  * 지금 쓸 수 있는 회원권인가. 화면이 "사용 중" 과 "지난" 을 이것으로 가른다.
@@ -159,7 +140,7 @@ export function Home({ view, now = new Date() }) {
         {total > 0 ? <Ring remaining={remaining} total={total} /> : null}
         <p className="cap">남은 횟수</p>
         <p className="big serif num">{remaining}<span>회</span></p>
-        {front ? <p className="name">{passName(front)}</p> : null}
+        {front ? <p className="name">{passLabel(front)}</p> : null}
         {view?.nextExpiresAt ? <p className="until num">{dateLabel(view.nextExpiresAt)}까지</p> : null}
       </section>
 
@@ -222,16 +203,17 @@ export function Passes({ view, now = new Date() }) {
               {group.map((pass) => (
                 <Card key={text(pass.passId)} tone={dim ? "quietcard" : ""} className="pass">
                   <div className="rowcard">
-                    <p className="name">{passName(pass)}</p>
+                    <p className="name">{passTitle(pass)}</p>
                     {dim ? null : (
                       <p className="rem serif num">{count(pass.remainingCount)}<span>회</span></p>
                     )}
                   </div>
-                  <p className="meta">{roundLabel(pass.purchaseRound)}</p>
+                  {/* 서비스는 산 횟수에 더하지 않고 따로 적는다. 0회면 줄이 없다. */}
+                  {serviceLabel(pass) ? <p className="meta">{serviceLabel(pass)}</p> : null}
                   <p className="meta">
                     {count(pass.remainingCount) > 0
-                      ? <>{count(pass.totalSessions) + count(pass.serviceSessions)}회 중 <b>{count(pass.remainingCount)}회</b> 남았어요</>
-                      : `${count(pass.totalSessions) + count(pass.serviceSessions)}회를 모두 사용했어요`}
+                      ? <><b>{count(pass.remainingCount)}회</b> 남았어요</>
+                      : "모두 사용했어요"}
                   </p>
                   {/* 서비스 회차는 먼저 쓰인다. 몇 회가 서비스인지 말하지
                       않으면 회원은 정규가 줄어든 줄로 읽고, 재등록 때 숫자가

@@ -2,7 +2,7 @@
  * 회원 화면 스모크의 케이스들. **테스트만 읽는다.**
  *
  * `member/src` 밖에 두는 이유가 있다. 회원 앱은 번들이 작은 것이 요점이고,
- * 화면 넷을 그리자고 시험용 데이터를 함께 내려보낼 이유가 없다. 강사 앱은
+ * 화면 셋을 그리자고 시험용 데이터를 함께 내려보낼 이유가 없다. 강사 앱은
  * App.jsx 안에 케이스를 두지만 그쪽은 이미 2.1MB 다.
  *
  * JSX 는 여기 있고 단언은 screens.test.js 에 있다 -- node --test 는 JSX 를
@@ -10,11 +10,12 @@
  */
 
 import {
-  DeleteAccount, DeleteAccountGuide, Diagnostics, History, Home, LinkNotice, LoadFailed, Loading, More,
-  NotMigrated, Passes, Preparing, SlowConnection,
+  DeleteAccount, DeleteAccountGuide, Diagnostics, Home, LinkNotice, LoadFailed, Loading, MyPage,
+  NotMigrated, Preparing, Records, SlowConnection,
 } from "../../member/src/screens.jsx";
 import { linkResultScreen } from "../../member/src/link-result.js";
 
+/** 2026-09-24 (목) 정오. */
 export const NOW = new Date(2026, 8, 24, 12, 0);
 
 export const view = (overrides = {}) => ({
@@ -26,47 +27,24 @@ export const view = (overrides = {}) => ({
     remainingCount: 8, expiresAt: new Date(2027, 0, 31), status: "active",
     isDuet: false, partnerName: "",
   }],
-  history: [{ occurredAt: new Date(2026, 8, 18), type: "deduct", instructorName: "정예진" }],
+  history: [{
+    occurredAt: new Date(2026, 8, 18, 19, 0), type: "deduct", lessonType: "1:1", instructorName: "정예진",
+  }],
   journey: null,
   ...overrides,
 });
 
-const JOURNEY = {
-  segments: [
-    { kind: "prior", passId: "", round: 0, total: 12, used: 12 },
-    { kind: "pass", passId: "pass-1", round: 2, total: 22, used: 14 },
-  ],
-  prior: 12, usedTotal: 26, grandTotal: 34, currentRound: 2, hasPrior: true,
-};
-
-/* ── 달력이 읽는 것 ──────────────────────────────────────────────────
-
-   더보기 탭은 투영의 수업 이력 하나만 센다. 서버도 규칙도 건드리지 않았으므로,
-   여기 있는 배열이 곧 그 탭이 아는 전부다. */
-
-const lesson = (year, month, day) => ({
-  occurredAt: new Date(year, month, day), type: "deduct", instructorName: "정예진",
+const lesson = (year, month, day, hour = 19, extra = {}) => ({
+  occurredAt: new Date(year, month, day, hour, 0), type: "deduct", lessonType: "1:1",
+  instructorName: "정예진", ...extra,
 });
 
-/** 2026-09: 2·4·8·10·15·17·22·24 — 넉 주 연속, 이번 달 8번. */
+/** 9월 2·4·8·10·15·17·22·24(오늘). 오늘 10시 수업과 22일의 한마디가 있다. */
 const STEADY = [
-  ...[2, 4, 8, 10, 15, 17, 22, 24].map((day) => lesson(2026, 8, day)),
-  ...[3, 5, 11, 13, 19, 21, 27].map((day) => lesson(2026, 7, day)),
-];
-
-/**
- * 마지막이 9월 6일이다. NOW(9/24) 기준 18일 지났다.
- *
- * 여섯 달이 8·7·6·5·5·3 으로 내려간다 -- 이 모양이 이 탭을 만든 이유다.
- * 사람은 "지난달보다 줄었다" 를 문장보다 모양으로 먼저 안다.
- */
-const FADING = [
-  ...[1, 3, 6].map((day) => lesson(2026, 8, day)),
-  ...[4, 11, 18, 25, 28].map((day) => lesson(2026, 7, day)),
-  ...[2, 9, 16, 23, 30].map((day) => lesson(2026, 6, day)),
-  ...[1, 8, 15, 22, 26, 29].map((day) => lesson(2026, 5, day)),
-  ...[2, 6, 11, 15, 20, 24, 28].map((day) => lesson(2026, 4, day)),
-  ...[1, 4, 8, 11, 15, 18, 22, 25].map((day) => lesson(2026, 3, day)),
+  lesson(2026, 8, 24, 10, { memberNote: "오늘도 자세가 좋아졌어요! 다음 수업에서 복부 호흡을 집중해 볼게요." }),
+  lesson(2026, 8, 22, 19, { memberNote: "허리 골반 교정운동을 진행했고, 다음엔 코어 운동강도를 더 높여볼게요:)" }),
+  ...[17, 15, 10, 8, 4, 2].map((day) => lesson(2026, 8, day)),
+  ...[27, 21, 19, 13, 11, 5, 3].map((day) => lesson(2026, 7, day)),
 ];
 
 /** 상한(100건)에 닿은 이력. 가장 오래된 달보다 앞은 모르는 구간이다. */
@@ -74,11 +52,13 @@ const CAPPED = Array.from({ length: 100 }, (_unused, index) => (
   lesson(2026, 8 - Math.floor(index / 9), (index % 9) * 3 + 1)
 ));
 
+const JOURNEY = { usedTotal: 26 };
+
 const noop = () => {};
 
 export function memberScreenCases() {
   return [
-    { name: "홈", element: <Home view={view()} now={NOW} /> },
+    { name: "홈", element: <Home view={view({ history: STEADY })} now={NOW} onOpenRecords={noop} /> },
     {
       name: "홈 · 만료 임박",
       /* 날짜는 회원권 자체에 둔다. 홈은 이름과 날짜를 같은 회원권에서 읽는다
@@ -98,48 +78,43 @@ export function memberScreenCases() {
         clientStatus: "ended", remainingTotal: 0, passes: [{ ...view().passes[0], remainingCount: 0 }],
       })} now={NOW} />,
     },
+    /* 오늘 받은 수업이 없다. 예정 수업은 아직 데이터에 없으므로 "예정된 수업이
+       없어요" 라고 하지 않는다. */
+    { name: "홈 · 오늘 수업 없음", element: <Home view={view()} now={NOW} onOpenRecords={noop} /> },
+    { name: "홈 · 첫 회원", element: <Home view={view({ history: [] })} now={NOW} /> },
+    /* 갓 받은 회원권 -- 서비스가 먼저 쓰이므로 아직 하나도 안 쓴 회원권만
+       서비스가 남아 있다 (remainingSplit). */
+    { name: "홈 · 새 회원권", element: <Home view={view({
+      passes: [{ ...view().passes[0], remainingCount: 22 }],
+    })} now={NOW} /> },
+    { name: "홈 · 기록 끝", element: <Home view={view({ history: CAPPED })} now={NOW} monthsBack={11} /> },
 
-    { name: "회원권", element: <Passes view={view()} /> },
+    { name: "수업기록", element: <Records view={view({ history: STEADY, journey: JOURNEY })} /> },
     {
-      name: "회원권 · 듀엣",
-      element: <Passes view={view({
-        passes: [{
-          passId: "duet-1", totalSessions: 30, serviceSessions: 0,
-          remainingCount: 29, expiresAt: new Date(2027, 0, 31), status: "active",
-          isDuet: true, partnerName: "김민정",
-        }],
-      })} />,
-    },
-    { name: "회원권 · 없음", element: <Passes view={view({ passes: [] })} /> },
-
-    { name: "수업 이력", element: <History view={view()} /> },
-    {
-      name: "수업 이력 · 되돌린 차감",
-      element: <History view={view({
+      name: "수업기록 · 되돌린 차감",
+      element: <Records view={view({
         history: [{ occurredAt: new Date(2026, 8, 19), type: "correction", instructorName: "정예진" }],
       })} />,
     },
-    {
-      /* 강사가 회원에게 보내려고 따로 적은 한 줄. 수업기록 원문이 아니다. */
-      name: "수업 이력 · 강사의 말",
-      element: <History view={view({
-        history: [
-          {
-            occurredAt: new Date(2026, 8, 19), type: "deduct", instructorName: "정예진",
-            memberNote: "오늘 어깨 내리는 게 한결 편해 보이셨어요. 다음까지 벽 스트레칭만 짧게 해 보세요.",
-          },
-          { occurredAt: new Date(2026, 8, 18), type: "deduct", instructorName: "정예진", memberNote: "" },
-        ],
-      })} />,
-    },
-    { name: "수업 이력 · 없음", element: <History view={view({ history: [] })} /> },
+    { name: "수업기록 · 없음", element: <Records view={view({ history: [] })} /> },
 
-    /* 꾸준한 회원. 9월 2·4·8·10·15·17·22·24 -- 넉 주 연속이다. */
-    { name: "더보기", element: <More view={view({ history: STEADY, journey: JOURNEY })} now={NOW} /> },
+    { name: "마이페이지", element: <MyPage view={view()} now={NOW} onSignOut={noop} /> },
     {
-      name: "더보기 · 계정 삭제 있음",
-      element: <More view={view({ history: STEADY })} now={NOW} onDeleteAccount={async () => {}} />,
+      name: "마이페이지 · 듀엣",
+      element: <MyPage view={view({
+        passes: [{
+          passId: "duet-1", lessonType: "2:1", totalSessions: 30, serviceSessions: 0,
+          remainingCount: 29, expiresAt: new Date(2027, 0, 31), status: "active",
+          isDuet: true, partnerName: "김민정",
+        }],
+      })} now={NOW} onSignOut={noop} />,
     },
+    { name: "마이페이지 · 회원권 없음", element: <MyPage view={view({ passes: [] })} now={NOW} onSignOut={noop} /> },
+    {
+      name: "마이페이지 · 계정 삭제 있음",
+      element: <MyPage view={view()} now={NOW} onSignOut={noop} onDeleteAccount={async () => {}} />,
+    },
+
     { name: "계정 삭제 · 첫 화면", element: <DeleteAccount onDelete={async () => {}} /> },
     { name: "계정 삭제 안내 (스토어 URL)", element: <DeleteAccountGuide appName="보니따필라테스" /> },
     { name: "연결이 늦다", element: <SlowConnection seconds={10} onRetry={() => {}} /> },
@@ -153,20 +128,6 @@ export function memberScreenCases() {
         platform: "ios", appVersion: "1.0.0", appCommit: "5be3511",
       }]} />,
     },
-    /* 뜸해진 회원. 마지막이 9월 6일이라 18일 지났고, 막대가 내려간다.
-       이 화면이 이 탭을 만든 이유다. */
-    { name: "더보기 · 뜸해짐", element: <More view={view({ history: FADING })} now={NOW} /> },
-    /* 아직 수업이 없다. 빈 달력을 그리되 지어낸 숫자를 넣지 않는다. */
-    { name: "더보기 · 첫 회원", element: <More view={view({ history: [], journey: null })} now={NOW} /> },
-    /* 이력이 상한(100건)에 닿았다. 가장 오래된 달보다 앞은 **모르는 구간**이고,
-       빈 달력을 말없이 그리면 회원은 그때 안 나온 것으로 읽는다. */
-    {
-      name: "더보기 · 기록 끝",
-      /* 가장 오래된 달로 넘겨 둔 화면이다. 그 끝에서만 말하면 되는 문구라
-         거기까지 가 있어야 볼 수 있다. */
-      element: <More view={view({ history: CAPPED })} now={NOW} monthsBack={11} />,
-    },
-
 
     { name: "불러오는 중", element: <Loading /> },
     { name: "조회 실패", element: <LoadFailed code="permission-denied" onRetry={noop} /> },
@@ -190,15 +151,14 @@ export function memberScreenCases() {
       element: <LinkNotice screen={linkResultScreen("weird")} onRetry={noop} />,
     },
 
-    /* 금액이 새는지 한자리에서 본다. 네 화면을 모두 그린다. */
+    /* 금액이 새는지 한자리에서 본다. 세 화면을 모두 그린다. */
     {
       name: "전부",
       element: (
         <div>
-          <Home view={view({ journey: JOURNEY })} now={NOW} />
-          <Passes view={view({ journey: JOURNEY })} />
-          <History view={view({ journey: JOURNEY })} />
-          <More view={view({ history: STEADY, journey: JOURNEY })} now={NOW} />
+          <Home view={view({ history: STEADY, journey: JOURNEY })} now={NOW} />
+          <Records view={view({ history: STEADY, journey: JOURNEY })} />
+          <MyPage view={view({ journey: JOURNEY })} now={NOW} onSignOut={noop} onDeleteAccount={async () => {}} />
         </div>
       ),
     },

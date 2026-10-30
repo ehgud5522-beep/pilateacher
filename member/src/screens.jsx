@@ -1,7 +1,7 @@
 /**
- * 화면 넷 — 홈 · 회원권 · 수업 · 더보기.
+ * 화면 셋 — 홈 · 수업기록 · 마이페이지 (2026-10-30 개편, 예약 탭은 다음 단계).
  *
- * 넷 다 **투영 문서 하나**를 그린다. 질의도, 다른 컬렉션도 없다 (member-data.js).
+ * 셋 다 **투영 문서 하나**를 그린다. 질의도, 다른 컬렉션도 없다 (member-data.js).
  *
  * ── 문구 ──
  * 격려 3 : 지식 1. 재등록을 권하지 않는다 -- 판매는 센터가 한다. 잔여가 적으면
@@ -20,9 +20,9 @@ import {
 import { diagnosticsText } from "./diagnostics.js";
 /* 회원권 카드의 숫자는 강사 앱과 한 곳에서 나온다. 같은 회원권이 두 화면에서
    다른 숫자가 되는 것을 막는 것이 이 import 의 목적이다. */
-import { isUsablePass, passCardList, remainingSplit } from "../../src/features/membership/pass-cards.js";
+import { isUsablePass, remainingSplit } from "../../src/features/membership/pass-cards.js";
 /* 수강권 이름은 상품명이 아니라 수업 유형과 횟수로 짓는다 (pass-label.js). */
-import { passLabel, passTitle, serviceLabel } from "./pass-label.js";
+import { lessonName, passTitle, serviceLabel } from "./pass-label.js";
 import { homeSummary } from "./home-summary.js";
 
 /**
@@ -93,237 +93,10 @@ const Card = ({ children, tone, className = "" }) => (
   </section>
 );
 
-/** 남은 비율 링. 전체 중 얼마가 남았는지를 숫자 옆에 얇게. */
-function Ring({ remaining, total }) {
-  const radius = 54;
-  const circumference = 2 * Math.PI * radius;
-  const shown = total > 0 ? Math.max(0, Math.min(1, remaining / total)) : 0;
-  return (
-    <svg className="ring" viewBox="0 0 120 120" aria-hidden="true">
-      <circle cx="60" cy="60" r={radius} fill="none" stroke="var(--ring)" strokeWidth="2" />
-      <circle cx="60" cy="60" r={radius} fill="none" stroke="var(--rose)" strokeWidth="2"
-        strokeLinecap="round" strokeDasharray={circumference}
-        strokeDashoffset={circumference * (1 - shown)} transform="rotate(-90 60 60)" />
-    </svg>
-  );
-}
+/* ── 달력 계산 ───────────────────────────────────────────────────────────
 
-/* ── 홈 ──────────────────────────────────────────────────────────────── */
-
-export function Home({ view, now = new Date() }) {
-  /* 이름 · 날짜 · 링이 서로 다른 회원권에서 오지 않게 한 곳에서 고른다
-     (home-summary.js). */
-  const summary = homeSummary(view, isUsable, now);
-  const { front, remaining } = summary;
-  const total = summary.ringTotal;
-  const left = daysUntil(summary.expiresAt, now);
-  const ended = text(view?.clientStatus) === "ended";
-  /* 누적 횟수는 더보기 탭 맨 위 한 줄이 말한다. 홈에도 두면 같은 숫자가 두 번
-     나오고, 홈의 주인공은 남은 횟수여야 한다. */
-  const history = Array.isArray(view?.history) ? view.history : [];
-
-  /* 임박은 말하되 재등록은 권하지 않는다. 사실만 놓으면 회원이 스스로 센터에
-     묻는다 -- 앱이 파는 자리가 되면 열어 보는 이유가 달라진다. */
-  const note = ended
-    ? "이용이 종료된 회원권이에요. 지난 기록은 그대로 보실 수 있어요."
-    : remaining === 0 ? "남은 횟수가 없어요. 센터에 문의해 주세요."
-      : left !== null && left <= 14 ? `만료까지 ${left}일 남았어요.`
-        : remaining <= 3 ? "곧 마지막 회차예요." : "";
-
-  return (
-    <div className="stack">
-      <header className="greet">
-        <p className="hello serif">{text(view?.name)}님, 오늘도 반가워요</p>
-        {view?.locationName ? <p className="place">{view.locationName}</p> : null}
-      </header>
-
-      <section className="membership">
-        {total > 0 ? <Ring remaining={remaining} total={total} /> : null}
-        <p className="cap">남은 횟수</p>
-        <p className="big serif num">{remaining}<span>회</span></p>
-        {front ? (
-          <p className="name">
-            {passLabel(front)}{summary.others ? <span className="muted"> 외 {summary.others}장</span> : null}
-          </p>
-        ) : null}
-        {summary.expiresAt ? <p className="until num">{dateLabel(summary.expiresAt)}까지</p> : null}
-      </section>
-
-      <Card>
-        <p className="muted" style={{ fontSize: TYPE.caption, letterSpacing: ".06em" }}>최근 수업</p>
-        {history.length ? (
-          <div className="rowcard mt">
-            <span className="serif" style={{ fontSize: TYPE.title }}>{dayLabel(history[0].occurredAt)}</span>
-            <span className="muted" style={{ fontSize: TYPE.caption }}>{text(history[0].instructorName)}</span>
-          </div>
-        ) : (
-          <p className="muted mt" style={{ fontSize: TYPE.body }}>첫 수업을 기다리고 있어요</p>
-        )}
-      </Card>
-
-      {note ? (
-        <Card tone="quietcard">
-          <p className="note" style={{ fontSize: TYPE.caption }}>{note}</p>
-        </Card>
-      ) : null}
-    </div>
-  );
-}
-
-/* ── 회원권 ──────────────────────────────────────────────────────────── */
-
-export function Passes({ view, now = new Date() }) {
-  const passes = Array.isArray(view?.passes) ? view.passes : [];
-  /* 나누는 것도 줄 세우는 것도 강사 앱과 한 곳에서 한다. 사용 중은 만료가
-     가까운 순이라, 다음에 쓰일 회원권이 맨 위에 선다.
-
-     "대기(미리 구매)" 는 두지 않는다. 이 데이터에 그런 상태가 없다 --
-     회원권은 발급되는 순간부터 쓸 수 있다. 없는 칸을 그려 두면 아무도 보지
-     못하고, 언젠가 보이면 그때는 틀린 화면이다. */
-  const cards = passCardList({ passes, now });
-  const byId = new Map(passes.map((pass) => [text(pass?.passId), pass]));
-  const using = cards.active.map((card) => byId.get(card.passId)).filter(Boolean);
-  const past = cards.ended.map((card) => byId.get(card.passId)).filter(Boolean);
-
-  if (passes.length === 0) {
-    return (
-      <div className="stack">
-        <h1 className="title serif">회원권</h1>
-        <Card>
-          <p style={{ fontSize: TYPE.body }}>지금 쓸 수 있는 회원권이 없어요.</p>
-          <p className="muted mt" style={{ fontSize: TYPE.caption }}>센터에 문의해 주세요.</p>
-        </Card>
-      </div>
-    );
-  }
-
-  return (
-    <div className="stack">
-      <h1 className="title serif">회원권</h1>
-      {[["사용 중", using, false], ["지난 회원권", past, true]].map(([label, group, dim]) => (
-        group.length ? (
-          <div key={label}>
-            <p className="group">{label}</p>
-            <div className="stack">
-              {group.map((pass) => (
-                <Card key={text(pass.passId)} tone={dim ? "quietcard" : ""} className="pass">
-                  <div className="rowcard">
-                    <p className="name">{passTitle(pass)}</p>
-                    {dim ? null : (
-                      <p className="rem serif num">{count(pass.remainingCount)}<span>회</span></p>
-                    )}
-                  </div>
-                  {/* 서비스는 산 횟수에 더하지 않고 따로 적는다. 0회면 줄이 없다. */}
-                  {serviceLabel(pass) ? <p className="meta">{serviceLabel(pass)}</p> : null}
-                  <p className="meta">
-                    {count(pass.remainingCount) > 0
-                      ? <><b>{count(pass.remainingCount)}회</b> 남았어요</>
-                      : "모두 사용했어요"}
-                  </p>
-                  {/* 서비스 회차는 먼저 쓰인다. 몇 회가 서비스인지 말하지
-                      않으면 회원은 정규가 줄어든 줄로 읽고, 재등록 때 숫자가
-                      안 맞는다고 느낀다. 숫자는 강사 앱과 한 곳에서 나온다. */}
-                  {remainingSplit(pass).service > 0 ? (
-                    <p className="meta">그중 서비스 {remainingSplit(pass).service}회</p>
-                  ) : null}
-                  {pass.expiresAt ? <p className="meta num">{dateLabel(pass.expiresAt)}까지</p> : null}
-                  {/* 각자 30회로 오해하면 계약 자체가 틀어진다. 반드시 적는다. */}
-                  {pass.isDuet ? (
-                    <p className="duet">
-                      {pass.partnerName ? `${pass.partnerName}님과 ` : "두 분이 "}함께 쓰는 회원권이에요
-                      <br /><em>수업 한 번에 1회 차감</em>
-                    </p>
-                  ) : null}
-                </Card>
-              ))}
-            </div>
-          </div>
-        ) : null
-      ))}
-    </div>
-  );
-}
-
-/* ── 수업 ────────────────────────────────────────────────────────────── */
-
-const HISTORY_LABEL = {
-  deduct: "수업",
-  /* 잘못 차감했다 되돌린 사실은 회원의 것이다. 숨기면 회차가 늘어난 이유를
-     아무도 설명하지 못한다. */
-  correction: "차감 취소",
-  transfer: "담당 강사 변경",
-};
-
-export function History({ view }) {
-  const rows = Array.isArray(view?.history) ? view.history : [];
-  const used = count(view?.journey?.usedTotal);
-
-  if (rows.length === 0) {
-    return (
-      <div>
-        <h1 className="title serif">수업</h1>
-        <div className="empty">
-          <p className="big serif">첫 수업을<br />기다리고 있어요</p>
-          <p className="sub">수업이 끝나면 여기에<br />하나씩 쌓입니다</p>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div>
-      <h1 className="title serif">수업</h1>
-      {used ? <p className="count num">모두 {used}번의 수업</p> : null}
-      <ol className="timeline">
-        {rows.map((row, index) => (
-          <li key={`${text(row.occurredAt)}-${index}`}>
-            <span className="dot" />
-            <div className="body">
-              <p className="when serif num">
-                {dayLabel(row.occurredAt)}<em>{weekdayLabel(row.occurredAt)}</em>
-              </p>
-              <p className="who">
-                {text(row.instructorName)}
-                {text(row.type) !== "deduct" ? ` · ${HISTORY_LABEL[text(row.type)] || text(row.type)}` : ""}
-              </p>
-              {/* 강사가 이 수업에 대해 회원에게 남긴 말. 수업기록 원문이 아니라
-                  회원을 향해 따로 적은 문장이고, 없으면 줄 자체가 없다 --
-                  "메시지 없음" 을 그리면 빈 줄이 기록처럼 쌓인다. */}
-              {text(row.memberNote) ? <p className="note">{text(row.memberNote)}</p> : null}
-            </div>
-            <p className="one num">{text(row.type) === "correction" ? "+1회" : "1회"}</p>
-          </li>
-        ))}
-      </ol>
-      {used > rows.length ? (
-        <p className="more num">{used - rows.length}번의 수업이 더 있어요</p>
-      ) : null}
-    </div>
-  );
-}
-
-/* ── 더보기 ──────────────────────────────────────────────────────────── */
-
-/**
- * 달력과 빈도, 그리고 의견 보내기.
- *
- * ── 왜 이정표를 걷어냈나 ──
- * 10·30·50·100 이라는 사다리는 **끝이 있었다.** 100회를 넘긴 회원은 다 채운
- * 화면을 보게 되고, 그것은 가장 오래 온 사람에게 "끝났다" 고 말하는 화면이다.
- * 끝없이 늘리는 것으로 고쳐 봤지만, 애초에 회원이 알고 싶은 것은 누적이
- * 아니라 **요즘 얼마나 나오고 있는가** 였다.
- *
- * ── 달력이 말하는 것 ──
- * 사람은 "지난달보다 줄었다" 를 문장보다 모양으로 먼저 안다. 그래서 막대를
- * 둔다. 아무도 혼내지 않는데 본인이 안다.
- *
- * 그리고 끊겼을 때 **0 을 보여주지 않는다.** "이번 주에 한 번 나오면 다시
- * 이어져요" 라고 적는다 -- 혼내면 앱을 안 열고, 할 일을 말해야 온다.
- *
- * ── 서버는 건드리지 않았다 ──
- * 날짜는 이미 투영의 수업 이력에 있다. 여기 있는 것은 전부 그 배열을 세는
- * 순수 계산이고, 그래서 경계값을 테스트로 고정할 수 있다.
- */
+   날짜는 투영의 수업 이력에 이미 있다. 여기 있는 것은 그 배열을 세는 순수
+   계산이고, 그래서 경계값을 테스트로 고정할 수 있다. */
 
 /**
  * 투영이 싣고 오는 수업 이력의 최대 건수.
@@ -337,7 +110,6 @@ export const HISTORY_KEPT = 100;
 
 /** 달력에서 한 주의 시작은 일요일이다. 한국 달력이 그렇다. */
 const WEEK_START = 0;
-const DAY = 86400000;
 
 /** 그날 수업이 있었는가를 가리는 이력의 종류. 발급·취소는 수업이 아니다. */
 const ATTENDED_TYPE = "deduct";
@@ -348,18 +120,17 @@ const atMidnight = (value) => {
   return at ? new Date(at.getFullYear(), at.getMonth(), at.getDate()) : null;
 };
 
-const sameDay = (left, right) => (
-  left.getFullYear() === right.getFullYear()
+export const sameDay = (left, right) => Boolean(left && right)
+  && left.getFullYear() === right.getFullYear()
   && left.getMonth() === right.getMonth()
-  && left.getDate() === right.getDate()
-);
+  && left.getDate() === right.getDate();
 
 /**
  * 수업한 날들. 오래된 것부터.
  *
  * 되돌린 차감(correction)은 빼지 못한다 -- 투영의 이력에 lessonId 가 없어
  * 어느 차감을 되돌린 것인지 짝지을 수 없다. 내부 id 를 회원에게 내보내는 것이
- * 더 나쁘다고 보고 그대로 두었다. 되돌린 사실은 수업 탭이 한 줄로 말한다.
+ * 더 나쁘다고 보고 그대로 두었다. 되돌린 사실은 수업기록 탭이 한 줄로 말한다.
  */
 export function attendedDates(history) {
   return (Array.isArray(history) ? history : [])
@@ -372,7 +143,7 @@ export function attendedDates(history) {
 /**
  * 한 달 달력의 칸들. 앞쪽 빈 칸까지 포함한다.
  *
- * @returns {Array<{ key: string, day: number, blank: boolean, attended: boolean, today: boolean }>}
+ * @returns {Array<{ key: string, day: number, date: Date | null, blank: boolean, attended: boolean, today: boolean }>}
  */
 export function monthCells(year, month, dates, now = new Date()) {
   const first = new Date(year, month, 1);
@@ -380,13 +151,14 @@ export function monthCells(year, month, dates, now = new Date()) {
   const days = new Date(year, month + 1, 0).getDate();
   const cells = [];
   for (let index = 0; index < lead; index += 1) {
-    cells.push({ key: `blank-${index}`, day: 0, blank: true, attended: false, today: false });
+    cells.push({ key: `blank-${index}`, day: 0, date: null, blank: true, attended: false, today: false });
   }
   for (let day = 1; day <= days; day += 1) {
     const at = new Date(year, month, day);
     cells.push({
       key: `${year}-${month}-${day}`,
       day,
+      date: at,
       blank: false,
       attended: dates.some((date) => sameDay(date, at)),
       today: sameDay(at, now),
@@ -401,94 +173,6 @@ export const countInMonth = (dates, year, month) => dates.filter(
 ).length;
 
 /**
- * 최근 몇 달의 횟수. 오래된 것이 앞이다.
- *
- * 빈도가 줄고 있으면 여기서 먼저 보인다 -- 사람은 "지난달보다 줄었다" 를
- * 문장보다 모양으로 먼저 안다.
- */
-export function monthlyCounts(dates, now = new Date(), months = 6) {
-  const rows = [];
-  for (let back = months - 1; back >= 0; back -= 1) {
-    const at = new Date(now.getFullYear(), now.getMonth() - back, 1);
-    rows.push({
-      year: at.getFullYear(),
-      month: at.getMonth(),
-      label: `${at.getMonth() + 1}월`,
-      count: countInMonth(dates, at.getFullYear(), at.getMonth()),
-    });
-  }
-  return rows;
-}
-
-/** 그 날짜가 속한 주의 일요일. */
-function weekStart(at) {
-  const start = new Date(at.getFullYear(), at.getMonth(), at.getDate());
-  start.setDate(start.getDate() - ((start.getDay() - WEEK_START + 7) % 7));
-  return start;
-}
-
-/**
- * 몇 주째 쉬지 않고 나왔는가.
- *
- * 이번 주가 아직 비어 있어도 지난주까지로 센다 -- 수요일에 열어 본 사람에게
- * "0주" 라고 말할 이유가 없다. 다만 지난주도 비었으면 그때는 0 이고, 화면은
- * 며칠 지났는지를 대신 말한다.
- */
-export function weekStreak(dates, now = new Date()) {
-  if (!dates.length) return 0;
-  const weeks = new Set(dates.map((date) => weekStart(date).getTime()));
-  const thisWeek = weekStart(now).getTime();
-  let cursor = weeks.has(thisWeek) ? thisWeek : thisWeek - 7 * DAY;
-  if (!weeks.has(cursor)) return 0;
-  let count = 0;
-  while (weeks.has(cursor)) {
-    count += 1;
-    cursor -= 7 * DAY;
-  }
-  return count;
-}
-
-/** 마지막 수업으로부터 며칠. 수업이 없으면 null. */
-export function daysSinceLast(dates, now = new Date()) {
-  if (!dates.length) return null;
-  const last = dates[dates.length - 1];
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  return Math.max(0, Math.round((today - last) / DAY));
-}
-
-/**
- * 며칠부터 "쉬었다" 고 말할 것인가.
- *
- * 2주다. 그 아래는 그냥 이 사람의 주기일 수 있다 -- 일주일에 한 번 오는
- * 회원에게 8일 만에 "쉬고 있다" 고 하면 틀린 말이다.
- */
-export const AWAY_DAYS = 14;
-
-/**
- * 달력 아래 한 줄. 무엇을 말할지는 상태가 정한다.
- *
- * @returns {{ tone: "steady" | "away" | "none", line: string, hint: string }}
- */
-export function rhythmNote(dates, now = new Date()) {
-  const away = daysSinceLast(dates, now);
-  if (away === null) return { tone: "none", line: "", hint: "" };
-  if (away >= AWAY_DAYS) {
-    return {
-      tone: "away",
-      line: `마지막 수업에서 ${away}일 지났어요`,
-      /* 끊긴 주 수를 0 으로 보여주지 않는다. 혼내면 앱을 안 열고, 할 일을
-         말해야 온다. */
-      hint: "이번 주에 한 번 나오면 다시 이어져요",
-    };
-  }
-  const streak = weekStreak(dates, now);
-  if (streak >= 2) return { tone: "steady", line: `${streak}주째 쉬지 않고 나오고 있어요`, hint: "" };
-  return { tone: "none", line: "", hint: "" };
-}
-
-/**
- * 이 달보다 더 과거로 갈 수 있는가, 그리고 그 끝에서 뭐라고 말할 것인가.
- *
  * 기록이 없는 달과 안 나온 달은 다르다. 투영이 최근 100건만 싣고 오므로,
  * 상한에 닿아 있으면 가장 오래된 기록보다 앞은 **모르는 구간**이다. 빈
  * 달력을 그려 두면 회원은 그때 안 나온 것으로 읽는다.
@@ -499,50 +183,162 @@ export function historyEdge(dates, history) {
   return { oldest, capped };
 }
 
+/**
+ * 그날의 수업. 이른 시각부터.
+ *
+ * 지금은 받은 수업(차감 이력)뿐이다. 강사가 잡은 **예정 수업**은 아직 회원
+ * 데이터에 없다 -- 강사 앱 일정이 센터 서버에 오는 단계(개편 3단계)에서 여기에
+ * 더해진다. 그래서 오늘 칸의 빈 문구도 "예정된 수업이 없어요" 라고 하지 않는다:
+ * 모르는 것을 없다고 말하게 된다.
+ */
+export function lessonsOn(history, day) {
+  return (Array.isArray(history) ? history : [])
+    .filter((row) => text(row?.type) === ATTENDED_TYPE && sameDay(toDate(row?.occurredAt), day))
+    .sort((left, right) => toDate(left.occurredAt) - toDate(right.occurredAt));
+}
+
+/** "19:00". 시각을 모르는 옛 기록(자정)은 빈 문자열 -- 지어낸 시각을 쓰지 않는다. */
+export function timeLabel(value) {
+  const at = toDate(value);
+  if (!at || (at.getHours() === 0 && at.getMinutes() === 0)) return "";
+  return `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+}
+
+/**
+ * 남은 횟수 칩. "남은 8회 · 서비스 2회" -- 서비스가 0 이면 뒤를 뺀다.
+ *
+ * 쓸 수 있는 회원권 전부의 합이다. 정규와 서비스는 강사 앱과 같은 계산으로
+ * 가른다(remainingSplit) -- 서비스가 먼저 쓰이므로 회원권이 처음 가진 서비스
+ * 횟수와는 다를 수 있다.
+ */
+export function remainingChip(passes, now = new Date()) {
+  const usable = (Array.isArray(passes) ? passes : []).filter((pass) => isUsable(pass, now));
+  let regular = 0;
+  let service = 0;
+  for (const pass of usable) {
+    const split = remainingSplit(pass);
+    regular += count(split.regular);
+    service += count(split.service);
+  }
+  return service ? `남은 ${regular}회 · 서비스 ${service}회` : `남은 ${regular}회`;
+}
+
 const MONTH_LABEL = (year, month) => `${year}년 ${month + 1}월`;
 const DOW = ["일", "월", "화", "수", "목", "금", "토"];
 
+/* 수업 아이콘. 아이콘 묶음을 들이지 않는다 -- 쓰는 것이 몇 개뿐이다. */
+const LessonIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+    strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <circle cx="12" cy="5" r="2" />
+    <path d="M5 21l4-7 3 2 3-2 4 7M9 14l-2-4h10l-2 4" />
+  </svg>
+);
+
+/** 수업 한 건 카드. 시각 · 수업 이름 · 강사 · 지점. 그룹 표기는 없다. */
+function LessonCard({ row, location, onOpen }) {
+  const time = timeLabel(row.occurredAt);
+  return (
+    <button type="button" className="lesson" onClick={onOpen}>
+      <span className="time num">{time || dayLabel(row.occurredAt)}</span>
+      <span className="icon"><LessonIcon /></span>
+      <span className="what">
+        <b>{lessonName(row)}</b>
+        <span className="tags">
+          {text(row.instructorName) ? <i>{text(row.instructorName)} 강사</i> : null}
+          {text(location) ? <i>{text(location)}</i> : null}
+        </span>
+      </span>
+      {onOpen ? <span className="chev" aria-hidden="true">›</span> : null}
+    </button>
+  );
+}
+
+/** 수업기록 한 줄. 날짜 · 강사, 그리고 강사가 남긴 한마디가 있을 때만 말풍선. */
+function RecordItem({ row }) {
+  const type = text(row.type);
+  return (
+    <li>
+      <span className="dot" />
+      <div className="body">
+        <p className="when num">
+          {dayLabel(row.occurredAt)}<em>({weekdayLabel(row.occurredAt)})</em>
+        </p>
+        <p className="who">
+          {type === "deduct" ? lessonName(row) : HISTORY_LABEL[type] || type}
+          {text(row.instructorName) ? ` · ${text(row.instructorName)} 강사` : ""}
+        </p>
+        {/* 강사가 회원에게 남긴 한마디. 수업기록 원문이 아니라 회원을 향해 따로
+            적은 문장이고, 없으면 줄 자체가 없다 -- "메시지 없음" 을 그리면 빈
+            줄이 기록처럼 쌓인다. */}
+        {text(row.memberNote) ? <p className="note">{text(row.memberNote)}</p> : null}
+      </div>
+    </li>
+  );
+}
+
+const HISTORY_LABEL = {
+  deduct: "수업",
+  /* 잘못 차감했다 되돌린 사실은 회원의 것이다. 숨기면 회차가 늘어난 이유를
+     아무도 설명하지 못한다. */
+  correction: "차감 취소",
+  transfer: "담당 강사 변경",
+};
+
+/* ── 홈 ──────────────────────────────────────────────────────────────── */
+
 /**
- * @param {{ view: any, now?: Date, monthsBack?: number }} props
+ * 홈. 위에서부터 달력 → 그날 수업 → 남은 횟수 → 최근 수업 기록.
+ *
+ * 날짜를 누르면 그날의 수업이 아래 칸에 선다. 처음에는 오늘이다.
+ *
+ * @param {{ view: any, now?: Date, monthsBack?: number, onOpenRecords?: () => void }} props
  *   monthsBack  처음 보여 줄 달. 0 이 이번 달이다. 화면은 늘 0 으로 열고,
- *               테스트가 과거 달을 그려 보는 데 쓴다 -- "기록은 여기까지"
- *               처럼 끝에서만 나오는 문구는 거기까지 가 있어야 확인된다.
+ *               테스트가 과거 달을 그려 보는 데 쓴다.
  */
-export function More({ view, now = new Date(), monthsBack = 0, onDeleteAccount }) {
-  const [back, setBack] = useState(monthsBack);
+export function Home({ view, now = new Date(), monthsBack = 0, onOpenRecords }) {
   const history = Array.isArray(view?.history) ? view.history : [];
   const dates = useMemo(() => attendedDates(history), [history]);
+  const [back, setBack] = useState(monthsBack);
+  const [picked, setPicked] = useState(null);
   const shown = new Date(now.getFullYear(), now.getMonth() - back, 1);
   const year = shown.getFullYear();
   const month = shown.getMonth();
   const cells = useMemo(() => monthCells(year, month, dates, now), [year, month, dates, now]);
   const { oldest, capped } = historyEdge(dates, history);
-  const edge = capped && oldest
-    && year === oldest.getFullYear() && month === oldest.getMonth();
+  const edge = capped && oldest && year === oldest.getFullYear() && month === oldest.getMonth();
   /* 가장 오래된 기록보다 더 앞은 볼 것이 없다. 기록이 아예 없으면 이번 달에
      머문다 -- 빈 달을 넘기게 두면 안 나온 것처럼 읽힌다. */
   const earliest = oldest || now;
   const canGoBack = new Date(year, month, 1) > new Date(earliest.getFullYear(), earliest.getMonth(), 1);
 
-  const thisCount = countInMonth(dates, year, month);
-  const prev = new Date(year, month - 1, 1);
-  const prevCount = countInMonth(dates, prev.getFullYear(), prev.getMonth());
-  const note = rhythmNote(dates, now);
-  const months = useMemo(() => monthlyCounts(dates, now), [dates, now]);
-  const top = Math.max(1, ...months.map((row) => row.count));
-  const used = count(view?.journey?.usedTotal);
+  const selected = picked || atMidnight(now);
+  const isToday = sameDay(selected, now);
+  const dayLessons = lessonsOn(history, selected);
+
+  const summary = homeSummary(view, isUsable, now);
+  const left = daysUntil(summary.expiresAt, now);
+  const ended = text(view?.clientStatus) === "ended";
+  /* 임박은 말하되 재등록은 권하지 않는다. 사실만 놓으면 회원이 스스로 센터에
+     묻는다 -- 앱이 파는 자리가 되면 열어 보는 이유가 달라진다. */
+  const notice = ended
+    ? "이용이 종료된 회원권이에요. 지난 기록은 그대로 보실 수 있어요."
+    : summary.remaining === 0 ? "남은 횟수가 없어요. 센터에 문의해 주세요."
+      : left !== null && left <= 14 ? `만료까지 ${left}일 남았어요.`
+        : summary.remaining <= 3 ? "곧 마지막 회차예요." : "";
+
+  const recent = history.filter((row) => text(row?.type) === ATTENDED_TYPE).slice(0, 2);
 
   return (
     <div className="stack">
-      {/* 앱에 옮기기 전의 수업도 회원이 한 수업이다. 날짜가 없어 달력에는
-          그리지 못하므로 한 줄로만 남긴다. */}
-      {used > 0 ? (
-        <p className="total">지금까지 <b className="num">{used}번</b> 함께했어요</p>
-      ) : null}
+      <header className="greet">
+        <p className="hello">{text(view?.name)}님 <span aria-hidden="true">👋</span></p>
+        {view?.locationName ? <p className="place">{view.locationName}</p> : null}
+      </header>
 
-      <Card>
+      <Card className="cal">
         <div className="calhead">
-          <p className="mon serif num">{MONTH_LABEL(year, month)}</p>
+          <p className="mon num">{MONTH_LABEL(year, month)}</p>
           <div className="arrows">
             <button type="button" aria-label="이전 달" disabled={!canGoBack}
               onClick={() => setBack((value) => value + 1)}>‹</button>
@@ -552,55 +348,147 @@ export function More({ view, now = new Date(), monthsBack = 0, onDeleteAccount }
         </div>
         <div className="dow">{DOW.map((day) => <span key={day}>{day}</span>)}</div>
         <div className="grid">
-          {cells.map((cell) => (
-            <div key={cell.key}
-              className={`day${cell.blank ? " out" : ""}${cell.attended ? " on" : ""}${cell.today ? " today" : ""}`}>
+          {cells.map((cell) => (cell.blank ? <span key={cell.key} className="day out" /> : (
+            <button key={cell.key} type="button"
+              aria-label={`${month + 1}월 ${cell.day}일${cell.attended ? " · 수업 있음" : ""}`}
+              aria-pressed={sameDay(cell.date, selected)}
+              className={`day${cell.attended ? " on" : ""}${cell.today ? " today" : ""}${sameDay(cell.date, selected) ? " picked" : ""}`}
+              onClick={() => setPicked(cell.date)}>
+              <b>{cell.day}</b>
               {cell.attended ? <i /> : null}
-              <b>{cell.blank ? "" : cell.day}</b>
-            </div>
-          ))}
+            </button>
+          )))}
         </div>
-        {edge ? (
-          <p className="edge">이 앱에 남은 기록은 여기까지예요</p>
+        {edge ? <p className="edge">이 앱에 남은 기록은 여기까지예요</p> : null}
+        <p className="tally num">이번 달 {countInMonth(dates, year, month)}번</p>
+      </Card>
+
+      <section>
+        <div className="sechead">
+          <p>{isToday ? "오늘 수업" : `${selected.getMonth() + 1}월 ${selected.getDate()}일 수업`}</p>
+          {onOpenRecords ? <button type="button" onClick={onOpenRecords}>전체보기 ›</button> : null}
+        </div>
+        {dayLessons.length ? (
+          <div className="stack tight">
+            {dayLessons.map((row, index) => (
+              <LessonCard key={`${text(row.occurredAt)}-${index}`} row={row}
+                location={view?.locationName} onOpen={onOpenRecords} />
+            ))}
+          </div>
+        ) : (
+          <Card className="quietcard">
+            <p className="muted" style={{ fontSize: TYPE.caption }}>
+              {isToday ? "오늘 받은 수업은 끝나면 여기에 보여요." : "이날은 수업 기록이 없어요."}
+            </p>
+          </Card>
+        )}
+      </section>
+
+      <Card className="left">
+        <div className="lefthead">
+          <p className="cap">내 회원권</p>
+          {summary.expiresAt ? <p className="until num">{dateLabel(summary.expiresAt)}까지</p> : null}
+        </div>
+        {summary.front ? (
+          <p className="name">
+            {passTitle(summary.front)}{summary.others ? <span className="muted"> 외 {summary.others}장</span> : null}
+          </p>
         ) : null}
+        <p className="chipline"><span className="chip on num">{remainingChip(view?.passes, now)}</span></p>
+        {notice ? <p className="muted mt" style={{ fontSize: TYPE.caption }}>{notice}</p> : null}
       </Card>
 
-      <div className="rhythm">
-        <span className="big serif num">{thisCount}<span>번</span></span>
-        <span className="prev num">지난달 {prevCount}번</span>
+      <section>
+        <div className="sechead">
+          <p>최근 수업 기록</p>
+          {onOpenRecords ? <button type="button" onClick={onOpenRecords}>더보기 ›</button> : null}
+        </div>
+        {recent.length ? (
+          <ol className="timeline">
+            {recent.map((row, index) => <RecordItem key={`${text(row.occurredAt)}-${index}`} row={row} />)}
+          </ol>
+        ) : (
+          <Card className="quietcard">
+            <p className="muted" style={{ fontSize: TYPE.body }}>첫 수업을 기다리고 있어요</p>
+          </Card>
+        )}
+      </section>
+    </div>
+  );
+}
+
+/* ── 수업기록 ────────────────────────────────────────────────────────── */
+
+export function Records({ view }) {
+  const rows = Array.isArray(view?.history) ? view.history : [];
+  const used = count(view?.journey?.usedTotal);
+
+  if (rows.length === 0) {
+    return (
+      <div>
+        <h1 className="title">수업기록</h1>
+        <div className="empty">
+          <p className="big">첫 수업을<br />기다리고 있어요</p>
+          <p className="sub">수업이 끝나면 여기에<br />하나씩 쌓입니다</p>
+        </div>
       </div>
+    );
+  }
 
-      {note.line ? (
-        <div className="since">
-          <p className={`a num${note.tone === "away" ? " quiet" : ""}`}>{note.line}</p>
-          {note.hint ? <p className="b">{note.hint}</p> : null}
-        </div>
+  return (
+    <div>
+      <h1 className="title">수업기록</h1>
+      {/* 앱에 옮기기 전의 수업도 회원이 한 수업이다. 날짜가 없어 줄로는 그리지
+          못하므로 숫자로만 남긴다. */}
+      {used ? <p className="count num">지금까지 <b>{used}번</b> 함께했어요</p> : null}
+      <ol className="timeline">
+        {rows.map((row, index) => <RecordItem key={`${text(row.occurredAt)}-${index}`} row={row} />)}
+      </ol>
+      {used > rows.length ? (
+        <p className="more num">{used - rows.length}번의 수업이 더 있어요</p>
       ) : null}
+    </div>
+  );
+}
 
-      <Card className="barwrap">
-        <p className="cap">최근 여섯 달</p>
-        <div className="bars">
-          {months.map((row, index) => (
-            <div key={`${row.year}-${row.month}`}
-              className={`bar${row.count ? " on" : ""}${index === months.length - 1 ? " last" : ""}`}>
-              <u style={{ height: `${Math.max(6, Math.round((row.count / top) * 52))}px` }} />
-              <em>{row.label}</em>
+/* ── 마이페이지 ──────────────────────────────────────────────────────── */
+
+/**
+ * 회원권 목록 · 의견 보내기 · 로그아웃 · 계정 삭제.
+ *
+ * 계정 삭제가 맨 아래인 것은 뜻이 있다 -- 되돌릴 수 없는 버튼은 지나가다 누를
+ * 자리에 두지 않는다.
+ */
+export function MyPage({ view, now = new Date(), onSignOut, onDeleteAccount }) {
+  const passes = Array.isArray(view?.passes) ? view.passes : [];
+  const using = passes.filter((pass) => isUsable(pass, now));
+  const past = passes.filter((pass) => !isUsable(pass, now));
+
+  return (
+    <div className="stack">
+      <h1 className="title">마이페이지</h1>
+      <Card className="me">
+        <p className="name">{text(view?.name)}님</p>
+        {view?.locationName ? <p className="muted mt" style={{ fontSize: TYPE.caption }}>{view.locationName}</p> : null}
+      </Card>
+
+      {passes.length === 0 ? (
+        <Card>
+          <p style={{ fontSize: TYPE.body }}>지금 쓸 수 있는 회원권이 없어요.</p>
+          <p className="muted mt" style={{ fontSize: TYPE.caption }}>센터에 문의해 주세요.</p>
+        </Card>
+      ) : [["사용 중", using, false], ["지난 회원권", past, true]].map(([label, group, dim]) => (
+        group.length ? (
+          <div key={label}>
+            <p className="group">{label}</p>
+            <div className="stack">
+              {group.map((pass) => <PassCard key={text(pass.passId)} pass={pass} dim={dim} />)}
             </div>
-          ))}
-        </div>
-      </Card>
+          </div>
+        ) : null
+      ))}
 
-      {/* 격려 3 : 지식 1. 넷 중 하나만 지식이다. */}
-      <Card className="know">
-        <p className="cap">알아 두면 좋아요</p>
-        <p>{note.tone === "away"
-          ? "2~3주 쉬면 심폐 지구력부터 먼저 떨어집니다. 근력은 더 오래 남고, 둘 다 주 한두 번만 이어가도 지키기 쉬워요."
-          : "같은 횟수라도 몰아서 하는 것보다 나눠서 할 때 몸이 더 잘 기억합니다."}</p>
-      </Card>
-
-      {/* 이 탭에서 회원이 할 수 있는 단 하나의 행동이라 카드 한 장을 준다.
-          맨 아래인 것도 뜻이 있다 -- 달력을 다 보고 내려온 사람이 마지막에
-          만나는 자리가 말이 나오는 자리다. */}
+      {/* 의견 보내기. 회원이 센터에 말을 거는 자리라 카드 한 장을 준다. */}
       <Card className="say">
         <p className="cap">의견 보내기</p>
         <p>수업이 어땠는지, 불편한 것은 없는지 알려 주세요. 칭찬도 건의도 좋고, 익명으로도 보낼 수 있어요.</p>
@@ -609,8 +497,43 @@ export function More({ view, now = new Date(), monthsBack = 0, onDeleteAccount }
         </a>
       </Card>
 
+      {onSignOut ? <button type="button" className="btn" onClick={onSignOut}>로그아웃</button> : null}
       {onDeleteAccount ? <DeleteAccount onDelete={onDeleteAccount} /> : null}
     </div>
+  );
+}
+
+function PassCard({ pass, dim }) {
+  return (
+    <Card tone={dim ? "quietcard" : ""} className="pass">
+      <div className="rowcard">
+        <p className="name">{passTitle(pass)}</p>
+        {dim ? null : (
+          <p className="rem num">{count(pass.remainingCount)}<span>회</span></p>
+        )}
+      </div>
+      {/* 서비스는 산 횟수에 더하지 않고 따로 적는다. 0회면 줄이 없다. */}
+      {serviceLabel(pass) ? <p className="meta">{serviceLabel(pass)}</p> : null}
+      <p className="meta">
+        {count(pass.remainingCount) > 0
+          ? <><b>{count(pass.remainingCount)}회</b> 남았어요</>
+          : "모두 사용했어요"}
+      </p>
+      {/* 서비스 회차는 먼저 쓰인다. 몇 회가 서비스인지 말하지 않으면 회원은
+          정규가 줄어든 줄로 읽고, 재등록 때 숫자가 안 맞는다고 느낀다. 숫자는
+          강사 앱과 한 곳에서 나온다. */}
+      {remainingSplit(pass).service > 0 ? (
+        <p className="meta">그중 서비스 {remainingSplit(pass).service}회</p>
+      ) : null}
+      {pass.expiresAt ? <p className="meta num">{dateLabel(pass.expiresAt)}까지</p> : null}
+      {/* 각자 30회로 오해하면 계약 자체가 틀어진다. 반드시 적는다. */}
+      {pass.isDuet ? (
+        <p className="duet">
+          {pass.partnerName ? `${pass.partnerName}님과 ` : "두 분이 "}함께 쓰는 회원권이에요
+          <br /><em>수업 한 번에 1회 차감</em>
+        </p>
+      ) : null}
+    </Card>
   );
 }
 
@@ -634,7 +557,7 @@ export function DeleteAccountGuide({ appName }) {
       <p className="cap">{text(appName) || "회원 앱"} 계정 삭제</p>
       <ol className="bullets mt" style={{ fontSize: TYPE.caption }}>
         <li>아래에서 센터에 등록된 휴대폰 번호로 로그인해요.</li>
-        <li>로그인하면 더보기 탭이 열려요. 맨 아래 "계정 삭제" 를 눌러요.</li>
+        <li>로그인하면 마이페이지가 열려요. 맨 아래 "계정 삭제" 를 눌러요.</li>
         <li>"네, 지울게요" 를 누르면 바로 지워져요.</li>
       </ol>
 

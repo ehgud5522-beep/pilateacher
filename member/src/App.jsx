@@ -14,7 +14,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { TYPE } from "../../src/features/ui/type-scale.js";
-import { CENTRE_NAME, CENTRE_TAGLINE } from "./brand.js";
+import { BRAND_MARK } from "./brand.js";
 import { classifyPhoneAuthError } from "./auth-errors.js";
 import {
   deleteMemberAccount, linkMemberAccount, resetRecaptcha, signOutMember, startPhoneSignIn,
@@ -32,18 +32,18 @@ import {
 } from "./resend.js";
 import { forgetDevice, needsReverification, readVerifiedAt, writeVerifiedAt } from "./session.js";
 import {
-  DeleteAccountGuide, Diagnostics, History, Home, LinkNotice, LoadFailed, Loading, More,
-  NotMigrated,
-  Passes, Preparing, SlowConnection,
+  DeleteAccountGuide, Diagnostics, Home, LinkNotice, LoadFailed, Loading, MyPage,
+  NotMigrated, Preparing, Records, SlowConnection,
 } from "./screens.jsx";
 
 /* 아이콘은 인라인 SVG 다. 아이콘 묶음을 하나 들이면 번들이 늘고, 이 앱이
    쓰는 것은 넷뿐이다. */
+/* 홈 · 수업기록 · 마이페이지 (2026-10-30 개편). 예약 탭은 다음 단계에서 이
+   자리에 들어간다 -- 지금 두면 누를 데 없는 탭이 된다. */
 const TABS = [
   { key: "home", label: "홈", path: "M3 10.5 12 3l9 7.5M5.5 9.5V20h13V9.5" },
-  { key: "passes", label: "회원권", path: "M3 9a3 3 0 0 1 3-3h12a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3zM3 11h18" },
-  { key: "history", label: "수업", path: "M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0M12 7v5l3 2" },
-  { key: "more", label: "더보기", path: "M5 12h.01M12 12h.01M19 12h.01" },
+  { key: "records", label: "수업기록", path: "M7 3h10a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM9 8h6M9 12h6M9 16h4" },
+  { key: "mypage", label: "마이페이지", path: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4 21a8 8 0 0 1 16 0" },
 ];
 
 const text = (value) => String(value ?? "").trim();
@@ -102,10 +102,10 @@ export default function App() {
     );
   }
   /* `/delete-account` 로 왔으면 로그인 전에는 삭제 안내를, 로그인 뒤에는
-     삭제 버튼이 있는 더보기 탭을 먼저 연다 (플레이스토어 계정 삭제 URL). */
+     삭제 버튼이 있는 마이페이지를 먼저 연다 (플레이스토어 계정 삭제 URL). */
   const deletion = wantsAccountDeletion(window.location.pathname);
   if (!user || stale) return <SignIn signedIn={Boolean(user)} deletion={deletion} />;
-  return <Member userId={user.uid} initialTab={deletion ? "more" : "home"} />;
+  return <Member userId={user.uid} initialTab={deletion ? "mypage" : "home"} />;
 }
 
 /**
@@ -143,11 +143,11 @@ function Shell({ children, footer, onSignOut }) {
 
   return (
     <div className="shell">
-      {/* 작고 얇게 위에만. 화면의 주인공은 남은 횟수다 -- 이름 쪽만 로즈로
-          도드라지고 앞말은 물러나 있다. 로그아웃도 같은 줄에 물러나 있다 --
-          어느 탭에서든 보이되 주인공을 가리지 않게. */}
+      {/* 작게 위에만. 로그아웃은 마이페이지에 있다 -- 머리줄에 서는 것은 탭이
+          없는 화면(불러오기 실패 · 연결 안내 · 준비 중)뿐이다. 거기서 막힌
+          사람이 다른 번호로 들어갈 길이 있어야 한다. */}
       <header className="head">
-        <span>{CENTRE_TAGLINE} <b>{CENTRE_NAME}</b></span>
+        <b className="mark">{BRAND_MARK}</b>
         {onSignOut ? (
           <button type="button" className="signout" onClick={onSignOut}>로그아웃</button>
         ) : null}
@@ -330,9 +330,14 @@ function Member({ userId, initialTab = "home" }) {
   const [place, setPlace] = useState(0);
   const [slow, setSlow] = useState(false);
 
-  const load = useCallback(async () => {
-    setState({ stage: "loading" });
-    setSlow(false);
+  /* quiet: 앱으로 돌아왔을 때 조용히 다시 읽는다. 화면을 "잠시만요" 로 바꾸지
+     않고, 실패하면 보던 것을 그대로 둔다 -- 돌아올 때마다 깜빡이거나 오류를
+     띄우면 회원은 앱이 불안하다고 읽는다. */
+  const load = useCallback(async ({ quiet = false } = {}) => {
+    if (!quiet) {
+      setState({ stage: "loading" });
+      setSlow(false);
+    }
     try {
       recordDiagnostic({ feature: MEMBER_FEATURE.LINK, stage: MEMBER_STAGE.READ_LINK });
       let link = await readMemberLink(db, userId);
@@ -345,7 +350,7 @@ function Member({ userId, initialTab = "home" }) {
       }
       const screen = linkResultScreen(link.status);
       if (!screen.opensHome) {
-        setState({ stage: "notice", screen });
+        if (!quiet) setState({ stage: "notice", screen });
         return;
       }
       recordDiagnostic({
@@ -368,6 +373,7 @@ function Member({ userId, initialTab = "home" }) {
         errorDomain: "firestore", errorCode: text(error?.code) || "unknown",
         message: error?.message,
       });
+      if (quiet) return;
       const cached = readViewCache();
       if (cached) {
         recordDiagnostic({ feature: MEMBER_FEATURE.OFFLINE_CACHE, stage: MEMBER_STAGE.CACHE_HIT });
@@ -381,6 +387,22 @@ function Member({ userId, initialTab = "home" }) {
   }, [userId]);
 
   useEffect(() => { load(); }, [load]);
+
+  /* 열거나 돌아올 때 최신 (2026-10-30 결정). 강사가 일정 · 기록을 바꾸면 회원
+     데이터는 곧바로 다시 만들어지지만, 이 앱은 한 번 읽는 방식이라 켜 둔 화면은
+     모른다. 다른 앱에 갔다 돌아오면 조용히 다시 읽는다 -- 30초 안에 돌아온
+     것은 건너뛴다. */
+  useEffect(() => {
+    let lastRead = Date.now();
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      if (Date.now() - lastRead < 30000) return;
+      lastRead = Date.now();
+      load({ quiet: true });
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [load]);
 
   /* 읽기도 영영 안 끝날 수 있다. Firestore 호출에는 시간제한이 없다. */
   useEffect(() => {
@@ -459,17 +481,19 @@ function Member({ userId, initialTab = "home" }) {
   /* 연결은 됐는데 투영이 아직 없다 -- 트리거가 도는 몇 초다. "조회 실패" 로
      말하면 정상 상태를 고장으로 말하는 것이 된다. */
   else if (!current.view) body = <Preparing onRetry={load} />;
-  else if (tab === "passes") body = <Passes view={current.view} />;
-  else if (tab === "history") body = <History view={current.view} />;
-  else if (tab === "more") {
+  else if (tab === "records") body = <Records view={current.view} />;
+  else if (tab === "mypage") {
     /* 오프라인 사본을 보는 중에는 계정 삭제를 내지 않는다. 누르면 실패할
        뿐이고, 되돌릴 수 없는 버튼이 실패하는 것은 회원을 불안하게 한다. */
-    body = <More view={current.view} onDeleteAccount={state.offlineAt ? undefined : removeAccount} />;
+    body = <MyPage view={current.view} onSignOut={signOutNow}
+      onDeleteAccount={state.offlineAt ? undefined : removeAccount} />;
   }
-  else body = <Home view={current.view} />;
+  else body = <Home view={current.view} onOpenRecords={() => setTab("records")} />;
 
+  /* 회원 데이터가 없으면 어느 탭이든 "준비 중" 이라 마이페이지의 로그아웃도
+     없다. 그때만 머리줄에 둔다. */
   return (
-    <Shell footer={<Tabs tab={tab} onPick={setTab} />} onSignOut={signOutNow}>
+    <Shell footer={<Tabs tab={tab} onPick={setTab} />} onSignOut={current?.view ? undefined : signOutNow}>
       {/* 오래된 숫자라는 사실이 숫자 위에 있어야 한다. 아래에 두면 잔여를
           보고 화면을 닫은 사람은 읽지 않는다. */}
       {state.offlineAt ? (

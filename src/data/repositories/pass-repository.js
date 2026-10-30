@@ -75,13 +75,17 @@ const requiredInt = (value, label, { min }) => {
 /**
  * Firestore 를 읽고 쓰는 기본 구현. firebase 모듈은 호출 시점에만 불러온다 —
  * product-repository.js 의 createFirestoreProductStore 와 같은 방식이다.
+ *
+ * 규칙 테스트는 에뮬레이터의 firestore 를 넘겨 이 배치를 그대로 돌린다.
+ *
+ * @param {{ firestore?: any }} [options]
  */
-export function createFirestorePassStore() {
+export function createFirestorePassStore(options = {}) {
   const load = () => import("firebase/firestore");
   return {
     list: async (collectionPath) => {
       const { collection, getDocs, getFirestore } = await load();
-      const snapshot = await getDocs(collection(getFirestore(), collectionPath));
+      const snapshot = await getDocs(collection((options.firestore || getFirestore()), collectionPath));
       return snapshot.docs.map((document) => ({ id: document.id, ...document.data() }));
     },
     /* writeBatch 는 전부 쓰이거나 전부 안 쓰인다. 회원권과 원장 항목이 갈라져
@@ -91,7 +95,7 @@ export function createFirestorePassStore() {
        이것을 set 으로 쓰면 계약 금액도 잔여 횟수도 통째로 날아간다. */
     commit: async (writes) => {
       const { doc, getFirestore, writeBatch } = await load();
-      const firestore = getFirestore();
+      const firestore = (options.firestore || getFirestore());
       const batch = writeBatch(firestore);
       for (const write of writes) {
         const reference = doc(firestore, write.path);
@@ -119,7 +123,7 @@ export function createFirestorePassStore() {
     },
     read: async (documentPath) => {
       const { doc, getDoc, getFirestore } = await load();
-      const snapshot = await getDoc(doc(getFirestore(), documentPath));
+      const snapshot = await getDoc(doc((options.firestore || getFirestore()), documentPath));
       return snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null;
     },
     /* 센터 전체의 원장. 잔여 점검이 쓴다.
@@ -129,7 +133,7 @@ export function createFirestorePassStore() {
     listLedgerByOrganization: async (organizationId) => {
       const { collectionGroup, getDocs, getFirestore, orderBy, query, where } = await load();
       const snapshot = await getDocs(query(
-        collectionGroup(getFirestore(), "ledger"),
+        collectionGroup((options.firestore || getFirestore()), "ledger"),
         where("organizationId", "==", organizationId),
         orderBy("occurredAt", "asc"),
       ));

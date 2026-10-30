@@ -27,3 +27,9 @@ export const CENTRE_NAME = "보니따필라테스";
  * 선다.
  */
 export const CENTRE_TAGLINE = "내 몸 안에 힘";
+
+/**
+ * 화면 맨 위의 표지. 앱 아이콘과 같은 글자다 (2026-10-27 BONITA VIP 아이콘).
+ * 아이콘을 누르고 들어온 사람이 같은 이름을 처음 보는 자리에서 다시 본다.
+ */
+export const BRAND_MARK = "BONITA VIP";

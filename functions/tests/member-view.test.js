@@ -468,3 +468,20 @@ test("원문이 입력에 섞여 들어와도 따라 나가지 않는다", () =>
   assert.doesNotMatch(json, /무릎 주의/);
   assert.match(json, /오늘 정말 잘하셨어요/);
 });
+
+test("이력 한 줄은 차감된 회원권의 수업 유형을 싣는다 — passId 는 싣지 않는다", () => {
+  /* 회원 앱이 "1:1 필라테스 수업" 처럼 부른다 (2026-10-30). */
+  const view = buildMemberView({
+    client: { id: "client-a", organizationId: "center-a", userId: "uid-1", name: "김하나" },
+    passes: [
+      { id: "solo", clientId: "client-a", category: "pt_1_1_new", totalSessions: 10, remainingCount: 5, status: "active" },
+      { id: "diosa", clientId: "client-a", category: "diosa_a", totalSessions: 4, remainingCount: 3, status: "active" },
+    ],
+    ledger: [
+      { passId: "solo", type: "deduct", occurredAt: new Date(2026, 9, 21, 19, 0), instructorId: "u1" },
+      { passId: "diosa", type: "deduct", occurredAt: new Date(2026, 9, 18, 10, 0), instructorId: "u1" },
+    ],
+  });
+  assert.deepEqual(view.history.map((row) => row.lessonType), [LESSON_TYPE.SOLO, LESSON_TYPE.DIOSA]);
+  assert.doesNotMatch(JSON.stringify(view.history), /"solo"|passId|diosa_a|pt_1_1_new/);
+});

@@ -86,7 +86,10 @@ function lessonTypeOf(pass, productSessionTypes, shared) {
 }
 
 /** 수업 이력 한 건에서 내보낼 것. */
-const HISTORY_FIELDS = Object.freeze(["occurredAt", "type", "instructorName", "memberNote"]);
+/* lessonType 은 그 수업이 어떤 회원권에서 차감됐는지로 정한다 -- 회원 앱이
+   이력 한 줄을 "1:1 필라테스 수업" 으로 부른다 (2026-10-30). passId 는 내보내지
+   않는다. */
+const HISTORY_FIELDS = Object.freeze(["occurredAt", "type", "lessonType", "instructorName", "memberNote"]);
 
 /**
  * 회원에게 보낼 말의 길이.
@@ -254,6 +257,7 @@ function buildMemberView(input) {
   const expiryDates = usable.map((pass) => toDate(pass.expiresAt)).filter(Boolean);
 
   const passIds = new Set(passes.map((pass) => pass.passId).filter(Boolean));
+  const lessonTypeByPass = new Map(passes.map((pass) => [pass.passId, pass.lessonType]));
   const history = (Array.isArray(input?.ledger) ? input.ledger : [])
     .filter(Boolean)
     .filter((entry) => HISTORY_TYPES.includes(text(entry.type)))
@@ -261,6 +265,7 @@ function buildMemberView(input) {
     .map((entry) => ({
       occurredAt: toDate(entry.occurredAt),
       type: text(entry.type),
+      lessonType: lessonTypeByPass.get(text(entry.passId)) || LESSON_TYPE.OTHER,
       /* 이름을 박아 둔다. 강사가 퇴사해도 그때 가르친 사람의 이름이 남아야
          한다 -- uid 를 내보내고 화면에서 찾게 하면 그 이름이 사라진다. */
       instructorName: lookup(input?.instructorNames, text(entry.instructorId)),

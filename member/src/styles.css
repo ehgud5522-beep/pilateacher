@@ -1,7 +1,7 @@
-/* 보니따 멤버십.
+/* BONITA VIP 회원 앱.
    ─────────────────────────────────────────────────────────────────────────
-   시안 A(아이보리)가 라이트, 시안 B(딥 톤)가 다크다. 두 벌 중 하나를 고른
-   것이 아니라 **같은 디자인의 두 모드**이고, 기기 설정을 따라간다.
+   2026-10-30 개편: 앱 아이콘(BONITA VIP, 핫핑크)과 같은 색과 굵은 고딕으로
+   바꿨다. 라이트 · 다크는 **같은 디자인의 두 모드**이고, 기기 설정을 따라간다.
 
    Tailwind 를 쓰지 않는다 -- 화면 넷이라 빌드를 하나 더 들일 이유가 없고,
    번들이 작을수록 지하 스튜디오에서 빨리 뜬다.
@@ -18,43 +18,39 @@
   --t-display: 24px;
   --t-hero: 32px;
 
-  /* 라이트 — 따뜻한 아이보리 바탕, 짙은 차콜 글자. */
-  --page: #FAF7F4;
+  /* 라이트 — 아주 옅은 분홍 바탕, 흰 카드, 짙은 글자. */
+  --page: #FFF7FA;
   --card: #FFFFFF;
-  --card-tone: #FFFDFB;
-  --ink: #2B2426;
-  --sub: #8A7C7F;
-  --faint: #B3A6A8;
-  --line: rgba(43, 36, 38, .07);
-  --shadow: 0 1px 2px rgba(43, 36, 38, .03), 0 8px 24px rgba(43, 36, 38, .05);
-  /* 로즈. 보니따 핫핑크를 한 톤 낮춘 값이고, 쓰는 자리는 넷뿐이다 --
-     활성 탭 · 상품명 밑줄 · 잔여 숫자 · 달력에서 나온 날. */
-  --rose: #C25B78;
-  --blush: linear-gradient(152deg, #F7E6EA 0%, #FAF0EC 52%, #F6EDE6 100%);
-  --ring: rgba(194, 91, 120, .16);
-  --tab-bg: rgba(255, 255, 255, .92);
-  --mile-off: #EDE4E2;
+  --card-tone: #FFF0F6;
+  --ink: #1F1A1C;
+  --sub: #7B7175;
+  --faint: #ADA3A7;
+  --line: rgba(31, 26, 28, .07);
+  --shadow: 0 1px 2px rgba(31, 26, 28, .03), 0 8px 24px rgba(240, 19, 127, .06);
+  /* 핫핑크. 앱 아이콘의 글자색이다. 쓰는 자리는 강조뿐이다 -- 활성 탭 · 오늘 ·
+     수업 있는 날 · 남은 횟수 칩 · 표지. 변수 이름은 옛 것(--rose)을 그대로 둔다. */
+  --rose: #F0137F;
+  --ring: rgba(240, 19, 127, .14);
+  --tab-bg: rgba(255, 255, 255, .94);
   --on-rose: #FFFFFF;
 }
 
 /* 다크 — 기기 설정을 따른다. 저녁 수업 뒤 어두운 데서 여는 화면이다. */
 @media (prefers-color-scheme: dark) {
   :root {
-    --page: #221C1E;
-    --card: #2B2325;
-    --card-tone: #2F2629;
-    --ink: #F4EEEA;
-    --sub: #A2938F;
-    --faint: #7A6C69;
-    --line: rgba(244, 238, 234, .07);
-    --shadow: 0 1px 2px rgba(0, 0, 0, .20), 0 10px 30px rgba(0, 0, 0, .28);
-    /* 어두운 바탕에서 같은 로즈는 읽히지 않는다. 한 단계 밝게. */
-    --rose: #DE8CA3;
-    --blush: linear-gradient(152deg, #4A3038 0%, #37272C 55%, #2C2326 100%);
-    --ring: rgba(222, 140, 163, .20);
-    --tab-bg: rgba(43, 35, 37, .92);
-    --mile-off: #3A2F31;
-    --on-rose: #221C1E;
+    --page: #161214;
+    --card: #221B1E;
+    --card-tone: #2A2125;
+    --ink: #F5EEF1;
+    --sub: #A59A9E;
+    --faint: #6E6468;
+    --line: rgba(245, 238, 241, .08);
+    --shadow: 0 1px 2px rgba(0, 0, 0, .25), 0 10px 30px rgba(0, 0, 0, .32);
+    /* 어두운 바탕에서 같은 핑크는 탁해진다. 한 단계 밝게. */
+    --rose: #FF4FA3;
+    --ring: rgba(255, 79, 163, .20);
+    --tab-bg: rgba(34, 27, 30, .94);
+    --on-rose: #160F12;
   }
 }
 
@@ -73,11 +69,11 @@ body {
   -webkit-text-size-adjust: 100%;
 }
 
-/* 큰 숫자와 제목만 세리프다. 이 디자인의 인상이 거기서 나온다. */
+/* 제목과 큰 숫자. 예전에는 세리프였고, 개편 뒤에는 굵은 고딕이다 (시안).
+   클래스 이름은 그대로 둔다 -- 쓰는 자리가 로그인 · 안내 화면까지 퍼져 있다. */
 .serif {
-  font-family: "Gowun Batang", "Nanum Myeongjo", "Apple SD Gothic Neo", serif;
-  font-weight: 400;
-  letter-spacing: -.01em;
+  font-weight: 800;
+  letter-spacing: -.02em;
 }
 
 /* 세로 폰이 기준이다. 8pt 그리드 -- 좌우 24, 카드 사이 16. */
@@ -98,8 +94,7 @@ body {
   padding-left: env(safe-area-inset-left, 0px);
   padding-right: env(safe-area-inset-right, 0px);
 }
-/* 맨 위 한 줄. 앞말은 물러나 있고 센터 이름만 로즈로 선다 -- 이름만 놓으면
-   상호이고, 앞말이 서면 회원이 여기 오는 이유가 된다. */
+/* 맨 위 한 줄. 앱 아이콘과 같은 표지(BONITA VIP)만 작게 선다. */
 .head {
   display: flex;
   align-items: center;
@@ -110,7 +105,7 @@ body {
   letter-spacing: .14em;
   color: var(--faint);
 }
-.head b { margin-left: 5px; font-size: 12px; font-weight: 700; color: var(--rose); letter-spacing: .1em; }
+.head .mark { font-size: 11px; font-weight: 900; color: var(--rose); letter-spacing: .16em; }
 /* 머리줄과 같은 무게로 물러나 있다. 글자는 작아도 누르는 자리는 44px 이다. */
 .signout {
   min-height: 44px;
@@ -144,41 +139,98 @@ body {
 
 /* ── 홈 ────────────────────────────────────────────────────────────── */
 
-.greet { padding: 10px 0 22px; }
-.greet .hello { font-size: var(--t-heading); line-height: 1.45; }
-.greet .place { margin-top: 6px; font-size: var(--t-caption); color: var(--sub); letter-spacing: .02em; }
+.greet { padding: 2px 0 6px; }
+.greet .hello { font-size: var(--t-display); font-weight: 800; letter-spacing: -.02em; line-height: 1.35; }
+.greet .place { margin-top: 4px; font-size: var(--t-caption); color: var(--sub); }
 
-.membership {
-  position: relative;
-  background: var(--blush);
-  border-radius: 24px;
-  padding: 32px 28px 28px;
-  box-shadow: var(--shadow);
-  overflow: hidden;
+/* 달력. 오늘은 꽉 찬 핑크 원, 고른 날은 테두리, 수업 있는 날은 아래 점. */
+.cal { padding: 18px 16px 14px; }
+.calhead { display: flex; align-items: center; justify-content: space-between; padding: 0 4px 10px; }
+.calhead .mon { font-size: var(--t-title); font-weight: 800; letter-spacing: -.01em; }
+.calhead .arrows { display: flex; gap: 2px; }
+.calhead button {
+  width: 36px; height: 36px; border: 0; border-radius: 50%;
+  background: transparent; color: var(--sub);
+  font-family: inherit; font-size: 18px;
 }
-.membership .cap { font-size: var(--t-caption); color: var(--sub); letter-spacing: .06em; }
-.membership .big { font-size: 76px; line-height: 1.05; margin-top: 2px; letter-spacing: -.03em; }
-.membership .big span { font-size: var(--t-title); margin-left: 6px; letter-spacing: 0; }
-.membership .name {
-  display: inline-block;
-  margin-top: 14px;
-  font-size: var(--t-body);
-  font-weight: 600;
-  border-bottom: 1.5px solid var(--rose);
-  padding-bottom: 2px;
+.calhead button:disabled { opacity: .3; }
+.dow { display: grid; grid-template-columns: repeat(7, 1fr); margin-bottom: 2px; }
+.dow span { text-align: center; font-size: 11px; color: var(--faint); }
+.grid { display: grid; grid-template-columns: repeat(7, 1fr); row-gap: 2px; }
+.day {
+  position: relative; height: 44px; padding: 0; border: 0; background: transparent;
+  display: flex; align-items: center; justify-content: center;
+  font-family: inherit; color: var(--ink);
 }
-.membership .until { margin-top: 10px; font-size: var(--t-caption); color: var(--sub); }
-.ring { position: absolute; right: 24px; top: 30px; width: 116px; height: 116px; }
+.day b {
+  position: relative; display: flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; border-radius: 50%;
+  font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums;
+}
+.day.on b { font-weight: 800; }
+.day i {
+  position: absolute; bottom: 2px; left: 50%; transform: translateX(-50%);
+  width: 4px; height: 4px; border-radius: 50%; background: var(--rose);
+}
+.day.picked b { box-shadow: inset 0 0 0 1.5px var(--rose); color: var(--rose); }
+.day.today b { background: var(--rose); color: var(--on-rose); box-shadow: none; font-weight: 800; }
+.day.out { pointer-events: none; }
+/* 기록이 없는 달과 안 나온 달은 다르다. 빈 달력을 말없이 그리면 회원은 그때
+   안 나온 것으로 읽는다. */
+.edge { margin-top: 10px; text-align: center; font-size: var(--t-caption); color: var(--faint); }
+.tally { margin-top: 8px; text-align: right; font-size: var(--t-caption); color: var(--sub); padding: 0 4px; }
+
+/* 칸 제목 + 오른쪽 "전체보기 ›" */
+.sechead { display: flex; align-items: center; justify-content: space-between; margin: 6px 2px 10px; }
+.sechead p { font-size: var(--t-title); font-weight: 800; letter-spacing: -.01em; }
+.sechead button {
+  min-height: 36px; padding: 0 2px; border: 0; background: none;
+  color: var(--sub); font-family: inherit; font-size: var(--t-caption);
+}
+.stack.tight > * + * { margin-top: 10px; }
+
+/* 수업 카드. 왼쪽 핑크 띠 · 시각 · 아이콘 · 이름과 태그 · 화살표. */
+.lesson {
+  width: 100%; display: flex; align-items: center; gap: 12px;
+  padding: 16px 14px 16px 18px; border: 0; border-radius: 16px;
+  background: var(--card); box-shadow: var(--shadow), inset 4px 0 0 var(--rose);
+  color: var(--ink); font-family: inherit; text-align: left;
+}
+.lesson .time { font-size: var(--t-title); font-weight: 800; min-width: 48px; }
+.lesson .icon {
+  flex-shrink: 0; width: 34px; height: 34px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--card-tone); color: var(--rose);
+}
+.lesson .icon svg { width: 18px; height: 18px; }
+.lesson .what { flex: 1; min-width: 0; }
+.lesson .what b { display: block; font-size: var(--t-body); font-weight: 700; }
+.lesson .tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.lesson .tags i {
+  font-style: normal; font-size: 11px; color: var(--sub);
+  padding: 3px 8px; border-radius: 999px; background: var(--card-tone);
+}
+.lesson .chev { color: var(--faint); font-size: 20px; }
+
+/* 내 회원권 — 남은 횟수 칩 */
+.left .lefthead { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.left .cap { font-size: var(--t-caption); color: var(--sub); font-weight: 700; }
+.left .until { font-size: var(--t-caption); color: var(--sub); }
+.left .name { margin-top: 8px; font-size: var(--t-body); font-weight: 700; }
+.left .chipline { margin-top: 12px; }
+.left .chip { display: inline-flex; align-items: center; min-height: 36px; font-size: var(--t-body); }
+
+.me .name { font-size: var(--t-title); font-weight: 800; }
 
 .rowcard { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
 
 /* ── 회원권 ────────────────────────────────────────────────────────── */
 
-.title { padding: 10px 0 18px; font-size: var(--t-heading); }
+.title { padding: 6px 0 14px; font-size: var(--t-heading); font-weight: 800; letter-spacing: -.02em; }
 .group { margin: 4px 0 10px; font-size: var(--t-caption); color: var(--sub); letter-spacing: .08em; }
 .stack .group:not(:first-child) { margin-top: 24px; }
 .pass .name { font-size: var(--t-body); font-weight: 600; letter-spacing: -.01em; }
-.pass .rem { font-size: var(--t-display); color: var(--rose); letter-spacing: -.02em; }
+.pass .rem { font-size: var(--t-display); font-weight: 800; color: var(--rose); letter-spacing: -.02em; }
 .pass .rem span { font-size: var(--t-caption); margin-left: 2px; }
 .pass .meta { margin-top: 6px; font-size: var(--t-caption); color: var(--sub); line-height: 1.6; }
 .pass .meta b { color: var(--ink); font-weight: 600; }
@@ -195,6 +247,7 @@ body {
 /* ── 수업 ──────────────────────────────────────────────────────────── */
 
 .count { font-size: var(--t-caption); color: var(--sub); margin-bottom: 16px; }
+.count b { color: var(--rose); font-weight: 800; }
 .timeline > li { position: relative; display: flex; align-items: flex-start; gap: 14px; padding-bottom: 22px; }
 .timeline > li::before {
   content: "";
@@ -207,7 +260,7 @@ body {
 .timeline > li:last-child::before { display: none; }
 .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--rose); margin-top: 6px; flex-shrink: 0; opacity: .85; }
 .timeline .body { flex: 1; }
-.timeline .when { font-size: var(--t-title); }
+.timeline .when { font-size: var(--t-body); font-weight: 800; }
 .timeline .when em { font-style: normal; font-size: var(--t-caption); color: var(--faint); margin-left: 6px; }
 .timeline .who { margin-top: 4px; font-size: var(--t-caption); color: var(--sub); }
 .timeline .one { font-size: var(--t-caption); color: var(--faint); margin-top: 6px; }
@@ -219,6 +272,7 @@ body {
   border-radius: 12px;
   background: var(--card);
   box-shadow: var(--shadow);
+  border-left: 3px solid var(--ring);
   font-size: var(--t-body);
   line-height: 1.75;
   color: var(--ink);
@@ -229,77 +283,16 @@ body {
 
 /* 빈 상태도 일러스트 없이. 여백이 문구를 받쳐 준다. */
 .empty { padding: 96px 0 0; text-align: center; }
-.empty .big { font-size: var(--t-display); line-height: 1.7; }
+.empty .big { font-size: var(--t-display); font-weight: 800; line-height: 1.6; }
 .empty .sub { margin-top: 20px; font-size: var(--t-caption); color: var(--sub); line-height: 1.9; }
 
-/* ── 더보기 ────────────────────────────────────────────────────────── */
+/* ── 마이페이지 ────────────────────────────────────────────────────── */
 
-/* 앱에 옮기기 전의 수업은 날짜가 없어 달력에 그릴 수 없다. 한 줄로만 남긴다. */
-.total { text-align: center; font-size: var(--t-caption); color: var(--sub); padding: 6px 0 0; }
-.total b { color: var(--ink); font-weight: 600; }
-
-.calhead { display: flex; align-items: center; justify-content: space-between; padding: 0 0 14px; }
-.calhead .mon { font-size: var(--t-title); letter-spacing: -.01em; }
-.calhead .arrows { display: flex; gap: 2px; }
-.calhead button {
-  width: 36px; height: 36px; border: 0; border-radius: 50%;
-  background: transparent; color: var(--faint);
-  font-family: inherit; font-size: 15px;
-}
-.calhead button:disabled { opacity: .3; }
-
-.dow { display: grid; grid-template-columns: repeat(7, 1fr); margin-bottom: 4px; }
-.dow span { text-align: center; font-size: 11px; color: var(--faint); letter-spacing: .04em; }
-
-.grid { display: grid; grid-template-columns: repeat(7, 1fr); row-gap: 2px; }
-.day { position: relative; height: 42px; display: flex; align-items: center; justify-content: center; }
-/* 나온 날. 점이 아니라 원이라야 한 달 치가 한눈에 리듬으로 읽힌다. */
-.day i { position: absolute; width: 32px; height: 32px; border-radius: 50%; background: var(--rose); opacity: .14; }
-.day b { position: relative; font-size: 13px; font-weight: 400; color: var(--sub); font-variant-numeric: tabular-nums; }
-.day.on b { color: var(--rose); font-weight: 700; }
-.day.today::after {
-  content: ""; position: absolute; bottom: 4px;
-  width: 3px; height: 3px; border-radius: 50%; background: var(--faint);
-}
-.day.out b { color: transparent; }
-
-/* 기록이 없는 달과 안 나온 달은 다르다. 빈 달력을 말없이 그리면 회원은 그때
-   안 나온 것으로 읽는다. */
-.edge { margin-top: 14px; text-align: center; font-size: var(--t-caption); color: var(--faint); }
-
-.rhythm { display: flex; align-items: baseline; justify-content: center; gap: 10px; padding-top: 14px; }
-.rhythm .big { font-size: var(--t-display); color: var(--rose); letter-spacing: -.02em; }
-.rhythm .big span { font-size: var(--t-caption); margin-left: 2px; }
-.rhythm .prev { font-size: var(--t-caption); color: var(--faint); }
-
-.since { text-align: center; padding-top: 2px; }
-.since .a { font-size: var(--t-body); color: var(--rose); line-height: 1.7; }
-/* 쉬고 있는 사람에게는 로즈로 외치지 않는다. 사실만 조용히 놓는다. */
-.since .a.quiet { color: var(--sub); }
-.since .b { margin-top: 8px; font-size: var(--t-caption); color: var(--faint); line-height: 1.7; }
-
-/* 최근 여섯 달. 빈도가 줄고 있으면 여기서 먼저 보인다 -- 사람은 "지난달보다
-   줄었다" 를 문장보다 모양으로 먼저 안다. */
-.barwrap .cap { text-align: center; font-size: var(--t-caption); color: var(--sub); letter-spacing: .06em; margin-bottom: 14px; }
-.bars { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; height: 74px; }
-.bar { flex: 1; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; }
-.bar u { display: block; width: 100%; max-width: 30px; border-radius: 5px 5px 0 0; background: var(--mile-off); }
-.bar.on u { background: var(--rose); opacity: .55; }
-/* 이번 달만 또렷하게. 지금 어디에 서 있는지가 이 카드의 요점이다. */
-.bar.last u { opacity: 1; }
-.bar em { font-style: normal; margin-top: 8px; font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
-
-.know .cap { font-size: var(--t-caption); color: var(--rose); letter-spacing: .06em; }
-.know p + p { margin-top: 10px; font-size: var(--t-body); line-height: 1.75; color: var(--sub); }
-
-/* 의견 보내기. 구석의 작은 알약이 아니라 카드 한 장이다 -- 이 탭에서 회원이
-   할 수 있는 단 하나의 행동이라 그만한 자리를 준다.
-
-   맨 아래인 것도 뜻이 있다: 달력을 다 보고 내려온 사람이 마지막에 만나는
-   자리가 말이 나오는 자리다. */
+/* 의견 보내기. 구석의 작은 알약이 아니라 카드 한 장이다 -- 회원이 센터에 말을
+   거는 자리라 그만한 자리를 준다. */
 .say .cap { font-size: var(--t-caption); color: var(--rose); letter-spacing: .06em; }
 .say p { margin-top: 10px; font-size: var(--t-body); line-height: 1.75; color: var(--sub); word-break: keep-all; }
-/* 꽉 찬 로즈로 두지 않는다. 이 탭의 주인공은 달력이다. */
+/* 꽉 찬 핑크로 두지 않는다. 행동은 하나여도 소리칠 일은 아니다. */
 .say .btn {
   margin-top: 16px;
   display: flex; align-items: center; justify-content: center; gap: 6px;
@@ -369,7 +362,7 @@ body {
   /* 아이폰 하단 안전 영역 위로 띄운다. */
   bottom: calc(18px + env(safe-area-inset-bottom, 0px));
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   align-items: center;
   height: 64px;
   border-radius: 22px;

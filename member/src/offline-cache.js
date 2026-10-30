@@ -48,7 +48,7 @@ export const CACHED_PASS_FIELDS = Object.freeze([
 ]);
 
 export const CACHED_HISTORY_FIELDS = Object.freeze([
-  "occurredAt", "type", "instructorName", "memberNote",
+  "occurredAt", "type", "lessonType", "instructorName", "memberNote",
 ]);
 
 /**

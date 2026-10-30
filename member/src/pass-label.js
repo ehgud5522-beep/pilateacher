@@ -41,15 +41,25 @@ export function lessonTypeOf(pass) {
   return pass?.isDuet ? LESSON_TYPE.DUET : LESSON_TYPE.OTHER;
 }
 
+/**
+ * 수업 한 번의 이름. "1:1 필라테스 수업" · "디오사 프로그램".
+ *
+ * 수강권 카드와 수업 카드(홈 · 수업기록)가 같은 말을 쓴다 -- 한쪽만 "PT" 라고
+ * 부르면 회원은 다른 수업으로 읽는다. 그룹 표기는 없다 (2026-10-30).
+ *
+ * @param {{ lessonType?: string, isDuet?: boolean }} source 회원권이나 이력 한 줄
+ */
+export function lessonName(source) {
+  const type = lessonTypeOf(source);
+  if (type === LESSON_TYPE.DIOSA) return "디오사 프로그램";
+  if (type === LESSON_TYPE.SOLO || type === LESSON_TYPE.DUET) return `${type} 필라테스 수업`;
+  return "필라테스 수업";
+}
+
 /** "1:1 필라테스 수업 10회". 유상 횟수가 0 이면 횟수를 붙이지 않는다. */
 export function passTitle(pass) {
-  const type = lessonTypeOf(pass);
   const paid = count(pass?.totalSessions);
-  const base = type === LESSON_TYPE.DIOSA
-    ? "디오사 프로그램"
-    : type === LESSON_TYPE.SOLO || type === LESSON_TYPE.DUET
-      ? `${type} 필라테스 수업`
-      : "필라테스 수업";
+  const base = lessonName(pass);
   return paid ? `${base} ${paid}회` : base;
 }
 

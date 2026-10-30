@@ -89,6 +89,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "일정 탭 · 소속 · 시작 전",
     "일정 탭 · 소속 · 시작 전 · 실패 기록",
     "일정 탭 · 소속 · 회원에게 보낼 말",
+    "일정 탭 · 소속 · 회원에게 보낼 말 · 연결 안 됨",
     "일정 탭 · 소속 · 회원에게 보낼 말 · 확정됨",
     "일정 탭 · 소속 · 확정됨 · 대표",
     "일정 탭 · 개인 모드 · 확정 없음",
@@ -2020,6 +2021,21 @@ test("the note says when the member will actually see it", async (t) => {
   const after = markupOf("일정 탭 · 소속 · 회원에게 보낼 말 · 확정됨");
   assert.match(after, /회원 앱의 수업 탭에 이 수업과 함께 보입니다/);
   assert.doesNotMatch(after, /확정해 회원권이 차감되면/);
+});
+
+test("the note says up front that the member will read it", async (t) => {
+  /* 수업기록 칸 바로 옆이라 강사끼리 쓰는 말을 여기 적기 쉽다. 쓰기 전에 말한다. */
+  const markupOf = await issueScreens(t);
+  assert.match(markupOf("일정 탭 · 소속 · 회원에게 보낼 말"), /이 내용은 회원에게 보입니다/);
+});
+
+test("a member not linked to the centre gets no note box, and the sheet says why", async (t) => {
+  /* 기기 명부에만 있는 회원은 회원 앱이 없다. 칸을 열어 두면 강사는 쓰고 나서
+     아무 데도 가지 않은 것을 나중에 안다. */
+  const markupOf = await issueScreens(t);
+  const sheet = markupOf("일정 탭 · 소속 · 회원에게 보낼 말 · 연결 안 됨");
+  assert.match(sheet, /센터 회원과 연결되지 않아 회원 앱으로 보낼 수 없어요/);
+  assert.doesNotMatch(sheet, /이 내용은 회원에게 보입니다/);
 });
 
 test("the note is not offered where there is no member app", async (t) => {

@@ -23,6 +23,7 @@ import { diagnosticsText } from "./diagnostics.js";
 import { isUsablePass, passCardList, remainingSplit } from "../../src/features/membership/pass-cards.js";
 /* 수강권 이름은 상품명이 아니라 수업 유형과 횟수로 짓는다 (pass-label.js). */
 import { passLabel, passTitle, serviceLabel } from "./pass-label.js";
+import { homeSummary } from "./home-summary.js";
 
 /**
  * 의견을 받는 곳. 링크 하나다.
@@ -110,13 +111,13 @@ function Ring({ remaining, total }) {
 /* ── 홈 ──────────────────────────────────────────────────────────────── */
 
 export function Home({ view, now = new Date() }) {
-  const remaining = count(view?.remainingTotal);
-  const left = daysUntil(view?.nextExpiresAt, now);
+  /* 이름 · 날짜 · 링이 서로 다른 회원권에서 오지 않게 한 곳에서 고른다
+     (home-summary.js). */
+  const summary = homeSummary(view, isUsable, now);
+  const { front, remaining } = summary;
+  const total = summary.ringTotal;
+  const left = daysUntil(summary.expiresAt, now);
   const ended = text(view?.clientStatus) === "ended";
-  const passes = Array.isArray(view?.passes) ? view.passes : [];
-  const using = passes.filter((pass) => isUsable(pass, now));
-  const front = using[0] || passes[0] || null;
-  const total = front ? count(front.totalSessions) + count(front.serviceSessions) : 0;
   /* 누적 횟수는 더보기 탭 맨 위 한 줄이 말한다. 홈에도 두면 같은 숫자가 두 번
      나오고, 홈의 주인공은 남은 횟수여야 한다. */
   const history = Array.isArray(view?.history) ? view.history : [];
@@ -140,8 +141,12 @@ export function Home({ view, now = new Date() }) {
         {total > 0 ? <Ring remaining={remaining} total={total} /> : null}
         <p className="cap">남은 횟수</p>
         <p className="big serif num">{remaining}<span>회</span></p>
-        {front ? <p className="name">{passLabel(front)}</p> : null}
-        {view?.nextExpiresAt ? <p className="until num">{dateLabel(view.nextExpiresAt)}까지</p> : null}
+        {front ? (
+          <p className="name">
+            {passLabel(front)}{summary.others ? <span className="muted"> 외 {summary.others}장</span> : null}
+          </p>
+        ) : null}
+        {summary.expiresAt ? <p className="until num">{dateLabel(summary.expiresAt)}까지</p> : null}
       </section>
 
       <Card>

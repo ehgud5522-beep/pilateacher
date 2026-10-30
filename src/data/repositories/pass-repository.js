@@ -703,6 +703,10 @@ export async function deductPass(organizationId, pass, input, options = {}) {
     instructorId,
     startsAt: occurredAt,
     status: LESSON_STATUS.COMPLETED,
+    /* 어느 회원권에서 뺐는가 (2026-10-31). 규칙이 이것으로 같은 배치의 원장 항목
+       ({lessonId}_deduct)을 찾는다 -- "완료" 는 실제 차감과 함께일 때만 받는다.
+       듀엣에서 회원권이 둘이면 두 번째 확정이 덮지만, 그 배치에도 자기 항목이 있다. */
+    settledPassId: passId,
     createdAt: stampedAt,
     createdBy,
   };

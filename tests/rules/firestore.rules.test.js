@@ -3748,22 +3748,24 @@ describe("checking attendance against a pass", () => {
   });
 
   test("the lesson a deduction points at can be created by whoever taught it", async () => {
-    await assertSucceeds(setDoc(
-      doc(dbFor(users.instructor), "organizations", ORG_A, COLLECTIONS.LESSONS, "lesson-attendance"),
-      {
-        organizationId: ORG_A, lessonId: "lesson-attendance", clientId: "client-member",
-        locationId: "location-a", instructorId: users.instructor,
-        startsAt: hoursAgo(2), status: "completed",
-        createdAt: serverTimestamp(), createdBy: users.instructor,
-      },
-    ));
-    await assertSucceeds(setDoc(
-      doc(dbFor(users.instructor), "organizations", ORG_A, COLLECTIONS.LESSONS, "lesson-attendance", COLLECTIONS.PARTICIPANTS, "client-member"),
-      {
-        organizationId: ORG_A, lessonId: "lesson-attendance",
-        clientId: "client-member", attendanceStatus: "attended",
-      },
-    ));
+    /* 확정의 배치 그대로 -- 수업 문서와 참석 문서가 한 배치다 (스토어 1.1.43 모양).
+       2026-10-31 부터 "완료" 수업 문서는 혼자서는 만들 수 없다: 실제 차감 없이 완료로
+       바꾸는 길이 되기 때문이다. */
+    const db = dbFor(users.instructor);
+    const lessonBody = {
+      organizationId: ORG_A, lessonId: "lesson-attendance", clientId: "client-member",
+      locationId: "location-a", instructorId: users.instructor,
+      startsAt: hoursAgo(2), status: "completed",
+      createdAt: serverTimestamp(), createdBy: users.instructor,
+    };
+    await assertFails(setDoc(doc(db, "organizations", ORG_A, COLLECTIONS.LESSONS, "lesson-attendance"), lessonBody));
+    const batch = writeBatch(db);
+    batch.set(doc(db, "organizations", ORG_A, COLLECTIONS.LESSONS, "lesson-attendance"), lessonBody);
+    batch.set(doc(db, "organizations", ORG_A, COLLECTIONS.LESSONS, "lesson-attendance", COLLECTIONS.PARTICIPANTS, "client-member"), {
+      organizationId: ORG_A, lessonId: "lesson-attendance",
+      clientId: "client-member", attendanceStatus: "attended",
+    });
+    await assertSucceeds(batch.commit());
   });
 
   test("a pass is issued with the base its deductions will start from", async () => {
@@ -5547,12 +5549,50 @@ describe("store app 1.1.43 settlement — still allowed after the revision rule"
     await setDoc(doc(context.firestore(), "organizations", ORG_A, "lessons", lessonId), data);
   });
 
+  /* 1.1.43 의 확정 배치에서 lessons 에 닿는 두 줄: 수업 문서(통째로 덮기) + 참석 문서. */
+  const storeAppBatch = (lessonId, body = storeAppLesson(lessonId)) => {
+    const db = dbFor(ME);
+    const batch = writeBatch(db);
+    batch.set(doc(db, "organizations", ORG_A, "lessons", lessonId), body);
+    batch.set(doc(db, "organizations", ORG_A, "lessons", lessonId, "participants", "client-member"), {
+      organizationId: ORG_A, lessonId, clientId: "client-member", attendanceStatus: "attended",
+    });
+    return batch.commit();
+  };
+
   test("새 문서 · 번호 없는 문서 · 웹이 번호를 붙인 예정 문서 — 모두 덮어 확정한다", async () => {
-    await assertSucceeds(setDoc(doc(dbFor(ME), "organizations", ORG_A, "lessons", "store-new"), storeAppLesson("store-new")));
+    await assertSucceeds(storeAppBatch("store-new"));
     await seed("store-old", { organizationId: ORG_A, status: "scheduled", clientIds: ["client-member"] });
-    await assertSucceeds(setDoc(doc(dbFor(ME), "organizations", ORG_A, "lessons", "store-old"), storeAppLesson("store-old")));
+    await assertSucceeds(storeAppBatch("store-old"));
     await seed("store-rev", { organizationId: ORG_A, status: "scheduled", clientIds: ["client-member"], revision: 4 });
-    await assertSucceeds(setDoc(doc(dbFor(ME), "organizations", ORG_A, "lessons", "store-rev"), storeAppLesson("store-rev")));
+    await assertSucceeds(storeAppBatch("store-rev"));
+  });
+
+  test("완료로 바꾸는 다른 길은 막힌다 — 같은 배치에 실제 확정이 없으면", async () => {
+    const ref = (id) => doc(dbFor(ME), "organizations", ORG_A, "lessons", id);
+    await seed("bypass", { organizationId: ORG_A, status: "scheduled", clientIds: ["client-member"], revision: 4 });
+    // R1 번호를 그대로 두고 완료만 합쳐 쓰기 (새 코드 모양, 원장 없음)
+    await assertFails(setDoc(ref("bypass"), { status: "completed" }, { merge: true }));
+    // R2 회원권을 가리키지만 같은 배치에 원장 항목이 없다
+    await assertFails(setDoc(ref("bypass"), { status: "completed", settledPassId: PASS_A }, { merge: true }));
+    // R3 이미 있던 원장 항목을 가리킨다 (새로 생긴 차감이 아니다)
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "organizations", ORG_A, "passes", PASS_A, "ledger", "bypass_deduct"), ledgerFixture(ORG_A, PASS_A, { lessonId: "bypass" }));
+    });
+    await assertFails(setDoc(ref("bypass"), { status: "completed", settledPassId: PASS_A }, { merge: true }));
+    // R4 1.1.43 모양이지만 같은 배치에 참석 문서가 없다
+    await assertFails(setDoc(ref("bypass"), storeAppLesson("bypass")));
+    // R5 1.1.43 모양에 다른 칸을 얹었다
+    await assertFails(storeAppBatch("bypass", { ...storeAppLesson("bypass"), room: "x" }));
+    // R6 이미 참석 문서가 있는 수업(이미 확정됐던)을 1.1.43 모양으로 다시 완료로
+    await seed("bypass-again", { organizationId: ORG_A, status: "scheduled", clientIds: ["client-member"], revision: 2 });
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "organizations", ORG_A, "lessons", "bypass-again", "participants", "client-member"), {
+        organizationId: ORG_A, lessonId: "bypass-again", clientId: "client-member", attendanceStatus: "attended",
+      });
+    });
+    await assertFails(setDoc(ref("bypass-again"), storeAppLesson("bypass-again")));
+    assert.equal((await (async () => { let v; await testEnv.withSecurityRulesDisabled(async (c) => { v = (await getDoc(doc(c.firestore(), "organizations", ORG_A, "lessons", "bypass"))).data(); }); return v; })()).status, "scheduled");
   });
 
   test("그래도 번호 없는 예정 쓰기(옛 탭)와 번호를 바꾸는 확정은 거절된다", async () => {

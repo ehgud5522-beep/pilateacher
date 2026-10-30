@@ -135,6 +135,8 @@ import {
 import {
   MEMBER_NOTE_MAX, memberNoteReadFailure, memberNoteSaveFailure, readCentreLessons, readMemberNote, saveMemberNote,
 } from "./data/repositories/member-note-repository.js";
+import { PUBLISH_OUTCOME, publishScheduledLessons } from "./data/repositories/lesson-schedule-repository.js";
+import { scheduleChanges } from "./features/schedule/schedule-publish.js";
 import {
   createProduct, listProducts, productBaseUnitPrice, setProductStatus,
 } from "./data/repositories/product-repository.js";
@@ -27264,6 +27266,10 @@ export default function App() {
     [db, roster],
   );
   const rosterMembers = rosterDb.members;
+  /* 일정을 센터 서버에 보낼 때 쓰는 명부. 저장 콜백이 옛 명부를 붙들지 않게
+     ref 로 읽는다 -- 센터 회원 id(orgClientId)는 이 명부에만 있다. */
+  const rosterMembersRef = useRef(rosterMembers);
+  rosterMembersRef.current = rosterMembers;
   /* 화면이 건네는 id 로 회원을 찾는다.
 
      db.members 에서 찾으면 안 된다. 조직에만 있는 회원은 id 가 조직 clientId 이고
@@ -28545,6 +28551,42 @@ export default function App() {
     refreshPendingWrites();
   }, [findRosterMember, refreshPendingWrites]);
 
+  /* 회원 앱에 보내지 못한 일정. 다음 저장 때 함께 다시 보낸다 -- 바뀐 것만
+     보내므로, 여기 남겨 두지 않으면 한 번 실패한 일정은 다시 고치기 전까지
+     회원 화면에 영영 안 맞는다. 기기를 껐다 켜면 비는 것은 받아들인다: 그때는
+     강사가 그 일정을 다시 열어 저장하면 된다. */
+  const unpublishedLessonsRef = useRef(new Map());
+  /* 일정 → 센터 서버 (schedule-publish.js). 기기 저장이 끝난 뒤 뒤에서 돈다 --
+     서버가 늦어도 강사 화면은 기다리지 않는다. */
+  const publishSchedule = useCallback(async (before, after) => {
+    if (!organizationRoster || !organizationContext.organizationId || !account?.id) return;
+    const changed = scheduleChanges({
+      before, after, members: rosterMembersRef.current,
+      organizationId: organizationContext.organizationId, instructorId: account.id,
+    });
+    const queue = new Map(unpublishedLessonsRef.current);
+    for (const document of changed) queue.set(document.lessonId, document);
+    if (!queue.size) return;
+    unpublishedLessonsRef.current = new Map();
+    const results = await publishScheduledLessons(organizationContext.organizationId, [...queue.values()], {
+      createdBy: account.id,
+    });
+    const failed = results.filter((result) => result.outcome === PUBLISH_OUTCOME.FAILED);
+    for (const result of failed) {
+      unpublishedLessonsRef.current.set(result.lessonId, queue.get(result.lessonId));
+      deviceLog("schedule_publish_failed", {
+        feature: "schedule_publish", stage: "write", errorDomain: "firestore",
+        errorCode: result.errorCode, lessonId: result.lessonId,
+      });
+    }
+    if (failed.length) {
+      setToast({
+        ok: false,
+        msg: `일정을 회원 앱에 아직 보내지 못했어요. 다음 저장 때 다시 보냅니다. (코드 ${failed[0].errorCode})`,
+      });
+    }
+  }, [organizationRoster, organizationContext.organizationId, account?.id]);
+
   const saveDb = useCallback(async (next, dualWrite) => {
     if (accountDeletionInFlight.current) return false;
     const prev = lessonRecordDbRef.current;
@@ -28565,10 +28607,37 @@ export default function App() {
            강사는 저장된 것으로 알았다 -- 그 침묵이 이 코드가 생긴 이유다. */
         reportSecondaryWrite(outcome, dualWrite);
       } else await legacyWrite();
+      /* 일정이 바뀌었으면 회원 앱에도 보낸다. 등록 · 수정 · 삭제 · 취소가 모두
+         여기를 지난다 -- 버튼마다 따로 부르면 한 군데는 빠진다. */
+      if (prev?.schedule !== next?.schedule) {
+        publishSchedule(prev?.schedule, next?.schedule).catch((error) => {
+          deviceLog("schedule_publish_failed", {
+            feature: "schedule_publish", stage: "prepare", errorDomain: "app", ...deviceError(error),
+          });
+        });
+      }
       return true;
     }
     catch (e) { lessonRecordDbRef.current = prev; setDb(prev); deviceLog("app_data_save_failed", { storage: "localStorage", operation: dualWrite?.operation || "legacy_write", ...deviceError(e) }); setToast({ ok: false, msg: "저장하지 못했습니다. 방금 입력한 내용을 다시 확인해 주세요." }); return false; }
-  }, [account, queueCloud]);
+  }, [account, queueCloud, publishSchedule]);
+
+  /* 앱을 열었을 때 한 번, 오늘부터의 일정을 센터 서버에 맞춘다. 이 기능이
+     생기기 전에 잡아 둔 일정과, 다른 기기에서 고친 일정이 회원 앱에 나타나게
+     하는 자리다. 서버와 같은 문서는 쓰지 않는다(lesson-schedule-repository.js)
+     -- 열 때마다 회원 데이터를 다시 만들지 않게. 명부가 온 뒤에만 돈다: 센터
+     회원 id 가 명부에만 있다. */
+  const initialSchedulePublishRef = useRef(false);
+  useEffect(() => {
+    if (initialSchedulePublishRef.current || !organizationRoster || !roster || !account?.id) return;
+    initialSchedulePublishRef.current = true;
+    const today = todayISO();
+    const upcoming = (db.schedule || []).filter((entry) => String(entry?.date || "") >= today);
+    publishSchedule([], upcoming).catch((error) => {
+      deviceLog("schedule_publish_failed", {
+        feature: "schedule_publish", stage: "initial", errorDomain: "app", ...deviceError(error),
+      });
+    });
+  }, [organizationRoster, roster, account?.id, publishSchedule, db.schedule]);
 
   const resolveLessonRecordLink = useCallback(async ({ memberId, lessonId } = {}) => {
     const current = evaluateLessonRecordLink({ members: db.members, schedule: db.schedule, memberId, lessonId });

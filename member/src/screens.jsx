@@ -145,13 +145,13 @@ export function attendedDates(history) {
  *
  * @returns {Array<{ key: string, day: number, date: Date | null, blank: boolean, attended: boolean, today: boolean }>}
  */
-export function monthCells(year, month, dates, now = new Date()) {
+export function monthCells(year, month, dates, now = new Date(), plannedDates = []) {
   const first = new Date(year, month, 1);
   const lead = (first.getDay() - WEEK_START + 7) % 7;
   const days = new Date(year, month + 1, 0).getDate();
   const cells = [];
   for (let index = 0; index < lead; index += 1) {
-    cells.push({ key: `blank-${index}`, day: 0, date: null, blank: true, attended: false, today: false });
+    cells.push({ key: `blank-${index}`, day: 0, date: null, blank: true, attended: false, planned: false, today: false });
   }
   for (let day = 1; day <= days; day += 1) {
     const at = new Date(year, month, day);
@@ -161,6 +161,7 @@ export function monthCells(year, month, dates, now = new Date()) {
       date: at,
       blank: false,
       attended: dates.some((date) => sameDay(date, at)),
+      planned: plannedDates.some((date) => sameDay(date, at)),
       today: sameDay(at, now),
     });
   }
@@ -183,19 +184,38 @@ export function historyEdge(dates, history) {
   return { oldest, capped };
 }
 
-/**
- * 그날의 수업. 이른 시각부터.
- *
- * 지금은 받은 수업(차감 이력)뿐이다. 강사가 잡은 **예정 수업**은 아직 회원
- * 데이터에 없다 -- 강사 앱 일정이 센터 서버에 오는 단계(개편 3단계)에서 여기에
- * 더해진다. 그래서 오늘 칸의 빈 문구도 "예정된 수업이 없어요" 라고 하지 않는다:
- * 모르는 것을 없다고 말하게 된다.
- */
+/** 그날 받은 수업(차감 이력). 이른 시각부터. */
 export function lessonsOn(history, day) {
   return (Array.isArray(history) ? history : [])
     .filter((row) => text(row?.type) === ATTENDED_TYPE && sameDay(toDate(row?.occurredAt), day))
     .sort((left, right) => toDate(left.occurredAt) - toDate(right.occurredAt));
 }
+
+/** 예정 수업이 있는 날들 (2026-10-30, 강사 일정이 센터 서버로 온다). */
+export function plannedDates(schedule) {
+  return (Array.isArray(schedule) ? schedule : [])
+    .map((lesson) => atMidnight(lesson?.startsAt))
+    .filter(Boolean);
+}
+
+/**
+ * 그날의 수업 -- 예정과 받은 것을 한 줄로, 이른 시각부터.
+ *
+ * 예정 수업은 강사가 일정을 등록 · 수정 · 취소하면 곧바로 회원 데이터에 들어온다
+ * (functions/src/member-view.js 의 schedule). 확정하면 예정에서 빠지고 받은
+ * 수업(이력)으로 들어오므로 한 수업이 두 번 서지 않는다. 취소된 수업은 목록에서
+ * 사라진다 -- "취소됨" 을 따로 그리지 않는다.
+ */
+export function dayLessons(view, day) {
+  const planned = (Array.isArray(view?.schedule) ? view.schedule : [])
+    .filter((lesson) => sameDay(toDate(lesson?.startsAt), day))
+    .map((lesson) => ({ ...lesson, when: lesson.startsAt, planned: true }));
+  const done = lessonsOn(view?.history, day).map((row) => ({ ...row, when: row.occurredAt, planned: false }));
+  return [...planned, ...done].sort((left, right) => toDate(left.when) - toDate(right.when));
+}
+
+/** 회원 데이터에 예정 수업이 실려 오는가. 옛 문서(서버가 다시 만들기 전)에는 없다. */
+export const knowsSchedule = (view) => Array.isArray(view?.schedule);
 
 /** "19:00". 시각을 모르는 옛 기록(자정)은 빈 문자열 -- 지어낸 시각을 쓰지 않는다. */
 export function timeLabel(value) {
@@ -237,16 +257,17 @@ const LessonIcon = () => (
 
 /** 수업 한 건 카드. 시각 · 수업 이름 · 강사 · 지점. 그룹 표기는 없다. */
 function LessonCard({ row, location, onOpen }) {
-  const time = timeLabel(row.occurredAt);
+  const when = row.when || row.occurredAt;
+  const time = timeLabel(when);
   return (
-    <button type="button" className="lesson" onClick={onOpen}>
-      <span className="time num">{time || dayLabel(row.occurredAt)}</span>
+    <button type="button" className={`lesson${row.planned ? " planned" : ""}`} onClick={onOpen}>
+      <span className="time num">{time || dayLabel(when)}</span>
       <span className="icon"><LessonIcon /></span>
       <span className="what">
         <b>{lessonName(row)}</b>
         <span className="tags">
           {text(row.instructorName) ? <i>{text(row.instructorName)} 강사</i> : null}
-          {text(location) ? <i>{text(location)}</i> : null}
+          {text(row.locationName || location) ? <i>{text(row.locationName || location)}</i> : null}
         </span>
       </span>
       {onOpen ? <span className="chev" aria-hidden="true">›</span> : null}
@@ -299,12 +320,18 @@ const HISTORY_LABEL = {
 export function Home({ view, now = new Date(), monthsBack = 0, onOpenRecords }) {
   const history = Array.isArray(view?.history) ? view.history : [];
   const dates = useMemo(() => attendedDates(history), [history]);
+  const planned = useMemo(() => plannedDates(view?.schedule), [view?.schedule]);
+  /* 예정 수업이 있는 달까지는 앞으로 넘길 수 있다. back 이 음수면 앞달이다. */
+  const lastPlanned = planned.length ? planned.reduce((a, b) => (a > b ? a : b)) : null;
+  const ahead = lastPlanned
+    ? Math.max(0, (lastPlanned.getFullYear() - now.getFullYear()) * 12 + lastPlanned.getMonth() - now.getMonth())
+    : 0;
   const [back, setBack] = useState(monthsBack);
   const [picked, setPicked] = useState(null);
   const shown = new Date(now.getFullYear(), now.getMonth() - back, 1);
   const year = shown.getFullYear();
   const month = shown.getMonth();
-  const cells = useMemo(() => monthCells(year, month, dates, now), [year, month, dates, now]);
+  const cells = useMemo(() => monthCells(year, month, dates, now, planned), [year, month, dates, now, planned]);
   const { oldest, capped } = historyEdge(dates, history);
   const edge = capped && oldest && year === oldest.getFullYear() && month === oldest.getMonth();
   /* 가장 오래된 기록보다 더 앞은 볼 것이 없다. 기록이 아예 없으면 이번 달에
@@ -314,7 +341,7 @@ export function Home({ view, now = new Date(), monthsBack = 0, onOpenRecords }) 
 
   const selected = picked || atMidnight(now);
   const isToday = sameDay(selected, now);
-  const dayLessons = lessonsOn(history, selected);
+  const lessonsThatDay = dayLessons(view, selected);
 
   const summary = homeSummary(view, isUsable, now);
   const left = daysUntil(summary.expiresAt, now);
@@ -342,20 +369,20 @@ export function Home({ view, now = new Date(), monthsBack = 0, onOpenRecords }) 
           <div className="arrows">
             <button type="button" aria-label="이전 달" disabled={!canGoBack}
               onClick={() => setBack((value) => value + 1)}>‹</button>
-            <button type="button" aria-label="다음 달" disabled={back === 0}
-              onClick={() => setBack((value) => Math.max(0, value - 1))}>›</button>
+            <button type="button" aria-label="다음 달" disabled={back <= -ahead}
+              onClick={() => setBack((value) => Math.max(-ahead, value - 1))}>›</button>
           </div>
         </div>
         <div className="dow">{DOW.map((day) => <span key={day}>{day}</span>)}</div>
         <div className="grid">
           {cells.map((cell) => (cell.blank ? <span key={cell.key} className="day out" /> : (
             <button key={cell.key} type="button"
-              aria-label={`${month + 1}월 ${cell.day}일${cell.attended ? " · 수업 있음" : ""}`}
+              aria-label={`${month + 1}월 ${cell.day}일${cell.attended ? " · 수업 있음" : cell.planned ? " · 수업 예정" : ""}`}
               aria-pressed={sameDay(cell.date, selected)}
-              className={`day${cell.attended ? " on" : ""}${cell.today ? " today" : ""}${sameDay(cell.date, selected) ? " picked" : ""}`}
+              className={`day${cell.attended ? " on" : ""}${cell.planned ? " plan" : ""}${cell.today ? " today" : ""}${sameDay(cell.date, selected) ? " picked" : ""}`}
               onClick={() => setPicked(cell.date)}>
               <b>{cell.day}</b>
-              {cell.attended ? <i /> : null}
+              {cell.attended || cell.planned ? <i /> : null}
             </button>
           )))}
         </div>
@@ -368,17 +395,21 @@ export function Home({ view, now = new Date(), monthsBack = 0, onOpenRecords }) 
           <p>{isToday ? "오늘 수업" : `${selected.getMonth() + 1}월 ${selected.getDate()}일 수업`}</p>
           {onOpenRecords ? <button type="button" onClick={onOpenRecords}>전체보기 ›</button> : null}
         </div>
-        {dayLessons.length ? (
+        {lessonsThatDay.length ? (
           <div className="stack tight">
-            {dayLessons.map((row, index) => (
-              <LessonCard key={`${text(row.occurredAt)}-${index}`} row={row}
-                location={view?.locationName} onOpen={onOpenRecords} />
+            {lessonsThatDay.map((row, index) => (
+              <LessonCard key={`${text(row.when)}-${index}`} row={row}
+                location={view?.locationName} onOpen={row.planned ? undefined : onOpenRecords} />
             ))}
           </div>
         ) : (
           <Card className="quietcard">
             <p className="muted" style={{ fontSize: TYPE.caption }}>
-              {isToday ? "오늘 받은 수업은 끝나면 여기에 보여요." : "이날은 수업 기록이 없어요."}
+              {/* 예정 수업을 아는 문서에서만 "없어요" 라고 한다. 옛 문서(서버가 다시
+                  만들기 전)에서 그렇게 말하면 모르는 것을 단정하게 된다. */}
+              {knowsSchedule(view)
+                ? (isToday ? "오늘은 예정된 수업이 없어요." : "이날은 수업이 없어요.")
+                : (isToday ? "오늘 받은 수업은 끝나면 여기에 보여요." : "이날은 수업 기록이 없어요.")}
             </p>
           </Card>
         )}

@@ -408,3 +408,79 @@ test("남은 횟수 칩은 쓸 수 있는 회원권 전부를 더한다", async 
   ], NOW), "남은 25회 · 서비스 2회");
   assert.equal(remainingChip([], NOW), "남은 0회");
 });
+
+/* ── 서버 계산부터 화면까지 (2026-10-30 병합 전 확인) ─────────────────────
+
+   투영(functions/src/member-view.js)이 만든 문서를 그대로 세 화면에 넣는다.
+   한쪽만 시험하면 "서버는 막았는데 화면이 다른 칸을 읽는" 틈이 남는다. */
+
+async function screensFromProjection(t, input) {
+  const markupOf = await memberScreens(t);
+  const { createRequire } = await import("node:module");
+  const { createElement } = await import("react");
+  const require = createRequire(import.meta.url);
+  const { buildMemberView } = require("../../functions/src/member-view.js");
+  const view = buildMemberView({ now: new Date(2026, 9, 30, 12), ...input });
+  const { Home, Records, MyPage } = markupOf.screens;
+  const render = (Screen, props = {}) => renderToStaticMarkup(createElement(Screen, {
+    view, now: new Date(2026, 9, 30, 12), ...props,
+  }));
+  return {
+    view,
+    home: render(Home, { onOpenRecords: () => {} }),
+    records: render(Records),
+    mypage: render(MyPage, { onSignOut: () => {}, onDeleteAccount: async () => {} }),
+  };
+}
+
+const EVENT_MEMBER = {
+  client: { id: "client-a", organizationId: "center-a", userId: "uid-1", name: "김하나", status: "active" },
+  locationName: "반송점",
+  passes: [
+    /* 이관분: 상품명이 productId 에 그대로 들어 있다. */
+    { id: "p-kkak", clientId: "client-a", productId: "1:1 깍두기 이벤트 10회", category: "pt_1_1_repurchase_event",
+      purchaseRound: 3, totalSessions: 10, serviceSessions: 2, remainingCount: 12, status: "active",
+      expiresAt: new Date(2027, 0, 31) },
+    /* 상품 문서에 이벤트명이 있는 회원권. */
+    { id: "p-trans", clientId: "client-a", productId: "prod-transfer", category: "pt_2_1_new",
+      purchaseRound: 1, totalSessions: 20, serviceSessions: 0, remainingCount: 0, status: "active",
+      expiresAt: new Date(2026, 5, 1) },
+  ],
+  productNames: { "prod-transfer": "2:1 양도권 세일즈 특가" },
+  productSessionTypes: { "prod-transfer": "pt_2_1" },
+  ledger: [
+    { passId: "p-kkak", lessonId: "lesson-1", type: "deduct", occurredAt: new Date(2026, 9, 30, 10, 0),
+      instructorId: "u1", lessonRecord: "코어근육이 많이 약해짐 · 요추 통증", notes: "강사 내부 메모" },
+    { passId: "p-trans", lessonId: "lesson-0", type: "deduct", occurredAt: new Date(2026, 4, 20, 19, 0), instructorId: "u1" },
+  ],
+  memberNotes: { "lesson-1": "오늘 자세가 한결 편해 보이셨어요." },
+  instructorNames: { u1: "정예진" },
+};
+
+test("한마디는 '회원에게 보낼 말'(memberNote)에서만 온다 — 내부 기록은 어디에도 없다", async (t) => {
+  const { view, home, records } = await screensFromProjection(t, EVENT_MEMBER);
+  for (const markup of [home, records]) {
+    assert.match(markup, /오늘 자세가 한결 편해 보이셨어요/);
+    assert.doesNotMatch(markup, /코어근육|요추 통증|강사 내부 메모/);
+  }
+  // 투영 문서 자체에도 없다 -- 화면이 실수로 다른 칸을 읽을 재료가 없다.
+  assert.doesNotMatch(JSON.stringify(view), /코어근육|요추 통증|강사 내부 메모|lessonRecord|"notes"/);
+  // 한마디가 없는 수업에는 말풍선이 없다.
+  assert.equal((records.match(/class="note"/g) || []).length, 1);
+});
+
+test("이벤트 회원권(깍두기 · 양도권) 계정 — 홈 · 수업기록 · 마이페이지에 이벤트명이 없다", async (t) => {
+  const { view, home, records, mypage } = await screensFromProjection(t, EVENT_MEMBER);
+  for (const [name, markup] of [["홈", home], ["수업기록", records], ["마이페이지", mypage]]) {
+    for (const hidden of [/깍두기/, /양도권/, /세일즈/, /이벤트/, /특가/, /\d차\b/, /번째 회원권/]) {
+      assert.doesNotMatch(markup, hidden, `${name} 에 ${hidden}`);
+    }
+  }
+  // 이름은 규칙대로 지어진다.
+  assert.match(mypage, /1:1 필라테스 수업 10회/);
+  assert.match(mypage, /2:1 필라테스 수업 20회/);
+  assert.match(records, /1:1 필라테스 수업 · 정예진 강사/);
+  assert.match(home, /<b>1:1 필라테스 수업<\/b>/);
+  // 투영 문서에도 없다.
+  assert.doesNotMatch(JSON.stringify(view), /깍두기|양도권|세일즈|특가|purchaseRound|displayName/);
+});

@@ -28645,19 +28645,43 @@ export default function App() {
   const unpublishedLessonsRef = useRef(new Map());
   /* 일정 → 센터 서버 (schedule-publish.js). 기기 저장이 끝난 뒤 뒤에서 돈다 --
      서버가 늦어도 강사 화면은 기다리지 않는다. */
-  const publishSchedule = useCallback(async (before, after) => {
+  const publishSchedule = useCallback(async (before, after, { initial = false } = {}) => {
     if (!organizationRoster || !organizationContext.organizationId || !account?.id) return;
     const changed = scheduleChanges({
       before, after, members: rosterMembersRef.current,
       organizationId: organizationContext.organizationId, instructorId: account.id,
     });
+    /* 이번 저장에서 새로 들어온 일정만 취소된 서버 문서를 되살릴 수 있다 (되돌리기).
+       앱을 열 때 맞추기(initial)는 아무것도 되살리지 않는다 -- 다른 PC 에서 지운
+       일정을 이 PC 가 다시 올리던 자리다 (lesson-schedule-repository.js). */
+    const beforeIds = new Set((Array.isArray(before) ? before : []).map((entry) => entry?.id));
     const queue = new Map(unpublishedLessonsRef.current);
-    for (const document of changed) queue.set(document.lessonId, document);
+    for (const document of changed) {
+      queue.set(document.lessonId, { ...document, allowRevive: !initial && !beforeIds.has(document.lessonId) });
+    }
     if (!queue.size) return;
     unpublishedLessonsRef.current = new Map();
     const results = await publishScheduledLessons(organizationContext.organizationId, [...queue.values()], {
-      createdBy: account.id,
+      createdBy: account.id, deviceId: deviceIdentity(),
     });
+    /* 다른 기기가 먼저 지웠거나 확정한 수업. 오류가 아니다 -- 서버가 이긴 것이고,
+       이 기기의 화면만 아직 모른다 (서버 일정을 읽어 합치는 것은 동기화 2단계). */
+    const localOf = new Map((Array.isArray(after) ? after : []).map((entry) => [entry?.id, entry]));
+    const elsewhere = results.filter((result) => result.outcome === PUBLISH_OUTCOME.CANCELLED_ELSEWHERE);
+    const settledElsewhere = results.filter((result) => result.outcome === PUBLISH_OUTCOME.SETTLED
+      && !isSettledLesson(localOf.get(result.lessonId)));
+    for (const result of [...elsewhere, ...settledElsewhere]) {
+      deviceLog("schedule_publish_skipped", {
+        feature: "schedule_publish", stage: initial ? "initial" : "write", reason: result.outcome, lessonId: result.lessonId,
+      });
+    }
+    if (elsewhere.length || settledElsewhere.length) {
+      const parts = [
+        elsewhere.length ? `다른 기기에서 지우거나 취소한 일정 ${elsewhere.length}건` : "",
+        settledElsewhere.length ? `다른 기기에서 확정된 수업 ${settledElsewhere.length}건` : "",
+      ].filter(Boolean);
+      setToast({ ok: true, msg: `${parts.join(" · ")}은 회원 앱에 다시 올리지 않았어요.` });
+    }
     const failed = results.filter((result) => result.outcome === PUBLISH_OUTCOME.FAILED);
     for (const result of failed) {
       unpublishedLessonsRef.current.set(result.lessonId, queue.get(result.lessonId));
@@ -28719,7 +28743,7 @@ export default function App() {
     initialSchedulePublishRef.current = true;
     const today = todayISO();
     const upcoming = (db.schedule || []).filter((entry) => String(entry?.date || "") >= today);
-    publishSchedule([], upcoming).catch((error) => {
+    publishSchedule([], upcoming, { initial: true }).catch((error) => {
       deviceLog("schedule_publish_failed", {
         feature: "schedule_publish", stage: "initial", errorDomain: "app", ...deviceError(error),
       });

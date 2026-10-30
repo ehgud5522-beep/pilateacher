@@ -35,10 +35,23 @@ export const DELETE_MODE = Object.freeze({
 export const DELETE_BLOCK_REASON = Object.freeze({
   MISSING: "missing",
   SETTLED: "settled",
+  /** 다른 기기에서 확정됐다 (동기화 2단계). 이 기기에는 확정 기록이 없다. */
+  SETTLED_ELSEWHERE: "settled_elsewhere",
 });
 
+/** 다른 기기에서 확정된 수업인가 -- 서버를 읽어 합칠 때 표시된다 (schedule-sync.js). */
+export const isSettledElsewhere = (lesson) => Boolean(lesson?.settledElsewhereAt);
+
+/** 확정으로 잠긴 수업인가 -- 이 기기에서든 다른 기기에서든. */
+export const isLockedBySettlement = (lesson) => isSettledLesson(lesson) || isSettledElsewhere(lesson);
+
 /** 확정된 수업을 지우거나 고치려 할 때. 되돌릴 수 있는 사람에 따라 다음 할 일이 다르다. */
-export function settledLockNotice({ canUnsettle = false } = {}) {
+export function settledLockNotice({ canUnsettle = false, elsewhere = false } = {}) {
+  if (elsewhere) {
+    return canUnsettle
+      ? "다른 기기에서 확정된 수업이에요. 지우거나 시간을 바꾸려면 그 기기에서 확정을 먼저 되돌려 주세요."
+      : "다른 기기에서 확정된 수업이에요. 지우거나 시간을 바꿀 수 없어요. 대표에게 확정 되돌리기를 요청해 주세요.";
+  }
   return canUnsettle
     ? "확정된 수업은 지우거나 시간을 바꿀 수 없어요. 확정을 먼저 되돌려 주세요."
     : "확정된 수업은 지우거나 시간을 바꿀 수 없어요. 대표에게 확정 되돌리기를 요청해 주세요.";
@@ -51,12 +64,13 @@ export function settledLockNotice({ canUnsettle = false } = {}) {
 export function lessonDeletePolicy(lesson) {
   if (!lesson?.id) return { mode: DELETE_MODE.BLOCKED, reason: DELETE_BLOCK_REASON.MISSING };
   if (isSettledLesson(lesson)) return { mode: DELETE_MODE.BLOCKED, reason: DELETE_BLOCK_REASON.SETTLED };
+  if (isSettledElsewhere(lesson)) return { mode: DELETE_MODE.BLOCKED, reason: DELETE_BLOCK_REASON.SETTLED_ELSEWHERE };
   if (attendeesOf(lesson).some((attendee) => attendee?.deductFrom)) return { mode: DELETE_MODE.CONFIRM, reason: "" };
   return { mode: DELETE_MODE.ONE_TAP, reason: "" };
 }
 
 /** 날짜 · 시간 · 회원을 고칠 수 있는가. 확정된 수업만 잠근다. */
-export const canEditLessonInfo = (lesson) => !isSettledLesson(lesson);
+export const canEditLessonInfo = (lesson) => !isLockedBySettlement(lesson);
 
 /**
  * 시트를 열자마자 고치는 칸을 펼칠까.

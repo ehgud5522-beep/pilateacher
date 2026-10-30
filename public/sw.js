@@ -1,5 +1,5 @@
 /* 필라티쳐 Service Worker — 오프라인 캐싱 */
-const CACHE = "pilateacher-v4";
+const CACHE = "pilateacher-v5";
 const CORE = [
   "/",
   "/index.html",
@@ -33,6 +33,9 @@ self.addEventListener("fetch", (e) => {
 
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
+
+  // 새 버전 확인(2026-10-31). 캐시에서 주면 영영 옛 번호라 "새로고침" 안내가 안 뜬다.
+  if (url.pathname === "/version.json") return;
 
   // Navigation: network-first, fall back to cached index (offline shell)
   if (req.mode === "navigate") {

@@ -24,21 +24,26 @@ const lesson = (extra = {}) => ({
   ...extra,
 });
 
-test("일정 한 건은 날짜 · 시각 · 수업 유형 · 강사 · 지점 · 센터 회원 id 만 싣는다", () => {
+test("일정 한 건은 날짜 · 시각 · 수업 유형 · 강사 · 지점 · 센터 회원 id · 종류 · 방 · 기구만 싣는다", () => {
   const document = scheduledLessonDocument({ ...base, entry: lesson() });
   assert.equal(document.lessonId, "L1");
   assert.deepEqual(Object.keys(document.data).sort(), [
-    "clientId", "clientIds", "date", "endsAt", "instructorId", "lessonId", "lessonType",
-    "locationId", "organizationId", "startsAt", "status",
+    "careGrades", "clientId", "clientIds", "date", "endsAt", "equipmentIds", "instructorId", "lessonId", "lessonType",
+    "locationId", "organizationId", "room", "scheduleType", "startsAt", "status",
   ]);
+  /* 동기화 2단계: 다른 기기가 이 일정을 다시 그리는 데 쓴다. 센터 직원이 봐도 되는
+     것만이고 회원 데이터에는 싣지 않는다 (member-view.js 허용 목록). */
+  assert.equal(document.data.scheduleType, "개인레슨");
+  assert.equal(document.data.room, "1번룸");
+  assert.equal(document.baseRevision, 0, "처음 보내는 일정");
   assert.equal(document.data.status, SCHEDULE_STATUS.SCHEDULED);
   assert.deepEqual(document.data.clientIds, ["client-a"]);
   assert.equal(document.data.lessonType, SCHEDULE_LESSON_TYPE.SOLO);
   assert.equal(document.data.locationId, "bansong");
   assert.deepEqual(document.data.startsAt, new Date(2026, 10, 3, 19, 0));
   assert.deepEqual(document.data.endsAt, new Date(2026, 10, 3, 19, 50));
-  // 메모 · 강사 이름 문자열 · 방은 싣지 않는다.
-  assert.doesNotMatch(JSON.stringify(document.data), /허리 통증|강사 메모|1번룸|정예진|m-local-1/);
+  // 메모 · 강사 이름 문자열 · 기기 회원 id 는 싣지 않는다.
+  assert.doesNotMatch(JSON.stringify(document.data), /허리 통증|강사 메모|정예진|m-local-1/);
 });
 
 test("수업 유형 — 개인레슨 1:1, 듀엣 2:1, 관리 등급이 있으면 디오사, 그 밖은 other", () => {
@@ -95,8 +100,8 @@ test("새 일정은 보내고, 지운 일정은 cancelled 로 남긴다", () => 
 test("이미 확정(completed)된 수업은 일정 쪽에서 쓰지 않는다 — 완료가 되돌아가지 않게", () => {
   const document = scheduledLessonDocument({ ...base, entry: lesson() });
   assert.equal(scheduleWriteFor({ status: "completed" }, document), null);
-  assert.deepEqual(scheduleWriteFor(null, document), document.data);
-  assert.deepEqual(scheduleWriteFor({ status: "scheduled" }, document), document.data);
+  assert.deepEqual(scheduleWriteFor(null, document), { ...document.data, revision: 1 }, "처음 만드는 문서는 번호 1");
+  assert.deepEqual(scheduleWriteFor({ status: "scheduled" }, document), { ...document.data, revision: 1 }, "번호 없던 옛 문서도 1");
 });
 
 test("서버와 같은 문서는 다시 쓰지 않는다 — 앱을 열 때마다 회원 데이터를 다시 만들지 않게", () => {
@@ -107,7 +112,7 @@ test("서버와 같은 문서는 다시 쓰지 않는다 — 앱을 열 때마�
     endsAt: { toMillis: () => document.data.endsAt.getTime() },
   };
   assert.equal(scheduleWriteFor(stored, document), null);
-  assert.deepEqual(scheduleWriteFor({ ...stored, clientIds: ["client-b"] }, document), document.data);
+  assert.deepEqual(scheduleWriteFor({ ...stored, clientIds: ["client-b"] }, document), { ...document.data, revision: 1 });
 });
 
 test("쓰기 결과는 건마다 — 실패는 원본 코드와 함께", async () => {
@@ -115,18 +120,18 @@ test("쓰기 결과는 건마다 — 실패는 원본 코드와 함께", async (
   const store = {
     async transact(path, decide) {
       if (path.endsWith("/L-fail")) throw Object.assign(new Error("denied"), { code: "permission-denied" });
-      const current = path.endsWith("/L-done") ? { status: "completed" } : null;
-      const write = decide(current);
+      const current = path.endsWith("/L-done") ? { status: "completed", revision: 4 } : null;
+      const { write, outcome } = decide(current);
       if (write) writes.push({ path, write });
-      return write ? PUBLISH_OUTCOME.WRITTEN : PUBLISH_OUTCOME.SETTLED;
+      return { outcome, revision: write ? write.revision : current?.revision || 0 };
     },
   };
   const documents = ["L-new", "L-done", "L-fail"].map((id) => ({ lessonId: id, data: { status: "scheduled" } }));
   const results = await publishScheduledLessons(ORG, documents, { store, createdBy: "uid-instructor" });
   assert.deepEqual(results, [
-    { lessonId: "L-new", outcome: "written", errorCode: "" },
-    { lessonId: "L-done", outcome: "settled", errorCode: "" },
-    { lessonId: "L-fail", outcome: "failed", errorCode: "permission-denied" },
+    { lessonId: "L-new", outcome: "written", errorCode: "", revision: 1 },
+    { lessonId: "L-done", outcome: "settled", errorCode: "", revision: 4 },
+    { lessonId: "L-fail", outcome: "failed", errorCode: "permission-denied", revision: 0 },
   ]);
   assert.equal(writes.length, 1);
   assert.equal(writes[0].path, `organizations/${ORG}/lessons/L-new`);
@@ -138,8 +143,8 @@ test("취소된 서버 문서는 아무 기기나 되살리지 못한다 — PC 
   const document = scheduledLessonDocument({ ...base, entry: lesson() });
   const cancelledBy = (device) => ({ ...document.data, status: "cancelled", updatedDevice: device });
   assert.equal(scheduleWriteFor(cancelledBy("pc-a"), document, { deviceId: "pc-b" }), null, "다른 PC 의 취소 -- 처음 맞추기 · 고치기");
-  assert.deepEqual(scheduleWriteFor(cancelledBy("pc-a"), document, { deviceId: "pc-a" }), document.data, "내가 취소한 것은 내가 되돌린다");
-  assert.deepEqual(scheduleWriteFor(cancelledBy("pc-a"), { ...document, allowRevive: true }, { deviceId: "pc-b" }), document.data, "되돌리기를 누른 것");
+  assert.deepEqual(scheduleWriteFor(cancelledBy("pc-a"), document, { deviceId: "pc-a" }), { ...document.data, revision: 1 }, "내가 취소한 것은 내가 되돌린다");
+  assert.deepEqual(scheduleWriteFor(cancelledBy("pc-a"), { ...document, allowRevive: true }, { deviceId: "pc-b" }), { ...document.data, revision: 1 }, "되돌리기를 누른 것");
   assert.equal(scheduleWriteFor({ ...document.data, status: "cancelled" }, document, { deviceId: "pc-b" }), null, "누가 취소했는지 모르는 옛 문서도 되살리지 않는다");
   assert.equal(outcomeWithoutWrite({ status: "cancelled" }), PUBLISH_OUTCOME.CANCELLED_ELSEWHERE);
   assert.equal(outcomeWithoutWrite({ status: "completed" }), PUBLISH_OUTCOME.SETTLED);

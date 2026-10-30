@@ -752,6 +752,7 @@ export function planPassSelection(input = {}) {
 export function needsSettlement(lesson, options = {}) {
   if (!lesson || lesson.personal || lesson.isSample) return false;
   if (isSettledLesson(lesson)) return false;
+  if (lesson.settledElsewhereAt) return false;
   if (lesson.groupCancelled) return false;
   const list = attendeesOf(lesson);
   // 기구 그룹은 참석자가 없다. 회원권이 아니라 진행 완료로 세는 수업이다.
@@ -914,6 +915,9 @@ export const settledDeductionsOf = (lesson) => {
  */
 export const canSettleLesson = (lesson, options = {}) => {
   if (isSettledLesson(lesson)) return false;
+  /* 다른 기기에서 확정된 수업 (동기화 2단계). 이 기기에는 확정 기록이 없지만 원장에는
+     이미 차감이 있다 -- 또 확정하면 두 번 나간다. */
+  if (lesson?.settledElsewhereAt) return false;
   if (!lesson || lesson.personal || lesson.isSample || lesson.groupCancelled) return false;
   const list = attendeesOf(lesson);
   if (list.length === 0) return false;

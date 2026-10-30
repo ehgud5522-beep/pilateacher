@@ -51,7 +51,7 @@ import { RepositoryReadError, readCollection } from "./repository-read.js";
 /**
  * @typedef {object} PassStore
  * @property {(collectionPath: string) => Promise<Array<any>>} list
- * @property {(writes: Array<{ path: string, data: object, operation?: "set" | "update" | "decrement" | "bump" }>) => Promise<void>} commit
+ * @property {(writes: Array<{ path: string, data: object, operation?: "set" | "update" | "decrement" | "bump" | "merge" }>) => Promise<void>} commit
  * @property {(documentPath: string) => Promise<any | null>} read
  * @property {(organizationId: string) => Promise<Array<any>>} [listLedgerByOrganization]
  * @property {() => Promise<any>} serverTimestamp
@@ -117,6 +117,9 @@ export function createFirestorePassStore(options = {}) {
           );
           batch.update(reference, deltas);
         } else if (write.operation === "update") batch.update(reference, write.data);
+        /* 합쳐 쓴다. 확정이 일정 문서를 통째로 덮으면 종류 · 방 · 수정 번호가
+           사라져, 확정을 되돌렸을 때 그 수업을 다시 그릴 수 없다 (2026-10-31). */
+        else if (write.operation === "merge") batch.set(reference, write.data, { merge: true });
         else batch.set(reference, write.data);
       }
       await batch.commit();
@@ -752,7 +755,8 @@ export async function deductPass(organizationId, pass, input, options = {}) {
   };
 
   await store.commit([
-    { path: paths.lesson(organization, lessonId), data: lesson },
+    /* 일정이 먼저 있다 (동기화 1단계) -- 그 문서 위에 "완료" 를 합쳐 쓴다. */
+    { path: paths.lesson(organization, lessonId), data: lesson, operation: "merge" },
     ...participants,
     { path: paths.passLedgerEntry(organization, passId, entryId), data: entry },
     /* 잔여는 읽어서 빼지 않고 서버가 하나 줄인다. 두 강사가 같은 순간에 눌러도

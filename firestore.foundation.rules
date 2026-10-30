@@ -455,6 +455,13 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    /* 일정 동기화 스위치 (2026-10-31). 쓰기는 대표 전용 통로(updateRuntimeConfig)뿐이다
+       -- 서버의 일정이 기기 일정을 바꾸기 시작하는 자리라 실수로 눌러지면 안 된다. */
+    match /runtimeConfig/scheduleSync {
+      allow read: if signedIn();
+      allow write: if false;
+    }
+
     match /diagnostics/{userId}/reports/{reportId} {
       allow read: if signedIn() && request.auth.uid == userId;
       allow create: if signedIn()
@@ -628,11 +635,30 @@ service cloud.firestore {
         allow get: if isCentreStaff(organizationId)
           && (resource == null || resource.data.organizationId == organizationId);
         allow list: if isCentreStaff(organizationId);
+        /* ── 수정 번호 (2026-10-31, 동기화 1단계) ────────────────────────────
+           일정 쓰기는 번호를 하나씩 올린다 (lesson-schedule-repository.js). 앱은
+           트랜잭션 안에서 서버 번호와 견주어 다른 기기의 수정을 덮지 않는다. 규칙은
+           같은 것을 한 번 더 본다: **번호 없이 쓰는 옛 탭은 거절된다** -- 옛 코드는
+           서버를 보지 않고 덮어쓰고, 그것이 다른 PC 에서 고친 일정을 지운다.
+
+           확정(deductPass)은 번호를 모른다. "완료" 로 쓰는 것은 번호를 그대로 두는
+           한 받는다 -- 확정이 일정을 이기는 것은 앱의 판정과 같다.
+
+           완료를 다시 예정 · 취소로 돌리는 것은 확정 되돌리기뿐이고, 원장 보정과 같은
+           선(대표 · 총괄매니저)이다. 일정 쓰기로는 완료가 되돌아가지 않는다. */
         allow create: if request.resource.data.organizationId == organizationId
-          && hasRole(organizationId, ["owner", "area_manager", "manager", "instructor", "staff"]);
+          && hasRole(organizationId, ["owner", "area_manager", "manager", "instructor", "staff"])
+          && (request.resource.data.get("status", "") == "completed"
+            || request.resource.data.get("revision", 0) == 1);
         allow update: if resource.data.organizationId == organizationId
           && request.resource.data.organizationId == organizationId
-          && hasRole(organizationId, ["owner", "area_manager", "manager", "instructor", "staff"]);
+          && hasRole(organizationId, ["owner", "area_manager", "manager", "instructor", "staff"])
+          && (request.resource.data.get("status", "") == "completed"
+            ? request.resource.data.get("revision", 0) == resource.data.get("revision", 0)
+            : (resource.data.get("status", "") == "completed"
+              ? hasRole(organizationId, ["owner", "area_manager"])
+                && request.resource.data.get("revision", 0) == resource.data.get("revision", 0) + 1
+              : request.resource.data.get("revision", 0) == resource.data.get("revision", 0) + 1));
         allow delete: if false;
 
         match /participants/{clientId} {

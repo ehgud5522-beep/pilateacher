@@ -28145,6 +28145,13 @@ export default function App() {
   }, []);
 
   const loadAccount = async (acc) => {
+    /* 다른 계정이 들어오면 앞 계정의 일정 대기열과 맞추기 표시를 버린다 -- 로그아웃을
+       거치지 않고 계정이 바뀌는 길이 생겨도 여기서 한 번 더 막는다. */
+    if (loadedAccountIdRef.current !== acc?.id) {
+      unpublishedLessonsRef.current = new Map();
+      initialSchedulePublishRef.current = false;
+      loadedAccountIdRef.current = acc?.id || "";
+    }
     revokeAllUrls();
     setAccount(acc);
     accountRef.current = acc;
@@ -28350,11 +28357,41 @@ export default function App() {
     else await persistAccounts(accounts.map((a) => (a.id === next.id ? next : a)));
     setToast({ ok: true, msg: src ? "프로필 사진을 저장했습니다." : "프로필 사진을 삭제했습니다." });
   };
+  /* 로그아웃 (2026-10-31 손봄). 센터 PC 에서는 강사 A 가 나가고 강사 B 가 같은
+     탭에서 들어온다. 화면은 다시 그려지지만 이 컴포넌트는 그대로라 **ref 는 A 의
+     것을 들고 남는다.** 전에 남던 것:
+     - 일정 재전송 대기열 -- B 로 로그인한 뒤 다음 저장 때 A 의 일정이 B 의 센터
+       경로에 B 의 이름으로 쓰일 수 있었다
+     - "앱 열 때 일정 맞추기" 표시 -- B 는 맞추기를 한 번도 하지 않았다
+     - 사진 · db ref, 3초 뒤 올라갈 A 의 백업
+     그래서 나가기 전에 A 의 것을 A 의 이름으로 보내고(로그인이 살아 있을 때),
+     그다음에 비운다. 기기의 A 데이터(db · 사진 메타 · 사진 원본)는 지우지 않는다
+     -- 계정별 키(pilateacher_db_{uid})에 남고 A 가 다시 들어올 때만 읽힌다. */
+  const flushBeforeLogout = async () => {
+    const pending = cloudPending.current;
+    if (cloudTimer.current) { clearTimeout(cloudTimer.current); cloudTimer.current = null; }
+    cloudPending.current = null;
+    const within = (promise) => Promise.race([promise, new Promise((resolve) => setTimeout(resolve, 5000))]);
+    if (pending && fbReady && !restoreBlockedRef.current) {
+      try { await within(pushCloudBackup(pending.uid, pending.data)); }
+      catch (error) { deviceLog("logout_backup_flush_failed", { feature: "cloud_backup", stage: "logout", errorCode: error?.code || "unknown" }); }
+    }
+    if (unpublishedLessonsRef.current.size) {
+      try { await within(publishSchedule([], [])); }
+      catch (error) { deviceLog("logout_schedule_flush_failed", { feature: "schedule_publish", stage: "logout", errorCode: error?.code || "unknown" }); }
+    }
+  };
   const handleLogout = async () => {
+    await flushBeforeLogout();
     if (fbReady) { try { await fbSignOut(); } catch (e) {} }
     try { await window.storage.set(SES_KEY, JSON.stringify({ accountId: null, auto: false })); } catch (e) {}
     revokeAllUrls();
-    setAccount(null); setPhase("auth"); setDb(emptyDb("", "")); setPhotos({});
+    unpublishedLessonsRef.current = new Map();
+    initialSchedulePublishRef.current = false;
+    photosRef.current = {};
+    const empty = emptyDb("", "");
+    lessonRecordDbRef.current = empty;
+    setAccount(null); setPhase("auth"); setDb(empty); setPhotos({});
   };
 
   const cloudTimer = useRef(null);
@@ -28643,6 +28680,7 @@ export default function App() {
      회원 화면에 영영 안 맞는다. 기기를 껐다 켜면 비는 것은 받아들인다: 그때는
      강사가 그 일정을 다시 열어 저장하면 된다. */
   const unpublishedLessonsRef = useRef(new Map());
+  const loadedAccountIdRef = useRef("");
   /* 일정 → 센터 서버 (schedule-publish.js). 기기 저장이 끝난 뒤 뒤에서 돈다 --
      서버가 늦어도 강사 화면은 기다리지 않는다. */
   const publishSchedule = useCallback(async (before, after, { initial = false } = {}) => {

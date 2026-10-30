@@ -27,7 +27,7 @@ test("회원 앱 Android 워크플로가 있다", () => {
 });
 
 test("그룹 이름은 bonita_member_signing 이다 — singing 이 아니다", () => {
-  assert.deepEqual(android.environment.groups, ["bonita_member_signing"]);
+  assert.deepEqual(android.environment.groups, ["bonita_member_signing", "google_play"]);
   /* 오타 난 이름이 그룹으로 적힌 곳이 없어야 한다. 한 군데 남아 있으면 누군가
      그것을 복사한다. (설명 주석에 그 낱말이 나오는 것은 괜찮다.) */
   for (const workflow of Object.values(workflows)) {
@@ -40,15 +40,27 @@ test("수동 실행만 — 트리거가 없다", () => {
   assert.equal(android.when, undefined);
 });
 
-test("올리지 않는다 — AAB 와 APK 를 남기기만 한다", () => {
-  assert.equal(android.publishing, undefined);
+test("Play 프로덕션에 초안으로 올린다 — 첫 출시 전 앱은 초안만 받는다", () => {
+  /* 2026-10-30 대표 결정으로 "올리지 않는다" 를 뒤집었다. 공개 전 앱에
+     submit_as_draft: false 로 올리면 Play API 가 거절한다. */
+  assert.deepEqual(android.publishing.google_play, {
+    credentials: "$GOOGLE_PLAY_SERVICE_ACCOUNT_CREDENTIALS",
+    track: "production",
+    submit_as_draft: true,
+  });
+  assert.ok(android.environment.groups.includes("google_play"));
   assert.ok(android.artifacts.some((item) => /bundle\/release\/\*\.aab$/.test(item)));
   assert.ok(android.artifacts.some((item) => /apk\/release\/\*\.apk$/.test(item)));
   assert.match(scripts(), /bundleRelease assembleRelease/);
 });
 
-test("versionCode 는 빌드 번호다", () => {
-  assert.match(scripts(), /-PmemberVersionCode="\$BUILD_NUMBER"/);
+test("versionCode 는 Play 의 가장 큰 번호보다 크다", () => {
+  assert.match(scripts(), /google-play get-latest-build-number --package-name "\$PACKAGE_NAME"/);
+  assert.match(scripts(), /nextPlayVersion\(process\.env\.BUILD_NUMBER, process\.env\.LATEST\)/);
+  assert.match(scripts(), /-PmemberVersionCode="\$MEMBER_VERSION_CODE"/);
+  assert.match(scripts(), /versionCode='\$MEMBER_VERSION_CODE'/);
+  // 물어보지 못하면 멈춘다 -- 옛 번호로 짐작하지 않는다.
+  assert.match(scripts(), /PLAY_VERSION_LOOKUP_FAILED[\s\S]*?exit 1/);
   const gradle = readFileSync(path.join(root, "member-app/android/app/build.gradle"), "utf8");
   assert.match(gradle, /versionCode\(\(project\.findProperty\('memberVersionCode'\) \?: '1'\) as Integer\)/);
 });

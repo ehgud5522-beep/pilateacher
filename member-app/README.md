@@ -263,16 +263,25 @@ npm run member:assets
 ## Android 빌드도 Codemagic 이 한다 — `member-android`
 
 **수동 실행만** (트리거 없음). Codemagic → 앱 → Start new build → 브랜치 →
-워크플로 **Bonita Member Android (AAB + APK)**. 결과물은 두 개다.
+워크플로 **Bonita Member Android (Play)**. 빌드가 끝나면 **Play 프로덕션
+트랙에 초안으로 올라간다** (2026-10-30 부터 -- 그 전에는 AAB · APK 만 남겼다).
 
-| 파일 | 쓰는 곳 |
+| 결과 | 쓰는 곳 |
 | --- | --- |
-| `app-release.aab` | Play Console 에 올린다 (대표가 직접) |
+| Play 프로덕션 초안 | Play Console → 프로덕션 → 초안 확인 → "검토를 위해 전송" (대표) |
 | `app-release.apk` | 폰에 바로 깔아 본다. 업로드 키로 서명돼 있다 |
 
-versionCode 는 Codemagic 빌드 번호다 (`-PmemberVersionCode=$BUILD_NUMBER`).
-로컬 빌드는 1 이다. versionName 은 `member-app/android/app/build.gradle` 에서
-손으로 올린다.
+**초안인 이유:** 한 번도 공개된 적 없는 앱에는 Play API 가 초안 릴리스만 만들게
+한다. 첫 출시가 공개된 뒤에는 `codemagic.yaml` 의 `submit_as_draft` 를 `false`
+로, `rollout_fraction: 0.2` 를 더해 강사 앱처럼 20% 단계적 출시로 바꾼다.
+
+versionCode 는 **Play 에 있는 가장 큰 번호 + 1** 과 Codemagic 빌드 번호 중 큰
+것이다 (강사 앱과 같은 `tools/android/ci-version.mjs`). 로컬 빌드는 1 이다.
+versionName 은 `member-app/android/app/build.gradle` 에서 손으로 올린다.
+
+Play 서비스 계정은 강사 앱과 같은 그룹 `google_play` 의
+`GOOGLE_PLAY_SERVICE_ACCOUNT_CREDENTIALS` 를 쓴다. 그 계정이 Play Console →
+사용자 및 권한에서 **보니따필라테스 앱에도** 권한(릴리스 관리)이 있어야 한다.
 
 ### 환경변수 그룹 `bonita_member_signing`
 

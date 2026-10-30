@@ -563,15 +563,19 @@ workflows:
   # 실패했다. 이름이 틀리면 Codemagic 은 그룹을 못 찾았다고 말하지 않고, 변수가
   # 비어 있는 채로 빌드가 시작된다. 그래서 첫 단계가 변수부터 본다.
   member-android:
-    name: Bonita Member Android (AAB + APK)
+    name: Bonita Member Android (Play)
     max_build_duration: 45
     instance_type: mac_mini_m2
 
     environment:
       node: 22
       java: 21
+      # bonita_member_signing: 회원 앱 키 · google-services.json
+      # google_play: Play 서비스 계정 (강사 앱과 같은 것. 그 계정이 Play Console
+      #              "사용자 및 권한" 에서 보니따필라테스 앱에도 권한이 있어야 한다)
       groups:
         - bonita_member_signing
+        - google_play
       vars:
         PACKAGE_NAME: "com.bonitapilates.member"
 
@@ -580,7 +584,7 @@ workflows:
         script: |
           set -euo pipefail
           missing=""
-          for name in MEMBER_KEYSTORE_BASE64 MEMBER_KEYSTORE_PASSWORD MEMBER_KEY_ALIAS MEMBER_KEY_PASSWORD MEMBER_GOOGLE_SERVICES_JSON; do
+          for name in MEMBER_KEYSTORE_BASE64 MEMBER_KEYSTORE_PASSWORD MEMBER_KEY_ALIAS MEMBER_KEY_PASSWORD MEMBER_GOOGLE_SERVICES_JSON GOOGLE_PLAY_SERVICE_ACCOUNT_CREDENTIALS; do
             if [ -z "${!name:-}" ]; then missing="$missing $name"; fi
           done
           if [ -n "$missing" ]; then
@@ -591,6 +595,8 @@ workflows:
           # 별칭이 회원 앱 키인가. 강사 앱 키를 올리면 여기서 걸린다.
           test "$MEMBER_KEY_ALIAS" = "bonita-member-upload" || {
             echo "[WRONG_KEY_ALIAS] 별칭이 bonita-member-upload 가 아닙니다."; exit 1; }
+          # 서비스 계정 키가 읽히는가. 값은 한 글자도 찍지 않는다.
+          python3 -c 'import json,os; c=json.loads(os.environ["GOOGLE_PLAY_SERVICE_ACCOUNT_CREDENTIALS"]); assert c.get("type")=="service_account" and c.get("private_key") and c.get("client_email"), "INVALID_PLAY_CREDENTIALS"'
 
       - name: Install npm packages
         script: npm ci
@@ -634,15 +640,32 @@ workflows:
           # 강사 앱을 건드리지 않았는가.
           test -z "$(git status --porcelain android/ ios/)"
 
+      - name: Play 의 가장 큰 번호보다 큰 versionCode
+        # Play 는 같은 번호를 두 번 받지 않는다. 빌드 번호만 쓰면 로컬에서 올린
+        # AAB 나 다른 트랙의 번호와 부딪힐 수 있어서, Play 에 실제로 있는 가장 큰
+        # 번호를 물어 그보다 크게 잡는다 (강사 앱과 같은 규칙 · tools/android/ci-version.mjs).
+        # 물어보지 못하면 멈춘다 -- 옛 번호로 짐작해 올리지 않는다.
+        script: |
+          set -euo pipefail
+          if ! LATEST="$(google-play get-latest-build-number --package-name "$PACKAGE_NAME")"; then
+            echo "[PLAY_VERSION_LOOKUP_FAILED] Play 에서 최신 번호를 읽지 못했습니다."
+            echo "  서비스 계정에 보니따필라테스 앱 권한이 있는지, 앱에 올라간 번들이 하나라도 있는지 보세요."
+            exit 1
+          fi
+          VERSION_CODE="$(LATEST="$LATEST" node --input-type=module -e "
+            import { nextPlayVersion } from './tools/android/ci-version.mjs';
+            console.log(nextPlayVersion(process.env.BUILD_NUMBER, process.env.LATEST));
+          ")"
+          echo "Play 최대 $LATEST → versionCode $VERSION_CODE"
+          echo "MEMBER_VERSION_CODE=$VERSION_CODE" >> "$CM_ENV"
+
       - name: AAB 와 APK
-        # versionCode 는 이 워크플로의 빌드 번호다 -- Play 는 같은 번호를 두 번
-        # 받지 않는다. 손으로 올리는 번호는 올리는 것을 잊은 날 조용히 틀린다.
         script: |
           set -euo pipefail
           cd member-app/android
           chmod +x gradlew
           ./gradlew bundleRelease assembleRelease --console=plain \
-            -PmemberVersionCode="$BUILD_NUMBER"
+            -PmemberVersionCode="$MEMBER_VERSION_CODE"
 
       - name: 서명과 번호를 확인한다
         script: |
@@ -662,7 +685,7 @@ workflows:
           "
           BUILD_TOOLS="$(ls -d "$ANDROID_SDK_ROOT"/build-tools/* | sort -V | tail -1)"
           "$BUILD_TOOLS/aapt2" dump badging "$APK" | sed -n '1p'
-          "$BUILD_TOOLS/aapt2" dump badging "$APK" | grep "package: name='com.bonitapilates.member' versionCode='$BUILD_NUMBER'"
+          "$BUILD_TOOLS/aapt2" dump badging "$APK" | grep "package: name='com.bonitapilates.member' versionCode='$MEMBER_VERSION_CODE'"
           "$BUILD_TOOLS/apksigner" verify --print-certs "$APK" | grep -i "SHA-1"
 
       - name: 남은 비밀을 걷는다
@@ -673,6 +696,23 @@ workflows:
       - member-app/android/app/build/outputs/bundle/release/*.aab
       - member-app/android/app/build/outputs/apk/release/*.apk
       - member-app/android/app/build/outputs/mapping/release/mapping.txt
+
+    # Play 프로덕션으로 올린다 (대표 결정 2026-10-30, 강사 앱과 같게).
+    #
+    # **지금은 초안(draft)이다.** 한 번도 공개된 적 없는 앱에는 Play API 가 초안
+    # 릴리스만 만들게 한다 -- 초안이 아니면 "Only releases with status draft may
+    # be created on draft app" 으로 거절된다. 그래서 Codemagic 은 AAB 를
+    # 프로덕션 트랙에 초안으로 올리고, 대표가 Play Console 에서 "검토를 위해
+    # 전송" 을 누른다. 첫 출시에는 단계적 출시가 없다 (받을 기존 사용자가 없다).
+    #
+    # 첫 출시가 공개된 뒤에는 강사 앱처럼 바꾼다:
+    #   submit_as_draft: false
+    #   rollout_fraction: 0.2     # 5명 중 1명부터. 지우면 100% 즉시 공개
+    publishing:
+      google_play:
+        credentials: $GOOGLE_PLAY_SERVICE_ACCOUNT_CREDENTIALS
+        track: production
+        submit_as_draft: true
 
   instructor-android-production:
     name: Pilateacher Android Production

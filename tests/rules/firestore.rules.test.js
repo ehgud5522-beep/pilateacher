@@ -30,7 +30,11 @@ import {
 import {
   PRICING_RULE, netContractPriceFor,
 } from "../../src/data/schema/deduction-pricing.js";
-import { CLIENT_STATUS_FOR_CREATE } from "../../src/data/repositories/client-repository.js";
+import {
+  CLIENT_STATUS_FOR_CREATE, createClient, createFirestoreClientStore, listClients,
+} from "../../src/data/repositories/client-repository.js";
+import { mergeRoster } from "../../src/features/roster/roster-bridge.js";
+import { linkCandidates, linkDeviceMember } from "../../src/features/roster/unlinked-members.js";
 import { createFirestorePassStore, deductPass } from "../../src/data/repositories/pass-repository.js";
 import {
   createFirestoreLessonScheduleStore, publishScheduledLessons,
@@ -5227,5 +5231,75 @@ describe("schedule publish — two PCs, no reviving what another PC cancelled", 
     // PC-B 에서 지웠다가 되돌리기를 누른 경우: 이번 저장에 새로 들어왔다.
     assert.deepEqual(outcomes(await publish("pc-b", [], [entry()])), ["written"]);
     assert.equal((await status("pc-1")).updatedDevice, "pc-b");
+  });
+});
+
+/* ── 회원 등록: 앱 코드 그대로 (2026-10-31) ─────────────────────────────────
+   센터 계정의 회원 등록은 더보기 → 센터 회원 관리 한 곳이다. 등록 직후 명부를
+   다시 읽으면 회원 탭 · 수업 등록의 회원 선택에 그 회원이 서는지, 다른 PC 가 먼저
+   올린 같은 회원은 막히는지, 기기에만 있던 회원을 올리면 기록이 따라가는지 본다. */
+describe("member registration — the app code through the rules", () => {
+  const storeFor = (userId) => createFirestoreClientStore({ firestore: dbFor(userId) });
+  const register = (userId, input, existingClients = []) => createClient(ORG_A, {
+    locationId: "location-a", createdBy: userId, existingClients, ...input,
+  }, { store: storeFor(userId), checkServer: true, newId: () => `reg-${String(input.phone).replace(/-/g, "")}` });
+  /* App.jsx 와 같은 순서: 명부를 다시 읽어 기기 회원과 합친다. 수업 등록의 회원
+     선택은 이 명부(rosterDb.members)에서 운영 중인 회원을 고른다. */
+  const rosterAfterReload = async (userId, deviceMembers = []) => mergeRoster({
+    clients: await listClients(ORG_A, { store: storeFor(userId) }),
+    members: deviceMembers, passes: [], hideUnlinked: true,
+  });
+
+  test("대표가 등록하면 다시 읽은 명부 · 수업 등록 회원 선택에 바로 선다", async () => {
+    await assertSucceeds(register(users.owner, { name: "새회원", phone: "010-7000-0001" }));
+    const roster = await rosterAfterReload(users.owner);
+    const added = roster.roster.find((member) => member.name === "새회원");
+    assert.ok(added, "회원 탭 명부에 있다");
+    assert.equal(added.status, "active", "수업 등록의 회원 선택은 운영 중인 회원을 고른다");
+    assert.equal(added.orgClientId, "reg-01070000001", "서버 문서의 id 로 선다");
+  });
+
+  test("다른 PC 가 먼저 올린 같은 회원은 만들지 않는다 — 화면의 명부가 옛것이어도", async () => {
+    await register(users.owner, { name: "중복회원", phone: "01070000002" });
+    // PC-B 는 명부를 열어 둔 뒤라 그 회원을 모른다 (existingClients 비어 있음).
+    await assert.rejects(
+      register(users.manager, { name: "중복회원", phone: "010-7000-0002" }, []),
+      (error) => error.code === "duplicate_phone" && error.sameName === true && error.existingClientId === "reg-01070000002",
+    );
+    await assert.rejects(
+      register(users.manager, { name: "다른이름", phone: "01070000002" }, []),
+      (error) => error.code === "duplicate_phone" && error.sameName === false,
+    );
+    const same = (await listClients(ORG_A, { store: storeFor(users.owner) })).filter((client) => client.phone === "01070000002");
+    assert.equal(same.length, 1, "한 명뿐이다");
+  });
+
+  test("강사는 센터 명부에 등록하지 못한다 (규칙) — 기기 회원은 잇기만 한다", async () => {
+    await assertFails(register(users.instructor, { name: "강사등록", phone: "01070000003" }));
+  });
+
+  test("기기에만 있던 회원을 올리면 연락처로 이어져 기록이 따라간다 — 지우지 않는다", async () => {
+    const device = [{ id: "device-1", name: "기기회원", phone: "010-7000-0004", notes: [{ id: "n1", body: "기록" }] }];
+    const before = await rosterAfterReload(users.owner, device);
+    assert.deepEqual(before.unlinkedLocal.map((member) => member.id), ["device-1"], "센터에 등록되지 않은 회원 1명");
+    assert.equal(before.roster.some((member) => member.id === "device-1"), false, "목록에는 없다");
+    await assertSucceeds(register(users.owner, { name: "기기회원", phone: device[0].phone }));
+    const after = await rosterAfterReload(users.owner, device);
+    const linked = after.roster.find((member) => member.id === "device-1");
+    assert.ok(linked, "같은 id 로 명부에 선다");
+    assert.equal(linked.notes[0].body, "기록", "수업기록이 따라간다");
+    assert.equal(after.unlinkedLocal.length, 0);
+  });
+
+  test("기기 회원을 기존 센터 회원과 이으면 그 회원으로 선다", async () => {
+    await register(users.owner, { name: "센터회원", phone: "01070000005" });
+    const device = [{ id: "device-2", name: "센터회원(기기)", phone: "", notes: [{ id: "n2", body: "기록2" }] }];
+    const before = await rosterAfterReload(users.owner, device);
+    const candidate = linkCandidates(before.roster).find((member) => member.name === "센터회원");
+    assert.ok(candidate, "아직 이어지지 않은 센터 회원이 후보다");
+    const { outcome, members } = linkDeviceMember(device, "device-2", candidate);
+    assert.equal(outcome, "linked");
+    const after = await rosterAfterReload(users.owner, members);
+    assert.equal(after.roster.find((member) => member.id === "device-2")?.notes[0].body, "기록2");
   });
 });

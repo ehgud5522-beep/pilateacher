@@ -17,6 +17,7 @@ import {
   getDocs,
   increment,
   query,
+  runTransaction,
   serverTimestamp,
   setDoc,
   updateDoc,
@@ -2254,6 +2255,29 @@ describe("collection queries the app will run", () => {
     assert.equal(snapshot.size, 1);
     await assertFails(getDocs(listOf(users.outsider, "organizations", ORG_A, "lessons")));
     await assertFails(getDocs(listOf(null, "organizations", ORG_A, "lessons")));
+  });
+
+  /* 강사 일정 → 센터 서버 (2026-10-30, 회원 앱 개편 3단계). 앱은 확정된 수업을
+     덮지 않으려고 트랜잭션 안에서 먼저 읽는다 -- 새 일정이면 **없는 문서를**
+     읽는다. get 규칙이 resource.data 를 보면 없는 문서에서 거절되고, 새 일정이
+     전부 permission-denied 로 끝났다 (2026-10-31, 운영에서 확인). */
+  test("staff can read a lesson that does not exist yet — the schedule publish transaction", async () => {
+    for (const role of ["owner", "instructor"]) {
+      const db = dbFor(users[role]);
+      const reference = doc(db, "organizations", ORG_A, "lessons", `lesson-new-${role}`);
+      await assertSucceeds(getDoc(reference));
+      await assertSucceeds(runTransaction(db, async (transaction) => {
+        const snapshot = await transaction.get(reference);
+        assert.equal(snapshot.exists(), false);
+        transaction.set(reference, {
+          organizationId: ORG_A, lessonId: `lesson-new-${role}`, status: "scheduled",
+          clientIds: ["client-member"], clientId: "client-member",
+        }, { merge: true });
+      }));
+    }
+    await assertFails(getDoc(doc(dbFor(users.outsider), "organizations", ORG_A, "lessons", "lesson-new-outsider")));
+    await assertFails(getDoc(doc(dbFor(null), "organizations", ORG_A, "lessons", "lesson-new-anon")));
+    await assertFails(getDoc(doc(dbFor(users.member), "organizations", ORG_A, "lessons", "lesson-new-member")));
   });
 
   test("lesson participants list for any member of the organization", async () => {

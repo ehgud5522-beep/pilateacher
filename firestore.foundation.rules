@@ -620,8 +620,13 @@ service cloud.firestore {
 
       match /lessons/{lessonId} {
         // See the locations block for why get and list are split.
+        /* 없는 문서도 읽게 둔다 (2026-10-31). 강사 일정을 서버에 쓸 때 앱은 확정된
+           수업을 덮지 않으려고 트랜잭션 안에서 먼저 읽는다 -- 새 일정이면 아직
+           없는 문서다. resource.data 만 보면 그 읽기가 거절되고, 새 일정이 전부
+           permission-denied 로 끝났다 (lesson-schedule-repository.js). 없는 문서를
+           읽어 알 수 있는 것은 "없다" 하나뿐이고, 센터 직원에게만 열린다. */
         allow get: if isCentreStaff(organizationId)
-          && resource.data.organizationId == organizationId;
+          && (resource == null || resource.data.organizationId == organizationId);
         allow list: if isCentreStaff(organizationId);
         allow create: if request.resource.data.organizationId == organizationId
           && hasRole(organizationId, ["owner", "area_manager", "manager", "instructor", "staff"]);

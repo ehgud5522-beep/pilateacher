@@ -48,12 +48,17 @@ export { normalizePhone };
  * Firestore 를 읽고 쓰는 기본 구현. firebase 모듈은 호출 시점에만 불러온다 —
  * product-repository.js 의 createFirestoreProductStore 와 같은 방식이다.
  */
-export function createFirestoreClientStore() {
+/**
+ * @param {{ firestore?: any }} [storeOptions]  규칙 테스트가 에뮬레이터를 넘긴다.
+ *   앱은 넘기지 않는다 -- 그때는 getFirestore().
+ */
+export function createFirestoreClientStore(storeOptions = {}) {
   const load = () => import("firebase/firestore");
+  const db = async () => storeOptions.firestore || (await load()).getFirestore();
   return {
     list: async (collectionPath, options = {}) => {
-      const { collection, getDocs, getFirestore, query, where } = await load();
-      const base = collection(getFirestore(), collectionPath);
+      const { collection, getDocs, query, where } = await load();
+      const base = collection(await db(), collectionPath);
       /* 강사는 **조건이 붙은 질의만** 보낸다. 조건 없는 목록 읽기는 규칙이
          거부하므로(3단계), 여기서 안 붙이면 화면이 통째로 빈다. 단일 조건이라
          자동 인덱스로 처리된다 -- 새 색인이 필요 없다. */
@@ -64,8 +69,16 @@ export function createFirestoreClientStore() {
       return snapshot.docs.map((document) => ({ id: document.id, ...document.data() }));
     },
     create: async (documentPath, data) => {
-      const { doc, getFirestore, setDoc } = await load();
-      await setDoc(doc(getFirestore(), documentPath), data);
+      const { doc, setDoc } = await load();
+      await setDoc(doc(await db(), documentPath), data);
+    },
+    /* 이 번호를 쓰는 회원 -- 등록 직전에 서버에 다시 묻는다 (2026-10-31).
+       화면이 들고 있는 명부는 열 때의 것이라, 다른 PC 가 그사이 같은 회원을
+       등록했으면 모른다. 단일 조건이라 자동 인덱스로 풀린다. */
+    findByPhone: async (collectionPath, phone) => {
+      const { collection, getDocs, query, where } = await load();
+      const snapshot = await getDocs(query(collection(await db(), collectionPath), where("phone", "==", phone)));
+      return snapshot.docs.map((document) => ({ id: document.id, ...document.data() }));
     },
     serverTimestamp: async () => {
       const { serverTimestamp } = await load();
@@ -191,6 +204,11 @@ export function findSameNameClients(clients, name) {
  * }} input
  * @param {{ store?: ClientStore, newId?: () => string }} [options]
  */
+/**
+ * @param {string} organizationId
+ * @param {any} input
+ * @param {{ store?: any, newId?: () => string, checkServer?: boolean }} [options]
+ */
 export async function createClient(organizationId, input, options = {}) {
   const {
     store = createFirestoreClientStore(),
@@ -208,10 +226,22 @@ export async function createClient(organizationId, input, options = {}) {
      먼저 막지만, 화면만 막으면 다른 호출부가 생기는 날 조용히 뚫린다.
      넘겨주지 않으면 검사하지 않는다 -- 여기서 명부 전체를 읽으면 등록 한
      번에 회원 수만큼 읽기가 붙는다. */
-  const taken = findSamePhoneClients(input?.existingClients, phone);
+  /* checkServer: 등록 직전에 서버에 한 번 더 묻는다. 센터에는 PC 가 두 대인
+     곳이 많다 -- 두 사람이 같은 회원을 거의 동시에 등록하면 화면의 명부로는
+     못 막는다. 같은 번호가 있으면 **새로 만들지 않고** 그 회원을 알려 준다. */
+  const onServer = options.checkServer === true && typeof store.findByPhone === "function"
+    ? await store.findByPhone(clientsCollection(organization), phone)
+    : [];
+  const taken = [...findSamePhoneClients(input?.existingClients, phone), ...onServer];
   if (taken.length > 0) {
+    const name = String(input?.name ?? "").trim();
     throw Object.assign(new Error("duplicate_phone"), {
-      code: "duplicate_phone", clientName: String(taken[0]?.name || ""),
+      code: "duplicate_phone",
+      clientName: String(taken[0]?.name || ""),
+      existingClientId: String(taken[0]?.id || ""),
+      /* 이름까지 같으면 같은 사람이다 -- "기존 회원 보기" 로 안내한다.
+         이름이 다르면 번호를 잘못 친 것일 수 있다. */
+      sameName: Boolean(name) && String(taken[0]?.name || "").trim() === name,
     });
   }
 

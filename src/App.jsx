@@ -167,6 +167,9 @@ import {
   settlementSkipsOf,
 } from "./features/schedule/lesson-settlement.js";
 import {
+  DELETE_MODE, canEditLessonInfo, lessonDeletePolicy, opensEditingFirst, restoreDeletedLesson, settledLockNotice,
+} from "./features/schedule/schedule-edit.js";
+import {
   loadInstructorMonthlyPay, loadOrganizationLedger, loadOrganizationMonthlyPayroll,
   monthRange, onlyNewInstructorRate, payrollClientCsv, summarizeOrganizationPay,
   currentMonth, toDate,
@@ -3995,7 +3998,11 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
   const [memberIds, setMemberIds] = useState(currentIds);
   const [memberNames, setMemberNames] = useState(currentIds.map((id) => members.find((m) => m.id === id)?.name || ""));
   const [del, setDel] = useState(false);
-  const [editingInfo, setEditingInfo] = useState(!draft.id);
+  /* 앞날의 일정은 열자마자 고치는 칸을 펼친다 -- 잘못 넣은 것을 고치러 연 것이다
+     (schedule-edit.js). 확정된 수업은 펼치지 않고, 고치는 버튼도 없다. */
+  const [editingInfo, setEditingInfo] = useState(() => !draft.id || opensEditingFirst(draft, todayISO()));
+  const infoLocked = Boolean(draft.id) && !canEditLessonInfo(draft);
+  const deletePolicy = lessonDeletePolicy(draft);
   const [activeMemberId, setActiveMemberId] = useState(currentIds[0] || "");
   const [recordMode, setRecordMode] = useState(null);
   const [recordFallback, setRecordFallback] = useState("");
@@ -4112,7 +4119,7 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
               <p className="text-sm font-extrabold" style={{ color: INK }}>{draft.personal ? draft.title : isGroup ? `그룹 ${num(draft.groupCount) || DEFAULT_GROUP_COUNT}명` : `${draft.type} · ${attendeesOf(draft).length}명`}</p>
               <p className="mt-0.5 text-xs tabular-nums" style={{ color: SUB }}>{draft.start}~{draft.end || addMin(draft.start, Number(draft.dur) || 50)}{lessonEquipFullText(draft) ? ` · ${lessonEquipFullText(draft)}` : ""}</p>
             </div>
-            <button onClick={() => setEditingInfo(true)} className="shrink-0 rounded-lg px-3 py-2 text-xs font-extrabold" style={{ backgroundColor: CARD, color: PRIMARY, border: `1px solid ${LINE}` }}>일정 정보 수정</button>
+            {!infoLocked && <button onClick={() => setEditingInfo(true)} className="shrink-0 rounded-lg px-3 py-2 text-xs font-extrabold" style={{ backgroundColor: CARD, color: PRIMARY, border: `1px solid ${LINE}` }}>일정 정보 수정</button>}
           </div>
         )}
         {editingInfo && <>
@@ -4459,9 +4466,15 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
           </div>
         )}
         {draft.id && !editingInfo && <button type="button" onClick={onClose} className="h-11 w-full rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: INK, border: `1px solid ${LINE}` }}>닫기</button>}
-        {draft.id && onDelete && (del ? (
+        {/* 확정된 수업은 지우는 버튼 대신 다음 할 일을 말한다. 지울 수 있는 일정은
+            누르면 바로 지우고 되돌리기를 준다. 회차가 돌아오는 수업만 한 번 묻는다. */}
+        {draft.id && onDelete && deletePolicy.mode === DELETE_MODE.BLOCKED ? (
+          <p className="rounded-lg px-3 py-2.5 text-xs font-bold leading-relaxed" style={{ backgroundColor: CANVAS, color: SUB }}>{settledLockNotice({ canUnsettle })}</p>
+        ) : draft.id && onDelete && deletePolicy.mode === DELETE_MODE.ONE_TAP ? (
+          <button onClick={() => { onDelete(draft.id); onClose(); }} className="flex h-10 w-full items-center justify-center gap-1.5 rounded-lg text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}><Trash2 size={13} /> 일정 삭제</button>
+        ) : draft.id && onDelete && (del ? (
           <div className="flex items-center gap-2 rounded-lg p-2.5" style={{ backgroundColor: BAD_S }}>
-            <span className="min-w-0 flex-1 text-xs font-bold" style={{ color: BAD }}>이 일정을 삭제할까요?</span>
+            <span className="min-w-0 flex-1 text-xs font-bold" style={{ color: BAD }}>삭제하면 뺀 회차가 회원에게 돌아갑니다. 삭제할까요?</span>
             <button onClick={() => { onDelete(draft.id); onClose(); }} className="rounded-lg px-3 py-2 text-xs font-bold text-white" style={{ backgroundColor: BAD }}>삭제</button>
             <button onClick={() => setDel(false)} className="rounded-lg px-3 py-2 text-xs font-bold" style={{ color: SUB }}>취소</button>
           </div>
@@ -29008,7 +29021,8 @@ export default function App() {
     processPhotoQueue(account?.id, db).catch(() => {});
   }, [account?.id, db, processPhotoQueue, queueCloud, restoreOffer]);
 
-  useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 2600); return () => clearTimeout(t); }, [toast]);
+  /* 되돌리기가 달린 문구는 누를 틈을 준다. */
+  useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), toast.action ? 6000 : 2600); return () => clearTimeout(t); }, [toast]);
 
   const patch = async (id, p, duet) => {
     /* 조직에만 있는 회원은 기기에 행이 없다. 그대로 map 하면 아무 일도 일어나지
@@ -29289,6 +29303,12 @@ export default function App() {
 
   const saveSchedule = (item) => {
     const prev = db.schedule.find((s) => s.id === item.id);
+    /* 확정된 수업의 날짜 · 시간 · 회원은 바꾸지 않는다 (schedule-edit.js). 시트를
+       연 채로 다른 곳에서 확정되면 고치는 칸이 열려 있을 수 있다 -- 여기서 막는다. */
+    if (prev && !canEditLessonInfo(prev)) {
+      setToast({ ok: false, msg: settledLockNotice({ canUnsettle: organizationRoster && isOwnerLevelRole(organizationContext.role) }) });
+      return false;
+    }
     let members = db.members;
     if (prev) {
       const keep = new Set(attendeesOf(item).map((a) => a.memberId));
@@ -29313,6 +29333,13 @@ export default function App() {
   };
   const deleteSchedule = (id) => {
     const s0 = db.schedule.find((x) => x.id === id);
+    /* 확정된 수업은 지우지 않는다 -- 원장의 차감 · 급여가 되짚을 수업을 잃는다.
+       시트가 버튼을 감추지만, 지우는 길이 하나 더 생겨도 여기서 막힌다. */
+    const policy = lessonDeletePolicy(s0);
+    if (s0 && policy.mode === DELETE_MODE.BLOCKED) {
+      setToast({ ok: false, msg: settledLockNotice({ canUnsettle: organizationRoster && isOwnerLevelRole(organizationContext.role) }) });
+      return false;
+    }
     let members = db.members;
     if (s0) attendeesOf(s0).forEach((a) => { if (a.deductFrom) members = restoreOne(members, a.memberId, a.deductFrom); });
     const next = { ...db, members, schedule: db.schedule.filter((x) => x.id !== id) };
@@ -29325,7 +29352,29 @@ export default function App() {
     )).then((saved) => {
       if (saved !== false) syncLessonNotifications({ schedule: next.schedule, members: next.members }).catch(() => {});
     });
-    setToast({ ok: true, msg: "수업을 삭제했습니다." });
+    /* 바로 지운 일정은 되돌릴 수 있다. 같은 id 로 다시 넣으면 회원 앱에도 다시
+       예정으로 나간다(일정 → 서버는 저장 전후를 견준다). 회차가 돌아온 수업은
+       되돌리기를 주지 않는다 -- 지울 때 이미 한 번 물었다. */
+    const undo = s0 && policy.mode === DELETE_MODE.ONE_TAP
+      ? () => {
+        const current = lessonRecordDbRef.current || db;
+        const schedule = restoreDeletedLesson(current.schedule, s0);
+        if (schedule === current.schedule) return;
+        const restored = { ...current, schedule };
+        Promise.resolve(saveDb(restored, {
+          entityType: "lesson", entityId: s0.id, operation: "update",
+          payload: { ...s0, participantCount: attendeesOf(s0).length },
+        })).then((saved) => {
+          if (saved !== false) syncLessonNotifications({ schedule: restored.schedule, members: restored.members }).catch(() => {});
+        });
+        setToast({ ok: true, msg: s0.personal ? "일정을 되돌렸습니다." : "수업을 되돌렸습니다." });
+      }
+      : null;
+    setToast({
+      ok: true,
+      msg: s0?.personal ? "일정을 삭제했습니다." : "수업을 삭제했습니다.",
+      ...(undo ? { action: { label: "되돌리기", run: undo } } : {}),
+    });
   };
   const saveAttendanceOnce = (lessonId, next, descriptor) => {
     if (attendanceMutationsInFlight.current.has(lessonId)) {
@@ -30835,6 +30884,8 @@ export default function App() {
           <div className="flex max-w-[360px] items-center gap-2 px-4 py-2.5" style={{ borderRadius: 8, backgroundColor: toast.ok ? TOAST : BAD, boxShadow: SHADOW }}>
             {toast.ok ? <Check size={14} color="#fff" /> : <AlertTriangle size={14} color="#fff" />}
             <span className="text-sm font-bold text-white">{toast.msg}</span>
+            {toast.action && <button type="button" onClick={() => { const { run } = toast.action; setToast(null); run(); }}
+              className="ml-1 shrink-0 rounded-md px-2.5 py-1 text-xs font-extrabold" style={{ color: "#fff", border: "1px solid rgba(255,255,255,.55)" }}>{toast.action.label}</button>}
           </div>
         </div>
       )}

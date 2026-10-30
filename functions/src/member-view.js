@@ -32,36 +32,57 @@
  * 그리지 않는다 -- 지어낸 값을 넣는 것보다 없는 편이 낫다.
  */
 
-/** 회원권 한 건에서 내보낼 것. 이 목록에 없는 필드는 나가지 않는다. */
+/**
+ * 회원권 한 건에서 내보낼 것. 이 목록에 없는 필드는 나가지 않는다.
+ *
+ * ── 상품명과 차수는 나가지 않는다 (2026-10-30, 대표 결정) ──
+ * 상품명에는 "깍두기 · 양도권 · 세일즈" 같은 센터 안의 이름이 붙고, 차수는
+ * 재등록 몇 번째인지다. 둘 다 관리용이고 회원이 볼 것이 아니다. 회원 화면은
+ * 수업 유형과 횟수로 이름을 짓는다 ("1:1 필라테스 수업 10회") -- 그 재료만
+ * 내보낸다. 화면에서 가리는 것으로 끝내지 않는 이유는 이 문서가 통째로 회원
+ * 폰에 내려가기 때문이다.
+ */
 const PASS_FIELDS = Object.freeze([
-  "passId", "purchaseRound", "totalSessions", "serviceSessions",
+  "passId", "lessonType", "totalSessions", "serviceSessions",
   "remainingCount", "expiresAt", "status", "isDuet", "partnerName",
-  /* 회원이 계약할 때 들은 이름. 금액도 카테고리도 아니다 -- 이름 하나다.
-     없으면 빈 문자열이고 화면이 "22회 회원권" 으로 부른다. */
-  "displayName",
 ]);
 
+/** 회원 화면이 이름을 짓는 수업 유형. 급여카테고리 문자열을 그대로 내보내지 않는다. */
+const LESSON_TYPE = Object.freeze({
+  SOLO: "1:1",
+  DUET: "2:1",
+  DIOSA: "diosa",
+  OTHER: "other",
+});
+
+/* functions/shared/constants.mjs 의 값과 같다 (SESSION_TYPE · DIOSA_CATEGORIES).
+   이 파일은 CommonJS 라 그 모듈을 require 하지 않고 값만 적는다 -- 같은지는
+   tests/member-view.test.js 가 본다. */
+const SESSION_TYPE_SOLO = "pt_1_1";
+const SESSION_TYPE_DUET = "pt_2_1";
+const DIOSA_CATEGORIES = Object.freeze(["diosa_a", "diosa_b"]);
+
 /**
- * 이 회원권을 뭐라고 부르는가.
+ * 이 회원권은 어떤 수업인가.
  *
- * 상품 문서의 이름이 먼저다. 없으면 productId 자체가 이름인 경우를 본다 --
- * 엑셀 이관이 상품명을 그대로 id 로 썼다(migration-repository.js 의
- * `productId: requireText(record, "상품명")`). 그 회원권들이 반송점 명부의
- * 대부분이고, 이름을 못 찾으면 회원 화면에서 전부 "N회 회원권" 이 된다.
- *
- * 만들어진 id 와 사람이 적은 이름은 글자로 갈린다: 생성된 id 는 영숫자와
- * 하이픈뿐이고, 이관이 넣은 이름에는 한글·공백·콜론이 섞인다.
+ * 상품이 스스로 말하는 sessionType 이 먼저다. 없는 옛 상품과 이관분은 회원권의
+ * 급여카테고리로 가른다 (앱의 productGroupOf 와 같은 순서). 그래도 모르면 두
+ * 사람이 함께 쓰는 회원권은 2:1 이다. 나머지는 "other" -- 화면이 유형 없이
+ * "필라테스 수업 N회" 로 부른다.
  */
-function passDisplayName(productId, productNames) {
-  const id = text(productId);
-  if (!id) return "";
-  const found = productNames && typeof productNames.get === "function"
-    ? text(productNames.get(id))
-    : text(productNames?.[id]);
-  if (found) return found;
-  // 이관이 붙이는 자리표시자. 이름이 아니다.
-  if (id === "csv") return "";
-  return /^[A-Za-z0-9_-]+$/.test(id) ? "" : id;
+function lessonTypeOf(pass, productSessionTypes, shared) {
+  const productId = text(pass?.productId);
+  const sessionType = productSessionTypes && typeof productSessionTypes.get === "function"
+    ? text(productSessionTypes.get(productId))
+    : text(productSessionTypes?.[productId]);
+  if (sessionType === SESSION_TYPE_SOLO) return LESSON_TYPE.SOLO;
+  if (sessionType === SESSION_TYPE_DUET) return LESSON_TYPE.DUET;
+  const category = text(pass?.category);
+  if (category.startsWith("pt_1_1")) return LESSON_TYPE.SOLO;
+  if (category.startsWith("pt_2_1")) return LESSON_TYPE.DUET;
+  if (DIOSA_CATEGORIES.includes(category)) return LESSON_TYPE.DIOSA;
+  if (shared) return LESSON_TYPE.DUET;
+  return LESSON_TYPE.OTHER;
 }
 
 /** 수업 이력 한 건에서 내보낼 것. */
@@ -172,6 +193,7 @@ function isUsablePass(pass, now) {
  *   passes?: Array<any>,
  *   ledger?: Array<any>,
  *   locationName?: string,
+ *   productSessionTypes?: Record<string, string> | Map<string, string>,
  *   instructorNames?: Record<string, string> | Map<string, string>,
  *   clientNames?: Record<string, string> | Map<string, string>,
  *   buildJourney?: ((input: any) => any) | null,
@@ -183,6 +205,7 @@ function isUsablePass(pass, now) {
  *   ledger            그 회원권들의 원장 항목
  *   memberNotes       lessonId → 강사가 회원에게 보내려고 적은 말
  *   locationName      지점 이름. id 가 아니다
+ *   productSessionTypes productId → 상품의 sessionType. 수업 유형을 가른다
  *   instructorNames   uid → 이름. 원장은 uid 만 들고 있다
  *   clientNames       clientId → 이름. 듀엣 상대를 부르는 데 쓴다
  *   buildJourney      앱의 pass-journey 계산. 없으면 journey 는 null
@@ -213,13 +236,12 @@ function buildMemberView(input) {
     const others = clientIdsOf(pass).filter((id) => id !== clientId);
     return {
       passId: text(pass.id || pass.passId),
-      purchaseRound: count(pass.purchaseRound),
+      lessonType: lessonTypeOf(pass, input?.productSessionTypes, others.length > 0),
       totalSessions: count(pass.totalSessions),
       serviceSessions: count(pass.serviceSessions),
       remainingCount: count(pass.remainingCount),
       expiresAt: toDate(pass.expiresAt),
       status: text(pass.status),
-      displayName: passDisplayName(pass.productId, input?.productNames),
       isDuet: others.length > 0,
       /* 듀엣 상대의 이름은 언제나 보여준다 (확정 2번). 이름을 모르면 빈
          문자열이고, 화면은 "함께 쓰는 분" 으로 적는다 -- uid 나 clientId 를
@@ -251,14 +273,19 @@ function buildMemberView(input) {
     .sort((left, right) => right.occurredAt - left.occurredAt);
 
   /* 여정은 주입받은 계산이 만든다. 없으면 null 이고 화면은 그 줄을 그리지
-     않는다 -- 지어낸 값을 넣는 것보다 없는 편이 낫다. */
+     않는다 -- 지어낸 값을 넣는 것보다 없는 편이 낫다.
+
+     회원 화면이 쓰는 것은 "지금까지 몇 번" 하나다. 계산 결과에는 회차마다의
+     차수(round · currentRound)와 passId 가 들어 있어서, 통째로 내보내면 위에서
+     뺀 차수가 여기로 다시 나간다. 쓰는 숫자만 고른다. */
   let journey = null;
   if (typeof input?.buildJourney === "function") {
     try {
-      journey = input.buildJourney({
+      const built = input.buildJourney({
         passes: all,
         instructorSessions: count(input?.instructorSessions),
-      }) || null;
+      });
+      journey = built ? { usedTotal: count(built.usedTotal) } : null;
     } catch (_error) {
       journey = null;
     }
@@ -288,6 +315,7 @@ module.exports = {
   FORBIDDEN_FIELDS,
   HISTORY_FIELDS,
   HISTORY_TYPES,
+  LESSON_TYPE,
   MEMBER_NOTE_MAX,
   PASS_FIELDS,
   VIEW_FIELDS,

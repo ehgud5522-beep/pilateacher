@@ -83,31 +83,37 @@ test("잔여 0 과 종료 회원은 서로 다른 말을 한다", async (t) => {
 
 /* ── 회원권 ──────────────────────────────────────────────────────────── */
 
-test("회원권은 서비스 회차를 합쳐 총 회차로 보여준다", async (t) => {
+test("수강권 이름은 수업 유형과 유상 횟수로 짓고, 서비스는 따로 적는다", async (t) => {
+  /* 2026-10-30 대표 결정. 상품명을 쓰지 않는다. 서비스는 산 횟수에 더하지
+     않는다 -- "22회" 라고 하면 회원은 22회를 샀다고 기억한다. */
   const markupOf = await memberScreens(t);
   const passes = markupOf("회원권");
-  // 20 + 서비스 2 = 22회. 서비스도 회원이 쓰는 회차다.
-  assert.match(passes, /22회 중 <b>8회<\/b> 남았어요/);
-  // 계약할 때 들은 이름이 먼저다.
-  assert.match(passes, /1:1 퍼스널 20회/);
+  assert.match(passes, /1:1 필라테스 수업 20회/);
+  assert.match(passes, /서비스 2회/);
+  assert.match(passes, /<b>8회<\/b> 남았어요/);
+  assert.doesNotMatch(passes, /22회/);
 });
 
-test("이름이 없는 회원권은 회차로 부른다", async (t) => {
-  /* 상품 문서가 지워졌거나 아주 옛 회원권이다. 빈 칸을 두면 회원은 무슨
-     회원권인지 알 수 없다. */
+test("서비스가 없으면 서비스 줄이 없다 · 2:1 은 2:1 로 부른다", async (t) => {
   const markupOf = await memberScreens(t);
   const duet = markupOf("회원권 · 듀엣");
-  assert.match(duet, /30회 듀엣 회원권/);
+  assert.match(duet, /2:1 필라테스 수업 30회/);
+  assert.doesNotMatch(duet, /서비스 \d+회/);
 });
 
-test("내부 표현을 화면에 쓰지 않는다", async (t) => {
-  /* "2차" 는 우리가 세는 방식이고 회원은 그렇게 세지 않는다. 분수도 쓰지
-     않는다 -- "8/22회" 는 읽는 사람에게 남은 것을 말해 주지 않는다. */
+test("홈은 한 줄로 부른다", async (t) => {
   const markupOf = await memberScreens(t);
-  const passes = markupOf("회원권");
-  assert.match(passes, /2번째 회원권/);
-  assert.doesNotMatch(passes, /2차/);
-  assert.doesNotMatch(passes, /\d+\/\d+회/);
+  assert.match(markupOf("홈"), /1:1 필라테스 수업 20회 \+ 서비스 2회/);
+});
+
+test("관리용 값은 어느 회원 화면에도 없다", async (t) => {
+  /* 차수 · 상품명 · 세션업 · 급여카테고리 · 단가는 FC · 강사 · 대표 화면에서만
+     쓴다. "2차" 같은 우리 셈법도, 분수 표기도 쓰지 않는다. */
+  const markupOf = await memberScreens(t);
+  const all = markupOf.names.map((name) => markupOf(name)).join("\n");
+  for (const hidden of [/번째 회원권/, /첫 회원권/, /\d차\b/, /퍼스널/, /세션업/, /신규|재등록/, /\d+\/\d+회/, /깍두기|양도권|세일즈/]) {
+    assert.doesNotMatch(all, hidden, String(hidden));
+  }
 });
 
 test("듀엣은 함께 쓴다는 것을 반드시 적는다", async (t) => {

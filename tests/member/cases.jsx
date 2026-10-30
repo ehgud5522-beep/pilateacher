@@ -22,7 +22,7 @@ export const view = (overrides = {}) => ({
   name: "김하나", locationName: "반송점", clientStatus: "active",
   remainingTotal: 8, nextExpiresAt: new Date(2027, 0, 31),
   passes: [{
-    passId: "pass-1", displayName: "1:1 퍼스널 20회", purchaseRound: 2, totalSessions: 20, serviceSessions: 2,
+    passId: "pass-1", lessonType: "1:1", totalSessions: 20, serviceSessions: 2,
     remainingCount: 8, expiresAt: new Date(2027, 0, 31), status: "active",
     isDuet: false, partnerName: "",
   }],
@@ -94,7 +94,7 @@ export function memberScreenCases() {
       name: "회원권 · 듀엣",
       element: <Passes view={view({
         passes: [{
-          passId: "duet-1", purchaseRound: 1, totalSessions: 30, serviceSessions: 0,
+          passId: "duet-1", totalSessions: 30, serviceSessions: 0,
           remainingCount: 29, expiresAt: new Date(2027, 0, 31), status: "active",
           isDuet: true, partnerName: "김민정",
         }],

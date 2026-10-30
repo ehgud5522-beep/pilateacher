@@ -3,7 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
-  FORBIDDEN_FIELDS, HISTORY_FIELDS, MEMBER_NOTE_MAX, PASS_FIELDS, VIEW_FIELDS, buildMemberView,
+  FORBIDDEN_FIELDS, HISTORY_FIELDS, LESSON_TYPE, MEMBER_NOTE_MAX, PASS_FIELDS, VIEW_FIELDS, buildMemberView,
 } = require("../src/member-view");
 
 const NOW = new Date(2026, 8, 20, 12, 0, 0);
@@ -237,9 +237,13 @@ test("the journey comes from the injected calculation, not a copy of it", async 
      배포에 어떻게 넣을지는 트리거를 만들 때 정한다 (설계 10장 5번). */
   const { buildPassJourney } = await import("../shared/pass-journey.mjs");
   const view = build({ buildJourney: buildPassJourney, instructorSessions: 40 });
+  const full = buildPassJourney({ passes: [], instructorSessions: 40 });
   assert.ok(view.journey);
-  assert.equal(view.journey.grandTotal, 22 + view.journey.prior);
-  assert.equal(view.journey.currentRound, 2);
+  /* 회원 화면이 쓰는 "지금까지 몇 번" 하나만 나간다. 계산 결과의 차수
+     (round · currentRound)와 passId 는 나가지 않는다 -- 2026-10-30 결정. */
+  assert.deepEqual(Object.keys(view.journey), ["usedTotal"]);
+  assert.ok(Number.isInteger(view.journey.usedTotal));
+  assert.ok("currentRound" in full || "segments" in full, "계산 결과 모양이 바뀌었다");
 });
 
 test("without the calculation the journey is null, not invented", () => {
@@ -295,41 +299,65 @@ test("an empty member projects an empty record, not a broken one", () => {
   assert.deepEqual(view.updatedAt, NOW);
 });
 
-/* ── 상품 이름 ────────────────────────────────────────────────────────────
+/* ── 수업 유형 (상품명 · 차수는 나가지 않는다) ─────────────────────────────
 
-   회원이 계약할 때 들은 이름이다. 금액도 카테고리도 아니고 이름 하나다 --
-   그것 없이는 화면이 모든 회원권을 "N회 회원권" 으로 부른다. */
+   2026-10-30 대표 결정. 상품명("깍두기 · 양도권 · 세일즈" 같은 센터 안의 이름)과
+   차수는 관리용이다. 회원 화면은 수업 유형과 횟수로 이름을 짓고, 투영은 그
+   재료만 보낸다. */
 
-test("상품 문서의 이름을 쓴다", () => {
-  const view = buildMemberView({
-    client: { id: "client-a", organizationId: "center-a", userId: "uid-1", name: "김하나" },
-    passes: [{ id: "pass-1", clientId: "client-a", productId: "product-1", totalSessions: 20, remainingCount: 8, status: "active" }],
-    productNames: { "product-1": "1:1 퍼스널 20회" },
-  });
-  assert.equal(view.passes[0].displayName, "1:1 퍼스널 20회");
+const lessonView = (pass, extra = {}) => buildMemberView({
+  client: { id: "client-a", organizationId: "center-a", userId: "uid-1", name: "김하나" },
+  passes: [{ id: "pass-1", clientId: "client-a", totalSessions: 10, remainingCount: 8, status: "active", ...pass }],
+  ...extra,
 });
 
-test("이관분은 productId 자체가 이름이다", () => {
-  /* 엑셀 이관이 상품명을 그대로 id 로 썼다 (migration-repository.js).
-     그 회원권들이 반송점 명부의 대부분이고, 못 읽으면 전부 "N회 회원권" 이 된다. */
-  const view = buildMemberView({
-    client: { id: "client-a", organizationId: "center-a", userId: "uid-1", name: "김하나" },
-    passes: [{ id: "csv_1", clientId: "client-a", productId: "1:1 20회 가을 이벤트", totalSessions: 20, remainingCount: 8, status: "active" }],
-    productNames: {},
-  });
-  assert.equal(view.passes[0].displayName, "1:1 20회 가을 이벤트");
+test("상품명 · 차수는 투영에 없다 — 이름이 아무리 그럴듯해도", () => {
+  const view = lessonView(
+    { productId: "1:1 깍두기 양도권 세일즈", purchaseRound: 3, category: "pt_1_1_new" },
+    { productNames: { "1:1 깍두기 양도권 세일즈": "깍두기" } },
+  );
+  const json = JSON.stringify(view);
+  for (const leak of ["깍두기", "양도권", "세일즈", "displayName", "purchaseRound"]) {
+    assert.doesNotMatch(json, new RegExp(leak), `${leak} 가 투영에 있다`);
+  }
+  assert.ok(!PASS_FIELDS.includes("displayName"));
+  assert.ok(!PASS_FIELDS.includes("purchaseRound"));
 });
 
-test("만들어진 id 는 이름이 아니다", () => {
-  /* 상품 문서를 못 읽었을 때 uuid 를 화면에 띄우면, 회원은 그것을 자기
-     회원권 이름으로 읽는다. 차라리 비운다. */
-  for (const productId of ["product-1758000000000", "9f2c4a1b-3d5e", "csv", ""]) {
-    const view = buildMemberView({
-      client: { id: "client-a", organizationId: "center-a", userId: "uid-1", name: "김하나" },
-      passes: [{ id: "pass-1", clientId: "client-a", productId, totalSessions: 20, remainingCount: 8, status: "active" }],
-      productNames: {},
-    });
-    assert.equal(view.passes[0].displayName, "", productId || "(빈 값)");
+test("수업 유형 — 상품의 sessionType 이 먼저다", () => {
+  const types = { "product-1": "pt_1_1", "product-2": "pt_2_1" };
+  assert.equal(lessonView({ productId: "product-1", category: "pt_2_1_new" }, { productSessionTypes: types }).passes[0].lessonType, LESSON_TYPE.SOLO);
+  assert.equal(lessonView({ productId: "product-2" }, { productSessionTypes: types }).passes[0].lessonType, LESSON_TYPE.DUET);
+});
+
+test("수업 유형 — 상품이 말하지 않으면 급여카테고리로 가른다", () => {
+  const cases = [
+    ["pt_1_1_new", LESSON_TYPE.SOLO], ["pt_1_1_repurchase_event", LESSON_TYPE.SOLO],
+    ["pt_2_1_repurchase", LESSON_TYPE.DUET], ["diosa_a", LESSON_TYPE.DIOSA], ["diosa_b", LESSON_TYPE.DIOSA],
+    ["service", LESSON_TYPE.OTHER], ["", LESSON_TYPE.OTHER],
+  ];
+  for (const [category, expected] of cases) {
+    assert.equal(lessonView({ productId: "csv", category }).passes[0].lessonType, expected, category || "(빈 값)");
+  }
+});
+
+test("수업 유형 — 아무것도 모르면 함께 쓰는 회원권은 2:1 이다", () => {
+  const view = lessonView({ clientIds: ["client-a", "client-b"] });
+  assert.equal(view.passes[0].lessonType, LESSON_TYPE.DUET);
+});
+
+test("수업 유형은 급여카테고리 문자열을 그대로 내보내지 않는다", () => {
+  assert.deepEqual(Object.values(LESSON_TYPE).sort(), ["1:1", "2:1", "diosa", "other"]);
+});
+
+test("유형 판정에 쓰는 값이 공용 상수와 같다", async () => {
+  /* member-view.js 는 CommonJS 라 shared/constants.mjs 를 require 하지 않고 값을
+     옮겨 적었다. 상수가 바뀌면 여기서 깨진다. */
+  const { SESSION_TYPE, DIOSA_CATEGORIES } = await import("../shared/constants.mjs");
+  assert.equal(lessonView({ productId: "p" }, { productSessionTypes: { p: SESSION_TYPE.PT_1_1 } }).passes[0].lessonType, LESSON_TYPE.SOLO);
+  assert.equal(lessonView({ productId: "p" }, { productSessionTypes: { p: SESSION_TYPE.PT_2_1 } }).passes[0].lessonType, LESSON_TYPE.DUET);
+  for (const category of DIOSA_CATEGORIES) {
+    assert.equal(lessonView({ category }).passes[0].lessonType, LESSON_TYPE.DIOSA, category);
   }
 });
 
@@ -343,7 +371,7 @@ test("이름이 늘어도 금지 목록은 그대로다", () => {
       baseUnitPrice: 30000, netContractPrice: 1181818, contractPrice: 1300000,
       category: "pt_1_1_new", paymentMethod: "card",
     }],
-    productNames: { "product-1": "1:1 퍼스널 20회" },
+    productSessionTypes: { "product-1": "pt_1_1" },
   });
   const json = JSON.stringify(view);
   for (const forbidden of FORBIDDEN_FIELDS) {

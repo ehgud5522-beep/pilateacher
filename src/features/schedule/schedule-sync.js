@@ -7,7 +7,7 @@
  * 일정만**(instructorId == 나, 7일 전 ~ 60일 뒤) 받아 여기서 기기 일정에 합친다.
  *
  * ── 원칙 ──
- * - **예정 일정은 서버가 기준이다.** 서버 번호(revision)가 기기가 본 번호보다 크면
+ * - **예정 일정은 서버가 기준이다.** 서버 번호(revision)가 기기가 본 번호와 다르면
  *   핵심 칸(날짜 · 시각 · 종류 · 회원 · 방 · 기구)을 서버 것으로 바꾼다
  * - **기기의 것은 지우지 않는다** -- 메모 · 출석 상태 · 확정 기록은 기기 것을 지킨다.
  *   서버에서 지운 일정도, 기기에 출석으로 뺀 회차가 있으면 지우지 않고 알린다
@@ -167,7 +167,7 @@ export function mergeServerLessons(input) {
     const current = byId.get(id);
 
     if (status === "cancelled") {
-      if (!current || serverRevision <= localRevision) continue;
+      if (!current || serverRevision === localRevision) continue;
       if (doc?.deletedAt) {
         /* 지운 일정. 출석으로 뺀 회차(기기 모드)가 있으면 지우지 않는다 -- 지우면
            그 회차를 되돌릴 자리가 사라진다. */
@@ -210,7 +210,10 @@ export function mergeServerLessons(input) {
       summary.added += 1;
       continue;
     }
-    if (serverRevision <= localRevision) continue;
+    /* 번호가 같으면 이미 본 것이다. **다르면 위아래를 가리지 않고 서버를 따른다** --
+       기기의 번호는 서버가 준 것뿐이라 기기가 앞설 수 없다. 서버 번호가 내려간 것은
+       옛 앱의 확정이 문서를 번호 없이 통째로 덮었다가 되돌려진 경우다. */
+    if (serverRevision === localRevision) continue;
     const { attendees, unmatched } = mergedAttendees(doc, current, byClient);
     unmatched.forEach((clientId) => unmatchedClientIds.add(clientId));
     byId.set(id, { ...current, ...core, attendees, syncRevision: serverRevision });

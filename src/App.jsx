@@ -29194,8 +29194,12 @@ export default function App() {
   useEffect(() => {
     if (phase !== "app" || !account?.id) return undefined;
     let alive = true;
-    fbLoadScheduleSyncConfig().then((config) => { if (alive) setScheduleSyncConfig(config); });
-    return () => { alive = false; };
+    const load = () => fbLoadScheduleSyncConfig().then((config) => { if (alive) setScheduleSyncConfig(config); });
+    load();
+    /* 대표가 스위치를 끄면 열어 둔 탭도 돌아올 때 끈다 -- 다음 날까지 기다리지 않는다. */
+    const onVisible = () => { if (document.visibilityState === "visible") load(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { alive = false; document.removeEventListener("visibilitychange", onVisible); };
   }, [phase, account?.id, syncDay]);
   const scheduleSyncOn = scheduleSyncEnabledFor(scheduleSyncConfig, account?.id);
   /* 처음 받아 합치기 전에 이 기기의 데이터를 한 벌 남긴다 (0단계 스냅샷, 사진 원본

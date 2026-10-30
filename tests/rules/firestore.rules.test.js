@@ -5531,3 +5531,34 @@ describe("member registration — the app code through the rules", () => {
     assert.equal(after.roster.find((member) => member.id === "device-2")?.notes[0].body, "기록2");
   });
 });
+
+/* ── 스토어 폰 앱(1.1.43)의 확정은 규칙 2차 뒤에도 된다 (2026-10-31) ─────────────
+   1.1.43 이 lessons 에 쓰는 길은 확정(deductPass) 하나다. 일정 문서를 번호 없이
+   통째로 덮는다(batch.set, merge 없음). 그 배치에는 원장 · 회원권도 함께 들어
+   있어, lessons 쓰기가 막히면 차감 전체가 실패한다. release/1-1-43 의 모양 그대로. */
+describe("store app 1.1.43 settlement — still allowed after the revision rule", () => {
+  const ME = users.instructor;
+  const storeAppLesson = (lessonId) => ({
+    organizationId: ORG_A, lessonId, clientId: "client-member", clientIds: ["client-member"],
+    locationId: "location-a", instructorId: ME, startsAt: new Date(), status: "completed",
+    createdAt: serverTimestamp(), createdBy: ME,
+  });
+  const seed = async (lessonId, data) => testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), "organizations", ORG_A, "lessons", lessonId), data);
+  });
+
+  test("새 문서 · 번호 없는 문서 · 웹이 번호를 붙인 예정 문서 — 모두 덮어 확정한다", async () => {
+    await assertSucceeds(setDoc(doc(dbFor(ME), "organizations", ORG_A, "lessons", "store-new"), storeAppLesson("store-new")));
+    await seed("store-old", { organizationId: ORG_A, status: "scheduled", clientIds: ["client-member"] });
+    await assertSucceeds(setDoc(doc(dbFor(ME), "organizations", ORG_A, "lessons", "store-old"), storeAppLesson("store-old")));
+    await seed("store-rev", { organizationId: ORG_A, status: "scheduled", clientIds: ["client-member"], revision: 4 });
+    await assertSucceeds(setDoc(doc(dbFor(ME), "organizations", ORG_A, "lessons", "store-rev"), storeAppLesson("store-rev")));
+  });
+
+  test("그래도 번호 없는 예정 쓰기(옛 탭)와 번호를 바꾸는 확정은 거절된다", async () => {
+    await seed("store-guard", { organizationId: ORG_A, status: "scheduled", clientIds: ["client-member"], revision: 4 });
+    const ref = doc(dbFor(ME), "organizations", ORG_A, "lessons", "store-guard");
+    await assertFails(setDoc(ref, { organizationId: ORG_A, status: "scheduled", clientIds: ["client-member"] }));
+    await assertFails(setDoc(ref, { ...storeAppLesson("store-guard"), revision: 9 }));
+  });
+});

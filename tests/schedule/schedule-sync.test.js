@@ -179,3 +179,10 @@ test("받기 스위치 — 못 읽으면 꺼짐, 고른 계정만, 전체", asyn
   assert.equal(scheduleSyncEnabledFor({ mode: "all" }, "uid-teacher"), true);
   assert.equal(scheduleSyncEnabledFor({ mode: "off", userIds: ["uid-owner"] }, "uid-owner"), false);
 });
+
+test("서버 번호가 내려가도 서버를 따른다 — 옛 앱의 확정이 번호 없이 덮었다가 되돌려진 경우", () => {
+  const result = merge([local({ syncRevision: 3 })], [doc({ revision: 1, room: "4번룸" })]);
+  assert.equal(result.summary.updated, 1);
+  assert.equal(result.schedule[0].room, "4번룸");
+  assert.equal(result.schedule[0].syncRevision, 1);
+});

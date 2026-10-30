@@ -71,9 +71,29 @@ function settlementPayload(input) {
   };
 }
 
+/**
+ * 일정 동기화 스위치 (2026-10-31, 서버 기준 동기화 2단계).
+ *
+ * 서버의 일정을 받아 기기에 합치는 것(서버가 기준)을 누구에게 켤 것인가. 대표
+ * 결정: 대표 → 강사 한 명 → 전체 순서로 켠다. 폰도 쓰는 계정은 그 폰이 새 빌드를
+ * 받은 뒤에 켠다 (Android 프로덕션 100% · 최소 버전 강제) -- 옛 폰은 일정을 서버에
+ * 보내지 않아, 켜도 그 폰의 일정은 따라오지 않는다.
+ *
+ * mode: off (아무도) · listed (userIds 만) · all (전부). 앱은 못 읽으면 꺼진 것으로 본다.
+ */
+function scheduleSyncPayload(input) {
+  const mode = text(input?.mode);
+  if (!["off", "listed", "all"].includes(mode)) throw new Error("schedule_sync_mode_invalid");
+  const userIds = [...new Set((Array.isArray(input?.userIds) ? input.userIds : []).map(text).filter(Boolean))];
+  if (userIds.length > 50) throw new Error("schedule_sync_too_many_users");
+  if (userIds.some((id) => !/^[A-Za-z0-9_-]{6,128}$/.test(id))) throw new Error("schedule_sync_user_invalid");
+  return { mode, userIds };
+}
+
 const WRITERS = Object.freeze({
   appUpdate: appUpdatePayload,
   settlement: settlementPayload,
+  scheduleSync: scheduleSyncPayload,
 });
 
 /**
@@ -116,6 +136,7 @@ module.exports = {
   buildField,
   appUpdatePayload,
   settlementPayload,
+  scheduleSyncPayload,
   readRuntimeConfig,
   writeRuntimeConfig,
 };

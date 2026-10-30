@@ -33,8 +33,12 @@ import {
 import { CLIENT_STATUS_FOR_CREATE } from "../../src/data/repositories/client-repository.js";
 import { createFirestorePassStore, deductPass } from "../../src/data/repositories/pass-repository.js";
 import {
-  createFirestoreLessonScheduleStore, publishScheduledLessons,
+  createFirestoreLessonScheduleStore, publishScheduledLessons, reopenSettledLesson,
 } from "../../src/data/repositories/lesson-schedule-repository.js";
+import { readMyLessons } from "../../src/data/repositories/lesson-sync-repository.js";
+import {
+  applyPublishedRevisions, mergeServerLessons, reapplyChanges, syncWindow,
+} from "../../src/features/schedule/schedule-sync.js";
 import { scheduleChanges } from "../../src/features/schedule/schedule-publish.js";
 import {
   listBackups, preservePreviousBackup, pushBackup, uploadMigrationSnapshot,
@@ -514,6 +518,12 @@ describe("role permissions", () => {
     await assertSucceeds(setDoc(doc(dbFor(users.staff), "organizations", ORG_A, "lessons", "lesson-a"), {
       organizationId: ORG_A,
       status: "scheduled",
+      revision: 1,
+    }));
+    // 수정 번호 없이 만드는 옛 탭은 거절된다 (2026-10-31, 동기화 1단계).
+    await assertFails(setDoc(doc(dbFor(users.staff), "organizations", ORG_A, "lessons", "lesson-old-tab"), {
+      organizationId: ORG_A,
+      status: "scheduled",
     }));
     await assertFails(setDoc(doc(dbFor(users.staff), "assessments", "assessment-staff"), {
       organizationId: ORG_A,
@@ -536,10 +546,13 @@ describe("role permissions", () => {
       clientId: "client-dual",
       status: "active",
     }));
+    /* dual-write 어댑터(운영에서 꺼짐)도 다시 켤 때는 수정 번호를 실어야 한다 --
+       동기화 1단계부터 번호 없는 lessons 쓰기는 거절된다. */
     await assertSucceeds(setDoc(doc(staffDb, "organizations", ORG_A, "lessons", "lesson-dual"), {
       organizationId: ORG_A,
       lessonId: "lesson-dual",
       status: "scheduled",
+      revision: 1,
     }));
     await assertSucceeds(setDoc(doc(staffDb, "organizations", ORG_A, "lessons", "lesson-dual", "participants", "client-dual"), {
       organizationId: ORG_A,
@@ -2279,7 +2292,7 @@ describe("collection queries the app will run", () => {
         const snapshot = await transaction.get(reference);
         assert.equal(snapshot.exists(), false);
         transaction.set(reference, {
-          organizationId: ORG_A, lessonId: `lesson-new-${role}`, status: "scheduled",
+          organizationId: ORG_A, lessonId: `lesson-new-${role}`, status: "scheduled", revision: 1,
           clientIds: ["client-member"], clientId: "client-member",
         }, { merge: true });
       }));
@@ -5221,11 +5234,226 @@ describe("schedule publish — two PCs, no reviving what another PC cancelled", 
     assert.equal((await status("pc-1")).status, "scheduled");
   });
 
-  test("다른 PC 의 취소를 되돌리기로 되살릴 수는 있다 — 사람이 누른 것이다", async () => {
+  test("다른 PC 의 취소를 [다시 살리기] 로 되살릴 수는 있다 — 사람이 누른 것이다", async () => {
     await publish("pc-a", [], [entry()]);
     await publish("pc-a", [entry()], []);
-    // PC-B 에서 지웠다가 되돌리기를 누른 경우: 이번 저장에 새로 들어왔다.
-    assert.deepEqual(outcomes(await publish("pc-b", [], [entry()])), ["written"]);
+    // 서버 번호를 모르는 채로는 되살리지 않는다 -- 그사이 PC-A 가 지웠다 (충돌).
+    assert.deepEqual(outcomes(await publish("pc-b", [], [entry()])), ["conflict"]);
+    // [다시 살리기] 는 서버 번호(2)를 들고 다시 쓴다 (App.jsx reapplyMine).
+    const results = await publish("pc-b", [], [entry({ syncRevision: (await status("pc-1")).revision })]);
+    assert.deepEqual(outcomes(results), ["written"]);
+    assert.equal((await status("pc-1")).status, "scheduled");
     assert.equal((await status("pc-1")).updatedDevice, "pc-b");
+  });
+});
+
+/* ── 서버 기준 동기화 1 · 2단계: 앱 코드 그대로 (2026-10-31) ────────────────────
+   PC 두 대(pc-a · pc-b)가 같은 강사 계정으로 일정을 고친다. 보내기는
+   publishScheduledLessons, 받기는 readMyLessons → mergeServerLessons, 확정은
+   deductPass, 되돌리기는 reopenSettledLesson -- 앱이 부르는 함수 그대로다. */
+describe("schedule sync — two PCs through the rules, the app code as is", () => {
+  const ME = users.instructor;
+  const MEMBERS = [{ id: "m-1", name: "회원", orgClientId: "client-member", orgLocationId: "location-a" }];
+  const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const DAY = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, "0")}-${String(yesterday.getDate()).padStart(2, "0")}`;
+  const entry = (extra = {}) => ({
+    id: "sync-1", date: DAY, start: "19:00", end: "19:50", type: "개인레슨", room: "1번룸",
+    attendees: [{ memberId: "m-1", status: "booked" }], ...extra,
+  });
+  /* 기기 하나. 일정을 들고 있고, 보낸 결과의 번호를 적고(applyPublishedRevisions),
+     서버를 읽어 합친다(mergeServerLessons) -- App.jsx 의 publishSchedule · 실시간 반영과 같다. */
+  const device = (deviceId, userId = ME) => {
+    let schedule = [];
+    const store = createFirestoreLessonScheduleStore({ firestore: dbFor(userId) });
+    return {
+      get schedule() { return schedule; },
+      set schedule(next) { schedule = next; },
+      async save(after) {
+        const before = schedule;
+        const beforeIds = new Set(before.map((item) => item.id));
+        const documents = scheduleChanges({ before, after, members: MEMBERS, organizationId: ORG_A, instructorId: ME })
+          .map((document) => ({ ...document, allowRevive: !beforeIds.has(document.lessonId) }));
+        schedule = after;
+        const results = await publishScheduledLessons(ORG_A, documents, { store, createdBy: userId, deviceId });
+        schedule = applyPublishedRevisions(schedule, results);
+        return results.map((result) => result.outcome);
+      },
+      async pull() {
+        const { from, to } = syncWindow(new Date());
+        const docs = await readMyLessons({ firestore: dbFor(userId), organizationId: ORG_A, instructorId: ME, from, to });
+        const merged = mergeServerLessons({ schedule, docs, rosterMembers: MEMBERS, staffName: "강사" });
+        schedule = merged.schedule;
+        return merged;
+      },
+      find(id = "sync-1") { return schedule.find((item) => item.id === id); },
+    };
+  };
+  const server = async (id = "sync-1") => {
+    let value = null;
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const snapshot = await getDoc(doc(context.firestore(), "organizations", ORG_A, "lessons", id));
+      value = snapshot.exists() ? snapshot.data() : null;
+    });
+    return value;
+  };
+  const lessonRef = (userId, id = "sync-1") => doc(dbFor(userId), "organizations", ORG_A, "lessons", id);
+
+  test("T1 수정 번호 — 만들기 1, 고치기 2, 번호가 틀린 쓰기는 앱이 멈추고 규칙도 거절한다", async () => {
+    const pcA = device("pc-a");
+    assert.deepEqual(await pcA.save([entry()]), ["written"]);
+    assert.equal((await server()).revision, 1);
+    assert.equal(pcA.find().syncRevision, 1, "보낸 번호를 기기에 적는다");
+    assert.deepEqual(await pcA.save([entry({ start: "20:00", end: "20:50", syncRevision: 1 })]), ["written"]);
+    assert.equal((await server()).revision, 2);
+    // 앱을 거치지 않고 번호를 건너뛰거나 되돌리는 쓰기는 규칙이 거절한다.
+    await assertFails(setDoc(lessonRef(ME), { revision: 5, room: "x" }, { merge: true }));
+    await assertFails(setDoc(lessonRef(ME), { revision: 2, room: "x" }, { merge: true }));
+    await assertSucceeds(setDoc(lessonRef(ME), { revision: 3, room: "x" }, { merge: true }));
+  });
+
+  test("T2 옛 버전 쓰기 — 번호 없이 덮는 3단계 코드 모양은 거절, 번호 없던 옛 문서는 첫 쓰기 1로", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "organizations", ORG_A, "lessons", "old-1"), {
+        organizationId: ORG_A, lessonId: "old-1", status: "scheduled", clientIds: ["client-member"], instructorId: ME,
+        startsAt: new Date(), lessonType: "1:1",
+      });
+    });
+    // 옛 탭(3단계): 트랜잭션 안에서 읽고 번호 없이 merge 로 쓴다.
+    const oldTab = dbFor(ME);
+    await assertFails(runTransaction(oldTab, async (transaction) => {
+      const reference = doc(oldTab, "organizations", ORG_A, "lessons", "old-1");
+      await transaction.get(reference);
+      transaction.set(reference, { organizationId: ORG_A, status: "scheduled", room: "옛탭" }, { merge: true });
+    }));
+    await assertFails(setDoc(lessonRef(ME, "old-new"), { organizationId: ORG_A, status: "scheduled", clientIds: ["client-member"] }));
+    // 새 코드는 번호 없던 문서에 1 을 쓴다.
+    const pcA = device("pc-a");
+    pcA.schedule = [];
+    assert.deepEqual(await pcA.save([entry({ id: "old-1" })]), ["written"]);
+    assert.equal((await server("old-1")).revision, 1);
+  });
+
+  test("T3 PC 두 대가 같은 일정을 고침 — 늦은 쪽은 충돌, 받아서 다시 적용하면 두 수정이 다 남는다", async () => {
+    const pcA = device("pc-a");
+    const pcB = device("pc-b");
+    await pcA.save([entry()]);
+    await pcB.pull();
+    assert.equal(pcB.find().syncRevision, 1, "PC-B 가 PC-A 의 일정을 받았다");
+    const beforeA = pcA.find();
+    // PC-B 가 방을 먼저 바꾼다.
+    assert.deepEqual(await pcB.save([{ ...pcB.find(), room: "3번룸" }]), ["written"]);
+    // PC-A 는 그걸 모르고 시간을 바꾼다 → 충돌, 쓰지 않는다.
+    const mine = { ...beforeA, start: "21:00", end: "21:50" };
+    assert.deepEqual(await pcA.save([mine]), ["conflict"]);
+    assert.equal((await server()).room, "3번룸");
+    assert.equal((await server()).revision, 2);
+    // 실시간 반영으로 서버 것을 받고, [내 수정 다시 적용] -- 내가 바꾼 칸만 얹는다.
+    await pcA.pull();
+    assert.equal(pcA.find().room, "3번룸");
+    const reapplied = reapplyChanges(pcA.find(), beforeA, mine);
+    assert.deepEqual(await pcA.save([reapplied]), ["written"]);
+    const stored = await server();
+    assert.equal(stored.revision, 3);
+    assert.equal(stored.room, "3번룸", "PC-B 의 수정");
+    assert.equal(stored.startsAt.toDate().getHours(), 21, "PC-A 의 수정");
+  });
+
+  test("T4 삭제 대 수정 — 먼저 저장한 쪽이 이긴다, 되살리기는 사람이 누를 때만", async () => {
+    // A 가 지우고 B 가 고친다.
+    const pcA = device("pc-a");
+    const pcB = device("pc-b");
+    await pcA.save([entry()]);
+    await pcB.pull();
+    assert.deepEqual(await pcA.save([]), ["written"], "PC-A 삭제");
+    assert.equal((await server()).status, "cancelled");
+    assert.ok((await server()).deletedAt, "지운 것과 출석 전원 취소를 가른다");
+    assert.deepEqual(await pcB.save([{ ...pcB.find(), room: "5번룸" }]), ["cancelled_elsewhere"]);
+    const pulled = await pcB.pull();
+    assert.deepEqual(pulled.removedIds, ["sync-1"], "PC-B 화면에서도 사라진다");
+    // [다시 살리기] -- 서버 번호를 들고 다시 넣는다.
+    assert.deepEqual(await pcB.save([entry({ syncRevision: (await server()).revision })]), ["written"]);
+    assert.equal((await server()).status, "scheduled");
+
+    // B 가 고친 뒤 A 가 지운다 → A 의 삭제는 충돌, 일정이 돌아온다.
+    await pcA.pull();
+    await pcB.save([{ ...pcB.find(), room: "6번룸" }]);
+    assert.deepEqual(await pcA.save([]), ["conflict"]);
+    assert.equal((await server()).status, "scheduled");
+    await pcA.pull();
+    assert.equal(pcA.find().room, "6번룸", "PC-A 에 고친 일정이 돌아온다");
+  });
+
+  test("T5 확정 잠금 — 확정은 예정 문서에 합쳐 쓰고, 다른 PC 의 수정은 막히며, 되돌리기는 대표만", async () => {
+    const pcA = device("pc-a");
+    const pcB = device("pc-b");
+    await pcA.save([entry()]);
+    await pcB.pull();
+    let pass = null;
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const snapshot = await getDoc(doc(context.firestore(), "organizations", ORG_A, "passes", PASS_A));
+      pass = { id: snapshot.id, ...snapshot.data() };
+    });
+    await assertSucceeds(deductPass(ORG_A, pass, {
+      instructorId: ME, createdBy: ME, occurredAt: new Date(`${DAY}T19:00:00`), isDeputyDirector: false,
+      lessonId: "sync-1", attendanceByClientId: { "client-member": "attended" },
+    }, { store: createFirestorePassStore({ firestore: dbFor(ME) }) }));
+    const settled = await server();
+    assert.equal(settled.status, "completed");
+    assert.equal(settled.revision, 1, "확정은 번호를 바꾸지 않는다");
+    assert.equal(settled.room, "1번룸", "합쳐 썼다 -- 일정 칸이 남아 확정을 되돌리면 다시 그린다");
+    // PC-B 는 받아서 잠근다. 고쳐도 쓰이지 않는다.
+    await pcB.pull();
+    assert.ok(pcB.find().settledElsewhereAt, "다른 기기에서 확정됨");
+    assert.deepEqual(await pcB.save([{ ...pcB.find(), room: "9번룸" }]), ["settled"]);
+    // 일정 쓰기로 완료를 되돌리는 직접 쓰기는 거절된다 -- 강사도, 번호를 맞춰도.
+    await assertFails(setDoc(lessonRef(ME), { status: "scheduled", revision: 2 }, { merge: true }));
+    await assertFails(reopenSettledLesson(ORG_A, "sync-1", { firestore: dbFor(users.instructor) }));
+    await assertFails(reopenSettledLesson(ORG_A, "sync-1", { firestore: dbFor(users.manager) }));
+    // 대표가 확정을 되돌리면 예정으로, 번호 +1. PC-B 의 잠금이 풀린다.
+    const reopened = await assertSucceeds(reopenSettledLesson(ORG_A, "sync-1", { firestore: dbFor(users.owner), updatedBy: users.owner }));
+    assert.deepEqual(reopened, { outcome: "reopened", revision: 2 });
+    const unlocked = await pcB.pull();
+    assert.equal(unlocked.summary.unlocked, 1);
+    assert.equal(pcB.find().settledElsewhereAt, undefined);
+  });
+
+  test("T6 두 PC 가 같은 수업을 확정 — 두 번째 차감은 거절된다", async () => {
+    const pcA = device("pc-a");
+    await pcA.save([entry()]);
+    let pass = null;
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const snapshot = await getDoc(doc(context.firestore(), "organizations", ORG_A, "passes", PASS_A));
+      pass = { id: snapshot.id, ...snapshot.data() };
+    });
+    const settle = (userId) => deductPass(ORG_A, pass, {
+      instructorId: ME, createdBy: userId, occurredAt: new Date(`${DAY}T19:00:00`), isDeputyDirector: false,
+      lessonId: "sync-1", attendanceByClientId: { "client-member": "attended" },
+    }, { store: createFirestorePassStore({ firestore: dbFor(userId) }) });
+    await assertSucceeds(settle(ME));
+    await assertFails(settle(ME), "같은 원장 항목(sync-1_deduct)을 다시 만들 수 없다");
+  });
+
+  test("T7 내 수업 일정 읽기 — 강사 본인은 된다, 다른 센터 · 회원 · 비로그인은 안 된다", async () => {
+    await device("pc-a").save([entry()]);
+    const { from, to } = syncWindow(new Date());
+    const read = (userId) => readMyLessons({ firestore: dbFor(userId), organizationId: ORG_A, instructorId: ME, from, to });
+    const mine = await assertSucceeds(read(ME));
+    assert.deepEqual(mine.map((item) => item.id), ["sync-1"]);
+    await assertFails(read(users.outsider));
+    await assertFails(read(users.member));
+    await assertFails(read(null));
+  });
+});
+
+describe("schedule sync switch — runtimeConfig/scheduleSync", () => {
+  test("로그인한 사람은 읽고, 앱에서는 아무도 쓰지 못한다 (대표 전용 통로뿐)", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "runtimeConfig", "scheduleSync"), { mode: "listed", userIds: [users.owner] });
+    });
+    await assertSucceeds(getDoc(doc(dbFor(users.instructor), "runtimeConfig", "scheduleSync")));
+    await assertFails(getDoc(doc(dbFor(null), "runtimeConfig", "scheduleSync")));
+    for (const userId of [users.owner, users.instructor]) {
+      await assertFails(setDoc(doc(dbFor(userId), "runtimeConfig", "scheduleSync"), { mode: "all", userIds: [] }));
+    }
   });
 });

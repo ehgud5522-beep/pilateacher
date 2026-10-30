@@ -23,6 +23,8 @@
  * "cancelled" 로 바꾸고, 회원 화면에서는 사라진다 ("취소됨" 을 따로 그리지 않는다).
  */
 
+import { normalizeEquipmentIds } from "./equipment.js";
+
 export const SCHEDULE_STATUS = Object.freeze({
   SCHEDULED: "scheduled",
   CANCELLED: "cancelled",
@@ -101,6 +103,12 @@ export function scheduledLessonDocument(input) {
 
   return {
     lessonId,
+    /* 이 기기가 마지막으로 본 서버 수정 번호 (2026-10-31, 동기화 1단계). 쓰는 쪽이
+       서버의 번호와 견준다 -- 다르면 그사이 다른 기기가 고친 것이다. */
+    baseRevision: Math.max(0, Number(entry.syncRevision) || 0),
+    /* 일정을 지웠다 -- 출석 전원 취소와 가른다. 받는 기기는 지운 것은 지우고,
+       전원 취소는 출석으로 남긴다. */
+    deleted: Boolean(input?.cancelled),
     data: {
       organizationId,
       lessonId,
@@ -114,6 +122,17 @@ export function scheduledLessonDocument(input) {
       lessonType: scheduleLessonType(entry),
       instructorId: text(input?.instructorId),
       locationId: text(linked[0].member?.orgLocationId) || null,
+      /* 다른 기기가 이 일정을 다시 그리는 데 필요한 것 (동기화 2단계). 센터 직원이
+         봐도 되는 것만: 종류 · 방 · 기구. 회원 데이터에는 싣지 않는다 (member-view.js
+         의 허용 목록). 메모는 여전히 기기에만 있다. */
+      scheduleType: text(entry.type) || null,
+      room: text(entry.room) || null,
+      equipmentIds: normalizeEquipmentIds(entry.equipmentIds),
+      /* 관리 등급(디오사). 받는 기기가 이것 없이 그리면 그 수업을 PT 로 확정해
+         회차와 단가가 틀린다. 등급이 있는 회원만. */
+      careGrades: Object.fromEntries(linked
+        .filter(({ attendee }) => text(attendee?.careGrade))
+        .map(({ attendee, member }) => [text(member.orgClientId), text(attendee.careGrade)])),
     },
   };
 }
@@ -125,6 +144,8 @@ function publishedShape(entry) {
     start: text(entry?.start),
     end: text(entry?.end),
     type: text(entry?.type),
+    room: text(entry?.room),
+    equipmentIds: normalizeEquipmentIds(entry?.equipmentIds),
     personal: Boolean(entry?.personal),
     attendees: attendeesOf(entry).map((attendee) => ({
       memberId: text(attendee?.memberId),
@@ -145,7 +166,7 @@ function publishedShape(entry) {
  *   before: Array<any>, after: Array<any>, members: Array<any>,
  *   organizationId: string, instructorId: string,
  * }} input
- * @returns {Array<{ lessonId: string, data: object }>}
+ * @returns {Array<{ lessonId: string, data: object, baseRevision: number, deleted: boolean }>}
  */
 export function scheduleChanges(input) {
   const before = new Map((Array.isArray(input?.before) ? input.before : []).map((entry) => [text(entry?.id), entry]));

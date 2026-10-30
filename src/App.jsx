@@ -27,7 +27,7 @@ import {
 } from "recharts";
 import {
   fbReady, fbAuthApiKey, fbSignInSocial, fbSignInEmail, fbSignUpEmail, fbSignOut, fbOnAuth,
-  fbAuthStateReady, fbLoadProfileState, fbSaveProfile, fbPushBackup, fbPullBackup, fbListBackups, fbUploadMigrationSnapshot,
+  fbAuthStateReady, fbLoadProfileState, fbSaveProfile, fbPushBackup, fbPullBackup, fbListBackups, fbUploadMigrationSnapshot, fbLoadScheduleSyncConfig,
   fbPreservePreviousBackup, PREVIOUS_PHONE_BACKUP, fbReauthenticate, fbRefreshIdToken,
   fbRevokeAppleAccess, fbDeleteCurrentUserAccount, fbLoadAIConsent, fbGrantAIConsent, fbCurrentUserId,
   fbSendPasswordReset,
@@ -135,8 +135,13 @@ import {
 import {
   MEMBER_NOTE_MAX, memberNoteReadFailure, memberNoteSaveFailure, readCentreLessons, readMemberNote, saveMemberNote,
 } from "./data/repositories/member-note-repository.js";
-import { PUBLISH_OUTCOME, publishScheduledLessons } from "./data/repositories/lesson-schedule-repository.js";
+import { PUBLISH_OUTCOME, publishScheduledLessons, reopenSettledLesson } from "./data/repositories/lesson-schedule-repository.js";
+import { subscribeMyLessons } from "./data/repositories/lesson-sync-repository.js";
 import { scheduleChanges } from "./features/schedule/schedule-publish.js";
+import { applyPublishedRevisions, mergeServerLessons, reapplyChanges, syncWindow } from "./features/schedule/schedule-sync.js";
+import { recordSyncReads, syncReadsByDay } from "./features/schedule/sync-read-counter.js";
+import { SCHEDULE_SYNC_MODE, readScheduleSyncConfig, scheduleSyncEnabledFor } from "./features/schedule/sync-switch.js";
+import { WEB_VERSION_CHECK_MS, fetchDeployedWebBuild, isNewerWebBuild, staleTabMessage } from "./features/ui/web-version.js";
 import {
   createProduct, listProducts, productBaseUnitPrice, setProductStatus,
 } from "./data/repositories/product-repository.js";
@@ -171,7 +176,8 @@ import {
 } from "./features/backup/backup-safety.js";
 import { deviceIdentity } from "./features/backup/device-identity.js";
 import {
-  DELETE_MODE, canEditLessonInfo, lessonDeletePolicy, opensEditingFirst, restoreDeletedLesson, settledLockNotice,
+  DELETE_MODE, DELETE_BLOCK_REASON, canEditLessonInfo, isLockedBySettlement, isSettledElsewhere, lessonDeletePolicy,
+  opensEditingFirst, restoreDeletedLesson, settledLockNotice,
 } from "./features/schedule/schedule-edit.js";
 import {
   loadInstructorMonthlyPay, loadOrganizationLedger, loadOrganizationMonthlyPayroll,
@@ -3123,7 +3129,7 @@ const CARE_CHOICES_UNKNOWN = Object.freeze([
   Object.freeze({ key: "b", label: "관리 B(50분)", usable: false, note: "확인 안 됨" }),
 ]);
 
-function SchedSettleBlock({ s, members, canSettle, settled, canUnsettle, notStarted = false, onSettle, onUnsettle }) {
+function SchedSettleBlock({ s, members, canSettle, settled, settledElsewhere = false, canUnsettle, notStarted = false, onSettle, onUnsettle }) {
   const [busy, setBusy] = useState(false);
   const [undoing, setUndoing] = useState(false);
   const [reason, setReason] = useState("");
@@ -3134,6 +3140,18 @@ function SchedSettleBlock({ s, members, canSettle, settled, canUnsettle, notStar
      못한다. 그대로 두면 강사가 [처리 되돌리기] 를 눌러 pass_missing 을 보고
      자기 앱이 고장 난 줄 안다. */
   const fromMigratedData = settledDeductionsOf(s).some((item) => String(item.passId).startsWith("csv_"));
+
+  /* 다른 기기에서 확정된 수업. 이 기기에는 차감 기록이 없어 되돌리기도 여기서는
+     하지 못한다 -- 확정한 기기에서 되돌리면 이 기기의 잠금도 풀린다. */
+  if (settledElsewhere) return (
+    <div className="mt-2 rounded-xl p-2.5" style={{ backgroundColor: CANVAS }}>
+      <div className="flex items-center gap-2">
+        <Check size={13} style={{ color: SUB }} />
+        <span className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: INK2 }}>다른 기기에서 확정된 수업이에요</span>
+      </div>
+      <p className="mt-1 text-xs leading-relaxed" style={{ color: SUB }}>차감은 이미 원장에 있습니다. 되돌리려면 확정한 기기에서 해 주세요.</p>
+    </div>
+  );
 
   if (settled) return (
     <div className="mt-2 rounded-xl p-2.5" style={{ backgroundColor: line.bg }}>
@@ -4005,7 +4023,10 @@ function confirmedLessonNoteArgs(note, reviewedDraft = null) {
 function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, onClose, onSubmit, onDelete, onStatus, onStatusAll, onCareGrade, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onOpenMember, onFocusMemberWeek, scheduleColors = null, organizationMode = false, rateOf, careOptionsOf, onSettleLesson, onUnsettleLesson, onReadMemberNote, onSaveMemberNote, onToast, canUnsettle = false }) {
   /* 확정된 수업은 출석을 바꿀 수 없다. 상태를 바꿔도 이미 나간 차감은 따라오지
      않고, 둘이 어긋나면 어느 것이 맞는지 알 수 없다. */
-  const settledLesson = organizationMode && isSettledLesson(draft);
+  /* 다른 기기에서 확정된 수업도 잠근다 (동기화 2단계). 이 기기에는 확정 기록이
+     없으므로 "차감 없음" 이 아니라 "다른 기기에서 확정됨" 이라고 말한다. */
+  const settledElsewhere = organizationMode && isSettledElsewhere(draft);
+  const settledLesson = organizationMode && isLockedBySettlement(draft);
   /* 확정 뒤에는 예상이 아니라 결과가 있다. 이미 박힌 금액 옆에 "예상" 을 또
      쓰면 둘 중 어느 것이 실제인지 알 수 없다. */
   const rates = useMemo(
@@ -4336,7 +4357,9 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
                   {!settledLesson && activeAttendee.status !== "booked" && <button type="button" onClick={() => onStatus?.(draft.id, "booked", activeMemberId)} className="mt-2 h-9 w-full rounded-lg text-xs font-bold" style={{ backgroundColor: CARD, color: BRAND_D, border: `1px solid ${LINE}` }}>처리 되돌리기</button>}
                   {/* 소속 모드에서는 확정이 차감한다. 레거시 잔여를 줄이던 문구를
                       그대로 두면 차감되지 않은 회차가 차감된 것으로 읽힌다. */}
-                  {organizationMode
+                  {organizationMode && settledElsewhere ? (
+                    <p className="mt-1.5 text-xs font-bold" style={{ color: SUB }}>다른 기기에서 확정됨</p>
+                  ) : organizationMode
                     ? settledLesson && (
                       <p className="mt-1.5 text-xs font-bold" style={{ color: activeAttendee.orgEntryId ? GOOD : WARN }}>
                         {activeAttendee.orgEntryId
@@ -4477,7 +4500,7 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
             {/* 여러 명인 수업은 전원을 정한 뒤 한 번에 확정한다 -- 누르는 횟수가
                 오히려 줄어든다. 개인 모드에는 조직 회원권이 없어 이 블록이 없다. */}
             {organizationMode ? (
-              <SchedSettleBlock s={draft} members={members} settled={settledLesson} canSettle={canSettleLesson(draft)} notStarted={!lessonHasStarted(draft)}
+              <SchedSettleBlock s={draft} members={members} settled={settledLesson} settledElsewhere={settledElsewhere} canSettle={canSettleLesson(draft)} notStarted={!lessonHasStarted(draft)}
                 canUnsettle={canUnsettle} onSettle={onSettleLesson}
                 onUnsettle={async (...args) => {
                   const done = await onUnsettleLesson?.(...args);
@@ -4497,7 +4520,7 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
         {/* 확정된 수업은 지우는 버튼 대신 다음 할 일을 말한다. 지울 수 있는 일정은
             누르면 바로 지우고 되돌리기를 준다. 회차가 돌아오는 수업만 한 번 묻는다. */}
         {draft.id && onDelete && deletePolicy.mode === DELETE_MODE.BLOCKED ? (
-          <p className="rounded-lg px-3 py-2.5 text-xs font-bold leading-relaxed" style={{ backgroundColor: CANVAS, color: SUB }}>{settledLockNotice({ canUnsettle })}</p>
+          <p className="rounded-lg px-3 py-2.5 text-xs font-bold leading-relaxed" style={{ backgroundColor: CANVAS, color: SUB }}>{settledLockNotice({ canUnsettle, elsewhere: deletePolicy.reason === DELETE_BLOCK_REASON.SETTLED_ELSEWHERE })}</p>
         ) : draft.id && onDelete && deletePolicy.mode === DELETE_MODE.ONE_TAP ? (
           <button onClick={() => { onDelete(draft.id); onClose(); }} className="flex h-10 w-full items-center justify-center gap-1.5 rounded-lg text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}><Trash2 size={13} /> 일정 삭제</button>
         ) : draft.id && onDelete && (del ? (
@@ -15308,6 +15331,35 @@ const compactBytes = (value) => {
   if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1048576).toFixed(1)} MB`;
 };
+/**
+ * 같은 수업이 두 번 들어간 것 같다 (동기화 2단계). 다른 기기에서 넣은 일정(서버)과
+ * 이 기기에서 따로 넣은 일정이 날짜 · 시각 · 회원이 같고 id 만 다르다. **자동으로
+ * 지우지 않는다** -- 사람이 하나씩 고른다. 이 기기 것을 지우거나 둘 다 둔다.
+ */
+function SyncDuplicatesSheet({ pairs, schedule, members, onDeleteLocal, onKeep, onClose }) {
+  const nameOf = (id) => (members || []).find((member) => member.id === id)?.name || "회원";
+  const byId = new Map((schedule || []).map((entry) => [entry.id, entry]));
+  return (
+    <Sheet title="같은 수업이 두 번 있어요" sub="다른 기기에서 넣은 일정과 이 기기에서 넣은 일정이 겹칩니다" onClose={onClose}>
+      <div className="space-y-2">
+        {pairs.map((pair) => {
+          const local = byId.get(pair.localId);
+          if (!local) return null;
+          return (
+            <div key={pair.localId} className="rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
+              <p className="text-sm font-bold" style={{ color: INK }}>{local.date} {local.start} · {attendeesOf(local).map((attendee) => nameOf(attendee.memberId)).join(", ")}</p>
+              <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>이 기기의 것을 지우면 다른 기기에서 넣은 일정 하나만 남아요. 이 기기 것의 메모는 함께 지워집니다.</p>
+              <div className="mt-2 flex gap-2">
+                <button type="button" onClick={() => onKeep(pair.localId)} className="h-9 flex-1 font-bold" style={{ borderRadius: 8, backgroundColor: CARD, color: SUB, fontSize: TYPE.caption }}>둘 다 둔다</button>
+                <button type="button" onClick={() => onDeleteLocal(pair.localId)} className="h-9 flex-1 font-bold" style={{ borderRadius: 8, backgroundColor: BAD_S, color: BAD, fontSize: TYPE.caption }}>이 기기 것 지우기</button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </Sheet>
+  );
+}
 /** 복원 목록 한 줄의 이름. */
 const backupChoiceLabel = (item) => (item?.kind === "previousPhone" ? "이전 폰 보관본"
   : item?.kind === "latest" ? "마지막 공용 백업"
@@ -23125,6 +23177,81 @@ function InstructorNameConfirm({ organization, onPreview, onConfirm, onToast, in
   );
 }
 
+/**
+ * 일정 동기화 스위치 (2026-10-31). 서버의 일정을 받아 기기에 합치기를 누구에게 켤까.
+ * 대표 → 강사 한 명 → 전체. 폰도 쓰는 강사는 그 폰이 새 빌드를 받은 뒤에 켠다 --
+ * 옛 폰은 일정을 서버에 보내지 않아, 켜도 그 폰의 일정은 따라오지 않는다. 대표만
+ * 바꾼다 (updateRuntimeConfig).
+ */
+function ScheduleSyncAdmin({ organization, instructorStore, onLoadConfig, onSaveConfig }) {
+  const [instructors, setInstructors] = useState([]);
+  const [draft, setDraft] = useState(readScheduleSyncConfig(null));
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const organizationId = organization?.organizationId || "";
+  useEffect(() => {
+    if (!organizationId || organization?.status === "unknown") return undefined;
+    let alive = true;
+    listInstructors(organizationId, { store: instructorStore }).then((found) => { if (alive) setInstructors(found); }).catch(() => {});
+    Promise.resolve(onLoadConfig?.(organizationId))
+      .then((found) => { if (alive) setDraft(readScheduleSyncConfig(found?.scheduleSync)); })
+      .catch((thrown) => { if (alive) setMessage(`지금 값을 읽지 못했어요 (코드 ${thrown?.code || "unknown"})`); });
+    return () => { alive = false; };
+  }, [organizationId, organization?.status, instructorStore, onLoadConfig]);
+  const rows = instructorVersionRows(instructors, {});
+  const toggle = (userId) => setDraft((current) => ({
+    ...current,
+    userIds: current.userIds.includes(userId) ? current.userIds.filter((id) => id !== userId) : [...current.userIds, userId],
+  }));
+  const save = async () => {
+    if (busy) return;
+    setBusy(true); setMessage("");
+    try {
+      const result = await onSaveConfig?.(organizationId, "scheduleSync", draft);
+      setDraft(readScheduleSyncConfig(result?.config?.scheduleSync));
+      setMessage("저장했습니다. 켜진 계정은 앱을 열거나 돌아올 때부터 받습니다.");
+    } catch (thrown) {
+      setMessage(`저장하지 못했어요 (코드 ${thrown?.code || thrown?.message || "unknown"})`);
+    } finally { setBusy(false); }
+  };
+  const modes = [
+    { value: SCHEDULE_SYNC_MODE.OFF, label: "끔" },
+    { value: SCHEDULE_SYNC_MODE.LISTED, label: "고른 계정만" },
+    { value: SCHEDULE_SYNC_MODE.ALL, label: "전체" },
+  ];
+  return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }} data-schedule-sync-admin>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>일정 동기화 (서버가 기준)</h2>
+      <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        켜진 계정은 다른 PC · 폰에서 넣고 고치고 지운 내 수업 일정을 실시간으로 받습니다. 대표 → 강사 한 명 → 전체 순서로 켜세요.
+        폰도 쓰는 강사는 그 폰이 새 버전을 받은 뒤에 켭니다.
+      </p>
+      <div className="mt-3 flex gap-2">
+        {modes.map((option) => (
+          <button key={option.value} type="button" onClick={() => setDraft((current) => ({ ...current, mode: option.value }))}
+            className="h-9 flex-1 font-bold" style={{ borderRadius: 999, fontSize: TYPE.caption,
+              backgroundColor: draft.mode === option.value ? TINT : CANVAS, color: draft.mode === option.value ? BRAND_D : SUB }}>{option.label}</button>
+        ))}
+      </div>
+      {draft.mode === SCHEDULE_SYNC_MODE.LISTED ? (
+        <div className="mt-3 space-y-1">
+          {rows.map((row) => (
+            <label key={row.userId} className="flex min-h-10 items-center gap-2 px-2" style={{ borderRadius: 8, backgroundColor: CANVAS }}>
+              <input type="checkbox" checked={draft.userIds.includes(row.userId)} onChange={() => toggle(row.userId)} />
+              <span className="min-w-0 flex-1 truncate text-sm font-bold" style={{ color: INK }}>{row.name}</span>
+              <span style={{ fontSize: TYPE.caption, color: SUB }}>{row.build ? `앱 ${row.version || ""} (${row.build})` : "앱 버전 모름"}</span>
+            </label>
+          ))}
+          {!rows.length ? <p style={{ fontSize: TYPE.caption, color: SUB }}>강사 목록을 읽는 중이거나 없습니다.</p> : null}
+        </div>
+      ) : null}
+      <button type="button" onClick={save} disabled={busy} className="mt-3 h-11 w-full font-bold text-white disabled:opacity-50"
+        style={{ borderRadius: 10, backgroundColor: BRAND, fontSize: TYPE.caption }}>{busy ? "저장 중" : "저장"}</button>
+      {message ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>{message}</p> : null}
+    </section>
+  );
+}
+
 function AppUpdateAdmin({ organization, instructorStore, onLoadConfig, onSaveConfig, onRetryOrganization }) {
   const [instructors, setInstructors] = useState([]);
   const [draft, setDraft] = useState(draftFromConfig(null));
@@ -24495,6 +24622,9 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
     return [...confirmed, ...pending].sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 10);
   }, [db.members]);
   const voiceSessionDiagnostics = useMemo(() => showLessonDiagnostics ? readVoiceSessionDiagnostics() : [], [showLessonDiagnostics]);
+  /* 실시간 반영으로 받은 문서 수 (동기화 2단계). 첫 주에 읽기가 문제 되는지 대표가
+     여기서 본다 -- Firestore 콘솔의 사용량은 센터 전체 합계라 이 몫을 가를 수 없다. */
+  const syncReads = useMemo(() => (showLessonDiagnostics && account?.id ? syncReadsByDay(globalThis.localStorage, account.id) : []), [showLessonDiagnostics, account?.id]);
   const authDiagnostics = useMemo(() => showLessonDiagnostics ? readAuthDiagnostics() : [], [showLessonDiagnostics]);
   const posturePersistenceDiagnostics = useMemo(() => showLessonDiagnostics ? readPosturePersistenceDiagnostics() : [], [showLessonDiagnostics]);
   const firstAuthFailure = useMemo(() => firstFailedAuthStage(authDiagnostics), [authDiagnostics]);
@@ -25225,9 +25355,13 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
             onPreview={onPreviewInstructorNames} onConfirm={onConfirmInstructorNames} onToast={onToast} />
         )}
         {view === "app-update" && showAppUpdate && (
-          <AppUpdateAdmin organization={organization} instructorStore={instructorStore}
-            onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
-            onRetryOrganization={onRetryOrganization} />
+          <div className="space-y-2">
+            <AppUpdateAdmin organization={organization} instructorStore={instructorStore}
+              onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
+              onRetryOrganization={onRetryOrganization} />
+            <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
+              onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig} />
+          </div>
         )}
         {view === "instructor-scope" && showAudit && (
           <InstructorScopeAdmin organization={organization} instructorStore={instructorStore} locationStore={locationStore}
@@ -25313,6 +25447,9 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
                 {!posturePersistenceDiagnostics.length && <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>체형 저장 진단 없음</p>}
               </div>
               <div className="mt-2 space-y-1">{diagnosticRecordSources.map((record, index) => <p key={`${record.at}-${index}`} className="tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>기록 {index + 1} · {diagnosticLocalTime(record.at)} · {record.status} · source={record.source} · date={record.dateSource}</p>)}</div>
+              <p className="mt-3" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>일정 실시간 반영 · 받은 문서 (하루)</p>
+              <div className="mt-1.5 space-y-1">{syncReads.map((row) => <p key={row.day} className="tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>{row.day} · 문서 {row.reads}건 · 받은 횟수 {row.snapshots}번</p>)}</div>
+              {!syncReads.length && <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>받은 기록 없음</p>}
               <p className="mt-3" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>음성 세션 최근 30건</p>
               <div className="mt-1.5 space-y-1">{voiceSessionDiagnostics.map((item, index) => <p key={`${item.at}-${index}`} className="break-all tabular-nums" style={{ fontSize: TYPE.caption, lineHeight: 1.45, color: ["error", "failed", "voice_pipeline_failed", "voice_prepare_failed", "voice_record_start_failed", "voice_stop_failed"].includes(item.event) ? BAD : SUB }}>
                 {item.localTime || diagnosticLocalTime(item.at)} · {item.event} · {item.source}
@@ -28680,6 +28817,11 @@ export default function App() {
      회원 화면에 영영 안 맞는다. 기기를 껐다 켜면 비는 것은 받아들인다: 그때는
      강사가 그 일정을 다시 열어 저장하면 된다. */
   const unpublishedLessonsRef = useRef(new Map());
+  /* 지금 서버에 쓰는 중인 일정. 실시간 반영이 이것을 덮지 않는다. */
+  const publishingLessonIdsRef = useRef(new Set());
+  const saveDbRef = useRef(null);
+  const deleteScheduleRef = useRef(null);
+  const newerWebBuildRef = useRef(false);
   const loadedAccountIdRef = useRef("");
   /* 일정 → 센터 서버 (schedule-publish.js). 기기 저장이 끝난 뒤 뒤에서 돈다 --
      서버가 늦어도 강사 화면은 기다리지 않는다. */
@@ -28699,26 +28841,64 @@ export default function App() {
     }
     if (!queue.size) return;
     unpublishedLessonsRef.current = new Map();
-    const results = await publishScheduledLessons(organizationContext.organizationId, [...queue.values()], {
-      createdBy: account.id, deviceId: deviceIdentity(),
-    });
-    /* 다른 기기가 먼저 지웠거나 확정한 수업. 오류가 아니다 -- 서버가 이긴 것이고,
-       이 기기의 화면만 아직 모른다 (서버 일정을 읽어 합치는 것은 동기화 2단계). */
+    const sending = [...queue.keys()];
+    sending.forEach((id) => publishingLessonIdsRef.current.add(id));
+    let results = [];
+    try {
+      results = await publishScheduledLessons(organizationContext.organizationId, [...queue.values()], {
+        createdBy: account.id, deviceId: deviceIdentity(),
+      });
+    } finally {
+      sending.forEach((id) => publishingLessonIdsRef.current.delete(id));
+    }
+    /* 서버에 쓴 번호를 기기 일정에 적는다 -- 다음 쓰기가 이 번호를 들고 간다.
+       서버에서 온 변경이므로 다시 보내지 않는다 (fromServer). */
+    const current = lessonRecordDbRef.current;
+    const withRevisions = applyPublishedRevisions(current?.schedule, results);
+    if (current && withRevisions !== current.schedule) {
+      saveDbRef.current?.({ ...current, schedule: withRevisions }, undefined, { fromServer: true });
+    }
+    /* 서버가 이긴 것들. 오류가 아니다 -- 실시간 반영이 서버 내용을 곧 이 기기에
+       그린다. 사람이 고친 것은 버리지 않고 다시 적용할 수 있게 남긴다. */
     const localOf = new Map((Array.isArray(after) ? after : []).map((entry) => [entry?.id, entry]));
+    const beforeOf = new Map((Array.isArray(before) ? before : []).map((entry) => [entry?.id, entry]));
     const elsewhere = results.filter((result) => result.outcome === PUBLISH_OUTCOME.CANCELLED_ELSEWHERE);
     const settledElsewhere = results.filter((result) => result.outcome === PUBLISH_OUTCOME.SETTLED
       && !isSettledLesson(localOf.get(result.lessonId)));
-    for (const result of [...elsewhere, ...settledElsewhere]) {
-      deviceLog("schedule_publish_skipped", {
-        feature: "schedule_publish", stage: initial ? "initial" : "write", reason: result.outcome, lessonId: result.lessonId,
+    const conflicts = results.filter((result) => result.outcome === PUBLISH_OUTCOME.CONFLICT);
+    for (const result of [...elsewhere, ...settledElsewhere, ...conflicts]) {
+      deviceLog(result.outcome === PUBLISH_OUTCOME.CONFLICT ? "schedule_sync_conflict" : "schedule_publish_skipped", {
+        feature: "schedule_sync", stage: initial ? "initial" : "write", reason: result.outcome,
+        lessonId: result.lessonId, serverRevision: result.revision,
+        deviceRevision: Number(queue.get(result.lessonId)?.baseRevision) || 0,
+        winner: "server",
       });
     }
-    if (elsewhere.length || settledElsewhere.length) {
-      const parts = [
-        elsewhere.length ? `다른 기기에서 지우거나 취소한 일정 ${elsewhere.length}건` : "",
-        settledElsewhere.length ? `다른 기기에서 확정된 수업 ${settledElsewhere.length}건` : "",
-      ].filter(Boolean);
-      setToast({ ok: true, msg: `${parts.join(" · ")}은 회원 앱에 다시 올리지 않았어요.` });
+    /* 앱을 열 때 맞추기에서 진 것은 말하지 않는다 -- 사람이 방금 고친 것이 아니다. */
+    if (!initial) {
+      const conflict = conflicts[0];
+      const gone = elsewhere[0];
+      if (conflict) {
+        const mine = localOf.get(conflict.lessonId);
+        const deleted = !mine && beforeOf.has(conflict.lessonId);
+        const draft = { entry: mine || beforeOf.get(conflict.lessonId), before: beforeOf.get(conflict.lessonId), deleted, serverRevision: conflict.revision };
+        setToast({
+          ok: false,
+          msg: deleted
+            ? "다른 기기에서 먼저 고친 일정이라 지우지 않았어요. 그 내용으로 맞췄어요."
+            : "다른 기기에서 먼저 고친 일정이라 그 내용으로 맞췄어요.",
+          action: { label: deleted ? "그래도 지우기" : "내 수정 다시 적용", run: () => reapplyMine(draft) },
+        });
+      } else if (gone) {
+        const draft = { entry: localOf.get(gone.lessonId) || beforeOf.get(gone.lessonId), revive: true, serverRevision: gone.revision };
+        setToast({
+          ok: true,
+          msg: "다른 기기에서 지운 일정이라 회원 앱에 다시 올리지 않았어요.",
+          ...(draft.entry ? { action: { label: "다시 살리기", run: () => reapplyMine(draft) } } : {}),
+        });
+      } else if (settledElsewhere.length) {
+        setToast({ ok: false, msg: "다른 기기에서 확정된 수업이라 바꾸지 않았어요." });
+      }
     }
     const failed = results.filter((result) => result.outcome === PUBLISH_OUTCOME.FAILED);
     for (const result of failed) {
@@ -28729,14 +28909,41 @@ export default function App() {
       });
     }
     if (failed.length) {
+      /* 옛 탭이면 규칙이 번호 없는 쓰기를 거절한다. 새 버전이 확인됐으면 그렇게 말한다. */
+      const stale = staleTabMessage({ errorCode: failed[0].errorCode, newerBuildAvailable: newerWebBuildRef.current });
       setToast({
         ok: false,
-        msg: `일정을 회원 앱에 아직 보내지 못했어요. 다음 저장 때 다시 보냅니다. (코드 ${failed[0].errorCode})`,
+        msg: stale || `일정을 회원 앱에 아직 보내지 못했어요. 다음 저장 때 다시 보냅니다. (코드 ${failed[0].errorCode})`,
+        ...(stale ? { action: { label: "새로고침", run: () => globalThis.location?.reload() } } : {}),
       });
     }
   }, [organizationRoster, organizationContext.organizationId, account?.id]);
 
-  const saveDb = useCallback(async (next, dualWrite) => {
+  /* [내 수정 다시 적용] · [그래도 지우기] · [다시 살리기]. 서버 번호를 들고 다시
+     쓴다 -- 서버 최신 위에 내 것을 얹는다. 사람이 누른 것이라 되살리기도 된다. */
+  const reapplyMine = (draft) => {
+    const current = lessonRecordDbRef.current;
+    if (!current || !draft?.entry?.id) return;
+    const id = draft.entry.id;
+    const rest = (current.schedule || []).filter((entry) => entry.id !== id);
+    if (draft.deleted) {
+      const present = (current.schedule || []).find((entry) => entry.id === id);
+      if (!present) return;
+      const restamped = (current.schedule || []).map((entry) => (entry.id === id ? { ...entry, syncRevision: draft.serverRevision } : entry));
+      Promise.resolve(saveDbRef.current?.({ ...current, schedule: restamped }, undefined, { fromServer: true }))
+        .then(() => deleteScheduleRef.current?.(id));
+      return;
+    }
+    /* 내가 바꾼 칸만 서버 최신 위에 얹는다 -- 다른 기기가 바꾼 칸은 지킨다. */
+    const present = (current.schedule || []).find((item) => item.id === id);
+    const entry = { ...reapplyChanges(present || null, draft.before, draft.entry), syncRevision: draft.serverRevision };
+    /* 기기에서 빠졌다가 다시 들어오는 일정은 이번 저장에 "새로 들어온" 것이라 취소를
+       되살릴 수 있다 (lesson-schedule-repository.js). */
+    saveDbRef.current?.({ ...current, schedule: [...rest, entry] });
+    setToast({ ok: true, msg: draft.revive ? "일정을 다시 살렸어요." : "내 수정을 다시 적용했어요." });
+  };
+
+  const saveDb = useCallback(async (next, dualWrite, { fromServer = false } = {}) => {
     if (accountDeletionInFlight.current) return false;
     const prev = lessonRecordDbRef.current;
     lessonRecordDbRef.current = next;
@@ -28758,7 +28965,9 @@ export default function App() {
       } else await legacyWrite();
       /* 일정이 바뀌었으면 회원 앱에도 보낸다. 등록 · 수정 · 삭제 · 취소가 모두
          여기를 지난다 -- 버튼마다 따로 부르면 한 군데는 빠진다. */
-      if (prev?.schedule !== next?.schedule) {
+      /* 서버에서 받아 합친 것(fromServer)은 다시 보내지 않는다 -- 보내면 같은 내용을
+         다시 쓰고, 회원 데이터도 다시 만들어진다. */
+      if (!fromServer && prev?.schedule !== next?.schedule) {
         publishSchedule(prev?.schedule, next?.schedule).catch((error) => {
           deviceLog("schedule_publish_failed", {
             feature: "schedule_publish", stage: "prepare", errorDomain: "app", ...deviceError(error),
@@ -28769,6 +28978,123 @@ export default function App() {
     }
     catch (e) { lessonRecordDbRef.current = prev; setDb(prev); deviceLog("app_data_save_failed", { storage: "localStorage", operation: dualWrite?.operation || "legacy_write", ...deviceError(e) }); setToast({ ok: false, msg: "저장하지 못했습니다. 방금 입력한 내용을 다시 확인해 주세요." }); return false; }
   }, [account, queueCloud, publishSchedule]);
+  saveDbRef.current = saveDb;
+
+  /* ── 서버의 내 수업 일정 실시간 반영 (2026-10-31, 동기화 2단계) ─────────────
+     내 수업만, 7일 전 ~ 60일 뒤, 앱이 열려 있는 동안 (대표 조건). 받은 것은
+     schedule-sync.js 가 기기 일정에 합친다 -- 서버가 기준, 기기의 메모 · 출석 ·
+     확정 기록은 지킨다. 받은 문서 수는 날마다 센다 (더보기 → 진단). */
+  const [syncDay, setSyncDay] = useState(() => todayISO());
+  const [syncState, setSyncState] = useState({ state: "idle", errorCode: "" });
+  const [syncDuplicates, setSyncDuplicates] = useState([]);
+  /* 받기 스위치 (sync-switch.js). 대표 → 강사 한 명 → 전체. 못 읽으면 꺼진 것이다. */
+  const [scheduleSyncConfig, setScheduleSyncConfig] = useState(null);
+  useEffect(() => {
+    if (phase !== "app" || !account?.id) return undefined;
+    let alive = true;
+    fbLoadScheduleSyncConfig().then((config) => { if (alive) setScheduleSyncConfig(config); });
+    return () => { alive = false; };
+  }, [phase, account?.id, syncDay]);
+  const scheduleSyncOn = scheduleSyncEnabledFor(scheduleSyncConfig, account?.id);
+  /* 처음 받아 합치기 전에 이 기기의 데이터를 한 벌 남긴다 (0단계 스냅샷, 사진 원본
+     없이). 서버가 기기 일정을 바꾸기 시작하는 순간이라, 무엇이 꼬여도 이것으로
+     돌아간다. 못 남기면 합치지 않는다. 계정 · 기기마다 한 번. */
+  const syncSnapshotKey = (accountId) => `pilateacher_sync_snapshot_v1_${accountId}`;
+  const syncSnapshotInFlight = useRef(false);
+  const ensureSyncSnapshot = async (accountId) => {
+    try { if (globalThis.localStorage?.getItem(syncSnapshotKey(accountId)) === "1") return true; } catch (_error) {}
+    if (syncSnapshotInFlight.current) return false;
+    syncSnapshotInFlight.current = true;
+    try {
+      const operational = withoutSampleData(lessonRecordDbRef.current, photosRef.current);
+      const snapshot = buildMigrationSnapshot({
+        data: operational.db, photos: operational.photos, deviceId: deviceIdentity(),
+        appBuild: (await RUNTIME_APP_IDENTITY)?.build || "",
+      });
+      await fbUploadMigrationSnapshot(accountId, snapshot);
+      try { globalThis.localStorage?.setItem(syncSnapshotKey(accountId), "1"); } catch (_error) {}
+      deviceLog("schedule_sync_snapshot_saved", { feature: "schedule_sync", stage: "snapshot", bytes: snapshot.bytes, ...snapshot.counts });
+      return true;
+    } catch (error) {
+      deviceLog("schedule_sync_snapshot_failed", { feature: "schedule_sync", stage: "snapshot", errorDomain: "firebase_storage", errorCode: error?.code || "unknown" });
+      setSyncState({ state: "error", errorCode: `snapshot:${error?.code || "unknown"}` });
+      return false;
+    } finally { syncSnapshotInFlight.current = false; }
+  };
+  useEffect(() => {
+    const refresh = () => { if (document.visibilityState === "visible") setSyncDay(todayISO()); };
+    document.addEventListener("visibilitychange", refresh);
+    const timer = setInterval(refresh, 60 * 60 * 1000);
+    return () => { document.removeEventListener("visibilitychange", refresh); clearInterval(timer); };
+  }, []);
+  useEffect(() => {
+    const organizationId = organizationContext.organizationId;
+    const accountId = account?.id || "";
+    if (!organizationRoster || !organizationId || !accountId || !roster || !scheduleSyncOn) {
+      setSyncState({ state: scheduleSyncOn ? "idle" : "off", errorCode: "" });
+      return undefined;
+    }
+    let stop = () => {};
+    let alive = true;
+    const { from, to } = syncWindow(new Date());
+    setSyncState({ state: "listening", errorCode: "" });
+    subscribeMyLessons({
+      organizationId, instructorId: accountId, from, to,
+      onDocs: async (docs, meta) => {
+        if (!alive) return;
+        if (!meta.fromCache) recordSyncReads(globalThis.localStorage, accountId, meta.changes);
+        if (!(await ensureSyncSnapshot(accountId)) || !alive) return;
+        const current = lessonRecordDbRef.current;
+        if (!current) return;
+        const merged = mergeServerLessons({
+          schedule: current.schedule, docs, rosterMembers: rosterMembersRef.current,
+          staffName: current.settings?.staff || "",
+          pendingIds: [...unpublishedLessonsRef.current.keys(), ...publishingLessonIdsRef.current],
+        });
+        if (merged.unmatchedClientIds.length) {
+          deviceLog("schedule_sync_unmatched_clients", { feature: "schedule_sync", stage: "merge", count: merged.unmatchedClientIds.length });
+        }
+        if (merged.summary.keptWithDeductions) {
+          deviceLog("schedule_sync_kept_deducted", { feature: "schedule_sync", stage: "merge", count: merged.summary.keptWithDeductions });
+        }
+        if (merged.duplicates.length) setSyncDuplicates(merged.duplicates);
+        if (merged.changed) {
+          saveDbRef.current?.({ ...current, schedule: merged.schedule }, undefined, { fromServer: true });
+          if (merged.summary.lockedElsewhere) setToast({ ok: true, msg: `다른 기기에서 확정된 수업 ${merged.summary.lockedElsewhere}건을 잠갔어요.` });
+        }
+      },
+      onError: (error) => {
+        const code = error?.code || "unknown";
+        setSyncState({ state: "error", errorCode: code });
+        deviceLog("schedule_sync_listen_failed", { feature: "schedule_sync", stage: "listen", errorDomain: "firestore", errorCode: code, message: String(error?.message || "").slice(0, 200) });
+      },
+    }).then((unsubscribe) => { if (alive) stop = unsubscribe; else unsubscribe(); })
+      .catch((error) => setSyncState({ state: "error", errorCode: error?.code || "unknown" }));
+    return () => { alive = false; stop(); };
+  }, [organizationRoster, organizationContext.organizationId, account?.id, Boolean(roster), syncDay, scheduleSyncOn]);
+
+  /* ── 웹 새 버전 알림 (2026-10-31) ─────────────────────────────────────────
+     센터 PC 는 탭을 며칠씩 열어 둔다. 배포된 빌드 번호가 이 탭의 것과 다르면
+     "새 버전이 나왔어요 [새로고침]" 을 띄운다 (web-version.js). 네이티브 앱과 개발
+     서버에는 번호가 없어 묻지 않는다. */
+  const [newerWebBuild, setNewerWebBuild] = useState(false);
+  useEffect(() => {
+    const currentBuild = import.meta.env.VITE_WEB_BUILD_ID || "";
+    if (Capacitor.isNativePlatform() || !currentBuild) return undefined;
+    let alive = true;
+    const check = async () => {
+      const deployed = await fetchDeployedWebBuild();
+      if (!alive) return;
+      const newer = isNewerWebBuild(currentBuild, deployed);
+      newerWebBuildRef.current = newer;
+      setNewerWebBuild(newer);
+    };
+    check();
+    const timer = setInterval(check, WEB_VERSION_CHECK_MS);
+    const onVisible = () => { if (document.visibilityState === "visible") check(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { alive = false; clearInterval(timer); document.removeEventListener("visibilitychange", onVisible); };
+  }, []);
 
   /* 앱을 열었을 때 한 번, 오늘부터의 일정을 센터 서버에 맞춘다. 이 기능이
      생기기 전에 잡아 둔 일정과, 다른 기기에서 고친 일정이 회원 앱에 나타나게
@@ -29495,7 +29821,7 @@ export default function App() {
     /* 확정된 수업의 날짜 · 시간 · 회원은 바꾸지 않는다 (schedule-edit.js). 시트를
        연 채로 다른 곳에서 확정되면 고치는 칸이 열려 있을 수 있다 -- 여기서 막는다. */
     if (prev && !canEditLessonInfo(prev)) {
-      setToast({ ok: false, msg: settledLockNotice({ canUnsettle: organizationRoster && isOwnerLevelRole(organizationContext.role) }) });
+      setToast({ ok: false, msg: settledLockNotice({ canUnsettle: organizationRoster && isOwnerLevelRole(organizationContext.role), elsewhere: isSettledElsewhere(prev) }) });
       return false;
     }
     let members = db.members;
@@ -29526,7 +29852,7 @@ export default function App() {
        시트가 버튼을 감추지만, 지우는 길이 하나 더 생겨도 여기서 막힌다. */
     const policy = lessonDeletePolicy(s0);
     if (s0 && policy.mode === DELETE_MODE.BLOCKED) {
-      setToast({ ok: false, msg: settledLockNotice({ canUnsettle: organizationRoster && isOwnerLevelRole(organizationContext.role) }) });
+      setToast({ ok: false, msg: settledLockNotice({ canUnsettle: organizationRoster && isOwnerLevelRole(organizationContext.role), elsewhere: policy.reason === DELETE_BLOCK_REASON.SETTLED_ELSEWHERE }) });
       return false;
     }
     let members = db.members;
@@ -29565,6 +29891,7 @@ export default function App() {
       ...(undo ? { action: { label: "되돌리기", run: undo } } : {}),
     });
   };
+  deleteScheduleRef.current = deleteSchedule;
   const saveAttendanceOnce = (lessonId, next, descriptor) => {
     if (attendanceMutationsInFlight.current.has(lessonId)) {
       setToast({ ok: true, msg: "출석 상태를 처리하고 있습니다." });
@@ -29756,6 +30083,11 @@ export default function App() {
   const settleLesson = async (lessonId) => {
     const lesson = db.schedule.find((item) => item.id === lessonId);
     if (!lesson || !organizationRoster || isSettledLesson(lesson)) return;
+    /* 다른 기기에서 이미 확정했다. 또 확정하면 같은 회차가 두 번 나간다. */
+    if (isSettledElsewhere(lesson)) {
+      setToast({ ok: false, msg: "다른 기기에서 확정된 수업이에요. 다시 확정하지 않았어요." });
+      return;
+    }
     /* 차감 계산이 이 기기에서 돈다. 업데이트하지 않은 폰은 옛 규칙으로 계산한
        차감을 원장에 박을 수 있고, 원장은 append-only 라 대표만 되돌린다.
        버튼마다 막지 않고 여기 한 곳에서 막는다 -- 확정으로 들어오는 길이
@@ -29898,6 +30230,13 @@ export default function App() {
       schedule: db.schedule.map((item) => (item.id === lessonId ? clearSettlementFromLesson(item) : item)),
     });
     setRosterRevision((value) => value + 1);
+    /* 서버의 수업 문서도 예정으로 돌린다 (2026-10-31). 전에는 "completed" 로 남아
+       그 수업이 다시는 회원 앱에 나가지 않았고, 다른 기기는 계속 잠겨 있었다. */
+    reopenSettledLesson(organizationId, lessonId, { updatedBy: account?.id || "", deviceId: deviceIdentity() })
+      .then((result) => {
+        if (result.outcome !== "reopened") deviceLog("lesson_reopen_skipped", { feature: "schedule_sync", stage: "unsettle", reason: result.outcome, lessonId });
+      })
+      .catch((error) => deviceLog("lesson_reopen_failed", { feature: "schedule_sync", stage: "unsettle", errorDomain: "firestore", errorCode: error?.code || "unknown", lessonId }));
     setToast({ ok: true, msg: "처리를 되돌렸습니다. 원장에 보정 기록이 남았습니다." });
     return true;
   };
@@ -31072,6 +31411,21 @@ export default function App() {
         onNextPending={reflectionPending.sessions[0]?.lessonId
           ? () => openLessonRecord(reflectionPending.sessions[0].lessonId)
           : null} />}
+      {newerWebBuild ? (
+        <div className="fixed inset-x-0 top-0 flex justify-center px-4" style={{ zIndex: overlayZ("TOAST"), paddingTop: "max(env(safe-area-inset-top, 0px), 8px)" }}>
+          <div className="flex max-w-[420px] items-center gap-2 px-4 py-2.5" style={{ borderRadius: 8, backgroundColor: TOAST, boxShadow: SHADOW }}>
+            <span className="text-sm font-bold text-white">새 버전이 나왔어요. 새로고침해 주세요.</span>
+            <button type="button" onClick={() => globalThis.location?.reload()} className="ml-1 shrink-0 rounded-md px-2.5 py-1 text-xs font-extrabold"
+              style={{ color: "#fff", border: "1px solid rgba(255,255,255,.55)" }}>새로고침</button>
+          </div>
+        </div>
+      ) : null}
+      {syncDuplicates.length ? (
+        <SyncDuplicatesSheet pairs={syncDuplicates} schedule={db.schedule} members={rosterMembers}
+          onDeleteLocal={(id) => { deleteSchedule(id); setSyncDuplicates((list) => list.filter((pair) => pair.localId !== id)); }}
+          onKeep={(id) => setSyncDuplicates((list) => list.filter((pair) => pair.localId !== id))}
+          onClose={() => setSyncDuplicates([])} />
+      ) : null}
       {/* 결과 문구는 **무엇 위에서 눌렀든** 보여야 한다. 전에는 담당 변경과
           같은 z-70 이었고, 값이 같으면 DOM 순서가 정한다 -- 그 순서가 뒤집히는
           날 저장은 됐는데 아무 말도 없는 화면이 된다. */}

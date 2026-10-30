@@ -931,6 +931,23 @@ export async function fbDeleteAIConsent(memberId) {
  * 옛 규칙으로 계산한 차감을 원장에 박을 수 있고, 원장은 되돌릴 수 없다.
  * 판정은 settlement-gate.js 가 하고 여기서는 읽기만 한다.
  */
+/**
+ * 일정 동기화 스위치 (2026-10-31). 못 읽으면 null -- 부르는 쪽이 꺼진 것으로 본다
+ * (sync-switch.js). 서버가 기기 일정을 바꾸는 일이라 모르면 켜지 않는다.
+ */
+export async function fbLoadScheduleSyncConfig() {
+  if (!fs || !auth?.currentUser) return null;
+  try {
+    const snap = await withAuthTimeout(
+      () => getDoc(doc(fs, "runtimeConfig", "scheduleSync")),
+      { timeoutMs: FIRESTORE_READ_TIMEOUT_MS, provider: "firebase", stage: "schedule_sync_config_read" },
+    );
+    return snap.exists() ? snap.data() || null : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
 export async function fbLoadSettlementConfig() {
   if (!fs || !auth?.currentUser) return null;
   try {

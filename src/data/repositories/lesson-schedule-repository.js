@@ -25,16 +25,19 @@ export const PUBLISH_OUTCOME = Object.freeze({
 const text = (value) => String(value ?? "").trim();
 
 /**
- * Firestore 에 붙는 쓰기. 테스트는 같은 모양의 가짜를 넘긴다.
+ * Firestore 에 붙는 쓰기. 단위 테스트는 같은 모양의 가짜를 넘기고, 규칙 테스트는
+ * 에뮬레이터의 firestore 를 넘겨 **이 코드 그대로** 규칙을 지나게 한다 --
+ * 가짜만으로는 규칙이 이 읽기를 막는 것을 못 잡았다 (2026-10-31).
  *
+ * @param {{ firestore?: any }} [options]
  * @returns {{ transact: (documentPath: string, decide: (current: any) => any) => Promise<any> }}
  */
-export function createFirestoreLessonScheduleStore() {
+export function createFirestoreLessonScheduleStore(options = {}) {
   const load = () => import("firebase/firestore");
   return {
     async transact(documentPath, decide) {
       const { doc, getFirestore, runTransaction, serverTimestamp } = await load();
-      const firestore = getFirestore();
+      const firestore = options.firestore || getFirestore();
       const reference = doc(firestore, documentPath);
       return runTransaction(firestore, async (transaction) => {
         const snapshot = await transaction.get(reference);

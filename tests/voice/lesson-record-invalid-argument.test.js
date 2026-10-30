@@ -53,8 +53,9 @@ test("sanitizing survives a self-referencing database instead of hanging", () =>
 });
 
 test("the cloud backup write is the boundary that sanitizes", async () => {
-  const firebaseSource = await readFile(new URL("../../src/lib/firebase.js", import.meta.url), "utf8");
-  const push = firebaseSource.slice(firebaseSource.indexOf("export async function fbPushBackup"), firebaseSource.indexOf("export async function fbPullBackup"));
+  /* 2026-10-31 부터 본문은 backup-repository.js 에 있다 (규칙 테스트가 그대로 돌린다). */
+  const source = await readFile(new URL("../../src/data/repositories/backup-repository.js", import.meta.url), "utf8");
+  const push = source.slice(source.indexOf("export async function pushBackup"), source.indexOf("export async function listBackups"));
   assert.match(push, /const payload = sanitizeFirestorePayload\(data\)/);
   assert.match(push, /data: payload/);
   assert.doesNotMatch(push, /^\s+data,$/m, "the raw in-memory database must never be written directly");
@@ -75,7 +76,7 @@ test("a saved lesson note omits absent keys rather than setting them to undefine
 test("a failed cloud backup is reported on its own and never cancels the upload", async () => {
   const source = await appSource();
   const prepare = source.slice(source.indexOf("const prepareLessonRecordContext"), source.indexOf("const reconcileLessonRecordContext"));
-  assert.match(prepare, /try \{[\s\S]*await fbPushBackup\([\s\S]*\} catch \(error\) \{/, "the backup push must be guarded");
+  assert.match(prepare, /try \{[\s\S]*await pushCloudBackup\([\s\S]*\} catch \(error\) \{/, "the backup push must be guarded");
   assert.match(prepare, /code: "cloud_backup_failed"/);
   assert.match(prepare, /return \{ \.\.\.link, backupSynced: false, backupError: cause \}/);
 

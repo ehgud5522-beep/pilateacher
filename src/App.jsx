@@ -27,7 +27,7 @@ import {
 } from "recharts";
 import {
   fbReady, fbAuthApiKey, fbSignInSocial, fbSignInEmail, fbSignUpEmail, fbSignOut, fbOnAuth,
-  fbAuthStateReady, fbLoadProfileState, fbSaveProfile, fbPushBackup, fbPullBackup,
+  fbAuthStateReady, fbLoadProfileState, fbSaveProfile, fbPushBackup, fbPullBackup, fbListBackups, fbUploadMigrationSnapshot,
   fbPreservePreviousBackup, PREVIOUS_PHONE_BACKUP, fbReauthenticate, fbRefreshIdToken,
   fbRevokeAppleAccess, fbDeleteCurrentUserAccount, fbLoadAIConsent, fbGrantAIConsent, fbCurrentUserId,
   fbSendPasswordReset,
@@ -166,6 +166,10 @@ import {
   planLessonSettlement, recordSettlementAttempt, settledDeductionsOf, settlementOutcome,
   settlementSkipsOf,
 } from "./features/schedule/lesson-settlement.js";
+import {
+  BACKUP_SIZE, BACKUP_TOO_LARGE_CODE, BACKUP_WARN_BYTES, buildMigrationSnapshot, describeBackups,
+} from "./features/backup/backup-safety.js";
+import { deviceIdentity } from "./features/backup/device-identity.js";
 import {
   DELETE_MODE, canEditLessonInfo, lessonDeletePolicy, opensEditingFirst, restoreDeletedLesson, settledLockNotice,
 } from "./features/schedule/schedule-edit.js";
@@ -450,6 +454,15 @@ const RUNTIME_APP_IDENTITY = Capacitor.isNativePlatform()
     .then((info) => ({ version: String(info?.version || "").trim(), build: String(info?.build || "").trim() }))
     .catch(() => ({ version: "", build: "" }))
   : Promise.resolve({ version: RELEASE_VERSION, build: RELEASE_BUILD_NUMBER });
+
+/* 클라우드 백업은 이 기기의 자리(device_{id})에도 쓴다 (2026-10-31, 백업 안전망).
+   같은 계정의 PC 와 폰이 latest 한 자리를 번갈아 덮던 것을 막는다. 빌드 번호는
+   서버 기준 전환 때 "이 계정의 기기가 모두 최소 버전 이상인가" 를 보는 재료다. */
+const pushCloudBackup = async (uid, data, options = {}) => fbPushBackup(uid, data, {
+  ...options,
+  deviceId: deviceIdentity(),
+  appBuild: (await RUNTIME_APP_IDENTITY)?.build || "",
+});
 
 function RuntimeBuildLabel() {
   const [label, setLabel] = useState(APP_BUILD_LABEL);
@@ -15295,7 +15308,11 @@ const compactBytes = (value) => {
   if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1048576).toFixed(1)} MB`;
 };
-function CloudBackupCard({ status, onEnablePhotos, onRetry, onRestorePrevious }) {
+/** 복원 목록 한 줄의 이름. */
+const backupChoiceLabel = (item) => (item?.kind === "previousPhone" ? "이전 폰 보관본"
+  : item?.kind === "latest" ? "마지막 공용 백업"
+    : `${item?.device || "기기"} 기기`);
+function CloudBackupCard({ status, onEnablePhotos, onRetry, onRestorePrevious, onSnapshot, snapshotBusy = false }) {
   const photoCovered = status?.photoEnabled || Number(status?.localPhotoCount || 0) === 0;
   const safe = status?.state === "safe" && Number(status?.pendingPhotos || 0) === 0 && photoCovered;
   const counts = status?.counts || {};
@@ -15312,12 +15329,26 @@ function CloudBackupCard({ status, onEnablePhotos, onRetry, onRestorePrevious })
         {[{ l: "회원", v: `${counts.members || 0}명` }, { l: "수업", v: `${counts.sessions || 0}건` }, { l: "사진", v: `${counts.photos || 0}장` }, { l: status?.photoEnabled ? "사진 백업 대기" : "사진 미백업", v: `${status?.photoEnabled ? status?.pendingPhotos || 0 : status?.localPhotoCount || 0}장`, warn: status?.photoEnabled ? status?.pendingPhotos > 0 : status?.localPhotoCount > 0 }].map((item) => <div key={item.l} className="rounded-lg px-3 py-2" style={{ backgroundColor: CANVAS }}><p style={{ fontSize: TYPE.caption, color: SUB }}>{item.l}</p><p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 700, color: item.warn ? WARN : INK }}>{item.v}</p></div>)}
       </div>
       <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>사진 {compactBytes(usage.photoBytes)} · 썸네일 {compactBytes(usage.thumbnailBytes)} · 데이터 {compactBytes(counts.firestoreBytes)}</p>
+      {/* 백업은 문서 하나라 1MB 를 넘지 못한다 (backup-safety.js). 넘기 전에 말하고,
+          넘으면 무엇이 멈췄는지 코드와 함께 말한다. */}
+      {status?.size === BACKUP_SIZE.WARN && <p className="mt-2 rounded-lg px-3 py-2" style={{ backgroundColor: WARN_S, fontSize: TYPE.caption, lineHeight: 1.5, color: WARN }}>백업 크기 {compactBytes(status.bytes)} · 한도(1MB)에 가까워요. 넘으면 백업이 멈춥니다. 기기의 기록은 그대로 남아요.</p>}
+      {status?.size === BACKUP_SIZE.TOO_LARGE && <p className="mt-2 rounded-lg px-3 py-2" style={{ backgroundColor: BAD_S, fontSize: TYPE.caption, lineHeight: 1.5, color: BAD }}>백업 크기 {compactBytes(status.bytes)} · 한도(1MB)를 넘어 올리지 못했어요 (코드 {status.errorCode || "backup/too-large"}). 기기의 기록은 그대로 남아요.</p>}
       {!status?.photoEnabled && <button type="button" onClick={onEnablePhotos} className="mt-3 h-11 w-full rounded-lg text-sm font-bold text-white" style={{ backgroundColor: BRAND }}>사진 클라우드 백업 켜기</button>}
       {status?.photoEnabled && <p className="mt-3 rounded-lg px-3 py-2" style={{ backgroundColor: GOOD_S, fontSize: TYPE.caption, lineHeight: 1.5, color: GOOD }}>사진 복구 백업 사용 중 · 고화질 최적화본과 썸네일을 본인 계정에 저장합니다.</p>}
       {/* 폰을 바꾼 강사가 찾아오는 자리다. 묻지 않고 띄우던 창을 여기로 옮겼다 --
           센터 소속이면 기기가 비어 있는 것이 정상이라, 그것만 보고 물으면
           매번 틀린 질문이 된다 (restore-offer.js). 옛 기록은 지워지지 않으므로
           필요할 때 여기서 꺼낸다. */}
+      {onSnapshot ? (
+        <>
+          <button type="button" onClick={onSnapshot} disabled={snapshotBusy}
+            className="mt-3 h-11 w-full rounded-lg text-sm font-bold disabled:opacity-50"
+            style={{ backgroundColor: CANVAS, color: INK }}>{snapshotBusy ? "스냅샷 남기는 중" : "지금 스냅샷 남기기"}</button>
+          <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+            이 기기의 기록 · 일정 · 설정을 한 벌 따로 보관합니다. 사진 원본은 빼고 사진 목록만 담습니다.
+          </p>
+        </>
+      ) : null}
       {onRestorePrevious ? (
         <>
           <button type="button" onClick={onRestorePrevious}
@@ -24198,7 +24229,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
      보게 되고, 그 차이는 아무 데도 적히지 않는다. 지난달 원장만 이 화면을
      열었을 때 따로 읽는다. */
   currentUserId = "", rosterClients = [], rosterPasses = [], monthReportState = null, onOpenPay,
-  onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, onRestorePrevious, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, payrollStore, issueStore, auditStore, ledgerStore, onRetryOrganization, onOpenClient, onClearMigratedSettlements, onLoadRuntimeConfig, onSaveRuntimeConfig, onSwapInstructorAccount, onPreviewInstructorNames, onConfirmInstructorNames, noticeStore, initialView = "hub", initialOpenGroups = null, nameConfirmState = null, noticeState = null }) {
+  onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, onRestorePrevious, onSnapshotBackup, snapshotBusy = false, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, payrollStore, issueStore, auditStore, ledgerStore, onRetryOrganization, onOpenClient, onClearMigratedSettlements, onLoadRuntimeConfig, onSaveRuntimeConfig, onSwapInstructorAccount, onPreviewInstructorNames, onConfirmInstructorNames, noticeStore, initialView = "hub", initialOpenGroups = null, nameConfirmState = null, noticeState = null }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const organization = useContext(OrganizationContext);
 
@@ -25114,7 +25145,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
             {demoMode && <section style={{ ...sectionStyle, backgroundColor: WARN_S, borderColor: WARN }}><p style={{ fontSize: TYPE.caption, fontWeight: 700, color: WARN }}>개발·데모 데이터 사용 중</p><p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK2 }}>현재 데이터는 실제 운영 데이터가 아닙니다.</p></section>}
           </div>
         )}
-        {view === "backup" && <div className="space-y-3"><CloudBackupCard status={backupStatus} onEnablePhotos={onEnablePhotoBackup} onRetry={onRetryBackup} onRestorePrevious={onRestorePrevious} /><HandoffCard db={db} photos={photos} account={account} onImport={onImport} onToast={onToast} /></div>}
+        {view === "backup" && <div className="space-y-3"><CloudBackupCard status={backupStatus} onEnablePhotos={onEnablePhotoBackup} onRetry={onRetryBackup} onRestorePrevious={onRestorePrevious} onSnapshot={onSnapshotBackup} snapshotBusy={snapshotBusy} /><HandoffCard db={db} photos={photos} account={account} onImport={onImport} onToast={onToast} /></div>}
         {view === "pass-issue" && showClients && (
           <PassIssue organization={organization} currentUserId={account?.id || ""}
             clientStore={clientStore} productStore={productStore} instructorStore={instructorStore}
@@ -26142,8 +26173,19 @@ export function createAppScreenSmokeCases() {
     { name: "더보기 탭 · 묶음 펼침 · 총괄매니저", element: settingsTab({ ...smokeOwner, role: "area_manager" }, { initialOpenGroups: ALL_MENU_GROUPS_OPEN }) },
     { name: "더보기 탭 · 총괄매니저", element: settingsTab({ ...smokeOwner, role: "area_manager" }) },
     { name: "더보기 탭 · 백업", element: settingsTab(smokeOwner, {
-      initialView: "backup", onRestorePrevious: noop,
+      initialView: "backup", onRestorePrevious: noop, onSnapshotBackup: noop,
       backupStatus: { state: "safe", counts: { members: 16, sessions: 6, photos: 4 }, lastBackupAt: new Date(2026, 8, 3, 9, 0).toISOString() },
+    }) },
+    /* 백업은 문서 하나라 1MB 를 넘지 못한다 (2026-10-31). 넘기 전 경고와 넘은 뒤
+       멈춤이 코드와 함께 화면에 있어야 한다 -- "백업을 확인해 주세요" 만으로는
+       다시 눌러도 같다는 것을 알 수 없다. */
+    { name: "더보기 탭 · 백업 · 크기 경고", element: settingsTab(smokeOwner, {
+      initialView: "backup", onRestorePrevious: noop, onSnapshotBackup: noop,
+      backupStatus: { state: "safe", size: "warn", bytes: 850 * 1024, counts: { members: 16, sessions: 6, photos: 4 }, lastBackupAt: new Date(2026, 8, 3, 9, 0).toISOString() },
+    }) },
+    { name: "더보기 탭 · 백업 · 한도 넘음", element: settingsTab(smokeOwner, {
+      initialView: "backup", onRestorePrevious: noop, onSnapshotBackup: noop,
+      backupStatus: { state: "error", size: "too_large", bytes: 1100 * 1024, errorCode: "backup/too-large", counts: { members: 16, sessions: 6, photos: 4 } },
     }) },
     /* ── 이번 달 내 수업 활동 ─────────────────────────────────────────────
        금액은 이 화면에 없다. 같은 숫자가 일정 탭 카드와 급여 시트에도 있어서
@@ -28331,6 +28373,14 @@ export default function App() {
      그 순간의 값이 필요하다. */
   const organizationRef = useRef(organizationContext);
   useEffect(() => { organizationRef.current = organizationContext; }, [organizationContext]);
+  /* 백업 크기. 경고선을 넘으면 화면과 진단에 남긴다 (backup-safety.js). */
+  const recordBackupSize = useCallback((pushed) => {
+    if (!pushed) return;
+    setCloudBackupStatus((current) => ({ ...current, size: pushed.size, bytes: pushed.bytes, errorCode: "" }));
+    if (pushed.size === BACKUP_SIZE.WARN) {
+      deviceLog("cloud_backup_size_warning", { feature: "cloud_backup", stage: "size", bytes: pushed.bytes, warnBytes: BACKUP_WARN_BYTES });
+    }
+  }, []);
   const queueCloud = useCallback((uidStr, data) => {
     if (!fbReady || !uidStr) return;
     if (restoreBlockedRef.current) {
@@ -28361,9 +28411,17 @@ export default function App() {
       try {
         const allowDestructiveOverwrite = backupOverrideOnce.current;
         backupOverrideOnce.current = false;
-        await fbPushBackup(p.uid, p.data, { ...pushOptions, allowDestructiveOverwrite });
+        const pushed = await pushCloudBackup(p.uid, p.data, { ...pushOptions, allowDestructiveOverwrite });
         markSaved();
+        recordBackupSize(pushed);
       } catch (e) {
+        /* 한도를 넘었다. 덮어쓰기 보호나 네트워크와 다른 일이라 따로 말한다 --
+           다시 눌러도 같다. 기기 데이터는 그대로다. */
+        if (e?.code === BACKUP_TOO_LARGE_CODE) {
+          setCloudBackupStatus((current) => ({ ...current, state: "error", size: BACKUP_SIZE.TOO_LARGE, bytes: e.bytes || 0, errorCode: e.code }));
+          deviceLog("cloud_backup_too_large", { feature: "cloud_backup", stage: "size", errorDomain: "app", errorCode: e.code, bytes: e.bytes || 0 });
+          return;
+        }
         if (e?.code === "backup/overwrite-blocked") {
           /* 보호 장치는 "기기 회원이 갑자기 줄었다" 를 사고로 본다. 센터
              소속에서는 신호가 아니다 -- 명부 원본이 서버에 있고 기기 쪽은
@@ -28377,7 +28435,7 @@ export default function App() {
             try {
               const preserved = await fbPreservePreviousBackup(p.uid);
               deviceLog("cloud_backup_previous_preserved", { feature: "cloud_backup", stage: "preserve", state: preserved });
-              await fbPushBackup(p.uid, p.data, { ...pushOptions, allowDestructiveOverwrite: true });
+              await pushCloudBackup(p.uid, p.data, { ...pushOptions, allowDestructiveOverwrite: true });
               markSaved();
               return;
             } catch (forceError) {
@@ -28397,7 +28455,7 @@ export default function App() {
         deviceLog("cloud_backup_write_failed", { stage: "backup", code: e?.code || "unknown" });
       }
     }, 3000);
-  }, []);
+  }, [recordBackupSize]);
   useEffect(() => () => { if (cloudTimer.current) clearTimeout(cloudTimer.current); }, []);
 
   const processPhotoQueue = useCallback(async (uidStr = account?.id, data = db) => {
@@ -28438,7 +28496,7 @@ export default function App() {
       const uploadedManifest = manifest.filter((item) => item.storagePath && item.thumbnailPath);
       const usage = storageUsage(uploadedManifest);
       const photoGraph = buildPhotoGraph(operational.photos);
-      await fbPushBackup(uidStr, operational.db, { photoCount: uploadedManifest.length, photoPending: queue.read().length, storageUsage: usage, photoManifest: uploadedManifest, photoGraph });
+      await pushCloudBackup(uidStr, operational.db, { photoCount: uploadedManifest.length, photoPending: queue.read().length, storageUsage: usage, photoManifest: uploadedManifest, photoGraph });
       writeCloudSyncMarker(uidStr, { localSavedAt: Date.now(), lastCloudAt: Date.now() });
       setCloudBackupStatus({ state: "safe", counts: backupCounts(operational.db, uploadedManifest, photoGraph), pendingPhotos: 0, localPhotoCount: manifest.length, storageUsage: usage, photoEnabled: true, lastBackupAt: new Date().toISOString() });
     } catch (error) {
@@ -28479,7 +28537,7 @@ export default function App() {
       const uploadedManifest = manifest.filter((item) => item.storagePath && item.thumbnailPath);
       const photoGraph = buildPhotoGraph(photosRef.current);
       const queue = createPhotoQueue(window.localStorage, accountId).read();
-      await fbPushBackup(accountId, withoutSampleData(data, photosRef.current).db, {
+      await pushCloudBackup(accountId, withoutSampleData(data, photosRef.current).db, {
         photoCount: uploadedManifest.length,
         photoPending: queue.length,
         storageUsage: storageUsage(uploadedManifest),
@@ -29006,14 +29064,41 @@ export default function App() {
     [],
   );
 
-  const openPreviousPhoneRestore = useCallback(async () => {
+  /* 백업 한 자리를 읽어 "무엇이 바뀌는지" 창을 띄운다. source 가 없으면 옛 순서
+     (이전 폰 보관본 → latest). */
+  const loadRestoreFrom = useCallback(async (uid, choice = null) => {
+    let cloud = null;
+    let source = choice?.id || "";
+    if (source) cloud = await fbPullBackup(uid, source);
+    else {
+      cloud = await fbPullBackup(uid, PREVIOUS_PHONE_BACKUP);
+      source = PREVIOUS_PHONE_BACKUP;
+      if (!cloud?.data) { cloud = await fbPullBackup(uid); source = "latest"; }
+    }
+    return { cloud, source, sourceLabel: choice?.label || "" };
+  }, []);
+  const [backupChoices, setBackupChoices] = useState(null);
+  /* 같은 계정의 기기마다 백업 자리가 따로 있다 (2026-10-31). 둘 이상이면 고르게
+     한다 -- 어느 기기의 기록을 되살릴지는 사람이 안다. 이 기기 자신의 것은 뺀다. */
+  const openPreviousPhoneRestore = useCallback(async (picked = null) => {
     const uid = account?.id;
     if (!uid || restoreBusy) return;
     setRestoreBusy(true);
     try {
-      let cloud = await fbPullBackup(uid, PREVIOUS_PHONE_BACKUP);
-      let source = PREVIOUS_PHONE_BACKUP;
-      if (!cloud?.data) { cloud = await fbPullBackup(uid); source = "latest"; }
+      let choice = picked && typeof picked === "object" && picked.id ? picked : null;
+      if (!choice) {
+        const listed = await fbListBackups(uid).catch((error) => {
+          deviceLog("cloud_restore_list_failed", { feature: "cloud_backup", stage: "list", code: error?.code || "unknown" });
+          return [];
+        });
+        const choices = describeBackups(listed, { deviceId: deviceIdentity() }).filter((item) => !item.own);
+        if (choices.length > 1) {
+          setBackupChoices(choices.map((item) => ({ ...item, label: backupChoiceLabel(item) })));
+          return;
+        }
+        if (choices.length === 1) choice = { ...choices[0], label: backupChoiceLabel(choices[0]) };
+      }
+      const { cloud, source, sourceLabel } = await loadRestoreFrom(uid, choice);
       if (!cloud?.data) {
         setToast({ ok: false, msg: "불러올 이전 기록이 없습니다." });
         return;
@@ -29021,14 +29106,40 @@ export default function App() {
       const manifest = (await fbListPhotoBackups(uid).catch(() => []))
         .filter((item) => item?.status !== "deleted");
       setRestoreLookup({
-        accountId: uid, cloud, manifest, source,
+        accountId: uid, cloud, manifest, source, sourceLabel,
         preview: restorePreview({ local: db, cloud: cloud.data, photoCount: manifest.length }),
       });
     } catch (error) {
       setToast({ ok: false, msg: "이전 기록을 읽지 못했습니다. 네트워크를 확인한 뒤 다시 시도해 주세요." });
       deviceLog("cloud_restore_lookup_failed", { feature: "cloud_backup", stage: "lookup", code: error?.code || "unknown" });
     } finally { setRestoreBusy(false); }
-  }, [account?.id, db, restoreBusy]);
+  }, [account?.id, db, restoreBusy, loadRestoreFrom]);
+
+  /* 옮기기 전 스냅샷 (2026-10-31). 사진 원본은 넣지 않고 사진 목록까지만.
+     서버 기준으로 옮기기 직전에 자동으로 찍을 자리이고, 지금은 손으로 남긴다. */
+  const [snapshotBusy, setSnapshotBusy] = useState(false);
+  const takeMigrationSnapshot = useCallback(async () => {
+    const uid = account?.id;
+    if (!uid || snapshotBusy) return;
+    setSnapshotBusy(true);
+    try {
+      const operational = withoutSampleData(db, photosRef.current);
+      const snapshot = buildMigrationSnapshot({
+        data: operational.db, photos: operational.photos, deviceId: deviceIdentity(),
+        appBuild: (await RUNTIME_APP_IDENTITY)?.build || "",
+      });
+      await fbUploadMigrationSnapshot(uid, snapshot);
+      deviceLog("migration_snapshot_saved", {
+        feature: "cloud_backup", stage: "snapshot", bytes: snapshot.bytes, ...snapshot.counts,
+        strippedBinaries: snapshot.strippedBinaries,
+      });
+      setToast({ ok: true, msg: `스냅샷을 남겼어요. 회원 ${snapshot.counts.members} · 일정 ${snapshot.counts.sessions} · 사진 목록 ${snapshot.counts.photos}` });
+    } catch (error) {
+      const code = error?.code || "unknown";
+      deviceLog("migration_snapshot_failed", { feature: "cloud_backup", stage: "snapshot", errorDomain: "firebase_storage", errorCode: code, message: String(error?.message || "").slice(0, 200) });
+      setToast({ ok: false, msg: `스냅샷을 남기지 못했어요 (코드 ${code})` });
+    } finally { setSnapshotBusy(false); }
+  }, [account?.id, db, snapshotBusy]);
 
   const retryCloudBackup = useCallback(() => {
     if (restoreOffer) return;
@@ -30665,7 +30776,7 @@ export default function App() {
               instructorPay={instructorPay} payMonth={payMonth} payLoading={payLoading} payError={payError}
               currentUserId={account?.id || ""} rosterClients={rosterClients} rosterPasses={rosterPasses}
               onOpenPay={canSeeOwnPay ? () => setPayOpen(true) : undefined} onChangeSettings={(s) => saveDb({ ...db, settings: s })} onChangePhoto={changePhoto} onToast={setToast} themePref={themePref} onChangeTheme={changeTheme} onLogout={handleLogout} onDeleteAccount={handleDeleteAccount} onImport={importHandoff}
-              onOpenSchedule={() => { setScheduleQuickAddRequest((request) => request + 1); setTab("schedule"); }} onOpenRecords={() => { setMobileView("list"); setTab("members"); }} onOpenOnboarding={openOnboardingReplay} onOpenLessonExamples={() => setLessonExamplesOpen(true)} backupStatus={cloudBackupStatus} onEnablePhotoBackup={enablePhotoBackup} onRetryBackup={retryCloudBackup} onRestorePrevious={openPreviousPhoneRestore} onRetryOrganization={retryOrganizationContext} onLoadRuntimeConfig={loadRuntimeConfig} onSaveRuntimeConfig={saveRuntimeConfig} onSwapInstructorAccount={swapInstructorAccount} onPreviewInstructorNames={previewInstructorNames} onConfirmInstructorNames={confirmInstructorNames} noticeStore={noticeStore} onOpenClient={(picked) => setDetailClient(picked)} onClearMigratedSettlements={clearMigratedSettlements} />}
+              onOpenSchedule={() => { setScheduleQuickAddRequest((request) => request + 1); setTab("schedule"); }} onOpenRecords={() => { setMobileView("list"); setTab("members"); }} onOpenOnboarding={openOnboardingReplay} onOpenLessonExamples={() => setLessonExamplesOpen(true)} backupStatus={cloudBackupStatus} onEnablePhotoBackup={enablePhotoBackup} onRetryBackup={retryCloudBackup} onRestorePrevious={() => openPreviousPhoneRestore()} onSnapshotBackup={takeMigrationSnapshot} snapshotBusy={snapshotBusy} onRetryOrganization={retryOrganizationContext} onLoadRuntimeConfig={loadRuntimeConfig} onSaveRuntimeConfig={saveRuntimeConfig} onSwapInstructorAccount={swapInstructorAccount} onPreviewInstructorNames={previewInstructorNames} onConfirmInstructorNames={confirmInstructorNames} noticeStore={noticeStore} onOpenClient={(picked) => setDetailClient(picked)} onClearMigratedSettlements={clearMigratedSettlements} />}
           </Guard>
         </div>
         {/* 출석 체크는 일정 탭 위에 시트로 뜬다. 탭 구조를 건드리지 않으면서
@@ -30775,8 +30886,15 @@ export default function App() {
       {/* 이전 폰 기록 불러오기. 사용자가 메뉴에서 찾아온 길이라 묻는 창이 아니라
           **무엇이 바뀌는지 보여주는 창**이다 -- 불러오기는 병합이 아니라 통째
           교체라, 숫자를 먼저 보여주지 않으면 누른 뒤에야 알게 된다. */}
+      {backupChoices && <ChoiceBottomSheet title="어느 기기의 기록을 불러올까요?" subtitle="기기마다 백업이 따로 있습니다"
+        value="" onClose={() => setBackupChoices(null)}
+        options={backupChoices.map((item) => ({
+          value: item.id, label: item.label,
+          description: `회원 ${item.members}명 · 일정 ${item.sessions}건 · ${backupTimeLabel(item.at)}`,
+        }))}
+        onSelect={(id) => { const choice = backupChoices.find((item) => item.id === id); setBackupChoices(null); if (choice) openPreviousPhoneRestore(choice); }} />}
       {restoreLookup && <ScheduleBottomSheet title="이전 폰 기록 불러오기"
-        subtitle={`${restoreLookup.source === PREVIOUS_PHONE_BACKUP ? "이전 폰" : "마지막"} 백업 · ${backupTimeLabel(restoreLookup.cloud?.at)}`}
+        subtitle={`${restoreLookup.sourceLabel || (restoreLookup.source === PREVIOUS_PHONE_BACKUP ? "이전 폰" : "마지막")} 백업 · ${backupTimeLabel(restoreLookup.cloud?.at)}`}
         onClose={() => setRestoreLookup(null)}>
         <div className="space-y-3">
           <div className="rounded-xl p-3" style={{ backgroundColor: CANVAS }}>

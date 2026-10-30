@@ -67,10 +67,11 @@ function stripRuntimePhotoFields(record) {
   return Object.fromEntries(Object.entries(source).filter(([key, value]) => !blocked.has(key) && typeof value !== "function"));
 }
 
+/** @param {Record<string, any>} photoMap */
 export function buildPhotoGraph(photoMap) {
   return Object.fromEntries(Object.entries(photoMap || {}).map(([memberId, buckets]) => [safeId(memberId), {
     sets: Array.isArray(buckets?.sets) ? stripBinaryDeep(buckets.sets) : [],
-  }]).filter(([memberId, graph]) => memberId && graph.sets.length));
+  }]).filter((entry) => entry[0] && /** @type {{ sets: any[] }} */ (entry[1]).sets.length));
 }
 
 export function mergePhotoGraph(photoMap, photoGraph) {
@@ -240,6 +241,7 @@ export function storageUsage(manifest) {
   }), { photoCount: 0, photoBytes: 0, thumbnailBytes: 0 });
 }
 
+/** @param {{ data?: any, photos?: any, photoBinary?: any, from?: string, at?: string }} [input] */
 export function createEmergencyBackupEnvelope({ data, photos, photoBinary = null, from = "", at = new Date().toISOString() } = {}) {
   return {
     app: "pilateacher",

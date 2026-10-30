@@ -31,6 +31,11 @@ import {
   PRICING_RULE, netContractPriceFor,
 } from "../../src/data/schema/deduction-pricing.js";
 import { CLIENT_STATUS_FOR_CREATE } from "../../src/data/repositories/client-repository.js";
+import { createFirestorePassStore, deductPass } from "../../src/data/repositories/pass-repository.js";
+import {
+  createFirestoreLessonScheduleStore, publishScheduledLessons,
+} from "../../src/data/repositories/lesson-schedule-repository.js";
+import { scheduleChanges } from "../../src/features/schedule/schedule-publish.js";
 import { deleteObject, getMetadata, ref, uploadBytes } from "firebase/storage";
 
 const PROJECT_ID = "pilateacher-dev";
@@ -4929,5 +4934,97 @@ describe("notices are written by the owner level and read by the centre", () => 
       doc(dbFor(users.owner), "organizations", ORG_B, "notices", "n-other"),
       { ...notice(users.owner), organizationId: ORG_B },
     ));
+  });
+});
+
+/* ── 강사 일정 → 센터 서버: 앱 코드 그대로 (2026-10-31) ──────────────────────
+   3단계(#96)의 쓰기 경로를 **앱 함수 그대로** 에뮬레이터 규칙에 통과시킨다.
+   #96 은 가짜 저장소로만 시험했고, 그래서 새 일정의 트랜잭션 읽기를 규칙이
+   막는 것을 운영에서야 봤다 (#98). 본문을 손으로 옮기면 같은 일이 또 난다 --
+   앱이 실제로 보내는 모양이 아니라 내가 옮긴 모양을 시험하게 된다.
+
+   경로: 등록 · 수정 · 삭제(cancelled) · 되돌리기 · 그대로(쓰지 않음) ·
+   확정(deductPass 가 같은 문서를 set) · 확정 뒤 다시 저장(쓰지 않음). */
+describe("schedule publish — the app's own write paths through the rules", () => {
+  const MEMBERS = [{ id: "m-1", name: "회원", orgClientId: "client-member", orgLocationId: "location-a" }];
+  /* 어제 수업. 확정은 앞날의 수업을 받지 않는다 (occurred_at_future). */
+  const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const DAY = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, "0")}-${String(yesterday.getDate()).padStart(2, "0")}`;
+  const entry = (extra = {}) => ({
+    id: "sched-1", date: DAY, start: "19:00", end: "19:50", type: "개인레슨",
+    attendees: [{ memberId: "m-1", status: "booked" }], ...extra,
+  });
+  const publish = (userId, before, after) => publishScheduledLessons(
+    ORG_A,
+    scheduleChanges({ before, after, members: MEMBERS, organizationId: ORG_A, instructorId: users.instructor }),
+    { store: createFirestoreLessonScheduleStore({ firestore: dbFor(userId) }), createdBy: userId },
+  );
+  const stored = async (lessonId) => {
+    let data = null;
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const snapshot = await getDoc(doc(context.firestore(), "organizations", ORG_A, "lessons", lessonId));
+      data = snapshot.exists() ? snapshot.data() : null;
+    });
+    return data;
+  };
+  const outcomes = (results) => results.map((item) => `${item.outcome}${item.errorCode ? `:${item.errorCode}` : ""}`);
+
+  for (const role of ["owner", "instructor"]) {
+    test(`${role}: 등록 → 수정 → 삭제 → 되돌리기 → 그대로`, async () => {
+      assert.deepEqual(outcomes(await publish(users[role], [], [entry()])), ["written"], "등록");
+      assert.equal((await stored("sched-1")).status, "scheduled");
+
+      const moved = entry({ start: "20:00", end: "20:50" });
+      assert.deepEqual(outcomes(await publish(users[role], [entry()], [moved])), ["written"], "수정");
+      assert.equal((await stored("sched-1")).startsAt.toDate().getHours(), 20);
+
+      assert.deepEqual(outcomes(await publish(users[role], [moved], [])), ["written"], "삭제");
+      assert.equal((await stored("sched-1")).status, "cancelled");
+
+      assert.deepEqual(outcomes(await publish(users[role], [], [moved])), ["written"], "되돌리기");
+      assert.equal((await stored("sched-1")).status, "scheduled");
+
+      assert.deepEqual(outcomes(await publish(users[role], [], [moved])), ["unchanged"], "같으면 쓰지 않는다");
+    });
+  }
+
+  test("출석 취소 — 모두 취소하면 cancelled, 회원은 남긴다", async () => {
+    await publish(users.instructor, [], [entry()]);
+    const cancelled = entry({ attendees: [{ memberId: "m-1", status: "cancel" }] });
+    assert.deepEqual(outcomes(await publish(users.instructor, [entry()], [cancelled])), ["written"]);
+    const data = await stored("sched-1");
+    assert.equal(data.status, "cancelled");
+    assert.deepEqual(data.clientIds, ["client-member"]);
+  });
+
+  test("확정 — deductPass 가 예정 문서를 completed 로 덮고, 그 뒤 일정 저장은 쓰지 않는다", async () => {
+    await publish(users.instructor, [], [entry()]);
+    let pass = null;
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const snapshot = await getDoc(doc(context.firestore(), "organizations", ORG_A, "passes", PASS_A));
+      pass = { id: snapshot.id, ...snapshot.data() };
+    });
+    await assertSucceeds(deductPass(ORG_A, pass, {
+      instructorId: users.instructor,
+      createdBy: users.instructor,
+      occurredAt: new Date(`${DAY}T19:00:00`),
+      isDeputyDirector: false,
+      lessonId: "sched-1",
+      attendanceByClientId: { "client-member": "attended" },
+    }, { store: createFirestorePassStore({ firestore: dbFor(users.instructor) }) }));
+    assert.equal((await stored("sched-1")).status, "completed");
+
+    // 확정 뒤 강사가 일정을 다시 저장해도 완료가 예정으로 되돌아가지 않는다.
+    const moved = entry({ start: "21:00", end: "21:50" });
+    assert.deepEqual(outcomes(await publish(users.instructor, [entry()], [moved])), ["settled"]);
+    assert.deepEqual(outcomes(await publish(users.instructor, [moved], [])), ["settled"], "삭제도");
+    assert.equal((await stored("sched-1")).status, "completed");
+  });
+
+  test("다른 센터 · 회원 · 비로그인은 일정을 쓰지도 읽지도 못한다", async () => {
+    for (const userId of [users.outsider, users.member, null]) {
+      const results = await publish(userId, [], [entry({ id: `sched-${userId}` })]);
+      assert.deepEqual(outcomes(results), ["failed:permission-denied"], String(userId));
+    }
   });
 });

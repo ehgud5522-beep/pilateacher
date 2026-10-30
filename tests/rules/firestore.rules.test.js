@@ -4958,11 +4958,16 @@ describe("schedule publish — the app's own write paths through the rules", () 
     id: "sched-1", date: DAY, start: "19:00", end: "19:50", type: "개인레슨",
     attendees: [{ memberId: "m-1", status: "booked" }], ...extra,
   });
-  const publish = (userId, before, after) => publishScheduledLessons(
-    ORG_A,
-    scheduleChanges({ before, after, members: MEMBERS, organizationId: ORG_A, instructorId: users.instructor }),
-    { store: createFirestoreLessonScheduleStore({ firestore: dbFor(userId) }), createdBy: userId },
-  );
+  /* App.jsx publishSchedule 과 같이: 이번 저장에 새로 들어온 것만 되살릴 수 있다. */
+  const publish = (userId, before, after) => {
+    const beforeIds = new Set(before.map((item) => item.id));
+    return publishScheduledLessons(
+      ORG_A,
+      scheduleChanges({ before, after, members: MEMBERS, organizationId: ORG_A, instructorId: users.instructor })
+        .map((document) => ({ ...document, allowRevive: !beforeIds.has(document.lessonId) })),
+      { store: createFirestoreLessonScheduleStore({ firestore: dbFor(userId) }), createdBy: userId, deviceId: "pc-test" },
+    );
+  };
   const stored = async (lessonId) => {
     let data = null;
     await testEnv.withSecurityRulesDisabled(async (context) => {
@@ -5155,5 +5160,72 @@ describe("cloud backup safety net — the app code through the rules", () => {
     await assertFails(uploadBytes(at("name_1/photo.jpg"), new Uint8Array([123, 125]), { contentType: "application/json" }));
     await assertFails(uploadBytes(at("bad.id/db.json"), new Uint8Array([123, 125]), { contentType: "application/json" }));
     await assertSucceeds(uploadBytes(at("ok_1/db.json"), new Uint8Array([123, 125]), { contentType: "application/json" }));
+  });
+});
+
+/* ── PC 두 대: 다른 PC 가 지운 일정을 되살리지 않는다 (2026-10-31) ──────────────
+   센터에는 PC 가 두 대인 곳이 많다. PC-A 가 지운 일정을 PC-B 가 아직 들고 있으면
+   PC-B 를 열 때 "처음 맞추기" 가 그것을 예정으로 다시 썼다. 앱 코드 그대로 본다. */
+describe("schedule publish — two PCs, no reviving what another PC cancelled", () => {
+  const MEMBERS = [{ id: "m-1", name: "회원", orgClientId: "client-member", orgLocationId: "location-a" }];
+  const entry = (extra = {}) => ({
+    id: "pc-1", date: "2099-11-03", start: "19:00", end: "19:50", type: "개인레슨",
+    attendees: [{ memberId: "m-1", status: "booked" }], ...extra,
+  });
+  const ME = users.instructor;
+  /* App.jsx publishSchedule 과 같은 순서: 바뀐 것 → allowRevive (이번 저장에 새로 들어온
+     것, 처음 맞추기는 없음) → 기기 id 와 함께 쓴다. */
+  const publish = (deviceId, before, after, { initial = false } = {}) => {
+    const beforeIds = new Set(before.map((item) => item.id));
+    const documents = scheduleChanges({ before, after, members: MEMBERS, organizationId: ORG_A, instructorId: ME })
+      .map((document) => ({ ...document, allowRevive: !initial && !beforeIds.has(document.lessonId) }));
+    return publishScheduledLessons(ORG_A, documents, {
+      store: createFirestoreLessonScheduleStore({ firestore: dbFor(ME) }), createdBy: ME, deviceId,
+    });
+  };
+  const status = async (lessonId) => {
+    let value = null;
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const snapshot = await getDoc(doc(context.firestore(), "organizations", ORG_A, "lessons", lessonId));
+      value = snapshot.exists() ? snapshot.data() : null;
+    });
+    return value;
+  };
+  const outcomes = (results) => results.map((item) => item.outcome);
+
+  test("PC-A 가 지운 일정을 PC-B 의 처음 맞추기가 되살리지 않는다", async () => {
+    await publish("pc-a", [], [entry()]);
+    assert.deepEqual(outcomes(await publish("pc-a", [entry()], [])), ["written"], "PC-A 삭제");
+    // PC-B 는 아직 그 일정을 들고 있다. 앱을 열면 오늘 이후 일정을 맞춘다.
+    assert.deepEqual(outcomes(await publish("pc-b", [], [entry()], { initial: true })), ["cancelled_elsewhere"]);
+    assert.equal((await status("pc-1")).status, "cancelled");
+    // PC-B 에서 그 일정을 고쳐 저장해도 되살리지 않는다.
+    assert.deepEqual(outcomes(await publish("pc-b", [entry()], [entry({ start: "20:00", end: "20:50" })])), ["cancelled_elsewhere"]);
+    assert.equal((await status("pc-1")).status, "cancelled");
+  });
+
+  test("PC-A 의 출석 전원 취소도 PC-B 가 되살리지 않는다", async () => {
+    await publish("pc-a", [], [entry()]);
+    await publish("pc-a", [entry()], [entry({ attendees: [{ memberId: "m-1", status: "cancel" }] })]);
+    assert.deepEqual(outcomes(await publish("pc-b", [], [entry()], { initial: true })), ["cancelled_elsewhere"]);
+  });
+
+  test("내가 지운 것을 내가 되돌리면 되살아난다 — 되돌리기 · 내 출석 취소 되돌리기", async () => {
+    await publish("pc-a", [], [entry()]);
+    await publish("pc-a", [entry()], []);
+    assert.deepEqual(outcomes(await publish("pc-a", [], [entry()])), ["written"], "되돌리기");
+    assert.equal((await status("pc-1")).status, "scheduled");
+    const cancelled = entry({ attendees: [{ memberId: "m-1", status: "cancel" }] });
+    await publish("pc-a", [entry()], [cancelled]);
+    assert.deepEqual(outcomes(await publish("pc-a", [cancelled], [entry()])), ["written"], "같은 기기의 출석 취소 되돌리기");
+    assert.equal((await status("pc-1")).status, "scheduled");
+  });
+
+  test("다른 PC 의 취소를 되돌리기로 되살릴 수는 있다 — 사람이 누른 것이다", async () => {
+    await publish("pc-a", [], [entry()]);
+    await publish("pc-a", [entry()], []);
+    // PC-B 에서 지웠다가 되돌리기를 누른 경우: 이번 저장에 새로 들어왔다.
+    assert.deepEqual(outcomes(await publish("pc-b", [], [entry()])), ["written"]);
+    assert.equal((await status("pc-1")).updatedDevice, "pc-b");
   });
 });

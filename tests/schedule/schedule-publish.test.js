@@ -4,7 +4,7 @@ import {
   SCHEDULE_LESSON_TYPE, SCHEDULE_STATUS, scheduleChanges, scheduleTime, scheduledLessonDocument,
 } from "../../src/features/schedule/schedule-publish.js";
 import {
-  PUBLISH_OUTCOME, publishScheduledLessons, scheduleWriteFor,
+  PUBLISH_OUTCOME, outcomeWithoutWrite, publishScheduledLessons, scheduleWriteFor,
 } from "../../src/data/repositories/lesson-schedule-repository.js";
 
 /* 강사 일정 → 센터 서버 (2026-10-30, 회원 앱 개편 3단계).
@@ -132,4 +132,15 @@ test("쓰기 결과는 건마다 — 실패는 원본 코드와 함께", async (
   assert.equal(writes[0].path, `organizations/${ORG}/lessons/L-new`);
   // 처음 만드는 문서에만 만든 사람을 적는다.
   assert.equal(writes[0].write.createdBy, "uid-instructor");
+});
+
+test("취소된 서버 문서는 아무 기기나 되살리지 못한다 — PC 두 대 (2026-10-31)", () => {
+  const document = scheduledLessonDocument({ ...base, entry: lesson() });
+  const cancelledBy = (device) => ({ ...document.data, status: "cancelled", updatedDevice: device });
+  assert.equal(scheduleWriteFor(cancelledBy("pc-a"), document, { deviceId: "pc-b" }), null, "다른 PC 의 취소 -- 처음 맞추기 · 고치기");
+  assert.deepEqual(scheduleWriteFor(cancelledBy("pc-a"), document, { deviceId: "pc-a" }), document.data, "내가 취소한 것은 내가 되돌린다");
+  assert.deepEqual(scheduleWriteFor(cancelledBy("pc-a"), { ...document, allowRevive: true }, { deviceId: "pc-b" }), document.data, "되돌리기를 누른 것");
+  assert.equal(scheduleWriteFor({ ...document.data, status: "cancelled" }, document, { deviceId: "pc-b" }), null, "누가 취소했는지 모르는 옛 문서도 되살리지 않는다");
+  assert.equal(outcomeWithoutWrite({ status: "cancelled" }), PUBLISH_OUTCOME.CANCELLED_ELSEWHERE);
+  assert.equal(outcomeWithoutWrite({ status: "completed" }), PUBLISH_OUTCOME.SETTLED);
 });

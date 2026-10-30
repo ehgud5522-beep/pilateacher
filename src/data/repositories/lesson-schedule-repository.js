@@ -19,6 +19,8 @@ export const PUBLISH_OUTCOME = Object.freeze({
   SETTLED: "settled",
   /** 서버가 이미 같은 내용이다. */
   UNCHANGED: "unchanged",
+  /** 다른 기기가 지우거나 취소한 수업이라 되살리지 않았다. */
+  CANCELLED_ELSEWHERE: "cancelled_elsewhere",
   FAILED: "failed",
 });
 
@@ -51,7 +53,7 @@ export function createFirestoreLessonScheduleStore(options = {}) {
           }, { merge: true });
         }
         if (write) return PUBLISH_OUTCOME.WRITTEN;
-        return text(current?.status) === "completed" ? PUBLISH_OUTCOME.SETTLED : PUBLISH_OUTCOME.UNCHANGED;
+        return outcomeWithoutWrite(current);
       });
     },
   };
@@ -80,17 +82,40 @@ function sameSchedule(current, data) {
 /**
  * 이 문서를 지금 써도 되는가. **순수 함수다.**
  * 완료된 수업이면 null (확정이 이긴다). 서버와 같으면 null (쓸 것이 없다).
+ *
+ * **취소된 수업은 아무 기기나 되살리지 못한다** (2026-10-31). 센터에는 PC 가 두
+ * 대인 곳이 많다. PC-A 에서 지운 일정을 PC-B 가 아직 들고 있으면, PC-B 를 여는
+ * 순간 "처음 맞추기" 가 그것을 예정으로 다시 썼다. 되살릴 수 있는 것은 둘뿐이다:
+ * - 이 기기가 취소한 것 (updatedDevice 가 나) -- 내 출석 취소를 내가 되돌린다
+ * - 이번 저장에서 새로 들어온 것 (allowRevive) -- 되돌리기를 누른 것
+ * 앱을 열 때 맞추기는 allowRevive 를 주지 않는다.
+ *
+ * @param {any} current
+ * @param {{ data: any, allowRevive?: boolean }} document
+ * @param {{ deviceId?: string }} [options]
  */
-export function scheduleWriteFor(current, document) {
+export function scheduleWriteFor(current, document, options = {}) {
   if (text(current?.status) === "completed") return null;
   if (sameSchedule(current, document.data)) return null;
+  if (text(current?.status) === "cancelled" && text(document.data?.status) !== "cancelled") {
+    const mine = Boolean(text(options.deviceId)) && text(current?.updatedDevice) === text(options.deviceId);
+    if (!mine && document.allowRevive !== true) return null;
+  }
   return document.data;
+}
+
+/** 쓰지 않았을 때 왜인가. 완료 · 다른 기기의 취소 · 이미 같음. */
+export function outcomeWithoutWrite(current) {
+  const status = text(current?.status);
+  if (status === "completed") return PUBLISH_OUTCOME.SETTLED;
+  if (status === "cancelled") return PUBLISH_OUTCOME.CANCELLED_ELSEWHERE;
+  return PUBLISH_OUTCOME.UNCHANGED;
 }
 
 /**
  * @param {string} organizationId
  * @param {Array<{ lessonId: string, data: object }>} documents
- * @param {{ store?: ReturnType<typeof createFirestoreLessonScheduleStore>, createdBy?: string }} [options]
+ * @param {{ store?: ReturnType<typeof createFirestoreLessonScheduleStore>, createdBy?: string, deviceId?: string }} [options]
  * @returns {Promise<Array<{ lessonId: string, outcome: string, errorCode: string }>>}
  */
 export async function publishScheduledLessons(organizationId, documents, options = {}) {
@@ -104,9 +129,15 @@ export async function publishScheduledLessons(organizationId, documents, options
       const outcome = await store.transact(
         paths.lesson(organization, lessonId),
         (current) => {
-          const write = scheduleWriteFor(current, document);
-          /* 처음 만드는 문서에만 누가 만들었는지 적는다. */
-          return write && !current && options.createdBy ? { ...write, createdBy: options.createdBy } : write;
+          const write = scheduleWriteFor(current, document, { deviceId: options.deviceId });
+          if (!write) return null;
+          /* 어느 기기가 썼는가 -- 취소를 되살려도 되는지 다음에 이것을 본다.
+             처음 만드는 문서에만 누가 만들었는지 적는다. */
+          return {
+            ...write,
+            ...(text(options.deviceId) ? { updatedDevice: text(options.deviceId) } : {}),
+            ...(!current && options.createdBy ? { createdBy: options.createdBy } : {}),
+          };
         },
       );
       results.push({ lessonId, outcome, errorCode: "" });

@@ -6,8 +6,8 @@
 지금 스토어: **1.1.43** (Android 73 · iOS 226). 웹 코드는 main #90 (2026-10-27) 까지다.
 그 뒤 웹에만 나간 것이 이번 빌드에 함께 들어간다.
 
-**출시 순서:** 내부 테스트(Android 내부 트랙 · iOS TestFlight) → Android 20% → 확대(100%) ·
-iOS 출시 → 최소 버전 강제 → 1.1.43 예외 분기 제거 → 규칙 2차.
+**출시 순서:** 내부 테스트(Android 내부 트랙 · iOS TestFlight) → Android 100% (단계적 출시 없음,
+2026-10-31 대표 결정) · iOS 심사 제출(단계적 출시) → 최소 버전 강제 → 1.1.43 예외 분기 제거 → 규칙 2차.
 
 ## 1. 빌드에 들어가야 할 것
 
@@ -60,8 +60,8 @@ iOS 출시 → 최소 버전 강제 → 1.1.43 예외 분기 제거 → 규칙 2
 
 | 순서 | 항목 | 확인 방법 |
 | --- | --- | --- |
-| 1 | **Android 20% 단계 출시** | Codemagic `instructor-android-production` (rollout 0.2) 을 `release/1-1-44` 로. 2~3일 동안 진단(`schedule_sync_*` · `schedule_publish_failed` · `settlement_duplicate_*` · 비정상 종료) |
-| 2 | **확대(100%)** | Play Console → 프로덕션 → 출시 비율 100%. iOS 는 App Store Connect 제출 (대표) |
+| 1 | **Android 프로덕션 초안** | Codemagic `instructor-android-production` 을 `release/1-1-44` 로. 빌드가 끝나면 프로덕션 트랙에 **초안**으로 올라간다 -- 아직 공개 아님 |
+| 2 | **Android 100% 게시 · iOS 심사 제출** | 대표가 "게시" 라고 하면: Play Console → 프로덕션 → 초안 [출시 검토 → 출시] (100%). iOS 는 App Store Connect 에서 심사 제출 + 단계적 출시. 출시 뒤 진단(`schedule_sync_*` · `schedule_publish_failed` · `settlement_duplicate_*` · 비정상 종료) |
 | 3 | 스위치 켜기 | 폰을 업데이트한 강사부터 "고른 계정만" 에 더한다. 대표 → 강사 한 명 → 전체 |
 
 ## 5. 최소 버전 강제

@@ -32,6 +32,7 @@ const {
 } = require("./service-session-fix");
 const { isPassAdmin, runHandover, runSessionUp } = require("./pass-admin");
 const { handleRuntimeConfigRequest } = require("./runtime-config-admin");
+const { handleNoticeRequest } = require("./notice-admin");
 const { monthlyPayFor, planAccountSwap, runAccountSwap } = require("./instructor-swap");
 const { reconcileOrganization } = require("./pass-reconcile-nightly");
 const { createFirestoreMemberLinkPorts } = require("./member-link-store");
@@ -847,6 +848,38 @@ exports.updateRuntimeConfig = onCall({
       errorCode: error?.message || "unknown",
     });
     throw new HttpsError("failed-precondition", String(error?.message || "runtime_config_failed"));
+  }
+});
+
+/* ── 공지 쓰기 · 고치기 · 지우기 ─────────────────────────────────────────
+   대표 · 총괄매니저. 총괄매니저는 자기가 쓴 공지만 고치고 지운다. 근거는
+   notice-admin.js 머리말에 있다. 규칙은 공지 쓰기를 닫았다 -- 이 통로 하나다.
+   updateRuntimeConfig 와 따로 둔다 (그쪽은 계속 대표 전용). */
+exports.manageNotice = onCall({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  timeoutSeconds: 30,
+  invoker: "public",
+}, async (request) => {
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  const action = String(request?.data?.action || "").trim();
+  try {
+    const result = await handleNoticeRequest(firestore, {
+      callerUid: request?.auth?.uid, organizationId, action,
+      noticeId: request?.data?.noticeId, value: request?.data?.value,
+    }, { membershipId, newId: () => firestore.collection("_").doc().id });
+    // 제목 · 본문 · 이름은 남기지 않는다 (§7). 무엇을 했는지와 id 만.
+    logger.info("notice_written", { feature: "notices", stage: action, organizationId, noticeId: result.noticeId });
+    return result;
+  } catch (error) {
+    if (error?.httpsCode) {
+      logger.warn("notice_refused", { feature: "notices", stage: action, organizationId, errorCode: error.reason || error.httpsCode });
+      throw new HttpsError(error.httpsCode, error.message, { reason: error.reason || "" });
+    }
+    logger.error("notice_write_failed", {
+      feature: "notices", stage: action, organizationId, errorDomain: "firestore",
+      errorCode: String(error?.code || "unknown"), message: String(error?.message || "").slice(0, 200),
+    });
+    throw new HttpsError("unavailable", "notice_write_failed", { reason: "notice_write_failed" });
   }
 });
 

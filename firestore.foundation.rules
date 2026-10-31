@@ -304,33 +304,6 @@ service cloud.firestore {
     // 그것은 급여 판정 1 그 자체라 isDeputyDirector 하나로만 두고, 같은 사실을
     // 두 곳에 적어 어긋나게 두지 않는다.
     // Keep in sync with MEMBERSHIP_TITLE in src/data/schema/constants.js.
-    /* 공지 본문. 있으면 모양을 따지고, 없어도 되는 칸은 없어도 된다.
-
-       링크는 http(s) 만 받는다 -- javascript: 같은 것이 들어오면 누르는 사람의
-       앱 안에서 돈다. 쓰는 사람이 대표라도 그 문을 열어 둘 이유가 없다.
-       Keep in sync with noticeError in functions/shared/notices.mjs. */
-    function noticeBodyWellFormed() {
-      return request.resource.data.title is string
-        && request.resource.data.title.size() > 0
-        && request.resource.data.title.size() <= 60
-        && request.resource.data.body is string
-        && request.resource.data.body.size() > 0
-        && request.resource.data.body.size() <= 2000
-        && request.resource.data.status in ["active", "ended"]
-        && (!("important" in request.resource.data) || request.resource.data.important is bool)
-        && (!("linkUrl" in request.resource.data)
-          || request.resource.data.linkUrl.matches("^https?://.*"))
-        && (!("imageUrl" in request.resource.data)
-          || request.resource.data.imageUrl.matches("^https?://.*"))
-        && (!("locationIds" in request.resource.data) || request.resource.data.locationIds is list)
-        && (!("titles" in request.resource.data) || request.resource.data.titles is list)
-        && (!("roles" in request.resource.data) || request.resource.data.roles is list)
-        && (!("startsOn" in request.resource.data)
-          || request.resource.data.startsOn.matches("^[0-9]{4}-[0-9]{2}-[0-9]{2}$"))
-        && (!("endsOn" in request.resource.data)
-          || request.resource.data.endsOn.matches("^[0-9]{4}-[0-9]{2}-[0-9]{2}$"));
-    }
-
     function membershipProfileWellFormed() {
       return (!("title" in request.resource.data)
           || request.resource.data.title in ["instructor", "team_lead", "branch_manager"])
@@ -1537,52 +1510,24 @@ service cloud.firestore {
       }
 
       /* ── 공지사항 ──────────────────────────────────────────────────────
-         대표·총괄매니저가 쓰고, 센터 사람이 읽는다. 강사 앱이 기간 안의 안 읽은
-         공지를 팝업으로 한 번 띄운다.
+         대표·총괄매니저가 쓰고, 센터 사람이 읽는다. 강사 앱이 기간 안의 확인
+         안 한 공지를 팝업으로 띄운다 (확인은 그 기기에만 적는다).
+
+         **앱은 쓰지 않는다** (2026-10-31). 쓰기 · 고치기 · 지우기는 서버 함수
+         manageNotice 하나로만 -- 총괄매니저는 자기 공지만, 작성자 이름은 서버가
+         적는다 (functions/src/notice-admin.js). 옛 앱의 직접 쓰기는 여기서 막힌다.
 
          **대상으로 거르지 않는다.** 지점·직급·역할은 문서 안의 값이고, list
          규칙은 질의가 제약하지 않은 필드를 평가할 수 없다 (이 파일 머리말) --
          거르려 들면 질의 전체가 거부되어 공지가 통째로 안 뜬다. 거르는 것은
          화면의 몫이고(pendingNotices), 여기서 지키는 것은 "이 센터 사람인가"
          까지다. 공지는 센터가 모두에게 알리려고 쓰는 글이라 그 선이 맞다.
-
-         지우지 않는다. 읽음 기록이 가리킬 글이 사라지면 "읽음 N명" 이 무엇의
-         N 인지 알 수 없다 -- 끝낼 때는 status 를 ended 로 둔다. */
+         회원 · 로그인만 한 사람 · 다른 센터 직원은 읽지 못한다. */
       match /notices/{noticeId} {
         allow get: if isCentreStaff(organizationId)
           && resource.data.organizationId == organizationId;
         allow list: if isCentreStaff(organizationId);
-        allow create: if request.resource.data.organizationId == organizationId
-          && hasRole(organizationId, ownerLevel())
-          && request.resource.data.keys().hasOnly([
-            "organizationId", "title", "body", "imageUrl", "linkUrl",
-            "startsOn", "endsOn", "important",
-            "locationIds", "titles", "roles",
-            "status", "createdAt", "createdBy", "updatedAt", "updatedBy"
-          ])
-          && request.resource.data.keys().hasAll([
-            "organizationId", "title", "body", "status", "createdAt", "createdBy"
-          ])
-          && noticeBodyWellFormed()
-          && request.resource.data.createdAt == request.time
-          && request.resource.data.createdBy == request.auth.uid;
-        /* 고칠 수 있다. 공지는 사람이 쓰는 글이라 오타가 나고, 그것을 못 고치면
-           같은 공지를 두 번 쓰게 된다 -- 그러면 읽은 사람에게 또 뜬다.
-
-           만든 사람과 만든 시각은 움직이지 않는다. */
-        allow update: if resource.data.organizationId == organizationId
-          && request.resource.data.organizationId == organizationId
-          && hasRole(organizationId, ownerLevel())
-          && immutable(["createdAt", "createdBy"])
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-            "title", "body", "imageUrl", "linkUrl",
-            "startsOn", "endsOn", "important",
-            "locationIds", "titles", "roles",
-            "status", "updatedAt", "updatedBy"
-          ])
-          && noticeBodyWellFormed()
-          && request.resource.data.updatedBy == request.auth.uid;
-        allow delete: if false;
+        allow create, update, delete: if false;
 
         /* ── 읽음 ────────────────────────────────────────────────────────
            **본인만 자기 것을 만든다.** 남이 대신 적으면 "읽음 N명" 이 거짓이

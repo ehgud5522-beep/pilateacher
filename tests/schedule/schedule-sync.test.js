@@ -186,3 +186,27 @@ test("서버 번호가 내려가도 서버를 따른다 — 옛 앱의 확정이
   assert.equal(result.schedule[0].room, "4번룸");
   assert.equal(result.schedule[0].syncRevision, 1);
 });
+
+test("시트 저장은 바뀐 칸만 지금 일정에 얹는다 — 번호를 지키고, 다른 PC 의 수정을 되돌리지 않는다", async () => {
+  const { mergeFormEdit } = await import("../../src/features/schedule/schedule-sync.js");
+  const opened = local({ syncRevision: 1 });
+  // 시트를 연 사이 다른 PC 가 방을 바꿨고 실시간 반영으로 들어왔다.
+  const current = { ...opened, room: "3번룸", syncRevision: 2, settledElsewhereAt: undefined };
+  // 시트는 번호 없이, 열 때의 방으로 일정 한 벌을 만든다. 바꾼 것은 시간뿐.
+  const { syncRevision: _dropped, ...formFields } = opened;
+  const edited = { ...formFields, start: "21:00", end: "21:50" };
+  const merged = mergeFormEdit(current, opened, edited);
+  assert.equal(merged.start, "21:00", "내 수정");
+  assert.equal(merged.room, "3번룸", "다른 PC 의 수정을 되돌리지 않는다");
+  assert.equal(merged.syncRevision, 2, "번호를 지킨다 -- 거짓 충돌이 나지 않는다");
+  assert.equal(merged.memo, "기기 메모");
+});
+
+test("두 PC 가 같은 수업을 거의 동시에 넣어 둘 다 서버에 있어도 중복 의심으로 알린다 — 처음 들어올 때 한 번", () => {
+  const mine = local({ id: "L-pc-a", syncRevision: 1, attendees: [{ memberId: "m-1", status: "booked" }] });
+  const docs = [doc({ id: "L-pc-a", lessonId: "L-pc-a" }), doc({ id: "L-pc-b", lessonId: "L-pc-b" })];
+  const first = merge([mine], docs);
+  assert.deepEqual(first.duplicates, [{ serverId: "L-pc-b", localId: "L-pc-a" }]);
+  const again = merge(first.schedule, docs);
+  assert.deepEqual(again.duplicates, [], "이미 들어온 뒤로는 다시 알리지 않는다");
+});

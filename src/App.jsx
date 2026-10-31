@@ -138,7 +138,7 @@ import {
 import { PUBLISH_OUTCOME, publishScheduledLessons, reopenSettledLesson } from "./data/repositories/lesson-schedule-repository.js";
 import { subscribeMyLessons } from "./data/repositories/lesson-sync-repository.js";
 import { scheduleChanges } from "./features/schedule/schedule-publish.js";
-import { applyPublishedRevisions, mergeServerLessons, reapplyChanges, syncWindow } from "./features/schedule/schedule-sync.js";
+import { applyPublishedRevisions, mergeFormEdit, mergeServerLessons, reapplyChanges, syncWindow } from "./features/schedule/schedule-sync.js";
 import { recordSyncReads, syncReadsByDay } from "./features/schedule/sync-read-counter.js";
 import { SCHEDULE_SYNC_MODE, readScheduleSyncConfig, scheduleSyncEnabledFor } from "./features/schedule/sync-switch.js";
 import { WEB_VERSION_CHECK_MS, fetchDeployedWebBuild, isNewerWebBuild, staleTabMessage } from "./features/ui/web-version.js";
@@ -3634,7 +3634,7 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
       </div>}
 
       {editing && <ScheduleForm draft={liveEditing} members={db.members} schedule={db.schedule} briefingOf={briefingOf} scheduleColors={scheduleColors} returnFocusRef={scheduleTriggerRef} onClose={() => setEditing(null)}
-        onSubmit={(v) => { onSave(v); setEditing(null); }} onDelete={(id) => { onDelete(id); setEditing(null); }}
+        onSubmit={(v, opened) => { onSave(v, opened); setEditing(null); }} onDelete={(id) => { onDelete(id); setEditing(null); }}
         onStatus={onStatus} onStatusAll={onStatusAll} onCareGrade={onCareGrade} onNoshowFee={onNoshowFee} onGroupDone={onGroupDone}
         organizationMode={organizationMode} rateOf={rateOf} careOptionsOf={careOptionsOf} onSettleLesson={onSettleLesson} onUnsettleLesson={onUnsettleLesson} onReadMemberNote={onReadMemberNote} onSaveMemberNote={onSaveMemberNote} onToast={onToast} canUnsettle={canUnsettle}
         onNoComment={onNoComment} onSaveNote={onSaveNote} onOpenMember={onOpenMember} onFocusMemberWeek={(memberId) => { setFocusedMemberId(memberId); setEditing(null); }} />}
@@ -4050,6 +4050,7 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
   const [memberIds, setMemberIds] = useState(currentIds);
   const [memberNames, setMemberNames] = useState(currentIds.map((id) => members.find((m) => m.id === id)?.name || ""));
   const [del, setDel] = useState(false);
+  const openedDraftRef = useRef(draft);
   /* 앞날의 일정은 열자마자 고치는 칸을 펼친다 -- 잘못 넣은 것을 고치러 연 것이다
      (schedule-edit.js). 확정된 수업은 펼치지 않고, 고치는 버튼도 없다. */
   const [editingInfo, setEditingInfo] = useState(() => !draft.id || opensEditingFirst(draft, todayISO()));
@@ -4140,6 +4141,7 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
   const submit = () => {
     const previous = attendeesOf(draft);
     const personal = kind === "consult" || kind === "off";
+    /* 열 때의 일정을 함께 넘긴다 -- 저장하는 쪽이 바뀐 칸만 지금 일정에 얹는다 (mergeFormEdit). */
     onSubmit({
       id: draft.id || uid(), date: f.date, start: f.start, end: addMin(f.start, Number(f.dur) || 50),
       /* 일정 문서에 적히는 종류. **정의에서 읽는다** -- 여기서 따로 적으면
@@ -4159,7 +4161,7 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
       personal: personal || undefined,
       title: personal ? (kind === "consult" ? "상담" : (draft.personal && draft.title && draft.title !== "상담" ? draft.title : "휴무")) : undefined,
       ...(draft.aiRecommendation ? { aiRecommendation: draft.aiRecommendation } : {}),
-    });
+    }, openedDraftRef.current);
   };
   return (
     <>
@@ -30022,8 +30024,11 @@ export default function App() {
     return () => window.removeEventListener("pilateacher:lesson-record-updated", promotePendingNote);
   }, [db.members]);
 
-  const saveSchedule = (item) => {
-    const prev = db.schedule.find((s) => s.id === item.id);
+  const saveSchedule = (edited, opened = null) => {
+    const prev = db.schedule.find((s) => s.id === edited.id);
+    /* 시트에서 바뀐 칸만 지금 일정에 얹는다 -- 수정 번호를 지키고, 시트를 연 사이 다른
+       PC 가 고친 칸을 되돌리지 않는다 (schedule-sync.js mergeFormEdit). */
+    const item = prev && opened ? mergeFormEdit(prev, opened, edited) : edited;
     /* 확정된 수업의 날짜 · 시간 · 회원은 바꾸지 않는다 (schedule-edit.js). 시트를
        연 채로 다른 곳에서 확정되면 고치는 칸이 열려 있을 수 있다 -- 여기서 막는다. */
     if (prev && !canEditLessonInfo(prev)) {

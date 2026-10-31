@@ -137,7 +137,6 @@ export function mergeServerLessons(input) {
   const unmatchedClientIds = new Set();
   const duplicates = [];
   const removedIds = [];
-  const docIds = new Set(docs.map((doc) => text(doc?.lessonId || doc?.id)));
   const byId = new Map(schedule.map((entry) => [text(entry?.id), entry]));
   const removals = new Set();
   const additions = [];
@@ -200,9 +199,11 @@ export function mergeServerLessons(input) {
       unmatched.forEach((clientId) => unmatchedClientIds.add(clientId));
       if (!attendees.length) continue;
       const entry = { id, ...core, memo: "", attendees, syncRevision: serverRevision };
-      /* 같은 수업을 이 기기에서도 따로 넣었는가 -- 같은 날 · 같은 시각 · 같은 회원,
-         id 는 다르고 서버에 없는 기기 일정. */
-      const twin = schedule.find((other) => text(other?.id) !== id && !docIds.has(text(other?.id))
+      /* 같은 수업을 이 기기에서도 따로 넣었는가 -- 같은 날 · 같은 시각 · 같은 회원, id 만
+         다르다. 이 기기 것이 이미 서버에 올라갔어도 본다: 두 PC 가 거의 동시에 넣으면 둘 다
+         서버에 있고, 회원은 같은 수업을 두 번 본다. 다른 기기 것이 처음 들어올 때 한 번만
+         알린다 -- 한 번 들어온 뒤로는 "더한다" 가 아니라 이 갈래를 지나지 않는다. */
+      const twin = schedule.find((other) => text(other?.id) !== id
         && text(other?.date) === entry.date && text(other?.start) === entry.start
         && memberSet(other) === memberSet(entry));
       if (twin) duplicates.push({ serverId: id, localId: text(twin.id) });
@@ -273,5 +274,29 @@ export function reapplyChanges(current, before, after) {
   const patch = Object.fromEntries(REAPPLY_FIELDS
     .filter((field) => !same(before[field], after[field]))
     .map((field) => [field, after[field]]));
+  return { ...current, ...patch };
+}
+
+/**
+ * 시트에서 고친 것을 **지금의 일정 위에** 얹는다 (2026-10-31, 6단계 전 점검에서 찾음).
+ *
+ * 시트는 열 때의 값으로 일정 한 벌을 통째로 만든다. 그대로 바꿔 끼우면 두 가지가 샌다:
+ * - 수정 번호(syncRevision)가 빠져, 다른 PC 에서 온 일정을 고칠 때마다 "다른 기기에서
+ *   먼저 고친 일정" 이 거짓으로 뜬다
+ * - 시트를 연 사이 다른 PC 가 고친 칸(예: 방)을 열 때의 옛 값으로 되돌린다
+ *
+ * 그래서 **시트에서 실제로 바뀐 칸만**(연 때의 값과 다른 칸) 지금 일정에 얹는다.
+ * 시트가 다루지 않는 칸(번호 · 잠금 표시 등)과 바꾸지 않은 칸은 지금 것을 지킨다.
+ *
+ * @param {any} current  지금 기기의 일정 (실시간 반영으로 최신)
+ * @param {any} opened   시트를 열 때의 일정
+ * @param {any} edited   시트가 만든 일정
+ */
+export function mergeFormEdit(current, opened, edited) {
+  if (!current || !opened || !edited) return edited;
+  const same = (left, right) => JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+  const patch = Object.fromEntries(Object.keys(edited)
+    .filter((key) => !same(opened[key], edited[key]))
+    .map((key) => [key, edited[key]]));
   return { ...current, ...patch };
 }

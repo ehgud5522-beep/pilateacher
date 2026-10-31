@@ -41,7 +41,7 @@ import {
 } from "../../src/data/repositories/lesson-schedule-repository.js";
 import { readMyLessons } from "../../src/data/repositories/lesson-sync-repository.js";
 import {
-  applyPublishedRevisions, mergeServerLessons, reapplyChanges, syncWindow,
+  applyPublishedRevisions, mergeFormEdit, mergeServerLessons, reapplyChanges, syncWindow,
 } from "../../src/features/schedule/schedule-sync.js";
 import { scheduleChanges } from "../../src/features/schedule/schedule-publish.js";
 import {
@@ -5600,5 +5600,49 @@ describe("store app 1.1.43 settlement — still allowed after the revision rule"
     const ref = doc(dbFor(ME), "organizations", ORG_A, "lessons", "store-guard");
     await assertFails(setDoc(ref, { organizationId: ORG_A, status: "scheduled", clientIds: ["client-member"] }));
     await assertFails(setDoc(ref, { ...storeAppLesson("store-guard"), revision: 9 }));
+  });
+});
+
+describe("schedule sheet on two PCs — opened before the other PC's change arrived", () => {
+  const ME = users.instructor;
+  const MEMBERS = [{ id: "m-1", name: "회원", orgClientId: "client-member", orgLocationId: "location-a" }];
+  const entry = (extra = {}) => ({
+    id: "form-1", date: "2099-11-03", start: "19:00", end: "19:50", type: "개인레슨", room: "1번룸",
+    attendees: [{ memberId: "m-1", status: "booked" }], ...extra,
+  });
+  const publish = (deviceId, before, after) => {
+    const beforeIds = new Set(before.map((item) => item.id));
+    return publishScheduledLessons(ORG_A, scheduleChanges({ before, after, members: MEMBERS, organizationId: ORG_A, instructorId: ME })
+      .map((document) => ({ ...document, allowRevive: !beforeIds.has(document.lessonId) })),
+    { store: createFirestoreLessonScheduleStore({ firestore: dbFor(ME) }), createdBy: ME, deviceId });
+  };
+  const pull = async (schedule) => {
+    const { from, to } = { from: new Date(2099, 10, 1), to: new Date(2099, 11, 1) };
+    const docs = await readMyLessons({ firestore: dbFor(ME), organizationId: ORG_A, instructorId: ME, from, to });
+    return mergeServerLessons({ schedule, docs, rosterMembers: MEMBERS }).schedule;
+  };
+
+  test("PC-B 의 시트 저장이 거짓 충돌 없이 써지고, PC-A 가 그사이 바꾼 방을 지킨다", async () => {
+    let pcA = [entry()];
+    pcA = applyPublishedRevisions(pcA, await publish("pc-a", [], pcA));
+    let pcB = await pull([]);
+    const opened = pcB[0];                                     // PC-B 가 시트를 연다
+    const roomChanged = [{ ...pcA[0], room: "3번룸" }];          // PC-A 가 방을 바꾼다
+    pcA = applyPublishedRevisions(roomChanged, await publish("pc-a", pcA, roomChanged));
+    pcB = await pull(pcB);                                     // 실시간 반영
+    // 시트는 번호 없이, 열 때의 방으로 한 벌을 만든다. 바꾼 것은 시간뿐 (App.jsx ScheduleForm.submit).
+    const { syncRevision: _dropped, ...formFields } = opened;
+    const edited = { ...formFields, start: "21:00", end: "21:50" };
+    // 고치기 전(시트 값을 통째로 바꿔 끼움)은 번호가 빠져 거짓 충돌이었다.
+    assert.deepEqual((await publish("pc-b", pcB, [edited])).map((result) => result.outcome), ["conflict"]);
+    const saved = [mergeFormEdit(pcB[0], opened, edited)];      // App.jsx saveSchedule
+    const outcomes = (await publish("pc-b", pcB, saved)).map((result) => result.outcome);
+    assert.deepEqual(outcomes, ["written"], "거짓 충돌이 없다");
+    let stored;
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      stored = (await getDoc(doc(context.firestore(), "organizations", ORG_A, "lessons", "form-1"))).data();
+    });
+    assert.equal(stored.room, "3번룸", "PC-A 의 수정을 지켰다");
+    assert.equal(stored.startsAt.toDate().getHours(), 21, "PC-B 의 수정");
   });
 });

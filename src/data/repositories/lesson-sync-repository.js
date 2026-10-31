@@ -63,3 +63,29 @@ export async function readMyLessons(input) {
   ));
   return page.docs.map((document) => ({ id: document.id, ...document.data() }));
 }
+
+/**
+ * 같은 시각 · 이 회원들의 확정된 수업 (2026-10-31, 확정 직전 중복 방지).
+ *
+ * 회원마다 한 번: clientIds 에 그 회원 · status 완료 · startsAt 같음. 셋 다 같음 조건이라
+ * 단일 필드 색인을 합쳐서 풀린다 -- 새 색인이 필요 없다. 읽는 문서는 보통 0 ~ 1 건이다.
+ *
+ * @param {{ firestore?: any, organizationId: string, clientIds: Array<string>, startsAt: Date }} input
+ * @returns {Promise<Array<any>>}
+ */
+export async function findCompletedLessonsAt(input) {
+  const { collection, getDocs, getFirestore, query, where } = await import("firebase/firestore");
+  const firestore = input.firestore || getFirestore();
+  const ids = [...new Set((Array.isArray(input.clientIds) ? input.clientIds : []).map(text).filter(Boolean))];
+  const found = new Map();
+  for (const clientId of ids) {
+    const page = await getDocs(query(
+      collection(firestore, lessonsCollection(text(input.organizationId))),
+      where("clientIds", "array-contains", clientId),
+      where("status", "==", "completed"),
+      where("startsAt", "==", input.startsAt),
+    ));
+    page.docs.forEach((document) => found.set(document.id, { id: document.id, ...document.data() }));
+  }
+  return [...found.values()];
+}

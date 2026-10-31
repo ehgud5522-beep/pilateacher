@@ -136,7 +136,9 @@ import {
   MEMBER_NOTE_MAX, memberNoteReadFailure, memberNoteSaveFailure, readCentreLessons, readMemberNote, saveMemberNote,
 } from "./data/repositories/member-note-repository.js";
 import { PUBLISH_OUTCOME, publishScheduledLessons, reopenSettledLesson } from "./data/repositories/lesson-schedule-repository.js";
-import { subscribeMyLessons } from "./data/repositories/lesson-sync-repository.js";
+import { findCompletedLessonsAt, subscribeMyLessons } from "./data/repositories/lesson-sync-repository.js";
+import { INITIAL_SYNC, initialSyncMode, initialUploadPlan, schedulePublishAllowed } from "./features/schedule/sync-gate.js";
+import { DUPLICATE_SETTLEMENT_CODE, findDuplicateSettlement, settlementTime } from "./features/schedule/settlement-duplicate.js";
 import { scheduleChanges } from "./features/schedule/schedule-publish.js";
 import { applyPublishedRevisions, mergeFormEdit, mergeServerLessons, reapplyChanges, syncWindow } from "./features/schedule/schedule-sync.js";
 import { recordSyncReads, syncReadsByDay } from "./features/schedule/sync-read-counter.js";
@@ -28491,6 +28493,7 @@ export default function App() {
     if (loadedAccountIdRef.current !== acc?.id) {
       unpublishedLessonsRef.current = new Map();
       initialSchedulePublishRef.current = false;
+      initialUploadAfterPullRef.current = false;
       loadedAccountIdRef.current = acc?.id || "";
     }
     revokeAllUrls();
@@ -28729,6 +28732,7 @@ export default function App() {
     revokeAllUrls();
     unpublishedLessonsRef.current = new Map();
     initialSchedulePublishRef.current = false;
+    initialUploadAfterPullRef.current = false;
     photosRef.current = {};
     const empty = emptyDb("", "");
     lessonRecordDbRef.current = empty;
@@ -29023,6 +29027,10 @@ export default function App() {
   const unpublishedLessonsRef = useRef(new Map());
   /* 지금 서버에 쓰는 중인 일정. 실시간 반영이 이것을 덮지 않는다. */
   const publishingLessonIdsRef = useRef(new Set());
+  /* 보내도 되는가 -- 스위치를 읽은 뒤 정해진다. 폰은 못 읽었으면 보내지 않는다. */
+  const publishAllowedRef = useRef(!Capacitor.isNativePlatform());
+  /* 스위치가 켜진 계정: 처음 받은 뒤에 올린다 (initialUploadPlan). */
+  const initialUploadAfterPullRef = useRef(false);
   const saveDbRef = useRef(null);
   const deleteScheduleRef = useRef(null);
   const newerWebBuildRef = useRef(false);
@@ -29031,6 +29039,9 @@ export default function App() {
      서버가 늦어도 강사 화면은 기다리지 않는다. */
   const publishSchedule = useCallback(async (before, after, { initial = false } = {}) => {
     if (!organizationRoster || !organizationContext.organizationId || !account?.id) return;
+    /* 폰은 스위치가 켜진 계정만 보낸다 (sync-gate.js). 꺼진 계정은 기기에만 저장한다 --
+       폰에만 있던 일정이 서버로 나가 PC 의 같은 수업과 겹치지 않게. */
+    if (!publishAllowedRef.current) return;
     const changed = scheduleChanges({
       before, after, members: rosterMembersRef.current,
       organizationId: organizationContext.organizationId, instructorId: account.id,
@@ -29192,11 +29203,12 @@ export default function App() {
   const [syncState, setSyncState] = useState({ state: "idle", errorCode: "" });
   const [syncDuplicates, setSyncDuplicates] = useState([]);
   /* 받기 스위치 (sync-switch.js). 대표 → 강사 한 명 → 전체. 못 읽으면 꺼진 것이다. */
-  const [scheduleSyncConfig, setScheduleSyncConfig] = useState(null);
+  /* undefined = 아직 못 읽음, null = 문서 없음(꺼짐). 첫 맞추기가 이것을 기다린다. */
+  const [scheduleSyncConfig, setScheduleSyncConfig] = useState(undefined);
   useEffect(() => {
     if (phase !== "app" || !account?.id) return undefined;
     let alive = true;
-    const load = () => fbLoadScheduleSyncConfig().then((config) => { if (alive) setScheduleSyncConfig(config); });
+    const load = () => fbLoadScheduleSyncConfig().then((config) => { if (alive) setScheduleSyncConfig(config ?? null); });
     load();
     /* 대표가 스위치를 끄면 열어 둔 탭도 돌아올 때 끈다 -- 다음 날까지 기다리지 않는다. */
     const onVisible = () => { if (document.visibilityState === "visible") load(); };
@@ -29204,6 +29216,7 @@ export default function App() {
     return () => { alive = false; document.removeEventListener("visibilitychange", onVisible); };
   }, [phase, account?.id, syncDay]);
   const scheduleSyncOn = scheduleSyncEnabledFor(scheduleSyncConfig, account?.id);
+  publishAllowedRef.current = schedulePublishAllowed({ native: Capacitor.isNativePlatform(), syncOn: scheduleSyncOn });
   /* 처음 받아 합치기 전에 이 기기의 데이터를 한 벌 남긴다 (0단계 스냅샷, 사진 원본
      없이). 서버가 기기 일정을 바꾸기 시작하는 순간이라, 무엇이 꼬여도 이것으로
      돌아간다. 못 남기면 합치지 않는다. 계정 · 기기마다 한 번. */
@@ -29266,6 +29279,20 @@ export default function App() {
           deviceLog("schedule_sync_kept_deducted", { feature: "schedule_sync", stage: "merge", count: merged.summary.keptWithDeductions });
         }
         if (merged.duplicates.length) setSyncDuplicates(merged.duplicates);
+        /* 스위치가 켜진 계정의 첫 맞추기: 받은 뒤에, 서버의 다른 수업과 겹치는 기기 일정은
+           올리지 않고(중복 의심으로 보여 준다) 나머지만 올린다. */
+        if (initialUploadAfterPullRef.current) {
+          initialUploadAfterPullRef.current = false;
+          const today = todayISO();
+          const plan = initialUploadPlan({
+            upcoming: (merged.changed ? merged.schedule : current.schedule || []).filter((entry) => String(entry?.date || "") >= today),
+            duplicates: merged.duplicates,
+          });
+          if (plan.held.length) deviceLog("schedule_sync_initial_held", { feature: "schedule_sync", stage: "initial", count: plan.held.length });
+          publishSchedule([], plan.upload, { initial: true }).catch((error) => {
+            deviceLog("schedule_publish_failed", { feature: "schedule_publish", stage: "initial", errorDomain: "app", ...deviceError(error) });
+          });
+        }
         if (merged.changed) {
           saveDbRef.current?.({ ...current, schedule: merged.schedule }, undefined, { fromServer: true });
           if (merged.summary.lockedElsewhere) setToast({ ok: true, msg: `다른 기기에서 확정된 수업 ${merged.summary.lockedElsewhere}건을 잠갔어요.` });
@@ -29312,7 +29339,15 @@ export default function App() {
   const initialSchedulePublishRef = useRef(false);
   useEffect(() => {
     if (initialSchedulePublishRef.current || !organizationRoster || !roster || !account?.id) return;
+    /* 스위치를 읽은 뒤에 정한다 (sync-gate.js): 폰 · 꺼짐은 올리지 않고, 켜짐은 처음
+       받은 뒤에 중복을 빼고 올린다. 웹 · 꺼짐만 지금처럼 바로 올린다. */
+    const mode = initialSyncMode({
+      native: Capacitor.isNativePlatform(), syncOn: scheduleSyncOn, configLoaded: scheduleSyncConfig !== undefined,
+    });
+    if (mode === INITIAL_SYNC.WAIT) return;
     initialSchedulePublishRef.current = true;
+    if (mode === INITIAL_SYNC.SKIP) return;
+    if (mode === INITIAL_SYNC.AFTER_PULL) { initialUploadAfterPullRef.current = true; return; }
     const today = todayISO();
     const upcoming = (db.schedule || []).filter((entry) => String(entry?.date || "") >= today);
     publishSchedule([], upcoming, { initial: true }).catch((error) => {
@@ -29320,7 +29355,7 @@ export default function App() {
         feature: "schedule_publish", stage: "initial", errorDomain: "app", ...deviceError(error),
       });
     });
-  }, [organizationRoster, roster, account?.id, publishSchedule, db.schedule]);
+  }, [organizationRoster, roster, account?.id, publishSchedule, db.schedule, scheduleSyncConfig, scheduleSyncOn]);
 
   const resolveLessonRecordLink = useCallback(async ({ memberId, lessonId } = {}) => {
     const current = evaluateLessonRecordLink({ members: db.members, schedule: db.schedule, memberId, lessonId });
@@ -30310,6 +30345,32 @@ export default function App() {
     if (settlingRef.current.has(lessonId)) return;
     settlingRef.current.add(lessonId);
     try {
+      /* 같은 강사 · 같은 시각 · 같은 회원으로 이미 확정된 다른 수업이 있으면 확정하지 않는다
+         (settlement-duplicate.js). 폰과 PC 에 따로 넣은 같은 수업을 양쪽에서 확정하면 회원권이
+         두 번 빠진다. 같은 수업의 두 번째 차감(듀엣) · 다른 강사의 수업은 막지 않는다.
+         서버를 못 읽으면 확정하지 않는다 -- 다시 누르면 된다. */
+      const clientIds = attendeesOf(lesson)
+        .map((attendee) => rosterMembers.find((member) => member.id === attendee.memberId)?.orgClientId)
+        .filter(Boolean);
+      let serverLessons = [];
+      try {
+        serverLessons = await findCompletedLessonsAt({
+          organizationId: organizationContext.organizationId, clientIds, startsAt: settlementTime(lesson),
+        });
+      } catch (error) {
+        const code = error?.code || "unknown";
+        deviceLog("settlement_duplicate_check_failed", { feature: "settlement", stage: "duplicate_check", errorDomain: "firestore", errorCode: code, lessonId });
+        setToast({ ok: false, msg: `같은 수업이 이미 확정됐는지 확인하지 못해 확정하지 않았어요. 다시 눌러 주세요. (코드 ${code})` });
+        return;
+      }
+      const duplicate = findDuplicateSettlement({
+        lesson, schedule: db.schedule, serverLessons, clientIds, instructorId: account?.id || "",
+      });
+      if (duplicate) {
+        deviceLog("settlement_duplicate_blocked", { feature: "settlement", stage: "duplicate_check", errorCode: DUPLICATE_SETTLEMENT_CODE, lessonId, otherLessonId: duplicate.lessonId, source: duplicate.source });
+        setToast({ ok: false, msg: `같은 회원 · 같은 시각에 이미 확정된 수업이 있어 확정하지 않았어요. 같은 수업이 두 번 들어갔다면 이 수업을 지워 주세요. (코드 ${DUPLICATE_SETTLEMENT_CODE})` });
+        return;
+      }
       const plan = planLessonSettlement({
         lesson, members: rosterMembers, passes: rosterPasses, now: new Date(),
       });

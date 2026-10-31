@@ -22,3 +22,10 @@ test("모르는 모드 · 잘못된 uid · 너무 긴 명단은 쓰지 않는다
   const many = Array.from({ length: 51 }, (_, index) => `uid-number-${index}`);
   assert.throws(() => scheduleSyncPayload({ mode: "listed", userIds: many }), /schedule_sync_too_many_users/);
 });
+
+test("고른 계정에는 계정 id 만 — 이름 · 이메일 · 전화번호는 쓰지 않는다 (누구나 읽는 문서)", () => {
+  for (const value of ["정예진", "teacher@example.com", "01012345678", "010-1234-5678"]) {
+    assert.throws(() => scheduleSyncPayload({ mode: "listed", userIds: [value] }), /schedule_sync_user_invalid/, value);
+  }
+  assert.deepEqual(scheduleSyncPayload({ mode: "listed", userIds: ["CgArUW7A8OdFm0VFhyitRWyucOq2"] }).userIds, ["CgArUW7A8OdFm0VFhyitRWyucOq2"]);
+});

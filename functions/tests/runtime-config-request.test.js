@@ -55,7 +55,7 @@ test("대표: 기존 appUpdate · settlement 쓰기가 그대로 된다 — 지�
   assert.deepEqual(firestore.store.get("runtimeConfig/settlement").minBuilds, settlementValue.minBuilds);
 
   // 응답에는 지금 값 전부가 실린다 -- 화면이 그것으로 다시 그린다.
-  assert.deepEqual(Object.keys(settlement.config).sort(), ["appUpdate", "scheduleSync", "settlement"]);
+  assert.deepEqual(Object.keys(settlement.config).sort(), ["appUpdate", "privateSync", "scheduleSync", "settlement"]);
   assert.equal(settlement.config.scheduleSync, null, "아직 쓰지 않은 스위치는 null -- 앱은 꺼짐으로 본다");
 });
 
@@ -95,4 +95,14 @@ test("값이 틀리면 쓰지 않고 쓰기 실패로 표시한다 — index.js 
     (error) => error.writeFailed === true && /minimum_above_latest/.test(error.message));
   await assert.rejects(call(firestore, "uid-owner", "unknownDoc", {}), (error) => error.writeFailed === true && /unknown_document/.test(error.message));
   assert.equal(firestore.store.has("runtimeConfig/scheduleSync"), false);
+});
+
+test("본인 일정 · 메모 스위치(privateSync)도 대표만, 계정 id 만", async () => {
+  const firestore = seeded();
+  const result = await call(firestore, "uid-owner", "privateSync", { mode: "listed", userIds: ["uid-teacher"] });
+  assert.deepEqual(result.value, { mode: "listed", userIds: ["uid-teacher"] });
+  for (const callerUid of ["uid-area", "uid-manager", "uid-teacher"]) {
+    await assert.rejects(call(seeded(), callerUid, "privateSync", { mode: "all" }), (error) => error.httpsCode === "permission-denied");
+  }
+  await assert.rejects(call(seeded(), "uid-owner", "privateSync", { mode: "listed", userIds: ["01012345678"] }), (error) => error.writeFailed === true);
 });

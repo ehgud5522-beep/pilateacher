@@ -50,3 +50,12 @@ export function initialUploadPlan({ upcoming = [], duplicates = [] } = {}) {
     held: list.filter((entry) => held.has(String(entry?.id || ""))),
   };
 }
+
+/**
+ * 본인 일정 · 메모(3단계)를 서버와 주고받아도 되는가. **웹 · 폰 모두 스위치가 켜진
+ * 계정만** -- 센터 수업과 달리 웹도 꺼지면 아무것도 쓰지 않는다. 스위치는
+ * runtimeConfig/privateSync (센터 수업과 따로, 처음에는 꺼짐).
+ */
+export function privateSyncAllowed({ syncOn = false } = {}) {
+  return syncOn === true;
+}

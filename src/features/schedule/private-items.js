@@ -68,11 +68,17 @@ function rosterByMember(rosterMembers) {
 
 /**
  * 지금 기기 상태에서 서버에 둘 문서들. itemId → { itemId, data, baseRevision }.
- * @param {{ schedule: Array<any>, rosterMembers: Array<any> }} input
+ *
+ * rosterMembers: 회원 (메모 · 목표가 붙은 기기 행). clientIdOf: 기기 회원 id → 센터 회원 id.
+ * 앱은 기기 db 의 회원과 명부에서 만든 이 지도를 넘긴다 -- 기기 행에는 센터 회원 id 가 없을 수
+ * 있고(연락처로 이어진다), 명부에만 있는 회원은 기기 행이 없다.
+ *
+ * @param {{ schedule: Array<any>, rosterMembers: Array<any>, clientIdOf?: Map<string, string> }} input
  */
-export function privateDocuments({ schedule = [], rosterMembers = [] } = {}) {
+export function privateDocuments({ schedule = [], rosterMembers = [], clientIdOf = null } = {}) {
   const out = new Map();
   const byMember = rosterByMember(rosterMembers);
+  const clientIdFor = (memberId) => text(clientIdOf?.get(text(memberId))) || text(byMember.get(text(memberId))?.orgClientId);
   const put = (itemId, data, baseRevision) => out.set(itemId, { itemId, data: { itemId, ...data }, baseRevision: revisionOf(baseRevision) });
 
   for (const entry of Array.isArray(schedule) ? schedule : []) {
@@ -95,14 +101,14 @@ export function privateDocuments({ schedule = [], rosterMembers = [] } = {}) {
       continue;
     }
     /* 센터 수업(센터 회원이 있는 수업)의 강사 메모. 수업 자체는 lessons 가 맡는다. */
-    const isCentreLesson = attendeesOf(entry).some((attendee) => text(byMember.get(text(attendee?.memberId))?.orgClientId));
+    const isCentreLesson = attendeesOf(entry).some((attendee) => clientIdFor(attendee?.memberId));
     if (isCentreLesson && (text(entry.memo) || entry.memoRevision)) {
       put(`memo_${id}`, { kind: PRIVATE_KIND.LESSON_MEMO, date: text(entry.date), lessonId: id, memo: String(entry.memo ?? "") }, entry.memoRevision);
     }
   }
 
   for (const member of byMember.values()) {
-    const clientId = text(member?.orgClientId);
+    const clientId = clientIdFor(member?.id);
     if (!clientId) continue;
     for (const note of notesOf(member)) {
       if (text(note?.type) !== "상담" || !text(note?.id)) continue;

@@ -108,3 +108,14 @@ test("스위치 — 웹 · 폰 모두 켜진 계정만", () => {
   assert.equal(privateSyncAllowed({}), false, "못 읽었으면 꺼짐");
   assert.equal(privateSyncAllowed({ syncOn: true }), true);
 });
+
+test("기기 행에 센터 회원 id 가 없어도 명부 지도로 잇는다 — 연락처로 이어진 회원 · 명부에만 있는 회원의 수업", () => {
+  const deviceRows = [{ id: "m-local", name: "하나", notes: [{ id: "n-9", type: "상담", date: "2026-11-01", body: "메모" }], goal: "코어" }];
+  const clientIdOf = new Map([["m-local", "client-1"], ["client-2", "client-2"]]);
+  const docs = privateDocuments({
+    schedule: [{ id: "L-9", type: "개인레슨", date: "2026-11-03", memo: "명부에만 있는 회원 수업", attendees: [{ memberId: "client-2" }] }],
+    rosterMembers: deviceRows, clientIdOf,
+  });
+  assert.deepEqual([...docs.keys()].sort(), ["goal_client-1", "memo_L-9", "note_n-9"]);
+  assert.equal(docs.get("note_n-9").data.clientId, "client-1");
+});

@@ -641,20 +641,51 @@ service cloud.firestore {
            같은 것을 한 번 더 본다: **번호 없이 쓰는 옛 탭은 거절된다** -- 옛 코드는
            서버를 보지 않고 덮어쓰고, 그것이 다른 PC 에서 고친 일정을 지운다.
 
-           확정(deductPass)은 번호를 모른다. "완료" 로 쓰는 것은 번호를 그대로 두는
-           한 받는다 -- 확정이 일정을 이기는 것은 앱의 판정과 같다.
+           확정(deductPass)은 번호를 모른다. 그래서 "완료" 쓰기는 번호 대신 **같은
+           배치에 실제 차감이 있는지**로 받는다 -- 번호 검사를 피해 완료로 바꾸는 다른
+           길이 없게 (2026-10-31 대표 확인 요청):
+           - 새 코드: settledPassId 의 원장 항목 {lessonId}_deduct 가 **이 배치에서 새로
+             생긴다** (전에는 없고 뒤에는 있다). 번호는 그대로이거나 칸이 없어야 한다
+           - 스토어 폰 앱 1.1.43: 회원권 id 를 싣지 않고 문서를 번호 없이 통째로 덮는다
+             (set). 그 모양 그대로(칸 목록 고정)이고 참석 문서가 **이 배치에서 새로
+             생길** 때만 받는다. 막으면 차감 · 회원권까지 한 배치가 통째로 실패한다.
+             **1.1.43 이 사라지면(최소 버전 강제) 이 갈래는 지운다** -- 원장을 증명하지
+             못하는 갈래다.
 
            완료를 다시 예정 · 취소로 돌리는 것은 확정 되돌리기뿐이고, 원장 보정과 같은
            선(대표 · 총괄매니저)이다. 일정 쓰기로는 완료가 되돌아가지 않는다. */
+        function settledWithLedger() {
+          return request.resource.data.get("settledPassId", "") is string
+            && request.resource.data.get("settledPassId", "").size() > 0
+            && !exists(/databases/$(database)/documents/organizations/$(organizationId)/passes/$(request.resource.data.settledPassId)/ledger/$(lessonId + "_deduct"))
+            && existsAfter(/databases/$(database)/documents/organizations/$(organizationId)/passes/$(request.resource.data.settledPassId)/ledger/$(lessonId + "_deduct"));
+        }
+        function legacyStoreAppSettlement() {
+          return request.resource.data.keys().hasOnly([
+              "organizationId", "lessonId", "clientId", "clientIds", "locationId",
+              "instructorId", "startsAt", "status", "createdAt", "createdBy"
+            ])
+            && request.resource.data.get("lessonId", "") == lessonId
+            && request.resource.data.get("clientId", "") is string
+            && request.resource.data.get("clientId", "").size() > 0
+            && !exists(/databases/$(database)/documents/organizations/$(organizationId)/lessons/$(lessonId)/participants/$(request.resource.data.clientId))
+            && existsAfter(/databases/$(database)/documents/organizations/$(organizationId)/lessons/$(lessonId)/participants/$(request.resource.data.clientId));
+        }
+        function completedBySettlement(previousRevision) {
+          return legacyStoreAppSettlement()
+            || (settledWithLedger()
+              && (!("revision" in request.resource.data) || request.resource.data.revision == previousRevision));
+        }
         allow create: if request.resource.data.organizationId == organizationId
           && hasRole(organizationId, ["owner", "area_manager", "manager", "instructor", "staff"])
           && (request.resource.data.get("status", "") == "completed"
-            || request.resource.data.get("revision", 0) == 1);
+            ? completedBySettlement(0)
+            : request.resource.data.get("revision", 0) == 1);
         allow update: if resource.data.organizationId == organizationId
           && request.resource.data.organizationId == organizationId
           && hasRole(organizationId, ["owner", "area_manager", "manager", "instructor", "staff"])
           && (request.resource.data.get("status", "") == "completed"
-            ? request.resource.data.get("revision", 0) == resource.data.get("revision", 0)
+            ? completedBySettlement(resource.data.get("revision", 0))
             : (resource.data.get("status", "") == "completed"
               ? hasRole(organizationId, ["owner", "area_manager"])
                 && request.resource.data.get("revision", 0) == resource.data.get("revision", 0) + 1

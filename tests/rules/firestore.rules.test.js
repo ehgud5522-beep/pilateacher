@@ -39,7 +39,9 @@ import { createFirestorePassStore, deductPass } from "../../src/data/repositorie
 import {
   createFirestoreLessonScheduleStore, publishScheduledLessons, reopenSettledLesson,
 } from "../../src/data/repositories/lesson-schedule-repository.js";
-import { readMyLessons } from "../../src/data/repositories/lesson-sync-repository.js";
+import { findCompletedLessonsAt, readMyLessons } from "../../src/data/repositories/lesson-sync-repository.js";
+import { INITIAL_SYNC, initialSyncMode, initialUploadPlan, schedulePublishAllowed } from "../../src/features/schedule/sync-gate.js";
+import { findDuplicateSettlement, settlementTime } from "../../src/features/schedule/settlement-duplicate.js";
 import {
   applyPublishedRevisions, mergeFormEdit, mergeServerLessons, reapplyChanges, syncWindow,
 } from "../../src/features/schedule/schedule-sync.js";
@@ -5644,5 +5646,93 @@ describe("schedule sheet on two PCs — opened before the other PC's change arri
     });
     assert.equal(stored.room, "3번룸", "PC-A 의 수정을 지켰다");
     assert.equal(stored.startsAt.toDate().getHours(), 21, "PC-B 의 수정");
+  });
+});
+
+/* ── 폰 출시 전 안전 수정 (2026-10-31): 앱 코드 그대로 ─────────────────────────
+   폰은 스위치 하나로 보내기 · 받기를 함께 (sync-gate.js), 켠 계정의 첫 실행은 받은 뒤
+   중복을 빼고 올리기, 확정 직전 중복 방지 (settlement-duplicate.js). */
+describe("phone sync gate and settlement duplicate guard — the app code through the rules", () => {
+  const ME = users.instructor;
+  const MEMBERS = [{ id: "m-1", name: "회원", orgClientId: "client-member", orgLocationId: "location-a" }];
+  const entry = (id, extra = {}) => ({
+    id, date: "2099-11-03", start: "19:00", end: "19:50", type: "개인레슨",
+    attendees: [{ memberId: "m-1", status: "booked" }], ...extra,
+  });
+  const store = () => createFirestoreLessonScheduleStore({ firestore: dbFor(ME) });
+  const lessonsOnServer = async () => {
+    let ids = [];
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      ids = (await getDocs(collection(context.firestore(), "organizations", ORG_A, "lessons"))).docs.map((d) => d.id).sort();
+    });
+    return ids.filter((id) => id !== "lesson-seed");
+  };
+  /* App.jsx publishSchedule 의 앞부분 그대로: 보내도 되는가 → 바뀐 것 → 보내기. */
+  const phoneSave = async (syncOn, before, after) => {
+    if (!schedulePublishAllowed({ native: true, syncOn })) return [];
+    const documents = scheduleChanges({ before, after, members: MEMBERS, organizationId: ORG_A, instructorId: ME });
+    return publishScheduledLessons(ORG_A, documents, { store: store(), createdBy: ME, deviceId: "phone-1" });
+  };
+
+  test("폰 · 스위치 꺼짐: 등록 · 수정 · 삭제 · 앱을 열 때 맞추기 모두 서버에 아무것도 쓰지 않는다", async () => {
+    const before = await lessonsOnServer();
+    await phoneSave(false, [], [entry("phone-1")]);
+    await phoneSave(false, [entry("phone-1")], [entry("phone-1", { start: "20:00", end: "20:50" })]);
+    await phoneSave(false, [entry("phone-1")], []);
+    assert.equal(initialSyncMode({ native: true, syncOn: false, configLoaded: true }), INITIAL_SYNC.SKIP);
+    assert.equal(initialSyncMode({ native: true, syncOn: false, configLoaded: false }), INITIAL_SYNC.WAIT, "스위치를 읽기 전에도 쓰지 않는다");
+    assert.deepEqual(await lessonsOnServer(), before, "서버의 일정 문서가 하나도 늘지 않았다");
+  });
+
+  test("폰 · 스위치 켠 첫 실행: 받은 뒤 PC 의 같은 수업과 겹치는 것은 올리지 않고 나머지만 올린다", async () => {
+    // PC 가 먼저 넣은 수업 (웹은 늘 보낸다).
+    await publishScheduledLessons(ORG_A, scheduleChanges({ before: [], after: [entry("pc-1")], members: MEMBERS, organizationId: ORG_A, instructorId: ME }),
+      { store: store(), createdBy: ME, deviceId: "pc-1" });
+    // 폰에는 같은 수업이 따로(phone-twin), 그리고 폰에만 있는 수업(phone-only).
+    const phoneSchedule = [entry("phone-twin"), entry("phone-only", { start: "21:00", end: "21:50" })];
+    assert.equal(initialSyncMode({ native: true, syncOn: true, configLoaded: true }), INITIAL_SYNC.AFTER_PULL);
+    const docs = await readMyLessons({ firestore: dbFor(ME), organizationId: ORG_A, instructorId: ME, from: new Date(2099, 10, 1), to: new Date(2099, 11, 1) });
+    const merged = mergeServerLessons({ schedule: phoneSchedule, docs, rosterMembers: MEMBERS });
+    assert.deepEqual(merged.duplicates, [{ serverId: "pc-1", localId: "phone-twin" }], "중복 의심으로 보여 준다");
+    const plan = initialUploadPlan({ upcoming: merged.schedule, duplicates: merged.duplicates });
+    await phoneSave(true, [], plan.upload);
+    assert.deepEqual(await lessonsOnServer(), ["pc-1", "phone-only"], "겹친 수업은 올라가지 않았다 -- 회원 앱에 두 번 보이지 않는다");
+    assert.ok(merged.schedule.some((item) => item.id === "phone-twin"), "폰의 것도 지우지 않았다");
+  });
+
+  test("확정 직전 중복 방지: PC 에서 확정된 같은 수업이 있으면 폰의 다른 수업은 확정하지 않는다", async () => {
+    const DAY = "2026-10-30";
+    let pass = null;
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const snapshot = await getDoc(doc(context.firestore(), "organizations", ORG_A, "passes", PASS_A));
+      pass = { id: snapshot.id, ...snapshot.data() };
+    });
+    const pcLesson = { id: "dup-pc", date: DAY, start: "19:00", attendees: [{ memberId: "m-1", status: "done" }] };
+    await assertSucceeds(deductPass(ORG_A, pass, {
+      instructorId: ME, createdBy: ME, occurredAt: settlementTime(pcLesson), isDeputyDirector: false,
+      lessonId: "dup-pc", attendanceByClientId: { "client-member": "attended" },
+    }, { store: createFirestorePassStore({ firestore: dbFor(ME) }) }));
+    const phoneLesson = { ...pcLesson, id: "dup-phone" };
+    // App.jsx settleLesson 그대로: 서버에서 같은 시각 · 이 회원의 확정된 수업 → 판정.
+    const serverLessons = await assertSucceeds(findCompletedLessonsAt({
+      firestore: dbFor(ME), organizationId: ORG_A, clientIds: ["client-member"], startsAt: settlementTime(phoneLesson),
+    }));
+    assert.deepEqual(findDuplicateSettlement({ lesson: phoneLesson, schedule: [], serverLessons, clientIds: ["client-member"], instructorId: ME }),
+      { source: "server", lessonId: "dup-pc" });
+    // 같은 수업의 두 번째 차감(듀엣의 다른 회원권)은 막지 않는다.
+    assert.equal(findDuplicateSettlement({ lesson: pcLesson, schedule: [], serverLessons, clientIds: ["client-member"], instructorId: ME }), null);
+    // 다른 강사가 같은 시각에 확정한 수업은 막지 않는다.
+    assert.equal(findDuplicateSettlement({ lesson: phoneLesson, schedule: [], serverLessons, clientIds: ["client-member"], instructorId: "other-teacher" }), null);
+    // 같은 시각의 다른 회원은 서버에서 찾지도 않는다.
+    const otherMember = await findCompletedLessonsAt({ firestore: dbFor(ME), organizationId: ORG_A, clientIds: ["client-other"], startsAt: settlementTime(phoneLesson) });
+    assert.deepEqual(otherMember, []);
+  });
+
+  test("확정 직전 확인 읽기는 센터 직원만 — 다른 센터 · 회원 · 비로그인은 거절", async () => {
+    const read = (userId) => findCompletedLessonsAt({ firestore: dbFor(userId), organizationId: ORG_A, clientIds: ["client-member"], startsAt: new Date(2026, 9, 30, 19, 0) });
+    await assertSucceeds(read(ME));
+    await assertFails(read(users.outsider));
+    await assertFails(read(users.member));
+    await assertFails(read(null));
   });
 });

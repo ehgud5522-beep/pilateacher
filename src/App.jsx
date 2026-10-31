@@ -139,7 +139,7 @@ import { PUBLISH_OUTCOME, publishScheduledLessons, reopenSettledLesson } from ".
 import { findCompletedLessonsAt, subscribeMyLessons } from "./data/repositories/lesson-sync-repository.js";
 import { INITIAL_SYNC, initialSyncMode, initialUploadPlan, privateSyncAllowed, schedulePublishAllowed } from "./features/schedule/sync-gate.js";
 import {
-  PRIVATE_KIND, applyPrivateRevisions, mergePrivateItems, privateChanges, privateDocuments, privateWindow,
+  applyPrivateRevisions, mergePrivateItems, privateChanges, privateDocuments, privateWindow,
 } from "./features/schedule/private-items.js";
 import { publishPrivateItems, subscribePrivateItems } from "./data/repositories/private-schedule-repository.js";
 import { DUPLICATE_SETTLEMENT_CODE, findDuplicateSettlement, settlementTime } from "./features/schedule/settlement-duplicate.js";
@@ -1442,6 +1442,14 @@ async function shareBeforeAfter(before, after, memberName, onToast, saveOnly) {
     const c = await composeBeforeAfter(before, after, memberName);
     return await shareCanvas(c, `비포애프터_${memberName || "회원"}_${todayISO()}.jpg`, "비포 & 애프터", onToast, saveOnly);
   } catch (e) { onToast && onToast({ ok: false, msg: "이미지를 만들지 못했습니다." }); return false; }
+}
+
+/* 동기화 3단계 범위 (2026-10-31): 메모 · 상담 메모 · 회원 목표는 서버에 싣지 않는다
+   (private-items.js). 개인 일정은 이름(상담 · 휴무)과 시각만 본인의 다른 기기로 간다. */
+const DEVICE_ONLY_HINT = "이 기기에만 저장돼요";
+const SHARED_TITLE_HINT = "다른 기기에도 보여요";
+function DeviceOnlyNote() {
+  return <p data-device-only style={{ fontSize: TYPE.caption, color: SUB }}>{DEVICE_ONLY_HINT}</p>;
 }
 
 function blankMember(staff) {
@@ -4229,6 +4237,7 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
               );
             })}
           </div>
+          {(kind === "consult" || kind === "off") && <p data-shared-hint className="mt-1.5" style={{ fontSize: TYPE.caption, color: SUB }}>{SHARED_TITLE_HINT}</p>}
         </div>
         {isMemberLesson && (
           <div>
@@ -6032,11 +6041,11 @@ function MemberRegisterSheet({ members, onOpenExisting, onClose, onCreate }) {
         <Field label="연락처"><input value={f.phone} onChange={(e) => setF({ ...f, phone: e.target.value })} className={inputCls} /></Field>
         <Field label="생년월일" hint={f.birth ? `${ageFromBirth(f.birth)}세 · 오늘 기준 자동 계산` : "나이는 자동 계산됩니다"}><input type="date" value={f.birth} max={todayISO()} onChange={(e) => setF({ ...f, birth: e.target.value })} className={inputCls} /></Field>
         <Field label="기본 수업시간" hint="새 일정을 만들 때 자동 적용됩니다"><select value={f.defaultLessonDuration} onChange={(e) => setF({ ...f, defaultLessonDuration: e.target.value })} className={inputCls}>{[30, 50, 60, 80].map((value) => <option key={value} value={value}>{value}분</option>)}</select></Field>
-        <Field label="목표"><input value={f.goal} onChange={(e) => setF({ ...f, goal: e.target.value })} className={inputCls} /></Field>
-        <Field label="주의사항" hint="한 줄에 하나"><textarea rows={2} value={f.focus} onChange={(e) => setF({ ...f, focus: e.target.value })} className={`${inputCls} h-auto resize-none py-2.5`} /></Field>
+        <Field label="목표" hint={DEVICE_ONLY_HINT}><input value={f.goal} onChange={(e) => setF({ ...f, goal: e.target.value })} className={inputCls} /></Field>
+        <Field label="주의사항" hint={`한 줄에 하나 · ${DEVICE_ONLY_HINT}`}><textarea rows={2} value={f.focus} onChange={(e) => setF({ ...f, focus: e.target.value })} className={`${inputCls} h-auto resize-none py-2.5`} /></Field>
         <div className="grid grid-cols-2 gap-2"><Field label="이용권"><input value={f.passName} onChange={(e) => setF({ ...f, passName: e.target.value })} className={inputCls} /></Field><Field label="총 횟수"><input inputMode="numeric" value={f.regular} onChange={(e) => setF({ ...f, regular: e.target.value.replace(/\D/g, "") })} className={inputCls} /></Field></div>
         <div className="grid grid-cols-2 gap-2"><Field label="시작일"><input type="date" value={f.startDate} onChange={(e) => setF({ ...f, startDate: e.target.value })} className={inputCls} /></Field><Field label="만료일"><input type="date" value={f.contractEnd} onChange={(e) => setF({ ...f, contractEnd: e.target.value })} className={inputCls} /></Field></div>
-        <Field label="상담 메모"><textarea rows={2} value={f.memo} onChange={(e) => setF({ ...f, memo: e.target.value })} className={`${inputCls} h-auto resize-none py-2.5`} /></Field>
+        <Field label="상담 메모" hint={DEVICE_ONLY_HINT}><textarea rows={2} value={f.memo} onChange={(e) => setF({ ...f, memo: e.target.value })} className={`${inputCls} h-auto resize-none py-2.5`} /></Field>
         </>}
         {error && <div className="flex items-center gap-2" style={{ padding: "9px 10px", borderRadius: 8, backgroundColor: WARN_S, color: WARN, fontSize: TYPE.caption }}><AlertCircle size={14} />{error}{error.includes("이미") && <button type="button" className="ml-auto font-semibold" onClick={() => { const name = f.name.trim(), phone = f.phone.replace(/\D/g, ""); const d = (members || []).find((m) => String(m.name || "").trim() === name && (!phone || String(m.phone || "").replace(/\D/g, "") === phone)); if (d) onOpenExisting(d.id); }}>기존 회원 열기</button>}</div>}
       </div>
@@ -6687,7 +6696,7 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
         <Field label="이름"><input value={edit.name || ""} onChange={(e) => setEdit({ ...edit, name: e.target.value })} className={inputCls} /></Field><div className="grid grid-cols-2 gap-2"><Field label="담당 강사"><input value={edit.instructor || ""} onChange={(e) => setEdit({ ...edit, instructor: e.target.value })} className={inputCls} /></Field><Field label="연락처"><input value={edit.phone || ""} onChange={(e) => setEdit({ ...edit, phone: e.target.value })} className={inputCls} /></Field></div><Field label="생년월일"><input type="date" value={edit.birth || ""} onChange={(e) => setEdit({ ...edit, birth: e.target.value })} className={inputCls} /></Field><div className="grid grid-cols-2 gap-2"><Field label="수업 유형"><select value={edit.lessonType || "private"} onChange={(e) => setEdit({ ...edit, lessonType: e.target.value })} className={inputCls}><option value="private">개인</option><option value="duet">듀엣</option><option value="group">그룹</option></select></Field><Field label="기본 수업시간"><select value={edit.defaultLessonDuration || DEFAULT_CLASS_DURATION} onChange={(e) => setEdit({ ...edit, defaultLessonDuration: Number(e.target.value) })} className={inputCls}>{[30, 50, 60, 80].map((value) => <option key={value} value={value}>{value}분</option>)}</select></Field></div>
         {saveError && <p role="alert" style={{ fontSize: TYPE.caption, color: BAD }}>{saveError}</p>}<button type="button" aria-busy={saving === "basic"} disabled={!String(edit.name || "").trim() || saving === "basic"} onClick={() => commitPatch("basic", { ...edit, name: edit.name.trim(), defaultLessonDuration: lessonDurationOf(edit), ...(String(edit.instructor || "") !== String(member.instructor || "") ? { instructorHistory: [{ id: uid(), date: todayISO(), before: member.instructor || "", after: edit.instructor || "" }, ...(member.instructorHistory || [])] } : {}) })} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>{saving === "basic" ? "저장 중…" : "기본정보 저장"}</button>
       </div></Sheet>}
-      {sheet === "preparation" && <Sheet title="목표·주의사항 수정" onClose={() => setSheet(null)}><div className="space-y-3"><Field label="운동 목표"><textarea rows={3} value={edit.goal || ""} onChange={(e) => setEdit({ ...edit, goal: e.target.value })} className={`${inputCls} h-auto py-3`} /></Field><Field label="통증 및 주의사항" hint="쉼표로 구분"><textarea rows={3} value={edit.focus || ""} onChange={(e) => setEdit({ ...edit, focus: e.target.value })} className={`${inputCls} h-auto py-3`} /></Field>{saveError && <p role="alert" style={{ fontSize: TYPE.caption, color: BAD }}>{saveError}</p>}<button type="button" disabled={saving === "preparation"} onClick={() => commitPatch("preparation", { goal: String(edit.goal || "").trim(), focus: String(edit.focus || "").split(",").map((x) => x.trim()).filter(Boolean) })} className="h-12 w-full text-sm font-bold text-white disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND }}>{saving === "preparation" ? "저장 중…" : "목표·주의사항 저장"}</button></div></Sheet>}
+      {sheet === "preparation" && <Sheet title="목표·주의사항 수정" onClose={() => setSheet(null)}><div className="space-y-3"><DeviceOnlyNote /><Field label="운동 목표"><textarea rows={3} value={edit.goal || ""} onChange={(e) => setEdit({ ...edit, goal: e.target.value })} className={`${inputCls} h-auto py-3`} /></Field><Field label="통증 및 주의사항" hint="쉼표로 구분"><textarea rows={3} value={edit.focus || ""} onChange={(e) => setEdit({ ...edit, focus: e.target.value })} className={`${inputCls} h-auto py-3`} /></Field>{saveError && <p role="alert" style={{ fontSize: TYPE.caption, color: BAD }}>{saveError}</p>}<button type="button" disabled={saving === "preparation"} onClick={() => commitPatch("preparation", { goal: String(edit.goal || "").trim(), focus: String(edit.focus || "").split(",").map((x) => x.trim()).filter(Boolean) })} className="h-12 w-full text-sm font-bold text-white disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND }}>{saving === "preparation" ? "저장 중…" : "목표·주의사항 저장"}</button></div></Sheet>}
       {sheet === "hold" && <Sheet title="홀딩 설정" sub={`${member.name} · 수업 기록과 변화 기록은 유지됩니다`} onClose={() => setSheet(null)}><div className="space-y-3">
         <div className="grid grid-cols-2 gap-2"><Field label="홀딩 시작일"><input type="date" value={hold.start} onChange={(e) => setHold({ ...hold, start: e.target.value })} className={inputCls} /></Field><Field label="종료 예정일"><input type="date" value={hold.end} onChange={(e) => setHold({ ...hold, end: e.target.value })} className={inputCls} /></Field></div>
         <Field label="홀딩 사유"><input value={hold.reason} onChange={(e) => setHold({ ...hold, reason: e.target.value })} placeholder="예: 개인 사정 · 부상 · 여행" className={inputCls} /></Field>
@@ -6695,9 +6704,9 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
         <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>홀딩은 예정된 수업을 자동 취소하지 않습니다. 일정 탭에서 직접 확인해 주세요.</p>
         <button type="button" disabled={!hold.start || !hold.end || hold.end < hold.start} onClick={() => { const days = Math.max(0, Math.round((new Date(`${hold.end}T00:00:00`).getTime() - new Date(`${hold.start}T00:00:00`).getTime()) / 86400000)); onPatch({ status: "hold", holdFrom: hold.start, holdUntil: hold.end, holdReason: hold.reason.trim(), holdExtendDays: hold.extend ? days : 0, contractEnd: hold.extend && member.contractEnd ? shift(member.contractEnd, days) : member.contractEnd }); setSheet(null); }} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>홀딩 시작</button>
       </div></Sheet>}
-      {(sheet === "memo" || sheet === "record") && <Sheet title={sheet === "memo" ? "상담 메모 추가" : "수업 기록"} onClose={() => setSheet(null)}><div className="space-y-2">{sheet === "record" && <VoiceNote key={lessonRecordSessionKey(member.id, null)} memberId={member.id} memberName={member.name || "회원"} duetPartner={duetPartnerOf(member)} onClose={() => setSheet(null)} onDeferred={() => setSheet(null)} onDraftChange={(text, meta, options) => onSaveNote("개인레슨", text, meta, options)} onApply={(text, meta) => onSaveNote("개인레슨", text, meta, { confirmed: true, upsert: true })} />}{sheet === "memo" && <><button type="button" aria-pressed={memoImportant} onClick={() => setMemoImportant((value) => !value)} className="flex h-10 w-full items-center gap-2 px-3" style={{ borderRadius: 8, backgroundColor: memoImportant ? WARN_S : CANVAS, color: memoImportant ? WARN : SUB, fontSize: TYPE.caption, fontWeight: 700 }}><Star size={14} fill={memoImportant ? "currentColor" : "none"} />중요 메모로 상단 고정</button><textarea autoFocus rows={5} value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="내용을 입력하세요" className={`${inputCls} h-auto resize-none py-3`} />{saveError && <p role="alert" style={{ fontSize: TYPE.caption, color: BAD }}>{saveError}</p>}<button type="button" aria-busy={saving === sheet} disabled={!memo.trim() || saving === sheet} onClick={commitNote} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>{saving === sheet ? "저장 중…" : "저장"}</button></>}</div></Sheet>}
+      {(sheet === "memo" || sheet === "record") && <Sheet title={sheet === "memo" ? "상담 메모 추가" : "수업 기록"} onClose={() => setSheet(null)}><div className="space-y-2"><DeviceOnlyNote />{sheet === "record" && <VoiceNote key={lessonRecordSessionKey(member.id, null)} memberId={member.id} memberName={member.name || "회원"} duetPartner={duetPartnerOf(member)} onClose={() => setSheet(null)} onDeferred={() => setSheet(null)} onDraftChange={(text, meta, options) => onSaveNote("개인레슨", text, meta, options)} onApply={(text, meta) => onSaveNote("개인레슨", text, meta, { confirmed: true, upsert: true })} />}{sheet === "memo" && <><button type="button" aria-pressed={memoImportant} onClick={() => setMemoImportant((value) => !value)} className="flex h-10 w-full items-center gap-2 px-3" style={{ borderRadius: 8, backgroundColor: memoImportant ? WARN_S : CANVAS, color: memoImportant ? WARN : SUB, fontSize: TYPE.caption, fontWeight: 700 }}><Star size={14} fill={memoImportant ? "currentColor" : "none"} />중요 메모로 상단 고정</button><textarea autoFocus rows={5} value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="내용을 입력하세요" className={`${inputCls} h-auto resize-none py-3`} />{saveError && <p role="alert" style={{ fontSize: TYPE.caption, color: BAD }}>{saveError}</p>}<button type="button" aria-busy={saving === sheet} disabled={!memo.trim() || saving === sheet} onClick={commitNote} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>{saving === sheet ? "저장 중…" : "저장"}</button></>}</div></Sheet>}
       {sheet === "record-review" && reviewDraft && <Sheet title="AI 수업기록 확인" sub="확인은 선택입니다. 정리된 기록은 이미 저장되어 있어요." onClose={() => setSheet(null)}><div className="space-y-3"><div className="grid grid-cols-2 gap-2">{[{ k: "didToday", l: "오늘 수업" }, { k: "observations", l: "변화" }, { k: "responses", l: "회원 반응" }, { k: "nextFocus", l: "다음 확인" }].map((field) => <div key={field.k} className="rounded-xl p-3" style={{ backgroundColor: CANVAS }}><p className="text-caption font-extrabold" style={{ color: SUB }}>{field.l}</p>{reviewEditing ? <textarea rows={2} aria-label={`${field.l} 수정`} value={structuredFieldText(reviewDraft, field.k)} onChange={(event) => setReviewDraft((current) => editStructuredField(current, field.k, event.target.value))} className={`${inputCls} mt-1 h-auto resize-none py-2 text-xs`} /> : <p className="mt-1 text-xs font-bold leading-relaxed" style={{ color: INK2 }}>{prepText(reviewDraft[field.k], "기록 없음")}</p>}</div>)}</div><div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => setReviewEditing((value) => !value)} className="h-12 rounded-xl text-sm font-extrabold" style={{ backgroundColor: CANVAS, color: BRAND_D }}>{reviewEditing ? "수정 닫기" : "수정"}</button><button type="button" onClick={confirmRecordReview} className="h-12 rounded-xl text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>확인</button></div></div></Sheet>}
-      {sheet === "memos-all" && <Sheet title="상담 메모 전체 보기" onClose={() => setSheet(null)}><div className="space-y-2">{consultationNotes.length ? consultationNotes.map((note) => <div key={note.id} style={{ padding: 10, borderRadius: 8, backgroundColor: note.important ? WARN_S : CANVAS }}><p style={{ fontSize: TYPE.caption, color: SUB }}>{ymd(note.date)}{note.important ? " · 중요 메모" : ""}</p><p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK2 }}>{note.body}</p></div>) : <p style={{ fontSize: TYPE.caption, color: SUB }}>등록된 상담 메모가 없습니다</p>}<button type="button" onClick={openMemo} className="h-11 w-full text-xs font-bold" style={{ borderRadius: 8, backgroundColor: TINT, color: BRAND_D }}>메모 추가</button></div></Sheet>}
+      {sheet === "memos-all" && <Sheet title="상담 메모 전체 보기" onClose={() => setSheet(null)}><div className="space-y-2"><DeviceOnlyNote />{consultationNotes.length ? consultationNotes.map((note) => <div key={note.id} style={{ padding: 10, borderRadius: 8, backgroundColor: note.important ? WARN_S : CANVAS }}><p style={{ fontSize: TYPE.caption, color: SUB }}>{ymd(note.date)}{note.important ? " · 중요 메모" : ""}</p><p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK2 }}>{note.body}</p></div>) : <p style={{ fontSize: TYPE.caption, color: SUB }}>등록된 상담 메모가 없습니다</p>}<button type="button" onClick={openMemo} className="h-11 w-full text-xs font-bold" style={{ borderRadius: 8, backgroundColor: TINT, color: BRAND_D }}>메모 추가</button></div></Sheet>}
       {sheet === "records-all" && <Sheet title="수업 기록 전체 보기" onClose={() => setSheet(null)}><div className="min-w-0 space-y-2">{lessonSessions.length ? lessonSessions.map((session) => <div key={session.key} className="min-w-0" style={{ padding: 10, borderRadius: 8, backgroundColor: CANVAS }}><p className="mb-2 text-caption tabular-nums" style={{ color: SUB }}>{formatMemberLessonDate(session.date, { weekday: true })} · {session.type}</p><LessonRecordFieldRows session={session} />{session.warning && <p className="mt-2 text-caption" style={{ color: SUB }}>{session.warning}</p>}</div>) : <p style={{ fontSize: TYPE.caption, color: SUB }}>아직 작성된 수업 기록이 없습니다</p>}</div></Sheet>}
       {sheet === "membership" && <Sheet title="현재 이용권 수정" onClose={() => setSheet(null)}><div className="space-y-3">{!passConfirm ? <><Field label="이용권 이름"><input value={pass.name} onChange={(e) => setPass({ ...pass, name: e.target.value })} className={inputCls} /></Field><div className="grid grid-cols-3 gap-2"><Field label="정규 잔여"><input inputMode="numeric" value={pass.regular} onChange={(e) => setPass({ ...pass, regular: e.target.value.replace(/\D/g, "") })} className={inputCls} /></Field><Field label="서비스 잔여"><input inputMode="numeric" value={pass.service} onChange={(e) => setPass({ ...pass, service: e.target.value.replace(/\D/g, "") })} className={inputCls} /></Field><Field label="누적 등록"><input inputMode="numeric" value={pass.total} onChange={(e) => setPass({ ...pass, total: e.target.value.replace(/\D/g, "") })} className={inputCls} /></Field></div><Field label="만료일"><input type="date" value={pass.end} onChange={(e) => setPass({ ...pass, end: e.target.value })} className={inputCls} /></Field><button type="button" onClick={() => setPassConfirm(true)} className="h-12 w-full text-sm font-bold text-white" style={{ borderRadius: 8, backgroundColor: BRAND }}>변경 내용 확인</button></> : <><div style={{ padding: 12, borderRadius: 10, backgroundColor: CANVAS }}><p className="mb-2 text-xs font-bold" style={{ color: INK }}>변경 전후를 확인해 주세요</p>{[["총 잔여", `${left(member)}회`, `${num(pass.regular) + num(pass.service)}회`], ["누적 등록", `${num(member.total)}회`, `${num(pass.total)}회`], ["만료일", member.contractEnd ? ymd(member.contractEnd) : "미설정", pass.end ? ymd(pass.end) : "미설정"]].map(([label,before,after]) => <div key={label} className="flex items-center gap-2 py-1"><span className="w-16 text-caption" style={{ color: SUB }}>{label}</span><span className="min-w-0 flex-1 text-right text-xs line-through" style={{ color: SUB }}>{before}</span><ChevronRight size={12} style={{ color: FAINT }} /><span className="min-w-0 flex-1 text-xs font-bold" style={{ color: BRAND_D }}>{after}</span></div>)}</div>{saveError && <p role="alert" style={{ fontSize: TYPE.caption, color: BAD }}>{saveError}</p>}<div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => setPassConfirm(false)} className="h-12 text-sm font-bold" style={{ borderRadius: 8, backgroundColor: CANVAS, color: INK2 }}>다시 수정</button><button type="button" disabled={saving === "membership"} onClick={() => { const regular = num(pass.regular), service = num(pass.service), total = num(pass.total); commitPatch("membership", { passName: pass.name.trim(), regular, service, total, contractEnd: pass.end, payments: [{ id: uid(), date: todayISO(), kind: "adjustment", name: "이용권 수정", before: { remaining: left(member), total: num(member.total), end: member.contractEnd || "" }, after: { remaining: regular + service, total, end: pass.end } }, ...(member.payments || [])] }); }} className="h-12 text-sm font-bold text-white disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND }}>{saving === "membership" ? "저장 중…" : "확인 후 저장"}</button></div></>}</div></Sheet>}
       {sheet === "rate" && canViewSettlement && !organizationMode && <Sheet title="강사 정산 단가 수정" onClose={() => setSheet(null)}><div className="space-y-3">{!rateConfirm ? <><Field label="강사 정산 단가"><input inputMode="numeric" value={rateEdit} onChange={(e) => setRateEdit(e.target.value.replace(/\D/g, ""))} className={inputCls} /></Field><p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>회원 회당 결제금액과 별도이며 급여 예상 계산에 사용됩니다.</p><button type="button" disabled={!num(rateEdit)} onClick={() => setRateConfirm(true)} className="h-12 w-full text-sm font-bold text-white disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND }}>변경 내용 확인</button></> : <><div className="flex items-center gap-3" style={{ padding: 12, borderRadius: 10, backgroundColor: CANVAS }}><span className="min-w-0 flex-1 text-right text-sm line-through" style={{ color: SUB }}>₩{won(settlementUnit)}</span><ChevronRight size={14} style={{ color: FAINT }} /><span className="min-w-0 flex-1 text-sm font-bold" style={{ color: BRAND_D }}>₩{won(rateEdit)}</span></div>{saveError && <p role="alert" style={{ fontSize: TYPE.caption, color: BAD }}>{saveError}</p>}<div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => setRateConfirm(false)} className="h-12 text-sm font-bold" style={{ borderRadius: 8, backgroundColor: CANVAS, color: INK2 }}>다시 수정</button><button type="button" disabled={saving === "rate"} onClick={() => commitPatch("rate", { payRate: num(rateEdit) })} className="h-12 text-sm font-bold text-white disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND }}>{saving === "rate" ? "저장 중…" : "확인 후 저장"}</button></div></>}</div></Sheet>}
@@ -12269,7 +12278,7 @@ function InbodyForm({ member, last, onSave, onDelete, onPatch, onToast }) {
       <Card className="p-5">
         <div className="flex items-center gap-2">
           <span className="flex h-7 w-7 items-center justify-center rounded-lg" style={{ backgroundColor: TINT }}><Target size={14} style={{ color: PRIMARY }} /></span>
-          <div><h3 className="font-extrabold" style={{ color: INK }}>인바디 목표</h3><Sub>그래프 목표선과 종합 평가에 사용됩니다</Sub></div>
+          <div><h3 className="font-extrabold" style={{ color: INK }}>인바디 목표</h3><Sub>그래프 목표선과 종합 평가에 사용됩니다 · {DEVICE_ONLY_HINT}</Sub></div>
         </div>
         <div className="mt-4 grid grid-cols-2 gap-2">
           <Field label="목표 체중 kg"><input inputMode="decimal" value={g.goalWeight} onChange={(e) => setG({ ...g, goalWeight: e.target.value })} placeholder="예) 54" className={inputCls} /></Field>
@@ -23352,7 +23361,7 @@ function InstructorNameConfirm({ organization, onPreview, onConfirm, onToast, in
  */
 function ScheduleSyncAdmin({
   organization, instructorStore, onLoadConfig, onSaveConfig,
-  /* 같은 카드로 두 스위치를 다룬다: 센터 수업(scheduleSync)과 본인 일정 · 메모(privateSync, 3단계). */
+  /* 같은 카드로 두 스위치를 다룬다: 센터 수업(scheduleSync)과 본인 일정(privateSync, 3단계). */
   document: configDocument = "scheduleSync",
   title = "일정 동기화 (서버가 기준)",
   description = "켜진 계정은 다른 PC · 폰에서 넣고 고치고 지운 내 수업 일정을 실시간으로 받습니다. 대표 → 강사 한 명 → 전체 순서로 켜세요. 폰도 쓰는 강사는 그 폰이 새 버전을 받은 뒤에 켭니다.",
@@ -25533,8 +25542,8 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
               onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig} />
             <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
               onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
-              document="privateSync" title="본인 일정 · 메모 동기화"
-              description="켜진 계정은 상담 · 휴무 같은 개인 일정, 그룹 수업, 수업 메모, 회원별 상담 메모 · 목표를 본인의 다른 PC · 폰과 주고받습니다. 본인만 볼 수 있고 대표 · FC · 다른 강사는 볼 수 없습니다. 30일 전 ~ 60일 뒤의 것만 주고받습니다. 꺼진 계정은 서버에 아무것도 올리지 않습니다." />
+              document="privateSync" title="본인 일정 동기화"
+              description="켜진 계정은 상담 · 휴무 같은 개인 일정(제목 · 날짜 · 시각)과 그룹 수업을 본인의 다른 PC · 폰과 주고받습니다. 본인만 볼 수 있고 대표 · FC · 다른 강사는 볼 수 없습니다. 30일 전 ~ 60일 뒤의 것만 주고받습니다. 메모 · 상담 메모 · 회원 목표는 입력한 기기에만 남습니다. 꺼진 계정은 서버에 아무것도 올리지 않습니다." />
           </div>
         )}
         {view === "instructor-scope" && showAudit && (
@@ -29204,7 +29213,7 @@ export default function App() {
       /* 서버에서 받아 합친 것(fromServer)은 다시 보내지 않는다 -- 보내면 같은 내용을
          다시 쓰고, 회원 데이터도 다시 만들어진다. */
       /* 본인 일정 · 메모 (3단계). 스위치가 켜진 계정만 -- 웹 · 폰 모두. */
-      if (!fromServer && privateSyncOnRef.current && (prev?.schedule !== next?.schedule || prev?.members !== next?.members)) {
+      if (!fromServer && privateSyncOnRef.current && prev?.schedule !== next?.schedule) {
         privatePublishRef.current?.(prev, next).catch((error) => {
           deviceLog("private_publish_failed", { feature: "private_sync", stage: "prepare", errorDomain: "app", ...deviceError(error) });
         });
@@ -29335,9 +29344,9 @@ export default function App() {
     return () => { alive = false; stop(); };
   }, [organizationRoster, organizationContext.organizationId, account?.id, Boolean(roster), syncDay, scheduleSyncOn]);
 
-  /* ── 본인 일정 · 메모 동기화 (2026-10-31, 3단계) ─────────────────────────────
-     개인 일정 · 그룹 수업 · 수업 메모 · 회원별 상담 메모 · 목표를 본인 전용 자리
-     (users/{uid}/scheduleItems)와 주고받는다. 스위치는 센터 수업과 따로
+  /* ── 본인 일정 동기화 (2026-10-31, 3단계) ─────────────────────────────
+     개인 일정(제목 · 날짜 · 시각) · 그룹 수업을 본인 전용 자리 (users/{uid}/scheduleItems)와
+     주고받는다. 메모 · 상담 메모 · 회원 목표는 이 기기에만 남는다 (private-items.js). 스위치는 센터 수업과 따로
      (runtimeConfig/privateSync) -- **꺼진 계정은 웹 · 폰 모두 아무것도 쓰지 않는다.**
      받는 기간은 30일 전 ~ 60일 뒤 (private-items.js). */
   const [privateSyncConfig, setPrivateSyncConfig] = useState(undefined);
@@ -29352,11 +29361,7 @@ export default function App() {
   }, [phase, account?.id, syncDay]);
   const privateSyncOn = privateSyncAllowed({ syncOn: scheduleSyncEnabledFor(privateSyncConfig, account?.id) });
   privateSyncOnRef.current = privateSyncOn;
-  /* 기기 회원 id → 센터 회원 id. 기기 행에는 센터 회원 id 가 없을 수 있다(연락처로 이어진다). */
-  const privateDocsOf = (state) => privateDocuments({
-    schedule: state?.schedule || [], rosterMembers: state?.members || [],
-    clientIdOf: new Map((rosterMembersRef.current || []).filter((member) => member?.orgClientId).map((member) => [member.id, member.orgClientId])),
-  });
+  const privateDocsOf = (state) => privateDocuments({ schedule: state?.schedule || [] });
   const publishPrivate = async (prev, next, { initialDocs = null } = {}) => {
     const accountId = account?.id || "";
     if (!accountId || !privateSyncOnRef.current) return;
@@ -29376,11 +29381,9 @@ export default function App() {
     }
     const current = lessonRecordDbRef.current;
     if (current) {
-      const applied = applyPrivateRevisions({
-        schedule: current.schedule, members: current.members, results, documents: [...queue.values()], rosterMembers: rosterMembersRef.current,
-      });
-      if (applied.schedule !== current.schedule || applied.members !== current.members) {
-        saveDbRef.current?.({ ...current, schedule: applied.schedule, members: applied.members }, undefined, { fromServer: true });
+      const applied = applyPrivateRevisions({ schedule: current.schedule, results });
+      if (applied.schedule !== current.schedule) {
+        saveDbRef.current?.({ ...current, schedule: applied.schedule }, undefined, { fromServer: true });
       }
     }
     const failed = results.filter((result) => result.outcome === PUBLISH_OUTCOME.FAILED);
@@ -29392,7 +29395,7 @@ export default function App() {
       });
     }
     if (failed.length) {
-      setToast({ ok: false, msg: `메모 · 개인 일정을 다른 기기에 아직 보내지 못했어요. 다음 저장 때 다시 보냅니다. (코드 ${failed[0].errorCode})` });
+      setToast({ ok: false, msg: `개인 일정을 다른 기기에 아직 보내지 못했어요. 다음 저장 때 다시 보냅니다. (코드 ${failed[0].errorCode})` });
       return;
     }
     /* 다른 기기가 먼저 고쳤거나 지웠다. 내 내용은 버리지 않고 [내 내용 다시 적용] 으로 남긴다. */
@@ -29401,7 +29404,7 @@ export default function App() {
       const mine = queue.get(lost.itemId);
       setToast({
         ok: false,
-        msg: "다른 기기에서 먼저 고친 메모 · 개인 일정이라 그 내용으로 맞췄어요.",
+        msg: "다른 기기에서 먼저 고친 개인 일정이라 그 내용으로 맞췄어요.",
         action: {
           label: "내 내용 다시 적용",
           run: () => publishPrivateItems(accountId, [{ ...mine, baseRevision: lost.revision, allowRevive: true }], { deviceId: deviceIdentity() })
@@ -29450,23 +29453,20 @@ export default function App() {
         const current = lessonRecordDbRef.current;
         if (!current) return;
         const merged = mergePrivateItems({
-          schedule: current.schedule, members: current.members, docs, rosterMembers: rosterMembersRef.current,
-          pendingIds: [...privatePendingRef.current.keys(), ...privateSendingRef.current],
-          newMember: (rosterMember) => ({ ...blankMember(current.settings?.staff || ""), id: rosterMember.id, name: rosterMember.name || "", phone: rosterMember.phone || "", status: "active" }),
+          schedule: current.schedule, docs, pendingIds: [...privatePendingRef.current.keys(), ...privateSendingRef.current],
         });
-        if (merged.unmatchedClientIds.length) deviceLog("private_sync_unmatched_clients", { feature: "private_sync", stage: "merge", count: merged.unmatchedClientIds.length });
         if (merged.duplicates.length) setSyncDuplicates((list) => [...list, ...merged.duplicates.filter((pair) => !list.some((item) => item.localId === pair.localId))]);
-        if (merged.changed) saveDbRef.current?.({ ...current, schedule: merged.schedule, members: merged.members }, undefined, { fromServer: true });
+        if (merged.changed) saveDbRef.current?.({ ...current, schedule: merged.schedule }, undefined, { fromServer: true });
         /* 첫 맞추기: 받은 뒤에, 서버에 없고 중복 의심이 아닌 것만, 받는 기간 안의 것만 올린다.
            더 오래된 메모는 이 기기에만 남는다. */
         if (!privateInitialDoneRef.current) {
           privateInitialDoneRef.current = true;
           const serverIds = new Set(docs.map((item) => String(item?.itemId || item?.id || "")));
           const held = new Set(merged.duplicates.map((pair) => `sch_${pair.localId}`));
-          const state = merged.changed ? { schedule: merged.schedule, members: merged.members } : current;
+          const state = merged.changed ? { schedule: merged.schedule } : current;
           const initialDocs = [...privateDocsOf(state).values()]
             .filter((item) => !serverIds.has(item.itemId) && !held.has(item.itemId))
-            .filter((item) => item.data.kind === PRIVATE_KIND.MEMBER_GOAL || (item.data.date >= from && item.data.date <= to))
+            .filter((item) => item.data.date >= from && item.data.date <= to)
             .map((item) => ({ ...item, deleted: false }));
           if (initialDocs.length) {
             publishPrivate(null, null, { initialDocs }).catch((error) => {

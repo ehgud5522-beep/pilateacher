@@ -5743,15 +5743,14 @@ describe("phone sync gate and settlement duplicate guard — the app code throug
   });
 });
 
-/* ── 본인 전용 일정 · 메모 (2026-10-31, 동기화 3단계): 앱 코드 그대로 ───────────
+/* ── 본인 전용 일정 (2026-10-31, 동기화 3단계): 앱 코드 그대로 ──────────────────
    users/{uid}/scheduleItems -- 그 계정 본인만. private-items.js 가 문서를 만들고
    private-schedule-repository.js 가 쓰고 읽는다. */
 describe("private schedule items — only the owner of the account, the app code as is", () => {
   const ME = users.instructor;
-  const ROSTER = [{ id: "m-1", name: "회원", orgClientId: "client-member", notes: [{ id: "n-1", type: "상담", date: "2099-11-01", body: "허리 통증" }], goal: "자세", focus: ["허리"] }];
   const SCHEDULE = [
-    { id: "p-1", personal: true, title: "상담", date: "2099-11-03", start: "10:00", end: "10:30", memo: "" },
-    { id: "g-1", type: "그룹", date: "2099-11-03", start: "11:00", end: "11:50", groupCount: 4, attendees: [] },
+    { id: "p-1", personal: true, title: "상담", date: "2099-11-03", start: "10:00", end: "10:30", memo: "허리 통증 상담" },
+    { id: "g-1", type: "그룹", date: "2099-11-03", start: "11:00", end: "11:50", groupCount: 4, attendees: [], memo: "코어 집중" },
     { id: "L-1", type: "개인레슨", date: "2099-11-03", start: "19:00", end: "19:50", memo: "어깨 주의", attendees: [{ memberId: "m-1" }] },
   ];
   const itemRef = (userId, itemId, owner = ME) => doc(dbFor(userId), "users", owner, "scheduleItems", itemId);
@@ -5765,14 +5764,11 @@ describe("private schedule items — only the owner of the account, the app code
   /* App 이 할 일 그대로: 스위치 → 바뀐 것 → 쓰기 → 번호 적기. */
   const save = async (deviceId, syncOn, before, after, userId = ME) => {
     if (!privateSyncAllowed({ syncOn })) return [];
-    const documents = privateChanges({
-      before: privateDocuments({ schedule: before.schedule, rosterMembers: before.roster }),
-      after: privateDocuments({ schedule: after.schedule, rosterMembers: after.roster }),
-    });
+    const documents = privateChanges({ before: privateDocuments(before), after: privateDocuments(after) });
     return publishPrivateItems(userId, documents, { store: createFirestorePrivateItemStore({ firestore: dbFor(userId) }), deviceId });
   };
-  const empty = { schedule: [], roster: ROSTER.map((member) => ({ ...member, notes: [], goal: "", focus: [] })) };
-  const full = { schedule: SCHEDULE, roster: ROSTER };
+  const empty = { schedule: [] };
+  const full = { schedule: SCHEDULE };
 
   test("스위치가 꺼지면 웹 · 폰 모두 서버에 아무것도 쓰지 않는다 — 문서 0건", async () => {
     await save("pc-a", false, empty, full);
@@ -5780,15 +5776,31 @@ describe("private schedule items — only the owner of the account, the app code
     assert.equal((await stored()).length, 0);
   });
 
-  test("본인은 쓰고 읽는다 — 다섯 종류, 번호 1부터", async () => {
+  test("본인은 쓰고 읽는다 — 개인 일정 · 그룹 수업 두 종류, 번호 1부터, 메모 없이", async () => {
     const results = await save("pc-a", true, empty, full);
-    assert.deepEqual(results.map((result) => result.outcome), ["written", "written", "written", "written", "written"]);
+    assert.deepEqual(results.map((result) => result.outcome), ["written", "written"]);
     const docs = await stored();
-    assert.deepEqual(docs.map((item) => item.kind).sort(), ["consultNote", "group", "lessonMemo", "memberGoal", "personal"]);
+    assert.deepEqual(docs.map((item) => item.kind).sort(), ["group", "personal"]);
     assert.ok(docs.every((item) => item.revision === 1));
+    assert.ok(docs.every((item) => !("memo" in item)), "개인 일정 · 그룹 수업의 메모는 서버에 없다");
     const { from, to } = { from: "2099-10-01", to: "2099-12-31" };
     const read = await assertSucceeds(readPrivateItems({ firestore: dbFor(ME), uid: ME, from, to }));
-    assert.equal(read.length, 5);
+    assert.equal(read.length, 2);
+  });
+
+  test("본인이라도 제외한 것은 서버가 거절한다 — 수업 메모 · 상담 메모 · 회원 목표 · 일정 메모", async () => {
+    const write = (itemId, data) => setDoc(itemRef(ME, itemId), { itemId, revision: 1, ...data });
+    await assertFails(write("memo_L-1", { kind: "lessonMemo", lessonId: "L-1", date: "2099-11-03", memo: "어깨 주의" }), "수업 메모");
+    await assertFails(write("note_n-1", { kind: "consultNote", noteId: "n-1", clientId: "client-member", body: "허리 통증" }), "상담 메모");
+    await assertFails(write("goal_client-member", { kind: "memberGoal", clientId: "client-member", goal: "자세" }), "회원 목표");
+    for (const [field, value] of [["goal", "자세"], ["focus", ["허리"]], ["goalWeight", 54], ["goalFat", 24], ["body", "상담"], ["clientId", "client-member"]]) {
+      await assertFails(write("sch_x", { kind: "personal", title: "상담", [field]: value }), `개인 일정에 ${field} 칸`);
+    }
+    await assertFails(write("sch_x", { kind: "personal", title: "상담", memo: "허리 통증" }), "개인 일정의 메모 칸");
+    await assertFails(write("sch_x", { kind: "group", groupCount: 4, memo: "코어 집중" }), "그룹 수업의 메모 칸");
+    await assertSucceeds(write("sch_x", { kind: "personal", title: "상담", date: "2099-11-03", start: "10:00", end: "10:30" }));
+    await assertFails(setDoc(itemRef(ME, "sch_x"), { memo: "나중에 덧붙이기", revision: 2 }, { merge: true }), "고치기로 메모를 덧붙이는 것도");
+    assert.equal((await stored()).length, 1);
   });
 
   test("대표 · 총괄매니저 · FC매니저 · 다른 강사 · 회원 · 비로그인은 읽지도 쓰지도 못한다", async () => {
@@ -5822,28 +5834,28 @@ describe("private schedule items — only the owner of the account, the app code
     await save("pc-a", true, empty, full);
     // PC-B 는 받아서 합친다 (아직 아무것도 없는 기기).
     const docs = await readPrivateItems({ firestore: dbFor(ME), uid: ME, from: "2099-10-01", to: "2099-12-31" });
-    const merged = mergePrivateItems({
-      schedule: [{ id: "L-1", type: "개인레슨", date: "2099-11-03", start: "19:00", attendees: [{ memberId: "m-1" }] }],
-      members: [], docs, rosterMembers: ROSTER.map((member) => ({ ...member, notes: [], goal: "", focus: [] })),
-    });
+    const pcBLocal = [{ id: "L-1", type: "개인레슨", date: "2099-11-03", start: "19:00", memo: "PC-B 에만 있는 메모", attendees: [{ memberId: "m-1" }] }];
+    const merged = mergePrivateItems({ schedule: pcBLocal, docs });
     assert.equal(merged.schedule.find((entry) => entry.id === "p-1")?.title, "상담");
+    assert.equal(merged.schedule.find((entry) => entry.id === "p-1")?.memo, "", "메모는 따라오지 않는다");
     assert.equal(merged.schedule.find((entry) => entry.id === "g-1")?.groupCount, 4);
-    assert.equal(merged.schedule.find((entry) => entry.id === "L-1")?.memo, "어깨 주의");
-    assert.equal(merged.members.find((member) => member.id === "m-1")?.notes[0].body, "허리 통증");
-    assert.equal(merged.members.find((member) => member.id === "m-1")?.goal, "자세");
-    // PC-A 가 메모를 고친 뒤, 옛 번호를 든 PC-B 의 고치기는 충돌.
-    const pcAFull = { schedule: SCHEDULE.map((entry) => ({ ...entry, privateRevision: 1, memoRevision: 1 })), roster: ROSTER };
-    const pcANext = { ...pcAFull, schedule: pcAFull.schedule.map((entry) => (entry.id === "L-1" ? { ...entry, memo: "PC-A 메모" } : entry)) };
+    assert.equal(merged.schedule.find((entry) => entry.id === "L-1")?.memo, "PC-B 에만 있는 메모", "기기 값은 그대로");
+    // PC-A 가 그룹 인원을 고친 뒤, 옛 번호를 든 PC-B 의 고치기는 충돌.
+    const pcAFull = { schedule: SCHEDULE.map((entry) => ({ ...entry, privateRevision: 1 })) };
+    const pcANext = { schedule: pcAFull.schedule.map((entry) => (entry.id === "g-1" ? { ...entry, groupCount: 5 } : entry)) };
     assert.deepEqual((await save("pc-a", true, pcAFull, pcANext)).map((result) => result.outcome), ["written"]);
-    const pcBBefore = { schedule: merged.schedule, roster: ROSTER };
-    const pcBAfter = { ...pcBBefore, schedule: merged.schedule.map((entry) => (entry.id === "L-1" ? { ...entry, memo: "PC-B 메모" } : entry)) };
+    const pcBBefore = { schedule: merged.schedule };
+    const pcBAfter = { schedule: merged.schedule.map((entry) => (entry.id === "g-1" ? { ...entry, groupCount: 6 } : entry)) };
     assert.deepEqual((await save("pc-b", true, pcBBefore, pcBAfter)).map((result) => result.outcome), ["conflict"]);
+    // 메모만 고치면 보낼 것이 없다.
+    const memoOnly = { schedule: pcANext.schedule.map((entry) => ({ ...entry, memo: "PC-A 새 메모" })) };
+    assert.deepEqual(await save("pc-a", true, pcANext, memoOnly), []);
     // PC-A 가 상담 일정을 지운다 → 지운 표시. PC-B 가 받으면 사라진다.
     const removed = { ...pcANext, schedule: pcANext.schedule.filter((entry) => entry.id !== "p-1") };
     await save("pc-a", true, pcANext, removed);
     const after = await readPrivateItems({ firestore: dbFor(ME), uid: ME, from: "2099-10-01", to: "2099-12-31" });
     assert.ok(after.find((item) => item.itemId === "sch_p-1").deletedAt, "지우지 않고 표시");
-    const pcB = mergePrivateItems({ schedule: merged.schedule, members: merged.members, docs: after, rosterMembers: ROSTER });
+    const pcB = mergePrivateItems({ schedule: merged.schedule, docs: after });
     assert.equal(pcB.schedule.some((entry) => entry.id === "p-1"), false);
   });
 });

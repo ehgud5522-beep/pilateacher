@@ -86,7 +86,12 @@ function scheduleSyncPayload(input) {
   if (!["off", "listed", "all"].includes(mode)) throw new Error("schedule_sync_mode_invalid");
   const userIds = [...new Set((Array.isArray(input?.userIds) ? input.userIds : []).map(text).filter(Boolean))];
   if (userIds.length > 50) throw new Error("schedule_sync_too_many_users");
-  if (userIds.some((id) => !/^[A-Za-z0-9_-]{6,128}$/.test(id))) throw new Error("schedule_sync_user_invalid");
+  /* 계정 id 만 담는다. 이 문서는 로그인한 누구나 읽는다 -- 이름 · 연락처가 들어가면
+     센터 밖까지 보인다. 이름(한글) · 이메일(@ .)은 아래 모양에서 걸리고, 숫자만인
+     값(전화번호)은 따로 막는다. Firebase 계정 id 는 숫자만으로 되지 않는다. */
+  if (userIds.some((id) => !/^[A-Za-z0-9_-]{6,128}$/.test(id) || /^[0-9-]+$/.test(id))) {
+    throw new Error("schedule_sync_user_invalid");
+  }
   return { mode, userIds };
 }
 

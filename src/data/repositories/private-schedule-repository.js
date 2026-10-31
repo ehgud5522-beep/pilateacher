@@ -1,5 +1,5 @@
 /**
- * 본인 전용 일정 · 메모를 `users/{uid}/scheduleItems/{itemId}` 에 쓰고 읽는다
+ * 본인 전용 일정(개인 일정 · 그룹 수업)을 `users/{uid}/scheduleItems/{itemId}` 에 쓰고 읽는다
  * (2026-10-31, 동기화 3단계). 문서 모양은 private-items.js 가 만든다.
  *
  * 1 · 2단계(lesson-schedule-repository.js)와 같은 판정이다:
@@ -108,42 +108,31 @@ export async function publishPrivateItems(uid, documents, options = {}) {
   return results;
 }
 
-/* 받는 질의 둘: 날짜가 있는 것(30일 전 ~ 60일 뒤)과 목표(날짜 없음). 둘 다 단일 필드라
-   새 색인이 필요 없다. */
-const queriesFor = (api, firestore, input) => {
-  const base = api.collection(firestore, itemsPath(input.uid));
-  return [
-    api.query(base, api.where("date", ">=", input.from), api.where("date", "<=", input.to)),
-    api.query(base, api.where("kind", "==", "memberGoal")),
-  ];
-};
+/* 받는 질의: 30일 전 ~ 60일 뒤. 단일 필드라 새 색인이 필요 없다. */
+const queryFor = (api, firestore, input) => api.query(
+  api.collection(firestore, itemsPath(input.uid)),
+  api.where("date", ">=", input.from), api.where("date", "<=", input.to),
+);
 
 /** 한 번 읽는다 (규칙 테스트 · 다시 시도). */
 export async function readPrivateItems(input) {
   const api = await import("firebase/firestore");
   const firestore = input.firestore || api.getFirestore();
-  const pages = await Promise.all(queriesFor(api, firestore, input).map((query) => api.getDocs(query)));
-  const found = new Map();
-  pages.forEach((page) => page.docs.forEach((document) => found.set(document.id, { id: document.id, ...document.data() })));
-  return [...found.values()];
+  const page = await api.getDocs(queryFor(api, firestore, input));
+  return page.docs.map((document) => ({ id: document.id, ...document.data() }));
 }
 
 /**
- * 실시간으로 받는다. 두 질의를 합쳐 한 번에 넘긴다.
+ * 실시간으로 받는다.
  * @returns {Promise<() => void>}
  */
 export async function subscribePrivateItems(input) {
   const api = await import("firebase/firestore");
   const firestore = input.firestore || api.getFirestore();
   if (!text(input.uid)) return () => {};
-  const latest = [new Map(), new Map()];
-  const seen = [false, false];
-  const stops = queriesFor(api, firestore, input).map((query, index) => api.onSnapshot(query, (snapshot) => {
-    latest[index] = new Map(snapshot.docs.map((document) => [document.id, { id: document.id, ...document.data() }]));
-    seen[index] = true;
-    if (!seen.every(Boolean)) return;
-    const merged = new Map([...latest[0], ...latest[1]]);
-    input.onDocs([...merged.values()], { changes: snapshot.docChanges().length, fromCache: snapshot.metadata.fromCache });
-  }, (error) => input.onError?.(error)));
-  return () => stops.forEach((stop) => stop());
+  return api.onSnapshot(queryFor(api, firestore, input), (snapshot) => {
+    input.onDocs(snapshot.docs.map((document) => ({ id: document.id, ...document.data() })), {
+      changes: snapshot.docChanges().length, fromCache: snapshot.metadata.fromCache,
+    });
+  }, (error) => input.onError?.(error));
 }

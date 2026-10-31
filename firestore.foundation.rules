@@ -425,29 +425,28 @@ service cloud.firestore {
         allow delete: if false;
       }
 
-      /* ── 본인 전용 일정 · 메모 (2026-10-31, 동기화 3단계) ──────────────────────
-         개인 일정(상담 · 휴무), 그룹 수업(인원만), 센터 수업에 붙는 강사 메모, 회원별
-         상담 메모 · 목표. **그 계정 본인만 읽고 쓴다** -- 대표 · FC · 다른 강사 · 회원은
-         읽지도 쓰지도 못한다. 센터 직원이 읽는 lessons 에는 싣지 않는다.
+      /* ── 본인 전용 일정 (2026-10-31, 동기화 3단계) ──────────────────────────────
+         개인 일정(상담 · 휴무 -- 이름 · 날짜 · 시각만)과 그룹 수업(인원만) 두 종류.
+         **그 계정 본인만 읽고 쓴다** -- 대표 · FC · 다른 강사 · 회원은 읽지도 쓰지도 못한다.
+         센터 직원이 읽는 lessons 에는 싣지 않는다.
+
+         메모 · 수업 메모 · 상담 메모 · 회원 목표는 싣지 않는다 (대표 결정) -- 입력한 기기에만
+         남는다. 그 칸(memo · body · goal · focus 따위)이나 다른 종류가 든 쓰기는 칸 목록에서
+         막힌다. 칸 목록을 닫아 둔다 -- 다른 것을 싣는 길을 만들지 않는다.
 
          1 · 2단계와 같은 틀: 만들 때 revision 1, 고칠 때 +1 (앱이 서버 번호와 견주어
          다른 기기의 수정을 덮지 않는다). 지우지 않고 deletedAt 으로 표시한다.
-         칸 목록을 닫아 둔다 -- 다른 것을 싣는 길을 만들지 않는다.
 
          한계: 본인 전용이라 퇴사 · 담당 변경 때 센터가 넘겨받을 수 없다 (5단계에서 정한다). */
       function privateItemWellFormed(itemId) {
         let data = request.resource.data;
         return data.keys().hasOnly([
-            "itemId", "kind", "date", "start", "end", "title", "memo", "type", "room",
+            "itemId", "kind", "date", "start", "end", "title", "type", "room",
             "equipmentIds", "groupCount", "actualCount", "noshowCount", "groupDone", "groupCancelled",
-            "lessonId", "clientId", "noteId", "body", "important", "goal", "focus", "goalWeight", "goalFat",
             "revision", "updatedAt", "createdAt", "updatedDevice", "deletedAt"
           ])
           && data.get("itemId", "") == itemId
-          && data.get("kind", "") in ["personal", "group", "lessonMemo", "consultNote", "memberGoal"]
-          && data.get("memo", "").size() <= 5000
-          && data.get("body", "").size() <= 5000
-          && data.get("goal", "").size() <= 2000
+          && data.get("kind", "") in ["personal", "group"]
           && data.get("title", "").size() <= 200;
       }
       match /scheduleItems/{itemId} {

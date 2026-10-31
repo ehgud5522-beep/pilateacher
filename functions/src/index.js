@@ -31,7 +31,7 @@ const {
   findServiceDeductions, planServiceSessionFix, runServiceSessionFix,
 } = require("./service-session-fix");
 const { isPassAdmin, runHandover, runSessionUp } = require("./pass-admin");
-const { readRuntimeConfig, writeRuntimeConfig } = require("./runtime-config-admin");
+const { handleRuntimeConfigRequest } = require("./runtime-config-admin");
 const { monthlyPayFor, planAccountSwap, runAccountSwap } = require("./instructor-swap");
 const { reconcileOrganization } = require("./pass-reconcile-nightly");
 const { createFirestoreMemberLinkPorts } = require("./member-link-store");
@@ -814,13 +814,8 @@ exports.updateRuntimeConfig = onCall({
   timeoutSeconds: 60,
   invoker: "public",
 }, async (request) => {
-  const callerUid = String(request?.auth?.uid || "").trim();
   const organizationId = String(request?.data?.organizationId || "").trim();
-  if (!callerUid) throw new HttpsError("unauthenticated", "Please sign in again.");
-  if (!organizationId) throw new HttpsError("invalid-argument", "organizationId is required.");
-
-  const membership = await firestore
-    .collection("memberships").doc(membershipId(organizationId, callerUid)).get();
+  const document = String(request?.data?.document || "").trim();
   /* 화면이 카드를 감추는 것은 안내이고 막는 것은 여기다. 이 설정은 조직의
      것이 아니라 앱 전체의 것이라, 어느 센터의 대표든 바꿀 수 있다는 뜻이
      되지 않도록 소속 확인을 지나게 둔다.
@@ -830,25 +825,23 @@ exports.updateRuntimeConfig = onCall({
      전체의 수업 확정이 막히고**, appUpdate 최소 빌드를 올리면 그 번호보다
      낮은 앱이 전부 필수 팝업에 갇힌다. 숫자 하나가 센터를 세우는 자리라
      이관 초기화와 같은 선에 둔다. */
-  if (!isActiveOwner(membership.exists ? membership.data() : null)) {
-    throw new HttpsError("permission-denied", "Only the centre owner can change this.");
-  }
-
-  /* 쓰지 않고 읽기만 할 수도 있다. 화면이 고치기 전에 지금 값을 보여준다. */
-  const document = String(request?.data?.document || "").trim();
-  if (!document) return { config: await readRuntimeConfig(firestore) };
-
+  /* 본문은 runtime-config-admin.js 의 handleRuntimeConfigRequest 다 (2026-10-31) --
+     역할마다 테스트가 그 길을 그대로 지난다. 응답과 오류 코드는 전과 같다. */
   try {
-    const result = await writeRuntimeConfig(firestore, {
-      document, value: request?.data?.value, actorId: callerUid,
-    });
+    const result = await handleRuntimeConfigRequest(firestore, {
+      callerUid: request?.auth?.uid, organizationId, document, value: request?.data?.value,
+    }, { membershipId, isActiveOwner });
     /* 숫자만 남긴다. 이 값이 센터 전체를 막을 수 있어 누가 언제 무엇으로
        바꿨는지가 남아야 한다 (§7 -- 이름도 번호도 아니다). */
-    logger.info("runtime_config_updated", {
-      feature: "runtime_config", stage: "write", organizationId, document,
-    });
-    return { ...result, config: await readRuntimeConfig(firestore) };
+    if (document) {
+      logger.info("runtime_config_updated", {
+        feature: "runtime_config", stage: "write", organizationId, document,
+      });
+    }
+    return result;
   } catch (error) {
+    if (error?.httpsCode) throw new HttpsError(error.httpsCode, error.message);
+    if (!error?.writeFailed) throw error;
     logger.error("runtime_config_write_failed", {
       feature: "runtime_config", stage: "write", organizationId, document,
       errorCode: error?.message || "unknown",

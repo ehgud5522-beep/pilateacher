@@ -948,6 +948,20 @@ export async function fbLoadScheduleSyncConfig() {
   }
 }
 
+/** 본인 일정 · 메모 동기화 스위치 (3단계). 못 읽으면 null -- 꺼진 것으로 본다. */
+export async function fbLoadPrivateSyncConfig() {
+  if (!fs || !auth?.currentUser) return null;
+  try {
+    const snap = await withAuthTimeout(
+      () => getDoc(doc(fs, "runtimeConfig", "privateSync")),
+      { timeoutMs: FIRESTORE_READ_TIMEOUT_MS, provider: "firebase", stage: "private_sync_config_read" },
+    );
+    return snap.exists() ? snap.data() || null : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
 export async function fbLoadSettlementConfig() {
   if (!fs || !auth?.currentUser) return null;
   try {

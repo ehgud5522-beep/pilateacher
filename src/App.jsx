@@ -27,7 +27,7 @@ import {
 } from "recharts";
 import {
   fbReady, fbAuthApiKey, fbSignInSocial, fbSignInEmail, fbSignUpEmail, fbSignOut, fbOnAuth,
-  fbAuthStateReady, fbLoadProfileState, fbSaveProfile, fbPushBackup, fbPullBackup, fbListBackups, fbUploadMigrationSnapshot, fbLoadScheduleSyncConfig,
+  fbAuthStateReady, fbLoadProfileState, fbSaveProfile, fbPushBackup, fbPullBackup, fbListBackups, fbUploadMigrationSnapshot, fbLoadScheduleSyncConfig, fbLoadPrivateSyncConfig,
   fbPreservePreviousBackup, PREVIOUS_PHONE_BACKUP, fbReauthenticate, fbRefreshIdToken,
   fbRevokeAppleAccess, fbDeleteCurrentUserAccount, fbLoadAIConsent, fbGrantAIConsent, fbCurrentUserId,
   fbSendPasswordReset,
@@ -137,7 +137,11 @@ import {
 } from "./data/repositories/member-note-repository.js";
 import { PUBLISH_OUTCOME, publishScheduledLessons, reopenSettledLesson } from "./data/repositories/lesson-schedule-repository.js";
 import { findCompletedLessonsAt, subscribeMyLessons } from "./data/repositories/lesson-sync-repository.js";
-import { INITIAL_SYNC, initialSyncMode, initialUploadPlan, schedulePublishAllowed } from "./features/schedule/sync-gate.js";
+import { INITIAL_SYNC, initialSyncMode, initialUploadPlan, privateSyncAllowed, schedulePublishAllowed } from "./features/schedule/sync-gate.js";
+import {
+  PRIVATE_KIND, applyPrivateRevisions, mergePrivateItems, privateChanges, privateDocuments, privateWindow,
+} from "./features/schedule/private-items.js";
+import { publishPrivateItems, subscribePrivateItems } from "./data/repositories/private-schedule-repository.js";
 import { DUPLICATE_SETTLEMENT_CODE, findDuplicateSettlement, settlementTime } from "./features/schedule/settlement-duplicate.js";
 import { scheduleChanges } from "./features/schedule/schedule-publish.js";
 import { applyPublishedRevisions, mergeFormEdit, mergeServerLessons, reapplyChanges, syncWindow } from "./features/schedule/schedule-sync.js";
@@ -23346,7 +23350,13 @@ function InstructorNameConfirm({ organization, onPreview, onConfirm, onToast, in
  * 옛 폰은 일정을 서버에 보내지 않아, 켜도 그 폰의 일정은 따라오지 않는다. 대표만
  * 바꾼다 (updateRuntimeConfig).
  */
-function ScheduleSyncAdmin({ organization, instructorStore, onLoadConfig, onSaveConfig }) {
+function ScheduleSyncAdmin({
+  organization, instructorStore, onLoadConfig, onSaveConfig,
+  /* 같은 카드로 두 스위치를 다룬다: 센터 수업(scheduleSync)과 본인 일정 · 메모(privateSync, 3단계). */
+  document: configDocument = "scheduleSync",
+  title = "일정 동기화 (서버가 기준)",
+  description = "켜진 계정은 다른 PC · 폰에서 넣고 고치고 지운 내 수업 일정을 실시간으로 받습니다. 대표 → 강사 한 명 → 전체 순서로 켜세요. 폰도 쓰는 강사는 그 폰이 새 버전을 받은 뒤에 켭니다.",
+}) {
   const [instructors, setInstructors] = useState([]);
   const [draft, setDraft] = useState(readScheduleSyncConfig(null));
   const [busy, setBusy] = useState(false);
@@ -23357,10 +23367,10 @@ function ScheduleSyncAdmin({ organization, instructorStore, onLoadConfig, onSave
     let alive = true;
     listInstructors(organizationId, { store: instructorStore }).then((found) => { if (alive) setInstructors(found); }).catch(() => {});
     Promise.resolve(onLoadConfig?.(organizationId))
-      .then((found) => { if (alive) setDraft(readScheduleSyncConfig(found?.scheduleSync)); })
+      .then((found) => { if (alive) setDraft(readScheduleSyncConfig(found?.[configDocument])); })
       .catch((thrown) => { if (alive) setMessage(`지금 값을 읽지 못했어요 (코드 ${thrown?.code || "unknown"})`); });
     return () => { alive = false; };
-  }, [organizationId, organization?.status, instructorStore, onLoadConfig]);
+  }, [organizationId, organization?.status, instructorStore, onLoadConfig, configDocument]);
   const rows = instructorVersionRows(instructors, {});
   const toggle = (userId) => setDraft((current) => ({
     ...current,
@@ -23370,8 +23380,8 @@ function ScheduleSyncAdmin({ organization, instructorStore, onLoadConfig, onSave
     if (busy) return;
     setBusy(true); setMessage("");
     try {
-      const result = await onSaveConfig?.(organizationId, "scheduleSync", draft);
-      setDraft(readScheduleSyncConfig(result?.config?.scheduleSync));
+      const result = await onSaveConfig?.(organizationId, configDocument, draft);
+      setDraft(readScheduleSyncConfig(result?.config?.[configDocument]));
       setMessage("저장했습니다. 켜진 계정은 앱을 열거나 돌아올 때부터 받습니다.");
     } catch (thrown) {
       setMessage(`저장하지 못했어요 (코드 ${thrown?.code || thrown?.message || "unknown"})`);
@@ -23383,12 +23393,9 @@ function ScheduleSyncAdmin({ organization, instructorStore, onLoadConfig, onSave
     { value: SCHEDULE_SYNC_MODE.ALL, label: "전체" },
   ];
   return (
-    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }} data-schedule-sync-admin>
-      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>일정 동기화 (서버가 기준)</h2>
-      <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
-        켜진 계정은 다른 PC · 폰에서 넣고 고치고 지운 내 수업 일정을 실시간으로 받습니다. 대표 → 강사 한 명 → 전체 순서로 켜세요.
-        폰도 쓰는 강사는 그 폰이 새 버전을 받은 뒤에 켭니다.
-      </p>
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }} data-schedule-sync-admin={configDocument}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>{title}</h2>
+      <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>{description}</p>
       <div className="mt-3 flex gap-2">
         {modes.map((option) => (
           <button key={option.value} type="button" onClick={() => setDraft((current) => ({ ...current, mode: option.value }))}
@@ -25524,6 +25531,10 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
               onRetryOrganization={onRetryOrganization} />
             <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
               onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig} />
+            <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
+              onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
+              document="privateSync" title="본인 일정 · 메모 동기화"
+              description="켜진 계정은 상담 · 휴무 같은 개인 일정, 그룹 수업, 수업 메모, 회원별 상담 메모 · 목표를 본인의 다른 PC · 폰과 주고받습니다. 본인만 볼 수 있고 대표 · FC · 다른 강사는 볼 수 없습니다. 30일 전 ~ 60일 뒤의 것만 주고받습니다. 꺼진 계정은 서버에 아무것도 올리지 않습니다." />
           </div>
         )}
         {view === "instructor-scope" && showAudit && (
@@ -28494,6 +28505,8 @@ export default function App() {
       unpublishedLessonsRef.current = new Map();
       initialSchedulePublishRef.current = false;
       initialUploadAfterPullRef.current = false;
+      privatePendingRef.current = new Map();
+      privateInitialDoneRef.current = false;
       loadedAccountIdRef.current = acc?.id || "";
     }
     revokeAllUrls();
@@ -28733,6 +28746,8 @@ export default function App() {
     unpublishedLessonsRef.current = new Map();
     initialSchedulePublishRef.current = false;
     initialUploadAfterPullRef.current = false;
+    privatePendingRef.current = new Map();
+    privateInitialDoneRef.current = false;
     photosRef.current = {};
     const empty = emptyDb("", "");
     lessonRecordDbRef.current = empty;
@@ -29031,6 +29046,12 @@ export default function App() {
   const publishAllowedRef = useRef(!Capacitor.isNativePlatform());
   /* 스위치가 켜진 계정: 처음 받은 뒤에 올린다 (initialUploadPlan). */
   const initialUploadAfterPullRef = useRef(false);
+  /* 본인 일정 · 메모 (3단계): 못 보낸 것 · 보내는 중 · 첫 맞추기 했는가 · 스위치. */
+  const privatePendingRef = useRef(new Map());
+  const privateSendingRef = useRef(new Set());
+  const privateInitialDoneRef = useRef(false);
+  const privateSyncOnRef = useRef(false);
+  const privatePublishRef = useRef(null);
   const saveDbRef = useRef(null);
   const deleteScheduleRef = useRef(null);
   const newerWebBuildRef = useRef(false);
@@ -29182,6 +29203,12 @@ export default function App() {
          여기를 지난다 -- 버튼마다 따로 부르면 한 군데는 빠진다. */
       /* 서버에서 받아 합친 것(fromServer)은 다시 보내지 않는다 -- 보내면 같은 내용을
          다시 쓰고, 회원 데이터도 다시 만들어진다. */
+      /* 본인 일정 · 메모 (3단계). 스위치가 켜진 계정만 -- 웹 · 폰 모두. */
+      if (!fromServer && privateSyncOnRef.current && (prev?.schedule !== next?.schedule || prev?.members !== next?.members)) {
+        privatePublishRef.current?.(prev, next).catch((error) => {
+          deviceLog("private_publish_failed", { feature: "private_sync", stage: "prepare", errorDomain: "app", ...deviceError(error) });
+        });
+      }
       if (!fromServer && prev?.schedule !== next?.schedule) {
         publishSchedule(prev?.schedule, next?.schedule).catch((error) => {
           deviceLog("schedule_publish_failed", {
@@ -29307,6 +29334,152 @@ export default function App() {
       .catch((error) => setSyncState({ state: "error", errorCode: error?.code || "unknown" }));
     return () => { alive = false; stop(); };
   }, [organizationRoster, organizationContext.organizationId, account?.id, Boolean(roster), syncDay, scheduleSyncOn]);
+
+  /* ── 본인 일정 · 메모 동기화 (2026-10-31, 3단계) ─────────────────────────────
+     개인 일정 · 그룹 수업 · 수업 메모 · 회원별 상담 메모 · 목표를 본인 전용 자리
+     (users/{uid}/scheduleItems)와 주고받는다. 스위치는 센터 수업과 따로
+     (runtimeConfig/privateSync) -- **꺼진 계정은 웹 · 폰 모두 아무것도 쓰지 않는다.**
+     받는 기간은 30일 전 ~ 60일 뒤 (private-items.js). */
+  const [privateSyncConfig, setPrivateSyncConfig] = useState(undefined);
+  useEffect(() => {
+    if (phase !== "app" || !account?.id) return undefined;
+    let alive = true;
+    const load = () => fbLoadPrivateSyncConfig().then((config) => { if (alive) setPrivateSyncConfig(config ?? null); });
+    load();
+    const onVisible = () => { if (document.visibilityState === "visible") load(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { alive = false; document.removeEventListener("visibilitychange", onVisible); };
+  }, [phase, account?.id, syncDay]);
+  const privateSyncOn = privateSyncAllowed({ syncOn: scheduleSyncEnabledFor(privateSyncConfig, account?.id) });
+  privateSyncOnRef.current = privateSyncOn;
+  /* 기기 회원 id → 센터 회원 id. 기기 행에는 센터 회원 id 가 없을 수 있다(연락처로 이어진다). */
+  const privateDocsOf = (state) => privateDocuments({
+    schedule: state?.schedule || [], rosterMembers: state?.members || [],
+    clientIdOf: new Map((rosterMembersRef.current || []).filter((member) => member?.orgClientId).map((member) => [member.id, member.orgClientId])),
+  });
+  const publishPrivate = async (prev, next, { initialDocs = null } = {}) => {
+    const accountId = account?.id || "";
+    if (!accountId || !privateSyncOnRef.current) return;
+    const changes = initialDocs || privateChanges({ before: privateDocsOf(prev), after: privateDocsOf(next) });
+    const beforeIds = new Set(initialDocs ? [] : [...privateDocsOf(prev).keys()]);
+    const queue = new Map(privatePendingRef.current);
+    for (const change of changes) queue.set(change.itemId, { ...change, allowRevive: !initialDocs && !beforeIds.has(change.itemId) });
+    if (!queue.size) return;
+    privatePendingRef.current = new Map();
+    const sending = [...queue.keys()];
+    sending.forEach((id) => privateSendingRef.current.add(id));
+    let results = [];
+    try {
+      results = await publishPrivateItems(accountId, [...queue.values()], { deviceId: deviceIdentity() });
+    } finally {
+      sending.forEach((id) => privateSendingRef.current.delete(id));
+    }
+    const current = lessonRecordDbRef.current;
+    if (current) {
+      const applied = applyPrivateRevisions({
+        schedule: current.schedule, members: current.members, results, documents: [...queue.values()], rosterMembers: rosterMembersRef.current,
+      });
+      if (applied.schedule !== current.schedule || applied.members !== current.members) {
+        saveDbRef.current?.({ ...current, schedule: applied.schedule, members: applied.members }, undefined, { fromServer: true });
+      }
+    }
+    const failed = results.filter((result) => result.outcome === PUBLISH_OUTCOME.FAILED);
+    failed.forEach((result) => privatePendingRef.current.set(result.itemId, queue.get(result.itemId)));
+    for (const result of results.filter((item) => [PUBLISH_OUTCOME.FAILED, PUBLISH_OUTCOME.CONFLICT, PUBLISH_OUTCOME.CANCELLED_ELSEWHERE].includes(item.outcome))) {
+      deviceLog(result.outcome === PUBLISH_OUTCOME.FAILED ? "private_publish_failed" : "private_sync_conflict", {
+        feature: "private_sync", stage: initialDocs ? "initial" : "write", reason: result.outcome, errorCode: result.errorCode || "",
+        kind: queue.get(result.itemId)?.data?.kind || "", serverRevision: result.revision, winner: result.outcome === PUBLISH_OUTCOME.FAILED ? "" : "server",
+      });
+    }
+    if (failed.length) {
+      setToast({ ok: false, msg: `메모 · 개인 일정을 다른 기기에 아직 보내지 못했어요. 다음 저장 때 다시 보냅니다. (코드 ${failed[0].errorCode})` });
+      return;
+    }
+    /* 다른 기기가 먼저 고쳤거나 지웠다. 내 내용은 버리지 않고 [내 내용 다시 적용] 으로 남긴다. */
+    const lost = !initialDocs && results.find((result) => [PUBLISH_OUTCOME.CONFLICT, PUBLISH_OUTCOME.CANCELLED_ELSEWHERE].includes(result.outcome));
+    if (lost) {
+      const mine = queue.get(lost.itemId);
+      setToast({
+        ok: false,
+        msg: "다른 기기에서 먼저 고친 메모 · 개인 일정이라 그 내용으로 맞췄어요.",
+        action: {
+          label: "내 내용 다시 적용",
+          run: () => publishPrivateItems(accountId, [{ ...mine, baseRevision: lost.revision, allowRevive: true }], { deviceId: deviceIdentity() })
+            .then((again) => setToast(again[0]?.outcome === PUBLISH_OUTCOME.WRITTEN
+              ? { ok: true, msg: "내 내용을 다시 적용했어요." }
+              : { ok: false, msg: `다시 적용하지 못했어요 (코드 ${again[0]?.errorCode || again[0]?.outcome || "unknown"})` })),
+        },
+      });
+    }
+  };
+  privatePublishRef.current = publishPrivate;
+
+  /* 처음 받기 전 스냅샷 -- 센터 수업과 따로 한 번 (0단계 스냅샷, 사진 원본 없이). */
+  const privateSnapshotKey = (accountId) => `pilateacher_private_snapshot_v1_${accountId}`;
+  const ensurePrivateSnapshot = async (accountId) => {
+    try { if (globalThis.localStorage?.getItem(privateSnapshotKey(accountId)) === "1") return true; } catch (_error) {}
+    try {
+      const operational = withoutSampleData(lessonRecordDbRef.current, photosRef.current);
+      const snapshot = buildMigrationSnapshot({
+        data: operational.db, photos: operational.photos, deviceId: deviceIdentity(),
+        appBuild: (await RUNTIME_APP_IDENTITY)?.build || "",
+        at: new Date(Date.now() + 1000), // 센터 수업 스냅샷과 같은 초에 겹치지 않게
+      });
+      await fbUploadMigrationSnapshot(accountId, snapshot);
+      try { globalThis.localStorage?.setItem(privateSnapshotKey(accountId), "1"); } catch (_error) {}
+      deviceLog("private_sync_snapshot_saved", { feature: "private_sync", stage: "snapshot", bytes: snapshot.bytes, ...snapshot.counts });
+      return true;
+    } catch (error) {
+      deviceLog("private_sync_snapshot_failed", { feature: "private_sync", stage: "snapshot", errorDomain: "firebase_storage", errorCode: error?.code || "unknown" });
+      return false;
+    }
+  };
+
+  useEffect(() => {
+    const accountId = account?.id || "";
+    if (!privateSyncOn || !accountId || !roster) return undefined;
+    let alive = true;
+    let stop = () => {};
+    const { from, to } = privateWindow(new Date());
+    subscribePrivateItems({
+      uid: accountId, from, to,
+      onDocs: async (docs, meta) => {
+        if (!alive) return;
+        if (!meta.fromCache) recordSyncReads(globalThis.localStorage, accountId, meta.changes);
+        if (!(await ensurePrivateSnapshot(accountId)) || !alive) return;
+        const current = lessonRecordDbRef.current;
+        if (!current) return;
+        const merged = mergePrivateItems({
+          schedule: current.schedule, members: current.members, docs, rosterMembers: rosterMembersRef.current,
+          pendingIds: [...privatePendingRef.current.keys(), ...privateSendingRef.current],
+          newMember: (rosterMember) => ({ ...blankMember(current.settings?.staff || ""), id: rosterMember.id, name: rosterMember.name || "", phone: rosterMember.phone || "", status: "active" }),
+        });
+        if (merged.unmatchedClientIds.length) deviceLog("private_sync_unmatched_clients", { feature: "private_sync", stage: "merge", count: merged.unmatchedClientIds.length });
+        if (merged.duplicates.length) setSyncDuplicates((list) => [...list, ...merged.duplicates.filter((pair) => !list.some((item) => item.localId === pair.localId))]);
+        if (merged.changed) saveDbRef.current?.({ ...current, schedule: merged.schedule, members: merged.members }, undefined, { fromServer: true });
+        /* 첫 맞추기: 받은 뒤에, 서버에 없고 중복 의심이 아닌 것만, 받는 기간 안의 것만 올린다.
+           더 오래된 메모는 이 기기에만 남는다. */
+        if (!privateInitialDoneRef.current) {
+          privateInitialDoneRef.current = true;
+          const serverIds = new Set(docs.map((item) => String(item?.itemId || item?.id || "")));
+          const held = new Set(merged.duplicates.map((pair) => `sch_${pair.localId}`));
+          const state = merged.changed ? { schedule: merged.schedule, members: merged.members } : current;
+          const initialDocs = [...privateDocsOf(state).values()]
+            .filter((item) => !serverIds.has(item.itemId) && !held.has(item.itemId))
+            .filter((item) => item.data.kind === PRIVATE_KIND.MEMBER_GOAL || (item.data.date >= from && item.data.date <= to))
+            .map((item) => ({ ...item, deleted: false }));
+          if (initialDocs.length) {
+            publishPrivate(null, null, { initialDocs }).catch((error) => {
+              deviceLog("private_publish_failed", { feature: "private_sync", stage: "initial", errorDomain: "app", ...deviceError(error) });
+            });
+          }
+        }
+      },
+      onError: (error) => deviceLog("private_sync_listen_failed", { feature: "private_sync", stage: "listen", errorDomain: "firestore", errorCode: error?.code || "unknown" }),
+    }).then((unsubscribe) => { if (alive) stop = unsubscribe; else unsubscribe(); })
+      .catch((error) => deviceLog("private_sync_listen_failed", { feature: "private_sync", stage: "listen", errorDomain: "firestore", errorCode: error?.code || "unknown" }));
+    return () => { alive = false; stop(); };
+  }, [privateSyncOn, account?.id, Boolean(roster), syncDay]);
 
   /* ── 웹 새 버전 알림 (2026-10-31) ─────────────────────────────────────────
      센터 PC 는 탭을 며칠씩 열어 둔다. 배포된 빌드 번호가 이 탭의 것과 다르면

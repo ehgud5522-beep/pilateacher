@@ -99,6 +99,8 @@ const WRITERS = Object.freeze({
   appUpdate: appUpdatePayload,
   settlement: settlementPayload,
   scheduleSync: scheduleSyncPayload,
+  /* 본인 일정 · 메모 동기화 (3단계). 센터 수업과 따로 켜고 끈다 -- 모양은 같다. */
+  privateSync: scheduleSyncPayload,
 });
 
 /**

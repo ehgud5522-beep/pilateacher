@@ -164,9 +164,9 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "예상 급여 카드",
     "예상 급여 카드 · 예정 포함",
     "공지사항 · 대표",
-    "공지사항 · 읽음 현황",
     "공지사항 · 강사",
     "공지사항 · 새 공지",
+    "공지 팝업 · 중요",
     "공지 팝업",
     "예상 급여 카드 · 조회 실패",
     "출석 체크",
@@ -2589,62 +2589,64 @@ test("confirmed pay and planned pay are two numbers, never one", async (t) => {
   assert.match(card, /회원권이 없어 빠지지 않는 수업 1건/);
 });
 
-test("a notice popup says which button makes it stop coming back", async (t) => {
-  /* 닫는 길이 하나뿐이면 "읽음" 은 읽었다는 뜻이 아니라 창을 치웠다는 뜻이
-     되고, 대표의 "읽음 N명" 이 그만큼 거짓이 된다.
-
-     그래서 둘이다. [닫기] 는 이번만 넘기고 다음에 앱을 켜면 다시 서며,
-     [다시 보지 않기] 만 읽음으로 서버에 남는다. **어느 쪽이 어느 쪽인지
-     화면이 말해야** 누르는 사람이 고를 수 있다. */
+test("a notice popup has two buttons, and an important one cannot be put off", async (t) => {
+  /* [확인했습니다(다시 표시하지 않기)] 는 그 기기에 적고, [나중에 다시보기] 는 이번만
+     넘긴다. 중요 공지에는 [나중에 다시보기] 가 없다 -- 확인 전까지 닫을 수 없다.
+     **어느 쪽이 어느 쪽인지 화면이 말해야** 누르는 사람이 고를 수 있다. */
   const markupOf = await issueScreens(t);
-  const popup = markupOf("공지 팝업");
+  const important = markupOf("공지 팝업 · 중요");
+  const normal = markupOf("공지 팝업");
 
-  assert.match(popup, /다음 주 월요일 휴무/);
-  assert.match(popup, /다시 보지 않기/);
-  assert.match(popup, /\[닫기\] 는 다음에 앱을 켤 때 다시 보여드립니다/);
-  assert.match(popup, /2건 중 1건/);
-  assert.equal(popup.includes("아래로 끌어 닫기"), false, "끌어서 닫는 길을 두지 않는다");
+  assert.match(important, /다음 주 월요일 휴무/);
+  assert.match(important, /확인했습니다\(다시 표시하지 않기\)/);
+  assert.equal(important.includes("나중에 다시보기"), false, "중요 공지는 미룰 수 없다");
+  assert.match(important, /중요 공지는 확인해야 닫힙니다/);
+  assert.match(important, /2건 중 1건/);
+  assert.match(important, /대표 · 2026\.10\.11 09:30/, "작성자 · 올린 시각");
+  assert.equal(important.includes("<a "), false, "본문의 주소를 링크로 만들지 않는다");
+  assert.equal(important.includes("<img"), false);
+  assert.equal(important.includes("아래로 끌어 닫기"), false, "끌어서 닫는 길을 두지 않는다");
+
+  assert.match(normal, /확인했습니다\(다시 표시하지 않기\)/);
+  assert.match(normal, /나중에 다시보기/);
+  assert.match(normal, /다음에 앱을 열 때 다시 보여드립니다/);
 });
 
-test("the notice list is one screen, with writing bolted on for the owner", async (t) => {
-  /* 둘로 나누면 "내가 쓴 공지가 강사에게 어떻게 보이나" 를 확인할 자리가
-     없어진다. */
+test("the notice list is one screen, with writing bolted on for the owner level", async (t) => {
+  /* 둘로 나누면 "내가 쓴 공지가 강사에게 어떻게 보이나" 를 확인할 자리가 없어진다. */
   const markupOf = await issueScreens(t);
   const owner = markupOf("공지사항 · 대표");
   const instructor = markupOf("공지사항 · 강사");
 
   assert.match(owner, /새 공지/);
   assert.match(owner, /다음 주 월요일 휴무/);
-  // 끝난 공지도 목록에는 남는다 -- 읽음 기록이 가리킬 글이 사라지면 안 된다.
-  assert.match(owner, /종료/);
+  assert.match(owner, /총괄 · 2026\.10\.05 18:00/, "작성자 이름과 올린 시각");
+  assert.match(owner, /수정/);
+  assert.match(owner, /삭제/, "대표는 남이 쓴 공지도 지운다");
+  // 기간이 끝난 공지는 쓰는 사람에게 "기간 끝남" 으로 남는다.
+  assert.match(owner, /기간 끝남/);
 
   assert.match(instructor, /다음 주 월요일 휴무/);
+  assert.equal(instructor.includes("지난 공지"), false, "표시 종료일이 지나면 숨긴다");
   assert.equal(instructor.includes("새 공지"), false, "강사는 쓰지 않는다");
-  assert.match(instructor, /다시 볼 수 있습니다/);
+  assert.equal(instructor.includes(">삭제<"), false);
+  assert.match(instructor, /다시 표시하지 않기를 누른 공지도 여기서 읽을 수 있습니다/);
+  assert.equal(instructor.includes("<a "), false, "본문은 글자 그대로");
 });
 
-test("the owner sees who has not read it", async (t) => {
-  // 안 읽은 사람이 보여야 대표가 누구에게 다시 말할지 안다.
-  const markupOf = await issueScreens(t);
-  const opened = markupOf("공지사항 · 읽음 현황");
-
-  assert.match(opened, /읽음 1\/4명/, "재직 강사 넷 중 하나가 읽었다");
-  assert.match(opened, /안 읽음/);
-  assert.match(opened, /박서연/);
-  assert.match(opened, /최소연/);
-  // 퇴사자는 분모에 없다. 남아 있으면 "읽음 N/전체" 가 영영 안 찬다.
-  assert.equal(opened.includes("김하나"), false, "퇴사자는 세지 않는다");
-});
-
-test("the notice form says an empty target means everyone", async (t) => {
+test("the notice form: everyone by default, branches to pick, the end date and no image or link", async (t) => {
   /* 빈 목록을 "아무도 아님" 으로 읽으면 공지를 쓰고 아무에게도 안 보이는
      일이 생기고, 쓴 사람은 그것을 알 길이 없다. */
   const markupOf = await issueScreens(t);
   const form = markupOf("공지사항 · 새 공지");
 
-  assert.match(form, /아무것도 고르지 않으면 전체입니다/);
-  assert.match(form, /모두 해당하는 사람/);
-  assert.match(form, /중요한 공지가 먼저 뜹니다/);
+  assert.match(form, /지점을 고르지 않으면 전체 강사입니다/);
+  assert.match(form, /전체 강사/);
+  assert.match(form, /표시 종료일/);
+  assert.match(form, /중요 공지는 꼭 정해 주세요/);
+  assert.match(form, /확인했습니다\] 를 누르기 전까지 닫을 수 없습니다/);
+  assert.equal(form.includes("이미지"), false, "이미지 칸이 없다");
+  assert.equal(form.includes("링크"), false, "링크 칸이 없다");
 });
 
 test("the app update card starts empty and says so", async (t) => {

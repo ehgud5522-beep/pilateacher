@@ -131,8 +131,48 @@ async function readRuntimeConfig(firestore, documents = Object.keys(WRITERS)) {
   return out;
 }
 
+/** 요청을 거부할 때. index.js 가 httpsCode 그대로 HttpsError 로 바꾼다. */
+const requestError = (httpsCode, message) => Object.assign(new Error(message), { httpsCode });
+
+/**
+ * updateRuntimeConfig 의 본문 (2026-10-31 index.js 에서 옮김). 동작은 그대로다 --
+ * 테스트가 역할마다 이 길을 그대로 지나게 하려고 옮겼다.
+ *
+ * 1. 로그인 · 소속 확인 → 2. **대표만** (총괄매니저도 아니다) → 3. 문서가 없으면 읽기만,
+ * 있으면 그 문서를 쓰고 지금 값 전체를 돌려준다.
+ *
+ * @param {any} firestore
+ * @param {{ callerUid: string, organizationId: string, document?: string, value?: any, now?: () => Date }} input
+ * @param {{ membershipId: (organizationId: string, uid: string) => string, isActiveOwner: (membership: any) => boolean }} deps
+ */
+async function handleRuntimeConfigRequest(firestore, input, deps) {
+  const callerUid = text(input?.callerUid);
+  const organizationId = text(input?.organizationId);
+  if (!callerUid) throw requestError("unauthenticated", "Please sign in again.");
+  if (!organizationId) throw requestError("invalid-argument", "organizationId is required.");
+  const membership = await firestore
+    .collection("memberships").doc(deps.membershipId(organizationId, callerUid)).get();
+  if (!deps.isActiveOwner(membership.exists ? membership.data() : null)) {
+    throw requestError("permission-denied", "Only the centre owner can change this.");
+  }
+  const document = text(input?.document);
+  if (!document) return { config: await readRuntimeConfig(firestore) };
+  /* 쓰기 실패만 따로 표시한다 -- index.js 가 그것만 failed-precondition 으로 바꾸고,
+     읽기 · 소속 조회 실패는 전처럼 그대로 던진다. */
+  let result;
+  try {
+    result = await writeRuntimeConfig(firestore, {
+      document, value: input?.value, actorId: callerUid, now: input?.now,
+    });
+  } catch (error) {
+    throw Object.assign(error, { writeFailed: true });
+  }
+  return { ...result, config: await readRuntimeConfig(firestore) };
+}
+
 module.exports = {
   CONFIG_ERROR,
+  handleRuntimeConfigRequest,
   buildField,
   appUpdatePayload,
   settlementPayload,

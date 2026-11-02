@@ -21,7 +21,7 @@ import {
   watchAuth, db,
 } from "./firebase.js";
 import { wantsAccountDeletion } from "./delete-account.js";
-import { LINK_RESULT, linkResultScreen } from "./link-result.js";
+import { LINK_RESULT, linkResultScreen, needsLinkCall } from "./link-result.js";
 import {
   MEMBER_FEATURE, MEMBER_STAGE, clearDiagnostics, readDiagnostics, recordDiagnostic,
 } from "./diagnostics.js";
@@ -342,8 +342,9 @@ function Member({ userId, initialTab = "home" }) {
       recordDiagnostic({ feature: MEMBER_FEATURE.LINK, stage: MEMBER_STAGE.READ_LINK });
       let link = await readMemberLink(db, userId);
       /* 링크 문서가 없으면 아직 이어지지 않은 계정이다. 이 순간이 첫 로그인이고,
-         여기서 서버가 명부에서 이 번호를 찾는다. */
-      if (!link) {
+         여기서 서버가 명부에서 이 번호를 찾는다. not_found · taken 으로 남아 있으면
+         다시 묻는다 -- 그사이 센터가 등록했을 수 있다 (link-result.js). */
+      if (needsLinkCall(link)) {
         recordDiagnostic({ feature: MEMBER_FEATURE.LINK, stage: MEMBER_STAGE.CALL_LINK });
         const result = await linkMemberAccount();
         link = { status: text(result?.status), links: result?.links || [] };

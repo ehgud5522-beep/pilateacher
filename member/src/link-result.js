@@ -30,6 +30,24 @@ export const OPENS_HOME = Object.freeze([
   LINK_RESULT.LINKED, LINK_RESULT.ENDED, LINK_RESULT.MULTI_LOCATION,
 ]);
 
+/* 센터 명부가 바뀌면 답이 달라지는 상태. 저장된 답을 믿지 않고 앱을 열 때마다
+   서버에 다시 묻는다 (2026-11-02). 회원이 먼저 로그인하고 센터가 33초 뒤에
+   등록한 일이 실제로 있었다 -- 저장된 not_found 만 읽으면 그 회원은 로그아웃해도
+   영영 "등록된 번호를 찾지 못했어요" 에 머문다.
+   ambiguous 는 대표가 골라 잇는 순간 서버가 문서를 바꾸므로 넣지 않는다. */
+const RECHECK = Object.freeze([LINK_RESULT.NOT_FOUND, LINK_RESULT.TAKEN]);
+
+/**
+ * 서버에 연결을 (다시) 물어야 하는가. 연결 문서가 없거나, 명부가 바뀌면 답이
+ * 달라지는 상태로 남아 있을 때.
+ *
+ * @param {{ status?: string } | null} link 저장된 연결 문서
+ */
+export function needsLinkCall(link) {
+  if (!link) return true;
+  return RECHECK.includes(String(link.status ?? "").trim());
+}
+
 /**
  * 이 결과로 무엇을 보여줄 것인가.
  *
@@ -70,7 +88,7 @@ export function linkResultScreen(status) {
     return {
       opensHome: false,
       title: "등록된 번호를 찾지 못했어요",
-      body: "센터에 등록된 연락처와 다를 수 있어요. 센터에 문의해 주세요.",
+      body: "센터에 등록된 연락처와 다를 수 있어요. 센터에 문의해 주세요. 센터에서 등록하면 앱을 다시 열 때 연결돼요.",
       retry: false,
     };
   }

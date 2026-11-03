@@ -35,7 +35,8 @@ import {
   MIXED_PAYMENT_PARTS, PAYMENT_NOTE_MAX, PAY_CATEGORY, PAYMENT_METHOD,
 } from "../schema/constants.js";
 import {
-  netContractPriceFor, netContractPriceOf, resolveDeductionUnitPrice, spendsServiceSession,
+  netContractPriceFor, netContractPriceOf, paidServiceSessionsOf, resolveDeductionUnitPrice,
+  spendsServiceSession,
 } from "../schema/deduction-pricing.js";
 import { paths } from "../schema/paths.js";
 import {
@@ -688,6 +689,7 @@ export async function deductPass(organizationId, pass, input, options = {}) {
     handedOver: pass?.handedOver === true,
     priorSessions,
     serviceUsedCount: pass?.serviceUsed,
+    paidServiceSessions: paidServiceSessionsOf(pass),
   });
 
   const lessonId = String(input?.lessonId || newId());

@@ -143,6 +143,26 @@ export function newToInstructorUnitPrice(category) {
 export const PAID_SERVICE_SESSIONS_PER_PASS = 1;
 
 /**
+ * 이 회원권이 급여를 주는 서비스 회차 수. 회원권에 적혀 있으면 그 값이다.
+ *
+ * 대표가 서비스를 추가로 지급하면서 **그 회차도 급여를 준다**고 정한 회원권이
+ * 있다 (2026-11-03 대표 결정). 그런 회원권에는 paidServiceSessions 가 적히고,
+ * 그 수만큼은 표에 적힌 서비스 금액이 나간다. 적혀 있지 않으면 위 기본값이다.
+ *
+ * 서비스 회차 수(serviceSessions)를 넘지 않는다 -- 붙이지 않은 서비스에 급여를
+ * 줄 수는 없다. 0 이하나 정수가 아닌 값은 기본값으로 읽는다: 잘못 적힌 숫자가
+ * 서비스 급여를 통째로 없애면 강사는 그 이유를 알 길이 없다.
+ *
+ * @param {{ paidServiceSessions?: unknown, serviceSessions?: unknown }} [pass]
+ */
+export function paidServiceSessionsOf(pass) {
+  const given = pass?.paidServiceSessions;
+  if (!Number.isInteger(given) || given < 1) return PAID_SERVICE_SESSIONS_PER_PASS;
+  const service = Number(pass?.serviceSessions);
+  return Number.isInteger(service) && service >= 1 ? Math.min(given, service) : given;
+}
+
+/**
  * 이 차감이 서비스 회차를 쓰는가.
  *
  * ── 서비스를 먼저 쓴다 ──
@@ -411,6 +431,7 @@ export function deputyDirectorUnitPrice({ netContractPrice, totalSessions }) {
  *   handedOver?: boolean,
  *   priorSessions?: number,
  *   serviceUsedCount?: number,
+ *   paidServiceSessions?: number,
  * }} input
  *   category          회원권의 기준 카테고리
  *   title             차감 시점의 강사 직급 (판정 1.5가 쓰는 값)
@@ -422,6 +443,8 @@ export function deputyDirectorUnitPrice({ netContractPrice, totalSessions }) {
  *                     신규 단가다 (판정 2) -- 누적과 무관하다
  *   priorSessions     이 강사가 이 회원에게 이미 진행한 횟수
  *   serviceUsedCount  이 회원권에서 이미 나간 service 차감 수
+ *   paidServiceSessions 이 회원권이 급여를 주는 서비스 회차 수 (paidServiceSessionsOf).
+ *                     없으면 PAID_SERVICE_SESSIONS_PER_PASS
  * @returns {{ unitPrice: number, rule: string }}
  */
 export function resolveDeductionUnitPrice(input = {}) {
@@ -442,9 +465,13 @@ export function resolveDeductionUnitPrice(input = {}) {
 
      센터가 급여를 주는 서비스는 회원권당 PAID_SERVICE_SESSIONS_PER_PASS
      회분이고, 그다음부터는 0원이다. 회차는 그대로 빠진다 -- 회원은 받은
-     것이고, 0원인 것은 강사에게 주는 돈이다. */
+     것이고, 0원인 것은 강사에게 주는 돈이다. 대표가 회원권에 그 수를 따로
+     적었으면 그 수까지다 (paidServiceSessionsOf). */
   if (category === PAY_CATEGORY.SERVICE) {
-    if (serviceUsedCount >= PAID_SERVICE_SESSIONS_PER_PASS) {
+    const paidLimit = Number.isInteger(input?.paidServiceSessions) && input.paidServiceSessions >= 1
+      ? input.paidServiceSessions
+      : PAID_SERVICE_SESSIONS_PER_PASS;
+    if (serviceUsedCount >= paidLimit) {
       return { unitPrice: 0, rule: PRICING_RULE.SERVICE_ALREADY_USED };
     }
     /* 표에 적힌 서비스 금액. baseUnitPrice 로 들어온다 -- 부르는 쪽이

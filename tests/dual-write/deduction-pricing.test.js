@@ -3,8 +3,8 @@ import test from "node:test";
 import {
   NEW_TO_INSTRUCTOR_THRESHOLD, NEW_TO_INSTRUCTOR_UNIT_PRICE, PAYMENT_INCLUDES_VAT, PRICING_RULE,
   SENIOR_TITLES, SENIOR_TITLE_EVENT_UNIT_PRICE, VAT_BY_PARTS, vatablePortionOf,
-  deputyDirectorUnitPrice, netContractPriceFor, netContractPriceOf, resolveDeductionUnitPrice,
-  spendsServiceSession,
+  deputyDirectorUnitPrice, netContractPriceFor, netContractPriceOf, paidServiceSessionsOf,
+  resolveDeductionUnitPrice, spendsServiceSession,
 } from "../../src/data/schema/deduction-pricing.js";
 import {
   DUET_PAY_CATEGORIES, LEGACY_PAYMENT_METHOD, MEMBERSHIP_TITLE,
@@ -181,6 +181,31 @@ test("the first service session of a pass pays, the rest do not", () => {
   assert.equal(second.unitPrice, 0);
   assert.equal(second.rule, PRICING_RULE.SERVICE_ALREADY_USED);
   assert.equal(resolveDeductionUnitPrice(servicePass({ serviceUsedCount: 2 })).unitPrice, 0);
+});
+
+test("대표가 급여를 준다고 정한 추가 서비스는 그 수까지 표값이 나간다 (2026-11-03)", () => {
+  /* 서비스 1회를 추가 지급하면서 그 회차도 10,000 을 주기로 했다.
+     회원권에 paidServiceSessions 2 가 적히고, 두 번째 서비스까지 표값이다. */
+  const second = resolveDeductionUnitPrice(servicePass({ serviceUsedCount: 1, paidServiceSessions: 2 }));
+  assert.equal(second.unitPrice, 10000);
+  assert.equal(second.rule, PRICING_RULE.SERVICE_FIRST);
+  // 그 수를 넘으면 전처럼 0 이다.
+  const third = resolveDeductionUnitPrice(servicePass({ serviceUsedCount: 2, paidServiceSessions: 2 }));
+  assert.equal(third.unitPrice, 0);
+  assert.equal(third.rule, PRICING_RULE.SERVICE_ALREADY_USED);
+  // 잘못 적힌 값은 기본값(1회)으로 읽는다 -- 서비스 급여가 통째로 사라지지 않게.
+  for (const bad of [0, -1, 1.5, "2", null]) {
+    assert.equal(resolveDeductionUnitPrice(servicePass({ serviceUsedCount: 0, paidServiceSessions: bad })).unitPrice, 10000, String(bad));
+    assert.equal(resolveDeductionUnitPrice(servicePass({ serviceUsedCount: 1, paidServiceSessions: bad })).unitPrice, 0, String(bad));
+  }
+});
+
+test("회원권에서 급여 서비스 수를 읽는다 — 없으면 1, 붙인 서비스 수를 넘지 않는다", () => {
+  assert.equal(paidServiceSessionsOf({ serviceSessions: 2 }), 1);
+  assert.equal(paidServiceSessionsOf({ serviceSessions: 2, paidServiceSessions: 2 }), 2);
+  assert.equal(paidServiceSessionsOf({ serviceSessions: 1, paidServiceSessions: 3 }), 1);
+  assert.equal(paidServiceSessionsOf({ serviceSessions: 2, paidServiceSessions: 0 }), 1);
+  assert.equal(paidServiceSessionsOf(null), 1);
 });
 
 test("a used service session does not zero out the other categories", () => {

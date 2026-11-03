@@ -22,7 +22,7 @@
 import { PAY_CATEGORY } from "../../data/schema/constants.js";
 import { sessionUpWindowOf } from "../../../functions/shared/session-up.mjs";
 import {
-  netContractPriceOf, resolveDeductionUnitPrice, spendsServiceSession,
+  netContractPriceOf, paidServiceSessionsOf, resolveDeductionUnitPrice, spendsServiceSession,
 } from "../../data/schema/deduction-pricing.js";
 import { defaultUnitPriceFor } from "../../data/schema/pay-rates.js";
 import { remainingCountOf } from "../../data/repositories/pass-repository.js";
@@ -103,6 +103,7 @@ export function previewMemberRate(input = {}) {
       handedOver: pass.handedOver === true,
       priorSessions: instructorClientSessionsOf(input.totals, input.instructorId, clientId),
       serviceUsedCount: pass.serviceUsed,
+      paidServiceSessions: paidServiceSessionsOf(pass),
     });
     return {
       unitPrice, rule, passId: text(pass.id), remaining: remainingCountOf(pass),

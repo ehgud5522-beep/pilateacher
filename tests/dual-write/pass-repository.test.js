@@ -447,6 +447,31 @@ test("a service session spends a count but does not raise the instructor's total
   assert.equal(passWrite.data.serviceUsed, 1);
 });
 
+test("an extra service the owner chose to pay goes out at the table price", async () => {
+  /* 회원권에 적힌 paidServiceSessions 를 차감이 그대로 단가 판정에 넘긴다.
+     넘기지 않으면 판정은 기본값(1회)을 보고 두 번째 서비스를 0원으로 적는다
+     -- 원장은 고칠 수 없어 그 수업은 보정으로만 되돌릴 수 있다. */
+  const store = fakeStore();
+  const { entry } = await deductPass(
+    ORG,
+    activePass({ serviceSessions: 2, serviceUsed: 1, paidServiceSessions: 2 }),
+    deductInput(),
+    deductOptions(store),
+  );
+  assert.equal(entry.category, "service");
+  assert.equal(entry.unitPrice, 10000);
+  assert.equal(entry.rule, "service_first");
+
+  const plain = fakeStore();
+  const { entry: unpaid } = await deductPass(
+    ORG,
+    activePass({ serviceSessions: 2, serviceUsed: 1 }),
+    deductInput(),
+    deductOptions(plain),
+  );
+  assert.equal(unpaid.unitPrice, 0, "적혀 있지 않으면 전처럼 1회까지만");
+});
+
 test("a paid session still raises the total", async () => {
   // 조건을 거꾸로 달면 모든 차감이 누적을 멈춘다. 반대쪽도 못 박는다.
   const store = fakeStore();

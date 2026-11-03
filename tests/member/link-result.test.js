@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
 import {
-  LINK_RESULT, OPENS_HOME, linkResultScreen,
+  LINK_RESULT, OPENS_HOME, linkResultScreen, needsLinkCall,
 } from "../../member/src/link-result.js";
 
 /* 서버가 정한 상태 목록을 그대로 읽어 온다. 화면 쪽 복사본이 하나라도 빠지면
@@ -66,4 +67,18 @@ test("문구가 회원에게 할 일을 말한다", () => {
   assert.match(linkResultScreen("taken").body, /센터/);
   // 가족 공용 번호가 실제 사유다. 그것을 말해 주면 회원이 먼저 알아챈다.
   assert.match(linkResultScreen("taken").body, /가족/);
+});
+
+test("명부가 바뀌면 답이 달라지는 상태는 앱을 열 때마다 서버에 다시 묻는다", async () => {
+  /* 2026-11-02: 회원이 먼저 로그인해 not_found 가 저장되고, 센터가 33초 뒤에 등록했다.
+     저장된 답만 읽으면 그 회원은 로그아웃해도 영영 안내 화면에 머문다. */
+  assert.equal(needsLinkCall(null), true, "처음 로그인");
+  assert.equal(needsLinkCall({ status: "not_found" }), true);
+  assert.equal(needsLinkCall({ status: "taken" }), true, "먼저 이은 계정이 풀렸을 수 있다");
+  for (const status of ["linked", "ended", "multi_location", "ambiguous", "rejected"]) {
+    assert.equal(needsLinkCall({ status }), false, status);
+  }
+  assert.match(linkResultScreen("not_found").body, /앱을 다시 열 때 연결/);
+  const app = await readFile(new URL("../../member/src/App.jsx", import.meta.url), "utf8");
+  assert.match(app, /if \(needsLinkCall\(link\)\) \{\s+recordDiagnostic\(\{ feature: MEMBER_FEATURE\.LINK, stage: MEMBER_STAGE\.CALL_LINK \}\);\s+const result = await linkMemberAccount\(\);/);
 });

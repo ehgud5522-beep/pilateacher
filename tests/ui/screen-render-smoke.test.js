@@ -163,6 +163,9 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "이달 예상 급여 · 조회 실패",
     "예상 급여 카드",
     "예상 급여 카드 · 예정 포함",
+    "예상 급여 카드 · 큰 글씨",
+    "이달 예상 급여 · 확정 대기 · 보정",
+    "이달 예상 급여 · 큰 글씨",
     "공지사항 · 대표",
     "공지사항 · 강사",
     "공지사항 · 새 공지",
@@ -1325,21 +1328,22 @@ test("the pay screen says what it counted and what it did not", async (t) => {
 
   assert.match(detail, /2026년 9월/);
   assert.match(detail, /₩130,000/);
-  assert.match(detail, /예상 급여/);
+  // 맨 위는 확정 급여다 (2026-11-04). 확정 대기는 그 아래 따로.
+  assert.match(detail, /확정 급여/);
+  assert.match(detail, /확정된 수업 기준/);
 
   /* 이 문구가 없으면 강사가 이 숫자를 받을 돈으로 읽고, 매달 정산 때 어긋난다. */
   assert.match(detail, /수업료만 자동으로 계산됩니다\. 인센티브와 노쇼는 별도로 정산됩니다\./);
 
-  // 카테고리별 건수와 금액.
+  /* 단가별 요약 (2026-11-04): 구분 · 단가 × 건수 = 금액. 같은 카테고리의
+     세 회차가 30,000 + 30,000 + 25,000 이면 단가마다 줄이 갈린다 -- 합계만
+     보면 계산이 틀린 것처럼 보이던 것을 곱셈 한 줄로 답한다. */
   assert.match(detail, /1:1 재등록\(정상\)/);
-  assert.match(detail, /1건/);
-  assert.match(detail, /₩45,000/);
+  assert.match(detail, /₩45,000 × 1건 = <b[^>]*>₩45,000/);
   assert.match(detail, /1:1 재등록\(이벤트\)/);
-  assert.match(detail, /3건/);
-  /* 같은 카테고리의 세 회차가 30,000 + 25,000 + 0 이다. 회차마다 판정이
-     다르면 이렇게 되고, 합계만 보면 계산이 틀린 것처럼 보인다 -- 사유 줄이
-     있어야 하는 이유가 이것이다. */
-  assert.match(detail, /₩85,000/);
+  assert.match(detail, /₩30,000 × 2건 = <b[^>]*>₩60,000/);
+  assert.match(detail, /₩25,000 × 1건 = <b[^>]*>₩25,000/);
+  assert.match(detail, /합계<\/span><span[^>]*>₩130,000/);
 });
 
 test("the list holds the whole month, grouped by week", async (t) => {
@@ -1351,7 +1355,7 @@ test("the list holds the whole month, grouped by week", async (t) => {
      이제 그 달의 전부가 주 단위로 들어간다. */
   const markupOf = await issueScreens(t);
   const detail = markupOf("이달 예상 급여");
-  assert.match(detail, /차감 내역/);
+  assert.match(detail, /날짜별 내역/);
   assert.doesNotMatch(detail, /최근 차감/);
 
   // 원장은 회원권만 가리키므로 회원권 → 회원으로 이어 붙인다.
@@ -1411,8 +1415,11 @@ test("a failed read never shows itself as zero won", async (t) => {
 test("the card shows the month total and nothing else", async (t) => {
   const markupOf = await issueScreens(t);
   const card = markupOf("예상 급여 카드");
-  assert.match(card, /이달 예상 급여/);
+  assert.match(card, /이번 달 급여/);
   assert.match(card, /₩130,000/);
+  assert.match(card, /\(확정된 수업 기준\)/);
+  // 카드 전체가 버튼이고, 오른쪽 글자가 어디로 가는지 말한다.
+  assert.match(card, /이번 달 급여 자세히 보기/);
   // 카드는 총액만 말한다. 자세한 것은 눌러서 본다.
   assert.doesNotMatch(card, /최근 차감/);
 });
@@ -2582,9 +2589,9 @@ test("confirmed pay and planned pay are two numbers, never one", async (t) => {
   const markupOf = await issueScreens(t);
   const card = markupOf("예상 급여 카드 · 예정 포함");
 
-  assert.match(card, /확정/);
-  assert.match(card, /예정/);
-  assert.match(card, /90,000/);
+  assert.match(card, /확정된 수업 기준/);
+  // 확정 대기는 따로 한 줄. 합계에 섞지 않는다.
+  assert.match(card, /확정 대기 3건 \(\+₩90,000\)/);
   // 빠질 수 없는 수업은 예정에서 빼 두고, 그런 것이 있다는 사실만 말한다.
   assert.match(card, /회원권이 없어 빠지지 않는 수업 1건/);
 });

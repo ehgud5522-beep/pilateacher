@@ -35,7 +35,9 @@ import {
 } from "../../src/data/repositories/client-repository.js";
 import { mergeRoster } from "../../src/features/roster/roster-bridge.js";
 import { linkCandidates, linkDeviceMember } from "../../src/features/roster/unlinked-members.js";
-import { createFirestorePassStore, deductPass } from "../../src/data/repositories/pass-repository.js";
+import {
+  changePassExpiry, createFirestorePassStore, deductPass, holdPass, transferPassInstructor,
+} from "../../src/data/repositories/pass-repository.js";
 import {
   createFirestoreLessonScheduleStore, publishScheduledLessons, reopenSettledLesson,
 } from "../../src/data/repositories/lesson-schedule-repository.js";
@@ -5893,4 +5895,86 @@ describe("private schedule items — only the owner of the account, the app code
     const pcB = mergePrivateItems({ schedule: merged.schedule, docs: after });
     assert.equal(pcB.schedule.some((entry) => entry.id === "p-1"), false);
   });
+});
+
+/* ── FC매니저 · 지점 둘 (2026-11-02) ─────────────────────────────────────
+   FC매니저가 만료일 변경 · 홀딩 · 담당 교체 · 수업 확정에서 "권한이 없다" 를
+   받았다는 보고. 실제 소속 문서 모양 그대로 심는다 -- role manager · title
+   instructor · locationId 하나뿐(locationIds 없음) · appBuild "web". 그리고
+   지점 둘(locationIds 2개)을 가진 FC매니저도 함께 본다.
+
+   회원권은 **그 FC매니저의 기본 지점이 아닌 지점**에 있다. 규칙이 지점을
+   비교한다면 여기서 막혀야 하고, 비교하지 않으므로 통과해야 한다.
+
+   화면이 실제로 부르는 저장소 함수를 그대로 부른다 -- 손으로 만든 쓰기는
+   규칙만 보고, 앱이 보내는 배치 모양은 보지 않는다. */
+describe("FC매니저 — 지점 둘, 화면이 보내는 그대로", () => {
+  const YANGSAN = "loc-yangsan";
+  const JWADONG = "loc-jwadong";
+  const SINGLE = "fc-single";
+  const DUAL = "fc-dual";
+  const passIn = (passId) => passFixture(ORG_A, passId, {
+    locationId: JWADONG,
+    expiresAt: Timestamp.fromDate(new Date(Date.now() + 90 * 24 * 60 * 60 * 1000)),
+  });
+  const read = async (passId) => {
+    let pass = null;
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const snapshot = await getDoc(doc(context.firestore(), "organizations", ORG_A, "passes", passId));
+      pass = { id: snapshot.id, ...snapshot.data() };
+    });
+    return pass;
+  };
+  const storeFor = (uid) => ({ store: createFirestorePassStore({ firestore: dbFor(uid) }) });
+
+  beforeEach(async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      for (const [id, name] of [[YANGSAN, "양산점"], [JWADONG, "좌동점"]]) {
+        await setDoc(doc(db, "organizations", ORG_A, "locations", id), { organizationId: ORG_A, name, status: "active" });
+      }
+      // 운영 소속 문서와 같은 모양 (값만 바꿨다).
+      await setDoc(doc(db, "memberships", `${ORG_A}_${SINGLE}`), {
+        organizationId: ORG_A, userId: SINGLE, role: "manager", title: "instructor", status: "active",
+        locationId: YANGSAN, displayName: "FC", displayNameBy: "owner", appBuild: "web", appVersion: "1.1.42",
+      });
+      await setDoc(doc(db, "memberships", `${ORG_A}_${DUAL}`), {
+        organizationId: ORG_A, userId: DUAL, role: "manager", title: "instructor", status: "active",
+        locationId: YANGSAN, locationIds: [YANGSAN, JWADONG], displayName: "FC2", appBuild: "web",
+      });
+      for (const uid of [SINGLE, DUAL]) {
+        for (const kind of ["exp", "hold", "move", "deduct"]) {
+          await setDoc(doc(db, "organizations", ORG_A, "passes", `${uid}-${kind}`), passIn(`${uid}-${kind}`));
+        }
+      }
+    });
+  });
+
+  for (const uid of [SINGLE, DUAL]) {
+    test(`${uid}: 만료일 변경 · 홀딩 · 담당 교체 · 차감이 모두 통과한다`, async () => {
+      const pass = await read(`${uid}-exp`);
+      await assertSucceeds(changePassExpiry(ORG_A, pass, {
+        expiresAt: new Date(pass.expiresAt.toDate().getTime() + 30 * 24 * 60 * 60 * 1000),
+        reason: "연장", createdBy: uid,
+      }, storeFor(uid)));
+
+      await assertSucceeds(holdPass(ORG_A, await read(`${uid}-hold`), {
+        days: 14, reason: "", createdBy: uid,
+      }, storeFor(uid)));
+
+      await assertSucceeds(transferPassInstructor(ORG_A, `${uid}-move`, {
+        clientId: "client-member", clientIds: ["client-member"],
+        fromInstructorId: users.instructor, toInstructorId: uid,
+        locationId: JWADONG, createdBy: uid,
+      }, storeFor(uid)));
+
+      await assertSucceeds(deductPass(ORG_A, await read(`${uid}-deduct`), {
+        instructorId: uid, createdBy: uid,
+        occurredAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
+        isDeputyDirector: false, title: "instructor",
+        lessonId: `lesson-${uid}`,
+        attendanceByClientId: { "client-member": "attended" },
+      }, storeFor(uid)));
+    });
+  }
 });

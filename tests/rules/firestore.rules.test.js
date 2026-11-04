@@ -5894,3 +5894,77 @@ describe("private schedule items — only the owner of the account, the app code
     assert.equal(pcB.schedule.some((entry) => entry.id === "p-1"), false);
   });
 });
+
+/* ── FC매니저는 맡은 지점 안의 강사만 담당으로 (2026-11-04 대표) ─────────────
+   발급과 담당 교체 둘 다. 대표 · 총괄매니저는 묻지 않는다 (타지점 지원 배정). */
+describe("FC매니저의 담당 강사는 맡은 지점 안에서만", () => {
+  const LOC_MINE = "loc-mine";
+  const LOC_FAR = "loc-far";
+  const INSTRUCTORS = {
+    "inst-near": { locationId: LOC_MINE },
+    "inst-far": { locationId: LOC_FAR },
+    "inst-dual": { locationId: LOC_FAR, locationIds: [LOC_FAR, LOC_MINE] },
+    "inst-nowhere": {},
+  };
+  const seedScope = async (managerScope) => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      await setDoc(doc(db, "memberships", `${ORG_A}_${users.manager}`), {
+        organizationId: ORG_A, userId: users.manager, role: "manager", status: "active", ...managerScope,
+      });
+      for (const [userId, scope] of Object.entries(INSTRUCTORS)) {
+        await setDoc(doc(db, "memberships", `${ORG_A}_${userId}`), {
+          organizationId: ORG_A, userId, role: "instructor", status: "active", ...scope,
+        });
+      }
+    });
+  };
+  const issue = (userId, passId, instructorId) => setDoc(
+    doc(dbFor(userId), "organizations", ORG_A, "passes", passId),
+    passFixture(ORG_A, passId, { instructorId }),
+  );
+  const handOver = (userId, instructorId) => updateDoc(
+    doc(dbFor(userId), "organizations", ORG_A, "passes", PASS_A),
+    { instructorId, handedOver: true },
+  );
+
+  beforeEach(async () => { await seedScope({ locationId: LOC_MINE, locationIds: [LOC_MINE] }); });
+
+  test("발급 — 맡은 지점 강사 · 겸직 · 지점 없는 강사는 되고, 다른 지점 · 소속 없는 강사는 막힌다", async () => {
+    await assertSucceeds(issue(users.manager, "fc-near", "inst-near"));
+    await assertSucceeds(issue(users.manager, "fc-dual", "inst-dual"));
+    await assertSucceeds(issue(users.manager, "fc-nowhere", "inst-nowhere"));
+    await assertFails(issue(users.manager, "fc-far", "inst-far"));
+    await assertFails(issue(users.manager, "fc-ghost", "inst-ghost"));
+  });
+
+  test("담당 교체 — 같은 선", async () => {
+    await assertSucceeds(handOver(users.manager, "inst-near"));
+    await assertSucceeds(handOver(users.manager, "inst-dual"));
+    await assertFails(handOver(users.manager, "inst-far"));
+    await assertFails(handOver(users.manager, "inst-ghost"));
+  });
+
+  test("대표 · 총괄매니저는 다른 지점 강사도 지정한다 (타지점 지원)", async () => {
+    for (const userId of [users.owner, users.area_manager]) {
+      await assertSucceeds(issue(userId, `top-far-${userId}`, "inst-far"), userId);
+    }
+    await assertSucceeds(handOver(users.owner, "inst-far"));
+  });
+
+  test("지점이 둘인 FC매니저는 둘 다 맡은 지점이다", async () => {
+    await seedScope({ locationId: LOC_MINE, locationIds: [LOC_MINE, LOC_FAR] });
+    await assertSucceeds(issue(users.manager, "fc-two-far", "inst-far"));
+  });
+
+  test("옛 한 칸(locationId)만 있는 FC매니저도 같은 판정", async () => {
+    await seedScope({ locationId: LOC_MINE });
+    await assertSucceeds(issue(users.manager, "fc-old-near", "inst-near"));
+    await assertFails(issue(users.manager, "fc-old-far", "inst-far"));
+  });
+
+  test("FC매니저의 지점이 비어 있으면 막지 않는다 (앱과 같은 판단)", async () => {
+    await seedScope({});
+    await assertSucceeds(issue(users.manager, "fc-empty-far", "inst-far"));
+  });
+});

@@ -97,6 +97,42 @@ service cloud.firestore {
       return hasRole(organizationId, ["owner", "area_manager", "manager"]);
     }
 
+    /* 소속 문서가 가리키는 지점들. locationIds 가 먼저, 없으면 locationId 한 칸.
+       앱의 scopedLocationIds (location-repository.js) 와 같은 읽기다. */
+    function scopedLocationsOf(data) {
+      return data.get("locationIds", []) is list && data.get("locationIds", []).size() > 0
+        ? data.get("locationIds", [])
+        : (data.get("locationId", "") is string && data.get("locationId", "") != ""
+          ? [data.get("locationId", "")]
+          : []);
+    }
+
+    /* ── FC매니저는 맡은 지점 안의 강사만 담당으로 지정한다 (2026-11-04 대표) ──
+       회원권 발급과 담당 교체 둘 다. 앱도 같은 선을 긋는다 (instructor-picker.js 의
+       instructorOutsideScope) -- 규칙은 옛 앱 · 직접 쓰기까지 막는 마지막 문이다.
+
+       예외 (그날 데이터: 겸직 강사 0명, 타지점 지원 수업 60일 2건 -- 대표 발급분):
+         - 대표 · 총괄매니저는 묻지 않는다. 타지점 지원 배정은 그쪽 일이다
+         - 겸직 강사(지점이 둘 이상)는 하나라도 겹치면 된다
+         - 지점이 비어 있는 강사는 막지 않는다 (앱의 itemsVisibleTo 와 같은 판단)
+         - FC매니저 본인의 지점이 비어 있으면 막지 않는다 (앱과 같은 판단)
+       **소속 문서가 없는 강사는 막는다.** 앱은 소속 명단에서만 고르게 하므로
+       없는 사람을 지정하는 쓰기는 화면에서 온 것이 아니다.
+
+       읽기: 강사 소속 문서 get 하나. 부르는 사람의 소속은 hasRole 이 이미 읽었다. */
+    function instructorInManagerScope(organizationId, instructorId) {
+      let mine = scopedLocationsOf(membership(organizationId).data);
+      let targetPath = /databases/$(database)/documents/memberships/$(organizationId + "_" + instructorId);
+      return mine.size() == 0
+        || (
+          exists(targetPath)
+          && (
+            scopedLocationsOf(get(targetPath).data).size() == 0
+            || scopedLocationsOf(get(targetPath).data).hasAny(mine)
+          )
+        );
+    }
+
     function canRegisterClient(organizationId) {
       return hasRole(organizationId, ["owner", "area_manager", "manager"]);
     }
@@ -1018,7 +1054,12 @@ service cloud.firestore {
           && request.resource.data.createdAt == request.time
           // 발급은 대표·FC매니저. canIssuePass 의 주석 참고 — 바꿀 때는 그 목록
           // 하나만 바꾼다.
-          && canIssuePass(organizationId);
+          && canIssuePass(organizationId)
+          // FC매니저는 맡은 지점 안의 강사만 (instructorInManagerScope).
+          && (
+            !hasRole(organizationId, ["manager"])
+            || instructorInManagerScope(organizationId, request.resource.data.instructorId)
+          );
         /* ── 세션업 기간은 왜 여기 없는가 (2026-10-27) ───────────────────
            세션업은 **이 문을 아예 지나지 않는다.** totalSessions 는 아래 어느
            갈래에도 없어 클라이언트가 쓸 수 없고, 짝이 되는 원장 항목의 종류
@@ -1082,6 +1123,8 @@ service cloud.firestore {
               && request.resource.data.diff(resource.data).affectedKeys()
                 .hasOnly(["instructorId", "handedOver"])
               && request.resource.data.handedOver == true
+              // 맡은 지점 안의 강사에게만 넘긴다 (instructorInManagerScope).
+              && instructorInManagerScope(organizationId, request.resource.data.instructorId)
             )
             /* 만료일. FC매니저도 옮긴다 -- 연장과 홀딩은 운영이 하는
                일이고, 그때마다 대표를 불러야 하면 회원이 기다린다.

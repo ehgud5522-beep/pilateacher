@@ -63,11 +63,11 @@ test("카드 · 큰 글씨: 고정 높이 없이 접히고, 누르는 곳은 44p
   assert.ok(tapHeights(html).every((height) => height >= 44), JSON.stringify(tapHeights(html)));
 });
 
-test("급여 화면: 확정 급여가 맨 위, 그 아래 확정 대기 포함, 단가별 요약 · 보정 · 센터 지원 · 날짜별", async () => {
+test("급여 화면: 확정 급여가 맨 위, 그 아래 확정 대기 포함, 단가별 요약 · 보정 · 서비스 수업 · 날짜별", async () => {
   const html = await markupOf("이달 예상 급여 · 확정 대기 · 보정");
   // 9월을 9월에 본다 -- "이번 달".
   assert.match(html, /이번 달 확정 급여/);
-  /* 130,000 + 센터 지원 15,000 − 보정 30,000 = 115,000. 손으로 적은 값이 아니라
+  /* 130,000 + 서비스 수업 15,000 − 보정 30,000 = 115,000. 손으로 적은 값이 아니라
      summarizeInstructorPay 가 낸 픽스처의 합계다. */
   const confirmedAt = html.indexOf("data-pay-confirmed");
   const pendingAt = html.indexOf("data-pay-with-pending");
@@ -81,7 +81,9 @@ test("급여 화면: 확정 급여가 맨 위, 그 아래 확정 대기 포함, 
 
   const summary = html.slice(summaryAt, listAt);
   assert.match(summary, /₩30,000 × 2건 = <b[^>]*>₩60,000/);
-  assert.match(summary, /센터 지원 \(서비스\)/);
+  assert.match(summary, /서비스 수업/);
+  // "센터 지원" 은 타지점 지원과 헷갈린다 (2026-11-04 대표).
+  assert.doesNotMatch(summary, /센터 지원/);
   assert.match(summary, /₩15,000 × 1건 = <b[^>]*>₩15,000/);
   assert.match(summary, /보정 \(되돌린 수업\)/);
   assert.match(summary, /1건 = −₩30,000/);

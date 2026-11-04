@@ -10,7 +10,8 @@
  *
  * ── 무엇으로 나누는가 ──
  *   수업      차감 항목을 (구분 · 단가) 로. "1:1 재등록 ₩30,000 × 3건 = ₩90,000"
- *   센터 지원  서비스 회차 중 센터가 수업료를 내는 것 (판정 service_first)
+ *   서비스 수업  서비스 회차 중 센터가 수업료를 내는 것 (판정 service_first). 화면 이름은
+ *              "서비스 수업" -- "센터 지원" 은 타지점 지원과 헷갈린다 (2026-11-04 대표)
  *   보정      되돌린 차감. 금액은 음수다
  *
  * 잔여 조정(adjust)은 급여 항목이 아니다 -- 원장의 급여 질의가 애초에 읽지
@@ -56,7 +57,7 @@ export function unitPriceSummary(entries) {
   const rows = [...groups].map(([key, group]) => ({
     key, kind: group.kind, category: group.category, unitPrice: group.unitPrice, ...totalsOf(group.entries),
   }))
-    /* 수업이 먼저, 센터 지원이 뒤. 그 안에서는 금액이 큰 줄이 위 -- 강사가
+    /* 수업이 먼저, 서비스 수업이 뒤. 그 안에서는 금액이 큰 줄이 위 -- 강사가
        먼저 확인하고 싶은 순서다. */
     .sort((left, right) => (left.kind === right.kind ? 0 : left.kind === "lesson" ? -1 : 1)
       || right.amount - left.amount

@@ -372,6 +372,10 @@ import {
   clientBreakdown, monthChoices, payrollRows, payrollWeeks,
 } from "./features/schedule/payroll-weeks.js";
 import HandoverSheet from "./features/members/HandoverSheet.jsx";
+import InstructorPicker from "./features/membership/InstructorPicker.jsx";
+import {
+  INSTRUCTOR_OUT_OF_SCOPE, INSTRUCTOR_OUT_OF_SCOPE_MESSAGE, instructorOutsideScope,
+} from "./features/membership/instructor-picker.js";
 import { unsettledBeforeHandover } from "./features/members/instructor-handover.js";
 import { runHandover } from "./data/repositories/handover-repository.js";
 import {
@@ -16589,6 +16593,16 @@ function PassIssue({
     if (!client) { setFormError("회원을 골라 주세요."); return; }
     if (!product) { setFormError("상품을 골라 주세요."); return; }
     if (!form.instructorId) { setFormError("담당 강사를 골라 주세요."); return; }
+    /* 맡은 지점 밖의 강사. 목록이 이미 좁혀져 있어 보통은 닿지 않는다 -- 지점이
+       바뀐 강사가 화면에 남아 있었거나 옛 상태가 돌아온 경우다. 규칙은 이것을
+       묻지 않으므로 여기서 막는다. */
+    if (instructorOutsideScope(issueScope, instructor)) {
+      deviceLog("pass_issue_blocked", {
+        feature: "pass_issue", stage: "review", errorDomain: "app", errorCode: INSTRUCTOR_OUT_OF_SCOPE, role: issueScope.role,
+      });
+      setFormError(INSTRUCTOR_OUT_OF_SCOPE_MESSAGE);
+      return;
+    }
     if (rateBlock) { setFormError(rateBlock); return; }
     if (duetBlock) { setFormError(duetBlock.message); return; }
     if (!(Number(form.totalSessions) >= 1)) { setFormError("세션 수를 1 이상으로 입력해 주세요."); return; }
@@ -16602,6 +16616,12 @@ function PassIssue({
   };
 
   const issue = async () => {
+    /* 확인 화면에서 한 번 더. 저장 단계에서도 막는다 (2026-11-04 대표) -- 확인
+       화면은 앞 단계의 판정을 다시 하지 않는다. */
+    if (instructorOutsideScope(issueScope, instructor)) {
+      setFormError(INSTRUCTOR_OUT_OF_SCOPE_MESSAGE);
+      return;
+    }
     setSaving(true);
     setFormError("");
     try {
@@ -16950,20 +16970,14 @@ function PassIssue({
           ) : null}
 
           <IssueField label="담당 강사">
-            {instructors.length === 0
-              ? <p style={{ fontSize: TYPE.caption, color: SUB }}>등록된 강사가 없습니다.</p>
-              : (
-                <div className="flex flex-wrap gap-2">
-                  {instructors.map((item) => (
-                    <button key={item.userId} type="button" onClick={() => setForm({ ...form, instructorId: item.userId })}
-                      className="h-9 px-3 font-bold" style={{
-                        borderRadius: 999, fontSize: TYPE.caption,
-                        backgroundColor: form.instructorId === item.userId ? TINT : CANVAS,
-                        color: form.instructorId === item.userId ? BRAND_D : SUB,
-                      }}>{item.displayName || item.userId}</button>
-                  ))}
-                </div>
-              )}
+            {/* 지점 칩 → 이름 검색 → 강사 칩 (2026-11-04). FC매니저는 자기 지점이,
+                대표 · 총괄매니저는 전체가 먼저 눌려 있다. 칩은 이미 맡은 지점으로
+                좁힌 목록(locations · instructors)으로만 그린다. */}
+            <InstructorPicker instructors={instructors} locations={locations} viewer={issueScope}
+              preferredLocationId={client?.locationId || ""} value={form.instructorId}
+              initialLocationId={initialState?.pickerLocationId || ""}
+              initialQuery={initialState?.pickerQuery || ""}
+              onSelect={(userId) => setForm({ ...form, instructorId: userId })} />
           </IssueField>
 
           {rateBlock ? (
@@ -27469,6 +27483,12 @@ export default function App() {
      "넘길 회원권이 없습니다" 로 뜬다 -- 더보기 → 회원 관리는 명부 밖의
      회원도 열 수 있어서 그 길로 연 회원권이 전부 그렇게 끝난다. */
   const [handoverPass, setHandoverPass] = useState(null);
+  /* 담당 변경을 누르는 사람의 범위. 지점 칩의 기본값과 맡은 지점 밖 판정이 이것을 본다. */
+  const handoverViewer = useMemo(() => ({
+    role: organizationContext?.role || "",
+    locationId: organizationContext?.locationId || "",
+    locationIds: organizationContext?.locationIds || [],
+  }), [organizationContext?.role, organizationContext?.locationId, organizationContext?.locationIds]);
   const [handoverBusy, setHandoverBusy] = useState(false);
   const [handoverError, setHandoverError] = useState("");
 
@@ -31593,6 +31613,9 @@ export default function App() {
             <HandoverSheet
               passes={[handoverPass]}
               instructors={rosterInstructors}
+              /* 이름 검색 · 칩의 소속 지점 · 맡은 지점 밖 판정 (2026-11-04). */
+              viewer={handoverViewer}
+              locations={locationsVisibleTo(rosterLocations, handoverViewer)}
               fromInstructorId={String(handoverPass?.instructorId || "")}
               fromName={String(rosterInstructors.find(
                 (item) => String(item?.userId || "") === String(handoverPass?.instructorId || ""),
@@ -31614,6 +31637,18 @@ export default function App() {
               onRun={async ({ plan }) => {
                 const row = plan.ready[0];
                 if (!row) return;
+                /* 저장 단계에서도 막는다. 시트가 버튼을 끄지만, 규칙은 이것을 묻지
+                   않으므로 실제로 쓰기 직전에 한 번 더 본다. */
+                if (instructorOutsideScope(handoverViewer, rosterInstructors.find(
+                  (item) => String(item?.userId || "") === String(row.toInstructorId || ""),
+                ))) {
+                  deviceLog("pass_handover_blocked", {
+                    feature: "pass_handover", stage: "commit", errorDomain: "app",
+                    errorCode: INSTRUCTOR_OUT_OF_SCOPE, role: handoverViewer.role,
+                  });
+                  setHandoverError(INSTRUCTOR_OUT_OF_SCOPE);
+                  return;
+                }
                 setHandoverBusy(true);
                 setHandoverError("");
                 try {

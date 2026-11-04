@@ -137,6 +137,11 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 센터 정보 · 개인 모드",
     "더보기 탭 · 센터 정보 · 강사",
     "센터 회원 상세",
+    "센터 회원 상세 · 이력 전부 펼침",
+    "센터 회원 상세 · 이력 · 회원권 칩",
+    "센터 회원 상세 · 이력 · 대표",
+    "센터 회원 상세 · 이력 · 총괄매니저",
+    "센터 회원 상세 · 이력 · FC매니저",
     "센터 회원 상세 · 대표",
     "센터 회원 상세 · 차감 보정 확인",
     "센터 회원 상세 · 발급 취소 확인",
@@ -234,6 +239,14 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "회원 관리 · 심사용 · 대표",
     "회원 관리 · 심사용 · FC매니저",
     "회원 관리 · 소속 확인 실패",
+    "회원 관리 · 강사 칩 · 대표",
+    "회원 관리 · 강사 칩 · 총괄매니저",
+    "회원 관리 · 강사 칩 · FC매니저",
+    "회원 관리 · 강사 칩 · 한 강사",
+    "회원 관리 · 강사 칩 · 담당 미지정",
+    "회원 관리 · 강사 칩 · 활성 없음 펼침",
+    "회원 관리 · 강사 칩 · 검색",
+    "회원 관리 · 강사 칩 · 회원권 조회 실패",
     "더보기 탭 · 매니저",
     "회원권 상품",
     "회원권 상품 · 폰 폭",
@@ -1480,8 +1493,8 @@ test("the history reads issue, deduct and transfer differently", async (t) => {
   assert.match(detail, /담당 강사 변경 정예진 → 박서연/);
   assert.match(detail, /±0/);
 
-  // 발급과 차감은 부호가 보인다.
-  assert.match(detail, /\+22/);
+  // 발급과 차감은 부호가 보인다. 8월 발급은 접힌 달에 있어 펼친 화면에서 본다.
+  assert.match(markupOf("센터 회원 상세 · 이력 전부 펼침"), /\+22/);
   assert.match(detail, /-1/);
 
   // 수업일과 기록일이 다르면 기록일을 병기한다 -- 밤에 몰아 누른 건이다.
@@ -1491,8 +1504,8 @@ test("the history reads issue, deduct and transfer differently", async (t) => {
 test("the history is newest first", async (t) => {
   const markupOf = await issueScreens(t);
   /* 카테고리 문구는 위쪽 회원권 목록에도 나오므로 이력 구간만 잘라서 본다. */
-  const detail = markupOf("센터 회원 상세");
-  const history = detail.slice(detail.lastIndexOf("이력"));
+  const detail = markupOf("센터 회원 상세 · 이력 전부 펼침");
+  const history = detail.slice(detail.indexOf("data-pass-history"));
   const transferAt = history.search(/담당 강사 변경/);
   const deductAt = history.search(/기록 9\.13 23:40/);
   const issueAt = history.search(/\+22/);

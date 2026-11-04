@@ -4,6 +4,11 @@ import { AlertTriangle, ChevronRight, Loader2 } from "lucide-react";
 import {
   HANDOVER_BLOCK_LABEL, handoverPlan, instructorsForHandover,
 } from "./instructor-handover.js";
+import { ALL_LOCATIONS } from "../../data/repositories/location-repository.js";
+import {
+  INSTRUCTOR_OUT_OF_SCOPE_MESSAGE, defaultPickerLocation, instructorLocationLabel,
+  instructorOutsideScope, pickerInstructors,
+} from "../membership/instructor-picker.js";
 
 /**
  * 담당 인계 화면. **회원권 한 장이든 퇴사 강사 전부든 같은 화면이다.**
@@ -51,9 +56,19 @@ export default function HandoverSheet({
      스모크가 날짜마다 다른 화면을 그린다 -- 픽스처의 날짜를 옮기는 것은
      답이 아니다 (또 다른 날에 터진다). */
   now = null,
+  /* 강사 고르기 (2026-11-04). 둘 다 넘겨주면 지점 칩 · 이름 검색 · 칩의 소속
+     지점 · 맡은 지점 밖 판정이 켜진다. 안 넘기면 전과 같다. */
+  viewer = null,
+  locations = [],
+  initialQuery = "",
 }) {
   const [assignments, setAssignments] = useState(() => initialAssignments || {});
   const [revoke, setRevoke] = useState(offerRevoke);
+  const [query, setQuery] = useState(initialQuery);
+  /* 지점 칩은 "전부 한 강사에게" 만 거른다. 줄마다의 목록은 그 회원권의 지점이
+     이미 정한다 -- 칩으로 다른 지점을 고르면 그 줄에 고를 사람이 없어진다. */
+  const [locationId, setLocationId] = useState(() => (viewer ? defaultPickerLocation(viewer, locations) : ALL_LOCATIONS));
+  const labelOf = (item) => (viewer ? ` · ${instructorLocationLabel(item, locations)}` : "");
 
   const plan = useMemo(() => handoverPlan({
     passes, assignments, fromInstructorId,
@@ -65,9 +80,9 @@ export default function HandoverSheet({
   /* 받을 수 있는 강사는 **그 회원권의 지점** 기준이다. 퇴사 인계에서 지점이
      섞여 있으면 줄마다 목록이 달라지는 것이 맞다 -- 한 목록으로 묶으면 다른
      지점 강사가 보이고, 고르면 그 줄이 막힌다. */
-  const choicesFor = (locationId) => instructorsForHandover(instructors, {
-    locationId, excludeUserId: fromInstructorId,
-  });
+  const choicesFor = (rowLocationId) => pickerInstructors(instructorsForHandover(instructors, {
+    locationId: rowLocationId, excludeUserId: fromInstructorId,
+  }), { query });
 
   const assignAll = (userId) => {
     const next = {};
@@ -75,7 +90,18 @@ export default function HandoverSheet({
     setAssignments(next);
   };
 
-  const allChoices = instructorsForHandover(instructors, { excludeUserId: fromInstructorId });
+  const allChoices = pickerInstructors(
+    instructorsForHandover(instructors, { excludeUserId: fromInstructorId }),
+    { locationId, query },
+  );
+
+  /* 저장 단계에서도 막는다 (2026-11-04 대표). 줄마다의 목록은 회원권의 지점으로
+     좁혀져 있어 보통은 닿지 않는다 -- 규칙은 이것을 묻지 않으므로 여기서 본다. */
+  const outOfScope = viewer
+    ? plan.ready.filter((row) => instructorOutsideScope(viewer, instructors.find(
+      (item) => String(item?.userId || "") === String(row.toInstructorId || ""),
+    )))
+    : [];
 
   return (
     <div className="space-y-3">
@@ -101,6 +127,33 @@ export default function HandoverSheet({
         </p>
       ) : (
         <>
+          {viewer ? (
+            <div className="space-y-2" data-handover-filter>
+              {plan.rows.length > 1 && locations.length > 0 ? (
+                <div className="flex flex-wrap gap-1.5">
+                  {[{ id: ALL_LOCATIONS, name: "전체" }, ...locations].map((item) => {
+                    const on = locationId === item.id;
+                    return (
+                      <button type="button" key={item.id} data-location-chip={item.id} aria-pressed={on}
+                        onClick={() => setLocationId(item.id)}
+                        className="h-8 px-2.5 font-bold" style={{
+                          borderRadius: 999, fontSize: "var(--t-caption)",
+                          backgroundColor: on ? "var(--ink)" : "var(--canvas)",
+                          color: on ? "var(--card)" : "var(--sub)",
+                        }}>{item.name || item.id}</button>
+                    );
+                  })}
+                </div>
+              ) : null}
+              <input value={query} onChange={(event) => setQuery(event.target.value)}
+                data-picker-search placeholder="강사 이름 검색"
+                className="h-9 w-full px-3" style={{
+                  borderRadius: 9, fontSize: "var(--t-caption)", color: "var(--ink)",
+                  backgroundColor: "var(--card)", border: "1px solid var(--line)",
+                }} />
+            </div>
+          ) : null}
+
           {/* 전부 한 사람에게. 퇴사 인계에서 가장 자주 쓰는 길이라 맨 위에 둔다. */}
           {plan.rows.length > 1 && allChoices.length > 0 ? (
             <div className="rounded-xl p-3" style={{ backgroundColor: "var(--canvas)" }}>
@@ -111,7 +164,7 @@ export default function HandoverSheet({
                     className="h-8 px-2.5 font-bold" style={{
                       borderRadius: 999, fontSize: "var(--t-caption)",
                       backgroundColor: "var(--card)", color: "var(--ink2)", border: "1px solid var(--line)",
-                    }}>{item.displayName || item.userId.slice(0, 6)}</button>
+                    }}>{item.displayName || item.userId.slice(0, 6)}{labelOf(item)}</button>
                 ))}
               </div>
               <p className="mt-2 text-caption" style={{ color: "var(--sub)" }}>
@@ -139,7 +192,9 @@ export default function HandoverSheet({
 
                   <div className="mt-2 flex flex-wrap gap-1.5">
                     {choices.length === 0 ? (
-                      <p className="text-xs" style={{ color: "var(--bad)" }}>이 지점에 받을 수 있는 강사가 없습니다.</p>
+                      <p className="text-xs" style={{ color: "var(--bad)" }}>
+                        {query.trim() ? "이름이 맞는 강사가 없습니다." : "이 지점에 받을 수 있는 강사가 없습니다."}
+                      </p>
                     ) : choices.map((item) => {
                       const on = row.toInstructorId === item.userId;
                       return (
@@ -149,7 +204,7 @@ export default function HandoverSheet({
                             borderRadius: 999, fontSize: "var(--t-caption)",
                             backgroundColor: on ? "var(--tint)" : "var(--canvas)",
                             color: on ? "var(--brand-d)" : "var(--sub)",
-                          }}>{item.displayName || item.userId.slice(0, 6)}</button>
+                          }}>{item.displayName || item.userId.slice(0, 6)}{labelOf(item)}</button>
                       );
                     })}
                   </div>
@@ -200,6 +255,10 @@ export default function HandoverSheet({
         </>
       )}
 
+      {outOfScope.length > 0 ? (
+        <p className="text-xs font-bold" data-out-of-scope style={{ color: "var(--bad)" }}>{INSTRUCTOR_OUT_OF_SCOPE_MESSAGE}</p>
+      ) : null}
+
       {errorCode ? (
         <p className="text-xs font-bold" style={{ color: "var(--bad)" }}>넘기지 못했어요 (코드 {errorCode})</p>
       ) : null}
@@ -209,7 +268,7 @@ export default function HandoverSheet({
           className="h-11 flex-1 font-bold disabled:opacity-40" style={{
             borderRadius: 9, backgroundColor: "var(--canvas)", color: "var(--sub)", fontSize: "var(--t-caption)",
           }}>닫기</button>
-        <button type="button" disabled={!plan.canRun || busy || unsettled.length > 0}
+        <button type="button" disabled={!plan.canRun || busy || unsettled.length > 0 || outOfScope.length > 0}
           onClick={() => onRun?.({ plan, revoke: offerRevoke && revoke })}
           className="flex h-11 flex-[1.4] items-center justify-center gap-1.5 font-extrabold disabled:opacity-40" style={{
             borderRadius: 9, backgroundColor: "var(--brand)", color: "#fff", fontSize: "var(--t-caption)",

@@ -150,6 +150,9 @@ import { recordSyncReads, syncReadsByDay } from "./features/schedule/sync-read-c
 import { SCHEDULE_SYNC_MODE, readScheduleSyncConfig, scheduleSyncEnabledFor } from "./features/schedule/sync-switch.js";
 import { WEB_VERSION_CHECK_MS, fetchDeployedWebBuild, isNewerWebBuild, staleTabMessage } from "./features/ui/web-version.js";
 import {
+  lastUpdatedLabel, refreshRosterOnce, shouldRefreshOnResume,
+} from "./features/roster/roster-refresh.js";
+import {
   createProduct, listProducts, productBaseUnitPrice, setProductStatus,
 } from "./data/repositories/product-repository.js";
 import {
@@ -157,7 +160,7 @@ import {
   transferableSessions,
 } from "./data/schema/pass-transfer.js";
 import {
-  DEDUCT_BACKDATE_LIMIT_DAYS, HOLD_MAX_DAYS, adjustPass, adjustDirectionOf, cancelPass, changePassExpiry,
+  DEDUCT_BACKDATE_LIMIT_DAYS, HOLD_MAX_DAYS, listPassesIssuedSince, adjustPass, adjustDirectionOf, cancelPass, changePassExpiry,
   mayAdjustRemaining,
   isFreshlyIssuedPass,
   correctDeduction, deductPass, holdPass, isCancellablePass, loadPassReconcileRows,
@@ -373,6 +376,16 @@ import {
   clientBreakdown, monthChoices, payrollRows, payrollWeeks,
 } from "./features/schedule/payroll-weeks.js";
 import HandoverSheet from "./features/members/HandoverSheet.jsx";
+import {
+  ALL_PASSES, entryCountsByPass, historyMonths, monthHeading,
+} from "./features/membership/pass-history-months.js";
+import {
+  INSTRUCTOR_GROUP, activeAssignments, assignedInstructorCount, inInstructorGroup, instructorChips,
+} from "./features/members/instructor-groups.js";
+import InstructorPicker from "./features/membership/InstructorPicker.jsx";
+import {
+  INSTRUCTOR_OUT_OF_SCOPE, INSTRUCTOR_OUT_OF_SCOPE_MESSAGE, instructorOutsideScope,
+} from "./features/membership/instructor-picker.js";
 import { unsettledBeforeHandover } from "./features/members/instructor-handover.js";
 import { runHandover } from "./data/repositories/handover-repository.js";
 import {
@@ -397,7 +410,7 @@ import {
   ACCOUNT_DELETION_PHASE_LABELS, ACCOUNT_DELETION_PHASES, DELETE_CONFIRMATION_PHRASE,
   collectOwnedBlobIds, runAccountDeletion,
 } from "./features/account/account-deletion.js";
-import { Users, Settings as SettingsIcon, Search, ChevronRight, ChevronLeft, Plus, Camera, MessageSquare, Check, X, Trash2, ArrowLeft, Target, ClipboardList, RotateCcw, Redo2, Palette, Sparkles, Copy, ArrowUpRight, ArrowDownRight, Loader as Loader2, Pencil, UserPlus, Activity, Ticket, Calendar, Clock, Bell, Download, Share2, TriangleAlert as AlertTriangle, CircleAlert as AlertCircle, LogOut, Mail, Star, Sun, Moon, Smartphone, Move, Crosshair, ChevronDown, ImagePlus, SlidersHorizontal, CalendarDays, ArrowUpDown, Minus, Upload, Link2, Users as Users2, Play } from "lucide-react";
+import { Users, Settings as SettingsIcon, Search, ChevronRight, ChevronLeft, Plus, Camera, MessageSquare, Check, X, Trash2, ArrowLeft, Target, ClipboardList, RotateCcw, Redo2, Palette, Sparkles, Copy, ArrowUpRight, ArrowDownRight, Loader as Loader2, Pencil, UserPlus, Activity, Ticket, Calendar, Clock, Bell, Download, Share2, TriangleAlert as AlertTriangle, CircleAlert as AlertCircle, LogOut, Mail, Star, Sun, Moon, Smartphone, Move, Crosshair, ChevronDown, ImagePlus, SlidersHorizontal, CalendarDays, ArrowUpDown, Minus, Upload, Link2, Users as Users2, Play, RefreshCw } from "lucide-react";
 import { TYPE } from "./features/ui/type-scale.js";
 import { overlayZ } from "./features/ui/overlay-stack.js";
 
@@ -2066,11 +2079,14 @@ function LessonRecordExamplesModal({ onClose, onPractice }) {
 
 /* matches 를 주면 위에 검색 칸이 생긴다. 회원 선택처럼 목록이 길 때 -- 센터 회원이
    백 명을 넘으면 스크롤로 찾을 수 없다 (2026-10-31). */
-function ChoiceBottomSheet({ title, subtitle, options, value, onSelect, onClose, columns = 1, matches = null, searchPlaceholder = "검색" }) {
+function ChoiceBottomSheet({ title, subtitle, options, value, onSelect, onClose, columns = 1, matches = null, searchPlaceholder = "검색", freshness = false }) {
   const [query, setQuery] = useState("");
   const shown = matches && query.trim() ? options.filter((option) => matches(option, query)) : options;
   return (
     <ScheduleBottomSheet title={title} subtitle={subtitle} onClose={onClose}>
+      {/* 시트는 끌어 내리면 닫힌다 (bottom-sheet-gesture.js). 그래서 여기서는 당겨서
+          새로고침 대신 버튼이다 -- 시트를 여는 순간에도 이미 한 번 새로 읽는다. */}
+      {freshness ? <RosterFreshness /> : null}
       {matches && (
         <label className="mb-3 flex h-11 items-center gap-2 px-3" style={{ borderRadius: 9, backgroundColor: CANVAS, border: `1px solid ${LINE}` }}>
           <Search size={15} style={{ color: SUB }} />
@@ -4044,6 +4060,7 @@ function confirmedLessonNoteArgs(note, reviewedDraft = null) {
 }
 
 function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, onClose, onSubmit, onDelete, onStatus, onStatusAll, onCareGrade, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onOpenMember, onFocusMemberWeek, scheduleColors = null, organizationMode = false, rateOf, careOptionsOf, onSettleLesson, onUnsettleLesson, onReadMemberNote, onSaveMemberNote, onToast, canUnsettle = false }) {
+  const rosterRefresh = useContext(RosterRefreshContext);
   /* 확정된 수업은 출석을 바꿀 수 없다. 상태를 바꿔도 이미 나간 차감은 따라오지
      않고, 둘이 어긋나면 어느 것이 맞는지 알 수 없다. */
   /* 다른 기기에서 확정된 수업도 잠근다 (동기화 2단계). 이 기기에는 확정 기록이
@@ -4082,6 +4099,12 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
   const [recordBody, setRecordBody] = useState("");
   const recordSectionRef = useRef(null);
   const [picker, setPicker] = useState(null);
+  /* 회원 선택 시트를 열 때마다 명단을 새로 읽는다 (2026-11-04). FC가 방금 등록 ·
+     발급한 회원이 여기 있어야 한다. 연속으로 열면 10초에 한 번만 읽는다. */
+  const memberPickerOpen = picker?.type === "member";
+  useEffect(() => {
+    if (memberPickerOpen) rosterRefresh.refresh("member_picker");
+  }, [memberPickerOpen]);
   useEffect(() => {
     if (!recordMode) return undefined;
     const scroll = () => scrollRecordSectionIntoView(recordSectionRef.current);
@@ -4572,7 +4595,7 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
         if (next) setKind(lessonTypeDef(next).formKind);
       }} />}
     {picker?.type === "member" && <ChoiceBottomSheet title="회원 선택" subtitle="기존 회원과 정확히 연결합니다" value={memberIds[picker.slot] || ""} onClose={() => setPicker(null)}
-      searchPlaceholder="이름 또는 연락처" matches={(option, query) => clientMatchesSearch(option.member, query)}
+      freshness searchPlaceholder="이름 또는 연락처" matches={(option, query) => clientMatchesSearch(option.member, query)}
       options={members.filter(isActive).map((item) => ({ value: item.id, member: item, label: item.name || "이름 미입력", description: `잔여 ${left(item)}회${item.contractEnd ? ` · ${ymd(item.contractEnd)}까지` : ""}` }))}
       onSelect={(id) => { const item = members.find((memberItem) => memberItem.id === id); const ids = [...memberIds]; const names = [...memberNames]; ids[picker.slot] = id; names[picker.slot] = item?.name || ""; setMemberIds(ids); setMemberNames(names); if (!draft.id && picker.slot === 0 && item) setF((current) => ({ ...current, dur: lessonDurationOf(item) })); }} />}
     </>
@@ -5601,6 +5624,8 @@ function ReferenceMemberList({
   initialFilter = "",
 }) {
   const [q, setQ] = useState("");
+  const rosterRefresh = useContext(RosterRefreshContext);
+  const pullToRefresh = usePullToRefresh(() => rosterRefresh.refresh("pull_member_list"), organizationMode && rosterRefresh.enabled);
   /* 소속 센터에서만 운영중이 기본이다. 개인 모드에는 회원권이 없어 모두가
      "운영중" 이 되고, 그러면 칩 하나가 아무것도 가르지 않는다. */
   const [filter, setFilter] = useState(initialFilter || (organizationMode ? "ongoing" : "all"));
@@ -5800,7 +5825,13 @@ function ReferenceMemberList({
           ))}
         </div>
       ) : null}
-      <div className="pt-scroll min-h-0 flex-1 overflow-y-auto" style={{ padding: "10px 12px 16px" }}>
+      <div className="pt-scroll min-h-0 flex-1 overflow-y-auto" style={{ padding: "10px 12px 16px" }} {...pullToRefresh.handlers}>
+        {pullToRefresh.pull > 0 ? (
+          <p className="text-center" data-pull-indicator style={{ height: pullToRefresh.pull / 2, fontSize: TYPE.caption, color: SUB, overflow: "hidden" }}>
+            {pullToRefresh.pull >= 70 ? "놓으면 새로 읽어요" : "당겨서 새로고침"}
+          </p>
+        ) : null}
+        {organizationMode ? <RosterFreshness /> : null}
         {/* 못 읽었으면 빈 목록을 보여주지 않는다. 빈 목록은 "센터에 회원이 없다"로
             읽히고, 그 다음 행동이 바로 다시 등록이다. */}
         {rosterError ? (
@@ -12381,6 +12412,66 @@ const AIRecordingStatusContext = createContext({ status: AI_RECORDING_STATUS.NOR
  * legacy 개인 모드(isLegacy: true)와는 다른 상태다.
  */
 const OrganizationContext = createContext(UNRESOLVED_ORGANIZATION_CONTEXT);
+/**
+ * 센터 회원 명단의 가벼운 갱신 (2026-11-04, roster-refresh.js). 회원 목록과 수업
+ * 등록의 회원 선택이 쓴다. enabled 가 false 면(개인 모드 · 스모크) 아무것도 안 한다.
+ */
+export const RosterRefreshContext = createContext({ enabled: false, refresh: () => {}, updatedAt: null, refreshing: false });
+
+/** "마지막 갱신 N분 전" 이 혼자 낡지 않게 30초마다 다시 그린다. */
+function useMinuteClock(enabled) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!enabled) return undefined;
+    const timer = setInterval(() => setNow(Date.now()), 30 * 1000);
+    return () => clearInterval(timer);
+  }, [enabled]);
+  return now;
+}
+
+/**
+ * 당겨서 새로고침. 목록이 맨 위에 있을 때 70px 넘게 끌어 내리면 부른다.
+ * 마우스(PC 웹)는 끌지 않으므로 옆의 새로고침 버튼을 쓴다.
+ */
+function usePullToRefresh(onRefresh, enabled) {
+  const [pull, setPull] = useState(0);
+  const start = useRef(null);
+  const handlers = enabled ? {
+    onTouchStart: (event) => {
+      start.current = event.currentTarget.scrollTop <= 0 ? event.touches[0].clientY : null;
+    },
+    onTouchMove: (event) => {
+      if (start.current === null) return;
+      const distance = event.touches[0].clientY - start.current;
+      setPull(distance > 0 ? Math.min(distance, 120) : 0);
+    },
+    onTouchEnd: () => {
+      if (pull >= 70) onRefresh?.();
+      start.current = null;
+      setPull(0);
+    },
+  } : {};
+  return { pull, handlers };
+}
+
+/** 마지막 갱신 시각과 새로고침 버튼. 목록과 시트가 같은 줄을 쓴다. */
+export function RosterFreshness({ compact = false }) {
+  const roster = useContext(RosterRefreshContext);
+  const now = useMinuteClock(roster.enabled);
+  if (!roster.enabled) return null;
+  return (
+    <div data-roster-freshness className={`flex items-center gap-2 ${compact ? "" : "mb-2"}`}>
+      <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: SUB }}>
+        {roster.refreshing ? "새로 읽는 중…" : lastUpdatedLabel(roster.updatedAt, now)}
+      </span>
+      <button type="button" disabled={roster.refreshing} onClick={() => roster.refresh("manual", { force: false })}
+        className="flex h-9 shrink-0 items-center gap-1 px-3 font-bold disabled:opacity-50"
+        style={{ borderRadius: 999, backgroundColor: CANVAS, color: BRAND_D, fontSize: TYPE.caption }}>
+        <RefreshCw size={13} />새로고침
+      </button>
+    </div>
+  );
+}
 
 function IOSMediaDiagnosticPanel({ memberId = "diagnostics", lessonId = "hidden-diagnostics" }) {
   const [microphoneTest, setMicrophoneTest] = useState({ status: "idle", steps: [] });
@@ -16676,6 +16767,16 @@ function PassIssue({
     if (!client) { setFormError("회원을 골라 주세요."); return; }
     if (!product) { setFormError("상품을 골라 주세요."); return; }
     if (!form.instructorId) { setFormError("담당 강사를 골라 주세요."); return; }
+    /* 맡은 지점 밖의 강사. 목록이 이미 좁혀져 있어 보통은 닿지 않는다 -- 지점이
+       바뀐 강사가 화면에 남아 있었거나 옛 상태가 돌아온 경우다. 규칙은 이것을
+       묻지 않으므로 여기서 막는다. */
+    if (instructorOutsideScope(issueScope, instructor)) {
+      deviceLog("pass_issue_blocked", {
+        feature: "pass_issue", stage: "review", errorDomain: "app", errorCode: INSTRUCTOR_OUT_OF_SCOPE, role: issueScope.role,
+      });
+      setFormError(INSTRUCTOR_OUT_OF_SCOPE_MESSAGE);
+      return;
+    }
     if (rateBlock) { setFormError(rateBlock); return; }
     if (duetBlock) { setFormError(duetBlock.message); return; }
     if (!(Number(form.totalSessions) >= 1)) { setFormError("세션 수를 1 이상으로 입력해 주세요."); return; }
@@ -16689,6 +16790,12 @@ function PassIssue({
   };
 
   const issue = async () => {
+    /* 확인 화면에서 한 번 더. 저장 단계에서도 막는다 (2026-11-04 대표) -- 확인
+       화면은 앞 단계의 판정을 다시 하지 않는다. */
+    if (instructorOutsideScope(issueScope, instructor)) {
+      setFormError(INSTRUCTOR_OUT_OF_SCOPE_MESSAGE);
+      return;
+    }
     setSaving(true);
     setFormError("");
     try {
@@ -17037,20 +17144,14 @@ function PassIssue({
           ) : null}
 
           <IssueField label="담당 강사">
-            {instructors.length === 0
-              ? <p style={{ fontSize: TYPE.caption, color: SUB }}>등록된 강사가 없습니다.</p>
-              : (
-                <div className="flex flex-wrap gap-2">
-                  {instructors.map((item) => (
-                    <button key={item.userId} type="button" onClick={() => setForm({ ...form, instructorId: item.userId })}
-                      className="h-9 px-3 font-bold" style={{
-                        borderRadius: 999, fontSize: TYPE.caption,
-                        backgroundColor: form.instructorId === item.userId ? TINT : CANVAS,
-                        color: form.instructorId === item.userId ? BRAND_D : SUB,
-                      }}>{item.displayName || item.userId}</button>
-                  ))}
-                </div>
-              )}
+            {/* 지점 칩 → 이름 검색 → 강사 칩 (2026-11-04). FC매니저는 자기 지점이,
+                대표 · 총괄매니저는 전체가 먼저 눌려 있다. 칩은 이미 맡은 지점으로
+                좁힌 목록(locations · instructors)으로만 그린다. */}
+            <InstructorPicker instructors={instructors} locations={locations} viewer={issueScope}
+              preferredLocationId={client?.locationId || ""} value={form.instructorId}
+              initialLocationId={initialState?.pickerLocationId || ""}
+              initialQuery={initialState?.pickerQuery || ""}
+              onSelect={(userId) => setForm({ ...form, instructorId: userId })} />
           </IssueField>
 
           {rateBlock ? (
@@ -19434,8 +19535,16 @@ function ClientDetail({
   onHandover,
   now = () => new Date(), initialUndo = null, initialTransfer = null, initialPhoneEdit = false,
   initialPassEdit = null, initialSessionUp = null,
+  /* 이력의 회원권 칩과 펼친 달. 스모크가 첫 렌더를 세우는 자리다. */
+  initialHistoryPass = ALL_PASSES, initialOpenMonths = null,
 }) {
   const at = now();
+  /* ── 이력: 달로 묶고 회원권으로 거른다 (2026-11-04) ─────────────────────
+     최근 달만 펼친다. 급여 합계는 대표 · 총괄매니저에게만 -- 강사 · FC매니저가
+     남의 급여 합계를 회원 화면에서 보게 되면 그것이 급여 화면을 대신한다. */
+  const [historyPass, setHistoryPass] = useState(initialHistoryPass);
+  const [openMonths, setOpenMonths] = useState(() => (Array.isArray(initialOpenMonths) ? new Set(initialOpenMonths) : null));
+  const showPayTotal = isOwnerLevelRole(organization?.role) && !organization?.isLegacy;
   /* 되돌리기는 대표만 한다. 강사와 매니저가 스스로 되돌릴 수 있으면 기록의
      의미가 없다 -- 잘못 누른 사람이 그것을 지울 수 있다는 뜻이기 때문이다.
      규칙도 같은 선을 긋는다. */
@@ -19799,27 +19908,86 @@ function ClientDetail({
               ))}
           </div>
 
-          <div className="mt-4">
+          <div className="mt-4" data-pass-history>
             <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>이력</p>
+            {/* 회원권 칩. 한 장뿐이면 고를 것이 없어 줄을 내지 않는다. 보정 · 조정
+                줄은 자기 회원권 칩 안에 그대로 남는다. */}
+            {passes.length > 1 && entries.length > 0 ? (() => {
+              const counts = entryCountsByPass(entries);
+              const chosen = historyPass === ALL_PASSES || passes.some((pass) => pass.id === historyPass)
+                ? historyPass : ALL_PASSES;
+              return (
+                <div className="pt-hscroll mt-2 flex gap-1.5 overflow-x-auto" data-history-pass-chips>
+                  {[{ id: ALL_PASSES, label: "전체", count: entries.length },
+                    ...passes.map((pass) => ({
+                      id: pass.id,
+                      label: `${pass.purchaseRound ? `${pass.purchaseRound}차 ` : ""}${labelOf(PAY_CATEGORY_LABELS, pass.category)}`,
+                      count: counts[pass.id] || 0,
+                    }))].map((chip) => {
+                    const selected = chosen === chip.id;
+                    return (
+                      <button key={chip.id} type="button" data-history-pass={chip.id} aria-pressed={selected}
+                        onClick={() => { setHistoryPass(chip.id); setOpenMonths(null); }}
+                        className="h-8 shrink-0 px-3 font-bold tabular-nums" style={{
+                          borderRadius: 999, fontSize: TYPE.caption,
+                          backgroundColor: selected ? TINT : CANVAS, color: selected ? BRAND_D : SUB,
+                        }}>{chip.label} {chip.count}</button>
+                    );
+                  })}
+                </div>
+              );
+            })() : null}
             {entries.length === 0
               ? <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>아직 기록이 없습니다.</p>
-              : entries.map((entry) => {
-                const pass = passes.find((item) => item.id === entry.passId);
-                const canCorrect = canUndo && pass && isCorrectableEntry(entry, entries);
-                return (
-                  <LedgerRow key={entry.id} entry={entry} nameOfInstructor={nameOfInstructor}
-                    corrected={isCorrectedEntry(entry, entries)}
-                    onCorrect={canCorrect
-                      ? () => { setUndo({ kind: "correct", pass, entry }); setReason(""); }
-                      : undefined} />
-                );
-              })}
+              : (() => {
+                const chosen = historyPass === ALL_PASSES || passes.some((pass) => pass.id === historyPass)
+                  ? historyPass : ALL_PASSES;
+                const months = historyMonths(entries, { passId: chosen });
+                if (months.length === 0) {
+                  return <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>이 회원권에는 아직 기록이 없습니다.</p>;
+                }
+                /* 아무것도 안 눌렀으면 최근 달 하나만 펼친다. */
+                const open = openMonths || new Set([months[0].key]);
+                const toggle = (key) => {
+                  const next = new Set(open);
+                  if (next.has(key)) next.delete(key); else next.add(key);
+                  setOpenMonths(next);
+                };
+                return months.map((month) => {
+                  const expanded = open.has(month.key);
+                  return (
+                    <div key={month.key} data-history-month={month.key} className="mt-2">
+                      <button type="button" onClick={() => toggle(month.key)} aria-expanded={expanded}
+                        className="flex w-full items-center gap-1.5 text-left tabular-nums"
+                        style={{ padding: "8px 0", fontSize: TYPE.caption, fontWeight: 700, color: expanded ? INK : SUB }}>
+                        <ChevronRight size={14} style={{ transform: expanded ? "rotate(90deg)" : "none" }} />
+                        <span className="min-w-0 flex-1 truncate">{monthHeading(month, { now: at, showPay: showPayTotal })}</span>
+                        <span className="shrink-0" style={{ fontWeight: 600, color: SUB }}>{month.entries.length}줄</span>
+                      </button>
+                      {expanded ? month.entries.map((entry) => {
+                        const pass = passes.find((item) => item.id === entry.passId);
+                        const canCorrect = canUndo && pass && isCorrectableEntry(entry, entries);
+                        return (
+                          <LedgerRow key={entry.id} entry={entry} nameOfInstructor={nameOfInstructor}
+                            corrected={isCorrectedEntry(entry, entries)}
+                            onCorrect={canCorrect
+                              ? () => { setUndo({ kind: "correct", pass, entry }); setReason(""); }
+                              : undefined} />
+                        );
+                      }) : null}
+                    </div>
+                  );
+                });
+              })()}
           </div>
         </div>
       ) : null}
     </section>
   );
 }
+
+const defaultClock = () => new Date();
+const smokeDirectoryClock = () => new Date(2026, 10, 4, 12, 0);
 
 /* 회원 관리. 대표와 매니저가 본다.
 
@@ -19842,7 +20010,7 @@ const phoneTail = (phone) => {
   return digits.length >= 4 ? digits.slice(-4) : digits;
 };
 
-function ClientRow({ client, locationName, onOpen }) {
+function ClientRow({ client, locationName, onOpen, instructorCount = 0 }) {
   const ended = client.status === CLIENT_STATUS.ENDED;
   const tail = phoneTail(client.phone);
   return (
@@ -19863,6 +20031,14 @@ function ClientRow({ client, locationName, onOpen }) {
           backgroundColor: ended ? CANVAS : TINT, color: ended ? SUB : BRAND_D,
         }}>{labelOf(CLIENT_STATUS_LABELS, client.status)}</span>
       </div>
+      {/* 활성 회원권의 담당이 둘 이상이면 그 회원은 여러 강사 칩에 나온다.
+          같은 회원이 두 번 보이는 이유를 여기서 말한다. */}
+      {instructorCount >= 2 ? (
+        <span data-instructor-count className="mt-1 inline-block" style={{
+          padding: "1px 7px", borderRadius: 999, fontSize: TYPE.caption, fontWeight: 700,
+          backgroundColor: CANVAS, color: INK2,
+        }}>담당 {instructorCount}명</span>
+      ) : null}
       <p className="mt-1 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
         {tail ? `···${tail}` : "연락처 없음"}
         {" · "}{locationName || client.locationId || "지점 없음"}
@@ -19878,9 +20054,23 @@ function ClientRow({ client, locationName, onOpen }) {
  * 으로만 그려진다. 앱은 이 prop 을 넘기지 않으며, 넘기지 않으면 동작은 이전과
  * 같다.
  */
-function ClientDirectory({ organization, currentUserId, clientStore, locationStore, onRetryOrganization, onToast, onOpenClient, onChanged, initialState = null }) {
+function ClientDirectory({
+  organization, currentUserId, clientStore, locationStore, passStore, instructorStore,
+  onRetryOrganization, onToast, onOpenClient, onChanged, initialState = null,
+  /* 회원권 담당을 바꾸면 앱이 이 숫자를 올린다 -- 그때 다시 읽어 강사 묶음이 바로
+     새 담당을 따른다. 안 그러면 방금 넘긴 회원이 옛 강사 칩에 남는다. */
+  refreshKey = 0,
+  now = defaultClock,
+}) {
   const [clients, setClients] = useState(initialState?.clients || []);
   const [locations, setLocations] = useState(initialState?.locations || []);
+  /* 강사 묶음의 재료 (2026-11-04). 못 읽어도 회원 목록은 보여 준다 -- 묶음만 뺀다.
+     null 은 아직 안 읽음 -- 그동안은 묶지 않고 목록을 전처럼 그린다. */
+  const [passes, setPasses] = useState(Array.isArray(initialState?.passes) ? initialState.passes : null);
+  const [instructors, setInstructors] = useState(initialState?.instructors || []);
+  const [passError, setPassError] = useState(initialState?.passError || "");
+  const [instructorFilter, setInstructorFilter] = useState(initialState?.instructorFilter || INSTRUCTOR_GROUP.ALL);
+  const [noActiveOpen, setNoActiveOpen] = useState(Boolean(initialState?.noActiveOpen));
   const [loading, setLoading] = useState(!initialState);
   const [loadError, setLoadError] = useState("");
   const [mode, setMode] = useState(initialState?.mode || "list");
@@ -19905,21 +20095,26 @@ function ClientDirectory({ organization, currentUserId, clientStore, locationSto
          다만 견디는 것과 삼키는 것은 다르다. 실패는 이미 리포지토리가 기록했고,
          여기서는 등록 폼이 "못 읽었다"와 "지점이 없다"를 구분할 수 있도록
          코드를 들고 간다. */
-      const [foundClients, locationResult] = await Promise.all([
+      const [foundClients, locationResult, passResult, instructorResult] = await Promise.all([
         listClients(organizationId, { store: clientStore }),
         toleratingReadFailure(listLocations(organizationId, { store: locationStore })),
+        toleratingReadFailure(listPasses(organizationId, { store: passStore })),
+        toleratingReadFailure(listInstructors(organizationId, { store: instructorStore })),
       ]);
       setClients(foundClients);
       setLocations(locationResult.items);
       setLocationError(locationResult.failed ? locationResult.errorCode || "unknown" : "");
+      setPasses(passResult.items);
+      setPassError(passResult.failed ? passResult.errorCode || "unknown" : "");
+      setInstructors(instructorResult.items);
     } catch (error) {
       setLoadError(`회원을 불러오지 못했어요 (코드 ${error?.code || "unknown"})`);
     } finally {
       setLoading(false);
     }
-  }, [organizationId, clientStore, locationStore]);
+  }, [organizationId, clientStore, locationStore, passStore, instructorStore]);
 
-  useEffect(() => { if (!locked) reload(); else setLoading(false); }, [locked, reload]);
+  useEffect(() => { if (!locked) reload(); else setLoading(false); }, [locked, reload, refreshKey]);
 
   const locationNames = useMemo(
     () => new Map(locations.map((location) => [location.id, location.name || ""])),
@@ -19958,6 +20153,25 @@ function ClientDirectory({ organization, currentUserId, clientStore, locationSto
       .filter((client) => clientMatchesSearch(client, search)),
     [scopedClients, choosableLocations, locationFilter, search],
   );
+  /* ── 지점 → 강사 → 회원 (2026-11-04) ─────────────────────────────────────
+     강사 칩은 지점 칩 · 검색을 거친 목록으로 센다. 지점 칩의 숫자는 그대로
+     회원 수다 -- 강사 칩을 골라도 바뀌지 않는다. */
+  const groupingReady = Array.isArray(passes) && !passError;
+  const assignments = useMemo(() => activeAssignments(passes || [], now()), [passes, now]);
+  const grouping = useMemo(() => instructorChips(visible, assignments, instructors), [visible, assignments, instructors]);
+  /* 고른 칩이 사라지면(지점을 바꿔 그 강사의 회원이 없으면) 전체로. 빈 목록만
+     남으면 회원이 없는 것처럼 보인다. */
+  const effectiveInstructor = instructorFilter === INSTRUCTOR_GROUP.ALL
+    || (instructorFilter === INSTRUCTOR_GROUP.UNASSIGNED && grouping.unassigned > 0)
+    || (instructorFilter === INSTRUCTOR_GROUP.NO_ACTIVE && grouping.noActive > 0)
+    || grouping.chips.some((chip) => chip.id === instructorFilter)
+    ? instructorFilter : INSTRUCTOR_GROUP.ALL;
+  const grouped = !groupingReady ? visible : visible.filter((client) => inInstructorGroup(assignments.get(client.id), effectiveInstructor));
+  /* 전체 칩에서는 활성 회원권이 없는 회원을 아래 접힌 묶음으로 내린다 -- 지금
+     맡을 사람을 찾는 화면에서 끝난 회원이 섞이면 매번 지나쳐야 한다. */
+  const foldNoActive = groupingReady && effectiveInstructor === INSTRUCTOR_GROUP.ALL;
+  const listedNow = foldNoActive ? grouped.filter((client) => assignments.has(client.id)) : grouped;
+  const folded = foldNoActive ? grouped.filter((client) => !assignments.has(client.id)) : [];
 
   const resetForm = () => {
     setForm({ name: "", phone: "", locationId: "" });
@@ -20146,6 +20360,33 @@ function ClientDirectory({ organization, currentUserId, clientStore, locationSto
         <input value={search} onChange={(e) => setSearch(e.target.value)} className={inputCls} placeholder="이름 또는 연락처" />
       </div>
       <LocationFilter locations={choosableLocations} counts={locationCounts} value={locationFilter} onChange={setLocationFilter} />
+      {/* 강사 칩. 이름과 담당 회원 수 (회원 단위, 중복 없이). */}
+      {!loading && !loadError && clients.length > 0 && groupingReady ? (
+        <div className="pt-hscroll mt-2 flex gap-1.5 overflow-x-auto" data-instructor-groups>
+          {[
+            { id: INSTRUCTOR_GROUP.ALL, label: "전체", count: visible.length },
+            ...grouping.chips.map((chip) => ({ id: chip.id, label: chip.name, count: chip.count })),
+            ...(grouping.unassigned > 0 ? [{ id: INSTRUCTOR_GROUP.UNASSIGNED, label: "담당 미지정", count: grouping.unassigned }] : []),
+            ...(grouping.noActive > 0 ? [{ id: INSTRUCTOR_GROUP.NO_ACTIVE, label: "활성 회원권 없음", count: grouping.noActive }] : []),
+          ].map((chip) => {
+            const selected = effectiveInstructor === chip.id;
+            return (
+              <button key={chip.id} type="button" data-instructor-group={chip.id} aria-pressed={selected}
+                onClick={() => setInstructorFilter(chip.id)}
+                className="h-8 shrink-0 px-3 font-bold tabular-nums" style={{
+                  borderRadius: 999, fontSize: TYPE.caption,
+                  backgroundColor: selected ? INK : CARD, color: selected ? CARD : SUB,
+                  border: `1px solid ${selected ? INK : LINE}`,
+                }}>{chip.label} {chip.count}</button>
+            );
+          })}
+        </div>
+      ) : null}
+      {passError ? (
+        <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>
+          회원권을 불러오지 못해 강사별로 묶지 못했어요. 회원 목록은 그대로입니다. (코드 {passError})
+        </p>
+      ) : null}
       <div className="mt-3">
         {loading ? <p style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : null}
         {!loading && loadError ? <p style={{ fontSize: TYPE.caption, color: BAD }}>{loadError}</p> : null}
@@ -20155,10 +20396,24 @@ function ClientDirectory({ organization, currentUserId, clientStore, locationSto
         {!loading && !loadError && clients.length > 0 && visible.length === 0
           ? <p style={{ fontSize: TYPE.caption, color: SUB }}>{search.trim() ? "검색 결과가 없습니다." : "이 지점에 등록된 회원이 없습니다."}</p>
           : null}
-        {!loading && !loadError && visible.map((client) => (
+        {!loading && !loadError && listedNow.map((client) => (
           <ClientRow key={client.id} client={client} locationName={locationNames.get(client.locationId)}
+            instructorCount={assignedInstructorCount(assignments.get(client.id))}
             onOpen={() => onOpenClient?.({ ...client, locationName: locationNames.get(client.locationId) || "" })} />
         ))}
+        {!loading && !loadError && folded.length > 0 ? (
+          <div data-no-active-group style={{ borderTop: `1px solid ${LINE}` }}>
+            <button type="button" onClick={() => setNoActiveOpen((open) => !open)} aria-expanded={noActiveOpen}
+              className="flex w-full items-center gap-1.5 text-left" style={{ padding: "11px 12px", fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>
+              <ChevronRight size={14} style={{ transform: noActiveOpen ? "rotate(90deg)" : "none" }} />
+              활성 회원권 없음 {folded.length}명
+            </button>
+            {noActiveOpen ? folded.map((client) => (
+              <ClientRow key={client.id} client={client} locationName={locationNames.get(client.locationId)}
+                onOpen={() => onOpenClient?.({ ...client, locationName: locationNames.get(client.locationId) || "" })} />
+            )) : null}
+          </div>
+        ) : null}
       </div>
     </section>
   );
@@ -24566,7 +24821,7 @@ const WATCH_TONE = {
   get [WATCH_REASON.QUIET]() { return { backgroundColor: CANVAS, color: INK2 }; },
 };
 
-function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
+function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevision = 0,
   /* 일정 탭이 이미 읽어 둔 원장 급여를 **그대로** 받는다. 여기서 다시 읽으면
      두 화면이 서로 다른 순간의 원장을 보게 되고, 그 차이는 아무 데도 적히지
      않는다 -- 같은 객체를 쓰면 다를 수가 없다. */
@@ -25523,6 +25778,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode,
         {view === "clients" && showClients && (
           <ClientDirectory organization={organization} currentUserId={account?.id || ""}
             clientStore={clientStore} locationStore={locationStore} onOpenClient={onOpenClient}
+            passStore={passStore} instructorStore={instructorStore} refreshKey={dataRevision}
             onRetryOrganization={onRetryOrganization} onToast={onToast} onChanged={onRosterChanged} />
         )}
         {view === "products" && showProducts && (
@@ -26177,8 +26433,31 @@ export function createAppScreenSmokeCases() {
   const clientDirectory = (organization, initialState) => providerWith(organization, (
     <ClientDirectory organization={readyOrganizationContext(organization)} currentUserId="smoke-account"
       clientStore={clientStore} locationStore={locationStore} initialState={initialState}
-      onRetryOrganization={noop} onToast={noop} />
+      now={smokeDirectoryClock} onRetryOrganization={noop} onToast={noop} />
   ));
+  /* 강사 묶음 픽스처. 박셋은 활성 회원권 둘(강사 A · B), 최넷은 담당 빈 회원권,
+     김하나(반송)는 A, 김하나(센텀)는 B, 이두리는 끝난 회원권만 있다. */
+  const smokeDirectoryGroups = {
+    clients: [
+      ...smokeClients,
+      { id: "smoke-client-d", organizationId: "smoke-center", name: "박셋", phone: "01022223333", locationId: "bansong", status: "active" },
+      { id: "smoke-client-e", organizationId: "smoke-center", name: "최넷", phone: "01044445555", locationId: "bansong", status: "active" },
+    ],
+    locations: smokeLocations,
+    instructors: [
+      { userId: "smoke-inst-a", displayName: "강사가", locationId: "bansong", status: "active" },
+      { userId: "smoke-inst-b", displayName: "강사나", locationId: "centum", status: "active" },
+    ],
+    passes: [
+      { id: "dp-1", clientId: "smoke-client-a", instructorId: "smoke-inst-a", status: "active", remainingCount: 5, expiresAt: new Date(2027, 0, 1) },
+      { id: "dp-2", clientId: "smoke-client-b", instructorId: "smoke-inst-b", status: "active", remainingCount: 3, expiresAt: new Date(2027, 0, 1) },
+      { id: "dp-3", clientId: "smoke-client-d", instructorId: "smoke-inst-a", status: "active", remainingCount: 2, expiresAt: new Date(2027, 0, 1) },
+      { id: "dp-4", clientId: "smoke-client-d", instructorId: "smoke-inst-b", status: "active", remainingCount: 4, expiresAt: new Date(2027, 0, 1) },
+      { id: "dp-5", clientId: "smoke-client-e", instructorId: "", status: "active", remainingCount: 6, expiresAt: new Date(2027, 0, 1) },
+      // 끝난 회원권 -- 이두리는 활성 회원권이 없다.
+      { id: "dp-6", clientId: "smoke-client-c", instructorId: "smoke-inst-a", status: "active", remainingCount: 0, expiresAt: new Date(2027, 0, 1) },
+    ],
+  };
   const auditLog = (organization, initialState) => providerWith(organization, (
     <AuditLog organization={readyOrganizationContext(organization)}
       clientStore={clientStore} instructorStore={instructorStore} locationStore={locationStore}
@@ -26636,6 +26915,17 @@ export function createAppScreenSmokeCases() {
     /* 강사에게는 이 화면이 아무것도 바꾸지 못한다. 열리면 고쳤다고 믿게 된다. */
     { name: "더보기 탭 · 센터 정보 · 강사", element: settingsTab({ ...smokeOwner, role: "instructor" }, { initialView: "center" }) },
     { name: "센터 회원 상세", element: clientDetail() },
+    /* 이력은 달로 묶이고 최근 달만 펼친다 (2026-11-04). 급여 합계는 대표 ·
+       총괄매니저에게만 -- 같은 이력을 역할마다 띄워 그 선을 본다. */
+    { name: "센터 회원 상세 · 이력 전부 펼침", element: clientDetail({ initialOpenMonths: ["2026-09", "2026-08"] }) },
+    { name: "센터 회원 상세 · 이력 · 회원권 칩", element: ownerClientDetail({ initialHistoryPass: "smoke-pass-old" }) },
+    { name: "센터 회원 상세 · 이력 · 대표", element: ownerClientDetail() },
+    { name: "센터 회원 상세 · 이력 · 총괄매니저", element: providerWith({ ...smokeOwner, role: "area_manager" }, (
+      <ClientDetail organization={readyOrganizationContext({ ...smokeOwner, role: "area_manager" })} client={smokeDetailClient}
+        history={smokeHistory} loading={false} error="" instructors={smokeInstructors}
+        now={() => new Date(2026, 8, 17)} onClose={noop} onRetry={noop} />
+    )) },
+    { name: "센터 회원 상세 · 이력 · FC매니저", element: managerClientDetail() },
     { name: "센터 회원 상세 · 대표", element: ownerClientDetail() },
     { name: "센터 회원 상세 · 차감 보정 확인", element: ownerClientDetail({
       initialUndo: {
@@ -27153,6 +27443,16 @@ export function createAppScreenSmokeCases() {
       locations: smokeLocations,
     }) },
     { name: "회원 관리 · 소속 확인 실패", element: clientDirectory({ organizationId: "", role: "", status: "unknown", isLegacy: false }, null) },
+    /* 지점 → 강사 → 회원 (2026-11-04). 역할마다 보이는 지점이 다르고, 강사 칩은
+       그 범위 안에서만 센다. 시계를 고정한다 -- 만료 판정이 "지금" 에 달려 있다. */
+    { name: "회원 관리 · 강사 칩 · 대표", element: clientDirectory(smokeOwner, smokeDirectoryGroups) },
+    { name: "회원 관리 · 강사 칩 · 총괄매니저", element: clientDirectory({ ...smokeOwner, role: "area_manager", locationId: "centum" }, smokeDirectoryGroups) },
+    { name: "회원 관리 · 강사 칩 · FC매니저", element: clientDirectory({ ...smokeOwner, role: "manager", locationId: "bansong", locationIds: ["bansong"] }, smokeDirectoryGroups) },
+    { name: "회원 관리 · 강사 칩 · 한 강사", element: clientDirectory(smokeOwner, { ...smokeDirectoryGroups, instructorFilter: "smoke-inst-a" }) },
+    { name: "회원 관리 · 강사 칩 · 담당 미지정", element: clientDirectory(smokeOwner, { ...smokeDirectoryGroups, instructorFilter: "__unassigned__" }) },
+    { name: "회원 관리 · 강사 칩 · 활성 없음 펼침", element: clientDirectory(smokeOwner, { ...smokeDirectoryGroups, noActiveOpen: true }) },
+    { name: "회원 관리 · 강사 칩 · 검색", element: clientDirectory(smokeOwner, { ...smokeDirectoryGroups, search: "박" }) },
+    { name: "회원 관리 · 강사 칩 · 회원권 조회 실패", element: clientDirectory(smokeOwner, { ...smokeDirectoryGroups, passError: "permission-denied" }) },
     { name: "더보기 탭 · 매니저", element: settingsTab({ ...smokeOwner, role: "manager" }) },
     { name: "회원권 상품", element: providerWith(smokeOwner, (
       <ProductCatalog organization={readyOrganizationContext(smokeOwner)} currentUserId="smoke-account"
@@ -27587,6 +27887,12 @@ export default function App() {
      "넘길 회원권이 없습니다" 로 뜬다 -- 더보기 → 회원 관리는 명부 밖의
      회원도 열 수 있어서 그 길로 연 회원권이 전부 그렇게 끝난다. */
   const [handoverPass, setHandoverPass] = useState(null);
+  /* 담당 변경을 누르는 사람의 범위. 지점 칩의 기본값과 맡은 지점 밖 판정이 이것을 본다. */
+  const handoverViewer = useMemo(() => ({
+    role: organizationContext?.role || "",
+    locationId: organizationContext?.locationId || "",
+    locationIds: organizationContext?.locationIds || [],
+  }), [organizationContext?.role, organizationContext?.locationId, organizationContext?.locationIds]);
   const [handoverBusy, setHandoverBusy] = useState(false);
   const [handoverError, setHandoverError] = useState("");
 
@@ -27607,6 +27913,12 @@ export default function App() {
      재시도가 효과를 다시 돌리면서 값이 false 로 돌아가고, 권한이 정말 없는
      사람에게 무한 반복이 된다. */
   const rosterAuthRetried = useRef(false);
+  /* ── 가벼운 갱신 (2026-11-04, roster-refresh.js) ──────────────────────────
+     loadedAt 은 마지막으로 **성공한 읽기를 시작한 시각**이다. 그 뒤에 발급된
+     회원권만 다시 읽는 기준이 된다. lastAt 은 간격 제한의 기준이다. */
+  const [rosterUpdatedAt, setRosterUpdatedAt] = useState(null);
+  const [rosterRefreshing, setRosterRefreshing] = useState(false);
+  const rosterRefreshState = useRef({ lastAt: null, loadedAt: null, inFlight: false });
 
   useEffect(() => {
     if (!organizationRoster) { setRosterClients([]); setRosterPasses([]); setRosterTotals([]); setRosterProducts([]); setRosterLocations([]); setRosterInstructors([]); setRosterError(""); return undefined; }
@@ -27620,6 +27932,7 @@ export default function App() {
        그것은 "아직 모른다" 와 같은 방향이라 거짓을 보여주지 않는다. */
     /* 강사에게는 담당 회원만 내려온다. 기기에서 거르는 것이 아니라 애초에
        오지 않는다 -- 화면 필터는 보여주지 않을 뿐 주지 않은 것이 아니다. */
+    const fullLoadStartedAt = Date.now();
     Promise.all([
       listClients(organizationContext.organizationId, clientScopeFor(organizationContext, account?.id)),
       listPasses(organizationContext.organizationId),
@@ -27636,6 +27949,9 @@ export default function App() {
       toleratingReadFailure(listInstructors(organizationContext.organizationId)),
     ]).then(([clients, passes, totalsResult, productResult, locationResult, instructorResult]) => {
       if (!alive) return;
+      rosterRefreshState.current.loadedAt = fullLoadStartedAt;
+      rosterRefreshState.current.lastAt = fullLoadStartedAt;
+      setRosterUpdatedAt(Date.now());
       setRosterClients(clients);
       setRosterPasses(passes);
       setRosterTotals(totalsResult.items);
@@ -27676,6 +27992,73 @@ export default function App() {
     });
     return () => { alive = false; };
   }, [organizationRoster, organizationContext.organizationId, rosterRevision]);
+
+  const rosterClientsRef = useRef(rosterClients);
+  rosterClientsRef.current = rosterClients;
+  const rosterPassesRef = useRef(rosterPasses);
+  rosterPassesRef.current = rosterPasses;
+  const refreshRoster = useCallback(async (reason, options = {}) => {
+    if (!organizationRoster || !organizationContext.organizationId) return "disabled";
+    const state = rosterRefreshState.current;
+    const organizationId = organizationContext.organizationId;
+    /* 판정은 refreshRosterOnce 가 동기로 먼저 한다. 읽기로 가면 그 자리에서 읽는 중
+       표시를 세운다 -- 같은 순간에 두 번 불려도 둘째는 in_flight 로 끝난다. */
+    const result = refreshRosterOnce({
+      readClients: () => listClients(organizationId, clientScopeFor(organizationContext, account?.id)),
+      readPassesSince: (since) => (since ? listPassesIssuedSince(organizationId, since) : listPasses(organizationId)),
+      current: { clients: rosterClientsRef.current, passes: rosterPassesRef.current },
+      lastAt: state.lastAt, loadedAt: state.loadedAt, inFlight: state.inFlight, force: options.force === true,
+      now: () => Date.now(),
+      onStart: (startedAt) => { state.inFlight = true; state.lastAt = startedAt; setRosterRefreshing(true); },
+    });
+    const outcome = await result;
+    if (outcome.status === "refreshed") {
+      state.loadedAt = outcome.startedAt;
+      setRosterClients(outcome.clients);
+      setRosterPasses(outcome.passes);
+      setRosterUpdatedAt(Date.now());
+      /* 읽은 문서 수를 남긴다 -- 2단계(실시간)를 정할 때 이 숫자가 근거다. */
+      deviceLog("roster_refresh", { feature: "centre_roster", stage: reason, count: outcome.read });
+    } else if (outcome.status === "failed") {
+      deviceLog("roster_refresh_failed", {
+        feature: "centre_roster", stage: reason, errorDomain: "firestore",
+        errorCode: outcome.error?.code || outcome.error?.name || "unknown", message: outcome.error?.message,
+      });
+    } else {
+      deviceLog("roster_refresh_skipped", { feature: "centre_roster", stage: reason, reason: outcome.status });
+      return outcome.status;
+    }
+    state.inFlight = false;
+    setRosterRefreshing(false);
+    return outcome.status;
+  }, [organizationRoster, organizationContext, account?.id]);
+
+  /* 30초 넘게 비활성이었다가 돌아오면 새로 읽는다. 웹은 visibilitychange, 폰은
+     appStateChange 도 함께 본다 -- 어느 쪽이 먼저 와도 간격 제한이 둘을 하나로 만든다. */
+  useEffect(() => {
+    if (!organizationRoster) return undefined;
+    let hiddenAt = null;
+    const away = () => { if (hiddenAt === null) hiddenAt = Date.now(); };
+    const back = () => {
+      if (shouldRefreshOnResume({ hiddenAt, now: Date.now() })) refreshRoster("resume");
+      hiddenAt = null;
+    };
+    const onVisibility = () => (document.visibilityState === "hidden" ? away() : back());
+    document.addEventListener("visibilitychange", onVisibility);
+    let listener = null;
+    if (Capacitor.isNativePlatform()) {
+      Promise.resolve(CapacitorApp.addListener("appStateChange", ({ isActive }) => (isActive ? back() : away())))
+        .then((handle) => { listener = handle; }).catch(() => {});
+    }
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      listener?.remove?.();
+    };
+  }, [organizationRoster, refreshRoster]);
+
+  const rosterRefreshValue = useMemo(() => ({
+    enabled: Boolean(organizationRoster), refresh: refreshRoster, updatedAt: rosterUpdatedAt, refreshing: rosterRefreshing,
+  }), [organizationRoster, refreshRoster, rosterUpdatedAt, rosterRefreshing]);
 
   /* ── 이 기기가 몇 번 빌드인지 적는다 ──────────────────────────────────
      회원 범위 규칙을 켜면 낡은 앱은 통째로 멈춘다. 대표가 그것을 켜기 전에
@@ -31620,6 +32003,7 @@ export default function App() {
     <AIRecordingStatusContext.Provider value={{ ...aiRecordingStatus, updateStatus: updateAIRecordingStatus }}>
     <OrganizationContext.Provider value={organizationContext}>
     <LessonRecordLinkContext.Provider value={{ prepare: prepareLessonRecordContext, resolve: resolveLessonRecordLink }}>
+    <RosterRefreshContext.Provider value={rosterRefreshValue}>
     <div className={`${appRootClassName} flex justify-center`} style={{ minHeight: "100vh", height: "100dvh", backgroundColor: PAGE, overflow: "hidden" }}>
       {style}
       <div className="pt-app-shell safe-t flex h-full min-h-0 w-full flex-col" style={{ backgroundColor: PAGE, boxShadow: "0 0 0 1px rgba(28,36,51,.04)" }}>
@@ -31692,7 +32076,7 @@ export default function App() {
                   onSaveMarks={(view, photoId, marks, options) => saveMarks(id, view, photoId, marks, options)} onSaveAssessmentRole={(assessmentId, role) => saveAssessmentRole(id, assessmentId, role)} onToggleAssessmentFavorite={(assessmentId, favorite) => toggleAssessmentFavorite(id, assessmentId, favorite)}
                   onToast={setToast} onSaved={(mode) => setAnalysisDone({ id, mode })} /></Guard>;
               }} />}
-            {tab === "settings" && <ReferenceSettingsTab key={`settings-${settingsEntry.key}`} initialView={settingsEntry.view} onRosterChanged={() => setRosterRevision((value) => value + 1)} db={db} photos={photos} account={account} savedAt={savedAt} demoMode={demoMode}
+            {tab === "settings" && <ReferenceSettingsTab key={`settings-${settingsEntry.key}`} initialView={settingsEntry.view} onRosterChanged={() => setRosterRevision((value) => value + 1)} dataRevision={rosterRevision} db={db} photos={photos} account={account} savedAt={savedAt} demoMode={demoMode}
               instructorPay={instructorPay} payMonth={payMonth} payLoading={payLoading} payError={payError}
               currentUserId={account?.id || ""} rosterClients={rosterClients} rosterPasses={rosterPasses}
               onOpenPay={canSeeOwnPay ? () => setPayOpen(true) : undefined} onChangeSettings={(s) => saveDb({ ...db, settings: s })} onChangePhoto={changePhoto} onToast={setToast} themePref={themePref} onChangeTheme={changeTheme} onLogout={handleLogout} onDeleteAccount={handleDeleteAccount} onImport={importHandoff}
@@ -31711,6 +32095,9 @@ export default function App() {
             <HandoverSheet
               passes={[handoverPass]}
               instructors={rosterInstructors}
+              /* 이름 검색 · 칩의 소속 지점 · 맡은 지점 밖 판정 (2026-11-04). */
+              viewer={handoverViewer}
+              locations={locationsVisibleTo(rosterLocations, handoverViewer)}
               fromInstructorId={String(handoverPass?.instructorId || "")}
               fromName={String(rosterInstructors.find(
                 (item) => String(item?.userId || "") === String(handoverPass?.instructorId || ""),
@@ -31732,6 +32119,18 @@ export default function App() {
               onRun={async ({ plan }) => {
                 const row = plan.ready[0];
                 if (!row) return;
+                /* 저장 단계에서도 막는다. 시트가 버튼을 끄지만, 규칙은 이것을 묻지
+                   않으므로 실제로 쓰기 직전에 한 번 더 본다. */
+                if (instructorOutsideScope(handoverViewer, rosterInstructors.find(
+                  (item) => String(item?.userId || "") === String(row.toInstructorId || ""),
+                ))) {
+                  deviceLog("pass_handover_blocked", {
+                    feature: "pass_handover", stage: "commit", errorDomain: "app",
+                    errorCode: INSTRUCTOR_OUT_OF_SCOPE, role: handoverViewer.role,
+                  });
+                  setHandoverError(INSTRUCTOR_OUT_OF_SCOPE);
+                  return;
+                }
                 setHandoverBusy(true);
                 setHandoverError("");
                 try {
@@ -31962,6 +32361,7 @@ export default function App() {
         </div>
       )}
     </div>
+    </RosterRefreshContext.Provider>
     </LessonRecordLinkContext.Provider>
     </OrganizationContext.Provider>
     </AIRecordingStatusContext.Provider>

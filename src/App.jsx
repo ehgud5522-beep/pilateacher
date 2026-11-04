@@ -150,8 +150,13 @@ import { recordSyncReads, syncReadsByDay } from "./features/schedule/sync-read-c
 import { SCHEDULE_SYNC_MODE, readScheduleSyncConfig, scheduleSyncEnabledFor } from "./features/schedule/sync-switch.js";
 import { WEB_VERSION_CHECK_MS, fetchDeployedWebBuild, isNewerWebBuild, staleTabMessage } from "./features/ui/web-version.js";
 import {
-  lastUpdatedLabel, refreshRosterOnce, shouldRefreshOnResume,
+  lastUpdatedLabel, mergeRosterRefresh, refreshRosterOnce, shouldRefreshOnResume,
 } from "./features/roster/roster-refresh.js";
+import {
+  REALTIME_SCOPE, applyClientChanges, missingPassClientIds, readsOfSnapshot, removesOnLeave,
+  rosterRealtimeEnabledFor, rosterRealtimeScope, shouldLogReads,
+} from "./features/roster/roster-realtime.js";
+import { readPassesForClients, subscribeClients } from "./data/repositories/client-realtime.js";
 import {
   createProduct, listProducts, productBaseUnitPrice, setProductStatus,
 } from "./data/repositories/product-repository.js";
@@ -5625,6 +5630,8 @@ function ReferenceMemberList({
 }) {
   const [q, setQ] = useState("");
   const rosterRefresh = useContext(RosterRefreshContext);
+  /* 고른 지점 칩을 앱에 알린다 -- 명단 실시간이 그 지점을 듣는다 (2단계). */
+  const reportLocationChip = rosterRefresh.reportLocationChip;
   const pullToRefresh = usePullToRefresh(() => rosterRefresh.refresh("pull_member_list"), organizationMode && rosterRefresh.enabled);
   /* 소속 센터에서만 운영중이 기본이다. 개인 모드에는 회원권이 없어 모두가
      "운영중" 이 되고, 그러면 칩 하나가 아무것도 가르지 않는다. */
@@ -5691,6 +5698,7 @@ function ReferenceMemberList({
     if (locationFilter === NO_LOCATION) return locationCounts[NO_LOCATION] > 0 ? NO_LOCATION : ALL_LOCATIONS;
     return visibleLocations.some((item) => item.id === locationFilter) ? locationFilter : ALL_LOCATIONS;
   }, [locationFilter, visibleLocations, locationCounts]);
+  useEffect(() => { if (organizationMode) reportLocationChip?.(effectiveLocation); }, [organizationMode, effectiveLocation, reportLocationChip]);
   /* **scopedMembers 를 쓴다.** members 를 그대로 쓰면 칩만 줄고 "전체" 에서
      남의 지점 회원이 그대로 나온다. locationId 가 붙어 있는 행이라 아래
      filterByLocation 과 모양이 같다. */
@@ -12416,7 +12424,11 @@ const OrganizationContext = createContext(UNRESOLVED_ORGANIZATION_CONTEXT);
  * 센터 회원 명단의 가벼운 갱신 (2026-11-04, roster-refresh.js). 회원 목록과 수업
  * 등록의 회원 선택이 쓴다. enabled 가 false 면(개인 모드 · 스모크) 아무것도 안 한다.
  */
-export const RosterRefreshContext = createContext({ enabled: false, refresh: () => {}, updatedAt: null, refreshing: false });
+export const RosterRefreshContext = createContext({
+  enabled: false, refresh: () => {}, updatedAt: null, refreshing: false,
+  /* 회원 목록이 고른 지점 칩을 알린다. 명단 실시간(2단계)이 그 지점을 듣는다. */
+  reportLocationChip: () => {}, live: false,
+});
 
 /** "마지막 갱신 N분 전" 이 혼자 낡지 않게 30초마다 다시 그린다. */
 function useMinuteClock(enabled) {
@@ -12462,7 +12474,7 @@ export function RosterFreshness({ compact = false }) {
   return (
     <div data-roster-freshness className={`flex items-center gap-2 ${compact ? "" : "mb-2"}`}>
       <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: SUB }}>
-        {roster.refreshing ? "새로 읽는 중…" : lastUpdatedLabel(roster.updatedAt, now)}
+        {roster.refreshing ? "새로 읽는 중…" : roster.live ? "실시간으로 받는 중" : lastUpdatedLabel(roster.updatedAt, now)}
       </span>
       <button type="button" disabled={roster.refreshing} onClick={() => roster.refresh("manual", { force: false })}
         className="flex h-9 shrink-0 items-center gap-1 px-3 font-bold disabled:opacity-50"
@@ -25841,6 +25853,10 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
               onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
               document="privateSync" title="본인 일정 동기화"
               description="켜진 계정은 상담 · 휴무 같은 개인 일정(제목 · 날짜 · 시각)과 그룹 수업을 본인의 다른 PC · 폰과 주고받습니다. 본인만 볼 수 있고 대표 · FC · 다른 강사는 볼 수 없습니다. 30일 전 ~ 60일 뒤의 것만 주고받습니다. 메모 · 상담 메모 · 회원 목표는 입력한 기기에만 남습니다. 꺼진 계정은 서버에 아무것도 올리지 않습니다." />
+            <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
+              onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
+              document="rosterRealtime" title="회원 명단 실시간"
+              description="켜진 계정은 센터 회원 명단을 실시간으로 받습니다. 강사는 본인 담당 회원만, FC매니저 · 매니저 · 대표는 회원 목록에서 고른 지점을 받습니다 (대표 · 총괄매니저가 '전체'를 고르면 받지 않고 새로고침으로 맞춥니다). 대표 → 강사 한 명 → 전체 순서로 켜세요. 읽은 횟수는 진단에 남습니다." />
           </div>
         )}
         {view === "instructor-scope" && showAudit && (
@@ -28056,9 +28072,16 @@ export default function App() {
     };
   }, [organizationRoster, refreshRoster]);
 
+  /* 회원 목록에서 고른 지점 칩. 목록과 같은 기기 저장값에서 시작한다. */
+  const [rosterLocationChip, setRosterLocationChip] = useState(() => {
+    try { return String(localStorage.getItem(MEMBER_LOCATION_KEY) || "") || ALL_LOCATIONS; }
+    catch (e) { return ALL_LOCATIONS; }
+  });
+  const [rosterLive, setRosterLive] = useState(false);
   const rosterRefreshValue = useMemo(() => ({
     enabled: Boolean(organizationRoster), refresh: refreshRoster, updatedAt: rosterUpdatedAt, refreshing: rosterRefreshing,
-  }), [organizationRoster, refreshRoster, rosterUpdatedAt, rosterRefreshing]);
+    reportLocationChip: setRosterLocationChip, live: rosterLive,
+  }), [organizationRoster, refreshRoster, rosterUpdatedAt, rosterRefreshing, rosterLive]);
 
   /* ── 이 기기가 몇 번 빌드인지 적는다 ──────────────────────────────────
      회원 범위 규칙을 켜면 낡은 앱은 통째로 멈춘다. 대표가 그것을 켜기 전에
@@ -29673,6 +29696,87 @@ export default function App() {
     return () => { alive = false; document.removeEventListener("visibilitychange", onVisible); };
   }, [phase, account?.id, syncDay]);
   const scheduleSyncOn = scheduleSyncEnabledFor(scheduleSyncConfig, account?.id);
+
+  /* ── 센터 회원 명단 실시간 (2026-11-04, 2단계, roster-realtime.js) ─────────────
+     스위치는 scheduleSync 문서의 rosterRealtime 칸이다 -- 위에서 이미 읽는 문서라
+     읽기가 늘지 않는다. 못 읽으면 꺼진 것이다.
+
+     강사는 본인 담당 회원만, FC매니저 · 매니저 · 대표 · 총괄매니저는 회원 목록에서
+     고른 지점을 듣는다. 대표 · 총괄의 "전체" 칩은 듣지 않는다 (1단계가 맡는다). */
+  const rosterRealtimeOn = Boolean(organizationRoster) && rosterRealtimeEnabledFor(scheduleSyncConfig, account?.id);
+  const realtimeScope = useMemo(() => (rosterRealtimeOn
+    ? rosterRealtimeScope({
+      role: organizationContext.role, userId: account?.id || "", locationFilter: rosterLocationChip,
+      viewer: { locationId: organizationContext.locationId || "", locationIds: organizationContext.locationIds || [] },
+      locations: locationsVisibleTo(rosterLocations, {
+        role: organizationContext.role, locationId: organizationContext.locationId || "", locationIds: organizationContext.locationIds || [],
+      }),
+    })
+    : { kind: REALTIME_SCOPE.NONE, reason: "off", key: "none:off" }),
+  [rosterRealtimeOn, organizationContext.role, organizationContext.locationId, organizationContext.locationIds, account?.id, rosterLocationChip, rosterLocations]);
+  useEffect(() => {
+    const organizationId = organizationContext.organizationId;
+    if (realtimeScope.kind === REALTIME_SCOPE.NONE || !organizationId) { setRosterLive(false); return undefined; }
+    let alive = true;
+    let stop = () => {};
+    let total = 0;
+    /* 회원권을 한 번 물어본 회원. 회원권이 정말 없는 회원을 스냅샷마다 다시 읽지 않게. */
+    const asked = new Set();
+    subscribeClients(organizationId, realtimeScope, {
+      onChange: (snapshot) => {
+        if (!alive) return;
+        const reads = readsOfSnapshot(snapshot);
+        const before = total;
+        total += reads;
+        /* 읽은 문서 수를 남긴다. 첫 스냅샷과 50건을 넘을 때마다 -- 2단계를 계속할지
+           정하는 근거다. */
+        if (shouldLogReads(before, total, snapshot.first)) {
+          deviceLog("roster_realtime", {
+            feature: "centre_roster", stage: snapshot.first ? "initial" : "change",
+            count: total, reason: realtimeScope.kind, state: snapshot.fromCache ? "cache" : "server",
+          });
+        }
+        const next = applyClientChanges(rosterClientsRef.current, snapshot.changes, { removeOnLeave: removesOnLeave(realtimeScope) });
+        rosterClientsRef.current = next;
+        setRosterClients(next);
+        setRosterUpdatedAt(Date.now());
+        setRosterLive(true);
+        /* 새로 나타난 회원 중 회원권을 모르는 사람만 그 회원권을 읽는다 -- 잔여가
+           0 으로 보이면 강사는 그 회원을 고르지 못한다. */
+        const touched = new Set(snapshot.changes.filter((change) => change.type !== "removed").map((change) => String(change.doc?.id || "")));
+        const missing = missingPassClientIds(next.filter((client) => touched.has(String(client?.id || ""))), rosterPassesRef.current, asked);
+        if (missing.length === 0) return;
+        missing.forEach((id) => asked.add(id));
+        readPassesForClients(organizationId, missing).then((found) => {
+          if (!alive || found.length === 0) return;
+          setRosterPasses((current) => mergeRosterRefresh({ passes: current }, { clients: [], passes: found }).passes);
+        }).catch((error) => {
+          deviceLog("roster_realtime_failed", {
+            feature: "centre_roster", stage: "passes", errorDomain: "firestore",
+            errorCode: error?.code || error?.name || "unknown", message: error?.message,
+          });
+        });
+      },
+      onError: (error) => {
+        if (!alive) return;
+        setRosterLive(false);
+        deviceLog("roster_realtime_failed", {
+          feature: "centre_roster", stage: "listen", errorDomain: "firestore",
+          errorCode: error?.code || error?.name || "unknown", message: error?.message,
+        });
+      },
+    }).then((unsubscribe) => { if (alive) stop = unsubscribe; else unsubscribe(); })
+      .catch((error) => deviceLog("roster_realtime_failed", {
+        feature: "centre_roster", stage: "subscribe", errorDomain: "firestore",
+        errorCode: error?.code || error?.name || "unknown", message: error?.message,
+      }));
+    return () => {
+      alive = false;
+      stop();
+      setRosterLive(false);
+      deviceLog("roster_realtime", { feature: "centre_roster", stage: "stop", count: total, reason: realtimeScope.kind });
+    };
+  }, [realtimeScope.key, organizationContext.organizationId]);
   publishAllowedRef.current = schedulePublishAllowed({ native: Capacitor.isNativePlatform(), syncOn: scheduleSyncOn });
   /* 처음 받아 합치기 전에 이 기기의 데이터를 한 벌 남긴다 (0단계 스냅샷, 사진 원본
      없이). 서버가 기기 일정을 바꾸기 시작하는 순간이라, 무엇이 꼬여도 이것으로

@@ -101,6 +101,21 @@ const WRITERS = Object.freeze({
   scheduleSync: scheduleSyncPayload,
   /* 본인 일정 · 메모 동기화 (3단계). 센터 수업과 따로 켜고 끈다 -- 모양은 같다. */
   privateSync: scheduleSyncPayload,
+  /* 센터 회원 명단 실시간 (2026-11-04, 2단계). 모양은 같다. 문서는 따로 두지
+     않는다 -- 아래 FIELD_TARGETS 참고. */
+  rosterRealtime: scheduleSyncPayload,
+});
+
+/**
+ * 자기 문서가 아니라 **다른 문서의 한 칸**에 쓰는 설정.
+ *
+ * 명단 실시간 스위치는 scheduleSync 문서의 rosterRealtime 칸에 산다. 새 문서를
+ * 만들면 규칙에 그 문서의 읽기 문을 새로 내야 하는데(runtimeConfig 는 문서마다
+ * match 가 있다), 규칙 배포 없이 켜고 끌 수 있어야 해서 이미 읽히는 문서에
+ * 얹는다. 앱은 scheduleSync 를 이미 읽으므로 읽기도 늘지 않는다.
+ */
+const FIELD_TARGETS = Object.freeze({
+  rosterRealtime: { document: "scheduleSync", field: "rosterRealtime" },
 });
 
 /**
@@ -117,13 +132,22 @@ async function writeRuntimeConfig(firestore, input) {
 
   const at = (input?.now || (() => new Date()))();
   const payload = build(input?.value);
+  const target = FIELD_TARGETS[name];
+  if (target) {
+    await firestore.collection("runtimeConfig").doc(target.document).set({
+      [target.field]: { ...payload, updatedAt: at, updatedBy: text(input?.actorId) },
+    }, { merge: true });
+    return { document: name, value: payload };
+  }
+  /* 다른 설정이 칸으로 얹혀 사는 문서는 합쳐 쓴다 -- 통째로 쓰면 그 칸이 지워진다. */
+  const hosted = Object.values(FIELD_TARGETS).some((item) => item.document === name);
   await firestore.collection("runtimeConfig").doc(name).set({
     ...payload,
     /* 누가 언제 바꿨는가. 이 숫자가 센터 전체를 막을 수 있어, 바뀐 뒤에
        "왜 이렇게 되어 있지" 에 답할 것이 있어야 한다. */
     updatedAt: at,
     updatedBy: text(input?.actorId),
-  });
+  }, hosted ? { merge: true } : undefined);
   return { document: name, value: payload };
 }
 
@@ -132,8 +156,10 @@ async function readRuntimeConfig(firestore, documents = Object.keys(WRITERS)) {
   const out = {};
   for (const name of documents) {
     if (!WRITERS[name]) continue;
-    const snapshot = await firestore.collection("runtimeConfig").doc(name).get();
-    out[name] = snapshot.exists ? snapshot.data() : null;
+    const target = FIELD_TARGETS[name];
+    const snapshot = await firestore.collection("runtimeConfig").doc(target ? target.document : name).get();
+    const data = snapshot.exists ? snapshot.data() : null;
+    out[name] = target ? (data?.[target.field] || null) : data;
   }
   return out;
 }
@@ -184,6 +210,7 @@ module.exports = {
   appUpdatePayload,
   settlementPayload,
   scheduleSyncPayload,
+  FIELD_TARGETS,
   readRuntimeConfig,
   writeRuntimeConfig,
 };

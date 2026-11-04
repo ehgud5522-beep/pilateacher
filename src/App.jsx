@@ -372,6 +372,9 @@ import {
   clientBreakdown, monthChoices, payrollRows, payrollWeeks,
 } from "./features/schedule/payroll-weeks.js";
 import HandoverSheet from "./features/members/HandoverSheet.jsx";
+import {
+  ALL_PASSES, entryCountsByPass, historyMonths, monthHeading,
+} from "./features/membership/pass-history-months.js";
 import { unsettledBeforeHandover } from "./features/members/instructor-handover.js";
 import { runHandover } from "./data/repositories/handover-repository.js";
 import {
@@ -19347,8 +19350,16 @@ function ClientDetail({
   onHandover,
   now = () => new Date(), initialUndo = null, initialTransfer = null, initialPhoneEdit = false,
   initialPassEdit = null, initialSessionUp = null,
+  /* 이력의 회원권 칩과 펼친 달. 스모크가 첫 렌더를 세우는 자리다. */
+  initialHistoryPass = ALL_PASSES, initialOpenMonths = null,
 }) {
   const at = now();
+  /* ── 이력: 달로 묶고 회원권으로 거른다 (2026-11-04) ─────────────────────
+     최근 달만 펼친다. 급여 합계는 대표 · 총괄매니저에게만 -- 강사 · FC매니저가
+     남의 급여 합계를 회원 화면에서 보게 되면 그것이 급여 화면을 대신한다. */
+  const [historyPass, setHistoryPass] = useState(initialHistoryPass);
+  const [openMonths, setOpenMonths] = useState(() => (Array.isArray(initialOpenMonths) ? new Set(initialOpenMonths) : null));
+  const showPayTotal = isOwnerLevelRole(organization?.role) && !organization?.isLegacy;
   /* 되돌리기는 대표만 한다. 강사와 매니저가 스스로 되돌릴 수 있으면 기록의
      의미가 없다 -- 잘못 누른 사람이 그것을 지울 수 있다는 뜻이기 때문이다.
      규칙도 같은 선을 긋는다. */
@@ -19712,21 +19723,77 @@ function ClientDetail({
               ))}
           </div>
 
-          <div className="mt-4">
+          <div className="mt-4" data-pass-history>
             <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>이력</p>
+            {/* 회원권 칩. 한 장뿐이면 고를 것이 없어 줄을 내지 않는다. 보정 · 조정
+                줄은 자기 회원권 칩 안에 그대로 남는다. */}
+            {passes.length > 1 && entries.length > 0 ? (() => {
+              const counts = entryCountsByPass(entries);
+              const chosen = historyPass === ALL_PASSES || passes.some((pass) => pass.id === historyPass)
+                ? historyPass : ALL_PASSES;
+              return (
+                <div className="pt-hscroll mt-2 flex gap-1.5 overflow-x-auto" data-history-pass-chips>
+                  {[{ id: ALL_PASSES, label: "전체", count: entries.length },
+                    ...passes.map((pass) => ({
+                      id: pass.id,
+                      label: `${pass.purchaseRound ? `${pass.purchaseRound}차 ` : ""}${labelOf(PAY_CATEGORY_LABELS, pass.category)}`,
+                      count: counts[pass.id] || 0,
+                    }))].map((chip) => {
+                    const selected = chosen === chip.id;
+                    return (
+                      <button key={chip.id} type="button" data-history-pass={chip.id} aria-pressed={selected}
+                        onClick={() => { setHistoryPass(chip.id); setOpenMonths(null); }}
+                        className="h-8 shrink-0 px-3 font-bold tabular-nums" style={{
+                          borderRadius: 999, fontSize: TYPE.caption,
+                          backgroundColor: selected ? TINT : CANVAS, color: selected ? BRAND_D : SUB,
+                        }}>{chip.label} {chip.count}</button>
+                    );
+                  })}
+                </div>
+              );
+            })() : null}
             {entries.length === 0
               ? <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>아직 기록이 없습니다.</p>
-              : entries.map((entry) => {
-                const pass = passes.find((item) => item.id === entry.passId);
-                const canCorrect = canUndo && pass && isCorrectableEntry(entry, entries);
-                return (
-                  <LedgerRow key={entry.id} entry={entry} nameOfInstructor={nameOfInstructor}
-                    corrected={isCorrectedEntry(entry, entries)}
-                    onCorrect={canCorrect
-                      ? () => { setUndo({ kind: "correct", pass, entry }); setReason(""); }
-                      : undefined} />
-                );
-              })}
+              : (() => {
+                const chosen = historyPass === ALL_PASSES || passes.some((pass) => pass.id === historyPass)
+                  ? historyPass : ALL_PASSES;
+                const months = historyMonths(entries, { passId: chosen });
+                if (months.length === 0) {
+                  return <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>이 회원권에는 아직 기록이 없습니다.</p>;
+                }
+                /* 아무것도 안 눌렀으면 최근 달 하나만 펼친다. */
+                const open = openMonths || new Set([months[0].key]);
+                const toggle = (key) => {
+                  const next = new Set(open);
+                  if (next.has(key)) next.delete(key); else next.add(key);
+                  setOpenMonths(next);
+                };
+                return months.map((month) => {
+                  const expanded = open.has(month.key);
+                  return (
+                    <div key={month.key} data-history-month={month.key} className="mt-2">
+                      <button type="button" onClick={() => toggle(month.key)} aria-expanded={expanded}
+                        className="flex w-full items-center gap-1.5 text-left tabular-nums"
+                        style={{ padding: "8px 0", fontSize: TYPE.caption, fontWeight: 700, color: expanded ? INK : SUB }}>
+                        <ChevronRight size={14} style={{ transform: expanded ? "rotate(90deg)" : "none" }} />
+                        <span className="min-w-0 flex-1 truncate">{monthHeading(month, { now: at, showPay: showPayTotal })}</span>
+                        <span className="shrink-0" style={{ fontWeight: 600, color: SUB }}>{month.entries.length}줄</span>
+                      </button>
+                      {expanded ? month.entries.map((entry) => {
+                        const pass = passes.find((item) => item.id === entry.passId);
+                        const canCorrect = canUndo && pass && isCorrectableEntry(entry, entries);
+                        return (
+                          <LedgerRow key={entry.id} entry={entry} nameOfInstructor={nameOfInstructor}
+                            corrected={isCorrectedEntry(entry, entries)}
+                            onCorrect={canCorrect
+                              ? () => { setUndo({ kind: "correct", pass, entry }); setReason(""); }
+                              : undefined} />
+                        );
+                      }) : null}
+                    </div>
+                  );
+                });
+              })()}
           </div>
         </div>
       ) : null}
@@ -26542,6 +26609,17 @@ export function createAppScreenSmokeCases() {
     /* 강사에게는 이 화면이 아무것도 바꾸지 못한다. 열리면 고쳤다고 믿게 된다. */
     { name: "더보기 탭 · 센터 정보 · 강사", element: settingsTab({ ...smokeOwner, role: "instructor" }, { initialView: "center" }) },
     { name: "센터 회원 상세", element: clientDetail() },
+    /* 이력은 달로 묶이고 최근 달만 펼친다 (2026-11-04). 급여 합계는 대표 ·
+       총괄매니저에게만 -- 같은 이력을 역할마다 띄워 그 선을 본다. */
+    { name: "센터 회원 상세 · 이력 전부 펼침", element: clientDetail({ initialOpenMonths: ["2026-09", "2026-08"] }) },
+    { name: "센터 회원 상세 · 이력 · 회원권 칩", element: ownerClientDetail({ initialHistoryPass: "smoke-pass-old" }) },
+    { name: "센터 회원 상세 · 이력 · 대표", element: ownerClientDetail() },
+    { name: "센터 회원 상세 · 이력 · 총괄매니저", element: providerWith({ ...smokeOwner, role: "area_manager" }, (
+      <ClientDetail organization={readyOrganizationContext({ ...smokeOwner, role: "area_manager" })} client={smokeDetailClient}
+        history={smokeHistory} loading={false} error="" instructors={smokeInstructors}
+        now={() => new Date(2026, 8, 17)} onClose={noop} onRetry={noop} />
+    )) },
+    { name: "센터 회원 상세 · 이력 · FC매니저", element: managerClientDetail() },
     { name: "센터 회원 상세 · 대표", element: ownerClientDetail() },
     { name: "센터 회원 상세 · 차감 보정 확인", element: ownerClientDetail({
       initialUndo: {

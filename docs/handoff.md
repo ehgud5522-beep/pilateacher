@@ -1,5 +1,17 @@
 # 이어서 작업하기 — 최근 변경과 남은 일
 
+## 2026-11-04 — 회원 이름 수정 · 보관 (`feat/client-rename-archive`)
+
+- 삭제는 넣지 않았다. 원장 · 급여 회원별 보기 · 강사 폰 사진 · 회원 앱 연결 · `csv_{번호}` 재등록이 회원 문서에
+  기대고 있다. clients `allow delete: if false` 그대로
+- 보관: 회원 문서 `archived: true` + `archivedAt` · `archivedBy`. 쓸 수 있는 회원권(isDeductablePass, 듀엣 짝 포함)이
+  남으면 막는다(`active_pass`). 회원 탭 · 검색 · 수업 등록 회원 선택(mergeRoster) · 회원권 발급 · 회원 관리 목록에서
+  빠지고, 회원 관리 "보관된 회원 N명" 묶음에서 되살린다. listClients 는 거르지 않는다(급여 · 감사 · 이력의 이름)
+- 이름 수정: 회원 상세(대표 · 총괄 · FC). 이름 한 칸 update + 감사 `client_renamed`(이름 없음) 한 배치
+- 규칙: auditActions 에 `client_renamed` · `client_archived`, mayRecordAudit 이 canRegisterClient 로. **배포는
+  규칙(운영본 + 이 블록) → 강사 웹.** 규칙이 먼저 안 나가면 두 기능이 permission-denied. Functions 배포는 필요 없음
+  (회원 앱 이름은 rebuildMemberViewOnClientWrite 가 다시 만든다)
+
 ## 2026-11-04 — 화면 개선 다섯 건 병합 · 강사 웹 7ff08e0 (대표 지시)
 
 - 병합: #125 담당 강사 고르기(지점 칩 · 검색 · 맡은 지점 밖 instructor_out_of_scope, 규칙은 그대로) ·

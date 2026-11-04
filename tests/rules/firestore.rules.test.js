@@ -5968,3 +5968,48 @@ describe("FC매니저의 담당 강사는 맡은 지점 안에서만", () => {
     await assertSucceeds(issue(users.manager, "fc-empty-far", "inst-far"));
   });
 });
+
+/* ── 회원 이름 수정 · 보관의 감사 기록 (2026-11-04 대표) ────────────────────
+   대표 · 총괄매니저 · FC매니저 (canRegisterClient). 이름은 기록에 담지 못한다. */
+describe("회원 이름 수정 · 보관 기록은 회원을 등록하는 사람만, 이름 없이", () => {
+  const entry = (role, action, extra = {}) => ({
+    organizationId: ORG_A, actorId: users[role], actorRole: role, action,
+    createdAt: serverTimestamp(), targetId: "client-member", clientId: "client-member", ...extra,
+  });
+  const write = (role, id, data) => setDoc(doc(dbFor(users[role]), "auditLogs", id), data);
+
+  test("대표 · 총괄매니저 · FC매니저는 남기고, 강사 · 직원은 못 남긴다", async () => {
+    for (const role of ["owner", "area_manager", "manager"]) {
+      await assertSucceeds(write(role, `rename-${role}`, entry(role, "client_renamed")), role);
+      await assertSucceeds(write(role, `archive-${role}`, entry(role, "client_archived", { enabled: true })), role);
+    }
+    for (const role of ["instructor", "staff"]) {
+      await assertFails(write(role, `rename-${role}`, entry(role, "client_renamed")), role);
+      await assertFails(write(role, `archive-${role}`, entry(role, "client_archived", { enabled: false })), role);
+    }
+  });
+
+  test("이름 칸은 받지 않는다", async () => {
+    await assertFails(write("owner", "rename-with-name", entry("owner", "client_renamed", { name: "새 이름" })));
+    await assertFails(write("owner", "rename-with-prev", entry("owner", "client_renamed", { previousName: "옛 이름" })));
+  });
+
+  test("FC매니저: 회원 이름 update 와 기록을 한 배치로", async () => {
+    const db = dbFor(users.manager);
+    const batch = writeBatch(db);
+    batch.update(doc(db, "organizations", ORG_A, "clients", "client-member"), { name: "새 이름" });
+    batch.set(doc(db, "auditLogs", "rename-batch"), entry("manager", "client_renamed"));
+    await assertSucceeds(batch.commit());
+  });
+
+  test("보관 필드도 같은 배치로 쓰이고, 회원 문서 삭제는 여전히 막힌다", async () => {
+    const db = dbFor(users.owner);
+    const batch = writeBatch(db);
+    batch.update(doc(db, "organizations", ORG_A, "clients", "client-member"), {
+      archived: true, archivedAt: serverTimestamp(), archivedBy: users.owner,
+    });
+    batch.set(doc(db, "auditLogs", "archive-batch"), entry("owner", "client_archived", { enabled: true }));
+    await assertSucceeds(batch.commit());
+    await assertFails(deleteDoc(doc(db, "organizations", ORG_A, "clients", "client-member")));
+  });
+});

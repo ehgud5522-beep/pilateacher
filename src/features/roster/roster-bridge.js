@@ -232,6 +232,9 @@ export function mergeRoster(input = {}) {
       /* 짝의 clientId. 화면이 쓰는 duetWith 는 회원 id 라, 목록이 다 만들어진
          뒤에 한 번 더 돌면서 옮긴다 -- 맞물린 회원은 둘이 다르다. */
       orgPartnerClientId: facts.partnerClientId,
+      /* 보관된 회원 (2026-11-04, client-archive.js). 목록에서는 아래에서 빼지만
+         여기서는 맞춘다 -- 맞추지 않으면 그 기기 회원이 "센터 미등록" 으로 떨어진다. */
+      orgArchived: client?.archived === true,
     };
     if (match) {
       linked.add(match.id);
@@ -322,13 +325,20 @@ export function mergeRoster(input = {}) {
   const all = input.hideUnlinked === true ? [...paired] : [...paired, ...leftovers];
   /* 숨긴 회원은 목록에서 빼되 세어서 돌려준다. 몇 명을 숨겼는지 모르면 되돌릴
      길이 없고, 되돌릴 수 없는 숨김은 삭제와 다를 바가 없다. */
-  const visible = hidden.size === 0
+  const unhidden = hidden.size === 0
     ? all
     : all.filter((member) => !hidden.has(text(member.orgClientId)) && !hidden.has(text(member.id)));
+  /* 보관된 회원은 회원 탭 · 검색 · 수업 등록 회원 선택에서 뺀다. 보관할 수 있는
+     회원은 쓸 수 있는 회원권이 없으므로 차감할 일도 없다. 되살리는 곳은 회원
+     관리(더보기)다. */
+  const visible = unhidden.filter((member) => member.orgArchived !== true);
   return {
     roster: visible,
     unlinkedLocal: leftovers.filter((member) => !hidden.has(text(member.id))),
-    hiddenCount: all.length - visible.length,
+    hiddenCount: all.length - unhidden.length,
+    /* 보관된 회원 수. "숨긴 회원" 과 다르다 -- 숨김은 이 기기의 화면 설정이고, 보관은
+       센터 전체에 걸린다. 섞어 세면 "다시 보기" 가 보관된 회원을 못 꺼낸다. */
+    archivedCount: unhidden.length - visible.length,
   };
 }
 

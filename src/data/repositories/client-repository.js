@@ -13,6 +13,10 @@
 import { CLIENT_STATUS } from "../schema/constants.js";
 import { paths } from "../schema/paths.js";
 import { readCollection } from "./repository-read.js";
+import { AUDIT_ACTION, auditEntry, auditLogId } from "./audit-repository.js";
+import {
+  CLIENT_EDIT_ERROR, archiveBlock, isArchivedClient, validateClientName,
+} from "../../features/members/client-archive.js";
 
 /**
  * @typedef {object} ClientStore
@@ -83,6 +87,19 @@ export function createFirestoreClientStore(storeOptions = {}) {
     serverTimestamp: async () => {
       const { serverTimestamp } = await load();
       return serverTimestamp();
+    },
+    /* 회원 문서 수정과 감사 기록을 한 배치로. 하나가 거부되면 둘 다 안 나간다 --
+       기록 없는 수정도, 수정 없는 기록도 남지 않는다. */
+    commit: async (writes) => {
+      const { doc, writeBatch } = await load();
+      const firestore = await db();
+      const batch = writeBatch(firestore);
+      for (const write of writes) {
+        const reference = doc(firestore, write.path);
+        if (write.operation === "update") batch.update(reference, write.data);
+        else batch.set(reference, write.data);
+      }
+      await batch.commit();
     },
   };
 }
@@ -280,4 +297,88 @@ export async function saveScopeSnapshot(organizationId, snapshotId, payload, opt
     `${paths.organization(organization)}/scopeSnapshots/${id}`,
     { ...payload, createdAt: await store.serverTimestamp() },
   );
+}
+
+/** 고칠 수 없는 이유를 코드로 던진다. 화면이 clientEditMessage 로 문구를 고른다. */
+const editError = (code) => Object.assign(new Error(code), { code, feature: "client_edit" });
+
+/**
+ * 회원 이름을 고친다. **대표·총괄매니저·FC매니저** (감사 기록이 규칙의
+ * canRegisterClient 로 막힌다 -- 같은 배치라 이름도 함께 막힌다).
+ *
+ * 이름 한 칸만 update 한다. set 으로 쓰면 연락처 · 지점 · 담당 강사 목록이 통째로
+ * 덮인다. 회원권 · 원장은 이름이 아니라 clientId 로 이어져 있어 손대지 않는다.
+ * 회원 앱의 이름은 회원 문서가 바뀌면 서버 트리거가 다시 만든다
+ * (rebuildMemberViewOnClientWrite).
+ *
+ * @param {string} organizationId
+ * @param {{ id: string, name?: string, locationId?: string }} client
+ * @param {{ name: string, actorId: string, actorRole: string }} input
+ * @param {{ store?: any, stamp?: () => string }} [options]
+ */
+export async function renameClient(organizationId, client, input, options = {}) {
+  const { store = createFirestoreClientStore(), stamp = () => String(Date.now()) } = options;
+  const organization = requiredText(organizationId, "organizationId");
+  const clientId = requiredText(client?.id, "clientId");
+  const checked = validateClientName(input?.name, { current: client?.name });
+  if ("code" in checked) throw editError(checked.code);
+  const audit = auditEntry(organization, {
+    action: AUDIT_ACTION.CLIENT_RENAMED,
+    actorId: input?.actorId,
+    actorRole: input?.actorRole,
+    targetId: clientId,
+    clientId,
+    locationId: client?.locationId || "",
+    stampedAt: await store.serverTimestamp(),
+  });
+  await store.commit([
+    { path: paths.client(organization, clientId), data: { name: checked.name }, operation: "update" },
+    { path: paths.auditLog(auditLogId(AUDIT_ACTION.CLIENT_RENAMED, clientId, stamp())), data: audit },
+  ]);
+  return { clientId, name: checked.name };
+}
+
+/**
+ * 회원을 보관하거나 되살린다. **지우지 않는다** -- client-archive.js 머리말 참고.
+ *
+ * 보관은 쓸 수 있는 회원권이 하나도 없을 때만 (archiveBlock). 판정에 쓰는
+ * 회원권은 부르는 쪽이 넘긴다 -- 회원 상세가 이미 읽어 들고 있는 것이다.
+ *
+ * @param {string} organizationId
+ * @param {{ id: string, archived?: boolean, locationId?: string }} client
+ * @param {boolean} archived
+ * @param {{ actorId: string, actorRole: string, passes?: Array<any>, now?: Date }} input
+ * @param {{ store?: any, stamp?: () => string }} [options]
+ */
+export async function setClientArchived(organizationId, client, archived, input, options = {}) {
+  const { store = createFirestoreClientStore(), stamp = () => String(Date.now()) } = options;
+  const organization = requiredText(organizationId, "organizationId");
+  const clientId = requiredText(client?.id, "clientId");
+  if (archived) {
+    const blocked = archiveBlock(client, input?.passes, input?.now instanceof Date ? input.now : new Date());
+    if (blocked) throw editError(blocked);
+  } else if (!isArchivedClient(client)) {
+    throw editError(CLIENT_EDIT_ERROR.NOT_ARCHIVED);
+  }
+  const actorId = requiredText(input?.actorId, "actorId");
+  const stampedAt = await store.serverTimestamp();
+  const audit = auditEntry(organization, {
+    action: AUDIT_ACTION.CLIENT_ARCHIVED,
+    actorId,
+    actorRole: input?.actorRole,
+    targetId: clientId,
+    clientId,
+    locationId: client?.locationId || "",
+    // 방향. 보관인지 되살림인지가 없으면 줄을 읽을 수 없다.
+    enabled: Boolean(archived),
+    stampedAt,
+  });
+  const data = archived
+    ? { archived: true, archivedAt: stampedAt, archivedBy: actorId }
+    : { archived: false, archivedAt: null, archivedBy: null };
+  await store.commit([
+    { path: paths.client(organization, clientId), data, operation: "update" },
+    { path: paths.auditLog(auditLogId(AUDIT_ACTION.CLIENT_ARCHIVED, clientId, stamp())), data: audit },
+  ]);
+  return { clientId, archived: Boolean(archived) };
 }

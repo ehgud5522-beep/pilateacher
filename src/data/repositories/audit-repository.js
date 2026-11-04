@@ -121,6 +121,17 @@ export const AUDIT_ACTION = Object.freeze({
      Keep in sync with auditActions() in firestore.foundation.rules. */
   PRODUCT_ADDED: "product_added",
   PRODUCT_ARCHIVED: "product_archived",
+  /* 회원 이름 수정 · 보관 (2026-11-04 대표). **대표·총괄·FC매니저가 한다** --
+     규칙의 canRegisterClient 와 같은 선 (회원을 등록하는 사람이 고치고 정리한다).
+
+     **이름은 여기 담기지 않는다.** 전 이름도 새 이름도 -- 이 목록에는 자유 문장
+     칸이 하나도 없다. 누구를 고쳤는지는 clientId 가 말한다.
+
+     보관은 `enabled` 가 방향이다 -- 보관이면 true, 되살림이면 false
+     (PRODUCT_ARCHIVED 와 같은 모양).
+     Keep in sync with auditActions() in firestore.foundation.rules. */
+  CLIENT_RENAMED: "client_renamed",
+  CLIENT_ARCHIVED: "client_archived",
   /* 세션업 기간이 지난 회원권을 대표·총괄매니저가 예외로 늘렸다. 서버
      (sessionUpPass)만 쓰고 앱은 읽기만 한다 -- 규칙의 auditActions() 에도
      넣지 않았다. Admin SDK 는 규칙을 지나지 않고, 열어 두면 클라이언트가

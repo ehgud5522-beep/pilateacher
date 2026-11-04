@@ -120,7 +120,7 @@ import {
 } from "./data/repositories/instructor-repository.js";
 import {
   clientMatchesSearch, createClient, findSameNameClients, findSamePhoneClients, listClients,
-  normalizePhone, saveScopeSnapshot,
+  normalizePhone, renameClient, saveScopeSnapshot, setClientArchived,
 } from "./data/repositories/client-repository.js";
 import {
   ALL_LOCATIONS, BRANCH_SCOPED_ROLES, NO_LOCATION, countByLocation, createLocation, filterByLocation,
@@ -382,6 +382,10 @@ import {
   clientBreakdown, monthChoices, payrollRows, payrollWeeks,
 } from "./features/schedule/payroll-weeks.js";
 import HandoverSheet from "./features/members/HandoverSheet.jsx";
+import {
+  CLIENT_NAME_MAX, archiveBlock, clientEditMessage, isArchivedClient, onlyArchived, validateClientName,
+  withoutArchived,
+} from "./features/members/client-archive.js";
 import {
   ALL_PASSES, entryCountsByPass, historyMonths, monthHeading,
 } from "./features/membership/pass-history-months.js";
@@ -16571,7 +16575,8 @@ function PassIssue({
     locationId: organization?.locationId || "",
     locationIds: organization?.locationIds || [],
   }), [organization]);
-  const clients = useMemo(() => itemsVisibleTo(allClients, issueScope), [allClients, issueScope]);
+  /* 보관된 회원에게는 발급하지 않는다 -- 되살린 뒤에 발급한다 (client-archive.js). */
+  const clients = useMemo(() => withoutArchived(itemsVisibleTo(allClients, issueScope)), [allClients, issueScope]);
   const instructors = useMemo(
     () => itemsVisibleTo(allInstructors, issueScope),
     [allInstructors, issueScope],
@@ -18816,6 +18821,76 @@ function LedgerUndoSheet({ title, description, reason, onReason, onCancel, onCon
  * 번호가 바뀐 계정은 더 이상 그 회원이 아니다. 회원 앱을 쓰던 회원은 새
  * 번호로 다시 로그인해야 하고, 그 사실을 누르기 전에 말한다.
  */
+/**
+ * 회원 이름 수정 (2026-11-04). 대표·총괄매니저·FC매니저.
+ *
+ * 같은 이름이 이미 있으면 **알리기만 한다** -- 동명이인은 실제로 있다
+ * (findSameNameClients 와 같은 판단). 이름은 감사 기록에 담기지 않는다.
+ */
+function ClientNameSheet({ client, sameNameOf, onCancel, onConfirm, busy, error, initialName = null }) {
+  const [name, setName] = useState(initialName ?? String(client?.name || ""));
+  const checked = validateClientName(name, { current: client?.name });
+  const namesakes = checked.ok ? sameNameOf?.(checked.name) || [] : [];
+  return (
+    <section data-client-name style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>이름 수정</h2>
+      <div className="mt-3">
+        <Field label="새 이름">
+          <input value={name} className={inputCls} maxLength={CLIENT_NAME_MAX + 10}
+            onChange={(event) => setName(event.target.value)} />
+        </Field>
+        {!checked.ok && checked.code !== "name_unchanged" ? (
+          <p className="mt-1.5" style={{ fontSize: TYPE.caption, color: BAD }}>{clientEditMessage(checked)}</p>
+        ) : null}
+        {namesakes.length > 0 ? (
+          <p className="mt-1.5" data-namesake style={{ fontSize: TYPE.caption, color: WARN }}>
+            같은 이름의 회원이 {namesakes.length}명 있어요. 다른 사람이면 그대로 저장해도 됩니다.
+          </p>
+        ) : null}
+      </div>
+      {error ? <p className="mt-2" role="alert" style={{ fontSize: TYPE.caption, color: BAD }}>{error}</p> : null}
+      <p className="mt-3" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        회원권 · 수업 기록 · 급여는 회원 번호(ID)로 이어져 있어 그대로입니다. 회원 앱에는 새 이름이 보입니다.
+        {" "}강사 폰에 이미 저장된 지난 일정에는 예전 이름이 남을 수 있어요.
+      </p>
+      <div className="mt-3 flex gap-2">
+        <button type="button" onClick={onCancel} className="h-11 flex-1 font-bold"
+          style={{ borderRadius: 10, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>취소</button>
+        <button type="button" disabled={busy || !checked.ok} onClick={() => checked.ok && onConfirm?.(checked.name)}
+          className="h-11 flex-1 font-bold" style={{
+            borderRadius: 10, backgroundColor: BRAND, color: "#fff", fontSize: TYPE.caption,
+            opacity: busy || !checked.ok ? 0.5 : 1,
+          }}>{busy ? "저장 중" : "이름 저장"}</button>
+      </div>
+    </section>
+  );
+}
+
+/** 보관 확인. 지우는 것이 아니라는 것을 누르기 전에 말한다. */
+function ClientArchiveSheet({ client, archived, onCancel, onConfirm, busy, error }) {
+  return (
+    <section data-client-archive style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>
+        {archived ? `${client?.name || "회원"} 되살리기` : `${client?.name || "회원"} 보관`}
+      </h2>
+      <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.6, color: INK2 }}>
+        {archived
+          ? "회원 목록 · 검색 · 수업 등록 · 회원권 발급에 다시 나타납니다."
+          : "회원 목록 · 검색 · 수업 등록 · 회원권 발급에서 빠집니다. 지우는 것이 아니에요 -- 회원권 · 수업 기록 · 사진 · 급여 기록은 그대로이고, 회원 관리의 \"보관된 회원\" 에서 언제든 되살릴 수 있어요."}
+      </p>
+      {error ? <p className="mt-2" role="alert" style={{ fontSize: TYPE.caption, color: BAD }}>{error}</p> : null}
+      <div className="mt-3 flex gap-2">
+        <button type="button" onClick={onCancel} className="h-11 flex-1 font-bold"
+          style={{ borderRadius: 10, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>취소</button>
+        <button type="button" disabled={busy} onClick={onConfirm}
+          className="h-11 flex-1 font-bold" style={{
+            borderRadius: 10, backgroundColor: BRAND, color: "#fff", fontSize: TYPE.caption, opacity: busy ? 0.5 : 1,
+          }}>{busy ? "처리 중" : archived ? "되살리기" : "보관하기"}</button>
+      </div>
+    </section>
+  );
+}
+
 function ClientPhoneSheet({ client, masked, onCancel, onConfirm, busy, error }) {
   const [phone, setPhone] = useState("");
   const digits = phone.replace(/\D/g, "");
@@ -19551,8 +19626,19 @@ function ClientDetail({
   initialPassEdit = null, initialSessionUp = null,
   /* 이력의 회원권 칩과 펼친 달. 스모크가 첫 렌더를 세우는 자리다. */
   initialHistoryPass = ALL_PASSES, initialOpenMonths = null,
+  /* 이름 수정 · 보관 (2026-11-04). 바뀐 칸을 부르는 쪽에 알린다 -- 이 화면이 든
+     client 는 연 순간의 것이라, 알리지 않으면 방금 고친 이름이 옛것으로 남는다. */
+  clientStore, onClientChanged, initialNameEdit = false, initialArchive = null,
 }) {
   const at = now();
+  const [nameEdit, setNameEdit] = useState(initialNameEdit);
+  const [nameError, setNameError] = useState("");
+  /* null · "archive" · "restore" */
+  const [archiveSheet, setArchiveSheet] = useState(initialArchive);
+  const [archiveError, setArchiveError] = useState("");
+  /* 회원을 등록하는 사람이 고치고 정리한다 (규칙의 canRegisterClient 와 같은 선). */
+  const canEditClient = !organization?.isLegacy
+    && (isOwnerLevelRole(organization?.role) || organization?.role === ROLES.MANAGER);
   /* ── 이력: 달로 묶고 회원권으로 거른다 (2026-11-04) ─────────────────────
      최근 달만 펼친다. 급여 합계는 대표 · 총괄매니저에게만 -- 강사 · FC매니저가
      남의 급여 합계를 회원 화면에서 보게 되면 그것이 급여 화면을 대신한다. */
@@ -19633,6 +19719,50 @@ function ClientDetail({
       onChanged?.();
     } catch (thrown) {
       setUndoError(`처리하지 못했어요 (코드 ${thrown?.code || thrown?.message || "unknown"})`);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const clientEditFailed = (stage, thrown) => {
+    const code = String(thrown?.code || thrown?.name || "unknown");
+    deviceLog("client_edit_failed", {
+      feature: "client_edit", stage,
+      errorDomain: thrown?.feature === "client_edit" ? "app" : "firestore",
+      errorCode: code, message: thrown?.message, role: organization?.role || "",
+    });
+    return clientEditMessage({ code });
+  };
+  const runRename = async (nextName) => {
+    if (busy) return;
+    setBusy(true);
+    setNameError("");
+    try {
+      const result = await renameClient(organizationId, client, {
+        name: nextName, actorId: currentUserId, actorRole: organization?.role || "",
+      }, { store: clientStore });
+      setNameEdit(false);
+      onToast?.({ ok: true, msg: "이름을 바꿨습니다." });
+      onClientChanged?.({ name: result.name });
+    } catch (thrown) {
+      setNameError(clientEditFailed("rename", thrown));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const runArchive = async () => {
+    if (busy || !archiveSheet) return;
+    const archiving = archiveSheet === "archive";
+    setBusy(true);
+    setArchiveError("");
+    try {
+      await setClientArchived(organizationId, client, archiving, {
+        actorId: currentUserId, actorRole: organization?.role || "", passes: history?.passes || [], now: at,
+      }, { store: clientStore });
+      setArchiveSheet(null);
+      onToast?.({ ok: true, msg: archiving ? "보관했습니다. 회원 관리의 보관된 회원에서 되살릴 수 있어요." : "되살렸습니다." });
+      onClientChanged?.({ archived: archiving });
+    } catch (thrown) {
+      setArchiveError(clientEditFailed(archiving ? "archive" : "restore", thrown));
     } finally {
       setBusy(false);
     }
@@ -19789,6 +19919,19 @@ function ClientDetail({
     .filter((date) => Number.isFinite(date.getTime()))
     .sort((left, right) => left.getTime() - right.getTime())[0];
 
+  if (nameEdit) return (
+    <ClientNameSheet client={client}
+      sameNameOf={(name) => findSameNameClients(clients, name).filter((item) => item.id !== client?.id)}
+      onCancel={() => { setNameEdit(false); setNameError(""); }}
+      onConfirm={runRename} busy={busy} error={nameError} />
+  );
+
+  if (archiveSheet) return (
+    <ClientArchiveSheet client={client} archived={archiveSheet === "restore"}
+      onCancel={() => { setArchiveSheet(null); setArchiveError(""); }}
+      onConfirm={runArchive} busy={busy} error={archiveError} />
+  );
+
   if (phoneEdit) return (
     <ClientPhoneSheet client={client} masked={maskPhone(client?.phone)}
       onCancel={() => { setPhoneEdit(false); setPhoneError(""); }}
@@ -19833,6 +19976,12 @@ function ClientDetail({
         <div className="min-w-0">
           <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>
             {client?.name || "회원"}
+            {isArchivedClient(client) ? (
+              <span className="ml-1.5" data-archived-badge style={{
+                padding: "2px 8px", borderRadius: 999, fontSize: TYPE.caption, fontWeight: 700,
+                backgroundColor: CANVAS, color: SUB,
+              }}>보관됨</span>
+            ) : null}
             {isReviewDemo(client) ? (
               <span className="ml-1.5" style={{
                 padding: "2px 8px", borderRadius: 999, fontSize: TYPE.caption, fontWeight: 700,
@@ -19850,6 +19999,27 @@ function ClientDetail({
           {canChangePhone ? (
             <button type="button" onClick={() => { setPhoneEdit(true); setPhoneError(""); }}
               className="mt-1.5 font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>연락처 수정</button>
+          ) : null}
+          {/* 이름 수정 · 보관 (2026-11-04). 지우기는 없다 -- client-archive.js 머리말. */}
+          {canEditClient ? (
+            <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1" data-client-edit>
+              <button type="button" onClick={() => { setNameEdit(true); setNameError(""); }}
+                className="font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>이름 수정</button>
+              {isArchivedClient(client) ? (
+                <button type="button" onClick={() => { setArchiveSheet("restore"); setArchiveError(""); }}
+                  className="font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>되살리기</button>
+              ) : !loading && !error ? (() => {
+                const blocked = archiveBlock(client, passes, at);
+                return blocked ? (
+                  <span data-archive-blocked style={{ fontSize: TYPE.caption, color: SUB }}>
+                    보관 불가 · {clientEditMessage({ code: blocked })}
+                  </span>
+                ) : (
+                  <button type="button" onClick={() => { setArchiveSheet("archive"); setArchiveError(""); }}
+                    className="font-bold" style={{ fontSize: TYPE.caption, color: SUB }}>보관</button>
+                );
+              })() : null}
+            </div>
           ) : null}
         </div>
         {onClose ? (
@@ -20046,7 +20216,7 @@ function ClientRow({ client, locationName, onOpen, instructorCount = 0 }) {
         <span className="shrink-0" style={{
           padding: "2px 8px", borderRadius: 999, fontSize: TYPE.caption, fontWeight: 700,
           backgroundColor: ended ? CANVAS : TINT, color: ended ? SUB : BRAND_D,
-        }}>{labelOf(CLIENT_STATUS_LABELS, client.status)}</span>
+        }}>{isArchivedClient(client) ? "보관됨" : labelOf(CLIENT_STATUS_LABELS, client.status)}</span>
       </div>
       {/* 활성 회원권의 담당이 둘 이상이면 그 회원은 여러 강사 칩에 나온다.
           같은 회원이 두 번 보이는 이유를 여기서 말한다. */}
@@ -20088,6 +20258,8 @@ function ClientDirectory({
   const [passError, setPassError] = useState(initialState?.passError || "");
   const [instructorFilter, setInstructorFilter] = useState(initialState?.instructorFilter || INSTRUCTOR_GROUP.ALL);
   const [noActiveOpen, setNoActiveOpen] = useState(Boolean(initialState?.noActiveOpen));
+  /* 보관된 회원 묶음. 기본은 접힘 -- 되살릴 때만 연다. */
+  const [archivedOpen, setArchivedOpen] = useState(Boolean(initialState?.archivedOpen));
   const [loading, setLoading] = useState(!initialState);
   const [loadError, setLoadError] = useState("");
   const [mode, setMode] = useState(initialState?.mode || "list");
@@ -20140,10 +20312,13 @@ function ClientDirectory({
   /* 심사용 회원은 사람이 아니다. 대표에게만 보이고(배지가 붙는다), 나머지
      역할에게는 아예 없다 -- 대표는 그 회원이 거기 있다는 것을 알아야 하고,
      안 보이면 왜 숫자가 안 맞는지 물을 곳이 없다. */
-  const listed = useMemo(() => visibleToRole(clients, { role: organization?.role }), [clients, organization?.role]);
+  /* 보관된 회원은 목록 · 칩 숫자에서 뺀다 (client-archive.js). 등록의 중복 검사는
+     전체(clients)로 한다 -- 보관된 회원과 같은 번호로 새로 만들면 안 된다. */
+  const roleVisible = useMemo(() => visibleToRole(clients, { role: organization?.role }), [clients, organization?.role]);
+  const listed = useMemo(() => withoutArchived(roleVisible), [roleVisible]);
   /* 인원수는 대표에게도 뺀다. 보이는 문제가 아니라 세는 문제이고, 지점 칩의
      숫자가 실제 회원 수여야 한다. */
-  const countedClients = useMemo(() => visibleToRole(clients, {}), [clients]);
+  const countedClients = useMemo(() => withoutArchived(visibleToRole(clients, {})), [clients]);
   /* 맡은 지점 밖은 보여 주지 않는다 (2026-10-26 대표 결정 2항). 대표·총괄
      매니저는 그대로 전부이고, FC매니저만 좁혀진다 -- 강사·팀장·점장의
      동작은 바뀌지 않는다 (BRANCH_SCOPED_ROLES).
@@ -20189,6 +20364,11 @@ function ClientDirectory({
   const foldNoActive = groupingReady && effectiveInstructor === INSTRUCTOR_GROUP.ALL;
   const listedNow = foldNoActive ? grouped.filter((client) => assignments.has(client.id)) : grouped;
   const folded = foldNoActive ? grouped.filter((client) => !assignments.has(client.id)) : [];
+  /* 보관된 회원. 지점 칩 · 검색은 그대로 걸고, 강사 칩은 걸지 않는다 -- 보관할 수
+     있는 회원은 쓸 수 있는 회원권이 없으므로 어느 강사 칩에도 들지 않는다. */
+  const archivedShown = filterByLocation(
+    itemsVisibleTo(onlyArchived(roleVisible), viewerScope), locationFilter, choosableLocations,
+  ).filter((client) => clientMatchesSearch(client, search));
 
   const resetForm = () => {
     setForm({ name: "", phone: "", locationId: "" });
@@ -20426,6 +20606,19 @@ function ClientDirectory({
               활성 회원권 없음 {folded.length}명
             </button>
             {noActiveOpen ? folded.map((client) => (
+              <ClientRow key={client.id} client={client} locationName={locationNames.get(client.locationId)}
+                onOpen={() => onOpenClient?.({ ...client, locationName: locationNames.get(client.locationId) || "" })} />
+            )) : null}
+          </div>
+        ) : null}
+        {!loading && !loadError && archivedShown.length > 0 ? (
+          <div data-archived-group style={{ borderTop: `1px solid ${LINE}` }}>
+            <button type="button" onClick={() => setArchivedOpen((open) => !open)} aria-expanded={archivedOpen}
+              className="flex w-full items-center gap-1.5 text-left" style={{ padding: "11px 12px", fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>
+              <ChevronRight size={14} style={{ transform: archivedOpen ? "rotate(90deg)" : "none" }} />
+              보관된 회원 {archivedShown.length}명
+            </button>
+            {archivedOpen ? archivedShown.map((client) => (
               <ClientRow key={client.id} client={client} locationName={locationNames.get(client.locationId)}
                 onOpen={() => onOpenClient?.({ ...client, locationName: locationNames.get(client.locationId) || "" })} />
             )) : null}
@@ -22612,6 +22805,8 @@ const AUDIT_ACTION_LABEL = {
   [AUDIT_ACTION.SESSION_UP_OVERRIDE]: "세션업 기간 예외",
   [AUDIT_ACTION.PRODUCT_ADDED]: "상품 추가",
   [AUDIT_ACTION.PRODUCT_ARCHIVED]: "상품 삭제 · 되살림",
+  [AUDIT_ACTION.CLIENT_RENAMED]: "회원 이름 수정",
+  [AUDIT_ACTION.CLIENT_ARCHIVED]: "회원 보관 · 되살림",
   issue: "회원권 발급",
   deduct: "차감",
   transfer: "담당 강사 변경",
@@ -22652,6 +22847,13 @@ function AuditTimelineRow({ row, nameOfClient, nameOfInstructor, nameOfLocation 
     /* 한 동작에 두 방향이다. 어느 쪽이었는지가 없으면 줄을 읽을 수 없다 --
        퇴사·복직과 같은 모양이다. 상품 이름은 담기지 않으므로 id 로 보여준다. */
     detail = `${row.targetId || "(상품 없음)"} · ${row.enabled ? "삭제" : "되살림"}`;
+  } else if (row.action === AUDIT_ACTION.CLIENT_ARCHIVED) {
+    /* 이름은 기록에 없다 -- 지금 이름을 명부에서 찾아 붙인다. 방향이 없으면 줄을
+       읽을 수 없다 (상품 보관과 같은 모양). */
+    detail = `${nameOfClient(row.clientId)} · ${row.enabled ? "보관" : "되살림"}`;
+  } else if (row.action === AUDIT_ACTION.CLIENT_RENAMED) {
+    /* 전 이름 · 새 이름은 담지 않는다 (자유 문장 칸 없음). 지금 이름만 보인다. */
+    detail = nameOfClient(row.clientId);
   } else if (row.action === AUDIT_ACTION.PRODUCT_ADDED) {
     detail = String(row.targetId || "(상품 없음)");
   } else if (row.action === AUDIT_ACTION.SESSION_UP_OVERRIDE) {
@@ -26163,6 +26365,11 @@ export function createAppScreenSmokeCases() {
     { id: "h-sessionup", passId: "smoke-pass-a", clientId: "smoke-client-a", type: "sessionup", delta: 50, addedSessions: 50, addedService: 0, addedPrice: 2500000, fromTotalSessions: 20, paymentMethod: "card", instructorId: "u1", occurredAt: new Date(2026, 8, 16, 15, 0), createdAt: new Date(2026, 8, 16, 15, 0), createdBy: "u2" },
   ];
   const smokeHistory = { passes: smokeHistoryPasses, entries: smokeHistoryEntries, remainingTotal: 8, failedPassIds: [] };
+  /* 회원권이 다 끝난 회원 -- 보관할 수 있다. */
+  const smokeEndedHistory = {
+    ...smokeHistory, remainingTotal: 0,
+    passes: smokeHistoryPasses.map((pass) => ({ ...pass, remainingCount: 0 })),
+  };
   const clientDetail = (extra = {}) => providerWith(smokeInstructorOrg, (
     <ClientDetail organization={readyOrganizationContext(smokeInstructorOrg)} client={smokeDetailClient}
       history={smokeHistory} loading={false} error="" instructors={smokeInstructors}
@@ -26947,6 +27154,13 @@ export function createAppScreenSmokeCases() {
         now={() => new Date(2026, 8, 17)} onClose={noop} onRetry={noop} />
     )) },
     { name: "센터 회원 상세 · 이력 · FC매니저", element: managerClientDetail() },
+    /* 이름 수정 · 보관 (2026-11-04). 회원권이 끝난 회원만 보관할 수 있다 -- 쓸 수
+       있는 회원권이 남은 smokeHistory 는 "보관 불가" 가 뜨고, 다 끝난 이력은 버튼이
+       뜬다. 보관된 회원은 배지와 되살리기. */
+    { name: "센터 회원 상세 · 이름 수정", element: ownerClientDetail({ initialNameEdit: true }) },
+    { name: "센터 회원 상세 · 보관 가능", element: ownerClientDetail({ history: smokeEndedHistory }) },
+    { name: "센터 회원 상세 · 보관 확인", element: ownerClientDetail({ history: smokeEndedHistory, initialArchive: "archive" }) },
+    { name: "센터 회원 상세 · 보관됨", element: ownerClientDetail({ history: smokeEndedHistory, client: { ...smokeDetailClient, archived: true } }) },
     { name: "센터 회원 상세 · 대표", element: ownerClientDetail() },
     { name: "센터 회원 상세 · 차감 보정 확인", element: ownerClientDetail({
       initialUndo: {
@@ -27474,6 +27688,11 @@ export function createAppScreenSmokeCases() {
     { name: "회원 관리 · 강사 칩 · 활성 없음 펼침", element: clientDirectory(smokeOwner, { ...smokeDirectoryGroups, noActiveOpen: true }) },
     { name: "회원 관리 · 강사 칩 · 검색", element: clientDirectory(smokeOwner, { ...smokeDirectoryGroups, search: "박" }) },
     { name: "회원 관리 · 강사 칩 · 회원권 조회 실패", element: clientDirectory(smokeOwner, { ...smokeDirectoryGroups, passError: "permission-denied" }) },
+    /* 보관된 회원은 목록 · 칩 숫자에서 빠지고 아래 접힌 묶음에서만 보인다. */
+    { name: "회원 관리 · 보관된 회원", element: clientDirectory(smokeOwner, {
+      ...smokeDirectoryGroups, archivedOpen: true,
+      clients: [...smokeDirectoryGroups.clients, { id: "smoke-client-archived", organizationId: "smoke-center", name: "보관회원", phone: "01066667777", locationId: "bansong", status: "ended", archived: true }],
+    }) },
     { name: "더보기 탭 · 매니저", element: settingsTab({ ...smokeOwner, role: "manager" }) },
     { name: "회원권 상품", element: providerWith(smokeOwner, (
       <ProductCatalog organization={readyOrganizationContext(smokeOwner)} currentUserId="smoke-account"
@@ -32320,6 +32539,12 @@ export default function App() {
               /* 규칙이 clients.phone 을 잠그고 있어 이 통로가 유일한 문이다. */
               onChangePhone={fbUpdateClientPhone}
               onChanged={() => setHistoryRevision((value) => value + 1)}
+              /* 이름 수정 · 보관 뒤: 열린 상세의 회원을 바꾸고 명부 · 회원 관리를 다시
+                 읽는다 (회원 관리는 dataRevision → refreshKey 로 따라온다). */
+              onClientChanged={(patch) => {
+                setDetailClient((current) => (current ? { ...current, ...patch } : current));
+                setRosterRevision((value) => value + 1);
+              }}
               /* 회원 탭의 "담당 변경" 과 **같은 시트**를 연다. 더보기로 연
                  회원 상세에만 이 버튼이 없어서 대표가 찾지 못했다 (1.1.38).
                  두 화면이 다른 컴포넌트라 한쪽만 고쳐져 있었다. */

@@ -1,5 +1,17 @@
 # 이어서 작업하기 — 최근 변경과 남은 일
 
+## 2026-11-04 — 잔여 조정: FC매니저는 줄이는 것만 (`fix/adjust-increase-owner-only`)
+
+- 대표 결정: 잔여 **증가는 대표 · 총괄매니저만**, FC매니저는 감소만. 10-26 결정(FC도 조정)의 증가 쪽을 거둔 것
+- 이전 상태: 규칙 · 화면 모두 FC매니저 증가를 **허용**하고 있었다 (규칙 테스트도 FC +3 성공). 최근 14일 FC 증가 기록 0건
+- 판정 한 곳: `mayAdjustRemaining(role, direction)` (pass-repository.js). `adjustPass` 가 역할을 받으면 규칙 전에
+  `increase_owner_only` 로 막는다. 화면은 FC에게 안내 문구를 보이고 + 값이면 저장을 막는다
+- 문구: `src/features/membership/pass-edit-failure.js` (코드 → 문구 테스트). 규칙이 막은 FC 증가(permission-denied)도
+  "증가는 대표·총괄매니저만 가능해요 (코드 permission-denied)"
+- 진단: `pass_edit_failed` — feature · stage(precheck/commit) · errorDomain · errorCode(원본) · role · direction · delta
+- 규칙: 원장 adjust 는 FC면 delta < 0, 회원권 문서는 FC면 잔여가 줄어야. **배포는 대표 지시 뒤** -- 나가기 전까지는
+  옛 폰 앱의 FC 증가가 규칙을 지나간다
+
 ## 2026-10-31 — 강사 공지 개편 · 업데이트 안내 두 버튼 (`feat/instructor-notices`, 독립 PR)
 
 - **기존 공지사항을 고쳐 맞췄다** (대표 결정, 새로 만들지 않음). 대상의 "센터 선택" 은 **지점 선택**

@@ -1101,12 +1101,17 @@ service cloud.firestore {
                2026-10-26 대표 결정. 만료일과 같은 선이 됐다 -- 둘 다 운영이
                매일 하는 일이고, 둘 다 사유와 이력이 함께 남는다.
 
+               **줄이는 것만** (2026-11-04 대표). 늘리는 것은 회원이 사지 않은
+               수업을 만드는 일이라 대표·총괄매니저만이다. 화면도 같은 선을
+               긋는다 (mayAdjustRemaining).
+
                숫자 자체의 불변식(정수 · 0 이상)은 위 역할 갈래 **밖에** 있어
                여기서 다시 묻지 않는다. 짝이 되는 원장 항목(type "adjust",
                사유 필수)은 그쪽 문이 지킨다. */
             || (
               hasRole(organizationId, ["manager"])
               && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["remainingCount"])
+              && request.resource.data.remainingCount < resource.data.remainingCount
             )
             /* ── 회원권 취소 (FC매니저) ────────────────────────────────
                **갓 발급하고 한 회차도 안 쓴 것만** (2026-10-26). 자기가 방금
@@ -1276,8 +1281,17 @@ service cloud.firestore {
                      만료일과 같은 선이 됐다 -- 둘 다 운영이 매일 하는 일이고,
                      둘 다 사유와 이력이 함께 남는다.
 
+                     다만 FC매니저는 **줄이는 조정만** (2026-11-04 대표). 늘리는
+                     것은 대표·총괄매니저만이다 -- 회원권 문서 쪽 문과 같은 선.
+
                      차감 보정은 여기 없다. 그쪽은 위 갈래이고 대표·총괄만이다. */
-                  && hasRole(organizationId, ["owner", "area_manager", "manager"])
+                  && (
+                    hasRole(organizationId, ownerLevel())
+                    || (
+                      hasRole(organizationId, ["manager"])
+                      && (request.resource.data.type == "expiry" || request.resource.data.delta < 0)
+                    )
+                  )
                   && !("correctsEntryId" in request.resource.data)
                 )
                 : !("reason" in request.resource.data)

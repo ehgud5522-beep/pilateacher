@@ -32,7 +32,7 @@
 
 import {
   ATTENDANCE_STATUS, LEDGER_ENTRY_TYPE, LEDGER_REASON_MAX, LESSON_STATUS, PASS_STATUS,
-  MIXED_PAYMENT_PARTS, PAYMENT_NOTE_MAX, PAY_CATEGORY, PAYMENT_METHOD,
+  MIXED_PAYMENT_PARTS, PAYMENT_NOTE_MAX, PAY_CATEGORY, PAYMENT_METHOD, ROLES, isOwnerLevelRole,
 } from "../schema/constants.js";
 import {
   netContractPriceFor, netContractPriceOf, resolveDeductionUnitPrice, spendsServiceSession,
@@ -1425,9 +1425,33 @@ export const HOLD_REASON_PREFIX = "홀딩";
 
 const DAY_MS = 86400000;
 
-/** 잔여가 모자라 조정을 못 한 것. 권한 문제와 다른 말을 하기 위해 따로 둔다. */
+/** 잔여 조정의 방향. 늘리는 것과 줄이는 것은 할 수 있는 사람이 다르다. */
+export const ADJUST_DIRECTION = Object.freeze({ INCREASE: "increase", DECREASE: "decrease" });
+
+/** @param {number} delta */
+export const adjustDirectionOf = (delta) => (delta > 0 ? ADJUST_DIRECTION.INCREASE : ADJUST_DIRECTION.DECREASE);
+
+/**
+ * 이 역할이 이 방향으로 잔여를 조정할 수 있는가. **규칙과 같은 선이다.**
+ *
+ * 대표·총괄매니저는 둘 다. FC매니저는 줄이는 것만 (2026-11-04 대표) -- 늘리는
+ * 것은 회원이 사지 않은 수업을 만드는 일이다. 한쪽만 고치면 화면은 되는데
+ * 규칙이 막고, 쓰는 사람에게는 "권한이 없어요" 한 줄로 도착한다.
+ *
+ * @param {string} role @param {string} direction
+ */
+export function mayAdjustRemaining(role, direction) {
+  if (isOwnerLevelRole(role)) return true;
+  return role === ROLES.MANAGER && direction === ADJUST_DIRECTION.DECREASE;
+}
+
+/**
+ * 조정을 못 한 것. 잔여가 모자란 것(below_zero)과 역할이 그 방향을 못 하는 것
+ * (increase_owner_only · role_not_allowed)은 권한 거부와 다른 말을 해야 해서
+ * 따로 둔다. 방향은 진단에 그대로 남는다.
+ */
 export class PassAdjustError extends Error {
-  /** @param {string} code @param {{ remaining?: number, delta?: number }} detail */
+  /** @param {string} code @param {{ remaining?: number, delta?: number, role?: string }} detail */
   constructor(code, detail) {
     super(`pass adjust refused (${code})`);
     this.name = "PassAdjustError";
@@ -1435,6 +1459,8 @@ export class PassAdjustError extends Error {
     this.feature = "pass_adjust";
     this.remaining = detail?.remaining;
     this.delta = detail?.delta;
+    this.direction = Number.isInteger(detail?.delta) ? adjustDirectionOf(detail.delta) : undefined;
+    this.role = detail?.role;
   }
 }
 
@@ -1451,7 +1477,8 @@ export class PassExpiryError extends Error {
 }
 
 /**
- * 잔여 회차를 맞춘다. **대표만** (규칙이 막는다).
+ * 잔여 회차를 맞춘다. 대표·총괄매니저는 양쪽, FC매니저는 줄이는 것만
+ * (mayAdjustRemaining · 규칙이 같은 선을 긋는다).
  *
  * 0 미만으로는 내려가지 않는다. 규칙도 막지만 여기서 먼저 막는 이유는, 규칙이
  * 막으면 화면에 "권한이 없습니다" 로 도착하기 때문이다 -- 권한 문제가 아니라
@@ -1484,6 +1511,18 @@ export async function adjustPass(organizationId, pass, input, options = {}) {
   const remaining = remainingCountOf(pass);
   const next = remaining + delta;
   if (next < 0) throw new PassAdjustError("below_zero", { remaining, delta });
+
+  /* 역할이 그 방향을 못 하면 규칙에 닿기 전에 막는다. 규칙이 막으면
+     permission-denied 한 줄이라 "증가는 대표·총괄만" 이라는 말을 할 수 없다.
+     역할을 모르면(옛 호출) 규칙에 맡긴다. */
+  const role = String(input?.actorRole ?? "").trim();
+  const direction = adjustDirectionOf(delta);
+  if (role && !mayAdjustRemaining(role, direction)) {
+    throw new PassAdjustError(
+      direction === ADJUST_DIRECTION.INCREASE ? "increase_owner_only" : "role_not_allowed",
+      { remaining, delta, role },
+    );
+  }
 
   /* 사유가 없으면 반년 뒤 이 줄을 보는 사람에게 남는 것이 숫자뿐이다 --
      조정과 실수를 구별할 방법이 없다. */

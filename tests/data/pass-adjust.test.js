@@ -16,6 +16,7 @@ import {
   PassAdjustError,
   PassExpiryError,
   adjustPass,
+  mayAdjustRemaining,
   changePassExpiry,
   heldExpiry,
   holdPass,
@@ -94,6 +95,46 @@ test("0 미만으로는 내려가지 않는다 — 권한 문제와 다른 오�
   // 딱 0 까지는 된다.
   const { result } = await withStore(adjustPass, { delta: -10, reason: "전부 소진 처리", createdBy: "owner-1" });
   assert.equal(result.remainingCount, 0);
+});
+
+test("FC매니저는 줄이는 조정만 한다 — 늘리면 규칙에 닿기 전에 막는다", async () => {
+  /* 2026-11-04 대표. 규칙이 막으면 permission-denied 한 줄이라 "증가는
+     대표·총괄만" 이라고 말할 수 없다. 방향과 역할은 진단에 남는다. */
+  await assert.rejects(
+    run(adjustPass, { delta: 3, reason: "누락분", createdBy: "fc-1", actorRole: "manager" }),
+    (error) => {
+      assert.ok(error instanceof PassAdjustError);
+      assert.equal(error.code, "increase_owner_only");
+      assert.equal(error.direction, "increase");
+      assert.equal(error.delta, 3);
+      assert.equal(error.role, "manager");
+      return true;
+    },
+  );
+  const { result } = await withStore(adjustPass, { delta: -3, reason: "이관 누락분 보정", createdBy: "fc-1", actorRole: "manager" });
+  assert.equal(result.remainingCount, 7);
+  for (const role of ["owner", "area_manager"]) {
+    const { result: up } = await withStore(adjustPass, { delta: 3, reason: "누락분", createdBy: "o-1", actorRole: role });
+    assert.equal(up.remainingCount, 13, role);
+  }
+});
+
+test("조정 권한표 — 규칙과 같은 선", () => {
+  const table = {
+    owner: [true, true], area_manager: [true, true], manager: [false, true],
+    instructor: [false, false], staff: [false, false], member: [false, false], "": [false, false],
+  };
+  for (const [role, [up, down]] of Object.entries(table)) {
+    assert.equal(mayAdjustRemaining(role, "increase"), up, `${role} 증가`);
+    assert.equal(mayAdjustRemaining(role, "decrease"), down, `${role} 감소`);
+  }
+});
+
+test("강사가 조정하면 방향과 상관없이 역할 오류다", async () => {
+  await assert.rejects(
+    run(adjustPass, { delta: -1, reason: "왜", createdBy: "i-1", actorRole: "instructor" }),
+    (error) => error.code === "role_not_allowed" && error.direction === "decrease",
+  );
 });
 
 test("0 은 조정이 아니고, 사유는 비울 수 없다", async () => {

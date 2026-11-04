@@ -55,7 +55,7 @@ test("대표: 기존 appUpdate · settlement 쓰기가 그대로 된다 — 지�
   assert.deepEqual(firestore.store.get("runtimeConfig/settlement").minBuilds, settlementValue.minBuilds);
 
   // 응답에는 지금 값 전부가 실린다 -- 화면이 그것으로 다시 그린다.
-  assert.deepEqual(Object.keys(settlement.config).sort(), ["appUpdate", "privateSync", "scheduleSync", "settlement"]);
+  assert.deepEqual(Object.keys(settlement.config).sort(), ["appUpdate", "privateSync", "rosterRealtime", "scheduleSync", "settlement"]);
   assert.equal(settlement.config.scheduleSync, null, "아직 쓰지 않은 스위치는 null -- 앱은 꺼짐으로 본다");
 });
 

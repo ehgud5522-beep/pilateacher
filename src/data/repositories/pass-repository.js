@@ -54,6 +54,7 @@ import { RepositoryReadError, readCollection } from "./repository-read.js";
  * @property {(writes: Array<{ path: string, data: object, operation?: "set" | "update" | "decrement" | "bump" | "merge" }>) => Promise<void>} commit
  * @property {(documentPath: string) => Promise<any | null>} read
  * @property {(organizationId: string) => Promise<Array<any>>} [listLedgerByOrganization]
+ * @property {(collectionPath: string, since: Date) => Promise<Array<any>>} [listCreatedSince]
  * @property {() => Promise<any>} serverTimestamp
  */
 
@@ -86,6 +87,17 @@ export function createFirestorePassStore(options = {}) {
     list: async (collectionPath) => {
       const { collection, getDocs, getFirestore } = await load();
       const snapshot = await getDocs(collection((options.firestore || getFirestore()), collectionPath));
+      return snapshot.docs.map((document) => ({ id: document.id, ...document.data() }));
+    },
+    /* 그 시각 이후에 발급된 회원권만. 명단의 가벼운 갱신이 쓴다 (roster-refresh.js) --
+       전체를 다시 읽으면 강사 한 명에게 천 건이 넘는다. createdAt 하나에 거는
+       범위라 기본 색인으로 된다. */
+    listCreatedSince: async (collectionPath, since) => {
+      const { collection, getDocs, getFirestore, query, where } = await load();
+      const snapshot = await getDocs(query(
+        collection((options.firestore || getFirestore()), collectionPath),
+        where("createdAt", ">=", since),
+      ));
       return snapshot.docs.map((document) => ({ id: document.id, ...document.data() }));
     },
     /* writeBatch 는 전부 쓰이거나 전부 안 쓰인다. 회원권과 원장 항목이 갈라져
@@ -216,6 +228,30 @@ export async function listPasses(organizationId, options = {}) {
     .filter((pass) => (clientId ? passBelongsTo(pass, clientId) : true))
     .filter((pass) => (includeExpired ? true : pass.status === PASS_STATUS.ACTIVE))
     .sort(byIssuedAtDesc);
+}
+
+/**
+ * 그 시각 이후에 발급된 회원권. 명단의 가벼운 갱신이 쓴다 (roster-refresh.js).
+ *
+ * 저장소가 범위 조회를 모르면(테스트 저장소 · 옛 주입) 전체를 읽어 거른다 --
+ * 결과는 같고 읽는 양만 다르다.
+ *
+ * @param {string} organizationId @param {Date} since
+ * @param {{ store?: PassStore }} [options]
+ */
+export async function listPassesIssuedSince(organizationId, since, options = {}) {
+  const { store = createFirestorePassStore() } = options;
+  const organization = requiredText(organizationId, "organizationId");
+  if (!(since instanceof Date) || !Number.isFinite(since.getTime())) throw new Error("Invalid since");
+  const path = passesCollection(organization);
+  const found = await readCollection({
+    feature: "pass_directory_since",
+    path,
+    read: (collectionPath) => (typeof store.listCreatedSince === "function"
+      ? store.listCreatedSince(collectionPath, since)
+      : store.list(collectionPath)),
+  });
+  return found.filter((pass) => toDate(pass.createdAt).getTime() >= since.getTime());
 }
 
 /**

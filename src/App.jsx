@@ -149,6 +149,9 @@ import { recordSyncReads, syncReadsByDay } from "./features/schedule/sync-read-c
 import { SCHEDULE_SYNC_MODE, readScheduleSyncConfig, scheduleSyncEnabledFor } from "./features/schedule/sync-switch.js";
 import { WEB_VERSION_CHECK_MS, fetchDeployedWebBuild, isNewerWebBuild, staleTabMessage } from "./features/ui/web-version.js";
 import {
+  lastUpdatedLabel, refreshRosterOnce, shouldRefreshOnResume,
+} from "./features/roster/roster-refresh.js";
+import {
   createProduct, listProducts, productBaseUnitPrice, setProductStatus,
 } from "./data/repositories/product-repository.js";
 import {
@@ -156,7 +159,7 @@ import {
   transferableSessions,
 } from "./data/schema/pass-transfer.js";
 import {
-  DEDUCT_BACKDATE_LIMIT_DAYS, HOLD_MAX_DAYS, adjustPass, adjustDirectionOf, cancelPass, changePassExpiry,
+  DEDUCT_BACKDATE_LIMIT_DAYS, HOLD_MAX_DAYS, listPassesIssuedSince, adjustPass, adjustDirectionOf, cancelPass, changePassExpiry,
   mayAdjustRemaining,
   isFreshlyIssuedPass,
   correctDeduction, deductPass, holdPass, isCancellablePass, loadPassReconcileRows,
@@ -396,7 +399,7 @@ import {
   ACCOUNT_DELETION_PHASE_LABELS, ACCOUNT_DELETION_PHASES, DELETE_CONFIRMATION_PHRASE,
   collectOwnedBlobIds, runAccountDeletion,
 } from "./features/account/account-deletion.js";
-import { Users, Settings as SettingsIcon, Search, ChevronRight, ChevronLeft, Plus, Camera, MessageSquare, Check, X, Trash2, ArrowLeft, Target, ClipboardList, RotateCcw, Redo2, Palette, Sparkles, Copy, ArrowUpRight, ArrowDownRight, Loader as Loader2, Pencil, UserPlus, Activity, Ticket, Calendar, Clock, Bell, Download, Share2, TriangleAlert as AlertTriangle, CircleAlert as AlertCircle, LogOut, Mail, Star, Sun, Moon, Smartphone, Move, Crosshair, ChevronDown, ImagePlus, SlidersHorizontal, CalendarDays, ArrowUpDown, Minus, Upload, Link2, Users as Users2, Play } from "lucide-react";
+import { Users, Settings as SettingsIcon, Search, ChevronRight, ChevronLeft, Plus, Camera, MessageSquare, Check, X, Trash2, ArrowLeft, Target, ClipboardList, RotateCcw, Redo2, Palette, Sparkles, Copy, ArrowUpRight, ArrowDownRight, Loader as Loader2, Pencil, UserPlus, Activity, Ticket, Calendar, Clock, Bell, Download, Share2, TriangleAlert as AlertTriangle, CircleAlert as AlertCircle, LogOut, Mail, Star, Sun, Moon, Smartphone, Move, Crosshair, ChevronDown, ImagePlus, SlidersHorizontal, CalendarDays, ArrowUpDown, Minus, Upload, Link2, Users as Users2, Play, RefreshCw } from "lucide-react";
 import { TYPE } from "./features/ui/type-scale.js";
 import { overlayZ } from "./features/ui/overlay-stack.js";
 
@@ -2065,11 +2068,14 @@ function LessonRecordExamplesModal({ onClose, onPractice }) {
 
 /* matches 를 주면 위에 검색 칸이 생긴다. 회원 선택처럼 목록이 길 때 -- 센터 회원이
    백 명을 넘으면 스크롤로 찾을 수 없다 (2026-10-31). */
-function ChoiceBottomSheet({ title, subtitle, options, value, onSelect, onClose, columns = 1, matches = null, searchPlaceholder = "검색" }) {
+function ChoiceBottomSheet({ title, subtitle, options, value, onSelect, onClose, columns = 1, matches = null, searchPlaceholder = "검색", freshness = false }) {
   const [query, setQuery] = useState("");
   const shown = matches && query.trim() ? options.filter((option) => matches(option, query)) : options;
   return (
     <ScheduleBottomSheet title={title} subtitle={subtitle} onClose={onClose}>
+      {/* 시트는 끌어 내리면 닫힌다 (bottom-sheet-gesture.js). 그래서 여기서는 당겨서
+          새로고침 대신 버튼이다 -- 시트를 여는 순간에도 이미 한 번 새로 읽는다. */}
+      {freshness ? <RosterFreshness /> : null}
       {matches && (
         <label className="mb-3 flex h-11 items-center gap-2 px-3" style={{ borderRadius: 9, backgroundColor: CANVAS, border: `1px solid ${LINE}` }}>
           <Search size={15} style={{ color: SUB }} />
@@ -4043,6 +4049,7 @@ function confirmedLessonNoteArgs(note, reviewedDraft = null) {
 }
 
 function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, onClose, onSubmit, onDelete, onStatus, onStatusAll, onCareGrade, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onOpenMember, onFocusMemberWeek, scheduleColors = null, organizationMode = false, rateOf, careOptionsOf, onSettleLesson, onUnsettleLesson, onReadMemberNote, onSaveMemberNote, onToast, canUnsettle = false }) {
+  const rosterRefresh = useContext(RosterRefreshContext);
   /* 확정된 수업은 출석을 바꿀 수 없다. 상태를 바꿔도 이미 나간 차감은 따라오지
      않고, 둘이 어긋나면 어느 것이 맞는지 알 수 없다. */
   /* 다른 기기에서 확정된 수업도 잠근다 (동기화 2단계). 이 기기에는 확정 기록이
@@ -4081,6 +4088,12 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
   const [recordBody, setRecordBody] = useState("");
   const recordSectionRef = useRef(null);
   const [picker, setPicker] = useState(null);
+  /* 회원 선택 시트를 열 때마다 명단을 새로 읽는다 (2026-11-04). FC가 방금 등록 ·
+     발급한 회원이 여기 있어야 한다. 연속으로 열면 10초에 한 번만 읽는다. */
+  const memberPickerOpen = picker?.type === "member";
+  useEffect(() => {
+    if (memberPickerOpen) rosterRefresh.refresh("member_picker");
+  }, [memberPickerOpen]);
   useEffect(() => {
     if (!recordMode) return undefined;
     const scroll = () => scrollRecordSectionIntoView(recordSectionRef.current);
@@ -4571,7 +4584,7 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
         if (next) setKind(lessonTypeDef(next).formKind);
       }} />}
     {picker?.type === "member" && <ChoiceBottomSheet title="회원 선택" subtitle="기존 회원과 정확히 연결합니다" value={memberIds[picker.slot] || ""} onClose={() => setPicker(null)}
-      searchPlaceholder="이름 또는 연락처" matches={(option, query) => clientMatchesSearch(option.member, query)}
+      freshness searchPlaceholder="이름 또는 연락처" matches={(option, query) => clientMatchesSearch(option.member, query)}
       options={members.filter(isActive).map((item) => ({ value: item.id, member: item, label: item.name || "이름 미입력", description: `잔여 ${left(item)}회${item.contractEnd ? ` · ${ymd(item.contractEnd)}까지` : ""}` }))}
       onSelect={(id) => { const item = members.find((memberItem) => memberItem.id === id); const ids = [...memberIds]; const names = [...memberNames]; ids[picker.slot] = id; names[picker.slot] = item?.name || ""; setMemberIds(ids); setMemberNames(names); if (!draft.id && picker.slot === 0 && item) setF((current) => ({ ...current, dur: lessonDurationOf(item) })); }} />}
     </>
@@ -5600,6 +5613,8 @@ function ReferenceMemberList({
   initialFilter = "",
 }) {
   const [q, setQ] = useState("");
+  const rosterRefresh = useContext(RosterRefreshContext);
+  const pullToRefresh = usePullToRefresh(() => rosterRefresh.refresh("pull_member_list"), organizationMode && rosterRefresh.enabled);
   /* 소속 센터에서만 운영중이 기본이다. 개인 모드에는 회원권이 없어 모두가
      "운영중" 이 되고, 그러면 칩 하나가 아무것도 가르지 않는다. */
   const [filter, setFilter] = useState(initialFilter || (organizationMode ? "ongoing" : "all"));
@@ -5799,7 +5814,13 @@ function ReferenceMemberList({
           ))}
         </div>
       ) : null}
-      <div className="pt-scroll min-h-0 flex-1 overflow-y-auto" style={{ padding: "10px 12px 16px" }}>
+      <div className="pt-scroll min-h-0 flex-1 overflow-y-auto" style={{ padding: "10px 12px 16px" }} {...pullToRefresh.handlers}>
+        {pullToRefresh.pull > 0 ? (
+          <p className="text-center" data-pull-indicator style={{ height: pullToRefresh.pull / 2, fontSize: TYPE.caption, color: SUB, overflow: "hidden" }}>
+            {pullToRefresh.pull >= 70 ? "놓으면 새로 읽어요" : "당겨서 새로고침"}
+          </p>
+        ) : null}
+        {organizationMode ? <RosterFreshness /> : null}
         {/* 못 읽었으면 빈 목록을 보여주지 않는다. 빈 목록은 "센터에 회원이 없다"로
             읽히고, 그 다음 행동이 바로 다시 등록이다. */}
         {rosterError ? (
@@ -12380,6 +12401,66 @@ const AIRecordingStatusContext = createContext({ status: AI_RECORDING_STATUS.NOR
  * legacy 개인 모드(isLegacy: true)와는 다른 상태다.
  */
 const OrganizationContext = createContext(UNRESOLVED_ORGANIZATION_CONTEXT);
+/**
+ * 센터 회원 명단의 가벼운 갱신 (2026-11-04, roster-refresh.js). 회원 목록과 수업
+ * 등록의 회원 선택이 쓴다. enabled 가 false 면(개인 모드 · 스모크) 아무것도 안 한다.
+ */
+export const RosterRefreshContext = createContext({ enabled: false, refresh: () => {}, updatedAt: null, refreshing: false });
+
+/** "마지막 갱신 N분 전" 이 혼자 낡지 않게 30초마다 다시 그린다. */
+function useMinuteClock(enabled) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!enabled) return undefined;
+    const timer = setInterval(() => setNow(Date.now()), 30 * 1000);
+    return () => clearInterval(timer);
+  }, [enabled]);
+  return now;
+}
+
+/**
+ * 당겨서 새로고침. 목록이 맨 위에 있을 때 70px 넘게 끌어 내리면 부른다.
+ * 마우스(PC 웹)는 끌지 않으므로 옆의 새로고침 버튼을 쓴다.
+ */
+function usePullToRefresh(onRefresh, enabled) {
+  const [pull, setPull] = useState(0);
+  const start = useRef(null);
+  const handlers = enabled ? {
+    onTouchStart: (event) => {
+      start.current = event.currentTarget.scrollTop <= 0 ? event.touches[0].clientY : null;
+    },
+    onTouchMove: (event) => {
+      if (start.current === null) return;
+      const distance = event.touches[0].clientY - start.current;
+      setPull(distance > 0 ? Math.min(distance, 120) : 0);
+    },
+    onTouchEnd: () => {
+      if (pull >= 70) onRefresh?.();
+      start.current = null;
+      setPull(0);
+    },
+  } : {};
+  return { pull, handlers };
+}
+
+/** 마지막 갱신 시각과 새로고침 버튼. 목록과 시트가 같은 줄을 쓴다. */
+export function RosterFreshness({ compact = false }) {
+  const roster = useContext(RosterRefreshContext);
+  const now = useMinuteClock(roster.enabled);
+  if (!roster.enabled) return null;
+  return (
+    <div data-roster-freshness className={`flex items-center gap-2 ${compact ? "" : "mb-2"}`}>
+      <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: SUB }}>
+        {roster.refreshing ? "새로 읽는 중…" : lastUpdatedLabel(roster.updatedAt, now)}
+      </span>
+      <button type="button" disabled={roster.refreshing} onClick={() => roster.refresh("manual", { force: false })}
+        className="flex h-9 shrink-0 items-center gap-1 px-3 font-bold disabled:opacity-50"
+        style={{ borderRadius: 999, backgroundColor: CANVAS, color: BRAND_D, fontSize: TYPE.caption }}>
+        <RefreshCw size={13} />새로고침
+      </button>
+    </div>
+  );
+}
 
 function IOSMediaDiagnosticPanel({ memberId = "diagnostics", lessonId = "hidden-diagnostics" }) {
   const [microphoneTest, setMicrophoneTest] = useState({ status: "idle", steps: [] });
@@ -27489,6 +27570,12 @@ export default function App() {
      재시도가 효과를 다시 돌리면서 값이 false 로 돌아가고, 권한이 정말 없는
      사람에게 무한 반복이 된다. */
   const rosterAuthRetried = useRef(false);
+  /* ── 가벼운 갱신 (2026-11-04, roster-refresh.js) ──────────────────────────
+     loadedAt 은 마지막으로 **성공한 읽기를 시작한 시각**이다. 그 뒤에 발급된
+     회원권만 다시 읽는 기준이 된다. lastAt 은 간격 제한의 기준이다. */
+  const [rosterUpdatedAt, setRosterUpdatedAt] = useState(null);
+  const [rosterRefreshing, setRosterRefreshing] = useState(false);
+  const rosterRefreshState = useRef({ lastAt: null, loadedAt: null, inFlight: false });
 
   useEffect(() => {
     if (!organizationRoster) { setRosterClients([]); setRosterPasses([]); setRosterTotals([]); setRosterProducts([]); setRosterLocations([]); setRosterInstructors([]); setRosterError(""); return undefined; }
@@ -27502,6 +27589,7 @@ export default function App() {
        그것은 "아직 모른다" 와 같은 방향이라 거짓을 보여주지 않는다. */
     /* 강사에게는 담당 회원만 내려온다. 기기에서 거르는 것이 아니라 애초에
        오지 않는다 -- 화면 필터는 보여주지 않을 뿐 주지 않은 것이 아니다. */
+    const fullLoadStartedAt = Date.now();
     Promise.all([
       listClients(organizationContext.organizationId, clientScopeFor(organizationContext, account?.id)),
       listPasses(organizationContext.organizationId),
@@ -27518,6 +27606,9 @@ export default function App() {
       toleratingReadFailure(listInstructors(organizationContext.organizationId)),
     ]).then(([clients, passes, totalsResult, productResult, locationResult, instructorResult]) => {
       if (!alive) return;
+      rosterRefreshState.current.loadedAt = fullLoadStartedAt;
+      rosterRefreshState.current.lastAt = fullLoadStartedAt;
+      setRosterUpdatedAt(Date.now());
       setRosterClients(clients);
       setRosterPasses(passes);
       setRosterTotals(totalsResult.items);
@@ -27558,6 +27649,73 @@ export default function App() {
     });
     return () => { alive = false; };
   }, [organizationRoster, organizationContext.organizationId, rosterRevision]);
+
+  const rosterClientsRef = useRef(rosterClients);
+  rosterClientsRef.current = rosterClients;
+  const rosterPassesRef = useRef(rosterPasses);
+  rosterPassesRef.current = rosterPasses;
+  const refreshRoster = useCallback(async (reason, options = {}) => {
+    if (!organizationRoster || !organizationContext.organizationId) return "disabled";
+    const state = rosterRefreshState.current;
+    const organizationId = organizationContext.organizationId;
+    /* 판정은 refreshRosterOnce 가 동기로 먼저 한다. 읽기로 가면 그 자리에서 읽는 중
+       표시를 세운다 -- 같은 순간에 두 번 불려도 둘째는 in_flight 로 끝난다. */
+    const result = refreshRosterOnce({
+      readClients: () => listClients(organizationId, clientScopeFor(organizationContext, account?.id)),
+      readPassesSince: (since) => (since ? listPassesIssuedSince(organizationId, since) : listPasses(organizationId)),
+      current: { clients: rosterClientsRef.current, passes: rosterPassesRef.current },
+      lastAt: state.lastAt, loadedAt: state.loadedAt, inFlight: state.inFlight, force: options.force === true,
+      now: () => Date.now(),
+      onStart: (startedAt) => { state.inFlight = true; state.lastAt = startedAt; setRosterRefreshing(true); },
+    });
+    const outcome = await result;
+    if (outcome.status === "refreshed") {
+      state.loadedAt = outcome.startedAt;
+      setRosterClients(outcome.clients);
+      setRosterPasses(outcome.passes);
+      setRosterUpdatedAt(Date.now());
+      /* 읽은 문서 수를 남긴다 -- 2단계(실시간)를 정할 때 이 숫자가 근거다. */
+      deviceLog("roster_refresh", { feature: "centre_roster", stage: reason, count: outcome.read });
+    } else if (outcome.status === "failed") {
+      deviceLog("roster_refresh_failed", {
+        feature: "centre_roster", stage: reason, errorDomain: "firestore",
+        errorCode: outcome.error?.code || outcome.error?.name || "unknown", message: outcome.error?.message,
+      });
+    } else {
+      deviceLog("roster_refresh_skipped", { feature: "centre_roster", stage: reason, reason: outcome.status });
+      return outcome.status;
+    }
+    state.inFlight = false;
+    setRosterRefreshing(false);
+    return outcome.status;
+  }, [organizationRoster, organizationContext, account?.id]);
+
+  /* 30초 넘게 비활성이었다가 돌아오면 새로 읽는다. 웹은 visibilitychange, 폰은
+     appStateChange 도 함께 본다 -- 어느 쪽이 먼저 와도 간격 제한이 둘을 하나로 만든다. */
+  useEffect(() => {
+    if (!organizationRoster) return undefined;
+    let hiddenAt = null;
+    const away = () => { if (hiddenAt === null) hiddenAt = Date.now(); };
+    const back = () => {
+      if (shouldRefreshOnResume({ hiddenAt, now: Date.now() })) refreshRoster("resume");
+      hiddenAt = null;
+    };
+    const onVisibility = () => (document.visibilityState === "hidden" ? away() : back());
+    document.addEventListener("visibilitychange", onVisibility);
+    let listener = null;
+    if (Capacitor.isNativePlatform()) {
+      Promise.resolve(CapacitorApp.addListener("appStateChange", ({ isActive }) => (isActive ? back() : away())))
+        .then((handle) => { listener = handle; }).catch(() => {});
+    }
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      listener?.remove?.();
+    };
+  }, [organizationRoster, refreshRoster]);
+
+  const rosterRefreshValue = useMemo(() => ({
+    enabled: Boolean(organizationRoster), refresh: refreshRoster, updatedAt: rosterUpdatedAt, refreshing: rosterRefreshing,
+  }), [organizationRoster, refreshRoster, rosterUpdatedAt, rosterRefreshing]);
 
   /* ── 이 기기가 몇 번 빌드인지 적는다 ──────────────────────────────────
      회원 범위 규칙을 켜면 낡은 앱은 통째로 멈춘다. 대표가 그것을 켜기 전에
@@ -31502,6 +31660,7 @@ export default function App() {
     <AIRecordingStatusContext.Provider value={{ ...aiRecordingStatus, updateStatus: updateAIRecordingStatus }}>
     <OrganizationContext.Provider value={organizationContext}>
     <LessonRecordLinkContext.Provider value={{ prepare: prepareLessonRecordContext, resolve: resolveLessonRecordLink }}>
+    <RosterRefreshContext.Provider value={rosterRefreshValue}>
     <div className={`${appRootClassName} flex justify-center`} style={{ minHeight: "100vh", height: "100dvh", backgroundColor: PAGE, overflow: "hidden" }}>
       {style}
       <div className="pt-app-shell safe-t flex h-full min-h-0 w-full flex-col" style={{ backgroundColor: PAGE, boxShadow: "0 0 0 1px rgba(28,36,51,.04)" }}>
@@ -31842,6 +32001,7 @@ export default function App() {
         </div>
       )}
     </div>
+    </RosterRefreshContext.Provider>
     </LessonRecordLinkContext.Provider>
     </OrganizationContext.Provider>
     </AIRecordingStatusContext.Provider>

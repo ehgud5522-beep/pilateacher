@@ -437,8 +437,10 @@ test("a deduction says why it was worth what it was worth", async () => {
   assert.match(pay, /부원장 5:5/);
   assert.match(pay, /기준 단가/);
 
-  // 분쟁이 생겼을 때 여는 화면에도 같은 근거가 붙는다.
-  assert.match(markupOf("센터 회원 상세"), /기준 단가/);
+  // 분쟁이 생겼을 때 여는 화면에도 같은 근거가 붙는다 -- 대표 · 총괄매니저에게만.
+  // 강사 · FC매니저에게는 줄별 금액과 단가(판정 이름 포함)를 숨긴다 (2026-11-04 대표).
+  assert.match(markupOf("센터 회원 상세 · 이력 · 대표"), /기준 단가/);
+  assert.doesNotMatch(markupOf("센터 회원 상세"), /기준 단가/);
 });
 
 test("the payroll summary is the owner's, and says out loud what it did not count", async () => {

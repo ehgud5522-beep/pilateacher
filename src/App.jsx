@@ -16078,7 +16078,7 @@ function InstructorPayDetail({
                 <div key={row.key} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5" data-pay-unit-row
                   style={{ padding: "10px 0", borderTop: `1px solid ${LINE}` }}>
                   <span className="min-w-0" style={{ flex: "1 1 9rem", fontSize: TYPE.body, color: INK, overflowWrap: "anywhere" }}>
-                    {row.kind === "support" ? "센터 지원 (서비스)" : labelOf(PAY_CATEGORY_LABELS, row.category)}
+                    {row.kind === "support" ? "서비스 수업" : labelOf(PAY_CATEGORY_LABELS, row.category)}
                   </span>
                   <span className="tabular-nums" style={{ fontSize: TYPE.body, color: INK2 }}>
                     ₩{won(row.unitPrice)} × {row.sessions}건 = <b style={{ color: INK }}>₩{won(row.amount)}</b>
@@ -18641,7 +18641,7 @@ const LEDGER_TYPE_LABEL = {
 };
 
 /** 원장 한 줄이 무엇을 말하는가. 종류마다 읽는 법이 다르다. */
-function LedgerRow({ entry, nameOfInstructor, corrected = false, onCorrect }) {
+function LedgerRow({ entry, nameOfInstructor, corrected = false, onCorrect, showPay = true }) {
   const transfer = entry.type === LEDGER_ENTRY_TYPE.TRANSFER;
   const issue = entry.type === LEDGER_ENTRY_TYPE.ISSUE;
   const undoing = entry.type === LEDGER_ENTRY_TYPE.CORRECTION || entry.type === LEDGER_ENTRY_TYPE.CANCEL;
@@ -18699,22 +18699,23 @@ function LedgerRow({ entry, nameOfInstructor, corrected = false, onCorrect }) {
             : nameOfInstructor(entry.instructorId)}
           {/* 분쟁이 생겼을 때 여는 화면이다. 금액 옆에 근거가 없으면
               "왜 이 금액이냐"에 아무도 답할 수 없다. */}
-          {!transfer && entry.rule ? ` · ${labelOf(PRICING_RULE_LABELS, entry.rule)}` : ""}
+          {/* 판정 이름도 단가의 일부다 ("신규 단가" · "부원장 5:5"). 금액과 같이 숨긴다. */}
+          {showPay && !transfer && entry.rule ? ` · ${labelOf(PRICING_RULE_LABELS, entry.rule)}` : ""}
         </span>
-        {!transfer && !titled ? (
+        {showPay && !transfer && !titled ? (
           <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
             ₩{won(amount)}
           </span>
         ) : null}
         {/* 세션업으로 들어온 돈. 0원 세션업(서비스만 얹기)도 있어 조건을 둔다 --
             ₩0 을 적으면 돈이 오간 줄로 읽힌다. */}
-        {sessionUp && addedPrice > 0 ? (
+        {showPay && sessionUp && addedPrice > 0 ? (
           <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: BRAND_D }}>
             +₩{won(addedPrice)}
           </span>
         ) : null}
         {/* 되돌리는 항목은 급여에서 그만큼을 뺀다. 부호가 보여야 읽힌다. */}
-        {entry.type === LEDGER_ENTRY_TYPE.CORRECTION ? (
+        {showPay && entry.type === LEDGER_ENTRY_TYPE.CORRECTION ? (
           <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: BAD }}>
             −₩{won(amount)}
           </span>
@@ -19969,6 +19970,9 @@ function ClientDetail({
                         const canCorrect = canUndo && pass && isCorrectableEntry(entry, entries);
                         return (
                           <LedgerRow key={entry.id} entry={entry} nameOfInstructor={nameOfInstructor}
+                            /* 줄별 금액 · 단가도 대표 · 총괄매니저에게만 (2026-11-04 대표).
+                               강사 본인 단가는 급여 상세에서 그대로 본다. */
+                            showPay={showPayTotal}
                             corrected={isCorrectedEntry(entry, entries)}
                             onCorrect={canCorrect
                               ? () => { setUndo({ kind: "correct", pass, entry }); setReason(""); }

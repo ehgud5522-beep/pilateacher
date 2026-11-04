@@ -72,3 +72,21 @@ test("펼치면 8월 발급 줄이 보인다", async () => {
   assert.deepEqual(months(html).map((month) => month.open), [true, true]);
   assert.match(html, /\+22/);
 });
+
+test("줄별 금액과 단가는 대표 · 총괄매니저에게만 — FC매니저 · 강사는 숨긴다", async () => {
+  /* 2026-11-04 대표. 금액(₩) · 보정의 −₩ · 세션업의 +₩ · 판정 이름(단가의 근거) 모두. */
+  for (const name of ["센터 회원 상세 · 이력 · 대표", "센터 회원 상세 · 이력 · 총괄매니저"]) {
+    const html = historyOf(await markupOf(name));
+    assert.match(html, /₩30,000/, name);
+    assert.match(html, /−₩30,000/, `${name}: 보정의 금액`);
+    assert.match(html, /기준 단가/, `${name}: 판정 이름`);
+  }
+  for (const name of ["센터 회원 상세 · 이력 · FC매니저", "센터 회원 상세"]) {
+    const html = historyOf(await markupOf(name));
+    assert.doesNotMatch(html, /₩/, `${name}: 금액이 하나도 없어야 한다`);
+    assert.doesNotMatch(html, /기준 단가|신규 단가|부원장/, `${name}: 판정 이름도 숨긴다`);
+    // 줄 자체와 보정 사유는 그대로 보인다.
+    assert.match(html, /차감 보정/, name);
+    assert.match(html, /강사가 다른 회원을 눌렀습니다/, name);
+  }
+});

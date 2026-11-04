@@ -156,7 +156,8 @@ import {
   transferableSessions,
 } from "./data/schema/pass-transfer.js";
 import {
-  DEDUCT_BACKDATE_LIMIT_DAYS, HOLD_MAX_DAYS, adjustPass, cancelPass, changePassExpiry,
+  DEDUCT_BACKDATE_LIMIT_DAYS, HOLD_MAX_DAYS, adjustPass, adjustDirectionOf, cancelPass, changePassExpiry,
+  mayAdjustRemaining,
   isFreshlyIssuedPass,
   correctDeduction, deductPass, holdPass, isCancellablePass, loadPassReconcileRows,
   isCorrectableEntry, isCorrectedEntry, isDeductablePass, isExpiredPass, issuePass,
@@ -164,6 +165,7 @@ import {
   transferPassInstructor,
   transferPass,
 } from "./data/repositories/pass-repository.js";
+import { ADJUST_INCREASE_NOTICE, passEditFailure } from "./features/membership/pass-edit-failure.js";
 import {
   SETTLEMENT_GATE, SETTLEMENT_GATE_LABEL, blocksSettlement, settlementGate,
 } from "./features/schedule/settlement-gate.js";
@@ -775,6 +777,9 @@ const DEVICE_LOG_FIELDS = new Set([
   "feature", "errorDomain", "errorCode", "membershipCount", "selectedOrganizationId", "role", "isLegacy",
   // 세션이 실제로 쓴 uid 를 값 없이 지목한다 -- 길이와 양끝 4자뿐, 원본은 아니다 (§7).
   "uidLength", "uidPrefix", "uidSuffix",
+  // 회원권 수정 실패. 조정이면 방향과 변화량이 원인을 가른다 -- FC매니저의 증가는
+  // 규칙이 막고, 그것만으로는 권한 거부와 구별되지 않는다.
+  "direction", "delta",
 ]);
 /** 소속 조회 진단이 쓰는 필드. 화이트리스트와 어긋나면 테스트가 잡는다. */
 export const ORGANIZATION_CONTEXT_LOG_FIELDS = Object.freeze([
@@ -18665,31 +18670,8 @@ function ClientPhoneSheet({ client, masked, onCancel, onConfirm, busy, error }) 
  * **바뀔 값을 누르기 전에 보여준다.** 조정은 "10회 → 13회", 만료일은
  * "3월 31일 → 6월 30일". 되돌릴 수 없는 버튼 앞에서 결과를 숨기지 않는다.
  */
-/**
- * 회원권 수정이 막혔을 때 뭐라고 말할 것인가.
- *
- * 잔여가 모자란 것 · 만료일이 없는 것 · 권한이 없는 것은 대표가 할 일이
- * 서로 다르다. 한 문구로 뭉개면 자기가 못 하는 일인 줄 알고 물러난다.
- * 코드는 언제나 함께 보여준다.
- */
-function passEditFailure(error) {
-  const code = String(error?.code || "unknown");
-  if (code === "below_zero") {
-    return `잔여는 0회 미만이 될 수 없어요. 지금 ${Number(error?.remaining) || 0}회 남아 있습니다.`;
-  }
-  if (code === "no_previous_expiry") {
-    return "이 회원권에는 만료일이 없어 옮길 수 없어요. 회원권을 다시 발급해 주세요.";
-  }
-  if (code === "unchanged") return "지금과 같은 날짜예요.";
-  if (code === "permission-denied") {
-    return `이 회원권을 고칠 권한이 없어요. 센터에 문의해 주세요. (코드 ${code})`;
-  }
-  if (["unavailable", "deadline-exceeded", "aborted", "cancelled"].includes(code)) {
-    return `연결이 불안정해 저장하지 못했어요. 다시 시도해 주세요. (코드 ${code})`;
-  }
-  return `저장하지 못했어요. (코드 ${code})`;
-}
-
+/* 회원권 수정이 막혔을 때의 문구는 pass-edit-failure.js 에 있다 -- 코드 → 문구를
+   테스트로 고정한다. */
 /**
  * 세션업·양도가 서버에서 막힌 이유. **코드를 반드시 함께 보여준다.**
  *
@@ -18731,7 +18713,7 @@ function passAdminFailure(error) {
 }
 
 function PassEditSheet({
-  kind, pass, onCancel, onConfirm, busy, error,
+  kind, pass, onCancel, onConfirm, busy, error, canIncrease = true,
   initialDelta = "", initialDays = "", initialDate = "", initialReason = "",
   initialMode = "date",
 }) {
@@ -18746,6 +18728,9 @@ function PassEditSheet({
   const deltaNumber = Number.parseInt(String(delta).trim(), 10);
   const nextRemaining = Number.isInteger(deltaNumber) ? remaining + deltaNumber : null;
   const below = nextRemaining !== null && nextRemaining < 0;
+  /* FC매니저는 줄이는 조정만 한다 (2026-11-04 대표). 저장을 눌러 규칙에
+     막히게 두지 않고 입력하는 자리에서 말한다. */
+  const increaseBlocked = adjust && !canIncrease && Number.isInteger(deltaNumber) && deltaNumber > 0;
 
   const currentExpiry = pass?.expiresAt ? toDate(pass.expiresAt) : null;
   const heldDays = Number.parseInt(String(days).trim(), 10);
@@ -18763,7 +18748,7 @@ function PassEditSheet({
 
   const ready = Boolean(reason.trim())
     && (adjust
-      ? Number.isInteger(deltaNumber) && deltaNumber !== 0 && !below
+      ? Number.isInteger(deltaNumber) && deltaNumber !== 0 && !below && !increaseBlocked
       : Boolean(nextExpiry) && !sameDay);
 
   return (
@@ -18780,10 +18765,10 @@ function PassEditSheet({
       {adjust ? (
         <>
           <div className="mt-3 flex items-center gap-2">
-            <input inputMode="numeric" value={delta} placeholder="+3 또는 -2"
+            <input inputMode="numeric" value={delta} placeholder={canIncrease ? "+3 또는 -2" : "-2"}
               onChange={(event) => setDelta(event.target.value)} className={inputCls}
               style={{ maxWidth: 140 }} />
-            <p className="tabular-nums" style={{ fontSize: TYPE.caption, color: below ? BAD : SUB }}>
+            <p className="tabular-nums" style={{ fontSize: TYPE.caption, color: below || increaseBlocked ? BAD : SUB }}>
               {Number.isInteger(deltaNumber) && deltaNumber !== 0
                 ? `${remaining}회 → ${nextRemaining}회`
                 : `지금 ${remaining}회`}
@@ -18792,6 +18777,13 @@ function PassEditSheet({
           {below ? (
             <p role="alert" className="mt-1 font-bold" style={{ fontSize: TYPE.caption, color: BAD }}>
               잔여는 0회 미만이 될 수 없어요. 지금 {remaining}회 남아 있습니다.
+            </p>
+          ) : null}
+          {!canIncrease ? (
+            <p role={increaseBlocked ? "alert" : undefined} className={increaseBlocked ? "mt-1 font-bold" : "mt-1"}
+              data-adjust-increase-notice
+              style={{ fontSize: TYPE.caption, color: increaseBlocked ? BAD : SUB }}>
+              {ADJUST_INCREASE_NOTICE} FC매니저는 잔여를 줄이는 조정만 할 수 있어요.
             </p>
           ) : null}
         </>
@@ -19489,7 +19481,20 @@ function ClientDetail({
     } catch (thrown) {
       /* 종류마다 할 일이 다르다. 잔여가 모자란 것과 권한이 없는 것을 한
          문구로 뭉개면 대표는 자기가 못 하는 일인 줄 안다. */
-      setPassEditError(passEditFailure(thrown));
+      const role = organization?.role || "";
+      const direction = kind === "adjust" && Number.isInteger(delta) ? adjustDirectionOf(delta) : undefined;
+      /* 원본 코드를 그대로 남긴다. 앱이 먼저 막은 것(below_zero ·
+         increase_owner_only)과 규칙이 막은 것(permission-denied)은 계층이 다르다. */
+      const refusedByApp = thrown?.name === "PassAdjustError" || thrown?.name === "PassExpiryError";
+      deviceLog("pass_edit_failed", {
+        feature: kind === "adjust" ? "pass_adjust" : (days ? "pass_hold" : "pass_expiry"),
+        stage: refusedByApp ? "precheck" : "commit",
+        errorDomain: refusedByApp ? "pass_repository" : (thrown?.code ? "firestore" : "app"),
+        errorCode: String(thrown?.code || thrown?.name || "unknown"),
+        message: thrown?.message,
+        role, direction, delta: kind === "adjust" ? delta : undefined,
+      });
+      setPassEditError(passEditFailure(thrown, { direction, role }));
     } finally {
       setBusy(false);
     }
@@ -19582,6 +19587,7 @@ function ClientDetail({
 
   if (passEdit) return (
     <PassEditSheet kind={passEdit.kind} pass={passEdit.pass}
+      canIncrease={mayAdjustRemaining(organization?.role || "", "increase")}
       onCancel={() => { setPassEdit(null); setPassEditError(""); }}
       onConfirm={runPassEdit} busy={busy} error={passEditError} />
   );

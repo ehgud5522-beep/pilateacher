@@ -1336,14 +1336,38 @@ describe("adjusting sessions and moving the expiry date", () => {
     }
   });
 
-  test("FC매니저도 잔여를 조정한다 — 사유는 그대로 필수다", async () => {
+  test("FC매니저도 잔여를 줄인다 — 사유는 그대로 필수다", async () => {
     /* 2026-10-26 대표 결정. 만료일과 같은 선이 됐다 -- 둘 다 운영이 매일
        하는 일이고, 둘 다 사유와 이력이 함께 남는다.
 
        **차감 보정은 열리지 않았다.** 그쪽은 이미 일어난 수업의 급여를
        되돌리는 일이라 대표·총괄 그대로다 (아래 테스트). */
-    await assertSucceeds(setDoc(ledgerAt(dbFor(users.manager), PASS_A, "adj-manager-ok"),
-      adjust(users.manager)));
+    const db = dbFor(users.manager);
+    const batch = writeBatch(db);
+    batch.set(ledgerAt(db, PASS_A, "adj-manager-ok"), adjust(users.manager, { delta: -3 }));
+    batch.update(passAt(db, PASS_A), { remainingCount: increment(-3) });
+    await assertSucceeds(batch.commit());
+  });
+
+  test("FC매니저는 잔여를 늘리지 못한다 — 원장도 회원권도", async () => {
+    /* 2026-11-04 대표. 늘리는 것은 회원이 사지 않은 수업을 만드는 일이라
+       대표·총괄매니저만이다. 두 반쪽이 각각 막는다 -- 한쪽만 막으면 다른
+       쪽만 쓰는 옛 코드가 지나간다. */
+    const db = dbFor(users.manager);
+    await assertFails(setDoc(ledgerAt(db, PASS_A, "adj-manager-up"), adjust(users.manager, { delta: 3 })));
+    await assertFails(updateDoc(passAt(db, PASS_A), { remainingCount: increment(3) }));
+    const batch = writeBatch(db);
+    batch.set(ledgerAt(db, PASS_A, "adj-manager-up-batch"), adjust(users.manager, { delta: 3 }));
+    batch.update(passAt(db, PASS_A), { remainingCount: increment(3) });
+    await assertFails(batch.commit());
+  });
+
+  test("총괄매니저는 잔여를 늘린다", async () => {
+    const db = dbFor(users.area_manager);
+    const batch = writeBatch(db);
+    batch.set(ledgerAt(db, PASS_A, "adj-area-up"), adjust(users.area_manager, { delta: 3 }));
+    batch.update(passAt(db, PASS_A), { remainingCount: increment(3) });
+    await assertSucceeds(batch.commit());
   });
 
   test("FC매니저의 조정도 사유 없이는 거부된다", async () => {

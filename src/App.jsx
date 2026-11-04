@@ -152,6 +152,7 @@ import { WEB_VERSION_CHECK_MS, fetchDeployedWebBuild, isNewerWebBuild, staleTabM
 import {
   lastUpdatedLabel, refreshRosterOnce, shouldRefreshOnResume,
 } from "./features/roster/roster-refresh.js";
+import { refreshAfterSettlement, settleRefreshTargets } from "./features/roster/settle-refresh.js";
 import {
   createProduct, listProducts, productBaseUnitPrice, setProductStatus,
 } from "./data/repositories/product-repository.js";
@@ -160,7 +161,7 @@ import {
   transferableSessions,
 } from "./data/schema/pass-transfer.js";
 import {
-  DEDUCT_BACKDATE_LIMIT_DAYS, HOLD_MAX_DAYS, listPassesIssuedSince, adjustPass, adjustDirectionOf, cancelPass, changePassExpiry,
+  DEDUCT_BACKDATE_LIMIT_DAYS, HOLD_MAX_DAYS, listPassesIssuedSince, readSettledRosterDocs, adjustPass, adjustDirectionOf, cancelPass, changePassExpiry,
   mayAdjustRemaining,
   isFreshlyIssuedPass,
   correctDeduction, deductPass, holdPass, isCancellablePass, loadPassReconcileRows,
@@ -30924,6 +30925,38 @@ export default function App() {
     }
   }, [organizationRoster, organizationContext.organizationId, account?.id]);
 
+  /* 확정 · 되돌리기가 바꾼 회원권과 누적 문서만 다시 읽는다 (2026-11-04 대표,
+     settle-refresh.js). 전에는 명단 전체(강사 한 명에게 2,350건쯤)를 다시 읽었다.
+     못 읽거나 회원권이 없어졌으면 전처럼 전체를 다시 읽는다. */
+  const refreshSettledRoster = async (stage, touched) => {
+    const targets = settleRefreshTargets(touched, rosterPasses, account?.id || "");
+    const outcome = await refreshAfterSettlement({
+      targets,
+      read: (wanted) => readSettledRosterDocs(organizationContext.organizationId, wanted),
+      current: { passes: rosterPasses, totals: rosterTotals },
+    });
+    if (outcome.status === "refreshed") {
+      /* 함수형으로 합친다 -- 읽는 사이에 다른 갱신이 명단을 바꿨으면 그것을 덮지 않게. */
+      const fresh = new Map(outcome.passes.map((pass) => [String(pass?.id || ""), pass]));
+      setRosterPasses((current) => current.map((pass) => fresh.get(String(pass?.id || "")) || pass));
+      setRosterTotals((current) => {
+        const ids = new Set(current.map((item) => String(item?.id || "")));
+        const freshTotals = new Map(outcome.totals.map((item) => [String(item?.id || ""), item]));
+        return [
+          ...current.map((item) => freshTotals.get(String(item?.id || "")) || item),
+          ...outcome.totals.filter((item) => !ids.has(String(item?.id || ""))),
+        ];
+      });
+      deviceLog("roster_settle_refresh", { feature: "centre_roster", stage, count: outcome.read });
+    } else if (outcome.status === "fallback") {
+      deviceLog("roster_settle_refresh_failed", {
+        feature: "centre_roster", stage, errorDomain: outcome.errorCode === "pass_missing" ? "app" : "firestore",
+        errorCode: outcome.errorCode, message: outcome.error?.message,
+      });
+      setRosterRevision((value) => value + 1);
+    }
+  };
+
   const settleLesson = async (lessonId) => {
     const lesson = db.schedule.find((item) => item.id === lessonId);
     if (!lesson || !organizationRoster || isSettledLesson(lesson)) return;
@@ -31028,8 +31061,9 @@ export default function App() {
         ...db,
         schedule: db.schedule.map((item) => (item.id === lessonId ? attempted : item)),
       })) return;
-      // 잔여가 줄었다. 명부를 다시 읽지 않으면 화면이 옛 숫자를 보여준다.
-      setRosterRevision((value) => value + 1);
+      /* 잔여가 줄었다. 명부를 다시 읽지 않으면 화면이 옛 숫자를 보여준다 --
+         차감한 회원권과 그 누적만 다시 읽는다. */
+      refreshSettledRoster("settle", results.map((item) => ({ passId: item.passId })));
       const toastByOutcome = {
         [SETTLEMENT_OUTCOME.COMPLETE]: { ok: true, msg: `수업을 확정했습니다. ${results.length}명 회원권 1회 차감.` },
         [SETTLEMENT_OUTCOME.NOTHING]: { ok: true, msg: "수업을 확정했습니다. 차감할 회차는 없습니다." },
@@ -31079,6 +31113,7 @@ export default function App() {
     if (!lesson || !organizationRoster || !isSettledLesson(lesson)) return false;
     const organizationId = organizationContext.organizationId;
     const failures = [];
+    const touched = [];
     for (const item of settledDeductionsOf(lesson)) {
       try {
         const pass = rosterPasses.find((candidate) => candidate.id === item.passId);
@@ -31087,11 +31122,16 @@ export default function App() {
         const entry = entries.find((candidate) => candidate.id === item.entryId);
         if (!entry) throw Object.assign(new Error("entry not found"), { code: "entry_missing" });
         await correctDeduction(organizationId, pass, entry, { reason, createdBy: account?.id || "" });
+        /* 보정은 그 차감을 한 강사의 누적을 되돌린다 -- 지금 누른 사람이 아니다. */
+        touched.push({ passId: item.passId, instructorId: entry.instructorId || "" });
       } catch (error) {
         failures.push({ memberId: item.memberId, code: error?.code || error?.message || "unknown" });
       }
     }
     if (failures.length > 0) {
+      /* 일부는 이미 보정됐을 수 있다. 그 회원권만이라도 다시 읽는다 -- 전에는 여기서
+         아무것도 다시 읽지 않아 보정된 잔여가 옛 숫자로 남았다. */
+      if (touched.length > 0) refreshSettledRoster("unsettle_partial", touched);
       setToast({ ok: false, msg: `되돌리지 못했어요 (코드 ${failures[0].code}).` });
       return false;
     }
@@ -31099,7 +31139,7 @@ export default function App() {
       ...db,
       schedule: db.schedule.map((item) => (item.id === lessonId ? clearSettlementFromLesson(item) : item)),
     });
-    setRosterRevision((value) => value + 1);
+    refreshSettledRoster("unsettle", touched);
     /* 서버의 수업 문서도 예정으로 돌린다 (2026-10-31). 전에는 "completed" 로 남아
        그 수업이 다시는 회원 앱에 나가지 않았고, 다른 기기는 계속 잠겨 있었다. */
     reopenSettledLesson(organizationId, lessonId, { updatedBy: account?.id || "", deviceId: deviceIdentity() })

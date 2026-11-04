@@ -1006,6 +1006,49 @@ export async function readInstructorClientSessions(organizationId, instructorId,
   return typeof sessions === "number" && Number.isInteger(sessions) && sessions >= 0 ? sessions : 0;
 }
 
+/**
+ * 수업 확정 · 되돌리기가 바꾼 문서만 다시 읽는다 (2026-11-04).
+ *
+ * 확정 한 번에 움직이는 것은 그 회원권(잔여 · 서비스 사용)과 그 강사 · 회원의
+ * 누적 문서뿐이다. 전에는 명부 전체(회원권 · 누적 · 상품 전부, 강사 한 명에게
+ * 2천 건 넘게)를 다시 읽었다.
+ *
+ * 회원권이 없어졌으면(missingPassIds) 부르는 쪽이 전체 읽기로 돌아간다 -- 여기서
+ * 지우면 명부가 "그 회원권이 없다" 를 이 기기 혼자 아는 상태가 된다. 누적 문서가
+ * 없는 것은 0 이라는 뜻이라 그대로 건너뛴다 (readInstructorClientSessions 와 같음).
+ *
+ * @param {string} organizationId
+ * @param {{ passIds: Array<string>, totals: Array<{ instructorId: string, clientId: string }> }} targets
+ * @param {{ store?: PassStore }} [options]
+ */
+export async function readSettledRosterDocs(organizationId, targets, options = {}) {
+  const { store = createFirestorePassStore() } = options;
+  const organization = requiredText(organizationId, "organizationId");
+  const passIds = [...new Set((targets?.passIds || []).map((id) => String(id || "").trim()).filter(Boolean))];
+  const totalKeys = [...new Map((targets?.totals || [])
+    .filter((item) => String(item?.instructorId || "").trim() && String(item?.clientId || "").trim())
+    .map((item) => [`${item.instructorId}_${item.clientId}`, item])).values()];
+  const read = async (path, feature) => {
+    try {
+      return await store.read(path);
+    } catch (error) {
+      throw new RepositoryReadError({ feature, stage: "get", path, code: error?.code || "unknown", cause: error });
+    }
+  };
+  const [passes, totals] = await Promise.all([
+    Promise.all(passIds.map((id) => read(paths.pass(organization, id), "pass_settle_refresh"))),
+    Promise.all(totalKeys.map((item) => read(
+      paths.instructorClientTotal(organization, item.instructorId, item.clientId), "instructor_client_totals",
+    ))),
+  ]);
+  return {
+    passes: passes.filter(Boolean),
+    totals: totals.filter(Boolean),
+    missingPassIds: passIds.filter((id, index) => !passes[index]),
+    read: passIds.length + totalKeys.length,
+  };
+}
+
 /* ── 고치는 항목 ────────────────────────────────────────────────────────────
 
    원장은 append-only 다. 잘못 차감한 건을 지울 수는 없고, 되돌리는 항목을 더한다.

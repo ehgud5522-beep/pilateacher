@@ -479,6 +479,41 @@ const attendanceStatusOf = (status) => ({
 const PAIRABLE = ["done", "noshow"];
 
 /**
+ * ── 노쇼 차감 / 노쇼 미차감 (2026-11-06 대표) ──────────────────────────────
+ * 노쇼는 강사가 확정할 때 고른다. attendee.noshowFee 가 그 선택이다:
+ *   true   노쇼 차감   -- 출석과 같은 단가로 회차와 급여가 나간다
+ *   false  노쇼 미차감 -- 회차도 급여도 없다. 출석 기록에만 노쇼로 남는다
+ *   그 밖  아직 안 고름 -- **확정할 수 없다** (settleBlockReason)
+ *
+ * 그 전에는 센터 모드에서 이 선택이 기기에 표시만 남고 확정은 그것을 보지
+ * 않았다. 첫 화면 카드에서 "차감 없음" 을 골라도 확정하면 1회가 빠졌다.
+ */
+export const NOSHOW_CHOICE_REQUIRED = "노쇼한 회원마다 '노쇼 차감' 또는 '노쇼 미차감'을 골라 주세요.";
+
+/** 노쇼인데 아직 차감 여부를 고르지 않은 사람인가. */
+export const isUndecidedNoshow = (attendee) => text(attendee?.status) === "noshow"
+  && typeof attendee?.noshowFee !== "boolean";
+
+/**
+ * 이 사람이 회차를 쓰는가. 출석, 그리고 노쇼 차감을 고른 노쇼.
+ *
+ * 고르지 않은 노쇼는 예전 규칙대로 차감 쪽으로 센다 -- 확정 버튼은 고르기 전에
+ * 열리지 않으므로(settleBlockReason) 여기 닿는 것은 미리보기뿐이고, 미리보기가
+ * "빠질 수 있는 회차" 를 숨기지 않게 하는 쪽이 덜 틀린다.
+ */
+export const deductsFor = (attendee) => {
+  const status = text(attendee?.status);
+  if (status === "done") return true;
+  if (status === "noshow") return attendee?.noshowFee !== false;
+  return false;
+};
+
+/** 지금 확정을 막는 이유. 없으면 빈 문자열. */
+export function settleBlockReason(lesson) {
+  return attendeesOf(lesson).some(isUndecidedNoshow) ? NOSHOW_CHOICE_REQUIRED : "";
+}
+
+/**
  * 이 수업에서 누가 어느 회원권을 쓰는가. **확정과 미리보기가 같이 쓴다.**
  *
  * 둘이 갈라지면 강사는 화면에서 본 금액과 다른 금액이 원장에 박히는 것을 보게
@@ -533,7 +568,7 @@ export function planPassSelection(input = {}) {
        clientId 가 모두 있어야 하고, 지우면 남은 한 명이 1:1 로 떨어진다 --
        2026-09-23 에는 그것이 규칙이었고 지금은 아니다. */
     if (status === "cancel" && !duetLesson) continue;
-    if (requireAttendance && !duetLesson && !PAIRABLE.includes(status)) continue;
+    if (requireAttendance && !duetLesson && !deductsFor(attendee)) continue;
     const memberId = text(attendee.memberId);
     const member = byId.get(memberId);
     /* 회원권은 조직 clientId 로 붙어 있다. 맞물린 회원은 기기의 id 를 그대로
@@ -543,7 +578,7 @@ export function planPassSelection(input = {}) {
     if (!clientId) {
       /* 노쇼도 차감하므로 노쇼인 사람도 명부에 있어야 한다. 취소한 사람은
          차감할 것이 없어 띄우지 않는다. */
-      if (!requireAttendance || PAIRABLE.includes(status)) {
+      if (!requireAttendance || deductsFor(attendee)) {
         skips.push({ memberId, clientId: "", reason: SETTLEMENT_SKIP.NO_CLIENT });
       }
       continue;
@@ -616,8 +651,10 @@ export function planPassSelection(input = {}) {
     }
 
     /* 둘 다 취소면 일어나지 않은 수업이다. 둘 다 노쇼면 일어난 것으로 센다 --
-       강사는 그 시간을 비워 두었고 회원은 알리지 않았다. */
-    if (requireAttendance && !unique.some((row) => PAIRABLE.includes(row.status))) {
+       강사는 그 시간을 비워 두었고 회원은 알리지 않았다. 다만 노쇼 미차감을 고른
+       사람은 회차를 쓰지 않는다 (2026-11-06) -- 둘 다 미차감이거나 미차감 · 취소면
+       차감 없이 닫는다. 한 명이라도 출석 · 노쇼 차감이면 공유 회원권에서 1회다. */
+    if (requireAttendance && !unique.some((row) => deductsFor(row.attendee))) {
       return { deductions, skips };
     }
 
@@ -656,8 +693,8 @@ export function planPassSelection(input = {}) {
 
   for (const row of rows) {
     const { memberId, clientId, status } = row;
-    /* 노쇼도 차감한다 (위 머리말). 취소만 건너뛴다. */
-    if (requireAttendance && !PAIRABLE.includes(status)) continue;
+    /* 노쇼도 차감한다 (위 머리말). 취소와 노쇼 미차감만 건너뛴다. */
+    if (requireAttendance && !deductsFor(row.attendee)) continue;
     // 추가 관리가 막힌 사람. 사유는 위에서 적었고, PT 도 빼지 않는다.
     if (careBlocked.has(clientId)) continue;
 

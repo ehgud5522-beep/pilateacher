@@ -80,6 +80,9 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "일정 탭 · 소속 · 1:1 노쇼",
     "일정 탭 · 소속 · 2:1 둘 다 노쇼",
     "일정 탭 · 소속 · 2:1 한 명 미표시",
+    "일정 탭 · 소속 · 1:1 노쇼 차감",
+    "일정 탭 · 소속 · 1:1 노쇼 미차감",
+    "일정 탭 · 소속 · 2:1 노쇼 한 명만 고름",
     "일정 탭 · 소속 · 예상 단가",
     "일정 탭 · 소속 · 예상 단가 · 세션업 기간",
     "일정 탭 · 소속 · 예상 단가 · 서비스",
@@ -2263,20 +2266,35 @@ test("the session up history line says what grew and who did it", async (t) => {
    번호는 회원의 정체다. 고치는 것과 보는 것은 다른 일이라, 고치는 창에서도
    전체 번호를 보여 주지 않는다. */
 
-test("a no-show lesson still offers the confirm button and says it will deduct", async (t) => {
+test("a no-show lesson still offers the confirm button, asks 차감/미차감, and locks until chosen", async (t) => {
   /* 2026-10-04 에 대표가 본 증상: 노쇼로 표시하면 확정할 자리가 사라졌다.
      진짜 원인은 큐(needsSettlement)였지만, 화면 쪽도 함께 고정해 둔다 --
-     확정 버튼이 사라지는 회귀가 나면 큐 테스트만으로는 안 잡힌다. */
+     확정 버튼이 사라지는 회귀가 나면 큐 테스트만으로는 안 잡힌다.
+
+     2026-11-06 대표: 노쇼는 확정할 때 "노쇼 차감 / 노쇼 미차감" 을 고른다.
+     고르기 전에는 버튼이 **있되 잠기고** 이유를 말한다. */
   const markupOf = await issueScreens(t);
-  for (const name of ["일정 탭 · 소속 · 1:1 노쇼", "일정 탭 · 소속 · 2:1 둘 다 노쇼"]) {
+  const settleButton = (markup) => markup.match(/<button[^>]*>(?:수업 확정|다시 확정)[^<]*<\/button>/)?.[0] || "";
+  for (const name of ["일정 탭 · 소속 · 1:1 노쇼", "일정 탭 · 소속 · 2:1 둘 다 노쇼", "일정 탭 · 소속 · 2:1 노쇼 한 명만 고름"]) {
     const markup = markupOf(name);
     assert.match(markup, /수업 확정/, name);
-    /* 노쇼는 확정 전까지 아무것도 움직이지 않는다. 그 말을 하지 않으면 강사는
-       노쇼를 누른 것으로 끝난 줄 안다. */
-    assert.match(markup, /노쇼도 1회 차감됩니다/, name);
-    // 소속 모드에서는 고를 수 없는 것을 고르게 두지 않는다.
-    assert.doesNotMatch(markup, />비차감</, name);
+    assert.match(markup, />노쇼 차감</, name);
+    assert.match(markup, />노쇼 미차감</, name);
+    assert.match(markup, /data-settle-block-reason/, `${name}: 왜 잠겼는지 말한다`);
+    assert.match(settleButton(markup), /disabled=""/, `${name}: 고르기 전에는 확정이 잠긴다`);
+    // 예전의 "언제나 차감" 안내는 사라졌다.
+    assert.doesNotMatch(markup, /노쇼도 1회 차감됩니다/, name);
   }
+  const charged = markupOf("일정 탭 · 소속 · 1:1 노쇼 차감");
+  assert.doesNotMatch(charged, /data-settle-block-reason/);
+  assert.doesNotMatch(settleButton(charged), /disabled=""/);
+  assert.match(charged, /출석과 같은 단가로 급여에 잡힙니다/);
+  assert.match(settleButton(charged), /1명 차감/, "노쇼 차감은 차감 인원에 든다");
+
+  const waived = markupOf("일정 탭 · 소속 · 1:1 노쇼 미차감");
+  assert.doesNotMatch(settleButton(waived), /disabled=""/);
+  assert.match(waived, /차감과 급여 없이 노쇼로만 남습니다/);
+  assert.doesNotMatch(settleButton(waived), /명 차감/, "노쇼 미차감은 차감 인원에 들지 않는다");
 });
 
 test("an add-on care lesson shows both rate lines and the picker", async (t) => {

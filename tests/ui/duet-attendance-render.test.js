@@ -42,11 +42,13 @@ test("듀엣 한 명 미표시 — 확정 버튼이 잠기고 누가 남았는�
 });
 
 test("둘 다 정해진 듀엣 — 막지 않는다 (전과 같은 확정 버튼)", async () => {
-  for (const name of ["일정 탭 · 소속 · 확정 전", "일정 탭 · 소속 · 2:1 둘 다 노쇼"]) {
-    const html = await markupOf(name);
-    assert.doesNotMatch(html, /data-settle-blocked/, name);
-    assert.doesNotMatch(settleButton(html), /disabled=""/, name);
-  }
+  /* 둘 다 정해졌으면 듀엣 출석 미표시(data-settle-blocked)로는 막지 않는다. 둘 다 노쇼인 수업은
+     노쇼 차감/미차감 선택(#138)이 따로 잠그므로 버튼 잠김은 그쪽 테스트가 본다. */
+  const ready = await markupOf("일정 탭 · 소속 · 확정 전");
+  assert.doesNotMatch(ready, /data-settle-blocked/);
+  assert.doesNotMatch(settleButton(ready), /disabled=""/);
+  const bothNoshow = await markupOf("일정 탭 · 소속 · 2:1 둘 다 노쇼");
+  assert.doesNotMatch(bothNoshow, /data-settle-blocked/, "출석은 둘 다 정해졌다");
 });
 
 test("1:1 은 회원별 출석 묶음도 '둘 다 출석' 도 없다", async () => {

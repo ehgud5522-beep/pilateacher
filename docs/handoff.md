@@ -1,5 +1,24 @@
 # 이어서 작업하기 — 최근 변경과 남은 일
 
+## 다음 폰 빌드 메모 (2026-11-04 대표: "다음번에 넣을게")
+
+- **`release/1-1-45` 에는 #135(회원 이름 수정 · 보관)가 없다.** 브랜치는 main `90d7110` 위 커밋 `cc2b4d8`
+  (1.1.45 버전명 · 허용 브랜치). #135 는 그 뒤 `301eebc` 로 병합됐다
+- 다음 폰 빌드 때: 새 main 에서 릴리스 브랜치를 다시 딴다. 1.1.45 가 이미 스토어에 올라갔으면 1.1.46 으로 —
+  `android/app/build.gradle` versionName · iOS `MARKETING_VERSION` 둘 · `release/android-release-policy.json`
+  의 `allowedBranchPatterns` 에 새 브랜치 (1.1.44 · 1.1.45 커밋과 같은 모양). Codemagic 은 대표가 직접
+- 폰 앱에 #135 가 없어도 깨지지 않는다 -- 그 기능 버튼이 없을 뿐. 규칙은 이미 나가 있다
+
+## 2026-11-04 배포 기록 (대표 지시) — Functions · 규칙 둘 · 강사 웹
+
+- **Functions** `updateRuntimeConfig` 만 (13:26): 리비전 `updateruntimeconfig-00005-gon`. 롤백 `-00004-viv`(소스 `2a3e687`).
+  appUpdate · settlement · scheduleSync 값과 수정 시각 배포 전과 같음, 비로그인 401, 명단 실시간 스위치 칸 없음(꺼짐)
+- **규칙 #133** (13:43): `5248b4f2` = `b3708b59` + FC 담당 강사 지점 블록. 게시본 바이트 대조 일치
+- **규칙 #135** (16:06): `efcaf678` = `5248b4f2` + 감사 종류 client_renamed · client_archived. 게시본 바이트 대조 일치.
+  롤백 `5248b4f2`. **규칙 2차(일정 수정 번호)는 여전히 미배포** -- 다음 규칙 배포도 운영본 기준으로 만든다
+- **강사 웹** (16:11): main `301eebc`, Hosting `f7f2601a717bfd78`, 빌드 `mw1s3des-301eebc`, 파일 27개 해시 일치.
+  롤백 `1594f14ed3cdb11b` (규칙도 `5248b4f2` 로 함께 -- 웹만 남기면 이름 수정 · 보관이 막힌다)
+
 ## 2026-11-04 — 회원 이름 수정 · 보관 (`feat/client-rename-archive`)
 
 - 삭제는 넣지 않았다. 원장 · 급여 회원별 보기 · 강사 폰 사진 · 회원 앱 연결 · `csv_{번호}` 재등록이 회원 문서에

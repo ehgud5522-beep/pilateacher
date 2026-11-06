@@ -184,7 +184,7 @@ import {
   ABSENT_PARTNER, absentPartnerPrompt, toSoloLesson,
   DEDUCTION_CODE_LABEL, NOT_STARTED_NOTICE, lessonHasStarted,
   canSettleLesson, carePayCategory, clearSettlementFromLesson, closesSettlement, isSettledLesson,
-  needsSettlement,
+  needsSettlement, deductsFor, settleBlockReason,
   nextByPurchaseRound, pickCarePass, pickSoloPass, pickSharedDuetPass,
   planLessonSettlement, recordSettlementAttempt, settledDeductionsOf, settlementOutcome,
   settlementSkipsOf,
@@ -3182,7 +3182,8 @@ function SchedSettleBlock({ s, members, canSettle, settled, settledElsewhere = f
   const [busy, setBusy] = useState(false);
   const [undoing, setUndoing] = useState(false);
   const [reason, setReason] = useState("");
-  const doneCount = attendeesOf(s).filter((a) => a.status === "done").length;
+  /* 회차를 쓰는 사람: 출석과 노쇼 차감 (deductsFor). 노쇼 미차감은 세지 않는다. */
+  const doneCount = attendeesOf(s).filter(deductsFor).length;
   const line = SETTLEMENT_OUTCOME_LINE[s?.orgSettledOutcome] || SETTLEMENT_OUTCOME_LINE[SETTLEMENT_OUTCOME.COMPLETE];
   /* 이관 초기화로 사라진 회원권을 가리키는 확정. 대표 기기에서는 초기화가
      표시를 걷지만 **강사 기기에는 그대로 남는다** -- 서버는 기기에 닿지
@@ -3244,6 +3245,7 @@ function SchedSettleBlock({ s, members, canSettle, settled, settledElsewhere = f
   );
 
   if (!canSettle) return null;
+  const blockReason = settleBlockReason(s);
   /* 한 건도 나가지 않아 열려 있는 수업. 무엇이 막았는지 여기서 말하고, 다시
      시도할 수 있게 둔다 -- 두 번 차감할 것이 없으므로 안전하다. */
   const failedBefore = settlementSkipsOf(s).length > 0;
@@ -3270,9 +3272,16 @@ function SchedSettleBlock({ s, members, canSettle, settled, settledElsewhere = f
           {NOT_STARTED_NOTICE}
         </p>
       ) : null}
-      <button type="button" disabled={busy || notStarted}
+      {/* 노쇼 차감 / 미차감을 아직 안 고른 사람이 있다. 버튼을 없애지 않고 잠근다 --
+          잠긴 버튼은 이유를 말할 수 있다. */}
+      {blockReason ? (
+        <p data-settle-block-reason className={`text-xs font-bold leading-relaxed${failedBefore || notStarted ? " mt-2" : ""}`} style={{ color: BAD }}>
+          {blockReason}
+        </p>
+      ) : null}
+      <button type="button" disabled={busy || notStarted || Boolean(blockReason)}
         onClick={async () => { setBusy(true); try { await onSettle?.(s.id); } finally { setBusy(false); } }}
-        className={`h-10 w-full rounded-lg text-sm font-extrabold text-white disabled:opacity-40${failedBefore || notStarted ? " mt-2" : ""}`}
+        className={`h-10 w-full rounded-lg text-sm font-extrabold text-white disabled:opacity-40${failedBefore || notStarted || blockReason ? " mt-2" : ""}`}
         style={{ backgroundColor: failedBefore ? BAD : PRIMARY }}>
         {busy ? "확정 중" : failedBefore ? "다시 확정" : doneCount > 0 ? `수업 확정 · ${doneCount}명 차감` : "수업 확정"}
       </button>
@@ -3532,6 +3541,10 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
   const isSettled = (r) => {
     if (r.kind === "personal") return true;
     if (r.kind === "equip") return r.done || !!r.s?.groupCancelled;
+    /* 소속 모드에서는 **확정돼야** 끝난 수업이다 (2026-11-06). 노쇼 차감 / 미차감을
+       고른 것만으로는 회원권도 급여도 움직이지 않았다 -- 그 카드를 내려 보내면
+       강사는 끝난 줄 안다. */
+    if (organizationMode) return isSettledLesson(r.s) || !!r.s?.settledElsewhereAt;
     if (r.kind === "multi") return r.list.every((a) => a.status !== "booked" && (a.status !== "noshow" || a.noshowFee != null));
     if (r.status === "cancel") return true;
     if (r.status === "noshow") return r.fee != null;
@@ -4472,13 +4485,8 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
                       ) : null}
                     </div>
                   ) : null}
-                  {/* 차감 여부를 묻는 자리. **소속 모드에는 없다** -- 2026-10-04
-                      부터 노쇼는 언제나 1회 차감이고, 여기서 [비차감]을 고를 수
-                      있으면 고른 대로 되지 않는다. 고를 수 없는 것을 고르게
-                      두는 것이 "확정했는데 왜 빠졌지"의 출발점이다.
-
-                      개인 모드는 그대로다. 거기서는 이 버튼이 기기의 잔여를
-                      실제로 줄이고, 센터 규칙이 닿지 않는다. */}
+                  {/* 차감 여부를 묻는 자리 (개인 모드). 이 버튼이 기기의 잔여를
+                      실제로 줄이고, 센터 규칙이 닿지 않는다. 소속 모드는 아래 칸이다. */}
                   {!settledLesson && activeAttendee.status === "noshow" && !organizationMode && (
                     <div className="mt-2 grid grid-cols-2 gap-2">
                       <button onClick={() => onNoshowFee?.(draft.id, true, activeMemberId)} className="h-9 rounded-lg text-xs font-extrabold" style={activeAttendee.noshowFee === true ? { backgroundColor: BAD, color: "#fff" } : { backgroundColor: BAD_S, color: BAD }}>차감</button>
@@ -4488,10 +4496,29 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
                   {/* 무엇이 일어날지 미리 말한다. 노쇼는 확정 전까지 아무것도
                       움직이지 않으므로, 이 줄이 없으면 강사는 노쇼를 누른 것으로
                       끝난 줄 안다 -- 그 수업은 차감도 급여도 없이 남는다. */}
+                  {/* 소속 모드의 노쇼 (2026-11-06 대표): 강사가 고른다. 고른 대로
+                      확정이 차감하거나(출석과 같은 단가) 차감 없이 닫는다. 고르기
+                      전에는 확정 버튼이 잠긴다 (settleBlockReason). 듀엣은 회원마다. */}
                   {!settledLesson && activeAttendee.status === "noshow" && organizationMode && (
-                    <p className="mt-1.5 text-xs font-bold leading-relaxed" style={{ color: BAD }}>
-                      노쇼도 1회 차감됩니다. 아래 [수업 확정]을 눌러 주세요.
-                    </p>
+                    <div className="mt-2" data-noshow-choice>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button type="button" onClick={() => onNoshowFee?.(draft.id, true, activeMemberId)}
+                          aria-pressed={activeAttendee.noshowFee === true}
+                          className="h-11 rounded-lg text-xs font-extrabold"
+                          style={activeAttendee.noshowFee === true ? { backgroundColor: BAD, color: "#fff" } : { backgroundColor: BAD_S, color: BAD }}>노쇼 차감</button>
+                        <button type="button" onClick={() => onNoshowFee?.(draft.id, false, activeMemberId)}
+                          aria-pressed={activeAttendee.noshowFee === false}
+                          className="h-11 rounded-lg text-xs font-extrabold"
+                          style={activeAttendee.noshowFee === false ? { backgroundColor: BRAND, color: "#fff" } : { backgroundColor: CANVAS, color: SUB }}>노쇼 미차감</button>
+                      </div>
+                      <p className="mt-1.5 text-xs font-bold leading-relaxed" style={{ color: typeof activeAttendee.noshowFee === "boolean" ? INK2 : BAD }}>
+                        {activeAttendee.noshowFee === true
+                          ? "확정하면 회원권 1회가 빠지고, 출석과 같은 단가로 급여에 잡힙니다."
+                          : activeAttendee.noshowFee === false
+                            ? "확정하면 차감과 급여 없이 노쇼로만 남습니다."
+                            : "차감할지 골라 주세요. 고른 뒤 아래 [수업 확정]을 눌러야 끝납니다."}
+                      </p>
+                    </div>
                   )}
                 </div>
 
@@ -26827,6 +26854,20 @@ export function createAppScreenSmokeCases() {
         { ...settleAttendee("smoke-client-b"), status: "noshow" },
       ],
     })) },
+    /* 노쇼 차감 / 미차감을 고른 뒤 (2026-11-06). 고르면 확정 버튼이 열린다. */
+    { name: "일정 탭 · 소속 · 1:1 노쇼 차감", element: scheduleWithSettlement(settleLessonOf({
+      type: "1:1", attendees: [{ ...settleAttendee("m-local-1"), status: "noshow", noshowFee: true }],
+    })) },
+    { name: "일정 탭 · 소속 · 1:1 노쇼 미차감", element: scheduleWithSettlement(settleLessonOf({
+      type: "1:1", attendees: [{ ...settleAttendee("m-local-1"), status: "noshow", noshowFee: false }],
+    })) },
+    /* 듀엣: 한 명은 골랐고 한 명은 아직. 한 명이라도 안 고르면 잠긴다. */
+    { name: "일정 탭 · 소속 · 2:1 노쇼 한 명만 고름", element: scheduleWithSettlement(settleLessonOf({
+      attendees: [
+        { ...settleAttendee("m-local-1"), status: "noshow", noshowFee: false },
+        { ...settleAttendee("smoke-client-b"), status: "noshow" },
+      ],
+    })) },
     /* 확정 전 예상 단가. 한 회원은 기준 단가, 한 회원은 회원권이 없다 --
        금액과 "왜 그 금액인지" 와 "왜 못 하는지" 가 한 화면에 함께 선다. */
     { name: "일정 탭 · 소속 · 예상 단가", element: scheduleWithSettlement(settleLessonOf(), {
@@ -31186,16 +31227,21 @@ export default function App() {
     const cur = list.find((a) => a.memberId === mid);
     if (!cur) return;
     let members = db.members, deductFrom = cur.deductFrom || null, msg = "";
-    /* 노쇼 과금도 잔여를 줄인다. 소속 모드에서는 그 숫자가 조직 회원권에 있어
-       여기서 줄일 것이 없다 -- 과금 표시만 남기고 차감은 출석 체크로 보낸다. */
+    /* 소속 모드: 여기서는 아무것도 차감하지 않는다. 고른 것(노쇼 차감 / 미차감)을
+       남기고, 확정이 그것을 읽는다 (lesson-settlement.js 의 deductsFor). 누가 언제
+       골랐는지도 함께 남긴다 -- 강사가 직접 고르는 만큼 기록이 균형을 잡는다.
+       선택은 기기의 일정에만 있다. 서버 참가자 문서에는 규칙이 칸을 열지 않아
+       출석 상태(noshow)까지만 올라간다. */
     if (organizationRoster) {
-      const attendees = list.map((a) => (a.memberId === mid ? { ...a, noshowFee: charge, deductFrom: null } : a));
+      const attendees = list.map((a) => (a.memberId === mid
+        ? { ...a, noshowFee: charge, noshowFeeBy: account?.id || "", noshowFeeAt: new Date().toISOString(), deductFrom: null }
+        : a));
       if (!saveAttendanceOnce(id, { ...db, schedule: db.schedule.map((x) => (x.id === id ? { ...x, attendees } : x)) })) return;
       setToast({
         ok: true,
         msg: charge
-          ? "노쇼 과금으로 표시했습니다. 회원권 차감은 출석 체크에서 해 주세요."
-          : "차감 없이 기록합니다.",
+          ? "노쇼 차감으로 골랐어요. [수업 확정]을 눌러야 회원권에 반영돼요."
+          : "노쇼 미차감으로 골랐어요. [수업 확정]을 누르면 차감 없이 닫혀요.",
       });
       return;
     }
@@ -31294,6 +31340,17 @@ export default function App() {
        일정 시트·출석 화면·처리 큐로 여럿이다. */
     if (blocksSettlement(settlementGateState)) {
       setToast(SETTLEMENT_GATE_LABEL[SETTLEMENT_GATE.OUTDATED]);
+      return;
+    }
+    /* 노쇼는 차감 / 미차감을 고른 뒤에만 확정한다 (2026-11-06 대표). 버튼도 잠기지만
+       확정으로 들어오는 길이 여럿이라 여기서 한 번 더 막는다. */
+    const blockReason = settleBlockReason(lesson);
+    if (blockReason) {
+      deviceLog("lesson_settle_blocked", {
+        feature: "lesson_settlement", stage: "precheck", errorDomain: "app",
+        errorCode: "noshow_choice_required", lessonId,
+      });
+      setToast({ ok: false, msg: `${blockReason} (코드 noshow_choice_required)` });
       return;
     }
     if (settlingRef.current.has(lessonId)) return;

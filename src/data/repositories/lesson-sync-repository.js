@@ -89,3 +89,31 @@ export async function findCompletedLessonsAt(input) {
   }
   return [...found.values()];
 }
+
+/**
+ * 확정된 여러 명 수업과 그 참석 문서 -- 대표 확인 목록이 읽는다 (duet-attendance.js).
+ *
+ * 읽기만 한다. startsAt 하나에 거는 범위라 기본 색인으로 된다 (status 까지 걸면
+ * 복합 색인이 필요하다). 그 기간의 수업 문서를 모두 읽고, 확정된 여러 명 수업만
+ * 참석 문서를 더 읽는다 -- 60일이면 수업 문서 수 + 듀엣 수 × 2 남짓이다.
+ *
+ * @param {{ firestore?: any, organizationId: string, since: Date }} input
+ * @returns {Promise<{ lessons: Array<any>, participantsByLesson: Map<string, Array<any>>, reads: number }>}
+ */
+export async function listSettledGroupLessons(input) {
+  const { collection, getDocs, getFirestore, query, where } = await import("firebase/firestore");
+  const firestore = input.firestore || getFirestore();
+  const path = lessonsCollection(text(input.organizationId));
+  const page = await getDocs(query(collection(firestore, path), where("startsAt", ">=", input.since)));
+  const lessons = page.docs.map((document) => /** @type {any} */ ({ id: document.id, ...document.data() }))
+    .filter((lesson) => text(lesson.status) === "completed"
+      && Array.isArray(lesson.clientIds) && lesson.clientIds.length >= 2 && !lesson.deletedAt);
+  const participantsByLesson = new Map();
+  let reads = page.size;
+  for (const lesson of lessons) {
+    const parts = await getDocs(collection(firestore, `${path}/${lesson.id}/participants`));
+    reads += parts.size;
+    participantsByLesson.set(lesson.id, parts.docs.map((document) => ({ id: document.id, ...document.data() })));
+  }
+  return { lessons, participantsByLesson, reads };
+}

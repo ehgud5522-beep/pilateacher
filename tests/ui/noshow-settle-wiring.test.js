@@ -38,5 +38,6 @@ test("오늘 카드는 소속 모드에서 확정돼야 끝난다", () => {
 test("확정 버튼은 이유가 있으면 잠긴다", () => {
   const block = between("function SchedSettleBlock(", "확정하면 회원권이 차감되고");
   assert.match(block, /const blockReason = settleBlockReason\(s\);/);
-  assert.match(block, /disabled=\{busy \|\| notStarted \|\| Boolean\(blockReason\)\}/);
+  // 듀엣 출석 미표시(#137 blockedReason)와 함께 건다 -- 둘 중 하나라도 있으면 잠긴다.
+  assert.match(block, /disabled=\{busy \|\| notStarted \|\| Boolean\(blockReason\) \|\| Boolean\(blockedReason\)\}/);
 });

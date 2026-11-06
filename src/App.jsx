@@ -137,7 +137,7 @@ import {
   MEMBER_NOTE_MAX, memberNoteReadFailure, memberNoteSaveFailure, readCentreLessons, readMemberNote, saveMemberNote,
 } from "./data/repositories/member-note-repository.js";
 import { PUBLISH_OUTCOME, publishScheduledLessons, reopenSettledLesson } from "./data/repositories/lesson-schedule-repository.js";
-import { findCompletedLessonsAt, subscribeMyLessons } from "./data/repositories/lesson-sync-repository.js";
+import { findCompletedLessonsAt, readLessonStates, subscribeMyLessons } from "./data/repositories/lesson-sync-repository.js";
 import { INITIAL_SYNC, initialSyncMode, initialUploadPlan, privateSyncAllowed, schedulePublishAllowed } from "./features/schedule/sync-gate.js";
 import {
   applyPrivateRevisions, mergePrivateItems, privateChanges, privateDocuments, privateWindow,
@@ -149,6 +149,11 @@ import { applyPublishedRevisions, mergeFormEdit, mergeServerLessons, reapplyChan
 import { recordSyncReads, syncReadsByDay } from "./features/schedule/sync-read-counter.js";
 import { SCHEDULE_SYNC_MODE, readScheduleSyncConfig, scheduleSyncEnabledFor } from "./features/schedule/sync-switch.js";
 import { WEB_VERSION_CHECK_MS, fetchDeployedWebBuild, isNewerWebBuild, staleTabMessage } from "./features/ui/web-version.js";
+import {
+  QUEUE_CUTOFF, QUEUE_TAB, QUEUE_TAB_LABEL, lessonIdsToCheck, mergeServerCache, organizeLessonQueue,
+  readQueueCounts, readQueueMarks, readServerCache, serverStatesFromCache, writeQueueCounts, writeQueueMarks,
+  writeServerCache,
+} from "./features/schedule/lesson-queue.js";
 import {
   lastUpdatedLabel, mergeRosterRefresh, refreshRosterOnce, shouldRefreshOnResume,
 } from "./features/roster/roster-refresh.js";
@@ -3391,7 +3396,9 @@ function SchedMemberNote({ lessonId, clientId, settled, onRead, onSave, onToast 
   );
 }
 
-function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onCareGrade, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset, quickAddRequest, onConsumeQuickAdd, openLessonId, onConsumeOpenLesson, onOpenMember, onAddMember, onOpenAttendance, organizationMode = false, rateOf, careOptionsOf, onSettleLesson, onUnsettleLesson, onReadMemberNote, onSaveMemberNote, canUnsettle = false, payCard = null }) {
+function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onCareGrade, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset, quickAddRequest, onConsumeQuickAdd, openLessonId, onConsumeOpenLesson, onOpenMember, onAddMember, onOpenAttendance, organizationMode = false, rateOf, careOptionsOf, onSettleLesson, onUnsettleLesson, onReadMemberNote, onSaveMemberNote, canUnsettle = false, payCard = null,
+  /* 큐 정리용 서버 상태 읽기 (2026-11-07, lesson-queue.js). 센터 소속일 때만 넘어온다. */
+  readQueueLessonStates = null }) {
   const initialDisplay = useMemo(() => {
     try { return JSON.parse(localStorage.getItem(SCHEDULE_VIEW_KEY) || "null") || {}; }
     catch (e) { return {}; }
@@ -3585,7 +3592,6 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
   const unsettledLessons = useMemo(() => (
     organizationMode ? db.schedule.filter((item) => needsSettlement(item, { now: new Date() })) : []
   ), [organizationMode, db.schedule]);
-  const pendingCount = pendingLessonSummary.count + unsettledLessons.length;
   const taskQueue = useMemo(() => [
     ...unsettledLessons.map((lesson) => ({
       key: `settle|${lesson.id}`,
@@ -3617,6 +3623,73 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
     };
   }),
   ], [pendingLessonSummary, db.schedule, db.members, unsettledLessons]);
+  /* ── 확인할 수업 정리 (2026-11-07 대표 결정, lesson-queue.js) ─────────────────
+     서버 확정 상태와 대조해 다른 곳에서 끝난 수업을 빼고, 11월 1일 이전은 "지난 항목" 으로
+     접고, 30일 지난 것은 "관리자 확인" 으로, 같은 수업은 한 묶음으로. 데이터는 그대로다.
+     서버 답과 보류 · 관리자 확인 표시는 이 기기에만 둔다. */
+  const [queueServerCache, setQueueServerCache] = useState(() => readServerCache(globalThis.localStorage));
+  const [queueMarks, setQueueMarks] = useState(() => readQueueMarks(globalThis.localStorage));
+  const queueReadKey = useMemo(() => (organizationMode && readQueueLessonStates
+    ? lessonIdsToCheck({ tasks: taskQueue, cache: queueServerCache, now: Date.now() }).join(",")
+    : ""), [organizationMode, readQueueLessonStates, taskQueue, queueServerCache]);
+  const [queueReads, setQueueReads] = useState(0);
+  useEffect(() => {
+    if (!queueReadKey || !readQueueLessonStates) return undefined;
+    let alive = true;
+    const ids = queueReadKey.split(",");
+    readQueueLessonStates(ids).then(({ documents, failures }) => {
+      if (!alive) return;
+      const next = mergeServerCache(readServerCache(globalThis.localStorage), documents, Date.now());
+      writeServerCache(globalThis.localStorage, next);
+      setQueueServerCache(next);
+      setQueueReads((value) => value + Object.keys(documents).length);
+      if (failures.length) {
+        deviceLog("lesson_queue_reconcile_failed", {
+          feature: "lesson_queue", stage: "read_server_state", errorDomain: "firestore",
+          errorCode: failures[0].code, count: failures.length,
+        });
+      }
+    }).catch((error) => {
+      if (!alive) return;
+      deviceLog("lesson_queue_reconcile_failed", {
+        feature: "lesson_queue", stage: "read_server_state", errorDomain: "firestore",
+        errorCode: error?.code || error?.name || "unknown", message: error?.message, count: ids.length,
+      });
+    });
+    return () => { alive = false; };
+  }, [queueReadKey, readQueueLessonStates]);
+  const organizedQueue = useMemo(() => organizeLessonQueue({
+    tasks: taskQueue,
+    today: T0,
+    serverStates: serverStatesFromCache(queueServerCache),
+    snoozed: queueMarks.snoozed,
+    escalated: queueMarks.escalated,
+    /* 개인 강사(센터 미소속)에게는 컷오프가 없다 -- 센터의 결정이다. */
+    cutoff: organizationMode ? QUEUE_CUTOFF : "0000-00-00",
+  }), [taskQueue, T0, queueServerCache, queueMarks, organizationMode]);
+  const queueCountsKey = organizationMode ? JSON.stringify(organizedQueue.counts) : "";
+  useEffect(() => {
+    if (!queueCountsKey) return;
+    const counts = JSON.parse(queueCountsKey);
+    writeQueueCounts(globalThis.localStorage, counts, Date.now(), queueReads);
+    /* 개수만 남긴다. 회원 이름 · 기록 내용은 담지 않는다. */
+    deviceLog("lesson_queue_reconcile", {
+      feature: "lesson_queue", stage: "classify",
+      count: counts.doneElsewhere + counts.pending + counts.unknown + counts.archived,
+      message: `완료인데 남은 것 ${counts.doneElsewhere} · 진짜 미처리 ${counts.pending} · 판단 불가 ${counts.unknown} · 지난 항목 ${counts.archived}`,
+    });
+  }, [queueCountsKey, queueReads]);
+  const markQueueGroup = (kind, key, on) => {
+    const next = { ...queueMarks, [kind]: { ...queueMarks[kind] } };
+    if (on) next[kind][key] = true; else delete next[kind][key];
+    writeQueueMarks(globalThis.localStorage, next);
+    setQueueMarks(next);
+  };
+  const queueSummaryDetail = [
+    organizedQueue.overdueCount ? `지난 미처리 ${organizedQueue.overdueCount}건` : "",
+    organizedQueue.adminCount ? `관리자 확인 ${organizedQueue.adminCount}건` : "",
+    organizedQueue.archivedCount ? `지난 항목 ${organizedQueue.archivedCount}건` : "",
+  ].filter(Boolean).join(" · ");
   return (
     <div className="flex h-full min-h-0 flex-col">
       {/* 조직 소속 강사의 이달 예상 급여. 앱을 여는 이유가 이 숫자라 맨 위에 둔다. */}
@@ -3665,17 +3738,18 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
 
       {/* ─── 하단 고정 업무 요약 ─── */}
       {db.members.length > 0 && db.schedule.length > 0 && <div className="shrink-0" style={{ padding: "6px 12px 8px", backgroundColor: PAGE }}>
-        <button onClick={(e) => { if (pendingCount) { queueTriggerRef.current = e.currentTarget; setQueueOpen(true); } }} disabled={!pendingCount}
+        {/* 첫 화면은 "오늘 미처리 N건" 하나로 말한다 (2026-11-07). 지난 것은 아래 줄에 수만. */}
+        <button data-queue-summary onClick={(e) => { if (organizedQueue.total) { queueTriggerRef.current = e.currentTarget; setQueueOpen(true); } }} disabled={!organizedQueue.total}
           className="flex h-14 w-full items-center gap-3 rounded-xl px-3 text-left disabled:opacity-80"
-          style={{ backgroundColor: pendingCount ? TINT : CARD, border: `1px solid ${pendingCount ? RING : LINE}`, boxShadow: "0 1px 4px rgba(28,36,51,.06)" }}>
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: pendingLessonSummary.count ? TINT : GOOD_S }}>
-            {pendingLessonSummary.count ? <Pencil size={14} style={{ color: PRIMARY }} /> : <Check size={14} style={{ color: GOOD }} />}
+          style={{ backgroundColor: organizedQueue.todayCount ? TINT : CARD, border: `1px solid ${organizedQueue.todayCount ? RING : LINE}`, boxShadow: "0 1px 4px rgba(28,36,51,.06)" }}>
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: organizedQueue.todayCount ? TINT : GOOD_S }}>
+            {organizedQueue.todayCount ? <Pencil size={14} style={{ color: PRIMARY }} /> : <Check size={14} style={{ color: GOOD }} />}
           </span>
           <span className="min-w-0 flex-1">
-            <span className="block text-sm font-extrabold" style={{ color: INK }}>{pendingCount ? `확인할 수업 ${pendingCount}건` : "오늘 할 일 없음"}</span>
-            <span className="block text-xs" style={{ color: SUB }}>{pendingCount ? (unsettledLessons.length ? `미확정 ${unsettledLessons.length}건 · 미기록 수업과 확인 전 기록` : "미기록 수업과 확인 전 기록") : "확인할 수업이 없습니다"}</span>
+            <span className="block text-sm font-extrabold" style={{ color: INK }}>{organizedQueue.todayCount ? `오늘 미처리 ${organizedQueue.todayCount}건` : "오늘 미처리 없음"}</span>
+            <span className="block truncate text-xs" style={{ color: SUB }}>{queueSummaryDetail || "확인할 수업이 없습니다"}</span>
           </span>
-          {pendingLessonSummary.count > 0 && <span className="shrink-0 text-xs font-extrabold" style={{ color: PRIMARY }}>지금 처리</span>}
+          {organizedQueue.total > 0 && <span className="shrink-0 text-xs font-extrabold" style={{ color: PRIMARY }}>{organizedQueue.todayCount ? "지금 처리" : "보기"}</span>}
         </button>
       </div>}
 
@@ -3685,7 +3759,8 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
         organizationMode={organizationMode} rateOf={rateOf} careOptionsOf={careOptionsOf} onSettleLesson={onSettleLesson} onUnsettleLesson={onUnsettleLesson} onReadMemberNote={onReadMemberNote} onSaveMemberNote={onSaveMemberNote} onToast={onToast} canUnsettle={canUnsettle}
         onNoComment={onNoComment} onSaveNote={onSaveNote} onOpenMember={onOpenMember} onFocusMemberWeek={(memberId) => { setFocusedMemberId(memberId); setEditing(null); }} />}
       {queueOpen && (
-        <ScheduleQueueSheet tasks={taskQueue} members={db.members} returnFocusRef={queueTriggerRef} onClose={() => setQueueOpen(false)}
+        <ScheduleQueueSheet queue={organizedQueue} members={db.members} returnFocusRef={queueTriggerRef} onClose={() => setQueueOpen(false)}
+          onSnooze={(key, on) => markQueueGroup("snoozed", key, on)} onEscalate={(key, on) => markQueueGroup("escalated", key, on)}
           onNoComment={onNoComment} onSaveNote={onSaveNote}
           onOpenLesson={(lesson) => { setQueueOpen(false); if (lesson) { setCursor(lesson.date || todayISO()); setEditing(lesson); } }} />
       )}
@@ -4612,9 +4687,23 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
   );
 }
 
-function ScheduleQueueSheet({ tasks, members, returnFocusRef, onClose, onNoComment, onSaveNote, onOpenLesson }) {
+/**
+ * 확인할 수업 (2026-11-07). 탭 넷: 오늘 · 지난 미처리 · 관리자 확인 · 지난 항목(접힘).
+ * 같은 수업의 줄은 한 묶음 -- 듀엣은 한 카드다. 묶음을 고르면 그 묶음의 첫 일(확정이
+ * 먼저)을 아래에서 처리한다. 묶음은 lesson-queue.js 가 만든다.
+ */
+export function ScheduleQueueSheet({ queue, members, returnFocusRef, onClose, onNoComment, onSaveNote, onOpenLesson, onSnooze, onEscalate, initialTab = "", initialGroupKey = "", initialArchivedOpen = false }) {
   const aiRecording = useContext(AIRecordingStatusContext);
-  const task = tasks[0] || null;
+  const tabs = queue?.tabs || { [QUEUE_TAB.TODAY]: [], [QUEUE_TAB.OVERDUE]: [], [QUEUE_TAB.ADMIN]: [], [QUEUE_TAB.ARCHIVED]: [] };
+  const firstTab = [QUEUE_TAB.TODAY, QUEUE_TAB.OVERDUE, QUEUE_TAB.ADMIN, QUEUE_TAB.ARCHIVED].find((key) => tabs[key].length) || QUEUE_TAB.TODAY;
+  const [tab, setTab] = useState(initialTab || firstTab);
+  const [archivedOpen, setArchivedOpen] = useState(initialArchivedOpen);
+  const [groupKey, setGroupKey] = useState(initialGroupKey);
+  const group = Object.values(tabs).flat().find((item) => item.key === groupKey) || null;
+  const task = group ? group.tasks[0] || null : null;
+  const nameOfMember = (id) => members.find((m) => String(m.id) === String(id))?.name || "회원";
+  const reasonLabel = (item) => (item.kind === "settlement" ? "확정" : item.kind === "attendance" ? "출석" : item.kind === "note" ? "기록" : "기록 확인");
+  const shown = tabs[tab] || [];
   const [recordMode, setRecordMode] = useState(null);
   const [recordBody, setRecordBody] = useState("");
   const recordSectionRef = useRef(null);
@@ -4633,8 +4722,44 @@ function ScheduleQueueSheet({ tasks, members, returnFocusRef, onClose, onNoComme
   const memberName = task?.m?.name || members.find((m) => String(m.id) === String(task?.memberId || task?.a?.memberId))?.name || "회원";
   const taskState = pendingLessonState(task);
   return (
-    <ScheduleBottomSheet title="확인할 수업" subtitle={`남은 ${tasks.length}건`} returnFocusRef={returnFocusRef} onClose={onClose}>
-      {!task ? (
+    <ScheduleBottomSheet title="확인할 수업" subtitle={`오늘 미처리 ${queue?.todayCount || 0}건`} returnFocusRef={returnFocusRef} onClose={onClose}>
+      <div className="mb-3 flex gap-1.5 overflow-x-auto" data-queue-tabs>
+        {[QUEUE_TAB.TODAY, QUEUE_TAB.OVERDUE, QUEUE_TAB.ADMIN, QUEUE_TAB.ARCHIVED].map((key) => (
+          <button key={key} type="button" data-queue-tab={key} aria-pressed={tab === key}
+            onClick={() => { setTab(key); setGroupKey(""); }}
+            className="h-9 shrink-0 rounded-full px-3 text-xs font-extrabold tabular-nums"
+            style={{ backgroundColor: tab === key ? INK : CANVAS, color: tab === key ? CARD : SUB }}>
+            {QUEUE_TAB_LABEL[key]} {tabs[key].length}
+          </button>
+        ))}
+      </div>
+      {!group ? (
+        <div className="space-y-2" data-queue-list>
+          {tab === QUEUE_TAB.ARCHIVED && shown.length > 0 && (
+            <button type="button" onClick={() => setArchivedOpen((open) => !open)} aria-expanded={archivedOpen}
+              className="flex h-11 w-full items-center gap-1.5 rounded-lg px-3 text-left text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>
+              <ChevronRight size={14} style={{ transform: archivedOpen ? "rotate(90deg)" : "none" }} />
+              11월 1일 이전 수업 {shown.length}건 — 요약에 세지 않아요. 지우지 않고 그대로 둡니다.
+            </button>
+          )}
+          {(tab !== QUEUE_TAB.ARCHIVED || archivedOpen) && shown.map((item) => (
+            <button key={item.key} type="button" data-queue-group={item.key} onClick={() => setGroupKey(item.key)}
+              className="w-full rounded-xl px-3 py-2.5 text-left" style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, opacity: item.snoozed ? 0.6 : 1 }}>
+              <span className="block text-xs font-bold tabular-nums" style={{ color: PRIMARY }}>
+                {item.date ? `${dow(item.date)} ${item.date.slice(5).replace("-", ".")}` : "날짜 없음"}{item.lesson?.start ? ` · ${item.lesson.start}` : ""}
+                {item.snoozed ? " · 보류" : ""}{item.serverState === "unknown" && item.tab !== QUEUE_TAB.ARCHIVED ? " · 서버 확인 전" : ""}
+              </span>
+              <span className="mt-0.5 block truncate text-sm font-extrabold" style={{ color: INK }}>
+                {(item.memberIds.length ? item.memberIds : [""]).map(nameOfMember).join(" · ")}
+              </span>
+              <span className="mt-0.5 block text-xs" style={{ color: SUB }}>
+                {[...new Set(item.tasks.map(reasonLabel))].join(" · ")}
+              </span>
+            </button>
+          ))}
+          {shown.length === 0 && <p className="py-6 text-center text-xs font-bold" style={{ color: SUB }}>이 탭에 처리할 수업이 없어요.</p>}
+        </div>
+      ) : !task ? (
         <div className="py-8 text-center">
           <span className="mx-auto flex h-10 w-10 items-center justify-center rounded-xl" style={{ backgroundColor: GOOD_S }}><Check size={18} style={{ color: GOOD }} /></span>
           <p className="mt-3 text-sm font-extrabold" style={{ color: INK }}>오늘 할 일 없음</p>
@@ -4642,6 +4767,20 @@ function ScheduleQueueSheet({ tasks, members, returnFocusRef, onClose, onNoComme
         </div>
       ) : (
         <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={() => setGroupKey("")} className="h-9 rounded-lg px-3 text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: SUB }}>← 목록</button>
+            <span className="min-w-0 flex-1" />
+            {/* 보류 · 관리자 확인은 이 기기에만 남는다. 서버에는 아무것도 쓰지 않는다. */}
+            <button type="button" data-queue-snooze onClick={() => onSnooze?.(group.key, !group.snoozed)} className="h-9 rounded-lg px-3 text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: SUB }}>{group.snoozed ? "보류 풀기" : "보류"}</button>
+            {group.tab !== QUEUE_TAB.ADMIN && group.tab !== QUEUE_TAB.ARCHIVED && (
+              <button type="button" data-queue-escalate onClick={() => { onEscalate?.(group.key, true); setGroupKey(""); }} className="h-9 rounded-lg px-3 text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: SUB }}>관리자 확인</button>
+            )}
+          </div>
+          {group.memberIds.length > 1 && (
+            <p className="rounded-lg px-3 py-2 text-xs font-bold" style={{ backgroundColor: TINT, color: PRIMARY }}>
+              한 수업 · 회원 {group.memberIds.length}명 — {group.tasks.map((item) => `${nameOfMember(item.memberId || item.a?.memberId)} ${reasonLabel(item)}`).join(" · ")}
+            </p>
+          )}
           <div className="rounded-xl px-3 py-3" style={{ backgroundColor: CANVAS, border: `1px solid ${LINE}` }}>
             <p className="text-xs font-bold tabular-nums" style={{ color: PRIMARY }}>{task.s ? `${dow(task.s.date)} ${task.s.date?.slice(5).replace("-", ".")} · ${task.s.start || "시간 없음"}` : "저장되지 않은 수업 초안"}</p>
             <p className="mt-1 truncate text-base font-extrabold" style={{ color: INK }}>{memberName}</p>
@@ -25319,6 +25458,8 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
   /* 실시간 반영으로 받은 문서 수 (동기화 2단계). 첫 주에 읽기가 문제 되는지 대표가
      여기서 본다 -- Firestore 콘솔의 사용량은 센터 전체 합계라 이 몫을 가를 수 없다. */
   const syncReads = useMemo(() => (showLessonDiagnostics && account?.id ? syncReadsByDay(globalThis.localStorage, account.id) : []), [showLessonDiagnostics, account?.id]);
+  /* 확인할 수업 정리의 마지막 분류 개수 (lesson-queue.js). 이 기기에만 있다. */
+  const queueCounts = useMemo(() => (showLessonDiagnostics ? readQueueCounts(globalThis.localStorage) : null), [showLessonDiagnostics]);
   const authDiagnostics = useMemo(() => showLessonDiagnostics ? readAuthDiagnostics() : [], [showLessonDiagnostics]);
   const posturePersistenceDiagnostics = useMemo(() => showLessonDiagnostics ? readPosturePersistenceDiagnostics() : [], [showLessonDiagnostics]);
   const firstAuthFailure = useMemo(() => firstFailedAuthStage(authDiagnostics), [authDiagnostics]);
@@ -26153,6 +26294,12 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
               <p className="mt-3" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>일정 실시간 반영 · 받은 문서 (하루)</p>
               <div className="mt-1.5 space-y-1">{syncReads.map((row) => <p key={row.day} className="tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>{row.day} · 문서 {row.reads}건 · 받은 횟수 {row.snapshots}번</p>)}</div>
               {!syncReads.length && <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>받은 기록 없음</p>}
+              <p className="mt-3" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>확인할 수업 · 서버 대조 (수업 단위)</p>
+              {queueCounts ? (
+                <p data-queue-diagnostics className="mt-1.5 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+                  {diagnosticLocalTime(queueCounts.at)} · 완료인데 남은 것 {queueCounts.doneElsewhere} · 진짜 미처리 {queueCounts.pending} · 판단 불가 {queueCounts.unknown} · 지난 항목 {queueCounts.archived} · 서버 읽기 {queueCounts.reads}건
+                </p>
+              ) : <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>아직 대조하지 않았어요</p>}
               <p className="mt-3" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>음성 세션 최근 30건</p>
               <div className="mt-1.5 space-y-1">{voiceSessionDiagnostics.map((item, index) => <p key={`${item.at}-${index}`} className="break-all tabular-nums" style={{ fontSize: TYPE.caption, lineHeight: 1.45, color: ["error", "failed", "voice_pipeline_failed", "voice_prepare_failed", "voice_record_start_failed", "voice_stop_failed"].includes(item.event) ? BAD : SUB }}>
                 {item.localTime || diagnosticLocalTime(item.at)} · {item.event} · {item.source}
@@ -28149,6 +28296,11 @@ export default function App() {
      읽을 때 누가 썼는지 모르면 대표는 그 말을 센터의 말로 읽는다. */
   const [rosterInstructors, setRosterInstructors] = useState([]);
   const [rosterRevision, setRosterRevision] = useState(0);
+  /* 확인할 수업 정리가 묻는 서버 상태 (2026-11-07, lesson-queue.js). 문서 하나씩 get. */
+  const queueLessonStatesReader = useCallback(
+    (lessonIds) => readLessonStates({ organizationId: organizationContext.organizationId, lessonIds }),
+    [organizationContext.organizationId],
+  );
   /* 토큰을 새로 받아 다시 해 본 적이 있는가. **효과 밖에 둔다** -- 안에 두면
      재시도가 효과를 다시 돌리면서 값이 false 로 돌아가고, 권한이 정말 없는
      사람에게 무한 반복이 된다. */
@@ -32408,7 +32560,7 @@ export default function App() {
         ) : null}
         <div className="relative min-h-0 flex-1 overflow-hidden">
           <Guard key={tab}>
-            {tab === "schedule" && <ScheduleManager db={rosterDb} photos={photos} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onCareGrade={setCareGrade} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterInMemberTab || canOpenCentreRegistration ? requestMemberRegistration : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} careOptionsOf={careOptionsFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && isOwnerLevelRole(organizationContext.role)} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} upcoming={upcomingPay} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
+            {tab === "schedule" && <ScheduleManager db={rosterDb} photos={photos} readQueueLessonStates={organizationRoster && organizationContext.organizationId ? queueLessonStatesReader : null} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onCareGrade={setCareGrade} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterInMemberTab || canOpenCentreRegistration ? requestMemberRegistration : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} careOptionsOf={careOptionsFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && isOwnerLevelRole(organizationContext.role)} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} upcoming={upcomingPay} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
             {tab === "members" && <div className={`h-full min-h-0 ${mobileView === "detail" && member ? "pt-member-detail-active" : ""}`}>
               <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList passSummaryOf={passSummaryFor} locations={rosterLocations} members={rosterMembers} schedule={db.schedule} settings={db.settings} organizationMode={organizationRoster} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} canBrowseAll={!organizationRoster || canBrowseAllClients(organizationContext.role)} viewerRole={organizationContext.role} viewerLocationId={organizationContext.locationId || ""} viewerLocationIds={organizationContext.locationIds || []} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterInMemberTab} centreAccount={centreAccount} onOpenCentreRegistration={canOpenCentreRegistration ? openCentreRegistration : undefined} unlinkedLocal={centreAccount && roster ? roster.unlinkedLocal || [] : []} onUploadUnlinked={canOpenCentreRegistration ? uploadUnlinkedMember : undefined} onLinkUnlinked={linkUnlinkedMember} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} journeyOf={organizationRoster ? journeyFor : undefined} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
               {mobileView === "detail" && member && <div className="pt-member-detail-pane h-full min-h-0">

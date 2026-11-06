@@ -89,3 +89,36 @@ export async function findCompletedLessonsAt(input) {
   }
   return [...found.values()];
 }
+
+/**
+ * 큐에 걸린 수업들의 서버 상태 (2026-11-07, "확인할 수업" 정리).
+ *
+ * 문서 하나씩 get 이다 -- 규칙이 센터 직원에게 get 을 열어 두었고(없는 문서도),
+ * 질의를 쓰지 않으므로 색인이 필요 없다. 부르는 쪽이 id 수를 상한으로 자르고
+ * 기기에 답을 적어 둔다 (lesson-queue.js 의 lessonIdsToCheck).
+ *
+ * 돌려주는 것은 id → 문서(없으면 null). **못 읽은 id 는 빠진다** -- "없다" 와 "모른다"
+ * 를 섞지 않는다. 실패 코드는 failures 에 원본 그대로.
+ *
+ * @param {{ firestore?: any, organizationId: string, lessonIds: Array<string> }} input
+ * @returns {Promise<{ documents: Record<string, any | null>, failures: Array<{ lessonId: string, code: string }> }>}
+ */
+export async function readLessonStates(input) {
+  const { doc, getDoc, getFirestore } = await import("firebase/firestore");
+  const firestore = input.firestore || getFirestore();
+  const organizationId = text(input.organizationId);
+  /** @type {Record<string, any>} */
+  const documents = {};
+  /** @type {Array<{ lessonId: string, code: string }>} */
+  const failures = [];
+  const ids = [...new Set((Array.isArray(input.lessonIds) ? input.lessonIds : []).map(text).filter(Boolean))];
+  await Promise.all(ids.map(async (lessonId) => {
+    try {
+      const snapshot = await getDoc(doc(firestore, paths.lesson(organizationId, lessonId)));
+      documents[lessonId] = snapshot.exists() ? snapshot.data() : null;
+    } catch (error) {
+      failures.push({ lessonId, code: text(error?.code) || "unknown" });
+    }
+  }));
+  return { documents, failures };
+}

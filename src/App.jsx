@@ -137,7 +137,8 @@ import {
   MEMBER_NOTE_MAX, memberNoteReadFailure, memberNoteSaveFailure, readCentreLessons, readMemberNote, saveMemberNote,
 } from "./data/repositories/member-note-repository.js";
 import { PUBLISH_OUTCOME, publishScheduledLessons, reopenSettledLesson } from "./data/repositories/lesson-schedule-repository.js";
-import { findCompletedLessonsAt, readLessonStates, subscribeMyLessons } from "./data/repositories/lesson-sync-repository.js";
+import { findCompletedLessonsAt, listSettledGroupLessons, readLessonStates, subscribeMyLessons } from "./data/repositories/lesson-sync-repository.js";
+import { settledDuetsWithUnmarked, unmarkedSettleMessage } from "./features/schedule/duet-attendance.js";
 import { INITIAL_SYNC, initialSyncMode, initialUploadPlan, privateSyncAllowed, schedulePublishAllowed } from "./features/schedule/sync-gate.js";
 import {
   applyPrivateRevisions, mergePrivateItems, privateChanges, privateDocuments, privateWindow,
@@ -189,7 +190,7 @@ import {
   ABSENT_PARTNER, absentPartnerPrompt, toSoloLesson,
   DEDUCTION_CODE_LABEL, NOT_STARTED_NOTICE, lessonHasStarted,
   canSettleLesson, carePayCategory, clearSettlementFromLesson, closesSettlement, isSettledLesson,
-  needsSettlement,
+  needsSettlement, deductsFor, settleBlockReason,
   nextByPurchaseRound, pickCarePass, pickSoloPass, pickSharedDuetPass,
   planLessonSettlement, recordSettlementAttempt, settledDeductionsOf, settlementOutcome,
   settlementSkipsOf,
@@ -3183,11 +3184,12 @@ const CARE_CHOICES_UNKNOWN = Object.freeze([
   Object.freeze({ key: "b", label: "관리 B(50분)", usable: false, note: "확인 안 됨" }),
 ]);
 
-function SchedSettleBlock({ s, members, canSettle, settled, settledElsewhere = false, canUnsettle, notStarted = false, onSettle, onUnsettle }) {
+function SchedSettleBlock({ s, members, canSettle, settled, settledElsewhere = false, canUnsettle, notStarted = false, blockedReason = "", onSettle, onUnsettle }) {
   const [busy, setBusy] = useState(false);
   const [undoing, setUndoing] = useState(false);
   const [reason, setReason] = useState("");
-  const doneCount = attendeesOf(s).filter((a) => a.status === "done").length;
+  /* 회차를 쓰는 사람: 출석과 노쇼 차감 (deductsFor). 노쇼 미차감은 세지 않는다. */
+  const doneCount = attendeesOf(s).filter(deductsFor).length;
   const line = SETTLEMENT_OUTCOME_LINE[s?.orgSettledOutcome] || SETTLEMENT_OUTCOME_LINE[SETTLEMENT_OUTCOME.COMPLETE];
   /* 이관 초기화로 사라진 회원권을 가리키는 확정. 대표 기기에서는 초기화가
      표시를 걷지만 **강사 기기에는 그대로 남는다** -- 서버는 기기에 닿지
@@ -3249,6 +3251,7 @@ function SchedSettleBlock({ s, members, canSettle, settled, settledElsewhere = f
   );
 
   if (!canSettle) return null;
+  const blockReason = settleBlockReason(s);
   /* 한 건도 나가지 않아 열려 있는 수업. 무엇이 막았는지 여기서 말하고, 다시
      시도할 수 있게 둔다 -- 두 번 차감할 것이 없으므로 안전하다. */
   const failedBefore = settlementSkipsOf(s).length > 0;
@@ -3275,9 +3278,21 @@ function SchedSettleBlock({ s, members, canSettle, settled, settledElsewhere = f
           {NOT_STARTED_NOTICE}
         </p>
       ) : null}
-      <button type="button" disabled={busy || notStarted}
+      {/* 확정을 막는 이유가 둘이다 -- 노쇼 차감/미차감을 안 고른 사람(settleBlockReason)과
+          여러 명 수업에서 출석을 안 정한 사람(duet-attendance.js). 버튼은 잠그고 이유를 말한다. */}
+      {blockedReason ? (
+        <p data-settle-blocked className={`text-xs font-extrabold leading-relaxed${failedBefore || notStarted ? " mt-2" : ""}`} style={{ color: BAD }}>
+          {blockedReason}
+        </p>
+      ) : null}
+      {blockReason ? (
+        <p data-settle-block-reason className={`text-xs font-bold leading-relaxed${failedBefore || notStarted ? " mt-2" : ""}`} style={{ color: BAD }}>
+          {blockReason}
+        </p>
+      ) : null}
+      <button type="button" disabled={busy || notStarted || Boolean(blockReason) || Boolean(blockedReason)}
         onClick={async () => { setBusy(true); try { await onSettle?.(s.id); } finally { setBusy(false); } }}
-        className={`h-10 w-full rounded-lg text-sm font-extrabold text-white disabled:opacity-40${failedBefore || notStarted ? " mt-2" : ""}`}
+        className={`h-10 w-full rounded-lg text-sm font-extrabold text-white disabled:opacity-40${failedBefore || notStarted || blockReason ? " mt-2" : ""}`}
         style={{ backgroundColor: failedBefore ? BAD : PRIMARY }}>
         {busy ? "확정 중" : failedBefore ? "다시 확정" : doneCount > 0 ? `수업 확정 · ${doneCount}명 차감` : "수업 확정"}
       </button>
@@ -3539,6 +3554,10 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
   const isSettled = (r) => {
     if (r.kind === "personal") return true;
     if (r.kind === "equip") return r.done || !!r.s?.groupCancelled;
+    /* 소속 모드에서는 **확정돼야** 끝난 수업이다 (2026-11-06). 노쇼 차감 / 미차감을
+       고른 것만으로는 회원권도 급여도 움직이지 않았다 -- 그 카드를 내려 보내면
+       강사는 끝난 줄 안다. */
+    if (organizationMode) return isSettledLesson(r.s) || !!r.s?.settledElsewhereAt;
     if (r.kind === "multi") return r.list.every((a) => a.status !== "booked" && (a.status !== "noshow" || a.noshowFee != null));
     if (r.status === "cancel") return true;
     if (r.status === "noshow") return r.fee != null;
@@ -4202,6 +4221,8 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
      유형(kind)이 아니라 draft 를 읽는다 -- 아직 저장하지 않은 선택으로
      "취소했어요" 를 띄우면 강사가 누른 적 없는 말을 하게 된다. */
   const absentPrompt = useMemo(() => absentPartnerPrompt(draft), [draft]);
+  /* 여러 명 수업에서 아직 출석을 안 고른 사람. 있으면 확정을 막는다 (duet-attendance.js). */
+  const duetUnmarked = unmarkedSettleMessage(draft, (id) => members.find((item) => item.id === id)?.name || "");
   const absentPromptName = absentPrompt
     ? (members.find((item) => item.id === absentPrompt.absentMemberId)?.name || "짝")
     : "";
@@ -4547,13 +4568,8 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
                       ) : null}
                     </div>
                   ) : null}
-                  {/* 차감 여부를 묻는 자리. **소속 모드에는 없다** -- 2026-10-04
-                      부터 노쇼는 언제나 1회 차감이고, 여기서 [비차감]을 고를 수
-                      있으면 고른 대로 되지 않는다. 고를 수 없는 것을 고르게
-                      두는 것이 "확정했는데 왜 빠졌지"의 출발점이다.
-
-                      개인 모드는 그대로다. 거기서는 이 버튼이 기기의 잔여를
-                      실제로 줄이고, 센터 규칙이 닿지 않는다. */}
+                  {/* 차감 여부를 묻는 자리 (개인 모드). 이 버튼이 기기의 잔여를
+                      실제로 줄이고, 센터 규칙이 닿지 않는다. 소속 모드는 아래 칸이다. */}
                   {!settledLesson && activeAttendee.status === "noshow" && !organizationMode && (
                     <div className="mt-2 grid grid-cols-2 gap-2">
                       <button onClick={() => onNoshowFee?.(draft.id, true, activeMemberId)} className="h-9 rounded-lg text-xs font-extrabold" style={activeAttendee.noshowFee === true ? { backgroundColor: BAD, color: "#fff" } : { backgroundColor: BAD_S, color: BAD }}>차감</button>
@@ -4563,10 +4579,29 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
                   {/* 무엇이 일어날지 미리 말한다. 노쇼는 확정 전까지 아무것도
                       움직이지 않으므로, 이 줄이 없으면 강사는 노쇼를 누른 것으로
                       끝난 줄 안다 -- 그 수업은 차감도 급여도 없이 남는다. */}
+                  {/* 소속 모드의 노쇼 (2026-11-06 대표): 강사가 고른다. 고른 대로
+                      확정이 차감하거나(출석과 같은 단가) 차감 없이 닫는다. 고르기
+                      전에는 확정 버튼이 잠긴다 (settleBlockReason). 듀엣은 회원마다. */}
                   {!settledLesson && activeAttendee.status === "noshow" && organizationMode && (
-                    <p className="mt-1.5 text-xs font-bold leading-relaxed" style={{ color: BAD }}>
-                      노쇼도 1회 차감됩니다. 아래 [수업 확정]을 눌러 주세요.
-                    </p>
+                    <div className="mt-2" data-noshow-choice>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button type="button" onClick={() => onNoshowFee?.(draft.id, true, activeMemberId)}
+                          aria-pressed={activeAttendee.noshowFee === true}
+                          className="h-11 rounded-lg text-xs font-extrabold"
+                          style={activeAttendee.noshowFee === true ? { backgroundColor: BAD, color: "#fff" } : { backgroundColor: BAD_S, color: BAD }}>노쇼 차감</button>
+                        <button type="button" onClick={() => onNoshowFee?.(draft.id, false, activeMemberId)}
+                          aria-pressed={activeAttendee.noshowFee === false}
+                          className="h-11 rounded-lg text-xs font-extrabold"
+                          style={activeAttendee.noshowFee === false ? { backgroundColor: BRAND, color: "#fff" } : { backgroundColor: CANVAS, color: SUB }}>노쇼 미차감</button>
+                      </div>
+                      <p className="mt-1.5 text-xs font-bold leading-relaxed" style={{ color: typeof activeAttendee.noshowFee === "boolean" ? INK2 : BAD }}>
+                        {activeAttendee.noshowFee === true
+                          ? "확정하면 회원권 1회가 빠지고, 출석과 같은 단가로 급여에 잡힙니다."
+                          : activeAttendee.noshowFee === false
+                            ? "확정하면 차감과 급여 없이 노쇼로만 남습니다."
+                            : "차감할지 골라 주세요. 고른 뒤 아래 [수업 확정]을 눌러야 끝납니다."}
+                      </p>
+                    </div>
                   )}
                 </div>
 
@@ -4631,10 +4666,36 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
               </div>
             ) : null}
 
+            {/* ── 여러 명 수업: 전원의 출석을 한눈에 (2026-11-06 대표) ──────────────
+                확정 전에 두 사람이 모두 정해져야 한다. 한 사람만 누르고 확정하면 다른
+                사람은 서버에 "예약" 으로 남았다 (60일 확정 듀엣 125건 중 48건). */}
+            {organizationMode && !settledLesson && !settledElsewhere && lessonTypeKeyOf(draft) === "duet" && attendeesOf(draft).length > 1 ? (
+              <div data-duet-attendance className="rounded-xl p-3" style={{ backgroundColor: CARD, border: `1px solid ${duetUnmarked ? BAD : LINE}` }}>
+                <p className="text-xs font-extrabold" style={{ color: INK }}>회원별 출석</p>
+                <div className="mt-1.5 space-y-1">
+                  {attendeesOf(draft).map((attendee) => (
+                    <div key={attendee.memberId} className="flex items-center gap-2" data-duet-member={attendee.memberId}>
+                      <span className="min-w-0 flex-1 truncate text-xs font-bold" style={{ color: INK2 }}>
+                        {members.find((item) => item.id === attendee.memberId)?.name || "회원"}
+                      </span>
+                      <span className="shrink-0 text-xs font-extrabold" style={{ color: attendee.status === "booked" ? BAD : stOf(attendee.status).color }}>
+                        {attendee.status === "booked" ? "아직 안 정함" : stOf(attendee.status).label}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                <button type="button" data-all-attended onClick={() => onStatusAll?.(draft.id, "done")}
+                  className="mt-2 h-11 w-full rounded-lg text-sm font-extrabold text-white" style={{ backgroundColor: GOOD }}>
+                  둘 다 출석
+                </button>
+              </div>
+            ) : null}
+
             {/* 여러 명인 수업은 전원을 정한 뒤 한 번에 확정한다 -- 누르는 횟수가
                 오히려 줄어든다. 개인 모드에는 조직 회원권이 없어 이 블록이 없다. */}
             {organizationMode ? (
               <SchedSettleBlock s={draft} members={members} settled={settledLesson} settledElsewhere={settledElsewhere} canSettle={canSettleLesson(draft)} notStarted={!lessonHasStarted(draft)}
+                blockedReason={duetUnmarked}
                 canUnsettle={canUnsettle} onSettle={onSettleLesson}
                 onUnsettle={async (...args) => {
                   const done = await onUnsettleLesson?.(...args);
@@ -23443,6 +23504,90 @@ const INSTRUCTOR_RESET_NOTICE = "회원권 데이터를 새 엑셀로 다시 올
  * 자동으로 피하지 않는다 -- 순서를 뒤집으면 예측이 깨지고, 그것이 차수 순으로
  * 바꾼 이유였다. 대신 여기 모아 두고 대표가 만료일을 옮겨 푼다.
  */
+/**
+ * 듀엣 출석 확인 — **확정됐는데 한 사람이 "예약" 으로 남은 여러 명 수업.**
+ *
+ * 2026-11-06 대표. 고치지 않는다 -- 차감은 이미 맞게 나갔고(2:1 은 두 회원이 함께
+ * 쓰는 회원권 한 장), 그 사람이 왔는지는 그 자리에 있던 강사만 안다. 여기는 목록만
+ * 보인다. 회원 이름 · 번호는 보이지 않는다 -- 날짜 · 지점 · 강사 · 미표시 인원.
+ *
+ * 최근 60일. 그 기간 수업 문서 + 확정 듀엣의 참석 문서를 읽는다 (읽은 수를 진단에).
+ */
+function DuetUnmarkedReview({ organization, locationStore, instructorStore, onRetryOrganization, initialState = null, load = listSettledGroupLessons }) {
+  const [rows, setRows] = useState(initialState?.rows || null);
+  const [names, setNames] = useState(initialState?.names || { locations: new Map(), instructors: new Map() });
+  const [error, setError] = useState(initialState?.error || "");
+  const locked = organization?.status === "unknown";
+  const organizationId = organization?.organizationId || "";
+
+  useEffect(() => {
+    if (initialState || !organizationId || locked) return undefined;
+    let alive = true;
+    const since = new Date(Date.now() - 60 * 86400000);
+    Promise.all([
+      load({ organizationId, since }),
+      toleratingReadFailure(listLocations(organizationId, { store: locationStore })),
+      toleratingReadFailure(listMemberships(organizationId, { store: instructorStore })),
+    ])
+      .then(([found, locationResult, memberResult]) => {
+        if (!alive) return;
+        deviceLog("duet_unmarked_review", { feature: "duet_unmarked_review", stage: "loaded", count: found.reads });
+        setNames({
+          locations: new Map(locationResult.items.map((item) => [String(item?.id || ""), String(item?.name || "")])),
+          instructors: new Map(memberResult.items.map((item) => [String(item?.userId || ""), String(item?.displayName || "")])),
+        });
+        setRows(settledDuetsWithUnmarked(found.lessons, found.participantsByLesson, { since }));
+      })
+      .catch((thrown) => {
+        if (!alive) return;
+        deviceLog("duet_unmarked_review_failed", {
+          feature: "duet_unmarked_review", stage: "load", errorDomain: "firestore",
+          errorCode: thrown?.code || "unknown", message: thrown?.message,
+        });
+        setError(thrown?.code || "unknown");
+      });
+    return () => { alive = false; };
+  }, [organizationId, locked, locationStore, instructorStore, load, initialState]);
+
+  if (locked) return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>소속을 확인하지 못했습니다</h2>
+      <button type="button" onClick={() => onRetryOrganization?.()} className="mt-3 h-11 w-full font-bold"
+        style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>다시 시도</button>
+    </section>
+  );
+
+  return (
+    <section data-duet-unmarked style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>
+        듀엣 출석 확인{rows ? ` ${rows.length}건` : ""}
+      </h2>
+      <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        최근 60일 확정된 듀엣 중 한 회원이 출석 · 노쇼 · 취소 없이 "예약" 으로 남은 수업입니다.
+        차감은 맞게 나갔습니다. 여기서는 바꾸지 않습니다 — 담당 강사에게 확인해 주세요.
+      </p>
+      {error ? <p className="mt-3" style={{ fontSize: TYPE.caption, color: BAD }}>불러오지 못했어요 (코드 {error})</p> : null}
+      {!error && !rows ? <p className="mt-3" style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : null}
+      {!error && rows && rows.length === 0 ? <p className="mt-3" style={{ fontSize: TYPE.caption, color: SUB }}>확인할 수업이 없습니다.</p> : null}
+      {!error && rows && rows.length > 0 ? (
+        <div className="mt-3">
+          {rows.map((row) => (
+            <div key={row.lessonId} data-duet-unmarked-row className="flex items-center gap-2" style={{ padding: "9px 0", borderTop: `1px solid ${LINE}` }}>
+              <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>{dayTimeLabel(row.startsAt)}</span>
+              <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: INK }}>
+                {names.locations.get(row.locationId) || "지점 없음"} · {names.instructors.get(row.instructorId) || "강사 미확인"}
+              </span>
+              <span className="shrink-0 tabular-nums font-bold" style={{ fontSize: TYPE.caption, color: BAD }}>
+                {row.members}명 중 {row.unmarked}명 미표시
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function ExpiryOrderReview({ organization, passStore, clientStore, onOpenClient, onRetryOrganization }) {
   const [rows, setRows] = useState(null);
   const [error, setError] = useState("");
@@ -25548,7 +25693,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
     return total;
   }, [db.schedule, db.members, db.settings, reportYm]);
   const detailTitles = {
-    report: inOrganization ? "이번 달 내 수업 활동" : "월간 리포트", expiry: "만료 회원", "instructor-scope": "담당 강사", "app-update": "앱 업데이트 안내", "name-confirm": "강사 이름 확정", notices: "공지사항", "expiry-order": "만료일 순서 확인", assessment: "변화 기록 설정", center: "센터 정보", theme: "화면 설정", "schedule-colors": "일정 색상",
+    report: inOrganization ? "이번 달 내 수업 활동" : "월간 리포트", expiry: "만료 회원", "instructor-scope": "담당 강사", "app-update": "앱 업데이트 안내", "name-confirm": "강사 이름 확정", notices: "공지사항", "expiry-order": "만료일 순서 확인", "duet-unmarked": "듀엣 출석 확인", assessment: "변화 기록 설정", center: "센터 정보", theme: "화면 설정", "schedule-colors": "일정 색상",
     data: "데이터 상태", backup: "데이터 이관 · 백업", permissions: "접근권한 안내", knowledge: "오늘의 지식", account: "계정", "account-delete": "계정 삭제", app: "앱 정보",
     products: "회원권 상품",
     clients: "회원 관리",
@@ -25611,6 +25756,8 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
        찾을 일이 생겼을 때만 연다. */
     { label: "점검", collapsible: true, items: [
       ...(showAudit ? [{ key: "expiry-order", title: "만료일 순서 확인", description: "뒤 차수가 먼저 만료되는 회원", Icon: AlertTriangle }] : []),
+      /* 확정된 듀엣인데 한 사람이 "예약" 으로 남은 수업. 고치지 않고 모아만 둔다. */
+      ...(showAudit ? [{ key: "duet-unmarked", title: "듀엣 출석 확인", description: "확정됐는데 한 명이 미표시인 듀엣", Icon: Users }] : []),
       ...(showAudit ? [{ key: "phone-check", title: "번호 점검", description: "010 열한 자리가 아닌 회원 찾기", Icon: AlertCircle }] : []),
       ...(showAudit ? [{ key: "audit", title: "감사 로그", description: "이상한 건만 모아 보기 · 전체 이력", Icon: AlertCircle }] : []),
     ] },
@@ -26130,6 +26277,10 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
             locationStore={locationStore}
             onRetryOrganization={onRetryOrganization} onToast={onToast}
             onSwap={onSwapInstructorAccount} />
+        )}
+        {view === "duet-unmarked" && showAudit && (
+          <DuetUnmarkedReview organization={organization} locationStore={locationStore} instructorStore={instructorStore}
+            onRetryOrganization={onRetryOrganization} />
         )}
         {view === "expiry-order" && showAudit && (
           <ExpiryOrderReview organization={organization} passStore={passStore} clientStore={clientStore}
@@ -26974,6 +27125,24 @@ export function createAppScreenSmokeCases() {
         { ...settleAttendee("smoke-client-b"), status: "noshow" },
       ],
     })) },
+    /* 듀엣인데 한 명만 정함 (2026-11-06). 확정 버튼이 잠기고 누가 남았는지 말한다. */
+    { name: "일정 탭 · 소속 · 2:1 한 명 미표시", element: scheduleWithSettlement(settleLessonOf({
+      attendees: [settleAttendee("m-local-1"), { ...settleAttendee("smoke-client-b"), status: "booked" }],
+    })) },
+    /* 노쇼 차감 / 미차감을 고른 뒤 (2026-11-06). 고르면 확정 버튼이 열린다. */
+    { name: "일정 탭 · 소속 · 1:1 노쇼 차감", element: scheduleWithSettlement(settleLessonOf({
+      type: "1:1", attendees: [{ ...settleAttendee("m-local-1"), status: "noshow", noshowFee: true }],
+    })) },
+    { name: "일정 탭 · 소속 · 1:1 노쇼 미차감", element: scheduleWithSettlement(settleLessonOf({
+      type: "1:1", attendees: [{ ...settleAttendee("m-local-1"), status: "noshow", noshowFee: false }],
+    })) },
+    /* 듀엣: 한 명은 골랐고 한 명은 아직. 한 명이라도 안 고르면 잠긴다. */
+    { name: "일정 탭 · 소속 · 2:1 노쇼 한 명만 고름", element: scheduleWithSettlement(settleLessonOf({
+      attendees: [
+        { ...settleAttendee("m-local-1"), status: "noshow", noshowFee: false },
+        { ...settleAttendee("smoke-client-b"), status: "noshow" },
+      ],
+    })) },
     /* 확정 전 예상 단가. 한 회원은 기준 단가, 한 회원은 회원권이 없다 --
        금액과 "왜 그 금액인지" 와 "왜 못 하는지" 가 한 화면에 함께 선다. */
     { name: "일정 탭 · 소속 · 예상 단가", element: scheduleWithSettlement(settleLessonOf(), {
@@ -27183,6 +27352,13 @@ export function createAppScreenSmokeCases() {
     /* 만료일 순서 확인. 대표가 한 화면에서 어긋난 회원을 보고 만료일을 옮긴다 --
        차감이 차수 순이라 뒤 차수가 먼저 만료되면 그 회차를 잃는다. */
     { name: "더보기 탭 · 만료일 순서 확인", element: settingsTab(smokeOwner, { initialView: "expiry-order" }) },
+    /* 확정된 듀엣인데 한 명이 "예약" 으로 남은 수업 -- 대표 확인 목록. 읽지 않고 그린다. */
+    { name: "듀엣 출석 확인", element: providerWith(smokeOwner, (
+      <DuetUnmarkedReview organization={readyOrganizationContext(smokeOwner)} initialState={{
+        rows: [{ lessonId: "dl-1", startsAt: new Date(2026, 9, 21, 10, 0), locationId: "bansong", instructorId: "u1", members: 2, unmarked: 1 }],
+        names: { locations: new Map([["bansong", "반송점"]]), instructors: new Map([["u1", "정예진"]]) },
+      }} />
+    )) },
     /* 총괄매니저가 연 더보기. 급여·감사·강사 관리는 보이고 **앱 업데이트
        안내만 없다** -- 숫자 하나가 센터 전체의 수업 확정을 막는 자리다. */
     /* 접는 묶음을 펼친 화면. 접힌 상태로는 그 항목이 한 번도 그려지지 않아,
@@ -31338,16 +31514,21 @@ export default function App() {
     const cur = list.find((a) => a.memberId === mid);
     if (!cur) return;
     let members = db.members, deductFrom = cur.deductFrom || null, msg = "";
-    /* 노쇼 과금도 잔여를 줄인다. 소속 모드에서는 그 숫자가 조직 회원권에 있어
-       여기서 줄일 것이 없다 -- 과금 표시만 남기고 차감은 출석 체크로 보낸다. */
+    /* 소속 모드: 여기서는 아무것도 차감하지 않는다. 고른 것(노쇼 차감 / 미차감)을
+       남기고, 확정이 그것을 읽는다 (lesson-settlement.js 의 deductsFor). 누가 언제
+       골랐는지도 함께 남긴다 -- 강사가 직접 고르는 만큼 기록이 균형을 잡는다.
+       선택은 기기의 일정에만 있다. 서버 참가자 문서에는 규칙이 칸을 열지 않아
+       출석 상태(noshow)까지만 올라간다. */
     if (organizationRoster) {
-      const attendees = list.map((a) => (a.memberId === mid ? { ...a, noshowFee: charge, deductFrom: null } : a));
+      const attendees = list.map((a) => (a.memberId === mid
+        ? { ...a, noshowFee: charge, noshowFeeBy: account?.id || "", noshowFeeAt: new Date().toISOString(), deductFrom: null }
+        : a));
       if (!saveAttendanceOnce(id, { ...db, schedule: db.schedule.map((x) => (x.id === id ? { ...x, attendees } : x)) })) return;
       setToast({
         ok: true,
         msg: charge
-          ? "노쇼 과금으로 표시했습니다. 회원권 차감은 출석 체크에서 해 주세요."
-          : "차감 없이 기록합니다.",
+          ? "노쇼 차감으로 골랐어요. [수업 확정]을 눌러야 회원권에 반영돼요."
+          : "노쇼 미차감으로 골랐어요. [수업 확정]을 누르면 차감 없이 닫혀요.",
       });
       return;
     }
@@ -31435,6 +31616,14 @@ export default function App() {
   const settleLesson = async (lessonId) => {
     const lesson = db.schedule.find((item) => item.id === lessonId);
     if (!lesson || !organizationRoster || isSettledLesson(lesson)) return;
+    /* 여러 명 수업은 전원의 출석이 정해져야 확정한다 (2026-11-06 대표). 확정으로
+       들어오는 길이 일정 시트 · 출석 화면 · 처리 큐로 여럿이라 여기서도 막는다. */
+    const unmarked = unmarkedSettleMessage(lesson, (id) => db.members.find((item) => item.id === id)?.name || "");
+    if (unmarked) {
+      deviceLog("lesson_settle_blocked", { feature: "lesson_settle", stage: "precheck", errorDomain: "app", errorCode: "duet_unmarked" });
+      setToast({ ok: false, msg: `${unmarked}. (코드 duet_unmarked)` });
+      return;
+    }
     /* 다른 기기에서 이미 확정했다. 또 확정하면 같은 회차가 두 번 나간다. */
     if (isSettledElsewhere(lesson)) {
       setToast({ ok: false, msg: "다른 기기에서 확정된 수업이에요. 다시 확정하지 않았어요." });
@@ -31446,6 +31635,17 @@ export default function App() {
        일정 시트·출석 화면·처리 큐로 여럿이다. */
     if (blocksSettlement(settlementGateState)) {
       setToast(SETTLEMENT_GATE_LABEL[SETTLEMENT_GATE.OUTDATED]);
+      return;
+    }
+    /* 노쇼는 차감 / 미차감을 고른 뒤에만 확정한다 (2026-11-06 대표). 버튼도 잠기지만
+       확정으로 들어오는 길이 여럿이라 여기서 한 번 더 막는다. */
+    const blockReason = settleBlockReason(lesson);
+    if (blockReason) {
+      deviceLog("lesson_settle_blocked", {
+        feature: "lesson_settlement", stage: "precheck", errorDomain: "app",
+        errorCode: "noshow_choice_required", lessonId,
+      });
+      setToast({ ok: false, msg: `${blockReason} (코드 noshow_choice_required)` });
       return;
     }
     if (settlingRef.current.has(lessonId)) return;

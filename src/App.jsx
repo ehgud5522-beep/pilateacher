@@ -317,6 +317,9 @@ import {
 } from "./features/lesson-record/draft-queue.js";
 import { evaluateLessonRecordLink, linkScheduleToMember, upsertLessonRecordNote } from "./features/lesson-record/link-context.js";
 import {
+  defaultLinkLesson, linkableLessonsFor, manualNoteFor, voiceNoteFor,
+} from "./features/lesson-record/note-edit.js";
+import {
   formatMemberLessonDate, formatMemberLessonHeader, isMeaningfulLessonSession, lessonSessionRepresentative, pendingLessonState,
   selectLessonSheetBriefing, selectMemberDetailStatus, selectMemberHistoryRows, selectMemberLessonCounts, selectMemberLessonSessions, selectPendingLessonSessions, selectUnresolvedLessonRows,
 } from "./features/lesson-record/member-detail-selectors.js";
@@ -1475,10 +1478,19 @@ async function shareBeforeAfter(before, after, memberName, onToast, saveOnly) {
 
 /* 동기화 3단계 범위 (2026-10-31): 메모 · 상담 메모 · 회원 목표는 서버에 싣지 않는다
    (private-items.js). 개인 일정은 이름(상담 · 휴무)과 시각만 본인의 다른 기기로 간다. */
-const DEVICE_ONLY_HINT = "이 기기에만 저장돼요";
+/* 문구 (2026-11-07 대표). "이 기기에만" 은 틀린 말이었다 -- 기록은 본인 계정 백업에
+   실려 올라간다. 다만 다른 기기 · 센터 · 회원 앱에는 실시간으로 보이지 않는다. 그
+   차이를 말하지 않으면 PC 에 쓴 글을 폰에서 못 찾고 "수정이 안 된다" 로 읽힌다. */
+const DEVICE_ONLY_HINT = "다른 기기에는 보이지 않아요 (본인 계정 백업에 포함)";
 const SHARED_TITLE_HINT = "다른 기기에도 보여요";
-function DeviceOnlyNote() {
-  return <p data-device-only style={{ fontSize: TYPE.caption, color: SUB }}>{DEVICE_ONLY_HINT}</p>;
+/** 기록을 쓰는 자리마다 같은 줄. 글씨만 회색이던 것을 칸으로 세워 눈에 띄게 한다. */
+export function DeviceOnlyNote() {
+  return (
+    <p data-device-only className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5"
+      style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK2, backgroundColor: CANVAS, border: `1px solid ${LINE}` }}>
+      <Smartphone size={13} style={{ color: SUB }} />{DEVICE_ONLY_HINT}
+    </p>
+  );
 }
 
 function blankMember(staff) {
@@ -2728,7 +2740,7 @@ function AuthScreen({ accounts, onLogin, onSignup, onToast }) {
         </div>
 
         <p className="text-center text-xs leading-relaxed" style={{ color: FAINT }}>
-          로그인 정보와 회원·수업 기록은 클라우드에 안전하게 백업됩니다. 음성은 기록 정리를 위해 서버로 전송된 뒤 즉시 삭제되며 보관하지 않습니다. 체형 사진은 이 기기에만 저장됩니다.<br />
+          로그인 정보와 회원·수업 기록은 본인 계정 백업에 포함됩니다. 수업 메모·상담 메모·회원 목표는 입력한 기기에 저장되며 다른 기기·센터·회원 앱에는 보이지 않습니다. 음성은 기록 정리를 위해 서버로 전송된 뒤 즉시 삭제되며 보관하지 않습니다. 체형 사진은 이 기기에만 저장됩니다.<br />
           로그인하면 이용약관 및 개인정보 처리방침에 동의하게 됩니다.
         </p>
         <button type="button" aria-label="앱 버전"
@@ -4142,6 +4154,9 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
   const isCareLesson = isCareLessonKey(lessonTypeByFormKind(kind).key);
   const isMemberLesson = kind === "solo" || isDuet || isCareLesson;
   const activeMember = members.find((m) => m.id === activeMemberId) || null;
+  /* 이 수업에 이미 손으로 쓴 기록. 있으면 직접입력이 그 글을 불러와 같은 기록을 고친다
+     (2026-11-07). 전에는 늘 빈 칸에서 시작해 저장할 때마다 기록이 하나씩 늘었다. */
+  const editingNote = manualNoteFor(activeMember?.notes, draft?.id);
   const activeAttendee = attendeesOf(draft).find((a) => a.memberId === activeMemberId) || null;
   /* 이 회원이 어떤 디오사 회원권을 가졌는가. 칩을 열고 닫는 것도, 디오사만
      끊은 회원을 PT 로 넣으려 할 때 길을 알려주는 것도 이 하나에서 나온다. */
@@ -4499,16 +4514,17 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
                 {!aiRecordingAvailable(aiRecording) && <p className="rounded-lg px-3 py-2 text-xs font-bold" style={{ backgroundColor: WARN_S, color: WARN }}>AI 정리 잠시 점검 중 · 직접 입력으로 기록할 수 있어요.</p>}
                 <div className="grid grid-cols-2 gap-2">
                   {aiRecordingAvailable(aiRecording) && <button onClick={() => { setRecordFallback(""); setRecordMode(recordMode === "voice" ? null : "voice"); }} className="flex h-12 items-center justify-center gap-1.5 rounded-lg text-xs font-extrabold" style={{ backgroundColor: recordMode === "voice" ? PRIMARY : TINT, color: recordMode === "voice" ? "#fff" : PRIMARY, border: `1px solid ${recordMode === "voice" ? PRIMARY : "#D9D7EE"}` }}><Smartphone size={15} /> 기록하기</button>}
-                  <button onClick={() => { setRecordFallback(""); setRecordMode(recordMode === "write" ? null : "write"); }} className="flex h-12 items-center justify-center gap-1 rounded-lg text-xs font-extrabold" style={{ backgroundColor: recordMode === "write" ? TINT : CARD, color: recordMode === "write" ? PRIMARY : INK, border: `1px solid ${LINE}` }}><Pencil size={13} /> 직접입력</button>
+                  <button data-direct-record onClick={() => { setRecordFallback(""); if (recordMode !== "write") setRecordBody(editingNote?.body || ""); setRecordMode(recordMode === "write" ? null : "write"); }} className="flex h-12 items-center justify-center gap-1 rounded-lg text-xs font-extrabold" style={{ backgroundColor: recordMode === "write" ? TINT : CARD, color: recordMode === "write" ? PRIMARY : INK, border: `1px solid ${LINE}` }}><Pencil size={13} /> {editingNote ? "기록 수정" : "직접입력"}</button>
                   <button onClick={async () => { const stored = await onNoComment?.(activeMemberId, draft.type, draft.id); if (stored !== false) onClose(); }} className="h-12 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: SUB, border: `1px solid ${LINE}` }}>노코멘트</button>
                   <button onClick={onClose} className="h-12 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: SUB, border: `1px solid ${LINE}` }}>나중에</button>
                 </div>
 
                 {recordMode && (
                   <div ref={recordSectionRef} data-lesson-record-entry className="space-y-2 rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
-                    {recordFallback && <p role="status" className="rounded-lg px-3 py-2 text-xs font-bold" style={{ backgroundColor: WARN_S, color: WARN }}>{recordFallback}</p>}
+                    <DeviceOnlyNote />
+                    {recordFallback &&<p role="status" className="rounded-lg px-3 py-2 text-xs font-bold" style={{ backgroundColor: WARN_S, color: WARN }}>{recordFallback}</p>}
                     {recordMode === "voice" && <VoiceNote key={lessonRecordSessionKey(activeMemberId, draft.id)} memberId={activeMemberId} memberName={activeMember?.name || "회원"} duetPartner={duetPartnerOf(activeMember)} lessonId={draft.id} onLater={() => setRecordMode(null)} onClose={onClose} onDeferred={onClose} onDirectEntry={(message) => { setRecordFallback(message || "음성 인식을 사용할 수 없어 직접 입력으로 전환했습니다."); setRecordMode("write"); }} onDraftChange={(text, meta, options) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, options)} onApply={(text, meta) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, { confirmed: true, upsert: true })} />}
-                    {recordMode === "write" && <><textarea rows={4} value={recordBody} onChange={(e) => setRecordBody(e.target.value)} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} /><button disabled={!recordBody.trim()} onClick={async () => { const stored = await onSaveNote?.(activeMemberId, draft.type, draft.id, recordBody.trim(), null); if (stored !== false) onClose(); }} className="h-11 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35" style={{ backgroundColor: PRIMARY }}>저장</button></>}
+                    {recordMode === "write" && <><textarea rows={4} value={recordBody} onChange={(e) => setRecordBody(e.target.value)} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} /><button disabled={!recordBody.trim()} onClick={async () => { const stored = await onSaveNote?.(activeMemberId, draft.type, draft.id, recordBody.trim(), null, editingNote ? { existingNoteId: editingNote.id } : null); if (stored === true) onClose(); }} className="h-11 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35" style={{ backgroundColor: PRIMARY }}>{editingNote ? "수정 저장" : "저장"}</button></>}
                   </div>
                 )}
 
@@ -4615,6 +4631,10 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
 function ScheduleQueueSheet({ tasks, members, returnFocusRef, onClose, onNoComment, onSaveNote, onOpenLesson }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const task = tasks[0] || null;
+  /* 일정 시트와 같다: 이 수업에 손으로 쓴 기록이 있으면 불러와 그 기록을 고친다. */
+  const queueEditingNote = manualNoteFor(
+    (members || []).find((item) => item?.id === task?.a?.memberId)?.notes, task?.s?.id,
+  );
   const [recordMode, setRecordMode] = useState(null);
   const [recordBody, setRecordBody] = useState("");
   const recordSectionRef = useRef(null);
@@ -4675,14 +4695,15 @@ function ScheduleQueueSheet({ tasks, members, returnFocusRef, onClose, onNoComme
               {!aiRecordingAvailable(aiRecording) && <p className="mb-2 rounded-lg px-3 py-2 text-xs font-bold" style={{ backgroundColor: WARN_S, color: WARN }}>AI 정리 잠시 점검 중 · 직접 입력으로 기록할 수 있어요.</p>}
               <div className="grid grid-cols-2 gap-2">
                 {aiRecordingAvailable(aiRecording) && <button onClick={() => setRecordMode(recordMode === "voice" ? null : "voice")} className="flex h-12 items-center justify-center gap-1 rounded-lg text-xs font-extrabold" style={{ backgroundColor: recordMode === "voice" ? PRIMARY : TINT, border: `1px solid ${recordMode === "voice" ? PRIMARY : "#D9D7EE"}`, color: recordMode === "voice" ? "#fff" : PRIMARY }}><Smartphone size={15} /> 말하기</button>}
-                <button onClick={() => setRecordMode(recordMode === "write" ? null : "write")} className="flex h-12 items-center justify-center gap-1 rounded-lg text-xs font-extrabold" style={{ backgroundColor: recordMode === "write" ? TINT : CARD, border: `1px solid ${LINE}`, color: recordMode === "write" ? PRIMARY : INK }}><Pencil size={14} /> 직접 입력</button>
+                <button onClick={() => { if (recordMode !== "write") setRecordBody(queueEditingNote?.body || ""); setRecordMode(recordMode === "write" ? null : "write"); }} className="flex h-12 items-center justify-center gap-1 rounded-lg text-xs font-extrabold" style={{ backgroundColor: recordMode === "write" ? TINT : CARD, border: `1px solid ${LINE}`, color: recordMode === "write" ? PRIMARY : INK }}><Pencil size={14} /> {queueEditingNote ? "기록 수정" : "직접 입력"}</button>
                 <button onClick={() => onNoComment?.(task.a.memberId, task.s.type, task.s.id)} className="h-12 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: SUB, border: `1px solid ${LINE}` }}>노코멘트</button>
                 <button onClick={onClose} className="h-12 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: SUB, border: `1px solid ${LINE}` }}>나중에</button>
               </div>
               {recordMode && (
                 <div ref={recordSectionRef} data-lesson-record-entry className="mt-3 space-y-2 rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
+                  <DeviceOnlyNote />
                   {recordMode === "voice" && <VoiceNote key={lessonRecordSessionKey(task.a.memberId, task.s.id)} memberId={task.a.memberId} memberName={memberName} duetPartner={duetPartnerOf(task?.m)} lessonId={task.s.id} onLater={() => setRecordMode(null)} onClose={onClose} onDeferred={onClose} onDirectEntry={() => setRecordMode("write")} onDraftChange={(text, meta, options) => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, text, meta, options)} onApply={(text, meta) => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, text, meta, { confirmed: true, upsert: true })} />}
-                  {recordMode === "write" && <><textarea rows={4} value={recordBody} onChange={(e) => setRecordBody(e.target.value)} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} /><button disabled={!recordBody.trim()} onClick={() => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, recordBody.trim(), null)} className="h-11 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35" style={{ backgroundColor: PRIMARY }}>저장 · 다음</button></>}
+                  {recordMode === "write" && <><textarea rows={4} value={recordBody} onChange={(e) => setRecordBody(e.target.value)} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} /><button disabled={!recordBody.trim()} onClick={() => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, recordBody.trim(), null, queueEditingNote ? { existingNoteId: queueEditingNote.id } : null)} className="h-11 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35" style={{ backgroundColor: PRIMARY }}>저장 · 다음</button></>}
                 </div>
               )}
             </div>
@@ -6350,6 +6371,17 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
   const centreSummary = useMemo(() => centreLessonSummary(centre || { rows: [] }), [centre]);
 
   const lessonSessions = useMemo(() => selectMemberLessonSessions({ member, schedule }), [member, schedule]);
+  /* 회원 상세에서 쓰는 수업 기록도 수업에 잇는다 (2026-11-07). 전에는 수업 없이(sid 없음)
+     저장돼 그 수업이 "기록 필요" 로 계속 남았다. 오늘 · 최근의 기록 없는 수업을 먼저
+     골라 두고, 강사가 바꾸거나 "수업과 잇지 않음" 을 고를 수 있다. */
+  const linkableLessons = useMemo(
+    () => linkableLessonsFor({ memberId: member?.id, notes: member?.notes, schedule, today: todayISO() }),
+    [member, schedule],
+  );
+  const [linkLessonId, setLinkLessonId] = useState("");
+  useEffect(() => {
+    if (sheet === "record") setLinkLessonId(defaultLinkLesson(linkableLessons, todayISO()));
+  }, [sheet]); // 시트를 열 때 한 번만 고른다 -- 연 뒤 목록이 바뀌어도 강사가 고른 것을 덮지 않는다
   const meaningfulLessonSessions = useMemo(() => lessonSessions.filter(isMeaningfulLessonSession), [lessonSessions]);
   const latestLessonSession = meaningfulLessonSessions[0] || null;
   /* 잔여와 만료는 **센터 회원권이 먼저다.** 기기에도 같은 이름의 값이 있지만
@@ -6754,7 +6786,17 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
         <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>홀딩은 예정된 수업을 자동 취소하지 않습니다. 일정 탭에서 직접 확인해 주세요.</p>
         <button type="button" disabled={!hold.start || !hold.end || hold.end < hold.start} onClick={() => { const days = Math.max(0, Math.round((new Date(`${hold.end}T00:00:00`).getTime() - new Date(`${hold.start}T00:00:00`).getTime()) / 86400000)); onPatch({ status: "hold", holdFrom: hold.start, holdUntil: hold.end, holdReason: hold.reason.trim(), holdExtendDays: hold.extend ? days : 0, contractEnd: hold.extend && member.contractEnd ? shift(member.contractEnd, days) : member.contractEnd }); setSheet(null); }} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>홀딩 시작</button>
       </div></Sheet>}
-      {(sheet === "memo" || sheet === "record") && <Sheet title={sheet === "memo" ? "상담 메모 추가" : "수업 기록"} onClose={() => setSheet(null)}><div className="space-y-2"><DeviceOnlyNote />{sheet === "record" && <VoiceNote key={lessonRecordSessionKey(member.id, null)} memberId={member.id} memberName={member.name || "회원"} duetPartner={duetPartnerOf(member)} onClose={() => setSheet(null)} onDeferred={() => setSheet(null)} onDraftChange={(text, meta, options) => onSaveNote("개인레슨", text, meta, options)} onApply={(text, meta) => onSaveNote("개인레슨", text, meta, { confirmed: true, upsert: true })} />}{sheet === "memo" && <><button type="button" aria-pressed={memoImportant} onClick={() => setMemoImportant((value) => !value)} className="flex h-10 w-full items-center gap-2 px-3" style={{ borderRadius: 8, backgroundColor: memoImportant ? WARN_S : CANVAS, color: memoImportant ? WARN : SUB, fontSize: TYPE.caption, fontWeight: 700 }}><Star size={14} fill={memoImportant ? "currentColor" : "none"} />중요 메모로 상단 고정</button><textarea autoFocus rows={5} value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="내용을 입력하세요" className={`${inputCls} h-auto resize-none py-3`} />{saveError && <p role="alert" style={{ fontSize: TYPE.caption, color: BAD }}>{saveError}</p>}<button type="button" aria-busy={saving === sheet} disabled={!memo.trim() || saving === sheet} onClick={commitNote} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>{saving === sheet ? "저장 중…" : "저장"}</button></>}</div></Sheet>}
+      {(sheet === "memo" || sheet === "record") && <Sheet title={sheet === "memo" ? "상담 메모 추가" : "수업 기록"} onClose={() => setSheet(null)}><div className="space-y-2"><DeviceOnlyNote />{sheet === "record" && linkableLessons.length > 0 && (
+        <label className="block" data-record-lesson-link>
+          <span style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>어느 수업의 기록인가요</span>
+          <select value={linkLessonId} onChange={(event) => setLinkLessonId(event.target.value)} className={`${inputCls} mt-1`}>
+            <option value="">수업과 잇지 않음</option>
+            {linkableLessons.map((lesson) => (
+              <option key={lesson.id} value={lesson.id}>{`${md(lesson.date)} ${lesson.start} · ${lesson.type || "수업"}${lesson.hasRecord ? " · 기록 있음" : ""}`}</option>
+            ))}
+          </select>
+        </label>
+      )}{sheet === "record" && <VoiceNote key={lessonRecordSessionKey(member.id, linkLessonId || null)} memberId={member.id} memberName={member.name || "회원"} duetPartner={duetPartnerOf(member)} lessonId={linkLessonId || undefined} onClose={() => setSheet(null)} onDeferred={() => setSheet(null)} onDraftChange={(text, meta, options) => onSaveNote("개인레슨", text, meta, { ...(options || {}), lessonId: linkLessonId || null })} onApply={(text, meta) => onSaveNote("개인레슨", text, meta, { confirmed: true, upsert: true, lessonId: linkLessonId || null })} />}{sheet === "memo" && <><button type="button" aria-pressed={memoImportant} onClick={() => setMemoImportant((value) => !value)} className="flex h-10 w-full items-center gap-2 px-3" style={{ borderRadius: 8, backgroundColor: memoImportant ? WARN_S : CANVAS, color: memoImportant ? WARN : SUB, fontSize: TYPE.caption, fontWeight: 700 }}><Star size={14} fill={memoImportant ? "currentColor" : "none"} />중요 메모로 상단 고정</button><textarea autoFocus rows={5} value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="내용을 입력하세요" className={`${inputCls} h-auto resize-none py-3`} />{saveError && <p role="alert" style={{ fontSize: TYPE.caption, color: BAD }}>{saveError}</p>}<button type="button" aria-busy={saving === sheet} disabled={!memo.trim() || saving === sheet} onClick={commitNote} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>{saving === sheet ? "저장 중…" : "저장"}</button></>}</div></Sheet>}
       {sheet === "record-review" && reviewDraft && <Sheet title="AI 수업기록 확인" sub="확인은 선택입니다. 정리된 기록은 이미 저장되어 있어요." onClose={() => setSheet(null)}><div className="space-y-3"><div className="grid grid-cols-2 gap-2">{[{ k: "didToday", l: "오늘 수업" }, { k: "observations", l: "변화" }, { k: "responses", l: "회원 반응" }, { k: "nextFocus", l: "다음 확인" }].map((field) => <div key={field.k} className="rounded-xl p-3" style={{ backgroundColor: CANVAS }}><p className="text-caption font-extrabold" style={{ color: SUB }}>{field.l}</p>{reviewEditing ? <textarea rows={2} aria-label={`${field.l} 수정`} value={structuredFieldText(reviewDraft, field.k)} onChange={(event) => setReviewDraft((current) => editStructuredField(current, field.k, event.target.value))} className={`${inputCls} mt-1 h-auto resize-none py-2 text-xs`} /> : <p className="mt-1 text-xs font-bold leading-relaxed" style={{ color: INK2 }}>{prepText(reviewDraft[field.k], "기록 없음")}</p>}</div>)}</div><div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => setReviewEditing((value) => !value)} className="h-12 rounded-xl text-sm font-extrabold" style={{ backgroundColor: CANVAS, color: BRAND_D }}>{reviewEditing ? "수정 닫기" : "수정"}</button><button type="button" onClick={confirmRecordReview} className="h-12 rounded-xl text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>확인</button></div></div></Sheet>}
       {sheet === "memos-all" && <Sheet title="상담 메모 전체 보기" onClose={() => setSheet(null)}><div className="space-y-2"><DeviceOnlyNote />{consultationNotes.length ? consultationNotes.map((note) => <div key={note.id} style={{ padding: 10, borderRadius: 8, backgroundColor: note.important ? WARN_S : CANVAS }}><p style={{ fontSize: TYPE.caption, color: SUB }}>{ymd(note.date)}{note.important ? " · 중요 메모" : ""}</p><p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK2 }}>{note.body}</p></div>) : <p style={{ fontSize: TYPE.caption, color: SUB }}>등록된 상담 메모가 없습니다</p>}<button type="button" onClick={openMemo} className="h-11 w-full text-xs font-bold" style={{ borderRadius: 8, backgroundColor: TINT, color: BRAND_D }}>메모 추가</button></div></Sheet>}
       {sheet === "records-all" && <Sheet title="수업 기록 전체 보기" onClose={() => setSheet(null)}><div className="min-w-0 space-y-2">{lessonSessions.length ? lessonSessions.map((session) => <div key={session.key} className="min-w-0" style={{ padding: 10, borderRadius: 8, backgroundColor: CANVAS }}><p className="mb-2 text-caption tabular-nums" style={{ color: SUB }}>{formatMemberLessonDate(session.date, { weekday: true })} · {session.type}</p><LessonRecordFieldRows session={session} />{session.warning && <p className="mt-2 text-caption" style={{ color: SUB }}>{session.warning}</p>}</div>) : <p style={{ fontSize: TYPE.caption, color: SUB }}>아직 작성된 수업 기록이 없습니다</p>}</div></Sheet>}
@@ -15806,7 +15848,7 @@ function SettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings,
           <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: CANVAS }}><Smartphone size={14} style={{ color: SUB }} /></span>
           <h3 className="font-extrabold" style={{ color: INK }}>개인정보 안내</h3>
         </div>
-        <p className="mt-2.5 text-xs leading-relaxed" style={{ color: INK2 }}>로그인 정보와 회원·수업 기록은 클라우드에 안전하게 백업됩니다. 음성은 기록 정리를 위해 서버로 전송된 뒤 즉시 삭제되며 보관하지 않습니다. 체형 사진은 이 기기에만 저장됩니다.</p>
+        <p className="mt-2.5 text-xs leading-relaxed" style={{ color: INK2 }}>로그인 정보와 회원·수업 기록은 본인 계정 백업에 포함됩니다. 수업 메모·상담 메모·회원 목표는 입력한 기기에 저장되며 다른 기기·센터·회원 앱에는 보이지 않습니다. 음성은 기록 정리를 위해 서버로 전송된 뒤 즉시 삭제되며 보관하지 않습니다. 체형 사진은 이 기기에만 저장됩니다.</p>
         <p className="mt-1.5 text-xs leading-relaxed" style={{ color: INK2 }}>
           {fbReady
             ? <>새 기기에서 기존 데이터가 발견되면 먼저 복원 여부를 확인합니다. 사진 백업을 켜지 않았다면 사진은 복원되지 않으므로 JSON 백업 파일도 함께 보관해 주세요.</>
@@ -30775,7 +30817,12 @@ export default function App() {
   const savedLessonRecordToastKeysRef = useRef(new Set());
   const saveScheduleComment = async (id, type, sid, body, voiceMeta = null, noteOptions = null) => {
     const text = String(body || "").trim();
-    if (!text) return false;
+    /* 빈 기록은 저장하지 않는다. 말없이 false 만 돌려주면 강사는 버튼이 고장 난 줄
+       안다 -- 왜 안 됐는지 말한다. */
+    if (!text) {
+      setToast({ ok: false, msg: "기록할 내용이 비어 있어요. 내용을 입력한 뒤 저장해 주세요. (코드 empty_record)" });
+      return false;
+    }
     setNoteBack(false);
     let currentDb = lessonRecordDbRef.current;
     /* 기록은 회원 행 안(member.notes)에 쌓인다. 조직에만 있는 회원은 그 행이
@@ -30839,8 +30886,10 @@ export default function App() {
     };
     const existingPending = noteOptions?.existingNoteId
       ? (target.notes || []).find((item) => item.id === noteOptions.existingNoteId)
+      /* 음성 확정은 그 수업의 **음성 기록**만 이어 고친다. 같은 수업에 손으로 쓴 기록이
+         먼저 있어도 그것을 집어 덮지 않는다 (2026-11-07, note-edit.js). */
       : noteOptions?.upsert && voiceMeta && sid
-        ? (target.notes || []).find((item) => String(item.sid || "") === String(sid || ""))
+        ? voiceNoteFor(target.notes || [], sid)
         : null;
     const resolvedSid = String(sid || existingPending?.sid || "");
     const transcriptText = String(voiceMeta?.transcript || "").trim();
@@ -30902,6 +30951,16 @@ export default function App() {
     const nextDb = { ...currentDb, members: currentDb.members.map((m) => (m.id === id ? { ...m, notes: nextNotes, aiMemory: memoryResult.memories, memoryRebuildNeeded: memoryResult.failed } : m)) };
     const stored = await saveDb(nextDb);
     if (stored === false) return false;
+    /* 로그인이 풀린 채로는 saveDb 가 기기에 쓰지 않고 undefined 를 돌려준다. 전에는
+       그것을 성공으로 읽어 시트를 닫았다 -- 입력한 글이 어디에도 남지 않는다. 실패로
+       돌려 입력을 지키고, 이유를 코드와 함께 말한다. */
+    if (stored !== true) {
+      deviceLog("lesson_note_save_failed", {
+        feature: "lesson_record", stage: "save_device", errorDomain: "app", errorCode: "no_account", memberId: id, lessonId: sid,
+      });
+      setToast({ ok: false, msg: "로그인이 풀려 기록을 저장하지 못했어요. 다시 로그인한 뒤 저장해 주세요. 입력한 내용은 그대로 있어요. (코드 no_account)" });
+      return false;
+    }
     if (voiceMeta?.aiMeta?.requestId) {
       Promise.resolve(fbWritePilotMetricAttempt({
         requestId: voiceMeta.aiMeta.requestId,
@@ -32414,7 +32473,7 @@ export default function App() {
               {mobileView === "detail" && member && <div className="pt-member-detail-pane h-full min-h-0">
                 <ReferenceMemberDetail key={member.id} member={member} schedule={db.schedule} photos={photos[member.id]} settings={db.settings} viewerRole={organizationRoster ? organizationContext.role : ""}
                   canViewSettlement={!account?.role || ["owner", "manager", "admin", "director"].includes(String(account.role).toLowerCase())} onBack={() => setMobileView("list")}
-                  onPatch={(change) => patch(member.id, change)} onSaveNote={(type, body, voiceMeta, noteOptions) => saveScheduleComment(member.id, type, null, body, voiceMeta, noteOptions)}
+                  onPatch={(change) => patch(member.id, change)} onSaveNote={(type, body, voiceMeta, noteOptions) => saveScheduleComment(member.id, type, noteOptions?.lessonId || null, body, voiceMeta, noteOptions)}
                   onSchedule={() => { setScheduleMemberId(member.id); setTab("schedule"); }} onOpenLesson={(lessonId) => { setScheduleOpenLessonId(lessonId); setTab("schedule"); }} onAssess={(entry = {}) => { setAnalysisRecordId(entry.poseId || null); setAnalysisAssessmentId(entry.assessmentId || null); setAnalysisEntryMode(entry.mode || "home"); setAnalysisComparisonEntry(entry.beforeAssessmentId && entry.afterAssessmentId ? { beforeAssessmentId: entry.beforeAssessmentId, afterAssessmentId: entry.afterAssessmentId, compareView: entry.compareView || "front" } : null); setAnalysisMemberId(member.id); setTab("analysis"); }} onToast={setToast} onDelete={removeMember} onDeactivate={deactivateMember} onReactivate={reactivateMember}
                   organizationMode={organizationRoster && isRosterMember(member)} onHide={hideRosterMember}
                   journey={journeyFor(member.id)} passCards={passCardsFor(member.id)} centrePasses={centrePassesFor(member.id)}

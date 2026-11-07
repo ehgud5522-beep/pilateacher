@@ -12,7 +12,9 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { TYPE } from "../../src/features/ui/type-scale.js";
-import { blockedMessage, cancelFailure, deadlineLabel, remainingLabel } from "./cancel-copy.js";
+import {
+  CANCEL_DONE_TITLE, blockedMessage, cancelDoneNote, cancelFailure, deadlineLabel, remainingLabel,
+} from "./cancel-copy.js";
 import { lessonName } from "./pass-label.js";
 import { MEMBER_FEATURE, MEMBER_STAGE, recordDiagnostic } from "./diagnostics.js";
 
@@ -71,7 +73,11 @@ export function LessonSheet({ lesson, place, offline = false, api, onClose, onCa
       const result = await api({ action: "cancel", ...request });
       recordDiagnostic({
         feature: MEMBER_FEATURE.LESSON_CANCEL, stage: MEMBER_STAGE.DONE,
-        message: text(result?.outcome), correlationId: text(result?.recordId),
+        /* 강사 알림 결과도 함께 -- 완료 화면이 강사 알림을 말하지 않은 이유를 여기서 본다. */
+        message: [text(result?.outcome), text(result?.teacherNotice) || "no_notice",
+          text(result?.teacherNoticeCode), `inbox_${text(result?.teacherInbox) || "none"}`,
+          text(result?.teacherInboxCode)].filter(Boolean).join(":"),
+        correlationId: text(result?.recordId),
       });
       setDone(result);
       setPhase("done");
@@ -137,8 +143,13 @@ export function LessonSheet({ lesson, place, offline = false, api, onClose, onCa
         ) : null}
 
         {phase === "done" ? (
-          <div className="cancelbox">
-            <p style={{ fontSize: TYPE.body }}>수업을 취소했어요.</p>
+          <div className="cancelbox canceldone" role="status">
+            <svg className="donecheck" width="40" height="40" viewBox="0 0 40 40" aria-hidden="true">
+              <circle cx="20" cy="20" r="17" fill="none" stroke="currentColor" strokeWidth="3" />
+              <path d="M12.5 20.5l5 5 10-11" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            <p className="donetitle">{CANCEL_DONE_TITLE}</p>
+            <p className="muted" style={{ fontSize: TYPE.caption }}>{cancelDoneNote(done)}</p>
             {remainingLabel({ remaining: done?.remaining, period: status?.period }) ? (
               <p className="muted" style={{ fontSize: TYPE.caption }}>{remainingLabel({ remaining: done.remaining, period: status?.period })}</p>
             ) : null}

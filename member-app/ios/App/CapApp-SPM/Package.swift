@@ -12,7 +12,10 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/ionic-team/capacitor-swift-pm.git", exact: "8.4.2"),
-        .package(name: "CapacitorFirebaseAuthentication", path: "..\..\..\..\node_modules\@capacitor-firebase\authentication")
+        .package(name: "CapacitorFirebaseAuthentication", path: "..\..\..\..\node_modules\@capacitor-firebase\authentication"),
+        .package(name: "CapacitorFirebaseMessaging", path: "..\..\..\..\node_modules\@capacitor-firebase\messaging"),
+        .package(name: "CapacitorApp", path: "..\..\..\..\node_modules\@capacitor\app"),
+        .package(name: "CapawesomeCapacitorAppUpdate", path: "..\..\..\..\node_modules\@capawesome\capacitor-app-update")
     ],
     targets: [
         .target(
@@ -20,7 +23,10 @@ let package = Package(
             dependencies: [
                 .product(name: "Capacitor", package: "capacitor-swift-pm"),
                 .product(name: "Cordova", package: "capacitor-swift-pm"),
-                .product(name: "CapacitorFirebaseAuthentication", package: "CapacitorFirebaseAuthentication")
+                .product(name: "CapacitorFirebaseAuthentication", package: "CapacitorFirebaseAuthentication"),
+                .product(name: "CapacitorFirebaseMessaging", package: "CapacitorFirebaseMessaging"),
+                .product(name: "CapacitorApp", package: "CapacitorApp"),
+                .product(name: "CapawesomeCapacitorAppUpdate", package: "CapawesomeCapacitorAppUpdate")
             ]
         )
     ]

@@ -45,7 +45,9 @@ import {
   TRANSFER_BLOCK, checkTransfer, transferPricing,
 } from "../schema/pass-transfer.js";
 import { toDate } from "./payroll-repository.js";
-import { defaultUnitPriceFor, resolveUnitPrice } from "../schema/pay-rates.js";
+import {
+  ISSUE_UNIT_PRICE_SOURCE, defaultUnitPriceFor, resolveIssueUnitPrice, resolveUnitPrice,
+} from "../schema/pay-rates.js";
 import { RepositoryReadError, readCollection } from "./repository-read.js";
 
 /**
@@ -273,6 +275,7 @@ export async function listPassesIssuedSince(organizationId, since, options = {})
  *   paymentBreakdown?: Record<string, number>, balance?: number,
  *   balanceEdited?: boolean, paymentNote?: string,
  *   unitPrice?: number, fullRoomRate?: number, expiresAt?: Date | string,
+ *   manualUnitPrice?: number, unitPriceReason?: string, issuerRole?: string,
  *   passId?: string, entryId?: string, clientIds?: Array<string>,
  * }} input
  * @param {{ store?: PassStore, newId?: () => string }} [options]
@@ -284,7 +287,10 @@ export async function issuePass(organizationId, input, options = {}) {
   } = options;
   const organization = requiredText(organizationId, "organizationId");
   const payCategory = requiredText(input?.payCategory, "payCategory");
-  const paymentMethod = String(input?.paymentMethod ?? PAYMENT_METHOD.CARD).trim() || PAYMENT_METHOD.CARD;
+  /* 결제 수단은 기본값이 없다 (2026-11-07 대표 결정). 전에는 비면 카드였고,
+     현금으로 받고 손대지 않은 회원권이 카드로 박혀 공급가액(부원장 단가의
+     분자)이 1.1 로 나뉘었다 -- 원장은 고칠 수 없다. */
+  const paymentMethod = requiredText(input?.paymentMethod, "paymentMethod");
   /* 옛 값(제로페이 · 바우처)은 여기서 거부된다. 읽기는 하지만 **새로 만들지는
      않는다** -- 접어 둔 수단으로 다시 발급되면 변환이 끝나지 않는다. */
   if (!values(PAYMENT_METHOD).has(paymentMethod)) throw new Error("Invalid paymentMethod");
@@ -308,10 +314,17 @@ export async function issuePass(organizationId, input, options = {}) {
   /* 단가가 어디서 오든 -- 표, 담당 강사의 풀방금액, 직접 입력 -- 정해지지
      않으면 여기서 거부된다. 물어보지 않고 0원으로 발급되면 그 수업들이 통째로
      무보수로 기록되고, 원장은 고칠 수 없다. */
-  const unitPrice = resolveUnitPrice(payCategory, {
+  /* 발급하는 사람이 기준 단가를 직접 정할 수 있다 (2026-11-07 대표 결정 2·3).
+     바뀌는 것은 기준값 하나이고 차감 판정은 그대로 그 위에 선다. 역할 검사와
+     "제안값과 다르면 사유" 는 resolveIssueUnitPrice 가 한다 (pay-rates.mjs). */
+  const issuePrice = resolveIssueUnitPrice(payCategory, {
     unitPrice: input?.unitPrice,
     fullRoomRate: input?.fullRoomRate,
+    manualUnitPrice: input?.manualUnitPrice,
+    unitPriceReason: input?.unitPriceReason,
+    issuerRole: input?.issuerRole,
   });
+  const unitPrice = issuePrice.unitPrice;
 
   const clientId = requiredText(input?.clientId, "clientId");
   /* 듀엣이면 둘. 없으면 대표 한 명짜리 배열이 된다 -- 1:1 회원권도 같은 모양을
@@ -385,6 +398,13 @@ export async function issuePass(organizationId, input, options = {}) {
        그래도 발급 시점에 박아 둔다. 표가 나중에 바뀌어도, 담당 강사의 풀방금액이
        나중에 올라도, 이 회원권이 팔린 조건은 그때의 것이어야 한다. */
     baseUnitPrice: unitPrice,
+    /* 기준값이 어디서 왔는가 -- table · full_room_rate · product · manual.
+       manual 이면 원래 제안값(standardUnitPrice)과 사유가 함께 남는다. 누가는
+       createdBy 다. 규칙의 passes create 는 hasAll(하한)이라 칸이 늘어도
+       거부되지 않는다. */
+    unitPriceSource: issuePrice.source,
+    ...(issuePrice.standardUnitPrice !== null ? { standardUnitPrice: issuePrice.standardUnitPrice } : {}),
+    ...(issuePrice.reason ? { unitPriceReason: issuePrice.reason } : {}),
     /* 이 회원권에서 이미 나간 service 차감 수. 센터가 급여를 주는 서비스는
        회원권당 1회분뿐이고, 두 번째부터는 판정 0 이 0원으로 만든다. */
     serviceUsed: 0,
@@ -1443,6 +1463,10 @@ export async function transferPass(organizationId, pass, input, options = {}) {
     expiresAt,
     handedOver: false,
     baseUnitPrice,
+    /* 양도는 언제나 1:1 신규 표값이다. 발급과 같은 칸을 들고 있어야 한다
+       (issuePass 의 unitPriceSource · standardUnitPrice, 2026-11-07). */
+    unitPriceSource: ISSUE_UNIT_PRICE_SOURCE.TABLE,
+    standardUnitPrice: baseUnitPrice,
     serviceUsed: 0,
     instructorId,
     status: PASS_STATUS.ACTIVE,

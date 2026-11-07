@@ -39,6 +39,8 @@ const issueInput = (overrides = {}) => ({
   payCategory: "pt_1_1_new",
   totalSessions: 20,
   contractPrice: 1300000,
+  /* 결제 수단은 기본값이 없다 (2026-11-07). 화면이 늘 고른 값을 보낸다. */
+  paymentMethod: "card",
   instructorId: "instructor-a",
   createdBy: "owner-a",
   ...overrides,
@@ -192,12 +194,25 @@ test("issuing refuses what the rules would refuse, before the round trip", async
   }
 });
 
-test("a pass starts active on round one paid by card", async () => {
+test("a pass starts active on round one with the payment method it was given", async () => {
   const store = fakeStore();
   const { pass } = await issuePass(ORG, issueInput(), { store });
   assert.equal(pass.status, "active");
   assert.equal(pass.purchaseRound, 1);
   assert.equal(pass.paymentMethod, "card");
+});
+
+test("issuing without a payment method is refused -- there is no default", async () => {
+  /* 기본값이 카드이던 때, 현금으로 받고 손대지 않은 회원권이 카드로 박혀
+     공급가액이 1.1 로 나뉘었다. 원장은 고칠 수 없다 (2026-11-07 대표 결정 4). */
+  for (const missing of [undefined, null, "", "  "]) {
+    const store = fakeStore();
+    await assert.rejects(
+      () => issuePass(ORG, issueInput({ paymentMethod: missing }), { store }),
+      /Missing paymentMethod/, JSON.stringify(missing),
+    );
+    assert.equal(store.calls.commit.length, 0);
+  }
 });
 
 /* ── 담당 강사 교체 ───────────────────────────────────────────────────── */

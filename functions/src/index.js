@@ -35,6 +35,7 @@ const { handleRuntimeConfigRequest } = require("./runtime-config-admin");
 const { handleMemberPushSettings, runMemberPush } = require("./member-push");
 const { handleNoticeRequest } = require("./notice-admin");
 const { grantMemberCancel, memberCancelLesson, memberCancelStatus } = require("./member-cancel");
+const { cancelThenNotifyTeacher, handleTeacherPushSettings } = require("./teacher-cancel-push");
 const { monthlyPayFor, planAccountSwap, runAccountSwap } = require("./instructor-swap");
 const { reconcileOrganization } = require("./pass-reconcile-nightly");
 const { createFirestoreMemberLinkPorts } = require("./member-link-store");
@@ -907,13 +908,22 @@ exports.memberCancelLesson = onCall(MEMBER_LINK_OPTIONS, async (request) => {
   };
   try {
     if (action === "status") return await memberCancelStatus(firestore, input, { membershipId });
-    const result = await memberCancelLesson(firestore, input, {
-      membershipId, newId: () => firestore.collection("_").doc().id,
-    });
+    /* 취소 뒤 담당 강사 푸시 (2026-11-07). 취소는 이미 끝났다 -- 푸시가 실패해도 취소는
+       성공으로 돌려준다. teacherNotice 는 회원 완료 화면이 "전달했어요" 를 말할지 정하는
+       값이다. 스위치 runtimeConfig/teacherPush (기본 꺼짐). 근거는 teacher-cancel-push.js. */
+    const result = await cancelThenNotifyTeacher(
+      firestore,
+      () => require("firebase-admin/messaging").getMessaging(),
+      input,
+      { membershipId, newId: () => firestore.collection("_").doc().id },
+      { cancel: memberCancelLesson },
+      { log: logger, stamp: () => FieldValue.serverTimestamp() },
+    );
     // uid · 이름 · 번호는 남기지 않는다 (§7). 수업 id 와 결과 · 남은 횟수만.
     memberCancelLog("info", "member_cancel_done", {
       stage: "cancel", organizationId, lessonId, outcome: result.outcome,
       remaining: result.remaining, partnerKept: Boolean(result.partnerKept), correlationId: result.recordId,
+      teacherNotice: result.teacherNotice, teacherNoticeCode: result.teacherNoticeCode,
     });
     return result;
   } catch (error) {
@@ -1312,6 +1322,29 @@ exports.sendMemberLessonReminders = onSchedule({
       feature: "member_push", stage: "run", errorDomain: "firestore",
       errorCode: String(error?.code || "unknown"), message: String(error?.message || "").slice(0, 300),
     });
+  }
+});
+
+/* 강사 앱의 기기 토큰 (회원 취소 알림, 2026-11-07). 센터 직원만. 서버만 쓴다 --
+   teacherPush 에 규칙 문을 내지 않는다. 강사 앱은 아직 이 통로를 부르지 않는다
+   (네이티브 푸시 설정이 먼저다 -- teacher-cancel-push.js 머리말). */
+exports.teacherPushSettings = onCall(MEMBER_LINK_OPTIONS, async (request) => {
+  const action = String(request?.data?.action || "").trim();
+  try {
+    return await handleTeacherPushSettings(firestore, {
+      callerUid: request?.auth?.uid,
+      organizationId: request?.data?.organizationId,
+      action,
+      token: request?.data?.token,
+      platform: request?.data?.platform,
+    }, { membershipId });
+  } catch (error) {
+    logger.warn("teacher_push_settings_failed", {
+      feature: "teacher_push", stage: action || "unknown", errorDomain: error?.httpsCode ? "teacher_push" : "firestore",
+      errorCode: String(error?.code || error?.message || "unknown"),
+    });
+    if (error?.httpsCode) throw new HttpsError(error.httpsCode, String(error.code), { code: String(error.code) });
+    throw new HttpsError("unavailable", "push_settings_unavailable", { code: "push_settings_unavailable" });
   }
 });
 

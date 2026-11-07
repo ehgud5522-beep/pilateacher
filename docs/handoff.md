@@ -1,5 +1,23 @@
 # 이어서 작업하기 — 최근 변경과 남은 일
 
+## 2026-11-07 — 회원 취소 → 강사 푸시 · 회원 완료 화면 (`feat/member-cancel-teacher-push`, 배포 · 병합 전)
+
+- 서버: `memberCancelLesson`(cancel) 이 트랜잭션 성공 뒤 `cancelThenNotifyTeacher`(`functions/src/teacher-cancel-push.js`)로
+  수업 강사에게 FCM 한 통. 제목 "[회원 수업 취소]", 본문 "11/8(일) 10:00 수업이 회원 요청으로 취소되었어요"(듀엣 한 명이면
+  "… 듀엣 수업에서 회원 1명이 취소했어요"), 이름 없음. 푸시가 어떻게 끝나도 취소는 성공 -- 응답에 `teacherNotice`
+  (sent · off · no_device · failed · skipped) + `teacherNoticeCode`(원본 코드)
+- 한 번만: `notificationSends/{lessonId}_{clientId}_member_cancel_{recordId}` create. 두 번째 호출은 첫 결과를 그대로
+- 스위치 `runtimeConfig/teacherPush`(off/listed/all, listed 는 강사 uid, **기본 꺼짐**). updateRuntimeConfig 키만 추가, 화면 카드 없음
+- **강사 앱 토큰 저장소는 없었다.** `teacherPush/{uid}`(memberPush 와 같은 모양, 서버만 씀) + 등록 통로 `teacherPushSettings`
+  를 서버에 먼저 둠. 강사 앱 쪽은 아직 아무것도 없다 -- 지금은 켜도 no_device. 필요한 것: 강사 앱 iOS `aps-environment`
+  entitlement · AppDelegate FCM 전달 · App ID Push, 안드로이드 `@capacitor-firebase/messaging` cap sync(google-services.json 은 있음),
+  로그인 뒤 토큰 등록 호출, 안드로이드 채널 `member_cancel`
+- 회원 앱: 취소 확인 뒤 완료 화면(초록 체크 · "수업 취소가 완료되었어요"). 아래 줄은 sent 일 때만 "담당 강사님께 취소 알림을
+  전달했어요", 그 밖은 "취소 내용은 담당 강사님 일정에 표시돼요"(오류 아님, 원인은 진단 message 에 `cancelled:no_device` 식)
+- 규칙 변경 없음 (teacherPush 는 맨 아래 전부 거부 -- 규칙 시험에 줄 추가, 에뮬레이터로는 아직 안 돌림)
+- 배포 순서(지시 뒤): Functions(memberCancelLesson · teacherPushSettings · updateRuntimeConfig) → 회원 앱 빌드. 서버만 먼저 나가도
+  예전 회원 앱은 teacherNotice 를 무시한다
+
 ## 2026-11-07 — 회원 앱 수업 취소 5차 1단계 (`feat/member-cancel`, 배포 · 병합 전)
 
 - **스위치 꺼진 채로 만든 것.** `runtimeConfig/scheduleSync.memberCancel` 칸(mode · userIds · limit · period).

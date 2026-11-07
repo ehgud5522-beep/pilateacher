@@ -215,6 +215,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "회원권 발급",
     "회원권 발급 · 같은 이름 여러 회차",
     "회원권 발급 · 같은 이름 여러 회차 · 펼침",
+    "회원권 발급 · 상품 검색",
     "회원권 발급 · 상품 관리",
     /* 복합결제 (2026-10-27). 금액 칸 넷 · 결제 합계 · 잔금이 한 화면에 선다. */
     "회원권 발급 · 복합결제",
@@ -1185,32 +1186,33 @@ const issueScreens = () => screenMarkup();
    봐야 알았다. 고른 상품이 그 회원권의 단가와 급여카테고리를 정하므로, 잘못
    고르면 원장이 틀린 채로 쌓인다 -- append-only 라 되돌릴 수 없다. */
 
-test("같은 이름을 여러 회차로 팔면 회차·금액으로 갈라 보인다", async (t) => {
+test("상품 고르기는 종류 → 구분 → 상품, 단계마다 버튼 몇 개 (2026-11-07 대표: 리스트가 너무 많다)", async (t) => {
   const markupOf = await issueScreens(t);
 
-  /* 1단계는 이름 하나당 칩 하나다. 10·20·30회가 한 칩으로 접히고, 몇 개가
-     들어 있는지를 칩이 말한다 -- 눌러 보기 전에 알 수 있어야 한다. */
-  const folded = markupOf("회원권 발급 · 같은 이름 여러 회차");
-  assert.equal((folded.match(/1:1 PT 1차 정상가/g) || []).length, 2,
-    "1:1 과 2:1 로 두 칩. 회차마다 하나씩 서지 않는다");
-  assert.match(folded, /\(3\)/, "그 이름에 상품이 셋이라는 것을 칩이 말한다");
-  assert.match(folded, /상품을 고르면 회차와 금액이 여기 섭니다/);
-  // 고르기 전에는 회차·금액이 없다. 셋 중 어느 것인지 아직 정해지지 않았다.
-  assert.doesNotMatch(folded, /10회 · 100만원/);
+  /* 처음에는 수업 종류 버튼만 선다. 상품 이름 칩을 늘어놓지 않는다. */
+  const first = markupOf("회원권 발급 · 같은 이름 여러 회차");
+  assert.match(first, /① 수업 종류/);
+  assert.match(first, /data-product-step="group"/);
+  assert.doesNotMatch(first, /data-product-step="product"/, "종류를 고르기 전에는 상품이 없다");
+  assert.doesNotMatch(first, /1:1 PT 1차 정상가/, "이름 칩을 늘어놓지 않는다");
+  assert.match(first, /수업 종류부터 골라 주세요/);
+  assert.match(first, /data-product-search/, "이름을 알면 찾는 칸");
 
-  /* 2단계는 회차 · 금액 카드다. 적은 회차가 앞이고, 급여카테고리가 아래에
-     작게 붙는다 -- 회원권 상품 화면과 같은 카드(ProductSessionCard)다. */
+  /* 종류 · 구분을 고르면 그 상품만 회차 적은 순으로. 구분이 하나뿐이면 ② 를 건너뛴다. */
   const opened = markupOf("회원권 발급 · 같은 이름 여러 회차 · 펼침");
-  const cards = ["10회 · 100만원", "20회 · 190만원", "30회 · 270만원"]
-    .map((label) => opened.indexOf(label));
-  assert.ok(cards.every((at) => at >= 0), "회차와 금액이 카드에 함께 선다");
+  assert.match(opened, /data-product-step="product"/);
+  assert.doesNotMatch(opened, /② 등록 구분/, "1:1 은 구분이 하나뿐이라 건너뛴다");
+  const cards = ["10회 · 100만원", "20회 · 190만원", "30회 · 270만원"].map((label) => opened.indexOf(label));
+  assert.ok(cards.every((at) => at >= 0), "회차와 금액이 카드에 선다");
   assert.deepEqual(cards.slice().sort((a, b) => a - b), cards, "회차가 적은 순");
-  assert.match(opened, /1:1 신규/, "급여카테고리가 카드 아래에 붙는다");
+  assert.doesNotMatch(opened, /24<!-- -->0만원|240만원/, "다른 종류(2:1) 상품은 섞이지 않는다");
+  assert.match(opened, /1:1 PT 1차 정상가/, "카드 아래에 상품 이름");
 
-  /* 이름이 같은 1:1 과 2:1 은 따로 선다. 이름만으로는 구별되지 않는데, 그
-     둘은 차감하는 회원권부터 다르다. */
-  const groups = ["1:1", "2:1"].map((label) => folded.indexOf(label));
-  assert.ok(groups.every((at) => at >= 0), "칩이 1:1 · 2:1 을 함께 적는다");
+  /* 검색은 종류와 상관없이 이름으로 바로. */
+  const search = markupOf("회원권 발급 · 상품 검색");
+  assert.match(search, /data-product-search-hits/);
+  assert.match(search, /240만원/, "2:1 도 이름이 맞으면 나온다");
+  assert.match(search, /10회 · 100만원/);
 });
 
 test("발급 화면의 [상품 관리]는 넘겨준 화면에만 선다", async (t) => {

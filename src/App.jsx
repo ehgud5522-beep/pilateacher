@@ -247,6 +247,7 @@ import {
 import {
   groupProducts, isArchivedProduct, issuableProducts, issueUnitPrice, priceLabel, productLine,
   productGroupOf, productNameChips, productTable, sessionsWarning, unusedProducts,
+  issueChoices, issueChoiceOf, searchIssuableProducts,
 } from "./features/membership/product-groups.js";
 import { productMemberRows, productUsage } from "./features/membership/product-usage.js";
 import {
@@ -17250,40 +17251,52 @@ function PassIssue({
     unitPriceWon: "", unitPriceReason: "",
   }));
 
-  /* ── 상품 고르기는 두 단계다 ────────────────────────────────────────────
-     전에는 칩 하나에 이름만 적혀 있었다. "1:1 PT 1차 정상가" 를 10·20·30회로
-     파는 센터에서는 **똑같아 보이는 칩이 셋** 서고, 어느 것이 몇 회짜리인지
-     눌러 봐야 알았다. 고른 상품이 단가와 급여카테고리를 정하므로, 잘못 고르면
-     원장이 틀린 채로 쌓인다 -- append-only 라 되돌릴 수 없다.
-
-     묶는 방법과 순서는 **회원권 상품 화면과 같은 함수**가 정한다
-     (productNameChips). 두 화면의 순서가 다르면 눈이 줄을 잃는다. */
-  const productChips = useMemo(
-    () => productNameChips(issuableProducts(products)),
-    [products],
-  );
-  const chipKeyOf = useCallback((item) => (
-    item ? `${productGroupOf(item)}|${String(item.name ?? "").trim() || "(이름 없음)"}` : ""
-  ), []);
-  const [productChipKey, setProductChipKey] = useState(initialState?.productChipKey || "");
-  /* 고른 상품이 있으면 그 상품의 묶음이 열려 있어야 한다 -- 안 그러면 고른
-     카드가 화면에 없는데 아래 요약에는 그 상품이 서 있다. */
-  const activeChipKey = productChipKey || chipKeyOf(product);
-  const activeChip = productChips.find((item) => item.key === activeChipKey) || null;
-
-  const chooseProductName = (chip) => {
-    setProductChipKey(chip.key);
-    /* 회차가 하나뿐인 상품은 여기서 끝난다. 한 번 더 누르게 하면 지금보다
-       손이 느려지고, 고를 것이 없는 자리에서 고르라고 하는 셈이다. */
-    if (chip.items.length === 1) { chooseProduct(chip.items[0]); return; }
-    /* 다른 이름으로 옮기면 고른 상품을 놓는다. 들고 있으면 보이지 않는 카드가
-       선택된 채로 남고, 그 상품의 계약 금액이 그대로 발급된다. */
-    if (!chip.items.some((item) => item.id === form.productId)) {
+  /* ── 상품 고르기: 종류 → 구분 → 상품 (2026-11-07 대표: "리스트가 너무 많아서 뭘
+     눌러야 할지 모름") ──────────────────────────────────────────────────
+     전에는 이름 칩 40여 개가 한 화면에 섰다. 고르는 사람이 먼저 정하는 것은 이름이
+     아니라 **수업 종류**와 **등록 구분**이고, 고른 상품이 정하는 것(급여카테고리)도
+     그 둘이다. 단계마다 버튼이 몇 개뿐이다. 이름을 알면 검색 한 칸으로 바로 간다.
+     묶는 방법은 features/membership/product-groups.js 의 issueChoices. */
+  const productChoices = useMemo(() => issueChoices(products), [products]);
+  const [pickGroup, setPickGroup] = useState(initialState?.pickGroup || "");
+  const [pickCategory, setPickCategory] = useState(initialState?.pickCategory ?? null);
+  const [productQuery, setProductQuery] = useState(initialState?.productQuery || "");
+  /* 이미 고른 상품이 있으면 그 단계가 열려 있어야 한다 -- 안 그러면 고른 상품이
+     화면에 없는데 아래 요약에는 서 있다. */
+  const pickedFrom = issueChoiceOf(product);
+  const activeGroupKey = pickGroup || pickedFrom.group;
+  const activeGroup = productChoices.find((group) => group.key === activeGroupKey) || null;
+  /* 구분이 하나뿐인 종류는 2단계를 건너뛴다 -- 고를 것이 없는 자리에서 고르라고 하지 않는다. */
+  const activeCategoryKey = pickCategory ?? (activeGroup?.categories.length === 1
+    ? activeGroup.categories[0].key
+    : activeGroup?.key === pickedFrom.group ? pickedFrom.category : null);
+  const activeCategory = activeGroup?.categories.find((entry) => entry.key === activeCategoryKey) || null;
+  const searchHits = useMemo(() => searchIssuableProducts(products, productQuery), [products, productQuery]);
+  /* 보이지 않게 된 상품은 놓는다 -- 들고 있으면 보이지 않는 카드가 선택된 채 남고,
+     그 상품의 계약 금액이 그대로 발급된다. */
+  const dropProductUnless = (keep) => {
+    if (product && !keep(product)) {
       setForm((current) => ({
         ...current, productId: "", totalSessions: "", contractPriceManwon: "",
         unitPriceWon: "", unitPriceReason: "",
       }));
     }
+  };
+  const chooseGroup = (key) => {
+    setPickGroup(key); setPickCategory(null); setProductQuery("");
+    dropProductUnless((item) => productGroupOf(item) === key);
+  };
+  const chooseCategory = (key) => {
+    setPickCategory(key); setProductQuery("");
+    dropProductUnless((item) => productGroupOf(item) === activeGroupKey && String(item.payCategory || "") === key);
+    const only = activeGroup?.categories.find((entry) => entry.key === key)?.items;
+    /* 그 구분에 상품이 하나뿐이면 바로 고른다 -- 한 번 더 누르게 하지 않는다. */
+    if (only?.length === 1) chooseProduct(only[0]);
+  };
+  const chooseFromSearch = (item) => {
+    chooseProduct(item);
+    const at = issueChoiceOf(item);
+    setPickGroup(at.group); setPickCategory(at.category); setProductQuery("");
   };
 
   /* 듀엣 판정은 전부 features/passes/duet-issue.js 에 있다. 화면은 그리기만
@@ -17629,61 +17642,87 @@ function PassIssue({
           ) : null}
 
           <IssueField label="상품">
-            {productChips.length === 0
+            {productChoices.length === 0
               ? <p style={{ fontSize: TYPE.caption, color: SUB }}>운영중인 상품이 없습니다. 회원권 상품에서 먼저 추가해 주세요.</p>
               : (
                 <>
-                  {/* ── 1단계: 상품 이름 ──────────────────────────────────
-                      이름 하나당 칩 하나다. 1:1 · 2:1 을 함께 적는 것은 이름이
-                      같은 두 상품이 있을 수 있기 때문이고, 그 둘은 차감하는
-                      회원권부터 다르다.
+                  {/* ── 상품 고르기: 검색 · 종류 · 구분 · 상품 (2026-11-07) ────────────
+                      단계마다 버튼이 몇 개뿐이다. 삭제한 상품은 처음부터 없다
+                      (issueChoices 가 issuableProducts 로 거른다). */}
+                  <input value={productQuery} onChange={(event) => setProductQuery(event.target.value)}
+                    data-product-search placeholder="상품 이름으로 찾기 (예: 렛미인, 1차 정상가)"
+                    className="h-10 w-full px-3" style={{ borderRadius: 10, border: `1px solid ${LINE}`, backgroundColor: CARD, color: INK, fontSize: TYPE.caption }} />
 
-                      삭제한 상품으로는 새로 발급하지 않는다 -- listProducts 가
-                      이미 거르지만 여기서 한 번 더 막는다 (issuableProducts). */}
-                  <div className="flex flex-wrap gap-2">
-                    {productChips.map((chip) => (
-                      <button key={chip.key} type="button" onClick={() => chooseProductName(chip)}
-                        className="h-9 px-3 font-bold" style={{
-                          borderRadius: 999, fontSize: TYPE.caption,
-                          backgroundColor: activeChipKey === chip.key ? TINT : CANVAS,
-                          color: activeChipKey === chip.key ? BRAND_D : SUB,
-                        }}>
-                        {chip.chipPrefix ? (
-                          <><span style={{ fontWeight: 400 }}>{chip.chipPrefix}</span>{" "}</>
-                        ) : null}
-                        {chip.name}
-                        {chip.items.length > 1 ? (
-                          <span style={{ fontWeight: 400 }}>{` (${chip.items.length})`}</span>
-                        ) : null}
-                      </button>
-                    ))}
-                  </div>
-
-                  {/* ── 2단계: 회차 · 금액 ────────────────────────────────
-                      상품 화면과 **같은 카드**다 (ProductSessionCard). 회차는
-                      적은 순이고, 그 순서는 productNameChips 가 정한다. */}
-                  {activeChip ? (
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      {activeChip.items.map((item) => (
-                        <ProductSessionCard key={item.id} product={item}
-                          selected={form.productId === item.id}
-                          onClick={() => chooseProduct(item)} />
-                      ))}
+                  {productQuery.trim() ? (
+                    <div className="mt-2" data-product-search-hits>
+                      {searchHits.length === 0
+                        ? <p style={{ fontSize: TYPE.caption, color: SUB }}>"{productQuery.trim()}" 이(가) 들어간 상품이 없어요.</p>
+                        : (
+                          <div className="flex flex-wrap gap-2">
+                            {searchHits.map((item) => (
+                              <ProductSessionCard key={item.id} product={item} note={String(item.name || "")}
+                                selected={form.productId === item.id} onClick={() => chooseFromSearch(item)} />
+                            ))}
+                          </div>
+                        )}
                     </div>
                   ) : (
-                    <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>
-                      상품을 고르면 회차와 금액이 여기 섭니다.
-                    </p>
-                  )}
+                    <>
+                      <p className="mt-3" style={{ fontSize: TYPE.caption, color: INK, fontWeight: 600 }}>① 수업 종류</p>
+                      <div className="mt-1.5 grid grid-cols-2 gap-2 sm:grid-cols-4" data-product-step="group">
+                        {productChoices.map((group) => (
+                          <button key={group.key} type="button" onClick={() => chooseGroup(group.key)}
+                            aria-pressed={activeGroupKey === group.key}
+                            className="h-12 font-extrabold" style={{
+                              borderRadius: 10, fontSize: TYPE.body,
+                              backgroundColor: activeGroupKey === group.key ? BRAND : CANVAS,
+                              color: activeGroupKey === group.key ? "#fff" : INK,
+                            }}>
+                            {group.label}
+                          </button>
+                        ))}
+                      </div>
 
-                  {/* 같은 이름인데 급여카테고리가 갈리면 급여가 회차마다
-                      달라진다. 고르기 전에 말해야 한다 -- 발급은 되돌릴 수
-                      없고, 상품 화면이 쓰는 그 판정이다 (mixedCategories). */}
-                  {activeChip?.mixed ? (
-                    <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: WARN }}>
-                      이 상품은 회차마다 급여카테고리가 다릅니다. 카드 아래 값을 확인해 주세요.
-                    </p>
-                  ) : null}
+                      {activeGroup && activeGroup.categories.length > 1 ? (
+                        <>
+                          <p className="mt-3" style={{ fontSize: TYPE.caption, color: INK, fontWeight: 600 }}>② 등록 구분</p>
+                          <div className="mt-1.5 flex flex-wrap gap-2" data-product-step="category">
+                            {activeGroup.categories.map((entry) => (
+                              <button key={entry.key} type="button" onClick={() => chooseCategory(entry.key)}
+                                aria-pressed={activeCategoryKey === entry.key}
+                                className="h-10 px-4 font-bold" style={{
+                                  borderRadius: 999, fontSize: TYPE.caption,
+                                  backgroundColor: activeCategoryKey === entry.key ? TINT : CANVAS,
+                                  color: activeCategoryKey === entry.key ? BRAND_D : INK,
+                                  border: `1px solid ${activeCategoryKey === entry.key ? RING : "transparent"}`,
+                                }}>
+                                {entry.label}
+                              </button>
+                            ))}
+                          </div>
+                        </>
+                      ) : null}
+
+                      {activeCategory ? (
+                        <>
+                          <p className="mt-3" style={{ fontSize: TYPE.caption, color: INK, fontWeight: 600 }}>
+                            {activeGroup.categories.length > 1 ? "③" : "②"} 상품 <span style={{ color: SUB, fontWeight: 400 }}>{activeCategory.count}개</span>
+                          </p>
+                          {/* 회차 · 금액이 크게, 상품 이름이 아래에 작게. 회차가 적은 순이다. */}
+                          <div className="mt-1.5 flex flex-wrap gap-2" data-product-step="product">
+                            {activeCategory.items.map((item) => (
+                              <ProductSessionCard key={item.id} product={item} note={String(item.name || "")}
+                                selected={form.productId === item.id} onClick={() => chooseProduct(item)} />
+                            ))}
+                          </div>
+                        </>
+                      ) : (
+                        <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>
+                          {activeGroup ? "등록 구분을 고르면 상품이 여기 섭니다." : "수업 종류부터 골라 주세요."}
+                        </p>
+                      )}
+                    </>
+                  )}
                 </>
               )}
           </IssueField>
@@ -28459,7 +28498,11 @@ export function createAppScreenSmokeCases() {
        작게 붙는다 -- 회원권 상품 화면과 같은 카드다. */
     { name: "회원권 발급 · 같은 이름 여러 회차 · 펼침", element: passIssue(smokeOwner, {
       ...smokeIssueBase, products: smokeRepeatedProducts,
-      productChipKey: "solo|1:1 PT 1차 정상가",
+      pickGroup: "solo", pickCategory: "pt_1_1_new",
+    }) },
+    /* 이름을 알면 검색 한 칸으로 바로 간다 (2026-11-07). */
+    { name: "회원권 발급 · 상품 검색", element: passIssue(smokeOwner, {
+      ...smokeIssueBase, products: smokeRepeatedProducts, productQuery: "1차",
     }) },
     /* 대표·총괄만. 고를 상품이 없거나 금액이 틀렸을 때 가는 길이다 -- 메뉴로
        돌아 나가면 적어 둔 회원과 금액이 날아간다. */

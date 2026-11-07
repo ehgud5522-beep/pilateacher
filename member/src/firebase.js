@@ -163,6 +163,17 @@ export async function deleteMemberAccount() {
 }
 
 /**
+ * 수업 알림 설정 · 기기 토큰 (2026-11-07). 서버만 쓴다 -- 회원 앱은 Firestore 에
+ * 쓰지 않는다. action: get | save | register | unregister.
+ * 돌려주는 것: { prefs: { lesson30h, lesson30m }, devices }.
+ */
+export async function memberPushSettings(payload) {
+  const call = httpsCallable(functions, "memberPushSettings");
+  const response = await call(payload || { action: "get" });
+  return response?.data || null;
+}
+
+/**
  * 수업 취소 (2026-11-07, 5차 1단계). action "status" 는 쓰지 않고 버튼 · 마감 · 남은
  * 횟수만 묻는다. "cancel" 이 취소한다. 판정은 전부 서버가 한다 -- 마감도 서버 시각.
  * 보내는 것은 어느 수업인지뿐이고, 본인 확인은 서버가 토큰의 uid 로 한다.

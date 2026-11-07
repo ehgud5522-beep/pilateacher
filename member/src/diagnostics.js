@@ -34,6 +34,8 @@ export const MEMBER_FEATURE = Object.freeze({
   OFFLINE_CACHE: "offline_cache",
   DELETE_ACCOUNT: "delete_account",
   SIGN_OUT: "sign_out",
+  /* 수업 알림 (2026-11-07). 토큰 값은 적지 않는다 -- 있었는지만. */
+  PUSH: "member_push",
   LESSON_CANCEL: "member_lesson_cancel",
 });
 

@@ -6017,6 +6017,25 @@ describe("회원 이름 수정 · 보관 기록은 회원을 등록하는 사람
   });
 });
 
+/* ── 회원 수업 알림 (2026-11-07, 지시서 2차) ─────────────────────────────────
+   기기 토큰 · 알림 설정(memberPush) · 보낸 기록(notificationSends) · 훑은 자리
+   (notificationState) · 스위치(runtimeConfig/memberPush) 는 **서버만** 읽고 쓴다.
+   회원 앱은 memberPushSettings 통로로만 간다. 규칙에 문을 내지 않았다 -- 맨 아래의
+   "전부 거부" 가 막는다. 그 사실을 여기서 고정한다. */
+describe("회원 수업 알림 문서는 서버만", () => {
+  test("회원 · 대표 · 강사 누구도 앱에서 읽거나 쓰지 못한다", async () => {
+    for (const userId of [users.member, users.owner, users.instructor]) {
+      const db = dbFor(userId);
+      await assertFails(getDoc(doc(db, "memberPush", userId)), `${userId} memberPush 읽기`);
+      await assertFails(setDoc(doc(db, "memberPush", userId), { prefs: { lesson30h: false } }), `${userId} memberPush 쓰기`);
+      await assertFails(getDoc(doc(db, "notificationSends", "L1_c1_lesson30m")), `${userId} 보낸 기록 읽기`);
+      await assertFails(setDoc(doc(db, "notificationSends", "L1_c1_lesson30m"), { status: "sent" }), `${userId} 보낸 기록 쓰기`);
+      await assertFails(setDoc(doc(db, "notificationState", "memberPush"), { sweptUntil: 1 }), `${userId} 훑은 자리 쓰기`);
+      await assertFails(setDoc(doc(db, "runtimeConfig", "memberPush"), { mode: "all" }), `${userId} 스위치 쓰기`);
+    }
+  });
+});
+
 /* ── 회원 앱 수업 취소 (2026-11-07, 5차 1단계) ─────────────────────────────
 
    취소 · 추가 부여는 서버 함수만 쓴다 (functions/src/member-cancel.js). 규칙은 세

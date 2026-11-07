@@ -32,6 +32,7 @@ const {
 } = require("./service-session-fix");
 const { isPassAdmin, runHandover, runSessionUp } = require("./pass-admin");
 const { handleRuntimeConfigRequest } = require("./runtime-config-admin");
+const { handleMemberPushSettings, runMemberPush } = require("./member-push");
 const { handleNoticeRequest } = require("./notice-admin");
 const { grantMemberCancel, memberCancelLesson, memberCancelStatus } = require("./member-cancel");
 const { monthlyPayFor, planAccountSwap, runAccountSwap } = require("./instructor-swap");
@@ -1281,5 +1282,57 @@ exports.rebuildInstructorIdsNightly = onSchedule({
         errorCode: error?.code || "unknown", message: error?.message || "",
       });
     }
+  }
+});
+
+/* ── 회원 수업 알림 (2026-11-07 대표, 지시서 2차 기본 기능) ─────────────────
+   5분마다 30시간 전 · 30분 전 알림을 보낸다. 스위치(runtimeConfig/memberPush)가
+   꺼져 있으면 칸만 앞으로 민다. 근거와 한계는 member-push.js 머리말에 있다.
+   로그에는 개수만 남긴다 -- 이름 · 번호 · 토큰 없음 (§7). */
+exports.sendMemberLessonReminders = onSchedule({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  schedule: "every 5 minutes",
+  timeZone: "Asia/Seoul",
+  memory: "256MiB",
+  timeoutSeconds: 240,
+}, async () => {
+  try {
+    const { getMessaging } = require("firebase-admin/messaging");
+    const tally = await runMemberPush(firestore, getMessaging(), {
+      log: logger, serverTimestamp: () => FieldValue.serverTimestamp(),
+    });
+    /* 훑은 구간(window)은 로그에 싣지 않는다 -- 개수만. */
+    const counts = { ...tally };
+    delete counts.window;
+    if (tally.switch !== "off" || tally.planned > 0) {
+      logger.info("member_push_run", { feature: "member_push", stage: "run", ...counts });
+    }
+  } catch (error) {
+    logger.error("member_push_run_failed", {
+      feature: "member_push", stage: "run", errorDomain: "firestore",
+      errorCode: String(error?.code || "unknown"), message: String(error?.message || "").slice(0, 300),
+    });
+  }
+});
+
+/* 회원 앱의 알림 설정 · 기기 토큰. 회원 계정만 (memberLinks 가 있는 계정). 토큰과
+   설정은 서버만 쓴다 -- 회원 앱에 Firestore 쓰기 문을 새로 내지 않는다. */
+exports.memberPushSettings = onCall(MEMBER_LINK_OPTIONS, async (request) => {
+  const action = String(request?.data?.action || "").trim();
+  try {
+    return await handleMemberPushSettings(firestore, {
+      callerUid: request?.auth?.uid,
+      action,
+      token: request?.data?.token,
+      platform: request?.data?.platform,
+      prefs: request?.data?.prefs,
+    });
+  } catch (error) {
+    logger.warn("member_push_settings_failed", {
+      feature: "member_push", stage: action || "unknown", errorDomain: "member_push",
+      errorCode: String(error?.code || error?.message || "unknown"),
+    });
+    if (error?.httpsCode) throw new HttpsError(error.httpsCode, String(error.code), { code: String(error.code) });
+    throw new HttpsError("unavailable", "push_settings_unavailable", { code: "push_settings_unavailable" });
   }
 });

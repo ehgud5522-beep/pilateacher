@@ -17,9 +17,13 @@ import { TYPE } from "../../src/features/ui/type-scale.js";
 import { BRAND_MARK } from "./brand.js";
 import { classifyPhoneAuthError } from "./auth-errors.js";
 import {
-  callMemberCancel, deleteMemberAccount, linkMemberAccount, resetRecaptcha, signOutMember, startPhoneSignIn,
+  callMemberCancel, deleteMemberAccount, linkMemberAccount, memberPushSettings, resetRecaptcha, signOutMember, startPhoneSignIn,
   watchAuth, db,
 } from "./firebase.js";
+import {
+  DEFAULT_PREFS, PUSH_PERMISSION, PUSH_SUPPORT, forgetPushDevice, normalizePrefs, permissionGuide,
+  platformOf, pushPlugin, registerDevice, tapTarget,
+} from "./push.js";
 import { wantsAccountDeletion } from "./delete-account.js";
 import { LINK_RESULT, linkResultScreen, needsLinkCall } from "./link-result.js";
 import {
@@ -330,6 +334,13 @@ function Member({ userId, initialTab = "home" }) {
   const [tab, setTab] = useState(initialTab);
   const [place, setPlace] = useState(0);
   const [slow, setSlow] = useState(false);
+  /* 수업 알림 (2026-11-07). 앱에서만 -- 웹은 "앱에서만" 안내로 끝난다. */
+  const plugin = useMemo(() => pushPlugin(), []);
+  const [push, setPush] = useState(() => ({
+    support: plugin ? PUSH_SUPPORT.NATIVE : PUSH_SUPPORT.WEB,
+    permission: PUSH_PERMISSION.UNKNOWN, prefs: DEFAULT_PREFS, saving: "", errorCode: "",
+  }));
+  const recordPush = useCallback((entry) => recordDiagnostic({ feature: MEMBER_FEATURE.PUSH, ...entry }), []);
   /* 수업 상세 (2026-11-07, 수업 취소). 취소한 수업은 서버가 회원 데이터를 다시 만들기
      전(몇 초)에도 목록에서 바로 뺀다 -- 방금 취소한 수업이 그대로 보이면 회원은
      취소가 안 된 줄 안다. */
@@ -411,6 +422,61 @@ function Member({ userId, initialTab = "home" }) {
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [load]);
 
+  /* 알림: 회원 화면이 열리면 한 번 -- 권한을 묻고 토큰을 넘기고 설정을 읽는다.
+     묻는 것은 처음 한 번뿐이다(거절하면 OS 가 다시 묻지 않는다). 실패해도 화면은 그대로다. */
+  const ready = state.stage === "ready" && !state.offlineAt;
+  useEffect(() => {
+    if (!ready) return undefined;
+    let alive = true;
+    (async () => {
+      if (plugin) {
+        const outcome = await registerDevice({
+          plugin, platform: platformOf(), record: recordPush,
+          register: ({ token, platform }) => memberPushSettings({ action: "register", token, platform }),
+        });
+        if (alive) setPush((current) => ({ ...current, permission: outcome.permission, errorCode: outcome.errorCode || "" }));
+      }
+      try {
+        const result = await memberPushSettings({ action: "get" });
+        if (alive) setPush((current) => ({ ...current, prefs: normalizePrefs(result?.prefs) }));
+      } catch (error) {
+        recordPush({ stage: "read_prefs", errorDomain: "functions", errorCode: String(error?.details?.code || error?.code || "unknown"), message: error?.message });
+      }
+    })();
+    return () => { alive = false; };
+  }, [ready, plugin, recordPush]);
+
+  /* 알림을 누르면 홈(달력)으로. 수업 하나를 여는 화면은 아직 없다. */
+  useEffect(() => {
+    if (!plugin?.addListener) return undefined;
+    let handle = null;
+    Promise.resolve(plugin.addListener("notificationActionPerformed", (event) => setTab(tapTarget(event?.notification))))
+      .then((value) => { handle = value; }).catch(() => {});
+    return () => { handle?.remove?.(); };
+  }, [plugin]);
+
+  const savePushPref = useCallback(async (kind, on) => {
+    setPush((current) => ({ ...current, saving: kind, errorCode: "", prefs: { ...current.prefs, [kind]: on } }));
+    try {
+      const result = await memberPushSettings({ action: "save", prefs: { [kind]: on } });
+      setPush((current) => ({ ...current, saving: "", prefs: normalizePrefs(result?.prefs) }));
+    } catch (error) {
+      const code = String(error?.details?.code || error?.code || "unknown");
+      recordPush({ stage: "save_prefs", errorDomain: "functions", errorCode: code, message: error?.message });
+      /* 못 저장했으면 화면을 원래대로 -- 켜진 것처럼 보이는데 안 오는 것이 더 나쁘다. */
+      setPush((current) => ({ ...current, saving: "", errorCode: code, prefs: { ...current.prefs, [kind]: !on } }));
+    }
+  }, [recordPush]);
+
+  const askPushAgain = useCallback(async () => {
+    if (!plugin) return;
+    const outcome = await registerDevice({
+      plugin, platform: platformOf(), record: recordPush,
+      register: ({ token, platform }) => memberPushSettings({ action: "register", token, platform }),
+    });
+    setPush((current) => ({ ...current, permission: outcome.permission, errorCode: outcome.errorCode || "" }));
+  }, [plugin, recordPush]);
+
   /* 읽기도 영영 안 끝날 수 있다. Firestore 호출에는 시간제한이 없다. */
   useEffect(() => {
     if (state.stage !== "loading") return undefined;
@@ -426,17 +492,22 @@ function Member({ userId, initialTab = "home" }) {
    * 화면이 한 순간이라도 남아 있으면 안 된다.
    */
   const removeAccount = useCallback(async () => {
+    /* 알림 토큰부터 뗀다. 계정이 지워진 뒤에는 이 통로를 부를 수 없다. */
+    await forgetPushDevice({ plugin, record: recordPush, unregister: ({ token }) => memberPushSettings({ action: "unregister", token }) });
     await deleteMemberAccount();
     forgetDevice();
     await signOutMember({ quiet: true });
     window.location.reload();
-  }, []);
+  }, [plugin, recordPush]);
 
   /* 로그아웃 → onAuthStateChanged 가 null → App 이 로그인 화면을 그린다.
      여기서 화면을 직접 옮기지 않는다 -- 상태가 하나여야 어긋나지 않는다. */
   const signOutNow = async () => {
     if (!window.confirm("로그아웃할까요?")) return;
     try {
+      /* 이 기기로 다른 사람이 들어올 수 있다 -- 알림 토큰을 먼저 떼어 낸다. 못 떼도
+         로그아웃은 막지 않는다 (서버가 다음 발송 때 죽은 토큰을 지운다). */
+      await forgetPushDevice({ plugin, record: recordPush, unregister: ({ token }) => memberPushSettings({ action: "unregister", token }) });
       await signOutMember();
       forgetDevice();
     } catch (error) {
@@ -493,7 +564,11 @@ function Member({ userId, initialTab = "home" }) {
     /* 오프라인 사본을 보는 중에는 계정 삭제를 내지 않는다. 누르면 실패할
        뿐이고, 되돌릴 수 없는 버튼이 실패하는 것은 회원을 불안하게 한다. */
     body = <MyPage view={current.view} onSignOut={signOutNow}
-      onDeleteAccount={state.offlineAt ? undefined : removeAccount} />;
+      onDeleteAccount={state.offlineAt ? undefined : removeAccount}
+      push={{
+        ...push, guide: permissionGuide(platformOf()),
+        onToggle: state.offlineAt ? undefined : savePushPref, onEnable: askPushAgain,
+      }} />;
   }
   else {
     const schedule = Array.isArray(current.view.schedule)

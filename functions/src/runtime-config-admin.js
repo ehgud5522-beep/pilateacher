@@ -128,6 +128,9 @@ const WRITERS = Object.freeze({
   /* 센터 회원 명단 실시간 (2026-11-04, 2단계). 모양은 같다. 문서는 따로 두지
      않는다 -- 아래 FIELD_TARGETS 참고. */
   rosterRealtime: scheduleSyncPayload,
+  /* 회원 수업 알림 (2026-11-07, 지시서 2차). listed 의 userIds 는 회원 앱 계정 uid 다.
+     읽는 것은 서버(sendMemberLessonReminders)뿐이라 규칙에 읽기 문이 필요 없다. */
+  memberPush: scheduleSyncPayload,
   /* 회원 앱 수업 취소 (5차 1단계). scheduleSync 문서의 memberCancel 칸 -- 아래 참고. */
   memberCancel: memberCancelPayload,
 });

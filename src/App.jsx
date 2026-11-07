@@ -41,7 +41,7 @@ import {
   fbLoadAppUpdateConfig,
   fbSwapInstructorAccount,
   fbConfirmInstructorNames,
-  fbManageNotice, fbUpdateRuntimeConfig,
+  fbGrantMemberCancel, fbManageNotice, fbUpdateRuntimeConfig,
   fbHandoverPass,
   fbSessionUpPass,
   fbResetMigratedData,
@@ -146,9 +146,16 @@ import {
 import { publishPrivateItems, subscribePrivateItems } from "./data/repositories/private-schedule-repository.js";
 import { DUPLICATE_SETTLEMENT_CODE, findDuplicateSettlement, settlementTime } from "./features/schedule/settlement-duplicate.js";
 import { scheduleChanges } from "./features/schedule/schedule-publish.js";
-import { applyPublishedRevisions, mergeFormEdit, mergeServerLessons, reapplyChanges, syncWindow } from "./features/schedule/schedule-sync.js";
+import { applyPublishedRevisions, mergeFormEdit, mergeServerLessons, reapplyChanges, syncWindow, upcomingMemberCancels } from "./features/schedule/schedule-sync.js";
 import { recordSyncReads, syncReadsByDay } from "./features/schedule/sync-read-counter.js";
 import { SCHEDULE_SYNC_MODE, readScheduleSyncConfig, scheduleSyncEnabledFor } from "./features/schedule/sync-switch.js";
+import {
+  DEFAULT_LIMIT_HINT as MEMBER_CANCEL_DEFAULT_LIMIT_HINT, LIMIT_RANGE as MEMBER_CANCEL_LIMIT_RANGE,
+  MEMBER_CANCEL_PERIOD, bucketKey as memberCancelBucketKey, grantFailureMessage, grantsByGranter,
+  listMemberCancelGrants, memberCancelEnabledFor, monthKey as memberCancelMonthKey, readMemberCancelConfig,
+  readMemberCancelLedger, remainingIn as memberCancelRemainingIn,
+  GRANT_LIMITS as MEMBER_CANCEL_GRANT_LIMITS, activePassIdFor as memberCancelActivePassId,
+} from "./data/repositories/member-cancel-repository.js";
 import { WEB_VERSION_CHECK_MS, fetchDeployedWebBuild, isNewerWebBuild, staleTabMessage } from "./features/ui/web-version.js";
 import {
   QUEUE_CUTOFF, QUEUE_TAB, QUEUE_TAB_LABEL, lessonIdsToCheck, mergeServerCache, organizeLessonQueue,
@@ -3423,7 +3430,7 @@ function SchedMemberNote({ lessonId, clientId, settled, onRead, onSave, onToast 
   );
 }
 
-function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onCareGrade, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset, quickAddRequest, onConsumeQuickAdd, openLessonId, onConsumeOpenLesson, onOpenMember, onAddMember, onOpenAttendance, organizationMode = false, rateOf, careOptionsOf, onSettleLesson, onUnsettleLesson, onReadMemberNote, onSaveMemberNote, canUnsettle = false, payCard = null,
+function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onCareGrade, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset, quickAddRequest, onConsumeQuickAdd, openLessonId, onConsumeOpenLesson, onOpenMember, onAddMember, onOpenAttendance, organizationMode = false, rateOf, careOptionsOf, onSettleLesson, onUnsettleLesson, onReadMemberNote, onSaveMemberNote, canUnsettle = false, payCard = null, memberCancelOn = false,
   /* 큐 정리용 서버 상태 읽기 (2026-11-07, lesson-queue.js). 센터 소속일 때만 넘어온다. */
   readQueueLessonStates = null }) {
   const initialDisplay = useMemo(() => {
@@ -3623,6 +3630,15 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
   const unsettledLessons = useMemo(() => (
     organizationMode ? db.schedule.filter((item) => needsSettlement(item, { now: new Date() })) : []
   ), [organizationMode, db.schedule]);
+  const memberCancelCount = useMemo(() => (memberCancelOn ? upcomingMemberCancels(db.schedule) : 0), [memberCancelOn, db.schedule]);
+  const nextMemberCancelled = useMemo(() => {
+    if (!memberCancelOn || !memberCancelCount) return null;
+    const today = todayISO();
+    return [...db.schedule]
+      .filter((entry) => String(entry?.date || "") >= today
+        && attendeesOf(entry).some((attendee) => attendee?.memberCancelledAt && attendee?.status === "cancel"))
+      .sort((left, right) => `${left.date} ${left.start}`.localeCompare(`${right.date} ${right.start}`))[0] || null;
+  }, [memberCancelOn, memberCancelCount, db.schedule]);
   const taskQueue = useMemo(() => [
     ...unsettledLessons.map((lesson) => ({
       key: `settle|${lesson.id}`,
@@ -3769,6 +3785,17 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
 
       {/* ─── 하단 고정 업무 요약 ─── */}
       {db.members.length > 0 && db.schedule.length > 0 && <div className="shrink-0" style={{ padding: "6px 12px 8px", backgroundColor: PAGE }}>
+        {/* 회원 앱에서 회원이 직접 취소한 수업 (2026-11-07, 5차 1단계). 기능이 켜진 강사만,
+            오늘부터 앞으로의 것만 센다 (schedule-sync.js 의 upcomingMemberCancels). 누르면
+            가장 가까운 그 수업을 연다. */}
+        {memberCancelOn && memberCancelCount > 0 ? (
+          <button type="button" data-member-cancel-count onClick={(e) => { if (nextMemberCancelled) { scheduleTriggerRef.current = e.currentTarget; setEditing(nextMemberCancelled); } }}
+            className="mb-1.5 flex h-10 w-full items-center gap-2 rounded-xl px-3 text-left"
+            style={{ backgroundColor: WARN_S, border: `1px solid ${LINE}` }}>
+            <span className="min-w-0 flex-1 truncate text-sm font-extrabold" style={{ color: INK }}>회원 취소 {memberCancelCount}건</span>
+            <span className="shrink-0 text-xs font-extrabold" style={{ color: PRIMARY }}>보기</span>
+          </button>
+        ) : null}
         {/* 첫 화면은 "오늘 미처리 N건" 하나로 말한다 (2026-11-07). 지난 것은 아래 줄에 수만. */}
         <button data-queue-summary onClick={(e) => { if (organizedQueue.total) { queueTriggerRef.current = e.currentTarget; setQueueOpen(true); } }} disabled={!organizedQueue.total}
           className="flex h-14 w-full items-center gap-3 rounded-xl px-3 text-left disabled:opacity-80"
@@ -19858,6 +19885,87 @@ function ClientPassRow({
   );
 }
 
+/**
+ * 회원 앱 취소 횟수 — 남은 횟수와 "취소 횟수 추가" (2026-11-07, 5차 1단계).
+ * 대표 · 총괄매니저, 그 밖에는 담당 강사만 버튼이 보인다. 서버(grantMemberCancel)가 소속 ·
+ * 회원 문서로 다시 가른다 -- 버튼을 숨기는 것은 안내이고 막는 것은 서버다.
+ * 기능이 꺼져 있으면(설정 없음 · 끔) 아무것도 그리지 않는다.
+ */
+function MemberCancelGrant({ organization, client, passes = [], currentUserId = "", config, onToast }) {
+  const settings = readMemberCancelConfig(config?.memberCancel);
+  const organizationId = organization?.organizationId || "";
+  const clientId = String(client?.id || "");
+  const on = !organization?.isLegacy && settings.configured && settings.mode !== "off" && Boolean(organizationId && clientId);
+  const assigned = (Array.isArray(client?.instructorIds) ? client.instructorIds : []).includes(currentUserId)
+    || passes.some((pass) => pass?.instructorId === currentUserId && pass?.status === "active");
+  const canGrant = isOwnerLevelRole(organization?.role) || assigned;
+  const [ledger, setLedger] = useState(undefined);
+  const [readError, setReadError] = useState("");
+  const [open, setOpen] = useState(false);
+  const [amount, setAmount] = useState(1);
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [revision, setRevision] = useState(0);
+  useEffect(() => {
+    if (!on) return undefined;
+    let alive = true;
+    readMemberCancelLedger(organizationId, clientId)
+      .then((found) => { if (alive) { setLedger(found); setReadError(""); } })
+      .catch((thrown) => { if (alive) setReadError(`남은 취소 횟수를 읽지 못했어요 (코드 ${thrown?.code || "unknown"})`); });
+    return () => { alive = false; };
+  }, [on, organizationId, clientId, revision]);
+  if (!on) return null;
+  const bucket = memberCancelBucketKey({ period: settings.period, at: new Date(), passId: memberCancelActivePassId(passes, clientId) });
+  const remaining = bucket && ledger !== undefined ? memberCancelRemainingIn(ledger, bucket, settings.limit) : null;
+  const scope = settings.period === MEMBER_CANCEL_PERIOD.PASS ? "이 회원권" : "이번 달";
+  const submit = async () => {
+    if (busy) return;
+    setBusy(true); setError("");
+    try {
+      const result = await fbGrantMemberCancel({ organizationId, clientId, amount: Number(amount), reason });
+      onToast?.({ ok: true, msg: `취소 횟수 ${amount}회를 더했습니다 (남은 ${result?.remaining ?? "-"}회)` });
+      setOpen(false); setReason(""); setAmount(1); setRevision((value) => value + 1);
+    } catch (thrown) {
+      setError(grantFailureMessage(thrown));
+    } finally { setBusy(false); }
+  };
+  return (
+    <div className="mt-1.5" data-member-cancel-grant>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <span style={{ fontSize: TYPE.caption, color: SUB }}>
+          {readError || (remaining === null ? (bucket ? "앱 취소 횟수 읽는 중…" : "앱 취소 · 사용 중인 회원권 없음") : `앱 취소 ${scope} 남은 ${remaining}회`)}
+        </span>
+        {canGrant && !open ? (
+          <button type="button" onClick={() => { setOpen(true); setError(""); }} className="font-bold"
+            style={{ fontSize: TYPE.caption, color: BRAND_D }}>취소 횟수 추가</button>
+        ) : null}
+      </div>
+      {open ? (
+        <div className="mt-2 space-y-2" style={{ padding: 10, borderRadius: 10, backgroundColor: CANVAS }}>
+          <div className="flex items-center gap-2">
+            <span style={{ fontSize: TYPE.caption, color: INK, minWidth: 40 }}>횟수</span>
+            <select value={amount} onChange={(event) => setAmount(Number(event.target.value))} className="h-9 px-2"
+              style={{ borderRadius: 8, border: `1px solid ${LINE}`, backgroundColor: CARD, color: INK }}>
+              {Array.from({ length: MEMBER_CANCEL_GRANT_LIMITS.maxAmount }, (_, index) => index + 1).map((value) => <option key={value} value={value}>{value}회</option>)}
+            </select>
+          </div>
+          <input value={reason} onChange={(event) => setReason(event.target.value)} maxLength={MEMBER_CANCEL_GRANT_LIMITS.maxReason}
+            placeholder="사유 (필수, 예: 병원 진료)" className="h-10 w-full px-2"
+            style={{ borderRadius: 8, border: `1px solid ${LINE}`, backgroundColor: CARD, color: INK, fontSize: TYPE.caption }} />
+          <div className="flex gap-2">
+            <button type="button" onClick={() => setOpen(false)} disabled={busy} className="h-10 flex-1 font-bold"
+              style={{ borderRadius: 8, backgroundColor: CARD, color: SUB, fontSize: TYPE.caption }}>그만두기</button>
+            <button type="button" onClick={submit} disabled={busy || !reason.trim()} className="h-10 flex-1 font-bold text-white disabled:opacity-50"
+              style={{ borderRadius: 8, backgroundColor: BRAND, fontSize: TYPE.caption }}>{busy ? "주는 중" : "주기"}</button>
+          </div>
+          {error ? <p style={{ fontSize: TYPE.caption, color: BAD }}>{error}</p> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function ClientDetail({
   organization, client, history, loading, error, instructors = [], currentUserId = "", nameOfClient = () => "",
   clients = [], passStore, onClose, onRetry, onChanged, onToast, onChangePhone,
@@ -19871,6 +19979,8 @@ function ClientDetail({
   /* 이름 수정 · 보관 (2026-11-04). 바뀐 칸을 부르는 쪽에 알린다 -- 이 화면이 든
      client 는 연 순간의 것이라, 알리지 않으면 방금 고친 이름이 옛것으로 남는다. */
   clientStore, onClientChanged, initialNameEdit = false, initialArchive = null,
+  /* 회원 앱 취소 횟수 (2026-11-07). runtimeConfig/scheduleSync 문서 그대로 -- memberCancel 칸. */
+  memberCancelConfig = null,
 }) {
   const at = now();
   const [nameEdit, setNameEdit] = useState(initialNameEdit);
@@ -20263,6 +20373,8 @@ function ClientDetail({
               })() : null}
             </div>
           ) : null}
+          <MemberCancelGrant organization={organization} client={client} passes={history?.passes || []}
+            currentUserId={currentUserId} config={memberCancelConfig} onToast={onToast} />
         </div>
         {onClose ? (
           <button type="button" onClick={onClose} aria-label="닫기" className="shrink-0"
@@ -24272,6 +24384,149 @@ function ScheduleSyncAdmin({
   );
 }
 
+/**
+ * 회원 앱 수업 취소 (2026-11-07, 5차 1단계) — 대표 설정 · 강사별 추가 부여 현황.
+ *
+ * 켜는 범위는 강사 단위 시범(고른 강사만)부터. **그 강사의 일정 동기화가 켜져 있어야**
+ * 서버가 받는다 -- 동기화가 꺼진 기기는 서버의 취소를 받지 못해 강사가 모르는 취소가
+ * 된다. 그래서 동기화가 꺼진 강사 옆에 그렇게 적는다.
+ * 횟수 · 적용 기간은 저장해야 효력이 있다. 처음 비어 있을 때 칸의 3 은 안내값이다.
+ */
+function MemberCancelAdmin({ organization, instructorStore, onLoadConfig, onSaveConfig }) {
+  const [instructors, setInstructors] = useState([]);
+  const [draft, setDraft] = useState(null);
+  const [syncConfig, setSyncConfig] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [month, setMonth] = useState(() => memberCancelMonthKey(new Date()));
+  const [grants, setGrants] = useState(null);
+  const [grantError, setGrantError] = useState("");
+  const organizationId = organization?.organizationId || "";
+  const fromConfig = (found) => {
+    const config = readMemberCancelConfig(found?.memberCancel);
+    setSyncConfig(found?.scheduleSync || null);
+    setDraft({
+      mode: config.mode, userIds: config.userIds,
+      limit: config.limit === null ? String(MEMBER_CANCEL_DEFAULT_LIMIT_HINT) : String(config.limit),
+      period: config.period || MEMBER_CANCEL_PERIOD.MONTH,
+      saved: config.configured,
+    });
+  };
+  useEffect(() => {
+    if (!organizationId || organization?.status === "unknown") return undefined;
+    let alive = true;
+    listInstructors(organizationId, { store: instructorStore }).then((found) => { if (alive) setInstructors(found); }).catch(() => {});
+    Promise.resolve(onLoadConfig?.(organizationId))
+      .then((found) => { if (alive) fromConfig(found); })
+      .catch((thrown) => { if (alive) setMessage(`지금 값을 읽지 못했어요 (코드 ${thrown?.code || "unknown"})`); });
+    return () => { alive = false; };
+  }, [organizationId, organization?.status, instructorStore, onLoadConfig]);
+  useEffect(() => {
+    if (!organizationId) return undefined;
+    let alive = true;
+    setGrants(null); setGrantError("");
+    listMemberCancelGrants(organizationId, month)
+      .then((found) => { if (alive) setGrants(found); })
+      .catch((thrown) => { if (alive) setGrantError(`추가 부여 기록을 읽지 못했어요 (코드 ${thrown?.code || "unknown"})`); });
+    return () => { alive = false; };
+  }, [organizationId, month]);
+  const rows = instructorVersionRows(instructors, {});
+  const nameOf = (userId) => rows.find((row) => row.userId === userId)?.name || "이름 모름";
+  const syncOn = (userId) => scheduleSyncEnabledFor(syncConfig, userId);
+  const save = async () => {
+    if (busy || !draft) return;
+    setBusy(true); setMessage("");
+    try {
+      const result = await onSaveConfig?.(organizationId, "memberCancel", {
+        mode: draft.mode, userIds: draft.userIds, limit: Number(draft.limit), period: draft.period,
+      });
+      fromConfig(result?.config);
+      setMessage("저장했습니다. 회원이 수업 상세를 열 때부터 적용됩니다.");
+    } catch (thrown) {
+      setMessage(`저장하지 못했어요 (코드 ${thrown?.code || thrown?.message || "unknown"})`);
+    } finally { setBusy(false); }
+  };
+  const shiftMonth = (delta) => setMonth((current) => {
+    const [year, mon] = current.split("-").map(Number);
+    const next = new Date(year, mon - 1 + delta, 1);
+    return `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, "0")}`;
+  });
+  const chip = (active) => ({ borderRadius: 999, fontSize: TYPE.caption, backgroundColor: active ? TINT : CANVAS, color: active ? BRAND_D : SUB });
+  const summary = grantsByGranter(grants || []);
+  return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }} data-member-cancel-admin>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>회원 앱 수업 취소</h2>
+      <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        켜진 강사의 수업은 회원이 시작 24시간 전까지 앱에서 직접 취소합니다. 회원권 횟수는 차감하지 않습니다. 강사 한 명씩 켜세요 — 그 강사의 일정 동기화가 켜져 있어야 적용됩니다.
+      </p>
+      {!draft ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>지금 값을 읽는 중…</p> : (
+        <>
+          <div className="mt-3 flex gap-2">
+            {[["off", "끔"], ["listed", "고른 강사만"], ["all", "전체"]].map(([value, label]) => (
+              <button key={value} type="button" onClick={() => setDraft((current) => ({ ...current, mode: value }))}
+                className="h-9 flex-1 font-bold" style={chip(draft.mode === value)}>{label}</button>
+            ))}
+          </div>
+          {draft.mode === "listed" ? (
+            <div className="mt-3 space-y-1">
+              {rows.map((row) => (
+                <label key={row.userId} className="flex min-h-10 items-center gap-2 px-2" style={{ borderRadius: 8, backgroundColor: CANVAS }}>
+                  <input type="checkbox" checked={draft.userIds.includes(row.userId)}
+                    onChange={() => setDraft((current) => ({ ...current, userIds: current.userIds.includes(row.userId) ? current.userIds.filter((id) => id !== row.userId) : [...current.userIds, row.userId] }))} />
+                  <span className="min-w-0 flex-1 truncate text-sm font-bold" style={{ color: INK }}>{row.name}</span>
+                  <span style={{ fontSize: TYPE.caption, color: syncOn(row.userId) ? SUB : WARN }}>{syncOn(row.userId) ? "동기화 켜짐" : "동기화 꺼짐 — 적용 안 됨"}</span>
+                </label>
+              ))}
+            </div>
+          ) : null}
+          <div className="mt-3 flex items-center gap-2">
+            <span style={{ fontSize: TYPE.caption, color: INK, minWidth: 96 }}>취소 가능 횟수</span>
+            <input type="number" inputMode="numeric" min={MEMBER_CANCEL_LIMIT_RANGE.min} max={MEMBER_CANCEL_LIMIT_RANGE.max}
+              value={draft.limit} onChange={(event) => setDraft((current) => ({ ...current, limit: event.target.value }))}
+              className="h-10 w-20 px-2 text-center" style={{ borderRadius: 8, border: `1px solid ${LINE}`, backgroundColor: CANVAS, color: INK }} />
+            <span style={{ fontSize: TYPE.caption, color: SUB }}>회</span>
+          </div>
+          <div className="mt-2 flex items-center gap-2">
+            <span style={{ fontSize: TYPE.caption, color: INK, minWidth: 96 }}>적용 기간</span>
+            {[[MEMBER_CANCEL_PERIOD.MONTH, "월 기준"], [MEMBER_CANCEL_PERIOD.PASS, "회원권 기준"]].map(([value, label]) => (
+              <button key={value} type="button" onClick={() => setDraft((current) => ({ ...current, period: value }))}
+                className="h-9 flex-1 font-bold" style={chip(draft.period === value)}>{label}</button>
+            ))}
+          </div>
+          {!draft.saved ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>아직 저장한 값이 없어 꺼져 있습니다. 칸의 값은 안내값입니다.</p> : null}
+          <button type="button" onClick={save} disabled={busy} className="mt-3 h-11 w-full font-bold text-white disabled:opacity-50"
+            style={{ borderRadius: 10, backgroundColor: BRAND, fontSize: TYPE.caption }}>{busy ? "저장 중" : "저장"}</button>
+        </>
+      )}
+      {message ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>{message}</p> : null}
+
+      <div className="mt-4 pt-3" style={{ borderTop: `1px solid ${LINE}` }} data-member-cancel-grants>
+        <div className="flex items-center justify-between">
+          <h3 style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>강사별 취소 횟수 추가 부여</h3>
+          <div className="flex items-center gap-1">
+            <button type="button" onClick={() => shiftMonth(-1)} className="h-9 w-9" style={{ color: SUB }} aria-label="이전 달">‹</button>
+            <span className="tabular-nums" style={{ fontSize: TYPE.caption, color: INK }}>{month.replace("-", "년 ")}월</span>
+            <button type="button" onClick={() => shiftMonth(1)} className="h-9 w-9" style={{ color: SUB }} aria-label="다음 달">›</button>
+          </div>
+        </div>
+        {grantError ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: BAD }}>{grantError}</p>
+          : grants === null ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>읽는 중…</p>
+          : summary.length === 0 ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>이 달에는 추가 부여가 없습니다.</p>
+          : (
+            <div className="mt-2 space-y-1">
+              {summary.map((row) => (
+                <div key={row.grantedBy} className="flex min-h-9 items-center justify-between px-2" style={{ borderRadius: 8, backgroundColor: CANVAS }}>
+                  <span className="text-sm font-bold" style={{ color: INK }}>{nameOf(row.grantedBy)}</span>
+                  <span className="tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>{row.count}건 · {row.amount}회</span>
+                </div>
+              ))}
+            </div>
+          )}
+      </div>
+    </section>
+  );
+}
+
 function AppUpdateAdmin({ organization, instructorStore, onLoadConfig, onSaveConfig, onRetryOrganization }) {
   const [instructors, setInstructors] = useState([]);
   const [draft, setDraft] = useState(draftFromConfig(null));
@@ -26394,6 +26649,8 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
               onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
               document="privateSync" title="본인 일정 동기화"
               description="켜진 계정은 상담 · 휴무 같은 개인 일정(제목 · 날짜 · 시각)과 그룹 수업을 본인의 다른 PC · 폰과 주고받습니다. 본인만 볼 수 있고 대표 · FC · 다른 강사는 볼 수 없습니다. 30일 전 ~ 60일 뒤의 것만 주고받습니다. 메모 · 상담 메모 · 회원 목표는 입력한 기기에만 남습니다. 꺼진 계정은 서버에 아무것도 올리지 않습니다." />
+            <MemberCancelAdmin organization={organization} instructorStore={instructorStore}
+              onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig} />
             <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
               onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
               document="rosterRealtime" title="회원 명단 실시간"
@@ -27523,6 +27780,16 @@ export function createAppScreenSmokeCases() {
        있는 회원권이 남은 smokeHistory 는 "보관 불가" 가 뜨고, 다 끝난 이력은 버튼이
        뜬다. 보관된 회원은 배지와 되살리기. */
     { name: "센터 회원 상세 · 이름 수정", element: ownerClientDetail({ initialNameEdit: true }) },
+    /* 회원 앱 취소 횟수 (2026-11-07). 기능이 켜지면 남은 횟수 줄과 "취소 횟수 추가" 가 보인다. */
+    { name: "센터 회원 상세 · 앱 취소 횟수", element: ownerClientDetail({
+      memberCancelConfig: { mode: "all", memberCancel: { mode: "all", userIds: [], limit: 3, period: "month" } },
+    }) },
+    { name: "일정 탭 · 회원 취소 N건", element: provider(<ScheduleManager memberCancelOn
+      db={{ ...busyDb, schedule: busyDb.schedule.map((entry, index) => (index === 0 ? { ...entry, date: "2999-01-01", attendees: (entry.attendees || []).map((attendee) => ({ ...attendee, status: "cancel", memberCancelledAt: "2026-11-07T00:00:00.000Z" })) } : entry)) }}
+      photos={{}} onSave={noop} onDelete={noop} onStatus={noop} onStatusAll={noop} onNoshowFee={noop} onGroupDone={noop} onNoComment={noop} onSaveNote={noop} onToast={noop} onSettings={noop} onConsumeMemberPreset={noop} onConsumeQuickAdd={noop} onOpenMember={noop} />) },
+    { name: "운영 설정 · 회원 앱 수업 취소", element: providerWith(smokeOwner, (
+      <MemberCancelAdmin organization={readyOrganizationContext(smokeOwner)} onLoadConfig={() => Promise.resolve(null)} onSaveConfig={noop} />
+    )) },
     { name: "센터 회원 상세 · 보관 가능", element: ownerClientDetail({ history: smokeEndedHistory }) },
     { name: "센터 회원 상세 · 보관 확인", element: ownerClientDetail({ history: smokeEndedHistory, initialArchive: "archive" }) },
     { name: "센터 회원 상세 · 보관됨", element: ownerClientDetail({ history: smokeEndedHistory, client: { ...smokeDetailClient, archived: true } }) },
@@ -32819,7 +33086,7 @@ export default function App() {
         ) : null}
         <div className="relative min-h-0 flex-1 overflow-hidden">
           <Guard key={tab}>
-            {tab === "schedule" && <ScheduleManager db={rosterDb} photos={photos} readQueueLessonStates={organizationRoster && organizationContext.organizationId ? queueLessonStatesReader : null} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onCareGrade={setCareGrade} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterInMemberTab || canOpenCentreRegistration ? requestMemberRegistration : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} careOptionsOf={careOptionsFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && isOwnerLevelRole(organizationContext.role)} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} upcoming={upcomingPay} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
+            {tab === "schedule" && <ScheduleManager db={rosterDb} photos={photos} readQueueLessonStates={organizationRoster && organizationContext.organizationId ? queueLessonStatesReader : null} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onCareGrade={setCareGrade} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterInMemberTab || canOpenCentreRegistration ? requestMemberRegistration : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} careOptionsOf={careOptionsFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && isOwnerLevelRole(organizationContext.role)} memberCancelOn={organizationRoster && memberCancelEnabledFor(scheduleSyncConfig, account?.id)} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} upcoming={upcomingPay} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
             {tab === "members" && <div className={`h-full min-h-0 ${mobileView === "detail" && member ? "pt-member-detail-active" : ""}`}>
               <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList passSummaryOf={passSummaryFor} locations={rosterLocations} members={rosterMembers} schedule={db.schedule} settings={db.settings} organizationMode={organizationRoster} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} canBrowseAll={!organizationRoster || canBrowseAllClients(organizationContext.role)} viewerRole={organizationContext.role} viewerLocationId={organizationContext.locationId || ""} viewerLocationIds={organizationContext.locationIds || []} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterInMemberTab} centreAccount={centreAccount} onOpenCentreRegistration={canOpenCentreRegistration ? openCentreRegistration : undefined} unlinkedLocal={centreAccount && roster ? roster.unlinkedLocal || [] : []} onUploadUnlinked={canOpenCentreRegistration ? uploadUnlinkedMember : undefined} onLinkUnlinked={linkUnlinkedMember} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} journeyOf={organizationRoster ? journeyFor : undefined} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
               {mobileView === "detail" && member && <div className="pt-member-detail-pane h-full min-h-0">
@@ -32947,6 +33214,7 @@ export default function App() {
                 .map((item) => ({ id: item.orgClientId, name: item.name, phone: item.phone }))}
               instructors={detailInstructors}
               currentUserId={account?.id || ""} onToast={setToast}
+              memberCancelConfig={scheduleSyncConfig}
               /* 규칙이 clients.phone 을 잠그고 있어 이 통로가 유일한 문이다. */
               onChangePhone={fbUpdateClientPhone}
               onChanged={() => setHistoryRevision((value) => value + 1)}

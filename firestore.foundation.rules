@@ -676,6 +676,35 @@ service cloud.firestore {
         allow create, update, delete: if false;
       }
 
+      /* ── 회원 앱 수업 취소 (2026-11-07, 5차 1단계) ─────────────────────────
+         회원의 취소 · 강사의 추가 부여는 서버 함수(memberCancelLesson ·
+         grantMemberCancel)만 쓴다 -- 횟수 차감과 수업 변경이 한 트랜잭션이어야
+         하고 마감은 서버 시각으로 재야 한다. 그래서 **세 곳 모두 쓰기는 닫는다.**
+         회원은 어느 것도 읽지 않는다 (남은 횟수는 서버 함수가 돌려준다).
+         회원은 lessons 를 쓰지도 못한다 -- 아래 lessons 의 쓰기는 센터 직원만이다.
+
+         - memberCancelLedger/{clientId}: 칸별 사용 · 추가. 강사 앱 회원 상세가 남은
+           횟수를 그린다 -- 센터 직원이 문서 하나씩
+         - memberCancellations: 취소 기록. 센터 직원 (강사 첫 화면 "회원 취소 N건")
+         - memberCancelGrants: 추가 부여 기록. 대표 화면의 강사별 월 집계 -- 대표 ·
+           총괄매니저만 (사유 문장이 들어 있다) */
+      match /memberCancelLedger/{clientId} {
+        allow get: if isCentreStaff(organizationId)
+          && resource.data.organizationId == organizationId;
+        allow list: if false;
+        allow create, update, delete: if false;
+      }
+      match /memberCancellations/{recordId} {
+        allow get: if isCentreStaff(organizationId)
+          && resource.data.organizationId == organizationId;
+        allow list: if isCentreStaff(organizationId);
+        allow create, update, delete: if false;
+      }
+      match /memberCancelGrants/{grantId} {
+        allow get, list: if hasRole(organizationId, ["owner", "area_manager"]);
+        allow create, update, delete: if false;
+      }
+
       match /lessons/{lessonId} {
         // See the locations block for why get and list are split.
         /* 없는 문서도 읽게 둔다 (2026-10-31). 강사 일정을 서버에 쓸 때 앱은 확정된

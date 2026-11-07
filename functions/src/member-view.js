@@ -127,7 +127,9 @@ function memberNoteFor(entry, notes) {
  * 차수, 단가는 담지 않는다** -- 일정 문서에도 메모는 없지만, 여기서 한 번 더
  * 고른다. 다른 회원(듀엣 상대)의 id 도 내보내지 않는다.
  */
-const SCHEDULE_FIELDS = Object.freeze(["startsAt", "endsAt", "lessonType", "instructorName", "locationName"]);
+/* lessonId (2026-11-07, 회원 앱 수업 취소): 회원이 취소할 수업을 가리키는 값. 일정 문서의
+   id 일 뿐이고 그 문서를 회원이 읽을 수는 없다 (규칙: lessons 는 센터 직원만). */
+const SCHEDULE_FIELDS = Object.freeze(["lessonId", "startsAt", "endsAt", "lessonType", "instructorName", "locationName"]);
 
 /** 회원 화면이 오늘 지난 수업도 그날 칸에 보이게, 하루 전부터 싣는다. */
 const SCHEDULE_LOOKBACK_MS = 24 * 60 * 60 * 1000;
@@ -318,6 +320,7 @@ function buildMemberView(input) {
     .filter((lesson) => lesson && text(lesson.status) === "scheduled")
     .filter((lesson) => clientIdsOf(lesson).includes(clientId))
     .map((lesson) => ({
+      lessonId: text(lesson.id || lesson.lessonId),
       startsAt: toDate(lesson.startsAt),
       endsAt: toDate(lesson.endsAt),
       lessonType: Object.values(LESSON_TYPE).includes(text(lesson.lessonType))

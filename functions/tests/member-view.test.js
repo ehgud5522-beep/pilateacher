@@ -510,11 +510,14 @@ test("예정 수업은 날짜 · 시간 · 유형 · 강사 · 지점만 싣는�
   }]);
   assert.equal(view.schedule.length, 1);
   assert.deepEqual(Object.keys(view.schedule[0]).sort(), [...SCHEDULE_FIELDS].sort());
+  /* lessonId 는 2026-11-07 부터 싣는다 -- 회원 앱 수업 취소가 가리킬 값이다. 기기가 만든
+     임의 문자열이고, 회원은 그 문서를 읽지 못한다. 상대 회원 · 강사 id 는 여전히 없다. */
   assert.deepEqual(view.schedule[0], {
+    lessonId: "L1",
     startsAt: new Date(2026, 10, 3, 19), endsAt: new Date(2026, 10, 3, 19, 50),
     lessonType: "2:1", instructorName: "정예진", locationName: "해운대점",
   });
-  assert.doesNotMatch(JSON.stringify(view.schedule), /client-b|L1|u1|허리|메모|깍두기/);
+  assert.doesNotMatch(JSON.stringify(view.schedule), /client-b|u1|허리|메모|깍두기/);
 });
 
 test("취소된 수업 · 지난 수업 · 남의 수업은 싣지 않는다", () => {

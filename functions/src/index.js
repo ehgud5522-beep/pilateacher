@@ -33,6 +33,7 @@ const {
 const { isPassAdmin, runHandover, runSessionUp } = require("./pass-admin");
 const { handleRuntimeConfigRequest } = require("./runtime-config-admin");
 const { handleNoticeRequest } = require("./notice-admin");
+const { grantMemberCancel, memberCancelLesson, memberCancelStatus } = require("./member-cancel");
 const { monthlyPayFor, planAccountSwap, runAccountSwap } = require("./instructor-swap");
 const { reconcileOrganization } = require("./pass-reconcile-nightly");
 const { createFirestoreMemberLinkPorts } = require("./member-link-store");
@@ -880,6 +881,79 @@ exports.manageNotice = onCall({
       errorCode: String(error?.code || "unknown"), message: String(error?.message || "").slice(0, 200),
     });
     throw new HttpsError("unavailable", "notice_write_failed", { reason: "notice_write_failed" });
+  }
+});
+
+/* ── 회원 앱 수업 취소 (2026-11-07, 5차 1단계) ─────────────────────────────
+   회원은 일정 문서를 쓰지 못한다 -- 이 통로 하나다. 근거는 member-cancel.js 머리말.
+   action: "status" (수업 상세가 열릴 때, 쓰지 않음) · "cancel".
+   기능 스위치는 runtimeConfig/scheduleSync.memberCancel (처음에는 꺼짐). */
+const memberCancelLog = (level, event, fields) => logger[level](event, { feature: "member_cancel", ...fields });
+
+exports.memberCancelLesson = onCall(MEMBER_LINK_OPTIONS, async (request) => {
+  const action = String(request?.data?.action || "").trim() === "cancel" ? "cancel" : "status";
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  const lessonId = String(request?.data?.lessonId || "").trim();
+  const input = {
+    callerUid: request?.auth?.uid, organizationId,
+    clientId: request?.data?.clientId, lessonId,
+  };
+  try {
+    if (action === "status") return await memberCancelStatus(firestore, input, { membershipId });
+    const result = await memberCancelLesson(firestore, input, {
+      membershipId, newId: () => firestore.collection("_").doc().id,
+    });
+    // uid · 이름 · 번호는 남기지 않는다 (§7). 수업 id 와 결과 · 남은 횟수만.
+    memberCancelLog("info", "member_cancel_done", {
+      stage: "cancel", organizationId, lessonId, outcome: result.outcome,
+      remaining: result.remaining, partnerKept: Boolean(result.partnerKept), correlationId: result.recordId,
+    });
+    return result;
+  } catch (error) {
+    if (error?.httpsCode) {
+      memberCancelLog("warn", "member_cancel_refused", {
+        stage: action, organizationId, lessonId, errorDomain: "member_cancel",
+        errorCode: error.reason || error.httpsCode,
+      });
+      throw new HttpsError(error.httpsCode, error.message, { reason: error.reason || "" });
+    }
+    memberCancelLog("error", "member_cancel_failed", {
+      stage: action, organizationId, lessonId, errorDomain: "firestore",
+      errorCode: String(error?.code || "unknown"), message: String(error?.message || "").slice(0, 200),
+    });
+    throw new HttpsError("unavailable", "member_cancel_failed", { reason: "member_cancel_failed" });
+  }
+});
+
+/* 취소 횟수 추가 부여 -- 강사 앱 회원 상세. 대표 · 총괄매니저, 그 밖에는 담당 강사만. */
+exports.grantMemberCancel = onCall({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  timeoutSeconds: 30,
+  invoker: "public",
+}, async (request) => {
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  try {
+    const result = await grantMemberCancel(firestore, {
+      callerUid: request?.auth?.uid, organizationId, clientId: request?.data?.clientId,
+      amount: request?.data?.amount, reason: request?.data?.reason,
+    }, { membershipId, newId: () => firestore.collection("_").doc().id });
+    // 사유 문장 · 회원 이름은 남기지 않는다 (§7).
+    memberCancelLog("info", "member_cancel_granted", {
+      stage: "grant", organizationId, correlationId: result.grantId, remaining: result.remaining,
+    });
+    return result;
+  } catch (error) {
+    if (error?.httpsCode) {
+      memberCancelLog("warn", "member_cancel_grant_refused", {
+        stage: "grant", organizationId, errorDomain: "member_cancel", errorCode: error.reason || error.httpsCode,
+      });
+      throw new HttpsError(error.httpsCode, error.message, { reason: error.reason || "" });
+    }
+    memberCancelLog("error", "member_cancel_grant_failed", {
+      stage: "grant", organizationId, errorDomain: "firestore",
+      errorCode: String(error?.code || "unknown"), message: String(error?.message || "").slice(0, 200),
+    });
+    throw new HttpsError("unavailable", "member_cancel_grant_failed", { reason: "member_cancel_grant_failed" });
   }
 });
 

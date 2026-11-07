@@ -5742,7 +5742,10 @@ describe("phone sync gate and settlement duplicate guard — the app code throug
   });
 
   test("확정 직전 중복 방지: PC 에서 확정된 같은 수업이 있으면 폰의 다른 수업은 확정하지 않는다", async () => {
-    const DAY = "2026-10-30";
+    /* 어제 날짜로 둔다. 날짜를 박아 두면 차감 창(7일)이 지나는 날부터 이 시험이 깨진다
+       (2026-11-07 에 "2026-10-30" 이 그렇게 깨졌다). */
+    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const DAY = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, "0")}-${String(yesterday.getDate()).padStart(2, "0")}`;
     let pass = null;
     await testEnv.withSecurityRulesDisabled(async (context) => {
       const snapshot = await getDoc(doc(context.firestore(), "organizations", ORG_A, "passes", PASS_A));
@@ -6011,5 +6014,85 @@ describe("회원 이름 수정 · 보관 기록은 회원을 등록하는 사람
     batch.set(doc(db, "auditLogs", "archive-batch"), entry("owner", "client_archived", { enabled: true }));
     await assertSucceeds(batch.commit());
     await assertFails(deleteDoc(doc(db, "organizations", ORG_A, "clients", "client-member")));
+  });
+});
+
+/* ── 노쇼 차감 / 미차감과 고른 사람 (2026-11-07 대표) ─────────────────────────
+   참석 문서에 noshowCharge · noshowChosenBy · noshowChosenAt. 고른 사람은 쓰는 사람이고,
+   노쇼에만 붙고, 칸 목록은 닫혀 있다. 원장 없이 닫는 수업은 전원 취소 · 미차감일 때만. */
+describe("노쇼 선택 기록 — 참석 문서", () => {
+  const participantAt = (db, lessonId, clientId) =>
+    doc(db, "organizations", ORG_A, "lessons", lessonId, "participants", clientId);
+  const lessonAt = (db, lessonId) => doc(db, "organizations", ORG_A, "lessons", lessonId);
+  const choice = (by, overrides = {}) => ({
+    noshowCharge: false, noshowChosenBy: by, noshowChosenAt: Timestamp.fromDate(new Date(Date.now() - 60 * 1000)), ...overrides,
+  });
+  const body = (clientId, extra = {}) => ({
+    organizationId: ORG_A, lessonId: "lesson-seed", clientId, attendanceStatus: "noshow", ...extra,
+  });
+
+  test("강사가 확정하며 자기 선택을 남긴다 — 차감 · 미차감 둘 다", async () => {
+    const db = dbFor(users.instructor);
+    await assertSucceeds(setDoc(participantAt(db, "lesson-seed", "client-a1"), body("client-a1", choice(users.instructor))));
+    await assertSucceeds(setDoc(participantAt(db, "lesson-seed", "client-a2"), body("client-a2", choice(users.instructor, { noshowCharge: true }))));
+    // 기존 참석 문서(예약)를 노쇼 + 선택으로 합쳐 쓴다.
+    await assertSucceeds(setDoc(participantAt(db, "lesson-seed", "client-member"), body("client-member", choice(users.instructor)), { merge: true }));
+  });
+
+  test("고른 사람이 쓰는 사람과 다르면 거절된다", async () => {
+    await assertFails(setDoc(participantAt(dbFor(users.instructor), "lesson-seed", "client-b1"), body("client-b1", choice(users.owner))));
+  });
+
+  test("노쇼가 아닌 참석에는 선택을 붙이지 못한다", async () => {
+    const db = dbFor(users.instructor);
+    await assertFails(setDoc(participantAt(db, "lesson-seed", "client-c1"), body("client-c1", { attendanceStatus: "attended", ...choice(users.instructor) })));
+    await assertFails(setDoc(participantAt(db, "lesson-seed", "client-c2"), body("client-c2", { attendanceStatus: "cancelled", ...choice(users.instructor) })));
+  });
+
+  test("셋은 함께 오고, 모양이 맞아야 한다", async () => {
+    const db = dbFor(users.instructor);
+    await assertFails(setDoc(participantAt(db, "lesson-seed", "client-d1"), body("client-d1", { noshowCharge: false })));
+    await assertFails(setDoc(participantAt(db, "lesson-seed", "client-d2"), body("client-d2", choice(users.instructor, { noshowCharge: "no" }))));
+    await assertFails(setDoc(participantAt(db, "lesson-seed", "client-d3"), body("client-d3", choice(users.instructor, { noshowChosenAt: "2026-11-07" }))));
+    // 기기 시각이 서버보다 크게 앞서면 거절 (10분까지만 받는다).
+    await assertFails(setDoc(participantAt(db, "lesson-seed", "client-d4"), body("client-d4", choice(users.instructor, {
+      noshowChosenAt: Timestamp.fromDate(new Date(Date.now() + 60 * 60 * 1000)),
+    }))));
+  });
+
+  test("자유 문장 칸은 열리지 않는다", async () => {
+    const db = dbFor(users.instructor);
+    await assertFails(setDoc(participantAt(db, "lesson-seed", "client-e1"), body("client-e1", { ...choice(users.instructor), noshowReason: "연락 없음" })));
+    await assertFails(setDoc(participantAt(db, "lesson-seed", "client-e2"), body("client-e2", { memo: "메모" })));
+  });
+
+  test("이미 적힌 선택을 그대로 다시 쓰는 것은 누구든 된다", async () => {
+    const chosen = choice(users.instructor);
+    await assertSucceeds(setDoc(participantAt(dbFor(users.instructor), "lesson-seed", "client-f1"), body("client-f1", chosen)));
+    await assertSucceeds(setDoc(participantAt(dbFor(users.owner), "lesson-seed", "client-f1"), body("client-f1", { ...chosen, updatedAt: serverTimestamp() }), { merge: true }));
+    // 값을 바꾸면 고른 사람이 쓰는 사람이어야 한다.
+    await assertFails(setDoc(participantAt(dbFor(users.owner), "lesson-seed", "client-f1"), body("client-f1", { ...chosen, noshowCharge: true }), { merge: true }));
+  });
+
+  test("차감할 회차가 없던 수업은 원장 없이 닫힌다 — 전원 미차감 노쇼일 때만", async () => {
+    const db = dbFor(users.instructor);
+    const close = (batch, clientIds) => batch.set(lessonAt(db, "lesson-seed"), {
+      organizationId: ORG_A, lessonId: "lesson-seed", clientIds, status: "completed", settledWithoutDeduction: true,
+    }, { merge: true });
+
+    const charged = writeBatch(db);
+    charged.set(participantAt(db, "lesson-seed", "client-member"), body("client-member", choice(users.instructor, { noshowCharge: true })), { merge: true });
+    close(charged, ["client-member"]);
+    await assertFails(charged.commit(), "노쇼 차감인데 원장 없이 닫을 수는 없다");
+
+    const attended = writeBatch(db);
+    attended.set(participantAt(db, "lesson-seed", "client-member"), body("client-member", { attendanceStatus: "attended" }), { merge: true });
+    close(attended, ["client-member"]);
+    await assertFails(attended.commit(), "출석이면 차감이 있어야 한다");
+
+    const free = writeBatch(db);
+    free.set(participantAt(db, "lesson-seed", "client-member"), body("client-member", choice(users.instructor)), { merge: true });
+    close(free, ["client-member"]);
+    await assertSucceeds(free.commit());
   });
 });

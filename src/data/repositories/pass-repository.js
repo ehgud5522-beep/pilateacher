@@ -47,6 +47,7 @@ import {
 import { toDate } from "./payroll-repository.js";
 import { defaultUnitPriceFor, resolveUnitPrice } from "../schema/pay-rates.js";
 import { RepositoryReadError, readCollection } from "./repository-read.js";
+import { noshowChoiceFields } from "../../features/schedule/noshow-record.js";
 
 /**
  * @typedef {object} PassStore
@@ -605,6 +606,7 @@ export function isDeductablePass(pass, now = new Date()) {
  *   title?: string,
  *   lessonId?: string, entryId?: string,
  *   attendanceByClientId?: Record<string, string>,
+ *   noshowChoiceByClientId?: Record<string, { charge: boolean, by: string, at: Date }>,
  * }} input
  * @param {{ store?: PassStore, newId?: () => string, now?: () => Date }} [options]
  */
@@ -753,6 +755,15 @@ export async function deductPass(organizationId, pass, input, options = {}) {
     const given = input?.attendanceByClientId?.[id];
     return values(ATTENDANCE_STATUS).has(String(given)) ? String(given) : ATTENDANCE_STATUS.ATTENDED;
   };
+  /* 노쇼 차감 / 미차감과 고른 사람 (2026-11-07, noshow-record.js). 노쇼인 사람에게만,
+     고른 사람이 지금 확정하는 사람일 때만 싣는다 -- 규칙이 그 둘을 대조하고, 어긋나면
+     이 배치의 차감까지 함께 거절된다. */
+  const choiceFor = (id) => {
+    const choice = input?.noshowChoiceByClientId?.[id];
+    if (attendanceOf(id) !== ATTENDANCE_STATUS.NOSHOW) return {};
+    if (!choice || String(choice.by || "") !== createdBy) return {};
+    return noshowChoiceFields(choice);
+  };
   const participants = clientIds.map((id) => ({
     path: paths.lessonParticipant(organization, lessonId, id),
     data: {
@@ -760,6 +771,7 @@ export async function deductPass(organizationId, pass, input, options = {}) {
       lessonId,
       clientId: id,
       attendanceStatus: attendanceOf(id),
+      ...choiceFor(id),
     },
   }));
   const entry = {
@@ -852,6 +864,76 @@ export async function deductPass(organizationId, pass, input, options = {}) {
 
    그래서 인덱스도 규칙도 그대로다.
    ────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * 차감 배치가 쓰지 않은 참석 문서를 쓴다 -- 노쇼 선택을 남기고, 차감할 회차가 없는
+ * 수업이면 서버의 수업도 닫는다 (2026-11-07, noshow-record.js).
+ *
+ * ── 언제 부르는가 ──
+ *   close false  차감은 나갔는데 그 배치에 없던 노쇼 회원 (1:1 묶음 · 그룹의 미차감)
+ *   close true   차감할 회차가 아예 없던 수업 (전원 노쇼 미차감 · 취소). 기기에서는
+ *                닫혔는데 서버에는 "예정" 으로 남아, 다른 기기 · 회원 앱이 계속 예정
+ *                수업으로 봤다
+ *
+ * 원장은 쓰지 않는다. 닫는 수업에는 settledWithoutDeduction 을 적는다 -- 원장 없이
+ * "완료" 가 된 이유가 문서에 남는다. 참석 문서는 합쳐 쓴다(merge).
+ *
+ * @param {string} organizationId
+ * @param {{
+ *   lessonId: string, createdBy: string, close?: boolean,
+ *   attendance: Record<string, string>,
+ *   choices?: Record<string, { charge: boolean, by: string, at: Date }>,
+ *   clientIds?: Array<string>,
+ *   lesson?: { clientIds?: Array<string>, locationId?: string, instructorId?: string, startsAt?: Date },
+ * }} input
+ * @param {{ store?: PassStore }} [options]
+ */
+export async function recordLessonAttendance(organizationId, input, options = {}) {
+  const { store = createFirestorePassStore() } = options;
+  const organization = requiredText(organizationId, "organizationId");
+  const lessonId = requiredText(input?.lessonId, "lessonId");
+  const createdBy = requiredText(input?.createdBy, "createdBy");
+  const attendance = input?.attendance || {};
+  const ids = (Array.isArray(input?.clientIds) ? input.clientIds : Object.keys(attendance))
+    .map((id) => String(id || "").trim()).filter((id) => id && values(ATTENDANCE_STATUS).has(String(attendance[id])));
+  if (ids.length === 0) return { written: 0, closed: false };
+  /** @type {Array<{ path: string, data: object, operation?: "set" | "update" | "decrement" | "bump" | "merge" }>} */
+  const writes = ids.map((id) => {
+    const choice = input?.choices?.[id];
+    const fields = attendance[id] === ATTENDANCE_STATUS.NOSHOW && choice && String(choice.by || "") === createdBy
+      ? noshowChoiceFields(choice) : {};
+    return {
+      path: paths.lessonParticipant(organization, lessonId, id),
+      operation: /** @type {"merge"} */ ("merge"),
+      data: /** @type {object} */ ({ organizationId: organization, lessonId, clientId: id, attendanceStatus: attendance[id], ...fields }),
+    };
+  });
+  const close = input?.close === true;
+  if (close) {
+    const lesson = input?.lesson || {};
+    const clientIds = (Array.isArray(lesson.clientIds) && lesson.clientIds.length ? lesson.clientIds : ids).map(String);
+    writes.unshift({
+      path: paths.lesson(organization, lessonId),
+      operation: "merge",
+      data: {
+        organizationId: organization,
+        lessonId,
+        clientId: clientIds[0],
+        clientIds,
+        ...(lesson.locationId ? { locationId: String(lesson.locationId) } : {}),
+        ...(lesson.instructorId ? { instructorId: String(lesson.instructorId) } : {}),
+        ...(lesson.startsAt instanceof Date ? { startsAt: lesson.startsAt } : {}),
+        status: LESSON_STATUS.COMPLETED,
+        /* 원장 없이 닫힌 수업. 규칙이 이 표시와 참석 문서(전원 미차감 노쇼 · 취소)를
+           함께 보고 받는다. */
+        settledWithoutDeduction: true,
+        createdBy,
+      },
+    });
+  }
+  await store.commit(writes);
+  return { written: ids.length, closed: close };
+}
 
 const ledgerCollection = (organizationId, passId) => {
   const documentPath = paths.passLedgerEntry(organizationId, passId, "placeholder");

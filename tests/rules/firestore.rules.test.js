@@ -59,6 +59,7 @@ import { buildMigrationSnapshot } from "../../src/features/backup/backup-safety.
 import { deleteObject, getBytes, getMetadata, ref, uploadBytes } from "firebase/storage";
 import { createRequire } from "node:module";
 import { listNotices, visibleNotices } from "../../src/data/repositories/notice-repository.js";
+import { readMemberCancelLedger } from "../../src/data/repositories/member-cancel-repository.js";
 
 /* 서버 함수 본문(CommonJS)을 그대로 부른다 -- 공지 쓰기는 manageNotice 하나뿐이다. */
 const require = createRequire(import.meta.url);
@@ -6092,6 +6093,19 @@ describe("member lesson cancellation records", () => {
     await assertFails(getDoc(record(dbFor(APP_MEMBER))));
     await assertFails(getDoc(ledger(dbFor(users.outsider))));
     await assertFails(getDocs(collection(dbFor(users.owner), "organizations", ORG_A, "memberCancelLedger")), "횟수 목록은 훑지 않는다");
+  });
+
+  /* 2026-11-07 대표 화면: 취소 · 부여가 한 번도 없던 회원은 원장 문서가 없다. 그때도 직원은
+     "없음" 을 읽어야 한다 -- 거절되면 회원 상세가 "읽지 못했어요 (코드 permission-denied)" 를 띄운다.
+     앱 코드(readMemberCancelLedger)를 그대로 규칙에 통과시킨다. */
+  test("staff read a member with no count yet as 'none' — not permission-denied; the member and outsiders still cannot", async () => {
+    for (const userId of [users.owner, users.area_manager, users.manager, users.instructor, users.staff]) {
+      const found = await readMemberCancelLedger(ORG_A, "client-never-cancelled", { firestore: dbFor(userId) });
+      assert.equal(found, null, `${userId} 없는 원장은 null`);
+    }
+    await assertFails(getDoc(doc(dbFor(APP_MEMBER), "organizations", ORG_A, "memberCancelLedger", "client-never-cancelled")), "회원");
+    await assertFails(getDoc(doc(dbFor(users.outsider), "organizations", ORG_A, "memberCancelLedger", "client-never-cancelled")), "다른 센터");
+    await assertFails(getDoc(doc(dbFor(null), "organizations", ORG_A, "memberCancelLedger", "client-never-cancelled")), "로그인 안 함");
   });
 
   test("grant records (with the reason text) are for the owner and the area manager only", async () => {

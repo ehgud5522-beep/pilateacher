@@ -226,6 +226,62 @@ async function notifyTeacherOfMemberCancel(firestore, messaging, input, options 
   }
 }
 
+/* ── 강사 앱 알림함 (2026-11-07) ───────────────────────────────────────────
+   users/{강사 uid}/inbox/{recordId}. 푸시와 따로 -- 스위치 · 기기 토큰과 상관없이
+   취소가 되면 한 건 남긴다. 강사 앱(폰 · PC 웹)이 같은 문서를 듣는다.
+   문서 id 가 취소 기록 id 라 두 번 눌러도 한 건이다 (create).
+   회원 이름은 적지 않는다 -- 강사 앱이 clientId 로 자기 명단에서 찾는다.
+   읽음(readAt)은 강사 본인만 한 번 적는다 (규칙). 서버는 만들기만 한다. */
+
+const INBOX_STATUS = Object.freeze({ WRITTEN: "written", DUPLICATE: "duplicate", FAILED: "failed", SKIPPED: "skipped" });
+
+/**
+ * @returns {Promise<{ inbox: string, errorCode?: string }>} 던지지 않는다
+ */
+async function writeTeacherInbox(firestore, input, options = {}) {
+  const log = options.log || {};
+  const stamp = options.stamp || (() => new Date());
+  const organizationId = text(input?.organizationId);
+  const lessonId = text(input?.lessonId);
+  const clientId = text(input?.clientId);
+  const recordId = text(input?.recordId);
+  const where = { feature: "member_cancel_inbox", organizationId, lessonId, correlationId: recordId };
+  let stage = "read_record";
+  try {
+    if (!organizationId || !lessonId || !clientId || !recordId) return { inbox: INBOX_STATUS.SKIPPED, errorCode: "missing_fields" };
+    const record = await firestore.collection("organizations").doc(organizationId)
+      .collection("memberCancellations").doc(recordId).get();
+    const data = record.exists ? record.data() || {} : null;
+    const instructorUid = text(data?.instructorId);
+    if (!data || !instructorUid) return { inbox: INBOX_STATUS.SKIPPED, errorCode: data ? "no_instructor" : "record_not_found" };
+    stage = "create";
+    try {
+      await firestore.collection("users").doc(instructorUid).collection("inbox").doc(recordId).create({
+        kind: KIND,
+        organizationId,
+        lessonId,
+        clientId,
+        recordId,
+        lessonStartsAt: data.lessonStartsAt || null,
+        partnerKept: Boolean(data.partnerKept),
+        title: TITLE,
+        body: teacherCancelBody({ lessonStartsAt: data.lessonStartsAt, partnerKept: data.partnerKept }),
+        createdAt: stamp(),
+      });
+    } catch (error) {
+      if (isAlreadyExists(error)) return { inbox: INBOX_STATUS.DUPLICATE };
+      throw error;
+    }
+    return { inbox: INBOX_STATUS.WRITTEN };
+  } catch (error) {
+    const errorCode = text(error?.code) || "unknown";
+    log.error?.("member_cancel_inbox_failed", {
+      ...where, stage, errorDomain: "firestore", errorCode, message: text(error?.message).slice(0, 200),
+    });
+    return { inbox: INBOX_STATUS.FAILED, errorCode };
+  }
+}
+
 /**
  * 취소 → 강사 알림. index.js 의 memberCancelLesson(action cancel) 본문이다.
  * 취소가 막히면 그 오류를 그대로 던진다 (아무것도 보내지 않는다). 취소가 되면
@@ -238,12 +294,15 @@ async function notifyTeacherOfMemberCancel(firestore, messaging, input, options 
 async function cancelThenNotifyTeacher(firestore, getMessaging, input, cancelDeps, parts, options = {}) {
   const result = await parts.cancel(firestore, input, cancelDeps);
   const log = options.log || {};
+  const target = {
+    organizationId: input.organizationId, lessonId: result.lessonId || input.lessonId,
+    clientId: input.clientId, recordId: result.recordId,
+  };
+  /* 알림함이 먼저다 -- 푸시가 꺼져 있거나 실패해도 강사는 앱에서 본다. */
+  const inbox = await writeTeacherInbox(firestore, target, options);
   let notice;
   try {
-    notice = await notifyTeacherOfMemberCancel(firestore, getMessaging(), {
-      organizationId: input.organizationId, lessonId: result.lessonId || input.lessonId,
-      clientId: input.clientId, recordId: result.recordId,
-    }, options);
+    notice = await notifyTeacherOfMemberCancel(firestore, getMessaging(), target, options);
   } catch (error) {
     notice = { teacherNotice: TEACHER_NOTICE.FAILED, errorCode: text(error?.code) || "unknown" };
     log.error?.("member_cancel_push_failed", {
@@ -252,7 +311,11 @@ async function cancelThenNotifyTeacher(firestore, getMessaging, input, cancelDep
       errorCode: notice.errorCode, message: text(error?.message).slice(0, 200),
     });
   }
-  return { ...result, teacherNotice: notice.teacherNotice, teacherNoticeCode: notice.errorCode || "" };
+  return {
+    ...result,
+    teacherNotice: notice.teacherNotice, teacherNoticeCode: notice.errorCode || "",
+    teacherInbox: inbox.inbox, teacherInboxCode: inbox.errorCode || "",
+  };
 }
 
 /* ── 강사 앱이 부를 등록 통로 (teacherPushSettings) ─────────────────────────
@@ -301,6 +364,7 @@ async function handleTeacherPushSettings(firestore, input, deps) {
 
 module.exports = {
   ANDROID_CHANNEL,
+  INBOX_STATUS,
   TEACHER_NOTICE,
   TITLE,
   cancelThenNotifyTeacher,
@@ -309,4 +373,5 @@ module.exports = {
   notifyTeacherOfMemberCancel,
   sendKey,
   teacherCancelBody,
+  writeTeacherInbox,
 };

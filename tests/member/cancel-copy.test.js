@@ -63,6 +63,11 @@ test("완료 화면: 제목은 시안 그대로, 강사 알림이 실제로 갔�
     assert.doesNotMatch(note, /오류|실패|코드/, "취소는 성공이다 -- 오류처럼 말하지 않는다");
   }
   assert.equal(cancelDoneNote(null), CANCEL_DONE_NOT_NOTIFIED);
+  /* 강사 앱 알림함에 들어갔으면 푸시가 없어도 전달된 것이다 (2026-11-07). */
+  assert.equal(cancelDoneNote({ teacherNotice: "off", teacherInbox: "written" }), CANCEL_DONE_NOTIFIED);
+  assert.equal(cancelDoneNote({ teacherNotice: "no_device", teacherInbox: "duplicate" }), CANCEL_DONE_NOTIFIED);
+  assert.equal(cancelDoneNote({ teacherNotice: "failed", teacherInbox: "failed" }), CANCEL_DONE_NOT_NOTIFIED);
+  assert.equal(cancelDoneNote({ teacherNotice: "off", teacherInbox: "skipped" }), CANCEL_DONE_NOT_NOTIFIED);
 });
 
 test("완료 화면은 시트의 done 단계에 있고 문구는 cancel-copy 에서 온다 (하드코딩 없음)", () => {

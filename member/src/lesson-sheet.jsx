@@ -75,7 +75,8 @@ export function LessonSheet({ lesson, place, offline = false, api, onClose, onCa
         feature: MEMBER_FEATURE.LESSON_CANCEL, stage: MEMBER_STAGE.DONE,
         /* 강사 알림 결과도 함께 -- 완료 화면이 강사 알림을 말하지 않은 이유를 여기서 본다. */
         message: [text(result?.outcome), text(result?.teacherNotice) || "no_notice",
-          text(result?.teacherNoticeCode)].filter(Boolean).join(":"),
+          text(result?.teacherNoticeCode), `inbox_${text(result?.teacherInbox) || "none"}`,
+          text(result?.teacherInboxCode)].filter(Boolean).join(":"),
         correlationId: text(result?.recordId),
       });
       setDone(result);

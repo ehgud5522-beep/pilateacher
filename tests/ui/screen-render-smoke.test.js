@@ -154,6 +154,9 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "센터 회원 상세 · 이름 수정",
     "센터 회원 상세 · 앱 취소 횟수",
     "일정 탭 · 회원 취소 N건",
+    "일정 탭 · 강사 알림함 띠",
+    "강사 알림함 시트",
+    "강사 알림함 시트 · 열지 못함",
     "운영 설정 · 회원 앱 수업 취소",
     "센터 회원 상세 · 보관 가능",
     "센터 회원 상세 · 보관 확인",
@@ -3240,6 +3243,25 @@ test("이관 서비스 보정은 바뀔 값을 전후로 보여준다", async ()
   const clean = markupOf("이관 서비스 보정 · 보정할 것 없음");
   assert.match(clean, /보정할 것 없음/);
   assert.equal(clean.includes("확인했습니다"), false, "고칠 것이 없으면 확정 버튼을 내지 않는다");
+});
+
+test("instructor inbox: unread strip on the schedule tab, rows with a read dot, the failure code", async () => {
+  const markup = await screenMarkup();
+  const strip = markup("일정 탭 · 강사 알림함 띠");
+  assert.match(strip, /data-inbox-strip/);
+  assert.match(strip, /새 알림 1건/);
+  assert.doesNotMatch(markup("일정 탭"), /data-inbox-strip/, "알림함이 없는 강사에게는 띠가 없다");
+
+  const sheet = markup("강사 알림함 시트");
+  assert.match(sheet, /data-inbox-item="rec-1"/);
+  assert.match(sheet, /data-inbox-item="rec-2"/);
+  assert.ok(sheet.includes("11/8(일) 10:00 수업이 회원 요청으로 취소되었어요"));
+  assert.match(sheet, /일정 보기/);
+
+  const failed = markup("강사 알림함 시트 · 열지 못함");
+  assert.match(failed, /data-inbox-error/);
+  assert.match(failed, /코드 permission-denied/);
+  assert.doesNotMatch(failed, /새 알림이 없어요/, "열지 못한 것을 '없음' 으로 말하지 않는다");
 });
 
 test("member app cancellation: the count on the first screen, the grant button, the owner's switch", async () => {

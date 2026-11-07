@@ -175,6 +175,8 @@ import {
   rosterRealtimeEnabledFor, rosterRealtimeScope, shouldLogReads,
 } from "./features/roster/roster-realtime.js";
 import { readPassesForClients, subscribeClients } from "./data/repositories/client-realtime.js";
+import { markTeacherInboxRead, subscribeTeacherInbox } from "./data/repositories/teacher-inbox-repository.js";
+import { INBOX_COPY, inboxFailure, inboxRow, inboxStripLabel, lessonForInboxItem } from "./features/notifications/teacher-inbox.js";
 import {
   createProduct, listProducts, productBaseUnitPrice, setProductStatus,
 } from "./data/repositories/product-repository.js";
@@ -3495,7 +3497,7 @@ function SchedMemberNote({ lessonId, clientId, settled, onRead, onSave, onToast,
   );
 }
 
-function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onCareGrade, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset, quickAddRequest, onConsumeQuickAdd, openLessonId, onConsumeOpenLesson, onOpenMember, onAddMember, onOpenAttendance, organizationMode = false, rateOf, careOptionsOf, onSettleLesson, onUnsettleLesson, onReadMemberNote, onSaveMemberNote, canUnsettle = false, payCard = null, memberCancelOn = false,
+function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onCareGrade, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset, quickAddRequest, onConsumeQuickAdd, openLessonId, onConsumeOpenLesson, onOpenMember, onAddMember, onOpenAttendance, organizationMode = false, rateOf, careOptionsOf, onSettleLesson, onUnsettleLesson, onReadMemberNote, onSaveMemberNote, canUnsettle = false, payCard = null, memberCancelOn = false, inbox = null,
   /* 큐 정리용 서버 상태 읽기 (2026-11-07, lesson-queue.js). 센터 소속일 때만 넘어온다. */
   readQueueLessonStates = null }) {
   const initialDisplay = useMemo(() => {
@@ -3509,10 +3511,22 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
   const [listOpen, setListOpen] = useState(false);
   const [briefingList, setBriefingList] = useState(null);
   const [queueOpen, setQueueOpen] = useState(false);
+  const [inboxOpen, setInboxOpen] = useState(false);
+  const inboxTriggerRef = useRef(null);
   const [recordQueueRevision, setRecordQueueRevision] = useState(0);
   const scheduleTriggerRef = useRef(null);
   const queueTriggerRef = useRef(null);
   const [cursor, setCursor] = useState(todayISO());
+  const inboxLabel = inbox ? inboxStripLabel(inbox.items) : "";
+  /* 알림 하나를 누름: 읽음(안 읽은 것만) → 그 수업을 연다. 기기 일정에 아직 없으면 말한다. */
+  const pickInboxItem = (item) => {
+    if (!item?.readAt) inbox?.onRead?.(item);
+    const lesson = lessonForInboxItem(item, db.schedule);
+    if (!lesson) { onToast?.({ ok: false, msg: INBOX_COPY.NOT_SYNCED }); return; }
+    setInboxOpen(false);
+    setCursor(lesson.date || todayISO());
+    setEditing(lesson);
+  };
   const [editing, setEditing] = useState(null);
   const [del, setDel] = useState(null);
   const [focusedMemberId, setFocusedMemberId] = useState(null);
@@ -3867,6 +3881,16 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
         {/* 회원 앱에서 회원이 직접 취소한 수업 (2026-11-07, 5차 1단계). 기능이 켜진 강사만,
             오늘부터 앞으로의 것만 센다 (schedule-sync.js 의 upcomingMemberCancels). 누르면
             가장 가까운 그 수업을 연다. */}
+        {/* 강사 알림함 (2026-11-07). 읽지 않은 것이 있을 때만 띠, 오류면 띠가 코드를 말한다. */}
+        {inbox && (inboxLabel || inbox.error) ? (
+          <button type="button" data-inbox-strip ref={inboxTriggerRef} onClick={() => setInboxOpen(true)}
+            className="mb-1.5 flex h-10 w-full items-center gap-2 rounded-xl px-3 text-left"
+            style={{ backgroundColor: TINT, border: `1px solid ${RING}` }}>
+            <Bell size={14} style={{ color: PRIMARY }} />
+            <span className="min-w-0 flex-1 truncate text-sm font-extrabold" style={{ color: INK }}>{inboxLabel || inbox.error.message}</span>
+            <span className="shrink-0 text-xs font-extrabold" style={{ color: PRIMARY }}>보기</span>
+          </button>
+        ) : null}
         {memberCancelOn && memberCancelCount > 0 ? (
           <button type="button" data-member-cancel-count onClick={(e) => { if (nextMemberCancelled) { scheduleTriggerRef.current = e.currentTarget; setEditing(nextMemberCancelled); } }}
             className="mb-1.5 flex h-10 w-full items-center gap-2 rounded-xl px-3 text-left"
@@ -3895,6 +3919,11 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
         onStatus={onStatus} onStatusAll={onStatusAll} onCareGrade={onCareGrade} onNoshowFee={onNoshowFee} onGroupDone={onGroupDone}
         organizationMode={organizationMode} rateOf={rateOf} careOptionsOf={careOptionsOf} onSettleLesson={onSettleLesson} onUnsettleLesson={onUnsettleLesson} onReadMemberNote={onReadMemberNote} onSaveMemberNote={onSaveMemberNote} onToast={onToast} canUnsettle={canUnsettle}
         onNoComment={onNoComment} onSaveNote={onSaveNote} onOpenMember={onOpenMember} onFocusMemberWeek={(memberId) => { setFocusedMemberId(memberId); setEditing(null); }} />}
+      {inboxOpen && inbox && (
+        <TeacherInboxSheet items={inbox.items} error={inbox.error} members={db.members}
+          onClose={() => { setInboxOpen(false); try { inboxTriggerRef.current?.focus?.(); } catch (_error) {} }}
+          onPick={pickInboxItem} />
+      )}
       {queueOpen && (
         <ScheduleQueueSheet queue={organizedQueue} members={db.members} returnFocusRef={queueTriggerRef} onClose={() => setQueueOpen(false)}
           onSnooze={(key, on) => markQueueGroup("snoozed", key, on)}
@@ -4877,6 +4906,38 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
  * 같은 수업의 줄은 한 묶음 -- 듀엣은 한 카드다. 묶음을 고르면 그 묶음의 첫 일(확정이
  * 먼저)을 아래에서 처리한다. 묶음은 lesson-queue.js 가 만든다.
  */
+/* 강사 알림함 (2026-11-07). 회원이 회원 앱에서 취소한 수업이 여기에 한 건씩 온다.
+   누르면 읽음으로 적고 그 수업을 연다. 문구 · 판정은 features/notifications/teacher-inbox.js. */
+export function TeacherInboxSheet({ items, error, members, onClose, onPick }) {
+  const rows = (Array.isArray(items) ? items : []).map((item) => ({ item, row: inboxRow(item, members) }));
+  return (
+    <Sheet title={INBOX_COPY.TITLE} onClose={onClose}>
+      {error ? <p className="mb-2 rounded-xl px-3 py-2 text-xs font-bold" data-inbox-error style={{ backgroundColor: WARN_S, color: INK }}>{error.message}</p> : null}
+      {rows.length === 0 && !error ? <p className="py-6 text-center text-sm" style={{ color: SUB }}>{INBOX_COPY.EMPTY}</p> : null}
+      <ul className="flex flex-col gap-2">
+        {rows.map(({ item, row }) => (
+          <li key={row.id}>
+            <button type="button" data-inbox-item={row.id} onClick={() => onPick(item)}
+              className="flex w-full items-start gap-3 rounded-xl px-3 py-3 text-left"
+              style={{ backgroundColor: row.unread ? TINT : CARD, border: `1px solid ${row.unread ? RING : LINE}` }}>
+              <span aria-hidden="true" className="mt-1.5 h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: row.unread ? PRIMARY : "transparent" }} />
+              <span className="min-w-0 flex-1">
+                <span className="flex items-baseline justify-between gap-2">
+                  <span className="truncate text-sm font-extrabold" style={{ color: INK }}>{row.title}</span>
+                  <span className="shrink-0 text-xs tabular-nums" style={{ color: SUB }}>{row.received}</span>
+                </span>
+                <span className="mt-0.5 block text-sm" style={{ color: INK2 }}>{row.body}</span>
+                {row.who ? <span className="mt-0.5 block text-xs" style={{ color: SUB }}>{row.who}</span> : null}
+              </span>
+              <span className="shrink-0 self-center text-xs font-extrabold" style={{ color: PRIMARY }}>{INBOX_COPY.OPEN}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </Sheet>
+  );
+}
+
 export function ScheduleQueueSheet({ queue, members, returnFocusRef, onClose, onNoComment, onSaveNote, onOpenLesson, onSnooze, onDismissAll, onRestoreDismissed, initialTab = "", initialGroupKey = "", initialArchivedOpen = false, initialConfirmClear = false }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const tabs = queue?.tabs || { [QUEUE_TAB.TODAY]: [], [QUEUE_TAB.OVERDUE]: [], [QUEUE_TAB.ARCHIVED]: [] };
@@ -27956,6 +28017,15 @@ export function createAppScreenSmokeCases() {
     { name: "일정 탭 · 회원 취소 N건", element: provider(<ScheduleManager memberCancelOn
       db={{ ...busyDb, schedule: busyDb.schedule.map((entry, index) => (index === 0 ? { ...entry, date: "2999-01-01", attendees: (entry.attendees || []).map((attendee) => ({ ...attendee, status: "cancel", memberCancelledAt: "2026-11-07T00:00:00.000Z" })) } : entry)) }}
       photos={{}} onSave={noop} onDelete={noop} onStatus={noop} onStatusAll={noop} onNoshowFee={noop} onGroupDone={noop} onNoComment={noop} onSaveNote={noop} onToast={noop} onSettings={noop} onConsumeMemberPreset={noop} onConsumeQuickAdd={noop} onOpenMember={noop} />) },
+    { name: "일정 탭 · 강사 알림함 띠", element: provider(<ScheduleManager memberCancelOn
+      inbox={{ items: [{ id: "rec-1", lessonId: busyDb.schedule[0]?.id, clientId: "", title: "[회원 수업 취소]", body: "11/8(일) 10:00 수업이 회원 요청으로 취소되었어요", createdAt: "2026-11-07T00:00:00.000Z" }], error: null, onRead: noop }}
+      db={busyDb}
+      photos={{}} onSave={noop} onDelete={noop} onStatus={noop} onStatusAll={noop} onNoshowFee={noop} onGroupDone={noop} onNoComment={noop} onSaveNote={noop} onToast={noop} onSettings={noop} onConsumeMemberPreset={noop} onConsumeQuickAdd={noop} onOpenMember={noop} />) },
+    { name: "강사 알림함 시트", element: provider(<TeacherInboxSheet members={busyDb.members}
+      items={[{ id: "rec-1", lessonId: "L1", clientId: busyDb.members[0]?.id, title: "[회원 수업 취소]", body: "11/8(일) 10:00 수업이 회원 요청으로 취소되었어요", createdAt: "2026-11-07T00:00:00.000Z" }, { id: "rec-2", lessonId: "L2", clientId: "", title: "[회원 수업 취소]", body: "11/9(월) 19:00 듀엣 수업에서 회원 1명이 취소했어요", createdAt: "2026-11-06T00:00:00.000Z", readAt: "2026-11-06T01:00:00.000Z" }]}
+      error={null} onClose={noop} onPick={noop} />) },
+    { name: "강사 알림함 시트 · 열지 못함", element: provider(<TeacherInboxSheet members={[]} items={[]}
+      error={{ kind: "permission", code: "permission-denied", message: "알림함을 아직 열 수 없어요 (코드 permission-denied)" }} onClose={noop} onPick={noop} />) },
     { name: "운영 설정 · 회원 앱 수업 취소", element: providerWith(smokeOwner, (
       <MemberCancelAdmin organization={readyOrganizationContext(smokeOwner)} onLoadConfig={() => Promise.resolve(null)} onSaveConfig={noop} />
     )) },
@@ -30733,6 +30803,41 @@ export default function App() {
 
      강사는 본인 담당 회원만, FC매니저 · 매니저 · 대표 · 총괄매니저는 회원 목록에서
      고른 지점을 듣는다. 대표 · 총괄의 "전체" 칩은 듣지 않는다 (1단계가 맡는다). */
+  /* 강사 알림함 (2026-11-07). 회원 앱 취소가 켜진 강사만 듣는다 -- 알림이 올 일이 없는 계정에
+     듣기를 열지 않는다. 규칙이 아직 안 나갔으면 permission-denied 로 끝나고 띠가 코드를 말한다. */
+  const inboxOn = Boolean(organizationRoster) && Boolean(account?.id) && memberCancelEnabledFor(scheduleSyncConfig, account?.id);
+  const [inboxItems, setInboxItems] = useState([]);
+  const [inboxError, setInboxError] = useState(null);
+  useEffect(() => {
+    const uid = account?.id;
+    if (!inboxOn || !uid) { setInboxItems([]); setInboxError(null); return undefined; }
+    let alive = true;
+    let stop = () => {};
+    const fail = (stage) => (error) => {
+      if (!alive) return;
+      const view = inboxFailure(error);
+      setInboxError(view);
+      deviceLog("teacher_inbox_failed", {
+        feature: "teacher_inbox", stage, errorDomain: "firestore",
+        errorCode: error?.code || error?.name || "unknown", message: error?.message,
+      });
+    };
+    subscribeTeacherInbox(uid, {
+      onChange: (items) => { if (!alive) return; setInboxItems(items); setInboxError(null); },
+      onError: fail("listen"),
+    }).then((unsubscribe) => { if (alive) stop = unsubscribe; else unsubscribe(); }).catch(fail("subscribe"));
+    return () => { alive = false; stop(); };
+  }, [inboxOn, account?.id]);
+  const readInboxItem = useCallback((item) => {
+    const uid = account?.id;
+    if (!uid || !item?.id || item.readAt) return;
+    markTeacherInboxRead(uid, item.id).catch((error) => deviceLog("teacher_inbox_failed", {
+      feature: "teacher_inbox", stage: "mark_read", errorDomain: "firestore",
+      errorCode: error?.code || error?.name || "unknown", message: error?.message,
+    }));
+  }, [account?.id]);
+  const inboxProps = useMemo(() => (inboxOn ? { items: inboxItems, error: inboxError, onRead: readInboxItem } : null),
+    [inboxOn, inboxItems, inboxError, readInboxItem]);
   const rosterRealtimeOn = Boolean(organizationRoster) && rosterRealtimeEnabledFor(scheduleSyncConfig, account?.id);
   const realtimeScope = useMemo(() => (rosterRealtimeOn
     ? rosterRealtimeScope({
@@ -33255,7 +33360,7 @@ export default function App() {
         ) : null}
         <div className="relative min-h-0 flex-1 overflow-hidden">
           <Guard key={tab}>
-            {tab === "schedule" && <ScheduleManager db={rosterDb} photos={photos} readQueueLessonStates={organizationRoster && organizationContext.organizationId ? queueLessonStatesReader : null} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onCareGrade={setCareGrade} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterInMemberTab || canOpenCentreRegistration ? requestMemberRegistration : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} careOptionsOf={careOptionsFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && isOwnerLevelRole(organizationContext.role)} memberCancelOn={organizationRoster && memberCancelEnabledFor(scheduleSyncConfig, account?.id)} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} upcoming={upcomingPay} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
+            {tab === "schedule" && <ScheduleManager db={rosterDb} photos={photos} readQueueLessonStates={organizationRoster && organizationContext.organizationId ? queueLessonStatesReader : null} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onCareGrade={setCareGrade} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterInMemberTab || canOpenCentreRegistration ? requestMemberRegistration : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} careOptionsOf={careOptionsFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && isOwnerLevelRole(organizationContext.role)} memberCancelOn={organizationRoster && memberCancelEnabledFor(scheduleSyncConfig, account?.id)} inbox={inboxProps} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} upcoming={upcomingPay} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
             {tab === "members" && <div className={`h-full min-h-0 ${mobileView === "detail" && member ? "pt-member-detail-active" : ""}`}>
               <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList passSummaryOf={passSummaryFor} locations={rosterLocations} members={rosterMembers} schedule={db.schedule} settings={db.settings} organizationMode={organizationRoster} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} canBrowseAll={!organizationRoster || canBrowseAllClients(organizationContext.role)} viewerRole={organizationContext.role} viewerLocationId={organizationContext.locationId || ""} viewerLocationIds={organizationContext.locationIds || []} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterInMemberTab} centreAccount={centreAccount} onOpenCentreRegistration={canOpenCentreRegistration ? openCentreRegistration : undefined} unlinkedLocal={centreAccount && roster ? roster.unlinkedLocal || [] : []} onUploadUnlinked={canOpenCentreRegistration ? uploadUnlinkedMember : undefined} onLinkUnlinked={linkUnlinkedMember} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} journeyOf={organizationRoster ? journeyFor : undefined} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
               {mobileView === "detail" && member && <div className="pt-member-detail-pane h-full min-h-0">

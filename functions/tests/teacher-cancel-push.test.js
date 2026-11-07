@@ -275,3 +275,51 @@ test("강사 토큰 등록 통로: 센터 직원만 · 서버가 teacherPush/{ui
     callerUid: "uid-teacher", organizationId: ORG, action: "register", token: "x", platform: "web",
   }, { membershipId }), (error) => error.code === "push_platform_invalid");
 });
+
+
+/* ── 강사 알림함 (2026-11-07) ── */
+const inboxOf = (db, uid = "uid-teacher") => [...db.docs.entries()].filter(([key]) => key.startsWith(`users/${uid}/inbox/`));
+
+test("알림함: 취소마다 강사 알림함에 한 건 — 푸시 스위치가 꺼져 있어도, 이름 없이", async () => {
+  const db = seed({ teacherPush: null, devices: null });
+  const result = await cancel(db, fakeMessaging());
+  assert.equal(result.teacherNotice, TEACHER_NOTICE.OFF);
+  assert.equal(result.teacherInbox, "written");
+  const items = inboxOf(db);
+  assert.equal(items.length, 1);
+  const [path, item] = items[0];
+  assert.equal(path, `users/uid-teacher/inbox/${result.recordId}`);
+  assert.equal(item.kind, "member_cancel");
+  assert.equal(item.lessonId, "L1");
+  assert.equal(item.clientId, "client-a");
+  assert.equal(item.body, "11/8(일) 10:00 수업이 회원 요청으로 취소되었어요");
+  assert.equal(item.readAt, undefined, "서버는 읽음을 적지 않는다");
+  assert.doesNotMatch(JSON.stringify(item), /김하나/);
+});
+
+test("알림함: 두 번 눌러도 한 건 — 두 번째는 duplicate", async () => {
+  const db = seed();
+  const messaging = fakeMessaging();
+  await cancel(db, messaging);
+  const again = await cancel(db, messaging);
+  assert.equal(again.teacherInbox, "duplicate");
+  assert.equal(inboxOf(db).length, 1);
+});
+
+test("알림함 쓰기가 실패해도 취소 · 푸시는 그대로 — failed + 원본 코드 + 로그", async () => {
+  const db = seed();
+  const original = db.collection;
+  db.collection = (name) => {
+    const ref = original(name);
+    if (name !== "users") return ref;
+    return { doc: (id) => ({ collection: () => ({ doc: () => ({ create: async () => { throw Object.assign(new Error("quota"), { code: "resource-exhausted" }); } }) }) }) };
+  };
+  const log = fakeLog();
+  const messaging = fakeMessaging();
+  const result = await cancel(db, messaging, { log });
+  assert.equal(result.outcome, "cancelled");
+  assert.equal(result.teacherInbox, "failed");
+  assert.equal(result.teacherInboxCode, "resource-exhausted");
+  assert.equal(result.teacherNotice, TEACHER_NOTICE.SENT, "푸시는 따로 간다");
+  assert.ok(log.lines.some((line) => line.event === "member_cancel_inbox_failed" && line.errorCode === "resource-exhausted" && line.stage === "create"));
+});

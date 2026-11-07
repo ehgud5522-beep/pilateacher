@@ -1,5 +1,19 @@
 # 이어서 작업하기 — 최근 변경과 남은 일
 
+## 2026-11-07 — 강사 알림함 (`feat/teacher-inbox`, #152 위에 쌓음, 배포 · 병합 전)
+
+- 대표가 "실제 알림 기능 완성" 목록 중 **알림함 먼저**를 골랐다. 푸시 토큰(네이티브) · 대표 발송 현황 · 재시도는 뒤
+- 서버: 회원 취소가 되면 `users/{강사 uid}/inbox/{recordId}` 한 건 create (`writeTeacherInbox`). 푸시 스위치 · 토큰과 무관,
+  두 번 눌러도 한 건. 이름 없음(clientId 만, 강사 앱이 명단에서 이름을 찾음). 실패해도 취소 · 푸시는 그대로,
+  응답 `teacherInbox`(written · duplicate · failed · skipped) + `teacherInboxCode`, 로그 `member_cancel_inbox_failed`
+- 회원 완료 화면: 푸시 sent **또는** 알림함 written/duplicate 이면 "담당 강사님께 취소 알림을 전달했어요"
+- 강사 앱: 회원 앱 취소가 켜진 강사만 알림함을 듣는다(onSnapshot, createdAt desc 50). 일정 탭 맨 위 "새 알림 N건" 띠 →
+  시트(안 읽음 점 · 이름 · 받은 시각) → 누르면 읽음(서버 시각) + 그 수업 열기. 기기 일정에 없으면 "일정을 새로 받은 뒤"
+  안내. 못 열면 띠가 코드(`permission-denied` 등)를 말함, 진단 `teacher_inbox_failed`
+- **규칙 변경 있음**: `users/{uid}/inbox` 본인 읽기 · readAt 한 번(서버 시각)만, 만들기 · 지우기 거부. 운영본
+  `a04695f2`(11-07 09:30Z 배포분)에 이 블록 15줄만 더한 후보로 시험. **배포 순서(지시 뒤)**: 규칙 → Functions → 강사 웹 →
+  회원 앱 빌드. 규칙이 먼저 안 나가면 강사 앱 띠가 permission-denied 를 말한다(알림이 오는 강사에게만)
+
 ## 2026-11-07 — 회원 취소 → 강사 푸시 · 회원 완료 화면 (`feat/member-cancel-teacher-push`, 배포 · 병합 전)
 
 - 서버: `memberCancelLesson`(cancel) 이 트랜잭션 성공 뒤 `cancelThenNotifyTeacher`(`functions/src/teacher-cancel-push.js`)로

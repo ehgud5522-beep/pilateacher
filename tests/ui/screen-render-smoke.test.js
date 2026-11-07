@@ -154,6 +154,15 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "센터 회원 상세 · 이름 수정",
     "센터 회원 상세 · 앱 취소 횟수",
     "일정 탭 · 회원 취소 N건",
+    "취소 횟수 추가 · 경고 · 대표",
+    "취소 횟수 추가 · 경고 · 담당 강사",
+    "취소 횟수 추가 · 강사 재량 다 씀",
+    "수업 관리 · 회원 취소 (개인)",
+    "수업 관리 · 회원 취소 (듀엣 한 명)",
+    "수업 관리 · 회원 취소 확인함",
+    "일정 탭 · 강사 알림함 띠",
+    "강사 알림함 시트",
+    "강사 알림함 시트 · 열지 못함",
     "운영 설정 · 회원 앱 수업 취소",
     "센터 회원 상세 · 보관 가능",
     "센터 회원 상세 · 보관 확인",
@@ -2392,7 +2401,7 @@ test("the area manager runs the centre but never the app update setting", async 
   assert.match(hub, /강사 관리/);
   /* 접혀서 안 보이는 것과 역할로 없는 것은 다르다. 펼친 화면에서도 없다 --
      그것이 "대표만" 이다. */
-  assert.doesNotMatch(hub, /앱 업데이트 안내/);
+  assert.doesNotMatch(hub, /앱 업데이트 · 운영 스위치/);
   /* "대표 설정" 묶음 자체는 선다 -- 이관 데이터는 총괄매니저도 올린다
      (대표만인 것은 이관 **초기화** 쪽이고, 그것은 서버의 문이다). 묶음이
      사라지는 것과 그 안의 한 줄이 없는 것은 다른 일이다. */
@@ -3269,6 +3278,69 @@ test("이관 서비스 보정은 바뀔 값을 전후로 보여준다", async ()
   assert.equal(clean.includes("확인했습니다"), false, "고칠 것이 없으면 확정 버튼을 내지 않는다");
 });
 
+test("grant warning: configured base count, three reasons, before/after preview, instructor cap of one", async () => {
+  const markup = await screenMarkup();
+  const owner = markup("취소 횟수 추가 · 경고 · 대표");
+  assert.match(owner, /data-member-cancel-grant-dialog/);
+  assert.match(owner, /취소 횟수를 추가하시겠습니까\?/);
+  assert.match(owner, /기본 제공 횟수는 월 3회이며, 추가 부여는 예외적인 상황에서만 허용됩니다\./);
+  for (const label of ["건강 및 부상 등 불가피한 사유", "센터 또는 강사 일정 변경", "기타 특별 사유"]) assert.ok(owner.includes(label), label);
+  assert.match(owner, /data-member-cancel-grant-preview/);
+  assert.match(owner, /남은 취소 <b[^>]*>0<!-- -->회 → <!-- -->1<!-- -->회<\/b>|남은 취소 <b[^>]*>0회 → 1회<\/b>/);
+  assert.match(owner, /1<!-- -->회 부여|1회 부여/);
+  assert.match(owner, /<select/, "대표는 횟수를 고른다");
+  assert.doesNotMatch(owner, /사유 복사/, "복사 버튼은 없다");
+  assert.doesNotMatch(owner, /대표님 권한/, "대표에게는 재량 안내가 없다");
+
+  const teacher = markup("취소 횟수 추가 · 경고 · 담당 강사");
+  assert.match(teacher, /추가 1회까지만 줄 수 있고, 그 이상은 대표님 권한이에요 — 대표님에게 직접 요청해 주세요/);
+  assert.doesNotMatch(teacher, /<select/, "강사는 1회 고정");
+
+  const capped = markup("취소 횟수 추가 · 강사 재량 다 씀");
+  assert.match(capped, /data-member-cancel-grant-capped/);
+  assert.match(capped, /대표님에게 직접 요청해 주세요/);
+  assert.doesNotMatch(capped, />취소 횟수 추가</, "버튼 대신 안내");
+});
+
+test("member-cancelled lesson stays on the schedule: banner, confirm button, '회원 취소' badge, freed slot", async () => {
+  const markup = await screenMarkup();
+  const solo = markup("수업 관리 · 회원 취소 (개인)");
+  assert.match(solo, /data-member-cancel-banner/);
+  assert.match(solo, /회원이 앱에서 직접 취소했어요/);
+  assert.match(solo, /이 시간은 비어 있어요\. 다른 회원 수업을 넣을 수 있어요/);
+  assert.match(solo, /data-member-cancel-ack/);
+  assert.match(solo, /data-member-cancel-badge/);
+  assert.match(solo, />회원 취소</);
+
+  const duet = markup("수업 관리 · 회원 취소 (듀엣 한 명)");
+  assert.match(duet, /회원 1명이 앱에서 직접 취소했어요 · 수업은 남은 회원과 그대로 진행돼요/);
+  assert.doesNotMatch(duet, /이 시간은 비어 있어요/, "듀엣은 수업이 그대로라 빈 시간이 아니다");
+
+  const acked = markup("수업 관리 · 회원 취소 확인함");
+  assert.match(acked, />확인함</);
+  assert.doesNotMatch(acked, /data-member-cancel-ack/, "확인한 뒤에는 버튼이 없다");
+  assert.match(acked, /data-member-cancel-banner/, "확인해도 일정 · 표시는 남는다");
+});
+
+test("instructor inbox: unread strip on the schedule tab, rows with a read dot, the failure code", async () => {
+  const markup = await screenMarkup();
+  const strip = markup("일정 탭 · 강사 알림함 띠");
+  assert.match(strip, /data-inbox-strip/);
+  assert.match(strip, /새 알림 1건/);
+  assert.doesNotMatch(markup("일정 탭"), /data-inbox-strip/, "알림함이 없는 강사에게는 띠가 없다");
+
+  const sheet = markup("강사 알림함 시트");
+  assert.match(sheet, /data-inbox-item="rec-1"/);
+  assert.match(sheet, /data-inbox-item="rec-2"/);
+  assert.ok(sheet.includes("11/8(일) 10:00 수업이 회원 요청으로 취소되었어요"));
+  assert.match(sheet, /일정 보기/);
+
+  const failed = markup("강사 알림함 시트 · 열지 못함");
+  assert.match(failed, /data-inbox-error/);
+  assert.match(failed, /코드 permission-denied/);
+  assert.doesNotMatch(failed, /새 알림이 없어요/, "열지 못한 것을 '없음' 으로 말하지 않는다");
+});
+
 test("member app cancellation: the count on the first screen, the grant button, the owner's switch", async () => {
   const markup = await screenMarkup();
   const schedule = markup("일정 탭 · 회원 취소 N건");
@@ -3283,7 +3355,7 @@ test("member app cancellation: the count on the first screen, the grant button, 
   const off = markup("센터 회원 상세 · 대표");
   assert.doesNotMatch(off, /취소 횟수 추가/, "설정이 없으면 버튼이 없다");
   assert.match(off, /data-member-cancel-grant-off/);
-  assert.match(off, /운영 설정 → 회원 앱 수업 취소/);
+  assert.match(off, /대표 설정 → 앱 업데이트 · 운영 스위치 → &quot;회원 앱 수업 취소&quot;/);
 
   const admin = markup("운영 설정 · 회원 앱 수업 취소");
   assert.match(admin, /data-member-cancel-admin/);

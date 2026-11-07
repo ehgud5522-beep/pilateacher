@@ -1398,74 +1398,55 @@ test("an instructor is not offered a way to register a member", async (t) => {
 test("the pay screen says what it counted and what it did not", async (t) => {
   const markupOf = await issueScreens(t);
   const detail = markupOf("이달 예상 급여");
-
   assert.match(detail, /2026년 9월/);
   assert.match(detail, /₩130,000/);
-  // 맨 위는 확정 급여다 (2026-11-04). 확정 대기는 그 아래 따로.
-  assert.match(detail, /확정 급여/);
-  assert.match(detail, /확정된 수업 기준/);
-
-  /* 이 문구가 없으면 강사가 이 숫자를 받을 돈으로 읽고, 매달 정산 때 어긋난다. */
-  assert.match(detail, /수업료만 자동으로 계산됩니다\. 인센티브와 노쇼는 별도로 정산됩니다\./);
-
-  /* 단가별 요약 (2026-11-04): 구분 · 단가 × 건수 = 금액. 같은 카테고리의
-     세 회차가 30,000 + 30,000 + 25,000 이면 단가마다 줄이 갈린다 -- 합계만
-     보면 계산이 틀린 것처럼 보이던 것을 곱셈 한 줄로 답한다. */
-  assert.match(detail, /1:1 재등록\(정상\)/);
-  assert.match(detail, /₩45,000 × 1건 = <b[^>]*>₩45,000/);
-  assert.match(detail, /1:1 재등록\(이벤트\)/);
-  assert.match(detail, /₩30,000 × 2건 = <b[^>]*>₩60,000/);
-  assert.match(detail, /₩25,000 × 1건 = <b[^>]*>₩25,000/);
-  assert.match(detail, /합계<\/span><span[^>]*>₩130,000/);
+  assert.match(detail, /확정 수업료/);
+  assert.match(detail, /확정 대기/);
+  /* 이 문구가 없으면 강사가 이 숫자를 받을 돈으로 읽는다 -- 인센티브 · 보너스 · 세금 제외를 말한다. */
+  assert.match(detail, /수업료만 계산합니다\. 인센티브 · 노쇼 · 보너스 · 세금은 따로 정산되고/);
+  /* 단가별: 구분 · 건수 · 건당 단가 · 금액. 같은 구분이라도 단가가 다르면 줄이 갈린다. */
+  assert.match(detail, /1:1 재등록\(정상\) · 1건/);
+  assert.match(detail, /건당 ₩45,000/);
+  assert.match(detail, /1:1 재등록\(이벤트\) · 2건/);
+  assert.match(detail, /\+₩60,000/);
+  assert.match(detail, /건당 ₩25,000/);
+  assert.match(detail, /확정 수업료<\/span><span[^>]*>₩130,000/);
 });
 
 test("the list holds the whole month, grouped by week", async (t) => {
-  /* ── 2026-10-16 에 바뀐 검사 ──────────────────────────────────────
-     전에는 `최근 차감` 스무 줄이었다. 항목은 최신순이라 **스물한 번째부터
-     조용히 사라졌고**, 10월 16일에 10월 13일 이전이 안 보였다 -- 그 달의
-     급여를 설명하는 화면에서.
-
-     이제 그 달의 전부가 주 단위로 들어간다. */
+  /* 그 달의 전부가 주 단위로 들어간다 (잘라내지 않는다). */
   const markupOf = await issueScreens(t);
   const detail = markupOf("이달 예상 급여");
-  assert.match(detail, /날짜별 내역/);
+  assert.match(detail, /수업별 상세 내역/);
   assert.doesNotMatch(detail, /최근 차감/);
-
-  // 원장은 회원권만 가리키므로 회원권 → 회원으로 이어 붙인다.
   assert.match(detail, /김하나/);
-  // 그 달의 첫 주와 마지막 주가 **함께** 보인다 -- 잘라내지 않는다.
-  assert.match(detail, /9\.16/);
-  assert.match(detail, /9\.4/);
-  // 한 건의 금액은 그 항목에 박힌 단가다.
-  assert.match(detail, /₩30,000/);
-  // 주별 소계. "이번 주에 얼마" 가 바로 보여야 접은 값어치가 있다.
-  assert.match(detail, /9\.14 주/);
-
-  /* 월 선택. 월말 정산은 다음 달에 하므로 그때 강사가 자기 숫자를 확인할
-     자리가 있어야 한다. */
-  assert.match(detail, />9월</);
-  assert.match(detail, />8월</);
+  assert.match(detail, /9월 16일/);
+  assert.match(detail, /9월 4일/);
+  assert.match(detail, /\+₩30,000/);
+  assert.match(detail, /9월 14일 ~ 9월 20일/);
+  assert.match(detail, /8월 31일 ~ 9월 6일/);
+  // 달 이동 (월말 정산은 다음 달에 한다).
+  assert.match(detail, /aria-label="이전 달"/);
 });
 
 test("a collapsed week shows its subtotal and not its rows", async (t) => {
-  /* 접는 것이 요점이다 -- 한 달 치 마흔 줄을 펼쳐 두면 스크롤이 길어 결국
-     안 읽힌다. 소계는 보이고 그 안의 줄은 안 그려진다. */
+  /* 기본은 접힘 (2026-11-08 대표). 주 머리줄과 순액만, 그 안의 줄은 안 그려진다. */
   const markupOf = await issueScreens(t);
   const folded = markupOf("이달 예상 급여 · 주 접힘");
-  assert.match(folded, /8\.31 주/, "접힌 주도 머리줄은 있다");
-  assert.doesNotMatch(folded, /9\.4/, "그 안의 줄은 안 그려진다");
-  // 가장 최근 주는 펼쳐진다 -- 전부 접으면 빈 화면으로 보인다.
-  assert.match(folded, /9\.16/);
+  assert.match(folded, /8월 31일 ~ 9월 6일/, "접힌 주도 머리줄은 있다");
+  assert.match(folded, /9월 14일 ~ 9월 20일/);
+  assert.doesNotMatch(folded, /data-pay-row=/, "그 안의 줄은 안 그려진다");
+  assert.match(folded, /aria-expanded="false"/);
 });
 
 test("an empty month is not an error", async (t) => {
   const markupOf = await issueScreens(t);
   const empty = markupOf("이달 예상 급여 · 빈 달");
   assert.match(empty, /₩0/);
-  assert.match(empty, /이번 달 차감된 수업이 없습니다/);
+  assert.match(empty, /이 달에 확정된 수업이 없습니다/);
   assert.doesNotMatch(empty, /불러오지 못했습니다/);
   // 범위 안내는 0원일 때도 있어야 한다.
-  assert.match(empty, /수업료만 자동으로 계산됩니다/);
+  assert.match(empty, /수업료만 계산합니다/);
 });
 
 test("a failed read never shows itself as zero won", async (t) => {
@@ -2591,22 +2572,17 @@ test("the handover is blocked until the taught-but-unsettled lessons are closed"
 });
 
 test("the pay sheet keeps its month off the close button", async (t) => {
-  /* 390px 에서 "2026년 10월" 이 X 와 겹쳐 보이고 노치에 윗줄이 잘렸다.
-     달·금액이 한 덩어리로 왼쪽에 서고 X 가 그 옆이라, 폭이 좁아지면 X 가
-     달 이름 줄로 내려왔다.
-
-     **달 이름과 X 가 같은 줄이고, 금액은 그 아래 줄이다.** 한 줄에 셋을
-     두면 폭이 좁아지는 순간 다시 겹친다. */
+  /* 전체 화면 (2026-11-08): 위 한 줄에 뒤로 · 제목 · 달 이동. 금액은 그 줄에 없다 --
+     좁은 폭에서 겹치지 않게, 스크롤해도 남게(sticky). */
   const markupOf = await issueScreens(t);
   const sheet = markupOf("이달 예상 급여");
-
-  const header = sheet.match(/<div class="flex min-h-8 items-center gap-2">[\s\S]*?<\/div>/);
-  assert.ok(header, "달 이름과 X 가 자기 줄로 서야 한다");
+  const header = sheet.match(/<header[\s\S]*?<\/header>/);
+  assert.ok(header, "위 줄이 따로 있다");
+  assert.match(header[0], /sticky top-0/);
+  assert.match(header[0], /aria-label="뒤로"/);
+  assert.match(header[0], /내 급여/);
   assert.match(header[0], /2026년 9월/);
-  assert.match(header[0], /aria-label="닫기"/);
   assert.doesNotMatch(header[0], /₩/, "금액은 이 줄에 없다");
-  // 금액 줄은 넘치면 줄바꿈한다. 좁은 폭에서 "예상 급여" 가 밀려나지 않는다.
-  assert.match(sheet, /<div class="mt-1 flex flex-wrap items-end gap-x-2">/);
 });
 
 test("the product screen becomes a list on a phone, with the same numbers", async (t) => {

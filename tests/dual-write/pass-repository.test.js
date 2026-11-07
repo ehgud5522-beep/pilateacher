@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  activeRemainingTotal, cancelPass, correctDeduction, correctionEntryId, createFirestorePassStore,
-  deductPass, isCancellablePass, isCorrectableEntry, isCorrectedEntry, isDeductablePass,
+  DEDUCT_BACKDATE_LIMIT_DAYS, activeRemainingTotal, cancelPass, correctDeduction, correctionEntryId, createFirestorePassStore,
+  deductPass, settleDeadline, isCancellablePass, isCorrectableEntry, isCorrectedEntry, isDeductablePass,
   isExpiredPass, issuePass, listPassLedger, listPasses, loadClientPassHistory,
   readInstructorClientSessions, remainingCountOf, transferPassInstructor,
 } from "../../src/data/repositories/pass-repository.js";
@@ -787,6 +787,23 @@ test("a lesson time in the future or long past is refused, each with its own cod
     );
     assert.equal(store.calls.commit.length, 0);
   }
+});
+
+test("확정 마감 경계는 settleDeadline 하나 -- 마감 순간부터 거절, 1ms 전은 받는다 (큐와 같은 선)", async () => {
+  /* "확인할 수업" 큐(lesson-queue.js)가 같은 settleDeadline 으로 지난 항목을 가른다.
+     둘이 어긋나면 큐에 남은 수업이 눌러도 거절되거나, 확정할 수 있는 수업이 사라진다. */
+  const now = new Date("2026-09-17T12:00:00.000Z").getTime();
+  const exact = new Date(now - DEDUCT_BACKDATE_LIMIT_DAYS * 86400000);
+  assert.equal(settleDeadline(exact).getTime(), now);
+  const refusedStore = fakeStore();
+  await assert.rejects(
+    () => deductPass(ORG, activePass(), deductInput({ occurredAt: exact }), deductOptions(refusedStore)),
+    (error) => /** @type {any} */ (error).code === "occurred_at_too_old",
+  );
+  assert.equal(refusedStore.calls.commit.length, 0);
+  const acceptedStore = fakeStore();
+  await deductPass(ORG, activePass(), deductInput({ occurredAt: new Date(exact.getTime() + 1) }), deductOptions(acceptedStore));
+  assert.equal(acceptedStore.calls.commit.length, 1);
 });
 
 test("a lesson inside the window is accepted", async () => {

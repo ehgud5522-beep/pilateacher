@@ -17,7 +17,7 @@ import { TYPE } from "../../src/features/ui/type-scale.js";
 import { BRAND_MARK } from "./brand.js";
 import { classifyPhoneAuthError } from "./auth-errors.js";
 import {
-  deleteMemberAccount, linkMemberAccount, memberPushSettings, resetRecaptcha, signOutMember, startPhoneSignIn,
+  callMemberCancel, deleteMemberAccount, linkMemberAccount, memberPushSettings, resetRecaptcha, signOutMember, startPhoneSignIn,
   watchAuth, db,
 } from "./firebase.js";
 import {
@@ -39,6 +39,7 @@ import {
   DeleteAccountGuide, Diagnostics, Home, LinkNotice, LoadFailed, Loading, MyPage,
   NotMigrated, Preparing, Records, SlowConnection,
 } from "./screens.jsx";
+import { LessonSheet } from "./lesson-sheet.jsx";
 
 /* 아이콘은 인라인 SVG 다. 아이콘 묶음을 하나 들이면 번들이 늘고, 이 앱이
    쓰는 것은 넷뿐이다. */
@@ -340,6 +341,11 @@ function Member({ userId, initialTab = "home" }) {
     permission: PUSH_PERMISSION.UNKNOWN, prefs: DEFAULT_PREFS, saving: "", errorCode: "",
   }));
   const recordPush = useCallback((entry) => recordDiagnostic({ feature: MEMBER_FEATURE.PUSH, ...entry }), []);
+  /* 수업 상세 (2026-11-07, 수업 취소). 취소한 수업은 서버가 회원 데이터를 다시 만들기
+     전(몇 초)에도 목록에서 바로 뺀다 -- 방금 취소한 수업이 그대로 보이면 회원은
+     취소가 안 된 줄 안다. */
+  const [openLesson, setOpenLesson] = useState(null);
+  const [cancelledIds, setCancelledIds] = useState(() => new Set());
 
   /* quiet: 앱으로 돌아왔을 때 조용히 다시 읽는다. 화면을 "잠시만요" 로 바꾸지
      않고, 실패하면 보던 것을 그대로 둔다 -- 돌아올 때마다 깜빡이거나 오류를
@@ -564,7 +570,13 @@ function Member({ userId, initialTab = "home" }) {
         onToggle: state.offlineAt ? undefined : savePushPref, onEnable: askPushAgain,
       }} />;
   }
-  else body = <Home view={current.view} onOpenRecords={() => setTab("records")} />;
+  else {
+    const schedule = Array.isArray(current.view.schedule)
+      ? current.view.schedule.filter((lesson) => !cancelledIds.has(text(lesson?.lessonId)))
+      : current.view.schedule;
+    body = <Home view={{ ...current.view, schedule }} onOpenRecords={() => setTab("records")}
+      onOpenLesson={setOpenLesson} />;
+  }
 
   /* 회원 데이터가 없으면 어느 탭이든 "준비 중" 이라 마이페이지의 로그아웃도
      없다. 그때만 머리줄에 둔다. */
@@ -590,6 +602,15 @@ function Member({ userId, initialTab = "home" }) {
         </div>
       ) : null}
       {body}
+      {openLesson && current ? (
+        <LessonSheet lesson={openLesson} place={current.link} offline={Boolean(state.offlineAt)}
+          api={callMemberCancel}
+          onClose={() => setOpenLesson(null)}
+          onCancelled={(lessonId) => {
+            setCancelledIds((previous) => new Set([...previous, text(lessonId)]));
+            load({ quiet: true });
+          }} />
+      ) : null}
     </Shell>
   );
 }

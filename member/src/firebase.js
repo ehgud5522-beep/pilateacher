@@ -174,6 +174,17 @@ export async function memberPushSettings(payload) {
 }
 
 /**
+ * 수업 취소 (2026-11-07, 5차 1단계). action "status" 는 쓰지 않고 버튼 · 마감 · 남은
+ * 횟수만 묻는다. "cancel" 이 취소한다. 판정은 전부 서버가 한다 -- 마감도 서버 시각.
+ * 보내는 것은 어느 수업인지뿐이고, 본인 확인은 서버가 토큰의 uid 로 한다.
+ */
+export async function callMemberCancel({ action, organizationId, clientId, lessonId }) {
+  const call = httpsCallable(functions, "memberCancelLesson");
+  const response = await call({ action, organizationId, clientId, lessonId });
+  return response?.data || null;
+}
+
+/**
  * 로그아웃. 다음 사람이 이 기기에서 인증할 때 쓸 reCAPTCHA 도 새로 만든다.
  *
  * 회원이 누른 로그아웃은 실패를 던진다 -- 끊기지 않았는데 조용히 넘어가면

@@ -441,3 +441,26 @@ body {
   line-height: 1.6;
   resize: vertical;
 }
+
+/* ── 수업 상세 · 취소 (2026-11-07) ─────────────────────────────────────
+   아래에서 올라오는 시트. 취소는 되돌릴 수 없어 확인을 한 번 더 받고, 막힌
+   이유는 버튼 바로 아래에 둔다 -- 꺼진 버튼만 있으면 왜인지 모른다. */
+.sheetwrap {
+  position: fixed; inset: 0; z-index: 50;
+  display: flex; align-items: flex-end; justify-content: center;
+  background: rgba(0, 0, 0, .32);
+}
+.sheet {
+  width: 100%; max-width: 480px;
+  max-height: 88vh; overflow-y: auto;
+  padding: 18px 16px calc(20px + env(safe-area-inset-bottom));
+  border-radius: 20px 20px 0 0;
+  background: var(--page);
+  color: var(--ink);
+}
+.sheethead { display: flex; align-items: center; justify-content: space-between; }
+.sheethead .cap { font-size: var(--t-caption); color: var(--rose); letter-spacing: .06em; }
+.sheethead .x { min-width: 44px; min-height: 44px; border: 0; background: none; color: var(--sub); font-size: 16px; }
+.sheet .name { font-size: 20px; font-weight: 700; margin: 4px 0 2px; }
+.cancelbox { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+.cancelbox .blocked { margin-top: 10px; font-size: var(--t-caption); color: var(--sub); word-break: keep-all; line-height: 1.6; }

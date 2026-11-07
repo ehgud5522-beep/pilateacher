@@ -1,22 +1,33 @@
 /**
- * "확인할 수업" 큐 정리 (2026-11-07 대표 결정): 서버 대조 · 11월 1일 컷오프 · 30일 관리자
- * 확인 · 듀엣 한 묶음 · 다른 기기 확정은 완료 · 진단 개수.
+ * "확인할 수업" 큐 정리 (2026-11-07 대표 결정): 서버 대조 · 11월 1일 컷오프 · 확정 마감(7일)이
+ * 지나면 지난 항목 · 마감 표시 · 듀엣 한 묶음 · 다른 기기 확정은 완료 · 진단 개수.
  */
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  QUEUE_CUTOFF, QUEUE_TAB, SERVER_STATE, SERVER_STATE_READ_LIMIT, SERVER_STATE_TTL_MS,
-  lessonIdsToCheck, mergeServerCache, organizeLessonQueue, readQueueCounts, readQueueMarks,
+  DEADLINE_WARN_DAYS, QUEUE_CUTOFF, QUEUE_TAB, QUEUE_TABS, SERVER_STATE, SERVER_STATE_READ_LIMIT, SERVER_STATE_TTL_MS,
+  deadlineBadgeOf, lessonIdsToCheck, mergeServerCache, organizeLessonQueue, queueDeadlineOf, readQueueCounts, readQueueMarks,
   readServerCache, serverStateOf, serverStatesFromCache, writeQueueCounts, writeQueueMarks, writeServerCache,
+  DISMISS_KEEP_DAYS, dismissQueueGroups, restoreDismissedGroups,
 } from "../../src/features/schedule/lesson-queue.js";
+import { DEDUCT_BACKDATE_LIMIT_DAYS, settleDeadline } from "../../src/data/repositories/pass-repository.js";
 
 const TODAY = "2026-11-07";
+const NOW = new Date(`${TODAY}T12:00:00`).getTime();
 const lesson = (id, date, extra = {}) => ({ id, date, start: "10:00", attendees: [], ...extra });
 const task = (kind, memberId, l, extra = {}) => ({ key: `${kind}|${memberId}|${l?.id || "none"}`, kind, memberId, lessonId: l?.id || "", s: l, ...extra });
-const organize = (tasks, serverStates = {}, extra = {}) => organizeLessonQueue({ tasks, today: TODAY, serverStates, ...extra });
+const organize = (tasks, serverStates = {}, extra = {}) => organizeLessonQueue({ tasks, today: TODAY, now: NOW, serverStates, ...extra });
 const keys = (list) => list.map((group) => group.key);
+
+test("탭은 셋 -- 오늘 · 지난 미처리 · 지난 항목. 관리자 확인 탭은 없다", () => {
+  assert.deepEqual(QUEUE_TABS, ["today", "overdue", "archived"]);
+  assert.equal(QUEUE_TAB.ADMIN, undefined);
+  const queue = organize([task("attendance", "m1", lesson("L", "2026-11-05"))]);
+  assert.deepEqual(Object.keys(queue.tabs).sort(), ["archived", "overdue", "today"]);
+  assert.equal(queue.adminCount, undefined);
+});
 
 test("서버 상태: 완료 · 취소 · 삭제 표시 · 예정 · 없음", () => {
   assert.equal(serverStateOf({ status: "completed" }), SERVER_STATE.COMPLETED);
@@ -38,7 +49,7 @@ test("서버에서 끝난 수업은 큐에서 빠지고 '완료인데 남은 것
     { "L-done": SERVER_STATE.COMPLETED, "L-removed": SERVER_STATE.REMOVED, "L-open": SERVER_STATE.SCHEDULED },
   );
   assert.deepEqual(keys(queue.tabs[QUEUE_TAB.OVERDUE]).sort(), ["lesson|L-open", "lesson|L-unknown"]);
-  assert.deepEqual(queue.counts, { doneElsewhere: 2, pending: 1, unknown: 1, archived: 0 });
+  assert.deepEqual(queue.counts, { doneElsewhere: 2, pending: 1, unknown: 1, archived: 0, expired: 0, dismissed: 0 });
 });
 
 test("이 기기가 확정한 수업의 기록은 서버가 완료여도 남는다 -- 진짜 할 일", () => {
@@ -47,17 +58,24 @@ test("이 기기가 확정한 수업의 기록은 서버가 완료여도 남는�
   assert.equal(queue.tabs[QUEUE_TAB.OVERDUE].length, 1);
 });
 
-test("다른 기기에서 확정돼 잠긴 수업은 완료로 본다 (서버를 묻지 않았어도)", () => {
+test("다른 기기에서 확정돼 잠긴 수업은 완료로 본다 -- 어느 탭에도 없다 (서버를 묻지 않았어도)", () => {
   const locked = lesson("L-locked", "2026-11-06", { settledElsewhereAt: "2026-11-06T03:00:00Z" });
   const queue = organize([task("attendance", "m1", locked), task("attendance", "m2", locked)]);
   assert.equal(queue.total, 0);
+  for (const tab of QUEUE_TABS) assert.equal(queue.tabs[tab].length, 0, tab);
   assert.equal(queue.counts.doneElsewhere, 1, "한 수업은 한 번 센다");
+  // 마감이 지났어도 지난 항목이 아니라 완료다.
+  const oldLocked = lesson("L-old-locked", "2026-11-02", { settledElsewhereAt: "2026-11-02T03:00:00Z" });
+  const later = organize([task("attendance", "m1", oldLocked)], {}, { now: new Date("2026-11-20T12:00:00").getTime(), today: "2026-11-20" });
+  assert.equal(later.total, 0);
+  assert.equal(later.counts.doneElsewhere, 1);
+  assert.equal(later.counts.archived, 0);
 });
 
 test("11월 1일 이전은 '지난 항목' 에만 -- 요약에 세지 않는다", () => {
   assert.equal(QUEUE_CUTOFF, "2026-11-01");
-  const october = lesson("L-oct", "2026-10-30");
-  const first = lesson("L-nov1", "2026-11-01");
+  const october = lesson("L-oct", "2026-10-31");
+  const first = lesson("L-nov1", "2026-11-01", { start: "23:00" });
   const queue = organize([task("attendance", "m1", october), task("attendance", "m2", first)]);
   assert.deepEqual(keys(queue.tabs[QUEUE_TAB.ARCHIVED]), ["lesson|L-oct"]);
   assert.deepEqual(keys(queue.tabs[QUEUE_TAB.OVERDUE]), ["lesson|L-nov1"]);
@@ -65,28 +83,81 @@ test("11월 1일 이전은 '지난 항목' 에만 -- 요약에 세지 않는다"
   assert.equal(queue.todayCount, 0);
   assert.equal(queue.overdueCount, 1);
   assert.equal(queue.counts.archived, 1);
+  assert.equal(queue.counts.expired, 0, "컷오프로 간 것은 '마감 지남' 이 아니다");
 });
 
-test("개인 강사에게는 컷오프가 없다 (부르는 쪽이 0000-00-00 을 준다)", () => {
-  const queue = organize([task("attendance", "m1", lesson("L-oct", "2026-10-30"))], {}, { cutoff: "0000-00-00" });
-  assert.equal(queue.tabs[QUEUE_TAB.OVERDUE].length, 1);
+test("개인 강사에게는 컷오프가 없다 (부르는 쪽이 0000-00-00 을 준다) -- 마감은 같다", () => {
+  const recent = organize([task("attendance", "m1", lesson("L-recent", "2026-11-03"))], {}, { cutoff: "0000-00-00" });
+  assert.equal(recent.tabs[QUEUE_TAB.OVERDUE].length, 1);
+  const old = organize([task("attendance", "m1", lesson("L-oct", "2026-10-30"))], {}, { cutoff: "0000-00-00" });
+  assert.equal(old.tabs[QUEUE_TAB.ARCHIVED].length, 1, "확정할 수 없는 수업은 개인 모드에서도 지난 항목");
 });
 
-test("오늘 · 지난 미처리 · 30일 넘으면 관리자 확인", () => {
-  const tasks = [
-    task("attendance", "m1", lesson("L-today", "2026-12-15")),
-    task("attendance", "m2", lesson("L-30", "2026-11-15")), // 정확히 30일 -- 아직 지난 미처리
-    task("attendance", "m3", lesson("L-31", "2026-11-14")), // 31일 -- 관리자 확인
-  ];
-  const queue = organizeLessonQueue({ tasks, today: "2026-12-15", serverStates: {} });
-  assert.deepEqual(keys(queue.tabs[QUEUE_TAB.TODAY]), ["lesson|L-today"]);
-  assert.deepEqual(keys(queue.tabs[QUEUE_TAB.OVERDUE]), ["lesson|L-30"]);
-  assert.deepEqual(keys(queue.tabs[QUEUE_TAB.ADMIN]), ["lesson|L-31"]);
-  assert.equal(queue.todayCount, 1);
-  assert.equal(queue.adminCount, 1);
+/* ── 확정 마감: 확정과 같은 선 ──────────────────────────────────────────── */
+
+test("마감은 확정 검사와 같은 helper -- 수업 시작 + 7일", () => {
+  assert.equal(DEDUCT_BACKDATE_LIMIT_DAYS, 7);
+  const deadline = queueDeadlineOf(lesson("L", "2026-11-03", { start: "19:00" }));
+  assert.equal(deadline.getTime(), settleDeadline(new Date("2026-11-03T19:00:00")).getTime());
+  assert.equal(deadline.getTime(), new Date("2026-11-10T19:00:00").getTime());
+  assert.equal(queueDeadlineOf(null), null, "수업 없는 항목은 마감이 없다");
 });
 
-test("듀엣 한 수업의 줄은 한 묶음 -- 회원 둘 + 확정 하나도 1건", () => {
+test("7일째와 8일째 경계 -- 마감 순간부터 지난 항목, 그 직전까지는 지난 미처리", () => {
+  const l = lesson("L-edge", "2026-11-03", { start: "19:00" });
+  const tasks = [task("attendance", "m1", l)];
+  const at = (iso, today) => organizeLessonQueue({ tasks, today, now: new Date(iso).getTime(), serverStates: {} });
+  // 7일째(11/10) 마감 1분 전: 아직 확정할 수 있다 -- 지난 미처리, "오늘까지".
+  const before = at("2026-11-10T18:59:00", "2026-11-10");
+  assert.deepEqual(keys(before.tabs[QUEUE_TAB.OVERDUE]), ["lesson|L-edge"]);
+  assert.equal(before.tabs[QUEUE_TAB.OVERDUE][0].badge.label, "오늘까지 확정해야 해요");
+  // 마감 그 순간: 규칙이 거절한다(occurredAt > now - 7d 가 거짓) -- 지난 항목.
+  const exact = at("2026-11-10T19:00:00", "2026-11-10");
+  assert.deepEqual(keys(exact.tabs[QUEUE_TAB.ARCHIVED]), ["lesson|L-edge"]);
+  assert.equal(exact.tabs[QUEUE_TAB.ARCHIVED][0].expired, true);
+  assert.equal(exact.counts.expired, 1);
+  assert.equal(exact.overdueCount, 0, "첫 화면 숫자에서 빠진다");
+  // 8일째(11/11): 지난 항목.
+  const eighth = at("2026-11-11T09:00:00", "2026-11-11");
+  assert.equal(eighth.tabs[QUEUE_TAB.ARCHIVED].length, 1);
+  assert.equal(eighth.tabs[QUEUE_TAB.ARCHIVED][0].badge, null, "지난 항목에는 마감 표시가 없다");
+});
+
+test("출석 · 확정 · 기록 알림 모두 같은 마감으로 넘어간다", () => {
+  const l = lesson("L-all", "2026-10-31", { start: "10:00" });
+  const tasks = [task("attendance", "m1", l), task("settlement", "m1", l), task("note", "m2", l)];
+  const queue = organizeLessonQueue({ tasks, today: "2026-11-08", now: new Date("2026-11-08T10:00:00").getTime(), serverStates: {}, cutoff: "0000-00-00" });
+  assert.deepEqual(keys(queue.tabs[QUEUE_TAB.ARCHIVED]), ["lesson|L-all"]);
+  assert.equal(queue.tabs[QUEUE_TAB.ARCHIVED][0].tasks.length, 3);
+});
+
+test("마감 표시: 2일 · 1일 · 0일 남았을 때만, 문구는 모레 · 내일 · 오늘", () => {
+  assert.equal(DEADLINE_WARN_DAYS, 2);
+  const deadline = new Date("2026-11-10T19:00:00");
+  const badge = (iso) => deadlineBadgeOf(deadline, new Date(iso).getTime());
+  assert.equal(badge("2026-11-07T23:00:00"), null, "3일 전에는 없다");
+  assert.deepEqual(badge("2026-11-08T09:00:00"), { daysLeft: 2, label: "모레까지 확정해야 해요" });
+  assert.deepEqual(badge("2026-11-09T09:00:00"), { daysLeft: 1, label: "내일까지 확정해야 해요" });
+  assert.deepEqual(badge("2026-11-10T18:59:00"), { daysLeft: 0, label: "오늘까지 확정해야 해요" });
+  assert.equal(badge("2026-11-10T19:00:00"), null, "마감이 지나면 없다");
+  assert.equal(deadlineBadgeOf(null, NOW), null);
+});
+
+test("마감 표시는 확정하지 않은 수업에만, 날짜 없는 항목에는 없다", () => {
+  const near = lesson("L-near", "2026-11-01", { start: "13:00" }); // 마감 11/8 13:00 -- 11/7 기준 내일
+  const settledHere = lesson("L-mine", "2026-11-01", { start: "13:00", orgSettledAt: "2026-11-01T05:00:00Z" });
+  const queue = organize([
+    task("attendance", "m1", near),
+    task("note", "m2", settledHere),
+    { key: "m3|draft", kind: "local_draft", memberId: "m3", lessonId: "", s: null, session: { date: "" } },
+  ]);
+  const byKey = Object.fromEntries(queue.tabs[QUEUE_TAB.OVERDUE].map((group) => [group.key, group]));
+  assert.equal(byKey["lesson|L-near"].badge.label, "내일까지 확정해야 해요");
+  assert.equal(byKey["lesson|L-mine"].badge, null, "이 기기에서 확정한 수업의 기록 알림에는 달지 않는다");
+  assert.equal(byKey["m3|draft"].badge, null);
+});
+
+test("듀엣 한 수업의 줄은 한 묶음 -- 회원 둘 + 확정 하나도 1건, 마감도 함께 넘어간다", () => {
   const duet = lesson("L-duet", TODAY);
   const queue = organize([task("note", "m1", duet), task("attendance", "m2", duet), task("settlement", "m1", duet)]);
   assert.equal(queue.todayCount, 1);
@@ -94,36 +165,61 @@ test("듀엣 한 수업의 줄은 한 묶음 -- 회원 둘 + 확정 하나도 1�
   assert.deepEqual(group.memberIds, ["m1", "m2"]);
   assert.equal(group.tasks[0].kind, "settlement", "확정이 먼저");
   assert.equal(group.tasks.length, 3);
+
+  const oldDuet = lesson("L-old-duet", "2026-11-02", { start: "09:00" });
+  const later = organizeLessonQueue({
+    tasks: [task("attendance", "m1", oldDuet), task("attendance", "m2", oldDuet), task("settlement", "m1", oldDuet)],
+    today: "2026-11-09", now: new Date("2026-11-09T10:00:00").getTime(), serverStates: {},
+  });
+  assert.deepEqual(keys(later.tabs[QUEUE_TAB.ARCHIVED]), ["lesson|L-old-duet"], "한 카드로 함께 지난 항목");
+  assert.equal(later.tabs[QUEUE_TAB.ARCHIVED][0].tasks.length, 3);
+  assert.equal(later.tabs[QUEUE_TAB.OVERDUE].length, 0);
 });
 
-test("수업 없는 기록 확인 · 초안은 각자 한 묶음으로 지난 미처리에 남는다", () => {
+test("수업 없는 기록 확인 · 초안은 각자 한 묶음으로 지난 미처리에 남는다 (마감 없음)", () => {
   const queue = organize([{ key: "m1|session-x", kind: "confirmation", memberId: "m1", lessonId: "", s: null, session: { date: "" } }]);
   assert.deepEqual(keys(queue.tabs[QUEUE_TAB.OVERDUE]), ["m1|session-x"]);
   assert.equal(queue.counts.unknown, 1);
 });
 
-test("보류는 요약에서 빠지고 목록에는 남는다 · 관리자 확인으로 보낸 것은 그 탭으로", () => {
+test("보류는 요약에서 빠지고 목록에는 남는다", () => {
   const a = lesson("L-a", TODAY);
   const b = lesson("L-b", "2026-11-05");
   const queue = organize([task("attendance", "m1", a), task("attendance", "m2", b)], {}, {
-    snoozed: { "lesson|L-a": true }, escalated: { "lesson|L-b": true },
+    snoozed: { "lesson|L-a": true, "lesson|L-b": true },
   });
   assert.equal(queue.todayCount, 0);
+  assert.equal(queue.overdueCount, 0);
   assert.equal(queue.tabs[QUEUE_TAB.TODAY][0].snoozed, true);
-  assert.deepEqual(keys(queue.tabs[QUEUE_TAB.ADMIN]), ["lesson|L-b"]);
+  assert.deepEqual(keys(queue.tabs[QUEUE_TAB.OVERDUE]), ["lesson|L-b"], "보류는 지난 미처리에 남는다");
 });
 
-test("서버에 물을 id: 지난 항목은 묻지 않고, TTL 안의 답은 다시 묻지 않고, 상한까지만", () => {
-  const now = 1_000_000_000;
+test("첫 화면 숫자는 지난 항목을 세지 않는다", () => {
+  const queue = organize([
+    task("attendance", "m1", lesson("L-today", TODAY)),
+    task("attendance", "m2", lesson("L-recent", "2026-11-05")),
+    task("attendance", "m3", lesson("L-expired", "2026-11-01", { start: "09:00" })), // 마감 11/8 09:00 -- 아직
+    task("attendance", "m4", lesson("L-gone", "2026-10-31")),
+  ]);
+  assert.equal(queue.todayCount, 1);
+  assert.equal(queue.overdueCount, 2);
+  assert.equal(queue.archivedCount, 1);
+});
+
+test("서버에 물을 id: 지난 항목(컷오프 · 마감 지남)은 묻지 않고, TTL 안의 답은 다시 묻지 않고, 상한까지만", () => {
+  const now = new Date("2026-11-07T12:00:00").getTime();
   const tasks = [
     task("attendance", "m1", lesson("L-oct", "2026-10-30")),
+    task("attendance", "m0", lesson("L-expired", "2026-11-01", { start: "08:00" })), // 마감 11/8 08:00 -- 아직 묻는다
     task("attendance", "m2", lesson("L-fresh", "2026-11-05")),
     task("attendance", "m3", lesson("L-stale", "2026-11-05")),
     task("attendance", "m4", lesson("L-new", "2026-11-05")),
     task("note", "m5", lesson("L-new", "2026-11-05")),
   ];
   const cache = { "L-fresh": { state: "scheduled", at: now - 1000 }, "L-stale": { state: "scheduled", at: now - SERVER_STATE_TTL_MS - 1 } };
-  assert.deepEqual(lessonIdsToCheck({ tasks, cache, now }), ["L-stale", "L-new"]);
+  assert.deepEqual(lessonIdsToCheck({ tasks, cache, now }), ["L-expired", "L-stale", "L-new"]);
+  const later = new Date("2026-11-08T09:00:00").getTime();
+  assert.deepEqual(lessonIdsToCheck({ tasks, cache: {}, now: later }), ["L-fresh", "L-stale", "L-new"], "마감이 지나면 묻지 않는다");
   const many = Array.from({ length: SERVER_STATE_READ_LIMIT + 10 }, (_, i) => task("attendance", `m${i}`, lesson(`L-${i}`, "2026-11-05")));
   assert.equal(lessonIdsToCheck({ tasks: many, cache: {}, now }).length, SERVER_STATE_READ_LIMIT);
 });
@@ -134,17 +230,55 @@ test("캐시: 읽은 것만 바꾸고, 못 읽은 id 는 예전 답을 둔다", 
   assert.deepEqual(serverStatesFromCache(next), { old: "scheduled", a: "completed", b: "unknown" });
 });
 
-test("기기 저장: 캐시 · 표시 · 진단 개수 -- 저장소가 없거나 깨져도 던지지 않는다", () => {
+test("기기 저장: 캐시 · 보류 · 진단 개수 -- 저장소가 없거나 깨져도 던지지 않는다", () => {
   const box = new Map();
   const storage = { getItem: (k) => (box.has(k) ? box.get(k) : null), setItem: (k, v) => box.set(k, v) };
   writeServerCache(storage, { a: { state: "completed", at: 2 } });
   assert.deepEqual(readServerCache(storage), { a: { state: "completed", at: 2 } });
-  writeQueueMarks(storage, { snoozed: { x: true }, escalated: {} });
-  assert.deepEqual(readQueueMarks(storage), { snoozed: { x: true }, escalated: {} });
-  writeQueueCounts(storage, { doneElsewhere: 1, pending: 2, unknown: 3, archived: 4 }, 99, 7);
-  assert.deepEqual(readQueueCounts(storage), { doneElsewhere: 1, pending: 2, unknown: 3, archived: 4, reads: 7, at: 99 });
+  // 예전 기기에 남은 관리자 확인 표시는 읽지 않는다.
+  writeQueueMarks(storage, { snoozed: { x: true }, escalated: { y: true } });
+  assert.deepEqual(readQueueMarks(storage), { snoozed: { x: true }, dismissed: {} });
+  writeQueueCounts(storage, { doneElsewhere: 1, pending: 2, unknown: 3, archived: 4, expired: 1 }, 99, 7);
+  assert.deepEqual(readQueueCounts(storage), { doneElsewhere: 1, pending: 2, unknown: 3, archived: 4, expired: 1, reads: 7, at: 99 });
   const broken = { getItem: () => "{not json", setItem: () => { throw new Error("full"); } };
   assert.deepEqual(readServerCache(broken), {});
   assert.doesNotThrow(() => writeServerCache(broken, {}));
   assert.equal(readQueueCounts(null), null);
+});
+
+/* ── 모두 지우기 (2026-11-07 대표): 목록에서만 뺀다, 처리 안 된 것은 그대로 ───── */
+
+test("모두 지우기: 모든 탭이 비고 숨긴 수가 남는다 · 수업 · 출석 데이터는 그대로 · 다시 보기로 돌아온다", () => {
+  const today = lesson("A", TODAY, { attendees: [{ memberId: "m1", status: "booked" }] });
+  const tasks = [
+    task("attendance", "m1", today),
+    task("attendance", "m2", lesson("B", "2026-11-05")),
+    task("attendance", "m3", lesson("C", "2026-10-20")),
+  ];
+  const before = organize(tasks);
+  const snapshot = JSON.stringify(tasks);
+  const marks = dismissQueueGroups({ snoozed: { x: true } }, Object.values(before.tabs).flat(), TODAY);
+  const after = organize(tasks, {}, { dismissed: marks.dismissed, snoozed: marks.snoozed });
+  assert.equal(after.total, 0);
+  assert.equal(after.todayCount, 0);
+  assert.equal(after.dismissedCount, 3);
+  assert.equal(after.counts.dismissed, 3);
+  assert.equal(JSON.stringify(tasks), snapshot, "큐 판정은 수업 · 출석을 바꾸지 않는다");
+  assert.equal(today.attendees[0].status, "booked", "출석은 처리 안 된 그대로");
+  assert.deepEqual(marks.snoozed, { x: true }, "보류 표시는 지키고");
+  /* 새로 생긴 수업은 숨겨지지 않는다 */
+  const later = organize([...tasks, task("attendance", "m1", lesson("D", TODAY))], {}, { dismissed: marks.dismissed });
+  assert.deepEqual(keys(later.tabs.today), ["lesson|D"]);
+  const restored = restoreDismissedGroups(marks);
+  assert.equal(organize(tasks, {}, { dismissed: restored.dismissed }).total, 3);
+});
+
+test("숨긴 표시는 기기에 저장되고, 90일 지난 수업의 표시는 정리된다", () => {
+  const store = new Map();
+  const storage = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)) };
+  const marks = dismissQueueGroups({ dismissed: { "lesson|old": "2026-07-01", "lesson|keep": "2026-10-01" } }, [{ key: "lesson|new", date: "2026-11-06" }], TODAY);
+  assert.deepEqual(Object.keys(marks.dismissed).sort(), ["lesson|keep", "lesson|new"]);
+  assert.equal(DISMISS_KEEP_DAYS, 90);
+  writeQueueMarks(storage, marks);
+  assert.deepEqual(readQueueMarks(storage).dismissed, marks.dismissed);
 });

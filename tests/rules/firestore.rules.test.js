@@ -322,7 +322,10 @@ before(async () => {
   testEnv = await initializeTestEnvironment({
     projectId: PROJECT_ID,
     firestore: {
-      rules: await readFile(new URL("../../firestore.foundation.rules", import.meta.url), "utf8"),
+      /* RULES_UNDER_TEST: 배포 후보(운영본 + 이번 블록) 파일을 그대로 시험할 때 (2026-11-07).
+         운영 규칙은 main 보다 뒤에 있어(규칙 2차 미배포) main 파일로만 돌리면 실제로
+         나갈 파일을 시험하지 않은 것이 된다. 비우면 저장소 파일이다. */
+      rules: await readFile(process.env.RULES_UNDER_TEST || new URL("../../firestore.foundation.rules", import.meta.url), "utf8"),
     },
     storage: {
       rules: await readFile(new URL("../../storage.rules", import.meta.url), "utf8"),
@@ -6029,6 +6032,75 @@ describe("회원 수업 알림 문서는 서버만", () => {
       await assertFails(setDoc(doc(db, "notificationSends", "L1_c1_lesson30m"), { status: "sent" }), `${userId} 보낸 기록 쓰기`);
       await assertFails(setDoc(doc(db, "notificationState", "memberPush"), { sweptUntil: 1 }), `${userId} 훑은 자리 쓰기`);
       await assertFails(setDoc(doc(db, "runtimeConfig", "memberPush"), { mode: "all" }), `${userId} 스위치 쓰기`);
+    }
+  });
+});
+
+/* ── 회원 앱 수업 취소 (2026-11-07, 5차 1단계) ─────────────────────────────
+
+   취소 · 추가 부여는 서버 함수만 쓴다 (functions/src/member-cancel.js). 규칙은 세
+   기록 모두의 쓰기를 닫고, 회원이 일정 문서를 직접 고치는 길도 없음을 고정한다.
+   읽기: 남은 횟수 · 취소 기록은 센터 직원, 추가 부여 기록은 대표 · 총괄매니저. */
+describe("member lesson cancellation records", () => {
+  const ledger = (db) => doc(db, "organizations", ORG_A, "memberCancelLedger", APP_MEMBER_CLIENT);
+  const record = (db) => doc(db, "organizations", ORG_A, "memberCancellations", "rec-1");
+  const grant = (db) => doc(db, "organizations", ORG_A, "memberCancelGrants", "grant-1");
+  const lesson = (db) => doc(db, "organizations", ORG_A, "lessons", "lesson-mc");
+
+  beforeEach(async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      await setDoc(doc(db, "organizations", ORG_A, "clients", APP_MEMBER_CLIENT), {
+        organizationId: ORG_A, userId: APP_MEMBER, name: "회원", phone: "01012345678", status: "active",
+      });
+      await setDoc(ledger(db), { organizationId: ORG_A, clientId: APP_MEMBER_CLIENT, buckets: { "m:2026-11": { used: 1, granted: 0 } } });
+      await setDoc(record(db), { organizationId: ORG_A, clientId: APP_MEMBER_CLIENT, lessonId: "lesson-mc", instructorId: users.instructor });
+      await setDoc(grant(db), { organizationId: ORG_A, clientId: APP_MEMBER_CLIENT, amount: 1, reason: "병원", grantedBy: users.instructor, month: "2026-11" });
+      await setDoc(lesson(db), {
+        organizationId: ORG_A, lessonId: "lesson-mc", status: "scheduled", clientIds: [APP_MEMBER_CLIENT],
+        clientId: APP_MEMBER_CLIENT, instructorId: users.instructor, revision: 1,
+      });
+    });
+  });
+
+  test("a member cannot cancel by writing the lesson — only the server function can", async () => {
+    const db = dbFor(APP_MEMBER);
+    await assertFails(updateDoc(lesson(db), { status: "cancelled", revision: 2 }));
+    await assertFails(updateDoc(lesson(db), { clientIds: [], revision: 2 }));
+    await assertFails(getDoc(lesson(db)));
+  });
+
+  test("nobody writes the counts, the cancellation records or the grants from the app — not even the owner", async () => {
+    for (const userId of [APP_MEMBER, users.owner, users.area_manager, users.manager, users.instructor, users.staff]) {
+      const db = dbFor(userId);
+      await assertFails(updateDoc(ledger(db), { "buckets.m:2026-11.granted": 9 }), `${userId} 횟수`);
+      await assertFails(setDoc(doc(db, "organizations", ORG_A, "memberCancelLedger", "client-new"), { organizationId: ORG_A, buckets: {} }), `${userId} 새 횟수`);
+      await assertFails(setDoc(doc(db, "organizations", ORG_A, "memberCancellations", "rec-2"), { organizationId: ORG_A }), `${userId} 기록`);
+      await assertFails(deleteDoc(record(db)), `${userId} 기록 지우기`);
+      await assertFails(setDoc(doc(db, "organizations", ORG_A, "memberCancelGrants", "grant-2"), { organizationId: ORG_A, amount: 5 }), `${userId} 부여`);
+      await assertFails(updateDoc(grant(db), { amount: 9 }), `${userId} 부여 고치기`);
+    }
+  });
+
+  test("staff read the count and the records; the member reads neither", async () => {
+    for (const userId of [users.owner, users.area_manager, users.manager, users.instructor, users.staff]) {
+      await assertSucceeds(getDoc(ledger(dbFor(userId))));
+      await assertSucceeds(getDoc(record(dbFor(userId))));
+      await assertSucceeds(getDocs(query(collection(dbFor(userId), "organizations", ORG_A, "memberCancellations"), where("instructorId", "==", users.instructor))));
+    }
+    await assertFails(getDoc(ledger(dbFor(APP_MEMBER))));
+    await assertFails(getDoc(record(dbFor(APP_MEMBER))));
+    await assertFails(getDoc(ledger(dbFor(users.outsider))));
+    await assertFails(getDocs(collection(dbFor(users.owner), "organizations", ORG_A, "memberCancelLedger")), "횟수 목록은 훑지 않는다");
+  });
+
+  test("grant records (with the reason text) are for the owner and the area manager only", async () => {
+    const month = (userId) => query(collection(dbFor(userId), "organizations", ORG_A, "memberCancelGrants"), where("month", "==", "2026-11"));
+    await assertSucceeds(getDocs(month(users.owner)));
+    await assertSucceeds(getDocs(month(users.area_manager)));
+    for (const userId of [users.manager, users.instructor, users.staff, APP_MEMBER, users.outsider]) {
+      await assertFails(getDocs(month(userId)), userId);
+      await assertFails(getDoc(grant(dbFor(userId))), userId);
     }
   });
 });

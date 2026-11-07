@@ -49,7 +49,7 @@ export const CACHED_PASS_FIELDS = Object.freeze([
 
 /** 예정 수업 (2026-10-30). 서버의 SCHEDULE_FIELDS 와 같다. */
 export const CACHED_SCHEDULE_FIELDS = Object.freeze([
-  "startsAt", "endsAt", "lessonType", "instructorName", "locationName",
+  "lessonId", "startsAt", "endsAt", "lessonType", "instructorName", "locationName",
 ]);
 
 export const CACHED_HISTORY_FIELDS = Object.freeze([

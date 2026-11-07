@@ -821,6 +821,10 @@ export const fbFixMigratedServiceSessions = callableAsOwner("fixMigratedServiceS
    document 를 비워 보내면 읽기만 한다. 화면이 고치기 전에 지금 값을 본다. */
 export const fbUpdateRuntimeConfig = callableAsOwner("updateRuntimeConfig");
 
+/* 회원 앱 수업 취소 횟수 추가 부여 (2026-11-07, 5차 1단계). 대표 · 총괄매니저, 그 밖에는
+   담당 강사만 -- 서버가 소속 · 회원 문서로 다시 가른다. functions/src/member-cancel.js. */
+export const fbGrantMemberCancel = callableAsOwner("grantMemberCancel");
+
 /* 공지 쓰기 · 고치기 · 지우기. 대표 · 총괄매니저 (총괄매니저는 자기 공지만) --
    역할은 서버가 다시 읽는다. functions/src/notice-admin.js 머리말에 근거가 있다. */
 export const fbManageNotice = callableAsOwner("manageNotice");

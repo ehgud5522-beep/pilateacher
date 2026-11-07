@@ -1,5 +1,24 @@
 # 이어서 작업하기 — 최근 변경과 남은 일
 
+## 2026-11-07 밤 — 병합 · 배포 (대표 지시 "남은 규칙 및 배포 다 진행해줘")
+
+- **병합** (대표 확인 후): #155 → #152 → #153 → #156 → #154 → #151 → #148. main `6b84924`
+- **규칙** 23:40 KST — 운영본 `a04695f2` + 알림함 블록(#153) + 취소 횟수 읽기 고침(#155) **만**. 규칙 2차는 여전히 미배포.
+  새 운영본 `fc41b638-bde8-47ac-b112-5c21edbc4107`, **롤백 대상 `a04695f2-0894-4370-89b9-a5f67c3ceeb7`**.
+  배포 전 같은 후보로 `RULES_UNDER_TEST` 391/399 (실패 8 = 규칙 2차 7 + 날짜 고정 1, 전과 같음)
+- **Functions** (main `6b84924`): memberCancelLesson · grantMemberCancel · updateRuntimeConfig · handoverPass · sessionUpPass 갱신,
+  teacherPushSettings 새로 만듦. 스위치(`runtimeConfig/teacherPush`)는 없음 = 꺼짐 -- 푸시는 안 나간다. 알림함은 회원 앱 취소가
+  켜진 강사에게만 쌓인다
+- **강사 웹** `npm run deploy:web` — build `mw6im3xh-6b84924`. 회원권 발급 "강사 기준 단가" · 알림함 · "회원 취소" 표시 · 취소 횟수 경고가
+  배포된 JS 에 있는 것을 확인. 열려 있던 탭은 새 버전 안내가 뜨거나 새로고침이 필요
+- **앱 빌드 브랜치** (대표가 Codemagic 에서 직접, 업로드는 대표):
+  - 강사 앱: **`release/1-1-47`** (main `6b84924` 까지 합침). 1.1.47 에만 `includePlugins`(강사 앱 플러그인 고정)가 있다 --
+    #148 의 `@capawesome/capacitor-app-update` · #143 의 messaging 이 강사 앱에 들어가지 않게. **1.1.45 · 1.1.46 으로 빌드하지 말 것**
+    (1.1.45 에는 오늘 main 을 합쳤지만 includePlugins 가 없다). 1.1.47 이 이미 스토어에 올라갔으면 1.1.48 을 새로 따야 한다
+  - 보니따 회원 앱: **`release/member-1-1-1`** (main `6b84924` + #143). 버전 1.1.1 (iOS MARKETING_VERSION · Android versionName ·
+    member-app/package.json). 애플 90062 · 90186 은 1.1.0 재사용 때문 -- 1.1.1 이면 풀린다. 강제 업데이트(#148)는 Remote Config 키가
+    비어 있으면 아무것도 안 뜬다
+
 ## 2026-11-07 — 보니따 VIP 앱 업데이트 안내 · 강제 업데이트 (`feat/member-force-update`)
 
 - Firebase Remote Config 키 아홉 개 (`member_*`, member-app/README.md "업데이트 안내"). 콘솔에 아직 안 만들었다 --

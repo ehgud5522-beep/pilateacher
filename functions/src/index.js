@@ -924,6 +924,7 @@ exports.memberCancelLesson = onCall(MEMBER_LINK_OPTIONS, async (request) => {
       stage: "cancel", organizationId, lessonId, outcome: result.outcome,
       remaining: result.remaining, partnerKept: Boolean(result.partnerKept), correlationId: result.recordId,
       teacherNotice: result.teacherNotice, teacherNoticeCode: result.teacherNoticeCode,
+      teacherInbox: result.teacherInbox, teacherInboxCode: result.teacherInboxCode,
     });
     return result;
   } catch (error) {

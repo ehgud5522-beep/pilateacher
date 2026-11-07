@@ -59,6 +59,7 @@ import { buildMigrationSnapshot } from "../../src/features/backup/backup-safety.
 import { deleteObject, getBytes, getMetadata, ref, uploadBytes } from "firebase/storage";
 import { createRequire } from "node:module";
 import { listNotices, visibleNotices } from "../../src/data/repositories/notice-repository.js";
+import { listTeacherInbox, markTeacherInboxRead } from "../../src/data/repositories/teacher-inbox-repository.js";
 import { readMemberCancelLedger } from "../../src/data/repositories/member-cancel-repository.js";
 
 /* 서버 함수 본문(CommonJS)을 그대로 부른다 -- 공지 쓰기는 manageNotice 하나뿐이다. */
@@ -6038,6 +6039,54 @@ describe("회원 수업 알림 문서는 서버만", () => {
       await assertFails(setDoc(doc(db, "teacherPush", userId), { tokens: {} }), `${userId} teacherPush 쓰기`);
       await assertFails(setDoc(doc(db, "runtimeConfig", "teacherPush"), { mode: "all" }), `${userId} 강사 푸시 스위치 쓰기`);
     }
+  });
+});
+
+/* ── 강사 알림함 (2026-11-07) ─────────────────────────────────────────────
+   users/{uid}/inbox 는 서버가 만든다. 본인은 읽고, readAt 을 서버 시각으로 한 번
+   적는다. 앱 코드(teacher-inbox-repository.js)를 그대로 규칙에 통과시킨다. */
+describe("강사 알림함: 본인만 읽고, 읽음은 한 번", () => {
+  const seedInbox = async (uid, itemId = "rec-1", extra = {}) => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "users", uid, "inbox", itemId), {
+        kind: "member_cancel", organizationId: ORG_A, lessonId: "L1", clientId: "client-a", recordId: itemId,
+        title: "[회원 수업 취소]", body: "11/8(일) 10:00 수업이 회원 요청으로 취소되었어요",
+        createdAt: Timestamp.fromDate(new Date("2026-11-07T00:00:00Z")), ...extra,
+      });
+    });
+  };
+
+  test("본인은 목록을 읽고 읽음을 한 번 적는다 — 서버 시각", async () => {
+    await seedInbox(users.instructor);
+    const firestore = dbFor(users.instructor);
+    const items = await listTeacherInbox(users.instructor, { firestore });
+    assert.equal(items.length, 1);
+    assert.equal(items[0].lessonId, "L1");
+    await assertSucceeds(markTeacherInboxRead(users.instructor, "rec-1", { firestore }));
+    const [after] = await listTeacherInbox(users.instructor, { firestore });
+    assert.ok(after.readAt, "readAt 이 남는다");
+    await assertFails(markTeacherInboxRead(users.instructor, "rec-1", { firestore }), "두 번째 읽음은 거절 -- 되돌리기 · 덮기 없음");
+  });
+
+  test("남의 알림함은 대표라도 읽지 못한다", async () => {
+    await seedInbox(users.instructor);
+    for (const userId of [users.owner, users.member, users.outsider]) {
+      await assertFails(listTeacherInbox(users.instructor, { firestore: dbFor(userId) }), `${userId} 목록`);
+      await assertFails(getDoc(doc(dbFor(userId), "users", users.instructor, "inbox", "rec-1")), `${userId} 한 건`);
+      await assertFails(markTeacherInboxRead(users.instructor, "rec-1", { firestore: dbFor(userId) }), `${userId} 읽음`);
+    }
+    await assertFails(listTeacherInbox(users.instructor, { firestore: dbFor(null) }), "로그인 안 한 사람");
+  });
+
+  test("본인도 만들기 · 지우기 · 다른 칸 고치기 · 기기 시각은 거절", async () => {
+    await seedInbox(users.instructor);
+    const firestore = dbFor(users.instructor);
+    const ref = doc(firestore, "users", users.instructor, "inbox", "rec-1");
+    await assertFails(setDoc(doc(firestore, "users", users.instructor, "inbox", "fake"), { kind: "member_cancel", createdAt: serverTimestamp() }), "만들기");
+    await assertFails(deleteDoc(ref), "지우기");
+    await assertFails(updateDoc(ref, { body: "바꾼 문구" }), "다른 칸");
+    await assertFails(updateDoc(ref, { readAt: serverTimestamp(), lessonId: "L2" }), "읽음에 다른 칸을 얹기");
+    await assertFails(updateDoc(ref, { readAt: Timestamp.fromDate(new Date("2020-01-01T00:00:00Z")) }), "기기가 정한 시각");
   });
 });
 

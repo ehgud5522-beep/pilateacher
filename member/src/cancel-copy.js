@@ -96,9 +96,10 @@ export function cancelFailure(error, instructorName = "") {
 /* ── 취소 완료 화면 (2026-11-07 대표 시안) ─────────────────────────────────
    초록 체크 · "수업 취소가 완료되었어요" · 그 아래 한 줄.
 
-   그 한 줄은 서버가 돌려준 teacherNotice 로 고른다. **sent 일 때만** "전달했어요" 라고
-   말한다. 스위치가 꺼졌거나(off) · 강사 기기가 없거나(no_device) · 보내다 실패했거나
-   (failed) · 예전 서버(값 없음)이면 알림이 갔다고 말하지 않는다. 대신 사실인 것을
+   그 한 줄은 서버가 돌려준 값으로 고른다. **실제로 강사에게 닿은 길이 있을 때만**
+   "전달했어요" 라고 말한다: 푸시가 나갔거나(teacherNotice sent) · 강사 앱 알림함에
+   한 건이 들어갔다(teacherInbox written · duplicate, 2026-11-07). 둘 다 아니면 --
+   알림함 쓰기 실패 · 강사 없음 · 예전 서버(값 없음) -- 알림이 갔다고 말하지 않는다. 대신 사실인 것을
    말한다 -- 취소는 서버 일정 문서에 이미 들어갔고 강사 앱 일정이 그것을 받는다.
    이것은 오류가 아니다(취소는 성공) -- 코드도, 다시 시도 버튼도 보이지 않는다.
    원인은 진단(teacherNotice · teacherNoticeCode)에 남는다. */
@@ -109,5 +110,7 @@ export const CANCEL_DONE_NOT_NOTIFIED = "취소 내용은 담당 강사님 일�
 
 /** 서버 결과 → 완료 화면 아래 줄. */
 export function cancelDoneNote(result) {
-  return text(result?.teacherNotice) === "sent" ? CANCEL_DONE_NOTIFIED : CANCEL_DONE_NOT_NOTIFIED;
+  const pushed = text(result?.teacherNotice) === "sent";
+  const inboxed = ["written", "duplicate"].includes(text(result?.teacherInbox));
+  return pushed || inboxed ? CANCEL_DONE_NOTIFIED : CANCEL_DONE_NOT_NOTIFIED;
 }

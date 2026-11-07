@@ -2,15 +2,17 @@
    카드 안에 색을 직접 적지 않고, 항상 이 레이어가 계산한 tone 을 받아 쓴다.
 
    surface = 옅은 배경(카드 전체), edge = 왼쪽 띠와 유형 약자, ink = 배경 위 글자.
-   형광색과 원색은 쓰지 않는다 — 브랜드 보라(#4C4399) 톤에 맞춘 저채도만 담는다. */
+   형광색과 원색은 쓰지 않는다 — 브랜드 핫핑크(2026-11-08) 톤에 맞춘 저채도만 담는다. */
 
 import { LESSON_TYPE_KEYS } from "./lesson-types.js";
 
 export const SCHEDULE_COLOR_PRESETS = Object.freeze([
+  /* 핫핑크 (2026-11-08). 개인 수업 기본값. 브랜드가 보라에서 핫핑크로 바뀌어 보라 자리를 대신한다 --
+     프리셋은 8개까지(고르는 칸). 보라를 골라 둔 저장값은 기본값(핫핑크)으로 돌아간다. */
   Object.freeze({
-    id: "violet", label: "보라",
-    light: Object.freeze({ surface: "#EFEDFA", edge: "#5B4FB0", ink: "#3E3781", border: "#DDD9F2" }),
-    dark: Object.freeze({ surface: "#2A2650", edge: "#9A8FF0", ink: "#C7C0F7", border: "#3A3470" }),
+    id: "hotpink", label: "핫핑크",
+    light: Object.freeze({ surface: "#FCE8F1", edge: "#E0136E", ink: "#9E0F51", border: "#F6D3E3" }),
+    dark: Object.freeze({ surface: "#3A1C2C", edge: "#FF4F98", ink: "#FFC2DA", border: "#4A2238" }),
   }),
   Object.freeze({
     id: "indigo", label: "남보라",
@@ -54,9 +56,9 @@ export const SCHEDULE_COLOR_PRESET_IDS = Object.freeze(SCHEDULE_COLOR_PRESETS.ma
 const BY_ID = new Map(SCHEDULE_COLOR_PRESETS.map((item) => [item.id, item]));
 
 export const DEFAULT_SCHEDULE_COLORS = Object.freeze({
-  private: "violet",
+  private: "hotpink",
   duet: "blue",
-  /* 관리 A·B. 개인(violet)과 듀엣(blue)에서 떨어뜨려 둔다 -- 주간 격자에서
+  /* 관리 A·B. 개인(hotpink)과 듀엣(blue)에서 떨어뜨려 둔다 -- 주간 격자에서
      PT 와 섞이면 "오늘 PT 가 몇 개인가" 를 눈으로 셀 수 없다. */
   care_a: "rose",
   care_b: "amber",

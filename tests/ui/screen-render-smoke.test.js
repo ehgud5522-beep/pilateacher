@@ -160,6 +160,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "수업 관리 · 회원 취소 (개인)",
     "수업 관리 · 회원 취소 (듀엣 한 명)",
     "수업 관리 · 회원 취소 확인함",
+    "오늘의 한 문장 · 접힘",
+    "오늘의 한 문장 · 펼침",
     "일정 탭 · 강사 알림함 띠",
     "강사 알림함 시트",
     "강사 알림함 시트 · 열지 못함",
@@ -3322,6 +3324,20 @@ test("member-cancelled lesson stays on the schedule: banner, confirm button, '�
   assert.match(acked, />확인함</);
   assert.doesNotMatch(acked, /data-member-cancel-ack/, "확인한 뒤에는 버튼이 없다");
   assert.match(acked, /data-member-cancel-banner/, "확인해도 일정 · 표시는 남는다");
+});
+
+test("daily sentence: one line under the week, tap to see today's small step, close for today", async () => {
+  const markup = await screenMarkup();
+  const folded = markup("오늘의 한 문장 · 접힘");
+  assert.match(folded, /data-daily-sentence="pride"/, "월요일은 자부심");
+  assert.match(folded, /오늘의 한 문장 · 강사의 자부심/);
+  assert.match(folded, /aria-expanded="false"/);
+  assert.doesNotMatch(folded, /오늘의 작은 실천/, "접혀 있을 때는 한 줄뿐");
+  const opened = markup("오늘의 한 문장 · 펼침");
+  assert.match(opened, /오늘의 작은 실천/);
+  assert.match(opened, /data-daily-sentence-hide/);
+  assert.match(opened, /오늘은 닫기/);
+  assert.match(markup("일정 탭"), /data-daily-sentence=/, "일정 탭에 들어 있다");
 });
 
 test("instructor inbox: unread strip on the schedule tab, rows with a read dot, the failure code", async () => {

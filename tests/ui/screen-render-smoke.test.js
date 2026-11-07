@@ -3252,7 +3252,11 @@ test("member app cancellation: the count on the first screen, the grant button, 
   const detail = markup("센터 회원 상세 · 앱 취소 횟수");
   assert.match(detail, /data-member-cancel-grant/);
   assert.match(detail, /취소 횟수 추가/, "대표에게는 버튼이 보인다");
-  assert.doesNotMatch(markup("센터 회원 상세 · 이름 수정"), /data-member-cancel-grant/, "설정이 없으면 그리지 않는다");
+  /* 설정이 없으면 버튼 대신 대표에게만 어디서 켜는지 한 줄 (2026-11-07). */
+  const off = markup("센터 회원 상세 · 대표");
+  assert.doesNotMatch(off, /취소 횟수 추가/, "설정이 없으면 버튼이 없다");
+  assert.match(off, /data-member-cancel-grant-off/);
+  assert.match(off, /운영 설정 → 회원 앱 수업 취소/);
 
   const admin = markup("운영 설정 · 회원 앱 수업 취소");
   assert.match(admin, /data-member-cancel-admin/);

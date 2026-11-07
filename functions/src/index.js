@@ -832,12 +832,18 @@ exports.updateRuntimeConfig = onCall({
   try {
     const result = await handleRuntimeConfigRequest(firestore, {
       callerUid: request?.auth?.uid, organizationId, document, value: request?.data?.value,
-    }, { membershipId, isActiveOwner });
+    }, { membershipId, isActiveOwner, newId: () => firestore.collection("_").doc().id });
     /* 숫자만 남긴다. 이 값이 센터 전체를 막을 수 있어 누가 언제 무엇으로
        바꿨는지가 남아야 한다 (§7 -- 이름도 번호도 아니다). */
     if (document) {
+      /* 누가(uid · 역할) · 언제 · 바꾸기 전 · 바꾼 값 (2026-11-07). 설정 값은 계정 id ·
+         숫자 · 짧은 문구뿐이다 (이름 · 연락처는 payload 검사에서 막힌다). 같은 내용이
+         runtimeConfigChanges/{changeId} 에도 남는다. */
       logger.info("runtime_config_updated", {
         feature: "runtime_config", stage: "write", organizationId, document,
+        actorUid: String(request?.auth?.uid || ""), actorRole: result?.change?.actorRole || "",
+        at: result?.change?.at instanceof Date ? result.change.at.toISOString() : "", correlationId: result?.change?.id || "",
+        before: result?.change?.before ?? null, after: result?.change?.after ?? null,
       });
     }
     return result;
@@ -935,17 +941,19 @@ exports.grantMemberCancel = onCall({
   try {
     const result = await grantMemberCancel(firestore, {
       callerUid: request?.auth?.uid, organizationId, clientId: request?.data?.clientId,
-      amount: request?.data?.amount, reason: request?.data?.reason,
+      amount: request?.data?.amount, reason: request?.data?.reason, requestId: request?.data?.requestId,
     }, { membershipId, newId: () => firestore.collection("_").doc().id });
     // 사유 문장 · 회원 이름은 남기지 않는다 (§7).
     memberCancelLog("info", "member_cancel_granted", {
       stage: "grant", organizationId, correlationId: result.grantId, remaining: result.remaining,
+      duplicate: Boolean(result.duplicate),
     });
     return result;
   } catch (error) {
     if (error?.httpsCode) {
       memberCancelLog("warn", "member_cancel_grant_refused", {
         stage: "grant", organizationId, errorDomain: "member_cancel", errorCode: error.reason || error.httpsCode,
+        role: error.role || "",
       });
       throw new HttpsError(error.httpsCode, error.message, { reason: error.reason || "" });
     }

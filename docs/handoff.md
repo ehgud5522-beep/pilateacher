@@ -18,6 +18,10 @@
   (규칙 2차 제외). 후보 만들기: 운영본을 받아 `match /lessons/{lessonId} {` 앞에 저장소의 블록을 끼운다.
   `RULES_UNDER_TEST=<후보 파일> npm run test:rules` 로 후보 그대로 시험 -- 11-07 결과 385/393, 실패 8 = 규칙 2차 7 +
   날짜 고정 픽스처 1(occurred_at_too_old, 저장소 파일에서도 같음)
+- 후속(#145 계열, 11-07): 운영 설정 저장마다 `runtimeConfigChanges/{id}`(누가 uid · 역할 · 언제 · before · after,
+  서버만 씀 · 앱은 안 읽음 → 규칙 변경 없음) + 같은 내용의 `runtime_config_updated` 로그. 추가 부여는 요청 ID
+  (`memberCancelGrants/{uid}_{requestId}`)로 한 번만, ID 없는 예전 호출은 그대로. 강사 앱 부여 · 설정 저장 실패는
+  deviceLog(`member_cancel_grant_failed` · `member_cancel_config_save_failed`)
 - **배포 순서(지시 뒤)**: 규칙 → Functions(memberCancelLesson · grantMemberCancel · 투영 트리거) → 강사 웹 →
   회원 앱 빌드(Apple 심사 끝난 뒤 별도 버전, 푸시와 다른 빌드). 켜기는 운영 설정에서 강사 한 명
 - 남은 것: 강사가 다시 넣은 개인 수업은 기기의 "다른 곳의 취소" 규칙에 걸려 되살려지지 않을 수 있음(기존 동작) ·

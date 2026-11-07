@@ -341,3 +341,59 @@ test("설정: 횟수 · 적용 기간은 반드시, scheduleSync 문서의 한 �
     }), /member_cancel_(limit|period)_invalid/, JSON.stringify(bad));
   }
 });
+
+/* ── 후속 보강 (2026-11-07) ─────────────────────────────────────────────── */
+
+test("추가 부여: 같은 요청 ID 는 한 번만 — 동시에 두 번 · 다시 시도해도 기록 하나, 두 번째는 기존 결과", async () => {
+  const db = seed();
+  const requestId = "req-abcdef12";
+  const [first, second] = await Promise.all([
+    grant(db, "uid-teacher", { amount: 2, requestId }),
+    grant(db, "uid-teacher", { amount: 2, requestId }),
+  ]);
+  const retry = await grant(db, "uid-teacher", { amount: 2, requestId });
+  assert.equal(grantsOf(db).length, 1);
+  assert.deepEqual(db.read(ledgerPath("client-a")).buckets["m:2026-11"], { used: 0, granted: 2 });
+  assert.deepEqual([first.duplicate, second.duplicate].sort(), [false, true]);
+  assert.equal(retry.duplicate, true);
+  assert.equal(retry.remaining, 5);
+  assert.equal(retry.grantId, first.grantId);
+  /* 다른 계정의 같은 ID 는 따로다 · 요청 ID 없는 예전 호출은 전처럼 매번 */
+  await grant(db, "uid-owner", { requestId });
+  await grant(db, "uid-teacher");
+  await grant(db, "uid-teacher");
+  assert.equal(grantsOf(db).length, 4);
+  await assert.rejects(grant(db, "uid-teacher", { requestId: "bad id!" }), refusedWith("grant_request_id_invalid"));
+  await assert.rejects(grant(db, "uid-other"), (error) => error.reason === "grant_not_assigned" && error.role === "instructor");
+});
+
+test("설정 변경 기록: 저장마다 한 건 — 누가(계정 · 역할) · 언제 · 바꾸기 전 · 바꾼 값", async () => {
+  const { handleRuntimeConfigRequest } = require("../src/runtime-config-admin");
+  const db = memoryFirestore({
+    [`memberships/${membershipId(ORG, "uid-owner")}`]: { status: "active", role: "owner" },
+    "runtimeConfig/scheduleSync": { mode: "listed", userIds: ["uid-teacher"], rosterRealtime: { mode: "off", userIds: [] } },
+  });
+  const save = (value) => handleRuntimeConfigRequest(db, {
+    callerUid: "uid-owner", organizationId: ORG, document: "memberCancel", value, now: () => NOW,
+  }, { membershipId, isActiveOwner: (row) => row?.role === "owner" && row?.status === "active", newId: () => `chg-${(ids += 1)}` });
+  await save({ mode: "listed", userIds: ["uid-teacher"], limit: 3, period: "month" });
+  await save({ mode: "listed", userIds: ["uid-teacher"], limit: 5, period: "pass" });
+  const changes = [...db.docs.entries()].filter(([key]) => key.startsWith("runtimeConfigChanges/")).map(([, value]) => value);
+  assert.equal(changes.length, 2);
+  assert.equal(changes[0].before, null, "처음에는 전 값이 없다");
+  assert.deepEqual(changes[0].after, { mode: "listed", userIds: ["uid-teacher"], limit: 3, period: "month" });
+  assert.deepEqual(changes[1].before, { mode: "listed", userIds: ["uid-teacher"], limit: 3, period: "month" }, "시각 · 작성자는 빼고 값만");
+  assert.deepEqual(changes[1].after, { mode: "listed", userIds: ["uid-teacher"], limit: 5, period: "pass" });
+  for (const change of changes) {
+    assert.equal(change.actorUid, "uid-owner");
+    assert.equal(change.actorRole, "owner");
+    assert.equal(change.document, "memberCancel");
+    assert.equal(change.organizationId, ORG);
+    assert.deepEqual(change.at, NOW);
+  }
+  /* 동기화 스위치를 저장해도 기록이 남고, 같은 문서에 얹힌 칸(취소 · 명단)은 전 값에 섞이지 않는다 */
+  await handleRuntimeConfigRequest(db, {
+    callerUid: "uid-owner", organizationId: ORG, document: "scheduleSync", value: { mode: "off", userIds: [] }, now: () => NOW,
+  }, { membershipId, isActiveOwner: (row) => row?.role === "owner", newId: () => "chg-sync" });
+  assert.deepEqual(db.read("runtimeConfigChanges/chg-sync").before, { mode: "listed", userIds: ["uid-teacher"] });
+});

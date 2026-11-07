@@ -158,6 +158,8 @@ import {
   listMemberCancelGrants, memberCancelEnabledFor, monthKey as memberCancelMonthKey, readMemberCancelConfig,
   readMemberCancelLedger, remainingIn as memberCancelRemainingIn, newMemberCancelRequestId,
   GRANT_LIMITS as MEMBER_CANCEL_GRANT_LIMITS, activePassIdFor as memberCancelActivePassId,
+  GRANT_REASON as MEMBER_CANCEL_GRANT_REASON, GRANT_REASON_LABEL as MEMBER_CANCEL_GRANT_REASON_LABEL,
+  instructorGrantRoom as memberCancelInstructorGrantRoom, bucketOf as memberCancelBucketOf,
 } from "./data/repositories/member-cancel-repository.js";
 import { WEB_VERSION_CHECK_MS, fetchDeployedWebBuild, isNewerWebBuild, staleTabMessage } from "./features/ui/web-version.js";
 import {
@@ -20101,7 +20103,7 @@ function ClientPassRow({
  * 회원 문서로 다시 가른다 -- 버튼을 숨기는 것은 안내이고 막는 것은 서버다.
  * 기능이 꺼져 있으면(설정 없음 · 끔) 아무것도 그리지 않는다.
  */
-function MemberCancelGrant({ organization, client, passes = [], currentUserId = "", config, onToast }) {
+function MemberCancelGrant({ organization, client, passes = [], currentUserId = "", config, onToast, initialOpen = false, initialLedger = undefined }) {
   const settings = readMemberCancelConfig(config?.memberCancel);
   const organizationId = organization?.organizationId || "";
   const clientId = String(client?.id || "");
@@ -20109,10 +20111,12 @@ function MemberCancelGrant({ organization, client, passes = [], currentUserId = 
   const assigned = (Array.isArray(client?.instructorIds) ? client.instructorIds : []).includes(currentUserId)
     || passes.some((pass) => pass?.instructorId === currentUserId && pass?.status === "active");
   const canGrant = isOwnerLevelRole(organization?.role) || assigned;
-  const [ledger, setLedger] = useState(undefined);
+  const [ledger, setLedger] = useState(initialLedger);
   const [readError, setReadError] = useState("");
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(initialOpen);
   const [amount, setAmount] = useState(1);
+  /* 사유는 셋 중 하나를 고르고(대표 시안 2026-11-07), "기타" 는 내용을 반드시 적는다. */
+  const [reasonCode, setReasonCode] = useState(MEMBER_CANCEL_GRANT_REASON.HEALTH);
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -20143,6 +20147,13 @@ function MemberCancelGrant({ organization, client, passes = [], currentUserId = 
   const bucket = memberCancelBucketKey({ period: settings.period, at: new Date(), passId: memberCancelActivePassId(passes, clientId) });
   const remaining = bucket && ledger !== undefined ? memberCancelRemainingIn(ledger, bucket, settings.limit) : null;
   const scope = settings.period === MEMBER_CANCEL_PERIOD.PASS ? "이 회원권" : "이번 달";
+  /* 추가 1회까지는 재량, 그 이상은 대표님 권한 (2026-11-07 대표 결정). 대표면 null(제한 없음).
+     원장을 아직 못 읽었으면 1로 보고, 막는 것은 서버다 (grant_needs_admin). */
+  const room = bucket && ledger !== undefined
+    ? memberCancelInstructorGrantRoom(organization?.role, memberCancelBucketOf(ledger, bucket).granted)
+    : (organization?.role === "owner" ? null : 1);
+  const maxAmount = room === null ? MEMBER_CANCEL_GRANT_LIMITS.maxAmount : room;
+  const otherNeedsText = reasonCode === MEMBER_CANCEL_GRANT_REASON.OTHER && !reason.trim();
   const submit = async () => {
     if (sendingRef.current) return;
     sendingRef.current = true;
@@ -20150,11 +20161,11 @@ function MemberCancelGrant({ organization, client, passes = [], currentUserId = 
     setBusy(true); setError("");
     try {
       const result = await fbGrantMemberCancel({
-        organizationId, clientId, amount: Number(amount), reason, requestId: requestIdRef.current,
+        organizationId, clientId, amount: Number(amount), reasonCode, reason, requestId: requestIdRef.current,
       });
       onToast?.({ ok: true, msg: `취소 횟수 ${amount}회를 더했습니다 (남은 ${result?.remaining ?? "-"}회)` });
       requestIdRef.current = "";
-      setOpen(false); setReason(""); setAmount(1); setRevision((value) => value + 1);
+      setOpen(false); setReason(""); setReasonCode(MEMBER_CANCEL_GRANT_REASON.HEALTH); setAmount(1); setRevision((value) => value + 1);
     } catch (thrown) {
       /* 입력한 횟수 · 사유와 요청 ID 는 그대로 둔다 -- [주기] 를 다시 누르면 같은 요청이다. */
       setError(grantFailureMessage(thrown));
@@ -20172,28 +20183,59 @@ function MemberCancelGrant({ organization, client, passes = [], currentUserId = 
         <span style={{ fontSize: TYPE.caption, color: SUB }}>
           {readError || (remaining === null ? (bucket ? "앱 취소 횟수 읽는 중…" : "앱 취소 · 사용 중인 회원권 없음") : `앱 취소 ${scope} 남은 ${remaining}회`)}
         </span>
-        {canGrant && !open ? (
-          <button type="button" onClick={() => { setOpen(true); setError(""); }} className="font-bold"
+        {canGrant && !open && maxAmount > 0 ? (
+          <button type="button" onClick={() => { setOpen(true); setError(""); setAmount(1); }} className="font-bold"
             style={{ fontSize: TYPE.caption, color: BRAND_D }}>취소 횟수 추가</button>
         ) : null}
       </div>
+      {canGrant && !open && maxAmount === 0 ? (
+        <p className="mt-1" data-member-cancel-grant-capped style={{ fontSize: TYPE.caption, color: SUB }}>
+          {scope} 추가 1회를 이미 줬어요. 그 이상은 대표님 권한이에요 — 대표님에게 직접 요청해 주세요
+        </p>
+      ) : null}
       {open ? (
-        <div className="mt-2 space-y-2" style={{ padding: 10, borderRadius: 10, backgroundColor: CANVAS }}>
-          <div className="flex items-center gap-2">
-            <span style={{ fontSize: TYPE.caption, color: INK, minWidth: 40 }}>횟수</span>
-            <select value={amount} onChange={(event) => setAmount(Number(event.target.value))} className="h-9 px-2"
-              style={{ borderRadius: 8, border: `1px solid ${LINE}`, backgroundColor: CARD, color: INK }}>
-              {Array.from({ length: MEMBER_CANCEL_GRANT_LIMITS.maxAmount }, (_, index) => index + 1).map((value) => <option key={value} value={value}>{value}회</option>)}
-            </select>
+        <div className="mt-2 space-y-2" data-member-cancel-grant-dialog role="group" aria-label="취소 횟수 추가"
+          style={{ padding: 12, borderRadius: 12, backgroundColor: CARD, border: `1px solid ${LINE}` }}>
+          {/* 경고 (2026-11-07 대표 시안). 기본 횟수는 대표 설정값 그대로 -- 고정 숫자를 쓰지 않는다. */}
+          <p className="flex items-center gap-1.5 font-extrabold" style={{ fontSize: TYPE.body, color: INK }}>
+            <AlertTriangle size={16} style={{ color: WARN }} aria-hidden="true" /> 취소 횟수를 추가하시겠습니까?
+          </p>
+          <p style={{ fontSize: TYPE.caption, color: SUB, lineHeight: 1.5 }}>
+            기본 제공 횟수는 {settings.period === MEMBER_CANCEL_PERIOD.PASS ? "회원권당" : "월"} {settings.limit}회이며, 추가 부여는 예외적인 상황에서만 허용됩니다.
+            {room !== null ? " 추가 1회까지만 줄 수 있고, 그 이상은 대표님 권한이에요 — 대표님에게 직접 요청해 주세요." : ""}
+          </p>
+          <p className="pt-1" style={{ fontSize: TYPE.caption, color: INK }}>추가 부여 사유</p>
+          <div className="space-y-1" role="radiogroup" aria-label="추가 부여 사유">
+            {Object.values(MEMBER_CANCEL_GRANT_REASON).map((code) => (
+              <label key={code} className="flex min-h-10 items-center gap-2 px-2" style={{ borderRadius: 8, backgroundColor: reasonCode === code ? TINT : CANVAS }}>
+                <input type="radio" name={`grant-reason-${clientId}`} value={code} checked={reasonCode === code} onChange={() => setReasonCode(code)} />
+                <span className="text-sm" style={{ color: INK }}>{MEMBER_CANCEL_GRANT_REASON_LABEL[code]}</span>
+              </label>
+            ))}
           </div>
           <input value={reason} onChange={(event) => setReason(event.target.value)} maxLength={MEMBER_CANCEL_GRANT_LIMITS.maxReason}
-            placeholder="사유 (필수, 예: 병원 진료)" className="h-10 w-full px-2"
+            placeholder={reasonCode === MEMBER_CANCEL_GRANT_REASON.OTHER ? "내용 (필수)" : "내용 (선택, 예: 병원 진료)"} className="h-10 w-full px-2"
             style={{ borderRadius: 8, border: `1px solid ${LINE}`, backgroundColor: CARD, color: INK, fontSize: TYPE.caption }} />
+          {maxAmount > 1 ? (
+            <div className="flex items-center gap-2">
+              <span style={{ fontSize: TYPE.caption, color: INK, minWidth: 40 }}>횟수</span>
+              <select value={amount} onChange={(event) => setAmount(Number(event.target.value))} className="h-9 px-2"
+                style={{ borderRadius: 8, border: `1px solid ${LINE}`, backgroundColor: CARD, color: INK }}>
+                {Array.from({ length: maxAmount }, (_, index) => index + 1).map((value) => <option key={value} value={value}>{value}회</option>)}
+              </select>
+            </div>
+          ) : null}
+          {/* 부여 전 · 후를 미리 -- 잘못 누르는 일을 줄인다. */}
+          {remaining !== null ? (
+            <p className="tabular-nums" data-member-cancel-grant-preview style={{ fontSize: TYPE.caption, color: INK }}>
+              {scope} 남은 취소 <b>{remaining}회 → {remaining + Number(amount)}회</b>
+            </p>
+          ) : null}
           <div className="flex gap-2">
             <button type="button" onClick={() => { requestIdRef.current = ""; setOpen(false); }} disabled={busy} className="h-10 flex-1 font-bold"
-              style={{ borderRadius: 8, backgroundColor: CARD, color: SUB, fontSize: TYPE.caption }}>그만두기</button>
-            <button type="button" onClick={submit} disabled={busy || !reason.trim()} className="h-10 flex-1 font-bold text-white disabled:opacity-50"
-              style={{ borderRadius: 8, backgroundColor: BRAND, fontSize: TYPE.caption }}>{busy ? "주는 중" : "주기"}</button>
+              style={{ borderRadius: 8, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>취소</button>
+            <button type="button" onClick={submit} disabled={busy || otherNeedsText} className="h-10 flex-1 font-bold text-white disabled:opacity-50"
+              style={{ borderRadius: 8, backgroundColor: INK, fontSize: TYPE.caption }}>{busy ? "주는 중" : `${amount}회 부여`}</button>
           </div>
           {error ? <p style={{ fontSize: TYPE.caption, color: BAD }}>{error}</p> : null}
         </div>
@@ -28053,6 +28095,27 @@ export function createAppScreenSmokeCases() {
     { name: "일정 탭 · 회원 취소 N건", element: provider(<ScheduleManager memberCancelOn
       db={{ ...busyDb, schedule: busyDb.schedule.map((entry, index) => (index === 0 ? { ...entry, date: "2999-01-01", attendees: (entry.attendees || []).map((attendee) => ({ ...attendee, status: "cancel", memberCancelledAt: "2026-11-07T00:00:00.000Z" })) } : entry)) }}
       photos={{}} onSave={noop} onDelete={noop} onStatus={noop} onStatusAll={noop} onNoshowFee={noop} onGroupDone={noop} onNoComment={noop} onSaveNote={noop} onToast={noop} onSettings={noop} onConsumeMemberPreset={noop} onConsumeQuickAdd={noop} onOpenMember={noop} />) },
+    /* 취소 횟수 추가 경고 (2026-11-07 대표 시안). 원장은 이번 달 칸에 3회 다 쓴 모양. */
+    ...(() => {
+      const config = { mode: "all", memberCancel: { mode: "all", userIds: [], limit: 3, period: "month" } };
+      const bucket = memberCancelBucketKey({ period: "month", at: new Date() });
+      const ledgerWith = (granted) => ({ buckets: { [bucket]: { used: 3, granted } } });
+      const assignedClient = { ...smokeDetailClient, instructorIds: ["u1"] };
+      return [
+        { name: "취소 횟수 추가 · 경고 · 대표", element: providerWith(smokeOwner, (
+          <MemberCancelGrant organization={readyOrganizationContext(smokeOwner)} client={smokeDetailClient} currentUserId="owner"
+            config={config} initialOpen initialLedger={ledgerWith(0)} />
+        )) },
+        { name: "취소 횟수 추가 · 경고 · 담당 강사", element: providerWith(smokeInstructorOrg, (
+          <MemberCancelGrant organization={readyOrganizationContext(smokeInstructorOrg)} client={assignedClient} currentUserId="u1"
+            config={config} initialOpen initialLedger={ledgerWith(0)} />
+        )) },
+        { name: "취소 횟수 추가 · 강사 재량 다 씀", element: providerWith(smokeInstructorOrg, (
+          <MemberCancelGrant organization={readyOrganizationContext(smokeInstructorOrg)} client={assignedClient} currentUserId="u1"
+            config={config} initialLedger={ledgerWith(1)} />
+        )) },
+      ];
+    })(),
     /* 회원 앱 취소된 수업 (2026-11-07). 지우지 않고 "회원 취소" 로 남긴다 -- 배너 · [확인] · 출석 배지. */
     { name: "수업 관리 · 회원 취소 (개인)", element: scheduleWithSettlement(settleLessonOf({
       id: "mc-solo", type: "개인", date: shift(todayISO(), 1),

@@ -73,6 +73,19 @@ curl -s -X POST "https://asia-northeast3-pilateacher.cloudfunctions.net/linkMemb
 `{"error":{"details":{"code":"unauthenticated","stage":"authorize"},…}}` 이면
 살아 있는 것이다. 코드와 단계가 함께 오는지까지 본다 — 그 둘이 진단의 값어치다.
 
+## 회원 취소 · 알림함 · 회원권 발급 함수 — 2026-11-07 밤 배포
+
+main `6b84924` 에서:
+
+```bash
+npx firebase deploy --project pilateacher --config firebase.ai-gateway.json --only "functions:memberCancelLesson,functions:grantMemberCancel,functions:updateRuntimeConfig,functions:teacherPushSettings,functions:handoverPass,functions:sessionUpPass"
+```
+
+- 갱신: memberCancelLesson(취소 뒤 강사 알림함 · 푸시) · grantMemberCancel(재량 1회 · 사유 셋 · 전후 기록) · updateRuntimeConfig(teacherPush 키) ·
+  handoverPass · sessionUpPass(회원권 단가 출처 칸, #151)
+- 새로 만듦: teacherPushSettings (강사 앱은 아직 부르지 않음)
+- 롤백: 이 함수들을 `9e2af9e` 에서 같은 명령으로 (teacherPushSettings 는 지우거나 둔다 -- 부르는 곳이 없다)
+
 ## 롤백
 
 트래픽만 이전 revision 으로 되돌린다.

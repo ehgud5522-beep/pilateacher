@@ -2365,7 +2365,7 @@ test("the area manager runs the centre but never the app update setting", async 
   assert.match(hub, /강사 관리/);
   /* 접혀서 안 보이는 것과 역할로 없는 것은 다르다. 펼친 화면에서도 없다 --
      그것이 "대표만" 이다. */
-  assert.doesNotMatch(hub, /앱 업데이트 안내/);
+  assert.doesNotMatch(hub, /앱 업데이트 · 운영 스위치/);
   /* "대표 설정" 묶음 자체는 선다 -- 이관 데이터는 총괄매니저도 올린다
      (대표만인 것은 이관 **초기화** 쪽이고, 그것은 서버의 문이다). 묶음이
      사라지는 것과 그 안의 한 줄이 없는 것은 다른 일이다. */
@@ -3256,7 +3256,7 @@ test("member app cancellation: the count on the first screen, the grant button, 
   const off = markup("센터 회원 상세 · 대표");
   assert.doesNotMatch(off, /취소 횟수 추가/, "설정이 없으면 버튼이 없다");
   assert.match(off, /data-member-cancel-grant-off/);
-  assert.match(off, /운영 설정 → 회원 앱 수업 취소/);
+  assert.match(off, /대표 설정 → 앱 업데이트 · 운영 스위치 → &quot;회원 앱 수업 취소&quot;/);
 
   const admin = markup("운영 설정 · 회원 앱 수업 취소");
   assert.match(admin, /data-member-cancel-admin/);

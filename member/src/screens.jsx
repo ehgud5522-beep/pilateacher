@@ -14,6 +14,7 @@
 
 import { useMemo, useState } from "react";
 import { TYPE } from "../../src/features/ui/type-scale.js";
+import { PUSH_PERMISSION, PUSH_ROWS, PUSH_SUPPORT } from "./push.js";
 import {
   DELETED_ITEMS, DELETE_STEP, KEPT_ITEMS, deleteFailureMessage,
 } from "./delete-account.js";
@@ -490,7 +491,7 @@ export function Records({ view }) {
  * 계정 삭제가 맨 아래인 것은 뜻이 있다 -- 되돌릴 수 없는 버튼은 지나가다 누를
  * 자리에 두지 않는다.
  */
-export function MyPage({ view, now = new Date(), onSignOut, onDeleteAccount }) {
+export function MyPage({ view, now = new Date(), onSignOut, onDeleteAccount, push = null }) {
   const passes = Array.isArray(view?.passes) ? view.passes : [];
   const using = passes.filter((pass) => isUsable(pass, now));
   const past = passes.filter((pass) => !isUsable(pass, now));
@@ -519,6 +520,8 @@ export function MyPage({ view, now = new Date(), onSignOut, onDeleteAccount }) {
         ) : null
       ))}
 
+      {push ? <PushSettings push={push} /> : null}
+
       {/* 의견 보내기. 회원이 센터에 말을 거는 자리라 카드 한 장을 준다. */}
       <Card className="say">
         <p className="cap">의견 보내기</p>
@@ -531,6 +534,61 @@ export function MyPage({ view, now = new Date(), onSignOut, onDeleteAccount }) {
       {onSignOut ? <button type="button" className="btn" onClick={onSignOut}>로그아웃</button> : null}
       {onDeleteAccount ? <DeleteAccount onDelete={onDeleteAccount} /> : null}
     </div>
+  );
+}
+
+/**
+ * 알림 설정 (2026-11-07). 두 알림을 따로 켜고 끈다. 웹에서는 받을 수 없다는 것만 말한다 --
+ * 권한 거부처럼 보이게 두지 않는다. 기기 알림이 꺼져 있으면 켜는 길을 보여 준다.
+ */
+export function PushSettings({ push }) {
+  if (push.support !== PUSH_SUPPORT.NATIVE) {
+    return (
+      <Card className="push"><div data-push-settings="web">
+        <p className="cap">알림 설정</p>
+        <p style={{ fontSize: TYPE.body }}>수업 알림은 보니따 앱에서만 받을 수 있어요.</p></div>
+      </Card>
+    );
+  }
+  const blocked = push.permission === PUSH_PERMISSION.DENIED;
+  return (
+    <Card className="push"><div data-push-settings="native">
+      <p className="cap">알림 설정</p>
+      {blocked ? (
+        <div data-push-blocked>
+          <p style={{ fontSize: TYPE.body }}>휴대폰에서 이 앱의 알림이 꺼져 있어요.</p>
+          <p className="muted mt" style={{ fontSize: TYPE.caption }}>{push.guide}</p>
+        </div>
+      ) : null}
+      {push.permission === PUSH_PERMISSION.PROMPT && push.onEnable ? (
+        <button type="button" className="btn mt" onClick={push.onEnable}>알림 받기</button>
+      ) : null}
+      <div className="stack mt">
+        {PUSH_ROWS.map((row) => {
+          const on = push.prefs?.[row.kind] !== false;
+          return (
+            <div key={row.kind} className="rowcard" data-push-row={row.kind}>
+              <div>
+                <p style={{ fontSize: TYPE.body, fontWeight: 600 }}>{row.title}</p>
+                <p className="muted" style={{ fontSize: TYPE.caption }}>{row.label}</p>
+              </div>
+              <button type="button" role="switch" aria-checked={on} aria-label={`${row.title} 알림`}
+                className={`chip${on ? " on" : ""}`} style={{ minHeight: 44, minWidth: 64 }}
+                disabled={!push.onToggle || push.saving === row.kind}
+                onClick={() => push.onToggle?.(row.kind, !on)}>
+                {on ? "켜짐" : "꺼짐"}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      {push.errorCode ? (
+        <p className="mt" role="alert" style={{ fontSize: TYPE.caption }}>
+          알림 설정을 저장하지 못했어요. 잠시 후 다시 시도해 주세요. (코드 {push.errorCode})
+        </p>
+      ) : null}
+      </div>
+    </Card>
   );
 }
 

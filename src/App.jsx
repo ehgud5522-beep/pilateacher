@@ -24206,6 +24206,9 @@ function ScheduleSyncAdmin({
   document: configDocument = "scheduleSync",
   title = "일정 동기화 (서버가 기준)",
   description = "켜진 계정은 다른 PC · 폰에서 넣고 고치고 지운 내 수업 일정을 실시간으로 받습니다. 대표 → 강사 한 명 → 전체 순서로 켜세요. 폰도 쓰는 강사는 그 폰이 새 버전을 받은 뒤에 켭니다.",
+  /* "고른 계정만" 의 목록은 강사다. 회원 알림(memberPush)처럼 강사가 대상이 아닌 스위치는
+     끔 · 전체만 둔다 -- 고른 회원 계정은 콘솔에서 userIds 로 넣는다. */
+  allowListed = true,
 }) {
   const [instructors, setInstructors] = useState([]);
   const [draft, setDraft] = useState(readScheduleSyncConfig(null));
@@ -24239,7 +24242,7 @@ function ScheduleSyncAdmin({
   };
   const modes = [
     { value: SCHEDULE_SYNC_MODE.OFF, label: "끔" },
-    { value: SCHEDULE_SYNC_MODE.LISTED, label: "고른 계정만" },
+    ...(allowListed ? [{ value: SCHEDULE_SYNC_MODE.LISTED, label: "고른 계정만" }] : []),
     { value: SCHEDULE_SYNC_MODE.ALL, label: "전체" },
   ];
   return (
@@ -24253,7 +24256,10 @@ function ScheduleSyncAdmin({
               backgroundColor: draft.mode === option.value ? TINT : CANVAS, color: draft.mode === option.value ? BRAND_D : SUB }}>{option.label}</button>
         ))}
       </div>
-      {draft.mode === SCHEDULE_SYNC_MODE.LISTED ? (
+      {!allowListed && draft.mode === SCHEDULE_SYNC_MODE.LISTED ? (
+        <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>지금은 콘솔에서 고른 회원 계정에만 보냅니다.</p>
+      ) : null}
+      {allowListed && draft.mode === SCHEDULE_SYNC_MODE.LISTED ? (
         <div className="mt-3 space-y-1">
           {rows.map((row) => (
             <label key={row.userId} className="flex min-h-10 items-center gap-2 px-2" style={{ borderRadius: 8, backgroundColor: CANVAS }}>
@@ -26398,6 +26404,11 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
               onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
               document="rosterRealtime" title="회원 명단 실시간"
               description="켜진 계정은 센터 회원 명단을 실시간으로 받습니다. 강사는 본인 담당 회원만, FC매니저 · 매니저 · 대표는 회원 목록에서 고른 지점을 받습니다 (대표 · 총괄매니저가 '전체'를 고르면 받지 않고 새로고침으로 맞춥니다). 대표 → 강사 한 명 → 전체 순서로 켜세요. 읽은 횟수는 진단에 남습니다." />
+            {/* 회원 수업 알림 (2026-11-07, 지시서 2차). 서버(sendMemberLessonReminders)만 읽는다. */}
+            <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
+              onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
+              document="memberPush" title="회원 수업 알림" allowListed={false}
+              description="켜면 회원 앱으로 수업 30시간 전(취소 마감 안내) · 30분 전(수업 리마인드) 알림이 나갑니다. 회원이 앱에서 끈 알림은 보내지 않습니다. 회원 이름은 알림에 들어가지 않습니다. 회원 앱 새 버전이 깔린 폰부터 받습니다." />
           </div>
         )}
         {view === "instructor-scope" && showAudit && (

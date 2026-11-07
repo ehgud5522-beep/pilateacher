@@ -163,6 +163,17 @@ export async function deleteMemberAccount() {
 }
 
 /**
+ * 수업 알림 설정 · 기기 토큰 (2026-11-07). 서버만 쓴다 -- 회원 앱은 Firestore 에
+ * 쓰지 않는다. action: get | save | register | unregister.
+ * 돌려주는 것: { prefs: { lesson30h, lesson30m }, devices }.
+ */
+export async function memberPushSettings(payload) {
+  const call = httpsCallable(functions, "memberPushSettings");
+  const response = await call(payload || { action: "get" });
+  return response?.data || null;
+}
+
+/**
  * 로그아웃. 다음 사람이 이 기기에서 인증할 때 쓸 reCAPTCHA 도 새로 만든다.
  *
  * 회원이 누른 로그아웃은 실패를 던진다 -- 끊기지 않았는데 조용히 넘어가면

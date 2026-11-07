@@ -1,5 +1,18 @@
 # 이어서 작업하기 — 최근 변경과 남은 일
 
+## 2026-11-07 — 회원 수업 알림 (지시서 2차 기본, `feat/member-push-reminders`)
+
+- 두 알림: "수업 30시간 전"(취소 마감 안내) · "수업 30분 전"(수업 리마인드). 문구는 대표 확정 그대로, 이름 없음
+- 서버 `sendMemberLessonReminders` (5분마다): 지난번 훑은 끝(`notificationState/memberPush.sweptUntil`)부터
+  지금까지를 한 칸으로 보고, 시작이 칸 + 30분 / + 30시간 안인 예정 수업만. 최대 15분까지만 거슬러 간다.
+  보내기 직전 수업 재확인, (수업·회원·종류) 당 `notificationSends/{lessonId}_{clientId}_{kind}` create 로 한 번만
+- 회원 → 계정은 `clients.userId`. 토큰 · 설정은 `memberPush/{uid}` (서버만 씀, 통로 `memberPushSettings`)
+- 스위치 `runtimeConfig/memberPush` (mode off/listed/all, 기본 꺼짐) — 대표 화면 "앱 업데이트 안내" 카드
+- 규칙 변경 없음 (새 컬렉션은 맨 아래 전부 거부에 걸림 -- 시험으로 고정)
+- 한계: 30분 안쪽에 새로 넣은 수업, 이미 훑은 칸 안쪽으로 시각을 옮긴 수업은 놓친다. 보낸 뒤 시각이 바뀌면 다시 안 보낸다
+- 네이티브: `@capacitor-firebase/messaging` (iOS 는 FCM 토큰이 필요해 이 플러그인), AppDelegate 전달 코드,
+  Firebase 콘솔 APNs 키 업로드 · App ID Push 켜기 필요. 회원 앱 다음 빌드부터
+
 ## 2026-11-04 — 회원 이름 수정 · 보관 (`feat/client-rename-archive`)
 
 - 삭제는 넣지 않았다. 원장 · 급여 회원별 보기 · 강사 폰 사진 · 회원 앱 연결 · `csv_{번호}` 재등록이 회원 문서에

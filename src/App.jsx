@@ -158,7 +158,7 @@ import {
 } from "./data/repositories/member-cancel-repository.js";
 import { WEB_VERSION_CHECK_MS, fetchDeployedWebBuild, isNewerWebBuild, staleTabMessage } from "./features/ui/web-version.js";
 import {
-  QUEUE_CUTOFF, QUEUE_TAB, QUEUE_TAB_LABEL, lessonIdsToCheck, mergeServerCache, organizeLessonQueue,
+  QUEUE_CUTOFF, QUEUE_TAB, QUEUE_TABS, QUEUE_TAB_LABEL, lessonIdsToCheck, mergeServerCache, organizeLessonQueue,
   readQueueCounts, readQueueMarks, readServerCache, serverStatesFromCache, writeQueueCounts, writeQueueMarks,
   writeServerCache,
 } from "./features/schedule/lesson-queue.js";
@@ -3671,9 +3671,9 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
   }),
   ], [pendingLessonSummary, db.schedule, db.members, unsettledLessons]);
   /* ── 확인할 수업 정리 (2026-11-07 대표 결정, lesson-queue.js) ─────────────────
-     서버 확정 상태와 대조해 다른 곳에서 끝난 수업을 빼고, 11월 1일 이전은 "지난 항목" 으로
-     접고, 30일 지난 것은 "관리자 확인" 으로, 같은 수업은 한 묶음으로. 데이터는 그대로다.
-     서버 답과 보류 · 관리자 확인 표시는 이 기기에만 둔다. */
+     서버 확정 상태와 대조해 다른 곳에서 끝난 수업을 빼고, 11월 1일 이전과 확정 마감(수업
+     시작 + 7일, settleDeadline)이 지난 수업은 "지난 항목" 으로 접고, 같은 수업은 한 묶음으로.
+     데이터는 그대로다. 서버 답과 보류 표시는 이 기기에만 둔다. */
   const [queueServerCache, setQueueServerCache] = useState(() => readServerCache(globalThis.localStorage));
   const [queueMarks, setQueueMarks] = useState(() => readQueueMarks(globalThis.localStorage));
   const queueReadKey = useMemo(() => (organizationMode && readQueueLessonStates
@@ -3708,9 +3708,10 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
   const organizedQueue = useMemo(() => organizeLessonQueue({
     tasks: taskQueue,
     today: T0,
+    /* 확정 마감을 가르는 지금. 큐가 다시 계산될 때(일정 · 기록 · 서버 답이 바뀔 때) 함께 읽는다. */
+    now: Date.now(),
     serverStates: serverStatesFromCache(queueServerCache),
     snoozed: queueMarks.snoozed,
-    escalated: queueMarks.escalated,
     /* 개인 강사(센터 미소속)에게는 컷오프가 없다 -- 센터의 결정이다. */
     cutoff: organizationMode ? QUEUE_CUTOFF : "0000-00-00",
   }), [taskQueue, T0, queueServerCache, queueMarks, organizationMode]);
@@ -3723,7 +3724,7 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
     deviceLog("lesson_queue_reconcile", {
       feature: "lesson_queue", stage: "classify",
       count: counts.doneElsewhere + counts.pending + counts.unknown + counts.archived,
-      message: `완료인데 남은 것 ${counts.doneElsewhere} · 진짜 미처리 ${counts.pending} · 판단 불가 ${counts.unknown} · 지난 항목 ${counts.archived}`,
+      message: `완료인데 남은 것 ${counts.doneElsewhere} · 진짜 미처리 ${counts.pending} · 판단 불가 ${counts.unknown} · 지난 항목 ${counts.archived} (마감 지남 ${counts.expired || 0})`,
     });
   }, [queueCountsKey, queueReads]);
   const markQueueGroup = (kind, key, on) => {
@@ -3734,7 +3735,6 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
   };
   const queueSummaryDetail = [
     organizedQueue.overdueCount ? `지난 미처리 ${organizedQueue.overdueCount}건` : "",
-    organizedQueue.adminCount ? `관리자 확인 ${organizedQueue.adminCount}건` : "",
     organizedQueue.archivedCount ? `지난 항목 ${organizedQueue.archivedCount}건` : "",
   ].filter(Boolean).join(" · ");
   return (
@@ -3818,7 +3818,7 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
         onNoComment={onNoComment} onSaveNote={onSaveNote} onOpenMember={onOpenMember} onFocusMemberWeek={(memberId) => { setFocusedMemberId(memberId); setEditing(null); }} />}
       {queueOpen && (
         <ScheduleQueueSheet queue={organizedQueue} members={db.members} returnFocusRef={queueTriggerRef} onClose={() => setQueueOpen(false)}
-          onSnooze={(key, on) => markQueueGroup("snoozed", key, on)} onEscalate={(key, on) => markQueueGroup("escalated", key, on)}
+          onSnooze={(key, on) => markQueueGroup("snoozed", key, on)}
           onNoComment={onNoComment} onSaveNote={onSaveNote}
           onOpenLesson={(lesson) => { setQueueOpen(false); if (lesson) { setCursor(lesson.date || todayISO()); setEditing(lesson); } }} />
       )}
@@ -4792,14 +4792,15 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
 }
 
 /**
- * 확인할 수업 (2026-11-07). 탭 넷: 오늘 · 지난 미처리 · 관리자 확인 · 지난 항목(접힘).
+ * 확인할 수업 (2026-11-07). 탭 셋: 오늘 · 지난 미처리(확정 기간 안) · 지난 항목(접힘).
+ * 확정 마감(수업 시작 + 7일)이 지난 항목과 11월 1일 이전 항목은 지난 항목에만 남는다.
  * 같은 수업의 줄은 한 묶음 -- 듀엣은 한 카드다. 묶음을 고르면 그 묶음의 첫 일(확정이
  * 먼저)을 아래에서 처리한다. 묶음은 lesson-queue.js 가 만든다.
  */
-export function ScheduleQueueSheet({ queue, members, returnFocusRef, onClose, onNoComment, onSaveNote, onOpenLesson, onSnooze, onEscalate, initialTab = "", initialGroupKey = "", initialArchivedOpen = false }) {
+export function ScheduleQueueSheet({ queue, members, returnFocusRef, onClose, onNoComment, onSaveNote, onOpenLesson, onSnooze, initialTab = "", initialGroupKey = "", initialArchivedOpen = false }) {
   const aiRecording = useContext(AIRecordingStatusContext);
-  const tabs = queue?.tabs || { [QUEUE_TAB.TODAY]: [], [QUEUE_TAB.OVERDUE]: [], [QUEUE_TAB.ADMIN]: [], [QUEUE_TAB.ARCHIVED]: [] };
-  const firstTab = [QUEUE_TAB.TODAY, QUEUE_TAB.OVERDUE, QUEUE_TAB.ADMIN, QUEUE_TAB.ARCHIVED].find((key) => tabs[key].length) || QUEUE_TAB.TODAY;
+  const tabs = queue?.tabs || { [QUEUE_TAB.TODAY]: [], [QUEUE_TAB.OVERDUE]: [], [QUEUE_TAB.ARCHIVED]: [] };
+  const firstTab = QUEUE_TABS.find((key) => tabs[key]?.length) || QUEUE_TAB.TODAY;
   const [tab, setTab] = useState(initialTab || firstTab);
   const [archivedOpen, setArchivedOpen] = useState(initialArchivedOpen);
   const [groupKey, setGroupKey] = useState(initialGroupKey);
@@ -4832,12 +4833,12 @@ export function ScheduleQueueSheet({ queue, members, returnFocusRef, onClose, on
   return (
     <ScheduleBottomSheet title="확인할 수업" subtitle={`오늘 미처리 ${queue?.todayCount || 0}건`} returnFocusRef={returnFocusRef} onClose={onClose}>
       <div className="mb-3 flex gap-1.5 overflow-x-auto" data-queue-tabs>
-        {[QUEUE_TAB.TODAY, QUEUE_TAB.OVERDUE, QUEUE_TAB.ADMIN, QUEUE_TAB.ARCHIVED].map((key) => (
+        {QUEUE_TABS.map((key) => (
           <button key={key} type="button" data-queue-tab={key} aria-pressed={tab === key}
             onClick={() => { setTab(key); setGroupKey(""); }}
             className="h-9 shrink-0 rounded-full px-3 text-xs font-extrabold tabular-nums"
             style={{ backgroundColor: tab === key ? INK : CANVAS, color: tab === key ? CARD : SUB }}>
-            {QUEUE_TAB_LABEL[key]} {tabs[key].length}
+            {QUEUE_TAB_LABEL[key]} {(tabs[key] || []).length}
           </button>
         ))}
       </div>
@@ -4847,7 +4848,7 @@ export function ScheduleQueueSheet({ queue, members, returnFocusRef, onClose, on
             <button type="button" onClick={() => setArchivedOpen((open) => !open)} aria-expanded={archivedOpen}
               className="flex h-11 w-full items-center gap-1.5 rounded-lg px-3 text-left text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>
               <ChevronRight size={14} style={{ transform: archivedOpen ? "rotate(90deg)" : "none" }} />
-              11월 1일 이전 수업 {shown.length}건 — 요약에 세지 않아요. 지우지 않고 그대로 둡니다.
+              확정 기간(7일)이 지났거나 11월 1일 이전인 수업 {shown.length}건 — 요약에 세지 않아요. 지우지 않고 그대로 둡니다.
             </button>
           )}
           {(tab !== QUEUE_TAB.ARCHIVED || archivedOpen) && shown.map((item) => (
@@ -4857,6 +4858,12 @@ export function ScheduleQueueSheet({ queue, members, returnFocusRef, onClose, on
                 {item.date ? `${dow(item.date)} ${item.date.slice(5).replace("-", ".")}` : "날짜 없음"}{item.lesson?.start ? ` · ${item.lesson.start}` : ""}
                 {item.snoozed ? " · 보류" : ""}{item.serverState === "unknown" && item.tab !== QUEUE_TAB.ARCHIVED ? " · 서버 확인 전" : ""}
               </span>
+              {/* 확정 마감 2일 전부터. 지나면 이 카드는 지난 항목으로 간다. */}
+              {item.badge && (
+                <span data-queue-deadline={item.badge.daysLeft} className="mt-1 inline-block rounded-full px-2 py-0.5 text-xs font-extrabold" style={{ backgroundColor: item.badge.daysLeft === 0 ? BAD_S : WARN_S, color: item.badge.daysLeft === 0 ? BAD : WARN }}>
+                  {item.badge.label}
+                </span>
+              )}
               <span className="mt-0.5 block truncate text-sm font-extrabold" style={{ color: INK }}>
                 {(item.memberIds.length ? item.memberIds : [""]).map(nameOfMember).join(" · ")}
               </span>
@@ -4878,12 +4885,14 @@ export function ScheduleQueueSheet({ queue, members, returnFocusRef, onClose, on
           <div className="flex items-center gap-2">
             <button type="button" onClick={() => setGroupKey("")} className="h-9 rounded-lg px-3 text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: SUB }}>← 목록</button>
             <span className="min-w-0 flex-1" />
-            {/* 보류 · 관리자 확인은 이 기기에만 남는다. 서버에는 아무것도 쓰지 않는다. */}
+            {/* 보류는 이 기기에만 남는다. 서버에는 아무것도 쓰지 않는다. */}
             <button type="button" data-queue-snooze onClick={() => onSnooze?.(group.key, !group.snoozed)} className="h-9 rounded-lg px-3 text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: SUB }}>{group.snoozed ? "보류 풀기" : "보류"}</button>
-            {group.tab !== QUEUE_TAB.ADMIN && group.tab !== QUEUE_TAB.ARCHIVED && (
-              <button type="button" data-queue-escalate onClick={() => { onEscalate?.(group.key, true); setGroupKey(""); }} className="h-9 rounded-lg px-3 text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: SUB }}>관리자 확인</button>
-            )}
           </div>
+          {group.badge && (
+            <p data-queue-deadline={group.badge.daysLeft} className="rounded-lg px-3 py-2 text-xs font-extrabold" style={{ backgroundColor: group.badge.daysLeft === 0 ? BAD_S : WARN_S, color: group.badge.daysLeft === 0 ? BAD : WARN }}>
+              {group.badge.label}
+            </p>
+          )}
           {group.memberIds.length > 1 && (
             <p className="rounded-lg px-3 py-2 text-xs font-bold" style={{ backgroundColor: TINT, color: PRIMARY }}>
               한 수업 · 회원 {group.memberIds.length}명 — {group.tasks.map((item) => `${nameOfMember(item.memberId || item.a?.memberId)} ${reasonLabel(item)}`).join(" · ")}
@@ -26773,7 +26782,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
               <p className="mt-3" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>확인할 수업 · 서버 대조 (수업 단위)</p>
               {queueCounts ? (
                 <p data-queue-diagnostics className="mt-1.5 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
-                  {diagnosticLocalTime(queueCounts.at)} · 완료인데 남은 것 {queueCounts.doneElsewhere} · 진짜 미처리 {queueCounts.pending} · 판단 불가 {queueCounts.unknown} · 지난 항목 {queueCounts.archived} · 서버 읽기 {queueCounts.reads}건
+                  {diagnosticLocalTime(queueCounts.at)} · 완료인데 남은 것 {queueCounts.doneElsewhere} · 진짜 미처리 {queueCounts.pending} · 판단 불가 {queueCounts.unknown} · 지난 항목 {queueCounts.archived} (마감 지남 {queueCounts.expired || 0}) · 서버 읽기 {queueCounts.reads}건
                 </p>
               ) : <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>아직 대조하지 않았어요</p>}
               <p className="mt-3" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>음성 세션 최근 30건</p>

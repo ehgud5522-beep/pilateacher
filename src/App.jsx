@@ -160,6 +160,7 @@ import { WEB_VERSION_CHECK_MS, fetchDeployedWebBuild, isNewerWebBuild, staleTabM
 import {
   QUEUE_CUTOFF, QUEUE_TAB, QUEUE_TABS, QUEUE_TAB_LABEL, lessonIdsToCheck, mergeServerCache, organizeLessonQueue,
   readQueueCounts, readQueueMarks, readServerCache, serverStatesFromCache, writeQueueCounts, writeQueueMarks,
+  dismissQueueGroups, restoreDismissedGroups,
   writeServerCache,
 } from "./features/schedule/lesson-queue.js";
 import {
@@ -3712,6 +3713,7 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
     now: Date.now(),
     serverStates: serverStatesFromCache(queueServerCache),
     snoozed: queueMarks.snoozed,
+    dismissed: queueMarks.dismissed,
     /* 개인 강사(센터 미소속)에게는 컷오프가 없다 -- 센터의 결정이다. */
     cutoff: organizationMode ? QUEUE_CUTOFF : "0000-00-00",
   }), [taskQueue, T0, queueServerCache, queueMarks, organizationMode]);
@@ -3727,6 +3729,18 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
       message: `완료인데 남은 것 ${counts.doneElsewhere} · 진짜 미처리 ${counts.pending} · 판단 불가 ${counts.unknown} · 지난 항목 ${counts.archived} (마감 지남 ${counts.expired || 0})`,
     });
   }, [queueCountsKey, queueReads]);
+  /* [모두 지우기] · [다시 보기] (2026-11-07 대표). 목록에서만 빼고 넣는다 -- 수업 · 출석 ·
+     확정 · 기록은 처리 안 된 그대로다. 기기에만 적는다. */
+  const saveQueueMarks = (next) => { writeQueueMarks(globalThis.localStorage, next); setQueueMarks(next); };
+  const dismissAllQueue = () => {
+    const groups = Object.values(organizedQueue.tabs).flat();
+    saveQueueMarks(dismissQueueGroups(queueMarks, groups, T0));
+    deviceLog("lesson_queue_dismiss_all", { feature: "lesson_queue", stage: "dismiss_all", count: groups.length });
+  };
+  const restoreQueue = () => {
+    saveQueueMarks(restoreDismissedGroups(queueMarks));
+    deviceLog("lesson_queue_restore", { feature: "lesson_queue", stage: "restore", count: organizedQueue.dismissedCount });
+  };
   const markQueueGroup = (kind, key, on) => {
     const next = { ...queueMarks, [kind]: { ...queueMarks[kind] } };
     if (on) next[kind][key] = true; else delete next[kind][key];
@@ -3736,6 +3750,7 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
   const queueSummaryDetail = [
     organizedQueue.overdueCount ? `지난 미처리 ${organizedQueue.overdueCount}건` : "",
     organizedQueue.archivedCount ? `지난 항목 ${organizedQueue.archivedCount}건` : "",
+    organizedQueue.dismissedCount ? `숨긴 항목 ${organizedQueue.dismissedCount}건` : "",
   ].filter(Boolean).join(" · ");
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -3797,7 +3812,7 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
           </button>
         ) : null}
         {/* 첫 화면은 "오늘 미처리 N건" 하나로 말한다 (2026-11-07). 지난 것은 아래 줄에 수만. */}
-        <button data-queue-summary onClick={(e) => { if (organizedQueue.total) { queueTriggerRef.current = e.currentTarget; setQueueOpen(true); } }} disabled={!organizedQueue.total}
+        <button data-queue-summary onClick={(e) => { if (organizedQueue.total || organizedQueue.dismissedCount) { queueTriggerRef.current = e.currentTarget; setQueueOpen(true); } }} disabled={!organizedQueue.total && !organizedQueue.dismissedCount}
           className="flex h-14 w-full items-center gap-3 rounded-xl px-3 text-left disabled:opacity-80"
           style={{ backgroundColor: organizedQueue.todayCount ? TINT : CARD, border: `1px solid ${organizedQueue.todayCount ? RING : LINE}`, boxShadow: "0 1px 4px rgba(28,36,51,.06)" }}>
           <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: organizedQueue.todayCount ? TINT : GOOD_S }}>
@@ -3819,6 +3834,7 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
       {queueOpen && (
         <ScheduleQueueSheet queue={organizedQueue} members={db.members} returnFocusRef={queueTriggerRef} onClose={() => setQueueOpen(false)}
           onSnooze={(key, on) => markQueueGroup("snoozed", key, on)}
+          onDismissAll={dismissAllQueue} onRestoreDismissed={restoreQueue}
           onNoComment={onNoComment} onSaveNote={onSaveNote}
           onOpenLesson={(lesson) => { setQueueOpen(false); if (lesson) { setCursor(lesson.date || todayISO()); setEditing(lesson); } }} />
       )}
@@ -4797,14 +4813,16 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
  * 같은 수업의 줄은 한 묶음 -- 듀엣은 한 카드다. 묶음을 고르면 그 묶음의 첫 일(확정이
  * 먼저)을 아래에서 처리한다. 묶음은 lesson-queue.js 가 만든다.
  */
-export function ScheduleQueueSheet({ queue, members, returnFocusRef, onClose, onNoComment, onSaveNote, onOpenLesson, onSnooze, initialTab = "", initialGroupKey = "", initialArchivedOpen = false }) {
+export function ScheduleQueueSheet({ queue, members, returnFocusRef, onClose, onNoComment, onSaveNote, onOpenLesson, onSnooze, onDismissAll, onRestoreDismissed, initialTab = "", initialGroupKey = "", initialArchivedOpen = false, initialConfirmClear = false }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const tabs = queue?.tabs || { [QUEUE_TAB.TODAY]: [], [QUEUE_TAB.OVERDUE]: [], [QUEUE_TAB.ARCHIVED]: [] };
   const firstTab = QUEUE_TABS.find((key) => tabs[key]?.length) || QUEUE_TAB.TODAY;
   const [tab, setTab] = useState(initialTab || firstTab);
   const [archivedOpen, setArchivedOpen] = useState(initialArchivedOpen);
   const [groupKey, setGroupKey] = useState(initialGroupKey);
+  const [confirmClear, setConfirmClear] = useState(initialConfirmClear);
   const group = Object.values(tabs).flat().find((item) => item.key === groupKey) || null;
+  const visibleTotal = Object.values(tabs).reduce((sum, list) => sum + (list?.length || 0), 0);
   const task = group ? group.tasks[0] || null : null;
   const nameOfMember = (id) => members.find((m) => String(m.id) === String(id))?.name || "회원";
   const reasonLabel = (item) => (item.kind === "settlement" ? "확정" : item.kind === "attendance" ? "출석" : item.kind === "note" ? "기록" : "기록 확인");
@@ -4873,6 +4891,26 @@ export function ScheduleQueueSheet({ queue, members, returnFocusRef, onClose, on
             </button>
           ))}
           {shown.length === 0 && <p className="py-6 text-center text-xs font-bold" style={{ color: SUB }}>이 탭에 처리할 수업이 없어요.</p>}
+          {/* 모두 지우기 (2026-11-07 대표): 목록에서만 뺀다. 처리 안 된 수업은 그대로 둔다. */}
+          {onDismissAll && visibleTotal > 0 && (confirmClear ? (
+            <div data-queue-clear-confirm className="rounded-xl px-3 py-3" style={{ backgroundColor: CANVAS, border: `1px solid ${LINE}` }}>
+              <p className="text-sm font-extrabold" style={{ color: INK }}>확인할 수업 {visibleTotal}건을 목록에서 지울까요?</p>
+              <p className="mt-1 text-xs leading-relaxed" style={{ color: SUB }}>목록에서만 사라져요. 출석 · 확정 · 기록은 처리되지 않은 채 일정에 그대로 남아요. 이 기기에만 적용돼요.</p>
+              <div className="mt-2 flex gap-2">
+                <button type="button" onClick={() => setConfirmClear(false)} className="h-10 flex-1 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: SUB }}>그만두기</button>
+                <button type="button" data-queue-clear-go onClick={() => { setConfirmClear(false); onDismissAll(); }} className="h-10 flex-1 rounded-lg text-xs font-extrabold text-white" style={{ backgroundColor: INK }}>목록에서 지우기</button>
+              </div>
+            </div>
+          ) : (
+            <button type="button" data-queue-clear onClick={() => setConfirmClear(true)} className="h-10 w-full rounded-lg text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: SUB }}>
+              모두 지우기
+            </button>
+          ))}
+          {onRestoreDismissed && queue?.dismissedCount > 0 && (
+            <button type="button" data-queue-restore onClick={onRestoreDismissed} className="h-10 w-full rounded-lg text-xs font-bold" style={{ color: SUB }}>
+              숨긴 항목 {queue.dismissedCount}건 다시 보기
+            </button>
+          )}
         </div>
       ) : !task ? (
         <div className="py-8 text-center">

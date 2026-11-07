@@ -125,3 +125,123 @@ export function resolveUnitPrice(payCategory, options = {}) {
   }
   return parsePositiveInt(options?.unitPrice, "unitPrice");
 }
+
+/* ── 발급 화면에서 기준 단가를 직접 정한다 (2026-11-07 대표 결정) ─────────────
+ * 지점마다 단가와 수강권 형태가 조금씩 다르다. 표·풀방금액·상품 단가는 이제
+ * **제안값**이고, 대표 · 총괄매니저 · FC매니저가 발급할 때 바꿀 수 있다.
+ *
+ * 바꾸는 것은 회원권의 기준값(baseUnitPrice) 하나다. 차감할 때의 판정 --
+ * 부원장 5:5 · 인수인계 25,000 · 이 강사에게 20회 미만 신규 단가 · 직급 이벤트
+ * -- 은 그대로 그 위에 선다 (deduction-pricing.mjs). 부원장은 판정 1 이라
+ * 20회 미만 판정보다 먼저 끝난다.
+ *
+ * 누가 · 무엇을 · 왜 바꿨는지 회원권 문서에 남는다: createdBy(누가),
+ * standardUnitPrice(원래 값) · baseUnitPrice(정한 값), unitPriceReason(왜).
+ * 원장은 append-only 라, 이 셋이 없으면 월말에 "왜 이 회원권만 단가가 다른가"
+ * 에 답할 것이 없다.
+ */
+
+/** 기준 단가가 어디서 왔는가. 회원권 문서의 unitPriceSource 에 그대로 남는다. */
+export const ISSUE_UNIT_PRICE_SOURCE = Object.freeze({
+  TABLE: "table",
+  FULL_ROOM_RATE: "full_room_rate",
+  /** 기타 상품이 들고 있는 회당 단가. */
+  PRODUCT: "product",
+  /** 발급하는 사람이 직접 정했다. */
+  MANUAL: "manual",
+});
+
+/** 기준 단가를 직접 정할 수 있는 역할. 규칙의 canIssuePass 와 같은 목록이다. */
+export const UNIT_PRICE_EDITOR_ROLES = Object.freeze(
+  /** @type {ReadonlyArray<string>} */ (["owner", "area_manager", "manager"]),
+);
+
+/** @param {string} role */
+export function canSetUnitPrice(role) {
+  return UNIT_PRICE_EDITOR_ROLES.includes(String(role ?? ""));
+}
+
+/** 사유 글자 수 상한. 회원권 문서에 남는다. */
+export const UNIT_PRICE_REASON_MAX = 100;
+
+const isBlank = (value) => value === undefined || value === null || String(value).trim() === "";
+
+/**
+ * 직접 정하지 않았을 때 쓰일 값. 없으면 null -- 0 이 아니다.
+ *
+ * @param {string} payCategory
+ * @param {{ productUnitPrice?: number | null, fullRoomRate?: number | string | null }} [options]
+ * @returns {{ value: number | null, source: string }}
+ */
+export function standardIssueUnitPrice(payCategory, options = {}) {
+  const source = unitPriceSourceFor(payCategory);
+  if (source === UNIT_PRICE_SOURCE.TABLE) {
+    return { value: defaultUnitPriceFor(payCategory), source: ISSUE_UNIT_PRICE_SOURCE.TABLE };
+  }
+  if (source === UNIT_PRICE_SOURCE.FULL_ROOM_RATE) {
+    const rate = Number(options?.fullRoomRate);
+    return {
+      value: !isBlank(options?.fullRoomRate) && Number.isInteger(rate) && rate > 0 ? rate : null,
+      source: ISSUE_UNIT_PRICE_SOURCE.FULL_ROOM_RATE,
+    };
+  }
+  const productPrice = options?.productUnitPrice;
+  return {
+    value: Number.isInteger(productPrice) && productPrice >= 0 ? productPrice : null,
+    source: ISSUE_UNIT_PRICE_SOURCE.PRODUCT,
+  };
+}
+
+/**
+ * 발급 시 박을 기준 단가와 그 출처.
+ *
+ * manualUnitPrice 가 비어 있으면 예전 길(resolveUnitPrice)과 같다. 값이 있으면
+ *   - 정할 수 있는 역할이 아니면 거부 (Forbidden manualUnitPrice)
+ *   - 1원 이상의 정수가 아니면 거부 -- 0 은 그 수업들이 통째로 무보수가 된다
+ *   - 제안값이 있고 그와 다르면 사유가 있어야 한다 (Missing unitPriceReason)
+ *
+ * @param {string} payCategory
+ * @param {{
+ *   manualUnitPrice?: number | string | null,
+ *   unitPriceReason?: string,
+ *   issuerRole?: string,
+ *   unitPrice?: number | string | null,
+ *   fullRoomRate?: number | string | null,
+ * }} [options]
+ * @returns {{ unitPrice: number, source: string, standardUnitPrice: number | null, reason: string }}
+ */
+export function resolveIssueUnitPrice(payCategory, options = {}) {
+  const productUnitPrice = (() => {
+    if (unitPriceSourceFor(payCategory) !== UNIT_PRICE_SOURCE.MANUAL || isBlank(options?.unitPrice)) return null;
+    const parsed = Number(options.unitPrice);
+    return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+  })();
+  const standard = standardIssueUnitPrice(payCategory, {
+    productUnitPrice, fullRoomRate: options?.fullRoomRate,
+  });
+  const reason = String(options?.unitPriceReason ?? "").trim().slice(0, UNIT_PRICE_REASON_MAX);
+
+  if (isBlank(options?.manualUnitPrice)) {
+    return {
+      unitPrice: resolveUnitPrice(payCategory, { unitPrice: options?.unitPrice, fullRoomRate: options?.fullRoomRate }),
+      source: standard.source,
+      standardUnitPrice: standard.value,
+      reason: "",
+    };
+  }
+
+  if (!canSetUnitPrice(options?.issuerRole)) throw new Error("Forbidden manualUnitPrice");
+  const manual = Number(String(options.manualUnitPrice).trim());
+  if (!Number.isInteger(manual) || manual < 1) throw new Error("Invalid manualUnitPrice");
+  if (standard.value === manual) {
+    // 제안값을 그대로 적었다. 바꾼 것이 아니므로 출처도 그대로다.
+    return { unitPrice: manual, source: standard.source, standardUnitPrice: standard.value, reason: "" };
+  }
+  if (standard.value !== null && !reason) throw new Error("Missing unitPriceReason");
+  return {
+    unitPrice: manual,
+    source: ISSUE_UNIT_PRICE_SOURCE.MANUAL,
+    standardUnitPrice: standard.value,
+    reason,
+  };
+}

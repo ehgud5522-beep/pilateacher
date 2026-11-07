@@ -93,3 +93,18 @@ test("첫 화면 요약과 진단 배선", async () => {
   const sheet = source.slice(source.indexOf("function ScheduleQueueSheet"), source.indexOf("function coverDraw"));
   assert.match(sheet, /onClick=\{\(\) => onOpenLesson\?\.\(task\.s \|\| task\.lesson\)\}/);
 });
+
+test("모두 지우기: 버튼 → 확인(목록에서만 · 처리 안 된 채 남음) · 숨긴 항목 다시 보기", async () => {
+  const html = await render({ onDismissAll: () => {}, onRestoreDismissed: () => {} });
+  assert.match(html, /data-queue-clear/);
+  assert.match(html, /모두 지우기/);
+  const confirm = await render({ onDismissAll: () => {}, initialConfirmClear: true });
+  assert.match(confirm, /data-queue-clear-confirm/);
+  assert.match(confirm, /확인할 수업 3건을 목록에서 지울까요/);
+  assert.match(confirm, /처리되지 않은 채 일정에 그대로 남아요/);
+  const hidden = organizeLessonQueue({ tasks, today: TODAY, now: NOW, serverStates: {}, dismissed: { "lesson|L-duet": TODAY, "lesson|L-near": TODAY, "lesson|L-oct": TODAY } });
+  const { ScheduleQueueSheet } = await app();
+  const empty = renderToStaticMarkup(createElement(ScheduleQueueSheet, { queue: hidden, members, onClose: () => {}, onDismissAll: () => {}, onRestoreDismissed: () => {} }));
+  assert.doesNotMatch(empty, /data-queue-clear"/, "지울 것이 없으면 버튼이 없다");
+  assert.match(empty, /숨긴 항목 3건 다시 보기/);
+});

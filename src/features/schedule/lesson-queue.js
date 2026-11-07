@@ -156,11 +156,14 @@ function closedElsewhere(lesson, serverState) {
  *   now?: number | Date,
  *   serverStates?: Record<string, string>,
  *   snoozed?: Record<string, boolean>,
+ *   dismissed?: Record<string, string>,
  *   cutoff?: string,
  * }} input
  *   now           지금(밀리초). 확정 마감을 가르는 시각이다. 없으면 today 의 정오로 본다
  *   serverStates  수업 id → SERVER_STATE. 없는 id 는 아직 못 물은 것(UNKNOWN)
  *   snoozed       묶음 key → 보류. 요약에서 빠지고 목록에는 "보류" 로 남는다 (기기에만)
+ *   dismissed     묶음 key → 숨긴 날. [모두 지우기] 로 목록에서 뺀 것 (기기에만, 2026-11-07).
+ *                 수업 · 출석 · 확정 · 기록은 처리되지 않은 그대로다 -- 큐가 세지 않을 뿐
  */
 export function organizeLessonQueue(input) {
   const today = text(input?.today);
@@ -170,11 +173,12 @@ export function organizeLessonQueue(input) {
   const cutoff = text(input?.cutoff) || QUEUE_CUTOFF;
   const serverStates = input?.serverStates || {};
   const snoozed = input?.snoozed || {};
+  const dismissed = input?.dismissed || {};
 
   /** @type {Map<string, any>} */
   const groups = new Map();
   /* archived = 지난 항목 전체(컷오프 + 마감 지남), expired = 그중 마감이 지나 넘어간 것. */
-  const counts = { doneElsewhere: 0, pending: 0, unknown: 0, archived: 0, expired: 0 };
+  const counts = { doneElsewhere: 0, pending: 0, unknown: 0, archived: 0, expired: 0, dismissed: 0 };
 
   for (const task of Array.isArray(input?.tasks) ? input.tasks : []) {
     if (!task) continue;
@@ -195,6 +199,7 @@ export function organizeLessonQueue(input) {
   const out = { [QUEUE_TAB.TODAY]: [], [QUEUE_TAB.OVERDUE]: [], [QUEUE_TAB.ARCHIVED]: [] };
   for (const group of groups.values()) {
     if (lessonClosed(group)) { counts.doneElsewhere += 1; continue; }
+    if (dismissed[group.key]) { counts.dismissed += 1; continue; }
     /* 확정 항목이 먼저 -- 돈이 걸린 일이고, 출석 · 기록은 확정 화면에서 함께 본다. */
     group.tasks.sort((left, right) => Number(right.kind === "settlement") - Number(left.kind === "settlement"));
     group.snoozed = Boolean(snoozed[group.key]);
@@ -230,8 +235,10 @@ export function organizeLessonQueue(input) {
     todayCount: active(QUEUE_TAB.TODAY),
     overdueCount: active(QUEUE_TAB.OVERDUE),
     archivedCount: out[QUEUE_TAB.ARCHIVED].length,
-    /** 시트를 열 만한 것이 있는가 (지난 항목만 있어도 연다) */
+    /** 시트를 열 만한 것이 있는가 (지난 항목만 있어도 연다 · 숨긴 것만 있어도 되살리러 연다) */
     total: Object.values(out).reduce((sum, list) => sum + list.length, 0),
+    /** [모두 지우기] 로 숨긴 묶음 수 -- 시트가 "다시 보기" 를 낸다 */
+    dismissedCount: counts.dismissed,
     /** 진단: 완료인데 남은 것 / 진짜 미처리 / 판단 불가 / 지난 항목 · 그중 마감 지남 (묶음 수) */
     counts,
   };
@@ -318,7 +325,36 @@ export function mergeServerCache(cache, documents, now) {
  */
 export function readQueueMarks(storage) {
   const marks = readJson(storage, QUEUE_MARKS_KEY, {});
-  return { snoozed: { ...(marks.snoozed || {}) } };
+  return { snoozed: { ...(marks.snoozed || {}) }, dismissed: { ...(marks.dismissed || {}) } };
+}
+
+/** 숨긴 표시를 남겨 두는 기간. 그보다 오래된 수업의 표시는 지운다 -- 기기 저장이 끝없이 늘지 않게. */
+export const DISMISS_KEEP_DAYS = 90;
+
+/**
+ * [모두 지우기] (2026-11-07 대표). 지금 큐에 선 묶음 전부를 **목록에서만** 숨긴다.
+ * 수업 · 출석 · 확정 · 기록 데이터는 건드리지 않는다 -- 처리 안 된 것은 처리 안 된 채로 둔다.
+ * 기기에만 적는다. 숨긴 날이 아니라 수업 날짜를 적어, 90일 지난 수업의 표시는 정리한다.
+ *
+ * @param {{ snoozed?: any, dismissed?: Record<string, string> }} marks
+ * @param {Array<{ key: string, date?: string }>} groups
+ * @param {string} today YYYY-MM-DD
+ */
+export function dismissQueueGroups(marks, groups, today) {
+  const keepFrom = new Date(`${text(today)}T12:00:00`);
+  keepFrom.setDate(keepFrom.getDate() - DISMISS_KEEP_DAYS);
+  const pad = (value) => String(value).padStart(2, "0");
+  const floor = `${keepFrom.getFullYear()}-${pad(keepFrom.getMonth() + 1)}-${pad(keepFrom.getDate())}`;
+  const dismissed = Object.fromEntries(Object.entries(marks?.dismissed || {}).filter(([, day]) => text(day) >= floor));
+  for (const group of Array.isArray(groups) ? groups : []) {
+    if (text(group?.key)) dismissed[text(group.key)] = text(group.date) || text(today);
+  }
+  return { ...marks, snoozed: { ...(marks?.snoozed || {}) }, dismissed };
+}
+
+/** 숨긴 것을 모두 다시 보이게. */
+export function restoreDismissedGroups(marks) {
+  return { ...marks, snoozed: { ...(marks?.snoozed || {}) }, dismissed: {} };
 }
 export function writeQueueMarks(storage, marks) { writeJson(storage, QUEUE_MARKS_KEY, marks); }
 

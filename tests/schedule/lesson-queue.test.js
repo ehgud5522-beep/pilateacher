@@ -10,6 +10,7 @@ import {
   DEADLINE_WARN_DAYS, QUEUE_CUTOFF, QUEUE_TAB, QUEUE_TABS, SERVER_STATE, SERVER_STATE_READ_LIMIT, SERVER_STATE_TTL_MS,
   deadlineBadgeOf, lessonIdsToCheck, mergeServerCache, organizeLessonQueue, queueDeadlineOf, readQueueCounts, readQueueMarks,
   readServerCache, serverStateOf, serverStatesFromCache, writeQueueCounts, writeQueueMarks, writeServerCache,
+  DISMISS_KEEP_DAYS, dismissQueueGroups, restoreDismissedGroups,
 } from "../../src/features/schedule/lesson-queue.js";
 import { DEDUCT_BACKDATE_LIMIT_DAYS, settleDeadline } from "../../src/data/repositories/pass-repository.js";
 
@@ -48,7 +49,7 @@ test("서버에서 끝난 수업은 큐에서 빠지고 '완료인데 남은 것
     { "L-done": SERVER_STATE.COMPLETED, "L-removed": SERVER_STATE.REMOVED, "L-open": SERVER_STATE.SCHEDULED },
   );
   assert.deepEqual(keys(queue.tabs[QUEUE_TAB.OVERDUE]).sort(), ["lesson|L-open", "lesson|L-unknown"]);
-  assert.deepEqual(queue.counts, { doneElsewhere: 2, pending: 1, unknown: 1, archived: 0, expired: 0 });
+  assert.deepEqual(queue.counts, { doneElsewhere: 2, pending: 1, unknown: 1, archived: 0, expired: 0, dismissed: 0 });
 });
 
 test("이 기기가 확정한 수업의 기록은 서버가 완료여도 남는다 -- 진짜 할 일", () => {
@@ -236,11 +237,48 @@ test("기기 저장: 캐시 · 보류 · 진단 개수 -- 저장소가 없거나
   assert.deepEqual(readServerCache(storage), { a: { state: "completed", at: 2 } });
   // 예전 기기에 남은 관리자 확인 표시는 읽지 않는다.
   writeQueueMarks(storage, { snoozed: { x: true }, escalated: { y: true } });
-  assert.deepEqual(readQueueMarks(storage), { snoozed: { x: true } });
+  assert.deepEqual(readQueueMarks(storage), { snoozed: { x: true }, dismissed: {} });
   writeQueueCounts(storage, { doneElsewhere: 1, pending: 2, unknown: 3, archived: 4, expired: 1 }, 99, 7);
   assert.deepEqual(readQueueCounts(storage), { doneElsewhere: 1, pending: 2, unknown: 3, archived: 4, expired: 1, reads: 7, at: 99 });
   const broken = { getItem: () => "{not json", setItem: () => { throw new Error("full"); } };
   assert.deepEqual(readServerCache(broken), {});
   assert.doesNotThrow(() => writeServerCache(broken, {}));
   assert.equal(readQueueCounts(null), null);
+});
+
+/* ── 모두 지우기 (2026-11-07 대표): 목록에서만 뺀다, 처리 안 된 것은 그대로 ───── */
+
+test("모두 지우기: 모든 탭이 비고 숨긴 수가 남는다 · 수업 · 출석 데이터는 그대로 · 다시 보기로 돌아온다", () => {
+  const today = lesson("A", TODAY, { attendees: [{ memberId: "m1", status: "booked" }] });
+  const tasks = [
+    task("attendance", "m1", today),
+    task("attendance", "m2", lesson("B", "2026-11-05")),
+    task("attendance", "m3", lesson("C", "2026-10-20")),
+  ];
+  const before = organize(tasks);
+  const snapshot = JSON.stringify(tasks);
+  const marks = dismissQueueGroups({ snoozed: { x: true } }, Object.values(before.tabs).flat(), TODAY);
+  const after = organize(tasks, {}, { dismissed: marks.dismissed, snoozed: marks.snoozed });
+  assert.equal(after.total, 0);
+  assert.equal(after.todayCount, 0);
+  assert.equal(after.dismissedCount, 3);
+  assert.equal(after.counts.dismissed, 3);
+  assert.equal(JSON.stringify(tasks), snapshot, "큐 판정은 수업 · 출석을 바꾸지 않는다");
+  assert.equal(today.attendees[0].status, "booked", "출석은 처리 안 된 그대로");
+  assert.deepEqual(marks.snoozed, { x: true }, "보류 표시는 지키고");
+  /* 새로 생긴 수업은 숨겨지지 않는다 */
+  const later = organize([...tasks, task("attendance", "m1", lesson("D", TODAY))], {}, { dismissed: marks.dismissed });
+  assert.deepEqual(keys(later.tabs.today), ["lesson|D"]);
+  const restored = restoreDismissedGroups(marks);
+  assert.equal(organize(tasks, {}, { dismissed: restored.dismissed }).total, 3);
+});
+
+test("숨긴 표시는 기기에 저장되고, 90일 지난 수업의 표시는 정리된다", () => {
+  const store = new Map();
+  const storage = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)) };
+  const marks = dismissQueueGroups({ dismissed: { "lesson|old": "2026-07-01", "lesson|keep": "2026-10-01" } }, [{ key: "lesson|new", date: "2026-11-06" }], TODAY);
+  assert.deepEqual(Object.keys(marks.dismissed).sort(), ["lesson|keep", "lesson|new"]);
+  assert.equal(DISMISS_KEEP_DAYS, 90);
+  writeQueueMarks(storage, marks);
+  assert.deepEqual(readQueueMarks(storage).dismissed, marks.dismissed);
 });

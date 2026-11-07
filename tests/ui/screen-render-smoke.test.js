@@ -102,6 +102,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "일정 탭 · 소속 · 확정됨 · 대표",
     "일정 탭 · 개인 모드 · 확정 없음",
     "회원 목록",
+    "회원 목록 · 지금 회원권",
     "회원 상세",
     /* 회원권 네 장 짜리. 배포 563 이 여기서 죽었다 -- "소속" 케이스는
        passCards 를 넘기지 않아 새 카드 코드가 한 줄도 돌지 않았다. */
@@ -3338,6 +3339,22 @@ test("daily sentence: one line under the week, tap to see today's small step, cl
   assert.match(opened, /data-daily-sentence-hide/);
   assert.match(opened, /오늘은 닫기/);
   assert.match(markup("일정 탭"), /data-daily-sentence=/, "일정 탭에 들어 있다");
+});
+
+test("member card shows only the pass in use: 'N회 중 M회 사용', one bar, 15px text", async () => {
+  const markup = await screenMarkup();
+  const cards = markup("회원 목록 · 지금 회원권");
+  assert.match(cards, /이번 회원권 · 5<!-- -->번째 등록|이번 회원권 · 5번째 등록/);
+  assert.match(cards, /20회 중 12회 사용/);
+  /* 미리 끊은 다음 회원권은 합치지 않고 따로 (2026-11-08). */
+  assert.ok(cards.includes("다음 회원권 · 20회 대기"), "다음 회원권 대기");
+  assert.equal((cards.match(/data-pass-waiting/g) || []).length, 1);
+  assert.ok(!cards.includes("40회 중"), "지금 것과 대기를 합치지 않는다");
+  assert.match(cards, /1:1 20회 · 2:1 8회/);
+  assert.ok(!cards.includes("누적 "), "카드에 누적 여정 문구는 없다");
+  assert.doesNotMatch(cards, /진행중/);
+  assert.doesNotMatch(cards, /가장 빠른 만료/);
+  assert.equal((cards.match(/data-pass-usage/g) || []).length, 2, "다 쓴 회원(진행 중 회원권 없음)은 줄이 없다");
 });
 
 test("instructor inbox: unread strip on the schedule tab, rows with a read dot, the failure code", async () => {

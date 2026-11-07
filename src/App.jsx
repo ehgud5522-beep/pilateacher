@@ -72,7 +72,10 @@ import {
   careChoices, careMinutesOfGrade, careOnlyClient, settlementSkipMessage,
 } from "./features/schedule/care-options.js";
 import { useNarrowViewport } from "./features/ui/viewport.js";
-import { upcomingPayPreview } from "./features/schedule/upcoming-pay.js";
+import { upcomingPayPreview, upcomingPayRows } from "./features/schedule/upcoming-pay.js";
+import {
+  PAY_FILTERS as MY_PAY_FILTERS, PAY_STATUS_LABEL as MY_PAY_STATUS_LABEL, myPayModel, myPayWeeks, whenLabel,
+} from "./features/schedule/my-pay.js";
 import { payHeadline, unitPriceSummary } from "./features/schedule/instructor-pay-view.js";
 import {
   NOTICE_BODY_MAX, NOTICE_TITLE_MAX, confirmNotice as confirmNoticeOnDevice, confirmedNoticeIds,
@@ -16373,7 +16376,7 @@ function SettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings,
    없다. 강사가 이 값을 받을 돈으로 읽으면 매달 정산 때 어긋나므로, 화면이
    무엇까지 셌는지 먼저 말한다. */
 
-const PAY_SCOPE_NOTICE = "수업료만 자동으로 계산됩니다. 인센티브와 노쇼는 별도로 정산됩니다.";
+const PAY_SCOPE_NOTICE = "수업료만 계산합니다. 인센티브 · 노쇼 · 보너스 · 세금은 따로 정산되고, 확정 대기는 바뀔 수 있어요.";
 
 /* 이름을 못 읽은 급여 줄. 회원권 번호를 보여 주면 강사는 그것이 무엇인지 알 수
    없고, 빈칸으로 두면 화면이 깨진 것으로 읽는다. 무슨 일이 있었는지 말한다. */
@@ -16443,33 +16446,31 @@ function InstructorPayCard({ pay, loading, error, upcoming = null, onOpen }) {
   );
 }
 
+/* ── 내 급여 (2026-11-08 대표 개편 지시) ─────────────────────────────────────
+   전체 화면 한 장. 위에 뒤로 · 달 이동이 고정, 그 아래 세 숫자(예상 · 확정 · 확정 대기),
+   단가별 계산 내역(누르면 그 수업), 수업 정정 내역, 주별 상세(접힘, 필터).
+   **계산은 바꾸지 않았다** -- 묶음은 features/schedule/my-pay.js, 그 합은 원장 합계와 같다.
+   핑크는 확정 대기에만 쓴다. 정정은 빨강 계열 글자와 "정정" 표시로. */
 function InstructorPayDetail({
   organization, currentUserId, pay, loading, error, month, clientStore, passStore,
   onClose, onRetry, onChangeMonth, initialState = null,
-  /* 확정 대기. 일정 탭 카드와 **같은 객체**다 (upcomingPayPreview) -- 다시 세지 않는다. */
-  upcoming = null,
+  /* 확정 대기 합계 · 줄. 일정 탭 카드와 **같은 계산**이다 (upcomingPayRows). */
+  upcoming = null, pending = null, memberNameOf = () => "",
+  /* 정정 줄 · 수업 줄을 누르면 그 회원 상세로 (원래 수업 기록). 없으면 누르지 않는다. */
+  onOpenClient,
   now = () => new Date(),
 }) {
-  const headline = payHeadline(pay, upcoming);
-  const unitSummary = useMemo(() => unitPriceSummary(pay?.entries), [pay?.entries]);
   const thisMonth = monthKey(isoOf(now()));
   const isThisMonth = month === thisMonth;
-  const monthName = `${Number(String(month).slice(5, 7)) || ""}월`;
   const [passes, setPasses] = useState(initialState?.passes || []);
   const [clients, setClients] = useState(initialState?.clients || []);
   const organizationId = organization?.organizationId || "";
-
-  /* 원장 항목은 회원권만 가리킨다. 이름을 붙이려면 회원권 → 회원을 이어야
-     하는데, 그 두 번의 읽기는 카드가 아니라 이 화면을 열었을 때만 치른다.
-     이름을 못 읽어도 금액은 맞으므로 목록만 회원권 번호로 떨어진다. */
   useEffect(() => {
     if (!organizationId || initialState) return;
     let alive = true;
     Promise.all([
       listPasses(organizationId, { store: passStore }).catch(() => []),
-      listClients(organizationId, {
-        store: clientStore, ...clientScopeFor(organization, currentUserId),
-      }).catch(() => []),
+      listClients(organizationId, { store: clientStore, ...clientScopeFor(organization, currentUserId) }).catch(() => []),
     ]).then(([foundPasses, foundClients]) => {
       if (!alive) return;
       setPasses(foundPasses);
@@ -16478,283 +16479,217 @@ function InstructorPayDetail({
     return () => { alive = false; };
   }, [organizationId, clientStore, passStore, initialState]);
 
-  const nameOfPass = useMemo(() => {
-    const clientById = new Map(clients.map((client) => [client.id, client.name || ""]));
-    const map = new Map();
-    /* 이름을 못 읽은 줄은 비우지 않는다. **인수인계된 회원이 여기 온다** --
-       담당이 새 강사로 바뀌면 이전 강사는 그 회원을 더 이상 읽을 수 없는데,
-       지난달 차감의 금액은 그대로 이 강사의 것이다. 빈칸으로 두면 강사는
-       자기 급여 줄이 깨진 것으로 읽는다.
-
-       원장에 이름을 복사해 두지 않는다 -- append-only 라 틀린 이름은 영영
-       못 고치고, 그 이름은 회원의 것이지 이 줄의 것이 아니다. */
-    for (const pass of passes) map.set(pass.id, clientById.get(pass.clientId) || "");
-    return map;
-  }, [passes, clients]);
-  const displayNameOfPass = (passId) => nameOfPass.get(passId) || HANDED_OVER_LABEL;
-
-  /* ── 그 달의 차감 전부를 주 단위로 ───────────────────────────────────────
-     전에는 `최근 차감` 스무 줄이었다. 항목은 최신순이라 스물한 번째부터
-     조용히 사라졌고, 10월 16일에 10월 13일 이전이 안 보였다 -- 그 달의
-     급여를 설명하는 화면에서. */
-  const passById = useCallback(
-    (passId) => passes.find((item) => String(item?.id || "") === String(passId || "")) || null,
-    [passes],
-  );
-  const clientNameById = useCallback(
-    (clientId) => clients.find((item) => String(item?.id || "") === String(clientId || ""))?.name || "",
-    [clients],
-  );
-  const payWeeks = useMemo(() => payrollWeeks({
-    rows: payrollRows({
-      entries: pay?.entries,
-      passOf: passById,
-      clientNameOf: clientNameById,
-      passLabelOf: displayNameOfPass,
-    }),
-    /* 이번 주를 펼친 채로 연다. 지난달을 보고 있으면 그 달에 "이번 주" 가
-       없으므로 전부 접힌 채로 뜬다 -- 그것이 맞다. */
-    now: new Date(),
-  }), [pay?.entries, passById, clientNameById, nameOfPass]);
-  /* 스모크는 주를 전부 펼쳐 둘 수 있어야 한다. 접힌 줄은 아예 그려지지
-     않으므로, 펼치지 않으면 그 화면의 절반을 검사할 수 없다. */
-  const [openWeeks, setOpenWeeks] = useState(() => (
-    initialState?.openWeeks === "all" ? "all" : {}
-  ));
-  const [openRow, setOpenRow] = useState("");
+  const passOf = useCallback((passId) => passes.find((item) => String(item?.id || "") === String(passId || "")) || null, [passes]);
+  const clientById = useMemo(() => new Map(clients.map((client) => [String(client.id), client])), [clients]);
+  const clientNameOf = useCallback((clientId) => clientById.get(String(clientId || ""))?.name || "", [clientById]);
+  const model = useMemo(() => myPayModel({
+    pay, pending: pending || { rows: [] }, passOf, clientNameOf, memberNameOf,
+  }), [pay, pending, passOf, clientNameOf, memberNameOf]);
+  /* 맨 위 숫자의 대기는 일정 탭 카드와 같은 값(upcoming)을 우선한다 -- 줄이 없을 때도 카드와 같은 숫자. */
+  const pendingAmount = upcoming ? Number(upcoming.total) || 0 : model.headline.pending;
+  const pendingLessons = upcoming ? Number(upcoming.lessons) || 0 : model.headline.pendingLessons;
+  const confirmed = model.headline.confirmed;
+  const [filter, setFilter] = useState(initialState?.filter || "all");
+  const weeks = useMemo(() => myPayWeeks(model.rows, filter), [model.rows, filter]);
+  const [openWeeks, setOpenWeeks] = useState(() => (initialState?.openWeeks === "all" ? "all" : {}));
+  const [openUnit, setOpenUnit] = useState(initialState?.openUnit || "");
+  const monthTitle = `${String(month).slice(0, 4)}년 ${Number(String(month).slice(5, 7)) || ""}월`;
+  const previous = shiftMonth(month, -1);
+  const next = shiftMonth(month, 1);
+  const canNext = next <= thisMonth;
+  const statusStyle = (status) => (status === "pending"
+    ? { color: BRAND_D, backgroundColor: TINT }
+    : status === "correction" ? { color: BAD, backgroundColor: BAD_S } : { color: GOOD, backgroundColor: GOOD_S });
+  const won$ = (amount) => `${amount < 0 ? "−" : amount > 0 ? "+" : ""}₩${won(Math.abs(amount))}`;
+  const openClient = (row) => {
+    const client = clientById.get(String(row.clientId || ""));
+    if (client && onOpenClient) onOpenClient(client);
+  };
 
   return (
-    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
-      {/* 달 이름과 닫기는 **같은 줄**이다. 금액은 그 아래로 내린다 -- 전에는
-          달·금액 한 덩어리가 왼쪽에 서고 X 가 그 옆이라, 폭이 좁아지면 X 가
-          달 이름 쪽으로 내려와 겹쳐 보였다. */}
-      <div className="flex min-h-8 items-center gap-2">
-        <p className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: SUB }}>
-          {monthLabel(`${month}-01`)}
-        </p>
+    <div className="flex h-full min-h-0 flex-col" data-my-pay style={{ backgroundColor: PAGE }}>
+      {/* 위: 뒤로 · 제목 · 달 이동. 스크롤해도 남는다. 달 버튼은 여기 하나뿐이다. */}
+      <header className="sticky top-0 z-10 flex shrink-0 items-center gap-1 px-2"
+        style={{ minHeight: 56, paddingTop: "env(safe-area-inset-top, 0px)", backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
         {onClose ? (
-          <button type="button" onClick={onClose} aria-label="닫기" className="shrink-0 flex items-center justify-center"
-            style={{ width: PAY_TAP, height: PAY_TAP, color: SUB }}><X size={22} /></button>
+          <button type="button" onClick={onClose} aria-label="뒤로" className="flex shrink-0 items-center justify-center"
+            style={{ width: PAY_TAP, height: PAY_TAP, color: INK }}><ArrowLeft size={22} /></button>
         ) : null}
-      </div>
-      {/* ── 맨 위: 확정 급여를 크게, 그 아래 확정 대기 포함 합계 ─────────────
-          두 숫자를 한 줄로 합치지 않는다. 확정은 원장에 박혀 있고, 대기는
-          회원권이 모자라면 나가지 않는다. */}
-      <p className="mt-1" style={{ fontSize: TYPE.body, fontWeight: 600, color: INK2 }}>
-        {isThisMonth ? "이번 달" : monthName} 확정 급여
-      </p>
-      <div className="mt-1 flex flex-wrap items-end gap-x-2">
-        <p className="tabular-nums" data-pay-confirmed style={{ fontSize: TYPE.hero, lineHeight: 1.15, fontWeight: 800, color: INK, overflowWrap: "anywhere" }}>
-          ₩{won(headline.confirmed)}
-        </p>
-        <p style={{ paddingBottom: 3, fontSize: TYPE.body, color: SUB }}>확정된 수업 기준</p>
-      </div>
-      {headline.pendingLessons > 0 ? (
-        <div className="mt-2" data-pay-with-pending style={{ padding: "10px 12px", borderRadius: 10, backgroundColor: TINT }}>
-          <p className="flex flex-wrap items-baseline gap-x-2 tabular-nums" style={{ fontSize: TYPE.body, color: INK }}>
-            <span style={{ fontWeight: 600 }}>확정 대기 포함</span>
-            <span style={{ fontSize: TYPE.heading, fontWeight: 800 }}>₩{won(headline.withPending)}</span>
-          </p>
-          <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.body, color: BRAND_D }}>
-            확정 대기 {headline.pendingLessons}건 (+₩{won(headline.pendingAmount)})
-          </p>
-        </div>
-      ) : null}
-      <p className="mt-2" style={{ fontSize: TYPE.body, lineHeight: 1.5, color: SUB }}>{PAY_SCOPE_NOTICE}</p>
+        <h2 className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.title, fontWeight: 800, color: INK }}>내 급여</h2>
+        {onChangeMonth ? (
+          <div className="flex shrink-0 items-center" data-pay-month-nav>
+            <button type="button" aria-label="이전 달" onClick={() => onChangeMonth(previous)} className="flex items-center justify-center"
+              style={{ width: PAY_TAP, height: PAY_TAP, color: SUB }}><ChevronLeft size={20} /></button>
+            <span className="tabular-nums" data-pay-month style={{ fontSize: TYPE.body, fontWeight: 700, color: INK }}>{monthTitle}</span>
+            <button type="button" aria-label="다음 달" disabled={!canNext} onClick={() => canNext && onChangeMonth(next)}
+              className="flex items-center justify-center disabled:opacity-30" style={{ width: PAY_TAP, height: PAY_TAP, color: SUB }}><ChevronRight size={20} /></button>
+          </div>
+        ) : <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.body, fontWeight: 700, color: INK }}>{monthTitle}</span>}
+      </header>
 
-      {/* ── 지난달 보기 ────────────────────────────────────────────────
-          월말 정산은 다음 달에 한다. 이번 달만 보이면 그때 강사는 자기 숫자를
-          확인할 자리가 없고, 대표의 집계만 믿게 된다. */}
-      {onChangeMonth ? (() => {
-        const choices = monthChoices(now(), 6);
-        const at = choices.indexOf(month);
-        const previous = at >= 0 && at + 1 < choices.length ? choices[at + 1] : "";
-        const next = at > 0 ? choices[at - 1] : "";
-        return (
+      <div className="pt-scroll min-h-0 flex-1 overflow-y-auto" style={{ padding: "12px 12px calc(env(safe-area-inset-bottom, 0px) + 24px)" }}>
+        {loading ? <p style={{ fontSize: TYPE.body, color: SUB }}>불러오는 중…</p> : null}
+        {!loading && error ? (
+          <div style={{ padding: 14, borderRadius: 14, backgroundColor: CARD }}>
+            <p style={{ fontSize: TYPE.body, color: BAD }}>급여를 불러오지 못했습니다 (코드 {error})</p>
+            <button type="button" onClick={() => onRetry?.()} className="mt-2 w-full font-bold"
+              style={{ minHeight: PAY_TAP, borderRadius: 10, backgroundColor: CANVAS, color: INK, fontSize: TYPE.body }}>다시 시도</button>
+          </div>
+        ) : null}
+
+        {!loading && !error ? (
           <>
-            <div className="mt-3 flex flex-wrap gap-2" data-pay-month-nav>
-              <button type="button" disabled={!previous} onClick={() => previous && onChangeMonth(previous)}
-                className="flex items-center gap-1 px-3 font-bold disabled:opacity-40" style={{
-                  minHeight: PAY_TAP, borderRadius: 10, fontSize: TYPE.body, backgroundColor: CANVAS, color: INK,
-                }}><ChevronLeft size={18} /> 지난 달</button>
-              {!isThisMonth ? (
-                <button type="button" disabled={!next} onClick={() => next && onChangeMonth(next)}
-                  className="flex items-center gap-1 px-3 font-bold disabled:opacity-40" style={{
-                    minHeight: PAY_TAP, borderRadius: 10, fontSize: TYPE.body, backgroundColor: CANVAS, color: INK,
-                  }}>다음 달 <ChevronRight size={18} /></button>
+            {/* ① 요약 -- 3초 안에: 예상 · 확정 · 확정 대기 */}
+            <section data-pay-summary style={{ padding: 16, borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}>
+              <p style={{ fontSize: TYPE.body, fontWeight: 600, color: INK2 }}>{isThisMonth ? "이번 달" : `${Number(String(month).slice(5, 7))}월`} 예상 수업료</p>
+              <p className="mt-1 tabular-nums" data-pay-expected style={{ fontSize: TYPE.hero, lineHeight: 1.15, fontWeight: 800, color: INK, overflowWrap: "anywhere" }}>
+                ₩{won(confirmed + pendingAmount)}
+              </p>
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <div style={{ padding: "10px 12px", borderRadius: 12, backgroundColor: CANVAS }}>
+                  <p style={{ fontSize: TYPE.caption, fontWeight: 600, color: SUB }}>확정 수업료</p>
+                  <p className="mt-0.5 tabular-nums" data-pay-confirmed style={{ fontSize: TYPE.heading, fontWeight: 800, color: INK, overflowWrap: "anywhere" }}>₩{won(confirmed)}</p>
+                </div>
+                <div style={{ padding: "10px 12px", borderRadius: 12, backgroundColor: TINT }}>
+                  <p style={{ fontSize: TYPE.caption, fontWeight: 600, color: BRAND_D }}>확정 대기{pendingLessons ? ` · ${pendingLessons}건` : ""}</p>
+                  <p className="mt-0.5 tabular-nums" data-pay-pending style={{ fontSize: TYPE.heading, fontWeight: 800, color: BRAND_D, overflowWrap: "anywhere" }}>₩{won(pendingAmount)}</p>
+                </div>
+              </div>
+              <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>{PAY_SCOPE_NOTICE}</p>
+              {upcoming?.blocked ? (
+                <p className="mt-1" style={{ fontSize: TYPE.caption, color: WARN }}>회원권이 없어 빠지지 않는 수업 {upcoming.blocked}건은 대기에 넣지 않았어요</p>
               ) : null}
-            </div>
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {choices.map((choice) => {
-                const on = choice === month;
+            </section>
+
+            {/* ② 단가별 계산 내역 -- 누르면 그 수업 */}
+            <h3 className="mt-5 mb-2 px-1" style={{ fontSize: TYPE.body, fontWeight: 800, color: INK }}>급여 계산 내역</h3>
+            <section data-pay-unit-summary style={{ padding: "4px 16px", borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}>
+              {model.unitRows.length === 0 && model.corrections.length === 0 ? (
+                <p style={{ padding: "12px 0", fontSize: TYPE.body, color: SUB }}>이 달에 확정된 수업이 없습니다.</p>
+              ) : null}
+              {model.unitRows.map((row) => {
+                const open = openUnit === row.key;
                 return (
-                  <button type="button" key={choice} onClick={() => onChangeMonth(choice)}
-                    className="px-3 font-bold" style={{
-                      minHeight: PAY_TAP, borderRadius: 999, fontSize: TYPE.body,
-                      backgroundColor: on ? TINT : CANVAS, color: on ? BRAND_D : SUB,
-                    }}>{Number(choice.slice(5, 7))}월</button>
+                  <div key={row.key} style={{ borderBottom: `1px solid ${LINE}` }}>
+                    <button type="button" data-pay-unit-row onClick={() => setOpenUnit(open ? "" : row.key)} aria-expanded={open}
+                      className="flex w-full items-center gap-2 text-left" style={{ minHeight: PAY_TAP, padding: "10px 0" }}>
+                      <span className="min-w-0 flex-1" style={{ fontSize: TYPE.body, color: INK, wordBreak: "keep-all" }}>
+                        {row.label} · {row.sessions}건
+                        <span className="block tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>건당 ₩{won(row.unitPrice)}</span>
+                      </span>
+                      <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.body, fontWeight: 700, color: INK }}>{won$(row.amount)}</span>
+                      <ChevronDown size={16} style={{ color: FAINT, transform: open ? "rotate(180deg)" : "none" }} />
+                    </button>
+                    {open ? (
+                      <div className="pb-2" data-pay-unit-lessons>
+                        {row.rows.map((lesson) => (
+                          <div key={lesson.id} className="flex items-center gap-2" style={{ padding: "6px 0 6px 12px" }}>
+                            <span className="min-w-0 flex-1" style={{ fontSize: TYPE.body, color: INK2 }}>
+                              {whenLabel(lesson.at)} · {lesson.title}
+                              {lesson.ruleLabel ? <span className="block" style={{ fontSize: TYPE.caption, color: FAINT }}>{lesson.ruleLabel}</span> : null}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+              {model.corrections.length ? (
+                <div className="flex items-center gap-2" data-pay-correction-row style={{ minHeight: PAY_TAP, padding: "10px 0", borderBottom: `1px solid ${LINE}` }}>
+                  <span className="min-w-0 flex-1" style={{ fontSize: TYPE.body, color: BAD }}>수업 정정 · {model.corrections.length}건</span>
+                  <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.body, fontWeight: 700, color: BAD }}>{won$(model.correctionTotal)}</span>
+                </div>
+              ) : null}
+              {model.unitRows.length || model.corrections.length ? (
+                <div className="flex items-center gap-2" data-pay-summary-total style={{ padding: "12px 0" }}>
+                  <span className="min-w-0 flex-1" style={{ fontSize: TYPE.body, fontWeight: 800, color: INK }}>확정 수업료</span>
+                  <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.heading, fontWeight: 800, color: INK }}>₩{won(confirmed)}</span>
+                </div>
+              ) : null}
+            </section>
+            {pay?.byCategory?.some((row) => isDiosaCategory(row.category)) ? (
+              <p className="mt-2 px-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>{DIOSA_PAYROLL_NOTICE}</p>
+            ) : null}
+
+            {/* ③ 수업 정정 내역 -- 왜 빠졌는가 */}
+            {model.corrections.length ? (
+              <>
+                <h3 className="mt-5 mb-2 px-1" style={{ fontSize: TYPE.body, fontWeight: 800, color: INK }}>수업 정정 내역</h3>
+                <section data-pay-corrections style={{ borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}>
+                  {model.corrections.map((row, index) => (
+                    <button key={row.id} type="button" data-pay-correction={row.id} disabled={!onOpenClient || !clientById.has(String(row.clientId))}
+                      onClick={() => openClient(row)} className="block w-full text-left"
+                      style={{ minHeight: PAY_TAP, padding: "12px 16px", borderTop: index ? `1px solid ${LINE}` : "none" }}>
+                      <span className="flex items-baseline gap-2">
+                        <span className="min-w-0 flex-1" style={{ fontSize: TYPE.body, fontWeight: 700, color: INK }}>{row.title}</span>
+                        <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.body, fontWeight: 800, color: BAD }}>{won$(row.amount)}</span>
+                      </span>
+                      <span className="mt-1 block" style={{ fontSize: TYPE.body, color: INK2 }}>
+                        수업 {row.lessonAt ? whenLabel(row.lessonAt, false) : "지난달 수업"}{row.priorMonth ? " · 지난달 수업" : ""} · 원래 +₩{won(row.unitPrice)}
+                      </span>
+                      <span className="mt-0.5 block" style={{ fontSize: TYPE.body, color: SUB }}>사유: {row.reason || "적힌 사유 없음"}</span>
+                      <span className="mt-0.5 block tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>처리 {whenLabel(row.at, false)}</span>
+                    </button>
+                  ))}
+                </section>
+                <p className="mt-2 px-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+                  정정된 수업도 기록에서 지우지 않습니다. 금액이 이상하면 수업 날짜와 회원 이름을 대표님께 알려 주세요.
+                </p>
+              </>
+            ) : null}
+
+            {/* ④ 수업별 상세 -- 주로 접힘, 필터 */}
+            <div className="mt-5 mb-2 flex flex-wrap items-center gap-2 px-1">
+              <h3 className="min-w-0 flex-1" style={{ fontSize: TYPE.body, fontWeight: 800, color: INK }}>수업별 상세 내역</h3>
+              <div className="flex gap-1" role="tablist" aria-label="상태" data-pay-filter>
+                {MY_PAY_FILTERS.map((item) => (
+                  <button key={item.key} type="button" role="tab" aria-selected={filter === item.key} onClick={() => setFilter(item.key)}
+                    className="px-3 font-bold" style={{ minHeight: PAY_TAP, borderRadius: 999, fontSize: TYPE.caption,
+                      backgroundColor: filter === item.key ? INK : CARD, color: filter === item.key ? CARD : SUB, border: `1px solid ${LINE}` }}>{item.label}</button>
+                ))}
+              </div>
+            </div>
+            {weeks.length === 0 ? <p className="px-1" style={{ fontSize: TYPE.body, color: SUB }}>해당하는 수업이 없습니다.</p> : null}
+            <div className="space-y-2">
+              {weeks.map((week) => {
+                const open = openWeeks === "all" ? true : Boolean(openWeeks[week.key]);
+                return (
+                  <section key={week.key} data-pay-week style={{ borderRadius: 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}>
+                    <button type="button" aria-expanded={open} onClick={() => setOpenWeeks((value) => (value === "all" ? { [week.key]: false } : { ...value, [week.key]: !open }))}
+                      className="flex w-full items-center gap-2 text-left" style={{ minHeight: 52, padding: "0 16px" }}>
+                      <span className="min-w-0 flex-1 tabular-nums" style={{ fontSize: TYPE.body, fontWeight: 700, color: INK }}>{week.label}</span>
+                      <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.body, fontWeight: 800, color: week.net < 0 ? BAD : INK }}>{won$(week.net)}</span>
+                      <ChevronDown size={18} style={{ color: FAINT, transform: open ? "rotate(180deg)" : "none" }} />
+                    </button>
+                    {open ? (
+                      <div style={{ borderTop: `1px solid ${LINE}`, padding: "4px 16px 8px" }}>
+                        {week.rows.map((row) => (
+                          <button key={row.id} type="button" data-pay-row={row.status} disabled={!onOpenClient || !clientById.has(String(row.clientId || ""))}
+                            onClick={() => openClient(row)} className="flex w-full items-start gap-2 text-left" style={{ minHeight: PAY_TAP, padding: "10px 0", borderBottom: `1px solid ${LINE}` }}>
+                            <span className="min-w-0 flex-1">
+                              <span className="block" style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>{whenLabel(row.at)} · {row.title}</span>
+                              <span className="block" style={{ fontSize: TYPE.caption, color: SUB }}>
+                                {row.kind} · {row.category} · 건당 ₩{won(row.unitPrice)}
+                              </span>
+                              {row.ruleLabel ? <span className="block" style={{ fontSize: TYPE.caption, color: FAINT }}>{row.ruleLabel}</span> : null}
+                            </span>
+                            <span className="flex shrink-0 flex-col items-end gap-1">
+                              <span className="tabular-nums" style={{ fontSize: TYPE.body, fontWeight: 700, color: row.amount < 0 ? BAD : INK }}>{won$(row.amount)}</span>
+                              <span className="rounded-full px-2" style={{ fontSize: TYPE.caption, fontWeight: 700, ...statusStyle(row.status) }}>{MY_PAY_STATUS_LABEL[row.status]}</span>
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </section>
                 );
               })}
             </div>
           </>
-        );
-      })() : null}
-
-      {loading ? <p className="mt-3" style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : null}
-      {!loading && error ? (
-        <div className="mt-3">
-          <p style={{ fontSize: TYPE.caption, color: BAD }}>급여를 불러오지 못했습니다 (코드 {error}).</p>
-          <button type="button" onClick={() => onRetry?.()} className="mt-2 h-11 w-full font-bold"
-            style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>다시 시도</button>
-        </div>
-      ) : null}
-
-      {!loading && !error ? (
-        <div className="mt-3">
-          {pay?.byCategory?.length ? (
-            <div data-pay-unit-summary>
-              {/* ── 단가별 요약 ────────────────────────────────────────────
-                  구분 · 단가 × 건수 = 금액. 같은 구분이라도 단가가 다르면 줄이
-                  갈린다 -- "왜 이 금액이냐" 에 곱셈 한 줄로 답한다. 금액은
-                  급여 합계와 같은 함수(summarizeInstructorPay)가 낸다. */}
-              <p style={{ fontSize: TYPE.body, fontWeight: 700, color: INK2 }}>단가별 요약</p>
-              {unitSummary.rows.map((row) => (
-                <div key={row.key} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5" data-pay-unit-row
-                  style={{ padding: "10px 0", borderTop: `1px solid ${LINE}` }}>
-                  <span className="min-w-0" style={{ flex: "1 1 9rem", fontSize: TYPE.body, color: INK, overflowWrap: "anywhere" }}>
-                    {row.kind === "support" ? "서비스 수업" : labelOf(PAY_CATEGORY_LABELS, row.category)}
-                  </span>
-                  <span className="tabular-nums" style={{ fontSize: TYPE.body, color: INK2 }}>
-                    ₩{won(row.unitPrice)} × {row.sessions}건 = <b style={{ color: INK }}>₩{won(row.amount)}</b>
-                  </span>
-                </div>
-              ))}
-              {/* 되돌린 차감. 급여에서 그만큼 빠진다 -- 부호가 보여야 읽힌다. */}
-              {unitSummary.correction.count > 0 ? (
-                <div className="flex flex-wrap items-baseline gap-x-2" data-pay-correction-row
-                  style={{ padding: "10px 0", borderTop: `1px solid ${LINE}` }}>
-                  <span className="min-w-0" style={{ flex: "1 1 9rem", fontSize: TYPE.body, color: INK }}>보정 (되돌린 수업)</span>
-                  <span className="tabular-nums" style={{ fontSize: TYPE.body, color: BAD }}>
-                    {unitSummary.correction.count}건 = −₩{won(Math.abs(unitSummary.correction.amount))}
-                  </span>
-                </div>
-              ) : null}
-              <div className="flex flex-wrap items-baseline gap-x-2" data-pay-summary-total
-                style={{ padding: "10px 0", borderTop: `2px solid ${LINE}` }}>
-                <span className="min-w-0" style={{ flex: "1 1 9rem", fontSize: TYPE.body, fontWeight: 700, color: INK }}>합계</span>
-                <span className="tabular-nums" style={{ fontSize: TYPE.title, fontWeight: 800, color: INK }}>₩{won(unitSummary.total)}</span>
-              </div>
-              <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
-                잔여 횟수 조정은 수업이 아니라 급여에 들어가지 않습니다.
-              </p>
-              {/* 정산지에는 디오사 칸이 없다. 빈 칸 둘을 빌려 쓰기로 했으므로
-                  (2026-10-05) 어디에 옮겨 적을지를 그 자리에서 말해 준다.
-                  디오사를 한 건도 안 한 달에는 띄우지 않는다 -- 상관없는
-                  안내가 매달 서 있으면 아무도 읽지 않게 된다. */}
-              {pay.byCategory.some((row) => isDiosaCategory(row.category)) ? (
-                <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
-                  {DIOSA_PAYROLL_NOTICE}
-                </p>
-              ) : null}
-            </div>
-          ) : (
-            <p style={{ fontSize: TYPE.caption, color: SUB }}>이번 달 차감된 수업이 없습니다.</p>
-          )}
-
-          {pay?.entries?.length ? (
-            <div className="mt-4">
-              {/* ── 그 달의 전부를 주 단위로 ──────────────────────────────
-                  전에는 `최근 차감` 스무 줄이었다. 항목은 최신순이라 스물한
-                  번째부터 조용히 사라졌고, 10월 16일에 10월 13일 이전이 안
-                  보였다 -- 그 달의 급여를 설명하는 화면에서.
-
-                  전부 펼쳐 두면 스크롤이 길어 결국 안 읽힌다. 주별 소계로
-                  접고, 이번 주만 열어 둔다. */}
-              <p style={{ fontSize: TYPE.body, fontWeight: 700, color: INK2 }}>날짜별 내역</p>
-              {payWeeks.map((week) => {
-                const open = openWeeks === "all" ? true : (openWeeks[week.key] ?? week.current);
-                return (
-                  <div key={week.key} style={{ borderTop: `1px solid ${LINE}` }}>
-                    <button type="button" onClick={() => setOpenWeeks((value) => (
-                      value === "all" ? { [week.key]: false } : { ...value, [week.key]: !open }
-                    ))}
-                      className="flex w-full flex-wrap items-center gap-x-2" style={{ minHeight: PAY_TAP, padding: "8px 0" }}>
-                      <ChevronDown size={16} style={{ color: FAINT, transform: open ? "none" : "rotate(-90deg)" }} />
-                      <span className="min-w-0 flex-1 text-left tabular-nums" style={{ fontSize: TYPE.body, fontWeight: 700, color: INK }}>
-                        {week.start.getMonth() + 1}.{week.start.getDate()} 주
-                      </span>
-                      <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.body, color: SUB }}>{week.sessions}건</span>
-                      <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.body, fontWeight: 700, color: INK }}>₩{won(week.amount)}</span>
-                    </button>
-                    {open ? week.rows.map((row) => {
-                      const expanded = openRow === row.id;
-                      return (
-                        <div key={row.id} style={{ padding: "0 0 8px 20px" }}>
-                          <button type="button" onClick={() => setOpenRow(expanded ? "" : row.id)}
-                            className="flex w-full flex-wrap items-center gap-x-2 text-left" style={{ minHeight: PAY_TAP, padding: "6px 0" }}>
-                            <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.body, color: SUB }}>
-                              {row.occurredAt ? `${row.occurredAt.getMonth() + 1}.${row.occurredAt.getDate()}` : "날짜 없음"}
-                            </span>
-                            {/* 듀엣은 두 이름이 함께 선다. 원장 항목은 대표
-                                한 명만 들고 있어 전에는 한 이름만 떴다 --
-                                차감은 둘 다 맞았는데 화면만 반쪽이었다. */}
-                            <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.body, color: INK }}>
-                              {row.title}
-                              {row.isDuet ? <span style={{ fontSize: TYPE.caption, color: SUB }}> (2:1)</span> : null}
-                            </span>
-                            <span className="shrink-0" style={{ fontSize: TYPE.caption, color: SUB }}>
-                              {labelOf(PAY_CATEGORY_LABELS, row.category)}
-                            </span>
-                            <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.body, fontWeight: 700, color: INK }}>
-                              ₩{won(row.amount)}
-                            </span>
-                          </button>
-                          {/* 왜 이 금액인가. 같은 회원권 안에서도 회차마다
-                              답이 달라 금액만 보면 계산이 틀린 것처럼 보인다.
-                              이 필드가 생기기 전 항목에는 없으므로 있을 때만. */}
-                          {row.rule ? (
-                            <p className="truncate" style={{ paddingLeft: 34, fontSize: TYPE.caption, color: FAINT }}>
-                              {labelOf(PRICING_RULE_LABELS, row.rule)}
-                            </p>
-                          ) : null}
-                          {/* 회원별로 어느 회원권에서 몇 회 빠졌는가. "3회
-                              차감" 만으로는 어느 계약인지 알 수 없고, 분쟁 때
-                              여는 화면이라 그 구분이 곧 근거가 된다. */}
-                          {expanded ? (
-                            <div style={{ marginTop: 4, marginLeft: 34, padding: "8px 10px", borderRadius: 8, backgroundColor: CANVAS }}>
-                              {clientBreakdown({
-                                clientIds: row.clientIds, entries: pay.entries,
-                                passOf: passById, clientNameOf: clientNameById, passLabelOf: displayNameOfPass,
-                              }).map((person) => (
-                                <div key={person.clientId} style={{ padding: "3px 0" }}>
-                                  <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>
-                                    {person.name || "이름을 불러오지 못했습니다"}
-                                  </p>
-                                  {person.passes.map((item) => (
-                                    <p key={item.passId} className="flex gap-2 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
-                                      <span className="min-w-0 flex-1 truncate">{item.label || item.passId}</span>
-                                      <span className="shrink-0">{item.sessions}회</span>
-                                      <span className="shrink-0">₩{won(item.amount)}</span>
-                                    </p>
-                                  ))}
-                                </div>
-                              ))}
-                              <p className="mt-1" style={{ fontSize: TYPE.caption, color: FAINT }}>
-                                이번 달 이 회원의 차감 전부입니다 (이 수업 한 건이 아닙니다).
-                              </p>
-                            </div>
-                          ) : null}
-                        </div>
-                      );
-                    }) : null}
-                  </div>
-                );
-              })}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-    </section>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
@@ -29801,6 +29736,11 @@ export default function App() {
   /* 확정 전 수업료. **미리보기와 같은 함수를 쓴다** -- 일정 카드의 예상 단가와
      같은 값이고, 그것은 다시 확정이 쓰는 판정을 지난다. 여기서 다시 계산하면
      세 화면이 서로 다른 금액을 말하는 날이 온다. */
+  /* 내 급여 화면의 확정 대기 줄 (2026-11-08). 합계(upcomingPay)와 같은 계산이다. */
+  const pendingPayRows = useMemo(
+    () => (canSeeOwnPay && payOpen ? upcomingPayRows({ schedule: db.schedule, month: payMonth, rateOf: previewRatesFor }) : null),
+    [canSeeOwnPay, payOpen, db.schedule, payMonth, previewRatesFor],
+  );
   const upcomingPay = useMemo(
     () => (organizationRoster
       ? upcomingPayPreview({ schedule: db.schedule, month: payMonth, rateOf: previewRatesFor })
@@ -33843,7 +33783,9 @@ export default function App() {
         {payOpen && canSeeOwnPay ? (
           <AppOverlay layer="PAGE" name="이달 예상 급여">
             <InstructorPayDetail organization={organizationContext} currentUserId={account?.id || ""} pay={instructorPay}
-              loading={payLoading} error={payError} month={payMonth} upcoming={upcomingPay}
+              loading={payLoading} error={payError} month={payMonth} upcoming={upcomingPay} pending={pendingPayRows}
+              memberNameOf={(memberId) => db.members.find((member) => member.id === memberId)?.name || ""}
+              onOpenClient={(client) => { setPayOpen(false); setDetailClient(client); }}
               clientStore={undefined} passStore={undefined}
               onRetry={() => setPayRevision((value) => value + 1)}
               onChangeMonth={setPayMonth}

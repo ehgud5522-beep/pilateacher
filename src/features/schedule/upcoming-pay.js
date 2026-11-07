@@ -47,14 +47,46 @@ export function unsettledLessonsOf(schedule, month) {
 }
 
 /**
+ * 확정 전 수업을 **한 사람 · 한 줄씩** (2026-11-08 내 급여 화면). 금액 판정은 아래 합계와 같은 줄이다 --
+ * 합계는 이 줄들을 더한 것이라 둘이 어긋날 수 없다.
+ *
+ * 빠질 수 없는 사람(skip)은 줄이 아니라 blocked 로만 센다. 듀엣의 짝(deducts:false)은 금액이 없다.
+ * 추가 관리(디오사)는 같은 사람의 두 번째 줄이다.
+ *
+ * @returns {{ rows: Array<{ id: string, lessonId: string, date: string, start: string, memberId: string,
+ *   unitPrice: number, care: boolean, isDuet: boolean }>, lessons: number, blocked: number }}
+ */
+export function upcomingPayRows({ schedule, month, rateOf } = {}) {
+  const lessons = unsettledLessonsOf(schedule, month);
+  const rows = [];
+  let blocked = 0;
+  for (const lesson of lessons) {
+    const rates = typeof rateOf === "function" ? rateOf(lesson) : null;
+    if (!rates || typeof rates.get !== "function") continue;
+    const attendees = attendeesOf(lesson);
+    for (const attendee of attendees) {
+      const memberId = text(attendee?.memberId);
+      const row = rates.get(memberId);
+      if (!row) continue;
+      if (row.skip) { blocked += 1; continue; }
+      if (row.deducts === false) continue;
+      const base = { lessonId: text(lesson.id), date: text(lesson.date), start: text(lesson.start), memberId, isDuet: attendees.length > 1 };
+      rows.push({ ...base, id: `${base.lessonId}|${memberId}`, unitPrice: count(row.unitPrice), care: false });
+      if (row.care && !row.care.skip && row.care.deducts !== false) {
+        rows.push({ ...base, id: `${base.lessonId}|${memberId}|care`, unitPrice: count(row.care.unitPrice), care: true });
+      }
+    }
+  }
+  return { rows, lessons: lessons.length, blocked };
+}
+
+/**
  * 확정 전 수업료의 합. **빠질 수 없는 것은 세지 않는다.**
  *
  * 미리보기가 "회원권이 없다" 고 답한 사람은 확정해도 한 푼도 나가지 않는다.
- * 그것을 예정에 넣으면 강사는 받을 수 없는 돈을 본다 -- 그리고 월말에 그만큼
- * 비는 이유를 아무도 설명하지 못한다.
- *
- * 추가 관리(디오사)는 PT 줄 **아래 따로** 선다. 한 수업에서 회원권 둘이 빠지고
- * 금액도 둘이라, 한쪽만 세면 그만큼 모자란다.
+ * 그것을 예정에 넣으면 강사는 받을 수 없는 돈을 본다.
+ * 추가 관리(디오사)는 PT 줄 **아래 따로** 선다 -- 한 수업에서 회원권 둘이 빠지고 금액도 둘이다.
+ * 금액은 upcomingPayRows 의 줄을 더한 것이다 (내 급여 화면의 줄과 같은 수).
  *
  * @param {{
  *   schedule?: Array<any>, month?: string,
@@ -62,32 +94,7 @@ export function unsettledLessonsOf(schedule, month) {
  * }} input
  * @returns {{ total: number, sessions: number, lessons: number, blocked: number }}
  */
-export function upcomingPayPreview({ schedule, month, rateOf } = {}) {
-  const lessons = unsettledLessonsOf(schedule, month);
-  let total = 0;
-  let sessions = 0;
-  let blocked = 0;
-
-  for (const lesson of lessons) {
-    const rates = typeof rateOf === "function" ? rateOf(lesson) : null;
-    if (!rates || typeof rates.get !== "function") continue;
-    for (const attendee of attendeesOf(lesson)) {
-      const row = rates.get(text(attendee?.memberId));
-      if (!row) continue;
-      /* 빠질 수 없는 사람. 사유가 있으면 미리보기가 금액 대신 그것을 돌려준다. */
-      if (row.skip) { blocked += 1; continue; }
-      /* 듀엣은 회원권 하나를 둘이 나눠 쓴다. 차감하는 쪽에만 금액이 붙으므로
-         (deducts), 짝까지 세면 한 수업에 두 번 센다. */
-      if (row.deducts === false) continue;
-      total += count(row.unitPrice);
-      sessions += 1;
-      // 추가 관리는 같은 사람의 두 번째 줄이다. 금액도 회차도 따로 간다.
-      if (row.care && !row.care.skip && row.care.deducts !== false) {
-        total += count(row.care.unitPrice);
-        sessions += 1;
-      }
-    }
-  }
-
-  return { total, sessions, lessons: lessons.length, blocked };
+export function upcomingPayPreview(input = {}) {
+  const { rows, lessons, blocked } = upcomingPayRows(input);
+  return { total: rows.reduce((sum, row) => sum + row.unitPrice, 0), sessions: rows.length, lessons, blocked };
 }

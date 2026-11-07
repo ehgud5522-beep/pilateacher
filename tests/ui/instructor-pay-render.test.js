@@ -63,43 +63,53 @@ test("카드 · 큰 글씨: 고정 높이 없이 접히고, 누르는 곳은 44p
   assert.ok(tapHeights(html).every((height) => height >= 44), JSON.stringify(tapHeights(html)));
 });
 
-test("급여 화면: 확정 급여가 맨 위, 그 아래 확정 대기 포함, 단가별 요약 · 보정 · 서비스 수업 · 날짜별", async () => {
+test("내 급여 (2026-11-08): 예상 · 확정 · 확정 대기가 맨 위, 계산 내역 · 정정 내역 · 주별 상세", async () => {
   const html = await markupOf("이달 예상 급여 · 확정 대기 · 보정");
-  // 9월을 9월에 본다 -- "이번 달".
-  assert.match(html, /이번 달 확정 급여/);
-  /* 130,000 + 서비스 수업 15,000 − 보정 30,000 = 115,000. 손으로 적은 값이 아니라
-     summarizeInstructorPay 가 낸 픽스처의 합계다. */
+  /* 130,000 + 서비스 수업 15,000 − 정정 30,000 = 115,000 (summarizeInstructorPay 가 낸 픽스처 합계), 대기 25,000. */
+  const expectedAt = html.indexOf("data-pay-expected");
   const confirmedAt = html.indexOf("data-pay-confirmed");
-  const pendingAt = html.indexOf("data-pay-with-pending");
+  const pendingAt = html.indexOf("data-pay-pending");
   const summaryAt = html.indexOf("data-pay-unit-summary");
-  const listAt = html.indexOf("날짜별 내역");
-  assert.ok(confirmedAt > 0 && confirmedAt < pendingAt && pendingAt < summaryAt && summaryAt < listAt, "순서");
+  const correctionsAt = html.indexOf("data-pay-corrections");
+  const listAt = html.indexOf("수업별 상세 내역");
+  assert.ok(expectedAt > 0 && expectedAt < confirmedAt && confirmedAt < pendingAt && pendingAt < summaryAt
+    && summaryAt < correctionsAt && correctionsAt < listAt, "순서");
+  assert.match(html, /이번 달 예상 수업료/);
+  assert.match(html.slice(expectedAt, confirmedAt), /₩140,000/);
   assert.match(html.slice(confirmedAt, pendingAt), /₩115,000/);
-  assert.match(html.slice(pendingAt, summaryAt), /확정 대기 포함/);
-  assert.match(html.slice(pendingAt, summaryAt), /₩140,000/);
-  assert.match(html.slice(pendingAt, summaryAt), /확정 대기 1건 \(\+₩25,000\)/);
+  assert.match(html.slice(pendingAt - 200, summaryAt), /확정 대기 · 1건/);
+  assert.match(html.slice(pendingAt, summaryAt), /₩25,000/);
 
-  const summary = html.slice(summaryAt, listAt);
-  assert.match(summary, /₩30,000 × 2건 = <b[^>]*>₩60,000/);
-  assert.match(summary, /서비스 수업/);
-  // "센터 지원" 은 타지점 지원과 헷갈린다 (2026-11-04 대표).
-  assert.doesNotMatch(summary, /센터 지원/);
-  assert.match(summary, /₩15,000 × 1건 = <b[^>]*>₩15,000/);
-  assert.match(summary, /보정 \(되돌린 수업\)/);
-  assert.match(summary, /1건 = −₩30,000/);
-  assert.match(summary, /합계<\/span><span[^>]*>₩115,000/);
-  assert.match(summary, /잔여 횟수 조정은 수업이 아니라 급여에 들어가지 않습니다/);
+  const summary = html.slice(summaryAt, correctionsAt);
+  assert.match(summary, /1:1 재등록\(이벤트\) · 2건/);
+  assert.match(summary, /건당 ₩30,000/);
+  assert.match(summary, /\+₩60,000/);
+  assert.match(summary, /서비스 수업 · 1건/);
+  assert.doesNotMatch(summary, /센터 지원/, "\"센터 지원\" 은 타지점 지원과 헷갈린다 (2026-11-04 대표)");
+  assert.match(summary, /수업 정정 · 1건/);
+  assert.match(summary, /−₩30,000/);
+  assert.match(summary, /확정 수업료<\/span><span[^>]*>₩115,000/);
+  assert.doesNotMatch(summary, /보정/, "\"보정\" 대신 \"수업 정정\"");
 
-  // 날짜별: 날짜 · 회원 · 구분 · 금액.
+  /* 정정 상세: 회원 · 원래 수업 날짜 · 원래 금액 · 정정 금액 · 사유 · 처리 날짜 */
+  const corrections = html.slice(correctionsAt, listAt);
+  assert.match(corrections, /김하나/);
+  assert.match(corrections, /수업 9월 16일/);
+  assert.match(corrections, /원래 \+₩30,000/);
+  assert.match(corrections, /사유: /);
+  assert.match(corrections, /처리 9월 18일/);
+
   const list = html.slice(listAt);
-  assert.match(list, /9\.16/);
+  assert.match(list, /9월 14일 ~ 9월 20일/);
   assert.match(list, /김하나/);
-  assert.match(list, /1:1 재등록\(이벤트\)/);
-  assert.match(list, /₩30,000/);
+  assert.match(list, /data-pay-row="pending"|data-pay-row="confirmed"/);
+  assert.match(list, />전체</);
+  assert.match(list, />정정</);
 
-  // 지난 달로.
-  assert.match(html, /지난 달/);
-  assert.doesNotMatch(html, /다음 달/, "이번 달에는 다음 달이 없다");
+  // 달 이동은 위 한 곳. 이번 달에는 다음 달로 가지 않는다.
+  assert.match(html, /aria-label="이전 달"/);
+  assert.match(html, /aria-label="다음 달" disabled=""/);
+  assert.doesNotMatch(html, /지난 달<\/button>/, "달 버튼 중복 없음");
 });
 
 test("급여 화면 · 큰 글씨: 고정 높이 없이 접히고, 누르는 곳은 44px 이상", async () => {
@@ -109,9 +119,8 @@ test("급여 화면 · 큰 글씨: 고정 높이 없이 접히고, 누르는 곳
   const heights = tapHeights(html);
   assert.ok(heights.length > 5);
   assert.ok(heights.every((height) => height >= 44), JSON.stringify(heights));
-  // 요약 줄 · 날짜 줄은 넘치면 접힌다.
-  assert.match(html, /class="flex flex-wrap items-baseline gap-x-2 gap-y-0\.5" data-pay-unit-row="true"/);
-  assert.match(html, /class="flex w-full flex-wrap items-center gap-x-2 text-left"/);
+  // 금액은 넘치면 줄바꿈 (overflow-wrap), 글자는 칸 밖으로 나가지 않는다.
+  assert.match(html, /data-pay-expected="true" style="[^"]*overflow-wrap:anywhere/);
 });
 
 test("급여는 본인 것만 — 카드는 소속 강사에게만, 읽기는 내 uid 로", async () => {

@@ -272,7 +272,8 @@ import {
   planClientMigration, planPassMigration,
 } from "./data/repositories/migration-repository.js";
 import {
-  UNIT_PRICE_SOURCE, unitPriceSourceFor,
+  ISSUE_UNIT_PRICE_SOURCE, UNIT_PRICE_REASON_MAX, UNIT_PRICE_SOURCE, canSetUnitPrice,
+  standardIssueUnitPrice, unitPriceSourceFor,
 } from "./data/schema/pay-rates.js";
 import {
   NEW_TO_INSTRUCTOR_THRESHOLD, NEW_TO_INSTRUCTOR_UNIT_PRICE, netContractPriceFor,
@@ -16893,14 +16894,22 @@ function AttendanceCheck({
    발급은 회원권과 원장 항목을 한 배치로 쓰고, 원장은 append-only 다. 누른 뒤에
    고칠 수 있는 것이 거의 없으므로 누르기 전에 요약을 보여준다.
 
-   단가 해석은 pay-rates.js 의 UNIT_PRICE_SOURCE 를 따른다.
-     table           묻지 않는다. 표가 정한다
-     full_room_rate  담당 강사의 풀방금액. 없으면 여기서 막는다
-     manual          금액 칸을 띄운다
+   ── 강사 기준 단가 (2026-11-07 대표 결정) ──
+   지점마다 단가가 다르다. 표값 · 풀방금액 · 상품 단가는 **제안값**이고, 대표 ·
+   총괄매니저 · FC매니저가 "강사 기준 단가" 칸에서 바꿀 수 있다. 비워 두면
+   제안값이 그대로 박힌다. 제안값과 다르게 적으면 사유를 받는다 -- 회원권
+   문서에 standardUnitPrice · unitPriceReason 으로 남는다 (pay-rates.mjs
+   resolveIssueUnitPrice).
 
-   풀방금액이 없는 강사로 재등록(정상)을 발급하려 하면 규칙에 닿기 전에 막는다.
-   규칙 거부는 permission-denied 한 줄로만 돌아와서, 무엇을 해야 하는지 화면이
-   말해 주지 못한다.
+   바뀌는 것은 기준값(판정 4) 하나다. 부원장 5:5 · 인수인계 · 20회 미만 신규
+   단가는 차감할 때 그대로 그 위에 선다.
+
+   풀방금액이 없는 강사로 재등록(정상)을 발급하려 하면, 기준 단가를 직접 적지
+   않은 한 여기서 막는다. **이것을 막는 곳은 화면과 저장 경로뿐이다** -- 규칙의
+   passes create 는 baseUnitPrice 가 0 이상의 정수인지만 보고, 표 · 풀방금액
+   과 맞는지는 묻지 않는다.
+
+   결제 수단은 기본값이 없다. 골라야 발급된다.
 
    하지 않는 것: 잔금 분할, 횟수미정 발급, 계약서 이미지. */
 
@@ -16911,6 +16920,34 @@ const manwonInput = (value) => String(value).replace(/[^\d.]/g, "");
    input 이 uncontrolled 에서 controlled 로 바뀌고, 그 경고가 뜨는 자리에서
    커서가 끝으로 튄다. */
 const emptyBreakdown = () => Object.fromEntries(MIXED_PAYMENT_PARTS.map((part) => [part, ""]));
+
+/* 제안 단가가 어디서 왔는지, 화면에 적는 말. */
+const UNIT_PRICE_SOURCE_LABEL = Object.freeze({
+  [ISSUE_UNIT_PRICE_SOURCE.TABLE]: "단가표",
+  [ISSUE_UNIT_PRICE_SOURCE.FULL_ROOM_RATE]: "담당 강사 풀방금액",
+  [ISSUE_UNIT_PRICE_SOURCE.PRODUCT]: "상품에 정해진 금액",
+  [ISSUE_UNIT_PRICE_SOURCE.MANUAL]: "직접 입력",
+});
+
+/* 발급 폼의 빈 상태. 처음 열 때와 발급한 뒤 비울 때가 같은 모양이어야 한다 --
+   두 벌로 적어 두면 칸을 하나 늘릴 때 한쪽만 늘어난다. */
+const emptyIssueForm = () => ({
+  clientId: "", productId: "", totalSessions: "", contractPriceManwon: "",
+  serviceSessions: "0", purchaseRound: "1",
+  /* 결제 수단은 기본값이 없다 (2026-11-07 대표 결정). 카드가 기본이던 때,
+     현금으로 받고 손대지 않은 회원권이 카드로 박혀 부원장 단가가 틀렸다. */
+  paymentMethod: "",
+  instructorId: "",
+  /* 강사 기준 단가(원). 비어 있으면 제안값(표 · 풀방금액 · 상품)이 박힌다. */
+  unitPriceWon: "", unitPriceReason: "",
+  expiresAt: "",
+  duet: false, partnerClientId: "",
+  /* 복합결제의 칸들. 복합결제가 아니면 쓰이지 않지만 폼에는 늘 있다 --
+     수단을 바꿀 때마다 칸을 만들고 지우면 적다 만 숫자가 사라진다. */
+  paymentBreakdown: emptyBreakdown(), balanceManwon: "", balanceEdited: false,
+  /* 기타결제가 무엇이었는지. 제로페이 · 평생교육바우처가 여기 남는다. */
+  paymentNote: "",
+});
 
 /** 만원 칸 넷을 원 단위 숫자 넷으로. 빈 칸은 0 이다 (대표 결정: 빈칸 = 0). */
 const breakdownToWon = (parts) => Object.fromEntries(
@@ -16974,15 +17011,7 @@ function PassIssue({
      발급할 때마다 끄는 손이 하나 더 든다. */
   const [partnerSearch, setPartnerSearch] = useState(initialState?.partnerSearch || "");
   const [form, setForm] = useState({
-    clientId: "", productId: "", totalSessions: "", contractPriceManwon: "",
-    serviceSessions: "0", purchaseRound: "1", paymentMethod: PAYMENT_METHOD.CARD,
-    instructorId: "", unitPriceManwon: "", expiresAt: "",
-    duet: false, partnerClientId: "",
-    /* 복합결제의 칸들. 복합결제가 아니면 쓰이지 않지만 폼에는 늘 있다 --
-       수단을 바꿀 때마다 칸을 만들고 지우면 적다 만 숫자가 사라진다. */
-    paymentBreakdown: emptyBreakdown(), balanceManwon: "", balanceEdited: false,
-    /* 기타결제가 무엇이었는지. 제로페이 · 평생교육바우처가 여기 남는다. */
-    paymentNote: "",
+    ...emptyIssueForm(),
     ...(initialState?.form || {}),
   });
   const [formError, setFormError] = useState("");
@@ -17085,13 +17114,32 @@ function PassIssue({
   const productUnitPrice = priceSource === UNIT_PRICE_SOURCE.MANUAL
     ? productBaseUnitPrice(product)
     : null;
-  const asksUnitPrice = priceSource === UNIT_PRICE_SOURCE.MANUAL && productUnitPrice === null;
+  /* 강사 기준 단가를 직접 정할 수 있는 사람인가. 규칙의 canIssuePass 와 같은
+     목록이다 -- 이 화면을 여는 사람은 이미 그 안이지만, 화면이 권한을 혼자
+     짐작하지 않도록 같은 판정을 한 번 더 묻는다. 저장 경로도 같은 판정이다. */
+  const unitPriceEditable = canSetUnitPrice(issueScope.role);
+  /* 직접 적지 않았을 때 박힐 값. 담당 강사를 고르기 전의 풀방금액은 null 이다. */
+  const standardPrice = product
+    ? standardIssueUnitPrice(product.payCategory, {
+      productUnitPrice, fullRoomRate: fullRoomRateOf(instructor),
+    })
+    : { value: null, source: "" };
+  const typedUnitPrice = form.unitPriceWon === "" ? null : Number(form.unitPriceWon);
+  const unitPriceOverridden = typedUnitPrice !== null && typedUnitPrice !== standardPrice.value;
+  /* 사유를 받는 때: 제안값이 있는데 다르게 적었을 때. 제안값이 없는(옛 기타
+     상품 · 풀방금액 없는 강사) 자리는 적는 것 자체가 답이라 사유를 묻지 않는다. */
+  const asksUnitPriceReason = unitPriceOverridden && standardPrice.value !== null;
+  /* 반드시 적어야 하는 때: 제안값이 없을 때. */
+  const asksUnitPrice = Boolean(product) && standardPrice.value === null
+    && priceSource !== UNIT_PRICE_SOURCE.FULL_ROOM_RATE;
+  const issueUnitPriceWon = typedUnitPrice !== null ? typedUnitPrice : standardPrice.value;
 
-  /* 풀방금액이 없는 강사로는 재등급(정상)을 발급할 수 없다. 규칙도 막지만
-     permission-denied 한 줄로는 무엇을 해야 하는지 알 수 없다. */
+  /* 풀방금액이 없는 강사로 재등록(정상)을 발급하려 할 때. 기준 단가를 직접
+     적으면 그 값이 박히므로 막지 않는다. **규칙은 이것을 묻지 않는다** --
+     막는 곳은 이 화면과 저장 경로(pay-rates.mjs)뿐이다. */
   const rateBlock = priceSource === UNIT_PRICE_SOURCE.FULL_ROOM_RATE
-    && instructor && !hasUsableFullRoomRate(instructor)
-    ? `${instructor.displayName || instructor.userId}님의 풀방금액이 설정되지 않았습니다. 더보기 → 강사 관리에서 먼저 정해 주세요.`
+    && instructor && !hasUsableFullRoomRate(instructor) && typedUnitPrice === null
+    ? `${instructor.displayName || instructor.userId}님의 풀방금액이 설정되지 않았습니다. 더보기 → 강사 관리에서 정하거나, 강사 기준 단가를 직접 적어 주세요.`
     : "";
 
   const chooseProduct = (picked) => setForm((current) => ({
@@ -17100,7 +17148,7 @@ function PassIssue({
     // 기준값으로 채운다. 아래 3·4에서 조정할 수 있고, 조정하면 기준값을 옆에 남긴다.
     totalSessions: String(picked.defaultSessions ?? ""),
     contractPriceManwon: String((Number(picked.defaultPrice) || 0) / WON_PER_MANWON),
-    unitPriceManwon: "",
+    unitPriceWon: "", unitPriceReason: "",
   }));
 
   /* ── 상품 고르기는 두 단계다 ────────────────────────────────────────────
@@ -17133,7 +17181,8 @@ function PassIssue({
        선택된 채로 남고, 그 상품의 계약 금액이 그대로 발급된다. */
     if (!chip.items.some((item) => item.id === form.productId)) {
       setForm((current) => ({
-        ...current, productId: "", totalSessions: "", contractPriceManwon: "", unitPriceManwon: "",
+        ...current, productId: "", totalSessions: "", contractPriceManwon: "",
+        unitPriceWon: "", unitPriceReason: "",
       }));
     }
   };
@@ -17183,8 +17232,16 @@ function PassIssue({
     if (form.contractPriceManwon === "") { setFormError("계약 금액을 입력해 주세요."); return; }
     // 계약서에 적힌 값이다. 지어내지 않고 받는다.
     if (!form.expiresAt) { setFormError("만료일을 입력해 주세요."); return; }
-    if (asksUnitPrice && form.unitPriceManwon === "") {
-      setFormError("급여 단가를 입력해 주세요."); return;
+    /* 결제 수단은 기본값이 없다. 고르지 않으면 공급가액을 셀 수 없다. */
+    if (!form.paymentMethod) { setFormError("결제 수단을 골라 주세요."); return; }
+    if (asksUnitPrice && typedUnitPrice === null) {
+      setFormError("이 상품은 제안 단가가 없습니다. 강사 기준 단가를 입력해 주세요."); return;
+    }
+    if (typedUnitPrice !== null && !(Number.isInteger(typedUnitPrice) && typedUnitPrice >= 1)) {
+      setFormError("강사 기준 단가는 1원 이상으로 입력해 주세요."); return;
+    }
+    if (asksUnitPriceReason && !form.unitPriceReason.trim()) {
+      setFormError("제안 단가와 다르게 정한 사유를 적어 주세요."); return;
     }
     setMode("confirm");
   };
@@ -17223,31 +17280,36 @@ function PassIssue({
         paymentNote: asksPaymentNote ? form.paymentNote : "",
         instructorId: form.instructorId,
         expiresAt: new Date(`${form.expiresAt}T23:59:59`),
-        /* 표에서 오는 카테고리는 아래 둘을 보지 않는다 -- pay-rates.js 가 가른다.
-           상품이 회당 단가를 들고 있으면 그것이 먼저다. 사람이 넣는 값은 그 필드가
-           없는 옛 기타 상품에만 남아 있다. */
-        unitPrice: productUnitPrice !== null
-          ? productUnitPrice
-          : form.unitPriceManwon === "" ? undefined : manwonToWon(Number(form.unitPriceManwon)),
+        /* 제안값의 재료. 표 카테고리는 이 둘을 보지 않는다 -- pay-rates.mjs 가
+           가른다. 기타 상품의 회당 단가가 여기로 간다. */
+        unitPrice: productUnitPrice ?? undefined,
         fullRoomRate: fullRoomRateOf(instructor) ?? undefined,
+        /* 직접 정한 기준 단가. 비어 있으면 보내지 않고 제안값이 박힌다.
+           역할과 사유는 저장 경로가 다시 본다 (resolveIssueUnitPrice). */
+        ...(typedUnitPrice !== null ? {
+          manualUnitPrice: typedUnitPrice,
+          unitPriceReason: asksUnitPriceReason ? form.unitPriceReason.trim() : "",
+        } : {}),
+        issuerRole: issueScope.role,
         createdBy: currentUserId,
       }, { store: passStore });
       onToast?.({ ok: true, msg: form.duet && partner
         ? `${client.name}님과 ${partner.name}님에게 듀엣 회원권을 발급했습니다.`
         : `${client.name}님에게 회원권을 발급했습니다.` });
       setMode("form");
-      setForm({
-        clientId: "", productId: "", totalSessions: "", contractPriceManwon: "",
-        serviceSessions: "0", purchaseRound: "1", paymentMethod: PAYMENT_METHOD.CARD,
-        instructorId: "", unitPriceManwon: "", expiresAt: "",
-        duet: false, partnerClientId: "",
-        paymentBreakdown: emptyBreakdown(), balanceManwon: "", balanceEdited: false,
-        paymentNote: "",
-      });
+      setForm(emptyIssueForm());
       setSearch("");
       setPartnerSearch("");
       setMoreOpen(false);
     } catch (error) {
+      /* 단가 직접 입력이 생기면서 저장 경로가 거부하는 이유가 늘었다
+         (Forbidden manualUnitPrice · Missing unitPriceReason). 원본 그대로 남긴다. */
+      deviceLog("pass_issue_failed", {
+        feature: "pass_issue", stage: "commit",
+        errorDomain: error?.code ? "firestore" : "app",
+        errorCode: error?.code || "", message: String(error?.message || ""),
+        role: issueScope.role, unitPriceSource: unitPriceOverridden ? ISSUE_UNIT_PRICE_SOURCE.MANUAL : standardPrice.source,
+      });
       setMode("form");
       setFormError(`발급하지 못했어요 (코드 ${error?.code || error?.message || "unknown"})`);
     } finally {
@@ -17338,13 +17400,18 @@ function PassIssue({
               공급가액 {won(netWon)}원 · 부원장 단가는 이 금액을 기준으로 합니다
             </p>
           )}
-          {/* 상품에서 온 값이라 발급 화면에서는 묻지 않았다. 원장에 박히고 나면
-              고칠 수 없으므로 누르기 전에 한 번은 보여야 한다. */}
-          {productUnitPrice === null ? null : (
-            <p className="tabular-nums" style={{ fontSize: TYPE.caption, color: INK2 }}>
-              급여 단가 회당 {won(productUnitPrice)}원 · 상품에 정해진 금액
+          {/* 강사 기준 단가. 어디서 왔든 원장에 박히고 나면 고칠 수 없으므로
+              누르기 전에 한 번은 보여야 한다. 직접 정했으면 원래 값과 사유도. */}
+          {issueUnitPriceWon === null ? null : (
+            <p className="tabular-nums" style={{ fontSize: TYPE.caption, color: unitPriceOverridden ? BRAND_D : INK2, fontWeight: unitPriceOverridden ? 650 : 400 }}>
+              강사 기준 단가 회당 {won(issueUnitPriceWon)}원 · {unitPriceOverridden
+                ? `직접 입력${standardPrice.value !== null ? ` (제안 ${won(standardPrice.value)}원)` : ""}${asksUnitPriceReason ? ` · 사유: ${form.unitPriceReason.trim()}` : ""}`
+                : UNIT_PRICE_SOURCE_LABEL[standardPrice.source] || ""}
             </p>
           )}
+          <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+            부원장 5:5 · 인수인계 · 이 강사에게 20회 미만은 차감할 때 따로 계산됩니다.
+          </p>
           <p style={{ fontSize: TYPE.caption, color: INK2 }}>
             담당 {instructor?.displayName || form.instructorId}
           </p>
@@ -17482,8 +17549,10 @@ function PassIssue({
                           backgroundColor: activeChipKey === chip.key ? TINT : CANVAS,
                           color: activeChipKey === chip.key ? BRAND_D : SUB,
                         }}>
-                        <span style={{ fontWeight: 400 }}>{chip.groupLabel}</span>
-                        {" "}{chip.name}
+                        {chip.chipPrefix ? (
+                          <><span style={{ fontWeight: 400 }}>{chip.chipPrefix}</span>{" "}</>
+                        ) : null}
+                        {chip.name}
                         {chip.items.length > 1 ? (
                           <span style={{ fontWeight: 400 }}>{` (${chip.items.length})`}</span>
                         ) : null}
@@ -17536,13 +17605,6 @@ function PassIssue({
               onChange={(e) => setForm({ ...form, expiresAt: e.target.value })} />
           </IssueField>
 
-          {asksUnitPrice && product ? (
-            <IssueField label="급여 단가 (만원)" hint="이 상품은 표에 단가가 없어 직접 넣습니다. 회당 금액입니다.">
-              <input inputMode="decimal" value={form.unitPriceManwon} className={inputCls} placeholder="2.5"
-                onChange={(e) => setForm({ ...form, unitPriceManwon: manwonInput(e.target.value) })} />
-            </IssueField>
-          ) : null}
-
           <IssueField label="담당 강사">
             {/* 지점 칩 → 이름 검색 → 강사 칩 (2026-11-04). FC매니저는 자기 지점이,
                 대표 · 총괄매니저는 전체가 먼저 눌려 있다. 칩은 이미 맡은 지점으로
@@ -17560,9 +17622,109 @@ function PassIssue({
             </div>
           ) : null}
 
+          {/* ── 강사 기준 단가 (2026-11-07 대표 결정) ──────────────────────────
+              비워 두면 제안값이 박힌다. 담당 강사 뒤에 둔다 -- 1:1 재등록(정상)의
+              제안값은 그 강사의 풀방금액이라, 강사를 고르기 전에는 알 수 없다.
+              대표 · 총괄매니저 · FC매니저만 본다 (canSetUnitPrice). */}
+          {product && unitPriceEditable ? (
+            <IssueField label="강사 기준 단가 (원)"
+              hint={standardPrice.value !== null
+                ? `제안 ${won(standardPrice.value)}원 · ${UNIT_PRICE_SOURCE_LABEL[standardPrice.source] || ""}. 비워 두면 이 값으로 발급됩니다. 부원장 5:5 · 인수인계 · 20회 미만은 차감할 때 따로 계산됩니다.`
+                : priceSource === UNIT_PRICE_SOURCE.FULL_ROOM_RATE
+                  ? "담당 강사의 풀방금액으로 정해집니다. 강사를 고르거나 직접 입력해 주세요."
+                  : "이 상품은 제안 단가가 없어 직접 넣습니다. 회당 금액입니다."}>
+              <input inputMode="numeric" value={form.unitPriceWon} className={inputCls}
+                placeholder={standardPrice.value !== null ? String(standardPrice.value) : "30000"}
+                onChange={(e) => setForm({ ...form, unitPriceWon: e.target.value.replace(/\D/g, "") })} />
+            </IssueField>
+          ) : null}
+          {asksUnitPriceReason ? (
+            <IssueField label="단가를 바꾼 사유" hint="회원권에 함께 남습니다. 월말 급여 확인 때 이 글이 근거가 됩니다.">
+              <input value={form.unitPriceReason} className={inputCls} maxLength={UNIT_PRICE_REASON_MAX}
+                placeholder="예) 양산점 단가, 지점 행사가"
+                onChange={(e) => setForm({ ...form, unitPriceReason: e.target.value })} />
+            </IssueField>
+          ) : null}
+
+          <IssueField label="결제 수단">
+            <div className="flex flex-wrap gap-2">
+              {/* 옛 값(제로페이 · 바우처)은 여기 없다. 기타결제 하나로 접었고,
+                  무엇이었는지는 아래 "내용" 칸에 글자로 남는다. */}
+              {Object.values(PAYMENT_METHOD).map((method) => (
+                <button key={method} type="button" onClick={() => setForm({ ...form, paymentMethod: method })}
+                  className="h-9 px-3 font-bold" style={{
+                    borderRadius: 999, fontSize: TYPE.caption,
+                    backgroundColor: form.paymentMethod === method ? TINT : CANVAS,
+                    color: form.paymentMethod === method ? BRAND_D : SUB,
+                  }}>{labelOf(PAYMENT_METHOD_LABELS, method)}</button>
+              ))}
+            </div>
+          </IssueField>
+
+          {/* ── 복합결제: 계약 금액 안을 수단별로 쪼갠다 ──────────────────
+              빈 칸은 0 이다. 네 칸을 다 채우게 하지 않는 것은, 실제로 둘로
+              나눠 받는 계약이 대부분이기 때문이다. */}
+          {isMixedPayment ? (
+            <div className="space-y-3" style={{
+              padding: 12, borderRadius: 10, backgroundColor: CANVAS,
+            }}>
+              <div className="grid grid-cols-2 gap-2">
+                {MIXED_PAYMENT_PARTS.map((part) => (
+                  <Field key={part} label={`${labelOf(PAYMENT_METHOD_LABELS, part)} (만원)`}>
+                    <input inputMode="decimal" value={form.paymentBreakdown?.[part] ?? ""}
+                      className={inputCls} placeholder="0"
+                      onChange={(e) => setForm({
+                        ...form,
+                        paymentBreakdown: {
+                          ...form.paymentBreakdown,
+                          [part]: manwonInput(e.target.value),
+                        },
+                      })} />
+                  </Field>
+                ))}
+              </div>
+              <p className="tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>
+                결제 합계 {won(paidWon)}원
+              </p>
+              <Field label="잔금 (만원)">
+                <input inputMode="decimal" value={balanceInput} className={inputCls} placeholder="0"
+                  onChange={(e) => setForm({
+                    ...form, balanceEdited: true, balanceManwon: manwonInput(e.target.value),
+                  })} />
+              </Field>
+              {/* 자동값인지 사람이 적은 값인지가 보여야 한다. 안 보이면
+                  결제 금액을 고친 뒤에도 잔금이 그대로인 것이 버그처럼 읽힌다. */}
+              {form.balanceEdited ? (
+                <div className="flex items-center gap-2">
+                  <span style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND_D }}>직접 수정</span>
+                  <button type="button"
+                    onClick={() => setForm({ ...form, balanceEdited: false, balanceManwon: "" })}
+                    className="px-2.5 font-bold" style={{
+                      height: 28, borderRadius: 999, fontSize: TYPE.caption,
+                      backgroundColor: TINT, color: BRAND_D,
+                    }}>자동 계산으로</button>
+                </div>
+              ) : (
+                <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+                  계약 금액 − 결제 합계로 자동 계산됩니다. 고치면 그 값이 그대로 저장됩니다.
+                </p>
+              )}
+            </div>
+          ) : null}
+
+          {/* 기타결제가 무엇이었는지. 제로페이 · 평생교육바우처가 여기 남는다 --
+              수단을 하나로 접으면서 잃을 뻔한 글자다. */}
+          {asksPaymentNote ? (
+            <IssueField label="내용 (선택)">
+              <input value={form.paymentNote} className={inputCls} maxLength={PAYMENT_NOTE_MAX}
+                placeholder="예) 평생교육바우처, 제로페이"
+                onChange={(e) => setForm({ ...form, paymentNote: e.target.value })} />
+            </IssueField>
+          ) : null}
+
           <button type="button" onClick={() => setMoreOpen((open) => !open)} className="w-full text-left"
             style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>
-            {moreOpen ? "· 서비스 · 차수 · 결제 수단 접기" : "· 서비스 · 차수 · 결제 수단"}
+            {moreOpen ? "· 서비스 · 차수 접기" : "· 서비스 · 차수"}
           </button>
           {moreOpen ? (
             <div className="space-y-3">
@@ -17581,81 +17743,6 @@ function PassIssue({
                     : `자동으로 채운 번호는 ${suggestedRound}차입니다. 차수가 빠른 것부터 차감됩니다.`}
                 </p>
               </IssueField>
-              <IssueField label="결제 수단">
-                <div className="flex flex-wrap gap-2">
-                  {/* 옛 값(제로페이 · 바우처)은 여기 없다. 기타결제 하나로 접었고,
-                      무엇이었는지는 아래 "내용" 칸에 글자로 남는다. */}
-                  {Object.values(PAYMENT_METHOD).map((method) => (
-                    <button key={method} type="button" onClick={() => setForm({ ...form, paymentMethod: method })}
-                      className="h-9 px-3 font-bold" style={{
-                        borderRadius: 999, fontSize: TYPE.caption,
-                        backgroundColor: form.paymentMethod === method ? TINT : CANVAS,
-                        color: form.paymentMethod === method ? BRAND_D : SUB,
-                      }}>{labelOf(PAYMENT_METHOD_LABELS, method)}</button>
-                  ))}
-                </div>
-              </IssueField>
-
-              {/* ── 복합결제: 계약 금액 안을 수단별로 쪼갠다 ──────────────────
-                  빈 칸은 0 이다. 네 칸을 다 채우게 하지 않는 것은, 실제로 둘로
-                  나눠 받는 계약이 대부분이기 때문이다. */}
-              {isMixedPayment ? (
-                <div className="space-y-3" style={{
-                  padding: 12, borderRadius: 10, backgroundColor: CANVAS,
-                }}>
-                  <div className="grid grid-cols-2 gap-2">
-                    {MIXED_PAYMENT_PARTS.map((part) => (
-                      <Field key={part} label={`${labelOf(PAYMENT_METHOD_LABELS, part)} (만원)`}>
-                        <input inputMode="decimal" value={form.paymentBreakdown?.[part] ?? ""}
-                          className={inputCls} placeholder="0"
-                          onChange={(e) => setForm({
-                            ...form,
-                            paymentBreakdown: {
-                              ...form.paymentBreakdown,
-                              [part]: manwonInput(e.target.value),
-                            },
-                          })} />
-                      </Field>
-                    ))}
-                  </div>
-                  <p className="tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>
-                    결제 합계 {won(paidWon)}원
-                  </p>
-                  <Field label="잔금 (만원)">
-                    <input inputMode="decimal" value={balanceInput} className={inputCls} placeholder="0"
-                      onChange={(e) => setForm({
-                        ...form, balanceEdited: true, balanceManwon: manwonInput(e.target.value),
-                      })} />
-                  </Field>
-                  {/* 자동값인지 사람이 적은 값인지가 보여야 한다. 안 보이면
-                      결제 금액을 고친 뒤에도 잔금이 그대로인 것이 버그처럼 읽힌다. */}
-                  {form.balanceEdited ? (
-                    <div className="flex items-center gap-2">
-                      <span style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND_D }}>직접 수정</span>
-                      <button type="button"
-                        onClick={() => setForm({ ...form, balanceEdited: false, balanceManwon: "" })}
-                        className="px-2.5 font-bold" style={{
-                          height: 28, borderRadius: 999, fontSize: TYPE.caption,
-                          backgroundColor: TINT, color: BRAND_D,
-                        }}>자동 계산으로</button>
-                    </div>
-                  ) : (
-                    <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
-                      계약 금액 − 결제 합계로 자동 계산됩니다. 고치면 그 값이 그대로 저장됩니다.
-                    </p>
-                  )}
-                </div>
-              ) : null}
-
-              {/* 기타결제가 무엇이었는지. 제로페이 · 평생교육바우처가 여기 남는다 --
-                  수단을 하나로 접으면서 잃을 뻔한 글자다. */}
-              {asksPaymentNote ? (
-                <IssueField label="내용 (선택)">
-                  <input value={form.paymentNote} className={inputCls} maxLength={PAYMENT_NOTE_MAX}
-                    placeholder="예) 평생교육바우처, 제로페이"
-                    onChange={(e) => setForm({ ...form, paymentNote: e.target.value })} />
-                </IssueField>
-              ) : null}
             </div>
           ) : null}
 
@@ -28273,34 +28360,48 @@ export function createAppScreenSmokeCases() {
     }) },
     { name: "회원권 발급 · 기준값과 다름", element: passIssue(smokeOwner, {
       ...smokeIssueBase,
-      form: { clientId: "smoke-client-a", productId: "smoke-product-active", totalSessions: "22", contractPriceManwon: "140", serviceSessions: "0", purchaseRound: "1", paymentMethod: "card", instructorId: "u1", unitPriceManwon: "" },
+      form: { clientId: "smoke-client-a", productId: "smoke-product-active", totalSessions: "22", contractPriceManwon: "140", serviceSessions: "0", purchaseRound: "1", paymentMethod: "card", instructorId: "u1", unitPriceWon: "" },
     }) },
     { name: "회원권 발급 · 직접 단가", element: passIssue(smokeOwner, {
       ...smokeIssueBase,
-      form: { clientId: "smoke-client-a", productId: "smoke-product-etc", totalSessions: "1", contractPriceManwon: "5.5", serviceSessions: "0", purchaseRound: "1", paymentMethod: "card", instructorId: "u1", unitPriceManwon: "" },
+      form: { clientId: "smoke-client-a", productId: "smoke-product-etc", totalSessions: "1", contractPriceManwon: "5.5", serviceSessions: "0", purchaseRound: "1", paymentMethod: "card", instructorId: "u1", unitPriceWon: "" },
     }) },
     /* 상품에 회당 단가가 적혀 있으면 묻지 않는다. 물으면 같은 상품이 사람마다
        다른 단가로 나가고, 원장은 고칠 수 없다. */
     { name: "회원권 발급 · 상품 단가", element: passIssue(smokeOwner, {
       ...smokeIssueBase,
-      form: { clientId: "smoke-client-a", productId: "smoke-product-etc-priced", totalSessions: "5", contractPriceManwon: "25", serviceSessions: "0", purchaseRound: "1", paymentMethod: "card", instructorId: "u1", unitPriceManwon: "" },
+      form: { clientId: "smoke-client-a", productId: "smoke-product-etc-priced", totalSessions: "5", contractPriceManwon: "25", serviceSessions: "0", purchaseRound: "1", paymentMethod: "card", instructorId: "u1", unitPriceWon: "" },
     }) },
     { name: "회원권 발급 · 상품 단가 · 확인", element: passIssue(smokeOwner, {
       ...smokeIssueBase, mode: "confirm",
-      form: { clientId: "smoke-client-a", productId: "smoke-product-etc-priced", totalSessions: "5", contractPriceManwon: "25", serviceSessions: "0", purchaseRound: "1", paymentMethod: "card", instructorId: "u1", unitPriceManwon: "", expiresAt: "2027-03-31" },
+      form: { clientId: "smoke-client-a", productId: "smoke-product-etc-priced", totalSessions: "5", contractPriceManwon: "25", serviceSessions: "0", purchaseRound: "1", paymentMethod: "card", instructorId: "u1", unitPriceWon: "", expiresAt: "2027-03-31" },
     }) },
     { name: "회원권 발급 · 풀방금액 없음", element: passIssue(smokeOwner, {
       ...smokeIssueBase,
-      form: { clientId: "smoke-client-a", productId: "smoke-product-normal", totalSessions: "20", contractPriceManwon: "130", serviceSessions: "0", purchaseRound: "1", paymentMethod: "card", instructorId: "u2", unitPriceManwon: "" },
+      form: { clientId: "smoke-client-a", productId: "smoke-product-normal", totalSessions: "20", contractPriceManwon: "130", serviceSessions: "0", purchaseRound: "1", paymentMethod: "card", instructorId: "u2", unitPriceWon: "" },
     }) },
     { name: "회원권 발급 · 확인", element: passIssue(smokeOwner, {
       ...smokeIssueBase, mode: "confirm",
-      form: { clientId: "smoke-client-a", productId: "smoke-product-active", totalSessions: "20", contractPriceManwon: "130", serviceSessions: "2", purchaseRound: "2", paymentMethod: "card", instructorId: "u1", unitPriceManwon: "" },
+      form: { clientId: "smoke-client-a", productId: "smoke-product-active", totalSessions: "20", contractPriceManwon: "130", serviceSessions: "2", purchaseRound: "2", paymentMethod: "card", instructorId: "u1", unitPriceWon: "" },
     }) },
     /* 현금 계약. 계약 금액이 곧 공급가액이라 그 줄이 붙지 않는다. */
     { name: "회원권 발급 · 확인 · 현금", element: passIssue(smokeOwner, {
       ...smokeIssueBase, mode: "confirm",
-      form: { clientId: "smoke-client-a", productId: "smoke-product-active", totalSessions: "20", contractPriceManwon: "130", serviceSessions: "2", purchaseRound: "2", paymentMethod: "cash", instructorId: "u1", unitPriceManwon: "" },
+      form: { clientId: "smoke-client-a", productId: "smoke-product-active", totalSessions: "20", contractPriceManwon: "130", serviceSessions: "2", purchaseRound: "2", paymentMethod: "cash", instructorId: "u1", unitPriceWon: "" },
+    }) },
+    /* 표 카테고리의 기준 단가를 직접 바꿨다 -- 사유 칸이 선다 (2026-11-07). */
+    { name: "회원권 발급 · 기준 단가 직접 입력", element: passIssue(smokeOwner, {
+      ...smokeIssueBase,
+      form: { clientId: "smoke-client-a", productId: "smoke-product-active", totalSessions: "20", contractPriceManwon: "130", serviceSessions: "0", purchaseRound: "1", paymentMethod: "card", instructorId: "u1", unitPriceWon: "33000", unitPriceReason: "지점 단가" },
+    }) },
+    { name: "회원권 발급 · 기준 단가 직접 입력 · 확인", element: passIssue(smokeOwner, {
+      ...smokeIssueBase, mode: "confirm",
+      form: { clientId: "smoke-client-a", productId: "smoke-product-active", totalSessions: "20", contractPriceManwon: "130", serviceSessions: "0", purchaseRound: "1", paymentMethod: "card", instructorId: "u1", unitPriceWon: "33000", unitPriceReason: "지점 단가", expiresAt: "2027-03-31" },
+    }) },
+    /* 결제 수단을 아직 고르지 않았다. 기본값이 없다 (2026-11-07). */
+    { name: "회원권 발급 · 결제 수단 미선택", element: passIssue(smokeOwner, {
+      ...smokeIssueBase,
+      form: { clientId: "smoke-client-a", productId: "smoke-product-active", totalSessions: "20", contractPriceManwon: "130", serviceSessions: "0", purchaseRound: "1", paymentMethod: "", instructorId: "u1", expiresAt: "2027-03-31" },
     }) },
     { name: "회원권 발급 · 조회 실패", element: passIssue(smokeOwner, { clients: [], products: [], instructors: [], locations: [], loadError: "permission-denied" }) },
     { name: "강사 관리", element: instructorAdmin(smokeOwner, { members: [...smokeInstructors, smokeRetired], locations: smokeLocations }) },

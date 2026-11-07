@@ -226,6 +226,10 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "회원권 발급 · 풀방금액 없음",
     "회원권 발급 · 확인",
     "회원권 발급 · 확인 · 현금",
+    /* 강사 기준 단가 직접 입력 · 결제 수단 기본값 없음 (2026-11-07). */
+    "회원권 발급 · 기준 단가 직접 입력",
+    "회원권 발급 · 기준 단가 직접 입력 · 확인",
+    "회원권 발급 · 결제 수단 미선택",
     "회원권 발급 · 조회 실패",
     "강사 관리",
     "강사 관리 · 계정 교체",
@@ -1209,29 +1213,52 @@ test("발급 화면의 [상품 관리]는 넘겨준 화면에만 선다", async 
   assert.doesNotMatch(markupOf("회원권 발급"), /상품 관리/);
 });
 
-test("the issue form asks only what the price source needs", async (t) => {
+test("the issue form offers the suggested unit price and lets the issuer change it", async (t) => {
   const markupOf = await issueScreens(t);
 
-  /* 표에서 단가가 오는 상품은 급여 단가를 묻지 않는다. 물으면 사람이 표와
-     다른 값을 넣을 수 있고, 그것이 그대로 원장에 박힌다. */
+  /* 2026-11-07 대표 결정: 지점마다 단가가 달라 표 카테고리도 기준 단가를 직접
+     정할 수 있다. 칸은 비어 있고 제안값이 옆에 선다 -- 비워 두면 그 값이다. */
   const fromTable = markupOf("회원권 발급 · 기준값과 다름");
-  assert.doesNotMatch(fromTable, /급여 단가/);
+  assert.match(fromTable, /강사 기준 단가 \(원\)/);
+  assert.match(fromTable, /제안 30,000원 · 단가표/);
+  assert.doesNotMatch(fromTable, /단가를 바꾼 사유/, "바꾸지 않았으면 사유를 묻지 않는다");
 
-  /* 표 밖의 상품 중에서도, 회당 단가가 붙기 전에 만들어진 것만 금액 칸을 띄운다.
-     빈 값을 0 으로 흘려보내면 그 수업들이 통째로 무보수가 된다. */
+  /* 회당 단가가 붙기 전에 만들어진 기타 상품은 제안값이 없어 반드시 적는다. */
   const manual = markupOf("회원권 발급 · 직접 단가");
-  assert.match(manual, /급여 단가 \(만원\)/);
-  assert.match(manual, /표에 단가가 없어 직접 넣습니다/);
+  assert.match(manual, /제안 단가가 없어 직접 넣습니다/);
 
-  /* 상품이 회당 단가를 들고 있으면 묻지 않는다. 물으면 같은 상품이 사람마다
-     다른 단가로 나가고, 원장은 append-only 라 고칠 수 없다. */
+  /* 상품이 회당 단가를 들고 있으면 그것이 제안값이다. */
   const priced = markupOf("회원권 발급 · 상품 단가");
-  assert.doesNotMatch(priced, /급여 단가/);
+  assert.match(priced, /제안 28,000원 · 상품에 정해진 금액/);
 
-  /* 묻지 않은 값이라 발급 직전에 한 번은 보여야 한다. 원장에 박히고 나면 고칠 수
-     없는 숫자를 확인 없이 지나가게 두지 않는다. */
+  /* 원장에 박히고 나면 고칠 수 없는 숫자라 발급 직전에 한 번은 보인다. */
   const confirm = markupOf("회원권 발급 · 상품 단가 · 확인");
-  assert.match(confirm, /급여 단가 회당 28,000원/);
+  assert.match(confirm, /강사 기준 단가 회당 28,000원/);
+  assert.match(confirm, /상품에 정해진 금액/);
+
+  /* 제안값과 다르게 적으면 사유 칸이 서고, 확인 화면에 원래 값과 사유가 함께 선다. */
+  const overridden = markupOf("회원권 발급 · 기준 단가 직접 입력");
+  assert.match(overridden, /단가를 바꾼 사유/);
+  const overriddenConfirm = markupOf("회원권 발급 · 기준 단가 직접 입력 · 확인");
+  assert.match(overriddenConfirm, /강사 기준 단가 회당 33,000원/);
+  assert.match(overriddenConfirm, /직접 입력 \(제안 30,000원\) · 사유: 지점 단가/);
+  assert.match(overriddenConfirm, /부원장 5:5 · 인수인계 · 이 강사에게 20회 미만은 차감할 때 따로 계산됩니다/);
+});
+
+test("payment method sits outside the fold and has no default", async (t) => {
+  const markupOf = await issueScreens(t);
+  /* 접힌 칸 안에 기본값 카드로 있을 때, 현금 계약이 카드로 박혀 부원장 단가가
+     틀렸다. 이제 늘 보이고, 접힌 칸은 서비스 · 차수뿐이다. */
+  const blank = markupOf("회원권 발급 · 결제 수단 미선택");
+  assert.match(blank, /결제 수단/);
+  assert.match(blank, /현금/);
+  assert.match(blank, /· 서비스 · 차수</);
+  assert.doesNotMatch(blank, /서비스 · 차수 · 결제 수단/);
+});
+
+test("chips do not repeat the group label the product name already carries", async (t) => {
+  const markupOf = await issueScreens(t);
+  assert.doesNotMatch(markupOf("회원권 발급"), /1:1<\/span>(\s|<!-- -->)*1:1/);
 });
 
 test("changing a default leaves the default in sight", async (t) => {

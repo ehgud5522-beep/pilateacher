@@ -6643,7 +6643,7 @@ function PassCard({ card, onEdit, sessionUpWindow = null }) {
   );
 }
 
-function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSettlement = true, organizationMode = false, journey = null, passCards = null, centrePasses = null, centreLessons = null, viewerRole = "", onHandoverPass, onBack, onPatch, onSaveNote, onSchedule, onOpenLesson, onAssess, onToast, onDelete, onDeactivate, onReactivate, onHide }) {
+function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSettlement = true, organizationMode = false, journey = null, passCards = null, centrePasses = null, centreLessons = null, viewerRole = "", onHandoverPass, onBack, onPatch, onSaveNote, onSchedule, onOpenLesson, onAssess, onToast, onDelete, onDeactivate, onReactivate, onHide, cancelGrant = null }) {
   /* 세션업 기간은 **회원권 문서에서** 센다. 카드(passCards)는 회원 앱과 함께
      쓰는 모양이라 그 칸이 없다 -- pass-cards.js 머리말의 "회원에게 가지 않는
      것은 여기서도 만들지 않는다". 그래서 여기서 짝지어 넘긴다. */
@@ -6869,6 +6869,8 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
             <div className="flex min-w-0 items-center gap-3"><span className="min-w-0 flex-1 break-words text-xs font-extrabold tabular-nums" style={{ color: statusInk }}>잔여 {detailStatus.remaining}회 · 다음 예약 {detailStatus.nextLesson ? formatMemberLessonDate(detailStatus.nextLesson.date) : "없음"} · {detailStatus.expiry ? `${formatMemberLessonDate(detailStatus.expiry)} 만료` : "만료일 없음"}</span>{pendingSessionCount > 0 && <span className="shrink-0 rounded-full px-2 py-1 text-caption font-extrabold" style={{ backgroundColor: CARD, color: WARN }}>확인 {pendingSessionCount}</span>}</div>
             {detailStatus.risk !== "normal" && bodyPhotoSurface.latest && bodyPhotoSurface.daysSinceLatest !== null && <p className="mt-1.5 text-caption font-medium tabular-nums" style={{ color: INK2, opacity: 0.78 }}>최근 체형사진 · {bodyPhotoSurface.daysSinceLatest}일 전</p>}
           </section>
+          {/* 회원 앱 취소 횟수 · 추가 (2026-11-07). 센터 회원 상세와 같은 줄이다. */}
+          {cancelGrant ? <section data-member-section="cancel-grant" style={sectionStyle}>{cancelGrant}</section> : null}
           {/* 이 회원이 우리와 얼마나 왔는가. 이번 회원권만으로는 답할 수 없는
               질문이고, 재등록 상담에서 필요한 것은 그쪽이다. */}
           {hasJourney(journey) ? (
@@ -20018,6 +20020,9 @@ function MemberCancelGrant({ organization, client, passes = [], currentUserId = 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [revision, setRevision] = useState(0);
+  /* 꺼져 있으면 대표 · 총괄에게만 어디서 켜는지 한 줄 (2026-11-07) -- 버튼이 안 보이는 이유를
+     화면이 말한다. 강사에게는 아무것도 그리지 않는다. */
+  const ownerLevel = isOwnerLevelRole(organization?.role);
   /* 누르는 즉시 잠근다 (상태는 다음 그리기까지 늦다). 요청 ID 는 한 번의 부여에 하나 --
      실패 후 다시 눌러도 같은 ID 라 서버가 한 번만 준다. 성공 · 그만두기 뒤에 새로 만든다. */
   const sendingRef = useRef(false);
@@ -20030,7 +20035,14 @@ function MemberCancelGrant({ organization, client, passes = [], currentUserId = 
       .catch((thrown) => { if (alive) setReadError(`남은 취소 횟수를 읽지 못했어요 (코드 ${thrown?.code || "unknown"})`); });
     return () => { alive = false; };
   }, [on, organizationId, clientId, revision]);
-  if (!on) return null;
+  if (!on) {
+    if (!ownerLevel || organization?.isLegacy || !clientId) return null;
+    return (
+      <p className="mt-1.5" data-member-cancel-grant-off style={{ fontSize: TYPE.caption, color: SUB }}>
+        앱 취소 횟수 · 꺼짐 — 더보기 → 운영 설정 → 회원 앱 수업 취소에서 횟수 · 기간을 저장하면 여기서 추가할 수 있어요
+      </p>
+    );
+  }
   const bucket = memberCancelBucketKey({ period: settings.period, at: new Date(), passId: memberCancelActivePassId(passes, clientId) });
   const remaining = bucket && ledger !== undefined ? memberCancelRemainingIn(ledger, bucket, settings.limit) : null;
   const scope = settings.period === MEMBER_CANCEL_PERIOD.PASS ? "이 회원권" : "이번 달";
@@ -33257,7 +33269,11 @@ export default function App() {
                     setHandoverError("");
                     setHandoverPass(rosterPasses.find((item) => String(item?.id || "") === String(passId)) || null);
                   } : undefined}
-                  centreLessons={centreLessonsFor} />
+                  centreLessons={centreLessonsFor}
+                  cancelGrant={organizationRoster && isRosterMember(member) && member.orgClientId ? (
+                    <MemberCancelGrant organization={organizationContext} client={{ id: member.orgClientId, instructorIds: member.instructorIds }}
+                      passes={centrePassesFor(member.id) || []} currentUserId={account?.id || ""} config={scheduleSyncConfig} onToast={setToast} />
+                  ) : null} />
               </div>}
             </div>}
             {tab === "analysis" && <ReferenceAnalysisTab members={rosterMembers} photos={photos} selectedId={analysisMemberId} selectedPoseId={analysisRecordId}

@@ -185,6 +185,37 @@ export async function callMemberCancel({ action, organizationId, clientId, lesso
 }
 
 /**
+ * 업데이트 안내 설정 (2026-11-07, 지시서 11번). Firebase Remote Config 에서 읽는다 --
+ * 콘솔에서 바꾸면 앱을 다시 내지 않고 적용된다. 키 · 기본값은 app-update.js.
+ *
+ * 네트워크가 없으면 **마지막으로 받아 둔 값**을 쓴다 (Remote Config 가 기기에 남긴다) --
+ * 그래서 필수 업데이트는 오프라인으로 다시 열어도 풀리지 않는다. 그것도 없으면 기본값
+ * (전부 빈 값 = 아무것도 띄우지 않음). 실패 코드는 돌려준다 -- 진단이 남긴다.
+ *
+ * 모듈은 필요할 때 가져온다 -- 회원 웹(브라우저)은 업데이트 확인을 하지 않으므로 받지 않는다.
+ *
+ * @param {Record<string, string>} defaults
+ * @returns {Promise<{ values: Record<string, string>, fetched: boolean, errorCode: string }>}
+ */
+export async function readUpdateRemoteConfig(defaults, { minimumFetchIntervalMillis = 10 * 60 * 1000 } = {}) {
+  const { fetchAndActivate, getAll, getRemoteConfig } = await import("firebase/remote-config");
+  const remoteConfig = getRemoteConfig(app);
+  remoteConfig.settings.minimumFetchIntervalMillis = minimumFetchIntervalMillis;
+  remoteConfig.settings.fetchTimeoutMillis = 15000;
+  remoteConfig.defaultConfig = { ...defaults };
+  let fetched = false;
+  let errorCode = "";
+  try {
+    await fetchAndActivate(remoteConfig);
+    fetched = true;
+  } catch (error) {
+    errorCode = String(error?.code || error?.name || "unknown");
+  }
+  const values = Object.fromEntries(Object.entries(getAll(remoteConfig)).map(([key, value]) => [key, value.asString()]));
+  return { values, fetched, errorCode };
+}
+
+/**
  * 로그아웃. 다음 사람이 이 기기에서 인증할 때 쓸 reCAPTCHA 도 새로 만든다.
  *
  * 회원이 누른 로그아웃은 실패를 던진다 -- 끊기지 않았는데 조용히 넘어가면

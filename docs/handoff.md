@@ -1,5 +1,15 @@
 # 이어서 작업하기 — 최근 변경과 남은 일
 
+## 2026-11-07 — 보니따 VIP 앱 업데이트 안내 · 강제 업데이트 (`feat/member-force-update`)
+
+- Firebase Remote Config 키 아홉 개 (`member_*`, member-app/README.md "업데이트 안내"). 콘솔에 아직 안 만들었다 --
+  비어 있으면 아무것도 안 뜬다. 판정은 강사 앱 update-gate.js 를 그대로 쓰고, 스토어에 새 버전이 없거나 확인 못 하면
+  막지 않는다. 강제는 `member_force_update_enabled = true` 일 때만
+- 네이티브 플러그인 둘(`@capawesome/capacitor-app-update` 8.1.1, `@capacitor/app`) -- **회원 앱 새 빌드에만 들어간다.**
+  루트 package.json 에도 넣었다 (CI 가 루트에서만 설치). 강사 앱 cap sync 도 이 플러그인을 집는다 (아래 위험)
+- 위험: 루트에 있는 플러그인은 강사 앱 네이티브에도 들어간다 (#143 의 messaging 도 같다). 강사 앱 capacitor.config 에
+  includePlugins 를 두면 막을 수 있다 -- 대표 결정 필요
+
 ## 2026-11-07 — 회원 앱 수업 취소 5차 1단계 (`feat/member-cancel`, 배포 · 병합 전)
 
 - **스위치 꺼진 채로 만든 것.** `runtimeConfig/scheduleSync.memberCancel` 칸(mode · userIds · limit · period).

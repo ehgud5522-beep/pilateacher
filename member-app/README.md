@@ -358,3 +358,41 @@ TestFlight → 내부 테스팅 → 그룹 선택 → **설정** →
 - SHA 지문 · APNs 키 등록 (위)
 - 앱 아이콘 · 스플래시
 - 푸시 알림 (2단계)
+
+## 업데이트 안내 · 강제 업데이트 (2026-11-07, 지시서 11번)
+
+앱을 열 때와 백그라운드에서 돌아올 때 확인한다. 판정은 `member/src/app-update.js`,
+화면은 `member/src/update-gate.jsx` (앱 전체를 감싼다 -- 로그인 화면도 덮는다).
+회원 웹(브라우저)에서는 확인하지 않는다 -- 웹은 배포가 곧 최신이다.
+
+### Firebase 콘솔 → Remote Config 에 만들 매개변수 (값은 전부 문자열)
+
+| 키 | 뜻 | 예 |
+| --- | --- | --- |
+| `member_android_latest_build` | Android 최신 **versionCode** | `12` |
+| `member_android_min_build` | Android 최소 지원 versionCode -- 이보다 낮으면 필수 | `10` |
+| `member_ios_latest_build` | iOS 최신 **빌드 번호** (Codemagic 빌드 번호) | `45` |
+| `member_ios_min_build` | iOS 최소 지원 빌드 번호 | `40` |
+| `member_force_update_enabled` | `true` 일 때만 최소 버전 아래를 막는다. 그 밖에는 권유 | `false` |
+| `member_update_title` | 안내 제목 (비우면 "새 버전이 나왔어요") | |
+| `member_update_message` | 안내 내용 (비우면 기본 문구) | |
+| `member_android_store_url` | 비우면 Play 페이지를 플러그인이 연다. 넣으면 그 주소 (https 만) | |
+| `member_ios_store_url` | 비우면 앱스토어 페이지를 플러그인이 연다. 넣으면 그 주소 (https 만) | |
+
+값이 비어 있으면 아무것도 띄우지 않는다. 앱은 10분마다 새 값을 받고, 못 받으면 마지막
+받은 값을 쓴다 (필수 업데이트가 오프라인 재실행으로 풀리지 않는다).
+
+### 잘못 막지 않게 -- 순서
+
+1. 새 빌드를 스토어에 내고 **심사 · 출시가 끝난 뒤** 최신 빌드 번호를 적는다 (권유가 뜬다)
+2. 구버전을 막아야 할 때만 최소 빌드 번호를 올리고 `member_force_update_enabled` 를 `true` 로
+3. 앱도 스스로 확인한다: 스토어에 새 버전이 없으면 띄우지 않고, Play 에 올라간 versionCode 가
+   최소 버전보다 낮거나 스토어를 확인하지 못하면 막지 않고 권유만 한다
+
+### 버튼
+
+- Android: Play **즉시 업데이트**(In-App Updates)가 되면 그것, 안 되면 Play 페이지
+- iOS: 앱스토어 페이지. 설치하고 돌아오면 다시 확인한다
+- 실패 · 취소는 원본 코드와 함께 진단(`app_update`)에 남고 [다시 시도] 가 남는다
+
+플러그인: `@capawesome/capacitor-app-update`, `@capacitor/app` (설치 빌드 번호 -- 오프라인에서도 읽힌다).

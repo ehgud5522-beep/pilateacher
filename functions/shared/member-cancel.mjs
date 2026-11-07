@@ -308,7 +308,9 @@ export function validateGrant(input) {
   /* 고른 사유. 없으면 예전 화면 -- 문장이 곧 사유라 "기타" 로 받는다. */
   const rawCode = text(input?.reasonCode);
   const reasonCode = rawCode || GRANT_REASON.OTHER;
-  if (!Object.values(GRANT_REASON).includes(reasonCode)) return { ok: false, reason: "grant_reason_code_invalid" };
+  /** @type {string[]} */
+  const codes = Object.values(GRANT_REASON);
+  if (!codes.includes(reasonCode)) return { ok: false, reason: "grant_reason_code_invalid" };
   if (reasonCode === GRANT_REASON.OTHER && !reason) return { ok: false, reason: "grant_reason_required" };
   return { ok: true, amount, reasonCode, reason: reason || GRANT_REASON_LABEL[reasonCode] };
 }

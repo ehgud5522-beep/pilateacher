@@ -523,6 +523,25 @@ export async function transferPassInstructor(organizationId, passId, input, opti
 export const DEDUCT_BACKDATE_LIMIT_DAYS = 7;
 
 /**
+ * 이 수업을 확정(차감)할 수 있는 **마지막 순간** -- occurredAt + 7일.
+ *
+ * 규칙의 `occurredAt > request.time - duration.value(7, "d")` 와 같은 선이다: 지금이
+ * 이 시각과 **같거나 지났으면** 거절된다. 확정 전 검사(deductPass)와 "확인할 수업" 큐
+ * (lesson-queue.js)가 이 하나를 쓴다 -- 둘이 따로 세면 큐에는 남아 있는데 누르면
+ * 거절되거나, 아직 확정할 수 있는데 큐에서 사라진다 (2026-11-07 대표).
+ *
+ * occurredAt 은 수업 시작 시각이다 (settlementTime: 기기 날짜 + 시작 시각).
+ *
+ * @param {Date | number | string} occurredAt
+ * @returns {Date | null} 시각을 못 읽으면 null
+ */
+export function settleDeadline(occurredAt) {
+  const at = occurredAt instanceof Date ? occurredAt : new Date(occurredAt);
+  if (!Number.isFinite(at.getTime())) return null;
+  return new Date(at.getTime() + DEDUCT_BACKDATE_LIMIT_DAYS * 24 * 60 * 60 * 1000);
+}
+
+/**
  * 차감 시각이 창을 벗어나는 세 가지 이유.
  *
  * 규칙도 같은 창을 본다(occurredAt <= request.time, 그리고 7일). 여기서 먼저
@@ -668,9 +687,11 @@ export async function deductPass(organizationId, pass, input, options = {}) {
   if (!Number.isFinite(occurredAt.getTime())) throw deductionWindowError(DEDUCT_WINDOW.INVALID);
   const today = now();
   if (occurredAt.getTime() > today.getTime()) throw deductionWindowError(DEDUCT_WINDOW.FUTURE);
-  const oldest = today.getTime() - DEDUCT_BACKDATE_LIMIT_DAYS * 24 * 60 * 60 * 1000;
   // 규칙이 같은 창으로 막는다. 여기서 먼저 막는 것은 무엇이 문제인지 말해 주기 위해서다.
-  if (occurredAt.getTime() <= oldest) throw deductionWindowError(DEDUCT_WINDOW.TOO_OLD);
+  // 큐(lesson-queue.js)도 같은 settleDeadline 으로 "지난 항목" 을 가른다.
+  if (/** @type {Date} */ (settleDeadline(occurredAt)).getTime() <= today.getTime()) {
+    throw deductionWindowError(DEDUCT_WINDOW.TOO_OLD);
+  }
 
   /* 판정 3 이 보는 누적은 지금 이 순간의 값이어야 한다. 화면이 열릴 때 읽어
      두면 20회째에서 한 칸 뒤처지고, 그 한 회차만 신규 단가로 굳는다.

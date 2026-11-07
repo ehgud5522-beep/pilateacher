@@ -12,18 +12,28 @@
  *      (데이터는 그대로다 -- 큐가 세지 않을 뿐).
  *   2. 다른 기기에서 확정돼 잠긴 수업(settledElsewhereAt)은 완료로 본다.
  *   3. 11월 1일(QUEUE_CUTOFF) 이전 수업은 요약과 목록에서 빼고 "지난 항목" 에만 접어 둔다.
- *   4. 30일이 지난 항목은 "관리자 확인" 탭으로 간다.
+ *   4. **확정할 수 있는 기간(7일)이 지난 항목도 "지난 항목" 으로 간다** (2026-11-07 대표).
+ *      출석 · 확정 · 수업 기록 알림 전부다. 기준은 확정과 같은 settleDeadline
+ *      (pass-repository.js) -- 수업 시작 시각 + 7일이 되는 순간부터 지난 항목이다.
+ *      그 전까지는 확정이 받아지고, 그 순간부터는 규칙이 거절한다. 둘이 어긋나지 않는다.
+ *      마감 2일 전부터는 "모레/내일/오늘까지 확정해야 해요" 를 단다.
  *   5. 같은 수업의 줄은 한 묶음이다 -- 듀엣은 한 수업으로 보인다.
  *
+ * 탭은 셋이다: 오늘 · 지난 미처리(확정 기간 안) · 지난 항목(접힘). "관리자 확인" 탭은
+ * 없앴다 (2026-11-07 대표) -- 확정할 수 없게 된 수업을 강사 화면에 모아 둘 이유가 없다.
+ *
  * 판정만 순수 함수로 둔다. 서버 읽기와 기기 저장은 부르는 쪽이 한다.
- * 아무것도 쓰지 않는다.
+ * 아무것도 쓰지 않는다. 서버 데이터도 지우거나 바꾸지 않는다.
  */
+
+import { settleDeadline } from "../../data/repositories/pass-repository.js";
+import { settlementTime } from "./settlement-duplicate.js";
 
 /** 이 날짜(기기 시각, YYYY-MM-DD)보다 앞선 수업은 큐에서 뺀다. 데이터는 지우지 않는다. */
 export const QUEUE_CUTOFF = "2026-11-01";
 
-/** 이만큼 지난 미처리는 "관리자 확인" 탭으로. */
-export const ADMIN_REVIEW_AFTER_DAYS = 30;
+/** 마감까지 이만큼(달력 일수) 남으면 항목에 마감 표시를 단다. */
+export const DEADLINE_WARN_DAYS = 2;
 
 /** 서버 상태를 다시 묻는 간격. 그 사이에는 기기에 적어 둔 답을 쓴다. */
 export const SERVER_STATE_TTL_MS = 6 * 60 * 60 * 1000;
@@ -34,14 +44,15 @@ export const SERVER_STATE_READ_LIMIT = 60;
 export const QUEUE_TAB = Object.freeze({
   TODAY: "today",
   OVERDUE: "overdue",
-  ADMIN: "admin",
   ARCHIVED: "archived",
 });
+
+/** 화면이 그리는 순서. */
+export const QUEUE_TABS = Object.freeze([QUEUE_TAB.TODAY, QUEUE_TAB.OVERDUE, QUEUE_TAB.ARCHIVED]);
 
 export const QUEUE_TAB_LABEL = Object.freeze({
   [QUEUE_TAB.TODAY]: "오늘",
   [QUEUE_TAB.OVERDUE]: "지난 미처리",
-  [QUEUE_TAB.ADMIN]: "관리자 확인",
   [QUEUE_TAB.ARCHIVED]: "지난 항목",
 });
 
@@ -84,6 +95,41 @@ const daysBetween = (fromDay, toDay) => {
   return Math.round((to.getTime() - from.getTime()) / 86400000);
 };
 
+const localDay = (at) => `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, "0")}-${String(at.getDate()).padStart(2, "0")}`;
+
+/**
+ * 이 수업의 확정 마감(settleDeadline). 수업이 없거나 날짜를 모르면 null -- 수업 없는 기록
+ * 확인 · 초안은 마감이 없다 (그래서 지난 항목으로 가지도 않고 마감 표시도 없다).
+ *
+ * 수업 시각은 확정이 원장에 적는 것과 같은 식이다 (settlementTime: 날짜 + 시작, 없으면 00:00).
+ *
+ * @param {any} lesson
+ */
+export function queueDeadlineOf(lesson) {
+  if (!lesson || !text(lesson.date)) return null;
+  const at = settlementTime(lesson);
+  return at ? settleDeadline(at) : null;
+}
+
+/** 마감이 지났는가 -- 지금이 마감과 같거나 지났으면 확정이 거절된다. */
+export const isPastSettleDeadline = (deadline, now) => Boolean(deadline) && deadline.getTime() <= Number(now);
+
+/**
+ * 마감 표시. 마감일까지 달력으로 0 · 1 · 2일 남았을 때만. 지났거나 그보다 멀면 null.
+ *
+ * 대표 문구는 "내일까지 확정해야 해요" 하나였다. 2일 전부터 같은 말을 쓰면 이틀 남은
+ * 날에 "내일까지" 가 거짓이 되므로 남은 날로 말을 바꾼다 (모레 · 내일 · 오늘).
+ *
+ * @param {Date | null} deadline @param {number} now
+ */
+export function deadlineBadgeOf(deadline, now) {
+  if (!deadline || isPastSettleDeadline(deadline, now)) return null;
+  const daysLeft = daysBetween(localDay(new Date(Number(now))), localDay(deadline));
+  if (daysLeft < 0 || daysLeft > DEADLINE_WARN_DAYS) return null;
+  const word = daysLeft === 0 ? "오늘" : daysLeft === 1 ? "내일" : "모레";
+  return { daysLeft, label: `${word}까지 확정해야 해요` };
+}
+
 /**
  * 이 수업이 다른 곳에서 이미 끝났는가.
  *
@@ -107,25 +153,28 @@ function closedElsewhere(lesson, serverState) {
  * @param {{
  *   tasks: Array<any>,
  *   today: string,
+ *   now?: number | Date,
  *   serverStates?: Record<string, string>,
  *   snoozed?: Record<string, boolean>,
- *   escalated?: Record<string, boolean>,
  *   cutoff?: string,
  * }} input
+ *   now           지금(밀리초). 확정 마감을 가르는 시각이다. 없으면 today 의 정오로 본다
  *   serverStates  수업 id → SERVER_STATE. 없는 id 는 아직 못 물은 것(UNKNOWN)
  *   snoozed       묶음 key → 보류. 요약에서 빠지고 목록에는 "보류" 로 남는다 (기기에만)
- *   escalated     묶음 key → 관리자 확인으로 보냄 (기기에만)
  */
 export function organizeLessonQueue(input) {
   const today = text(input?.today);
+  const now = input?.now instanceof Date ? input.now.getTime()
+    : Number.isFinite(Number(input?.now)) && input?.now !== null && input?.now !== undefined ? Number(input.now)
+      : new Date(`${today}T12:00:00`).getTime();
   const cutoff = text(input?.cutoff) || QUEUE_CUTOFF;
   const serverStates = input?.serverStates || {};
   const snoozed = input?.snoozed || {};
-  const escalated = input?.escalated || {};
 
   /** @type {Map<string, any>} */
   const groups = new Map();
-  const counts = { doneElsewhere: 0, pending: 0, unknown: 0, archived: 0 };
+  /* archived = 지난 항목 전체(컷오프 + 마감 지남), expired = 그중 마감이 지나 넘어간 것. */
+  const counts = { doneElsewhere: 0, pending: 0, unknown: 0, archived: 0, expired: 0 };
 
   for (const task of Array.isArray(input?.tasks) ? input.tasks : []) {
     if (!task) continue;
@@ -143,22 +192,31 @@ export function organizeLessonQueue(input) {
     if (!group.date) group.date = queueDateOf(task);
   }
 
-  const out = { [QUEUE_TAB.TODAY]: [], [QUEUE_TAB.OVERDUE]: [], [QUEUE_TAB.ADMIN]: [], [QUEUE_TAB.ARCHIVED]: [] };
+  const out = { [QUEUE_TAB.TODAY]: [], [QUEUE_TAB.OVERDUE]: [], [QUEUE_TAB.ARCHIVED]: [] };
   for (const group of groups.values()) {
     if (lessonClosed(group)) { counts.doneElsewhere += 1; continue; }
     /* 확정 항목이 먼저 -- 돈이 걸린 일이고, 출석 · 기록은 확정 화면에서 함께 본다. */
     group.tasks.sort((left, right) => Number(right.kind === "settlement") - Number(left.kind === "settlement"));
     group.snoozed = Boolean(snoozed[group.key]);
+    /* 마감은 수업 하나에 하나다 -- 듀엣의 두 회원 · 확정 줄이 같이 넘어간다. */
+    group.deadline = queueDeadlineOf(group.lesson || (group.date ? { date: group.date } : null));
+    const expired = isPastSettleDeadline(group.deadline, now);
+    const beforeCutoff = Boolean(group.date) && group.date < cutoff;
     let tab;
-    if (group.date && group.date < cutoff) tab = QUEUE_TAB.ARCHIVED;
-    else if (escalated[group.key]) tab = QUEUE_TAB.ADMIN;
+    if (beforeCutoff) tab = QUEUE_TAB.ARCHIVED;
+    else if (expired) tab = QUEUE_TAB.ARCHIVED;
     else if (group.date && group.date === today) tab = QUEUE_TAB.TODAY;
-    else if (group.date && daysBetween(group.date, today) > ADMIN_REVIEW_AFTER_DAYS) tab = QUEUE_TAB.ADMIN;
     else tab = QUEUE_TAB.OVERDUE;
     group.tab = tab;
+    /* "마감 지남" 은 컷오프가 아니라 확정 기간 때문에 넘어간 것만 센다 -- 진단이 둘을 가른다. */
+    group.expired = !beforeCutoff && expired;
+    /* 확정하지 않은 수업에만 단다. 이 기기가 확정한 수업의 기록 알림은 돈이 걸려 있지 않다. */
+    group.badge = tab !== QUEUE_TAB.ARCHIVED && !group.lesson?.orgSettledAt ? deadlineBadgeOf(group.deadline, now) : null;
     out[tab].push(group);
-    if (tab === QUEUE_TAB.ARCHIVED) counts.archived += 1;
-    else if (group.serverState === SERVER_STATE.SCHEDULED) counts.pending += 1;
+    if (tab === QUEUE_TAB.ARCHIVED) {
+      counts.archived += 1;
+      if (group.expired) counts.expired += 1;
+    } else if (group.serverState === SERVER_STATE.SCHEDULED) counts.pending += 1;
     else counts.unknown += 1;
   }
   for (const tab of Object.keys(out)) {
@@ -171,11 +229,10 @@ export function organizeLessonQueue(input) {
     /** 첫 화면 요약: "오늘 미처리 N건" */
     todayCount: active(QUEUE_TAB.TODAY),
     overdueCount: active(QUEUE_TAB.OVERDUE),
-    adminCount: out[QUEUE_TAB.ADMIN].length,
     archivedCount: out[QUEUE_TAB.ARCHIVED].length,
     /** 시트를 열 만한 것이 있는가 (지난 항목만 있어도 연다) */
     total: Object.values(out).reduce((sum, list) => sum + list.length, 0),
-    /** 진단: 완료인데 남은 것 / 진짜 미처리 / 판단 불가 / 지난 항목 (묶음 수) */
+    /** 진단: 완료인데 남은 것 / 진짜 미처리 / 판단 불가 / 지난 항목 · 그중 마감 지남 (묶음 수) */
     counts,
   };
 
@@ -199,6 +256,8 @@ export function lessonIdsToCheck(input) {
     if (!lessonId || ids.includes(lessonId)) continue;
     const date = queueDateOf(task);
     if (date && date < cutoff) continue;
+    // 마감이 지난 수업도 묻지 않는다 -- 지난 항목이라 세지 않는다.
+    if (isPastSettleDeadline(queueDeadlineOf(task.s || task.lesson || (date ? { date } : null)), input.now)) continue;
     const cached = cache[lessonId];
     if (cached && Number(input.now) - Number(cached.at) < SERVER_STATE_TTL_MS) continue;
     ids.push(lessonId);
@@ -213,7 +272,7 @@ export function serverStatesFromCache(cache) {
 }
 
 /* ── 기기 저장 ─────────────────────────────────────────────────────────────
-   셋 다 이 기기에만 둔다. 서버에 쓰지 않는다 -- 보류 · 관리자 확인은 "이 강사가 이
+   셋 다 이 기기에만 둔다. 서버에 쓰지 않는다 -- 보류는 "이 강사가 이
    화면에서 어떻게 보고 싶은가" 이고, 서버 답은 다시 물으면 얻는 값이다. */
 export const QUEUE_SERVER_CACHE_KEY = "pilateacher_lesson_queue_server_v1";
 export const QUEUE_MARKS_KEY = "pilateacher_lesson_queue_marks_v1";
@@ -251,10 +310,15 @@ export function mergeServerCache(cache, documents, now) {
   return next;
 }
 
-/** 보류 · 관리자 확인 표시. { snoozed: { key: true }, escalated: { key: true } } */
+/**
+ * 보류 표시. { snoozed: { key: true } }
+ *
+ * "관리자 확인" 표시는 없앴다 (2026-11-07). 예전 기기에 남은 escalated 칸은 읽지 않는다 --
+ * 그 묶음은 이제 날짜대로 지난 미처리 · 지난 항목에 선다.
+ */
 export function readQueueMarks(storage) {
   const marks = readJson(storage, QUEUE_MARKS_KEY, {});
-  return { snoozed: { ...(marks.snoozed || {}) }, escalated: { ...(marks.escalated || {}) } };
+  return { snoozed: { ...(marks.snoozed || {}) } };
 }
 export function writeQueueMarks(storage, marks) { writeJson(storage, QUEUE_MARKS_KEY, marks); }
 

@@ -95,6 +95,10 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "일정 탭 · 소속 · 회원에게 보낼 말",
     "일정 탭 · 소속 · 회원에게 보낼 말 · 연결 안 됨",
     "일정 탭 · 소속 · 회원에게 보낼 말 · 확정됨",
+    "회원 피드백 · 묻기",
+    "회원 피드백 · 예 · 입력칸",
+    "회원 피드백 · 아니오",
+    "회원 피드백 · 작성 완료",
     "일정 탭 · 소속 · 확정됨 · 대표",
     "일정 탭 · 개인 모드 · 확정 없음",
     "회원 목록",
@@ -150,6 +154,15 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "센터 회원 상세 · 이름 수정",
     "센터 회원 상세 · 앱 취소 횟수",
     "일정 탭 · 회원 취소 N건",
+    "취소 횟수 추가 · 경고 · 대표",
+    "취소 횟수 추가 · 경고 · 담당 강사",
+    "취소 횟수 추가 · 강사 재량 다 씀",
+    "수업 관리 · 회원 취소 (개인)",
+    "수업 관리 · 회원 취소 (듀엣 한 명)",
+    "수업 관리 · 회원 취소 확인함",
+    "일정 탭 · 강사 알림함 띠",
+    "강사 알림함 시트",
+    "강사 알림함 시트 · 열지 못함",
     "운영 설정 · 회원 앱 수업 취소",
     "센터 회원 상세 · 보관 가능",
     "센터 회원 상세 · 보관 확인",
@@ -222,6 +235,10 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "회원권 발급 · 풀방금액 없음",
     "회원권 발급 · 확인",
     "회원권 발급 · 확인 · 현금",
+    /* 강사 기준 단가 직접 입력 · 결제 수단 기본값 없음 (2026-11-07). */
+    "회원권 발급 · 기준 단가 직접 입력",
+    "회원권 발급 · 기준 단가 직접 입력 · 확인",
+    "회원권 발급 · 결제 수단 미선택",
     "회원권 발급 · 조회 실패",
     "강사 관리",
     "강사 관리 · 계정 교체",
@@ -1205,29 +1222,52 @@ test("발급 화면의 [상품 관리]는 넘겨준 화면에만 선다", async 
   assert.doesNotMatch(markupOf("회원권 발급"), /상품 관리/);
 });
 
-test("the issue form asks only what the price source needs", async (t) => {
+test("the issue form offers the suggested unit price and lets the issuer change it", async (t) => {
   const markupOf = await issueScreens(t);
 
-  /* 표에서 단가가 오는 상품은 급여 단가를 묻지 않는다. 물으면 사람이 표와
-     다른 값을 넣을 수 있고, 그것이 그대로 원장에 박힌다. */
+  /* 2026-11-07 대표 결정: 지점마다 단가가 달라 표 카테고리도 기준 단가를 직접
+     정할 수 있다. 칸은 비어 있고 제안값이 옆에 선다 -- 비워 두면 그 값이다. */
   const fromTable = markupOf("회원권 발급 · 기준값과 다름");
-  assert.doesNotMatch(fromTable, /급여 단가/);
+  assert.match(fromTable, /강사 기준 단가 \(원\)/);
+  assert.match(fromTable, /제안 30,000원 · 단가표/);
+  assert.doesNotMatch(fromTable, /단가를 바꾼 사유/, "바꾸지 않았으면 사유를 묻지 않는다");
 
-  /* 표 밖의 상품 중에서도, 회당 단가가 붙기 전에 만들어진 것만 금액 칸을 띄운다.
-     빈 값을 0 으로 흘려보내면 그 수업들이 통째로 무보수가 된다. */
+  /* 회당 단가가 붙기 전에 만들어진 기타 상품은 제안값이 없어 반드시 적는다. */
   const manual = markupOf("회원권 발급 · 직접 단가");
-  assert.match(manual, /급여 단가 \(만원\)/);
-  assert.match(manual, /표에 단가가 없어 직접 넣습니다/);
+  assert.match(manual, /제안 단가가 없어 직접 넣습니다/);
 
-  /* 상품이 회당 단가를 들고 있으면 묻지 않는다. 물으면 같은 상품이 사람마다
-     다른 단가로 나가고, 원장은 append-only 라 고칠 수 없다. */
+  /* 상품이 회당 단가를 들고 있으면 그것이 제안값이다. */
   const priced = markupOf("회원권 발급 · 상품 단가");
-  assert.doesNotMatch(priced, /급여 단가/);
+  assert.match(priced, /제안 28,000원 · 상품에 정해진 금액/);
 
-  /* 묻지 않은 값이라 발급 직전에 한 번은 보여야 한다. 원장에 박히고 나면 고칠 수
-     없는 숫자를 확인 없이 지나가게 두지 않는다. */
+  /* 원장에 박히고 나면 고칠 수 없는 숫자라 발급 직전에 한 번은 보인다. */
   const confirm = markupOf("회원권 발급 · 상품 단가 · 확인");
-  assert.match(confirm, /급여 단가 회당 28,000원/);
+  assert.match(confirm, /강사 기준 단가 회당 28,000원/);
+  assert.match(confirm, /상품에 정해진 금액/);
+
+  /* 제안값과 다르게 적으면 사유 칸이 서고, 확인 화면에 원래 값과 사유가 함께 선다. */
+  const overridden = markupOf("회원권 발급 · 기준 단가 직접 입력");
+  assert.match(overridden, /단가를 바꾼 사유/);
+  const overriddenConfirm = markupOf("회원권 발급 · 기준 단가 직접 입력 · 확인");
+  assert.match(overriddenConfirm, /강사 기준 단가 회당 33,000원/);
+  assert.match(overriddenConfirm, /직접 입력 \(제안 30,000원\) · 사유: 지점 단가/);
+  assert.match(overriddenConfirm, /부원장 5:5 · 인수인계 · 이 강사에게 20회 미만은 차감할 때 따로 계산됩니다/);
+});
+
+test("payment method sits outside the fold and has no default", async (t) => {
+  const markupOf = await issueScreens(t);
+  /* 접힌 칸 안에 기본값 카드로 있을 때, 현금 계약이 카드로 박혀 부원장 단가가
+     틀렸다. 이제 늘 보이고, 접힌 칸은 서비스 · 차수뿐이다. */
+  const blank = markupOf("회원권 발급 · 결제 수단 미선택");
+  assert.match(blank, /결제 수단/);
+  assert.match(blank, /현금/);
+  assert.match(blank, /· 서비스 · 차수</);
+  assert.doesNotMatch(blank, /서비스 · 차수 · 결제 수단/);
+});
+
+test("chips do not repeat the group label the product name already carries", async (t) => {
+  const markupOf = await issueScreens(t);
+  assert.doesNotMatch(markupOf("회원권 발급"), /1:1<\/span>(\s|<!-- -->)*1:1/);
 });
 
 test("changing a default leaves the default in sight", async (t) => {
@@ -2029,44 +2069,50 @@ test("a failed lesson keeps its reason and its retry even before it starts", asy
 test("the member-facing note sits beside the lesson record, not inside it", async (t) => {
   const markupOf = await issueScreens(t);
   const sheet = markupOf("일정 탭 · 소속 · 회원에게 보낼 말");
-
-  assert.match(sheet, /회원에게 보낼 말/);
-  // 강사가 자기를 위해 쓰는 기록도 그 자리에 그대로 있다 -- 한쪽이 다른 쪽을
-  // 밀어내면 강사는 둘 중 하나를 포기한다.
+  // 강사가 자기를 위해 쓰는 기록도 그 자리에 그대로 있다 -- 회원 피드백 선택과 상관없다.
   assert.match(sheet, /기록하기/);
   assert.match(sheet, /직접입력/);
-  // 회원에게 가는 칸이라는 것을 칸 자체가 말한다.
   assert.match(sheet, /data-member-note/);
 });
 
-test("before the note is loaded the box says so instead of looking empty", async (t) => {
-  /* 빈 칸으로 보이면 강사는 아직 안 썼다고 읽고 그 위에 덮어쓴다 -- 먼젓번에
-     보낸 말이 소리 없이 사라진다. */
+test("before the note is loaded the box says so and asks nothing", async (t) => {
+  /* 못 읽은 채로 [예] → 저장하면 먼젓번에 보낸 말이 덮인다. 읽기 전에는 묻지도 열지도 않는다. */
   const markupOf = await issueScreens(t);
   const sheet = markupOf("일정 탭 · 소속 · 회원에게 보낼 말");
-
-  assert.match(sheet, /불러오는 중…/);
-  assert.match(sheet, /disabled=""/, "읽어 오기 전인데 입력이 열려 있다");
+  assert.match(sheet, /회원 피드백 불러오는 중…/);
+  assert.doesNotMatch(sheet, /data-member-note-yes/);
+  assert.doesNotMatch(sheet, /<textarea[^>]*placeholder="오늘 좋았던 점/);
 });
 
-test("the note says when the member will actually see it", async (t) => {
-  /* 확정 전에 저장하면 회원 앱에는 아직 없다 -- 회원의 수업 이력은 차감으로
-     만들어지기 때문이다. 말하지 않으면 강사는 저장하고 나서 안 보인다고 한다.
-     실제로 그 일이 있었고, 그래서 이 기능이 생겼다. */
+test("member feedback is a choice: the question and yes / no only, the box opens on yes", async (t) => {
   const markupOf = await issueScreens(t);
+  const ask = markupOf("회원 피드백 · 묻기");
+  assert.match(ask, /이번 수업에 회원에게 피드백을 보내시겠어요\?/);
+  assert.match(ask, /data-member-note-yes/);
+  assert.match(ask, /data-member-note-no/);
+  assert.doesNotMatch(ask, /<textarea/, "고르기 전에는 입력칸이 없다");
 
-  const before = markupOf("일정 탭 · 소속 · 회원에게 보낼 말");
-  assert.match(before, /수업을 확정해 회원권이 차감되면 회원 앱에 보입니다/);
+  const no = markupOf("회원 피드백 · 아니오");
+  assert.doesNotMatch(no, /<textarea/, "아니오면 입력칸이 열리지 않는다");
+  assert.match(no, /보내지 않아요/);
 
-  const after = markupOf("일정 탭 · 소속 · 회원에게 보낼 말 · 확정됨");
-  assert.match(after, /회원 앱의 수업 탭에 이 수업과 함께 보입니다/);
-  assert.doesNotMatch(after, /확정해 회원권이 차감되면/);
+  const yes = markupOf("회원 피드백 · 예 · 입력칸");
+  assert.match(yes, /<textarea/);
+  assert.match(yes, /이 내용은 회원에게 보입니다/);
+  assert.match(yes, /수업을 확정해 회원권이 차감되면 회원 앱에 보입니다/);
+  assert.match(yes, /내용이 비어 있으면 보내지 않아요/);
+  assert.match(yes, /data-member-note-save[^>]*disabled=""/, "비어 있으면 저장 버튼이 꺼진다");
 });
 
-test("the note says up front that the member will read it", async (t) => {
-  /* 수업기록 칸 바로 옆이라 강사끼리 쓰는 말을 여기 적기 쉽다. 쓰기 전에 말한다. */
+test("a saved note shows as done with an edit button, and when the member will see it", async (t) => {
   const markupOf = await issueScreens(t);
-  assert.match(markupOf("일정 탭 · 소속 · 회원에게 보낼 말"), /이 내용은 회원에게 보입니다/);
+  const saved = markupOf("회원 피드백 · 작성 완료");
+  assert.match(saved, /작성 완료/);
+  assert.match(saved, /data-member-note-edit/);
+  assert.match(saved, /브릿지 10회/);
+  assert.match(saved, /회원 앱의 수업 탭에 이 수업과 함께 보입니다/);
+  assert.doesNotMatch(saved, /data-member-note-yes/, "저장된 말이 있으면 다시 묻지 않는다");
+  assert.doesNotMatch(saved, /<textarea/);
 });
 
 test("a member not linked to the centre gets no note box, and the sheet says why", async (t) => {
@@ -2355,7 +2401,7 @@ test("the area manager runs the centre but never the app update setting", async 
   assert.match(hub, /강사 관리/);
   /* 접혀서 안 보이는 것과 역할로 없는 것은 다르다. 펼친 화면에서도 없다 --
      그것이 "대표만" 이다. */
-  assert.doesNotMatch(hub, /앱 업데이트 안내/);
+  assert.doesNotMatch(hub, /앱 업데이트 · 운영 스위치/);
   /* "대표 설정" 묶음 자체는 선다 -- 이관 데이터는 총괄매니저도 올린다
      (대표만인 것은 이관 **초기화** 쪽이고, 그것은 서버의 문이다). 묶음이
      사라지는 것과 그 안의 한 줄이 없는 것은 다른 일이다. */
@@ -3232,6 +3278,69 @@ test("이관 서비스 보정은 바뀔 값을 전후로 보여준다", async ()
   assert.equal(clean.includes("확인했습니다"), false, "고칠 것이 없으면 확정 버튼을 내지 않는다");
 });
 
+test("grant warning: configured base count, three reasons, before/after preview, instructor cap of one", async () => {
+  const markup = await screenMarkup();
+  const owner = markup("취소 횟수 추가 · 경고 · 대표");
+  assert.match(owner, /data-member-cancel-grant-dialog/);
+  assert.match(owner, /취소 횟수를 추가하시겠습니까\?/);
+  assert.match(owner, /기본 제공 횟수는 월 3회이며, 추가 부여는 예외적인 상황에서만 허용됩니다\./);
+  for (const label of ["건강 및 부상 등 불가피한 사유", "센터 또는 강사 일정 변경", "기타 특별 사유"]) assert.ok(owner.includes(label), label);
+  assert.match(owner, /data-member-cancel-grant-preview/);
+  assert.match(owner, /남은 취소 <b[^>]*>0<!-- -->회 → <!-- -->1<!-- -->회<\/b>|남은 취소 <b[^>]*>0회 → 1회<\/b>/);
+  assert.match(owner, /1<!-- -->회 부여|1회 부여/);
+  assert.match(owner, /<select/, "대표는 횟수를 고른다");
+  assert.doesNotMatch(owner, /사유 복사/, "복사 버튼은 없다");
+  assert.doesNotMatch(owner, /대표님 권한/, "대표에게는 재량 안내가 없다");
+
+  const teacher = markup("취소 횟수 추가 · 경고 · 담당 강사");
+  assert.match(teacher, /추가 1회까지만 줄 수 있고, 그 이상은 대표님 권한이에요 — 대표님에게 직접 요청해 주세요/);
+  assert.doesNotMatch(teacher, /<select/, "강사는 1회 고정");
+
+  const capped = markup("취소 횟수 추가 · 강사 재량 다 씀");
+  assert.match(capped, /data-member-cancel-grant-capped/);
+  assert.match(capped, /대표님에게 직접 요청해 주세요/);
+  assert.doesNotMatch(capped, />취소 횟수 추가</, "버튼 대신 안내");
+});
+
+test("member-cancelled lesson stays on the schedule: banner, confirm button, '회원 취소' badge, freed slot", async () => {
+  const markup = await screenMarkup();
+  const solo = markup("수업 관리 · 회원 취소 (개인)");
+  assert.match(solo, /data-member-cancel-banner/);
+  assert.match(solo, /회원이 앱에서 직접 취소했어요/);
+  assert.match(solo, /이 시간은 비어 있어요\. 다른 회원 수업을 넣을 수 있어요/);
+  assert.match(solo, /data-member-cancel-ack/);
+  assert.match(solo, /data-member-cancel-badge/);
+  assert.match(solo, />회원 취소</);
+
+  const duet = markup("수업 관리 · 회원 취소 (듀엣 한 명)");
+  assert.match(duet, /회원 1명이 앱에서 직접 취소했어요 · 수업은 남은 회원과 그대로 진행돼요/);
+  assert.doesNotMatch(duet, /이 시간은 비어 있어요/, "듀엣은 수업이 그대로라 빈 시간이 아니다");
+
+  const acked = markup("수업 관리 · 회원 취소 확인함");
+  assert.match(acked, />확인함</);
+  assert.doesNotMatch(acked, /data-member-cancel-ack/, "확인한 뒤에는 버튼이 없다");
+  assert.match(acked, /data-member-cancel-banner/, "확인해도 일정 · 표시는 남는다");
+});
+
+test("instructor inbox: unread strip on the schedule tab, rows with a read dot, the failure code", async () => {
+  const markup = await screenMarkup();
+  const strip = markup("일정 탭 · 강사 알림함 띠");
+  assert.match(strip, /data-inbox-strip/);
+  assert.match(strip, /새 알림 1건/);
+  assert.doesNotMatch(markup("일정 탭"), /data-inbox-strip/, "알림함이 없는 강사에게는 띠가 없다");
+
+  const sheet = markup("강사 알림함 시트");
+  assert.match(sheet, /data-inbox-item="rec-1"/);
+  assert.match(sheet, /data-inbox-item="rec-2"/);
+  assert.ok(sheet.includes("11/8(일) 10:00 수업이 회원 요청으로 취소되었어요"));
+  assert.match(sheet, /일정 보기/);
+
+  const failed = markup("강사 알림함 시트 · 열지 못함");
+  assert.match(failed, /data-inbox-error/);
+  assert.match(failed, /코드 permission-denied/);
+  assert.doesNotMatch(failed, /새 알림이 없어요/, "열지 못한 것을 '없음' 으로 말하지 않는다");
+});
+
 test("member app cancellation: the count on the first screen, the grant button, the owner's switch", async () => {
   const markup = await screenMarkup();
   const schedule = markup("일정 탭 · 회원 취소 N건");
@@ -3242,7 +3351,11 @@ test("member app cancellation: the count on the first screen, the grant button, 
   const detail = markup("센터 회원 상세 · 앱 취소 횟수");
   assert.match(detail, /data-member-cancel-grant/);
   assert.match(detail, /취소 횟수 추가/, "대표에게는 버튼이 보인다");
-  assert.doesNotMatch(markup("센터 회원 상세 · 이름 수정"), /data-member-cancel-grant/, "설정이 없으면 그리지 않는다");
+  /* 설정이 없으면 버튼 대신 대표에게만 어디서 켜는지 한 줄 (2026-11-07). */
+  const off = markup("센터 회원 상세 · 대표");
+  assert.doesNotMatch(off, /취소 횟수 추가/, "설정이 없으면 버튼이 없다");
+  assert.match(off, /data-member-cancel-grant-off/);
+  assert.match(off, /대표 설정 → 앱 업데이트 · 운영 스위치 → &quot;회원 앱 수업 취소&quot;/);
 
   const admin = markup("운영 설정 · 회원 앱 수업 취소");
   assert.match(admin, /data-member-cancel-admin/);

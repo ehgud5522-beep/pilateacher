@@ -7,11 +7,20 @@
  * 다른 상품을 고른다. 고른 상품이 회원권의 단가와 급여 카테고리를 정하므로,
  * 잘못 고르면 원장이 틀린 채로 쌓인다 -- append-only 라 대표만 되돌린다.
  *
- * ── 상품은 조직 공용이다 ──
+ * ── 상품은 조직 공용이다. 가격은 지점마다 다를 수 있다 ──
  * 지점 필드가 없다 (product-repository 의 문서 모양, 규칙의 products create 가
- * hasOnly 로 닫혀 있다). 지점마다 가격이 같다는 것이 대표의 결정이고, 그래서
- * 지점으로 묶지 않는다. 이름에 지점을 적는 운영도 하지 않기로 했다 -- 지점이
- * 바뀌면 이미 팔린 회원권의 이름까지 틀려진다.
+ * hasOnly 로 닫혀 있다).
+ *
+ * 전에는 "지점마다 가격이 같다" 가 대표의 결정이었다. **2026-11-07 에 바뀌었다**
+ * -- 지점마다 단가와 수강권 형태가 조금씩 다르다. 그래서 상품은 이제 형태와
+ * 급여카테고리를 고르는 출발점이고, 회차 · 계약 금액 · 결제 수단 · 강사 기준
+ * 단가는 발급 화면에서 그 회원권에 맞게 정한다 (App.jsx PassIssue,
+ * pay-rates.mjs resolveIssueUnitPrice). 상품에 지점을 다는 것은 아직 하지
+ * 않았다 -- 규칙 변경과 배포가 따르고, 발급 화면에서 직접 정하는 것으로
+ * 충분한지 먼저 본다.
+ *
+ * 이름에 지점을 적는 운영은 여전히 권하지 않는다 -- 지점이 바뀌면 이미 팔린
+ * 회원권의 이름까지 틀려진다.
  *
  * ── 세 단계로 묶는다 ──
  *   1. 종류    1:1 · 2:1 · 기타    (수업에서 갈리는 단위)
@@ -193,10 +202,17 @@ export function mixedCategories(items) {
  * @param {Array<any>} products
  * @param {{ includeArchived?: boolean }} [options]
  * @returns {Array<{
- *   key: string, name: string, groupKey: string, groupLabel: string,
+ *   key: string, name: string, groupKey: string, groupLabel: string, chipPrefix: string,
  *   items: Array<any>, mixed: boolean,
  * }>}
  */
+/** 띄어쓰기를 무시하고 이름이 묶음 이름으로 시작하는가. "1:1PT" 도 "1:1" 로 시작한다. */
+export function nameStartsWithLabel(name, label) {
+  const squash = (value) => text(value).replace(/\s+/g, "");
+  const head = squash(label);
+  return Boolean(head) && squash(name).startsWith(head);
+}
+
 export function productNameChips(products, { includeArchived = false } = {}) {
   return groupProducts(products, { includeArchived }).flatMap((group) => (
     group.names.map((entry) => ({
@@ -205,6 +221,10 @@ export function productNameChips(products, { includeArchived = false } = {}) {
       name: entry.name,
       groupKey: group.key,
       groupLabel: group.label,
+      /* 칩 앞에 붙일 말. 이름이 이미 그 말로 시작하면 비운다 -- 운영 상품
+         이름이 "1:1 PT 깍두기" 처럼 종류를 먼저 적고 있어서 칩이 "1:1 1:1 PT
+         깍두기" 로 섰다 (2026-11-07). */
+      chipPrefix: nameStartsWithLabel(entry.name, group.label) ? "" : group.label,
       // groupProducts 가 이미 회차 오름차순으로 세워 두었다.
       items: entry.items,
       mixed: mixedCategories(entry.items),

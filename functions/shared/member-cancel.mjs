@@ -28,6 +28,36 @@ export const MEMBER_CANCEL_PERIOD = Object.freeze({ MONTH: "month", PASS: "pass"
 /** 추가 부여 한 번의 범위. 사유는 반드시 적는다. */
 export const GRANT_LIMITS = Object.freeze({ minAmount: 1, maxAmount: 10, maxReason: 200 });
 
+/**
+ * 추가 부여 사유 (2026-11-07 대표 시안). 셋 중 하나를 고른다. "기타" 는 내용을 반드시
+ * 적고, 나머지는 적어도 되고 안 적어도 된다. 예전 화면(사유 문장만)은 OTHER 로 받는다.
+ */
+export const GRANT_REASON = Object.freeze({ HEALTH: "health", CENTRE_SCHEDULE: "centre_schedule", OTHER: "other" });
+export const GRANT_REASON_LABEL = Object.freeze({
+  [GRANT_REASON.HEALTH]: "건강 및 부상 등 불가피한 사유",
+  [GRANT_REASON.CENTRE_SCHEDULE]: "센터 또는 강사 일정 변경",
+  [GRANT_REASON.OTHER]: "기타 특별 사유",
+});
+
+/**
+ * 추가 부여의 재량 (2026-11-07 대표 결정: "추가 1회까지는 강사 재량, 그 이상은 **대표님 권한**").
+ * 한 칸(월 · 회원권) 안에서 **누가 줬든** 추가 부여 합계가 이 값을 넘으면 대표가 아닌 사람은
+ * 줄 수 없다 -- 담당 강사도 총괄매니저도. 대표만 제한이 없다. 서버가 트랜잭션 안의 원장으로 판정한다.
+ */
+export const INSTRUCTOR_GRANT_CAP = 1;
+
+/** 1회를 넘는 추가 부여를 할 수 있는가 -- 대표만 (2026-11-07 대표 결정). */
+export const isGrantAdmin = (role) => text(role) === "owner";
+
+/**
+ * 대표가 아닌 사람이 이 칸에서 더 줄 수 있는 횟수. 대표면 null(제한 없음).
+ * @param {string} role @param {number} grantedSoFar 이 칸에 이미 준 합계
+ */
+export function instructorGrantRoom(role, grantedSoFar) {
+  if (isGrantAdmin(role)) return null;
+  return Math.max(0, INSTRUCTOR_GRANT_CAP - Math.max(0, Number(grantedSoFar) || 0));
+}
+
 /** 대표 설정의 횟수 범위. 0 은 "직접 취소를 받지 않는다(추가 부여만)" 이다. */
 export const LIMIT_RANGE = Object.freeze({ min: 0, max: 20 });
 
@@ -261,6 +291,7 @@ export function activePassIdFor(passes, clientId, now = new Date()) {
  * (회원 문서의 instructorIds -- 트리거가 회원권에서 채우는 "누가 이 회원을 맡는가").
  */
 export function mayGrantMemberCancel(role, callerUid, client) {
+  /* 누구의 회원에게 줄 수 있는가 (담당 여부). 몇 회까지인가는 instructorGrantRoom 이 따로 정한다. */
   if (["owner", "area_manager"].includes(text(role))) return true;
   const assigned = Array.isArray(client?.instructorIds) ? client.instructorIds.map(text) : [];
   return Boolean(text(callerUid)) && assigned.includes(text(callerUid));
@@ -273,19 +304,30 @@ export function validateGrant(input) {
     return { ok: false, reason: "grant_amount_invalid" };
   }
   const reason = text(input?.reason);
-  if (!reason) return { ok: false, reason: "grant_reason_required" };
   if (reason.length > GRANT_LIMITS.maxReason) return { ok: false, reason: "grant_reason_too_long" };
-  return { ok: true, amount, reason };
+  /* 고른 사유. 없으면 예전 화면 -- 문장이 곧 사유라 "기타" 로 받는다. */
+  const rawCode = text(input?.reasonCode);
+  const reasonCode = rawCode || GRANT_REASON.OTHER;
+  /** @type {string[]} */
+  const codes = Object.values(GRANT_REASON);
+  if (!codes.includes(reasonCode)) return { ok: false, reason: "grant_reason_code_invalid" };
+  if (reasonCode === GRANT_REASON.OTHER && !reason) return { ok: false, reason: "grant_reason_required" };
+  return { ok: true, amount, reasonCode, reason: reason || GRANT_REASON_LABEL[reasonCode] };
 }
 
-/** 대표 화면: 추가 부여를 강사별로 모은다. @returns {Array<{ grantedBy: string, count: number, amount: number }>} */
+/**
+ * 대표 화면: 추가 부여를 강사별로 모은다. repeat 는 같은 칸에 두 번째 이상으로 준 건수
+ * (2026-11-07 "반복 부여는 관리자 확인").
+ * @returns {Array<{ grantedBy: string, count: number, amount: number, repeat: number }>}
+ */
 export function grantsByGranter(grants) {
   const rows = new Map();
   for (const grant of Array.isArray(grants) ? grants : []) {
     const id = text(grant?.grantedBy);
     if (!id) continue;
-    const row = rows.get(id) || { grantedBy: id, count: 0, amount: 0 };
+    const row = rows.get(id) || { grantedBy: id, count: 0, amount: 0, repeat: 0 };
     row.count += 1;
+    if (grant?.repeat === true) row.repeat += 1;
     row.amount += Math.max(0, Number(grant?.amount) || 0);
     rows.set(id, row);
   }

@@ -151,7 +151,7 @@ test("발급과 같은 필드를 쓴다", async () => {
   const issueStore = storeWith();
   await issuePass("center-a", {
     clientId: "client-b", locationId: "bansong", productId: "product-1",
-    payCategory: "pt_1_1_new", totalSessions: 5, contractPrice: 324999,
+    payCategory: "pt_1_1_new", totalSessions: 5, contractPrice: 324999, paymentMethod: "card",
     instructorId: "u-target", createdBy: "owner-a", expiresAt: new Date(2027, 0, 31),
   }, { store: issueStore, newId: () => "pass-issued" });
 

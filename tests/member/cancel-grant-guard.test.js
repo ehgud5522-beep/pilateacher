@@ -21,13 +21,14 @@ test("사유 판정: 고른 사유는 내용 없이도 되고, 기타는 내용 
   assert.equal(legacy.reason, "병원");
 });
 
-test("강사 재량은 칸마다 1회 — 대표 · 총괄은 제한 없음", () => {
+test("재량은 칸마다 1회 — 그 이상은 대표님만 (총괄매니저도 1회)", () => {
   assert.equal(INSTRUCTOR_GRANT_CAP, 1);
   assert.equal(instructorGrantRoom("instructor", 0), 1);
   assert.equal(instructorGrantRoom("instructor", 1), 0);
   assert.equal(instructorGrantRoom("manager", 3), 0);
   assert.equal(instructorGrantRoom("owner", 5), null);
-  assert.equal(instructorGrantRoom("area_manager", 5), null);
+  assert.equal(instructorGrantRoom("area_manager", 0), 1);
+  assert.equal(instructorGrantRoom("area_manager", 1), 0);
 });
 
 test("대표 화면: 강사별 건수 · 횟수 · 반복", () => {
@@ -42,9 +43,9 @@ test("대표 화면: 강사별 건수 · 횟수 · 반복", () => {
   ]);
 });
 
-test("거절 문구는 코드와 함께 — 재량 초과는 누구에게 요청할지 말한다", () => {
+test("거절 문구는 코드와 함께 — 재량 초과는 '대표님에게 직접 요청해 주세요'", () => {
   const needsAdmin = grantFailureMessage({ code: "functions/permission-denied", details: { reason: "grant_needs_admin" } });
-  assert.match(needsAdmin, /대표 · 총괄매니저에게 요청/);
+  assert.match(needsAdmin, /대표님 권한이에요. 대표님에게 직접 요청해 주세요/);
   assert.match(needsAdmin, /코드 grant_needs_admin/);
   assert.match(grantFailureMessage({ details: { reason: "grant_reason_code_invalid" } }), /사유를 다시 골라 주세요 \(코드 grant_reason_code_invalid\)/);
 });

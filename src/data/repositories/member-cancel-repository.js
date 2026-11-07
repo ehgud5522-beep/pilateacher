@@ -50,7 +50,7 @@ export function grantFailureMessage(error) {
     grant_reason_required: "사유를 적어 주세요",
     grant_reason_too_long: "사유는 200자까지 적을 수 있어요",
     grant_reason_code_invalid: "사유를 다시 골라 주세요",
-    grant_needs_admin: "담당 강사는 추가 1회까지 줄 수 있어요. 그 이상은 대표 · 총괄매니저에게 요청해 주세요",
+    grant_needs_admin: "추가 1회까지만 줄 수 있어요. 그 이상은 대표님 권한이에요. 대표님에게 직접 요청해 주세요",
     feature_off: "회원 앱 취소 기능이 꺼져 있어요",
     no_active_pass: "사용 중인 회원권이 없어 줄 수 없어요",
     unavailable: "연결이 불안정해요. 다시 시도해 주세요",

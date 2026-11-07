@@ -20050,11 +20050,11 @@ function MemberCancelGrant({ organization, client, passes = [], currentUserId = 
   const bucket = memberCancelBucketKey({ period: settings.period, at: new Date(), passId: memberCancelActivePassId(passes, clientId) });
   const remaining = bucket && ledger !== undefined ? memberCancelRemainingIn(ledger, bucket, settings.limit) : null;
   const scope = settings.period === MEMBER_CANCEL_PERIOD.PASS ? "이 회원권" : "이번 달";
-  /* 담당 강사의 재량: 이 칸에서 추가 1회까지 (2026-11-07). 관리자면 null(제한 없음).
-     원장을 아직 못 읽었으면 강사는 1로 보고, 막는 것은 서버다 (grant_needs_admin). */
+  /* 추가 1회까지는 재량, 그 이상은 대표님 권한 (2026-11-07 대표 결정). 대표면 null(제한 없음).
+     원장을 아직 못 읽었으면 1로 보고, 막는 것은 서버다 (grant_needs_admin). */
   const room = bucket && ledger !== undefined
     ? memberCancelInstructorGrantRoom(organization?.role, memberCancelBucketOf(ledger, bucket).granted)
-    : (ownerLevel ? null : 1);
+    : (organization?.role === "owner" ? null : 1);
   const maxAmount = room === null ? MEMBER_CANCEL_GRANT_LIMITS.maxAmount : room;
   const otherNeedsText = reasonCode === MEMBER_CANCEL_GRANT_REASON.OTHER && !reason.trim();
   const submit = async () => {
@@ -20093,7 +20093,7 @@ function MemberCancelGrant({ organization, client, passes = [], currentUserId = 
       </div>
       {canGrant && !open && maxAmount === 0 ? (
         <p className="mt-1" data-member-cancel-grant-capped style={{ fontSize: TYPE.caption, color: SUB }}>
-          {scope} 추가 1회를 이미 줬어요. 더 필요하면 대표 · 총괄매니저에게 요청해 주세요
+          {scope} 추가 1회를 이미 줬어요. 그 이상은 대표님 권한이에요 — 대표님에게 직접 요청해 주세요
         </p>
       ) : null}
       {open ? (
@@ -20105,7 +20105,7 @@ function MemberCancelGrant({ organization, client, passes = [], currentUserId = 
           </p>
           <p style={{ fontSize: TYPE.caption, color: SUB, lineHeight: 1.5 }}>
             기본 제공 횟수는 {settings.period === MEMBER_CANCEL_PERIOD.PASS ? "회원권당" : "월"} {settings.limit}회이며, 추가 부여는 예외적인 상황에서만 허용됩니다.
-            {room !== null ? " 담당 강사는 추가 1회까지, 그 이상은 대표 · 총괄매니저가 줍니다." : ""}
+            {room !== null ? " 추가 1회까지만 줄 수 있고, 그 이상은 대표님 권한이에요 — 대표님에게 직접 요청해 주세요." : ""}
           </p>
           <p className="pt-1" style={{ fontSize: TYPE.caption, color: INK }}>추가 부여 사유</p>
           <div className="space-y-1" role="radiogroup" aria-label="추가 부여 사유">

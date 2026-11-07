@@ -3257,15 +3257,15 @@ test("grant warning: configured base count, three reasons, before/after preview,
   assert.match(owner, /1<!-- -->회 부여|1회 부여/);
   assert.match(owner, /<select/, "대표는 횟수를 고른다");
   assert.doesNotMatch(owner, /사유 복사/, "복사 버튼은 없다");
-  assert.doesNotMatch(owner, /담당 강사는 추가 1회까지/, "대표에게는 재량 안내가 없다");
+  assert.doesNotMatch(owner, /대표님 권한/, "대표에게는 재량 안내가 없다");
 
   const teacher = markup("취소 횟수 추가 · 경고 · 담당 강사");
-  assert.match(teacher, /담당 강사는 추가 1회까지, 그 이상은 대표 · 총괄매니저가 줍니다/);
+  assert.match(teacher, /추가 1회까지만 줄 수 있고, 그 이상은 대표님 권한이에요 — 대표님에게 직접 요청해 주세요/);
   assert.doesNotMatch(teacher, /<select/, "강사는 1회 고정");
 
   const capped = markup("취소 횟수 추가 · 강사 재량 다 씀");
   assert.match(capped, /data-member-cancel-grant-capped/);
-  assert.match(capped, /대표 · 총괄매니저에게 요청해 주세요/);
+  assert.match(capped, /대표님에게 직접 요청해 주세요/);
   assert.doesNotMatch(capped, />취소 횟수 추가</, "버튼 대신 안내");
 });
 

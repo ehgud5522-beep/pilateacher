@@ -298,7 +298,9 @@ test("추가 부여: 담당 강사 · 대표 · 총괄은 된다, 담당 아닌 
   const byTeacher = await grant(db, "uid-teacher", { amount: 1, reason: "출장" });
   assert.equal(byTeacher.remaining, 4);
   await grant(db, "uid-owner", { amount: 2 });
-  await grant(db, "uid-area");
+  /* 총괄매니저도 1회를 넘지 못한다 -- 그 이상은 대표님 권한. 다른 회원(아직 0회)에게는 된다. */
+  await assert.rejects(grant(db, "uid-area"), refusedWith("grant_needs_admin"));
+  await grant(db, "uid-area", { clientId: "client-b" });
   await assert.rejects(grant(db, "uid-other"), refusedWith("grant_not_assigned"));
   await assert.rejects(grant(db, "uid-fc"), refusedWith("grant_not_assigned"));
   await assert.rejects(grant(db, "uid-member-a"), refusedWith("not_staff"));
@@ -310,7 +312,7 @@ test("추가 부여: 담당 강사 · 대표 · 총괄은 된다, 담당 아닌 
   assert.equal(grants[0].reasonCode, "other", "예전 화면(문장만)은 기타로");
   assert.equal(grants[0].month, "2026-11");
   assert.equal(grants[0].grantedByRole, "instructor");
-  assert.deepEqual(db.read(ledgerPath("client-a")).buckets["m:2026-11"], { used: 0, granted: 4 });
+  assert.deepEqual(db.read(ledgerPath("client-a")).buckets["m:2026-11"], { used: 0, granted: 3 });
 });
 
 test("추가 부여 입력: 횟수 1~10, 사유 필수 · 200자, 기능이 꺼져 있으면 거절", async () => {
@@ -360,7 +362,7 @@ test("추가 부여: 같은 요청 ID 는 한 번만 — 동시에 두 번 · �
   assert.equal(retry.remaining, 5);
   assert.equal(retry.grantId, first.grantId);
   /* 다른 계정의 같은 ID 는 따로다 · 요청 ID 없는 예전 호출은 전처럼 매번 */
-  await grant(db, "uid-area", { requestId });
+  await grant(db, "uid-area", { requestId, clientId: "client-b" });
   await grant(db, "uid-owner");
   await grant(db, "uid-owner");
   assert.equal(grantsOf(db).length, 4);
@@ -401,14 +403,15 @@ test("설정 변경 기록: 저장마다 한 건 — 누가(계정 · 역할) ·
 
 /* ── 추가 부여 경고 · 재량 (2026-11-07 대표 시안) ─────────────────────────── */
 
-test("담당 강사는 한 칸에 추가 1회까지 — 넘으면 grant_needs_admin, 대표 · 총괄은 제한 없음", async () => {
+test("대표가 아니면 한 칸에 추가 1회까지 — 넘으면 grant_needs_admin, 대표만 제한 없음", async () => {
   const db = seed();
   await assert.rejects(grant(db, "uid-teacher", { amount: 2 }), refusedWith("grant_needs_admin"), "한 번에 2회도 막힌다");
   assert.equal(grantsOf(db).length, 0, "막히면 아무것도 쓰지 않는다");
   await grant(db, "uid-teacher");
   await assert.rejects(grant(db, "uid-teacher"), refusedWith("grant_needs_admin"), "두 번째 1회는 대표에게");
   await grant(db, "uid-owner", { amount: 3 });
-  await grant(db, "uid-area");
+  await assert.rejects(grant(db, "uid-area"), refusedWith("grant_needs_admin"), "총괄매니저도 대표님에게 요청");
+  await grant(db, "uid-owner");
   assert.deepEqual(db.read(ledgerPath("client-a")).buckets["m:2026-11"], { used: 0, granted: 5 });
 });
 

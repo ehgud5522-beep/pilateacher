@@ -40,17 +40,17 @@ export const GRANT_REASON_LABEL = Object.freeze({
 });
 
 /**
- * 담당 강사의 재량 (2026-11-07 대표 시안: "추가 1회까지는 강사 재량, 그 이상은 관리자").
- * 한 칸(월 · 회원권) 안에서 **누가 줬든** 추가 부여 합계가 이 값을 넘으면 강사는 줄 수 없다.
- * 대표 · 총괄매니저는 제한이 없다. 서버가 트랜잭션 안의 원장으로 판정한다.
+ * 추가 부여의 재량 (2026-11-07 대표 결정: "추가 1회까지는 강사 재량, 그 이상은 **대표님 권한**").
+ * 한 칸(월 · 회원권) 안에서 **누가 줬든** 추가 부여 합계가 이 값을 넘으면 대표가 아닌 사람은
+ * 줄 수 없다 -- 담당 강사도 총괄매니저도. 대표만 제한이 없다. 서버가 트랜잭션 안의 원장으로 판정한다.
  */
 export const INSTRUCTOR_GRANT_CAP = 1;
 
-/** 대표 · 총괄매니저인가 (추가 부여 제한 없음). */
-export const isGrantAdmin = (role) => ["owner", "area_manager"].includes(text(role));
+/** 1회를 넘는 추가 부여를 할 수 있는가 -- 대표만 (2026-11-07 대표 결정). */
+export const isGrantAdmin = (role) => text(role) === "owner";
 
 /**
- * 강사가 이 칸에서 더 줄 수 있는 횟수. 관리자면 null(제한 없음).
+ * 대표가 아닌 사람이 이 칸에서 더 줄 수 있는 횟수. 대표면 null(제한 없음).
  * @param {string} role @param {number} grantedSoFar 이 칸에 이미 준 합계
  */
 export function instructorGrantRoom(role, grantedSoFar) {
@@ -291,7 +291,8 @@ export function activePassIdFor(passes, clientId, now = new Date()) {
  * (회원 문서의 instructorIds -- 트리거가 회원권에서 채우는 "누가 이 회원을 맡는가").
  */
 export function mayGrantMemberCancel(role, callerUid, client) {
-  if (isGrantAdmin(role)) return true;
+  /* 누구의 회원에게 줄 수 있는가 (담당 여부). 몇 회까지인가는 instructorGrantRoom 이 따로 정한다. */
+  if (["owner", "area_manager"].includes(text(role))) return true;
   const assigned = Array.isArray(client?.instructorIds) ? client.instructorIds.map(text) : [];
   return Boolean(text(callerUid)) && assigned.includes(text(callerUid));
 }

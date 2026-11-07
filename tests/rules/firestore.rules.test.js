@@ -793,6 +793,21 @@ describe("PT passes and their ledger", () => {
     }
   });
 
+  test("a typed base unit price rides the same issuing door", async () => {
+    /* 2026-11-07 대표 결정: 발급 화면에서 강사 기준 단가를 직접 정한다. 칸이
+       셋 늘지만(unitPriceSource · standardUnitPrice · unitPriceReason) passes
+       create 는 hasAll(하한)이라 규칙을 고치지 않는다. 정할 수 있는 사람은
+       발급할 수 있는 사람과 같다 -- 강사 · staff 는 발급 문부터 닫혀 있다. */
+    const typed = (id) => passFixture(ORG_A, id, {
+      baseUnitPrice: 33000, unitPriceSource: "manual", standardUnitPrice: 30000, unitPriceReason: "지점 단가",
+    });
+    await assertSucceeds(setDoc(passRef(users.owner, ORG_A, "pass-typed-owner"), typed("pass-typed-owner")));
+    await assertSucceeds(setDoc(passRef(users.manager, ORG_A, "pass-typed-manager"), typed("pass-typed-manager")));
+    for (const userId of [users.instructor, users.staff]) {
+      await assertFails(setDoc(passRef(userId, ORG_A, `pass-typed-${userId}`), typed(`pass-typed-${userId}`)), userId);
+    }
+  });
+
   test("a pass whose organizationId disagrees with its path is rejected", async () => {
     await assertFails(setDoc(
       passRef(users.owner, ORG_A, "pass-wrong-org"),

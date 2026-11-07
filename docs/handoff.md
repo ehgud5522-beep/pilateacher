@@ -1,5 +1,20 @@
 # 이어서 작업하기 — 최근 변경과 남은 일
 
+## 2026-11-07 — 회원권 발급: 강사 기준 단가 직접 입력 · 결제 수단 필수 (`feat/pass-issue-manual-unit-price`, 병합 · 배포 전)
+
+- 대표 결정 4건: ① "지점마다 가격이 같다" 철회 ② 직접 넣은 단가는 **기준값(baseUnitPrice)만** 바꾼다 -- 부원장 5:5 ·
+  인수인계 25,000 · 20회 미만 신규 단가는 차감 때 그대로 위에 선다, 부원장은 20회 미만 판정 제외(이미 판정 1 이 맨 앞)
+  ③ 입력은 대표 · 총괄매니저 · FC매니저 ④ 결제 수단은 접힌 칸 밖, 기본값 없음
+- 판정 한 벌: `functions/shared/pay-rates.mjs` `resolveIssueUnitPrice` · `standardIssueUnitPrice` · `canSetUnitPrice`.
+  비우면 제안값(표 · 풀방금액 · 상품 단가), 다르게 적으면 사유 필수, 0원 거부, 역할 밖이면 `Forbidden manualUnitPrice`
+- 회원권 문서에 `unitPriceSource`(table · full_room_rate · product · manual) · `standardUnitPrice` · `unitPriceReason` 추가.
+  누가는 createdBy. 규칙의 passes create 가 hasAll(하한)이라 **규칙 변경 없음** -- 발급 자체가 canIssuePass(대표 · 총괄 ·
+  FC매니저)라 강사 · staff 는 규칙에서 이미 막힘. 새 칸의 타입 검사는 규칙에 아직 없다(후속 후보)
+- `issuePass` 는 결제 수단이 비면 `Missing paymentMethod` 로 거부(전에는 카드)
+- 칩 이름 "1:1 1:1 PT" 중복 정리(`productNameChips` 의 chipPrefix)
+- 남은 것: 상품에 지점 달기(B안)는 하지 않았다 -- 규칙 변경 · 배포가 따른다. 직급 이벤트(점장 · 팀장 31,000)는 기준값을
+  보지 않으므로 직접 입력이 그 판정에는 닿지 않는다(대표 확인 필요). 실기기 · 웹에서 아직 안 봄
+
 ## 2026-11-07 — 취소 횟수 추가 부여: 경고 · 사유 셋 · 강사 재량 1회 (`feat/member-cancel-grant-guard`, 배포 · 병합 전)
 
 - 대표 시안("추가로 시스템에 넣으면 좋은 장치")을 지금 코드와 맞춰 본 결과: 기본 3회(설정값) · 사유 필수 · 강사별 내역은 이미 있음,

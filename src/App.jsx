@@ -149,7 +149,7 @@ import {
 import { publishPrivateItems, subscribePrivateItems } from "./data/repositories/private-schedule-repository.js";
 import { DUPLICATE_SETTLEMENT_CODE, findDuplicateSettlement, settlementTime } from "./features/schedule/settlement-duplicate.js";
 import { scheduleChanges } from "./features/schedule/schedule-publish.js";
-import { applyPublishedRevisions, mergeFormEdit, mergeServerLessons, reapplyChanges, syncWindow, upcomingMemberCancels } from "./features/schedule/schedule-sync.js";
+import { applyPublishedRevisions, mergeFormEdit, mergeServerLessons, reapplyChanges, syncWindow } from "./features/schedule/schedule-sync.js";
 import { recordSyncReads, syncReadsByDay } from "./features/schedule/sync-read-counter.js";
 import { SCHEDULE_SYNC_MODE, readScheduleSyncConfig, scheduleSyncEnabledFor } from "./features/schedule/sync-switch.js";
 import {
@@ -177,6 +177,10 @@ import {
 import { readPassesForClients, subscribeClients } from "./data/repositories/client-realtime.js";
 import { markTeacherInboxRead, subscribeTeacherInbox } from "./data/repositories/teacher-inbox-repository.js";
 import { INBOX_COPY, inboxFailure, inboxRow, inboxStripLabel, lessonForInboxItem } from "./features/notifications/teacher-inbox.js";
+import {
+  MEMBER_CANCEL_VIEW_COPY, ackKey as memberCancelAckKey, acksFromInbox, freesSlot, hasMemberCancel, isMemberCancelledAttendee,
+  isWholeMemberCancel, pendingMemberCancels, readMemberCancelAcks, revivesMemberCancel, writeMemberCancelAck,
+} from "./features/schedule/member-cancel-view.js";
 import {
   createProduct, listProducts, productBaseUnitPrice, setProductStatus,
 } from "./data/repositories/product-repository.js";
@@ -3709,15 +3713,28 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
   const unsettledLessons = useMemo(() => (
     organizationMode ? db.schedule.filter((item) => needsSettlement(item, { now: new Date() })) : []
   ), [organizationMode, db.schedule]);
-  const memberCancelCount = useMemo(() => (memberCancelOn ? upcomingMemberCancels(db.schedule) : 0), [memberCancelOn, db.schedule]);
-  const nextMemberCancelled = useMemo(() => {
-    if (!memberCancelOn || !memberCancelCount) return null;
-    const today = todayISO();
-    return [...db.schedule]
-      .filter((entry) => String(entry?.date || "") >= today
-        && attendeesOf(entry).some((attendee) => attendee?.memberCancelledAt && attendee?.status === "cancel"))
-      .sort((left, right) => `${left.date} ${left.start}`.localeCompare(`${right.date} ${right.start}`))[0] || null;
-  }, [memberCancelOn, memberCancelCount, db.schedule]);
+  /* 회원 앱 취소 -- 강사가 [확인] 한 것은 "회원 취소 N건" 에서 뺀다 (2026-11-07). 확인은 이 기기
+     기록 + 알림함 읽음(다른 기기에서 읽은 것도). 일정에서는 지우지 않는다 (member-cancel-view.js). */
+  const [localCancelAcks, setLocalCancelAcks] = useState(() => readMemberCancelAcks(globalThis.localStorage));
+  const memberCancelAcks = useMemo(() => new Set([...localCancelAcks, ...acksFromInbox(inbox?.items, db.members)]),
+    [localCancelAcks, inbox?.items, db.members]);
+  const pendingCancels = useMemo(() => (memberCancelOn ? pendingMemberCancels(db.schedule, { acks: memberCancelAcks }) : []),
+    [memberCancelOn, db.schedule, memberCancelAcks]);
+  const memberCancelCount = pendingCancels.length;
+  const nextMemberCancelled = pendingCancels[0]?.entry || null;
+  const isMemberCancelAcked = (entry) => attendeesOf(entry).filter(isMemberCancelledAttendee)
+    .every((attendee) => memberCancelAcks.has(memberCancelAckKey(entry?.id, attendee.memberId)));
+  const ackMemberCancel = (entry) => {
+    let next = localCancelAcks;
+    for (const attendee of attendeesOf(entry).filter(isMemberCancelledAttendee)) {
+      next = writeMemberCancelAck(globalThis.localStorage, memberCancelAckKey(entry?.id, attendee.memberId));
+    }
+    setLocalCancelAcks(next);
+    /* 알림함의 같은 수업 알림도 읽음으로 -- 다른 기기의 띠에서도 빠진다. */
+    for (const item of inbox?.items || []) {
+      if (!item?.readAt && String(item?.lessonId || "") === String(entry?.id || "")) inbox?.onRead?.(item);
+    }
+  };
   const taskQueue = useMemo(() => [
     ...unsettledLessons.map((lesson) => ({
       key: `settle|${lesson.id}`,
@@ -3879,7 +3896,7 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
       {/* ─── 하단 고정 업무 요약 ─── */}
       {db.members.length > 0 && db.schedule.length > 0 && <div className="shrink-0" style={{ padding: "6px 12px 8px", backgroundColor: PAGE }}>
         {/* 회원 앱에서 회원이 직접 취소한 수업 (2026-11-07, 5차 1단계). 기능이 켜진 강사만,
-            오늘부터 앞으로의 것만 센다 (schedule-sync.js 의 upcomingMemberCancels). 누르면
+            오늘부터 앞으로, 아직 [확인] 하지 않은 것만 센다 (member-cancel-view.js). 누르면
             가장 가까운 그 수업을 연다. */}
         {/* 강사 알림함 (2026-11-07). 읽지 않은 것이 있을 때만 띠, 오류면 띠가 코드를 말한다. */}
         {inbox && (inboxLabel || inbox.error) ? (
@@ -3914,7 +3931,7 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
         </button>
       </div>}
 
-      {editing && <ScheduleForm draft={liveEditing} members={db.members} schedule={db.schedule} briefingOf={briefingOf} scheduleColors={scheduleColors} returnFocusRef={scheduleTriggerRef} onClose={() => setEditing(null)}
+      {editing && <ScheduleForm memberCancelAcked={isMemberCancelAcked(liveEditing)} onAckMemberCancel={() => ackMemberCancel(liveEditing)} draft={liveEditing} members={db.members} schedule={db.schedule} briefingOf={briefingOf} scheduleColors={scheduleColors} returnFocusRef={scheduleTriggerRef} onClose={() => setEditing(null)}
         onSubmit={(v, opened) => { onSave(v, opened); setEditing(null); }} onDelete={(id) => { onDelete(id); setEditing(null); }}
         onStatus={onStatus} onStatusAll={onStatusAll} onCareGrade={onCareGrade} onNoshowFee={onNoshowFee} onGroupDone={onGroupDone}
         organizationMode={organizationMode} rateOf={rateOf} careOptionsOf={careOptionsOf} onSettleLesson={onSettleLesson} onUnsettleLesson={onUnsettleLesson} onReadMemberNote={onReadMemberNote} onSaveMemberNote={onSaveMemberNote} onToast={onToast} canUnsettle={canUnsettle}
@@ -4174,7 +4191,7 @@ function WeekGrid({ days, byDate, nameOf, memberOf, briefingOf, cursor, onOpen, 
     const needsRecord = !pv && !eq && list.some((a) => a.status === "done" && !(memberOf?.(a.memberId)?.notes || []).some((n) => n?.sid === s.id));
     const briefingLine = !pv && !eq && list.some((attendee) => !!selectScheduleBriefing(briefingOf?.(attendee.memberId, s.id)));
     const typeLabel = typeDef.label;
-    return { s, top: topOf(st), h: Math.max(20, topOf(en) - topOf(st) - 2), label, equipText, typeKey,  typeLabel, typeShape: typeDef.shape, briefingLine, done, cancelled: (eq && !!s.groupCancelled) || status === "cancel", noshow: status === "noshow", eq, pv, next: s.id === nextId, needsRecord, groupPeople };
+    return { s, top: topOf(st), h: Math.max(20, topOf(en) - topOf(st) - 2), label, equipText, typeKey,  typeLabel, typeShape: typeDef.shape, briefingLine, done, cancelled: (eq && !!s.groupCancelled) || status === "cancel", memberCancelled: hasMemberCancel(s), noshow: status === "noshow", eq, pv, next: s.id === nextId, needsRecord, groupPeople };
   }).filter((b) => b.top >= -GRID_ROW && b.top < totalHeight);
 
   return (
@@ -4233,12 +4250,12 @@ function WeekGrid({ days, byDate, nameOf, memberOf, briefingOf, cursor, onOpen, 
                   /* 유형 글자가 화면에서 빠지므로 aria-label 이 읽어 주는
                      유일한 경로가 된다. 도형은 눈으로 보는 쪽이고, 여기서는
                      이름 그대로 말해 준다. */
-                  <button key={b.s.id} aria-label={[b.typeLabel, b.label, lessonEquipFullText(b.s)].filter(Boolean).join(" · ")} title={[b.typeLabel, b.label, lessonEquipFullText(b.s)].filter(Boolean).join(" · ")} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); onOpen(b.s, e.currentTarget); }}
+                  <button key={b.s.id} data-member-cancelled={b.memberCancelled ? "" : undefined} aria-label={[b.typeLabel, b.label, lessonEquipFullText(b.s), b.memberCancelled ? MEMBER_CANCEL_VIEW_COPY.BADGE : ""].filter(Boolean).join(" · ")} title={[b.typeLabel, b.label, lessonEquipFullText(b.s), b.memberCancelled ? MEMBER_CANCEL_VIEW_COPY.BADGE : ""].filter(Boolean).join(" · ")} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); onOpen(b.s, e.currentTarget); }}
                     className="absolute left-0.5 right-0.5 flex min-w-0 flex-col justify-center overflow-hidden text-left"
                     style={{ top: b.top + 1, height: Math.max(18, b.h - 1), borderRadius: 4,
                       background: b.cancelled ? "transparent" : b.noshow ? "var(--bad-s)" : tone.surface,
-                      border: b.next ? "1.5px solid var(--brand)" : b.cancelled ? "1px dashed var(--line)" : `1px solid ${b.noshow ? "var(--bad-s)" : tone.border}`,
-                      borderLeft: `3px solid ${b.cancelled ? "var(--line)" : tone.edge}`,
+                      border: b.next ? "1.5px solid var(--brand)" : b.cancelled ? `1px dashed ${b.memberCancelled ? WARN : "var(--line)"}` : `1px solid ${b.noshow ? "var(--bad-s)" : tone.border}`,
+                      borderLeft: `3px solid ${b.memberCancelled ? WARN : b.cancelled ? "var(--line)" : tone.edge}`,
                       color: b.noshow ? "var(--bad)" : b.done || b.cancelled ? "var(--ink2)" : "var(--ink)",
                       padding: "1px 2px 1px 3px", fontSize: labelLen >= 6 ? 8 : labelLen === 5 ? 9 : labelLen === 4 ? 9.5 : 10.5,
                       letterSpacing: labelLen >= 4 ? "-0.35px" : "-0.15px", lineHeight: 1.08, fontWeight: b.next || (focusedMemberId && memberMatch) ? 700 : 600,
@@ -4311,7 +4328,7 @@ function confirmedLessonNoteArgs(note, reviewedDraft = null) {
   };
 }
 
-function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, onClose, onSubmit, onDelete, onStatus, onStatusAll, onCareGrade, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onOpenMember, onFocusMemberWeek, scheduleColors = null, organizationMode = false, rateOf, careOptionsOf, onSettleLesson, onUnsettleLesson, onReadMemberNote, onSaveMemberNote, onToast, canUnsettle = false }) {
+function ScheduleForm({ memberCancelAcked = false, onAckMemberCancel, draft, members, schedule, briefingOf, returnFocusRef, onClose, onSubmit, onDelete, onStatus, onStatusAll, onCareGrade, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onOpenMember, onFocusMemberWeek, scheduleColors = null, organizationMode = false, rateOf, careOptionsOf, onSettleLesson, onUnsettleLesson, onReadMemberNote, onSaveMemberNote, onToast, canUnsettle = false }) {
   const rosterRefresh = useContext(RosterRefreshContext);
   /* 확정된 수업은 출석을 바꿀 수 없다. 상태를 바꿔도 이미 나간 차감은 따라오지
      않고, 둘이 어긋나면 어느 것이 맞는지 알 수 없다. */
@@ -4431,7 +4448,9 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
   const prevIds = new Set(attendeesOf(draft).map((a) => a.memberId));
   const noRest = chosenIds.filter((id) => !prevIds.has(id)).map((id) => members.find((m) => m.id === id)).filter((m) => m && left(m) <= 0);
   const myStart = minOf(f.start), myEnd = myStart + (Number(f.dur) || 50);
-  const clashes = (schedule || []).filter((s) => s?.date === f.date && s.id !== draft.id).filter((s) => {
+  /* 출석이 전부 취소된 수업(회원 앱 취소 포함)은 그 시간을 막지 않는다 (2026-11-07) -- 빈 시간에 다른
+     회원을 넣을 때 "겹쳐서 등록됩니다" 를 띄우지 않는다. */
+  const clashes = (schedule || []).filter((s) => s?.date === f.date && s.id !== draft.id && !freesSlot(s)).filter((s) => {
     const a = minOf(s.start), b = minOf(s.end) || a + 50;
     return myStart < b && a < myEnd;
   });
@@ -4467,6 +4486,23 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
     <>
     <ScheduleBottomSheet title={draft.id ? (isMemberLesson ? "수업 관리" : "일정 수정") : "일정 등록"} subtitle={`${dow(f.date)} ${f.date?.slice(5).replace("-", ".") || ""}${draft.id ? ` · ${draft.start}~${draft.end || addMin(draft.start, Number(draft.dur) || 50)}` : ""}`} returnFocusRef={returnFocusRef} onClose={onClose}>
       <div className="space-y-4">
+        {/* 회원이 앱에서 취소한 수업 (2026-11-07). 지우지 않고 남긴다 -- [확인] 하면 첫 화면 "회원 취소 N건" 에서
+            빠진다. 개인 수업이면 그 시간이 비었다고 함께 말한다. */}
+        {draft.id && hasMemberCancel(draft) && (
+          <div className="flex items-center gap-3 rounded-xl px-3 py-2.5" data-member-cancel-banner
+            style={{ backgroundColor: WARN_S, border: `1px solid ${LINE}` }}>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-extrabold" style={{ color: INK }}>
+                {isWholeMemberCancel(draft) ? MEMBER_CANCEL_VIEW_COPY.BANNER : MEMBER_CANCEL_VIEW_COPY.BANNER_DUET}
+              </p>
+              {isWholeMemberCancel(draft) ? <p className="mt-0.5 text-xs" style={{ color: INK2 }}>{MEMBER_CANCEL_VIEW_COPY.FREED}</p> : null}
+            </div>
+            {memberCancelAcked
+              ? <span className="shrink-0 text-xs font-extrabold" style={{ color: SUB }}>{MEMBER_CANCEL_VIEW_COPY.CONFIRMED}</span>
+              : <button type="button" data-member-cancel-ack onClick={() => onAckMemberCancel?.()} className="shrink-0 rounded-lg px-3 py-2 text-xs font-extrabold"
+                  style={{ backgroundColor: CARD, color: PRIMARY, border: `1px solid ${LINE}` }}>{MEMBER_CANCEL_VIEW_COPY.CONFIRM}</button>}
+          </div>
+        )}
         {draft.id && !editingInfo && (
           <div className="flex items-center gap-3 rounded-xl px-3 py-2.5" style={{ backgroundColor: CANVAS, border: `1px solid ${LINE}` }}>
             <div className="min-w-0 flex-1">
@@ -4615,7 +4651,7 @@ function ScheduleForm({ draft, members, schedule, briefingOf, returnFocusRef, on
                 return (
                   <div key={a.memberId} className="min-w-0 rounded-xl p-3 text-left" style={{ backgroundColor: active ? TINT : CANVAS, border: `1px solid ${active ? "#D9D7EE" : LINE}` }}>
                     <button type="button" onClick={() => { setActiveMemberId(a.memberId); setRecordMode(null); setRecordBody(""); }} className="w-full min-w-0 text-left">
-                      <span className="flex min-w-0 items-center gap-2"><span className="min-w-0 flex-1 truncate text-sm font-extrabold" style={{ color: active ? PRIMARY : INK }}>{m?.name || "삭제된 회원"}</span><span className="shrink-0 rounded-full px-2 py-0.5 text-caption font-extrabold" style={{ backgroundColor: stOf(a.status).bg, color: stOf(a.status).color }}>{stOf(a.status).label}</span></span>
+                      <span className="flex min-w-0 items-center gap-2"><span className="min-w-0 flex-1 truncate text-sm font-extrabold" style={{ color: active ? PRIMARY : INK }}>{m?.name || "삭제된 회원"}</span><span className="shrink-0 rounded-full px-2 py-0.5 text-caption font-extrabold" data-member-cancel-badge={isMemberCancelledAttendee(a) ? "" : undefined} style={isMemberCancelledAttendee(a) ? { backgroundColor: WARN_S, color: WARN } : { backgroundColor: stOf(a.status).bg, color: stOf(a.status).color }}>{isMemberCancelledAttendee(a) ? MEMBER_CANCEL_VIEW_COPY.BADGE : stOf(a.status).label}</span></span>
                       <span className="mt-0.5 block text-xs" style={{ color: SUB }}>잔여 {left(m)}회{m?.contractEnd ? ` · ${m.contractEnd.slice(5).replace("-", ".")}까지` : ""}</span>
                       {/* 확정하면 얼마가 되는지. 눌러 본 뒤에 아는 것과 누르기 전에
                           아는 것은 다르다 -- 원장은 append-only 라 누른 뒤에는
@@ -28017,6 +28053,19 @@ export function createAppScreenSmokeCases() {
     { name: "일정 탭 · 회원 취소 N건", element: provider(<ScheduleManager memberCancelOn
       db={{ ...busyDb, schedule: busyDb.schedule.map((entry, index) => (index === 0 ? { ...entry, date: "2999-01-01", attendees: (entry.attendees || []).map((attendee) => ({ ...attendee, status: "cancel", memberCancelledAt: "2026-11-07T00:00:00.000Z" })) } : entry)) }}
       photos={{}} onSave={noop} onDelete={noop} onStatus={noop} onStatusAll={noop} onNoshowFee={noop} onGroupDone={noop} onNoComment={noop} onSaveNote={noop} onToast={noop} onSettings={noop} onConsumeMemberPreset={noop} onConsumeQuickAdd={noop} onOpenMember={noop} />) },
+    /* 회원 앱 취소된 수업 (2026-11-07). 지우지 않고 "회원 취소" 로 남긴다 -- 배너 · [확인] · 출석 배지. */
+    { name: "수업 관리 · 회원 취소 (개인)", element: scheduleWithSettlement(settleLessonOf({
+      id: "mc-solo", type: "개인", date: shift(todayISO(), 1),
+      attendees: [settleAttendee("m-local-1", { status: "cancel", memberCancelledAt: "2026-11-07T01:00:00.000Z" })],
+    })) },
+    { name: "수업 관리 · 회원 취소 (듀엣 한 명)", element: scheduleWithSettlement(settleLessonOf({
+      id: "mc-duet", date: shift(todayISO(), 1),
+      attendees: [settleAttendee("m-local-1", { status: "booked" }), settleAttendee("smoke-client-b", { status: "cancel", memberCancelledAt: "2026-11-07T01:00:00.000Z" })],
+    })) },
+    { name: "수업 관리 · 회원 취소 확인함", element: scheduleWithSettlement(settleLessonOf({
+      id: "mc-acked", type: "개인", date: shift(todayISO(), 1),
+      attendees: [settleAttendee("m-local-1", { status: "cancel", memberCancelledAt: "2026-11-07T01:00:00.000Z" })],
+    }), { memberCancelAcked: true }) },
     { name: "일정 탭 · 강사 알림함 띠", element: provider(<ScheduleManager memberCancelOn
       inbox={{ items: [{ id: "rec-1", lessonId: busyDb.schedule[0]?.id, clientId: "", title: "[회원 수업 취소]", body: "11/8(일) 10:00 수업이 회원 요청으로 취소되었어요", createdAt: "2026-11-07T00:00:00.000Z" }], error: null, onRead: noop }}
       db={busyDb}
@@ -30624,9 +30673,14 @@ export default function App() {
        앱을 열 때 맞추기(initial)는 아무것도 되살리지 않는다 -- 다른 PC 에서 지운
        일정을 이 PC 가 다시 올리던 자리다 (lesson-schedule-repository.js). */
     const beforeIds = new Set((Array.isArray(before) ? before : []).map((entry) => entry?.id));
+    /* 회원 앱 취소를 강사가 직접 되돌린 수업도 되살릴 수 있다 (2026-11-07) -- 그 취소를 받은 기기에서
+       강사가 바꾼 것이다 (member-cancel-view.js 의 revivesMemberCancel). */
+    const beforeById = new Map((Array.isArray(before) ? before : []).map((entry) => [entry?.id, entry]));
+    const afterById = new Map((Array.isArray(after) ? after : []).map((entry) => [entry?.id, entry]));
     const queue = new Map(unpublishedLessonsRef.current);
     for (const document of changed) {
-      queue.set(document.lessonId, { ...document, allowRevive: !initial && !beforeIds.has(document.lessonId) });
+      const revived = !initial && revivesMemberCancel(beforeById.get(document.lessonId), afterById.get(document.lessonId));
+      queue.set(document.lessonId, { ...document, allowRevive: (!initial && !beforeIds.has(document.lessonId)) || revived });
     }
     if (!queue.size) return;
     unpublishedLessonsRef.current = new Map();

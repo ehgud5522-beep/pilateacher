@@ -50,12 +50,14 @@ export function receivedLabel(value, now = Date.now()) {
 }
 
 /**
- * 한 줄. members 는 강사 앱 명단 ({ id, name }) -- 센터 모드에서 id 가 clientId 다.
+ * 한 줄. members 는 강사 앱 명단 ({ id, orgClientId, name }) -- 알림의 clientId 는 orgClientId 와 맞춘다.
  * @returns {{ id: string, title: string, body: string, who: string, unread: boolean, lessonId: string, received: string }}
  */
 export function inboxRow(item, members = [], now = Date.now()) {
   const clientId = text(item?.clientId);
-  const member = clientId ? (Array.isArray(members) ? members : []).find((entry) => text(entry?.id) === clientId) : null;
+  /* 센터 회원 id 는 orgClientId 다 -- 옛 기기 회원과 이어진 사람은 id 가 다르다. 둘 다 본다. */
+  const member = clientId ? (Array.isArray(members) ? members : [])
+    .find((entry) => text(entry?.orgClientId) === clientId || text(entry?.id) === clientId) : null;
   return {
     id: text(item?.id),
     title: text(item?.title) || "[회원 수업 취소]",

@@ -16,6 +16,56 @@
 - 규칙 변경 없음. 배포(지시 뒤): Functions(grantMemberCancel) → 강사 웹. 서버만 먼저 나가면 예전 화면의 강사가 2회 이상을 주려다
   grant_needs_admin 을 본다 (문구는 예전 화면에 없어 "처리하지 못했어요 (코드 grant_needs_admin)")
 
+## 2026-11-07 — 회원 취소 수업을 일정에서 다루는 법 (`feat/member-cancel-schedule-view`, #153 위에 쌓음, 배포 · 병합 전)
+
+- 대표 결정: **지우지 않고 "회원 취소" 로 남긴다.** 판정은 `src/features/schedule/member-cancel-view.js`
+- 모양: 주간 칸은 주황 점선 + 왼쪽 주황 줄(강사 취소는 회색 점선), 수업 관리 시트 위 배너 "회원이 앱에서 직접 취소했어요"
+  (듀엣 한 명이면 "… 수업은 남은 회원과 그대로 진행돼요"), 출석 배지 "회원 취소"
+- [확인]: 이 기기 localStorage(`pilateacher.memberCancelAcks.v1`, 300개) + 같은 수업 알림함 읽음. 알림함 읽음은 다른 기기에서도
+  확인으로 친다 → 첫 화면 "회원 취소 N건" 은 **확인 안 한 것만** 센다. 확인해도 일정 · 배너는 남는다("확인함")
+- 빈 시간: 출석이 전부 취소인 수업은 새 수업 등록 때 "겹쳐서 등록됩니다" 경고에서 빠진다
+- **되살리기 고침**(5차 1단계의 남은 것): 회원 취소를 받은 기기에서 강사가 그 회원 출석을 다시 바꾸면 `allowRevive` --
+  전에는 "다른 곳의 취소" 로 막혀 서버에 안 올라갔다. memberCancelledAt 이 없는 기기(옛 탭)는 여전히 못 되살린다
+- 알림함 이름 찾기 고침(#153): 알림 clientId 를 기기 회원의 `orgClientId` 로 잇는다 (옛 기기 회원과 이어진 사람은 id 가 다름)
+- 규칙 · 서버 변경 없음. 배포는 강사 웹 · 앱 빌드뿐(지시 뒤)
+
+## 2026-11-07 — 취소 횟수 읽기 permission-denied (`fix/member-cancel-ledger-read`, #155, 배포 · 병합 전)
+
+- 원인: `memberCancelLedger` 읽기 규칙이 `resource.data` 를 봐서 **문서가 없는 회원**(취소 · 부여가 한 번도 없음) 읽기가 거절됐다.
+  대표 · 강사 모두 같은 회원에서 뜬다. 고침: `resource == null ||` 한 줄. **규칙 배포 하나로 끝**(운영본 + 3줄 후보로 시험)
+
+## 2026-11-07 — 강사 알림함 (`feat/teacher-inbox`, #152 위에 쌓음, 배포 · 병합 전)
+
+- 대표가 "실제 알림 기능 완성" 목록 중 **알림함 먼저**를 골랐다. 푸시 토큰(네이티브) · 대표 발송 현황 · 재시도는 뒤
+- 서버: 회원 취소가 되면 `users/{강사 uid}/inbox/{recordId}` 한 건 create (`writeTeacherInbox`). 푸시 스위치 · 토큰과 무관,
+  두 번 눌러도 한 건. 이름 없음(clientId 만, 강사 앱이 명단에서 이름을 찾음). 실패해도 취소 · 푸시는 그대로,
+  응답 `teacherInbox`(written · duplicate · failed · skipped) + `teacherInboxCode`, 로그 `member_cancel_inbox_failed`
+- 회원 완료 화면: 푸시 sent **또는** 알림함 written/duplicate 이면 "담당 강사님께 취소 알림을 전달했어요"
+- 강사 앱: 회원 앱 취소가 켜진 강사만 알림함을 듣는다(onSnapshot, createdAt desc 50). 일정 탭 맨 위 "새 알림 N건" 띠 →
+  시트(안 읽음 점 · 이름 · 받은 시각) → 누르면 읽음(서버 시각) + 그 수업 열기. 기기 일정에 없으면 "일정을 새로 받은 뒤"
+  안내. 못 열면 띠가 코드(`permission-denied` 등)를 말함, 진단 `teacher_inbox_failed`
+- **규칙 변경 있음**: `users/{uid}/inbox` 본인 읽기 · readAt 한 번(서버 시각)만, 만들기 · 지우기 거부. 운영본
+  `a04695f2`(11-07 09:30Z 배포분)에 이 블록 15줄만 더한 후보로 시험. **배포 순서(지시 뒤)**: 규칙 → Functions → 강사 웹 →
+  회원 앱 빌드. 규칙이 먼저 안 나가면 강사 앱 띠가 permission-denied 를 말한다(알림이 오는 강사에게만)
+
+## 2026-11-07 — 회원 취소 → 강사 푸시 · 회원 완료 화면 (`feat/member-cancel-teacher-push`, 배포 · 병합 전)
+
+- 서버: `memberCancelLesson`(cancel) 이 트랜잭션 성공 뒤 `cancelThenNotifyTeacher`(`functions/src/teacher-cancel-push.js`)로
+  수업 강사에게 FCM 한 통. 제목 "[회원 수업 취소]", 본문 "11/8(일) 10:00 수업이 회원 요청으로 취소되었어요"(듀엣 한 명이면
+  "… 듀엣 수업에서 회원 1명이 취소했어요"), 이름 없음. 푸시가 어떻게 끝나도 취소는 성공 -- 응답에 `teacherNotice`
+  (sent · off · no_device · failed · skipped) + `teacherNoticeCode`(원본 코드)
+- 한 번만: `notificationSends/{lessonId}_{clientId}_member_cancel_{recordId}` create. 두 번째 호출은 첫 결과를 그대로
+- 스위치 `runtimeConfig/teacherPush`(off/listed/all, listed 는 강사 uid, **기본 꺼짐**). updateRuntimeConfig 키만 추가, 화면 카드 없음
+- **강사 앱 토큰 저장소는 없었다.** `teacherPush/{uid}`(memberPush 와 같은 모양, 서버만 씀) + 등록 통로 `teacherPushSettings`
+  를 서버에 먼저 둠. 강사 앱 쪽은 아직 아무것도 없다 -- 지금은 켜도 no_device. 필요한 것: 강사 앱 iOS `aps-environment`
+  entitlement · AppDelegate FCM 전달 · App ID Push, 안드로이드 `@capacitor-firebase/messaging` cap sync(google-services.json 은 있음),
+  로그인 뒤 토큰 등록 호출, 안드로이드 채널 `member_cancel`
+- 회원 앱: 취소 확인 뒤 완료 화면(초록 체크 · "수업 취소가 완료되었어요"). 아래 줄은 sent 일 때만 "담당 강사님께 취소 알림을
+  전달했어요", 그 밖은 "취소 내용은 담당 강사님 일정에 표시돼요"(오류 아님, 원인은 진단 message 에 `cancelled:no_device` 식)
+- 규칙 변경 없음 (teacherPush 는 맨 아래 전부 거부 -- 규칙 시험에 줄 추가, 에뮬레이터로는 아직 안 돌림)
+- 배포 순서(지시 뒤): Functions(memberCancelLesson · teacherPushSettings · updateRuntimeConfig) → 회원 앱 빌드. 서버만 먼저 나가도
+  예전 회원 앱은 teacherNotice 를 무시한다
+
 ## 2026-11-07 — 회원 앱 수업 취소 5차 1단계 (`feat/member-cancel`, 배포 · 병합 전)
 
 - **스위치 꺼진 채로 만든 것.** `runtimeConfig/scheduleSync.memberCancel` 칸(mode · userIds · limit · period).

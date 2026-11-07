@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import {
-  CANCEL_FAILURE_KIND, blockedMessage, cancelFailure, deadlineLabel, remainingLabel,
+  CANCEL_DONE_NOTIFIED, CANCEL_DONE_NOT_NOTIFIED, CANCEL_DONE_TITLE, CANCEL_FAILURE_KIND,
+  blockedMessage, cancelDoneNote, cancelFailure, deadlineLabel, remainingLabel,
 } from "../../member/src/cancel-copy.js";
 import {
   CANCEL_REASON, decideMemberCancel, memberCancelEnabledFor, monthKey, validateGrant,
@@ -46,6 +48,36 @@ test("서버 이유마다 종류가 갈린다 — 막힘은 재시도 없음, �
     assert.match(view.message, pattern, error.code);
     assert.ok(view.code, "코드 없는 실패는 없다");
   }
+});
+
+/* ── 취소 완료 화면 (2026-11-07 대표 시안) ── */
+test("완료 화면: 제목은 시안 그대로, 강사 알림이 실제로 갔을 때만 '전달했어요'", () => {
+  assert.equal(CANCEL_DONE_TITLE, "수업 취소가 완료되었어요");
+  assert.equal(cancelDoneNote({ outcome: "cancelled", teacherNotice: "sent" }), "담당 강사님께 취소 알림을 전달했어요");
+  assert.equal(CANCEL_DONE_NOTIFIED, "담당 강사님께 취소 알림을 전달했어요");
+  /* 꺼짐 · 강사 기기 없음 · 실패 · 보낼 상대 없음 · 예전 서버(값 없음) -- 전달했다고 말하지 않는다. */
+  for (const teacherNotice of ["off", "no_device", "failed", "skipped", undefined, ""]) {
+    const note = cancelDoneNote({ outcome: "cancelled", teacherNotice });
+    assert.equal(note, CANCEL_DONE_NOT_NOTIFIED, String(teacherNotice));
+    assert.doesNotMatch(note, /전달/, String(teacherNotice));
+    assert.doesNotMatch(note, /오류|실패|코드/, "취소는 성공이다 -- 오류처럼 말하지 않는다");
+  }
+  assert.equal(cancelDoneNote(null), CANCEL_DONE_NOT_NOTIFIED);
+  /* 강사 앱 알림함에 들어갔으면 푸시가 없어도 전달된 것이다 (2026-11-07). */
+  assert.equal(cancelDoneNote({ teacherNotice: "off", teacherInbox: "written" }), CANCEL_DONE_NOTIFIED);
+  assert.equal(cancelDoneNote({ teacherNotice: "no_device", teacherInbox: "duplicate" }), CANCEL_DONE_NOTIFIED);
+  assert.equal(cancelDoneNote({ teacherNotice: "failed", teacherInbox: "failed" }), CANCEL_DONE_NOT_NOTIFIED);
+  assert.equal(cancelDoneNote({ teacherNotice: "off", teacherInbox: "skipped" }), CANCEL_DONE_NOT_NOTIFIED);
+});
+
+test("완료 화면은 시트의 done 단계에 있고 문구는 cancel-copy 에서 온다 (하드코딩 없음)", () => {
+  const sheet = readFileSync(new URL("../../member/src/lesson-sheet.jsx", import.meta.url), "utf8");
+  const done = sheet.slice(sheet.indexOf('phase === "done"'));
+  assert.ok(done.includes("{CANCEL_DONE_TITLE}"));
+  assert.ok(done.includes("cancelDoneNote(done)"));
+  assert.match(done, /donecheck/, "초록 체크");
+  assert.ok(!sheet.includes("수업을 취소했어요."), "예전 완료 문구는 없다");
+  assert.doesNotMatch(sheet, /전달했어요/, "문구는 cancel-copy.js 한 곳에");
 });
 
 test("마감 · 남은 횟수 표시", () => {

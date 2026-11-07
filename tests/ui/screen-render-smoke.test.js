@@ -157,6 +157,12 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "취소 횟수 추가 · 경고 · 대표",
     "취소 횟수 추가 · 경고 · 담당 강사",
     "취소 횟수 추가 · 강사 재량 다 씀",
+    "수업 관리 · 회원 취소 (개인)",
+    "수업 관리 · 회원 취소 (듀엣 한 명)",
+    "수업 관리 · 회원 취소 확인함",
+    "일정 탭 · 강사 알림함 띠",
+    "강사 알림함 시트",
+    "강사 알림함 시트 · 열지 못함",
     "운영 설정 · 회원 앱 수업 취소",
     "센터 회원 상세 · 보관 가능",
     "센터 회원 상세 · 보관 확인",
@@ -3267,6 +3273,45 @@ test("grant warning: configured base count, three reasons, before/after preview,
   assert.match(capped, /data-member-cancel-grant-capped/);
   assert.match(capped, /대표님에게 직접 요청해 주세요/);
   assert.doesNotMatch(capped, />취소 횟수 추가</, "버튼 대신 안내");
+});
+
+test("member-cancelled lesson stays on the schedule: banner, confirm button, '회원 취소' badge, freed slot", async () => {
+  const markup = await screenMarkup();
+  const solo = markup("수업 관리 · 회원 취소 (개인)");
+  assert.match(solo, /data-member-cancel-banner/);
+  assert.match(solo, /회원이 앱에서 직접 취소했어요/);
+  assert.match(solo, /이 시간은 비어 있어요\. 다른 회원 수업을 넣을 수 있어요/);
+  assert.match(solo, /data-member-cancel-ack/);
+  assert.match(solo, /data-member-cancel-badge/);
+  assert.match(solo, />회원 취소</);
+
+  const duet = markup("수업 관리 · 회원 취소 (듀엣 한 명)");
+  assert.match(duet, /회원 1명이 앱에서 직접 취소했어요 · 수업은 남은 회원과 그대로 진행돼요/);
+  assert.doesNotMatch(duet, /이 시간은 비어 있어요/, "듀엣은 수업이 그대로라 빈 시간이 아니다");
+
+  const acked = markup("수업 관리 · 회원 취소 확인함");
+  assert.match(acked, />확인함</);
+  assert.doesNotMatch(acked, /data-member-cancel-ack/, "확인한 뒤에는 버튼이 없다");
+  assert.match(acked, /data-member-cancel-banner/, "확인해도 일정 · 표시는 남는다");
+});
+
+test("instructor inbox: unread strip on the schedule tab, rows with a read dot, the failure code", async () => {
+  const markup = await screenMarkup();
+  const strip = markup("일정 탭 · 강사 알림함 띠");
+  assert.match(strip, /data-inbox-strip/);
+  assert.match(strip, /새 알림 1건/);
+  assert.doesNotMatch(markup("일정 탭"), /data-inbox-strip/, "알림함이 없는 강사에게는 띠가 없다");
+
+  const sheet = markup("강사 알림함 시트");
+  assert.match(sheet, /data-inbox-item="rec-1"/);
+  assert.match(sheet, /data-inbox-item="rec-2"/);
+  assert.ok(sheet.includes("11/8(일) 10:00 수업이 회원 요청으로 취소되었어요"));
+  assert.match(sheet, /일정 보기/);
+
+  const failed = markup("강사 알림함 시트 · 열지 못함");
+  assert.match(failed, /data-inbox-error/);
+  assert.match(failed, /코드 permission-denied/);
+  assert.doesNotMatch(failed, /새 알림이 없어요/, "열지 못한 것을 '없음' 으로 말하지 않는다");
 });
 
 test("member app cancellation: the count on the first screen, the grant button, the owner's switch", async () => {

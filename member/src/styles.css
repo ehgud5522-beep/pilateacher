@@ -464,3 +464,7 @@ body {
 .sheet .name { font-size: 20px; font-weight: 700; margin: 4px 0 2px; }
 .cancelbox { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
 .cancelbox .blocked { margin-top: 10px; font-size: var(--t-caption); color: var(--sub); word-break: keep-all; line-height: 1.6; }
+/* 취소 완료 (2026-11-07 대표 시안): 초록 체크 · 큰 제목 · 작은 한 줄, 가운데. */
+.canceldone { text-align: center; }
+.canceldone .donecheck { display: block; margin: 6px auto 10px; color: #16a34a; }
+.canceldone .donetitle { font-size: var(--t-heading); font-weight: 700; word-break: keep-all; margin-bottom: 6px; }

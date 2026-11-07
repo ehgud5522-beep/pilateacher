@@ -70,7 +70,7 @@ export function paintThemeVars(mode) {
       "--good": p.good, "--good-s": p.goodS, "--bad": p.bad, "--bad-s": p.badS,
       "--warn": p.warn, "--warn-s": p.warnS, "--mint": p.mint,
       "--lavender": p.lavender, "--lavender-s": p.lavenderS, "--sand": p.sand,
-      "--shadow": p.shadow, "--grad": p.grad, "--grad-soft": p.gradSoft,
+      "--shadow": p.shadow, "--grad": p.grad, "--grad-soft": p.gradSoft, "--header-grad": p.headerGrad,
       "--splash-bg": p.splash, "--glow": p.glow, "--scrim": p.scrim, "--on-brand": p.onBrand,
       "--theme": mode,
     };

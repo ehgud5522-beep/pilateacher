@@ -3835,7 +3835,7 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
       {/* 조직 소속 강사의 이달 예상 급여. 앱을 여는 이유가 이 숫자라 맨 위에 둔다. */}
       {payCard}
       {/* ─── 상단 헤더: 주 범위 + 이동 + 오늘 + 등록 ─── */}
-      <div className="shrink-0 flex items-center gap-1 px-2" style={{ height: 44, backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
+      <div className="shrink-0 flex items-center gap-1 px-2" style={{ height: 44, background: "var(--header-grad)", borderBottom: `1px solid ${LINE}` }}>
         <button onClick={() => step(-1)} className="flex items-center justify-center" style={{ width: 36, height: 36, color: SUB }}>
           <ChevronLeft size={18} />
         </button>
@@ -3902,7 +3902,7 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
         {/* 첫 화면은 "오늘 미처리 N건" 하나로 말한다 (2026-11-07). 지난 것은 아래 줄에 수만. */}
         <button data-queue-summary onClick={(e) => { if (organizedQueue.total || organizedQueue.dismissedCount) { queueTriggerRef.current = e.currentTarget; setQueueOpen(true); } }} disabled={!organizedQueue.total && !organizedQueue.dismissedCount}
           className="flex h-14 w-full items-center gap-3 rounded-xl px-3 text-left disabled:opacity-80"
-          style={{ backgroundColor: organizedQueue.todayCount ? TINT : CARD, border: `1px solid ${organizedQueue.todayCount ? RING : LINE}`, boxShadow: "0 1px 4px rgba(28,36,51,.06)" }}>
+          style={{ background: organizedQueue.todayCount ? "var(--grad-soft)" : CARD, border: `1px solid ${organizedQueue.todayCount ? RING : LINE}`, boxShadow: "0 1px 4px rgba(28,36,51,.06)" }}>
           <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: organizedQueue.todayCount ? TINT : GOOD_S }}>
             {organizedQueue.todayCount ? <Pencil size={14} style={{ color: PRIMARY }} /> : <Check size={14} style={{ color: GOOD }} />}
           </span>
@@ -4185,9 +4185,10 @@ function WeekGrid({ days, byDate, nameOf, memberOf, briefingOf, cursor, onOpen, 
             {days.map((d) => {
               const today = d === todayISO(), on = d === cursor;
               return (
-                <div key={d} className="min-w-0 py-1.5 text-center" style={{ borderLeft: "1px solid var(--line)", backgroundColor: today ? "var(--tint)" : "var(--card)" }}>
-                  <p className="pt-week-day font-extrabold" style={{ color: today ? "var(--primary)" : redInk(d, SUB) }}>{dow(d)}</p>
-                  <p className="pt-week-date font-extrabold tabular-nums" style={{ color: today ? "var(--primary)" : redInk(d, on ? INK : SUB) }}>{Number(d.slice(8, 10))}</p>
+                <div key={d} className="min-w-0 py-1.5 text-center" style={{ borderLeft: "1px solid var(--line)", background: today ? "var(--grad)" : "var(--card)", borderRadius: today ? 10 : 0 }}>
+                  {/* 오늘은 핫핑크 그라데이션 위 흰 글자 (2026-11-08). */}
+                  <p className="pt-week-day font-extrabold" style={{ color: today ? "#FFFFFF" : redInk(d, SUB) }}>{dow(d)}</p>
+                  <p className="pt-week-date font-extrabold tabular-nums" style={{ color: today ? "#FFFFFF" : redInk(d, on ? INK : SUB) }}>{Number(d.slice(8, 10))}</p>
                 </div>
               );
             })}
@@ -5764,7 +5765,7 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
         </div>
         <button aria-label="실행 취소" disabled={!pending && !undoStack.length} onClick={undoMarks} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl disabled:opacity-30" style={{ backgroundColor: "rgba(255,255,255,.08)" }}><RotateCcw size={15} color="#fff" /></button>
         <button aria-label="다시 실행" disabled={!redoStack.length} onClick={redoMarks} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl disabled:opacity-30" style={{ backgroundColor: "rgba(255,255,255,.08)" }}><Redo2 size={15} color="#fff" /></button>
-        <button onClick={async () => { const next = marks.map((mark) => ({ ...mark, source: mark.source || "manual" })); try { const stored = await onSave(next); if (stored === false) throw Object.assign(new Error("annotation save rejected"), { code: "annotation_save_rejected" }); initialMarks.current = JSON.stringify(next); onClose(); } catch (error) { deviceLog("assessment_annotation_save_failed", { memberId: photo.memberId, assessmentId: photo.assessmentId, view: photo.view, ...deviceError(error) }); onToast?.({ ok: false, msg: "표시를 저장하지 못했습니다. 현재 편집 내용은 유지됩니다. 다시 시도해 주세요." }); } }} className="flex h-11 shrink-0 items-center rounded-xl px-4 text-xs font-extrabold text-white" style={{ backgroundColor: BRAND, boxShadow: "0 5px 14px rgba(76,67,153,.35)" }}>완료</button>
+        <button onClick={async () => { const next = marks.map((mark) => ({ ...mark, source: mark.source || "manual" })); try { const stored = await onSave(next); if (stored === false) throw Object.assign(new Error("annotation save rejected"), { code: "annotation_save_rejected" }); initialMarks.current = JSON.stringify(next); onClose(); } catch (error) { deviceLog("assessment_annotation_save_failed", { memberId: photo.memberId, assessmentId: photo.assessmentId, view: photo.view, ...deviceError(error) }); onToast?.({ ok: false, msg: "표시를 저장하지 못했습니다. 현재 편집 내용은 유지됩니다. 다시 시도해 주세요." }); } }} className="flex h-11 shrink-0 items-center rounded-xl px-4 text-xs font-extrabold text-white" style={{ backgroundColor: BRAND, boxShadow: "0 5px 14px rgba(224,19,110,.35)" }}>완료</button>
       </div>
       <div className="flex min-h-0 flex-1 items-center justify-center px-1.5 py-1">
         <div ref={wrapRef} className="relative overflow-hidden rounded-xl" style={{ aspectRatio: "3 / 4", maxHeight: "100%", maxWidth: "min(100%, 540px)", width: "100%", border: "1px solid rgba(255,255,255,.12)", boxShadow: "0 16px 36px rgba(0,0,0,.34)" }}>
@@ -5782,7 +5783,7 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
             {toolItems.map(({ k, l, I }) => {
               const active = k === "guide" ? ["hline", "vline"].includes(tool) : k === "ruler" ? Boolean(ruler) : tool === k;
               return <button key={k} onClick={() => { if (k === "guide") setGuideSheet(true); else if (k === "ruler") { setRuler((value) => value ? null : { cx: 0.5, cy: 0.58, deg: 0 }); pickTool("pen"); } else pickTool(k); }} className="flex h-10 min-w-0 flex-col items-center justify-center gap-0.5 rounded-lg px-0.5 text-caption font-bold"
-                style={active ? { backgroundColor: BRAND, color: "#fff", boxShadow: "0 5px 12px rgba(76,67,153,.32)" } : { backgroundColor: "rgba(255,255,255,.055)", color: "rgba(255,255,255,.76)", border: "1px solid rgba(255,255,255,.055)" }}
+                style={active ? { backgroundColor: BRAND, color: "#fff", boxShadow: "0 5px 12px rgba(224,19,110,.32)" } : { backgroundColor: "rgba(255,255,255,.055)", color: "rgba(255,255,255,.76)", border: "1px solid rgba(255,255,255,.055)" }}
                 aria-pressed={active}><I size={16} strokeWidth={2.1} /><span className="whitespace-nowrap">{l}</span></button>;
             })}
           </div>
@@ -8859,7 +8860,7 @@ function PostureTeacherMemo({ rec, onUpdate, onToast }) {
     } catch (error) { onToast?.({ ok: false, msg: "강사 메모를 저장하지 못했습니다." }); }
     finally { setBusy(false); }
   };
-  return <div className="rounded-xl p-3" style={{ backgroundColor: "rgba(255,255,255,.96)", color: "#1C2433" }}><p className="text-sm font-extrabold">강사 메모</p><textarea rows={3} value={teacherNote} onChange={(event) => setTeacherNote(event.target.value)} placeholder="직접 확인한 내용을 기록하세요" className={`${inputCls} mt-2 h-auto resize-none py-2 text-xs`} /><button type="button" disabled={busy} onClick={save} className="mt-2 h-10 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: "#4C4399" }}>{busy ? "저장 중…" : "강사 메모 저장"}</button></div>;
+  return <div className="rounded-xl p-3" style={{ backgroundColor: "rgba(255,255,255,.96)", color: "#1C2433" }}><p className="text-sm font-extrabold">강사 메모</p><textarea rows={3} value={teacherNote} onChange={(event) => setTeacherNote(event.target.value)} placeholder="직접 확인한 내용을 기록하세요" className={`${inputCls} mt-2 h-auto resize-none py-2 text-xs`} /><button type="button" disabled={busy} onClick={save} className="mt-2 h-10 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: BRAND }}>{busy ? "저장 중…" : "강사 메모 저장"}</button></div>;
 }
 
 function SavedPoseViewer({ rec, member, records, onUpdate, memberName, onClose, onToast }) {
@@ -8891,7 +8892,7 @@ function SavedPoseViewer({ rec, member, records, onUpdate, memberName, onClose, 
             </div>
           ))}
           {rec.comment && (
-            <div className="rounded-xl px-3 py-3" style={{ backgroundColor: "rgba(76,67,153,.18)" }}>
+            <div className="rounded-xl px-3 py-3" style={{ backgroundColor: "rgba(224,19,110,.18)" }}>
               <p className="text-xs font-extrabold text-white opacity-80">저장된 코멘트</p>
               <p className="mt-1 text-sm leading-relaxed text-white">{rec.comment}</p>
             </div>
@@ -9759,7 +9760,7 @@ function PostureCaptureScreen({
           <span className="min-w-0 flex-1"><span className="block truncate text-sm font-extrabold">{member?.name || "회원"} · {roleLabel || "미분류"}</span><span className="block text-caption text-white/65">{completedCount}/{captureViews.length} 완료 · {postureViewLabel(activeView)}</span></span>
         </div>
         <div className="grid gap-1" style={{ gridTemplateColumns: `repeat(${captureViews.length}, minmax(0, 1fr))` }}>
-          {captureViews.map((capture, index) => { const selected = capture.key === activeView; const complete = !!capturePhotos[capture.key]; return <button key={capture.key} type="button" disabled={countdown != null || cameraStatus === "capturing"} onClick={() => onSelectView(capture.key)} className="flex h-8 min-w-0 items-center justify-center gap-1 rounded-lg px-1 text-caption font-bold disabled:opacity-45" style={{ backgroundColor: selected ? "rgba(76,67,153,.92)" : complete ? "rgba(46,125,91,.72)" : "rgba(255,255,255,.10)", border: `1px solid ${selected ? "#B9B2F4" : "rgba(255,255,255,.14)"}` }}><span>{complete ? <Check size={10} /> : index + 1}</span><span className="truncate">{capture.label}</span></button>; })}
+          {captureViews.map((capture, index) => { const selected = capture.key === activeView; const complete = !!capturePhotos[capture.key]; return <button key={capture.key} type="button" disabled={countdown != null || cameraStatus === "capturing"} onClick={() => onSelectView(capture.key)} className="flex h-8 min-w-0 items-center justify-center gap-1 rounded-lg px-1 text-caption font-bold disabled:opacity-45" style={{ backgroundColor: selected ? "rgba(224,19,110,.92)" : complete ? "rgba(46,125,91,.72)" : "rgba(255,255,255,.10)", border: `1px solid ${selected ? "#B9B2F4" : "rgba(255,255,255,.14)"}` }}><span>{complete ? <Check size={10} /> : index + 1}</span><span className="truncate">{capture.label}</span></button>; })}
         </div>
       </header>
 
@@ -9792,8 +9793,8 @@ function PostureCaptureScreen({
               <div><p className="text-sm font-extrabold">{transferLabel || (iosStableCaptureFallback ? "사진 촬영 또는 선택" : cameraStatus === "starting" ? "카메라 준비 중" : cameraStatus === "paused" ? "카메라가 일시 중지되었습니다" : "카메라를 열 수 없습니다")}</p>{!transferLabel && (iosStableCaptureFallback || cameraError) && <p className="mt-1 text-xs leading-relaxed text-white/65">{iosStableCaptureFallback ? "App Store 안정화 빌드에서는 iOS 기본 사진 선택 화면을 사용합니다." : cameraError}</p>}</div>
               {/* 진행 중에는 아무 버튼도 내주지 않는다. 다시 시도할 것이 없다. */}
               {!transferLabel && cameraStatus !== "starting" && (iosStableCaptureFallback
-                ? <button type="button" onClick={() => onOpenAlbum(activeView)} className="h-11 rounded-xl px-5 text-sm font-bold text-white" style={{ backgroundColor: "#4C4399" }}>사진 촬영 또는 선택</button>
-                : <button type="button" onClick={startCamera} className="h-11 rounded-xl px-5 text-sm font-bold text-white" style={{ backgroundColor: "#4C4399" }}>다시 시도</button>)}
+                ? <button type="button" onClick={() => onOpenAlbum(activeView)} className="h-11 rounded-xl px-5 text-sm font-bold text-white" style={{ backgroundColor: BRAND }}>사진 촬영 또는 선택</button>
+                : <button type="button" onClick={startCamera} className="h-11 rounded-xl px-5 text-sm font-bold text-white" style={{ backgroundColor: BRAND }}>다시 시도</button>)}
             </div>
           )}
 
@@ -9807,11 +9808,11 @@ function PostureCaptureScreen({
       <footer className="safe-b shrink-0 px-3 pt-2" style={{ background: "linear-gradient(0deg, rgba(13,16,22,1), rgba(13,16,22,.9))" }}>
         {(cameraError || captureImportError) && <p className="mb-2 rounded-lg px-3 py-2 text-center text-caption font-bold" style={{ backgroundColor: "rgba(179,57,46,.24)", color: "#FFB8B1" }}>{cameraError || captureImportError}</p>}
         {pendingCapture ? (
-          <div className="grid grid-cols-2 gap-2 pb-1"><button type="button" onClick={retakePending} disabled={busy} className="flex h-12 items-center justify-center gap-2 rounded-xl text-sm font-bold disabled:opacity-40" style={{ border: "1px solid rgba(255,255,255,.22)" }}><RotateCcw size={16} />다시 촬영</button><button type="button" onClick={usePending} disabled={busy} className="flex h-12 items-center justify-center gap-2 rounded-xl text-sm font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: "#4C4399" }}>{busy ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}사용하기</button></div>
+          <div className="grid grid-cols-2 gap-2 pb-1"><button type="button" onClick={retakePending} disabled={busy} className="flex h-12 items-center justify-center gap-2 rounded-xl text-sm font-bold disabled:opacity-40" style={{ border: "1px solid rgba(255,255,255,.22)" }}><RotateCcw size={16} />다시 촬영</button><button type="button" onClick={usePending} disabled={busy} className="flex h-12 items-center justify-center gap-2 rounded-xl text-sm font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: BRAND }}>{busy ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}사용하기</button></div>
         ) : captureCompleteIdle ? (
-          <div className="grid gap-2 pb-1"><button type="button" onClick={onContinue} disabled={busy} className="flex h-12 items-center justify-center gap-2 rounded-xl text-sm font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: "#4C4399" }}><ChevronRight size={17} />다음 분석 단계</button><button type="button" onClick={() => iosStableCaptureFallback ? onOpenAlbum(activeView) : startCamera()} disabled={busy} className="h-10 text-xs font-bold text-white/70 disabled:opacity-40"><RotateCcw size={13} className="mr-1 inline" />{postureViewLabel(activeView)} 다시 촬영</button></div>
+          <div className="grid gap-2 pb-1"><button type="button" onClick={onContinue} disabled={busy} className="flex h-12 items-center justify-center gap-2 rounded-xl text-sm font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: BRAND }}><ChevronRight size={17} />다음 분석 단계</button><button type="button" onClick={() => iosStableCaptureFallback ? onOpenAlbum(activeView) : startCamera()} disabled={busy} className="h-10 text-xs font-bold text-white/70 disabled:opacity-40"><RotateCcw size={13} className="mr-1 inline" />{postureViewLabel(activeView)} 다시 촬영</button></div>
         ) : iosStableCaptureFallback ? (
-          <button type="button" onClick={() => onOpenAlbum(activeView)} disabled={busy} className="flex h-12 w-full items-center justify-center gap-2 rounded-xl text-sm font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: "#4C4399" }}><ImagePlus size={17} />사진 촬영 또는 선택</button>
+          <button type="button" onClick={() => onOpenAlbum(activeView)} disabled={busy} className="flex h-12 w-full items-center justify-center gap-2 rounded-xl text-sm font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: BRAND }}><ImagePlus size={17} />사진 촬영 또는 선택</button>
         ) : (
           <div className="relative flex items-center justify-between gap-3 pb-1">
             <button type="button" onClick={async () => { await stopCamera("album"); onOpenAlbum(activeView); }} disabled={countdown != null || busy} className="flex h-11 w-16 flex-col items-center justify-center gap-0.5 rounded-xl text-caption font-bold disabled:opacity-40" style={{ backgroundColor: "rgba(255,255,255,.10)" }}><ImagePlus size={16} />앨범</button>
@@ -10078,10 +10079,10 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
         if (!pts[a] || !pts[b]) return;
         const p = S(pts[a]), q = S(pts[b]);
         ctx.save();
-        ctx.strokeStyle = "rgba(76,67,153,.25)"; ctx.lineWidth = 9 * k;
+        ctx.strokeStyle = "rgba(224,19,110,.25)"; ctx.lineWidth = 9 * k;
         ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke();
         ctx.strokeStyle = BRAND; ctx.lineWidth = 3.2 * k;
-        ctx.shadowColor = "rgba(76,67,153,.35)"; ctx.shadowBlur = 10 * k;
+        ctx.shadowColor = "rgba(224,19,110,.35)"; ctx.shadowBlur = 10 * k;
         ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke();
         ctx.restore();
       });
@@ -10092,8 +10093,8 @@ function PoseAnalyzer({ member, photos, onSavePose, onUpdatePose, onDeletePose, 
         const r = (on ? 11 : 7) * k;
         ctx.save();
         const halo = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r * 2.6);
-        halo.addColorStop(0, on ? "rgba(76,67,153,.46)" : "rgba(76,67,153,.25)");
-        halo.addColorStop(1, "rgba(76,67,153,0)");
+        halo.addColorStop(0, on ? "rgba(224,19,110,.46)" : "rgba(224,19,110,.25)");
+        halo.addColorStop(1, "rgba(224,19,110,0)");
         ctx.fillStyle = halo;
         ctx.beginPath(); ctx.arc(p.x, p.y, r * 2.6, 0, Math.PI * 2); ctx.fill();
         if (on) { ctx.strokeStyle = "rgba(255,255,255,.55)"; ctx.lineWidth = 1.4 * k; ctx.beginPath(); ctx.arc(p.x, p.y, r * 1.9, 0, Math.PI * 2); ctx.stroke(); }

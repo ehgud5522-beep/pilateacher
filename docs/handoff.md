@@ -1,5 +1,17 @@
 # 이어서 작업하기 — 최근 변경과 남은 일
 
+## 2026-11-08 — 강사 앱 아이콘 · 시작 화면 교체 (`feat/app-icon-hotpink`, 배포 · 병합 전)
+
+- 대표 확정 아이콘(핫핑크 P + 필라테스 동작). **강사 앱만** -- 보니따 VIP(member-app/)는 손대지 않음
+- 원본 `resources/icon-only.png` (1024): 받은 그림의 흰 여백 · 미리 깎은 둥근 모서리를 지우고 정사각형을 분홍으로 채움(가장자리는
+  주변 그라데이션으로). 모든 크기는 `node tools/brand/instructor-icons.mjs` 한 줄로 다시 만든다 -- iOS AppIcon(알파 없음) ·
+  Android mipmap(옛 런처 둥근 사각 · 원, 적응형 배경=그림 · 전경=투명) · Play 512 · 웹 icon-192/512/maskable · apple-touch ·
+  네이티브 시작 화면(Android drawable · iOS Splash.imageset · resources/splash*)
+- 웹 로딩 화면(App.jsx Splash): 어두운 배경 + 핫핑크 빛 · 새 아이콘 · 분홍 문구 · 분홍 진행 막대. 색은 `SPLASH_THEME` 하나 (테마와
+  무관) -- 네이티브 시작 화면과 같은 색이라 열릴 때 튀지 않는다. `Logo` 는 이제 아이콘 그림(로그인 · 머리 · 로딩 셋)
+- 안드로이드 `ic_launcher_background` #D9136A, PWA background_color #0E0A10
+- 앱 빌드: `release/1-1-48` (1.1.47 + 이 아이콘, 버전 1.1.48 · versionCode 71). 실기기 · 스토어 표시는 대표 빌드 뒤 확인
+
 ## 2026-11-07 밤 — 회원권 발급 상품 고르기 간소화 (`feat/pass-issue-simple-picker`, 배포 · 병합 전)
 
 - 대표: "리스트가 너무 많아서 뭘 눌러야 할지 모름". 이름 칩 40여 개를 한꺼번에 늘어놓던 것을 세 단계로:

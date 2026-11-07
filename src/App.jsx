@@ -2176,49 +2176,14 @@ function GuideOverlay({ strong = false }) {
     </div>
   );
 }
-const Logo = ({ size = 64, radius = 0.24 }) => (
-  <svg width={size} height={size} viewBox="0 0 100 100" role="img" aria-label="필라티쳐"
-    style={{ borderRadius: size * radius, display: "block", boxShadow: `0 18px 40px ${RING}, 0 4px 10px ${RING}` }}>
-    <defs>
-      <linearGradient id="ptg" x1="0.1" y1="0" x2="0.9" y2="1">
-        <stop offset="0%" stopColor="#5D55AA" />
-        <stop offset="100%" stopColor={BRAND} />
-      </linearGradient>
-      <linearGradient id="ptGloss" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.38" />
-        <stop offset="70%" stopColor="#FFFFFF" stopOpacity="0" />
-      </linearGradient>
-    </defs>
-    <rect width="100" height="100" rx={100 * radius} fill="url(#ptg)" />
-    <rect width="100" height="54" rx={100 * radius} fill="url(#ptGloss)" />
-    <g stroke="#FFFFFF" strokeLinecap="round" strokeOpacity="0.4">
-      <line x1="8" y1="50" x2="92" y2="50" strokeWidth="1.2" strokeDasharray="3.5 3.5" />
-      <line x1="50" y1="8" x2="50" y2="92" strokeWidth="1.2" strokeDasharray="3.5 3.5" />
-    </g>
-    <path fillRule="evenodd" fill="#FFFFFF"
-      d="M34.5 24 H50.5 a15 15 0 0 1 0 30 H46 V76 H34.5 Z M46 34 h4.5 a5 5 0 0 1 0 10 H46 Z" />
-    <g fill="none" strokeLinecap="round" strokeLinejoin="round">
-      <g stroke={BRAND} strokeWidth="9">
-        <path d="M69 42 L62 31" />
-        <path d="M69 42 H83" />
-        <path d="M69 42 V57" />
-        <path d="M69 57 L63.5 71.5 M69 57 L74.5 71.5" />
-      </g>
-      <g stroke="#FFFFFF" strokeWidth="4.5">
-        <path d="M69 42 L62 31" />
-        <path d="M69 42 H83" />
-        <path d="M69 42 V57" />
-        <path d="M69 57 L63.5 71.5 M69 57 L74.5 71.5" />
-      </g>
-    </g>
-    <circle cx="69" cy="29.5" r="7" fill={LAVENDER} />
-    <circle cx="69" cy="29.5" r="5.8" fill="#FFFFFF" />
-    <g fill={BRAND} stroke="#FFFFFF" strokeWidth="1.6">
-      {[[62, 31], [83, 42], [69, 42], [69, 57], [63.5, 71.5], [74.5, 71.5]].map(([cx, cy]) => (
-        <circle key={`${cx}-${cy}`} cx={cx} cy={cy} r="3" />
-      ))}
-    </g>
-  </svg>
+/* 앱 아이콘 그대로 (2026-11-08 대표 확정: 핫핑크 P + 필라테스 동작). 그림은 public/icon-*.png 하나 --
+   tools/brand/instructor-icons.mjs 가 resources/icon-only.png 에서 만든다. 둥근 모서리만 여기서 깎는다. */
+const Logo = ({ size = 64, radius = 0.225, glow = false }) => (
+  <img src={size > 96 ? "/icon-512.png" : "/icon-192.png"} width={size} height={size} alt="필라티쳐" draggable={false}
+    style={{
+      width: size, height: size, borderRadius: size * radius, display: "block", objectFit: "cover",
+      boxShadow: glow ? "0 22px 48px rgba(236,26,114,0.42), 0 6px 14px rgba(236,26,114,0.30)" : "0 6px 16px rgba(28,36,51,0.16)",
+    }} />
 );
 /* ===== 인사말 =====
    응원 3 : 지식 1 비율로 뜬다. 응원은 시간대·요일에 맞게, 최근에 나온 건 피한다. */
@@ -2439,29 +2404,43 @@ const INBODY_EXTRA = [
   { k: "bmr", l: "기초대사량", u: "kcal" }, { k: "visceral", l: "내장지방", u: "레벨" },
   { k: "score", l: "인바디 점수", u: "점" },
 ];
+/* 로딩 화면 색 (2026-11-08). 테마와 상관없이 늘 이 색이다 -- 네이티브 시작 화면(tools/brand/instructor-icons.mjs
+   의 SPLASH_COLORS)과 같아야 앱이 열릴 때 화면이 한 번 튀지 않는다. */
+const SPLASH_THEME = Object.freeze({
+  background: "radial-gradient(ellipse 120% 85% at 50% 46%, #3A0C26 0%, #1B0A16 45%, #0E0A10 100%)",
+  glow: "radial-gradient(circle, rgba(236,26,114,0.34) 0%, rgba(236,26,114,0.10) 38%, rgba(236,26,114,0) 68%)",
+  ring: "rgba(255,111,170,0.22)",
+  ringFar: "rgba(255,111,170,0.10)",
+  title: "#FFFFFF",
+  accent: "#FF6FAA",
+  sub: "rgba(255,255,255,0.62)",
+  faint: "rgba(255,255,255,0.34)",
+  track: "rgba(255,255,255,0.10)",
+  bar: "linear-gradient(90deg, #FF6FAA 0%, #EC1A72 100%)",
+});
 function Splash() {
   return (
-    <div className="fixed inset-0 z-50 overflow-hidden" style={{ background: SPLASH_BG }}>
+    <div className="fixed inset-0 z-50 overflow-hidden" data-splash style={{ background: SPLASH_THEME.background }}>
       <div className="pointer-events-none absolute" style={{
-        width: 560, height: 560, left: "50%", top: "40%", transform: "translate(-50%,-50%)",
-        background: GLOW,
+        width: 620, height: 620, left: "50%", top: "40%", transform: "translate(-50%,-50%)",
+        background: SPLASH_THEME.glow,
       }} />
       <div className="relative flex h-full flex-col items-center justify-center px-8">
         <div className="splash-pop relative">
-          <span className="ring1 absolute" style={{ inset: -24, borderRadius: 40, border: `1px solid ${RING}` }} />
-          <span className="ring2 absolute" style={{ inset: -46, borderRadius: 56, border: `1px solid ${RING}` }} />
-          <Logo size={108} />
+          <span className="ring1 absolute" style={{ inset: -22, borderRadius: 42, border: `1px solid ${SPLASH_THEME.ring}` }} />
+          <span className="ring2 absolute" style={{ inset: -44, borderRadius: 58, border: `1px solid ${SPLASH_THEME.ringFar}` }} />
+          <Logo size={108} glow />
         </div>
-        <h1 className="splash-fade mt-8 text-4xl font-extrabold" style={{ color: INK, letterSpacing: "-0.045em" }}>필라티쳐</h1>
-        <div className="splash-fade mt-4 h-px w-12" style={{ backgroundColor: RING }} />
-        <p className="splash-fade2 mt-4 text-center text-sm font-extrabold leading-relaxed" style={{ color: PRIMARY, letterSpacing: "-0.01em" }}>수업은 선생님이.<br />기억은 PilaTeacher가.</p>
-        <p className="splash-fade2 mt-2 text-center text-xs font-medium leading-relaxed" style={{ color: SUB }}>수업 후 10초만 말하면,<br />다음 수업 전에 기억해드려요.</p>
+        <h1 className="splash-fade mt-14 text-4xl font-extrabold" style={{ color: SPLASH_THEME.title, letterSpacing: "-0.045em" }}>필라티쳐</h1>
+        <div className="splash-fade mt-4 h-px w-12" style={{ background: `linear-gradient(90deg, transparent, ${SPLASH_THEME.accent}, transparent)` }} />
+        <p className="splash-fade2 mt-4 text-center text-sm font-extrabold leading-relaxed" style={{ color: SPLASH_THEME.accent, letterSpacing: "-0.01em" }}>수업은 선생님이.<br />기억은 PilaTeacher가.</p>
+        <p className="splash-fade2 mt-2 text-center text-xs font-medium leading-relaxed" style={{ color: SPLASH_THEME.sub }}>수업 후 10초만 말하면,<br />다음 수업 전에 기억해드려요.</p>
       </div>
       <div className="absolute inset-x-0 bottom-16 flex flex-col items-center gap-3">
-        <div className="h-1 w-32 overflow-hidden rounded-full" style={{ backgroundColor: LINE }}>
-          <div className="loadbar h-full rounded-full" style={{ backgroundColor: BRAND }} />
+        <div className="h-1 w-32 overflow-hidden rounded-full" style={{ backgroundColor: SPLASH_THEME.track }}>
+          <div className="loadbar h-full rounded-full" style={{ background: SPLASH_THEME.bar }} />
         </div>
-        <p className="splash-fade2 text-xs" style={{ color: FAINT }}>PILATEACHER</p>
+        <p className="splash-fade2 text-xs" style={{ color: SPLASH_THEME.faint, letterSpacing: "0.18em" }}>PILATEACHER</p>
       </div>
     </div>
   );

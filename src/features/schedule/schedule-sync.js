@@ -70,11 +70,31 @@ function rosterIndex(rosterMembers) {
  * 노쇼비는 그대로 둔다. 서버 목록에 없는 기기 출석 중 취소한 사람과 센터 명부에
  * 없는 회원은 지우지 않고 남긴다.
  */
+/**
+ * 회원 앱에서 회원이 직접 취소한 사람 (2026-11-07, 5차 1단계). 서버 함수가 수업 문서에
+ * memberCancellations.{clientId} 를 남긴다. **표시일 뿐 기준이 아니다** -- 강사가 다시
+ * 넣어 clientIds 에 돌아온 사람은 취소로 되돌리지 않는다.
+ */
+export function memberCancelledAt(doc, clientId) {
+  const mark = doc?.memberCancellations?.[text(clientId)];
+  if (!mark || typeof mark !== "object") return "";
+  return toDate(mark.cancelledAt)?.toISOString() || "member";
+}
+
 function mergedAttendees(doc, local, byClient) {
   const careGrades = doc?.careGrades && typeof doc.careGrades === "object" ? doc.careGrades : {};
   const previous = new Map(attendeesOf(local).map((attendee) => [text(attendee?.memberId), attendee]));
   const fromServer = [];
   const unmatched = [];
+  /* 듀엣에서 회원이 자기 몫만 취소하면 서버는 그 사람을 clientIds 에서 뺀다. 그대로 두면
+     아래에서 그 출석이 지워진다 -- 강사는 누가 빠졌는지 모른다. 취소로 남긴다. */
+  const serverClientIds = new Set((Array.isArray(doc?.clientIds) ? doc.clientIds : []).map(text));
+  const memberCancelled = new Map();
+  for (const clientId of Object.keys(doc?.memberCancellations && typeof doc.memberCancellations === "object" ? doc.memberCancellations : {})) {
+    if (serverClientIds.has(text(clientId))) continue;
+    const member = byClient.get(text(clientId));
+    if (member) memberCancelled.set(text(member.id), memberCancelledAt(doc, clientId));
+  }
   for (const clientId of Array.isArray(doc?.clientIds) ? doc.clientIds.map(text) : []) {
     const member = byClient.get(clientId);
     if (!member) { unmatched.push(clientId); continue; }
@@ -90,7 +110,10 @@ function mergedAttendees(doc, local, byClient) {
   const keptLocal = attendeesOf(local).filter((attendee) => {
     const id = text(attendee?.memberId);
     if (serverIds.has(id)) return false;
-    return text(attendee?.status) === "cancel" || !memberIdsInRoster.has(id);
+    return text(attendee?.status) === "cancel" || memberCancelled.has(id) || !memberIdsInRoster.has(id);
+  }).map((attendee) => {
+    const at = memberCancelled.get(text(attendee?.memberId));
+    return at ? { ...attendee, status: "cancel", memberCancelledAt: at } : attendee;
   });
   return { attendees: [...fromServer, ...keptLocal], unmatched };
 }
@@ -180,10 +203,15 @@ export function mergeServerLessons(input) {
       } else {
         /* 출석 전원 취소. 일정은 남기고 센터 회원의 출석을 취소로. */
         const linkedIds = new Set([...byClient.values()].map((member) => text(member.id)));
+        /* 회원이 앱에서 취소한 사람은 그렇다고 적는다 -- 첫 화면 "회원 취소 N건" 이 센다. */
+        const clientOf = new Map([...byClient.entries()].map(([clientId, member]) => [text(member.id), clientId]));
         byId.set(id, {
           ...current,
-          attendees: attendeesOf(current).map((attendee) => (linkedIds.has(text(attendee?.memberId))
-            ? { ...attendee, status: "cancel" } : attendee)),
+          attendees: attendeesOf(current).map((attendee) => {
+            if (!linkedIds.has(text(attendee?.memberId))) return attendee;
+            const at = memberCancelledAt(doc, clientOf.get(text(attendee?.memberId)));
+            return { ...attendee, status: "cancel", ...(at ? { memberCancelledAt: at } : {}) };
+          }),
           syncRevision: serverRevision,
         });
         summary.attendanceCancelled += 1;
@@ -299,4 +327,20 @@ export function mergeFormEdit(current, opened, edited) {
     .filter((key) => !same(opened[key], edited[key]))
     .map((key) => [key, edited[key]]));
   return { ...current, ...patch };
+}
+
+/**
+ * 첫 화면 "회원 취소 N건" (2026-11-07). 오늘부터 앞으로의 일정 중 회원이 앱에서 취소한
+ * 출석 수. 강사가 다시 넣어 출석이 취소가 아니게 된 것은 세지 않는다.
+ */
+export function upcomingMemberCancels(schedule, now = new Date()) {
+  const today = isoDay(now instanceof Date ? now : new Date());
+  let count = 0;
+  for (const entry of Array.isArray(schedule) ? schedule : []) {
+    if (text(entry?.date) < today) continue;
+    for (const attendee of attendeesOf(entry)) {
+      if (attendee?.memberCancelledAt && text(attendee?.status) === "cancel") count += 1;
+    }
+  }
+  return count;
 }

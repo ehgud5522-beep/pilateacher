@@ -95,6 +95,30 @@ function scheduleSyncPayload(input) {
   return { mode, userIds };
 }
 
+/**
+ * 회원 앱 수업 취소 스위치 · 횟수 · 적용 기간 (2026-11-07, 5차 1단계).
+ *
+ * 켜는 범위는 일정 동기화와 같은 모양(off · listed · all)이고, listed 의 userIds 는
+ * **강사** 계정이다 -- 그 강사의 수업에만 회원 취소를 받는다. 서버는 그 강사의 일정
+ * 동기화도 켜져 있어야 받는다 (functions/shared/member-cancel.mjs).
+ *
+ * 횟수(limit)와 적용 기간(period)은 반드시 적는다. 비어 있으면 기능이 꺼진 것으로
+ * 읽힌다 -- 코드에 기본값을 두지 않는다 (대표 결정: 값은 설정 화면에서).
+ */
+async function memberCancelPayload(input) {
+  const policy = await import("../shared/member-cancel.mjs");
+  const { mode, userIds } = scheduleSyncPayload(input);
+  const rawLimit = input?.limit;
+  const limit = Number(rawLimit);
+  if (rawLimit === null || rawLimit === undefined || rawLimit === "" || !Number.isInteger(limit)
+    || limit < policy.LIMIT_RANGE.min || limit > policy.LIMIT_RANGE.max) {
+    throw new Error("member_cancel_limit_invalid");
+  }
+  const period = text(input?.period);
+  if (!Object.values(policy.MEMBER_CANCEL_PERIOD).includes(period)) throw new Error("member_cancel_period_invalid");
+  return { mode, userIds, limit, period };
+}
+
 const WRITERS = Object.freeze({
   appUpdate: appUpdatePayload,
   settlement: settlementPayload,
@@ -104,6 +128,8 @@ const WRITERS = Object.freeze({
   /* 센터 회원 명단 실시간 (2026-11-04, 2단계). 모양은 같다. 문서는 따로 두지
      않는다 -- 아래 FIELD_TARGETS 참고. */
   rosterRealtime: scheduleSyncPayload,
+  /* 회원 앱 수업 취소 (5차 1단계). scheduleSync 문서의 memberCancel 칸 -- 아래 참고. */
+  memberCancel: memberCancelPayload,
 });
 
 /**
@@ -116,6 +142,9 @@ const WRITERS = Object.freeze({
  */
 const FIELD_TARGETS = Object.freeze({
   rosterRealtime: { document: "scheduleSync", field: "rosterRealtime" },
+  /* 같은 이유로 scheduleSync 에 얹는다. 강사 앱은 이 문서를 이미 읽고, 서버는 같은
+     문서에서 그 강사의 동기화 스위치와 함께 읽는다. 회원 앱은 이 문서를 읽지 않는다. */
+  memberCancel: { document: "scheduleSync", field: "memberCancel" },
 });
 
 /**
@@ -131,7 +160,7 @@ async function writeRuntimeConfig(firestore, input) {
   if (!build) throw new Error(CONFIG_ERROR.UNKNOWN_DOCUMENT);
 
   const at = (input?.now || (() => new Date()))();
-  const payload = build(input?.value);
+  const payload = await build(input?.value);
   const target = FIELD_TARGETS[name];
   if (target) {
     await firestore.collection("runtimeConfig").doc(target.document).set({
@@ -210,6 +239,7 @@ module.exports = {
   appUpdatePayload,
   settlementPayload,
   scheduleSyncPayload,
+  memberCancelPayload,
   FIELD_TARGETS,
   readRuntimeConfig,
   writeRuntimeConfig,

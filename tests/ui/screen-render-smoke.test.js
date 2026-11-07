@@ -148,6 +148,9 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "센터 회원 상세 · 이력 · 총괄매니저",
     "센터 회원 상세 · 이력 · FC매니저",
     "센터 회원 상세 · 이름 수정",
+    "센터 회원 상세 · 앱 취소 횟수",
+    "일정 탭 · 회원 취소 N건",
+    "운영 설정 · 회원 앱 수업 취소",
     "센터 회원 상세 · 보관 가능",
     "센터 회원 상세 · 보관 확인",
     "센터 회원 상세 · 보관됨",
@@ -3227,4 +3230,21 @@ test("이관 서비스 보정은 바뀔 값을 전후로 보여준다", async ()
   const clean = markupOf("이관 서비스 보정 · 보정할 것 없음");
   assert.match(clean, /보정할 것 없음/);
   assert.equal(clean.includes("확인했습니다"), false, "고칠 것이 없으면 확정 버튼을 내지 않는다");
+});
+
+test("member app cancellation: the count on the first screen, the grant button, the owner's switch", async () => {
+  const markup = await screenMarkup();
+  const schedule = markup("일정 탭 · 회원 취소 N건");
+  assert.match(schedule, /data-member-cancel-count/);
+  assert.match(schedule, /회원 취소 \d+건/);
+  assert.doesNotMatch(markup("일정 탭"), /data-member-cancel-count/, "기능이 꺼진 강사에게는 없다");
+
+  const detail = markup("센터 회원 상세 · 앱 취소 횟수");
+  assert.match(detail, /data-member-cancel-grant/);
+  assert.match(detail, /취소 횟수 추가/, "대표에게는 버튼이 보인다");
+  assert.doesNotMatch(markup("센터 회원 상세 · 이름 수정"), /data-member-cancel-grant/, "설정이 없으면 그리지 않는다");
+
+  const admin = markup("운영 설정 · 회원 앱 수업 취소");
+  assert.match(admin, /data-member-cancel-admin/);
+  assert.match(admin, /강사별 취소 횟수 추가 부여/);
 });

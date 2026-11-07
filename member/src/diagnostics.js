@@ -34,6 +34,7 @@ export const MEMBER_FEATURE = Object.freeze({
   OFFLINE_CACHE: "offline_cache",
   DELETE_ACCOUNT: "delete_account",
   SIGN_OUT: "sign_out",
+  LESSON_CANCEL: "member_lesson_cancel",
 });
 
 /** 그 기능의 어느 단계인가. */
@@ -47,6 +48,8 @@ export const MEMBER_STAGE = Object.freeze({
   CALL_LINK: "call_link",
   READ_VIEWS: "read_views",
   CACHE_HIT: "cache_hit",
+  CANCEL_STATUS: "cancel_status",
+  CANCEL_CALL: "cancel_call",
   DONE: "done",
   FAILED: "failed",
 });

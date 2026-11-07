@@ -704,8 +704,11 @@ service cloud.firestore {
          - memberCancelGrants: 추가 부여 기록. 대표 화면의 강사별 월 집계 -- 대표 ·
            총괄매니저만 (사유 문장이 들어 있다) */
       match /memberCancelLedger/{clientId} {
+        /* 문서가 없을 수 있다 -- 한 번도 취소 · 추가 부여가 없던 회원 (2026-11-07 대표 화면
+           "남은 취소 횟수를 읽지 못했어요 (코드 permission-denied)"). 없는 문서의 resource 는
+           null 이라 resource.data 를 보면 거절된다. 없으면 센터 직원인지만 본다. */
         allow get: if isCentreStaff(organizationId)
-          && resource.data.organizationId == organizationId;
+          && (resource == null || resource.data.organizationId == organizationId);
         allow list: if false;
         allow create, update, delete: if false;
       }
